@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 
 import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation, TsunamiWarningComment } from '../../types/earthquake'
 import { formatDateTimeMin, formatDepth, formatMagnitudeCondition, formatTime, hasDepth } from '../../utils/formatters'
 import { quakeEventKey } from '../../utils/quakeMerge'
-import { groupAreasForCardDisplay, matchesArea, observationBadges, observationHeightText, observationArrivalFallbackText, observationMaxHeightTimeText, estimationBadges, estimationHeightText, forecastHeightImportantBadge, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, isTsunamiGradeRaised, sourceEarthquakeTime, tsunamiAreaKey, evacuationActionLine } from '../../utils/tsunami'
+import { groupAreasForCardDisplay, tsunamiAreaGradeChanges, TSUNAMI_GRADE_LIFTED, matchesArea, observationBadges, observationHeightText, observationArrivalFallbackText, observationMaxHeightTimeText, estimationBadges, estimationHeightText, forecastHeightImportantBadge, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, isTsunamiGradeRaised, sourceEarthquakeTime, tsunamiAreaKey, evacuationActionLine } from '../../utils/tsunami'
 import { TSUNAMI_MISSING_COLOR as MISSING_COLOR } from '../../utils/tsunamiStyle'
 import { mapChunksToRefs, planFollowScroll, type FollowRect, type SpeechFollowSession, type SpeechRef } from '../../utils/ttsFollow'
 import { getSpeechClock } from '../../utils/voicevox'
@@ -503,6 +503,80 @@ function TsunamiGradeCard({ grade, areas, observations, onObservationClick, canF
           ))}
         </div>
       ))}
+    </div>
+  )
+}
+
+/**
+ * この報で解除された区域を並べる枠。等級カードの後ろに置く。
+ *
+ * **等級カードを流用しないこと。** 解除された区域は電文が `Area` と `Category` しか持たず、
+ * 波高・到達時刻・潮位観測点のいずれも無い。等級カードの行（`TsunamiAreaRow`）はそれらを
+ * 描く前提で組んであるので、通しても空欄が並ぶだけになる。
+ *
+ * **前回の等級は無条件に出す。** 等級カードの「〇〇から切り替え」は直近の受信で動いた区域だけに
+ * 付く（`areaGradeChangedKeys`。`lastGrade` が続報にも載り続けるため）が、こちらは枠そのものが
+ * 「この報で解除された区域」を意味するので、印を絞る理由が無い。
+ */
+function TsunamiCancelledCard({ areas, focusedDistrict, registerRow, registerSpeechRow, registerSpeechAnchor }: { areas: TsunamiArea[]; focusedDistrict?: FocusedDistrict | null; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void; registerSpeechAnchor?: (keys: string[], el: HTMLElement | null) => void }) {
+  if (areas.length === 0) return null
+  // 無彩色。解除は「もう出ていない」という報せなので、等級の色を借りない。
+  const style = getGradeStyle('Unknown')
+  // **カード自体は追従の引き当て先にしない。** 等級カードが `grade:` の鍵を持つのは、読み上げが
+  // 「〇〇警報。」と等級を告げる箇所を指すため。解除の読み上げは区域名しか指さないので、
+  // ここに鍵を置いても誰も引かない。
+  return (
+    <div className="bg-card rounded-lg overflow-hidden"
+      style={{ border: `2px solid ${style.cardBorder}`, boxShadow: `0 0 0 1px ${style.cardBorder}40` }}>
+      <div ref={el => {
+        for (const area of areas) {
+          registerSpeechAnchor?.(speechRowKeys({ kind: 'area', code: area.code, name: area.name }), el)
+        }
+      }}
+        className="w-full py-1.5 px-4 text-center text-xs font-bold tracking-widest"
+        style={{ backgroundColor: style.headerBg, color: style.headerColor, borderBottom: `1px solid ${style.headerBorder}` }}>
+        解除
+      </div>
+      {areas.map((area, i) => (
+        <TsunamiCancelledRow
+          key={i}
+          area={area}
+          style={style}
+          isChanged={focusedDistrict?.districts.some(d => districtMatchesArea(d, area)) ?? false}
+          isTop={focusedDistrict?.top != null && districtMatchesArea(focusedDistrict.top, area)}
+          registerRow={registerRow}
+          registerSpeechRow={registerSpeechRow}
+        />
+      ))}
+    </div>
+  )
+}
+
+/**
+ * 解除カードの行。読み上げの追従と受信時スクロールの寄せ先になるため、等級カードの行と同じ
+ * 2 つの登録（`registerRow` / `registerSpeechRow`）を通す。
+ */
+function TsunamiCancelledRow({ area, style, isChanged, isTop, registerRow, registerSpeechRow }: { area: TsunamiArea; style: GradeStyle; isChanged: boolean; isTop: boolean; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void }) {
+  const setRowRef = useCallback((el: HTMLDivElement | null) => {
+    registerRow?.(area, isChanged, isTop, el)
+    registerSpeechRow?.(speechRowKeys({ kind: 'area', code: area.code, name: area.name }), el)
+  }, [registerRow, registerSpeechRow, area, isChanged, isTop])
+  return (
+    <div ref={setRowRef} className="border-b border-white/5 last:border-0">
+      <div className="flex items-center gap-2 px-3 py-2 roomy:gap-3 roomy:px-4 roomy:py-3">
+        <div className="flex-1 min-w-0">
+          <span className="text-white font-semibold block text-[1.0625rem] roomy:text-[1.25rem]" style={{ lineHeight: '1.2' }}>
+            {area.name}
+          </span>
+          {/* 等級の呼び名は読み上げと共有する（`TSUNAMI_GRADE_SHORT_LABEL`）。
+              `lastGrade` の有無は `describableCancelledAreas` が保証している。 */}
+          {area.lastGrade && (
+            <span className="block mt-1" style={{ fontSize: '0.8125rem', color: style.arrivalColor }}>
+              {TSUNAMI_GRADE_SHORT_LABEL[area.lastGrade]}を解除
+            </span>
+          )}
+        </div>
+      </div>
     </div>
   )
 }
@@ -1231,6 +1305,22 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
                 areaGradeChangedKeys={areaGradeChangedKeys}
               />
             ))}
+            {/* この報で解除された区域。等級カードの後ろ＝いちばん軽い遷移先として置く
+                （読み上げも引き下げの組の最後に読む）。
+
+                **並びは読み上げが作る組をそのまま使う。** ここで `describableCancelledAreas` を
+                独自に並べ替えると、**前回の等級が違う区域が同時に解除された報**で声と画面が
+                食い違う —— 読み上げは `(遷移元, 遷移先)` の組ごとに分けて遷移元の重い順に読むが、
+                こちらは全部を 1 つのリストとして扱うので電文順のまま残る。追従スクロールが
+                解除カードの中を往復することになり、この機能が直そうとしたのと同じ症状になる。 */}
+            <TsunamiCancelledCard
+              areas={tsunamiAreaGradeChanges(t, observations)
+                .filter(c => c.to === TSUNAMI_GRADE_LIFTED).flatMap(c => c.areas)}
+              focusedDistrict={focusedDistrict}
+              registerRow={registerRow}
+              registerSpeechRow={registerSpeechRow}
+              registerSpeechAnchor={registerSpeechAnchor}
+            />
             {(unmatched.length > 0 || (t.estimations?.length ?? 0) > 0) && (
               <div className="bg-card rounded-lg overflow-hidden"
                 style={{ border: '2px solid #1d4ed8', boxShadow: '0 0 0 1px rgba(29,78,216,0.25)' }}>

@@ -15,7 +15,7 @@ import {
 } from '../utils/eew'
 import { hasKnownEpicenter, haversineKm } from '../utils/geo'
 import { showBrowserNotification } from '../utils/notifications'
-import { GRADE_PRIORITY, isWarningLevelWhileObserving, tsunamiMaxGrade, tsunamiAreaGradeChanges, selectUnspokenAreaGradeChanges, rememberAreaGrades, tsunamiAreaKey, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, isTsunamiContinuation, matchesArea, sortAreasAcrossGradesForCardDisplay, sortObservationsForCardDisplay, mergeTsunamiObservations, isObservationMissing } from '../utils/tsunami'
+import { GRADE_PRIORITY, TSUNAMI_GRADE_LIFTED, isWarningLevelWhileObserving, tsunamiMaxGrade, tsunamiAreaGradeChanges, selectUnspokenAreaGradeChanges, rememberAreaGrades, tsunamiAreaKey, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, isTsunamiContinuation, matchesArea, sortAreasAcrossGradesForCardDisplay, sortObservationsForCardDisplay, mergeTsunamiObservations, isObservationMissing } from '../utils/tsunami'
 import { playAlertSound, ttsDelayFor, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, stopSpeech, type PrewarmedSpeech, type ShouldStillPlay } from '../utils/voicevox'
 import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiAreaGradeChangeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, tsunamiMissingToSegments, selectMissingToSpeak, tsunamiWarningLevelToSegments, selectWarningLevelToSpeak, joinWithAlso, nankaiToText, nankaiCommentaryToText, kohatsuToText, earthquakeCountToText, estimatedIntensityToText, lpgmToText, createQuakeSpokenState, applySpokenRefs, type TtsRegionOptions, type QuakeSpokenState } from '../utils/ttsText'
@@ -2460,6 +2460,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         : '津波注意報'
       // **区域はカードの並びで挙げる**（`tsunamiCardBasis`）。上位 5 件しか出さないので、
       // 電文順（気象庁の地理順）で切ると、カードの先頭に並ぶ深刻な区域が通知から落ちる。
+      //
+      // **解除された区域（`cancelledAreas`）はここへ入れない。** 見出しはいま発表中の等級
+      // （「津波注意報」等）なので、その下に解除された区域を並べると**まだ出ている**と読める。
+      // 通知は「いま何が出ているか」を伝えるもので、区域ごとの移り変わりはカードと読み上げが担う。
+      // **決めていないのではなく、入れないと決めている。**
       showBrowserNotification(
         tsunamiNotifyTitle,
         sortAreasAcrossGradesForCardDisplay(tsunamiCardBasis.areas, tsunamiCardBasis.observations)
@@ -2536,6 +2541,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // 欠測として読み上げ文に含めた観測点。同じく発話を始める瞬間に既読へ移す。
       let spokenMissingObs: import('../types/earthquake').TsunamiObservation[] | null = null
       let spokenWarningLevelObs: import('../types/earthquake').TsunamiObservation[] | null = null
+      // 既読へ移してよい等級変化。既定は今回の組すべて（下の `areasToMark` の説明を参照）。
+      // **解除された区域だけは、読まなかった報では外す** —— 全体の等級も動いた報では発表文・降格文が
+      // 区域を等級ごとに読み上げるが、解除された区域は `areas` に居ないのでそこに現れない。
+      // 既読にすると、続報が同じ解除コードを載せ続けても二度と伝わらない。
+      let speakableAreaChanges = tsunamiAreaChanges
       if (event.kind === 'quake' && !event.cancelled) {
         // **続報は変化したところだけを読む。** 基準は受信内容ではなく「声になった内容」で、
         // その更新は読み上げの完了時（下の `onSpokenRefs`）に行う。受信時に更新すると、
@@ -2743,6 +2753,14 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // `lastTsunamiGradeRef` は `Unknown` を覚えないので比較の基準にも混ざらない。
           // 種別の判定に「`Unknown` でも鳴らす」分岐を足すなら、ここも併せて見直すこと。
           const canTellGrade = currentGrade !== 'Unknown'
+          // **解除された区域はこの文にも足す。** 発表文・降格文が挙げるのは `areas` に居る区域だけで、
+          // 解除された区域はそこに現れない（`cancelledAreas`）。足さないと、全体の等級も同時に動いた
+          // 報——2025-12-09T06:20 の「津波注意報を解除しました」がまさにこの形——で、解除された
+          // 区域が声にも画面にも出ないまま既読になる。等級の話なので、観測点の話題より先に置く。
+          const liftedChanges = canTellGrade ? tsunamiAreaChanges.filter(c => c.to === TSUNAMI_GRADE_LIFTED) : []
+          // 読まない解除は既読にしない（宣言箇所の理由）。
+          if (!canTellGrade) speakableAreaChanges = tsunamiAreaChanges.filter(c => c.to !== TSUNAMI_GRADE_LIFTED)
+          ttsSegments = joinWithAlso(ttsSegments, tsunamiAreaGradeChangeToSegments(liftedChanges))
           // 等級の発表と到達確認は別の話題（観測情報の続報と同じ理由で「また、」を挟む）。
           ttsSegments = joinWithAlso(
             ttsSegments,
@@ -2791,7 +2809,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         // **専用の文を読んだ報だけに限らない。** 全体の等級が同時に動いた報では発表文・降格文が
         // 全区域を等級ごとに読み上げるので、動いた区域の「いまの等級」はそこで声になっている。
         // 限ってしまうと、次に全体が落ち着いた報で「〇〇から切り替えられました」を遅れて言い直す。
-        const areasToMark = tsunamiAreaChanges.length > 0 ? tsunamiAreaChanges : null
+        //
+        // **ただし「そこで声になっている」が成り立つのは `areas` に居る区域だけ。** 解除された区域は
+        // 専用の文を足したときにしか声にならないので、`speakableAreaChanges` が外している
+        // （宣言箇所の理由）。
+        const areasToMark = speakableAreaChanges.length > 0 ? speakableAreaChanges : null
         const spokenState = quakeSpokenState
         speakNonEEWDelayed(
           ttsText,
@@ -3111,6 +3133,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             // **区域の等級変化も同じく埋めること。** `LastKind` は変化した後の続報にも載り続けるため、
             // 埋め忘れると、注入後の最初の続報が T より前に起きた解除を「いま起きた」ものとして
             // 読み上げ・タブ移動する（観測点で防いでいるのと同型の穴）。
+            //
+            // **解除された区域（`cancelledAreas`）もここで埋まる。** ライブ経路は「等級を語れない
+            // 電文では解除を既読にしない」ガードを持つが（`speakableAreaChanges`）、ここには無い ——
+            // 上の `canTellGrade` と同じ前提に依存している。パーサーが未知の等級を `Warning` へ
+            // 倒すのをやめるなら、この非対称も併せて見直すこと。
             rememberAreaGrades(tsunamiAreaGradeChanges(tsunami), spokenAreaGradeRef.current)
           }
         }
