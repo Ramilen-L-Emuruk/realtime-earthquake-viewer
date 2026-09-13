@@ -1179,6 +1179,43 @@ export interface JMALpgm {
 
 export type AppEvent = JMAQuake | JMATsunami | EEWAlert
 
+/**
+ * `onLiveEvent`（通知音・読み上げ・自動タブ切替の経路）が運ぶ電文のうち、{@link AppEvent} に
+ * 含まれないもの。
+ *
+ * **`AppEvent` に混ぜない。** あちらは地震カード・津波カード・EEW 表示という「画面に載る状態」
+ * そのもので、型が直接そのまま描画へ渡る。こちらは状態を別のフィールドで持っていて
+ * （`lpgmByEventId`・`nankai`・帯の各種など）、鳴らす経路にだけ流れてくる。
+ *
+ * **お知らせ（`JMAQuakeNotice`）は入れない。** あれは音も読み上げも起こさない運用連絡で、
+ * `onLiveEvent` へ流していない（流すと「鳴らす経路に載っているのに鳴らない」紛らわしい状態に
+ * なる）。→ `docs/spec/data-sources-spec.md` §2「扱う電文種別」
+ */
+export type ExtraLiveEvent =
+  | { kind: 'lpgm'; data: JMALpgm }
+  | { kind: 'nankai'; data: JMANankai }
+  | { kind: 'nankaiCommentary'; data: JMANankaiCommentary }
+  | { kind: 'kohatsu'; data: JMAKohatsu }
+  | { kind: 'earthquakeCount'; data: JMAEarthquakeCount }
+  | {
+    kind: 'estimatedIntensity'
+    data: JMAEstimatedIntensity
+    /**
+     * 初報か続報か（`isNewEstimatedIntensity` が決める）。
+     *
+     * **省略可能にしない。** 受け手はこれで「受信しました」と「更新されました」を言い分ける
+     * ので、付け忘れると続報が初報の文で読まれる——画面にも記録にも出ない食い違いになる。
+     * 必須にしてあるから、流し込み口を増やしたときに型検査が止める。
+     */
+    isNew: boolean
+  }
+
+/**
+ * `onLiveEvent` が受け取る電文の全体。**`kind` で判別できる**ので、受け手は絞り込みだけで
+ * 中身へ辿り着ける。
+ */
+export type LiveEvent = AppEvent | ExtraLiveEvent
+
 // 南海トラフ地震臨時情報 (VYSE50)
 // 段階（調査中 → 巨大地震注意／巨大地震警戒 → 調査終了）はすべてこの 1 種別で配信される。
 // 段階の判別は電文の Head/Title（情報名）に入る括弧内キーワードで行う。Head/InfoKind は
