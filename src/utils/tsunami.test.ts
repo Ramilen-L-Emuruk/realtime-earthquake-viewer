@@ -22,6 +22,8 @@ import {
   latestValidDateTime,
   withInheritedTsunamiFacts,
   tsunamiAreaGradeChanges,
+  describableCancelledAreas,
+  TSUNAMI_GRADE_LIFTED,
   selectUnspokenAreaGradeChanges,
   rememberAreaGrades,
   parseTsunamiObservationCondition,
@@ -837,6 +839,124 @@ describe('tsunamiAreaGradeChanges（区域単位の等級変化）', () => {
       ],
     })
     expect(tsunamiAreaGradeChanges(tsunami).map(c => c.from)).toEqual(['MajorWarning', 'Warning'])
+  })
+})
+
+// 一部解除の実電文の形（2025-12-09T06:20 の VTSE41）。7 区域が注意報 → 予報へ落ち、
+// 1 区域だけが解除された
+function makeWithLiftedArea(): JMATsunami {
+  return makeTsunami({
+    areas: [
+      makeArea({ code: '711', name: '福岡県日本海沿岸', grade: 'Forecast', lastGrade: 'Watch' }),
+    ],
+    cancelledAreas: [
+      makeArea({ code: '200', name: '青森県日本海沿岸', grade: 'Unknown', lastGrade: 'Watch' }),
+    ],
+  })
+}
+
+describe('解除された区域（cancelledAreas）', () => {
+  // **記録を数えるテストを置くなら、この後始末が要る。** `vi.spyOn` は既にモック化された
+  // メソッドへ当てると同じスパイを返すので、戻さないと呼び出し回数が次のテストへ持ち越される
+  // （落ちるのは無関係な後続のテストで、原因が分かりにくい）。
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('正: 解除された区域も等級変化の組になる', () => {
+    const changes = tsunamiAreaGradeChanges(makeWithLiftedArea())
+    const lifted = changes.find(c => c.to === TSUNAMI_GRADE_LIFTED)!
+    expect(lifted.from).toBe('Watch')
+    expect(lifted.raised).toBe(false)
+    expect(lifted.areas.map(a => a.name)).toEqual(['青森県日本海沿岸'])
+  })
+
+  it('正: 解除の組は引き下げの組より後ろに置く（カードの並びと揃える）', () => {
+    const changes = tsunamiAreaGradeChanges(makeWithLiftedArea())
+    expect(changes.map(c => c.to)).toEqual(['Forecast', TSUNAMI_GRADE_LIFTED])
+  })
+
+  it('対照: 前回も津波なしの区域は組にならない（何も起きていない）', () => {
+    const tsunami = makeTsunami({
+      areas: [makeArea({ code: '711', name: '福岡県日本海沿岸', grade: 'Forecast', lastGrade: 'Watch' })],
+      cancelledAreas: [makeArea({ code: '200', name: '青森県日本海沿岸', grade: 'Unknown', lastGrade: 'Unknown' })],
+    })
+    expect(tsunamiAreaGradeChanges(tsunami).map(c => c.to)).toEqual(['Forecast'])
+    expect(describableCancelledAreas(tsunami)).toEqual([])
+  })
+
+  it('対照: 前回の等級を読めない解除は組にならない（何から解除されたか言えない）', () => {
+    const tsunami = makeTsunami({
+      areas: [],
+      cancelledAreas: [makeArea({ code: '200', name: '青森県日本海沿岸', grade: 'Unknown' })],
+    })
+    expect(tsunamiAreaGradeChanges(tsunami)).toEqual([])
+    expect(describableCancelledAreas(tsunami)).toEqual([])
+  })
+
+  it('安全弁: `areas` の中の Unknown（等級を読めなかった区域）は解除として扱わない', () => {
+    const tsunami = makeTsunami({
+      areas: [makeArea({ code: '711', name: '福岡県日本海沿岸', grade: 'Unknown', lastGrade: 'Watch' })],
+    })
+    expect(tsunamiAreaGradeChanges(tsunami)).toEqual([])
+  })
+
+  it('正: 一度読んだ解除は次の報で読み直さない（既読の記録が効く）', () => {
+    const spoken = new Map<string, import('../types/earthquake').TsunamiGrade>()
+    rememberAreaGrades(tsunamiAreaGradeChanges(makeWithLiftedArea()), spoken)
+    expect(selectUnspokenAreaGradeChanges(tsunamiAreaGradeChanges(makeWithLiftedArea()), spoken)).toEqual([])
+  })
+
+  it('続報のマージ: 区域を伝える報が来たら新報が正', () => {
+    const merged = mergeTsunamiReports(makeWithLiftedArea(), makeTsunami({
+      areas: [makeArea({ code: '711', name: '福岡県日本海沿岸', grade: 'Forecast' })],
+    }))
+    expect(merged.cancelledAreas).toBeUndefined()
+  })
+
+  it('続報のマージ: 区域を伝えていない報（観測のみ）では前報の解除を残す', () => {
+    const merged = mergeTsunamiReports(makeWithLiftedArea(), makeTsunami({ areas: [] }))
+    expect(merged.cancelledAreas?.map(a => a.name)).toEqual(['青森県日本海沿岸'])
+  })
+
+  // **履歴からの復元でも同じ結果になること。** 引き継ぎの規則は `mergeTsunamiReports` の 1 箇所に
+  // 置いてあるが、この節の項目が「ライブ受信では出るのにリロードすると消える」形で落ちる事故が
+  // 過去に繰り返し起きている（`mergeTsunamiReports` の宣言箇所）。畳み込みの経路でも固定する。
+  it('履歴からの復元: 解除を伝えた報のあと観測のみの報が来ても残る', () => {
+    const lifted = { ...makeWithLiftedArea(), id: 'a', eventId: 'E1', time: '2024-01-02T10:00:00+09:00' }
+    const obsOnly = makeTsunami({ id: 'b', eventId: 'E1', time: '2024-01-02T10:03:00+09:00', areas: [] })
+    expect(withInheritedTsunamiFacts(obsOnly, [lifted, obsOnly]).cancelledAreas?.map(a => a.name))
+      .toEqual(['青森県日本海沿岸'])
+  })
+
+  // 「解除」の表示が消えるのはここだけ。寿命を電文に預ける設計は実電文 1 事象の観測に乗っている
+  // ので、載らなくなったら記録を残して実運用で確かめられるようにする
+  it('正: 解除が続報に載らなくなったら記録する', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    mergeTsunamiReports(makeWithLiftedArea(), makeTsunami({
+      areas: [makeArea({ code: '711', name: '福岡県日本海沿岸', grade: 'Forecast' })],
+    }))
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn.mock.calls[0][0]).toContain('青森県日本海沿岸')
+  })
+
+  it('対照: 続報にも同じ解除が載っていれば記録しない', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    mergeTsunamiReports(makeWithLiftedArea(), makeWithLiftedArea())
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it('対照: 区域を伝えていない報（観測のみ）では記録しない（解除は残るため）', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    mergeTsunamiReports(makeWithLiftedArea(), makeTsunami({ areas: [] }))
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it('履歴からの復元: 区域を伝える報が後に来たら解除は消える', () => {
+    const lifted = { ...makeWithLiftedArea(), id: 'a', eventId: 'E1', time: '2024-01-02T10:00:00+09:00' }
+    const next = makeTsunami({
+      id: 'b', eventId: 'E1', time: '2024-01-02T10:03:00+09:00',
+      areas: [makeArea({ code: '711', name: '福岡県日本海沿岸', grade: 'Forecast' })],
+    })
+    expect(withInheritedTsunamiFacts(next, [lifted, next]).cancelledAreas).toBeUndefined()
   })
 })
 
