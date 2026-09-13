@@ -9,13 +9,13 @@
 // 観測点の行。**どれか 1 つだけ直しても型検査は通り、壊れても例外は出ない**ので、
 // 3 か所そろっていることをここで固定する。
 import { describe, it, expect, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent } from '@testing-library/react'
+import { render, screen, cleanup } from '@testing-library/react'
 import { EarthquakeTab } from './index'
 import { quakeEventKey } from '../../utils/quakeMerge'
 import type { JMAQuake, JMALpgm, EarthquakePoint, JMAQuakeCity } from '../../types/earthquake'
 // 地名と `＊` は右端を揃えるために別の要素へ分けてある（→ `IntensityRow`）。
 // `getByText('〇〇＊')` では引けないので、行ごと見る。
-import { intensityRowText as rowText } from '../../test-utils/intensityRow'
+import { intensityRowText as rowText, openIntensityRows } from '../../test-utils/intensityRow'
 
 afterEach(cleanup)
 
@@ -93,23 +93,10 @@ const renderTab = (quake: JMAQuake, lpgm?: JMALpgm, opts: { unreceivedOpen?: boo
     onToggleDistribution={() => {}}
     unreceivedQuakeKey={opts.unreceivedOpen ? quakeEventKey(quake) : null}
     onToggleUnreceived={() => {}}
+    onPointFocus={() => {}}
   />
 )
 
-/**
- * 震度一覧は既定でどの段も畳んでいる。県 → 区域 → 市町村と開いて観測点の行まで降りる。
- *
- * **カード自体も押せる**（`<button>`）うえ、そのテキストは配下の行を全部含む。行は
- * `<div role="button">` なので、そちらだけを拾う。
- */
-function openDownToStations(labels: string[]) {
-  for (const label of labels) {
-    const row = screen.getAllByRole('button')
-      .find(el => el.tagName === 'DIV' && el.textContent?.includes(label))
-    expect(row, `${label} の行が見つからない`).toBeTruthy()
-    fireEvent.click(row!)
-  }
-}
 
 describe('地震カードの観測点名に付く「気象庁以外」の印', () => {
   // 正: 震度一覧の観測点の行に `＊` が出る。
@@ -120,7 +107,7 @@ describe('地震カードの観測点名に付く「気象庁以外」の印', (
       station(),
     ]))
 
-    openDownToStations([PREF, AREA, CITY])
+    openIntensityRows(PREF, AREA, CITY)
 
     expect(rowText(NON_JMA_STATION)).toContain(`${NON_JMA_STATION}＊`)
     // 対照: 気象庁の観測点には付かない。
@@ -153,7 +140,7 @@ describe('地震カードの観測点名に付く「気象庁以外」の印', (
       ],
     })
 
-    openDownToStations([PREF, AREA])
+    openIntensityRows(PREF, AREA)
 
     expect(rowText(NON_JMA_STATION)).toContain(`${NON_JMA_STATION}＊`)
     expect(rowText(JMA_STATION)).toContain(JMA_STATION)

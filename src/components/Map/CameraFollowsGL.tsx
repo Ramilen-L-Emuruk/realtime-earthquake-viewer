@@ -4,7 +4,7 @@ import type * as maplibregl from 'maplibre-gl'
 import { useMapGL } from './mapGLContext'
 import type { LatLng } from '../../utils/stationCoords'
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
-import type { ShakeFocus } from './mapTypes'
+import type { ShakeFocus, MapFocusPoint } from './mapTypes'
 import type { EEWAlert } from '../../types/earthquake'
 import type { PsWaveCircle } from '../../services/kyoshin'
 import { computeEewCircle } from '../../hooks/usePsWaveCalc'
@@ -1339,5 +1339,37 @@ export function FocusObsGL({
     log.debug(`[mapGL] 観測点フォーカス flyTo ${bar.name}`)
     flyToPoint(map, [bar.lat, bar.lng], fitMaxZoom(map), 1.0)
   }, [map, focusObsName, observationBars])
+  return null
+}
+
+// ── 一覧の行クリックで、渡された地点へ flyTo ──────────────────────────────────────
+/**
+ * 役割は上の `FocusObsGL`（津波）と同じだが、**寄り先を名前ではなく座標で受け取る**。
+ *
+ * 津波の潮位観測点名は全国で一意なので地図側で引けるが、震度観測点は都道府県名との組でしか
+ * 引けない（`lookupPointCoords`。府中市＝東京都・広島県）。呼び出し側（地震カード）は
+ * 座標テーブルを持っているため、**押せるかどうかの判定と寄り先を同じ解決から出せる** ——
+ * 名前を渡して地図側で引き直すと、判定と寄り先が別々の解決になり、片方だけが引けたときに
+ * 「押せるのに動かない」（またはその逆）になる。
+ *
+ * 地図の表示条件には依存しない。震度の観測点ドットは引いた画では区域塗りへ集約されて消えるが、
+ * **そこから特定の観測点へ寄るのがこの操作の主な使い道**なので、点が出ていることを条件にしない。
+ *
+ * **ただし寄せた先でも区域集約は続く。** 着地は寄り上限（`fitMaxZoom`）で、集約の閾値がそれと
+ * 同値（`zoom <= aggregateMaxZoom`）だから —— 自動フィットの着地は常に区域集約になるよう揃えて
+ * ある（→ `docs/spec/quake-spec.md` §7）。点そのものを見たければ、そこから手で寄ることになる。
+ */
+export function FocusPointGL({ focusPoint }: { focusPoint: MapFocusPoint | null }) {
+  const map = useMapGL()
+  const handledTsRef = useRef(0)
+  useEffect(() => {
+    if (!map || !focusPoint) return
+    // クリック 1 回につき 1 度だけ寄せる。**鍵は座標ではなく `ts`** —— 同じ行を続けて押しても
+    // 効くようにするため（座標で見ると 2 度目が「変化なし」になり、カメラが動かない）。
+    if (focusPoint.ts === handledTsRef.current) return
+    handledTsRef.current = focusPoint.ts
+    log.debug(`[mapGL] 地点フォーカス flyTo ${focusPoint.position[0]},${focusPoint.position[1]}`)
+    flyToPoint(map, focusPoint.position, fitMaxZoom(map), 1.0)
+  }, [map, focusPoint])
   return null
 }

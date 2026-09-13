@@ -55,8 +55,12 @@ function findControlChar(path: string): string | null {
 }
 
 describe('生の制御文字を置かない', () => {
+  // **上限を延ばしてあるのは、走査そのものが遅いからではない。** 単独で回せば 1.2 秒で終わる
+  // （実測）。全ファイルを並列で回すと他のワーカーとディスク I/O を取り合い、同じ走査が
+  // 既定の 5 秒を超えることがある（実測で 191 ファイルの実行中に時間切れ。単独実行では再現しない）。
+  // 対象はソースとドキュメント全体なので、ファイルが増えるほど余裕は減る。
   it('ソースとドキュメントに、タブ・改行・復帰以外の制御文字が無い', () => {
     const offenders = ROOTS.flatMap(listFiles).map(findControlChar).filter((x): x is string => x !== null)
     expect(offenders).toEqual([])
-  })
+  }, 15_000)
 })

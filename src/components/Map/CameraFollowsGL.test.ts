@@ -4,7 +4,7 @@ import { createElement as h } from 'react'
 import { render, cleanup, act } from '@testing-library/react'
 import type * as maplibregl from 'maplibre-gl'
 import { MapGLContext } from './mapGLContext'
-import { FitToCandidateGL, FitToDetectionGL, FitToEEWGL, TsunamiFitGL, FocusObsGL } from './CameraFollowsGL'
+import { FitToCandidateGL, FitToDetectionGL, FitToEEWGL, TsunamiFitGL, FocusObsGL, FocusPointGL } from './CameraFollowsGL'
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
 import type { LatLng } from '../../utils/stationCoords'
 import type { EEWAlert } from '../../types/earthquake'
@@ -2009,5 +2009,50 @@ describe('揺れフォーカスの担当の受け渡し', () => {
     }))
 
     expect(focusTickRef.current).toBe(1)
+  })
+})
+
+// ── 一覧の行クリックによる地点フォーカス（FocusPointGL） ──────────────────────────
+// 地震カードの観測点の行から座標で渡される経路。津波（FocusObsGL）との違いは、寄り先を
+// 名前ではなく座標で受け取ること。**鍵は座標ではなく `ts`** で、同じ行を続けて押しても効く。
+
+function pointFocusHarness(map: maplibregl.Map, focus: { position: LatLng; ts: number } | null) {
+  return h(
+    MapGLContext.Provider,
+    { value: map },
+    h(FocusPointGL, { focusPoint: focus }),
+  )
+}
+
+describe('一覧の行クリックによる地点フォーカス', () => {
+  it('同じ地点を続けて押しても、押すたびに寄せる（鍵は ts）', () => {
+    // Arrange: ある観測点の行を押した。
+    const map = createFakeMap()
+    const view = render(pointFocusHarness(map, { position: [34.0, 131.0], ts: 1 }))
+    expect(flyCenters(map)).toEqual([[131.0, 34.0]])
+
+    // Act: 地図を手で動かしたあと、同じ行をもう一度押す（座標は同じで ts だけ進む）。
+    view.rerender(pointFocusHarness(map, { position: [34.0, 131.0], ts: 2 }))
+
+    // Assert: 2 度目も寄せる。座標で判定していると「変化なし」になって動かない。
+    expect(flyCenters(map)).toEqual([[131.0, 34.0], [131.0, 34.0]])
+  })
+
+  it('クリック 1 回につき 1 度だけ寄せる（再レンダーでは寄せ直さない）', () => {
+    // Arrange: 押した直後。
+    const map = createFakeMap()
+    const view = render(pointFocusHarness(map, { position: [34.0, 131.0], ts: 1 }))
+
+    // Act: 続報などで同じ props のまま描き直される。
+    view.rerender(pointFocusHarness(map, { position: [34.0, 131.0], ts: 1 }))
+
+    // Assert: 寄せ直さない（電文が届くたびに古いクリック先へ引き戻さない）。
+    expect(flyCenters(map)).toHaveLength(1)
+  })
+
+  it('要求が無ければカメラに触らない', () => {
+    const map = createFakeMap()
+    render(pointFocusHarness(map, null))
+    expect(flyCenters(map)).toHaveLength(0)
   })
 })
