@@ -910,7 +910,7 @@ describe('isEewAreaArrived', () => {
   })
 
   // 安全弁 1: PLUM 法（09/19）は到達済みではない。**時刻は持つが到達の予測ではない**ので、
-  // ここへ混ぜると「到達時刻は不明」と出すべき区域が「到達済み」に化ける。
+  // ここへ混ぜると「時刻不明」と出すべき区域が「到達済み」に化ける。
   it('PLUM 法のコードでは立たない', () => {
     expect(isEewAreaArrived(area({ kindCode: '09', arrivalTime: '2026-01-01T12:00:00+09:00' }))).toBe(false)
     expect(isEewAreaArrived(area({ kindCode: '19', arrivalTime: '2026-01-01T12:00:00+09:00' }))).toBe(false)
