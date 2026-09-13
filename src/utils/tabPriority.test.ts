@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest'
 import {
   TAB_PRIORITY, TAB_HOLD_MS, TAB_FOLLOW_MIN_DWELL_MS,
   shouldAcceptAutoTab, shouldFollowNow, idleRevertPriority, resolveNonRealtimeTabSource,
+  shouldDeferRevertWhileSpeaking,
   shouldRetakeAfterPreSpeech,
   type TabHold,
 } from './tabPriority'
@@ -352,5 +353,24 @@ describe('idleRevertPriority', () => {
     const hold = held(idleRevertPriority(false))
     expect(shouldAcceptAutoTab(hold, TAB_PRIORITY.tsunami, NOW)).toBe(true)
     expect(shouldAcceptAutoTab(held(TAB_PRIORITY.eewUpdate), TAB_PRIORITY.tsunami, NOW)).toBe(false)
+  })
+})
+
+describe('shouldDeferRevertWhileSpeaking', () => {
+  // 正: 読み上げている間は、既定の状態へ戻す操作を見送る。
+  it('読み上げ中なら見送る', () => {
+    expect(shouldDeferRevertWhileSpeaking(true, 30)).toBe(true)
+  })
+
+  // 対照: 読んでいなければ従来どおり戻す（見送りは読み上げ中に限る）。
+  it('読み上げていなければ見送らない', () => {
+    expect(shouldDeferRevertWhileSpeaking(false, 30)).toBe(false)
+  })
+
+  // 安全弁: 自動復帰を切っている端末では見送らない。見送った分を後から拾うのは
+  // アイドル復帰なので、ここで見送ると**既定タブへ戻る契機が 1 つも残らない**。
+  it('自動復帰が無効な端末では、読み上げ中でも見送らない', () => {
+    expect(shouldDeferRevertWhileSpeaking(true, 0)).toBe(false)
+    expect(shouldDeferRevertWhileSpeaking(true, -1)).toBe(false)
   })
 })
