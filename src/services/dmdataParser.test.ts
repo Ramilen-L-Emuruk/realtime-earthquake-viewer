@@ -1234,7 +1234,11 @@ function eewXml(o: {
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<Report xmlns="http://xml.kishou.go.jp/jmaxml1/" xmlns:jmx="http://xml.kishou.go.jp/jmaxml1/">',
-    '<Control><Title>緊急地震速報（地震動予報）</Title><Status>通常</Status><EditorialOffice>気象庁</EditorialOffice></Control>',
+    // `Control/DateTime` は実電文どおり UTC 表記で、`ReportDateTime` と同じ瞬間を指す
+    // （03:00:10Z ＝ 12:00:10+09:00）。緊急地震速報はこの 2 つが**秒まで一致する**
+    // ——地震情報のように `ReportDateTime` へ分の丸めが掛からない（走査した範囲と実測値は
+    // `parseEEWFromXml` のコメント。→ `docs/spec/quake-spec.md` §6.3）。
+    '<Control><Title>緊急地震速報（地震動予報）</Title><DateTime>2026-01-01T03:00:10Z</DateTime><Status>通常</Status><EditorialOffice>気象庁</EditorialOffice></Control>',
     '<Head xmlns="http://xml.kishou.go.jp/jmaxml1/informationBasis1/">',
     '<Title>緊急地震速報（地震動予報）</Title>',
     '<ReportDateTime>2026-01-01T12:00:10+09:00</ReportDateTime>',
@@ -4237,6 +4241,86 @@ describe('parseEEWFromXml（VXSE45 の XML 経路）', () => {
     expect(e.earthquake.hypocenter.longitude).toBe(-200)
     expect(e.areas).toEqual([])
     expect(e.forecastMaxScale).toBeUndefined()
+  })
+})
+
+// ---- 発表時刻の受け皿（Head/ReportDateTime が空なら Control/DateTime へ落ちる）----
+//
+// **緊急地震速報も他の XML パーサーと同じ `readReportDateTime` を通す。** ここだけ素読み
+// だったため、受け皿（UTC → JST の表記揃え）も検証（読めない値・時間帯を明示しない値を
+// 空にする）も持っていなかった。地震情報側の同名のテスト（→「発表時刻が空なら〜」）と
+// 対になる。
+//
+// 緊急地震速報では 2 つの時刻が**秒まで一致する**（走査した範囲と実測値は `parseEEWFromXml`
+// のコメント）。地震情報は `ReportDateTime` が分へ丸められて最大 55 秒ずれるが、こちらに
+// その丸めは無い。雛形も実電文どおり同じ瞬間の別表記（13:35:37Z ＝ 22:35:37+09:00）なので、
+// 2 つの経路が同じ文字列を返すことを直接確かめられる。
+describe('緊急地震速報: 発表時刻の受け皿', () => {
+  const withoutReportDateTime = (): string => {
+    const xml = EEW_XML.replace('<ReportDateTime>2026-09-03T22:35:37+09:00</ReportDateTime>', '')
+    // .replace() は対象が無くても黙って素通りする。当たったことを機械的に確かめる。
+    expect(xml).not.toBe(EEW_XML)
+    return xml
+  }
+
+  // 正: 受け皿へ落ちた値は JST 表記に揃う（UTC のまま出てこない）。
+  it('発表時刻が空なら Control/DateTime を JST 表記へ直して使う', () => {
+    const e = parseEEWFromXml('VXSE45', withoutReportDateTime())!
+    expect(e.time).toBe('2026-09-03T22:35:37+09:00')
+    // `time` と `issue.time` は同じ値から作る。片方だけ直すと、自動解除の時刻計算
+    // （`calcEEWCancelTime`）と誤報取消の読み上げ（`eewCancelToText`）で別の時刻になる。
+    expect(e.issue!.time).toBe(e.time)
+  })
+
+  // 対照: 発表時刻がある電文は受け皿を通らず、その値をそのまま使う（変換を掛けない）。
+  it('発表時刻があればそれをそのまま使う', () => {
+    expect(parseEEWFromXml('VXSE45', EEW_XML)!.time).toBe('2026-09-03T22:35:37+09:00')
+  })
+
+  // 安全弁: 受け皿を通った値と通常経路の値が**文字列として等しい**。どちらの表記が変わっても
+  // ここで落ちるので、片方だけを直す変更を止められる。
+  it('受け皿を通っても通常経路と同じ文字列になる', () => {
+    expect(parseEEWFromXml('VXSE45', withoutReportDateTime())!.time)
+      .toBe(parseEEWFromXml('VXSE45', EEW_XML)!.time)
+  })
+
+  // 対照: 受け皿は `Head/ReportDateTime` が読めるときには使わない。壊れた
+  // `Control/DateTime` に引きずられて発表時刻が消えたり、UTC 表記へ化けたりしない。
+  it('Control/DateTime が壊れていても発表時刻があればそちらを使う', () => {
+    const xml = EEW_XML.replace('<DateTime>2026-09-03T13:35:37Z</DateTime>', '<DateTime>不明</DateTime>')
+    expect(xml).not.toBe(EEW_XML)
+    expect(parseEEWFromXml('VXSE45', xml)!.time).toBe('2026-09-03T22:35:37+09:00')
+  })
+
+  // ---- ここから下の 2 件が守るもの ----
+  //
+  // **`parseEEWFromXml` が `readReportDateTime` を通ること自体は、上の「発表時刻が空なら〜」と
+  // 「受け皿を通っても〜」の 2 件が守る。** 素読み（`xmlText(xmlQ(doc, 'ReportDateTime'))`）へ
+  // 戻すとその 2 件が落ちる。
+  //
+  // 下の 2 件は**戻しても落ちない** —— `ReportDateTime` を落とした時点で素読みも空を返すので、
+  // `Control/DateTime` の中身が何であれ結果が変わらない。守っているのは別のこと＝
+  // **`readReportDateTime` の検証（時間帯の明示・日時として読めるか）が緊急地震速報の経路でも
+  // 効いていること**で、将来この検証が緩められたり、EEW だけ独自の受け皿を書いたりすれば落ちる。
+
+  // 安全弁: 時間帯を明示していない値は空にする。**「読めない」では捕まらない類の壊れ方。**
+  // オフセットが無いと `Date.parse` は実行環境のローカル時刻として解釈し、有限値を返す
+  // （`Number.isNaN` は素通りする）。このアプリは利用者のブラウザで動くので、同じ電文が
+  // 端末ごとに違う時刻になる。
+  it('Control/DateTime に時間帯が無ければ発表時刻を空にする', () => {
+    const xml = withoutReportDateTime()
+      .replace('<DateTime>2026-09-03T13:35:37Z</DateTime>', '<DateTime>2026-09-03T13:35:37</DateTime>')
+    expect(xml).toContain('<DateTime>2026-09-03T13:35:37</DateTime>')
+    expect(parseEEWFromXml('VXSE45', xml)!.time).toBe('')
+  })
+
+  // 安全弁: 日時として読めない値も空にする。そのまま通すと以降の時刻比較がこの値に
+  // 引きずられる（自動解除の時刻が Invalid Date になり、解除の予約が働かなくなる）。
+  it('Control/DateTime が日時として読めなければ発表時刻を空にする', () => {
+    const xml = withoutReportDateTime()
+      .replace('<DateTime>2026-09-03T13:35:37Z</DateTime>', '<DateTime>不明</DateTime>')
+    expect(xml).toContain('<DateTime>不明</DateTime>')
+    expect(parseEEWFromXml('VXSE45', xml)!.time).toBe('')
   })
 })
 
