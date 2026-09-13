@@ -13,6 +13,10 @@ import { WARNING_COMMENT_ORDER } from '../utils/tsunami'
 
 // 震度速報（VXSE51）。震源が未確定の段階で出るため Earthquake 要素を持たず、
 // 震度は Pref > Area（一次細分区域）までしか無い。
+//
+// **`Serial` は空要素。** 実電文どおりの形にしてある（能登 2024-01-01 のアーカイブで確認。
+// 本震は震度速報が 7 通発表されたが 7 通とも空だった）。連番を振るのは VXSE53 だけで、
+// ここを `1` にすると「何通受け取っても第 1 報」という実在しない形になる。
 const VXSE51_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <Report xmlns="http://xml.kishou.go.jp/jmaxml1/">
   <Control>
@@ -28,7 +32,7 @@ const VXSE51_XML = `<?xml version="1.0" encoding="UTF-8"?>
     <TargetDateTime>2026-08-09T02:58:00+09:00</TargetDateTime>
     <EventID>20260809025800</EventID>
     <InfoType>発表</InfoType>
-    <Serial>1</Serial>
+    <Serial/>
   </Head>
   <Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/">
     <Intensity>
@@ -5508,5 +5512,90 @@ describe('日時として読めない電文の時刻（津波以外の経路）'
       const xml = replaceOnce(VXSE60_XML, '<StartTime>2008-08-24T15:00:00+09:00</StartTime>', '<StartTime>壊れた値</StartTime>')
       expect(parseEarthquakeCountFromXml(xml)!.items[0].startTime).toBe('')
     })
+  })
+})
+
+// --- 電文の一意鍵と報番号 ---
+//
+// カードの見出しを「震度速報#2/震源情報」の形で組むための材料
+// （→ `types/earthquake.ts` の `JMAQuake.telegramKey` / `.reportSerial`）。
+describe('電文の一意鍵と報番号', () => {
+  // 正: 一意鍵は `Control/DateTime`（電文を作成した時刻・秒精度）。
+  it('一意鍵に Control/DateTime を読む', () => {
+    expect(parseEarthquakeFromXml('VXSE51', VXSE51_XML)!.telegramKey).toBe('2026-08-08T18:00:00Z')
+  })
+
+  // 対照: `Head/ReportDateTime`（発表時刻）では代用できない。分へ丸められており、同じ分に
+  // 複数報が発表されるのが普通（能登 2024-01-01 の本震は 16:11 に 2 報）。
+  it('一意鍵は発表時刻ではなく電文の作成時刻', () => {
+    const quake = parseEarthquakeFromXml('VXSE51', VXSE51_XML)!
+    // **値で確かめる。** `not.toBe` だけだと、鍵をまったく読まない実装（どちらも undefined に
+    // ならない側）でも通ってしまう。
+    expect(quake.time).toBe('2026-08-09T03:00:00+09:00')
+    expect(quake.telegramKey).toBe('2026-08-08T18:00:00Z')
+  })
+
+  // 正: 報番号は `Head/Serial`。連番を振るのは震源・震度情報だけ。
+  it('震源・震度情報の報番号を読む', () => {
+    expect(parseEarthquakeFromXml('VXSE53', VXSE53_XML)!.reportSerial).toBe(1)
+    const 第2報 = VXSE53_XML.replace('<Serial>1</Serial>', '<Serial>2</Serial>')
+    expect(parseEarthquakeFromXml('VXSE53', 第2報)!.reportSerial).toBe(2)
+  })
+
+  // 対照: 震度速報は `Serial` が空要素なので持たせない。
+  //
+  // **ここで 1 を入れると、7 通受け取った震度速報が「第 1 報」に化ける** ——
+  // 見出しは受信通数より報番号を優先するため、通数が出なくなる。
+  it('震度速報は報番号を持たない（実電文では Serial が空要素）', () => {
+    expect(parseEarthquakeFromXml('VXSE51', VXSE51_XML)!.reportSerial).toBeUndefined()
+  })
+
+  // 安全弁: 数値として読めない報番号は持たせず、記録を残す（受信通数で数える側へ倒す）。
+  it('数値として読めない報番号は持たせず、記録を残す', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      const xml = VXSE53_XML.replace('<Serial>1</Serial>', '<Serial>壱</Serial>')
+      expect(parseEarthquakeFromXml('VXSE53', xml)!.reportSerial).toBeUndefined()
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('報番号を数値として読めません'))
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  // 安全弁: 一意鍵を読めなければ記録を残す。
+  //
+  // 読めない報は `id` で代用されるが、**`Head/Serial` が空の種別は同じ地震の全報が同じ `id`**
+  // になるため、2 通目以降が重複と見なされて通数が出なくなる。例外も画面の異常も出ない。
+  it('一意鍵を読めなければ記録を残す', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      const xml = VXSE51_XML.replace('<DateTime>2026-08-08T18:00:00Z</DateTime>', '<DateTime/>')
+      expect(parseEarthquakeFromXml('VXSE51', xml)!.telegramKey).toBeUndefined()
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('電文作成時刻'))
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  // 安全弁: 空の `Serial` では記録を残さない。実電文の大半がこの形なので、鳴らすと
+  // 正常な電文のたびにログが埋まる。
+  it('空の報番号では記録を残さない', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      parseEarthquakeFromXml('VXSE51', VXSE51_XML)
+      expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('報番号'))
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  // 安全弁: 取消電文でも埋める（記録は積まないが、形を揃えておく）。
+  it('取消電文でも一意鍵を埋める', () => {
+    const xml = VXSE53_XML.replace('<InfoType>発表</InfoType>', '<InfoType>取消</InfoType>')
+    const quake = parseEarthquakeFromXml('VXSE53', xml)!
+    expect(quake.cancelled).toBe(true)
+    // **値で確かめる。** 通常報と突き合わせるだけだと、両方とも埋めない実装で通ってしまう。
+    expect(quake.telegramKey).toBe('2026-08-08T18:02:00Z')
+    expect(quake.reportSerial).toBe(1)
   })
 })
