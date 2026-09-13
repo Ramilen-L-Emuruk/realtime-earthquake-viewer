@@ -2261,7 +2261,12 @@ export function lpgmToText(lpgm: JMALpgm, opts: TtsRegionOptions, isNew: boolean
   if (lpgm.cancelled) {
     return '長周期地震動情報はキャンセルされました。'
   }
-  const time = formatTime(lpgm.originTime)
+  // 地震の時刻は**発現時刻を先に採る**（地震情報・津波カードと同じ規則）。揃えないと、
+  // 同じ地震について地震情報が「◯時◯分ころ」と読んだ直後に、長周期が 1 分違う時刻を読む。
+  // 気象庁自身も見出し文へ発現時刻を書いており、VXSE62 も例外ではない（実電文の全期間走査で
+  // 確認。→ `docs/spec/tsunami-spec.md` §4）。**`originTime` は空になりえないが**
+  // （パーサーが無ければ電文ごと捨てる）、`arrivalTime` は任意なので `||` で落とす。
+  const time = formatTime(lpgm.arrivalTime || lpgm.originTime)
   const prefix = isNew ? '長周期地震動情報。' : '長周期地震動情報が更新されました。'
   const regionText = buildLpgmRegionText(lpgm, opts)
   if (regionText) {

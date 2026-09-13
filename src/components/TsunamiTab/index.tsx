@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 
 import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation, TsunamiWarningComment } from '../../types/earthquake'
 import { formatDateTimeMin, formatDepth, formatMagnitudeCondition, formatTime, hasDepth } from '../../utils/formatters'
 import { quakeEventKey } from '../../utils/quakeMerge'
-import { groupAreasForCardDisplay, matchesArea, observationBadges, observationHeightText, observationArrivalFallbackText, observationMaxHeightTimeText, estimationBadges, estimationHeightText, forecastHeightImportantBadge, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, isTsunamiGradeRaised, tsunamiAreaKey, evacuationActionLine } from '../../utils/tsunami'
+import { groupAreasForCardDisplay, matchesArea, observationBadges, observationHeightText, observationArrivalFallbackText, observationMaxHeightTimeText, estimationBadges, estimationHeightText, forecastHeightImportantBadge, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, isTsunamiGradeRaised, sourceEarthquakeTime, tsunamiAreaKey, evacuationActionLine } from '../../utils/tsunami'
 import { TSUNAMI_MISSING_COLOR as MISSING_COLOR } from '../../utils/tsunamiStyle'
 import { mapChunksToRefs, planFollowScroll, type FollowRect, type SpeechFollowSession, type SpeechRef } from '../../utils/ttsFollow'
 import { getSpeechClock } from '../../utils/voicevox'
@@ -181,6 +181,7 @@ function SourceEarthquakeLine({ eq, prefix, link }: {
   prefix: string
   link: React.ReactNode
 }) {
+  const quakeTime = sourceEarthquakeTime(eq)
   return (
     <div>
       {prefix}{eq.hypocenterName}
@@ -194,7 +195,10 @@ function SourceEarthquakeLine({ eq, prefix, link }: {
           **値によらず「深さ」を前置する** —— 地震カード・地図・共有カードもそう出しており、
           ここだけ省くとアプリの中で表記が割れる。 */}
       {eq.depth !== undefined && hasDepth(eq.depth) && `　深さ ${formatDepth(eq.depth)}`}
-      {eq.originTime && `　${formatTime(eq.originTime).slice(0, 5)}発生`}
+      {/* 地震の時刻は `sourceEarthquakeTime` を通す（**発現時刻を先に採る**）。発生時刻を出すと、
+          同じ地震が地震カードと津波カードで 1 分違って見える。理由と実電文で測った数字は
+          `docs/spec/tsunami-spec.md` §4 が正。 */}
+      {quakeTime && `　${formatTime(quakeTime).slice(0, 5)}発生`}
       {link}
       {/* 震央補助表現（「御前崎の北東40km付近」）と震源決定機関（「ＰＴＷＣ」等）。
           前者は震央地名より具体的に場所が分かり、後者は誰が決めた値かを示す。

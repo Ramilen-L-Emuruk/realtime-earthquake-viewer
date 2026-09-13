@@ -1219,7 +1219,12 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
   const now = serverDate()
   const nowIso = now.toISOString()
   const t = (offsetMin: number) => new Date(now.getTime() + offsetMin * 60000).toISOString()
-  const originIso = tsunamiOriginDate(now).toISOString()
+  // **`tsunamiOriginDate` が返すのは発現時刻**（識別子の材料。関数の説明どおり）。
+  // 発生時刻はそれより前で、実電文では分値まで有効。全期間の走査では 11.2% の電文で
+  // 両者が 1 分ずれる（→ `docs/spec/tsunami-spec.md` §4）ので、**1 件目でその形を再現する**
+  // —— 一致する形しか持たせないと、画面がどちらを出しているかテストボタンで区別できない。
+  const arrivalIso = tsunamiOriginDate(now).toISOString()
+  const originIso = new Date(tsunamiOriginDate(now).getTime() - 60000).toISOString()
   return {
     kind: 'tsunami',
     id: `test-tsunami-${Date.now()}`,
@@ -1278,11 +1283,15 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
         // **識別子（`eventId`）はこの地震の発現時刻から作る。** 電文の `EventID` は原因地震の
         // もので、津波電文はそのあとに発表される（→ `tsunamiOriginDate`）。
         hypocenterName: '三陸沖', magnitudeCondition: 'Ｍ８を超える巨大地震', magnitudeType: 'Mj',
-        originTime: originIso, arrivalTime: originIso,
+        // **発生時刻と発現時刻が 1 分ずれる形**（実電文の三陸沖 M7.4 と同じ。発生 16:52 /
+        // 発現 16:53）。カードが出すのは発現時刻のほう。2 件目は一致する形にしてあり、
+        // 1 画面で両方を見比べられる。
+        originTime: originIso, arrivalTime: arrivalIso,
         code: '288', latitude: 38.1, longitude: 143.9, depth: 24,
       },
       {
-        // 2 件目も第一波の到達（6 分前）より前に置く。
+        // 2 件目も第一波の到達（6 分前）より前に置く。**発生時刻と発現時刻は一致させる**
+        // —— 実電文では 88.8% がこの形で、1 件目のずれる形と並べて見比べられる。
         hypocenterName: '岩手県沖', magnitude: 7.2, magnitudeType: 'M',
         originTime: t(-9), arrivalTime: t(-9), source: 'ＰＴＷＣ',
         code: '286', latitude: 39.6, longitude: 143.2, depth: 10,

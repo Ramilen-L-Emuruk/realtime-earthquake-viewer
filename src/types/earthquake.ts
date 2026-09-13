@@ -460,10 +460,15 @@ export interface TsunamiSourceEarthquake extends HypocenterAreaDetail {
    * 地震発現時刻（`Earthquake/ArrivalTime`）。観測点が地震を検知した時刻で、国外の地震で
    * 発現時刻が不明なときは発生時刻の値が入る（電文解説資料 Ⅱ.11 2-2）。
    *
-   * **`originTime` と入れ替えないこと。** 地震情報側（`parseEarthquakeFromXml`）は
-   * こちらを優先して地震の時刻に充てているが、津波の `originTime` は
-   * `isTsunamiContinuation`（`utils/tsunami.ts`）が**識別子を持たない電文の同一性判定**に
-   * 使っている。中身を差し替えると、続報が別の津波として立つ。
+   * **画面に出すのはこちら。** 地震情報側（`parseEarthquakeFromXml`）と揃えるため、
+   * カードの「◯時◯分発生」は `sourceEarthquakeTime`（`utils/tsunami.ts`）を通して
+   * 発現時刻を先に採る。気象庁も利用者向けの文へ発現時刻を書いている（→
+   * `docs/spec/tsunami-spec.md` §4）。
+   *
+   * **ただし `originTime` と入れ替えないこと。** 津波の `originTime` は
+   * `isTsunamiNewFire`（`utils/tsunami.ts`）が**電文の識別子が両側そろっていないときの
+   * 同一性判定**に使っている。中身を差し替えると、続報が別の津波として立つ。
+   * （`isTsunamiContinuation` は `eventId` と `cancelledAt` しか見ておらず、この注意の対象外）
    */
   arrivalTime?: string
   /**
@@ -1105,7 +1110,13 @@ export interface JMALpgm {
   magnitudeCondition?: string
   /** マグニチュードの種別（`@type`）。→ {@link TsunamiSourceEarthquake.magnitudeType} */
   magnitudeType?: string
-  /** 地震発現時刻（`Earthquake/ArrivalTime`）。発生時刻（{@link originTime}）と別物。画面には出していない */
+  /**
+   * 地震発現時刻（`Earthquake/ArrivalTime`）。発生時刻（{@link originTime}）と別物。
+   *
+   * **読み上げの「◯時◯分頃発生した地震で」はこちらを先に採る**（`lpgmToText`）。
+   * 地震情報・津波カードと同じ規則で、揃えないと同じ地震の時刻が経路によって 1 分ずれる。
+   * 画面（長周期のカード・一覧）には時刻そのものを出していない。
+   */
   arrivalTime?: string
   /** 震源の要素。→ {@link LpgmHypocenter} */
   hypocenter?: LpgmHypocenter

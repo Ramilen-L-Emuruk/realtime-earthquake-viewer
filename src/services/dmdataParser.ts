@@ -1283,7 +1283,13 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   // 震度速報は Head/TargetDateTime（地震検知時刻）を earthquake.time に充てる。
   // 通常電文は arrivalTime を優先し、無ければ originTime にフォールバックする
   // （DMD-4: かつて OriginTime を採っていて、同じ地震の時刻が 1 分ずれていた）。
-  const originTime = earthquakeEl
+  //
+  // **変数名を `originTime` にしない。** 中身は発現時刻が優先で、電文の
+  // `OriginTime`（地震発生時刻）とは別物。同じ名前を付けると、実装を読んで裏を取る人が
+  // 「`originTime` という名前なのに発現時刻？」で止まる（実際に止まった）。
+  // 津波側の選択（`sourceEarthquakeTime`）と同じ規則であることは
+  // `docs/spec/tsunami-spec.md` §4 に書いてある。
+  const earthquakeTime = earthquakeEl
     ? (xmlText(xmlQ(earthquakeEl, 'ArrivalTime')) || xmlText(xmlQ(earthquakeEl, 'OriginTime')))
     : xmlText(xmlQ(doc, 'TargetDateTime'))
 
@@ -1515,7 +1521,7 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
       correct,
     },
     earthquake: {
-      time: originTime,
+      time: earthquakeTime,
       hypocenter: {
         name: hypName,
         // 震度速報は震源情報なし。-200 は「位置不明」センチネル（P2PQuake 経路と揃えてある）。
