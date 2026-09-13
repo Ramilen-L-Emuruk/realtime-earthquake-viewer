@@ -1506,6 +1506,16 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
 }
 
 /**
+ * 推計震度分布図の続報が、初報から遅れて発表される幅。
+ *
+ * 実電文で観測した 6 分をそのまま置いている（M7.4 → M7.5・セル数も変化。
+ * → `useEarthquakes` の `applyEstimatedIntensity`）。**この値を待つものは無い** ――
+ * 続報をいつ流すかはテストのキューが別に決めており、ここは電文が名乗る発表時刻だけ。
+ * 反映の判定（`decideEstimatedIntensityUpdate`）は初報より後かどうかしか見ない。
+ */
+const ESTIMATED_INTENSITY_FOLLOW_UP_MS = 6 * 60_000
+
+/**
  * 推計震度分布図（IXAC41）のテスト。**地震情報と対で返す。**
  *
  * この電文は識別子を持たず、地震カードとの結び付けは発現時刻で行う（→ `utils/estimatedIntensity.ts`）。
@@ -1518,8 +1528,23 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
  *
  * セルの座標は**格子の整数添字**で持っている（緯度 1/480 度・経度 1/320 度にきっちり乗る）。
  * 小数で書くと桁が無駄なうえ、読み戻しで丸めが乗る。
+ *
+ * **続報も返す。** 同じ地震について続報が出るので（実電文で 6 分後）、読み上げは初報を
+ * 「受信しました」、続報を「更新されました」と言い分ける。初報しか流せないと、その言い分けを
+ * 実機で一度も聞けない（→ CLAUDE.md「テストボタンは実機確認の唯一の入口」）。
+ *
+ * **続報のセルは初報と同じもの。** 実電文の続報はセル数も変わるが、それを再現するには同じ
+ * 地震の 2 通目を採り直す必要がある（`build-test-estimated-intensity` は「セルが多いほう」を
+ * 採る作りで 1 通しか保存しない）。ここで確かめたいのは**アプリが続報をどう扱うか**なので、
+ * 発表時刻だけを進める —— 反映するかどうかの判定（`decideEstimatedIntensityUpdate`）は
+ * 発表時刻が進んでいれば続報と見なす。
  */
-export function createTestEstimatedIntensity(): { quake: JMAQuake; estimated: JMAEstimatedIntensity } {
+export function createTestEstimatedIntensity(): {
+  quake: JMAQuake
+  estimated: JMAEstimatedIntensity
+  /** 同じ地震の続報。発表時刻だけが初報より後になっている */
+  followUp: JMAEstimatedIntensity
+} {
   const nowDate = serverDate()
   const now = nowDate.toISOString()
   const eventId = toEventIdTimestamp(nowDate)
@@ -1561,22 +1586,31 @@ export function createTestEstimatedIntensity(): { quake: JMAQuake; estimated: JM
     if (lo > east) east = lo
   }
 
+  const estimated: JMAEstimatedIntensity = {
+    id: `test-ixac41-${eventId}`,
+    time: now,
+    // **地震カードと同じ発現時刻にする。** ここがずれると引き当てが外れ、ボタンが
+    // 「このアプリの推定」のまま変わらない（テストとして無意味になる）。
+    arrivalTime: now,
+    hypocenter: e.hypocenter,
+    magnitude: e.magnitude ?? NaN,
+    ...(e.magnitudeCondition && { magnitudeCondition: e.magnitudeCondition }),
+    areaCode: e.areaCode,
+    telegramKind: e.telegramKind,
+    grades: e.grades,
+    count: n, lat, lon, si,
+    bounds: { south, north: north + CELL_LAT_DEG, west, east: east + CELL_LON_DEG },
+  }
+
   return {
     quake,
-    estimated: {
-      id: `test-ixac41-${eventId}`,
-      time: now,
-      // **地震カードと同じ発現時刻にする。** ここがずれると引き当てが外れ、ボタンが
-      // 「このアプリの推定」のまま変わらない（テストとして無意味になる）。
-      arrivalTime: now,
-      hypocenter: e.hypocenter,
-      magnitude: e.magnitude ?? NaN,
-      ...(e.magnitudeCondition && { magnitudeCondition: e.magnitudeCondition }),
-      areaCode: e.areaCode,
-      telegramKind: e.telegramKind,
-      grades: e.grades,
-      count: n, lat, lon, si,
-      bounds: { south, north: north + CELL_LAT_DEG, west, east: east + CELL_LON_DEG },
+    estimated,
+    followUp: {
+      ...estimated,
+      id: `test-ixac41-${eventId}-2`,
+      // **発現時刻は同じまま、発表時刻だけを進める。** 発現時刻が同じだからこそ「同じ地震の
+      // 続報」になる（変えると別の地震へ入れ替えた扱いになり、初報と同じ文で読まれる）。
+      time: new Date(nowDate.getTime() + ESTIMATED_INTENSITY_FOLLOW_UP_MS).toISOString(),
     },
   }
 }

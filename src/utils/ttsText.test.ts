@@ -1871,6 +1871,49 @@ describe('nankaiToText: 取消と調査終了の言い分け', () => {
   })
 })
 
+// 取消の述語は種別をまたいで「取り消されました」でそろえる。
+//
+// **気象庁が使う語は「取消」**（→ CLAUDE.md「利用者へ出す語を気象庁の表現と揃える」）。
+// 2026-09-13 まで、緊急地震速報・地震情報・長周期地震動だけが「キャンセルされました」で、
+// 津波・南海トラフ臨時情報・地震回数の「取り消されました」と割れていた。**同じ事象を 2 通りの
+// 述語で言うと、種別ごとに別のことが起きたように聞こえる。**
+describe('取消の述語は種別をまたいでそろえる', () => {
+  const eew = {
+    kind: 'eew', id: 'e1', time: '2026-01-01T12:00:05+09:00', test: false, cancelled: true,
+    issue: { eventId: 'e', serial: '2', time: '2026-01-01T12:00:00+09:00' },
+    earthquake: { originTime: '2026-01-01T12:00:00+09:00', arrivalTime: '2026-01-01T12:00:00+09:00', hypocenter: { name: '日向灘', latitude: 32, longitude: 132, depth: 30, magnitude: 6.5 } },
+  } as unknown as EEWAlert
+  const lpgm = {
+    id: 'l1', eventId: '20260101120000', time: '2026-01-01T12:03:00+09:00',
+    originTime: '2026-01-01T12:00:00+09:00', maxClass: 3 as LpgmClass, cancelled: true, regions: [],
+  } as JMALpgm
+
+  const texts: [string, string][] = [
+    ['緊急地震速報', eewCancelToText(eew)],
+    ['地震情報', earthquakeCancelToText('2026-01-01T12:00:00+09:00')],
+    ['長周期地震動情報', lpgmToText(lpgm, TTS_OPTS, true)],
+    ['津波', tsunamiCancelToText('retracted')],
+  ]
+
+  // 正: どの種別も「取り消されました」で終える。
+  it.each(texts)('%s の取消は「取り消されました」と読む', (_label, text) => {
+    expect(text).toContain('取り消されました')
+  })
+
+  // 安全弁: 「キャンセル」を復活させない。**画面のオーバーレイも「この地震情報は取り消されました」と
+  // 書いている**ので、読み上げだけ戻すと画面と声が食い違う。
+  it.each(texts)('%s の取消で「キャンセル」と読まない', (_label, text) => {
+    expect(text).not.toContain('キャンセル')
+  })
+
+  // 対照: 津波の**解除・失効**は取消とは別の事象なので、述語も別のまま。
+  // この describe だけを見て `tsunamiCancelToText` を一括で書き換えると、ここが落ちる。
+  it('津波の解除・失効は取消と別の述語のまま', () => {
+    expect(tsunamiCancelToText('lifted')).toBe('津波警報等は全て解除されました。')
+    expect(tsunamiCancelToText('expired')).toContain('終了しました')
+  })
+})
+
 // 規模が数値にならない電文（`jmx_eb:Magnitude@description`）。
 //
 // 数値が無いことだけを見て黙ると、**最大級の地震ほど音声から規模が消える**。
@@ -1911,7 +1954,11 @@ describe('earthquakeToText: 数値にならない規模', () => {
 
   // 正: 既読の記録は数値と説明を同じ鍵で持つ。段階的に確定していく続報
   // （「Ｍ不明」→「Ｍ８を超える巨大地震」→ 実測値）で、変わったことを取りこぼさない。
-  it('説明が変わったら続報で読み直す', () => {
+  //
+  // **2026-09-13 に期待値を覆した。** 以前は初報と同じ「マグニチュードは8を超える巨大地震と
+  // みられます。」を期待していたが、それだと**数値の規模（「〜に更新されました」）とだけ
+  // 言い方が食い違い、最大級の地震でのみ「変わった」が声にならない**。
+  it('説明が変わったら続報で「更新されました」と読み直す', () => {
     const first = makeQuake({ type: '震源・震度情報', magnitude: NaN, magnitudeCondition: 'Ｍ不明' })
     const spoken = createQuakeSpokenState()
     const segs = earthquakeToSegments(first, TTS_OPTS, true, spoken)
@@ -1919,7 +1966,47 @@ describe('earthquakeToText: 数値にならない規模', () => {
 
     const second = makeQuake({ type: '震源・震度情報', magnitude: NaN, magnitudeCondition: 'Ｍ８を超える巨大地震' })
     const text = joinSegments(earthquakeToSegments(second, TTS_OPTS, false, spoken))
+    expect(text).toContain('マグニチュードが更新されました。8を超える巨大地震とみられます。')
+  })
+
+  // 正: 「Ｍ不明」へ変わる続報も同じ形で読む。表に頼らず主題部だけを差し替えているので、
+  // 述部が何であっても更新は声になる。
+  it('「Ｍ不明」へ変わる続報も更新として読む', () => {
+    const first = makeQuake({ type: '震源・震度情報', magnitude: 7.4 })
+    const spoken = createQuakeSpokenState()
+    applySpokenRefs(spoken, earthquakeToSegments(first, TTS_OPTS, true, spoken).flatMap(seg => seg.refs))
+
+    const second = makeQuake({ type: '震源・震度情報', magnitude: NaN, magnitudeCondition: 'Ｍ不明' })
+    const text = joinSegments(earthquakeToSegments(second, TTS_OPTS, false, spoken))
+    expect(text).toContain('マグニチュードが更新されました。不明です。')
+  })
+
+  // 対照: 初報では「更新」と言わない。主題部の差し替えが続報だけに効いていること。
+  it('初報では更新と言わない', () => {
+    const text = earthquakeToText(makeQuake({ magnitude: NaN, magnitudeCondition: 'Ｍ８を超える巨大地震' }), TTS_OPTS, true)
     expect(text).toContain('マグニチュードは8を超える巨大地震とみられます。')
+    expect(text).not.toContain('マグニチュードが更新されました。')
+  })
+
+  // 安全弁: 「〜に更新されました」の枠へ値を入れない。マグニチュード（数値）を地震（出来事）へ
+  // 更新することになり、文として破綻する。**この形が復活していないこと**を見る。
+  it('「巨大地震に更新されました」という形を作らない', () => {
+    const first = makeQuake({ type: '震源・震度情報', magnitude: NaN, magnitudeCondition: 'Ｍ不明' })
+    const spoken = createQuakeSpokenState()
+    applySpokenRefs(spoken, earthquakeToSegments(first, TTS_OPTS, true, spoken).flatMap(seg => seg.refs))
+
+    const second = makeQuake({ type: '震源・震度情報', magnitude: NaN, magnitudeCondition: 'Ｍ８を超える巨大地震' })
+    const text = joinSegments(earthquakeToSegments(second, TTS_OPTS, false, spoken))
+    expect(text).not.toContain('巨大地震に更新されました')
+  })
+
+  // 安全弁: 震源要素更新（VXSE61）では「更新」を重ねない。この電文は名乗りと直前の文が
+  // 既に「更新」を言っているので、続報の形を持ち込むと 1 回の発話で「更新」が 3 度重なる。
+  it('震源要素更新では規模の説明に「更新」を重ねない', () => {
+    const q = makeQuake({ type: '顕著な地震の震源要素更新のお知らせ', magnitude: NaN, magnitudeCondition: 'Ｍ８を超える巨大地震' })
+    const text = earthquakeToText(q, TTS_OPTS, true)
+    expect(text).toContain('マグニチュードは8を超える巨大地震とみられます。')
+    expect(text).not.toContain('マグニチュードが更新されました。')
   })
 
   // 対照: 同じ説明の続報では読み直さない（続報のたびに同じことを言わない）。
@@ -1975,7 +2062,7 @@ describe('tsunamiWarningLevelToText', () => {
   })
 })
 
-// 取消しの概要（電文の `Body/Text`）。アプリの定型文（「キャンセルされました」）は何が起きたかしか
+// 取消しの概要（電文の `Body/Text`）。アプリの定型文（「取り消されました」）は何が起きたかしか
 // 言っておらず、**なぜ取り消したのかは電文のこの本文にしか無い**。
 //
 // **ただし実電文の本文は取消の宣言だけで、理由を含まない。** 定型文が同じ事実を先に述べるので、
@@ -2043,7 +2130,7 @@ describe('取消の理由を読み上げる', () => {
 
   it('地震情報の取消に理由を足す', () => {
     const text = earthquakeCancelToText('2026-01-01T12:00:00+09:00', 'システム障害のため取り消します。')
-    expect(text).toContain('キャンセルされました。')
+    expect(text).toContain('取り消されました。')
     expect(text).toContain('システム障害のため取り消します。')
   })
 
@@ -2052,13 +2139,13 @@ describe('取消の理由を読み上げる', () => {
   it('地震情報の取消でも宣言だけの本文は読まない', () => {
     // 2024-01-01 の実電文（DMDATA・NII の両方に入っている 1 通）
     const text = earthquakeCancelToText('2026-01-01T12:00:00+09:00', '先ほどの、震度速報を取り消します。')
-    expect(text).toMatch(/に発表された地震情報はキャンセルされました。$/)
+    expect(text).toMatch(/に発表された地震情報は取り消されました。$/)
   })
 
   // 対照: 理由が無ければ従来どおり（空文字を足して助詞だけの文にしない）
   it('理由が無ければ従来どおり', () => {
     // 時刻の書式はローカルタイムゾーン依存なので、末尾だけを見る
-    expect(earthquakeCancelToText('2026-01-01T12:00:00+09:00')).toMatch(/に発表された地震情報はキャンセルされました。$/)
+    expect(earthquakeCancelToText('2026-01-01T12:00:00+09:00')).toMatch(/に発表された地震情報は取り消されました。$/)
     expect(tsunamiCancelToText('lifted')).toBe('津波警報等は全て解除されました。')
   })
 
@@ -2086,7 +2173,7 @@ describe('EEW の取消の理由を読み上げる', () => {
 
   it('理由を足す', () => {
     const text = eewCancelToText(cancelledEew('システム障害のため取り消します。'))
-    expect(text).toContain('キャンセルされました。')
+    expect(text).toContain('取り消されました。')
     expect(text).toContain('システム障害のため取り消します。')
   })
 
@@ -2096,12 +2183,12 @@ describe('EEW の取消の理由を読み上げる', () => {
     ['先ほどの、緊急地震速報（予報）を取り消します。'],
     ['先ほどの、緊急地震速報（地震動予報）を取り消します。'],
   ])('実電文の本文は読まない: %s', (cancelText) => {
-    expect(eewCancelToText(cancelledEew(cancelText))).toMatch(/緊急地震速報はキャンセルされました。$/)
+    expect(eewCancelToText(cancelledEew(cancelText))).toMatch(/緊急地震速報は取り消されました。$/)
   })
 
   // 対照: 理由が無ければ従来どおり（空文字を足して助詞だけの文にしない）
   it('理由が無ければ従来どおり', () => {
-    expect(eewCancelToText(cancelledEew())).toMatch(/緊急地震速報はキャンセルされました。$/)
+    expect(eewCancelToText(cancelledEew())).toMatch(/緊急地震速報は取り消されました。$/)
   })
 
   // 安全弁: 上限を超えた本文は読まないが、**捨てたことを記録する**（画面には全文が出る）
@@ -2109,7 +2196,7 @@ describe('EEW の取消の理由を読み上げる', () => {
     const info = vi.spyOn(log, 'info').mockImplementation(() => {})
     try {
       const long = 'あ'.repeat(CANCEL_REASON_SPEAK_MAX_CHARS + 1)
-      expect(eewCancelToText(cancelledEew(long))).toMatch(/キャンセルされました。$/)
+      expect(eewCancelToText(cancelledEew(long))).toMatch(/取り消されました。$/)
       expect(info).toHaveBeenCalledWith(expect.stringContaining('取消しの概要が長いため'))
     } finally {
       info.mockRestore()
@@ -2217,24 +2304,52 @@ describe('earthquakeCountToText', () => {
   })
 })
 
-// 推計震度分布図（IXAC41）の読み上げ文。**守りたいのは名前の決定**であって語感ではない。
+// 推計震度分布図（IXAC41）の読み上げ文。**守りたいのは名前の決定と、初報・続報の言い分け**。
 describe('estimatedIntensityToText', () => {
-  // 正: 気象庁の呼称をそのまま名乗る。これ自体が名乗りとして働くので前置きは付けない。
-  it('気象庁の呼称で受信を伝える', () => {
-    expect(estimatedIntensityToText()).toBe('気象庁の推計震度分布図を受信しました。')
+  const ARRIVAL = '2026-01-01T15:04:00+09:00'
+
+  // 正: 気象庁の呼称をそのまま名乗り、どの地震のものかを時刻で言う。
+  it('初報は発現時刻を添えて受信を伝える', () => {
+    expect(estimatedIntensityToText(ARRIVAL, true))
+      .toBe('15時4分頃発生した地震について、気象庁の推計震度分布図を受信しました。')
+  })
+
+  // 正: 同じ地震の続報は「更新されました」。言い分けないと同じ報が二度読まれたように聞こえる。
+  it('続報は更新として伝える', () => {
+    expect(estimatedIntensityToText(ARRIVAL, false))
+      .toBe('15時4分頃発生した地震について、気象庁の推計震度分布図が更新されました。')
+  })
+
+  // 対照: 時刻は電文の発現時刻から組む。地震情報が読む時刻（`formatTime`）と同じ形なので、
+  // 別の地震の分布へ入れ替わったときに耳で区別できる。
+  it('発現時刻が違えば読み上げの時刻も変わる', () => {
+    expect(estimatedIntensityToText('2026-01-01T09:07:00+09:00', true)).toContain('9時7分頃')
+    expect(estimatedIntensityToText(ARRIVAL, true)).toContain('15時4分頃')
   })
 
   // 安全弁: 気象庁が使っていない名前を作らない。「推計震度分布情報」という情報名は存在せず、
   // 資料名は「推計震度分布図作図用データ」・図の名は「推計震度分布図」。
   it('気象庁が使っていない名前を名乗らない', () => {
-    expect(estimatedIntensityToText()).not.toContain('推計震度分布情報')
-    expect(estimatedIntensityToText()).toContain('推計震度分布図')
+    for (const isNew of [true, false]) {
+      expect(estimatedIntensityToText(ARRIVAL, isNew)).not.toContain('推計震度分布情報')
+      expect(estimatedIntensityToText(ARRIVAL, isNew)).toContain('推計震度分布図')
+    }
   })
 
   // 安全弁: 推計の最大震度を言わない。気象庁が「1階級程度異なることがある」と断っており、
   // 発表した最大震度と食い違う「最大震度」が耳に 2 つ入ることになる。
   it('震度の値を言わない', () => {
-    expect(estimatedIntensityToText()).not.toMatch(/震度[0-9１-７]|震度５弱|最大震度/)
+    for (const isNew of [true, false]) {
+      expect(estimatedIntensityToText(ARRIVAL, isNew)).not.toMatch(/震度[0-9１-７]|震度５弱|最大震度/)
+    }
+  })
+
+  // 安全弁: 名乗りを分ける前置き（「震度分布情報。」など）を足さない。気象庁が使っていない
+  // 情報名になるうえ、「推計震度分布図」という呼称自体が名乗りとして働いている。
+  it('名乗りを分ける前置きを付けない', () => {
+    for (const isNew of [true, false]) {
+      expect(estimatedIntensityToText(ARRIVAL, isNew)).not.toMatch(/^[^、]*。/)
+    }
   })
 })
 
