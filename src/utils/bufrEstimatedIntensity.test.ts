@@ -7,9 +7,11 @@
 // 足りない** —— 詰め物の余地が 8〜23 ビットあるので、幅が 1 ビットずれた読み方も通りうる。
 // 資料の値と突き合わせて初めて幅が確定する。
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { decodeEstimatedIntensity, bufrDeclaredLength, CELL_LAT_DEG, CELL_LON_DEG } from './bufrEstimatedIntensity'
+import {
+  decodeEstimatedIntensity, bufrDeclaredLength, cellCapacityFor, CELL_LAT_DEG, CELL_LON_DEG,
+} from './bufrEstimatedIntensity'
 // 組み立て側はリプレイのテストと共有する（`src/test-utils/bufrBuild.ts`）。
-import { build, DESCS_PLAIN, SAMPLE_GRADES } from '../test-utils/bufrBuild'
+import { build, DESCS_PLAIN, SAMPLE_GRADES, type Build, type Mesh2, type Mesh3 } from '../test-utils/bufrBuild'
 import { log } from './logger'
 
 vi.mock('./logger', () => ({
@@ -18,6 +20,18 @@ vi.mock('./logger', () => ({
 }))
 
 beforeEach(() => { vi.clearAllMocks() })
+
+/**
+ * 第4節の位置と長さを、読み取り側と同じ手順で辿る。**辿り方がずれれば確保長の再現も嘘になる**
+ * ので、読めた値が電文全体の長さと噛み合うことを呼び出し側で併せて確かめる。
+ */
+function section4(bytes: Uint8Array): { offset: number; length: number } {
+  const u3 = (o: number) => (bytes[o] << 16) | (bytes[o + 1] << 8) | bytes[o + 2]
+  let p = 8 + u3(8)
+  if (bytes[8 + 7] & 0x80) p += u3(p)   // 第2節（任意節）
+  const offset = p + u3(p)
+  return { offset, length: u3(offset) }
+}
 
 describe('decodeEstimatedIntensity（別紙4 の実バイナリ例）', () => {
   // 正: 資料が「このビット列はこの値」と書いている組がそのまま返る。
@@ -161,6 +175,50 @@ describe('decodeEstimatedIntensity（読めないもの）', () => {
     expect(String(vi.mocked(log.warn).mock.calls[0][0])).toContain('長さが宣言と違います')
   })
 
+  // 安全弁: 第4節の長さが電文に収まらない値を名乗ったら読まない。**第0節が名乗る全長とは
+  // 別のフィールド**なので突き合わせる相手がおらず、過大だとセルを収める配列がそのまま
+  // 膨らむ（上限値を名乗らせると 88.6MB を確保してから捨てていた）。読み位置の歯止めも
+  // 電文の外へ後退するので、**「第4節の中」という言い方が成り立たなくなる**。
+  it('第4節の長さが電文に収まらなければ読まない', () => {
+    const bytes = build({ ...ok, section4LengthOverride: 0xffffff })
+    expect(decodeEstimatedIntensity(bytes, 'id', 't')).toBeNull()
+    expect(String(vi.mocked(log.warn).mock.calls[0][0])).toContain('第4節の長さが電文に収まりません')
+  })
+
+  // 対照: 第5節（終端の `7777`・4 オクテット固定）の直前を指す長さは弾かない。**正しい電文は
+  // 必ずここを指す**ので、境界を 1 オクテットでも内側へ詰めると分布が丸ごと読めなくなる。
+  it('第4節の長さが第5節の直前を指すなら弾かない', () => {
+    const origin = build(ok)
+    const bytes = build({ ...ok, section4LengthOverride: origin.length - 4 - section4(origin).offset })
+    expect(decodeEstimatedIntensity(bytes, 'id', 't')).not.toBeNull()
+    expect(log.warn).not.toHaveBeenCalled()
+  })
+
+  // 安全弁: 短すぎる側も弾く。**読み始めは第4節の 4 オクテット目**（長さ 3 ＋ 保留 1）なので、
+  // 4 を下回ると読み始めの時点でもう歯止めの外にいて、最初の 1 オクテットが素通しで読まれる。
+  it.each([0, 3])('第4節の長さが %i オクテットなら読まない', (s4len) => {
+    const bytes = build({ ...ok, section4LengthOverride: s4len })
+    expect(decodeEstimatedIntensity(bytes, 'id', 't')).toBeNull()
+    expect(String(vi.mocked(log.warn).mock.calls[0][0])).toContain('第4節の長さが電文に収まりません')
+  })
+
+  // 安全弁: 境界のすぐ外側。1 オクテットでも第5節へ食い込めば読まない。
+  it('第4節の長さが第5節へ 1 オクテット食い込めば読まない', () => {
+    const origin = build(ok)
+    const bytes = build({ ...ok, section4LengthOverride: origin.length - 3 - section4(origin).offset })
+    expect(decodeEstimatedIntensity(bytes, 'id', 't')).toBeNull()
+    expect(String(vi.mocked(log.warn).mock.calls[0][0])).toContain('第4節の長さが電文に収まりません')
+  })
+
+  // 安全弁: 凡例の件数も電文の値をそのまま使うので、メッシュの 3 段と同じ歯止めが要る。
+  // ここだけ素通しだと、**1 件 27 ビット × 最大 255 件を読み進めた先で震源も時刻もメッシュ数も
+  // 無関係な値で組み上がる**（配列外は 0 が返るだけで例外にならない）。
+  it('凡例の件数を水増しした電文は読み位置で止める', () => {
+    const bytes = build({ ...ok, declaredGradeCount: 255 })
+    expect(decodeEstimatedIntensity(bytes, 'id', 't')).toBeNull()
+    expect(String(vi.mocked(log.warn).mock.calls[0][0])).toContain('凡例の途中で第4節を超えました')
+  })
+
   it('BUFR の版が 3 でなければ読まない', () => {
     const bytes = build({ ...ok, edition: 4 })
     expect(decodeEstimatedIntensity(bytes, 'id', 't')).toBeNull()
@@ -234,6 +292,105 @@ describe('decodeEstimatedIntensity（読めないもの）', () => {
     expect(r).not.toBeNull()
     expect(r!.telegramKind).toBe(1)
     expect(String(vi.mocked(log.warn).mock.calls[0][0])).toContain('電文の種類')
+  })
+})
+
+// セルを収める配列の確保長（`capacity`）は、読み方がずれたときの最後の砦として
+// 「積んだ件数が確保長に届いたら電文ごと捨てる」分岐を持っている。**だがその分岐へは到達しない**
+// —— 読み位置の歯止め（`r.pos >= endBit`）が必ず先に効く。ここで固定するのはその包含関係で、
+// 分岐を消さずに残している理由は実装側のコメントにある。
+describe('decodeEstimatedIntensity（確保長は読み位置の歯止めに包まれている）', () => {
+  const base = { grades: SAMPLE_GRADES, latRaw: 12484, lonRaw: 31562, depthKm: 10, magRaw: 61 }
+
+  // 確保長は**実装の関数をそのまま呼ぶ**。式を書き写すと、1 セルのビット幅を変えたときに
+  // 片方だけ直っても、ここはずれた関係を検査したまま緑で通る。
+  const capacityOf = (bytes: Uint8Array) => cellCapacityFor(section4(bytes).length)
+
+  /**
+   * セルを最も密に詰めた電文の中身。1 つの 3 次メッシュへ 255 件（セル数の幅の上限）まで
+   * 入れるとメッシュのヘッダが占める割合が最小になり、**確保長にいちばん近づく形**になる。
+   */
+  function densest(cellCount: number): Mesh2[] {
+    const mesh3: Mesh3[] = []
+    for (let left = cellCount, i = 0; left > 0; i++) {
+      const take = Math.min(255, left)
+      left -= take
+      mesh3.push({
+        r3: i % 8, w3: 0,
+        cells: Array.from({ length: take }, (_, k) => ({ half: (k % 4) + 1, quarter: (k % 4) + 1, si: 40 })),
+      })
+    }
+    return [{ p1: 52, u1: 35, q2: 0, v2: 6, mesh3 }]
+  }
+
+  // 正: 最も密に詰めても、読めた件数は確保長へ届かない。**余裕が 16 セルぶん以上残る**ことまで
+  // 見る —— 確保長の末尾に足している `+ 16` がこの関係を作っている。
+  it.each([255, 1020, 2550])('最も密に詰めた %i セルの電文でも確保長には届かない', (cellCount) => {
+    const bytes = build({ ...base, mesh2: densest(cellCount) })
+    const s4 = section4(bytes)
+    expect(s4.offset + s4.length + 4).toBe(bytes.length)   // 辿り方の自己確認（末尾 4 オクテットは 7777）
+    const r = decodeEstimatedIntensity(bytes, 'id', 't')
+    expect(r).not.toBeNull()
+    expect(r!.count).toBe(cellCount)
+    expect(capacityOf(bytes) - r!.count).toBeGreaterThanOrEqual(16)
+  })
+
+  // 安全弁: 確保長が実際のセル数に足りない電文でも、返るのは**読み位置の歯止め**のほう。
+  // 確保長は第4節の長さから決まるので、短く名乗らせれば縮む。
+  it('確保長がセル数に足りなくても、先に効くのは読み位置の歯止め', () => {
+    const bytes = build({ ...base, mesh2: densest(255), section4LengthOverride: 200 })
+    expect(capacityOf(bytes)).toBeLessThan(255)
+    expect(decodeEstimatedIntensity(bytes, 'id', 't')).toBeNull()
+    expect(String(vi.mocked(log.warn).mock.calls[0][0])).toContain('第4節を超えました')
+  })
+
+  // 安全弁: 第4節の長さをどう名乗らせても、確保長の分岐は 1 度も発火しない。
+  // **確保長・読み進められるビット数・積める件数の上限はどれも第4節の長さだけで決まる**ので、
+  // そこを振り切れば経路を覆える。読み方がずれた電文は読み位置の歯止めか、
+  // ビット列の終わり方の検査で捕まる。
+  it('第4節の長さをどう名乗らせても確保長の分岐は発火しない', () => {
+    // 組み立ては 1 度だけ行い、名乗る値だけ書き換える（毎回組み直すと 500 通りで時間がかかる）。
+    const origin = build({ ...base, mesh2: densest(255) })
+    const { offset, length } = section4(origin)
+    for (let s4len = 0; s4len <= length + 32; s4len++) {
+      vi.clearAllMocks()
+      const bytes = Uint8Array.from(origin)
+      bytes[offset] = (s4len >> 16) & 0xff
+      bytes[offset + 1] = (s4len >> 8) & 0xff
+      bytes[offset + 2] = s4len & 0xff
+      decodeEstimatedIntensity(bytes, 'id', 't')
+      const msgs = vi.mocked(log.warn).mock.calls.map((c) => String(c[0]))
+      expect(msgs.filter((m) => m.includes('セルが確保長'))).toEqual([])
+    }
+  })
+
+  // 安全弁: 反復回数は電文の値をそのまま使うので、水増しされたら読み位置で止める。
+  // **止まる段は水増しした段とは限らない** —— 外側の段は次の周へ入る前にヘッダを読み進めて
+  // しまい、そこで読んだ値がそのまま内側の反復回数になるので、詰め物や末尾の `7777` の
+  // 中身しだいで内側の段が先に捕まえる。ここでは段を問わず「第4節を超えたこととして止まる」
+  // ことを見る（セルの段で止まることは次のテストが見る）。
+  it.each<[string, Build]>([
+    ['2 次メッシュ', { ...base, mesh2: densest(255), declaredMesh2Count: 100 }],
+    ['3 次メッシュ', { ...base, mesh2: [{ ...densest(255)[0], declaredMesh3Count: 100 }] }],
+  ])('%s の数を水増しした電文は読み位置で止める', (_label, spec) => {
+    expect(decodeEstimatedIntensity(build(spec), 'id', 't')).toBeNull()
+    expect(String(vi.mocked(log.warn).mock.calls[0][0])).toContain('メッシュの途中で第4節を超えました')
+  })
+
+  // 安全弁: セルの段の歯止めだけは重みが違う。**1 周が 13 ビットの読み取りを伴う**ので、
+  // ここが抜けると名乗られた件数ぶんだけ実際に読み進める（外側 2 段の 1 周はヘッダを
+  // 読むだけで、しかも電文の中身が尽きれば読む値が 0 になって内側の段が立たなくなる）。
+  // セル数を水増しした電文がセルの段で捕まることを見る。
+  it('水増しされたセル数はセルの段で止まる', () => {
+    const bytes = build({
+      ...base,
+      mesh2: [{
+        p1: 52, u1: 35, q2: 0, v2: 6,
+        mesh3: [{ r3: 0, w3: 0, cells: [{ half: 1, quarter: 1, si: 42 }], declaredCellCount: 100 }],
+      }],
+    })
+    expect(decodeEstimatedIntensity(bytes, 'id', 't')).toBeNull()
+    expect(String(vi.mocked(log.warn).mock.calls[0][0])).toContain('（セル ')
   })
 })
 
