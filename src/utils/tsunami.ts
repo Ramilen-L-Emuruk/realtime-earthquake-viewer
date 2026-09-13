@@ -1,5 +1,5 @@
 import type { JMATsunami, TsunamiArea, TsunamiEstimation, TsunamiEstimationCondition, TsunamiGrade, TsunamiObservation, TsunamiObservationCondition, TsunamiWarningComment } from '../types/earthquake'
-import { formatTime } from './formatters'
+import { formatTimeMin } from './formatters'
 import { log } from './logger'
 
 /**
@@ -734,11 +734,12 @@ export function observationArrivalFallbackText(obs: TsunamiObservation): string 
  * 裸の時刻を足すとどちらがどちらか分からなくなる。
  *
  * 波高を出していない行では返さない —— 時刻だけが残ると、値の無い観測点に何かを観測した
- * ように見える。
+ * ように見える。**日時として読めない時刻も同じく返さない**（「最大波 」とラベルだけが残る）。
  */
 export function observationMaxHeightTimeText(obs: TsunamiObservation): string {
   if (!obs.maxHeightDateTime || !obs.height) return ''
-  return `最大波 ${formatTime(obs.maxHeightDateTime).slice(0, 5)}`
+  const hm = formatTimeMin(obs.maxHeightDateTime)
+  return hm ? `最大波 ${hm}` : ''
 }
 
 /**

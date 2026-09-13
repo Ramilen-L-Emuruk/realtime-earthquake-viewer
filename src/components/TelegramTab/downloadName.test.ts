@@ -128,6 +128,36 @@ describe('電文ログのダウンロード名', () => {
     }
   })
 
+  // **壊れた受信時刻がダウンロードを道連れにしない。**
+  //
+  // `Date.prototype.toISOString()` は `Invalid Date` に対して `RangeError` を**投げる**
+  // （`NaN` を返すだけの `getTime()` とは違う）。素で呼んでいた頃は、選んだ電文に 1 件でも
+  // 壊れた時刻が混じると `map` ごと例外で止まり、**正常な電文まで巻き添えでダウンロードが
+  // 何も起きずに終わった** —— 利用者には何も伝わらない。
+  it('受信時刻が壊れていても、他の電文ごとダウンロードが止まらない', async () => {
+    const cap = captureDownloads()
+    try {
+      withTz('Asia/Tokyo', () => {
+        vi.spyOn(Date, 'now').mockReturnValue(NOW())
+        const broken = { ...entry(RECEIVED(), 'VXSE51'), id: 'broken', receivedAt: new Date('壊れた値') }
+        const { container } = render(h(TelegramTab, { telegramLog: [broken, entry(RECEIVED())], onClear: () => {} }))
+        const box = container.querySelector('input[type=checkbox]')
+        if (!box) throw new Error('選択のチェックボックスが無い')
+        fireEvent.click(box)
+        click(container, 'JSON')
+      })
+      // 正: ダウンロードそのものが成立する（例外で止まらない）。
+      expect(cap.names).toEqual(['20260824_093000+0900_telegrams_2件.json'])
+      const payload = JSON.parse(await cap.blobs[0].text()) as { headType: string; receivedAt: string | null }[]
+      // 正: 壊れた時刻は `null` として書き出す。JSON を読む側にも「時刻が無い」と分かる。
+      expect(payload.find(e => e.headType === 'VXSE51')?.receivedAt).toBeNull()
+      // 対照: 同じ書き出しに混ざった正常な電文は、従来どおり ISO で残る。
+      expect(payload.find(e => e.headType === 'VXSE53')?.receivedAt).toMatch(/Z$/)
+    } finally {
+      cap.restore()
+    }
+  })
+
   it('ZIP は外側を書き出した時刻・中身を受信時刻で出す', async () => {
     const cap = captureDownloads()
     try {

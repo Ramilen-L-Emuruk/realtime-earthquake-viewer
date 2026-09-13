@@ -2,7 +2,7 @@ import { memo, useState, useCallback } from 'react'
 import { zipSync } from 'fflate'
 import type { TelegramLogEntry } from '../../types/earthquake'
 import { isDmdss } from '../../utils/env'
-import { formatFileStamp } from '../../utils/formatters'
+import { formatFileStamp, readDateTime } from '../../utils/formatters'
 
 // VXSE43 は購読していないが、配信分類が変わって届いた場合に `filtered` として記録するため
 // ラベルを残す（services/dmdata.ts の「購読していない EEW 種別」の分岐）。
@@ -36,8 +36,17 @@ const STATUS_BADGE: Record<TelegramLogEntry['status'], { label: string; classNam
   error:    { label: '✗', className: 'text-red-400' },
 }
 
-function formatTime(date: Date): string {
-  return date.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+/**
+ * 電文を受け取った時刻。**表示用の `formatters.ts` の同名関数とは別**（こちらは `Date` を
+ * 受け、秒まで出す）。
+ *
+ * 受け取る値はアプリ時計（`serverDate()`）が作る。時計のオフセットが壊れれば `Invalid Date`
+ * になりうるので、同じ検査を通す（素通しにすると `toLocaleTimeString` が `"Invalid Date"` を
+ * 返し、行に混ざったまま記録も残らない）。
+ */
+function formatTime(date: Date): string | null {
+  const d = readDateTime('TelegramTab.formatTime', date)
+  return d?.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) ?? null
 }
 
 function buildDownloadPayload(entry: TelegramLogEntry): unknown {
@@ -164,7 +173,12 @@ export const TelegramTab = memo(function TelegramTab({ telegramLog, onClear }: P
     const payload = entries.map(e => ({
       source: e.source,
       headType: e.headType,
-      receivedAt: e.receivedAt.toISOString(),
+      // **`toISOString()` を素で呼ばない。** `Invalid Date` に対しては `RangeError` を
+      // **投げる**（`NaN` を返すだけの `getTime()` とは違う）。選んだ電文に 1 件でも壊れた
+      // 時刻が混じると `map` ごと例外で止まり、**ダウンロードが何も起きずに終わる**
+      // —— 正常な電文まで道連れになるうえ、利用者には何も伝わらない。
+      // 読めない時刻は `null` にして、書き出した JSON の読み手にもそれと分かるようにする。
+      receivedAt: readDateTime('TelegramTab.receivedAt', e.receivedAt)?.toISOString() ?? null,
       ...(e.rawHead !== undefined ? { head: e.rawHead, body: e.rawBody } : { body: e.rawBody }),
     }))
     const json = JSON.stringify(payload, null, 2)
@@ -324,7 +338,9 @@ export const TelegramTab = memo(function TelegramTab({ telegramLog, onClear }: P
                         >
                           <div className="flex items-center gap-2 min-w-0">
                             <span className={`text-xs font-mono flex-shrink-0 w-3 ${badge.className}`}>{badge.label}</span>
-                            <span className="text-xs text-secondary font-mono flex-shrink-0">{formatTime(entry.receivedAt)}</span>
+                            {/* 日時として読めなければ語を出す。空欄にすると列が詰まって
+                                隣の値が時刻の位置に見える。 */}
+                            <span className="text-xs text-secondary font-mono flex-shrink-0">{formatTime(entry.receivedAt) ?? '時刻不明'}</span>
                             <span className="text-xs font-mono bg-white/10 rounded px-1 flex-shrink-0 text-secondary">{sourceLabel}</span>
                             <span className="text-xs font-mono text-white flex-shrink-0">{entry.headType}</span>
                             <span className="text-xs text-secondary truncate">

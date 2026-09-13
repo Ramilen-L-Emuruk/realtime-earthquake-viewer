@@ -118,13 +118,15 @@ function clickHtml(f: MapGeoJSONFeature): string {
   const m = Number(f.properties?.magnitude ?? -1)
   const depth = Number(f.properties?.depth ?? -1)
   const time = String(f.properties?.time ?? '')
+  // 日時として読めなければ行ごと落とす（時刻が無い点と同じ扱い）。
+  const timeText = time ? formatDateTimeMin(time) : null
   return (
     `<div style="min-width:160px">` +
     `<div style="font-weight:700;font-size:13px">${escapeHtml(titleOf(f))}</div>` +
     `<div style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:12px">` +
     `${badgeHtml(formatMagnitude(m), getMagnitudeColor(m))}` +
     `<span style="color:#cbd5e1">深さ ${escapeHtml(formatDepth(depth))}</span></div>` +
-    (time ? `<div style="margin-top:4px;font-size:11px;color:#94a3b8">${escapeHtml(formatDateTimeMin(time))}</div>` : '') +
+    (timeText ? `<div style="margin-top:4px;font-size:11px;color:#94a3b8">${escapeHtml(timeText)}</div>` : '') +
     `</div>`
   )
 }
