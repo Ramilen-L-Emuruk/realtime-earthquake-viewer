@@ -1368,11 +1368,7 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
         // 落とすと「到達予想 ○○」の行を実機で一度も見られない
         // （→ docs/spec/tsunami-spec.md §9「実測の到達時刻が無い行に添える到達予想」）。
         stations: [
-          // **欠測の地点にも到達予想は持たせない。** 電文では残ることがあるが（→
-          // [`tsunami-spec.md`](../../docs/spec/tsunami-spec.md) §9「区域の到達状況」）、
-          // カードは同じ名前の観測点があると予報の行を出さないので**画面に届かない**。
-          // 実機で確かめられない値をテストデータへ置いても、形が増えるだけで何も確認できない
-          { name: 'いわき市小名浜', code: '25002', highTideDateTime: t(65) },
+          { name: 'いわき市小名浜', code: '25002', arrivalTime: t(-2), highTideDateTime: t(65) },
         ],
       },
       {
@@ -1444,9 +1440,14 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
       {
         // 続報でこの区域だけが**解除**される（`createTestTsunamiGradeChange`）。区域は 1 つも
         // 潮位観測点を持たない形にしてある —— 実電文にもこの形があり（2025-12-09T06:20 の
-        // VTSE41）、解除された区域の `Item` は `Area` と `Category` しか持たない
+        // VTSE41）、解除された区域の `Item` は `Area` と `Category` しか持たない。
+        //
+        // **その形になるのは続報の側だけ。** ここは解除される前の初報で、津波注意報として
+        // 発表されている区域なので `firstHeight` を持つ（→ §7「実電文の形に合わせる」。
+        // 要素ごと無いのは津波予報と解除だけ）。
         grade: 'Watch', immediate: false, name: '青森県日本海沿岸', code: '200',
         maxHeight: { description: '1m', value: 1.0 },
+        firstHeight: { arrivalTime: t(45), condition: '' },
       },
     ] as TsunamiArea[]).map(a => withDmdssFields ? a : toP2pTsunamiArea(a)),
     ...(withDmdssFields ? {
