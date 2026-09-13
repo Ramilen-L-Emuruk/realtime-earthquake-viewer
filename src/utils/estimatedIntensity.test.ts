@@ -5,7 +5,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   matchEstimatedIntensity, matchEstimatedIntensityArrival, estimatedIntensityFor,
-  estimatedIntensityAvailability, decideEstimatedIntensityUpdate,
+  estimatedIntensityAvailability, decideEstimatedIntensityUpdate, isNewEstimatedIntensity,
 } from './estimatedIntensity'
 import type { JMAQuake, JMAEstimatedIntensity, IntensityScale } from '../types/earthquake'
 
@@ -188,5 +188,29 @@ describe('decideEstimatedIntensityUpdate', () => {
   it('同じ発表時刻でもセル数が違えば反映する', () => {
     expect(decideEstimatedIntensityUpdate(kuma, { ...kuma, count: 1694 }))
       .toEqual({ apply: true, reason: 'newer' })
+  })
+})
+
+// 読み上げが「受信しました」と「更新されました」を言い分けるための写像。
+//
+// **判定そのもの（上の describe）とは別に固定する。** 反映するかどうかと、初報として読むか
+// どうかは別の問いで、`switched` の扱いがここだけ違う。
+describe('isNewEstimatedIntensity', () => {
+  // 正: 同じ地震の続報だけが「更新」。
+  it('同じ地震の続報は更新として読む', () => {
+    expect(isNewEstimatedIntensity('newer')).toBe(false)
+  })
+
+  // 対照: 初めての分布は当然「受信」。
+  it('初めての分布は受信として読む', () => {
+    expect(isNewEstimatedIntensity('first')).toBe(true)
+  })
+
+  // 安全弁: **別の地震へ入れ替えたときも「受信」。** 聞き手にとっては初めて届いた分布で、
+  // ここで「更新されました」と言うと、直前まで読んでいた地震の分布が差し替わったように
+  // 聞こえる。反映した（`apply: true`）という点では `newer` と同じなので、真偽へ潰すと
+  // この区別が消える。
+  it('別の地震へ入れ替えたときは受信として読む', () => {
+    expect(isNewEstimatedIntensity('switched')).toBe(true)
   })
 })

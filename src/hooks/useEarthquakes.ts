@@ -8,7 +8,7 @@ import type { QuakeRetraction } from '../utils/quakeMerge'
 import { loadStationCoords, onStationCoordsLoaded, buildAreaPrefIndex, getAreaPrefIndexCache } from '../utils/stationCoords'
 import type { AreaPrefIndex } from '../utils/quakePoints'
 import { calcEEWCancelTime, eewSerial, eewEventKey } from '../utils/eew'
-import { decideEstimatedIntensityUpdate } from '../utils/estimatedIntensity'
+import { decideEstimatedIntensityUpdate, isNewEstimatedIntensity, type AppliedEstimatedIntensityReason } from '../utils/estimatedIntensity'
 import { mergeTsunamiReports, isCancelForCurrentTsunami, isTsunamiContinuation, withInheritedTsunamiFacts } from '../utils/tsunami'
 import { log } from '../utils/logger'
 import { serverNow, serverDate } from '../utils/clock'
@@ -57,6 +57,15 @@ function findQuakeCancelTarget(
  * 地震カードが一覧に載る前に分布が届くと、自動で開く側が引き当てる相手を見つけられない。
  */
 const TEST_ESTIMATED_INTENSITY_DELAY_MS = 3000
+/**
+ * 推計震度分布図テストで、初報から続報までを空ける間隔。
+ *
+ * **初報の読み上げが鳴り終わるまでの長さが要る。** 続報は初報と同じ主題なので、読み上げの
+ * 到来順の裁きが初報を取り下げて割り込む（実運用では 6 分空くので起きない）。上の 3 秒のままだと
+ * 初報が「〜について、」で切れ、**確かめたい「受信しました」が一度も鳴らない**。
+ * 実測で通知音・間・2 チャンクの合成と再生に 8 秒前後かかるので、その倍を取る。
+ */
+const TEST_ESTIMATED_INTENSITY_FOLLOW_UP_DELAY_MS = 16000
 const EEW_FINAL_SILENCE_MS = 10000 // EEW発報テスト（特別警報・警報・予報）: この間隔クリックが無ければ最終報として確定する
 const EEW_RETRACTION_CANCEL_MS = 10000 // EEW誤報取消テスト: 発報からこの秒数後に取消電文を送る
 
@@ -863,9 +872,13 @@ export function useEarthquakes(
    * **別の地震の分布は無条件に置き換える。** 発表されるのは震度5弱以上の地震だけなので、
    * 新しい地震の分布が届いたということは、そちらを見せるべき状況になっている。
    *
-   * @returns 反映したら true
+   * **反映した理由をそのまま返す。** 読み上げが「受信しました」と「更新されました」を
+   * 言い分けるのに要る（→ `isNewEstimatedIntensity`）。真偽へ潰して受け取る側で数え直すと、
+   * 「同じ地震の続報」と「別の地震へ入れ替え」の区別を 2 か所で持つことになる。
+   *
+   * @returns 反映したらその理由。反映しなかったら null
    */
-  const applyEstimatedIntensity = useCallback((data: JMAEstimatedIntensity): boolean => {
+  const applyEstimatedIntensity = useCallback((data: JMAEstimatedIntensity): AppliedEstimatedIntensityReason | null => {
     // **判定は ref で同期に行う。** `setState` の更新関数の中で判定すると、React が
     // 開発時に更新関数を二度呼ぶため副作用が二重になり、しかも呼び出し元へ結果を返せない
     // （更新が後回しになりうる）。地震回数の帯が同じ理由で ref を持っている。
@@ -875,16 +888,16 @@ export function useEarthquakes(
     const verdict = decideEstimatedIntensityUpdate(cur, data)
     if (verdict.reason === 'stale') {
       log.info(`[ixac41] 発表が古い報なので反映しません received=${data.time}/${data.arrivalTime} shown=${cur?.time}/${cur?.arrivalTime}`)
-      return false
+      return null
     }
-    if (!verdict.apply) return false
+    if (!verdict.apply) return null
     if (verdict.reason === 'switched') {
       // 別の地震の分布へ入れ替えた。**画面だけ見てもどちらの地震のものかは判らない**ので残す。
       log.info(`[ixac41] 別の地震の分布へ入れ替えます received=${data.arrivalTime} shown=${cur?.arrivalTime}`)
     }
     shownEstimatedIntensityRef.current = { arrivalTime: data.arrivalTime, time: data.time, count: data.count }
     setState(prev => ({ ...prev, estimatedIntensity: data }))
-    return true
+    return verdict.reason
   }, [])
 
   /**
@@ -1328,8 +1341,9 @@ export function useEarthquakes(
           // **`onLiveEvent` へ流す。** 音・読み上げ・地図の分布モードを開く処理がその先にある。
           // 反映できなかったとき（古い報・重複配信）は流さない —— 画面が変わっていないのに
           // 音だけ鳴る。
-          if (applyEstimatedIntensity(ei) && !silent) {
-            onLiveEventRef.current?.({ kind: 'estimatedIntensity', data: ei } as unknown as AppEvent)
+          const applied = applyEstimatedIntensity(ei)
+          if (applied && !silent) {
+            onLiveEventRef.current?.({ kind: 'estimatedIntensity', data: ei, isNew: isNewEstimatedIntensity(applied) } as unknown as AppEvent)
           }
         }
         isSilentRef.current = false
@@ -1576,8 +1590,9 @@ export function useEarthquakes(
           }
         } else if (ev.kind === 'estimatedIntensity') {
           const ei = ev.data
-          if (applyEstimatedIntensity(ei)) {
-            onLiveEventRef.current?.({ kind: 'estimatedIntensity', data: ei } as unknown as AppEvent)
+          const applied = applyEstimatedIntensity(ei)
+          if (applied) {
+            onLiveEventRef.current?.({ kind: 'estimatedIntensity', data: ei, isNew: isNewEstimatedIntensity(applied) } as unknown as AppEvent)
           }
         } else {
           const data = ev.data
@@ -1876,12 +1891,19 @@ export function useEarthquakes(
    */
   const simulateEstimatedIntensity = useCallback(async () => {
     const { createTestEstimatedIntensity } = await loadTestData()
-    const { quake, estimated } = createTestEstimatedIntensity()
+    const { quake, estimated, followUp } = createTestEstimatedIntensity()
     const now = serverDate()
     eventQueueRef.current.push({ eventTime: now, payload: { kind: 'event', event: quake } })
     eventQueueRef.current.push({
       eventTime: new Date(now.getTime() + TEST_ESTIMATED_INTENSITY_DELAY_MS),
       payload: { kind: 'estimatedIntensity', data: estimated },
+    })
+    // **続報も流す。** 読み上げの「受信しました」／「更新されました」の言い分けは、続報が
+    // 届かないと実機で一度も聞けない。**新しいタイマーは足さない** —— キューへ積むだけなので、
+    // リプレイ開始・リセットの `eventQueueRef.current.clear()` でそのまま落ちる。
+    eventQueueRef.current.push({
+      eventTime: new Date(now.getTime() + TEST_ESTIMATED_INTENSITY_DELAY_MS + TEST_ESTIMATED_INTENSITY_FOLLOW_UP_DELAY_MS),
+      payload: { kind: 'estimatedIntensity', data: followUp },
     })
   }, [])
 
