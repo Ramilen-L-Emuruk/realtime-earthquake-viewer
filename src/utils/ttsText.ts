@@ -2399,5 +2399,13 @@ export { tsunamiMaxGrade }
  */
 export function estimatedIntensityToText(arrivalTime: string, isNew: boolean): string {
   const tail = isNew ? 'を受信しました' : 'が更新されました'
-  return `${formatTime(arrivalTime)}頃発生した地震について、気象庁の推計震度分布図${tail}。`
+  // 時刻が日時として読めなければ句ごと落とす。**素で埋めると `null頃` と声に出る** ——
+  // `formatTime` の戻り値は `string | null` だが、テンプレートリテラルは型検査を通る。
+  //
+  // **この句が担うのは「どの地震の分布か」の区別**（分布は別の地震のものへ入れ替わりうるので、
+  // 時刻が無いと声だけでは前の分布と見分けが付かない。→ `docs/spec/quake-spec.md` §8）。
+  // 落とすとその区別を失うが、読めない値を声にするよりはよい。読めなかった事実は
+  // `readDateTime` が記録に残す。
+  const time = formatTime(arrivalTime)
+  return `${time ? `${time}頃発生した地震について、` : ''}気象庁の推計震度分布図${tail}。`
 }

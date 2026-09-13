@@ -242,7 +242,9 @@ function EEWCard({ eew, visible, activeLpgmEventId, onToggleLpgm, onDeactivateLp
   const areas = eewAreas(eew)
   const serial = eewSerial(eew)
   const { hypocenter } = eew.earthquake
-  const originTimeText = formatDateTime(eew.earthquake.originTime)
+  // **値が無いときは整形を呼ばない。** 呼ぶと「読めない値が来た」として記録され、
+  // 「電文が時刻を持たない」ことと区別が付かなくなる（他の呼び出しと表記も揃う）。
+  const originTimeText = eew.earthquake.originTime ? formatDateTime(eew.earthquake.originTime) : null
   // 震源要素が推定できず、PLUM 法による震度予測だけが有効な状態。震源・規模・深さは固定の仮定値
   // （観測点直下 10km・M1.0）なので、数値は伏せ、地名には未確定である旨を添える。
   const isAssumed = eew.earthquake.condition === '仮定震源要素'

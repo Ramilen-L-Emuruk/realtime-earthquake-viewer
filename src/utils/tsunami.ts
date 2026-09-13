@@ -839,7 +839,11 @@ export function estimationHeightText(est: TsunamiEstimation): string {
  * 出せない理由が電文にあることが画面から読めない。
  */
 export function observationArrivalFallbackText(obs: TsunamiObservation): string {
-  if (obs.arrivalTime) return ''
+  // **判定は整形の結果で行う。** 値があっても日時として読めなければ呼び出し側は時刻を出せず、
+  // ここで空を返すと「第１波識別不能」という電文の判断が画面から消える。同じ行で
+  // 「予報側の到達予想を添えるか」を決める述語（`TsunamiTab`）とも揃う ——
+  // 片方だけ整形の結果で見ると、到達予想は出るのに理由の語が出ない形になる。
+  if (obs.arrivalTime && formatTimeMin(obs.arrivalTime)) return ''
   return obs.condition?.firstWaveUnidentifiable ? '到達時刻不明' : ''
 }
 
