@@ -12,6 +12,8 @@
  * （`useQuakeLayerData` の `lpgmActive`）。
  */
 
+import type { TabId } from '../components/IconNav'
+
 /**
  * - `lpgm` — 長周期地震動階級。`eventId` は電文の識別子で、`source` は開いた場所
  *   （地震カード／EEW カード）。後者は EEW が消えたときの自動解除に使う
@@ -86,6 +88,22 @@ export function closeUnreceivedOverlay(prev: QuakeOverlay | null): QuakeOverlay 
 }
 
 /**
+ * **その地震の**未入電の表示だけを閉じた結果を返す（読み上げの自動開閉が自分の分を戻すとき）。
+ *
+ * {@link closeUnreceivedOverlay} と分けてあるのは、閉じる主体が違うため。あちらは
+ * 「未入電が 1 件も無くなった」という事実に対する後始末なので、開いている未入電は必ず対象。
+ * こちらは**自分が開いた分を戻す**操作で、開けてから閉じるまでの間に別の地震へ移っていれば、
+ * そこにあるのは他人の表示になる（選択が移ると追加表示は一度閉じられ、利用者が手で開き直す
+ * 余地がある）。鍵が違えば触らない。
+ */
+export function closeUnreceivedOverlayFor(
+  prev: QuakeOverlay | null,
+  eventKey: string,
+): QuakeOverlay | null {
+  return prev?.kind === 'unreceived' && prev.eventKey === eventKey ? null : prev
+}
+
+/**
  * 長周期の表示だけを閉じた結果を返す（EEW カードの閉じる操作）。
  *
  * **震度分布は触らない。** 排他なので同時には開いていないが、この操作の意味は
@@ -118,4 +136,58 @@ export function shouldCloseOverlayOnSelection(
   nextSelectedKey: string | null,
 ): boolean {
   return prevSelectedKey !== nextSelectedKey
+}
+
+/**
+ * 開こうとした結果。**「開かないことを選んだ」と「開くべきなのに開けない」を分ける。**
+ * 分けないと、正常な見送り（別のタブを見ている等）まで診断に載って記録が役に立たなくなる。
+ */
+export type UnreceivedOpenResult =
+  /** 開いた。 */
+  | 'opened'
+  /** 開かないことを選んだ（別のタブを見ている・他の追加表示が開いている）。正常。 */
+  | 'declined'
+  /**
+   * 開くべきなのに開けない（読んでいる地震が画面に無い・その地震に未入電の地点が無い）。
+   * 読み上げと画面が食い違っている印なので記録する。
+   */
+  | 'mismatch'
+
+/**
+ * 読み上げに合わせて未入電モードを開いてよいかを決める
+ * （→ [`audio-tts-spec.md`](../../docs/spec/audio-tts-spec.md) §6「読み上げに合わせた未入電モードの自動開閉」）。
+ *
+ * **対象は読み上げの主題（`subject`）で決め、「いま選ばれている地震」で代用しない。** 読み上げは
+ * 優先度の待ち行列を通るので、順番が回ってくるまでに別の地震の電文が届いて選択がそちらへ移って
+ * いることがある（選択は受信した瞬間に同期で動く）。代用すると **A の未入電を読みながら B の
+ * 一覧を開く**。
+ *
+ * 判定を純関数にしてあるのは、この 4 つの分岐が画面からは見分けにくいため（開かなかったことは
+ * 「画面が動かない」としか現れない）。
+ */
+export function decideUnreceivedSpeechOpen(args: {
+  /** いま見ているタブ。 */
+  activeTab: TabId
+  /** いま開いている追加表示（排他）。 */
+  overlay: QuakeOverlay | null
+  /** 読み上げの主題（どの地震について語っているか）。 */
+  subject: string | undefined
+  /** 画面が出している地震の鍵。 */
+  selectedKey: string | null
+  /** その地震に、地図へ出せる未入電の地点があるか。 */
+  hasUnreceivedPoints: boolean
+}): UnreceivedOpenResult {
+  // 津波やリアルタイムを見ている最中に、地図だけ未入電の画へ変わるのを防ぐ
+  // （タブ移動は読み上げ追従の側が別に判断していて、こちらはその結果に従う）。
+  if (args.activeTab !== 'earthquake') return 'declined'
+  // **手で開かれている別の追加表示は奪わない。** 3 つは排他なので、ここで開くと震度分布・
+  // 長周期が閉じる。しかも閉じる番（`closeUnreceivedOverlayFor`）は元の表示へ戻さないので、
+  // 利用者からは操作していないのに消えたようにしか見えない。
+  if (args.overlay !== null) return 'declined'
+  // 読んでいる地震が画面に出ていない。主題を持たない読み上げもここへ来る
+  // （この経路は地震の読み上げしか通らないはずなので、来たら記録に値する）。
+  if (!args.subject || args.selectedKey !== args.subject) return 'mismatch'
+  // 未入電を読み上げているのに地点が無い＝読み上げ文と画面のカードが食い違っている。
+  if (!args.hasUnreceivedPoints) return 'mismatch'
+  return 'opened'
 }

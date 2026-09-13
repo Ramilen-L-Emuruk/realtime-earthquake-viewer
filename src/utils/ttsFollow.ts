@@ -103,6 +103,43 @@ export function hasFollowTarget(segments: readonly SpeechSegment[] | undefined):
 }
 
 /**
+ * その読み上げ文が「震度が届いていない地点」を含むか（未入電モードの自動開閉に使う）。
+ *
+ * **{@link hasFollowTarget} を広げないこと。** あちらは津波カードの行を引ける 3 種だけを
+ * 通す門で、`quakeRegion` をわざと外してある。ここへ足すと地震情報の読み上げが津波カードの
+ * 追従を起こす（同関数の注記）。別の述語として持つ。
+ *
+ * 判定は **`unreceived` の印が立った参照があるか**だけ。観測値の区域参照
+ * （`unreceived` なし）では開かない —— 開く相手はカードの未入電トグルで、観測値の文では
+ * 出すものが無い。
+ */
+export function hasUnreceivedFollowTarget(segments: readonly SpeechSegment[] | undefined): boolean {
+  return segments?.some(s => s.refs.some(r => r.kind === 'quakeRegion' && r.unreceived)) ?? false
+}
+
+/**
+ * チャンクごとの参照から、「未入電を声にしているチャンク」の範囲を返す。
+ *
+ * 未入電の文は観測値の文の後ろに置いてあるので実際には連続するが、**範囲は実データから求める**
+ * （最初と最後の位置）。順番を前提に「最後のチャンクまで」とすると、文の並びを変えたときに
+ * 黙ってずれる。
+ *
+ * 未入電のチャンクが 1 つも無ければ `null`。
+ */
+export function unreceivedChunkRange(
+  refsPerChunk: readonly (readonly SpeechRef[])[],
+): { first: number; last: number } | null {
+  let first = -1
+  let last = -1
+  refsPerChunk.forEach((refs, i) => {
+    if (!refs.some(r => r.kind === 'quakeRegion' && r.unreceived)) return
+    if (first < 0) first = i
+    last = i
+  })
+  return first < 0 ? null : { first, last }
+}
+
+/**
  * 読み上げのチャンク（`splitIntoChunks` の結果）ごとに、そのチャンクが指す対象を返す。
  * 戻り値の長さは `chunks` と同じで、対象を持たないチャンクは空配列になる。
  *
@@ -211,6 +248,17 @@ export function spokenChunkIndices(
 export interface SpeechFollowSession {
   readonly token: number
   readonly segments: SpeechSegment[]
+  /**
+   * この読み上げが何について語っているか（地震なら `quakeEventKey`）。
+   *
+   * **「いま選ばれている地震」で代用しないために持つ。** 読み上げは優先度の待ち行列を通るので、
+   * 順番が回ってくるまでに別の地震の電文が届き、選択がそちらへ移っていることがある（選択は
+   * 受信した瞬間に同期で動く）。追従する側が選択を見て対象を決めると、**A の未入電を読みながら
+   * B の一覧を開く**。
+   *
+   * 津波の追従は使わない（カードは常に 1 件で、行は参照から直接引ける）。
+   */
+  readonly subject?: string
   /** チャンク列。最初の予約通知で決まる（それまでは null） */
   chunks: readonly string[] | null
   /** 予約表。届いた順に積む。`index` は連番にならない（合成に失敗した分が欠ける） */
@@ -227,8 +275,12 @@ export interface SpeechFollowSession {
  * トークンが一致するときだけ状態を触る。
  */
 export interface SpeechFollowApi {
-  /** 読み上げを始める。以降の通知に添える世代トークンを返す */
-  begin: (segments: SpeechSegment[]) => number
+  /**
+   * 読み上げを始める。以降の通知に添える世代トークンを返す。
+   *
+   * `subject` はこの読み上げが何について語っているか（→ {@link SpeechFollowSession.subject}）。
+   */
+  begin: (segments: SpeechSegment[], subject?: string) => number
   /** チャンクの再生が予約された（`startAt` は AudioContext の時間軸） */
   schedule: (token: number, index: number, startAt: number, chunks: readonly string[]) => void
   /** 読み上げが終わった、または取り下げられた */
@@ -276,8 +328,8 @@ export function createSpeechFollowController(
 
   return {
     get current() { return current },
-    begin: segments => {
-      const session: SpeechFollowSession = { token: ++token, segments, chunks: null, schedule: [] }
+    begin: (segments, subject) => {
+      const session: SpeechFollowSession = { token: ++token, segments, subject, chunks: null, schedule: [] }
       current = session
       onSessionChange(session)
       return session.token

@@ -40,6 +40,7 @@ import { useTestScenarios } from './hooks/useTestScenarios'
 import { useSettings } from './hooks/useSettings'
 import { useAlertTitle } from './hooks/useAlertTitle'
 import { useLiveEventHandler } from './hooks/useLiveEventHandler'
+import { useUnreceivedSpeechFollow } from './hooks/useUnreceivedSpeechFollow'
 import { useKyoshinAlerts } from './hooks/useKyoshinAlerts'
 import { useKyoshinRealtime } from './hooks/useKyoshinRealtime'
 import { useKyoshinDetectorV2 } from './hooks/useKyoshinDetectorV2'
@@ -60,7 +61,8 @@ import { quakeEventKey, quakeKeyForLpgmEventId } from './utils/quakeMerge'
 import { estimatedIntensityFor, matchEstimatedIntensityArrival } from './utils/estimatedIntensity'
 import {
   type QuakeOverlay, toggleLpgmOverlay, toggleDistributionOverlay, toggleUnreceivedOverlay,
-  closeLpgmOverlay, closeEewLpgmOverlay, closeUnreceivedOverlay, shouldCloseOverlayOnSelection,
+  closeLpgmOverlay, closeEewLpgmOverlay, closeUnreceivedOverlay, closeUnreceivedOverlayFor,
+  decideUnreceivedSpeechOpen, shouldCloseOverlayOnSelection, type UnreceivedOpenResult,
 } from './utils/quakeOverlay'
 import { tsunamiOverallGrade } from './utils/tsunami'
 import { playCountdownBeep, unlockAudio, setSoundVolume } from './utils/alertSound'
@@ -582,12 +584,18 @@ export function App() {
   const [speechFollowSession, setSpeechFollowSession] = useState<SpeechFollowSession | null>(null)
   const speechFollow = useMemo(() => createSpeechFollowController(setSpeechFollowSession), [])
 
+  // 未入電モードの自動開閉も同じ仕組みで動かす。**枠は分ける** —— 津波側の門
+  // （`hasFollowTarget`）は津波カードの行を引ける参照だけを通す作りで、地震情報の参照を
+  // 混ぜると津波カードが動く（→ `ttsFollow.ts`）。仕組み自体は同じものを 2 本立てる。
+  const [unreceivedFollowSession, setUnreceivedFollowSession] = useState<SpeechFollowSession | null>(null)
+  const unreceivedFollow = useMemo(() => createSpeechFollowController(setUnreceivedFollowSession), [])
+
   // ライブイベント受信処理（通知音・タイトル・タブ切替・読み上げ・ブラウザ通知）
   const { handleLiveEvent, resetTracking, restorePreWindowTracking, obsUpdateStatus, areaGradeChangedKeys, focusedDistrict } = useLiveEventHandler({
     settings, title, earthquakesRef, tsunamisRef, kyoshinDetectedRef, defaultTabRef,
     setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate, setActiveTabRealtimeUrgent,
     setActiveTabRealtimeForKyoshin: () => requestTabForKyoshin('realtime'),
-    followSpeechTab, preSpeechTab, speechFollow, expandPanelForSpecialInfo,
+    followSpeechTab, preSpeechTab, speechFollow, unreceivedFollow, expandPanelForSpecialInfo,
     revertToDefaultTab, selectQuake, openLpgmFromQuake, openEstimatedIntensity,
   })
 
@@ -1557,6 +1565,52 @@ export function App() {
   // 未入電の印を寄り具合に関わらず出すか。**地図が出している地震のものだけ**を見る
   // （分布モードと同じ理由）。
   const mapUnreceivedMode = !!mapQuake && unreceivedQuakeKey === quakeEventKey(mapQuake)
+
+  // 未入電を声に出しているあいだだけ未入電モードを開く（→ `useUnreceivedSpeechFollow`）。
+  //
+  // **開く相手はセッションが持つ主題（読んでいる地震）で決める。** 「いま選ばれている地震」で
+  // 代用すると、読み上げの順番待ちのあいだに別の地震が届いて選択が移ったとき、**A の未入電を
+  // 読みながら B の一覧を開く**（選択は受信した瞬間に同期で動き、読み上げの番とは独立している）。
+  //
+  // **開かない条件は 4 つ**（追わない条件。津波の追従が 4 つ持っているのと同じ形）。
+  // 「開かないことを選んだ」（`declined`）と「開くべきなのに開けない」（`mismatch`）を
+  // 分けて返すのは、前者を診断へ載せると正常な見送りで記録が埋まるため。
+  //
+  // - **地震タブを見ていない** → `declined`。津波やリアルタイムを見ている最中に地図だけ
+  //   未入電の画へ変わるのを防ぐ（タブ移動は読み上げ追従の側が別に判断する）
+  // - **他の追加表示が開いている** → `declined`。3 つは排他（`quakeOverlay.ts`）なので、ここで
+  //   開くと利用者が手で開いた震度分布・長周期が閉じる。しかも閉じる番は元へ戻さないので、
+  //   操作していないのに消えたようにしか見えない
+  // - **読んでいる地震が画面に出ていない** → `mismatch`。主題を持たない読み上げ（地震以外）も
+  //   ここへ来る。本来この経路は地震の読み上げしか通らない
+  // - **その地震に未入電の地点が 1 つも無い** → `mismatch`。未入電を読み上げているのに地点が
+  //   無いのは、読み上げ文と画面のカードが食い違っている印
+  const openUnreceivedForSpeech = useCallback((subject: string | undefined): UnreceivedOpenResult => {
+    const decision = decideUnreceivedSpeechOpen({
+      activeTab,
+      overlay: quakeOverlay,
+      subject,
+      selectedKey: selectedQuake ? quakeEventKey(selectedQuake) : null,
+      // **見るのは地点名の有無まで。** 座標表で引けるかは見ない（引けない地点はカードの一覧に
+      // 出る。地図へ置けなかったことは別に記録する）。カードのボタンを出す条件・自動で閉じる
+      // 条件と同じ述語に揃えてある。
+      hasUnreceivedPoints: !!selectedQuake?.points.some(p => p.unreceived && p.addr),
+    })
+    if (decision === 'opened') setQuakeOverlay({ kind: 'unreceived', eventKey: subject! })
+    return decision
+  }, [selectedQuake, activeTab, quakeOverlay])
+  // **開いたときと同じ地震のものだけ閉じる。** 開けてから閉じるまでの間に選択が移っていれば、
+  // そこにあるのは利用者が開き直した別の表示（`closeUnreceivedOverlayFor`）。
+  const closeUnreceivedForSpeech = useCallback((subject: string | undefined) => {
+    if (!subject) return
+    setQuakeOverlay(prev => closeUnreceivedOverlayFor(prev, subject))
+  }, [])
+  useUnreceivedSpeechFollow({
+    session: unreceivedFollowSession,
+    isOpen: unreceivedQuakeKey !== null,
+    open: openUnreceivedForSpeech,
+    close: closeUnreceivedForSpeech,
+  })
   // 共有カード（表示中の地図を 1 枚の画像にする）。撮影は地図そのものを操作するため実体が要る
   // ——地図の生成時に受け取って持つ。地図へ重ねる UI は App が配置する決まりなので、
   // それを起こすボタンもここに置く。
