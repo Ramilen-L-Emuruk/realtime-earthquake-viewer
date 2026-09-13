@@ -1,7 +1,89 @@
 import type { CorrectType, DomesticTsunami, Hypocenter, IssueType, TsunamiGrade } from '../types/earthquake'
+import {
+  createLogThrottle, createPerLabelLogGate, log,
+  UNREADABLE_VALUE_LOG_KINDS, UNREADABLE_VALUE_LOG_INTERVAL_MS,
+} from './logger'
 
-export function formatDateTime(isoString: string): string {
-  const date = new Date(isoString)
+const FORMAT_LOG_PREFIX = '[format]'
+
+// 読めない値の記録は**値ごとに 1 回**出し、種類が溢れたら時間で間引く
+// （理由は `createPerLabelLogGate`）。時刻の整形は再描画のたびに走るため、素朴に
+// `log.warn` を置くと壊れた値 1 つでコンソールが埋まる。
+
+/** 文字列の入力用。整形関数ごとに独立した枠を持つ。 */
+const gateByLabel = createPerLabelLogGate(UNREADABLE_VALUE_LOG_KINDS, UNREADABLE_VALUE_LOG_INTERVAL_MS)
+/** `Date`・数値の入力用（下記の理由で値では間引けない）。こちらも整形関数ごとに分ける。 */
+const opaqueThrottles = new Map<string, (emit: () => void) => void>()
+
+/**
+ * 読めなかったことを記録する。**間引き方は入力の型で分ける。**
+ *
+ * - **文字列**は値ごとに 1 回。壊れた値がそのまま鍵になる
+ * - **`Date` と数値**は時間で間引く。壊れていると `String()` は元の値によらず
+ *   `"Invalid Date"` / `"NaN"` へ丸まり、**別々の壊れた値が 1 つの鍵に潰れる**。値で間引くと
+ *   最初の 1 回だけ出て以後は永久に黙る —— `createFirstSeenLogGate` が「やってはいけない」と
+ *   書いた状態そのもので、しかも痕跡が残らない
+ *
+ * **`Date`・数値では、記録に元の値が載らない**（上と同じ理由で復元できない）。原因を追うには
+ * その `Date` を作った側を当たることになる。文字列で渡せる経路は文字列のまま渡すこと。
+ */
+function reportInvalidDateTime(label: string, raw: string, opaque: boolean): void {
+  const emit = (overflowed: boolean): void => {
+    const tail = overflowed
+      ? `（読めない値が ${UNREADABLE_VALUE_LOG_KINDS} 種類を超えたため、以後は間引いて記録します）`
+      : ''
+    // **落とし先を文面で断定しない。** 呼び出し元によって違う（表示の整形は `null` を返して
+    // 欄・句ごと落とすが、ファイル名の時刻印は現在時刻で作る）。共通の文面で「時刻を
+    // 出しません」と書くと、書き出したファイル名には時刻が入っているのに記録だけが
+    // 別のことを言う。
+    log.warn(`${FORMAT_LOG_PREFIX} ${label}: 日時として読めません: "${raw}"${tail}`)
+  }
+  if (!opaque) {
+    gateByLabel(label, raw, emit)
+    return
+  }
+  let throttle = opaqueThrottles.get(label)
+  if (!throttle) {
+    throttle = createLogThrottle(UNREADABLE_VALUE_LOG_INTERVAL_MS)
+    opaqueThrottles.set(label, throttle)
+  }
+  throttle(() => emit(false))
+}
+
+/**
+ * 日時として読める値だけを `Date` にして返す。読めなければ記録を残して `null`。
+ *
+ * **日時を整形する関数はすべてここを通す。** `new Date('壊れた値')` は例外を投げず
+ * `Invalid Date` になり、`getHours()` 以下がそろって `NaN` を返す。素通しにすると
+ * `"NaN:NaN:NaN"` のような文字列が画面へ出るうえ、**例外も記録も残らない**ので
+ * 起きたことにすら気づけない。
+ *
+ * **時間帯を明示していない値（`2026-01-01T12:00:00`）はここでは弾けない。** `Date` は
+ * それを実行環境のローカル時刻として解釈し、有効な値を返す。端末ごとに違う時刻が出る別の
+ * 穴で、手当ては電文を読む側（`dmdataParser.ts` の `readReportDateTime` ほか）。
+ *
+ * **この関数は外にも出している。** 読み上げ文（`ttsText.ts`）は表示とは別の語形で時刻を組む
+ * ため独自の整形関数を持つが、`Invalid Date` の穴は同じで、しかもそちらは
+ * 「ナンじナンぷん」と**音声に出る**。同じ検査を通すために共有する。
+ *
+ * @param label 記録に出す呼び出し元の名前。同じ名前の関数が別ファイルにあるときは
+ *   `ttsText.formatTime` のように前置きを添える
+ */
+export function readDateTime(label: string, input: string | number | Date): Date | null {
+  const date = input instanceof Date ? input : new Date(input)
+  if (Number.isNaN(date.getTime())) {
+    // 文字列以外は「壊れた値の中身」を記録へ載せられない（`String()` が `"Invalid Date"` /
+    // `"NaN"` へ丸める）。間引き方を変える理由は {@link reportInvalidDateTime}。
+    const opaque = typeof input !== 'string'
+    reportInvalidDateTime(label, opaque ? String(input) : input, opaque)
+    return null
+  }
+  return date
+}
+
+export function formatDateTime(isoString: string): string | null {
+  const date = readDateTime('formatDateTime', isoString)
+  if (!date) return null
   const y = date.getFullYear()
   const M = String(date.getMonth() + 1).padStart(2, '0')
   const d = String(date.getDate()).padStart(2, '0')
@@ -11,8 +93,9 @@ export function formatDateTime(isoString: string): string {
   return `${y}/${M}/${d} ${h}:${m}:${s}`
 }
 
-export function formatDateTimeMin(isoString: string): string {
-  const date = new Date(isoString)
+export function formatDateTimeMin(isoString: string): string | null {
+  const date = readDateTime('formatDateTimeMin', isoString)
+  if (!date) return null
   const y = date.getFullYear()
   const M = String(date.getMonth() + 1).padStart(2, '0')
   const d = String(date.getDate()).padStart(2, '0')
@@ -25,8 +108,9 @@ export function formatDateTimeMin(isoString: string): string {
  * 地震の時刻（`earthquake.time`）。元データに秒が含まれないため、秒を出さず「ごろ」を付ける。
  * 例: 6月6日 8:47ごろ
  */
-export function formatQuakeTime(isoString: string): string {
-  const date = new Date(isoString)
+export function formatQuakeTime(isoString: string): string | null {
+  const date = readDateTime('formatQuakeTime', isoString)
+  if (!date) return null
   const M = date.getMonth() + 1
   const d = date.getDate()
   const h = date.getHours()
@@ -34,18 +118,42 @@ export function formatQuakeTime(isoString: string): string {
   return `${M}月${d}日 ${h}:${m}ごろ`
 }
 
-export function formatTime(isoString: string): string {
-  const date = new Date(isoString)
+export function formatTime(isoString: string): string | null {
+  const date = readDateTime('formatTime', isoString)
+  if (!date) return null
   const h = String(date.getHours()).padStart(2, '0')
   const m = String(date.getMinutes()).padStart(2, '0')
   const s = String(date.getSeconds()).padStart(2, '0')
   return `${h}:${m}:${s}`
 }
 
+/**
+ * 時刻を分まで（`HH:MM`）。津波の到達・満潮・最大波など、**秒を出す意味がない欄**はこちら。
+ *
+ * 呼び出し側が `formatTime(...).slice(0, 5)` と書くのをやめるために置いた。切り出す前は
+ * 12 箇所で同じ `slice` が繰り返されており、読めない値のときに `null` を `slice` しようとして
+ * 落ちる箇所と、文字列 `"NaN:N"` が出る箇所が混在していた。
+ *
+ * **秒まで出す欄はこちらを使わない**（緊急地震速報の到達予測時刻。区域ごとの差が数秒なので
+ * 分に丸めると到達順が潰れる。→ `docs/spec/eew-spec.md` §4）。
+ *
+ * `formatTime` を呼んで切るのではなく独立させてあるのは、記録に出る名前を呼び出し元と
+ * 一致させるため（`formatDateTime` と `formatDateTimeMin` の関係と同じ）。
+ */
+export function formatTimeMin(isoString: string): string | null {
+  const date = readDateTime('formatTimeMin', isoString)
+  if (!date) return null
+  const h = String(date.getHours()).padStart(2, '0')
+  const m = String(date.getMinutes()).padStart(2, '0')
+  return `${h}:${m}`
+}
+
 /** datetime-local input 用のローカル時刻文字列（YYYY-MM-DDTHH:mm）を返す。 */
-export function formatDateTimeLocal(date: Date): string {
+export function formatDateTimeLocal(date: Date): string | null {
+  const d = readDateTime('formatDateTimeLocal', date)
+  if (!d) return null
   const pad = (n: number) => String(n).padStart(2, '0')
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
 /**
@@ -225,9 +333,14 @@ export function formatTsunamiGrade(grade: TsunamiGrade): { text: string; color: 
  *
  * 末尾に UTC からのオフセットを添えるのは、端末の時間帯が JST とは限らないため。名前だけで
  * どの時間帯の時刻か決まる。30 分・45 分刻みの時間帯があるので分も出す。
+ *
+ * **読めない値では現在時刻で作る。** `NaNNaNNaN_NaNNaNNaN+NaNNaN` という名前で書き出しても
+ * 意味を成さないが、**ここだけは `null` を返さない** —— 画面の時刻表示と違って、名前が
+ * 付かなければ書き出し自体が成り立たない。対象の時刻が判らないことと、利用者が求めた
+ * 書き出しを止めることは別で、後者まで巻き込むのは過剰。読めなかった事実は記録に残る。
  */
 export function formatFileStamp(ms: number): string {
-  const d = new Date(ms)
+  const d = readDateTime('formatFileStamp', ms) ?? new Date()
   const p = (n: number, w = 2): string => String(Math.floor(Math.abs(n))).padStart(w, '0')
   const date = `${p(d.getFullYear(), 4)}${p(d.getMonth() + 1)}${p(d.getDate())}`
   const time = `${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`

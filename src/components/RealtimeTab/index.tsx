@@ -206,8 +206,9 @@ function useSecondTick(active: boolean): number {
 /**
  * 区域の到達予測時刻から残り秒数を出す。**読めない時刻は `null` を返す。**
  *
- * `EEWRegion.arrivalTime` は電文の生テキストで、パーサーは日時として読めるかを確かめていない
- * （`dmdataParser.ts` の `xmlText(...) || null`）。素朴に引き算すると `NaN` になり、
+ * `EEWRegion.arrivalTime` は XML 経路では読めることを確かめてある（`dmdataParser.ts` の
+ * `readTelegramDateTime`）が、**そこを通らない経路がある**（テストデータ・履歴アーカイブ）。
+ * 素朴に引き算すると `NaN` になり、
  * **`NaN > 0` が偽なので「まもなく」へ落ちる** —— 壊れた値が「もうすぐ来る」という
  * 確度の高い表示に化ける。旧実装（絶対時刻をそのまま出す）は `NaN:NaN:NaN` と出て
  * 異常だと判った。**読めないものは読めないと出す。**
@@ -241,6 +242,9 @@ function EEWCard({ eew, visible, activeLpgmEventId, onToggleLpgm, onDeactivateLp
   const areas = eewAreas(eew)
   const serial = eewSerial(eew)
   const { hypocenter } = eew.earthquake
+  // **値が無いときは整形を呼ばない。** 呼ぶと「読めない値が来た」として記録され、
+  // 「電文が時刻を持たない」ことと区別が付かなくなる（他の呼び出しと表記も揃う）。
+  const originTimeText = eew.earthquake.originTime ? formatDateTime(eew.earthquake.originTime) : null
   // 震源要素が推定できず、PLUM 法による震度予測だけが有効な状態。震源・規模・深さは固定の仮定値
   // （観測点直下 10km・M1.0）なので、数値は伏せ、地名には未確定である旨を添える。
   const isAssumed = eew.earthquake.condition === '仮定震源要素'
@@ -494,10 +498,15 @@ function EEWCard({ eew, visible, activeLpgmEventId, onToggleLpgm, onDeactivateLp
             地震情報・津波・長周期は発現時刻（`ArrivalTime`）を出すようにしてあるが、緊急地震速報は
             両方の時刻が秒値まで有効で他の種別と性質が違い、**ずれの実態を測っていない**。
             意図的に据え置いているのであって、ずれないと確かめたわけではない
-            （→ `docs/spec/eew-spec.md` §3「地震の時刻は発生時刻を出す」）。 */}
-        <div className="text-secondary text-[0.9375rem] roomy:text-[1.125rem]">
-          {formatDateTime(eew.earthquake.originTime)}ごろ
-        </div>
+            （→ `docs/spec/eew-spec.md` §3「地震の時刻は発生時刻を出す」）。
+
+            日時として読めなければ欄ごと出さない（「ごろ」だけが残ると、時刻を
+            読み落としたのか電文が出していないのか分からない）。 */}
+        {originTimeText && (
+          <div className="text-secondary text-[0.9375rem] roomy:text-[1.125rem]">
+            {originTimeText}ごろ
+          </div>
+        )}
 
         {/* 震源名。仮定震源要素のときの地名は「最初に揺れを捉えた観測点の所在地」であって
             震源の推定位置ではないため、断定して見えないよう注記を添える（M・深さを伏せるのと同じ理由）。 */}
