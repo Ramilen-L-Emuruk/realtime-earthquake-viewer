@@ -28,7 +28,7 @@ import type {
 import { isValidLpgmClass } from '../utils/lpgm'
 import { isEewForecastKindCode, isEewWarningKindCode, isEewArrivedKindCode } from '../utils/eewKind'
 import { parseTsunamiEstimationCondition, parseTsunamiForecastHeightImportant, parseTsunamiObservationCondition } from '../utils/tsunami'
-import { log } from '../utils/logger'
+import { createPerLabelLogGate, log, UNREADABLE_VALUE_LOG_KINDS, UNREADABLE_VALUE_LOG_INTERVAL_MS } from '../utils/logger'
 import { NON_JMA_MARK } from '../utils/formatters'
 import { arr, obj, str } from './parseHelpers'
 
@@ -513,13 +513,26 @@ const JST_OFFSET_MS = 9 * 3600_000
  * 「同一種別の情報における最新情報の検索にあたっては `Serial` ではなく `Control/DateTime` を
  * 参照すること」と書いているが、**本実装は秒精度へ上げていない** —— 理由は
  * `docs/spec/quake-spec.md` §6.4。
+ *
+ * @param kindLabel 記録に出す電文種別の名前。**呼び出し元ごとに違う値を渡すこと** ——
+ *   この関数は 9 種別から呼ばれており、固定文字列にすると記録の間引きの枠を全種別で
+ *   食い合う（ある種別のノイズで別の種別の異常が黙る。→ `createPerLabelLogGate`）
+ * @param logPrefix 記録の接頭辞。**津波だけ `[tsunami XML]`** で、他は `[dmdata XML]`
+ *   （→ `docs/spec/data-sources-spec.md` §2「読めなかったものは記録する」）。既定値を
+ *   置かないのは、種別を足したときの決め忘れを型検査で捕まえるため
  */
-function readReportDateTime(doc: Document): string {
+function readReportDateTime(doc: Document, kindLabel: string, logPrefix: string): string {
   const report = xmlText(xmlQ(doc, 'ReportDateTime'))
-  if (report) return report
+  if (report) {
+    // **主経路は値を捨てず、記録だけ残す。** 下の受け皿と扱いが違うのは意図したもの ——
+    // 発表時刻は全種別の骨格で、空にした場合に何が壊れるか（続報の新旧判定・表示・共有
+    // カード・読み上げ）を確かめていない。受け皿は元から空へ倒す作りで、そちらは
+    // `Head/ReportDateTime` が欠けた電文しか通らないため影響範囲が狭い。
+    warnIfUnreadableDateTime(logPrefix, `${kindLabel}の発表時刻`, report, '空にしたときの影響を確かめていない')
+    return report
+  }
   const control = xmlText(xmlQ(doc, 'DateTime'))
   if (!control) return ''
-  const ms = Date.parse(control)
   // **読めない値をそのまま通さない。** 通すと以降の時刻比較がすべてこの値に引きずられる。
   // 空にすれば `mergeQuakeInto` が「発表時刻が空の電文」として据え置く（安全側）。
   //
@@ -527,8 +540,10 @@ function readReportDateTime(doc: Document): string {
   // `Date.parse` は**実行環境のローカル時刻**として解釈する。このアプリは利用者のブラウザで
   // 動くので、同じ電文が端末ごとに違う時刻になり、しかも「読めない」とも判定されない
   // （`Number.isNaN` は素通りする）。実電文は常に `Z` 付きだが、静かにずれる形なので弾く。
-  if (Number.isNaN(ms) || !HAS_EXPLICIT_TIMEZONE.test(control)) {
-    log.warn(`${DMDATA_LOG_PREFIX} 発表時刻を日時として読めません（空として扱います）: "${control}"`)
+  // 判定は `readableDateTimeMs` に集約してある（この 2 段を書き写すと片方だけずれる）。
+  const ms = readableDateTimeMs(control)
+  if (ms === null) {
+    reportUnreadableTelegramDateTime(logPrefix, `${kindLabel}の発表時刻`, control, '空として扱います')
     return ''
   }
   return new Date(ms + JST_OFFSET_MS).toISOString().replace(/\.\d{3}Z$/, '+09:00')
@@ -538,14 +553,103 @@ function readReportDateTime(doc: Document): string {
 const HAS_EXPLICIT_TIMEZONE = /(?:Z|[+-]\d{2}:?\d{2})$/
 
 /**
- * 観測状況を確定した時刻（`Head/TargetDateTime`）。**日時として読めない値は捨てる。**
+ * 日時として使えるならミリ秒値、使えなければ `null`。読めることと、時間帯を明示していることの
+ * 2 段で見る。
  *
- * 表示側（`TsunamiTab`）は `formatTime` を通すが、あちらは `new Date(...)` の結果を確かめずに
- * 時分を取り出すため、読めない値が届くと画面に `NaN:NaN` と出る —— 例外もログも出ない。
- * しかも「発表時刻と同じ分なら出さない」判定は素通りする（壊れた文字列は有効な時刻と一致しない）。
+ * 判定と値を 1 回で返すのは、`readReportDateTime` が判定の後にミリ秒値を使うため
+ * （別々にすると `Date.parse` を 2 度呼ぶことになる）。
+ */
+function readableDateTimeMs(raw: string): number | null {
+  const ms = Date.parse(raw)
+  return Number.isFinite(ms) && HAS_EXPLICIT_TIMEZONE.test(raw) ? ms : null
+}
+
+/** 日時として使える値か。値が要らない呼び出し元はこちら。 */
+function isReadableDateTime(raw: string): boolean {
+  return readableDateTimeMs(raw) !== null
+}
+
+/**
+ * 読めない日時の記録。**要素の種別ごとに、同じ値では二度鳴らさない。**
+ *
+ * ここの呼び出しは繰り返しの中にある（津波なら区域・潮位観測点・沖合観測点でそれぞれ）。
+ * 上流の日時書式がまとめて変わると、1 通の電文で観測点の数だけ同じ行が並び、**他の警告が
+ * 埋もれる**。表示の整形（`formatters.ts`）が同じ理由で間引いているので、濃さを揃える。
+ *
+ * 種類が上限を超えたあとも時間で間引いて出し続ける（黙らせない理由は `createFirstSeenLogGate`）。
+ */
+const gateTelegramDateTime = createPerLabelLogGate(UNREADABLE_VALUE_LOG_KINDS, UNREADABLE_VALUE_LOG_INTERVAL_MS)
+
+function reportUnreadableTelegramDateTime(logPrefix: string, label: string, raw: string, disposition: string): void {
+  gateTelegramDateTime(`${logPrefix} ${label}`, raw, overflowed => {
+    const tail = overflowed
+      ? `（読めない値が ${UNREADABLE_VALUE_LOG_KINDS} 種類を超えたため、以後は間引いて記録します）`
+      : ''
+    log.warn(`${logPrefix} ${label}を日時として読めません（${disposition}）: "${raw}"${tail}`)
+  })
+}
+
+/**
+ * 電文の日時要素を読む。**日時として読めない値・時間帯を明示していない値は捨てて記録する。**
+ *
+ * `readReportDateTime` / `readObservationDateTime` と同じ厳しさで見る。片方だけ検証すると、
+ * 隣り合った 2 つの時刻で守りの強さが食い違う。
+ *
+ * **時間帯の明示まで確かめるのがこの関数の要**。`2026-01-01T12:00:00` のようにオフセットが
+ * 無い値を `Date` は実行環境のローカル時刻として解釈し、**有効な日時を返す** —— 表示側の
+ * ガード（`formatters.ts` の `readDateTime`）では原理的に捕まらず、同じ電文が端末ごとに
+ * 違う時刻として画面に出る。実電文はすべて `Z` か `+09:00` を持つ。
+ *
+ * **同一性の判定に使う時刻へは当てない**（下記「捨てずに記録だけ残す」）。空文字へ倒すと、
+ * 別々の電文が同じキーを共有して 1 つの地震として束ねられる —— 読めない時刻をキーに残すより
+ * 重い事故になる。
+ *
+ * @returns 読めた値。読めなければ空文字（要素が無いのと同じ扱いへ倒す）
+ */
+function readTelegramDateTime(logPrefix: string, label: string, raw: string): string {
+  if (!raw) return ''
+  if (!isReadableDateTime(raw)) {
+    reportUnreadableTelegramDateTime(logPrefix, label, raw, '無視します')
+    return ''
+  }
+  return raw
+}
+
+/**
+ * 日時として読めないことを記録するだけで、値は捨てない。
+ *
+ * **捨てるほうが害になる時刻に使う。** 残す理由は呼び出し元ごとに違う。
+ *
+ * - **同一性の判定に使う時刻**（地震情報の `earthquake.time`・津波の `originTime`）。
+ *   空文字へ倒すと、識別子を持たない電文どうしが同じキーになって束ねられる
+ * - **その電文に必須の要素**（長周期地震動観測情報の `OriginTime`）。捨てると電文ごと
+ *   落ちる作りなので、階級の情報まで道連れになる
+ * - **落としたときの影響を確かめていない時刻**（全種別の発表時刻。`readReportDateTime` の
+ *   主経路）。空にすると続報の新旧判定・表示・共有カード・読み上げのどこが壊れるかを
+ *   調べていない
+ *
+ * **理由を引数で受け取るのは、文面で決めつけないため。** 固定文にすると、長周期の
+ * `OriginTime`（同一性の判定には使わない）で「同一性の判定に使うため」と記録され、
+ * 次に調べる人を別の場所へ誘導する。
+ *
+ * 表示・読み上げは `formatters.ts` の `readDateTime` が受け止める（時刻の句ごと落とす）。
+ *
+ * @param keepReason 値を残す理由。「〜ため値は残します」の形に埋め込む
+ */
+function warnIfUnreadableDateTime(logPrefix: string, label: string, raw: string, keepReason: string): void {
+  if (!raw || isReadableDateTime(raw)) return
+  reportUnreadableTelegramDateTime(logPrefix, label, raw, `${keepReason}ため値は残します`)
+}
+
+/**
+ * 観測状況を確定した時刻（`Head/TargetDateTime`）。**日時として読めない値は捨てる。**
  *
  * **`readReportDateTime` と同じ厳しさで見る。** 片方だけ検証すると、隣り合った 2 つの時刻で
  * 守りの強さが食い違う。
+ *
+ * 表示側（`TsunamiTab` の `formatTimeMin`）も読めない値を弾くようになったので、守りは二重。
+ * それでも入口で捨てるのは、**時間帯を明示していない値は表示側では捕まえられない**ため
+ * （`Date` がローカル時刻として解釈し、端末ごとに違う時刻が出る）。
  */
 function readObservationDateTime(headEl: Element): string | undefined {
   const raw = xmlText(xmlChild(headEl, 'TargetDateTime'))
@@ -554,8 +658,8 @@ function readObservationDateTime(headEl: Element): string | undefined {
   // オフセットの無い `2026-01-01T12:00:00` を**実行環境のローカル時刻**として解釈し、
   // 有限値を返す —— つまり `Number.isFinite` だけでは素通りする。このアプリは利用者の
   // ブラウザで動くので、同じ電文が端末ごとに違う時刻として画面に出る。
-  if (!Number.isFinite(Date.parse(raw)) || !HAS_EXPLICIT_TIMEZONE.test(raw)) {
-    log.warn(`${TSUNAMI_LOG_PREFIX} 観測状況を確定した時刻を日時として読めません（無視します）: "${raw}"`)
+  if (!isReadableDateTime(raw)) {
+    reportUnreadableTelegramDateTime(TSUNAMI_LOG_PREFIX, '観測状況を確定した時刻', raw, '無視します')
     return undefined
   }
   return raw
@@ -1002,7 +1106,7 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
   // XML 80,725 通。2026-09-13 に数えた値）を走査した実測。差の分布は 0 秒のみ、
   // `ReportDateTime` の欠落は 0 通だった。**目録は後から縮むので、別の日に数えた値とは
   // 範囲が同じでも数が食い違いうる**（→ `docs/spec/quake-spec.md` §6.2）。
-  const reportTime = readReportDateTime(doc)
+  const reportTime = readReportDateTime(doc, '緊急地震速報', DMDATA_LOG_PREFIX)
   const isCanceled = xmlText(xmlQ(doc, 'InfoType')) === '取消'
 
   const eqEl = xmlQ(doc, 'Earthquake')
@@ -1124,7 +1228,7 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
         scaleTo,
         ...(orAbove && { scaleToOrAbove: true }),
         kindCode,
-        arrivalTime: xmlText(xmlChild(a, 'ArrivalTime')) || null,
+        arrivalTime: readTelegramDateTime(DMDATA_LOG_PREFIX, '緊急地震速報の区域の到達予測時刻', xmlText(xmlChild(a, 'ArrivalTime'))) || null,
         ...(arrived && { arrived: true }),
         lgIntTo: lgVal,
         ...(lgOver && { lgIntToOver: true }),
@@ -1172,8 +1276,10 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
     ...(eewInfoName && { infoName: eewInfoName }),
     ...(eewCancelText && { cancelText: eewCancelText }),
     earthquake: {
-      originTime: xmlText(eqEl ? xmlChild(eqEl, 'OriginTime') : null),
-      arrivalTime: xmlText(eqEl ? xmlChild(eqEl, 'ArrivalTime') : null),
+      // 緊急地震速報は `eventId` で束ねるので、この 2 つは表示・共有カードにしか使わない。
+      // 読めない値は捨ててよい（同一性の判定に使う地震情報・津波とは扱いが違う）。
+      originTime: readTelegramDateTime(DMDATA_LOG_PREFIX, '緊急地震速報の地震発生時刻', xmlText(eqEl ? xmlChild(eqEl, 'OriginTime') : null)),
+      arrivalTime: readTelegramDateTime(DMDATA_LOG_PREFIX, '緊急地震速報の地震発現時刻', xmlText(eqEl ? xmlChild(eqEl, 'ArrivalTime') : null)),
       // Earthquake 直下だけを見る（上記のとおり Area 直下にも Condition がある）。
       condition: xmlText(eqEl ? xmlChild(eqEl, 'Condition') : null),
       hypocenter: {
@@ -1223,7 +1329,7 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   const quakeOperationStatus = parseOperationStatus(doc)
   // 見出し文。**読んで持つだけで画面には出さない**（→ `readHeadlineText`）。
   const quakeHeadline = readHeadlineText(doc)
-  const reportDateTime = readReportDateTime(doc)
+  const reportDateTime = readReportDateTime(doc, '地震情報', DMDATA_LOG_PREFIX)
   const eventId = xmlText(xmlQ(doc, 'EventID'))
   const infoType = xmlText(xmlQ(doc, 'InfoType'))
   const serial = xmlText(xmlQ(doc, 'Serial')) || '1'
@@ -1305,9 +1411,15 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   // 「`originTime` という名前なのに発現時刻？」で止まる（実際に止まった）。
   // 津波側の選択（`sourceEarthquakeTime`）と同じ規則であることは
   // `docs/spec/tsunami-spec.md` §4 に書いてある。
+  //
+  // **読めない値でも捨てない。** この値は `earthquake.time` になり、`eventId` を持たない経路
+  // （P2PQuake）の同一性キー（`eventKey`）に入る。空文字へ倒すと別々の地震が同じキーになって
+  // 1 枚のカードへ束ねられる —— 読めない時刻を残すより重い。記録だけ残し、表示・読み上げ側の
+  // ガード（`formatters.ts` の `readDateTime`）に受け止めさせる。
   const earthquakeTime = earthquakeEl
     ? (xmlText(xmlQ(earthquakeEl, 'ArrivalTime')) || xmlText(xmlQ(earthquakeEl, 'OriginTime')))
     : xmlText(xmlQ(doc, 'TargetDateTime'))
+  warnIfUnreadableDateTime(DMDATA_LOG_PREFIX, '地震の発現時刻（または発生時刻）', earthquakeTime, '同一性の判定に使う')
 
   // Magnitude 要素が空・欠落の電文は「規模不明」。`|| 0` で 0 に潰すと M0.0 と実測値のように
   // 表示・読み上げされるため、NaN のまま返して不明判定（formatters の hasMagnitude）に委ねる。
@@ -1622,7 +1734,7 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
   if (!doc) return null
 
   const tsunamiOperationStatus = parseOperationStatus(doc)
-  const reportDateTime = readReportDateTime(doc)
+  const reportDateTime = readReportDateTime(doc, '津波情報', TSUNAMI_LOG_PREFIX)
   // 空文字は undefined に落とす。
   // 「同一イベントか」の判定はどこも falsy 判定で書かれているのに対し、キーの導出側が空文字を
   // 有効な識別子として扱うと、識別子を持たない電文どうしが同じ津波として束ねられる。
@@ -1630,7 +1742,10 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
   const serial = xmlText(xmlQ(doc, 'Serial')) || '1'
   const infoType = xmlText(xmlQ(doc, 'InfoType'))
   const source = parseIssueSourceFromXml(doc)
-  const validDateTime = xmlText(xmlQ(doc, 'ValidDateTime')) || undefined
+  // 有効期限。**読めない値は採らない** —— 残すと以後の比較（`new Date(...) <= now`）がすべて
+  // 偽へ倒れ、表示は続くのに失効の予約も積まれない津波ができる。消費側（`useEarthquakes.ts`）も
+  // 予約を積む直前に同じ検査をしているが、そこを通らない比較が他に 4 箇所ある。
+  const validDateTime = readTelegramDateTime(TSUNAMI_LOG_PREFIX, '津波の有効期限', xmlText(xmlQ(doc, 'ValidDateTime'))) || undefined
   // 観測状況を確定した時刻（`Head/TargetDateTime`）。**観測情報の 2 種別だけで読む。**
   //
   // この要素は種別で意味が変わる（電文解説資料 Ⅰ.（ⅱ）3）。津波警報・注意報・予報（VTSE41）は
@@ -1698,15 +1813,22 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
     // 震央補助表現・座標・震央地名コードは `Hypocenter/Area` 直下、震源決定機関は
     // `Hypocenter` 直下（`Source`）。**位置要素は長周期側と同じ読み手を通す** ——
     // 経路ごとに書くと、いま直したのと同じ取りこぼしがまた起きる。
+    //
+    // 2 つの時刻は扱いが違う。発生時刻は**読めなくても捨てない** —— `isTsunamiNewFire` が、
+    // 識別子が両側そろっていない電文の同一性判定にこの値を使うため、空へ倒すと別々の津波が
+    // 同じものとして扱われる。発現時刻は表示にしか使わないので捨てる。
+    const sourceOriginTime = xmlText(xmlQ(eqEl, 'OriginTime'))
+    warnIfUnreadableDateTime(TSUNAMI_LOG_PREFIX, '原因地震の発生時刻', sourceOriginTime, '同一性の判定に使う')
+    const sourceArrivalTime = readTelegramDateTime(TSUNAMI_LOG_PREFIX, '原因地震の発現時刻', xmlText(xmlChild(eqEl, 'ArrivalTime')))
     return {
       hypocenterName: hypoName,
       magnitude: !isNaN(magnitude) ? magnitude : undefined,
       ...(isNaN(magnitude) && magnitudeCondition && { magnitudeCondition }),
       ...(magnitudeType && { magnitudeType }),
-      originTime: xmlText(xmlQ(eqEl, 'OriginTime')) || undefined,
+      originTime: sourceOriginTime || undefined,
       // 地震発現時刻。**`originTime` へ混ぜない** —— あちらは識別子を持たない電文の
       // 同一性判定に使われている（→ `TsunamiSourceEarthquake.arrivalTime`）。
-      ...(xmlText(xmlChild(eqEl, 'ArrivalTime')) && { arrivalTime: xmlText(xmlChild(eqEl, 'ArrivalTime')) }),
+      ...(sourceArrivalTime && { arrivalTime: sourceArrivalTime }),
       ...(hypoAreaEl && readHypocenterAreaDetail(hypoAreaEl, TSUNAMI_LOG_PREFIX)),
       ...(tsunamiHypoSource && { source: tsunamiHypoSource }),
     }
@@ -1806,7 +1928,7 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
     }
 
     const fhEl = xmlQ(itemEl, 'FirstHeight')
-    const arrivalTime = fhEl ? xmlText(xmlQ(fhEl, 'ArrivalTime')) : ''
+    const arrivalTime = readTelegramDateTime(TSUNAMI_LOG_PREFIX, '区域の到達予想時刻', fhEl ? xmlText(xmlQ(fhEl, 'ArrivalTime')) : '')
     const condition = fhEl ? xmlText(xmlQ(fhEl, 'Condition')) : ''
 
     const mhEl = xmlQ(itemEl, 'MaxHeight')
@@ -1845,9 +1967,9 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
         continue
       }
       forecastStationTally.readable()
-      const highTide = xmlText(xmlQ(st, 'HighTideDateTime')) || undefined
+      const highTide = readTelegramDateTime(TSUNAMI_LOG_PREFIX, '満潮時刻', xmlText(xmlQ(st, 'HighTideDateTime'))) || undefined
       const stFhEl = xmlQ(st, 'FirstHeight')
-      const stArrival = stFhEl ? xmlText(xmlQ(stFhEl, 'ArrivalTime')) : ''
+      const stArrival = readTelegramDateTime(TSUNAMI_LOG_PREFIX, '潮位観測点の到達予想時刻', stFhEl ? xmlText(xmlQ(stFhEl, 'ArrivalTime')) : '')
       const stCondition = stFhEl ? xmlText(xmlQ(stFhEl, 'Condition')) : ''
       stations.push({
         name: stName,
@@ -1958,10 +2080,13 @@ function parseTsunamiEstimationsFromXml(estimationEl: Element): import('../types
     // **`MaxHeight/Condition` は `DateTime` と `jmx_eb:TsunamiHeight` の代わりに出る**ので
     // （電文解説資料 Ⅱ.13 1-2-2-3）、ここを読まないと「推定中」の沿岸は波高欄が空のままになる。
     const condition = parseTsunamiEstimationCondition(mhEl ? xmlText(xmlQ(mhEl, 'Condition')) : undefined)
+    // 2 つの時刻はどちらも表示にしか使わないので、日時として読めなければ捨てる。
+    const estArrivalTime = readTelegramDateTime(TSUNAMI_LOG_PREFIX, '沿岸への推定の到達時刻', fhEl ? xmlText(xmlQ(fhEl, 'ArrivalTime')) : '')
+    const estMaxHeightDateTime = readTelegramDateTime(TSUNAMI_LOG_PREFIX, '沿岸への推定の最大波の時刻', mhEl ? xmlText(xmlChild(mhEl, 'DateTime')) : '')
     estimations.push({
       name,
       ...(code && { code }),
-      ...(fhEl && xmlText(xmlQ(fhEl, 'ArrivalTime')) && { arrivalTime: xmlText(xmlQ(fhEl, 'ArrivalTime')) }),
+      ...(estArrivalTime && { arrivalTime: estArrivalTime }),
       // 到達についての説明（「早いところでは既に津波到達と推定」）。**時刻と併存する**ので、
       // 時刻があるかどうかで拾い分けない（理由は TsunamiEstimation.arrivalCondition）。
       ...(fhEl && xmlText(xmlQ(fhEl, 'Condition')) && { arrivalCondition: xmlText(xmlQ(fhEl, 'Condition')) }),
@@ -1970,7 +2095,7 @@ function parseTsunamiEstimationsFromXml(estimationEl: Element): import('../types
       }),
       ...(condition && { condition }),
       // 推定した時刻と、続報での位置づけ。観測点側と同じ項目を同じ形で持つ。
-      ...(mhEl && xmlText(xmlChild(mhEl, 'DateTime')) && { maxHeightDateTime: xmlText(xmlChild(mhEl, 'DateTime')) }),
+      ...(estMaxHeightDateTime && { maxHeightDateTime: estMaxHeightDateTime }),
       ...(fhEl && xmlText(xmlChild(fhEl, 'Revise')) && { firstHeightRevise: xmlText(xmlChild(fhEl, 'Revise')) }),
       ...(mhEl && xmlText(xmlChild(mhEl, 'Revise')) && { maxHeightRevise: xmlText(xmlChild(mhEl, 'Revise')) }),
     })
@@ -2003,9 +2128,11 @@ function parseTsunamiObservationsFromXml(observationEl: Element, offshore: boole
       }
       tally.readable()
       const fhEl = xmlQ(st, 'FirstHeight')
-      const arrivalTime = fhEl ? xmlText(xmlQ(fhEl, 'ArrivalTime')) : ''
+      const arrivalTime = readTelegramDateTime(TSUNAMI_LOG_PREFIX, '観測点の第1波の到達時刻', fhEl ? xmlText(xmlQ(fhEl, 'ArrivalTime')) : '')
       const initial = fhEl ? xmlText(xmlQ(fhEl, 'Initial')) : ''
       const mhEl = xmlQ(st, 'MaxHeight')
+      // 表示にしか使わないので、日時として読めなければ捨てる。
+      const maxHeightDateTime = readTelegramDateTime(TSUNAMI_LOG_PREFIX, '観測点の最大波の時刻', mhEl ? xmlText(xmlChild(mhEl, 'DateTime')) : '')
       const heightEl = mhEl ? xmlQ(mhEl, 'TsunamiHeight') : null
       checkTsunamiHeightType(heightEl, 'これまでの最大波の高さ', '観測点', name)
       const heightVal = heightEl ? parseFloat(xmlText(heightEl)) : NaN
@@ -2066,7 +2193,7 @@ function parseTsunamiObservationsFromXml(observationEl: Element, offshore: boole
         // 代理値で置き換えていた）。
         ...(fhEl && xmlText(xmlChild(fhEl, 'Revise')) && { firstHeightRevise: xmlText(xmlChild(fhEl, 'Revise')) }),
         // 最大波を観測した時刻。**波高の数値だけでは、それがいつの値かが分からない。**
-        ...(mhEl && xmlText(xmlChild(mhEl, 'DateTime')) && { maxHeightDateTime: xmlText(xmlChild(mhEl, 'DateTime')) }),
+        ...(maxHeightDateTime && { maxHeightDateTime }),
         // 特殊観測機器の名称（Ⅱ.13 1-1-2-2）。沖合の観測点だけが持つ
         ...(xmlText(xmlQ(st, 'Sensor')) && { sensor: xmlText(xmlQ(st, 'Sensor')) }),
         districtCode,
@@ -2194,7 +2321,7 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
   // 種別によって付けたり付けなかったりすると、試験報の印が電文の種類次第で出たり出なかったりする。
   const lpgmOperationStatus = parseOperationStatus(doc)
 
-  const reportDateTime = readReportDateTime(doc)
+  const reportDateTime = readReportDateTime(doc, '長周期地震動観測情報', DMDATA_LOG_PREFIX)
   const eventId        = xmlText(xmlQ(doc, 'EventID'))
   const serial         = xmlText(xmlQ(doc, 'Serial')) || '1'
   const infoType       = xmlText(xmlQ(doc, 'InfoType'))
@@ -2202,7 +2329,11 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
   const cancelled      = infoType === '取消'
 
   const earthquakeEl = xmlQ(doc, 'Earthquake')
+  // **読めない値でも捨てない。** この要素が無いと電文ごと落とす作り（次の行）なので、
+  // 捨てると階級の情報まで道連れになる。読み上げ側（`ttsText.ts` の `lpgmToText`）が
+  // 時刻の句ごと落として受け止める。
   const originTime   = earthquakeEl ? xmlText(xmlQ(earthquakeEl, 'OriginTime')) : ''
+  warnIfUnreadableDateTime(DMDATA_LOG_PREFIX, '長周期地震動観測情報の地震発生時刻', originTime, 'この要素が無いと電文ごと落とす')
 
   if (cancelled) return { ...(lpgmOperationStatus && { operationStatus: lpgmOperationStatus }), id, eventId, time: reportDateTime, originTime, maxClass: 0, cancelled: true }
   if (!originTime) return dropTelegram(DMDATA_LOG_PREFIX, 'VXSE62（長周期地震動観測情報）に OriginTime がありません')
@@ -2408,7 +2539,7 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
     ? undefined
     : (lpgmMagnitudeEl?.getAttribute('description')?.trim() || undefined)
   const lpgmMagnitudeType = lpgmMagnitudeEl?.getAttribute('type')?.trim() || undefined
-  const lpgmArrivalTime = earthquakeEl ? xmlText(xmlChild(earthquakeEl, 'ArrivalTime')) : ''
+  const lpgmArrivalTime = readTelegramDateTime(DMDATA_LOG_PREFIX, '長周期地震動観測情報の地震発現時刻', earthquakeEl ? xmlText(xmlChild(earthquakeEl, 'ArrivalTime')) : '')
 
   // 付加文と、気象庁の詳細ページ。**アプリが出せない情報（波形・スペクトル）の在りかを
   // 電文自身が示している**ので、そこへ行ける導線を残す。
@@ -2502,7 +2633,7 @@ export function parseNankaiFromXml(xml: string): JMANankai | null {
   // 種別によって付けたり付けなかったりすると、試験報の印が電文の種類次第で出たり出なかったりする。
   const nankaiOperationStatus = parseOperationStatus(doc)
 
-  const reportDateTime = readReportDateTime(doc)
+  const reportDateTime = readReportDateTime(doc, '南海トラフ地震臨時情報', DMDATA_LOG_PREFIX)
   const eventId        = xmlText(xmlQ(doc, 'EventID'))
   const serial         = xmlText(xmlQ(doc, 'Serial')) || '1'
   const infoType       = xmlText(xmlQ(doc, 'InfoType'))
@@ -2637,7 +2768,7 @@ export function parseNankaiCommentaryFromXml(xml: string): JMANankaiCommentary |
   // 保険であり、相互排他は dmdataParser.test.ts で固定している。
   if (NANKAI_STAGE_KEYWORDS.some(k => headline.includes(k))) return null
 
-  const reportDateTime = readReportDateTime(doc)
+  const reportDateTime = readReportDateTime(doc, '南海トラフ地震関連解説情報', DMDATA_LOG_PREFIX)
   // 期限（expireAt）の計算に使うため、日時として解釈できることをここで確かめる。
   // 不正な文字列のまま進むと new Date(...).toISOString() が RangeError を投げる。
   const reportMs = new Date(reportDateTime).getTime()
@@ -2689,7 +2820,7 @@ export function parseVyse60FromXml(xml: string): JMAKohatsu | null {
   // 種別によって付けたり付けなかったりすると、試験報の印が電文の種類次第で出たり出なかったりする。
   const kohatsuOperationStatus = parseOperationStatus(doc)
 
-  const reportDateTime = readReportDateTime(doc)
+  const reportDateTime = readReportDateTime(doc, '北海道・三陸沖後発地震注意情報', DMDATA_LOG_PREFIX)
   const eventId        = xmlText(xmlQ(doc, 'EventID'))
   const serial         = xmlText(xmlQ(doc, 'Serial')) || '1'
   const infoType       = xmlText(xmlQ(doc, 'InfoType'))
@@ -2755,7 +2886,7 @@ export function parseQuakeNoticeFromXml(xml: string): JMAQuakeNotice | null {
   if (!doc) return null
   const operationStatus = parseOperationStatus(doc)
 
-  const reportDateTime = readReportDateTime(doc)
+  const reportDateTime = readReportDateTime(doc, '地震・津波に関するお知らせ', DMDATA_LOG_PREFIX)
   // 期限の計算に使うので、日時として解釈できることをここで確かめる（解説情報と同じ理由）。
   const reportMs = new Date(reportDateTime).getTime()
   if (!Number.isFinite(reportMs)) {
@@ -2808,7 +2939,7 @@ export function parseEarthquakeCountFromXml(xml: string): JMAEarthquakeCount | n
   if (!doc) return null
   const operationStatus = parseOperationStatus(doc)
 
-  const reportDateTime = readReportDateTime(doc)
+  const reportDateTime = readReportDateTime(doc, '地震回数に関する情報', DMDATA_LOG_PREFIX)
   // 期限（発表から 7 日）の計算に使うので、日時として解釈できることをここで確かめる
   // （お知らせ・後発地震・南海トラフ関連解説情報と同じ扱い）。
   const reportMs = new Date(reportDateTime).getTime()
@@ -2852,8 +2983,9 @@ export function parseEarthquakeCountFromXml(xml: string): JMAEarthquakeCount | n
   const tally = createReadTally(COUNT_ITEM_LABEL)
   for (const itemEl of countEl ? xmlAll(countEl, 'Item') : []) {
     const type = itemEl.getAttribute('type') ?? ''
-    const startTime = xmlText(xmlQ(itemEl, 'StartTime'))
-    const endTime = xmlText(xmlQ(itemEl, 'EndTime'))
+    // 区間の両端。表示にしか使わないので、日時として読めなければ捨てる。
+    const startTime = readTelegramDateTime(DMDATA_LOG_PREFIX, '地震回数の区間の開始時刻', xmlText(xmlQ(itemEl, 'StartTime')))
+    const endTime = readTelegramDateTime(DMDATA_LOG_PREFIX, '地震回数の区間の終了時刻', xmlText(xmlQ(itemEl, 'EndTime')))
     const numberText = xmlText(xmlQ(itemEl, 'Number'))
     const feltText = xmlText(xmlQ(itemEl, 'FeltNumber'))
     // 回数が数として読めない区間は採らない。

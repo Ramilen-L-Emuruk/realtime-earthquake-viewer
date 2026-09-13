@@ -7,7 +7,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { BufrFragmentStore, fragmentIndex, fragmentKey } from './bufrTelegramAssembly'
 import { log } from '../utils/logger'
 
-vi.mock('../utils/logger', () => ({
+// **部分モックにする。** 丸ごと置き換えると、logger が新しい関数を export した日に
+// 「そんな export は無い」でファイルごと落ちる。差し替えたいのは `log` と
+// `createLogThrottle`（間引きは素通しにする。ここで見たいのは「警告を出したか」であって
+// 間引きの時間条件ではない）だけ。
+vi.mock('../utils/logger', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/logger')>()),
   log: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
   createLogThrottle: () => (fn: () => void) => fn(),
 }))

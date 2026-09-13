@@ -14,7 +14,11 @@ import {
 import { build, DESCS_PLAIN, SAMPLE_GRADES, type Build, type Mesh2, type Mesh3 } from '../test-utils/bufrBuild'
 import { log } from './logger'
 
-vi.mock('./logger', () => ({
+// **部分モックにする。** 丸ごと置き換えると、logger が新しい関数を export した日に
+// 「そんな export は無い」でファイルごと落ちる。差し替えたいのは `log` と
+// `createLogThrottle`（間引きは素通しにする）だけ。
+vi.mock('./logger', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./logger')>()),
   log: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
   createLogThrottle: () => (fn: () => void) => fn(),
 }))

@@ -1180,6 +1180,21 @@ describe('observationBadges: 上昇中 / observationArrivalFallbackText', () => 
     expect(observationArrivalFallbackText(obs({ condition: { firstWaveUnidentifiable: true } }))).toBe('到達時刻不明')
   })
 
+  // 正: 値はあっても日時として読めなければ理由の語を出す。呼び出し側は時刻を出せないので、
+  // ここで空を返すと「第１波識別不能」という電文の判断が画面から消える。
+  it('正: 到達時刻が日時として読めなければ理由の語を出す', () => {
+    expect(observationArrivalFallbackText(obs({
+      arrivalTime: '壊れた値',
+      condition: { firstWaveUnidentifiable: true },
+    }))).toBe('到達時刻不明')
+  })
+
+  // 安全弁: 読めない時刻でも、第1波識別不能でなければ語を作らない
+  // （「読めない」ことを理由にしてはいけない。理由を言うのは電文がそう言っているときだけ）。
+  it('安全弁: 読めない時刻だけを理由に語を作らない', () => {
+    expect(observationArrivalFallbackText(obs({ arrivalTime: '壊れた値' }))).toBe('')
+  })
+
   it('対照: 到達時刻があれば何も返さない（呼び出し側が時刻を出す）', () => {
     expect(observationArrivalFallbackText(obs({
       arrivalTime: '2026-09-03T10:00:00+09:00',

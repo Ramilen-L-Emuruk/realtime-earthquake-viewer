@@ -1246,7 +1246,10 @@ export function App() {
 
   // 強震モニタ（常時ポーリング: タブ非表示中も揺れ検知を継続する）
   // Yahoo hypoInfo の EEW を injectEvent で状態に注入する（音・タブ切替も発火）
-  const [kyoshinInputDateTime, setKyoshinInputDateTime] = useState(() => formatDateTimeLocal(new Date()))
+  // 初期値は現在時刻なので日時として読めないことは起こらないが、`formatDateTimeLocal` は
+  // 読めない値で `null` を返す。空文字へ落として `datetime-local` の未入力扱いにする
+  // （`null` を `value` に渡すと制御・非制御が切り替わったと React に警告される）。
+  const [kyoshinInputDateTime, setKyoshinInputDateTime] = useState(() => formatDateTimeLocal(new Date()) ?? '')
   // リプレイの取得・世代管理は useReplayController に集約している（非同期の完了順序に
   // 依存する状態機械のため、単体でテストできる形に切り出した）。
   // 時計への反映（setClockReplayOffset）は上の useEffect が replayTimeOffset を見て行う。
