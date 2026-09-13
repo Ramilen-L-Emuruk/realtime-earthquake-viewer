@@ -51,8 +51,19 @@ function descBytes(list: string[]): Uint8Array {
 
 export interface Grade { mod: number; scale: number; lo: number; hi: number }
 export interface Cell { half: number; quarter: number; si: number }
-export interface Mesh3 { r3: number; w3: number; cells: Cell[] }
-export interface Mesh2 { p1: number; u1: number; q2: number; v2: number; mesh3: Mesh3[] }
+export interface Mesh3 {
+  r3: number; w3: number; cells: Cell[]
+  /**
+   * 電文が名乗るセル数を実際とわざと食い違わせる。**読み取り側は反復回数に電文の値を
+   * そのまま使う**ので、水増しすると第4節の外まで読み進めようとする（その歯止めの再現）。
+   */
+  declaredCellCount?: number
+}
+export interface Mesh2 {
+  p1: number; u1: number; q2: number; v2: number; mesh3: Mesh3[]
+  /** 電文が名乗る 3 次メッシュ数を実際とわざと食い違わせる（`declaredCellCount` と同じ狙い）。 */
+  declaredMesh3Count?: number
+}
 export interface Build {
   grades: Grade[]
   kind?: number
@@ -65,11 +76,20 @@ export interface Build {
   descs?: string[]
   /** 宣言する全長を実際とわざと食い違わせる（結合漏れの再現） */
   declaredLengthOverride?: number
+  /** 電文が名乗る 2 次メッシュ数を実際とわざと食い違わせる（`Mesh3.declaredCellCount` と同じ狙い）。 */
+  declaredMesh2Count?: number
+  /** 電文が名乗る凡例の件数を実際とわざと食い違わせる（同上）。 */
+  declaredGradeCount?: number
+  /**
+   * 第4節が名乗る長さを実際とわざと食い違わせる。読み取り側は**セルを収める配列の長さも
+   * 読み進める上限もこの値から決める**ので、どちらが先に効くかを確かめるのに使う。
+   */
+  section4LengthOverride?: number
 }
 
 export function build(b: Build): Uint8Array {
   const w = new BitWriter()
-  w.write(b.grades.length, 8)
+  w.write(b.declaredGradeCount ?? b.grades.length, 8)
   for (const g of b.grades) {
     w.write(90, 7).write(g.mod, 2).write(g.scale, 4).write(g.lo, 7).write(g.hi, 7)
   }
@@ -79,11 +99,12 @@ export function build(b: Build): Uint8Array {
   w.write(b.areaCode ?? 520, 10)
   if (b.tsunami) { w.write(0, 7).write(0, 10).write(9000, 16).write(80, 13) }   // 合計 46 ビット
   w.write(b.latRaw, 15).write(b.lonRaw, 16).write(b.depthKm, 14).write(b.magRaw, 7)
-  w.write(b.mesh2.length, 16)
+  w.write(b.declaredMesh2Count ?? b.mesh2.length, 16)
   for (const m2 of b.mesh2) {
-    w.write(m2.p1, 7).write(m2.u1, 7).write(m2.q2, 4).write(m2.v2, 4).write(m2.mesh3.length, 8)
+    w.write(m2.p1, 7).write(m2.u1, 7).write(m2.q2, 4).write(m2.v2, 4)
+      .write(m2.declaredMesh3Count ?? m2.mesh3.length, 8)
     for (const m3 of m2.mesh3) {
-      w.write(m3.r3, 4).write(m3.w3, 4).write(m3.cells.length, 8)
+      w.write(m3.r3, 4).write(m3.w3, 4).write(m3.declaredCellCount ?? m3.cells.length, 8)
       for (const c of m3.cells) w.write(c.half, 3).write(c.quarter, 3).write(c.si, 7)
     }
   }
@@ -111,7 +132,11 @@ export function build(b: Build): Uint8Array {
   out[o++] = 0; out[o++] = 1        // サブセット数 1
   out[o++] = 0x80                   // 観測資料・非圧縮
   out.set(db, o); o += s3len - 7
-  out[o++] = (s4len >> 16) & 0xff; out[o++] = (s4len >> 8) & 0xff; out[o++] = s4len & 0xff
+  // 節の中身の置き方は実際の長さで決め、名乗る値だけ差し替える。
+  const declaredS4len = b.section4LengthOverride ?? s4len
+  out[o++] = (declaredS4len >> 16) & 0xff
+  out[o++] = (declaredS4len >> 8) & 0xff
+  out[o++] = declaredS4len & 0xff
   out[o++] = 0
   out.set(payload, o); o += s4len - 4
   out.set([0x37, 0x37, 0x37, 0x37], o)
