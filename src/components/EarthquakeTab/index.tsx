@@ -24,14 +24,14 @@ interface Props {
   /** 未入電の一覧を開いている地震の `eventKey`。 */
   unreceivedQuakeKey: string | null
   onToggleUnreceived: (eventKey: string) => void
-  /** 観測点の行をクリックしたときに、その地点へ地図を寄せる。 */
-  onPointFocus: (position: LatLng) => void
+  /** 一覧の行をクリックしたときに、その場所へ地図を寄せる（1 点でも範囲でも）。 */
+  onFocusMap: (positions: LatLng[]) => void
 }
 
 // 地震情報タブの右パネル。地震カードの一覧を表示し、クリックで地図表示対象を選択する。
 // 地図そのものは App が常時表示する。
 // React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
-export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, error, lpgmByEventId, activeLpgmEventId, onToggleLpgm, estimatedIntensity, distributionQuakeKey, onToggleDistribution, unreceivedQuakeKey, onToggleUnreceived, onPointFocus }: Props) {
+export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, error, lpgmByEventId, activeLpgmEventId, onToggleLpgm, estimatedIntensity, distributionQuakeKey, onToggleDistribution, unreceivedQuakeKey, onToggleUnreceived, onFocusMap }: Props) {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -83,7 +83,7 @@ export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selected
           onToggleDistribution={() => onToggleDistribution(quakeEventKey(quake))}
           unreceivedActive={quakeEventKey(quake) === unreceivedQuakeKey}
           onToggleUnreceived={() => onToggleUnreceived(quakeEventKey(quake))}
-          onPointFocus={onPointFocus}
+          onFocusMap={onFocusMap}
         />
       ))}
       {hasMore && (

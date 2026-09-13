@@ -4,12 +4,12 @@ import { mergeUnreceivedPointNames, groupUnreceivedPointNames } from './unreceiv
 describe('mergeUnreceivedPointNames', () => {
   it('正: 気象庁以外の観測点には印が付く', () => {
     expect(mergeUnreceivedPointNames([{ addr: '普代村銅屋', nonJma: true }]))
-      .toEqual([{ name: '普代村銅屋', nonJma: true }])
+      .toEqual([{ name: '普代村銅屋', nonJma: true, isArea: false }])
   })
 
   it('対照: 気象庁の観測点には印が付かない', () => {
     expect(mergeUnreceivedPointNames([{ addr: '普代村' }]))
-      .toEqual([{ name: '普代村', nonJma: false }])
+      .toEqual([{ name: '普代村', nonJma: false, isArea: false }])
   })
 
   it('渡された順序を保つ（並びは呼び出し側が決めている）', () => {
@@ -21,19 +21,38 @@ describe('mergeUnreceivedPointNames', () => {
     expect(mergeUnreceivedPointNames([
       { addr: '香取市', nonJma: true },
       { addr: '香取市', nonJma: true },
-    ])).toEqual([{ name: '香取市', nonJma: true }])
+    ])).toEqual([{ name: '香取市', nonJma: true, isArea: false }])
+  })
+
+  // 区域かどうかも持ち回る。**座標表は観測点と区域を別の表に持つ**ので、行から地図へ寄せる
+  // ときにどちらを引くかがこれで決まる（→ `EarthquakeCard` の `focusHandlerFor`）。
+  it('正: 区域だけの行は区域として持つ', () => {
+    expect(mergeUnreceivedPointNames([{ addr: '岩手県沿岸北部', isArea: true }]))
+      .toEqual([{ name: '岩手県沿岸北部', nonJma: false, isArea: true }])
+  })
+
+  it('安全弁: 同名で観測点と区域が混ざったら観測点として扱う（地図の印は観測点の位置に出る）', () => {
+    expect(mergeUnreceivedPointNames([
+      { addr: '奈良県', isArea: true },
+      { addr: '奈良県' },
+    ])).toEqual([{ name: '奈良県', nonJma: false, isArea: false }])
+    // 逆順でも同じ（先に来た方の値が残らないこと）
+    expect(mergeUnreceivedPointNames([
+      { addr: '奈良県' },
+      { addr: '奈良県', isArea: true },
+    ])).toEqual([{ name: '奈良県', nonJma: false, isArea: false }])
   })
 
   it('安全弁: 同名で出所が混ざったら印を付けない（気象庁の観測点に他所の印を付けない）', () => {
     expect(mergeUnreceivedPointNames([
       { addr: '中央', nonJma: true },
       { addr: '中央' },
-    ])).toEqual([{ name: '中央', nonJma: false }])
+    ])).toEqual([{ name: '中央', nonJma: false, isArea: false }])
     // 逆順でも同じ（先に来た方の値が残らないこと）
     expect(mergeUnreceivedPointNames([
       { addr: '中央' },
       { addr: '中央', nonJma: true },
-    ])).toEqual([{ name: '中央', nonJma: false }])
+    ])).toEqual([{ name: '中央', nonJma: false, isArea: false }])
   })
 })
 
@@ -44,8 +63,8 @@ describe('groupUnreceivedPointNames', () => {
       { addr: '延岡市北方町卯', pref: '宮崎県', nonJma: true },
       { addr: '佐伯市本匠', pref: '大分県', nonJma: true },
     ])).toEqual([
-      { pref: '大分県', names: [{ name: '別府市鶴見', nonJma: false }, { name: '佐伯市本匠', nonJma: true }] },
-      { pref: '宮崎県', names: [{ name: '延岡市北方町卯', nonJma: true }] },
+      { pref: '大分県', names: [{ name: '別府市鶴見', nonJma: false, isArea: false }, { name: '佐伯市本匠', nonJma: true, isArea: false }] },
+      { pref: '宮崎県', names: [{ name: '延岡市北方町卯', nonJma: true, isArea: false }] },
     ])
   })
 
@@ -54,18 +73,18 @@ describe('groupUnreceivedPointNames', () => {
       { addr: '府中市', pref: '東京都' },
       { addr: '府中市', pref: '広島県' },
     ])).toEqual([
-      { pref: '東京都', names: [{ name: '府中市', nonJma: false }] },
-      { pref: '広島県', names: [{ name: '府中市', nonJma: false }] },
+      { pref: '東京都', names: [{ name: '府中市', nonJma: false, isArea: false }] },
+      { pref: '広島県', names: [{ name: '府中市', nonJma: false, isArea: false }] },
     ])
     // 同じ県の中なら従来どおり 1 行へまとまる。
     expect(groupUnreceivedPointNames([
       { addr: '府中市', pref: '東京都' },
       { addr: '府中市', pref: '東京都' },
-    ])).toEqual([{ pref: '東京都', names: [{ name: '府中市', nonJma: false }] }])
+    ])).toEqual([{ pref: '東京都', names: [{ name: '府中市', nonJma: false, isArea: false }] }])
   })
 
   it('安全弁: 県を引けなかった点も落とさない（見出しの無いかたまりになる）', () => {
     expect(groupUnreceivedPointNames([{ addr: '名前だけの点', pref: '' }]))
-      .toEqual([{ pref: '', names: [{ name: '名前だけの点', nonJma: false }] }])
+      .toEqual([{ pref: '', names: [{ name: '名前だけの点', nonJma: false, isArea: false }] }])
   })
 })

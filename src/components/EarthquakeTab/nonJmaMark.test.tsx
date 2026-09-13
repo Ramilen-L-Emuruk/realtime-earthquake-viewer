@@ -93,7 +93,7 @@ const renderTab = (quake: JMAQuake, lpgm?: JMALpgm, opts: { unreceivedOpen?: boo
     onToggleDistribution={() => {}}
     unreceivedQuakeKey={opts.unreceivedOpen ? quakeEventKey(quake) : null}
     onToggleUnreceived={() => {}}
-    onPointFocus={() => {}}
+    onFocusMap={() => {}}
   />
 )
 

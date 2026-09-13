@@ -4,7 +4,7 @@ import type * as maplibregl from 'maplibre-gl'
 import { useMapGL } from './mapGLContext'
 import type { LatLng } from '../../utils/stationCoords'
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
-import type { ShakeFocus, MapFocusPoint } from './mapTypes'
+import type { ShakeFocus, MapFocusTarget } from './mapTypes'
 import type { EEWAlert } from '../../types/earthquake'
 import type { PsWaveCircle } from '../../services/kyoshin'
 import { computeEewCircle } from '../../hooks/usePsWaveCalc'
@@ -1154,6 +1154,7 @@ export function TsunamiFitGL({
   arrivalMarkers,
   missingMarkers,
   focusObsName = null,
+  focusTarget = null,
 }: {
   mode: string
   tsunamiSignature: string
@@ -1168,6 +1169,11 @@ export function TsunamiFitGL({
   missingMarkers: { name: string; lat: number; lng: number }[]
   /** 観測行クリックで FocusObsGL が寄せた観測点。猶予を数え直すためだけに見る（フィットはしない）。 */
   focusObsName?: { name: string; ts: number } | null
+  /**
+   * 一覧の行クリックで `FocusTargetGL` が寄せた場所（津波タブでは区域名のクリック）。
+   * こちらも猶予を数え直すためだけに見る。
+   */
+  focusTarget?: MapFocusTarget | null
 }) {
   const map = useMapGL()
   // 最後にカメラへ反映した海岸線 signature。津波が消えたとき（全解除・有効期間の満了・
@@ -1225,6 +1231,23 @@ export function TsunamiFitGL({
     idleReturnDueRef.current = false
     armIdleReturnTimer()
   }, [focusObsTs, focusObsName, observationBars, arrivalMarkers, missingMarkers, armIdleReturnTimer])
+
+  // 区域名クリック（`FocusTargetGL` が寄せる）でも同じく猶予を数え直す。寄り先は座標で渡って
+  // くるため、観測点の側と違って「寄せられるか」を確かめる必要は無い。
+  //
+  // **猶予を張るのは津波モードにいるときだけ。ただし要求そのものは常に消費する。**
+  // この要求は地震カードの一覧とも共有しているので（`App` の `focusedMapTarget`）、モードを
+  // 見ないと地震タブでの操作が津波の帰還を遅らせる。一方で**消費まで止めると**、地震タブで
+  // 押した要求が残り、津波タブへ移った瞬間にそこで猶予を延ばしてしまう。
+  const focusTargetTs = focusTarget?.ts ?? 0
+  const lastFocusTargetTsRef = useRef(0)
+  useEffect(() => {
+    if (focusTargetTs === 0 || focusTargetTs === lastFocusTargetTsRef.current) return
+    lastFocusTargetTsRef.current = focusTargetTs
+    if (mode !== 'tsunami') return
+    idleReturnDueRef.current = false
+    armIdleReturnTimer()
+  }, [mode, focusTargetTs, armIdleReturnTimer])
 
   useEffect(() => {
     if (!map) return
@@ -1342,7 +1365,7 @@ export function FocusObsGL({
   return null
 }
 
-// ── 一覧の行クリックで、渡された地点へ flyTo ──────────────────────────────────────
+// ── 一覧の行クリックで、渡された場所へ寄せる ──────────────────────────────────────
 /**
  * 役割は上の `FocusObsGL`（津波）と同じだが、**寄り先を名前ではなく座標で受け取る**。
  *
@@ -1352,6 +1375,9 @@ export function FocusObsGL({
  * 名前を渡して地図側で引き直すと、判定と寄り先が別々の解決になり、片方だけが引けたときに
  * 「押せるのに動かない」（またはその逆）になる。
  *
+ * **1 点とは限らない。** 観測点の行は 1 点、県・区域・市町村の行は範囲を指す。どちらも
+ * `fitToPositions` へ渡す（1 点ならその中で `flyToPoint` へ落ちる）。
+ *
  * 地図の表示条件には依存しない。震度の観測点ドットは引いた画では区域塗りへ集約されて消えるが、
  * **そこから特定の観測点へ寄るのがこの操作の主な使い道**なので、点が出ていることを条件にしない。
  *
@@ -1359,17 +1385,21 @@ export function FocusObsGL({
  * 同値（`zoom <= aggregateMaxZoom`）だから —— 自動フィットの着地は常に区域集約になるよう揃えて
  * ある（→ `docs/spec/quake-spec.md` §7）。点そのものを見たければ、そこから手で寄ることになる。
  */
-export function FocusPointGL({ focusPoint }: { focusPoint: MapFocusPoint | null }) {
+export function FocusTargetGL({ focusTarget }: { focusTarget: MapFocusTarget | null }) {
   const map = useMapGL()
   const handledTsRef = useRef(0)
   useEffect(() => {
-    if (!map || !focusPoint) return
+    if (!map || !focusTarget) return
     // クリック 1 回につき 1 度だけ寄せる。**鍵は座標ではなく `ts`** —— 同じ行を続けて押しても
     // 効くようにするため（座標で見ると 2 度目が「変化なし」になり、カメラが動かない）。
-    if (focusPoint.ts === handledTsRef.current) return
-    handledTsRef.current = focusPoint.ts
-    log.debug(`[mapGL] 地点フォーカス flyTo ${focusPoint.position[0]},${focusPoint.position[1]}`)
-    flyToPoint(map, focusPoint.position, fitMaxZoom(map), 1.0)
-  }, [map, focusPoint])
+    if (focusTarget.ts === handledTsRef.current) return
+    handledTsRef.current = focusTarget.ts
+    // 空は来ない想定（呼び出し側は寄り先を作れた行だけ押せるようにする）。来ても
+    // `fitToPositions` が何もしないので、カメラは動かないまま ts だけ消費する。
+    const { positions } = focusTarget
+    log.debug(`[mapGL] 一覧からのフォーカス ${positions.length === 1
+      ? `${positions[0][0]},${positions[0][1]}` : `${positions.length} 点の範囲`}`)
+    fitToPositions(map, positions, { durationSec: 1.0 })
+  }, [map, focusTarget])
   return null
 }
