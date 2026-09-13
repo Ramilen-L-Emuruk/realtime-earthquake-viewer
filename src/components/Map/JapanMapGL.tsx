@@ -194,8 +194,11 @@ export function JapanMapGL({
   // 震度分布モードのときは引いた画でも面を出す —— このモードは「引いた画で分布の拡がりを見る」
   // ためのもので、ズーム連動のままだといちばん見せたい画角で区域塗りへ戻ってしまう。
   //
-  // **観測点ドットはここに乗せない。** ドットは従来どおりズームだけで決まる（`!aggregateByRegion`）。
-  // 引いた画でドットを重ねると、粒が面を埋め尽くして分布の形が読めなくなる（実際そうなった）。
+  // **このモードのあいだ、観測点ドットは寄っても出さない**（下の `QuakeIntensityPointsGL` が
+  // 同じ `distributionMode` を見る）。引いた画では粒が面を埋め尽くして分布の形が読めなくなり、
+  // 寄った画でも面の色と点の色が同じ場所で食い違って見える。**自前の面のときは重ねて増える
+  // 情報が無く**（面はそのドットを補間したもの）、**公式の分布のときは実測と推定が並んで
+  // どちらを見ているのか判らなくなる**。実測を見たいならモードを閉じれば戻る。
   //
   // **`!lpgmActive` は防御として残す。** 呼び出し側（App の `quakeOverlay`）が長周期と分布を
   // 排他にしているので通常は両方が真にならないが、`lpgm` と `distributionMode` は独立した props
@@ -553,10 +556,13 @@ export function JapanMapGL({
             data={estimatedIntensity}
             visible={showDistribution && estimatedIntensityActive}
           />
+          {/* 観測点ドット。**震度分布モードでは寄っても出さない** —— このモードは面だけを
+              見せるためのもので、区域塗りと並んで引っ込む側に立つ（理由は上の
+              `showDistribution` のコメント）。 */}
           <QuakeIntensityPointsGL
             markers={stationMarkers}
             iconScale={iconScale}
-            visible={mode === 'quake' && !aggregateByRegion && !lpgmActive && !unreceivedMode}
+            visible={mode === 'quake' && !aggregateByRegion && !lpgmActive && !unreceivedMode && !distributionMode}
             epicenter={epicenter}
           />
           {/* 震度が届いていない観測点の印。**観測値のドットと出す条件が 1 つ違う** ——
