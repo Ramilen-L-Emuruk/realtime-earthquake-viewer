@@ -51,7 +51,7 @@ export function quakeEventKey(q: JMAQuake): string {
 
 // 生電文からイベントキーを新規に作る。DMDATA は全報が共有する eventId をそのまま使う。
 // P2PQuake は eventId を配信せず、レコード id も報ごとに変わるため、
-// 「発生時刻＋その報の id」で一意化する。このキーが作られるのはイベントの初報だけで、
+// 「地震の時刻（`earthquake.time`）＋その報の id」で一意化する。このキーが作られるのはイベントの初報だけで、
 // 以降の続報は mergeQuakeInto が初報のキーを引き継ぐ（＝キーは事後的に安定する）。
 function initialQuakeKey(q: JMAQuake): string {
   return extractQuakeEventId(q) ?? `p2p:${q.earthquake.time}#${q.id}`
@@ -62,7 +62,7 @@ function initialQuakeKey(q: JMAQuake): string {
  * 引き当てられなければ null。
  *
  * **鍵の体系が違うので直接は渡せない。** 長周期の表示は電文の `eventId` で持つのに対し、
- * 選択はカードの `eventKey`（DMDATA は `eventId` 由来だが P2PQuake は発生時刻＋レコード id）。
+ * 選択はカードの `eventKey`（DMDATA は `eventId` 由来だが P2PQuake は地震の時刻＋レコード id）。
  *
  * **長周期電文の自動表示とカードのバッジで同じ述語を使う。** 別々に書くと、片方だけ条件を
  * 変えたときに静かにずれる（どちらも「その長周期はどの地震のものか」という同じ問いに答える）。
@@ -97,8 +97,9 @@ function hasConflictingHypocenter(a: JMAQuake, b: JMAQuake): boolean {
 
 // 震源が未確定の電文か（＝震度速報。震源名が空であることで見分ける）。
 //
-// **この電文の EventID は同一性の根拠にできない。** 気象庁は震源決定前を検知時刻で採番し、
-// 震源が決まると震源時刻で採り直すため、同じ地震でも ID が変わることがある。
+// **この電文の EventID は同一性の根拠にできない。** 気象庁は震源決定の前と後とで別々に採番するため、
+// 同じ地震でも ID が変わることがある（**どちらの値がどの時刻なのかは判っていない**。下の実例では
+// 確定後のほうが 7 秒後ろで、発生時刻では説明が付かない。→ docs/spec/quake-spec.md §6.1）。
 // 実例: 2026-08-24 04:05 の地震（熊本県天草・芦北地方）で、震度速報が 20260824040519、
 // 震源情報以降が 20260824040526。震度速報は気象庁本庁、震源情報は大阪管区気象台の発表で、
 // 官署の引き継ぎに伴って採り直された。
@@ -142,12 +143,12 @@ function hasDisjointAreas(a: JMAQuake, b: JMAQuake, areaPrefIndex: AreaPrefIndex
 }
 
 // 2つの地震カードが同一イベントかどうか。
-// 判定の優先順は「安定キー → eventId → 発生時刻＋震源名＋区域の重なり」。
+// 判定の優先順は「安定キー → eventId → 地震の時刻＋震源名＋区域の重なり」。
 //
 // DMDATA は震度速報が targetDateTime、以降が arrivalTime を earthquake.time に使い、
-// 同じ地震なら同じ値になる（震源時刻 originTime とは 1 分ずれることがあるため採らない）。
-// P2PQuake は eventId が無いため発生時刻で比較するが、同時刻は分単位でしか一致しない
-// （P2PQuake の発生時刻は秒が常に 00）ので、震源名まで見て「同じ分に起きた別の地震」を分離する。
+// 同じ地震なら同じ値になる（発生時刻 originTime とは 1 分ずれることがあるため採らない）。
+// P2PQuake は eventId が無いため地震の時刻で比較するが、同時刻は分単位でしか一致しない
+// （P2PQuake の地震の時刻は秒が常に 00）ので、震源名まで見て「同じ分に起きた別の地震」を分離する。
 //
 // **eventId が食い違っても、それだけで別イベントとはしない。** 震源未確定の電文（震度速報）の
 // EventID は暫定値で採り直されうるため、その場合だけ内容での照合へ落とす。震源が判明している
@@ -163,7 +164,7 @@ function hasDisjointAreas(a: JMAQuake, b: JMAQuake, areaPrefIndex: AreaPrefIndex
 // 統合済みカードどうしを比較する将来の呼び出し・テストのための分岐。
 //
 // 限界（`docs/spec/quake-spec.md` §6.1）:
-// - eventId が完全に一致すれば、発生時刻も区域も見ずに同一と判断する
+// - eventId が完全に一致すれば、地震の時刻も区域も見ずに同一と判断する
 // - 暫定 ID のカードは、区域を持たない電文（震源情報）とはその場では合流しない
 // - P2PQuake 経路では、同じ分に起きた別々の地震を常には分離できない（震源名が同じ場合など）
 export function sameQuakeEntry(a: JMAQuake, b: JMAQuake, areaPrefIndex: AreaPrefIndex): boolean {
@@ -179,7 +180,7 @@ export function sameQuakeEntry(a: JMAQuake, b: JMAQuake, areaPrefIndex: AreaPref
     // **両方が震源未確定なら別々の地震**。片方でも震源が判明していなければ救済しない。
     if (isHypocenterPending(a) === isHypocenterPending(b)) return false
   }
-  // 発生時刻が空の電文（取消）は内容照合の材料を持たない。空どうしを「一致」と
+  // 地震の時刻が空の電文（取消）は内容照合の材料を持たない。空どうしを「一致」と
   // 数えないよう、値があることまで要求する。
   if (!a.earthquake.time || a.earthquake.time !== b.earthquake.time) return false
   if (hasConflictingHypocenter(a, b)) return false
@@ -443,8 +444,8 @@ export function mergeQuakeInto(existing: JMAQuake | undefined, incoming: JMAQuak
  * 取り下げの記録。取消電文の発表時刻・種別と、対象を照合するための電文・カード。
  *
  * `entry` に何を入れるかで照合の精度が変わる。**取消を受けたカードがあればそれを入れる**
- * （震源名・発生時刻・区域が揃っているため `sameQuakeEntry` の全経路が使える）。当たるカードが
- * 無かった場合は取消電文そのものを入れるが、そちらは発生時刻・震源名とも空なので eventId でしか
+ * （震源名・地震の時刻・区域が揃っているため `sameQuakeEntry` の全経路が使える）。当たるカードが
+ * 無かった場合は取消電文そのものを入れるが、そちらは地震の時刻・震源名とも空なので eventId でしか
  * 照合できない（§6.2）。eventId を持たない P2PQuake 経路では後者は当たらない。
  *
  * `issueType` は**取消電文の**種別。`entry` から読まずに別に持つのは、`entry` がカードのときに

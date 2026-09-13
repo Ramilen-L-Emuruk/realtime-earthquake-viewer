@@ -1598,7 +1598,7 @@ export function useEarthquakes(
         if (cancelled) return
         // 種別横断の生電文をイベントごとに統合する（DMDSS 版・リアルタイムと同一ロジック）。
         // 以前は earthquake.time をキーにした Map で「優先度が最も高い 1 報」を選んでいたが、
-        // P2PQuake の発生時刻は分単位のため、同じ分に起きた別の地震が 1 枚に潰れていた。
+        // P2PQuake の earthquake.time は分単位のため、同じ分に起きた別の地震が 1 枚に潰れていた。
         rememberQuakeRetractionsFromBatch(quakeEvents)
         const earthquakes = mergeQuakeHistory(quakeEvents, [], quakeRetractionsRef.current, getAreaPrefIndexCache())
         const allTsunami = (tsunamiEvents as JMATsunami[])

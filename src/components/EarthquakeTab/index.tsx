@@ -63,7 +63,7 @@ export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selected
           // QUAKE-4: 続報で id 末尾の serial が変わるたびに EarthquakeCard がリマウントされ、
           // isSelected の副作用（強制スクロール）が発火してユーザー操作を妨害する。
           // eventKey は続報でも変わらないため、React の key・選択判定の両方をこれで安定させる
-          // （どちらも quakeEventKey に統一。発生時刻は同じ分に起きた別の地震と衝突する）。
+          // （どちらも quakeEventKey に統一。earthquake.time は同じ分に起きた別の地震と衝突する）。
           key={quakeEventKey(quake)}
           quake={quake}
           isLatest={i === 0}

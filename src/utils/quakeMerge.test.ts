@@ -48,7 +48,7 @@ interface QuakeOpts {
   maxScale?: IntensityScale
   points?: EarthquakePoint[]
   time?: string          // 電文発表時刻（issue/telegram time）
-  quakeTime?: string     // earthquake.time（発生時刻）
+  quakeTime?: string     // earthquake.time（地震の時刻。→ docs/spec/quake-spec.md §1）
   mag?: number
   hypoName?: string
   correct?: CorrectType  // 訂正区分（既定は 'なし'）
@@ -185,10 +185,10 @@ describe('sameQuakeEntry', () => {
     expect(sameQuakeEntry(prompt, detail)).toBe(true)
   })
 
-  // 気象庁は震源決定前の震度速報を検知時刻で採番し、震源が決まると震源時刻で採り直すため、
-  // 同じ地震でも EventID が変わることがある（2026-08-24 04:05 熊本県天草・芦北地方の実例）。
+  // 気象庁は震源決定の前と後とで EventID を別々に採番するため、同じ地震でも EventID が
+  // 変わることがある（2026-08-24 04:05 熊本県天草・芦北地方の実例）。
   // 以下 4 件はその救済と、救済のために緩めすぎていないことの対。
-  it('震度速報は eventId が食い違っても、発生時刻と区域が重なれば同一イベントとみなす', () => {
+  it('震度速報は eventId が食い違っても、地震の時刻と区域が重なれば同一イベントとみなす', () => {
     const prompt = makeQuake({
       id: 'dmdata-quake-20260824040519-1', type: '震度速報', hypoName: '',
       points: [{ pref: '', addr: '熊本県天草・芦北地方', isArea: true, scale: 30 }],
@@ -221,7 +221,7 @@ describe('sameQuakeEntry', () => {
     expect(sameQuakeEntry(prompt, detail)).toBe(false)
   })
 
-  it('震度速報でも、発生時刻の一致は免除しない', () => {
+  it('震度速報でも、地震の時刻の一致は免除しない', () => {
     const prompt = makeQuake({
       id: 'dmdata-quake-20260824040519-1', type: '震度速報', hypoName: '',
       quakeTime: '2026-08-24T04:05:00Z',
@@ -288,7 +288,7 @@ describe('sameQuakeEntry', () => {
     expect(sameQuakeEntry(other, prompt)).toBe(false)
   })
 
-  it('取消電文は eventId が食い違えば別イベントとする（震源名・発生時刻が空でも合流しない）', () => {
+  it('取消電文は eventId が食い違えば別イベントとする（震源名・地震の時刻が空でも合流しない）', () => {
     const card = makeQuake({ id: 'dmdata-quake-20260824040526-1', hypoName: '熊本県天草・芦北地方' })
     const cancel: JMAQuake = {
       ...makeQuake({ id: 'dmdata-quake-20260824040519-2', hypoName: '' }),
@@ -364,7 +364,7 @@ describe('quakeEventKey', () => {
     expect(quakeEventKey(makeQuake({ id: 'dmdata-quake-20260728162718-1' }))).toBe('20260728162718')
   })
 
-  it('P2P 経路の生電文は発生時刻とレコード id から作る', () => {
+  it('P2P 経路の生電文は地震の時刻とレコード id から作る', () => {
     const key = quakeEventKey(makeQuake({ id: 'p2p-1', quakeTime: '2026-07-28T07:27:00Z' }))
     expect(key).toBe('p2p:2026-07-28T07:27:00Z#p2p-1')
   })
@@ -883,7 +883,7 @@ describe('mergeQuakeHistory', () => {
   })
 
   // 2026-08-15 06:58 の実データ（群馬県南部 震度2／インドネシア、フローレスの遠地地震）。
-  // P2PQuake の発生時刻は分単位のため両者の earthquake.time が完全一致し、
+  // P2PQuake の地震の時刻は分単位のため両者の earthquake.time が完全一致し、
   // 以前は優先度比較（各地の震度情報 4 > 遠地地震 0）で遠地地震のカードが捨てられていた。
   it('P2P 由来で同じ分に起きた別震源の地震は 2 枚に分かれる', () => {
     const domestic = makeQuake({
@@ -1002,20 +1002,20 @@ describe('mergeQuakeHistory', () => {
 })
 
 describe('coalesceByEventId — 暫定 EventID で分かれたカードを畳む', () => {
-  const 発生時刻 = '2026-08-23T19:05:00Z'
+  const 地震の時刻 = '2026-08-23T19:05:00Z'
   // 2026-08-24 04:05 熊本県天草・芦北地方の実系列。震度速報だけ EventID が別採番されている。
   const 震度速報 = makeQuake({
     id: 'dmdata-quake-20260824040519-1', type: '震度速報', hypoName: '',
-    time: '2026-08-23T19:06:00Z', quakeTime: 発生時刻, maxScale: 30,
+    time: '2026-08-23T19:06:00Z', quakeTime: 地震の時刻, maxScale: 30,
     points: [{ pref: '', addr: '熊本県天草・芦北地方', isArea: true, scale: 30 }],
   })
   const 震源情報 = makeNoIntensity({
     id: 'dmdata-quake-20260824040526-1', type: '震源情報', hypoName: '熊本県天草・芦北地方',
-    time: '2026-08-23T19:08:00Z', quakeTime: 発生時刻,
+    time: '2026-08-23T19:08:00Z', quakeTime: 地震の時刻,
   })
   const 震源震度情報 = makeQuake({
     id: 'dmdata-quake-20260824040526-2', type: '震源・震度情報', hypoName: '熊本県天草・芦北地方',
-    time: '2026-08-23T19:09:00Z', quakeTime: 発生時刻, maxScale: 30,
+    time: '2026-08-23T19:09:00Z', quakeTime: 地震の時刻, maxScale: 30,
     points: [{ pref: '', addr: '熊本県天草・芦北地方', isArea: true, scale: 30 }],
   })
 
@@ -1060,19 +1060,19 @@ describe('coalesceByEventId — 暫定 EventID で分かれたカードを畳む
 })
 
 describe('findExistingQuakeCard — 一致が 2 枚あるときの選び方', () => {
-  const 発生時刻 = '2026-08-23T19:05:00Z'
+  const 地震の時刻 = '2026-08-23T19:05:00Z'
   const 震度速報 = makeQuake({
     id: 'dmdata-quake-20260824040519-1', type: '震度速報', hypoName: '',
-    time: '2026-08-23T19:06:00Z', quakeTime: 発生時刻, maxScale: 30,
+    time: '2026-08-23T19:06:00Z', quakeTime: 地震の時刻, maxScale: 30,
     points: [{ pref: '', addr: '熊本県天草・芦北地方', isArea: true, scale: 30 }],
   })
   const 震源情報カード = makeNoIntensity({
     id: 'dmdata-quake-20260824040526-1', type: '震源情報', hypoName: '熊本県天草・芦北地方',
-    time: '2026-08-23T19:08:00Z', quakeTime: 発生時刻,
+    time: '2026-08-23T19:08:00Z', quakeTime: 地震の時刻,
   })
   const 震源震度情報 = makeQuake({
     id: 'dmdata-quake-20260824040526-2', type: '震源・震度情報', hypoName: '熊本県天草・芦北地方',
-    time: '2026-08-23T19:09:00Z', quakeTime: 発生時刻, maxScale: 30,
+    time: '2026-08-23T19:09:00Z', quakeTime: 地震の時刻, maxScale: 30,
     points: [{ pref: '', addr: '熊本県天草・芦北地方', isArea: true, scale: 30 }],
   })
 
@@ -1112,24 +1112,24 @@ describe('findExistingQuakeCard — 一致が 2 枚あるときの選び方', ()
 })
 
 describe('区域を持たない電文が先に割り込む場合', () => {
-  const 発生時刻 = '2026-08-23T19:05:00Z'
+  const 地震の時刻 = '2026-08-23T19:05:00Z'
   const 震度速報 = makeQuake({
     id: 'dmdata-quake-20260824040519-1', type: '震度速報', hypoName: '',
-    time: '2026-08-23T19:06:00Z', quakeTime: 発生時刻, maxScale: 30,
+    time: '2026-08-23T19:06:00Z', quakeTime: 地震の時刻, maxScale: 30,
     points: [{ pref: '', addr: '熊本県天草・芦北地方', isArea: true, scale: 30 }],
   })
   const 震源情報 = makeNoIntensity({
     id: 'dmdata-quake-20260824040526-1', type: '震源情報', hypoName: '熊本県天草・芦北地方',
-    time: '2026-08-23T19:08:00Z', quakeTime: 発生時刻,
+    time: '2026-08-23T19:08:00Z', quakeTime: 地震の時刻,
   })
   // 震源要素更新（VXSE61）も区域を持たない。確定 ID 側のカードだけを更新する。
   const 震源要素更新 = makeNoIntensity({
     id: 'dmdata-quake-20260824040526-9', type: '顕著な地震の震源要素更新のお知らせ',
-    hypoName: '天草灘', time: '2026-08-23T19:10:00Z', quakeTime: 発生時刻,
+    hypoName: '天草灘', time: '2026-08-23T19:10:00Z', quakeTime: 地震の時刻,
   })
   const 震源震度情報 = makeQuake({
     id: 'dmdata-quake-20260824040526-2', type: '震源・震度情報', hypoName: '熊本県天草・芦北地方',
-    time: '2026-08-23T19:09:00Z', quakeTime: 発生時刻, maxScale: 30,
+    time: '2026-08-23T19:09:00Z', quakeTime: 地震の時刻, maxScale: 30,
     points: [{ pref: '', addr: '熊本県天草・芦北地方', isArea: true, scale: 30 }],
   })
 
@@ -1150,13 +1150,13 @@ describe('区域を持たない電文が先に割り込む場合', () => {
 // 正常な運用では取消の後に同じ地震の続報は来ない。届いたなら「到着順の入れ替わり」か
 // 「同一性の誤認識」のどちらかで、発表時刻で切り分ける（詳細は `isRetractedQuakeReport`）。
 describe('取消の後に届いた報', () => {
-  const 発生時刻 = '2026-01-01T07:06:00Z'
+  const 地震の時刻 = '2026-01-01T07:06:00Z'
   const 震度速報 = makeQuake({
     id: 'dmdata-quake-20260101160610-1', type: '震度速報', hypoName: '',
-    time: '2026-01-01T07:07:00Z', quakeTime: 発生時刻, maxScale: 50,
+    time: '2026-01-01T07:07:00Z', quakeTime: 地震の時刻, maxScale: 50,
     points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
   })
-  // 取消電文はパーサが発生時刻・震源名とも空で作る（照合は eventId のみ）。
+  // 取消電文はパーサが地震の時刻・震源名とも空で作る（照合は eventId のみ）。
   const 取消: JMAQuake = {
     ...makeQuake({ id: 'dmdata-quake-20260101160610-2', type: '震度速報', time: '2026-01-01T07:10:00Z' }),
     cancelled: true,
@@ -1174,7 +1174,7 @@ describe('取消の後に届いた報', () => {
     it('正: 取消より前に発表された報は取り下げ済みとみなす', () => {
       const stale = makeQuake({
         id: 'dmdata-quake-20260101160610-3', type: '震度速報', hypoName: '',
-        time: '2026-01-01T07:09:00Z', quakeTime: 発生時刻, maxScale: 50,
+        time: '2026-01-01T07:09:00Z', quakeTime: 地震の時刻, maxScale: 50,
         points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
       })
       expect(isRetractedQuakeReport(retractions, stale)).toBe(true)
@@ -1183,7 +1183,7 @@ describe('取消の後に届いた報', () => {
     it('正: 発表時刻が同じ報も取り下げ側へ倒す（分精度では前後を決められない）', () => {
       const tie = makeQuake({
         id: 'dmdata-quake-20260101160610-4', type: '震度速報', hypoName: '',
-        time: 取消.time, quakeTime: 発生時刻, maxScale: 50,
+        time: 取消.time, quakeTime: 地震の時刻, maxScale: 50,
         points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
       })
       expect(isRetractedQuakeReport(retractions, tie)).toBe(true)
@@ -1192,7 +1192,7 @@ describe('取消の後に届いた報', () => {
     it('正: 発表時刻が空の報も取り下げ側へ倒す', () => {
       const noTime = makeQuake({
         id: 'dmdata-quake-20260101160610-5', type: '震度速報', hypoName: '',
-        time: '', quakeTime: 発生時刻, maxScale: 50,
+        time: '', quakeTime: 地震の時刻, maxScale: 50,
         points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
       })
       expect(isRetractedQuakeReport(retractions, noTime)).toBe(true)
@@ -1202,7 +1202,7 @@ describe('取消の後に届いた報', () => {
       // 種別は取消と同じにして、発表時刻の条件だけを見る。
       const fresh = makeQuake({
         id: 'dmdata-quake-20260101160610-6', type: '震度速報', hypoName: '',
-        time: '2026-01-01T07:11:00Z', quakeTime: 発生時刻, maxScale: 50,
+        time: '2026-01-01T07:11:00Z', quakeTime: 地震の時刻, maxScale: 50,
         points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
       })
       expect(isRetractedQuakeReport(retractions, fresh)).toBe(false)
@@ -1213,7 +1213,7 @@ describe('取消の後に届いた報', () => {
       // 参照側で広げると、取消と無関係な種別の正常な報が無音で消える。
       const otherType = makeQuake({
         id: 'dmdata-quake-20260101160610-8', type: '震源・震度情報', hypoName: '石川県能登地方',
-        time: '2026-01-01T07:09:00Z', quakeTime: 発生時刻, maxScale: 50,
+        time: '2026-01-01T07:09:00Z', quakeTime: 地震の時刻, maxScale: 50,
         points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
       })
       expect(isRetractedQuakeReport(retractions, otherType)).toBe(false)
@@ -1237,7 +1237,7 @@ describe('取消の後に届いた報', () => {
     it('正: 取消表示中のカードは既存として選ばない（置換で取消が消えるのを防ぐ）', () => {
       const fresh = makeQuake({
         id: 'dmdata-quake-20260101160610-6', type: '震源・震度情報', hypoName: '石川県能登地方',
-        time: '2026-01-01T07:11:00Z', quakeTime: 発生時刻, maxScale: 50,
+        time: '2026-01-01T07:11:00Z', quakeTime: 地震の時刻, maxScale: 50,
         points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
       })
       expect(findExistingQuakeCard([取消済みカード], fresh)).toBeUndefined()
@@ -1246,7 +1246,7 @@ describe('取消の後に届いた報', () => {
     it('対照: 取消されていない同一イベントのカードは従来どおり選ぶ', () => {
       const fresh = makeQuake({
         id: 'dmdata-quake-20260101160610-6', type: '震源・震度情報', hypoName: '石川県能登地方',
-        time: '2026-01-01T07:11:00Z', quakeTime: 発生時刻, maxScale: 50,
+        time: '2026-01-01T07:11:00Z', quakeTime: 地震の時刻, maxScale: 50,
         points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
       })
       expect(findExistingQuakeCard([震度速報], fresh)?.id).toBe(震度速報.id)
@@ -1260,7 +1260,7 @@ describe('取消の後に届いた報', () => {
     it('正: 取消と同じ分に発表された報が、入力順で取消より後に来ても復活させない', () => {
       const tie = makeQuake({
         id: 'dmdata-quake-20260101160610-3', type: '震度速報', hypoName: '',
-        time: 取消.time, quakeTime: 発生時刻, maxScale: 50,
+        time: 取消.time, quakeTime: 地震の時刻, maxScale: 50,
         points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
       })
       // 履歴はカードを消してしまうため、取消を見た事実を別に覚えていないと復活する。
@@ -1270,7 +1270,7 @@ describe('取消の後に届いた報', () => {
     it('対照: 取消より前に発表された報は、時刻順で取消の前に処理されて取消で消える', () => {
       const stale = makeQuake({
         id: 'dmdata-quake-20260101160610-7', type: '震度速報', hypoName: '',
-        time: '2026-01-01T07:09:00Z', quakeTime: 発生時刻, maxScale: 50,
+        time: '2026-01-01T07:09:00Z', quakeTime: 地震の時刻, maxScale: 50,
         points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
       })
       expect(mergeQuakeHistory([震度速報, stale, 取消])).toHaveLength(0)
@@ -1279,7 +1279,7 @@ describe('取消の後に届いた報', () => {
     it('対照: 取消より後に発表された報は新しいカードとして残る', () => {
       const fresh = makeQuake({
         id: 'dmdata-quake-20260101160610-6', type: '震源・震度情報', hypoName: '石川県能登地方',
-        time: '2026-01-01T07:11:00Z', quakeTime: 発生時刻, maxScale: 50,
+        time: '2026-01-01T07:11:00Z', quakeTime: 地震の時刻, maxScale: 50,
         points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
       })
       const merged = mergeQuakeHistory([震度速報, 取消, fresh])
@@ -1290,7 +1290,7 @@ describe('取消の後に届いた報', () => {
     it('安全弁: 取消が無ければ従来どおり統合する', () => {
       const fresh = makeQuake({
         id: 'dmdata-quake-20260101160610-6', type: '震源・震度情報', hypoName: '石川県能登地方',
-        time: '2026-01-01T07:11:00Z', quakeTime: 発生時刻, maxScale: 50,
+        time: '2026-01-01T07:11:00Z', quakeTime: 地震の時刻, maxScale: 50,
         points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
       })
       expect(mergeQuakeHistory([震度速報, fresh])).toHaveLength(1)
@@ -1301,7 +1301,7 @@ describe('取消の後に届いた報', () => {
     it('正: base の取消表示中のカードを置換しない（取消と purge 予約を保つ）', () => {
       const fresh = makeQuake({
         id: 'dmdata-quake-20260101160610-9', type: '震源・震度情報', hypoName: '石川県能登地方',
-        time: '2026-01-01T07:11:00Z', quakeTime: 発生時刻, maxScale: 50,
+        time: '2026-01-01T07:11:00Z', quakeTime: 地震の時刻, maxScale: 50,
         points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
       })
       const merged = mergeQuakeHistory([fresh], [取消済みカード])
@@ -1315,7 +1315,7 @@ describe('取消の後に届いた報', () => {
       // `base` の取消はこのバッチに含まれないため、台帳を渡さないと照合できない。
       const stale = makeQuake({
         id: 'dmdata-quake-20260101160610-10', type: '震度速報', hypoName: '',
-        time: '2026-01-01T07:09:00Z', quakeTime: 発生時刻, maxScale: 50,
+        time: '2026-01-01T07:09:00Z', quakeTime: 地震の時刻, maxScale: 50,
         points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
       })
       expect(mergeQuakeHistory([stale], [], retractions)).toHaveLength(0)
@@ -1324,7 +1324,7 @@ describe('取消の後に届いた報', () => {
     it('対照: 台帳を渡さなければ弾かない（台帳が効いていることの裏返し）', () => {
       const stale = makeQuake({
         id: 'dmdata-quake-20260101160610-10', type: '震度速報', hypoName: '',
-        time: '2026-01-01T07:09:00Z', quakeTime: 発生時刻, maxScale: 50,
+        time: '2026-01-01T07:09:00Z', quakeTime: 地震の時刻, maxScale: 50,
         points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
       })
       expect(mergeQuakeHistory([stale])).toHaveLength(1)

@@ -136,7 +136,7 @@ export function quakeScaleForScope(
     // 観測点の点を持つ電文なら「載っていない＝震度1未満」なので、閾値がいくつでも出さなくてよい。
     // 区域しか持たない電文（震度速報）で言えるのは「震度3未満」までなので、閾値がそれより低いと
     // 判定できない。**そこで判定を保留すると、その地震は二度と評価されないことがある** ——
-    // 見るのは常に最新の 1 件（`earthquakes[0]`・発生時刻の新しい順）なので、観測点を載せた続報が
+    // 見るのは常に最新の 1 件（`earthquakes[0]`・地震の時刻の新しい順）なので、観測点を載せた続報が
     // 届く前に別の地震が起きると、古い方は先頭へ戻れない。
     const hasStationPoint = (quake.points ?? []).some(p => !p.isArea && isValidIntensityScale(p.scale))
     if (!hasStationPoint && minScale < AREA_REPORT_FLOOR) return nationwide()

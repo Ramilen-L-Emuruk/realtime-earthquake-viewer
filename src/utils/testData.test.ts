@@ -239,7 +239,7 @@ describe('地震情報テストの points 形状', () => {
 
     // 安全弁: 同じ地震として扱われること。`eventId` が変わると別カードが立ち、
     // 「訂正された」ように見えない（印だけが 2 枚目のカードに付く）。
-    it('2 通が同じ地震を指し、震源時刻は動かない', () => {
+    it('2 通が同じ地震を指し、地震の時刻は動かない', () => {
       const { initial, amended } = createTestQuakeAmendment(true)
       expect(extractQuakeEventIdFromId(amended.id)).toBe(extractQuakeEventIdFromId(initial.id))
       expect(extractQuakeEventIdFromId(initial.id)).not.toBeNull()
