@@ -502,27 +502,39 @@ describe('津波テストの区域は実配信の形に従う', () => {
     }
   })
 
-  // 安全弁: 地点の到達予想も未来しか無く、波高か到達時刻が届いた地点からは消える
-  // （満潮時刻だけが残る）。**欠測の地点は電文では残ることがあるが、カードが同名の観測点を
-  // 優先して予報の行を出さないため、テストデータにも持たせていない**（実機に届かない）
-  it('地点の到達予想は未来で、値が届いた地点は持たない', () => {
+  // 安全弁: 地点の到達予想は、波高か到達時刻が届いた地点からは消える（満潮時刻だけが残る）。
+  // **残る地点のうち、まだ何も届いていない地点は未来・欠測の地点は過去。** 後者は予想した
+  // 時刻を過ぎても到達を観測できていない形で、気象庁には予想を取り下げる理由が無い。
+  // カードはこの値を観測点の行へ「到達予想」として添えるので実機にも届く
+  // （→ docs/spec/tsunami-spec.md §9「実測の到達時刻が無い行に添える到達予想」）。
+  it('地点の到達予想は、値が届いた地点からは消え、欠測の地点だけ過去に残る', () => {
     const tsunami = createTestTsunami(true)
     const received = new Set((tsunami.observations ?? [])
       .filter((o) => o.height?.description || o.arrivalTime)
       .map((o) => o.name))
+    const missing = new Set((tsunami.observations ?? [])
+      .filter((o) => isObservationMissing(o))
+      .map((o) => o.name))
     const stations = (tsunami.areas ?? []).flatMap((a) => a.stations ?? [])
     expect(stations.length).toBeGreaterThan(0)
     let future = 0
+    let missingPast = 0
     for (const st of stations) {
       if (received.has(st.name)) {
         expect(st.arrivalTime, st.name).toBeFalsy()
         continue
       }
       if (!st.arrivalTime) continue
+      if (missing.has(st.name)) {
+        expect(Date.parse(st.arrivalTime), st.name).toBeLessThan(Date.parse(tsunami.time))
+        missingPast++
+        continue
+      }
       expect(Date.parse(st.arrivalTime), st.name).toBeGreaterThan(Date.parse(tsunami.time))
       future++
     }
     expect(future).toBeGreaterThan(0)
+    expect(missingPast).toBeGreaterThan(0)
   })
 
 })
