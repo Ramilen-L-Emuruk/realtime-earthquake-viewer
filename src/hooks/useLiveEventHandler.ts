@@ -559,8 +559,11 @@ export interface LiveEventHandlerDeps {
    * **`onLiveEvent` の経路から呼ぶ。** 状態を見る `useEffect` にすると、リプレイの初期状態の
    * 復元（`silent`）でも開いてしまう ―― あれは「いま届いた」ではなく「その時刻に出ていた」の
    * 再現なので、画面を切り替える理由が無い。
+   *
+   * 戻り値は**分布モードを開けたか**（引き当てる地震カードが無ければ `false`）。記録を残すかは
+   * 呼び出し側が決める（理由は実装側の注記）。
    */
-  openEstimatedIntensity: (arrivalTime: string, lat: number, lon: number) => void
+  openEstimatedIntensity: (arrivalTime: string, lat: number, lon: number) => boolean
   revertToDefaultTab: () => void
   selectQuake: (id: string | null) => void
   /**
@@ -1139,7 +1142,16 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       }
       // 自分の番が来た（これから声に出す）瞬間に画面を合わせ、読み上げた値を既読へ移す。
       // 待ち行列の後なので、重い電文の読み上げ中に届いた軽い電文は、その後になって初めてタブを取る。
-      onSpeakStart?.()
+      //
+      // **ここの失敗で読み上げを落とさない。** 例外が抜けると下の `speakWithVoicevox` へ到達せず、
+      // **本文が一言も鳴らないまま** catch へ落ちる（記録は「読み上げの進行に失敗」という汎用の
+      // 一行だけで、どの電文のどこで落ちたか残らない）。EEW 側の追従（`chainEEWSpeech` の
+      // `follow?.()`）と同じ方針。画面を合わせられないことより、声が出ないことのほうが重い。
+      //
+      // **通るのは 1 つの経路ではない。** `speakNonEEWDelayed` が渡す関数はタブ移動
+      // （`followSpeechTab`）を含み、呼び出し側の `onSpeakStart` は津波の観測点・地震情報の
+      // 既読更新と、推計震度分布図の分布モードを開く操作を担う。
+      try { onSpeakStart?.() } catch (err) { log.warn(`[tts] 発話直前の処理に失敗（読み上げは続行）topic=${topic}`, err) }
       // 追従は「これから声に出す」ここで開始する。予約の段階で始めると、間を置いている
       // 最中に追い越されて鳴らなかった読み上げに画面が付いていく。
       //
@@ -1447,7 +1459,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // 地震から数分後に届く。**地震そのものの事実は既に地震情報で伝え終えている**ので、
     // ここが足すのは「震度の広がりが、気象庁の推計として出そろった」ことだけ。
     // 下の地震回数と違い**タブは動かす** —— 見せる先が地図の面で、そこへ行かないと何も見えない。
-    // ただし要求として出すので、EEW・揺れ検知・利用者の操作には譲る。
+    // **動かし方は他のタブを持つ情報と同じで、読み上げに同調させる**（地震情報・長周期・津波と
+    // 同じく `speakNonEEWDelayed` へ追従先を渡す）。受信の瞬間に要求を出すだけの形だと、
+    // EEW が画面を保持している間はその要求が弾かれ、読み上げの番が来ても画面が合わないまま
+    // 声だけが出る（→ audio-tts-spec.md §6「推計震度分布図は地震情報の音を借りる」）。
     if (event.kind === 'estimatedIntensity') {
       // **初報か続報かは `useEarthquakes` が決めて渡してくる**（`isNewEstimatedIntensity`）。
       // ここで見た `arrivalTime` を覚えて数え直すと、「同じ地震の続報」と「別の地震へ入れ替え」の
@@ -1463,16 +1478,43 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // 読まれた」と聞こえるだけで、事実としては嘘になっていない。
       // **地図の分布モードを開く。** 地震発生から数分後に届くもので、そのころ利用者は
       // 別のものを見ている。合図なしに画面だけ替わるのがいちばん困るので、音と声も添える。
-      openEstimatedIntensity(ei.arrivalTime, ei.hypocenter.lat, ei.hypocenter.lon)
+      //
+      // **読み上げの番が来た瞬間にもう一度開く**（下の `onSpeakStart`）。待っている間に別の
+      // 地震情報が届けば選択はそちらへ移るので、受信時の 1 回きりだと「更新されました」と
+      // 読み上げながら分布が出ていない形になる。開く操作は冪等（→ `openEstimatedIntensity`）。
+      // **記録を残すのは「最後の機会」でだけ。** 受信の時点で開けないのは珍しくない（分布図が
+      // 地震情報より先に届けば、まだどのカードにも結び付かない）ので、両方で残すと同じ文面が
+      // 並び、本当に開けなかった回が埋もれる。
+      const openDistribution = (lastChance: boolean) => {
+        if (openEstimatedIntensity(ei.arrivalTime, ei.hypocenter.lat, ei.hypocenter.lon)) return
+        if (!lastChance) return
+        // 画面には何も現れないのに声は「受信しました」と言う。**記録が唯一の手掛かり**なので、
+        // 同じ形の食い違いを扱う未入電側（`useUnreceivedSpeechFollow`）と同じく warn で残す。
+        log.warn(`[quake] 推計震度分布図を受信したのに、対応する地震カードが無く分布モードを開けませんでした（地震発現時刻 ${ei.arrivalTime}）`)
+      }
+      // 受信の瞬間。読み上げが無い端末では、ここが開ける最後の機会になる。
+      openDistribution(!settings.voicevoxEnabled)
+      // **受信時要求へ落とすのは読み上げが無効な端末だけ。** そこでは画面が唯一の伝え手に
+      // なるので `receipt` 駆動で出し、EEW 続報の保持を越えさせる（振り分けは
+      // `setActiveTabNonRealtime`）。読み上げがある端末でここを通すと、最弱の優先度で出した
+      // 要求が EEW の保持に弾かれたきりになる。
+      if (!settings.voicevoxEnabled) {
+        log.info('[tab] earthquake を要求 (推計震度分布図・読み上げ無し)')
+        setActiveTabNonRealtime('earthquake')
+      }
       if (settings.soundEnabled) {
         // **新しい音を作らない。** これは新しい危険ではなく、既に読み上げた地震の
         // **震度の描き方が公式のものへ替わった**という報せ。地震情報と同じ音で足りる。
         playAlertSound('earthquakeInfo')
       }
       if (settings.voicevoxEnabled) {
+        // **読み上げ文は常に非空**（`estimatedIntensityToText` は時刻が読めなくても末尾の句を
+        // 返す）。長周期のような「文が空なら受信時要求へ落とす」分岐が要らないのはそのため。
         speakNonEEWDelayed(
           estimatedIntensityToText(ei.arrivalTime, isNew !== false), SPEECH_PRIORITY.normal,
           ttsDelayFor('earthquakeInfo'), 'estimatedIntensity',
+          { tab: 'earthquake', priority: TAB_PRIORITY.quake },
+          undefined, undefined, () => openDistribution(true),
         )
       }
       return

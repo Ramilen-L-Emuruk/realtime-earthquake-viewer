@@ -61,6 +61,7 @@ import { quakeEventKey, quakeKeyForLpgmEventId } from './utils/quakeMerge'
 import { estimatedIntensityFor, matchEstimatedIntensityArrival } from './utils/estimatedIntensity'
 import {
   type QuakeOverlay, toggleLpgmOverlay, toggleDistributionOverlay, toggleUnreceivedOverlay,
+  openDistributionOverlay,
   closeLpgmOverlay, closeEewLpgmOverlay, closeUnreceivedOverlay, closeUnreceivedOverlayFor,
   decideUnreceivedSpeechOpen, shouldCloseOverlayOnSelection, type UnreceivedOpenResult,
 } from './utils/quakeOverlay'
@@ -458,26 +459,40 @@ export function App() {
   /**
    * 気象庁の推計震度分布図が届いたときに、その地震の分布モードを開く。
    *
-   * **タブ移動は既存の仕組みへ要求として出す**（`setActiveTabNonRealtime`）。直接
-   * `setActiveTab` を叩くと、EEW・揺れ検知・利用者の操作より優先されてしまい、
-   * 地震から数分後に画面を横取りすることになる（→ audio-tts-spec.md §6 の優先順位）。
+   * **タブ移動はここでは行わない。** 見せ先が地図の面なので画面を移す必要はあるが、それは
+   * 読み上げに同調させる（呼び出し側が `speakNonEEWDelayed` の追従先として渡す。→
+   * audio-tts-spec.md §6「推計震度分布図は地震情報の音を借りる」）。受信の瞬間に要求を
+   * 出すだけだと、その要求が EEW の保持に弾かれたきり、**読み上げの番が来ても画面が合わない**
+   * ——リアルタイムタブのまま「更新されました」とだけ声が出る。
    *
-   * 引き当ては受信側と同じ述語（`matchEstimatedIntensity`）。**該当するカードが無ければ何もしない**
-   * ——別の地震の分布モードを勝手に開くよりは、開かないほうがましでしてよ。
+   * **二度呼ばれる前提で冪等にしてある**（受信の瞬間と、読み上げの順番が来た瞬間）。読み上げは
+   * 優先度の待ち行列を通るので、順番が回るまでに別の地震情報が届いて選択がそちらへ移っている
+   * ことがある（選択は受信した瞬間に同期で動く）。受信時の 1 回きりだと、そのとき分布が
+   * 閉じたまま声だけが出る。開く遷移は `openDistributionOverlay`（トグルではない）。
+   *
+   * 引き当ては受信側と同じ述語（`matchEstimatedIntensityArrival`）。**該当するカードが無ければ
+   * 何もしない** ——別の地震の分布モードを勝手に開くよりは、開かないほうがまし。
+   *
+   * **開けたかどうかを返し、記録するかは呼び出し側が決める。** 2 回呼ばれるうち受信の時点で
+   * 開けないのは珍しくなく（分布図が地震情報より先に届けば、まだどのカードにも結び付かない）、
+   * ここで毎回記録すると本当に開けなかった回が埋もれる。
+   *
+   * @returns 分布モードを開けたか
    */
-  const openEstimatedIntensity = useCallback((arrivalTime: string, lat: number, lon: number) => {
+  const openEstimatedIntensity = useCallback((arrivalTime: string, lat: number, lon: number): boolean => {
     const target = earthquakesRef.current.find(
       q => !q.cancelledAt && matchEstimatedIntensityArrival(q, arrivalTime, lat, lon),
     )
-    if (!target) return
+    if (!target) return false
     // **カードの選択も合わせる。** 地図が出すのは選択中の地震（`mapQuake`）で、分布モードも
     // 公式の面もそこから引く。鍵を書き替えるだけだと、利用者が別の地震カードを見ている間に
     // 届いたとき**カードのボタンは押された状態なのに地図には何も出ない**——エラーもログも
     // 出ないので、手掛かりが何も残らない。長周期の自動表示も同じ 2 つを対にしている。
-    selectQuake(quakeEventKey(target))
-    setQuakeOverlay({ kind: 'distribution', eventKey: quakeEventKey(target) })
-    setActiveTabNonRealtime('earthquake')
-  }, [selectQuake, setActiveTabNonRealtime])
+    const eventKey = quakeEventKey(target)
+    selectQuake(eventKey)
+    setQuakeOverlay(prev => openDistributionOverlay(prev, eventKey))
+    return true
+  }, [selectQuake])
 
   // EEW の受信による realtime タブ移動。
   //
