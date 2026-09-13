@@ -1867,6 +1867,25 @@ export function useEarthquakes(
   }, [])
 
   /**
+   * 種別が前後して届く報のテスト。**4 通を順に流す。**
+   *
+   * 気象庁は同じ地震について種別の違う電文を前後して発表する（震度速報 → 震源情報 →
+   * 震度速報 → 震源・震度情報）。3 通目で見出しが「震度速報#2/震源情報」になり、4 通目で
+   * 速報段階が畳まれる（→ docs/spec/quake-spec.md §8「見出しには受け取った種別を並べる」）。
+   * **その見え方を実機で確かめられる入口がここしかない。**
+   *
+   * **受信と同じ経路（イベントキュー）へ積む**ので、同一性の判定も続報のマージも実運用と
+   * 同じところを踏む。待ちをキューに持たせているため、リセット（リプレイの開始・停止）で
+   * 一緒に落ちる（理由は → `simulateQuakeAmendment`）。
+   */
+  const simulateQuakeReportSequence = useCallback(async () => {
+    const { createTestQuakeReportSequence } = await loadTestData()
+    for (const report of createTestQuakeReportSequence(isDmdss)) {
+      eventQueueRef.current.push({ eventTime: new Date(report.time), payload: { kind: 'event', event: report } })
+    }
+  }, [])
+
+  /**
    * 市町村の未入電を含む地震情報のテスト（日向灘 2022-01-22）。
    *
    * 「地震テスト」（能登本震）では**市町村の未入電が 1 件も出ない** —— 発表条件が
@@ -2175,6 +2194,7 @@ export function useEarthquakes(
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
     simulateQuakeNotice, simulateEarthquakeCount, simulateEarthquakeCountRetraction, simulateEstimatedIntensity,
     simulateTrainingQuake, simulateUnreceivedQuake, simulateTsunamiGradeChange, simulateQuakeAmendment,
+    simulateQuakeReportSequence,
     resetState,
     loadReplayEvents,
     restoreQuakeHistory,

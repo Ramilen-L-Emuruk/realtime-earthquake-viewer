@@ -549,6 +549,49 @@ function readReportDateTime(doc: Document, kindLabel: string, logPrefix: string)
   return new Date(ms + JST_OFFSET_MS).toISOString().replace(/\.\d{3}Z$/, '+09:00')
 }
 
+/**
+ * 電文を一意に指す鍵（`Control/DateTime`）。→ `JMAQuake.telegramKey`
+ *
+ * **日時としては扱わない。** ここで欲しいのは「同じ電文か」だけなので、読めない値でも
+ * そのまま鍵にする（読めない値どうしが一致するなら、それは同じ電文）。日時としての検証は
+ * `readReportDateTime` の担当で、あちらは値の意味を使うため基準が違う。
+ *
+ * **`Head/ReportDateTime` では代用できない。** あちらは分へ丸められており、同じ分に複数報が
+ * 発表されるのが普通（能登 2024-01-01 の本震は 16:11 に 2 報）。`Control/DateTime` は秒精度で、
+ * 実電文では同じ地震の続報どうしが必ず異なっていた。
+ *
+ * **読めなかったら記録を残す。** 鍵を持たない報は `id` で代用されるが、`Head/Serial` が空の種別
+ * （震度速報・震源情報）は**同じ地震の全報が同じ `id`** になるため、2 通目以降が重複と見なされて
+ * 受信通数が実際より少なく出る。例外も画面の異常も出ないので、ここで言わないと痕跡が残らない。
+ */
+function readTelegramKey(doc: Document, kindLabel: string, logPrefix: string): string | undefined {
+  const controlEl = xmlQ(doc, 'Control')
+  const raw = controlEl ? xmlText(xmlChild(controlEl, 'DateTime')) : ''
+  if (!raw) {
+    log.warn(`${logPrefix} ${kindLabel}の電文作成時刻（Control/DateTime）を読めません（同じ電文を二度数えない鍵に使うため、受信通数が実際より少なく出ます）`)
+    return undefined
+  }
+  return raw
+}
+
+/**
+ * 電文が名乗る報番号（`Head/Serial`）。→ `JMAQuake.reportSerial`
+ *
+ * **空が正常。** 実電文で連番を振るのは震源・震度情報（VXSE53）だけで、震度速報（VXSE51）・
+ * 震源情報（VXSE52）は空要素で届く。空のときは記録を残さない（残すと正常な電文のたびに鳴る）。
+ * 空でないのに数値として読めない値だけ記録する。
+ */
+function readReportSerial(doc: Document, kindLabel: string, logPrefix: string): number | undefined {
+  const raw = xmlText(xmlQ(doc, 'Serial'))
+  if (!raw) return undefined
+  const n = Number(raw)
+  if (!Number.isInteger(n) || n <= 0) {
+    log.warn(`${logPrefix} ${kindLabel}の報番号を数値として読めません（受信した通数で数えます）: "${raw}"`)
+    return undefined
+  }
+  return n
+}
+
 /** ISO 8601 の日時が時間帯を明示しているか（末尾が `Z` か `±HH:MM` / `±HHMM`）。 */
 const HAS_EXPLICIT_TIMEZONE = /(?:Z|[+-]\d{2}:?\d{2})$/
 
@@ -1333,6 +1376,10 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   const eventId = xmlText(xmlQ(doc, 'EventID'))
   const infoType = xmlText(xmlQ(doc, 'InfoType'))
   const serial = xmlText(xmlQ(doc, 'Serial')) || '1'
+  // 同じ電文を二度数えないための鍵と、電文が名乗る報番号。どちらもカードの見出しが
+  // 「震度速報#2/震源情報」の形を組むための材料（→ `JMAQuake.telegramKey` / `.reportSerial`）。
+  const telegramKey = readTelegramKey(doc, '地震情報', DMDATA_LOG_PREFIX)
+  const reportSerial = readReportSerial(doc, '地震情報', DMDATA_LOG_PREFIX)
   // 電文が名乗る情報名（`Head/Title`）。**読み取りは `readInfoName` へ集約する** ——
   // `Control/Title` と紛れる要素で、複数の経路が別々に読むと片方が遅れる。
   // 取消報でも同じ判定が要るため、取消の早期リターンより前で解決しておく。
@@ -1352,6 +1399,10 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
       // 揃えておくのは、次にこのフィールドを使うコードが「取消だけ持たない」ことを知らずに
       // 取りこぼすのを防ぐため（読んでいるのは TsunamiTab の原因地震リンク）。
       eventId: eventId || undefined,
+      // **取消でも埋める。** 取消カードは `reports` を積まないが、次にこのフィールドを使う
+      // コードが「取消だけ持たない」ことを知らずに取りこぼすのを防ぐ（上の `eventId` と同じ理由）。
+      ...(telegramKey && { telegramKey }),
+      ...(reportSerial !== undefined && { reportSerial }),
       time: reportDateTime,
       ...(quakeOperationStatus && { operationStatus: quakeOperationStatus }),
       cancelled: true,
@@ -1641,6 +1692,8 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
     // TsunamiTab は q.eventId を直接比較して原因地震カードへのリンクを作るため、
     // フィールドを落とすと履歴経由のカードがそのリンクに引き当たらない。
     eventId: eventId || undefined,
+    ...(telegramKey && { telegramKey }),
+    ...(reportSerial !== undefined && { reportSerial }),
     time: reportDateTime,
     issue: {
       source,
