@@ -65,6 +65,7 @@ const fakeCtx = {
 vi.mock('./alertSound', () => ({
   getAudioContext: () => fakeCtx,
   getMasterInput: () => ({ connect: vi.fn() }),
+  syncKeepAlive: () => {},
 }))
 
 type Mora = { vowel: string; vowel_length: number }

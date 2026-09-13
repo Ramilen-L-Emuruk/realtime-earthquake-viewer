@@ -89,6 +89,9 @@ const ctx = {
 vi.mock('./alertSound', () => ({
   getAudioContext: () => ctx,
   getMasterInput: () => ({}),
+  // speakWithVoicevox() が ctx.resume() の直後に呼ぶ。この場のテストはキープアライブの
+  // 挙動自体を検証対象にしないため、実体を持たない no-op で足りる
+  syncKeepAlive: () => {},
 }))
 
 /** /audio_query は即答、/synthesis はチャンクごとに指定の遅延で答える。 */
