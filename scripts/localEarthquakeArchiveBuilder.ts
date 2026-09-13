@@ -11,7 +11,7 @@
 // 読み込まれてしまうと、ポリフィル未設定のまま失敗する）。
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import { fetchDayListing, fetchRawXml, fetchText } from './niiJmaXmlArchive'
+import { fetchDayListing, fetchRawXml, fetchText, flushSuppressedCacheWarnings } from './niiJmaXmlArchive'
 import { buildEewEntries } from './historicalEewArchiveBuilder'
 import { parseEewContentHtml } from './historicalEewParser'
 import type { HistoricalArchiveEntry, HistoricalArchiveFile } from '../src/types/historicalArchive'
@@ -145,7 +145,22 @@ export interface QuakeTsunamiOptions {
   parseTsunamiFromXml: (headType: string, xml: string) => JMATsunami | null
 }
 
+/**
+ * 地震情報・津波を集める。
+ *
+ * **キャッシュの不調で間引いた件数は、どう抜けても最後に出す**（同じ原因の1件目は起きた
+ * 時点で出ている）。取得が途中で失敗して例外になった実行こそ、「キャッシュが使えず毎回
+ * 取りに行っていた」ことが原因の手掛かりになるため、正常終了の経路だけで出さない。
+ */
 export async function buildQuakeAndTsunamiSection(opts: QuakeTsunamiOptions): Promise<HistoricalArchiveEntry[]> {
+  try {
+    return await collectQuakeAndTsunamiEntries(opts)
+  } finally {
+    flushSuppressedCacheWarnings()
+  }
+}
+
+async function collectQuakeAndTsunamiEntries(opts: QuakeTsunamiOptions): Promise<HistoricalArchiveEntry[]> {
   const { dates, windowStart, windowEnd, hypocenterNames, areaPrefixes, parseEarthquakeFromXml, parseTsunamiFromXml } = opts
   const entries: HistoricalArchiveEntry[] = []
   let totalCandidates = 0
