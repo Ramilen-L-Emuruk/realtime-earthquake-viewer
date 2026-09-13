@@ -349,7 +349,8 @@ export interface EarthquakeState {
   /**
    * 推計震度分布図（IXAC41）。最新の 1 通だけ持つ。
    *
-   * 最大 36 万セル・3MB あるので**複数は持たない**。震度5弱以上の地震にしか発表されないため、
+   * 1 通で 36 万セル・3MB 規模になる（実電文で観測された最大。形式が定める上限ではない）ので
+   * **複数は持たない**。震度5弱以上の地震にしか発表されないため、
    * 新しいものが来た＝より新しい大きな地震か、同じ地震の続報のどちらか。
    */
   estimatedIntensity: JMAEstimatedIntensity | null
@@ -498,7 +499,9 @@ export function useEarthquakes(
   // ここに集めて両経路で共有する。
   const quakeRetractionsRef = useRef<QuakeRetraction[]>([])
   // いま出している推計震度分布図の見分け（IXAC41）。**巨大な本体は持たない** ——
-  // 判定に要るのは地震発現時刻・発表時刻・セル数の 3 つだけで、本体は最大 3MB ある。
+  // 判定に要るのは地震発現時刻・発表時刻・セル数の 3 つだけで、本体は実電文で観測された
+  // 最大の 364,993 セルで 3MB 規模になる（形式が定める上限ではない。確保長は電文が宣言する
+  // 長さから決まるので、これより大きくなりうる）。
   const shownEstimatedIntensityRef = useRef<{ arrivalTime: string; time: string; count: number } | null>(null)
   // 後発地震注意情報（VYSE60）の7日間有効期限タイマー
   const kohatsuExpireTimerRef = useRef<number | undefined>(undefined)

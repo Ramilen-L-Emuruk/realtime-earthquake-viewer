@@ -1415,9 +1415,9 @@ export interface JMAEstimatedIntensityGrade {
  * **この電文だけ BUFR（二進形式）で届く。** DMDATA は他の種別と違って JSON 変換版を配らない。
  * 512KiB を超えると分割配信され、受け側で結合してから読む（→ `bufrTelegramAssembly.ts`）。
  *
- * **セルは列指向の型付き配列で持つ。** 実電文の最大は 364,993 セル（2026-04-20 の M7.5）で、
- * 1 セル 1 オブジェクトにすると桁違いに重くなる。震源カタログの点群（`map-rendering-spec.md`
- * §16）が同じ持ち方をしている。
+ * **セルは列指向の型付き配列で持つ。** 実電文の最大は 364,993 セル（2026-04-20 の M7.5。
+ * 形式が定める上限ではない）で、1 セル 1 オブジェクトにすると桁違いに重くなる。震源カタログの
+ * 点群（`map-rendering-spec.md` §16）が同じ持ち方をしている。
  */
 export interface JMAEstimatedIntensity {
   id: string
