@@ -76,6 +76,99 @@ function cacheFileName(key: string): string {
   return `${key.replace(/[^A-Za-z0-9_.-]/g, '_')}.html`
 }
 
+/** キャッシュの不調の種類。記録の文面にそのまま使う。 */
+type CacheTroubleLabel = '読めませんでした' | '残せませんでした'
+
+/** エラーコードを持たない例外の落とし先。**ここだけは鍵で原因を区別できない。** */
+const UNKNOWN_CODE = 'UNKNOWN'
+
+/**
+ * 間引いたぶんに載せる、1件目とは違う文面の見本の数。
+ *
+ * **`UNKNOWN` のときだけ集める。** コードが取れていれば鍵が原因を表しているので、
+ * 文面の違いは対象ファイルの違いでしかない（`fs` の例外はメッセージに対象パスを含む
+ * ——「`EACCES: permission denied, open 'C:\\...\\day-20160414.html'`」）。
+ * そこまで集めると、**単一の原因が数百通ぶん繰り返しているだけの実行で毎回見本が付き、
+ * 別の異常が混ざっているかのように読める**。
+ */
+const SUPPRESSED_MESSAGE_SAMPLES = 3
+
+/**
+ * 同じ原因で続いた不調の、2回目以降の件数。鍵は「操作 × エラーコード」。
+ *
+ * 操作も鍵に含めるのは、読めない原因と残せない原因が別でありうるため（読みが権限不足、
+ * 保存がディスク不足、など）。同じコードでも別の事実なので、まとめずに分けて数える。
+ */
+const suppressedCacheWarnings = new Map<
+  string,
+  {
+    label: CacheTroubleLabel
+    code: string
+    count: number
+    firstMessage: string
+    otherMessages: Set<string>
+    /** 見本が上限に達したあと、さらに別の文面が来たか。「3件で全部」と読ませないための印 */
+    hasMoreMessages: boolean
+  }
+>()
+
+/**
+ * キャッシュを読み書きできなかったことを記録する。**同じ原因は最初の1回だけ出す。**
+ *
+ * 1件の地震活動で数百通を1通ずつ取るため（2016年熊本地震は653通）、権限やI/Oの異常で
+ * 読み書きが恒常的に失敗する状態だと、同じ警告が電文数ぶん並ぶ。そのあいだに挟まる進捗ログ
+ * （どの日を取っているか・候補が何件か）が埋もれる。
+ *
+ * **黙らせるのではない。** 2回目以降は数えておき、`flushSuppressedCacheWarnings()` が
+ * 取得をひと通り終えたところでまとめて出す。
+ */
+function warnCacheTrouble(label: CacheTroubleLabel, key: string, err: unknown): void {
+  const code = (err as NodeJS.ErrnoException)?.code ?? UNKNOWN_CODE
+  const message = (err as Error).message
+  const mapKey = `${label}:${code}`
+  const seen = suppressedCacheWarnings.get(mapKey)
+  if (seen) {
+    seen.count++
+    // 見本を集めるのは `UNKNOWN` だけ（→ `SUPPRESSED_MESSAGE_SAMPLES`）。1件目と同じ文面も覚えない
+    if (seen.code === UNKNOWN_CODE && message !== seen.firstMessage && !seen.otherMessages.has(message)) {
+      if (seen.otherMessages.size < SUPPRESSED_MESSAGE_SAMPLES) seen.otherMessages.add(message)
+      else seen.hasMoreMessages = true
+    }
+    return
+  }
+  suppressedCacheWarnings.set(mapKey, {
+    label,
+    code,
+    count: 0,
+    firstMessage: message,
+    otherMessages: new Set(),
+    hasMoreMessages: false,
+  })
+  console.warn(`[nii-cache] ${label}（${key}）: ${message}（以後、同じ原因（${code}）は件数だけ最後にまとめる）`)
+}
+
+/**
+ * 間引いた不調の件数を出し、数えたものを空にする。
+ *
+ * **取得をひと通り終える場所から呼ぶ。** いまの呼び出し元は
+ * `localEarthquakeArchiveBuilder` の `buildQuakeAndTsunamiSection` で、取り込みの集計を
+ * 出したあと（例外で抜けた場合も含む）にこれを呼ぶ。**この関数を通らない取得経路を
+ * 作らないこと** —— 呼ばれなければ、2回目以降の失敗は件数すらどこにも現れない。
+ */
+export function flushSuppressedCacheWarnings(): void {
+  for (const { label, code, count, otherMessages, hasMoreMessages } of suppressedCacheWarnings.values()) {
+    if (count === 0) continue
+    // 見本が付くのは `UNKNOWN` のときだけ（→ `SUPPRESSED_MESSAGE_SAMPLES`）。
+    // 打ち切った場合は「ほか」を添える —— 並んだ数件で全部だと読ませない
+    const samples =
+      otherMessages.size > 0
+        ? `（ほかの文面: ${[...otherMessages].join(' / ')}${hasMoreMessages ? ' ほか' : ''}）`
+        : ''
+    console.warn(`[nii-cache] ${label}（${code}）: ほかに${count}件${samples}`)
+  }
+  suppressedCacheWarnings.clear()
+}
+
 /**
  * 残してあるページを読む。**保存したときと同じ目で検分する。**
  *
@@ -91,7 +184,7 @@ async function readCache(key: string, canCache: (html: string) => boolean): Prom
     // 権限や I/O の異常で読めない状態が続くと、キャッシュが無いのと同じことになり、
     // 数百通を毎回取り直す —— この仕組みが減らそうとしている負荷が、誰にも気づかれずに戻る
     if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
-      console.warn(`[nii-cache] 読めませんでした（${key}）: ${(err as Error).message}`)
+      warnCacheTrouble('読めませんでした', key, err)
     }
     return null
   }
@@ -116,7 +209,7 @@ async function saveCache(key: string, html: string): Promise<void> {
   } catch (err) {
     // 書きかけを残さない（消せなくても構わない。ここで投げたら本末転倒）
     await unlink(tmp).catch(() => undefined)
-    console.warn(`[nii-cache] 残せませんでした（${key}）: ${(err as Error).message}`)
+    warnCacheTrouble('残せませんでした', key, err)
   }
 }
 

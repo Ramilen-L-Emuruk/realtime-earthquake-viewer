@@ -1,5 +1,21 @@
-import { describe, it, expect } from 'vitest'
-import { parseNiiTime, resolveQuakeHeadType, resolveTsunamiHeadType, isRelated, isUnverifiableCancellation, mergeIndexEntry } from './localEarthquakeArchiveBuilder'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+
+// NIIからの取得をこのモジュールの外側で差し替える。取り込みの流れ（一覧 → 電文 → 採否）は
+// この1つのモジュールを通るので、ここを押さえれば通信なしで最後まで走らせられる。
+const { nii } = vi.hoisted(() => ({
+  nii: { listing: [] as { id: string; time: string; typeLabel: string }[] },
+}))
+
+vi.mock('./niiJmaXmlArchive', () => ({
+  fetchDayListing: vi.fn(async () => nii.listing),
+  fetchRawXml: vi.fn(async () => '<Report/>'),
+  fetchText: vi.fn(async () => ''),
+  flushSuppressedCacheWarnings: vi.fn(),
+}))
+
+import { parseNiiTime, resolveQuakeHeadType, resolveTsunamiHeadType, isRelated, isUnverifiableCancellation, mergeIndexEntry, buildQuakeAndTsunamiSection } from './localEarthquakeArchiveBuilder'
+import { flushSuppressedCacheWarnings } from './niiJmaXmlArchive'
+import type { JMAQuake } from '../src/types/earthquake'
 
 function indexEntry(id: string, from: string) {
   return { id, label: id, description: id, from, to: from, firstEventTime: from }
@@ -132,5 +148,51 @@ describe('resolveTsunamiHeadType', () => {
 
   it('安全弁: 未知のラベルは黙ってスキップせず例外にする', () => {
     expect(() => resolveTsunamiHeadType('謎の津波電文')).toThrow()
+  })
+})
+
+// キャッシュの不調は同じ原因の2回目以降を間引くため、間引いた件数はここで出すしかない
+// （→ `niiJmaXmlArchive.ts` の `flushSuppressedCacheWarnings`）。呼び忘れると、
+// 653通ぶんの失敗が1行の記録だけで終わる。
+describe('キャッシュの不調の要約は、取り込みを抜けるときに必ず出す', () => {
+  function options() {
+    const quake = {
+      time: '2016/04/14 21:26:00',
+      cancelled: false,
+      earthquake: { hypocenter: { name: '熊本県熊本地方' } },
+      points: [],
+    } as unknown as JMAQuake
+    return {
+      dates: ['20160414'],
+      windowStart: new Date('2016-04-14T00:00:00+09:00'),
+      windowEnd: new Date('2016-04-16T00:00:00+09:00'),
+      hypocenterNames: new Set(['熊本県熊本地方']),
+      areaPrefixes: ['熊本'],
+      parseEarthquakeFromXml: () => quake,
+      parseTsunamiFromXml: () => null,
+    }
+  }
+
+  beforeEach(() => {
+    vi.mocked(flushSuppressedCacheWarnings).mockClear()
+    nii.listing = [{ id: 'uuid-1', time: '2016-04-14 21:28:06+09', typeLabel: '震度速報' }]
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('正: 取り込みが成功した実行で出す', async () => {
+    await buildQuakeAndTsunamiSection(options())
+    expect(flushSuppressedCacheWarnings).toHaveBeenCalled()
+  })
+
+  it('安全弁: 途中で例外になった実行でも出す', async () => {
+    // **取得が失敗して止まった実行こそ効く** —— キャッシュが読めず毎回取りに行っていたことが、
+    // 配信元が応じなくなった原因の手掛かりになる
+    nii.listing = []
+    await expect(buildQuakeAndTsunamiSection(options())).rejects.toThrow()
+    expect(flushSuppressedCacheWarnings).toHaveBeenCalled()
   })
 })
