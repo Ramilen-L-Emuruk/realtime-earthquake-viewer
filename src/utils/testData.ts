@@ -1361,6 +1361,12 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
         grade: 'MajorWarning', immediate: false, name: '福島県', code: '250',
         maxHeight: { description: '6m', value: 6.0 },
         firstHeight: { condition: '第１波の到達を確認' },
+        // **この `arrivalTime` が、欠測の行に到達予想を出す唯一の材料。** 同じ名前の観測点が
+        // 下の `observations` にいて、そちらは第1波も最大波も欠測（到達したかどうかも判って
+        // いない）。予想した時刻を過ぎても到達を観測できていない形で、気象庁には予想を
+        // 取り下げる理由が無い —— 実配信でも到達予想が残るのは欠測の地点だけ。
+        // 落とすと「到達予想 ○○」の行を実機で一度も見られない
+        // （→ docs/spec/tsunami-spec.md §9「実測の到達時刻が無い行に添える到達予想」）。
         stations: [
           // **欠測の地点にも到達予想は持たせない。** 電文では残ることがあるが（→
           // [`tsunami-spec.md`](../../docs/spec/tsunami-spec.md) §9「区域の到達状況」）、
