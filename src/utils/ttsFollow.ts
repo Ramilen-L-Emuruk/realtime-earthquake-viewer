@@ -28,6 +28,7 @@ import { log } from './logger'
  * |---|---|
  * | `grade` / `area` / `station` | 津波カードの行を引く（追従スクロール） |
  * | `quakeRegion` / `quakeFact` | 地震情報で「実際に声になった内容」を記録する（続報の差分） |
+ * | `unreceivedNote` | 未入電の説明文（「…では、震度5弱以上と推定されますが、未入電です。」）。**名前を指さない** |
  *
  * `grade` は等級のカードそのもの（「大津波警報」「津波警報」の見出し）を指す。等級を言った
  * 時点でそのカードの頭に合わせられるようにするためで、区域名を読み始める前に画面が整う。
@@ -42,6 +43,21 @@ export type SpeechRef =
   | { kind: 'station'; name: string }
   | { kind: 'quakeRegion'; name: string; scale: number; unreceived?: boolean }
   | { kind: 'quakeFact'; fact: QuakeFact; value: string }
+  | { kind: 'unreceivedNote' }
+
+/**
+ * `unreceivedNote` は**未入電モードの自動開閉のためだけ**に置いてある印。
+ *
+ * 未入電の文は「地名の列挙」＋「では、震度5弱以上と推定されますが、未入電です。」という形で、
+ * 後半は地名を含まないため参照を持たなかった。すると {@link unreceivedChunkRange} の範囲が
+ * 地名の最後で終わり、**「なぜ未入電なのか」を説明している最中に地図とカードが通常表示へ戻る**
+ * （実測で起きていた —— 全 66 チャンクのうち範囲が 53〜63 で、64 の「震度5弱以上と推定されますが、」
+ * を読み始めた時点で閉じていた）。
+ *
+ * **名前を持たせないのは、既読の記録に混ぜないため。** `quakeRegion` で足すと、その名前が
+ * 「声にした区域」として記録され、続報の差分から落ちる（{@link applySpokenRefs} は
+ * `quakeRegion` / `quakeFact` だけを見るので、この種類は素通りする）。
+ */
 
 /**
  * 地震情報が伝える「震度の地域以外の事実」。続報で変化したものだけを読むための単位。
@@ -87,6 +103,9 @@ function sameRef(a: SpeechRef, b: SpeechRef): boolean {
   // 起きないが、名前だけで同一とみなすと将来そうなったときに階級の低い側へ丸められる。
   if (a.kind === 'quakeRegion' && b.kind === 'quakeRegion') return a.name === b.name && a.scale === b.scale && !a.unreceived === !b.unreceived
   if (a.kind === 'quakeFact' && b.kind === 'quakeFact') return a.fact === b.fact && a.value === b.value
+  // 未入電の説明文の印は中身を持たないので、同じ種類なら同一。**扱わないと重複排除が効かない**
+  // （`mapChunksToRefs` は `sameRef` で既出かを見るため、同じチャンクへ何度も積まれる）。
+  if (a.kind === 'unreceivedNote' && b.kind === 'unreceivedNote') return true
   return false
 }
 
@@ -113,8 +132,18 @@ export function hasFollowTarget(segments: readonly SpeechSegment[] | undefined):
  * （`unreceived` なし）では開かない —— 開く相手はカードの未入電トグルで、観測値の文では
  * 出すものが無い。
  */
+/**
+ * 未入電を指す参照か（地名そのものと、末尾の説明文）。
+ *
+ * **開始の判定と範囲の判定で同じ述語を使うこと。** 片方だけに説明文を入れると、説明文しか
+ * 持たないチャンクで範囲が途切れる。
+ */
+function isUnreceivedRef(r: SpeechRef): boolean {
+  return (r.kind === 'quakeRegion' && !!r.unreceived) || r.kind === 'unreceivedNote'
+}
+
 export function hasUnreceivedFollowTarget(segments: readonly SpeechSegment[] | undefined): boolean {
-  return segments?.some(s => s.refs.some(r => r.kind === 'quakeRegion' && r.unreceived)) ?? false
+  return segments?.some(s => s.refs.some(isUnreceivedRef)) ?? false
 }
 
 /**
@@ -132,7 +161,7 @@ export function unreceivedChunkRange(
   let first = -1
   let last = -1
   refsPerChunk.forEach((refs, i) => {
-    if (!refs.some(r => r.kind === 'quakeRegion' && r.unreceived)) return
+    if (!refs.some(isUnreceivedRef)) return
     if (first < 0) first = i
     last = i
   })

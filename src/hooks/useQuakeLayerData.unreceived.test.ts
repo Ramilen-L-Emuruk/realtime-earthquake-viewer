@@ -25,8 +25,14 @@ function sub(name: string, lat: number, lng: number): SubRegion {
   }
 }
 
+// 2 つ目の区域は「配下が全部未入電」の形を作るために要る（→ 末尾の describe）。
+const AREA_ALL_UNRECEIVED = '愛媛県南予'
+
 vi.mock('./useSubRegions', () => ({
-  useSubRegions: () => ({ data: [sub(AREA, 33.8, 132.7)], failed: false }),
+  useSubRegions: () => ({
+    data: [sub(AREA, 33.8, 132.7), sub(AREA_ALL_UNRECEIVED, 33.2, 132.5)],
+    failed: false,
+  }),
 }))
 
 // 観測点 2 つだけの座標テーブル。どちらも同じ区域（愛媛県中予）に属させる。
@@ -34,9 +40,14 @@ const COORDS: StationCoordsData = {
   stations: {
     [`${PREF}|観測できた点`]: [33.80, 132.70, 0],
     [`${PREF}|届かなかった点`]: [33.85, 132.75, 0],
+    // 別の区域に属し、そこには観測できた点が 1 つも無い。
+    [`${PREF}|南予の届かなかった点`]: [33.20, 132.50, 1],
   },
-  areas: { [`${PREF}|${AREA}`]: [33.8, 132.7] },
-  regionNames: [AREA],
+  areas: {
+    [`${PREF}|${AREA}`]: [33.8, 132.7],
+    [`${PREF}|${AREA_ALL_UNRECEIVED}`]: [33.2, 132.5],
+  },
+  regionNames: [AREA, AREA_ALL_UNRECEIVED],
 }
 vi.mock('./useStationCoords', () => ({ useStationCoords: () => COORDS }))
 
@@ -48,8 +59,15 @@ const AGGREGATED = { zoom: 5, aggregateMaxZoom: 8 }
 /** 観測点ごとに描くズーム。 */
 const ZOOMED_IN = { zoom: 10, aggregateMaxZoom: 8 }
 
+/**
+ * 観測点。**`pref` は空にする** —— DMDATA の XML 経路は観測点も区域点も `pref: ''` で積み、
+ * 都道府県は座標表からの逆引き（`stationPrefIndex` / `areaPrefIndex`）で復元する
+ * （→ docs/spec/quake-spec.md §4「QUAKE-2 で XML 経路の観測点も pref: '' に統一」）。ここで直に持たせると
+ * **逆引きを一度も通らない**ので、そちらが壊れてもこのテストは通り続ける。
+ * 県のロールアップ点だけは電文が `pref` を持つので、作る側で明示する。
+ */
 function point(over: Partial<EarthquakePoint> & Pick<EarthquakePoint, 'addr'>): EarthquakePoint {
-  return { pref: PREF, scale: 40, isArea: false, ...over }
+  return { pref: '', scale: 40, isArea: false, ...over }
 }
 
 function makeQuake(points: EarthquakePoint[]): JMAQuake {
@@ -119,7 +137,9 @@ describe('未入電の点を地図のどの経路が数えるか', () => {
 
   // 正: 震源の吹き出しの都道府県別最大震度も、カードの県の行と同じ 4 になる。
   it('都道府県別最大震度は未入電で押し上げられない', () => {
-    expect(layers(MIXED).prefIntensities).toEqual([{ pref: PREF, scale: 40, unreceived: false }])
+    // 値は観測値の 40 のまま。ただし「その県に未入電がある」ことは別に伝える（下のテスト）。
+    expect(layers(MIXED).prefIntensities)
+      .toEqual([{ pref: PREF, scale: 40, unreceived: false, hasUnreceived: true }])
   })
 
   // 正: 観測値が 1 件も無い県は、未入電として一覧に残す（カードは配下から積み上げて出すので、
@@ -127,7 +147,8 @@ describe('未入電の点を地図のどの経路が数えるか', () => {
   it('観測値が無い県は未入電として都道府県別最大震度に残る', () => {
     const onlyUnreceived = [point({ addr: '届かなかった点', scale: 45, unreceived: true })]
     expect(layers(onlyUnreceived).prefIntensities)
-      .toEqual([{ pref: PREF, scale: 45, unreceived: true }])
+      // 値そのものが推定なので「未入電あり」は重ねない（「5弱以上」が既にそれを言っている）。
+      .toEqual([{ pref: PREF, scale: 45, unreceived: true, hasUnreceived: false }])
   })
 
   // 安全弁: 観測値がある県に未入電の値を足さない（1 県 1 行のまま）。
@@ -207,5 +228,70 @@ describe('地図へ置けなかった未入電の地点', () => {
     const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
     layers([point({ addr: '座標表に無い点', scale: 40 })])
     expect(warn).not.toHaveBeenCalled()
+  })
+})
+
+// 配下が全部未入電の区域は、地図から完全に消えうる。
+//
+// 気象庁は未入電しか無い範囲に `Area/MaxInt` を出さないので区域点が作られず、観測点も 1 つも
+// 入電していないので区域塗りの材料（`regionMaxByName`）にも現れない。一方で未入電の印は寄るか
+// 未入電モードに入らないと出ないが、**自動フィットの着地は常に区域集約のズーム**なので、電文を
+// 受けた直後の画面はその条件を外れる。結果、カードは「未入電あり」の行を出しているのに
+// 地図だけが黙る（→ docs/spec/quake-spec.md §4「地図には観測値と混ぜずに出す」）。
+describe('区域塗りに現れない未入電の地点', () => {
+  /** 愛媛県中予は観測できた点あり、愛媛県南予は未入電だけ。 */
+  const SPLIT: EarthquakePoint[] = [
+    point({ addr: '観測できた点', scale: 40 }),
+    point({ addr: '届かなかった点', scale: 45, unreceived: true }),
+    point({ addr: '南予の届かなかった点', scale: 45, unreceived: true }),
+  ]
+
+  // 正: 区域塗りが作られない区域の点だけを切り出す。
+  it('観測値が 1 件も無い区域の未入電だけを拾う', () => {
+    const { orphanUnreceivedMarkers, regionAggregates } = layers(SPLIT)
+    expect(regionAggregates.map(r => r.name)).toEqual([AREA])
+    expect(orphanUnreceivedMarkers.map(m => m.addr)).toEqual(['南予の届かなかった点'])
+  })
+
+  // 対照: 観測値がある区域の未入電は拾わない（塗りが出ているので地図は黙っていない）。
+  it('観測値がある区域の未入電は拾わない', () => {
+    const bothInSameArea: EarthquakePoint[] = [
+      point({ addr: '観測できた点', scale: 40 }),
+      point({ addr: '届かなかった点', scale: 45, unreceived: true }),
+    ]
+    expect(layers(bothInSameArea).orphanUnreceivedMarkers).toEqual([])
+  })
+
+  // 安全弁: 全部を拾ってしまわない（引いた画が印で埋まると、区域塗りが読めなくなる）。
+  it('未入電をまとめて拾うわけではない', () => {
+    const { unreceivedMarkers, orphanUnreceivedMarkers } = layers(SPLIT)
+    expect(unreceivedMarkers.length).toBe(2)
+    expect(orphanUnreceivedMarkers.length).toBe(1)
+  })
+})
+
+// 震源の吹き出しの都道府県別最大震度にも「未入電あり」を出す。
+//
+// 値そのものは観測できていても、その県にはもっと強い地点があるかもしれない。**市町村の行で
+// 同じ取り違えをしていた** —— 「救済」（値を出すか）と「印」（未入電があると伝えるか）を
+// 1 つのフラグに畳んでいて、観測値がある県では未入電を 1 件も伝えられなかった。
+describe('都道府県別最大震度の「未入電あり」', () => {
+  // 正: 観測値がある県でも、未入電があれば印を立てる。
+  it('観測値がある県にも未入電の印を立てる', () => {
+    const rows = layers(MIXED).prefIntensities
+    expect(rows[0]).toMatchObject({ pref: PREF, unreceived: false, hasUnreceived: true })
+  })
+
+  // 対照: 未入電を持たない県には立てない。
+  it('未入電を持たない県には立てない', () => {
+    const observedOnly = [point({ addr: '観測できた点', scale: 40 })]
+    expect(layers(observedOnly).prefIntensities[0]).toMatchObject({ hasUnreceived: false })
+  })
+
+  // 安全弁: 値そのものが推定の県には重ねない（「5弱以上」が既にそれを言っている）。
+  it('値が推定の県には重ねない', () => {
+    const onlyUnreceived = [point({ addr: '届かなかった点', scale: 45, unreceived: true })]
+    expect(layers(onlyUnreceived).prefIntensities[0])
+      .toMatchObject({ unreceived: true, hasUnreceived: false })
   })
 })

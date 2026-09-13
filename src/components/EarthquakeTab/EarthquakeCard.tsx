@@ -22,7 +22,7 @@ import { getIntensityLabel, getIntensityLabelWithOrAbove, getIntensityColor, get
 import { hasKnownEpicenter } from '../../utils/geo'
 
 import { buildAreaPrefIndex, buildRegionOrderIndex, buildStationPrefIndex, lookupStationRegion, regionOrderRank } from '../../utils/stationCoords'
-import { isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel, buildIntensityRows, makeAreaPrefResolver } from '../../utils/quakePoints'
+import { isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel, buildIntensityRows, makeAreaPrefResolver, cityKey } from '../../utils/quakePoints'
 import { useStationCoords } from '../../hooks/useStationCoords'
 import { groupUnreceivedPointNames, type UnreceivedPointGroup } from './unreceivedPointNames'
 
@@ -407,6 +407,7 @@ export function EarthquakeCard({
     const { stationPrefIndex, prefOf, regionOfStation, stations: unreceivedStations, areas: unreceivedAreaPoints } = unreceivedIndexes
     const unreceivedPrefs = new Set<string>()
     const unreceivedAreas = new Set<string>()
+    const unreceivedCities = new Set<string>()
     for (const p of [...unreceivedStations, ...unreceivedAreaPoints]) {
       const pref = prefOf(p)
       if (pref) unreceivedPrefs.add(pref)
@@ -414,7 +415,14 @@ export function EarthquakeCard({
       if (p.isArea) { if (!p.pref) unreceivedAreas.add(p.addr) }
       else {
         const region = regionOfStation(p)
-        if (region) unreceivedAreas.add(region)
+        if (region) {
+          unreceivedAreas.add(region)
+          // **市町村にも同じ条件で印を付ける。** 電文の `City/Condition` は市町村の最大が
+          // 震度4以下のときしか出ないので、それだけに頼ると**強く揺れた市町村ほど印が消える**
+          // （能登本震では 1343 市町村すべてで `Condition` が付いていない）。鍵の作り方は
+          // 行の組み立てと共有する（`cityKey`）。
+          if (p.city) unreceivedCities.add(cityKey(region, p.city))
+        }
       }
     }
 
@@ -428,6 +436,7 @@ export function EarthquakeCard({
       regionOfStation: (pref, addr) => (stationData ? lookupStationRegion(stationData, pref, addr) : null),
       unreceivedPrefs,
       unreceivedAreas,
+      unreceivedCities,
       rank: name => regionOrderRank(name, order),
     })
   }, [isSelected, quake.points, quake.cities, stationData, unreceivedIndexes])

@@ -30,7 +30,7 @@ const station = (over: Partial<EarthquakePoint> = {}): EarthquakePoint => ({
 
 const CITIES: JMAQuakeCity[] = [{ name: CITY, area: AREA, pref: PREF, scale: 40, hasUnreceived: true }]
 
-function makeQuake(points: EarthquakePoint[]): JMAQuake {
+function makeQuake(points: EarthquakePoint[], cities: JMAQuakeCity[] = CITIES): JMAQuake {
   return {
     kind: 'quake',
     id: 'dmdata-quake-20220122011300-1',
@@ -44,7 +44,7 @@ function makeQuake(points: EarthquakePoint[]): JMAQuake {
       domesticTsunami: 'なし',
     },
     points,
-    cities: CITIES,
+    cities,
   }
 }
 
@@ -176,5 +176,47 @@ describe('震度一覧の未入電の印', () => {
     const text = rowText(UNRECEIVED_STATION)
     expect(text).toContain('未入電')
     expect(text).not.toContain('未入電あり')
+  })
+})
+
+// 市町村の印は、電文が言っている分だけでは足りない。
+//
+// `City/Condition` は「市町村の最大が震度4以下（又は入電なし）」のときにしか発表されない
+// （→ docs/spec/quake-spec.md §5「市町村の震度」）。つまり**強く揺れた市町村ほど付かない** ——
+// 通信が途絶えて未入電を抱えやすいのは、まさにそちら。能登本震の実電文では 1343 市町村すべてで
+// `Condition` が無く、震度6強の輪島市が未入電の観測点を 1 点抱えたまま印を出せずにいた。
+describe('市町村の「未入電あり」は配下の観測点からも立てる', () => {
+  /** 気象庁が Condition を付けない形（市町村の最大が震度5弱以上）。 */
+  const CITY_WITHOUT_CONDITION: JMAQuakeCity[] = [{ name: CITY, area: AREA, pref: PREF, scale: 55 }]
+  const STRONG_CITY: EarthquakePoint[] = [
+    { pref: PREF, addr: PREF, isArea: true, scale: 55 },
+    { pref: '', addr: AREA, isArea: true, scale: 55 },
+    station({ scale: 55 }),
+    station({ addr: UNRECEIVED_STATION, scale: 45, unreceived: true }),
+  ]
+
+  // 正: 電文が黙っていても、配下の観測点から立てる。
+  it('電文が Condition を付けていない市町村でも、配下に未入電があれば印が出る', () => {
+    renderTab(makeQuake(STRONG_CITY, CITY_WITHOUT_CONDITION))
+    openRows(PREF, AREA)
+    expect(rowText(CITY)).toContain('未入電あり')
+  })
+
+  // 対照: 未入電を持たない市町村には出ない（同じ区域に未入電を抱えた市町村があっても）。
+  it('未入電を持たない市町村には出ない', () => {
+    const OTHER_CITY = '日出町'
+    renderTab(makeQuake([
+      { pref: PREF, addr: PREF, isArea: true, scale: 55 },
+      { pref: '', addr: AREA, isArea: true, scale: 55 },
+      station({ scale: 55 }),
+      station({ addr: UNRECEIVED_STATION, scale: 45, unreceived: true }),
+      station({ addr: '日出町', scale: 40, city: OTHER_CITY }),
+    ], [
+      { name: CITY, area: AREA, pref: PREF, scale: 55 },
+      { name: OTHER_CITY, area: AREA, pref: PREF, scale: 40 },
+    ]))
+    openRows(PREF, AREA)
+    expect(rowText(CITY)).toContain('未入電あり')
+    expect(rowText(OTHER_CITY)).not.toContain('未入電')
   })
 })

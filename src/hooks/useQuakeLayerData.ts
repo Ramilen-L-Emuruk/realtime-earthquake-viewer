@@ -64,6 +64,16 @@ export interface PrefIntensity {
    * 表示側は断定形にせず「5弱以上」の語を補う（→ docs/spec/quake-spec.md §4）。
    */
   unreceived: boolean
+  /**
+   * その県に未入電の地点がある（値そのものは観測できていることもある）。
+   *
+   * **{@link unreceived} と分ける。** あちらは「この値が推定である」こと、こちらは
+   * 「もっと強い地点があるかもしれない」こと。畳むと、観測値がある県では未入電を 1 件も
+   * 伝えられなくなる —— カードは「震度4 愛媛県 未入電あり」と出しているのに、震源の吹き出し
+   * だけが「愛媛県 4」とだけ言う形になる。**条件はカードの印と同じ**「その範囲に未入電の
+   * 地点が 1 つでもあるか」（→ docs/spec/quake-spec.md §4）。
+   */
+  hasUnreceived: boolean
 }
 
 export interface RegionAggregate {
@@ -141,6 +151,11 @@ export interface QuakeLayerData {
    * 観測値とは別のレイヤーで無彩色の印として描き、塗り・面・集約には混ぜない。
    */
   unreceivedMarkers: IntensityMarker[]
+  /**
+   * 区域塗りに現れない未入電の地点。**引いた画（区域集約中）でもこれだけは出す**
+   * —— 配下が全部未入電の区域は塗りが作られないため、落とすと地図から完全に消える。
+   */
+  orphanUnreceivedMarkers: IntensityMarker[]
   /**
    * true のとき一次細分区域へ集約して塗る（zoom <= aggregateMaxZoom）。
    * 区域データ（subregions.json）の取得に失敗したときは、集約しても塗るポリゴンが無いため false。
@@ -384,6 +399,26 @@ export function useQuakeLayerData(
     return list.sort((a, b) => a.scale - b.scale)
   }, [subregionIndex, regionMaxByName])
 
+  /**
+   * 区域塗りに現れない未入電の地点（引いた画でも出す分）。
+   *
+   * **配下が全部未入電の区域は、地図から完全に消えうる。** 気象庁は未入電しか無い範囲に
+   * `Area/MaxInt` を出さないので区域点が作られず、観測点も 1 つも入電していないので
+   * `regionMaxByName` にも現れない —— 区域塗りが無い。一方で未入電の印は寄るか未入電モードに
+   * 入らないと出ないが、**自動フィットの着地は常に区域集約のズーム**なので、電文を受けた直後の
+   * 画面はその条件を外れる。結果、カードは「未入電あり」の行を出しているのに**地図だけが黙る**。
+   *
+   * そこで、区域塗りに現れない分だけは集約中でも出す。**通常は 0 件**（観測値が 1 件でもある
+   * 区域は塗られる）なので、引いた画に 60 個の印が散らばることにはならない。
+   *
+   * **区域を引けない点も出す側へ倒す。** 塗りに現れているかを判定できない以上、落とすと
+   * 上と同じ「地図だけが黙る」に戻る。
+   */
+  const orphanUnreceivedMarkers = useMemo(
+    () => unreceivedMarkers.filter((m) => !m.region || !regionMaxByName.has(m.region)),
+    [unreceivedMarkers, regionMaxByName],
+  )
+
   const hasEpicenter = !!quake
     && hasKnownEpicenter(quake.earthquake.hypocenter.latitude, quake.earthquake.hypocenter.longitude)
 
@@ -408,21 +443,31 @@ export function useQuakeLayerData(
   // 持たないので、除外するだけだとこの一覧から県ごと消える。カードは配下から積み上げて
   // 「5弱以上・未入電」の行を出す（`buildIntensityRows`）ので、落とすと画面の中で食い違う。
   // **順位は観測値を先に置く** —— 同じ階級なら観測できた県のほうが確かな事実。
+  //
+  // **「救済」と「印」は別の話。** 救済は値を出すかどうか（観測値ゼロの県だけ）、印は
+  // 未入電があると伝えるかどうか（**カードと同じく、1 件でもあれば**）。畳むと、観測値がある県で
+  // 未入電を 1 件も伝えられない —— カードが「震度4 愛媛県 未入電あり」と出しているのに、
+  // 震源の吹き出しは「愛媛県 4」とだけ言う形になる（→ docs/spec/quake-spec.md §4）。
   const prefIntensities = useMemo<PrefIntensity[]>(() => {
     if (!quake) return []
     const observed = new Map<string, number>()
     const unreceivedOnly = new Map<string, number>()
+    const withUnreceived = new Set<string>()
     for (const p of quake.points) {
       const pref = p.pref || (p.isArea ? areaPrefIndex.get(p.addr) : stationPrefIndex.get(p.addr))
       if (!pref) continue
+      if (p.unreceived) withUnreceived.add(pref)
       const into = p.unreceived ? unreceivedOnly : observed
       const cur = into.get(pref)
       if (cur == null || p.scale > cur) into.set(pref, p.scale)
     }
-    const rows: PrefIntensity[] = [...observed].map(([pref, scale]) => ({ pref, scale, unreceived: false }))
+    const rows: PrefIntensity[] = [...observed].map(([pref, scale]) => ({
+      pref, scale, unreceived: false, hasUnreceived: withUnreceived.has(pref),
+    }))
     for (const [pref, scale] of unreceivedOnly) {
       if (observed.has(pref)) continue
-      rows.push({ pref, scale, unreceived: true })
+      // 値そのものが推定なので、その上に「未入電あり」を重ねない（カードの行と同じ規則）。
+      rows.push({ pref, scale, unreceived: true, hasUnreceived: false })
     }
     return rows.sort((a, b) => b.scale - a.scale || Number(a.unreceived) - Number(b.unreceived))
   }, [quake, areaPrefIndex, stationPrefIndex])
@@ -533,6 +578,7 @@ export function useQuakeLayerData(
     intensityMarkers,
     stationMarkers,
     unreceivedMarkers,
+    orphanUnreceivedMarkers,
     aggregateByRegion,
     regionAggregates,
     hasEpicenter,

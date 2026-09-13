@@ -169,6 +169,7 @@ export function JapanMapGL({
   const {
     stationMarkers,
     unreceivedMarkers,
+    orphanUnreceivedMarkers,
     aggregateByRegion,
     regionAggregates,
     hasEpicenter,
@@ -568,10 +569,18 @@ export function JapanMapGL({
               推定の面はいずれも `!unreceivedMode` で引っ込め、カメラも未入電の地点だけへ
               寄せる（`quakeFitPositions`）。同じ画面に震度を残すと、60 点の印が塗りの上に
               散って「どこが届いていないのか」が読めなくなる。 */}
+          {/* **引いた画では、区域塗りに現れない分だけを出す。** 配下が全部未入電の区域は塗りが
+              作られない（電文が `Area/MaxInt` を持たない）ので、落とすとカードだけが未入電を
+              伝えて地図が黙る。通常は 0 件なので、引いた画が印で埋まることはない。
+
+              **`distributionMode` は明示的に見る。** `quakeOverlay` が型で排他を保証するのは
+              `unreceivedMode` との間だけで、ここは独立した props（区域塗り・観測点ドットと
+              同じ扱い）。見ないと、推計震度分布図や震度の面を見せている最中に無関係の印が
+              重なる。 */}
           <QuakeUnreceivedPointsGL
-            markers={unreceivedMarkers}
+            markers={unreceivedMode || !aggregateByRegion ? unreceivedMarkers : orphanUnreceivedMarkers}
             iconScale={iconScale}
-            visible={mode === 'quake' && !lpgmActive && (unreceivedMode || !aggregateByRegion)}
+            visible={mode === 'quake' && !lpgmActive && !distributionMode}
             epicenter={epicenter}
           />
           {/* LPGM（長周期地震動）進行中: 区域集約時は区域塗り＋階級ラベル、高ズーム時は観測点ドット。 */}
