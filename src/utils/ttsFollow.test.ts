@@ -27,7 +27,12 @@ const seg = (text: string, ...refs: SpeechRef[]): SpeechSegment => ({ text, refs
 function refNames(segments: SpeechSegment[]): string[][] {
   const chunks = splitIntoChunks(joinSegments(segments))
   return mapChunksToRefs(segments, chunks)
-    .map(refs => refs.map(r => (r.kind === 'grade' ? r.grade : r.kind === 'quakeFact' ? r.value : r.name)))
+    .map(refs => refs.map(r => (
+      r.kind === 'grade' ? r.grade
+        : r.kind === 'quakeFact' ? r.value
+          : r.kind === 'unreceivedNote' ? '(未入電の説明)'
+            : r.name
+    )))
 }
 
 describe('mapChunksToRefs', () => {
@@ -559,6 +564,10 @@ describe('hasUnreceivedFollowTarget', () => {
     expect(hasUnreceivedFollowTarget([plain('地震情報。')])).toBe(false)
   })
 
+  it('説明文だけの断片でも未入電として数える（範囲が途切れないように）', () => {
+    expect(hasUnreceivedFollowTarget([{ text: 'では、震度5弱以上と推定されますが、未入電です。', refs: [{ kind: 'unreceivedNote' }] }])).toBe(true)
+  })
+
   it('津波カードの追従（hasFollowTarget）は未入電では起きない', () => {
     // 門を 1 つにまとめると、地震情報の読み上げが津波カードを動かす。別の述語のままにする。
     expect(hasFollowTarget([seg('西条市丹原町鞍瀬', unreceived('西条市丹原町鞍瀬'))])).toBe(false)
@@ -578,6 +587,20 @@ describe('unreceivedChunkRange', () => {
       [],
     ]
     expect(unreceivedChunkRange(refsPerChunk)).toEqual({ first: 2, last: 3 })
+  })
+
+  it('末尾の説明文まで範囲に含める（地名の最後で切らない）', () => {
+    // 実測で起きていた形。未入電の文は「地名の列挙」＋「では、震度5弱以上と推定されますが、
+    // 未入電です。」で、後半は地名を含まないため参照を持っていなかった。すると範囲が地名の
+    // 最後で終わり、**説明している最中に地図とカードが通常表示へ戻る**。
+    const refsPerChunk: SpeechRef[][] = [
+      [observed('大分県中部', 55)],
+      [unreceived('西条市丹原町鞍瀬')],
+      [unreceived('伊予市双海町')],
+      [{ kind: 'unreceivedNote' }],
+      [],
+    ]
+    expect(unreceivedChunkRange(refsPerChunk)).toEqual({ first: 1, last: 3 })
   })
 
   it('未入電が 1 つも無ければ null', () => {
