@@ -5,7 +5,7 @@ import { ErrorBoundary } from './components/ErrorBoundary'
 import {
   TAB_PRIORITY, TAB_HOLD_MS, shouldAcceptAutoTab, shouldFollowNow, idleRevertPriority,
   shouldRetakeAfterPreSpeech,
-  resolveNonRealtimeTabSource, shouldResetTsunamiScroll,
+  resolveNonRealtimeTabSource, shouldResetTsunamiScroll, shouldDeferRevertWhileSpeaking,
   type TabHold, type TabPriority, type TabHoldSource, type TabFollowMark,
 } from './utils/tabPriority'
 import { PanelResizeHandle } from './components/PanelResizeHandle'
@@ -69,7 +69,7 @@ import { playCountdownBeep, unlockAudio, setSoundVolume } from './utils/alertSou
 import { loadTtsPhraseBreakDict } from './utils/ttsPhraseBreakDict'
 import { loadTtsStationReadings } from './utils/ttsStationReadings'
 import { loadTtsEpicenterAccents } from './utils/ttsEpicenterAccents'
-import { warmFixedPhrases, isValidVoicevoxUrl, VOICEVOX_URL_DEBOUNCE_MS } from './utils/voicevox'
+import { warmFixedPhrases, isValidVoicevoxUrl, VOICEVOX_URL_DEBOUNCE_MS, isSpeaking, onSpeechIdle } from './utils/voicevox'
 import { EEW_LEAD_PHRASES } from './utils/ttsText'
 import type { EEWAlert, JMAQuake, JMATsunami } from './types/earthquake'
 import { useReplayController, WINDOW_MS as REPLAY_WINDOW_MS, PRE_WINDOW_MS as REPLAY_PRE_WINDOW_MS } from './hooks/useReplayController'
@@ -255,6 +255,12 @@ export function App() {
   // 津波リスト（続報判定に使う）。値の確定は下方で毎レンダー tsunamis で更新する。
   const tsunamisRef = useRef<JMATsunami[]>([])
   const defaultTabRef = useRef<TabId>(settings.defaultTab)
+  // 自動復帰までの時間。**読み上げ中に既定の状態へ戻すのを見送ってよいか**の判定に使う
+  // （`shouldDeferRevertWhileSpeaking`）。ref で持つのは、`revertToDefaultTab` を受け取る側
+  // （`useKyoshinAlerts` / `useLiveEventHandler`）が依存を絞った effect の中で呼ぶため
+  // ——設定の変化で関数が作り直されても、古い値を掴んだままになる。値は毎レンダー同期する。
+  const idleRevertSecRef = useRef(settings.idleRevertSec)
+  idleRevertSecRef.current = settings.idleRevertSec
   // 表示中のタブ。「同じタブをもう一度押したら折りたたむ」判定に使う。
   // handleTabChange の deps に activeTab を入れると切替のたびに関数の参照が変わり、
   // React.memo 化した IconNav が再レンダーされるため ref で参照する（値は毎レンダー同期）。
@@ -564,7 +570,17 @@ export function App() {
   // （`requestAutoTab` の `tsunamiAutoShowTick`）が `shouldResetTsunamiScroll` で決める。
   // かつてここから別に要求を出していたが、**タブが変わっていなくても戻す**形だったため、
   // 津波優先の既定タブで津波カードを読んでいる間、無操作 30 秒ごとに位置が捨てられていた。
-  const revertToDefaultTab = () => {
+  // @param reason どの経路から戻そうとしたか。**見送ったときの記録に出すために必須**にして
+  //   ある —— 呼び出し元は 4 つあり、見送りの記録が同じ文言だとどれが止まったのか分からない。
+  const revertToDefaultTab = (reason: string) => {
+    // **読み上げている間は戻さない**（理由と例外は `shouldDeferRevertWhileSpeaking`）。
+    // アイドル復帰だけでなくここへ寄せてあるのは、呼び出し元が 4 つあり**どれも同じ症状を
+    // 起こす**ため —— 未入電を読み上げている最中に「揺れの可能性」が失効しただけで、
+    // 地震情報タブから引き離される。見送った分はアイドル復帰が後で拾う。
+    if (shouldDeferRevertWhileSpeaking(isSpeaking(), idleRevertSecRef.current)) {
+      log.info(`[tab] 読み上げ中のため既定タブへの復帰を見送り（${reason}・アイドル復帰が後で戻す）`)
+      return
+    }
     const tab = defaultTabRef.current
     // 既定の状態へ戻す操作なので必ず動かす（理由は forceTab）。呼び出し元は EEW 発報中・
     // 揺れ検知中を除外しているため、警報級の表示を消すことはない。
@@ -1154,13 +1170,38 @@ export function App() {
   })
 
   // 設定秒数 情報更新（activeTab の自動切替・DMDSS 更新）もユーザー操作もなければ
-  // デフォルトタブへ戻す。activeTab / lastUpdate の変化、および操作のたびにリセット。
+  // デフォルトタブへ戻す。activeTab / lastUpdate の変化、操作のたび、および**読み上げが
+  // 終わったとき**にリセット（4 つ目は下の `onSpeechIdle`）。
   // idleRevertSec が 0 以下なら自動復帰は無効。
   useEffect(() => {
     if (settings.idleRevertSec <= 0) return
     const ms = settings.idleRevertSec * 1000
+    // 宣言を `revert` より前に置く（`revert` の中から張り直すため）。初回のセットは下。
+    let timer: number | undefined
     // EEW 発報中または揺れ検知中はリアルタイムタブを維持する。それ以外はデフォルトタブへ戻す。
     const revert = () => {
+      // **読み上げている間は既定の状態へ戻さない。** アイドル復帰は「離席したら速報へ返す」
+      // ための仕組みで、声が流れているあいだは離席と見なせない。見ないと、各地の震度のように
+      // 読み切りに 2 分近くかかる読み上げの最中に画面だけが持っていかれる —— 読み上げ追従が
+      // 画面を要求するのは発話を投入する瞬間の 1 回だけなので、奪われても取り返せない
+      // （→ docs/spec/audio-tts-spec.md §6「読み上げている間は既定の状態へ戻さない」）。
+      //
+      // **下の realtime へ留める経路（EEW 発報中・揺れ検知中）にも掛かる。** そちらを通すと、
+      // EEW が生きているあいだ 30 秒ごとにリアルタイムへ引き戻され、直したい症状が残る。
+      // 代償として、無関係な読み上げが続く間はリアルタイムへの引き戻しも遅れるが、**EEW と
+      // 揺れ検知は自前の経路で画面を取る**（新規発報・レベルアップ・誤報取消は `eewUrgent`、
+      // 揺れ検知は `requestTabForKyoshin`、読み上げが始まれば追従）。ここは取りこぼしの受け皿。
+      //
+      // 判定は `revertToDefaultTab` と同じ述語を通す（`idleRevertSec` が 0 以下の端末では
+      // この effect 自体が動かないので、ここでは第 2 引数が偽になることはない）。
+      if (shouldDeferRevertWhileSpeaking(isSpeaking(), settings.idleRevertSec)) {
+        log.info('[tab] 読み上げ中のためアイドル復帰を見送り（読み終わってから計り直す）')
+        // 読み上げの終わりでも計り直すが（下の `onSpeechIdle`）、通知を取りこぼしても
+        // 永久に復帰しなくならないよう、ここでも張り直しておく。**発火済みのタイマーを
+        // 消す必要はない**ので `reset` は通さない（あちらは宣言がこの下にある）。
+        timer = window.setTimeout(revert, ms)
+        return
+      }
       // 特別情報のために一時的に開いたパネルも、ここで平常へ戻す（アイドル復帰は既定の状態へ
       // 戻す操作なので、パネルの畳みも元に戻すのが筋）。**判定はタブ移動の前に取る**。
       // 移動が追跡を消すため（`requestAutoTab`）、後から見ると常に「追跡なし」になる。
@@ -1183,8 +1224,8 @@ export function App() {
       } else if (activeTabRef.current === 'catalog') {
         log.info(`[tab] 震源カタログのためアイドル復帰を見送り (idleRevertSec=${settings.idleRevertSec})`)
       } else {
-        log.info(`[tab] → ${defaultTabRef.current} (アイドル復帰 idleRevertSec=${settings.idleRevertSec})`)
-        revertToDefaultTab()
+        log.info(`[tab] ${defaultTabRef.current} を要求 (アイドル復帰 idleRevertSec=${settings.idleRevertSec})`)
+        revertToDefaultTab(`アイドル復帰 idleRevertSec=${settings.idleRevertSec}`)
         if (!title.tsunamiTitleFlag()) {
           title.setTitle(null)
         }
@@ -1192,7 +1233,7 @@ export function App() {
       if (collapseAfterRevert) setPanelCollapsed(true)
       setSpecialInfoPanelHold(null)
     }
-    let timer = window.setTimeout(revert, ms)
+    timer = window.setTimeout(revert, ms)
     const reset = () => {
       window.clearTimeout(timer)
       timer = window.setTimeout(revert, ms)
@@ -1213,7 +1254,17 @@ export function App() {
     window.addEventListener('wheel', reset, opts)
     window.addEventListener('touchmove', reset, opts)
     window.addEventListener('scroll', reset, opts)
+    // **読み上げが終わった時点から計り直す。** 見送り（上の `isSpeaking`）だけだと、読み終えた
+    // 直後に見送り分のタイマーが発火して唐突に画面が動く。見送りは最大 idleRevertSec の粒度
+    // でしか判定できないため、終わりの瞬間はこちらで拾う。
+    // **ここだけ記録を分ける。** `reset` は操作のたびにも呼ばれるので、ログが無いと
+    // 「操作で計り直したのか、読み上げが終わって計り直したのか」を後から区別できない。
+    const stopWatchingSpeech = onSpeechIdle(() => {
+      log.debug('[tab] 読み上げが終わったのでアイドル復帰を計り直す')
+      reset()
+    })
     return () => {
+      stopWatchingSpeech()
       window.clearTimeout(timer)
       window.removeEventListener('pointerdown', reset, true)
       window.removeEventListener('pointermove', resetOnDrag, true)
