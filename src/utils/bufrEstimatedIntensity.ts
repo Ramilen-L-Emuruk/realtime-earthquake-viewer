@@ -118,6 +118,23 @@ function cellLon(u1: number, v2: number, w3: number, half: number, quarter: numb
     + ((quarter - 1) & 1) / 320
 }
 
+/**
+ * セルを収める配列の確保長。1 セルはちょうど 13 ビット（1/2 が 3 + 1/4 が 3 + 計測震度 7）
+ * なので、第4節の長さから決まる。
+ *
+ * **この長さへは届かない。** セルに使えるのは高々 `8·s4len − 32` ビット（読み始めが第4節の
+ * 4 オクテット目）なのに対し、積んだ件数がここへ達するにはセルだけで `13·capacity` ビット要る。
+ * 切り上げの性質から差は `+ 16` が無くても 32〜44 ビットあり、**不到達そのものは `+ 16` に
+ * 依存しない**（`+ 16` はその余裕を 240 ビットへ広げているだけ）。実際には 2 次・3 次メッシュの
+ * ヘッダもこの上に乗るので、**読み位置の歯止め（`r.pos >= endBit`）が必ず先に効く**。
+ *
+ * **テスト側もこの関数を通すこと。** 式を書き写すと、1 セルのビット幅を変えたときに片方だけ
+ * 直っても、テストはずれた関係を検査したまま緑で通る。
+ */
+export function cellCapacityFor(section4Length: number): number {
+  return Math.ceil((section4Length * 8) / 13) + 16
+}
+
 function refuse(reason: string): null {
   log.warn(`${PREFIX} 推計震度分布図を読めませんでした: ${reason}`)
   return null
@@ -175,6 +192,16 @@ export function decodeEstimatedIntensity(
 
   const s4 = s3 + s3len
   const s4len = u3(bytes, s4)
+  if (s4len < 4 || s4 + s4len > bytes.length - 4) {
+    // 第4節の長さは、第0節が名乗る全長とは**別のフィールド**（最大 16,777,215）で、
+    // 突き合わせる相手がいない。末尾の 4 は第5節（終端の `7777`）の固定長で、**正しい電文では
+    // `s4 + s4len` がちょうどその直前を指す**（全長は上で実際の長さと一致を見ている）。
+    // **以降の「第4節の中」という言い方はこの 1 行が裏付けている。** 過大だと下の確保長が
+    // そのまま膨らみ（上限値で実測 88.6MB）、読み位置の歯止めも電文の外まで広がる。
+    // 過少の側も見るのは、**読み始めが第4節の 4 オクテット目**（長さ 3 ＋ 保留 1）だから ——
+    // 4 を下回ると読み始めがもう歯止めの外にいて、最初の 1 オクテットが素通しで読まれる。
+    return refuse(`第4節の長さが電文に収まりません（第4節 ${s4} + ${s4len} / 全長 ${bytes.length}）`)
+  }
   const endBit = (s4 + s4len) * 8
   const r = new BitReader(bytes, (s4 + 4) * 8)   // 長さ 3 + 保留 1 オクテット
 
@@ -183,6 +210,10 @@ export function decodeEstimatedIntensity(
   const grades: JMAEstimatedIntensityGrade[] = []
   const badGrades: string[] = []
   for (let i = 0; i < gradeCount; i++) {
+    // 凡例の件数も電文の値をそのまま使うので、メッシュの 3 段と同じ歯止めを掛ける。
+    // 化けた `gradeCount` は 1 件 27 ビット × 最大 255 件を読み進め、その先の震源・時刻・
+    // メッシュ数を無関係な値で組み上げる（配列外は 0 が返るだけで例外にならない）。
+    if (r.pos >= endBit) return refuse(`凡例の途中で第4節を超えました（${i}/${gradeCount}）`)
     r.skip(7)                       // 0-08-193 要素の修飾（実電文では常に 90）
     const mod = r.read(2)           // 0-08-198
     const scale = r.read(4)         // 0-60-003 階級震度の整数部
@@ -223,10 +254,7 @@ export function decodeEstimatedIntensity(
 
   // ── メッシュ ──
   const meshCount = r.read(16)                                     // 0-31-002 2 次メッシュの数
-  // 上限の見積もり。1 セルは最短 13 ビット（1/2 3 + 1/4 3 + 計測震度 7）なので、
-  // 第4節の長さから確保長を決めれば足りる。**足りないと分布を丸ごと捨てる**（下の
-  // `n >= capacity` で打ち切る）ので余裕を持たせる。
-  const capacity = Math.ceil((s4len * 8) / 13) + 16
+  const capacity = cellCapacityFor(s4len)
   const latArr = new Float32Array(capacity)
   const lonArr = new Float32Array(capacity)
   const siArr = new Uint8Array(capacity)
@@ -241,8 +269,9 @@ export function decodeEstimatedIntensity(
   for (let i = 0; i < meshCount; i++) {
     // **反復回数は電文の値をそのまま使うので、読み位置で歯止めを掛ける。**
     // 記述子列・全長・終端の検査をすべて通ったうえで第4節の中身だけが化けた場合、
-    // 反復回数は最大 65535 × 255 × 255 になりうる。範囲外のセルは飛ばすだけで
-    // `capacity` の判定にも掛からないため、走査量に上限が無くなる（画面が固まる）。
+    // 最大 65535 × 255 × 255 回を名乗りうる。範囲外のセルは飛ばすだけで配列も埋まらないので、
+    // ここで止めないと名乗られたぶんだけ空回りする（電文の中身が尽きれば読む値が 0 になって
+    // 内側の段は立たなくなるが、外側だけでも 65535 周する）。
     if (r.pos >= endBit) return refuse(`メッシュの途中で第4節を超えました（2 次メッシュ ${i}/${meshCount}）`)
     const p1 = r.read(7), u1 = r.read(7)
     const q2 = r.read(4), v2 = r.read(4)
@@ -263,8 +292,13 @@ export function decodeEstimatedIntensity(
           continue
         }
         if (n >= capacity) {
-          // 確保長の見積もりが外れた＝読み方がずれている。ここまでを捨てて記録する。
-          return refuse(`セルが見積もり（${capacity}）を超えました。読み方がずれています`)
+          // **ここへは来ない。** `cellCapacityFor` の説明のとおり、読み位置の歯止めが先に効く
+          // （`bufrEstimatedIntensity.test.ts` の「確保長は読み位置の歯止めに包まれている」が
+          // 固定している）。それでも残すのは、到達しない根拠が「1 セル＝13 ビット」という
+          // **資料から写した仮定**に乗っているため。型付き配列への範囲外書き込みは例外を出さずに
+          // 捨てられ、`count` だけが実データを超えて報告される —— 描画側から見れば
+          // 「セルが在るのに空」で、画面にもログにも痕跡が残らない。
+          return refuse(`セルが確保長（${capacity}）を超えました。読み方がずれています`)
         }
         const cLat = cellLat(p1, q2, r3, half, quarter)
         const cLon = cellLon(u1, v2, w3, half, quarter)
