@@ -1,12 +1,15 @@
 import { describe, it, expect } from 'vitest'
 import {
-  type QuakeOverlay, toggleLpgmOverlay, toggleDistributionOverlay,
-  closeLpgmOverlay, closeEewLpgmOverlay, shouldCloseOverlayOnSelection,
+  type QuakeOverlay, toggleLpgmOverlay, toggleDistributionOverlay, toggleUnreceivedOverlay,
+  closeLpgmOverlay, closeEewLpgmOverlay, closeUnreceivedOverlay, closeUnreceivedOverlayFor,
+  decideUnreceivedSpeechOpen, shouldCloseOverlayOnSelection,
 } from './quakeOverlay'
+import type { TabId } from '../components/IconNav'
 
 const lpgm = (eventId: string, source: 'earthquake' | 'eew' = 'earthquake'): QuakeOverlay =>
   ({ kind: 'lpgm', eventId, source })
 const distribution = (eventKey: string): QuakeOverlay => ({ kind: 'distribution', eventKey })
+const unreceived = (eventKey: string): QuakeOverlay => ({ kind: 'unreceived', eventKey })
 
 describe('追加表示は同時に 1 つだけ（長周期と震度分布の排他）', () => {
   // 正: 一方を開くと他方が閉じる
@@ -41,6 +44,53 @@ describe('追加表示は同時に 1 つだけ（長周期と震度分布の排�
   // 「表示中のものを押したら閉じる」——source で判定を分けるとトグルが切り替えに化ける。
   it('EEW カードから開いた長周期を地震カード側から押しても閉じる', () => {
     expect(toggleLpgmOverlay(lpgm('20240101160010', 'eew'), '20240101160010', 'earthquake')).toBeNull()
+  })
+})
+
+describe('未入電の表示も同じ排他に乗る', () => {
+  // 正: 未入電を開くと他の追加表示は閉じる。
+  it('震度分布を開いている状態で未入電を開くと、分布は閉じる', () => {
+    expect(toggleUnreceivedOverlay(distribution('k1'), 'k1')).toEqual(unreceived('k1'))
+  })
+
+  it('長周期を開いている状態で未入電を開くと、長周期は閉じる', () => {
+    expect(toggleUnreceivedOverlay(lpgm('20240101160010'), 'k1')).toEqual(unreceived('k1'))
+  })
+
+  // 正: 逆向きも同じ（未入電を開いているところへ他を開く）。
+  it('未入電を開いている状態で震度分布を開くと、未入電は閉じる', () => {
+    expect(toggleDistributionOverlay(unreceived('k1'), 'k1')).toEqual(distribution('k1'))
+  })
+
+  it('表示中の未入電をもう一度押すと閉じる', () => {
+    expect(toggleUnreceivedOverlay(unreceived('k1'), 'k1')).toBeNull()
+  })
+
+  // 対照: 別の地震の未入電を押したときは切り替える（閉じない）。
+  it('別の地震の未入電を押したときは切り替える', () => {
+    expect(toggleUnreceivedOverlay(unreceived('k1'), 'k2')).toEqual(unreceived('k2'))
+  })
+
+  // 安全弁: 「長周期を閉じる」操作は未入電に触らない（対象を絞る規則は新しい種別にも効く）。
+  it('長周期を閉じる操作は未入電に触らない', () => {
+    const prev = unreceived('k1')
+    expect(closeLpgmOverlay(prev)).toBe(prev)
+    expect(closeEewLpgmOverlay(prev)).toBe(prev)
+  })
+
+  // 正: 未入電が無くなったら閉じる。カードのボタンは件数で出しているので続報で 0 件になると
+  // 消えるが、この状態が残ると地図が震源の印だけで固定され、閉じる手段が無くなる。
+  it('未入電を閉じる操作は未入電を落とす', () => {
+    expect(closeUnreceivedOverlay(unreceived('k1'))).toBeNull()
+  })
+
+  // 安全弁: 他の追加表示には触らない（閉じる理由は「未入電が無くなった」ことなので）。
+  it('未入電を閉じる操作は長周期・震度分布に触らない', () => {
+    const lp = lpgm('20240101160010')
+    const dist = distribution('k1')
+    expect(closeUnreceivedOverlay(lp)).toBe(lp)
+    expect(closeUnreceivedOverlay(dist)).toBe(dist)
+    expect(closeUnreceivedOverlay(null)).toBeNull()
   })
 })
 
@@ -102,5 +152,63 @@ describe('追加表示を閉じるのは別の地震へ移るときだけ', () =
 
   it('どちらも選択が無いなら閉じない', () => {
     expect(shouldCloseOverlayOnSelection(null, null)).toBe(false)
+  })
+})
+
+describe('読み上げが開いた未入電を閉じるのは、開いたときと同じ地震のときだけ', () => {
+  it('正: 同じ鍵なら閉じる', () => {
+    expect(closeUnreceivedOverlayFor(unreceived('A'), 'A')).toBeNull()
+  })
+
+  it('対照: 別の地震の未入電が開いていたら触らない', () => {
+    // 開けてから閉じるまでの間に選択が移ると、そこにあるのは利用者が開き直した別の表示。
+    const other = unreceived('B')
+    expect(closeUnreceivedOverlayFor(other, 'A')).toBe(other)
+  })
+
+  it('安全弁: 未入電以外の追加表示には当たらない', () => {
+    const dist = distribution('A')
+    expect(closeUnreceivedOverlayFor(dist, 'A')).toBe(dist)
+    const lp = lpgm('A')
+    expect(closeUnreceivedOverlayFor(lp, 'A')).toBe(lp)
+  })
+})
+
+describe('読み上げに合わせて未入電モードを開いてよいか', () => {
+  const base = {
+    activeTab: 'earthquake' as TabId,
+    overlay: null as QuakeOverlay | null,
+    subject: 'A' as string | undefined,
+    selectedKey: 'A' as string | null,
+    hasUnreceivedPoints: true,
+  }
+
+  it('正: 地震タブで、読んでいる地震が画面に出ていて、未入電の地点があれば開く', () => {
+    expect(decideUnreceivedSpeechOpen(base)).toBe('opened')
+  })
+
+  it('対照: 地震タブを見ていなければ開かない（見送りであって食い違いではない）', () => {
+    expect(decideUnreceivedSpeechOpen({ ...base, activeTab: 'tsunami' })).toBe('declined')
+  })
+
+  it('安全弁: 手で開かれている別の追加表示は奪わない', () => {
+    // 3 つは排他なので、ここで開くと震度分布・長周期が閉じる。しかも閉じる番は元へ戻さない。
+    expect(decideUnreceivedSpeechOpen({ ...base, overlay: distribution('A') })).toBe('declined')
+    expect(decideUnreceivedSpeechOpen({ ...base, overlay: lpgm('A') })).toBe('declined')
+  })
+
+  it('安全弁: 読んでいる地震と画面の地震が違えば開かない（食い違いとして記録する）', () => {
+    // 読み上げの順番待ちのあいだに別の地震が届くと、選択だけが先に移る。
+    expect(decideUnreceivedSpeechOpen({ ...base, selectedKey: 'B' })).toBe('mismatch')
+    expect(decideUnreceivedSpeechOpen({ ...base, selectedKey: null })).toBe('mismatch')
+    expect(decideUnreceivedSpeechOpen({ ...base, subject: undefined })).toBe('mismatch')
+  })
+
+  it('安全弁: その地震に未入電の地点が無ければ開かない（食い違いとして記録する）', () => {
+    expect(decideUnreceivedSpeechOpen({ ...base, hasUnreceivedPoints: false })).toBe('mismatch')
+  })
+
+  it('既に未入電が開いているときも奪わない（手で開かれた可能性がある）', () => {
+    expect(decideUnreceivedSpeechOpen({ ...base, overlay: unreceived('A') })).toBe('declined')
   })
 })

@@ -86,6 +86,8 @@ const renderTab = (lpgm: JMALpgm) => render(
     estimatedIntensity={null}
     distributionQuakeKey={null}
     onToggleDistribution={() => {}}
+    unreceivedQuakeKey={null}
+    onToggleUnreceived={() => {}}
   />
 )
 

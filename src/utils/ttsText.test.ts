@@ -1230,6 +1230,28 @@ describe('earthquakeToSegments: 続報は差分だけ読む', () => {
     expect(text).toBe('震度速報。宮城県北部では、震度5弱以上と推定されますが、未入電です。')
   })
 
+  // 正: **説明文にも未入電の印を付ける。** 読み上げに合わせて未入電モードを開く追従
+  // （`unreceivedChunkRange`）は参照の有無で範囲を決めるので、地名にだけ付けると
+  // **「なぜ未入電なのか」を説明している最中に地図とカードが通常表示へ戻る**（実測で起きていた）。
+  //
+  // **名前を持たない種類にすること** —— `quakeRegion` で足すと、その名前が既読の記録へ入る。
+  it('未入電の説明文にも印を付ける（読み上げ追従の範囲が地名の最後で切れないように）', () => {
+    const state = createQuakeSpokenState()
+    const unreceived: EarthquakePoint = { pref: '', addr: '宮城県北部', isArea: true, scale: 45, unreceived: true }
+    const segments = earthquakeToSegments(quakeOf([unreceived], 45), OPTS, true, state)
+    const note = segments.find(seg => seg.text.includes('未入電です'))
+    expect(note, '説明文の断片が見つからない').toBeTruthy()
+    expect(note!.refs).toEqual([{ kind: 'unreceivedNote' }])
+  })
+
+  // 安全弁: その印を既読の記録へ混ぜない（名前を持たないので素通りする）。
+  it('説明文の印は既読の記録を変えない', () => {
+    const state = createQuakeSpokenState()
+    applySpokenRefs(state, [{ kind: 'unreceivedNote' }])
+    expect(state.regions.size).toBe(0)
+    expect(state.facts.size).toBe(0)
+  })
+
   // 安全弁: 観測値の文と混ぜない。同じ電文に両方あれば、文を分けて両方伝える
   it('観測値と未入電が混ざれば文を分けて両方読む', () => {
     const state = createQuakeSpokenState()

@@ -13,6 +13,9 @@ import { render, screen, cleanup, fireEvent } from '@testing-library/react'
 import { EarthquakeTab } from './index'
 import { quakeEventKey } from '../../utils/quakeMerge'
 import type { JMAQuake, JMALpgm, EarthquakePoint, JMAQuakeCity } from '../../types/earthquake'
+// 地名と `＊` は右端を揃えるために別の要素へ分けてある（→ `IntensityRow`）。
+// `getByText('〇〇＊')` では引けないので、行ごと見る。
+import { intensityRowText as rowText } from '../../test-utils/intensityRow'
 
 afterEach(cleanup)
 
@@ -72,7 +75,7 @@ const LPGM_BASE: JMALpgm = {
   regions: [],
 }
 
-const renderTab = (quake: JMAQuake, lpgm?: JMALpgm) => render(
+const renderTab = (quake: JMAQuake, lpgm?: JMALpgm, opts: { unreceivedOpen?: boolean } = {}) => render(
   <EarthquakeTab
     earthquakes={[quake]}
     selectedId={quakeEventKey(quake)}
@@ -88,6 +91,8 @@ const renderTab = (quake: JMAQuake, lpgm?: JMALpgm) => render(
     estimatedIntensity={null}
     distributionQuakeKey={null}
     onToggleDistribution={() => {}}
+    unreceivedQuakeKey={opts.unreceivedOpen ? quakeEventKey(quake) : null}
+    onToggleUnreceived={() => {}}
   />
 )
 
@@ -117,20 +122,21 @@ describe('地震カードの観測点名に付く「気象庁以外」の印', (
 
     openDownToStations([PREF, AREA, CITY])
 
-    expect(screen.getByText(`${NON_JMA_STATION}＊`)).toBeTruthy()
+    expect(rowText(NON_JMA_STATION)).toContain(`${NON_JMA_STATION}＊`)
     // 対照: 気象庁の観測点には付かない。
-    expect(screen.getByText(JMA_STATION)).toBeTruthy()
-    expect(screen.queryByText(`${JMA_STATION}＊`)).toBeNull()
+    expect(rowText(JMA_STATION)).toContain(JMA_STATION)
+    expect(rowText(JMA_STATION)).not.toContain('＊')
   })
 
-  // 正: 「震度を入手していない地点」のブロックにも `＊` が出る。
-  // **このブロックは同名の地点を 1 行へまとめる**ので、印の経路が震度一覧とは別にある。
+  // 正: 「震度を入手していない地点」の一覧にも `＊` が出る。
+  // **この一覧は同名の地点を 1 行へまとめる**ので、印の経路が震度一覧とは別にある。
+  // 一覧は未入電トグルを開いたときに出る（→ `unreceivedOpen`）。
   it('「震度を入手していない地点」に印が出る', () => {
     renderTab(makeQuake([
       ...upperRows(45),
       station({ addr: NON_JMA_STATION, scale: 45, unreceived: true, nonJma: true }),
       station({ scale: 45, unreceived: true }),
-    ]))
+    ]), undefined, { unreceivedOpen: true })
 
     expect(screen.getByText(`${NON_JMA_STATION}＊`)).toBeTruthy()
     expect(screen.getByText(JMA_STATION)).toBeTruthy()
@@ -149,9 +155,9 @@ describe('地震カードの観測点名に付く「気象庁以外」の印', (
 
     openDownToStations([PREF, AREA])
 
-    expect(screen.getByText(`${NON_JMA_STATION}＊`)).toBeTruthy()
-    expect(screen.getByText(JMA_STATION)).toBeTruthy()
-    expect(screen.queryByText(`${JMA_STATION}＊`)).toBeNull()
+    expect(rowText(NON_JMA_STATION)).toContain(`${NON_JMA_STATION}＊`)
+    expect(rowText(JMA_STATION)).toContain(JMA_STATION)
+    expect(rowText(JMA_STATION)).not.toContain('＊')
   })
 
   // 安全弁: **印を県・区域・市町村の行へ広げていない。** 運用機関は観測点ごとの事実で、
