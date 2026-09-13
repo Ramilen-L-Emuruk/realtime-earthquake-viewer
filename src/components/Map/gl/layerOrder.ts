@@ -59,6 +59,9 @@ export const MAP_LAYER_ORDER = [
   'quake-region-label',
   'quake-lpgm-region-label',
   'quake-points',
+  // 震度が届いていない観測点。観測値のドットより前面に置く —— 数が少なく、いちばん伝えたい
+  // 「ここは分からない」を隠されないため。
+  'quake-unreceived-points',
   'quake-lpgm-points',
   'kyoshin-subthreshold',
   'kyoshin-points',

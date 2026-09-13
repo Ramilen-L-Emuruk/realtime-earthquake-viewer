@@ -313,7 +313,7 @@ export const TEST_AMENDMENT_DELAY_MS = 3000
  * （16:24 発表）が M7.6 で、規模が訂正されている。初報と訂正報の差をこれに合わせた。
  *
  * 報ごとに進めるもの・進めないものは §7「実電文の形に合わせる」に従う —— 報番号（`id` の末尾）と
- * 発表時刻は進め、**震源時刻（`earthquake.time`）と識別情報（`eventId`）は動かさない**。
+ * 発表時刻は進め、**地震の時刻（`earthquake.time`）と識別情報（`eventId`）は動かさない**。
  * 動かすと 2 通目が別の地震として立ち、訂正が同じカードへ届かない。
  */
 export function createTestQuakeAmendment(useDmdataShape: boolean): { initial: JMAQuake; amended: JMAQuake } {
@@ -386,7 +386,7 @@ export function createTestUnreceivedQuake(): JMAQuake {
     eventId,
     time: now,
     issue: { source: 'テスト', time: now, type: '震源・震度情報', correct: 'なし' },
-    // 震源要素は実電文のまま。発生時刻だけ「いま」へ寄せる（カードの並びと自動タブ切替が
+    // 震源要素は実電文のまま。地震の時刻だけ「いま」へ寄せる（カードの並びと自動タブ切替が
     // 実運用と同じところを踏むようにするため）。
     earthquake: { ...hyuganadaQuake.earthquake, time: now },
   }
@@ -760,11 +760,11 @@ export function createTestEEW(withDmdssFields: boolean, eventId?: string, serial
       // 読み取り後の値（`arrived`）も立てる。到達予測時刻とは排他で、時刻は持たない。
       { pref: '茨城県', name: '茨城県北部', scaleFrom: 40, scaleTo: 45, kindCode: '11', arrivalTime: null, arrived: true, lgIntTo: 1 },
       // 19 ＝ 警報・PLUM 法。**時刻は持つが到達の予測ではない**（「震度を初めて予測した時刻」）
-      // ので過去の時刻が入る。画面は時刻を出さず「到達時刻は不明」と書く。
+      // ので過去の時刻が入る。画面は残り秒数を出さず「時刻不明」と書き、並びの末尾へ回す。
       { pref: '千葉県', name: '千葉県北東部', scaleFrom: 40, scaleTo: 45, kindCode: '19', arrivalTime: at(-4000), lgIntTo: 1 },
       // **区域に載る予測震度に下限は無い**（→ docs/spec/eew-spec.md §4）。震度 3 の区域も同じ
-      // 電文に載り、到達予測時刻も持つ。震源から遠いぶん時刻は後ろに来るので、到達の欄
-      // （上位 6 件まで）からは外れて「他1地域」になる —— その形もここでしか実機で確かめられない。
+      // 電文に載り、到達予測時刻も持つ。震源から遠いぶん残り秒数は最も大きく、到達の欄では
+      // 未到達の群の末尾に並ぶ —— 弱い区域が強い区域より後ろへ回る形もここでしか実機で確かめられない。
       { pref: '東京都', name: '東京都２３区', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(60000), lgIntTo: 1 },
     ] as const).map(a => withDmdssFields ? { ...a } : toP2pArea({ ...a })),
   }
@@ -1083,17 +1083,17 @@ export function createTestTsunamiForecast(withDmdssFields: boolean): JMATsunami 
  * `tsunamiMaxGrade` は動かないため、区域が持つ前回の等級（`LastKind`）でしか分からない
  * （→ docs/spec/tsunami-spec.md §10「区域単位で等級が動いた報」）。
  *
- * 4 通りとも入れる。**降格だけだと引き上げ側の表示（`isTsunamiGradeRaised`）が一度も通らない。**
+ * 5 通りとも入れる。**降格だけだと引き上げ側の表示（`isTsunamiGradeRaised`）が一度も通らない。**
  *   岩手県・福島県 … 大津波警報 → 津波警報（降格）
  *   青森県太平洋沿岸 … 津波警報 → 津波注意報（降格）
  *   茨城県 … 津波警報 → 大津波警報（引き上げ）
  *   北海道太平洋沿岸東部 … 津波注意報 → 津波予報（若干の海面変動。最も軽い降格）
+ *   青森県日本海沿岸 … 津波注意報 → **解除**（`cancelledAreas` へ移る）
  * 宮城県だけは据え置き —— 動いた区域にだけ印が付くことを確かめるための対照。
  *
- * **`Unknown` の区域は作らない。** 解除相当のコード（50/60/00）が付いた区域は
- * `parseTsunamiFromXml` が `continue` で捨てるため、内部型の `areas` に残ることがない
- * （`grade: 'Unknown'` は「読めなかった」を表す内部値で、電文の等級ではない）。
- * 完全に解除された区域は**一覧から消える**のが実運用の形。
+ * **解除された区域は `areas` から外して `cancelledAreas` へ移す。** 気象庁は、その津波予報区で
+ * もう何も発表しないときだけ解除コード（00/50/60）を付ける。`areas` に残すと、解除済みの区域を
+ * 発表中として地図にも通知にも出すことになる（→ `JMATsunami.cancelledAreas`）。
  *
  * **DMDATA 経路のみ。** `lastGrade` は P2PQuake が配信しないので、standard 版で押しても
  * 印は出ない（ボタン自体を DMDSS 版に限っている）。
@@ -1119,6 +1119,15 @@ export function createTestTsunamiGradeChange(base: JMATsunami): JMATsunami {
     // 津波予報の区域は予想波高を持たない（実電文でも `MaxHeight` が付かない）
     '北海道太平洋沿岸東部': { grade: 'Forecast' },
   }
+  // 解除される区域。`areas` から外して `cancelledAreas` へ移す（上の説明を参照）。
+  const LIFTED_AREA_NAME = '青森県日本海沿岸'
+  const lifted = base.areas
+    .filter(a => a.name === LIFTED_AREA_NAME)
+    // 解除された区域の `Item` は `Area` と `Category` しか持たない。予想波高・到達予想・
+    // 潮位観測点を残すと実電文に無い形になる
+    .map(a => ({
+      grade: 'Unknown' as const, lastGrade: a.grade, immediate: false, name: a.name, code: a.code,
+    }))
   return {
     ...base,
     id: `${base.id}-2`,
@@ -1137,7 +1146,8 @@ export function createTestTsunamiGradeChange(base: JMATsunami): JMATsunami {
     // 行動指示はここから採れず、アプリ側の既定文へ落ちる（仕様書 §9）。上の発表報が採れる側
     // なので、2 つのボタンで両方の経路を通せる。
     warningComments: [{ key: 'VTSE41', text: '＜津波警報＞\n津波による被害が発生します。\n沿岸部や川沿いにいる人はただちに高台や避難ビルなど安全な場所へ避難してください。\n津波は繰り返し襲ってきます。警報が解除されるまで安全な場所から離れないでください。\n　\n＜津波注意報＞\n海の中や海岸付近は危険です。\n海の中にいる人はただちに海から上がって、海岸から離れてください。\n潮の流れが速い状態が続きますので、注意報が解除されるまで海に入ったり海岸に近づいたりしないようにしてください。\n　\n＜津波予報（若干の海面変動）＞\n若干の海面変動が予想されますが、被害の心配はありません。\n　\n警報が発表された沿岸部や川沿いにいる人はただちに高台や避難ビルなど安全な場所へ避難してください。\n到達予想時刻は、予報区のなかで最も早く津波が到達する時刻です。場所によっては、この時刻よりもかなり遅れて津波が襲ってくることがあります。\n到達予想時刻から津波が最も高くなるまでに数時間以上かかることがありますので、観測された津波の高さにかかわらず、警報が解除されるまで安全な場所から離れないでください。\n　\n場所によっては津波の高さが「予想される津波の高さ」より高くなる可能性があります。' }],
-    areas: base.areas.map(a => {
+    cancelledAreas: lifted.length > 0 ? lifted : undefined,
+    areas: base.areas.filter(a => a.name !== LIFTED_AREA_NAME).map(a => {
       const n = next[a.name]
       // 等級が動かない区域も、この種別では観測点を持たない（マージが前報から継ぐ）
       const withoutStations = { ...a, stations: undefined }
@@ -1219,7 +1229,12 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
   const now = serverDate()
   const nowIso = now.toISOString()
   const t = (offsetMin: number) => new Date(now.getTime() + offsetMin * 60000).toISOString()
-  const originIso = tsunamiOriginDate(now).toISOString()
+  // **`tsunamiOriginDate` が返すのは発現時刻**（識別子の材料。関数の説明どおり）。
+  // 発生時刻はそれより前で、実電文では分値まで有効。全期間の走査では 11.2% の電文で
+  // 両者が 1 分ずれる（→ `docs/spec/tsunami-spec.md` §4）ので、**1 件目でその形を再現する**
+  // —— 一致する形しか持たせないと、画面がどちらを出しているかテストボタンで区別できない。
+  const arrivalIso = tsunamiOriginDate(now).toISOString()
+  const originIso = new Date(tsunamiOriginDate(now).getTime() - 60000).toISOString()
   return {
     kind: 'tsunami',
     id: `test-tsunami-${Date.now()}`,
@@ -1278,11 +1293,15 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
         // **識別子（`eventId`）はこの地震の発現時刻から作る。** 電文の `EventID` は原因地震の
         // もので、津波電文はそのあとに発表される（→ `tsunamiOriginDate`）。
         hypocenterName: '三陸沖', magnitudeCondition: 'Ｍ８を超える巨大地震', magnitudeType: 'Mj',
-        originTime: originIso, arrivalTime: originIso,
+        // **発生時刻と発現時刻が 1 分ずれる形**（実電文の三陸沖 M7.4 と同じ。発生 16:52 /
+        // 発現 16:53）。カードが出すのは発現時刻のほう。2 件目は一致する形にしてあり、
+        // 1 画面で両方を見比べられる。
+        originTime: originIso, arrivalTime: arrivalIso,
         code: '288', latitude: 38.1, longitude: 143.9, depth: 24,
       },
       {
-        // 2 件目も第一波の到達（6 分前）より前に置く。
+        // 2 件目も第一波の到達（6 分前）より前に置く。**発生時刻と発現時刻は一致させる**
+        // —— 実電文では 88.8% がこの形で、1 件目のずれる形と並べて見比べられる。
         hypocenterName: '岩手県沖', magnitude: 7.2, magnitudeType: 'M',
         originTime: t(-9), arrivalTime: t(-9), source: 'ＰＴＷＣ',
         code: '286', latitude: 39.6, longitude: 143.2, depth: 10,
@@ -1293,40 +1312,61 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
     // name は地図の海岸線表示用に、津波予報区データ（tsunami-zones.json）に実在する区域名を使用する
     // 2011年東北地方太平洋沖地震を参考にした発令内容
     // code は津波予報区コード。名前とコードの対応は気象庁の個別コード表
-    // （技術資料の jmaxml_*_Code.zip・シート 31 = AreaTsunami）から採る。observations の
+    // （技術資料の jmaxml_*_Code.zip・シート 31 = AreaTsunami）から採る。**下の 11 区域は
+    // すべて実配信の電文に現れた組み合わせ**（千葉県内房 311・相模湾・三浦半島 330・静岡県 380・
+    // 北海道太平洋沿岸西部 102 を含む）。observations の
     // districtCode と一致させて紐づけを確認する。区域の中の観測点コードは同 zip の
     // シート 35 = PointTsunami。**一次細分区域（震度）のコードと混ぜないこと** ——
     // 「石川県能登」は一次細分区域では 390、津波予報区では 360 で、番号がまったく別物
+    //
+    // **区域の到達状況（`firstHeight`）は実配信の形に合わせる。** 形は 4 つしかなく、実測との
+    // 組み合わせにも決まりがある（→ [`tsunami-spec.md`](../../docs/spec/tsunami-spec.md)
+    // §9「区域の到達状況」）。ここでは 4 形すべてを 1 枚のカードに並べる。
+    //
+    // **実測がある区域では到達状況バッジが出ない**（`TsunamiAreaRow` の `badgeSuppressed`。
+    // 観測点の行が事実を語るため）。以前は 6 区域すべてに実測があり、**バッジが 1 つも画面に
+    // 出なかった** —— 3 値を実機で確かめる手段が無かった。下の 4 区域（千葉県九十九里・外房／
+    // 千葉県内房／相模湾・三浦半島／静岡県）は実測を持たせず、そのために置いている。
+    //
+    // 並びは震源（三陸沖）から遠ざかる順で、到達の段階もその順に進む。
     areas: ([
+      // ── 実測が届いた区域。到達済みなので「第１波の到達を確認」で、到達予想時刻は持たない ──
       {
         // 数値にならない予想波高。`value` を持たないのが電文どおりの形
-        grade: 'MajorWarning', immediate: true, name: '岩手県', code: '210',
+        grade: 'MajorWarning', immediate: false, name: '岩手県', code: '210',
         maxHeight: { description: '巨大' },
-        firstHeight: { arrivalTime: t(-6), condition: 'ただちに津波来襲と予測' },
+        firstHeight: { condition: '第１波の到達を確認' },
         stations: [
-          { name: '宮古',   code: '21001', arrivalTime: t(-6), highTideDateTime: t(60) },
-          { name: '釜石',   code: '21003', arrivalTime: t(-4), highTideDateTime: t(62) },
-          { name: '大船渡', code: '21002', arrivalTime: t(-5), highTideDateTime: t(58) },
+          // **実測が届いた地点は到達予想を持たない**（満潮時刻だけが残る）。まだ届いていない
+          // 地点（釜石）は到達予想を持ち、その値は**必ず未来**。
+          { name: '宮古',   code: '21001', highTideDateTime: t(60) },
+          { name: '釜石',   code: '21003', arrivalTime: t(8), highTideDateTime: t(62) },
+          { name: '大船渡', code: '21002', highTideDateTime: t(58) },
         ],
       },
       {
-        grade: 'MajorWarning', immediate: true, name: '宮城県', code: '220',
+        grade: 'MajorWarning', immediate: false, name: '宮城県', code: '220',
         maxHeight: { description: '10m以上', value: 10.0 },
         // 大津波警報の区域で予想波高が初めて数値になった／上方修正された合図（電文の
         // `MaxHeight/Condition` = 重要）。観測・推定の「重要」とは意味が違う
         forecastHeightImportant: true,
-        // 到達状況は 3 つある。時刻を出せない段階ではこちらが入る
-        firstHeight: { condition: '津波到達中と推測' },
+        firstHeight: { condition: '第１波の到達を確認' },
         stations: [
-          { name: '石巻港', code: '22022', arrivalTime: t(-4), highTideDateTime: t(55) },
-          { name: '仙台港', code: '22021', arrivalTime: t(-3), highTideDateTime: t(57) },
-          { name: '石巻市鮎川', code: '22002', arrivalTime: t(-5), highTideDateTime: t(56) },
+          { name: '石巻港', code: '22022', highTideDateTime: t(55) },
+          { name: '仙台港', code: '22021', arrivalTime: t(14), highTideDateTime: t(57) },
+          { name: '石巻市鮎川', code: '22002', arrivalTime: t(10), highTideDateTime: t(56) },
         ],
       },
       {
-        grade: 'MajorWarning', immediate: true, name: '福島県', code: '250',
+        grade: 'MajorWarning', immediate: false, name: '福島県', code: '250',
         maxHeight: { description: '6m', value: 6.0 },
         firstHeight: { condition: '第１波の到達を確認' },
+        // **この `arrivalTime` が、欠測の行に到達予想を出す唯一の材料。** 同じ名前の観測点が
+        // 下の `observations` にいて、そちらは第1波も最大波も欠測（到達したかどうかも判って
+        // いない）。予想した時刻を過ぎても到達を観測できていない形で、気象庁には予想を
+        // 取り下げる理由が無い —— 実配信でも到達予想が残るのは欠測の地点だけ。
+        // 落とすと「到達予想 ○○」の行を実機で一度も見られない
+        // （→ docs/spec/tsunami-spec.md §9「実測の到達時刻が無い行に添える到達予想」）。
         stations: [
           { name: 'いわき市小名浜', code: '25002', arrivalTime: t(-2), highTideDateTime: t(65) },
         ],
@@ -1334,26 +1374,80 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
       {
         grade: 'Warning', immediate: false, name: '青森県太平洋沿岸', code: '201',
         maxHeight: { description: '3m', value: 3.0 },
-        firstHeight: { arrivalTime: t(10), condition: '' },
+        firstHeight: { condition: '第１波の到達を確認' },
         stations: [
-          { name: '八戸港',       code: '20121', arrivalTime: t(10), highTideDateTime: t(70) },
+          { name: '八戸港',       code: '20121', highTideDateTime: t(70) },
           { name: 'むつ市関根浜', code: '20102', arrivalTime: t(15), highTideDateTime: t(72) },
         ],
       },
       {
         grade: 'Warning', immediate: false, name: '茨城県', code: '300',
         maxHeight: { description: '3m', value: 3.0 },
-        firstHeight: { arrivalTime: t(20), condition: '' },
+        firstHeight: { condition: '第１波の到達を確認' },
         stations: [
-          { name: '大洗', code: '30001', arrivalTime: t(20), highTideDateTime: t(80) },
+          { name: '大洗', code: '30001', highTideDateTime: t(80) },
         ],
       },
       {
         grade: 'Watch', immediate: false, name: '北海道太平洋沿岸東部', code: '100',
         maxHeight: { description: '1m', value: 1.0 },
+        // **津波注意報以上は `firstHeight` を必ず持つ。** 要素ごと無いのは津波予報
+        // （若干の海面変動）と解除だけ
+        firstHeight: { condition: '第１波の到達を確認' },
         stations: [
-          { name: '釧路', code: '10001', arrivalTime: t(30), highTideDateTime: t(90) },
+          { name: '釧路', code: '10001', highTideDateTime: t(90) },
         ],
+      },
+      // ── 実測がまだ届いていない区域。到達状況バッジはここでしか出ない ──
+      //
+      // **`stations` を持たせない。** 区域の中の地点（満潮時刻・地点ごとの到達予想）を運ぶのは
+      // 津波情報（VTSE51）で、津波警報等（VTSE41）は区域一覧しか運ばない（→ §5「続報で前報から
+      // 引き継ぐもの」）。新しく等級が出たばかりで、まだ津波情報に載っていない区域の形にあたる。
+      {
+        // バッジ「第1波到達」。到達を確認した区域でも、その区域の潮位観測点の実測が
+        // まだ届いていないことがある
+        grade: 'Warning', immediate: false, name: '千葉県九十九里・外房', code: '310',
+        maxHeight: { description: '3m', value: 3.0 },
+        firstHeight: { condition: '第１波の到達を確認' },
+      },
+      {
+        // バッジ「到達中」。もう来ているが第1波を捉えられていない段階で、到達予想時刻は消える
+        grade: 'Warning', immediate: true, name: '千葉県内房', code: '311',
+        maxHeight: { description: '3m', value: 3.0 },
+        firstHeight: { condition: '津波到達中と推測' },
+      },
+      {
+        // バッジ「まもなく到達」。**到達状況のうちこれだけが到達予想時刻と併存し、その値は
+        // 必ず未来**（実配信では発表の 2〜10 分後）
+        grade: 'Watch', immediate: true, name: '相模湾・三浦半島', code: '330',
+        maxHeight: { description: '1m', value: 1.0 },
+        firstHeight: { arrivalTime: t(5), condition: 'ただちに津波来襲と予測' },
+      },
+      {
+        // 到達予想時刻だけの形（バッジなし）。これから来る区域のふつうの姿
+        grade: 'Watch', immediate: false, name: '静岡県', code: '380',
+        maxHeight: { description: '1m', value: 1.0 },
+        firstHeight: { arrivalTime: t(40), condition: '' },
+      },
+      {
+        // **津波予報の区域にも実測は届く。** `FirstHeight` を持たないのは「到達を語らない」
+        // だけで、観測していないという意味ではない —— 実配信でも波高の実測がある区域の
+        // 1 割強がこの形（→ [`tsunami-spec.md`](../../docs/spec/tsunami-spec.md) §9
+        // 「実測との関係」）。等級が下がっても観測は続くため、警報の発表中にこの組み合わせが混じる
+        grade: 'Forecast', immediate: false, name: '北海道太平洋沿岸西部', code: '102',
+        maxHeight: { description: '0.2m未満', value: 0.2 },
+      },
+      {
+        // 続報でこの区域だけが**解除**される（`createTestTsunamiGradeChange`）。区域は 1 つも
+        // 潮位観測点を持たない形にしてある —— 実電文にもこの形があり（2025-12-09T06:20 の
+        // VTSE41）、解除された区域の `Item` は `Area` と `Category` しか持たない。
+        //
+        // **その形になるのは続報の側だけ。** ここは解除される前の初報で、津波注意報として
+        // 発表されている区域なので `firstHeight` を持つ（→ §7「実電文の形に合わせる」。
+        // 要素ごと無いのは津波予報と解除だけ）。
+        grade: 'Watch', immediate: false, name: '青森県日本海沿岸', code: '200',
+        maxHeight: { description: '1m', value: 1.0 },
+        firstHeight: { arrivalTime: t(45), condition: '' },
       },
     ] as TsunamiArea[]).map(a => withDmdssFields ? a : toP2pTsunamiArea(a)),
     ...(withDmdssFields ? {
@@ -1379,6 +1473,8 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
       { name: '久慈港', districtCode: '210', districtName: '岩手県', height: { value: 4.4, description: '4.4m' }, initial: '押し', maxHeightDateTime: t(-2), condition: { firstWaveUnidentifiable: true } },
       // 津波注意報の区域で、これまでの最大波がごく小さい（数値を発表しない）。
       { name: '釧路',   districtCode: '100', districtName: '北海道太平洋沿岸東部', arrivalTime: t(-2), initial: '押し', condition: { weak: true } },
+      // 津波予報まで下がった区域の実測。等級が下がっても観測は続く（区域の側は上の `areas` を見る）。
+      { name: '室蘭港', districtCode: '102', districtName: '北海道太平洋沿岸西部', height: { value: 0.1, description: '0.1m' }, arrivalTime: t(-4), initial: '押し', maxHeightDateTime: t(-3) },
       // 沖合の潮位観測点。「重要」の基準が沿岸と違う（大津波警報だけでなく津波警報も含む）ため、
       // 出所の印（offshore）を付けてバッジの語が切り替わることを確かめられるようにする。
       { name: '沖合40km', offshore: true, sensor: 'ＧＮＳＳ波浪計', height: { value: 3.0, description: '3.0m以上', over: true }, arrivalTime: t(-3), condition: { important: true }, maxHeightDateTime: t(-2) },
@@ -1411,6 +1507,16 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
 }
 
 /**
+ * 推計震度分布図の続報が、初報から遅れて発表される幅。
+ *
+ * 実電文で観測した 6 分をそのまま置いている（M7.4 → M7.5・セル数も変化。
+ * → `useEarthquakes` の `applyEstimatedIntensity`）。**この値を待つものは無い** ――
+ * 続報をいつ流すかはテストのキューが別に決めており、ここは電文が名乗る発表時刻だけ。
+ * 反映の判定（`decideEstimatedIntensityUpdate`）は初報より後かどうかしか見ない。
+ */
+const ESTIMATED_INTENSITY_FOLLOW_UP_MS = 6 * 60_000
+
+/**
  * 推計震度分布図（IXAC41）のテスト。**地震情報と対で返す。**
  *
  * この電文は識別子を持たず、地震カードとの結び付けは発現時刻で行う（→ `utils/estimatedIntensity.ts`）。
@@ -1423,8 +1529,23 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
  *
  * セルの座標は**格子の整数添字**で持っている（緯度 1/480 度・経度 1/320 度にきっちり乗る）。
  * 小数で書くと桁が無駄なうえ、読み戻しで丸めが乗る。
+ *
+ * **続報も返す。** 同じ地震について続報が出るので（実電文で 6 分後）、読み上げは初報を
+ * 「受信しました」、続報を「更新されました」と言い分ける。初報しか流せないと、その言い分けを
+ * 実機で一度も聞けない（→ CLAUDE.md「テストボタンは実機確認の唯一の入口」）。
+ *
+ * **続報のセルは初報と同じもの。** 実電文の続報はセル数も変わるが、それを再現するには同じ
+ * 地震の 2 通目を採り直す必要がある（`build-test-estimated-intensity` は「セルが多いほう」を
+ * 採る作りで 1 通しか保存しない）。ここで確かめたいのは**アプリが続報をどう扱うか**なので、
+ * 発表時刻だけを進める —— 反映するかどうかの判定（`decideEstimatedIntensityUpdate`）は
+ * 発表時刻が進んでいれば続報と見なす。
  */
-export function createTestEstimatedIntensity(): { quake: JMAQuake; estimated: JMAEstimatedIntensity } {
+export function createTestEstimatedIntensity(): {
+  quake: JMAQuake
+  estimated: JMAEstimatedIntensity
+  /** 同じ地震の続報。発表時刻だけが初報より後になっている */
+  followUp: JMAEstimatedIntensity
+} {
   const nowDate = serverDate()
   const now = nowDate.toISOString()
   const eventId = toEventIdTimestamp(nowDate)
@@ -1466,22 +1587,31 @@ export function createTestEstimatedIntensity(): { quake: JMAQuake; estimated: JM
     if (lo > east) east = lo
   }
 
+  const estimated: JMAEstimatedIntensity = {
+    id: `test-ixac41-${eventId}`,
+    time: now,
+    // **地震カードと同じ発現時刻にする。** ここがずれると引き当てが外れ、ボタンが
+    // 「このアプリの推定」のまま変わらない（テストとして無意味になる）。
+    arrivalTime: now,
+    hypocenter: e.hypocenter,
+    magnitude: e.magnitude ?? NaN,
+    ...(e.magnitudeCondition && { magnitudeCondition: e.magnitudeCondition }),
+    areaCode: e.areaCode,
+    telegramKind: e.telegramKind,
+    grades: e.grades,
+    count: n, lat, lon, si,
+    bounds: { south, north: north + CELL_LAT_DEG, west, east: east + CELL_LON_DEG },
+  }
+
   return {
     quake,
-    estimated: {
-      id: `test-ixac41-${eventId}`,
-      time: now,
-      // **地震カードと同じ発現時刻にする。** ここがずれると引き当てが外れ、ボタンが
-      // 「このアプリの推定」のまま変わらない（テストとして無意味になる）。
-      arrivalTime: now,
-      hypocenter: e.hypocenter,
-      magnitude: e.magnitude ?? NaN,
-      ...(e.magnitudeCondition && { magnitudeCondition: e.magnitudeCondition }),
-      areaCode: e.areaCode,
-      telegramKind: e.telegramKind,
-      grades: e.grades,
-      count: n, lat, lon, si,
-      bounds: { south, north: north + CELL_LAT_DEG, west, east: east + CELL_LON_DEG },
+    estimated,
+    followUp: {
+      ...estimated,
+      id: `test-ixac41-${eventId}-2`,
+      // **発現時刻は同じまま、発表時刻だけを進める。** 発現時刻が同じだからこそ「同じ地震の
+      // 続報」になる（変えると別の地震へ入れ替えた扱いになり、初報と同じ文で読まれる）。
+      time: new Date(nowDate.getTime() + ESTIMATED_INTENSITY_FOLLOW_UP_MS).toISOString(),
     },
   }
 }

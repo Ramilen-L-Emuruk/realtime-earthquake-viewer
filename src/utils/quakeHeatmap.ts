@@ -8,7 +8,7 @@ export interface HeatPoint {
   weight: number
   /** 震源地名。DMDSS の GD Earthquake List が返さない場合は空文字。 */
   name: string
-  /** 発生時刻（ISO 文字列）。 */
+  /** 地震の時刻（ISO 文字列）。 */
   time: string
   /** 深さ(km)。不明・未取得は -1（formatDepth が「不明」に落とす）。 */
   depth: number
@@ -17,8 +17,8 @@ export interface HeatPoint {
 
 // 地震の同一性判定キー。DMDSS版の id には14桁の eventId が埋め込まれておりそれを使う
 // （GD Earthquake List の eventId フィールドも同じ14桁形式のため突き合わせ可能）。
-// 通常版（P2PQuake）の id はこの形式を持たないため発生時刻にフォールバックするが、
-// P2PQuake の発生時刻は分単位のため震源名まで含めて「同じ分に起きた別の地震」を分ける
+// 通常版（P2PQuake）の id はこの形式を持たないため地震の時刻にフォールバックするが、
+// P2PQuake の地震の時刻は分単位のため震源名まで含めて「同じ分に起きた別の地震」を分ける
 // （震源名を持たない震度速報は座標も無く、ヒートマップでは hasValidHypocenter で除外される）。
 // 副作用: 震源を訂正した報は訂正前後で別キーになり、1 つの地震が 2 点残ることがある。
 // ヒートマップは分布の統計表示なので、別々の地震が 1 点に潰れる方を避ける選択をしている

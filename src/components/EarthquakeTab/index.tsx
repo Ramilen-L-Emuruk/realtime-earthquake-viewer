@@ -20,12 +20,15 @@ interface Props {
   /** 震度分布モードを開いている地震の `eventKey`。 */
   distributionQuakeKey: string | null
   onToggleDistribution: (eventKey: string) => void
+  /** 未入電の一覧を開いている地震の `eventKey`。 */
+  unreceivedQuakeKey: string | null
+  onToggleUnreceived: (eventKey: string) => void
 }
 
 // 地震情報タブの右パネル。地震カードの一覧を表示し、クリックで地図表示対象を選択する。
 // 地図そのものは App が常時表示する。
 // React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
-export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, error, lpgmByEventId, activeLpgmEventId, onToggleLpgm, estimatedIntensity, distributionQuakeKey, onToggleDistribution }: Props) {
+export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, error, lpgmByEventId, activeLpgmEventId, onToggleLpgm, estimatedIntensity, distributionQuakeKey, onToggleDistribution, unreceivedQuakeKey, onToggleUnreceived }: Props) {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -63,7 +66,7 @@ export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selected
           // QUAKE-4: 続報で id 末尾の serial が変わるたびに EarthquakeCard がリマウントされ、
           // isSelected の副作用（強制スクロール）が発火してユーザー操作を妨害する。
           // eventKey は続報でも変わらないため、React の key・選択判定の両方をこれで安定させる
-          // （どちらも quakeEventKey に統一。発生時刻は同じ分に起きた別の地震と衝突する）。
+          // （どちらも quakeEventKey に統一。earthquake.time は同じ分に起きた別の地震と衝突する）。
           key={quakeEventKey(quake)}
           quake={quake}
           isLatest={i === 0}
@@ -75,6 +78,8 @@ export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selected
           estimatedIntensity={estimatedIntensity}
           distributionActive={quakeEventKey(quake) === distributionQuakeKey}
           onToggleDistribution={() => onToggleDistribution(quakeEventKey(quake))}
+          unreceivedActive={quakeEventKey(quake) === unreceivedQuakeKey}
+          onToggleUnreceived={() => onToggleUnreceived(quakeEventKey(quake))}
         />
       ))}
       {hasMore && (

@@ -20,6 +20,7 @@ import { renderHook, cleanup, act } from '@testing-library/react'
 import type { AppEvent, EEWAlert, JMAQuake, JMATsunami, JMANankaiCommentary, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity } from '../types/earthquake'
 import { serverDate, setReplayOffset } from '../utils/clock'
 import { DMDATA_API_KEY_INVALID_MESSAGE } from '../utils/dmdataApiKey'
+import { log } from '../utils/logger'
 // **テストボタンのデータをここで先に読む。** 値は使わないが、これが無いと
 // `simulate*` を最初に呼ぶテストが「このファイルで初回のモジュール解決・変換」を
 // テスト本体の中で行うことになる —— 実データ 3 つで 824 KB あり、全ファイル並列実行では
@@ -277,16 +278,21 @@ describe('再生中もキューの予約は発火時刻を待つ', () => {
   // 「再生中もその猶予がキューに残ること」だけを見る。
   const OFFSET_MS = -3600_000
 
-  /** 最終報の EEW。規模を小さく取り、猶予が下限（60 秒）で決まるようにする。 */
-  function finalEEW(at: Date): EEWAlert {
+  /**
+   * 最終報の EEW。規模を小さく取り、猶予が下限（60 秒）で決まるようにする。
+   *
+   * `time` / `originTime` は上書きできる。**解除時刻はこの 2 つから決まる**ので、
+   * 読めない値を入れたときの振る舞いをここで作れる（→ 下の「解除時刻を決められないとき」）。
+   */
+  function finalEEW(at: Date, override: { time?: string; originTime?: string } = {}): EEWAlert {
     const iso = at.toISOString()
     return {
       kind: 'eew',
       id: 'replay-final',
-      time: iso,
+      time: override.time ?? iso,
       test: false,
       earthquake: {
-        originTime: iso,
+        originTime: override.originTime ?? iso,
         arrivalTime: iso,
         condition: '',
         hypocenter: { name: 'テスト沖', latitude: 35, longitude: 140, depth: 10, magnitude: 4.0 },
@@ -294,7 +300,7 @@ describe('再生中もキューの予約は発火時刻を待つ', () => {
       severity: 'Forecast',
       cancelled: false,
       isFinal: true,
-      issue: { eventId: 'replay-final-event', serial: '2', time: iso },
+      issue: { eventId: 'replay-final-event', serial: '2', time: override.time ?? iso },
       areas: [],
     }
   }
@@ -353,6 +359,46 @@ describe('再生中もキューの予約は発火時刻を待つ', () => {
     act(() => { vi.advanceTimersByTime(31_000) })
     expect(h.current.tsunamis[0].cancelledAt).toBeInstanceOf(Date)
     expect(h.current.tsunamis[0].cancelReason).toBe('expired')
+  })
+
+  // ---- 解除時刻を決められないとき ----
+  //
+  // 自動解除はこの 1 回の予約が全てで、キューは発火時刻が読めないエントリを捨てる。
+  // **捨てられるとその EEW は取消が来るまで画面に残り続ける。**
+
+  // 正: 発表時刻が読めなくても震源時刻が読めれば予約できる（`calcEEWCancelTime`）。
+  it('発表時刻が読めなくても、震源時刻から自動解除を予約する', () => {
+    setReplayOffset(OFFSET_MS)
+    const h = setup({ offset: OFFSET_MS })
+
+    act(() => { h.current.injectEvent(finalEEW(serverDate(), { time: '' })) })
+    expect(h.current.activeEEWs.size).toBe(1)
+
+    act(() => { vi.advanceTimersByTime(30_000) })
+    expect(h.current.activeEEWs.size).toBe(1)
+
+    act(() => { vi.advanceTimersByTime(31_000) })
+    expect(h.current.activeEEWs.size).toBe(0)
+  })
+
+  // 安全弁: どちらも読めなければ予約できない。**そのことを記録する** ——
+  // キューの汎用ログ（発火時刻が読めないエントリを捨てた）だけでは、
+  // 「なぜこの EEW が消えないか」に辿り着けない。
+  it('発表時刻も震源時刻も読めなければ、予約できないことを記録する', () => {
+    // このファイルは `log` 全体をモックしている（冒頭の `vi.mock`）ので、`vi.spyOn` を
+    // 重ねず素の呼び出し履歴を見る。他のテストの分が混ざらないよう先に落とす。
+    const err = vi.mocked(log.error)
+    err.mockClear()
+    setReplayOffset(OFFSET_MS)
+    const h = setup({ offset: OFFSET_MS })
+
+    act(() => { h.current.injectEvent(finalEEW(serverDate(), { time: '', originTime: '' })) })
+    expect(h.current.activeEEWs.size).toBe(1)
+    expect(err.mock.calls.filter(c => String(c[0]).includes('自動解除を予約できません'))).toHaveLength(1)
+
+    // 予約が無いので猶予を過ぎても消えない（取消が来るまで残る）
+    act(() => { vi.advanceTimersByTime(300_000) })
+    expect(h.current.activeEEWs.size).toBe(1)
   })
 })
 
@@ -1561,14 +1607,14 @@ describe('P2PQuake 補完経路も古い報で退行しない', () => {
 // 台帳の受け渡しを 1 箇所忘れても型チェックもユニットテストも通ってしまう（実際に、実装途中で
 // 台帳を作ったのに 1 箇所も渡していない状態が敵対的レビューで観測された）。
 describe('DMDSS 版: 取消の後に届いた報', () => {
-  const 発生時刻 = '2026-01-01T07:06:00+09:00'
+  const 地震の時刻 = '2026-01-01T07:06:00+09:00'
   const 震度速報 = (id: string, time: string): JMAQuake => ({
     kind: 'quake',
     id,
     time,
     issue: { source: '気象庁', time, type: '震度速報', correct: 'なし' },
     earthquake: {
-      time: 発生時刻,
+      time: 地震の時刻,
       hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: NaN },
       maxScale: 50,
       domesticTsunami: '調査中',
@@ -2227,6 +2273,38 @@ describe('テストボタンの待ちの後始末', () => {
 
     act(() => { vi.advanceTimersByTime(5_000) })
     expect(h.current.estimatedIntensity).not.toBeNull()
+  })
+
+  // 正: 続報まで流し、**初報と続報で「初めて受信したか」の印が入れ替わる**こと。
+  // 読み上げが「受信しました」／「更新されました」を言い分ける唯一の材料で、印が
+  // 付かないまま渡ると続報が初報と同じ文で読まれる（画面にも記録にも出ない食い違い）。
+  it('推計震度分布図テストは続報まで流し、続報には更新の印が付く', async () => {
+    const events: AppEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+    await h.flush()
+
+    await act(async () => { await h.current.simulateEstimatedIntensity() })
+    // 続報は初報の 16 秒後（`TEST_ESTIMATED_INTENSITY_FOLLOW_UP_DELAY_MS`）。初報の読み上げが
+    // 鳴り終わるまで空けてあるので、10 秒では届かない。
+    act(() => { vi.advanceTimersByTime(30_000) })
+
+    const distributions = events.filter(
+      (e): e is AppEvent & { isNew: boolean } =>
+        (e as unknown as { kind?: string }).kind === 'estimatedIntensity',
+    )
+    expect(distributions.map(e => e.isNew)).toEqual([true, false])
+  })
+
+  // 対照: **続報は同じ地震のものであること。** 発現時刻を進めてしまうと「別の地震へ入れ替え」
+  // 扱いになり、反映はされるのに読み上げは初報と同じ文へ戻る（上のテストだけでは、印が
+  // `[true, true]` になった理由が発現時刻のずれなのか写像のせいなのか分からない）。
+  it('推計震度分布図テストの続報は同じ地震の発現時刻を保つ', async () => {
+    const { createTestEstimatedIntensity } = await import('../utils/testData')
+    const { quake, estimated, followUp } = createTestEstimatedIntensity()
+    expect(followUp.arrivalTime).toBe(estimated.arrivalTime)
+    expect(followUp.arrivalTime).toBe(quake.earthquake.time)
+    // 発表時刻だけが進む（反映の判定はここしか見ない）
+    expect(followUp.time > estimated.time).toBe(true)
   })
 
   // 正: 訂正報テストも同じ形（キューへ 2 通積む）で、**同じカードが更新される**こと。

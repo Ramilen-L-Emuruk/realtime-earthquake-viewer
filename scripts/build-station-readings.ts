@@ -12,8 +12,13 @@
 //
 //   | 列挙元 | 声になる場面 | ふりがな |
 //   |---|---|---|
-//   | 震度観測点（4372 点） | 「5弱以上・未入電」の地点名 | 純粋なかな |
+//   | 震度観測点（4494 点） | 「5弱以上・未入電」の地点名 | 純粋なかな |
 //   | 潮位観測点（609 点） | 津波の観測情報の観測点名 | 沖合だけ距離・単位・英字が生のまま |
+//
+// 【震度観測点は現行の一覧だけではない】現行 4360 点に加えて、取得元のリビジョン履歴を遡って
+// 集めた「現行の一覧に無い観測点」134 点も判定に掛ける（`lib/stationSource.mjs`）。過去の電文を
+// 再生すると当時の観測点名が声になり、上流が更新されれば「後から一覧へ加わった観測点」も
+// 同じ入れ物に入るため、ライブでも起こりうる。
 //
 // 【エンジンが要る】「どれを誤読するか」は実際に読ませないと判らない。**全点を収録すれば
 // エンジン不要で決定的に作れるが、正しく読めている点までカナ経由になり、そこでアクセントと
@@ -40,15 +45,8 @@ import { hasUnreadableFurigana, normalizeReading, stripReadingTail, toKanaEntry 
 import { classifyTsunamiStation, offshoreExpectedReading, splitDistance } from './tsunamiStationReading'
 import type { TsunamiStationShape } from './tsunamiStationReading'
 import { findWorkbookInZip } from './lib/xlsx.mjs'
-
-/**
- * 震度観測点一覧の取得元。**`build-station-coords.mjs` と同じ URL を指す。**
- * 座標側は素の node で動かす規定（`node scripts/build-station-coords.mjs`）のため、
- * このスクリプト（tsx 実行）から定数を共有できない。食い違いは
- * `scripts/stationReadings.test.ts` が両ファイルを読んで検査する。
- */
-export const SOURCE_URL =
-  'https://gist.githubusercontent.com/iku55/79005d1896631ad6117bbe327b8162c1/raw/6458684e522767a9ffc42f9bba9d6b2b06253f44/stations.json'
+import { collectUnlistedStations, fetchListedStations, stationKeyOf } from './lib/stationSource.mjs'
+import type { UpstreamStation } from './lib/stationSource.mjs'
 
 /**
  * 潮位観測点の取得元（気象庁 技術資料ページ）。**`build-tsunami-obs-coords.mjs` と同じ URL を指す。**
@@ -67,12 +65,12 @@ const DEFAULT_SPEAKER = 3
 const CONCURRENCY = 8
 
 /**
- * 上流の件数として受け入れる幅。2026-09 時点で震度観測点 4372 点・潮位観測点 609 点
- * （どちらも名前で数えた値。潮位観測点はコード表の行が 611 あり、うち 2 件が内容部と
- * ヘッダ部で同名）。
+ * 潮位観測点の件数として受け入れる幅。2026-09 時点で 609 点（名前で数えた値。コード表の行は
+ * 611 あり、うち 2 件が内容部とヘッダ部で同名）。
  * この幅を外れたらスキーマか URL が変わったと見て止める（黙って少ない辞書を作らない）。
+ *
+ * 震度観測点の件数は `lib/stationSource.mjs` の `LISTED_COUNT_RANGE` が見る。
  */
-const EXPECTED_COUNT_RANGE = { min: 3000, max: 6000 } as const
 const EXPECTED_TIDAL_COUNT_RANGE = { min: 450, max: 900 } as const
 
 /**
@@ -195,12 +193,6 @@ const DISTANCE_READING_FIXTURES: readonly (readonly [string, string])[] = [
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const OUT_DIR = join(__dirname, '..', 'public', 'data')
 const OUT_FILE = join(OUT_DIR, 'tts-station-readings.json')
-
-type Station = {
-  name?: string
-  furigana?: string
-  pref?: { name?: string }
-}
 
 /**
  * 照合の対象。列挙元が違っても、この形へ揃えてから同じ手順（読ませる → 期待と比べる →
@@ -333,39 +325,106 @@ function checkFurigana(
   }
 }
 
-/** 震度観測点のふりがな表を取る。 */
+/**
+ * 震度観測点のふりがな表を取る。**現行の一覧に無い観測点（`unlisted`）も含める。**
+ *
+ * 過去の電文を再生すると、当時運用されていて今は一覧に無い観測点の名前が声になる
+ * （「震度5弱以上未入電」は**地点名で読む**ため。→ `docs/spec/audio-tts-spec.md` §4）。
+ * 現行の一覧だけを列挙していると、その名前は誤読の判定を一度も通らない。
+ *
+ * **リプレイに限った話ではない。** 同じ入れ物には「固定リビジョンより後に一覧へ加わった
+ * 観測点」も入るため、上流が更新されればライブで声になる名前も対象外になりうる
+ * （→ `lib/stationSource.mjs` の `collectUnlistedStations`）。
+ */
 async function fetchSeismicFurigana(): Promise<Map<string, string>> {
-  console.log(`Fetching ${SOURCE_URL} ...`)
-  const res = await fetch(SOURCE_URL)
-  if (!res.ok) throw new Error(`Failed to fetch source: ${res.status}`)
-  const stations = await res.json() as Station[]
-  if (!Array.isArray(stations)) throw new Error('取得したデータが配列ではありません')
-  if (stations.length < EXPECTED_COUNT_RANGE.min || stations.length > EXPECTED_COUNT_RANGE.max) {
-    throw new Error(
-      `震度観測点の件数が想定の幅（${EXPECTED_COUNT_RANGE.min}〜${EXPECTED_COUNT_RANGE.max}）を`
-      + `外れています: ${stations.length} 件。取得元か形式が変わっていないか確かめてください。`,
+  const listed = await fetchListedStations()
+  const listedKeys = new Set<string>()
+  for (const s of listed) {
+    const key = stationKeyOf(s)
+    if (key) listedKeys.add(key)
+  }
+  const unlisted = await collectUnlistedStations(listedKeys)
+  console.log(`Loaded ${listed.length} listed + ${unlisted.size} unlisted seismic stations`)
+
+  const merged = mergeFurigana([listed, [...unlisted.values()]])
+  if (merged.duplicates.length > 0) {
+    console.warn(
+      `現行と履歴で名前が重なった観測点: ${merged.duplicates.length} 件（ふりがなは一致）`
+      + `: ${merged.duplicates.slice(0, 5).join('・')}`,
     )
   }
-  console.log(`Loaded ${stations.length} seismic stations`)
 
+  // **両方まとめて投げる。** 片方ずつ投げると、1 つ目を直して再実行するまで 2 つ目に
+  // 気づけない（生成は数分かかる）。
+  const problems: string[] = []
+  if (merged.unreadable.length > 0) {
+    problems.push(
+      `ふりがなとして読めない震度観測点が ${merged.unreadable.length} 件あります: `
+      + `${merged.unreadable.slice(0, 5).join(' / ')}。取得元の形式を確かめてください。`,
+    )
+  }
+  if (merged.conflicts.length > 0) {
+    problems.push(
+      `同じ名前でふりがなが違う震度観測点が ${merged.conflicts.length} 件あります: `
+      + `${merged.conflicts.slice(0, 5).join(' / ')}。読み上げ文には県名が付かないため、`
+      + 'どちらの読みを採るべきか決められません。',
+    )
+  }
+  if (problems.length > 0) throw new Error(problems.join('\n'))
+
+  checkFurigana('震度観測点', merged.furiganaOf, FURIGANA_FIXTURES)
+  return merged.furiganaOf
+}
+
+/** {@link mergeFurigana} の結果。 */
+export interface MergedFurigana {
+  /** 観測点名 -> ふりがな。 */
+  readonly furiganaOf: Map<string, string>
+  /** ふりがなとして読めなかった点（`名前（ふりがな）` の形）。呼び出し側が例外にする。 */
+  readonly unreadable: string[]
+  /** 同じ名前でふりがなが違った点。呼び出し側が例外にする。 */
+  readonly conflicts: string[]
+  /** 同じ名前でふりがなも同じだった点。通すが記録に残す。 */
+  readonly duplicates: string[]
+}
+
+/**
+ * 観測点の群から「観測点名 → ふりがな」の表を作る。
+ *
+ * **同じ名前が二度現れたら、先に入った値を残す。** ただしふりがなが食い違えば `conflicts` へ
+ * 入れて呼び出し側が生成を止めるので、**「どちらの群が勝ったか」は外から観測できない**
+ * （一致していればどちらを採っても同じ値になる）。この非対称を当てにした呼び出し方をしないこと。
+ *
+ * 鍵に都道府県を含めないのは、読み上げ文に県名が付かない形で観測点名が現れるため
+ * （DMDATA は点の `pref` が常に空）。観測点名は一意（現行どうし・履歴どうし・両者のあいだ、
+ * いずれも同名が無いことを実測済み）。
+ *
+ * **一意性が崩れても黙って上書きしない。** 上書きするとどちらの読みが採られるかが列挙の順序で
+ * 決まり、読み上げだけが静かに変わる。ふりがなが食い違えば `conflicts` へ入れて呼び出し側が
+ * 止め、一致していれば通すが `duplicates` へ記録する —— 「同一の観測点が現行と履歴の両方に
+ * 居る」のか「別の場所の観測点がたまたま同名同読み」なのかは生成物から区別できず、
+ * 後者が原因の誤読を調べるときの手掛かりになる。
+ */
+export function mergeFurigana(groups: readonly (readonly UpstreamStation[])[]): MergedFurigana {
   const furiganaOf = new Map<string, string>()
   const unreadable: string[] = []
-  for (const s of stations) {
-    if (!s.name) continue
-    const furigana = s.furigana ?? ''
-    if (hasUnreadableFurigana(furigana)) { unreadable.push(`${s.name}（${furigana || '空'}）`); continue }
-    // 観測点名は全点で一意（同名は存在しない）。都道府県を鍵に含めないのは、読み上げ文に県名が
-    // 付かない形で観測点名が現れるため（DMDATA は点の `pref` が常に空）。
-    furiganaOf.set(s.name, furigana)
+  const conflicts: string[] = []
+  const duplicates: string[] = []
+  for (const group of groups) {
+    for (const s of group) {
+      if (!s.name) continue
+      const furigana = s.furigana ?? ''
+      if (hasUnreadableFurigana(furigana)) { unreadable.push(`${s.name}（${furigana || '空'}）`); continue }
+      const known = furiganaOf.get(s.name)
+      if (known !== undefined) {
+        if (known !== furigana) conflicts.push(`${s.name}（${known} / ${furigana}）`)
+        else duplicates.push(s.name)
+        continue
+      }
+      furiganaOf.set(s.name, furigana)
+    }
   }
-  if (unreadable.length > 0) {
-    throw new Error(
-      `ふりがなとして読めない震度観測点が ${unreadable.length} 件あります: `
-      + `${unreadable.slice(0, 5).join(' / ')}。取得元の形式を確かめてください。`,
-    )
-  }
-  checkFurigana('震度観測点', furiganaOf, FURIGANA_FIXTURES)
-  return furiganaOf
+  return { furiganaOf, unreadable, conflicts, duplicates }
 }
 
 /**
@@ -712,7 +771,7 @@ async function main(): Promise<void> {
 /**
  * **直接実行されたときだけ走らせる。**
  *
- * `scripts/stationReadings.test.ts` が `SOURCE_URL` を読むために import しており、
+ * `scripts/stationReadings.test.ts` が `JMA_TEC_MATERIAL` を読むために import しており、
  * 読み込みだけで `main()` が動くと `npm test` が音声合成エンジンへ繋ぎに行く。
  * 理由と落ち方の詳細は `build-epicenter-accents.ts` の同じ門にある
  * —— **生成スクリプトをテストから import するなら必ずこの形にすること。**

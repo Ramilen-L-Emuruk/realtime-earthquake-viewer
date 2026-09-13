@@ -515,7 +515,7 @@ const JST_OFFSET_MS = 9 * 3600_000
  * `docs/spec/quake-spec.md` §6.4。
  *
  * @param kindLabel 記録に出す電文種別の名前。**呼び出し元ごとに違う値を渡すこと** ——
- *   この関数は 8 種別から呼ばれており、固定文字列にすると記録の間引きの枠を全種別で
+ *   この関数は 9 種別から呼ばれており、固定文字列にすると記録の間引きの枠を全種別で
  *   食い合う（ある種別のノイズで別の種別の異常が黙る。→ `createPerLabelLogGate`）
  * @param logPrefix 記録の接頭辞。**津波だけ `[tsunami XML]`** で、他は `[dmdata XML]`
  *   （→ `docs/spec/data-sources-spec.md` §2「読めなかったものは記録する」）。既定値を
@@ -523,7 +523,14 @@ const JST_OFFSET_MS = 9 * 3600_000
  */
 function readReportDateTime(doc: Document, kindLabel: string, logPrefix: string): string {
   const report = xmlText(xmlQ(doc, 'ReportDateTime'))
-  if (report) return report
+  if (report) {
+    // **主経路は値を捨てず、記録だけ残す。** 下の受け皿と扱いが違うのは意図したもの ——
+    // 発表時刻は全種別の骨格で、空にした場合に何が壊れるか（続報の新旧判定・表示・共有
+    // カード・読み上げ）を確かめていない。受け皿は元から空へ倒す作りで、そちらは
+    // `Head/ReportDateTime` が欠けた電文しか通らないため影響範囲が狭い。
+    warnIfUnreadableDateTime(logPrefix, `${kindLabel}の発表時刻`, report, '空にしたときの影響を確かめていない')
+    return report
+  }
   const control = xmlText(xmlQ(doc, 'DateTime'))
   if (!control) return ''
   // **読めない値をそのまま通さない。** 通すと以降の時刻比較がすべてこの値に引きずられる。
@@ -617,7 +624,9 @@ function readTelegramDateTime(logPrefix: string, label: string, raw: string): st
  *   空文字へ倒すと、識別子を持たない電文どうしが同じキーになって束ねられる
  * - **その電文に必須の要素**（長周期地震動観測情報の `OriginTime`）。捨てると電文ごと
  *   落ちる作りなので、階級の情報まで道連れになる
- * - **落としたときの影響を確かめていない時刻**（緊急地震速報の発表時刻）
+ * - **落としたときの影響を確かめていない時刻**（全種別の発表時刻。`readReportDateTime` の
+ *   主経路）。空にすると続報の新旧判定・表示・共有カード・読み上げのどこが壊れるかを
+ *   調べていない
  *
  * **理由を引数で受け取るのは、文面で決めつけないため。** 固定文にすると、長周期の
  * `OriginTime`（同一性の判定には使わない）で「同一性の判定に使うため」と記録され、
@@ -1081,13 +1090,23 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
 
   const eventId = xmlText(xmlQ(doc, 'EventID'))
   const serial = xmlText(xmlQ(doc, 'Serial')) || '1'
-  // **緊急地震速報だけ `readReportDateTime` を通っていない**（他の 8 種別は全部通る）。
-  // あちらは `ReportDateTime` が無いときに `Control/DateTime` から JST へ直す落とし先を持つが、
-  // ここは素で読むだけ。揃えるには落とし先の挙動ごと検証がいるので、いまは読めないことを
-  // 記録するに留める。**値は捨てない** —— 発表時刻はこの電文の骨格で、空にした場合の
-  // 影響範囲（表示・共有カード・読み上げ）を確かめずに倒すほうが危うい。
-  const reportTime = xmlText(xmlQ(doc, 'ReportDateTime'))
-  warnIfUnreadableDateTime(DMDATA_LOG_PREFIX, '緊急地震速報の発表時刻', reportTime, '空にしたときの影響を確かめていない')
+  // **他の XML パーサーと同じ経路で読む。** かつてここだけ素読みで、`Control/DateTime` への
+  // 受け皿も、読めない値・時間帯を明示しない値を空にする検証も持っていなかった。
+  //
+  // 緊急地震速報では `Head/ReportDateTime` と `Control/DateTime` が**秒まで一致する**。
+  // 地震情報は `ReportDateTime` が分へ丸められて最大 55 秒ずれるが、こちらにその丸めは
+  // 無いので、受け皿へ落ちても指す瞬間は変わらない。
+  //
+  // **受け皿が実運用で働くことは期待していない。** `Head/ReportDateTime` の欠落は 1 通も
+  // 観測できていない。それでも揃えるのは、欠けた電文が来たときに**例外もログも出さずに**
+  // 発表時刻が空になり、自動解除の時刻計算（`utils/eew.ts` の `calcEEWCancelTime`）が
+  // Invalid Date へ落ちるため。
+  //
+  // 上の 2 つは DMDATA アーカイブの `eew.forecast` と `eew.warning`（2022-07-20〜2026-09-12・
+  // XML 80,725 通。2026-09-13 に数えた値）を走査した実測。差の分布は 0 秒のみ、
+  // `ReportDateTime` の欠落は 0 通だった。**目録は後から縮むので、別の日に数えた値とは
+  // 範囲が同じでも数が食い違いうる**（→ `docs/spec/quake-spec.md` §6.2）。
+  const reportTime = readReportDateTime(doc, '緊急地震速報', DMDATA_LOG_PREFIX)
   const isCanceled = xmlText(xmlQ(doc, 'InfoType')) === '取消'
 
   const eqEl = xmlQ(doc, 'Earthquake')
@@ -1387,14 +1406,20 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   // 通常電文は arrivalTime を優先し、無ければ originTime にフォールバックする
   // （DMD-4: かつて OriginTime を採っていて、同じ地震の時刻が 1 分ずれていた）。
   //
+  // **変数名を `originTime` にしない。** 中身は発現時刻が優先で、電文の
+  // `OriginTime`（地震発生時刻）とは別物。同じ名前を付けると、実装を読んで裏を取る人が
+  // 「`originTime` という名前なのに発現時刻？」で止まる（実際に止まった）。
+  // 津波側の選択（`sourceEarthquakeTime`）と同じ規則であることは
+  // `docs/spec/tsunami-spec.md` §4 に書いてある。
+  //
   // **読めない値でも捨てない。** この値は `earthquake.time` になり、`eventId` を持たない経路
   // （P2PQuake）の同一性キー（`eventKey`）に入る。空文字へ倒すと別々の地震が同じキーになって
   // 1 枚のカードへ束ねられる —— 読めない時刻を残すより重い。記録だけ残し、表示・読み上げ側の
   // ガード（`formatters.ts` の `readDateTime`）に受け止めさせる。
-  const originTime = earthquakeEl
+  const earthquakeTime = earthquakeEl
     ? (xmlText(xmlQ(earthquakeEl, 'ArrivalTime')) || xmlText(xmlQ(earthquakeEl, 'OriginTime')))
     : xmlText(xmlQ(doc, 'TargetDateTime'))
-  warnIfUnreadableDateTime(DMDATA_LOG_PREFIX, '地震の発現時刻（または発生時刻）', originTime, '同一性の判定に使う')
+  warnIfUnreadableDateTime(DMDATA_LOG_PREFIX, '地震の発現時刻（または発生時刻）', earthquakeTime, '同一性の判定に使う')
 
   // Magnitude 要素が空・欠落の電文は「規模不明」。`|| 0` で 0 に潰すと M0.0 と実測値のように
   // 表示・読み上げされるため、NaN のまま返して不明判定（formatters の hasMagnitude）に委ねる。
@@ -1624,7 +1649,7 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
       correct,
     },
     earthquake: {
-      time: originTime,
+      time: earthquakeTime,
       hypocenter: {
         name: hypName,
         // 震度速報は震源情報なし。-200 は「位置不明」センチネル（P2PQuake 経路と揃えてある）。
@@ -1857,10 +1882,14 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
   }
 
   const areas: TsunamiArea[] = []
-  // 解除コード（00/50/60）で `areas` から落とした区域の名前。全区域が落ちれば正式解除だが、
-  // **他の区域が残ったまま一部だけ落ちた場合は区域単位の等級変化として検出できない**
-  // （`lastGrade` は残った区域にしか付かない）。下で記録を残す。
-  const droppedByCancelCode: string[] = []
+  // 解除コード（00/50/60）が付いた区域。**`areas` へは積まない**（もう等級が出ていないため）が、
+  // 捨てもしない —— 他の区域が残ったまま一部だけ解除された報では、この区域が
+  // 「津波注意報が解除されました」として伝わる唯一の手がかりになる
+  // （→ `JMATsunami.cancelledAreas`）。全区域がここへ落ちれば正式解除で、下の分岐が拾う。
+  const cancelledAreas: TsunamiArea[] = []
+  // 解除されたのに前回の等級（`LastKind`）を読めなかった区域の名前。**何から解除されたかを
+  // 言えないので伝えようがない**。画面にも音にも出ないため、記録だけ残す。
+  const undescribableCancel: string[] = []
   const forecastStationTally = createReadTally('津波の到達予想の観測点')
   // 名前を読めなかった区域は、**等級まで見て 2 つに分ける**。名前だけで一緒くたにすると、
   // まだ有効かもしれない区域を巻き込んで「解除」を発表する（下の判定を参照）。
@@ -1887,7 +1916,10 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
     }
     if (grade === 'Unknown') {
       if (isKnownCancelCode(kindCode)) {
-        droppedByCancelCode.push(areaName)
+        // 解除された区域。実電文の `Item` は `Area` と `Category` しか持たないので、
+        // 波高・到達時刻・潮位観測点は読まない（下の読み取りへ進ませない）。
+        cancelledAreas.push({ grade: 'Unknown', lastGrade, immediate: false, name: areaName, code: areaCode })
+        if (lastGrade === undefined) undescribableCancel.push(areaName)
         continue
       }
       // DMD-5: 未知コードは silent lifted 誤認を避けるため Warning 相当で保持し警告する
@@ -2003,13 +2035,13 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
     log.warn(`${TSUNAMI_LOG_PREFIX} Forecast の区域 ${unreadableAreaCount} 件で名前を読めませんでした（うち解除済みと判定できたもの: ${unreadableCancelledCount} 件）`)
   }
   if (areas.length === 0) return { kind: 'tsunami', id, eventId, time: reportDateTime, cancelled: true, cancelReason: 'lifted', issue: { source, time: reportDateTime, type: 'Focus' }, areas: [] }
-  warnPartialDrop(droppedByCancelCode, TSUNAMI_LOG_PREFIX)
+  warnUndescribableCancel(undescribableCancel, TSUNAMI_LOG_PREFIX)
   forecastStationTally.warnIfNoneReadable(TSUNAMI_LOG_PREFIX)
 
   // Observation も含む場合（VTSE51①: Forecast + Observation 両方あり）
   const observations = observationEl ? parseTsunamiObservationsFromXml(observationEl, offshore) : undefined
 
-  return { kind: 'tsunami', id, eventId, time: reportDateTime, ...(tsunamiOperationStatus && { operationStatus: tsunamiOperationStatus }), cancelled: false, validDateTime, headline, infoName, warningComments, carriesForecastStations, freeText, bodyText: tsunamiBodyText, sourceEarthquakes, issue: { source, time: reportDateTime, type: 'Focus' }, areas, observations: observations && observations.length > 0 ? observations : undefined, observationDateTime, estimations }
+  return { kind: 'tsunami', id, eventId, time: reportDateTime, ...(tsunamiOperationStatus && { operationStatus: tsunamiOperationStatus }), cancelled: false, validDateTime, headline, infoName, warningComments, carriesForecastStations, freeText, bodyText: tsunamiBodyText, sourceEarthquakes, issue: { source, time: reportDateTime, type: 'Focus' }, areas, cancelledAreas: cancelledAreas.length > 0 ? cancelledAreas : undefined, observations: observations && observations.length > 0 ? observations : undefined, observationDateTime, estimations }
 }
 
 /**
@@ -2193,23 +2225,20 @@ function isKnownCancelCode(code: string): boolean {
 }
 
 /**
- * 発表中の区域が残っているのに、一部の区域だけが解除コード（00/50/60）で `areas` から
- * 落ちた場合に記録を残す。
+ * 解除された区域（`Kind/Code` = 00/50/60）のうち、**前回の等級を読めなかったもの**を記録する。
  *
- * **この形は実電文にある。** 落ちた区域は `lastGrade` を持てないため「区域単位で等級が動いた報」
- * として検出できず、カードから説明もなく消える。通常運用の実例は 2025-12-09T06:20 の VTSE41 で、
- * `青森県日本海沿岸` が `Kind/Code=60`（津波注意報解除）・`LastKind/Code=62`（津波注意報）として
- * 届いた。同じ報の他の 7 区域は 62 → 72 の降格として残るので読み上げ自体は起きるが、解除された
- * 区域だけがどこにも現れない（件数・走査範囲・数え直す手順は
- * → docs/spec/tsunami-spec.md §10「区域の顔ぶれが報ごとに変わること」）。
+ * 解除そのものは `cancelledAreas` で持ち回るので画面にも読み上げにも出る。ただし
+ * 「何から解除されたか」は `LastKind` にしか無く、そこが読めないと文にできない
+ * （`tsunamiAreaGradeChanges` が遷移元を持たない区域を落とす）。**その区域だけは画面にも音にも
+ * 現れない**ので、追う手がかりをここに残す。
  *
- * かつてここには「実電文では現れない」と書いてあった。根拠は 2024 年能登半島地震
- * （`eventId=20240101161010`）1 事象ぶんの `Kind/Code` で、**1 事象では足りない**。
- * **画面には何も出ないので、追う手がかりはこの警告だけ。**
+ * 実電文で `LastKind` を欠く区域は観測できていない（走査した区域 19,906 件で 0 件。範囲と
+ * 数え直す手順は → docs/spec/tsunami-spec.md §10「区域の顔ぶれが報ごとに変わること」）。
+ * コード改定で未知の値が来た場合は `parseLastKindGrade` 側でも警告が出る。
  */
-function warnPartialDrop(droppedNames: string[], logPrefix: string): void {
-  if (droppedNames.length === 0) return
-  log.warn(`${logPrefix} 発表中の区域が残っているのに解除コードで落ちた区域があります（区域単位の等級変化として検出できません）: ${droppedNames.join('・')}`)
+function warnUndescribableCancel(cancelledNames: string[], logPrefix: string): void {
+  if (cancelledNames.length === 0) return
+  log.warn(`${logPrefix} 解除された区域の前回の等級を読めませんでした（解除を伝えられません）: ${cancelledNames.join('・')}`)
 }
 
 /**

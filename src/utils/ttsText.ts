@@ -1,7 +1,7 @@
 import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMANankaiCommentary, JMAKohatsu, JMAEarthquakeCount, JMALpgm, IntensityScale, TsunamiGrade, TsunamiArea, EarthquakePoint, DomesticTsunami, TsunamiObservation, Hypocenter } from '../types/earthquake'
 import { eewNoForecastReason, canPresentLpgmClass, type EewMaxScaleInfo } from './eew'
 import { getIntensityLabel, getIntensityLabelWithApproxAbove } from './intensity'
-import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, hasForecastHeight, compareObservedHeightDesc, overSuffixedHeight, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, type TsunamiAreaGradeChange } from './tsunami'
+import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, hasForecastHeight, compareObservedHeightDesc, overSuffixedHeight, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, TSUNAMI_GRADE_LIFTED, type TsunamiAreaGradeChange } from './tsunami'
 import { joinSegments, plain, type SpeechSegment, type SpeechRef, type QuakeFact } from './ttsFollow'
 import { getSubRegionsCache } from './subregions'
 import { getPrefecturesCache } from './prefectures'
@@ -404,7 +404,13 @@ function unreceivedRegionSegments(
   // **推定の理由まで言う。** 「5弱以上と推定されます」だけだと、なぜ推定なのかが伝わらない。
   // 語は気象庁の「未入電」をそのまま使い、画面のバッジ（「未入電あり」）とも揃える ——
   // 聞いた語で画面を探せるように。
-  segments.push(plain('では、震度5弱以上と推定されますが、未入電です。'))
+  //
+  // **この文にも未入電の印を付ける**（`unreceivedNote`）。読み上げに合わせて未入電モードを開く
+  // 追従は参照の有無で範囲を決めるので、地名にだけ付けると**説明している最中に画面が戻る**。
+  segments.push({
+    text: 'では、震度5弱以上と推定されますが、未入電です。',
+    refs: [{ kind: 'unreceivedNote' }],
+  })
   return segments
 }
 
@@ -588,7 +594,7 @@ function magnitudePhrase(mag: number): string {
 }
 
 /**
- * 規模が数値にならないときの説明（`jmx_eb:Magnitude@description`）を読む文。
+ * 規模が数値にならないときの説明（`jmx_eb:Magnitude@description`）の**述部**。
  *
  * **「Ｍ不明」と「Ｍ８を超える巨大地震」は別物**で、後者は M8 を超えて速報できないことを表す
  * （電文解説資料 Ⅱ.32/33/36）。数値が無いことだけを見て黙ると、最大級の地震ほど音声から
@@ -596,28 +602,58 @@ function magnitudePhrase(mag: number): string {
  *
  * **別の文にする。** 「マグニチュード〜の地震が発生しました」の句へ差し込むと
  * 「8を超える巨大地震の地震が発生しました」と重なる。
+ *
+ * **主題部（「マグニチュードは」）を含めない。** 初報と続報で主題部が変わるため
+ * （→ {@link magnitudeConditionSentence} / {@link magnitudeConditionAmendSentence}）。
+ * 表へ主題部まで書くと、続報側が文の頭を差し替えられず、値が変わったことを言えなくなる。
  */
-const MAGNITUDE_CONDITION_SENTENCE: Record<string, string> = {
-  'Ｍ不明': 'マグニチュードは不明です。',
-  'Ｍ８を超える巨大地震': 'マグニチュードは8を超える巨大地震とみられます。',
+const MAGNITUDE_CONDITION_PREDICATE: Record<string, string> = {
+  'Ｍ不明': '不明です。',
+  'Ｍ８を超える巨大地震': '8を超える巨大地震とみられます。',
 }
 
 /** 未知の説明を記録した値。同じ地震の続報で何度も来るので 1 度だけ出す。 */
 const reportedUnknownMagnitudeConditions = new Set<string>()
 
-function magnitudeConditionSentence(hypocenter: Hypocenter): string {
+/** 上の述部を引く。規模が数値なら（＝説明を読む必要が無ければ）空文字。 */
+function magnitudeConditionPredicate(hypocenter: Hypocenter): string {
   const desc = hypocenter.magnitudeCondition
   if (!desc || hasMagnitude(hypocenter.magnitude)) return ''
-  const known = MAGNITUDE_CONDITION_SENTENCE[desc]
+  const known = MAGNITUDE_CONDITION_PREDICATE[desc]
   if (known) return known
   // 気象庁が語を増やしたときに黙らない。全角の「Ｍ」と全角数字だけを直して読む
-  // （見出しの「マグニチュードは」と重ならないよう先頭の「Ｍ」は落とす）。
+  // （前に置く主題部の「マグニチュード」と重ならないよう先頭の「Ｍ」は落とす）。
   if (!reportedUnknownMagnitudeConditions.has(desc)) {
     reportedUnknownMagnitudeConditions.add(desc)
     log.warn(`[tts] 規模の説明に未知の表記があります（そのまま読みます）: ${desc}`)
   }
   const body = desc.replace(/^[ＭM]/, '').replace(/[０-９．]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
-  return `マグニチュードは${body}です。`
+  return `${body}です。`
+}
+
+/** 初報で読む形。「マグニチュードは8を超える巨大地震とみられます。」 */
+function magnitudeConditionSentence(hypocenter: Hypocenter): string {
+  const predicate = magnitudeConditionPredicate(hypocenter)
+  return predicate ? `マグニチュードは${predicate}` : ''
+}
+
+/**
+ * 続報で**値が変わったとき**に読む形。「マグニチュードが更新されました。8を超える巨大地震とみられます。」
+ *
+ * **数値の規模（「マグニチュードは7.1に更新されました。」）と同じく、更新されたことを言う。**
+ * 初報と同じ文へ落とすと、**最大級の地震でだけ「変わった」が声にならない** ——
+ * 「Ｍ不明」から「Ｍ８を超える巨大地震」へ確定する続報がまさにその場面。
+ *
+ * **「〜に更新されました」の枠へ値を入れない。** マグニチュード（数値）を地震（出来事）へ
+ * 更新することになり、「マグニチュードは8を超える巨大地震に更新されました。」と破綻する。
+ * そこで**主題部だけを差し替え**、値は初報と同じ述部で言う。
+ *
+ * **主題部で「マグニチュード」を言うので、述部は主題を持たない**（そのための
+ * {@link MAGNITUDE_CONDITION_PREDICATE} の切り分け）。
+ */
+function magnitudeConditionAmendSentence(hypocenter: Hypocenter): string {
+  const predicate = magnitudeConditionPredicate(hypocenter)
+  return predicate ? `マグニチュードが更新されました。${predicate}` : ''
 }
 
 /**
@@ -722,12 +758,18 @@ function formatDayTime(isoTime: string): string | null {
   return `${d.getDate()}日${d.getHours()}時${d.getMinutes()}分`
 }
 
-/** VXSE43/45 EEW キャンセル（誤報取消）の読み上げテキストを生成する。 */
+/**
+ * VXSE43/45 EEW の誤報取消の読み上げテキストを生成する。
+ *
+ * **述語は「取り消されました」。** 気象庁が使う語は「取消」で（→ CLAUDE.md「利用者へ出す語を
+ * 気象庁の表現と揃える」）、カードのオーバーレイも「この緊急地震速報は取り消されました」と
+ * 書いている。津波・南海トラフ臨時情報・地震回数の取消も同じ述語。
+ */
 export function eewCancelToText(event: EEWAlert): string {
   const time = event.issue?.time ? formatTime(event.issue.time) : null
   const head = time
-    ? `${time}に発表された緊急地震速報はキャンセルされました。`
-    : '緊急地震速報はキャンセルされました。'
+    ? `${time}に発表された緊急地震速報は取り消されました。`
+    : '緊急地震速報は取り消されました。'
   // 地震情報・津波情報と同じ扱い（→ `cancelReasonSentence`）。3 つの電文で揃えないと、
   // 同じ事象なのに種別によって理由が出たり出なかったりする
   return head + cancelReasonSentence(event.cancelText)
@@ -740,9 +782,10 @@ export function eewCancelToText(event: EEWAlert): string {
  */
 export function earthquakeCancelToText(time: string | null, cancelText?: string): string {
   const formatted = time ? formatTime(time) : null
+  // 述語は「取り消されました」で全種別そろえる（→ `eewCancelToText`）。
   const head = formatted
-    ? `${formatted}に発表された地震情報はキャンセルされました。`
-    : '地震情報はキャンセルされました。'
+    ? `${formatted}に発表された地震情報は取り消されました。`
+    : '地震情報は取り消されました。'
   return head + cancelReasonSentence(cancelText)
 }
 
@@ -750,7 +793,7 @@ export function earthquakeCancelToText(time: string | null, cancelText?: string)
  * 取消しの概要（電文の `Body/Text`）を読み上げへ足す句。無ければ空。
  * → docs/spec/audio-tts-spec.md §4「取消は「取り消された事実」だけを伝える」
  *
- * **気象庁が書いた理由をそのまま読む。** アプリの定型文（「キャンセルされました」）は何が
+ * **気象庁が書いた理由をそのまま読む。** アプリの定型文（「取り消されました」）は何が
  * 起きたかしか言っておらず、なぜ取り消したのかは電文のこの本文にしか無い。
  *
  * **ただし取消の宣言だけの本文は読まない**（→ `CANCEL_DECLARATION_SUBJECTS`）。定型文が同じ事実を
@@ -1186,11 +1229,12 @@ function changedFactSegments(event: JMAQuake, spoken: QuakeSpokenState): SpeechS
   }
   if (changed('magnitude', magnitudeFactValue(hypocenter))) {
     const value = magnitudeFactValue(hypocenter)
-    // 数値にならない規模は「〜に更新されました」の形へ入れられない（「8を超える巨大地震に
-    // 更新されました」）。そのときは初報と同じ文で言い直す。
+    // 数値にならない規模は「〜に更新されました」の枠へ入れられない（「8を超える巨大地震に
+    // 更新されました」と破綻する）。**それでも更新されたことは言う** —— 主題部だけを
+    // 差し替えた形を使う（→ `magnitudeConditionAmendSentence`）。
     const text = hasMagnitude(hypocenter.magnitude)
       ? `マグニチュードは${magnitudeText(hypocenter.magnitude)}に更新されました。`
-      : magnitudeConditionSentence(hypocenter)
+      : magnitudeConditionAmendSentence(hypocenter)
     segments.push({ text, refs: [{ kind: 'quakeFact', fact: 'magnitude', value }] })
   }
   if (changed('depth', String(hypocenter.depth))) {
@@ -1278,6 +1322,9 @@ export function earthquakeToSegments(
     // 震源名だけでも文は成立する。
     const head = plain(`顕著な地震の震源要素更新のお知らせ。${time ? `${time}頃発生した` : ''}${hypocenter.name}の地震について、`)
     // 数値にならない規模は「〜に更新されました」の並びへ入れられないので、別の文で後に足す。
+    // **ここは初報の形（「マグニチュードは〜」）のまま。** この電文は名乗りと直前の文が既に
+    // 「更新」を言っているので、`magnitudeConditionAmendSentence` を使うと 1 回の発話で
+    // 「更新」が 3 度重なる（続報の差分では前に「更新」を言う文が無いので、あちらは要る）。
     const magCondition = magnitudeConditionSentence(hypocenter)
     const conditionSegments: SpeechSegment[] = magCondition
       ? [{ text: magCondition, refs: [{ kind: 'quakeFact', fact: 'magnitude', value: magnitudeFactValue(hypocenter) }] }]
@@ -1598,7 +1645,12 @@ export function tsunamiToSegments(
       ...lowerGradeSentence(event.areas, topGrade, observations),
     ]
   }
-  // 波高がまだ付いていない（続報で後から付く）場合は、区域名を直接挙げる
+  // 波高がまだ付いていない（続報で後から付く）場合は、区域名を直接挙げる。
+  //
+  // **等級名が 2 回出るが、これは頭の名乗りを残すための代償**（→ docs/spec/tts-sentence-inventory.md
+  // §4-10・§5）。「〈区域〉に発表されました」は区域が述語の前に来るので、頭の `${gradeLabel}。` を
+  // 外すと**等級が判るまで区域名を全部聞くことになる**（予報区が多いほど遅れる）。上の波高あり経路が
+  // 等級と行動を先に言い切っているのと同じ理由で、重複のほうを受け入れる。
   return [
     plain(`${gradeLabel}。`),
     ...areaNameSegments(orderAreasForSpeech(rawTopAreas, observations)),
@@ -1688,6 +1740,12 @@ export function tsunamiAreaGradeChangeToSegments(changes: readonly TsunamiAreaGr
   changes.forEach((change, i) => {
     if (i > 0) segments.push(plain('また、'))
     segments.push(...areaNameSegments(change.areas))
+    if (change.to === TSUNAMI_GRADE_LIFTED) {
+      // 解除された区域。遷移先に等級の名前が無いので「〜に切り替えられました」とは言えない。
+      // **残っている区域の話も、行動の指示も足さない**（他の遷移と同じ方針）。
+      segments.push(plain(`の${tsunamiGradeLabel(change.from)}が解除されました。`))
+      return
+    }
     if (change.from === 'Unknown') {
       // 前回は津波なし（`LastKind` が 00 等）。「〜の津波なしが」とは言えないので、
       // 波高が付いていない発表文と同じ言い方に落とす。
@@ -2274,9 +2332,15 @@ function buildLpgmRegionText(lpgm: JMALpgm, opts: TtsRegionOptions): string {
 /** VXSE62 長周期地震動情報の読み上げテキストを生成する。isNew=false のとき更新報として冒頭に通知する。 */
 export function lpgmToText(lpgm: JMALpgm, opts: TtsRegionOptions, isNew: boolean): string {
   if (lpgm.cancelled) {
-    return '長周期地震動情報はキャンセルされました。'
+    // 述語は「取り消されました」で全種別そろえる（→ `eewCancelToText`）。
+    return '長周期地震動情報は取り消されました。'
   }
-  const time = formatTime(lpgm.originTime)
+  // 地震の時刻は**発現時刻を先に採る**（地震情報・津波カードと同じ規則）。揃えないと、
+  // 同じ地震について地震情報が「◯時◯分ころ」と読んだ直後に、長周期が 1 分違う時刻を読む。
+  // 気象庁自身も見出し文へ発現時刻を書いており、VXSE62 も例外ではない（実電文の全期間走査で
+  // 確認。→ `docs/spec/tsunami-spec.md` §4）。**`originTime` は空になりえないが**
+  // （パーサーが無ければ電文ごと捨てる）、`arrivalTime` は任意なので `||` で落とす。
+  const time = formatTime(lpgm.arrivalTime || lpgm.originTime)
   const prefix = isNew ? '長周期地震動情報。' : '長周期地震動情報が更新されました。'
   // 時刻が日時として読めなければ句ごと落とす。「頃発生した地震で、」だけが残ると文が壊れ、
   // かといって時刻を読ませると「ナンじナンぷん頃」になる。落としても、この情報の主題
@@ -2308,12 +2372,32 @@ export { tsunamiMaxGrade }
  * 足すのは「その震度の広がりが、気象庁の推計として出そろった」ことだけ。地震発生から
  * 数分後に届くので、長い文は続報の読み上げを塞ぐ。
  *
+ * **どの地震の分布かは時刻で言う。** アプリが持つ分布は最新の 1 通だけで、震度5弱以上が
+ * 短時間に続くと**別の地震の分布へ入れ替わる**（`decideEstimatedIntensityUpdate` の
+ * `switched`）。時刻が無いと、いま聞いている分布がどちらのものか声だけでは分からない。
+ * 読む値は地震発現時刻（`arrivalTime`）で、**地震情報が読む時刻と同じ**（引き当ての鍵でもある
+ * → `matchEstimatedIntensity`）ので、耳の中で先ほどの地震情報と繋がる。
+ *
+ * 名詞句「〇時〇分頃発生した地震」は長周期地震動（{@link lpgmToText}）と同じ。助詞だけ
+ * 「で」ではなく「について」にする —— あちらの述語は「観測しました」で地震が観測の場だが、
+ * こちらは「受信しました」で地震は話題にすぎない（震源要素更新と同じ側）。
+ *
+ * **続報は「更新されました」と言う。** 同じ地震について続報が出る（実電文で 6 分後）。
+ * 言い分けないと、聞き手には同じ報が二度読まれたようにしか聞こえない。長周期地震動が
+ * 「長周期地震動情報。」／「長周期地震動情報が更新されました。」と分けているのと同じ扱い。
+ * 判定は呼び出し側が渡す（→ `isNewEstimatedIntensity`）。
+ *
  * **推計の最大震度は言わない。** 気象庁が「推計された震度の値は、場合によっては1階級程度
  * 異なることがあります」と断っており、観測して発表した最大震度と食い違いうる。声で並べると
  * どちらが発表値か区別できないまま、2 つの「最大震度」が耳に入ることになる。
  *
  * **場所も言わない。** 電文が持つのは震央地名の**番号**だけで、名前はアプリの側に無い。
+ *
+ * @param arrivalTime 地震発現時刻。**本体（最大 3MB）ではなくこの値だけを受け取る** ――
+ *   文に要るのはこれ 1 つで、引数を見れば何に依存しているかが分かる
+ * @param isNew 初めて受信した分布なら真。同じ地震の続報なら偽
  */
-export function estimatedIntensityToText(): string {
-  return '気象庁の推計震度分布図を受信しました。'
+export function estimatedIntensityToText(arrivalTime: string, isNew: boolean): string {
+  const tail = isNew ? 'を受信しました' : 'が更新されました'
+  return `${formatTime(arrivalTime)}頃発生した地震について、気象庁の推計震度分布図${tail}。`
 }

@@ -5,7 +5,7 @@
 // 標準版（P2PQuake）で区域ごと落ちる。索引を渡す形と渡さない形の両方を固定する。
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { isAreaPoint, buildIntensityRows, type IntensityRowDeps } from './quakePoints'
+import { isAreaPoint, buildIntensityRows, cityKey, type IntensityRowDeps } from './quakePoints'
 import { buildAreaPrefIndex, type StationCoordsData } from './stationCoords'
 import type { EarthquakePoint, IntensityScale } from '../types/earthquake'
 
@@ -76,6 +76,7 @@ describe('buildIntensityRows', () => {
     regionOfStation: () => null,
     unreceivedPrefs: new Set<string>(),
     unreceivedAreas: new Set<string>(),
+    unreceivedCities: new Set<string>(),
     rank: () => 0,
     ...over,
   })
@@ -291,5 +292,63 @@ describe('buildIntensityRows', () => {
     const cities = rows[0].regions[0].cities
     expect(cities.find(c => c.name === '珠洲市')).toMatchObject({ scale: 45, unreceived: true, hasUnreceived: false })
     expect(cities.find(c => c.name === '能登町')).toMatchObject({ scale: 40, unreceived: false, hasUnreceived: true })
+  })
+
+  // 正: **市町村の「未入電あり」は配下の観測点からも立てる。** 電文の `City/Condition` は
+  // 市町村の最大が震度4以下のときしか出ないので（→ docs/spec/quake-spec.md §5）、それだけに
+  // 頼ると**強く揺れた市町村ほど印が消える**。能登本震（震度6強の輪島市に未入電の観測点が 1 点）
+  // では、1343 市町村すべてで `Condition` が付いていなかった。
+  it('市町村の最大が観測できていても、配下に未入電の観測点があれば印を立てる', () => {
+    const rows = buildIntensityRows([
+      area('石川県能登', 60),
+      { pref: '', addr: '輪島市鳳至町', isArea: false, scale: s(60), area: '石川県能登', city: '輪島市' },
+      { pref: '', addr: '輪島市門前町走出', isArea: false, scale: s(45), unreceived: true, area: '石川県能登', city: '輪島市' },
+    ], [
+      // 気象庁は震度6強の市町村に Condition を付けない。
+      { name: '輪島市', area: '石川県能登', pref: '石川県', scale: s(60) },
+    ], deps({ unreceivedCities: new Set([cityKey('石川県能登', '輪島市')]) }))
+    const city = rows[0].regions[0].cities.find(c => c.name === '輪島市')!
+    expect(city).toMatchObject({ scale: 60, unreceived: false, hasUnreceived: true })
+  })
+
+  // 対照: 未入電を持たない市町村には立てない（同じ区域に別の市町村が未入電を抱えていても）。
+  it('未入電を持たない市町村には印を立てない', () => {
+    const rows = buildIntensityRows([
+      area('石川県能登', 60),
+      { pref: '', addr: '穴水町大町', isArea: false, scale: s(60), area: '石川県能登', city: '穴水町' },
+    ], [
+      { name: '輪島市', area: '石川県能登', pref: '石川県', scale: s(60) },
+      { name: '穴水町', area: '石川県能登', pref: '石川県', scale: s(60) },
+    ], deps({ unreceivedCities: new Set([cityKey('石川県能登', '輪島市')]) }))
+    const cities = rows[0].regions[0].cities
+    expect(cities.find(c => c.name === '穴水町')!.hasUnreceived).toBe(false)
+    expect(cities.find(c => c.name === '輪島市')!.hasUnreceived).toBe(true)
+  })
+
+  // 安全弁: **電文が言っている分を消さない。** 配下の観測点を 1 つも読めていない形では、
+  // 集合の側は空のままになる。そこで上書きすると、電文だけが知っている事実が消える。
+  it('配下の観測点から集められなくても、電文の Condition は残す', () => {
+    const rows = buildIntensityRows([
+      area('石川県能登', 40),
+    ], [
+      { name: '能登町', area: '石川県能登', pref: '石川県', scale: s(40), hasUnreceived: true },
+    ], deps({ unreceivedCities: new Set<string>() }))
+    expect(rows[0].regions[0].cities.find(c => c.name === '能登町')!.hasUnreceived).toBe(true)
+  })
+
+  // 安全弁: **鍵は区域と組にする。** 同じ名前の市町村が別の区域にあるとき、片方だけに立てる
+  // （府中市＝東京都・広島県）。名前だけで束ねると両方に印が出る。
+  it('同名の市町村が別の区域にあっても、印は該当する方だけに立てる', () => {
+    const rows = buildIntensityRows([
+      area('東京都23区', 40),
+      area('広島県南西部', 40),
+    ], [
+      { name: '府中市', area: '東京都23区', pref: '東京都', scale: s(40) },
+      { name: '府中市', area: '広島県南西部', pref: '広島県', scale: s(40) },
+    ], deps({ unreceivedCities: new Set([cityKey('広島県南西部', '府中市')]) }))
+    const tokyo = rows.find(r => r.pref === '東京都')!.regions[0].cities.find(c => c.name === '府中市')!
+    const hiroshima = rows.find(r => r.pref === '広島県')!.regions[0].cities.find(c => c.name === '府中市')!
+    expect(tokyo.hasUnreceived).toBe(false)
+    expect(hiroshima.hasUnreceived).toBe(true)
   })
 })

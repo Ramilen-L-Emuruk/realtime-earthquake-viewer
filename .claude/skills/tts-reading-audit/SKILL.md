@@ -32,7 +32,7 @@ VOICEVOX の誤読を洗い出し、読み仮名辞書 `public/data/tts-phrase-b
 | 対象 | 正解の出どころ | 形式 |
 |---|---|---|
 | 一次細分区域・津波予報区 | 上流 GeoJSON の `namekana`（`scripts/build-subregions.mjs`・`build-tsunami-zones.mjs` が使っている [JMA-GIS-GeoJSON](https://github.com/Ichihai1415/JMA-GIS-GeoJSON) の release ブランチ） | JSON・依存なしで読める |
-| 震度観測点 | 震度観測点一覧表を JSON 化したもの（`scripts/build-station-readings.ts` の `SOURCE_URL`。全点の `furigana` を持つ） | JSON・依存なしで読める |
+| 震度観測点 | 震度観測点一覧表を JSON 化したもの（`scripts/lib/stationSource.mjs` の `STATION_SOURCE_URL`。全点の `furigana` を持つ）。**現行の一覧だけでなく、そこから遡れる履歴の観測点も対象**（同ファイルの `collectUnlistedStations`） | JSON・依存なしで読める |
 | 震央地名 | [0Quake/JMA_Region](https://github.com/0Quake/JMA_Region) の `震央地名.geojson` の `name_kana`（CC0 1.0・出典は気象庁の境界線と多言語辞書データ） | JSON・依存なしで読める |
 | 潮位観測点・長周期観測点 | 気象庁 [防災情報XML 技術資料](https://xml.kishou.go.jp/tec_material.html) の「個別コード表」zip。中身は個別の xlsx 群で、**リポジトリ内のヘルパー（`scripts/lib/xlsx.mjs` の `findWorkbookInZip`）で読める**。潮位観測点はシート 35（PointTsunami）で、`scripts/build-station-readings.ts` と `build-tsunami-obs-coords.mjs` が実際にこれを読んでいる | xlsx・依存を足さずに抽出できる |
 | 都道府県 | **ふりがなが無い。** 読みを目視で確かめ、疑わしいものは公的資料で裏を取る | — |
@@ -181,7 +181,9 @@ return sent   // → ["ナガサキケン(4)/セエホオ(4)", ...]
 - **震度観測点名・潮位観測点名は手で辞書へ入れない。** 生成した辞書
   （`public/data/tts-station-readings.json`。→ [`audio-tts-spec.md`](../../../docs/spec/audio-tts-spec.md)
   §3「震度観測点名の読み」「潮位観測点名の読み」）が気象庁のふりがなから誤読する点だけを
-  収録しており、震度観測点 4372 点・潮位観測点 609 点を突き合わせてある。
+  収録しており、震度観測点と潮位観測点を突き合わせてある（件数は
+  [`audio-tts-spec.md`](../../../docs/spec/audio-tts-spec.md) §3 が持つ）。**震度観測点は現行の
+  一覧に無いものも対象** —— 過去の電文を再生すると当時の観測点名が声になるため。
   震度観測点で**声になるのは「5弱以上・未入電」の地点名だけ**で、地震情報の本文（震度一覧）は
   観測点を区域名へ丸める（`lookupStationRegion`）。**潮位観測点は津波の観測情報で名前がそのまま
   声になる。** この棚卸しで観測点名を扱うのは、生成した読みの**アクセントの当たりが悪いものを
