@@ -47,10 +47,22 @@ const LPGM_NOTES_KEY = 'lpgm:notes'
  * 入れ子を許さない。長周期のトグルと同じ作法）。開けない段には `role` も `tabIndex` も
  * 与えない —— 押せない行がタブ移動で止まると邪魔になる。
  */
-function IntensityRow({ label, scale, unreceived, hasUnreceived, nonJma, depth, expandKey, expanded, onToggle }: {
+function IntensityRow({ label, scale, unreceived, unreceivedIsOwn, hasUnreceived, nonJma, depth, expandKey, expanded, onToggle }: {
   label: string
   scale: IntensityScale
+  /** その行の震度が未入電の値から来ている（ラベルへ「以上」を足す）。 */
   unreceived: boolean
+  /**
+   * 「未入電」の印を出すか。**`unreceived` とは分ける。**
+   *
+   * 県・区域の行の値は、電文が区域の `MaxInt` を持たないときに**配下から積み上げる**
+   * （標準版は区域のロールアップ点を持たないので常にこの経路）。積み上げは震度の大小で
+   * 決まるため、**観測できた震度3 と未入電（下限 45）が混在すると未入電が勝つ**。その行を
+   * 「未入電」と断定すると、届いている観測値を無かったことにする。**電文が直にその行について
+   * 言っている場合だけ**に出す —— 観測点の行と、値を持たない市町村。範囲の行は下の
+   * `hasUnreceived` が「未入電あり」を担う。
+   */
+  unreceivedIsOwn?: boolean
   hasUnreceived?: boolean
   nonJma?: boolean
   /** 字下げの段（0＝都道府県）。 */
@@ -94,16 +106,26 @@ function IntensityRow({ label, scale, unreceived, hasUnreceived, nonJma, depth, 
             引き当てのために外してあるので、戻すのは表示のここ（→ `withNonJmaMark`）。
             記号だけでは何と対比しているのか分からないので説明を添える。 */}
         <span title={nonJma ? NON_JMA_MARK_TITLE : undefined}>{withNonJmaMark(label, nonJma)}</span>
-        {/* **「あり」を付けて範囲の話にする。** 未入電は地点単位の事実なので、「〇〇県 未入電」
-            だと県が丸ごと未入電に読める。どの地点かは上のブロックが示す。語は気象庁のものを
-            そのまま使い、読み上げとも揃える。 */}
-        {hasUnreceived && (
+        {/* **その行自身が未入電か、配下にあるだけかを書き分ける。**
+            - 「未入電」＝この行の震度そのものが届いていない（観測点の行と、値を持たない市町村）
+            - 「未入電あり」＝この範囲に未入電の地点があるが、行の値は観測できている
+
+            **「あり」の有無が意味を分ける。** 未入電は地点単位の事実なので、配下にあるだけの
+            県へ「〇〇県 未入電」と書くと県が丸ごと未入電に読める。逆に、行自身が未入電なのに
+            何も書かないと、**事実を持っている行が黙って、範囲の行だけが喋る**ことになる
+            （「震度5弱以上」の語だけでは、なぜ「以上」なのかが読み取れない）。
+
+            **両方は出さない。** 行自身が未入電なら、配下に未入電があることは言わずとも含む。
+            語は気象庁のものをそのまま使い、読み上げとも揃える。 */}
+        {(unreceivedIsOwn || hasUnreceived) && (
           <span
             className="ml-1.5 text-[0.75rem] roomy:text-[0.875rem]"
             style={{ color: '#9ca3af' }}
-            title="この範囲に、震度が届いていない観測点があります"
+            title={unreceivedIsOwn
+              ? '気象庁は震度5弱以上と推定していますが、震度が届いていません（未入電）'
+              : 'この範囲に、震度が届いていない地点があります'}
           >
-            未入電あり
+            {unreceivedIsOwn ? '未入電' : '未入電あり'}
           </span>
         )}
         {interactive && (
@@ -912,6 +934,7 @@ export function EarthquakeCard({
                                   label={city.name}
                                   scale={city.scale}
                                   unreceived={city.unreceived}
+                                  unreceivedIsOwn={city.unreceived}
                                   hasUnreceived={city.hasUnreceived}
                                   depth={2}
                                   expandKey={city.stations.length > 0 ? `city:${region.name}/${city.name}` : null}
@@ -924,6 +947,7 @@ export function EarthquakeCard({
                                     label={st.name}
                                     scale={st.scale}
                                     unreceived={st.unreceived}
+                                    unreceivedIsOwn={st.unreceived}
                                     nonJma={st.nonJma}
                                     depth={3}
                                     expandKey={null}
@@ -941,6 +965,7 @@ export function EarthquakeCard({
                                 label={st.name}
                                 scale={st.scale}
                                 unreceived={st.unreceived}
+                                unreceivedIsOwn={st.unreceived}
                                 nonJma={st.nonJma}
                                 depth={2}
                                 expandKey={null}
