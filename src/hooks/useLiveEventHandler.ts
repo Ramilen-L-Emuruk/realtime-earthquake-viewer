@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { AppEvent, EEWAlert, Hypocenter, JMAQuake, JMATsunami, JMANankaiCommentary, JMAEarthquakeCount, JMAEstimatedIntensity, TsunamiArea, TsunamiObservation, TsunamiGrade } from '../types/earthquake'
+import type { AppEvent, ExtraLiveEvent, LiveEvent, EEWAlert, Hypocenter, JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation, TsunamiGrade } from '../types/earthquake'
 import type { TabId } from '../components/IconNav'
 import type { AppSettings } from './useSettings'
 import type { AlertTitleApi } from './useAlertTitle'
@@ -1394,7 +1394,215 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     )
   }
 
-  const handleLiveEvent = (event: AppEvent) => {
+  /**
+   * {@link AppEvent} に含まれない種別（{@link ExtraLiveEvent}）の受け口。
+   *
+   * **`handleLiveEvent` の本体から分けてある。** あちらは地震・津波・EEW の状態を突き合わせる
+   * 処理で、ここで扱う電文はそのどの分岐にも当てはまらない。入口で振り分けて降ろすことで、
+   * `handleLiveEvent` の中の `event` は `AppEvent` に絞られる —— 分岐の `kind` ガードを
+   * 書き落とせば型検査が止める。
+   *
+   * ここに並ぶ電文は**どれも帯か地図で伝えるもの**で、地震カード・津波カード・EEW 表示の
+   * 状態には載らない。担うのは通知音・読み上げ・（一部は）自動タブ切替だけ。
+   */
+  const handleExtraLiveEvent = (event: ExtraLiveEvent) => {
+    // 長周期地震動情報（DMDSS版のみ）
+    if (event.kind === 'lpgm') {
+      const lpgmEvent = event.data
+      // 読み上げ文を先に作る。長周期は読み上げの範囲設定によって空になり（= 声が出ない）、
+      // その場合は追従でタブが動かない。受信時に要求してフォールバックする。
+      const isNewLpgm = !seenLpgmEventIdsRef.current.has(lpgmEvent.eventId)
+      const lpgmSpeech = settings.voicevoxEnabled
+        ? lpgmToText(lpgmEvent, ttsRegionOptions(settings), isNewLpgm)
+        : ''
+      if (!lpgmSpeech) {
+        log.info('[tab] earthquake を要求 (長周期地震動・読み上げ無し)')
+        setActiveTabNonRealtime('earthquake')
+      }
+      if (!lpgmEvent.cancelled) {
+        // 紐づく地震カードを選択し、自動的に LPGM 表示をオンにする
+        // （引き当ての述語はカードのバッジと共有する。→ `quakeKeyForLpgmEventId`）
+        const matchedKey = quakeKeyForLpgmEventId(earthquakesRef.current, lpgmEvent.eventId)
+        if (matchedKey) selectQuake(matchedKey)
+        openLpgmFromQuake(lpgmEvent.eventId)
+      }
+      if (settings.soundEnabled) {
+        playAlertSound('earthquake')
+      }
+      if (lpgmSpeech) {
+        // 主題は地震情報と分ける。内容が別軸（震度と長周期地震動階級）なので、片方が
+        // もう片方の言い換えにはならない（割り込みは従来どおり許す）。
+        speakNonEEWDelayed(
+          lpgmSpeech, SPEECH_PRIORITY.normal, ttsDelayFor('earthquake'), `lpgm:${lpgmEvent.eventId}`,
+          { tab: 'earthquake', priority: TAB_PRIORITY.quake },
+        )
+      }
+      // voicevox 有効/無効に関わらず追跡する（次回の isNewLpgm 判定に使用）
+      seenLpgmEventIdsRef.current.add(lpgmEvent.eventId)
+      return
+    }
+
+    // 推計震度分布図（DMDSS版のみ）。
+    //
+    // 地震から数分後に届く。**地震そのものの事実は既に地震情報で伝え終えている**ので、
+    // ここが足すのは「震度の広がりが、気象庁の推計として出そろった」ことだけ。
+    // 下の地震回数と違い**タブは動かす** —— 見せる先が地図の面で、そこへ行かないと何も見えない。
+    // ただし要求として出すので、EEW・揺れ検知・利用者の操作には譲る。
+    if (event.kind === 'estimatedIntensity') {
+      // **初報か続報かは `useEarthquakes` が決めて渡してくる**（`isNewEstimatedIntensity`）。
+      // ここで見た `arrivalTime` を覚えて数え直すと、「同じ地震の続報」と「別の地震へ入れ替え」の
+      // 区別を 2 か所で持つことになる。
+      const { data: ei, isNew } = event
+      // **印は型で必須にしてある**（`ExtraLiveEvent.isNew`）。流し込み口が付け忘れれば型検査が
+      // 止めるので、欠落を実行時に確かめて記録する処理は置かない。
+      //
+      // **それでも下で `!== false` として受けるのは、倒す向きを初報側に固定しておくため。**
+      // 型を潰して渡す経路が紛れ込むと `undefined` のまま届きうるが、素の真偽値として読むと
+      // falsy なので「更新されました」側へ落ちる —— 初報を「更新されました」と読むと、聞き手は
+      // 前に同じ分布を聞き逃したと思う（実際には届いていない）。逆向きの誤りは「同じ報が二度
+      // 読まれた」と聞こえるだけで、事実としては嘘になっていない。
+      // **地図の分布モードを開く。** 地震発生から数分後に届くもので、そのころ利用者は
+      // 別のものを見ている。合図なしに画面だけ替わるのがいちばん困るので、音と声も添える。
+      openEstimatedIntensity(ei.arrivalTime, ei.hypocenter.lat, ei.hypocenter.lon)
+      if (settings.soundEnabled) {
+        // **新しい音を作らない。** これは新しい危険ではなく、既に読み上げた地震の
+        // **震度の描き方が公式のものへ替わった**という報せ。地震情報と同じ音で足りる。
+        playAlertSound('earthquakeInfo')
+      }
+      if (settings.voicevoxEnabled) {
+        speakNonEEWDelayed(
+          estimatedIntensityToText(ei.arrivalTime, isNew !== false), SPEECH_PRIORITY.normal,
+          ttsDelayFor('earthquakeInfo'), 'estimatedIntensity',
+        )
+      }
+      return
+    }
+    // 地震回数に関する情報（DMDSS版のみ）。
+    //
+    // **帯で出す**（特別情報バナー。並びは後発地震の下）。伝えるのは群発という続いている「状況」で、
+    // 地震カードのように 1 件ずつ増える「出来事」ではない。しかも群発の最中は小さな地震で
+    // 揺れ検知が繰り返し発火してリアルタイムタブへ画面を持っていくため、タブの中へ置くと
+    // いちばん見たいときに見えない。**そのためタブは動かさない**（帯はどのタブからも見える）。
+    //
+    // **ウィンドウタイトルは書き換えない。** 震度を伝える情報ではないので、震度を出している
+    // タイトルを上書きすると、いま何が起きているかの表示が後退する。
+    if (event.kind === 'earthquakeCount') {
+      const count = event.data
+      if (count.cancelled) {
+        // **取消は音を鳴らさず、取り消された事実だけを読む**（南海トラフの取消と同じ扱い）。
+        // 直前に「1704 回発生しています」と読んだ耳へ訂正を届けるため、黙って消さない。
+        // **主題は発表と共有する** —— 分けると到来順の枠に載らず、発表の予約が待っている
+        // 最中に取消が届いても取り下げられない（取り消された回数をそのあと読み上げる）。
+        // 帯が消えるので、パネルの展開も要らない。
+        if (settings.voicevoxEnabled) {
+          speakNonEEWDelayed(earthquakeCountToText(count), SPEECH_PRIORITY.normal, 0, 'earthquakeCount')
+        }
+        return
+      }
+      // 帯は地図に重なって出るため、パネルを畳んでいると気づきにくい。いったん開く
+      // （戻す判断は App 側。南海トラフ・後発地震と同じ扱い）。
+      expandPanelForSpecialInfo()
+      if (settings.soundEnabled) {
+        playAlertSound('earthquakeCount')
+      }
+      if (settings.voicevoxEnabled) {
+        // 帯で伝える情報なのでタブは動かさない（理由は上）。累積の区間が読めなければ
+        // `earthquakeCountToText` は空を返し、そのときは音と帯だけで伝える。
+        const countSpeech = earthquakeCountToText(count)
+        if (countSpeech) {
+          speakNonEEWDelayed(
+            countSpeech, SPEECH_PRIORITY.normal, ttsDelayFor('earthquakeCount'), 'earthquakeCount',
+          )
+        }
+      }
+      return
+    }
+
+    // 南海トラフ関連解説情報（DMDSS版のみ）。臨時情報とは別の帯に出るため、ここでも別扱いにする。
+    //
+    // **ウィンドウタイトルは書き換えない。** 臨時情報の発表期間中は解説情報が毎日届くため、
+    // 書き換えると「南海トラフ臨時情報（巨大地震注意）」のタイトル表示を毎日上書きしてしまう。
+    if (event.kind === 'nankaiCommentary') {
+      if (!settings.nankaiCommentaryAlerts) return
+      const commentary = event.data
+      // 帯は地図に重なって出るため、パネルを畳んでいると気づきにくい。いったん開く（戻す判断は App 側）。
+      expandPanelForSpecialInfo()
+      if (settings.soundEnabled) {
+        playAlertSound('specialInfoCommentary')
+      }
+      // 読み上げは soundEnabled と独立に voicevoxEnabled のみで判定する（AUD-7）。
+      if (settings.voicevoxEnabled) {
+        // 最下位の専用層を使う（理由は SPEECH_PRIORITY の commentary の注記）。
+        // 帯で伝える情報なのでタブは動かさない（パネルの展開は expandPanelForSpecialInfo が担う）。
+        speakNonEEWDelayed(
+          nankaiCommentaryToText(commentary), SPEECH_PRIORITY.commentary, ttsDelayFor('specialInfoCommentary'),
+          'nankaiCommentary',
+        )
+      }
+      return
+    }
+
+    // 南海トラフ臨時情報・後発地震注意情報（DMDSS版のみ）
+    if (event.kind === 'nankai' || event.kind === 'kohatsu') {
+      if (!event.data.cancelled) {
+        // 帯は地図に重なって出るため、パネルを畳んでいると気づきにくい。いったん開く（戻す判断は App 側）。
+        // 取消・終了では呼ばない（帯が消えるので、開いて見せるものが無い）。
+        expandPanelForSpecialInfo()
+        if (settings.soundEnabled) {
+          playAlertSound('specialInfo')
+        }
+        // 読み上げは soundEnabled と独立に voicevoxEnabled のみで判定する（AUD-7）。
+        if (settings.voicevoxEnabled) {
+          const ttsText = event.kind === 'nankai'
+            ? nankaiToText(event.data)
+            : kohatsuToText(event.data)
+          // 帯で伝える情報なのでタブは動かさない（理由は関連解説情報と同じ）
+          // 臨時情報と後発地震注意情報は主題を分ける。どちらも `high` だが互いに言い換えでは
+          // ないため、まとめると一方の発表がもう一方を無音のまま消す。
+          speakNonEEWDelayed(ttsText, SPEECH_PRIORITY.high, ttsDelayFor('specialInfo'),
+            event.kind === 'nankai' ? 'nankai' : 'kohatsu')
+        }
+        // タイトル更新
+        const specialTitle = event.kind === 'nankai'
+          ? `南海トラフ臨時情報（${event.data.kindName}）`
+          : '後発地震注意情報 発表中'
+        title.setTitle(specialTitle)
+        title.scheduleTitleRevert('specialInfo')
+      } else {
+        // 取消・終了時はタイマーをクリアして即時リセット
+        title.clearTitleTimer('specialInfo')
+        title.applyPriority()
+        if (event.kind === 'nankai' && settings.voicevoxEnabled) {
+          // 取消・終了も発表と同じ主題で予約する（間は置かない）。**主題を渡さないと到来順の枠に
+          // 載らず**、発表の予約が待っている最中に取消が届いても取り下げられない
+          // （取り消されたはずの臨時情報を、そのあと読み上げてしまう）。
+          speakNonEEWDelayed(
+            nankaiToText(event.data),
+            SPEECH_PRIORITY.high, 0, 'nankai',
+          )
+        }
+      }
+      return
+    }
+
+    // **ここへ落ちたら、種別を足して上の分岐を書き忘れている。** `never` で受けるので、
+    // `ExtraLiveEvent` へ足した時点で型検査が止まる —— 入口の振り分け（`handleLiveEvent`）が
+    // 守るのは「`AppEvent` に絞られること」だけで、こちらの網羅性はそこでは見ていない。
+    //
+    // 実行時の記録も残す。型を潰して渡された電文は分岐へ当たらず、音も声もタブ移動も
+    // 起こさないまま黙って抜けるため。
+    const unhandled: never = event
+    log.warn('[live-event] 扱いの決まっていない電文が届きました', unhandled)
+  }
+
+  const handleLiveEvent = (event: LiveEvent) => {
+    // **地震・津波・EEW 以外はここで降ろす。** 以降の分岐はこの 3 種別の状態を突き合わせる
+    // 処理で、ほかの電文はどれにも当てはまらない（→ `handleExtraLiveEvent`）。先に降ろすので、
+    // この行から下の `event` は `AppEvent` に絞られている。
+    if (event.kind !== 'quake' && event.kind !== 'tsunami' && event.kind !== 'eew') {
+      handleExtraLiveEvent(event)
+      return
+    }
     // 受信時に該当タブを自動表示し、ウィンドウタイトルを更新する
     // （地震情報・津波情報・緊急地震速報）。
     // isNewQuake は UI ブロックと TTS ブロックの両方で参照するためここで宣言する
@@ -2307,189 +2515,6 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         }
       }
 
-      return
-    }
-
-    // 長周期地震動情報（DMDSS版のみ）
-    if ((event as unknown as { kind?: string }).kind === 'lpgm') {
-      const lpgmEvent = (event as unknown as { kind: string; data: import('../types/earthquake').JMALpgm }).data
-      // 読み上げ文を先に作る。長周期は読み上げの範囲設定によって空になり（= 声が出ない）、
-      // その場合は追従でタブが動かない。受信時に要求してフォールバックする。
-      const isNewLpgm = !seenLpgmEventIdsRef.current.has(lpgmEvent.eventId)
-      const lpgmSpeech = settings.voicevoxEnabled
-        ? lpgmToText(lpgmEvent, ttsRegionOptions(settings), isNewLpgm)
-        : ''
-      if (!lpgmSpeech) {
-        log.info('[tab] earthquake を要求 (長周期地震動・読み上げ無し)')
-        setActiveTabNonRealtime('earthquake')
-      }
-      if (!lpgmEvent.cancelled) {
-        // 紐づく地震カードを選択し、自動的に LPGM 表示をオンにする
-        // （引き当ての述語はカードのバッジと共有する。→ `quakeKeyForLpgmEventId`）
-        const matchedKey = quakeKeyForLpgmEventId(earthquakesRef.current, lpgmEvent.eventId)
-        if (matchedKey) selectQuake(matchedKey)
-        openLpgmFromQuake(lpgmEvent.eventId)
-      }
-      if (settings.soundEnabled) {
-        playAlertSound('earthquake')
-      }
-      if (lpgmSpeech) {
-        // 主題は地震情報と分ける。内容が別軸（震度と長周期地震動階級）なので、片方が
-        // もう片方の言い換えにはならない（割り込みは従来どおり許す）。
-        speakNonEEWDelayed(
-          lpgmSpeech, SPEECH_PRIORITY.normal, ttsDelayFor('earthquake'), `lpgm:${lpgmEvent.eventId}`,
-          { tab: 'earthquake', priority: TAB_PRIORITY.quake },
-        )
-      }
-      // voicevox 有効/無効に関わらず追跡する（次回の isNewLpgm 判定に使用）
-      seenLpgmEventIdsRef.current.add(lpgmEvent.eventId)
-      return
-    }
-
-    // 推計震度分布図（DMDSS版のみ）。
-    //
-    // 地震から数分後に届く。**地震そのものの事実は既に地震情報で伝え終えている**ので、
-    // ここが足すのは「震度の広がりが、気象庁の推計として出そろった」ことだけ。
-    // 下の地震回数と違い**タブは動かす** —— 見せる先が地図の面で、そこへ行かないと何も見えない。
-    // ただし要求として出すので、EEW・揺れ検知・利用者の操作には譲る。
-    if ((event as unknown as { kind?: string }).kind === 'estimatedIntensity') {
-      // **初報か続報かは `useEarthquakes` が決めて渡してくる**（`isNewEstimatedIntensity`）。
-      // ここで見た `arrivalTime` を覚えて数え直すと、「同じ地震の続報」と「別の地震へ入れ替え」の
-      // 区別を 2 か所で持つことになる。
-      const { data: ei, isNew } = event as unknown as { data: JMAEstimatedIntensity; isNew: boolean }
-      // **分割代入では既定値を与えない。** 与えると下の `typeof` の判定が常に偽になり、印の
-      // 欠落を検知できなくなる。この電文は `as unknown as AppEvent` で型検査をすり抜けて渡るので、
-      // 新しい流し込み口が印を付け忘れても静かに通る ——画面にも記録にも出ない食い違いなので、
-      // 欠落を記録したうえで読み上げの直前（`isNew !== false`）で初めて倒す。
-      //
-      // **倒す向きは初報側。** 初報を「更新されました」と読むと、聞き手は前に同じ分布を
-      // 聞き逃したと思う（実際には届いていない）。逆向きの誤りは「同じ報が二度読まれた」と
-      // 聞こえるだけで、事実としては嘘になっていない。
-      if (typeof isNew !== 'boolean') {
-        log.warn(`[tts] 推計震度分布図に初報・続報の印がありません（初報として読みます）: ${ei.arrivalTime}`)
-      }
-      // **地図の分布モードを開く。** 地震発生から数分後に届くもので、そのころ利用者は
-      // 別のものを見ている。合図なしに画面だけ替わるのがいちばん困るので、音と声も添える。
-      openEstimatedIntensity(ei.arrivalTime, ei.hypocenter.lat, ei.hypocenter.lon)
-      if (settings.soundEnabled) {
-        // **新しい音を作らない。** これは新しい危険ではなく、既に読み上げた地震の
-        // **震度の描き方が公式のものへ替わった**という報せ。地震情報と同じ音で足りる。
-        playAlertSound('earthquakeInfo')
-      }
-      if (settings.voicevoxEnabled) {
-        speakNonEEWDelayed(
-          estimatedIntensityToText(ei.arrivalTime, isNew !== false), SPEECH_PRIORITY.normal,
-          ttsDelayFor('earthquakeInfo'), 'estimatedIntensity',
-        )
-      }
-      return
-    }
-    // 地震回数に関する情報（DMDSS版のみ）。
-    //
-    // **帯で出す**（特別情報バナー。並びは後発地震の下）。伝えるのは群発という続いている「状況」で、
-    // 地震カードのように 1 件ずつ増える「出来事」ではない。しかも群発の最中は小さな地震で
-    // 揺れ検知が繰り返し発火してリアルタイムタブへ画面を持っていくため、タブの中へ置くと
-    // いちばん見たいときに見えない。**そのためタブは動かさない**（帯はどのタブからも見える）。
-    //
-    // **ウィンドウタイトルは書き換えない。** 震度を伝える情報ではないので、震度を出している
-    // タイトルを上書きすると、いま何が起きているかの表示が後退する。
-    if ((event as unknown as { kind?: string }).kind === 'earthquakeCount') {
-      const count = (event as unknown as { data: JMAEarthquakeCount }).data
-      if (count.cancelled) {
-        // **取消は音を鳴らさず、取り消された事実だけを読む**（南海トラフの取消と同じ扱い）。
-        // 直前に「1704 回発生しています」と読んだ耳へ訂正を届けるため、黙って消さない。
-        // **主題は発表と共有する** —— 分けると到来順の枠に載らず、発表の予約が待っている
-        // 最中に取消が届いても取り下げられない（取り消された回数をそのあと読み上げる）。
-        // 帯が消えるので、パネルの展開も要らない。
-        if (settings.voicevoxEnabled) {
-          speakNonEEWDelayed(earthquakeCountToText(count), SPEECH_PRIORITY.normal, 0, 'earthquakeCount')
-        }
-        return
-      }
-      // 帯は地図に重なって出るため、パネルを畳んでいると気づきにくい。いったん開く
-      // （戻す判断は App 側。南海トラフ・後発地震と同じ扱い）。
-      expandPanelForSpecialInfo()
-      if (settings.soundEnabled) {
-        playAlertSound('earthquakeCount')
-      }
-      if (settings.voicevoxEnabled) {
-        // 帯で伝える情報なのでタブは動かさない（理由は上）。累積の区間が読めなければ
-        // `earthquakeCountToText` は空を返し、そのときは音と帯だけで伝える。
-        const countSpeech = earthquakeCountToText(count)
-        if (countSpeech) {
-          speakNonEEWDelayed(
-            countSpeech, SPEECH_PRIORITY.normal, ttsDelayFor('earthquakeCount'), 'earthquakeCount',
-          )
-        }
-      }
-      return
-    }
-
-    // 南海トラフ関連解説情報（DMDSS版のみ）。臨時情報とは別の帯に出るため、ここでも別扱いにする。
-    //
-    // **ウィンドウタイトルは書き換えない。** 臨時情報の発表期間中は解説情報が毎日届くため、
-    // 書き換えると「南海トラフ臨時情報（巨大地震注意）」のタイトル表示を毎日上書きしてしまう。
-    if ((event as unknown as { kind?: string }).kind === 'nankaiCommentary') {
-      if (!settings.nankaiCommentaryAlerts) return
-      const commentary = (event as unknown as { data: JMANankaiCommentary }).data
-      // 帯は地図に重なって出るため、パネルを畳んでいると気づきにくい。いったん開く（戻す判断は App 側）。
-      expandPanelForSpecialInfo()
-      if (settings.soundEnabled) {
-        playAlertSound('specialInfoCommentary')
-      }
-      // 読み上げは soundEnabled と独立に voicevoxEnabled のみで判定する（AUD-7）。
-      if (settings.voicevoxEnabled) {
-        // 最下位の専用層を使う（理由は SPEECH_PRIORITY の commentary の注記）。
-        // 帯で伝える情報なのでタブは動かさない（パネルの展開は expandPanelForSpecialInfo が担う）。
-        speakNonEEWDelayed(
-          nankaiCommentaryToText(commentary), SPEECH_PRIORITY.commentary, ttsDelayFor('specialInfoCommentary'),
-          'nankaiCommentary',
-        )
-      }
-      return
-    }
-
-    // 南海トラフ臨時情報・後発地震注意情報（DMDSS版のみ）
-    if ((event as unknown as { kind?: string }).kind === 'nankai' || (event as unknown as { kind?: string }).kind === 'kohatsu') {
-      const specialEvent = event as unknown as { kind: string; data: { cancelled?: boolean; kindName?: string } }
-      if (!specialEvent.data.cancelled) {
-        // 帯は地図に重なって出るため、パネルを畳んでいると気づきにくい。いったん開く（戻す判断は App 側）。
-        // 取消・終了では呼ばない（帯が消えるので、開いて見せるものが無い）。
-        expandPanelForSpecialInfo()
-        if (settings.soundEnabled) {
-          playAlertSound('specialInfo')
-        }
-        // 読み上げは soundEnabled と独立に voicevoxEnabled のみで判定する（AUD-7）。
-        if (settings.voicevoxEnabled) {
-          const ttsText = specialEvent.kind === 'nankai'
-            ? nankaiToText(specialEvent.data as Parameters<typeof nankaiToText>[0])
-            : kohatsuToText(specialEvent.data as Parameters<typeof kohatsuToText>[0])
-          // 帯で伝える情報なのでタブは動かさない（理由は関連解説情報と同じ）
-          // 臨時情報と後発地震注意情報は主題を分ける。どちらも `high` だが互いに言い換えでは
-          // ないため、まとめると一方の発表がもう一方を無音のまま消す。
-          speakNonEEWDelayed(ttsText, SPEECH_PRIORITY.high, ttsDelayFor('specialInfo'),
-            specialEvent.kind === 'nankai' ? 'nankai' : 'kohatsu')
-        }
-        // タイトル更新
-        const specialTitle = specialEvent.kind === 'nankai'
-          ? `南海トラフ臨時情報（${specialEvent.data.kindName ?? '発表中'}）`
-          : '後発地震注意情報 発表中'
-        title.setTitle(specialTitle)
-        title.scheduleTitleRevert('specialInfo')
-      } else {
-        // 取消・終了時はタイマーをクリアして即時リセット
-        title.clearTitleTimer('specialInfo')
-        title.applyPriority()
-        if (specialEvent.kind === 'nankai' && settings.voicevoxEnabled) {
-          // 取消・終了も発表と同じ主題で予約する（間は置かない）。**主題を渡さないと到来順の枠に
-          // 載らず**、発表の予約が待っている最中に取消が届いても取り下げられない
-          // （取り消されたはずの臨時情報を、そのあと読み上げてしまう）。
-          speakNonEEWDelayed(
-            nankaiToText(specialEvent.data as Parameters<typeof nankaiToText>[0]),
-            SPEECH_PRIORITY.high, 0, 'nankai',
-          )
-        }
-      }
       return
     }
 

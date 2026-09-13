@@ -17,7 +17,7 @@
 // 差し替えるのは外部 I/O（WebSocket・REST・観測点座標）だけ。時計や純粋関数は本物を使う。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, cleanup, act } from '@testing-library/react'
-import type { AppEvent, EEWAlert, JMAQuake, JMATsunami, JMANankaiCommentary, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity } from '../types/earthquake'
+import type { AppEvent, LiveEvent, EEWAlert, JMAQuake, JMATsunami, JMANankaiCommentary, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity } from '../types/earthquake'
 import { serverDate, setReplayOffset } from '../utils/clock'
 import { DMDATA_API_KEY_INVALID_MESSAGE } from '../utils/dmdataApiKey'
 import { log } from '../utils/logger'
@@ -135,7 +135,7 @@ beforeEach(() => {
 afterEach(cleanup)
 
 /** replayTimeOffset を差し替えられるハーネス。onLiveEvent は生の電文を覗きたいときだけ渡す。 */
-function setup(opts: { apiKey?: string; offset?: number | null; onLiveEvent?: (event: AppEvent) => void } = {}) {
+function setup(opts: { apiKey?: string; offset?: number | null; onLiveEvent?: (event: LiveEvent) => void } = {}) {
   const view = renderHook(
     ({ offset }: { offset: number | null }) =>
       useEarthquakes(opts.onLiveEvent, opts.apiKey ?? 'test-key', false, offset),
@@ -447,7 +447,7 @@ describe('キューは配列を差し替えない（同じ電文を二度処理�
   }
 
   const 地震の通知数 = (fn: ReturnType<typeof vi.fn>) =>
-    fn.mock.calls.filter(([e]) => (e as AppEvent).kind === 'quake').length
+    fn.mock.calls.filter(([e]) => (e as LiveEvent).kind === 'quake').length
 
   beforeEach(() => { vi.useFakeTimers() })
   afterEach(() => {
@@ -523,7 +523,7 @@ describe('キューは配列を差し替えない（同じ電文を二度処理�
     act(() => { vi.advanceTimersByTime(100) })
     // 読めない時刻の 1 件目は積まれず、2 件目だけが通る（1 件目で止まらない・1 件目が即発火しない）
     const 通知された = onLiveEvent.mock.calls
-      .map(([e]) => e as AppEvent)
+      .map(([e]) => e as LiveEvent)
       .filter(e => e.kind === 'quake')
       .map(e => (e as JMAQuake).id)
     expect(通知された).toEqual(['queue-identity-quake-2'])
@@ -609,7 +609,7 @@ describe('EEW 発報テストの報の推移', () => {
   // activeEEWs は取消を受けても直前の確定状態を保つ（表示を空にしないための実装）ため、
   // 取消電文そのものの形は state からは見えない。onLiveEvent に届く生の電文で確かめる。
   it('誤報取消も独立した 1 報として報番号を進め、対象地域を持たない', async () => {
-    const events: AppEvent[] = []
+    const events: LiveEvent[] = []
     const h = setup({ onLiveEvent: (e) => { events.push(e) } })
 
     await act(async () => { await h.current.simulateEEWRetraction() })
@@ -640,7 +640,7 @@ describe('EEW 発報テストの報の推移', () => {
   // 取消しの概要（電文の `Body/Text`）は XML を読む dmdataParser でしか作れない。
   // 津波の解除テストと同じ形で、バリアントの境目を正・対照の対で固定する。
   it('DMDSS 版: 誤報取消は取消しの概要を持つ', async () => {
-    const events: AppEvent[] = []
+    const events: LiveEvent[] = []
     const h = setup({ onLiveEvent: (e) => { events.push(e) } })
 
     await act(async () => { await h.current.simulateEEWRetraction() })
@@ -655,7 +655,7 @@ describe('EEW 発報テストの報の推移', () => {
   // 外れると、実機では一度も起きない表示・読み上げが「起きる」ように見える
   it('standard 版: 取消しの概要を持たない（P2PQuake には無い項目）', async () => {
     mockIsDmdss = false
-    const events: AppEvent[] = []
+    const events: LiveEvent[] = []
     const h = setup({ onLiveEvent: (e) => { events.push(e) } })
 
     await act(async () => { await h.current.simulateEEWRetraction() })
@@ -675,7 +675,7 @@ describe('津波テストの解除電文', () => {
   afterEach(() => { vi.useRealTimers() })
 
   /** 発表 → 解除の 2 通を取り出す。 */
-  function tsunamiPair(events: AppEvent[]): [JMATsunami, JMATsunami] {
+  function tsunamiPair(events: LiveEvent[]): [JMATsunami, JMATsunami] {
     const list = events.filter((e): e is JMATsunami => e.kind === 'tsunami')
     expect(list.length).toBe(2)
     return [list[0], list[1]]
@@ -697,7 +697,7 @@ describe('津波テストの解除電文', () => {
   }
 
   it('DMDSS 版: 解除は区域を空にし、発表時刻を解除時点へ進める', async () => {
-    const events: AppEvent[] = []
+    const events: LiveEvent[] = []
     const h = setup({ onLiveEvent: (e) => { events.push(e) } })
 
     await flushInitialLoad()
@@ -748,7 +748,7 @@ describe('津波テストの解除電文', () => {
 
   it('standard 版: 解除理由と eventId を持たない（P2PQuake では判別できない項目）', async () => {
     mockIsDmdss = false
-    const events: AppEvent[] = []
+    const events: LiveEvent[] = []
     const h = setup({ onLiveEvent: (e) => { events.push(e) } })
 
     await flushInitialLoad()
@@ -1184,9 +1184,6 @@ describe('推計震度分布図（IXAC41）の結線', () => {
   const KUMA = ei('2026-07-28T07:27:00.000Z', '2026-07-28T07:32:00+09:00', 1693)
   const LATER = ei('2026-07-28T07:31:00.000Z', '2026-07-28T07:36:00+09:00', 812)
 
-  // `kind` を文字列として比べるのは、`AppEvent` が地震・津波・EEW の 3 つしか型で持たず、
-  // それ以外の種別（長周期・南海トラフ・地震回数・これ）は送出側で型を潰して渡しているため
-  // （`useEarthquakes.ts` の `as unknown as AppEvent`。6 種別で同じ形）。
   function push(h: ReturnType<typeof setup>, data: JMAEstimatedIntensity) {
     act(() => { h.current.loadReplayEvents([{ payload: { kind: 'estimatedIntensity', data }, replayTime: serverDate() }]) })
     act(() => { vi.advanceTimersByTime(50) })
@@ -1197,7 +1194,7 @@ describe('推計震度分布図（IXAC41）の結線', () => {
 
   // 正: 届いた分布を反映し、音と読み上げの経路へも流す。
   it('届いた分布を反映して鳴らす経路へ流す', async () => {
-    const events: AppEvent[] = []
+    const events: LiveEvent[] = []
     const h = setup({ onLiveEvent: (e) => { events.push(e) } })
     await h.flush()
     push(h, KUMA)
@@ -1207,7 +1204,7 @@ describe('推計震度分布図（IXAC41）の結線', () => {
 
   // 正: 別の地震の新しい分布へは入れ替える（アプリが持つのは最新の 1 通だけ）。
   it('別の地震の新しい分布へ入れ替える', async () => {
-    const events: AppEvent[] = []
+    const events: LiveEvent[] = []
     const h = setup({ onLiveEvent: (e) => { events.push(e) } })
     await h.flush()
     push(h, KUMA)
@@ -1220,7 +1217,7 @@ describe('推計震度分布図（IXAC41）の結線', () => {
   // 到着順は発表順と一致しない（分割の結合が遅れる・当日経路とライブが前後する）ので、
   // 震度5弱以上が短時間に続く場面で、遅れて届いた古い分布が新しい分布を押しのけうる。
   it('発表が古い報では退行しない', async () => {
-    const events: AppEvent[] = []
+    const events: LiveEvent[] = []
     const h = setup({ onLiveEvent: (e) => { events.push(e) } })
     await h.flush()
     push(h, LATER)
@@ -1232,7 +1229,7 @@ describe('推計震度分布図（IXAC41）の結線', () => {
   // 安全弁: **反映しない報では鳴らす経路へも流さない。** 内容が同じ重複配信は実電文で
   // 観測している。流すと画面は変わらないのに音と読み上げだけが二度鳴る。
   it('内容が同じ重複配信では鳴らす経路へ流さない', async () => {
-    const events: AppEvent[] = []
+    const events: LiveEvent[] = []
     const h = setup({ onLiveEvent: (e) => { events.push(e) } })
     await h.flush()
     push(h, KUMA)
@@ -2149,13 +2146,13 @@ describe('テストボタンの待ちの後始末', () => {
   })
 
   /** 生の電文から種別で絞る（state に出ない解除・取消はこちらでしか見えない）。 */
-  function kindsOf(events: AppEvent[], kind: AppEvent['kind']): AppEvent[] {
+  function kindsOf(events: LiveEvent[], kind: LiveEvent['kind']): LiveEvent[] {
     return events.filter(e => e.kind === kind)
   }
 
   // 正: リセットを挟まなければ、EEW の最終報は沈黙時間（10 秒）の後に届く。
   it('EEW テストは最終報を届ける', async () => {
-    const events: AppEvent[] = []
+    const events: LiveEvent[] = []
     const h = setup({ onLiveEvent: (e) => { events.push(e) } })
     await h.flush()
 
@@ -2170,7 +2167,7 @@ describe('テストボタンの待ちの後始末', () => {
   // 対照: リセットを挟めば最終報は届かない。
   // **ここが落ちると、消したはずの画面に EEW がカードごと 1 枚生える。**
   it('リセット後は EEW の最終報が届かない', async () => {
-    const events: AppEvent[] = []
+    const events: LiveEvent[] = []
     const h = setup({ onLiveEvent: (e) => { events.push(e) } })
     await h.flush()
 
@@ -2189,7 +2186,7 @@ describe('テストボタンの待ちの後始末', () => {
   // 対照: EEW 誤報取消の待ちも同じ。**取消は音・通知・読み上げを伴う**ので、
   // 取り残すとリセット後に「誤報でした」とだけ鳴る。
   it('リセット後は EEW の誤報取消が届かない', async () => {
-    const events: AppEvent[] = []
+    const events: LiveEvent[] = []
     const h = setup({ onLiveEvent: (e) => { events.push(e) } })
     await h.flush()
 
@@ -2207,7 +2204,7 @@ describe('テストボタンの待ちの後始末', () => {
   // 音と読み上げは表示中の津波の有無を判定せずに走る（→ docs/spec/tsunami-spec.md §5）ため、
   // 生の電文で見る。
   it('リセット後は津波の自動解除が届かない', async () => {
-    const events: AppEvent[] = []
+    const events: LiveEvent[] = []
     const h = setup({ onLiveEvent: (e) => { events.push(e) } })
     await h.flush()
 
@@ -2279,7 +2276,7 @@ describe('テストボタンの待ちの後始末', () => {
   // 読み上げが「受信しました」／「更新されました」を言い分ける唯一の材料で、印が
   // 付かないまま渡ると続報が初報と同じ文で読まれる（画面にも記録にも出ない食い違い）。
   it('推計震度分布図テストは続報まで流し、続報には更新の印が付く', async () => {
-    const events: AppEvent[] = []
+    const events: LiveEvent[] = []
     const h = setup({ onLiveEvent: (e) => { events.push(e) } })
     await h.flush()
 
@@ -2289,8 +2286,7 @@ describe('テストボタンの待ちの後始末', () => {
     act(() => { vi.advanceTimersByTime(30_000) })
 
     const distributions = events.filter(
-      (e): e is AppEvent & { isNew: boolean } =>
-        (e as unknown as { kind?: string }).kind === 'estimatedIntensity',
+      (e): e is Extract<LiveEvent, { kind: 'estimatedIntensity' }> => e.kind === 'estimatedIntensity',
     )
     expect(distributions.map(e => e.isNew)).toEqual([true, false])
   })
@@ -2366,7 +2362,7 @@ describe('テストボタンの待ちの後始末', () => {
   // 呼び出しを壊す回帰（古いクロージャを握る・一部の ref だけ呼ばなくなる）を、
   // 起こさなかった待ちについて検出できない。上の対照は `resetState` 側しか通らない。
   it('アンマウント後は待ちが発火しても電文が流れない', async () => {
-    const events: AppEvent[] = []
+    const events: LiveEvent[] = []
     const h = setup({ onLiveEvent: (e) => { events.push(e) } })
     await h.flush()
 
