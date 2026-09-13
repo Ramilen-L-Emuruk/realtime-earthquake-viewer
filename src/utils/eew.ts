@@ -67,7 +67,19 @@ export function calcEEWAutoCancelSec(mjma: number, depth: number): number {
   return Math.round(sWaveSec) + FIXED_BUFFER_SEC
 }
 
-/** EEWの発震時刻を起点にした自動解除時刻を返す。最終報受信から MIN_CANCEL_SEC 秒の下限保証付き。 */
+/**
+ * EEWの発震時刻を起点にした自動解除時刻を返す。最終報受信から MIN_CANCEL_SEC 秒の下限保証付き。
+ *
+ * **片方の時刻が読めないときは、読めたほうだけで決める。** 読めない時刻から作った `Date` は
+ * Invalid で、それを含む大小比較は**どちらの向きでも偽**になる。素朴に書くと非対称になり、
+ * 震源時刻が読めないときは発表時刻基準の値が返るのに、発表時刻が読めないときだけ Invalid が
+ * 返っていた（下限を採る側が `else` に当たるため）。
+ *
+ * **両方読めなければ Invalid Date を返す。** ここで「いまから 60 秒後」のような値を作ると、
+ * 呼び出し側は時刻を決められなかったことに気づけない。**判らないことは判らないまま返し、
+ * 呼び出し側に決めさせる**（`hooks/useEarthquakes.ts` は自動解除を予約できない旨を記録し、
+ * `services/dmdataReplay.ts` は失効の判定ができない旨を記録して有効側へ倒す）。
+ */
 export function calcEEWCancelTime(eew: EEWAlert, reportTime: Date): Date {
   const mjma = eew.earthquake.hypocenter.magnitude ?? 6.0
   const depth = eew.earthquake.hypocenter.depth ?? 30
@@ -75,6 +87,7 @@ export function calcEEWCancelTime(eew: EEWAlert, reportTime: Date): Date {
   const autoCancelSec = calcEEWAutoCancelSec(mjma, depth)
   const fromOrigin = new Date(originTime.getTime() + autoCancelSec * 1000)
   const minTime = new Date(reportTime.getTime() + MIN_CANCEL_SEC * 1000)
+  if (!Number.isFinite(minTime.getTime())) return fromOrigin
   return fromOrigin > minTime ? fromOrigin : minTime
 }
 

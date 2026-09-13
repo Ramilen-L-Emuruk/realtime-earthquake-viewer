@@ -6,9 +6,10 @@
 // 捨てられ、「電文 0 件だが成功」に化けて原因が追えなかった。
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest'
 import { fetchDmdataReplayEvents, fetchDmdataQuakeHistory, clearReplayCache, filterPreWindowEvents } from './dmdataReplay'
-import type { JMATsunami } from '../types/earthquake'
+import type { JMATsunami, EEWAlert } from '../types/earthquake'
 import type { ReplayEntry } from '../types/replay'
 import { DmdataApiKeyError } from '../utils/dmdataApiKey'
+import { log } from '../utils/logger'
 import { buildSampleTelegram } from '../test-utils/bufrBuild'
 
 // 電文の読み取りが XML に一本化されたため DOMParser が要る。**環境ごと jsdom へ移さない**
@@ -1105,5 +1106,77 @@ describe('filterPreWindowEvents の津波', () => {
     ]
     const kept = keptTsunamis(entries, '2024-01-02T19:00:00+09:00')
     expect(kept.map(t => t.eventId)).toEqual(['E2'])
+  })
+})
+
+// EEW の最終報は「開始時刻の時点で自動解除済みか」で載せるかを決める（`calcEEWCancelTime`）。
+// 判定に使う 2 つの時刻（発表時刻・震源時刻）が読めないと Invalid Date になり、**Invalid Date
+// との比較はどちらの向きでも偽**なので、書き分けないと判定そのものが黙って無効化される。
+describe('filterPreWindowEvents の EEW（解除時刻を決められないとき）', () => {
+  function eewEntry(
+    time: string,
+    opts: { originTime?: string; eventId?: string } = {},
+  ): ReplayEntry {
+    const eventId = opts.eventId ?? 'EEW1'
+    const eew: EEWAlert = {
+      kind: 'eew',
+      id: `dmdata-eew-${eventId}-1`,
+      time,
+      test: false,
+      earthquake: {
+        originTime: opts.originTime ?? time,
+        arrivalTime: opts.originTime ?? time,
+        condition: '',
+        hypocenter: { name: 'テスト震源', latitude: 35, longitude: 135, depth: 10, magnitude: 5.0 },
+      },
+      severity: 'Forecast',
+      cancelled: false,
+      isFinal: true,
+      issue: { eventId, serial: '1', time },
+    }
+    return { replayTime: new Date(time || '2026-01-01T12:00:00+09:00'), payload: { kind: 'event', event: eew } }
+  }
+
+  const keptEews = (entries: ReplayEntry[], target: string): EEWAlert[] =>
+    filterPreWindowEvents(entries, new Date(target))
+      .map(e => (e.payload.kind === 'event' ? e.payload.event : null))
+      .filter((ev): ev is EEWAlert => ev?.kind === 'eew')
+
+  // 対照: 両方の時刻が読める最終報は、解除時刻を過ぎていれば載せない（従来どおり）。
+  it('解除時刻を過ぎた最終報は載せない', () => {
+    const entries = [eewEntry('2026-01-01T12:00:00+09:00')]
+    expect(keptEews(entries, '2026-01-01T12:30:00+09:00')).toEqual([])
+  })
+
+  // 安全弁: 発表時刻が読めなくても、震源時刻が読めれば判定は効く。**無条件に有効側へ倒さない。**
+  it('発表時刻が読めなくても震源時刻で判定し、過ぎていれば載せない', () => {
+    const entries = [eewEntry('', { originTime: '2026-01-01T12:00:00+09:00' })]
+    expect(keptEews(entries, '2026-01-01T12:30:00+09:00')).toEqual([])
+  })
+
+  // 正: どちらも読めなければ判定できないので、有効として残す（再現する電文を落とさない）。
+  //
+  // **倒したことを記録する。** 残す挙動自体は書き分けなくても同じ結果になる（Invalid Date との
+  // 比較が偽へ倒れるため）ので、この判定が意図したものだと分かるのは記録があるときだけ。
+  it('発表時刻も震源時刻も読めなければ、記録を残したうえで有効として残す', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      const entries = [eewEntry('', { originTime: '' })]
+      expect(keptEews(entries, '2026-01-01T12:30:00+09:00')).toHaveLength(1)
+      expect(warn.mock.calls.filter(c => String(c[0]).includes('失効を判定できない'))).toHaveLength(1)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  // 対照: 判定できた側では記録を出さない（正常系で鳴らすと記録の価値が下がる）。
+  it('時刻が読める最終報では記録を出さない', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      keptEews([eewEntry('2026-01-01T12:00:00+09:00')], '2026-01-01T12:30:00+09:00')
+      expect(warn.mock.calls.filter(c => String(c[0]).includes('失効を判定できない'))).toHaveLength(0)
+    } finally {
+      warn.mockRestore()
+    }
   })
 })

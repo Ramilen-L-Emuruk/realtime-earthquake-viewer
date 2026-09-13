@@ -939,10 +939,23 @@ export function useEarthquakes(
       const eew = event as EEWAlert
       if (!eew.cancelled && !eew.test && eew.isFinal) {
         const cancelTime = calcEEWCancelTime(eew, new Date(eew.time))
-        eventQueueRef.current.push({
-          eventTime: cancelTime,
-          payload: { kind: 'event', event: { ...eew, cancelled: true, expired: true } as AppEvent },
-        })
+        // **予約できなかったことを、この経路の言葉で残す。** キューは発火時刻が読めない
+        // エントリを捨てて記録するが（`createEventQueue` の `push`）、その文言は
+        // 「捨てた」までしか言わない。ここで書かないと、症状（**その EEW が自動では
+        // 消えず画面に居座る**）と原因が結び付かない。
+        //
+        // 解除時刻は発表時刻と震源時刻のどちらか一方が読めれば決まる（`calcEEWCancelTime`）。
+        // ここへ来るのは両方読めなかったときだけ。
+        if (!Number.isFinite(cancelTime.getTime())) {
+          log.error('[eew] 発表時刻も震源時刻も読めないため自動解除を予約できません（取消が来るまで表示が残ります）'
+            + ` id=${eew.id} eventId=${eew.issue?.eventId ?? '(なし)'}`
+            + ` time="${eew.time}" originTime="${eew.earthquake.originTime}"`)
+        } else {
+          eventQueueRef.current.push({
+            eventTime: cancelTime,
+            payload: { kind: 'event', event: { ...eew, cancelled: true, expired: true } as AppEvent },
+          })
+        }
       }
     }
 
