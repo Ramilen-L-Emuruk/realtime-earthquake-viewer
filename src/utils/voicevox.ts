@@ -1,4 +1,4 @@
-import { getAudioContext, getMasterInput } from './alertSound'
+import { getAudioContext, getMasterInput, syncKeepAlive } from './alertSound'
 import { findPhraseBreakMatch, getTtsPhraseBreakDictCache, isPlaceNameKey, loadTtsPhraseBreakDict } from './ttsPhraseBreakDict'
 import { getTtsStationReadingsCache, loadTtsStationReadings } from './ttsStationReadings'
 import { getTtsEpicenterAccentsCache, loadTtsEpicenterAccents } from './ttsEpicenterAccents'
@@ -961,6 +961,10 @@ export async function speakWithVoicevox(
     return
   }
   if (ctx.state === 'suspended') await ctx.resume()
+  // soundEnabled が無効でも voicevoxEnabled だけで読み上げは鳴る（AUD-7）。この経路が
+  // alertSound 側の再生関数を一度も通らない端末があるため、ここでもキープアライブの
+  // 生死を確かめる（詳細は syncKeepAlive() のコメント）
+  syncKeepAlive()
 
   const gainNode = ctx.createGain()
   gainNode.gain.value = Math.min(1, Math.max(0, volume))
