@@ -1083,17 +1083,17 @@ export function createTestTsunamiForecast(withDmdssFields: boolean): JMATsunami 
  * `tsunamiMaxGrade` は動かないため、区域が持つ前回の等級（`LastKind`）でしか分からない
  * （→ docs/spec/tsunami-spec.md §10「区域単位で等級が動いた報」）。
  *
- * 4 通りとも入れる。**降格だけだと引き上げ側の表示（`isTsunamiGradeRaised`）が一度も通らない。**
+ * 5 通りとも入れる。**降格だけだと引き上げ側の表示（`isTsunamiGradeRaised`）が一度も通らない。**
  *   岩手県・福島県 … 大津波警報 → 津波警報（降格）
  *   青森県太平洋沿岸 … 津波警報 → 津波注意報（降格）
  *   茨城県 … 津波警報 → 大津波警報（引き上げ）
  *   北海道太平洋沿岸東部 … 津波注意報 → 津波予報（若干の海面変動。最も軽い降格）
+ *   青森県日本海沿岸 … 津波注意報 → **解除**（`cancelledAreas` へ移る）
  * 宮城県だけは据え置き —— 動いた区域にだけ印が付くことを確かめるための対照。
  *
- * **`Unknown` の区域は作らない。** 解除相当のコード（50/60/00）が付いた区域は
- * `parseTsunamiFromXml` が `continue` で捨てるため、内部型の `areas` に残ることがない
- * （`grade: 'Unknown'` は「読めなかった」を表す内部値で、電文の等級ではない）。
- * 完全に解除された区域は**一覧から消える**のが実運用の形。
+ * **解除された区域は `areas` から外して `cancelledAreas` へ移す。** 気象庁は、その津波予報区で
+ * もう何も発表しないときだけ解除コード（00/50/60）を付ける。`areas` に残すと、解除済みの区域を
+ * 発表中として地図にも通知にも出すことになる（→ `JMATsunami.cancelledAreas`）。
  *
  * **DMDATA 経路のみ。** `lastGrade` は P2PQuake が配信しないので、standard 版で押しても
  * 印は出ない（ボタン自体を DMDSS 版に限っている）。
@@ -1119,6 +1119,15 @@ export function createTestTsunamiGradeChange(base: JMATsunami): JMATsunami {
     // 津波予報の区域は予想波高を持たない（実電文でも `MaxHeight` が付かない）
     '北海道太平洋沿岸東部': { grade: 'Forecast' },
   }
+  // 解除される区域。`areas` から外して `cancelledAreas` へ移す（上の説明を参照）。
+  const LIFTED_AREA_NAME = '青森県日本海沿岸'
+  const lifted = base.areas
+    .filter(a => a.name === LIFTED_AREA_NAME)
+    // 解除された区域の `Item` は `Area` と `Category` しか持たない。予想波高・到達予想・
+    // 潮位観測点を残すと実電文に無い形になる
+    .map(a => ({
+      grade: 'Unknown' as const, lastGrade: a.grade, immediate: false, name: a.name, code: a.code,
+    }))
   return {
     ...base,
     id: `${base.id}-2`,
@@ -1137,7 +1146,8 @@ export function createTestTsunamiGradeChange(base: JMATsunami): JMATsunami {
     // 行動指示はここから採れず、アプリ側の既定文へ落ちる（仕様書 §9）。上の発表報が採れる側
     // なので、2 つのボタンで両方の経路を通せる。
     warningComments: [{ key: 'VTSE41', text: '＜津波警報＞\n津波による被害が発生します。\n沿岸部や川沿いにいる人はただちに高台や避難ビルなど安全な場所へ避難してください。\n津波は繰り返し襲ってきます。警報が解除されるまで安全な場所から離れないでください。\n　\n＜津波注意報＞\n海の中や海岸付近は危険です。\n海の中にいる人はただちに海から上がって、海岸から離れてください。\n潮の流れが速い状態が続きますので、注意報が解除されるまで海に入ったり海岸に近づいたりしないようにしてください。\n　\n＜津波予報（若干の海面変動）＞\n若干の海面変動が予想されますが、被害の心配はありません。\n　\n警報が発表された沿岸部や川沿いにいる人はただちに高台や避難ビルなど安全な場所へ避難してください。\n到達予想時刻は、予報区のなかで最も早く津波が到達する時刻です。場所によっては、この時刻よりもかなり遅れて津波が襲ってくることがあります。\n到達予想時刻から津波が最も高くなるまでに数時間以上かかることがありますので、観測された津波の高さにかかわらず、警報が解除されるまで安全な場所から離れないでください。\n　\n場所によっては津波の高さが「予想される津波の高さ」より高くなる可能性があります。' }],
-    areas: base.areas.map(a => {
+    cancelledAreas: lifted.length > 0 ? lifted : undefined,
+    areas: base.areas.filter(a => a.name !== LIFTED_AREA_NAME).map(a => {
       const n = next[a.name]
       // 等級が動かない区域も、この種別では観測点を持たない（マージが前報から継ぐ）
       const withoutStations = { ...a, stations: undefined }
@@ -1354,6 +1364,13 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
         stations: [
           { name: '釧路', code: '10001', arrivalTime: t(30), highTideDateTime: t(90) },
         ],
+      },
+      {
+        // 続報でこの区域だけが**解除**される（`createTestTsunamiGradeChange`）。区域は 1 つも
+        // 潮位観測点を持たない形にしてある —— 実電文にもこの形があり（2025-12-09T06:20 の
+        // VTSE41）、解除された区域の `Item` は `Area` と `Category` しか持たない
+        grade: 'Watch', immediate: false, name: '青森県日本海沿岸', code: '200',
+        maxHeight: { description: '1m', value: 1.0 },
       },
     ] as TsunamiArea[]).map(a => withDmdssFields ? a : toP2pTsunamiArea(a)),
     ...(withDmdssFields ? {

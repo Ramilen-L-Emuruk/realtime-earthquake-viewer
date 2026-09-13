@@ -1738,10 +1738,14 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
   }
 
   const areas: TsunamiArea[] = []
-  // 解除コード（00/50/60）で `areas` から落とした区域の名前。全区域が落ちれば正式解除だが、
-  // **他の区域が残ったまま一部だけ落ちた場合は区域単位の等級変化として検出できない**
-  // （`lastGrade` は残った区域にしか付かない）。下で記録を残す。
-  const droppedByCancelCode: string[] = []
+  // 解除コード（00/50/60）が付いた区域。**`areas` へは積まない**（もう等級が出ていないため）が、
+  // 捨てもしない —— 他の区域が残ったまま一部だけ解除された報では、この区域が
+  // 「津波注意報が解除されました」として伝わる唯一の手がかりになる
+  // （→ `JMATsunami.cancelledAreas`）。全区域がここへ落ちれば正式解除で、下の分岐が拾う。
+  const cancelledAreas: TsunamiArea[] = []
+  // 解除されたのに前回の等級（`LastKind`）を読めなかった区域の名前。**何から解除されたかを
+  // 言えないので伝えようがない**。画面にも音にも出ないため、記録だけ残す。
+  const undescribableCancel: string[] = []
   const forecastStationTally = createReadTally('津波の到達予想の観測点')
   // 名前を読めなかった区域は、**等級まで見て 2 つに分ける**。名前だけで一緒くたにすると、
   // まだ有効かもしれない区域を巻き込んで「解除」を発表する（下の判定を参照）。
@@ -1768,7 +1772,10 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
     }
     if (grade === 'Unknown') {
       if (isKnownCancelCode(kindCode)) {
-        droppedByCancelCode.push(areaName)
+        // 解除された区域。実電文の `Item` は `Area` と `Category` しか持たないので、
+        // 波高・到達時刻・潮位観測点は読まない（下の読み取りへ進ませない）。
+        cancelledAreas.push({ grade: 'Unknown', lastGrade, immediate: false, name: areaName, code: areaCode })
+        if (lastGrade === undefined) undescribableCancel.push(areaName)
         continue
       }
       // DMD-5: 未知コードは silent lifted 誤認を避けるため Warning 相当で保持し警告する
@@ -1884,13 +1891,13 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
     log.warn(`${TSUNAMI_LOG_PREFIX} Forecast の区域 ${unreadableAreaCount} 件で名前を読めませんでした（うち解除済みと判定できたもの: ${unreadableCancelledCount} 件）`)
   }
   if (areas.length === 0) return { kind: 'tsunami', id, eventId, time: reportDateTime, cancelled: true, cancelReason: 'lifted', issue: { source, time: reportDateTime, type: 'Focus' }, areas: [] }
-  warnPartialDrop(droppedByCancelCode, TSUNAMI_LOG_PREFIX)
+  warnUndescribableCancel(undescribableCancel, TSUNAMI_LOG_PREFIX)
   forecastStationTally.warnIfNoneReadable(TSUNAMI_LOG_PREFIX)
 
   // Observation も含む場合（VTSE51①: Forecast + Observation 両方あり）
   const observations = observationEl ? parseTsunamiObservationsFromXml(observationEl, offshore) : undefined
 
-  return { kind: 'tsunami', id, eventId, time: reportDateTime, ...(tsunamiOperationStatus && { operationStatus: tsunamiOperationStatus }), cancelled: false, validDateTime, headline, infoName, warningComments, carriesForecastStations, freeText, bodyText: tsunamiBodyText, sourceEarthquakes, issue: { source, time: reportDateTime, type: 'Focus' }, areas, observations: observations && observations.length > 0 ? observations : undefined, observationDateTime, estimations }
+  return { kind: 'tsunami', id, eventId, time: reportDateTime, ...(tsunamiOperationStatus && { operationStatus: tsunamiOperationStatus }), cancelled: false, validDateTime, headline, infoName, warningComments, carriesForecastStations, freeText, bodyText: tsunamiBodyText, sourceEarthquakes, issue: { source, time: reportDateTime, type: 'Focus' }, areas, cancelledAreas: cancelledAreas.length > 0 ? cancelledAreas : undefined, observations: observations && observations.length > 0 ? observations : undefined, observationDateTime, estimations }
 }
 
 /**
@@ -2069,23 +2076,20 @@ function isKnownCancelCode(code: string): boolean {
 }
 
 /**
- * 発表中の区域が残っているのに、一部の区域だけが解除コード（00/50/60）で `areas` から
- * 落ちた場合に記録を残す。
+ * 解除された区域（`Kind/Code` = 00/50/60）のうち、**前回の等級を読めなかったもの**を記録する。
  *
- * **この形は実電文にある。** 落ちた区域は `lastGrade` を持てないため「区域単位で等級が動いた報」
- * として検出できず、カードから説明もなく消える。通常運用の実例は 2025-12-09T06:20 の VTSE41 で、
- * `青森県日本海沿岸` が `Kind/Code=60`（津波注意報解除）・`LastKind/Code=62`（津波注意報）として
- * 届いた。同じ報の他の 7 区域は 62 → 72 の降格として残るので読み上げ自体は起きるが、解除された
- * 区域だけがどこにも現れない（件数・走査範囲・数え直す手順は
- * → docs/spec/tsunami-spec.md §10「区域の顔ぶれが報ごとに変わること」）。
+ * 解除そのものは `cancelledAreas` で持ち回るので画面にも読み上げにも出る。ただし
+ * 「何から解除されたか」は `LastKind` にしか無く、そこが読めないと文にできない
+ * （`tsunamiAreaGradeChanges` が遷移元を持たない区域を落とす）。**その区域だけは画面にも音にも
+ * 現れない**ので、追う手がかりをここに残す。
  *
- * かつてここには「実電文では現れない」と書いてあった。根拠は 2024 年能登半島地震
- * （`eventId=20240101161010`）1 事象ぶんの `Kind/Code` で、**1 事象では足りない**。
- * **画面には何も出ないので、追う手がかりはこの警告だけ。**
+ * 実電文で `LastKind` を欠く区域は観測できていない（走査した区域 19,906 件で 0 件。範囲と
+ * 数え直す手順は → docs/spec/tsunami-spec.md §10「区域の顔ぶれが報ごとに変わること」）。
+ * コード改定で未知の値が来た場合は `parseLastKindGrade` 側でも警告が出る。
  */
-function warnPartialDrop(droppedNames: string[], logPrefix: string): void {
-  if (droppedNames.length === 0) return
-  log.warn(`${logPrefix} 発表中の区域が残っているのに解除コードで落ちた区域があります（区域単位の等級変化として検出できません）: ${droppedNames.join('・')}`)
+function warnUndescribableCancel(cancelledNames: string[], logPrefix: string): void {
+  if (cancelledNames.length === 0) return
+  log.warn(`${logPrefix} 解除された区域の前回の等級を読めませんでした（解除を伝えられません）: ${cancelledNames.join('・')}`)
 }
 
 /**

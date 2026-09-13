@@ -13,7 +13,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { createElement } from 'react'
 import { render, cleanup } from '@testing-library/react'
 import { TsunamiTab } from './index'
-import { sortObservationsForCardDisplay } from '../../utils/tsunami'
+import { sortObservationsForCardDisplay, tsunamiAreaGradeChanges, TSUNAMI_GRADE_LIFTED } from '../../utils/tsunami'
 import type { JMATsunami, TsunamiArea, TsunamiObservation } from '../../types/earthquake'
 
 afterEach(cleanup)
@@ -79,5 +79,39 @@ describe('津波カードの観測点の並び', () => {
     const expected = sortObservationsForCardDisplay(observations, areas).map(o => o.name)
     expect(expected).toEqual(['宮古', '大船渡', '石巻市鮎川', '八戸港', '沖合ブイ'])
     expect(expected).not.toEqual(observations.map(o => o.name))
+  })
+})
+
+// 解除された区域の並びも同じ理由で守る。**こちらは読み上げが組（遷移元ごと）に分けて読む**ので、
+// カードが全部を 1 つのリストとして並べ替えると、前回の等級が違う区域が同時に解除された報で
+// 順が食い違う（→ docs/spec/tsunami-spec.md §10「解除された区域」）。
+describe('解除された区域の並び', () => {
+  const active = [area('岩手県', '210', 'Watch', '1m')]
+  // 電文順は「注意報から」「警報から」の順。読み上げは遷移元の重い順に読むので逆になる
+  const cancelled: TsunamiArea[] = [
+    { name: '青森県日本海沿岸', code: '200', grade: 'Unknown', lastGrade: 'Watch', immediate: false },
+    { name: '北海道日本海沿岸南部', code: '110', grade: 'Unknown', lastGrade: 'Warning', immediate: false },
+  ]
+  const tsunami: JMATsunami = {
+    kind: 'tsunami',
+    id: 'card-order-lifted',
+    time: '2026-01-01T12:00:00Z',
+    cancelled: false,
+    issue: { source: 'JMA', time: '2026-01-01T12:00:00Z', type: 'Focus' },
+    areas: active,
+    cancelledAreas: cancelled,
+    observations: [],
+  }
+  const spokenOrder = () => tsunamiAreaGradeChanges(tsunami, [])
+    .filter(c => c.to === TSUNAMI_GRADE_LIFTED).flatMap(c => c.areas).map(a => a.name)
+
+  it('読み上げの並びがカードの描画順と一致する', () => {
+    const expected = spokenOrder()
+    expect(renderedOrder(tsunami, expected)).toEqual(expected)
+  })
+
+  it('並びは電文順ではない（遷移元の重い順が効いている）', () => {
+    expect(spokenOrder()).toEqual(['北海道日本海沿岸南部', '青森県日本海沿岸'])
+    expect(spokenOrder()).not.toEqual(cancelled.map(a => a.name))
   })
 })

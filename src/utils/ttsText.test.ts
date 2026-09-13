@@ -1673,6 +1673,38 @@ describe('tsunamiAreaGradeChangeToText（区域単位で等級が動いた報）
       { grade: 'Watch', lastGrade: 'Watch', immediate: false, code: '360', name: '石川県能登' },
     ])).toBe('')
   })
+
+  // 解除された区域は `areas` に居ない（`cancelledAreas`）。遷移先に等級の名前が無いので、
+  // 「〜に切り替えられました」の形では言えない
+  const liftedTsunami = (): JMATsunami => ({
+    ...makeAreaChangeTsunami([
+      { grade: 'Forecast', lastGrade: 'Watch', immediate: false, code: '711', name: '福岡県日本海沿岸' },
+    ]),
+    cancelledAreas: [
+      { grade: 'Unknown', lastGrade: 'Watch', immediate: false, code: '200', name: '青森県日本海沿岸' },
+    ],
+  })
+
+  it('正: 解除された区域は「〜が解除されました」と読む', () => {
+    const text = tsunamiAreaGradeChangeToText(tsunamiAreaGradeChanges({
+      ...makeAreaChangeTsunami([]),
+      cancelledAreas: [
+        { grade: 'Unknown', lastGrade: 'Watch', immediate: false, code: '200', name: '青森県日本海沿岸' },
+      ],
+    }))
+    expect(text).toBe('青森県日本海沿岸の津波注意報が解除されました。')
+  })
+
+  it('正: 切り替えの組と並ぶときは解除を後に置き「また、」で継ぐ', () => {
+    expect(tsunamiAreaGradeChangeToText(tsunamiAreaGradeChanges(liftedTsunami())))
+      .toBe('福岡県日本海沿岸の津波注意報が津波予報に切り替えられました。また、青森県日本海沿岸の津波注意報が解除されました。')
+  })
+
+  it('安全弁: 解除の文にも行動指示や残っている区域の話を足さない', () => {
+    const text = tsunamiAreaGradeChangeToText(tsunamiAreaGradeChanges(liftedTsunami()))
+    expect(text).not.toContain('離れ')
+    expect(text).not.toContain('発表されています')
+  })
 })
 
 // 欠測（観測データが得られていない観測点）の読み上げ。

@@ -1,7 +1,7 @@
 import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMANankaiCommentary, JMAKohatsu, JMAEarthquakeCount, JMALpgm, IntensityScale, TsunamiGrade, TsunamiArea, EarthquakePoint, DomesticTsunami, TsunamiObservation, Hypocenter } from '../types/earthquake'
 import { eewNoForecastReason, canPresentLpgmClass, type EewMaxScaleInfo } from './eew'
 import { getIntensityLabel, getIntensityLabelWithApproxAbove } from './intensity'
-import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, hasForecastHeight, compareObservedHeightDesc, overSuffixedHeight, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, type TsunamiAreaGradeChange } from './tsunami'
+import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, hasForecastHeight, compareObservedHeightDesc, overSuffixedHeight, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, TSUNAMI_GRADE_LIFTED, type TsunamiAreaGradeChange } from './tsunami'
 import { joinSegments, plain, type SpeechSegment, type SpeechRef, type QuakeFact } from './ttsFollow'
 import { getSubRegionsCache } from './subregions'
 import { getPrefecturesCache } from './prefectures'
@@ -1673,6 +1673,12 @@ export function tsunamiAreaGradeChangeToSegments(changes: readonly TsunamiAreaGr
   changes.forEach((change, i) => {
     if (i > 0) segments.push(plain('また、'))
     segments.push(...areaNameSegments(change.areas))
+    if (change.to === TSUNAMI_GRADE_LIFTED) {
+      // 解除された区域。遷移先に等級の名前が無いので「〜に切り替えられました」とは言えない。
+      // **残っている区域の話も、行動の指示も足さない**（他の遷移と同じ方針）。
+      segments.push(plain(`の${tsunamiGradeLabel(change.from)}が解除されました。`))
+      return
+    }
     if (change.from === 'Unknown') {
       // 前回は津波なし（`LastKind` が 00 等）。「〜の津波なしが」とは言えないので、
       // 波高が付いていない発表文と同じ言い方に落とす。
