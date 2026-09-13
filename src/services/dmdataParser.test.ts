@@ -5315,3 +5315,198 @@ describe('津波フィクスチャの観測点名・区域名が実在するこ�
     })
   }
 })
+
+// 電文の日時要素を、日時として読めるかまで確かめる。
+//
+// **表示側のガード（`formatters.ts` の `readDateTime`）では時間帯の欠落を捕まえられない。**
+// `2026-01-01T12:00:00` のようにオフセットが無い値を `Date` は実行環境のローカル時刻として
+// 解釈し、有効な日時を返す —— 同じ電文が端末ごとに違う時刻として画面に出る。弾けるのは
+// 電文を読むこの層だけなので、ここで検証する。
+//
+// 扱いは 2 通りに分かれる。**表示にしか使わない時刻は捨て**、**同一性の判定に使う時刻は
+// 捨てずに記録だけ残す**（空へ倒すと別々の電文が同じキーで束ねられ、読めない時刻を残すより
+// 重い事故になる）。
+describe('日時として読めない電文の時刻', () => {
+  /** fixture の一部を差し替える。`.replace()` は対象が無くても黙って素通りするので当たりを確かめる。 */
+  const replaceOnce = (xml: string, from: string, to: string): string => {
+    const next = xml.replace(from, to)
+    expect(next).not.toBe(xml)
+    return next
+  }
+
+  // 対照: 素の fixture では従来どおり読める（ガードが正常な値まで止めていないこと）。
+  it('読める値は従来どおり残る', () => {
+    const t = parseTsunamiFromXml('VTSE51', PARITY_TSUNAMI_XML)!
+    expect(t.areas[0].firstHeight?.arrivalTime).toBe('2026-01-01T12:30:00+09:00')
+    expect(t.areas[0].stations?.[0].highTideDateTime).toBe('2026-01-01T15:00:00+09:00')
+    expect(t.sourceEarthquakes?.[0].originTime).toBe('2026-01-01T12:00:00+09:00')
+  })
+
+  // 正: 表示にしか使わない時刻は、日時として読めなければ捨てる。
+  it('区域の到達予想時刻が読めなければ捨てる', () => {
+    const xml = replaceOnce(PARITY_TSUNAMI_XML, '<ArrivalTime>2026-01-01T12:30:00+09:00</ArrivalTime>', '<ArrivalTime>壊れた値</ArrivalTime>')
+    expect(parseTsunamiFromXml('VTSE51', xml)!.areas[0].firstHeight?.arrivalTime).toBeFalsy()
+  })
+
+  // **安全弁: 時間帯を明示していない値も捨てる。** ここがこの層で検証する理由そのもの。
+  // 表示側のガードは `Date` が有効値を返すため素通しし、端末ごとに違う時刻が出る。
+  it('時間帯を明示していない到達予想時刻も捨てる', () => {
+    const xml = replaceOnce(PARITY_TSUNAMI_XML, '<ArrivalTime>2026-01-01T12:30:00+09:00</ArrivalTime>', '<ArrivalTime>2026-01-01T12:30:00</ArrivalTime>')
+    expect(parseTsunamiFromXml('VTSE51', xml)!.areas[0].firstHeight?.arrivalTime).toBeFalsy()
+  })
+
+  // 正: 満潮時刻も同じ扱い。
+  it('満潮時刻が読めなければ捨てる', () => {
+    const xml = replaceOnce(PARITY_TSUNAMI_XML, '<HighTideDateTime>2026-01-01T15:00:00+09:00</HighTideDateTime>', '<HighTideDateTime>壊れた値</HighTideDateTime>')
+    expect(parseTsunamiFromXml('VTSE51', xml)!.areas[0].stations?.[0].highTideDateTime).toBeUndefined()
+  })
+
+  // 正: 最大波の観測時刻も同じ扱い。
+  //
+  // **対照を同じテストの中に置く。** 素の fixture で値が入ることを先に確かめないと、
+  // 引き当て先を取り違えたテストが「常に undefined」で通ってしまう（実際に一度そうなった
+  // —— 観測点は `areas[].observations` ではなく電文の直下に入る）。
+  it('最大波の観測時刻が読めなければ捨てる', () => {
+    expect(parseTsunamiFromXml('VTSE51', PARITY_TSUNAMI_XML)!.observations?.[0].maxHeightDateTime)
+      .toBe('2026-01-01T12:40:00+09:00')
+    const xml = replaceOnce(PARITY_TSUNAMI_XML, '<DateTime>2026-01-01T12:40:00+09:00</DateTime>', '<DateTime>壊れた値</DateTime>')
+    expect(parseTsunamiFromXml('VTSE51', xml)!.observations?.[0].maxHeightDateTime).toBeUndefined()
+  })
+
+  // **正: 有効期限は読めなければ捨てる。** 残すと以後の比較（`new Date(...) <= now`）が
+  // すべて偽へ倒れ、**表示は続くのに失効の予約も積まれない津波**ができる
+  // （→ `docs/spec/tsunami-spec.md` §3「有効期限は報ではなく津波に付く」）。
+  //
+  // fixture は有効期限を持たないので、この 2 件だけ挿入して作る。
+  const withValidDateTime = (value: string): string => replaceOnce(
+    PARITY_TSUNAMI_XML,
+    '<ReportDateTime>2026-01-01T12:05:00+09:00</ReportDateTime>',
+    `<ReportDateTime>2026-01-01T12:05:00+09:00</ReportDateTime>
+    <ValidDateTime>${value}</ValidDateTime>`,
+  )
+
+  it('有効期限が読めなければ捨てる', () => {
+    // 対照: 読める値では従来どおり入る（挿入が効いていることの確認を兼ねる）。
+    expect(parseTsunamiFromXml('VTSE51', withValidDateTime('2026-01-01T13:00:00+09:00'))!.validDateTime)
+      .toBe('2026-01-01T13:00:00+09:00')
+    expect(parseTsunamiFromXml('VTSE51', withValidDateTime('壊れた値'))!.validDateTime).toBeUndefined()
+  })
+
+  // 安全弁: 時間帯を明示していない有効期限も捨てる。ここを通すと、端末ごとに違う時刻で
+  // 失効することになる（表示側のガードでは捕まらない）。
+  it('時間帯を明示していない有効期限も捨てる', () => {
+    expect(parseTsunamiFromXml('VTSE51', withValidDateTime('2026-01-01T13:00:00'))!.validDateTime).toBeUndefined()
+  })
+
+  // **安全弁: 同一性の判定に使う時刻は捨てない。** `isTsunamiNewFire` が、識別子が両側
+  // そろっていない電文の同一性判定にこの値を使う。空へ倒すと別々の津波が同じものとして
+  // 扱われる —— 読めない時刻を残すより重い。
+  it('原因地震の発生時刻は読めなくても捨てない（同一性の判定に使うため）', () => {
+    const xml = replaceOnce(PARITY_TSUNAMI_XML, '<OriginTime>2026-01-01T12:00:00+09:00</OriginTime>', '<OriginTime>壊れた値</OriginTime>')
+    expect(parseTsunamiFromXml('VTSE51', xml)!.sourceEarthquakes?.[0].originTime).toBe('壊れた値')
+  })
+
+  // 対照: 同じ地震要素でも、発現時刻は表示にしか使わないので捨てる。
+  // **2 つを同じ扱いにしないこと**を固定する（片方の規則をもう片方へ広げると穴が開く）。
+  it('原因地震の発現時刻は読めなければ捨てる', () => {
+    const xml = replaceOnce(PARITY_TSUNAMI_XML, '<ArrivalTime>2026-01-01T12:01:00+09:00</ArrivalTime>', '<ArrivalTime>壊れた値</ArrivalTime>')
+    expect(parseTsunamiFromXml('VTSE51', xml)!.sourceEarthquakes?.[0].arrivalTime).toBeUndefined()
+  })
+})
+
+// 日時のガードを、津波以外の経路でも配線できているか。
+//
+// **`readTelegramDateTime` の当て方は 3 通り混在する**（`|| null` / `|| undefined` /
+// `warnIfUnreadableDateTime` で残す）。引数の取り違えや `||` の付け忘れは型検査を通るので、
+// 種別ごとに「読める値は従来どおり／読めない値はどう落ちるか」の対で固定する。
+describe('日時として読めない電文の時刻（津波以外の経路）', () => {
+  const replaceOnce = (xml: string, from: string, to: string): string => {
+    const next = xml.replace(from, to)
+    expect(next).not.toBe(xml)
+    return next
+  }
+
+  // ---- 緊急地震速報 ----
+  //
+  // `eventId` で束ねる種別なので、地震発生時刻・発現時刻は表示と共有カードにしか使わない。
+  // 読めない値は捨てる。
+  describe('緊急地震速報', () => {
+    it('読める値は従来どおり残る', () => {
+      const eew = parseEEWFromXml('VXSE45', EEW_XML)!
+      expect(eew.earthquake.originTime).toBe('2026-09-03T22:34:56+09:00')
+      expect(eew.earthquake.arrivalTime).toBe('2026-09-03T22:34:58+09:00')
+    })
+
+    it('地震発生時刻が読めなければ捨てる', () => {
+      const xml = replaceOnce(EEW_XML, '<OriginTime>2026-09-03T22:34:56+09:00</OriginTime>', '<OriginTime>壊れた値</OriginTime>')
+      expect(parseEEWFromXml('VXSE45', xml)!.earthquake.originTime).toBe('')
+    })
+
+    // 安全弁: 時間帯を明示していない値も捨てる（表示側のガードでは捕まらない形）。
+    it('時間帯を明示していない地震発現時刻も捨てる', () => {
+      const xml = replaceOnce(EEW_XML, '<ArrivalTime>2026-09-03T22:34:58+09:00</ArrivalTime>', '<ArrivalTime>2026-09-03T22:34:58</ArrivalTime>')
+      expect(parseEEWFromXml('VXSE45', xml)!.earthquake.arrivalTime).toBe('')
+    })
+
+    // **安全弁: 発表時刻は捨てない。** 空にしたときの影響を確かめていないため、記録だけ残す。
+    // `readReportDateTime` は `Head/ReportDateTime` が在れば素通しする（検証が掛かるのは
+    // `Control/DateTime` への受け皿だけ）。これは全 9 種別に共通の扱い。
+    it('発表時刻は読めなくても捨てない', () => {
+      const xml = replaceOnce(EEW_XML, '<ReportDateTime>2026-09-03T22:35:37+09:00</ReportDateTime>', '<ReportDateTime>壊れた値</ReportDateTime>')
+      expect(parseEEWFromXml('VXSE45', xml)!.time).toBe('壊れた値')
+    })
+  })
+
+  // ---- 地震情報 ----
+  //
+  // **安全弁: `earthquake.time` は捨てない。** `eventKey`（同一性の判定）の材料で、空文字へ
+  // 倒すと識別子を持たない電文どうしが同じキーで束ねられる —— 読めない時刻を残すより重い。
+  describe('地震情報', () => {
+    it('読める値は従来どおり残る', () => {
+      expect(parseEarthquakeFromXml('VXSE53', NOTO_UNRECEIVED_XML)!.earthquake.time).toBe('2024-01-01T16:10:00+09:00')
+    })
+
+    it('発現時刻は読めなくても捨てない（同一性の判定に使うため）', () => {
+      const xml = replaceOnce(NOTO_UNRECEIVED_XML, '<ArrivalTime>2024-01-01T16:10:00+09:00</ArrivalTime>', '<ArrivalTime>壊れた値</ArrivalTime>')
+      expect(parseEarthquakeFromXml('VXSE53', xml)!.earthquake.time).toBe('壊れた値')
+    })
+  })
+
+  // ---- 長周期地震動観測情報 ----
+  //
+  // 地震発生時刻は**必須要素**（無いと電文ごと落とす作り）なので捨てない。発現時刻は表示だけ
+  // なので捨てる。**2 つを同じ扱いにしないこと**を固定する。
+  describe('長周期地震動観測情報', () => {
+    it('読める値は従来どおり残る', () => {
+      const lpgm = parseLpgmFromXml(PARITY_LPGM_XML)!
+      expect(lpgm.originTime).toBe('2026-08-13T18:58:00+09:00')
+      expect(lpgm.arrivalTime).toBe('2026-08-13T18:58:30+09:00')
+    })
+
+    it('地震発生時刻は読めなくても捨てない（捨てると電文ごと落ちるため）', () => {
+      const xml = replaceOnce(PARITY_LPGM_XML, '<OriginTime>2026-08-13T18:58:00+09:00</OriginTime>', '<OriginTime>壊れた値</OriginTime>')
+      const lpgm = parseLpgmFromXml(xml)
+      expect(lpgm).not.toBeNull()
+      expect(lpgm!.originTime).toBe('壊れた値')
+    })
+
+    it('地震発現時刻は読めなければ捨てる', () => {
+      const xml = replaceOnce(PARITY_LPGM_XML, '<ArrivalTime>2026-08-13T18:58:30+09:00</ArrivalTime>', '<ArrivalTime>壊れた値</ArrivalTime>')
+      expect(parseLpgmFromXml(xml)!.arrivalTime).toBeUndefined()
+    })
+  })
+
+  // ---- 地震回数に関する情報 ----
+  describe('地震回数に関する情報', () => {
+    it('読める値は従来どおり残る', () => {
+      const item = parseEarthquakeCountFromXml(VXSE60_XML)!.items[0]
+      expect(item.startTime).toBe('2008-08-24T15:00:00+09:00')
+      expect(item.endTime).toBe('2008-08-25T09:00:00+09:00')
+    })
+
+    it('区間の開始時刻が読めなければ捨てる', () => {
+      const xml = replaceOnce(VXSE60_XML, '<StartTime>2008-08-24T15:00:00+09:00</StartTime>', '<StartTime>壊れた値</StartTime>')
+      expect(parseEarthquakeCountFromXml(xml)!.items[0].startTime).toBe('')
+    })
+  })
+})

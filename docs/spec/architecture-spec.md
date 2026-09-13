@@ -50,6 +50,26 @@ React 18 + TypeScript + Vite 6 で作られた PWA（Progressive Web App）。�
   └─ 自動タブ切替・カメラ自動フィット
 ```
 
+### 副作用への入口（`onLiveEvent`）
+
+受け取った電文を**音・読み上げ・自動タブ切替**へ流す口は `onLiveEvent` の 1 本だけ
+（`useEarthquakes` が呼び、`useLiveEventHandler` の `handleLiveEvent` が受ける）。
+
+**運ぶ電文は判別可能ユニオンで表す**（`LiveEvent = AppEvent | ExtraLiveEvent`）。`AppEvent`
+（地震・津波・緊急地震速報）はカードや地図に載る状態そのもので、残る 6 種別（長周期地震動・
+南海トラフ臨時情報・同関連解説情報・後発地震注意情報・地震回数・推計震度分布図）は状態を
+別のフィールドで持っていて、この経路にだけ流れてくる。
+
+- **型を潰して渡さない。** かつては後者の 6 種別を `as unknown as AppEvent` で渡し、受け手も
+  `kind` を文字列として読み直していた。**種別ごとにしか無い項目を付け忘れても型検査が通る**
+  ——推計震度分布図が運ぶ「初報か続報か」の印がその形で、落とすと続報が初報の文で読まれる
+- **追加種別の処理は `handleExtraLiveEvent` へ置き、`handleLiveEvent` の入口で振り分ける。**
+  振り分けたあとの `event` は `AppEvent` に絞られるので、以降の分岐が `kind` ガードを
+  書き落とせば型検査が止まる
+- **`handleExtraLiveEvent` の末尾は `never` で受ける。** 種別を足して分岐を書き忘れたときに
+  止まるのはここだけ（入口の振り分けが見ているのは絞り込みで、網羅性ではない）
+- **「地震・津波に関するお知らせ」は流さない**（→ §4「受信時にパネルを一時的に開く」）
+
 各層の詳細は個別仕様書へ:
 - 電文パース・接続 → [`data-sources-spec.md`](data-sources-spec.md)
 - 地図描画 → [`map-rendering-spec.md`](map-rendering-spec.md)
@@ -576,3 +596,9 @@ Redux 等のグローバルストアは使わず、React のフック（`useStat
   `gl/guardRender.ts` が包んで `utils/renderHealth.ts` の表示へ、それ以外の非同期例外は
   `utils/globalErrorLog.ts` が記録へ回す。**個別の入力ガードは残した**（境界は「その範囲を
   表示できない」結果しか受け止められず、描画ループの中へは届かないため）
+- 2026-09-13: `onLiveEvent` が運ぶ電文を判別可能ユニオン（`LiveEvent`）へ移した（§2）。
+  それまで `AppEvent` に含まれない 6 種別は 17 箇所すべて `as unknown as AppEvent` で渡り、
+  受け手も `kind` を文字列として読み直していた。**種別ごとにしか無い項目を付け忘れても
+  型検査が通る**状態で、推計震度分布図の「初報か続報か」の印が実際にその形だった
+  （欠落は実行時の記録で受け止めていた）。型で必須にしたうえで記録は外し、
+  `handleExtraLiveEvent` の末尾には網羅性の安全弁を置いた

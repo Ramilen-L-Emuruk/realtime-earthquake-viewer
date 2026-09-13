@@ -19,7 +19,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
 import type { AppSettings } from './useSettings'
-import type { JMAQuake, JMATsunami, IssueType, EEWAlert } from '../types/earthquake'
+import type { JMAQuake, JMATsunami, IssueType, EEWAlert, ExtraLiveEvent } from '../types/earthquake'
 
 /**
  * 発話ごとに「まだ再生中」の Promise を返し、解決関数を控えておく。
@@ -786,12 +786,10 @@ describe('内容が重ならない同格どうしは互いに待つ', () => {
   //
   // 内容も重ならない —— あちらは観測した震度を地域ごとに読み、こちらは「分布図を受信した」と
   // だけ言う。どちらも読みたい側なので、互いに待たせる。
-  function makeEstimatedIntensity() {
+  function makeEstimatedIntensity(): ExtraLiveEvent {
     return {
       kind: 'estimatedIntensity',
-      // **印を必ず付ける。** 実運用では `useEarthquakes` が付けて渡す
-      // （→ `isNewEstimatedIntensity`）。手で組み立てるテストで落とすと、実装が印を
-      // 読まなくなっても気づけない。
+      // 初報として扱わせる（実運用では `useEarthquakes` が `isNewEstimatedIntensity` で決めて渡す）。
       isNew: true,
       data: {
         id: 'ix-1', time: '2026-01-01T12:05:00+09:00', arrivalTime: '2026-01-01T03:00:00.000Z',
@@ -801,7 +799,7 @@ describe('内容が重ならない同格どうしは互いに待つ', () => {
         count: 1, lat: new Float32Array([35]), lon: new Float32Array([139]), si: new Uint8Array([42]),
         bounds: { south: 35, north: 35.1, west: 139, east: 139.1 },
       },
-    } as never
+    }
   }
 
   // 正: 地震情報を読んでいる最中に届いても切らない。

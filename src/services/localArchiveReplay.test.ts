@@ -2,7 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { HistoricalArchiveIndex, HistoricalArchiveMeta } from '../types/historicalArchive'
 
 vi.mock('../utils/fetchJson', () => ({ fetchJsonWithTimeout: vi.fn() }))
-vi.mock('../utils/logger', () => ({ log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } }))
+// `log` だけ差し替える部分モック。**丸ごと置き換えると、logger が新しい関数を export した日に
+// 「そんな export は無い」でファイルごと落ちる**（`createFirstSeenLogGate` を足したときに実際に起きた）。
+vi.mock('../utils/logger', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/logger')>()),
+  log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}))
 
 import { fetchJsonWithTimeout } from '../utils/fetchJson'
 import {

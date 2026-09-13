@@ -7,7 +7,7 @@ import { getSubRegionsCache } from './subregions'
 import { getPrefecturesCache } from './prefectures'
 import { getStationCoordsCache, getAreaPrefIndexCache, buildStationPrefIndex, buildPrefAreaNamesIndex, buildRegionOrderIndex, regionOrderRank, sortByRegionOrder, lookupStationRegion, type StationCoordsData, type RegionOrderIndex } from './stationCoords'
 import { isAreaPoint, isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel } from './quakePoints'
-import { hasMagnitude, hasDepth } from './formatters'
+import { hasMagnitude, hasDepth, readDateTime } from './formatters'
 import { createLogThrottle, log } from './logger'
 import { hasKnownEpicenter } from './geo'
 
@@ -734,8 +734,13 @@ function maxScaleOnlySegments(maxScale: IntensityScale, spoken?: QuakeSpokenStat
   return [{ text: sentence, refs: [{ kind: 'quakeFact', fact: 'maxScaleOnly', value }] }]
 }
 
-function formatTime(isoTime: string): string {
-  const d = new Date(isoTime)
+/**
+ * 「21時34分」形式。**日時として読めなければ `null`** —— 呼び出し側は時刻の句ごと落とす。
+ * 素通しにすると「ナンじナンぷん」と**音声に出る**（画面と違い、聞き手は読み飛ばせない）。
+ */
+function formatTime(isoTime: string): string | null {
+  const d = readDateTime('ttsText.formatTime', isoTime)
+  if (!d) return null
   // 分をゼロ埋めすると VOICEVOX が「06分」を「ぜろろくふん」と桁読みしてしまうため、
   // TTS 用テキストではゼロ埋めしない（表示用の formatters.ts の formatTime とは別）
   return `${d.getHours()}時${d.getMinutes()}分`
@@ -744,9 +749,13 @@ function formatTime(isoTime: string): string {
 /**
  * 「10日21時34分」形式。遠地地震は発表が発生から数十分後になることがあり、
  * 日付をまたいで受信する場合があるため日から読み上げる。
+ *
+ * `formatTime` を呼ばず自前で組むのは、記録に出る名前を呼び出し元と一致させるため。
  */
-function formatDayTime(isoTime: string): string {
-  return `${new Date(isoTime).getDate()}日${formatTime(isoTime)}`
+function formatDayTime(isoTime: string): string | null {
+  const d = readDateTime('ttsText.formatDayTime', isoTime)
+  if (!d) return null
+  return `${d.getDate()}日${d.getHours()}時${d.getMinutes()}分`
 }
 
 /**
@@ -1309,7 +1318,9 @@ export function earthquakeToSegments(
       if (amended.length > 0) amended.push(plain('、'))
       amended.push({ text: `マグニチュード${value}`, refs: [{ kind: 'quakeFact', fact: 'magnitude', value }] })
     }
-    const head = plain(`顕著な地震の震源要素更新のお知らせ。${time}頃発生した${hypocenter.name}の地震について、`)
+    // 時刻が日時として読めなければ句ごと落とす（「ナンじナンぷん頃発生した」と読ませない）。
+    // 震源名だけでも文は成立する。
+    const head = plain(`顕著な地震の震源要素更新のお知らせ。${time ? `${time}頃発生した` : ''}${hypocenter.name}の地震について、`)
     // 数値にならない規模は「〜に更新されました」の並びへ入れられないので、別の文で後に足す。
     // **ここは初報の形（「マグニチュードは〜」）のまま。** この電文は名乗りと直前の文が既に
     // 「更新」を言っているので、`magnitudeConditionAmendSentence` を使うと 1 回の発話で
@@ -1337,8 +1348,10 @@ export function earthquakeToSegments(
     const tail = event.forecastText
       ? plain(event.forecastText)
       : domesticTsunamiSegment(domesticTsunami)
+    // 時刻が日時として読めなければ句ごと落とす（上の地震情報と同じ扱い）。
+    const dayTime = formatDayTime(event.earthquake.time)
     return [
-      plain(`${prefix}${formatDayTime(event.earthquake.time)}頃、`),
+      plain(`${prefix}${dayTime ? `${dayTime}頃、` : ''}`),
       ...quakeOccurrenceSegments(hypocenter),
       tail,
     ]
@@ -1376,7 +1389,9 @@ export function earthquakeToSegments(
 
   const prefix = isNew ? `${label}。` : `${label}が更新されました。`
   const segments: SpeechSegment[] = [
-    plain(`${prefix}${time}頃、`),
+    // 時刻が読めなければ句ごと落とす。この後に続く `quakeOccurrenceSegments` が震源名から
+    // 読み始めるので、文としては「地震情報。石川県能登地方で地震が発生しました。」になる。
+    plain(`${prefix}${time ? `${time}頃、` : ''}`),
     ...quakeOccurrenceSegments(hypocenter),
     domesticTsunamiSegment(domesticTsunami),
   ]
@@ -2327,11 +2342,15 @@ export function lpgmToText(lpgm: JMALpgm, opts: TtsRegionOptions, isNew: boolean
   // （パーサーが無ければ電文ごと捨てる）、`arrivalTime` は任意なので `||` で落とす。
   const time = formatTime(lpgm.arrivalTime || lpgm.originTime)
   const prefix = isNew ? '長周期地震動情報。' : '長周期地震動情報が更新されました。'
+  // 時刻が日時として読めなければ句ごと落とす。「頃発生した地震で、」だけが残ると文が壊れ、
+  // かといって時刻を読ませると「ナンじナンぷん頃」になる。落としても、この情報の主題
+  // （どこで階級いくつを観測したか）は後半がすべて伝える。
+  const occurrence = time ? `${time}頃発生した地震で、` : ''
   const regionText = buildLpgmRegionText(lpgm, opts)
   if (regionText) {
-    return `${prefix}${time}頃発生した地震で、長周期地震動${regionText}`
+    return `${prefix}${occurrence}長周期地震動${regionText}`
   }
-  return `${prefix}${time}頃発生した地震で、長周期地震動階級${lpgm.maxClass}を観測しました。`
+  return `${prefix}${occurrence}長周期地震動階級${lpgm.maxClass}を観測しました。`
 }
 
 export { tsunamiMaxGrade }
@@ -2380,5 +2399,13 @@ export { tsunamiMaxGrade }
  */
 export function estimatedIntensityToText(arrivalTime: string, isNew: boolean): string {
   const tail = isNew ? 'を受信しました' : 'が更新されました'
-  return `${formatTime(arrivalTime)}頃発生した地震について、気象庁の推計震度分布図${tail}。`
+  // 時刻が日時として読めなければ句ごと落とす。**素で埋めると `null頃` と声に出る** ——
+  // `formatTime` の戻り値は `string | null` だが、テンプレートリテラルは型検査を通る。
+  //
+  // **この句が担うのは「どの地震の分布か」の区別**（分布は別の地震のものへ入れ替わりうるので、
+  // 時刻が無いと声だけでは前の分布と見分けが付かない。→ `docs/spec/quake-spec.md` §8）。
+  // 落とすとその区別を失うが、読めない値を声にするよりはよい。読めなかった事実は
+  // `readDateTime` が記録に残す。
+  const time = formatTime(arrivalTime)
+  return `${time ? `${time}頃発生した地震について、` : ''}気象庁の推計震度分布図${tail}。`
 }

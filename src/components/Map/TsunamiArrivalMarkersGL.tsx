@@ -5,7 +5,7 @@ import type { TsunamiArrivalMarker } from '../../hooks/useTsunamiLayerData'
 import {
   arrivalMetrics, popupOffset, ARRIVAL_COLOR, ARRIVAL_RING_COLOR, ARRIVAL_OPACITY,
 } from './gl/tsunamiArrivalMarker'
-import { formatTime } from '../../utils/formatters'
+import { formatTimeMin } from '../../utils/formatters'
 
 // 津波の到達確認マーカー（波高が「観測中」の観測点）を描画する。
 //
@@ -21,8 +21,11 @@ import { formatTime } from '../../utils/formatters'
 
 function tooltipHtml(marker: TsunamiArrivalMarker): string {
   const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  const arrival = marker.arrivalTime
-    ? `${formatTime(marker.arrivalTime).slice(0, 5)} 到達${marker.initial ? `（${esc(marker.initial)}）` : ''}`
+  // 時刻が日時として読めないときは、時刻を持たない電文と同じ「到達を確認」へ落とす。
+  // 到達したこと自体は確定しているので、そこは伝える。
+  const arrivalHm = marker.arrivalTime ? formatTimeMin(marker.arrivalTime) : null
+  const arrival = arrivalHm
+    ? `${arrivalHm} 到達${marker.initial ? `（${esc(marker.initial)}）` : ''}`
     : '到達を確認'
   return (
     `<div class="text-sm"><div class="font-bold">${esc(marker.name)}</div>` +

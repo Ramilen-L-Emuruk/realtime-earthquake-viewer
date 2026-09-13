@@ -1,5 +1,5 @@
 import type { JMATsunami, TsunamiArea, TsunamiEstimation, TsunamiEstimationCondition, TsunamiGrade, TsunamiObservation, TsunamiObservationCondition, TsunamiSourceEarthquake, TsunamiWarningComment } from '../types/earthquake'
-import { formatTime } from './formatters'
+import { formatTimeMin } from './formatters'
 import { log } from './logger'
 
 /**
@@ -839,7 +839,11 @@ export function estimationHeightText(est: TsunamiEstimation): string {
  * 出せない理由が電文にあることが画面から読めない。
  */
 export function observationArrivalFallbackText(obs: TsunamiObservation): string {
-  if (obs.arrivalTime) return ''
+  // **判定は整形の結果で行う。** 値があっても日時として読めなければ呼び出し側は時刻を出せず、
+  // ここで空を返すと「第１波識別不能」という電文の判断が画面から消える。同じ行で
+  // 「予報側の到達予想を添えるか」を決める述語（`TsunamiTab`）とも揃う ——
+  // 片方だけ整形の結果で見ると、到達予想は出るのに理由の語が出ない形になる。
+  if (obs.arrivalTime && formatTimeMin(obs.arrivalTime)) return ''
   return obs.condition?.firstWaveUnidentifiable ? '到達時刻不明' : ''
 }
 
@@ -853,11 +857,12 @@ export function observationArrivalFallbackText(obs: TsunamiObservation): string 
  * 裸の時刻を足すとどちらがどちらか分からなくなる。
  *
  * 波高を出していない行では返さない —— 時刻だけが残ると、値の無い観測点に何かを観測した
- * ように見える。
+ * ように見える。**日時として読めない時刻も同じく返さない**（「最大波 」とラベルだけが残る）。
  */
 export function observationMaxHeightTimeText(obs: TsunamiObservation): string {
   if (!obs.maxHeightDateTime || !obs.height) return ''
-  return `最大波 ${formatTime(obs.maxHeightDateTime).slice(0, 5)}`
+  const hm = formatTimeMin(obs.maxHeightDateTime)
+  return hm ? `最大波 ${hm}` : ''
 }
 
 /**

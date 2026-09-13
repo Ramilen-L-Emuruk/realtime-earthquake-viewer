@@ -6,7 +6,7 @@ import { arrivalMetrics, popupOffset, ARRIVAL_RING_COLOR, ARRIVAL_OPACITY } from
 import { missingMarkMetrics } from './gl/tsunamiMissingMarker'
 import { TSUNAMI_MISSING_COLOR } from '../../utils/tsunamiStyle'
 import { overSuffixedHeight } from '../../utils/tsunami'
-import { formatTime } from '../../utils/formatters'
+import { formatTimeMin } from '../../utils/formatters'
 
 // 観測データが欠測となっている観測点の印を描画する。
 //
@@ -17,8 +17,10 @@ import { formatTime } from '../../utils/formatters'
 function tooltipHtml(marker: TsunamiMissingMarker): string {
   const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   const lines = [`<div class="font-bold">${esc(marker.name)}</div>`]
-  if (marker.arrivalTime) {
-    lines.push(`<div class="text-xs" style="color:#e5e7eb">${formatTime(marker.arrivalTime).slice(0, 5)} 到達</div>`)
+  // 日時として読めない時刻は行ごと落とす（「 到達」だけが残ると時刻を読み落としたように見える）。
+  const arrivalHm = marker.arrivalTime ? formatTimeMin(marker.arrivalTime) : null
+  if (arrivalHm) {
+    lines.push(`<div class="text-xs" style="color:#e5e7eb">${arrivalHm} 到達</div>`)
   }
   // これまでに観測できた波高があれば出す。欠測になる前の値であることを添えないと、いまの波高だと読める。
   if (marker.height) {

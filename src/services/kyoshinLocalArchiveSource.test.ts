@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-vi.mock('../utils/logger', () => ({ log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } }))
+// `log` だけ差し替える部分モック（丸ごと置き換えると logger の export が増えた日に落ちる）。
+vi.mock('../utils/logger', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/logger')>()),
+  log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}))
 // このファイルのテストは静的ファイル経路の挙動を検証する対象。IndexedDB経路（kyoshinImportDb.ts）は
 // 実際のindexedDBが無いNode環境で動かすとReferenceErrorになり無関係な警告が漏れるため、
 // 「インポート未実施（null）」に固定してモックする。IndexedDB優先化そのものの検証は下部の

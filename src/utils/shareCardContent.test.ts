@@ -4,13 +4,13 @@ import type { EEWAlert, JMAQuake, JMATsunami } from '../types/earthquake'
 import { ATTRIBUTION_SOURCES, EEW_NOTICE } from './shareCard'
 import { buildShareCardContent, type ShareCardContent, type ShareCardContentInput } from './shareCardContent'
 
-function quake(over: { maxScale?: number; magnitude?: number; depth?: number } = {}): JMAQuake {
+function quake(over: { maxScale?: number; magnitude?: number; depth?: number; time?: string } = {}): JMAQuake {
   return {
     id: 'q1',
     time: '2026/08/24 12:35:00',
     issue: { source: '', time: '', type: '震源・震度情報' },
     earthquake: {
-      time: '2026/08/24 12:34:00',
+      time: over.time ?? '2026/08/24 12:34:00',
       hypocenter: {
         name: '日向灘',
         latitude: 32,
@@ -26,15 +26,16 @@ function quake(over: { maxScale?: number; magnitude?: number; depth?: number } =
 }
 
 function eew(
-  over: { severity?: string; scaleTo?: number; cancelled?: boolean; name?: string; condition?: string } = {},
+  over: { severity?: string; scaleTo?: number; cancelled?: boolean; name?: string; condition?: string; originTime?: string; serial?: string } = {},
 ): EEWAlert {
   return {
     id: 'e1',
     earthquake: {
-      originTime: '2026/08/24 12:34:00',
+      originTime: over.originTime ?? '2026/08/24 12:34:00',
       condition: over.condition ?? '',
       hypocenter: { name: over.name ?? '日向灘', latitude: 32, longitude: 131.6, depth: 30, magnitude: 6.5 },
     },
+    ...(over.serial ? { issue: { serial: over.serial } } : {}),
     severity: over.severity ?? 'Forecast',
     cancelled: over.cancelled ?? false,
     areas: [{ pref: '宮崎県', name: '宮崎県南部平野部', scaleFrom: 40, scaleTo: over.scaleTo ?? 45 }],
@@ -101,6 +102,44 @@ describe('buildShareCardContent — 地震', () => {
   it('地震が無くても見出しだけは作る', () => {
     const c = build(input({ mode: 'quake' }))
     expect(c.header.title).toBe('地震情報')
+  })
+})
+
+// 時刻が日時として読めないときの meta 欄。
+//
+// **画像は訂正できない。** 素で埋めていた頃は `"null 発生"` という文字列が焼き付いた
+// （`formatDateTime` が `null` を返してもテンプレートリテラルは型検査を通る）。
+// 規模・深さの「不明」を落とすのと同じ考え方で、欄ごと落とす。
+describe('buildShareCardContent — 読めない時刻', () => {
+  it('地震の発生時刻が読めなければ meta を出さない', () => {
+    // 対照: 読める値では従来どおり入る。
+    expect(build(input({ mode: 'quake', quake: quake() })).header.meta).toContain('発生')
+    const c = build(input({ mode: 'quake', quake: quake({ time: '壊れた値' }) }))
+    expect(c.header.meta).toBeUndefined()
+  })
+
+  // 対照: 報番号と時刻が両方そろう既定の形。**組み立てを配列の join へ変えた**ので、
+  // 区切り（全角スペース）と並びが従来どおりであることを固定する。
+  it('報番号と発生時刻が両方あれば従来どおり並べる', () => {
+    const c = build(input({ mode: 'kyoshin', eews: [eew({ serial: '3' })] }))
+    expect(c.header.meta).toBe('第3報　2026/08/24 12:34:00 発生')
+  })
+
+  it('緊急地震速報は発生時刻が読めなくても報番号を残す', () => {
+    // **報番号は別の事実なので巻き込まない。**
+    const c = build(input({ mode: 'kyoshin', eews: [eew({ originTime: '壊れた値', serial: '3' })] }))
+    expect(c.header.meta).toBe('第3報')
+  })
+
+  it('緊急地震速報で発生時刻も報番号も無ければ meta を出さない', () => {
+    const c = build(input({ mode: 'kyoshin', eews: [eew({ originTime: '壊れた値' })] }))
+    expect(c.header.meta).toBeUndefined()
+  })
+
+  // 安全弁: `null` という文字列が焼き付かない（これが元の症状）。
+  it('meta に "null" を焼き付けない', () => {
+    const c = build(input({ mode: 'quake', quake: quake({ time: '壊れた値' }) }))
+    expect(c.header.meta ?? '').not.toContain('null')
   })
 })
 
