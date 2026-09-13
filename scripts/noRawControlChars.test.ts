@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync, readdirSync } from 'node:fs'
+import { readdirSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 // ソースとドキュメントに**生の制御文字**を置かない。文字が要るならエスケープで書く
@@ -21,11 +22,20 @@ import { join } from 'node:path'
 const ROOTS = ['src', 'scripts', 'docs']
 const EXTENSIONS = ['.ts', '.tsx', '.md', '.mjs', '.js', '.css']
 
-/** タブ (09)・改行 (0A)・復帰 (0D) 以外の C0 制御文字と DEL (7F)。 */
-const FORBIDDEN = new Set<number>([
-  ...Array.from({ length: 0x20 }, (_, i) => i).filter(c => c !== 0x09 && c !== 0x0a && c !== 0x0d),
-  0x7f,
-])
+/**
+ * バイト値で引いて「置いてはいけない制御文字か」を返す表。
+ * タブ (09)・改行 (0A)・復帰 (0D) 以外の C0 制御文字と DEL (7F) が 1。
+ *
+ * **`Set` で持たない。** 全バイトを 1 つずつ問い合わせるので呼び出しは 1000 万回を超え、
+ * `Set.has` だと走査だけで 0.22 秒かかる（表引きなら 0.02〜0.05 秒）。
+ */
+const FORBIDDEN = ((): Uint8Array => {
+  const table = new Uint8Array(0x100)
+  for (let code = 0x00; code < 0x20; code++) table[code] = 1
+  for (const allowed of [0x09, 0x0a, 0x0d]) table[allowed] = 0
+  table[0x7f] = 1
+  return table
+})()
 
 function listFiles(dir: string): string[] {
   const out: string[] = []
@@ -41,12 +51,13 @@ function listFiles(dir: string): string[] {
 }
 
 /** 1 件目の違反を「ファイル:行:文字コード」の形で返す（無ければ null）。 */
-function findControlChar(path: string): string | null {
-  const buf = readFileSync(path)
+async function findControlChar(path: string): Promise<string | null> {
+  const buf = await readFile(path)
   let line = 1
-  for (const byte of buf) {
+  for (let i = 0; i < buf.length; i++) {
+    const byte = buf[i]
     if (byte === 0x0a) { line++; continue }
-    if (FORBIDDEN.has(byte)) {
+    if (FORBIDDEN[byte]) {
       const hex = byte.toString(16).padStart(2, '0').toUpperCase()
       return `${path}:${line} に生の制御文字 0x${hex}（エスケープで書くこと）`
     }
@@ -55,8 +66,19 @@ function findControlChar(path: string): string | null {
 }
 
 describe('生の制御文字を置かない', () => {
-  it('ソースとドキュメントに、タブ・改行・復帰以外の制御文字が無い', () => {
-    const offenders = ROOTS.flatMap(listFiles).map(findControlChar).filter((x): x is string => x !== null)
+  // **ファイルを 1 件ずつ順番に読まない。** 対象は 500 件あまり・10MB 弱（2026-09-14 時点。走査
+  // するのは作業ツリーの実体なので、`.gitignore` された手元の使い捨てスクリプトも数に入る）。
+  // 1 件ずつ `readFileSync` で読むと待ちが件数だけ積み上がり、`npm test` の並列実行で他ワーカーとの
+  // 競合が乗ると既定の 5 秒を超えて**このテストだけが時間切れで落ちる**（実際に起きた。単独で
+  // 回すと通ってしまうので原因が分かりにくい）。`Promise.all` でまとめて投げれば待ちを重ねられる。
+  //
+  // 上限を延ばす手当て（`{ timeout: 15_000 }`）は採らない。vitest 上の実測で**単独 1.98 秒 →
+  // 0.43 秒・並列実行下で 532ms** となり 5 秒に対して 9 倍の余裕ができるうえ、上限を緩めると
+  // **このテストに入り込んだ性能劣化を見逃す網**になる（`vitest.config.ts` が既定の 5 秒を
+  // 据え置いている理由と同じ）。
+  it('ソースとドキュメントに、タブ・改行・復帰以外の制御文字が無い', async () => {
+    const found = await Promise.all(ROOTS.flatMap(listFiles).map(findControlChar))
+    const offenders = found.filter((x): x is string => x !== null)
     expect(offenders).toEqual([])
   })
 })

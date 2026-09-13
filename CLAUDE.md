@@ -287,6 +287,7 @@ done
       - **テストが動的 import を書いている**（`vi.resetModules()` ＋動的 import で毎回作り直す）。手順・実測値・つまずきどころは [`src/services/akamaiClock.test.ts`](src/services/akamaiClock.test.ts) 冒頭
       - **実装が遅延読込していて、テストがそれを待つ**（`utils/testDataLoader.ts` の `import()` で読む実データ 5 本・約 1.1 MB を、`simulate*` を呼ぶテストが最初に待つ）。**テストの書き方だけを見ても気づけない。** 手当ては同じくトップレベルで一度読む（実例は [`src/hooks/useEarthquakes.wiring.test.ts`](src/hooks/useEarthquakes.wiring.test.ts) 冒頭の `await import('../utils/testData')`）
     - **症状は「1 件の時間切れ」ではなく「そのファイルのほぼ全件が落ちる」形で出る**（後続のテストが `h.current` を null で掴んで連鎖する）。実測で 117 件中 102 件が巻き添えになった。件数の多さに驚いて実装の不具合を疑う前に、落ちた 1 件目が時間切れかどうかを見ること。**並列実行のときだけ起きる**ので、そのファイルを単独で回すと通ってしまう（実測: 1 件目だけが単体実行 118ms・全体実行 907ms。同じファイルの他のテストは 3ms 前後）
+  - **多数のファイルをテスト本体で直列に読まないこと。** `readFileSync` を 1 件ずつ回すと待ちが件数だけ積み上がる。**並列実行のときだけ既定の 5 秒を超え、単独で回すと通る**——ここは上の項と同じだが、原因も手当ても違う（上は 1 件目にモジュール解決が乗る話で、こちらはファイル I/O そのもの。`fs/promises` の `readFile` を `Promise.all` でまとめて投げる）。**症状の出方も違う**——テストが 1 件しか無いファイルでは上の項が言う「全件が落ちる」形にはならず、単発の時間切れとして出る。実例は [`scripts/noRawControlChars.test.ts`](scripts/noRawControlChars.test.ts)（`src` / `scripts` / `docs` 配下の 500 件あまり・10MB 弱を走査。単独実行 1.98 秒 → 0.43 秒、並列実行下で 532ms。全バイトを `Set.has` で判定していた分も 256 要素の表引きへ変えた）。
 - **アプリ起動（デフォルト: DMDSS 版）**: **特にバリアントの指定がない場合は `npm run dev:dmdss` を使用する**。
   - DMDSS 版 URL: `http://localhost:5173/realtime-earthquake-viewer/dmdss/`
   - standard 版が明示的に必要な場合のみ `npm run dev` → `http://localhost:5173/realtime-earthquake-viewer/`
