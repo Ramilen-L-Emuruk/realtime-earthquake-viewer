@@ -42,6 +42,7 @@ let fakeCtx = makeFakeCtx()
 vi.mock('./alertSound', () => ({
   getAudioContext: () => fakeCtx,
   getMasterInput: () => ({ connect: vi.fn() }),
+  syncKeepAlive: () => {},
 }))
 
 // 句区切り辞書は先行合成の対象外の話なので、常に「未取得」にして経路を通さない
