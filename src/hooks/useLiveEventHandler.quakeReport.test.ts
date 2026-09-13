@@ -60,7 +60,7 @@ async function settle() {
 }
 
 // 同一イベントとして扱わせるため earthquake.time と震源名は固定する（`sameQuakeEntry` は
-// eventId を持たない電文を「発生時刻が同じで震源が矛盾しない」で束ねる）。
+// eventId を持たない電文を「地震の時刻が同じで震源が矛盾しない」で束ねる）。
 function makeQuake(over: { type?: IssueType; addr?: string; maxScale?: number; magnitude?: number; unreceived?: boolean } = {}): JMAQuake {
   const maxScale = over.maxScale ?? 40
   return {

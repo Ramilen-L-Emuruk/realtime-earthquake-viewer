@@ -313,7 +313,7 @@ export const TEST_AMENDMENT_DELAY_MS = 3000
  * （16:24 発表）が M7.6 で、規模が訂正されている。初報と訂正報の差をこれに合わせた。
  *
  * 報ごとに進めるもの・進めないものは §7「実電文の形に合わせる」に従う —— 報番号（`id` の末尾）と
- * 発表時刻は進め、**震源時刻（`earthquake.time`）と識別情報（`eventId`）は動かさない**。
+ * 発表時刻は進め、**地震の時刻（`earthquake.time`）と識別情報（`eventId`）は動かさない**。
  * 動かすと 2 通目が別の地震として立ち、訂正が同じカードへ届かない。
  */
 export function createTestQuakeAmendment(useDmdataShape: boolean): { initial: JMAQuake; amended: JMAQuake } {
@@ -386,7 +386,7 @@ export function createTestUnreceivedQuake(): JMAQuake {
     eventId,
     time: now,
     issue: { source: 'テスト', time: now, type: '震源・震度情報', correct: 'なし' },
-    // 震源要素は実電文のまま。発生時刻だけ「いま」へ寄せる（カードの並びと自動タブ切替が
+    // 震源要素は実電文のまま。地震の時刻だけ「いま」へ寄せる（カードの並びと自動タブ切替が
     // 実運用と同じところを踏むようにするため）。
     earthquake: { ...hyuganadaQuake.earthquake, time: now },
   }
