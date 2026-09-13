@@ -923,6 +923,27 @@ describe('津波の続報で区域ごとに等級が動く報', () => {
     expect(by('北海道太平洋沿岸東部')).toMatchObject({ grade: 'Forecast', lastGrade: 'Watch' })
   })
 
+  // 正: 解除された区域は `areas` から外れて `cancelledAreas` へ移る。**実機で解除の読み上げと
+  // カードの「解除」の枠を確かめられる唯一の入口**（→ docs/spec/tsunami-spec.md §10）。
+  it('解除された区域は cancelledAreas へ移り、areas からは消える', () => {
+    const next = createTestTsunamiGradeChange(createTestTsunami(true))
+    expect(next.areas.map(a => a.name)).not.toContain('青森県日本海沿岸')
+    expect(next.cancelledAreas).toHaveLength(1)
+    expect(next.cancelledAreas![0]).toMatchObject({
+      name: '青森県日本海沿岸', code: '200', grade: 'Unknown', lastGrade: 'Watch',
+    })
+    // 実電文の解除された区域は `Area` と `Category` しか持たない
+    expect(next.cancelledAreas![0].maxHeight).toBeUndefined()
+    expect(next.cancelledAreas![0].stations).toBeUndefined()
+  })
+
+  // 対照: 発表報の時点では通常の区域として出ている（解除の前後が実機で見える）。
+  it('発表報では解除される区域も通常の区域として出ている', () => {
+    const base = createTestTsunami(true)
+    expect(base.cancelledAreas).toBeUndefined()
+    expect(base.areas.find(a => a.name === '青森県日本海沿岸')).toMatchObject({ grade: 'Watch' })
+  })
+
   // 対照: 動いていない区域には印を付けない（付けると全区域に「切り替え」が出る）。
   it('据え置きの区域は前回の等級を持たない', () => {
     const next = createTestTsunamiGradeChange(createTestTsunami(true))

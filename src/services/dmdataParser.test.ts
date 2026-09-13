@@ -3128,20 +3128,48 @@ describe('津波 XML: 区域を読めなかったときに解除へ化けない�
     expect(warnings.filter(w => w.includes('名前を読めませんでした'))).toHaveLength(1)
   })
 
-  // 有効な区域が残ったまま一部だけ解除コードで落ちる形。**気象庁は一部解除でも区域を電文から
-  // 消さず等級の降格として載せる**ため実電文では稀だが、コード自身がこれを
-  // 「区域単位の等級変化として検出できない」既知のリスクとして名指ししている
-  // （→ docs/spec/tsunami-spec.md §10）。この関数は判定を何度も書き換えているので、
-  // 隣接する経路が黙って壊れないよう記録が出ることだけ固定しておく
-  it('一部だけ解除コードで落ちたら記録する（残りは通常の津波として成立）', () => {
+  // 有効な区域が残ったまま一部だけ解除される形。実電文にある（2025-12-09T06:20 の VTSE41）。
+  // 解除された区域は `areas` に居ないので、`cancelledAreas` で持ち回らないと画面にも音にも
+  // 現れない（→ docs/spec/tsunami-spec.md §10）
+  it('正: 一部だけ解除された区域は cancelledAreas で持ち回る（残りは通常の津波として成立）', () => {
     const partialLift = VTSE41_PARTIAL_LIFT_XML
       .replace('<Kind><Name>津波注意報</Name><Code>62</Code></Kind>', '<Kind><Name>津波注意報解除</Name><Code>60</Code></Kind>')
     const warnings = captureWarnings(() => {
       const t = parseTsunamiFromXml('VTSE51', partialLift)!
       expect(t.cancelled).toBe(false)
+      // 対照: 解除されていない区域は従来どおり `areas` に残る
       expect(t.areas).toHaveLength(2)
+      expect(t.areas.map(a => a.name)).not.toContain('石川県能登')
+      expect(t.cancelledAreas).toHaveLength(1)
+      expect(t.cancelledAreas![0]).toMatchObject({
+        name: '石川県能登', code: '360', grade: 'Unknown', lastGrade: 'Watch',
+      })
+      // 解除された区域は電文が波高も到達時刻も持たない
+      expect(t.cancelledAreas![0].maxHeight).toBeUndefined()
+      expect(t.cancelledAreas![0].stations).toBeUndefined()
     })
-    expect(warnings.filter(w => w.includes('解除コードで落ちた区域があります'))).toHaveLength(1)
+    // 前回の等級が読めているので記録は出ない（出るのは下の「読めなかった」ときだけ）
+    expect(warnings.filter(w => w.includes('前回の等級を読めませんでした'))).toHaveLength(0)
+  })
+
+  // 安全弁: 解除されたことは分かっても「何から解除されたか」を読めない区域は文にできない。
+  // 画面にも音にも出ないので、追う手がかりを記録に残す
+  it('安全弁: 前回の等級を読めない解除は記録する', () => {
+    const partialLift = VTSE41_PARTIAL_LIFT_XML
+      .replace('<Kind><Name>津波注意報</Name><Code>62</Code></Kind>', '<Kind><Name>津波注意報解除</Name><Code>60</Code></Kind>')
+      .replace('<LastKind><Name>津波注意報</Name><Code>62</Code></LastKind>', '<LastKind><Name>不明</Name><Code>99</Code></LastKind>')
+    const warnings = captureWarnings(() => {
+      const t = parseTsunamiFromXml('VTSE51', partialLift)!
+      expect(t.cancelledAreas).toHaveLength(1)
+      expect(t.cancelledAreas![0].lastGrade).toBeUndefined()
+    })
+    expect(warnings.filter(w => w.includes('前回の等級を読めませんでした'))).toHaveLength(1)
+  })
+
+  // 安全弁: 解除された区域が 1 つも無ければフィールドごと持たせない
+  it('安全弁: 解除された区域が無ければ cancelledAreas を持たない', () => {
+    const t = parseTsunamiFromXml('VTSE51', VTSE41_PARTIAL_LIFT_XML)!
+    expect(t.cancelledAreas).toBeUndefined()
   })
 
   // 安全弁: 一部の区域だけ名前が読めない場合は、読めた区域で通常どおり成立させる。
@@ -3179,6 +3207,9 @@ describe('津波の取消・全解除・原因地震', () => {
     const t = parseTsunamiFromXml('VTSE51', xml)!
     expect(t.areas).toEqual([])
     expect(t.cancelReason).toBe('lifted')
+    // 全解除の報は `cancelledAreas` を持たない（→ `JMATsunami.cancelledAreas`）。守っているのは
+    // この早期 return の位置だけなので、返却の組み立てを共通化するとき黙って壊れうる
+    expect(t.cancelledAreas).toBeUndefined()
   })
 
   // 対照: 震源名が無ければ原因地震を名乗らない（空文字の見出しを作らない）。

@@ -1260,7 +1260,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
           <TestButton color="purple" onClick={onTest.tsunami}>大警報テスト</TestButton>
         </Row>
         {isDmdss && onTest.tsunamiGradeChange && (
-          <Row label="津波警報（区域ごとに等級が動く続報）" description="大津波警報 → 45秒後に続報（岩手・福島は津波警報へ降格／青森は注意報へ／茨城は大津波警報へ引き上げ／北海道は津波予報へ）→ 90秒後に全解除。**続報で区域が消えることはない** —— 完全に解除された区域は電文から落ちるため、テストデータでも作っていない。全体の最上位等級は動かないので、区域の「〇〇から切り替え」「〇〇から引き上げ」でしか変化が分からない">
+          <Row label="津波警報（区域ごとに等級が動く続報）" description="大津波警報 → 45秒後に続報（岩手・福島は津波警報へ降格／青森県太平洋沿岸は注意報へ／茨城は大津波警報へ引き上げ／北海道は津波予報へ／青森県日本海沿岸は解除）→ 90秒後に全解除。全体の最上位等級は動かないので、区域ごとの「〇〇から切り替え」「〇〇から引き上げ」と、いちばん下の「解除」の枠でしか変化が分からない">
             <TestButton color="orange" onClick={onTest.tsunamiGradeChange}>区域の等級変化テスト</TestButton>
           </Row>
         )}

@@ -733,6 +733,27 @@ export interface JMATsunami {
    */
   infoName?: string
   areas: TsunamiArea[]
+  /**
+   * この報で等級が解除された津波予報区（気象庁電文の `Kind/Code` が 00/50/60）。
+   *
+   * **`areas` には混ぜないこと。** `areas` は「いま等級が出ている区域」で、地図の海岸線・
+   * 全体の最上位等級（`tsunamiMaxGrade`）・通知本文・受信時スクロールの寄せ先がすべてそこを
+   * 読む。解除された区域を混ぜると、除外を書き忘れた経路が**解除済みの区域を発表中として
+   * 描く**——型検査には掛からず、事実と逆のことを伝える。別の入れ物にしておけば、読み忘れは
+   * 「この機能が効かない」に留まる。
+   *
+   * 中身は `TsunamiArea` のまま持つ（並べ替え・区域名の読み上げ・カードの行がそのまま使える）。
+   * `grade` は常に `'Unknown'` ＝「この報の時点でこの区域に等級は無い」で、`lastGrade` に
+   * 解除される前の等級が入る。実電文では `Area` と `Category` しか持たないため、波高・到達
+   * 時刻・潮位観測点はいずれも付かない。
+   *
+   * **全区域が解除された報（全解除）では載せない。** そちらは `cancelled: true` /
+   * `cancelReason: 'lifted'` で伝える。
+   *
+   * DMDATA XML 経路のみ。P2PQuake は解除コードに相当する値を配信しない
+   * （→ docs/spec/tsunami-spec.md §10「区域の顔ぶれが報ごとに変わること」）。
+   */
+  cancelledAreas?: TsunamiArea[]
   observations?: TsunamiObservation[]
   /**
    * **観測状況を確定した時刻**（`Head/TargetDateTime`）。津波観測情報（VTSE51）と
