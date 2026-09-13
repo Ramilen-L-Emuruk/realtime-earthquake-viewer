@@ -1561,14 +1561,14 @@ describe('P2PQuake 補完経路も古い報で退行しない', () => {
 // 台帳の受け渡しを 1 箇所忘れても型チェックもユニットテストも通ってしまう（実際に、実装途中で
 // 台帳を作ったのに 1 箇所も渡していない状態が敵対的レビューで観測された）。
 describe('DMDSS 版: 取消の後に届いた報', () => {
-  const 発生時刻 = '2026-01-01T07:06:00+09:00'
+  const 地震の時刻 = '2026-01-01T07:06:00+09:00'
   const 震度速報 = (id: string, time: string): JMAQuake => ({
     kind: 'quake',
     id,
     time,
     issue: { source: '気象庁', time, type: '震度速報', correct: 'なし' },
     earthquake: {
-      time: 発生時刻,
+      time: 地震の時刻,
       hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: NaN },
       maxScale: 50,
       domesticTsunami: '調査中',

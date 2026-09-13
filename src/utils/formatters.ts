@@ -22,7 +22,7 @@ export function formatDateTimeMin(isoString: string): string {
 }
 
 /**
- * 地震の発生時刻。元データに秒が含まれないため、秒を出さず「ごろ」を付ける。
+ * 地震の時刻（`earthquake.time`）。元データに秒が含まれないため、秒を出さず「ごろ」を付ける。
  * 例: 6月6日 8:47ごろ
  */
 export function formatQuakeTime(isoString: string): string {

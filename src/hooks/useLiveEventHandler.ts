@@ -268,7 +268,7 @@ function ttsRegionOptions(settings: AppSettings): TtsRegionOptions {
 // される。utils/clock.ts の Page Visibility 対応コメント参照）にキューが一括で捌けると
 // 直前の統合結果を含まないため、同じ地震の続報を「新規」と誤判定して音が鳴り直す。
 //
-// DMDATA は全報が eventId を共有する。P2PQuake は eventId を持たないが、発生時刻と震源名は
+// DMDATA は全報が eventId を共有する。P2PQuake は eventId を持たないが、earthquake.time と震源名は
 // 続報間で変わらない（変わるのは訂正報・震源要素更新のときで、それは通知に値する変化）。
 // issue.type まで含めるのは、震度速報／震源情報／各地の震度情報を別報として扱うため。
 function newQuakeTrackingKey(q: JMAQuake): string {

@@ -18,7 +18,7 @@
  * - `distribution` — 震度分布モード。`eventKey` は地震カードの鍵
  *
  * **鍵の体系が違うので 1 つには畳めない。** 長周期は電文の `eventId`、分布は地震カードの
- * `eventKey`（DMDATA は `eventId` 由来だが P2PQuake は発生時刻＋震源名）で地震を指す。
+ * `eventKey`（DMDATA は `eventId` 由来だが P2PQuake は地震の時刻＋震源名）で地震を指す。
  */
 export type QuakeOverlay =
   | { kind: 'lpgm'; eventId: string; source: 'earthquake' | 'eew' }
