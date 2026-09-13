@@ -2,9 +2,18 @@ import { useCallback, useRef, useState } from 'react'
 import { log } from '../utils/logger'
 import { isDmdss } from '../utils/env'
 import { isValidIntensityScale } from '../utils/intensity'
+// 読み上げ文の作り方を決める値なので、定義は読み上げ側（`utils/ttsText.ts`）に置く。
+// ここ（設定）から生やすと utils → hooks の向きで参照が要り、依存が逆流する。
+import type { TtsUnreceivedDetail } from '../utils/ttsText'
+
+export type { TtsUnreceivedDetail }
 
 // アイドル復帰時に戻すデフォルトタブの選択肢（津波情報・設定は対象外）
 export type DefaultTabSetting = 'earthquake' | 'realtime'
+
+/** 津波の観測点を読み上げる件数の上限（設定で選べる範囲）。0 は「無制限」ではなく最小値。 */
+export const TTS_MAX_OBSERVATION_POINTS_MIN = 1
+export const TTS_MAX_OBSERVATION_POINTS_MAX = 20
 
 export interface AppSettings {
   minDisplayScale: number   // 最低表示震度 (-1 = すべて)
@@ -52,6 +61,26 @@ export interface AppSettings {
   ttsMaxRegions: number            // 読み上げる最大地域数（0 = 無制限）
   ttsAlwaysReadScale: number       // 階数の設定を超えても読み上げる下限震度 (-1 = 無効)
   ttsRegionTolerance: number       // 最大地域数をこの数まで超える場合は省略せず全地域を読む (0 = 無効)
+  /**
+   * 気象庁が書いた文（本文・付加文）を読み上げる。既定は無効（画面にだけ出す従来の挙動）。
+   *
+   * **本文は電文本体とは別の発話として、最下位の層で読む。** 本体の末尾に足すと、
+   * 南海トラフ臨時情報の本文（実電文で 1055 字・読み上げ実測 3 分）が地震情報を
+   * 90 秒待たせ、そこで割り込まれて本文自体も途中で切れる。詳細は
+   * docs/spec/audio-tts-spec.md §6「気象庁が書いた文は最下位の層で読む」。
+   */
+  ttsReadTelegramText: boolean
+  /**
+   * 緊急地震速報の固定付加文（「強い揺れに警戒してください。」等）を読み上げる。既定は無効。
+   *
+   * `ttsReadTelegramText` と分けているのは、EEW だけ秒を争うため。読む場合も
+   * **震度・地域を伝えたあと**に回す（→ docs/spec/eew-spec.md §3「固定付加文」）。
+   */
+  ttsReadEewWarningComment: boolean
+  ttsUnreceivedDetail: TtsUnreceivedDetail  // 「震度5弱以上・未入電」の読み方
+  ttsMaxObservationPoints: number  // 津波の観測点を読み上げる件数（波高更新・到達確認・欠測・警報相当で共通）
+  ttsReadHypocenterDetail: boolean // 震源の深さ・規模を読む（無効なら震源名だけ）
+  ttsReadEewLpgmClass: boolean     // 緊急地震速報の予想最大長周期地震動階級を読む
   panelRatio: number               // 縦積みレイアウト（スマホ縦など）でのパネル高さ比率（0.2〜0.8）
 }
 
@@ -74,7 +103,15 @@ const STORAGE_KEY = isDmdss
   ? 'quake-viewer-settings-dmdss'
   : 'quake-viewer-settings'
 
-const DEFAULTS: AppSettings = {
+/**
+ * 設定の既定値。
+ *
+ * **テストから参照してよい。** 設定の一部だけを書いたオブジェクトを `as unknown as AppSettings`
+ * でキャストすると、後から項目を足したときに `undefined` のまま実装へ渡り、**その項目に限って
+ * 型が保証しているはずの既定値が効かない**。`{ ...DEFAULTS, 上書きしたいもの }` と書けば、
+ * 項目が増えても既定の挙動から始まる。
+ */
+export const DEFAULTS: AppSettings = {
   minDisplayScale: -1,
   notifyMinScale: -1,
   actionChecklistMinScale: 45,
@@ -115,6 +152,14 @@ const DEFAULTS: AppSettings = {
   ttsMaxRegions: 10,
   ttsAlwaysReadScale: 30,
   ttsRegionTolerance: 2,
+  // 以下 6 項目の既定は「この設定を入れる前の挙動」に揃えてある。既存の利用者の耳に
+  // 届く内容を、設定を足しただけで変えないため。
+  ttsReadTelegramText: false,
+  ttsReadEewWarningComment: false,
+  ttsUnreceivedDetail: 'stations',
+  ttsMaxObservationPoints: 5,
+  ttsReadHypocenterDetail: true,
+  ttsReadEewLpgmClass: true,
   panelRatio: 0.45,
 }
 
@@ -133,6 +178,10 @@ function ensureString(value: unknown, fallback: string): string {
 
 function ensureDefaultTab(value: unknown, fallback: DefaultTabSetting): DefaultTabSetting {
   return value === 'earthquake' || value === 'realtime' ? value : fallback
+}
+
+function ensureUnreceivedDetail(value: unknown, fallback: TtsUnreceivedDetail): TtsUnreceivedDetail {
+  return value === 'stations' || value === 'areas' || value === 'none' ? value : fallback
 }
 
 // 震度は気象庁の階級値（10/20/30/40/45/50/55/60/70）と、無効を表す -1 しか取らない。
@@ -200,6 +249,20 @@ export function sanitize(partial: Partial<AppSettings>): AppSettings {
     ttsMaxRegions: clampNumber(partial.ttsMaxRegions, 0, 100, DEFAULTS.ttsMaxRegions),
     ttsAlwaysReadScale: ensureIntensityScale(partial.ttsAlwaysReadScale, DEFAULTS.ttsAlwaysReadScale, 'ttsAlwaysReadScale'),
     ttsRegionTolerance: clampNumber(partial.ttsRegionTolerance, 0, 100, DEFAULTS.ttsRegionTolerance),
+    ttsReadTelegramText: ensureBool(partial.ttsReadTelegramText, DEFAULTS.ttsReadTelegramText),
+    ttsReadEewWarningComment: ensureBool(partial.ttsReadEewWarningComment, DEFAULTS.ttsReadEewWarningComment),
+    ttsUnreceivedDetail: ensureUnreceivedDetail(partial.ttsUnreceivedDetail, DEFAULTS.ttsUnreceivedDetail),
+    // **0 を通さないこと。** 件数の上限がここだけ「無制限」の意味を持たないのは、
+    // 隣の `ttsMaxRegions`（0 = 無制限）と紛らわしいが、観測点の選抜は 0 を無制限として
+    // 扱う実装になっていない（`selectObservationUpdatesToSpeak` 等は `slice(0, maxPoints)`）。
+    // 0 が入ると 1 件も読まれず、しかも黙るだけで原因が画面に出ない。
+    ttsMaxObservationPoints: clampNumber(
+      partial.ttsMaxObservationPoints,
+      TTS_MAX_OBSERVATION_POINTS_MIN, TTS_MAX_OBSERVATION_POINTS_MAX,
+      DEFAULTS.ttsMaxObservationPoints,
+    ),
+    ttsReadHypocenterDetail: ensureBool(partial.ttsReadHypocenterDetail, DEFAULTS.ttsReadHypocenterDetail),
+    ttsReadEewLpgmClass: ensureBool(partial.ttsReadEewLpgmClass, DEFAULTS.ttsReadEewLpgmClass),
     panelRatio: clampNumber(partial.panelRatio, PANEL_RATIO_MIN, PANEL_RATIO_MAX, DEFAULTS.panelRatio),
   }
 }

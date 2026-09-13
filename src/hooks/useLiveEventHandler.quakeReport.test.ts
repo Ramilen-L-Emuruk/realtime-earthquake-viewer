@@ -14,7 +14,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
-import type { AppSettings } from './useSettings'
+import { DEFAULTS, type AppSettings } from './useSettings'
 import type { JMAQuake, JMATsunami, IssueType } from '../types/earthquake'
 
 const speeches: { text: string; finish: () => void; done: boolean }[] = []
@@ -85,7 +85,7 @@ const titles: string[] = []
 
 /** @param existingCards `earthquakesRef` の中身（統合済みカード。既存カードの震度判定に使う） */
 function setup(existingCards: JMAQuake[] = []) {
-  const settings = {
+  const settings = { ...DEFAULTS,
     voicevoxEnabled: true, voicevoxUrl: 'http://x', voicevoxSpeakerId: 1,
     soundEnabled: false, soundVolume: 1, notifyMinScale: -1,
     notifyEEW: false, notifyTsunami: false, notifyDetection: false,

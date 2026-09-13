@@ -55,7 +55,13 @@ function findControlChar(path: string): string | null {
 }
 
 describe('生の制御文字を置かない', () => {
-  it('ソースとドキュメントに、タブ・改行・復帰以外の制御文字が無い', () => {
+  // **上限を延ばしてある。** `src` / `scripts` / `docs` の全ファイルを読むので、単独実行でも
+  // 5 秒に迫る（実測 5.1〜5.5 秒）。全ファイル並列実行では他のワーカーと I/O を奪い合って
+  // さらに伸び、既定の 5 秒を超えて時間切れになる。**落ち方が「制御文字が見つかった」ではなく
+  // 時間切れなので、メッセージを読まないと原因を取り違える**（実際に取り違えかけた）。
+  //
+  // ここは待ちを消せない —— 走査そのものが仕事で、遅延の待ち合わせではないため。
+  it('ソースとドキュメントに、タブ・改行・復帰以外の制御文字が無い', { timeout: 30_000 }, () => {
     const offenders = ROOTS.flatMap(listFiles).map(findControlChar).filter((x): x is string => x !== null)
     expect(offenders).toEqual([])
   })
