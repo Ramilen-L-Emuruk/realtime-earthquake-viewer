@@ -14,6 +14,7 @@ import {
   formatMagnitudeValue,
   formatMagnitudeWithCondition,
   formatCoordinate,
+  NON_JMA_MARK,
   NON_JMA_MARK_TITLE,
   withNonJmaMark,
 } from '../../utils/formatters'
@@ -91,21 +92,18 @@ function IntensityRow({ label, scale, unreceived, unreceivedIsOwn, hasUnreceived
           if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); e.preventDefault(); onToggle(expandKey) }
         },
       } : {})}
-      className={`flex items-center justify-between ${pad} pr-2 py-0.5 ${depth === 0 ? 'roomy:py-1.5' : ''} ${size}${interactive ? ' cursor-pointer hover:bg-white/5' : ''}`}
+      className={`flex items-center ${pad} pr-2 py-0.5 ${depth === 0 ? 'roomy:py-1.5' : ''} ${size}${interactive ? ' cursor-pointer hover:bg-white/5' : ''}`}
     >
-      <span
-        className={`flex-shrink-0 whitespace-nowrap${depth === 0 ? ' font-bold' : ''}`}
-        style={{ color: getIntensityColor(scale) }}
-      >
-        {/* 未入電は「5弱以上」。観測値と同じ顔で出すと、実際にはもっと強い可能性があることが
-            伝わらない。EEW の「上限を定めない予想震度」と同じ語を同じヘルパーで付ける。 */}
-        震度{getIntensityLabelWithOrAbove(scale, unreceived)}
-      </span>
-      <span style={{ color: depth === 0 ? '#ffffff' : '#d1d5db' }}>
-        {/* 気象庁以外が運用する観測点には電文どおり `＊` を付ける。読み取りの側では
-            引き当てのために外してあるので、戻すのは表示のここ（→ `withNonJmaMark`）。
-            記号だけでは何と対比しているのか分からないので説明を添える。 */}
-        <span title={nonJma ? NON_JMA_MARK_TITLE : undefined}>{withNonJmaMark(label, nonJma)}</span>
+      {/* 震度と、その値についての印（未入電）を左に置く。**印を地名の側へ置かない** ——
+          置くと右端を揃えるためにいちばん長い「未入電あり」ぶんの枠を全行で空けることになり、
+          狭い画面では印を持たない行まで地名が折り返す（実測: 幅 320px で 47 行中 7 行）。
+          震度の隣なら、なぜ「以上」なのかをその値の真横で言うことにもなる。 */}
+      <span className={`flex items-center flex-shrink-0 gap-1.5 whitespace-nowrap${depth === 0 ? ' font-bold' : ''}`}>
+        <span style={{ color: getIntensityColor(scale) }}>
+          {/* 未入電は「5弱以上」。観測値と同じ顔で出すと、実際にはもっと強い可能性があることが
+              伝わらない。EEW の「上限を定めない予想震度」と同じ語を同じヘルパーで付ける。 */}
+          震度{getIntensityLabelWithOrAbove(scale, unreceived)}
+        </span>
         {/* **その行自身が未入電か、配下にあるだけかを書き分ける。**
             - 「未入電」＝この行の震度そのものが届いていない（観測点の行と、値を持たない市町村）
             - 「未入電あり」＝この範囲に未入電の地点があるが、行の値は観測できている
@@ -119,7 +117,7 @@ function IntensityRow({ label, scale, unreceived, unreceivedIsOwn, hasUnreceived
             語は気象庁のものをそのまま使い、読み上げとも揃える。 */}
         {(unreceivedIsOwn || hasUnreceived) && (
           <span
-            className="ml-1.5 text-[0.75rem] roomy:text-[0.875rem]"
+            className="text-[0.75rem] font-normal roomy:text-[0.875rem]"
             style={{ color: '#9ca3af' }}
             title={unreceivedIsOwn
               ? '気象庁は震度5弱以上と推定していますが、震度が届いていません（未入電）'
@@ -128,11 +126,39 @@ function IntensityRow({ label, scale, unreceived, unreceivedIsOwn, hasUnreceived
             {unreceivedIsOwn ? '未入電' : '未入電あり'}
           </span>
         )}
-        {interactive && (
-          <span className="ml-1.5 text-[0.75rem] roomy:text-[0.875rem]" style={{ color: '#9ca3af' }}>
-            {isOpen ? '▾' : '▸'}
-          </span>
-        )}
+      </span>
+      {/* 地名は伸びる枠に入れて右端で揃え、`＊` と開閉の記号はそれぞれ固定幅の枠へ出す。
+          同じ流れに並べると、付いている行だけ地名が左へ押されて右端が揃わない（実測で 69px）。
+          **`＊` と地名のあいだは詰める** —— 電文が名前の末尾へ置く印なので、離すと別のものに
+          見える。枠を分けているのは右端を揃えるためで、見た目は続いているのが正しい。
+
+          **行の両端揃え（`justify-between`）は使わない。** この枠が `flex-1` で残り幅を
+          占めるので空きが生まれず、効かないクラスが意図だけ残ることになる。右端へ寄せるのは
+          この枠の中の `justify-end`。 */}
+      <span className="flex items-center justify-end min-w-0 flex-1">
+        {/* `text-right` は**折り返した 2 行目以降のため**。1 行に収まるあいだは上の
+            `justify-end` が寄せるので効かないが、長い観測点名（実データで最長 12 文字）が
+            折り返したとき、これが無いと 2 行目だけ左へ流れる。 */}
+        <span className="min-w-0 text-right" style={{ color: depth === 0 ? '#ffffff' : '#d1d5db' }}>
+          {/* 気象庁以外が運用する観測点には電文どおり `＊` を付ける。読み取りの側では
+              引き当てのために外してあるので、戻すのは表示のここ。記号だけでは何と対比して
+              いるのか分からないので説明を添える。**枠の幅は行の文字の大きさに連動させる**
+              （`em`）—— 段ごとに文字が小さくなるため。 */}
+          <span title={nonJma ? NON_JMA_MARK_TITLE : undefined}>{label}</span>
+        </span>
+        <span
+          className="flex-shrink-0 w-[1em] text-center"
+          style={{ color: depth === 0 ? '#ffffff' : '#d1d5db' }}
+          title={nonJma ? NON_JMA_MARK_TITLE : undefined}
+        >
+          {nonJma ? NON_JMA_MARK : ''}
+        </span>
+        <span
+          className="ml-1.5 flex-shrink-0 w-[1em] text-center text-[0.75rem] roomy:text-[0.875rem]"
+          style={{ color: '#9ca3af' }}
+        >
+          {interactive ? (isOpen ? '▾' : '▸') : ''}
+        </span>
       </span>
     </div>
   )
@@ -177,29 +203,40 @@ function LpgmRow({ label, lgInt, int, nonJma, depth, expandKey, expanded, onTogg
           if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); e.preventDefault(); onToggle(expandKey) }
         },
       } : {})}
-      className={`flex items-center justify-between ${pad} pr-2 py-0.5 ${depth === 0 ? 'roomy:py-1.5' : ''} ${size}${interactive ? ' cursor-pointer hover:bg-white/5' : ''}`}
+      className={`flex items-center ${pad} pr-2 py-0.5 ${depth === 0 ? 'roomy:py-1.5' : ''} ${size}${interactive ? ' cursor-pointer hover:bg-white/5' : ''}`}
     >
-      <span
-        className={`flex-shrink-0 whitespace-nowrap${depth === 0 ? ' font-bold' : ''}`}
-        style={{ color: getLpgmClassColor(lgInt) }}
-      >
-        長周期 {getLpgmClassLabel(lgInt)}
-      </span>
-      <span className="flex items-baseline gap-2 min-w-0">
+      {/* 階級と、その範囲の最大震度を左に置く。**震度一覧と同じ並べ方**（値についての情報は
+          左、地名は右で揃える）。地名の側へ置くと、付いている行だけ地名が左へ押される。 */}
+      <span className={`flex items-baseline flex-shrink-0 gap-1.5 whitespace-nowrap${depth === 0 ? ' font-bold' : ''}`}>
+        <span style={{ color: getLpgmClassColor(lgInt) }}>
+          長周期 {getLpgmClassLabel(lgInt)}
+        </span>
         {int !== undefined && (
-          <span className="text-[0.8125rem] text-gray-400 whitespace-nowrap roomy:text-[0.9375rem]">
+          <span className="text-[0.8125rem] font-normal text-gray-400 roomy:text-[0.9375rem]">
             震度 {getIntensityLabel(int)}
           </span>
         )}
-        <span style={{ color: depth === 0 ? '#ffffff' : '#d1d5db' }}>
-          {/* 気象庁以外が運用する観測点の印。震度一覧・地図の吹き出しと同じ扱い
-              （→ `withNonJmaMark`）。 */}
-          <span title={nonJma ? NON_JMA_MARK_TITLE : undefined}>{withNonJmaMark(label, nonJma)}</span>
-          {interactive && (
-            <span className="ml-1.5 text-[0.75rem] roomy:text-[0.875rem]" style={{ color: '#9ca3af' }}>
-              {isOpen ? '▾' : '▸'}
-            </span>
-          )}
+      </span>
+      {/* 地名は伸びる枠に入れて右端で揃え、`＊` と開閉の記号は固定幅の枠へ出す
+          （→ `IntensityRow`。`justify-between` を使わない理由と `text-right` の役目も
+          そちらに書いてある）。 */}
+      <span className="flex items-center justify-end min-w-0 flex-1">
+        <span className="min-w-0 text-right" style={{ color: depth === 0 ? '#ffffff' : '#d1d5db' }}>
+          {/* 気象庁以外が運用する観測点の印。震度一覧・地図の吹き出しと同じ扱い。 */}
+          <span title={nonJma ? NON_JMA_MARK_TITLE : undefined}>{label}</span>
+        </span>
+        <span
+          className="flex-shrink-0 w-[1em] text-center"
+          style={{ color: depth === 0 ? '#ffffff' : '#d1d5db' }}
+          title={nonJma ? NON_JMA_MARK_TITLE : undefined}
+        >
+          {nonJma ? NON_JMA_MARK : ''}
+        </span>
+        <span
+          className="ml-1.5 flex-shrink-0 w-[1em] text-center text-[0.75rem] roomy:text-[0.875rem]"
+          style={{ color: '#9ca3af' }}
+        >
+          {interactive ? (isOpen ? '▾' : '▸') : ''}
         </span>
       </span>
     </div>

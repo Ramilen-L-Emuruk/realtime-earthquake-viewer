@@ -13,6 +13,9 @@ import { render, screen, cleanup, fireEvent } from '@testing-library/react'
 import { EarthquakeTab } from './index'
 import { quakeEventKey } from '../../utils/quakeMerge'
 import type { JMAQuake, JMALpgm, EarthquakePoint, JMAQuakeCity } from '../../types/earthquake'
+// 地名と `＊` は右端を揃えるために別の要素へ分けてある（→ `IntensityRow`）。
+// `getByText('〇〇＊')` では引けないので、行ごと見る。
+import { intensityRowText as rowText } from '../../test-utils/intensityRow'
 
 afterEach(cleanup)
 
@@ -119,10 +122,10 @@ describe('地震カードの観測点名に付く「気象庁以外」の印', (
 
     openDownToStations([PREF, AREA, CITY])
 
-    expect(screen.getByText(`${NON_JMA_STATION}＊`)).toBeTruthy()
+    expect(rowText(NON_JMA_STATION)).toContain(`${NON_JMA_STATION}＊`)
     // 対照: 気象庁の観測点には付かない。
-    expect(screen.getByText(JMA_STATION)).toBeTruthy()
-    expect(screen.queryByText(`${JMA_STATION}＊`)).toBeNull()
+    expect(rowText(JMA_STATION)).toContain(JMA_STATION)
+    expect(rowText(JMA_STATION)).not.toContain('＊')
   })
 
   // 正: 「震度を入手していない地点」の一覧にも `＊` が出る。
@@ -152,9 +155,9 @@ describe('地震カードの観測点名に付く「気象庁以外」の印', (
 
     openDownToStations([PREF, AREA])
 
-    expect(screen.getByText(`${NON_JMA_STATION}＊`)).toBeTruthy()
-    expect(screen.getByText(JMA_STATION)).toBeTruthy()
-    expect(screen.queryByText(`${JMA_STATION}＊`)).toBeNull()
+    expect(rowText(NON_JMA_STATION)).toContain(`${NON_JMA_STATION}＊`)
+    expect(rowText(JMA_STATION)).toContain(JMA_STATION)
+    expect(rowText(JMA_STATION)).not.toContain('＊')
   })
 
   // 安全弁: **印を県・区域・市町村の行へ広げていない。** 運用機関は観測点ごとの事実で、
