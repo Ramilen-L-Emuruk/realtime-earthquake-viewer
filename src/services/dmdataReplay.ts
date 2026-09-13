@@ -535,7 +535,18 @@ export function filterPreWindowEvents(
 
     if (finalReport) {
       const expireAt = calcEEWCancelTime(finalReport.eew, new Date(finalReport.eew.time))
-      if (expireAt.getTime() <= targetTime.getTime()) continue
+      // **失効の判定ができないときは有効側へ倒し、倒したことを記録する。** Invalid Date との
+      // 比較は**どちらの向きでも偽**になるので、書き分けないと `expireAt <= targetTime` が
+      // 常に偽になり、この分岐が黙って無効化される（痕跡が残らない）。
+      //
+      // 有効側へ倒すのは、再現する電文を落とすほうが害が大きいため。解除時刻は発表時刻と
+      // 震源時刻のどちらか一方が読めれば決まる（`calcEEWCancelTime`）ので、ここへ来るのは
+      // 両方読めなかったときだけ。
+      if (!Number.isFinite(expireAt.getTime())) {
+        log.warn('[replay] 発表時刻も震源時刻も読めず失効を判定できないため、有効として再現します'
+          + ` id=${finalReport.eew.id} time="${finalReport.eew.time}"`
+          + ` originTime="${finalReport.eew.earthquake.originTime}"`)
+      } else if (expireAt.getTime() <= targetTime.getTime()) continue
       result.push(finalReport.entry)
     } else {
       // まだ最終報がない場合は最新の非最終報を1件だけ注入

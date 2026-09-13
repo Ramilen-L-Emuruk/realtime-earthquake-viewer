@@ -613,6 +613,40 @@ describe('calcEEWCancelTime: 発震時刻起点の自動解除時刻（MIN_CANCE
     const minTime = new Date(reportTime.getTime() + 60 * 1000)
     expect(cancel.getTime()).toBe(minTime.getTime())
   })
+
+  // ---- 時刻が読めなかったとき ----
+  //
+  // 読めない時刻から作った `Date` は Invalid で、**それを含む大小比較はどちらの向きでも偽**。
+  // 素朴に書くと非対称になり、震源時刻が読めないときは発表時刻基準の値が返るのに、
+  // 発表時刻が読めないときだけ Invalid が返っていた（下限を採る側が `else` に当たるため）。
+  //
+  // Invalid Date が返ると、下流は**気づかないまま挙動が変わる** ——
+  // `hooks/useEarthquakes.ts` は自動解除の予約をキューに捨てられ（EEW が画面に居座る）、
+  // `services/dmdataReplay.ts` は失効の判定が常に偽へ倒れる（失効済みの EEW を復元する）。
+
+  // 正: 発表時刻が読めなくても、震源時刻が読めれば解除時刻は決まる。
+  it('発表時刻が読めなくても震源時刻から解除時刻を決める', () => {
+    const originTime = '2026-01-01T12:00:00Z'
+    const eew = makeEEWFor(5.0, 10, originTime)
+    const cancel = calcEEWCancelTime(eew, new Date(''))
+    const originBase = new Date(new Date(originTime).getTime() + calcEEWAutoCancelSec(5.0, 10) * 1000)
+    expect(cancel.getTime()).toBe(originBase.getTime())
+  })
+
+  // 対照: 逆向き（震源時刻が読めず発表時刻は読める）でも同じように決まる。**非対称にしない。**
+  it('震源時刻が読めなくても発表時刻から解除時刻を決める', () => {
+    const reportTime = new Date('2026-01-01T12:05:00Z')
+    const eew = makeEEWFor(5.0, 10, '')
+    const cancel = calcEEWCancelTime(eew, reportTime)
+    expect(cancel.getTime()).toBe(reportTime.getTime() + 60 * 1000)
+  })
+
+  // 安全弁: 両方読めなければ Invalid Date のまま返す。**代わりの値を作らない** ——
+  // 作ると呼び出し側は「時刻を決められなかった」ことに気づけず、記録も残せない。
+  it('発表時刻も震源時刻も読めなければ Invalid Date を返す', () => {
+    const eew = makeEEWFor(5.0, 10, '')
+    expect(Number.isNaN(calcEEWCancelTime(eew, new Date('')).getTime())).toBe(true)
+  })
 })
 
 describe('eewSerial', () => {
