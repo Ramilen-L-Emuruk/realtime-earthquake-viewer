@@ -72,7 +72,7 @@ const LPGM_BASE: JMALpgm = {
   regions: [],
 }
 
-const renderTab = (quake: JMAQuake, lpgm?: JMALpgm) => render(
+const renderTab = (quake: JMAQuake, lpgm?: JMALpgm, opts: { unreceivedOpen?: boolean } = {}) => render(
   <EarthquakeTab
     earthquakes={[quake]}
     selectedId={quakeEventKey(quake)}
@@ -88,6 +88,8 @@ const renderTab = (quake: JMAQuake, lpgm?: JMALpgm) => render(
     estimatedIntensity={null}
     distributionQuakeKey={null}
     onToggleDistribution={() => {}}
+    unreceivedQuakeKey={opts.unreceivedOpen ? quakeEventKey(quake) : null}
+    onToggleUnreceived={() => {}}
   />
 )
 
@@ -123,14 +125,15 @@ describe('地震カードの観測点名に付く「気象庁以外」の印', (
     expect(screen.queryByText(`${JMA_STATION}＊`)).toBeNull()
   })
 
-  // 正: 「震度を入手していない地点」のブロックにも `＊` が出る。
-  // **このブロックは同名の地点を 1 行へまとめる**ので、印の経路が震度一覧とは別にある。
+  // 正: 「震度を入手していない地点」の一覧にも `＊` が出る。
+  // **この一覧は同名の地点を 1 行へまとめる**ので、印の経路が震度一覧とは別にある。
+  // 一覧は未入電トグルを開いたときに出る（→ `unreceivedOpen`）。
   it('「震度を入手していない地点」に印が出る', () => {
     renderTab(makeQuake([
       ...upperRows(45),
       station({ addr: NON_JMA_STATION, scale: 45, unreceived: true, nonJma: true }),
       station({ scale: 45, unreceived: true }),
-    ]))
+    ]), undefined, { unreceivedOpen: true })
 
     expect(screen.getByText(`${NON_JMA_STATION}＊`)).toBeTruthy()
     expect(screen.getByText(JMA_STATION)).toBeTruthy()

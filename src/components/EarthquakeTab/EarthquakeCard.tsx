@@ -23,7 +23,7 @@ import { hasKnownEpicenter } from '../../utils/geo'
 import { buildAreaPrefIndex, buildRegionOrderIndex, buildStationPrefIndex, lookupStationRegion, regionOrderRank } from '../../utils/stationCoords'
 import { isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel, buildIntensityRows, makeAreaPrefResolver } from '../../utils/quakePoints'
 import { useStationCoords } from '../../hooks/useStationCoords'
-import { mergeUnreceivedPointNames, type UnreceivedPointName } from './unreceivedPointNames'
+import { groupUnreceivedPointNames, type UnreceivedPointGroup } from './unreceivedPointNames'
 
 /**
  * 長周期地震動に添える気象庁からの補足（付加文 3 種＋詳細ページ）の開閉キー。
@@ -234,11 +234,15 @@ interface Props {
   /** この地震の震度分布モードを開いているか。 */
   distributionActive?: boolean
   onToggleDistribution?: () => void
+  /** この地震の未入電の一覧を開いているか。 */
+  unreceivedActive?: boolean
+  onToggleUnreceived?: () => void
 }
 
 export function EarthquakeCard({
   quake, isLatest, isSelected, onSelect, lpgm, activeLpgmEventId, onToggleLpgm,
   estimatedIntensity = null, distributionActive = false, onToggleDistribution,
+  unreceivedActive = false, onToggleUnreceived,
 }: Props) {
   const { earthquake, issue } = quake
   const { hypocenter, maxScale, domesticTsunami } = earthquake
@@ -378,7 +382,9 @@ export function EarthquakeCard({
    * 並びは読み上げと同じ気象庁の標準順 —— 電文が点を並べた順に画面を委ねない。
    */
   const unreceivedPoints = useMemo(() => {
-    const empty = { names: [] as UnreceivedPointName[], unit: '地点' }
+    const empty = { groups: [] as UnreceivedPointGroup[], count: 0, unit: '地点' }
+    // ボタンも一覧も展開表示（`isSelected`）の中にしか無い。畳んだカードで組んでも使い道が無く、
+    // 一覧に並ぶカードの数だけ並べ替えが走る。
     if (!isSelected) return empty
     const { prefOf, regionOfStation, stations, areas } = unreceivedIndexes
     if (stations.length === 0 && areas.length === 0) return empty
@@ -389,9 +395,11 @@ export function EarthquakeCard({
     const ordered = [...stations, ...areas]
       .map((p, i) => ({ p, i, r: rank(p) }))
       .sort((a, b) => a.r - b.r || a.i - b.i)
-      .map(({ p }) => p)
+      .map(({ p }) => ({ addr: p.addr, nonJma: p.nonJma, pref: prefOf(p) }))
+    const groups = groupUnreceivedPointNames(ordered)
     return {
-      names: mergeUnreceivedPointNames(ordered),
+      groups,
+      count: groups.reduce((n, g) => n + g.names.length, 0),
       unit: unreceivedUnitLabel(stations.length > 0, areas.length > 0),
     }
   }, [isSelected, stationData, unreceivedIndexes])
@@ -717,6 +725,34 @@ export function EarthquakeCard({
             </div>
           )}
 
+          {/* 震度を入手していない地点（クリックで一覧を差し替え、地図に印を出す）。
+              **再掲だったブロックをこのボタンへ畳んである。** 未入電の観測点は震度一覧の入れ子の
+              中にも入っており、県・区域の「未入電あり」バッジがそこへ辿る導線になっている。
+              実測で 60 件のとき上下分割でパネル可視高の 142% を占めていたので、件数だけ常に見せて
+              地点名は開いたときに出す。 */}
+          {unreceivedPoints.count > 0 && (
+            <div
+              role="button"
+              tabIndex={0}
+              aria-pressed={unreceivedActive}
+              onClick={(e) => { e.stopPropagation(); onToggleUnreceived?.() }}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); onToggleUnreceived?.() } }}
+              title="気象庁が震度5弱以上と推定しているのに、震度が届いていない地点。押すと一覧と地図に出る"
+              className={`w-full rounded-lg py-1 px-3 flex items-center justify-between gap-2 border transition-colors cursor-pointer hover:opacity-80 roomy:py-2 roomy:px-4 ${
+                unreceivedActive
+                  ? 'bg-gray-500/25 border-gray-400 outline outline-2 outline-offset-2 outline-gray-400'
+                  : 'bg-panel border-border'
+              }`}
+            >
+              <span className="text-xs font-medium text-white roomy:text-sm">
+                震度を入手していない{unreceivedPoints.unit}
+              </span>
+              <span className="text-xs font-bold roomy:text-sm" style={{ color: '#d1d5db' }}>
+                {unreceivedPoints.count}{unreceivedPoints.unit}
+              </span>
+            </div>
+          )}
+
           {/* 各地の震度 / 長周期地震動階級（LPGM トグルオン時は階級表示に切り替え） */}
           {(() => {
             const isLpgmActive = lpgm && activeLpgmEventId === lpgm.eventId
@@ -794,40 +830,52 @@ export function EarthquakeCard({
               )
             }
 
-            if (prefGroups.length === 0 && unreceivedPoints.names.length === 0) return null
+            // 未入電の一覧（トグルオン時は震度一覧と差し替える）。
+            //
+            // **4 段の入れ子にしない。** 全部が同じ「5弱以上」なので段を作っても分かれる情報が
+            // 無く、60 件のときに段を開いて回る手間だけが残る。平らに並べ、どこの話かは県の
+            // 見出しが示す（→ `groupUnreceivedPointNames`）。
+            if (unreceivedActive && unreceivedPoints.count > 0) {
+              return (
+                <div className="flex flex-col gap-1 pt-1 border-t border-white/10">
+                  {/* **推定したのは気象庁**であることを書く。このアプリは強震モニタ由来の
+                      値にも「推定」を使っており（リアルタイムタブ）、主語が無いと
+                      「アプリが推定した値」と取り違えられる。 */}
+                  <div className="text-[0.6875rem] roomy:text-[0.8125rem]" style={{ color: '#9ca3af' }}>
+                    気象庁は震度5弱以上と推定していますが、震度が届いていません（未入電）
+                  </div>
+                  {unreceivedPoints.groups.map((group, idx) => (
+                    <div
+                      key={group.pref || `unknown-pref-${idx}`}
+                      className="rounded px-2 py-1"
+                      style={{ backgroundColor: idx % 2 === 0 ? 'rgba(255,255,255,0.03)' : 'transparent' }}
+                    >
+                      {/* 県を引けなかった点は見出しを出さずに並べる（名前は出す）。所属が
+                          分からないことは、地点名を落とす理由にならない。 */}
+                      {group.pref && (
+                        <div className="text-[0.75rem] roomy:text-[0.875rem] font-bold text-white">
+                          {group.pref}
+                        </div>
+                      )}
+                      <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[0.8125rem] roomy:text-[1rem] text-white">
+                        {/* 気象庁以外が運用する観測点には電文どおり `＊` を付ける。震度一覧・
+                            地図の吹き出しと同じ扱い（→ `withNonJmaMark`）。 */}
+                        {group.names.map(({ name, nonJma }) => (
+                          <span key={name} title={nonJma ? NON_JMA_MARK_TITLE : undefined}>
+                            {withNonJmaMark(name, nonJma)}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )
+            }
+
+            if (prefGroups.length === 0) return null
 
             return (
               <div className="flex flex-col gap-0.5 pt-1 border-t border-white/10">
-                {/* **地点の話は地点として見せる。** 震度一覧の上に置くのは、最も強く揺れた
-                    かもしれない場所が分からないことが、最大震度の次に重要だから。 */}
-                {unreceivedPoints.names.length > 0 && (
-                  <div
-                    className="mb-1 px-2 py-1.5 rounded"
-                    style={{ backgroundColor: 'rgba(156,163,175,0.12)', border: '1px solid rgba(156,163,175,0.35)' }}
-                  >
-                    {/* **単位は中身に合わせる。** 地点を持たない電文（震度速報は区域しか
-                        持たない）では区域名が並ぶので、見出しが「地点」のままだと粒度を
-                        誤解させる。読み上げの「ほかN地点／ほかN地域」と同じ判定で切り替える。 */}
-                    <div className="text-[0.75rem] roomy:text-[0.875rem] font-bold" style={{ color: '#d1d5db' }}>
-                      震度を入手していない{unreceivedPoints.unit}
-                    </div>
-                    {/* **推定したのは気象庁**であることを書く。このアプリは強震モニタ由来の
-                        値にも「推定」を使っており（リアルタイムタブ）、主語が無いと
-                        「アプリが推定した値」と取り違えられる。 */}
-                    <div className="text-[0.6875rem] roomy:text-[0.8125rem] mb-1" style={{ color: '#9ca3af' }}>
-                      気象庁は震度5弱以上と推定していますが、震度が届いていません（未入電）
-                    </div>
-                    <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[0.8125rem] roomy:text-[1rem] text-white">
-                      {/* 気象庁以外が運用する観測点には電文どおり `＊` を付ける。震度一覧・
-                          地図の吹き出しと同じ扱い（→ `withNonJmaMark`）。 */}
-                      {unreceivedPoints.names.map(({ name, nonJma }) => (
-                        <span key={name} title={nonJma ? NON_JMA_MARK_TITLE : undefined}>
-                          {withNonJmaMark(name, nonJma)}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
                 {prefGroups.map((prefRow, idx) => (
                   <div
                     key={prefRow.pref}

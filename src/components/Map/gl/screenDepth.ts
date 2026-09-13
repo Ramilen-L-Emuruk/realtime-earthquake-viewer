@@ -93,6 +93,8 @@ export interface FrontSortedLayer {
  */
 export const FRONT_SORTED_LAYERS: readonly FrontSortedLayer[] = [
   { id: 'quake-points', levelProp: 'scale' },
+  // 未入電はどれも同じ値なので、実際に効くのは「画面の手前らしさ」だけ。
+  { id: 'quake-unreceived-points', levelProp: 'scale' },
   { id: 'quake-region-label', levelProp: 'scale' },
   { id: 'quake-lpgm-points', levelProp: 'lgInt' },
   { id: 'quake-lpgm-region-label', levelProp: 'lgInt' },

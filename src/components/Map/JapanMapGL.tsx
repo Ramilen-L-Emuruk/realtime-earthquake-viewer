@@ -16,6 +16,7 @@ import { ActiveFaultsGL } from './ActiveFaultsGL'
 import { PlateBoundariesGL } from './PlateBoundariesGL'
 import { DayNightGL } from './DayNightGL'
 import { QuakeIntensityPointsGL } from './QuakeIntensityPointsGL'
+import { QuakeUnreceivedPointsGL } from './QuakeUnreceivedPointsGL'
 import { QuakeIntensitySurfaceGL } from './QuakeIntensitySurfaceGL'
 import { QuakeEstimatedIntensityGL } from './QuakeEstimatedIntensityGL'
 import { QuakeRegionFillGL } from './QuakeRegionFillGL'
@@ -82,6 +83,7 @@ export function JapanMapGL({
   quake,
   lpgm,
   distributionMode = false,
+  unreceivedMode = false,
   estimatedIntensity = null,
   tsunamis = [],
   observations = [],
@@ -166,6 +168,7 @@ export function JapanMapGL({
   // 地震モードの派生データ（震度点／区域集約／震源）。Leaflet 版と共有の導出フック。
   const {
     stationMarkers,
+    unreceivedMarkers,
     aggregateByRegion,
     regionAggregates,
     hasEpicenter,
@@ -176,7 +179,7 @@ export function JapanMapGL({
     lpgmRegionAggregates,
     quakeFitPositions,
     quakeSignature,
-  } = useQuakeLayerData(mode, quake, { zoom, aggregateMaxZoom }, lpgm, distributionMode, estimatedIntensity)
+  } = useQuakeLayerData(mode, quake, { zoom, aggregateMaxZoom }, lpgm, distributionMode, estimatedIntensity, unreceivedMode)
   // 気象庁の推計震度分布図を出しているか。**引き当ては呼び出し側の担当**で、ここへ来る時点で
   // 「いま地図が出している地震のもの」に絞られている（→ `estimatedIntensityFor`）。
   //
@@ -197,7 +200,12 @@ export function JapanMapGL({
   // 排他にしているので通常は両方が真にならないが、`lpgm` と `distributionMode` は独立した props
   // なので、ここだけでは呼び出し側の約束を確かめられない。外すと、両方渡されたときに階級の塗りと
   // 震度の面が重なる。
-  const showDistribution = mode === 'quake' && !lpgmActive && (!aggregateByRegion || distributionMode)
+  // 未入電モードでは面も出さない（震度の表現をまとめて引っ込める。下の区域塗り・観測点の
+  // ドットと同じ扱い）。**`distributionMode` との排他は `quakeOverlay` が型で保証しているが、
+  // ここは独立した props なので明示的に見る**（lpgm と distributionMode が同じ理由で
+  // 両方見られているのと同じ）。
+  const showDistribution = mode === 'quake' && !lpgmActive && !unreceivedMode
+    && (!aggregateByRegion || distributionMode)
   // 津波の派生データ（海岸線＋観測棒＋到達確認マーカー＋欠測マーカー）。発報中は全モードで海岸線を
   // 描くため常時計算する。
   const { tsunamiLines, observationBars, arrivalMarkers, missingMarkers, tsunamiFitPositions, tsunamiSignature } = useTsunamiLayerData(
@@ -530,7 +538,7 @@ export function JapanMapGL({
           <QuakeRegionFillGL
             regionAggregates={regionAggregates}
             iconScale={iconScale}
-            visible={mode === 'quake' && aggregateByRegion && !lpgmActive && !distributionMode}
+            visible={mode === 'quake' && aggregateByRegion && !lpgmActive && !distributionMode && !unreceivedMode}
           />
           {/* 観測点表示のときだけ、その背景に震度の面を敷く（区域塗りとは排他）。
               **気象庁の推計震度分布図が出ているときも敷かない** —— 同じ画面に推定を 2 つ置くと、
@@ -547,7 +555,23 @@ export function JapanMapGL({
           <QuakeIntensityPointsGL
             markers={stationMarkers}
             iconScale={iconScale}
-            visible={mode === 'quake' && !aggregateByRegion && !lpgmActive}
+            visible={mode === 'quake' && !aggregateByRegion && !lpgmActive && !unreceivedMode}
+            epicenter={epicenter}
+          />
+          {/* 震度が届いていない観測点の印。**観測値のドットと出す条件が 1 つ違う** ——
+              未入電トグルが開いている間は寄り具合に関わらず出す。自動フィットの着地は常に
+              区域集約のズーム（gl/camera.ts の fitMaxZoom でキャップされる）なので、
+              `!aggregateByRegion` だけにすると既定の画では一度も出ない。
+              長周期の表示中に出さないのは観測値のドットと同じ（地図が震度を出していない）。
+
+              **トグルを開いている間は、これだけが残る。** 上の区域塗り・観測点のドット・
+              推定の面はいずれも `!unreceivedMode` で引っ込め、カメラも未入電の地点だけへ
+              寄せる（`quakeFitPositions`）。同じ画面に震度を残すと、60 点の印が塗りの上に
+              散って「どこが届いていないのか」が読めなくなる。 */}
+          <QuakeUnreceivedPointsGL
+            markers={unreceivedMarkers}
+            iconScale={iconScale}
+            visible={mode === 'quake' && !lpgmActive && (unreceivedMode || !aggregateByRegion)}
             epicenter={epicenter}
           />
           {/* LPGM（長周期地震動）進行中: 区域集約時は区域塗り＋階級ラベル、高ズーム時は観測点ドット。 */}

@@ -59,8 +59,8 @@ import { computeEEWLevel, eewMaxLpgmClass } from './utils/eew'
 import { quakeEventKey, quakeKeyForLpgmEventId } from './utils/quakeMerge'
 import { estimatedIntensityFor, matchEstimatedIntensityArrival } from './utils/estimatedIntensity'
 import {
-  type QuakeOverlay, toggleLpgmOverlay, toggleDistributionOverlay,
-  closeLpgmOverlay, closeEewLpgmOverlay, shouldCloseOverlayOnSelection,
+  type QuakeOverlay, toggleLpgmOverlay, toggleDistributionOverlay, toggleUnreceivedOverlay,
+  closeLpgmOverlay, closeEewLpgmOverlay, closeUnreceivedOverlay, shouldCloseOverlayOnSelection,
 } from './utils/quakeOverlay'
 import { tsunamiOverallGrade } from './utils/tsunami'
 import { playCountdownBeep, unlockAudio, setSoundVolume } from './utils/alertSound'
@@ -170,6 +170,7 @@ export function App() {
   const activeLpgmEventId = quakeOverlay?.kind === 'lpgm' ? quakeOverlay.eventId : null
   const activeLpgmSource = quakeOverlay?.kind === 'lpgm' ? quakeOverlay.source : null
   const distributionQuakeKey = quakeOverlay?.kind === 'distribution' ? quakeOverlay.eventKey : null
+  const unreceivedQuakeKey = quakeOverlay?.kind === 'unreceived' ? quakeOverlay.eventKey : null
   // 子タブ（React.memo 化済み）へ props として渡すため useCallback で参照を安定化する
   // （毎レンダー再生成すると memo が破られる）。
   //
@@ -228,6 +229,11 @@ export function App() {
   const toggleDistribution = useCallback((eventKey: string) => {
     selectQuake(eventKey)
     setQuakeOverlay(prev => toggleDistributionOverlay(prev, eventKey))
+  }, [selectQuake])
+  // 未入電ボタン。鍵は分布と同じ `eventKey`。
+  const toggleUnreceived = useCallback((eventKey: string) => {
+    selectQuake(eventKey)
+    setQuakeOverlay(prev => toggleUnreceivedOverlay(prev, eventKey))
   }, [selectQuake])
   // EEW カードから長周期の表示を閉じる。**分布は触らない** —— 排他なので開いていないが、
   // この操作の意味は「長周期を閉じる」であって追加表示すべてではない。
@@ -833,6 +839,21 @@ export function App() {
       selectQuake(null)
     }
   }, [filteredEarthquakes, selectedQuakeId, selectQuake])
+
+  // 未入電が 1 件も無くなったら未入電モードを閉じる。
+  //
+  // **開いたまま閉じられなくなる形がある。** カードのボタンは件数で出しているので、続報で
+  // 観測点が入電して 0 件になると消える。一方 `quakeOverlay` は選択が別の地震へ移るまで残り、
+  // 地図は未入電モードの間だけ震度の表現を引っ込めるので、**震源の印だけの画面で固定される**。
+  //
+  // 判定はカードの件数と同じ述語にする（`partitionUnreceivedPoints` は名前を持たない点を外す）。
+  // 引き当てられない（カードが消えた・リプレイで作り直された）ときも閉じる。
+  useEffect(() => {
+    if (!unreceivedQuakeKey) return
+    const target = filteredEarthquakes.find(q => quakeEventKey(q) === unreceivedQuakeKey)
+    if (target?.points.some(p => p.unreceived && p.addr)) return
+    setQuakeOverlay(closeUnreceivedOverlay)
+  }, [filteredEarthquakes, unreceivedQuakeKey])
 
   // cancelledAt（10秒表示中）の EEW は地図・挙動系から除外する
   const activeEEWsNoCancelled = useMemo(
@@ -1533,6 +1554,9 @@ export function App() {
   // 分布が「気象庁の推計」として重なる。
   const mapEstimatedIntensity = estimatedIntensityFor(mapQuake, estimatedIntensity)
   const mapDistributionMode = !!mapQuake && distributionQuakeKey === quakeEventKey(mapQuake)
+  // 未入電の印を寄り具合に関わらず出すか。**地図が出している地震のものだけ**を見る
+  // （分布モードと同じ理由）。
+  const mapUnreceivedMode = !!mapQuake && unreceivedQuakeKey === quakeEventKey(mapQuake)
   // 共有カード（表示中の地図を 1 枚の画像にする）。撮影は地図そのものを操作するため実体が要る
   // ——地図の生成時に受け取って持つ。地図へ重ねる UI は App が配置する決まりなので、
   // それを起こすボタンもここに置く。
@@ -1593,6 +1617,7 @@ export function App() {
               observations={latestTsunamiObservations}
               lpgm={activeLpgm ?? undefined}
               distributionMode={mapDistributionMode}
+              unreceivedMode={mapUnreceivedMode}
               estimatedIntensity={mapEstimatedIntensity}
               iconScale={settings.mapIconScale}
               recording={settings.recordingMode}
@@ -1702,6 +1727,8 @@ export function App() {
                 estimatedIntensity={estimatedIntensity}
                 distributionQuakeKey={distributionQuakeKey}
                 onToggleDistribution={toggleDistribution}
+                unreceivedQuakeKey={unreceivedQuakeKey}
+                onToggleUnreceived={toggleUnreceived}
               />
             </ErrorBoundary>
           </div>

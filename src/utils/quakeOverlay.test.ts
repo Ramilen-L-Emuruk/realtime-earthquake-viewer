@@ -1,12 +1,13 @@
 import { describe, it, expect } from 'vitest'
 import {
-  type QuakeOverlay, toggleLpgmOverlay, toggleDistributionOverlay,
-  closeLpgmOverlay, closeEewLpgmOverlay, shouldCloseOverlayOnSelection,
+  type QuakeOverlay, toggleLpgmOverlay, toggleDistributionOverlay, toggleUnreceivedOverlay,
+  closeLpgmOverlay, closeEewLpgmOverlay, closeUnreceivedOverlay, shouldCloseOverlayOnSelection,
 } from './quakeOverlay'
 
 const lpgm = (eventId: string, source: 'earthquake' | 'eew' = 'earthquake'): QuakeOverlay =>
   ({ kind: 'lpgm', eventId, source })
 const distribution = (eventKey: string): QuakeOverlay => ({ kind: 'distribution', eventKey })
+const unreceived = (eventKey: string): QuakeOverlay => ({ kind: 'unreceived', eventKey })
 
 describe('追加表示は同時に 1 つだけ（長周期と震度分布の排他）', () => {
   // 正: 一方を開くと他方が閉じる
@@ -41,6 +42,53 @@ describe('追加表示は同時に 1 つだけ（長周期と震度分布の排�
   // 「表示中のものを押したら閉じる」——source で判定を分けるとトグルが切り替えに化ける。
   it('EEW カードから開いた長周期を地震カード側から押しても閉じる', () => {
     expect(toggleLpgmOverlay(lpgm('20240101160010', 'eew'), '20240101160010', 'earthquake')).toBeNull()
+  })
+})
+
+describe('未入電の表示も同じ排他に乗る', () => {
+  // 正: 未入電を開くと他の追加表示は閉じる。
+  it('震度分布を開いている状態で未入電を開くと、分布は閉じる', () => {
+    expect(toggleUnreceivedOverlay(distribution('k1'), 'k1')).toEqual(unreceived('k1'))
+  })
+
+  it('長周期を開いている状態で未入電を開くと、長周期は閉じる', () => {
+    expect(toggleUnreceivedOverlay(lpgm('20240101160010'), 'k1')).toEqual(unreceived('k1'))
+  })
+
+  // 正: 逆向きも同じ（未入電を開いているところへ他を開く）。
+  it('未入電を開いている状態で震度分布を開くと、未入電は閉じる', () => {
+    expect(toggleDistributionOverlay(unreceived('k1'), 'k1')).toEqual(distribution('k1'))
+  })
+
+  it('表示中の未入電をもう一度押すと閉じる', () => {
+    expect(toggleUnreceivedOverlay(unreceived('k1'), 'k1')).toBeNull()
+  })
+
+  // 対照: 別の地震の未入電を押したときは切り替える（閉じない）。
+  it('別の地震の未入電を押したときは切り替える', () => {
+    expect(toggleUnreceivedOverlay(unreceived('k1'), 'k2')).toEqual(unreceived('k2'))
+  })
+
+  // 安全弁: 「長周期を閉じる」操作は未入電に触らない（対象を絞る規則は新しい種別にも効く）。
+  it('長周期を閉じる操作は未入電に触らない', () => {
+    const prev = unreceived('k1')
+    expect(closeLpgmOverlay(prev)).toBe(prev)
+    expect(closeEewLpgmOverlay(prev)).toBe(prev)
+  })
+
+  // 正: 未入電が無くなったら閉じる。カードのボタンは件数で出しているので続報で 0 件になると
+  // 消えるが、この状態が残ると地図が震源の印だけで固定され、閉じる手段が無くなる。
+  it('未入電を閉じる操作は未入電を落とす', () => {
+    expect(closeUnreceivedOverlay(unreceived('k1'))).toBeNull()
+  })
+
+  // 安全弁: 他の追加表示には触らない（閉じる理由は「未入電が無くなった」ことなので）。
+  it('未入電を閉じる操作は長周期・震度分布に触らない', () => {
+    const lp = lpgm('20240101160010')
+    const dist = distribution('k1')
+    expect(closeUnreceivedOverlay(lp)).toBe(lp)
+    expect(closeUnreceivedOverlay(dist)).toBe(dist)
+    expect(closeUnreceivedOverlay(null)).toBeNull()
   })
 })
 
