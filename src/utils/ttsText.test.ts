@@ -2330,6 +2330,21 @@ describe('earthquakeCountToText', () => {
 describe('estimatedIntensityToText', () => {
   const ARRIVAL = '2026-01-01T15:04:00+09:00'
 
+  // 正: 時刻が日時として読めなければ句ごと落とす。**`null頃` と声に出さない** ——
+  // `formatTime` は `string | null` を返すが、テンプレートリテラルへ素で埋めると型検査を通る。
+  it('発現時刻が読めなければ句ごと落とし、「null」を声にしない', () => {
+    for (const isNew of [true, false]) {
+      const text = estimatedIntensityToText('壊れた値', isNew)
+      expect(text).not.toContain('null')
+      expect(text).not.toContain('NaN')
+      // 安全弁: 時刻を落としても、この情報の主題（推計震度分布図が来たこと）は残る。
+      expect(text).toContain('気象庁の推計震度分布図')
+      // 文として成立していること（助詞や「頃」だけが残らない）。
+      expect(text).not.toMatch(/^頃|、頃/)
+    }
+    expect(estimatedIntensityToText('壊れた値', true)).toBe('気象庁の推計震度分布図を受信しました。')
+  })
+
   // 正: 気象庁の呼称をそのまま名乗り、どの地震のものかを時刻で言う。
   it('初報は発現時刻を添えて受信を伝える', () => {
     expect(estimatedIntensityToText(ARRIVAL, true))

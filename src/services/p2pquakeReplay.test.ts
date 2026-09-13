@@ -13,7 +13,9 @@ vi.mock('./p2pquake', async (importOriginal) => {
   return { ...actual, fetchJmaArchiveRaw: vi.fn() }
 })
 
-vi.mock('../utils/logger', () => ({
+// `log` だけ差し替える部分モック（丸ごと置き換えると logger の export が増えた日に落ちる）。
+vi.mock('../utils/logger', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/logger')>()),
   log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }))
 

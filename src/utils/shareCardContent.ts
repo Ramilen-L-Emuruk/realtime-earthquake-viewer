@@ -108,6 +108,9 @@ function quakeContent(quake: JMAQuake | null): ContentWithoutNotices {
   const magnitude = formatMagnitudeWithCondition(hypocenter.magnitude, hypocenter.magnitudeCondition)
   if (magnitude !== '不明') parts.push(magnitude)
   if (hasDepth(hypocenter.depth)) parts.push(`深さ ${formatDepth(hypocenter.depth)}`)
+  // 日時として読めない時刻は欄ごと落とす。**画像は訂正できない**ので、「null 発生」のような
+  // 壊れた文字列を焼き付けるくらいなら出さない（規模・深さの「不明」を落とすのと同じ考え方）。
+  const timeText = formatDateTime(time)
   return {
     header: {
       // 未入電なら「以上」を付ける。**画像は訂正できない**ので、下限だけが確定した値を
@@ -117,7 +120,7 @@ function quakeContent(quake: JMAQuake | null): ContentWithoutNotices {
         : '地震情報',
       titleColor: knownScale ? getIntensityColor(maxScale) : undefined,
       subtitle: parts.join(SUBTITLE_SEPARATOR),
-      meta: `${formatDateTime(time)} 発生`,
+      meta: timeText ? `${timeText} 発生` : undefined,
     },
     filenameLabel: 'quake',
   }
@@ -145,12 +148,14 @@ function tsunamiContent(tsunamis: JMATsunami[]): ContentWithoutNotices {
   }
   if (areaCount > 0) parts.push(`${areaCount} 区域`)
   const issued = live[0]?.issue.time ?? live[0]?.time
+  // 日時として読めない発表時刻は、時刻を持たない電文と同じく欄ごと落とす。
+  const issuedText = issued ? formatDateTime(issued) : null
   return {
     header: {
       title: text,
       titleColor: color,
       subtitle: parts.join(SUBTITLE_SEPARATOR),
-      meta: issued ? `${formatDateTime(issued)} 発表` : undefined,
+      meta: issuedText ? `${issuedText} 発表` : undefined,
     },
     filenameLabel: 'tsunami',
   }
@@ -171,12 +176,16 @@ function kyoshinContent(liveEews: EEWAlert[]): ContentWithoutNotices {
   if (!assumedHypocenter && hasMagnitude(hypocenter.magnitude)) parts.push(formatMagnitude(hypocenter.magnitude))
   if (knownScale) parts.push(`予想最大震度 ${getIntensityLabelWithApproxAbove(info.scale, info.orAbove)}`)
   const serial = eew.issue?.serial
+  // 日時として読めない発生時刻は落とすが、**報番号は残す**（別の事実なので巻き込まない）。
+  // 両方とも無ければ欄ごと出さない。
+  const originText = formatDateTime(eew.earthquake.originTime)
+  const metaParts = [serial ? `第${serial}報` : '', originText ? `${originText} 発生` : ''].filter(Boolean)
   return {
     header: {
       title: eewKindLabel(computeSingleEEWLevel(eew)),
       titleColor: knownScale ? getIntensityColor(info.scale) : undefined,
       subtitle: parts.join(SUBTITLE_SEPARATOR),
-      meta: `${serial ? `第${serial}報　` : ''}${formatDateTime(eew.earthquake.originTime)} 発生`,
+      meta: metaParts.length > 0 ? metaParts.join('　') : undefined,
     },
     filenameLabel: 'eew',
   }

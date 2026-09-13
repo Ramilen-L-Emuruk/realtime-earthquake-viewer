@@ -1,5 +1,14 @@
-import { describe, it, expect } from 'vitest'
-import { formatCoordinate, formatDepth, formatDomesticTsunami, formatMagnitude, formatMagnitudeCondition, formatMagnitudeValue, formatMagnitudeWithCondition, formatFileStamp, hasHypocenterFacts, withNonJmaMark, NON_JMA_MARK } from './formatters'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+
+// `log` だけ差し替える部分モック（`createFirstSeenLogGate` は本物を使う —— 間引きの挙動ごと
+// 確かめたいため）。丸ごと置き換えると logger の export が増えた日にファイルごと落ちる。
+const warnMock = vi.hoisted(() => vi.fn())
+vi.mock('./logger', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./logger')>()),
+  log: { debug: vi.fn(), info: vi.fn(), warn: warnMock, error: vi.fn() },
+}))
+
+import { formatCoordinate, formatDepth, formatDomesticTsunami, formatMagnitude, formatMagnitudeCondition, formatMagnitudeValue, formatMagnitudeWithCondition, formatFileStamp, formatDateTime, formatDateTimeLocal, formatDateTimeMin, formatQuakeTime, formatTime, formatTimeMin, hasHypocenterFacts, withNonJmaMark, NON_JMA_MARK } from './formatters'
 import type { Hypocenter } from '../types/earthquake'
 import { withTz } from '../test-utils/withTz'
 import { getMagnitudeColor, getDepthColor } from './intensity'
@@ -285,5 +294,120 @@ describe('気象庁以外が運用する観測点の印', () => {
   // 半角の * に取り違えると、電文の付加文が説明している記号と画面の記号が食い違う。
   it('電文と同じ全角アスタリスク（U+FF0A）を使う', () => {
     expect(NON_JMA_MARK).toBe(String.fromCharCode(0xFF0A))
+  })
+})
+
+// 日時として読めない値のガード。
+//
+// `new Date('壊れた値')` は例外を投げず `Invalid Date` になり、`getHours()` 以下がそろって
+// `NaN` を返す。素通しにすると `"NaN:NaN:NaN"` が画面へ出るうえ、例外も記録も残らなかった。
+//
+// **テストごとに違う値を使うこと。** 記録の間引きはモジュール変数の `Set` で、テスト間で
+// 状態を共有する。同じ値を使い回すと 2 件目以降で `warn` が鳴らず、鳴らない理由が
+// 「ガードが効いていない」のか「既に記録済み」なのか判別できない。
+describe('日時として読めない値のガード', () => {
+  beforeEach(() => { warnMock.mockClear() })
+
+  // 正: 表示用の整形はすべて null を返す。呼び出し側はこれを見て欄・句ごと落とす。
+  it('読めない値では null を返す（表示用の 6 関数）', () => {
+    expect(formatTime('壊れた値-time')).toBeNull()
+    expect(formatTimeMin('壊れた値-timeMin')).toBeNull()
+    expect(formatDateTime('壊れた値-dateTime')).toBeNull()
+    expect(formatDateTimeMin('壊れた値-dateTimeMin')).toBeNull()
+    expect(formatQuakeTime('壊れた値-quakeTime')).toBeNull()
+    expect(formatDateTimeLocal(new Date('壊れた値-local'))).toBeNull()
+  })
+
+  // 対照: 読める値では従来どおりの文字列を返す（ガードが正常な値まで止めていないこと）。
+  it('読める値では従来どおりの文字列を返す', () => {
+    withTz('Asia/Tokyo', () => {
+      expect(formatTime('2026-01-02T03:04:05+09:00')).toBe('03:04:05')
+      expect(formatTimeMin('2026-01-02T03:04:05+09:00')).toBe('03:04')
+      expect(formatDateTime('2026-01-02T03:04:05+09:00')).toBe('2026/01/02 03:04:05')
+      expect(formatDateTimeMin('2026-01-02T03:04:05+09:00')).toBe('2026/01/02 03:04')
+      expect(formatQuakeTime('2026-01-02T03:04:05+09:00')).toBe('1月2日 3:04ごろ')
+      expect(formatDateTimeLocal(new Date('2026-01-02T03:04:05+09:00'))).toBe('2026-01-02T03:04')
+    })
+  })
+
+  // 正: 読めなかったことが記録に残る。**例外も記録も無い**のが元の問題だった。
+  it('読めない値は記録に残り、値そのものが載る', () => {
+    formatTime('記録される壊れた値')
+    expect(warnMock).toHaveBeenCalledTimes(1)
+    const message = String(warnMock.mock.calls[0]?.[0] ?? '')
+    expect(message).toContain('[format]')
+    expect(message).toContain('formatTime')
+    expect(message).toContain('記録される壊れた値')
+  })
+
+  // 対照: 同じ値の 2 回目は鳴らない。時刻の整形は再描画のたびに走るので、
+  // 素朴に `log.warn` を置くと壊れた値 1 つでコンソールが埋まる。
+  it('同じ値で何度も鳴らさない', () => {
+    formatTime('繰り返される壊れた値')
+    formatTime('繰り返される壊れた値')
+    formatTime('繰り返される壊れた値')
+    expect(warnMock).toHaveBeenCalledTimes(1)
+  })
+
+  // 対照: 関数が違えば別の経路なので、それぞれ記録する（追う先が違う）。
+  it('同じ値でも整形関数が違えば別に記録する', () => {
+    formatTime('経路ごとに記録される値')
+    formatDateTime('経路ごとに記録される値')
+    expect(warnMock).toHaveBeenCalledTimes(2)
+  })
+
+  // 安全弁: **時間帯を明示していない値はここでは弾かない。** `Date` はローカル時刻として
+  // 解釈して有効な値を返すため、この層では捕まえられない。弾くのは電文を読む側
+  // （`dmdataParser.ts` の `readTelegramDateTime`）の担当で、ここで中途半端に弾くと
+  // 「両方で見ているつもり」になって入口の検証が薄くなる。
+  it('時間帯を明示していない値はここでは弾かない（入口の担当）', () => {
+    withTz('Asia/Tokyo', () => {
+      expect(formatTime('2026-01-02T03:04:05')).toBe('03:04:05')
+    })
+    expect(warnMock).not.toHaveBeenCalled()
+  })
+
+  // **安全弁: `Date`・数値の入力は値で間引かない。** 壊れていると `String()` が元の値に
+  // よらず `"Invalid Date"` / `"NaN"` へ丸めるため、値を鍵にすると別々の壊れた値が 1 つに
+  // 潰れ、最初の 1 回だけ出て以後は永久に黙る（痕跡も残らない）。時間で間引くことで、
+  // 別の壊れた値でも間隔が明ければ必ず記録される。
+  it('Date の入力は値で間引かない（別の壊れた値が永久に黙らない）', () => {
+    vi.useFakeTimers()
+    try {
+      // 前のテストが張った間引きを明けさせてから測る（記録器はモジュール変数で持ち越される）。
+      vi.advanceTimersByTime(120_000)
+      warnMock.mockClear()
+
+      formatDateTimeLocal(new Date('壊れた日付A'))
+      expect(warnMock).toHaveBeenCalledTimes(1)
+
+      // 別の壊れた値。値を鍵にする作りなら「同じ値」と見なされて永久に黙る。
+      formatDateTimeLocal(new Date('壊れた日付B'))
+      expect(warnMock).toHaveBeenCalledTimes(1)
+
+      vi.advanceTimersByTime(60_001)
+      formatDateTimeLocal(new Date('壊れた日付C'))
+      expect(warnMock).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // 安全弁: 記録器は整形関数ごとに分かれている。ある関数で壊れた値が連発しても、
+  // 別の関数の記録が間引きに巻き込まれない。
+  it('ある関数で枠を使い切っても、別の関数の記録は止まらない', () => {
+    for (let i = 0; i < 40; i++) formatTime(`枠を埋める値${i}`)
+    warnMock.mockClear()
+    formatDateTimeMin('別の関数の壊れた値')
+    expect(warnMock).toHaveBeenCalledTimes(1)
+  })
+
+  // 安全弁: ファイル名の時刻印だけは null を返さない。名前が付かなければ書き出し自体が
+  // 成り立たず、対象の時刻が判らないことと利用者の操作を止めることは別。
+  it('ファイル名の時刻印は読めない値でも現在時刻で作る', () => {
+    const stamp = formatFileStamp(Number.NaN)
+    expect(stamp).not.toContain('NaN')
+    expect(stamp).toMatch(/^\d{8}_\d{6}[+-]\d{4}$/)
+    expect(warnMock).toHaveBeenCalledTimes(1)
   })
 })
