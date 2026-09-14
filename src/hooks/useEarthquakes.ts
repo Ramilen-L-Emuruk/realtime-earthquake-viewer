@@ -66,6 +66,14 @@ const TEST_ESTIMATED_INTENSITY_DELAY_MS = 3000
  * 実測で通知音・間・2 チャンクの合成と再生に 8 秒前後かかるので、その倍を取る。
  */
 const TEST_ESTIMATED_INTENSITY_FOLLOW_UP_DELAY_MS = 16000
+/**
+ * 推計震度分布図テストで、分布の続報から地震情報の続報までを空ける間隔。
+ *
+ * **分布の続報の読み上げが鳴り終わるまでの長さが要る。** 短すぎると「更新されました」が
+ * 途中で切れ、そちらを確かめられなくなる（上の 16 秒と同じ理由）。地震情報の続報は主題が
+ * 別なので割り込みでは切られないが、聞き分けられる間は空ける。
+ */
+const TEST_ESTIMATED_INTENSITY_QUAKE_FOLLOW_UP_DELAY_MS = 16000
 const EEW_FINAL_SILENCE_MS = 10000 // EEW発報テスト（特別警報・警報・予報）: この間隔クリックが無ければ最終報として確定する
 const EEW_RETRACTION_CANCEL_MS = 10000 // EEW誤報取消テスト: 発報からこの秒数後に取消電文を送る
 
@@ -1891,7 +1899,7 @@ export function useEarthquakes(
    */
   const simulateEstimatedIntensity = useCallback(async () => {
     const { createTestEstimatedIntensity } = await loadTestData()
-    const { quake, estimated, followUp } = createTestEstimatedIntensity()
+    const { quake, estimated, followUp, quakeFollowUp } = createTestEstimatedIntensity()
     const now = serverDate()
     eventQueueRef.current.push({ eventTime: now, payload: { kind: 'event', event: quake } })
     eventQueueRef.current.push({
@@ -1904,6 +1912,16 @@ export function useEarthquakes(
     eventQueueRef.current.push({
       eventTime: new Date(now.getTime() + TEST_ESTIMATED_INTENSITY_DELAY_MS + TEST_ESTIMATED_INTENSITY_FOLLOW_UP_DELAY_MS),
       payload: { kind: 'estimatedIntensity', data: followUp },
+    })
+    // **地震情報の続報も流す。** 分布が届いたあとに同じ地震の地震情報を受けると、地図は
+    // 分布モードを閉じて発表値へ戻る（→ `utils/quakeOverlay.ts` の
+    // `closeDistributionOverlayOnQuakeReport`）。流さないとその遷移を実機で確かめられない。
+    eventQueueRef.current.push({
+      eventTime: new Date(
+        now.getTime() + TEST_ESTIMATED_INTENSITY_DELAY_MS + TEST_ESTIMATED_INTENSITY_FOLLOW_UP_DELAY_MS
+        + TEST_ESTIMATED_INTENSITY_QUAKE_FOLLOW_UP_DELAY_MS,
+      ),
+      payload: { kind: 'event', event: quakeFollowUp },
     })
   }, [])
 

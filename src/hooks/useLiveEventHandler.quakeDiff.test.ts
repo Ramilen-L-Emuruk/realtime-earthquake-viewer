@@ -159,7 +159,7 @@ function setup() {
     setActiveTabRealtimeOnUpdate: vi.fn(),
     setActiveTabRealtimeUrgent: vi.fn(), followSpeechTab, preSpeechTab: vi.fn(() => true),
     expandPanelForSpecialInfo: vi.fn(), revertToDefaultTab: vi.fn(),
-    selectQuake: vi.fn(), openLpgmFromQuake: vi.fn(), openEstimatedIntensity: vi.fn(),
+    selectQuake: vi.fn(), openLpgmFromQuake: vi.fn(), openEstimatedIntensity: vi.fn(), closeDistributionOnQuakeReport: vi.fn(),
   }))
   return result.current.handleLiveEvent
 }
