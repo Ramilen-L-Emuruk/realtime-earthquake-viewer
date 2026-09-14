@@ -2,10 +2,11 @@
 //
 // **この電文は識別子を持たない**ので、突き合わせを外すとボタンが出ないまま黙る。
 // 逆に緩すぎると、別の地震の分布を「気象庁の推計」として見せてしまう。両側を固定する。
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import {
   matchEstimatedIntensity, matchEstimatedIntensityArrival, estimatedIntensityFor,
   estimatedIntensityAvailability, decideEstimatedIntensityUpdate, isNewEstimatedIntensity,
+  rememberShownEstimatedIntensity, MAX_SHOWN_ESTIMATED_INTENSITY_ARRIVALS,
 } from './estimatedIntensity'
 import type { JMAQuake, JMAEstimatedIntensity, IntensityScale } from '../types/earthquake'
 
@@ -191,26 +192,82 @@ describe('decideEstimatedIntensityUpdate', () => {
   })
 })
 
-// 読み上げが「受信しました」と「更新されました」を言い分けるための写像。
+// 読み上げが「受信しました」と「更新されました」を言い分けるための台帳。
 //
-// **判定そのもの（上の describe）とは別に固定する。** 反映するかどうかと、初報として読むか
-// どうかは別の問いで、`switched` の扱いがここだけ違う。
-describe('isNewEstimatedIntensity', () => {
-  // 正: 同じ地震の続報だけが「更新」。
-  it('同じ地震の続報は更新として読む', () => {
-    expect(isNewEstimatedIntensity('newer')).toBe(false)
+// **判定そのもの（上の describe）とは別の軸。** 反映するかどうかは「いま出している 1 通」との
+// 比較で決まるが、初報として読むかどうかは「その地震の分布を前に伝えたか」で決まる。
+describe('isNewEstimatedIntensity / rememberShownEstimatedIntensity', () => {
+  // 実電文（2024-01-01 の能登半島地震）の並び。JST では 16:10 が本震・16:18 が余震。
+  const NOTO = '2024-01-01T07:10:00.000Z'
+  const AFTERSHOCK = '2024-01-01T07:18:00.000Z'
+
+  // 正: 別の地震の分布を挟んでも、前に伝えた地震の続報は「更新」として読む。
+  // **これは `decideEstimatedIntensityUpdate` の理由では出せない** —— 挟まれた時点で
+  // 「いま出している 1 通」が別の地震のものになり、続報が `switched` になる。
+  it('別の地震の分布を挟んでも、前に伝えた地震の続報は更新として読む', () => {
+    const shown: string[] = []
+    expect(isNewEstimatedIntensity(shown, NOTO)).toBe(true)          // 16:20 本震の初報
+    rememberShownEstimatedIntensity(shown, NOTO)
+    expect(isNewEstimatedIntensity(shown, AFTERSHOCK)).toBe(true)    // 16:23 余震
+    rememberShownEstimatedIntensity(shown, AFTERSHOCK)
+    expect(isNewEstimatedIntensity(shown, NOTO)).toBe(false)         // 16:26 本震の続報
   })
 
-  // 対照: 初めての分布は当然「受信」。
-  it('初めての分布は受信として読む', () => {
-    expect(isNewEstimatedIntensity('first')).toBe(true)
+  // 対照: 初めて見る地震は「受信」。直前に別の分布を伝えていても変わらない。
+  it('初めて見る地震は受信として読む', () => {
+    const shown: string[] = []
+    rememberShownEstimatedIntensity(shown, NOTO)
+    expect(isNewEstimatedIntensity(shown, AFTERSHOCK)).toBe(true)
   })
 
-  // 安全弁: **別の地震へ入れ替えたときも「受信」。** 聞き手にとっては初めて届いた分布で、
-  // ここで「更新されました」と言うと、直前まで読んでいた地震の分布が差し替わったように
-  // 聞こえる。反映した（`apply: true`）という点では `newer` と同じなので、真偽へ潰すと
-  // この区別が消える。
-  it('別の地震へ入れ替えたときは受信として読む', () => {
-    expect(isNewEstimatedIntensity('switched')).toBe(true)
+  // 安全弁: **積まなければ「受信」のまま。** 音も声も伴わない注入では積まない、という
+  // 呼び出し側の規約をこの向きで支える。積んでしまうと、聞いていない報を前提に
+  // 「更新されました」と読むことになる。
+  it('積んでいない分布は台帳に残らない', () => {
+    const shown: string[] = []
+    expect(isNewEstimatedIntensity(shown, NOTO)).toBe(true)
+    expect(isNewEstimatedIntensity(shown, NOTO)).toBe(true)
+    expect(shown).toHaveLength(0)
+  })
+
+  // 安全弁: 同じ地震を二度積んでも枠を食わない。続報は何通でも届くので、積むたびに伸ばすと
+  // 上限がその地震だけで埋まり、並行している別の地震が押し出される。
+  it('同じ地震を二度積んでも枠を食わない', () => {
+    const shown: string[] = []
+    rememberShownEstimatedIntensity(shown, NOTO)
+    rememberShownEstimatedIntensity(shown, NOTO)
+    expect(shown).toEqual([NOTO])
+  })
+
+  // 安全弁: 上限を超えたら古いものから落ちる（落ちた地震は「受信」へ戻る）。
+  // 際限なく覚えると、長時間つないだ端末で伸び続ける。**落としたことは記録に残す** ——
+  // ライブ運用では台帳が空になる契機が無いので、数日つなぎ続ければ上限に届きうる。そこで
+  // 誤読（続報を「受信しました」と読む）が起きたとき、記録が無いと原因を追えない。
+  it('上限を超えたら古いものから落ち、落とした分を記録する', () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+    try {
+      const shown: string[] = [NOTO]
+      for (let i = 0; i < MAX_SHOWN_ESTIMATED_INTENSITY_ARRIVALS; i++) {
+        rememberShownEstimatedIntensity(shown, `2026-01-01T00:${String(i).padStart(2, '0')}:00.000Z`)
+      }
+      expect(shown).toHaveLength(MAX_SHOWN_ESTIMATED_INTENSITY_ARRIVALS)
+      expect(isNewEstimatedIntensity(shown, NOTO)).toBe(true)
+      expect(info).toHaveBeenCalledWith(expect.anything(), expect.stringContaining(NOTO))
+    } finally {
+      info.mockRestore()
+    }
+  })
+
+  // 対照: 上限に届かないうちは何も落とさず、記録も出さない（通常運転でログを汚さない）。
+  it('上限に届かないうちは記録を出さない', () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+    try {
+      const shown: string[] = []
+      rememberShownEstimatedIntensity(shown, NOTO)
+      rememberShownEstimatedIntensity(shown, AFTERSHOCK)
+      expect(info).not.toHaveBeenCalled()
+    } finally {
+      info.mockRestore()
+    }
   })
 })
