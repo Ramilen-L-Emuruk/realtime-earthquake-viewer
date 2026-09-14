@@ -7,7 +7,7 @@ import {
   formatDepth,
   formatDomesticTsunami,
   TSUNAMI_WARNING_GROUP_TITLE,
-  formatIssueType,
+  formatQuakeReports,
   formatCorrectType,
   hasHypocenterFacts,
   hasMagnitude,
@@ -534,7 +534,10 @@ export function EarthquakeCard({
             borderBottom: `1px solid ${typeStyle.headerBorder}`,
           }}
         >
-          {formatIssueType(issue.type)}
+          {/* 受け取った電文種別を `/` でつないで出す（→ `formatQuakeReports`）。気象庁は
+              震度速報 → 震源情報 → 震度速報 … と前後して発表するため、最後に届いた 1 種別だけ
+              だと「震源情報も受け取っている」ことが画面から消える。**色は代表種別のまま**。 */}
+          {formatQuakeReports(quake.reports, issue.type)}
           {/* 電文が自分で名乗っている運用種別（`Control/Status`）。訓練・試験のときだけ出す。
               **本物と見分けられるようにする** —— 検証用に受信した試験報もカードへ流している。 */}
           {quake.operationStatus && (
@@ -1101,7 +1104,7 @@ export function EarthquakeCard({
             {/* 畳んだ表示。開いた表示（上）と同じ語を出す。 */}
             <span className="text-base text-secondary flex-shrink-0">{formatQuakeTime(earthquake.time) ?? '発生時刻不明'}</span>
             <span className={`text-xs px-1.5 py-0.5 rounded min-w-0 truncate ${issueTypeBadgeClass(issue.type)}`}>
-              {formatIssueType(issue.type)}
+              {formatQuakeReports(quake.reports, issue.type)}
             </span>
             {quake.operationStatus && (
               <span className="text-xs px-1.5 py-0.5 rounded font-bold flex-shrink-0" style={{ backgroundColor: '#1f2937', color: '#fcd34d', border: '1px solid #d97706' }}>

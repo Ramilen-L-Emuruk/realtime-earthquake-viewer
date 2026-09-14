@@ -166,6 +166,33 @@ export type IssueType =
   | '遠地地震'
   | 'その他'
 
+/**
+ * その地震で受け取った 1 種別ぶんの記録。→ {@link JMAQuake.reports}
+ *
+ * カードの見出しを「震度速報#2/震源情報」の形で組むための材料。気象庁は同じ地震について
+ * 種別の違う電文を前後して発表する（能登 2024-01-01 の前震は 震度速報 → 震源情報 →
+ * 震度速報 → 震源・震度情報 の順）ため、最後に届いた 1 種別だけでは何を受け取ったかが
+ * 分からない。
+ */
+export interface QuakeReportRecord {
+  type: IssueType
+  /**
+   * 受け取った電文の一意鍵（受け取った順）。**長さがその種別の受信通数**。
+   *
+   * 通数を数値で持たず鍵の配列で持つのは、同じ電文が二度流れても数えないため。
+   * 「もっと見る」は既存カードへ過去の電文を流し直す（`mergeQuakeHistory`）ので、
+   * 重複は現実に起きる。鍵の出どころは {@link JMAQuake.telegramKey}。
+   */
+  keys: string[]
+  /**
+   * 電文が名乗った報番号のうち最大のもの（→ {@link JMAQuake.reportSerial}）。
+   *
+   * **表示はこちらを優先する。** 途中から受信し始めた端末では受信通数が気象庁の報番号より
+   * 少なくなるため、電文が番号を名乗っているならその値の方が正しい。
+   */
+  serial?: number
+}
+
 export type CorrectType =
   | 'なし'
   | '訂正'
@@ -330,6 +357,38 @@ export interface JMAQuake {
    * （実電文で確かめた）。→ `dmdataParser.ts` の `readHeadlineText`
    */
   headline?: string
+  /**
+   * この電文を一意に指す鍵。**同じ電文を二度数えないために持つ**（→ {@link JMAQuake.reports}）。
+   *
+   * DMDATA は `Control/DateTime`（電文を作成した時刻。秒精度で、実電文では同じ地震の続報
+   * どうしが必ず異なる）、P2PQuake は電文ごとに振られる `id`。
+   *
+   * **`id` では代用できない。** DMDATA 経路の `id` は `dmdata-quake-<eventId>-<serial>` だが、
+   * 震度速報・震源情報は `Head/Serial` が空要素で届くため（→ {@link JMAQuake.reportSerial}）、
+   * パーサーのフォールバックにより**同じ地震の全報が同じ `id`** になる。
+   */
+  telegramKey?: string
+  /**
+   * 電文が名乗る報番号（`Head/Serial`）。数値として読めないときは持たせない。
+   *
+   * **持つ種別は限られる。** 実電文では震源・震度情報（VXSE53）だけが 1, 2, … と連番を振り、
+   * 震度速報（VXSE51）・震源情報（VXSE52）は空要素で届く（能登 2024-01-01 のアーカイブで確認。
+   * 本震は震度速報が 7 通発表されたが 7 通とも空だった）。
+   *
+   * したがって**「第何報か」を電文だけから出すことはできない**。表示の通数は受信側で数える
+   * （→ {@link QuakeReportRecord.keys}）。
+   */
+  reportSerial?: number
+  /**
+   * その地震について受け取った電文種別の記録。→ {@link QuakeReportRecord}
+   *
+   * 統合（`utils/quakeMerge.ts` の `mergeQuakeInto`）が積み上げる。カードの見出しはここから
+   * 組む（`utils/formatters.ts` の `formatQuakeReports`）。
+   *
+   * **統合前の生電文には無い。** 履歴から復元しただけのカードなど、記録を持たないものは
+   * 見出しを `issue.type` 単独へ落とす。
+   */
+  reports?: QuakeReportRecord[]
 }
 
 export type TsunamiGrade = 'MajorWarning' | 'Warning' | 'Watch' | 'Forecast' | 'Unknown'

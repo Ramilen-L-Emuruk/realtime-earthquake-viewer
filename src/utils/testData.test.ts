@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { isEewArrivedKindCode, isEewPlumKindCode } from './eewKind'
+import { mergeQuakeInto, mergeQuakeHistory } from './quakeMerge'
+import { formatQuakeReports } from './formatters'
+import type { JMAQuake } from '../types/earthquake'
 import {
   createTestEarthquake,
   createTestEarthquakeCount,
@@ -13,6 +16,7 @@ import {
   createTestForeignQuakeHuge,
   createTestLpgm,
   createTestQuakeAmendment,
+  createTestQuakeReportSequence,
   createTestTsunami,
   createTestTsunamiForecast,
   createTestTsunamiGradeChange,
@@ -209,6 +213,125 @@ describe('地震情報テストの points 形状', () => {
   it('元データは 2 文とも持っている', () => {
     expect(notoHonshinQuake.varCommentText).toContain('震源要素を訂正します。')
     expect(notoHonshinQuake.varCommentText).toContain('＊印は気象庁以外の震度観測点')
+  })
+
+  /** バリアントごとに同じ検査を当てるための組。 */
+  const QUAKE_VARIANTS = [
+    { useDmdataShape: true, label: 'DMDSS' },
+    { useDmdataShape: false, label: 'standard' },
+  ] as const
+
+  // 種別遷移テスト。**受け取った種別を並べた見出しを実機で確かめられる唯一の入口**なので、
+  // 実電文の形（震度速報は震源を持たない・報番号は震源・震度情報だけ・鍵は報ごとに違う）を
+  // 固定する（→ docs/spec/quake-spec.md §8「見出しには受け取った種別を並べる」）。
+  describe('種別遷移テスト', () => {
+    // 正: 能登の前震と同じ順序で 4 通を返す。
+    it('震度速報 → 震源情報 → 震度速報 → 震源・震度情報 の順に 4 通を返す', () => {
+      expect(createTestQuakeReportSequence(true).map(q => q.issue.type))
+        .toEqual(['震度速報', '震源情報', '震度速報', '震源・震度情報'])
+      // standard 版は同じ内容の種別名が違う（P2PQuake の DetailScale）。
+      expect(createTestQuakeReportSequence(false).map(q => q.issue.type))
+        .toEqual(['震度速報', '震源情報', '震度速報', '各地の震度情報'])
+    })
+
+    // 正: 見出しが「震度速報#2/震源情報」→「震源・震度情報」と動くこと。**この関数の目的そのもの**。
+    it('統合すると見出しが「震度速報#2/震源情報」を経て「震源・震度情報」になる', () => {
+      const reports = createTestQuakeReportSequence(true)
+      const headlineAfter = (count: number): string => {
+        let card: JMAQuake | undefined
+        for (const report of reports.slice(0, count)) card = mergeQuakeInto(card, report)
+        return formatQuakeReports(card!.reports, card!.issue.type)
+      }
+      expect(headlineAfter(1)).toBe('震度速報')
+      expect(headlineAfter(2)).toBe('震度速報/震源情報')
+      expect(headlineAfter(3)).toBe('震度速報#2/震源情報')
+      expect(headlineAfter(4)).toBe('震源・震度情報')
+    })
+
+    // 安全弁: 鍵が報ごとに違うこと。**`id` は 4 通とも同じ**（`Head/Serial` が空の種別があるため）
+    // なので、鍵を持たせないと 2 通目の震度速報が「同じ電文の再送」と見なされて数えられない。
+    it('一意鍵は報ごとに違い、id は 4 通とも同じ（実電文の形）', () => {
+      const reports = createTestQuakeReportSequence(true)
+      expect(new Set(reports.map(q => q.telegramKey)).size).toBe(4)
+      expect(new Set(reports.map(q => q.id)).size).toBe(1)
+      expect(reports[0].id.endsWith('-1')).toBe(true)
+    })
+
+    // 安全弁: 報番号を持つのは震源・震度情報だけ（実電文で連番を振るのはこの種別に限る）。
+    it('報番号を持つのは震源・震度情報だけ', () => {
+      expect(createTestQuakeReportSequence(true).map(q => q.reportSerial))
+        .toEqual([undefined, undefined, undefined, 1])
+    })
+
+    // 対照: 震度速報は震源を持たず、震源情報は震度を持たない（種別ごとに構造が違う）。
+    //
+    // **両バリアントで見る。** 震度速報が持つ区域の点は `createTestEarthquake` の結果からは
+    // 採れない（standard 版は区域速報と観測点を別電文で送るため落としてある）。DMDSS 版だけを
+    // 見ていると、standard 版が震度ゼロの震度速報を作っていても気づけない。
+    it.each(QUAKE_VARIANTS)('震度速報は震源を持たず、震源情報は震度を持たない（$label 版）', ({ useDmdataShape }) => {
+      const [prompt1, destination, prompt2, detail] = createTestQuakeReportSequence(useDmdataShape)
+      for (const prompt of [prompt1, prompt2]) {
+        expect(prompt.earthquake.hypocenter.name).toBe('')
+        expect(prompt.earthquake.hypocenter.latitude).toBe(-200)
+        expect(Number.isNaN(prompt.earthquake.hypocenter.magnitude)).toBe(true)
+        // 震度速報が持つのは区域と都道府県の点だけ。**空にならないこと**が肝心。
+        expect(prompt.points.every(p => p.isArea)).toBe(true)
+        expect(prompt.points.length).toBeGreaterThan(0)
+        // 点があるなら最大震度も立つ（震度不明のまま「震度速報」を名乗らせない）。
+        expect(prompt.earthquake.maxScale).toBeGreaterThan(0)
+      }
+      expect(destination.earthquake.hypocenter.name).not.toBe('')
+      expect(destination.earthquake.maxScale).toBe(-1)
+      expect(destination.points).toEqual([])
+      // 対の確認: 観測点が届くのは震源・震度情報から。
+      expect(detail.points.some(p => !p.isArea)).toBe(true)
+    })
+
+    // 安全弁: 続報で区域が増えること（実電文の形）。同じ内容を 2 度流すだけでは速報の続報にならない。
+    it.each(QUAKE_VARIANTS)('2 通目の震度速報で区域が増える（$label 版）', ({ useDmdataShape }) => {
+      const [prompt1, , prompt2] = createTestQuakeReportSequence(useDmdataShape)
+      expect(prompt2.points.length).toBeGreaterThan(prompt1.points.length)
+    })
+
+    // 正・対照: 区域の点の都道府県名はバリアントで形が違う（→ docs/spec/quake-spec.md §4）。
+    //
+    // standard 版（P2PQuake）はどの点も `pref` を非空で配信するが、DMDSS 版（DMDATA）の区域の点は
+    // `pref` が空で届く。**元の資材は DMDATA 形状のまま**なので、standard 版だけ埋め直している。
+    it('区域の点は standard 版だけ都道府県名を持つ', () => {
+      const [standardPrompt] = createTestQuakeReportSequence(false)
+      expect(standardPrompt.points.length).toBeGreaterThan(0)
+      expect(standardPrompt.points.every(p => p.pref !== '')).toBe(true)
+      // 対照: DMDSS 版の区域の点は空のまま（実電文どおり）。都道府県の点だけが `pref` を持つ。
+      const [dmdssPrompt] = createTestQuakeReportSequence(true)
+      expect(dmdssPrompt.points.some(p => p.pref === '')).toBe(true)
+      expect(dmdssPrompt.points.some(p => p.pref !== '')).toBe(true)
+    })
+
+    // 安全弁: 受信経路を通しても 1 枚のカードへ合流すること。
+    //
+    // **`mergeQuakeInto` を直接呼ぶだけでは足りない。** あちらは既存カードを渡す前提で、
+    // 「どのカードへ届くか」の判定（`sameQuakeEntry`）を通らない。**standard 版は識別情報を
+    // 持たない**ので、震源名が空の震度速報を同じ地震と見なせるかはそちらの経路でしか分からない。
+    // 合流しなければ実機でカードが 4 枚並ぶ。
+    it.each(QUAKE_VARIANTS)('受信経路を通すと 4 通が 1 枚のカードへ合流する（$label 版）', ({ useDmdataShape }) => {
+      const merged = mergeQuakeHistory(createTestQuakeReportSequence(useDmdataShape), [], [], null)
+      expect(merged).toHaveLength(1)
+      expect(formatQuakeReports(merged[0].reports, merged[0].issue.type))
+        .toBe(useDmdataShape ? '震源・震度情報' : '各地の震度情報')
+      // 対の確認: 観測点まで届いている（震源・震度情報の中身が採られている）。
+      expect(merged[0].points.some(p => !p.isArea)).toBe(true)
+    })
+
+    // 安全弁: 同じ地震として扱われること。地震の時刻と識別情報を動かすと別カードが立つ。
+    it('4 通が同じ地震を指し、地震の時刻は動かない', () => {
+      const reports = createTestQuakeReportSequence(true)
+      const eventIds = reports.map(q => extractQuakeEventIdFromId(q.id))
+      expect(new Set(eventIds).size).toBe(1)
+      expect(eventIds[0]).not.toBeNull()
+      expect(new Set(reports.map(q => q.earthquake.time)).size).toBe(1)
+      // 発表時刻は進む（進めないと据え置き判定が続報を捨てる）。
+      expect(reports.map(q => q.time)).toEqual([...reports.map(q => q.time)].sort())
+    })
   })
 
   // 訂正報テスト。**「訂正」の印が出る形を作れる唯一の入口**なので、印・訂正の中身・

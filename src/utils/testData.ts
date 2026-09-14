@@ -1,4 +1,4 @@
-import type { JMAQuake, JMATsunami, EEWAlert, EEWForecastChange, JMANankai, JMANankaiCommentary, JMAKohatsu, EarthquakePoint, JMALpgm, JMAQuakeCity, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity, JMAEstimatedIntensityGrade, EEWRegion, TsunamiArea, TsunamiGrade, TelegramOperationStatus } from '../types/earthquake'
+import type { JMAQuake, JMATsunami, EEWAlert, EEWForecastChange, JMANankai, JMANankaiCommentary, JMAKohatsu, EarthquakePoint, IntensityScale, JMALpgm, JMAQuakeCity, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity, JMAEstimatedIntensityGrade, EEWRegion, TsunamiArea, TsunamiGrade, TelegramOperationStatus } from '../types/earthquake'
 import { serverNow, serverDate } from './clock'
 import { extractQuakeEventIdFromId } from './quakeMerge'
 import { log } from './logger'
@@ -357,6 +357,103 @@ export function createTestQuakeAmendment(useDmdataShape: boolean): { initial: JM
     },
   }
   return { initial, amended }
+}
+
+/** 種別が前後して届く報どうしの間隔。 */
+export const TEST_REPORT_SEQUENCE_DELAY_MS = 3000
+
+/**
+ * 種別が前後して届く地震情報のテストデータ（**4 通**）。
+ *
+ * 気象庁は同じ地震について**種別の違う電文を前後して発表する**。能登 2024-01-01 の前震は
+ * 震度速報 → 震源情報 → 震度速報 → 震源・震度情報 の順で届き、3 通目の時点で見出しが
+ * 「震度速報」へ戻って**震源情報も受け取っていることが画面から消える**。カードはこれを
+ * 「震度速報#2/震源情報」と出す（→ docs/spec/quake-spec.md §8「見出しには受け取った種別を並べる」）。
+ * **その見え方を実機で確かめられる入口がここしかない。**
+ *
+ * 形は実電文に合わせる（→ docs/spec/settings-pwa-spec.md §7「実電文の形に合わせる」）。
+ *
+ * - **震度速報は震源を持たない。** 電文に `Earthquake` 要素が無く、パーサーは震源名を空・
+ *   座標を -200（位置不明センチネル）・深さを -1・規模を `NaN` で埋める
+ * - **震源情報は震度を持たない**
+ * - **続報で区域が増える。** 1 通目は一部の区域だけで、3 通目で出そろう
+ * - **報番号（`Head/Serial`）を持つのは震源・震度情報だけ。** 震度速報・震源情報は空要素で届くので
+ *   `id` の末尾は 4 通とも `-1` のまま。**通数を数える鍵は電文の作成時刻**（`telegramKey`）で、
+ *   ここを持たせないと 2 通目の震度速報が「同じ電文の再送」と見なされて数えられない
+ * - **地震の時刻と識別情報は動かさない。** 動かすと別カードが立ち、同じカードへ届かない
+ */
+export function createTestQuakeReportSequence(useDmdataShape: boolean): JMAQuake[] {
+  const base = createTestEarthquake(useDmdataShape)
+  const baseMs = new Date(base.time).getTime()
+  // n 通目の発表時刻。**同じ値を一意鍵にも使う** —— 実電文の `Control/DateTime` にあたる。
+  const at = (index: number) => new Date(baseMs + index * TEST_REPORT_SEQUENCE_DELAY_MS).toISOString()
+  // 震度速報が持つのは区域と都道府県の点だけ（観測点は震源・震度情報から届く）。
+  //
+  // **`base.points` からは採れない。** standard 版の `createTestEarthquake` は区域の点を落として
+  // いる —— P2PQuake は区域速報（ScalePrompt）と観測点（DetailScale）を別の電文で送るため、
+  // 「各地の震度情報」として渡すものに区域を混ぜない。ここで作るのは**その区域速報のほう**なので、
+  // 元の資材から採り直す。
+  const areaSource = (useDmdataShape ? notoHonshinQuake.points : notoHonshinPoints) as EarthquakePoint[]
+  // **standard 版は区域の点も都道府県名を持つ形にする。** P2PQuake はどの点も `pref` を非空で
+  // 配信する（→ docs/spec/quake-spec.md §4）が、元の資材は DMDATA 形状のまま（区域の点の `pref` は
+  // 空）なので、市町村の段が持つ区域 → 都道府県の対応で埋め直す。埋めないと、区域名と県名が同じ
+  // 奈良県を見分ける経路（`isAreaPoint` の索引フォールバック）をこのテストが一度も通らない。
+  //
+  // **DMDSS 版は実電文どおり空のまま。** あちらは区域の点が `pref` を持たない形で届く。
+  const areaPrefByName = new Map((notoHonshinQuake.cities as JMAQuakeCity[]).map(c => [c.area, c.pref]))
+  const areaPoints = areaSource
+    .filter(p => p.isArea)
+    .map(p => (useDmdataShape || p.pref ? p : { ...p, pref: areaPrefByName.get(p.addr) ?? p.pref }))
+  const firstPoints = [...areaPoints]
+    .sort((a, b) => b.scale - a.scale)
+    .slice(0, Math.ceil(areaPoints.length * 0.6))
+  const maxScaleOf = (points: EarthquakePoint[]): IntensityScale =>
+    points.reduce<IntensityScale>((max, p) => (p.scale > max ? p.scale : max), -1)
+
+  const prompt = (index: number, points: EarthquakePoint[]): JMAQuake => {
+    const time = at(index)
+    return {
+      ...base,
+      telegramKey: time,
+      time,
+      issue: { ...base.issue, time, type: '震度速報' },
+      earthquake: {
+        ...base.earthquake,
+        hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: NaN },
+        maxScale: maxScaleOf(points),
+        // **震度速報の津波区分と固定付加文は種別に付く定型文で、その報の判断ではない**
+        // （→ docs/spec/quake-spec.md §6.4）。実データ（能登の前震）でもこの値だった。
+        domesticTsunami: '調査中',
+      },
+      points,
+      // 市町村の段は震源・震度情報だけが運ぶ。
+      cities: undefined,
+      ...(base.forecastText === undefined ? {} : { forecastText: '今後の情報に注意してください。' }),
+    }
+  }
+
+  const destinationTime = at(1)
+  const destination: JMAQuake = {
+    ...base,
+    telegramKey: destinationTime,
+    time: destinationTime,
+    issue: { ...base.issue, time: destinationTime, type: '震源情報' },
+    earthquake: { ...base.earthquake, maxScale: -1 },
+    points: [],
+    cities: undefined,
+  }
+
+  const detailTime = at(3)
+  const detail: JMAQuake = {
+    ...base,
+    telegramKey: detailTime,
+    // **報番号を持たせるのはこの種別だけ。** 実電文でも連番を振るのは震源・震度情報（VXSE53）に限る。
+    reportSerial: 1,
+    time: detailTime,
+    issue: { ...base.issue, time: detailTime },
+  }
+
+  return [prompt(0, firstPoints), destination, prompt(2, areaPoints), detail]
 }
 
 /**

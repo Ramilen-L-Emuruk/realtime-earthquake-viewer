@@ -1,4 +1,4 @@
-import type { JMAQuake, IssueType } from '../types/earthquake'
+import type { JMAQuake, IssueType, QuakeReportRecord } from '../types/earthquake'
 import { isAreaPoint, type AreaPrefIndex } from './quakePoints'
 import { log } from './logger'
 
@@ -27,6 +27,110 @@ export const QUAKE_ISSUE_PRIORITY: Record<IssueType, number> = {
 }
 
 const AMENDMENT_TYPE = '顕著な地震の震源要素更新のお知らせ'
+
+// --- 受け取った電文種別の記録（カードの見出しの材料。→ `QuakeReportRecord`） ---
+//
+// 気象庁は同じ地震について種別の違う電文を前後して発表する。能登 2024-01-01 の前震は
+// 震度速報 → 震源情報 → 震度速報 → 震源・震度情報 の順で、最後に届いた 1 種別だけを出すと
+// 「震源情報も受け取っている」ことが画面から消える。
+
+/** 震源も震度も持つ種別。これが届いたら、速報段階の種別は見出しから落とす。 */
+const FULL_REPORT_TYPES: readonly IssueType[] = ['震源・震度情報', '各地の震度情報']
+
+/** 完全版に呑み込まれる種別（震源だけ・震度だけの速報段階）。 */
+const SUPERSEDED_BY_FULL_TYPES: readonly IssueType[] = ['震度速報', '震源情報']
+
+/**
+ * 単独で出す種別。これが届いたら他の記録は見出しから落とす。
+ *
+ * - 顕著な地震の震源要素更新のお知らせ: 震源が確定したことを伝える報で、これ以降はこの 1 種別で
+ *   代表させる（従来の見出しと同じ振る舞い）
+ * - 遠地地震: 国内の震度を伴わない別系統。他の種別と混ざらない
+ */
+const EXCLUSIVE_REPORT_TYPES: readonly IssueType[] = [AMENDMENT_TYPE, '遠地地震']
+
+/**
+ * その電文を一意に指す鍵。→ `JMAQuake.telegramKey`
+ *
+ * **鍵を持たない電文は `id` で代用する。** テストボタン・収録シナリオ・ローカル履歴アーカイブの
+ * ように、生電文を通らずに作られたカードがこれに当たる。DMDATA のライブ経路では `id` が一意に
+ * ならない（震度速報・震源情報は `Head/Serial` が空なので同じ地震の全報が同じ `id` になる）が、
+ * そちらは `telegramKey` を必ず持つのでここへは落ちてこない。
+ */
+function quakeTelegramKey(q: JMAQuake): string {
+  return q.telegramKey ?? q.id
+}
+
+/** 電文 1 通ぶんの記録。 */
+function reportRecordOf(q: JMAQuake): QuakeReportRecord {
+  return {
+    type: q.issue.type,
+    keys: [quakeTelegramKey(q)],
+    ...(q.reportSerial !== undefined && { serial: q.reportSerial }),
+  }
+}
+
+/** 同じ種別の記録どうしを合流する。中身が変わらなければ `a` をそのまま返す。 */
+function mergeReportRecord(a: QuakeReportRecord, b: QuakeReportRecord): QuakeReportRecord {
+  const keys = [...a.keys]
+  for (const k of b.keys) if (!keys.includes(k)) keys.push(k)
+  // 報番号は大きい方を採る。続報で増えるものなので、古い報が後から流れても下がらない。
+  const serial = a.serial === undefined ? b.serial
+    : b.serial === undefined ? a.serial
+    : Math.max(a.serial, b.serial)
+  if (keys.length === a.keys.length && serial === a.serial) return a
+  return { type: a.type, keys, ...(serial !== undefined && { serial }) }
+}
+
+/**
+ * 呑み込みの規則を当てる。
+ *
+ * **「受け取った順」ではなく「記録の集合」に対して当てる。** 統合は暫定 ID のカードと確定 ID の
+ * カードを畳む経路（`coalesceByEventId`）も通り、そこでは記録がどちらの向きで合流するか決まって
+ * いない。順に当てる作りにすると、同じ顔ぶれでも合流の向きで見出しが変わる。
+ *
+ * **ただし可換なのは単独扱いの種別が 1 つまでのとき。** 2 つ同居したら記録の並び順で決まる。
+ * これを直さないのは、**同居させる経路が無い**ため —— 遠地地震は国内の震度を伴わない別の事象で、
+ * 顕著な地震の震源要素更新のお知らせとは `sameQuakeEntry` が同一カードと見なさない。
+ *
+ * 代償として、**完全版を受け取った後に震度速報が届いても見出しには出ない**。気象庁の発表順では
+ * 起きない形なので許容している（起きた場合、カードの中身は震度速報で置き換わる）。
+ */
+function normalizeReports(records: QuakeReportRecord[]): QuakeReportRecord[] {
+  const exclusive = records.filter(r => EXCLUSIVE_REPORT_TYPES.includes(r.type))
+  if (exclusive.length > 0) {
+    const last = exclusive[exclusive.length - 1]
+    return records.length === 1 && records[0] === last ? records : [last]
+  }
+  if (!records.some(r => FULL_REPORT_TYPES.includes(r.type))) return records
+  const kept = records.filter(r => !SUPERSEDED_BY_FULL_TYPES.includes(r.type))
+  return kept.length === records.length ? records : kept
+}
+
+/**
+ * 既存カードの記録へ `incoming` を取り込む。
+ *
+ * `incoming` が既に記録を持つ（＝統合済みカードどうしを畳む `coalesceByEventId`）ならそれを
+ * 丸ごと取り込み、持たない（＝生電文）なら 1 通ぶんの記録として足す。
+ *
+ * **中身が変わらなければ `base` をそのまま返す。** 呼び出し側が参照比較で「変化なし」を
+ * 判定するため。
+ */
+export function mergeQuakeReports(
+  base: QuakeReportRecord[] | undefined,
+  incoming: JMAQuake,
+): QuakeReportRecord[] {
+  const added = incoming.reports ?? [reportRecordOf(incoming)]
+  const next = base ? [...base] : []
+  for (const rec of added) {
+    const index = next.findIndex(r => r.type === rec.type)
+    if (index < 0) next.push(rec)
+    else next[index] = mergeReportRecord(next[index], rec)
+  }
+  const normalized = normalizeReports(next)
+  if (base && normalized.length === base.length && normalized.every((r, i) => r === base[i])) return base
+  return normalized
+}
 
 // 電文 ID 文字列から eventId（14桁タイムスタンプ）を抽出する。
 // VXSE51/52/53/61 はすべて同じ eventId を共有するため、同一地震の同定に使用できる。
@@ -223,13 +327,21 @@ export function sortQuakes(arr: JMAQuake[]): JMAQuake[] {
 // P2PQuake のように続報で id が変わる経路でも、カードのキーは初報のまま不変になる。
 export function mergeQuakeInto(existing: JMAQuake | undefined, incoming: JMAQuake): JMAQuake {
   const eventKey = existing?.eventKey ?? quakeEventKey(incoming)
+  // 受け取った電文種別の記録。**据え置く経路でも更新する** ——「震源情報も受け取った」ことは、
+  // カードの中身が変わらなくても見出しに出したい事実だから。同じ電文が二度流れて記録も
+  // 変わらないときは `existing` をそのまま返し、「変化なし＝同一参照」の約束を保つ。
+  const reports = mergeQuakeReports(existing?.reports, incoming)
+  /** 中身は据え置き。記録だけ変わったならそれを載せて返す。 */
+  const holdBack = (card: JMAQuake): JMAQuake =>
+    reports === card.reports ? card : { ...card, reports }
 
   // --- A. incoming が VXSE61（顕著地震の震源要素更新） ---
   if (incoming.issue.type === AMENDMENT_TYPE) {
-    if (!existing) return { ...incoming, eventKey }
+    if (!existing) return { ...incoming, eventKey, reports }
     return {
       ...existing,
       eventKey,
+      reports,
       time: incoming.time,
       issue: incoming.issue,
       earthquake: {
@@ -257,7 +369,7 @@ export function mergeQuakeInto(existing: JMAQuake | undefined, incoming: JMAQuak
   }
 
   // --- B. incoming が通常電文 ---
-  if (!existing) return { ...incoming, eventKey }
+  if (!existing) return { ...incoming, eventKey, reports }
 
   // 据え置き判定: 既存が実震度を持ち・未取消のとき、incoming を無視するかどうかを判定する。
   // hasIntensity を条件に含めることで、VXSE61 単独カードや震度欠落カードは
@@ -299,13 +411,13 @@ export function mergeQuakeInto(existing: JMAQuake | undefined, incoming: JMAQuak
   // ビルドバリアントごとにデータソースが単一だから（`CLAUDE.md`）。両方を1つの mergeQuakeInto
   // 呼び出し系列に混ぜる変更をするなら、先に time を `Date` ベースの比較に置き換えること。
   if (!existing.cancelledAt && hasIntensity(existing)) {
-    if (existing.issue.type === AMENDMENT_TYPE) return existing
+    if (existing.issue.type === AMENDMENT_TYPE) return holdBack(existing)
     if (!incoming.time) {
       log.warn('[quake] 発表時刻が空の電文を受信（据え置く）', { incomingId: incoming.id, incomingType: incoming.issue.type })
-      return existing
+      return holdBack(existing)
     }
     if (hasIntensity(incoming)) {
-      if (incoming.time < existing.time) return existing
+      if (incoming.time < existing.time) return holdBack(existing)
       // **時刻では受け入れるが、種別優先度としては据え置き相当（既存の方が詳しい）だった場合は
       // 記録を残す。** sameQuakeEntry は eventId が無い経路（P2PQuake）や暫定 ID の再採番で
       // 別の地震を同一と誤認識しうる（同関数の限界の節を参照）。誤認識が起きると、無関係な
@@ -318,11 +430,11 @@ export function mergeQuakeInto(existing: JMAQuake | undefined, incoming: JMAQuak
         })
       }
     } else if ((QUAKE_ISSUE_PRIORITY[existing.issue.type] ?? 0) > (QUAKE_ISSUE_PRIORITY[incoming.issue.type] ?? 0)) {
-      return existing
+      return holdBack(existing)
     }
   }
 
-  let result: JMAQuake = { ...incoming, eventKey }
+  let result: JMAQuake = { ...incoming, eventKey, reports }
 
   // 震度欠落の後続電文（震源のみ等）は既存の震度で補完する。
   if (!hasIntensity(incoming) && hasIntensity(existing)) {
