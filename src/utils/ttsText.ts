@@ -229,13 +229,11 @@ export interface TtsSpeechOptions {
    * （別の発話として最下位の層で読む。理由は同関数の説明）。
    */
   readTelegramText?: boolean
-  /** 緊急地震速報の固定付加文を読むか。→ `useSettings.ts` の `ttsReadEewWarningComment` */
-  readEewWarningComment?: boolean
   /**
    * 津波の観測点を読み上げる件数。
    *
-   * **0 を「無制限」の意味で渡さないこと。** 選抜は `slice(0, maxPoints)` なので 0 は
-   * 「1 件も読まない」になる（隣の `maxRegions` とは意味が違う。設定側の検証で 1 未満を弾く）。
+   * **`0` は無制限**（隣の `maxRegions` と意味を揃えてある）。選抜は `slice(0, maxPoints || Infinity)`
+   * を通すので、0 を渡すと全件を読む。
    */
   maxObservationPoints?: number
 }
@@ -1974,7 +1972,7 @@ export function selectObservationUpdatesToSpeak(
   // 深刻な順に選抜する（規則はカードの並びと同じ compareObservedHeightDesc）。**値の大小だけで
   // 切らないこと。** maxPoints で打ち切るため、値の大小で並べると「○m以上」の観測点が上位から
   // 押し出されて読み上げから丸ごと落ちる。カードなら下の方でも残るが、音は落ちたら気づけない。
-  return [...obs].sort((a, b) => compareObservedHeightDesc(a.height!, b.height!)).slice(0, maxPoints)
+  return [...obs].sort((a, b) => compareObservedHeightDesc(a.height!, b.height!)).slice(0, maxPoints || Infinity)
 }
 
 /**
@@ -2089,7 +2087,7 @@ export function selectArrivalsToSpeak(
   obs: readonly TsunamiObservation[],
   maxPoints = ARRIVAL_SPEAK_MAX_POINTS,
 ): TsunamiObservation[] {
-  return obs.slice(0, maxPoints)
+  return obs.slice(0, maxPoints || Infinity)
 }
 
 /**
@@ -2138,7 +2136,7 @@ export function selectMissingToSpeak(
   obs: readonly TsunamiObservation[],
   maxPoints = MISSING_SPEAK_MAX_POINTS,
 ): TsunamiObservation[] {
-  return obs.slice(0, maxPoints)
+  return obs.slice(0, maxPoints || Infinity)
 }
 
 /**
@@ -2209,7 +2207,7 @@ export function selectWarningLevelToSpeak(
   obs: readonly TsunamiObservation[],
   maxPoints = WARNING_LEVEL_SPEAK_MAX_POINTS,
 ): TsunamiObservation[] {
-  return obs.slice(0, maxPoints)
+  return obs.slice(0, maxPoints || Infinity)
 }
 
 /**
@@ -2525,8 +2523,88 @@ export function estimatedIntensityToText(arrivalTime: string, isNew: boolean): s
  * **改行と全角スペースは落とす。** 自由付加文には全角スペースで桁を揃えた表が入ることがあり、
  * そのまま渡すと合成エンジンが空白の数だけ間を作る。句読点は残す（文の切れ目そのものなので）。
  */
+/**
+ * 読み上げから落とす定型文。**画面には従来どおり出す。**
+ *
+ * 観測点名の `＊` を画面に出している以上その説明も要る（→ quake-spec.md §8「気象庁以外が
+ * 運用する観測点」）が、読み上げでは事情が違う ——
+ *
+ * - **震度を伝える電文のほぼ全てに入る**ので、有効にすると毎報聞かされる
+ * - **`＊` が音にならない**（合成エンジンは記号を読まず「シルシワ」と読む）ので、
+ *   何と対比しているのかが声だけでは伝わらない
+ *
+ * 実データでの表記は 1 通り（地震情報のコード 0262・長周期地震動観測情報の 0263 とも同じ文）。
+ * **表記が変われば落ちなくなる** —— そのときは読まれるようになるだけで、黙って壊れはしない。
+ */
+const TELEGRAM_TEXT_SKIPPED_PHRASES: readonly string[] = [
+  '＊印は気象庁以外の震度観測点についての情報です。',
+]
+
+function stripSkippedPhrases(text: string): string {
+  let out = text
+  for (const phrase of TELEGRAM_TEXT_SKIPPED_PHRASES) out = out.split(phrase).join('')
+  return out
+}
+
+/**
+ * 長周期地震動の自由付加文が載せる「階級と現象表現の対応表」で、階級と現象表現のあいだに
+ * 空白を挟む。原文は画面で表として読める形で、この 2 つのあいだに区切りを持たない。
+ *
+ * ```
+ *  階級１やや大きな揺れ
+ *  階級４極めて大きな揺れ
+ * ```
+ *
+ * **声にすると一続きに聞こえる。** 合成エンジンはここをアクセント句の切れ目としか扱わず、
+ * 間を置かない（実測）。
+ *
+ * **挟むのは空白であって読点ではない。** 合成エンジンが置く間はどちらも同じだが（実測:
+ * 半角スペース・全角スペース・読点・句点のいずれも 0.389〜0.412 秒）、読点は
+ * {@link splitIntoChunks} がチャンクを割る文字でもある。割れた末尾の間はチャンクを詰めて
+ * 鳴らすための足し分（`CHUNK_BREAK_PAUSE` = 0.11 秒）に変わり、**文中の読点より短くなる**
+ * （実機で確認）。空白なら割れないので、文中の間がそのまま入る。
+ *
+ * **鍵を「階級＋数字」だけにしないこと。** 同じ形は文中にも現れ（「長周期地震動階級４を
+ * 観測した地域があります」）、そこへ読点を入れると助詞の前で文が切れる。対応表でしか
+ * 使われない現象表現の語まで含めて照合する。
+ *
+ * 実電文の階級は全角数字（`階級４`）で、半角は観測できていない。それでも鍵に入れているのは、
+ * 一致が増えても誤爆しない（現象表現の語との組でしか当たらない）ため。
+ */
+const LPGM_CLASS_TABLE_RE = /(階級[０-９0-9])(やや大きな揺れ|非常に大きな揺れ|極めて大きな揺れ|大きな揺れ)/g
+
 function normalizeTelegramTextForSpeech(text: string): string {
-  return text.replace(/[\r\n\u3000\t]+/g, ' ').replace(/ {2,}/g, ' ').trim()
+  return stripSkippedPhrases(stripUrlsForSpeech(text))
+    .replace(LPGM_CLASS_TABLE_RE, '$1 $2')
+    .replace(/[\r\n\u3000\t]+/g, ' ')
+    .replace(/ {2,}/g, ' ')
+    // 括弧ごと落とした跡に残る「〜 、」「〜 。」を詰める。句読点の顔ぶれは
+    // `voicevox.ts` の `CHUNK_BREAK_PUNCTUATION`（チャンクを割る文字）と揃えておく
+    .replace(/\s+([\u3001\u3002\uff01\uff1f\u300d\uff09)])/g, '$1')
+    .trim()
+}
+
+/**
+ * 読み上げから URL を落とす。
+ *
+ * **音声で URL を伝えても書き取れない。** 長周期地震動観測情報の自由付加文は末尾に詳細ページの
+ * URL を持っており（`https://www.data.jma.go.jp/eew/data/ltpgm/event.php?eventId=…`）、そのまま
+ * 渡すと合成エンジンが 1 文字ずつ読み上げる（実機で確認）。**原文は画面にそのまま出している**
+ * ので、読み上げから落としても情報は失われない。
+ *
+ * **括弧で囲まれていれば括弧ごと落とす** —— URL だけ抜くと「ウェブサイト（）をご活用ください」と
+ * 空の括弧が残り、それも音になる。
+ *
+ * **URL の終わりとみなす文字には、空白・丸括弧に加えて全角の句読点と和文の閉じ括弧も入れる。**
+ * どれも URL の一部になりえないので、入れても URL を切り詰めることはない。入れないと、空白を
+ * 挟まずに句点が続く本文（`…https://example.com/foo。続報があります。`）で句点まで巻き込んで
+ * 消し、**2 つの文が 1 つに繋がる**。実電文の URL は前後に空白がある半角括弧の形なので現状
+ * この形は来ないが、正規表現の側でその前提に頼らない。
+ */
+function stripUrlsForSpeech(text: string): string {
+  return text
+    .replace(/[\uff08(]\s*https?:\/\/[^\s\uff08\uff09()\u3001\u3002\uff01\uff1f\u300d\u300f\u3015]+\s*[\uff09)]/g, '')
+    .replace(/https?:\/\/[^\s\uff08\uff09()\u3001\u3002\uff01\uff1f\u300d\u300f\u3015]+/g, '')
 }
 
 /** 空でないものだけを句点区切りで繋ぐ。既に句点で終わっているものは重ねない。 */
@@ -2570,22 +2648,10 @@ export interface TelegramTextSpeech {
  * - 取消電文の理由 —— 既に本体の読み上げが読んでいる（`cancelReasonSentence`）
  */
 export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): TelegramTextSpeech | null {
-  // 緊急地震速報だけは別の設定で切り替える。秒を争うため既定では読まない。
-  if (event.kind === 'eew') {
-    // **試験報・訓練報は読まない。** `EEWAlert.test` は「画面・音・地図へ流さない」抑制で、
-    // 電文の運用種別（`Control/Status`）とは別物（→ quake-spec.md §5「電文の運用種別」）。
-    // **判定はここに置く。** 呼び出し側の順序に任せると、`handleLiveEvent` が種別ごとの
-    // 抑制へ入る前にこの関数を呼んでいるため素通りし、**試験報の警戒文が本物の警告として
-    // 声になる**。
-    if (event.test) return null
-    // 取消・失効の報では付加文を出さない（画面も同じ扱い。→ eew-spec.md §3「固定付加文」）。
-    // **見るのは `cancelled`。`cancelledAt` ではない。** あちらはカードの状態を作るときに
-    // `useEarthquakes` が付けるもので、この関数へ渡るのは**パーサーが返した生の電文**なので
-    // 常に undefined になる（＝ガードが効かない）。取消・自動解除・失効はどれも `cancelled` を立てる。
-    if (!opts.readEewWarningComment || event.cancelled) return null
-    const body = joinTelegramTexts([event.warningComment])
-    return body ? { text: `緊急地震速報について、気象庁の文をお伝えします。${body}`, body } : null
-  }
+  // **緊急地震速報の固定付加文は読まない。** 秒を争うため、定型文を挟むと肝心の震度・地域が
+  // 遅れる（画面には出している。→ eew-spec.md §3「固定付加文」）。
+  // 読ませる形にするなら、この設定とは別に「震度・地域を伝えたあとへ確実に回す」仕組みが要る。
+  if (event.kind === 'eew') return null
   if (!opts.readTelegramText) return null
 
   switch (event.kind) {
