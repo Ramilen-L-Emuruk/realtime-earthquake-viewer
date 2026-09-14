@@ -68,6 +68,7 @@ const renderTab = (quake: JMAQuake, opts: { unreceivedOpen?: boolean } = {}) => 
     onToggleDistribution={() => {}}
     unreceivedQuakeKey={opts.unreceivedOpen ? quakeEventKey(quake) : null}
     onToggleUnreceived={() => {}}
+    onFocusMap={() => {}}
   />
 )
 
@@ -121,6 +122,7 @@ describe('未入電トグル', () => {
         onToggleDistribution={() => {}}
         unreceivedQuakeKey={quakeEventKey(makeQuake(MIXED))}
         onToggleUnreceived={() => {}}
+        onFocusMap={() => {}}
       />,
     )
     expect(screen.queryByText('震度4')).toBeNull()

@@ -4,7 +4,7 @@ import type * as maplibregl from 'maplibre-gl'
 import { useMapGL } from './mapGLContext'
 import type { LatLng } from '../../utils/stationCoords'
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
-import type { ShakeFocus } from './mapTypes'
+import type { ShakeFocus, MapFocusTarget } from './mapTypes'
 import type { EEWAlert } from '../../types/earthquake'
 import type { PsWaveCircle } from '../../services/kyoshin'
 import { computeEewCircle } from '../../hooks/usePsWaveCalc'
@@ -25,8 +25,10 @@ import {
   subscribeUserInteraction,
   INTERACTION_HOLD_SEC,
   fitMaxZoom,
+  focusMaxZoom,
 } from './gl/camera'
 import { decideTsunamiFit } from './gl/tsunamiFit'
+import { openPopupAt, closeMapPopup } from './gl/popupRegistry'
 import { log } from '../../utils/logger'
 
 // MapLibre 版のカメラ自動追従群（Leaflet 版 JapanMap 内の Fit* コンポーネント相当）。
@@ -1154,6 +1156,7 @@ export function TsunamiFitGL({
   arrivalMarkers,
   missingMarkers,
   focusObsName = null,
+  focusTarget = null,
 }: {
   mode: string
   tsunamiSignature: string
@@ -1168,6 +1171,11 @@ export function TsunamiFitGL({
   missingMarkers: { name: string; lat: number; lng: number }[]
   /** 観測行クリックで FocusObsGL が寄せた観測点。猶予を数え直すためだけに見る（フィットはしない）。 */
   focusObsName?: { name: string; ts: number } | null
+  /**
+   * 一覧の行クリックで `FocusTargetGL` が寄せた場所（津波タブでは区域名のクリック）。
+   * こちらも猶予を数え直すためだけに見る。
+   */
+  focusTarget?: MapFocusTarget | null
 }) {
   const map = useMapGL()
   // 最後にカメラへ反映した海岸線 signature。津波が消えたとき（全解除・有効期間の満了・
@@ -1225,6 +1233,23 @@ export function TsunamiFitGL({
     idleReturnDueRef.current = false
     armIdleReturnTimer()
   }, [focusObsTs, focusObsName, observationBars, arrivalMarkers, missingMarkers, armIdleReturnTimer])
+
+  // 区域名クリック（`FocusTargetGL` が寄せる）でも同じく猶予を数え直す。寄り先は座標で渡って
+  // くるため、観測点の側と違って「寄せられるか」を確かめる必要は無い。
+  //
+  // **猶予を張るのは津波モードにいるときだけ。ただし要求そのものは常に消費する。**
+  // この要求は地震カードの一覧とも共有しているので（`App` の `focusedMapTarget`）、モードを
+  // 見ないと地震タブでの操作が津波の帰還を遅らせる。一方で**消費まで止めると**、地震タブで
+  // 押した要求が残り、津波タブへ移った瞬間にそこで猶予を延ばしてしまう。
+  const focusTargetTs = focusTarget?.ts ?? 0
+  const lastFocusTargetTsRef = useRef(0)
+  useEffect(() => {
+    if (focusTargetTs === 0 || focusTargetTs === lastFocusTargetTsRef.current) return
+    lastFocusTargetTsRef.current = focusTargetTs
+    if (mode !== 'tsunami') return
+    idleReturnDueRef.current = false
+    armIdleReturnTimer()
+  }, [mode, focusTargetTs, armIdleReturnTimer])
 
   useEffect(() => {
     if (!map) return
@@ -1337,7 +1362,77 @@ export function FocusObsGL({
     if (!bar) return
     handledTsRef.current = focusObsName.ts
     log.debug(`[mapGL] 観測点フォーカス flyTo ${bar.name}`)
-    flyToPoint(map, [bar.lat, bar.lng], fitMaxZoom(map), 1.0)
+    // **寄り上限は `FocusTargetGL` と同じ**（`focusMaxZoom`）。どちらも「一覧の 1 点を指す行を
+    // 押した」という同じ操作で、着地の深さが一覧によって違う理由が無い。観測棒は細いので、
+    // 自動フィットの上限では隣の点と見分けが付かない。
+    flyToPoint(map, [bar.lat, bar.lng], focusMaxZoom(map), 1.0)
   }, [map, focusObsName, observationBars])
+  return null
+}
+
+// ── 一覧の行クリックで、渡された場所へ寄せる ──────────────────────────────────────
+/**
+ * 役割は上の `FocusObsGL`（津波）と同じだが、**寄り先を名前ではなく座標で受け取る**。
+ *
+ * 津波の潮位観測点名は全国で一意なので地図側で引けるが、震度観測点は都道府県名との組でしか
+ * 引けない（`lookupPointCoords`。府中市＝東京都・広島県）。呼び出し側（地震カード）は
+ * 座標テーブルを持っているため、**押せるかどうかの判定と寄り先を同じ解決から出せる** ——
+ * 名前を渡して地図側で引き直すと、判定と寄り先が別々の解決になり、片方だけが引けたときに
+ * 「押せるのに動かない」（またはその逆）になる。
+ *
+ * **1 点とは限らない。** 観測点の行は 1 点、県・区域・市町村の行は範囲を指す。どちらも
+ * `fitToPositions` へ渡す（1 点ならその中で `flyToPoint` へ落ちる）。
+ *
+ * 地図の表示条件には依存しない。震度の観測点ドットは引いた画では区域塗りへ集約されて消えるが、
+ * **そこから特定の観測点へ寄るのがこの操作の主な使い道**なので、点が出ていることを条件にしない。
+ *
+ * **着地では区域集約が解けている。** 寄り上限に自動フィットとは別の値（`focusMaxZoom`）を使い、
+ * 集約の閾値（自動フィットの寄り上限と同値。→ `docs/spec/quake-spec.md` §7）より深く寄せるため。
+ * 押した観測点が塗りに隠れたままでは、寄せた意味が無い。
+ *
+ * **寄り先が 1 点なら、着地後にその点の吹き出しを開く**（地図のマーカーを押したのと同じ状態）。
+ * 範囲を指す行（県・区域・市町村・津波の区域）では開かない —— 範囲の中心に何があるかは
+ * 行の内容と関係がなく、無関係な吹き出しが出る。**どちらの場合も、動かす前に開いている吹き出しは
+ * 閉じる** —— 残すと、寄せた範囲の外を指したまま画面の端に取り残される。
+ */
+export function FocusTargetGL({ focusTarget }: { focusTarget: MapFocusTarget | null }) {
+  const map = useMapGL()
+  const handledTsRef = useRef(0)
+  useEffect(() => {
+    if (!map || !focusTarget) return
+    // クリック 1 回につき 1 度だけ寄せる。**鍵は座標ではなく `ts`** —— 同じ行を続けて押しても
+    // 効くようにするため（座標で見ると 2 度目が「変化なし」になり、カメラが動かない）。
+    if (focusTarget.ts === handledTsRef.current) return
+    handledTsRef.current = focusTarget.ts
+    // 空は来ない想定（呼び出し側は寄り先を作れた行だけ押せるようにする）。来ても
+    // `fitToPositions` が何もしないので、カメラは動かないまま ts だけ消費する。
+    const { positions } = focusTarget
+    log.debug(`[mapGL] 一覧からのフォーカス ${positions.length === 1
+      ? `${positions[0][0]},${positions[0][1]}` : `${positions.length} 点の範囲`}`)
+    // 前に選んだ点の吹き出しは、カメラを動かす前に閉じる。1 点へ寄せる場合も、着地までの
+    // 1 秒のあいだ古い選択を引きずらない。
+    closeMapPopup(map)
+    if (positions.length !== 1) {
+      fitToPositions(map, positions, { durationSec: 1.0, maxZoom: focusMaxZoom(map) })
+      return
+    }
+    const [lat, lng] = positions[0]
+    fitToPositions(map, positions, { durationSec: 1.0, maxZoom: focusMaxZoom(map) })
+    const openPopup = () => openPopupAt(map, [lng, lat])
+    // **購読はカメラを動かした「あと」に張る。** `flyTo` は進行中の飛行を打ち切るとき、
+    // その場で `moveend` を発火する。先に張ると「前の飛行が止まった瞬間」を着地と取り違え、
+    // まだ目的地へ着いていない画面座標で判定してしまう（実機で、飛行中に別の行を押すと
+    // 途中の位置にあった区域代表点の吹き出しが開いた）。
+    //
+    // **動いていなければその場で開く。** 端末の「視差効果を減らす」設定が有効だと `flyTo` は
+    // `jumpTo` へ落ち、着地は呼び出しの中で終わっている —— 待っても `moveend` はもう来ない。
+    if (!map.isMoving()) {
+      openPopup()
+      return
+    }
+    map.once('moveend', openPopup)
+    // 次の行が押された（または地図が消えた）ら、着地を待っている予約は降ろす。
+    return () => { map.off('moveend', openPopup) }
+  }, [map, focusTarget])
   return null
 }
