@@ -15,6 +15,12 @@ import {
   type DetectionEvent,
   type TriggerResult,
 } from '../utils/kyoshinDetector'
+import {
+  consumeWarmup,
+  pushPendingFrame,
+  type PendingFrame,
+  type WarmupNotice,
+} from '../utils/kyoshinWarmupConsumer'
 import type { KyoshinWarmup } from './useKyoshinRealtime'
 import { createLogThrottle, log } from '../utils/logger'
 import { profileSpan } from '../utils/frameProfiler'
@@ -191,6 +197,58 @@ export const RESULT_STALL_RESET_FRAMES = 5
 export const WARMUP_WAIT_MAX_FRAMES = 90
 
 /**
+ * 助走の消化で起きたことを記録する。
+ *
+ * **文面はここが持ち、`consumeWarmup` は事実だけを返す。** 同じ出来事を 2 通りの言葉で書くと、
+ * 片方だけ直したときに記録と実装が食い違う。
+ */
+function logWarmupNotice(notice: WarmupNotice, supplyKey: string, sitesSiteConfigId: string): void {
+  switch (notice.kind) {
+    case 'gave-up':
+      log.warn(
+        `[kyoshinV2] 助走が ${notice.waitedFrames} フレーム待っても届かないため、助走なしで検知を始めます`
+        + `（supplyKey=${supplyKey}）`,
+      )
+      return
+    case 'all-unusable':
+      // **届いたのに 1 件も使えなかったことは記録する。** 画面からは「助走が無かった」のと
+      // 見分けが付かず、立ち上がりの検知が遅れた原因を後から追えない。落とした理由（版違いか、
+      // それ以外か）も添える —— 前者は観測点リストの切替と重なっただけだが、後者は助走そのものの
+      // 作り方を疑う手がかりになる。
+      log.warn(
+        `[kyoshinV2] 助走 ${notice.total} フレームを 1 件も使えませんでした`
+        + `（版違い ${notice.versionMismatch} 件・その他 ${notice.total - notice.versionMismatch} 件。`
+        + `助走なしで検知を始めます。sites=${sitesSiteConfigId}）`,
+      )
+      return
+    case 'feed-failed': {
+      // **件数だけでは「どの入力で壊れたか」を再現できない**ので、最初に落ちたフレームの
+      // データ時刻も添える。1 件ずつ出さないのは、助走が最大 900 件あるとログが埋まるため。
+      const at = notice.frameTimeMs === null ? '(不明)' : new Date(notice.frameTimeMs).toISOString()
+      log.error(
+        `[kyoshinV2] 助走・待機分の消化で ${notice.count} 件が例外（残りは続行。最初に落ちたのは ${at}）`,
+        notice.error,
+      )
+      return
+    }
+    case 'aborted':
+      // 1 件ぶんの握りでは受け止められなかった（列の反復そのものが壊れた）。その段は
+      // 途中で止まるが、検知そのものは続ける。
+      log.error(
+        `[kyoshinV2] ${notice.phase === 'warmup' ? '助走' : '待機分'}の消化中に例外`
+        + '（その分を打ち切って検知を始めます）',
+        notice.error,
+      )
+      return
+    default: {
+      // 種別を足して分岐を書き忘れたときに止まるのはここだけ。
+      const never: never = notice
+      log.warn('[kyoshinV2] 未知の助走の記録', never)
+    }
+  }
+}
+
+/**
  * 強震モニタ検知エンジン（純粋コア step・V3 近傍一致型）の React ラッパー。
  *
  * 強震モニタ検知の唯一のエンジン。検知結果は音・自動タブ切替・自動フィット・地図オーバーレイ・
@@ -260,10 +318,10 @@ export function useKyoshinDetectorV2(
    * 助走が届くまで待たせている通常フレーム（時刻の昇順）。
    *
    * **観測点集合の識別子を一緒に持つ。** 待たせている間に観測点リストの版が替わりうるので、
-   * 食わせる直前に今の座標と同じ版かを確かめる（`feed` の長さ検証では、版が違っても
-   * 点数がたまたま一致すれば通ってしまう）。
+   * 食わせる直前に今の座標と同じ版かを確かめる（長さの検証だけでは、版が違っても点数が
+   * たまたま一致すれば通ってしまう）。照合そのものは `consumeWarmup` が行う。
    */
-  const pendingRef = useRef<{ dataTimeMs: number; indices: number[]; sitesKey: string }[]>([])
+  const pendingRef = useRef<PendingFrame[]>([])
   /**
    * 最後に `step()` へ渡したデータ時刻。
    *
@@ -358,121 +416,44 @@ export function useKyoshinDetectorV2(
     // 以降は step() へ渡す分と床を並べ直す分で同じメタを使う（`meta.keys` が sites と同じ並び）。
     const stationMeta = metaRef.current.meta
 
-    // 助走と待機分の消化で `step()` が投げた件数。まとめて 1 行に残すために数える
-    // （1 件ずつ出すと、助走が最大 900 件あるぶんログが埋まる）。
-    // **最初の 1 件はデータ時刻も控える** —— 件数と例外だけでは「どの入力で壊れたか」を
-    // 再現できない。
-    // オブジェクトに持たせるのは型の都合。`let` で受けると、TypeScript はクロージャ（`feed`）の
-    // 中の代入を追わず「null のまま」と絞り込んでしまう。
-    const feedFailure = { count: 0, first: null as { frameTimeMs: number; err: unknown } | null }
-
-    /**
-     * 画面へ出さずに 1 フレームだけ検知エンジンを進める（助走と、助走を待つ間に溜めた分）。
-     *
-     * 落とす条件は通常の経路と同じものを使う。ここで通してしまうと、検知エンジンが
-     * 巻き戻り（`dtMs <= 0`）や長さ不一致で状態を作り直し、助走が無駄になる。
-     *
-     * **食わせたかどうかを返す。** 呼び出し側が「1 件も使えなかった」を数えるのに要る
-     * （落とした分まで使えたと数えると、助走が効いていないことに気づけない）。
-     *
-     * **`step()` の例外はここで握る。** 通常フレームの経路が同じ理由で握っているのと同じ扱いで、
-     * 握らないとエフェクトごと未捕捉例外で抜け、**根のエラー境界まで飛んで画面全体が落ちる**
-     * （このフックは `App()` の中で呼ばれる）。1 件の失敗で残りの助走まで止めないよう、
-     * 件数だけ数えて先へ進み、まとめて 1 行に残す。
-     */
-    const feed = (frameTimeMs: number, values: number[]): boolean => {
-      if (!Number.isFinite(frameTimeMs) || frameTimeMs <= lastSteppedMsRef.current) return false
-      if (values.length !== sites.length) return false
-      try {
-        stateRef.current = step(
-          stateRef.current,
-          {
-            dataTimeMs: frameTimeMs,
-            sites: sites as [number, number][],
-            values,
-            missing: values.map((idx) => idx < MISSING_INDEX_THRESHOLD),
-            eewActive: hasActiveNonAssumedEEWRef.current,
-          },
-          stationMeta,
-        ).state
-      } catch (err) {
-        feedFailure.count++
-        feedFailure.first ??= { frameTimeMs, err }
-        return false
-      }
-      lastSteppedMsRef.current = frameTimeMs
-      return true
-    }
-
     // ---- 助走（`utils/kyoshinWarmup`）----
     //
     // 供給が始まった時点で既に揺れていると、検知エンジンには「ずっと高いまま静止している点」に
     // しか見えず立ち上がらない。開始より前のフレームを先に食わせて履歴を作る。
     //
     // **助走が届くまで通常フレームを食わせない。** 先に食わせると、後から届いた助走が
-    // 「時刻の巻き戻り」になって上の `feed` に落とされ、助走が丸ごと効かなくなる。
+    // 「時刻の巻き戻り」になって落とされ、助走が丸ごと効かなくなる。
+    //
+    // 消化そのものは `utils/kyoshinWarmupConsumer` の純関数が持つ。ここに残すのは「待つか・
+    // 諦めるか」の判断と、返ってきた事実を文面にすることだけ。
     if (waitingWarmupRef.current) {
-      // **同じデータ時刻で 2 度積まない。** 助走は通常フレームと別の経路で届くので、
-      // データ時刻が変わらないまま `warmup` だけが変わるレンダーが必ず起きる（通常フレームの
-      // 取得 1 件は、助走の一括取得よりずっと速い）。二重に積むと、下のフラッシュが
-      // 「末尾以外」として食わせてしまい、**待たせていたフレームの検知結果が画面へ出ない**
-      // （次のフレームが届くまで、ライブなら約 1 秒のあいだ音も自動タブ切替も動かない）。
-      const last = pendingRef.current[pendingRef.current.length - 1]
-      if (!last || last.dataTimeMs !== dataTimeMs) {
-        pendingRef.current.push({ dataTimeMs, indices, sitesKey: indicesSiteConfigId })
-      }
+      pendingRef.current = pushPendingFrame(pendingRef.current, {
+        dataTimeMs,
+        indices,
+        sitesKey: indicesSiteConfigId,
+      })
       const ready = warmup !== null && warmup.supplyKey === supplyKey
       if (!ready && pendingRef.current.length < WARMUP_WAIT_MAX_FRAMES) return
-      try {
-        if (ready) {
-          let used = 0
-          let versionMismatch = 0
-          for (const f of warmup.frames) {
-            // 観測点リストの版が違う助走は使えない（座標と震度の対応が取れない）。
-            if (f.sitesKey !== sitesSiteConfigId) { versionMismatch++; continue }
-            if (feed(new Date(f.dataTime).getTime(), f.indices)) used++
-          }
-          // **届いたのに 1 件も使えなかったことは記録する。** 画面からは「助走が無かった」
-          // のと見分けが付かず、立ち上がりの検知が遅れた原因を後から追えない。
-          // 落とした理由（版違いか、それ以外か）も添える —— 前者は観測点リストの切替と
-          // 重なっただけだが、後者は助走そのものの作り方を疑う手がかりになる。
-          if (warmup.frames.length > 0 && used === 0) {
-            log.warn(
-              `[kyoshinV2] 助走 ${warmup.frames.length} フレームを 1 件も使えませんでした`
-              + `（版違い ${versionMismatch} 件・その他 ${warmup.frames.length - versionMismatch} 件。`
-              + `助走なしで検知を始めます。sites=${sitesSiteConfigId}）`,
-            )
-          }
-        } else {
-          log.warn(
-            `[kyoshinV2] 助走が ${WARMUP_WAIT_MAX_FRAMES} フレーム待っても届かないため、助走なしで検知を始めます`
-            + `（supplyKey=${supplyKey}）`,
-          )
-        }
-      } catch (err) {
-        // 助走の途中で壊れても、通常の検知は動かす。stateRef は step() が新しい状態を
-        // 返したところまでしか進んでいないので、続きから食わせて構わない。
-        log.error('[kyoshinV2] 助走の消化中に例外（助走を打ち切って検知を始めます）', err)
-      }
-      waitingWarmupRef.current = false
-      // 待たせていた分を順に食わせる。**末尾はいまのフレーム**なので、下の通常処理へ渡す。
-      const pending = pendingRef.current
+      const consumed = consumeWarmup({
+        state: stateRef.current,
+        lastSteppedMs: lastSteppedMsRef.current,
+        // 助走が届いていない（＝上限まで待って諦めた）ことは `null` で伝える。
+        warmupFrames: ready ? warmup.frames : null,
+        pending: pendingRef.current,
+        sites,
+        sitesSiteConfigId,
+        meta: stationMeta,
+        eewActive: hasActiveNonAssumedEEWRef.current,
+      })
+      stateRef.current = consumed.state
+      lastSteppedMsRef.current = consumed.lastSteppedMs
       pendingRef.current = []
-      for (let i = 0; i < pending.length - 1; i++) {
-        // 待たせている間に観測点リストの版が替わっていたら、その分は座標と対応が取れない。
-        if (pending[i].sitesKey !== sitesSiteConfigId) continue
-        feed(pending[i].dataTimeMs, pending[i].indices)
-      }
-      if (feedFailure.count > 0) {
-        const at = feedFailure.first ? new Date(feedFailure.first.frameTimeMs).toISOString() : '(不明)'
-        log.error(
-          `[kyoshinV2] 助走・待機分の消化で ${feedFailure.count} 件が例外（残りは続行。最初に落ちたのは ${at}）`,
-          feedFailure.first?.err,
-        )
-      }
+      waitingWarmupRef.current = false
+      for (const notice of consumed.notices) logWarmupNotice(notice, supplyKey, sitesSiteConfigId)
     }
 
-    // 助走と重なる時刻・巻き戻った時刻は、ここでも落とす（`feed` と同じ理由）。
+    // 助走と重なる時刻・巻き戻った時刻は、ここでも落とす（助走の消化と同じ理由 ―― 同じ時刻を
+    // 2 度渡すと `dtMs` が 0 になり、検知エンジンが不連続として状態を作り直す）。
     if (dataTimeMs <= lastSteppedMsRef.current) return
 
     let stepResult: ReturnType<typeof step>

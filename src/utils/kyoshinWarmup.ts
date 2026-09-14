@@ -7,7 +7,8 @@
 // 履歴を作っておく。
 //
 // ここに置くのは「どこまで遡るか」を決める規則だけ。取得は供給元（services/kyoshinSource・
-// kyoshinLocalArchiveSource）、消化は検知フック（hooks/useKyoshinDetectorV2）が受け持つ。
+// kyoshinLocalArchiveSource）、消化は utils/kyoshinWarmupConsumer（どのフレームをどの順で
+// 食わせるか）と検知フック（hooks/useKyoshinDetectorV2。待つか諦めるかの判断と記録）が受け持つ。
 //
 // ## どこまで遡るか
 //
