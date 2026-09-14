@@ -1047,6 +1047,30 @@ const EEW_LEAD_PHRASE = {
 export const EEW_LEAD_PHRASES: readonly string[] = Object.values(EEW_LEAD_PHRASE)
 
 /**
+ * EEW 第 1.5 フェーズ（警報の対象地方）の読み上げ文。
+ *
+ * 第 1 フェーズ（名乗りと震源）と第 2 フェーズ（予想値）のあいだに挟む。**予想値の読み上げを
+ * 遅らせる**のが狙いで、待っているあいだに続報が届けば、第 2 フェーズは新しい確定値を読める。
+ * 同時に「どこが対象か」という、その時点で既に確定している事実を先に伝えられる。
+ *
+ * @param regions これから声にする地方。**呼び出し側が「既に声にした分」を除いて渡す**
+ *   （電文の `LastKind` では判定しない。理由は `readEewWarningRegions` の JSDoc）
+ * @param isAdditional この EEW で既に地方を声にしているか。真なら「新たに」を冠する
+ *   （**判定は「声にしたか」であって「電文が新規と言ったか」ではない**。割り込みで消えた発話を
+ *   基準にすると、一度も声にしていない地方を「新たに」と言うことになる。地震情報の続報と同じ規律）
+ *
+ * 区切りに読点を使うのは、中黒が音にならず合成の区切りにもならないため（→ §4「読み上げ文で
+ * 名前を並べるときの書き方」）。
+ */
+export function eewWarningRegionsText(regions: readonly string[], isAdditional: boolean): string {
+  if (regions.length === 0) return ''
+  const names = regions.join('、')
+  return isAdditional
+    ? `新たに、${names}でも強い揺れに警戒してください。`
+    : `${names}では強い揺れに警戒してください。`
+}
+
+/**
  * 予想震度が付いていないときの句。理由の判定は `eewNoForecastReason` に委ねる
  * （待たずに読むかどうかの判断と同じ判定を使うため。二重に持つと食い違う）。
  */
