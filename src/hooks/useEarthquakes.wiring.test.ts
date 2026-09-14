@@ -1183,10 +1183,19 @@ describe('推計震度分布図（IXAC41）の結線', () => {
   }
   const KUMA = ei('2026-07-28T07:27:00.000Z', '2026-07-28T07:32:00+09:00', 1693)
   const LATER = ei('2026-07-28T07:31:00.000Z', '2026-07-28T07:36:00+09:00', 812)
+  // KUMA と同じ地震の続報（発現時刻が同じ・発表時刻だけ後）。
+  const KUMA_FOLLOW = ei('2026-07-28T07:27:00.000Z', '2026-07-28T07:40:00+09:00', 1700)
 
-  function push(h: ReturnType<typeof setup>, data: JMAEstimatedIntensity) {
-    act(() => { h.current.loadReplayEvents([{ payload: { kind: 'estimatedIntensity', data }, replayTime: serverDate() }]) })
+  function push(h: ReturnType<typeof setup>, data: JMAEstimatedIntensity, silent = false) {
+    act(() => { h.current.loadReplayEvents([{ payload: { kind: 'estimatedIntensity', data }, replayTime: serverDate(), silent }]) })
     act(() => { vi.advanceTimersByTime(50) })
+  }
+
+  /** 鳴らす経路へ流れた分の「初報か続報か」だけを取り出す。 */
+  function isNewFlags(events: LiveEvent[]): boolean[] {
+    return events
+      .filter(e => (e.kind as string) === 'estimatedIntensity')
+      .map(e => (e as { isNew: boolean }).isNew)
   }
 
   beforeEach(() => { vi.useFakeTimers() })
@@ -1248,6 +1257,54 @@ describe('推計震度分布図（IXAC41）の結線', () => {
 
     push(h, KUMA)
     expect(h.current.estimatedIntensity?.arrivalTime).toBe(KUMA.arrivalTime)
+  })
+
+  // 正: **別の地震の分布を挟んでも、同じ地震の続報は続報として流す。**
+  // 実電文（2024-01-01 の能登半島地震）がこの並びで、①本震 ②別の地震 ③本震の続報 と届いた。
+  // 「いま出している 1 通」との比較だけで決めていた頃は、③が初報として読まれていた。
+  it('別の地震の分布を挟んでも、同じ地震の続報は続報として流す', async () => {
+    const events: LiveEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+    await h.flush()
+    push(h, KUMA)
+    push(h, LATER)
+    push(h, KUMA_FOLLOW)
+    expect(isNewFlags(events)).toEqual([true, true, false])
+  })
+
+  // 対照: 挟まずに続けて届いた続報も、当然「続報」。
+  it('続けて届いた同じ地震の続報は続報として流す', async () => {
+    const events: LiveEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+    await h.flush()
+    push(h, KUMA)
+    push(h, KUMA_FOLLOW)
+    expect(isNewFlags(events)).toEqual([true, false])
+  })
+
+  // 安全弁: **音も声も伴わない注入では台帳へ積まない。** リプレイ開始時の初期状態は画面を
+  // 組み立てるだけで何も鳴らないので、積むと直後の続報が「更新されました」と読まれ、
+  // 聞き手は前の報を聞き逃したと思う。
+  it('初期状態の注入は台帳へ積まない', async () => {
+    const events: LiveEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+    await h.flush()
+    push(h, KUMA, true)
+    expect(isNewFlags(events)).toEqual([])
+    push(h, KUMA_FOLLOW)
+    expect(isNewFlags(events)).toEqual([true])
+  })
+
+  // 安全弁: リセットで台帳も空にする。リプレイの開始・リセットで時間軸が変わるため、
+  // 残すと新しい軸の初報が「更新されました」と読まれる。
+  it('リセット後は同じ地震でも初報として流す', async () => {
+    const events: LiveEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+    await h.flush()
+    push(h, KUMA)
+    act(() => { h.current.resetState() })
+    push(h, KUMA_FOLLOW)
+    expect(isNewFlags(events)).toEqual([true, true])
   })
 })
 
