@@ -187,7 +187,8 @@ export async function fetchLocalArchiveQuakeHistory(
 ): Promise<QuakeHistoryResult> {
   const file = await loadFile(meta.id)
   if (!file) {
-    return { quakes: [], skipped: 0, failedArchiveUrls: [fileUrl(meta.id)] }
+    // ローカル履歴アーカイブは帯・長周期を収録していないので `extras` は常に空。
+    return { quakes: [], extras: [], skipped: 0, failedArchiveUrls: [fileUrl(meta.id)] }
   }
 
   // 並べ替えは payload 内部の event.time ではなくエントリ自身の time で行う。
@@ -199,5 +200,5 @@ export async function fetchLocalArchiveQuakeHistory(
     .slice(0, targetEvents)
     .map((e) => (e.payload as { kind: 'event'; event: JMAQuake }).event)
 
-  return { quakes, skipped: 0, failedArchiveUrls: [] }
+  return { quakes, extras: [], skipped: 0, failedArchiveUrls: [] }
 }

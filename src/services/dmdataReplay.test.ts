@@ -928,6 +928,96 @@ describe('fetchDmdataQuakeHistory', () => {
     expect(result.quakes.every(q => q.id.includes('202608100'))).toBe(true)
   })
 
+  /**
+   * 地震回数に関する情報（VXSE60）の電文本体。
+   *
+   * 中身は最小限（区間 1 つ）。ここで見たいのは「拾うかどうか」だけで、読み取りそのものは
+   * `dmdataParser.test.ts` が実電文の形で固定している。
+   */
+  function countBody(eventId: string, reportTime: string): string {
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<Report xmlns="http://xml.kishou.go.jp/jmaxml1/">
+<Control><Title>地震回数に関する情報</Title><Status>通常</Status><EditorialOffice>気象庁</EditorialOffice><PublishingOffice>気象庁</PublishingOffice></Control>
+<Head xmlns="http://xml.kishou.go.jp/jmaxml1/informationBasis1/">
+<Title>地震回数に関する情報</Title>
+<ReportDateTime>${reportTime}</ReportDateTime>
+<TargetDateTime>${reportTime}</TargetDateTime>
+<EventID>${eventId}</EventID>
+<InfoType>発表</InfoType>
+<Serial>1</Serial>
+</Head>
+<Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/">
+<EarthquakeCount>
+<Item type="累積地震回数"><StartTime>${reportTime}</StartTime><EndTime>${reportTime}</EndTime><Number>12</Number><FeltNumber>3</FeltNumber></Item>
+</EarthquakeCount>
+</Body>
+</Report>`
+  }
+
+  /** 地震と地震回数を混ぜた 1 日ぶんのアーカイブ。 */
+  async function dayArchiveWithCount(
+    quakes: Array<{ id: string; eventId: string; time: string }>,
+    counts: Array<{ id: string; eventId: string; time: string }>,
+  ) {
+    return makeTarGz([
+      {
+        name: 'telegrams.json',
+        content: JSON.stringify([
+          ...quakes.map(t => manifestEntry(t.id, 'VXSE53', t.time)),
+          ...counts.map(t => manifestEntry(t.id, 'VXSE60', t.time)),
+        ]),
+      },
+      ...quakes.map(t => ({ name: `${t.id}_20260810120500000_0.xml`, content: historyBody(t.eventId, t.time) })),
+      ...counts.map(t => ({ name: `${t.id}_20260810120500000_0.xml`, content: countBody(t.eventId, t.time) })),
+    ])
+  }
+
+  // 7 日間表示され続ける帯（と地震ごとに紐づく長周期）は、初期状態の 24 時間では足りない。
+  // **地震の打ち切りに巻き込まれると、群発の最中ほど復元できなくなる**（地震が多い日ほど
+  // 早く目標件数に達するため）。
+  it('地震が目標件数に達した後の古い日からも、帯は拾う', async () => {
+    const newer = await dayArchiveWithCount(
+      [
+        { id: 'aaaaaaa1', eventId: '20260810010000', time: '2026-08-10T01:05:00+09:00' },
+        { id: 'bbbbbbb2', eventId: '20260810020000', time: '2026-08-10T02:05:00+09:00' },
+      ],
+      [],
+    )
+    const older = await dayArchiveWithCount(
+      [{ id: 'ccccccc3', eventId: '20260809010000', time: '2026-08-09T01:05:00+09:00' }],
+      [{ id: 'ddddddd4', eventId: '20260809000000', time: '2026-08-09T02:05:00+09:00' }],
+    )
+    globalThis.fetch = mockHistoryArchives([
+      { date: '2026-08-10', url: 'https://x/d10', gz: newer },
+      { date: '2026-08-09', url: 'https://x/d09', gz: older },
+    ]) as unknown as typeof fetch
+
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 2, 7, false)
+
+    // 地震は新しい日の 2 件で打ち切られるが、帯は古い日からも拾う
+    expect(result.quakes).toHaveLength(2)
+    expect(result.extras).toHaveLength(1)
+    expect(result.extras[0].payload.kind).toBe('earthquakeCount')
+    expect(result.extras[0].silent).toBe(true)
+  })
+
+  // 帯は画面に 1 つしか出ない。古い報まで流すと、初期状態が入れた新しい値を上書きしうる。
+  it('同じ種別の帯は最新 1 通だけを返す', async () => {
+    const day = await dayArchiveWithCount(
+      [],
+      [
+        { id: 'aaaaaaa1', eventId: '20260810000000', time: '2026-08-10T01:05:00+09:00' },
+        { id: 'bbbbbbb2', eventId: '20260810000000', time: '2026-08-10T03:05:00+09:00' },
+      ],
+    )
+    globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz: day }]) as unknown as typeof fetch
+
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
+
+    expect(result.extras).toHaveLength(1)
+    expect(result.extras[0].replayTime.toISOString()).toBe(new Date('2026-08-10T03:05:00+09:00').toISOString())
+  })
+
   // 続報を別イベントとして数えると、同じ地震が続いた日で打ち切りが早まりカードが増えない。
   it('同じ地震の続報は 1 件として数える', async () => {
     const day = await dayArchive([

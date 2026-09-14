@@ -59,18 +59,18 @@ const earthquakeCount = (operationStatus?: TelegramOperationStatus): JMAEarthqua
 describe('特別情報の帯の運用種別', () => {
   // 正: 5 つの帯すべてに印が出る。**帯ごとに書くと片方だけ落ちる**ので、まとめて見る。
   it('訓練報はどの帯にも印が出る', () => {
-    render(<SpecialInfoBanner nankai={nankai('訓練')} nankaiCommentary={commentary('訓練')} kohatsu={kohatsu('訓練')} quakeNotice={quakeNotice('訓練')} earthquakeCount={earthquakeCount('訓練')} />)
+    render(<SpecialInfoBanner nankai={nankai('訓練')} nankaiCommentary={commentary('訓練')} kohatsu={kohatsu('訓練')} quakeNotice={quakeNotice('訓練')} earthquakeCount={earthquakeCount('訓練')} speakingTelegramTextSubject={null} />)
     expect(screen.getAllByText('訓練報')).toHaveLength(5)
   })
 
   it('試験報も同じ', () => {
-    render(<SpecialInfoBanner nankai={nankai('試験')} nankaiCommentary={commentary('試験')} kohatsu={kohatsu('試験')} quakeNotice={quakeNotice('試験')} earthquakeCount={earthquakeCount('試験')} />)
+    render(<SpecialInfoBanner nankai={nankai('試験')} nankaiCommentary={commentary('試験')} kohatsu={kohatsu('試験')} quakeNotice={quakeNotice('試験')} earthquakeCount={earthquakeCount('試験')} speakingTelegramTextSubject={null} />)
     expect(screen.getAllByText('試験報')).toHaveLength(5)
   })
 
   // 対照: 通常の報では印を出さない。**平常時に余計な印が出ないこと**を押さえる。
   it('通常の報では印を出さない', () => {
-    render(<SpecialInfoBanner nankai={nankai()} nankaiCommentary={commentary()} kohatsu={kohatsu()} quakeNotice={quakeNotice()} earthquakeCount={earthquakeCount()} />)
+    render(<SpecialInfoBanner nankai={nankai()} nankaiCommentary={commentary()} kohatsu={kohatsu()} quakeNotice={quakeNotice()} earthquakeCount={earthquakeCount()} speakingTelegramTextSubject={null} />)
     expect(screen.queryByText('訓練報')).toBeNull()
     expect(screen.queryByText('試験報')).toBeNull()
     // 帯そのものは出ている（印だけが出ない）

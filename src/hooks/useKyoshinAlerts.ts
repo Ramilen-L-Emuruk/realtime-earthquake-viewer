@@ -504,7 +504,8 @@ export interface KyoshinAlertsDeps {
    * 生の `setActiveTab` を渡してはいけない（保持が張られず、直後の地震情報に画面を奪われる）。
    */
   setActiveTab: (tab: TabId) => void
-  revertToDefaultTab: () => void
+  /** 既定タブへ戻す。引数はどの経路から戻そうとしたか（見送りの記録に出る） */
+  revertToDefaultTab: (reason: string) => void
   /**
    * 「この 1 点を一時的に見せたい」という要求。**通知音を鳴らすのと同じ判定で**呼ばれる
    * （揺れの強まり＝レベルアップ／再エスカレーションと、別地点発報）。地図側（`FitToDetectionGL`）が
@@ -635,8 +636,8 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps): { resetForReplay: () 
       shocksBeforeStallRef.current = stalled ? lastConfirmedShocksRef.current : []
       title.applyPriority({ kyoshinDetected: false })
       if (activeEEWsRef.current.size === 0) {
-        log.info(`[tab] → ${defaultTabRef.current} (揺れ検知終了 V3)`)
-        revertToDefaultTab()
+        log.info(`[tab] ${defaultTabRef.current} を要求 (揺れ検知終了 V3)`)
+        revertToDefaultTab('揺れ検知終了 V3')
       }
     } else if (!confirmed && !stalled) {
       // 結果は戻ったのに検知は無い＝続きではなかった。印を下ろす。ここを省くと印が残り続け、
@@ -664,8 +665,8 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps): { resetForReplay: () 
       // 確定に昇格せず消えた場合のみ、静かに元へ戻す
       title.applyPriority({ kyoshinDetected: false })
       if (activeEEWsRef.current.size === 0) {
-        log.info(`[tab] → ${defaultTabRef.current} (揺れの可能性 失効 V3)`)
-        revertToDefaultTab()
+        log.info(`[tab] ${defaultTabRef.current} を要求 (揺れの可能性 失効 V3)`)
+        revertToDefaultTab('揺れの可能性 失効 V3')
       }
     }
     prevCandidateRef.current = candidate

@@ -14,6 +14,7 @@ import {
   quakeRetractionOf,
   quakeKeyForLpgmEventId,
 } from './quakeMerge'
+import { formatQuakeReports } from './formatters'
 import type { JMAQuake, IssueType, IntensityScale, EarthquakePoint, DomesticTsunami, CorrectType } from '../types/earthquake'
 
 // 区域名の索引を渡す引数は、本番の呼び出し側が渡し忘れないよう必須にしてある
@@ -41,6 +42,19 @@ const isRetractedQuakeReport = (
   idx: AreaPrefIndex = null,
 ) => isRetractedQuakeReportWithIndex(retractions, incoming, idx)
 
+/**
+ * 受け取った電文種別の記録（`reports`）を除いた中身。
+ *
+ * **据え置き・置換の確認に同一参照や素の `toEqual` は使えない。** 記録は据え置く経路でも
+ * 更新されるため（→ quakeMerge.ts の `holdBack`）、内容が据え置かれた回でも新しい
+ * オブジェクトが返る。ここで見たいのは「incoming の内容を採ったかどうか」なので、
+ * 記録を外して比べる。記録の積み上がり方は専用の describe（「受け取った電文種別の記録」）が見る。
+ */
+function withoutReports(q: JMAQuake): Omit<JMAQuake, 'reports'> {
+  const { reports: _reports, ...rest } = q
+  return rest
+}
+
 interface QuakeOpts {
   eventId?: string
   id?: string
@@ -54,6 +68,8 @@ interface QuakeOpts {
   correct?: CorrectType  // 訂正区分（既定は 'なし'）
   tsunami?: DomesticTsunami
   cancelledAt?: Date
+  telegramKey?: string   // 電文の一意鍵（→ JMAQuake.telegramKey）。省略すると id が鍵になる
+  reportSerial?: number  // 電文が名乗る報番号（→ JMAQuake.reportSerial）
 }
 
 // 熊本 M7.1・震度7（2026-07-28 16:27 JST = 07:27 UTC）を既定とするヘルパ。
@@ -65,6 +81,8 @@ function makeQuake(o: QuakeOpts = {}): JMAQuake {
   return {
     kind: 'quake',
     id: o.id ?? `dmdata-quake-${eventId}-1`,
+    ...(o.telegramKey !== undefined && { telegramKey: o.telegramKey }),
+    ...(o.reportSerial !== undefined && { reportSerial: o.reportSerial }),
     time,
     ...(o.cancelledAt ? { cancelledAt: o.cancelledAt } : {}),
     issue: { source: 'dmdata', time, type, correct: o.correct ?? 'なし' },
@@ -409,7 +427,7 @@ describe('mergeQuakeInto — VXSE61（顕著地震）', () => {
     const n = makeNoIntensity({ type: '顕著な地震の震源要素更新のお知らせ' })
     const merged = mergeQuakeInto(undefined, n)
     // 統合結果には eventKey が付くため、中身が incoming と一致することで確認する。
-    expect(merged).toEqual({ ...n, eventKey: quakeEventKey(n) })
+    expect(withoutReports(merged)).toEqual({ ...n, eventKey: quakeEventKey(n) })
     expect(hasIntensity(merged)).toBe(false)
   })
 
@@ -566,13 +584,13 @@ describe('mergeQuakeInto — 通常電文どうし', () => {
   it('各地の震度(既存) に 発表が古い震度速報 が来たら据え置く（対照）', () => {
     const e = makeQuake({ type: '各地の震度情報', maxScale: 70, time: '2026-07-28T07:30:00Z' })
     const n = makeQuake({ type: '震度速報', maxScale: 50, time: '2026-07-28T07:20:00Z' })
-    expect(mergeQuakeInto(e, n)).toBe(e)
+    expect(withoutReports(mergeQuakeInto(e, n))).toEqual(withoutReports(e))
   })
 
   it('低優先度(既存) に 高優先度 が来たら置換する', () => {
     const e = makeQuake({ type: '震度速報', maxScale: 40 })
     const n = makeQuake({ type: '各地の震度情報', maxScale: 70 })
-    expect(mergeQuakeInto(e, n)).toEqual({ ...n, eventKey: quakeEventKey(n) })
+    expect(withoutReports(mergeQuakeInto(e, n))).toEqual({ ...n, eventKey: quakeEventKey(n) })
   })
 
   it('震度欠落の後続電文は既存の震度で補完される', () => {
@@ -608,13 +626,13 @@ describe('mergeQuakeInto — 通常電文どうし', () => {
   it('発表時刻が空の続報は据え置く（異常データを安全側＝据え置きに倒す）', () => {
     const e = makeQuake({ type: '震度速報', maxScale: 50, time: '2026-07-28T07:27:30Z' })
     const n = makeQuake({ type: '震度速報', maxScale: 60, time: '' })
-    expect(mergeQuakeInto(e, n)).toBe(e)
+    expect(withoutReports(mergeQuakeInto(e, n))).toEqual(withoutReports(e))
   })
 
   it('取消表示中(cancelledAt)のカードは優先度に関わらず通常電文で置換される', () => {
     const e = makeQuake({ type: '各地の震度情報', maxScale: 70, cancelledAt: new Date() })
     const n = makeQuake({ type: '震度速報', maxScale: 40 })
-    expect(mergeQuakeInto(e, n)).toEqual({ ...n, eventKey: quakeEventKey(n) })
+    expect(withoutReports(mergeQuakeInto(e, n))).toEqual({ ...n, eventKey: quakeEventKey(n) })
   })
 
   it('顕著地震とマージ済みの完成カード（震度あり）は低優先度の後続電文で据え置く', () => {
@@ -624,7 +642,7 @@ describe('mergeQuakeInto — 通常電文どうし', () => {
       issue: { source: 'dmdata', time: '2026-07-28T07:35:00Z', type: '顕著な地震の震源要素更新のお知らせ', correct: 'なし' },
     }
     const n = makeQuake({ type: '震度速報', maxScale: 50, time: '2026-07-28T07:40:00Z' })
-    expect(mergeQuakeInto(e, n)).toBe(e)
+    expect(withoutReports(mergeQuakeInto(e, n))).toEqual(withoutReports(e))
   })
 
   // 能登 2024/1/1 16:06〜16:08 の実データで確認された不具合の回帰テスト（3件セット）。
@@ -661,7 +679,7 @@ describe('mergeQuakeInto — 通常電文どうし', () => {
         type: '震度速報', maxScale: 50, time: '2026-01-01T07:07:50Z',  // epicenterOnly より古い
         points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
       })
-      expect(mergeQuakeInto(afterEpicenter, staleReplay)).toBe(afterEpicenter)
+      expect(withoutReports(mergeQuakeInto(afterEpicenter, staleReplay))).toEqual(withoutReports(afterEpicenter))
     })
 
     it('安全弁: VXSE61 とマージ済みの完成カードは、発表時刻が新しくても変わらず据え置く', () => {
@@ -672,7 +690,7 @@ describe('mergeQuakeInto — 通常電文どうし', () => {
         issue: { source: 'dmdata', time: '2026-07-28T07:35:00Z', type: '顕著な地震の震源要素更新のお知らせ', correct: 'なし' },
       }
       const muchNewer = makeQuake({ type: '震度速報', maxScale: 50, time: '2099-01-01T00:00:00Z' })
-      expect(mergeQuakeInto(e, muchNewer)).toBe(e)
+      expect(withoutReports(mergeQuakeInto(e, muchNewer))).toEqual(withoutReports(e))
     })
   })
 
@@ -1392,5 +1410,140 @@ describe('quakeKeyForLpgmEventId', () => {
   it('統合済みカードでは、そのカードが持つ eventKey を返す', () => {
     const merged = { ...makeQuake({ eventId: '20260728162718' }), eventKey: 'merged-key' } as JMAQuake
     expect(quakeKeyForLpgmEventId([merged], '20260728162718')).toBe('merged-key')
+  })
+})
+
+// --- 受け取った電文種別の記録（カードの見出しの材料。→ `QuakeReportRecord`） ---
+//
+// 能登 2024-01-01 の前震（EventID 20240101160608）の並びを土台にする。DMDATA のアーカイブから
+// 生電文を引いて確かめた実際の順序:
+//   07:07:40Z VXSE51 震度速報 → 07:08:31Z VXSE52 震源情報 → 07:08:40Z VXSE51 震度速報
+//   → 07:10:04Z VXSE53 震源・震度情報（Serial=1）
+//   （時刻は `Control/DateTime`＝UTC。JST では 16:07〜16:10 で、2 通目と 3 通目は発表時刻が同じ 16:08）
+// VXSE51/52 は `Head/Serial` が空要素なので、通数は受信側で数えるほかない。
+describe('受け取った電文種別の記録', () => {
+  const NOTO = '20240101160608'
+  const 速報1 = () => makePrompt({
+    eventId: NOTO, id: `dmdata-quake-${NOTO}-1`,
+    telegramKey: '2024-01-01T07:07:40Z', time: '2024-01-01T16:07:00+09:00',
+  })
+  const 震源情報 = () => makeNoIntensity({
+    type: '震源情報', eventId: NOTO, id: `dmdata-quake-${NOTO}-1`,
+    telegramKey: '2024-01-01T07:08:31Z', time: '2024-01-01T16:08:00+09:00',
+  })
+  const 速報2 = () => makePrompt({
+    eventId: NOTO, id: `dmdata-quake-${NOTO}-1`,
+    telegramKey: '2024-01-01T07:08:40Z', time: '2024-01-01T16:08:00+09:00',
+  })
+  /** 取りこぼれて遅れて届いた震度速報（内容は据え置かれる）。 */
+  const 古い速報 = () => makePrompt({
+    eventId: NOTO, id: `dmdata-quake-${NOTO}-1`,
+    telegramKey: '2024-01-01T07:06:00Z', time: '2024-01-01T16:06:00+09:00',
+  })
+  const 震源震度 = (o: { telegramKey?: string; time?: string; reportSerial?: number } = {}) => makeQuake({
+    type: '震源・震度情報', eventId: NOTO, id: `dmdata-quake-${NOTO}-1`,
+    telegramKey: o.telegramKey ?? '2024-01-01T07:10:04Z',
+    time: o.time ?? '2024-01-01T16:10:00+09:00',
+    reportSerial: o.reportSerial ?? 1,
+  })
+
+  /** 電文を順に流して、カードの見出しに出る文字列を得る。 */
+  function headline(...telegrams: JMAQuake[]): string {
+    let card: JMAQuake | undefined
+    for (const t of telegrams) card = mergeQuakeInto(card, t)
+    return formatQuakeReports(card!.reports, card!.issue.type)
+  }
+
+  // 正: 種別が前後して届いても、受け取った全種別が初出順に並び、2 通目以降に #N が付く。
+  it('震度速報 → 震源情報 → 震度速報 の順で受けると「震度速報#2/震源情報」になる', () => {
+    expect(headline(速報1(), 震源情報(), 速報2())).toBe('震度速報#2/震源情報')
+  })
+
+  // 対照: 同じ電文が二度流れても増えない。「もっと見る」は既存カードへ過去の電文を流し直すため、
+  // 重複は現実に起きる（`mergeQuakeHistory` の base 経由）。
+  it('同じ電文が二度流れても通数は増えない', () => {
+    expect(headline(速報1(), 速報1())).toBe('震度速報')
+    expect(headline(速報1(), 震源情報(), 速報2(), 速報2(), 震源情報())).toBe('震度速報#2/震源情報')
+  })
+
+  // 安全弁: 記録も変わらないなら「変化なし」を表す同一参照を返す。ここが崩れると、据え置いた
+  // はずの電文のたびに state が更新され、再描画が走り続ける。
+  //
+  // **据え置く経路で確かめる。** incoming の内容を採る経路は記録に関わらず新しいカードを作る
+  // ので、そちらは同一参照にならない（この機能を入れる前からそう）。
+  it('据え置く電文で記録も変わらないなら、既存カードをそのまま返す', () => {
+    const card = mergeQuakeInto(undefined, 速報2())
+    const once = mergeQuakeInto(card, 古い速報())
+    expect(once).not.toBe(card)   // 対の確認: 記録が増えた回は新しいカードになる
+    expect(mergeQuakeInto(once, 古い速報())).toBe(once)
+  })
+
+  // 正: 完全版が届いたら速報段階は見出しから落ちる。
+  it('震源・震度情報が届いたら、震度速報・震源情報は見出しから落ちる', () => {
+    expect(headline(速報1(), 震源情報(), 速報2(), 震源震度())).toBe('震源・震度情報')
+  })
+
+  // 正: 電文が報番号を名乗っていればそちらを優先する。途中から受信し始めた端末では受信通数が
+  // 気象庁の報番号より少なくなるため、電文の値の方が正しい。
+  it('電文の報番号があれば、受信通数ではなくそちらを出す', () => {
+    // 第 2 報だけを受け取った端末でも「#2」と出る（受信通数は 1 なので、通数で数えると出ない）。
+    expect(headline(震源震度({ reportSerial: 2 }))).toBe('震源・震度情報#2')
+    // 逆に、報番号を名乗らない種別は受信通数で数える。
+    expect(headline(速報1(), 速報2())).toBe('震度速報#2')
+  })
+
+  // 安全弁: 報番号は大きい方を採り、古い報が後から流れても下がらない。
+  //
+  // **通数と食い違う組で確かめる。** 「第 1 報と第 2 報を受け取る」だと通数も報番号も 2 になり、
+  // 報番号を捨てる実装でも同じ答えが出てしまう（それで一度すり抜けた）。
+  it('報番号は大きい方を採る（到着順が入れ替わっても下がらない）', () => {
+    const 第2報 = 震源震度({ telegramKey: '2024-01-01T07:24:29Z', time: '2024-01-01T16:24:00+09:00', reportSerial: 2 })
+    const 第3報 = 震源震度({ telegramKey: '2024-01-01T07:40:00Z', time: '2024-01-01T16:40:00+09:00', reportSerial: 3 })
+    // 受け取ったのは 2 通。気象庁が名乗るのは第 3 報。
+    expect(headline(第2報, 第3報)).toBe('震源・震度情報#3')
+    expect(headline(第3報, 第2報)).toBe('震源・震度情報#3')
+  })
+
+  // 正: 顕著な地震の震源要素更新のお知らせは単独で出す（従来の見出しと同じ振る舞い）。
+  it('顕著な地震の震源要素更新のお知らせが届いたら、それだけを出す', () => {
+    const 更新 = makeNoIntensity({
+      type: '顕著な地震の震源要素更新のお知らせ', eventId: NOTO, id: `dmdata-quake-${NOTO}-1`,
+      telegramKey: '2024-01-02T00:00:00Z', time: '2024-01-02T09:00:00+09:00',
+    })
+    expect(headline(速報1(), 震源情報(), 震源震度(), 更新)).toBe('顕著な地震の震源要素更新のお知らせ')
+  })
+
+  // 正: 中身が据え置かれる電文でも、受け取った事実は見出しに出る。ここが抜けると、
+  // 「震源情報も受け取っている」ことが画面から消えるという、この機能そのものが成り立たない。
+  it('発表時刻が古くて内容が据え置かれる電文でも、通数には数える', () => {
+    const card = mergeQuakeInto(undefined, 速報2())
+    const merged = mergeQuakeInto(card, 古い速報())
+    // 中身（発表時刻）は新しい方のまま。
+    expect(merged.time).toBe('2024-01-01T16:08:00+09:00')
+    // 受け取った事実は残る。
+    expect(formatQuakeReports(merged.reports, merged.issue.type)).toBe('震度速報#2')
+  })
+
+  // 安全弁: 履歴経路（「もっと見る」）でも重複は数えない。
+  it('履歴経路で同じ電文が再度流れても通数は増えない', () => {
+    const first = mergeQuakeHistory([速報1(), 震源情報(), 速報2()])
+    expect(formatQuakeReports(first[0].reports, first[0].issue.type)).toBe('震度速報#2/震源情報')
+    const again = mergeQuakeHistory([速報1(), 震源情報(), 速報2()], first)
+    expect(formatQuakeReports(again[0].reports, again[0].issue.type)).toBe('震度速報#2/震源情報')
+  })
+
+  // 安全弁: 暫定 ID と確定 ID のカードを畳む経路でも記録が落ちない。合流の向きは決まって
+  // いないので、どちらから畳んでも同じ見出しになること。
+  it('同じ eventId のカードを畳んでも記録は失われない', () => {
+    const a = mergeQuakeInto(undefined, 速報1())
+    const b = mergeQuakeInto(undefined, 震源情報())
+    expect(formatQuakeReports(coalesceByEventId([a, b])[0].reports, '震度速報')).toBe('震度速報/震源情報')
+    expect(formatQuakeReports(coalesceByEventId([b, a])[0].reports, '震度速報')).toBe('震源情報/震度速報')
+  })
+
+  // 安全弁: 記録を持たないカード（統合を通らない生電文・古い履歴）は従来の見出しへ落ちる。
+  it('記録を持たないカードは種別 1 つに落ちる', () => {
+    expect(formatQuakeReports(undefined, '震源・震度情報')).toBe('震源・震度情報')
+    expect(formatQuakeReports([], '震度速報')).toBe('震度速報')
   })
 })

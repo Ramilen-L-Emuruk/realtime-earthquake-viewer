@@ -44,6 +44,7 @@ export type SpeechRef =
   | { kind: 'quakeRegion'; name: string; scale: number; unreceived?: boolean }
   | { kind: 'quakeFact'; fact: QuakeFact; value: string }
   | { kind: 'unreceivedNote' }
+  | { kind: 'telegramText' }
 
 /**
  * `unreceivedNote` は**未入電モードの自動開閉のためだけ**に置いてある印。
@@ -57,6 +58,10 @@ export type SpeechRef =
  * **名前を持たせないのは、既読の記録に混ぜないため。** `quakeRegion` で足すと、その名前が
  * 「声にした区域」として記録され、続報の差分から落ちる（{@link applySpokenRefs} は
  * `quakeRegion` / `quakeFact` だけを見るので、この種類は素通りする）。
+ *
+ * `telegramText` も同じ役目で、**気象庁が書いた文を読んでいるあいだ、その表示を開いておく**
+ * ためだけの印（→ {@link hasTelegramTextFollowTarget}）。どの電文の文かは参照ではなく
+ * セッションの `subject` が持つ —— 参照に種別を持たせると、既読の記録へ混ざる形が増える。
  */
 
 /**
@@ -145,6 +150,33 @@ function isUnreceivedRef(r: SpeechRef): boolean {
 export function hasUnreceivedFollowTarget(segments: readonly SpeechSegment[] | undefined): boolean {
   return segments?.some(s => s.refs.some(isUnreceivedRef)) ?? false
 }
+
+/**
+ * 気象庁が書いた文の読み上げか（＝その表示を開いておく対象か）。
+ *
+ * **門は他の 2 つと別に持つ。** 津波カードの追従（`hasFollowTarget`）や未入電モードの自動開閉
+ * （`hasUnreceivedFollowTarget`）へ相乗りすると、気象庁の文を読んでいるあいだに津波カードが
+ * 動いたり、未入電の一覧が開いたりする —— どれも別の参照を見るための門で、対象が違う。
+ */
+export function hasTelegramTextFollowTarget(segments: readonly SpeechSegment[] | undefined): boolean {
+  return segments?.some(s => s.refs.some(r => r.kind === 'telegramText')) ?? false
+}
+
+/**
+ * 気象庁が書いた文を読み上げたときに、画面へ開く先がある電文の種別。
+ *
+ * **地震情報と長周期地震動観測情報は入らない。** あの 2 つの付加文は元から畳んでおらず、
+ * 開く相手がいない（→ quake-spec.md §8「固定付加文（その他）…はそのまま出す」）。
+ *
+ * ここに無い種別では参照を付けない＝追従セッションを立てない。立ててしまうと、誰も反応しない
+ * セッションが始まっては終わる状態になり、**症状が出ないぶん後から意図を確かめられない**。
+ *
+ * 一覧は設定タブ側（`SpecialInfoBanner` の `speaking(...)` と `TsunamiTab` の
+ * `speakingTelegramText`）と対応する。食い違いは `ttsFollow.test.ts` が検査する。
+ */
+export const TELEGRAM_TEXT_OPEN_TARGET_KINDS: ReadonlySet<string> = new Set([
+  'nankai', 'nankaiCommentary', 'kohatsu', 'earthquakeCount', 'tsunami',
+])
 
 /**
  * チャンクごとの参照から、「未入電を声にしているチャンク」の範囲を返す。

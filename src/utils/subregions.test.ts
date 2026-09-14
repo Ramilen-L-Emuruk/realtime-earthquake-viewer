@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 // ringsBounds は純関数でモジュール状態（cache / inflight）に依存しないため静的 import で使う。
-import { ringsBounds, type SubRegion } from './subregions'
+import { ringsBounds, ringsBoundsIndex, type SubRegion } from './subregions'
 import { DATA_FETCH_TIMEOUT_MS } from './fetchJson'
 
 // subregions.ts はモジュールスコープに cache / inflight / 購読者を持つため、
@@ -185,5 +185,45 @@ describe('onSubRegionsLoaded', () => {
     await loadSubRegions()
 
     expect(seen).toEqual([])
+  })
+})
+
+// 外接矩形の索引。**同じ入力なら作り直さない**のが眼目 —— 境界は県 47 件・区域 192 件で
+// 合わせて 24 万点あり、地震カードの一覧は仮想化していないのでカードの枚数ぶん繰り返される。
+const subRegionEntries = (data: SubRegion[]) => () => data.map((r) => [r.name, r.rings] as const)
+
+describe('外接矩形の索引', () => {
+  it('正: 名前から外接矩形を引ける', () => {
+    const index = ringsBoundsIndex(SAMPLE, subRegionEntries(SAMPLE))
+    expect(index.get(SAMPLE[0].name)).toEqual(ringsBounds(SAMPLE[0].rings))
+  })
+
+  it('正: 同じ入力なら同じ索引を返す（作り直さない）', () => {
+    expect(ringsBoundsIndex(SAMPLE, subRegionEntries(SAMPLE)))
+      .toBe(ringsBoundsIndex(SAMPLE, subRegionEntries(SAMPLE)))
+  })
+
+  it('正: キャッシュに当たったら中身を作り直さない（組を作る費用もかからない）', () => {
+    ringsBoundsIndex(SAMPLE, subRegionEntries(SAMPLE))
+    let called = 0
+    ringsBoundsIndex(SAMPLE, () => { called += 1; return subRegionEntries(SAMPLE)() })
+    expect(called).toBe(0)
+  })
+
+  it('対照: 別の入力には別の索引を作る', () => {
+    const other = SAMPLE.map((r) => ({ ...r }))
+    expect(ringsBoundsIndex(other, subRegionEntries(other)))
+      .not.toBe(ringsBoundsIndex(SAMPLE, subRegionEntries(SAMPLE)))
+  })
+
+  it('安全弁: 頂点を持たない要素は索引へ入れない（寄り先を作れないため）', () => {
+    const empty: SubRegion[] = [{ name: '空区域', label: [0, 0], room: [0, 0], rings: [] }]
+    expect(ringsBoundsIndex(empty, subRegionEntries(empty)).has('空区域')).toBe(false)
+  })
+
+  it('名前をキーに持つ Record（県・津波予報区）も同じ索引で引ける', () => {
+    const zones: Record<string, [number, number][][]> = { 岩手県沿岸: [[[39, 141], [41, 142]]] }
+    const index = ringsBoundsIndex(zones, () => Object.entries(zones))
+    expect(index.get('岩手県沿岸')).toEqual({ minLat: 39, maxLat: 41, minLng: 141, maxLng: 142 })
   })
 })

@@ -279,5 +279,6 @@ export async function fetchP2PQuakeHistory(before: Date, targetEvents: number): 
     quakes.push(event)
   }
 
-  return { quakes, skipped, failedArchiveUrls: [] }
+  // P2PQuake は帯（地震回数・お知らせ・南海トラフ解説情報）も長周期も配信しないので常に空。
+  return { quakes, extras: [], skipped, failedArchiveUrls: [] }
 }

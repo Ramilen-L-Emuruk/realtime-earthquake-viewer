@@ -59,6 +59,26 @@ export function toggleDistributionOverlay(
 }
 
 /**
+ * 震度分布モードを**開いた**結果を返す（推計震度分布図の受信で自動的に開くとき）。
+ *
+ * {@link toggleDistributionOverlay} と分けてあるのは、こちらが「開く」だけで閉じないため。
+ * トグルを流用すると、同じ分布を二度開こうとしたときに閉じてしまう —— 自動で開く経路は
+ * **受信の瞬間と、読み上げの順番が来た瞬間の 2 回**呼ぶので（理由は
+ * [`audio-tts-spec.md`](../../docs/spec/audio-tts-spec.md) §6「推計震度分布図は地震情報の音を借りる」）、
+ * 閉じる側へ倒れると声に出す瞬間に分布が消える。
+ *
+ * **既に同じ分布を開いていれば前の値をそのまま返す。** 新しいオブジェクトを返すと、内容が
+ * 同じでも React は状態が変わったとみなして描き直す。
+ */
+export function openDistributionOverlay(
+  prev: QuakeOverlay | null,
+  eventKey: string,
+): QuakeOverlay | null {
+  if (prev?.kind === 'distribution' && prev.eventKey === eventKey) return prev
+  return { kind: 'distribution', eventKey }
+}
+
+/**
  * 未入電の表示をトグルした結果を返す。
  *
  * 同じ地震の未入電を開いていれば閉じ、それ以外なら開く（他の追加表示を開いていれば、それは閉じる）。
@@ -124,10 +144,40 @@ export function closeEewLpgmOverlay(prev: QuakeOverlay | null): QuakeOverlay | n
 }
 
 /**
+ * その地震の電文を受けたとき、震度分布モードだけを閉じた結果を返す。
+ *
+ * **分布モードは発表値を引っ込めるモード**なので（区域塗りも観測点ドットも出さない。
+ * → `docs/spec/quake-spec.md` §9「震度分布モード」）、開いたままだと続報で震度がどこまで
+ * 変わったのかが地図に一切現れない。分布は地震発生から概ね 15 分後に届き、震源・震度情報の
+ * 続報はその後も続くため、放置すると**いちばん新しい発表値が、いちばん見えない**状態になる。
+ *
+ * **手で開いたものも閉じる。** 開いた主体（自動／利用者）で分けていない —— 新しい発表値が
+ * 届いたことは、どちらで開いていても知りたい事実だから。閉じたあとカードのボタンを押せば
+ * すぐ分布へ戻せる。
+ *
+ * **長周期・未入電は触らない。** 閉じる理由が「発表値が更新されたのに分布モードが隠している」
+ * ことなので、他の追加表示には当たらない（長周期は自分の区域塗りを出しており、発表値を
+ * 隠していない）。
+ *
+ * **鍵を照合する。** この関数が受け持つのは「**同じ地震の**続報でも閉じる」ぶんだけ。鍵が
+ * 食い違うときは、直前に呼ばれる {@link shouldCloseOverlayOnSelection} が「別の地震へ移った」
+ * と見て既に閉じている（呼ぶ順は `selectQuake` → こちらで、分布モードの鍵は開く経路がどちらでも
+ * 選択と揃えてある）。照合を外せば順序に依存しなくなるが、代わりに別の地震の分布まで巻き込む。
+ */
+export function closeDistributionOverlayOnQuakeReport(
+  prev: QuakeOverlay | null,
+  eventKey: string,
+): QuakeOverlay | null {
+  return prev?.kind === 'distribution' && prev.eventKey === eventKey ? null : prev
+}
+
+/**
  * 選択が別の地震へ移ったか（＝追加表示を閉じるか）を返す。
  *
  * **同じ地震の続報では閉じない。** 続報は長く続くので、電文を受けるたびに閉じると開いた表示が
  * 数分後に消える（実電文での裏付けは `docs/spec/quake-spec.md` §9「震度分布モード」）。
+ * **震度分布モードだけは例外**で、その地震の電文を受けた時点で
+ * {@link closeDistributionOverlayOnQuakeReport} が別途閉じる（理由はそちら）。
  *
  * **選択が外れたとき（`null`）も閉じる。** 取消しで選択が解かれた地震の表示を残す理由はない。
  */

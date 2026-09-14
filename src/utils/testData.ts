@@ -1,4 +1,4 @@
-import type { JMAQuake, JMATsunami, EEWAlert, EEWForecastChange, JMANankai, JMANankaiCommentary, JMAKohatsu, EarthquakePoint, JMALpgm, JMAQuakeCity, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity, JMAEstimatedIntensityGrade, EEWRegion, TsunamiArea, TsunamiGrade, TelegramOperationStatus } from '../types/earthquake'
+import type { JMAQuake, JMATsunami, EEWAlert, EEWForecastChange, JMANankai, JMANankaiCommentary, JMAKohatsu, EarthquakePoint, IntensityScale, JMALpgm, JMAQuakeCity, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity, JMAEstimatedIntensityGrade, EEWRegion, TsunamiArea, TsunamiGrade, TelegramOperationStatus } from '../types/earthquake'
 import { serverNow, serverDate } from './clock'
 import { extractQuakeEventIdFromId } from './quakeMerge'
 import { log } from './logger'
@@ -359,6 +359,103 @@ export function createTestQuakeAmendment(useDmdataShape: boolean): { initial: JM
   return { initial, amended }
 }
 
+/** 種別が前後して届く報どうしの間隔。 */
+export const TEST_REPORT_SEQUENCE_DELAY_MS = 3000
+
+/**
+ * 種別が前後して届く地震情報のテストデータ（**4 通**）。
+ *
+ * 気象庁は同じ地震について**種別の違う電文を前後して発表する**。能登 2024-01-01 の前震は
+ * 震度速報 → 震源情報 → 震度速報 → 震源・震度情報 の順で届き、3 通目の時点で見出しが
+ * 「震度速報」へ戻って**震源情報も受け取っていることが画面から消える**。カードはこれを
+ * 「震度速報#2/震源情報」と出す（→ docs/spec/quake-spec.md §8「見出しには受け取った種別を並べる」）。
+ * **その見え方を実機で確かめられる入口がここしかない。**
+ *
+ * 形は実電文に合わせる（→ docs/spec/settings-pwa-spec.md §7「実電文の形に合わせる」）。
+ *
+ * - **震度速報は震源を持たない。** 電文に `Earthquake` 要素が無く、パーサーは震源名を空・
+ *   座標を -200（位置不明センチネル）・深さを -1・規模を `NaN` で埋める
+ * - **震源情報は震度を持たない**
+ * - **続報で区域が増える。** 1 通目は一部の区域だけで、3 通目で出そろう
+ * - **報番号（`Head/Serial`）を持つのは震源・震度情報だけ。** 震度速報・震源情報は空要素で届くので
+ *   `id` の末尾は 4 通とも `-1` のまま。**通数を数える鍵は電文の作成時刻**（`telegramKey`）で、
+ *   ここを持たせないと 2 通目の震度速報が「同じ電文の再送」と見なされて数えられない
+ * - **地震の時刻と識別情報は動かさない。** 動かすと別カードが立ち、同じカードへ届かない
+ */
+export function createTestQuakeReportSequence(useDmdataShape: boolean): JMAQuake[] {
+  const base = createTestEarthquake(useDmdataShape)
+  const baseMs = new Date(base.time).getTime()
+  // n 通目の発表時刻。**同じ値を一意鍵にも使う** —— 実電文の `Control/DateTime` にあたる。
+  const at = (index: number) => new Date(baseMs + index * TEST_REPORT_SEQUENCE_DELAY_MS).toISOString()
+  // 震度速報が持つのは区域と都道府県の点だけ（観測点は震源・震度情報から届く）。
+  //
+  // **`base.points` からは採れない。** standard 版の `createTestEarthquake` は区域の点を落として
+  // いる —— P2PQuake は区域速報（ScalePrompt）と観測点（DetailScale）を別の電文で送るため、
+  // 「各地の震度情報」として渡すものに区域を混ぜない。ここで作るのは**その区域速報のほう**なので、
+  // 元の資材から採り直す。
+  const areaSource = (useDmdataShape ? notoHonshinQuake.points : notoHonshinPoints) as EarthquakePoint[]
+  // **standard 版は区域の点も都道府県名を持つ形にする。** P2PQuake はどの点も `pref` を非空で
+  // 配信する（→ docs/spec/quake-spec.md §4）が、元の資材は DMDATA 形状のまま（区域の点の `pref` は
+  // 空）なので、市町村の段が持つ区域 → 都道府県の対応で埋め直す。埋めないと、区域名と県名が同じ
+  // 奈良県を見分ける経路（`isAreaPoint` の索引フォールバック）をこのテストが一度も通らない。
+  //
+  // **DMDSS 版は実電文どおり空のまま。** あちらは区域の点が `pref` を持たない形で届く。
+  const areaPrefByName = new Map((notoHonshinQuake.cities as JMAQuakeCity[]).map(c => [c.area, c.pref]))
+  const areaPoints = areaSource
+    .filter(p => p.isArea)
+    .map(p => (useDmdataShape || p.pref ? p : { ...p, pref: areaPrefByName.get(p.addr) ?? p.pref }))
+  const firstPoints = [...areaPoints]
+    .sort((a, b) => b.scale - a.scale)
+    .slice(0, Math.ceil(areaPoints.length * 0.6))
+  const maxScaleOf = (points: EarthquakePoint[]): IntensityScale =>
+    points.reduce<IntensityScale>((max, p) => (p.scale > max ? p.scale : max), -1)
+
+  const prompt = (index: number, points: EarthquakePoint[]): JMAQuake => {
+    const time = at(index)
+    return {
+      ...base,
+      telegramKey: time,
+      time,
+      issue: { ...base.issue, time, type: '震度速報' },
+      earthquake: {
+        ...base.earthquake,
+        hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: NaN },
+        maxScale: maxScaleOf(points),
+        // **震度速報の津波区分と固定付加文は種別に付く定型文で、その報の判断ではない**
+        // （→ docs/spec/quake-spec.md §6.4）。実データ（能登の前震）でもこの値だった。
+        domesticTsunami: '調査中',
+      },
+      points,
+      // 市町村の段は震源・震度情報だけが運ぶ。
+      cities: undefined,
+      ...(base.forecastText === undefined ? {} : { forecastText: '今後の情報に注意してください。' }),
+    }
+  }
+
+  const destinationTime = at(1)
+  const destination: JMAQuake = {
+    ...base,
+    telegramKey: destinationTime,
+    time: destinationTime,
+    issue: { ...base.issue, time: destinationTime, type: '震源情報' },
+    earthquake: { ...base.earthquake, maxScale: -1 },
+    points: [],
+    cities: undefined,
+  }
+
+  const detailTime = at(3)
+  const detail: JMAQuake = {
+    ...base,
+    telegramKey: detailTime,
+    // **報番号を持たせるのはこの種別だけ。** 実電文でも連番を振るのは震源・震度情報（VXSE53）に限る。
+    reportSerial: 1,
+    time: detailTime,
+    issue: { ...base.issue, time: detailTime },
+  }
+
+  return [prompt(0, firstPoints), destination, prompt(2, areaPoints), detail]
+}
+
 /**
  * 市町村の未入電を含む地震情報のテストデータ（2022-01-22 01:08 日向灘 M6.4 最大震度5強・第 2 報）。
  *
@@ -503,6 +600,27 @@ function toP2pArea(area: EEWRegion): EEWRegion {
 // 警報は予想震度5弱（scaleTo 45）以上の区域に発表されるため、震度4以下の区域には
 // 予報側のコードを使う（`isWarning` 判定は 10/11/19 のみを警報として扱う）。
 //
+// **種別コードの下 1 桁と `arrivalTime` は必ず噛み合わせる**（→ docs/spec/eew-spec.md §4
+// 「到達予測時刻は種別によって意味が変わる」）。実電文にこの 3 通りしか無いためで、
+// 外れた形を置くと「主要動の到達（予測）」の欄がテストボタンから出てこない。
+//   00 / 10（未到達）   … 未来の `arrivalTime` を持つ。`arrived` は立てない
+//   01 / 11（到達済み） … `arrivalTime` は `null`・`arrived: true`（時刻とは排他）
+//   09 / 19（PLUM 法）  … 過去の `arrivalTime` を持つ（到達の予測ではなく「その震度を
+//                          初めて予測した時刻」なので、画面は「時刻不明」と出す）
+//
+// **以下の数字は 1 つの走査から採っている**（このファイルの他の箇所はここを参照する）。
+// 対象は DMDATA アーカイブの `eew.forecast`・2026-08-02〜09-12 の 42 日分で、
+// そこに入っていた VXSE45 785 通・区域を持つ 95 通・区域 753 件。
+//   - 区域の内訳は未到達 317 件・到達済み 358 件・PLUM 法 78 件で、**3 通りのどれかに
+//     必ず当てはまった**。未到達と PLUM は全件が `ArrivalTime` を持ち、到達済みは全件が
+//     時刻を持たず `Condition` を持っていた。**時刻も `Condition` も無い区域は 1 件も無い。**
+//   - 区域の件数は電文全体の最大予想震度で変わる。震度4 の報 70 通が中央 3 件（最大 8 件）、
+//     震度5弱 21 通が中央 24 件、震度5強 2 通が 35 件。**震度6弱以上の報は 1 通も無かった。**
+//   - 震源距離 ÷（到達予測時刻 − 震源時刻）の中央は 4.4km/s（距離帯ごとに 4.2〜5.2km/s）。
+//
+// 到達までの秒数はこの見かけ速度で震源距離から作る。距離順に並べれば到達の欄が時間順になり、
+// 震源に近い弱い区域が強い区域より先に来る形（欄の並びの肝）もそのまま再現される。
+//
 // @param withDmdssFields DMDSS 版（DMDATA XML 経路）のとき true。
 //   **standard 版の EEW は 2 つの経路の合成**で、Yahoo 強震モニタの hypoInfo が土台になり、
 //   P2PQuake code=556 が区域と震源要素だけを後から注ぎ足す（`useEarthquakes.ts` の
@@ -514,6 +632,7 @@ export function createTestEEWWarning(withDmdssFields: boolean, eventId?: string,
   const origin = baseTime ?? serverDate()
   const report = serverDate().toISOString()
   const eid = eventId ?? `test-warn-${Date.now()}`
+  const at = (offsetMs: number) => new Date(origin.getTime() + offsetMs).toISOString()
   const forecastChange: EEWForecastChange | undefined =
     serial <= 1 ? undefined
     : serial === 2 ? { maxInt: 1, maxLgInt: 0, reason: 2 }
@@ -560,15 +679,51 @@ export function createTestEEWWarning(withDmdssFields: boolean, eventId?: string,
       ...(forecastChange && { forecastChange }),
     } : {}),
     issue: { eventId: eid, serial: String(serial), time: report },
+    // **区域はこの報の形（未到達ばかり）を受け持つ。** 到達済みの区域は震源から中央 98km の
+    // ところに出る（上記の走査。p10 36km 〜 p90 183km）が、日向灘の震源から最寄りの陸域は
+    // 66km で、押した時点＝震源時刻というテストの建て付けではまだどこにも届いていない。
+    // **3 通りが混じった形は特別警報テスト（`createTestEEW`）が受け持つ。**
+    //
+    // **件数 24 は震度5弱の報の中央値**（上記の走査）。この電文の最大予想震度は 5 強だが、
+    // そちらの標本は 2 通しかないので、厚いほうの値を採っている。**数件しか持たせないと
+    // 実運用では起こらない少なさになる**うえ、到達の欄は件数が増えて初めて列に折り返すため、
+    // その見え方も実機で確かめられない。
+    //
+    // 秒数は震源距離 ÷ 4.4km/s（上記）。距離順に並べてあるので到達の欄の並びとも一致する。
     areas: ([
-      { pref: '宮崎県', name: '宮崎県北部平野部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: null, lgIntTo: 3 },
-      { pref: '宮崎県', name: '宮崎県南部平野部', scaleFrom: 40, scaleTo: 45, kindCode: '10', arrivalTime: null, lgIntTo: 2 },
+      // 予想震度5弱以上の区域が警報域（種別コード 10）。押した直後から 20 秒以内で、
+      // 残り秒数が赤くなる（`ARRIVAL_SOON_SEC`）のはこの 2 件
+      { pref: '宮崎県', name: '宮崎県北部平野部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: at(15_000), lgIntTo: 3 },
+      { pref: '宮崎県', name: '宮崎県南部平野部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: at(17_000), lgIntTo: 3 },
+      { pref: '宮崎県', name: '宮崎県北部山沿い', scaleFrom: 40, scaleTo: 45, kindCode: '10', arrivalTime: at(21_000), lgIntTo: 2 },
+      { pref: '宮崎県', name: '宮崎県南部山沿い', scaleFrom: 40, scaleTo: 45, kindCode: '10', arrivalTime: at(22_000), lgIntTo: 2 },
       // 予想震度4（5弱未満）は警報の対象外。同一電文内の予報域として送る
-      { pref: '大分県', name: '大分県南部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: null, lgIntTo: 1 },
-      // **区域に載る予測震度に下限は無い**（→ docs/spec/eew-spec.md §4）。警報の区域と震度 3 の
+      { pref: '大分県', name: '大分県南部', scaleFrom: 40, scaleTo: 45, kindCode: '10', arrivalTime: at(26_000), lgIntTo: 2 },
+      { pref: '熊本県', name: '熊本県球磨', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(26_000), lgIntTo: 1 },
+      { pref: '鹿児島県', name: '鹿児島県大隅', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(29_000), lgIntTo: 1 },
+      { pref: '熊本県', name: '熊本県阿蘇', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(31_000), lgIntTo: 1 },
+      { pref: '大分県', name: '大分県中部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(33_000), lgIntTo: 1 },
+      { pref: '鹿児島県', name: '鹿児島県薩摩', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(34_000), lgIntTo: 1 },
+      { pref: '熊本県', name: '熊本県熊本', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(35_000), lgIntTo: 1 },
+      { pref: '大分県', name: '大分県西部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(35_000) },
+      // PLUM 法（種別コード 09）。**時刻は持つが到達の予測ではない**ので過去の時刻が入り、
+      // 欄では「時刻不明」として末尾へ回る。実電文でも区域の 1 割ほどがこの形
+      { pref: '高知県', name: '高知県西部', scaleFrom: 30, scaleTo: 40, kindCode: '09', arrivalTime: at(-3_000) },
+      { pref: '愛媛県', name: '愛媛県南予', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(36_000) },
+      // **区域に載る予測震度に下限は無い**（→ docs/spec/eew-spec.md §4）。警報の区域と震度 3 以下の
       // 区域は同じ電文に同居するので、ここに無いと弱い区域が並んだときの見え方（区域一覧・
       // 区域塗りの濃さ）を実機で一度も確かめられない。
-      { pref: '熊本県', name: '熊本県熊本', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: null, lgIntTo: 1 },
+      { pref: '熊本県', name: '熊本県天草・芦北', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(39_000) },
+      { pref: '大分県', name: '大分県北部', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(42_000) },
+      { pref: '長崎県', name: '長崎県島原半島', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(42_000) },
+      { pref: '福岡県', name: '福岡県筑後', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(44_000) },
+      { pref: '鹿児島県', name: '鹿児島県種子島', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(45_000) },
+      { pref: '愛媛県', name: '愛媛県中予', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(48_000) },
+      { pref: '鹿児島県', name: '鹿児島県甑島', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(48_000) },
+      { pref: '佐賀県', name: '佐賀県南部', scaleFrom: 30, scaleTo: 30, kindCode: '09', arrivalTime: at(-5_000) },
+      // 予想震度2 の区域。実電文にもある（→ docs/spec/eew-spec.md §4 の階級別の表）
+      { pref: '福岡県', name: '福岡県筑豊', scaleFrom: 20, scaleTo: 20, kindCode: '00', arrivalTime: at(50_000) },
+      { pref: '長崎県', name: '長崎県南西部', scaleFrom: 20, scaleTo: 20, kindCode: '00', arrivalTime: at(51_000) },
     ] as const).map(a => withDmdssFields ? { ...a } : toP2pArea({ ...a })),
   }
 }
@@ -581,6 +736,7 @@ export function createTestEEWForecast(withDmdssFields: boolean, eventId?: string
   const origin = baseTime ?? serverDate()
   const report = serverDate().toISOString()
   const eid = eventId ?? `test-forecast-${Date.now()}`
+  const at = (offsetMs: number) => new Date(origin.getTime() + offsetMs).toISOString()
   return {
     kind: 'eew',
     id: `test-eew-forecast-${eid}-${serial}`,
@@ -596,9 +752,13 @@ export function createTestEEWForecast(withDmdssFields: boolean, eventId?: string
     cancelled: false,
     forecastMaxScale: 40,
     issue: { eventId: eid, serial: String(serial), time: report },
+    // **件数 3 はこの規模の報の中央値**（上記の走査。最大予想震度が震度4 の報 70 通）。
+    // 強い地震のテストと違い、ここは少ない側の見え方を受け持つ。
+    // 秒数は震源距離（深さ 60km 込み）÷ 4.4km/s（上記）。
     areas: ([
-      { pref: '宮城県', name: '宮城県北部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: null },
-      { pref: '宮城県', name: '宮城県中部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: null },
+      { pref: '宮城県', name: '宮城県中部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(20_000) },
+      { pref: '宮城県', name: '宮城県北部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(21_000) },
+      { pref: '宮城県', name: '宮城県南部', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(26_000) },
     ] as const).map(a => withDmdssFields ? { ...a } : toP2pArea({ ...a })),
   }
 }
@@ -618,6 +778,7 @@ export function createTestEEWAssumed(withDmdssFields: boolean, eventId?: string,
   const origin = baseTime ?? serverDate()
   const report = serverDate().toISOString()
   const eid = eventId ?? `test-assumed-${Date.now()}`
+  const at = (offsetMs: number) => new Date(origin.getTime() + offsetMs).toISOString()
   const isAssumed = serial === 1
   return {
     kind: 'eew',
@@ -645,8 +806,9 @@ export function createTestEEWAssumed(withDmdssFields: boolean, eventId?: string,
     ...(withDmdssFields && !isAssumed ? { warningComment: '強い揺れに警戒してください。' } : {}),
     issue: { eventId: eid, serial: String(serial), time: report },
     // 初報に区域は載らない。続報で震源が確定して初めて地域別予想が付く
+    // （秒数は震源距離 66km ÷ 4.4km/s。→ 上記の kindCode の説明）
     areas: isAssumed ? [] : ([
-      { pref: '宮崎県', name: '宮崎県北部平野部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: null },
+      { pref: '宮崎県', name: '宮崎県北部平野部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: at(15_000) },
     ] as const).map(a => withDmdssFields ? { ...a } : toP2pArea({ ...a })),
   }
 }
@@ -734,38 +896,79 @@ export function createTestEEW(withDmdssFields: boolean, eventId?: string, serial
     // 「固定付加文」）ので、報番号によらず持たせる。この報は特別警報まで上がるため、
     // 警報級の色（特別警報の配色）での見え方をここでしか確かめられない。
     ...(withDmdssFields ? { warningComment: '強い揺れに警戒してください。' } : {}),
+    // 警報の対象地方（`Head/Headline/Information` の地方予報区ブロック）。**警報級の報にだけ
+    // 入り、DMDATA だけが配信する**（P2PQuake・Yahoo hypoInfo はこの要素を運ばない）。
+    //
+    // **続報で地方が増える形まで再現する。** 実配信では 4 年に 3 例しかないが（能登本震は
+    // 1→4→6 地方）、読み上げが「新たに、〜でも強い揺れに警戒してください。」と差分を言う経路は
+    // ここでしか通らない。ボタンを 1 回押すと 1 地方、もう 1 回で 2 地方へ広がる。
+    ...(withDmdssFields ? { warningRegions: isFirstReport ? ['東北'] : ['東北', '関東'] } : {}),
     issue: { eventId: eid, serial: String(serial), time: report },
     // 実データに合わせ areas を使用（参照は utils/eew.ts の eewAreas() で吸収）
     //
     // **standard 版の初報は区域を持たない。** Yahoo 強震モニタの hypoInfo が先に届き、
     // 区域は P2PQuake code=556 が後から注ぎ足す（`useEarthquakes.ts` の `enrichEEW`）ため、
     // 実運用でもこの順で画面に出る。ボタンを 2 回押すと注入後の形へ進む。
+    // **種別コードの下 1 桁が主要動の状況を表す**（コード表 12。→ `utils/eewKind.ts`）。
+    // 到達の欄はこれで表示が 3 通りに分かれるので、**このボタンが 3 種類とも受け持つ**
+    // —— 実機で確かめられるのはここに在る形だけ。
+    //
+    // **件数 34 は、観測できた中でいちばん多い報と同じ規模**（上記の走査で震度5強の報が 35 件。
+    // この電文は震度6強だが、**震度6弱以上の報は 1 通も走査に掛からなかった**ので、そこから
+    // 直に採ることはできない）。震源に近い順に 34 区域を採ってある。到達の欄は件数が増えて
+    // 初めて列に折り返すので（CSS `columns`）、少ないままだとその見え方と高さの圧迫を実機で
+    // 確かめられない。並びは震源距離の順で、秒数は距離 ÷ 4.4km/s（上記）。
     areas: (!withDmdssFields && isFirstReport) ? [] : ([
+      // 11 ＝ 警報・既に到達と推定。実電文は種別コードと `Condition` の両方で到達を伝えるので、
+      // 読み取り後の値（`arrived`）も立てる。**到達予測時刻とは排他で、時刻は持たない。**
+      // 震源にいちばん近い 2 区域に置いてある（実電文の到達済み区域は震源距離の中央が 98km）。
+      { pref: '岩手県', name: '岩手県沿岸南部', scaleFrom: 50, scaleTo: 55, kindCode: '11', arrivalTime: null, arrived: true, lgIntTo: 3 },
+      { pref: '宮城県', name: '宮城県中部', scaleFrom: 55, scaleTo: 60, kindCode: '11', arrivalTime: null, arrived: true, lgIntTo: 4 },
       {
         pref: '宮城県', name: '宮城県北部', scaleFrom: 55, scaleTo: 60, kindCode: '10',
-        arrivalTime: at(15000),
+        arrivalTime: at(38_000),
         // 震度は上限を定めず（「震度6強程度以上」）、長周期は初報で 1 段低い階級から始まる。
         ...(isFirstReport
           ? { scaleToOrAbove: true, lgIntTo: 3 as const, lgIntToOver: true }
           : { lgIntTo: 4 as const }),
       },
-      { pref: '宮城県', name: '宮城県中部', scaleFrom: 50, scaleTo: 55, kindCode: '10', arrivalTime: at(18000), lgIntTo: 3 },
-      { pref: '岩手県', name: '岩手県沿岸南部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: at(22000), lgIntTo: 2 },
-      { pref: '福島県', name: '福島県浜通り', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: at(25000), lgIntTo: 2 },
-      // **種別コードの下 1 桁が主要動の状況を表す**（コード表 12。→ `utils/eewKind.ts`）。
-      // 到達の欄はこれで表示が 3 通りに分かれるので、テストデータにも 3 種類とも入れておく
-      // —— 実機で確かめられるのはここに在る形だけ。
-      //
-      // 11 ＝ 警報・既に到達と推定。実電文は種別コードと `Condition` の両方で到達を伝えるので、
-      // 読み取り後の値（`arrived`）も立てる。到達予測時刻とは排他で、時刻は持たない。
-      { pref: '茨城県', name: '茨城県北部', scaleFrom: 40, scaleTo: 45, kindCode: '11', arrivalTime: null, arrived: true, lgIntTo: 1 },
+      { pref: '宮城県', name: '宮城県南部', scaleFrom: 50, scaleTo: 55, kindCode: '10', arrivalTime: at(43_000), lgIntTo: 3 },
+      { pref: '福島県', name: '福島県浜通り', scaleFrom: 50, scaleTo: 55, kindCode: '10', arrivalTime: at(44_000), lgIntTo: 3 },
+      { pref: '岩手県', name: '岩手県内陸南部', scaleFrom: 50, scaleTo: 55, kindCode: '10', arrivalTime: at(44_000), lgIntTo: 3 },
+      { pref: '岩手県', name: '岩手県沿岸北部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: at(50_000), lgIntTo: 2 },
+      { pref: '山形県', name: '山形県村山', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: at(53_000), lgIntTo: 2 },
+      { pref: '福島県', name: '福島県中通り', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: at(53_000), lgIntTo: 2 },
+      { pref: '山形県', name: '山形県最上', scaleFrom: 40, scaleTo: 45, kindCode: '10', arrivalTime: at(55_000), lgIntTo: 1 },
+      { pref: '秋田県', name: '秋田県内陸南部', scaleFrom: 40, scaleTo: 45, kindCode: '10', arrivalTime: at(57_000), lgIntTo: 1 },
+      { pref: '山形県', name: '山形県置賜', scaleFrom: 40, scaleTo: 45, kindCode: '10', arrivalTime: at(57_000), lgIntTo: 1 },
       // 19 ＝ 警報・PLUM 法。**時刻は持つが到達の予測ではない**（「震度を初めて予測した時刻」）
       // ので過去の時刻が入る。画面は残り秒数を出さず「時刻不明」と書き、並びの末尾へ回す。
-      { pref: '千葉県', name: '千葉県北東部', scaleFrom: 40, scaleTo: 45, kindCode: '19', arrivalTime: at(-4000), lgIntTo: 1 },
+      { pref: '岩手県', name: '岩手県内陸北部', scaleFrom: 40, scaleTo: 45, kindCode: '19', arrivalTime: at(-4_000), lgIntTo: 1 },
+      { pref: '山形県', name: '山形県庄内', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(63_000), lgIntTo: 1 },
+      { pref: '茨城県', name: '茨城県北部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(64_000), lgIntTo: 1 },
+      { pref: '秋田県', name: '秋田県沿岸南部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(65_000) },
+      { pref: '福島県', name: '福島県会津', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(65_000) },
+      { pref: '栃木県', name: '栃木県北部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(70_000) },
+      { pref: '秋田県', name: '秋田県内陸北部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(71_000) },
+      // 09 ＝ 予報・PLUM 法。警報側（19）と同じ扱いで、こちらは予想震度5弱未満の区域に付く
+      { pref: '青森県', name: '青森県三八上北', scaleFrom: 30, scaleTo: 40, kindCode: '09', arrivalTime: at(-6_000) },
+      { pref: '新潟県', name: '新潟県下越', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(73_000) },
+      { pref: '栃木県', name: '栃木県南部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(73_000) },
       // **区域に載る予測震度に下限は無い**（→ docs/spec/eew-spec.md §4）。震度 3 の区域も同じ
       // 電文に載り、到達予測時刻も持つ。震源から遠いぶん残り秒数は最も大きく、到達の欄では
       // 未到達の群の末尾に並ぶ —— 弱い区域が強い区域より後ろへ回る形もここでしか実機で確かめられない。
-      { pref: '東京都', name: '東京都２３区', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(60000), lgIntTo: 1 },
+      { pref: '秋田県', name: '秋田県沿岸北部', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(75_000) },
+      { pref: '茨城県', name: '茨城県南部', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(75_000) },
+      { pref: '千葉県', name: '千葉県北東部', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(79_000) },
+      { pref: '青森県', name: '青森県津軽南部', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(81_000) },
+      { pref: '千葉県', name: '千葉県北西部', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(82_000) },
+      { pref: '新潟県', name: '新潟県中越', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(84_000) },
+      { pref: '青森県', name: '青森県津軽北部', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(85_000) },
+      { pref: '埼玉県', name: '埼玉県北部', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(87_000) },
+      { pref: '埼玉県', name: '埼玉県南部', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(87_000) },
+      { pref: '群馬県', name: '群馬県北部', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(88_000) },
+      { pref: '群馬県', name: '群馬県南部', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(88_000) },
+      { pref: '東京都', name: '東京都２３区', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(88_000) },
     ] as const).map(a => withDmdssFields ? { ...a } : toP2pArea({ ...a })),
   }
 }
@@ -841,6 +1044,18 @@ export function createTestNankaiRetraction(base: JMANankai): JMANankai {
   }
 }
 
+// 南海トラフ地震関連解説情報の本文。**実電文をそのまま写している**
+// （臨時解説＝2024-08-15 発表の第７号、定例解説＝2026-09-07 発表の第109回）。
+//
+// **要約して短くしない。** 実電文は 1600〜1700 字あり、専門用語（「浅部超低周波地震」
+// 「深部低周波地震（微動）」「短期的ゆっくりすべり」など）はここにしか現れない。
+// 短い定型文へ置き換えると、それらの読み・間・読み上げの長さを実機で一度も確かめられない。
+const NANKAI_ADHOC_SUMMARY = '\n　８月８日１６時４３分頃に日向灘を震源とするマグニチュード７．１の地震が発生しました。この地震の発生に伴って、南海トラフ地震の想定震源域では、大規模地震の発生可能性が平常時に比べて相対的に高まっていると考えられたことから、８月８日１９時１５分に南海トラフ地震臨時情報（巨大地震注意）を発表しました。８日の地震の発生後、南海トラフ地震の想定震源域ではプレート境界の固着状況に特段の変化を示すような地震活動や地殻変動は観測されていません。地震の発生から１週間経過したことから、本日（１５日）１７時をもって、南海トラフ地震臨時情報（巨大地震注意）発表に伴う政府としての「特別な注意の呼びかけ」を終了しています。南海トラフ沿いでは、いつ大規模地震が発生してもおかしくないことに留意し、「日頃からの地震への備え」を引き続き実施してください。\n'
+const NANKAI_ADHOC_BODY = '\n　８月８日１６時４３分頃に日向灘を震源とするマグニチュード７．１（モーメントマグニチュード７．０）の地震が発生しました。この地震の震源付近の地震活動は、８日の地震発生当初は活発でしたが、時間の経過とともに低下しています。しかし、平常時より地震が多い状況が継続しており、現状程度の地震活動は当分続くと考えられます。\n　８日１６時から本日（１５日）１４時までに南海トラフ地震の想定震源域（８月８日の地震の震源域周辺を含む）で発生した震度１以上を観測した地震の回数（速報値）は次の通りです。\n　８日１６時から２４時まで　　８回（震度６弱：１回、震度２：２回、震度１：５回）\n　９日００時から２４時まで　１１回（震度３：１回、震度２：２回、震度１：８回）\n１０日００時から２４時まで　　２回（震度２：１回、震度１：１回）\n１１日００時から２４時まで　　２回（震度３：１回、震度１：１回）\n１２日００時から２４時まで　　１回（震度１：１回）\n１３日００時から２４時まで　　０回\n１４日００時から２４時まで　　０回\n１５日００時から１４時まで　　０回\n\n　また、ひずみ観測点では、マグニチュード７．１の地震に伴うステップ状の変化が観測されていますが、地震後に通常みられる変化以外は今のところ観測されていません。東海から紀伊半島の深部低周波地震（微動）活動に伴う変化が付近のひずみ計等で観測されていますが、従来からも繰り返し観測されてきた現象です。８月８日２１時頃から、日向灘及び九州地方南東沖で浅部超低周波地震を観測しています。この現象は従来からも繰り返し観測されてきた現象ですが、発生頻度・規模等発生様式については今後も観測・研究が必要です。また、８日の地震発生後、宮崎県南部を中心に、地震後の余効変動と考えられる地殻変動を観測しています。余効変動自体はＭ７クラス以上の地震が発生すると観測されるものですが、今回の余効変動は、そのような地震後に観測される通常の余効変動の範囲内と考えられます。なお、地震直後に余効変動のメカニズムを見極めることは困難であり、ある程度の期間、観測を続ける必要があります。\n　そのほか、８月５日頃から、紀伊半島沖で地殻変動に起因するとみられる孔内間隙水圧の変化を観測しています。この現象は従来からも繰り返し観測されてきた現象です。\n　このように、８日の地震の発生後、南海トラフ地震の想定震源域ではプレート境界の固着状況に特段の変化を示すような地震活動や地殻変動は観測されていません。\n\n　８月８日の地震と南海トラフ地震との関連性について検討した結果、南海トラフ地震の想定震源域では、大規模地震の発生可能性が平常時に比べて相対的に高まっていると考えられたことから、８月８日１９時１５分に南海トラフ地震臨時情報（巨大地震注意）を発表しました。\n　政府では、８月８日１６時４３分頃の日向灘を震源とする地震の発生から１週間経過したことから、本日（１５日）１７時をもって、南海トラフ地震臨時情報（巨大地震注意）発表に伴う政府としての「特別な注意の呼びかけ」を終了しています。\n　過去の世界的な事例をみると、大規模地震の発生の可能性は、最初の地震（８日の地震）の発生直後ほど高く、時間の経過とともにその可能性が低下していく傾向がありますが、最初の地震から1週間以上経過した後に大規模地震が発生した事例もあります。\n南海トラフ沿いの大規模地震（マグニチュード８から９クラス）は、「平常時」においても今後３０年以内に発生する確率が７０から８０％であり、昭和東南海地震・昭和南海地震の発生から約８０年が経過していることから切迫性の高い状態です。\n　南海トラフ沿いでは、いつ大規模地震が発生してもおかしくないことに留意し、「日頃からの地震への備え」については、引き続き実施してください。\n　気象庁では、引き続き注意深く南海トラフ沿いの地殻活動の推移を監視します。\n\n※モーメントマグニチュードは、震源断層のずれの規模を精査して得られるマグニチュードです。気象庁が地震情報等で、お知らせしているマグニチュードとは異なる値になる場合があります。\n'
+const NANKAI_ADHOC_NEXT = '\n　今後は、次回の定例の南海トラフ沿いの地震に関する評価検討会（９月６日開催予定）までの間、毎週１回「南海トラフ地震関連解説情報」で地殻活動の状況等を発表します。次回の情報発表は、２２日１５時３０分頃を予定しています。\n'
+const NANKAI_REGULAR_SUMMARY = '\n　第１０９回南海トラフ沿いの地震に関する評価検討会で、南海トラフ周辺の地殻活動を評価しました。\n'
+const NANKAI_REGULAR_BODY = '\n　本日（９月７日）開催した第１０９回南海トラフ沿いの地震に関する評価検討会で評価した、南海トラフ周辺の地殻活動の調査結果は以下のとおりです。\n\n　現在のところ、南海トラフ沿いの大規模地震の発生の可能性が平常時（注）と比べて相対的に高まったと考えられる特段の変化は観測されていません。\n　（注）南海トラフ沿いの大規模地震（Ｍ８からＭ９クラス）は、「平常時」においても今後３０年以内に発生する確率は高い（詳細は「南海トラフの地震活動の長期評価（第二版一部改訂）」参照）と評価されており、昭和東南海地震・昭和南海地震の発生から約８０年が経過していることから切迫性の高い状態です。\n\n１．地震の観測状況\n（顕著な地震活動に関係する現象）\n８月２日０４時１０分に日向灘の深さ２１ｋｍを震源とする М５．３の地震が発生しました。この地震は、発震機構が東西方向に張力軸を持つ正断層型で、フィリピン海プレート内部で発生しました。\n（ゆっくりすべりに関係する現象）\nプレート境界付近を震源とする深部低周波地震（微動）のうち、主なものは以下のとおりです。\n（１）四国西部：７月２９日から８月１１日\n（２）紀伊半島西部：８月８日から８月１３日\n（３）四国東部：８月９日から８月１５日\n（４）四国東部：８月２１日から継続中\n（５）紀伊半島中部：８月２４日から８月２７日\nこれらとは別にプレート境界付近で浅部超低周波地震を観測しています。\n（６）日向灘及びその周辺域：８月中旬\n\n\n２．地殻変動の観測状況\n（ゆっくりすべりに関係する現象）\n上記（１）から（５）の深部低周波地震（微動）とほぼ同期して、周辺に設置されている複数のひずみ計でわずかな地殻変動を観測しています。周辺の傾斜データでも、わずかな変化が見られています。\nＧＮＳＳ観測によると、２０２２年初頭から、静岡県西部から愛知県東部にかけて、それまでの傾向とは異なる地殻変動が観測されています。\n（長期的な地殻変動）\nＧＮＳＳ観測等によると、御前崎、潮岬及び室戸岬のそれぞれの周辺では長期的な沈降傾向が継続しています。\n\n３．地殻活動の評価\n（顕著な地震活動に関係する現象）\n８月２日に発生した日向灘の地震は、フィリピン海プレート内部で発生した地震で、その規模から南海トラフ沿いのプレート間の固着状態の特段の変化を示すものではないと考えられます。\n（ゆっくりすべりに関係する現象）\n上記（１）から（５）の深部低周波地震（微動）と地殻変動は、想定震源域のプレート境界深部において発生した短期的ゆっくりすべりに起因するものと推定しています。\n２０２２年初頭からの静岡県西部から愛知県東部にかけての地殻変動は、渥美半島周辺から浜名湖周辺にかけてのプレート境界深部における長期的ゆっくりすべりに起因するものと推定しています。この長期的ゆっくりすべりは、すべりの中心が渥美半島周辺から、浜名湖の東側に移動しています。\nこれらの深部低周波地震（微動）、短期的ゆっくりすべり、及び長期的ゆっくりすべりは、それぞれ、従来からも繰り返し観測されてきた現象です。\n上記（６）の浅部超低周波地震は従来からも観測されてきた現象で、これまでの観測結果や研究成果から想定震源域のプレート境界浅部において発生したゆっくりすべりに起因する可能性があります。この現象の発生頻度・規模等発生様式については今後も観測・研究が必要です。\n（長期的な地殻変動）\n御前崎、潮岬及び室戸岬のそれぞれの周辺で見られる長期的な沈降傾向はフィリピン海プレートの沈み込みに伴うもので、その傾向に大きな変化はありません。\n\n上記観測結果を総合的に判断すると、南海トラフ地震の想定震源域ではプレート境界の固着状況に特段の変化を示すようなデータは得られておらず、南海トラフ沿いの大規模地震の発生の可能性が平常時と比べて相対的に高まったと考えられる特段の変化は観測されていません。\n'
+
 export function createTestNankaiCommentary(serialName: '臨時解説' | '定例解説'): JMANankaiCommentary {
   const now = serverDate().toISOString()
   const expireAt = new Date(serverNow() + 7 * 24 * 3600 * 1000).toISOString()
@@ -851,17 +1066,13 @@ export function createTestNankaiCommentary(serialName: '臨時解説' | '定例�
     eventId: `test-nankai-commentary-event-${Date.now()}`,
     serialCode: isAdHoc ? '210' : '200',
     serialName,
-    headline: isAdHoc ? '南海トラフ地震関連解説情報（第１号）' : '南海トラフ地震関連解説情報',
-    summary: isAdHoc
-      ? '南海トラフ地震臨時情報（巨大地震注意）の発表後の状況をお知らせします。引き続き防災対応をとってください。'
-      : '南海トラフ沿いの地震に関する評価検討会の定例会合で、南海トラフ周辺の地殻活動を評価しました。',
-    body: isAdHoc
-      ? '想定震源域内の地震活動および地殻変動の観測状況について、現在のところ新たな変化は認められません。引き続き、政府や自治体などからの呼びかけ等に応じた防災対応をとってください。'
-      : '現在のところ、南海トラフ沿いの大規模地震の発生の可能性が平常時と比べて相対的に高まったと考えられる特段の変化は観測されていません。',
+    headline: isAdHoc ? '南海トラフ地震関連解説情報（第７号）' : '南海トラフ地震関連解説情報',
+    summary: isAdHoc ? NANKAI_ADHOC_SUMMARY : NANKAI_REGULAR_SUMMARY,
+    body: isAdHoc ? NANKAI_ADHOC_BODY : NANKAI_REGULAR_BODY,
     // **次回発表予定は臨時解説だけが持つ。** 実電文の定例解説（VYSE52）8 通に `NextAdvisory` は
     // 1 件も無い。持たせると、実電文では出ない欄をテストボタンが見せることになる。
     ...(isAdHoc && {
-      nextAdvisory: '今後も、「南海トラフ地震関連解説情報」で地殻活動の状況等を発表します。次回の情報発表は、１２日１５時３０分頃を予定しています。\n　なお、新たな変化を観測した場合には随時発表します。',
+      nextAdvisory: NANKAI_ADHOC_NEXT,
     }),
     appendix: NANKAI_APPENDIX,
     earthquakeInfoKind: '南海トラフ地震関連解説情報',
@@ -1517,6 +1728,17 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
 const ESTIMATED_INTENSITY_FOLLOW_UP_MS = 6 * 60_000
 
 /**
+ * 分布が届いたあと、同じ地震の地震情報が続報として発表されるまでの幅。
+ *
+ * 実電文で観測した 4 分を置いている（2024 年能登半島地震の本震。DMDATA のアーカイブで実測した。
+ * 分布 07:20:08 UTC → VXSE53（震源・震度情報）07:24:31 UTC で、観測点は 2987 点から 2993 点へ増えた。
+ * この地震では分布が発現の 10 分後に届いており、公式の目安「概ね 15 分後」より早い）。上の `ESTIMATED_INTENSITY_FOLLOW_UP_MS`
+ * と同じく、**この値を待つものは無い** —— 流す間隔はテストのキューが別に決めており、
+ * ここは電文が名乗る発表時刻だけ。
+ */
+const QUAKE_FOLLOW_UP_AFTER_DISTRIBUTION_MS = 4 * 60_000
+
+/**
  * 推計震度分布図（IXAC41）のテスト。**地震情報と対で返す。**
  *
  * この電文は識別子を持たず、地震カードとの結び付けは発現時刻で行う（→ `utils/estimatedIntensity.ts`）。
@@ -1539,12 +1761,25 @@ const ESTIMATED_INTENSITY_FOLLOW_UP_MS = 6 * 60_000
  * 採る作りで 1 通しか保存しない）。ここで確かめたいのは**アプリが続報をどう扱うか**なので、
  * 発表時刻だけを進める —— 反映するかどうかの判定（`decideEstimatedIntensityUpdate`）は
  * 発表時刻が進んでいれば続報と見なす。
+ *
+ * **地震情報の続報も返す。** 分布が届いたあとに同じ地震の地震情報が発表されると、地図は
+ * 分布モードを閉じて発表値へ戻る（→ `utils/quakeOverlay.ts` の
+ * `closeDistributionOverlayOnQuakeReport`）。これを流さないと、その遷移を実機で一度も
+ * 確かめられない。
+ *
+ * **中身は初報と同じで、発表時刻と識別子だけを進める。** 実電文の続報は観測点が増えるが
+ * （能登本震で 2987 点 → 2993 点）、それを再現できる地震は分布が大きすぎて**テストデータとして
+ * 持てない**（実測値と、観測できた範囲では軽さと両立しないことは
+ * → docs/spec/settings-pwa-spec.md §7）。ここで
+ * 確かめたいのは**続報が届いたときのアプリの振る舞い**なので、上の分布の続報と同じ扱いにする。
  */
 export function createTestEstimatedIntensity(): {
   quake: JMAQuake
   estimated: JMAEstimatedIntensity
   /** 同じ地震の続報。発表時刻だけが初報より後になっている */
   followUp: JMAEstimatedIntensity
+  /** 分布のあとに届く、同じ地震の地震情報の続報。発表時刻と識別子だけが初報より後になっている */
+  quakeFollowUp: JMAQuake
 } {
   const nowDate = serverDate()
   const now = nowDate.toISOString()
@@ -1612,6 +1847,17 @@ export function createTestEstimatedIntensity(): {
       // **発現時刻は同じまま、発表時刻だけを進める。** 発現時刻が同じだからこそ「同じ地震の
       // 続報」になる（変えると別の地震へ入れ替えた扱いになり、初報と同じ文で読まれる）。
       time: new Date(nowDate.getTime() + ESTIMATED_INTENSITY_FOLLOW_UP_MS).toISOString(),
+    },
+    quakeFollowUp: {
+      ...quake,
+      // **報ごとに進めるのは識別子と発表時刻だけ。** 震源時刻（`earthquake.time`）は
+      // 同じ地震を指すので固定する（→ docs/spec/settings-pwa-spec.md §7「実電文の形に合わせる」）。
+      id: `dmdata-quake-${eventId}-2`,
+      time: new Date(nowDate.getTime() + QUAKE_FOLLOW_UP_AFTER_DISTRIBUTION_MS).toISOString(),
+      issue: {
+        ...quake.issue,
+        time: new Date(nowDate.getTime() + QUAKE_FOLLOW_UP_AFTER_DISTRIBUTION_MS).toISOString(),
+      },
     },
   }
 }

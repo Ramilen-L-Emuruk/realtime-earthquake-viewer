@@ -2,13 +2,13 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useLazyRef } from './useLazyRef'
 import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMANankaiCommentary, JMAKohatsu, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity, EEWAlert, IntensityScale, EarthquakePoint, AppEvent, LiveEvent, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
 import { fetchHistory, fetchJmaQuake, P2PQuakeWebSocket } from '../services/p2pquake'
-import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms, fetchDmdataNankai, fetchDmdataNankaiCommentary, fetchDmdataKohatsu } from '../services/dmdata'
+import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms, fetchDmdataNankai, fetchDmdataNankaiCommentary, fetchDmdataKohatsu, fetchDmdataEarthquakeCount, fetchDmdataQuakeNotice } from '../services/dmdata'
 import { mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes, extractQuakeEventId, quakeEventKey, coalesceByEventId, findExistingQuakeCard, isRetractedQuakeReport, quakeRetractionOf } from '../utils/quakeMerge'
 import type { QuakeRetraction } from '../utils/quakeMerge'
 import { loadStationCoords, onStationCoordsLoaded, buildAreaPrefIndex, getAreaPrefIndexCache } from '../utils/stationCoords'
 import type { AreaPrefIndex } from '../utils/quakePoints'
 import { calcEEWCancelTime, eewSerial, eewEventKey } from '../utils/eew'
-import { decideEstimatedIntensityUpdate, isNewEstimatedIntensity, type AppliedEstimatedIntensityReason } from '../utils/estimatedIntensity'
+import { decideEstimatedIntensityUpdate, isNewEstimatedIntensity, rememberShownEstimatedIntensity } from '../utils/estimatedIntensity'
 import { mergeTsunamiReports, isCancelForCurrentTsunami, isTsunamiContinuation, withInheritedTsunamiFacts } from '../utils/tsunami'
 import { log } from '../utils/logger'
 import { serverNow, serverDate } from '../utils/clock'
@@ -66,6 +66,14 @@ const TEST_ESTIMATED_INTENSITY_DELAY_MS = 3000
  * 実測で通知音・間・2 チャンクの合成と再生に 8 秒前後かかるので、その倍を取る。
  */
 const TEST_ESTIMATED_INTENSITY_FOLLOW_UP_DELAY_MS = 16000
+/**
+ * 推計震度分布図テストで、分布の続報から地震情報の続報までを空ける間隔。
+ *
+ * **分布の続報の読み上げが鳴り終わるまでの長さが要る。** 短すぎると「更新されました」が
+ * 途中で切れ、そちらを確かめられなくなる（上の 16 秒と同じ理由）。地震情報の続報は主題が
+ * 別なので割り込みでは切られないが、聞き分けられる間は空ける。
+ */
+const TEST_ESTIMATED_INTENSITY_QUAKE_FOLLOW_UP_DELAY_MS = 16000
 const EEW_FINAL_SILENCE_MS = 10000 // EEW発報テスト（特別警報・警報・予報）: この間隔クリックが無ければ最終報として確定する
 const EEW_RETRACTION_CANCEL_MS = 10000 // EEW誤報取消テスト: 発報からこの秒数後に取消電文を送る
 
@@ -512,6 +520,10 @@ export function useEarthquakes(
   // 最大の 364,993 セルで 3MB 規模になる（形式が定める上限ではない。確保長は電文が宣言する
   // 長さから決まるので、これより大きくなりうる）。
   const shownEstimatedIntensityRef = useRef<{ arrivalTime: string; time: string; count: number } | null>(null)
+  // 分布を伝えた地震（発現時刻）の台帳。読み上げが「受信しました」と「更新されました」を
+  // 言い分けるのに使う（→ `isNewEstimatedIntensity`）。**いま出している 1 通だけでは足りない**
+  // —— 地震が立て続けに起きると分布が交互に届き、同じ地震の続報のあいだに別の地震の分布が挟まる。
+  const shownEstimatedIntensityArrivalsRef = useRef<string[]>([])
   // 後発地震注意情報（VYSE60）の7日間有効期限タイマー
   const kohatsuExpireTimerRef = useRef<number | undefined>(undefined)
   // 南海トラフ地震関連解説情報（VYSE51/52）の7日間有効期限タイマー。
@@ -864,7 +876,7 @@ export function useEarthquakes(
   /**
    * 推計震度分布図（IXAC41）を反映する。
    *
-   * **古い報で退行させない。** 同じ地震について続報が出る（実電文で M7.4 → M7.5 の 6 分後、
+   * **古い報で退行させない。** 同じ地震について続報が出る（実電文で M7.4 → M7.6 の 6 分後、
    * セル数も変わった）うえ、DMDATA は内容が同一の重複配信もする。到着順が入れ替わったときに
    * 古い分布へ戻ると、画面が理由もなく前の姿へ巻き戻る。判定は**発表時刻の比較**で行う
    * ——この電文は `eventId` を持たないので報番号の台帳が作れない。
@@ -872,13 +884,16 @@ export function useEarthquakes(
    * **別の地震の分布は無条件に置き換える。** 発表されるのは震度5弱以上の地震だけなので、
    * 新しい地震の分布が届いたということは、そちらを見せるべき状況になっている。
    *
-   * **反映した理由をそのまま返す。** 読み上げが「受信しました」と「更新されました」を
-   * 言い分けるのに要る（→ `isNewEstimatedIntensity`）。真偽へ潰して受け取る側で数え直すと、
-   * 「同じ地震の続報」と「別の地震へ入れ替え」の区別を 2 か所で持つことになる。
+   * **初報か続報かを併せて返す。** 読み上げが「受信しました」と「更新されました」を言い分ける
+   * のに要る（→ `isNewEstimatedIntensity`）。判定に使う台帳はここが持っているので、受け取る側で
+   * 数え直すことはできない。
    *
-   * @returns 反映したらその理由。反映しなかったら null
+   * @param announce 音・読み上げを伴うか。偽（初期状態の注入）なら台帳へ積まない
+   * @returns 反映したら初報かどうか。反映しなかったら null
    */
-  const applyEstimatedIntensity = useCallback((data: JMAEstimatedIntensity): AppliedEstimatedIntensityReason | null => {
+  const applyEstimatedIntensity = useCallback((
+    data: JMAEstimatedIntensity, announce: boolean,
+  ): { isNew: boolean } | null => {
     // **判定は ref で同期に行う。** `setState` の更新関数の中で判定すると、React が
     // 開発時に更新関数を二度呼ぶため副作用が二重になり、しかも呼び出し元へ結果を返せない
     // （更新が後回しになりうる）。地震回数の帯が同じ理由で ref を持っている。
@@ -897,7 +912,12 @@ export function useEarthquakes(
     }
     shownEstimatedIntensityRef.current = { arrivalTime: data.arrivalTime, time: data.time, count: data.count }
     setState(prev => ({ ...prev, estimatedIntensity: data }))
-    return verdict.reason
+    // 初報か続報かは**台帳**で決める。`verdict.reason` では決められない —— 理由が比べている
+    // 相手はいま出している 1 通だけなので、別の地震の分布を挟むと同じ地震の続報が `switched`
+    // になる（実電文の例は `isNewEstimatedIntensity`）。
+    const isNew = isNewEstimatedIntensity(shownEstimatedIntensityArrivalsRef.current, data.arrivalTime)
+    if (announce) rememberShownEstimatedIntensity(shownEstimatedIntensityArrivalsRef.current, data.arrivalTime)
+    return { isNew }
   }, [])
 
   /**
@@ -1341,9 +1361,9 @@ export function useEarthquakes(
           // **`onLiveEvent` へ流す。** 音・読み上げ・地図の分布モードを開く処理がその先にある。
           // 反映できなかったとき（古い報・重複配信）は流さない —— 画面が変わっていないのに
           // 音だけ鳴る。
-          const applied = applyEstimatedIntensity(ei)
+          const applied = applyEstimatedIntensity(ei, !silent)
           if (applied && !silent) {
-            onLiveEventRef.current?.({ kind: 'estimatedIntensity', data: ei, isNew: isNewEstimatedIntensity(applied) })
+            onLiveEventRef.current?.({ kind: 'estimatedIntensity', data: ei, isNew: applied.isNew })
           }
         }
         isSilentRef.current = false
@@ -1452,8 +1472,18 @@ export function useEarthquakes(
           log.error('[data] 南海トラフ地震関連解説情報の取得で想定外の失敗', err)
           return null
         }),
+        // **7 日間表示され続ける帯**。以前は起動時に復元しておらず、群発の最中にリロードすると
+        // 回数の経過が消えていた（南海トラフの 3 種は復元していたので、ここだけ抜けていた）。
+        fetchDmdataEarthquakeCount(dmdataApiKey).catch(err => {
+          log.error('[data] 地震回数に関する情報の取得で想定外の失敗', err)
+          return null
+        }),
+        fetchDmdataQuakeNotice(dmdataApiKey).catch(err => {
+          log.error('[data] 地震・津波に関するお知らせの取得で想定外の失敗', err)
+          return null
+        }),
       ])
-        .then(async ([quakeResult, tsunamiEvents, nankaiData, kohatsuData, commentaryData]) => {
+        .then(async ([quakeResult, tsunamiEvents, nankaiData, kohatsuData, commentaryData, countData, noticeData]) => {
           if (cancelled) return
           const { quakes: quakeEvents, nextToken } = quakeResult
           dmdataCursorRef.current = nextToken
@@ -1513,6 +1543,9 @@ export function useEarthquakes(
           if (nankaiData) applyNankai(nankaiData)
           if (kohatsuData) applyKohatsu(kohatsuData)
           if (commentaryData) applyNankaiCommentary(commentaryData)
+          // 期限切れ・取消の判定は apply 側が持つ（取得側へ写すと片方だけ直したときに食い違う）。
+          if (countData) applyEarthquakeCount(countData)
+          if (noticeData) applyQuakeNotice(noticeData)
           // 初回ロードで津波が有効（validDateTime未来）の場合、キューへ解除イベントを挿入する。
           if (tsunamis.length > 0 && latestTsunami?.validDateTime) {
             const expireTime = new Date(latestTsunami.validDateTime)
@@ -1590,9 +1623,9 @@ export function useEarthquakes(
           }
         } else if (ev.kind === 'estimatedIntensity') {
           const ei = ev.data
-          const applied = applyEstimatedIntensity(ei)
+          const applied = applyEstimatedIntensity(ei, true)
           if (applied) {
-            onLiveEventRef.current?.({ kind: 'estimatedIntensity', data: ei, isNew: isNewEstimatedIntensity(applied) })
+            onLiveEventRef.current?.({ kind: 'estimatedIntensity', data: ei, isNew: applied.isNew })
           }
         } else {
           const data = ev.data
@@ -1867,6 +1900,25 @@ export function useEarthquakes(
   }, [])
 
   /**
+   * 種別が前後して届く報のテスト。**4 通を順に流す。**
+   *
+   * 気象庁は同じ地震について種別の違う電文を前後して発表する（震度速報 → 震源情報 →
+   * 震度速報 → 震源・震度情報）。3 通目で見出しが「震度速報#2/震源情報」になり、4 通目で
+   * 速報段階が畳まれる（→ docs/spec/quake-spec.md §8「見出しには受け取った種別を並べる」）。
+   * **その見え方を実機で確かめられる入口がここしかない。**
+   *
+   * **受信と同じ経路（イベントキュー）へ積む**ので、同一性の判定も続報のマージも実運用と
+   * 同じところを踏む。待ちをキューに持たせているため、リセット（リプレイの開始・停止）で
+   * 一緒に落ちる（理由は → `simulateQuakeAmendment`）。
+   */
+  const simulateQuakeReportSequence = useCallback(async () => {
+    const { createTestQuakeReportSequence } = await loadTestData()
+    for (const report of createTestQuakeReportSequence(isDmdss)) {
+      eventQueueRef.current.push({ eventTime: new Date(report.time), payload: { kind: 'event', event: report } })
+    }
+  }, [])
+
+  /**
    * 市町村の未入電を含む地震情報のテスト（日向灘 2022-01-22）。
    *
    * 「地震テスト」（能登本震）では**市町村の未入電が 1 件も出ない** —— 発表条件が
@@ -1891,7 +1943,7 @@ export function useEarthquakes(
    */
   const simulateEstimatedIntensity = useCallback(async () => {
     const { createTestEstimatedIntensity } = await loadTestData()
-    const { quake, estimated, followUp } = createTestEstimatedIntensity()
+    const { quake, estimated, followUp, quakeFollowUp } = createTestEstimatedIntensity()
     const now = serverDate()
     eventQueueRef.current.push({ eventTime: now, payload: { kind: 'event', event: quake } })
     eventQueueRef.current.push({
@@ -1904,6 +1956,16 @@ export function useEarthquakes(
     eventQueueRef.current.push({
       eventTime: new Date(now.getTime() + TEST_ESTIMATED_INTENSITY_DELAY_MS + TEST_ESTIMATED_INTENSITY_FOLLOW_UP_DELAY_MS),
       payload: { kind: 'estimatedIntensity', data: followUp },
+    })
+    // **地震情報の続報も流す。** 分布が届いたあとに同じ地震の地震情報を受けると、地図は
+    // 分布モードを閉じて発表値へ戻る（→ `utils/quakeOverlay.ts` の
+    // `closeDistributionOverlayOnQuakeReport`）。流さないとその遷移を実機で確かめられない。
+    eventQueueRef.current.push({
+      eventTime: new Date(
+        now.getTime() + TEST_ESTIMATED_INTENSITY_DELAY_MS + TEST_ESTIMATED_INTENSITY_FOLLOW_UP_DELAY_MS
+        + TEST_ESTIMATED_INTENSITY_QUAKE_FOLLOW_UP_DELAY_MS,
+      ),
+      payload: { kind: 'event', event: quakeFollowUp },
     })
   }, [])
 
@@ -2097,6 +2159,9 @@ export function useEarthquakes(
     shownQuakeNoticeIdRef.current = null
     shownEarthquakeCountEventIdRef.current = null
     shownEstimatedIntensityRef.current = null
+    // 分布を伝えた地震の台帳も空にする。リプレイの開始・リセットで時間軸が変わるため、前の軸で
+    // 伝えた分布を「もう伝えた」と数えると、新しい軸の初報が「更新されました」と読まれる。
+    shownEstimatedIntensityArrivalsRef.current = []
     clearTestSimulationTimers()
     setState(prev => ({
       ...prev,
@@ -2175,6 +2240,7 @@ export function useEarthquakes(
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
     simulateQuakeNotice, simulateEarthquakeCount, simulateEarthquakeCountRetraction, simulateEstimatedIntensity,
     simulateTrainingQuake, simulateUnreceivedQuake, simulateTsunamiGradeChange, simulateQuakeAmendment,
+    simulateQuakeReportSequence,
     resetState,
     loadReplayEvents,
     restoreQuakeHistory,

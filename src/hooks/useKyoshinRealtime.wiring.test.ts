@@ -70,6 +70,8 @@ function createFakeSource(sites: SiteCoords = TOKYO) {
     emit: (frame: KyoshinFrame) => sink?.enqueue(frame),
     /** 更新停止の通知を送る。 */
     setStalled: (stalled: boolean) => sink?.setStalled(stalled),
+    /** 助走フレームを渡す。 */
+    prefill: (frames: KyoshinFrame[]) => sink?.prefill(frames),
   }
 }
 
@@ -565,5 +567,64 @@ describe('useKyoshinRealtime の結線', () => {
 
     expect(liveMock).not.toHaveBeenCalled()
     expect(fake.source.start).not.toHaveBeenCalled()
+  })
+})
+
+describe('useKyoshinRealtime: 助走の中継', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ now: NOW })
+    liveMock.mockReset()
+    archiveMock.mockReset()
+    localArchiveMock.mockReset()
+    setReplayOffset(null)
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+    setReplayOffset(null)
+  })
+
+  it('正: 供給元が渡した助走を、いまの供給の識別子つきで下流へ出す', async () => {
+    const fake = createFakeSource()
+    liveMock.mockReturnValue(fake.source)
+    const { result } = renderHook(() => useKyoshinRealtime(true))
+
+    expect(result.current.warmup).toBeNull()
+    const frames = [frameAt(NOW - 3000), frameAt(NOW - 2000)]
+    await act(async () => { fake.prefill(frames) })
+
+    expect(result.current.warmup?.frames).toEqual(frames)
+    expect(result.current.warmup?.supplyKey).toBe(result.current.supplyKey)
+  })
+
+  it('対照: 時間軸を切り替えたら、前の供給の助走は「いまの供給のもの」ではなくなる', async () => {
+    // 識別子で見分けられないと、下流は旧い時間軸のフレームを助走として食わせてしまう。
+    const live = createFakeSource()
+    const archive = createFakeSource()
+    liveMock.mockReturnValue(live.source)
+    archiveMock.mockReturnValue(archive.source)
+    const { result, rerender } = renderHook(
+      ({ offset }: { offset: number | null }) => useKyoshinRealtime(true, { timeOffset: offset }),
+      { initialProps: { offset: null as number | null } },
+    )
+    await act(async () => { live.prefill([frameAt(NOW - 2000)]) })
+    const liveKey = result.current.supplyKey
+    expect(result.current.warmup?.supplyKey).toBe(liveKey)
+
+    rerender({ offset: -3600_000 })
+    expect(result.current.supplyKey).not.toBe(liveKey)
+    expect(result.current.warmup?.supplyKey).toBe(liveKey)
+  })
+
+  it('安全弁: 助走が空でも渡ってくる（下流の待ちを解くため）', async () => {
+    const fake = createFakeSource()
+    liveMock.mockReturnValue(fake.source)
+    const { result } = renderHook(() => useKyoshinRealtime(true))
+
+    await act(async () => { fake.prefill([]) })
+
+    expect(result.current.warmup).not.toBeNull()
+    expect(result.current.warmup?.frames).toEqual([])
   })
 })

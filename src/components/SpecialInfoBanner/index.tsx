@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useAutoOpenWhileSpeaking } from '../../hooks/useAutoOpenWhileSpeaking'
 import type {
   EarthquakeInfoMeta, JMANankai, JMANankaiCommentary, JMAKohatsu, JMAQuakeNotice, JMAEarthquakeCount,
   TelegramOperationStatus,
@@ -13,6 +14,11 @@ interface Props {
   kohatsu: JMAKohatsu | null
   quakeNotice: JMAQuakeNotice | null
   earthquakeCount: JMAEarthquakeCount | null
+  /**
+   * いま気象庁が書いた文を読み上げている電文の主題（`telegramText:<kind>`。読んでいなければ null）。
+   * 帯は自分が対象なら中身を開く（→ `useAutoOpenWhileSpeaking`）。
+   */
+  speakingTelegramTextSubject: string | null
 }
 
 // 閉じた解説情報の電文 id を覚えておくキー。解説情報には解除電文が無く、定例解説は平常時にも
@@ -116,7 +122,14 @@ function formatExpire(isoTime: string): string {
 //   （env() は要素の位置に関わらず値を返すため条件が要る）。
 const SAFE_BOTTOM = 'side:last:[padding-bottom:env(safe-area-inset-bottom,0px)]'
 
-export function SpecialInfoBanner({ nankai, nankaiCommentary, kohatsu, quakeNotice, earthquakeCount }: Props) {
+export function SpecialInfoBanner({
+  nankai, nankaiCommentary, kohatsu, quakeNotice, earthquakeCount, speakingTelegramTextSubject,
+}: Props) {
+  /**
+   * この帯の文をいま読み上げているか。**主題は `telegramText:<電文の kind>`**
+   * （→ `useLiveEventHandler` の `speakTelegramText`）。
+   */
+  const speaking = (kind: string) => speakingTelegramTextSubject === `telegramText:${kind}`
   if (!nankai && !nankaiCommentary && !kohatsu && !quakeNotice && !earthquakeCount) return null
 
   return (
@@ -131,10 +144,10 @@ export function SpecialInfoBanner({ nankai, nankaiCommentary, kohatsu, quakeNoti
         {/* 南海トラフの 2 枚（臨時情報とその解説情報）を隣り合わせる。臨時情報の発表期間中は
             解説情報が毎日届いて両方が同時に出るため、間に別の事象（後発地震＝北海道・三陸沖）を
             挟むと同じ事象の話が分断されて読みにくい。重さの順よりこちらを優先する。 */}
-        {nankai && <NankaiBanner nankai={nankai} />}
-        {nankaiCommentary && <CommentaryBanner commentary={nankaiCommentary} />}
-        {kohatsu && <KohatsuBanner kohatsu={kohatsu} />}
-        {earthquakeCount && <EarthquakeCountBanner count={earthquakeCount} />}
+        {nankai && <NankaiBanner nankai={nankai} speaking={speaking('nankai')} />}
+        {nankaiCommentary && <CommentaryBanner commentary={nankaiCommentary} speaking={speaking('nankaiCommentary')} />}
+        {kohatsu && <KohatsuBanner kohatsu={kohatsu} speaking={speaking('kohatsu')} />}
+        {earthquakeCount && <EarthquakeCountBanner count={earthquakeCount} speaking={speaking('earthquakeCount')} />}
         {/* お知らせ（運用連絡）は最後。上の 4 枚は「いま起きている・起こりうる地震」の話で、
             こちらは観測点の入電停止・配信試験といった裏方の連絡。同時に出たときに
             事象の話を先に読ませる。 */}
@@ -233,15 +246,16 @@ function OperationStatusBadge({ status }: { status?: TelegramOperationStatus }) 
   )
 }
 
-function NankaiBanner({ nankai }: { nankai: JMANankai }) {
-  const [open, setOpen] = useState(false)
+function NankaiBanner({ nankai, speaking }: { nankai: JMANankai; speaking: boolean }) {
+  // 読み上げているあいだだけ開く（自分が開いた分だけ閉じる）
+  const [open, setOpen] = useAutoOpenWhileSpeaking(speaking)
   const { bg, border, badge } = nankaiColors(nankai.kindName)
 
   return (
     <div className={`${bg} border-t-2 ${border} ${SAFE_BOTTOM}`}>
       <button
         className="w-full px-3 py-2 flex items-center gap-2 text-left"
-        onClick={() => setOpen(v => !v)}
+        onClick={() => setOpen(!open)}
       >
         <NankaiIcon />
         <div className="min-w-0 flex-1 flex items-center gap-2 flex-wrap">
@@ -264,14 +278,14 @@ function NankaiBanner({ nankai }: { nankai: JMANankai }) {
   )
 }
 
-function KohatsuBanner({ kohatsu }: { kohatsu: JMAKohatsu }) {
-  const [open, setOpen] = useState(false)
+function KohatsuBanner({ kohatsu, speaking }: { kohatsu: JMAKohatsu; speaking: boolean }) {
+  const [open, setOpen] = useAutoOpenWhileSpeaking(speaking)
 
   return (
     <div className={`bg-blue-900/95 border-t-2 border-blue-400 ${SAFE_BOTTOM}`}>
       <button
         className="w-full px-3 py-2 flex items-center gap-2 text-left"
-        onClick={() => setOpen(v => !v)}
+        onClick={() => setOpen(!open)}
       >
         <KohatsuIcon />
         <div className="min-w-0 flex-1 flex items-center gap-2 flex-wrap">
@@ -302,8 +316,8 @@ function KohatsuBanner({ kohatsu }: { kohatsu: JMAKohatsu }) {
 //
 // 有効期限は出さない。内部では発表から 7 日で畳んでいるが、それは帯を常駐させないための
 // 表示上の都合であって、気象庁が期限を定めているわけではない（後発地震注意情報の 7 日とは違う）。
-function CommentaryBanner({ commentary }: { commentary: JMANankaiCommentary }) {
-  const [open, setOpen] = useState(false)
+function CommentaryBanner({ commentary, speaking }: { commentary: JMANankaiCommentary; speaking: boolean }) {
+  const [open, setOpen] = useAutoOpenWhileSpeaking(speaking)
   // 閉じた電文 id。マウント時に一度だけ読む。別の解説情報に入れ替わっても id が違うので
   // 下の判定を通り、新しい電文はきちんと表示される。
   const [dismissedId, setDismissedId] = useState<string | null>(() => {
@@ -339,7 +353,7 @@ function CommentaryBanner({ commentary }: { commentary: JMANankaiCommentary }) {
       <div className="w-full px-3 py-2 flex items-center gap-2">
         <button
           className="min-w-0 flex-1 flex items-center gap-2 text-left"
-          onClick={() => setOpen(v => !v)}
+          onClick={() => setOpen(!open)}
         >
           <CommentaryIcon />
           <div className="min-w-0 flex-1 flex items-center gap-2 flex-wrap">
@@ -413,7 +427,7 @@ function NoticeBanner({ notice }: { notice: JMAQuakeNotice }) {
       <div className="w-full px-3 py-2 flex items-center gap-2">
         <button
           className="min-w-0 flex-1 flex items-center gap-2 text-left"
-          onClick={() => setOpen(v => !v)}
+          onClick={() => setOpen(!open)}
         >
           <NoticeIcon />
           <div className="min-w-0 flex-1 flex items-center gap-2 flex-wrap">
@@ -456,8 +470,8 @@ function NoticeBanner({ notice }: { notice: JMAQuakeNotice }) {
 //
 // 色は青緑（cyan）。南海トラフの解説（teal）とは隣り合わないので紛れにくく、
 // 段階の重さを表す黄／橙／赤とも、運用連絡の無彩色とも別に見える。
-function EarthquakeCountBanner({ count }: { count: JMAEarthquakeCount }) {
-  const [open, setOpen] = useState(false)
+function EarthquakeCountBanner({ count, speaking }: { count: JMAEarthquakeCount; speaking: boolean }) {
+  const [open, setOpen] = useAutoOpenWhileSpeaking(speaking)
   const [dismissedId, setDismissedId] = useState<string | null>(() => {
     try {
       return localStorage.getItem(COUNT_DISMISSED_KEY)
@@ -487,7 +501,7 @@ function EarthquakeCountBanner({ count }: { count: JMAEarthquakeCount }) {
       <div className="w-full px-3 py-2 flex items-center gap-2">
         <button
           className="min-w-0 flex-1 flex items-center gap-2 text-left"
-          onClick={() => setOpen(v => !v)}
+          onClick={() => setOpen(!open)}
         >
           <CountIcon />
           <div className="min-w-0 flex-1 flex items-center gap-2 flex-wrap">

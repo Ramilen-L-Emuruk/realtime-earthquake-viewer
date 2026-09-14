@@ -4,6 +4,7 @@ import type { SiteCoords, PsWaveCircle } from '../../services/kyoshin'
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
 import type { HeatPoint } from '../../utils/quakeHeatmap'
 import type { CatalogPointCloud } from '../../utils/hypocenterCatalogView'
+import type { LatLng } from '../../utils/stationCoords'
 
 // 地図コンポーネントの契約（Props とモード）の単一情報源。
 // Leaflet 版 JapanMap と MapLibre 版 JapanMapGL、両者を出し分ける MapView が
@@ -29,6 +30,21 @@ export interface ShakeFocus {
   lng: number
   tick: number
   atMs: number
+}
+
+/**
+ * 一覧の行をクリックして「ここを見せてほしい」と立った要求（→ `FocusTargetGL`）。
+ *
+ * **1 点とは限らない。** 観測点の行は 1 点を指すが、県・区域・市町村の行は範囲を指す。
+ * `fitToPositions` は 1 点なら `flyToPoint` へ落ちるので、同じ入れ物で両方を表せる。
+ *
+ * `ts` は押した時刻。**座標ではなくこれを鍵にする** —— 同じ行を続けて押したとき、座標だけでは
+ * 値が変わらず地図が動かない。津波の `focusObsName` が同じ理由で `ts` を持っている。
+ */
+export interface MapFocusTarget {
+  /** 寄り先。1 点ならその点へ、複数点ならそれらの外接矩形へ寄る。 */
+  positions: LatLng[]
+  ts: number
 }
 
 /** 地図の外から地図を操作するための取っ手。共有カードの撮影だけが使う。 */
@@ -134,6 +150,12 @@ export interface JapanMapProps {
   shakeFocus?: ShakeFocus | null
   eewLpgmEventId?: string | null
   focusObsName?: { name: string; ts: number } | null
+  /**
+   * カードの一覧の行をクリックしたときの寄り先（地震カードの観測点・県・区域・市町村と、
+   * 津波カードの区域名）。**津波の `focusObsName` とは別に持つ** —— あちらは名前で地図側が
+   * 引く仕組みで、震度観測点と潮位観測点は名前が衝突しうる。
+   */
+  focusTarget?: MapFocusTarget | null
   obsUpdateStatus?: Map<string, 'new' | 'updated'>
   /**
    * 地震カードをユーザーが明示的に選んだ回数（単調増加）。QuakeFitGL が「明示選択」と

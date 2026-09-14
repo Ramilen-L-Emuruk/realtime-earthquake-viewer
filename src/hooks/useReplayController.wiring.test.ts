@@ -16,6 +16,7 @@ import { renderHook, act, cleanup } from '@testing-library/react'
 import { useReplayController, WINDOW_MS, PRE_WINDOW_MS, PREFETCH_MARGIN_MS, QUAKE_HISTORY_EVENTS, QUAKE_HISTORY_MAX_DAYS } from './useReplayController'
 import type { ReplayEntry, ReplayFetchResult, QuakeHistoryResult } from '../types/replay'
 import type { JMAQuake } from '../types/earthquake'
+import { log } from '../utils/logger'
 
 // 外部 I/O（取得）とキャッシュ破棄は deps 経由で注入されるため、ここでは偽物を渡すだけでよい。
 // Hook が内部で使う filterPreWindowEvents は本物のまま動く（後述の長周期地震動電文は
@@ -492,7 +493,7 @@ describe('useReplayController の地震カード履歴', () => {
   /** 履歴の結果。中身の統合は mergeQuakeHistory の担当なので、ここでは件数だけ数える。 */
   function history(count: number, skipped = 0, failedArchiveUrls: string[] = []): QuakeHistoryResult {
     const quakes = Array.from({ length: count }, (_, i) => ({ id: `q${i}` } as unknown as JMAQuake))
-    return { quakes, skipped, failedArchiveUrls }
+    return { quakes, extras: [], skipped, failedArchiveUrls }
   }
 
   it('再生開始時刻を境に、ライブと同じ件数を目標として履歴を取りに行く', async () => {
@@ -567,5 +568,140 @@ describe('useReplayController の地震カード履歴', () => {
 
     expect(h.current.error).toMatch(/1 件の取得元/)
     expect(h.current.error).toMatch(/2 件の電文/)
+  })
+})
+
+// 初期状態（24 時間）では足りないもの——長周期地震動と、7 日間表示され続ける帯——を
+// 地震カードの履歴（最大 7 日）から補う経路。
+//
+// **順序が要になる。** 初期状態のほうが新しいので、履歴の古い報を後から流すと上書きしてしまう。
+describe('useReplayController: 初期状態に無い帯・長周期を履歴から補う', () => {
+  /** 帯（地震回数）のエントリ。件数は見ないので中身は最小限。 */
+  function countEntry(id: string): ReplayEntry {
+    return {
+      payload: {
+        kind: 'earthquakeCount',
+        data: {
+          id, eventId: id, time: '2026-08-15T12:00:00+09:00',
+          expireAt: '2026-08-22T12:00:00+09:00', items: [], cancelled: false,
+        } as unknown as import('../types/earthquake').JMAEarthquakeCount,
+      },
+      replayTime: new Date('2026-08-15T12:00:00+09:00'),
+    }
+  }
+
+  function historyWith(extras: ReplayEntry[]): QuakeHistoryResult {
+    return { quakes: [], extras, skipped: 0, failedArchiveUrls: [] }
+  }
+
+  it('正: 初期状態に無い種別は履歴から補い、初期状態と同じ時刻・無音で流す', async () => {
+    const target = quietTarget()
+    const h = setup()
+    const started = h.start(target)
+    await act(async () => {
+      h.fetches[0].resolve(fetched([]))
+      h.fetches[1].resolve(fetched([]))
+      await started
+    })
+    h.deps.loadReplayEvents.mockClear()
+
+    await act(async () => { h.histories[0].resolve(historyWith([countEntry('c1')])) })
+
+    expect(h.deps.loadReplayEvents).toHaveBeenCalledTimes(1)
+    const injected = h.deps.loadReplayEvents.mock.calls[0][0] as ReplayEntry[]
+    expect(injected).toHaveLength(1)
+    expect(injected[0].silent).toBe(true)
+    expect(injected[0].replayTime.getTime()).toBe(target.getTime() - 1)
+  })
+
+  it('対照: 初期状態が同じ種別を流していれば補わない（古い報で上書きしない）', async () => {
+    const target = quietTarget()
+    const h = setup()
+    const started = h.start(target)
+    await act(async () => {
+      // 初期状態（24 時間以内）に新しい報がある
+      h.fetches[0].resolve(fetched([]))
+      h.fetches[1].resolve(fetched([countEntry('new')]))
+      await started
+    })
+    h.deps.loadReplayEvents.mockClear()
+
+    // 履歴には同じ種別の古い報しかない
+    await act(async () => { h.histories[0].resolve(historyWith([countEntry('old')])) })
+
+    expect(h.deps.loadReplayEvents).not.toHaveBeenCalled()
+  })
+
+  it('安全弁: 別セッションへ切り替わっていたら補わない', async () => {
+    const target = quietTarget()
+    const h = setup()
+    const started = h.start(target)
+    await act(async () => {
+      h.fetches[0].resolve(fetched([]))
+      h.fetches[1].resolve(fetched([]))
+      await started
+    })
+    act(() => { h.current.stop() })
+    h.deps.loadReplayEvents.mockClear()
+
+    await act(async () => { h.histories[0].resolve(historyWith([countEntry('c1')])) })
+
+    expect(h.deps.loadReplayEvents).not.toHaveBeenCalled()
+  })
+})
+
+// 補完が「効いていない」ことに気づける形になっているか。帯が出ないのは「発表が無かった」のと
+// 画面からは区別が付かないので、記録だけが手がかりになる。
+describe('useReplayController: 補完の結果を記録する', () => {
+  function countEntry2(id: string): ReplayEntry {
+    return {
+      payload: {
+        kind: 'earthquakeCount',
+        data: {
+          id, eventId: id, time: '2026-08-15T12:00:00+09:00',
+          expireAt: '2026-08-22T12:00:00+09:00', items: [], cancelled: false,
+        } as unknown as import('../types/earthquake').JMAEarthquakeCount,
+      },
+      replayTime: new Date('2026-08-15T12:00:00+09:00'),
+    }
+  }
+
+  it('対照: 本編で流れる分は補わない（開始時刻ちょうどの電文が二重に積まれる）', async () => {
+    const target = quietTarget()
+    const h = setup()
+    const started = h.start(target)
+    await act(async () => {
+      // 本編（開始時刻以降）に同じ種別がある
+      h.fetches[0].resolve(fetched([countEntry2('at-target')]))
+      h.fetches[1].resolve(fetched([]))
+      await started
+    })
+    h.deps.loadReplayEvents.mockClear()
+
+    await act(async () => {
+      h.histories[0].resolve({ quakes: [], extras: [countEntry2('from-history')], skipped: 0, failedArchiveUrls: [] })
+    })
+
+    expect(h.deps.loadReplayEvents).not.toHaveBeenCalled()
+  })
+
+  it('安全弁: 補完の途中で例外が出ても記録を残し、再生は続ける', async () => {
+    const target = quietTarget()
+    const h = setup()
+    const started = h.start(target)
+    await act(async () => {
+      h.fetches[0].resolve(fetched([]))
+      h.fetches[1].resolve(fetched([]))
+      await started
+    })
+    h.deps.loadReplayEvents.mockImplementationOnce(() => { throw new Error('積めなかった') })
+
+    await act(async () => {
+      h.histories[0].resolve({ quakes: [], extras: [countEntry2('c1')], skipped: 0, failedArchiveUrls: [] })
+    })
+
+    expect(vi.mocked(log.error)).toHaveBeenCalled()
+    // 再生そのものは止めない（エラー表示は取得の失敗のときだけ）
+    expect(h.current.error).toBeNull()
   })
 })

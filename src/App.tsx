@@ -5,12 +5,13 @@ import { ErrorBoundary } from './components/ErrorBoundary'
 import {
   TAB_PRIORITY, TAB_HOLD_MS, shouldAcceptAutoTab, shouldFollowNow, idleRevertPriority,
   shouldRetakeAfterPreSpeech,
-  resolveNonRealtimeTabSource, shouldResetTsunamiScroll,
+  resolveNonRealtimeTabSource, shouldResetTsunamiScroll, shouldDeferRevertWhileSpeaking,
   type TabHold, type TabPriority, type TabHoldSource, type TabFollowMark,
 } from './utils/tabPriority'
 import { PanelResizeHandle } from './components/PanelResizeHandle'
 import { MapView, type MapMode } from './components/Map/MapView'
-import type { ShakeFocus } from './components/Map/mapTypes'
+import type { ShakeFocus, MapFocusTarget } from './components/Map/mapTypes'
+import type { LatLng } from './utils/stationCoords'
 import { MapUpdateTime } from './components/MapUpdateTime'
 import { MapDataStatus } from './components/MapDataStatus'
 import { MapRenderStatus } from './components/MapRenderStatus'
@@ -47,6 +48,7 @@ import { useKyoshinDetectorV2 } from './hooks/useKyoshinDetectorV2'
 import { useKyoshinMissingHold } from './hooks/useKyoshinMissingHold'
 import { useDetectionDiagnostics } from './hooks/useDetectionDiagnostics'
 import { createSpeechFollowController, type SpeechFollowSession } from './utils/ttsFollow'
+import { useTelegramTextSpeechFollow } from './hooks/useTelegramTextSpeechFollow'
 import { deriveKyoshinView } from './utils/kyoshinDetectionView'
 import { filterSubThresholdIndices } from './utils/kyoshinSubThresholdFilter'
 import { useSWaveCountdown } from './hooks/useSWaveCountdown'
@@ -61,7 +63,9 @@ import { quakeEventKey, quakeKeyForLpgmEventId } from './utils/quakeMerge'
 import { estimatedIntensityFor, matchEstimatedIntensityArrival } from './utils/estimatedIntensity'
 import {
   type QuakeOverlay, toggleLpgmOverlay, toggleDistributionOverlay, toggleUnreceivedOverlay,
+  openDistributionOverlay,
   closeLpgmOverlay, closeEewLpgmOverlay, closeUnreceivedOverlay, closeUnreceivedOverlayFor,
+  closeDistributionOverlayOnQuakeReport,
   decideUnreceivedSpeechOpen, shouldCloseOverlayOnSelection, type UnreceivedOpenResult,
 } from './utils/quakeOverlay'
 import { tsunamiOverallGrade } from './utils/tsunami'
@@ -69,7 +73,7 @@ import { playCountdownBeep, unlockAudio, setSoundVolume, setKeepAliveEnabled } f
 import { loadTtsPhraseBreakDict } from './utils/ttsPhraseBreakDict'
 import { loadTtsStationReadings } from './utils/ttsStationReadings'
 import { loadTtsEpicenterAccents } from './utils/ttsEpicenterAccents'
-import { warmFixedPhrases, isValidVoicevoxUrl, VOICEVOX_URL_DEBOUNCE_MS } from './utils/voicevox'
+import { warmFixedPhrases, isValidVoicevoxUrl, VOICEVOX_URL_DEBOUNCE_MS, isSpeaking, onSpeechIdle } from './utils/voicevox'
 import { EEW_LEAD_PHRASES } from './utils/ttsText'
 import type { EEWAlert, JMAQuake, JMATsunami } from './types/earthquake'
 import { useReplayController, WINDOW_MS as REPLAY_WINDOW_MS, PRE_WINDOW_MS as REPLAY_PRE_WINDOW_MS } from './hooks/useReplayController'
@@ -157,6 +161,17 @@ export function App() {
   // CameraFollowsGL.tsx QuakeFitGL 参照）。
   const [quakeSelectionTick, setQuakeSelectionTick] = useState(0)
   const [focusedObsName, setFocusedObsName] = useState<{ name: string; ts: number } | null>(null)
+  /**
+   * カードの一覧の行をクリックしたときの寄り先（地震カードの観測点・県・区域・市町村と、
+   * 津波カードの区域名）。
+   *
+   * **津波の `focusedObsName` とは別に持つ。** あちらは名前で地図側が引く仕組みで、震度観測点と
+   * 潮位観測点は名前が衝突しうるため、同じ入れ物に混ぜると互いの点集合から引いてしまう。
+   *
+   * こちらは座標で渡すので、地震カードと津波カードのどちらから来ても同じ入れ物で扱える
+   * （同時に 2 つの寄せ要求は立たない —— 押せるのは表示中のタブの一覧だけ）。
+   */
+  const [focusedMapTarget, setFocusedMapTarget] = useState<MapFocusTarget | null>(null)
   /**
    * 地震カードに紐づく追加表示（長周期地震動階級／震度分布モード）。null なら何も重ねない。
    * **選択中の地震のものとは限らない**（EEW カードから開いた長周期・引き当てる地震カードが
@@ -246,6 +261,12 @@ export function App() {
   const focusTsunamiObs = useCallback((name: string) => {
     setFocusedObsName({ name, ts: Date.now() })
   }, [])
+  // カードの一覧の行をクリックしたときに、その場所を地図の寄り先として通知する。
+  // 座標の解決はカード側が行う（押せるかどうかの判定と同じ引き当てを使うため）。
+  // 1 点なら flyTo、複数点ならその外接矩形へ寄る（→ `FocusTargetGL`）。
+  const focusMapTarget = useCallback((positions: LatLng[]) => {
+    setFocusedMapTarget({ positions, ts: Date.now() })
+  }, [])
   // EEW 発報中（cancelledAt 除外済み）・揺れ検知フラグ・地震情報リスト・デフォルトタブを
   // タイマーコールバック内やフック間で参照するための ref。
   // 値の確定はレンダー後半（useEarthquakes / useKyoshinDetectorV2 の後）で毎レンダー代入する。
@@ -255,6 +276,12 @@ export function App() {
   // 津波リスト（続報判定に使う）。値の確定は下方で毎レンダー tsunamis で更新する。
   const tsunamisRef = useRef<JMATsunami[]>([])
   const defaultTabRef = useRef<TabId>(settings.defaultTab)
+  // 自動復帰までの時間。**読み上げ中に既定の状態へ戻すのを見送ってよいか**の判定に使う
+  // （`shouldDeferRevertWhileSpeaking`）。ref で持つのは、`revertToDefaultTab` を受け取る側
+  // （`useKyoshinAlerts` / `useLiveEventHandler`）が依存を絞った effect の中で呼ぶため
+  // ——設定の変化で関数が作り直されても、古い値を掴んだままになる。値は毎レンダー同期する。
+  const idleRevertSecRef = useRef(settings.idleRevertSec)
+  idleRevertSecRef.current = settings.idleRevertSec
   // 表示中のタブ。「同じタブをもう一度押したら折りたたむ」判定に使う。
   // handleTabChange の deps に activeTab を入れると切替のたびに関数の参照が変わり、
   // React.memo 化した IconNav が再レンダーされるため ref で参照する（値は毎レンダー同期）。
@@ -458,26 +485,51 @@ export function App() {
   /**
    * 気象庁の推計震度分布図が届いたときに、その地震の分布モードを開く。
    *
-   * **タブ移動は既存の仕組みへ要求として出す**（`setActiveTabNonRealtime`）。直接
-   * `setActiveTab` を叩くと、EEW・揺れ検知・利用者の操作より優先されてしまい、
-   * 地震から数分後に画面を横取りすることになる（→ audio-tts-spec.md §6 の優先順位）。
+   * **タブ移動はここでは行わない。** 見せ先が地図の面なので画面を移す必要はあるが、それは
+   * 読み上げに同調させる（呼び出し側が `speakNonEEWDelayed` の追従先として渡す。→
+   * audio-tts-spec.md §6「推計震度分布図は地震情報の音を借りる」）。受信の瞬間に要求を
+   * 出すだけだと、その要求が EEW の保持に弾かれたきり、**読み上げの番が来ても画面が合わない**
+   * ——リアルタイムタブのまま「更新されました」とだけ声が出る。
    *
-   * 引き当ては受信側と同じ述語（`matchEstimatedIntensity`）。**該当するカードが無ければ何もしない**
-   * ——別の地震の分布モードを勝手に開くよりは、開かないほうがましでしてよ。
+   * **二度呼ばれる前提で冪等にしてある**（受信の瞬間と、読み上げの順番が来た瞬間）。読み上げは
+   * 優先度の待ち行列を通るので、順番が回るまでに別の地震情報が届いて選択がそちらへ移っている
+   * ことがある（選択は受信した瞬間に同期で動く）。受信時の 1 回きりだと、そのとき分布が
+   * 閉じたまま声だけが出る。開く遷移は `openDistributionOverlay`（トグルではない）。
+   *
+   * 引き当ては受信側と同じ述語（`matchEstimatedIntensityArrival`）。**該当するカードが無ければ
+   * 何もしない** ——別の地震の分布モードを勝手に開くよりは、開かないほうがまし。
+   *
+   * **開けたかどうかを返し、記録するかは呼び出し側が決める。** 2 回呼ばれるうち受信の時点で
+   * 開けないのは珍しくなく（分布図が地震情報より先に届けば、まだどのカードにも結び付かない）、
+   * ここで毎回記録すると本当に開けなかった回が埋もれる。
+   *
+   * @returns 分布モードを開けたか
    */
-  const openEstimatedIntensity = useCallback((arrivalTime: string, lat: number, lon: number) => {
+  const openEstimatedIntensity = useCallback((arrivalTime: string, lat: number, lon: number): boolean => {
     const target = earthquakesRef.current.find(
       q => !q.cancelledAt && matchEstimatedIntensityArrival(q, arrivalTime, lat, lon),
     )
-    if (!target) return
+    if (!target) return false
     // **カードの選択も合わせる。** 地図が出すのは選択中の地震（`mapQuake`）で、分布モードも
     // 公式の面もそこから引く。鍵を書き替えるだけだと、利用者が別の地震カードを見ている間に
     // 届いたとき**カードのボタンは押された状態なのに地図には何も出ない**——エラーもログも
     // 出ないので、手掛かりが何も残らない。長周期の自動表示も同じ 2 つを対にしている。
-    selectQuake(quakeEventKey(target))
-    setQuakeOverlay({ kind: 'distribution', eventKey: quakeEventKey(target) })
-    setActiveTabNonRealtime('earthquake')
-  }, [selectQuake, setActiveTabNonRealtime])
+    const eventKey = quakeEventKey(target)
+    selectQuake(eventKey)
+    setQuakeOverlay(prev => openDistributionOverlay(prev, eventKey))
+    return true
+  }, [selectQuake])
+
+  /**
+   * その地震の電文を受けたとき、開いている震度分布モードを閉じる
+   * （判定と理由は `closeDistributionOverlayOnQuakeReport`）。
+   *
+   * **`selectQuake` の後に呼ぶ。** 別の地震へ移ったときは選択の側が先に閉じており、ここは
+   * 「同じ地震の続報でも閉じる」ぶんを受け持つ。
+   */
+  const closeDistributionOnQuakeReport = useCallback((eventKey: string) => {
+    setQuakeOverlay(prev => closeDistributionOverlayOnQuakeReport(prev, eventKey))
+  }, [])
 
   // EEW の受信による realtime タブ移動。
   //
@@ -564,7 +616,17 @@ export function App() {
   // （`requestAutoTab` の `tsunamiAutoShowTick`）が `shouldResetTsunamiScroll` で決める。
   // かつてここから別に要求を出していたが、**タブが変わっていなくても戻す**形だったため、
   // 津波優先の既定タブで津波カードを読んでいる間、無操作 30 秒ごとに位置が捨てられていた。
-  const revertToDefaultTab = () => {
+  // @param reason どの経路から戻そうとしたか。**見送ったときの記録に出すために必須**にして
+  //   ある —— 呼び出し元は 4 つあり、見送りの記録が同じ文言だとどれが止まったのか分からない。
+  const revertToDefaultTab = (reason: string) => {
+    // **読み上げている間は戻さない**（理由と例外は `shouldDeferRevertWhileSpeaking`）。
+    // アイドル復帰だけでなくここへ寄せてあるのは、呼び出し元が 4 つあり**どれも同じ症状を
+    // 起こす**ため —— 未入電を読み上げている最中に「揺れの可能性」が失効しただけで、
+    // 地震情報タブから引き離される。見送った分はアイドル復帰が後で拾う。
+    if (shouldDeferRevertWhileSpeaking(isSpeaking(), idleRevertSecRef.current)) {
+      log.info(`[tab] 読み上げ中のため既定タブへの復帰を見送り（${reason}・アイドル復帰が後で戻す）`)
+      return
+    }
     const tab = defaultTabRef.current
     // 既定の状態へ戻す操作なので必ず動かす（理由は forceTab）。呼び出し元は EEW 発報中・
     // 揺れ検知中を除外しているため、警報級の表示を消すことはない。
@@ -590,13 +652,31 @@ export function App() {
   const [unreceivedFollowSession, setUnreceivedFollowSession] = useState<SpeechFollowSession | null>(null)
   const unreceivedFollow = useMemo(() => createSpeechFollowController(setUnreceivedFollowSession), [])
 
+  // 気象庁が書いた文の自動展開も同じ仕組みで動かす（3 本目）。**枠を分ける理由は上と同じ** ——
+  // 門が見る参照が違うので、相乗りさせると気象庁の文を読むたびに津波カードが動く。
+  const [telegramTextFollowSession, setTelegramTextFollowSession] = useState<SpeechFollowSession | null>(null)
+  const telegramTextFollow = useMemo(() => createSpeechFollowController(setTelegramTextFollowSession), [])
+  /**
+   * いま気象庁の文を読み上げている電文の主題（`telegramText:<kind>`。読んでいなければ null）。
+   *
+   * バナーと津波カードはこれを見て自分の表示を開く。**開いた側が「自分が開いた分」を覚える**
+   * ので、利用者が手で開いていたものを読み終わりで閉じることはない。
+   */
+  const [speakingTelegramTextSubject, setSpeakingTelegramTextSubject] = useState<string | null>(null)
+  useTelegramTextSpeechFollow({
+    session: telegramTextFollowSession,
+    onSubjectChange: setSpeakingTelegramTextSubject,
+  })
+
   // ライブイベント受信処理（通知音・タイトル・タブ切替・読み上げ・ブラウザ通知）
   const { handleLiveEvent, resetTracking, restorePreWindowTracking, obsUpdateStatus, areaGradeChangedKeys, focusedDistrict } = useLiveEventHandler({
     settings, title, earthquakesRef, tsunamisRef, kyoshinDetectedRef, defaultTabRef,
     setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate, setActiveTabRealtimeUrgent,
     setActiveTabRealtimeForKyoshin: () => requestTabForKyoshin('realtime'),
-    followSpeechTab, preSpeechTab, speechFollow, unreceivedFollow, expandPanelForSpecialInfo,
+    followSpeechTab, preSpeechTab, speechFollow, unreceivedFollow, telegramTextFollow,
+    expandPanelForSpecialInfo,
     revertToDefaultTab, selectQuake, openLpgmFromQuake, openEstimatedIntensity,
+    closeDistributionOnQuakeReport,
   })
 
   const [replayTimeOffset, setReplayTimeOffset] = useState<number | null>(null)
@@ -617,6 +697,7 @@ export function App() {
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
     simulateQuakeNotice, simulateEarthquakeCount, simulateEarthquakeCountRetraction, simulateEstimatedIntensity,
     simulateTrainingQuake, simulateUnreceivedQuake, simulateTsunamiGradeChange, simulateQuakeAmendment,
+    simulateQuakeReportSequence,
     resetState, loadReplayEvents, restoreQuakeHistory,
   } = useEarthquakes(handleLiveEvent, debouncedApiKey, settings.dmdataTestDelivery, replayTimeOffset)
   earthquakesRef.current = earthquakes
@@ -681,6 +762,7 @@ export function App() {
     earthquakeCountRetraction: simulateEarthquakeCountRetraction,
     trainingQuake:     simulateTrainingQuake,
     quakeAmendment:    simulateQuakeAmendment,
+    quakeReportSequence: simulateQuakeReportSequence,
     unreceivedQuake:   simulateUnreceivedQuake,
     tsunamiGradeChange: simulateTsunamiGradeChange,
     estimatedIntensity: simulateEstimatedIntensity,
@@ -702,6 +784,7 @@ export function App() {
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
     simulateQuakeNotice, simulateEarthquakeCount, simulateEarthquakeCountRetraction, simulateEstimatedIntensity,
     simulateTrainingQuake, simulateUnreceivedQuake, simulateTsunamiGradeChange, simulateQuakeAmendment,
+    simulateQuakeReportSequence,
   ])
   // IconNav の onTabChange。手動選択は必ず即時反映し、以後 TAB_HOLD_MS の間は自動切替に
   // 奪わせない（EEW の新規発報・レベルアップ・誤報取消だけはこれより強い）。
@@ -1161,13 +1244,38 @@ export function App() {
   })
 
   // 設定秒数 情報更新（activeTab の自動切替・DMDSS 更新）もユーザー操作もなければ
-  // デフォルトタブへ戻す。activeTab / lastUpdate の変化、および操作のたびにリセット。
+  // デフォルトタブへ戻す。activeTab / lastUpdate の変化、操作のたび、および**読み上げが
+  // 終わったとき**にリセット（4 つ目は下の `onSpeechIdle`）。
   // idleRevertSec が 0 以下なら自動復帰は無効。
   useEffect(() => {
     if (settings.idleRevertSec <= 0) return
     const ms = settings.idleRevertSec * 1000
+    // 宣言を `revert` より前に置く（`revert` の中から張り直すため）。初回のセットは下。
+    let timer: number | undefined
     // EEW 発報中または揺れ検知中はリアルタイムタブを維持する。それ以外はデフォルトタブへ戻す。
     const revert = () => {
+      // **読み上げている間は既定の状態へ戻さない。** アイドル復帰は「離席したら速報へ返す」
+      // ための仕組みで、声が流れているあいだは離席と見なせない。見ないと、各地の震度のように
+      // 読み切りに 2 分近くかかる読み上げの最中に画面だけが持っていかれる —— 読み上げ追従が
+      // 画面を要求するのは発話を投入する瞬間の 1 回だけなので、奪われても取り返せない
+      // （→ docs/spec/audio-tts-spec.md §6「読み上げている間は既定の状態へ戻さない」）。
+      //
+      // **下の realtime へ留める経路（EEW 発報中・揺れ検知中）にも掛かる。** そちらを通すと、
+      // EEW が生きているあいだ 30 秒ごとにリアルタイムへ引き戻され、直したい症状が残る。
+      // 代償として、無関係な読み上げが続く間はリアルタイムへの引き戻しも遅れるが、**EEW と
+      // 揺れ検知は自前の経路で画面を取る**（新規発報・レベルアップ・誤報取消は `eewUrgent`、
+      // 揺れ検知は `requestTabForKyoshin`、読み上げが始まれば追従）。ここは取りこぼしの受け皿。
+      //
+      // 判定は `revertToDefaultTab` と同じ述語を通す（`idleRevertSec` が 0 以下の端末では
+      // この effect 自体が動かないので、ここでは第 2 引数が偽になることはない）。
+      if (shouldDeferRevertWhileSpeaking(isSpeaking(), settings.idleRevertSec)) {
+        log.info('[tab] 読み上げ中のためアイドル復帰を見送り（読み終わってから計り直す）')
+        // 読み上げの終わりでも計り直すが（下の `onSpeechIdle`）、通知を取りこぼしても
+        // 永久に復帰しなくならないよう、ここでも張り直しておく。**発火済みのタイマーを
+        // 消す必要はない**ので `reset` は通さない（あちらは宣言がこの下にある）。
+        timer = window.setTimeout(revert, ms)
+        return
+      }
       // 特別情報のために一時的に開いたパネルも、ここで平常へ戻す（アイドル復帰は既定の状態へ
       // 戻す操作なので、パネルの畳みも元に戻すのが筋）。**判定はタブ移動の前に取る**。
       // 移動が追跡を消すため（`requestAutoTab`）、後から見ると常に「追跡なし」になる。
@@ -1190,8 +1298,8 @@ export function App() {
       } else if (activeTabRef.current === 'catalog') {
         log.info(`[tab] 震源カタログのためアイドル復帰を見送り (idleRevertSec=${settings.idleRevertSec})`)
       } else {
-        log.info(`[tab] → ${defaultTabRef.current} (アイドル復帰 idleRevertSec=${settings.idleRevertSec})`)
-        revertToDefaultTab()
+        log.info(`[tab] ${defaultTabRef.current} を要求 (アイドル復帰 idleRevertSec=${settings.idleRevertSec})`)
+        revertToDefaultTab(`アイドル復帰 idleRevertSec=${settings.idleRevertSec}`)
         if (!title.tsunamiTitleFlag()) {
           title.setTitle(null)
         }
@@ -1199,7 +1307,7 @@ export function App() {
       if (collapseAfterRevert) setPanelCollapsed(true)
       setSpecialInfoPanelHold(null)
     }
-    let timer = window.setTimeout(revert, ms)
+    timer = window.setTimeout(revert, ms)
     const reset = () => {
       window.clearTimeout(timer)
       timer = window.setTimeout(revert, ms)
@@ -1220,7 +1328,17 @@ export function App() {
     window.addEventListener('wheel', reset, opts)
     window.addEventListener('touchmove', reset, opts)
     window.addEventListener('scroll', reset, opts)
+    // **読み上げが終わった時点から計り直す。** 見送り（上の `isSpeaking`）だけだと、読み終えた
+    // 直後に見送り分のタイマーが発火して唐突に画面が動く。見送りは最大 idleRevertSec の粒度
+    // でしか判定できないため、終わりの瞬間はこちらで拾う。
+    // **ここだけ記録を分ける。** `reset` は操作のたびにも呼ばれるので、ログが無いと
+    // 「操作で計り直したのか、読み上げが終わって計り直したのか」を後から区別できない。
+    const stopWatchingSpeech = onSpeechIdle(() => {
+      log.debug('[tab] 読み上げが終わったのでアイドル復帰を計り直す')
+      reset()
+    })
     return () => {
+      stopWatchingSpeech()
       window.clearTimeout(timer)
       window.removeEventListener('pointerdown', reset, true)
       window.removeEventListener('pointermove', resetOnDrag, true)
@@ -1398,7 +1516,7 @@ export function App() {
   })
   // 強震モニタの揺れ検知は V2 エンジン（純粋コア step）で行う。
   // 検知結果は音・自動タブ切替・自動フィット・地図オーバーレイ・リアルタイムタブのカードを駆動する。
-  const kyoshinV2 = useKyoshinDetectorV2(kyoshin.sites, kyoshin.indices, kyoshin.dataTime, kyoshin.sitesSiteConfigId, kyoshin.indicesSiteConfigId, true, hasActiveNonAssumedEEW)
+  const kyoshinV2 = useKyoshinDetectorV2(kyoshin.sites, kyoshin.indices, kyoshin.dataTime, kyoshin.sitesSiteConfigId, kyoshin.indicesSiteConfigId, true, hasActiveNonAssumedEEW, kyoshin.supplyKey, kyoshin.warmup)
   // siteConfigId 切替直後の一時的な「新 indices・旧 sites」状態では sites[i] と indices[i] を
   // 位置対応で使う下流（描画・タブ表示・派生ビュー）でも誤ペアリングが起きるため、両者の
   // siteConfigId が揃うまで空配列にゲートする。sitelist の非同期取得が完了した次フレームで
@@ -1711,6 +1829,7 @@ export function App() {
               shakeFocus={shakeFocus}
               eewLpgmEventId={activeLpgmSource === 'eew' ? activeLpgmEventId : null}
               focusObsName={focusedObsName}
+              focusTarget={focusedMapTarget}
               obsUpdateStatus={obsUpdateStatus}
               quakeSelectionTick={quakeSelectionTick}
               onMapReady={setMapHandle}
@@ -1753,7 +1872,7 @@ export function App() {
               onRestore={actionChecklist.restore}
             />
           )}
-          <SpecialInfoBanner nankai={nankai} nankaiCommentary={nankaiCommentary} kohatsu={kohatsu} quakeNotice={quakeNotice} earthquakeCount={earthquakeCount} />
+          <SpecialInfoBanner nankai={nankai} nankaiCommentary={nankaiCommentary} kohatsu={kohatsu} quakeNotice={quakeNotice} earthquakeCount={earthquakeCount} speakingTelegramTextSubject={speakingTelegramTextSubject} />
         </div>
 
         {/* 地図とパネルの境界（縦積み時のみ）。ドラッグで高さ比率を変え、タップで折りたたむ。 */}
@@ -1797,6 +1916,7 @@ export function App() {
                 onToggleDistribution={toggleDistribution}
                 unreceivedQuakeKey={unreceivedQuakeKey}
                 onToggleUnreceived={toggleUnreceived}
+                onFocusMap={focusMapTarget}
               />
             </ErrorBoundary>
           </div>
@@ -1821,10 +1941,12 @@ export function App() {
                 earthquakes={filteredEarthquakes}
                 onEarthquakeLink={linkTsunamiToEarthquake}
                 onObservationClick={focusTsunamiObs}
+                onFocusMap={focusMapTarget}
                 focusedDistrict={focusedDistrict}
                 obsUpdateStatus={obsUpdateStatus}
               areaGradeChangedKeys={areaGradeChangedKeys}
                 speechSession={speechFollowSession}
+                speakingTelegramText={speakingTelegramTextSubject === 'telegramText:tsunami'}
                 /* 読み上げ追従の可否。タブは invisible で隠すだけなので**非表示でもスクロールは
                    効いてしまう**（戻ってきたら知らない位置にいる）。折りたたみ時はさらに幅か
                    高さが 0 になり、視野の高さが取れない。 */

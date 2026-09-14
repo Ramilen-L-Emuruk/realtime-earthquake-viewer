@@ -4,11 +4,14 @@
 // 結合）を変えたときに、テストだけが古い境界を前提に通り続けるのを防ぐため。
 import { describe, it, expect } from 'vitest'
 import { splitIntoChunks } from './voicevox'
+import { readFileSync } from 'node:fs'
 import {
   createSpeechFollowController,
   joinSegments,
   mapChunksToRefs,
   plain,
+  hasTelegramTextFollowTarget,
+  TELEGRAM_TEXT_OPEN_TARGET_KINDS,
   planFollowScroll,
   hasFollowTarget,
   hasUnreceivedFollowTarget,
@@ -31,7 +34,8 @@ function refNames(segments: SpeechSegment[]): string[][] {
       r.kind === 'grade' ? r.grade
         : r.kind === 'quakeFact' ? r.value
           : r.kind === 'unreceivedNote' ? '(未入電の説明)'
-            : r.name
+            : r.kind === 'telegramText' ? '(気象庁が書いた文)'
+              : r.name
     )))
 }
 
@@ -675,5 +679,55 @@ describe('spokenChunkIndices', () => {
     it('対照: 1 つも鳴っていなければ空（完了時と同じ）', () => {
       expect(spokenChunkIndices(scheduled, 4, 10.5, false)).toEqual([])
     })
+  })
+})
+
+// 気象庁が書いた文の自動展開の門。**他の 2 つと別に持つ**という設計を、排他性まで固定する
+// （相乗りすると、気象庁の文を読むたびに津波カードが動く・未入電の一覧が開く）。
+describe('hasTelegramTextFollowTarget', () => {
+  const telegramSeg: SpeechSegment = { text: '気象庁の文です。', refs: [{ kind: 'telegramText' }] }
+
+  it('気象庁が書いた文の参照があれば真', () => {
+    expect(hasTelegramTextFollowTarget([telegramSeg])).toBe(true)
+  })
+
+  it('参照が無ければ偽（定型文だけの読み上げで始めない）', () => {
+    expect(hasTelegramTextFollowTarget([plain('津波警報が発表されました。')])).toBe(false)
+    expect(hasTelegramTextFollowTarget(undefined)).toBe(false)
+  })
+
+  // 安全弁: **他の 2 つの門はこの参照に反応しない。**
+  it('津波カードの追従・未入電モードの門は、この参照では開かない', () => {
+    expect(hasFollowTarget([telegramSeg])).toBe(false)
+    expect(hasUnreceivedFollowTarget([telegramSeg])).toBe(false)
+  })
+
+  // 対照: 逆向きも見る（区域・未入電の参照でこの門が開かない）
+  it('区域や未入電の参照では、この門は開かない', () => {
+    expect(hasTelegramTextFollowTarget([seg('岩手県', area('岩手県', '210'))])).toBe(false)
+    expect(hasTelegramTextFollowTarget([{ text: '未入電です。', refs: [{ kind: 'unreceivedNote' }] }])).toBe(false)
+  })
+})
+
+// 開く先がある電文の種別。**設定タブ側（バナー・津波カード）と対応が取れていること。**
+// ここから漏れると、読み上げても画面が動かない（例外もログも出ない）。
+describe('TELEGRAM_TEXT_OPEN_TARGET_KINDS', () => {
+  it('開く先がある 5 種別を持ち、畳んでいない 2 種別を持たない', () => {
+    expect([...TELEGRAM_TEXT_OPEN_TARGET_KINDS].sort())
+      .toEqual(['earthquakeCount', 'kohatsu', 'nankai', 'nankaiCommentary', 'tsunami'])
+    // 地震情報と長周期地震動観測情報の付加文は元から畳んでいない（開く相手がいない）
+    expect(TELEGRAM_TEXT_OPEN_TARGET_KINDS.has('quake')).toBe(false)
+    expect(TELEGRAM_TEXT_OPEN_TARGET_KINDS.has('lpgm')).toBe(false)
+  })
+
+  it('設定タブのバナーと津波カードが、同じ種別を見ている', () => {
+    const banner = readFileSync('src/components/SpecialInfoBanner/index.tsx', 'utf8')
+    const tsunami = readFileSync('src/App.tsx', 'utf8')
+    for (const kind of TELEGRAM_TEXT_OPEN_TARGET_KINDS) {
+      const found = kind === 'tsunami'
+        ? tsunami.includes("'telegramText:tsunami'")
+        : banner.includes(`speaking('${kind}')`)
+      expect(found, `「${kind}」を開く側が見つからない`).toBe(true)
+    }
   })
 })

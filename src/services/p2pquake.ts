@@ -267,6 +267,11 @@ function parseQuake(raw: Record<string, unknown>): JMAQuake | null {
   return {
     kind: 'quake',
     id,
+    // 同じ電文を二度数えないための鍵（→ `JMAQuake.telegramKey`）。P2PQuake の `id` は電文ごとに
+    // 振られるのでそのまま鍵になる（DMDATA 経路は `id` が一意にならないため別の値を使う）。
+    //
+    // **報番号（`reportSerial`）は配信されない**ので持たせない。見出しの通数は受信側で数える。
+    telegramKey: id,
     time,
     issue: {
       source: str(issue.source),

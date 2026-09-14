@@ -9,7 +9,7 @@ import { usePageVisible } from '../../hooks/usePageVisible'
 import { formatDateTime } from '../../utils/formatters'
 import { getIntensityColor, getIntensityLabel, getIntensityLabelWithApproxAbove, getIntensityBgColor, getMagnitudeColor, getDepthColor } from '../../utils/intensity'
 import { getLpgmClassLabelWithApproxAbove, getLpgmClassColor, getLpgmClassBgColor } from '../../utils/lpgm'
-import { eewAreas, eewMaxScaleInfo, eewMaxLpgmClassInfo, eewSerial, computeSingleEEWLevel, eewNoForecastReason, canPresentLpgmClass, eewEpicenterRankLabel, eewMagnitudeRankLabel, eewMagnitudePointsLabel, eewForecastChangeText, isEewHypocenterSettled, isEewAreaArrived } from '../../utils/eew'
+import { eewAreas, eewMaxScaleInfo, eewMaxLpgmClassInfo, eewSerial, computeSingleEEWLevel, eewNoForecastReason, canPresentLpgmClass, eewEpicenterRankLabel, eewMagnitudeRankLabel, eewMagnitudePointsLabel, eewForecastChangeText, isEewHypocenterSettled, isEewAreaArrived, sortEewWarningRegions } from '../../utils/eew'
 import { kyoshinIndexToJma, kyoshinIndexToLabel, kyoshinIntensityColor, SHINDO0_COLOR } from '../../utils/kyoshinIntensity'
 import { readableTextColor } from '../../utils/contrast'
 import { gateNotes, gateRows, gateShortfall } from '../../utils/detectionGates'
@@ -479,18 +479,37 @@ function EEWCard({ eew, visible, activeLpgmEventId, onToggleLpgm, onDeactivateLp
             `cancelled` は取消前の値（`false`）のまま残る。`!eew.cancelled` と書いていた版が
             あったが、あれは常に真で、実際に隠していたのは取消オーバーレイだった
             （`useHeldForecastChange` が同じ理由で `cancelledAt` を見ている）。 */}
-        {eew.warningComment && !eew.cancelledAt && (
+        {/* 対象地方と行動指示を同じ枠に入れ、対象を先に・一段大きく置く（理由と実測は
+            → `docs/spec/eew-spec.md` §3「固定付加文」）。
+            **どちらか片方しか無くても枠は出す** —— 片方を条件にすると、欠けたときにもう片方ごと消える。
+            下の「対象地域」は府県予報区で粒度が違うため別に出す。 */}
+        {(eew.warningComment || (eew.warningRegions?.length ?? 0) > 0) && !eew.cancelledAt && (
           <div
-            className="w-full rounded-lg py-1.5 px-3 font-bold text-[0.9375rem] roomy:text-[1.0625rem]"
+            className="w-full rounded-lg py-1.5 px-3"
             style={{
               backgroundColor: `${headerBorder}26`,
               border: `2px solid ${headerBorder}`,
               color: '#ffffff',
               lineHeight: 1.5,
-              whiteSpace: 'pre-line',
             }}
           >
-            {eew.warningComment}
+            {(eew.warningRegions?.length ?? 0) > 0 && (
+              <div className="font-bold text-[1.125rem] roomy:text-[1.3125rem]">
+                {/* **並びは読み上げと同じ標準順へ揃える**（`sortEewWarningRegions`）。
+                    電文の文書順は続報で入れ替わるので、そのまま出すと聞いた順と食い違う。
+                    区切りが下の「対象地域」欄（` / `）と違うのは、こちらを見出しの大きさで
+                    並べているため —— 日本語で地名を続ける書き方に寄せてある。 */}
+                {sortEewWarningRegions(eew.warningRegions!).join('・')}
+              </div>
+            )}
+            {eew.warningComment && (
+              <div
+                className="font-bold text-[0.9375rem] roomy:text-[1.0625rem]"
+                style={{ whiteSpace: 'pre-line' }}
+              >
+                {eew.warningComment}
+              </div>
+            )}
           </div>
         )}
 
@@ -572,16 +591,29 @@ function EEWCard({ eew, visible, activeLpgmEventId, onToggleLpgm, onDeactivateLp
           </div>
         )}
 
-        {/* 対象地域（警報域と予報域を区別して表示） */}
+        {/* 対象地域（警報域と予報域を区別して表示）。
+
+            **電文が載せた府県予報区を全部出す。** 以前は先頭 6 件で切って残りを「...」へ落として
+            いたが、対象が広がる報ほど溢れる —— 能登本震（VXSE45・全 46 報）の最終報は警報 21・
+            予報 14 の府県予報区を載せており、6 件で切ると警報側は 7 割、予報側は 6 割が
+            「...」の中だった。**いちばん対象が広いときにいちばん見えない**という、すぐ下の
+            「主要動の到達（予測）」で直したのと同じ形。長い並びは名前の span の中でテキストとして
+            折り返り、行の高さが伸びて収まる（下の `flex-wrap` はラベルと名前の 2 つが 1 行に
+            入らないときの縦積み用で、折り返しの主体ではない）。 */}
         {prefAreas.length > 0 && (() => {
-          const warningPrefs = [...new Set(prefAreas.filter(a => isEewWarningKindCode(a.kindCode)).map(a => a.pref))]
+          // 種別は府県予報区より細かい一次細分区域ごとに付くため、1 つの県に警報の区域と
+          // 予報の区域が混ざる（能登本震では石川・新潟・長野などが該当）。**両方へ出さず
+          // 警報の側だけに残す** —— 並べると、警報が出ている県が予報の列にも現れて一段軽く見える。
+          const warningPrefSet = new Set(prefAreas.filter(a => isEewWarningKindCode(a.kindCode)).map(a => a.pref))
+          const warningPrefs = [...warningPrefSet]
           const forecastPrefs = [...new Set(prefAreas.filter(a => !isEewWarningKindCode(a.kindCode)).map(a => a.pref))]
+            .filter(pref => !warningPrefSet.has(pref))
           const hasKindCode = prefAreas.some(a => a.kindCode !== '')
           if (!hasKindCode) {
+            // 種別を持たない経路（P2PQuake）。同じ県の細分区域が複数並ぶので重複を畳む。
             return (
               <div className="text-xs text-secondary leading-relaxed">
-                対象: {prefAreas.slice(0, 8).map(a => a.pref).join(' / ')}
-                {prefAreas.length > 8 && ' ...'}
+                対象: {[...new Set(prefAreas.map(a => a.pref))].join(' / ')}
               </div>
             )
           }
@@ -590,13 +622,13 @@ function EEWCard({ eew, visible, activeLpgmEventId, onToggleLpgm, onDeactivateLp
               {warningPrefs.length > 0 && (
                 <div className="flex items-start gap-1 flex-wrap">
                   <span className="text-red-300 font-bold flex-shrink-0">警報:</span>
-                  <span className="text-secondary">{warningPrefs.slice(0, 6).join(' / ')}{warningPrefs.length > 6 && ' ...'}</span>
+                  <span className="text-secondary">{warningPrefs.join(' / ')}</span>
                 </div>
               )}
               {forecastPrefs.length > 0 && (
                 <div className="flex items-start gap-1 flex-wrap">
                   <span className="text-yellow-300 flex-shrink-0">予報:</span>
-                  <span className="text-secondary">{forecastPrefs.slice(0, 6).join(' / ')}{forecastPrefs.length > 6 && ' ...'}</span>
+                  <span className="text-secondary">{forecastPrefs.join(' / ')}</span>
                 </div>
               )}
             </div>

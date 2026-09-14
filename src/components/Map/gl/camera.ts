@@ -60,6 +60,38 @@ export function fitMaxZoomForPane(shortSidePx: number): number {
 }
 
 /**
+ * 一覧の行から寄せるときに残す視野の広さ（短辺・km）。**自動フィットの `FIT_MIN_SPAN_KM` とは
+ * 別に持つ。**
+ *
+ * 自動フィットの寄り上限は「勝手に動く画が深くなりすぎない」ための値で、震度の区域集約もそこへ
+ * 揃えてある（着地では必ず区域塗り。→ `docs/spec/quake-spec.md` §7）。一覧の行のクリックは
+ * **利用者が場所を名指しした操作**なので同じ上限を当てる理由が無く、当てると押した観測点が
+ * 集約に隠れて出てこない —— 寄せた意味がほとんど無くなる。
+ *
+ * 100km は、観測点の丸バッジが出るところまで寄りつつ、周りの地理（半島の形・隣の観測点）が
+ * まだ画に残る広さ。**`FIT_MIN_SPAN_KM` より狭くないと意味が無い** —— 集約の閾値が自動フィットの
+ * 上限と同値なので、同じか広いと押しても塗りのままになる（`gl/zoomConstants.test.ts` が固定する）。
+ */
+export const FOCUS_SPAN_KM = 100
+
+/**
+ * 一覧の行から寄せるときの上限ズーム。
+ *
+ * **`ABSOLUTE_MAX_ZOOM` のクランプは掛けない。** あれは自動フィットが大画面で際限なく寄らない
+ * ための蓋で、地図自体にズーム上限は無い（利用者はピンチでいくらでも寄れる）。この操作は手で
+ * 寄せるのと同じ性質なので同じ扱いにする。海底地形のラスタは実在する最大 z を超えるとぼやけるが、
+ * それは手で寄ったときにも起きることで、この経路だけの問題ではない。
+ */
+export function focusMaxZoom(map: maplibregl.Map): number {
+  return focusMaxZoomForPane(paneShortSidePx(map))
+}
+
+/** 短辺 shortSidePx のペインでの一覧クリックの上限ズーム。`focusMaxZoom` の実体。 */
+export function focusMaxZoomForPane(shortSidePx: number): number {
+  return snapZoomNearest(zoomForSpanKm(FOCUS_SPAN_KM, shortSidePx), EEW_ZOOM_SNAP)
+}
+
+/**
  * 基準ペイン（`REFERENCE_SHORT_SIDE_PX`）での寄り上限。
  *
  * 実際の判定には使わない（それは常に実ペイン寸法で換算する `fitMaxZoom`）。**端末に依らない
