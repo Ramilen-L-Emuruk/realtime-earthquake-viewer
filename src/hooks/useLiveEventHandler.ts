@@ -572,7 +572,8 @@ export interface LiveEventHandlerDeps {
    * `utils/quakeOverlay.ts` の `closeDistributionOverlayOnQuakeReport`。
    */
   closeDistributionOnQuakeReport: (eventKey: string) => void
-  revertToDefaultTab: () => void
+  /** 既定タブへ戻す。引数はどの経路から戻そうとしたか（見送りの記録に出る） */
+  revertToDefaultTab: (reason: string) => void
   selectQuake: (id: string | null) => void
   /**
    * 長周期地震動観測情報が届いたことを知らせる（地図とカードの階級表示を開く）。
@@ -1997,8 +1998,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
               log.info('[tab] realtime を要求 (EEW全解除・揺れ検知中)')
               setActiveTabRealtimeForKyoshin()
             } else {
-              log.info(`[tab] → ${defaultTabRef.current} (EEW全解除)`)
-              revertToDefaultTab()
+              log.info(`[tab] ${defaultTabRef.current} を要求 (EEW全解除)`)
+              revertToDefaultTab('EEW全解除')
             }
           }
         }
