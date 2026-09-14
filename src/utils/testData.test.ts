@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { isEewArrivedKindCode, isEewPlumKindCode } from './eewKind'
 import { mergeQuakeInto, mergeQuakeHistory } from './quakeMerge'
-import { formatQuakeReports } from './formatters'
 import type { JMAQuake } from '../types/earthquake'
+import { reportsText } from '../test-utils/quakeReports'
 import {
   createTestEarthquake,
   createTestEarthquakeCount,
@@ -240,7 +240,7 @@ describe('地震情報テストの points 形状', () => {
       const headlineAfter = (count: number): string => {
         let card: JMAQuake | undefined
         for (const report of reports.slice(0, count)) card = mergeQuakeInto(card, report)
-        return formatQuakeReports(card!.reports, card!.issue.type)
+        return reportsText(card!.reports, card!.issue.type)
       }
       expect(headlineAfter(1)).toBe('震度速報')
       expect(headlineAfter(2)).toBe('震度速報/震源情報')
@@ -316,7 +316,7 @@ describe('地震情報テストの points 形状', () => {
     it.each(QUAKE_VARIANTS)('受信経路を通すと 4 通が 1 枚のカードへ合流する（$label 版）', ({ useDmdataShape }) => {
       const merged = mergeQuakeHistory(createTestQuakeReportSequence(useDmdataShape), [], [], null)
       expect(merged).toHaveLength(1)
-      expect(formatQuakeReports(merged[0].reports, merged[0].issue.type))
+      expect(reportsText(merged[0].reports, merged[0].issue.type))
         .toBe(useDmdataShape ? '震源・震度情報' : '各地の震度情報')
       // 対の確認: 観測点まで届いている（震源・震度情報の中身が採られている）。
       expect(merged[0].points.some(p => !p.isArea)).toBe(true)

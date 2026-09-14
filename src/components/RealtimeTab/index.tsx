@@ -14,6 +14,7 @@ import { kyoshinIndexToJma, kyoshinIndexToLabel, kyoshinIntensityColor, SHINDO0_
 import { readableTextColor } from '../../utils/contrast'
 import { gateNotes, gateRows, gateShortfall } from '../../utils/detectionGates'
 import { DescriptionTip } from '../DescriptionTip'
+import { SerialBadge } from '../SerialBadge'
 import { isEewWarningKindCode, isEewPlumKindCode } from '../../utils/eewKind'
 import { serverNow } from '../../utils/clock'
 import { log } from '../../utils/logger'
@@ -395,11 +396,7 @@ function EEWCard({ eew, visible, activeLpgmEventId, onToggleLpgm, onDeactivateLp
             {eew.operationStatus}報
           </span>
         )}
-        {serial != null && (
-          <span className="ml-2 font-normal opacity-75">
-            #{serial}{eew.isFinal ? ' 最終報' : ''}
-          </span>
-        )}
+        {serial != null && <SerialBadge serial={serial} suffix={eew.isFinal ? ' 最終報' : ''} />}
       </div>
 
       {/* 画面が狭い・低い環境（roomy 未満＝スマホ縦/横）では余白と文字を詰め、

@@ -383,7 +383,7 @@ export interface JMAQuake {
    * その地震について受け取った電文種別の記録。→ {@link QuakeReportRecord}
    *
    * 統合（`utils/quakeMerge.ts` の `mergeQuakeInto`）が積み上げる。カードの見出しはここから
-   * 組む（`utils/formatters.ts` の `formatQuakeReports`）。
+   * 組む（`utils/formatters.ts` の `quakeReportLabels`）。
    *
    * **統合前の生電文には無い。** 履歴から復元しただけのカードなど、記録を持たないものは
    * 見出しを `issue.type` 単独へ落とす。
