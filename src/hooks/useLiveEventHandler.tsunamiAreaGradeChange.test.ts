@@ -13,7 +13,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
-import type { AppSettings } from './useSettings'
+import { DEFAULTS, type AppSettings } from './useSettings'
 import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiGrade } from '../types/earthquake'
 
 const speeches: { text: string; finish: () => void; done: boolean }[] = []
@@ -98,7 +98,7 @@ const PARTIAL_LIFT: AreaSpec[] = [
 ]
 
 function setup(voicevoxEnabled = true) {
-  const settings = {
+  const settings = { ...DEFAULTS,
     voicevoxEnabled, voicevoxUrl: 'http://x', voicevoxSpeakerId: 1,
     soundEnabled: false, soundVolume: 1, notifyMinScale: -1,
     notifyEEW: false, notifyTsunami: false, notifyDetection: false,

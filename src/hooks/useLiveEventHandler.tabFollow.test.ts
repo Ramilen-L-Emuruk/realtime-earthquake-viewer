@@ -16,7 +16,7 @@ import { renderHook } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
 import { playAlertSound } from '../utils/alertSound'
 import { TAB_PRIORITY } from '../utils/tabPriority'
-import type { AppSettings } from './useSettings'
+import { DEFAULTS, type AppSettings } from './useSettings'
 import type { JMAQuake, JMATsunami, IssueType, EEWAlert, ExtraLiveEvent } from '../types/earthquake'
 
 // 発話の進行を外から終わらせられるようにする（ttsPriority.test.ts と同じ手口）。
@@ -206,7 +206,7 @@ function setup(over: { voicevoxEnabled?: boolean; soundEnabled?: boolean } = {})
     // 呼ばれるので、回数まで見る（→ 末尾の describe）。
     openEstimatedIntensity: vi.fn(),
   }
-  const settings = {
+  const settings = { ...DEFAULTS,
     voicevoxEnabled: over.voicevoxEnabled ?? true, voicevoxUrl: 'http://x', voicevoxSpeakerId: 1,
     soundEnabled: over.soundEnabled ?? false, soundVolume: 1, notifyMinScale: -1,
     notifyEEW: false, notifyTsunami: false, notifyDetection: false,

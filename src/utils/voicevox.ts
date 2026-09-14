@@ -230,7 +230,7 @@ async function refineProsody(
       // **間が消えて元の症状（地名が一続きに聞こえる）へ静かに戻る**ので、種の値へ倒して記録する。
       if (ap.pause_mora == null) {
         warnNoEstimatedPause(() => log.debug(
-          '[VoiceVox] mora_data が句読点の間を返さなかったため種の値を使う', { index: i },
+          '[VoiceVox] mora_data が区切りの間を返さなかったため種の値を使う', { index: i },
         ))
         return { ...ap, pause_mora: phrases[i].pause_mora }
       }
@@ -320,17 +320,30 @@ export async function fetchVoicevoxSpeakers(baseUrl: string): Promise<VoicevoxSp
 const CHUNK_BREAK_PUNCTUATION = '。、！？'
 const CHUNK_SPLIT_RE = new RegExp(`(?<=[${CHUNK_BREAK_PUNCTUATION}])`)
 const CHUNK_TAIL_RE = new RegExp(`[${CHUNK_BREAK_PUNCTUATION}]$`)
-const PUNCT_HEAD_RUN_RE = new RegExp(`^[${CHUNK_BREAK_PUNCTUATION}]+`)
+
+// 辞書での分割によって音から落ちる「間の文字」。**句読点だけでは足りず、空白も含む。**
+//
+// VOICEVOX は後ろに何も続かない区切り文字に間を付けない。分割の切れ目へ来たものは句読点か
+// 空白かによらず無音のまま消える（実測: 「…極めて大きな揺れ 波形、」を丸ごと読ませると
+// 0.430 秒の間が入るが、辞書の「波形」で切り出すと 0 秒になる）。空白は電文の改行から来る
+// （{@link normalizeTelegramTextForSpeech} が半角スペースへ直す）ので、気象庁が書いた文を
+// 読むと必ずこの形が現れる。
+//
+// **チャンク分割の集合（{@link CHUNK_BREAK_PUNCTUATION}）とは分けること。** あちらは
+// 「どこで割るか」と「チャンク末尾に間を足すか」の両方を決めており、空白を足すと割れない
+// 位置に間だけが入る。
+const SPLIT_GAP_TAIL_RE = new RegExp(`[${CHUNK_BREAK_PUNCTUATION}\\s]$`)
+const SPLIT_GAP_HEAD_RUN_RE = new RegExp(`^[${CHUNK_BREAK_PUNCTUATION}\\s]+`)
 
 /**
- * 断片の先頭の句読点が「内側」か（＝後ろにまだ読む文字が続くか）を返す。
+ * 断片の先頭の区切り文字が「内側」か（＝後ろにまだ読む文字が続くか）を返す。
  *
- * 句読点しか無い断片はチャンクの末尾を意味する。そこは {@link CHUNK_BREAK_PAUSE} の担当なので
+ * 区切り文字しか無い断片はチャンクの末尾を意味する。そこは {@link CHUNK_BREAK_PAUSE} の担当なので
  * {@link buildAccentPhrases} は種を置かない。置くと**最後のチャンクでだけ**引き直された長い無音
  * （実測 0.968 秒）が残り、読み終わりが伸びて次の読み上げがその分待たされる。
  */
-function hasInnerLeadingPunct(text: string): boolean {
-  return PUNCT_HEAD_RUN_RE.test(text) && text.replace(PUNCT_HEAD_RUN_RE, '') !== ''
+function hasInnerLeadingGap(text: string): boolean {
+  return SPLIT_GAP_HEAD_RUN_RE.test(text) && text.replace(SPLIT_GAP_HEAD_RUN_RE, '') !== ''
 }
 
 /**
@@ -461,30 +474,31 @@ async function buildAccentPhrases(
   // `indexOfStandalone` の注記。あちらは直前の文字、ここでは直後の文字が落ちる形）。
   const punctAt = [...preBuilt.punctAt]
 
-  // pre の末尾の句読点。辞書キーがこの直後に続くので、この句読点は必ず「内側」。
+  // pre の末尾の区切り文字（句読点・空白）。辞書キーがこの直後に続くので、必ず「内側」。
   //
-  // pre が句読点だけなら句が 0 個で掛ける先が無い。**それでもこの句読点は失われない。**
-  // その状況は「親が post の先頭の句読点ごとこの再帰へ渡した」ときにだけ起こり、親は既に
-  // 下の `postLeadsWithPunct` で辞書キー側へ間を置いている。掛ける先が無いのは
-  // **チャンクそのものが句読点で始まる**ときだけで、`splitIntoChunks` は句読点の後ろで割るため
-  // それには読み上げ文に句読点が連続している必要がある。テストデータと実シナリオの読み上げ文を
-  // 機械的に走査した限り、連続句読点・句読点だけのチャンクはいずれも生じていない。
+  // pre が区切り文字だけなら句が 0 個で掛ける先が無い。**それでもこの区切りは失われない。**
+  // その状況は「親が post の先頭の区切り文字ごとこの再帰へ渡した」ときにだけ起こり、親は既に
+  // 下の `postLeadsWithGap` で辞書キー側へ間を置いている。掛ける先が無いのは
+  // **チャンクそのものが区切り文字で始まる**ときだけ。空白では起こらない（`splitIntoChunks` が
+  // 各チャンクを `trim()` する）。句読点では、割る位置が句読点の後ろなので読み上げ文に句読点が
+  // 連続している必要がある。テストデータと実シナリオの読み上げ文を機械的に走査した限り、
+  // 連続句読点・句読点だけのチャンクはいずれも生じていない。
   let prePhrases = preBuilt.phrases
-  if (CHUNK_TAIL_RE.test(pre) && prePhrases.length > 0) {
+  if (SPLIT_GAP_TAIL_RE.test(pre) && prePhrases.length > 0) {
     prePhrases = withTrailingPause(prePhrases, SPLIT_PUNCT_PAUSE)
     punctAt.push(prePhrases.length - 1)
   }
 
-  // post の先頭の句読点。落ちるのは post 側だが、間を掛けられるのは辞書キーの最後の句。
-  // 句読点しか無い post（＝チャンク末尾）は CHUNK_BREAK_PAUSE の担当なので触らない。
-  const postLeadsWithPunct = hasInnerLeadingPunct(post)
-  const matchedPhrases = postLeadsWithPunct
+  // post の先頭の区切り文字。落ちるのは post 側だが、間を掛けられるのは辞書キーの最後の句。
+  // 区切り文字しか無い post（＝チャンク末尾）は CHUNK_BREAK_PAUSE の担当なので触らない。
+  const postLeadsWithGap = hasInnerLeadingGap(post)
+  const matchedPhrases = postLeadsWithGap
     ? withTrailingPause(matchedPhrasesRaw, SPLIT_PUNCT_PAUSE)
-    // 一般用語（「深発地震」等）は文中に自然に溶け込む語なので、句読点が無ければ間を入れない
+    // 一般用語（「深発地震」等）は文中に自然に溶け込む語なので、区切り文字が無ければ間を入れない
     : isPlaceNameKey(match.key)
       ? withTrailingPause(matchedPhrasesRaw, DICT_TRAILING_PAUSE)
       : matchedPhrasesRaw
-  if (postLeadsWithPunct) punctAt.push(prePhrases.length + matchedPhrases.length - 1)
+  if (postLeadsWithGap) punctAt.push(prePhrases.length + matchedPhrases.length - 1)
 
   const offset = prePhrases.length + matchedPhrases.length
   for (const i of postBuilt.punctAt) punctAt.push(offset + i)

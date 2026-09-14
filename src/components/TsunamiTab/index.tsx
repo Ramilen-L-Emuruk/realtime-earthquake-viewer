@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useAutoOpenWhileSpeaking } from '../../hooks/useAutoOpenWhileSpeaking'
 import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation, TsunamiWarningComment } from '../../types/earthquake'
 import { formatDateTimeMin, formatDepth, formatMagnitudeCondition, formatTimeMin, hasDepth } from '../../utils/formatters'
 import { quakeEventKey } from '../../utils/quakeMerge'
@@ -59,6 +60,11 @@ interface Props {
   areaGradeChangedKeys?: ReadonlySet<string>
   /** 進行中の読み上げ。渡されるとカードが読み上げに追従する（`null` なら追従しない） */
   speechSession?: SpeechFollowSession | null
+  /**
+   * 気象庁が書いた文（本文・付加文）をいま読み上げているか。真のあいだ、バナーの
+   * 「気象庁が書いた文」を開く（→ docs/spec/audio-tts-spec.md §6）。
+   */
+  speakingTelegramText?: boolean
   /**
    * 津波タブが実際に見えているか。
    * タブは `invisible` で隠すだけなので、非表示でもスクロールは効いてしまう。
@@ -690,7 +696,7 @@ function TsunamiCommentBody({ bodyText, comments, freeText, borderColor, textCol
   )
 }
 
-export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservationClick, onFocusMap, focusedDistrict, obsUpdateStatus, areaGradeChangedKeys, speechSession, isVisible, speechFollowEnabled, autoShowTick }: Props) {
+export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservationClick, onFocusMap, focusedDistrict, obsUpdateStatus, areaGradeChangedKeys, speechSession, speakingTelegramText, isVisible, speechFollowEnabled, autoShowTick }: Props) {
   // 行をクリックできるかは「地図がその観測点へ寄れるか」で決める。
   //
   // 座標表（`tsunami-obs-coords.json`）に無い観測点は地図に印が出ず、`FocusObsGL` も寄せ先を
@@ -732,7 +738,10 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
   // 開くものが 1 つも無ければ、その行はタップの入口にしない（押せる見た目だけ与えない）。
   // 取消し・解除の表示中も中身を出さないので、そこでも入口にしない。
   const hasCommentsToShow = (bannerComments?.length ?? 0) > 0 || !!bannerBodyText || !!bannerFreeText
-  const [commentsOpen, setCommentsOpen] = useState(false)
+  // 読み上げているあいだだけ開く（→ `useAutoOpenWhileSpeaking`）。**バナー 4 種と同じフックを使う。**
+  // 自前で組んでいた頃は「手で開き直したら読み終わりで閉じない」という安全弁が抜けており、
+  // 利用者が開いた面を読み終わりで閉じていた。
+  const [commentsOpen, setCommentsOpen] = useAutoOpenWhileSpeaking(!!speakingTelegramText)
   // **開いたまま等級が動いたら閉じる。** 付加文の面は下の区域一覧を覆うので、開けっ放しだと
   // 発表・引き上げ・一部解除が届いても利用者の目に入らない。
   //
@@ -750,10 +759,18 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
   // 「鍵は変わっていない」と見えて閉じそこねる —— 実機で等級が動いても開いたままになった。
   // state なら捨てられたレンダーの更新も一緒に捨てられるので、この取りこぼしが起きない。
   const [prevCommentsKey, setPrevCommentsKey] = useState(commentsKey)
-  if (prevCommentsKey !== commentsKey) {
+  // **閉じるのはエフェクトで行う。** 開閉の状態はフックが持ち、その setter は
+  // 「手で操作した」という意味を持つ（読み上げの持ち物から外す）。レンダー中に呼ぶと、
+  // React が捨てたレンダーでもフック内部の印だけが書き換わる。
+  //
+  // 1 描画ぶん閉じるのが遅れるが、**等級が動いた報で閉じる**という意図は保たれる。
+  useEffect(() => {
+    if (prevCommentsKey === commentsKey) return
     setPrevCommentsKey(commentsKey)
-    if (commentsOpen) setCommentsOpen(false)
-  }
+    // 読み上げ中でも閉じる（面は区域一覧を覆うので、発表・引き上げ・一部解除を隠さない）。
+    // フックの setter を通すので、その読み上げのあいだは開き直さない。
+    setCommentsOpen(false)
+  }, [commentsKey, prevCommentsKey, setCommentsOpen])
 
   // sticky バナーの実高さを測り、自動スクロール先の scroll-margin-top に反映する
   // （バナーは発令中/解除・地震カードリンクの有無で行数が変わり高さが可変のため固定値では合わない）
@@ -1288,10 +1305,10 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
               tabIndex={canOpenComments ? 0 : undefined}
               aria-expanded={canOpenComments ? commentsOpen : undefined}
               // **バナー自身のクリック（地震カードへの移動）へ伝播させない。**
-              onClick={canOpenComments ? e => { e.stopPropagation(); setCommentsOpen(o => !o) } : undefined}
+              onClick={canOpenComments ? e => { e.stopPropagation(); setCommentsOpen(!commentsOpen) } : undefined}
               onKeyDown={canOpenComments ? e => {
                 if (e.key !== 'Enter' && e.key !== ' ') return
-                e.preventDefault(); e.stopPropagation(); setCommentsOpen(o => !o)
+                e.preventDefault(); e.stopPropagation(); setCommentsOpen(!commentsOpen)
               } : undefined}
               style={{ fontSize: '0.6875rem', color: isCancelledDisplay ? '#6b7280' : topStyle.headerColor, opacity: 0.8 }}>
               <span className="flex-1">
