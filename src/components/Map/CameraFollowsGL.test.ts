@@ -10,6 +10,8 @@ import type { LatLng } from '../../utils/stationCoords'
 import type { EEWAlert } from '../../types/earthquake'
 import type { ShakeFocus } from './mapTypes'
 import type { PsWaveCircle } from '../../services/kyoshin'
+import { openPopupAt, closeMapPopup } from './gl/popupRegistry'
+import { fitMaxZoom, focusMaxZoom } from './gl/camera'
 
 // 「確定検知の終了」と「候補クラスタの継続」が重なる遷移を固定する回帰テスト。
 // この組み合わせはタイミング依存で、実機（Playwright）では再現が難しい。過去に 2 度作り込んでいる:
@@ -58,6 +60,10 @@ vi.mock('maplibre-gl', () => {
   }
   return { LngLatBounds: FakeLngLatBounds, default: { LngLatBounds: FakeLngLatBounds } }
 })
+
+// 吹き出しの調停役は本物の Popup（DOM）を作るため、呼ばれたことだけを見る。
+// ここで確かめたいのは「いつ・どこで開くよう頼んだか」であって、吹き出しの中身ではない。
+vi.mock('./gl/popupRegistry', () => ({ openPopupAt: vi.fn(), closeMapPopup: vi.fn() }))
 
 // fitJapan は padding 20、点群へのフィット（fitToPositions / flyToBoundsSnapped）は padding 60 で
 // 呼ばれる（gl/camera.ts の各既定値）。「日本全体へ戻した」のか「点群へ寄せた」のかの区別に使う。
@@ -128,13 +134,18 @@ function createFakeMap({ zoom: initialZoom = 4, fitZoom: initialFitZoom = 7 }: {
   // 直近のカメラ操作へ渡されたイベントデータ（`beginProgrammaticFlight` の戻り値）。
   // `completeFlight` が moveend でそのまま返し、飛行ロックを解かせる。
   let lastFlightEventData: unknown = null
+  /** カメラが動いている最中か（本物の `map.isMoving()` 相当）。fit/fly で立ち、moveend で降りる。 */
+  let moving = false
   const fake = {
     on(event: string, handler: (e?: unknown) => void) {
       if (!handlers.has(event)) handlers.set(event, new Set())
       handlers.get(event)!.add(handler)
     },
+    // **`once` で張った分も外す。** 本物の MapLibre の `off` は一度きりの購読も対象にするので、
+    // ここで片方しか消さないと「購読を解いたはずの処理が後から動く」形の穴がテストを素通りする。
     off(event: string, handler: (e?: unknown) => void) {
       handlers.get(event)?.delete(handler)
+      onceHandlers.get(event)?.delete(handler)
     },
     once(event: string, handler: (e?: unknown) => void) {
       if (!onceHandlers.has(event)) onceHandlers.set(event, new Set())
@@ -145,6 +156,7 @@ function createFakeMap({ zoom: initialZoom = 4, fitZoom: initialFitZoom = 7 }: {
     // 渡さないと本物の 0.8 秒に対して 2.8 秒（0.8＋`FLIGHT_EXPIRY_MARGIN_MS`）ロックが残り、
     // テストだけが実挙動より 2 秒鈍い状態になる。
     fire(event: string, data?: unknown) {
+      if (event === 'moveend') moving = false
       for (const handler of handlers.get(event) ?? []) handler(data)
       const once = onceHandlers.get(event)
       if (once) {
@@ -160,6 +172,7 @@ function createFakeMap({ zoom: initialZoom = 4, fitZoom: initialFitZoom = 7 }: {
         const [lng, lat] = boundsCenter(bounds)
         center = { lng, lat }
         moves.push({ padding: opts?.padding, west: boundsWest(bounds) })
+        moving = true
       }
     }),
     flyTo: vi.fn((opts?: { zoom?: number; center?: [number, number] }, eventData?: unknown) => {
@@ -173,7 +186,9 @@ function createFakeMap({ zoom: initialZoom = 4, fitZoom: initialFitZoom = 7 }: {
           : {}
       pendingFit = null
       moves.push(fit)
+      moving = true
     }),
+    isMoving: () => moving,
     getZoom: () => zoom,
     getCenter: () => center,
     // フィット系は現在の回転を保つため bearing を読む（渡さないと MapLibre が 0 を当てて回転が消える）。
@@ -1451,6 +1466,11 @@ function flyCenters(map: maplibregl.Map): [number, number][] {
   return (map.flyTo as unknown as Mock).mock.calls.map((call) => call[0].center)
 }
 
+/** flyTo に渡された着地ズーム（寄り上限の判別に使う）。 */
+function flyZooms(map: maplibregl.Map): number[] {
+  return (map.flyTo as unknown as Mock).mock.calls.map((call) => call[0].zoom)
+}
+
 describe('観測行クリックのフォーカス', () => {
   it('クリック 1 回につき 1 度だけ寄せる（観測棒の更新では寄せ直さない）', () => {
     // Arrange: クリックで石巻港（配列2件目）へ寄せた状態。
@@ -1483,6 +1503,23 @@ describe('観測行クリックのフォーカス', () => {
 
     // Assert: 取りこぼさずに寄せる。
     expect(flyCenters(map)).toEqual([[130.0, 33.0]])
+  })
+
+  // **正: 着地の深さは地震カードの一覧と同じ。** どちらも「1 点を指す行を押した」同じ操作で、
+  // 一覧によって深さが違う理由が無い。観測棒は細いので、自動フィットの上限では隣と見分けが付かない。
+  it('寄り上限は一覧の行クリックと同じものを使う', () => {
+    const map = createFakeMap()
+    render(focusHarness(map, { name: 'A', ts: 1 }, OBS_BARS))
+
+    expect(flyZooms(map)).toEqual([focusMaxZoom(map)])
+  })
+
+  // 安全弁: 自動フィットの寄り上限へ戻っていないこと（値が近いので取り違えやすい）。
+  it('自動フィットの寄り上限より深く寄る', () => {
+    const map = createFakeMap()
+    render(focusHarness(map, { name: 'A', ts: 1 }, OBS_BARS))
+
+    expect(flyZooms(map)[0]).toBeGreaterThan(fitMaxZoom(map))
   })
 })
 
@@ -2066,6 +2103,11 @@ function pointFocusHarness(map: maplibregl.Map, focus: { positions: LatLng[]; ts
 }
 
 describe('一覧の行クリックによる地点フォーカス', () => {
+  beforeEach(() => {
+    vi.mocked(openPopupAt).mockClear()
+    vi.mocked(closeMapPopup).mockClear()
+  })
+
   it('同じ地点を続けて押しても、押すたびに寄せる（鍵は ts）', () => {
     // Arrange: ある観測点の行を押した。
     const map = createFakeMap()
@@ -2095,5 +2137,97 @@ describe('一覧の行クリックによる地点フォーカス', () => {
     const map = createFakeMap()
     render(pointFocusHarness(map, null))
     expect(flyCenters(map)).toHaveLength(0)
+  })
+
+  // ── 寄せた先の点を選んだ状態にする ──────────────────────────────────────────────
+  // 観測点の行を押すと、地図上でその点を押したのと同じ吹き出しが開く。寄せただけでは
+  // 「どの点の行を押したのか」が地図から読み取れない（周りの点と見分けが付かない）。
+
+  it('[正] 1 点へ寄せたら、着地後にその点の吹き出しを開く', () => {
+    const map = createFakeMap()
+    render(pointFocusHarness(map, { positions: [[34.0, 131.0]], ts: 1 }))
+
+    // 飛行が終わるまでは開かない（飛んでいる途中の画面座標で判定しても当たらない）。
+    expect(openPopupAt).not.toHaveBeenCalled()
+
+    act(() => { map.fire('moveend') })
+
+    // 渡すのは経緯度の順（地図の API に合わせる。アプリ内の座標は [lat, lng]）。
+    expect(openPopupAt).toHaveBeenCalledWith(map, [131.0, 34.0])
+  })
+
+  it('[対照] 範囲へ寄せたときは開かない', () => {
+    const map = createFakeMap()
+    // 県・区域・市町村の行はこの形で来る。範囲の中心に何があるかは行の内容と関係がない。
+    render(pointFocusHarness(map, { positions: [[34.0, 131.0], [35.0, 132.0]], ts: 1 }))
+
+    act(() => { map.fire('moveend') })
+
+    expect(openPopupAt).not.toHaveBeenCalled()
+  })
+
+  // **安全弁: 前に選んだ点の吹き出しは、動かす前に閉じる。** 残すと、寄せた範囲の外を指したまま
+  // 画面の端に取り残される（実機で確認した。範囲へ寄せたときにいちばん目立つ）。
+  it('[安全弁] 寄せる前に、開いている吹き出しを閉じる', () => {
+    const map = createFakeMap()
+    render(pointFocusHarness(map, { positions: [[34.0, 131.0], [35.0, 132.0]], ts: 1 }))
+
+    expect(closeMapPopup).toHaveBeenCalledWith(map)
+  })
+
+  // 安全弁: 着地が同期で終わる経路でも取りこぼさない。端末の「視差効果を減らす」設定が
+  // 有効だと `flyTo` は `jumpTo` へ落ち、呼び出しの中で着地まで終わる —— 待っても `moveend` は
+  // もう来ないので、動いていないことを見てその場で開く。
+  it('[安全弁] 着地が同期で終わっても開く', () => {
+    const map = createFakeMap()
+    const flyTo = map.flyTo
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    map.flyTo = ((...args: any[]) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const r = (flyTo as any)(...args)
+      map.fire('moveend')
+      return r
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any
+
+    render(pointFocusHarness(map, { positions: [[34.0, 131.0]], ts: 1 }))
+
+    expect(openPopupAt).toHaveBeenCalledWith(map, [131.0, 34.0])
+  })
+
+  // **安全弁: 飛行の打ち切りを着地と取り違えない。** `flyTo` は進行中の飛行を止めるとき、
+  // その場で `moveend` を発火する。飛行中に次の行を押すとこの形になり、まだ目的地へ着いて
+  // いない画面座標で判定すると、途中の位置にある別の描画物の吹き出しが開く（実機で再現した）。
+  it('[安全弁] 飛行中に押しても、前の飛行が止まった瞬間には開かない', () => {
+    const map = createFakeMap()
+    const flyTo = map.flyTo
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    map.flyTo = ((...args: any[]) => {
+      // 打ち切りの moveend が先、新しい飛行の開始が後（本物と同じ順序）。
+      map.fire('moveend')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (flyTo as any)(...args)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any
+
+    render(pointFocusHarness(map, { positions: [[34.0, 131.0]], ts: 1 }))
+    expect(openPopupAt).not.toHaveBeenCalled()
+
+    // 新しい飛行が着地して初めて開く。
+    act(() => { map.fire('moveend') })
+    expect(openPopupAt).toHaveBeenCalledWith(map, [131.0, 34.0])
+  })
+
+  // 安全弁: 着地を待っている間に別の行が押されたら、前の予約は降ろす。
+  // 残すと、あとから来た 1 回の着地で前の行の吹き出しまで開こうとする。
+  it('[安全弁] 着地前に別の行を押したら、前の予約では開かない', () => {
+    const map = createFakeMap()
+    const view = render(pointFocusHarness(map, { positions: [[34.0, 131.0]], ts: 1 }))
+    view.rerender(pointFocusHarness(map, { positions: [[38.0, 140.0]], ts: 2 }))
+
+    act(() => { map.fire('moveend') })
+
+    expect(openPopupAt).toHaveBeenCalledTimes(1)
+    expect(openPopupAt).toHaveBeenCalledWith(map, [140.0, 38.0])
   })
 })
