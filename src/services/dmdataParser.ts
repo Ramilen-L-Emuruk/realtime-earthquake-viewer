@@ -972,6 +972,46 @@ function readHeadlineText(doc: Document): string {
   return headlineEl ? xmlText(xmlChild(headlineEl, 'Text')) : ''
 }
 
+/** 見出しの構造化（`Head/Headline/Information`）のうち、地方予報区を並べるブロックの `type`。 */
+const EEW_REGION_INFORMATION_TYPE = '緊急地震速報（地方予報区）'
+
+/**
+ * 緊急地震速報の警報対象地方（`Head/Headline/Information` の地方予報区ブロック）。
+ *
+ * **見出しの構造化を読む唯一の箇所。** 他の種別では `Body` の部分集合にしかならないので読んで
+ * いないが（→ `quake-spec.md` §8「見出しの構造化は読まない」）、**地方予報区は `Body` に無い**
+ * ——`Body/Intensity/Forecast` は府県予報区 → 細分区域の 2 階層で、地方の単位を持たない。
+ *
+ * **警報級の報にだけ入る。** DMDATA アーカイブの実電文で、このブロックがあることと警報が
+ * 出ていることが例外なく一致した（警報ありの 240 通すべてが持ち、警報 0 の 527 通は 1 通も
+ * 持たない）。予報級では空配列を返す。
+ *
+ * **`Item` を全部たどって文書順で連結する。** 気象庁は続報で新しく警報対象になった地方を
+ * 2 つ目の `Item`（`LastKind` が「なし」）に分けて示すが、**その区別は使わない** ——
+ * あれは「前報からの差分」で、こちらが前報を取りこぼしていれば一緒に落ちる。何を新しく
+ * 伝えるかは「自分が何を声にしたか」から決める（`useLiveEventHandler` の第 1.5 フェーズ）。
+ */
+function readEewWarningRegions(doc: Document): { regions: string[]; unreadable: number } {
+  const headEl = xmlQ(doc, 'Head')
+  const headlineEl = headEl ? xmlChild(headEl, 'Headline') : null
+  if (!headlineEl) return { regions: [], unreadable: 0 }
+  const names: string[] = []
+  let unreadable = 0
+  for (const info of xmlAll(headlineEl, 'Information')) {
+    if (info.getAttribute('type') !== EEW_REGION_INFORMATION_TYPE) continue
+    for (const area of xmlAll(info, 'Area')) {
+      const name = xmlText(xmlChild(area, 'Name'))
+      // **要素はあるのに名前が読めない**のは異常。数えて呼び出し元へ返す —— 黙って捨てると、
+      // 警報の対象が画面からも声からも欠けたことに気づけない（他の要素と同じ規律）。
+      if (name) names.push(name)
+      else unreadable++
+    }
+  }
+  // 実電文では同じ地方が 2 つの `Item` にまたがることは無い（既存と新規で排他）。
+  // それでも除くのは、重なれば読み上げが同じ地名を 2 度言うため。
+  return { regions: [...new Set(names)], unreadable }
+}
+
 /**
  * 電文が名乗る情報名（`Head/Title`）。
  *
@@ -1157,9 +1197,12 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
   // マグニチュードの種別（`Mj` / `M`）。地震情報・津波・長周期と同じく持つだけで画面には
   // 出さない。**緊急地震速報だけ別のパーサーを通るため落ちていた。**
   const eewMagnitudeType = eewMagnitudeEl?.getAttribute('type')?.trim() || undefined
-  // 見出し文。実電文では空だが、警報の報で入りうる（→ `readHeadlineText`）。
-  // 地震情報・長周期と同じく持つだけで画面には出さない。
+  // 見出し文。**予報級では空だが、警報級の報には必ず入る**（「石川県で地震　北陸　甲信　東海
+  // 関東で強い揺れ」の形。実電文で確認）。地震情報・長周期と同じく持つだけで画面には出さない
+  // ——後半の地方名は下の `warningRegions` が構造化された形で持っており、そちらを使う。
   const eewHeadline = readHeadlineText(doc)
+  // 警報の対象地方。予報級では空（→ `readEewWarningRegions`）。
+  const { regions: eewWarningRegions, unreadable: unreadableWarningRegions } = readEewWarningRegions(doc)
   const eewInfoName = readInfoName(doc)
   const hypocenterEl = eqEl ? xmlQ(eqEl, 'Hypocenter') : null
   const areaEl = eqEl ? xmlQ(hypocenterEl ?? eqEl, 'Area') : null
@@ -1223,6 +1266,10 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
   // 区域は数十個あるので 1 件ずつ出すと他の記録が埋もれる。
   const unknownArrivalConditions = new Set<string>()
   for (const prefEl of forecastEl ? xmlAll(forecastEl, 'Pref') : []) {
+    // 府県予報区名（`Pref/Name`）。**都道府県名ではない** —— 気象庁が緊急地震速報のために定めた
+    // 区分で、「熊本」のように「県」が付かないほか、鹿児島は「鹿児島」と「奄美」・北海道は
+    // 「北海道道央」等の 4 つ・沖縄は「沖縄本島」等の 4 つに分かれる（→ `EEWRegion.pref`）。
+    const prefName = xmlText(xmlChild(prefEl, 'Name'))
     for (const a of xmlAll(prefEl, 'Area')) {
       const name = xmlText(xmlChild(a, 'Name'))
       if (!name) continue
@@ -1265,7 +1312,7 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
       // 値域を定めているので、外れれば確かに異常。**
       if (arrivalConditionRaw && !arrivedByCondition) unknownArrivalConditions.add(arrivalConditionRaw)
       areas.push({
-        pref: '',
+        pref: prefName,
         name,
         scaleFrom: parseIntensityStr(fi.from),
         scaleTo,
@@ -1288,6 +1335,16 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
     // 資料が定めていない到達状況。**到達済みの区域が「時刻を持たない区域」に紛れる**ので、
     // 値域が増えたことに気づけるよう残す。
     log.warn(`${DMDATA_LOG_PREFIX} 緊急地震速報の区域の到達状況を読めません（無視します）: ${[...unknownArrivalConditions].join(', ')}`)
+  }
+  if (unreadableWarningRegions > 0) {
+    // 地方予報区の `Area` はあるのに名前が読めなかった。**画面にも声にも出ない**ので残す。
+    log.warn(`${DMDATA_LOG_PREFIX} 緊急地震速報の警報対象地方の名前を読めません（${unreadableWarningRegions} 件を無視します）`)
+  }
+  if (sawWarningKind && eewWarningRegions.length === 0) {
+    // **警報級と判定したのに対象地方が 1 つも無い。** 実電文では警報ありの 240 通すべてが
+    // 地方予報区ブロックを持つので、この組み合わせは電文の書式が変わった印。
+    // 画面の枠も読み上げの第 1.5 フェーズも黙るだけで、痕跡がどこにも残らない。
+    log.warn(`${DMDATA_LOG_PREFIX} 警報級の緊急地震速報に警報対象地方がありません（見出しの構造化を読めていない可能性）`)
   }
 
   // 取消しの概要（`Body/Text`）。地震情報・津波情報と同じ扱い（`Comments` は取消電文に出現しない）。
@@ -1316,6 +1373,7 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
     time: reportTime,
     test: false,
     ...(eewHeadline && { headline: eewHeadline }),
+    ...(eewWarningRegions.length > 0 && { warningRegions: eewWarningRegions }),
     ...(eewInfoName && { infoName: eewInfoName }),
     ...(eewCancelText && { cancelText: eewCancelText }),
     earthquake: {
