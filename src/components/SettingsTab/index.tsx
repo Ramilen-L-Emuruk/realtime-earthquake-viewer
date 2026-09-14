@@ -1146,6 +1146,12 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
               onChange={v => onUpdate('ttsReadEewLpgmClass', v)}
             />
           </Row>
+          <Row label="緊急地震速報の警戒地域" description="警報が出ている地方を、震源に続けて「北陸、甲信、東海では強い揺れに警戒してください」のように読み上げます。予想震度はそのあとに読み上げます">
+            <Toggle
+              checked={settings.ttsReadEewWarningRegions}
+              onChange={v => onUpdate('ttsReadEewWarningRegions', v)}
+            />
+          </Row>
           <Row label="気象庁が書いた文" description="電文に添えられた本文・付加文（南海トラフ地震臨時情報の本文など）を読み上げます。震度や津波の読み上げが終わってから読むため、電文が続いている間は読み上げられないことがあります">
             <Toggle
               checked={settings.ttsReadTelegramText}

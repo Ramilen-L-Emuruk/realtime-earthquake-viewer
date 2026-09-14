@@ -734,6 +734,13 @@ export function createTestEEW(withDmdssFields: boolean, eventId?: string, serial
     // 「固定付加文」）ので、報番号によらず持たせる。この報は特別警報まで上がるため、
     // 警報級の色（特別警報の配色）での見え方をここでしか確かめられない。
     ...(withDmdssFields ? { warningComment: '強い揺れに警戒してください。' } : {}),
+    // 警報の対象地方（`Head/Headline/Information` の地方予報区ブロック）。**警報級の報にだけ
+    // 入り、DMDATA だけが配信する**（P2PQuake・Yahoo hypoInfo はこの要素を運ばない）。
+    //
+    // **続報で地方が増える形まで再現する。** 実配信では 4 年に 3 例しかないが（能登本震は
+    // 1→4→6 地方）、読み上げが「新たに、〜でも強い揺れに警戒してください。」と差分を言う経路は
+    // ここでしか通らない。ボタンを 1 回押すと 1 地方、もう 1 回で 2 地方へ広がる。
+    ...(withDmdssFields ? { warningRegions: isFirstReport ? ['東北'] : ['東北', '関東'] } : {}),
     issue: { eventId: eid, serial: String(serial), time: report },
     // 実データに合わせ areas を使用（参照は utils/eew.ts の eewAreas() で吸収）
     //

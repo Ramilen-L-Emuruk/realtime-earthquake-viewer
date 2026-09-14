@@ -781,6 +781,22 @@ export interface JMATsunami {
 }
 
 export interface EEWRegion {
+  /**
+   * その区域が属する上位の区分。**経路で粒度が違う。**
+   *
+   * - DMDATA（XML）: **府県予報区**（`Body/Intensity/Forecast/Pref/Name`）。都道府県名ではなく、
+   *   気象庁が緊急地震速報のために定めた区分で「熊本」のように「県」が付かない。鹿児島は
+   *   「鹿児島」と「奄美」、北海道は「北海道道央」等の 4 つ、沖縄は「沖縄本島」等の 4 つに分かれる
+   *   （実電文で 56 種）
+   * - P2PQuake: 都道府県名（「宮城県」）
+   *
+   * **どちらの経路でも `name`（細分区域）より 1 段上**という関係は同じなので、警報／予報の
+   * 振り分け（`RealtimeTab` の「対象地域」欄）は共通に書ける。**表示のときに「県」を補わない**
+   * —— 上の分割があるので、機械的に付けると実在しない区分名になる。
+   *
+   * より広い**地方予報区**（北陸・甲信・東海…）は区域ではなく報そのものに付く
+   * （→ {@link EEWAlert.warningRegions}）。
+   */
   pref: string
   name: string
   /** 予想震度の下限。震度未確定は -1（`EarthquakePoint.scale` と同じセンチネル） */
@@ -867,6 +883,20 @@ export interface EEWAlert {
    * 見出し文（`Head/Headline/Text`）。→ {@link JMAQuake.headline}（扱いも同じ）
    */
   headline?: string
+  /**
+   * 警報の対象地方（地方予報区）。文書順。**警報級の報にだけ入る**ので、予報級では空。
+   *
+   * 気象庁は緊急地震速報（警報）の対象をこの単位で述べる（見出し文も「石川県で地震　北陸　甲信
+   * 東海　関東で強い揺れ」の形）。読み上げの第 1.5 フェーズと EEW カードが使う。
+   *
+   * **`Body` には無い。** 入っているのは `Head/Headline/Information` の地方予報区ブロックだけで、
+   * `Body/Intensity/Forecast` は府県予報区 → 細分区域の 2 階層。P2PQuake / Yahoo 経路は
+   * この要素を配信しないため常に空（DMDSS 版限定）。
+   *
+   * 値域は 14 種（北海道・東北・関東・伊豆諸島・小笠原・北陸・甲信・東海・近畿・中国・四国・
+   * 九州・奄美・沖縄）。
+   */
+  warningRegions?: string[]
   /**
    * 電文が名乗る情報名（`Head/Title`）。→ {@link JMATsunami.infoName}（読み取りも扱いも同じ）
    *

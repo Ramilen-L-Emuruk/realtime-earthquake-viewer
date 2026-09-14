@@ -9,7 +9,7 @@ import { isMaxScaleUnreceived } from '../utils/quakePoints'
 import { formatMagnitudeWithCondition } from '../utils/formatters'
 import {
   eewMaxScaleInfo, isForecastScaleHigher, isForecastLpgmHigher, eewNoForecastReason, computeSingleEEWLevel, canPresentLpgmClass,
-  selectEEWSoundType, eewKindLabel, eewPhase2ScaleStabilityMs,
+  selectEEWSoundType, eewKindLabel, eewPhase2ScaleStabilityMs, sortEewWarningRegions,
   EEW_PHASE2_STABILITY_MAX_WAIT_MS, EEW_PHASE2_LPGM_STABILITY_MS, eewMaxLpgmClassInfo,
   type EewMaxScaleInfo, type EewMaxLpgmClassInfo,
 } from '../utils/eew'
@@ -18,7 +18,7 @@ import { showBrowserNotification } from '../utils/notifications'
 import { GRADE_PRIORITY, TSUNAMI_GRADE_LIFTED, isWarningLevelWhileObserving, tsunamiMaxGrade, tsunamiAreaGradeChanges, selectUnspokenAreaGradeChanges, rememberAreaGrades, tsunamiAreaKey, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, isTsunamiContinuation, matchesArea, sortAreasAcrossGradesForCardDisplay, sortObservationsForCardDisplay, mergeTsunamiObservations, isObservationMissing } from '../utils/tsunami'
 import { playAlertSound, ttsDelayFor, maxTtsDelay, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, stopSpeech, type PrewarmedSpeech, type ShouldStillPlay } from '../utils/voicevox'
-import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiAreaGradeChangeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, tsunamiMissingToSegments, selectMissingToSpeak, tsunamiWarningLevelToSegments, selectWarningLevelToSpeak, joinWithAlso, nankaiToText, nankaiCommentaryToText, kohatsuToText, earthquakeCountToText, estimatedIntensityToText, lpgmToText, telegramTextToSpeak, createQuakeSpokenState, applySpokenRefs, type TtsSpeechOptions, type QuakeSpokenState } from '../utils/ttsText'
+import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewWarningRegionsText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiAreaGradeChangeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, tsunamiMissingToSegments, selectMissingToSpeak, tsunamiWarningLevelToSegments, selectWarningLevelToSpeak, joinWithAlso, nankaiToText, nankaiCommentaryToText, kohatsuToText, earthquakeCountToText, estimatedIntensityToText, lpgmToText, telegramTextToSpeak, createQuakeSpokenState, applySpokenRefs, type TtsSpeechOptions, type QuakeSpokenState } from '../utils/ttsText'
 import { joinSegments, plain, hasFollowTarget, hasUnreceivedFollowTarget, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
 import { log, createLogThrottle } from '../utils/logger'
 import { TAB_PRIORITY, type TabPriority } from '../utils/tabPriority'
@@ -804,6 +804,14 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   const nonEewSpeechSeqRef = useRef(0)
   const latestScheduledSeqByTopicRef = useRef<Map<SpeechTopic, number>>(new Map())
   const eewPhase2TokensRef = useRef<Map<string, object>>(new Map())
+  // 第 1.5 フェーズ（警報の対象地方）で**声にした**地方（eventId 別）。
+  //
+  // **記録するのは読み切った分だけ。** 途中で降りた発話は入れない —— 降りるのは「地方が増えた
+  // から読み直す」ときで、その分を既読にすると読み直しから抜け落ちる。
+  const spokenEEWRegionsRef = useRef<Map<string, Set<string>>>(new Map())
+  // 第 1.5 フェーズの予約を表す識別子（eventId 別）。第 2 フェーズと同じく、解決した時点で
+  // 消して次の予約を受け付ける。
+  const eewRegionTokensRef = useRef<Map<string, object>>(new Map())
   const eewTtsMaxTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   // 第 2 フェーズ（予想値）を一度でも発話した eventId。まだ読んでいない間は、値が上がって
   // いなくても読む（初報・震源更新の読み直しがこれに当たる）。
@@ -2035,6 +2043,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         eewTtsEventsRef.current.delete(key)
         eewPhase2TokensRef.current.delete(key)
         eewPhase2DoneRef.current.delete(key)
+        eewRegionTokensRef.current.delete(key)
+        spokenEEWRegionsRef.current.delete(key)
         spokenEEWLevelsRef.current.delete(key)
         // 安定待ちの進行中サイクル・確定値も落とす（取り消された地震の値を残さない）
         const pendingScaleStability = eewScaleStabilityRef.current.get(key)
@@ -2572,6 +2582,69 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           if (hasKnownEpicenter(hypo.latitude, hypo.longitude)) {
             activeEEWAnnouncedHypocentersRef.current.set(key, { name: hypo.name, lat: hypo.latitude, lng: hypo.longitude })
           }
+        }
+
+        /**
+         * 第 1.5 フェーズ（警報の対象地方）をチェーンの末尾へ予約する。
+         *
+         * **第 1 フェーズを積んだ直後に呼ぶ。** チェーンは積んだ順に解決するので、安定待ちが
+         * 最短（300ms）で確定して `enqueuePhase2` が走っても、順序は 第1 → 第1.5 → 第2 になる。
+         * 続報で地方が増えたときは第 1 フェーズを伴わないが、そのときは第 2 フェーズより後ろへ
+         * 積まれる——実配信で地方が増えるのは 35 秒・59 秒後（能登本震）で、予想値の告知を
+         * 待たせる関係にはならない。
+         *
+         * **読む中身は「電文の全地方 − 声にした地方」。** 電文が `LastKind` で示す「新規」は
+         * 前報からの差分で、こちらが前報を取りこぼしていれば一緒に落ちる。
+         */
+        const enqueueWarningRegions = () => {
+          if (!settings.ttsReadEewWarningRegions) return
+          if (eewRegionTokensRef.current.has(key)) return
+          const token = {}
+          eewRegionTokensRef.current.set(key, token)
+          chainEEWSpeech(() => {
+            if (eewRegionTokensRef.current.get(key) !== token) return null
+            eewRegionTokensRef.current.delete(key)
+            // 取消・自動解除で消えていたら読まない（第 1・第 2 フェーズと同じ）。
+            const latest = eewTtsEventsRef.current.get(key)
+            if (!latest) return null
+            const spoken = spokenEEWRegionsRef.current.get(key) ?? new Set<string>()
+            // **発話の直前に最新の電文から取り直す。** 予約から声になるまでには前の発話の完了待ちと
+            // 合成の往復があり、そのあいだにも続報は届く。
+            //
+            // **並びは標準順へ揃える**（`sortEewWarningRegions`）。電文の文書順は続報で入れ替わる
+            // ため、そのまま読むと画面の並びと食い違う。
+            const speaking = sortEewWarningRegions((latest.warningRegions ?? []).filter(r => !spoken.has(r)))
+            if (speaking.length === 0) return null
+            const text = eewWarningRegionsText(speaking, spoken.size > 0)
+            // 鳴り始めてから地方が増えたら降りる（増えた分を含めて読み直すため）。降りた回を
+            // 既読にしないよう、記録は `onSettled` で「降りていないとき」だけ行う。
+            let abandoned = false
+            return {
+              text,
+              shouldStillPlay: () => {
+                if (eewRetractedKeysRef.current.has(key)) { abandoned = true; return false }
+                const now = eewTtsEventsRef.current.get(key)
+                // 自動解除で消えた場合は鳴らし続ける（第 2 フェーズと同じ。発表は終わったが、
+                // 読んでいる地方が誤りだったわけではない）。
+                if (!now) return true
+                const grown = (now.warningRegions ?? []).some(r => !spoken.has(r) && !speaking.includes(r))
+                if (grown) { abandoned = true; return false }
+                return true
+              },
+              onSettled: () => {
+                if (abandoned) return
+                const set = spokenEEWRegionsRef.current.get(key) ?? new Set<string>()
+                speaking.forEach(r => set.add(r))
+                spokenEEWRegionsRef.current.set(key, set)
+              },
+            }
+          }, () => followSpeechTab('realtime', isNew ? TAB_PRIORITY.eewUrgent : TAB_PRIORITY.eewUpdate))
+        }
+
+        // 声にしていない地方が残っていれば積む。**第 1 フェーズの発火とは独立**——続報で地方が
+        // 増えたときは第 1 フェーズを伴わない（震源が動いていないため）。
+        if ((event.warningRegions ?? []).some(r => !(spokenEEWRegionsRef.current.get(key)?.has(r)))) {
+          enqueueWarningRegions()
         }
 
         /**
@@ -3235,6 +3308,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     activeNonEewSpeechRef.current = null
     latestScheduledSeqByTopicRef.current.clear()
     eewPhase2DoneRef.current.clear()
+    // 第 1.5 フェーズ（警報の対象地方）の既読と予約。**第 2 フェーズの対と揃えて落とす** ——
+    // 落とし忘れると、同じ `eventId` を再生し直したとき「もう声にした」と判定されて
+    // 第 1.5 フェーズがそのセッションで一度も鳴らない（例外もログも出ない）。
+    spokenEEWRegionsRef.current.clear()
+    eewRegionTokensRef.current.clear()
     eewRetractedKeysRef.current.clear()
     eewPhase1ProgressRef.current.clear()
     lastTsunamiGradeRef.current = null
