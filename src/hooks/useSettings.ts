@@ -86,6 +86,14 @@ export interface AppSettings {
   ttsMaxObservationPoints: number  // 津波の観測点を読み上げる件数（波高更新・到達確認・欠測・警報相当で共通）
   ttsReadHypocenterDetail: boolean // 震源の深さ・規模を読む（無効なら震源名だけ）
   ttsReadEewLpgmClass: boolean     // 緊急地震速報の予想最大長周期地震動階級を読む
+  /**
+   * 緊急地震速報（警報）の対象地方を、震源を伝えたあと・予想値を伝える前に読む。
+   *
+   * **予想値の読み上げを遅らせることが目的**の項目でもある。待っているあいだに続報が届けば、
+   * 予想震度はより新しい確定値で読まれる（詳細は docs/spec/audio-tts-spec.md §6
+   * 「警報の対象地方を、予想値の前に伝える」）。
+   */
+  ttsReadEewWarningRegions: boolean
   panelRatio: number               // 縦積みレイアウト（スマホ縦など）でのパネル高さ比率（0.2〜0.8）
 }
 
@@ -169,6 +177,10 @@ export const DEFAULTS: AppSettings = {
   ttsMaxObservationPoints: 5,
   ttsReadHypocenterDetail: true,
   ttsReadEewLpgmClass: true,
+  // **この 1 つだけ「入れる前の挙動」に揃えていない。** 上の 5 つは既にある読み上げの詳しさを
+  // 選ぶ項目なので既定を変えないが、これは新しく足す発話で、しかも「予想値の読み上げを
+  // 遅らせる」ことが目的。既定で切っておくと、目的そのものが誰にも届かない。
+  ttsReadEewWarningRegions: true,
   panelRatio: 0.45,
 }
 
@@ -285,6 +297,7 @@ export function sanitize(partial: Partial<AppSettings>): AppSettings {
     ),
     ttsReadHypocenterDetail: ensureBool(partial.ttsReadHypocenterDetail, DEFAULTS.ttsReadHypocenterDetail),
     ttsReadEewLpgmClass: ensureBool(partial.ttsReadEewLpgmClass, DEFAULTS.ttsReadEewLpgmClass),
+    ttsReadEewWarningRegions: ensureBool(partial.ttsReadEewWarningRegions, DEFAULTS.ttsReadEewWarningRegions),
     panelRatio: clampNumber(partial.panelRatio, PANEL_RATIO_MIN, PANEL_RATIO_MAX, DEFAULTS.panelRatio),
   }
 }
