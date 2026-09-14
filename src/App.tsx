@@ -1398,7 +1398,7 @@ export function App() {
   })
   // 強震モニタの揺れ検知は V2 エンジン（純粋コア step）で行う。
   // 検知結果は音・自動タブ切替・自動フィット・地図オーバーレイ・リアルタイムタブのカードを駆動する。
-  const kyoshinV2 = useKyoshinDetectorV2(kyoshin.sites, kyoshin.indices, kyoshin.dataTime, kyoshin.sitesSiteConfigId, kyoshin.indicesSiteConfigId, true, hasActiveNonAssumedEEW)
+  const kyoshinV2 = useKyoshinDetectorV2(kyoshin.sites, kyoshin.indices, kyoshin.dataTime, kyoshin.sitesSiteConfigId, kyoshin.indicesSiteConfigId, true, hasActiveNonAssumedEEW, kyoshin.supplyKey, kyoshin.warmup)
   // siteConfigId 切替直後の一時的な「新 indices・旧 sites」状態では sites[i] と indices[i] を
   // 位置対応で使う下流（描画・タブ表示・派生ビュー）でも誤ペアリングが起きるため、両者の
   // siteConfigId が揃うまで空配列にゲートする。sitelist の非同期取得が完了した次フレームで

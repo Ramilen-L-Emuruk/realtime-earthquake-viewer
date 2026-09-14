@@ -55,8 +55,12 @@ function findControlChar(path: string): string | null {
 }
 
 describe('生の制御文字を置かない', () => {
+  // **上限を延ばしてある。** 対象は `src` と `docs` の全ファイルで、1 バイトずつ走査する。
+  // 単独で回せば 1 秒足らずだが、全ファイル並列実行では他ワーカーとの I/O の取り合いが乗り、
+  // 既定の 5 秒に触れることがある（ファイルが増えるほど近づく）。**落ちるのは中身ではなく
+  // 混み具合なので、上限で吸収する**（→ CLAUDE.md「検証」節）。
   it('ソースとドキュメントに、タブ・改行・復帰以外の制御文字が無い', () => {
     const offenders = ROOTS.flatMap(listFiles).map(findControlChar).filter((x): x is string => x !== null)
     expect(offenders).toEqual([])
-  })
+  }, 30_000)
 })
