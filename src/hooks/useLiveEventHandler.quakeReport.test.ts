@@ -14,7 +14,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
-import type { AppSettings } from './useSettings'
+import { DEFAULTS, type AppSettings } from './useSettings'
 import type { JMAQuake, JMATsunami, IssueType } from '../types/earthquake'
 import { quakeEventKey } from '../utils/quakeMerge'
 
@@ -91,7 +91,7 @@ const titles: string[] = []
  * @param spies 呼び出しを検証したい依存だけ差し替える（省略したものは無害な `vi.fn()`）
  */
 function setup(existingCards: JMAQuake[] = [], spies: { closeDistributionOnQuakeReport?: (eventKey: string) => void } = {}) {
-  const settings = {
+  const settings = { ...DEFAULTS,
     voicevoxEnabled: true, voicevoxUrl: 'http://x', voicevoxSpeakerId: 1,
     soundEnabled: false, soundVolume: 1, notifyMinScale: -1,
     notifyEEW: false, notifyTsunami: false, notifyDetection: false,

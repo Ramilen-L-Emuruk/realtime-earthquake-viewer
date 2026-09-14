@@ -114,3 +114,63 @@ describe('バナーから開く付加文の面', () => {
     expect(container.textContent).not.toContain(BODY_ONLY)
   })
 })
+
+// 読み上げに合わせた自動展開（→ docs/spec/audio-tts-spec.md §6「読み上げに合わせて気象庁の文を開く」）。
+//
+// **バナー 4 種と同じフック（`useAutoOpenWhileSpeaking`）に寄せてある。** 自前で組んでいた頃は
+// 「手で開き直したら読み終わりで閉じない」が抜けており、利用者が開いた面を読み終わりで閉じていた。
+// フックの単体テストとは別に、**この画面で実際に繋がっていること**をここで固定する。
+describe('読み上げに合わせて気象庁の文を開く', () => {
+  const renderWithSpeech = (speaking: boolean, tsunamis = [makeTsunami()]) =>
+    render(<TsunamiTab tsunamis={tsunamis} isVisible speakingTelegramText={speaking} />)
+
+  // 正: 読み始めで開き、読み終わりで閉じる
+  it('読み始めで開き、読み終わりで閉じる', () => {
+    const { container, rerender } = renderWithSpeech(false)
+    expect(container.textContent).not.toContain(BODY_ONLY)
+
+    rerender(<TsunamiTab tsunamis={[makeTsunami()]} isVisible speakingTelegramText />)
+    expect(container.textContent).toContain(BODY_ONLY)
+
+    rerender(<TsunamiTab tsunamis={[makeTsunami()]} isVisible speakingTelegramText={false} />)
+    expect(container.textContent).not.toContain(BODY_ONLY)
+  })
+
+  // 安全弁: **手で開き直したものは、読み終わりで閉じない。**
+  // 自前実装だったときに抜けていた分岐（自動で開く → 手で閉じる → 手で開き直す → 読み終わり）。
+  it('読み上げ中に手で開き直したら、読み終わりで閉じない', () => {
+    const { container, rerender } = renderWithSpeech(true)
+    expect(container.textContent).toContain(BODY_ONLY)
+
+    // 手で閉じる → 手で開き直す
+    fireEvent.click(screen.getAllByRole('button')[0])
+    expect(container.textContent).not.toContain(BODY_ONLY)
+    fireEvent.click(screen.getAllByRole('button')[0])
+    expect(container.textContent).toContain(BODY_ONLY)
+
+    rerender(<TsunamiTab tsunamis={[makeTsunami()]} isVisible speakingTelegramText={false} />)
+    expect(container.textContent).toContain(BODY_ONLY)
+  })
+
+  // 安全弁: 読み上げ中に手で閉じたら、その読み上げのあいだは開き直さない
+  it('読み上げ中に手で閉じたら、そのまま閉じたままにする', () => {
+    const { container, rerender } = renderWithSpeech(true)
+    fireEvent.click(screen.getAllByRole('button')[0])
+    expect(container.textContent).not.toContain(BODY_ONLY)
+
+    // 同じ読み上げが続いても開き直さない
+    rerender(<TsunamiTab tsunamis={[makeTsunami()]} isVisible speakingTelegramText />)
+    expect(container.textContent).not.toContain(BODY_ONLY)
+  })
+
+  // 対照: 利用者が手で開いていたものは、読み終わりで閉じない
+  it('読み上げの前から手で開いていたものは、読み終わりで閉じない', () => {
+    const { container, rerender } = renderWithSpeech(false)
+    fireEvent.click(screen.getAllByRole('button')[0])
+    expect(container.textContent).toContain(BODY_ONLY)
+
+    rerender(<TsunamiTab tsunamis={[makeTsunami()]} isVisible speakingTelegramText />)
+    rerender(<TsunamiTab tsunamis={[makeTsunami()]} isVisible speakingTelegramText={false} />)
+    expect(container.textContent).toContain(BODY_ONLY)
+  })
+})

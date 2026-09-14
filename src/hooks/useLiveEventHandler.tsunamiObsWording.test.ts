@@ -12,7 +12,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
-import type { AppSettings } from './useSettings'
+import { DEFAULTS, type AppSettings } from './useSettings'
 import type { JMAQuake, JMATsunami } from '../types/earthquake'
 
 const speeches: { text: string; finish: () => void; done: boolean }[] = []
@@ -173,7 +173,7 @@ function displayedTsunami(areas: { name: string; code: string; grade: string; he
 }
 
 function setup(displayed: JMATsunami[] = []) {
-  const settings = {
+  const settings = { ...DEFAULTS,
     voicevoxEnabled: true, voicevoxUrl: 'http://x', voicevoxSpeakerId: 1,
     soundEnabled: false, soundVolume: 1, notifyMinScale: -1,
     notifyEEW: false, notifyTsunami: false, notifyDetection: false,
@@ -200,7 +200,7 @@ function setup(displayed: JMATsunami[] = []) {
 
 /** `setup` と同じ結線で、リプレイ復元も呼べるようにフックの戻り値ごと返す。 */
 function setupFull(displayed: JMATsunami[] = []) {
-  const settings = {
+  const settings = { ...DEFAULTS,
     voicevoxEnabled: true, voicevoxUrl: 'http://x', voicevoxSpeakerId: 1,
     soundEnabled: false, soundVolume: 1, notifyMinScale: -1,
     notifyEEW: false, notifyTsunami: false, notifyDetection: false,

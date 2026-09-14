@@ -48,6 +48,16 @@ export const INTENSITY_BG_COLORS: Record<number, string> = {
  * これで弾く。中間値（`25` 等）や範囲外の値をそのまま比較に使うと、
  * 震度表示が「不明」になったり特別警報へ誤って昇格したりする。
  */
+/**
+ * 気象庁の震度階級の段数（「不明」を除く）。現在は 9 段（震度1〜7。震度0 は震度1 と同じ階級値）。
+ *
+ * **「すべての階級を読む」の上限を導くのに使う。** 読み上げの階数は「最大震度に加えて何階級下まで」
+ * なので、段数から 1 引いた値で全段を覆う。数を直接書くと、階級が増減したときに選択肢だけが
+ * 古い段数のまま残る。
+ */
+export const INTENSITY_SCALE_COUNT = Object.keys(INTENSITY_LABELS)
+  .filter(k => Number(k) >= 0).length
+
 export function isValidIntensityScale(scale: number): scale is IntensityScale {
   // 型が効かない経路を守るための関数なので、自分自身は引数の型を当てにしない。
   // `in` 演算子や添字アクセスは継承プロパティも拾うため（`'toString' in INTENSITY_LABELS` は true）、
