@@ -1,13 +1,14 @@
-import { useMemo, useRef, useEffect, useState } from 'react'
-import type { JMAQuake, JMALpgm, IssueType, EarthquakePoint, IntensityScale, JMAEstimatedIntensity } from '../../types/earthquake'
+import { Fragment, useMemo, useRef, useEffect, useState } from 'react'
+import type { JMAQuake, JMALpgm, IssueType, EarthquakePoint, IntensityScale, JMAEstimatedIntensity, QuakeReportRecord } from '../../types/earthquake'
 import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor, lpgmCategoryNote, buildLpgmRows } from '../../utils/lpgm'
 import { estimatedIntensityFor, estimatedIntensityAvailability } from '../../utils/estimatedIntensity'
+import { SerialBadge } from '../SerialBadge'
 import {
   formatQuakeTime,
   formatDepth,
   formatDomesticTsunami,
   TSUNAMI_WARNING_GROUP_TITLE,
-  formatQuakeReports,
+  quakeReportLabels,
   formatCorrectType,
   hasHypocenterFacts,
   hasMagnitude,
@@ -358,6 +359,30 @@ interface Props {
   onFocusMap?: (positions: LatLng[]) => void
 }
 
+/**
+ * 種別ヘッダーに出す「受け取った電文種別」。→ `quakeReportLabels`
+ *
+ * **報番号の見た目は緊急地震速報と共有する**（→ `components/SerialBadge.tsx`）。同じ器に出す
+ * もので、別々に書くと片方だけ変わる。
+ *
+ * **鍵には並び順も混ぜる。** 同じ種別が 2 件並ばないことは統合の側（`utils/quakeMerge.ts` の
+ * `mergeQuakeReports` が種別ごとに 1 件へ畳む）が保証しているが、**そこが崩れたときの症状が
+ * 「種別が 1 つ黙って消える」になる** —— React は鍵が重なった要素を畳むだけで例外を投げない。
+ */
+function QuakeReportHeading({ reports, fallback }: { reports?: QuakeReportRecord[]; fallback: IssueType }) {
+  return (
+    <>
+      {quakeReportLabels(reports, fallback).map((label, index) => (
+        <Fragment key={`${index}:${label.type}`}>
+          {index > 0 && ' / '}
+          {label.type}
+          {label.count != null && <SerialBadge serial={label.count} />}
+        </Fragment>
+      ))}
+    </>
+  )
+}
+
 export function EarthquakeCard({
   quake, isLatest, isSelected, onSelect, lpgm, activeLpgmEventId, onToggleLpgm,
   estimatedIntensity = null, distributionActive = false, onToggleDistribution,
@@ -669,10 +694,10 @@ export function EarthquakeCard({
             borderBottom: `1px solid ${typeStyle.headerBorder}`,
           }}
         >
-          {/* 受け取った電文種別を `/` でつないで出す（→ `formatQuakeReports`）。気象庁は
+          {/* 受け取った電文種別を `/` でつないで出す（→ `QuakeReportHeading`）。気象庁は
               震度速報 → 震源情報 → 震度速報 … と前後して発表するため、最後に届いた 1 種別だけ
               だと「震源情報も受け取っている」ことが画面から消える。**色は代表種別のまま**。 */}
-          {formatQuakeReports(quake.reports, issue.type)}
+          <QuakeReportHeading reports={quake.reports} fallback={issue.type} />
           {/* 電文が自分で名乗っている運用種別（`Control/Status`）。訓練・試験のときだけ出す。
               **本物と見分けられるようにする** —— 検証用に受信した試験報もカードへ流している。 */}
           {quake.operationStatus && (
@@ -1268,7 +1293,7 @@ export function EarthquakeCard({
             {/* 畳んだ表示。開いた表示（上）と同じ語を出す。 */}
             <span className="text-base text-secondary flex-shrink-0">{formatQuakeTime(earthquake.time) ?? '発生時刻不明'}</span>
             <span className={`text-xs px-1.5 py-0.5 rounded min-w-0 truncate ${issueTypeBadgeClass(issue.type)}`}>
-              {formatQuakeReports(quake.reports, issue.type)}
+              <QuakeReportHeading reports={quake.reports} fallback={issue.type} />
             </span>
             {quake.operationStatus && (
               <span className="text-xs px-1.5 py-0.5 rounded font-bold flex-shrink-0" style={{ backgroundColor: '#1f2937', color: '#fcd34d', border: '1px solid #d97706' }}>
