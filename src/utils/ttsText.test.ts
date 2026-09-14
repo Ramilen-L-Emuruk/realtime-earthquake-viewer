@@ -3,13 +3,14 @@
 // 「日から読む／時分だけ読む」という書式の違いを正規表現で検証する。
 import { describe, it, expect, vi } from 'vitest'
 import { earthquakeCancelToText, tsunamiCancelToText, eewCancelToText, CANCEL_REASON_SPEAK_MAX_CHARS, nankaiToText, earthquakeCountToText,
-  estimatedIntensityToText, earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewAlertToText, eewIntensityText, voicevoxPreviewTexts, lpgmToText, tsunamiToText, tsunamiDowngradeToText, tsunamiArrivalToText, tsunamiMissingToText, tsunamiObservationUpdateToText, tsunamiAreaGradeChangeToText, tsunamiWarningLevelToText, selectWarningLevelToSpeak, WARNING_LEVEL_SPEAK_MAX_POINTS, joinWithAlso, telegramTextToSpeak, type TtsSpeechOptions, type QuakeSpokenState } from './ttsText'
+  estimatedIntensityToText, earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewAlertToText, eewIntensityText, voicevoxPreviewTexts, lpgmToText, tsunamiToText, tsunamiDowngradeToText, tsunamiArrivalToText, tsunamiMissingToText, tsunamiObservationUpdateToText, tsunamiAreaGradeChangeToText, tsunamiWarningLevelToText, selectWarningLevelToSpeak, selectObservationUpdatesToSpeak, selectMissingToSpeak, selectArrivalsToSpeak, WARNING_LEVEL_SPEAK_MAX_POINTS, joinWithAlso, telegramTextToSpeak, type TtsSpeechOptions, type QuakeSpokenState } from './ttsText'
+import { INTENSITY_SCALE_COUNT } from './intensity'
 import { joinSegments, plain, type SpeechSegment } from './ttsFollow'
 import { log } from './logger'
 import { tsunamiAreaGradeChanges } from './tsunami'
 import { getStationCoordsCache } from './stationCoords'
 import { eewMaxScaleInfo, eewMaxLpgmClassInfo } from './eew'
-import type { LiveEvent, JMAQuake, JMALpgm, EarthquakePoint, IssueType, DomesticTsunami, IntensityScale, EEWAlert, LpgmClass, JMATsunami, TsunamiArea, TsunamiObservation, JMANankai, JMAEarthquakeCount } from '../types/earthquake'
+import type { TsunamiObservation, LiveEvent, JMAQuake, JMALpgm, EarthquakePoint, IssueType, DomesticTsunami, IntensityScale, EEWAlert, LpgmClass, JMATsunami, TsunamiArea, JMANankai, JMAEarthquakeCount } from '../types/earthquake'
 
 const TTS_OPTS: TtsSpeechOptions = { intensityLevels: 0, maxRegions: 0, alwaysReadScale: -1, regionTolerance: 0 }
 
@@ -2565,9 +2566,11 @@ describe('telegramTextToSpeak: 気象庁が書いた文', () => {
   const OFF: TtsSpeechOptions = { intensityLevels: 2, maxRegions: 0, alwaysReadScale: -1, regionTolerance: 0 }
   const ON: TtsSpeechOptions = { ...OFF, readTelegramText: true }
 
+  // **題材に「＊印は…」を使わない** —— あれは読み上げから落とす定型文なので、
+  // ここで使うと「本文を読む」こと自体を確かめられない（→ 下の describe が担当する）。
   const quakeWithComment = (over: Partial<JMAQuake> = {}): JMAQuake => ({
     ...makeQuake({ type: '震源・震度情報' }),
-    varCommentText: '＊印は気象庁以外の震度観測点についての情報です。',
+    varCommentText: '震源要素を訂正します。',
     ...over,
   })
 
@@ -2579,29 +2582,20 @@ describe('telegramTextToSpeak: 気象庁が書いた文', () => {
   // 正: 有効にすると、何についての文かを添えて返す。
   it('有効にすると前置きを付けて返す', () => {
     const speech = telegramTextToSpeak(quakeWithComment(), ON)
-    expect(speech?.text).toBe('地震情報について、気象庁の文をお伝えします。＊印は気象庁以外の震度観測点についての情報です。')
+    expect(speech?.text).toBe('地震情報について、気象庁の文をお伝えします。震源要素を訂正します。')
     // 既読の照合には前置きを含めない（種別ごとに固定の文なので、混ぜると比較が鈍る）
-    expect(speech?.body).toBe('＊印は気象庁以外の震度観測点についての情報です。')
+    expect(speech?.body).toBe('震源要素を訂正します。')
   })
 
-  // 安全弁: 緊急地震速報は別の設定。まとめて有効にすると、秒を争う場面へ定型文が割り込む。
-  it('緊急地震速報の警戒文は別の設定で、まとめて有効にはならない', () => {
+  // 安全弁: **緊急地震速報の固定付加文は読まない。** 秒を争うため、定型文を挟むと肝心の
+  // 震度・地域が遅れる（画面には出している）。設定で有効にできる形も設けていないので、
+  // 「気象庁が書いた文」を有効にしても巻き込まれないこと。
+  it('緊急地震速報の固定付加文は、本文を読む設定でも読まない', () => {
     const eew = {
       kind: 'eew', id: 'e1', time: '', warningComment: '強い揺れに警戒してください。',
     } as unknown as EEWAlert
     expect(telegramTextToSpeak(eew, ON)).toBeNull()
-    const speech = telegramTextToSpeak(eew, { ...OFF, readEewWarningComment: true })
-    expect(speech?.body).toBe('強い揺れに警戒してください。')
-  })
-
-  // 安全弁（**試験報が本物の警告として声になる穴**）: `EEWAlert.test` は「画面・音・地図へ
-  // 流さない」抑制フラグ。判定をこの関数の中に置いていないと、呼び出し側（`handleLiveEvent`）が
-  // 種別ごとの抑制へ入る前に予約するため素通りする。
-  it('試験報・訓練報の緊急地震速報では返さない', () => {
-    const eew = {
-      kind: 'eew', id: 'e1', time: '', test: true, warningComment: '強い揺れに警戒してください。',
-    } as unknown as EEWAlert
-    expect(telegramTextToSpeak(eew, { ...OFF, readEewWarningComment: true })).toBeNull()
+    expect(telegramTextToSpeak(eew, OFF)).toBeNull()
   })
 
   // 安全弁: 取消の報では出さない（理由は本体の読み上げが読む。画面も付加文を出さない）。
@@ -2612,17 +2606,6 @@ describe('telegramTextToSpeak: 気象庁が書いた文', () => {
   // **ガードが効いていなくても通ってしまう**（実際にそうなっていた）。
   it('取消・失効の報では返さない', () => {
     expect(telegramTextToSpeak(quakeWithComment({ cancelled: true }), ON)).toBeNull()
-  })
-
-  // 安全弁: 緊急地震速報の自動解除・津波の失効も同じ形（`cancelled: true`）で届く。
-  // 直前の報の付加文がスプレッドで残るため、ここで弾かないと「終わった」と伝える瞬間に
-  // 警戒文が読まれる。
-  it('緊急地震速報の自動解除でも返さない', () => {
-    const eew = {
-      kind: 'eew', id: 'e1', time: '', cancelled: true, expired: true,
-      warningComment: '強い揺れに警戒してください。',
-    } as unknown as EEWAlert
-    expect(telegramTextToSpeak(eew, { ...OFF, readEewWarningComment: true })).toBeNull()
   })
 
   // 安全弁: 改行と全角スペースは落とす。自由付加文には全角スペースで桁を揃えた表が入り、
@@ -2663,6 +2646,44 @@ describe('telegramTextToSpeak: 気象庁が書いた文', () => {
     expect(speech?.body).toBe('調査を開始しました。本文です。次回の発表予定です。')
     expect(speech?.body).not.toContain('参考')
   })
+
+  // 長周期地震動の自由付加文が載せる「階級と現象表現の対応表」は、原文が
+  // 「階級４極めて大きな揺れ」と区切り無しで続く（画面では表として読める形）。
+  // 声にすると 4 行が一続きに聞こえるので、読み上げのときだけ空白を挟む。**読点ではない** ——
+  // 合成エンジンが置く間は同じだが、読点だと `splitIntoChunks` がそこでチャンクを割り、
+  // 間がチャンク末尾の足し分（0.11 秒）に変わって文中の読点より短くなる（実機で確認）。
+  describe('階級と現象表現の対応表', () => {
+    const lpgmWithFreeText = (freeFormText: string): LiveEvent => ({
+      kind: 'lpgm',
+      data: { id: 'l1', time: '', eventId: 'e1', originTime: '', maxClass: 4, cancelled: false, freeFormText },
+    } as unknown as LiveEvent)
+
+    // 正: 4 つの現象表現すべてで挟む。**「大きな揺れ」が「やや大きな揺れ」を食わないこと**も
+    // ここで見る（照合の並び順を変えると「やや」の前で切れる）。
+    it('階級と現象表現のあいだに空白を挟む', () => {
+      const speech = telegramTextToSpeak(lpgmWithFreeText(
+        '各長周期地震動階級に対する簡易な現象表現\n 階級１やや大きな揺れ\n 階級２大きな揺れ\n 階級３非常に大きな揺れ\n 階級４極めて大きな揺れ',
+      ), ON)
+      expect(speech?.body).toBe(
+        '各長周期地震動階級に対する簡易な現象表現 階級１ やや大きな揺れ 階級２ 大きな揺れ 階級３ 非常に大きな揺れ 階級４ 極めて大きな揺れ。',
+      )
+    })
+
+    // 安全弁: 挟むのは空白で、**読点にしない**。読点は `splitIntoChunks` がチャンクを割る文字
+    // なので、ここへ入れると間がチャンク末尾の足し分（0.11 秒）に変わって文中の読点より短くなる
+    it('読点は挟まない（チャンクを割る文字なので間が短くなる）', () => {
+      const body = telegramTextToSpeak(lpgmWithFreeText('階級４極めて大きな揺れ'), ON)?.body ?? ''
+      expect(body).toBe('階級４ 極めて大きな揺れ。')
+      expect(body).not.toContain('階級４、')
+    })
+
+    // 対照: **同じ「階級＋数字」は文中にも現れる。** そちらへ入れると助詞の前で文が切れるので、
+    // 対応表でしか使われない現象表現の語まで一致したときだけ挟む。
+    it('文中の「階級４を観測した」には挟まない', () => {
+      const speech = telegramTextToSpeak(lpgmWithFreeText('長周期地震動階級４を観測した地域があります。'), ON)
+      expect(speech?.body).toBe('長周期地震動階級４を観測した地域があります。')
+    })
+  })
 })
 
 describe('緊急地震速報の長周期地震動階級を読むかの設定', () => {
@@ -2685,5 +2706,124 @@ describe('緊急地震速報の長周期地震動階級を読むかの設定', (
   it('切っても予想震度は読む', () => {
     const text = eewIntensityText(scale, 3, eew, false, false, { ...BASE, readEewLpgmClass: false })
     expect(text).toContain('予想最大震度4')
+  })
+})
+
+// 上限を「無制限」にできること（設定の選択肢を広げた分）。
+describe('読み上げ件数の無制限', () => {
+  const BASE: TtsSpeechOptions = { intensityLevels: 2, maxRegions: 0, alwaysReadScale: -1, regionTolerance: 0 }
+
+  function obsOf(n: number): TsunamiObservation[] {
+    return Array.from({ length: n }, (_, i) => ({
+      name: `観測点${i + 1}`,
+      height: { value: 0.5, description: '0.5m' },
+      arrivalTime: '2026-01-01T12:00:00+09:00',
+    } as TsunamiObservation))
+  }
+
+  // 対照: 既定（5 件）では上限で切る。**この既定値を変えない** —— 変えると、いま動いている
+  // 端末の読み上げ内容が設定を触っていないのに変わる。
+  it('既定の 5 件では 5 地点で切る', () => {
+    expect(selectArrivalsToSpeak(obsOf(12), 5)).toHaveLength(5)
+  })
+
+  // 正: 0 は無制限（隣の `maxRegions` と同じ意味）。
+  it('0 を渡すと全件を読む', () => {
+    expect(selectArrivalsToSpeak(obsOf(12), 0)).toHaveLength(12)
+    expect(selectMissingToSpeak(obsOf(12), 0)).toHaveLength(12)
+    expect(selectWarningLevelToSpeak(obsOf(12), 0)).toHaveLength(12)
+    expect(selectObservationUpdatesToSpeak(obsOf(12), 0)).toHaveLength(12)
+  })
+
+  // 安全弁: 無制限は件数の上限を外すだけで、**並びと選抜の規則は変えない**
+  // （カードと同じ順に読む。→ tsunami-spec.md §9）。
+  it('無制限でも並びは変わらない', () => {
+    const obs = obsOf(3)
+    expect(selectArrivalsToSpeak(obs, 0).map(o => o.name)).toEqual(['観測点1', '観測点2', '観測点3'])
+  })
+
+  // 安全弁: 階数の「すべての階級」は段数から導く。数を直接書くと、階級が増減したときに
+  // 選択肢だけが古い段数のまま残る。
+  it('「すべての階級」の値は震度階級の段数から導く', () => {
+    // 震度1〜7 の 9 段（震度0 は震度1 と同じ階級値）。最大＋8 で全段を覆う
+    expect(INTENSITY_SCALE_COUNT).toBe(9)
+    const opts = { ...BASE, intensityLevels: INTENSITY_SCALE_COUNT - 1 }
+    expect(opts.intensityLevels).toBe(8)
+  })
+})
+
+// 読み上げから URL を落とす（→ `stripUrlsForSpeech`）。
+describe('気象庁が書いた文の URL', () => {
+  const ON: TtsSpeechOptions = {
+    intensityLevels: 2, maxRegions: 0, alwaysReadScale: -1, regionTolerance: 0, readTelegramText: true,
+  }
+  const lpgmWith = (freeFormText: string): LiveEvent => ({
+    kind: 'lpgm',
+    data: { id: 'l1', time: '', eventId: 'e1', originTime: '', maxClass: 0, cancelled: false, freeFormText },
+  } as unknown as LiveEvent)
+
+  // 正: 括弧で囲まれた URL は**括弧ごと**落とす。URL だけ抜くと空の括弧が残り、それも音になる。
+  // 実電文（長周期地震動観測情報の自由付加文）がこの形。
+  it('括弧で囲まれた URL を括弧ごと落とす', () => {
+    const speech = telegramTextToSpeak(lpgmWith(
+      '詳細な情報は気象庁のウェブサイト ( https://www.data.jma.go.jp/eew/data/ltpgm/event.php?eventId=20240101161010 ) もあわせてご活用ください。',
+    ), ON)
+    expect(speech?.body).toBe('詳細な情報は気象庁のウェブサイト もあわせてご活用ください。')
+    expect(speech?.body).not.toContain('http')
+  })
+
+  // 正: 裸の URL も落とす。
+  it('裸の URL も落とす', () => {
+    const speech = telegramTextToSpeak(lpgmWith('詳しくは https://www.jma.go.jp/ をご覧ください。'), ON)
+    expect(speech?.body).not.toContain('http')
+  })
+
+  // 安全弁: **URL の直後に空白なしで句点が続いても、句点まで巻き込まない。** 巻き込むと
+  // 2 つの文が 1 つに繋がる。実電文の URL は前後に空白があるが、正規表現の側でその前提に頼らない
+  it('URL の直後の句点を巻き込まない', () => {
+    const speech = telegramTextToSpeak(lpgmWith('詳しくはhttps://www.jma.go.jp/foo。続報があります。'), ON)
+    expect(speech?.body).toBe('詳しくは。続報があります。')
+  })
+
+  // 安全弁: URL 以外は変えない。**本文を勝手に削らない** —— 落としてよいのは
+  // 「音声で伝えても書き取れないもの」だけで、気象庁の文そのものは原文のまま読む。
+  //
+  // **題材に「階級１やや大きな揺れ」を使わない** —— あれは階級と現象表現の対応表で、
+  // 読み上げのときだけ読点を挟む対象（→ 上の「階級と現象表現の対応表」）。ここでは
+  // 現象表現の語を含むが対応表ではない文を使い、**語だけでは挟まない**ことも併せて見る。
+  it('URL 以外の本文は変えない', () => {
+    const body = '高層ビル高層階では非常に大きな揺れとなっていた可能性があります。'
+    expect(telegramTextToSpeak(lpgmWith(body), ON)?.body).toBe(body)
+  })
+})
+
+// 読み上げから落とす定型文（→ `TELEGRAM_TEXT_SKIPPED_PHRASES`）。
+describe('気象庁が書いた文のうち読み上げから落とす定型文', () => {
+  const ON: TtsSpeechOptions = {
+    intensityLevels: 2, maxRegions: 0, alwaysReadScale: -1, regionTolerance: 0, readTelegramText: true,
+  }
+  const quakeWith = (varCommentText: string): JMAQuake => ({
+    ...makeQuake({ type: '震源・震度情報' }), varCommentText,
+  })
+
+  // 正: 「＊印は…」は読まない。震度を伝える電文のほぼ全てに入るうえ、`＊` が音にならない。
+  it('「＊印は気象庁以外の…」は読まない', () => {
+    const speech = telegramTextToSpeak(quakeWith('＊印は気象庁以外の震度観測点についての情報です。'), ON)
+    expect(speech).toBeNull()
+  })
+
+  // 対照: **併記された別の付加文は読む。** 実電文は「震源要素を訂正します。＊印は…」の形で
+  // 届くことがあり、まとめて落とすと訂正の事実が声にならない。
+  it('併記された別の付加文は読む', () => {
+    const speech = telegramTextToSpeak(
+      quakeWith('震源要素を訂正します。\n＊印は気象庁以外の震度観測点についての情報です。'), ON)
+    expect(speech?.body).toBe('震源要素を訂正します。')
+  })
+
+  // 安全弁: 落とすのは**その文だけ**。前後の文を巻き込まない。
+  it('前後の文を巻き込まない', () => {
+    const speech = telegramTextToSpeak(
+      quakeWith('前の文です。＊印は気象庁以外の震度観測点についての情報です。後の文です。'), ON)
+    expect(speech?.body).toBe('前の文です。後の文です。')
   })
 })

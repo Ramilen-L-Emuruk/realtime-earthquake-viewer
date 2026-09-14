@@ -11,8 +11,8 @@ export type { TtsUnreceivedDetail }
 // アイドル復帰時に戻すデフォルトタブの選択肢（津波情報・設定は対象外）
 export type DefaultTabSetting = 'earthquake' | 'realtime'
 
-/** 津波の観測点を読み上げる件数の上限（設定で選べる範囲）。0 は「無制限」ではなく最小値。 */
-export const TTS_MAX_OBSERVATION_POINTS_MIN = 1
+/** 津波の観測点を読み上げる件数の上限（設定で選べる範囲）。**`0` は無制限**（`ttsMaxRegions` と同じ意味）。 */
+export const TTS_MAX_OBSERVATION_POINTS_MIN = 0
 export const TTS_MAX_OBSERVATION_POINTS_MAX = 20
 
 export interface AppSettings {
@@ -70,13 +70,6 @@ export interface AppSettings {
    * docs/spec/audio-tts-spec.md §6「気象庁が書いた文は最下位の層で読む」。
    */
   ttsReadTelegramText: boolean
-  /**
-   * 緊急地震速報の固定付加文（「強い揺れに警戒してください。」等）を読み上げる。既定は無効。
-   *
-   * `ttsReadTelegramText` と分けているのは、EEW だけ秒を争うため。読む場合も
-   * **震度・地域を伝えたあと**に回す（→ docs/spec/eew-spec.md §3「固定付加文」）。
-   */
-  ttsReadEewWarningComment: boolean
   ttsUnreceivedDetail: TtsUnreceivedDetail  // 「震度5弱以上・未入電」の読み方
   ttsMaxObservationPoints: number  // 津波の観測点を読み上げる件数（波高更新・到達確認・欠測・警報相当で共通）
   ttsReadHypocenterDetail: boolean // 震源の深さ・規模を読む（無効なら震源名だけ）
@@ -152,10 +145,9 @@ export const DEFAULTS: AppSettings = {
   ttsMaxRegions: 10,
   ttsAlwaysReadScale: 30,
   ttsRegionTolerance: 2,
-  // 以下 6 項目の既定は「この設定を入れる前の挙動」に揃えてある。既存の利用者の耳に
+  // 以下 5 項目の既定は「この設定を入れる前の挙動」に揃えてある。既存の利用者の耳に
   // 届く内容を、設定を足しただけで変えないため。
   ttsReadTelegramText: false,
-  ttsReadEewWarningComment: false,
   ttsUnreceivedDetail: 'stations',
   ttsMaxObservationPoints: 5,
   ttsReadHypocenterDetail: true,
@@ -250,12 +242,8 @@ export function sanitize(partial: Partial<AppSettings>): AppSettings {
     ttsAlwaysReadScale: ensureIntensityScale(partial.ttsAlwaysReadScale, DEFAULTS.ttsAlwaysReadScale, 'ttsAlwaysReadScale'),
     ttsRegionTolerance: clampNumber(partial.ttsRegionTolerance, 0, 100, DEFAULTS.ttsRegionTolerance),
     ttsReadTelegramText: ensureBool(partial.ttsReadTelegramText, DEFAULTS.ttsReadTelegramText),
-    ttsReadEewWarningComment: ensureBool(partial.ttsReadEewWarningComment, DEFAULTS.ttsReadEewWarningComment),
     ttsUnreceivedDetail: ensureUnreceivedDetail(partial.ttsUnreceivedDetail, DEFAULTS.ttsUnreceivedDetail),
-    // **0 を通さないこと。** 件数の上限がここだけ「無制限」の意味を持たないのは、
-    // 隣の `ttsMaxRegions`（0 = 無制限）と紛らわしいが、観測点の選抜は 0 を無制限として
-    // 扱う実装になっていない（`selectObservationUpdatesToSpeak` 等は `slice(0, maxPoints)`）。
-    // 0 が入ると 1 件も読まれず、しかも黙るだけで原因が画面に出ない。
+    // `0` は無制限（`ttsMaxRegions` と同じ意味。選抜が `slice(0, maxPoints || Infinity)` を通す）。
     ttsMaxObservationPoints: clampNumber(
       partial.ttsMaxObservationPoints,
       TTS_MAX_OBSERVATION_POINTS_MIN, TTS_MAX_OBSERVATION_POINTS_MAX,

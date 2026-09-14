@@ -3,7 +3,7 @@ import type { AppSettings, TtsUnreceivedDetail } from '../../hooks/useSettings'
 import { DAY_NIGHT_OPACITY_MIN, DAY_NIGHT_OPACITY_MAX } from '../../hooks/useSettings'
 import { Toggle } from '../Toggle'
 import type { ConnectionStatus } from '../../types/earthquake'
-import { getIntensityLabel, getIntensityColor, INTENSITY_LABELS } from '../../utils/intensity'
+import { INTENSITY_SCALE_COUNT, getIntensityLabel, getIntensityColor, INTENSITY_LABELS } from '../../utils/intensity'
 import { readableTextColor } from '../../utils/contrast'
 import { playAlertSound, playCountdownBeep, playKyoshinUpdateSound, unlockAudio } from '../../utils/alertSound'
 import { checkVoicevoxAvailable, fetchVoicevoxSpeakers, isValidVoicevoxUrl, speakSequentially, VOICEVOX_URL_DEBOUNCE_MS, type VoicevoxSpeaker } from '../../utils/voicevox'
@@ -728,7 +728,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             onChange={e => onUpdate('uiScale', Number(e.target.value))}
             className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
           >
-            {[0.5, 0.6, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.25, 2.5].map(s => (
+            {[0.5, 0.6, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.75, 3].map(s => (
               <option key={s} value={s}>{Math.round(s * 100)}%</option>
             ))}
           </select>
@@ -739,7 +739,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             onChange={e => onUpdate('mapIconScale', Number(e.target.value))}
             className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
           >
-            {[0.5, 0.6, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.25, 2.5].map(s => (
+            {[0.5, 0.6, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.75, 3].map(s => (
               <option key={s} value={s}>{Math.round(s * 100)}%</option>
             ))}
           </select>
@@ -872,6 +872,8 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             <option value={120}>2分</option>
             <option value={180}>3分</option>
             <option value={300}>5分</option>
+            <option value={600}>10分</option>
+            <option value={1800}>30分</option>
           </select>
         </Row>
       </Section>
@@ -1067,8 +1069,12 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
               onChange={e => onUpdate('ttsIntensityLevels', Number(e.target.value))}
               className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
             >
-              {[0, 1, 2, 3, 4].map(n => (
-                <option key={n} value={n}>{n === 0 ? '最大震度のみ' : `最大＋${n}階級`}</option>
+              {/* 最後の選択肢は「すべての階級」。値は階級の段数から導く（数を直接書くと、
+                  階級が増減したときに選択肢だけが古い段数のまま残る）。 */}
+              {[0, 1, 2, 3, 4, INTENSITY_SCALE_COUNT - 1].map(n => (
+                <option key={n} value={n}>
+                  {n === 0 ? '最大震度のみ' : n === INTENSITY_SCALE_COUNT - 1 ? 'すべての階級' : `最大＋${n}階級`}
+                </option>
               ))}
             </select>
           </Row>
@@ -1129,8 +1135,8 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
               onChange={e => onUpdate('ttsMaxObservationPoints', Number(e.target.value))}
               className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
             >
-              {[1, 3, 5, 10, 15, 20].map(n => (
-                <option key={n} value={n}>{n}地点</option>
+              {[0, 1, 3, 5, 10, 15, 20].map(n => (
+                <option key={n} value={n}>{n === 0 ? '無制限' : `${n}地点`}</option>
               ))}
             </select>
           </Row>
@@ -1144,12 +1150,6 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             <Toggle
               checked={settings.ttsReadTelegramText}
               onChange={v => onUpdate('ttsReadTelegramText', v)}
-            />
-          </Row>
-          <Row label="緊急地震速報の警戒文" description="「強い揺れに警戒してください」などの定型文を読み上げます。緊急地震速報は秒を争うため、既定では画面にだけ表示します">
-            <Toggle
-              checked={settings.ttsReadEewWarningComment}
-              onChange={v => onUpdate('ttsReadEewWarningComment', v)}
             />
           </Row>
         </Section>

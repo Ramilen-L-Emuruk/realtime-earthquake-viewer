@@ -16,7 +16,7 @@ import {
 import { hasKnownEpicenter, haversineKm } from '../utils/geo'
 import { showBrowserNotification } from '../utils/notifications'
 import { GRADE_PRIORITY, TSUNAMI_GRADE_LIFTED, isWarningLevelWhileObserving, tsunamiMaxGrade, tsunamiAreaGradeChanges, selectUnspokenAreaGradeChanges, rememberAreaGrades, tsunamiAreaKey, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, isTsunamiContinuation, matchesArea, sortAreasAcrossGradesForCardDisplay, sortObservationsForCardDisplay, mergeTsunamiObservations, isObservationMissing } from '../utils/tsunami'
-import { playAlertSound, ttsDelayFor, type AlertSoundType } from '../utils/alertSound'
+import { playAlertSound, ttsDelayFor, maxTtsDelay, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, stopSpeech, type PrewarmedSpeech, type ShouldStillPlay } from '../utils/voicevox'
 import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiAreaGradeChangeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, tsunamiMissingToSegments, selectMissingToSpeak, tsunamiWarningLevelToSegments, selectWarningLevelToSpeak, joinWithAlso, nankaiToText, nankaiCommentaryToText, kohatsuToText, earthquakeCountToText, estimatedIntensityToText, lpgmToText, telegramTextToSpeak, createQuakeSpokenState, applySpokenRefs, type TtsSpeechOptions, type QuakeSpokenState } from '../utils/ttsText'
 import { joinSegments, plain, hasFollowTarget, hasUnreceivedFollowTarget, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
@@ -206,6 +206,15 @@ const HIGHER_PRIORITY_SPEECH_MAX_WAIT_MS = 90000
 // 保険が緩むため。
 const MUTUAL_YIELD_SPEECH_MAX_WAIT_MS = 180000
 
+/**
+ * 気象庁が書いた文を**予約する**までの間（→ `handleLiveEvent`）。
+ *
+ * **読み上げの発火を遅らせる値ではなく、予約を遅らせる値。** 近接して届く電文（地震情報と
+ * 長周期地震動観測情報など）の予約が出そろってから予約することで、到来順の裁きで
+ * 取り下げられるのを避ける。本体の間の最大（`maxTtsDelay()`）に余白を足してある。
+ */
+const TELEGRAM_TEXT_SPEECH_RESERVE_DELAY_MS = maxTtsDelay() + 500
+
 // 予想震度が付くのを待っている EEW があるとき、非 EEW 側が状況を見直す間隔。
 // この待機中は「これから話す」状態で、待つ相手の Promise がまだ存在しないため、
 // 短く眠って作り直す（`EEW_PHASE2_MAX_WAIT_MS` の 3 秒に対して十分細かい刻み）。
@@ -291,7 +300,6 @@ function ttsRegionOptions(settings: AppSettings): TtsSpeechOptions {
     readHypocenterDetail: settings.ttsReadHypocenterDetail,
     readEewLpgmClass: settings.ttsReadEewLpgmClass,
     readTelegramText: settings.ttsReadTelegramText,
-    readEewWarningComment: settings.ttsReadEewWarningComment,
     maxObservationPoints: settings.ttsMaxObservationPoints,
   }
 }
@@ -1696,7 +1704,6 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // **主題は電文の種別。** 同じ種別の本文どうしは後発が勝つ（最新の本文を読む）。
     // 本体の読み上げとは別の主題にしてあるので、到来順の裁きが本体の予約を取り下げることはない。
     //
-    // 間（第 3 引数）は 0。本文は通知音を伴わないので、音の余韻を待つ必要がない。
     speakNonEEWDelayed(
       speech.text,
       SPEECH_PRIORITY.commentary,
@@ -3379,7 +3386,20 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   const handleLiveEvent = (event: LiveEvent) => {
     skipTelegramTextRef.current = false
     handleLiveEventInner(event)
-    if (!skipTelegramTextRef.current) speakTelegramText(event)
+    if (skipTelegramTextRef.current) return
+    // **予約そのものを遅らせる。発火を遅らせるのではない。**
+    //
+    // 到来順の裁き（`overtakenByLaterArrival`）は「自分より**後に予約された**同格以上の
+    // 読み上げ」に追い越されたら取り下げる。本文を本体と同じ瞬間に予約すると、直後に届いた
+    // 別の電文（地震情報と長周期地震動観測情報は続けて届く）の予約に追い越され、
+    // **待つ前に取り下げられる**（実機のログで確認）。
+    //
+    // 予約を数秒遅らせれば本文が最後の予約になり、追い越されない。そのうえで発火時に本体が
+    // 鳴っていれば、今度は待ち合わせ（`speechBlocker`）が正しく待たせる。
+    //
+    // 追跡できる形で予約する（`scheduleSpeech`）—— 画面を閉じたときとリプレイの開始で
+    // 取り消せないと、消したはずの画面へ本文が 1 通だけ届く。
+    scheduleSpeech(TELEGRAM_TEXT_SPEECH_RESERVE_DELAY_MS, () => speakTelegramText(event))
   }
 
   return { handleLiveEvent, resetTracking, restorePreWindowTracking, obsUpdateStatus, areaGradeChangedKeys, focusedDistrict }
