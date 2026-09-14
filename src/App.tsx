@@ -47,6 +47,7 @@ import { useKyoshinDetectorV2 } from './hooks/useKyoshinDetectorV2'
 import { useKyoshinMissingHold } from './hooks/useKyoshinMissingHold'
 import { useDetectionDiagnostics } from './hooks/useDetectionDiagnostics'
 import { createSpeechFollowController, type SpeechFollowSession } from './utils/ttsFollow'
+import { useTelegramTextSpeechFollow } from './hooks/useTelegramTextSpeechFollow'
 import { deriveKyoshinView } from './utils/kyoshinDetectionView'
 import { filterSubThresholdIndices } from './utils/kyoshinSubThresholdFilter'
 import { useSWaveCountdown } from './hooks/useSWaveCountdown'
@@ -590,12 +591,29 @@ export function App() {
   const [unreceivedFollowSession, setUnreceivedFollowSession] = useState<SpeechFollowSession | null>(null)
   const unreceivedFollow = useMemo(() => createSpeechFollowController(setUnreceivedFollowSession), [])
 
+  // 気象庁が書いた文の自動展開も同じ仕組みで動かす（3 本目）。**枠を分ける理由は上と同じ** ——
+  // 門が見る参照が違うので、相乗りさせると気象庁の文を読むたびに津波カードが動く。
+  const [telegramTextFollowSession, setTelegramTextFollowSession] = useState<SpeechFollowSession | null>(null)
+  const telegramTextFollow = useMemo(() => createSpeechFollowController(setTelegramTextFollowSession), [])
+  /**
+   * いま気象庁の文を読み上げている電文の主題（`telegramText:<kind>`。読んでいなければ null）。
+   *
+   * バナーと津波カードはこれを見て自分の表示を開く。**開いた側が「自分が開いた分」を覚える**
+   * ので、利用者が手で開いていたものを読み終わりで閉じることはない。
+   */
+  const [speakingTelegramTextSubject, setSpeakingTelegramTextSubject] = useState<string | null>(null)
+  useTelegramTextSpeechFollow({
+    session: telegramTextFollowSession,
+    onSubjectChange: setSpeakingTelegramTextSubject,
+  })
+
   // ライブイベント受信処理（通知音・タイトル・タブ切替・読み上げ・ブラウザ通知）
   const { handleLiveEvent, resetTracking, restorePreWindowTracking, obsUpdateStatus, areaGradeChangedKeys, focusedDistrict } = useLiveEventHandler({
     settings, title, earthquakesRef, tsunamisRef, kyoshinDetectedRef, defaultTabRef,
     setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate, setActiveTabRealtimeUrgent,
     setActiveTabRealtimeForKyoshin: () => requestTabForKyoshin('realtime'),
-    followSpeechTab, preSpeechTab, speechFollow, unreceivedFollow, expandPanelForSpecialInfo,
+    followSpeechTab, preSpeechTab, speechFollow, unreceivedFollow, telegramTextFollow,
+    expandPanelForSpecialInfo,
     revertToDefaultTab, selectQuake, openLpgmFromQuake, openEstimatedIntensity,
   })
 
@@ -1749,7 +1767,7 @@ export function App() {
               onRestore={actionChecklist.restore}
             />
           )}
-          <SpecialInfoBanner nankai={nankai} nankaiCommentary={nankaiCommentary} kohatsu={kohatsu} quakeNotice={quakeNotice} earthquakeCount={earthquakeCount} />
+          <SpecialInfoBanner nankai={nankai} nankaiCommentary={nankaiCommentary} kohatsu={kohatsu} quakeNotice={quakeNotice} earthquakeCount={earthquakeCount} speakingTelegramTextSubject={speakingTelegramTextSubject} />
         </div>
 
         {/* 地図とパネルの境界（縦積み時のみ）。ドラッグで高さ比率を変え、タップで折りたたむ。 */}
@@ -1821,6 +1839,7 @@ export function App() {
                 obsUpdateStatus={obsUpdateStatus}
               areaGradeChangedKeys={areaGradeChangedKeys}
                 speechSession={speechFollowSession}
+                speakingTelegramText={speakingTelegramTextSubject === 'telegramText:tsunami'}
                 /* 読み上げ追従の可否。タブは invisible で隠すだけなので**非表示でもスクロールは
                    効いてしまう**（戻ってきたら知らない位置にいる）。折りたたみ時はさらに幅か
                    高さが 0 になり、視野の高さが取れない。 */

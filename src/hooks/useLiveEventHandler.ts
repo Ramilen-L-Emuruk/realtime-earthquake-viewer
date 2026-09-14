@@ -19,7 +19,7 @@ import { GRADE_PRIORITY, TSUNAMI_GRADE_LIFTED, isWarningLevelWhileObserving, tsu
 import { playAlertSound, ttsDelayFor, maxTtsDelay, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, stopSpeech, type PrewarmedSpeech, type ShouldStillPlay } from '../utils/voicevox'
 import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiAreaGradeChangeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, tsunamiMissingToSegments, selectMissingToSpeak, tsunamiWarningLevelToSegments, selectWarningLevelToSpeak, joinWithAlso, nankaiToText, nankaiCommentaryToText, kohatsuToText, earthquakeCountToText, estimatedIntensityToText, lpgmToText, telegramTextToSpeak, createQuakeSpokenState, applySpokenRefs, type TtsSpeechOptions, type QuakeSpokenState } from '../utils/ttsText'
-import { joinSegments, plain, hasFollowTarget, hasUnreceivedFollowTarget, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
+import { joinSegments, plain, hasFollowTarget, hasUnreceivedFollowTarget, hasTelegramTextFollowTarget, TELEGRAM_TEXT_OPEN_TARGET_KINDS, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
 import { log, createLogThrottle } from '../utils/logger'
 import { TAB_PRIORITY, type TabPriority } from '../utils/tabPriority'
 import { extractQuakeEventIdFromId, quakeEventKey, quakeKeyForLpgmEventId, sameQuakeEntry } from '../utils/quakeMerge'
@@ -590,6 +590,13 @@ export interface LiveEventHandlerDeps {
    */
   unreceivedFollow?: SpeechFollowApi
   /**
+   * 気象庁が書いた文を読み上げているあいだ、その表示を開いておくための受け口。
+   *
+   * **上の 2 つとは別の枠**にする。津波カードの追従は区域・観測点の参照を、未入電モードは
+   * 未入電の参照を見ており、どちらも対象が違う（→ `ttsFollow.ts` の門）。
+   */
+  telegramTextFollow?: SpeechFollowApi
+  /**
    * 特別情報（南海トラフ臨時情報・後発地震注意情報・関連解説情報）の受信でパネルを開く。
    *
    * これらは地図に重ねた帯で伝える情報で、パネル側に居場所がない（切り替えるタブが無い）。
@@ -620,7 +627,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   const {
     settings, title, earthquakesRef, tsunamisRef, kyoshinDetectedRef, defaultTabRef,
     setActiveTabRealtimeForKyoshin, setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate,
-    setActiveTabRealtimeUrgent, followSpeechTab, preSpeechTab, speechFollow, unreceivedFollow, expandPanelForSpecialInfo,
+    setActiveTabRealtimeUrgent, followSpeechTab, preSpeechTab, speechFollow, unreceivedFollow, telegramTextFollow,
+    expandPanelForSpecialInfo,
     revertToDefaultTab, selectQuake, openLpgmFromQuake, openEstimatedIntensity,
   } = deps
 
@@ -1221,6 +1229,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       const unreceivedToken = hasUnreceivedFollowTarget(segments)
         ? unreceivedFollow?.begin(segments!, subject)
         : undefined
+      // 気象庁が書いた文の自動展開も同じ位置で始める。**どの電文の文かは `subject` が持つ**
+      // （参照には種別を持たせない。既読の記録へ混ざる形を増やさないため）。
+      const telegramTextToken = hasTelegramTextFollowTarget(segments)
+        ? telegramTextFollow?.begin(segments!, subject)
+        : undefined
       // 予約の通知を溜めておき、読み上げが終わってから「実際に鳴った範囲」を割り出す
       // （`spokenChunkIndices`）。合成は再生より先へ進むため、予約が通っただけでは鳴った
       // ことにならない。
@@ -1230,6 +1243,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       const notifyChunk = (index: number, startAt: number, chunks: readonly string[]) => {
         if (followToken !== undefined) speechFollow?.schedule(followToken, index, startAt, chunks)
         if (unreceivedToken !== undefined) unreceivedFollow?.schedule(unreceivedToken, index, startAt, chunks)
+        if (telegramTextToken !== undefined) telegramTextFollow?.schedule(telegramTextToken, index, startAt, chunks)
         if (onSpokenRefs && segments) {
           chunkRefs ??= mapChunksToRefs(segments, chunks)
           chunkCount = chunks.length
@@ -1277,7 +1291,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // 書き換わる値を持たないため、読み始めた文面を最後まで読んでよい。
       const done = speakWithVoicevox(
         settings.voicevoxUrl, text, settings.voicevoxSpeakerId, settings.soundVolume, undefined, prewarmed,
-        followToken === undefined && !onSpokenRefs ? undefined : notifyChunk,
+        followToken === undefined && unreceivedToken === undefined
+          && telegramTextToken === undefined && !onSpokenRefs
+          ? undefined : notifyChunk,
       )
       activeNonEewSpeechRef.current = { priority, topic, done, flushSpoken: () => flushSpokenRefs(false) }
       try {
@@ -1287,6 +1303,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         // 読み上げが終わった（割り込まれて途中で終わった場合も含む）。未入電モードを開いて
         // いれば、ここで閉じる側が元へ戻す。
         if (unreceivedToken !== undefined) unreceivedFollow?.end(unreceivedToken)
+        // 気象庁の文を読み終えた（割り込まれた場合も含む）。開いた表示はここで閉じる側が戻す。
+        if (telegramTextToken !== undefined) telegramTextFollow?.end(telegramTextToken)
         flushSpokenRefs(true)
         // 自分より後に始まった読み上げに置き換わっている場合は触らない（消すと待ち側が
         // 「誰も読んでいない」と誤認し、進行中の読み上げに割り込む）
@@ -1705,15 +1723,29 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // **主題は電文の種別。** 同じ種別の本文どうしは後発が勝つ（最新の本文を読む）。
     // 本体の読み上げとは別の主題にしてあるので、到来順の裁きが本体の予約を取り下げることはない。
     //
+    // **参照つきの断片で渡す。** 読み上げているあいだ、画面のその表示を開いておくため
+    // （→ `ttsFollow.ts` の `telegramText`）。文の中身では分けず 1 つにまとめている ——
+    // 求められているのは「読み始めたら開く」ことで、どの段落を読んでいるかの追従ではない。
+    //
+    // **開く先がある種別にだけ参照を付ける。** 地震情報と長周期地震動観測情報の付加文は
+    // 元から畳んでいないので開く相手がいない。無条件に付けると、誰も反応しない追従セッションが
+    // 立ち上がっては終わる（症状が出ないぶん、後から読んで意図を確かめられない）。
+    const segments: SpeechSegment[] = [{
+      text: speech.text,
+      refs: TELEGRAM_TEXT_OPEN_TARGET_KINDS.has(event.kind) ? [{ kind: 'telegramText' }] : [],
+    }]
     speakNonEEWDelayed(
       speech.text,
       SPEECH_PRIORITY.commentary,
       0,
       `telegramText:${event.kind}`,
       undefined,
-      undefined,
+      segments,
       undefined,
       () => { spokenTelegramTextRef.current.add(speech.body) },
+      // 追従する側が「どの電文の文か」を知るための主題。主題（topic）と同じ値にしてあるが、
+      // 別の役割 —— topic は到来順の裁きに、subject は画面の開閉に使う。
+      `telegramText:${event.kind}`,
     )
   }
 
@@ -3275,7 +3307,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // （区域名や観測点名が新旧で重なれば、実在する別の行を掴む）。
     speechFollow?.reset()
     unreceivedFollow?.reset()
-  }, [cancelPendingSpeech, speechFollow, unreceivedFollow])
+    // 気象庁の文の自動展開も同じ。**3 本とも並べて打ち切る** —— 1 本だけ残すと、
+    // 切り替え前の読み上げが自然に終わるまで（南海トラフ臨時情報なら約 3 分）
+    // 無関係なバナーが開いたままになる。
+    telegramTextFollow?.reset()
+  }, [cancelPendingSpeech, speechFollow, unreceivedFollow, telegramTextFollow])
 
   // pre-window イベントから T 時点の追跡 ref を復元する（サイレント注入後の正確な音判定に必要）
   const restorePreWindowTracking = useCallback((preFiltered: ReplayEntry[]) => {
