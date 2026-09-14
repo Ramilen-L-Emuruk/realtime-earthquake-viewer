@@ -35,6 +35,42 @@ let currentSessionId = 0
 // abort() することで旧セッションのリクエストを即座に打ち切る。
 let currentAbortController: AbortController | null = null
 
+// 進行中の読み上げの本数（{@link isSpeaking}）。**数えるのは {@link speakWithVoicevox} の
+// 呼び出しであって「いま音が鳴っているか」ではない。** 合成待ちやチャンクとチャンクの隙間で
+// 偽へ落ちると、その一瞬を突いてアイドル復帰が画面を持っていく（→ `App.tsx` のアイドル復帰）。
+// 割り込まれた側も正常終了で返るため（この関数は既存の再生を止めてから始める）、数は狂わない。
+let speakingCount = 0
+// **最後に読み上げが始まった**時刻（{@link SPEECH_STALE_MS} の起点）。
+let speakingSince = 0
+// 張り付きを記録したか。毎回出すと {@link isSpeaking} を呼ぶ周期でログが埋まる。
+let speakingStaleWarned = false
+// 最後に読み上げへ渡した文。張り付いたとき、何が詰まったのかを記録に残すために持つ。
+let speakingLastText = ''
+// 読み上げが 1 本も無くなったときに呼ぶ購読者（{@link onSpeechIdle}）。
+const speechIdleListeners = new Set<() => void>()
+
+/**
+ * 読み上げが終わらなくなったと見なすまでの時間（{@link isSpeaking} の安全弁）。
+ *
+ * **数が減らないまま真を返し続けると、既定の状態へ二度と戻らなくなる。** しかも症状は
+ * 「タブが戻らない」という形でしか出ず、例外もログも残らない。数える側（`speakWithVoicevox`
+ * の `finally`）は取りこぼさない作りだが、それは**外部依存が個別に守っている契約の集まり**に
+ * すぎない（辞書取得のタイムアウト・`AbortController`・`AudioContext` が止まらないこと）。
+ * どれか 1 つが崩れたときに黙って壊れないよう、時間で足切りする。
+ *
+ * **測るのは「最後に読み上げが始まってからの経過」で、1 本の実時間ではない。** 読み上げは
+ * 割り込み方式で、新しい呼び出しが古いものを止めてから始まる —— そのとき本数は 1 → 2 → 1 と
+ * 動いて**一度も 0 を通らない**（止められた側が正常終了で返るのは次のマイクロタスク以降）。
+ * 「1 本の実時間」で測ると、群発で同じ主題の続報が割り込み続ける間じゅう起点が最初の 1 件の
+ * まま固定され、**実際には読み続けているのに 5 分で解けてしまう** —— いちばん解けてほしく
+ * ない場面（大地震で読み上げが途切れない状況）で狙い撃ちになる。呼ばれるたびに引き直す。
+ *
+ * **値の根拠**: 正常な読み上げでいちばん長いのは各地の震度で、読み切りに 2 分近くかかる。
+ * ここへ掛かるのは「最後に始まった 1 本がそれだけ続いている」場合なので、その 2 倍以上を
+ * 取ってある。
+ */
+const SPEECH_STALE_MS = 5 * 60_000
+
 // 1 チャンクも合成できなかったときの警告の間引き。VOICEVOX が落ちていると読み上げのたびに
 // 起こるため、素通しにするとログが埋まって他の異常が見えなくなる。
 const warnNoAudio = createLogThrottle(30000)
@@ -850,6 +886,58 @@ export function getSpeechClock(): number | null {
   return getAudioContext()?.currentTime ?? null
 }
 
+/**
+ * いま読み上げの最中か（合成待ち・チャンクの隙間も含む）。
+ *
+ * 使うのは**既定の状態へ戻す操作を見送る**側（`App.tsx` の `revertToDefaultTab` とアイドル
+ * 復帰 —— 併せてアイドル復帰・EEW 全解除・揺れ検知終了・揺れの可能性の失効の 4 経路）。
+ * 声が流れている間は「離席した」と見なさない
+ * （→ docs/spec/audio-tts-spec.md §6「読み上げている間は既定の状態へ戻さない」）。**「音が鳴っているか」ではなく「読み上げの本数」で答える**理由は
+ * `speakingCount` の注記。
+ */
+export function isSpeaking(): boolean {
+  if (speakingCount <= 0) return false
+  if (performance.now() - speakingSince <= SPEECH_STALE_MS) return true
+  // **終わらなくなったら、読み上げ中の扱いを解ける。** ここへ来た時点で何かが壊れているが、
+  // 真を返し続けると既定の状態へ戻る仕組みごと止まる（→ {@link SPEECH_STALE_MS}）。
+  // **記録は 1 度だけ。** この関数はアイドル復帰の周期で呼ばれるので、毎回出すとログが埋まる。
+  if (!speakingStaleWarned) {
+    speakingStaleWarned = true
+    // **何が詰まったのかを添える。** 発話の中身は既定で無効な詳細ログにしか出ないので、
+    // これが無いと本番でこの警告を見ても、どの読み上げで起きたのか分からない。
+    const head = speakingLastText.length > 30 ? `${speakingLastText.slice(0, 30)}…` : speakingLastText
+    log.warn(`[VoiceVox] 読み上げが ${Math.round(SPEECH_STALE_MS / 1000)} 秒を超えても終わらないため、読み上げ中の扱いを解除しました（最後の発話: ${head}）`)
+  }
+  return false
+}
+
+/**
+ * 読み上げが 1 本も無くなったときの通知を購読する。戻り値を呼ぶと解除する。
+ *
+ * **呼ぶのは「最後の 1 本が終わった瞬間」だけ。** 続けて別の読み上げが始まっている間は呼ばない
+ * （鳴っている最中に計り直しても、そのぶん復帰が遅れるだけで意味が無い）。
+ */
+export function onSpeechIdle(listener: () => void): () => void {
+  speechIdleListeners.add(listener)
+  return () => { speechIdleListeners.delete(listener) }
+}
+
+/**
+ * 読み上げが途切れたことを購読者へ伝える。
+ *
+ * **1 人の失敗で残りへ届かなくしない。** 届かなかった購読者は計り直しの契機を失い、症状は
+ * 「タブが戻らない」という静かな形で出る。
+ */
+function notifySpeechIdle(): void {
+  for (const listener of speechIdleListeners) {
+    try {
+      listener()
+    } catch (err) {
+      log.warn('[VoiceVox] 読み上げ終了の通知に失敗', err)
+    }
+  }
+}
+
 // 予約したチャンクが鳴り始める何秒前に {@link ShouldStillPlay} を見直すか。
 // チャンクは切れ目を作らないよう前のチャンクの終わりに合わせて**先に**予約するため、
 // 予約した時点だけで判定すると 1 チャンク分（実測 1 秒強）先の未来を判定してしまう。
@@ -892,7 +980,24 @@ export function stopSpeech(): void {
  *
  * @param shouldStillPlay 各チャンクを鳴らす直前に呼ぶ妥当性の判定（省略時は常に鳴らす）
  */
-export async function speakWithVoicevox(
+export function speakWithVoicevox(...args: Parameters<typeof speakOnce>): Promise<void> {
+  // 読み上げの本数を数えるのはここ（{@link isSpeaking}）。**本体の中に置かない** —— 本体は
+  // 途中で抜ける経路を複数持っていて、経路を足したときに減算を書き忘れると数が下がらず、
+  // 既定の状態へ二度と戻らなくなる。包んでおけば書き忘れようがない。
+  // **起点は呼ばれるたびに引き直す**（理由は {@link SPEECH_STALE_MS}）。読み上げが続いて
+  // いる限り解けず、新しい読み上げが始まらないまま時間だけ過ぎたときに解ける。
+  speakingSince = performance.now()
+  speakingStaleWarned = false
+  speakingLastText = args[1]
+  speakingCount++
+  return speakOnce(...args).finally(() => {
+    speakingCount--
+    if (speakingCount === 0) notifySpeechIdle()
+  })
+}
+
+/** {@link speakWithVoicevox} の本体。読み上げの本数を数えるのは包む側の責務。 */
+async function speakOnce(
   baseUrl: string,
   text: string,
   speakerId: number,
