@@ -22,6 +22,14 @@ vi.mock('./kyoshin', () => ({
   startClockSync: vi.fn(),
 }))
 
+// このファイルの多くのテストは「通常の取得を何回投げたか」を数える。助走（開始より前の秒を
+// まとめて取りに行く）が混ざると数が読めなくなるため、遡るブロック数を 0 にして止める。
+// **助走そのものの振る舞いは kyoshinSource.warmup.test.ts で見る**（あちらはモックしない）。
+vi.mock('../utils/kyoshinWarmup', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/kyoshinWarmup')>()),
+  WARMUP_MAX_BLOCKS: 0,
+}))
+
 const NOW = new Date('2026-08-19T12:00:00+09:00').getTime()
 
 const fetchMock = vi.mocked(fetchRealtimeIntensity)
@@ -41,11 +49,15 @@ function response(overrides?: Partial<RealtimeIntensity>): RealtimeIntensity {
 function createSink() {
   const frames: KyoshinFrame[] = []
   const stalled: boolean[] = []
+  /** 助走として渡された回ぶんのフレーム列（1 度しか呼ばれない契約を確かめるため配列で持つ）。 */
+  const prefilled: KyoshinFrame[][] = []
   return {
     frames,
     stalled,
+    prefilled,
     enqueue: (frame: KyoshinFrame) => frames.push(frame),
     setStalled: (s: boolean) => stalled.push(s),
+    prefill: (fs: KyoshinFrame[]) => prefilled.push(fs),
   }
 }
 
@@ -324,6 +336,7 @@ describe('Yahoo 強震モニタソース', () => {
       source.start({
         enqueue: () => { throw new Error('下流のバグ') },
         setStalled: () => {},
+        prefill: () => {},
       })
       await vi.advanceTimersByTimeAsync(POLL_MS)
 

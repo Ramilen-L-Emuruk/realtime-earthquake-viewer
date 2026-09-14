@@ -12,6 +12,14 @@ import { diffHypoInfoEvents, type HypoInfoPendingMissing } from '../utils/eew'
 import { serverDate } from '../utils/clock'
 import { createLogThrottle, log } from '../utils/logger'
 
+/** 検知エンジンの助走（`utils/kyoshinWarmup`）に使うフレーム列。 */
+export interface KyoshinWarmup {
+  /** どの供給に属する助走か（`KyoshinRealtime.supplyKey` と突き合わせる）。 */
+  supplyKey: string
+  /** 時刻の昇順。空配列は「この供給に助走は無い」ことを表す。 */
+  frames: KyoshinFrame[]
+}
+
 export interface KyoshinRealtime {
   sites: SiteCoords
   indices: number[]
@@ -25,6 +33,22 @@ export interface KyoshinRealtime {
   indicesSiteConfigId: string | null
   /** 連続して取得に失敗し、更新が停止している場合 true */
   error: boolean
+  /**
+   * いま動いている供給を一意に表す文字列。時間軸（`timeOffset`）と供給元
+   * （`localArchiveId`）で決まる。
+   *
+   * 助走が「いまの供給のもの」かを受け取る側が判定するために持つ。連番ではなく props から
+   * 導ける値にしているのは、コミットのずれで**古い助走を新しい供給のものと取り違えない**ため。
+   */
+  supplyKey: string
+  /**
+   * この供給の助走フレーム。まだ届いていなければ `null`。
+   *
+   * 受け取る側（`useKyoshinDetectorV2`）は、`supplyKey` が一致する助走が届くまで通常フレームの
+   * 消化を待たせる。供給元は助走が無い場合も空配列で必ず 1 度渡す契約
+   * （`KyoshinSourceSink.prefill`）なので、待ちが解けないままにはならない。
+   */
+  warmup: KyoshinWarmup | null
 }
 
 /**
@@ -96,6 +120,7 @@ export function useKyoshinRealtime(
   const [sitesSiteConfigId, setSitesSiteConfigId] = useState<string | null>(null)
   const [indicesSiteConfigId, setIndicesSiteConfigId] = useState<string | null>(null)
   const [error, setError] = useState(false)
+  const [warmup, setWarmup] = useState<KyoshinWarmup | null>(null)
   // 現在 sites に反映済みの観測点集合の識別子（Yahoo では siteConfigId）。
   const currentSitesKeyRef = useRef<string | null>(null)
   const prevHypoInfoRef = useRef<YahooHypoInfoItem[]>([])
@@ -107,6 +132,9 @@ export function useKyoshinRealtime(
   // timeOffset・localArchiveId は deps に含めてエフェクトを再起動させるため、ref ではなく直接使う
   const timeOffset = options?.timeOffset ?? null
   const localArchiveId = options?.localArchiveId ?? null
+  // 供給を一意に表す文字列。下のエフェクトの deps と同じ値から作るので、供給が作り直される
+  // ときだけ変わる（`enabled` は供給元の選択に関わらないので含めない）。
+  const supplyKey = `${localArchiveId ?? ''}|${timeOffset ?? ''}`
 
   // 時間軸が変わったら、いま持っている値は新しい軸に属さない。落としてから次のフレームを待つ。
   //
@@ -278,6 +306,10 @@ export function useKyoshinRealtime(
       setStalled: (stalled) => {
         if (active) setError(stalled)
       },
+      prefill: (frames) => {
+        if (!active) return
+        setWarmup({ supplyKey, frames })
+      },
     })
 
     // データ時刻がまだ来ていないフレームを、時刻の到来で放出するための巡回。
@@ -289,7 +321,10 @@ export function useKyoshinRealtime(
       source.stop()
       queue.clear()
     }
+    // `supplyKey` は timeOffset / localArchiveId から導く値なので、deps に足しても
+    // エフェクトの再起動条件は変わらない（足すと lint が満たされるだけ）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, timeOffset, localArchiveId])
 
-  return { sites, indices, dataTime, sitesSiteConfigId, indicesSiteConfigId, error }
+  return { sites, indices, dataTime, sitesSiteConfigId, indicesSiteConfigId, error, supplyKey, warmup }
 }

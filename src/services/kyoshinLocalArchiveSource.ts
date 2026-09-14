@@ -13,11 +13,39 @@
 // （kyoshinSource.ts の「フレーム列が一度に手に入る供給元」という設計意図どおり）。
 
 import type { SiteCoords } from './kyoshin'
-import type { KyoshinSource } from './kyoshinSource'
+import type { KyoshinFrame, KyoshinSource } from './kyoshinSource'
 import type { LocalKyoshinArchive } from '../types/localKyoshinArchive'
+import { serverDate } from '../utils/clock'
 import { getMergedKyoshinArchive, onImportsChanged } from '../utils/kyoshinImportDb'
 import { STEP_SEC_DEFAULT } from '../utils/knet/buildEventResultFromZip'
+import {
+  WARMUP_BLOCK_SEC,
+  WARMUP_MAX_BLOCKS,
+  isQuietFrame,
+  firstContinuousIndex,
+} from '../utils/kyoshinWarmup'
 import { log } from '../utils/logger'
+
+/**
+ * 収録ぶんのフレームから、検知エンジンの助走に使う区間を切り出す。
+ *
+ * 再生開始時刻より前のフレームを末尾から遡り、静穏なフレームに行き当たったらそこを始点にする
+ * （規則と根拠は `utils/kyoshinWarmup`）。Yahoo 経由と違って取得が要らないぶん、遡りは
+ * ブロック単位ではなく 1 フレーム単位で見る。上限だけは同じ長さを掛ける。
+ */
+export function selectWarmupFrames(frames: readonly KyoshinFrame[], startMs: number): KyoshinFrame[] {
+  const limitMs = startMs - WARMUP_MAX_BLOCKS * WARMUP_BLOCK_SEC * 1000
+  const past = frames.filter((f) => {
+    const t = f.time.getTime()
+    return t < startMs && t >= limitMs
+  })
+  let from = 0
+  for (let i = past.length - 1; i >= 0; i--) {
+    if (isQuietFrame(past[i].indices)) { from = i; break }
+  }
+  const picked = past.slice(from)
+  return picked.slice(firstContinuousIndex(picked.map((f) => f.time.getTime())))
+}
 
 const fileUrl = (id: string): string => `${import.meta.env.BASE_URL}data/historical-archives-kyoshin/${id}.json`
 
@@ -163,27 +191,41 @@ export function createLocalKyoshinArchiveSource(archiveId: string): KyoshinSourc
     start(sink) {
       if (active) return
       active = true
+      // **`prefill` を必ず 1 度だけ呼ぶための包み。** 呼ばないと検知エンジンが上限まで待ち、
+      // そのあいだ検知が沈黙する（`KyoshinSourceSink.prefill` の契約）。分岐ごとに書くと
+      // 「この経路だけ呼んでいない」を見落とすので、下の `.catch()` からも同じ口を使う。
+      let prefilled = false
+      const prefillOnce = (frames: KyoshinFrame[]): void => {
+        if (prefilled) return
+        prefilled = true
+        sink.prefill(frames)
+      }
       loadLocalKyoshinArchive(archiveId).then((result) => {
         if (!active) return
-        if (result.kind === 'not-generated') return
+        if (result.kind === 'not-generated') { prefillOnce([]); return }
         if (result.kind === 'failed') {
           sink.setStalled(true)
+          prefillOnce([])
           return
         }
         sites = result.archive.sites
         sink.setStalled(false)
-        for (const frame of result.archive.frames) {
-          sink.enqueue({
-            time: new Date(frame.time),
-            dataTime: frame.time,
-            sitesKey: archiveId,
-            indices: frame.indices,
-          })
-        }
+        const frames: KyoshinFrame[] = result.archive.frames.map((frame) => ({
+          time: new Date(frame.time),
+          dataTime: frame.time,
+          sitesKey: archiveId,
+          indices: frame.indices,
+        }))
+        // 助走は「再生開始時刻より前のフレーム」から切り出す。こちらは収録ぶんが手元に
+        // そろっているので取得は要らず、どこまで遡るかだけを決めればよい。
+        prefillOnce(selectWarmupFrames(frames, serverDate().getTime()))
+        for (const frame of frames) sink.enqueue(frame)
       }).catch((err) => {
         // loadLocalKyoshinArchive は内部で失敗を握り潰すため通常到達しないが、
         // 想定外の例外（enqueue 自体の例外等）はログに残す。
         log.error('[kyoshinLocalArchiveSource] ローカルアーカイブの反映中に例外', err)
+        // ここへ落ちても助走の待ちは解く（上の `prefillOnce` を通っていれば二度目は無視される）。
+        if (active) prefillOnce([])
       })
     },
 

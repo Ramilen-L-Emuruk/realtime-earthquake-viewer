@@ -17,6 +17,12 @@ import {
   type YahooHypoInfoItem,
 } from './kyoshin'
 import { serverNow } from '../utils/clock'
+import {
+  WARMUP_BLOCK_SEC,
+  WARMUP_MAX_BLOCKS,
+  isQuietFrame,
+  firstContinuousIndex,
+} from '../utils/kyoshinWarmup'
 import { createLogThrottle, log } from '../utils/logger'
 
 /** 1 時点ぶんの観測データ。 */
@@ -46,6 +52,15 @@ export interface KyoshinSourceSink {
   enqueue(frame: KyoshinFrame): void
   /** 取得が続けて失敗し更新が止まっているか（true）／回復したか（false）を伝える。 */
   setStalled(stalled: boolean): void
+  /**
+   * 検知エンジンの助走（`utils/kyoshinWarmup`）に使うフレーム列を、**時刻の昇順で 1 度だけ**渡す。
+   * 供給が始まる時刻より前のフレームで、画面の震度・データ時刻には出さない。
+   *
+   * **助走を用意しない供給元も、取得に失敗した供給元も、必ず 1 度は呼ぶこと**（空配列でよい）。
+   * 受け取る側は助走が届くまで通常フレームの消化を待たせるので、呼ばずに済ませると
+   * **検知が上限まで沈黙する**。
+   */
+  prefill(frames: KyoshinFrame[]): void
 }
 
 /** 強震モニタのフレーム供給元。 */
@@ -88,6 +103,14 @@ export const REALTIME_MAX_RETRY_COUNT = MAX_LAG_MS / RETRY_MS
 export const REPLAY_MAX_RETRY_COUNT = 5
 /** この回数続けて取得に失敗したら「更新が止まっている」と扱う。 */
 export const ERROR_THRESHOLD = 5
+/**
+ * 助走フレームを取りに行くときの並列数。
+ *
+ * 1 ブロック（`WARMUP_BLOCK_SEC` 秒）ぶんをこの数ずつまとめて投げる。実測では 24 並列で
+ * 60 件が 889ms・30 並列で 30 件が 220ms。通常の取得（1 秒に 1 件）とは桁が違うので、
+ * 上げすぎて Yahoo 側に負荷を掛けない範囲に留める。
+ */
+const WARMUP_CONCURRENCY = 24
 /** 同種の失敗を記録し直す最小間隔 (ms)。1Hz で再発する失敗を間引きつつ、継続を見失わない幅。 */
 const LOG_THROTTLE_MS = 60_000
 
@@ -110,6 +133,76 @@ export function createYahooLiveSource(): KyoshinSource {
  */
 export function createYahooArchiveSource(timeOffsetMs: number): KyoshinSource {
   return createYahooSource(timeOffsetMs)
+}
+
+/**
+ * 秒ファイルをまとめて取りに行く。取れなかった秒は飛ばす（Yahoo 側に元から無い秒がある）。
+ *
+ * 助走の取得でしか使わない。通常の取得（`tick`）は失敗を再試行と「更新停止」の判定に使うが、
+ * こちらは取れた分だけ使えばよいので、1 件ずつ握って先へ進む。
+ */
+async function fetchFramesConcurrently(targets: Date[], isActive: () => boolean): Promise<KyoshinFrame[]> {
+  const out: KyoshinFrame[] = []
+  for (let i = 0; i < targets.length; i += WARMUP_CONCURRENCY) {
+    if (!isActive()) return out
+    const chunk = targets.slice(i, i + WARMUP_CONCURRENCY)
+    const got = await Promise.all(chunk.map(async (t): Promise<KyoshinFrame | null> => {
+      // 停止したら未発行の分は投げない（発行済みのものは止められない。`fetchRealtimeIntensity`
+      // は中断の手段を持たないため、そこまでは諦める）。
+      if (!isActive()) return null
+      try {
+        const rt = await fetchRealtimeIntensity(t)
+        // **hypoInfo は載せない。** 助走は検知エンジンだけのもので、EEW の差分検出へ流すと
+        // 開始より前に終わっていた速報が新規発報として鳴り直す。
+        return { time: t, dataTime: rt.dataTime, sitesKey: rt.siteConfigId, indices: rt.indices }
+      } catch {
+        return null
+      }
+    }))
+    for (const f of got) if (f !== null) out.push(f)
+  }
+  return out
+}
+
+/**
+ * 助走フレームを取得する。`startTarget` より前の秒をブロック単位で遡り、遡った先が静穏に
+ * なったところで打ち切る（どこまで遡るかの規則と根拠は `utils/kyoshinWarmup`）。
+ *
+ * 返すのは時刻の昇順。`startTarget` そのものは含めない（そちらは通常の取得が拾う）。
+ */
+async function fetchWarmupFrames(startTarget: Date, isActive: () => boolean): Promise<KyoshinFrame[]> {
+  const blocks: KyoshinFrame[][] = []
+  let requested = 0
+  /** 遡りを終えた理由。記録に出す（下記参照）。 */
+  let stoppedBy: '静穏まで遡った' | '取得できない秒に当たった' | '上限まで遡った' = '上限まで遡った'
+  for (let b = 1; b <= WARMUP_MAX_BLOCKS; b++) {
+    if (!isActive()) return []
+    const blockEndMs = startTarget.getTime() - (b - 1) * WARMUP_BLOCK_SEC * 1000
+    const targets: Date[] = []
+    for (let s = WARMUP_BLOCK_SEC; s >= 1; s--) targets.push(new Date(blockEndMs - s * 1000))
+    requested += targets.length
+    const block = await fetchFramesConcurrently(targets, isActive)
+    // 1 件も取れなかったブロックは静穏かどうかを確かめようがない。ここで止めて、
+    // それまでに取れた分を助走にする（遡り続けても確かめられないまま伸びるだけ）。
+    if (block.length === 0) { stoppedBy = '取得できない秒に当たった'; break }
+    blocks.unshift(block)
+    if (isQuietFrame(block[0].indices)) { stoppedBy = '静穏まで遡った'; break }
+  }
+  const frames = blocks.flat()
+  const usable = frames.slice(firstContinuousIndex(frames.map((f) => f.time.getTime())))
+
+  // **結果を必ず記録する。** 取得が全滅したときの戻り値は「1 ブロックで静穏に行き当たった」
+  // 正常な最短打ち切りと同じ空配列で、**画面からもログからも区別が付かない**。助走が効いて
+  // いないこと自体が症状として現れない（立ち上がりの検知が遅れるだけ）ので、ここが唯一の
+  // 手がかりになる。
+  if (usable.length === 0) {
+    log.warn(`[kyoshinSource] 助走フレームを 1 件も使えませんでした（要求 ${requested} 件・${stoppedBy}）`)
+  } else {
+    log.info(
+      `[kyoshinSource] 助走 ${usable.length} フレーム（要求 ${requested} 件・取得 ${frames.length} 件・${stoppedBy}）`,
+    )
+  }
+  return usable
 }
 
 function createYahooSource(timeOffsetMs: number | null): KyoshinSource {
@@ -139,6 +232,30 @@ function createYahooSource(timeOffsetMs: number | null): KyoshinSource {
       const initialTarget = isReplay
         ? new Date(Date.now() + timeOffsetMs)
         : new Date(serverNow() - FETCH_OFFSET_MS)
+
+      // 助走は通常の取得と並行して進める。待ってから始めると、画面に震度が出るまでの時間が
+      // 助走の取得ぶんだけ伸びる（検知が追いつくのが遅れるだけなら、画面は先に動かしてよい）。
+      //
+      // **どの経路を通っても `prefill` を必ず 1 度呼ぶ。** 受け取る側は助走が届くまで通常
+      // フレームの消化を待たせるため、呼び忘れると検知が上限まで沈黙する。
+      void (async () => {
+        let frames: KyoshinFrame[] = []
+        try {
+          frames = await fetchWarmupFrames(initialTarget, () => active)
+        } catch (err) {
+          // 取得は 1 件ずつ握ってあるのでここへは来ない想定。来たとしても助走を諦めるだけで、
+          // 通常の取得は動き続ける。
+          log.warn('[kyoshinSource] 助走フレームの取得に失敗（助走なしで続行）', err)
+        }
+        if (!active) return
+        try {
+          sink.prefill(frames)
+        } catch (err) {
+          throttledHandoffError(() => log.error(
+            '[kyoshinSource] 助走フレームの受け渡し中の例外（取得の失敗とは別）', err,
+          ))
+        }
+      })()
 
       // リプレイ時: (アンカーの実時刻, アンカーのデータ時刻) を基準に、各データ時刻の取得を
       // 始める実時刻を絶対値で計算する。setTimeout は指定時間ぴったりには発火しないため、
