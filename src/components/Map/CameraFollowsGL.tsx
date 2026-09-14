@@ -25,8 +25,10 @@ import {
   subscribeUserInteraction,
   INTERACTION_HOLD_SEC,
   fitMaxZoom,
+  focusMaxZoom,
 } from './gl/camera'
 import { decideTsunamiFit } from './gl/tsunamiFit'
+import { openPopupAt, closeMapPopup } from './gl/popupRegistry'
 import { log } from '../../utils/logger'
 
 // MapLibre 版のカメラ自動追従群（Leaflet 版 JapanMap 内の Fit* コンポーネント相当）。
@@ -1360,7 +1362,10 @@ export function FocusObsGL({
     if (!bar) return
     handledTsRef.current = focusObsName.ts
     log.debug(`[mapGL] 観測点フォーカス flyTo ${bar.name}`)
-    flyToPoint(map, [bar.lat, bar.lng], fitMaxZoom(map), 1.0)
+    // **寄り上限は `FocusTargetGL` と同じ**（`focusMaxZoom`）。どちらも「一覧の 1 点を指す行を
+    // 押した」という同じ操作で、着地の深さが一覧によって違う理由が無い。観測棒は細いので、
+    // 自動フィットの上限では隣の点と見分けが付かない。
+    flyToPoint(map, [bar.lat, bar.lng], focusMaxZoom(map), 1.0)
   }, [map, focusObsName, observationBars])
   return null
 }
@@ -1381,9 +1386,14 @@ export function FocusObsGL({
  * 地図の表示条件には依存しない。震度の観測点ドットは引いた画では区域塗りへ集約されて消えるが、
  * **そこから特定の観測点へ寄るのがこの操作の主な使い道**なので、点が出ていることを条件にしない。
  *
- * **ただし寄せた先でも区域集約は続く。** 着地は寄り上限（`fitMaxZoom`）で、集約の閾値がそれと
- * 同値（`zoom <= aggregateMaxZoom`）だから —— 自動フィットの着地は常に区域集約になるよう揃えて
- * ある（→ `docs/spec/quake-spec.md` §7）。点そのものを見たければ、そこから手で寄ることになる。
+ * **着地では区域集約が解けている。** 寄り上限に自動フィットとは別の値（`focusMaxZoom`）を使い、
+ * 集約の閾値（自動フィットの寄り上限と同値。→ `docs/spec/quake-spec.md` §7）より深く寄せるため。
+ * 押した観測点が塗りに隠れたままでは、寄せた意味が無い。
+ *
+ * **寄り先が 1 点なら、着地後にその点の吹き出しを開く**（地図のマーカーを押したのと同じ状態）。
+ * 範囲を指す行（県・区域・市町村・津波の区域）では開かない —— 範囲の中心に何があるかは
+ * 行の内容と関係がなく、無関係な吹き出しが出る。**どちらの場合も、動かす前に開いている吹き出しは
+ * 閉じる** —— 残すと、寄せた範囲の外を指したまま画面の端に取り残される。
  */
 export function FocusTargetGL({ focusTarget }: { focusTarget: MapFocusTarget | null }) {
   const map = useMapGL()
@@ -1399,7 +1409,30 @@ export function FocusTargetGL({ focusTarget }: { focusTarget: MapFocusTarget | n
     const { positions } = focusTarget
     log.debug(`[mapGL] 一覧からのフォーカス ${positions.length === 1
       ? `${positions[0][0]},${positions[0][1]}` : `${positions.length} 点の範囲`}`)
-    fitToPositions(map, positions, { durationSec: 1.0 })
+    // 前に選んだ点の吹き出しは、カメラを動かす前に閉じる。1 点へ寄せる場合も、着地までの
+    // 1 秒のあいだ古い選択を引きずらない。
+    closeMapPopup(map)
+    if (positions.length !== 1) {
+      fitToPositions(map, positions, { durationSec: 1.0, maxZoom: focusMaxZoom(map) })
+      return
+    }
+    const [lat, lng] = positions[0]
+    fitToPositions(map, positions, { durationSec: 1.0, maxZoom: focusMaxZoom(map) })
+    const openPopup = () => openPopupAt(map, [lng, lat])
+    // **購読はカメラを動かした「あと」に張る。** `flyTo` は進行中の飛行を打ち切るとき、
+    // その場で `moveend` を発火する。先に張ると「前の飛行が止まった瞬間」を着地と取り違え、
+    // まだ目的地へ着いていない画面座標で判定してしまう（実機で、飛行中に別の行を押すと
+    // 途中の位置にあった区域代表点の吹き出しが開いた）。
+    //
+    // **動いていなければその場で開く。** 端末の「視差効果を減らす」設定が有効だと `flyTo` は
+    // `jumpTo` へ落ち、着地は呼び出しの中で終わっている —— 待っても `moveend` はもう来ない。
+    if (!map.isMoving()) {
+      openPopup()
+      return
+    }
+    map.once('moveend', openPopup)
+    // 次の行が押された（または地図が消えた）ら、着地を待っている予約は降ろす。
+    return () => { map.off('moveend', openPopup) }
   }, [map, focusTarget])
   return null
 }

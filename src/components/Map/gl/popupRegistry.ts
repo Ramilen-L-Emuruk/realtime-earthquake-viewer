@@ -84,6 +84,38 @@ export interface PopupHandle {
  */
 const CLICK_PICK_RETRY_FRAMES = 3
 
+/**
+ * 外から開くとき（`openPopupAt`）に、**何も当たらなかった場合も**聞き直すフレーム数。
+ *
+ * カメラが着地した直後は、寄り具合で出し入れするレイヤー（震度の観測点ドットなど）の表示切替が
+ * まだ反映されていないことがある。切替はズームの変化を React の状態として受けてから行われるので、
+ * `moveend` の時点では 1 コミットぶん遅れる。未解決（`'pending'`）とは別の事情なので回数も分ける。
+ */
+const EXTERNAL_OPEN_RETRY_FRAMES = 10
+
+/**
+ * 外から開くときに見る優先度。**点だけに絞る。**
+ *
+ * 地図には「どこを押しても区域名を出す最後の受け皿」がある（`BaseMapGL` の `basemap` 優先度）。
+ * 全部の優先度を見ると**空振りが起きない**ので、目当ての点の層がまだ描かれていない一瞬に
+ * 受け皿の区域名を掴み、押した行と無関係な吹き出しが開く（実機で再現した）。絞れば空振りになり、
+ * 聞き直しが効く。一覧の行が指すのは常に点なので、絞っても取りこぼす相手はいない。
+ */
+const POINT_ONLY: readonly PopupPriority[] = ['point']
+
+/**
+ * 外から開くときに、その点だと認める画面上の距離（px）。
+ *
+ * バッジは**絵として重なる**ので、当たり判定には隣の点のバッジも入ってくる（5.5km 離れた
+ * 区域の代表点が拾われた）。クリックなら「指の近くでいちばん強いもの」を採るのが正しいが、
+ * 一覧の行から開くときは**その座標の点**しか正解が無い。
+ *
+ * **各レイヤーの `tolPx`（問い合わせる箱の大きさ）とは別に決めた値。** たまたま同じ 8 になって
+ * いるが、意味が違う——あちらは「どこまで拾うか」、こちらは「拾ったもののうちどれをその点と
+ * 認めるか」。片方を動かすときにもう片方を連れて動かさないこと。
+ */
+const EXTERNAL_OPEN_MAX_DIST_PX = 8
+
 export const HOVER_CLASS = 'map-hover-popup'
 const POPUP_OFFSET = 12
 
@@ -97,6 +129,26 @@ interface Registry {
   cursorOwned: boolean
   /** 開いているクリックポップアップの定期再生成（refreshMs 指定時のみ）。 */
   refresh: { source: PopupSource; feature: MapGeoJSONFeature; timer: number } | null
+  /**
+   * 吹き出しを開こうとしている系列の世代。**新しい系列が始まったら古い系列は降りる。**
+   *
+   * 聞き直し（`requestAnimationFrame` の再帰）は数フレームにわたるので、その最中に次の要求が
+   * 来ると 2 つの系列が 1 枚の吹き出しを取り合う。いまの呼び出し方（常に 1 秒の飛行を挟む）では
+   * 先発が先に決着するため事故らないが、**それを保証しているのは呼び出し側の都合**なので、
+   * ここで断ち切っておく。
+   */
+  openGeneration: number
+  /** 開いているクリック吹き出しを閉じる（`closeMapPopup` から呼ぶ）。 */
+  closeClick: () => void
+  /** クリックと同じ経路で吹き出しを開く（`openPopupAt` から呼ぶ）。 */
+  openAt: (
+    point: maplibregl.Point,
+    lngLat: maplibregl.LngLatLike,
+    retriesLeft: number,
+    retryOnMiss: boolean,
+    priorities?: readonly PopupPriority[],
+    exact?: boolean,
+  ) => void
   detach: () => void
 }
 
@@ -111,8 +163,59 @@ function pickTop(feats: MapGeoJSONFeature[], rankKey?: string): MapGeoJSONFeatur
   )
 }
 
+/** 「いま見つかっているいちばん近い点」。優先度 1 段ぶんの走査で持ち回る。 */
+interface NearestPick {
+  hit: { source: PopupSource; feature: MapGeoJSONFeature } | null
+  dist: number
+  /** 見た候補の数と、採らなかったもののうち最も近かった距離（px）。記録の切り分けに使う。 */
+  stats: ExactStats
+}
+
+/**
+ * 座標で選んだときに何を見たか。**「候補が 1 つも無かった」と「候補はあったが遠かった」を
+ * 分けるため**にだけ持つ —— 前者は描くのが間に合っていない疑い、後者は
+ * `EXTERNAL_OPEN_MAX_DIST_PX` の値そのものの疑いで、直す先が違う。
+ */
+export interface ExactStats {
+  seen: number
+  nearestRejectedPx: number
+}
+
+/**
+ * 候補のうち `at` にいちばん近い点を `nearest` へ取り込む（`EXTERNAL_OPEN_MAX_DIST_PX` 以内のみ）。
+ *
+ * 一覧の行から開くとき、当たり判定に紛れ込んだ隣のバッジを採らないための選び方。
+ * **点以外の図形は対象外**（線・面には「その座標の 1 つ」に当たるものが無い）。外から開く経路は
+ * 点だけに絞ってあるので取りこぼす相手はいないが、線・面を返す `pick` を持つソースを
+ * `exact` の対象へ足すと、ここで黙って落ちる。
+ */
+function considerNearest(
+  map: MapLibreMap,
+  nearest: NearestPick,
+  source: PopupSource,
+  feats: MapGeoJSONFeature[],
+  at: maplibregl.Point,
+): void {
+  for (const f of feats) {
+    if (f.geometry.type !== 'Point') continue
+    const [lng, lat] = f.geometry.coordinates
+    const p = map.project([lng, lat])
+    const d = Math.hypot(p.x - at.x, p.y - at.y)
+    nearest.stats.seen += 1
+    if (d > EXTERNAL_OPEN_MAX_DIST_PX) {
+      nearest.stats.nearestRejectedPx = Math.min(nearest.stats.nearestRejectedPx, d)
+      continue
+    }
+    // **同じ距離なら先着**（＝レイヤーの登録順で先の方）。8px 以内でちょうど並ぶのは稀だが、
+    // 決め方は書いておく。
+    if (d >= nearest.dist) continue
+    nearest.dist = d
+    nearest.hit = { source, feature: f }
+  }
+}
+
 /** 点 feature は自身の座標に吸着させる。線・面は形状の代表点が無いのでクリック位置に出す。 */
-function anchorOf(feature: MapGeoJSONFeature, fallback: maplibregl.LngLat): maplibregl.LngLatLike {
+function anchorOf(feature: MapGeoJSONFeature, fallback: maplibregl.LngLatLike): maplibregl.LngLatLike {
   if (feature.geometry.type !== 'Point') return fallback
   const [lng, lat] = feature.geometry.coordinates
   return [lng, lat]
@@ -139,6 +242,9 @@ function createRegistry(map: MapLibreMap): Registry {
     hoverHtml: null,
     cursorOwned: false,
     refresh: null,
+    openGeneration: 0,
+    closeClick: () => {},
+    openAt: () => {},
     detach: () => {},
   }
 
@@ -173,6 +279,7 @@ function createRegistry(map: MapLibreMap): Registry {
     stopRefresh()
     reg.clickPopup.remove()
   }
+  reg.closeClick = closeClick
 
   const releaseCursor = () => {
     if (!reg.cursorOwned) return
@@ -187,9 +294,19 @@ function createRegistry(map: MapLibreMap): Registry {
   const findTop = (
     point: maplibregl.Point,
     forClick: boolean,
+    priorities: readonly PopupPriority[] = PRIORITY_ORDER,
+    /** 立てると「いちばん強いもの」ではなく「`point` にいちばん近い点」を採る（外から開くとき）。 */
+    exact = false,
+    /** `exact` のとき、何を見たかをここへ書き出す（記録の切り分け用）。 */
+    stats?: ExactStats,
   ): { source: PopupSource; feature: MapGeoJSONFeature } | null | 'pending' => {
-    for (const priority of PRIORITY_ORDER) {
+    for (const priority of priorities) {
       let pending = false
+      const nearest: NearestPick = {
+        hit: null,
+        dist: Infinity,
+        stats: stats ?? { seen: 0, nearestRejectedPx: Infinity },
+      }
       for (const source of reg.sources) {
         if (source.priority !== priority) continue
         // 非表示（visibility:none）のレイヤーは queryRenderedFeatures にヒットしないため、
@@ -212,16 +329,25 @@ function createRegistry(map: MapLibreMap): Registry {
           // 変化が無ければ何もせずに返る。
           if (source.label) clearRenderFailure(source.layerId, 'interact')
           if (f === 'pending') { pending = true; continue }
-          if (f) return { source, feature: f }
-          continue
+          if (!f) continue
+          if (exact) { considerNearest(map, nearest, source, [f], point); continue }
+          return { source, feature: f }
         }
         const box: [PointLike, PointLike] = [
           [point.x - source.tolPx, point.y - source.tolPx],
           [point.x + source.tolPx, point.y + source.tolPx],
         ]
         const feats = map.queryRenderedFeatures(box, { layers: [source.layerId] })
-        if (feats.length > 0) return { source, feature: pickTop(feats, source.rankKey) }
+        if (feats.length === 0) continue
+        if (exact) { considerNearest(map, nearest, source, feats, point); continue }
+        return { source, feature: pickTop(feats, source.rankKey) }
       }
+      // **座標で選ぶときは、登録順で決め打たない。** その優先度のソースを回し切ってから、
+      // 全部の候補の中でいちばん近いものを採る。最初に条件を満たしたソースを返す形だと、
+      // 同じ場所に候補を持つレイヤーが複数あったとき**登録順で勝敗が決まる**。いまは
+      // `JapanMapGL` の表示条件でそれらが相互排他になっているが、それを保証しているのは
+      // 呼び出し側であって、この調停役ではない。
+      if (exact && nearest.hit) return nearest.hit
       // **この優先度に未解決が残っていたら、下位は見ない。** 見に行くと、まだ確定していない上位を
       // 飛び越えて下位が先に当たる。地図には「どこを押しても区域名は出す」最後の受け皿
       // （BaseMapGL の basemap 優先度）があるため、放置すると**未解決のたびに区域名が開く**。
@@ -231,24 +357,68 @@ function createRegistry(map: MapLibreMap): Registry {
     return null
   }
 
-  const onClick = (e: MapMouseEvent, retry = 0) => {
-    const hit = findTop(e.point, true)
+  /**
+   * 画面座標を 1 点受け取り、そこにある描画物の吹き出しを開く（何も無ければ閉じる）。
+   *
+   * 地図のクリックと、一覧の行からの呼び出し（`openPopupAt`）が共有する。**呼び出し元によって
+   * 違うのは「当たらなかったときに聞き直すか」だけ** —— クリックは何も無い場所を押したのだから
+   * 即座に閉じてよいが、外から開く経路は着地直後でレイヤーがまだ出ていないことがある。
+   */
+  const openAt = (
+    point: maplibregl.Point,
+    lngLat: maplibregl.LngLatLike,
+    retriesLeft: number,
+    retryOnMiss: boolean,
+    priorities?: readonly PopupPriority[],
+    exact = false,
+    generation = ++reg.openGeneration,
+  ) => {
+    // 自分より後に始まった系列がいるなら、何も触らずに降りる（`openGeneration` の注記）。
+    if (generation !== reg.openGeneration) return
+    const stats: ExactStats | undefined = exact ? { seen: 0, nearestRejectedPx: Infinity } : undefined
+    const hit = findTop(point, true, priorities, exact, stats)
     // 未解決なら数フレームだけ聞き直す。ここで諦めると、タッチ操作の 1 回目が必ず空振りする。
     if (hit === 'pending') {
-      if (retry < CLICK_PICK_RETRY_FRAMES) requestAnimationFrame(() => onClick(e, retry + 1))
+      if (retriesLeft > 0) {
+        requestAnimationFrame(() => openAt(point, lngLat, retriesLeft - 1, retryOnMiss, priorities, exact, generation))
+        return
+      }
+      // **諦めたら、確定した空振りと同じように閉じる。** 押した場所に何も出せないのに前の
+      // 吹き出しが残ると、**別の場所の情報を、押した場所の答えとして見せる**ことになる
+      // （このファイルの冒頭が約束している「1 クリックにつき 1 枚」もそこで破れる）。
+      // 判定が確定していないことと、いま開いているものを残してよいかは別の話。
+      //
+      // **記録の文面は分ける。** 前者は「そこに無い」、後者は「判定が返ってこない」で、
+      // 疑う先が違う（後者はカスタムレイヤーの描画ループ側）。
+      if (retryOnMiss) logGaveUp('判定が未解決のまま', lngLat, stats)
+      closeClick()
       return
     }
     if (!hit) {
+      if (retryOnMiss && retriesLeft > 0) {
+        requestAnimationFrame(() => openAt(point, lngLat, retriesLeft - 1, retryOnMiss, priorities, exact, generation))
+        return
+      }
+      // **外から開く要求が空振りしたら記録を残す。** 画面には「寄ったのに吹き出しだけ出ない」
+      // としか現れないので、記録が無いと聞き直しの予算や距離の値が実運用で妥当かを確かめられない。
+      //
+      // **ただし異常とは限らない。** 震度分布モードのあいだは観測点ドットを出さない決まりなので
+      // （`JapanMapGL` の `QuakeIntensityPointsGL` に渡す `visible`）、そのとき観測点の行を押せば
+      // 正常に空振りする。だから警告ではなく詳細の側へ置く。クリックの空振りは数えない。
+      if (retryOnMiss) logGaveUp('開ける点が無い', lngLat, stats)
       closeClick()
       return
     }
     closeHover()
     reg.clickPopup
-      .setLngLat(anchorOf(hit.feature, e.lngLat))
+      .setLngLat(anchorOf(hit.feature, lngLat))
       .setHTML(hit.source.buildClickHtml(hit.feature))
       .addTo(map)
     startRefresh(hit.source, hit.feature)
   }
+  reg.openAt = openAt
+
+  const onClick = (e: MapMouseEvent) => openAt(e.point, e.lngLat, CLICK_PICK_RETRY_FRAMES, false)
 
   const onMouseMove = (e: MapMouseEvent, retry = 0) => {
     // パン／ズーム中は吹き出しが地図に引きずられて鬱陶しいので追従しない。
@@ -313,6 +483,71 @@ function getRegistry(map: MapLibreMap): Registry {
   const created = createRegistry(map)
   registries.set(map, created)
   return created
+}
+
+/**
+ * 開いている吹き出しを閉じる。
+ *
+ * 一覧の行から**範囲**へ寄せるときに使う（→ `FocusTargetGL`）。別の場所へカメラを動かすのに
+ * 前に選んだ点の吹き出しを残すと、寄せた範囲の外を指したまま画面の端に取り残される。
+ */
+export function closeMapPopup(map: MapLibreMap): void {
+  const reg = registries.get(map)
+  if (!reg) {
+    warnNoRegistry('closeMapPopup')
+    return
+  }
+  reg.closeClick()
+}
+
+/**
+ * 調停役がいない地図を外から触ろうとしたときの記録。
+ *
+ * レイヤーの登録が 1 件も無い状態で、これは通常のアプリ起動では起きない —— 地図の下地
+ * （`BaseMapGL`）が地図の生存期間を通じて 1 件登録し続けるため。起きるとすれば登録側が
+ * 例外を握った結果か、初期化の順序が崩れたとき。**正常系ではないので警告の側へ置く。**
+ */
+function warnNoRegistry(from: string): void {
+  log.warn(`[popupRegistry] ${from}: 吹き出しの登録が 1 件も無い地図でした`)
+}
+
+/**
+ * 外から開く要求を諦めたときの記録。
+ *
+ * **見た候補の数と、採らなかったもののうち最も近かった距離を添える。** 「候補が 1 つも無かった」
+ * なら描くのが聞き直しの予算に間に合っていない疑いで、「候補はあったが遠かった」なら
+ * `EXTERNAL_OPEN_MAX_DIST_PX` の値そのものの疑い。同じ文言で出すと、次に閾値を疑うときに
+ * 切り分けられない。
+ */
+function logGaveUp(reason: string, lngLat: maplibregl.LngLatLike, stats?: ExactStats): void {
+  const seen = stats?.seen ?? 0
+  const rejected = stats && Number.isFinite(stats.nearestRejectedPx)
+    ? `・最短 ${Math.round(stats.nearestRejectedPx)}px`
+    : ''
+  log.debug(
+    `[popupRegistry] ${JSON.stringify(lngLat)} の吹き出しを開けませんでした`
+    + `（${reason}・候補 ${seen} 件${rejected}）`,
+  )
+}
+
+/**
+ * 指定した場所の吹き出しを、地図上のその描画物をクリックしたのと同じ状態で開く。
+ * カードの一覧の行から観測点へ寄せたとき、寄り先の点を選んだ状態にするために使う（`FocusTargetGL`）。
+ *
+ * **どのレイヤーの吹き出しかは呼び出し側が決めない。** クリックと同じ優先度判定を通すので、
+ * 震度の観測点・未入電の地点・長周期の観測点のどれであっても呼び出しは 1 つで済む。
+ *
+ * 何も当たらなければ開いている吹き出しを閉じる（別の場所へ寄ったのに前の選択が残らないように）。
+ * **登録されたレイヤーが 1 つも無い地図では何もしない** —— 調停役ごと存在しないため、開ける
+ * 吹き出しも無い。
+ */
+export function openPopupAt(map: MapLibreMap, lngLat: maplibregl.LngLatLike): void {
+  const reg = registries.get(map)
+  if (!reg) {
+    warnNoRegistry('openPopupAt')
+    return
+  }
+  reg.openAt(map.project(lngLat), lngLat, EXTERNAL_OPEN_RETRY_FRAMES, true, POINT_ONLY, true)
 }
 
 /**
