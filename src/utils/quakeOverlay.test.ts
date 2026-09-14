@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   type QuakeOverlay, toggleLpgmOverlay, toggleDistributionOverlay, toggleUnreceivedOverlay,
   closeLpgmOverlay, closeEewLpgmOverlay, closeUnreceivedOverlay, closeUnreceivedOverlayFor,
+  closeDistributionOverlayOnQuakeReport,
   decideUnreceivedSpeechOpen, shouldCloseOverlayOnSelection,
 } from './quakeOverlay'
 import type { TabId } from '../components/IconNav'
@@ -136,7 +137,8 @@ describe('追加表示を閉じるのは別の地震へ移るときだけ', () =
   })
 
   // 対照: 同じ地震の続報では閉じない。続報は発生から 10 分以上あとにも届くため、
-  // ここを「受信のたびに閉じる」にすると開いた分布・階級が数分後に勝手に消える
+  // ここを「受信のたびに閉じる」にすると開いた階級が数分後に勝手に消える
+  // （震度分布だけは別の理由で閉じる。下の describe を参照）
   it('同じ地震の続報では閉じない', () => {
     expect(shouldCloseOverlayOnSelection('20240101160010', '20240101160010')).toBe(false)
   })
@@ -152,6 +154,35 @@ describe('追加表示を閉じるのは別の地震へ移るときだけ', () =
 
   it('どちらも選択が無いなら閉じない', () => {
     expect(shouldCloseOverlayOnSelection(null, null)).toBe(false)
+  })
+})
+
+describe('震度分布モードは、その地震の電文を受けたら閉じる', () => {
+  // 正: 同じ地震の続報でも閉じる（症状: 分布を開いたまま震度情報の続報が届いても分布の面が
+  // 出たままで、区域塗りも観測点ドットも出ないため、どこの震度が変わったのか地図に現れない）
+  it('同じ地震の電文なら閉じる', () => {
+    expect(closeDistributionOverlayOnQuakeReport(distribution('k1'), 'k1')).toBeNull()
+  })
+
+  // 対照: 別の地震の電文では触らない（そちらは選択が移った時点で
+  // `shouldCloseOverlayOnSelection` が閉じる。ここが二重に効くと、呼ぶ順序で結果が変わる）
+  it('別の地震の電文では閉じない', () => {
+    expect(closeDistributionOverlayOnQuakeReport(distribution('k1'), 'k2')).toEqual(distribution('k1'))
+  })
+
+  // 安全弁: 長周期と未入電は巻き込まない。閉じる理由は「分布モードが発表値を隠している」
+  // ことなので、発表値を隠していない表示には当たらない
+  it('長周期は閉じない', () => {
+    expect(closeDistributionOverlayOnQuakeReport(lpgm('20240101160010'), 'k1'))
+      .toEqual(lpgm('20240101160010'))
+  })
+
+  it('未入電の一覧は閉じない', () => {
+    expect(closeDistributionOverlayOnQuakeReport(unreceived('k1'), 'k1')).toEqual(unreceived('k1'))
+  })
+
+  it('何も開いていないなら何も起きない', () => {
+    expect(closeDistributionOverlayOnQuakeReport(null, 'k1')).toBeNull()
   })
 })
 

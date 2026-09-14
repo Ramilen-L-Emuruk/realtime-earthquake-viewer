@@ -561,14 +561,23 @@ export interface LiveEventHandlerDeps {
    * 再現なので、画面を切り替える理由が無い。
    */
   openEstimatedIntensity: (arrivalTime: string, lat: number, lon: number) => void
+  /**
+   * その地震の電文を受けたことを知らせる（開いている震度分布モードを閉じる）。
+   *
+   * **分布モードは発表値（区域塗り・観測点ドット）を引っ込めるモード**なので、開いたままだと
+   * 続報で震度がどこまで変わったのかが地図に現れない。判定と理由は
+   * `utils/quakeOverlay.ts` の `closeDistributionOverlayOnQuakeReport`。
+   */
+  closeDistributionOnQuakeReport: (eventKey: string) => void
   revertToDefaultTab: () => void
   selectQuake: (id: string | null) => void
   /**
    * 長周期地震動観測情報が届いたことを知らせる（地図とカードの階級表示を開く）。
    *
-   * **開く／閉じるを両方兼ねさせない。** 追加表示は震度分布モードと排他で、閉じる判断は
-   * 選択中の地震が別の地震へ移ったかどうかに紐づく（→ App 側の `quakeOverlay`）。
-   * ここから閉じられるようにすると、その規則が 2 か所に分かれる。
+   * **開く／閉じるを両方兼ねさせない。** 追加表示は震度分布モードと排他で、長周期を閉じる
+   * 判断は選択中の地震が別の地震へ移ったかどうかに紐づく（→ App 側の `quakeOverlay`）。
+   * ここから閉じられるようにすると、その規則が 2 か所に分かれる（震度分布だけは別の理由でも
+   * 閉じる。上の `closeDistributionOnQuakeReport`）。
    */
   openLpgmFromQuake: (eventId: string) => void
 }
@@ -579,6 +588,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     setActiveTabRealtimeForKyoshin, setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate,
     setActiveTabRealtimeUrgent, followSpeechTab, preSpeechTab, speechFollow, unreceivedFollow, expandPanelForSpecialInfo,
     revertToDefaultTab, selectQuake, openLpgmFromQuake, openEstimatedIntensity,
+    closeDistributionOnQuakeReport,
   } = deps
 
   // 「新規地震」として注目を移した報のキー（`eventKey:issue.type`）。
@@ -1712,6 +1722,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       quakeSpeechTopic = `quake:${incomingEventKey}`
       quakeSubjectKey = incomingEventKey
       selectQuake(incomingEventKey)
+      // 震度分布モードを開いていたら閉じて、発表値の地図へ戻す。**同じ地震の続報でも閉じる**
+      // ——分布モードは区域塗りも観測点ドットも出さないので、開いたままだとこの電文が伝えて
+      // きた震度が地図に一切現れない（→ `closeDistributionOverlayOnQuakeReport`）。
+      closeDistributionOnQuakeReport(incomingEventKey)
       const { hypocenter, maxScale } = event.earthquake
       const isForeignQuake = event.issue.type === '遠地地震'
       // 震度を伝えない電文（VXSE52 等）では、同一イベントのカードが既に出している震度を消さない
