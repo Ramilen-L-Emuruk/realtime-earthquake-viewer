@@ -84,6 +84,8 @@ vi.mock('../services/dmdata', () => ({
   fetchDmdataNankai: vi.fn(),
   fetchDmdataNankaiCommentary: vi.fn(),
   fetchDmdataKohatsu: vi.fn(),
+  fetchDmdataEarthquakeCount: vi.fn(),
+  fetchDmdataQuakeNotice: vi.fn(),
 }))
 
 vi.mock('../services/p2pquake', () => ({
@@ -95,6 +97,7 @@ vi.mock('../services/p2pquake', () => ({
 const {
   fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms,
   fetchDmdataNankai, fetchDmdataNankaiCommentary, fetchDmdataKohatsu,
+  fetchDmdataEarthquakeCount, fetchDmdataQuakeNotice,
 } = await import('../services/dmdata')
 const { fetchHistory, fetchJmaQuake } = await import('../services/p2pquake')
 
@@ -128,6 +131,8 @@ beforeEach(() => {
   vi.mocked(fetchDmdataNankai).mockResolvedValue(null)
   vi.mocked(fetchDmdataNankaiCommentary).mockResolvedValue(null)
   vi.mocked(fetchDmdataKohatsu).mockResolvedValue(null)
+  vi.mocked(fetchDmdataEarthquakeCount).mockResolvedValue(null)
+  vi.mocked(fetchDmdataQuakeNotice).mockResolvedValue(null)
   vi.mocked(fetchHistory).mockResolvedValue([])
   vi.mocked(fetchJmaQuake).mockResolvedValue([])
 })
@@ -2585,5 +2590,59 @@ describe('津波の続報マージ（前報から引き継ぐもの）', () => {
     act(() => { h.current.injectEvent(warningTelegram(0, AREA_NAMES)) })
     act(() => { h.current.injectEvent(highTideTelegram(0, AREA_NAMES)) })
     expect(h.current.tsunamis[0].infoName).toBe('各地の満潮時刻・津波到達予想時刻に関する情報')
+  })
+})
+
+// 7 日間表示され続ける帯（地震回数・お知らせ）を、起動時にも復元する。
+//
+// 以前は南海トラフの 3 種だけを復元していて、この 2 つは抜けていた。**群発の最中に
+// リロードすると、いちばん見たい回数の経過が消えていた。**
+describe('DMDSS 版: 起動時に 7 日間の帯を復元する', () => {
+  // **期限は実時刻からの相対で作る。** 固定の未来日時にすると、`setTimeout` が扱える上限
+  // （約 24.8 日）を超えて**即座に発火**し、張った直後に帯が消える。
+  const expireAt = () => new Date(Date.now() + 3 * 86_400_000).toISOString()
+
+  const count = (): import('../types/earthquake').JMAEarthquakeCount => ({
+    id: 'c1', eventId: '20260819120000', time: '2026-08-19T12:00:00+09:00',
+    headline: '地震回数に関する情報をお知らせします。',
+    reportDateTime: '2026-08-19T12:00:00+09:00', expireAt: expireAt(),
+    items: [{ type: '累積地震回数', startTime: '2026-08-19T00:00:00+09:00', endTime: '2026-08-19T12:00:00+09:00', number: 12, feltNumber: 3 }],
+    cancelled: false,
+  })
+
+  const notice = (): import('../types/earthquake').JMAQuakeNotice => ({
+    id: 'n1', eventId: '20260819120000', time: '2026-08-19T12:00:00+09:00',
+    headline: 'お知らせ', reportDateTime: '2026-08-19T12:00:00+09:00', expireAt: expireAt(),
+    body: '観測点の入電停止について', cancelled: false,
+  })
+
+  it('正: 地震回数とお知らせを取りに行き、帯として出す', async () => {
+    vi.mocked(fetchDmdataEarthquakeCount).mockResolvedValue(count())
+    vi.mocked(fetchDmdataQuakeNotice).mockResolvedValue(notice())
+    const h = setup()
+    await h.flush()
+
+    expect(fetchDmdataEarthquakeCount).toHaveBeenCalled()
+    expect(fetchDmdataQuakeNotice).toHaveBeenCalled()
+    expect(h.current.earthquakeCount?.id).toBe('c1')
+    expect(h.current.quakeNotice?.id).toBe('n1')
+  })
+
+  it('対照: 発表が無ければ帯は出ない', async () => {
+    const h = setup()
+    await h.flush()
+
+    expect(h.current.earthquakeCount).toBeNull()
+    expect(h.current.quakeNotice).toBeNull()
+  })
+
+  it('安全弁: 取得が失敗しても他の初期表示を巻き込まない', async () => {
+    vi.mocked(fetchDmdataEarthquakeCount).mockRejectedValue(new Error('落ちた'))
+    vi.mocked(fetchDmdataQuakeNotice).mockRejectedValue(new Error('落ちた'))
+    const h = setup()
+    await h.flush()
+
+    expect(h.current.earthquakeCount).toBeNull()
+    expect(h.current.error).toBeNull()
   })
 })

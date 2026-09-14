@@ -12,6 +12,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { filterPreWindowEvents } from '../services/dmdataReplay'
+import { historyExtraKey } from '../services/dmdataTelegramPayload'
 import { MAX_HISTORY_RETAINED } from './useEarthquakes'
 import type { ReplayEntry, ReplayFetchResult, QuakeHistoryResult } from '../types/replay'
 import type { JMAQuake } from '../types/earthquake'
@@ -234,7 +235,8 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
     //   リプレイ全体を中止させない
     // - await しないのは、履歴が揃うまで再生開始を待たせないため。復元は後から届いても
     //   既存カードへ統合される（`restoreQuakeHistory` 参照）
-    void d.fetchQuakeHistory(targetDate, QUAKE_HISTORY_EVENTS, QUAKE_HISTORY_MAX_DAYS)
+    const historyPromise = d.fetchQuakeHistory(targetDate, QUAKE_HISTORY_EVENTS, QUAKE_HISTORY_MAX_DAYS)
+    void historyPromise
       .then((result) => {
         if (!guard.isCurrent(session)) {
           log.info('[replay] 履歴の取得完了時に別セッションへ切り替わっていたため結果を破棄')
@@ -285,6 +287,51 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
       d.restorePreWindowTracking(preFiltered)
 
       d.loadReplayEvents([...preFiltered, ...normal.entries])
+
+      // 初期状態（24 時間）では足りないものを、地震カードの履歴（最大 7 日）から補う。
+      // 対象は長周期地震動と、地震カードの履歴が読むアーカイブに入っている帯
+      // （種別の列挙は `HISTORY_EXTRA_TYPES` が単一情報源）。
+      //
+      // **既に流れる種別は補わない。** 初期状態のほうが新しいので、古い報を後から流すと
+      // 上書きしてしまう。**注入も初期状態より後に置く**（履歴の取得は別で走っているので、
+      // ここで繋がないと先に流れうる）。
+      void historyPromise
+        .then((result) => {
+          if (!guard.isCurrent(session)) return
+          // **本編で流れる分も「既にある」側に数える。** 開始時刻ちょうどに発表された電文は
+          // 履歴（`entryTime <= T`）と本編（`entryTime >= T`）の両方に入るため、ここで
+          // 除かないと同じ電文を 2 度積むことになる。
+          const covered = new Set(
+            [...preFiltered, ...normal.entries]
+              .map(e => historyExtraKey(e.payload))
+              .filter((k): k is string => k !== null),
+          )
+          const supplements = result.extras
+            .filter((e) => {
+              const key = historyExtraKey(e.payload)
+              return key !== null && !covered.has(key)
+            })
+            .map(e => ({ ...e, replayTime: new Date(targetDate.getTime() - 1), silent: true }))
+          // **0 件でも記録する。** 「補うものが無かった」と「絞り込みが壊れて全部落ちた」は
+          // 画面からも挙動からも区別が付かない（帯が出ないのは発表が無いのと同じに見える）。
+          if (supplements.length === 0) {
+            log.info(`[replay] 初期状態に無い帯・長周期はなし（履歴が持っていたのは ${result.extras.length} 件）`)
+            return
+          }
+          // 種別まで出す。件数だけだと「何が補われたのか」「何が初期状態で足りていたのか」が
+          // 分からず、復元できていないときの切り分けに使えない。
+          const kinds = [...new Set(supplements.map(e => e.payload.kind))].join('・')
+          log.info(`[replay] 初期状態に無い帯・長周期を履歴から補う: ${supplements.length} 件（${kinds}）`)
+          depsRef.current.loadReplayEvents(supplements)
+        })
+        .catch((e) => {
+          // **取得の失敗とは限らない。** この `.then` の中で起きた例外もここへ落ちる
+          // （種別を足したのに `historyExtraKey` へ書き忘れた、など）。取得の失敗は上の
+          // `.catch` が画面へ出すので、こちらは二重に表示せず記録だけ残す —— 黙って
+          // 握ると、補完が丸ごと効かなくなっても痕跡が残らない。
+          if (!guard.isCurrent(session)) return
+          log.error('[replay] 帯・長周期の補完に失敗（再生は継続）', e)
+        })
 
       // 取りこぼしがあれば、再生は始まっていても必ず知らせる。黙って減った電文は
       // 「そういう時間帯だった」と見分けが付かず、テスト結果の誤読につながる。

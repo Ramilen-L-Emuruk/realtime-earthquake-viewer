@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useLazyRef } from './useLazyRef'
 import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMANankaiCommentary, JMAKohatsu, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity, EEWAlert, IntensityScale, EarthquakePoint, AppEvent, LiveEvent, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
 import { fetchHistory, fetchJmaQuake, P2PQuakeWebSocket } from '../services/p2pquake'
-import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms, fetchDmdataNankai, fetchDmdataNankaiCommentary, fetchDmdataKohatsu } from '../services/dmdata'
+import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms, fetchDmdataNankai, fetchDmdataNankaiCommentary, fetchDmdataKohatsu, fetchDmdataEarthquakeCount, fetchDmdataQuakeNotice } from '../services/dmdata'
 import { mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes, extractQuakeEventId, quakeEventKey, coalesceByEventId, findExistingQuakeCard, isRetractedQuakeReport, quakeRetractionOf } from '../utils/quakeMerge'
 import type { QuakeRetraction } from '../utils/quakeMerge'
 import { loadStationCoords, onStationCoordsLoaded, buildAreaPrefIndex, getAreaPrefIndexCache } from '../utils/stationCoords'
@@ -1472,8 +1472,18 @@ export function useEarthquakes(
           log.error('[data] 南海トラフ地震関連解説情報の取得で想定外の失敗', err)
           return null
         }),
+        // **7 日間表示され続ける帯**。以前は起動時に復元しておらず、群発の最中にリロードすると
+        // 回数の経過が消えていた（南海トラフの 3 種は復元していたので、ここだけ抜けていた）。
+        fetchDmdataEarthquakeCount(dmdataApiKey).catch(err => {
+          log.error('[data] 地震回数に関する情報の取得で想定外の失敗', err)
+          return null
+        }),
+        fetchDmdataQuakeNotice(dmdataApiKey).catch(err => {
+          log.error('[data] 地震・津波に関するお知らせの取得で想定外の失敗', err)
+          return null
+        }),
       ])
-        .then(async ([quakeResult, tsunamiEvents, nankaiData, kohatsuData, commentaryData]) => {
+        .then(async ([quakeResult, tsunamiEvents, nankaiData, kohatsuData, commentaryData, countData, noticeData]) => {
           if (cancelled) return
           const { quakes: quakeEvents, nextToken } = quakeResult
           dmdataCursorRef.current = nextToken
@@ -1533,6 +1543,9 @@ export function useEarthquakes(
           if (nankaiData) applyNankai(nankaiData)
           if (kohatsuData) applyKohatsu(kohatsuData)
           if (commentaryData) applyNankaiCommentary(commentaryData)
+          // 期限切れ・取消の判定は apply 側が持つ（取得側へ写すと片方だけ直したときに食い違う）。
+          if (countData) applyEarthquakeCount(countData)
+          if (noticeData) applyQuakeNotice(noticeData)
           // 初回ロードで津波が有効（validDateTime未来）の場合、キューへ解除イベントを挿入する。
           if (tsunamis.length > 0 && latestTsunami?.validDateTime) {
             const expireTime = new Date(latestTsunami.validDateTime)
