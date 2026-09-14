@@ -24,6 +24,9 @@ const API_BASE = 'https://api.dmdata.jp/v2'
 // VXSE43 の受信は本来起きない。起きるとすれば配信分類の変わり目だが、連続発報で溢れると
 // 他の警告が見えなくなるため間引く（`createLogThrottle` の使い方は utils/logger.ts）。
 const warnUnsubscribedEew = createLogThrottle(60_000)
+// 一覧に発表時刻を欠くアイテムが居座っていると、「もっと見る」を押すたびに同じ文言が鳴る。
+// 時刻窓の計算から外すだけで電文は取得するので、鳴り続けても実害は無いぶん埋もれやすい。
+const warnUnreadableHeadTime = createLogThrottle(60_000)
 // パーサーへは渡さないが、`handleMessage` の分岐が扱う種別。**本文の復号を種別で絞るときの
 // 例外一覧**で、ここから漏らすとその分岐ごと届かなくなる。復号を種別で絞るのは `handleMessage`。
 //   VXSE42 … 配信テスト。本文は見ないが、疎通確認として記録する
@@ -46,6 +49,37 @@ export function needsBodyDecode(headType: string): boolean {
 const RECONNECT_BASE_MS = 3000
 const RECONNECT_MAX_MS = 30000
 const RECONNECT_FACTOR = 1.5
+/**
+ * 同時接続数の上限（HTTP 409）で待つときの間隔の上限。通常の再接続より大きく取る。
+ *
+ * **この状態はこちら側の異常ではない。** 契約の同時接続枠（`/v2/contract` の
+ * `connectionCounts` の合計）を別のタブ・端末・セッションが使っているだけで、
+ * 枠が空けば同じキーでそのまま繋がる。空く契機は利用者がそれを閉じることなので、
+ * こちらから縮められない。
+ *
+ * 通常の上限（30 秒）のまま待ち続けると、**同じ失敗を毎時 120 回配信元へ投げ続ける**
+ * （実測 2026-09-13: 1 セッションが 2 時間 27 分・304 回）。利用規約は「定常的に
+ * 2req/s 以上のアクセスはお控えいただき」と定めており、繋がらないと分かっている要求を
+ * 短い間隔で繰り返すのはその趣旨から外れる。
+ *
+ * **打ち切らずに間隔を伸ばすのは、枠が空いたときに自動で復帰させるため。** 打ち切って
+ * 手動操作を求めると、据え置きで動かしている端末が繋がらないまま放置される。
+ */
+const RECONNECT_CROWDED_MAX_MS = 300_000
+
+/**
+ * 同時接続数の上限（409）で接続できなかったことを表す。
+ *
+ * 401/403（`'auth'`）と違って**再試行すれば直る**ので停止させない。一方で通常の失敗
+ * （ネットワーク断など）とも待ち方が違うため、文字列ではなく型で見分ける
+ * （`ticket: 409` のメッセージ照合は、他の 4xx を足したときに静かに崩れる）。
+ */
+class SocketCrowdedError extends Error {
+  constructor() {
+    super('socket-crowded')
+    this.name = 'SocketCrowdedError'
+  }
+}
 // DMDATA v2 は概ね 15〜30 秒間隔で ping を送出する。90 秒間 ping/data の受信が無い場合は
 // 半開通信（TCP は生きているが実質無応答）と判定して自発 close → 再接続する。
 const PING_WATCHDOG_MS = 90000
@@ -250,6 +284,7 @@ async function fetchTicketUrl(apiKey: string, includeTest: boolean, debug: boole
   const result = await tryFetchTicket(apiKey, CLASSIFICATIONS, includeTest, debug)
   if (result.status === 200) return result.url
   if (result.status === 401 || result.status === 403) throw new Error('auth')
+  if (result.status === 409) throw new SocketCrowdedError()
   throw new Error(`ticket: ${result.status}`)
 }
 
@@ -325,6 +360,14 @@ export class DmdataWebSocket {
         log.error('[DMDSS] 認証エラーのため再接続しない（APIキーの契約スコープ・WebSocket権限を確認）', { reason })
         this.authError = true
         this.onStatusChange?.('disconnected')
+        return
+      }
+      // 同時接続数の上限は**再試行すれば直るが、短い間隔で繰り返しても直らない**。
+      // 枠が空くのを待つあいだ、配信元へ同じ失敗を投げ続けないよう間隔を伸ばす
+      // （理由は `RECONNECT_CROWDED_MAX_MS`）。停止はしない。
+      if (err instanceof SocketCrowdedError) {
+        this.onStatusChange?.('crowded')
+        this.scheduleReconnect({ crowded: true })
         return
       }
       if (this.debug) dlog('接続失敗', { reason })
@@ -688,10 +731,18 @@ export class DmdataWebSocket {
     }
   }
 
-  private scheduleReconnect() {
+  /**
+   * 再接続を予約する。
+   *
+   * `crowded` は「同時接続数の上限で断られた」ことを表し、間隔の上限だけを差し替える。
+   * **バックオフの回数（`reconnectAttempt`）は共有する** —— 別にすると、枠待ちの最中に
+   * ネットワークが切れたときどちらの回数で待つか決まらない。上限は呼び出しごとに見るので、
+   * 枠が空いて通常の失敗へ戻れば次の待ちは 30 秒以内に収まる。
+   */
+  private scheduleReconnect(opts: { crowded?: boolean } = {}) {
     const delay = Math.min(
       RECONNECT_BASE_MS * Math.pow(RECONNECT_FACTOR, this.reconnectAttempt),
-      RECONNECT_MAX_MS,
+      opts.crowded ? RECONNECT_CROWDED_MAX_MS : RECONNECT_MAX_MS,
     )
     this.reconnectAttempt += 1
     if (this.debug) dlog('再接続をスケジュール', { attempt: this.reconnectAttempt, delayMs: Math.round(delay) })
@@ -783,8 +834,21 @@ function warnRejectedTelegrams(results: PromiseSettledResult<unknown>[], label: 
 //
 // 初回フェッチの時刻窓統一:
 // 各タイプは同じ limit でも発生頻度が違うため取得できる受信時刻範囲がズレる。
-// 各タイプの最古受信時刻（time）を比較し、最も新しいもの（cutoffTime）より古いアイテムは
+// 各タイプの最古の発表時刻を比較し、最も新しいもの（cutoffMs）より古いアイテムは
 // 全タイプ問わず除外する。これにより不完全なカードが初期表示されることを防ぐ。
+//
+// **窓は一覧だけで決め、本体を取る前に絞る。** 一覧（`/v2/telegram`）は電文の発表時刻を
+// `head.time` に持っているので、本体を取らなくても窓は決まる。かつては全件の本体を取って
+// からパース結果の `time` で窓を計算していたため、**取得した大半をそのまま捨てていた** ——
+// 種別ごとに発表頻度が違い、同じ `limit` でも遡る期間が桁違いになる（実測 2026-09-14 の
+// `limit=50`: VXSE53 は 9 日ぶん / VXSE51 は 41 日ぶん / VXSE52 は 44 日ぶん / VXSE61 は
+// 在庫そのものが 12 件で最新が 3 週間前）。窓は最も新しい最古（このときは VXSE53 の 9 日前）に
+// なるので、他の 3 種別で取った分はほぼ全部窓の外側だった。
+//
+// 電文本体は `data.api.dmdata.jp/v1/:id` で、配信元が「同じ `id` に対して短期間に
+// リクエストを繰り返さないように実装してください」と明記した 50req/5min のエンドポイント
+// （→ [`docs/spec/data-sources-spec.md`](../../docs/spec/data-sources-spec.md) §2「リクエスト数を抑える」）。
+// 取ってから捨てる形にしない。
 export async function fetchDmdataEarthquakes(
   apiKey: string,
   limit: number,
@@ -805,7 +869,8 @@ export async function fetchDmdataEarthquakes(
     throw new Error(`earthquake history: ${status}`)
   }
 
-  type ItemList = { items?: Array<{ url: string; head: { type: string } }>; nextToken?: string }
+  type ItemHead = { type: string; time?: string }
+  type ItemList = { items?: Array<{ url: string; head: ItemHead }>; nextToken?: string }
   const json53 = await res53.value.json() as ItemList
 
   // VXSE51/52/61 の JSON を並列取得（失敗時は空リストで続行）
@@ -835,16 +900,69 @@ export async function fetchDmdataEarthquakes(
   const items51 = json51.items ?? []
   const items52 = json52.items ?? []
   const items61 = json61.items ?? []
-  const boundary51 = items51.length
-  const boundary52 = boundary51 + items52.length
-  const boundary53 = boundary52 + items53.length
 
-  const allItems = [
-    ...items51.map(it => ({ url: it.url, headType: it.head.type })),
-    ...items52.map(it => ({ url: it.url, headType: it.head.type })),
-    ...items53.map(it => ({ url: it.url, headType: it.head.type })),
-    ...items61.map(it => ({ url: it.url, headType: it.head.type })),
-  ]
+  // **一覧の `head.time` とパース結果の `time` は表記が違う。** 前者は UTC（`...Z`）、
+  // 後者は `Head/ReportDateTime` 由来の JST（`+09:00`）。文字列の辞書順で比べると
+  // **同じ時刻でも UTC 側が必ず小さく出て**、窓が全件を捨てる方向へ倒れる
+  // （`"2026-09-14T10:58:00.000Z" < "2026-09-14T19:58:00+09:00"`）。
+  // 窓の判定はどちらもミリ秒へ直してから行う。
+  const parseHeadTimeMs = (raw?: string): number | null => {
+    if (!raw) return null
+    const ms = new Date(raw).getTime()
+    return Number.isFinite(ms) ? ms : null
+  }
+  type Listed = { url: string; headType: string; timeMs: number | null }
+  const toListed = (items: Array<{ url: string; head: ItemHead }>): Listed[] =>
+    items.map(it => ({ url: it.url, headType: it.head.type, timeMs: parseHeadTimeMs(it.head.time) }))
+  const listed51 = toListed(items51)
+  const listed52 = toListed(items52)
+  const listed53 = toListed(items53)
+  const listed61 = toListed(items61)
+
+  // 各タイプの最古の発表時刻を求め、最大値を cutoffMs とする。
+  // **発表時刻を読めなかったアイテムは窓の計算から外し、取得する側へ倒す** ——
+  // 落とすと気象庁が出した電文が画面から消えるが、取りすぎた分は後段の cutoff で除ける。
+  const oldestMsOf = (items: Listed[]): number | null =>
+    items.reduce<number | null>((acc, it) => (
+      it.timeMs === null ? acc : acc === null || it.timeMs < acc ? it.timeMs : acc
+    ), null)
+  const allOldest = [listed51, listed52, listed53, listed61]
+    .map(oldestMsOf)
+    .filter((ms): ms is number => ms !== null)
+  const cutoffMs = allOldest.length > 0 ? Math.max(...allOldest) : null
+
+  // **間引いて、どのアイテムかを見本で残す。** この関数は初回の履歴取得だけでなく
+  // 「もっと見る」でも呼ばれ、そのたびに VXSE51/52/61 は最新を取り直す。恒常的に発表時刻を
+  // 欠くアイテムが一覧に居座っていると、素の `log.warn` では押すたびに同じ文言が鳴る。
+  // 見本を添えるのは、件数だけではどの一覧のどの電文が壊れているか追えないため
+  // （読めなかった値を最大 3 件載せる規約に揃える）。
+  const unreadableHeadTimes = [listed51, listed52, listed53, listed61]
+    .flat()
+    .filter(it => it.timeMs === null)
+  if (unreadableHeadTimes.length > 0) {
+    const samples = unreadableHeadTimes
+      .slice(0, 3)
+      .map(it => `${it.headType} ${(it.url.split('/').pop() ?? '').slice(0, 12)}`)
+      .join(', ')
+    warnUnreadableHeadTime(() => log.warn(
+      `[dmdata] 地震履歴の一覧で ${unreadableHeadTimes.length} 件の発表時刻を読めませんでした`
+      + `（時刻窓の計算からは外し、電文は取得します）: ${samples}`
+    ))
+  }
+
+  const withinWindow = (it: Listed): boolean =>
+    cutoffMs === null || it.timeMs === null || it.timeMs >= cutoffMs
+
+  // **本体を取るのは窓の中だけ。** 結合順序は上記のとおり「速報→詳細」を保つ。
+  const kept51 = listed51.filter(withinWindow)
+  const kept52 = listed52.filter(withinWindow)
+  const kept53 = listed53.filter(withinWindow)
+  const kept61 = listed61.filter(withinWindow)
+  const boundary51 = kept51.length
+  const boundary52 = boundary51 + kept52.length
+  const boundary53 = boundary52 + kept53.length
+
+  const allItems = [...kept51, ...kept52, ...kept53, ...kept61]
   const allResults = await Promise.allSettled(
     allItems.map(({ url, headType }) => fetchOneTelegram(apiKey, url, headType)),
   )
@@ -861,17 +979,20 @@ export async function fetchDmdataEarthquakes(
   const parsed53 = toQuakes(allResults.slice(boundary52, boundary53))
   const parsed61 = toQuakes(allResults.slice(boundary53))
 
-  // 各タイプの最古受信時刻（time）を求め、最大値を cutoffTime とする。
-  // cutoffTime より古いアイテムは全タイプ問わず除外する。
-  const oldestOf = (qs: JMAQuake[]): string | null =>
-    qs.reduce<string | null>((acc, q) => acc === null || q.time < acc ? q.time : acc, null)
-  const allOldest = [oldestOf(parsed51), oldestOf(parsed52), oldestOf(parsed53), oldestOf(parsed61)]
-    .filter((t): t is string => t !== null)
-  const cutoffTime = allOldest.length > 0 ? allOldest.reduce((max, t) => t > max ? t : max) : null
+  // **窓は一覧で決めた `cutoffMs` をそのまま使い、パース結果から取り直さない。**
+  // 絞り込んだ後の集合で数え直すと、窓を与えた種別以外の「窓以降の最初の電文」が
+  // 新しい側へずれるぶん窓も動き、**元の窓とその電文のあいだに入る電文を捨てる**
+  // （窓の外側は取得していないので、数え直しは必ず元より狭くなる方向へ働く）。
+  const withinCutoff = (q: JMAQuake): boolean => {
+    if (cutoffMs === null) return true
+    const ms = new Date(q.time).getTime()
+    // 日時として読めない発表時刻は残す側へ倒す。`readReportDateTime` が記録を残して
+    // 素通しさせた値で、ここで落とすと画面から消える
+    // （→ docs/spec/data-sources-spec.md §2「日時は 2 つの層で確かめる」）。
+    return !Number.isFinite(ms) || ms >= cutoffMs
+  }
 
-  const withinCutoff = (q: JMAQuake): boolean => !cutoffTime || q.time >= cutoffTime
-
-  // cutoffTime による不完全カード除外のみ行い、種別横断（VXSE51/52/53/61）の生電文を返す。
+  // cutoffMs による不完全カード除外のみ行い、種別横断（VXSE51/52/53/61）の生電文を返す。
   // 同一 eventId の統合（VXSE61 の震源マージ・震度の保持・優先度判定）は呼び出し側の
   // mergeQuakeHistory がリアルタイム経路と同一ロジックで行う。結合順序は上記のとおり
   // 「速報→詳細」（51→52→53→61）に揃えること。

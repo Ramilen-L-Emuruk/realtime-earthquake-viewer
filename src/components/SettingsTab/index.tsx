@@ -3,6 +3,7 @@ import type { AppSettings } from '../../hooks/useSettings'
 import { DAY_NIGHT_OPACITY_MIN, DAY_NIGHT_OPACITY_MAX } from '../../hooks/useSettings'
 import { Toggle } from '../Toggle'
 import type { ConnectionStatus } from '../../types/earthquake'
+import { dmdataConnectionLabel } from './connectionLabel'
 import { getIntensityLabel, getIntensityColor, INTENSITY_LABELS } from '../../utils/intensity'
 import { readableTextColor } from '../../utils/contrast'
 import { playAlertSound, playCountdownBeep, playKyoshinUpdateSound, unlockAudio } from '../../utils/alertSound'
@@ -668,20 +669,16 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             <p className="text-yellow-400 text-xs">APIキーはこのブラウザにのみ保存されます。第三者と共有しないでください。</p>
           </div>
           <Row label="接続状態">
-            {dmdataConnectionStatus === 'connected' ? (
-              <span className="text-xs text-green-400 font-medium">接続中</span>
-            ) : dmdataConnectionStatus === 'connecting' ? (
-              <span className="text-xs text-blue-400">接続試行中...</span>
-            ) : dmdataConnectionStatus === 'replay' ? (
-              // 過去再生中はライブ受信を意図的に止めている。「切断」と出すと異常のように見え、
-              // 更新しないままだと「接続中」が残って実態と食い違うため、専用の文言にする。
-              <span className="text-xs text-blue-400">再生中（ライブ受信は停止）</span>
-            ) : (
-              // キーが不正なときは接続を試みていない。「切断」だと通信の失敗に見えるため区別する。
-              <span className={`text-xs ${isApiKeyInvalid ? 'text-red-400' : 'text-secondary'}`}>
-                {!settings.dmdataApiKey ? 'APIキー未設定' : isApiKeyInvalid ? 'APIキーが不正' : '切断'}
-              </span>
-            )}
+            {(() => {
+              // 文言と色の対応は `connectionLabel.ts` が単一情報源。**ここに分岐を戻さないこと**
+              // —— 三項演算子の連鎖は最後の `:` が全部を受けるので、`ConnectionStatus` に値を
+              // 足したときの書き忘れが型検査に掛からない。
+              const label = dmdataConnectionLabel(dmdataConnectionStatus, {
+                apiKeySet: Boolean(settings.dmdataApiKey),
+                apiKeyInvalid: isApiKeyInvalid,
+              })
+              return <span className={`text-xs ${label.className}`}>{label.text}</span>
+            })()}
           </Row>
           <Row label="APIキー" description="DMDATA.JP のAPIキーを入力してください">
             {/* 不正な文字は入力時に弾かず、入ったことを見せて本人に直させる。入力欄から黙って

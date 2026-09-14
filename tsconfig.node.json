@@ -42,6 +42,7 @@
     "scripts/tsunamiStationReading.test.ts",
     "scripts/build-station-readings.ts",
     "scripts/stationReadings.test.ts",
+    "scripts/telegram-audit/archiveCache.test.ts",
     "scripts/lib/xlsx.d.mts",
     "scripts/epicenterAccent.ts",
     "scripts/epicenterAccent.test.ts",

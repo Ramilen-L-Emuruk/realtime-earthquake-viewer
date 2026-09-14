@@ -303,7 +303,13 @@ describe('fetchDmdataGdEarthquakes', () => {
 // `cutoffTime` は取得できた分だけで決まるため、欠けたまま「揃った履歴」に見える。
 describe('個別電文の取得に失敗したときの記録', () => {
   const KEY = 'valid-key'
-  const LIST_ITEM = { id: 'x1', url: 'https://data.api.dmdata.jp/v1/x1', head: { type: 'VXSE53' } }
+  // 実電文の一覧と同じ形（`head.time` は UTC 表記）。時刻を落とすと、時刻窓の計算が
+  // 「窓を決められない」経路へ落ちてこの describe の対象外の分岐を通る
+  const LIST_ITEM = {
+    id: 'x1',
+    url: 'https://data.api.dmdata.jp/v1/x1',
+    head: { type: 'VXSE53', time: '2026-09-14T10:00:00.000Z' },
+  }
 
   /**
    * 電文一覧は成功させ、個別電文の取得だけを `onTelegram` に委ねる fetch。
@@ -363,6 +369,104 @@ describe('個別電文の取得に失敗したときの記録', () => {
 // **黙って `break` すると、取れたところまでが「全部取れた」ように返る。** 件数が減ったことに
 // 気づく手立てが無い。個別電文の取得側（`warnRejectedTelegrams`）と同じ形の穴が、
 // 同じ関数の一覧取得側に残っていた。
+// 電文本体を取りに行く前に時刻窓で絞ることの契約。
+//
+// 一覧（`/v2/telegram`）は電文の発表時刻を `head.time` に持つので、本体を取らなくても
+// 窓は決まる。本体は配信元が「同じ `id` に対して短期間にリクエストを繰り返さないように
+// 実装してください」と明記した 50req/5min のエンドポイントなので、窓の外側を取ってから
+// 捨てる形にしない（→ docs/spec/data-sources-spec.md §2「リクエスト数を抑える」）。
+describe('地震履歴は時刻窓の外側の本体を取りに行かない', () => {
+  const KEY = 'valid-key'
+
+  /**
+   * 種別ごとの一覧を差し替え、**本体を要求された id** を記録する fetch。
+   * 判定したいのは「どの電文の本体を取りに行ったか」なので、本体の中身は見ない
+   * （このファイルは node 環境で `DOMParser` が無く、電文の解釈は必ず失敗する）。
+   */
+  function stubLists(listsByType: Record<string, Array<{ id: string; time?: string }>>) {
+    const requested: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('data.api.dmdata.jp')) {
+        requested.push(url.split('/').pop() ?? '')
+        return { ok: true, text: async () => '<Report/>' } as unknown as Response
+      }
+      const type = /type=(\w+)/.exec(url)?.[1] ?? ''
+      const items = (listsByType[type] ?? []).map(it => ({
+        id: it.id,
+        url: `https://data.api.dmdata.jp/v1/${it.id}`,
+        head: { type, ...(it.time ? { time: it.time } : {}) },
+      }))
+      return { ok: true, json: async () => ({ items }) } as unknown as Response
+    }))
+    return requested
+  }
+  const warnings = () => vi.mocked(log.warn).mock.calls.map(c => c.join(' '))
+
+  // 正: 窓（= 各種別の最古のうち最も新しいもの）より古い電文の本体は要求しない。
+  // 実運用ではここが効く —— 発表頻度の低い種別は同じ `limit` でも何十日も遡るため、
+  // その大半が窓の外側になる
+  it('窓より古い電文の本体は要求しない', async () => {
+    const requested = stubLists({
+      // いちばん発表が多い種別。最古が窓を決める
+      VXSE53: [{ id: 'new53', time: '2026-09-14T10:00:00.000Z' }],
+      // 発表頻度が低く古い側まで遡る種別。窓の外側が混じる
+      VXSE51: [
+        { id: 'new51', time: '2026-09-14T11:00:00.000Z' },
+        { id: 'old51', time: '2026-08-01T00:00:00.000Z' },
+      ],
+    })
+
+    await fetchDmdataEarthquakes(KEY, 50)
+
+    expect(requested).toContain('new53')
+    expect(requested).toContain('new51')
+    expect(requested).not.toContain('old51')
+  })
+
+  // 対照: 窓の内側は取りに行く。**窓と同じ時刻のものも含む** ——
+  // 境界を `>` にすると、窓を与えた電文自身が落ちて最古の 1 件が永久に取れない
+  it('窓と同じ時刻の電文は取りに行く', async () => {
+    const requested = stubLists({
+      VXSE53: [{ id: 'a', time: '2026-09-14T10:00:00.000Z' }],
+      VXSE52: [{ id: 'b', time: '2026-09-14T10:00:00.000Z' }],
+    })
+
+    await fetchDmdataEarthquakes(KEY, 50)
+
+    expect(requested).toEqual(expect.arrayContaining(['a', 'b']))
+    expect(requested).toHaveLength(2)
+  })
+
+  // 安全弁: 発表時刻を読めない一覧アイテムは**窓の計算から外し、取得する側へ倒す**。
+  // 落とすと気象庁が出した電文が画面から消えるうえ、件数が減ったことにも気づけない
+  it('発表時刻を読めない一覧アイテムは取りに行き、記録を残す', async () => {
+    const requested = stubLists({
+      VXSE53: [{ id: 'dated', time: '2026-09-14T10:00:00.000Z' }],
+      // 時刻が無いもの・日時として読めないもの。どちらも窓の外側扱いにしない
+      VXSE51: [{ id: 'undated' }, { id: 'broken', time: 'not-a-date' }],
+    })
+
+    await fetchDmdataEarthquakes(KEY, 50)
+
+    expect(requested).toEqual(expect.arrayContaining(['dated', 'undated', 'broken']))
+    const hit = warnings().filter(w => w.includes('発表時刻を読めませんでした'))
+    expect(hit).toHaveLength(1)
+    expect(hit[0]).toContain('2 件')
+  })
+
+  // 安全弁: どの一覧も発表時刻を持たないときは窓を決められない。
+  // そのとき全件取りに行く（窓が無いことを「全部窓の外」と解釈すると履歴が空になる）
+  it('窓を決められないときは全件取りに行く', async () => {
+    const requested = stubLists({
+      VXSE53: [{ id: 'p' }, { id: 'q' }],
+    })
+
+    await fetchDmdataEarthquakes(KEY, 50)
+
+    expect(requested).toEqual(expect.arrayContaining(['p', 'q']))
+  })
+})
+
 describe('長周期地震動の一覧取得を打ち切ったときの記録', () => {
   const KEY = 'valid-key'
   const warnings = () => vi.mocked(log.warn).mock.calls.map(c => c.join(' '))
@@ -567,6 +671,105 @@ describe('DmdataWebSocket: APIキーが不正なとき', () => {
   })
 })
 
+
+// 同時接続数の上限（HTTP 409）で断られたときの待ち方。
+//
+// この状態は**こちら側の異常ではない**（契約の枠を別のタブ・端末が使っているだけ）ので
+// 停止させない。一方で通常の上限（30 秒）のまま待ち続けると、繋がらないと分かっている
+// 要求を毎時 120 回投げ続ける（実測 2026-09-13: 1 セッションが 2 時間 27 分・304 回）。
+describe('DmdataWebSocket: 同時接続数の上限で断られたとき', () => {
+  /** tryConnect は async。catch へ到達するまでマイクロタスクを流す。 */
+  async function drain() {
+    for (let i = 0; i < 5; i++) await Promise.resolve()
+  }
+
+  /**
+   * チケット要求に指定の `status` を返し続ける fetch と、**予約された待ち時間**を記録する
+   * `setTimeout` を仕込む。待ちの長さは private なので、予約の引数から見るしかない。
+   */
+  function stubCrowdedTicket(status: number) {
+    const requests = { count: 0 }
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      requests.count++
+      return {
+        status,
+        json: async () => ({ error: { code: status, message: 'The maximum number of simultaneous connections is full.' } }),
+      } as unknown as Response
+    }))
+    const delays: number[] = []
+    const fakeSetTimeout = globalThis.setTimeout
+    vi.stubGlobal('setTimeout', ((fn: Parameters<typeof globalThis.setTimeout>[0], ms?: number) => {
+      delays.push(ms ?? 0)
+      return fakeSetTimeout(fn, ms)
+    }) as typeof globalThis.setTimeout)
+    return { requests, delays }
+  }
+
+  // 通常の再接続の上限。`dmdata.ts` の RECONNECT_MAX_MS と揃える（export していないため写す）
+  const NORMAL_MAX_MS = 30_000
+
+  // 正: 409 が続くと待ちが通常の上限を超えて伸びる
+  it('409 が続くと待ちが通常の上限（30 秒）を超えて伸びる', async () => {
+    vi.useFakeTimers()
+    const { requests, delays } = stubCrowdedTicket(409)
+    const ws = new DmdataWebSocket('valid-key')
+
+    try {
+      ws.connect()
+      await drain()
+      // 上限へ達するまで進める（3 秒から 1.5 倍ずつなので 10 分あれば頭打ちに入る）
+      await vi.advanceTimersByTimeAsync(600_000)
+
+      expect(Math.max(...delays)).toBeGreaterThan(NORMAL_MAX_MS)
+      // 安全弁: 伸ばしただけで、止めてはいない（枠が空いたら自動で繋がるため）
+      expect(requests.count).toBeGreaterThan(1)
+    } finally {
+      ws.disconnect()
+      vi.useRealTimers()
+    }
+  })
+
+  // 対照: 409 以外の失敗では通常の上限に収まる。伸ばすのは「枠が埋まっている」ときだけで、
+  // ネットワーク断まで 5 分待たせると復帰がそのぶん遅れる
+  it('409 以外の失敗では通常の上限に収まる', async () => {
+    vi.useFakeTimers()
+    const { requests, delays } = stubCrowdedTicket(500)
+    const ws = new DmdataWebSocket('valid-key')
+
+    try {
+      ws.connect()
+      await drain()
+      await vi.advanceTimersByTimeAsync(600_000)
+
+      expect(Math.max(...delays)).toBeLessThanOrEqual(NORMAL_MAX_MS)
+      expect(requests.count).toBeGreaterThan(1)
+    } finally {
+      ws.disconnect()
+      vi.useRealTimers()
+    }
+  })
+
+  // 安全弁: 「切断」ではなく専用の状態を通知する。利用者がすべきことが違う
+  // （キーや回線ではなく、別のタブを閉じる）ため、画面の文言を分ける必要がある
+  it('接続状態に crowded を通知する', async () => {
+    vi.useFakeTimers()
+    stubCrowdedTicket(409)
+    const ws = new DmdataWebSocket('valid-key')
+    const statuses: string[] = []
+    ws.onStatusChange = (s) => { statuses.push(s) }
+
+    try {
+      ws.connect()
+      await drain()
+
+      expect(statuses).toContain('crowded')
+      expect(statuses).not.toContain('disconnected')
+    } finally {
+      ws.disconnect()
+      vi.useRealTimers()
+    }
+  })
+})
 
 // 電文の本文の復号。`formatMode: 'raw'` で購読しているので、届くのは base64 + gzip の XML。
 // ここが壊れると電文が 1 通も読めなくなるが、型検査では気づけない（`body` は unknown 由来）。
