@@ -54,6 +54,7 @@ const fakeCtx = {
 vi.mock('./alertSound', () => ({
   getAudioContext: () => fakeCtx,
   getMasterInput: () => ({ connect: vi.fn() }),
+  syncKeepAlive: () => {},
 }))
 
 /** `/accent_phrases?is_kana=true` へ渡ったカナ表記を、リクエスト順に記録する。 */
