@@ -87,6 +87,18 @@ const REGION_TEXT_SIZE = 17
 const PREF_TEXT_SIZE = 14
 const SUB_TEXT_SIZE = 13
 
+/**
+ * 地方ラベルが重なったときに MapLibre が試す位置。**上下だけ**にしてある
+ * （左右を含めない理由はレイヤーを作る箇所のコメント）。`center` を先頭に置くことで、
+ * 重なっていない平常時は代表点の真上に出る。
+ */
+const REGION_VARIABLE_ANCHOR: ('center' | 'top' | 'bottom')[] = ['center', 'top', 'bottom']
+/**
+ * 上下へ逃がす量（em＝text-size に対する比）。地図アイコン倍率が既定（100%）なら 17px。
+ * 倍率を変えても文字サイズと同じ比で動くので、見た目の関係は崩れない。
+ */
+const REGION_RADIAL_OFFSET_EM = 1.0
+
 // 震度バッジ等と重なったときに退避する量（em＝text-size に対する比）。**平常時は退避しない**——
 // 重なりを検知したときだけ、この量だけ上下へ逃がす（gl/labelOverlap.ts の判定）。
 // 区域名が県名より広いのは、震度7バッジの実描画半径が約20px（gl/intensityIcons.ts の
@@ -258,8 +270,12 @@ export function LabelsGL({ overlapSignature, iconScale, recording = false }: Pro
     if (!map) return
     let cancelled = false
 
-    // 地方ラベルは定数（境界データ非依存）なので即座に用意する。退避はさせない（境界データを持たない
-    // ため、逃がした先が地方の内側かを判断できない。重なったときは薄くするだけにとどめる）。
+    // 地方ラベルは定数（境界データ非依存）なので即座に用意する。
+    //
+    // **ラベルどうしの重なりは MapLibre に上下だけで逃がさせる**（`text-variable-anchor`）。
+    // 下の「バッジとの重なり」（`gl/labelOverlap.ts` の自前判定）とは別の機構で、地方ラベルは
+    // そちらの退避の対象外。左右へ逃がさない理由と実測は map-rendering-spec.md §5
+    // 「地方名どうしの重なりは MapLibre に上下だけで逃がさせる」。
     targetsRef.current = REGIONS.map((r, i) => ({
       source: REGION_SRC,
       id: i,
@@ -279,6 +295,11 @@ export function LabelsGL({ overlapSignature, iconScale, recording = false }: Pro
         'text-font': JP_TEXT_FONT,
         'text-size': REGION_TEXT_SIZE * iconScaleRef.current,
         'text-letter-spacing': 0.05,
+        // 重なったら上下へ逃がす（理由と、左右を含めない理由は上のコメント）。
+        'text-variable-anchor': REGION_VARIABLE_ANCHOR,
+        'text-radial-offset': REGION_RADIAL_OFFSET_EM,
+        // `text-variable-anchor` を使うときは 'auto' にする（anchor に合わせて揃え方が決まる）。
+        'text-justify': 'auto',
       },
       paint: {
         'text-color': '#eef2f7',
