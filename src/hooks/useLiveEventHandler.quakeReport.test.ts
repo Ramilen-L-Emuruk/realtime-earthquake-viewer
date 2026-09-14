@@ -16,6 +16,7 @@ import { renderHook } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
 import type { AppSettings } from './useSettings'
 import type { JMAQuake, JMATsunami, IssueType } from '../types/earthquake'
+import { quakeEventKey } from '../utils/quakeMerge'
 
 const speeches: { text: string; finish: () => void; done: boolean }[] = []
 const speakMock = vi.fn((_url: string, text: string) => {
@@ -83,8 +84,13 @@ function makeQuake(over: { type?: IssueType; addr?: string; maxScale?: number; m
 
 const titles: string[] = []
 
-/** @param existingCards `earthquakesRef` の中身（統合済みカード。既存カードの震度判定に使う） */
-function setup(existingCards: JMAQuake[] = []) {
+/**
+ * `handleLiveEvent` を作る。
+ *
+ * @param existingCards `earthquakesRef` の中身（統合済みカード。既存カードの震度判定に使う）
+ * @param spies 呼び出しを検証したい依存だけ差し替える（省略したものは無害な `vi.fn()`）
+ */
+function setup(existingCards: JMAQuake[] = [], spies: { closeDistributionOnQuakeReport?: (eventKey: string) => void } = {}) {
   const settings = {
     voicevoxEnabled: true, voicevoxUrl: 'http://x', voicevoxSpeakerId: 1,
     soundEnabled: false, soundVolume: 1, notifyMinScale: -1,
@@ -107,6 +113,7 @@ function setup(existingCards: JMAQuake[] = []) {
     setActiveTabRealtimeUrgent: vi.fn(), followSpeechTab: vi.fn(), preSpeechTab: vi.fn(() => true),
     expandPanelForSpecialInfo: vi.fn(), revertToDefaultTab: vi.fn(),
     selectQuake: vi.fn(), openLpgmFromQuake: vi.fn(), openEstimatedIntensity: vi.fn(),
+    closeDistributionOnQuakeReport: spies.closeDistributionOnQuakeReport ?? vi.fn(),
   }))
   return result.current.handleLiveEvent
 }
@@ -211,5 +218,41 @@ describe('地震情報のウィンドウタイトル', () => {
     handle(makeQuake({ type: '震度速報', maxScale: 45 }))
     await flush()
     expect(titles).toEqual(['地震情報 石川県能登地方 最大震度5弱'])
+  })
+})
+
+// 分布モードは発表値（区域塗り・観測点ドット）を引っ込めるモードなので、開いたままだと
+// 続報で震度がどこまで変わったのかが地図に現れない。**同じ地震の続報でも閉じる**ことを
+// 固定する（判定そのものは `utils/quakeOverlay.test.ts`。ここで見るのは配線）。
+describe('地震情報を受けたら震度分布モードを閉じる', () => {
+  // 正: 同じ地震の続報でも閉じる要求が出る
+  it('同じ地震の続報でも要求が出る', async () => {
+    const closeDistribution = vi.fn()
+    const first = makeQuake({ type: '各地の震度情報' })
+    const handle = setup([first], { closeDistributionOnQuakeReport: closeDistribution })
+    handle(makeQuake({ type: '各地の震度情報', addr: '石川県加賀' }))
+    await settle()
+    expect(closeDistribution).toHaveBeenCalledTimes(1)
+    // 鍵は選択と同じもの（別々に組むと、閉じる相手を取り違える）
+    expect(closeDistribution).toHaveBeenCalledWith(quakeEventKey(first))
+  })
+
+  // 対照: 取消電文では出さない（取消は選択が外れるので、閉じるのは選択側の仕事）
+  it('取消電文では要求を出さない', async () => {
+    const closeDistribution = vi.fn()
+    const handle = setup([], { closeDistributionOnQuakeReport: closeDistribution })
+    handle({ ...makeQuake({ type: '各地の震度情報' }), cancelled: true })
+    await settle()
+    expect(closeDistribution).not.toHaveBeenCalled()
+  })
+
+  // 安全弁: 震度を伝えない電文（震源情報）でも出す。ユーザーの選択（すべての地震電文で閉じる）
+  // をここで固定する —— 種別で絞る形に戻すと、この行が落ちる
+  it('震度を伝えない電文でも要求を出す', async () => {
+    const closeDistribution = vi.fn()
+    const handle = setup([], { closeDistributionOnQuakeReport: closeDistribution })
+    handle(makeQuake({ type: '震源情報', maxScale: -1 }))
+    await settle()
+    expect(closeDistribution).toHaveBeenCalledTimes(1)
   })
 })

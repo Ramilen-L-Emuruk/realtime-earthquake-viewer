@@ -175,6 +175,7 @@ function setup() {
     selectQuake: vi.fn(),
     openLpgmFromQuake: vi.fn(),
     openEstimatedIntensity: vi.fn(),
+    closeDistributionOnQuakeReport: vi.fn(),
   }))
   return result.current.handleLiveEvent
 }
