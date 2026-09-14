@@ -10,6 +10,9 @@ import { INTERACTION_HOLD_SEC } from '../Map/gl/camera'
 import { log } from '../../utils/logger'
 import { useTsunamiObsCoords } from '../../hooks/useTsunamiObsCoords'
 import { commentsOverlayMaxHeight, canShowCommentsOverlay } from './overlayHeight'
+import { useTsunamiZones } from '../../hooks/useTsunamiZones'
+import { ringsBoundsIndex, EMPTY_BOUNDS_INDEX } from '../../utils/subregions'
+import type { LatLng } from '../../utils/stationCoords'
 
 export interface FocusedDistrict {
   // 今回の受信で変更（新規/更新）があった区域すべて。寄せ先を決められない受信では空配列
@@ -43,6 +46,8 @@ interface Props {
   earthquakes?: JMAQuake[]
   onEarthquakeLink?: (quakeKey: string) => void
   onObservationClick?: (name: string) => void
+  /** 区域名をクリックしたときに、その予報区の範囲へ地図を寄せる。 */
+  onFocusMap?: (positions: LatLng[]) => void
   focusedDistrict?: FocusedDistrict | null
   obsUpdateStatus?: Map<string, 'new' | 'updated'>
   /**
@@ -240,7 +245,8 @@ const ARRIVAL_CONDITION_BADGE: Record<string, string> = {
   '第1波の到達を確認': '第1波到達',
 }
 
-function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocusObs, isChanged, isTop, registerRow, registerSpeechRow, obsUpdateStatus, areaGradeChangedKeys }: { area: TsunamiArea; observations: TsunamiObservation[]; style: GradeStyle; onObservationClick?: (name: string) => void; canFocusObs: (name: string) => boolean; isChanged: boolean; isTop: boolean; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void; obsUpdateStatus?: Map<string, 'new' | 'updated'>; areaGradeChangedKeys?: ReadonlySet<string> }) {
+function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocusObs, onAreaFocus, isChanged, isTop, registerRow, registerSpeechRow, obsUpdateStatus, areaGradeChangedKeys }: { area: TsunamiArea; observations: TsunamiObservation[]; style: GradeStyle; onObservationClick?: (name: string) => void; canFocusObs: (name: string) => boolean; onAreaFocus?: (name: string) => (() => void) | undefined; isChanged: boolean; isTop: boolean; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void; obsUpdateStatus?: Map<string, 'new' | 'updated'>; areaGradeChangedKeys?: ReadonlySet<string> }) {
+  const areaFocus = onAreaFocus?.(area.name)
   const setRowRef = useCallback((el: HTMLDivElement | null) => {
     registerRow?.(area, isChanged, isTop, el)
     // 追従スクロールの引き当て用。focusedDistrict とは違い、変更の有無に関わらず全区域を登録する
@@ -295,7 +301,21 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
     <div ref={setRowRef} className="border-b border-white/5 last:border-0">
       <div className="flex items-center gap-2 px-3 py-2 roomy:gap-3 roomy:px-4 roomy:py-3">
         <div className="flex-1 min-w-0">
-          <span className="text-white font-semibold block text-[1.0625rem] roomy:text-[1.25rem]" style={{ lineHeight: '1.2' }}>
+          {/* 区域名を押すとその予報区の海岸線が入る範囲へ地図が寄る。**押せるのは境界を引ける
+              区域だけ**（観測点の行と同じ規律 → §9「観測点の行・区域名をクリックしたときの寄り先」）。
+              行全体を押せるようにしないのは、この行が観測点の一覧を抱えているため。 */}
+          <span
+            className={`text-white font-semibold block text-[1.0625rem] roomy:text-[1.25rem]${areaFocus ? ' cursor-pointer hover:underline' : ''}`}
+            style={{ lineHeight: '1.2' }}
+            {...(areaFocus ? {
+              role: 'button' as const,
+              tabIndex: 0,
+              onClick: (e: React.MouseEvent) => { e.stopPropagation(); areaFocus() },
+              onKeyDown: (e: React.KeyboardEvent) => {
+                if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); e.preventDefault(); areaFocus() }
+              },
+            } : {})}
+          >
             {area.name}
           </span>
           {arrivalText && (
@@ -508,7 +528,7 @@ function TsunamiObservationRow({ obs, onObservationClick, canFocusObs, registerS
   )
 }
 
-function TsunamiGradeCard({ grade, areas, observations, onObservationClick, canFocusObs, focusedDistrict, registerRow, registerSpeechRow, registerSpeechAnchor, obsUpdateStatus, areaGradeChangedKeys }: { grade: TsunamiGrade; areas: TsunamiArea[]; observations: TsunamiObservation[]; onObservationClick?: (name: string) => void; canFocusObs: (name: string) => boolean; focusedDistrict?: FocusedDistrict | null; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void; registerSpeechAnchor?: (keys: string[], el: HTMLElement | null) => void; obsUpdateStatus?: Map<string, 'new' | 'updated'>; areaGradeChangedKeys?: ReadonlySet<string> }) {
+function TsunamiGradeCard({ grade, areas, observations, onObservationClick, canFocusObs, onAreaFocus, focusedDistrict, registerRow, registerSpeechRow, registerSpeechAnchor, obsUpdateStatus, areaGradeChangedKeys }: { grade: TsunamiGrade; areas: TsunamiArea[]; observations: TsunamiObservation[]; onObservationClick?: (name: string) => void; canFocusObs: (name: string) => boolean; onAreaFocus?: (name: string) => (() => void) | undefined; focusedDistrict?: FocusedDistrict | null; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void; registerSpeechAnchor?: (keys: string[], el: HTMLElement | null) => void; obsUpdateStatus?: Map<string, 'new' | 'updated'>; areaGradeChangedKeys?: ReadonlySet<string> }) {
   if (areas.length === 0) return null
   const style = getGradeStyle(grade)
   const groups = groupAreasForCardDisplay(areas, observations)
@@ -535,6 +555,7 @@ function TsunamiGradeCard({ grade, areas, observations, onObservationClick, canF
           {group.areas.map((area, i) => (
             <TsunamiAreaRow
               canFocusObs={canFocusObs}
+              onAreaFocus={onAreaFocus}
               key={i}
               area={area}
               observations={observations.filter(o => matchesArea(o, area))}
@@ -669,7 +690,7 @@ function TsunamiCommentBody({ bodyText, comments, freeText, borderColor, textCol
   )
 }
 
-export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservationClick, focusedDistrict, obsUpdateStatus, areaGradeChangedKeys, speechSession, isVisible, speechFollowEnabled, autoShowTick }: Props) {
+export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservationClick, onFocusMap, focusedDistrict, obsUpdateStatus, areaGradeChangedKeys, speechSession, isVisible, speechFollowEnabled, autoShowTick }: Props) {
   // 行をクリックできるかは「地図がその観測点へ寄れるか」で決める。
   //
   // 座標表（`tsunami-obs-coords.json`）に無い観測点は地図に印が出ず、`FocusObsGL` も寄せ先を
@@ -677,6 +698,22 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
   // 理由が分からない。判定の材料は地図側（`useTsunamiLayerData`）が印を出すかどうかと同じ座標表。
   const obsCoords = useTsunamiObsCoords()
   const canFocusObs = useCallback((name: string) => !!obsCoords?.[name], [obsCoords])
+  /**
+   * 区域名から「その予報区へ寄せる」動作を作る。**押せるかどうかもこれで決まる**（境界を引けない
+   * 区域は `undefined` が返り、押せる見た目にならない）。観測点の行と同じ規律。
+   *
+   * 寄り先は海岸線の**外接矩形の 2 点**（`fitToPositions` が矩形へ寄せるので全頂点は要らない）。
+   * 索引は入力の参照をキーにキャッシュされるので、区域の行ごとに作り直されることはない。
+   */
+  const zones = useTsunamiZones()
+  const zoneBounds = zones ? ringsBoundsIndex(zones, () => Object.entries(zones)) : EMPTY_BOUNDS_INDEX
+  const onAreaFocus = useCallback((name: string) => {
+    if (!onFocusMap) return undefined
+    const bounds = zoneBounds.get(name)
+    if (!bounds) return undefined
+    const corners: LatLng[] = [[bounds.minLat, bounds.minLng], [bounds.maxLat, bounds.maxLng]]
+    return () => onFocusMap(corners)
+  }, [onFocusMap, zoneBounds])
   // cancelledAt がある = 10秒表示中なので active に含める
   const active = tsunamis.filter(t => !t.cancelled || t.cancelledAt)
 
@@ -1344,6 +1381,7 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
             {GRADE_ORDER.map(grade => (
               <TsunamiGradeCard
                 canFocusObs={canFocusObs}
+                onAreaFocus={onAreaFocus}
                 key={grade}
                 grade={grade}
                 areas={t.areas.filter(a => a.grade === grade)}
