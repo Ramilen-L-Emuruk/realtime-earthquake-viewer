@@ -59,6 +59,26 @@ export function toggleDistributionOverlay(
 }
 
 /**
+ * 震度分布モードを**開いた**結果を返す（推計震度分布図の受信で自動的に開くとき）。
+ *
+ * {@link toggleDistributionOverlay} と分けてあるのは、こちらが「開く」だけで閉じないため。
+ * トグルを流用すると、同じ分布を二度開こうとしたときに閉じてしまう —— 自動で開く経路は
+ * **受信の瞬間と、読み上げの順番が来た瞬間の 2 回**呼ぶので（理由は
+ * [`audio-tts-spec.md`](../../docs/spec/audio-tts-spec.md) §6「推計震度分布図は地震情報の音を借りる」）、
+ * 閉じる側へ倒れると声に出す瞬間に分布が消える。
+ *
+ * **既に同じ分布を開いていれば前の値をそのまま返す。** 新しいオブジェクトを返すと、内容が
+ * 同じでも React は状態が変わったとみなして描き直す。
+ */
+export function openDistributionOverlay(
+  prev: QuakeOverlay | null,
+  eventKey: string,
+): QuakeOverlay | null {
+  if (prev?.kind === 'distribution' && prev.eventKey === eventKey) return prev
+  return { kind: 'distribution', eventKey }
+}
+
+/**
  * 未入電の表示をトグルした結果を返す。
  *
  * 同じ地震の未入電を開いていれば閉じ、それ以外なら開く（他の追加表示を開いていれば、それは閉じる）。

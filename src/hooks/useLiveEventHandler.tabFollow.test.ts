@@ -17,7 +17,7 @@ import { useLiveEventHandler } from './useLiveEventHandler'
 import { playAlertSound } from '../utils/alertSound'
 import { TAB_PRIORITY } from '../utils/tabPriority'
 import type { AppSettings } from './useSettings'
-import type { JMAQuake, JMATsunami, IssueType, EEWAlert } from '../types/earthquake'
+import type { JMAQuake, JMATsunami, IssueType, EEWAlert, ExtraLiveEvent } from '../types/earthquake'
 
 // 発話の進行を外から終わらせられるようにする（ttsPriority.test.ts と同じ手口）。
 // 新しい発話が来たら前の発話を完了扱いにするのは、実装が単一セッションを割り込みで
@@ -202,6 +202,9 @@ function setup(over: { voicevoxEnabled?: boolean; soundEnabled?: boolean } = {})
     setActiveTabNonRealtime: vi.fn(),
     setActiveTabRealtimeOnUpdate: vi.fn(),
     setActiveTabRealtimeUrgent: vi.fn(),
+    // 推計震度分布図で「地図の分布モードを開く」操作。受信の瞬間と発話の瞬間の 2 回
+    // 呼ばれるので、回数まで見る（→ 末尾の describe）。
+    openEstimatedIntensity: vi.fn(),
   }
   const settings = {
     voicevoxEnabled: over.voicevoxEnabled ?? true, voicevoxUrl: 'http://x', voicevoxSpeakerId: 1,
@@ -226,7 +229,7 @@ function setup(over: { voicevoxEnabled?: boolean; soundEnabled?: boolean } = {})
     defaultTabRef: { current: 'earthquake' },
     setActiveTabRealtimeForKyoshin: vi.fn(),
     revertToDefaultTab: vi.fn(),
-    selectQuake: vi.fn(), openLpgmFromQuake: vi.fn(), openEstimatedIntensity: vi.fn(), closeDistributionOnQuakeReport: vi.fn(),
+    selectQuake: vi.fn(), openLpgmFromQuake: vi.fn(), closeDistributionOnQuakeReport: vi.fn(),
     ...spies,
   }))
   return {
@@ -606,5 +609,107 @@ describe('リプレイの開始で、津波の取消を「もう伝えた」記�
     resetTracking()
     handle(makeTsunamiCancelEvent())
     expect(cancelSounds()).toBe(2)
+  })
+})
+
+// 推計震度分布図（IXAC41）のタブ切替。
+//
+// 直したかった症状（2026-07-28 16:37 の実機）: 地震情報を読み上げている最中に分布図が届き、
+// 続けて緊急地震速報が割り込んだ。EEW を読み終えたあと分布図の番が回ってきたが、画面は
+// リアルタイムタブのままで「震度分布図が更新されました」と声だけが出た。
+//
+// 原因は、この電文だけ**タブを動かす情報なのに読み上げへ追従先を渡していなかった**こと。
+// 受信の瞬間に出していた要求（最弱の優先度）は EEW の保持に弾かれ、そのまま捨てられていた。
+describe('推計震度分布図のタブ切替', () => {
+  function makeEstimatedIntensity(): ExtraLiveEvent {
+    return {
+      kind: 'estimatedIntensity',
+      isNew: true,
+      data: {
+        id: 'ix-1', time: '2026-01-01T12:05:00+09:00', arrivalTime: '2026-01-01T03:00:00.000Z',
+        hypocenter: { lat: 35, lon: 139, depthKm: 10 },
+        magnitude: 6.0, areaCode: 100, telegramKind: 0,
+        grades: [{ scale: 4, modifier: 'none', lower: 35, upper: 44 }],
+        count: 1, lat: new Float32Array([35]), lon: new Float32Array([139]), si: new Uint8Array([42]),
+        bounds: { south: 35, north: 35.1, west: 139, east: 139.1 },
+      },
+    }
+  }
+
+  // 安全弁: 受信の瞬間に受信時要求を出さない。出すと、読み上げが有効な端末でも最弱の優先度で
+  // 画面を取りにいくことになり、EEW を読み上げている最中に画面を奪う経路が復活する。
+  it('読み上げが有効なら、受信の瞬間にはタブを動かさない', () => {
+    const { handle, spies } = setup()
+    handle(makeEstimatedIntensity())
+    expect(spies.setActiveTabNonRealtime).not.toHaveBeenCalled()
+  })
+
+  // 正: 発話の番が来たら画面を合わせる。
+  it('発話が始まると earthquake へ追従する', async () => {
+    const { handle, spies } = setup()
+    handle(makeEstimatedIntensity())
+    await settle()
+    expect(spies.followSpeechTab).toHaveBeenCalledWith('earthquake', TAB_PRIORITY.quake, { alreadyShown: true })
+  })
+
+  // 正（症状そのもの）: EEW に待たされても、番が回れば画面が付いてくる。
+  it('EEW の読み上げに待たされても、番が来れば earthquake へ追従する', async () => {
+    const { handle, spies } = setup()
+    handle(makeEEW())
+    await settle()
+    handle(makeEstimatedIntensity())
+    // **`settle()` を重ねない。** EEW チェーンの待ちは 8 秒で打ち切られるので、そこまで進めると
+    // 「待っている」ではなく「待ちきれずに割り込んだ」状態を見ることになる（→ `advance` の注記）。
+    // 通知音との間（590ms）を越えて発話の予約に到達させるには 2 秒で足りる。
+    await advance(2000)
+    // EEW を読んでいる間は待つ。先出しも見送られる（塞がっているため）。
+    expect(spies.followSpeechTab).not.toHaveBeenCalledWith('earthquake', TAB_PRIORITY.quake, { alreadyShown: false })
+    // EEW は第 1・第 2 フェーズで複数の発話を投入するので、未完了のものを全部終わらせる。
+    for (let i = 0; i < speeches.length; i++) finishSpeech(i)
+    await advance(1000)
+    expect(spies.followSpeechTab).toHaveBeenCalledWith('earthquake', TAB_PRIORITY.quake, { alreadyShown: false })
+  })
+
+  // 対照: 読み上げが無効な端末では、画面が唯一の伝え手なので受信の瞬間に要求する。
+  it('読み上げが無効な端末では、受信の瞬間にタブを動かす', async () => {
+    const { handle, spies } = setup({ voicevoxEnabled: false })
+    handle(makeEstimatedIntensity())
+    expect(spies.setActiveTabNonRealtime).toHaveBeenCalledWith('earthquake')
+    await settle()
+    expect(spies.followSpeechTab).not.toHaveBeenCalled()
+  })
+
+  // 正: 分布モードは発話の瞬間にも開き直す。待っている間に別の地震情報が届いて選択が移ると、
+  // 受信時の 1 回きりでは「更新されました」と読み上げながら分布が出ていない形になる。
+  it('分布モードは受信の瞬間と発話の瞬間の両方で開く', async () => {
+    const { handle, spies } = setup()
+    handle(makeEstimatedIntensity())
+    expect(spies.openEstimatedIntensity).toHaveBeenCalledTimes(1)
+    await settle()
+    expect(spies.openEstimatedIntensity).toHaveBeenCalledTimes(2)
+  })
+
+  // 対照: 読み上げが無効な端末では開き直しの契機が無い（発話そのものが起きない）。
+  it('読み上げが無効な端末では、受信の瞬間の 1 回だけ開く', async () => {
+    const { handle, spies } = setup({ voicevoxEnabled: false })
+    handle(makeEstimatedIntensity())
+    await settle()
+    expect(spies.openEstimatedIntensity).toHaveBeenCalledTimes(1)
+  })
+
+  // 安全弁: 画面を開く処理が失敗しても、読み上げは鳴らす。
+  //
+  // 発話直前の処理（`onSpeakStart`）から例外が抜けると `speakWithVoicevox` へ到達せず、本文が
+  // 一言も鳴らないまま汎用の catch に落ちる ——「声だけ出て画面が合わない」を直したつもりが
+  // 「画面も声も出ない」に化ける。**この位置はタブ移動と既読の更新も通る**ので、穴は分布図に
+  // 限らない（ここで固定するのは分布図の経路だけ）。
+  // **受信時は既定の実装で通し、発話の直前だけ投げさせる**（受信時の呼び出しはこの変更の前から
+  // 素で呼んでおり、守備範囲が違う）。
+  it('分布モードを開く処理が発話直前に失敗しても、読み上げは鳴る', async () => {
+    const { handle, spies } = setup()
+    handle(makeEstimatedIntensity())
+    spies.openEstimatedIntensity.mockImplementation(() => { throw new Error('boom') })
+    await settle()
+    expect(speeches.map(s => s.text).join('')).toContain('推計震度分布図')
   })
 })
