@@ -2,6 +2,7 @@ import { memo, useState, useCallback, useEffect, useRef } from 'react'
 import type { AppSettings, TtsUnreceivedDetail } from '../../hooks/useSettings'
 import { DAY_NIGHT_OPACITY_MIN, DAY_NIGHT_OPACITY_MAX } from '../../hooks/useSettings'
 import { Toggle } from '../Toggle'
+import { TELEGRAM_TEXT_BLOCK_KEYS, type TelegramTextBlockKey, type TelegramTextBlocks } from '../../utils/ttsText'
 import type { ConnectionStatus } from '../../types/earthquake'
 import { INTENSITY_SCALE_COUNT, getIntensityLabel, getIntensityColor, INTENSITY_LABELS } from '../../utils/intensity'
 import { readableTextColor } from '../../utils/contrast'
@@ -246,6 +247,140 @@ function KyoshinImportRow({ historicalArchives }: { historicalArchives: Historic
         </div>
       )}
     </div>
+  )
+}
+
+/**
+ * 気象庁が書いた文のブロック名（設定タブに出す）。
+ *
+ * **`Record<TelegramTextBlockKey, string>` で持つ。** キーを足してここへ書き忘れると
+ * 型検査が止める（対応表を配列で持つと、抜けても気付けない）。
+ */
+/**
+ * ブロックの説明（ラベルをホバー・タップしたときに出る）。
+ *
+ * **「固定付加文」「自由付加文」は気象庁の電文用語をそのまま使っている** —— 利用者へ出す語は
+ * 気象庁の表現と揃える方針（→ quake-spec.md §8）に沿うが、語だけでは何が読まれるか判らない。
+ * 同じ画面に「固定付加文」と「固定付加文（その他）」が並ぶ種別もあるので、中身で見分けられる
+ * ようにここで補う。
+ */
+const TELEGRAM_TEXT_BLOCK_DESCRIPTIONS: Record<TelegramTextBlockKey, string> = {
+  quakeVarComment: '気象庁以外が運用する観測点（＊印）の説明や、「震源要素を訂正します。」といった定型文です',
+  quakeFreeText: 'その電文にだけ添えられる説明です。内容は報ごとに変わります',
+  tsunamiBody: '津波がいつ来て、いつまで続くかの説明です。津波予報では区域に波高も到達時刻も付かないため、この文にしか書かれていません',
+  tsunamiVarComment: '避難の呼びかけ、満潮時刻、沿岸・沖合の観測についての定型文です。避難の呼びかけ自体は、この設定によらず読み上げます',
+  tsunamiFreeText: 'その電文にだけ添えられる説明です',
+  lpgmForecast: '「この地震について、緊急地震速報を発表しています。」のような定型文です',
+  lpgmVarComment: '気象庁以外が運用する観測点（＊印）の説明です',
+  lpgmFreeText: '階級と揺れの大きさの対応表など、その電文の補足です',
+  nankaiSummary: '発表内容を一文にまとめたものです。画面の帯に出ている見出しと同じ文です',
+  nankaiBody: '調査の結果や評価の根拠です。実際の電文では 1000 字を超えることがあります',
+  nankaiNextAdvisory: '次の情報がいつ出るかの案内です',
+  nankaiCommentarySummary: '発表内容を一文にまとめたものです。画面の帯に出ている見出しと同じ文です',
+  nankaiCommentaryBody: '地殻活動の観測状況と評価です。実際の電文では 1600 字を超えることがあります',
+  nankaiCommentaryNextAdvisory: '次の情報がいつ出るかの案内です',
+  kohatsuSummary: '発表内容を一文にまとめたものです。画面の帯に出ている見出しと同じ文です',
+  kohatsuBody: '発表の理由と、とるべき防災対応の説明です',
+  kohatsuNextAdvisory: '次の情報がいつ出るかの案内です',
+  earthquakeCountFreeText: '地震回数の補足です',
+}
+
+const TELEGRAM_TEXT_BLOCK_LABELS: Record<TelegramTextBlockKey, string> = {
+  quakeVarComment: '固定付加文（その他）',
+  quakeFreeText: '自由付加文',
+  tsunamiBody: '本文',
+  tsunamiVarComment: '固定付加文',
+  tsunamiFreeText: '自由付加文',
+  lpgmForecast: '固定付加文',
+  lpgmVarComment: '固定付加文（その他）',
+  lpgmFreeText: '自由付加文',
+  nankaiSummary: '要約',
+  nankaiBody: '本文',
+  nankaiNextAdvisory: '次回発表予定',
+  nankaiCommentarySummary: '要約',
+  nankaiCommentaryBody: '本文',
+  nankaiCommentaryNextAdvisory: '次回発表予定',
+  kohatsuSummary: '要約',
+  kohatsuBody: '本文',
+  kohatsuNextAdvisory: '次回発表予定',
+  earthquakeCountFreeText: '自由付加文',
+}
+
+/**
+ * 電文種別ごとのまとまり。並びは通知設定・テスト機能と同じカテゴリ順
+ * （地震情報 → 津波情報 → 長周期 → 南海トラフ系 → 地震回数）。
+ *
+ * **全キーがどこかのグループに入っていること**は `telegramTextBlockGroups.test.ts` が検査する
+ * （ここから漏れたキーは設定タブに出ず、既定のまま触れなくなる）。
+ */
+const TELEGRAM_TEXT_BLOCK_GROUPS: readonly {
+  readonly title: string
+  readonly keys: readonly TelegramTextBlockKey[]
+}[] = [
+  { title: '地震情報', keys: ['quakeVarComment', 'quakeFreeText'] },
+  { title: '津波情報', keys: ['tsunamiBody', 'tsunamiVarComment', 'tsunamiFreeText'] },
+  { title: '長周期地震動観測情報', keys: ['lpgmForecast', 'lpgmVarComment', 'lpgmFreeText'] },
+  { title: '南海トラフ臨時情報', keys: ['nankaiSummary', 'nankaiBody', 'nankaiNextAdvisory'] },
+  {
+    title: '南海トラフ関連解説情報',
+    keys: ['nankaiCommentarySummary', 'nankaiCommentaryBody', 'nankaiCommentaryNextAdvisory'],
+  },
+  {
+    title: '後発地震注意情報',
+    keys: ['kohatsuSummary', 'kohatsuBody', 'kohatsuNextAdvisory'],
+  },
+  { title: '地震回数に関する情報', keys: ['earthquakeCountFreeText'] },
+]
+
+/**
+ * 気象庁が書いた文の内訳（電文種別 × ブロック）。
+ *
+ * **既定は畳んでおく。** 18 行＋グループの見出し 7 行を常に開くと、設定タブの中でこの
+ * セクションだけが突出して伸びる。見出しには「何個を読む設定か」を出す —— 畳んだままでも、
+ * 全部読むのか一部だけかが分かる。
+ */
+function TelegramTextBlockRows({ blocks, onChange }: {
+  blocks: TelegramTextBlocks
+  onChange: (next: TelegramTextBlocks) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const enabled = TELEGRAM_TEXT_BLOCK_KEYS.filter(key => blocks[key]).length
+  return (
+    <>
+      <div className="px-4 py-3">
+        <button
+          type="button"
+          onClick={() => setOpen(v => !v)}
+          aria-expanded={open}
+          className="w-full flex items-center justify-between gap-2 text-left"
+        >
+          <span className="text-white text-sm">
+            読み上げる文の内訳
+            <span className="text-secondary text-xs ml-2">
+              {enabled} / {TELEGRAM_TEXT_BLOCK_KEYS.length} 項目
+            </span>
+          </span>
+          <span className="text-secondary text-xs">{open ? '閉じる' : '開く'}</span>
+        </button>
+      </div>
+      {open && TELEGRAM_TEXT_BLOCK_GROUPS.map(group => (
+        <div key={group.title}>
+          <div className="px-4 py-1.5 bg-panel/60 text-secondary text-xs">{group.title}</div>
+          {group.keys.map(key => (
+            <Row
+              key={key}
+              label={TELEGRAM_TEXT_BLOCK_LABELS[key]}
+              description={TELEGRAM_TEXT_BLOCK_DESCRIPTIONS[key]}
+            >
+              <Toggle
+                checked={blocks[key]}
+                onChange={v => onChange({ ...blocks, [key]: v })}
+              />
+            </Row>
+          ))}
+        </div>
+      ))}
+    </>
   )
 }
 
@@ -1152,6 +1287,13 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
               onChange={v => onUpdate('ttsReadTelegramText', v)}
             />
           </Row>
+          {/* 内訳はマスタートグルが入っているときだけ出す（切っていれば何を選んでも読まない）。 */}
+          {settings.ttsReadTelegramText && (
+            <TelegramTextBlockRows
+              blocks={settings.ttsTelegramTextBlocks}
+              onChange={next => onUpdate('ttsTelegramTextBlocks', next)}
+            />
+          )}
         </Section>
       )}
 
