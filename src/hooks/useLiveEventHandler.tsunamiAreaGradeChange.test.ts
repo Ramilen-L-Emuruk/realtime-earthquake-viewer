@@ -122,7 +122,7 @@ function setup(voicevoxEnabled = true) {
     setActiveTabRealtimeOnUpdate: vi.fn(),
     setActiveTabRealtimeUrgent: vi.fn(), followSpeechTab: vi.fn(), preSpeechTab: vi.fn(() => true),
     expandPanelForSpecialInfo: vi.fn(), revertToDefaultTab: vi.fn(),
-    selectQuake: vi.fn(), openLpgmFromQuake: vi.fn(), openEstimatedIntensity: vi.fn(),
+    selectQuake: vi.fn(), openLpgmFromQuake: vi.fn(), openEstimatedIntensity: vi.fn(), closeDistributionOnQuakeReport: vi.fn(),
   }))
   // 受信して、App が state を更新したあとの姿（次の報が見る `tsunamisRef`）まで進める
   const handle = (tsunami: JMATsunami) => {

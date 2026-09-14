@@ -62,6 +62,7 @@ import { estimatedIntensityFor, matchEstimatedIntensityArrival } from './utils/e
 import {
   type QuakeOverlay, toggleLpgmOverlay, toggleDistributionOverlay, toggleUnreceivedOverlay,
   closeLpgmOverlay, closeEewLpgmOverlay, closeUnreceivedOverlay, closeUnreceivedOverlayFor,
+  closeDistributionOverlayOnQuakeReport,
   decideUnreceivedSpeechOpen, shouldCloseOverlayOnSelection, type UnreceivedOpenResult,
 } from './utils/quakeOverlay'
 import { tsunamiOverallGrade } from './utils/tsunami'
@@ -479,6 +480,17 @@ export function App() {
     setActiveTabNonRealtime('earthquake')
   }, [selectQuake, setActiveTabNonRealtime])
 
+  /**
+   * その地震の電文を受けたとき、開いている震度分布モードを閉じる
+   * （判定と理由は `closeDistributionOverlayOnQuakeReport`）。
+   *
+   * **`selectQuake` の後に呼ぶ。** 別の地震へ移ったときは選択の側が先に閉じており、ここは
+   * 「同じ地震の続報でも閉じる」ぶんを受け持つ。
+   */
+  const closeDistributionOnQuakeReport = useCallback((eventKey: string) => {
+    setQuakeOverlay(prev => closeDistributionOverlayOnQuakeReport(prev, eventKey))
+  }, [])
+
   // EEW の受信による realtime タブ移動。
   //
   // **読み上げ系（`'speech'`）として出す。** EEW は必ず読み上げを持つ情報で、この要求は
@@ -597,6 +609,7 @@ export function App() {
     setActiveTabRealtimeForKyoshin: () => requestTabForKyoshin('realtime'),
     followSpeechTab, preSpeechTab, speechFollow, unreceivedFollow, expandPanelForSpecialInfo,
     revertToDefaultTab, selectQuake, openLpgmFromQuake, openEstimatedIntensity,
+    closeDistributionOnQuakeReport,
   })
 
   const [replayTimeOffset, setReplayTimeOffset] = useState<number | null>(null)

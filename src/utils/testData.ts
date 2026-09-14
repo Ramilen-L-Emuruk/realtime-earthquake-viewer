@@ -1517,6 +1517,17 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
 const ESTIMATED_INTENSITY_FOLLOW_UP_MS = 6 * 60_000
 
 /**
+ * 分布が届いたあと、同じ地震の地震情報が続報として発表されるまでの幅。
+ *
+ * 実電文で観測した 4 分を置いている（2024 年能登半島地震の本震。DMDATA のアーカイブで実測した。
+ * 分布 07:20:08 UTC → VXSE53（震源・震度情報）07:24:31 UTC で、観測点は 2987 点から 2993 点へ増えた。
+ * この地震では分布が発現の 10 分後に届いており、公式の目安「概ね 15 分後」より早い）。上の `ESTIMATED_INTENSITY_FOLLOW_UP_MS`
+ * と同じく、**この値を待つものは無い** —— 流す間隔はテストのキューが別に決めており、
+ * ここは電文が名乗る発表時刻だけ。
+ */
+const QUAKE_FOLLOW_UP_AFTER_DISTRIBUTION_MS = 4 * 60_000
+
+/**
  * 推計震度分布図（IXAC41）のテスト。**地震情報と対で返す。**
  *
  * この電文は識別子を持たず、地震カードとの結び付けは発現時刻で行う（→ `utils/estimatedIntensity.ts`）。
@@ -1539,12 +1550,25 @@ const ESTIMATED_INTENSITY_FOLLOW_UP_MS = 6 * 60_000
  * 採る作りで 1 通しか保存しない）。ここで確かめたいのは**アプリが続報をどう扱うか**なので、
  * 発表時刻だけを進める —— 反映するかどうかの判定（`decideEstimatedIntensityUpdate`）は
  * 発表時刻が進んでいれば続報と見なす。
+ *
+ * **地震情報の続報も返す。** 分布が届いたあとに同じ地震の地震情報が発表されると、地図は
+ * 分布モードを閉じて発表値へ戻る（→ `utils/quakeOverlay.ts` の
+ * `closeDistributionOverlayOnQuakeReport`）。これを流さないと、その遷移を実機で一度も
+ * 確かめられない。
+ *
+ * **中身は初報と同じで、発表時刻と識別子だけを進める。** 実電文の続報は観測点が増えるが
+ * （能登本震で 2987 点 → 2993 点）、それを再現できる地震は分布が大きすぎて**テストデータとして
+ * 持てない**（実測値と、観測できた範囲では軽さと両立しないことは
+ * → docs/spec/settings-pwa-spec.md §7）。ここで
+ * 確かめたいのは**続報が届いたときのアプリの振る舞い**なので、上の分布の続報と同じ扱いにする。
  */
 export function createTestEstimatedIntensity(): {
   quake: JMAQuake
   estimated: JMAEstimatedIntensity
   /** 同じ地震の続報。発表時刻だけが初報より後になっている */
   followUp: JMAEstimatedIntensity
+  /** 分布のあとに届く、同じ地震の地震情報の続報。発表時刻と識別子だけが初報より後になっている */
+  quakeFollowUp: JMAQuake
 } {
   const nowDate = serverDate()
   const now = nowDate.toISOString()
@@ -1612,6 +1636,17 @@ export function createTestEstimatedIntensity(): {
       // **発現時刻は同じまま、発表時刻だけを進める。** 発現時刻が同じだからこそ「同じ地震の
       // 続報」になる（変えると別の地震へ入れ替えた扱いになり、初報と同じ文で読まれる）。
       time: new Date(nowDate.getTime() + ESTIMATED_INTENSITY_FOLLOW_UP_MS).toISOString(),
+    },
+    quakeFollowUp: {
+      ...quake,
+      // **報ごとに進めるのは識別子と発表時刻だけ。** 震源時刻（`earthquake.time`）は
+      // 同じ地震を指すので固定する（→ docs/spec/settings-pwa-spec.md §7「実電文の形に合わせる」）。
+      id: `dmdata-quake-${eventId}-2`,
+      time: new Date(nowDate.getTime() + QUAKE_FOLLOW_UP_AFTER_DISTRIBUTION_MS).toISOString(),
+      issue: {
+        ...quake.issue,
+        time: new Date(nowDate.getTime() + QUAKE_FOLLOW_UP_AFTER_DISTRIBUTION_MS).toISOString(),
+      },
     },
   }
 }
