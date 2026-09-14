@@ -661,6 +661,7 @@ export function App() {
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
     simulateQuakeNotice, simulateEarthquakeCount, simulateEarthquakeCountRetraction, simulateEstimatedIntensity,
     simulateTrainingQuake, simulateUnreceivedQuake, simulateTsunamiGradeChange, simulateQuakeAmendment,
+    simulateQuakeReportSequence,
     resetState, loadReplayEvents, restoreQuakeHistory,
   } = useEarthquakes(handleLiveEvent, debouncedApiKey, settings.dmdataTestDelivery, replayTimeOffset)
   earthquakesRef.current = earthquakes
@@ -725,6 +726,7 @@ export function App() {
     earthquakeCountRetraction: simulateEarthquakeCountRetraction,
     trainingQuake:     simulateTrainingQuake,
     quakeAmendment:    simulateQuakeAmendment,
+    quakeReportSequence: simulateQuakeReportSequence,
     unreceivedQuake:   simulateUnreceivedQuake,
     tsunamiGradeChange: simulateTsunamiGradeChange,
     estimatedIntensity: simulateEstimatedIntensity,
@@ -746,6 +748,7 @@ export function App() {
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
     simulateQuakeNotice, simulateEarthquakeCount, simulateEarthquakeCountRetraction, simulateEstimatedIntensity,
     simulateTrainingQuake, simulateUnreceivedQuake, simulateTsunamiGradeChange, simulateQuakeAmendment,
+    simulateQuakeReportSequence,
   ])
   // IconNav の onTabChange。手動選択は必ず即時反映し、以後 TAB_HOLD_MS の間は自動切替に
   // 奪わせない（EEW の新規発報・レベルアップ・誤報取消だけはこれより強い）。
