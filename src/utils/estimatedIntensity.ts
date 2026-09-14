@@ -7,6 +7,7 @@ import type {
   JMAQuake, JMAEstimatedIntensity, JMAEstimatedIntensityGrade, IntensityScale,
 } from '../types/earthquake'
 import { haversineKm, hasKnownEpicenter } from './geo'
+import { log } from './logger'
 
 /**
  * 震源が離れすぎていたら別の地震とみなす距離。
@@ -161,18 +162,54 @@ export type EstimatedIntensityUpdate =
   /** 反映しない（内容が同じ重複配信。正常なので記録しない） */
   | { apply: false; reason: 'duplicate' }
 
-/** 反映した（`apply: true`）ときの理由。反映しなかった理由（`stale` / `duplicate`）を含まない。 */
-export type AppliedEstimatedIntensityReason = Extract<EstimatedIntensityUpdate, { apply: true }>['reason']
+/**
+ * 分布を伝えた地震（発現時刻）を覚えておく上限。
+ *
+ * 要るのは「同じ地震の続報が届くまでのあいだに、別の地震の分布が何通挟まりうるか」だけ。
+ * 実電文（2024-01-01 の能登半島地震）では本震の初報 16:20 と続報 16:26 のあいだに挟まった
+ * 別の地震の分布は 1 通で、当日 1 日を通しても発現時刻は 8 種類だった。余裕を見て倍にしてある
+ * —— 覚えるのは時刻の文字列だけなので、増やしても費用はほぼ無い。
+ *
+ * **ライブ運用では台帳が空になる契機が無い**（空にするのはリプレイの開始・終了だけ）ので、
+ * 数日つなぎ続ければ上限に届きうる。ただし追い出しが誤読につながるのは、**ある地震の初報から
+ * その続報が届くまでのあいだに、別の地震の分布が上限ぶん挟まった**ときだけ。この電文は震度5弱
+ * 以上でしか発表されず、続報も数分後に届く（実測 6 分）ので、届いても稀。**それでも
+ * 追い出したことは記録に残す** —— 誤読が起きたときに、原因を追う手掛かりがどこにも無くなる。
+ */
+export const MAX_SHOWN_ESTIMATED_INTENSITY_ARRIVALS = 16
 
 /**
  * その分布を「初めて受信した」ものとして読むか。読み上げの言い分けに使う。
  *
- * **更新扱いにするのは `newer`（同じ地震の続報）だけ。** `switched` は表示している分布が
- * 別の地震のものへ替わったので、聞き手にとっては初めて届いた分布にあたる —— そこで
- * 「更新されました」と言うと、直前まで読んでいた地震の分布が差し替わったように聞こえる。
+ * **見るのは「その地震の分布を前に伝えたか」だけ。** かつては
+ * {@link decideEstimatedIntensityUpdate} の理由で決め、`switched`（別の地震の分布へ入れ替え）を
+ * 初報側へ倒していた。だが理由が比べている相手は**いま出している 1 通**しかないので、地震が
+ * 立て続けに起きて分布が交互に届くと、同じ地震の続報まで `switched` になる。実電文
+ * （2024-01-01）は ①16:20 本震（発現 16:10）②16:23 余震（発現 16:18）③16:26 本震の続報
+ * （発現 16:10）と届いており、③が「更新されました」と読まれなかった。
+ *
+ * **初めて見る地震なら初報側**という判断自体は変えていない。台帳に無い発現時刻は真を返す。
  */
-export function isNewEstimatedIntensity(reason: AppliedEstimatedIntensityReason): boolean {
-  return reason !== 'newer'
+export function isNewEstimatedIntensity(shownArrivals: readonly string[], arrivalTime: string): boolean {
+  return !shownArrivals.includes(arrivalTime)
+}
+
+/**
+ * 分布を伝えた地震（発現時刻）を台帳へ積む。古いものから落として上限に収める。
+ *
+ * **積むのは声にした分だけ。** 反映しなかった報（`stale` / `duplicate`）はもちろん、画面へ
+ * 出しただけで音も声も伴わない注入（リプレイ開始時の初期状態）でも積まない —— 聞いていない
+ * ものを「更新されました」と読むと、聞き手は前の報を聞き逃したと思う。逆向きの誤り（二度
+ * 読んだように聞こえる）は事実として嘘になっていないぶん軽い。
+ */
+export function rememberShownEstimatedIntensity(shownArrivals: string[], arrivalTime: string): void {
+  if (!shownArrivals.includes(arrivalTime)) shownArrivals.push(arrivalTime)
+  if (shownArrivals.length > MAX_SHOWN_ESTIMATED_INTENSITY_ARRIVALS) {
+    const dropped = shownArrivals.splice(0, shownArrivals.length - MAX_SHOWN_ESTIMATED_INTENSITY_ARRIVALS)
+    // 追い出した地震の続報がこの後に届けば、初報として読まれる。**稀にしか起きないので
+    // 通常運転のログは汚さない**（1 回の追加で溢れるのは高々 1 件）。
+    log.info(`[ixac41] 台帳の上限を超えたので古い分を落とします dropped=${dropped.join(',')}`)
+  }
 }
 
 /**

@@ -1,4 +1,4 @@
-import type { CorrectType, DomesticTsunami, Hypocenter, IssueType, TsunamiGrade } from '../types/earthquake'
+import type { CorrectType, DomesticTsunami, Hypocenter, IssueType, QuakeReportRecord, TsunamiGrade } from '../types/earthquake'
 import {
   createLogThrottle, createPerLabelLogGate, log,
   UNREADABLE_VALUE_LOG_KINDS, UNREADABLE_VALUE_LOG_INTERVAL_MS,
@@ -300,6 +300,30 @@ export function formatIssueType(type: IssueType): string {
     'その他': 'その他',
   }
   return map[type] ?? type
+}
+
+/**
+ * カードの見出しに出す電文種別。→ `JMAQuake.reports`
+ *
+ * 受け取った種別を `/` でつなぎ、2 通目以降には `#N` を添える（例: `震度速報#2/震源情報`）。
+ * 気象庁は同じ地震について種別の違う電文を前後して発表するので、最後に届いた 1 種別だけでは
+ * 何を受け取ったかが画面から分からない。
+ *
+ * **`N` は受け取った通数。** 電文が報番号を名乗っていればそちらを優先する
+ * （→ `QuakeReportRecord.serial`。実電文で番号を振るのは震源・震度情報だけで、震度速報・
+ * 震源情報は空要素で届く）。1 のときは付けない。
+ *
+ * **記録を持たないカードは `fallback` の 1 種別へ落とす。** 統合を通っていない生電文や、
+ * 記録が積まれる前に作られたカードがこれに当たる。
+ */
+export function formatQuakeReports(reports: QuakeReportRecord[] | undefined, fallback: IssueType): string {
+  if (!reports || reports.length === 0) return formatIssueType(fallback)
+  return reports
+    .map(r => {
+      const count = r.serial ?? r.keys.length
+      return count > 1 ? `${formatIssueType(r.type)}#${count}` : formatIssueType(r.type)
+    })
+    .join('/')
 }
 
 export function formatCorrectType(type: CorrectType): string {

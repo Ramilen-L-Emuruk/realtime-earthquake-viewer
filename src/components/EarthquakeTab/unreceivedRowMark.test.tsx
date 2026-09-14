@@ -7,11 +7,11 @@
 // おらず、**事実を持っている観測点の行が黙って、範囲の行だけが喋っていた** —— 観測点の行は
 // 「震度5弱以上」としか出ず、なぜ「以上」なのかが読み取れなかった。
 import { describe, it, expect, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent } from '@testing-library/react'
+import { render, cleanup } from '@testing-library/react'
 import { EarthquakeTab } from './index'
 import { quakeEventKey } from '../../utils/quakeMerge'
 import type { JMAQuake, EarthquakePoint, JMAQuakeCity } from '../../types/earthquake'
-import { findIntensityRow, intensityRowText } from '../../test-utils/intensityRow'
+import { findIntensityRow, intensityRowText, openIntensityRows } from '../../test-utils/intensityRow'
 
 afterEach(cleanup)
 
@@ -66,21 +66,12 @@ const renderTab = (quake: JMAQuake) => render(
     onToggleDistribution={() => {}}
     unreceivedQuakeKey={null}
     onToggleUnreceived={() => {}}
+    onFocusMap={() => {}}
   />,
 )
 
-/** 震度一覧は既定でどの段も畳んでいる。上から順に開く。 */
-function openRows(...labels: string[]) {
-  for (const label of labels) {
-    const row = screen.getAllByRole('button')
-      .find(el => el.tagName === 'DIV' && el.textContent?.includes(label))
-    expect(row, `${label} の行が見つからない`).toBeTruthy()
-    fireEvent.click(row!)
-  }
-}
-
 /** 県 → 区域 → 市町村と開いて観測点の行まで降りる。 */
-const openDownToStations = () => openRows(PREF, AREA, CITY)
+const openDownToStations = () => openIntensityRows(PREF, AREA, CITY)
 
 // 行の引き方は 2 つのテストファイルで共有する（→ `test-utils/intensityRow`）。
 // **地名は完全一致で引く** —— 部分一致だと「大分県」が「大分県中部」の行にも当たる。
@@ -130,7 +121,7 @@ describe('震度一覧の未入電の印', () => {
       station({ addr: UNRECEIVED_STATION, scale: 45, unreceived: true, city: undefined }),
     ]
     renderTab(makeQuake(mixedRollup))
-    openRows(PREF)
+    openIntensityRows(PREF)
     for (const name of [PREF, AREA]) {
       const text = rowText(name)
       // 値は未入電から来ているので「以上」は付く（上限が定まらないことは伝える）。
@@ -198,7 +189,7 @@ describe('市町村の「未入電あり」は配下の観測点からも立て�
   // 正: 電文が黙っていても、配下の観測点から立てる。
   it('電文が Condition を付けていない市町村でも、配下に未入電があれば印が出る', () => {
     renderTab(makeQuake(STRONG_CITY, CITY_WITHOUT_CONDITION))
-    openRows(PREF, AREA)
+    openIntensityRows(PREF, AREA)
     expect(rowText(CITY)).toContain('未入電あり')
   })
 
@@ -215,7 +206,7 @@ describe('市町村の「未入電あり」は配下の観測点からも立て�
       { name: CITY, area: AREA, pref: PREF, scale: 55 },
       { name: OTHER_CITY, area: AREA, pref: PREF, scale: 40 },
     ]))
-    openRows(PREF, AREA)
+    openIntensityRows(PREF, AREA)
     expect(rowText(CITY)).toContain('未入電あり')
     expect(rowText(OTHER_CITY)).not.toContain('未入電')
   })

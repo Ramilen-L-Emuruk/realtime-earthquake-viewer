@@ -9,17 +9,17 @@ import { isMaxScaleUnreceived } from '../utils/quakePoints'
 import { formatMagnitudeWithCondition } from '../utils/formatters'
 import {
   eewMaxScaleInfo, isForecastScaleHigher, isForecastLpgmHigher, eewNoForecastReason, computeSingleEEWLevel, canPresentLpgmClass,
-  selectEEWSoundType, eewKindLabel, eewPhase2ScaleStabilityMs,
+  selectEEWSoundType, eewKindLabel, eewPhase2ScaleStabilityMs, sortEewWarningRegions,
   EEW_PHASE2_STABILITY_MAX_WAIT_MS, EEW_PHASE2_LPGM_STABILITY_MS, eewMaxLpgmClassInfo,
   type EewMaxScaleInfo, type EewMaxLpgmClassInfo,
 } from '../utils/eew'
 import { hasKnownEpicenter, haversineKm } from '../utils/geo'
 import { showBrowserNotification } from '../utils/notifications'
 import { GRADE_PRIORITY, TSUNAMI_GRADE_LIFTED, isWarningLevelWhileObserving, tsunamiMaxGrade, tsunamiAreaGradeChanges, selectUnspokenAreaGradeChanges, rememberAreaGrades, tsunamiAreaKey, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, isTsunamiContinuation, matchesArea, sortAreasAcrossGradesForCardDisplay, sortObservationsForCardDisplay, mergeTsunamiObservations, isObservationMissing } from '../utils/tsunami'
-import { playAlertSound, ttsDelayFor, type AlertSoundType } from '../utils/alertSound'
+import { playAlertSound, ttsDelayFor, maxTtsDelay, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, stopSpeech, type PrewarmedSpeech, type ShouldStillPlay } from '../utils/voicevox'
-import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiAreaGradeChangeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, tsunamiMissingToSegments, selectMissingToSpeak, tsunamiWarningLevelToSegments, selectWarningLevelToSpeak, joinWithAlso, nankaiToText, nankaiCommentaryToText, kohatsuToText, earthquakeCountToText, estimatedIntensityToText, lpgmToText, createQuakeSpokenState, applySpokenRefs, type TtsRegionOptions, type QuakeSpokenState } from '../utils/ttsText'
-import { joinSegments, plain, hasFollowTarget, hasUnreceivedFollowTarget, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
+import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewWarningRegionsText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiAreaGradeChangeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, tsunamiMissingToSegments, selectMissingToSpeak, tsunamiWarningLevelToSegments, selectWarningLevelToSpeak, joinWithAlso, nankaiToText, nankaiCommentaryToText, kohatsuToText, earthquakeCountToText, estimatedIntensityToText, lpgmToText, telegramTextToSpeak, createQuakeSpokenState, applySpokenRefs, type TtsSpeechOptions, type QuakeSpokenState } from '../utils/ttsText'
+import { joinSegments, plain, hasFollowTarget, hasUnreceivedFollowTarget, hasTelegramTextFollowTarget, TELEGRAM_TEXT_OPEN_TARGET_KINDS, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
 import { log, createLogThrottle } from '../utils/logger'
 import { TAB_PRIORITY, type TabPriority } from '../utils/tabPriority'
 import { extractQuakeEventIdFromId, quakeEventKey, quakeKeyForLpgmEventId, sameQuakeEntry } from '../utils/quakeMerge'
@@ -115,6 +115,14 @@ type SpeechPriority = typeof SPEECH_PRIORITY[keyof typeof SPEECH_PRIORITY]
 type SpeechTopic =
   | `quake:${string}`
   | `lpgm:${string}`
+  /**
+   * 気象庁が書いた文（本文・付加文）の読み上げ。→ `telegramTextToSpeak`
+   *
+   * **電文本体と別の主題にしてある。** 同じ主題にすると、到来順の裁き
+   * （`overtakenByLaterArrival`）が本体の予約を「後発に追い越された」として取り下げ、
+   * 本文を読むために肝心の震度・等級を落とすことになる。
+   */
+  | `telegramText:${string}`
   | 'tsunami' | 'tsunamiObs' | 'nankai' | 'kohatsu' | 'nankaiCommentary' | 'earthquakeCount'
   | 'estimatedIntensity'
 
@@ -146,6 +154,20 @@ const MUTUAL_YIELD_TOPICS: ReadonlySet<SpeechTopic> = new Set<SpeechTopic>([
   // こちらは**その描き方が公式のものへ替わった**という別の事実。
   'tsunami', 'tsunamiObs', 'nankai', 'kohatsu', 'earthquakeCount', 'estimatedIntensity',
 ])
+
+/**
+ * 相互譲りの対象か。
+ *
+ * **気象庁が書いた文（`telegramText:*`）は種別によらず対象。** 本体が伝えた事実の補足なので、
+ * どの主題とも内容が重ならない —— 切ると補足だけが失われる。とくに南海トラフ関連解説情報は
+ * 同じ最下位の層にいて読み切りに数分かかるため、待たずに割り込むと両方が中途半端になる。
+ *
+ * 主題を種別ごとに分けている（`telegramText:${kind}`）ので、集合ではなく接頭辞で判定する。
+ * **同主題どうしは呼び出し側で除外済み**（言い換えなので最新に置き換えるのが正しい）。
+ */
+function isMutualYieldTopic(topic: SpeechTopic): boolean {
+  return MUTUAL_YIELD_TOPICS.has(topic) || topic.startsWith('telegramText:')
+}
 
 /**
  * いま読み上げを始められない理由（`speechBlocker`）。
@@ -183,6 +205,15 @@ const HIGHER_PRIORITY_SPEECH_MAX_WAIT_MS = 90000
 // 意味が無くなる）。上位を待つ場合の上限とは別に持つのは、あちらを延ばすと VOICEVOX 無応答の
 // 保険が緩むため。
 const MUTUAL_YIELD_SPEECH_MAX_WAIT_MS = 180000
+
+/**
+ * 気象庁が書いた文を**予約する**までの間（→ `handleLiveEvent`）。
+ *
+ * **読み上げの発火を遅らせる値ではなく、予約を遅らせる値。** 近接して届く電文（地震情報と
+ * 長周期地震動観測情報など）の予約が出そろってから予約することで、到来順の裁きで
+ * 取り下げられるのを避ける。本体の間の最大（`maxTtsDelay()`）に余白を足してある。
+ */
+const TELEGRAM_TEXT_SPEECH_RESERVE_DELAY_MS = maxTtsDelay() + 500
 
 // 予想震度が付くのを待っている EEW があるとき、非 EEW 側が状況を見直す間隔。
 // この待機中は「これから話す」状態で、待つ相手の Promise がまだ存在しないため、
@@ -252,13 +283,25 @@ function capSpeechWait(p: Promise<void>, capMs = EEW_SPEECH_CHAIN_MAX_WAIT_MS): 
   return Promise.race([p, timeout]).finally(() => clearTimeout(timer))
 }
 
-/** 設定から読み上げの地域列挙オプションを組み立てる（震度・長周期地震動で共通）。 */
-function ttsRegionOptions(settings: AppSettings): TtsRegionOptions {
+/**
+ * 設定から読み上げのオプションを組み立てる。
+ *
+ * **設定を足したらここへも足すこと。** 読み上げ文を作る関数はこのオブジェクトしか見ないので、
+ * ここで拾い漏らすと設定タブの項目が何も効かない（型検査には掛からない ―― `TtsSpeechOptions`
+ * の詳細度の項目はすべて省略可で、省略時は従来の挙動になるため）。
+ */
+function ttsRegionOptions(settings: AppSettings): TtsSpeechOptions {
   return {
     intensityLevels: settings.ttsIntensityLevels,
     maxRegions: settings.ttsMaxRegions,
     alwaysReadScale: settings.ttsAlwaysReadScale,
     regionTolerance: settings.ttsRegionTolerance,
+    unreceivedDetail: settings.ttsUnreceivedDetail,
+    readHypocenterDetail: settings.ttsReadHypocenterDetail,
+    readEewLpgmClass: settings.ttsReadEewLpgmClass,
+    readTelegramText: settings.ttsReadTelegramText,
+    telegramTextBlocks: settings.ttsTelegramTextBlocks,
+    maxObservationPoints: settings.ttsMaxObservationPoints,
   }
 }
 
@@ -547,6 +590,13 @@ export interface LiveEventHandlerDeps {
    */
   unreceivedFollow?: SpeechFollowApi
   /**
+   * 気象庁が書いた文を読み上げているあいだ、その表示を開いておくための受け口。
+   *
+   * **上の 2 つとは別の枠**にする。津波カードの追従は区域・観測点の参照を、未入電モードは
+   * 未入電の参照を見ており、どちらも対象が違う（→ `ttsFollow.ts` の門）。
+   */
+  telegramTextFollow?: SpeechFollowApi
+  /**
    * 特別情報（南海トラフ臨時情報・後発地震注意情報・関連解説情報）の受信でパネルを開く。
    *
    * これらは地図に重ねた帯で伝える情報で、パネル側に居場所がない（切り替えるタブが無い）。
@@ -559,16 +609,29 @@ export interface LiveEventHandlerDeps {
    * **`onLiveEvent` の経路から呼ぶ。** 状態を見る `useEffect` にすると、リプレイの初期状態の
    * 復元（`silent`）でも開いてしまう ―― あれは「いま届いた」ではなく「その時刻に出ていた」の
    * 再現なので、画面を切り替える理由が無い。
+   *
+   * 戻り値は**分布モードを開けたか**（引き当てる地震カードが無ければ `false`）。記録を残すかは
+   * 呼び出し側が決める（理由は実装側の注記）。
    */
-  openEstimatedIntensity: (arrivalTime: string, lat: number, lon: number) => void
-  revertToDefaultTab: () => void
+  openEstimatedIntensity: (arrivalTime: string, lat: number, lon: number) => boolean
+  /**
+   * その地震の電文を受けたことを知らせる（開いている震度分布モードを閉じる）。
+   *
+   * **分布モードは発表値（区域塗り・観測点ドット）を引っ込めるモード**なので、開いたままだと
+   * 続報で震度がどこまで変わったのかが地図に現れない。判定と理由は
+   * `utils/quakeOverlay.ts` の `closeDistributionOverlayOnQuakeReport`。
+   */
+  closeDistributionOnQuakeReport: (eventKey: string) => void
+  /** 既定タブへ戻す。引数はどの経路から戻そうとしたか（見送りの記録に出る） */
+  revertToDefaultTab: (reason: string) => void
   selectQuake: (id: string | null) => void
   /**
    * 長周期地震動観測情報が届いたことを知らせる（地図とカードの階級表示を開く）。
    *
-   * **開く／閉じるを両方兼ねさせない。** 追加表示は震度分布モードと排他で、閉じる判断は
-   * 選択中の地震が別の地震へ移ったかどうかに紐づく（→ App 側の `quakeOverlay`）。
-   * ここから閉じられるようにすると、その規則が 2 か所に分かれる。
+   * **開く／閉じるを両方兼ねさせない。** 追加表示は震度分布モードと排他で、長周期を閉じる
+   * 判断は選択中の地震が別の地震へ移ったかどうかに紐づく（→ App 側の `quakeOverlay`）。
+   * ここから閉じられるようにすると、その規則が 2 か所に分かれる（震度分布だけは別の理由でも
+   * 閉じる。上の `closeDistributionOnQuakeReport`）。
    */
   openLpgmFromQuake: (eventId: string) => void
 }
@@ -577,8 +640,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   const {
     settings, title, earthquakesRef, tsunamisRef, kyoshinDetectedRef, defaultTabRef,
     setActiveTabRealtimeForKyoshin, setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate,
-    setActiveTabRealtimeUrgent, followSpeechTab, preSpeechTab, speechFollow, unreceivedFollow, expandPanelForSpecialInfo,
+    setActiveTabRealtimeUrgent, followSpeechTab, preSpeechTab, speechFollow, unreceivedFollow, telegramTextFollow,
+    expandPanelForSpecialInfo,
     revertToDefaultTab, selectQuake, openLpgmFromQuake, openEstimatedIntensity,
+    closeDistributionOnQuakeReport,
   } = deps
 
   // 「新規地震」として注目を移した報のキー（`eventKey:issue.type`）。
@@ -762,6 +827,14 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   const nonEewSpeechSeqRef = useRef(0)
   const latestScheduledSeqByTopicRef = useRef<Map<SpeechTopic, number>>(new Map())
   const eewPhase2TokensRef = useRef<Map<string, object>>(new Map())
+  // 第 1.5 フェーズ（警報の対象地方）で**声にした**地方（eventId 別）。
+  //
+  // **記録するのは読み切った分だけ。** 途中で降りた発話は入れない —— 降りるのは「地方が増えた
+  // から読み直す」ときで、その分を既読にすると読み直しから抜け落ちる。
+  const spokenEEWRegionsRef = useRef<Map<string, Set<string>>>(new Map())
+  // 第 1.5 フェーズの予約を表す識別子（eventId 別）。第 2 フェーズと同じく、解決した時点で
+  // 消して次の予約を受け付ける。
+  const eewRegionTokensRef = useRef<Map<string, object>>(new Map())
   const eewTtsMaxTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   // 第 2 フェーズ（予想値）を一度でも発話した eventId。まだ読んでいない間は、値が上がって
   // いなくても読む（初報・震源更新の読み直しがこれに当たる）。
@@ -810,6 +883,30 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   // 津波解除/取消/失効: 音・TTS を発火済みの eventId を追跡する（AUD-6 の重複鳴り防止）。
   // TSU-3 で同一スロットに別 eventId を上書きするケースもあるため eventId 単位で管理する。
   // 直前状態（lastTsunamiGradeRef===null）で判定するとリロード後の初回解除を握り潰す。
+  /**
+   * 気象庁が書いた文のうち、**既に声にした本文そのもの**（→ `speakTelegramText`）。
+   *
+   * **電文やイベントを鍵にしない。** 生の電文は統合前で `eventKey` を持たず、P2PQuake 経路の
+   * 鍵（`initialQuakeKey`）は電文の `id` を含むため、**続報のたびに別の鍵になって既読が効かない**
+   * （同じ「＊印は…」を報のたびに読むことになる）。本文そのものを覚えれば経路によらず効く。
+   *
+   * 副作用として、別の地震でも本文が同じなら 2 度目以降は読まない。付加文の大半は定型文なので
+   * これは望ましい挙動。内容の異なる本文（南海トラフの要約・本文など）は文字列が違うので残る。
+   */
+  const spokenTelegramTextRef = useRef(new Set<string>())
+
+  /**
+   * この電文では気象庁が書いた文を読まない、という印（→ `handleLiveEvent`）。
+   *
+   * **本体が「この電文は処理しない」と決めた経路で立てる。** 本文の予約は本体の外
+   * （ラッパー）で行うので、そのままだと本体が抑制した電文でも本文だけが声になる。
+   * 電文そのものの性質（取消・試験報）は `telegramTextToSpeak` が弾くので、ここで扱うのは
+   * **設定と電文の中身から本体が判断したもの**だけ。
+   *
+   * **本体に抑制を足したらここも見ること。** 立て忘れても型検査には掛からず、症状は
+   * 「止めたはずの種別の本文だけが読まれる」という無音の食い違いになる。
+   */
+  const skipTelegramTextRef = useRef(false)
   const spokenTsunamiCancelEventIdsRef = useRef<Set<string>>(new Set())
   // 津波観測点の新規/更新バッジ表示状態と自動クリアタイマー
   const [obsUpdateStatus, setObsUpdateStatus] = useState<Map<string, 'new' | 'updated'>>(() => new Map())
@@ -938,7 +1035,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // 古い内容を読み切るより最新に置き換えるのが正しい）。片方が載っていれば両方向で待つ
     // （理由は `MUTUAL_YIELD_TOPICS`）。
     if (active.priority === priority && active.topic !== topic
-      && (MUTUAL_YIELD_TOPICS.has(topic) || MUTUAL_YIELD_TOPICS.has(active.topic))) return 'mutualYield'
+      && (isMutualYieldTopic(topic) || isMutualYieldTopic(active.topic))) return 'mutualYield'
     return null
   }
 
@@ -1139,7 +1236,16 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       }
       // 自分の番が来た（これから声に出す）瞬間に画面を合わせ、読み上げた値を既読へ移す。
       // 待ち行列の後なので、重い電文の読み上げ中に届いた軽い電文は、その後になって初めてタブを取る。
-      onSpeakStart?.()
+      //
+      // **ここの失敗で読み上げを落とさない。** 例外が抜けると下の `speakWithVoicevox` へ到達せず、
+      // **本文が一言も鳴らないまま** catch へ落ちる（記録は「読み上げの進行に失敗」という汎用の
+      // 一行だけで、どの電文のどこで落ちたか残らない）。EEW 側の追従（`chainEEWSpeech` の
+      // `follow?.()`）と同じ方針。画面を合わせられないことより、声が出ないことのほうが重い。
+      //
+      // **通るのは 1 つの経路ではない。** `speakNonEEWDelayed` が渡す関数はタブ移動
+      // （`followSpeechTab`）を含み、呼び出し側の `onSpeakStart` は津波の観測点・地震情報の
+      // 既読更新と、推計震度分布図の分布モードを開く操作を担う。
+      try { onSpeakStart?.() } catch (err) { log.warn(`[tts] 発話直前の処理に失敗（読み上げは続行）topic=${topic}`, err) }
       // 追従は「これから声に出す」ここで開始する。予約の段階で始めると、間を置いている
       // 最中に追い越されて鳴らなかった読み上げに画面が付いていく。
       //
@@ -1154,6 +1260,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       const unreceivedToken = hasUnreceivedFollowTarget(segments)
         ? unreceivedFollow?.begin(segments!, subject)
         : undefined
+      // 気象庁が書いた文の自動展開も同じ位置で始める。**どの電文の文かは `subject` が持つ**
+      // （参照には種別を持たせない。既読の記録へ混ざる形を増やさないため）。
+      const telegramTextToken = hasTelegramTextFollowTarget(segments)
+        ? telegramTextFollow?.begin(segments!, subject)
+        : undefined
       // 予約の通知を溜めておき、読み上げが終わってから「実際に鳴った範囲」を割り出す
       // （`spokenChunkIndices`）。合成は再生より先へ進むため、予約が通っただけでは鳴った
       // ことにならない。
@@ -1163,6 +1274,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       const notifyChunk = (index: number, startAt: number, chunks: readonly string[]) => {
         if (followToken !== undefined) speechFollow?.schedule(followToken, index, startAt, chunks)
         if (unreceivedToken !== undefined) unreceivedFollow?.schedule(unreceivedToken, index, startAt, chunks)
+        if (telegramTextToken !== undefined) telegramTextFollow?.schedule(telegramTextToken, index, startAt, chunks)
         if (onSpokenRefs && segments) {
           chunkRefs ??= mapChunksToRefs(segments, chunks)
           chunkCount = chunks.length
@@ -1210,7 +1322,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // 書き換わる値を持たないため、読み始めた文面を最後まで読んでよい。
       const done = speakWithVoicevox(
         settings.voicevoxUrl, text, settings.voicevoxSpeakerId, settings.soundVolume, undefined, prewarmed,
-        followToken === undefined && !onSpokenRefs ? undefined : notifyChunk,
+        followToken === undefined && unreceivedToken === undefined
+          && telegramTextToken === undefined && !onSpokenRefs
+          ? undefined : notifyChunk,
       )
       activeNonEewSpeechRef.current = { priority, topic, done, flushSpoken: () => flushSpokenRefs(false) }
       try {
@@ -1220,6 +1334,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         // 読み上げが終わった（割り込まれて途中で終わった場合も含む）。未入電モードを開いて
         // いれば、ここで閉じる側が元へ戻す。
         if (unreceivedToken !== undefined) unreceivedFollow?.end(unreceivedToken)
+        // 気象庁の文を読み終えた（割り込まれた場合も含む）。開いた表示はここで閉じる側が戻す。
+        if (telegramTextToken !== undefined) telegramTextFollow?.end(telegramTextToken)
         flushSpokenRefs(true)
         // 自分より後に始まった読み上げに置き換わっている場合は触らない（消すと待ち側が
         // 「誰も読んでいない」と誤認し、進行中の読み上げに割り込む）
@@ -1447,7 +1563,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // 地震から数分後に届く。**地震そのものの事実は既に地震情報で伝え終えている**ので、
     // ここが足すのは「震度の広がりが、気象庁の推計として出そろった」ことだけ。
     // 下の地震回数と違い**タブは動かす** —— 見せる先が地図の面で、そこへ行かないと何も見えない。
-    // ただし要求として出すので、EEW・揺れ検知・利用者の操作には譲る。
+    // **動かし方は他のタブを持つ情報と同じで、読み上げに同調させる**（地震情報・長周期・津波と
+    // 同じく `speakNonEEWDelayed` へ追従先を渡す）。受信の瞬間に要求を出すだけの形だと、
+    // EEW が画面を保持している間はその要求が弾かれ、読み上げの番が来ても画面が合わないまま
+    // 声だけが出る（→ audio-tts-spec.md §6「推計震度分布図は地震情報の音を借りる」）。
     if (event.kind === 'estimatedIntensity') {
       // **初報か続報かは `useEarthquakes` が決めて渡してくる**（`isNewEstimatedIntensity`）。
       // ここで見た `arrivalTime` を覚えて数え直すと、「同じ地震の続報」と「別の地震へ入れ替え」の
@@ -1463,16 +1582,43 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // 読まれた」と聞こえるだけで、事実としては嘘になっていない。
       // **地図の分布モードを開く。** 地震発生から数分後に届くもので、そのころ利用者は
       // 別のものを見ている。合図なしに画面だけ替わるのがいちばん困るので、音と声も添える。
-      openEstimatedIntensity(ei.arrivalTime, ei.hypocenter.lat, ei.hypocenter.lon)
+      //
+      // **読み上げの番が来た瞬間にもう一度開く**（下の `onSpeakStart`）。待っている間に別の
+      // 地震情報が届けば選択はそちらへ移るので、受信時の 1 回きりだと「更新されました」と
+      // 読み上げながら分布が出ていない形になる。開く操作は冪等（→ `openEstimatedIntensity`）。
+      // **記録を残すのは「最後の機会」でだけ。** 受信の時点で開けないのは珍しくない（分布図が
+      // 地震情報より先に届けば、まだどのカードにも結び付かない）ので、両方で残すと同じ文面が
+      // 並び、本当に開けなかった回が埋もれる。
+      const openDistribution = (lastChance: boolean) => {
+        if (openEstimatedIntensity(ei.arrivalTime, ei.hypocenter.lat, ei.hypocenter.lon)) return
+        if (!lastChance) return
+        // 画面には何も現れないのに声は「受信しました」と言う。**記録が唯一の手掛かり**なので、
+        // 同じ形の食い違いを扱う未入電側（`useUnreceivedSpeechFollow`）と同じく warn で残す。
+        log.warn(`[quake] 推計震度分布図を受信したのに、対応する地震カードが無く分布モードを開けませんでした（地震発現時刻 ${ei.arrivalTime}）`)
+      }
+      // 受信の瞬間。読み上げが無い端末では、ここが開ける最後の機会になる。
+      openDistribution(!settings.voicevoxEnabled)
+      // **受信時要求へ落とすのは読み上げが無効な端末だけ。** そこでは画面が唯一の伝え手に
+      // なるので `receipt` 駆動で出し、EEW 続報の保持を越えさせる（振り分けは
+      // `setActiveTabNonRealtime`）。読み上げがある端末でここを通すと、最弱の優先度で出した
+      // 要求が EEW の保持に弾かれたきりになる。
+      if (!settings.voicevoxEnabled) {
+        log.info('[tab] earthquake を要求 (推計震度分布図・読み上げ無し)')
+        setActiveTabNonRealtime('earthquake')
+      }
       if (settings.soundEnabled) {
         // **新しい音を作らない。** これは新しい危険ではなく、既に読み上げた地震の
         // **震度の描き方が公式のものへ替わった**という報せ。地震情報と同じ音で足りる。
         playAlertSound('earthquakeInfo')
       }
       if (settings.voicevoxEnabled) {
+        // **読み上げ文は常に非空**（`estimatedIntensityToText` は時刻が読めなくても末尾の句を
+        // 返す）。長周期のような「文が空なら受信時要求へ落とす」分岐が要らないのはそのため。
         speakNonEEWDelayed(
           estimatedIntensityToText(ei.arrivalTime, isNew !== false), SPEECH_PRIORITY.normal,
           ttsDelayFor('earthquakeInfo'), 'estimatedIntensity',
+          { tab: 'earthquake', priority: TAB_PRIORITY.quake },
+          undefined, undefined, () => openDistribution(true),
         )
       }
       return
@@ -1523,7 +1669,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // **ウィンドウタイトルは書き換えない。** 臨時情報の発表期間中は解説情報が毎日届くため、
     // 書き換えると「南海トラフ臨時情報（巨大地震注意）」のタイトル表示を毎日上書きしてしまう。
     if (event.kind === 'nankaiCommentary') {
-      if (!settings.nankaiCommentaryAlerts) return
+      // 通知を切っている種別は本文も読まない（この設定は音・帯・読み上げをまとめて止めるもの）。
+      if (!settings.nankaiCommentaryAlerts) { skipTelegramTextRef.current = true; return }
       const commentary = event.data
       // 帯は地図に重なって出るため、パネルを畳んでいると気づきにくい。いったん開く（戻す判断は App 側）。
       expandPanelForSpecialInfo()
@@ -1595,7 +1742,75 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     log.warn('[live-event] 扱いの決まっていない電文が届きました', unhandled)
   }
 
-  const handleLiveEvent = (event: LiveEvent) => {
+  /**
+   * 津波の観測点を読み上げる件数の上限。
+   *
+   * **選抜（`select*ToSpeak`）と文の生成（`tsunami*ToSegments`）の両方へ同じ値を渡すこと。**
+   * 片方を既定のままにすると、読み上げた件数と既読にする件数がずれる ―― 読まれていない
+   * 観測点が既読になると、その値は二度と声にならない（→ tsunami-spec.md §10）。
+   */
+  const maxObsPoints = settings.ttsMaxObservationPoints
+
+  /**
+   * 気象庁が書いた文（本文・付加文）を読み上げる。設定で有効にしたときだけ鳴る。
+   *
+   * **最下位の層（`commentary`）で読む。** あの層は「何も切らない」ことを保証していて、
+   * 待ちきれなければ黙る（`speakNonEEW`）。南海トラフ臨時情報の本文は読み上げ 3 分に達するため、
+   * 電文本体の読み上げへ足すと地震情報を待たせることになる（→ `telegramTextToSpeak`）。
+   *
+   * **同じ本文は繰り返し読まない。** 固定付加文は区分が変わらない限り続報でも同じ値が載るので
+   * （→ quake-spec.md §3「津波の付加文」）、鍵を電文ごとにすると「＊印は気象庁以外の…」を
+   * 報のたびに読む。鍵はイベント単位にし、本文が変わったときだけ読み直す。
+   */
+  const speakTelegramText = (event: LiveEvent) => {
+    // 読み上げは soundEnabled と独立に voicevoxEnabled のみで判定する（AUD-7）。
+    // **このガードを省かない。** 設定タブの「読み上げ設定」は voicevoxEnabled が真のときしか
+    // 出ないが、`ttsReadTelegramText` はそれとは独立に永続化される。読み上げを切った端末で
+    // 有効な値が残っていると、マスタートグルを切ったのに声が出る。
+    if (!settings.voicevoxEnabled) return
+    const speech = telegramTextToSpeak(event, ttsRegionOptions(settings))
+    if (!speech) return
+    // 既読の更新は**声に出す瞬間**（`onSpeakStart`）。予約した時点で更新すると、待ちきれず
+    // 黙った本文まで既読になり、二度と読まれない（他の既読と同じ規約）。
+    if (spokenTelegramTextRef.current.has(speech.body)) return
+    // 際限なく溜めない（津波の取消の既読と同じ方式）。定型文が大半なので実運用でこの数に
+    // 達することはまず無いが、長時間の運用で増え続ける入れ物を残さない。
+    if (spokenTelegramTextRef.current.size > 200) spokenTelegramTextRef.current.clear()
+    // **`speakNonEEWDelayed` を経由する。`speakNonEEW` を直接呼ばない。**
+    // 到来順の裁き（`overtakenByLaterArrival`）と予約の枠の管理を持っているのはこちらだけで、
+    // 直接呼ぶと**先発がまだ鳴り出す前に後発が届いたとき、両方がキューに入って重なる**
+    // （既読は声に出す瞬間にしか進まないので、予約の時点では弾けない）。
+    //
+    // **主題は電文の種別。** 同じ種別の本文どうしは後発が勝つ（最新の本文を読む）。
+    // 本体の読み上げとは別の主題にしてあるので、到来順の裁きが本体の予約を取り下げることはない。
+    //
+    // **参照つきの断片で渡す。** 読み上げているあいだ、画面のその表示を開いておくため
+    // （→ `ttsFollow.ts` の `telegramText`）。文の中身では分けず 1 つにまとめている ——
+    // 求められているのは「読み始めたら開く」ことで、どの段落を読んでいるかの追従ではない。
+    //
+    // **開く先がある種別にだけ参照を付ける。** 地震情報と長周期地震動観測情報の付加文は
+    // 元から畳んでいないので開く相手がいない。無条件に付けると、誰も反応しない追従セッションが
+    // 立ち上がっては終わる（症状が出ないぶん、後から読んで意図を確かめられない）。
+    const segments: SpeechSegment[] = [{
+      text: speech.text,
+      refs: TELEGRAM_TEXT_OPEN_TARGET_KINDS.has(event.kind) ? [{ kind: 'telegramText' }] : [],
+    }]
+    speakNonEEWDelayed(
+      speech.text,
+      SPEECH_PRIORITY.commentary,
+      0,
+      `telegramText:${event.kind}`,
+      undefined,
+      segments,
+      undefined,
+      () => { spokenTelegramTextRef.current.add(speech.body) },
+      // 追従する側が「どの電文の文か」を知るための主題。主題（topic）と同じ値にしてあるが、
+      // 別の役割 —— topic は到来順の裁きに、subject は画面の開閉に使う。
+      `telegramText:${event.kind}`,
+    )
+  }
+
+  const handleLiveEventInner = (event: LiveEvent) => {
     // **地震・津波・EEW 以外はここで降ろす。** 以降の分岐はこの 3 種別の状態を突き合わせる
     // 処理で、ほかの電文はどれにも当てはまらない（→ `handleExtraLiveEvent`）。先に降ろすので、
     // この行から下の `event` は `AppEvent` に絞られている。
@@ -1712,6 +1927,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       quakeSpeechTopic = `quake:${incomingEventKey}`
       quakeSubjectKey = incomingEventKey
       selectQuake(incomingEventKey)
+      // 震度分布モードを開いていたら閉じて、発表値の地図へ戻す。**同じ地震の続報でも閉じる**
+      // ——分布モードは区域塗りも観測点ドットも出さないので、開いたままだとこの電文が伝えて
+      // きた震度が地図に一切現れない（→ `closeDistributionOverlayOnQuakeReport`）。
+      closeDistributionOnQuakeReport(incomingEventKey)
       const { hypocenter, maxScale } = event.earthquake
       const isForeignQuake = event.issue.type === '遠地地震'
       // 震度を伝えない電文（VXSE52 等）では、同一イベントのカードが既に出している震度を消さない
@@ -1914,6 +2133,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         eewTtsEventsRef.current.delete(key)
         eewPhase2TokensRef.current.delete(key)
         eewPhase2DoneRef.current.delete(key)
+        eewRegionTokensRef.current.delete(key)
+        spokenEEWRegionsRef.current.delete(key)
         spokenEEWLevelsRef.current.delete(key)
         // 安定待ちの進行中サイクル・確定値も落とす（取り消された地震の値を残さない）
         const pendingScaleStability = eewScaleStabilityRef.current.get(key)
@@ -1941,8 +2162,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
               log.info('[tab] realtime を要求 (EEW全解除・揺れ検知中)')
               setActiveTabRealtimeForKyoshin()
             } else {
-              log.info(`[tab] → ${defaultTabRef.current} (EEW全解除)`)
-              revertToDefaultTab()
+              log.info(`[tab] ${defaultTabRef.current} を要求 (EEW全解除)`)
+              revertToDefaultTab('EEW全解除')
             }
           }
         }
@@ -2143,9 +2364,17 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
               log.warn('[eew] 想定外: 震度を伝えられない報で階級だけ確定した', key, confirmedLpgm)
               if (scaleUnchanged) return null
             }
+            // 階級を読まない設定では、階級だけを読む経路に読むものが残らない（`eewLpgmOnlyText`
+            // が空文字を返し、下の「想定外」警告へ落ちる）。上の `confirmedLpgm === 0` と
+            // 同じ扱いで降りる。震度が動いた報は `eewIntensityText` の経路なので影響しない。
+            //
+            // **このガードは上の異常検知より後ろに置くこと。** 前へ出すと、設定を切った端末では
+            // 「震度を伝えられないのに階級だけ確定した」という電文の異常が一度も記録されない
+            // （発話の結果は同じなので画面にも出ず、後から原因を追えなくなる）。
+            if (scaleUnchanged && !settings.ttsReadEewLpgmClass) return null
             const text = scaleUnchanged
               ? eewLpgmOnlyText(confirmedLpgm, confirmedLpgmInfo?.over === true)
-              : eewIntensityText(confirmedScale, confirmedLpgm, latest, announceUpgrade, confirmedLpgmInfo?.over === true)
+              : eewIntensityText(confirmedScale, confirmedLpgm, latest, announceUpgrade, confirmedLpgmInfo?.over === true, ttsRegionOptions(settings))
             if (!text) {
               // 想定外。eewIntensityText 経由なら eewScaleOnlyText が常に非空を返す
               // （noForecastText が全ケースをカバーするため）。scaleUnchanged 経由の
@@ -2160,7 +2389,18 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             // **階級は「実際に声に含めた分」だけ記録する。** 上のガードに掛かった報（震度を
             // 伝えられないのに階級だけ確定した＝電文の異常）では `eewIntensityText` が階級句を
             // 落とすため、`confirmedLpgm` をそのまま入れると言っていない値が既読になる。
-            const spokenLpgm: EewMaxLpgmClassInfo = canPresentLpgmClass(confirmedScale.scale, confirmedLpgm)
+            //
+            // **階級を読まない設定のときも同じ。** 震度が動いた報は `eewIntensityText` の経路を
+            // 通って階級句だけが落ちるので、`confirmedLpgm` をそのまま記録すると「言っていない値」
+            // が既読に入る。判定は `eewIntensityText` が使うものと同値に保つこと。
+            //
+            // **これは不変条件を守るための修正で、到達できる実害は見つかっていない。**
+            // 既読の階級は早期 return の判定（`isForecastLpgmHigher`）にしか使わず、そこで差が
+            // 出るのは「震度も階級も据え置きの続報」だけ。その報では値が変わらないので
+            // `confirmLpgm` が呼ばれず第 2 フェーズの予約自体が作られない。**そのため回帰テストを
+            // 書けていない**（落ちないテストは、守っているように見えるぶん無いより悪い）。
+            const spokenLpgm: EewMaxLpgmClassInfo = settings.ttsReadEewLpgmClass
+              && canPresentLpgmClass(confirmedScale.scale, confirmedLpgm)
               ? { cls: confirmedLpgm, over: confirmedLpgmInfo?.over === true }
               : { cls: 0, over: false }
             spokenEEWScalesRef.current.set(key, confirmedScale)
@@ -2435,6 +2675,69 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         }
 
         /**
+         * 第 1.5 フェーズ（警報の対象地方）をチェーンの末尾へ予約する。
+         *
+         * **第 1 フェーズを積んだ直後に呼ぶ。** チェーンは積んだ順に解決するので、安定待ちが
+         * 最短（300ms）で確定して `enqueuePhase2` が走っても、順序は 第1 → 第1.5 → 第2 になる。
+         * 続報で地方が増えたときは第 1 フェーズを伴わないが、そのときは第 2 フェーズより後ろへ
+         * 積まれる——実配信で地方が増えるのは 35 秒・59 秒後（能登本震）で、予想値の告知を
+         * 待たせる関係にはならない。
+         *
+         * **読む中身は「電文の全地方 − 声にした地方」。** 電文が `LastKind` で示す「新規」は
+         * 前報からの差分で、こちらが前報を取りこぼしていれば一緒に落ちる。
+         */
+        const enqueueWarningRegions = () => {
+          if (!settings.ttsReadEewWarningRegions) return
+          if (eewRegionTokensRef.current.has(key)) return
+          const token = {}
+          eewRegionTokensRef.current.set(key, token)
+          chainEEWSpeech(() => {
+            if (eewRegionTokensRef.current.get(key) !== token) return null
+            eewRegionTokensRef.current.delete(key)
+            // 取消・自動解除で消えていたら読まない（第 1・第 2 フェーズと同じ）。
+            const latest = eewTtsEventsRef.current.get(key)
+            if (!latest) return null
+            const spoken = spokenEEWRegionsRef.current.get(key) ?? new Set<string>()
+            // **発話の直前に最新の電文から取り直す。** 予約から声になるまでには前の発話の完了待ちと
+            // 合成の往復があり、そのあいだにも続報は届く。
+            //
+            // **並びは標準順へ揃える**（`sortEewWarningRegions`）。電文の文書順は続報で入れ替わる
+            // ため、そのまま読むと画面の並びと食い違う。
+            const speaking = sortEewWarningRegions((latest.warningRegions ?? []).filter(r => !spoken.has(r)))
+            if (speaking.length === 0) return null
+            const text = eewWarningRegionsText(speaking, spoken.size > 0)
+            // 鳴り始めてから地方が増えたら降りる（増えた分を含めて読み直すため）。降りた回を
+            // 既読にしないよう、記録は `onSettled` で「降りていないとき」だけ行う。
+            let abandoned = false
+            return {
+              text,
+              shouldStillPlay: () => {
+                if (eewRetractedKeysRef.current.has(key)) { abandoned = true; return false }
+                const now = eewTtsEventsRef.current.get(key)
+                // 自動解除で消えた場合は鳴らし続ける（第 2 フェーズと同じ。発表は終わったが、
+                // 読んでいる地方が誤りだったわけではない）。
+                if (!now) return true
+                const grown = (now.warningRegions ?? []).some(r => !spoken.has(r) && !speaking.includes(r))
+                if (grown) { abandoned = true; return false }
+                return true
+              },
+              onSettled: () => {
+                if (abandoned) return
+                const set = spokenEEWRegionsRef.current.get(key) ?? new Set<string>()
+                speaking.forEach(r => set.add(r))
+                spokenEEWRegionsRef.current.set(key, set)
+              },
+            }
+          }, () => followSpeechTab('realtime', isNew ? TAB_PRIORITY.eewUrgent : TAB_PRIORITY.eewUpdate))
+        }
+
+        // 声にしていない地方が残っていれば積む。**第 1 フェーズの発火とは独立**——続報で地方が
+        // 増えたときは第 1 フェーズを伴わない（震源が動いていないため）。
+        if ((event.warningRegions ?? []).some(r => !(spokenEEWRegionsRef.current.get(key)?.has(r)))) {
+          enqueueWarningRegions()
+        }
+
+        /**
          * 震度・長周期階級の安定待ちを更新する。`firePhase1` かどうかに関わらず統一的に行う
          * ——新規発報・震源更新・言い直しの直後も、通常の続報も、扱いは同じでよい
          * （実際に読み上げるかどうかは `enqueuePhase2` 側の isForecastScaleHigher 等の
@@ -2592,6 +2895,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         log.info('[tab] tsunami を要求 (新規発報・読み上げなし)')
         setActiveTabNonRealtime('tsunami')
       }
+      // 本体が処理を打ち切った電文なので、本文だけを声にしない。
+      skipTelegramTextRef.current = true
       return
     }
     if (settings.soundEnabled) playAlertSound(type)
@@ -2741,13 +3046,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // 渡すこと。理由は `SpokenHeightLookup` の宣言箇所）。件数上限は既定のままなので
           // 第 3 引数は省略の意で undefined を渡す。
           const updateSegments = updatedObs.length > 0
-            ? tsunamiObservationUpdateToSegments(updatedObs, event.headline, undefined, prevMap)
+            ? tsunamiObservationUpdateToSegments(updatedObs, event.headline, maxObsPoints, prevMap)
             : []
-          const arrivalSegments = tsunamiArrivalToSegments(newlyArrivedObs)
-          const missingSegments = tsunamiMissingToSegments(newlyMissingObs)
+          const arrivalSegments = tsunamiArrivalToSegments(newlyArrivedObs, maxObsPoints)
+          const missingSegments = tsunamiMissingToSegments(newlyMissingObs, maxObsPoints)
           // 数値が無いので他のどの文にも乗らない（→ `tsunamiWarningLevelToSegments`）。
           const newlyWarningLevelObs = obsInCardOrder.filter(o => isWarningLevelWorthSpeaking(o))
-          const warningLevelSegments = tsunamiWarningLevelToSegments(newlyWarningLevelObs)
+          const warningLevelSegments = tsunamiWarningLevelToSegments(newlyWarningLevelObs, maxObsPoints)
           // 波高の文・到達確認の文・欠測の文はそれぞれ別の話題。接続語なしで並べると切れ目が
           // 耳で分からない（どれも「地名で〜しています」の形になる。理由は `joinWithAlso`）。
           // **確定した事実を先に、観測できていないものを後に**置く。
@@ -2765,12 +3070,12 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           if (ttsSegments) {
             // 到達確認も件数上限で落ちる。**落ちた分を既読にしてはいけない**（絞り込みは
             // 読み上げ文の生成と同じ関数を使う。理由は `selectArrivalsToSpeak` の宣言箇所）。
-            spokenObs = [...selectObservationUpdatesToSpeak(updatedObs), ...selectArrivalsToSpeak(newlyArrivedObs)]
+            spokenObs = [...selectObservationUpdatesToSpeak(updatedObs, maxObsPoints), ...selectArrivalsToSpeak(newlyArrivedObs, maxObsPoints)]
             // 欠測も件数上限で落ちる。**落ちた分を既読にしない**（絞り込みは読み上げ文の生成と
             // 同じ関数を使う。理由は `selectMissingToSpeak` の宣言箇所）。
-            spokenMissingObs = selectMissingToSpeak(newlyMissingObs)
+            spokenMissingObs = selectMissingToSpeak(newlyMissingObs, maxObsPoints)
             // 件数上限で落ちた分は既読にしない（欠測・到達確認と同じ規則）。
-            spokenWarningLevelObs = selectWarningLevelToSpeak(newlyWarningLevelObs)
+            spokenWarningLevelObs = selectWarningLevelToSpeak(newlyWarningLevelObs, maxObsPoints)
           }
         } else if (tsunamiIsAreaGradeChange) {
           // 区域単位で等級が動いた報。**動いた区域だけを読む**（残っている区域はカードが示す）。
@@ -2788,16 +3093,16 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             [
               ...ttsSegments,
               ...joinWithAlso(
-                tsunamiWarningLevelToSegments(newlyWarningLevelObsOnAreaChange),
-                tsunamiArrivalToSegments(newlyArrivedObsOnAreaChange),
+                tsunamiWarningLevelToSegments(newlyWarningLevelObsOnAreaChange, maxObsPoints),
+                tsunamiArrivalToSegments(newlyArrivedObsOnAreaChange, maxObsPoints),
               ),
             ],
-            tsunamiMissingToSegments(newlyMissingObsOnAreaChange),
+            tsunamiMissingToSegments(newlyMissingObsOnAreaChange, maxObsPoints),
           )
           // 等級の発表と同じ扱いで、既読にするのは到達確認と欠測だけ（実測値は読んでいない）
-          spokenObs = selectArrivalsToSpeak(newlyArrivedObsOnAreaChange)
-          spokenMissingObs = selectMissingToSpeak(newlyMissingObsOnAreaChange)
-          spokenWarningLevelObs = selectWarningLevelToSpeak(newlyWarningLevelObsOnAreaChange)
+          spokenObs = selectArrivalsToSpeak(newlyArrivedObsOnAreaChange, maxObsPoints)
+          spokenMissingObs = selectMissingToSpeak(newlyMissingObsOnAreaChange, maxObsPoints)
+          spokenWarningLevelObs = selectWarningLevelToSpeak(newlyWarningLevelObsOnAreaChange, maxObsPoints)
         } else {
           const isDowngrade = prevGrade !== null && GRADE_PRIORITY[currentGrade] < GRADE_PRIORITY[prevGrade]
           // **区域の並べ替えにはカードと同じ材料を渡す**（`tsunamiCardBasis`）。等級を切り替える報は
@@ -2838,10 +3143,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             canTellGrade
               ? joinWithAlso(
                 joinWithAlso(
-                  tsunamiWarningLevelToSegments(newlyWarningLevelObsOnGradeChange),
-                  tsunamiArrivalToSegments(newlyArrivedObsOnGradeChange),
+                  tsunamiWarningLevelToSegments(newlyWarningLevelObsOnGradeChange, maxObsPoints),
+                  tsunamiArrivalToSegments(newlyArrivedObsOnGradeChange, maxObsPoints),
                 ),
-                tsunamiMissingToSegments(newlyMissingObsOnGradeChange),
+                tsunamiMissingToSegments(newlyMissingObsOnGradeChange, maxObsPoints),
               )
               : [],
           )
@@ -2849,10 +3154,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // （`tsunamiToSegments` → `areaHeightSentence`）で、観測点は区域の並べ替えにしか
           // 使わない。ここで観測点を既読にすると、一度も声に出していない実測値が既読になり、
           // 直後の観測情報で読まれなくなる。既読にするのは到達確認だけ。
-          spokenObs = canTellGrade ? selectArrivalsToSpeak(newlyArrivedObsOnGradeChange) : []
+          spokenObs = canTellGrade ? selectArrivalsToSpeak(newlyArrivedObsOnGradeChange, maxObsPoints) : []
           // 等級を語れない電文では欠測も読まないので、既読にもしない（到達確認と同じ扱い）。
-          spokenMissingObs = canTellGrade ? selectMissingToSpeak(newlyMissingObsOnGradeChange) : []
-          spokenWarningLevelObs = canTellGrade ? selectWarningLevelToSpeak(newlyWarningLevelObsOnGradeChange) : []
+          spokenMissingObs = canTellGrade ? selectMissingToSpeak(newlyMissingObsOnGradeChange, maxObsPoints) : []
+          spokenWarningLevelObs = canTellGrade ? selectWarningLevelToSpeak(newlyWarningLevelObsOnGradeChange, maxObsPoints) : []
         }
         if (ttsSegments) ttsText = joinSegments(ttsSegments)
       }
@@ -3093,6 +3398,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     activeNonEewSpeechRef.current = null
     latestScheduledSeqByTopicRef.current.clear()
     eewPhase2DoneRef.current.clear()
+    // 第 1.5 フェーズ（警報の対象地方）の既読と予約。**第 2 フェーズの対と揃えて落とす** ——
+    // 落とし忘れると、同じ `eventId` を再生し直したとき「もう声にした」と判定されて
+    // 第 1.5 フェーズがそのセッションで一度も鳴らない（例外もログも出ない）。
+    spokenEEWRegionsRef.current.clear()
+    eewRegionTokensRef.current.clear()
     eewRetractedKeysRef.current.clear()
     eewPhase1ProgressRef.current.clear()
     lastTsunamiGradeRef.current = null
@@ -3112,6 +3422,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // なる経路）。しかも 200 件溜まるまで自己クリアされないので、実質そのセッション中ずっと
     // 効き続ける。他の既読系と揃える。
     spokenTsunamiCancelEventIdsRef.current.clear()
+    // 気象庁が書いた文の既読も落とす。残すと、同じシナリオを再生し直したときに本文が
+    // 前回と一致して「読んだこと」になり、**新しいセッションで一度も声にならない**
+    // （鍵はイベント単位なので、同じ地震を再生すれば必ず一致する）。
+    spokenTelegramTextRef.current.clear()
     // 60秒 obs バッジ自動消去タイマーもリプレイ切替時に持ち越さない（アンマウント経路と対称）
     window.clearTimeout(obsStatusClearTimerRef.current)
     obsStatusClearTimerRef.current = 0
@@ -3128,7 +3442,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // （区域名や観測点名が新旧で重なれば、実在する別の行を掴む）。
     speechFollow?.reset()
     unreceivedFollow?.reset()
-  }, [cancelPendingSpeech, speechFollow, unreceivedFollow])
+    // 気象庁の文の自動展開も同じ。**3 本とも並べて打ち切る** —— 1 本だけ残すと、
+    // 切り替え前の読み上げが自然に終わるまで（南海トラフ臨時情報なら約 3 分）
+    // 無関係なバナーが開いたままになる。
+    telegramTextFollow?.reset()
+  }, [cancelPendingSpeech, speechFollow, unreceivedFollow, telegramTextFollow])
 
   // pre-window イベントから T 時点の追跡 ref を復元する（サイレント注入後の正確な音判定に必要）
   const restorePreWindowTracking = useCallback((preFiltered: ReplayEntry[]) => {
@@ -3225,5 +3543,36 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   // **タブ復帰で津波カードを先頭へ戻す口はここに置かない。** 先頭復帰は `App.tsx` の
   // `requestAutoTab` が `shouldResetTsunamiScroll` で決める 1 経路だけにしてある。
   // ここから別に要求を出していた頃は、タブが変わっていない復帰でも位置を捨てていた。
+  /**
+   * 電文 1 通の処理。
+   *
+   * **気象庁が書いた文は本体の処理が済んでから予約する。** 入口で予約すると、待ち合わせは
+   * 「いま鳴っているものがあるか」で判定するため**何も鳴っていない状態で先に鳴り出し**、
+   * 後から予約された本体（地震情報・津波）が上位として割り込む —— 最下位の層に置いて
+   * 「何も切らない」ようにした意味が消える。本体を先に予約しておけば、本文はそれを待つ。
+   *
+   * **本体の早期 return を避けるためにラッパーにしてある。** `handleLiveEventInner` には
+   * 種別ごとの抑制（試験報・重複報など）による `return` が多数あり、その末尾へ置くと
+   * 通らない経路ができる。
+   */
+  const handleLiveEvent = (event: LiveEvent) => {
+    skipTelegramTextRef.current = false
+    handleLiveEventInner(event)
+    if (skipTelegramTextRef.current) return
+    // **予約そのものを遅らせる。発火を遅らせるのではない。**
+    //
+    // 到来順の裁き（`overtakenByLaterArrival`）は「自分より**後に予約された**同格以上の
+    // 読み上げ」に追い越されたら取り下げる。本文を本体と同じ瞬間に予約すると、直後に届いた
+    // 別の電文（地震情報と長周期地震動観測情報は続けて届く）の予約に追い越され、
+    // **待つ前に取り下げられる**（実機のログで確認）。
+    //
+    // 予約を数秒遅らせれば本文が最後の予約になり、追い越されない。そのうえで発火時に本体が
+    // 鳴っていれば、今度は待ち合わせ（`speechBlocker`）が正しく待たせる。
+    //
+    // 追跡できる形で予約する（`scheduleSpeech`）—— 画面を閉じたときとリプレイの開始で
+    // 取り消せないと、消したはずの画面へ本文が 1 通だけ届く。
+    scheduleSpeech(TELEGRAM_TEXT_SPEECH_RESERVE_DELAY_MS, () => speakTelegramText(event))
+  }
+
   return { handleLiveEvent, resetTracking, restorePreWindowTracking, obsUpdateStatus, areaGradeChangedKeys, focusedDistrict }
 }

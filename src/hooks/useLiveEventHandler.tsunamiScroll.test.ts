@@ -13,7 +13,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
-import type { AppSettings } from './useSettings'
+import { DEFAULTS, type AppSettings } from './useSettings'
 import type { JMAQuake, JMATsunami } from '../types/earthquake'
 
 vi.mock('../utils/voicevox', () => ({
@@ -111,7 +111,7 @@ const AREAS_WARNING = [
 ]
 
 function setup(displayed: JMATsunami[] = []) {
-  const settings = {
+  const settings = { ...DEFAULTS,
     // **読み上げは無効にする。** 有効だと受信時スクロールが猶予を待つ経路へ入り、
     // このテストが見たい「要求の中身」とは別の分岐が混ざる。
     voicevoxEnabled: false, voicevoxUrl: 'http://x', voicevoxSpeakerId: 1,
@@ -133,8 +133,8 @@ function setup(displayed: JMATsunami[] = []) {
     setActiveTabRealtimeOnUpdate: vi.fn(),
     setActiveTabRealtimeUrgent: vi.fn(), followSpeechTab: vi.fn(), preSpeechTab: vi.fn(() => true),
     expandPanelForSpecialInfo: vi.fn(), revertToDefaultTab: vi.fn(),
-    selectQuake: vi.fn(), openLpgmFromQuake: vi.fn(), openEstimatedIntensity: vi.fn(),
-  } as never))
+    selectQuake: vi.fn(), openLpgmFromQuake: vi.fn(), openEstimatedIntensity: vi.fn(), closeDistributionOnQuakeReport: vi.fn(),
+  }))
   return result
 }
 

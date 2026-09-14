@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { ringBounds } from './psWaveRing'
-import { fitMaxZoomForPane, REFERENCE_FIT_MAX_ZOOM, EEW_ZOOM_SNAP, snapZoomDown, snapZoomNearest } from './camera'
+import { fitMaxZoomForPane, focusMaxZoomForPane, FOCUS_SPAN_KM, FIT_MIN_SPAN_KM, REFERENCE_FIT_MAX_ZOOM, EEW_ZOOM_SNAP, snapZoomDown, snapZoomNearest } from './camera'
 import {
   desiredTileZoom,
   GEBCO_HIRES_MIN_ZOOM,
@@ -133,6 +133,28 @@ function eewFollowLandingZoomForBox(pane: Pane, box: [[number, number], [number,
   )
   return snapZoomDown(raw, EEW_ZOOM_SNAP)
 }
+
+describe('一覧クリックの寄り上限', () => {
+  // 区域集約の閾値は自動フィットの寄り上限と同値（`aggregateMaxZoom` に `fitMaxZoom` を渡す）。
+  // **一覧の行から寄せるときの上限がそれ以下だと、押した観測点は塗りに隠れたままになる** ——
+  // 寄せた意味がほとんど無くなるので、深い側であることを固定する。
+  it('正: どのペイン寸法でも、自動フィットの寄り上限より深い', () => {
+    for (const pane of [375, 800, 1600]) {
+      expect(focusMaxZoomForPane(pane)).toBeGreaterThan(fitMaxZoomForPane(pane))
+    }
+  })
+
+  // 対照: 上の関係は視野の広さの大小から来ている。km を逆転させれば成り立たない。
+  it('対照: 視野を自動フィットより広く取れば、深くはならない', () => {
+    expect(FOCUS_SPAN_KM).toBeLessThan(FIT_MIN_SPAN_KM)
+  })
+
+  // 安全弁: **`ABSOLUTE_MAX_ZOOM` のクランプを掛けない**（自動フィット用の蓋で、地図自体に
+  // ズーム上限は無い）。掛けると大画面で自動フィットと同じ値に潰れ、集約が解けなくなる。
+  it('安全弁: 大きなペインでも絶対上限で頭打ちにしない', () => {
+    expect(focusMaxZoomForPane(1600)).toBeGreaterThan(ABSOLUTE_MAX_ZOOM)
+  })
+})
 
 describe('ズーム閾値の相互関係', () => {
   // 区域集約の閾値（`useQuakeLayerData` の aggregateMaxZoom）は、カメラの寄り上限と同値であることが

@@ -13,6 +13,10 @@ import { WARNING_COMMENT_ORDER } from '../utils/tsunami'
 
 // 震度速報（VXSE51）。震源が未確定の段階で出るため Earthquake 要素を持たず、
 // 震度は Pref > Area（一次細分区域）までしか無い。
+//
+// **`Serial` は空要素。** 実電文どおりの形にしてある（能登 2024-01-01 のアーカイブで確認。
+// 本震は震度速報が 7 通発表されたが 7 通とも空だった）。連番を振るのは VXSE53 だけで、
+// ここを `1` にすると「何通受け取っても第 1 報」という実在しない形になる。
 const VXSE51_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <Report xmlns="http://xml.kishou.go.jp/jmaxml1/">
   <Control>
@@ -28,7 +32,7 @@ const VXSE51_XML = `<?xml version="1.0" encoding="UTF-8"?>
     <TargetDateTime>2026-08-09T02:58:00+09:00</TargetDateTime>
     <EventID>20260809025800</EventID>
     <InfoType>発表</InfoType>
-    <Serial>1</Serial>
+    <Serial/>
   </Head>
   <Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/">
     <Intensity>
@@ -1228,6 +1232,11 @@ function eewXml(o: {
   accuracy?: string
   /** `Intensity/Forecast/Appendix` の中身をそのまま差し込む。 */
   appendix?: string
+  /**
+   * `Head/Headline` の中身をそのまま差し込む（`<Text>` と `<Information>`）。
+   * **警報級の報にだけ入る**ので、既定では要素ごと出さない（予報級の実電文と同じ形）。
+   */
+  headline?: string
 } = {}): string {
   if (o.noEarthquake && o.area) throw new Error('eewXml: noEarthquake と area は同時に指定できない')
   const area = o.area ?? '<Name>茨城県沖</Name><jmx_eb:Coordinate>+36.2+141.0-30000/</jmx_eb:Coordinate>'
@@ -1245,6 +1254,7 @@ function eewXml(o: {
     '<EventID>20260101120000</EventID>',
     '<InfoType>' + (o.infoType ?? '発表') + '</InfoType>',
     '<Serial>1</Serial>',
+    ...(o.headline ? ['<Headline>' + o.headline + '</Headline>'] : []),
     '</Head>',
     '<Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/" xmlns:jmx_eb="http://xml.kishou.go.jp/jmaxml1/elementBasis1/">',
     o.nextAdvisory ?? '',
@@ -1341,7 +1351,7 @@ describe('parseEEWFromXml: severity・cancel・LPGM', () => {
     it('地域別も From に寄せ、「以上」をフラグで持つ', () => {
       const eew = withInt('<From>4</From><To>over</To>', eewPref('<From>4</From><To>over</To>'))
       expect(eew.areas).toEqual([
-        { pref: '', name: '石川県能登', scaleFrom: 40, scaleTo: 40, scaleToOrAbove: true, kindCode: '09', arrivalTime: null, lgIntTo: undefined },
+        { pref: '石川', name: '石川県能登', scaleFrom: 40, scaleTo: 40, scaleToOrAbove: true, kindCode: '09', arrivalTime: null, lgIntTo: undefined },
       ])
     })
 
@@ -4227,7 +4237,7 @@ describe('parseEEWFromXml（VXSE45 の XML 経路）', () => {
     const e = parseEEWFromXml('VXSE45', xml)!
     expect(e.severity).toBe('Warning')
     expect(e.areas).toEqual([{
-      pref: '', name: '神奈川県東部', scaleFrom: 45, scaleTo: 45,
+      pref: '神奈川', name: '神奈川県東部', scaleFrom: 45, scaleTo: 45,
       kindCode: '11', arrivalTime: null, arrived: true, lgIntTo: 1,
     }])
   })
@@ -4399,7 +4409,7 @@ describe('XML 経路が落としてはいけない項目（EEW）', () => {
     const e = parseEEWFromXml('VXSE45', xml)!
     expect(e.severity).toBe('Warning')
     expect(e.areas).toEqual([{
-      pref: '', name: '神奈川県東部', scaleFrom: 45, scaleTo: 45,
+      pref: '神奈川', name: '神奈川県東部', scaleFrom: 45, scaleTo: 45,
       kindCode: '11', arrivalTime: null, arrived: true, lgIntTo: 1,
     }])
   })
@@ -5508,5 +5518,201 @@ describe('日時として読めない電文の時刻（津波以外の経路）'
       const xml = replaceOnce(VXSE60_XML, '<StartTime>2008-08-24T15:00:00+09:00</StartTime>', '<StartTime>壊れた値</StartTime>')
       expect(parseEarthquakeCountFromXml(xml)!.items[0].startTime).toBe('')
     })
+  })
+})
+
+// --- 電文の一意鍵と報番号 ---
+//
+// カードの見出しを「震度速報#2/震源情報」の形で組むための材料
+// （→ `types/earthquake.ts` の `JMAQuake.telegramKey` / `.reportSerial`）。
+describe('電文の一意鍵と報番号', () => {
+  // 正: 一意鍵は `Control/DateTime`（電文を作成した時刻・秒精度）。
+  it('一意鍵に Control/DateTime を読む', () => {
+    expect(parseEarthquakeFromXml('VXSE51', VXSE51_XML)!.telegramKey).toBe('2026-08-08T18:00:00Z')
+  })
+
+  // 対照: `Head/ReportDateTime`（発表時刻）では代用できない。分へ丸められており、同じ分に
+  // 複数報が発表されるのが普通（能登 2024-01-01 の本震は 16:11 に 2 報）。
+  it('一意鍵は発表時刻ではなく電文の作成時刻', () => {
+    const quake = parseEarthquakeFromXml('VXSE51', VXSE51_XML)!
+    // **値で確かめる。** `not.toBe` だけだと、鍵をまったく読まない実装（どちらも undefined に
+    // ならない側）でも通ってしまう。
+    expect(quake.time).toBe('2026-08-09T03:00:00+09:00')
+    expect(quake.telegramKey).toBe('2026-08-08T18:00:00Z')
+  })
+
+  // 正: 報番号は `Head/Serial`。連番を振るのは震源・震度情報だけ。
+  it('震源・震度情報の報番号を読む', () => {
+    expect(parseEarthquakeFromXml('VXSE53', VXSE53_XML)!.reportSerial).toBe(1)
+    const 第2報 = VXSE53_XML.replace('<Serial>1</Serial>', '<Serial>2</Serial>')
+    expect(parseEarthquakeFromXml('VXSE53', 第2報)!.reportSerial).toBe(2)
+  })
+
+  // 対照: 震度速報は `Serial` が空要素なので持たせない。
+  //
+  // **ここで 1 を入れると、7 通受け取った震度速報が「第 1 報」に化ける** ——
+  // 見出しは受信通数より報番号を優先するため、通数が出なくなる。
+  it('震度速報は報番号を持たない（実電文では Serial が空要素）', () => {
+    expect(parseEarthquakeFromXml('VXSE51', VXSE51_XML)!.reportSerial).toBeUndefined()
+  })
+
+  // 安全弁: 数値として読めない報番号は持たせず、記録を残す（受信通数で数える側へ倒す）。
+  it('数値として読めない報番号は持たせず、記録を残す', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      const xml = VXSE53_XML.replace('<Serial>1</Serial>', '<Serial>壱</Serial>')
+      expect(parseEarthquakeFromXml('VXSE53', xml)!.reportSerial).toBeUndefined()
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('報番号を数値として読めません'))
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  // 安全弁: 一意鍵を読めなければ記録を残す。
+  //
+  // 読めない報は `id` で代用されるが、**`Head/Serial` が空の種別は同じ地震の全報が同じ `id`**
+  // になるため、2 通目以降が重複と見なされて通数が出なくなる。例外も画面の異常も出ない。
+  it('一意鍵を読めなければ記録を残す', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      const xml = VXSE51_XML.replace('<DateTime>2026-08-08T18:00:00Z</DateTime>', '<DateTime/>')
+      expect(parseEarthquakeFromXml('VXSE51', xml)!.telegramKey).toBeUndefined()
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('電文作成時刻'))
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  // 安全弁: 空の `Serial` では記録を残さない。実電文の大半がこの形なので、鳴らすと
+  // 正常な電文のたびにログが埋まる。
+  it('空の報番号では記録を残さない', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      parseEarthquakeFromXml('VXSE51', VXSE51_XML)
+      expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('報番号'))
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  // 安全弁: 取消電文でも埋める（記録は積まないが、形を揃えておく）。
+  it('取消電文でも一意鍵を埋める', () => {
+    const xml = VXSE53_XML.replace('<InfoType>発表</InfoType>', '<InfoType>取消</InfoType>')
+    const quake = parseEarthquakeFromXml('VXSE53', xml)!
+    expect(quake.cancelled).toBe(true)
+    // **値で確かめる。** 通常報と突き合わせるだけだと、両方とも埋めない実装で通ってしまう。
+    expect(quake.telegramKey).toBe('2026-08-08T18:02:00Z')
+    expect(quake.reportSerial).toBe(1)
+  })
+})
+
+describe('緊急地震速報の警報対象地方（Head/Headline/Information）', () => {
+  // 2024-01-01 能登半島地震（本震）の VXSE45 第 20 報からそのまま起こした。警報が北陸だけ
+  // だったところへ甲信・東海・関東が加わった報で、**`Item` が 2 つに分かれている**
+  // （1 つ目＝既に警報だった地方・2 つ目＝新たに加わった地方）。この形は 4 年で 3 例しかない。
+  const ITEM_EXISTING = [
+    '<Item><Kind><Name>緊急地震速報（警報）</Name><Code>31</Code></Kind>',
+    '<LastKind><Name>緊急地震速報（警報）</Name><Code>31</Code></LastKind>',
+    '<Areas codeType="緊急地震速報／地方予報区"><Area><Name>北陸</Name><Code>9934</Code></Area></Areas></Item>',
+  ].join('')
+  const ITEM_ADDED = [
+    '<Item><Kind><Name>緊急地震速報（警報）</Name><Code>31</Code></Kind>',
+    '<LastKind><Name>なし</Name><Code>00</Code></LastKind>',
+    '<Areas codeType="緊急地震速報／地方予報区">',
+    '<Area><Name>甲信</Name><Code>9935</Code></Area>',
+    '<Area><Name>東海</Name><Code>9936</Code></Area>',
+    '<Area><Name>関東</Name><Code>9931</Code></Area>',
+    '</Areas></Item>',
+  ].join('')
+  const regionInfo = (items: string) =>
+    '<Information type="緊急地震速報（地方予報区）">' + items + '</Information>'
+  const notoHeadline = [
+    '<Text>石川県で地震　北陸　甲信　東海　関東で強い揺れ</Text>',
+    regionInfo(ITEM_EXISTING + ITEM_ADDED),
+  ].join('')
+
+  // 正: Item をまたいで文書順に連結する
+  it('警報対象の地方を文書順で読む（Item の分かれ方は見ない）', () => {
+    const eew = parseEEWFromXml('VXSE45', eewXml({ headline: notoHeadline }))
+    expect(eew?.warningRegions).toEqual(['北陸', '甲信', '東海', '関東'])
+  })
+
+  // 対照: 見出しを持たない報（予報級の実電文と同じ形）では空
+  it('見出しを持たない報では持たせない', () => {
+    const eew = parseEEWFromXml('VXSE45', eewXml())
+    expect(eew?.warningRegions).toBeUndefined()
+  })
+
+  // 対照: 府県予報区・細分区域のブロックは読まない（同じ Headline の中に並んでいる）
+  it('地方予報区以外の Information は読まない', () => {
+    const prefInfo = [
+      '<Information type="緊急地震速報（府県予報区）"><Item>',
+      '<Areas codeType="緊急地震速報／府県予報区"><Area><Name>石川</Name><Code>9170</Code></Area></Areas>',
+      '</Item></Information>',
+    ].join('')
+    const subInfo = [
+      '<Information type="緊急地震速報（細分区域）"><Item>',
+      '<Areas codeType="地震情報／細分区域"><Area><Name>石川県能登</Name><Code>390</Code></Area></Areas>',
+      '</Item></Information>',
+    ].join('')
+    const eew = parseEEWFromXml('VXSE45', eewXml({
+      headline: '<Text>石川県で地震　北陸で強い揺れ</Text>' + regionInfo(ITEM_EXISTING) + prefInfo + subInfo,
+    }))
+    expect(eew?.warningRegions).toEqual(['北陸'])
+  })
+
+  // 安全弁: 同じ地方が 2 つの Item にまたがっても 1 度しか読まない
+  // （実電文では起きないが、重なれば読み上げが同じ地名を 2 度言う）
+  it('同じ地方が重複しても 1 つにまとめる', () => {
+    const dup = regionInfo(ITEM_EXISTING + ITEM_EXISTING)
+    const eew = parseEEWFromXml('VXSE45', eewXml({ headline: '<Text>x</Text>' + dup }))
+    expect(eew?.warningRegions).toEqual(['北陸'])
+  })
+
+  // 安全弁: 見出し文（Text）と地方の一覧は別々に読む。片方だけの電文でも壊れない
+  it('見出し文だけがあり地方予報区ブロックが無い報では持たせない', () => {
+    const eew = parseEEWFromXml('VXSE45', eewXml({ headline: '<Text>石川県で地震</Text>' }))
+    expect(eew?.headline).toBe('石川県で地震')
+    expect(eew?.warningRegions).toBeUndefined()
+  })
+})
+
+describe('緊急地震速報の区域が属する府県予報区（Pref/Name）', () => {
+  // 正: 区域へ府県予報区名が付く。**これが無いと DMDSS 版で「対象地域」欄が空になる**
+  //（`RealtimeTab` は `areas.filter(a => a.pref)` で絞るため）。
+  it('区域へ府県予報区名を持たせる', () => {
+    const e = parseEEWFromXml('VXSE45', eewXml({ pref: eewPref('<From>5-</From><To>5+</To>') }))
+    expect(e!.areas![0].pref).toBe('石川')
+  })
+
+  // 対照: **都道府県名ではない。** 気象庁が緊急地震速報のために定めた区分なので「県」が付かず、
+  // 鹿児島は「鹿児島」と「奄美」、北海道は 4 つに分かれる。表示側で「県」を補ってはいけない。
+  it('都道府県名ではなく電文の府県予報区名をそのまま持つ', () => {
+    const amami = '<Pref><Name>奄美</Name><Code>9462</Code><Area>'
+      + '<Name>鹿児島県奄美北部</Name><Code>773</Code>'
+      + '<Category><Kind><Name>緊急地震速報（警報）</Name><Code>11</Code></Kind></Category>'
+      + '<ForecastInt><From>5+</From><To>5+</To></ForecastInt>'
+      + '</Area></Pref>'
+    const e = parseEEWFromXml('VXSE45', eewXml({ pref: amami }))
+    expect(e!.areas![0].pref).toBe('奄美')
+    expect(e!.areas![0].name).toBe('鹿児島県奄美北部')
+  })
+
+  // 安全弁: 府県予報区が複数あっても、区域はそれぞれ自分の親を持つ
+  //（ループの外で 1 つ拾って使い回すと、2 つ目以降が前の親を引きずる）。
+  it('府県予報区が複数あっても取り違えない', () => {
+    const two = '<Pref><Name>石川</Name><Code>9170</Code><Area>'
+      + '<Name>石川県能登</Name><Code>390</Code>'
+      + '<Category><Kind><Name>緊急地震速報（警報）</Name><Code>11</Code></Kind></Category>'
+      + '<ForecastInt><From>6-</From><To>6-</To></ForecastInt></Area></Pref>'
+      + '<Pref><Name>富山</Name><Code>9160</Code><Area>'
+      + '<Name>富山県東部</Name><Code>370</Code>'
+      + '<Category><Kind><Name>緊急地震速報（警報）</Name><Code>11</Code></Kind></Category>'
+      + '<ForecastInt><From>5-</From><To>5-</To></ForecastInt></Area></Pref>'
+    const e = parseEEWFromXml('VXSE45', eewXml({ pref: two }))
+    expect(e!.areas!.map(a => [a.pref, a.name])).toEqual([
+      ['石川', '石川県能登'],
+      ['富山', '富山県東部'],
+    ])
   })
 })

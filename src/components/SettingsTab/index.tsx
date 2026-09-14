@@ -1,10 +1,11 @@
 import { memo, useState, useCallback, useEffect, useRef } from 'react'
-import type { AppSettings } from '../../hooks/useSettings'
+import type { AppSettings, TtsUnreceivedDetail } from '../../hooks/useSettings'
 import { DAY_NIGHT_OPACITY_MIN, DAY_NIGHT_OPACITY_MAX } from '../../hooks/useSettings'
 import { Toggle } from '../Toggle'
+import { TELEGRAM_TEXT_BLOCK_KEYS, type TelegramTextBlockKey, type TelegramTextBlocks } from '../../utils/ttsText'
 import type { ConnectionStatus } from '../../types/earthquake'
 import { dmdataConnectionLabel } from './connectionLabel'
-import { getIntensityLabel, getIntensityColor, INTENSITY_LABELS } from '../../utils/intensity'
+import { INTENSITY_SCALE_COUNT, getIntensityLabel, getIntensityColor, INTENSITY_LABELS } from '../../utils/intensity'
 import { readableTextColor } from '../../utils/contrast'
 import { playAlertSound, playCountdownBeep, playKyoshinUpdateSound, unlockAudio } from '../../utils/alertSound'
 import { checkVoicevoxAvailable, fetchVoicevoxSpeakers, isValidVoicevoxUrl, speakSequentially, VOICEVOX_URL_DEBOUNCE_MS, type VoicevoxSpeaker } from '../../utils/voicevox'
@@ -50,6 +51,7 @@ export interface TestFunctions {
   earthquakeCountRetraction?: () => void
   trainingQuake?: () => void
   quakeAmendment: () => void
+  quakeReportSequence: () => void
   unreceivedQuake?: () => void
   tsunamiGradeChange?: () => void
   estimatedIntensity?: () => void
@@ -247,6 +249,140 @@ function KyoshinImportRow({ historicalArchives }: { historicalArchives: Historic
         </div>
       )}
     </div>
+  )
+}
+
+/**
+ * 気象庁が書いた文のブロック名（設定タブに出す）。
+ *
+ * **`Record<TelegramTextBlockKey, string>` で持つ。** キーを足してここへ書き忘れると
+ * 型検査が止める（対応表を配列で持つと、抜けても気付けない）。
+ */
+/**
+ * ブロックの説明（ラベルをホバー・タップしたときに出る）。
+ *
+ * **「固定付加文」「自由付加文」は気象庁の電文用語をそのまま使っている** —— 利用者へ出す語は
+ * 気象庁の表現と揃える方針（→ quake-spec.md §8）に沿うが、語だけでは何が読まれるか判らない。
+ * 同じ画面に「固定付加文」と「固定付加文（その他）」が並ぶ種別もあるので、中身で見分けられる
+ * ようにここで補う。
+ */
+const TELEGRAM_TEXT_BLOCK_DESCRIPTIONS: Record<TelegramTextBlockKey, string> = {
+  quakeVarComment: '気象庁以外が運用する観測点（＊印）の説明や、「震源要素を訂正します。」といった定型文です',
+  quakeFreeText: 'その電文にだけ添えられる説明です。内容は報ごとに変わります',
+  tsunamiBody: '津波がいつ来て、いつまで続くかの説明です。津波予報では区域に波高も到達時刻も付かないため、この文にしか書かれていません',
+  tsunamiVarComment: '避難の呼びかけ、満潮時刻、沿岸・沖合の観測についての定型文です。避難の呼びかけ自体は、この設定によらず読み上げます',
+  tsunamiFreeText: 'その電文にだけ添えられる説明です',
+  lpgmForecast: '「この地震について、緊急地震速報を発表しています。」のような定型文です',
+  lpgmVarComment: '気象庁以外が運用する観測点（＊印）の説明です',
+  lpgmFreeText: '階級と揺れの大きさの対応表など、その電文の補足です',
+  nankaiSummary: '発表内容を一文にまとめたものです。画面の帯に出ている見出しと同じ文です',
+  nankaiBody: '調査の結果や評価の根拠です。実際の電文では 1000 字を超えることがあります',
+  nankaiNextAdvisory: '次の情報がいつ出るかの案内です',
+  nankaiCommentarySummary: '発表内容を一文にまとめたものです。画面の帯に出ている見出しと同じ文です',
+  nankaiCommentaryBody: '地殻活動の観測状況と評価です。実際の電文では 1600 字を超えることがあります',
+  nankaiCommentaryNextAdvisory: '次の情報がいつ出るかの案内です',
+  kohatsuSummary: '発表内容を一文にまとめたものです。画面の帯に出ている見出しと同じ文です',
+  kohatsuBody: '発表の理由と、とるべき防災対応の説明です',
+  kohatsuNextAdvisory: '次の情報がいつ出るかの案内です',
+  earthquakeCountFreeText: '地震回数の補足です',
+}
+
+const TELEGRAM_TEXT_BLOCK_LABELS: Record<TelegramTextBlockKey, string> = {
+  quakeVarComment: '固定付加文（その他）',
+  quakeFreeText: '自由付加文',
+  tsunamiBody: '本文',
+  tsunamiVarComment: '固定付加文',
+  tsunamiFreeText: '自由付加文',
+  lpgmForecast: '固定付加文',
+  lpgmVarComment: '固定付加文（その他）',
+  lpgmFreeText: '自由付加文',
+  nankaiSummary: '要約',
+  nankaiBody: '本文',
+  nankaiNextAdvisory: '次回発表予定',
+  nankaiCommentarySummary: '要約',
+  nankaiCommentaryBody: '本文',
+  nankaiCommentaryNextAdvisory: '次回発表予定',
+  kohatsuSummary: '要約',
+  kohatsuBody: '本文',
+  kohatsuNextAdvisory: '次回発表予定',
+  earthquakeCountFreeText: '自由付加文',
+}
+
+/**
+ * 電文種別ごとのまとまり。並びは通知設定・テスト機能と同じカテゴリ順
+ * （地震情報 → 津波情報 → 長周期 → 南海トラフ系 → 地震回数）。
+ *
+ * **全キーがどこかのグループに入っていること**は `telegramTextBlockGroups.test.ts` が検査する
+ * （ここから漏れたキーは設定タブに出ず、既定のまま触れなくなる）。
+ */
+const TELEGRAM_TEXT_BLOCK_GROUPS: readonly {
+  readonly title: string
+  readonly keys: readonly TelegramTextBlockKey[]
+}[] = [
+  { title: '地震情報', keys: ['quakeVarComment', 'quakeFreeText'] },
+  { title: '津波情報', keys: ['tsunamiBody', 'tsunamiVarComment', 'tsunamiFreeText'] },
+  { title: '長周期地震動観測情報', keys: ['lpgmForecast', 'lpgmVarComment', 'lpgmFreeText'] },
+  { title: '南海トラフ臨時情報', keys: ['nankaiSummary', 'nankaiBody', 'nankaiNextAdvisory'] },
+  {
+    title: '南海トラフ関連解説情報',
+    keys: ['nankaiCommentarySummary', 'nankaiCommentaryBody', 'nankaiCommentaryNextAdvisory'],
+  },
+  {
+    title: '後発地震注意情報',
+    keys: ['kohatsuSummary', 'kohatsuBody', 'kohatsuNextAdvisory'],
+  },
+  { title: '地震回数に関する情報', keys: ['earthquakeCountFreeText'] },
+]
+
+/**
+ * 気象庁が書いた文の内訳（電文種別 × ブロック）。
+ *
+ * **既定は畳んでおく。** 18 行＋グループの見出し 7 行を常に開くと、設定タブの中でこの
+ * セクションだけが突出して伸びる。見出しには「何個を読む設定か」を出す —— 畳んだままでも、
+ * 全部読むのか一部だけかが分かる。
+ */
+function TelegramTextBlockRows({ blocks, onChange }: {
+  blocks: TelegramTextBlocks
+  onChange: (next: TelegramTextBlocks) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const enabled = TELEGRAM_TEXT_BLOCK_KEYS.filter(key => blocks[key]).length
+  return (
+    <>
+      <div className="px-4 py-3">
+        <button
+          type="button"
+          onClick={() => setOpen(v => !v)}
+          aria-expanded={open}
+          className="w-full flex items-center justify-between gap-2 text-left"
+        >
+          <span className="text-white text-sm">
+            読み上げる文の内訳
+            <span className="text-secondary text-xs ml-2">
+              {enabled} / {TELEGRAM_TEXT_BLOCK_KEYS.length} 項目
+            </span>
+          </span>
+          <span className="text-secondary text-xs">{open ? '閉じる' : '開く'}</span>
+        </button>
+      </div>
+      {open && TELEGRAM_TEXT_BLOCK_GROUPS.map(group => (
+        <div key={group.title}>
+          <div className="px-4 py-1.5 bg-panel/60 text-secondary text-xs">{group.title}</div>
+          {group.keys.map(key => (
+            <Row
+              key={key}
+              label={TELEGRAM_TEXT_BLOCK_LABELS[key]}
+              description={TELEGRAM_TEXT_BLOCK_DESCRIPTIONS[key]}
+            >
+              <Toggle
+                checked={blocks[key]}
+                onChange={v => onChange({ ...blocks, [key]: v })}
+              />
+            </Row>
+          ))}
+        </div>
+      ))}
+    </>
   )
 }
 
@@ -725,7 +861,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             onChange={e => onUpdate('uiScale', Number(e.target.value))}
             className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
           >
-            {[0.5, 0.6, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.25, 2.5].map(s => (
+            {[0.5, 0.6, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.75, 3].map(s => (
               <option key={s} value={s}>{Math.round(s * 100)}%</option>
             ))}
           </select>
@@ -736,7 +872,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             onChange={e => onUpdate('mapIconScale', Number(e.target.value))}
             className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
           >
-            {[0.5, 0.6, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.25, 2.5].map(s => (
+            {[0.5, 0.6, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.75, 3].map(s => (
               <option key={s} value={s}>{Math.round(s * 100)}%</option>
             ))}
           </select>
@@ -869,6 +1005,8 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             <option value={120}>2分</option>
             <option value={180}>3分</option>
             <option value={300}>5分</option>
+            <option value={600}>10分</option>
+            <option value={1800}>30分</option>
           </select>
         </Row>
       </Section>
@@ -985,51 +1123,6 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
                 </Row>
               </>
             )}
-            <Row label="読み上げ震度階数" description="最大震度に加えて何階級下まで地域名を読み上げるか（0 = 最大震度のみ）">
-              <select
-                value={settings.ttsIntensityLevels}
-                onChange={e => onUpdate('ttsIntensityLevels', Number(e.target.value))}
-                className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
-              >
-                {[0, 1, 2, 3, 4].map(n => (
-                  <option key={n} value={n}>{n === 0 ? '最大震度のみ' : `最大＋${n}階級`}</option>
-                ))}
-              </select>
-            </Row>
-            <Row label="必ず読み上げる震度" description="階数の設定を超えても、この震度以上の階級は地域名を読み上げます（長周期地震動には適用されません）">
-              <div className="flex items-center gap-2">
-                <IntensityBadge scale={settings.ttsAlwaysReadScale} />
-                <ScaleSelect
-                  value={settings.ttsAlwaysReadScale}
-                  onChange={v => onUpdate('ttsAlwaysReadScale', v)}
-                  noneLabel="階数の設定どおり"
-                />
-              </div>
-            </Row>
-            <Row label="読み上げ最大地域数" description="1階級あたりに読み上げる地域名の上限（0 = 無制限）">
-              <select
-                value={settings.ttsMaxRegions}
-                onChange={e => onUpdate('ttsMaxRegions', Number(e.target.value))}
-                className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
-              >
-                {[0, 3, 5, 10, 15, 20].map(n => (
-                  <option key={n} value={n}>{n === 0 ? '無制限' : `${n}地域`}</option>
-                ))}
-              </select>
-            </Row>
-            {settings.ttsMaxRegions > 0 && (
-              <Row label="地域数の許容超過" description="上限をこの数まで超えるだけなら「ほかN地域」とせず全地域を読み上げます">
-                <select
-                  value={settings.ttsRegionTolerance}
-                  onChange={e => onUpdate('ttsRegionTolerance', Number(e.target.value))}
-                  className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
-                >
-                  {[0, 1, 2, 3, 5].map(n => (
-                    <option key={n} value={n}>{n === 0 ? '許容しない' : `+${n}地域まで`}</option>
-                  ))}
-                </select>
-              </Row>
-            )}
           </>
         )}
         {/* 解説情報は平常時でも毎月1回は必ず届くため、音と読み上げを個別に切れるようにしている。
@@ -1097,6 +1190,116 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
           <NotificationPermissionButton />
         </Row>
       </Section>
+
+      {/* 読み上げの詳しさ。VOICEVOX を有効にしたときだけ出す（無効な端末では何も効かないため）。
+          並びは「地域の列挙 → 1 件ごとの詳しさ → 気象庁が書いた文」。中の順序は
+          通知設定・テスト機能と同じカテゴリ順（地震情報 → 津波情報 → 緊急地震速報）。 */}
+      {settings.voicevoxEnabled && (
+        <Section title="読み上げ設定">
+          <Row label="読み上げ震度階数" description="最大震度に加えて何階級下まで地域名を読み上げるか（0 = 最大震度のみ）">
+            <select
+              value={settings.ttsIntensityLevels}
+              onChange={e => onUpdate('ttsIntensityLevels', Number(e.target.value))}
+              className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
+            >
+              {/* 最後の選択肢は「すべての階級」。値は階級の段数から導く（数を直接書くと、
+                  階級が増減したときに選択肢だけが古い段数のまま残る）。 */}
+              {[0, 1, 2, 3, 4, INTENSITY_SCALE_COUNT - 1].map(n => (
+                <option key={n} value={n}>
+                  {n === 0 ? '最大震度のみ' : n === INTENSITY_SCALE_COUNT - 1 ? 'すべての階級' : `最大＋${n}階級`}
+                </option>
+              ))}
+            </select>
+          </Row>
+          <Row label="必ず読み上げる震度" description="階数の設定を超えても、この震度以上の階級は地域名を読み上げます（長周期地震動には適用されません）">
+            <div className="flex items-center gap-2">
+              <IntensityBadge scale={settings.ttsAlwaysReadScale} />
+              <ScaleSelect
+                value={settings.ttsAlwaysReadScale}
+                onChange={v => onUpdate('ttsAlwaysReadScale', v)}
+                noneLabel="階数の設定どおり"
+              />
+            </div>
+          </Row>
+          <Row label="読み上げ最大地域数" description="1階級あたりに読み上げる地域名の上限（0 = 無制限）">
+            <select
+              value={settings.ttsMaxRegions}
+              onChange={e => onUpdate('ttsMaxRegions', Number(e.target.value))}
+              className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
+            >
+              {[0, 3, 5, 10, 15, 20].map(n => (
+                <option key={n} value={n}>{n === 0 ? '無制限' : `${n}地域`}</option>
+              ))}
+            </select>
+          </Row>
+          {settings.ttsMaxRegions > 0 && (
+            <Row label="地域数の許容超過" description="上限をこの数まで超えるだけなら「ほかN地域」とせず全地域を読み上げます">
+              <select
+                value={settings.ttsRegionTolerance}
+                onChange={e => onUpdate('ttsRegionTolerance', Number(e.target.value))}
+                className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
+              >
+                {[0, 1, 2, 3, 5].map(n => (
+                  <option key={n} value={n}>{n === 0 ? '許容しない' : `+${n}地域まで`}</option>
+                ))}
+              </select>
+            </Row>
+          )}
+          <Row label="震源の深さ・規模" description="「石川県能登地方、深さ10キロメートルを震源とするマグニチュード5.2の地震が発生しました」のように読み上げます。切ると震源の地名だけを読みます">
+            <Toggle
+              checked={settings.ttsReadHypocenterDetail}
+              onChange={v => onUpdate('ttsReadHypocenterDetail', v)}
+            />
+          </Row>
+          <Row label="震度を入手していない地点" description="震度5弱以上と推定されるのに観測値が届いていない地点の読み方。「区域名」は地点名の代わりに地域名でまとめます（例: 石川県能登では、一部の地点で…）。「地名を読まない」でも、件数と「震度5弱以上と推定されるが未入電」であることは読み上げます">
+            <select
+              value={settings.ttsUnreceivedDetail}
+              onChange={e => onUpdate('ttsUnreceivedDetail', e.target.value as TtsUnreceivedDetail)}
+              className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
+            >
+              <option value="stations">地点名</option>
+              <option value="areas">区域名</option>
+              <option value="none">地名を読まない</option>
+            </select>
+          </Row>
+          <Row label="津波観測点の読み上げ件数" description="津波の観測情報で読み上げる観測点の数。波高の更新・津波警報相当の観測・到達確認・欠測でそれぞれこの件数まで読み、残りは「ほかN地点」と件数で伝えます">
+            <select
+              value={settings.ttsMaxObservationPoints}
+              onChange={e => onUpdate('ttsMaxObservationPoints', Number(e.target.value))}
+              className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
+            >
+              {[0, 1, 3, 5, 10, 15, 20].map(n => (
+                <option key={n} value={n}>{n === 0 ? '無制限' : `${n}地点`}</option>
+              ))}
+            </select>
+          </Row>
+          <Row label="緊急地震速報の長周期地震動階級" description="予想震度に続けて「予想最大階級3」のように読み上げます。長周期地震動観測情報そのものには影響しません">
+            <Toggle
+              checked={settings.ttsReadEewLpgmClass}
+              onChange={v => onUpdate('ttsReadEewLpgmClass', v)}
+            />
+          </Row>
+          <Row label="緊急地震速報の警戒地域" description="警報が出ている地方を、震源に続けて「北陸、甲信、東海では強い揺れに警戒してください」のように読み上げます。予想震度はそのあとに読み上げます">
+            <Toggle
+              checked={settings.ttsReadEewWarningRegions}
+              onChange={v => onUpdate('ttsReadEewWarningRegions', v)}
+            />
+          </Row>
+          <Row label="気象庁が書いた文" description="電文に添えられた本文・付加文（南海トラフ地震臨時情報の本文など）を読み上げます。震度や津波の読み上げが終わってから読むため、電文が続いている間は読み上げられないことがあります">
+            <Toggle
+              checked={settings.ttsReadTelegramText}
+              onChange={v => onUpdate('ttsReadTelegramText', v)}
+            />
+          </Row>
+          {/* 内訳はマスタートグルが入っているときだけ出す（切っていれば何を選んでも読まない）。 */}
+          {settings.ttsReadTelegramText && (
+            <TelegramTextBlockRows
+              blocks={settings.ttsTelegramTextBlocks}
+              onChange={next => onUpdate('ttsTelegramTextBlocks', next)}
+            />
+          )}
+        </Section>
+      )}
 
       <Section title="通知音テスト">
         <div className="px-4 py-2 bg-blue-900/30 border-b border-blue-700/40">
@@ -1237,6 +1440,9 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
         </Row>
         <Row label="訂正報" description="地震情報を出し、3秒後に規模を訂正した報を流す（M7.4 → M7.6。2024年能登半島地震の実電文どおり）。同じカードが更新され、「震源を訂正」の印が付く。DMDSS 版では気象庁の「震源要素を訂正します。」の一文も並ぶ">
           <TestButton color="yellow" onClick={onTest.quakeAmendment}>訂正報テスト</TestButton>
+        </Row>
+        <Row label="種別が前後する報" description="3秒おきに4通を流す（震度速報 → 震源情報 → 震度速報 → 震源・震度情報。2024年能登半島地震の前震と同じ順序）。カードの見出しが「震度速報#2/震源情報」と受け取った種別を並べ、最後の震源・震度情報で速報段階が畳まれる">
+          <TestButton color="yellow" onClick={onTest.quakeReportSequence}>種別遷移テスト</TestButton>
         </Row>
         {isDmdss && onTest.trainingQuake && (
           <Row label="訓練報" description="中身は地震テストと同じで、電文ヘッダの運用種別（訓練）だけが違う。本物と同じく画面・音・読み上げへ流し、カードに「訓練報」の印を出す">

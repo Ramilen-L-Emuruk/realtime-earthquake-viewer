@@ -25,7 +25,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
 import { splitIntoChunks } from '../utils/voicevox'
-import type { AppSettings } from './useSettings'
+import { DEFAULTS, type AppSettings } from './useSettings'
 import type { EEWAlert, EEWRegion, IntensityScale, LpgmClass, JMAQuake, JMATsunami } from '../types/earthquake'
 
 // 「鳴っている最中」を再現するための保留。`holdNextSpeech()` で次の 1 回だけ保留にする。
@@ -109,6 +109,8 @@ function makeEEW(over: {
   cancelled?: boolean
   depth?: number
   hypocenter?: { name: string; latitude: number; longitude: number }
+  /** 警報の対象地方（`Head/Headline/Information` の地方予報区）。警報級の報にだけ入る。 */
+  warningRegions?: string[]
 } = {}): EEWAlert {
   const hypo = over.hypocenter ?? { name: '日向灘', latitude: 32.0, longitude: 132.0 }
   const areas: EEWRegion[] = over.noAreas ? [] : [{
@@ -136,12 +138,17 @@ function makeEEW(over: {
     severity: over.severity ?? 'Warning',
     cancelled: over.cancelled ?? false,
     issue: { eventId: over.eventId ?? 'evt-1', serial: String(over.serial ?? 1), time: '2026-01-01T12:00:00Z' },
+    ...(over.warningRegions && { warningRegions: over.warningRegions }),
     areas,
   } as EEWAlert
 }
 
-function setup() {
-  const settings = {
+/**
+ * @param over 設定の上書き。読み上げの詳しさの設定を切り替えるテストで使う。
+ *   **既定は「設定を入れる前の挙動」**（`DEFAULTS`）なので、渡さなければ従来どおり。
+ */
+function setup(over: Partial<AppSettings> = {}) {
+  const settings = { ...DEFAULTS,
     voicevoxEnabled: true,
     voicevoxUrl: 'http://localhost:50021',
     voicevoxSpeakerId: 1,
@@ -149,6 +156,7 @@ function setup() {
     soundVolume: 1,
     notifyMinScale: -1,
     notifyEEW: false,
+    ...over,
   } as unknown as AppSettings
 
   const title = {
@@ -175,6 +183,7 @@ function setup() {
     selectQuake: vi.fn(),
     openLpgmFromQuake: vi.fn(),
     openEstimatedIntensity: vi.fn(),
+    closeDistributionOnQuakeReport: vi.fn(),
   }))
   return result.current.handleLiveEvent
 }
@@ -192,6 +201,30 @@ afterEach(() => {
 })
 
 describe('EEW 読み上げの文言と発話順序', () => {
+  // 緊急地震速報の予想最大長周期地震動階級を読むかの設定（`ttsReadEewLpgmClass`）。
+  // **純関数（`eewIntensityText`）のテストとは別に要る** —— 設定が効くかどうかは
+  // `useLiveEventHandler` が渡すオプションと、既読（`spokenEEWLpgmClassesRef`）の更新条件で決まる。
+  describe('長周期地震動階級を読むかの設定（配線）', () => {
+    // 対照: 既定は従来どおり階級も読む。
+    it('既定では震度に続けて階級も読む', async () => {
+      const handle = setup()
+      handle(makeEEW({ scaleTo: 50, lgIntTo: 3 }))
+      await vi.advanceTimersByTimeAsync(2000)
+      await flushMicrotasks()
+      expect(spokenTexts()).toContain('予想最大震度5強。予想最大階級3。')
+    })
+
+    // 正: 切ると階級の句だけが落ちる。
+    it('切ると階級の句を落とす', async () => {
+      const handle = setup({ ttsReadEewLpgmClass: false })
+      handle(makeEEW({ scaleTo: 50, lgIntTo: 3 }))
+      await vi.advanceTimersByTimeAsync(2000)
+      await flushMicrotasks()
+      expect(spokenTexts()).toContain('予想最大震度5強。')
+      expect(spokenTexts().some(t => t.includes('階級'))).toBe(false)
+    })
+  })
+
   it('初報に予想震度があれば、安定待ち（300ms）の後に読む', async () => {
     const handle = setup()
     handle(makeEEW({ scaleTo: 50 }))
@@ -1433,5 +1466,90 @@ describe('EEW 読み上げの文言と発話順序', () => {
       expect(heard).toContain('予想最大階級1。')
     })
 
+  })
+})
+
+// 第 1.5 フェーズ（警報の対象地方）。震源を伝えたあと・予想値を伝える前に挟む。
+// **予想値の読み上げを遅らせることが目的**でもあるので、順序そのものがこの機能の中身になる。
+//
+// **この describe だけ待ちを 20 秒取る**（他は 2 秒）。第 1.5 フェーズが挟まるぶん発話チェーンが
+// 1 段長くなり、`chainEEWSpeech` の `finally`（＝既読を記録する `onSettled`）へ届くまでに
+// 必要なタイマーの進行が増えるため。**単独実行（`-t`）では 2 秒でも通り、ファイル全体で
+// 走らせたときだけ落ちる** —— 前のテストで作った hook がアンマウントされず、その発話チェーンが
+// 同じフェイククロックに乗って残っているせい。既読が記録されないと次の続報が「新たに」ではなく
+// 初回の形で読まれるので、**症状は「時間切れ」ではなく「文言が違う」形で出る**。
+describe('警報の対象地方（第 1.5 フェーズ）', () => {
+  // 正: 第 1 フェーズと第 2 フェーズのあいだに入る
+  it('震源のあと・予想値の前に読む', async () => {
+    const handle = setup()
+    handle(makeEEW({ scaleTo: 50, warningRegions: ['北陸', '甲信'] }))
+    await vi.advanceTimersByTimeAsync(20000)
+    await flushMicrotasks()
+    expect(spokenTexts()).toEqual([
+      '緊急地震速報、日向灘で地震。',
+      '北陸、甲信では強い揺れに警戒してください。',
+      '予想最大震度5強。',
+    ])
+  })
+
+  // 対照: 設定を切ると句ごと落ちる（他の 2 フェーズは変わらない）
+  it('切ると読まない', async () => {
+    const handle = setup({ ttsReadEewWarningRegions: false })
+    handle(makeEEW({ scaleTo: 50, warningRegions: ['北陸'] }))
+    await vi.advanceTimersByTimeAsync(20000)
+    await flushMicrotasks()
+    expect(spokenTexts().some(t => t.includes('警戒してください'))).toBe(false)
+    expect(spokenTexts()).toContain('予想最大震度5強。')
+  })
+
+  // 対照: 予報級の報は地方を持たない（実電文で警報級にしか入らない）
+  it('対象地方を持たない報では読まない', async () => {
+    const handle = setup()
+    handle(makeEEW({ scaleTo: 50 }))
+    await vi.advanceTimersByTimeAsync(20000)
+    await flushMicrotasks()
+    expect(spokenTexts().some(t => t.includes('警戒してください'))).toBe(false)
+  })
+
+  // 安全弁: 同じ地方を続報で読み直さない
+  it('既に声にした地方は続報で読み直さない', async () => {
+    const handle = setup()
+    handle(makeEEW({ scaleTo: 50, warningRegions: ['北陸'] }))
+    await vi.advanceTimersByTimeAsync(20000)
+    await flushMicrotasks()
+    handle(makeEEW({ serial: 2, scaleTo: 50, warningRegions: ['北陸'] }))
+    await vi.advanceTimersByTimeAsync(20000)
+    await flushMicrotasks()
+    expect(spokenTexts().filter(t => t.includes('警戒してください'))).toEqual([
+      '北陸では強い揺れに警戒してください。',
+    ])
+  })
+
+  // 正: 続報で増えた地方は「新たに」を冠して差分だけ読む
+  it('続報で増えた地方だけを「新たに」で読む', async () => {
+    const handle = setup()
+    handle(makeEEW({ scaleTo: 50, warningRegions: ['北陸'] }))
+    await vi.advanceTimersByTimeAsync(20000)
+    await flushMicrotasks()
+    handle(makeEEW({ serial: 2, scaleTo: 50, warningRegions: ['北陸', '甲信', '東海'] }))
+    await vi.advanceTimersByTimeAsync(20000)
+    await flushMicrotasks()
+    expect(spokenTexts().filter(t => t.includes('警戒してください'))).toEqual([
+      '北陸では強い揺れに警戒してください。',
+      '新たに、甲信、東海でも強い揺れに警戒してください。',
+    ])
+  })
+
+  // 安全弁: 声になる前に誤報取消が届いたら読まない（第 1・第 2 フェーズと同じ）。
+  // **鳴り始めてからの取消は別の話** —— そのときチャンク単位で残りを落とすのが
+  // `shouldStillPlay` の役目で、既に声になった分は戻せない。
+  it('声になる前に誤報取消が届けば読まない', async () => {
+    const handle = setup()
+    handle(makeEEW({ scaleTo: 50, warningRegions: ['北陸', '甲信'] }))
+    // ここで flush しない —— 予約はチェーンに積まれただけで、まだ 1 文字も声になっていない
+    handle(makeEEW({ serial: 2, cancelled: true }))
+    await vi.advanceTimersByTimeAsync(5000)
+    await flushMicrotasks()
+    expect(spokenTexts().some(t => t.includes('警戒してください'))).toBe(false)
   })
 })

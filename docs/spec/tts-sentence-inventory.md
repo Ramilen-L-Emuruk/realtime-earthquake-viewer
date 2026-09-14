@@ -90,7 +90,7 @@
 | 既読の記録 | `createQuakeSpokenState` `applySpokenRefs` `regionDiffKind` `isUnreceivedUnspoken` `magnitudeFactValue` `tellableHypocenterFacts` `tellableFacts` `hasUnspokenFact` |
 | 断片化・参照付け | `gradeSegment` |
 | 定数（上限値・順序・正規表現・照合表） | `GRADE_ORDER` `SCALE_DESCENDING` `NO_REGION_LOG_THROTTLE_MS` `warnNoRegionNames` `reportedUnknownMagnitudeConditions` `CANCEL_REASON_SPEAK_MAX_CHARS` `CANCEL_DECLARATION` `CANCEL_DECLARATION_SUBJECTS` `EEW_LEAD_PHRASES` `OBS_UPDATE_SPEAK_MAX_POINTS` `ARRIVAL_SPEAK_MAX_POINTS` `MISSING_SPEAK_MAX_POINTS` `WARNING_LEVEL_SPEAK_MAX_POINTS` |
-| 型定義（6 件） | `TtsRegionOptions` `QuakeSpokenState` `SpokenRegion` `RegionNameIndexes` `RegionDiffKind` `SpokenHeightLookup` |
+| 型定義（6 件） | `TtsSpeechOptions` `QuakeSpokenState` `SpokenRegion` `RegionNameIndexes` `RegionDiffKind` `SpokenHeightLookup` |
 
 **文字列版（`earthquakeToText` / `tsunamiToText` / `tsunamiDowngradeToText` /
 `tsunamiAreaGradeChangeToText` / `tsunamiObservationUpdateToText` / `tsunamiArrivalToText` /

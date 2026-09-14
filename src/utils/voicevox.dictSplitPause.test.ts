@@ -11,10 +11,16 @@
 // （実測: 種を 0.01 にしても 0.11 にしても引き直し後は同じ 0.432）。そのため、ここで固定すべきは
 // 「種の値」ではなく「引き直された値を採ったか、元の値へ戻したか」の**選び分け**になる。
 //
-// 固定するのは 3 点。
+// **落ちるのは句読点だけではない。空白も同じように落ちる。** 気象庁が書いた文を読むと必ず現れる
+// （電文の改行を半角スペースへ直すため）。実測: 「…極めて大きな揺れ 波形、」を丸ごと読ませると
+// 0.430 秒の間が入るが、辞書の「波形」で切り出すと 0 秒になる。
+//
+// 固定するのは 4 点。
 //   正 : 分割で落ちた句読点の位置は、引き直された値を採る（前・後ろのどちらの断片でも）
-//   対照: 句読点を伴わない純粋な辞書境界は DICT_TRAILING_PAUSE のまま（引き直し値を採らない）
+//   正 : 空白の位置も同じように扱う（前・後ろのどちらの断片でも）
+//   対照: 区切り文字を伴わない純粋な辞書境界は DICT_TRAILING_PAUSE のまま（引き直し値を採らない）
 //   安全弁: チャンク末尾は CHUNK_BREAK_PAUSE の担当なので種を置かない（読み終わりの無音を伸ばさない）
+//   安全弁: 空白はチャンク分割の集合には入れない（割らない位置に間だけが入ることを防ぐ）
 //
 // 併せて、引き直しが失敗したときに種が残ること（＝無音ではなく妥当な間へ倒れること）も固定する。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -117,7 +123,11 @@ function installFetch() {
     const url = String(input)
     if (/audio_query|accent_phrases/.test(url)) {
       const text = new URL(url).searchParams.get('text') ?? ''
-      const bare = text.replace(/[。、！？]/g, '')
+      // **区切り文字しか無いテキストは、実物も 0 句を返す。** 句読点だけでなく空白も同じ
+      // （実測・話者 6: `audio_query(" ")`・`audio_query("　")`・`audio_query("、")` はいずれも 0 句）。
+      // ここで空白を残すと、辞書キーどうしが空白 1 つで隣り合ったときに代役だけが句を返し、
+      // **実物では起こらない二重の間**をテストが許してしまう
+      const bare = text.replace(/[。、！？\s]/g, '')
       const count = bare === '' ? 0 : multiPhrase.get(text) ?? 1
       const phrases: Phrase[] = Array.from({ length: count }, () => ({
         moras: [{ vowel: 'a', vowel_length: 0.1 }], pause_mora: null,
@@ -300,5 +310,52 @@ describe('辞書分割で落ちた句読点の間', () => {
     await speakWithVoicevox('http://vv', text, 0, 1)
 
     expect(pauses()).toEqual([[0.35]])
+  })
+
+  it('辞書キーの直前の空白も、引き直された間で復活する', async () => {
+    dictState.keys = ['波形']
+    dictState.terms = ['波形']
+    // 気象庁の自由付加文の形。原文では改行で、読み上げ文へ直すときに半角スペースになる
+    const text = '極めて大きな揺れ 波形を観測しました。'
+    expect(splitIntoChunks(text)).toEqual([text])
+
+    await speakWithVoicevox('http://vv', text, 0, 1)
+
+    // 句は「極めて大きな揺れ 」＋辞書キー＋「を観測しました。」。空白の位置に引き直された間が入る。
+    // 一般用語なので辞書キー自身の後ろには間を入れない
+    expect(pauses()).toEqual([[ESTIMATED, null, null]])
+  })
+
+  it('辞書キーの直後の空白も、引き直された間で復活する', async () => {
+    dictState.keys = ['波形']
+    dictState.terms = ['波形']
+    const text = '波形 スペクトルを観測しました。'
+    expect(splitIntoChunks(text)).toEqual([text])
+
+    await speakWithVoicevox('http://vv', text, 0, 1)
+
+    // 前半が空なので句は 辞書キー＋「 スペクトルを観測しました。」の 2 つ。
+    // 落ちるのは後半の先頭の空白だが、間を掛けられるのは辞書キーの側
+    expect(pauses()).toEqual([[ESTIMATED, null]])
+  })
+
+  it('【安全弁】辞書キーが空白 1 つで隣り合っても、間は 1 つだけ', async () => {
+    dictState.keys = ['波形', '深発地震']
+    dictState.terms = ['波形', '深発地震']
+    const text = '波形 深発地震を観測しました。'
+    expect(splitIntoChunks(text)).toEqual([text])
+
+    await speakWithVoicevox('http://vv', text, 0, 1)
+
+    // 内側の再帰では前半が空白 1 文字だけになる。**実物はそこへ句を返さない**ので掛ける先が
+    // 無く、外側が辞書キーへ置いた 1 つだけが残る。空白を区切り文字へ足したことで初めて
+    // 生まれる形（句読点ではチャンクが割れるのでこの並びにならない）
+    expect(pauses()).toEqual([[ESTIMATED, null, null]])
+  })
+
+  it('【安全弁】空白ではチャンクを割らない', async () => {
+    // 「落ちた区切りを補う」集合へ空白を足したが、**チャンク分割の集合は句読点のまま**。
+    // 混ぜると、割れない位置に間だけが入るチャンクができる
+    expect(splitIntoChunks('極めて大きな揺れ 波形を観測しました。')).toEqual(['極めて大きな揺れ 波形を観測しました。'])
   })
 })

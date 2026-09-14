@@ -107,6 +107,18 @@ describe('convertEvent', () => {
       expect(warnSpy).not.toHaveBeenCalled()
     })
 
+    // 正: 同じ電文を二度数えないための鍵に `id` を採る（→ `JMAQuake.telegramKey`）。
+    // P2PQuake の `id` は電文ごとに振られるのでそのまま鍵になる。
+    it('電文の一意鍵に id を採る', () => {
+      const q = convert(REAL_QUAKE) as JMAQuake
+      expect(q.telegramKey).toBe('6a809077e88ee598246bf1f0')
+    })
+
+    // 対照: 報番号は配信されないので持たせない。カードの見出しの通数は受信側で数える。
+    it('報番号は持たない（P2PQuake は配信しない）', () => {
+      expect((convert(REAL_QUAKE) as JMAQuake).reportSerial).toBeUndefined()
+    })
+
     it('内部型に無い P2PQuake 固有フィールドは落とす', () => {
       const q = convert(REAL_QUAKE) as unknown as Record<string, unknown>
       expect(q.comments).toBeUndefined()

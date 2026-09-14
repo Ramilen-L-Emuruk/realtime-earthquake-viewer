@@ -902,6 +902,18 @@ export function ttsDelayFor(type: AlertSoundType): number {
   return SOUND_AUDIBLE_END_MS[type] + (ABRUPT_SOUNDS.includes(type) ? SPEECH_GAP_MS : 0)
 }
 
+/**
+ * 通知音と読み上げの間の**最大値**（現在は津波警報の 2720ms）。
+ *
+ * **「電文本体より後に鳴らしたい読み上げ」の基準。** 待ち合わせ（`speechBlocker`）は
+ * 「いま鳴っているものがあるか」で判定するので、本体が間を待っているあいだは空席に見える。
+ * そこへ間 0 で予約すると**後回しにしたい方が先に鳴り出し、あとから本体に割り込まれる**
+ * （気象庁が書いた文の読み上げで実際に起きた）。ここから導けば、音の長さを変えても追随する。
+ */
+export function maxTtsDelay(): number {
+  return Math.max(...(Object.keys(SOUND_AUDIBLE_END_MS) as AlertSoundType[]).map(ttsDelayFor))
+}
+
 // ─── 震度更新音（強震モニタ）─────────────────────────────────────
 // 震度が上がるにつれ音程・回数・音量が連動して増加する。
 

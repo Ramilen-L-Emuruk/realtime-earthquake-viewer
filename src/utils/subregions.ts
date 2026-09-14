@@ -51,6 +51,39 @@ export function ringsBounds(rings: LatLng[][]): RingsBounds | null {
   return { minLat, maxLat, minLng, maxLng }
 }
 
+/**
+ * 名前 → 外接矩形の索引。**入力の参照をキーにして 1 度だけ作る。**
+ *
+ * 境界は県 47 件で全頂点 97,562 点・区域 192 件で 142,471 点あり、呼び出しごとに走査すると重い。
+ * 地震カードの一覧は仮想化していないので、カードの中で走らせると**畳んだカードも含めて全枚数ぶん**
+ * 繰り返される。データは読み込んだら変わらないので、参照が同じなら作り直す理由が無い。
+ *
+ * 同じ形のキャッシュが `stationCoords.ts` の `getAreaPrefIndexCache` にもある。
+ *
+ * @param source キャッシュの鍵。読み込んだデータそのものを渡す（参照が変われば作り直す）。
+ * @param entries 名前とリング群の組。**キャッシュに当たったときは呼ばれない**ので、
+ *   呼び出し側で組を作り直す費用もかからない。
+ */
+const boundsIndexCache = new WeakMap<object, Map<string, RingsBounds>>()
+
+/** 境界データが未読み込みのときの空の索引。呼び出し側が毎レンダー作り直さないよう 1 つだけ持つ。 */
+export const EMPTY_BOUNDS_INDEX: ReadonlyMap<string, RingsBounds> = new Map()
+
+export function ringsBoundsIndex(
+  source: object,
+  entries: () => Iterable<readonly [string, LatLng[][]]>,
+): Map<string, RingsBounds> {
+  const hit = boundsIndexCache.get(source)
+  if (hit) return hit
+  const index = new Map<string, RingsBounds>()
+  for (const [name, rings] of entries()) {
+    const bounds = ringsBounds(rings)
+    if (bounds) index.set(name, bounds)
+  }
+  boundsIndexCache.set(source, index)
+  return index
+}
+
 const DATA_URL = `${import.meta.env.BASE_URL}data/subregions.json`
 
 let cache: SubRegion[] | null = null
