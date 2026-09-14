@@ -138,7 +138,7 @@ function collectCodepoints() {
   const add = (s) => {
     for (const ch of s) cps.add(ch.codePointAt(0))
   }
-  // 地方 9。単一情報源 src/utils/regions.ts の REGIONS から名前を読む（リテラル再定義だと LabelsGL が
+  // 地方 14（気象庁の地方予報区）。単一情報源 src/utils/regions.ts の REGIONS から名前を読む（リテラル再定義だと LabelsGL が
   // 使う REGIONS と非連動になり、地方区分変更時に新しい地方名だけ空白表示になる。.mjs は .ts を import
   // できないためソースを読んで name を取り出す）。
   const regionsSrc = fs.readFileSync(path.join(ROOT, 'src', 'utils', 'regions.ts'), 'utf8')
