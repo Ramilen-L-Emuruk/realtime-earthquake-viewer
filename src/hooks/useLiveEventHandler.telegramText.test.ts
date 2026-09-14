@@ -13,10 +13,10 @@
 // 3. **リプレイのリセットで既読が落ちること。** 落とさないと、同じシナリオを再生し直したときに
 //    本文が前回と一致して「読んだこと」になり、新しいセッションで一度も声にならない。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook } from '@testing-library/react'
+import { renderHook, act } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
 import { DEFAULTS, type AppSettings } from './useSettings'
-import type { JMAQuake, JMATsunami } from '../types/earthquake'
+import type { JMAQuake, JMATsunami, LiveEvent } from '../types/earthquake'
 
 const speeches: { text: string; finish: () => void; done: boolean }[] = []
 const speakMock = vi.fn((_url: string, text: string) => {
@@ -86,6 +86,19 @@ function makeQuake(over: { id?: string; varCommentText?: string } = {}): JMAQuak
   } as JMAQuake
 }
 
+/** 南海トラフ地震臨時情報。**開く先があるので追従セッションが立つ側**の題材。 */
+function makeNankai(): LiveEvent {
+  return {
+    kind: 'nankai',
+    data: {
+      id: 'nankai-1', time: '', eventId: 'n1', cancelled: false,
+      kindName: '調査中', headline: '南海トラフ地震臨時情報（調査中）',
+      summary: '調査を開始しました。', body: '現在調査を行っています。',
+      reportDateTime: '2026-01-01T12:00:00+09:00',
+    },
+  } as unknown as LiveEvent
+}
+
 function setup(overSettings: Partial<AppSettings> = {}) {
   const settings: AppSettings = {
     ...DEFAULTS,
@@ -100,6 +113,7 @@ function setup(overSettings: Partial<AppSettings> = {}) {
     get: (t, k) => (k in t ? t[k as string] : vi.fn()),
   })
   const { result } = renderHook(() => useLiveEventHandler({
+    telegramTextFollow: follow,
     settings, title: title as never,
     earthquakesRef: { current: [] as JMAQuake[] },
     tsunamisRef: { current: [] as JMATsunami[] },
@@ -114,7 +128,20 @@ function setup(overSettings: Partial<AppSettings> = {}) {
   return result.current
 }
 
+/** 気象庁の文の追従セッション。begin/end の呼ばれ方と `subject` を記録する。 */
+const followCalls: { kind: 'begin' | 'end' | 'reset'; subject?: string }[] = []
+const follow = {
+  begin: (_segments: unknown, subject?: string) => {
+    followCalls.push({ kind: 'begin', subject })
+    return followCalls.length
+  },
+  schedule: () => {},
+  end: (_token: number) => { followCalls.push({ kind: 'end' }) },
+  reset: () => { followCalls.push({ kind: 'reset' }) },
+} as never
+
 beforeEach(() => {
+  followCalls.length = 0
   vi.useFakeTimers()
   speeches.length = 0
   speakMock.mockClear()
@@ -152,6 +179,48 @@ describe('気象庁が書いた文の読み上げ（配線）', () => {
     handleLiveEvent(makeQuake())
     await drain()
     expect(telegramSpeeches()).toHaveLength(0)
+  })
+
+  // 正: **読み上げているあいだ、画面の表示を開くための追従セッションが立つ。**
+  // 主題（`telegramText:<kind>`）で、どの電文の文かが分かる（→ `useAutoOpenWhileSpeaking`）。
+  it('読み上げのあいだ、表示を開くための追従セッションが立つ', async () => {
+    const { handleLiveEvent } = setup()
+    handleLiveEvent(makeNankai())
+    await drain()
+    expect(followCalls.map(c => c.kind)).toEqual(['begin', 'end'])
+    expect(followCalls[0].subject).toBe('telegramText:nankai')
+  })
+
+  // 対照: **開く先が無い種別では立てない。** 地震情報の付加文は元から畳んでいないので
+  // 開く相手がいない（→ `TELEGRAM_TEXT_OPEN_TARGET_KINDS`）。誰も反応しないセッションを
+  // 立ち上げては終わる状態にしない —— 症状が出ないぶん、後から意図を確かめられなくなる
+  it('開く先が無い種別（地震情報）では追従セッションを立てない', async () => {
+    const { handleLiveEvent } = setup()
+    handleLiveEvent(makeQuake())
+    await drain()
+    expect(telegramSpeeches()).toHaveLength(1)   // 読み上げ自体は起きる
+    expect(followCalls).toEqual([])              // 追従だけ立たない
+  })
+
+  // 対照: 読まない電文では立てない（開く相手が無いのにセッションだけ始めない）
+  // 安全弁: **リセットで追従も打ち切る。** 鳴っている読み上げはリセットでは止まらないので、
+  // 追従だけを残すと、切り替え前の読み上げが自然に終わるまで（南海トラフ臨時情報なら約 3 分）
+  // 無関係なバナーが開いたままになる。既存の 2 本（津波カード・未入電）と並べて打ち切ること。
+  it('リセットで追従セッションを打ち切る', async () => {
+    const { handleLiveEvent, resetTracking } = setup()
+    handleLiveEvent(makeNankai())
+    await drain()
+    followCalls.length = 0
+
+    act(() => { resetTracking() })
+    expect(followCalls.map(c => c.kind)).toContain('reset')
+  })
+
+  it('読まない設定では追従セッションを立てない', async () => {
+    const { handleLiveEvent } = setup({ ttsReadTelegramText: false })
+    handleLiveEvent(makeNankai())
+    await drain()
+    expect(followCalls).toEqual([])
   })
 
   // 安全弁: 読み上げのマスタートグルを切ったら鳴らない。**この設定だけ有効な値が残っていても、
