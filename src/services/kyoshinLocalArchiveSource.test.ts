@@ -16,7 +16,9 @@ vi.mock('../utils/kyoshinImportDb', () => ({
 
 import { log } from '../utils/logger'
 import { getMergedKyoshinArchive } from '../utils/kyoshinImportDb'
-import { createLocalKyoshinArchiveSource, clearLocalKyoshinArchiveCache } from './kyoshinLocalArchiveSource'
+import { createLocalKyoshinArchiveSource, clearLocalKyoshinArchiveCache, selectWarmupFrames } from './kyoshinLocalArchiveSource'
+import type { KyoshinFrame } from './kyoshinSource'
+import { WARMUP_BLOCK_SEC, WARMUP_MAX_BLOCKS, WARMUP_QUIET_MAX_POINTS } from '../utils/kyoshinWarmup'
 import type { LocalKyoshinArchive } from '../types/localKyoshinArchive'
 
 const validArchive: LocalKyoshinArchive = {
@@ -62,7 +64,7 @@ describe('createLocalKyoshinArchiveSource', () => {
     const source = createLocalKyoshinArchiveSource('2018-iburi')
     const enqueue = vi.fn()
     const setStalled = vi.fn()
-    source.start({ enqueue, setStalled })
+    source.start({ enqueue, setStalled, prefill: vi.fn() })
 
     await vi.waitFor(() => expect(enqueue).toHaveBeenCalledTimes(2))
     expect(enqueue.mock.calls[0][0]).toMatchObject({
@@ -81,7 +83,7 @@ describe('createLocalKyoshinArchiveSource', () => {
     const source = createLocalKyoshinArchiveSource('2018-iburi')
     const enqueue = vi.fn()
     const setStalled = vi.fn()
-    source.start({ enqueue, setStalled })
+    source.start({ enqueue, setStalled, prefill: vi.fn() })
 
     await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
     expect(enqueue).not.toHaveBeenCalled()
@@ -98,7 +100,7 @@ describe('createLocalKyoshinArchiveSource', () => {
     const source = createLocalKyoshinArchiveSource('2018-iburi')
     const enqueue = vi.fn()
     const setStalled = vi.fn()
-    source.start({ enqueue, setStalled })
+    source.start({ enqueue, setStalled, prefill: vi.fn() })
 
     await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
     await new Promise((r) => setTimeout(r, 0))
@@ -114,7 +116,7 @@ describe('createLocalKyoshinArchiveSource', () => {
     const source = createLocalKyoshinArchiveSource('2018-iburi')
     const enqueue = vi.fn()
     const setStalled = vi.fn()
-    source.start({ enqueue, setStalled })
+    source.start({ enqueue, setStalled, prefill: vi.fn() })
 
     await vi.waitFor(() => expect(log.warn).toHaveBeenCalled())
     expect(enqueue).not.toHaveBeenCalled()
@@ -125,7 +127,7 @@ describe('createLocalKyoshinArchiveSource', () => {
     vi.mocked(fetch).mockResolvedValue(jsonResponse(200, { ...validArchive, frames: [] }))
     const source = createLocalKyoshinArchiveSource('2018-iburi')
     const setStalled = vi.fn()
-    source.start({ enqueue: vi.fn(), setStalled })
+    source.start({ enqueue: vi.fn(), setStalled, prefill: vi.fn() })
 
     await vi.waitFor(() => expect(setStalled).toHaveBeenCalledWith(true))
     expect(log.warn).toHaveBeenCalled()
@@ -137,7 +139,7 @@ describe('createLocalKyoshinArchiveSource', () => {
     vi.mocked(fetch).mockResolvedValue(jsonResponse(503, {}))
     const source = createLocalKyoshinArchiveSource('2018-iburi')
     const setStalled = vi.fn()
-    source.start({ enqueue: vi.fn(), setStalled })
+    source.start({ enqueue: vi.fn(), setStalled, prefill: vi.fn() })
 
     await vi.waitFor(() => expect(setStalled).toHaveBeenCalledWith(true))
     expect(log.warn).toHaveBeenCalled()
@@ -147,7 +149,7 @@ describe('createLocalKyoshinArchiveSource', () => {
     vi.mocked(fetch).mockRejectedValue(new TypeError('Failed to fetch'))
     const source = createLocalKyoshinArchiveSource('2018-iburi')
     const setStalled = vi.fn()
-    source.start({ enqueue: vi.fn(), setStalled })
+    source.start({ enqueue: vi.fn(), setStalled, prefill: vi.fn() })
 
     await vi.waitFor(() => expect(setStalled).toHaveBeenCalledWith(true))
     expect(log.warn).toHaveBeenCalled()
@@ -158,7 +160,7 @@ describe('createLocalKyoshinArchiveSource', () => {
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(503, {}))
     const source1 = createLocalKyoshinArchiveSource('2018-iburi')
     const setStalled1 = vi.fn()
-    source1.start({ enqueue: vi.fn(), setStalled: setStalled1 })
+    source1.start({ enqueue: vi.fn(), setStalled: setStalled1, prefill: vi.fn() })
     // fetch呼び出し自体は同期的にカウントされるため、それだけを待つと「取得失敗の判定・キャッシュの
     // 破棄」という非同期の後始末より先にsource2を作ってしまい、破棄前の失敗結果をキャッシュから
     // 再利用してしまう（レビューで実際に踏んだ）。setStalled(true)まで待てば後始末は完了している。
@@ -167,7 +169,7 @@ describe('createLocalKyoshinArchiveSource', () => {
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(200, validArchive))
     const source2 = createLocalKyoshinArchiveSource('2018-iburi')
     const enqueue2 = vi.fn()
-    source2.start({ enqueue: enqueue2, setStalled: vi.fn() })
+    source2.start({ enqueue: enqueue2, setStalled: vi.fn(), prefill: vi.fn() })
     await vi.waitFor(() => expect(enqueue2).toHaveBeenCalledTimes(2))
     expect(fetch).toHaveBeenCalledTimes(2)
   })
@@ -178,7 +180,7 @@ describe('createLocalKyoshinArchiveSource', () => {
     const source = createLocalKyoshinArchiveSource('2018-iburi')
     const enqueue = vi.fn()
     const setStalled = vi.fn()
-    source.start({ enqueue, setStalled })
+    source.start({ enqueue, setStalled, prefill: vi.fn() })
     source.stop()
     resolveFetch(jsonResponse(200, validArchive))
 
@@ -190,12 +192,12 @@ describe('createLocalKyoshinArchiveSource', () => {
   it('同一idの2回目のstart呼び出しはfetchをキャッシュから再利用する', async () => {
     vi.mocked(fetch).mockResolvedValue(jsonResponse(200, validArchive))
     const source1 = createLocalKyoshinArchiveSource('2018-iburi')
-    source1.start({ enqueue: vi.fn(), setStalled: vi.fn() })
+    source1.start({ enqueue: vi.fn(), setStalled: vi.fn(), prefill: vi.fn() })
     await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
 
     const source2 = createLocalKyoshinArchiveSource('2018-iburi')
     const enqueue2 = vi.fn()
-    source2.start({ enqueue: enqueue2, setStalled: vi.fn() })
+    source2.start({ enqueue: enqueue2, setStalled: vi.fn(), prefill: vi.fn() })
     await vi.waitFor(() => expect(enqueue2).toHaveBeenCalledTimes(2))
     expect(fetch).toHaveBeenCalledTimes(1)
   })
@@ -216,7 +218,7 @@ describe('IndexedDBとの優先順位', () => {
     const source = createLocalKyoshinArchiveSource('2018-iburi')
     const enqueue = vi.fn()
     const setStalled = vi.fn()
-    source.start({ enqueue, setStalled })
+    source.start({ enqueue, setStalled, prefill: vi.fn() })
 
     await vi.waitFor(() => expect(enqueue).toHaveBeenCalledTimes(2))
     expect(setStalled).toHaveBeenCalledWith(false)
@@ -228,7 +230,7 @@ describe('IndexedDBとの優先順位', () => {
     vi.mocked(fetch).mockResolvedValue(jsonResponse(200, validArchive))
     const source = createLocalKyoshinArchiveSource('2018-iburi')
     const enqueue = vi.fn()
-    source.start({ enqueue, setStalled: vi.fn() })
+    source.start({ enqueue, setStalled: vi.fn(), prefill: vi.fn() })
 
     await vi.waitFor(() => expect(enqueue).toHaveBeenCalledTimes(2))
     expect(fetch).toHaveBeenCalledTimes(1)
@@ -240,10 +242,57 @@ describe('IndexedDBとの優先順位', () => {
     vi.mocked(getMergedKyoshinArchive).mockRejectedValue(new Error('IndexedDB error'))
     const source = createLocalKyoshinArchiveSource('2018-iburi')
     const setStalled = vi.fn()
-    source.start({ enqueue: vi.fn(), setStalled })
+    source.start({ enqueue: vi.fn(), setStalled, prefill: vi.fn() })
 
     await vi.waitFor(() => expect(setStalled).toHaveBeenCalledWith(true))
     expect(log.warn).toHaveBeenCalled()
     expect(fetch).not.toHaveBeenCalled()
+  })
+})
+
+describe('selectWarmupFrames: 助走に使う区間の切り出し', () => {
+  const START = Date.UTC(2026, 0, 1, 0, 30, 0)
+  /** `agoSec` 秒前のフレーム。`shaking` なら静穏ではない値を入れる。 */
+  const frame = (agoSec: number, shaking: boolean): KyoshinFrame => ({
+    time: new Date(START - agoSec * 1000),
+    dataTime: new Date(START - agoSec * 1000).toISOString(),
+    sitesKey: 'local',
+    // value = -3.0 + index * 0.5。index 7 = value 0.5（静穏の判定に使うしきい値）
+    indices: shaking ? new Array<number>(WARMUP_QUIET_MAX_POINTS).fill(7) : [0, 0, 0],
+  })
+
+  it('正: 静穏なフレームまで遡り、そこから開始時刻の手前までを返す', () => {
+    const frames = [frame(5, false), frame(4, true), frame(3, true), frame(2, true), frame(1, true)]
+    const picked = selectWarmupFrames(frames, START)
+    expect(picked).toHaveLength(5)
+    expect(picked[0].time.getTime()).toBe(START - 5000)
+  })
+
+  it('対照: 開始時刻より後のフレームは助走に入れない（そちらは通常の再生が流す）', () => {
+    const future: KyoshinFrame = {
+      time: new Date(START + 1000),
+      dataTime: new Date(START + 1000).toISOString(),
+      sitesKey: 'local',
+      indices: [0],
+    }
+    const picked = selectWarmupFrames([frame(2, true), frame(1, true), future], START)
+    expect(picked.every((f) => f.time.getTime() < START)).toBe(true)
+  })
+
+  it('安全弁: 上限より古いフレームは使わない', () => {
+    // 上限の内側は連続させる（間を空けると下の「穴で切る」に引っかかり、上限の検証にならない）。
+    const limitSec = WARMUP_MAX_BLOCKS * WARMUP_BLOCK_SEC
+    const frames = [frame(limitSec + 10, true), frame(limitSec - 10, true), frame(limitSec - 11, true)]
+    const picked = selectWarmupFrames(frames, START)
+    expect(picked).toHaveLength(2)
+    expect(picked[0].time.getTime()).toBe(START - (limitSec - 10) * 1000)
+  })
+
+  it('安全弁: 検知エンジンが不連続とみなす穴があれば、その後ろだけを使う', () => {
+    // 穴より前を食わせても、検知エンジンが状態を作り直して捨てるだけ。
+    const frames = [frame(60, true), frame(59, true), frame(2, true), frame(1, true)]
+    const picked = selectWarmupFrames(frames, START)
+    expect(picked).toHaveLength(2)
+    expect(picked[0].time.getTime()).toBe(START - 2000)
   })
 })

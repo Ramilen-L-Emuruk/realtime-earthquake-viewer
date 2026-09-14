@@ -22,7 +22,8 @@ import { authHeader } from '../utils/dmdataApiKey'
 import type { JMAQuake } from '../types/earthquake'
 import type { ReplayEntry } from '../types/replay'
 import {
-  HANDLED_TYPES, QUAKE_TYPES, buildXmlPayload, isBinaryTelegramType, buildBinaryPayload,
+  HANDLED_TYPES, QUAKE_TYPES, HISTORY_EXTRA_TYPES, historyExtraKey,
+  buildXmlPayload, isBinaryTelegramType, buildBinaryPayload,
 } from './dmdataTelegramPayload'
 import { BufrFragmentStore, fragmentKey } from './bufrTelegramAssembly'
 
@@ -552,7 +553,7 @@ export async function fetchLiveQuakeTelegrams(
   day: string,
   before: Date,
   includeTest: boolean,
-): Promise<{ quakes: JMAQuake[]; skipped: number }> {
+): Promise<{ quakes: JMAQuake[]; extras: ReplayEntry[]; skipped: number }> {
   const daySet = new Set([day])
   const { from: utcFrom, to: utcTo } = utcRangeForJstDates([day])
   // 下限は日の始まりより 1 日ぶん手前に置く。担当日の切り出しは `daySet`（受信時刻の JST 日）が
@@ -570,16 +571,30 @@ export async function fetchLiveQuakeTelegrams(
   let skipped = 0
   const targets: TelegramListItem[] = []
   for (const item of list) {
-    if (!QUAKE_TYPES.has(item.head?.type)) continue
+    const type = item.head?.type
+    // 地震カードのほかに、帯と長周期（`HISTORY_EXTRA_TYPES`）も拾う。初期状態（24 時間）では
+    // 足りないもので、どれもこの一覧に入っているので追加の通信は要らない。
+    if (!QUAKE_TYPES.has(type) && !HISTORY_EXTRA_TYPES.has(type)) continue
     const verdict = classifyTelegram(item, windowFrom, until, daySet, includeTest)
     if (verdict === 'malformed') skipped++
     else if (verdict === 'include') targets.push(item)
   }
 
   const quakes: JMAQuake[] = []
+  const extras: ReplayEntry[] = []
   await mapWithLimit(targets, BODY_CONCURRENCY, async (item) => {
     try {
       const payload = buildXmlPayload(item.head.type, await fetchBody(item.url, apiKey))
+      if (HISTORY_EXTRA_TYPES.has(item.head.type)) {
+        if (payload === null || historyExtraKey(payload) === null) {
+          log.warn(`[replay] 履歴用電文のパースに失敗しスキップ id=${item.id} type=${item.head.type}`)
+          skipped++
+          return
+        }
+        // 発表時刻を入れておく（呼び出し側が種別ごとに最新 1 通へ畳むときの比較に使う）。
+        extras.push({ payload, replayTime: new Date(item.head.time), silent: true })
+        return
+      }
       if (payload?.kind !== 'event' || payload.event.kind !== 'quake') {
         log.warn(`[replay] 履歴用電文のパースに失敗しスキップ id=${item.id} type=${item.head.type}`)
         skipped++
@@ -591,5 +606,5 @@ export async function fetchLiveQuakeTelegrams(
       skipped++
     }
   })
-  return { quakes, skipped }
+  return { quakes, extras, skipped }
 }

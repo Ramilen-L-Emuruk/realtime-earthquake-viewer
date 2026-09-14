@@ -62,6 +62,47 @@ export const HANDLED_TYPES = new Set([
 ])
 
 /**
+ * 地震カードの履歴（最大 7 日）と一緒に復元する種別。
+ *
+ * **初期状態（24 時間）では足りないものだけを挙げる。** 長周期地震動は地震ごとに紐づくので
+ * カードの一覧と同じ厚みが要り、残りは 24 時間より長く画面に出続ける帯（地震回数・お知らせ・
+ * 解説情報・後発地震は発表から 7 日で失効し、南海トラフ臨時情報は調査終了か取消で消える）。
+ * どれも取得済みのアーカイブに入っているので、拾うだけで追加の通信は要らない。
+ *
+ * **津波・緊急地震速報は入れない。** 「その時刻に発表中だったか」の判定は初期状態の担当で、
+ * 遡り幅も目的も違う（イベント単位の生存判定が要る）。
+ *
+ * **推計震度分布図（IXAC41）も入れない。** 最新 1 通しか持たない設計で、遡っても過去の
+ * カードには紐づかない（引き当ては地震発現時刻）。理由は settings-pwa-spec.md §6。
+ */
+export const HISTORY_EXTRA_TYPES = new Set([
+  ...LPGM_TYPES, ...NANKAI_TYPES, ...COMMENTARY_TYPES, ...KOHATSU_TYPES,
+  ...NOTICE_TYPES, ...QUAKE_COUNT_TYPES,
+])
+
+/**
+ * 履歴で復元する電文の「同じものとみなす鍵」。同じ鍵のうち最新 1 通だけを残す。
+ *
+ * 長周期地震動だけ地震ごとに持つ（`lpgmByEventId`）ので鍵に識別子を含める。残りは
+ * 画面に 1 つだけ出る帯なので種別だけでよい。
+ *
+ * @returns 履歴で復元しない種別なら null
+ */
+export function historyExtraKey(payload: ReplayPayload): string | null {
+  switch (payload.kind) {
+    case 'lpgm': return `lpgm:${payload.data.eventId}`
+    case 'nankai':
+    case 'nankaiCommentary':
+    case 'kohatsu':
+    case 'quakeNotice':
+    case 'earthquakeCount':
+      return payload.kind
+    default:
+      return null
+  }
+}
+
+/**
  * 電文本体（気象庁の XML）から再生用ペイロードを組み立てる。
  *
  * 取得元（ライブ・アーカイブ・当日経路）を問わず、電文の読み取りはこの 1 本に集約する。

@@ -7,10 +7,10 @@ import { log } from '../utils/logger'
 import { authHeader } from '../utils/dmdataApiKey'
 import { extractQuakeEventIdFromId } from '../utils/quakeMerge'
 import { latestValidDateTime } from '../utils/tsunami'
-import type { ReplayEntry, ReplayFetchResult, QuakeHistoryResult } from '../types/replay'
+import type { ReplayEntry, ReplayPayload, ReplayFetchResult, QuakeHistoryResult } from '../types/replay'
 import {
-  HANDLED_TYPES, QUAKE_TYPES, buildXmlPayload, CLASSIFICATIONS,
-  isBinaryTelegramType, buildBinaryPayload,
+  HANDLED_TYPES, QUAKE_TYPES, HISTORY_EXTRA_TYPES, historyExtraKey,
+  buildXmlPayload, CLASSIFICATIONS, isBinaryTelegramType, buildBinaryPayload,
 } from './dmdataTelegramPayload'
 import { BufrFragmentStore, fragmentKey } from './bufrTelegramAssembly'
 import {
@@ -615,11 +615,20 @@ export async function fetchDmdataQuakeHistory(
   const quakes: JMAQuake[] = []
   const eventIds = new Set<string>()
   const failedArchiveUrls: string[] = []
+  /** 帯と長周期は種別ごとに最新 1 通だけ残す（鍵の作り方は `historyExtraKey`）。 */
+  const extraLatest = new Map<string, { payload: ReplayPayload; timeMs: number }>()
   let skipped = 0
   let usedDays = 0
 
   for (const source of sources) {
-    if (eventIds.size >= targetEvents) break
+    // **地震は目標件数に達した日で打ち切る。** 日の途中で切ると同一イベントの続報が分断され、
+    // 震度速報だけのカードが残りうる。
+    //
+    // **帯と長周期は打ち切らない**（`HISTORY_EXTRA_TYPES`）。7 日ぶん画面に出続けるもの・
+    // 地震ごとに紐づくもので、**地震活動が多い期間ほど早く打ち切られる**と、いちばん復元
+    // したい状況（群発の最中）で復元できない。アーカイブは上で並列にダウンロードしてあるので、
+    // 増えるのは目録の走査と 1 日数通のパースだけ。
+    const takeQuakes = eventIds.size < targetEvents
     usedDays++
 
     if (!source.archive) {
@@ -631,6 +640,13 @@ export async function fetchDmdataQuakeHistory(
         for (const quake of live.quakes) {
           quakes.push(quake)
           eventIds.add(extractQuakeEventIdFromId(quake.id) ?? quake.id)
+        }
+        for (const e of live.extras) {
+          const key = historyExtraKey(e.payload)
+          if (key === null) continue
+          const timeMs = e.replayTime.getTime()
+          const prev = extraLatest.get(key)
+          if (!prev || timeMs > prev.timeMs) extraLatest.set(key, { payload: e.payload, timeMs })
         }
         skipped += live.skipped
       } catch (e) {
@@ -660,7 +676,10 @@ export async function fetchDmdataQuakeHistory(
 
     for (const entry of manifest) {
       if (!entry?.head || (!includeTest && entry.head.test)) continue
-      if (!QUAKE_TYPES.has(entry.head.type)) continue
+      const isQuake = QUAKE_TYPES.has(entry.head.type)
+      const isExtra = HISTORY_EXTRA_TYPES.has(entry.head.type)
+      if (!isQuake && !isExtra) continue
+      if (isQuake && !takeQuakes) continue
       // XML 版と JSON 版の 2 エントリで載るうち、XML 版（originalId 無し）だけを拾う
       // （`fetchDmdataReplayEvents` と同じ重複排除。正常動作なので警告は出さない）。
       if (entry.originalId) continue
@@ -682,6 +701,22 @@ export async function fetchDmdataQuakeHistory(
         if (!bodyBytes) {
           log.warn(`[replay] 履歴用電文の本体が見つからずスキップ id=${entry.id} type=${entry.head.type}`)
           skipped++
+          continue
+        }
+        if (isExtra) {
+          // 帯と長周期は「種別ごとに最新 1 通」だけを残す（画面に出るのは 1 つ・長周期は
+          // 地震ごと）。古い報まで流すと、初期状態が入れた新しい値を上書きしうる。
+          const payload = buildXmlPayload(entry.head.type, dec.decode(bodyBytes))
+          const key = payload ? historyExtraKey(payload) : null
+          if (!payload || key === null) {
+            log.warn(`[replay] 履歴用電文のパースに失敗しスキップ id=${entry.id} type=${entry.head.type}`)
+            skipped++
+            continue
+          }
+          const prev = extraLatest.get(key)
+          if (!prev || entryTime.getTime() > prev.timeMs) {
+            extraLatest.set(key, { payload, timeMs: entryTime.getTime() })
+          }
           continue
         }
         const quake = parseEarthquakeFromXml(entry.head.type, dec.decode(bodyBytes))
@@ -711,6 +746,15 @@ export async function fetchDmdataQuakeHistory(
   } else if (quakes.length === 0) {
     log.warn(`[replay] 履歴用に ${usedDays} 日ぶんを読んだが地震電文は 0 件（${before.toISOString()} 以前）`)
   }
-  log.info(`[replay] 地震カードの履歴を復元 電文=${quakes.length} イベント=${eventIds.size} 参照日数=${usedDays}（うち当日経路=${liveDays.length}）`)
-  return { quakes, skipped, failedArchiveUrls }
+  // 帯と長周期は古い順に流す（`useReplayController` が初期状態の後に注入する）。
+  const extras: ReplayEntry[] = [...extraLatest.values()]
+    .sort((a, b) => a.timeMs - b.timeMs)
+    .map((x) => ({ payload: x.payload, replayTime: new Date(x.timeMs), silent: true }))
+  // 走査日数は**常に取得元の全日数**（＝`sources.length`。帯と長周期のために打ち切らない）。
+  // 地震が何日で目標に達したかとは別の数字なので、混ぜて読まないこと。
+  log.info(
+    `[replay] 地震カードの履歴を復元 電文=${quakes.length} イベント=${eventIds.size}`
+    + ` 走査日数=${usedDays}（うち当日経路=${liveDays.length}）帯と長周期=${extras.length}`,
+  )
+  return { quakes, extras, skipped, failedArchiveUrls }
 }

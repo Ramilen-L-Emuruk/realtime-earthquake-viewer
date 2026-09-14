@@ -1027,6 +1027,59 @@ export async function fetchDmdataKohatsu(apiKey: string): Promise<JMAKohatsu | n
   }
 }
 
+/**
+ * DMDATA REST API で「7 日ぶん表示され続ける帯」の最新 1 件を取る（地震回数・お知らせ）。
+ *
+ * **期限切れと取消の判定は呼び出し側（`applyEarthquakeCount` / `applyQuakeNotice`）に任せる。**
+ * あちらが持っている判断をここへ写すと、片方だけ直したときに静かに食い違う。
+ *
+ * 取得失敗時は null を返す（補助情報なのでアプリを壊さない）が、失敗した事実はログに残す。
+ * 「発表なし」と「取得できていない」は同じ null になるため、記録が無いと区別できない。
+ */
+async function fetchLatestTelegram<T>(
+  apiKey: string,
+  type: string,
+  label: string,
+  parse: (xml: string) => T | null,
+): Promise<T | null> {
+  if (!isApiKeyUsable(apiKey, label)) return null
+  const headers = { Authorization: authHeader(apiKey) }
+  try {
+    const res = await fetch(`${API_BASE}/telegram?type=${type}&limit=1`, { headers })
+    if (!res.ok) { logRestFailure(`${label} の一覧`, res.status); return null }
+    const json = await res.json() as { items?: Array<{ id: string; url: string }> }
+    const item = (json.items ?? [])[0]
+    if (!item) return null
+    const xmlRes = await fetch(item.url, { headers })
+    if (!xmlRes.ok) { logRestFailure(`${label} の電文本体`, xmlRes.status); return null }
+    const parsed = parse(await xmlRes.text())
+    // 取得はできたのに読めなかった場合を黙って「発表なし」に混ぜない。
+    if (!parsed) {
+      log.warn(`[DMDSS] ${label} を解析できませんでした`)
+      return null
+    }
+    return parsed
+  } catch (err) {
+    log.error(`[DMDSS] ${label} の取得に失敗`, err)
+    return null
+  }
+}
+
+/**
+ * 地震回数に関する情報（VXSE60）の最新 1 件を取得する。
+ *
+ * **この帯は 7 日間表示され続けるのに、以前は起動時に復元していなかった**——群発の最中に
+ * リロードすると、いちばん見たい回数の経過が消えていた。
+ */
+export function fetchDmdataEarthquakeCount(apiKey: string): Promise<JMAEarthquakeCount | null> {
+  return fetchLatestTelegram(apiKey, 'VXSE60', '地震回数に関する情報 (VXSE60)', parseEarthquakeCountFromXml)
+}
+
+/** 地震・津波に関するお知らせ（VZSE40）の最新 1 件を取得する（理由は上と同じ）。 */
+export function fetchDmdataQuakeNotice(apiKey: string): Promise<JMAQuakeNotice | null> {
+  return fetchLatestTelegram(apiKey, 'VZSE40', '地震・津波に関するお知らせ (VZSE40)', parseQuakeNoticeFromXml)
+}
+
 // DMDATA REST API で長周期地震動観測情報（VXSE62）を取得する。
 // oldestOriginTime より古い電文が見つかった時点でページネーションを停止する。
 // 取得失敗時は空配列を返す（補助情報なのでアプリを壊さない）。

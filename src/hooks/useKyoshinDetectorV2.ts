@@ -15,6 +15,13 @@ import {
   type DetectionEvent,
   type TriggerResult,
 } from '../utils/kyoshinDetector'
+import {
+  consumeWarmup,
+  pushPendingFrame,
+  type PendingFrame,
+  type WarmupNotice,
+} from '../utils/kyoshinWarmupConsumer'
+import type { KyoshinWarmup } from './useKyoshinRealtime'
 import { createLogThrottle, log } from '../utils/logger'
 import { profileSpan } from '../utils/frameProfiler'
 
@@ -176,6 +183,72 @@ export function siteSignature(sites: SiteCoords): string {
 export const RESULT_STALL_RESET_FRAMES = 5
 
 /**
+ * 助走（`utils/kyoshinWarmup`）が届くまで通常フレームを待たせる上限（フレーム数）。
+ *
+ * 供給元は助走が無い場合も空配列で必ず 1 度渡す契約（`KyoshinSourceSink.prefill`）なので、
+ * 通常はこの上限に触れない。**触れるのは契約が守られなかったとき**で、そのまま待ち続けると
+ * 検知が恒久的に沈黙する。上限に達したら助走を諦めて通常どおり動かす。
+ *
+ * 数えるのは**フレーム数で、経過時間ではない**。通常は 1 秒に 1 フレーム届くので 90 秒ぶんに
+ * 相当するが、観測点集合の識別子が揃わない区間（版の切替直後）のフレームはここへ積まれない
+ * ため、実時間ではもっと長くなりうる。助走の取得は最長でも 15 ブロック（実測で 1 ブロック
+ * 60 件が 1 秒未満）なので、正常な取得がこの幅に収まらないことはない。
+ */
+export const WARMUP_WAIT_MAX_FRAMES = 90
+
+/**
+ * 助走の消化で起きたことを記録する。
+ *
+ * **文面はここが持ち、`consumeWarmup` は事実だけを返す。** 同じ出来事を 2 通りの言葉で書くと、
+ * 片方だけ直したときに記録と実装が食い違う。
+ */
+function logWarmupNotice(notice: WarmupNotice, supplyKey: string, sitesSiteConfigId: string): void {
+  switch (notice.kind) {
+    case 'gave-up':
+      log.warn(
+        `[kyoshinV2] 助走が ${notice.waitedFrames} フレーム待っても届かないため、助走なしで検知を始めます`
+        + `（supplyKey=${supplyKey}）`,
+      )
+      return
+    case 'all-unusable':
+      // **届いたのに 1 件も使えなかったことは記録する。** 画面からは「助走が無かった」のと
+      // 見分けが付かず、立ち上がりの検知が遅れた原因を後から追えない。落とした理由（版違いか、
+      // それ以外か）も添える —— 前者は観測点リストの切替と重なっただけだが、後者は助走そのものの
+      // 作り方を疑う手がかりになる。
+      log.warn(
+        `[kyoshinV2] 助走 ${notice.total} フレームを 1 件も使えませんでした`
+        + `（版違い ${notice.versionMismatch} 件・その他 ${notice.total - notice.versionMismatch} 件。`
+        + `助走なしで検知を始めます。sites=${sitesSiteConfigId}）`,
+      )
+      return
+    case 'feed-failed': {
+      // **件数だけでは「どの入力で壊れたか」を再現できない**ので、最初に落ちたフレームの
+      // データ時刻も添える。1 件ずつ出さないのは、助走が最大 900 件あるとログが埋まるため。
+      const at = notice.frameTimeMs === null ? '(不明)' : new Date(notice.frameTimeMs).toISOString()
+      log.error(
+        `[kyoshinV2] 助走・待機分の消化で ${notice.count} 件が例外（残りは続行。最初に落ちたのは ${at}）`,
+        notice.error,
+      )
+      return
+    }
+    case 'aborted':
+      // 1 件ぶんの握りでは受け止められなかった（列の反復そのものが壊れた）。その段は
+      // 途中で止まるが、検知そのものは続ける。
+      log.error(
+        `[kyoshinV2] ${notice.phase === 'warmup' ? '助走' : '待機分'}の消化中に例外`
+        + '（その分を打ち切って検知を始めます）',
+        notice.error,
+      )
+      return
+    default: {
+      // 種別を足して分岐を書き忘れたときに止まるのはここだけ。
+      const never: never = notice
+      log.warn('[kyoshinV2] 未知の助走の記録', never)
+    }
+  }
+}
+
+/**
  * 強震モニタ検知エンジン（純粋コア step・V3 近傍一致型）の React ラッパー。
  *
  * 強震モニタ検知の唯一のエンジン。検知結果は音・自動タブ切替・自動フィット・地図オーバーレイ・
@@ -193,6 +266,9 @@ export const RESULT_STALL_RESET_FRAMES = 5
  * @param hasActiveNonAssumedEEW 震源要素が確定した（＝仮定震源要素でない）EEW が発表中か
  *   （cancelled 除く）。true の間は confirmed の確定条件を緩和する（§19）。仮定震源要素由来の速報は
  *   震源・推定震度の誤差が大きいため緩和しない。
+ * @param supplyKey いま動いている供給を表す文字列（`useKyoshinRealtime.supplyKey`）
+ * @param warmup その供給の助走フレーム（`useKyoshinRealtime.warmup`）。届くまでは通常フレームを
+ *   待たせる。詳細は `utils/kyoshinWarmup`
  */
 export function useKyoshinDetectorV2(
   sites: SiteCoords,
@@ -202,6 +278,8 @@ export function useKyoshinDetectorV2(
   indicesSiteConfigId: string | null,
   enabled: boolean,
   hasActiveNonAssumedEEW: boolean,
+  supplyKey: string,
+  warmup: KyoshinWarmup | null,
 ): KyoshinDetectorV2Result {
   // `useRef(loadInitialState())` と書いてはいけない——**引数式は毎レンダー評価される**ため、
   // 1Hz の再レンダーのたびに localStorage の読み取りと学習資産の復元が走り、結果は捨てられる
@@ -220,6 +298,38 @@ export function useKyoshinDetectorV2(
   const hasActiveNonAssumedEEWRef = useRef(hasActiveNonAssumedEEW)
   hasActiveNonAssumedEEWRef.current = hasActiveNonAssumedEEW
   const [result, setResult] = useState<KyoshinDetectorV2Result>(EMPTY)
+  /**
+   * 助走を待っているか。
+   *
+   * **立つのは「検知エンジンの状態が新しい時間軸で空になった」ときだけ**——初回マウントと、
+   * リプレイの開始・停止でデータ時刻が空に転じたとき。
+   *
+   * **`supplyKey` の変化で立ててはいけない。** ローカル履歴アーカイブの収録範囲を再生中に
+   * 跨ぐと供給元だけが替わるが、**再生時刻はそのまま続く**（`useKyoshinRealtime` の注記）。
+   * そこで待ちに入ると、検知エンジンの状態は有効なのに結果が古い値で凍結し、しかも待たせた
+   * フレームが**別の供給のもの**として溜まる。時間軸が同じなら助走は要らない。
+   *
+   * **`enabled` を可変にするなら、ここも見直すこと。** いまの呼び出し元（`App.tsx`）は常に
+   * `true` を渡すが、`false` の間にデータ時刻が空へ転じると下のエフェクトが手前で抜けるため、
+   * 時間軸が変わったことを観測できないまま `true` へ戻りうる。
+   */
+  const waitingWarmupRef = useRef(true)
+  /**
+   * 助走が届くまで待たせている通常フレーム（時刻の昇順）。
+   *
+   * **観測点集合の識別子を一緒に持つ。** 待たせている間に観測点リストの版が替わりうるので、
+   * 食わせる直前に今の座標と同じ版かを確かめる（長さの検証だけでは、版が違っても点数が
+   * たまたま一致すれば通ってしまう）。照合そのものは `consumeWarmup` が行う。
+   */
+  const pendingRef = useRef<PendingFrame[]>([])
+  /**
+   * 最後に `step()` へ渡したデータ時刻。
+   *
+   * 助走と通常フレームは別の経路で届くので、重なった時刻・巻き戻った時刻がありうる。
+   * **同じ時刻を 2 度渡すと `dtMs` が 0 になり、検知エンジンは不連続として状態を作り直す**
+   * （＝助走が丸ごと無駄になる）。ここで落とす。
+   */
+  const lastSteppedMsRef = useRef(-Infinity)
 
   // 供給が作り直されたら結果を空にする。データ時刻が空になるのは `useKyoshinRealtime` が供給を
   // 作り直したとき（リプレイの時間軸の切替・ローカルアーカイブの出入り）だけで、そのとき旧い
@@ -249,7 +359,15 @@ export function useKyoshinDetectorV2(
     if (!dataTime || indices.length === 0 || sites.length === 0) {
       // 供給が作り直されたなら、連続失敗の数え直しも兼ねる（この後に届くのは別の時間軸の
       // フレームで、それまでの失敗の続きではない）。
-      if (!dataTime) stalledFramesRef.current = 0
+      if (!dataTime) {
+        stalledFramesRef.current = 0
+        // 時間軸が変わった。前の軸で進めた時刻と、待たせていたフレームは新しい軸に属さない。
+        // 残すと、過去へ飛ぶ切替で新しい軸のフレームが軒並み「巻き戻り」として捨てられる。
+        lastSteppedMsRef.current = -Infinity
+        pendingRef.current = []
+        // 新しい軸では検知エンジンの状態が空なので、また助走から始める。
+        waitingWarmupRef.current = true
+      }
       return
     }
     const dataTimeMs = new Date(dataTime).getTime()
@@ -298,6 +416,46 @@ export function useKyoshinDetectorV2(
     // 以降は step() へ渡す分と床を並べ直す分で同じメタを使う（`meta.keys` が sites と同じ並び）。
     const stationMeta = metaRef.current.meta
 
+    // ---- 助走（`utils/kyoshinWarmup`）----
+    //
+    // 供給が始まった時点で既に揺れていると、検知エンジンには「ずっと高いまま静止している点」に
+    // しか見えず立ち上がらない。開始より前のフレームを先に食わせて履歴を作る。
+    //
+    // **助走が届くまで通常フレームを食わせない。** 先に食わせると、後から届いた助走が
+    // 「時刻の巻き戻り」になって落とされ、助走が丸ごと効かなくなる。
+    //
+    // 消化そのものは `utils/kyoshinWarmupConsumer` の純関数が持つ。ここに残すのは「待つか・
+    // 諦めるか」の判断と、返ってきた事実を文面にすることだけ。
+    if (waitingWarmupRef.current) {
+      pendingRef.current = pushPendingFrame(pendingRef.current, {
+        dataTimeMs,
+        indices,
+        sitesKey: indicesSiteConfigId,
+      })
+      const ready = warmup !== null && warmup.supplyKey === supplyKey
+      if (!ready && pendingRef.current.length < WARMUP_WAIT_MAX_FRAMES) return
+      const consumed = consumeWarmup({
+        state: stateRef.current,
+        lastSteppedMs: lastSteppedMsRef.current,
+        // 助走が届いていない（＝上限まで待って諦めた）ことは `null` で伝える。
+        warmupFrames: ready ? warmup.frames : null,
+        pending: pendingRef.current,
+        sites,
+        sitesSiteConfigId,
+        meta: stationMeta,
+        eewActive: hasActiveNonAssumedEEWRef.current,
+      })
+      stateRef.current = consumed.state
+      lastSteppedMsRef.current = consumed.lastSteppedMs
+      pendingRef.current = []
+      waitingWarmupRef.current = false
+      for (const notice of consumed.notices) logWarmupNotice(notice, supplyKey, sitesSiteConfigId)
+    }
+
+    // 助走と重なる時刻・巻き戻った時刻は、ここでも落とす（助走の消化と同じ理由 ―― 同じ時刻を
+    // 2 度渡すと `dtMs` が 0 になり、検知エンジンが不連続として状態を作り直す）。
+    if (dataTimeMs <= lastSteppedMsRef.current) return
+
     let stepResult: ReturnType<typeof step>
     try {
       // 全国約 1725 点を毎秒 1 回まとめて判定する。カメラの移動と同じフレームに落ちればコマ落ちの
@@ -335,6 +493,7 @@ export function useKyoshinDetectorV2(
     stalledFramesRef.current = 0
     const { state, detections, triggers, recentOnsetKeys, prunedMembers } = stepResult
     stateRef.current = state
+    lastSteppedMsRef.current = dataTimeMs
 
     // 床は `sites` と同じ並びの配列で渡す（詳細は KyoshinDetectorV2Result.floors）。
     // `state.sites` を走査せず `meta.keys` を走査するのは、キーの網羅性をこちらが握るため。
@@ -401,8 +560,11 @@ export function useKyoshinDetectorV2(
     // 前提が崩れると、dataTime だけ先に更新されて古い siteConfigId でガードを誤って通過し、
     // 座標と震度が誤ペアリングされる。リファクタ時はここも要見直し
     // （この前提は useKyoshinRealtime.wiring.test.ts が回帰テストで固定している）。
+    //
+    // `warmup` を deps に含めるのは、助走は**データ時刻とは別のタイミングで届く**ため。
+    // 含めないと、助走が届いた時点では何も起きず、次のフレームが来るまで待たされる。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dataTime, enabled])
+  }, [dataTime, enabled, warmup])
 
   return result
 }

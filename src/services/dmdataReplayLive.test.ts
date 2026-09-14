@@ -686,6 +686,43 @@ describe('fetchLiveQuakeTelegrams', () => {
     expect(result.quakes).toHaveLength(1)
   })
 
+  // 帯と長周期は初期状態（24 時間）では足りないので、地震カードの履歴と一緒に拾う。
+  // **アーカイブがまだ生成されていない日はこちらが担当する**ので、ここで拾えないと
+  // 「今日を指定した再生」だけ帯が復元されない。
+  it('帯（地震回数）も拾って extras へ入れる', async () => {
+    const countXml = `<?xml version="1.0" encoding="UTF-8"?>
+<Report xmlns="http://xml.kishou.go.jp/jmaxml1/">
+<Control><Title>地震回数に関する情報</Title><Status>通常</Status><EditorialOffice>気象庁</EditorialOffice><PublishingOffice>気象庁</PublishingOffice></Control>
+<Head xmlns="http://xml.kishou.go.jp/jmaxml1/informationBasis1/">
+<Title>地震回数に関する情報</Title>
+<ReportDateTime>2026-08-23T09:05:00+09:00</ReportDateTime>
+<TargetDateTime>2026-08-23T09:05:00+09:00</TargetDateTime>
+<EventID>20260823000000</EventID>
+<InfoType>発表</InfoType>
+<Serial>1</Serial>
+</Head>
+<Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/">
+<EarthquakeCount>
+<Item type="累積地震回数"><StartTime>2026-08-23T00:00:00+09:00</StartTime><EndTime>2026-08-23T09:00:00+09:00</EndTime><Number>12</Number><FeltNumber>3</FeltNumber></Item>
+</EarthquakeCount>
+</Body>
+</Report>`
+    const { fn } = mockLive({
+      list: [
+        { id: 'cnt', type: 'VXSE60', headTime: '2026-08-23T00:05:00Z', receivedTime: '2026-08-23T00:05:01.000Z', url: 'https://b/cnt' },
+      ],
+      bodies: { 'https://b/cnt': countXml },
+    })
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    const result = await fetchLiveQuakeTelegrams('key', '2026-08-23', new Date('2026-08-23T03:00:00Z'), false)
+
+    expect(result.quakes).toHaveLength(0)
+    expect(result.extras).toHaveLength(1)
+    expect(result.extras[0].payload.kind).toBe('earthquakeCount')
+    expect(result.extras[0].silent).toBe(true)
+  })
+
   it('地震以外の種別は採らない', async () => {
     const { fn } = mockLive({
       list: [
