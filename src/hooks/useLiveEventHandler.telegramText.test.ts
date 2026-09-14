@@ -142,6 +142,18 @@ describe('気象庁が書いた文の読み上げ（配線）', () => {
     expect(telegramSpeeches()).toHaveLength(0)
   })
 
+  // 正: **ブロックごとの指定が読み上げまで届く。** 設定（`ttsTelegramTextBlocks`）から
+  // `telegramTextToSpeak` までは `ttsRegionOptions` の 1 行を通るだけなので、
+  // そこを落としても型検査は通り、**設定を触っても何も変わらない**形で壊れる。
+  it('ブロックの指定が読み上げまで届く', async () => {
+    const { handleLiveEvent } = setup({
+      ttsTelegramTextBlocks: { ...DEFAULTS.ttsTelegramTextBlocks, quakeVarComment: false },
+    })
+    handleLiveEvent(makeQuake())
+    await drain()
+    expect(telegramSpeeches()).toHaveLength(0)
+  })
+
   // 安全弁: 読み上げのマスタートグルを切ったら鳴らない。**この設定だけ有効な値が残っていても、
   // 声を出してはいけない**（設定タブでは読み上げが無効だとこの項目自体が見えないため、
   // 利用者は切ったつもりでいる）。

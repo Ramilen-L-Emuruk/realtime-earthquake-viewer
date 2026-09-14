@@ -193,6 +193,36 @@ export type TtsUnreceivedDetail = 'stations' | 'areas' | 'none'
  * 前半 4 つは地域をどこまで挙げるか、後半 2 つは 1 件ごとの詳しさ。
  * **どちらも既定は「この設定を入れる前の挙動」**（→ `useSettings.ts` の `DEFAULTS`）。
  */
+/**
+ * 気象庁が書いた文のうち、読み上げを個別に選べる単位。**電文種別 × ブロック**で並べる。
+ *
+ * 同じ「自由付加文」でも種別によって中身の性質が違う（地震情報は `＊` の説明が主、津波は
+ * いつ来ていつまで続くかの説明、南海トラフは評価の本文）。種類でまとめて切る形にすると、
+ * 片方を聞くためにもう片方も付いてくる。
+ *
+ * **一覧はここが単一情報源。** 設定の既定値（`useSettings.ts`）・設定タブのラベル・
+ * `telegramTextToSpeak` の判定がこの型から導かれるので、足したものを書き忘れると型検査で止まる。
+ */
+export const TELEGRAM_TEXT_BLOCK_KEYS = [
+  // 地震情報
+  'quakeVarComment', 'quakeFreeText',
+  // 津波
+  'tsunamiBody', 'tsunamiVarComment', 'tsunamiFreeText',
+  // 長周期地震動観測情報
+  'lpgmForecast', 'lpgmVarComment', 'lpgmFreeText',
+  // 南海トラフ地震臨時情報
+  'nankaiSummary', 'nankaiBody', 'nankaiNextAdvisory',
+  // 南海トラフ地震関連解説情報
+  'nankaiCommentarySummary', 'nankaiCommentaryBody', 'nankaiCommentaryNextAdvisory',
+  // 北海道・三陸沖後発地震注意情報
+  'kohatsuSummary', 'kohatsuBody', 'kohatsuNextAdvisory',
+  // 地震回数に関する情報
+  'earthquakeCountFreeText',
+] as const
+
+export type TelegramTextBlockKey = typeof TELEGRAM_TEXT_BLOCK_KEYS[number]
+export type TelegramTextBlocks = Readonly<Record<TelegramTextBlockKey, boolean>>
+
 export interface TtsSpeechOptions {
   intensityLevels: number   // 最大震度に加えて何階級下まで読むか（0 = 最大のみ。観測がある階級だけを数える）
   maxRegions: number        // 読み上げる最大地域数（0 = 無制限）
@@ -236,6 +266,13 @@ export interface TtsSpeechOptions {
    * を通すので、0 を渡すと全件を読む。
    */
   maxObservationPoints?: number
+  /**
+   * 気象庁が書いた文のうち、どのブロックを読むか（→ `TELEGRAM_TEXT_BLOCK_KEYS`）。
+   *
+   * **省略したキーは読む側へ倒す。** 設定を足しただけで、これまで声になっていた文が
+   * 黙って消えないようにするため。`readTelegramText` が偽ならブロックの指定によらず何も読まない。
+   */
+  telegramTextBlocks?: TelegramTextBlocks
 }
 
 /**
@@ -2646,6 +2683,10 @@ export interface TelegramTextSpeech {
  * - 見出し文（`headline`）—— 型定義が「本文や既読の要素に無い事実は含まない」と断っており、
  *   読むと本体の読み上げと二度述べになる
  * - 取消電文の理由 —— 既に本体の読み上げが読んでいる（`cancelReasonSentence`）
+ *
+ * **どのブロックを読むかは設定で選べる**（`opts.telegramTextBlocks`。一覧は
+ * {@link TELEGRAM_TEXT_BLOCK_KEYS}）。全部切れば本文が空になり、この関数は `null` を返す ——
+ * 前置きだけが鳴る形にはならない。
  */
 export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): TelegramTextSpeech | null {
   // **緊急地震速報の固定付加文は読まない。** 秒を争うため、定型文を挟むと肝心の震度・地域が
@@ -2654,21 +2695,38 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
   if (event.kind === 'eew') return null
   if (!opts.readTelegramText) return null
 
+  // **指定が無いブロックは読む側へ倒す。** 設定を足しただけで、これまで声になっていた文が
+  // 黙って消えないようにするため（テストも 1 件ずつ指定しなくて済む）。
+  const on = (key: TelegramTextBlockKey): boolean => opts.telegramTextBlocks?.[key] ?? true
+  /** 読むと決めたブロックだけを残す。 */
+  const pick = (key: TelegramTextBlockKey, text: string | undefined) => (on(key) ? text : undefined)
+
   switch (event.kind) {
     case 'quake': {
       // 取消の報は理由を本体の読み上げが読む。付加文は添えない。
       // 見るのは `cancelled`（理由は上の EEW 分岐のコメント）。
       if (event.cancelled) return null
-      const body = joinTelegramTexts([event.varCommentText, event.freeText])
+      const body = joinTelegramTexts([
+        pick('quakeVarComment', event.varCommentText),
+        pick('quakeFreeText', event.freeText),
+      ])
       return body ? { text: `地震情報について、気象庁の文をお伝えします。${body}`, body } : null
     }
     case 'tsunami': {
       // 解除・失効・取消とも `cancelled` が立つ（理由は上の EEW 分岐のコメント）。
       if (event.cancelled) return null
       const body = joinTelegramTexts([
-        event.bodyText,
-        ...(event.warningComments ?? []).map(c => c.text),
-        event.freeText,
+        pick('tsunamiBody', event.bodyText),
+        // 固定付加文は主題ごとに複数ある（避難行動／満潮／沿岸の観測／沖合の観測）。
+        // **1 つの設定でまとめて切る。** 主題を束ねる鍵（`TsunamiWarningComment.key`）は
+        // 電文種別と情報名から実行時に導く値で、固定の一覧を持たない（→ tsunami-spec.md §5
+        // 「固定付加文は主題ごとに束ねる」。あちらも「表示はしない」と断っている）。
+        // 設定の項目にすると、気象庁が情報名の文字列を変えた版で対応が外れる。
+        //
+        // **避難行動の呼びかけは別経路が必ず読む**（`tsunamiToSegments`）ので、ここを切っても
+        // 行動指示が声から消えることはない。
+        ...(on('tsunamiVarComment') ? (event.warningComments ?? []).map(c => c.text) : []),
+        pick('tsunamiFreeText', event.freeText),
       ])
       return body ? { text: `津波情報について、気象庁の文をお伝えします。${body}`, body } : null
     }
@@ -2679,27 +2737,40 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
       // とき、この経路だけ黙って取消の本文を読む。
       if (event.data.cancelled) return null
       const body = joinTelegramTexts([
-        event.data.forecastText, event.data.varCommentText, event.data.freeFormText,
+        pick('lpgmForecast', event.data.forecastText),
+        pick('lpgmVarComment', event.data.varCommentText),
+        pick('lpgmFreeText', event.data.freeFormText),
       ])
       return body ? { text: `長周期地震動観測情報について、気象庁の文をお伝えします。${body}`, body } : null
     }
     case 'nankai':
     case 'nankaiCommentary': {
       if (event.data.cancelled) return null
-      const body = joinTelegramTexts([event.data.summary, event.data.body, event.data.nextAdvisory])
-      const label = event.kind === 'nankai' ? '南海トラフ地震臨時情報' : '南海トラフ地震関連解説情報'
+      // 臨時情報と関連解説情報は構造が同じだが、**設定は別に持つ** —— 段階の発表（臨時情報）と
+      // 状況の続報（解説情報）では、聞きたい度合いが違う。
+      const isAdvisory = event.kind === 'nankai'
+      const body = joinTelegramTexts([
+        pick(isAdvisory ? 'nankaiSummary' : 'nankaiCommentarySummary', event.data.summary),
+        pick(isAdvisory ? 'nankaiBody' : 'nankaiCommentaryBody', event.data.body),
+        pick(isAdvisory ? 'nankaiNextAdvisory' : 'nankaiCommentaryNextAdvisory', event.data.nextAdvisory),
+      ])
+      const label = isAdvisory ? '南海トラフ地震臨時情報' : '南海トラフ地震関連解説情報'
       return body ? { text: `${label}について、気象庁の文をお伝えします。${body}`, body } : null
     }
     case 'kohatsu': {
       if (event.data.cancelled) return null
-      const body = joinTelegramTexts([event.data.summary, event.data.body, event.data.nextAdvisory])
+      const body = joinTelegramTexts([
+        pick('kohatsuSummary', event.data.summary),
+        pick('kohatsuBody', event.data.body),
+        pick('kohatsuNextAdvisory', event.data.nextAdvisory),
+      ])
       return body
         ? { text: `北海道・三陸沖後発地震注意情報について、気象庁の文をお伝えします。${body}`, body }
         : null
     }
     case 'earthquakeCount': {
       if (event.data.cancelled) return null
-      const body = joinTelegramTexts([event.data.freeText])
+      const body = joinTelegramTexts([pick('earthquakeCountFreeText', event.data.freeText)])
       return body ? { text: `地震回数に関する情報について、気象庁の文をお伝えします。${body}`, body } : null
     }
     // 推計震度分布図は二進電文で、気象庁が書いた文を運ばない。

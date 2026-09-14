@@ -300,6 +300,7 @@ function ttsRegionOptions(settings: AppSettings): TtsSpeechOptions {
     readHypocenterDetail: settings.ttsReadHypocenterDetail,
     readEewLpgmClass: settings.ttsReadEewLpgmClass,
     readTelegramText: settings.ttsReadTelegramText,
+    telegramTextBlocks: settings.ttsTelegramTextBlocks,
     maxObservationPoints: settings.ttsMaxObservationPoints,
   }
 }

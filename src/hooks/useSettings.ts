@@ -4,9 +4,11 @@ import { isDmdss } from '../utils/env'
 import { isValidIntensityScale } from '../utils/intensity'
 // 読み上げ文の作り方を決める値なので、定義は読み上げ側（`utils/ttsText.ts`）に置く。
 // ここ（設定）から生やすと utils → hooks の向きで参照が要り、依存が逆流する。
-import type { TtsUnreceivedDetail } from '../utils/ttsText'
+import type { TtsUnreceivedDetail, TelegramTextBlockKey, TelegramTextBlocks } from '../utils/ttsText'
+import { TELEGRAM_TEXT_BLOCK_KEYS } from '../utils/ttsText'
 
-export type { TtsUnreceivedDetail }
+export type { TtsUnreceivedDetail, TelegramTextBlockKey, TelegramTextBlocks }
+export { TELEGRAM_TEXT_BLOCK_KEYS }
 
 // アイドル復帰時に戻すデフォルトタブの選択肢（津波情報・設定は対象外）
 export type DefaultTabSetting = 'earthquake' | 'realtime'
@@ -70,6 +72,16 @@ export interface AppSettings {
    * docs/spec/audio-tts-spec.md §6「気象庁が書いた文は最下位の層で読む」。
    */
   ttsReadTelegramText: boolean
+  /**
+   * 気象庁が書いた文のうち、どのブロックを読むか（電文種別 × ブロック。一覧は
+   * `TELEGRAM_TEXT_BLOCK_KEYS`）。**`ttsReadTelegramText` が偽ならここの指定は効かない** ——
+   * あちらがマスタートグルで、こちらはその内訳。
+   *
+   * **この設定だけオブジェクトで持っている。** 18 個をフラットに並べると、型定義・既定値・
+   * `sanitize` の 3 箇所へ 18 行ずつ増えて画面や音の設定と混ざる。ブロックの集合は電文の
+   * 構造に由来するまとまりなので、1 つにしてキーの一覧から導く。
+   */
+  ttsTelegramTextBlocks: TelegramTextBlocks
   ttsUnreceivedDetail: TtsUnreceivedDetail  // 「震度5弱以上・未入電」の読み方
   ttsMaxObservationPoints: number  // 津波の観測点を読み上げる件数（波高更新・到達確認・欠測・警報相当で共通）
   ttsReadHypocenterDetail: boolean // 震源の深さ・規模を読む（無効なら震源名だけ）
@@ -148,6 +160,11 @@ export const DEFAULTS: AppSettings = {
   // 以下 5 項目の既定は「この設定を入れる前の挙動」に揃えてある。既存の利用者の耳に
   // 届く内容を、設定を足しただけで変えないため。
   ttsReadTelegramText: false,
+  // **全ブロックを読む。** マスタートグル（`ttsReadTelegramText`）を入れた利用者は
+  // 「気象庁の文を読む」ことを選んだのだから、内訳の既定は全部読む側へ倒す。
+  ttsTelegramTextBlocks: Object.fromEntries(
+    TELEGRAM_TEXT_BLOCK_KEYS.map(key => [key, true]),
+  ) as TelegramTextBlocks,
   ttsUnreceivedDetail: 'stations',
   ttsMaxObservationPoints: 5,
   ttsReadHypocenterDetail: true,
@@ -174,6 +191,22 @@ function ensureDefaultTab(value: unknown, fallback: DefaultTabSetting): DefaultT
 
 function ensureUnreceivedDetail(value: unknown, fallback: TtsUnreceivedDetail): TtsUnreceivedDetail {
   return value === 'stations' || value === 'areas' || value === 'none' ? value : fallback
+}
+
+/**
+ * 気象庁の文のブロック指定を整える。
+ *
+ * **キーの一覧から作り直す** —— 保存された値をそのまま採ると、①後から足したキーが欠けたまま
+ * 残り ②消したキーが居座り ③真偽でない値が入り込む。欠けたキーは既定（読む）で埋める。
+ */
+function ensureTelegramTextBlocks(value: unknown): TelegramTextBlocks {
+  const saved = (value ?? {}) as Partial<Record<TelegramTextBlockKey, unknown>>
+  return Object.fromEntries(
+    TELEGRAM_TEXT_BLOCK_KEYS.map(key => [
+      key,
+      ensureBool(saved[key], DEFAULTS.ttsTelegramTextBlocks[key]),
+    ]),
+  ) as TelegramTextBlocks
 }
 
 // 震度は気象庁の階級値（10/20/30/40/45/50/55/60/70）と、無効を表す -1 しか取らない。
@@ -242,6 +275,7 @@ export function sanitize(partial: Partial<AppSettings>): AppSettings {
     ttsAlwaysReadScale: ensureIntensityScale(partial.ttsAlwaysReadScale, DEFAULTS.ttsAlwaysReadScale, 'ttsAlwaysReadScale'),
     ttsRegionTolerance: clampNumber(partial.ttsRegionTolerance, 0, 100, DEFAULTS.ttsRegionTolerance),
     ttsReadTelegramText: ensureBool(partial.ttsReadTelegramText, DEFAULTS.ttsReadTelegramText),
+    ttsTelegramTextBlocks: ensureTelegramTextBlocks(partial.ttsTelegramTextBlocks),
     ttsUnreceivedDetail: ensureUnreceivedDetail(partial.ttsUnreceivedDetail, DEFAULTS.ttsUnreceivedDetail),
     // `0` は無制限（`ttsMaxRegions` と同じ意味。選抜が `slice(0, maxPoints || Infinity)` を通す）。
     ttsMaxObservationPoints: clampNumber(
