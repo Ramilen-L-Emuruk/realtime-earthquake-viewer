@@ -128,11 +128,19 @@ function telegramIdFromUrl(url: string): string | null {
  *
  * **控えの失敗で取得を止めない。** IndexedDB が使えない環境（プライベートモード・容量超過）でも
  * 通常の取得で動く必要がある。
+ *
+ * `urgent` を渡すと、門で待っている通常の取得を追い越す（→ `utils/requestGate.ts`）。
+ * **間隔そのものは変わらない。** 渡すのは「待たせると意味が薄れるもの」だけ —— いまは起動時に
+ * 発表中の緊急地震速報を復元する経路だけが使う（履歴の後ろに並ぶと最悪 24 秒遅れて画面に出る）。
+ * **履歴・補助情報・リプレイには渡さないこと**（全部が urgent なら優先度は意味を失う）。
  */
-export function fetchTelegramText(apiKey: string, url: string): Promise<TelegramTextResult> {
+export function fetchTelegramText(
+  apiKey: string, url: string, opts?: { urgent?: boolean },
+): Promise<TelegramTextResult> {
+  const urgent = opts?.urgent ?? false
   const id = telegramIdFromUrl(url)
   // 鍵を作れない URL は控えも共有もしない（別の電文を同じ鍵で扱う危険を避ける）
-  if (!id) return fetchFresh(apiKey, url, null)
+  if (!id) return fetchFresh(apiKey, url, null, urgent)
 
   const pending = inFlight.get(id)
   if (pending) {
@@ -146,7 +154,7 @@ export function fetchTelegramText(apiKey: string, url: string): Promise<Telegram
       stats.fromCache++
       return { xml: cached, status: null, fromCache: true }
     }
-    return fetchFresh(apiKey, url, id)
+    return fetchFresh(apiKey, url, id, urgent)
   })()
   inFlight.set(id, promise)
   // **成否によらず取り終わったら外す。** 成功なら次からは控えが応え、失敗なら取り直せる
@@ -157,7 +165,9 @@ export function fetchTelegramText(apiKey: string, url: string): Promise<Telegram
 }
 
 /** 控えを見ずに取得して控える。 */
-async function fetchFresh(apiKey: string, url: string, id: string | null): Promise<TelegramTextResult> {
+async function fetchFresh(
+  apiKey: string, url: string, id: string | null, urgent: boolean,
+): Promise<TelegramTextResult> {
   // **通信そのものの例外は捕まえない。** 呼び出し側（`dmdataReplayLive.ts` の
   // `fetchLiveQuakeTelegrams`）が 1 件ごとに受けて**取りこぼしとして数えている**ので、
   // ここで `null` へ潰すとその計上から漏れる —— しかも「取得できなかった」が
@@ -167,7 +177,7 @@ async function fetchFresh(apiKey: string, url: string, id: string | null): Promi
   // 合わず、「思ったより減っている」と誤読する（この統計は削減できたかの判断に使う）。
   // **枠を待ってから投げる。** 呼び出し側は同時実行数を絞ってなお複数を並べてくるので、
   // ここで直列化しないと配信元の上限をそのまま超える（→ `utils/requestGate.ts`）。
-  await bodyGate.wait()
+  await bodyGate.wait({ urgent })
   let res: Response
   try {
     res = await fetch(url, { headers: { Authorization: authHeader(apiKey) } })

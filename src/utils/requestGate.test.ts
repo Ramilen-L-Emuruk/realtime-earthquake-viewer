@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { createRateGate } from './requestGate'
 
 // 起動時の履歴取得は `Promise.allSettled(items.map(...))` で全件を同時に投げる。
@@ -54,6 +54,71 @@ describe('createRateGate', () => {
     const start = Date.now()
     await gate.wait()
     expect(Date.now() - start).toBeLessThan(AT_LEAST_ONE_SLOT)
+  })
+
+  // 正: **待っている通常の要求を追い越して先に通る。** 起動時に発表中の緊急地震速報を
+  // 復元する経路がこれを使う（履歴の後ろに並ぶと最悪 24 秒遅れて画面に出る）。
+  it('urgent は待っている通常の要求を追い越す', async () => {
+    const gate = createRateGate(INTERVAL)
+    const order: string[] = []
+    // 1 本目で枠を使い切らせ、そのあいだに通常 2 本と urgent 1 本を積む
+    await gate.wait()
+    const normalA = gate.wait().then(() => { order.push('normalA') })
+    const normalB = gate.wait().then(() => { order.push('normalB') })
+    const urgent = gate.wait({ urgent: true }).then(() => { order.push('urgent') })
+    await Promise.all([normalA, normalB, urgent])
+
+    expect(order[0]).toBe('urgent')
+    // 通常どうしの相対順は崩さない（到来順）
+    expect(order).toEqual(['urgent', 'normalA', 'normalB'])
+  })
+
+  // 対照: **追い越すのは urgent だけ。** 通常の要求は積んだ順に通る（順番を入れ替える仕組みが
+  // 通常の要求まで巻き込んでいないこと）。
+  it('通常の要求どうしは到来順で通る', async () => {
+    const gate = createRateGate(INTERVAL)
+    const order: number[] = []
+    await gate.wait()
+    await Promise.all([0, 1, 2].map(i => gate.wait().then(() => { order.push(i) })))
+
+    expect(order).toEqual([0, 1, 2])
+  })
+
+  // 安全弁: **追い越しても間隔は守る。** ここが緩むと優先度がレート制限の抜け道になる
+  // （配信元の上限は 50req/5min ＝ 6 秒に 1 件で、緊急かどうかは関係ない）。
+  it('urgent を並べても間隔ぶんずつずれて通る', async () => {
+    const gate = createRateGate(INTERVAL)
+    const start = Date.now()
+    const passedAt: number[] = []
+    await Promise.all(
+      Array.from({ length: 4 }, () =>
+        gate.wait({ urgent: true }).then(() => { passedAt.push(Date.now() - start) })),
+    )
+    passedAt.sort((a, b) => a - b)
+
+    expect(passedAt[0]).toBeLessThan(AT_LEAST_ONE_SLOT)
+    for (let i = 1; i < passedAt.length; i++) {
+      expect(passedAt[i] - passedAt[i - 1]).toBeGreaterThanOrEqual(AT_LEAST_ONE_SLOT)
+    }
+  })
+
+  // 安全弁: **枠が空いていればタイマーを待たずに通る。** 順番を入れ替えられるようにした
+  // ときに `setTimeout` を必ず通る形へ変えてしまい、**偽のタイマーを使うテストが 1 件も
+  // 進まなくなった**（門を挟んだ経路のテストが 6 件そろって時間切れになった）。
+  // 間隔 0 でも 1 タスク遅れる形は、待つ理由が無いところで待つことになる。
+  it('枠が空いていれば、タイマーを進めなくても通る', async () => {
+    vi.useFakeTimers()
+    try {
+      const gate = createRateGate(INTERVAL)
+      let passed = false
+      void gate.wait().then(() => { passed = true })
+      // マイクロタスクだけ回す（タイマーは進めない）
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(passed).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   // 待っている件数が読めること（初回起動の進み具合の検証に使う）

@@ -6,6 +6,7 @@ import { isValidIntensityScale } from './intensity'
 import { isValidLpgmClass } from './lpgm'
 import { hypoInfoItemToEEW, type YahooHypoInfoItem } from '../services/kyoshin'
 import { isEewArrivedKindCode } from './eewKind'
+import { log } from './logger'
 
 // 司・翠川(1999)の距離減衰式を使ってEEW最終報後の自動解除秒数を計算する。
 // 有感半径（震度1以上が届く距離）を逆算し、1.5倍のバッファを乗せてS波到達時刻を求める。
@@ -694,4 +695,73 @@ export function sortEewWarningRegions(regions: readonly string[]): string[] {
   return regions.map((name, i) => ({ name, i }))
     .sort((a, b) => (rank(a.name) - rank(b.name)) || (a.i - b.i))
     .map(e => e.name)
+}
+
+/**
+ * ある時刻に発表中だった緊急地震速報を、地震ごとに 1 件だけ選ぶ。
+ *
+ * **リプレイの初期状態とライブ起動時の復元で共有する。** どちらも「その時刻の画面を作り直す」
+ * という同じ目的なので、判定を二重に持つと片方だけ直したときに再生と実機で挙動が食い違う。
+ *
+ * **並べ替えはこの中で行う。** 「最終報が無ければ最新の報を採る」という選び方の都合上、
+ * 渡された順序がそのまま結果を変える。呼び出し側の責任にすると、順序が崩れたときに
+ * **古い報を最新として出す** ―― 例外もログも出ないので気づけない。発表時刻を日時として
+ * 読めない報が混じったときは元の順序に任せる（`sort` の安定性に頼る）。
+ *
+ * @param reports 判定したい報。`value` には呼び出し側が復元に使いたいものを入れる
+ * @param targetTime この時刻の時点で有効だったものを選ぶ
+ * @param context 記録に残す経路の名前（`replay` / `startup` 等）。どちらで起きた取りこぼしかが
+ *   分からないと追跡できないため、呼び出し側が名乗る
+ */
+export function selectActiveEews<T>(
+  reports: readonly { eew: EEWAlert; value: T }[],
+  targetTime: Date,
+  context: string,
+): T[] {
+  const byEvent = new Map<string, { eew: EEWAlert; value: T }[]>()
+  for (const report of reports) {
+    const key = eewEventKey(report.eew)
+    const group = byEvent.get(key)
+    if (group) group.push(report)
+    else byEvent.set(key, [report])
+  }
+
+  const result: T[] = []
+  for (const group of byEvent.values()) {
+    // 取消電文があれば、その地震は誤報として取り下げられている。全報を捨てる
+    if (group.some(r => r.eew.cancelled)) continue
+
+    const ordered = [...group].sort((a, b) => {
+      const ta = Date.parse(a.eew.time)
+      const tb = Date.parse(b.eew.time)
+      if (!Number.isFinite(ta) || !Number.isFinite(tb)) return 0
+      return ta - tb
+    })
+
+    let final: { eew: EEWAlert; value: T } | undefined
+    for (let i = ordered.length - 1; i >= 0; i--) {
+      if (ordered[i].eew.isFinal) { final = ordered[i]; break }
+    }
+
+    // まだ最終報が出ていない地震は、自動解除の時刻がまだ決まらない。最新の報をそのまま出す
+    if (!final) {
+      result.push(ordered[ordered.length - 1].value)
+      continue
+    }
+
+    const expireAt = calcEEWCancelTime(final.eew, new Date(final.eew.time))
+    // **失効を判定できないときは有効側へ倒し、倒したことを記録する。** Invalid Date との比較は
+    // **どちらの向きでも偽**になるので、書き分けないと `expireAt <= targetTime` が常に偽になり、
+    // この分岐が黙って無効化される（痕跡が残らない）。有効側へ倒すのは、発表中の警報を落とす
+    // ほうが害が大きいため。解除時刻は発表時刻と震源時刻のどちらか一方が読めれば決まるので
+    // （`calcEEWCancelTime`）、ここへ来るのは両方読めなかったときだけ。
+    if (!Number.isFinite(expireAt.getTime())) {
+      log.warn(`[${context}] 発表時刻も震源時刻も読めず失効を判定できないため、有効として扱います`
+        + ` id=${final.eew.id} time="${final.eew.time}"`
+        + ` originTime="${final.eew.earthquake.originTime}"`)
+    } else if (expireAt.getTime() <= targetTime.getTime()) continue
+
+    result.push(final.value)
+  }
+  return result
 }

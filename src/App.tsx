@@ -342,6 +342,13 @@ export function App() {
     // **既定値は置かない**（`source` と同じ理由）。渡し忘れの症状は「タブが動かない」で、
     // 例外もログも出ない。必須にしておけば、新しい呼び出しを足したときに型が捕まえる。
     follow: boolean,
+    // **起動時の復元による要求か。** 判定 3（EEW 続報の片方向抑制）だけを素通りさせる。
+    // あの抑制は「続報が連投されて画面が往復する」のを防ぐもので、接続ごとに 1 回きりの
+    // 復元には当たらない。**渡し忘れると優先度表が逆転する**——復元の EEW(4) が、先に
+    // 完了した津波の保持(3)を越えられなくなる（理由は `shouldAcceptAutoTab` の引数）。
+    //
+    // **既定値は置かない**（`source`・`follow` と同じ理由）。
+    isStartupRestore: boolean,
   ): boolean => {
     const hold = tabHoldRef.current
     const now = Date.now()
@@ -355,7 +362,7 @@ export function App() {
     // 見ても「受信時要求が抑制で弾かれた（意図どおり）」のか「追従が別の理由で弾かれた（疑わしい）」
     // のかを事後に切り分けられない。
     const followNote = follow ? '・追従' : ''
-    if (!shouldAcceptAutoTab(hold, priority, now, source, follow)) {
+    if (!shouldAcceptAutoTab(hold, priority, now, source, follow, isStartupRestore)) {
       // **保持の側の駆動源も出すこと。** どの優先度に負けたかだけでは「何がその保持を張ったか」が
       // 分からず、拒否の原因（受信時要求か・手動選択か・アイドル復帰か）を突き合わせられない。
       log.debug(`[tab] → ${tab} スキップ (優先度${priority}・駆動${source}${followNote} < 保持中${hold.priority}・駆動${hold.source}・残り${hold.until - now}ms)`)
@@ -446,7 +453,7 @@ export function App() {
   const forceTab = useCallback((tab: TabId, priority: TabPriority, source: TabHoldSource) => {
     tabHoldRef.current = { until: 0, priority: TAB_PRIORITY.quake, source: 'hold' }
     // 追従ではない。ユーザー操作と既定の状態への復帰はどちらも「いま声になる」経路ではない
-    requestAutoTab(tab, priority, source, false)
+    requestAutoTab(tab, priority, source, false, false)
   }, [requestAutoTab])
 
   /**
@@ -457,7 +464,7 @@ export function App() {
   const requestTabForKyoshin = useCallback((tab: TabId) => {
     // 駆動源は `'hold'`。**`'receipt'` にしない** ——揺れ検知も読み上げを持たない経路だが、
     // 移動先が realtime で、EEW の保持中はすでに realtime を出しているため越える必要がない。
-    requestAutoTab(tab, TAB_PRIORITY.kyoshin, 'hold', false)
+    requestAutoTab(tab, TAB_PRIORITY.kyoshin, 'hold', false, false)
   }, [requestAutoTab])
 
   /** ユーザー操作によるタブ移動。以後 TAB_HOLD_MS は自動切替に奪わせない。 */
@@ -479,7 +486,7 @@ export function App() {
   //   見えなくなる（この優先度の仕組みが最初に直した症状そのもの）
   const setActiveTabNonRealtime = useCallback((tab: Exclude<TabId, 'realtime'>) => {
     const source = resolveNonRealtimeTabSource(settings.voicevoxEnabled)
-    requestAutoTab(tab, tab === 'tsunami' ? TAB_PRIORITY.tsunami : TAB_PRIORITY.quake, source, false)
+    requestAutoTab(tab, tab === 'tsunami' ? TAB_PRIORITY.tsunami : TAB_PRIORITY.quake, source, false, false)
   }, [requestAutoTab, settings.voicevoxEnabled])
 
   /**
@@ -546,12 +553,12 @@ export function App() {
   // 続報。手動選択より弱く、地震情報・津波より強い。
   // 動いたときだけ記録する（拒否は requestAutoTab 側が debug で残す）。
   const setActiveTabRealtimeOnUpdate = useCallback(() => {
-    if (requestAutoTab('realtime', TAB_PRIORITY.eewUpdate, 'speech', false)) log.info('[tab] → realtime (EEW続報)')
+    if (requestAutoTab('realtime', TAB_PRIORITY.eewUpdate, 'speech', false, false)) log.info('[tab] → realtime (EEW続報)')
   }, [requestAutoTab])
 
   // 新規発報・レベルアップ・誤報取消。手動選択より強い。
   const setActiveTabRealtimeUrgent = useCallback(() => {
-    requestAutoTab('realtime', TAB_PRIORITY.eewUrgent, 'speech', false)
+    requestAutoTab('realtime', TAB_PRIORITY.eewUrgent, 'speech', false, false)
   }, [requestAutoTab])
 
   /**
@@ -585,7 +592,7 @@ export function App() {
       setPanelCollapsed(false)
       return
     }
-    requestAutoTab(tab, priority, 'speech', true)
+    requestAutoTab(tab, priority, 'speech', true, false)
   }, [requestAutoTab])
 
   /**
@@ -605,7 +612,7 @@ export function App() {
    * 取り返すかどうかの判断は保持の中身を見て決める（`shouldRetakeAfterPreSpeech`）。
    */
   const preSpeechTab = useCallback((tab: TabId, priority: TabPriority) => (
-    requestAutoTab(tab, priority, 'speech', false)
+    requestAutoTab(tab, priority, 'speech', false, false)
   ), [requestAutoTab])
 
   // デフォルトタブへ復帰する。デフォルトタブが realtime の場合は
@@ -687,6 +694,35 @@ export function App() {
   // 保存と画面表示は即座に反映したいので、遅らせるのはここだけにする。
   const debouncedApiKey = useDebouncedValue(settings.dmdataApiKey, API_KEY_DEBOUNCE_MS)
 
+  /**
+   * 起動時の復元で、発表中のものを画面へ見せる。
+   *
+   * **緊急地震速報は `eewUrgent`(6) ではなく `eewUpdate`(4) で出す。** 復元するのは新規発報では
+   * なく**既に出ている報**で、手動選択（5）を奪う理由が無い——履歴の取得は非同期なので、
+   * 完了までに利用者が設定タブなどを開いていることがある。何も触っていなければ保持が空なので
+   * そのまま通る（`tabHoldRef` の初期値は `until: 0`）。
+   *
+   * **津波は `tsunamiPriorityDefault` に従う。** 「津波発表中はどのタブを既定にするか」を利用者が
+   * 既に選んでいるので、起動時だけそれを無視する理由が無い（アイドル復帰では従来から効いていた）。
+   *
+   * **駆動源は `receipt` で固定しない。** 復元そのものが声にならないことと、**この端末が
+   * 読み上げを使わない**ことは別の話。`receipt` は `eewUpdate` の保持を無条件に越える特権を
+   * 持っており（`shouldAcceptAutoTab` の判定 4）、それは「読み上げが無効な端末だけがそこへ
+   * 来る」前提で成り立っている。読み上げが有効な端末で固定すると、**実際に声に出ている
+   * 緊急地震速報から画面を奪う**——この優先度の仕組みが最初に直した症状そのもの。
+   * 振り分けは電文の受信と同じ `resolveNonRealtimeTabSource` に任せる。
+   */
+  const handleStartupRestore = useCallback((tab: 'realtime' | 'tsunami') => {
+    if (tab === 'tsunami' && !settings.tsunamiPriorityDefault) return
+    requestAutoTab(
+      tab,
+      tab === 'realtime' ? TAB_PRIORITY.eewUpdate : TAB_PRIORITY.tsunami,
+      resolveNonRealtimeTabSource(settings.voicevoxEnabled),
+      false,
+      true,
+    )
+  }, [requestAutoTab, settings.tsunamiPriorityDefault, settings.voicevoxEnabled])
+
   const {
     earthquakes, tsunamis, activeEEWs, lpgmByEventId, nankai, nankaiCommentary, kohatsu, quakeNotice, earthquakeCount, estimatedIntensity, connectionStatus, lastUpdate, isLoading, isLoadingMore, hasMore, error,
     telegramLog, clearTelegramLog,
@@ -699,7 +735,7 @@ export function App() {
     simulateTrainingQuake, simulateUnreceivedQuake, simulateTsunamiGradeChange, simulateQuakeAmendment,
     simulateQuakeReportSequence,
     resetState, loadReplayEvents, restoreQuakeHistory,
-  } = useEarthquakes(handleLiveEvent, debouncedApiKey, settings.dmdataTestDelivery, replayTimeOffset)
+  } = useEarthquakes(handleLiveEvent, debouncedApiKey, settings.dmdataTestDelivery, replayTimeOffset, handleStartupRestore)
   earthquakesRef.current = earthquakes
   tsunamisRef.current = tsunamis
 
