@@ -19,6 +19,7 @@
 // アーカイブとの同等性は実データで確認済み。詳細は docs/spec/settings-pwa-spec.md §6。
 import { log } from '../utils/logger'
 import { authHeader } from '../utils/dmdataApiKey'
+import { fetchTelegramText } from './telegramBody'
 import type { JMAQuake } from '../types/earthquake'
 import type { ReplayEntry } from '../types/replay'
 import {
@@ -180,14 +181,23 @@ async function getJson<T>(url: string, apiKey: string, what: string): Promise<T>
   return json
 }
 
-/** 電文本体を取得する（URL 単位でキャッシュ）。 */
+/**
+ * 電文本体を取得する（URL 単位でキャッシュ）。
+ *
+ * **セッション内のメモリ控えと、セッションを越える控えの 2 段になっている。** 手前の
+ * `bodyCache` は同じ窓を組み立て直すときの即時再利用、奥の `fetchTelegramText` は
+ * IndexedDB の控え（→ `telegramBody.ts`）。**同じ窓を再生し直すたびに取り直さない**ため、
+ * 奥の段が要る（リプレイは検証で何度も同じ範囲を流す）。
+ */
 function fetchBody(url: string, apiKey: string): Promise<string> {
   const cached = bodyCache.get(url)
   if (cached) return cached
   const promise = (async () => {
-    const res = await fetch(url, { headers: { Authorization: authHeader(apiKey) } })
-    if (!res.ok) throw new Error(`Telegram body fetch failed: ${res.status}`)
-    return res.text()
+    const body = await fetchTelegramText(apiKey, url)
+    if (body.xml === null) {
+      throw new Error(`Telegram body fetch failed: ${body.status === null ? 'network' : body.status}`)
+    }
+    return body.xml
   })()
   bodyCache.set(url, promise)
   // 失敗した Promise を残すと、以後そのセッション中は同じ URL が常にキャッシュ済みの失敗を返し、

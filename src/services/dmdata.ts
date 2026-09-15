@@ -17,6 +17,8 @@ import {
 import { BufrFragmentStore, fragmentKey } from './bufrTelegramAssembly'
 import { log, createLogThrottle } from '../utils/logger'
 import { authHeader, dmdataApiKeyProblem, dmdataApiKeyMessage, DmdataApiKeyError } from '../utils/dmdataApiKey'
+// 電文本体は必ずこの入口を通す（控えに載せるため。素の fetch を書き足さないこと）
+import { fetchTelegramText } from './telegramBody'
 
 const API_BASE = 'https://api.dmdata.jp/v2'
 // 種別の集合は `dmdataTelegramPayload.ts` が単一情報源。ここで定義し直すと、種別を足したとき
@@ -785,16 +787,19 @@ async function fetchOneTelegram(
   url: string,
   headType: string,
 ): Promise<JMAQuake | JMATsunami | JMALpgm | null> {
-  const res = await fetch(url, {
-    headers: { Authorization: authHeader(apiKey) },
-  })
+  // **控えを通す**（`telegramBody.ts`）。同じ id を取り直さないための唯一の入口で、
+  // 素の `fetch` を書くとこの経路だけ控えに載らない。
+  const body = await fetchTelegramText(apiKey, url)
   // 取得できなかった電文は履歴からそのまま消える。**件数が減ったことにも気づけない**——
-  // `cutoffTime` は取得できた分だけで決まるため、欠けたまま「揃った履歴」に見える。
-  if (!res.ok) {
-    log.warn(`[dmdata] ${headType} の電文を取得できませんでした（HTTP ${res.status}）`)
+  // `cutoffMs` は取得できた分だけで決まるため、欠けたまま「揃った履歴」に見える。
+  if (body.xml === null) {
+    // **`status` は実運用では必ず数値。** 通信そのものの失敗は `fetchTelegramText` が投げ、
+    // ここへは来ない（呼び出し側の `Promise.allSettled` が件数をまとめる）。
+    // `null` 側を残しているのは、入口の契約が変わったときに無言で欠けないための保険。
+    log.warn(`[dmdata] ${headType} の電文を取得できませんでした（${body.status === null ? '通信失敗' : `HTTP ${body.status}`}）`)
     return null
   }
-  const xml = await res.text()
+  const xml = body.xml
   if (headType === 'VXSE51' || headType === 'VXSE52' || headType === 'VXSE53' || headType === 'VXSE61') {
     return parseEarthquakeFromXml(headType, xml)
   }
@@ -1063,9 +1068,9 @@ export async function fetchDmdataNankai(apiKey: string): Promise<JMANankai | nul
     const json = await res.json() as { items?: Array<{ id: string; url: string }> }
     const item = (json.items ?? [])[0]
     if (!item) return null
-    const xmlRes = await fetch(item.url, { headers })
-    if (!xmlRes.ok) { logRestFailure('南海トラフ地震臨時情報 (VYSE50) の電文本体', xmlRes.status); return null }
-    const nankai = parseNankaiFromXml(await xmlRes.text())
+    const body = await fetchTelegramText(apiKey, item.url)
+    if (body.xml === null) { logRestFailure('南海トラフ地震臨時情報 (VYSE50) の電文本体', body.status ?? 0); return null }
+    const nankai = parseNankaiFromXml(body.xml)
     // 取得はできたのに読めなかった場合を黙って「発表なし」に混ぜない。VYSE50 は必ず段階を持つため、
     // ここが null になるのは書式が変わった等の異常であり、記録が無いと追跡できなくなる。
     if (!nankai) {
@@ -1101,9 +1106,9 @@ export async function fetchDmdataNankaiCommentary(apiKey: string): Promise<JMANa
       const json = await res.json() as { items?: Array<{ id: string; url: string }> }
       const item = (json.items ?? [])[0]
       if (!item) continue
-      const xmlRes = await fetch(item.url, { headers })
-      if (!xmlRes.ok) { logRestFailure(`南海トラフ地震関連解説情報 (${type}) の電文本体`, xmlRes.status); continue }
-      const commentary = parseNankaiCommentaryFromXml(await xmlRes.text())
+      const body = await fetchTelegramText(apiKey, item.url)
+      if (body.xml === null) { logRestFailure(`南海トラフ地震関連解説情報 (${type}) の電文本体`, body.status ?? 0); continue }
+      const commentary = parseNankaiCommentaryFromXml(body.xml)
       // 取得はできたのに読めなかった場合を黙って「発表なし」に混ぜない
       if (!commentary) {
         log.warn(`[DMDSS] 南海トラフ地震関連解説情報 (${type}) を解析できませんでした`)
@@ -1134,9 +1139,9 @@ export async function fetchDmdataKohatsu(apiKey: string): Promise<JMAKohatsu | n
     const json = await res.json() as { items?: Array<{ id: string; url: string; head: { type: string } }> }
     const item = (json.items ?? [])[0]
     if (!item) return null
-    const xmlRes = await fetch(item.url, { headers })
-    if (!xmlRes.ok) { logRestFailure('後発地震注意情報 (VYSE60) の電文本体', xmlRes.status); return null }
-    const xml = await xmlRes.text()
+    const body = await fetchTelegramText(apiKey, item.url)
+    if (body.xml === null) { logRestFailure('後発地震注意情報 (VYSE60) の電文本体', body.status ?? 0); return null }
+    const xml = body.xml
     const kohatsu = parseVyse60FromXml(xml)
     if (!kohatsu || kohatsu.cancelled) return null
     // 有効期限チェック: expireAt が過去なら null
@@ -1171,9 +1176,9 @@ async function fetchLatestTelegram<T>(
     const json = await res.json() as { items?: Array<{ id: string; url: string }> }
     const item = (json.items ?? [])[0]
     if (!item) return null
-    const xmlRes = await fetch(item.url, { headers })
-    if (!xmlRes.ok) { logRestFailure(`${label} の電文本体`, xmlRes.status); return null }
-    const parsed = parse(await xmlRes.text())
+    const body = await fetchTelegramText(apiKey, item.url)
+    if (body.xml === null) { logRestFailure(`${label} の電文本体`, body.status ?? 0); return null }
+    const parsed = parse(body.xml)
     // 取得はできたのに読めなかった場合を黙って「発表なし」に混ぜない。
     if (!parsed) {
       log.warn(`[DMDSS] ${label} を解析できませんでした`)
