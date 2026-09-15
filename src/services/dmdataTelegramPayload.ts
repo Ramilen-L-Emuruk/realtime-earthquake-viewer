@@ -14,6 +14,11 @@ import { decodeEstimatedIntensity } from '../utils/bufrEstimatedIntensity'
 import { log } from '../utils/logger'
 import type { ReplayPayload } from '../types/replay'
 
+// 電文本体を取りに行く URL の基底。一覧・目録が返す電文 id をこの後ろへ繋ぐ。
+// **取得元をまたいで共有する**——リプレイの当日経路とライブ起動時の復元が同じ形で組み立てるので、
+// 別々に持つと片方だけ直したときに一方の経路から電文本体が引けなくなる。
+export const TELEGRAM_DATA_BASE = 'https://data.api.dmdata.jp/v1/'
+
 // DMDATA の購読分類。ライブ（WebSocket）とリプレイ（アーカイブ要求）で共有する。
 // telegram.earthquake は地震・津波の両方を配信する（telegram.tsunami という分類は無い）。
 //

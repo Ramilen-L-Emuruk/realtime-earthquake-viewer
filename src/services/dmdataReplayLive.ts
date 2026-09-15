@@ -23,13 +23,12 @@ import type { JMAQuake } from '../types/earthquake'
 import type { ReplayEntry } from '../types/replay'
 import {
   HANDLED_TYPES, QUAKE_TYPES, HISTORY_EXTRA_TYPES, historyExtraKey,
-  buildXmlPayload, isBinaryTelegramType, buildBinaryPayload,
+  buildXmlPayload, isBinaryTelegramType, buildBinaryPayload, TELEGRAM_DATA_BASE,
 } from './dmdataTelegramPayload'
 import { BufrFragmentStore, fragmentKey } from './bufrTelegramAssembly'
 
 const API_BASE = 'https://api.dmdata.jp/v2'
 /** 電文本体の配信元。一覧が返す `url` と同じ形を id から組むのに使う。 */
-const DATA_BASE = 'https://data.api.dmdata.jp/v1/'
 /** 一覧 API の 1 ページあたりの取得件数（API の上限）。 */
 const LIST_LIMIT = 100
 /**
@@ -378,7 +377,7 @@ async function listEewTelegrams(
             skipped++
             continue
           }
-          items.push({ ...tg, id: xmlId, originalId: undefined, url: `${DATA_BASE}${xmlId}` })
+          items.push({ ...tg, id: xmlId, originalId: undefined, url: `${TELEGRAM_DATA_BASE}${xmlId}` })
         }
       }
     } catch (e) {

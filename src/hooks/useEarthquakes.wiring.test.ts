@@ -76,8 +76,14 @@ const { sockets, FakeWebSocket } = vi.hoisted(() => {
 // で与える。**ファクトリ内でリテラルを書くと型検査が効かない**ため、そこを取り違えると初回履歴取得が
 // TypeError で落ち、実装側の catch に飲まれて error state に入る（接続状態だけ見ていると緑のまま
 // 通ってしまう）。`vi.mocked` 経由なら実関数の戻り値型で縛られるので、取り違えは型エラーになる。
+// **丸ごと差し替える（`importOriginal` を混ぜない）。** 実物を残すと、ここでモックし忘れた
+// 関数がテスト中に本物の通信を始める。代償として `dmdata.ts` が export を増やすたびにこの
+// 一覧へ足す必要があるが、**落ちて気づける**ぶん、黙って通信が走るより良い。
 vi.mock('../services/dmdata', () => ({
   DmdataWebSocket: FakeWebSocket,
+  // 戻り値を持たせるのは、呼び出し側が `.then` で受けるため（`vi.fn()` のままだと
+  // `undefined.then` で落ちる）。
+  fetchDmdataActiveEews: vi.fn(async () => []),
   fetchDmdataEarthquakes: vi.fn(),
   fetchDmdataTsunamis: vi.fn(),
   fetchDmdataLpgms: vi.fn(),
@@ -314,6 +320,27 @@ describe('再生中もキューの予約は発火時刻を待つ', () => {
   afterEach(() => {
     vi.useRealTimers()
     setReplayOffset(null)
+  })
+
+  // 取消電文は報番号の台帳を進めず、状態側も取消前の報番号を保ったまま `cancelledAt` を足す。
+  // そのため**同じ報番号の非取消報が届くと「古い報」の判定をすり抜ける**。起動時の復元が
+  // 取消の直前に発表された報を拾ったとき（一覧 API が取消を反映するまでの遅れ）と、ライブで
+  // 到着順が入れ替わったときに現実に起きる。
+  it('取消済みの EEW は、同じ報番号の非取消報が届いても復活しない', () => {
+    const h = setup({})
+    const at = serverDate()
+
+    act(() => { h.current.injectEvent(finalEEW(at)) })
+    expect(h.current.activeEEWs.size).toBe(1)
+
+    act(() => { h.current.injectEvent({ ...finalEEW(at), cancelled: true }) })
+    expect(h.current.activeEEWs.get('replay-final-event')?.cancelledAt).toBeTruthy()
+
+    // 復元経路が拾ってきた「取消前の報」を模す（報番号は取消前と同じ）
+    act(() => { h.current.injectEvent(finalEEW(at)) })
+
+    // 取消の印が残っていること。消えると表示が復活し、10 秒後の purge も空振りする
+    expect(h.current.activeEEWs.get('replay-final-event')?.cancelledAt).toBeTruthy()
   })
 
   it('EEW 最終報を受けても猶予の内は解除せず、猶予を過ぎたら解除する', () => {

@@ -11,6 +11,7 @@ import {
   fetchDmdataNankai,
   fetchDmdataNankaiCommentary,
   fetchDmdataKohatsu,
+  fetchDmdataActiveEews,
   DmdataWebSocket,
   decodeTelegramText,
   needsBodyDecode,
@@ -651,5 +652,213 @@ describe('needsBodyDecode', () => {
     expect(needsBodyDecode('VXSE42')).toBe(true)   // 配信テスト（疎通確認として記録する）
     expect(needsBodyDecode('VXSE43')).toBe(true)   // 購読外。届いたら警告＋電文ログ
     expect(needsBodyDecode('VXSE44')).toBe(true)   // 廃止予定の旧 EEW。電文ログへ残す
+  })
+})
+
+// 起動時の復元で「いま発表中の緊急地震速報」を取る経路。
+//
+// **電文の中身には踏み込まない。** ここで確かめるのは取得の組み立て（どのイベントの詳細を
+// 引くか・どの URL を叩くか・失敗をどう扱うか）で、XML の読み取りは `dmdataParser.test.ts`、
+// 有効性の判定は `utils/eew.test.ts` の `selectActiveEews` が持っている。
+describe('fetchDmdataActiveEews', () => {
+  const KEY = 'valid-key'
+  const warnings = () => vi.mocked(log.warn).mock.calls.map(c => c.join(' '))
+
+  /**
+   * 一覧・詳細・電文本体を URL で振り分ける fetch。叩かれた URL を記録して返す。
+   *
+   * 電文本体は 404 にする。中身を読ませたいわけではなく、**どの URL を叩いたか**だけを
+   * 見たいため（本文を返すとパーサーが走り、検証したい範囲の外の失敗が混ざる）。
+   */
+  function stubEewFetch(events: unknown[], reports: unknown[]): string[] {
+    const urls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      urls.push(url)
+      if (url.includes('data.api.dmdata.jp')) return { ok: false, status: 404 } as unknown as Response
+      if (url.includes('/gd/eew/')) {
+        return { ok: true, json: async () => ({ items: reports }) } as unknown as Response
+      }
+      return { ok: true, json: async () => ({ items: events }) } as unknown as Response
+    }))
+    return urls
+  }
+
+  const telegram = (o: Record<string, unknown>) => ({ items: [{ serial: 1, telegrams: [o] }] })
+
+  afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks() })
+
+  it('正: 窓の中で終わったイベントは詳細まで辿る', async () => {
+    const recent = new Date(serverNow() - 60_000).toISOString()
+    const urls = stubEewFetch(
+      [{ eventId: 'ev-recent', dateTime: recent }],
+      telegram({ id: 'xml-1', head: { type: 'VXSE45', test: false } }).items,
+    )
+
+    await fetchDmdataActiveEews(KEY)
+
+    expect(urls.some(u => u.includes('/gd/eew/ev-recent'))).toBe(true)
+  })
+
+  it('対照: 窓より前に終わったイベントは詳細を引かない（1 件につきリクエストがかかるため）', async () => {
+    const old = new Date(serverNow() - 60 * 60_000).toISOString()
+    const urls = stubEewFetch([{ eventId: 'ev-old', dateTime: old }], [])
+
+    await fetchDmdataActiveEews(KEY)
+
+    expect(urls.some(u => u.includes('/gd/eew/ev-old'))).toBe(false)
+  })
+
+  it('安全弁: 最終報の時刻を読めないイベントは落とさず詳細を引く', async () => {
+    const urls = stubEewFetch(
+      [{ eventId: 'ev-broken', dateTime: '壊れた値' }],
+      telegram({ id: 'xml-1', head: { type: 'VXSE45', test: false } }).items,
+    )
+
+    await fetchDmdataActiveEews(KEY)
+
+    expect(urls.some(u => u.includes('/gd/eew/ev-broken'))).toBe(true)
+  })
+
+  it('安全弁: 訓練・試験の報は電文本体を取りに行かない', async () => {
+    const recent = new Date(serverNow() - 60_000).toISOString()
+    const urls = stubEewFetch(
+      [{ eventId: 'ev-test', dateTime: recent }],
+      telegram({ id: 'xml-1', head: { type: 'VXSE45', test: true } }).items,
+    )
+
+    await fetchDmdataActiveEews(KEY)
+
+    expect(urls.some(u => u.includes('data.api.dmdata.jp'))).toBe(false)
+  })
+
+  it('JSON 版を指す報は、元の XML の id へ組み替えて取りに行く', async () => {
+    const recent = new Date(serverNow() - 60_000).toISOString()
+    const urls = stubEewFetch(
+      [{ eventId: 'ev1', dateTime: recent }],
+      telegram({ id: 'json-1', originalId: 'xml-1', head: { type: 'VXSE45', test: false } }).items,
+    )
+
+    await fetchDmdataActiveEews(KEY)
+
+    expect(urls.some(u => u.endsWith('/xml-1'))).toBe(true)
+    expect(urls.some(u => u.endsWith('/json-1'))).toBe(false)
+  })
+
+  it('報番号がいちばん大きいものを最新として採る', async () => {
+    const recent = new Date(serverNow() - 60_000).toISOString()
+    const urls = stubEewFetch([{ eventId: 'ev1', dateTime: recent }], [
+      { serial: 3, telegrams: [{ id: 'xml-3', head: { type: 'VXSE45', test: false } }] },
+      { serial: 1, telegrams: [{ id: 'xml-1', head: { type: 'VXSE45', test: false } }] },
+    ])
+
+    await fetchDmdataActiveEews(KEY)
+
+    expect(urls.some(u => u.endsWith('/xml-3'))).toBe(true)
+    expect(urls.some(u => u.endsWith('/xml-1'))).toBe(false)
+  })
+
+  it('一覧が失敗したら空配列を返し、失敗した事実を記録する', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 503 }) as unknown as Response))
+
+    await expect(fetchDmdataActiveEews(KEY)).resolves.toEqual([])
+
+    expect(warnings().some(w => w.includes('発表中の緊急地震速報の一覧'))).toBe(true)
+  })
+})
+
+describe('fetchDmdataActiveEews の部分失敗', () => {
+  const KEY = 'valid-key'
+  const warnings = () => vi.mocked(log.warn).mock.calls.map(c => c.join(' '))
+
+  afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks() })
+
+  it('安全弁: 1 件の詳細で例外が出ても、他の地震の取得は続ける', async () => {
+    const recent = new Date(serverNow() - 60_000).toISOString()
+    const urls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      urls.push(url)
+      // `!res.ok` では捕まらない失敗（ネットワーク断・JSON 破損）を再現する。
+      if (url.includes('/gd/eew/ev-broken')) throw new Error('network down')
+      if (url.includes('data.api.dmdata.jp')) return { ok: false, status: 404 } as unknown as Response
+      if (url.includes('/gd/eew/')) {
+        return {
+          ok: true,
+          json: async () => ({ items: [{ serial: 1, telegrams: [{ id: 'xml-ok', head: { type: 'VXSE45', test: false } }] }] }),
+        } as unknown as Response
+      }
+      return {
+        ok: true,
+        json: async () => ({ items: [{ eventId: 'ev-broken', dateTime: recent }, { eventId: 'ev-ok', dateTime: recent }] }),
+      } as unknown as Response
+    }))
+
+    await fetchDmdataActiveEews(KEY)
+
+    // 壊れた 1 件に引きずられず、健全な側の電文本体まで辿り着いている
+    expect(urls.some(u => u.endsWith('/xml-ok'))).toBe(true)
+    expect(warnings().some(w => w.includes('ev-broken'))).toBe(true)
+  })
+
+  it('安全弁: 2 ページ目の一覧が失敗しても、1 ページ目で得た地震は捨てない', async () => {
+    const recent = new Date(serverNow() - 60_000).toISOString()
+    const urls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      urls.push(url)
+      if (url.includes('data.api.dmdata.jp')) return { ok: false, status: 404 } as unknown as Response
+      if (url.includes('/gd/eew/')) {
+        return {
+          ok: true,
+          json: async () => ({ items: [{ serial: 1, telegrams: [{ id: 'xml-page1', head: { type: 'VXSE45', test: false } }] }] }),
+        } as unknown as Response
+      }
+      // 2 ページ目（cursorToken 付き）だけ落とす
+      if (url.includes('cursorToken')) return { ok: false, status: 503 } as unknown as Response
+      return {
+        ok: true,
+        json: async () => ({ items: [{ eventId: 'ev-page1', dateTime: recent }], nextToken: 'next' }),
+      } as unknown as Response
+    }))
+
+    await fetchDmdataActiveEews(KEY)
+
+    expect(urls.some(u => u.endsWith('/xml-page1'))).toBe(true)
+    expect(warnings().some(w => w.includes('ページ目'))).toBe(true)
+  })
+
+  it('安全弁: 読める電文が 1 通も無ければ記録する（訓練報だけのときは黙る）', async () => {
+    const recent = new Date(serverNow() - 60_000).toISOString()
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('data.api.dmdata.jp')) return { ok: false, status: 404 } as unknown as Response
+      if (url.includes('/gd/eew/')) {
+        // 種別を名乗らない報だけ＝訓練ではないのに読めない
+        return {
+          ok: true,
+          json: async () => ({ items: [{ serial: 1, telegrams: [{ id: 'x', head: {} }] }] }),
+        } as unknown as Response
+      }
+      return { ok: true, json: async () => ({ items: [{ eventId: 'ev1', dateTime: recent }] }) } as unknown as Response
+    }))
+
+    await fetchDmdataActiveEews(KEY)
+
+    expect(warnings().some(w => w.includes('読み取れませんでした'))).toBe(true)
+  })
+
+  it('対照: 訓練・試験の報だけだったときは「読み取れない」と記録しない', async () => {
+    const recent = new Date(serverNow() - 60_000).toISOString()
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('data.api.dmdata.jp')) return { ok: false, status: 404 } as unknown as Response
+      if (url.includes('/gd/eew/')) {
+        return {
+          ok: true,
+          json: async () => ({ items: [{ serial: 1, telegrams: [{ id: 'x', head: { type: 'VXSE45', test: true } }] }] }),
+        } as unknown as Response
+      }
+      return { ok: true, json: async () => ({ items: [{ eventId: 'ev1', dateTime: recent }] }) } as unknown as Response
+    }))
+
+    await fetchDmdataActiveEews(KEY)
+
+    expect(warnings().some(w => w.includes('読み取れませんでした'))).toBe(false)
   })
 })
