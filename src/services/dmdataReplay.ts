@@ -138,15 +138,26 @@ export function clearReplayCache(): void {
 const ARCHIVE_LIST_MAX_PAGES = 20
 
 /**
+ * 1 ページで要求する目録の件数。配信元が許す最大値（リファレンス「デフォルト: 20 … 最大は100」）。
+ *
+ * **渡さないと既定の 20 件しか返らない。** かつて「この API は 1 回に 20 件しか返さない」と
+ * 誤解して省いており、同じ範囲を読むのに 5 倍のページを辿っていた。
+ */
+const ARCHIVE_LIST_LIMIT = 100
+
+/**
  * 指定期間・指定分類のアーカイブ目録を全ページ取得する。
  *
- * archive リスト API は 1 回の応答で最大 20 件までしか返さないため、nextToken が尽きるまで
- * cursorToken で辿る（打ち切ると広い期間の指定で古い側のアーカイブが無言で欠落し、
- * 本震当日のデータごと消えるという事故につながる）。
+ * 1 ページで収まらない範囲では、nextToken が尽きるまで cursorToken で辿る（打ち切ると広い期間の
+ * 指定で古い側のアーカイブが無言で欠落し、本震当日のデータごと消えるという事故につながる）。
+ * **2 ページ目以降も `limit` を渡し続けること** —— 配信元は cursorToken を使うとき「以前と同じ
+ * 検索クエリパラメータを指定する」ことを求めており、落とすと既定の 20 件へ戻る。
+ * `URLSearchParams` をページごとに作り直しているので、初期化に入れておけば自動で付く。
  *
- * **ただしページ数には上限を置く。** 1 ページ 20 件 × 20 ページ ＝ 400 日ぶんあれば、
- * このアプリが渡す範囲（最大でも 60 日）には十分。上限が無いと、範囲指定が効かない
- * 呼び出し 1 回で数百リクエストが飛ぶ（`LIST_MAX_PAGES` の由来を参照）。
+ * **ただしページ数には上限を置く。** 1 ページ 100 件 × 20 ページ ＝ 2000 件。目録の 1 件は
+ * 「1 日 × 1 分類」なので、このアプリが渡す範囲（最大でも `MAX_ENUMERATED_DAYS` ＝ 60 日 ×
+ * 2 分類）には十分。上限が無いと、範囲指定が効かない呼び出し 1 回で数百リクエストが飛ぶ
+ * （`LIST_MAX_PAGES` の由来を参照）。
  */
 async function listArchives(
   apiKey: string,
@@ -158,7 +169,11 @@ async function listArchives(
   let cursorToken: string | undefined
   let page = 0
   for (; page < ARCHIVE_LIST_MAX_PAGES; page++) {
-    const params = new URLSearchParams({ datetime: `${startDate}~${endDate}`, classification })
+    const params = new URLSearchParams({
+      datetime: `${startDate}~${endDate}`,
+      classification,
+      limit: String(ARCHIVE_LIST_LIMIT),
+    })
     if (cursorToken) params.set('cursorToken', cursorToken)
     const listRes = await fetch(
       `https://api.dmdata.jp/v2/archive?${params.toString()}`,
