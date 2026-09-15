@@ -1095,16 +1095,30 @@ export const EEW_LEAD_PHRASES: readonly string[] = Object.values(EEW_LEAD_PHRASE
  * @param isAdditional この EEW で既に地方を声にしているか。真なら「新たに」を冠する
  *   （**判定は「声にしたか」であって「電文が新規と言ったか」ではない**。割り込みで消えた発話を
  *   基準にすると、一度も声にしていない地方を「新たに」と言うことになる。地震情報の続報と同じ規律）
+ * @param announceUpgrade 「緊急地震速報に切り替わりました。」を前置きするか。**予報として
+ *   発報された EEW が警報へ上がり、まだ区分を声にしていないときだけ真にすること**（判定は
+ *   呼び出し側。`eewIntensityText` の同名引数と同じ材料＝声にした区分で決める）。
+ *
+ *   **この前置きがここに要るのは、地方のブロックが警報級の報にしか入らないため。** 予報から
+ *   警報へ上がった報では、地方の読み上げが必ずその EEW で最初の「警報になった」告知になる。
+ *   区分を第 2 フェーズの前置きだけに任せると、そちらは予想値の安定待ちを経てから鳴るので、
+ *   「〇〇では強い揺れに警戒してください。」が「緊急地震速報に切り替わりました。」より先に出る。
+ *
+ *   文言を第 2 フェーズと同じにしてあるのは、どちらが先に鳴っても聞こえ方を揃えるため。
+ *   前置きを声にしたら呼び出し側が区分を既読にするので、両方から言われることはない。
  *
  * 区切りに読点を使うのは、中黒が音にならず合成の区切りにもならないため（→ §4「読み上げ文で
  * 名前を並べるときの書き方」）。
  */
-export function eewWarningRegionsText(regions: readonly string[], isAdditional: boolean): string {
+export function eewWarningRegionsText(
+  regions: readonly string[], isAdditional: boolean, announceUpgrade = false,
+): string {
   if (regions.length === 0) return ''
   const names = regions.join('、')
-  return isAdditional
+  const prefix = announceUpgrade ? '緊急地震速報に切り替わりました。' : ''
+  return prefix + (isAdditional
     ? `新たに、${names}でも強い揺れに警戒してください。`
-    : `${names}では強い揺れに警戒してください。`
+    : `${names}では強い揺れに警戒してください。`)
 }
 
 /**
