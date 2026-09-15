@@ -10,6 +10,7 @@
 //    更新が無ければ読み上げ文が空になって受信音だけが鳴っていた）
 // 2. **同じ変化を載せ続ける続報で二度読みしないこと**（`LastKind` は変化後の報にも残る）
 // 3. **観測点更新の読み上げを潰さないこと**（既読になった後の続報は従来どおり観測情報として読む）
+import type { SpeechOutcome } from '../utils/voicevox'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
@@ -22,7 +23,7 @@ const speakMock = vi.fn((_url: string, text: string) => {
     if (!s.done) { s.done = true; s.finish() }
   }
   let finish!: () => void
-  const p = new Promise<void>(r => { finish = r })
+  const p = new Promise<SpeechOutcome>(r => { finish = () => r({ spoke: true }) })
   speeches.push({ text, finish, done: false })
   return p
 })

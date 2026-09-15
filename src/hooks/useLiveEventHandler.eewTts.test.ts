@@ -24,7 +24,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
-import { splitIntoChunks } from '../utils/voicevox'
+import { splitIntoChunks, type SpeechOutcome } from '../utils/voicevox'
 import { DEFAULTS, type AppSettings } from './useSettings'
 import type { EEWAlert, EEWRegion, IntensityScale, LpgmClass, JMAQuake, JMATsunami } from '../types/earthquake'
 
@@ -44,9 +44,9 @@ function releaseCurrentSpeech() {
 // 見つかった）。`stopSpeech` も同じ役を持たせないと、言い直しの待ちが明けない。
 const speakMock = vi.fn((..._args: unknown[]) => {
   releaseCurrentSpeech()
-  if (!holdNextCall) return Promise.resolve()
+  if (!holdNextCall) return Promise.resolve({ spoke: true })
   holdNextCall = false
-  return new Promise<void>(resolve => { releaseHeld = resolve })
+  return new Promise<SpeechOutcome>(resolve => { releaseHeld = () => resolve({ spoke: true }) })
 })
 vi.mock('../utils/voicevox', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../utils/voicevox')>()),
@@ -143,6 +143,9 @@ function makeEEW(over: {
   } as EEWAlert
 }
 
+/** 直近の `setup` が作ったフックの戻り値。`setupFull` が復元の入口を取り出すために控える。 */
+let capturedResult: ReturnType<typeof useLiveEventHandler> | null = null
+
 /**
  * @param over 設定の上書き。読み上げの詳しさの設定を切り替えるテストで使う。
  *   **既定は「設定を入れる前の挙動」**（`DEFAULTS`）なので、渡さなければ従来どおり。
@@ -185,7 +188,63 @@ function setup(over: Partial<AppSettings> = {}) {
     openEstimatedIntensity: vi.fn(),
     closeDistributionOnQuakeReport: vi.fn(),
   }))
+  capturedResult = result.current
   return result.current.handleLiveEvent
+}
+
+/**
+ * `setup` と同じだが、リプレイ復元（`restorePreWindowTracking`）も触れる形で返す。
+ * 途中から再生を始めたときの既読の復元を確かめるテストで使う。
+ */
+function setupFull(over: Partial<AppSettings> = {}) {
+  const handleLiveEvent = setup(over)
+  return { handleLiveEvent, restore: capturedResult!.restorePreWindowTracking }
+}
+
+const SPEAK_SYNTH_MS = 400
+const SPEAK_CHUNK_MS = 1200
+
+/**
+ * 実際にチャンクへ割って鳴らすモック。**`shouldStillPlay` を呼ぶのはこれだけ**で、
+ * 既定のモック（即座に解決する）では鳴らす直前の見直し・途中降りの経路を一度も通らない。
+ *
+ * @param heard 鳴ったチャンクがこの配列へ積まれる
+ */
+function installChunkedSpeak(heard: string[], opts?: { synthMs?: number; chunkMs?: number }) {
+  const synthMs = opts?.synthMs ?? SPEAK_SYNTH_MS
+  const chunkMs = opts?.chunkMs ?? SPEAK_CHUNK_MS
+  speakMock.mockImplementation(((...args: unknown[]) => {
+    const text = args[1] as string
+    const shouldStillPlay = args[4] as (() => boolean) | undefined
+    const chunks = splitIntoChunks(text)
+    return (async (): Promise<SpeechOutcome> => {
+      await new Promise<void>(r => { setTimeout(r, synthMs) })
+      let spoke = false
+      for (const chunk of chunks) {
+        // 1 チャンクも鳴らずに降りたら `spoke: false`（実物の `speakWithVoicevox` と同じ）
+        if (shouldStillPlay && !shouldStillPlay()) return { spoke }
+        heard.push(chunk)
+        spoke = true
+        await new Promise<void>(r => { setTimeout(r, chunkMs) })
+      }
+      return { spoke }
+    })()
+  }))
+}
+
+/** 時間を進めつつ、進めるたびに保留中のマイクロタスクを流し切る。 */
+async function advance(ms: number) {
+  await vi.advanceTimersByTimeAsync(ms)
+  await flushMicrotasks()
+}
+
+/**
+ * 条件が満たされるまで小刻みに進める。**「鳴り始めてから」を作るために要る** ——
+ * 固定の待ち時間で書くと、チェーンの前段の長さが変わっただけで「鳴る前」に化け、
+ * 確かめたい経路を通らないままテストが通ってしまう。
+ */
+async function advanceUntil(cond: () => boolean, stepMs = 100, maxSteps = 120) {
+  for (let i = 0; i < maxSteps && !cond(); i++) await advance(stepMs)
 }
 
 beforeEach(() => {
@@ -1308,8 +1367,8 @@ describe('EEW 読み上げの文言と発話順序', () => {
   // 古くなる。鳴らす直前に見直して、古い値を鳴らし続けないことを固定する。
   describe('鳴らす直前の見直し', () => {
     // VOICEVOX の合成待ち（最初の音が出るまで）と、1 チャンクの再生時間。
-    const SYNTH_MS = 400
-    const CHUNK_MS = 1200
+    const SYNTH_MS = SPEAK_SYNTH_MS
+    const CHUNK_MS = SPEAK_CHUNK_MS
 
     /**
      * `speakWithVoicevox` の代役。合成待ちのあと、チャンクごとに「鳴らす直前の判定」を通し、
@@ -1321,29 +1380,6 @@ describe('EEW 読み上げの文言と発話順序', () => {
      * 安定待ちが 2000ms（large）かかる現行仕様では、既定値のままだと「合成・再生の途中で
      * 安定待ちが先に終わる」シナリオを作れないテストがある。そのテストだけ個別に長い値を渡す。
      */
-    function installChunkedSpeak(heard: string[], opts?: { synthMs?: number; chunkMs?: number }) {
-      const synthMs = opts?.synthMs ?? SYNTH_MS
-      const chunkMs = opts?.chunkMs ?? CHUNK_MS
-      speakMock.mockImplementation(((...args: unknown[]) => {
-        const text = args[1] as string
-        const shouldStillPlay = args[4] as (() => boolean) | undefined
-        const chunks = splitIntoChunks(text)
-        return (async () => {
-          await new Promise<void>(r => { setTimeout(r, synthMs) })
-          for (const chunk of chunks) {
-            if (shouldStillPlay && !shouldStillPlay()) return
-            heard.push(chunk)
-            await new Promise<void>(r => { setTimeout(r, chunkMs) })
-          }
-        })()
-      }))
-    }
-
-    /** 時間を進めつつ、進めるたびに保留中のマイクロタスクを流し切る。 */
-    async function advance(ms: number) {
-      await vi.advanceTimersByTimeAsync(ms)
-      await flushMicrotasks()
-    }
 
     // 安定待ちが挟まるため、旧実装（続報を受けた瞬間に取り下げる）とは異なり、
     // **続報の安定待ちが完了して確定するまでは古い発話がそのまま続く**。震度1段階の変化でも
@@ -1540,6 +1576,80 @@ describe('警報の対象地方（第 1.5 フェーズ）', () => {
     ])
   })
 
+  // 正: 予報から警報へ上がった報では、地方の文が「警報になった」告知を兼ねる。
+  //
+  // 地方のブロックは警報級の報にしか入らないので、この発話は必ずその EEW で最初の格上げの
+  // 告知になる。区分を第 2 フェーズの前置きだけに任せると、そちらは予想値の安定待ちを経るため
+  // 「〇〇では強い揺れに警戒してください。」が先に出て順序が入れ替わる。
+  it('予報から警報へ上がった続報では、地方の文に格上げを前置きする', async () => {
+    const handle = setup()
+    handle(makeEEW({ scaleTo: 50, severity: 'Forecast' }))
+    await vi.advanceTimersByTimeAsync(20000)
+    await flushMicrotasks()
+    speakMock.mockClear()
+
+    handle(makeEEW({ serial: 2, scaleTo: 50, severity: 'Warning', warningRegions: ['北陸'] }))
+    await vi.advanceTimersByTimeAsync(20000)
+    await flushMicrotasks()
+    expect(spokenTexts()[0]).toBe('緊急地震速報に切り替わりました。北陸では強い揺れに警戒してください。')
+  })
+
+  // 安全弁: 前置きの語は譲っても、**予想値の読み直しは譲らない**。
+  //
+  // 第 2 フェーズは「区分が格上げされた報では震度を含めて全文を読み直す」（何の震度で警報に
+  // なったかの再確認）。前置きを付けるかどうかだけで読む中身を決めると、地方の文が語を
+  // 引き受けた瞬間にこの読み直しごと消える —— 実際に一度そうなった。
+  it('地方の文で格上げを伝えても、予想値は読み直す（前置きだけ重ねない）', async () => {
+    const handle = setup()
+    handle(makeEEW({ scaleTo: 50, severity: 'Forecast' }))
+    await vi.advanceTimersByTimeAsync(20000)
+    await flushMicrotasks()
+    speakMock.mockClear()
+
+    handle(makeEEW({ serial: 2, scaleTo: 50, severity: 'Warning', warningRegions: ['北陸'] }))
+    await vi.advanceTimersByTimeAsync(20000)
+    await flushMicrotasks()
+    expect(spokenTexts()).toEqual([
+      '緊急地震速報に切り替わりました。北陸では強い揺れに警戒してください。',
+      '予想最大震度5強。',
+    ])
+  })
+
+  // 対照: 初報から警報だった EEW では前置きしない。第 1 フェーズが「緊急地震速報、」と
+  // 名乗っており、重ねて言う意味がない。
+  it('初報から警報なら地方の文に前置きしない', async () => {
+    const handle = setup()
+    handle(makeEEW({ scaleTo: 50, warningRegions: ['北陸'] }))
+    await vi.advanceTimersByTimeAsync(20000)
+    await flushMicrotasks()
+    expect(spokenTexts().some(t => t.includes('切り替わりました'))).toBe(false)
+  })
+
+  // 安全弁: 鳴っている最中に地方が増えたら降りる。**降りた回は既読にしない** ——
+  // 前置き（格上げの告知）も地方名も記録せず、読み直しで両方が改めて声になる。
+  // 記録を発話の直前で行うと、降りた回で前置きが言った扱いになり格上げが一度も声にならない。
+  it('鳴っている最中に地方が増えたら、前置きごと読み直す', async () => {
+    const heard: string[] = []
+    installChunkedSpeak(heard)
+    const handle = setup()
+
+    handle(makeEEW({ scaleTo: 50, severity: 'Forecast' }))
+    await advance(SPEAK_SYNTH_MS + SPEAK_CHUNK_MS * 3)
+
+    // 格上げ＋地方の初出。**前置きのチャンクが鳴り始めるまで待ってから**地方を増やす
+    handle(makeEEW({ serial: 2, scaleTo: 50, severity: 'Warning', warningRegions: ['北陸'] }))
+    await advanceUntil(() => heard.some(h => h.includes('切り替わりました')))
+    expect(heard.some(h => h.includes('切り替わりました'))).toBe(true)
+
+    handle(makeEEW({ serial: 3, scaleTo: 50, severity: 'Warning', warningRegions: ['北陸', '甲信'] }))
+    await advance(SPEAK_SYNTH_MS * 4 + SPEAK_CHUNK_MS * 8)
+
+    // 降りた回は既読にしない。北陸も前置きも記録されないので、読み直しは初回の形へ戻る。
+    // 既読にしてしまうと「新たに、甲信でも〜」だけになり、**一度も読み切っていない北陸が
+    // 読まれないまま終わる**（格上げの告知も同じように失われる）。
+    expect(spokenTexts()).toContain('北陸、甲信では強い揺れに警戒してください。')
+  })
+
   // 安全弁: 声になる前に誤報取消が届いたら読まない（第 1・第 2 フェーズと同じ）。
   // **鳴り始めてからの取消は別の話** —— そのときチャンク単位で残りを落とすのが
   // `shouldStillPlay` の役目で、既に声になった分は戻せない。
@@ -1551,5 +1661,116 @@ describe('警報の対象地方（第 1.5 フェーズ）', () => {
     await vi.advanceTimersByTimeAsync(5000)
     await flushMicrotasks()
     expect(spokenTexts().some(t => t.includes('警戒してください'))).toBe(false)
+  })
+})
+
+// 合成が 1 音も鳴らなかったとき（VOICEVOX 未起動・ネットワーク断・話者 ID 不正）。
+//
+// **`speakWithVoicevox` は例外を投げずに正常終了する。** 戻り値の `spoke` を見ないと
+// 「読み上げが完了した」と区別が付かず、**1 音も出ていないのに既読が進む** —— その EEW では
+// 以後、同じ値を二度と読まない（格上げの告知も同じように失われる）。
+describe('合成が 1 音も鳴らなかったとき', () => {
+  /** 合成が全滅する状態。実物と同じく例外は投げず、`spoke: false` で正常終了する。 */
+  function installSilentSpeak() {
+    speakMock.mockImplementation((() => Promise.resolve({ spoke: false })) as never)
+  }
+
+  // 正: 地方も区分も既読にならない。合成が回復した続報で、**初出の形のまま・前置き付きで**
+  // 読み直す（「新たに」も付かない ―― 一度も声にしていないため）。
+  it('地方も区分も既読にせず、鳴るようになった続報で読み直す', async () => {
+    installSilentSpeak()
+    const handle = setup()
+    handle(makeEEW({ scaleTo: 50, warningRegions: ['北陸'] }))
+    await vi.advanceTimersByTimeAsync(20000)
+    await flushMicrotasks()
+
+    // ここから先は鳴る
+    speakMock.mockImplementation((() => Promise.resolve({ spoke: true })) as never)
+    speakMock.mockClear()
+    handle(makeEEW({ serial: 2, scaleTo: 50, warningRegions: ['北陸'] }))
+    await vi.advanceTimersByTimeAsync(20000)
+    await flushMicrotasks()
+    expect(spokenTexts()).toContain('緊急地震速報に切り替わりました。北陸では強い揺れに警戒してください。')
+  })
+
+  // 安全弁: **上限（8 秒）まで待ち切った発話は既読にする。**
+  //
+  // 合成が全滅した場合は待たずに完了するので（鳴らすものが無い）、上限まで返らないのは
+  // 鳴っている最中ということ。ここを「鳴らなかった」へ倒すと、地方を多く列挙する長い
+  // 読み上げのたびに既読を巻き戻し、**同じ内容を最初から読み直す**。
+  it('上限まで待ち切った発話は既読にする（鳴っている最中とみなす）', async () => {
+    speakMock.mockImplementation((() => new Promise(() => { /* 解決しない＝鳴り続けている */ })) as never)
+    const handle = setup()
+    handle(makeEEW({ scaleTo: 50, warningRegions: ['北陸'] }))
+    await vi.advanceTimersByTimeAsync(30000)
+    await flushMicrotasks()
+
+    speakMock.mockImplementation((() => Promise.resolve({ spoke: true })) as never)
+    speakMock.mockClear()
+    handle(makeEEW({ serial: 2, scaleTo: 50, warningRegions: ['北陸', '甲信'] }))
+    await vi.advanceTimersByTimeAsync(30000)
+    await flushMicrotasks()
+    // 北陸は伝えた扱い ―― 増えた甲信だけを「新たに」で読む
+    expect(spokenTexts()).toContain('新たに、甲信でも強い揺れに警戒してください。')
+  })
+
+  // 対照: 鳴ったなら既読になる（巻き戻しが常時効いているわけではないこと）
+  it('鳴った回は既読になる', async () => {
+    const handle = setup()
+    handle(makeEEW({ scaleTo: 50, warningRegions: ['北陸'] }))
+    await vi.advanceTimersByTimeAsync(20000)
+    await flushMicrotasks()
+    speakMock.mockClear()
+    handle(makeEEW({ serial: 2, scaleTo: 50, warningRegions: ['北陸'] }))
+    await vi.advanceTimersByTimeAsync(20000)
+    await flushMicrotasks()
+    expect(spokenTexts().some(t => t.includes('警戒してください'))).toBe(false)
+  })
+})
+
+// リプレイを EEW の発表中から始めたときの既読の復元。
+//
+// 復元は EEW について区分・予想値・第 2 フェーズ済み・確定値をすべて既読にしている
+// （途中から始めた地震が初報のように聞こえるのを避けるため）。**地方だけがその列から漏れて
+// いると、この EEW について他は何も声にしないのに地方だけが鳴る** —— 第 1 フェーズは
+// `activeEEWLevelsRef` で、第 2 フェーズは `eewPhase2DoneRef` で止まるのに、地方は「まだ
+// 声にしていない地方があるか」だけで発火するため。
+describe('警報の対象地方: リプレイを途中から始めたとき', () => {
+  const entry = (event: EEWAlert) => ({
+    payload: { kind: 'event' as const, event },
+    replayTime: new Date('2026-01-01T12:00:00Z'),
+  })
+
+  // 正: 窓の手前で発表済みの地方は既読になる
+  it('窓の手前で発表済みの地方は読み直さない', async () => {
+    const d = setupFull()
+    d.restore([entry(makeEEW({ scaleTo: 50, warningRegions: ['北陸'] }))] as never)
+    d.handleLiveEvent(makeEEW({ serial: 2, scaleTo: 50, warningRegions: ['北陸'] }))
+    await vi.advanceTimersByTimeAsync(20000)
+    await flushMicrotasks()
+    expect(spokenTexts().some(t => t.includes('警戒してください'))).toBe(false)
+  })
+
+  // 正: 窓の手前が予報級だった EEW が、窓の中で警報へ上がったら前置きは付く。
+  // **復元は「伝え済み」を積むだけで、これから起きる格上げまで黙らせない。**
+  it('窓の手前が予報級なら、窓の中の格上げは前置きして伝える', async () => {
+    const d = setupFull()
+    d.restore([entry(makeEEW({ scaleTo: 50, severity: 'Forecast' }))] as never)
+    d.handleLiveEvent(makeEEW({ serial: 2, scaleTo: 50, severity: 'Warning', warningRegions: ['北陸'] }))
+    await vi.advanceTimersByTimeAsync(20000)
+    await flushMicrotasks()
+    expect(spokenTexts()[0]).toBe('緊急地震速報に切り替わりました。北陸では強い揺れに警戒してください。')
+  })
+
+  // 対照: 窓の中で増えた分は読む（復元が読み上げごと止めていないこと）
+  it('窓の中で増えた地方は読む', async () => {
+    const d = setupFull()
+    d.restore([entry(makeEEW({ scaleTo: 50, warningRegions: ['北陸'] }))] as never)
+    d.handleLiveEvent(makeEEW({ serial: 2, scaleTo: 50, warningRegions: ['北陸', '甲信'] }))
+    await vi.advanceTimersByTimeAsync(20000)
+    await flushMicrotasks()
+    expect(spokenTexts().filter(t => t.includes('警戒してください'))).toEqual([
+      '新たに、甲信でも強い揺れに警戒してください。',
+    ])
   })
 })
