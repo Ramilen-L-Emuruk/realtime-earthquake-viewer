@@ -132,6 +132,17 @@ export async function fetchDmdataReplayEvents(
 ): Promise<ReplayFetchResult> {
   // アーカイブは JST 日付で索引されているため、UTC 日付との差を吸収するため
   // 開始日を -1 日、終了日を +1 日して確実に対象アーカイブを含める
+  //
+  // **窓の 3 倍のアーカイブを落としている（未解決）。** 本体（`/v1/archive/:id`）は 1 日分の
+  // 電文がまとめて入っていて重く、落とせば gunzip と tar 展開も走る。1 日に収まる窓を再生する
+  // だけで 3 日 × 分類数のファイルを落とし、窓の外の電文は時刻で捨てている（分類が 2 つなら
+  // 6 ファイル。本来は 2 ファイルで足りる）。
+  //
+  // **`item.date` で絞れば直るはずだが、まだ裏が取れていない。** アーカイブの日付と、
+  // その中に入る電文の時刻の対応を実データで確かめていない（テストは 8/09 のアーカイブに
+  // 8/10 の電文を入れており、それが便宜的な作りなのか実際にありうる形なのか判らない）。
+  // 外すと気象庁が出した電文が画面から消えるので、確かめるまでは広いまま取る。
+  // → `docs/spec/data-sources-spec.md` §2「アーカイブは窓の 3 倍を落としている（未解決）」
   const startDateObj = new Date(fromTime)
   startDateObj.setDate(startDateObj.getDate() - 1)
   const startDate = toDateStr(startDateObj)

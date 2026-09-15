@@ -1,7 +1,7 @@
 // DMDATA クライアントの単体テスト。
 // WebSocket そのものは jsdom でもモックしないため、ここではモジュール公開の
 // ユーティリティ（close code 判定）と、fetch をモックできる REST 取得を対象にする。
-import { describe, it, expect, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   isNonRecoverableCloseCode,
   fetchDmdataGdEarthquakes,
@@ -16,6 +16,7 @@ import {
   needsBodyDecode,
 } from './dmdata'
 import { isBinaryTelegramType } from './dmdataTelegramPayload'
+import { setBodyGateIntervalForTest } from './telegramBody'
 import { DmdataApiKeyError, DMDATA_API_KEY_INVALID_MESSAGE } from '../utils/dmdataApiKey'
 import { log } from '../utils/logger'
 import { serverNow } from '../utils/clock'
@@ -302,6 +303,11 @@ describe('fetchDmdataGdEarthquakes', () => {
 // 取得できなかった電文は履歴からそのまま消え、**件数が減ったことにも気づけない**——
 // `cutoffTime` は取得できた分だけで決まるため、欠けたまま「揃った履歴」に見える。
 describe('個別電文の取得に失敗したときの記録', () => {
+  // 電文本体の取得は配信元の上限に合わせて 6 秒に 1 件へ直列化されている
+  // （→ `services/telegramBody.ts`）。ここで見たいのは別の性質なので間隔を外す。
+  // **門そのものは `utils/requestGate.test.ts` と下記『一斉に投げない』が確かめる。**
+  beforeEach(() => { setBodyGateIntervalForTest(0) })
+
   const KEY = 'valid-key'
   // 実電文の一覧と同じ形（`head.time` は UTC 表記）。時刻を落とすと、時刻窓の計算が
   // 「窓を決められない」経路へ落ちてこの describe の対象外の分岐を通る
@@ -326,13 +332,25 @@ describe('個別電文の取得に失敗したときの記録', () => {
   const warnings = () => vi.mocked(log.warn).mock.calls.map(c => c.join(' '))
 
   // 正: HTTP エラーで落ちた電文を記録する
-  it('HTTP エラーで取得できなかった電文を記録する', async () => {
+  // 記録は 2 段になっている。**1 件ずつの理由**（種別と HTTP ステータス）と、
+  // **何件中何件が落ちたかの集約**。後者を足したのは、配信元が同じ id の取り直しを
+  // id 単位で止めるため**大半が落ちることが現実に起きる**と分かったから
+  // （実測 2026-09-15: 85 件中 81 件が 429）。1 件ずつの記録だけでは、
+  // 画面から「地震が無かった」と「取得できなかった」を見分けられない。
+  it('HTTP エラーで取得できなかった電文を、理由と件数の両方で記録する', async () => {
     stubTelegramFetch(async () => ({ ok: false, status: 404 }) as unknown as Response)
 
     await fetchDmdataEarthquakes(KEY, 10)
 
-    expect(warnings().filter(w => w.includes('電文を取得できませんでした'))).toHaveLength(1)
-    expect(warnings().find(w => w.includes('電文を取得できませんでした'))).toContain('404')
+    // 1 件ずつの記録は種別とステータスを持つ（集約の文面と重ならないよう `件中` で分ける）
+    const detail = warnings().filter(w => w.includes('取得できませんでした') && !w.includes('件中'))
+    expect(detail).toHaveLength(1)
+    expect(detail[0]).toContain('404')
+
+    // 集約は「N 件中 M 件」の形で 1 行だけ
+    const summary = warnings().filter(w => w.includes('件中') && w.includes('取得できませんでした'))
+    expect(summary).toHaveLength(1)
+    expect(summary[0]).toContain('地震履歴の取得')
   })
 
   // 正: 例外（ネットワーク断・DNS 失敗）で落ちた件数を記録する。
@@ -376,6 +394,11 @@ describe('個別電文の取得に失敗したときの記録', () => {
 // 実装してください」と明記した 50req/5min のエンドポイントなので、窓の外側を取ってから
 // 捨てる形にしない（→ docs/spec/data-sources-spec.md §2「リクエスト数を抑える」）。
 describe('地震履歴は時刻窓の外側の本体を取りに行かない', () => {
+  // 電文本体の取得は配信元の上限に合わせて 6 秒に 1 件へ直列化されている
+  // （→ `services/telegramBody.ts`）。ここで見たいのは別の性質なので間隔を外す。
+  // **門そのものは `utils/requestGate.test.ts` と下記『一斉に投げない』が確かめる。**
+  beforeEach(() => { setBodyGateIntervalForTest(0) })
+
   const KEY = 'valid-key'
 
   /**
@@ -464,6 +487,98 @@ describe('地震履歴は時刻窓の外側の本体を取りに行かない', (
     await fetchDmdataEarthquakes(KEY, 50)
 
     expect(requested).toEqual(expect.arrayContaining(['p', 'q']))
+  })
+})
+
+// 起動時の履歴取得は、窓で絞ったあとの**全件を一度に投げる**形だった。件数を 174 → 85 に
+// 減らしても投げ方は変わらないので、`data.api.dmdata.jp/v1/:id` の 50req/5min と、配信元が
+// 求める「定常的に 2req/s 以下」を初回起動のたびに超えていた（実測 2026-09-15: 起動直後に
+// 地震 85・津波 26・補助情報で 110 件超が同時）。
+//
+// **件数だけを見ていると、この形は何も起きていないように見える。** ここで投げ方そのものを固定する。
+describe('地震履歴は電文本体を一斉に投げない', () => {
+  const KEY = 'valid-key'
+
+  /** 一覧を差し替え、**本体を要求した時刻**を記録する fetch。 */
+  function stubListsWithTiming(ids: string[]) {
+    const requestedAt: number[] = []
+    const start = Date.now()
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('data.api.dmdata.jp')) {
+        requestedAt.push(Date.now() - start)
+        return { ok: true, text: async () => '<Report/>' } as unknown as Response
+      }
+      const type = /type=(\w+)/.exec(url)?.[1] ?? ''
+      const items = type === 'VXSE53'
+        ? ids.map(id => ({ id, url: `https://data.api.dmdata.jp/v1/${id}`, head: { type, time: '2026-09-14T10:00:00.000Z' } }))
+        : []
+      return { ok: true, json: async () => ({ items }) } as unknown as Response
+    }))
+    return requestedAt
+  }
+
+  // 正: 同じ一覧に複数件あっても、間隔を空けて順に投げる。**これが今回の修正の核心**
+  it('複数件の本体を、取得間隔を空けて順に投げる', async () => {
+    setBodyGateIntervalForTest(80)
+    const requestedAt = stubListsWithTiming(['aaa11111', 'bbb22222', 'ccc33333', 'ddd44444'])
+
+    await fetchDmdataEarthquakes(KEY, 50)
+
+    expect(requestedAt).toHaveLength(4)
+    requestedAt.sort((a, b) => a - b)
+    for (let i = 1; i < requestedAt.length; i++) {
+      // タイマー精度を見込んで間隔の 7 割。一斉に投げる実装なら差は 0ms 付近になる
+      expect(requestedAt[i] - requestedAt[i - 1]).toBeGreaterThanOrEqual(56)
+    }
+  })
+
+  // 正: 取れた分を途中で流す。**流さないと、初回起動は全件揃うまで画面が空のまま**
+  // （本番は 6 秒間隔で、起動時は地震・津波・補助情報が同じ門を共有するので十数分になる）
+  it('取れた分を途中で流し、最後の並びと食い違わせない', async () => {
+    setBodyGateIntervalForTest(0)
+    stubListsWithTiming(['aaa11111', 'bbb22222', 'ccc33333'])
+
+    const partials: number[] = []
+    const { quakes } = await fetchDmdataEarthquakes(KEY, 50, undefined, (p) => { partials.push(p.length) })
+
+    // この環境には DOMParser が無いので電文は 1 件も解釈できない（= 件数は 0）。
+    // **呼ばれたこと自体**が要点で、件数の中身は別のテストが見る
+    expect(partials.length).toBeGreaterThan(0)
+    expect(quakes).toEqual([])
+  })
+
+  // 正: 取得の途中で打ち切れる。**門は待つ前に枠を押さえる**ので、止められないと
+  // 「もう要らない取得」が数分ぶんの枠を握ったまま次の取得を待たせる。
+  //
+  // **並列 `map` では効かない。** `map` はコールバックを同期的に最後まで呼ぶため、
+  // 最初の `await` に届く前に全件が判定を通過してしまう（1 巡目の修正がこの形で、
+  // 打ち切りを渡しても 1 件も止まらなかった）。
+  it('取得の途中で打ち切れる', async () => {
+    setBodyGateIntervalForTest(0)
+    const requestedAt = stubListsWithTiming(['aaa11111', 'bbb22222', 'ccc33333', 'ddd44444', 'eee55555'])
+
+    // 2 件取れたところで打ち切る（判定は 1 件ごとに取りに行く前へ入る）
+    await fetchDmdataEarthquakes(KEY, 50, undefined, undefined, () => requestedAt.length >= 2)
+
+    expect(requestedAt).toHaveLength(2)   // 残り 3 件は取りに行かない
+  })
+
+  // 対照: 打ち切らなければ全件取る（打ち切りが効きすぎて取りこぼさない）
+  it('打ち切らなければ全件取る', async () => {
+    setBodyGateIntervalForTest(0)
+    const requestedAt = stubListsWithTiming(['aaa11111', 'bbb22222', 'ccc33333'])
+
+    await fetchDmdataEarthquakes(KEY, 50, undefined, undefined, () => false)
+
+    expect(requestedAt).toHaveLength(3)
+  })
+
+  // 安全弁: `onPartial` を渡さなければ従来どおり（呼び出し側を壊さない）
+  it('流し先を渡さなければ何も起きない', async () => {
+    setBodyGateIntervalForTest(0)
+    stubListsWithTiming(['aaa11111', 'bbb22222'])
+
+    await expect(fetchDmdataEarthquakes(KEY, 50)).resolves.toMatchObject({ quakes: [] })
   })
 })
 

@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { fetchTelegramText, telegramBodyStats, resetTelegramBodyStatsForTest } from './telegramBody'
+import { fetchTelegramText, telegramBodyStats, resetTelegramBodyStatsForTest, setBodyGateIntervalForTest } from './telegramBody'
 import { clearTelegramBodyCache, telegramCacheStats, MAX_ENTRIES } from '../utils/telegramBodyCache'
 
 // 電文本体の控え。**配信元が名指しで求めている形**（「同じ`id`に対して短期間にリクエストを
@@ -16,6 +16,10 @@ describe('fetchTelegramText（電文本体の控え）', () => {
   beforeEach(async () => {
     await clearTelegramBodyCache()
     resetTelegramBodyStatsForTest()
+    // ここで確かめるのは控えの振る舞いなので、取得間隔は 0 にする。
+    // **門が効いているかは `utils/requestGate.test.ts` が本物の間隔で確かめる** ——
+    // 本番の 6 秒のままだと、上限で捨てる挙動を見るテスト（600 件）が 1 時間かかる。
+    setBodyGateIntervalForTest(0)
   })
   afterEach(() => {
     vi.unstubAllGlobals()
@@ -150,6 +154,10 @@ describe('fetchTelegramText（同時要求のまとめ）', () => {
   beforeEach(async () => {
     await clearTelegramBodyCache()
     resetTelegramBodyStatsForTest()
+    // ここで確かめるのは控えの振る舞いなので、取得間隔は 0 にする。
+    // **門が効いているかは `utils/requestGate.test.ts` が本物の間隔で確かめる** ——
+    // 本番の 6 秒のままだと、上限で捨てる挙動を見るテスト（600 件）が 1 時間かかる。
+    setBodyGateIntervalForTest(0)
   })
   afterEach(() => {
     vi.unstubAllGlobals()
@@ -197,6 +205,32 @@ describe('fetchTelegramText（同時要求のまとめ）', () => {
     ])
 
     expect(requested.sort()).toEqual(['ffffffff66', 'gggggggg77'])
+  })
+
+  // 安全弁: **控えから読める分は門を通らない**。
+  // 通してしまうと、控えが効いているはずの 2 回目以降の起動まで取得間隔ぶん待たされる
+  // （本番は 6 秒間隔。起動時の顔ぶれなら十数分かかり、控えを入れた意味がまるごと消える）。
+  it('控えから読める分は取得間隔を待たない', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => (
+      { ok: true, status: 200, text: async () => '<Report>cached</Report>' }
+    ) as unknown as Response))
+
+    // 1 件だけ取得して控えさせる
+    await fetchTelegramText(KEY, url('iiiiiiii99'))
+    await new Promise((r) => setTimeout(r, 0))
+
+    // **門に「使用済みの枠」を作ってから測る。** 間隔を張り直した直後は予約が空で、
+    // 1 本目は誤った実装でも即座に通ってしまう（この手当てを入れる前のこのテストは、
+    // 控えヒットを門に通す形へ壊しても通っていた）。
+    setBodyGateIntervalForTest(10_000)
+    void fetchTelegramText(KEY, url('jjjjjjjj10'))   // 枠を 1 つ消費する（結果は待たない）
+    await new Promise((r) => setTimeout(r, 0))
+
+    const start = Date.now()
+    const again = await fetchTelegramText(KEY, url('iiiiiiii99'))
+
+    expect(again.fromCache).toBe(true)
+    expect(Date.now() - start).toBeLessThan(1_000)
   })
 
   // 安全弁: 失敗したまとめを残さない。**残すと、以後そのセッション中ずっと同じ失敗を返す**

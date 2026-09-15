@@ -13,6 +13,13 @@ import {
   enumerateJstDates, resolveLiveDates, toJstDateStr,
   fetchLiveReplayEntries, fetchLiveQuakeTelegrams, clearLiveReplayCache,
 } from './dmdataReplayLive'
+import { setBodyGateIntervalForTest } from './telegramBody'
+
+// 電文本体の取得は配信元の上限に合わせて 6 秒に 1 件へ直列化されている
+// （→ `services/telegramBody.ts`）。このファイルが見たいのは取り込みの中身なので間隔を外す。
+// **門そのものは `utils/requestGate.test.ts` と `dmdata.test.ts` の
+// 「地震履歴は電文本体を一斉に投げない」が確かめる。**
+beforeEach(() => { setBodyGateIntervalForTest(0) })
 
 /** 電文一覧が返す 1 件分。 */
 interface MockTelegram {
