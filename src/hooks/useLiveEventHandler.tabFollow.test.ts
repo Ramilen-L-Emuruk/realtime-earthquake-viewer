@@ -11,6 +11,7 @@
 //   2. ただし待たされずに読めそうなら、通知音と同じ瞬間に先出しする（遅延は最大 2.8 秒あり、
 //      その間画面が留まると「音が鳴ったのに変わらない」ように見えるため）
 //   3. 読み上げを持たない経路（読み上げ無効の端末）は従来どおり受信時に取る
+import type { SpeechOutcome } from '../utils/voicevox'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
@@ -28,7 +29,7 @@ const speakMock = vi.fn((_url: string, text: string) => {
     if (!s.done) { s.done = true; s.finish() }
   }
   let finish!: () => void
-  const p = new Promise<void>(r => { finish = r })
+  const p = new Promise<SpeechOutcome>(r => { finish = () => r({ spoke: true }) })
   speeches.push({ text, finish, done: false })
   return p
 })

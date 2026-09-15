@@ -804,6 +804,13 @@ export function createTestEEWAssumed(withDmdssFields: boolean, eventId?: string,
     // 「固定付加文」）。このボタンは初報＝予報級・続報＝警報級へ上がる形なので、
     // **格上げで初めて付加文が現れる**ところまで再現する。
     ...(withDmdssFields && !isAssumed ? { warningComment: '強い揺れに警戒してください。' } : {}),
+    // 警報の対象地方。固定付加文と同じく**警報級の報にだけ入る**ので、格上げの続報で初めて付く。
+    //
+    // **予報から警報へ上がる報で地方を伝える形は、このボタンでしか出せない。** EEW テストは
+    // 初報から警報級なので前置き（「緊急地震速報に切り替わりました。」）の経路を通らない。
+    // 地方の読み上げがその EEW で最初の格上げの告知になるのはここだけ
+    // （→ docs/spec/audio-tts-spec.md §6「警報の対象地方を、予想値の前に伝える」）。
+    ...(withDmdssFields && !isAssumed ? { warningRegions: ['九州'] } : {}),
     issue: { eventId: eid, serial: String(serial), time: report },
     // 初報に区域は載らない。続報で震源が確定して初めて地域別予想が付く
     // （秒数は震源距離 66km ÷ 4.4km/s。→ 上記の kindCode の説明）
