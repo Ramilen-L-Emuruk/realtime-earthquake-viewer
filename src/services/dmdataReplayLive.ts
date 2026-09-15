@@ -20,10 +20,10 @@
 import { log } from '../utils/logger'
 import { authHeader } from '../utils/dmdataApiKey'
 import { fetchTelegramText } from './telegramBody'
-import type { JMAQuake } from '../types/earthquake'
+import type { JMAQuake, JMATsunami } from '../types/earthquake'
 import type { ReplayEntry } from '../types/replay'
 import {
-  HANDLED_TYPES, QUAKE_TYPES, HISTORY_EXTRA_TYPES, historyExtraKey,
+  HANDLED_TYPES, QUAKE_TYPES, TSUNAMI_TYPES, HISTORY_EXTRA_TYPES, historyExtraKey,
   buildXmlPayload, isBinaryTelegramType, buildBinaryPayload,
 } from './dmdataTelegramPayload'
 import { BufrFragmentStore, fragmentKey } from './bufrTelegramAssembly'
@@ -50,8 +50,15 @@ const EEW_EVENT_MARGIN_MS = 3 * 60_000
 
 const JST_OFFSET_MS = 9 * 3600_000
 const DAY_MS = 86_400_000
-/** `enumerateJstDates` が一度に返す日数の上限（暴走防止。実運用の指定は数日以内）。 */
-const MAX_ENUMERATED_DAYS = 60
+/**
+ * `enumerateJstDates` が一度に返す日数の上限（暴走防止）。
+ *
+ * **これは呼び出し側の異常を検出するための歯止めで、遡れる範囲の設計値ではない。**
+ * 上限に達したら切り詰めずに投げる（切ると落とした日ぶんの電文が取りこぼしとして数えられない）。
+ * 「もっと見る」で日数を伸ばす経路はこの手前で止まる必要があるため、
+ * 渡してよい日数の上限を `MAX_HISTORY_DAYS`（→ `dmdataReplay.ts`）が導いている。
+ */
+export const MAX_ENUMERATED_DAYS = 60
 
 /** 電文一覧 API / gd-eew の telegrams が返す 1 件分。 */
 interface TelegramListItem {
@@ -151,6 +158,12 @@ function utcRangeForJstDates(days: string[]): { from: string; to: string } {
  *   - そのワーカーが拾うはずだった要素が未処理のまま残る（取りこぼしとして数えられない）
  *   - `Promise.all` の即時 reject で呼び出し元が先へ進んだあとも、他のワーカーは走り続け、
  *     呼び出し元が読み終えた共有配列へ書き込みを続ける
+ *
+ * **いまの呼び出し元は 1 つも例外を漏らさない。** どれも `fn` の中で try/catch し、
+ * 取りこぼし（`skipped`）や読めなかった取得元へ振り替えている。つまりこの投げ直しは
+ * **将来の呼び出し元に向けた安全網**で、現状は通らない。通る呼び出し元を足すなら、
+ * **2 件目以降の例外は件数だけがログに残る**（詳細は最初の 1 件しか上がらない）ことを
+ * 前提に、呼び出し元側で理由ごとに数えること。
  */
 async function mapWithLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
   let next = 0
@@ -563,7 +576,7 @@ export async function fetchLiveQuakeTelegrams(
   day: string,
   before: Date,
   includeTest: boolean,
-): Promise<{ quakes: JMAQuake[]; extras: ReplayEntry[]; skipped: number }> {
+): Promise<{ quakes: JMAQuake[]; tsunamis: JMATsunami[]; extras: ReplayEntry[]; skipped: number }> {
   const daySet = new Set([day])
   const { from: utcFrom, to: utcTo } = utcRangeForJstDates([day])
   // 下限は日の始まりより 1 日ぶん手前に置く。担当日の切り出しは `daySet`（受信時刻の JST 日）が
@@ -584,13 +597,16 @@ export async function fetchLiveQuakeTelegrams(
     const type = item.head?.type
     // 地震カードのほかに、帯と長周期（`HISTORY_EXTRA_TYPES`）も拾う。初期状態（24 時間）では
     // 足りないもので、どれもこの一覧に入っているので追加の通信は要らない。
-    if (!QUAKE_TYPES.has(type) && !HISTORY_EXTRA_TYPES.has(type)) continue
+    // 津波もここで拾う。アーカイブ側と揃える —— 当日ぶんだけ落ちると、
+    // 発表中の津波が「アーカイブのある日に出たものだけ」になる。
+    if (!QUAKE_TYPES.has(type) && !HISTORY_EXTRA_TYPES.has(type) && !TSUNAMI_TYPES.has(type)) continue
     const verdict = classifyTelegram(item, windowFrom, until, daySet, includeTest)
     if (verdict === 'malformed') skipped++
     else if (verdict === 'include') targets.push(item)
   }
 
   const quakes: JMAQuake[] = []
+  const tsunamis: JMATsunami[] = []
   const extras: ReplayEntry[] = []
   await mapWithLimit(targets, BODY_CONCURRENCY, async (item) => {
     try {
@@ -605,6 +621,15 @@ export async function fetchLiveQuakeTelegrams(
         extras.push({ payload, replayTime: new Date(item.head.time), silent: true })
         return
       }
+      if (TSUNAMI_TYPES.has(item.head.type)) {
+        if (payload?.kind !== 'event' || payload.event.kind !== 'tsunami') {
+          log.warn(`[replay] 履歴用電文のパースに失敗しスキップ id=${item.id} type=${item.head.type}`)
+          skipped++
+          return
+        }
+        tsunamis.push(payload.event)
+        return
+      }
       if (payload?.kind !== 'event' || payload.event.kind !== 'quake') {
         log.warn(`[replay] 履歴用電文のパースに失敗しスキップ id=${item.id} type=${item.head.type}`)
         skipped++
@@ -616,5 +641,5 @@ export async function fetchLiveQuakeTelegrams(
       skipped++
     }
   })
-  return { quakes, extras, skipped }
+  return { quakes, tsunamis, extras, skipped }
 }

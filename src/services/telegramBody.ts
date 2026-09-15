@@ -158,14 +158,14 @@ export function fetchTelegramText(apiKey: string, url: string): Promise<Telegram
 
 /** 控えを見ずに取得して控える。 */
 async function fetchFresh(apiKey: string, url: string, id: string | null): Promise<TelegramTextResult> {
-  // **通信そのものの例外は捕まえない。** 呼び出し側の `Promise.allSettled` が
-  // 「何件が例外で終わったか」をまとめて記録しており（`warnRejectedTelegrams`）、
-  // ここで `null` へ潰すとそのまとめが出なくなる —— 1 件ずつの警告は残るが、
-  // **ネットワーク断で全件落ちたときに件数が分からない**。
-  // HTTP のエラー（`!res.ok`）は旧来どおり値で返し、呼び出し側が種別つきで記録する。
+  // **通信そのものの例外は捕まえない。** 呼び出し側（`dmdataReplayLive.ts` の
+  // `fetchLiveQuakeTelegrams`）が 1 件ごとに受けて**取りこぼしとして数えている**ので、
+  // ここで `null` へ潰すとその計上から漏れる —— しかも「取得できなかった」が
+  // 「その電文は無かった」と見分けられなくなる。
+  // HTTP のエラー（`!res.ok`）は値で返し、呼び出し側が種別つきで記録する。
   // **例外も数えてから投げ直す。** 数えないと `fetched + fromCache + failed` が実際の試行数と
   // 合わず、「思ったより減っている」と誤読する（この統計は削減できたかの判断に使う）。
-  // **枠を待ってから投げる。** 呼び出し側は `Promise.allSettled` で全件を一度に渡してくるので、
+  // **枠を待ってから投げる。** 呼び出し側は同時実行数を絞ってなお複数を並べてくるので、
   // ここで直列化しないと配信元の上限をそのまま超える（→ `utils/requestGate.ts`）。
   await bodyGate.wait()
   let res: Response

@@ -5,7 +5,8 @@
 // 丸ごと不可能になっていた。また目録（telegrams.json）が無いアーカイブは無言で
 // 捨てられ、「電文 0 件だが成功」に化けて原因が追えなかった。
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest'
-import { fetchDmdataReplayEvents, fetchDmdataQuakeHistory, clearReplayCache, filterPreWindowEvents } from './dmdataReplay'
+import { fetchDmdataReplayEvents, fetchDmdataQuakeHistory, clearReplayCache, filterPreWindowEvents, MAX_HISTORY_DAYS } from './dmdataReplay'
+import { enumerateJstDates, MAX_ENUMERATED_DAYS } from './dmdataReplayLive'
 import type { JMATsunami, EEWAlert } from '../types/earthquake'
 import type { ReplayEntry } from '../types/replay'
 import { DmdataApiKeyError } from '../utils/dmdataApiKey'
@@ -871,15 +872,21 @@ describe('fetchDmdataQuakeHistory', () => {
   }
 
   /** 1 日ぶんのアーカイブ。id 先頭 7 文字がファイル名に含まれる必要がある。 */
-  async function dayArchive(telegrams: Array<{ id: string; eventId: string; time: string; serial?: string }>) {
+  async function dayArchive(
+    telegrams: Array<{
+      id: string; eventId: string; time: string; serial?: string; type?: string
+      /** 電文本体の `Head/ReportDateTime`。目録の `head.time` と別の値にしたいときだけ渡す。 */
+      bodyTime?: string
+    }>,
+  ) {
     return makeTarGz([
       {
         name: 'telegrams.json',
-        content: JSON.stringify(telegrams.map(t => manifestEntry(t.id, 'VXSE53', t.time))),
+        content: JSON.stringify(telegrams.map(t => manifestEntry(t.id, t.type ?? 'VXSE53', t.time))),
       },
       ...telegrams.map(t => ({
         name: `${t.id}_20260810120500000_0.xml`,
-        content: historyBody(t.eventId, t.time, t.serial),
+        content: historyBody(t.eventId, t.bodyTime ?? t.time, t.serial),
       })),
     ])
   }
@@ -904,6 +911,126 @@ describe('fetchDmdataQuakeHistory', () => {
 
     expect(result.quakes).toHaveLength(1)
     expect(result.quakes[0].id).toContain('20260810090000')
+  })
+
+  // `mergeQuakeHistory` は安定ソートで畳み込むため、**発表時刻が同値の電文どうしは入力配列の
+  // 相対順序がそのまま結果に効く**。詳しい電文が先・粗い電文が後だと粗い方が上書きする。
+  // 目録の並びも日の処理順（新しい日から）も、この並びを保証しない。
+  it('正: 発表時刻が同値なら「速報→詳細」の順に並べ直す', async () => {
+    const gz = await dayArchive([
+      // 目録では詳細（VXSE53）が先。並べ直さなければこの順で返る
+      { id: 'aaaaaaa1', eventId: '20260810010000', time: '2026-08-10T01:05:00+09:00', type: 'VXSE53' },
+      { id: 'bbbbbbb2', eventId: '20260810010000', time: '2026-08-10T01:05:00+09:00', type: 'VXSE51' },
+    ])
+    globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
+
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
+
+    expect(result.quakes.map(q => q.issue.type)).toEqual(['震度速報', '震源・震度情報'])
+  })
+
+  // 対照: 種別優先度で並べ替えるのは同値のときだけ。時刻が違えば時刻に従う
+  // （常に種別で並べると、あとから届いた震度速報の続報が古い詳細より前に来る）。
+  it('対照: 発表時刻が違えば時刻の昇順に従う（種別では入れ替えない）', async () => {
+    const gz = await dayArchive([
+      { id: 'aaaaaaa1', eventId: '20260810010000', time: '2026-08-10T02:05:00+09:00', type: 'VXSE51' },
+      { id: 'bbbbbbb2', eventId: '20260810010000', time: '2026-08-10T01:05:00+09:00', type: 'VXSE53' },
+    ])
+    globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
+
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
+
+    expect(result.quakes.map(q => q.issue.type)).toEqual(['震源・震度情報', '震度速報'])
+  })
+
+  // 安全弁: 日時として読めない時刻が混ざっても、比較関数が全順序のままであること。
+  // 「読めないものは据え置いて種別だけで比べる」形だと、読めない a と読める b・c について
+  // a=b・a=c なのに b<c が成り立ちうる（`Array.prototype.sort` の結果が実装依存になる）。
+  // 読めない時刻を末尾へ寄せることで全順序になり、並びが決まる。
+  it('安全弁: 読めない発表時刻は末尾へ寄せ、読める分の並びを崩さない', async () => {
+    const gz = await dayArchive([
+      { id: 'aaaaaaa1', eventId: '20260810020000', time: '2026-08-10T02:05:00+09:00' },
+      // 目録の時刻は読めるが、**電文本体の発表時刻**が読めない形（目録側が読めない電文は
+      // 本体を取る前に取りこぼしとして弾かれるので、この並べ替えには届かない）
+      { id: 'bbbbbbb2', eventId: '20260810030000', time: '2026-08-10T03:05:00+09:00', bodyTime: 'これは日時ではない' },
+      { id: 'ccccccc3', eventId: '20260810010000', time: '2026-08-10T01:05:00+09:00' },
+    ])
+    globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
+
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
+
+    // 読めない 1 件も捨てない（同一性の判定に使う時刻を落とさない方針）
+    expect(result.quakes).toHaveLength(3)
+    // 01:05 → 02:05 → 読めない分、の順
+    expect(result.quakes.map(q => q.time)).toEqual([
+      '2026-08-10T01:05:00+09:00',
+      '2026-08-10T02:05:00+09:00',
+      'これは日時ではない',
+    ])
+  })
+
+  // 安全弁: 日は新しい順に処理するので、並べ直さないと日をまたいだ並びが逆になる。
+  it('安全弁: 日をまたいでも時刻の昇順で返す', async () => {
+    const newer = await dayArchive([
+      { id: 'aaaaaaa1', eventId: '20260810010000', time: '2026-08-10T01:05:00+09:00' },
+    ])
+    const older = await dayArchive([
+      { id: 'ccccccc3', eventId: '20260809010000', time: '2026-08-09T01:05:00+09:00' },
+    ])
+    globalThis.fetch = mockHistoryArchives([
+      { date: '2026-08-09', url: 'https://x/d09', gz: older },
+      { date: '2026-08-10', url: 'https://x/d10', gz: newer },
+    ]) as unknown as typeof fetch
+
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
+
+    expect(result.quakes.map(q => q.id.includes('20260809010000'))).toEqual([true, false])
+  })
+
+  // 打ち切りは正常系（`StrictMode` の二重実行・時間軸の切り替え・画面を離れた）。
+  // 「読んだが 0 件」と同じ文面にすると、記録が「静かな期間だった」と主張してしまう。
+  describe('打ち切ったことは「0 件」と言い分ける', () => {
+    // このファイルは logger を差し替えていないので、テストごとに spy を張る
+    // （`afterEach` の `vi.restoreAllMocks()` が外す）。
+    const captured: { warn: string[]; info: string[] } = { warn: [], info: [] }
+    const warnings = () => captured.warn
+    const infos = () => captured.info
+
+    beforeEach(() => {
+      captured.warn = []
+      captured.info = []
+      vi.spyOn(log, 'warn').mockImplementation((...a: unknown[]) => { captured.warn.push(a.join(' ')) })
+      vi.spyOn(log, 'info').mockImplementation((...a: unknown[]) => { captured.info.push(a.join(' ')) })
+    })
+
+    it('正: 読み始める前に打ち切られたら、打ち切りとして記録する', async () => {
+      const gz = await dayArchive([
+        { id: 'aaaaaaa1', eventId: '20260810010000', time: '2026-08-10T01:05:00+09:00' },
+      ])
+      globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
+
+      const result = await fetchDmdataQuakeHistory(
+        'key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false, undefined, () => true,
+      )
+
+      expect(result.quakes).toHaveLength(0)
+      expect(result.hasMore).toBe(false)
+      expect(infos().filter(m => m.includes('打ち切った'))).toHaveLength(1)
+      // 「0 件」の警告と「復元」の報告はどちらも出さない
+      expect(warnings().filter(m => m.includes('地震電文は 0 件'))).toHaveLength(0)
+      expect(infos().filter(m => m.includes('履歴を復元'))).toHaveLength(0)
+    })
+
+    it('対照: 打ち切っていない 0 件は従来どおり警告として残す', async () => {
+      const gz = await dayArchive([])
+      globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
+
+      const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
+
+      expect(result.quakes).toHaveLength(0)
+      expect(warnings().filter(m => m.includes('地震電文は 0 件'))).toHaveLength(1)
+      expect(infos().filter(m => m.includes('打ち切った'))).toHaveLength(0)
+    })
   })
 
   // 打ち切りが無いと、地震の少ない期間で上限日数ぶんを常に読みに行くことになる。
@@ -1268,5 +1395,29 @@ describe('filterPreWindowEvents の EEW（解除時刻を決められないと�
     } finally {
       warn.mockRestore()
     }
+  })
+})
+
+// `MAX_HISTORY_DAYS` は `MAX_ENUMERATED_DAYS` から 1 日引いただけの値で、引き算そのものが
+// 正しいかは型でも実行でも確かめられない。**1 日ずれても症状は「8 回目に押したときだけ
+// 例外」**で、通常の検証には現れないため、ここで境界を固定する。
+//
+// `fetchDmdataQuakeHistory` が当日経路へ列挙させる範囲は `[before - maxDays, before + 1ms)`。
+describe('遡れる日数の上限（MAX_HISTORY_DAYS）', () => {
+  const before = new Date('2026-09-15T03:00:00Z')
+  const rangeFor = (maxDays: number) => {
+    const from = new Date(before)
+    from.setDate(from.getDate() - maxDays)
+    return [from, new Date(before.getTime() + 1)] as const
+  }
+
+  it('正: 上限ちょうどの日数なら列挙できる', () => {
+    const [from, to] = rangeFor(MAX_HISTORY_DAYS)
+    expect(enumerateJstDates(from, to)).toHaveLength(MAX_ENUMERATED_DAYS)
+  })
+
+  it('対照: 1 日でも超えると投げる', () => {
+    const [from, to] = rangeFor(MAX_HISTORY_DAYS + 1)
+    expect(() => enumerateJstDates(from, to)).toThrow(/対象期間が広すぎます/)
   })
 })

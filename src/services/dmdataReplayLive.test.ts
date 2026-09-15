@@ -17,8 +17,8 @@ import { setBodyGateIntervalForTest } from './telegramBody'
 
 // 電文本体の取得は配信元の上限に合わせて 6 秒に 1 件へ直列化されている
 // （→ `services/telegramBody.ts`）。このファイルが見たいのは取り込みの中身なので間隔を外す。
-// **門そのものは `utils/requestGate.test.ts` と `dmdata.test.ts` の
-// 「地震履歴は電文本体を一斉に投げない」が確かめる。**
+// **門そのものは `utils/requestGate.test.ts`、門と並行取得の噛み合わせは下記
+// 「電文本体を一斉に投げない」が確かめる。**
 beforeEach(() => { setBodyGateIntervalForTest(0) })
 
 /** 電文一覧が返す 1 件分。 */
@@ -42,6 +42,34 @@ function listItem(t: MockTelegram) {
     receivedTime: t.receivedTime,
     url: t.url,
   }
+}
+
+/** 津波警報・注意報・予報（VTSE51）の最小の電文。区域 1 つと等級だけを持つ。 */
+function tsunamiBody(): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Report xmlns="http://xml.kishou.go.jp/jmaxml1/" xmlns:jmx_eb="http://xml.kishou.go.jp/jmaxml1/elementBasis1/">
+<Control><Title>津波警報・注意報・予報</Title><Status>通常</Status><EditorialOffice>気象庁</EditorialOffice><PublishingOffice>気象庁</PublishingOffice></Control>
+<Head xmlns="http://xml.kishou.go.jp/jmaxml1/informationBasis1/">
+<Title>津波警報・注意報・予報</Title>
+<ReportDateTime>2026-08-23T09:05:00+09:00</ReportDateTime>
+<TargetDateTime>2026-08-23T09:05:00+09:00</TargetDateTime>
+<EventID>20260823090000</EventID>
+<InfoType>発表</InfoType>
+<Serial/>
+<InfoKind>津波警報・注意報・予報</InfoKind>
+<InfoKindVersion>1.1_0</InfoKindVersion>
+</Head>
+<Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/">
+<Tsunami>
+<Forecast>
+<Item>
+<Area><Name>岩手県</Name><Code>210</Code></Area>
+<Category><Kind><Name>津波注意報</Name><Code>62</Code></Kind></Category>
+</Item>
+</Forecast>
+</Tsunami>
+</Body>
+</Report>`
 }
 
 function quakeBody(eventId: string, reportTime: string): string {
@@ -156,7 +184,8 @@ describe('JST 日付の扱い', () => {
   })
 
   // 黙って切ると、落とした日ぶんの電文が取りこぼしとして数えられないまま消える。
-  // 現在の呼び出し元はいずれも数日以内しか渡さないため、到達すること自体が異常。
+  // 「もっと見る」で日数を伸ばす経路はこの手前で止まる（→ `dmdataReplay.ts` の
+  // `MAX_HISTORY_DAYS`）ので、ここへ到達すること自体が呼び出し側の異常。
   it('期間が上限を超えたら黙って切らずに投げる', () => {
     const from = new Date('2026-01-01T00:00:00Z')
     const to = new Date('2026-06-01T00:00:00Z')
@@ -640,6 +669,90 @@ describe('fetchLiveReplayEntries', () => {
   })
 })
 
+// 電文本体を取るのは当日ぶんだけだが、`mapWithLimit` が最大 8 並列で投げるため、
+// **門を通らない経路が 1 つでもできると配信元の上限（50req/5min）をそのまま超える**。
+// `requestGate.test.ts` は門そのものを見ているが、それだけでは
+// 「並列ワーカー経由でも同じ門へ合流するか」は確かめられない。
+describe('電文本体を一斉に投げない', () => {
+  const originalFetch = globalThis.fetch
+
+  beforeEach(() => {
+    clearLiveReplayCache()
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+  })
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    clearLiveReplayCache()
+    setBodyGateIntervalForTest(0)
+    vi.restoreAllMocks()
+  })
+
+  /** 本体を要求した時刻（ミリ秒・呼び出し開始からの相対）を記録する。 */
+  function mockWithTiming(ids: string[]) {
+    const requestedAt: number[] = []
+    const start = Date.now()
+    const list: MockTelegram[] = ids.map(id => ({
+      id, type: 'VXSE53',
+      headTime: '2026-08-23T00:05:00Z', receivedTime: '2026-08-23T00:05:01.000Z',
+      url: `https://b/${id}`,
+    }))
+    const fn = vi.fn(async (input: string) => {
+      if (input.includes('/v2/telegram?')) {
+        return { ok: true, json: async () => ({ status: 'ok', items: list.map(listItem) }) } as unknown as Response
+      }
+      requestedAt.push(Date.now() - start)
+      const id = input.split('/').pop() ?? ''
+      return { ok: true, text: async () => quakeBody(`2026082309${id}`, '2026-08-23T09:05:00+09:00') } as unknown as Response
+    })
+    return { fn, requestedAt }
+  }
+
+  // 正: 同じ一覧に複数件あっても、間隔を空けて順に投げる。
+  // 一斉に投げる実装なら隣り合う差は 0ms 付近になる。
+  it('複数件の本体を、取得間隔を空けて順に投げる', async () => {
+    setBodyGateIntervalForTest(80)
+    const { fn, requestedAt } = mockWithTiming(['aaa11111', 'bbb22222', 'ccc33333', 'ddd44444'])
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    await fetchLiveQuakeTelegrams('key', '2026-08-23', new Date('2026-08-23T03:00:00Z'), false)
+
+    expect(requestedAt).toHaveLength(4)
+    requestedAt.sort((a, b) => a - b)
+    for (let i = 1; i < requestedAt.length; i++) {
+      // タイマー精度を見込んで間隔の 7 割で判定する
+      expect(requestedAt[i] - requestedAt[i - 1]).toBeGreaterThanOrEqual(56)
+    }
+  })
+
+  // 対照: 間隔を外せば待たない（門が効きすぎて常に待つ形になっていないこと）。
+  it('間隔が 0 なら待たずに全件投げる', async () => {
+    setBodyGateIntervalForTest(0)
+    const { fn, requestedAt } = mockWithTiming(['aaa11111', 'bbb22222', 'ccc33333', 'ddd44444'])
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    await fetchLiveQuakeTelegrams('key', '2026-08-23', new Date('2026-08-23T03:00:00Z'), false)
+
+    expect(requestedAt).toHaveLength(4)
+    expect(Math.max(...requestedAt) - Math.min(...requestedAt)).toBeLessThan(56)
+  })
+
+  // 安全弁: 控えから読める分は門を通さない（通すと 2 回目以降まで待たされる）。
+  it('控えから読める分は待たない', async () => {
+    setBodyGateIntervalForTest(0)
+    const { fn } = mockWithTiming(['aaa11111', 'bbb22222'])
+    globalThis.fetch = fn as unknown as typeof fetch
+    await fetchLiveQuakeTelegrams('key', '2026-08-23', new Date('2026-08-23T03:00:00Z'), false)
+
+    // 2 回目は控えが効くので、間隔を戻しても待ちは生じない
+    setBodyGateIntervalForTest(2_000)
+    const start = Date.now()
+    await fetchLiveQuakeTelegrams('key', '2026-08-23', new Date('2026-08-23T03:00:00Z'), false)
+
+    expect(Date.now() - start).toBeLessThan(1_000)
+  })
+})
+
 describe('fetchLiveQuakeTelegrams', () => {
   const originalFetch = globalThis.fetch
 
@@ -730,18 +843,41 @@ describe('fetchLiveQuakeTelegrams', () => {
     expect(result.extras[0].silent).toBe(true)
   })
 
-  it('地震以外の種別は採らない', async () => {
+  // 対照: 履歴の復元対象でない種別は本体を取りに行かない。
+  // 緊急地震速報は「その時刻に発報中だったか」の判定が要り、遡り幅も目的が違う
+  // （初期状態の担当）。**ここで採ると、過去の EEW が履歴として画面へ並ぶ。**
+  it('履歴の復元対象でない種別は採らない', async () => {
     const { fn } = mockLive({
       list: [
-        { id: 'ts', type: 'VTSE51', headTime: '2026-08-23T00:05:00Z', receivedTime: '2026-08-23T00:05:01.000Z', url: 'https://b/ts' },
+        { id: 'eew', type: 'VXSE45', headTime: '2026-08-23T00:05:00Z', receivedTime: '2026-08-23T00:05:01.000Z', url: 'https://b/eew' },
       ],
-      bodies: { 'https://b/ts': '{}' },
+      bodies: { 'https://b/eew': '{}' },
     })
     globalThis.fetch = fn as unknown as typeof fetch
 
     const result = await fetchLiveQuakeTelegrams('key', '2026-08-23', new Date('2026-08-23T03:00:00Z'), false)
 
     expect(result.quakes).toHaveLength(0)
+    expect(result.tsunamis).toHaveLength(0)
+    expect(result.skipped).toBe(0)   // 取りに行っていないので取りこぼしにも数えない
+  })
+
+  // 正: 津波は地震と同じ一覧から拾う。**当日ぶんだけ落ちると、発表中の津波が
+  // 「アーカイブのある日に出たものだけ」になる**（アーカイブは日を締めてから生成される）。
+  it('津波も地震と同じ一覧から拾う', async () => {
+    const { fn } = mockLive({
+      list: [
+        { id: 'ts', type: 'VTSE51', headTime: '2026-08-23T00:05:00Z', receivedTime: '2026-08-23T00:05:01.000Z', url: 'https://b/ts' },
+      ],
+      bodies: { 'https://b/ts': tsunamiBody() },
+    })
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    const result = await fetchLiveQuakeTelegrams('key', '2026-08-23', new Date('2026-08-23T03:00:00Z'), false)
+
+    expect(result.tsunamis).toHaveLength(1)
+    expect(result.tsunamis[0].areas.map(a => a.name)).toContain('岩手県')
+    expect(result.quakes).toHaveLength(0)   // 地震としては数えない
     expect(result.skipped).toBe(0)
   })
 })
