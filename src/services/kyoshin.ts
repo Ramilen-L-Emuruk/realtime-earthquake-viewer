@@ -311,6 +311,77 @@ function searchRange(consecutiveFail: number): { above: number; below: number } 
 let syncConsecutiveFail = 0
 
 /**
+ * フロンティア探索 1 回あたりの判定リクエストの上限。
+ *
+ * 二分探索なら窓 ±60 秒でも 9 件で足りる（両端 2 件 ＋ log2(121) ≒ 7 件）。上限は
+ * **将来の書き換えで線形走査へ戻ったときに気づくための歯止め**で、通常は触れない。
+ */
+const MAX_FRONTIER_PROBES = 12
+
+/**
+ * フロンティア（登録済みの最新秒）を二分探索で探す。
+ *
+ * 登録は時刻順に進むので、「秒 s が登録済みか」は s について単調（s ≤ frontier のとき真）。
+ * **単調なら 1 秒ずつ下げる必要がない。**
+ *
+ * かつてここは `guess+above` から 1 秒ずつ下げていた。連続失敗のたびに窓が指数的に広がる
+ * 作りなので、**1 回の較正で最大 121 リクエスト**（窓 ±60 秒）を投げていた。較正は 30 秒
+ * ごとに走るため、主経路（外部の時刻サービス）が失敗し続ける端末では**毎分 240 件を超える**。
+ * 二分探索は同じ窓・同じ答えで 9 件。
+ *
+ * **判定不能（`null` ＝ 5xx・429・タイムアウト）が返ったらその回は諦める。** 単調性の前提が
+ * 崩れた状態で続けると境界を取り違える。
+ *
+ * **線形走査より 1 点の誤答に弱い。** 旧実装は「上から見て最初に真だった秒」を採るだけなので、
+ * 途中の 1 点が誤っても影響はその秒を見逃す程度に留まる。二分探索は単調性を全区間で信頼する
+ * ので、早い段階で 1 回誤答があると絞り込みの向きごとずれる。配信元の癖（負キャッシュ・登録
+ * 遅延）はこちらから制御できないので、起きない前提には立たない。
+ *
+ * **ただし誤った時刻が供給されることはない。** 呼び出し側は求めた境界の 1 秒後（`frontier + 1`）を
+ * ポーリングして **403→200 の遷移を実際に挟めたときだけ**時刻を供給する。
+ *   - 境界が低すぎた場合: `frontier + 1` が既に登録済みなので遷移を挟めず、
+ *     「開始時点で既に登録済み」として見送る
+ *   - 境界が高すぎた場合: `frontier + 1` は登録されないままなので打ち切り時間まで 403 が続き、
+ *     「flip を観測できず」として見送る
+ *
+ * どちらも**その回の較正を諦める**形に落ちる（`K` は前回の値を保つ）。較正が止まり続けた場合は
+ * `warnIfCalibrationStale` が記録に残す。
+ *
+ * @returns フロンティアの秒。窓の中に見つからない・判定不能なら `null`
+ */
+async function findFrontier(guessSec: number, above: number, below: number): Promise<number | null> {
+  let probes = 0
+  const probe = async (s: number): Promise<boolean | null> => {
+    if (probes >= MAX_FRONTIER_PROBES) {
+      log.error(`[kyoshin] clock sync: フロンティア探索の判定上限（${MAX_FRONTIER_PROBES}）に達した`)
+      return null
+    }
+    probes++
+    return isRegistered(SYNC_EDGE, s)
+  }
+
+  let lo = guessSec - below
+  let hi = guessSec + above
+  // 上端が登録済みなら、窓の中ではそこが最新。これより上は見ない（窓の外）
+  const atHi = await probe(hi)
+  if (atHi === null) return null
+  if (atHi === true) return hi
+  // 下端が未登録なら、窓の中に登録済みの秒は無い（単調なので上も全部未登録）
+  const atLo = await probe(lo)
+  if (atLo === null) return null
+  if (atLo === false) return null
+  // ここから `lo` は登録済み・`hi` は未登録。最後の登録済みを挟み込む
+  while (hi - lo > 1) {
+    const mid = Math.floor((lo + hi) / 2)
+    const atMid = await probe(mid)
+    if (atMid === null) return null
+    if (atMid) lo = mid
+    else hi = mid
+  }
+  return lo
+}
+
+/**
  * flip を観測できずに較正を見送った記録を間引く間隔 (ms)。
  *
  * 較正は 30 秒ごとに走るため素通しにすると同じ行で埋まる。一方で一度きりに絞ると、恒久的に
@@ -342,15 +413,7 @@ const throttledMissLog = {
 async function syncClockOnce(): Promise<void> {
   const guessSec = Math.floor(serverNow() / 1000)
   const { above, below } = searchRange(syncConsecutiveFail)
-  // フロンティア（最新の登録済み秒）を探す: guess+above から下げて最初に 200 になる秒
-  // （null=判定不能は探索対象としてスキップし、次の秒へ進む）
-  let frontier: number | null = null
-  for (let s = guessSec + above; s >= guessSec - below; s--) {
-    if ((await isRegistered(SYNC_EDGE, s)) === true) {
-      frontier = s
-      break
-    }
-  }
+  const frontier = await findFrontier(guessSec, above, below)
   if (frontier === null) {
     syncConsecutiveFail += 1
     if (syncConsecutiveFail % 3 === 0) {

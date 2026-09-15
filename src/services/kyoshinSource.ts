@@ -101,8 +101,65 @@ const MAX_LAG_MS = 5000
 export const REALTIME_MAX_RETRY_COUNT = MAX_LAG_MS / RETRY_MS
 /** リプレイ時: 同一データ時刻への最大再試行回数。超えたら次のデータ時刻へ進む。 */
 export const REPLAY_MAX_RETRY_COUNT = 5
-/** この回数続けて取得に失敗したら「更新が止まっている」と扱う。 */
-export const ERROR_THRESHOLD = 5
+/**
+ * 「更新が止まっている」と扱うまでの、失敗が続いた経過時間 (ms)。
+ *
+ * **回数ではなく経過時間で測る。** 失敗が続くと再試行の間隔が伸びる作りになったので
+ * （`stalledRetryDelayMs`）、回数で数えると**1 周が伸びたぶんだけ判定も遅れる**
+ * （→ `rules/common/code-review.md`「指標・条件が本体からずれていないか」）。
+ *
+ * 従来は「フレームを 5 つ諦めたら」という数え方で、**101 リクエスト・約 20 秒**を要していた。
+ * 経過時間なら間隔をどう変えても 5 秒で判定できる。
+ */
+export const STALLED_AFTER_MS = 5_000
+/**
+ * 更新停止と判定した後の再試行間隔の上限 (ms)。
+ *
+ * **失敗しても `RETRY_MS`（200ms）で撃ち続けない。** 1 フレームの取得はエッジ 2 つを順に試すので
+ * 最大 2 リクエスト。それを 200ms 間隔で再試行すると、配信が止まっているあいだ**毎秒 10 件**を
+ * 投げ続ける（実際に踏んだ: 2026-09-15 にリプレイの時刻を誤って範囲外にしたとき、18 秒ほどで
+ * 177 件の 403 が出た）。**止まっていることは既に画面へ出している**ので、急いで確かめる意味がない。
+ *
+ * 連続失敗が `STALLED_BACKOFF_AFTER_FAILURES` を超えてから倍々にし、ここで頭打ちにする。
+ * 復帰したら戻す（成功で連続失敗が 0 に戻るので、この間隔も自動的に `RETRY_MS` へ戻る）。
+ */
+export const STALLED_RETRY_MAX_MS = 10_000
+/**
+ * リプレイ時: この回数続けて「フレームを諦めた」ら、間隔を空けて様子を見る形へ移る。
+ *
+ * `REPLAY_MAX_RETRY_COUNT` が抑えるのは 1 フレームあたりの再試行で、**フレームをまたいだ総量は
+ * 抑えられない**。データが 1 件も無い時間帯（収録範囲の外・存在しない日付）を指定すると、
+ * 1 秒ごとに 10 件を投げ続けることになる。
+ *
+ * **止めるのではなく間隔を空ける。** ここは「収録の無い時代を指定した」と「収録期間内での
+ * 10 秒超の欠測」を区別できない。止める作りにしていた頃は、後者でも**そのリプレイセッションが
+ * 終わるまで二度と取りに行かなかった**（復旧しても、その後に本震が来ても）。
+ */
+export const REPLAY_MAX_CONSECUTIVE_GIVEUPS = 10
+
+/**
+ * 間隔を空け始めるまでの連続失敗回数。**数えるのは「取得の回数」で、フレーム数ではない。**
+ *
+ * かつての更新停止の判定は「同じ秒への再試行をまとめて 1 回」と数えており、閾値に届くまでに
+ * 25 回 × 4 サイクル ＝ **101 リクエスト**を要していた。**リクエストは 1 回ごとに発生するのに、
+ * 数えているのはフレーム** —— 間隔を決める尺度としては代理値で、実際の量とずれる。
+ *
+ * ここは 1 フレームぶんの再試行（`REALTIME_MAX_RETRY_COUNT` ＝ 5 秒ぶん）を使い切った
+ * ところに置く。**それより手前の挙動は変えない** —— 鈍らせると数百ミリ秒の瞬断で
+ * 揺れの立ち上がりを取り落とす。
+ */
+export const STALLED_BACKOFF_AFTER_FAILURES = REALTIME_MAX_RETRY_COUNT
+
+/**
+ * 連続失敗が続いたときの再試行間隔。手前では従来どおり `RETRY_MS`。
+ *
+ * @param attemptFailures 連続して失敗した**取得の回数**（同じ秒への再試行も 1 回と数える）
+ */
+export function stalledRetryDelayMs(attemptFailures: number): number {
+  if (attemptFailures < STALLED_BACKOFF_AFTER_FAILURES) return RETRY_MS
+  const steps = attemptFailures - STALLED_BACKOFF_AFTER_FAILURES
+  return Math.min(RETRY_MS * 2 ** steps, STALLED_RETRY_MAX_MS)
+}
 /**
  * 助走フレームを取りに行くときの並列数。
  *
@@ -210,8 +267,26 @@ function createYahooSource(timeOffsetMs: number | null): KyoshinSource {
   let active = false
   let timer: ReturnType<typeof setTimeout> | null = null
   let stopClockSync: (() => void) | null = null
-  // 連続失敗回数。同一データ時刻への再試行は 1 回の失敗として数える。
-  let failCount = 0
+  /**
+   * 失敗が続き始めた実時刻。成功したら `null` へ戻す。
+   *
+   * **更新停止の判定は経過時間で行う**（→ `STALLED_AFTER_MS`）。回数で数えると、
+   * 再試行の間隔が伸びたぶんだけ判定が遅れる。
+   */
+  let failingSince: number | null = null
+  /** 更新停止を通知済みか。同じ障害で何度も通知しないため。 */
+  let stalledNotified = false
+  /** リプレイ時: 続けて「フレームを諦めた」回数。1 フレームでも取れたら 0 へ戻す。 */
+  let consecutiveGiveUps = 0
+  /**
+   * 連続して失敗した**取得の回数**（同じ秒への再試行も 1 回として数える）。ライブ・リプレイの
+   * 両方で、再試行の間隔を決める尺度に使う（→ `stalledRetryDelayMs`）。
+   *
+   * **フレーム単位で数えた値は間隔の尺度にできない。** 1 フレームは最大
+   * `REALTIME_MAX_RETRY_COUNT` 回の再試行を含むので、フレームで数えると実際の
+   * リクエスト量と桁がずれる（→ `STALLED_BACKOFF_AFTER_FAILURES`）。
+   */
+  let attemptFailures = 0
   // 壊れた消費側は毎フレーム同じ例外を投げるため、記録は間引く（一度きりにはしない。
   // 継続している不具合が「一度失敗して直った」ように見えるのを避ける）。
   let throttledHandoffError = createLogThrottle(LOG_THROTTLE_MS)
@@ -220,7 +295,10 @@ function createYahooSource(timeOffsetMs: number | null): KyoshinSource {
     start(sink) {
       if (active) return
       active = true
-      failCount = 0
+      failingSince = null
+      stalledNotified = false
+      consecutiveGiveUps = 0
+      attemptFailures = 0
       throttledHandoffError = createLogThrottle(LOG_THROTTLE_MS)
 
       // ライブのみクロック同期を起動して serverNow() をサーバー時刻へ較正する
@@ -272,7 +350,10 @@ function createYahooSource(timeOffsetMs: number | null): KyoshinSource {
         fetchRealtimeIntensity(target)
           .then((rt) => {
             if (!active) return
-            failCount = 0
+            failingSince = null
+            stalledNotified = false
+            consecutiveGiveUps = 0
+            attemptFailures = 0
             // sink への受け渡しで例外が漏れると、次の setTimeout が仕込まれないまま取得が
             // 恒久停止する（無音で全機能が死ぬ）。現在の消費側は画面への反映で起きた例外を
             // 自分の内側で処理するため、ここへ届くのは sink 自体（キューへの投入や消費側の
@@ -309,28 +390,67 @@ function createYahooSource(timeOffsetMs: number | null): KyoshinSource {
           })
           .catch((err) => {
             if (!active) return
+            attemptFailures += 1
             if (!isReplay) {
-              // ライブのみ: 連続失敗を数えて「更新停止」を通知する
-              if (retryCount === 0) {
-                failCount += 1
-                if (failCount >= ERROR_THRESHOLD) {
-                  log.warn(`[kyoshinSource] 連続取得失敗 (${failCount}回) → 更新停止として通知`, err)
-                  sink.setStalled(true)
-                }
+              // ライブのみ: 失敗が続いた**経過時間**で「更新停止」を通知する
+              if (failingSince === null) failingSince = Date.now()
+              if (!stalledNotified && Date.now() - failingSince >= STALLED_AFTER_MS) {
+                stalledNotified = true
+                log.warn(
+                  `[kyoshinSource] ${Math.round((Date.now() - failingSince) / 1000)} 秒続けて取得できず → 更新停止として通知`,
+                  err,
+                )
+                sink.setStalled(true)
               }
+              // **失敗が続くほど間隔を空ける。** 200ms 間隔のまま撃ち続けると、配信が
+              // 止まっているあいだ毎秒 10 件（エッジ 2 つ × 5 回）になる。止まっていることは
+              // 画面へ出しているので、急いで確かめる意味がない（→ `STALLED_RETRY_MAX_MS`）。
+              // **進み方（どの秒を次に取るか）は変えない** —— 変えると瞬断の挙動まで動く。
+              const retryDelay = stalledRetryDelayMs(attemptFailures)
               // 同一データ時刻への失敗が続き上限を超えたら、その時刻を諦めて現在時刻ベースへ
               // 戻す（特定の秒が CDN 側で恒久的に取得できないケースで張り付くのを防ぐ）
               if (retryCount + 1 >= REALTIME_MAX_RETRY_COUNT) {
                 log.warn(`[kyoshinSource] 同一データ時刻への取得が ${retryCount + 1} 回失敗 → 現在時刻ベースにリセット`, err)
-                timer = setTimeout(() => tick(new Date(serverNow() - FETCH_OFFSET_MS)), RETRY_MS)
+                timer = setTimeout(() => tick(new Date(serverNow() - FETCH_OFFSET_MS)), retryDelay)
                 return
               }
-              timer = setTimeout(() => tick(target, retryCount + 1), RETRY_MS)
+              timer = setTimeout(() => tick(target, retryCount + 1), retryDelay)
               return
             }
             // リプレイ: 上限を超えたら諦めて次のデータ時刻へ進める
             // （アーカイブ側の恒久的な欠損で無限に再試行するのを防ぐ）
+            // **フレームをまたいだ総量を抑える。** 1 フレームあたりの再試行は
+            // `REPLAY_MAX_RETRY_COUNT` が抑えるが、データが 1 件も無い時間帯を指定すると
+            // 1 秒ごとに 10 件を投げ続けることになる（→ `REPLAY_MAX_CONSECUTIVE_GIVEUPS`）。
+            //
+            // **止めずに間隔を空ける。** かつてはここで `return` して以後 `tick` を張らなかったが、
+            // それは**指摘の範囲より広い範囲を止めていた** —— 判定条件は「収録の無い時代を
+            // 指定した」と「収録期間内での 10 秒超の欠測」を区別できないのに、後者でも
+            // **そのリプレイセッションが終わるまで二度と取りに行かない**状態になっていた
+            // （復旧しても、その後に本震が来ても）。ライブ経路が永久に再試行し続けるのと
+            // 非対称でもあった。
+            //
+            // **この状態では 1 回の探りにつき 1 件だけ投げる**（同じ秒への再試行を挟まない）。
+            // 挟むと 10 秒ごとに 5 件になる。間隔を空けつつ**再生時計の「いま」へ飛ぶ**
+            // （置いていかれた秒を追いかけない）。1 件でも取れれば `consecutiveGiveUps` と
+            // `attemptFailures` が 0 に戻り、間隔も元へ戻る。
+            if (consecutiveGiveUps >= REPLAY_MAX_CONSECUTIVE_GIVEUPS) {
+              if (!stalledNotified) {
+                stalledNotified = true
+                log.warn(
+                  `[kyoshinSource] ${consecutiveGiveUps} フレーム続けて取得できず → 更新停止として通知し、`
+                  + `間隔を空けて様子を見る（データ時刻 ${target.toISOString()} 付近）`, err,
+                )
+                sink.setStalled(true)
+              }
+              timer = setTimeout(
+                () => tick(new Date(serverNow() - FETCH_OFFSET_MS)),
+                stalledRetryDelayMs(attemptFailures),
+              )
+              return
+            }
             if (retryCount + 1 >= REPLAY_MAX_RETRY_COUNT) {
+              consecutiveGiveUps += 1
               const nextTarget = new Date(target.getTime() + POLL_MS)
               timer = setTimeout(() => tick(nextTarget), scheduledWaitMs(nextTarget))
               return

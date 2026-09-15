@@ -30,6 +30,14 @@ export const ARCHIVE_CACHE_DIR = process.env.DMDATA_ARCHIVE_CACHE
 const BODY_MIN_INTERVAL_MS = 6_000
 /** 一覧（`api.dmdata.jp/v2/archive`）の取得間隔。ドメイン全体の 10 分 2000 リクエストに対して十分余裕がある。 */
 const LIST_MIN_INTERVAL_MS = 500
+/**
+ * 一覧のページを辿る上限。**外すと 1 回の操作で数百リクエストが飛ぶ。**
+ *
+ * 実際に踏んだ（2026-09-15・アプリ側の同じ形のループ）。範囲外の日付を渡したところ、
+ * 配信元は範囲指定を無視したかのように `nextToken` を返し続け、合計 399 リクエストを辿った。
+ * 1 ページ 100 件 × 20 ページ ＝ 2000 件あれば、この script が渡す範囲には十分。
+ */
+const LIST_MAX_PAGES = 20
 /** 429（レート制限）・409・5xx で待ち直す回数。超えたら呼び出し側へ投げて「見ていない」として扱わせる。 */
 const MAX_RETRY = 5
 
@@ -132,7 +140,8 @@ export async function listArchive({ classification, from, to, auth }) {
   // （全体を止めると、それまでの集計も末尾の記録も出ない）、記録がここに無いと
   // 「その期間を走査できなかった」ことがどこにも残らない。
   try {
-    for (;;) {
+    let page = 0
+    for (; page < LIST_MAX_PAGES; page++) {
       const u = new URL('https://api.dmdata.jp/v2/archive')
       u.searchParams.set('datetime', `${from}~${to}`)
       u.searchParams.set('classification', classification)
@@ -146,6 +155,11 @@ export async function listArchive({ classification, from, to, auth }) {
       out.push(...j.items)
       if (!j.nextToken) break
       token = j.nextToken
+    }
+    // **上限に達したら失敗として扱う。** 黙って切ると、走査できなかった期間が
+    // 「アーカイブが無かった」に化けて集計へ混ざる（この script は網羅性を主張するために使う）。
+    if (page >= LIST_MAX_PAGES) {
+      throw new Error(`ページ上限（${LIST_MAX_PAGES}）に達した。範囲指定が効いていない疑いがある`)
     }
   } catch (e) {
     stats.failures.push({

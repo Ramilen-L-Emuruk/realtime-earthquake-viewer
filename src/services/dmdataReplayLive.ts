@@ -34,6 +34,21 @@ const DATA_BASE = 'https://data.api.dmdata.jp/v1/'
 /** 一覧 API の 1 ページあたりの取得件数（API の上限）。 */
 const LIST_LIMIT = 100
 /**
+ * 一覧のページを辿る上限。**これを外すと 1 回の操作で数百リクエストが飛ぶ。**
+ *
+ * 実際に踏んだ（2026-09-15）。リプレイの開始時刻を誤って 1969 年にしたところ、配信元は
+ * 範囲指定を無視したかのように `nextToken` を返し続け、**1 日あたり 42〜63 ページ・
+ * 合計 399 リクエスト**を辿った。窓は数日ぶんだったので、対象の電文は 1 通も無い。
+ *
+ * **「範囲指定が効いているなら辿り切るはず」という前提に頼らない。** 1 ページ 100 件で
+ * 20 ページ＝2000 件あれば、このアプリが扱う窓（数日ぶん・1 日十数通）には十分すぎる。
+ * 上限に達したら**記録を残す** —— 黙って切ると取りこぼしが「静かな時間帯」に化ける。
+ *
+ * 同じ形の上限は震源カタログにもある（`dmdata.ts` の `GD_EARTHQUAKE_MAX_PAGES`）。
+ * **ページを辿るループを新しく書くときは必ず上限を置くこと。**
+ */
+const LIST_MAX_PAGES = 20
+/**
  * 電文本体の同時取得数。
  *
  * アーカイブ経路は 1 日ぶんを 1 ファイルで落とせるが、こちらは電文 1 通につき 1 リクエストになる。
@@ -119,6 +134,68 @@ export function enumerateJstDates(from: Date, to: Date): string[] {
     days.push(new Date(i * DAY_MS).toISOString().slice(0, 10))
   }
   return days
+}
+
+/**
+ * 発表から配信（受信）までの遅れの見込み。
+ *
+ * アーカイブの日の区切りは**配信側**なので、日の終わり際に発表された電文は翌日のアーカイブへ
+ * 入る。実測（2026-09-15・手元の控え 16 通）で遅れは 8〜59 秒。発表時刻は分単位に丸められて
+ * いるぶんも含めて 1 分に収まっていたが、**余裕を持たせて 10 分**とする —— 広く取っても
+ * 増えるのは「窓が日の終わり際に掛かるときだけ 1 日」で、狭くして外すと電文が画面から消える。
+ */
+const DELIVERY_LAG_MARGIN_MS = 10 * 60_000
+
+/**
+ * アーカイブ本体を落とす JST 日を決める。
+ *
+ * **窓の終わりに配信の遅れぶんを足した範囲の JST 日**。アーカイブの日の区切りは配信（受信）
+ * 側で（配信元のリファレンスが「1 日の間に 1 つもデータが配信されてない配信区分は、アーカイブ
+ * ファイルの生成がされません」と書いている）、23:59 発表の電文は翌日のアーカイブへ入りうる。
+ * 逆に**窓が日の途中で終わるなら翌日は要らない** —— 一律で +1 日すると無駄に 1 日落とす。
+ *
+ * **前日は足さない。** 配信が発表より前になることはないので、窓の日に発表された電文が
+ * 前日のアーカイブに入ることはない —— 索引が発表・配信のどちらであっても成り立つ。
+ *
+ * **日付は JST で数える。** かつては UTC 日付の文字列に両端 ±1 日を足して差を吸収していた。
+ * アーカイブの索引が JST 日であることは実測で確かめてある（2026-09-01〜09-14 の 13 日・
+ * 電文 186 通で、発表・配信とも JST 日がアーカイブの日付と一致。UTC 索引なら
+ * 00:00〜09:00 JST 配信のぶんが前日へ落ちて大量の不一致が出る）。
+ *
+ * **境目を跨ぐ電文の実例は見つけていない。** 跨ぐ窓が 1 日あたり約 60 秒しかなく、
+ * 期待出現数は 0.0055 通/日（1 件に出会うのに約 180 日ぶん要る）。翌日を足しているのは
+ * 実例を見たからではなく、**外す根拠が無いから**。
+ *
+ * @param from 窓の始まり
+ * @param to 窓の終わり（**この時刻は含まない**。`enumerateJstDates` と、リプレイ側の
+ *   絞り込み（`entryTime >= toTime` を捨てる）に揃えている。終端を含む窓を持つ
+ *   呼び出し側は 1ms 足して渡すこと）
+ * @returns 落としてよいアーカイブの JST 日付
+ */
+export function archiveDaysForWindow(from: Date, to: Date): Set<string> {
+  return new Set(enumerateJstDates(from, new Date(to.getTime() + DELIVERY_LAG_MARGIN_MS)))
+}
+
+/**
+ * `archiveDaysForWindow` が返した日を全部覆う、目録（`/v2/archive`）の `datetime` 範囲を作る。
+ *
+ * **左端は排他、右端は包含。** 実測で確かめた（2026-09-15: `2026-09-11~2026-09-13` は
+ * 09-11 のアーカイブが存在するのに 09-12 から返り、`2026-09-10~2026-09-13` では 09-11 も
+ * 返った）。配信元のリファレンスは「左辺を開始日とし、右辺を終了日」としか書いていないので、
+ * **素直に読むと左端 1 日ぶんを取りこぼす。**
+ *
+ * かつてここは窓の UTC 日付に両端 ±1 日を足していた。開始側の −1 日は上の排他に打ち消されて
+ * 効いておらず、**終了側の +1 日は UTC 日で数えていたため、00:00〜09:00 JST の窓では
+ * 翌日のアーカイブが目録に現れなかった**（日をまたいで配信された電文を拾う経路が塞がっていた）。
+ *
+ * @returns `{ from, to }`（`datetime=from~to` に渡す JST 日付）。日が 1 つも無ければ `null`
+ */
+export function archiveListRange(days: ReadonlySet<string>): { from: string; to: string } | null {
+  if (days.size === 0) return null
+  const sorted = [...days].sort()
+  const first = sorted[0]
+  const dayBefore = new Date(Date.parse(`${first}T00:00:00Z`) - DAY_MS).toISOString().slice(0, 10)
+  return { from: dayBefore, to: sorted[sorted.length - 1] }
 }
 
 /**
@@ -252,7 +329,8 @@ async function listTelegrams(
 ): Promise<TelegramListItem[]> {
   const items: TelegramListItem[] = []
   let cursorToken: string | undefined
-  for (;;) {
+  let page = 0
+  for (; page < LIST_MAX_PAGES; page++) {
     const params = new URLSearchParams({ datetime: `${utcFrom}~${utcTo}`, limit: String(LIST_LIMIT) })
     // **一覧は既定で試験・訓練報を返さない。** 明示的に要求しないと、設定を入れていても
     // 当日経路だけ 1 通も拾えない（アーカイブ経路は最初から含んでいるので、ここを忘れると
@@ -265,6 +343,17 @@ async function listTelegrams(
     items.push(...(json.items ?? []))
     if (!json.nextToken) break
     cursorToken = json.nextToken
+  }
+  // **打ち切りは失敗として扱う。** ログだけにすると、呼び出し側は「打ち切られた不完全な配列」を
+  // 正常な戻り値として受け取り、取りこぼしにも計上されない（`fulfilled` なので `failedSources`
+  // も増えない）。上限に達するのは「範囲指定が効いていない」ときなので、そのとき欠けた分は
+  // どれだけあるか分からない —— **静かに一部を捨てるより、読めなかったと言うほうが正しい。**
+  // 監査スクリプト側（`scripts/telegram-audit/archive-cache.mjs`）も同じ扱いにしてある。
+  if (page >= LIST_MAX_PAGES) {
+    throw new Error(
+      `電文一覧のページ上限（${LIST_MAX_PAGES}）に達した 範囲=${utcFrom}~${utcTo}`
+      + ` 件数=${items.length}。範囲指定が効いていない疑いがある`,
+    )
   }
   // 設定を入れたのに試験報が 1 通も無いことを記録する。
   //
@@ -356,7 +445,8 @@ async function listEewTelegrams(
 ): Promise<{ items: TelegramListItem[]; failedSources: string[]; skipped: number }> {
   const events: EewListItem[] = []
   let cursorToken: string | undefined
-  for (;;) {
+  let page = 0
+  for (; page < LIST_MAX_PAGES; page++) {
     const params = new URLSearchParams({ datetime: `${utcFrom}~${utcTo}`, limit: String(LIST_LIMIT) })
     if (cursorToken) params.set('cursorToken', cursorToken)
     const json = await getJson<{ items?: EewListItem[]; nextToken?: string }>(
@@ -365,6 +455,18 @@ async function listEewTelegrams(
     events.push(...(json.items ?? []))
     if (!json.nextToken) break
     cursorToken = json.nextToken
+  }
+  // 打ち切りは失敗として扱う（理由は `listTelegrams` と同じ）。
+  //
+  // **EEW の一覧は他より先に上限へ届きやすい。** 毎正時の配信テスト（VXSE42）が XML と JSON の
+  // 2 版で載るため実測で 1 日あたり約 48 件あり、初期状態の 24 時間復元や履歴の遡りでは
+  // 地震情報より件数が伸びる。しかも 1 件でも欠けると**そのイベントの全報が丸ごと消える**
+  // （詳細の取得は `eventId` 単位）ので、黙って切ると欠落が取りこぼしにも現れない。
+  if (page >= LIST_MAX_PAGES) {
+    throw new Error(
+      `緊急地震速報の一覧のページ上限（${LIST_MAX_PAGES}）に達した 範囲=${utcFrom}~${utcTo}`
+      + ` 件数=${events.length}`,
+    )
   }
 
   // 詳細（全報）はイベント 1 件につき 1 リクエストかかる。窓に一報も掛からないイベントは
