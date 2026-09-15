@@ -165,18 +165,41 @@ export function hasTelegramTextFollowTarget(segments: readonly SpeechSegment[] |
 /**
  * 気象庁が書いた文を読み上げたときに、画面へ開く先がある電文の種別。
  *
- * **地震情報と長周期地震動観測情報は入らない。** あの 2 つの付加文は元から畳んでおらず、
- * 開く相手がいない（→ quake-spec.md §8「固定付加文（その他）…はそのまま出す」）。
+ * **入らないのは地震情報だけ。** あの付加文は元から畳んでおらず、開く相手がいない
+ * （→ quake-spec.md §8「固定付加文（その他）…はそのまま出す」）。長周期地震動観測情報は
+ * **畳んである**ので入る（同 §8「気象庁からの補足は畳んで置く」）—— 読み上げる 3 ブロックが
+ * そのまま補足の中身で、開かなければ声だけが本文を伝えることになる。
  *
  * ここに無い種別では参照を付けない＝追従セッションを立てない。立ててしまうと、誰も反応しない
  * セッションが始まっては終わる状態になり、**症状が出ないぶん後から意図を確かめられない**。
  *
- * 一覧は設定タブ側（`SpecialInfoBanner` の `speaking(...)` と `TsunamiTab` の
- * `speakingTelegramText`）と対応する。食い違いは `ttsFollow.test.ts` が検査する。
+ * **「畳んでいるか」は種別ごとに実装を見て決める。** まとめて「畳んでいない」と扱うと、
+ * 片方だけ当たっている状態に気づけない（長周期を外していたのがその形だった）。
+ *
+ * 一覧は開く側（`SpecialInfoBanner` の `speaking(...)`・`TsunamiTab` の
+ * `speakingTelegramText`・`EarthquakeCard` の補足）と対応する。食い違いは
+ * `ttsFollow.test.ts` が検査する。
  */
 export const TELEGRAM_TEXT_OPEN_TARGET_KINDS: ReadonlySet<string> = new Set([
-  'nankai', 'nankaiCommentary', 'kohatsu', 'earthquakeCount', 'tsunami',
+  'nankai', 'nankaiCommentary', 'kohatsu', 'earthquakeCount', 'tsunami', 'lpgm',
 ])
+
+/**
+ * 気象庁が書いた文の読み上げの主題（`SpeechFollowSession.subject`）を作る。
+ *
+ * **開く側と読む側が同じ関数を通ること。** 文字列を手で組み立てると、片方だけ書式を変えた
+ * ときに黙って開かなくなる（画面が動かないだけで、例外もログも出ない）。
+ *
+ * @param kind 電文の種別
+ * @param target 同じ種別の表示が画面に複数あるとき、どれを開くかを決める識別子。
+ *   **長周期地震動観測情報だけが渡す** —— 地震カードは複数並ぶので、種別だけでは
+ *   どのカードの補足を開くか決まらない。バナーと津波の面は画面に 1 つしか無いので要らない。
+ */
+export function telegramTextSubject(kind: string, target?: string): string {
+  // **`target !== undefined` で見る。** 真偽で見ると空文字が「渡していない」と同じ扱いになり、
+  // 識別子を読めなかった電文どうしが同じ主題へ潰れる（`eventId` は要素が無ければ空文字になる）。
+  return target !== undefined ? `telegramText:${kind}:${target}` : `telegramText:${kind}`
+}
 
 /**
  * チャンクごとの参照から、「未入電を声にしているチャンク」の範囲を返す。

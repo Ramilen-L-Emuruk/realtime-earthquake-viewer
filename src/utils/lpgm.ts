@@ -1,5 +1,5 @@
 // 長周期地震動階級のラベル・配色ユーティリティ（JMA公式色）と、カードの行の組み立て
-import type { IntensityScale, LpgmClass, LpgmPoint, LpgmPref, LpgmRegion } from '../types/earthquake'
+import type { IntensityScale, JMALpgm, LpgmClass, LpgmPoint, LpgmPref, LpgmRegion } from '../types/earthquake'
 const LPGM_COLORS: Record<number, string> = {
   1: '#c8c800',
   2: '#ff9600',
@@ -265,4 +265,20 @@ export function buildLpgmRows(
     rows.push({ kind: 'pref', name: pref, maxLgInt, ...(maxInt !== undefined && { maxInt }), areas: areaList, stations: loose })
   }
   return rows.sort(byValueDesc(r => r.maxLgInt, r => r.name))
+}
+
+/**
+ * 気象庁が長周期地震動に添えた補足（付加文 3 種＋詳細ページ）を、カードで開けるか。
+ *
+ * **1 つも無ければ見出しを出さない。** 開いても何も出ないのに押せる見た目だけ与えると、
+ * 何が起きないのか利用者に分からない（津波の付加文と同じ考え方
+ * → docs/spec/tsunami-spec.md §9「気象庁が書いた文は、行動指示の行から開く」）。
+ *
+ * **カードと、読み上げ側の診断で共有する。** 書き写すと必ずずれる —— 片方だけが「開ける」と
+ * 判断すると、「読み上げているのに開かない」を記録できない／正常な見送りで記録が埋まる、の
+ * どちらかになる（→ docs/spec/audio-tts-spec.md §6「読み上げに合わせて気象庁の文を開く」）。
+ */
+export function canOpenLpgmNotes(lpgm: JMALpgm | null | undefined): boolean {
+  if (!lpgm || lpgm.maxClass < 1) return false
+  return !!(lpgm.forecastText || lpgm.varCommentText || lpgm.freeFormText || lpgm.uri)
 }

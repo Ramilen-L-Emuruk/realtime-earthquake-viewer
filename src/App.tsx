@@ -47,7 +47,7 @@ import { useKyoshinRealtime } from './hooks/useKyoshinRealtime'
 import { useKyoshinDetectorV2 } from './hooks/useKyoshinDetectorV2'
 import { useKyoshinMissingHold } from './hooks/useKyoshinMissingHold'
 import { useDetectionDiagnostics } from './hooks/useDetectionDiagnostics'
-import { createSpeechFollowController, type SpeechFollowSession } from './utils/ttsFollow'
+import { createSpeechFollowController, telegramTextSubject, type SpeechFollowSession } from './utils/ttsFollow'
 import { useTelegramTextSpeechFollow } from './hooks/useTelegramTextSpeechFollow'
 import { deriveKyoshinView } from './utils/kyoshinDetectionView'
 import { filterSubThresholdIndices } from './utils/kyoshinSubThresholdFilter'
@@ -59,7 +59,8 @@ import { getIntensityLabelWithOrAbove } from './utils/intensity'
 import { isMaxScaleUnreceived } from './utils/quakePoints'
 import { formatMagnitudeWithCondition, formatDateTimeLocal } from './utils/formatters'
 import { computeEEWLevel, eewMaxLpgmClass } from './utils/eew'
-import { quakeEventKey, quakeKeyForLpgmEventId } from './utils/quakeMerge'
+import { quakeEventKey, quakeKeyForLpgmEventId, extractQuakeEventId } from './utils/quakeMerge'
+import { canOpenLpgmNotes } from './utils/lpgm'
 import { estimatedIntensityFor, matchEstimatedIntensityArrival } from './utils/estimatedIntensity'
 import {
   type QuakeOverlay, toggleLpgmOverlay, toggleDistributionOverlay, toggleUnreceivedOverlay,
@@ -664,10 +665,11 @@ export function App() {
   const [telegramTextFollowSession, setTelegramTextFollowSession] = useState<SpeechFollowSession | null>(null)
   const telegramTextFollow = useMemo(() => createSpeechFollowController(setTelegramTextFollowSession), [])
   /**
-   * いま気象庁の文を読み上げている電文の主題（`telegramText:<kind>`。読んでいなければ null）。
+   * いま気象庁の文を読み上げている電文の主題（読んでいなければ null。書式は
+   * `telegramTextSubject` が決める —— 長周期だけ地震の識別子まで含む）。
    *
-   * バナーと津波カードはこれを見て自分の表示を開く。**開いた側が「自分が開いた分」を覚える**
-   * ので、利用者が手で開いていたものを読み終わりで閉じることはない。
+   * バナー・津波カード・地震カードがこれを見て自分の表示を開く。**開いた側が「自分が開いた分」を
+   * 覚える**ので、利用者が手で開いていたものを読み終わりで閉じることはない。
    */
   const [speakingTelegramTextSubject, setSpeakingTelegramTextSubject] = useState<string | null>(null)
   useTelegramTextSpeechFollow({
@@ -962,6 +964,41 @@ export function App() {
   })()
   // 地図に表示中の LPGM（バッジクリックでトグル）
   const activeLpgm = activeLpgmEventId ? (lpgmByEventId.get(activeLpgmEventId) ?? null) : null
+
+  /**
+   * 長周期の補足を読み上げたのに、開く先が最後まで無かったことを記録する。
+   *
+   * **画面には何も現れないのに声は本文を読む。** この機能が直したのと同じ症状（声だけが
+   * 本文を伝える）が別の理由で起きても、記録が無ければ気づけない —— 実際、長周期が対象から
+   * 漏れていた間、例外もログも出なかった（→ docs/spec/audio-tts-spec.md §6）。
+   *
+   * **残すのは「最後の機会」でだけ。** 読み上げの途中はカードがまだ無いことがありうるので、
+   * その場で残すと正常な経過で記録が埋まる（推計震度分布図の診断と同じ考え方）。
+   * 一度でも開ける状態になったかを覚えておき、読み終わりに判定する。
+   */
+  const lpgmNotesOpenableRef = useRef<{ subject: string; openable: boolean } | null>(null)
+  useEffect(() => {
+    const subject = speakingTelegramTextSubject
+    const prefix = telegramTextSubject('lpgm', '')
+    if (subject === null || !subject.startsWith(prefix)) {
+      const prev = lpgmNotesOpenableRef.current
+      lpgmNotesOpenableRef.current = null
+      // 読み上げが終わった（別の種別へ移った場合も含む）。開けないまま終わっていたら残す。
+      if (prev && !prev.openable) {
+        log.warn(`[quake] 長周期地震動の補足を読み上げたのに、開く先の地震カードがありませんでした（eventId ${prev.subject.slice(prefix.length)}）`)
+      }
+      return
+    }
+    const eventId = subject.slice(prefix.length)
+    const openable = earthquakes.some(q => extractQuakeEventId(q) === eventId)
+      && canOpenLpgmNotes(lpgmByEventId.get(eventId))
+    const prev = lpgmNotesOpenableRef.current
+    // 後からカードが届いて開けるようになった場合も拾う（依存に一覧を入れてあるのはこのため）
+    lpgmNotesOpenableRef.current = {
+      subject,
+      openable: (prev?.subject === subject && prev.openable) || openable,
+    }
+  }, [speakingTelegramTextSubject, earthquakes, lpgmByEventId])
 
   // 選択中の地震カードがキャンセル状態になったら即座に選択解除する。
   // **`selectQuake` を通す** —— 直に state を書くと前値の ref（`selectedQuakeIdRef`）が
@@ -2006,6 +2043,7 @@ export function App() {
                 unreceivedQuakeKey={unreceivedQuakeKey}
                 onToggleUnreceived={toggleUnreceived}
                 onFocusMap={focusMapTarget}
+                speakingTelegramTextSubject={speakingTelegramTextSubject}
               />
             </ErrorBoundary>
           </div>
@@ -2035,7 +2073,7 @@ export function App() {
                 obsUpdateStatus={obsUpdateStatus}
               areaGradeChangedKeys={areaGradeChangedKeys}
                 speechSession={speechFollowSession}
-                speakingTelegramText={speakingTelegramTextSubject === 'telegramText:tsunami'}
+                speakingTelegramText={speakingTelegramTextSubject === telegramTextSubject('tsunami')}
                 /* 読み上げ追従の可否。タブは invisible で隠すだけなので**非表示でもスクロールは
                    効いてしまう**（戻ってきたら知らない位置にいる）。折りたたみ時はさらに幅か
                    高さが 0 になり、視野の高さが取れない。 */
