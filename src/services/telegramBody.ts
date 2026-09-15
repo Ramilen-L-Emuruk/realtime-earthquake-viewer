@@ -16,6 +16,40 @@
  */
 import { authHeader } from '../utils/dmdataApiKey'
 import { readTelegramBody, writeTelegramBody } from '../utils/telegramBodyCache'
+import { createRateGate } from '../utils/requestGate'
+
+/**
+ * 電文本体（`data.api.dmdata.jp/v1/:id`）の取得間隔。上限の 50req/5min ＝ 6 秒に 1 件。
+ *
+ * **この値を下げないこと。** 下げれば制限に触れ、触れなくても配信元が求める「定常的に 2req/s 以下」
+ * から外れる。初回起動が数分かかるのは承知のうえで、**控えが効く 2 回目以降は 1 件も通らない**。
+ *
+ * バーストを許す形（直近 5 分で 50 件まで、間隔は 500ms）も考えたが採らなかった。上限のうち
+ * 「定常的に」の語をこちら側に都合よく読む必要があり、**既に配信元から利用量の指摘を受けている
+ * 状況で際どい解釈に頼るのは筋が悪い**。どの読み方でも安全側へ倒す。
+ */
+const BODY_MIN_INTERVAL_MS = 6_000
+
+/**
+ * 電文本体の取得を直列化する門。**控えから読めた分はここを通らない**（通信しないので待つ理由がない）。
+ */
+let bodyGate = createRateGate(BODY_MIN_INTERVAL_MS)
+
+/** いま枠を待っている件数。初回起動の進み具合を検証で読む。 */
+export function telegramGateWaiting(): number {
+  return bodyGate.waiting()
+}
+
+/**
+ * テスト用。門の間隔を差し替える。
+ *
+ * **門が効いているかは `utils/requestGate.test.ts` が本物の間隔で確かめる。** ここで差し替えるのは、
+ * 控えの振る舞い（上限で古い順に捨てる等）を確かめるテストが 600 件を順に取るためで、
+ * 6 秒間隔のままだと 1 時間かかる。**本番の値を緩める口ではない。**
+ */
+export function setBodyGateIntervalForTest(ms: number): void {
+  bodyGate = createRateGate(ms)
+}
 
 export interface TelegramTextResult {
   /** 電文の XML。取得も控えも駄目だったときは `null`。 */
@@ -61,10 +95,17 @@ export function resetTelegramBodyStatsForTest(): void {
   stats.failed = 0
   stats.coalesced = 0
   inFlight.clear()
+  bodyGate.resetForTest()
 }
 
 if (typeof window !== 'undefined') {
-  ;(window as unknown as { __telegramBodyStats?: () => unknown }).__telegramBodyStats = telegramBodyStats
+  const w = window as unknown as {
+    __telegramBodyStats?: () => unknown
+    __telegramGateWaiting?: () => number
+  }
+  w.__telegramBodyStats = telegramBodyStats
+  // 初回起動が「どこまで進んだか」は件数だけでは分からない（まだ枠を待っている分が見えない）
+  w.__telegramGateWaiting = telegramGateWaiting
 }
 
 /**
@@ -124,6 +165,9 @@ async function fetchFresh(apiKey: string, url: string, id: string | null): Promi
   // HTTP のエラー（`!res.ok`）は旧来どおり値で返し、呼び出し側が種別つきで記録する。
   // **例外も数えてから投げ直す。** 数えないと `fetched + fromCache + failed` が実際の試行数と
   // 合わず、「思ったより減っている」と誤読する（この統計は削減できたかの判断に使う）。
+  // **枠を待ってから投げる。** 呼び出し側は `Promise.allSettled` で全件を一度に渡してくるので、
+  // ここで直列化しないと配信元の上限をそのまま超える（→ `utils/requestGate.ts`）。
+  await bodyGate.wait()
   let res: Response
   try {
     res = await fetch(url, { headers: { Authorization: authHeader(apiKey) } })

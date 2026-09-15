@@ -12,6 +12,7 @@ import {
   sortQuakes,
   isRetractedQuakeReport as isRetractedQuakeReportWithIndex,
   quakeRetractionOf,
+  addQuakeRetraction,
   quakeKeyForLpgmEventId,
 } from './quakeMerge'
 import { formatQuakeReports } from './formatters'
@@ -1545,5 +1546,65 @@ describe('受け取った電文種別の記録', () => {
   it('記録を持たないカードは種別 1 つに落ちる', () => {
     expect(formatQuakeReports(undefined, '震源・震度情報')).toBe('震源・震度情報')
     expect(formatQuakeReports([], '震度速報')).toBe('震度速報')
+  })
+})
+
+// 取消の台帳は複数の経路から埋まる —— 履歴の途中経過と最後の集約、ライブ受信と履歴の重なり、
+// 「もっと見る」での読み直し。**重複を許すと上限が同じ取消だけで埋まり、まだ生きている
+// 別の取消の記録を押し出す**（取り下げ済みの地震カードが復活する）。
+describe('addQuakeRetraction', () => {
+  const retractionOf = (id: string, reportTime: string) =>
+    quakeRetractionOf(
+      makeQuake({ id, time: reportTime, cancelledAt: new Date(reportTime) }),
+      makeQuake({ id, time: reportTime }),
+    )
+
+  // 正: 同じ取消を何度足しても 1 件のまま
+  it('同じ取消を二度積まない', () => {
+    const list: ReturnType<typeof retractionOf>[] = []
+    const r = retractionOf('q1', '2026-09-15T10:00:00+09:00')
+
+    addQuakeRetraction(list, r, 20)
+    addQuakeRetraction(list, r, 20)
+    addQuakeRetraction(list, { ...r }, 20)   // 作り直した同値でも同じ
+
+    expect(list).toHaveLength(1)
+  })
+
+  // 対照: 別の取消は別の記録として残す（重複排除が効きすぎて取りこぼさない）
+  it('別の取消は別に積む', () => {
+    const list: ReturnType<typeof retractionOf>[] = []
+
+    addQuakeRetraction(list, retractionOf('q1', '2026-09-15T10:00:00+09:00'), 20)
+    addQuakeRetraction(list, retractionOf('q2', '2026-09-15T10:00:00+09:00'), 20)
+    addQuakeRetraction(list, retractionOf('q1', '2026-09-15T11:00:00+09:00'), 20)
+
+    expect(list).toHaveLength(3)
+  })
+
+  // 安全弁: **重複で上限を埋めても、先に積んだ別の取消を押し出さない**。
+  // これが重複排除の目的そのもの（押し出されると、その取消の対象だった報が後から
+  // 届いたときに取り下げ済みだと判定できず、カードが復活する）
+  it('重複では上限を消費せず、先の記録を押し出さない', () => {
+    const list: ReturnType<typeof retractionOf>[] = []
+    const first = retractionOf('first', '2026-09-15T09:00:00+09:00')
+    addQuakeRetraction(list, first, 3)
+
+    const dup = retractionOf('dup', '2026-09-15T10:00:00+09:00')
+    for (let i = 0; i < 10; i++) addQuakeRetraction(list, dup, 3)
+
+    expect(list).toHaveLength(2)
+    expect(list[0].entry.id).toBe('first')
+  })
+
+  // 安全弁: 上限そのものは効く（別々の取消が並べば古い方から捨てる）
+  it('別々の取消が上限を超えたら古い方から捨てる', () => {
+    const list: ReturnType<typeof retractionOf>[] = []
+    for (let i = 0; i < 5; i++) {
+      addQuakeRetraction(list, retractionOf(`q${i}`, '2026-09-15T10:00:00+09:00'), 3)
+    }
+
+    expect(list).toHaveLength(3)
+    expect(list[0].entry.id).toBe('q2')   // 古い 2 件が落ちる
   })
 })

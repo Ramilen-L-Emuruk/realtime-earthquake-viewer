@@ -786,6 +786,11 @@ async function fetchOneTelegram(
   apiKey: string,
   url: string,
   headType: string,
+  /**
+   * 取得そのものに失敗したとき（HTTP エラー）に呼ぶ。
+   * **戻り値の `null` では代用できない** —— 解釈の失敗と対象外の種別も `null` になる。
+   */
+  onFetchFailure?: () => void,
 ): Promise<JMAQuake | JMATsunami | JMALpgm | null> {
   // **控えを通す**（`telegramBody.ts`）。同じ id を取り直さないための唯一の入口で、
   // 素の `fetch` を書くとこの経路だけ控えに載らない。
@@ -796,7 +801,15 @@ async function fetchOneTelegram(
     // **`status` は実運用では必ず数値。** 通信そのものの失敗は `fetchTelegramText` が投げ、
     // ここへは来ない（呼び出し側の `Promise.allSettled` が件数をまとめる）。
     // `null` 側を残しているのは、入口の契約が変わったときに無言で欠けないための保険。
-    log.warn(`[dmdata] ${headType} の電文を取得できませんでした（${body.status === null ? '通信失敗' : `HTTP ${body.status}`}）`)
+    //
+    // **1 件ずつの記録は間引く。** 配信元が同じ id の取り直しを id 単位で止めるため、
+    // 控えが空の初回は**大半がここへ落ちることが現実に起きる**（実測 2026-09-15: 85 件中 81 件）。
+    // 素で出すと 81 行が並んで他の記録を埋め、しかも「何件中何件が落ちたか」は分からない。
+    // 合計は呼び出し側が `warnHttpFailures` で 1 行にまとめる。
+    onFetchFailure?.()
+    warnTelegramHttpFailure(() => log.warn(
+      `[dmdata] ${headType} の電文を取得できませんでした（${body.status === null ? '通信失敗' : `HTTP ${body.status}`}）`
+    ))
     return null
   }
   const xml = body.xml
@@ -822,6 +835,28 @@ async function fetchOneTelegram(
  * 落ちた電文を件数ごと消す**。HTTP エラーと解釈の失敗は `fetchOneTelegram` と各パーサが
  * それぞれ記録するので、ここで数えるのは例外になった分だけでよい。
  */
+/** 1 件ずつの取得失敗は間引く（下記のとおり大半が落ちることが現実に起きるため）。 */
+const warnTelegramHttpFailure = createLogThrottle(60_000)
+
+/**
+ * 取得できなかった件数を 1 行にまとめる。
+ *
+ * **例外とは別に数える。** `warnRejectedTelegrams` が見るのは `rejected`（通信そのものの失敗）で、
+ * HTTP エラーは `fetchOneTelegram` が `null` を返すため `fulfilled` に入る。そちらだけでは
+ * **「85 件中 81 件が 429」という状態が集約として 1 行も残らない**（1 件ずつの警告が並ぶだけ）。
+ *
+ * この区別が要るのは、画面からは「地震が無かった」と「取得できなかった」が同じに見えるため。
+ * 取れた分だけでカードが立ち、読み込み中の表示も消え、エラーも出ない。
+ *
+ * **戻り値が `null` かどうかでは数えられない。** `fetchOneTelegram` は取得の失敗と
+ * 解釈の失敗のどちらでも `null` を返すので、混ぜると「取得はできたが読めなかった」電文まで
+ * 取得の失敗として数える（対象外の種別も `null` になる）。取得の失敗は取った側が数える。
+ */
+function warnHttpFailures(failed: number, requested: number, label: string): void {
+  if (failed === 0) return
+  log.warn(`[dmdata] ${label}: ${requested} 件中 ${failed} 件の電文を取得できませんでした（画面には取れた分だけが出ます）`)
+}
+
 function warnRejectedTelegrams(results: PromiseSettledResult<unknown>[], label: string): void {
   const rejected = results.filter(r => r.status === 'rejected')
   if (rejected.length === 0) return
@@ -854,10 +889,38 @@ function warnRejectedTelegrams(results: PromiseSettledResult<unknown>[], label: 
 // リクエストを繰り返さないように実装してください」と明記した 50req/5min のエンドポイント
 // （→ [`docs/spec/data-sources-spec.md`](../../docs/spec/data-sources-spec.md) §2「リクエスト数を抑える」）。
 // 取ってから捨てる形にしない。
+/**
+ * 履歴の途中経過を呼び出し側へ流す最小間隔。
+ *
+ * 取得は門で 6 秒に 1 件へ直列化されるので初回は素通りする。**効くのは控えが埋まっている
+ * 2 回目以降**で、全件が一瞬で揃うため 1 件ごとに流すと呼び出し側が 85 回マージし直す。
+ */
+const PARTIAL_EMIT_INTERVAL_MS = 400
+
 export async function fetchDmdataEarthquakes(
   apiKey: string,
   limit: number,
   cursorToken?: string,
+  /**
+   * 取れた分を途中で流す先。**渡さなければ従来どおり全件揃ってから返す。**
+   *
+   * 電文本体の取得は門で直列化されるため（`utils/requestGate.ts`）、控えが空の初回は
+   * 全件が揃うまで数分かかる。そのあいだ画面に何も出ないのを避けるために要る。
+   * 渡す配列は**最終的な戻り値と同じ並び**（速報→詳細）で、呼び出し側は同じように
+   * `mergeQuakeHistory` へ掛ければよい。**渡すのは前回からの差分**。
+   */
+  onPartial?: (quakes: JMAQuake[]) => void,
+  /**
+   * 途中で打ち切ってよいかを訊く。**真を返したら、残りのアイテムは取りに行かない。**
+   *
+   * 取得は最長で数分かかる（上記）。そのあいだにリプレイが始まる・API キーが変わる・
+   * 画面を離れる、といったことが起きうるが、放っておくと**もう要らない取得が門の枠を
+   * 予約し続け**、次の取得をそのぶん遅らせる。さらに、届いた結果を流し込む先は
+   * 既に別の時間軸（リプレイ中の一覧）へ変わっていることがある。
+   *
+   * 呼び出し側は必ず渡すこと。省略できるのは、寿命が呼び出しの中で閉じている場合だけ。
+   */
+  shouldStop?: () => boolean,
 ): Promise<{ quakes: JMAQuake[]; nextToken?: string }> {
   const qs = cursorToken ? `&cursorToken=${cursorToken}` : ''
   const headers = { Authorization: authHeader(apiKey) }
@@ -967,23 +1030,6 @@ export async function fetchDmdataEarthquakes(
   const boundary52 = boundary51 + kept52.length
   const boundary53 = boundary52 + kept53.length
 
-  const allItems = [...kept51, ...kept52, ...kept53, ...kept61]
-  const allResults = await Promise.allSettled(
-    allItems.map(({ url, headType }) => fetchOneTelegram(apiKey, url, headType)),
-  )
-  warnRejectedTelegrams(allResults, '地震履歴の取得')
-
-  const toQuakes = (results: typeof allResults): JMAQuake[] =>
-    results
-      .filter((r): r is PromiseFulfilledResult<JMAQuake | JMATsunami | JMALpgm | null> => r.status === 'fulfilled')
-      .map(r => r.value)
-      .filter((v): v is JMAQuake => v !== null && 'kind' in v && v.kind === 'quake')
-
-  const parsed51 = toQuakes(allResults.slice(0, boundary51))
-  const parsed52 = toQuakes(allResults.slice(boundary51, boundary52))
-  const parsed53 = toQuakes(allResults.slice(boundary52, boundary53))
-  const parsed61 = toQuakes(allResults.slice(boundary53))
-
   // **窓は一覧で決めた `cutoffMs` をそのまま使い、パース結果から取り直さない。**
   // 絞り込んだ後の集合で数え直すと、窓を与えた種別以外の「窓以降の最初の電文」が
   // 新しい側へずれるぶん窓も動き、**元の窓とその電文のあいだに入る電文を捨てる**
@@ -996,6 +1042,97 @@ export async function fetchDmdataEarthquakes(
     // （→ docs/spec/data-sources-spec.md §2「日時は 2 つの層で確かめる」）。
     return !Number.isFinite(ms) || ms >= cutoffMs
   }
+
+  const allItems = [...kept51, ...kept52, ...kept53, ...kept61]
+
+  type TelegramResult = PromiseSettledResult<JMAQuake | JMATsunami | JMALpgm | null>
+  const toQuakes = (results: Array<TelegramResult | undefined>): JMAQuake[] =>
+    results
+      .filter((r): r is PromiseFulfilledResult<JMAQuake | JMATsunami | JMALpgm | null> =>
+        r !== undefined && r.status === 'fulfilled')
+      .map(r => r.value)
+      .filter((v): v is JMAQuake => v !== null && 'kind' in v && v.kind === 'quake')
+
+  // **`allItems` の並びが「速報→詳細」なので、添字の順に集めれば並べ直さなくてよい。**
+  // 途中経過もこの配列から作るため、部分結果と最終結果で並びが食い違わない
+  // （食い違うと `mergeQuakeHistory` の優先度判定が途中と最後で違う答えを出す）。
+  const allResults: Array<TelegramResult | undefined> = new Array(allItems.length)
+  let lastPartialAt = 0
+  /** ここまでの添字は流し済み。**差分だけを渡すために覚える。** */
+  let emittedUpTo = 0
+  const emitPartial = (force = false): void => {
+    if (!onPartial) return
+    // **先頭から連続して確定した分までしか流さない。** 完了順は前後しうる（控えから読めた分は
+    // 待たずに返る）ので、確定した端から流すと「速報→詳細」の並びが崩れ、
+    // `mergeQuakeHistory` の優先度判定が途中と最後で違う答えを出す。
+    let end = emittedUpTo
+    while (end < allResults.length && allResults[end] !== undefined) end++
+    if (end === emittedUpTo) return
+
+    // 控えが効いている 2 回目以降は全件が一瞬で埋まる。1 件ごとに流すと、そのたびに
+    // 呼び出し側がマージし直すので間引く（初回は門が 6 秒空けるため素通りする）。
+    // **間引いた分は `emittedUpTo` を進めないので、次の機会にまとめて流れる。**
+    const now = Date.now()
+    if (!force && now - lastPartialAt < PARTIAL_EMIT_INTERVAL_MS) return
+    lastPartialAt = now
+
+    // **累積ではなく差分を渡す。** 累積を渡すと、呼び出し側が取消電文を数え直すたびに
+    // 同じ取消を台帳へ積み、上限（20 件）を重複だけで埋めて**別の取消の記録を押し出す**
+    // （取り下げ済みの地震カードが復活しうる）。毎回まっさらから全件マージし直す無駄も消える。
+    const slice = allResults.slice(emittedUpTo, end)
+    emittedUpTo = end
+    onPartial(toQuakes(slice).filter(withinCutoff))
+  }
+
+  let stopped = false
+  let fetchFailures = 0
+  let attempted = 0
+  // **並列に投げない。1 件ずつ順に取る。**
+  //
+  // 取得は門で 6 秒に 1 件へ直列化されるので（`utils/requestGate.ts`）、並列にしても
+  // 速くならない。それどころか `Promise.all(items.map(...))` の形では**打ち切りが効かない** ——
+  // `map` はコールバックを同期的に最後まで呼ぶため、最初の `await` に届く前に全件が
+  // 打ち切りの判定を通過し、そのまま門の枠を予約してしまう。あとからリプレイが始まっても
+  // 「もう要らない取得」が数分ぶんの枠を押さえたまま、次の取得を待たせる。
+  //
+  // 直列にすれば、各件の判定は**前の件の待ちが明けたあと**に評価されるので、途中の変化を拾える。
+  for (let i = 0; i < allItems.length; i++) {
+    if (shouldStop?.()) { stopped = true; break }
+    const { url, headType } = allItems[i]
+    attempted++
+    try {
+      allResults[i] = {
+        status: 'fulfilled',
+        value: await fetchOneTelegram(apiKey, url, headType, () => { fetchFailures++ }),
+      }
+    } catch (reason) {
+      allResults[i] = { status: 'rejected', reason }
+    }
+    // **流し先の例外で取得を止めない。** 投げると残りのアイテムを見捨てたうえで
+    // 呼び出し側が「全滅」として受け取る —— 実際には大半が取得できていて控えにも
+    // 入っているのに、画面にはエラーだけが出る。
+    try {
+      emitPartial()
+    } catch (e) {
+      log.warn('[dmdata] 履歴の途中経過を反映できませんでした（取得は続けます）', e)
+    }
+  }
+  // 間引きで最後の数件が流れずに終わることがあるので、ここで必ず 1 回出す
+  try {
+    emitPartial(true)
+  } catch (e) {
+    log.warn('[dmdata] 履歴の途中経過を反映できませんでした（取得は続けます）', e)
+  }
+  if (stopped) {
+    log.warn(`[dmdata] 地震履歴の取得を途中で打ち切りました（${allItems.length} 件中 ${attempted} 件で中断）`)
+  }
+  warnRejectedTelegrams(allResults.filter((r): r is TelegramResult => r !== undefined), '地震履歴の取得')
+  warnHttpFailures(fetchFailures, attempted, '地震履歴の取得')
+
+  const parsed51 = toQuakes(allResults.slice(0, boundary51))
+  const parsed52 = toQuakes(allResults.slice(boundary51, boundary52))
+  const parsed53 = toQuakes(allResults.slice(boundary52, boundary53))
+  const parsed61 = toQuakes(allResults.slice(boundary53))
 
   // cutoffMs による不完全カード除外のみ行い、種別横断（VXSE51/52/53/61）の生電文を返す。
   // 同一 eventId の統合（VXSE61 の震源マージ・震度の保持・優先度判定）は呼び出し側の
@@ -1042,10 +1179,12 @@ export async function fetchDmdataTsunamis(
     items.push(...(json52.items ?? []))
   }
 
+  let tsunamiFetchFailures = 0
   const results = await Promise.allSettled(
-    items.map(it => fetchOneTelegram(apiKey, it.url, it.head.type)),
+    items.map(it => fetchOneTelegram(apiKey, it.url, it.head.type, () => { tsunamiFetchFailures++ })),
   )
   warnRejectedTelegrams(results, '津波履歴の取得')
+  warnHttpFailures(tsunamiFetchFailures, items.length, '津波履歴の取得')
   return results
     .filter((r): r is PromiseFulfilledResult<JMAQuake | JMATsunami | JMALpgm | null> => r.status === 'fulfilled')
     .map(r => r.value)

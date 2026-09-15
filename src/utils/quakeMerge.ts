@@ -609,6 +609,39 @@ export function quakeRetractionOf(cancel: JMAQuake, matched?: JMAQuake): QuakeRe
  * 参照側で広げてはいけない。** 報を落とす判定は結果が画面に出ないぶん見つけにくいので、
  * 適用側と対称に保つ。
  */
+/**
+ * 取消の記録を台帳へ足す。**同じ取消は二度積まない。**
+ *
+ * 同じ取消電文は複数の経路から届く —— 履歴の途中経過と最後の集約、ライブ受信と履歴の重なり、
+ * 「もっと見る」で同じページを読み直したとき。重複を許すと**上限が同じ取消だけで埋まり、
+ * まだ生きている別の取消の記録を押し出す**。その取消の対象だった古い報が後から届くと、
+ * 取り下げ済みの地震カードが復活する（→ `docs/spec/quake-spec.md` §6.2「取消の後に届いた報」）。
+ *
+ * **冪等にするのは記録する側。** 呼ぶ側に「重複しないように呼べ」と課すと、経路が増えたときに
+ * 必ず破れる（実際、履歴の部分反映を足したときに破れた）。
+ *
+ * 同一性は電文そのもので見る（発表時刻・種別・電文の識別子）。`sameQuakeEntry` のような
+ * 「同じ地震か」の判定ではない —— **別々の取消電文は別の記録として残す**。
+ *
+ * @param list 台帳（その場で書き換える）
+ * @param retraction 足す記録
+ * @param max 保持する最大件数。超えた分は古い方から捨てる
+ */
+export function addQuakeRetraction(
+  list: QuakeRetraction[],
+  retraction: QuakeRetraction,
+  max: number,
+): void {
+  const already = list.some(r =>
+    r.reportTime === retraction.reportTime
+    && r.issueType === retraction.issueType
+    && r.entry.id === retraction.entry.id
+  )
+  if (already) return
+  list.push(retraction)
+  if (list.length > max) list.splice(0, list.length - max)
+}
+
 export function isRetractedQuakeReport(
   retractions: readonly QuakeRetraction[],
   incoming: JMAQuake,

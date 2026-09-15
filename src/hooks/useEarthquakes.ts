@@ -3,7 +3,7 @@ import { useLazyRef } from './useLazyRef'
 import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMANankaiCommentary, JMAKohatsu, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity, EEWAlert, IntensityScale, EarthquakePoint, AppEvent, LiveEvent, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
 import { fetchHistory, fetchJmaQuake, P2PQuakeWebSocket } from '../services/p2pquake'
 import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms, fetchDmdataNankai, fetchDmdataNankaiCommentary, fetchDmdataKohatsu, fetchDmdataEarthquakeCount, fetchDmdataQuakeNotice } from '../services/dmdata'
-import { mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes, extractQuakeEventId, quakeEventKey, coalesceByEventId, findExistingQuakeCard, isRetractedQuakeReport, quakeRetractionOf } from '../utils/quakeMerge'
+import { mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes, extractQuakeEventId, quakeEventKey, coalesceByEventId, findExistingQuakeCard, isRetractedQuakeReport, quakeRetractionOf, addQuakeRetraction } from '../utils/quakeMerge'
 import type { QuakeRetraction } from '../utils/quakeMerge'
 import { loadStationCoords, onStationCoordsLoaded, buildAreaPrefIndex, getAreaPrefIndexCache } from '../utils/stationCoords'
 import type { AreaPrefIndex } from '../utils/quakePoints'
@@ -536,6 +536,15 @@ export function useEarthquakes(
   const eventQueueRef = useLazyRef<EventQueue>(createEventQueue)
   // DMDSS 版「もっと見る」用カーソルと API キー（useCallback 内の stale closure 回避）
   const dmdataCursorRef = useRef<string | undefined>(undefined)
+  /**
+   * ライブ接続を張り直すたびに進む番号。**時間軸が変わったことを、後から走る取得へ伝える。**
+   *
+   * 履歴の電文本体は最長で数分かけて届く（→ `services/telegramBody.ts` の取得間隔）。
+   * その途中でリプレイが始まる・API キーが変わると、届いた電文は**別の時間軸の一覧**へ
+   * 流し込まれることになる。接続 effect の中の `cancelled` はそのスコープに閉じていて
+   * 「もっと見る」からは触れないため、共有できる形で持つ。
+   */
+  const liveGenerationRef = useRef(0)
   const dmdataApiKeyRef = useRef(dmdataApiKey)
   dmdataApiKeyRef.current = dmdataApiKey
   // 通常版「もっと見る」用の生 API 取得件数（重複除去後の earthquakes.length とは別管理）
@@ -927,10 +936,9 @@ export function useEarthquakes(
    * 走査する**ので、伸びると受信ごとの処理も重くなる。取り下げ済みの報が届くのは順序の
    * 入れ替わりか誤認識なので、直近の取消だけ覚えていれば足りる。
    */
+  // 重複の排除と上限の管理は `addQuakeRetraction` が持つ（そちらに理由とテストがある）
   const rememberQuakeRetraction = useCallback((retraction: QuakeRetraction) => {
-    const list = quakeRetractionsRef.current
-    list.push(retraction)
-    if (list.length > MAX_QUAKE_RETRACTIONS) list.splice(0, list.length - MAX_QUAKE_RETRACTIONS)
+    addQuakeRetraction(quakeRetractionsRef.current, retraction, MAX_QUAKE_RETRACTIONS)
   }, [])
 
   /** 履歴バッチに含まれる取消電文を台帳へ取り込む（ライブ経路と記憶を共有するため）。 */
@@ -1399,6 +1407,8 @@ export function useEarthquakes(
 
   useEffect(() => {
     let cancelled = false
+    // 時間軸が変わった印。ここより前に始まった取得は、以後の結果を捨てる
+    liveGenerationRef.current++
 
     // VAR-1: リプレイ中はライブ接続を止める（両バリアント共通）。過去の電文を流している最中に
     // 現在時刻のライブ更新が混ざると、再生時刻より未来の地震がカードに並んで実際の経過を追えない。
@@ -1453,9 +1463,30 @@ export function useEarthquakes(
 
       setState(prev => ({ ...prev, isLoading: true, connectionStatus: 'connecting', error: null }))
 
+      // **取れた分から順に画面へ出す。** 電文本体の取得は配信元の上限に合わせて
+      // 6 秒に 1 件へ直列化されるので（→ `services/telegramBody.ts`）、控えが空の初回は
+      // 全件が揃うまで数分かかる。揃うまで待つ形だと、そのあいだ地震の履歴が空のままになる。
+      // **控えが埋まっている 2 回目以降は待ちが無いので、実質いままでどおり一度に出る。**
+      const applyPartialQuakes = (partial: JMAQuake[]): void => {
+        if (cancelled) return
+        // 記録する側が重複を弾くので、部分結果ごとに呼んでよい（`rememberQuakeRetraction`）
+        rememberQuakeRetractionsFromBatch(partial)
+        // **base は空ではなく現在値。** 取得のあいだにライブで届いた地震を消さないため
+        // （`mergeQuakeHistory` は `Control/DateTime` で同じ電文を二度数えないので、
+        // 同じ部分結果を重ねて当てても結果は変わらない）。
+        setState(prev => ({
+          ...prev,
+          earthquakes: mergeQuakeHistory(partial, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache()),
+          lastUpdate: serverDate(),
+        }))
+        // **触るのは地震だけ。** 津波・長周期・補助情報は別経路で、ここで混ぜると
+        // まだ取得していないものを「無い」として画面へ出すことになる。
+        // `isLoading` も倒さない —— まだ増える途中なので、読み込み中のままが正しい。
+      }
+
       // DMDATA REST API で履歴取得
       Promise.all([
-        fetchDmdataEarthquakes(dmdataApiKey, MAX_HISTORY_RETAINED),
+        fetchDmdataEarthquakes(dmdataApiKey, MAX_HISTORY_RETAINED, undefined, applyPartialQuakes, () => cancelled),
         fetchDmdataTsunamis(dmdataApiKey, 10),
         // 取得側で失敗はすべて捕まえて null を返すため、ここへは届かない想定。
         // 万一漏れた場合に地震・津波の履歴取得まで巻き込まないための保険なので、
@@ -1489,6 +1520,8 @@ export function useEarthquakes(
           dmdataCursorRef.current = nextToken
           // 種別横断の生電文を eventId ごとに統合（リアルタイムと同一ロジック）。
           rememberQuakeRetractionsFromBatch(quakeEvents)
+          // `oldest`（長周期の遡り先）を決めるための一時的な組み立て。画面へ載せる分は
+          // 下の `setState` が現在値を base に組み直す。
           const earthquakes = mergeQuakeHistory(quakeEvents, [], quakeRetractionsRef.current, getAreaPrefIndexCache())
           const allTsunami = tsunamiEvents
             .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
@@ -1528,7 +1561,11 @@ export function useEarthquakes(
           if (cancelled) return
           setState(prev => ({
             ...prev,
-            earthquakes,
+            // **ここも base は現在値。** 空から組み直すと、履歴を取っているあいだに
+            // ライブで届いた地震が最後に消える。取得が 6 秒に 1 件へ直列化されたことで
+            // その窓が数分に伸びたため、取りこぼしが実際に起きうる
+            // （→ `services/telegramBody.ts` の取得間隔）。
+            earthquakes: mergeQuakeHistory(quakeEvents, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache()),
             tsunamis,
             lpgmByEventId,
             lastUpdate: serverDate(),
@@ -1753,13 +1790,33 @@ export function useEarthquakes(
 
   const loadMoreEarthquakes = useCallback(async () => {
     if (stateRef.current.isLoadingMore || !stateRef.current.hasMore) return
+    // **この取得が「まだ有効か」を測る物差し。**
+    // 電文本体の取得は最長で数分かかる（→ `services/telegramBody.ts` の取得間隔）。そのあいだに
+    // リプレイが始まる・接続が張り直されると、届いた電文は**別の時間軸の一覧**へ流し込まれる。
+    // 接続 effect の `cancelled` はそちらのスコープに閉じていて、ここからは触れないので、
+    // 作り直しのたびに進む世代の番号で見分ける。
+    const generation = liveGenerationRef.current
+    const stale = () => liveGenerationRef.current !== generation
     setState(prev => ({ ...prev, isLoadingMore: true }))
     try {
       if (isDmdss) {
         const apiKey = dmdataApiKeyRef.current
         const cursor = dmdataCursorRef.current
         const existingQuakes = stateRef.current.earthquakes
-        const { quakes: events, nextToken } = await fetchDmdataEarthquakes(apiKey, LOAD_MORE_BATCH, cursor)
+        // 初回と同じ理由で逐次に反映する。**控えが空のうちは 1 件 6 秒**なので、
+        // 揃うまで待つ形だと押してから数分ボタンが無反応に見える。
+        const applyPartialMore = (partial: JMAQuake[]): void => {
+          if (stale()) return
+          rememberQuakeRetractionsFromBatch(partial)
+          setState(prev => ({
+            ...prev,
+            earthquakes: mergeQuakeHistory(partial, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache()),
+          }))
+        }
+        const { quakes: events, nextToken } = await fetchDmdataEarthquakes(apiKey, LOAD_MORE_BATCH, cursor, applyPartialMore, stale)
+        // 時間軸が変わっていたら、取れた分ごと捨てる。**カーソルも進めない**
+        // （進めると、次に「もっと見る」を押したときこのページ分が飛ばされる）。
+        if (stale()) return
         dmdataCursorRef.current = nextToken
         // 既存カード群を base に、新バッチの生電文を eventId ごとに統合する。
         // これによりバッチ跨ぎ（先に届いた VXSE61 単独カードへ後続の VXSE53 の震度を合流など）も

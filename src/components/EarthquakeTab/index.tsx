@@ -32,7 +32,12 @@ interface Props {
 // 地図そのものは App が常時表示する。
 // React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
 export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, error, lpgmByEventId, activeLpgmEventId, onToggleLpgm, estimatedIntensity, distributionQuakeKey, onToggleDistribution, unreceivedQuakeKey, onToggleUnreceived, onFocusMap }: Props) {
-  if (isLoading) {
+  // **1 件も無いときだけ読み込み中の画面にする。**
+  // DMDSS 版の初回は電文本体の取得が配信元の上限に合わせて直列化されるため、全件が揃うのは
+  // 数分後になる（→ `docs/spec/data-sources-spec.md` §2「取得の間隔を空ける」）。取得側は
+  // 取れた分から順に流しているので、`isLoading` だけで覆うと**その間ずっとスピナーのままになり、
+  // 逐次に出す仕組みが画面へ一度も現れない**。
+  if (isLoading && earthquakes.length === 0) {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="text-center">
