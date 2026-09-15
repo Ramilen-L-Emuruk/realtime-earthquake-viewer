@@ -127,6 +127,7 @@ function renderCard(
       unreceivedQuakeKey={opts.unreceived ? quakeEventKey(quake) : null}
       onToggleUnreceived={() => {}}
       onFocusMap={onFocusMap}
+      speakingTelegramTextSubject={null}
     />,
   )
 }

@@ -1,7 +1,9 @@
 import { useMemo, useRef, useEffect, useState } from 'react'
 import type { JMAQuake, JMALpgm, IssueType, EarthquakePoint, IntensityScale, JMAEstimatedIntensity } from '../../types/earthquake'
-import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor, lpgmCategoryNote, buildLpgmRows } from '../../utils/lpgm'
+import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor, lpgmCategoryNote, buildLpgmRows, canOpenLpgmNotes } from '../../utils/lpgm'
 import { estimatedIntensityFor, estimatedIntensityAvailability } from '../../utils/estimatedIntensity'
+import { telegramTextSubject } from '../../utils/ttsFollow'
+import { useAutoOpenWhileSpeakingIn } from '../../hooks/useAutoOpenWhileSpeaking'
 import {
   formatQuakeTime,
   formatDepth,
@@ -356,12 +358,19 @@ interface Props {
   onToggleUnreceived?: () => void
   /** 一覧の行をクリックしたときに、その場所へ地図を寄せる（1 点でも範囲でも）。 */
   onFocusMap?: (positions: LatLng[]) => void
+  /**
+   * いま気象庁が書いた文を読み上げている主題（読んでいなければ null）。
+   * このカードの長周期の補足が対象なら、読み上げのあいだ開く（→ `useAutoOpenWhileSpeakingIn`）。
+   *
+   * **任意にしない**（理由は `EarthquakeTab` の同名 props）。
+   */
+  speakingTelegramTextSubject: string | null
 }
 
 export function EarthquakeCard({
   quake, isLatest, isSelected, onSelect, lpgm, activeLpgmEventId, onToggleLpgm,
   estimatedIntensity = null, distributionActive = false, onToggleDistribution,
-  unreceivedActive = false, onToggleUnreceived, onFocusMap,
+  unreceivedActive = false, onToggleUnreceived, onFocusMap, speakingTelegramTextSubject,
 }: Props) {
   const { earthquake, issue } = quake
   const { hypocenter, maxScale, domesticTsunami } = earthquake
@@ -375,14 +384,8 @@ export function EarthquakeCard({
   // 長周期の「観測情報の種類」から出す一文（値 2・4 のときだけ。→ `lpgmCategoryNote`）。
   // 条件と本文の両方で使うので一度だけ計算する。
   const categoryNote = lpgmCategoryNote(lpgm?.category)
-  /**
-   * 気象庁が長周期地震動に添えた補足（付加文 3 種＋詳細ページ）を 1 つでも持つか。
-   *
-   * **1 つも無ければ見出しを出さない。** 開いても何も出ないのに押せる見た目だけ与えると、
-   * 何が起きないのか利用者に分からない（津波の付加文と同じ考え方
-   * → docs/spec/tsunami-spec.md §9「気象庁が書いた文は、行動指示の行から開く」）。
-   */
-  const hasLpgmNotes = !!lpgm && !!(lpgm.forecastText || lpgm.varCommentText || lpgm.freeFormText || lpgm.uri)
+  /** 補足の見出しを出すか（判定は読み上げ側の診断と共有する → `canOpenLpgmNotes`）。 */
+  const hasLpgmNotes = canOpenLpgmNotes(lpgm)
   // 震度分布ボタン。**引き当てはここで行う** —— この電文は識別子を持たないので、
   // 発現時刻で突き合わせる（→ `estimatedIntensityFor`）。
   const matchedEstimated = estimatedIntensityFor(quake, estimatedIntensity)
@@ -422,6 +425,26 @@ export function EarthquakeCard({
     return next
   })
   const lpgmNotesOpen = expanded.has(LPGM_NOTES_KEY)
+  const setLpgmNotesOpen = (open: boolean) => setExpanded(prev => {
+    const next = new Set(prev)
+    if (open) next.add(LPGM_NOTES_KEY); else next.delete(LPGM_NOTES_KEY)
+    return next
+  })
+  /**
+   * **この地震の**長周期の補足をいま読み上げているか。
+   *
+   * 主題は電文の種別だけでなく地震の識別子まで含む（→ `telegramTextSubject`）。カードは
+   * 複数並ぶので、種別だけで判定すると読んでいるのとは別の地震の補足まで開く。
+   * **「いま選ばれているカード」で代用しない** —— 選択は受信した瞬間に動き、読み上げの
+   * 順番とは独立している（未入電モードの自動開閉と同じ規約）。
+   */
+  const speakingLpgmNotes = !!lpgm
+    && speakingTelegramTextSubject === telegramTextSubject('lpgm', lpgm.eventId)
+  // 読み上げているあいだだけ開く（自分が開いた分だけ閉じる）。**状態は `expanded` が持つ**
+  // ので、判定を書き写さず状態の持ち主を渡せる版を使う。
+  const setLpgmNotesOpenByUser = useAutoOpenWhileSpeakingIn(
+    speakingLpgmNotes, lpgmNotesOpen, setLpgmNotesOpen,
+  )
 
   /**
    * 未入電の点を切り分けた結果と、名前の解決に使う索引。**バッジとブロックで共有する。**
@@ -757,14 +780,16 @@ export function EarthquakeCard({
 
               開閉は `<div role="button">` で作る（カード自体が `<button>` なので入れ子にできない。
               震度一覧の行と同じ作法）。 */}
-          {lpgm && lpgm.maxClass >= 1 && hasLpgmNotes && (
+          {hasLpgmNotes && (
             <div
               role="button"
               tabIndex={0}
               aria-expanded={lpgmNotesOpen}
-              onClick={(e) => { e.stopPropagation(); toggle(LPGM_NOTES_KEY) }}
+              onClick={(e) => { e.stopPropagation(); setLpgmNotesOpenByUser(!lpgmNotesOpen) }}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); e.preventDefault(); toggle(LPGM_NOTES_KEY) }
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.stopPropagation(); e.preventDefault(); setLpgmNotesOpenByUser(!lpgmNotesOpen)
+                }
               }}
               className="text-secondary w-fit cursor-pointer hover:text-white transition-colors"
               style={{ fontSize: '0.75rem', lineHeight: 1.5 }}
