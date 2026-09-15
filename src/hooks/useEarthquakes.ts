@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useLazyRef } from './useLazyRef'
 import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMANankaiCommentary, JMAKohatsu, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity, EEWAlert, IntensityScale, EarthquakePoint, AppEvent, LiveEvent, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
 import { fetchHistory, fetchJmaQuake, P2PQuakeWebSocket } from '../services/p2pquake'
-import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms, fetchDmdataNankai, fetchDmdataNankaiCommentary, fetchDmdataKohatsu, fetchDmdataEarthquakeCount, fetchDmdataQuakeNotice } from '../services/dmdata'
+import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms, fetchDmdataNankai, fetchDmdataNankaiCommentary, fetchDmdataKohatsu, fetchDmdataEarthquakeCount, fetchDmdataQuakeNotice, fetchDmdataActiveEews } from '../services/dmdata'
 import { mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes, extractQuakeEventId, quakeEventKey, coalesceByEventId, findExistingQuakeCard, isRetractedQuakeReport, quakeRetractionOf } from '../utils/quakeMerge'
 import type { QuakeRetraction } from '../utils/quakeMerge'
 import { loadStationCoords, onStationCoordsLoaded, buildAreaPrefIndex, getAreaPrefIndexCache } from '../utils/stationCoords'
@@ -385,6 +385,24 @@ export function useEarthquakes(
   dmdataApiKey = '',
   dmdataTestDelivery = false,
   replayTimeOffset: number | null = null,
+  /**
+   * 復元した「発表中のもの」を画面へ見せてよいと伝える。
+   *
+   * **`onLiveEvent` とは別の口にする。** 復元は音も読み上げも起こさないので `onLiveEvent` を
+   * 通らない（`silent` を立ててキューへ積むため）。それでも**画面だけは見せたい**——揺れてから
+   * 開いた利用者にとって、発表中の警報は最初に目に入るべきものだから。
+   *
+   * **呼ばれるのは起動時だけではない。** この接続の effect は API キーの編集やリプレイの往復でも
+   * 再実行され、そのたびに復元と通知が走る。**「初回だけ」に絞ろうとしないこと** —— React の
+   * StrictMode は開発時に effect を 2 回実行し、1 回目は cleanup で破棄されるため、「初回か」を
+   * ref で覚えると**開発モードでだけ通知が一度も出なくなる**（本番では出るので、食い違いに
+   * 気づけない）。再接続で通知が出ても実害は小さい: 発表中の警報が無ければ何も起こらず、
+   * あるなら見せるべきものだから。
+   *
+   * 優先度と駆動源は受け取る側（`App`）が決める。ここで決めると、タブ切替の規則が
+   * `utils/tabPriority.ts` と 2 箇所へ分かれる。
+   */
+  onStartupRestore?: (tab: 'realtime' | 'tsunami') => void,
 ) {
   const [state, setState] = useState<EarthquakeState>({
     earthquakes: [],
@@ -423,6 +441,8 @@ export function useEarthquakes(
   // 最新のコールバックを ref で保持し、handleEvent を安定させる
   const onLiveEventRef = useRef(onLiveEvent)
   onLiveEventRef.current = onLiveEvent
+  const onStartupRestoreRef = useRef(onStartupRestore)
+  onStartupRestoreRef.current = onStartupRestore
   // キューディスパッチャーがサイレントエントリを処理中は true にして通知音を抑制する
   const isSilentRef = useRef(false)
   // テスト EEW の発報状態を種別ごとに独立管理（複数EEW同時テスト対応）
@@ -1258,6 +1278,19 @@ export function useEarthquakes(
           // レンダー待ちで進まないため、入口だけでは同じティックに積まれた報を取りこぼす。
           // 記録は入口に集約する（setState は再実行されうるので副作用を持たせない）。
           if (existing && isStaleEewReport(existing, eew)) return prev
+          // **取消は終端。非取消の報で復活させない。** 取消電文は報番号の台帳を進めず
+          // （入口のガードは `!incoming.cancelled` のときだけ記録する）、状態側も取消前の
+          // 報番号を保ったまま `cancelledAt` を足すだけなので、**同じ報番号の非取消報が
+          // 届くと `isStaleEewReport` をすり抜けて上書きする**。上書きされた側は
+          // `cancelledAt` を失い、取消の表示が消えたうえに 10 秒後の purge も空振りする
+          // （purge は `cancelledAt` の有無で判定するため）。
+          //
+          // これが現実に起きるのは、起動時の復元が取消の直前に発表された報を拾ったとき
+          // （一覧 API が取消を反映するまでの遅れ）と、ライブで報の到着順が入れ替わったとき。
+          if (existing?.cancelledAt && !eew.cancelled) {
+            log.debug(`[eew] 取消済みのため非取消の報を無視: key=${key} 受信=#${eew.issue?.serial ?? '(なし)'}`)
+            return prev
+          }
           const merged: EEWAlert = existing
             ? { ...eew, severity: existing.severity === 'Warning' ? 'Warning' : eew.severity }
             : eew
@@ -1399,7 +1432,6 @@ export function useEarthquakes(
 
   useEffect(() => {
     let cancelled = false
-
     // VAR-1: リプレイ中はライブ接続を止める（両バリアント共通）。過去の電文を流している最中に
     // 現在時刻のライブ更新が混ざると、再生時刻より未来の地震がカードに並んで実際の経過を追えない。
     // かつては standard 版だけ P2PQuake WS を継続していた（リプレイが強震モニタの時計ずらしに
@@ -1536,6 +1568,10 @@ export function useEarthquakes(
             hasMore: !!nextToken,
             error: null,
           }))
+          // 発表中の津波は画面にも見せる。**設定を尊重するかどうかは受け取る側が決める**
+          // （`tsunamiPriorityDefault`）——その設定は「津波発表中はどのタブを既定にするか」を
+          // 定めており、判定材料は `App` が持っている。
+          if (tsunamis.length > 0) onStartupRestoreRef.current?.('tsunami')
           // **臨時情報・後発地震・解説情報はヘルパ経由で入れる。** ここで state を直書きすると、
           // 表示中の識別情報を覚える記憶（`shownNankaiEventIdRef` 等）が進まず、以後に届いた
           // 取消の照合が「表示していない」と誤判定して無条件に帯を消す。後発地震の期限タイマーも
@@ -1565,6 +1601,33 @@ export function useEarthquakes(
           log.error('[data] DMDATA 履歴取得失敗', err)
           const msg = err instanceof Error ? err.message : '取得失敗'
           setState(prev => ({ ...prev, isLoading: false, error: msg }))
+        })
+
+      // **発表中の緊急地震速報を復元する。** 地震・津波の履歴とは別に走らせる —— 緊急地震速報の
+      // 取得は地震ごとに詳細を辿るぶん遅くなりうるのに、いちばん早く見せたいものだから。
+      // `Promise.all` へ入れると、取得の遅いこちらが地震一覧の表示まで待たせることになる。
+      //
+      // **音も読み上げも鳴らさない。** 開いた本人は既に揺れを体験しているので、起動直後の
+      // 警報音は情報を足さずに驚かせるだけ。`silent` を立ててキューへ積むと、状態の更新と
+      // 自動解除の予約（`handleEvent` が `calcEEWCancelTime` で積む）は通り、`onLiveEvent`
+      // だけが呼ばれない。画面を見せる側はタブ要求として別に出す。
+      void fetchDmdataActiveEews(dmdataApiKey)
+        .then(eews => {
+          if (cancelled || eews.length === 0) return
+          for (const eew of eews) {
+            eventQueueRef.current.push({
+              eventTime: serverDate(),
+              silent: true,
+              payload: { kind: 'event', event: eew as AppEvent },
+            })
+          }
+          log.info(`[data] 発表中の緊急地震速報を復元しました: ${eews.length} 件`)
+          onStartupRestoreRef.current?.('realtime')
+        })
+        .catch((err: unknown) => {
+          // 取得側で失敗はすべて捕まえて空配列を返すため、ここへは届かない想定。
+          // 万一漏れた場合に地震・津波の履歴を巻き込まないための保険なので、素通しにせず記録を残す。
+          log.error('[data] 発表中の緊急地震速報の復元で想定外の失敗', err)
         })
 
       // EEW の pref 補完用に細分区域名→都道府県の逆引きインデックスを先読みする。
@@ -1682,6 +1745,9 @@ export function useEarthquakes(
           hasMore: quakeEvents.length === MAX_HISTORY_RETAINED,
           error: null,
         }))
+        // 津波の復元は **standard 版でも効く**（DMDSS 版限定なのは緊急地震速報のほうだけで、
+        // P2PQuake には発表中の緊急地震速報を取る経路が無い）。
+        if (tsunamis.length > 0) onStartupRestoreRef.current?.('tsunami')
         // 初回ロードで津波が有効（validDateTime未来）の場合、キューへ解除イベントを挿入する。
         // VAR-1 の副作用対応: standard 版で kyoshin リプレイのトグル時にこの effect が cleanup→
         // 再実行されるため、同一 eventId の既存 expired 予約を除去してから積む（TSU-1 と同じ排除）。
