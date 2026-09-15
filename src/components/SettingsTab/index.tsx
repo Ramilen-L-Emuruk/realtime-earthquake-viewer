@@ -24,6 +24,7 @@ import { countRecords, listRecords, clearRecords, onRecordsChanged, hasStorageEr
 import { telegramCacheStats, hasTelegramCacheError, telegramCachePurgeStats, onTelegramCacheChanged } from '../../utils/telegramBodyCache'
 import { formatFileStamp } from '../../utils/formatters'
 import { useKyoshinImport } from '../../hooks/useKyoshinImport'
+import { buildSettingsFile, parseSettingsFile, settingsFileName, type SettingsVariant } from '../../utils/settingsIo'
 
 export interface TestFunctions {
   earthquake: () => void
@@ -62,6 +63,11 @@ export interface TestFunctions {
 interface Props {
   settings: AppSettings
   onUpdate: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void
+  /**
+   * 設定の読み込みで全項目をまとめて差し替える。渡す値は `sanitize()` 済みであること。
+   * 戻り値は「この端末へ保存できたか」。
+   */
+  onReplaceSettings: (next: AppSettings, keepApiKey?: boolean) => boolean
   onTest: TestFunctions
   /** リプレイ中なら再生時刻と実時刻の差（null = 再生していない）。「再生中」表示の判定に使う。 */
   kyoshinTimeOffset: number | null
@@ -142,6 +148,110 @@ function TelegramCacheRow() {
         {note && <p className="text-xs text-amber-400 w-56 text-left leading-snug">{note}</p>}
       </div>
     </Row>
+  )
+}
+
+/**
+ * 設定の書き出しと読み込み。
+ *
+ * 端末を移るとき・ブラウザのデータを消すとき・用途別の設定一式を作り置きするときに使う。
+ * 設定は localStorage にしか無いので、これが無いと持ち出す手段が無い。
+ *
+ * 書式と検証は `utils/settingsIo.ts`。ここは画面の口だけを持つ。
+ */
+function SettingsIoRow({ settings, onReplace }: {
+  settings: AppSettings
+  onReplace: (s: AppSettings, keepApiKey?: boolean) => boolean
+}) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const variant: SettingsVariant = isDmdss ? 'dmdss' : 'standard'
+
+  const download = useCallback(() => {
+    setError(null)
+    setNotice(null)
+    try {
+      const now = new Date()
+      const blob = new Blob([JSON.stringify(buildSettingsFile(settings, variant, now), null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = settingsFileName(variant, now)
+      // 文書へ入れてから押す。入れずに click() を呼ぶと、環境によっては例外も出さずに
+      // 何も起きない（押しても反応が無い理由がどこにも残らない）。
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+      setNotice(isDmdss ? '書き出しました（APIキーは含まれていません）' : '書き出しました')
+    } catch (e) {
+      // 黙って飲み込むと、押しても何も起きない理由が利用者に分からない
+      setError(`書き出しに失敗しました（${e instanceof Error ? e.message : String(e)}）`)
+    }
+  }, [settings, variant])
+
+  const handleFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    // 同じファイルを選び直しても onChange が発火するようにする
+    e.target.value = ''
+    if (!file) return
+    setError(null)
+    setNotice(null)
+    let raw: unknown
+    try {
+      raw = JSON.parse(await file.text())
+    } catch (err) {
+      // 文面は原因を絞れないが、記録には残す。構文の誤り・読み取りの失敗・
+      // 文字コードの異常が同じ文言になるため、これが無いと原因を追えない。
+      log.warn('[settings] 設定ファイルを読めませんでした', err)
+      setError('このファイルは読み取れませんでした（設定ファイルではないようです）')
+      return
+    }
+    const result = parseSettingsFile(raw, settings)
+    if (!result.ok) {
+      setError(result.error)
+      return
+    }
+    const persisted = onReplace(result.settings, result.usedFileApiKey)
+
+    const notes: string[] = ['設定を読み込みました']
+    const exportedAt = result.exportedAt == null ? null : new Date(result.exportedAt)
+    if (exportedAt && Number.isFinite(exportedAt.getTime())) {
+      notes[0] += `（${exportedAt.toLocaleString('ja-JP')} に書き出されたファイル）`
+    }
+    // 保存できたかは必ず伝える。黙ると「反映された」と思ったまま端末を移して、次に開いたときに
+    // 元へ戻っていることになる。
+    if (!persisted) notes.push('※ この端末に保存できませんでした。次にアプリを開くと元の設定に戻ります')
+    // 値が入っていたのに読めなかった項目。黙ると、壊れたファイルでも成功にしか見えない。
+    if (result.rejectedKeys.length > 0) {
+      notes.push(`※ 次の項目は読めなかったため、はじめの値にしました: ${result.rejectedKeys.join('、')}`)
+    }
+    // バリアントが違っても拒否はしない（設定の型は同じ）。ただし片方にしか無い項目があるので黙らない。
+    if (result.variant !== variant) {
+      notes.push(result.variant === 'dmdss'
+        ? '※ DM-D.S.S 版で書き出したファイルです。この版に無い項目は効きません'
+        : '※ 通常版で書き出したファイルです。DM-D.S.S 固有の項目ははじめの値のままです')
+    }
+    // APIキーを使う経路があるのは DMDSS 版だけ。通常版では触れても意味が無いので言わない。
+    if (result.usedFileApiKey && isDmdss) notes.push('※ ファイルに APIキーが書かれていたため、それを使いました')
+    setNotice(notes.join('\n'))
+  }, [settings, onReplace, variant])
+
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <input ref={inputRef} type="file" accept=".json,application/json" onChange={e => { void handleFile(e) }} className="hidden" />
+      <div className="flex items-center gap-2">
+        <button onClick={download} className="px-3 py-1.5 rounded text-xs bg-panel border border-border text-white">
+          書き出す
+        </button>
+        <button onClick={() => inputRef.current?.click()} className="px-3 py-1.5 rounded text-xs bg-panel border border-border text-white">
+          読み込む
+        </button>
+      </div>
+      {notice && <span className="text-xs text-secondary text-right whitespace-pre-line">{notice}</span>}
+      {error && <span className="text-xs text-red-400 text-right">{error}</span>}
+    </div>
   )
 }
 
@@ -785,7 +895,7 @@ function HomeLocationSection({
 }
 
 // React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
-export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, kyoshinInputDateTime, onSetKyoshinInputDateTime, dmdataConnectionStatus, replayIsFetching, replayError, onStartReplay, onStopReplay, historicalArchives, historicalArchivesLoading, scenarioTest }: Props) {
+export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onReplaceSettings, onTest, kyoshinTimeOffset, kyoshinInputDateTime, onSetKyoshinInputDateTime, dmdataConnectionStatus, replayIsFetching, replayError, onStartReplay, onStopReplay, historicalArchives, historicalArchivesLoading, scenarioTest }: Props) {
   const [voicevoxStatus, setVoicevoxStatus] = useState<'idle' | 'checking' | 'available' | 'unavailable' | 'invalid'>('idle')
   const [voicevoxSpeakers, setVoicevoxSpeakers] = useState<VoicevoxSpeaker[]>([])
 
@@ -1692,6 +1802,16 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
           hint="上の地震一覧にある地震のみ読み込めます"
         >
           <KyoshinImportRow historicalArchives={historicalArchives ?? EMPTY_HISTORICAL_ARCHIVES} />
+        </Row>
+      </Section>
+
+      <Section title="設定の書き出し・読み込み">
+        <Row
+          label="設定ファイル"
+          description={'いまの設定をファイルへ書き出し、別の端末やブラウザで読み込めます。' +
+            (isDmdss ? 'APIキーは書き出しに含まれません（読み込んでも、いま入力してある値は消えません）。' : '')}
+        >
+          <SettingsIoRow settings={settings} onReplace={onReplaceSettings} />
         </Row>
       </Section>
 

@@ -352,6 +352,24 @@ export function stripDevApiKey(settings: AppSettings, injectedKey: string | unde
   return { ...settings, dmdataApiKey: '' }
 }
 
+/**
+ * 設定の読み込みで localStorage へ書き出す形を決める。
+ *
+ * `keepApiKey` は「ファイルに明示されていたキーだから、注入値と同じ文字列でも残す」という指示。
+ * これが無いと、**利用者がファイルへ書いた値がたまたま dev の注入値と一致したときに黙って消える**。
+ *
+ * `replaceSettings` の中へ直接書かず関数にしてあるのは、この判断をテストから確かめるため
+ * （フック越しだと、テスト環境では注入値が常に `undefined` になり分岐を踏めない）。
+ * export はテスト向け（ランタイムからは `replaceSettings` 内でのみ使う）。
+ */
+export function settingsToStore(
+  settings: AppSettings,
+  injectedKey: string | undefined,
+  keepApiKey: boolean,
+): AppSettings {
+  return keepApiKey ? settings : stripDevApiKey(settings, injectedKey)
+}
+
 // export はテスト向け（ランタイムからは useSettings 内でのみ使う）。
 export function load(): AppSettings {
   return injectDevApiKey(loadStored(), devApiKey())
@@ -387,7 +405,8 @@ export function useSettings() {
     setSettings(prev => {
       const next = { ...prev, [key]: value }
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(stripDevApiKey(next, injectedApiKey.current)))
+        // 保存する形を決める窓口は `settingsToStore` の 1 つに寄せる（`replaceSettings` と共有）。
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(settingsToStore(next, injectedApiKey.current, false)))
       } catch (e) {
         // 容量超過・プライベートブラウジング等で保存できないケース。state には反映するので
         // 操作自体は効くが、次回の起動時には既定値へ戻る。無言だと「設定が勝手に戻る」
@@ -398,5 +417,36 @@ export function useSettings() {
     })
   }, [])
 
-  return { settings, updateSetting }
+  /**
+   * 全項目をまとめて差し替える（設定の読み込み用）。
+   *
+   * `updateSetting` を項目の数だけ呼ぶ形にしない —— 途中の状態が一度ずつ描画へ流れるうえ、
+   * 保存も項目の数だけ走る。読み込みは「前の設定を捨てて新しいものにする」操作なので、
+   * 1 回で置き換える。
+   *
+   * **渡す値は `sanitize()` を通したものであること**（`utils/settingsIo.ts` の
+   * `parseSettingsFile` が通している）。ここでは検証し直さない。
+   *
+   * **保存できたかを返す。** `updateSetting` は 1 項目の変更なので黙って記録するだけで済むが、
+   * こちらは今の設定を丸ごと捨てて入れ替える操作で、しかも「端末を移す」という保存の成否が
+   * いちばん効く場面で使う。失敗を伝えないと、画面は「読み込みました」のまま次回起動で元へ戻る。
+   *
+   * @param keepApiKey ファイルに明示されていた API キーをそのまま保存する。既定では dev の
+   *   注入値と同じ文字列を保存対象から外す（`stripDevApiKey`）が、**利用者がファイルへ書いた値が
+   *   たまたま注入値と一致した場合に、書いたはずのキーが黙って消える**。その取り違えを防ぐ。
+   * @returns localStorage へ保存できたか。state への反映は失敗時も行う。
+   */
+  const replaceSettings = useCallback((next: AppSettings, keepApiKey = false): boolean => {
+    let persisted = true
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(settingsToStore(next, injectedApiKey.current, keepApiKey)))
+    } catch (e) {
+      log.warn('[settings] localStorage への保存に失敗（この読み込みは次回起動時に失われる）', e)
+      persisted = false
+    }
+    setSettings(next)
+    return persisted
+  }, [])
+
+  return { settings, updateSetting, replaceSettings }
 }
