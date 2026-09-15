@@ -13,6 +13,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/react'
 import { EarthquakeTab } from './index'
 import { quakeEventKey } from '../../utils/quakeMerge'
+import { telegramTextSubject } from '../../utils/ttsFollow'
 import type { JMAQuake, JMALpgm } from '../../types/earthquake'
 
 afterEach(cleanup)
@@ -89,8 +90,38 @@ const renderTab = (lpgm: JMALpgm) => render(
     unreceivedQuakeKey={null}
     onToggleUnreceived={() => {}}
     onFocusMap={() => {}}
+    speakingTelegramTextSubject={null}
   />
 )
+
+/** 読み上げの主題を渡せる版（自動展開の確認用）。**`rerender` へ渡せるよう JSX を返す。** */
+const tabWith = (subject: string | null, lpgm: JMALpgm = makeLpgm()) => (
+  <EarthquakeTab
+    earthquakes={[QUAKE]}
+    selectedId={quakeEventKey(QUAKE)}
+    onSelect={() => {}}
+    isLoading={false}
+    isLoadingMore={false}
+    hasMore={false}
+    onLoadMore={() => {}}
+    error={null}
+    lpgmByEventId={new Map([[EVENT_ID, lpgm]])}
+    activeLpgmEventId={null}
+    onToggleLpgm={() => {}}
+    estimatedIntensity={null}
+    distributionQuakeKey={null}
+    onToggleDistribution={() => {}}
+    unreceivedQuakeKey={null}
+    onToggleUnreceived={() => {}}
+    onFocusMap={() => {}}
+    speakingTelegramTextSubject={subject}
+  />
+)
+const renderSpeaking = (subject: string | null, lpgm: JMALpgm = makeLpgm()) =>
+  render(tabWith(subject, lpgm))
+
+/** この地震の長周期を読み上げている主題。 */
+const SPEAKING = telegramTextSubject('lpgm', EVENT_ID)
 
 // **カード自体も `<button>`** で、そのアクセシブルネーム（カード全体の文字列）にも
 // 「気象庁からの補足」が含まれる。見出しだけを取るため、矢印まで込みの完全一致で絞る。
@@ -175,5 +206,67 @@ describe('長周期地震動の「気象庁からの補足」の折りたたみ'
     fireEvent.click(notesHeader())
     expect(notesHeader().getAttribute('aria-expanded')).toBe('false')
     expect(screen.queryByText(FORECAST_TEXT)).toBeNull()
+  })
+})
+
+// 読み上げに合わせた自動展開（→ docs/spec/audio-tts-spec.md §6「読み上げに合わせて気象庁の文を開く」）。
+//
+// **長周期はこの仕組みから漏れていた。** 「地震情報と同じで付加文は畳んでいない」と扱って
+// 対象から外していたが、実際にはこの補足として畳んであり、中身は読み上げる 3 ブロックそのもの。
+// 声だけが本文を伝えて画面は見出しのまま、という状態が残っていた。
+describe('読み上げに合わせて補足を開く', () => {
+  // 正: 読み始めで開き、読み終わりで閉じる
+  it('読み始めで開き、読み終わりで閉じる', () => {
+    const { container, rerender } = renderSpeaking(null)
+    expect(container.textContent).not.toContain(FORECAST_TEXT)
+
+    rerender(tabWith(SPEAKING))
+    expect(container.textContent).toContain(FORECAST_TEXT)
+
+    rerender(tabWith(null))
+    expect(container.textContent).not.toContain(FORECAST_TEXT)
+  })
+
+  // 安全弁: **手で開いていたものは、読み終わりで閉じない。** 見ようとしていた中身を奪わない
+  // （規約は `useAutoOpenWhileSpeakingIn` が持つ。ここでは配線が効いていることを確かめる）。
+  it('読み上げの前から手で開いていたものは、読み終わりで閉じない', () => {
+    const { container, rerender } = renderSpeaking(null)
+    fireEvent.click(notesHeader())
+    expect(container.textContent).toContain(FORECAST_TEXT)
+
+    rerender(tabWith(SPEAKING))
+    rerender(tabWith(null))
+    expect(container.textContent).toContain(FORECAST_TEXT)
+  })
+
+  // 安全弁: 読み上げ中に手で閉じたら、その読み上げのあいだは開き直さない
+  it('読み上げ中に手で閉じたら、そのまま閉じたままにする', () => {
+    const { container, rerender } = renderSpeaking(SPEAKING)
+    expect(container.textContent).toContain(FORECAST_TEXT)
+
+    fireEvent.click(notesHeader())
+    expect(container.textContent).not.toContain(FORECAST_TEXT)
+
+    rerender(tabWith(SPEAKING))
+    expect(container.textContent).not.toContain(FORECAST_TEXT)
+  })
+
+  // 対照: **別の地震の長周期を読んでいるときは開かない。** カードは複数並ぶので、
+  // 種別だけで判定すると読んでいるのとは違う地震の補足まで開く。
+  it('別の地震の長周期を読んでいるときは開かない', () => {
+    const { container } = renderSpeaking(telegramTextSubject('lpgm', '20240101999999'))
+    expect(container.textContent).not.toContain(FORECAST_TEXT)
+  })
+
+  // 対照: 種別だけの主題（識別子なし）でも開かない
+  it('識別子を持たない主題では開かない', () => {
+    const { container } = renderSpeaking('telegramText:lpgm')
+    expect(container.textContent).not.toContain(FORECAST_TEXT)
+  })
+
+  // 対照: 別種別の文を読んでいるときは開かない
+  it('別種別の文を読んでいるときは開かない', () => {
+    const { container } = renderSpeaking(telegramTextSubject('nankai'))
+    expect(container.textContent).not.toContain(FORECAST_TEXT)
   })
 })

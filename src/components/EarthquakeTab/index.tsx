@@ -26,12 +26,20 @@ interface Props {
   onToggleUnreceived: (eventKey: string) => void
   /** 一覧の行をクリックしたときに、その場所へ地図を寄せる（1 点でも範囲でも）。 */
   onFocusMap: (positions: LatLng[]) => void
+  /**
+   * いま気象庁が書いた文を読み上げている主題（読んでいなければ null）。
+   * 長周期の補足を読み上げているあいだ、そのカードの補足を開く。
+   *
+   * **任意にしない。** 渡し忘れても画面が動かないだけで例外もログも出ないので、
+   * 型検査で止める唯一の機会がここ（→ audio-tts-spec.md §6）。
+   */
+  speakingTelegramTextSubject: string | null
 }
 
 // 地震情報タブの右パネル。地震カードの一覧を表示し、クリックで地図表示対象を選択する。
 // 地図そのものは App が常時表示する。
 // React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
-export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, error, lpgmByEventId, activeLpgmEventId, onToggleLpgm, estimatedIntensity, distributionQuakeKey, onToggleDistribution, unreceivedQuakeKey, onToggleUnreceived, onFocusMap }: Props) {
+export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, error, lpgmByEventId, activeLpgmEventId, onToggleLpgm, estimatedIntensity, distributionQuakeKey, onToggleDistribution, unreceivedQuakeKey, onToggleUnreceived, onFocusMap, speakingTelegramTextSubject }: Props) {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -84,6 +92,7 @@ export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selected
           unreceivedActive={quakeEventKey(quake) === unreceivedQuakeKey}
           onToggleUnreceived={() => onToggleUnreceived(quakeEventKey(quake))}
           onFocusMap={onFocusMap}
+          speakingTelegramTextSubject={speakingTelegramTextSubject}
         />
       ))}
       {hasMore && (
