@@ -5,7 +5,7 @@
 //   - standard 版: P2PQuake の日付指定クエリ（services/p2pquakeReplay.ts）
 //   - 実地震テストシナリオ: 収録済み JSON（utils/testScenarioReplay.ts）
 import type {
-  AppEvent, JMAQuake, JMALpgm, JMANankai, JMANankaiCommentary, JMAKohatsu,
+  AppEvent, JMAQuake, JMATsunami, JMALpgm, JMANankai, JMANankaiCommentary, JMAKohatsu,
   JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity,
 } from './earthquake'
 
@@ -67,6 +67,26 @@ export interface ReplayFetchResult {
  */
 export interface QuakeHistoryResult {
   quakes: JMAQuake[]
+  /**
+   * 同じ遡り幅で拾った津波電文（古い順）。
+   *
+   * **「いま発表中か」の判定は呼び出し側が持つ。** 期限の引き継ぎ・解除の照合・失効の予約は
+   * イベント単位の判断で、電文を集めるここには置けない
+   * （→ `tsunami-spec.md` §3「有効期限は報ではなく津波に付く」）。
+   *
+   * **地震の件数で打ち切らない。** 発表中の津波は数日前に出たものが続いていることがあり、
+   * 地震のカードが揃った日で切ると拾えない。
+   *
+   * P2PQuake 経路は常に空配列。
+   */
+  tsunamis: JMATsunami[]
+  /**
+   * まだ遡れるか（目標件数に達して、読んでいない日が残っている）。
+   *
+   * 「もっと見る」の出し分けに使う。**打ち切ったときは真にしない** —— あれは「もう要らない」で、
+   * 在庫が残っているかとは別の話。
+   */
+  hasMore: boolean
   /**
    * 地震カードと同じ遡り幅で復元する、地震情報以外の電文（種別ごとに最新 1 通へ畳んだもの）。
    *

@@ -1635,8 +1635,15 @@ export interface JMAEstimatedIntensity {
  * 状態。`disconnected`（＝繋がるべきなのに繋がっていない）と区別する必要がある——混ぜると地図に
  * 切断警告が出てしまうし、逆に更新しないままにすると直前の値（多くは `connected`）が残って
  * 「受信していないのに接続中」と表示され続ける。
+ *
+ * `crowded` は「契約の同時接続枠を別のタブ・端末が使っていて繋がれない」状態。
+ * **こちら側の設定や通信の異常ではない**ので `disconnected` と区別する——「切断」と出すと
+ * 利用者はキーや回線を疑うが、実際にすべきことは別のタブを閉じることだけ。枠が空けば
+ * そのまま繋がるため、再接続は止めずに間隔だけ伸ばしている（`dmdata.ts` の
+ * `RECONNECT_CROWDED_MAX_MS`）。**更新が止まっている点は `disconnected` と同じ**なので、
+ * 地図の切断警告は両方で出す。
  */
-export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'replay'
+export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'replay' | 'crowded'
 
 export interface TelegramLogEntry {
   id: string

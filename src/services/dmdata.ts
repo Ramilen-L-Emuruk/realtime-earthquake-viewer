@@ -16,7 +16,7 @@ import {
 } from './dmdataTelegramPayload'
 import { BufrFragmentStore, fragmentKey } from './bufrTelegramAssembly'
 import { log, createLogThrottle } from '../utils/logger'
-import { authHeader, dmdataApiKeyProblem, dmdataApiKeyMessage, DmdataApiKeyError } from '../utils/dmdataApiKey'
+import { authHeader, DmdataApiKeyError } from '../utils/dmdataApiKey'
 
 const API_BASE = 'https://api.dmdata.jp/v2'
 // 種別の集合は `dmdataTelegramPayload.ts` が単一情報源。ここで定義し直すと、種別を足したとき
@@ -46,6 +46,37 @@ export function needsBodyDecode(headType: string): boolean {
 const RECONNECT_BASE_MS = 3000
 const RECONNECT_MAX_MS = 30000
 const RECONNECT_FACTOR = 1.5
+/**
+ * 同時接続数の上限（HTTP 409）で待つときの間隔の上限。通常の再接続より大きく取る。
+ *
+ * **この状態はこちら側の異常ではない。** 契約の同時接続枠（`/v2/contract` の
+ * `connectionCounts` の合計）を別のタブ・端末・セッションが使っているだけで、
+ * 枠が空けば同じキーでそのまま繋がる。空く契機は利用者がそれを閉じることなので、
+ * こちらから縮められない。
+ *
+ * 通常の上限（30 秒）のまま待ち続けると、**同じ失敗を毎時 120 回配信元へ投げ続ける**
+ * （実測 2026-09-13: 1 セッションが 2 時間 27 分・304 回）。利用規約は「定常的に
+ * 2req/s 以上のアクセスはお控えいただき」と定めており、繋がらないと分かっている要求を
+ * 短い間隔で繰り返すのはその趣旨から外れる。
+ *
+ * **打ち切らずに間隔を伸ばすのは、枠が空いたときに自動で復帰させるため。** 打ち切って
+ * 手動操作を求めると、据え置きで動かしている端末が繋がらないまま放置される。
+ */
+const RECONNECT_CROWDED_MAX_MS = 300_000
+
+/**
+ * 同時接続数の上限（409）で接続できなかったことを表す。
+ *
+ * 401/403（`'auth'`）と違って**再試行すれば直る**ので停止させない。一方で通常の失敗
+ * （ネットワーク断など）とも待ち方が違うため、文字列ではなく型で見分ける
+ * （`ticket: 409` のメッセージ照合は、他の 4xx を足したときに静かに崩れる）。
+ */
+class SocketCrowdedError extends Error {
+  constructor() {
+    super('socket-crowded')
+    this.name = 'SocketCrowdedError'
+  }
+}
 // DMDATA v2 は概ね 15〜30 秒間隔で ping を送出する。90 秒間 ping/data の受信が無い場合は
 // 半開通信（TCP は生きているが実質無応答）と判定して自発 close → 再接続する。
 const PING_WATCHDOG_MS = 90000
@@ -84,25 +115,6 @@ function logRestFailure(what: string, status: number): void {
   }
 }
 
-/**
- * 補助取得（失敗しても続行してよい経路）の入口で、APIキーが通信に使える形か確かめる。
- * 使えない場合はその事実を記録して false を返す。
- *
- * 呼び出し側（`useEarthquakes`）が通信前に弾いているため通常ここへは来ないが、
- * これらの関数は「失敗時は null / 空配列を返す」と約束している。約束を例外で破ると
- * `Promise.all` の外まで飛んで履歴取得全体を落とすため、保険として門を置く。
- *
- * この門を通ったあとの `authHeader` は同じ判定を再度行うが、そちらの throw へは到達しない。
- * 二重に見えるのは意図で、`authHeader` 側の判定は門を持たない経路（主系の取得・リプレイ）を守る。
- */
-function isApiKeyUsable(apiKey: string, what: string): boolean {
-  const problem = dmdataApiKeyProblem(apiKey)
-  if (!problem) return true
-  // 未設定か不正かを言い分ける。どちらもここへ来るのは呼び出し側が弾き忘れた場合だが、
-  // 記録が理由を取り違えていると、入れた覚えのない文字を探させることになる。
-  log.error(`[DMDSS] ${what}: ${dmdataApiKeyMessage(problem)}`)
-  return false
-}
 
 // base64 文字列をバイト列にデコードする。
 function base64ToBytes(b64: string): Uint8Array {
@@ -250,6 +262,7 @@ async function fetchTicketUrl(apiKey: string, includeTest: boolean, debug: boole
   const result = await tryFetchTicket(apiKey, CLASSIFICATIONS, includeTest, debug)
   if (result.status === 200) return result.url
   if (result.status === 401 || result.status === 403) throw new Error('auth')
+  if (result.status === 409) throw new SocketCrowdedError()
   throw new Error(`ticket: ${result.status}`)
 }
 
@@ -325,6 +338,14 @@ export class DmdataWebSocket {
         log.error('[DMDSS] 認証エラーのため再接続しない（APIキーの契約スコープ・WebSocket権限を確認）', { reason })
         this.authError = true
         this.onStatusChange?.('disconnected')
+        return
+      }
+      // 同時接続数の上限は**再試行すれば直るが、短い間隔で繰り返しても直らない**。
+      // 枠が空くのを待つあいだ、配信元へ同じ失敗を投げ続けないよう間隔を伸ばす
+      // （理由は `RECONNECT_CROWDED_MAX_MS`）。停止はしない。
+      if (err instanceof SocketCrowdedError) {
+        this.onStatusChange?.('crowded')
+        this.scheduleReconnect({ crowded: true })
         return
       }
       if (this.debug) dlog('接続失敗', { reason })
@@ -688,10 +709,18 @@ export class DmdataWebSocket {
     }
   }
 
-  private scheduleReconnect() {
+  /**
+   * 再接続を予約する。
+   *
+   * `crowded` は「同時接続数の上限で断られた」ことを表し、間隔の上限だけを差し替える。
+   * **バックオフの回数（`reconnectAttempt`）は共有する** —— 別にすると、枠待ちの最中に
+   * ネットワークが切れたときどちらの回数で待つか決まらない。上限は呼び出しごとに見るので、
+   * 枠が空いて通常の失敗へ戻れば次の待ちは 30 秒以内に収まる。
+   */
+  private scheduleReconnect(opts: { crowded?: boolean } = {}) {
     const delay = Math.min(
       RECONNECT_BASE_MS * Math.pow(RECONNECT_FACTOR, this.reconnectAttempt),
-      RECONNECT_MAX_MS,
+      opts.crowded ? RECONNECT_CROWDED_MAX_MS : RECONNECT_MAX_MS,
     )
     this.reconnectAttempt += 1
     if (this.debug) dlog('再接続をスケジュール', { attempt: this.reconnectAttempt, delayMs: Math.round(delay) })
@@ -726,424 +755,18 @@ export function isNonRecoverableCloseCode(code: number): boolean {
   return code === 1008
 }
 
-// REST API で電文1件を取得し、地震情報・津波情報・長周期地震動観測情報のいずれかにパースして返す。
-// url は一覧レスポンスの item.url（data.api.dmdata.jp/v1/{id}）を使う。
-// /v2/telegram/{id} は CORS でブロックされるため使わない。
-async function fetchOneTelegram(
-  apiKey: string,
-  url: string,
-  headType: string,
-): Promise<JMAQuake | JMATsunami | JMALpgm | null> {
-  const res = await fetch(url, {
-    headers: { Authorization: authHeader(apiKey) },
-  })
-  // 取得できなかった電文は履歴からそのまま消える。**件数が減ったことにも気づけない**——
-  // `cutoffTime` は取得できた分だけで決まるため、欠けたまま「揃った履歴」に見える。
-  if (!res.ok) {
-    log.warn(`[dmdata] ${headType} の電文を取得できませんでした（HTTP ${res.status}）`)
-    return null
-  }
-  const xml = await res.text()
-  if (headType === 'VXSE51' || headType === 'VXSE52' || headType === 'VXSE53' || headType === 'VXSE61') {
-    return parseEarthquakeFromXml(headType, xml)
-  }
-  if (headType === 'VTSE41' || headType === 'VTSE51' || headType === 'VTSE52') {
-    return parseTsunamiFromXml(headType, xml)
-  }
-  if (headType === 'VXSE62') {
-    return parseLpgmFromXml(xml)
-  }
-  // 呼び出し側が扱わない種別を渡した場合。現状は到達しないが、種別を足したときに
-  // 「取得はできたのに黙って捨てる」形へ落ちないよう記録する。
-  log.warn(`[dmdata] 取得した電文の種別を扱えません: ${headType}`)
-  return null
-}
-
-/**
- * 個別電文の取得で例外になった件数を記録する。
- *
- * `Promise.allSettled` の結果から `fulfilled` だけを残す形は、**ネットワーク断や DNS 失敗で
- * 落ちた電文を件数ごと消す**。HTTP エラーと解釈の失敗は `fetchOneTelegram` と各パーサが
- * それぞれ記録するので、ここで数えるのは例外になった分だけでよい。
- */
-function warnRejectedTelegrams(results: PromiseSettledResult<unknown>[], label: string): void {
-  const rejected = results.filter(r => r.status === 'rejected')
-  if (rejected.length === 0) return
-  const first = (rejected[0] as PromiseRejectedResult).reason
-  log.warn(`[dmdata] ${label}: ${results.length} 件中 ${rejected.length} 件の電文取得が例外で終わりました（最初の理由: ${String(first)}）`)
-}
-
-// DMDATA REST API で地震履歴（VXSE51/52/53: 震度速報・震源情報・震源＋各地震度）を取得する。
-// VXSE61（顕著な地震震源要素更新）も並列取得する。同一 eventId の電文どうしの統合
-// （VXSE61 の震源マージ・震度の保持・優先度判定など）は呼び出し側（useEarthquakes の
-// mergeQuakeHistory）がリアルタイム経路と同一ロジックで行うため、ここでは cutoffTime による
-// 不完全カードの除外だけを行い、種別横断の生電文をそのまま返す。
-// VXSE51/52 は VXSE53 未発表の地震速報をカバーするため初期表示の欠落を防ぐ。
-// cursorToken を指定するとカーソル位置以降の古い電文を取得する（「もっと見る」用・VXSE53 に適用）。
+// **履歴の一括取得はここに置かない。** 以前はここに 8 本の取得関数があり、どれも
+// 一覧（`/v2/telegram`）で id を並べてから本体（`/v1/:id`）を 1 件ずつ叩いていた。起動 1 回で
+// 110 件を超え、DMDATA.JP から利用制限の警告を受けた（2026-09 に API キーが停止された）。
 //
-// 初回フェッチの時刻窓統一:
-// 各タイプは同じ limit でも発生頻度が違うため取得できる受信時刻範囲がズレる。
-// 各タイプの最古受信時刻（time）を比較し、最も新しいもの（cutoffTime）より古いアイテムは
-// 全タイプ問わず除外する。これにより不完全なカードが初期表示されることを防ぐ。
-export async function fetchDmdataEarthquakes(
-  apiKey: string,
-  limit: number,
-  cursorToken?: string,
-): Promise<{ quakes: JMAQuake[]; nextToken?: string }> {
-  const qs = cursorToken ? `&cursorToken=${cursorToken}` : ''
-  const headers = { Authorization: authHeader(apiKey) }
-
-  const [res51, res52, res53, res61] = await Promise.allSettled([
-    fetch(`${API_BASE}/telegram?type=VXSE51&limit=${limit}`, { headers }),
-    fetch(`${API_BASE}/telegram?type=VXSE52&limit=${limit}`, { headers }),
-    fetch(`${API_BASE}/telegram?type=VXSE53&limit=${limit}${qs}`, { headers }),
-    fetch(`${API_BASE}/telegram?type=VXSE61&limit=${limit}`, { headers }),
-  ])
-
-  if (res53.status === 'rejected' || !res53.value.ok) {
-    const status = res53.status === 'rejected' ? 'network error' : res53.value.status
-    throw new Error(`earthquake history: ${status}`)
-  }
-
-  type ItemList = { items?: Array<{ url: string; head: { type: string } }>; nextToken?: string }
-  const json53 = await res53.value.json() as ItemList
-
-  // VXSE51/52/61 の JSON を並列取得（失敗時は空リストで続行）
-  const [json51, json52, json61] = await Promise.all([
-    res51.status === 'fulfilled' && res51.value.ok
-      ? res51.value.json() as Promise<ItemList>
-      : Promise.resolve({ items: [] } as ItemList),
-    res52.status === 'fulfilled' && res52.value.ok
-      ? res52.value.json() as Promise<ItemList>
-      : Promise.resolve({ items: [] } as ItemList),
-    res61.status === 'fulfilled' && res61.value.ok
-      ? res61.value.json() as Promise<ItemList>
-      : Promise.resolve({ items: [] } as ItemList),
-  ])
-
-  // VXSE51/52/53/61 の全電文を一括並列取得（タイプ別のインデックス境界を記録）。
-  //
-  // **結合順序は気象庁の通常の発表順（速報→詳細）に合わせること。** mergeQuakeHistory は
-  // time で安定ソートしてから畳み込むため、同じ分（time は分単位までしか精度が無い）に
-  // 複数種別の電文が発表された場合、ソート後もこの結合順序がそのまま残る。
-  // mergeQuakeInto の据え置き判定は「incoming が実震度を持つ電文どうし」では issue.type の
-  // 優先度を見ず time だけで判定するため、この結合順序が「詳しい→粗い」だと、同じ分の
-  // タイで詳しい情報（例: 各地の震度情報）が粗い情報（震度速報）に上書きされてしまう
-  // （敵対的レビューで指摘・確認済み）。VXSE51→52→53→61 の順にしておけば、
-  // 安定ソート後のタイは「粗い→詳しい」の順で並び、後着の詳しい方が正しく採用される。
-  const items53 = json53.items ?? []
-  const items51 = json51.items ?? []
-  const items52 = json52.items ?? []
-  const items61 = json61.items ?? []
-  const boundary51 = items51.length
-  const boundary52 = boundary51 + items52.length
-  const boundary53 = boundary52 + items53.length
-
-  const allItems = [
-    ...items51.map(it => ({ url: it.url, headType: it.head.type })),
-    ...items52.map(it => ({ url: it.url, headType: it.head.type })),
-    ...items53.map(it => ({ url: it.url, headType: it.head.type })),
-    ...items61.map(it => ({ url: it.url, headType: it.head.type })),
-  ]
-  const allResults = await Promise.allSettled(
-    allItems.map(({ url, headType }) => fetchOneTelegram(apiKey, url, headType)),
-  )
-  warnRejectedTelegrams(allResults, '地震履歴の取得')
-
-  const toQuakes = (results: typeof allResults): JMAQuake[] =>
-    results
-      .filter((r): r is PromiseFulfilledResult<JMAQuake | JMATsunami | JMALpgm | null> => r.status === 'fulfilled')
-      .map(r => r.value)
-      .filter((v): v is JMAQuake => v !== null && 'kind' in v && v.kind === 'quake')
-
-  const parsed51 = toQuakes(allResults.slice(0, boundary51))
-  const parsed52 = toQuakes(allResults.slice(boundary51, boundary52))
-  const parsed53 = toQuakes(allResults.slice(boundary52, boundary53))
-  const parsed61 = toQuakes(allResults.slice(boundary53))
-
-  // 各タイプの最古受信時刻（time）を求め、最大値を cutoffTime とする。
-  // cutoffTime より古いアイテムは全タイプ問わず除外する。
-  const oldestOf = (qs: JMAQuake[]): string | null =>
-    qs.reduce<string | null>((acc, q) => acc === null || q.time < acc ? q.time : acc, null)
-  const allOldest = [oldestOf(parsed51), oldestOf(parsed52), oldestOf(parsed53), oldestOf(parsed61)]
-    .filter((t): t is string => t !== null)
-  const cutoffTime = allOldest.length > 0 ? allOldest.reduce((max, t) => t > max ? t : max) : null
-
-  const withinCutoff = (q: JMAQuake): boolean => !cutoffTime || q.time >= cutoffTime
-
-  // cutoffTime による不完全カード除外のみ行い、種別横断（VXSE51/52/53/61）の生電文を返す。
-  // 同一 eventId の統合（VXSE61 の震源マージ・震度の保持・優先度判定）は呼び出し側の
-  // mergeQuakeHistory がリアルタイム経路と同一ロジックで行う。結合順序は上記のとおり
-  // 「速報→詳細」（51→52→53→61）に揃えること。
-  const quakes = [...parsed51, ...parsed52, ...parsed53, ...parsed61].filter(withinCutoff)
-
-  return { quakes, nextToken: json53.nextToken }
-}
-
-// DMDATA REST API で津波履歴（VTSE41: 大津波警報特別、VTSE51: 警報・注意報・解除、VTSE52: 沖合観測）を取得する。
-export async function fetchDmdataTsunamis(
-  apiKey: string,
-  limit: number,
-): Promise<JMATsunami[]> {
-  const headers = { Authorization: authHeader(apiKey) }
-
-  const [r41, r51, r52] = await Promise.allSettled([
-    fetch(`${API_BASE}/telegram?type=VTSE41&limit=${limit}`, { headers }),
-    fetch(`${API_BASE}/telegram?type=VTSE51&limit=${limit}`, { headers }),
-    fetch(`${API_BASE}/telegram?type=VTSE52&limit=${limit}`, { headers }),
-  ])
-
-  if (r51.status === 'rejected' || !r51.value.ok) {
-    const status = r51.status === 'rejected' ? 'network error' : r51.value.status
-    throw new Error(`tsunami history: ${status}`)
-  }
-  const json51 = await r51.value.json() as {
-    items?: Array<{ id: string; url: string; head: { type: string } }>
-  }
-  const items: Array<{ id: string; url: string; head: { type: string } }> = [...(json51.items ?? [])]
-
-  if (r41.status === 'fulfilled' && r41.value.ok) {
-    const json41 = await r41.value.json() as {
-      items?: Array<{ id: string; url: string; head: { type: string } }>
-    }
-    items.push(...(json41.items ?? []))
-  }
-
-  if (r52.status === 'fulfilled' && r52.value.ok) {
-    const json52 = await r52.value.json() as {
-      items?: Array<{ id: string; url: string; head: { type: string } }>
-    }
-    items.push(...(json52.items ?? []))
-  }
-
-  const results = await Promise.allSettled(
-    items.map(it => fetchOneTelegram(apiKey, it.url, it.head.type)),
-  )
-  warnRejectedTelegrams(results, '津波履歴の取得')
-  return results
-    .filter((r): r is PromiseFulfilledResult<JMAQuake | JMATsunami | JMALpgm | null> => r.status === 'fulfilled')
-    .map(r => r.value)
-    .filter((v): v is JMATsunami => v !== null && 'kind' in (v as object) && (v as JMATsunami).kind === 'tsunami')
-}
-
-// DMDATA REST API で南海トラフ地震臨時情報（VYSE50）の最新1件を取得する。
-// 取得失敗時は null を返す（補助情報なのでアプリを壊さない）が、失敗した事実はログに残す。
-// 「発表なし」と「取得できていない」は同じ null になるため、記録が無いと区別できなくなる。
+// **大量に取るならアーカイブを使う。** 1 日分が 1 ファイル（実測 gzip 10KB）で、中の目録から
+// 地震・津波・帯・長周期を全部取り出せる。実装は `services/dmdataReplay.ts` の
+// `fetchDmdataQuakeHistory` 1 本で、リプレイ開始時の復元とも共有している
+// （→ `docs/spec/data-sources-spec.md` §2「大量に取るならアーカイブを使う」）。
 //
-// 段階（調査中／巨大地震注意／巨大地震警戒／調査終了）はすべて VYSE50 で配信されるため、
-// 発令中かどうかはこの 1 種別だけで判定できる。解説情報（VYSE51/52）は段階を持たないので
-// ここでは見ない（以前は VYSE51 を優先して見ており、解説情報が段階を騙る原因になっていた）。
-export async function fetchDmdataNankai(apiKey: string): Promise<JMANankai | null> {
-  if (!isApiKeyUsable(apiKey, '南海トラフ地震臨時情報 (VYSE50)')) return null
-  const headers = { Authorization: authHeader(apiKey) }
-  try {
-    const res = await fetch(`${API_BASE}/telegram?type=VYSE50&limit=1`, { headers })
-    if (!res.ok) { logRestFailure('南海トラフ地震臨時情報 (VYSE50) の一覧', res.status); return null }
-    const json = await res.json() as { items?: Array<{ id: string; url: string }> }
-    const item = (json.items ?? [])[0]
-    if (!item) return null
-    const xmlRes = await fetch(item.url, { headers })
-    if (!xmlRes.ok) { logRestFailure('南海トラフ地震臨時情報 (VYSE50) の電文本体', xmlRes.status); return null }
-    const nankai = parseNankaiFromXml(await xmlRes.text())
-    // 取得はできたのに読めなかった場合を黙って「発表なし」に混ぜない。VYSE50 は必ず段階を持つため、
-    // ここが null になるのは書式が変わった等の異常であり、記録が無いと追跡できなくなる。
-    if (!nankai) {
-      log.warn('[DMDSS] 南海トラフ地震臨時情報 (VYSE50) の段階を解析できませんでした')
-      return null
-    }
-    // 調査終了・取消は「発令中ではない」ので表示しない
-    if (!nankai.cancelled) return nankai
-  } catch (err) {
-    log.error('[DMDSS] 南海トラフ地震臨時情報の取得に失敗', err)
-  }
-  return null
-}
-
-// DMDATA REST API で南海トラフ地震関連解説情報（VYSE51/52）の最新1件を取得する。
-// 取得失敗時の扱いは fetchDmdataNankai と同じ。
-//
-// 臨時解説（VYSE51）と定例解説（VYSE52）のうち、発表が新しい方を採る。臨時情報の発表期間中は
-// 毎日 VYSE51 が出るためそちらが勝ち、平常時は毎月の VYSE52 が残る。
-// 期限切れ（発表から 7 日）のものは初期表示に出さない。定例解説は月 1 回しか来ないため、
-// これを見ないと「先月の解説」が起動時に毎回出てしまう。
-export async function fetchDmdataNankaiCommentary(apiKey: string): Promise<JMANankaiCommentary | null> {
-  if (!isApiKeyUsable(apiKey, '南海トラフ地震関連解説情報 (VYSE51/52)')) return null
-  const headers = { Authorization: authHeader(apiKey) }
-  let newest: JMANankaiCommentary | null = null
-  // try は種別ごとに分ける。1 つの try でループ全体を包むと、VYSE51 側の例外（ネットワーク断・
-  // JSON 破損など !res.ok で捕まらない失敗）でループが中断し、取得できたはずの VYSE52 まで
-  // 諦めることになる。平常時は VYSE52 しか存在しないため、そちらを守る必要がある。
-  for (const type of ['VYSE51', 'VYSE52']) {
-    try {
-      const res = await fetch(`${API_BASE}/telegram?type=${type}&limit=1`, { headers })
-      if (!res.ok) { logRestFailure(`南海トラフ地震関連解説情報 (${type}) の一覧`, res.status); continue }
-      const json = await res.json() as { items?: Array<{ id: string; url: string }> }
-      const item = (json.items ?? [])[0]
-      if (!item) continue
-      const xmlRes = await fetch(item.url, { headers })
-      if (!xmlRes.ok) { logRestFailure(`南海トラフ地震関連解説情報 (${type}) の電文本体`, xmlRes.status); continue }
-      const commentary = parseNankaiCommentaryFromXml(await xmlRes.text())
-      // 取得はできたのに読めなかった場合を黙って「発表なし」に混ぜない
-      if (!commentary) {
-        log.warn(`[DMDSS] 南海トラフ地震関連解説情報 (${type}) を解析できませんでした`)
-        continue
-      }
-      // 取消済みのものは起動時の表示対象にしない
-      if (commentary.cancelled) continue
-      if (new Date(commentary.expireAt).getTime() <= serverNow()) continue
-      // 文字列比較にしないこと。ISO 文字列のタイムゾーン表記が揃っている保証はない
-      if (!newest || new Date(commentary.reportDateTime).getTime() > new Date(newest.reportDateTime).getTime()) {
-        newest = commentary
-      }
-    } catch (err) {
-      log.error(`[DMDSS] 南海トラフ地震関連解説情報 (${type}) の取得に失敗`, err)
-    }
-  }
-  return newest
-}
-
-// DMDATA REST API で北海道・三陸沖後発地震注意情報（VYSE60）の最新1件を取得する。
-// 取得失敗時は null を返すが、失敗した事実はログに残す（理由は fetchDmdataNankai と同じ）。
-export async function fetchDmdataKohatsu(apiKey: string): Promise<JMAKohatsu | null> {
-  if (!isApiKeyUsable(apiKey, '後発地震注意情報 (VYSE60)')) return null
-  const headers = { Authorization: authHeader(apiKey) }
-  try {
-    const res = await fetch(`${API_BASE}/telegram?type=VYSE60&limit=1`, { headers })
-    if (!res.ok) { logRestFailure('後発地震注意情報 (VYSE60) の一覧', res.status); return null }
-    const json = await res.json() as { items?: Array<{ id: string; url: string; head: { type: string } }> }
-    const item = (json.items ?? [])[0]
-    if (!item) return null
-    const xmlRes = await fetch(item.url, { headers })
-    if (!xmlRes.ok) { logRestFailure('後発地震注意情報 (VYSE60) の電文本体', xmlRes.status); return null }
-    const xml = await xmlRes.text()
-    const kohatsu = parseVyse60FromXml(xml)
-    if (!kohatsu || kohatsu.cancelled) return null
-    // 有効期限チェック: expireAt が過去なら null
-    if (new Date(kohatsu.expireAt) <= serverDate()) return null
-    return kohatsu
-  } catch (err) {
-    log.error('[DMDSS] 後発地震注意情報の取得に失敗', err)
-    return null
-  }
-}
-
-/**
- * DMDATA REST API で「7 日ぶん表示され続ける帯」の最新 1 件を取る（地震回数・お知らせ）。
- *
- * **期限切れと取消の判定は呼び出し側（`applyEarthquakeCount` / `applyQuakeNotice`）に任せる。**
- * あちらが持っている判断をここへ写すと、片方だけ直したときに静かに食い違う。
- *
- * 取得失敗時は null を返す（補助情報なのでアプリを壊さない）が、失敗した事実はログに残す。
- * 「発表なし」と「取得できていない」は同じ null になるため、記録が無いと区別できない。
- */
-async function fetchLatestTelegram<T>(
-  apiKey: string,
-  type: string,
-  label: string,
-  parse: (xml: string) => T | null,
-): Promise<T | null> {
-  if (!isApiKeyUsable(apiKey, label)) return null
-  const headers = { Authorization: authHeader(apiKey) }
-  try {
-    const res = await fetch(`${API_BASE}/telegram?type=${type}&limit=1`, { headers })
-    if (!res.ok) { logRestFailure(`${label} の一覧`, res.status); return null }
-    const json = await res.json() as { items?: Array<{ id: string; url: string }> }
-    const item = (json.items ?? [])[0]
-    if (!item) return null
-    const xmlRes = await fetch(item.url, { headers })
-    if (!xmlRes.ok) { logRestFailure(`${label} の電文本体`, xmlRes.status); return null }
-    const parsed = parse(await xmlRes.text())
-    // 取得はできたのに読めなかった場合を黙って「発表なし」に混ぜない。
-    if (!parsed) {
-      log.warn(`[DMDSS] ${label} を解析できませんでした`)
-      return null
-    }
-    return parsed
-  } catch (err) {
-    log.error(`[DMDSS] ${label} の取得に失敗`, err)
-    return null
-  }
-}
-
-/**
- * 地震回数に関する情報（VXSE60）の最新 1 件を取得する。
- *
- * **この帯は 7 日間表示され続けるのに、以前は起動時に復元していなかった**——群発の最中に
- * リロードすると、いちばん見たい回数の経過が消えていた。
- */
-export function fetchDmdataEarthquakeCount(apiKey: string): Promise<JMAEarthquakeCount | null> {
-  return fetchLatestTelegram(apiKey, 'VXSE60', '地震回数に関する情報 (VXSE60)', parseEarthquakeCountFromXml)
-}
-
-/** 地震・津波に関するお知らせ（VZSE40）の最新 1 件を取得する（理由は上と同じ）。 */
-export function fetchDmdataQuakeNotice(apiKey: string): Promise<JMAQuakeNotice | null> {
-  return fetchLatestTelegram(apiKey, 'VZSE40', '地震・津波に関するお知らせ (VZSE40)', parseQuakeNoticeFromXml)
-}
-
-// DMDATA REST API で長周期地震動観測情報（VXSE62）を取得する。
-// oldestOriginTime より古い電文が見つかった時点でページネーションを停止する。
-// 取得失敗時は空配列を返す（補助情報なのでアプリを壊さない）。
-export async function fetchDmdataLpgms(
-  apiKey: string,
-  oldestOriginTime: string,
-): Promise<JMALpgm[]> {
-  if (!isApiKeyUsable(apiKey, '長周期地震動観測情報 (VXSE62)')) return []
-  const headers  = { Authorization: authHeader(apiKey) }
-  const collected: JMALpgm[] = []
-  let nextToken: string | undefined
-  const cutoffMs = new Date(oldestOriginTime).getTime()
-
-  for (;;) {
-    const qs  = nextToken ? `&cursorToken=${nextToken}` : ''
-    // **ここで黙って `break` すると、取れたところまでが「全部取れた」ように返る。**
-    // 件数が減ったことに気づく手立てが無いので、打ち切った理由を残す
-    // （同じ形の穴を個別電文の取得側では `warnRejectedTelegrams` で塞いでいる）。
-    let res: Response
-    try {
-      res = await fetch(`${API_BASE}/telegram?type=VXSE62&limit=20${qs}`, { headers })
-    } catch (e) {
-      log.warn(`[dmdata] 長周期地震動観測情報の一覧取得が例外で終わったため、${collected.length} 件までで打ち切ります: ${String(e)}`)
-      break
-    }
-    if (!res.ok) {
-      log.warn(`[dmdata] 長周期地震動観測情報の一覧取得が HTTP ${res.status} のため、${collected.length} 件までで打ち切ります`)
-      break
-    }
-
-    const json = await res.json() as {
-      items?: Array<{ id: string; url: string; head: { type: string; time?: string } }>
-      nextToken?: string
-    }
-
-    const items = json.items ?? []
-    if (items.length === 0) break
-
-    // ページ内で cutoff より古い発報時刻が見つかればそこで停止
-    let reachedCutoff = false
-    const targets: typeof items = []
-    for (const item of items) {
-      const t = item.head.time ? new Date(item.head.time).getTime() : Infinity
-      if (t < cutoffMs) { reachedCutoff = true; break }
-      targets.push(item)
-    }
-
-    const pageResults = await Promise.allSettled(
-      targets.map(it => fetchOneTelegram(apiKey, it.url, it.head.type)),
-    )
-      warnRejectedTelegrams(pageResults, '長周期地震動観測情報の取得')
-    for (const r of pageResults) {
-      if (r.status === 'fulfilled' && r.value !== null && 'maxClass' in (r.value as object)) {
-        collected.push(r.value as JMALpgm)
-      }
-    }
-
-    if (reachedCutoff || !json.nextToken) break
-    nextToken = json.nextToken
-  }
-
-  return collected
-}
-
+// ここに 1 件ずつ取る経路を足し直さないこと。**このファイルに残っているのは、
+// 受信の入口（`DmdataWebSocket`）と、電文個別取得を必要としない `fetchDmdataGdEarthquakes`
+// だけでよい。**
 // GD Earthquake List（gd.earthquake スコープ）の1件分。震源緯度経度・マグニチュードが
 // レスポンス内で完結しており、telegram 系のような電文個別取得（N+1）が不要。
 export interface GdEarthquakeItem {

@@ -609,6 +609,39 @@ export function quakeRetractionOf(cancel: JMAQuake, matched?: JMAQuake): QuakeRe
  * 参照側で広げてはいけない。** 報を落とす判定は結果が画面に出ないぶん見つけにくいので、
  * 適用側と対称に保つ。
  */
+/**
+ * 取消の記録を台帳へ足す。**同じ取消は二度積まない。**
+ *
+ * 同じ取消電文は複数の経路から届く —— 履歴の途中経過と最後の集約、ライブ受信と履歴の重なり、
+ * 「もっと見る」で同じページを読み直したとき。重複を許すと**上限が同じ取消だけで埋まり、
+ * まだ生きている別の取消の記録を押し出す**。その取消の対象だった古い報が後から届くと、
+ * 取り下げ済みの地震カードが復活する（→ `docs/spec/quake-spec.md` §6.2「取消の後に届いた報」）。
+ *
+ * **冪等にするのは記録する側。** 呼ぶ側に「重複しないように呼べ」と課すと、経路が増えたときに
+ * 必ず破れる（実際、履歴の部分反映を足したときに破れた）。
+ *
+ * 同一性は電文そのもので見る（発表時刻・種別・電文の識別子）。`sameQuakeEntry` のような
+ * 「同じ地震か」の判定ではない —— **別々の取消電文は別の記録として残す**。
+ *
+ * @param list 台帳（その場で書き換える）
+ * @param retraction 足す記録
+ * @param max 保持する最大件数。超えた分は古い方から捨てる
+ */
+export function addQuakeRetraction(
+  list: QuakeRetraction[],
+  retraction: QuakeRetraction,
+  max: number,
+): void {
+  const already = list.some(r =>
+    r.reportTime === retraction.reportTime
+    && r.issueType === retraction.issueType
+    && r.entry.id === retraction.entry.id
+  )
+  if (already) return
+  list.push(retraction)
+  if (list.length > max) list.splice(0, list.length - max)
+}
+
 export function isRetractedQuakeReport(
   retractions: readonly QuakeRetraction[],
   incoming: JMAQuake,
@@ -702,8 +735,8 @@ export function coalesceByEventId(cards: JMAQuake[]): JMAQuake[] {
 // 据え置き判定は「incoming が実震度を持つ電文どうし」では issue.type の優先度を見ず time
 // だけで判定するため、同じ分に詳しい電文（各地の震度情報等）と粗い電文（震度速報の再送等）が
 // 両方含まれる場合、**入力配列で詳しい方が先・粗い方が後だと、粗い方が詳しい方を上書きする**
-// （敵対的レビューで指摘・確認済み）。呼び出し側（`fetchDmdataEarthquakes`）が
-// 「速報→詳細」（VXSE51→52→53→61）の順に結合することで、通常の発表順に沿う限り
+// （敵対的レビューで指摘・確認済み）。呼び出し側（`services/dmdataReplay.ts` の
+// `orderedForMerge`）が「発表時刻の昇順 → 同値なら種別優先度の昇順」で並べ直すことで、
 // この逆転は起きない設計にしている。呼び出し側で結合順序を変える場合はこの前提を崩さないこと。
 // 索引の意味は `quakePoints.ts` の `isAreaPoint`。**省略可能にしない**——渡し忘れた呼び出し側が
 // 黙って縮退する（区域名が県名と同じ奈良県だけ区域で引き当てられなくなる）ため、型検査に見張らせる。
@@ -717,9 +750,21 @@ export function mergeQuakeHistory(
 
   // 電文の発表時刻昇順で適用する（＝到着順の再現）。同時刻の相対順序は呼び出し側の
   // 入力順序に委ねる（上の「既知の限界」参照）。
-  const ordered = [...newQuakes].sort((a, b) =>
-    new Date(a.time).getTime() - new Date(b.time).getTime()
-  )
+  //
+  // **日時として読めない時刻は末尾へ寄せる。** 素朴に `getTime()` の差を返すと、読めない時刻が
+  // 1 件混ざるだけで比較関数が全順序にならず（読めない a と読める b・c について a=b・a=c なのに
+  // b<c が成り立つ）、`Array.prototype.sort` の結果が実装依存になる。**症状は「同じ入力なのに
+  // 並びが違う」で、例外もログも出ない。** 呼び出し側（`dmdataReplay.ts` の `orderedForMerge`）が
+  // 同じ規則で並べてくるので、そこで作った順序をここで崩さないためにも要る。
+  const timeKey = (q: JMAQuake): number => {
+    const ms = new Date(q.time).getTime()
+    return Number.isFinite(ms) ? ms : Number.POSITIVE_INFINITY
+  }
+  const ordered = [...newQuakes].sort((a, b) => {
+    const at = timeKey(a)
+    const bt = timeKey(b)
+    return at === bt ? 0 : at - bt
+  })
   // 取り下げの記録。履歴ではカードを消してしまうため、消した後に「取消以前に発表された報」が
   // 回ってきても照合できなくなる。**同じ分に取消と報が並ぶと入力順がそのまま効く**ので
   // （上の「既知の限界」と同じ機構）、取消を見た事実を別に残しておく。

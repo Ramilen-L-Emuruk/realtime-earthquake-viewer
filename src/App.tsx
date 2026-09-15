@@ -1817,9 +1817,13 @@ export function App() {
       : (isDmdss && nowTick !== null)
         ? nowTick
         : lastUpdate
-  // 更新がエラーで停止しているか（リアルタイム=取得連続失敗 / それ以外=WS切断）
+  // 更新がエラーで停止しているか（リアルタイム=取得連続失敗 / それ以外=WS切断）。
+  // **`crowded`（同時接続枠が埋まっている）も更新は止まっている**ので同じく警告を出す。
+  // 理由まで伝えるのは設定タブの接続状態の側（→ types/earthquake.ts の `ConnectionStatus`）。
   const overlayError =
-    mapTab === 'realtime' ? kyoshin.error : connectionStatus === 'disconnected'
+    mapTab === 'realtime'
+      ? kyoshin.error
+      : connectionStatus === 'disconnected' || connectionStatus === 'crowded'
 
   return (
     // 画面いっぱいの高さは h-dvh（100dvh）で取る。dvh はブラウザ UI の出入りに追従するため、

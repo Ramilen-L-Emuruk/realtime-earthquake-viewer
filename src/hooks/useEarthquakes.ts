@@ -2,8 +2,11 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useLazyRef } from './useLazyRef'
 import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMANankaiCommentary, JMAKohatsu, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity, EEWAlert, IntensityScale, EarthquakePoint, AppEvent, LiveEvent, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
 import { fetchHistory, fetchJmaQuake, P2PQuakeWebSocket } from '../services/p2pquake'
-import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms, fetchDmdataNankai, fetchDmdataNankaiCommentary, fetchDmdataKohatsu, fetchDmdataEarthquakeCount, fetchDmdataQuakeNotice } from '../services/dmdata'
-import { mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes, extractQuakeEventId, quakeEventKey, coalesceByEventId, findExistingQuakeCard, isRetractedQuakeReport, quakeRetractionOf } from '../utils/quakeMerge'
+import { DmdataWebSocket } from '../services/dmdata'
+// 履歴の取得はリプレイ開始時の復元と実装を共有する（→ `data-sources-spec.md` §2
+// 「大量に取るならアーカイブを使う」）。同じ目的の実装を 2 本持たない。
+import { fetchDmdataQuakeHistory, MAX_HISTORY_DAYS } from '../services/dmdataReplay'
+import { mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes, extractQuakeEventId, quakeEventKey, coalesceByEventId, findExistingQuakeCard, isRetractedQuakeReport, quakeRetractionOf, addQuakeRetraction } from '../utils/quakeMerge'
 import type { QuakeRetraction } from '../utils/quakeMerge'
 import { loadStationCoords, onStationCoordsLoaded, buildAreaPrefIndex, getAreaPrefIndexCache } from '../utils/stationCoords'
 import type { AreaPrefIndex } from '../utils/quakePoints'
@@ -25,6 +28,23 @@ import { loadTestData } from '../utils/testDataLoader'
 export const MAX_HISTORY_RETAINED = 50
 const LOAD_MORE_BATCH = 50        // 「もっと見る」1回あたりの取得件数
 const MAX_TELEGRAM_LOG = 200      // 電文ログの最大保持件数
+/**
+ * 起動時にアーカイブを遡る日数。
+ *
+ * リプレイ開始時の履歴復元と同じ値。**日数がそのままリクエスト数になる**（1 日 1 ファイル・
+ * 実測 gzip 10KB）ので、起動時は短く取る。件数が早く揃えばここまで遡らない。
+ */
+const HISTORY_INITIAL_DAYS = 7
+
+/**
+ * 「もっと見る」1 回で伸ばす日数。
+ *
+ * **遡れるのは `MAX_HISTORY_DAYS` まで。** アーカイブの在庫はそれより遥かに古くまであるので
+ * （実測: 目録は 135 日以上さかのぼれた）、「在庫が尽きて自然に止まる」ことは起きない。
+ * 止まるのは当日経路の日付列挙の上限で、そこへ達したら `hasMore` を偽にして押せなくする。
+ */
+const HISTORY_MORE_DAYS = 7
+
 const MAX_QUAKE_RETRACTIONS = 20  // 取消を見た事実の台帳の最大保持件数（`rememberQuakeRetraction`）
 
 /**
@@ -534,10 +554,27 @@ export function useEarthquakes(
   // イベントキュー: ディスパッチャーが 10ms ごとに、発火時刻の来たものを先頭から処理する。
   // リプレイ時は eventTime と再生時刻を比較して発火制御する（並びと取り出しの規約は `EventQueue`）。
   const eventQueueRef = useLazyRef<EventQueue>(createEventQueue)
-  // DMDSS 版「もっと見る」用カーソルと API キー（useCallback 内の stale closure 回避）
-  const dmdataCursorRef = useRef<string | undefined>(undefined)
+  /**
+   * ライブ接続を張り直すたびに進む番号。**時間軸が変わったことを、後から走る取得へ伝える。**
+   *
+   * 履歴の電文本体は最長で数分かけて届く（→ `services/telegramBody.ts` の取得間隔）。
+   * その途中でリプレイが始まる・API キーが変わると、届いた電文は**別の時間軸の一覧**へ
+   * 流し込まれることになる。接続 effect の中の `cancelled` はそのスコープに閉じていて
+   * 「もっと見る」からは触れないため、共有できる形で持つ。
+   */
+  const liveGenerationRef = useRef(0)
   const dmdataApiKeyRef = useRef(dmdataApiKey)
   dmdataApiKeyRef.current = dmdataApiKey
+  // 「もっと見る」は依存を持たない `useCallback` なので、設定は ref で見る
+  const dmdataTestDeliveryRef = useRef(dmdataTestDelivery)
+  dmdataTestDeliveryRef.current = dmdataTestDelivery
+  /**
+   * いまアーカイブを何日ぶん遡っているか。**「もっと見る」のたびに伸ばす。**
+   *
+   * 件数だけを増やしても、日数が足りなければ在庫を読み切ったところで止まる
+   * （7 日分で 43 件しか無ければ、目標 50 件には永久に届かない）。
+   */
+  const historyDaysRef = useRef(HISTORY_INITIAL_DAYS)
   // 通常版「もっと見る」用の生 API 取得件数（重複除去後の earthquakes.length とは別管理）
   // offset = earthquakes.length だと重複除去ズレで古いデータが抜け落ちるため、API 呼び出し回数ベースで管理する
   const p2pRawOffsetRef = useRef(0)
@@ -685,13 +722,24 @@ export function useEarthquakes(
     }
     if (!kohatsu.cancelled) {
       const expireMs = new Date(kohatsu.expireAt).getTime() - getTimeRef.current().getTime()
-      if (expireMs > 0) {
-        kohatsuExpireTimerRef.current = window.setTimeout(() => {
-          kohatsuExpireTimerRef.current = undefined
-          shownKohatsuEventIdRef.current = null
-          setState(prev => ({ ...prev, kohatsu: null }))
-        }, expireMs)
+      // **期限切れは出さない。** かつては取得側（`fetchDmdataKohatsu`）が期限切れを除いて
+      // 返していたので、ここへは届かなかった。履歴をアーカイブ経由の 1 本へ寄せたことで
+      // **遡り幅の中の最新 1 通がそのまま渡る**ようになり、期限切れも届く。
+      // タイマーを張らないだけでは足りない —— 表示は出たまま、消える契機が 1 つも無くなる。
+      //
+      // 「日時が壊れている」と「正当に期限切れ」を同じ無言の false に潰さない
+      // （解説情報・地震回数・お知らせと同じ方針）。
+      if (!Number.isFinite(expireMs)) {
+        log.warn('[data] 後発地震注意情報の期限を計算できません', kohatsu.expireAt)
+        return false
       }
+      if (expireMs <= 0) return false
+
+      kohatsuExpireTimerRef.current = window.setTimeout(() => {
+        kohatsuExpireTimerRef.current = undefined
+        shownKohatsuEventIdRef.current = null
+        setState(prev => ({ ...prev, kohatsu: null }))
+      }, expireMs)
       shownKohatsuEventIdRef.current = kohatsu.eventId
       setState(prev => ({ ...prev, kohatsu }))
       return true
@@ -927,10 +975,9 @@ export function useEarthquakes(
    * 走査する**ので、伸びると受信ごとの処理も重くなる。取り下げ済みの報が届くのは順序の
    * 入れ替わりか誤認識なので、直近の取消だけ覚えていれば足りる。
    */
+  // 重複の排除と上限の管理は `addQuakeRetraction` が持つ（そちらに理由とテストがある）
   const rememberQuakeRetraction = useCallback((retraction: QuakeRetraction) => {
-    const list = quakeRetractionsRef.current
-    list.push(retraction)
-    if (list.length > MAX_QUAKE_RETRACTIONS) list.splice(0, list.length - MAX_QUAKE_RETRACTIONS)
+    addQuakeRetraction(quakeRetractionsRef.current, retraction, MAX_QUAKE_RETRACTIONS)
   }, [])
 
   /** 履歴バッチに含まれる取消電文を台帳へ取り込む（ライブ経路と記憶を共有するため）。 */
@@ -1399,6 +1446,10 @@ export function useEarthquakes(
 
   useEffect(() => {
     let cancelled = false
+    // 時間軸が変わった印。ここより前に始まった取得は、以後の結果を捨てる
+    liveGenerationRef.current++
+    // 遡り幅も初期値へ戻す（戻さないと、接続を張り直すたびに余計に遡る）
+    historyDaysRef.current = HISTORY_INITIAL_DAYS
 
     // VAR-1: リプレイ中はライブ接続を止める（両バリアント共通）。過去の電文を流している最中に
     // 現在時刻のライブ更新が混ざると、再生時刻より未来の地震がカードに並んで実際の経過を追えない。
@@ -1453,43 +1504,47 @@ export function useEarthquakes(
 
       setState(prev => ({ ...prev, isLoading: true, connectionStatus: 'connecting', error: null }))
 
-      // DMDATA REST API で履歴取得
-      Promise.all([
-        fetchDmdataEarthquakes(dmdataApiKey, MAX_HISTORY_RETAINED),
-        fetchDmdataTsunamis(dmdataApiKey, 10),
-        // 取得側で失敗はすべて捕まえて null を返すため、ここへは届かない想定。
-        // 万一漏れた場合に地震・津波の履歴取得まで巻き込まないための保険なので、
-        // 素通しにせず記録を残す（この 2 つは補助情報のため、失敗しても続行してよい）。
-        fetchDmdataNankai(dmdataApiKey).catch(err => {
-          log.error('[data] 南海トラフ地震臨時情報の取得で想定外の失敗', err)
-          return null
-        }),
-        fetchDmdataKohatsu(dmdataApiKey).catch(err => {
-          log.error('[data] 後発地震注意情報の取得で想定外の失敗', err)
-          return null
-        }),
-        fetchDmdataNankaiCommentary(dmdataApiKey).catch(err => {
-          log.error('[data] 南海トラフ地震関連解説情報の取得で想定外の失敗', err)
-          return null
-        }),
-        // **7 日間表示され続ける帯**。以前は起動時に復元しておらず、群発の最中にリロードすると
-        // 回数の経過が消えていた（南海トラフの 3 種は復元していたので、ここだけ抜けていた）。
-        fetchDmdataEarthquakeCount(dmdataApiKey).catch(err => {
-          log.error('[data] 地震回数に関する情報の取得で想定外の失敗', err)
-          return null
-        }),
-        fetchDmdataQuakeNotice(dmdataApiKey).catch(err => {
-          log.error('[data] 地震・津波に関するお知らせの取得で想定外の失敗', err)
-          return null
-        }),
-      ])
-        .then(async ([quakeResult, tsunamiEvents, nankaiData, kohatsuData, commentaryData, countData, noticeData]) => {
+      // **取れた分から順に画面へ出す。** 電文本体の取得は配信元の上限に合わせて
+      // 6 秒に 1 件へ直列化されるので（→ `services/telegramBody.ts`）、控えが空の初回は
+      // 全件が揃うまで数分かかる。揃うまで待つ形だと、そのあいだ地震の履歴が空のままになる。
+      // **控えが埋まっている 2 回目以降は待ちが無いので、実質いままでどおり一度に出る。**
+      const applyPartialQuakes = (partial: JMAQuake[]): void => {
+        if (cancelled) return
+        // 記録する側が重複を弾くので、部分結果ごとに呼んでよい（`rememberQuakeRetraction`）
+        rememberQuakeRetractionsFromBatch(partial)
+        // **base は空ではなく現在値。** 取得のあいだにライブで届いた地震を消さないため
+        // （`mergeQuakeHistory` は `Control/DateTime` で同じ電文を二度数えないので、
+        // 同じ部分結果を重ねて当てても結果は変わらない）。
+        setState(prev => ({
+          ...prev,
+          earthquakes: mergeQuakeHistory(partial, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache()),
+          lastUpdate: serverDate(),
+        }))
+        // **触るのは地震だけ。** 津波・長周期・補助情報は別経路で、ここで混ぜると
+        // まだ取得していないものを「無い」として画面へ出すことになる。
+        // `isLoading` も倒さない —— まだ増える途中なので、読み込み中のままが正しい。
+      }
+
+      // **履歴はアーカイブ経由で 1 本にまとめて取る。**
+      //
+      // かつては地震・津波・補助情報 5 本を `Promise.all` で並行に取り、どれも
+      // 一覧（`/v2/telegram`）＋本体（`/v1/:id`）を 1 件ずつ叩いていた（実測で起動あたり
+      // 110 件超）。**大量に取るならアーカイブを使う** —— 1 日分が 1 ファイル（実測 gzip 10KB）で、
+      // 中の目録から地震・津波・帯・長周期を全部取り出せる（→ `data-sources-spec.md` §2
+      // 「大量に取るならアーカイブを使う」）。
+      //
+      // 実装はリプレイ開始時の履歴復元と共有する（`fetchDmdataQuakeHistory`）。同じ目的の
+      // 実装を 2 本持つと、片方だけがアーカイブを使う今までの形に戻る。
+      fetchDmdataQuakeHistory(
+        dmdataApiKey, serverDate(), MAX_HISTORY_RETAINED, HISTORY_INITIAL_DAYS, dmdataTestDelivery,
+        applyPartialQuakes, () => cancelled,
+      )
+        .then((history) => {
           if (cancelled) return
-          const { quakes: quakeEvents, nextToken } = quakeResult
-          dmdataCursorRef.current = nextToken
+          const quakeEvents = history.quakes
+          const tsunamiEvents = history.tsunamis
           // 種別横断の生電文を eventId ごとに統合（リアルタイムと同一ロジック）。
           rememberQuakeRetractionsFromBatch(quakeEvents)
-          const earthquakes = mergeQuakeHistory(quakeEvents, [], quakeRetractionsRef.current, getAreaPrefIndexCache())
           const allTsunami = tsunamiEvents
             .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
           // 画面へ載せるのは最新報 1 通だけ。その報が有効期限を持たなくても、同じ津波の過去報が
@@ -1508,14 +1563,11 @@ export function useEarthquakes(
             && !(latestTsunami.validDateTime && new Date(latestTsunami.validDateTime) <= now)
             ? [latestTsunami] : []
 
-          // 表示中の最古の地震時刻まで VXSE62 をページネーションで取得
-          const oldest = earthquakes.reduce<string | null>((acc, q) => {
-            const t = q.earthquake.time
-            return acc === null || t < acc ? t : acc
-          }, null)
-          const lpgmEvents = oldest
-            ? await fetchDmdataLpgms(dmdataApiKey, oldest).catch(() => [])
-            : []
+          // 長周期は同じアーカイブに入っているので、拾うだけで追加の通信は要らない
+          const lpgmEvents = history.extras
+            .map(e => e.payload)
+            .filter((p): p is { kind: 'lpgm'; data: JMALpgm } => p.kind === 'lpgm')
+            .map(p => p.data)
           const lpgmByEventId = new Map<string, JMALpgm>()
           for (const lpgm of lpgmEvents) {
             if (lpgm.cancelled) continue
@@ -1528,24 +1580,47 @@ export function useEarthquakes(
           if (cancelled) return
           setState(prev => ({
             ...prev,
-            earthquakes,
+            // **ここも base は現在値。** 空から組み直すと、履歴を取っているあいだに
+            // ライブで届いた地震が最後に消える。取得が 6 秒に 1 件へ直列化されたことで
+            // その窓が数分に伸びたため、取りこぼしが実際に起きうる
+            // （→ `services/telegramBody.ts` の取得間隔）。
+            earthquakes: mergeQuakeHistory(quakeEvents, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache()),
             tsunamis,
             lpgmByEventId,
             lastUpdate: serverDate(),
             isLoading: false,
-            hasMore: !!nextToken,
+            hasMore: history.hasMore,
             error: null,
           }))
           // **臨時情報・後発地震・解説情報はヘルパ経由で入れる。** ここで state を直書きすると、
           // 表示中の識別情報を覚える記憶（`shownNankaiEventIdRef` 等）が進まず、以後に届いた
           // 取消の照合が「表示していない」と誤判定して無条件に帯を消す。後発地震の期限タイマーも
-          // `applyKohatsu` が張るので、ここで重ねて張らない（取得は取消・期限切れを除いて返す）。
-          if (nankaiData) applyNankai(nankaiData)
-          if (kohatsuData) applyKohatsu(kohatsuData)
-          if (commentaryData) applyNankaiCommentary(commentaryData)
+          // `applyKohatsu` が張るので、ここで重ねて張らない。
+          // **`extras` は種別ごとに振り分けてヘルパへ渡す。** 再生キューへ流す形（リプレイ側）は
+          // ここでは採れない —— あちらは `silent` で音を抑えるが、こちらは音・読み上げ・通知を
+          // 起こす経路（`handleEvent`）を通ることになる。
+          //
           // 期限切れ・取消の判定は apply 側が持つ（取得側へ写すと片方だけ直したときに食い違う）。
-          if (countData) applyEarthquakeCount(countData)
-          if (noticeData) applyQuakeNotice(noticeData)
+          for (const e of history.extras) {
+            const p = e.payload
+            switch (p.kind) {
+              case 'lpgm': break            // 上で `lpgmByEventId` へ入れた
+              case 'nankai': applyNankai(p.data); break
+              case 'nankaiCommentary': applyNankaiCommentary(p.data); break
+              case 'kohatsu': applyKohatsu(p.data); break
+              case 'earthquakeCount': applyEarthquakeCount(p.data); break
+              case 'quakeNotice': applyQuakeNotice(p.data); break
+              case 'event':
+              case 'estimatedIntensity':
+                // `HISTORY_EXTRA_TYPES` に入らないので届かない。**種別を足したときに
+                // ここで止まるよう、既定へ落とさず名指しで書く。**
+                break
+              default: {
+                const exhaustive: never = p
+                log.warn('[data] 履歴の補助情報に未知の種別', exhaustive)
+              }
+            }
+          }
           // 初回ロードで津波が有効（validDateTime未来）の場合、キューへ解除イベントを挿入する。
           if (tsunamis.length > 0 && latestTsunami?.validDateTime) {
             const expireTime = new Date(latestTsunami.validDateTime)
@@ -1753,46 +1828,83 @@ export function useEarthquakes(
 
   const loadMoreEarthquakes = useCallback(async () => {
     if (stateRef.current.isLoadingMore || !stateRef.current.hasMore) return
+    // **この取得が「まだ有効か」を測る物差し。**
+    // 電文本体の取得は最長で数分かかる（→ `services/telegramBody.ts` の取得間隔）。そのあいだに
+    // リプレイが始まる・接続が張り直されると、届いた電文は**別の時間軸の一覧**へ流し込まれる。
+    // 接続 effect の `cancelled` はそちらのスコープに閉じていて、ここからは触れないので、
+    // 作り直しのたびに進む世代の番号で見分ける。
+    const generation = liveGenerationRef.current
+    const stale = () => liveGenerationRef.current !== generation
+    // **失敗したら伸ばした日数を戻す。** 戻さないと、一過性の失敗で飛ばした 1 週間ぶんの
+    // 履歴が二度と読まれない（次に押したときはさらに古い範囲を読むため）。
+    //
+    // **ただし戻すのは自分の世代のときだけ**（下の catch）。接続を張り直す effect は
+    // `liveGenerationRef` を進めるのと同じ同期ブロックで `historyDaysRef` を初期値へ戻すので、
+    // 世代が変わった後に無条件で書き戻すと**そのリセットを踏み潰す**。症状は
+    // 「キーを差し替えた直後の 1 回目のクリックだけ、旧世代の広い範囲を読み直す」で、
+    // 画面には何も出ない（このセッションで避けたいのは、まさに余計なリクエスト）。
+    const daysBeforeThisClick = historyDaysRef.current
     setState(prev => ({ ...prev, isLoadingMore: true }))
     try {
       if (isDmdss) {
         const apiKey = dmdataApiKeyRef.current
-        const cursor = dmdataCursorRef.current
         const existingQuakes = stateRef.current.earthquakes
-        const { quakes: events, nextToken } = await fetchDmdataEarthquakes(apiKey, LOAD_MORE_BATCH, cursor)
-        dmdataCursorRef.current = nextToken
+        // 初回と同じ理由で逐次に反映する。**控えが空のうちは 1 件 6 秒**なので、
+        // 揃うまで待つ形だと押してから数分ボタンが無反応に見える。
+        const applyPartialMore = (partial: JMAQuake[]): void => {
+          if (stale()) return
+          rememberQuakeRetractionsFromBatch(partial)
+          setState(prev => ({
+            ...prev,
+            earthquakes: mergeQuakeHistory(partial, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache()),
+          }))
+        }
+        // **目標件数を増やして呼び直す。** カーソルは使わない —— アーカイブ経由は件数基準で
+        // 遡る作りで、**読んだ日はキャッシュに残る**ので追加の通信は新しい日のぶんだけ。
+        const target = existingQuakes.length + LOAD_MORE_BATCH
+        // **日数も伸ばす。** 件数だけ増やしても、在庫を読み切った日より前へは進めない。
+        //
+        // **上限で頭を打つ。** 越えた日数を渡すと当日経路の日付列挙が投げる
+        // （→ `MAX_HISTORY_DAYS`）。押すたびに同じ例外を投げるボタンを残さないため、
+        // 越えないところで止め、下で `hasMore` を偽にする。
+        historyDaysRef.current = Math.min(historyDaysRef.current + HISTORY_MORE_DAYS, MAX_HISTORY_DAYS)
+        const history = await fetchDmdataQuakeHistory(
+          apiKey, serverDate(), target, historyDaysRef.current, dmdataTestDeliveryRef.current,
+          applyPartialMore, stale,
+        )
+        // 時間軸が変わっていたら、取れた分ごと捨てる（「取得中」の解除は finally が担う）
+        if (stale()) return
+        const events = history.quakes
         // 既存カード群を base に、新バッチの生電文を eventId ごとに統合する。
         // これによりバッチ跨ぎ（先に届いた VXSE61 単独カードへ後続の VXSE53 の震度を合流など）も
         // リアルタイムと同一結果になる。
         // 台帳への記録は setState の外で行う（更新関数は再実行されうるため副作用を持たせない）。
         rememberQuakeRetractionsFromBatch(events)
-        setState(prev => ({
-          ...prev,
-          earthquakes: mergeQuakeHistory(events, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache()),
-          isLoadingMore: false,
-          hasMore: !!nextToken,
-        }))
-        // 新しく読み込んだ地震に対応する LPGM を追加取得（失敗は無視）
-        const newOldest = [...existingQuakes, ...events].reduce<string | null>((acc, q) => {
-          const t = q.earthquake.time
-          return acc === null || t < acc ? t : acc
-        }, null)
-        if (newOldest) {
-          const lpgmEvents = await fetchDmdataLpgms(apiKey, newOldest).catch(() => [])
-          if (lpgmEvents.length > 0) {
-            setState(prev => {
-              const lpgmByEventId = new Map(prev.lpgmByEventId)
-              for (const lpgm of lpgmEvents) {
-                if (lpgm.cancelled) continue
-                const existing = lpgmByEventId.get(lpgm.eventId)
-                if (!existing || lpgm.time > existing.time) {
-                  lpgmByEventId.set(lpgm.eventId, lpgm)
-                }
-              }
-              return { ...prev, lpgmByEventId }
-            })
+        // 長周期は同じアーカイブに入っているので、拾うだけで追加の通信は要らない
+        const lpgmEvents = history.extras
+          .map(e => e.payload)
+          .filter((p): p is { kind: 'lpgm'; data: JMALpgm } => p.kind === 'lpgm')
+          .map(p => p.data)
+        setState(prev => {
+          const lpgmByEventId = new Map(prev.lpgmByEventId)
+          for (const lpgm of lpgmEvents) {
+            if (lpgm.cancelled) continue
+            const existing = lpgmByEventId.get(lpgm.eventId)
+            if (!existing || lpgm.time > existing.time) lpgmByEventId.set(lpgm.eventId, lpgm)
           }
-        }
+          const merged = mergeQuakeHistory(events, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache())
+          return {
+            ...prev,
+            earthquakes: merged,
+            lpgmByEventId,
+            // **打ち切るのは「これ以上遡れない」ときだけ。** 増えたかどうかでは判定しない ——
+            // 1 週間まるごと震度1以上の地震が無いことは普通に起きるが、それは
+            // 「もっと古い在庫が無い」ことを何も意味しない（実測でアーカイブの目録は
+            // 135 日以上さかのぼれた）。増えなかったら止める作りにしていた頃は、
+            // 静かな 1 週間に当たった時点で以後の遡りが永久に塞がっていた。
+            hasMore: history.hasMore && historyDaysRef.current < MAX_HISTORY_DAYS,
+          }
+        })
       } else {
         const offset = p2pRawOffsetRef.current
         const events = await fetchJmaQuake({ limit: LOAD_MORE_BATCH, offset })
@@ -1804,15 +1916,29 @@ export function useEarthquakes(
         setState(prev => ({
           ...prev,
           earthquakes: mergeQuakeHistory(events, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache()),
-          isLoadingMore: false,
           hasMore: events.length === LOAD_MORE_BATCH,
         }))
       }
     } catch (err) {
+      // **時間軸が変わった後の失敗は「失敗」として記録しない。** 結果ごと捨てる取得なので、
+      // 誰も困っていない。理由が本物なら新しい世代が同じ理由で失敗して、そちらが記録する。
+      // 巻き戻しを見送るのと同じ基準で揃える（片方だけガードすると、記録だけが残って
+      // 「失敗したのに遡り幅が戻っていない」と読める）。痕跡は詳細ログへ落とす。
+      if (stale()) {
+        log.debug('[data] 古い世代の追加読み込みが失敗（結果は破棄）', err)
+        return
+      }
       // 追加読み込みの失敗は画面では「増えなかった」だけに見える（初回ロード用の error state は
       // 触らない）。ユーザーが再度押せる状態に戻すだけなので、理由はログに残す。
       log.error('[data] 地震履歴の追加読み込みに失敗', err)
-      setState(prev => ({ ...prev, isLoadingMore: false }))
+      historyDaysRef.current = daysBeforeThisClick
+    } finally {
+      // **「取得中」の解除は抜け道を作らず、必ずここで行う。**
+      // 成功パスの `setState` の中に混ぜていた頃は、`stale()` での早期 return だけが解除を
+      // 通らなかった。冒頭のガード（`isLoadingMore` なら何もしない）と噛み合って、
+      // **押してから API キーを変えた・リプレイを始めただけでボタンがリロードまで死ぬ**。
+      // 画面には「取得中…」のまま押せないボタンが残るだけで、例外もログも出ない。
+      setState(prev => (prev.isLoadingMore ? { ...prev, isLoadingMore: false } : prev))
     }
   }, [])
 
