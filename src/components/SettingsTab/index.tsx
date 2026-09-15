@@ -21,6 +21,7 @@ import { useDebouncedValue } from '../../hooks/useDebouncedValue'
 import { DescriptionTip } from '../DescriptionTip'
 import { zipSync } from 'fflate'
 import { countRecords, listRecords, clearRecords, onRecordsChanged, hasStorageError } from '../../utils/detectionDiagnosticsDb'
+import { telegramCacheStats, hasTelegramCacheError, telegramCachePurgeStats, onTelegramCacheChanged } from '../../utils/telegramBodyCache'
 import { formatFileStamp } from '../../utils/formatters'
 import { useKyoshinImport } from '../../hooks/useKyoshinImport'
 
@@ -95,6 +96,52 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       </div>
       <div className="divide-y divide-border">{children}</div>
     </section>
+  )
+}
+
+/**
+ * 電文の控えの状態（件数・容量・使えているか）。
+ *
+ * **控えが効かない端末では、起動のたびに電文を取り直す。** 配信元が「同じ`id`に対して
+ * 短期間にリクエストを繰り返さないように実装してください」と求めている以上、効いていない
+ * ことに気づける必要がある —— プライベートモードや容量不足では IndexedDB が使えず、
+ * それを知らせる手立てがコンソールの 1 行しか無かった
+ * （→ [`data-sources-spec.md`](../../../docs/spec/data-sources-spec.md) §2「リクエスト数を抑える」）。
+ */
+function TelegramCacheRow() {
+  const [stats, setStats] = useState<{ entries: number; bytes: number } | null>(null)
+  const [note, setNote] = useState<string | null>(null)
+  const refresh = useCallback(() => {
+    void telegramCacheStats().then(setStats)
+    if (hasTelegramCacheError()) {
+      setNote('この端末では控えを持てません（プライベートモード・容量不足など）。起動のたびに電文を取り直します')
+      return
+    }
+    // 上限に達して控えたばかりのものまで捨てている状態は、件数だけでは正常と見分けが付かない
+    const purge = telegramCachePurgeStats()
+    setNote(purge.purgedRecent > 0
+      ? `控えが上限に達しています（控えた直後に捨てた電文 ${purge.purgedRecent} 件）。同じ電文を取り直している可能性があります`
+      : null)
+  }, [])
+  // 控えが増減したら読み直す（通知はまとめて届く）。設定タブは常時マウントされたまま
+  // CSS で隠れるだけなので、一定間隔で問い合わせる作りにはしない
+  useEffect(() => {
+    refresh()
+    return onTelegramCacheChanged(refresh)
+  }, [refresh])
+
+  return (
+    <Row
+      label="電文の控え"
+      description="取得した電文をこのブラウザに控えて、同じ電文を取り直さないようにします。上限を超えた分は古い順に自動で捨てます"
+    >
+      <div className="flex flex-col items-end gap-1">
+        <span className="text-xs text-secondary">
+          {stats === null ? '—' : `${stats.entries} 件 / ${(stats.bytes / 1024 / 1024).toFixed(1)} MB`}
+        </span>
+        {note && <p className="text-xs text-amber-400 w-56 text-left leading-snug">{note}</p>}
+      </div>
+    </Row>
   )
 }
 
@@ -841,6 +888,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
               onChange={v => onUpdate('dmdataTestDelivery', v)}
             />
           </Row>
+          <TelegramCacheRow />
 
         </Section>
       )}
