@@ -64,6 +64,14 @@ function spokenTexts(): string[] {
   return speeches.map(s => s.text)
 }
 
+/**
+ * 分布モードを開く呼び出し（`openEstimatedIntensity`）。
+ *
+ * **`false` を返させる**＝「対応する地震カードがまだ無くて開けなかった」状態を作る。この形で
+ * 受信時の 1 回目が空振りするので、「最後の機会」が与えられたかどうかを回数で見分けられる。
+ */
+const openEstimatedIntensitySpy = vi.fn(() => false)
+
 /** 読み上げは Promise チェーンで繋がっているため、保留中のマイクロタスクを流し切る */
 async function flush() {
   for (let i = 0; i < 400; i++) await Promise.resolve()
@@ -214,7 +222,7 @@ function setup() {
     setActiveTabRealtimeForKyoshin: vi.fn(), setActiveTabNonRealtime: vi.fn(),
     setActiveTabRealtimeOnUpdate: vi.fn(),
     setActiveTabRealtimeUrgent: vi.fn(), followSpeechTab: vi.fn(), preSpeechTab: vi.fn(() => true), expandPanelForSpecialInfo: vi.fn(), revertToDefaultTab: vi.fn(),
-    selectQuake: vi.fn(), openLpgmFromQuake: vi.fn(), openEstimatedIntensity: vi.fn(), closeDistributionOnQuakeReport: vi.fn(),
+    selectQuake: vi.fn(), openLpgmFromQuake: vi.fn(), openEstimatedIntensity: openEstimatedIntensitySpy, closeDistributionOnQuakeReport: vi.fn(),
   }))
   return result.current.handleLiveEvent
 }
@@ -237,6 +245,7 @@ beforeEach(() => {
   vi.useFakeTimers()
   speeches.length = 0
   speakMock.mockClear()
+  openEstimatedIntensitySpy.mockClear()
 })
 
 afterEach(() => {
@@ -301,6 +310,51 @@ describe('非 EEW の読み上げの優先度', () => {
   // 南海トラフ関連解説情報は最下位。臨時情報の発表期間中は毎日届くため、既存のどの層と同格に
   // しても何かを切ってしまう（同格は待たずに割り込む規則のため）。「解説情報は何も切らない」を
   // 両方向から固定する（ヘルパーは `handleCommentary`）。
+  // 対照。**鳴り終わった重い読み上げには追い越されない。** 優先度の枠が表すのは「まだ鳴って
+  // いない予約」だけで、鳴り始めた時点で降りる（→ `releaseScheduledPriority`）。
+  //
+  // 降ろさずにいると、解説情報のように**本体より後に予約される**層が、本体を待っているあいだに
+  // 別の地震情報が 1 件届くだけで、その地震情報を読み終えた後でも取り下げられる（群発の最中は
+  // ほぼ常に沈黙する）。
+  it('鳴り終わった重い読み上げには追い越されない（解説情報が沈黙しない）', async () => {
+    const handle = setup()
+    handle(makeQuake({ id: 'quake-1' }))
+    await settle()
+    handleCommentary(handle)
+    await settle()
+    // 解説情報が待っているあいだに別の地震情報が届く（群発ではごく普通に起きる）
+    handle(makeQuake({ id: 'quake-2', addr: '富山県東部' }))
+    await settle()
+
+    for (let i = 0; i < 6; i++) {
+      speeches.forEach((_, idx) => finishSpeech(idx))
+      await flush()
+      await vi.advanceTimersByTimeAsync(5000)
+      await flush()
+    }
+    // 2 件目を読み終えたあと、解説情報の番が来る
+    expect(spokenTexts().some(t => t.includes('解説情報'))).toBe(true)
+  })
+
+  // 安全弁。**まだ鳴っていない重い予約には取り下げられる**（枠が捉えるのはこちら）。
+  // 津波は声までの間が 2.3 秒あるので、解説情報（0.7 秒）の番が来た時点ではまだ鳴っていない。
+  it('まだ鳴っていない重い予約に追い越されたら、解説情報は取り下げられる', async () => {
+    const handle = setup()
+    handleCommentary(handle)
+    await vi.advanceTimersByTimeAsync(100)
+    await flush()
+    handle(makeTsunami())
+    await settle()
+
+    for (let i = 0; i < 6; i++) {
+      speeches.forEach((_, idx) => finishSpeech(idx))
+      await flush()
+      await vi.advanceTimersByTimeAsync(5000)
+      await flush()
+    }
+    expect(spokenTexts().some(t => t.includes('大津波警報'))).toBe(true)
+    expect(spokenTexts().some(t => t.includes('解説情報'))).toBe(false)
+  })
   it('解説情報は、地震情報の読み上げが終わるまで待つ', async () => {
     const handle = setup()
     handle(makeQuake())
@@ -689,14 +743,15 @@ describe('非 EEW の読み上げの優先度', () => {
     expect(spokenTexts().some(t => t.includes('大津波警報'))).toBe(true)
   })
 
-  // 取り下げが決まった予約は「最後に予約されたもの」から降りる。降りないと、自分より前に
-  // 予約されていた読み上げが「後発に追い越された」と誤認して連鎖的に取り下がり、**追い越した側も
-  // 追い越された側も鳴らない**。
+  // **かつては「後発が取り下げられても先発は読まれる」ことを固定していた**（取り下げの連鎖が
+  // 起きないことの確認）。到来順の裁きを声に出す直前まで続けるようにしたため覆した——
+  // EEW より前に予約された非 EEW は、先発も後発も「後から届いた重いものに追い越された」ことに
+  // なり、まとめて取り下げられる。
   //
-  // **EEW を読み切らせるのは 2 つの間の隙間で行う。** 先発の間が明けたときに EEW がまだ喋って
-  // いると、先発は「後から届いた読み上げに追い越された」として正当に取り下げられ、連鎖の有無を
-  // 見分けられなくなる。
-  it('後発が取り下げられたら、先に届いていた読み上げは読まれる', async () => {
+  // この構図で連鎖の有無は原理的に観測できない。重い相手に追い越される場合、先発は必ず後発より
+  // 小さい連番を持つので、枠から降ろし忘れていたかどうかに関わらず同じ判定で取り下がる。
+  // 枠から降ろすこと自体は、他の経路（待ちきれず黙る層・予約の取り消し）のために残している。
+  it('後から届いた EEW は、その前に予約されていた読み上げをまとめて取り下げる', async () => {
     const handle = setup()
     handle(makeQuake({ type: '各地の震度情報' }))  // 声までの間 0.77 秒
     await vi.advanceTimersByTimeAsync(100)
@@ -705,7 +760,7 @@ describe('非 EEW の読み上げの優先度', () => {
     await vi.advanceTimersByTimeAsync(100)
     await flush()
 
-    // 震度速報の間が明ける前に EEW が発報する（EEW は間を置かず即座に読む）
+    // どちらの間も明ける前に EEW が発報する（EEW は間を置かず即座に読む）
     handle(makeEEW())
     await flush()
     expect(spokenTexts()[0]).toContain('緊急地震速報')
@@ -715,19 +770,18 @@ describe('非 EEW の読み上げの優先度', () => {
     await flush()
     expect(spokenTexts()).toHaveLength(1)
 
-    // EEW の読み上げ（震源 → 予想震度の 2 フェーズ）を読み切らせる。残っていると EEW が最優先の
-    // ままなので、各地の震度情報が読まれない理由が「連鎖」か「EEW 待ち」か切り分けられない。
-    // **ここではタイマーを進めない**（進めると先発の間まで明けてしまう）。
+    // EEW の読み上げを読み切らせる。**ここではタイマーを進めない** —— 進めると先発の間まで
+    // 明けてしまい、EEW がまだ鳴っている時点での取り下げ（変更前からある判定）と区別が付かない。
     for (let i = 0; i < 5; i++) {
       speeches.forEach((_, idx) => finishSpeech(idx))
       await flush()
     }
 
-    // 各地の震度情報の間（0.77 秒）が明ける。取り下げが連鎖していなければ読まれる
+    // 各地の震度情報の間（0.77 秒）も明けるが、こちらも EEW より前の予約なので読まれない
     // （各地の震度情報は「地震情報。」と名乗る。震度速報の「震度速報。」とはここで見分ける）
     await vi.advanceTimersByTimeAsync(2000)
     await flush()
-    expect(spokenTexts().some(t => t.startsWith('地震情報。'))).toBe(true)
+    expect(spokenTexts().some(t => t.startsWith('地震情報。'))).toBe(false)
   })
 
   // 主題はイベントごとに分ける。別の地震は別のイベントで内容が重ならないため、種別だけでまとめると
@@ -836,6 +890,119 @@ describe('内容が重ならない同格どうしは互いに待つ', () => {
     await flush()
     expect(spokenTexts()).toHaveLength(2)
     expect(spokenTexts()[1]).toContain('震度速報')
+  })
+
+  // 相互譲りで待つのは「同格の相手」に対してだけ。待っているあいだに**重い**相手が届いたら、
+  // それは到来順が逆転する形なので取り下げる。
+  //
+  // 正。実配信で起きた形（2026-07-28 16:37 熊本・M7.1 の群発）。長周期地震動情報を読んでいる
+  // 最中に推計震度分布図が届いて待ちに入り、その 5.5 秒後に別の地震の EEW が発報した。分布図は
+  // EEW を読み終えた直後に鳴り、読み上げ追従が地震情報タブへ画面を持っていった（EEW の続報は
+  // その保持に弾かれて 14.8 秒ぶんリアルタイムタブへ戻れなかった）。
+  it('相互譲りで待っているあいだに EEW が発報したら、待ち明けでも読まない', async () => {
+    const handle = setup()
+    handle(makeQuake())
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)
+
+    handle(makeEstimatedIntensity())
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)   // 相互譲りで待つ
+
+    // 待っているあいだに EEW が発報する
+    handle(makeEEW())
+    await flush()
+    expect(spokenTexts().some(t => t.startsWith('緊急地震速報'))).toBe(true)
+
+    // 先の地震情報も EEW も読み切らせる。それでも分布図は鳴らない
+    // **タイマーも一緒に進めること。** EEW の第 2 フェーズは安定待ちの後に鳴るので、
+    // マイクロタスクを流すだけでは読み切れず、待っている側の番がいつまでも来ない
+    // （＝取り下げが効いていなくてもこのテストが通ってしまう）。
+    for (let i = 0; i < 5; i++) {
+      speeches.forEach((_, idx) => finishSpeech(idx))
+      await flush()
+      await vi.advanceTimersByTimeAsync(3000)
+      await flush()
+    }
+    expect(spokenTexts().some(t => t.includes('推計震度分布図'))).toBe(false)
+  })
+
+  // 対照。EEW が**先に**発報していれば到来順どおりなので、待って読む。
+  it('EEW が先に発報していれば、待っていた読み上げは EEW のあとに読まれる', async () => {
+    const handle = setup()
+    handle(makeEEW())
+    await flush()
+    expect(spokenTexts()[0]).toContain('緊急地震速報')
+
+    handle(makeEstimatedIntensity())
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)   // EEW を待つ
+
+    // **タイマーも一緒に進めること。** EEW の第 2 フェーズは安定待ちの後に鳴るので、
+    // マイクロタスクを流すだけでは読み切れず、待っている側の番がいつまでも来ない
+    // （＝取り下げが効いていなくてもこのテストが通ってしまう）。
+    for (let i = 0; i < 5; i++) {
+      speeches.forEach((_, idx) => finishSpeech(idx))
+      await flush()
+      await vi.advanceTimersByTimeAsync(3000)
+      await flush()
+    }
+    expect(spokenTexts().some(t => t.includes('推計震度分布図'))).toBe(true)
+  })
+
+  // 取り下げても、**分布モードを開く「最後の機会」は残す**（→ `speakNonEEWDelayed` の `onWithdrawn`）。
+  // 声が出ないことと地図に出ないことは別の損失で、こちらを逃すとその地震の分布は次の報が届くまで
+  // 一度も出せない。しかも開けなかった記録すら残らない。
+  it('取り下げられても、推計震度分布図の分布モードを開く機会は残る', async () => {
+    const handle = setup()
+    handle(makeQuake())
+    await settle()
+
+    handle(makeEstimatedIntensity())
+    await settle()
+    // 受信の瞬間に 1 回（このスパイは「開けなかった」を返すので、最後の機会がまだ要る状態）
+    expect(openEstimatedIntensitySpy).toHaveBeenCalledTimes(1)
+
+    handle(makeEEW())
+    await flush()
+
+    for (let i = 0; i < 5; i++) {
+      speeches.forEach((_, idx) => finishSpeech(idx))
+      await flush()
+      await vi.advanceTimersByTimeAsync(3000)
+      await flush()
+    }
+
+    // 読み上げは取り下げられる。それでも開く機会はもう一度与えられている
+    expect(spokenTexts().some(t => t.includes('推計震度分布図'))).toBe(false)
+    expect(openEstimatedIntensitySpy).toHaveBeenCalledTimes(2)
+  })
+
+  // 安全弁。到来順を進めるのは**新規発報のときだけ**。続報や第 2 フェーズでも進めると、
+  // 続報が数秒おきに届く実運用では、先に届いていた読み上げが軒並み消える。
+  it('先に発報していた EEW の続報では、待っている読み上げを取り下げない', async () => {
+    const handle = setup()
+    handle(makeEEW())
+    await flush()
+
+    handle(makeEstimatedIntensity())
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)
+
+    // 同じ EEW の続報（`issue.eventId` は初報と同じ）
+    handle(makeEEW({ serial: 2 }))
+    await flush()
+
+    // **タイマーも一緒に進めること。** EEW の第 2 フェーズは安定待ちの後に鳴るので、
+    // マイクロタスクを流すだけでは読み切れず、待っている側の番がいつまでも来ない
+    // （＝取り下げが効いていなくてもこのテストが通ってしまう）。
+    for (let i = 0; i < 5; i++) {
+      speeches.forEach((_, idx) => finishSpeech(idx))
+      await flush()
+      await vi.advanceTimersByTimeAsync(3000)
+      await flush()
+    }
+    expect(spokenTexts().some(t => t.includes('推計震度分布図'))).toBe(true)
   })
 
   it('津波の観測情報の読み上げ中に地震情報が届いても、観測情報を切らない', async () => {
