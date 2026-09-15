@@ -19,7 +19,7 @@ import { GRADE_PRIORITY, TSUNAMI_GRADE_LIFTED, isWarningLevelWhileObserving, tsu
 import { playAlertSound, ttsDelayFor, maxTtsDelay, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, stopSpeech, type PrewarmedSpeech, type ShouldStillPlay } from '../utils/voicevox'
 import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewWarningRegionsText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiAreaGradeChangeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, tsunamiMissingToSegments, selectMissingToSpeak, tsunamiWarningLevelToSegments, selectWarningLevelToSpeak, joinWithAlso, nankaiToText, nankaiCommentaryToText, kohatsuToText, earthquakeCountToText, estimatedIntensityToText, lpgmToText, telegramTextToSpeak, createQuakeSpokenState, applySpokenRefs, type TtsSpeechOptions, type QuakeSpokenState } from '../utils/ttsText'
-import { joinSegments, plain, hasFollowTarget, hasUnreceivedFollowTarget, hasTelegramTextFollowTarget, TELEGRAM_TEXT_OPEN_TARGET_KINDS, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
+import { joinSegments, plain, hasFollowTarget, hasUnreceivedFollowTarget, hasTelegramTextFollowTarget, TELEGRAM_TEXT_OPEN_TARGET_KINDS, telegramTextSubject, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
 import { log, createLogThrottle } from '../utils/logger'
 import { TAB_PRIORITY, type TabPriority } from '../utils/tabPriority'
 import { extractQuakeEventIdFromId, quakeEventKey, quakeKeyForLpgmEventId, sameQuakeEntry } from '../utils/quakeMerge'
@@ -1796,13 +1796,19 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // （→ `ttsFollow.ts` の `telegramText`）。文の中身では分けず 1 つにまとめている ——
     // 求められているのは「読み始めたら開く」ことで、どの段落を読んでいるかの追従ではない。
     //
-    // **開く先がある種別にだけ参照を付ける。** 地震情報と長周期地震動観測情報の付加文は
-    // 元から畳んでいないので開く相手がいない。無条件に付けると、誰も反応しない追従セッションが
-    // 立ち上がっては終わる（症状が出ないぶん、後から読んで意図を確かめられない）。
+    // **開く先がある種別にだけ参照を付ける。** 地震情報の付加文は元から畳んでいないので
+    // 開く相手がいない。無条件に付けると、誰も反応しない追従セッションが立ち上がっては終わる
+    // （症状が出ないぶん、後から読んで意図を確かめられない）。
     const segments: SpeechSegment[] = [{
       text: speech.text,
       refs: TELEGRAM_TEXT_OPEN_TARGET_KINDS.has(event.kind) ? [{ kind: 'telegramText' }] : [],
     }]
+    // **長周期地震動観測情報だけ、どの地震の補足かまで主題に載せる。** 地震カードは複数
+    // 並ぶので、種別だけではどのカードを開くか決まらない（バナーと津波の面は画面に 1 つ）。
+    // 鍵は `eventId` —— カードが長周期を引き当てるのに使っているものと同じ（`lpgmByEventId`）。
+    const subject = event.kind === 'lpgm'
+      ? telegramTextSubject(event.kind, event.data.eventId)
+      : telegramTextSubject(event.kind)
     speakNonEEWDelayed(
       speech.text,
       SPEECH_PRIORITY.commentary,
@@ -1812,9 +1818,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       segments,
       undefined,
       () => { spokenTelegramTextRef.current.add(speech.body) },
-      // 追従する側が「どの電文の文か」を知るための主題。主題（topic）と同じ値にしてあるが、
-      // 別の役割 —— topic は到来順の裁きに、subject は画面の開閉に使う。
-      `telegramText:${event.kind}`,
+      // 追従する側が「どの電文の文か」を知るための主題。**topic とは役割が違う** ——
+      // topic は到来順の裁き（同じ種別は後発が勝つ）に、subject は画面のどこを開くかに使う。
+      // 長周期だけ地震の識別子まで含むのはそのため。
+      subject,
     )
   }
 

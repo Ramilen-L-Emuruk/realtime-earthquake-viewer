@@ -12,6 +12,7 @@ import {
   plain,
   hasTelegramTextFollowTarget,
   TELEGRAM_TEXT_OPEN_TARGET_KINDS,
+  telegramTextSubject,
   planFollowScroll,
   hasFollowTarget,
   hasUnreceivedFollowTarget,
@@ -712,22 +713,58 @@ describe('hasTelegramTextFollowTarget', () => {
 // 開く先がある電文の種別。**設定タブ側（バナー・津波カード）と対応が取れていること。**
 // ここから漏れると、読み上げても画面が動かない（例外もログも出ない）。
 describe('TELEGRAM_TEXT_OPEN_TARGET_KINDS', () => {
-  it('開く先がある 5 種別を持ち、畳んでいない 2 種別を持たない', () => {
+  // **「畳んでいるか」は種別ごとに実装を見て決める。** まとめて扱うと片方だけ当たっている
+  // 状態に気づけない —— 長周期を「地震情報と同じで畳んでいない」と扱って外していたのがその形で、
+  // 実際には「気象庁からの補足」として畳んであり、中身は読み上げる 3 ブロックそのものだった。
+  it('畳んである 6 種別を持ち、畳んでいない地震情報を持たない', () => {
     expect([...TELEGRAM_TEXT_OPEN_TARGET_KINDS].sort())
-      .toEqual(['earthquakeCount', 'kohatsu', 'nankai', 'nankaiCommentary', 'tsunami'])
-    // 地震情報と長周期地震動観測情報の付加文は元から畳んでいない（開く相手がいない）
+      .toEqual(['earthquakeCount', 'kohatsu', 'lpgm', 'nankai', 'nankaiCommentary', 'tsunami'])
+    // 地震情報の付加文だけは元から畳んでいない（開く相手がいない）
     expect(TELEGRAM_TEXT_OPEN_TARGET_KINDS.has('quake')).toBe(false)
-    expect(TELEGRAM_TEXT_OPEN_TARGET_KINDS.has('lpgm')).toBe(false)
   })
 
-  it('設定タブのバナーと津波カードが、同じ種別を見ている', () => {
+  // 安全弁: **開く側が実在すること。** ここが空振りすると、読み上げても画面が動かないだけで
+  // 例外もログも出ない（長周期の漏れがまさにその症状だった）。
+  //
+  // **見ているのは字面だけ。** 種別がまるごと抜け落ちた形（前回の漏れ）は捕まえられるが、
+  // `App` → タブ → カードの props の受け渡しまでは見ていない。そちらは主題の props を
+  // 必須にして型検査で止めている（→ `EarthquakeTab` の `speakingTelegramTextSubject`）。
+  // 実際に開くかどうかは `lpgmNotesPanel.test.tsx` が描画して確かめる。
+  it('バナー・津波の面・地震カードが、同じ種別を見ている', () => {
     const banner = readFileSync('src/components/SpecialInfoBanner/index.tsx', 'utf8')
-    const tsunami = readFileSync('src/App.tsx', 'utf8')
+    const app = readFileSync('src/App.tsx', 'utf8')
+    const quakeCard = readFileSync('src/components/EarthquakeTab/EarthquakeCard.tsx', 'utf8')
     for (const kind of TELEGRAM_TEXT_OPEN_TARGET_KINDS) {
-      const found = kind === 'tsunami'
-        ? tsunami.includes("'telegramText:tsunami'")
-        : banner.includes(`speaking('${kind}')`)
+      const found = kind === 'tsunami' ? app.includes("telegramTextSubject('tsunami')")
+        // 長周期だけは地震の識別子まで含むので、主題を組み立てる関数の呼び出しで探す
+        : kind === 'lpgm' ? quakeCard.includes("telegramTextSubject('lpgm'")
+          : banner.includes(`speaking('${kind}')`)
       expect(found, `「${kind}」を開く側が見つからない`).toBe(true)
     }
+  })
+})
+
+// 主題の作り方。**開く側と読む側が同じ関数を通ること**を固定する（手で組み立てると、
+// 片方だけ書式を変えたときに黙って開かなくなる）。
+describe('telegramTextSubject', () => {
+  it('種別だけの主題を作る（画面に 1 つしか無い表示）', () => {
+    expect(telegramTextSubject('nankai')).toBe('telegramText:nankai')
+    expect(telegramTextSubject('tsunami')).toBe('telegramText:tsunami')
+  })
+
+  it('対象を渡すと識別子まで含める（地震カードは複数並ぶ）', () => {
+    expect(telegramTextSubject('lpgm', '20240101120000')).toBe('telegramText:lpgm:20240101120000')
+  })
+
+  // 対照: 別の地震の主題とは一致しない
+  it('別の地震の主題とは一致しない', () => {
+    expect(telegramTextSubject('lpgm', 'A')).not.toBe(telegramTextSubject('lpgm', 'B'))
+  })
+
+  // 安全弁: **識別子が空でも「渡していない」と同じにしない。** 電文の `EventID` は要素が
+  // 無ければ空文字になるので、真偽で見分けると読めなかった電文どうしが同じ主題へ潰れる。
+  it('空の識別子を「渡していない」と同じ扱いにしない', () => {
+    expect(telegramTextSubject('lpgm', '')).toBe('telegramText:lpgm:')
+    expect(telegramTextSubject('lpgm', '')).not.toBe(telegramTextSubject('lpgm'))
   })
 })
