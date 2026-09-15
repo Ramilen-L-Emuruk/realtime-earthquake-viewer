@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { eewEpicenterRankLabel, eewMagnitudeRankLabel, eewMagnitudePointsLabel, isEewHypocenterSettled, eewForecastChangeText, calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, calcEEWCancelTime, calcFeltRadiusKm, diffHypoInfoEvents, computeSingleEEWLevel, eewMaxLpgmClass, eewMaxScale, eewMaxScaleInfo, isForecastScaleHigher, eewNoForecastReason, canPresentLpgmClass, eewSerial, selectEEWSoundType, eewPhase2ScaleStabilityMs, EEW_PHASE2_STABILITY_SMALL_MS, EEW_PHASE2_STABILITY_LARGE_MS, isEewAreaArrived, type HypoInfoPendingMissing } from './eew'
+import { eewEpicenterRankLabel, eewMagnitudeRankLabel, eewMagnitudePointsLabel, isEewHypocenterSettled, eewForecastChangeText, calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, calcEEWCancelTime, calcFeltRadiusKm, diffHypoInfoEvents, computeSingleEEWLevel, eewMaxLpgmClass, eewMaxScale, eewMaxScaleInfo, isForecastScaleHigher, eewNoForecastReason, canPresentLpgmClass, eewSerial, selectEEWSoundType, eewPhase2ScaleStabilityMs, EEW_PHASE2_STABILITY_SMALL_MS, EEW_PHASE2_STABILITY_LARGE_MS, isEewAreaArrived, selectActiveEews, type HypoInfoPendingMissing } from './eew'
 import type { YahooHypoInfoItem } from '../services/kyoshin'
 import type { EEWAlert, EEWRegion, IntensityScale, LpgmClass } from '../types/earthquake'
 
@@ -920,5 +920,75 @@ describe('isEewAreaArrived', () => {
   it('コード表に無い値では立たない', () => {
     expect(isEewAreaArrived(area({ kindCode: '' }))).toBe(false)
     expect(isEewAreaArrived(area({ kindCode: '99' }))).toBe(false)
+  })
+})
+
+describe('selectActiveEews（その時刻に発表中だった緊急地震速報を選ぶ）', () => {
+  // 震源時刻 12:00:00・M6.0・深さ 10km なら自動解除は約 146 秒後（`calcEEWAutoCancelSec` の実測）。
+  // 最終報の発表から最低 60 秒という下限もあるので、ここでは震源時刻起点のほうが後になる。
+  const ORIGIN = '2026-01-01T12:00:00Z'
+  const REPORT = '2026-01-01T12:00:10Z'
+  const WITHIN = new Date('2026-01-01T12:01:00Z')   // 震源から 60 秒後（まだ有効）
+  const AFTER = new Date('2026-01-01T12:05:00Z')    // 震源から 300 秒後（解除済み）
+
+  function report(overrides: Partial<EEWAlert> = {}): EEWAlert {
+    return makeEEW({
+      time: REPORT,
+      earthquake: { ...makeEEW().earthquake, originTime: ORIGIN },
+      issue: { eventId: 'ev1', serial: '3' },
+      ...overrides,
+    })
+  }
+
+  function wrap(...eews: EEWAlert[]) {
+    return eews.map(eew => ({ eew, value: eew }))
+  }
+
+  it('正: 自動解除の時刻を過ぎていない最終報は残る', () => {
+    const eew = report({ isFinal: true })
+    expect(selectActiveEews(wrap(eew), WITHIN, 'test')).toEqual([eew])
+  })
+
+  it('対照: 自動解除の時刻を過ぎた最終報は落とす', () => {
+    const eew = report({ isFinal: true })
+    expect(selectActiveEews(wrap(eew), AFTER, 'test')).toEqual([])
+  })
+
+  it('安全弁: 取消電文があれば同じ地震の全報を落とす（最終報が未失効でも）', () => {
+    const normal = report({ isFinal: true })
+    const cancel = report({ cancelled: true, issue: { eventId: 'ev1', serial: '4' } })
+    expect(selectActiveEews(wrap(normal, cancel), WITHIN, 'test')).toEqual([])
+  })
+
+  it('安全弁: 発表時刻も震源時刻も読めないときは有効として残す', () => {
+    // Invalid Date との比較はどちらの向きでも偽になるため、書き分けないとこの分岐が
+    // 黙って「常に有効」へ倒れる。倒す向きは意図どおりだが、記録が残ることが要点。
+    const eew = report({
+      isFinal: true,
+      time: '壊れた値',
+      earthquake: { ...makeEEW().earthquake, originTime: '壊れた値' },
+    })
+    expect(selectActiveEews(wrap(eew), AFTER, 'test')).toEqual([eew])
+  })
+
+  it('最終報がまだ出ていない地震は、最新の報をそのまま残す', () => {
+    const first = report({ time: '2026-01-01T12:00:05Z', issue: { eventId: 'ev1', serial: '1' } })
+    const second = report({ time: '2026-01-01T12:00:08Z', issue: { eventId: 'ev1', serial: '2' } })
+    expect(selectActiveEews(wrap(first, second), WITHIN, 'test')).toEqual([second])
+  })
+
+  it('渡す順序が入れ替わっても最新の報を選ぶ（並べ替えは関数の中で行う）', () => {
+    const first = report({ time: '2026-01-01T12:00:05Z', issue: { eventId: 'ev1', serial: '1' } })
+    const second = report({ time: '2026-01-01T12:00:08Z', issue: { eventId: 'ev1', serial: '2' } })
+    expect(selectActiveEews(wrap(second, first), WITHIN, 'test')).toEqual([second])
+  })
+
+  it('地震ごとに 1 件へ畳む', () => {
+    const a1 = report({ issue: { eventId: 'evA', serial: '1' } })
+    const a2 = report({ isFinal: true, issue: { eventId: 'evA', serial: '2' } })
+    const b1 = report({ isFinal: true, issue: { eventId: 'evB', serial: '1' } })
+    const got = selectActiveEews(wrap(a1, a2, b1), WITHIN, 'test')
+    expect(got).toHaveLength(2)
+    expect(got).toEqual(expect.arrayContaining([a2, b1]))
   })
 })

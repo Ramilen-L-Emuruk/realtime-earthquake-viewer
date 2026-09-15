@@ -1,7 +1,7 @@
 import { parseEarthquakeFromXml, parseTsunamiFromXml } from './dmdataParser'
 import { parseTar } from '../utils/tarParser'
 import type { JMAQuake, EEWAlert, JMATsunami } from '../types/earthquake'
-import { calcEEWCancelTime } from '../utils/eew'
+import { selectActiveEews } from '../utils/eew'
 import { gunzip } from '../utils/gzip'
 import { log } from '../utils/logger'
 import { authHeader } from '../utils/dmdataApiKey'
@@ -563,9 +563,10 @@ export function filterPreWindowEvents(
   entries: ReplayEntry[],
   targetTime: Date,
 ): ReplayEntry[] {
-  // EEW は同一イベント ID の複数報をグルーピングして T 時点の有効性を判定する
-  // 状態管理キーは issue.eventId（シリアル番号を含まない）に合わせる
-  const eewByEventId = new Map<string, Array<{ entry: ReplayEntry; eew: EEWAlert }>>()
+  // EEW は T 時点で有効なものだけを 1 地震につき 1 件へ畳む。グルーピングと失効の判定は
+  // ライブ起動時の復元と共有する（`selectActiveEews`）——どちらも「その時刻の画面を作り直す」
+  // という同じ目的なので、二重に持つと片方だけ直したときに再生と実機で挙動が食い違う。
+  const eewReports: Array<{ eew: EEWAlert; value: ReplayEntry }> = []
   const quakeByEventId = new Map<string, ReplayEntry>()
   // 津波は報を跨いで状態が積み上がる（観測のみの続報が前報の区域を引き継ぐ）ため、EEW のように
   // 最新 1 報へ畳まずに全報を順に流す。一方で「T 時点でその津波が終わっているか」は報 1 通では
@@ -589,10 +590,7 @@ export function filterPreWindowEvents(
     }
 
     if (ev.kind === 'eew') {
-      const eew = ev as EEWAlert
-      const groupKey = eew.issue?.eventId ?? eew.id
-      if (!eewByEventId.has(groupKey)) eewByEventId.set(groupKey, [])
-      eewByEventId.get(groupKey)!.push({ entry, eew })
+      eewReports.push({ eew: ev as EEWAlert, value: entry })
       continue
     }
 
@@ -623,37 +621,7 @@ export function filterPreWindowEvents(
 
   for (const entry of quakeByEventId.values()) result.push(entry)
 
-  // EEW グループごとに T 時点の有効性を判定し、有効なら最新の1件だけ注入する
-  for (const [, reports] of eewByEventId) {
-    // キャンセル済み（解除電文あり）は全報スキップ
-    if (reports.some(r => r.eew.cancelled)) continue
-
-    // 最終報を後ろから探す
-    let finalReport: { entry: ReplayEntry; eew: EEWAlert } | undefined
-    for (let i = reports.length - 1; i >= 0; i--) {
-      if (reports[i].eew.isFinal) { finalReport = reports[i]; break }
-    }
-
-    if (finalReport) {
-      const expireAt = calcEEWCancelTime(finalReport.eew, new Date(finalReport.eew.time))
-      // **失効の判定ができないときは有効側へ倒し、倒したことを記録する。** Invalid Date との
-      // 比較は**どちらの向きでも偽**になるので、書き分けないと `expireAt <= targetTime` が
-      // 常に偽になり、この分岐が黙って無効化される（痕跡が残らない）。
-      //
-      // 有効側へ倒すのは、再現する電文を落とすほうが害が大きいため。解除時刻は発表時刻と
-      // 震源時刻のどちらか一方が読めれば決まる（`calcEEWCancelTime`）ので、ここへ来るのは
-      // 両方読めなかったときだけ。
-      if (!Number.isFinite(expireAt.getTime())) {
-        log.warn('[replay] 発表時刻も震源時刻も読めず失効を判定できないため、有効として再現します'
-          + ` id=${finalReport.eew.id} time="${finalReport.eew.time}"`
-          + ` originTime="${finalReport.eew.earthquake.originTime}"`)
-      } else if (expireAt.getTime() <= targetTime.getTime()) continue
-      result.push(finalReport.entry)
-    } else {
-      // まだ最終報がない場合は最新の非最終報を1件だけ注入
-      result.push(reports[reports.length - 1].entry)
-    }
-  }
+  result.push(...selectActiveEews(eewReports, targetTime, 'replay'))
 
   return result
 }
