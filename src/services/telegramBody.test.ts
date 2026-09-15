@@ -95,8 +95,8 @@ describe('fetchTelegramText（電文本体の控え）', () => {
   })
 
   // 安全弁: 通信そのものの例外は**潰さずに投げる**。
-  // 呼び出し側の `Promise.allSettled` が「何件が例外で終わったか」をまとめて記録しており
-  // （`warnRejectedTelegrams`）、ここで値へ潰すと**全件落ちたときに件数が分からなくなる**
+  // 呼び出し側（`fetchLiveQuakeTelegrams`）が 1 件ごとに受けて取りこぼしとして数えるので、
+  // ここで値へ潰すとその計上から漏れ、「取得できなかった」が「無かった」と区別できなくなる
   it('通信の例外は潰さずに投げる（呼び出し側が件数をまとめる）', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('network down') }))
 

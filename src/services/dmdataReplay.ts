@@ -1,21 +1,67 @@
-import { parseEarthquakeFromXml } from './dmdataParser'
+import { parseEarthquakeFromXml, parseTsunamiFromXml } from './dmdataParser'
 import { parseTar } from '../utils/tarParser'
 import type { JMAQuake, EEWAlert, JMATsunami } from '../types/earthquake'
 import { calcEEWCancelTime } from '../utils/eew'
 import { gunzip } from '../utils/gzip'
 import { log } from '../utils/logger'
 import { authHeader } from '../utils/dmdataApiKey'
-import { extractQuakeEventIdFromId } from '../utils/quakeMerge'
+import { extractQuakeEventIdFromId, QUAKE_ISSUE_PRIORITY } from '../utils/quakeMerge'
 import { latestValidDateTime } from '../utils/tsunami'
 import type { ReplayEntry, ReplayPayload, ReplayFetchResult, QuakeHistoryResult } from '../types/replay'
 import {
-  HANDLED_TYPES, QUAKE_TYPES, HISTORY_EXTRA_TYPES, historyExtraKey,
+  HANDLED_TYPES, QUAKE_TYPES, TSUNAMI_TYPES, HISTORY_EXTRA_TYPES, historyExtraKey,
   buildXmlPayload, CLASSIFICATIONS, isBinaryTelegramType, buildBinaryPayload,
 } from './dmdataTelegramPayload'
 import { BufrFragmentStore, fragmentKey } from './bufrTelegramAssembly'
 import {
   clearLiveReplayCache, fetchLiveQuakeTelegrams, fetchLiveReplayEntries, resolveLiveDates,
+  MAX_ENUMERATED_DAYS,
 } from './dmdataReplayLive'
+
+/**
+ * `fetchDmdataQuakeHistory` の `maxDays` に渡してよい上限。
+ *
+ * この関数が当日経路へ列挙させる範囲は `[before - maxDays, before]` ＝ **maxDays + 1 日**で、
+ * `MAX_ENUMERATED_DAYS` を超えると `enumerateJstDates` が投げる。1 日ぶんを差し引いた値が、
+ * 例外にならずに渡せる最大。
+ *
+ * **「もっと見る」で日数を伸ばす側がこの値で止まること。** 止めないと、上限を越えた時点から
+ * 押すたびに同じ例外を投げるだけのボタンが残る（画面には「増えなかった」としか出ない）。
+ */
+export const MAX_HISTORY_DAYS = MAX_ENUMERATED_DAYS - 1
+
+/**
+ * 地震電文を「速報→詳細」の並びに揃える。
+ *
+ * `mergeQuakeHistory` は安定ソートで畳み込むため、**発表時刻が同値の電文どうしは入力配列の
+ * 相対順序がそのまま結果に効く** —— 詳しい電文（各地の震度情報）が先・粗い電文（震度速報）が
+ * 後に並ぶと、粗い方が詳しい方を上書きする（→ `utils/quakeMerge.ts` の `mergeQuakeHistory`）。
+ *
+ * **アーカイブ経路も当日経路も、この並びを自分では保証しない。** 前者は目録の並びと日の処理順
+ * （新しい日から）に、後者は同時実行の完了順に従うだけ。旧実装は種別ごとに取って
+ * VXSE51→52→53→61 の順に連結していたが、1 本へ寄せた今は**ここで明示的に揃える**。
+ * 症状は「同じ分に 2 種類の電文が届いた地震のカードだけ震度が粗いまま」で、例外もログも出ない。
+ */
+function timeKey(q: JMAQuake): number {
+  const ms = Date.parse(q.time)
+  return Number.isFinite(ms) ? ms : Number.POSITIVE_INFINITY
+}
+
+function orderedForMerge(quakes: JMAQuake[]): JMAQuake[] {
+  return [...quakes].sort((a, b) => {
+    // **日時として読めない時刻は末尾へ寄せる。** 捨てないのは、同一性の判定に使う時刻を
+    // 落とさない方針のため（→ `data-sources-spec.md` §2「日時は 2 つの層で確かめる」）。
+    //
+    // **「読めないものは据え置いて種別だけで比べる」と書いてはいけない。** それでは
+    // 比較関数が全順序にならず（読めない a と読める b・c について a=b・a=c なのに b<c が
+    // 成り立ちうる）、`Array.prototype.sort` の結果が実装依存になる。**症状は「同じ入力なのに
+    // 並びが違う」で、例外もログも出ない。**
+    const at = timeKey(a)
+    const bt = timeKey(b)
+    if (at !== bt) return at - bt
+    return (QUAKE_ISSUE_PRIORITY[a.issue.type] ?? 0) - (QUAKE_ISSUE_PRIORITY[b.issue.type] ?? 0)
+  })
+}
 
 function toDateStr(d: Date): string {
   return d.toISOString().slice(0, 10)
@@ -593,6 +639,20 @@ export async function fetchDmdataQuakeHistory(
   targetEvents: number,
   maxDays: number,
   includeTest: boolean,
+  /**
+   * 1 日ぶんを読み終えるたびに、そこまでの地震を流す先。
+   *
+   * **当日ぶんは 1 件ずつ取るので門で直列化される**（→ `services/telegramBody.ts`）。
+   * 揃うまで待つと、そのあいだ画面に何も出ない。渡さなければ従来どおり全件揃ってから返す。
+   */
+  onPartial?: (quakes: JMAQuake[]) => void,
+  /**
+   * 途中で打ち切ってよいかを訊く。**日ごとに、読み始める前に見る。**
+   *
+   * 取得のあいだにリプレイが始まる・API キーが変わる・画面を離れることがある。
+   * 放っておくと、もう要らない取得が当日経路の門の枠を予約し続ける。
+   */
+  shouldStop?: () => boolean,
 ): Promise<QuakeHistoryResult> {
   // アーカイブは JST 日付で索引されているため、UTC 日付との差を吸収するよう終端を +1 日する
   // （`fetchDmdataReplayEvents` と同じ理由）。
@@ -624,12 +684,31 @@ export async function fetchDmdataQuakeHistory(
 
   const dec = new TextDecoder()
   const quakes: JMAQuake[] = []
+  /**
+   * 同じアーカイブから拾う津波電文。
+   *
+   * **地震の件数で打ち切らない。** 発表中の津波は数日前に出たものが続いていることがあり、
+   * 地震のカードが揃った日で切ると拾えなくなる（帯と長周期を打ち切らないのと同じ理由）。
+   * 取得済みのアーカイブから拾うだけなので、増えるのは目録の走査とパースだけ。
+   *
+   * **「いま発表中か」の判定はここでしない。** 期限の引き継ぎ・解除の照合は呼び出し側が持つ
+   * （→ `tsunami-spec.md` §3「有効期限は報ではなく津波に付く」）。ここは電文を集めるだけ。
+   *
+   * **遡る範囲は `maxDays`（起動時は 7 日）。** 以前は「津波電文の最新 10 通」を期間を問わずに
+   * 引いていたが、日数で切っても取り逃がしは増えない —— 気象庁の津波警報等はいずれも数日で
+   * 解除され（東北地方太平洋沖地震でも約 2 日）、発表中の津波が 7 日より古い報しか持たない形は
+   * 起きない。むしろ件数で引く形は、津波が発表中のあいだ 10 通が同じ日で埋まって前日以前へ
+   * 届かなくなる。
+   */
+  const tsunamis: JMATsunami[] = []
   const eventIds = new Set<string>()
   const failedArchiveUrls: string[] = []
   /** 帯と長周期は種別ごとに最新 1 通だけ残す（鍵の作り方は `historyExtraKey`）。 */
   const extraLatest = new Map<string, { payload: ReplayPayload; timeMs: number }>()
   let skipped = 0
   let usedDays = 0
+  /** 打ち切ったか。**まだ遡れるかの判定と混ぜない** —— 打ち切りは「もう要らない」、遡れるかは在庫の話。 */
+  let stoppedEarly = false
 
   for (const source of sources) {
     // **地震は目標件数に達した日で打ち切る。** 日の途中で切ると同一イベントの続報が分断され、
@@ -639,6 +718,7 @@ export async function fetchDmdataQuakeHistory(
     // 地震ごとに紐づくもので、**地震活動が多い期間ほど早く打ち切られる**と、いちばん復元
     // したい状況（群発の最中）で復元できない。アーカイブは上で並列にダウンロードしてあるので、
     // 増えるのは目録の走査と 1 日数通のパースだけ。
+    if (shouldStop?.()) { stoppedEarly = true; break }
     const takeQuakes = eventIds.size < targetEvents
     usedDays++
 
@@ -652,6 +732,8 @@ export async function fetchDmdataQuakeHistory(
           quakes.push(quake)
           eventIds.add(extractQuakeEventIdFromId(quake.id) ?? quake.id)
         }
+        // 当日ぶんの津波も拾う（アーカイブ側と揃える）
+        for (const tsunami of live.tsunamis) tsunamis.push(tsunami)
         for (const e of live.extras) {
           const key = historyExtraKey(e.payload)
           if (key === null) continue
@@ -663,6 +745,14 @@ export async function fetchDmdataQuakeHistory(
       } catch (e) {
         log.error(`[replay] 履歴用の当日経路の取得に失敗 date=${source.date}`, e)
         failedArchiveUrls.push(liveSourceId(source.date))
+      }
+      // 当日経路はアーカイブの走査（下の for）を通らないので、ここでも流す
+      if (onPartial) {
+        try {
+          onPartial(orderedForMerge(quakes))
+        } catch (e) {
+          log.warn('[replay] 履歴の途中経過を反映できませんでした（取得は続けます）', e)
+        }
       }
       continue
     }
@@ -689,7 +779,8 @@ export async function fetchDmdataQuakeHistory(
       if (!entry?.head || (!includeTest && entry.head.test)) continue
       const isQuake = QUAKE_TYPES.has(entry.head.type)
       const isExtra = HISTORY_EXTRA_TYPES.has(entry.head.type)
-      if (!isQuake && !isExtra) continue
+      const isTsunami = TSUNAMI_TYPES.has(entry.head.type)
+      if (!isQuake && !isExtra && !isTsunami) continue
       if (isQuake && !takeQuakes) continue
       // XML 版と JSON 版の 2 エントリで載るうち、XML 版（originalId 無し）だけを拾う
       // （`fetchDmdataReplayEvents` と同じ重複排除。正常動作なので警告は出さない）。
@@ -730,6 +821,16 @@ export async function fetchDmdataQuakeHistory(
           }
           continue
         }
+        if (isTsunami) {
+          const tsunami = parseTsunamiFromXml(entry.head.type, dec.decode(bodyBytes))
+          if (!tsunami) {
+            log.warn(`[replay] 履歴用電文のパースに失敗しスキップ id=${entry.id} type=${entry.head.type}`)
+            skipped++
+            continue
+          }
+          tsunamis.push(tsunami)
+          continue
+        }
         const quake = parseEarthquakeFromXml(entry.head.type, dec.decode(bodyBytes))
         if (!quake) {
           log.warn(`[replay] 履歴用電文のパースに失敗しスキップ id=${entry.id} type=${entry.head.type}`)
@@ -743,17 +844,50 @@ export async function fetchDmdataQuakeHistory(
         skipped++
       }
     }
+    // **1 日ぶん読み終えたところで流す。** 流し先の例外で取得を止めない —— 投げると
+    // 残りの日を見捨てたうえで呼び出し側が「全滅」として受け取る。
+    if (onPartial) {
+      try {
+        onPartial(orderedForMerge(quakes))
+      } catch (e) {
+        log.warn('[replay] 履歴の途中経過を反映できませんでした（取得は続けます）', e)
+      }
+    }
   }
 
   // 使おうとした日がすべて読めなかった場合だけ例外にする（認証エラー・全断などの共通原因が
   // ほとんどで、握り潰すと「履歴 0 件の成功」に化ける）。1 日でも読めていれば部分成功とする。
-  if (usedDays > 0 && failedArchiveUrls.length === usedDays) {
+  //
+  // **打ち切りを全滅と混ぜない。** 読んだ日がすべて失敗していても、途中で打ち切られたなら
+  // それは「もう要らない」状態で、呼び出し側は結果ごと捨てる（`usedDays` は打ち切り判定の
+  // **後**に増えるので、数日失敗してから打ち切られた形で両方が成立しうる）。例外にすると、
+  // API キーの差し替えやリプレイの開始のたびに「取得に失敗した」という記録が残る。
+  if (!stoppedEarly && usedDays > 0 && failedArchiveUrls.length === usedDays) {
     throw new Error(`Archive fetch failed: ${usedDays} 件の取得元すべてを読み取れませんでした`)
   }
   // 「取得元が 1 つも無い」は取得の失敗として現れないため、例外にも損失にもならない。
   // 黙って空を返すと「静かな期間だった」と区別が付かないので、手がかりだけは残す。
+  //
+  // **「大半が落ちて数件だけ残る」形はここでしか見えない。** 全滅は上で例外になり、
+  // 個別の失敗はその場で 1 行ずつ出るが、**分母との対比が無いと「7 日中 6 日が落ちた」と
+  // 「静かな期間だった」が区別できない**。呼び出し側（`useEarthquakes`）は画面へ出す手段を
+  // まだ持たないので、いまは記録だけが頼り。
+  // リプレイ側の兄弟関数（`fetchDmdataReplayEvents`）は同じ要約を出しており、片方だけ
+  // 抜けている状態だった。
+  if (failedArchiveUrls.length > 0) {
+    log.warn(
+      `[replay] 履歴用の取得元 ${usedDays} 日ぶんのうち ${failedArchiveUrls.length} 件を読めなかった`
+      + `（読めた地震電文=${quakes.length} 件・扱えなかった電文=${skipped} 件）`,
+    )
+  }
   if (sources.length === 0) {
     log.warn(`[replay] 履歴用の取得元が 1 件も見つからなかった（範囲 ${toDateStr(startObj)}〜${toDateStr(endObj)}）`)
+  } else if (stoppedEarly) {
+    // **打ち切りは「読んだが 0 件」とは別の状態。** 混ぜると、時間軸の切り替えや画面を離れた
+    // だけの正常な打ち切りが「静かな期間だった」と読める記録になる（`shouldStop` が初回から
+    // 真を返す形は `StrictMode` の二重実行で普通に起きるので、実際に毎回それが出ていた）。
+    // 警告にしないのも同じ理由で、正常系で鳴らすと他の記録が埋もれる。
+    log.info(`[replay] 履歴の取得を打ち切った（取得元 ${sources.length} 日のうち ${usedDays} 日を読んだ時点）`)
   } else if (quakes.length === 0) {
     log.warn(`[replay] 履歴用に ${usedDays} 日ぶんを読んだが地震電文は 0 件（${before.toISOString()} 以前）`)
   }
@@ -763,9 +897,23 @@ export async function fetchDmdataQuakeHistory(
     .map((x) => ({ payload: x.payload, replayTime: new Date(x.timeMs), silent: true }))
   // 走査日数は**常に取得元の全日数**（＝`sources.length`。帯と長周期のために打ち切らない）。
   // 地震が何日で目標に達したかとは別の数字なので、混ぜて読まないこと。
-  log.info(
-    `[replay] 地震カードの履歴を復元 電文=${quakes.length} イベント=${eventIds.size}`
-    + ` 走査日数=${usedDays}（うち当日経路=${liveDays.length}）帯と長周期=${extras.length}`,
-  )
-  return { quakes, extras, skipped, failedArchiveUrls }
+  //
+  // **打ち切ったときは出さない。** 上で打ち切りを記録済みで、こちらは「復元した」と名乗るため
+  // 0 件の行が並ぶと復元できなかったのか静かだったのか読めない。
+  if (!stoppedEarly) {
+    log.info(
+      `[replay] 地震カードの履歴を復元 電文=${quakes.length} イベント=${eventIds.size}`
+      + ` 走査日数=${usedDays}（うち当日経路=${liveDays.length}）帯と長周期=${extras.length}`,
+    )
+  }
+  // **「まだ試す余地があるか」。** 「もう無い」とは言い切らない。
+  //
+  // 件数で判定していた頃（目標に達して、かつ読んでいない日が残っている）は、
+  // **在庫が目標に届かないと永久に偽**になった —— 7 日分で 43 件しか無ければ目標 50 件には
+  // 届かず、範囲を広げる機会が来ない。範囲の外に在庫があるかはここでは分からないので、
+  // **取得元が 1 つでもあれば真**にして、呼び出し側が「押しても増えなかった」で打ち切る。
+  //
+  // 打ち切った場合は「もう要らない」ので真にしない（`stoppedEarly`）。
+  const hasMore = !stoppedEarly && sources.length > 0
+  return { quakes: orderedForMerge(quakes), tsunamis, extras, skipped, failedArchiveUrls, hasMore }
 }
