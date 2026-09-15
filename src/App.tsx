@@ -82,7 +82,7 @@ import { fetchP2PReplayEvents, fetchP2PQuakeHistory, clearP2PReplayCache } from 
 import { findCoveringArchiveSync, findArchiveJustEndedSync, fetchLocalArchiveEvents, fetchLocalArchiveQuakeHistory } from './services/localArchiveReplay'
 import { useHistoricalArchiveIndex } from './hooks/useHistoricalArchiveIndex'
 import { log } from './utils/logger'
-import { setReplayOffset as setClockReplayOffset, serverDate } from './utils/clock'
+import { setReplayOffset as setClockReplayOffset, serverDate, serverNow } from './utils/clock'
 import { isDmdss } from './utils/env'
 
 // 平常時のウィンドウタイトル（index.html の <title> と一致させる）。
@@ -109,7 +109,7 @@ const TAB_SCROLLER_CLASS = 'absolute inset-0 overflow-y-auto overflow-x-hidden o
 
 
 export function App() {
-  const { settings, updateSetting } = useSettings()
+  const { settings, updateSetting, replaceSettings } = useSettings()
   const [activeTab, setActiveTabState] = useState<TabId>(settings.defaultTab)
   // 津波タブを自動で見せた回数。増えるたびに津波カードのスクロールを先頭へ戻す
   // （増やす条件と理由は `requestAutoTab`）。
@@ -1489,6 +1489,59 @@ export function App() {
     loadReplayEvents,
   })
 
+  // 外からリプレイを操るための診断アクセサ（`__frameProfiler`・`__cameraUpdateSkip` 等と同じ流儀）。
+  //
+  // **設定タブの UI を叩かせないために置いている** —— UI 経由にすると、文言やレイアウトを
+  // 変えるたびに外部からの操作が壊れ、「画面の見た目」と「外から操る口」が結びついてしまう。
+  //
+  // `speaking()` は「読み上げが終わったか」を待つために使う。固定の秒数で待つと、読み上げの
+  // 長さは読む地域の数で変わるぶん足りたり余ったりする。
+  const replayAccessRef = useRef({
+    offset: replayTimeOffset, fetching: replay.isFetching, error: replay.error,
+    start: replay.start, stop: replay.stop,
+  })
+  // レンダー中に ref を書き換えない（React が捨てたレンダーの書き込みだけが残りうるため）。
+  useEffect(() => {
+    replayAccessRef.current = {
+      offset: replayTimeOffset, fetching: replay.isFetching, error: replay.error,
+      start: replay.start, stop: replay.stop,
+    }
+  })
+  useEffect(() => {
+    ;(window as unknown as Record<string, unknown>).__replay = {
+      /** 再生中のシナリオ時刻（epoch ms）。ライブ中は実時刻。 */
+      now: () => serverNow(),
+      /** 壁時計に足しているオフセット(ms)。`null` ならライブ。 */
+      offset: () => replayAccessRef.current.offset,
+      /** 電文を取りに行っている最中か。落ち着いてから次の操作へ移るため。 */
+      fetching: () => replayAccessRef.current.fetching,
+      /**
+       * 取得の失敗。`null` なら失敗していない。
+       *
+       * **これが無いと、外から見て成功と失敗が同じ形になる** —— `fetching()` は成否に
+       * かかわらず最後は `false` へ戻るので、それだけを見ていると失敗を「開始できた」と読む。
+       */
+      error: () => replayAccessRef.current.error,
+      /** 読み上げの最中か。 */
+      speaking: () => isSpeaking(),
+      /** 指定した日時から再生を始める。 */
+      start: (iso: string) => {
+        const at = new Date(iso)
+        if (!Number.isFinite(at.getTime())) throw new Error(`日時として読めません: ${iso}`)
+        // **`void` で捨てない。** `useReplayController` の `start` は、取得処理こそ内部で
+        // 捕まえるが、その手前の同期処理（セッションの採番・状態のリセット・時刻オフセットの
+        // 適用）は try の外にある。そこで投げると拾い手のない拒否になり、ログにも画面にも
+        // 残らない。
+        replayAccessRef.current.start(at).catch((e: unknown) => {
+          log.error('[replay] __replay.start が失敗しました', e)
+        })
+      },
+      /** 再生を止めてライブへ戻す。 */
+      stop: () => { replayAccessRef.current.stop() },
+    }
+    return () => { delete (window as unknown as Record<string, unknown>).__replay }
+  }, [])
+
   // リプレイ中、対象時刻がローカル履歴アーカイブの収録範囲に重なる場合、そのidを
   // useKyoshinRealtime へ渡す。ローカル限定生成の強震モニタ風データ（scripts/capture-kyoshin-waveform.ts）
   // が存在すればそちらを使い、無ければ何も供給されない（従来どおりYahooには到達不能な時代のため）。
@@ -1984,6 +2037,7 @@ export function App() {
               <SettingsTab
                 settings={settings}
                 onUpdate={updateSetting}
+                onReplaceSettings={replaceSettings}
                 dmdataConnectionStatus={connectionStatus}
                 onTest={testHandlers}
                 kyoshinTimeOffset={replayTimeOffset}
