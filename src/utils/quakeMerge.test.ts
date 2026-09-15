@@ -15,8 +15,8 @@ import {
   addQuakeRetraction,
   quakeKeyForLpgmEventId,
 } from './quakeMerge'
-import { formatQuakeReports } from './formatters'
 import type { JMAQuake, IssueType, IntensityScale, EarthquakePoint, DomesticTsunami, CorrectType } from '../types/earthquake'
+import { reportsText } from '../test-utils/quakeReports'
 
 // 区域名の索引を渡す引数は、本番の呼び出し側が渡し忘れないよう必須にしてある
 // （→ quakeMerge.ts の mergeQuakeHistory のコメント）。このファイルの既存のテストは
@@ -1472,7 +1472,7 @@ describe('受け取った電文種別の記録', () => {
   function headline(...telegrams: JMAQuake[]): string {
     let card: JMAQuake | undefined
     for (const t of telegrams) card = mergeQuakeInto(card, t)
-    return formatQuakeReports(card!.reports, card!.issue.type)
+    return reportsText(card!.reports, card!.issue.type)
   }
 
   // 正: 種別が前後して届いても、受け取った全種別が初出順に並び、2 通目以降に #N が付く。
@@ -1542,15 +1542,15 @@ describe('受け取った電文種別の記録', () => {
     // 中身（発表時刻）は新しい方のまま。
     expect(merged.time).toBe('2024-01-01T16:08:00+09:00')
     // 受け取った事実は残る。
-    expect(formatQuakeReports(merged.reports, merged.issue.type)).toBe('震度速報#2')
+    expect(reportsText(merged.reports, merged.issue.type)).toBe('震度速報#2')
   })
 
   // 安全弁: 履歴経路（「もっと見る」）でも重複は数えない。
   it('履歴経路で同じ電文が再度流れても通数は増えない', () => {
     const first = mergeQuakeHistory([速報1(), 震源情報(), 速報2()])
-    expect(formatQuakeReports(first[0].reports, first[0].issue.type)).toBe('震度速報#2/震源情報')
+    expect(reportsText(first[0].reports, first[0].issue.type)).toBe('震度速報#2/震源情報')
     const again = mergeQuakeHistory([速報1(), 震源情報(), 速報2()], first)
-    expect(formatQuakeReports(again[0].reports, again[0].issue.type)).toBe('震度速報#2/震源情報')
+    expect(reportsText(again[0].reports, again[0].issue.type)).toBe('震度速報#2/震源情報')
   })
 
   // 安全弁: 暫定 ID と確定 ID のカードを畳む経路でも記録が落ちない。合流の向きは決まって
@@ -1558,14 +1558,14 @@ describe('受け取った電文種別の記録', () => {
   it('同じ eventId のカードを畳んでも記録は失われない', () => {
     const a = mergeQuakeInto(undefined, 速報1())
     const b = mergeQuakeInto(undefined, 震源情報())
-    expect(formatQuakeReports(coalesceByEventId([a, b])[0].reports, '震度速報')).toBe('震度速報/震源情報')
-    expect(formatQuakeReports(coalesceByEventId([b, a])[0].reports, '震度速報')).toBe('震源情報/震度速報')
+    expect(reportsText(coalesceByEventId([a, b])[0].reports, '震度速報')).toBe('震度速報/震源情報')
+    expect(reportsText(coalesceByEventId([b, a])[0].reports, '震度速報')).toBe('震源情報/震度速報')
   })
 
   // 安全弁: 記録を持たないカード（統合を通らない生電文・古い履歴）は従来の見出しへ落ちる。
   it('記録を持たないカードは種別 1 つに落ちる', () => {
-    expect(formatQuakeReports(undefined, '震源・震度情報')).toBe('震源・震度情報')
-    expect(formatQuakeReports([], '震度速報')).toBe('震度速報')
+    expect(reportsText(undefined, '震源・震度情報')).toBe('震源・震度情報')
+    expect(reportsText([], '震度速報')).toBe('震度速報')
   })
 })
 
