@@ -516,6 +516,78 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     expect(listUrl).toContain('datetime=2026-08-09%7E2026-08-11')
   })
 
+  // **`limit` は明示して渡す。** 配信元の既定は 20 件で、指定すれば 100 件まで返る
+  // （リファレンス「デフォルト: 20 … 最大は100」）。渡さないでいた頃は「この API は 1 回に
+  // 20 件しか返さない」と誤解しており、同じ範囲を読むのに 5 倍のページを辿っていた。
+  it('目録の取得は limit を明示して渡す', async () => {
+    const gz = await makeTarGz([
+      { name: 'telegrams.json', content: JSON.stringify([manifestEntry('aaaaaaa1')]) },
+      { name: 'aaaaaaa1_20260810120500000_0.xml', content: quakeBody('岩手県沖') },
+    ])
+    const fn = mockArchivesWithLive([{ date: '2026-08-10', url: 'https://x/d10', gz }], 'empty')
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    await fetchDmdataReplayEvents('key', FROM, TO, false)
+
+    const listUrl = fn.mock.calls.map(c => c[0]).find(u => u.includes('/v2/archive?'))
+    expect(listUrl).toContain('limit=100')
+    // `URLSearchParams` の初期化をまとめて書き換えたので、**他のパラメータが落ちていないことも
+    // ここで見る**（範囲と分類はどちらも欠けると目録が別のものになる）。
+    expect(listUrl).toContain('datetime=2026-08-09%7E2026-08-11')
+    expect(listUrl).toContain('classification=')
+  })
+
+  // 対照: 本体（`/v1/archive/:id`）は目録が返した URL をそのまま叩く。件数の概念が無いので
+  // `limit` は付かない。一覧の組み立て方を本体へ流用すると、意味を持たないパラメータが付く。
+  // **いまの実装では一覧と本体で `fetch` の呼び出しが分かれているので、このテストは恒常的に通る。**
+  // 両者のコードパスを 1 本へまとめるリファクタが入ったときに意味を持つ。
+  it('アーカイブ本体の URL には limit を付けない', async () => {
+    const gz = await makeTarGz([
+      { name: 'telegrams.json', content: JSON.stringify([manifestEntry('aaaaaaa1')]) },
+      { name: 'aaaaaaa1_20260810120500000_0.xml', content: quakeBody('岩手県沖') },
+    ])
+    const fn = mockArchivesWithLive([{ date: '2026-08-10', url: 'https://x/d10', gz }], 'empty')
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    await fetchDmdataReplayEvents('key', FROM, TO, false)
+
+    const bodyUrls = fn.mock.calls.map(c => c[0] as string).filter(u => u.startsWith('https://x/'))
+    expect(bodyUrls).toEqual(['https://x/d10'])
+  })
+
+  // 安全弁: **2 ページ目以降も `limit` と範囲が落ちない。** 配信元は cursorToken を使うとき
+  // 「以前と同じ検索クエリパラメータを指定する」ことを求めており、落とすと 2 ページ目から
+  // 既定の 20 件へ戻る（ページ数が増え、上限にも早く達する）。`URLSearchParams` をページごとに
+  // 作り直す形なので、初期化から外して `set` で足すと落ちうる。
+  it('2 ページ目以降も limit と範囲を渡し続ける', async () => {
+    const fn = vi.fn(async (input: string) => {
+      if (input.includes('/v2/archive?')) {
+        // 1 ページ目だけ nextToken を返して 2 ページ目を辿らせる
+        if (input.includes('cursorToken=tok1')) {
+          return { ok: true, json: async () => ({ status: 'ok', items: [] }) } as unknown as Response
+        }
+        return {
+          ok: true,
+          json: async () => ({ status: 'ok', items: [], nextToken: 'tok1' }),
+        } as unknown as Response
+      }
+      if (input.includes('/v2/telegram?') || input.includes('/v2/gd/eew')) {
+        return { ok: true, json: async () => ({ status: 'ok', items: [] }) } as unknown as Response
+      }
+      return { ok: false, status: 500 } as unknown as Response
+    })
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    await fetchDmdataReplayEvents('key', FROM, TO, false)
+
+    const listUrls = fn.mock.calls.map(c => c[0] as string).filter(u => u.includes('/v2/archive?'))
+    expect(listUrls.length).toBeGreaterThanOrEqual(2)
+    for (const u of listUrls) {
+      expect(u).toContain('limit=100')
+      expect(u).toContain('datetime=2026-08-09%7E2026-08-11')
+    }
+    expect(listUrls.filter(u => u.includes('cursorToken=tok1'))).toHaveLength(1)
+  })
   // 本体（`/v1/archive/:id`）は 1 日分がまとめて入っていて重い。目録が返した分をそのまま
   // 全件落としていた頃は、1 日に収まる窓でも余計な日を取って時刻で捨てていた。
   it('窓の外の日のアーカイブ本体は落とさない', async () => {
