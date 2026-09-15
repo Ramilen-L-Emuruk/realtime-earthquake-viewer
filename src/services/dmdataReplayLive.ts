@@ -19,10 +19,11 @@
 // アーカイブとの同等性は実データで確認済み。詳細は docs/spec/settings-pwa-spec.md §6。
 import { log } from '../utils/logger'
 import { authHeader } from '../utils/dmdataApiKey'
-import type { JMAQuake } from '../types/earthquake'
+import { fetchTelegramText } from './telegramBody'
+import type { JMAQuake, JMATsunami } from '../types/earthquake'
 import type { ReplayEntry } from '../types/replay'
 import {
-  HANDLED_TYPES, QUAKE_TYPES, HISTORY_EXTRA_TYPES, historyExtraKey,
+  HANDLED_TYPES, QUAKE_TYPES, TSUNAMI_TYPES, HISTORY_EXTRA_TYPES, historyExtraKey,
   buildXmlPayload, isBinaryTelegramType, buildBinaryPayload,
 } from './dmdataTelegramPayload'
 import { BufrFragmentStore, fragmentKey } from './bufrTelegramAssembly'
@@ -32,6 +33,21 @@ const API_BASE = 'https://api.dmdata.jp/v2'
 const DATA_BASE = 'https://data.api.dmdata.jp/v1/'
 /** 一覧 API の 1 ページあたりの取得件数（API の上限）。 */
 const LIST_LIMIT = 100
+/**
+ * 一覧のページを辿る上限。**これを外すと 1 回の操作で数百リクエストが飛ぶ。**
+ *
+ * 実際に踏んだ（2026-09-15）。リプレイの開始時刻を誤って 1969 年にしたところ、配信元は
+ * 範囲指定を無視したかのように `nextToken` を返し続け、**1 日あたり 42〜63 ページ・
+ * 合計 399 リクエスト**を辿った。窓は数日ぶんだったので、対象の電文は 1 通も無い。
+ *
+ * **「範囲指定が効いているなら辿り切るはず」という前提に頼らない。** 1 ページ 100 件で
+ * 20 ページ＝2000 件あれば、このアプリが扱う窓（数日ぶん・1 日十数通）には十分すぎる。
+ * 上限に達したら**記録を残す** —— 黙って切ると取りこぼしが「静かな時間帯」に化ける。
+ *
+ * 同じ形の上限は震源カタログにもある（`dmdata.ts` の `GD_EARTHQUAKE_MAX_PAGES`）。
+ * **ページを辿るループを新しく書くときは必ず上限を置くこと。**
+ */
+const LIST_MAX_PAGES = 20
 /**
  * 電文本体の同時取得数。
  *
@@ -49,8 +65,15 @@ const EEW_EVENT_MARGIN_MS = 3 * 60_000
 
 const JST_OFFSET_MS = 9 * 3600_000
 const DAY_MS = 86_400_000
-/** `enumerateJstDates` が一度に返す日数の上限（暴走防止。実運用の指定は数日以内）。 */
-const MAX_ENUMERATED_DAYS = 60
+/**
+ * `enumerateJstDates` が一度に返す日数の上限（暴走防止）。
+ *
+ * **これは呼び出し側の異常を検出するための歯止めで、遡れる範囲の設計値ではない。**
+ * 上限に達したら切り詰めずに投げる（切ると落とした日ぶんの電文が取りこぼしとして数えられない）。
+ * 「もっと見る」で日数を伸ばす経路はこの手前で止まる必要があるため、
+ * 渡してよい日数の上限を `MAX_HISTORY_DAYS`（→ `dmdataReplay.ts`）が導いている。
+ */
+export const MAX_ENUMERATED_DAYS = 60
 
 /** 電文一覧 API / gd-eew の telegrams が返す 1 件分。 */
 interface TelegramListItem {
@@ -114,6 +137,68 @@ export function enumerateJstDates(from: Date, to: Date): string[] {
 }
 
 /**
+ * 発表から配信（受信）までの遅れの見込み。
+ *
+ * アーカイブの日の区切りは**配信側**なので、日の終わり際に発表された電文は翌日のアーカイブへ
+ * 入る。実測（2026-09-15・手元の控え 16 通）で遅れは 8〜59 秒。発表時刻は分単位に丸められて
+ * いるぶんも含めて 1 分に収まっていたが、**余裕を持たせて 10 分**とする —— 広く取っても
+ * 増えるのは「窓が日の終わり際に掛かるときだけ 1 日」で、狭くして外すと電文が画面から消える。
+ */
+const DELIVERY_LAG_MARGIN_MS = 10 * 60_000
+
+/**
+ * アーカイブ本体を落とす JST 日を決める。
+ *
+ * **窓の終わりに配信の遅れぶんを足した範囲の JST 日**。アーカイブの日の区切りは配信（受信）
+ * 側で（配信元のリファレンスが「1 日の間に 1 つもデータが配信されてない配信区分は、アーカイブ
+ * ファイルの生成がされません」と書いている）、23:59 発表の電文は翌日のアーカイブへ入りうる。
+ * 逆に**窓が日の途中で終わるなら翌日は要らない** —— 一律で +1 日すると無駄に 1 日落とす。
+ *
+ * **前日は足さない。** 配信が発表より前になることはないので、窓の日に発表された電文が
+ * 前日のアーカイブに入ることはない —— 索引が発表・配信のどちらであっても成り立つ。
+ *
+ * **日付は JST で数える。** かつては UTC 日付の文字列に両端 ±1 日を足して差を吸収していた。
+ * アーカイブの索引が JST 日であることは実測で確かめてある（2026-09-01〜09-14 の 13 日・
+ * 電文 186 通で、発表・配信とも JST 日がアーカイブの日付と一致。UTC 索引なら
+ * 00:00〜09:00 JST 配信のぶんが前日へ落ちて大量の不一致が出る）。
+ *
+ * **境目を跨ぐ電文の実例は見つけていない。** 跨ぐ窓が 1 日あたり約 60 秒しかなく、
+ * 期待出現数は 0.0055 通/日（1 件に出会うのに約 180 日ぶん要る）。翌日を足しているのは
+ * 実例を見たからではなく、**外す根拠が無いから**。
+ *
+ * @param from 窓の始まり
+ * @param to 窓の終わり（**この時刻は含まない**。`enumerateJstDates` と、リプレイ側の
+ *   絞り込み（`entryTime >= toTime` を捨てる）に揃えている。終端を含む窓を持つ
+ *   呼び出し側は 1ms 足して渡すこと）
+ * @returns 落としてよいアーカイブの JST 日付
+ */
+export function archiveDaysForWindow(from: Date, to: Date): Set<string> {
+  return new Set(enumerateJstDates(from, new Date(to.getTime() + DELIVERY_LAG_MARGIN_MS)))
+}
+
+/**
+ * `archiveDaysForWindow` が返した日を全部覆う、目録（`/v2/archive`）の `datetime` 範囲を作る。
+ *
+ * **左端は排他、右端は包含。** 実測で確かめた（2026-09-15: `2026-09-11~2026-09-13` は
+ * 09-11 のアーカイブが存在するのに 09-12 から返り、`2026-09-10~2026-09-13` では 09-11 も
+ * 返った）。配信元のリファレンスは「左辺を開始日とし、右辺を終了日」としか書いていないので、
+ * **素直に読むと左端 1 日ぶんを取りこぼす。**
+ *
+ * かつてここは窓の UTC 日付に両端 ±1 日を足していた。開始側の −1 日は上の排他に打ち消されて
+ * 効いておらず、**終了側の +1 日は UTC 日で数えていたため、00:00〜09:00 JST の窓では
+ * 翌日のアーカイブが目録に現れなかった**（日をまたいで配信された電文を拾う経路が塞がっていた）。
+ *
+ * @returns `{ from, to }`（`datetime=from~to` に渡す JST 日付）。日が 1 つも無ければ `null`
+ */
+export function archiveListRange(days: ReadonlySet<string>): { from: string; to: string } | null {
+  if (days.size === 0) return null
+  const sorted = [...days].sort()
+  const first = sorted[0]
+  const dayBefore = new Date(Date.parse(`${first}T00:00:00Z`) - DAY_MS).toISOString().slice(0, 10)
+  return { from: dayBefore, to: sorted[sorted.length - 1] }
+}
+
+/**
  * アーカイブが存在しない JST 日（＝当日経路で埋める日）を決める。
  *
  * アーカイブ経路と当日経路の担当日はここで排他になる。同じ日を両方が読むと同一電文が
@@ -150,6 +235,12 @@ function utcRangeForJstDates(days: string[]): { from: string; to: string } {
  *   - そのワーカーが拾うはずだった要素が未処理のまま残る（取りこぼしとして数えられない）
  *   - `Promise.all` の即時 reject で呼び出し元が先へ進んだあとも、他のワーカーは走り続け、
  *     呼び出し元が読み終えた共有配列へ書き込みを続ける
+ *
+ * **いまの呼び出し元は 1 つも例外を漏らさない。** どれも `fn` の中で try/catch し、
+ * 取りこぼし（`skipped`）や読めなかった取得元へ振り替えている。つまりこの投げ直しは
+ * **将来の呼び出し元に向けた安全網**で、現状は通らない。通る呼び出し元を足すなら、
+ * **2 件目以降の例外は件数だけがログに残る**（詳細は最初の 1 件しか上がらない）ことを
+ * 前提に、呼び出し元側で理由ごとに数えること。
  */
 async function mapWithLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
   let next = 0
@@ -180,14 +271,23 @@ async function getJson<T>(url: string, apiKey: string, what: string): Promise<T>
   return json
 }
 
-/** 電文本体を取得する（URL 単位でキャッシュ）。 */
+/**
+ * 電文本体を取得する（URL 単位でキャッシュ）。
+ *
+ * **セッション内のメモリ控えと、セッションを越える控えの 2 段になっている。** 手前の
+ * `bodyCache` は同じ窓を組み立て直すときの即時再利用、奥の `fetchTelegramText` は
+ * IndexedDB の控え（→ `telegramBody.ts`）。**同じ窓を再生し直すたびに取り直さない**ため、
+ * 奥の段が要る（リプレイは検証で何度も同じ範囲を流す）。
+ */
 function fetchBody(url: string, apiKey: string): Promise<string> {
   const cached = bodyCache.get(url)
   if (cached) return cached
   const promise = (async () => {
-    const res = await fetch(url, { headers: { Authorization: authHeader(apiKey) } })
-    if (!res.ok) throw new Error(`Telegram body fetch failed: ${res.status}`)
-    return res.text()
+    const body = await fetchTelegramText(apiKey, url)
+    if (body.xml === null) {
+      throw new Error(`Telegram body fetch failed: ${body.status === null ? 'network' : body.status}`)
+    }
+    return body.xml
   })()
   bodyCache.set(url, promise)
   // 失敗した Promise を残すと、以後そのセッション中は同じ URL が常にキャッシュ済みの失敗を返し、
@@ -229,7 +329,8 @@ async function listTelegrams(
 ): Promise<TelegramListItem[]> {
   const items: TelegramListItem[] = []
   let cursorToken: string | undefined
-  for (;;) {
+  let page = 0
+  for (; page < LIST_MAX_PAGES; page++) {
     const params = new URLSearchParams({ datetime: `${utcFrom}~${utcTo}`, limit: String(LIST_LIMIT) })
     // **一覧は既定で試験・訓練報を返さない。** 明示的に要求しないと、設定を入れていても
     // 当日経路だけ 1 通も拾えない（アーカイブ経路は最初から含んでいるので、ここを忘れると
@@ -242,6 +343,17 @@ async function listTelegrams(
     items.push(...(json.items ?? []))
     if (!json.nextToken) break
     cursorToken = json.nextToken
+  }
+  // **打ち切りは失敗として扱う。** ログだけにすると、呼び出し側は「打ち切られた不完全な配列」を
+  // 正常な戻り値として受け取り、取りこぼしにも計上されない（`fulfilled` なので `failedSources`
+  // も増えない）。上限に達するのは「範囲指定が効いていない」ときなので、そのとき欠けた分は
+  // どれだけあるか分からない —— **静かに一部を捨てるより、読めなかったと言うほうが正しい。**
+  // 監査スクリプト側（`scripts/telegram-audit/archive-cache.mjs`）も同じ扱いにしてある。
+  if (page >= LIST_MAX_PAGES) {
+    throw new Error(
+      `電文一覧のページ上限（${LIST_MAX_PAGES}）に達した 範囲=${utcFrom}~${utcTo}`
+      + ` 件数=${items.length}。範囲指定が効いていない疑いがある`,
+    )
   }
   // 設定を入れたのに試験報が 1 通も無いことを記録する。
   //
@@ -333,7 +445,8 @@ async function listEewTelegrams(
 ): Promise<{ items: TelegramListItem[]; failedSources: string[]; skipped: number }> {
   const events: EewListItem[] = []
   let cursorToken: string | undefined
-  for (;;) {
+  let page = 0
+  for (; page < LIST_MAX_PAGES; page++) {
     const params = new URLSearchParams({ datetime: `${utcFrom}~${utcTo}`, limit: String(LIST_LIMIT) })
     if (cursorToken) params.set('cursorToken', cursorToken)
     const json = await getJson<{ items?: EewListItem[]; nextToken?: string }>(
@@ -342,6 +455,18 @@ async function listEewTelegrams(
     events.push(...(json.items ?? []))
     if (!json.nextToken) break
     cursorToken = json.nextToken
+  }
+  // 打ち切りは失敗として扱う（理由は `listTelegrams` と同じ）。
+  //
+  // **EEW の一覧は他より先に上限へ届きやすい。** 毎正時の配信テスト（VXSE42）が XML と JSON の
+  // 2 版で載るため実測で 1 日あたり約 48 件あり、初期状態の 24 時間復元や履歴の遡りでは
+  // 地震情報より件数が伸びる。しかも 1 件でも欠けると**そのイベントの全報が丸ごと消える**
+  // （詳細の取得は `eventId` 単位）ので、黙って切ると欠落が取りこぼしにも現れない。
+  if (page >= LIST_MAX_PAGES) {
+    throw new Error(
+      `緊急地震速報の一覧のページ上限（${LIST_MAX_PAGES}）に達した 範囲=${utcFrom}~${utcTo}`
+      + ` 件数=${events.length}`,
+    )
   }
 
   // 詳細（全報）はイベント 1 件につき 1 リクエストかかる。窓に一報も掛からないイベントは
@@ -553,7 +678,7 @@ export async function fetchLiveQuakeTelegrams(
   day: string,
   before: Date,
   includeTest: boolean,
-): Promise<{ quakes: JMAQuake[]; extras: ReplayEntry[]; skipped: number }> {
+): Promise<{ quakes: JMAQuake[]; tsunamis: JMATsunami[]; extras: ReplayEntry[]; skipped: number }> {
   const daySet = new Set([day])
   const { from: utcFrom, to: utcTo } = utcRangeForJstDates([day])
   // 下限は日の始まりより 1 日ぶん手前に置く。担当日の切り出しは `daySet`（受信時刻の JST 日）が
@@ -574,13 +699,16 @@ export async function fetchLiveQuakeTelegrams(
     const type = item.head?.type
     // 地震カードのほかに、帯と長周期（`HISTORY_EXTRA_TYPES`）も拾う。初期状態（24 時間）では
     // 足りないもので、どれもこの一覧に入っているので追加の通信は要らない。
-    if (!QUAKE_TYPES.has(type) && !HISTORY_EXTRA_TYPES.has(type)) continue
+    // 津波もここで拾う。アーカイブ側と揃える —— 当日ぶんだけ落ちると、
+    // 発表中の津波が「アーカイブのある日に出たものだけ」になる。
+    if (!QUAKE_TYPES.has(type) && !HISTORY_EXTRA_TYPES.has(type) && !TSUNAMI_TYPES.has(type)) continue
     const verdict = classifyTelegram(item, windowFrom, until, daySet, includeTest)
     if (verdict === 'malformed') skipped++
     else if (verdict === 'include') targets.push(item)
   }
 
   const quakes: JMAQuake[] = []
+  const tsunamis: JMATsunami[] = []
   const extras: ReplayEntry[] = []
   await mapWithLimit(targets, BODY_CONCURRENCY, async (item) => {
     try {
@@ -595,6 +723,15 @@ export async function fetchLiveQuakeTelegrams(
         extras.push({ payload, replayTime: new Date(item.head.time), silent: true })
         return
       }
+      if (TSUNAMI_TYPES.has(item.head.type)) {
+        if (payload?.kind !== 'event' || payload.event.kind !== 'tsunami') {
+          log.warn(`[replay] 履歴用電文のパースに失敗しスキップ id=${item.id} type=${item.head.type}`)
+          skipped++
+          return
+        }
+        tsunamis.push(payload.event)
+        return
+      }
       if (payload?.kind !== 'event' || payload.event.kind !== 'quake') {
         log.warn(`[replay] 履歴用電文のパースに失敗しスキップ id=${item.id} type=${item.head.type}`)
         skipped++
@@ -606,5 +743,5 @@ export async function fetchLiveQuakeTelegrams(
       skipped++
     }
   })
-  return { quakes, extras, skipped }
+  return { quakes, tsunamis, extras, skipped }
 }

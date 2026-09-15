@@ -5,7 +5,8 @@
 // 丸ごと不可能になっていた。また目録（telegrams.json）が無いアーカイブは無言で
 // 捨てられ、「電文 0 件だが成功」に化けて原因が追えなかった。
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest'
-import { fetchDmdataReplayEvents, fetchDmdataQuakeHistory, clearReplayCache, filterPreWindowEvents } from './dmdataReplay'
+import { fetchDmdataReplayEvents, fetchDmdataQuakeHistory, clearReplayCache, filterPreWindowEvents, MAX_HISTORY_DAYS } from './dmdataReplay'
+import { enumerateJstDates, MAX_ENUMERATED_DAYS } from './dmdataReplayLive'
 import type { JMATsunami, EEWAlert } from '../types/earthquake'
 import type { ReplayEntry } from '../types/replay'
 import { DmdataApiKeyError } from '../utils/dmdataApiKey'
@@ -474,18 +475,162 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
 
   // 当日経路の失敗をそのまま投げると、既に読めているアーカイブ側の電文まで巻き添えで捨てられる。
   // この関数は本編と初期状態の 2 回 Promise.all で呼ばれるため、再生自体が始まらなくなる。
+  //
+  // **窓の日（8/10）のアーカイブは無く、翌日（8/11）のアーカイブに 8/10 23:59 発表の電文が
+  // 入っている形にしてある。** アーカイブの日の区切りは配信（受信）側なので、日付の境目を
+  // 跨いだ電文はこう入る（→ `dmdataReplayLive.ts` の `archiveDaysForWindow`）。翌日を
+  // 落とさない実装だとこの電文が消え、同時に 8/10 が当日経路へ回ることも確かめられる。
   it('当日経路が読めなくても、アーカイブから読めた分は残す', async () => {
     const gz = await makeTarGz([
-      { name: 'telegrams.json', content: JSON.stringify([manifestEntry('aaaaaaa1')]) },
-      { name: 'aaaaaaa1_20260810120500000_0.xml', content: quakeBody('岩手県沖') },
+      {
+        name: 'telegrams.json',
+        content: JSON.stringify([manifestEntry('aaaaaaa1', 'VXSE53', '2026-08-10T23:59:00+09:00')]),
+      },
+      // ファイル名の 17 桁は UTC のミリ秒精度の受信時刻（= JST 8/10 23:59:30）
+      { name: 'aaaaaaa1_20260810145930000_0.xml', content: quakeBody('岩手県沖') },
     ])
-    globalThis.fetch = mockArchivesWithLive([{ date: '2026-08-09', url: 'https://x/d09', gz }], 'error') as unknown as typeof fetch
+    globalThis.fetch = mockArchivesWithLive([{ date: '2026-08-11', url: 'https://x/d11', gz }], 'error') as unknown as typeof fetch
 
     const result = await fetchDmdataReplayEvents('key', FROM, TO, false)
 
     expect(result.entries).toHaveLength(1)
     // 読めなかった日は取得元の識別子として数える（無言で消すと「静かな時間帯」と区別が付かない）
     expect(result.failedArchiveUrls).toContain('live:2026-08-10')
+  })
+
+  // 目録の範囲も窓の JST 日から導く。**左端は排他**なので 1 日手前を指す（実測。
+  // → `dmdataReplayLive.ts` の `archiveListRange`）。かつては窓の **UTC 日付**へ
+  // 両端 ±1 日を足しており、1 日に収まる窓でも余計な日が返っていた。
+  it('目録の範囲は窓の JST 日から導く（左端は 1 日手前）', async () => {
+    const gz = await makeTarGz([
+      { name: 'telegrams.json', content: JSON.stringify([manifestEntry('aaaaaaa1')]) },
+      { name: 'aaaaaaa1_20260810120500000_0.xml', content: quakeBody('岩手県沖') },
+    ])
+    const fn = mockArchivesWithLive([{ date: '2026-08-10', url: 'https://x/d10', gz }], 'empty')
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    // 窓は JST 8/10 00:00〜8/11 00:00（終端は含まない）
+    await fetchDmdataReplayEvents('key', FROM, TO, false)
+
+    const listUrl = fn.mock.calls.map(c => c[0]).find(u => u.includes('/v2/archive?'))
+    expect(listUrl).toContain('datetime=2026-08-09%7E2026-08-11')
+  })
+
+  // **`limit` は明示して渡す。** 配信元の既定は 20 件で、指定すれば 100 件まで返る
+  // （リファレンス「デフォルト: 20 … 最大は100」）。渡さないでいた頃は「この API は 1 回に
+  // 20 件しか返さない」と誤解しており、同じ範囲を読むのに 5 倍のページを辿っていた。
+  it('目録の取得は limit を明示して渡す', async () => {
+    const gz = await makeTarGz([
+      { name: 'telegrams.json', content: JSON.stringify([manifestEntry('aaaaaaa1')]) },
+      { name: 'aaaaaaa1_20260810120500000_0.xml', content: quakeBody('岩手県沖') },
+    ])
+    const fn = mockArchivesWithLive([{ date: '2026-08-10', url: 'https://x/d10', gz }], 'empty')
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    await fetchDmdataReplayEvents('key', FROM, TO, false)
+
+    const listUrl = fn.mock.calls.map(c => c[0]).find(u => u.includes('/v2/archive?'))
+    expect(listUrl).toContain('limit=100')
+    // `URLSearchParams` の初期化をまとめて書き換えたので、**他のパラメータが落ちていないことも
+    // ここで見る**（範囲と分類はどちらも欠けると目録が別のものになる）。
+    expect(listUrl).toContain('datetime=2026-08-09%7E2026-08-11')
+    expect(listUrl).toContain('classification=')
+  })
+
+  // 対照: 本体（`/v1/archive/:id`）は目録が返した URL をそのまま叩く。件数の概念が無いので
+  // `limit` は付かない。一覧の組み立て方を本体へ流用すると、意味を持たないパラメータが付く。
+  // **いまの実装では一覧と本体で `fetch` の呼び出しが分かれているので、このテストは恒常的に通る。**
+  // 両者のコードパスを 1 本へまとめるリファクタが入ったときに意味を持つ。
+  it('アーカイブ本体の URL には limit を付けない', async () => {
+    const gz = await makeTarGz([
+      { name: 'telegrams.json', content: JSON.stringify([manifestEntry('aaaaaaa1')]) },
+      { name: 'aaaaaaa1_20260810120500000_0.xml', content: quakeBody('岩手県沖') },
+    ])
+    const fn = mockArchivesWithLive([{ date: '2026-08-10', url: 'https://x/d10', gz }], 'empty')
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    await fetchDmdataReplayEvents('key', FROM, TO, false)
+
+    const bodyUrls = fn.mock.calls.map(c => c[0] as string).filter(u => u.startsWith('https://x/'))
+    expect(bodyUrls).toEqual(['https://x/d10'])
+  })
+
+  // 安全弁: **2 ページ目以降も `limit` と範囲が落ちない。** 配信元は cursorToken を使うとき
+  // 「以前と同じ検索クエリパラメータを指定する」ことを求めており、落とすと 2 ページ目から
+  // 既定の 20 件へ戻る（ページ数が増え、上限にも早く達する）。`URLSearchParams` をページごとに
+  // 作り直す形なので、初期化から外して `set` で足すと落ちうる。
+  it('2 ページ目以降も limit と範囲を渡し続ける', async () => {
+    const fn = vi.fn(async (input: string) => {
+      if (input.includes('/v2/archive?')) {
+        // 1 ページ目だけ nextToken を返して 2 ページ目を辿らせる
+        if (input.includes('cursorToken=tok1')) {
+          return { ok: true, json: async () => ({ status: 'ok', items: [] }) } as unknown as Response
+        }
+        return {
+          ok: true,
+          json: async () => ({ status: 'ok', items: [], nextToken: 'tok1' }),
+        } as unknown as Response
+      }
+      if (input.includes('/v2/telegram?') || input.includes('/v2/gd/eew')) {
+        return { ok: true, json: async () => ({ status: 'ok', items: [] }) } as unknown as Response
+      }
+      return { ok: false, status: 500 } as unknown as Response
+    })
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    await fetchDmdataReplayEvents('key', FROM, TO, false)
+
+    const listUrls = fn.mock.calls.map(c => c[0] as string).filter(u => u.includes('/v2/archive?'))
+    expect(listUrls.length).toBeGreaterThanOrEqual(2)
+    for (const u of listUrls) {
+      expect(u).toContain('limit=100')
+      expect(u).toContain('datetime=2026-08-09%7E2026-08-11')
+    }
+    expect(listUrls.filter(u => u.includes('cursorToken=tok1'))).toHaveLength(1)
+  })
+  // 本体（`/v1/archive/:id`）は 1 日分がまとめて入っていて重い。目録が返した分をそのまま
+  // 全件落としていた頃は、1 日に収まる窓でも余計な日を取って時刻で捨てていた。
+  it('窓の外の日のアーカイブ本体は落とさない', async () => {
+    const inside = await makeTarGz([
+      { name: 'telegrams.json', content: JSON.stringify([manifestEntry('aaaaaaa1')]) },
+      { name: 'aaaaaaa1_20260810120500000_0.xml', content: quakeBody('岩手県沖') },
+    ])
+    const outside = await makeTarGz([
+      { name: 'telegrams.json', content: JSON.stringify([manifestEntry('bbbbbbb2', 'VXSE53', '2026-08-08T12:05:00+09:00')]) },
+      { name: 'bbbbbbb2_20260808120500000_0.xml', content: quakeBody('宮城県沖') },
+    ])
+    const fn = mockArchivesWithLive([
+      // 窓は JST 8/10 の 1 日。8/08 は窓の外（前日より前）
+      { date: '2026-08-08', url: 'https://x/d08', gz: outside },
+      { date: '2026-08-10', url: 'https://x/d10', gz: inside },
+    ], 'empty')
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    const result = await fetchDmdataReplayEvents('key', FROM, TO, false)
+
+    expect(result.entries).toHaveLength(1)
+    const fetched = fn.mock.calls.map(c => c[0]).filter(u => u.startsWith('https://x/'))
+    expect(fetched).toEqual(['https://x/d10'])
+  })
+
+  // 安全弁: **前日は落とさないが、翌日は落とす。** 受信は発表より前になりえないので前日は
+  // 要らないが、翌日は日付の境目を跨いだ電文が入りうるので外せない。
+  it('翌日のアーカイブ本体は落とす（前日は落とさない）', async () => {
+    const day = async (id: string, pub: string) => makeTarGz([
+      { name: 'telegrams.json', content: JSON.stringify([manifestEntry(id, 'VXSE53', pub)]) },
+      { name: `${id}_20260810120500000_0.xml`, content: quakeBody('岩手県沖') },
+    ])
+    const fn = mockArchivesWithLive([
+      { date: '2026-08-09', url: 'https://x/d09', gz: await day('aaaaaaa1', '2026-08-09T12:05:00+09:00') },
+      { date: '2026-08-10', url: 'https://x/d10', gz: await day('bbbbbbb2', '2026-08-10T12:05:00+09:00') },
+      { date: '2026-08-11', url: 'https://x/d11', gz: await day('ccccccc3', '2026-08-10T23:59:00+09:00') },
+    ], 'empty')
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    await fetchDmdataReplayEvents('key', FROM, TO, false)
+
+    const fetched = fn.mock.calls.map(c => c[0]).filter(u => u.startsWith('https://x/')).sort()
+    expect(fetched).toEqual(['https://x/d10', 'https://x/d11'])
   })
 
   // 取得元が当日経路 1 本しか無い窓（＝当日だけを指す本編の 1 時間）でこれを部分成功に落とすと、
@@ -871,15 +1016,21 @@ describe('fetchDmdataQuakeHistory', () => {
   }
 
   /** 1 日ぶんのアーカイブ。id 先頭 7 文字がファイル名に含まれる必要がある。 */
-  async function dayArchive(telegrams: Array<{ id: string; eventId: string; time: string; serial?: string }>) {
+  async function dayArchive(
+    telegrams: Array<{
+      id: string; eventId: string; time: string; serial?: string; type?: string
+      /** 電文本体の `Head/ReportDateTime`。目録の `head.time` と別の値にしたいときだけ渡す。 */
+      bodyTime?: string
+    }>,
+  ) {
     return makeTarGz([
       {
         name: 'telegrams.json',
-        content: JSON.stringify(telegrams.map(t => manifestEntry(t.id, 'VXSE53', t.time))),
+        content: JSON.stringify(telegrams.map(t => manifestEntry(t.id, t.type ?? 'VXSE53', t.time))),
       },
       ...telegrams.map(t => ({
         name: `${t.id}_20260810120500000_0.xml`,
-        content: historyBody(t.eventId, t.time, t.serial),
+        content: historyBody(t.eventId, t.bodyTime ?? t.time, t.serial),
       })),
     ])
   }
@@ -904,6 +1055,126 @@ describe('fetchDmdataQuakeHistory', () => {
 
     expect(result.quakes).toHaveLength(1)
     expect(result.quakes[0].id).toContain('20260810090000')
+  })
+
+  // `mergeQuakeHistory` は安定ソートで畳み込むため、**発表時刻が同値の電文どうしは入力配列の
+  // 相対順序がそのまま結果に効く**。詳しい電文が先・粗い電文が後だと粗い方が上書きする。
+  // 目録の並びも日の処理順（新しい日から）も、この並びを保証しない。
+  it('正: 発表時刻が同値なら「速報→詳細」の順に並べ直す', async () => {
+    const gz = await dayArchive([
+      // 目録では詳細（VXSE53）が先。並べ直さなければこの順で返る
+      { id: 'aaaaaaa1', eventId: '20260810010000', time: '2026-08-10T01:05:00+09:00', type: 'VXSE53' },
+      { id: 'bbbbbbb2', eventId: '20260810010000', time: '2026-08-10T01:05:00+09:00', type: 'VXSE51' },
+    ])
+    globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
+
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
+
+    expect(result.quakes.map(q => q.issue.type)).toEqual(['震度速報', '震源・震度情報'])
+  })
+
+  // 対照: 種別優先度で並べ替えるのは同値のときだけ。時刻が違えば時刻に従う
+  // （常に種別で並べると、あとから届いた震度速報の続報が古い詳細より前に来る）。
+  it('対照: 発表時刻が違えば時刻の昇順に従う（種別では入れ替えない）', async () => {
+    const gz = await dayArchive([
+      { id: 'aaaaaaa1', eventId: '20260810010000', time: '2026-08-10T02:05:00+09:00', type: 'VXSE51' },
+      { id: 'bbbbbbb2', eventId: '20260810010000', time: '2026-08-10T01:05:00+09:00', type: 'VXSE53' },
+    ])
+    globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
+
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
+
+    expect(result.quakes.map(q => q.issue.type)).toEqual(['震源・震度情報', '震度速報'])
+  })
+
+  // 安全弁: 日時として読めない時刻が混ざっても、比較関数が全順序のままであること。
+  // 「読めないものは据え置いて種別だけで比べる」形だと、読めない a と読める b・c について
+  // a=b・a=c なのに b<c が成り立ちうる（`Array.prototype.sort` の結果が実装依存になる）。
+  // 読めない時刻を末尾へ寄せることで全順序になり、並びが決まる。
+  it('安全弁: 読めない発表時刻は末尾へ寄せ、読める分の並びを崩さない', async () => {
+    const gz = await dayArchive([
+      { id: 'aaaaaaa1', eventId: '20260810020000', time: '2026-08-10T02:05:00+09:00' },
+      // 目録の時刻は読めるが、**電文本体の発表時刻**が読めない形（目録側が読めない電文は
+      // 本体を取る前に取りこぼしとして弾かれるので、この並べ替えには届かない）
+      { id: 'bbbbbbb2', eventId: '20260810030000', time: '2026-08-10T03:05:00+09:00', bodyTime: 'これは日時ではない' },
+      { id: 'ccccccc3', eventId: '20260810010000', time: '2026-08-10T01:05:00+09:00' },
+    ])
+    globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
+
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
+
+    // 読めない 1 件も捨てない（同一性の判定に使う時刻を落とさない方針）
+    expect(result.quakes).toHaveLength(3)
+    // 01:05 → 02:05 → 読めない分、の順
+    expect(result.quakes.map(q => q.time)).toEqual([
+      '2026-08-10T01:05:00+09:00',
+      '2026-08-10T02:05:00+09:00',
+      'これは日時ではない',
+    ])
+  })
+
+  // 安全弁: 日は新しい順に処理するので、並べ直さないと日をまたいだ並びが逆になる。
+  it('安全弁: 日をまたいでも時刻の昇順で返す', async () => {
+    const newer = await dayArchive([
+      { id: 'aaaaaaa1', eventId: '20260810010000', time: '2026-08-10T01:05:00+09:00' },
+    ])
+    const older = await dayArchive([
+      { id: 'ccccccc3', eventId: '20260809010000', time: '2026-08-09T01:05:00+09:00' },
+    ])
+    globalThis.fetch = mockHistoryArchives([
+      { date: '2026-08-09', url: 'https://x/d09', gz: older },
+      { date: '2026-08-10', url: 'https://x/d10', gz: newer },
+    ]) as unknown as typeof fetch
+
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
+
+    expect(result.quakes.map(q => q.id.includes('20260809010000'))).toEqual([true, false])
+  })
+
+  // 打ち切りは正常系（`StrictMode` の二重実行・時間軸の切り替え・画面を離れた）。
+  // 「読んだが 0 件」と同じ文面にすると、記録が「静かな期間だった」と主張してしまう。
+  describe('打ち切ったことは「0 件」と言い分ける', () => {
+    // このファイルは logger を差し替えていないので、テストごとに spy を張る
+    // （`afterEach` の `vi.restoreAllMocks()` が外す）。
+    const captured: { warn: string[]; info: string[] } = { warn: [], info: [] }
+    const warnings = () => captured.warn
+    const infos = () => captured.info
+
+    beforeEach(() => {
+      captured.warn = []
+      captured.info = []
+      vi.spyOn(log, 'warn').mockImplementation((...a: unknown[]) => { captured.warn.push(a.join(' ')) })
+      vi.spyOn(log, 'info').mockImplementation((...a: unknown[]) => { captured.info.push(a.join(' ')) })
+    })
+
+    it('正: 読み始める前に打ち切られたら、打ち切りとして記録する', async () => {
+      const gz = await dayArchive([
+        { id: 'aaaaaaa1', eventId: '20260810010000', time: '2026-08-10T01:05:00+09:00' },
+      ])
+      globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
+
+      const result = await fetchDmdataQuakeHistory(
+        'key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false, undefined, () => true,
+      )
+
+      expect(result.quakes).toHaveLength(0)
+      expect(result.hasMore).toBe(false)
+      expect(infos().filter(m => m.includes('打ち切った'))).toHaveLength(1)
+      // 「0 件」の警告と「復元」の報告はどちらも出さない
+      expect(warnings().filter(m => m.includes('地震電文は 0 件'))).toHaveLength(0)
+      expect(infos().filter(m => m.includes('履歴を復元'))).toHaveLength(0)
+    })
+
+    it('対照: 打ち切っていない 0 件は従来どおり警告として残す', async () => {
+      const gz = await dayArchive([])
+      globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
+
+      const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
+
+      expect(result.quakes).toHaveLength(0)
+      expect(warnings().filter(m => m.includes('地震電文は 0 件'))).toHaveLength(1)
+      expect(infos().filter(m => m.includes('打ち切った'))).toHaveLength(0)
+    })
   })
 
   // 打ち切りが無いと、地震の少ない期間で上限日数ぶんを常に読みに行くことになる。
@@ -1268,5 +1539,29 @@ describe('filterPreWindowEvents の EEW（解除時刻を決められないと�
     } finally {
       warn.mockRestore()
     }
+  })
+})
+
+// `MAX_HISTORY_DAYS` は `MAX_ENUMERATED_DAYS` から 1 日引いただけの値で、引き算そのものが
+// 正しいかは型でも実行でも確かめられない。**1 日ずれても症状は「8 回目に押したときだけ
+// 例外」**で、通常の検証には現れないため、ここで境界を固定する。
+//
+// `fetchDmdataQuakeHistory` が当日経路へ列挙させる範囲は `[before - maxDays, before + 1ms)`。
+describe('遡れる日数の上限（MAX_HISTORY_DAYS）', () => {
+  const before = new Date('2026-09-15T03:00:00Z')
+  const rangeFor = (maxDays: number) => {
+    const from = new Date(before)
+    from.setDate(from.getDate() - maxDays)
+    return [from, new Date(before.getTime() + 1)] as const
+  }
+
+  it('正: 上限ちょうどの日数なら列挙できる', () => {
+    const [from, to] = rangeFor(MAX_HISTORY_DAYS)
+    expect(enumerateJstDates(from, to)).toHaveLength(MAX_ENUMERATED_DAYS)
+  })
+
+  it('対照: 1 日でも超えると投げる', () => {
+    const [from, to] = rangeFor(MAX_HISTORY_DAYS + 1)
+    expect(() => enumerateJstDates(from, to)).toThrow(/対象期間が広すぎます/)
   })
 })

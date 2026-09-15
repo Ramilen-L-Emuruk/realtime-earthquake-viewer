@@ -18,6 +18,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, cleanup, act } from '@testing-library/react'
 import type { AppEvent, LiveEvent, EEWAlert, JMAQuake, JMATsunami, JMANankaiCommentary, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity } from '../types/earthquake'
+import type { ReplayEntry, ReplayPayload } from '../types/replay'
+import type { JMAKohatsu } from '../types/earthquake'
 import { serverDate, setReplayOffset } from '../utils/clock'
 import { DMDATA_API_KEY_INVALID_MESSAGE } from '../utils/dmdataApiKey'
 import { log } from '../utils/logger'
@@ -76,16 +78,43 @@ const { sockets, FakeWebSocket } = vi.hoisted(() => {
 // で与える。**ファクトリ内でリテラルを書くと型検査が効かない**ため、そこを取り違えると初回履歴取得が
 // TypeError で落ち、実装側の catch に飲まれて error state に入る（接続状態だけ見ていると緑のまま
 // 通ってしまう）。`vi.mocked` 経由なら実関数の戻り値型で縛られるので、取り違えは型エラーになる。
+/**
+ * 履歴取得（`fetchDmdataQuakeHistory`）の戻り値を組み立てる。
+ *
+ * 地震・津波・帯・長周期が 1 本で返るので、テストは足したいものだけを渡す。
+ */
+function history(opts: {
+  quakes?: JMAQuake[]
+  tsunamis?: JMATsunami[]
+  extras?: ReplayEntry[]
+  hasMore?: boolean
+} = {}) {
+  return {
+    quakes: opts.quakes ?? [],
+    tsunamis: opts.tsunamis ?? [],
+    extras: opts.extras ?? [],
+    skipped: 0,
+    failedArchiveUrls: [] as string[],
+    hasMore: opts.hasMore ?? false,
+  }
+}
+
+/** 帯・長周期を `extras` の 1 件として包む。 */
+function extra(payload: ReplayPayload): ReplayEntry {
+  return { payload, replayTime: new Date('2026-01-01T00:00:00Z'), silent: true }
+}
+
+// 履歴の一括取得は `services/dmdataReplay.ts` へ寄せてあるので、ここに差し替えるのは
+// 受信の入口だけでよい（旧来の 1 件ずつ取る 8 本は撤去済み）。
 vi.mock('../services/dmdata', () => ({
   DmdataWebSocket: FakeWebSocket,
-  fetchDmdataEarthquakes: vi.fn(),
-  fetchDmdataTsunamis: vi.fn(),
-  fetchDmdataLpgms: vi.fn(),
-  fetchDmdataNankai: vi.fn(),
-  fetchDmdataNankaiCommentary: vi.fn(),
-  fetchDmdataKohatsu: vi.fn(),
-  fetchDmdataEarthquakeCount: vi.fn(),
-  fetchDmdataQuakeNotice: vi.fn(),
+}))
+
+// 履歴の取得はアーカイブ経由の 1 本へ寄せてある（→ `services/dmdataReplay.ts` の
+// `fetchDmdataQuakeHistory`）。地震・津波・帯・長周期がまとめて返る。
+vi.mock('../services/dmdataReplay', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/dmdataReplay')>()),
+  fetchDmdataQuakeHistory: vi.fn(),
 }))
 
 vi.mock('../services/p2pquake', () => ({
@@ -94,11 +123,9 @@ vi.mock('../services/p2pquake', () => ({
   fetchJmaQuake: vi.fn(),
 }))
 
-const {
-  fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms,
-  fetchDmdataNankai, fetchDmdataNankaiCommentary, fetchDmdataKohatsu,
-  fetchDmdataEarthquakeCount, fetchDmdataQuakeNotice,
-} = await import('../services/dmdata')
+// 遡れる日数の上限は実装側の定数を正とする（テストへ数値を書き写すと、上限を動かしたときに
+// テストだけが古い値のまま通ってしまう）。モックのファクトリで実物を展開しているので本物が来る。
+const { fetchDmdataQuakeHistory, MAX_HISTORY_DAYS } = await import('../services/dmdataReplay')
 const { fetchHistory, fetchJmaQuake } = await import('../services/p2pquake')
 
 const { useEarthquakes } = await import('./useEarthquakes')
@@ -125,14 +152,7 @@ beforeEach(() => {
   sockets.length = 0
   mockIsDmdss = true
   // 戻り値の形はここで型付きに与える（実シグネチャと違えば型エラーになる）
-  vi.mocked(fetchDmdataEarthquakes).mockResolvedValue({ quakes: [] })
-  vi.mocked(fetchDmdataTsunamis).mockResolvedValue([])
-  vi.mocked(fetchDmdataLpgms).mockResolvedValue([])
-  vi.mocked(fetchDmdataNankai).mockResolvedValue(null)
-  vi.mocked(fetchDmdataNankaiCommentary).mockResolvedValue(null)
-  vi.mocked(fetchDmdataKohatsu).mockResolvedValue(null)
-  vi.mocked(fetchDmdataEarthquakeCount).mockResolvedValue(null)
-  vi.mocked(fetchDmdataQuakeNotice).mockResolvedValue(null)
+  vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history())
   vi.mocked(fetchHistory).mockResolvedValue([])
   vi.mocked(fetchJmaQuake).mockResolvedValue([])
 })
@@ -690,7 +710,7 @@ describe('津波テストの解除電文', () => {
    * 初回履歴の取り込みを先に流し切る。
    *
    * テストデータは動的 import で読むので、シミュレーション関数は Promise を返す。それを await
-   * すると**同じ待ちのあいだに初回履歴取得（`fetchDmdataTsunamis` 等）の解決も進む**ため、
+   * すると**同じ待ちのあいだに初回履歴取得（`fetchDmdataQuakeHistory`）の解決も進む**ため、
    * 順番しだいで履歴の `setState` が、いま流したテスト電文を上書きする。症状は
    * **「`onLiveEvent` には 2 通とも届いているのにカードが空」** —— 電文の形を見る assertion は
    * 通り、state を見る assertion だけが落ちるので、電文側だけ確かめていると気づけない。
@@ -892,21 +912,21 @@ describe('南海トラフ関連解説情報の帯は期限で畳む', () => {
   afterEach(() => { vi.useRealTimers() })
 
   it('初回取得で期限内の解説情報を帯に載せる', async () => {
-    vi.mocked(fetchDmdataNankaiCommentary).mockResolvedValue(commentary('c-fresh', 60_000))
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({ extras: [extra({ kind: 'nankaiCommentary', data: commentary('c-fresh', 60_000) })] }))
     const h = setup()
     await h.flush()
     expect(h.current.nankaiCommentary?.id).toBe('c-fresh')
   })
 
   it('期限切れの解説情報は載せない（先月の定例解説が起動時に出ないこと）', async () => {
-    vi.mocked(fetchDmdataNankaiCommentary).mockResolvedValue(commentary('c-stale', -1_000))
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({ extras: [extra({ kind: 'nankaiCommentary', data: commentary('c-stale', -1_000) })] }))
     const h = setup()
     await h.flush()
     expect(h.current.nankaiCommentary).toBeNull()
   })
 
   it('期限が来たら帯を畳む', async () => {
-    vi.mocked(fetchDmdataNankaiCommentary).mockResolvedValue(commentary('c-expiring', 5_000))
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({ extras: [extra({ kind: 'nankaiCommentary', data: commentary('c-expiring', 5_000) })] }))
     const h = setup()
     await h.flush()
     expect(h.current.nankaiCommentary?.id).toBe('c-expiring')
@@ -917,14 +937,14 @@ describe('南海トラフ関連解説情報の帯は期限で畳む', () => {
 
   it('期限日時が壊れていれば載せない（期限計算が破綻した状態で帯を出さない）', async () => {
     const broken = { ...commentary('c-broken', 60_000), expireAt: 'not-a-date' }
-    vi.mocked(fetchDmdataNankaiCommentary).mockResolvedValue(broken)
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({ extras: [extra({ kind: 'nankaiCommentary', data: broken })] }))
     const h = setup()
     await h.flush()
     expect(h.current.nankaiCommentary).toBeNull()
   })
 
   it('取消電文で帯を消す（期限を待たずに畳む）', async () => {
-    vi.mocked(fetchDmdataNankaiCommentary).mockResolvedValue(commentary('c-live', 60_000))
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({ extras: [extra({ kind: 'nankaiCommentary', data: commentary('c-live', 60_000) })] }))
     const h = setup()
     await h.flush()
     expect(h.current.nankaiCommentary?.id).toBe('c-live')
@@ -945,7 +965,7 @@ describe('南海トラフ関連解説情報の帯は期限で畳む', () => {
   // 安全弁: 別の情報単位に向けた取消で、いま出ている帯を消さない。気象庁は発表ごとに別の
   // `EventID` を割り振るため（同 Ⅰ.別紙エ）、遅れて届いた古い取消がこの形で来うる
   it('別の eventId に向けた取消では帯を消さない', async () => {
-    vi.mocked(fetchDmdataNankaiCommentary).mockResolvedValue(commentary('c-live', 60_000))
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({ extras: [extra({ kind: 'nankaiCommentary', data: commentary('c-live', 60_000) })] }))
     const h = setup()
     await h.flush()
     expect(h.current.nankaiCommentary?.id).toBe('c-live')
@@ -1321,9 +1341,7 @@ describe('DMDSS 版: APIキーが不正なら通信しない', () => {
   // 履歴を消さずに「呼ばれないこと」を見ると、他のテストの呼び出しを拾って落ちる。
   // 逆に「呼ばれること」の側は履歴が残っているせいで常に通り、検証にならない。
   beforeEach(() => {
-    for (const fn of [fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataNankai]) {
-      vi.mocked(fn).mockClear()
-    }
+    vi.mocked(fetchDmdataQuakeHistory).mockClear()
   })
 
   it('disconnected へ落ち、理由を error に載せ、取得を一度も呼ばない', async () => {
@@ -1333,9 +1351,7 @@ describe('DMDSS 版: APIキーが不正なら通信しない', () => {
     expect(h.current.connectionStatus).toBe('disconnected')
     expect(h.current.isLoading).toBe(false)
     expect(h.current.error).toBe(DMDATA_API_KEY_INVALID_MESSAGE)
-    expect(fetchDmdataEarthquakes).not.toHaveBeenCalled()
-    expect(fetchDmdataTsunamis).not.toHaveBeenCalled()
-    expect(fetchDmdataNankai).not.toHaveBeenCalled()
+    expect(fetchDmdataQuakeHistory).not.toHaveBeenCalled()
     // WebSocket も張らない（張ると 30 秒間隔の再接続が無音で回り続ける）
     expect(sockets.length).toBe(0)
   })
@@ -1346,7 +1362,7 @@ describe('DMDSS 版: APIキーが不正なら通信しない', () => {
     await h.flush()
 
     expect(h.current.error).toBeNull()
-    expect(fetchDmdataEarthquakes).toHaveBeenCalled()
+    expect(fetchDmdataQuakeHistory).toHaveBeenCalled()
     expect(sockets.length).toBe(1)
     expect(sockets[0].connected).toBe(true)
   })
@@ -1396,7 +1412,7 @@ describe('リプレイ開始時の地震カード', () => {
   // 押すと `loadMoreEarthquakes` がライブの最新履歴を取りに行き、再生時刻より未来の地震が
   // カードに並ぶ。カードを空にするだけでボタンを残すと、再生中もこれが押せてしまう。
   it('表示をリセットすると「もっと見る」を畳む', async () => {
-    vi.mocked(fetchDmdataEarthquakes).mockResolvedValue({ quakes: [], nextToken: 'next-page' })
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({ hasMore: true }))
     const h = setup({ offset: null })
     await h.flush()
     expect(h.current.hasMore).toBe(true)
@@ -1430,6 +1446,155 @@ describe('リプレイ開始時の地震カード', () => {
     act(() => { h.current.restoreQuakeHistory([quakeTelegram('20260810010000', '2026-08-10T01:05:00+09:00')]) })
 
     expect(h.current.earthquakes).toHaveLength(2)
+  })
+})
+
+describe('DMDSS 版: 「もっと見る」で遡れる範囲', () => {
+  /** 履歴の 1 通（`リプレイ開始時の地震カード` の同名ヘルパと同じ最小形）。 */
+  function quakeTelegram(eventId: string, time: string): JMAQuake {
+    return {
+      kind: 'quake' as const,
+      id: `dmdata-quake-${eventId}-1`,
+      time,
+      issue: { source: '気象庁', time, type: '各地の震度情報' as const, correct: 'なし' as const },
+      earthquake: {
+        time,
+        hypocenter: { name: '岩手県沖', latitude: 39.9, longitude: 142.2, depth: 50, magnitude: 5.1 },
+        maxScale: 40,
+        domesticTsunami: 'なし' as const,
+      },
+      points: [{ pref: '岩手県', addr: '宮古市', isArea: false, scale: 40 }],
+    }
+  }
+
+  /** 呼ばれたときの `maxDays`（第 4 引数）を順に返す。 */
+  function requestedDays(): number[] {
+    return vi.mocked(fetchDmdataQuakeHistory).mock.calls.map(c => c[3])
+  }
+
+  beforeEach(() => {
+    // 呼び出し履歴（`requestedDays`）を見るので、前のテストのぶんを消しておく
+    // （このファイルは `clearMocks` を使っていないため、同じ `vi.fn()` に積まれ続ける）。
+    vi.mocked(fetchDmdataQuakeHistory).mockClear()
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({ hasMore: true }))
+  })
+
+  // **1 週間まるごと震度1以上の地震が無いことは普通に起きる。** それは「もっと古い在庫が無い」
+  // ことを何も意味しない（実測でアーカイブの目録は 135 日以上さかのぼれた）。増えたかどうかで
+  // 打ち切る作りにしていた頃は、静かな 1 週間に当たった時点で以後の遡りが永久に塞がっていた。
+  it('正: カードが増えなかった回でも、まだ遡れるなら押せるままにする', async () => {
+    const h = setup({ offset: null })
+    await h.flush()
+
+    await act(async () => { await h.current.loadMoreEarthquakes() })
+
+    expect(h.current.earthquakes).toHaveLength(0)
+    expect(h.current.hasMore).toBe(true)
+  })
+
+  it('正: 押すたびに遡る日数が伸びる', async () => {
+    const h = setup({ offset: null })
+    await h.flush()
+
+    await act(async () => { await h.current.loadMoreEarthquakes() })
+    await act(async () => { await h.current.loadMoreEarthquakes() })
+
+    // 初回（起動時）=7 日、以後 1 回につき +7 日
+    expect(requestedDays()).toEqual([7, 14, 21])
+  })
+
+  // 当日経路の日付列挙には上限があり、越えると例外で止まる（→ `MAX_HISTORY_DAYS`）。
+  // 越えた日数を渡し続けると、押すたびに同じ例外を投げるだけのボタンが残る。
+  it('対照: 上限に達したらそれ以上は要求せず、押せなくする', async () => {
+    const h = setup({ offset: null })
+    await h.flush()
+
+    // 上限まで（+1 回ぶん余分に）押す
+    for (let i = 0; i < Math.ceil(MAX_HISTORY_DAYS / 7) + 2; i++) {
+      if (!h.current.hasMore) break
+      await act(async () => { await h.current.loadMoreEarthquakes() })
+    }
+
+    expect(h.current.hasMore).toBe(false)
+    expect(Math.max(...requestedDays())).toBe(MAX_HISTORY_DAYS)
+  })
+
+  // 取得側が「もう要らない（打ち切った）」と言ったら従う。日数の上限とは別の理由。
+  it('対照: 取得側が打ち切ったら押せなくする', async () => {
+    const h = setup({ offset: null })
+    await h.flush()
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({ hasMore: false }))
+
+    await act(async () => { await h.current.loadMoreEarthquakes() })
+
+    expect(h.current.hasMore).toBe(false)
+  })
+
+  // 押してから接続が張り直される（API キーの差し替え・リプレイの開始・試験報の設定変更）と、
+  // 待っていた取得は別の時間軸の一覧へ流し込まれるので結果ごと捨てる。**そのとき「取得中」を
+  // 解除しないと、冒頭のガードと噛み合ってボタンがリロードまで死ぬ**（押せない「取得中…」が
+  // 残るだけで、例外もログも出ない）。
+  it('安全弁: 押した後に接続が張り直されても、取得中の表示は解ける', async () => {
+    const h = setup({ offset: null })
+    await h.flush()
+    expect(h.current.hasMore).toBe(true)
+
+    // **`setup()` の初回取得より後に仕込む。** 先に仕込むと `mockReturnValueOnce` を
+    // 初回取得が消費し、押す側は既定の解決済みモックを受け取ってこのテストが空振りする。
+    let settle: (v: ReturnType<typeof history>) => void = () => {}
+    vi.mocked(fetchDmdataQuakeHistory).mockReturnValueOnce(new Promise((r) => { settle = r }))
+    const click = act(async () => { await h.current.loadMoreEarthquakes() })
+    // 世代を進める（リプレイ開始と同じ経路）
+    h.setOffset(-3600_000)
+    settle(history({ hasMore: true }))
+    await click
+
+    expect(h.current.isLoadingMore).toBe(false)
+  })
+
+  // 接続を張り直す effect は、世代を進めるのと同じ同期ブロックで遡り幅を初期値へ戻す。
+  // catch がそれを無条件に書き戻すと、**差し替えた直後の 1 回目だけ旧世代の広い範囲を読み直す**。
+  it('安全弁: 世代が変わった後の失敗では、遡り幅の初期化を踏み潰さない', async () => {
+    const h = setup({ offset: null })
+    await h.flush()
+    // 1 回押して 14 日まで伸ばす
+    await act(async () => { await h.current.loadMoreEarthquakes() })
+
+    let reject: (e: unknown) => void = () => {}
+    vi.mocked(fetchDmdataQuakeHistory).mockReturnValueOnce(new Promise((_r, rj) => { reject = rj }))
+    const click = act(async () => { await h.current.loadMoreEarthquakes() })
+    // 待っているあいだに世代が進む（= 遡り幅は 7 日へ戻っている）
+    h.setOffset(-3600_000)
+    reject(new Error('旧世代の取得が失敗'))
+    await click
+
+    // 再生をやめて押し直すと、初期値からの 1 回目（14 日）を読む。21 日にはならない
+    h.setOffset(null)
+    await h.flush()
+    vi.mocked(fetchDmdataQuakeHistory).mockClear()
+    await act(async () => { await h.current.loadMoreEarthquakes() })
+
+    expect(requestedDays()).toEqual([14])
+  })
+
+  // 失敗した回のぶんまで日数を進めたままにすると、飛ばした 1 週間ぶんの履歴が二度と読まれない。
+  it('安全弁: 失敗したら伸ばした日数を戻し、押し直しで同じ範囲を読む', async () => {
+    const h = setup({ offset: null })
+    await h.flush()
+    vi.mocked(fetchDmdataQuakeHistory).mockRejectedValueOnce(new Error('取得に失敗'))
+
+    await act(async () => { await h.current.loadMoreEarthquakes() })
+    expect(h.current.isLoadingMore).toBe(false)
+    expect(h.current.hasMore).toBe(true)
+
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(
+      history({ hasMore: true, quakes: [quakeTelegram('20260810010000', '2026-08-10T01:05:00+09:00')] }),
+    )
+    await act(async () => { await h.current.loadMoreEarthquakes() })
+
+    // 失敗した回と同じ 14 日を読み直す（21 日へ飛ばさない）
+    expect(requestedDays()).toEqual([7, 14, 14])
+    expect(h.current.earthquakes).toHaveLength(1)
   })
 })
 
@@ -1972,7 +2137,7 @@ describe('津波の有効期限は報を跨いで引き継ぐ', () => {
   it('履歴からの復元でも期限を引き継ぎ、期限を過ぎたら失効する', async () => {
     vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
     // 履歴は新しい順に並ぶとは限らないため、実装側の並べ替えに任せて逆順で渡す
-    vi.mocked(fetchDmdataTsunamis).mockResolvedValue([forecast(WITH_EXPIRE), forecast(WITHOUT_EXPIRE)])
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({ tsunamis: [forecast(WITH_EXPIRE), forecast(WITHOUT_EXPIRE)] }))
     const h = setup()
     await h.flush()
 
@@ -1991,10 +2156,10 @@ describe('津波の有効期限は報を跨いで引き継ぐ', () => {
   it('履歴からの復元でも本文を引き継ぐ', async () => {
     vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
     const BODY = '若干の海面変動が予想される時刻は、早い沿岸で０２日１０時３０分頃です。'
-    vi.mocked(fetchDmdataTsunamis).mockResolvedValue([
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({ tsunamis: [
       { ...forecast(WITH_EXPIRE), bodyText: BODY },
       forecast(WITHOUT_EXPIRE),
-    ])
+    ] }))
     const h = setup()
     await h.flush()
 
@@ -2004,7 +2169,7 @@ describe('津波の有効期限は報を跨いで引き継ぐ', () => {
 
   it('履歴からの復元で、期限を過ぎていれば最初から表示しない', async () => {
     vi.setSystemTime(new Date('2024-01-02T17:30:00+09:00'))
-    vi.mocked(fetchDmdataTsunamis).mockResolvedValue([forecast(WITH_EXPIRE), forecast(WITHOUT_EXPIRE)])
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({ tsunamis: [forecast(WITH_EXPIRE), forecast(WITHOUT_EXPIRE)] }))
     const h = setup()
     await h.flush()
 
@@ -2029,10 +2194,10 @@ describe('津波の有効期限は報を跨いで引き継ぐ', () => {
 
   it('別イベントの報からは期限を引き継がない（無関係な期限で消さない）', async () => {
     vi.setSystemTime(new Date('2024-01-02T17:30:00+09:00'))
-    vi.mocked(fetchDmdataTsunamis).mockResolvedValue([
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({ tsunamis: [
       forecast({ ...WITH_EXPIRE, eventId: 'other-tsunami' }),
       forecast(WITHOUT_EXPIRE),
-    ])
+    ] }))
     const h = setup()
     await h.flush()
 
@@ -2617,13 +2782,16 @@ describe('DMDSS 版: 起動時に 7 日間の帯を復元する', () => {
   })
 
   it('正: 地震回数とお知らせを取りに行き、帯として出す', async () => {
-    vi.mocked(fetchDmdataEarthquakeCount).mockResolvedValue(count())
-    vi.mocked(fetchDmdataQuakeNotice).mockResolvedValue(notice())
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({
+      extras: [
+        extra({ kind: 'earthquakeCount', data: count() }),
+        extra({ kind: 'quakeNotice', data: notice() }),
+      ],
+    }))
     const h = setup()
     await h.flush()
 
-    expect(fetchDmdataEarthquakeCount).toHaveBeenCalled()
-    expect(fetchDmdataQuakeNotice).toHaveBeenCalled()
+    expect(fetchDmdataQuakeHistory).toHaveBeenCalled()
     expect(h.current.earthquakeCount?.id).toBe('c1')
     expect(h.current.quakeNotice?.id).toBe('n1')
   })
@@ -2636,13 +2804,73 @@ describe('DMDSS 版: 起動時に 7 日間の帯を復元する', () => {
     expect(h.current.quakeNotice).toBeNull()
   })
 
-  it('安全弁: 取得が失敗しても他の初期表示を巻き込まない', async () => {
-    vi.mocked(fetchDmdataEarthquakeCount).mockRejectedValue(new Error('落ちた'))
-    vi.mocked(fetchDmdataQuakeNotice).mockRejectedValue(new Error('落ちた'))
+  // 安全弁: 履歴の取得が落ちたら**黙って空にしない**。
+  //
+  // 帯・長周期・地震・津波は 1 本の取得（`fetchDmdataQuakeHistory`）で返るので、
+  // **「帯だけ落ちて他は出る」形はもう無い**。落ちたら全部出ないので、
+  // 「発表が無かった」と区別が付くようにエラーを出す必要がある
+  // （アーカイブが 1 日でも読めれば部分成功になるので、ここへ来るのは全滅したときだけ）。
+  it('安全弁: 履歴の取得が落ちたらエラーを出す（黙って空にしない）', async () => {
+    vi.mocked(fetchDmdataQuakeHistory).mockRejectedValue(new Error('落ちた'))
     const h = setup()
     await h.flush()
 
     expect(h.current.earthquakeCount).toBeNull()
-    expect(h.current.error).toBeNull()
+    expect(h.current.error).toBe('落ちた')
+  })
+})
+
+// 後発地震注意情報は発表から 7 日で失効する。**履歴はその 7 日ぶんを遡る**ので、
+// 期限切れの報が「遡り幅の中の最新 1 通」として渡ってくることが現実に起きる。
+//
+// かつては取得側（`fetchDmdataKohatsu`）が期限切れを除いて返していたので届かなかった。
+// 履歴をアーカイブ経由の 1 本へ寄せたときにその濾し器が無くなり、**期限切れの帯が出たまま
+// 消えない**形になっていた（タイマーを張らないだけでは足りない）。
+describe('後発地震注意情報の帯は期限で弾く', () => {
+  function kohatsuInfo(expireInMs: number): JMAKohatsu {
+    const now = serverDate()
+    return {
+      id: 'dmdata-kohatsu-k1-1',
+      time: now.toISOString(),
+      eventId: 'k1',
+      headline: '北海道・三陸沖後発地震注意情報',
+      body: '巨大地震が発生する可能性が平常時と比べて相対的に高まっています。',
+      cancelled: false,
+      reportDateTime: now.toISOString(),
+      expireAt: new Date(now.getTime() + expireInMs).toISOString(),
+    }
+  }
+
+  const withKohatsu = (k: JMAKohatsu) =>
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({ extras: [extra({ kind: 'kohatsu', data: k })] }))
+
+  // 正: 期限内なら帯に出す
+  it('期限内なら帯に出す', async () => {
+    withKohatsu(kohatsuInfo(60_000))
+    const h = setup()
+    await h.flush()
+
+    expect(h.current.kohatsu?.eventId).toBe('k1')
+  })
+
+  // 対照: 期限切れは出さない。**これが濾し器を失って壊れていた形**
+  it('期限切れは帯に出さない', async () => {
+    withKohatsu(kohatsuInfo(-1_000))
+    const h = setup()
+    await h.flush()
+
+    expect(h.current.kohatsu).toBeNull()
+  })
+
+  // 安全弁: 日時が壊れていても出さない。**「正当に期限切れ」と同じ無言の見送りに潰さず記録する**
+  // （他の帯と同じ方針）
+  it('期限が日時として読めないときは出さず、記録を残す', async () => {
+    withKohatsu({ ...kohatsuInfo(60_000), expireAt: '壊れた日時' })
+    const h = setup()
+    await h.flush()
+
+    expect(h.current.kohatsu).toBeNull()
+    expect(vi.mocked(log.warn).mock.calls.map(c => c.join(' ')).join(' | '))
+      .toContain('後発地震注意情報の期限を計算できません')
   })
 })

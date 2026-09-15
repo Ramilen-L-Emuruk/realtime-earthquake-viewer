@@ -4,6 +4,7 @@ import { DAY_NIGHT_OPACITY_MIN, DAY_NIGHT_OPACITY_MAX } from '../../hooks/useSet
 import { Toggle } from '../Toggle'
 import { TELEGRAM_TEXT_BLOCK_KEYS, type TelegramTextBlockKey, type TelegramTextBlocks } from '../../utils/ttsText'
 import type { ConnectionStatus } from '../../types/earthquake'
+import { dmdataConnectionLabel } from './connectionLabel'
 import { INTENSITY_SCALE_COUNT, getIntensityLabel, getIntensityColor, INTENSITY_LABELS } from '../../utils/intensity'
 import { readableTextColor } from '../../utils/contrast'
 import { playAlertSound, playCountdownBeep, playKyoshinUpdateSound, unlockAudio } from '../../utils/alertSound'
@@ -20,6 +21,7 @@ import { useDebouncedValue } from '../../hooks/useDebouncedValue'
 import { DescriptionTip } from '../DescriptionTip'
 import { zipSync } from 'fflate'
 import { countRecords, listRecords, clearRecords, onRecordsChanged, hasStorageError } from '../../utils/detectionDiagnosticsDb'
+import { telegramCacheStats, hasTelegramCacheError, telegramCachePurgeStats, onTelegramCacheChanged } from '../../utils/telegramBodyCache'
 import { formatFileStamp } from '../../utils/formatters'
 import { useKyoshinImport } from '../../hooks/useKyoshinImport'
 import { buildSettingsFile, parseSettingsFile, settingsFileName, type SettingsVariant } from '../../utils/settingsIo'
@@ -100,6 +102,52 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       </div>
       <div className="divide-y divide-border">{children}</div>
     </section>
+  )
+}
+
+/**
+ * 電文の控えの状態（件数・容量・使えているか）。
+ *
+ * **控えが効かない端末では、起動のたびに電文を取り直す。** 配信元が「同じ`id`に対して
+ * 短期間にリクエストを繰り返さないように実装してください」と求めている以上、効いていない
+ * ことに気づける必要がある —— プライベートモードや容量不足では IndexedDB が使えず、
+ * それを知らせる手立てがコンソールの 1 行しか無かった
+ * （→ [`data-sources-spec.md`](../../../docs/spec/data-sources-spec.md) §2「リクエスト数を抑える」）。
+ */
+function TelegramCacheRow() {
+  const [stats, setStats] = useState<{ entries: number; bytes: number } | null>(null)
+  const [note, setNote] = useState<string | null>(null)
+  const refresh = useCallback(() => {
+    void telegramCacheStats().then(setStats)
+    if (hasTelegramCacheError()) {
+      setNote('この端末では控えを持てません（プライベートモード・容量不足など）。起動のたびに電文を取り直します')
+      return
+    }
+    // 上限に達して控えたばかりのものまで捨てている状態は、件数だけでは正常と見分けが付かない
+    const purge = telegramCachePurgeStats()
+    setNote(purge.purgedRecent > 0
+      ? `控えが上限に達しています（控えた直後に捨てた電文 ${purge.purgedRecent} 件）。同じ電文を取り直している可能性があります`
+      : null)
+  }, [])
+  // 控えが増減したら読み直す（通知はまとめて届く）。設定タブは常時マウントされたまま
+  // CSS で隠れるだけなので、一定間隔で問い合わせる作りにはしない
+  useEffect(() => {
+    refresh()
+    return onTelegramCacheChanged(refresh)
+  }, [refresh])
+
+  return (
+    <Row
+      label="電文の控え"
+      description="取得した電文をこのブラウザに控えて、同じ電文を取り直さないようにします。上限を超えた分は古い順に自動で捨てます"
+    >
+      <div className="flex flex-col items-end gap-1">
+        <span className="text-xs text-secondary">
+          {stats === null ? '—' : `${stats.entries} 件 / ${(stats.bytes / 1024 / 1024).toFixed(1)} MB`}
+        </span>
+        {note && <p className="text-xs text-amber-400 w-56 text-left leading-snug">{note}</p>}
+      </div>
+    </Row>
   )
 }
 
@@ -914,20 +962,16 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onRep
             <p className="text-yellow-400 text-xs">APIキーはこのブラウザにのみ保存されます。第三者と共有しないでください。</p>
           </div>
           <Row label="接続状態">
-            {dmdataConnectionStatus === 'connected' ? (
-              <span className="text-xs text-green-400 font-medium">接続中</span>
-            ) : dmdataConnectionStatus === 'connecting' ? (
-              <span className="text-xs text-blue-400">接続試行中...</span>
-            ) : dmdataConnectionStatus === 'replay' ? (
-              // 過去再生中はライブ受信を意図的に止めている。「切断」と出すと異常のように見え、
-              // 更新しないままだと「接続中」が残って実態と食い違うため、専用の文言にする。
-              <span className="text-xs text-blue-400">再生中（ライブ受信は停止）</span>
-            ) : (
-              // キーが不正なときは接続を試みていない。「切断」だと通信の失敗に見えるため区別する。
-              <span className={`text-xs ${isApiKeyInvalid ? 'text-red-400' : 'text-secondary'}`}>
-                {!settings.dmdataApiKey ? 'APIキー未設定' : isApiKeyInvalid ? 'APIキーが不正' : '切断'}
-              </span>
-            )}
+            {(() => {
+              // 文言と色の対応は `connectionLabel.ts` が単一情報源。**ここに分岐を戻さないこと**
+              // —— 三項演算子の連鎖は最後の `:` が全部を受けるので、`ConnectionStatus` に値を
+              // 足したときの書き忘れが型検査に掛からない。
+              const label = dmdataConnectionLabel(dmdataConnectionStatus, {
+                apiKeySet: Boolean(settings.dmdataApiKey),
+                apiKeyInvalid: isApiKeyInvalid,
+              })
+              return <span className={`text-xs ${label.className}`}>{label.text}</span>
+            })()}
           </Row>
           <Row label="APIキー" description="DMDATA.JP のAPIキーを入力してください">
             {/* 不正な文字は入力時に弾かず、入ったことを見せて本人に直させる。入力欄から黙って
@@ -954,6 +998,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onRep
               onChange={v => onUpdate('dmdataTestDelivery', v)}
             />
           </Row>
+          <TelegramCacheRow />
 
         </Section>
       )}
