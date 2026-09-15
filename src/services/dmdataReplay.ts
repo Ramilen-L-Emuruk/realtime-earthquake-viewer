@@ -15,7 +15,7 @@ import {
 import { BufrFragmentStore, fragmentKey } from './bufrTelegramAssembly'
 import {
   clearLiveReplayCache, fetchLiveQuakeTelegrams, fetchLiveReplayEntries, resolveLiveDates,
-  MAX_ENUMERATED_DAYS,
+  MAX_ENUMERATED_DAYS, archiveDaysForWindow, archiveListRange,
 } from './dmdataReplayLive'
 
 /**
@@ -61,10 +61,6 @@ function orderedForMerge(quakes: JMAQuake[]): JMAQuake[] {
     if (at !== bt) return at - bt
     return (QUAKE_ISSUE_PRIORITY[a.issue.type] ?? 0) - (QUAKE_ISSUE_PRIORITY[b.issue.type] ?? 0)
   })
-}
-
-function toDateStr(d: Date): string {
-  return d.toISOString().slice(0, 10)
 }
 
 /**
@@ -138,12 +134,19 @@ export function clearReplayCache(): void {
   clearLiveReplayCache()
 }
 
+/** 目録のページを辿る上限。理由は `dmdataReplayLive.ts` の `LIST_MAX_PAGES` と同じ。 */
+const ARCHIVE_LIST_MAX_PAGES = 20
+
 /**
  * 指定期間・指定分類のアーカイブ目録を全ページ取得する。
  *
  * archive リスト API は 1 回の応答で最大 20 件までしか返さないため、nextToken が尽きるまで
  * cursorToken で辿る（打ち切ると広い期間の指定で古い側のアーカイブが無言で欠落し、
  * 本震当日のデータごと消えるという事故につながる）。
+ *
+ * **ただしページ数には上限を置く。** 1 ページ 20 件 × 20 ページ ＝ 400 日ぶんあれば、
+ * このアプリが渡す範囲（最大でも 60 日）には十分。上限が無いと、範囲指定が効かない
+ * 呼び出し 1 回で数百リクエストが飛ぶ（`LIST_MAX_PAGES` の由来を参照）。
  */
 async function listArchives(
   apiKey: string,
@@ -153,7 +156,8 @@ async function listArchives(
 ): Promise<ArchiveItem[]> {
   const items: ArchiveItem[] = []
   let cursorToken: string | undefined
-  for (;;) {
+  let page = 0
+  for (; page < ARCHIVE_LIST_MAX_PAGES; page++) {
     const params = new URLSearchParams({ datetime: `${startDate}~${endDate}`, classification })
     if (cursorToken) params.set('cursorToken', cursorToken)
     const listRes = await fetch(
@@ -167,6 +171,15 @@ async function listArchives(
     if (!listJson.nextToken) break
     cursorToken = listJson.nextToken
   }
+  // **打ち切りは失敗として扱う**（理由は `dmdataReplayLive.ts` の `listTelegrams` と同じ）。
+  // ログだけにすると、打ち切られた不完全な目録が正常な戻り値として流れ、`failedArchiveUrls`
+  // にも計上されないまま「部分成功」に見える。
+  if (page >= ARCHIVE_LIST_MAX_PAGES) {
+    throw new Error(
+      `Archive list truncated: ページ上限（${ARCHIVE_LIST_MAX_PAGES}）に達した`
+      + ` 範囲=${startDate}~${endDate} 件数=${items.length}`,
+    )
+  }
   return items
 }
 
@@ -176,27 +189,39 @@ export async function fetchDmdataReplayEvents(
   toTime: Date,
   includeTest: boolean,
 ): Promise<ReplayFetchResult> {
-  // アーカイブは JST 日付で索引されているため、UTC 日付との差を吸収するため
-  // 開始日を -1 日、終了日を +1 日して確実に対象アーカイブを含める
+  // **落とす日を JST で決めて、目録もその範囲だけ引く。**
   //
-  // **窓の 3 倍のアーカイブを落としている（未解決）。** 本体（`/v1/archive/:id`）は 1 日分の
-  // 電文がまとめて入っていて重く、落とせば gunzip と tar 展開も走る。1 日に収まる窓を再生する
-  // だけで 3 日 × 分類数のファイルを落とし、窓の外の電文は時刻で捨てている（分類が 2 つなら
-  // 6 ファイル。本来は 2 ファイルで足りる）。
+  // 本体（`/v1/archive/:id`）は 1 日分の電文がまとめて入っていて重く、落とせば gunzip と
+  // tar 展開も走る。かつては窓の **UTC 日付**に両端 ±1 日を足して目録を引き、返ってきた分を
+  // 全件落としていた。1 日に収まる窓でも 3 日 × 分類数のファイルを取り、窓の外の電文は
+  // 時刻で捨てていた（分類 2 つで 6 ファイル）。
   //
-  // **`item.date` で絞れば直るはずだが、まだ裏が取れていない。** アーカイブの日付と、
-  // その中に入る電文の時刻の対応を実データで確かめていない（テストは 8/09 のアーカイブに
-  // 8/10 の電文を入れており、それが便宜的な作りなのか実際にありうる形なのか判らない）。
-  // 外すと気象庁が出した電文が画面から消えるので、確かめるまでは広いまま取る。
-  // → `docs/spec/data-sources-spec.md` §2「アーカイブは窓の 3 倍を落としている（未解決）」
-  const startDateObj = new Date(fromTime)
-  startDateObj.setDate(startDateObj.getDate() - 1)
-  const startDate = toDateStr(startDateObj)
-  const endDateObj = new Date(toTime)
-  endDateObj.setDate(endDateObj.getDate() + 1)
-  const endDate = toDateStr(endDateObj)
-
-  const items = await listArchives(apiKey, startDate, endDate, CLASSIFICATIONS.join(','))
+  // **その ±1 日は、両側とも狙いどおりに効いていなかった。**
+  //   - 開始側の −1 日: 目録の `datetime` は**左端が排他**なので打ち消されていた（実測）
+  //   - 終了側の +1 日: **UTC 日で数えていた**ため、00:00〜09:00 JST の窓では翌日の
+  //     アーカイブが目録に現れなかった —— **日をまたいで配信された電文を拾う経路が
+  //     塞がっていた**
+  //
+  // 日の決め方と境界の実測は `archiveDaysForWindow` / `archiveListRange`（→ そちら）。
+  const wantedDays = archiveDaysForWindow(fromTime, toTime)
+  const listRange = archiveListRange(wantedDays)
+  if (listRange === null) {
+    // **「窓が不正で目録を引いていない」と「引いたが 0 件だった」を混ぜない。**
+    // 現状は `fromTime < toTime` なら起きないが、混ぜると「見ていない」が
+    // 「見つからなかった」に化ける（→ CLAUDE.md「調査レビュー」）。
+    log.warn(`[replay] 窓から対象の JST 日を決められなかったため目録を引かなかった（${fromTime.toISOString()}〜${toTime.toISOString()}）`)
+  }
+  const items = listRange === null
+    ? []
+    : await listArchives(apiKey, listRange.from, listRange.to, CLASSIFICATIONS.join(','))
+  // **絞るのはダウンロードだけ。`resolveLiveDates` には絞る前の `items` を渡す**（下の
+  // `liveDates`）—— 絞った後を渡すと、窓の外の日を「アーカイブが無い」と誤認して
+  // 当日経路が余計に走る。目録の範囲は `wantedDays` を覆うだけなので通常は差が出ないが、
+  // 左端が排他であることに頼らずここでも絞る（配信元の境界の扱いが変わっても安全側）。
+  const targets = items.filter(i => wantedDays.has(i.date))
+  if (targets.length < items.length) {
+    log.debug(`[replay] アーカイブ本体は ${targets.length}/${items.length} 件だけ落とす（窓の JST 日: ${[...wantedDays].join(', ')}）`)
+  }
 
   const dec = new TextDecoder()
   const entries: ReplayEntry[] = []
@@ -216,7 +241,7 @@ export async function fetchDmdataReplayEvents(
   const failedArchiveUrls: string[] = []
 
   await Promise.all(
-    items.map(async (item) => {
+    targets.map(async (item) => {
       // アーカイブ単位で隔離する。ここを Promise.all に素通しすると、1 つのアーカイブの
       // 破損（tar/gzip の異常・CDN の一時エラー）だけで、他のアーカイブから既に読み取れた
       // 電文まで巻き添えで捨てられる。日をまたぐ期間指定ほど被害が大きくなるため、
@@ -406,7 +431,11 @@ export async function fetchDmdataReplayEvents(
   // 分母を「アーカイブの本数」ではなく「取得元の日数」で取るのが要点。当日だけを指す窓
   //（本編の 1 時間）は取得元が当日経路 1 本しか無く、そこを部分成功に落とすと**電文 0 件のまま
   // 「再生中」**になってしまう。日数で数えれば、その場合はちゃんと例外になる。
-  const sourceDays = items.length + liveDates.length
+  //
+  // **数えるのは `targets`（実際に落とした分）で、`items`（目録の全件）ではない。**
+  // 目録は窓より広く引いているので、`items` を分母にすると落としてもいない日で分母が膨らみ、
+  // **全滅が「一部は読めた」に化ける**（認証切れ・全断のときに例外が上がらなくなる）。
+  const sourceDays = targets.length + liveDates.length
   if (sourceDays > 0 && failedSourceDays === sourceDays) {
     throw new Error(`Archive fetch failed: ${sourceDays} 件の取得元すべてを読み取れませんでした`)
   }
@@ -417,11 +446,11 @@ export async function fetchDmdataReplayEvents(
   if (skippedCount > 0) {
     log.warn(`[replay] ${skippedCount} 件の電文を取り込めなかった（範囲 ${fromTime.toISOString()}〜${toTime.toISOString()}）`)
   }
-  if (items.length + liveDates.length > 0 && entries.length === 0) {
+  if (sourceDays > 0 && entries.length === 0) {
     // 取得元は引けたのに 1 件も取り込めなかった状態。指定期間に本当に電文が
     // 無いだけのこともあるため例外にはしないが、UI 側は「成功」としか見えないので
     // 診断の手がかりを残す。
-    log.warn(`[replay] アーカイブ ${items.length} 件・当日経路 ${liveDates.length} 日を取得したが対象電文は 0 件（範囲 ${fromTime.toISOString()}〜${toTime.toISOString()}）`)
+    log.warn(`[replay] アーカイブ ${targets.length} 件・当日経路 ${liveDates.length} 日を取得したが対象電文は 0 件（範囲 ${fromTime.toISOString()}〜${toTime.toISOString()}）`)
   }
 
   entries.sort((a, b) => a.replayTime.getTime() - b.replayTime.getTime())
@@ -654,15 +683,27 @@ export async function fetchDmdataQuakeHistory(
    */
   shouldStop?: () => boolean,
 ): Promise<QuakeHistoryResult> {
-  // アーカイブは JST 日付で索引されているため、UTC 日付との差を吸収するよう終端を +1 日する
-  // （`fetchDmdataReplayEvents` と同じ理由）。
+  // 落とす日と目録の範囲は、どちらも JST 日から導く（`fetchDmdataReplayEvents` と同じ理由。
+  // 根拠と境界の実測は `archiveDaysForWindow` / `archiveListRange`）。
+  //
+  // `before` ちょうどの電文は残す側（`entryTime > before` で捨てる）なので、終端を含まない
+  // `archiveDaysForWindow` へは 1ms 足して渡す。
   const startObj = new Date(before)
   startObj.setDate(startObj.getDate() - maxDays)
-  const endObj = new Date(before)
-  endObj.setDate(endObj.getDate() + 1)
-  const items = await listArchives(apiKey, toDateStr(startObj), toDateStr(endObj), 'telegram.earthquake')
+  const wantedDays = archiveDaysForWindow(startObj, new Date(before.getTime() + 1))
+  const listRange = archiveListRange(wantedDays)
+  const items = listRange === null
+    ? []
+    : await listArchives(apiKey, listRange.from, listRange.to, 'telegram.earthquake')
+  // **絞るのはダウンロードだけ。`resolveLiveDates` には絞る前の `items` を渡す**（下の
+  // `liveDays`）—— 絞った後を渡すと、窓の外の日を「アーカイブが無い」と誤認して
+  // 当日経路が余計に走る。
+  const targets = items.filter(i => wantedDays.has(i.date))
+  if (targets.length < items.length) {
+    log.debug(`[replay] 履歴用アーカイブ本体は ${targets.length}/${items.length} 件だけ落とす`)
+  }
 
-  const downloaded = await Promise.all(items.map(async (item) => {
+  const downloaded = await Promise.all(targets.map(async (item) => {
     try {
       return { date: item.date, item, files: await downloadArchive(item.url, apiKey) }
     } catch (e) {
@@ -881,7 +922,7 @@ export async function fetchDmdataQuakeHistory(
     )
   }
   if (sources.length === 0) {
-    log.warn(`[replay] 履歴用の取得元が 1 件も見つからなかった（範囲 ${toDateStr(startObj)}〜${toDateStr(endObj)}）`)
+    log.warn(`[replay] 履歴用の取得元が 1 件も見つからなかった（対象の JST 日: ${[...wantedDays].sort().join(', ') || 'なし'}）`)
   } else if (stoppedEarly) {
     // **打ち切りは「読んだが 0 件」とは別の状態。** 混ぜると、時間軸の切り替えや画面を離れた
     // だけの正常な打ち切りが「静かな期間だった」と読める記録になる（`shouldStop` が初回から

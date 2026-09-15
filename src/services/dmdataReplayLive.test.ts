@@ -10,7 +10,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { buildSampleTelegram } from '../test-utils/bufrBuild'
 import {
-  enumerateJstDates, resolveLiveDates, toJstDateStr,
+  enumerateJstDates, resolveLiveDates, toJstDateStr, archiveDaysForWindow, archiveListRange,
   fetchLiveReplayEntries, fetchLiveQuakeTelegrams, clearLiveReplayCache,
 } from './dmdataReplayLive'
 import { setBodyGateIntervalForTest } from './telegramBody'
@@ -204,6 +204,142 @@ describe('JST 日付の扱い', () => {
     expect(resolveLiveDates(from, to, ['2026-08-22'])).toEqual(['2026-08-23'])
     expect(resolveLiveDates(from, to, ['2026-08-22', '2026-08-23'])).toEqual([])
     expect(resolveLiveDates(from, to, [])).toEqual(['2026-08-22', '2026-08-23'])
+  })
+})
+
+// アーカイブ本体（`/v1/archive/:id`）は 1 日分がまとめて入っていて重い。落とす日を間違えると
+// 「取りすぎて捨てる」か「気象庁が出した電文が画面から消える」のどちらかになる。
+// **1 回の操作で数百リクエストが飛ぶ形を止める。** 2026-09-15 にリプレイの開始時刻を誤って
+// 1969 年にしたところ、配信元は範囲指定を無視したかのように `nextToken` を返し続け、
+// 合計 399 リクエストを辿った（対象の電文は 1 通も無い）。
+describe('一覧のページ送りは上限で打ち切る', () => {
+  const originalFetch = globalThis.fetch
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    clearLiveReplayCache()
+    vi.restoreAllMocks()
+  })
+
+  /** **無限に `nextToken` を返す**一覧。範囲指定が効かなくなった状態の再現。 */
+  function endlessList() {
+    let calls = 0
+    const fn = vi.fn(async (input: string) => {
+      if (input.includes('/v2/telegram?') || input.includes('/v2/gd/eew?')) {
+        calls++
+        return {
+          ok: true,
+          json: async () => ({ status: 'ok', items: [], nextToken: `t${calls}` }),
+        } as unknown as Response
+      }
+      return { ok: true, json: async () => ({ status: 'ok', items: [] }) } as unknown as Response
+    })
+    return { fn, listCalls: () => calls }
+  }
+
+  // 正: 上限で止まる。**止まらなければこのテストは終わらない**（無限ループになる）ので、
+  // 「通った」こと自体が上限が効いている証拠になる。
+  //
+  // **打ち切りは失敗として投げる。** ログだけにすると、打ち切られた不完全な一覧が正常な
+  // 戻り値として流れ、取りこぼしにも計上されないまま「部分成功」に見える。
+  it('正: 電文一覧は 20 ページで打ち切り、失敗として投げる', async () => {
+    const { fn, listCalls } = endlessList()
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    await expect(fetchLiveQuakeTelegrams('key', '2026-08-23', new Date('2026-08-23T03:00:00Z'), false))
+      .rejects.toThrow(/ページ上限/)
+    expect(listCalls()).toBe(20)
+  })
+
+  // 対照: `nextToken` が尽きれば上限より手前で止まり、投げずに返る。
+  it('対照: ページが尽きれば上限には触れず、投げずに返る', async () => {
+    let calls = 0
+    const fn = vi.fn(async (input: string) => {
+      if (input.includes('/v2/telegram?')) {
+        calls++
+        return {
+          ok: true,
+          json: async () => ({ status: 'ok', items: [], ...(calls < 3 ? { nextToken: `t${calls}` } : {}) }),
+        } as unknown as Response
+      }
+      return { ok: true, json: async () => ({ status: 'ok', items: [] }) } as unknown as Response
+    })
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    await expect(fetchLiveQuakeTelegrams('key', '2026-08-23', new Date('2026-08-23T03:00:00Z'), false))
+      .resolves.toBeDefined()
+
+    expect(calls).toBe(3)
+  })
+})
+
+describe('落とすアーカイブの JST 日を決める', () => {
+  const days = (from: string, to: string) => [...archiveDaysForWindow(new Date(from), new Date(to))].sort()
+
+  // 正: 窓の日だけ。**翌日は一律で足さない**（一律だと窓が日の途中で終わるときに 1 日無駄になる）。
+  it('正: 日の途中で終わる窓なら、その日だけ', () => {
+    expect(days('2026-08-10T00:00:00+09:00', '2026-08-10T00:30:00+09:00')).toEqual(['2026-08-10'])
+    expect(days('2026-08-10T09:00:00+09:00', '2026-08-10T13:00:00+09:00')).toEqual(['2026-08-10'])
+  })
+
+  it('正: 複数日にまたがる窓なら、その全日', () => {
+    expect(days('2026-08-10T12:00:00+09:00', '2026-08-12T12:00:00+09:00'))
+      .toEqual(['2026-08-10', '2026-08-11', '2026-08-12'])
+  })
+
+  // 正: **日の終わり際に掛かる窓では翌日も落とす。** アーカイブの日の区切りは配信（受信）側で、
+  // 配信は発表から遅れる（実測 8〜59 秒）。23:59 発表の電文は翌日のアーカイブへ入りうる。
+  it('正: 日の終わり際に掛かる窓では翌日も落とす', () => {
+    expect(days('2026-08-10T23:00:00+09:00', '2026-08-10T23:55:00+09:00'))
+      .toEqual(['2026-08-10', '2026-08-11'])
+    // 日付の境目ちょうどで終わる窓も同じ（23:59:59 発表の電文が翌日へ入りうる）
+    expect(days('2026-08-10T00:00:00+09:00', '2026-08-11T00:00:00+09:00'))
+      .toEqual(['2026-08-10', '2026-08-11'])
+  })
+
+  // 対照: **前日は入れない。** 配信が発表より前になりえないので、窓の日に発表された電文が
+  // 前日のアーカイブに入ることはない（索引が発表・配信のどちらでも成り立つ）。
+  it('対照: 前日は入れない', () => {
+    expect(days('2026-08-10T00:00:00+09:00', '2026-08-10T23:59:59+09:00'))
+      .not.toContain('2026-08-09')
+    // UTC 日付では前日になる時刻（00:00〜09:00 JST）でも、前日は入れない
+    expect(days('2026-08-10T05:00:00+09:00', '2026-08-10T06:00:00+09:00')).toEqual(['2026-08-10'])
+  })
+
+  // 安全弁: 月末・年末をまたいでも日付の繰り上がりが壊れない（文字列を組み立てているため）。
+  it('安全弁: 月末・年末の繰り上がり', () => {
+    expect(days('2026-08-31T23:00:00+09:00', '2026-08-31T23:55:00+09:00'))
+      .toEqual(['2026-08-31', '2026-09-01'])
+    expect(days('2026-12-31T23:00:00+09:00', '2026-12-31T23:55:00+09:00'))
+      .toEqual(['2026-12-31', '2027-01-01'])
+  })
+
+  it('終わりが始まり以前なら空を返す', () => {
+    expect(days('2026-08-10T12:00:00+09:00', '2026-08-10T11:00:00+09:00')).toEqual([])
+  })
+})
+
+// 目録の `datetime` は**左端が排他・右端が包含**。配信元のリファレンスは「左辺を開始日とし、
+// 右辺を終了日」としか書いていないので、素直に読むと左端 1 日ぶんを取りこぼす。
+// 実測で確かめた（2026-09-15: `2026-09-11~2026-09-13` は 09-11 のアーカイブが存在するのに
+// 09-12 から返り、`2026-09-10~2026-09-13` では 09-11 も返った）。
+describe('目録に渡す範囲を、落とす日から導く', () => {
+  it('正: 左端は 1 日手前を指す（排他だから）', () => {
+    expect(archiveListRange(new Set(['2026-08-10', '2026-08-11'])))
+      .toEqual({ from: '2026-08-09', to: '2026-08-11' })
+  })
+
+  it('正: 1 日だけでも成り立つ', () => {
+    expect(archiveListRange(new Set(['2026-08-10'])))
+      .toEqual({ from: '2026-08-09', to: '2026-08-10' })
+  })
+
+  it('安全弁: 月初・年初の繰り下がり', () => {
+    expect(archiveListRange(new Set(['2026-09-01']))).toEqual({ from: '2026-08-31', to: '2026-09-01' })
+    expect(archiveListRange(new Set(['2027-01-01']))).toEqual({ from: '2026-12-31', to: '2027-01-01' })
+  })
+
+  it('対照: 日が 1 つも無ければ null（目録を引かない）', () => {
+    expect(archiveListRange(new Set())).toBeNull()
   })
 })
 

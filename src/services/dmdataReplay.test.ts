@@ -475,18 +475,90 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
 
   // 当日経路の失敗をそのまま投げると、既に読めているアーカイブ側の電文まで巻き添えで捨てられる。
   // この関数は本編と初期状態の 2 回 Promise.all で呼ばれるため、再生自体が始まらなくなる。
+  //
+  // **窓の日（8/10）のアーカイブは無く、翌日（8/11）のアーカイブに 8/10 23:59 発表の電文が
+  // 入っている形にしてある。** アーカイブの日の区切りは配信（受信）側なので、日付の境目を
+  // 跨いだ電文はこう入る（→ `dmdataReplayLive.ts` の `archiveDaysForWindow`）。翌日を
+  // 落とさない実装だとこの電文が消え、同時に 8/10 が当日経路へ回ることも確かめられる。
   it('当日経路が読めなくても、アーカイブから読めた分は残す', async () => {
     const gz = await makeTarGz([
-      { name: 'telegrams.json', content: JSON.stringify([manifestEntry('aaaaaaa1')]) },
-      { name: 'aaaaaaa1_20260810120500000_0.xml', content: quakeBody('岩手県沖') },
+      {
+        name: 'telegrams.json',
+        content: JSON.stringify([manifestEntry('aaaaaaa1', 'VXSE53', '2026-08-10T23:59:00+09:00')]),
+      },
+      // ファイル名の 17 桁は UTC のミリ秒精度の受信時刻（= JST 8/10 23:59:30）
+      { name: 'aaaaaaa1_20260810145930000_0.xml', content: quakeBody('岩手県沖') },
     ])
-    globalThis.fetch = mockArchivesWithLive([{ date: '2026-08-09', url: 'https://x/d09', gz }], 'error') as unknown as typeof fetch
+    globalThis.fetch = mockArchivesWithLive([{ date: '2026-08-11', url: 'https://x/d11', gz }], 'error') as unknown as typeof fetch
 
     const result = await fetchDmdataReplayEvents('key', FROM, TO, false)
 
     expect(result.entries).toHaveLength(1)
     // 読めなかった日は取得元の識別子として数える（無言で消すと「静かな時間帯」と区別が付かない）
     expect(result.failedArchiveUrls).toContain('live:2026-08-10')
+  })
+
+  // 目録の範囲も窓の JST 日から導く。**左端は排他**なので 1 日手前を指す（実測。
+  // → `dmdataReplayLive.ts` の `archiveListRange`）。かつては窓の **UTC 日付**へ
+  // 両端 ±1 日を足しており、1 日に収まる窓でも余計な日が返っていた。
+  it('目録の範囲は窓の JST 日から導く（左端は 1 日手前）', async () => {
+    const gz = await makeTarGz([
+      { name: 'telegrams.json', content: JSON.stringify([manifestEntry('aaaaaaa1')]) },
+      { name: 'aaaaaaa1_20260810120500000_0.xml', content: quakeBody('岩手県沖') },
+    ])
+    const fn = mockArchivesWithLive([{ date: '2026-08-10', url: 'https://x/d10', gz }], 'empty')
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    // 窓は JST 8/10 00:00〜8/11 00:00（終端は含まない）
+    await fetchDmdataReplayEvents('key', FROM, TO, false)
+
+    const listUrl = fn.mock.calls.map(c => c[0]).find(u => u.includes('/v2/archive?'))
+    expect(listUrl).toContain('datetime=2026-08-09%7E2026-08-11')
+  })
+
+  // 本体（`/v1/archive/:id`）は 1 日分がまとめて入っていて重い。目録が返した分をそのまま
+  // 全件落としていた頃は、1 日に収まる窓でも余計な日を取って時刻で捨てていた。
+  it('窓の外の日のアーカイブ本体は落とさない', async () => {
+    const inside = await makeTarGz([
+      { name: 'telegrams.json', content: JSON.stringify([manifestEntry('aaaaaaa1')]) },
+      { name: 'aaaaaaa1_20260810120500000_0.xml', content: quakeBody('岩手県沖') },
+    ])
+    const outside = await makeTarGz([
+      { name: 'telegrams.json', content: JSON.stringify([manifestEntry('bbbbbbb2', 'VXSE53', '2026-08-08T12:05:00+09:00')]) },
+      { name: 'bbbbbbb2_20260808120500000_0.xml', content: quakeBody('宮城県沖') },
+    ])
+    const fn = mockArchivesWithLive([
+      // 窓は JST 8/10 の 1 日。8/08 は窓の外（前日より前）
+      { date: '2026-08-08', url: 'https://x/d08', gz: outside },
+      { date: '2026-08-10', url: 'https://x/d10', gz: inside },
+    ], 'empty')
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    const result = await fetchDmdataReplayEvents('key', FROM, TO, false)
+
+    expect(result.entries).toHaveLength(1)
+    const fetched = fn.mock.calls.map(c => c[0]).filter(u => u.startsWith('https://x/'))
+    expect(fetched).toEqual(['https://x/d10'])
+  })
+
+  // 安全弁: **前日は落とさないが、翌日は落とす。** 受信は発表より前になりえないので前日は
+  // 要らないが、翌日は日付の境目を跨いだ電文が入りうるので外せない。
+  it('翌日のアーカイブ本体は落とす（前日は落とさない）', async () => {
+    const day = async (id: string, pub: string) => makeTarGz([
+      { name: 'telegrams.json', content: JSON.stringify([manifestEntry(id, 'VXSE53', pub)]) },
+      { name: `${id}_20260810120500000_0.xml`, content: quakeBody('岩手県沖') },
+    ])
+    const fn = mockArchivesWithLive([
+      { date: '2026-08-09', url: 'https://x/d09', gz: await day('aaaaaaa1', '2026-08-09T12:05:00+09:00') },
+      { date: '2026-08-10', url: 'https://x/d10', gz: await day('bbbbbbb2', '2026-08-10T12:05:00+09:00') },
+      { date: '2026-08-11', url: 'https://x/d11', gz: await day('ccccccc3', '2026-08-10T23:59:00+09:00') },
+    ], 'empty')
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    await fetchDmdataReplayEvents('key', FROM, TO, false)
+
+    const fetched = fn.mock.calls.map(c => c[0]).filter(u => u.startsWith('https://x/')).sort()
+    expect(fetched).toEqual(['https://x/d10', 'https://x/d11'])
   })
 
   // 取得元が当日経路 1 本しか無い窓（＝当日だけを指す本編の 1 時間）でこれを部分成功に落とすと、

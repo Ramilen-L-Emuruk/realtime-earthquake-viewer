@@ -134,3 +134,81 @@ describe('withCompletenessMark（走査の不完全さを結果へ載せる）',
     expect(marked.areas).toBe(0)
   })
 })
+
+// **ページを辿るループに上限が無いと、1 回の走査で数百リクエストが飛ぶ。**
+// 2026-09-15 にアプリ側の同じ形のループで踏んだ —— 範囲外の日付を渡したところ、配信元は
+// 範囲指定を無視したかのように `nextToken` を返し続け、合計 399 リクエストを辿った。
+describe('一覧のページ送りは上限で打ち切る', () => {
+  beforeEach(() => {
+    resetArchiveCacheForTest()
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  /** **無限に `nextToken` を返す**一覧。範囲指定が効かなくなった状態の再現。 */
+  function endlessList() {
+    let calls = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      calls++
+      return {
+        status: 200,
+        ok: true,
+        json: async () => ({ status: 'ok', items: [], nextToken: `t${calls}` }),
+      }
+    }))
+    return () => calls
+  }
+
+  // 正: 上限で止まり、**失敗として記録される**。止まらなければこのテストは終わらない
+  // （無限ループになる）ので、「通った」こと自体が上限が効いている証拠になる。
+  //
+  // 黙って切ってはいけない —— この script は網羅性を主張するために使うので、走査できなかった
+  // 期間が「アーカイブが無かった」に化けて集計へ混ざる。
+  it('正: 20 ページで打ち切り、失敗として記録する', async () => {
+    const listCalls = endlessList()
+
+    const pending = listArchive({
+      classification: 'telegram.earthquake',
+      from: '2026-01-01',
+      to: '2026-01-02',
+      auth: {},
+    }).catch((e: unknown) => e)
+    await vi.advanceTimersByTimeAsync(300_000)
+    const outcome = await pending
+
+    expect(String((outcome as Error)?.message ?? outcome)).toContain('ページ上限')
+    expect(listCalls()).toBe(20)
+    expect(archiveCacheStats().failures.length).toBeGreaterThan(0)
+    // 集計へ「無いの根拠にしないこと」の印が載る
+    const marked = withCompletenessMark({ VXSE53: 0 }) as Record<string, unknown>
+    expect(marked._incomplete).toBeDefined()
+  })
+
+  // 対照: `nextToken` が尽きれば上限より手前で止まり、失敗としても記録しない。
+  it('対照: ページが尽きれば上限に触れず、失敗として記録しない', async () => {
+    let calls = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      calls++
+      return {
+        status: 200,
+        ok: true,
+        json: async () => ({ status: 'ok', items: [], ...(calls < 3 ? { nextToken: `t${calls}` } : {}) }),
+      }
+    }))
+
+    const pending = listArchive({
+      classification: 'telegram.earthquake',
+      from: '2026-01-01',
+      to: '2026-01-02',
+      auth: {},
+    })
+    await vi.advanceTimersByTimeAsync(300_000)
+    await pending
+
+    expect(calls).toBe(3)
+    expect(archiveCacheStats().failures).toHaveLength(0)
+  })
+})
