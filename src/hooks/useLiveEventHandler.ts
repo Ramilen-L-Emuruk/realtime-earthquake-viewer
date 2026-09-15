@@ -835,6 +835,14 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   // 第 1.5 フェーズの予約を表す識別子（eventId 別）。第 2 フェーズと同じく、解決した時点で
   // 消して次の予約を受け付ける。
   const eewRegionTokensRef = useRef<Map<string, object>>(new Map())
+  // 「緊急地震速報に切り替わりました。」を**声にした** eventId。
+  //
+  // **`spokenEEWLevelsRef` とは別に持つ。** あちらは「予想値を読み直す契機としての区分」で、
+  // 第 2 フェーズの発火ゲート（`level <= spokenLevel` なら黙る）を兼ねている。第 1.5 フェーズが
+  // 前置きを言ったときにあちらを進めると、格上げを伝えたのと引き換えに**予想値の読み直しごと
+  // 止まる** —— 気象庁が警報へ上げた報で「何の震度で警報になったか」が声にならなくなる。
+  // 言葉を重ねないことだけをこちらで担い、読み直しの契機はあちらに残す。
+  const spokenEEWUpgradePhraseRef = useRef<Set<string>>(new Set())
   const eewTtsMaxTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   // 第 2 フェーズ（予想値）を一度でも発話した eventId。まだ読んでいない間は、値が上がって
   // いなくても読む（初報・震源更新の読み直しがこれに当たる）。
@@ -2135,6 +2143,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         eewPhase2DoneRef.current.delete(key)
         eewRegionTokensRef.current.delete(key)
         spokenEEWRegionsRef.current.delete(key)
+        spokenEEWUpgradePhraseRef.current.delete(key)
         spokenEEWLevelsRef.current.delete(key)
         // 安定待ちの進行中サイクル・確定値も落とす（取り消された地震の値を残さない）
         const pendingScaleStability = eewScaleStabilityRef.current.get(key)
@@ -2249,6 +2258,24 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         }
 
         /**
+         * 声にした区分と、この報で**格上げが起きたか**。
+         *
+         * **第 1.5 フェーズと第 2 フェーズが同じ判定を使う。** 前者は前置き（「緊急地震速報に
+         * 切り替わりました。」）を付けるか、後者は予想値を読み直すかを決める。式を別々に持つと、
+         * 片方だけ変えたときに「格上げ」の意味が静かにずれ、前置きの有無と読み直しが食い違う。
+         *
+         * 区分は引き下げない（`Math.max`）—— 一度「警報」と伝えた EEW は、以後 severity が
+         * 落ちても伝え済みとして扱う（`activeEEWLevelsRef` の方針と同じ）。
+         *
+         * **発話の直前に呼ぶこと。** 予約から声になるまでのあいだにも続報は届く。
+         */
+        const levelUpgradeOf = (latest: EEWAlert) => {
+          const spoken = spokenEEWLevelsRef.current.get(key) ?? 0
+          const level = Math.max(computeSingleEEWLevel(latest), spoken) as 0 | 1 | 2
+          return { level, spoken, upgraded: level >= 1 && spoken < 1 }
+        }
+
+        /**
          * 第 2 フェーズ（予想値）をチェーンの末尾に予約する。
          *
          * 予約は eventId ごとに高々 1 件。解決した時点で「その時点の最新イベント」を読み直すため、
@@ -2323,8 +2350,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             const confirmedLpgm = confirmedLpgmInfo?.cls ?? 0
             // 区分は引き下げない。一度「警報」と伝えた EEW は、以後 severity が落ちても
             // 「伝え済み」として扱う（前置きを言い直さない。activeEEWLevelsRef の Math.max と同じ方針）。
-            const spokenLevel = spokenEEWLevelsRef.current.get(key) ?? 0
-            const level = Math.max(computeSingleEEWLevel(latest), spokenLevel) as 0 | 1 | 2
+            const { level, spoken: spokenLevel, upgraded: levelUpgraded } = levelUpgradeOf(latest)
             // まだ一度も予想値を読んでいなければ無条件に読む（初報・震源更新の読み直し）。
             // 読んだ後は、実際に発話した値より上がったものが一つも無ければ黙る（引き下げは追わない）。
             if (eewPhase2DoneRef.current.has(key)
@@ -2337,13 +2363,19 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             // 「緊急地震速報に切り替わりました。」は、予報として発報されたものが警報へ
             // 上がったときだけ。初報から警報なら第 1 フェーズが「緊急地震速報、〇〇で地震。」と
             // 伝えており（そのとき spokenEEWLevelsRef を埋めている）、重ねて言う意味がない。
-            const announceUpgrade = level >= 1 && spokenLevel < 1
+            // **「格上げが起きたか」と「格上げを言葉にするか」を分ける。**
+            //
+            // 前者（`levelUpgraded`）は何を読むかを決める —— 下の `scaleUnchanged` が偽になり、
+            // 震度を含めて全文を読み直す。後者は前置きの語を付けるかだけ。第 1.5 フェーズが
+            // 先に前置きを声にしていれば語は譲るが、**値の読み直しまで譲ってはいけない**
+            // （「何の震度で警報になったか」の再確認が消える）。
+            const announceUpgrade = levelUpgraded && !spokenEEWUpgradePhraseRef.current.has(key)
             // 震度が実際に声に出た値（spokenEEWScalesRef）とちょうど一致していて、区分格上げの
             // 前置きも無いなら、震度は繰り返さず階級部分だけを読む。震度自体が上がった・下がった
             // 場合や、区分格上げに伴う場合はこれまでどおり震度も含めて全文を読み直す
             // （区分格上げは「何の震度で警報になったか」を再確認させる意味があるため省略しない）。
             const spokenScale = spokenEEWScalesRef.current.get(key)
-            const scaleUnchanged = !announceUpgrade && eewPhase2DoneRef.current.has(key)
+            const scaleUnchanged = !levelUpgraded && eewPhase2DoneRef.current.has(key)
               && spokenScale !== undefined
               && spokenScale.scale === confirmedScale.scale
               && spokenScale.orAbove === confirmedScale.orAbove
@@ -2705,7 +2737,15 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             // ため、そのまま読むと画面の並びと食い違う。
             const speaking = sortEewWarningRegions((latest.warningRegions ?? []).filter(r => !spoken.has(r)))
             if (speaking.length === 0) return null
-            const text = eewWarningRegionsText(speaking, spoken.size > 0)
+            // **区分をまだ声にしていなければ、ここで前置きする。**
+            //
+            // 地方のブロックは警報級の報にしか入らないので、予報から警報へ上がった報では
+            // この発話がその EEW で最初の「警報になった」告知になる。区分を第 2 フェーズの
+            // 前置きだけに任せると、そちらは予想値の安定待ち（300ms〜5 秒）を経てから鳴るため、
+            // 「〇〇では強い揺れに警戒してください。」が先に出て順序が入れ替わる。
+            const announceUpgrade = levelUpgradeOf(latest).upgraded
+              && !spokenEEWUpgradePhraseRef.current.has(key)
+            const text = eewWarningRegionsText(speaking, spoken.size > 0, announceUpgrade)
             // 鳴り始めてから地方が増えたら降りる（増えた分を含めて読み直すため）。降りた回を
             // 既読にしないよう、記録は `onSettled` で「降りていないとき」だけ行う。
             let abandoned = false
@@ -2723,6 +2763,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
               },
               onSettled: () => {
                 if (abandoned) return
+                // **前置きの記録も地方の既読と同じタイミングで行う。** 第 1・第 2 フェーズは
+                // 発話の直前に記録するが、この発話だけは「鳴っている最中に地方が増えたら
+                // 降りて読み直す」経路を持つ（上の `grown`）。直前に記録すると、降りた回で
+                // 言った扱いになり、読み直しでは前置きが付かない ―― 格上げが一度も声にならない。
+                if (announceUpgrade) spokenEEWUpgradePhraseRef.current.add(key)
                 const set = spokenEEWRegionsRef.current.get(key) ?? new Set<string>()
                 speaking.forEach(r => set.add(r))
                 spokenEEWRegionsRef.current.set(key, set)
@@ -3402,6 +3447,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // 落とし忘れると、同じ `eventId` を再生し直したとき「もう声にした」と判定されて
     // 第 1.5 フェーズがそのセッションで一度も鳴らない（例外もログも出ない）。
     spokenEEWRegionsRef.current.clear()
+    spokenEEWUpgradePhraseRef.current.clear()
     eewRegionTokensRef.current.clear()
     eewRetractedKeysRef.current.clear()
     eewPhase1ProgressRef.current.clear()
@@ -3480,6 +3526,23 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // 「自分自身」を基準にしてしまい（跳躍0扱い）、実際より短い安定待ちになる。
           eewConfirmedScaleRef.current.set(key, eewMaxScaleInfo(eew))
           eewConfirmedLpgmRef.current.set(key, eewMaxLpgmClassInfo(eew))
+          // 警報の対象地方も既読にする。**ここが漏れていると、この EEW について他は何も
+          // 声にしないのに地方だけが鳴る** —— 第 1 フェーズは `activeEEWLevelsRef` で、
+          // 第 2 フェーズは `eewPhase2DoneRef` で止まるのに、地方は「まだ声にしていない地方が
+          // あるか」だけで発火するため。窓の手前で既に発表されていた地方を読み直すことになる。
+          //
+          // **上書きではなく積む。** 他の値（区分・予想値）は最後の報が最新なので上書きでよいが、
+          // 地方は「その報が載せた顔ぶれ」であって累積ではない。窓の境界直前の報がたまたま
+          // 地方を持たなければ、それ以前に発表済みの地方が未読へ戻る。
+          if (eew.warningRegions?.length) {
+            const spokenRegions = spokenEEWRegionsRef.current.get(key) ?? new Set<string>()
+            for (const region of eew.warningRegions) spokenRegions.add(region)
+            spokenEEWRegionsRef.current.set(key, spokenRegions)
+          }
+          // 格上げの前置きも伝え済みにする。**`spokenEEWLevelsRef` の復元に頼らない** ——
+          // いまは前置きの判定が「区分が上がったか」を併せて見るので相乗りで防げているが、
+          // その依存はどこにも書かれていない。対で復元して切っておく。
+          if (restoredLevel >= 1) spokenEEWUpgradePhraseRef.current.add(key)
         } else if (ev.kind === 'tsunami') {
           const tsunami = ev as JMATsunami
           // **ライブ経路と同じ形で進めること**（電文は時系列順に渡ってくる）。片方だけずらすと、
