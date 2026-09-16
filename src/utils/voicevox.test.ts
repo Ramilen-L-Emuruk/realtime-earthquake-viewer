@@ -13,7 +13,7 @@
 // AudioContext は偽物に差し替える。fake timers の時間軸に `currentTime` を合わせ、再生の終わりも
 // タイマーで起こすことで、本物の音声グラフと同じ順序で 'ended' が届く。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { speakWithVoicevox, speakSequentially, warmFixedPhrases, splitIntoChunks, __resetFixedPhrasesForTest } from './voicevox'
+import { speakWithVoicevox, speakSequentially, warmFixedPhrases, splitIntoChunks, __resetFixedPhrasesForTest, SPEECH_SYNTH_BUDGET_MS } from './voicevox'
 import { eewAlertToText, EEW_LEAD_PHRASES, voicevoxPreviewTexts } from './ttsText'
 import type { EEWAlert } from '../types/earthquake'
 
@@ -94,18 +94,48 @@ vi.mock('./alertSound', () => ({
   syncKeepAlive: () => {},
 }))
 
+/**
+ * 渡された `signal` が abort されたら失敗する Promise。**本物の `fetch` に合わせるために要る** ——
+ * 実装は合成のたびに `signal` を渡しており、abort 済みの signal で呼ぶと本物は即座に失敗する。
+ * モックがこれを無視すると、**「1 チャンクの中断が後続を巻き添えにする」形の不具合を
+ * 素通しする**（合成が普通に成功してしまい、テストが何も守らない）。
+ */
+function rejectOnAbort(signal: AbortSignal | undefined): Promise<never> {
+  return new Promise<never>((_, reject) => {
+    if (!signal) return
+    signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true })
+  })
+}
+
+/**
+ * **abort 済みの signal で呼ばれたら即座に失敗する。** 本物の `fetch` はそう振る舞う。
+ * `Promise.race` で後追いに混ぜるだけでは足りない —— 成功側が同じマイクロタスクで解決すると
+ * そちらが勝ってしまい、**中断されたはずの合成が成功して返る**（テストが何も守らなくなる）。
+ */
+function abortedNow(signal: AbortSignal | undefined): Promise<never> | null {
+  return signal?.aborted ? Promise.reject(new DOMException('Aborted', 'AbortError')) : null
+}
+
 /** /audio_query は即答、/synthesis はチャンクごとに指定の遅延で答える。 */
 function installFetch() {
-  vi.stubGlobal('fetch', (url: string, init?: { body?: string }) => {
+  vi.stubGlobal('fetch', (url: string, init?: { body?: string; signal?: AbortSignal }) => {
+    const aborted = abortedNow(init?.signal)
+    if (aborted) return aborted
     if (String(url).includes('/synthesis')) {
       const delay = synthDelaysMs[synthCallCount] ?? 0
       synthCallCount++
       synthBodies.push(init?.body ?? '')
-      return new Promise(resolve => {
-        setTimeout(() => resolve({ ok: true, arrayBuffer: () => Promise.resolve(new ArrayBuffer(8)) }), delay)
-      })
+      return Promise.race([
+        new Promise(resolve => {
+          setTimeout(() => resolve({ ok: true, arrayBuffer: () => Promise.resolve(new ArrayBuffer(8)) }), delay)
+        }),
+        rejectOnAbort(init?.signal),
+      ])
     }
-    return Promise.resolve({ ok: true, json: () => Promise.resolve({ accent_phrases: accentPhrasesFixture }) })
+    return Promise.race([
+      Promise.resolve({ ok: true, json: () => Promise.resolve({ accent_phrases: accentPhrasesFixture }) }),
+      rejectOnAbort(init?.signal),
+    ])
   })
 }
 
@@ -197,6 +227,137 @@ describe('speakWithVoicevox の鳴らす直前の見直し', () => {
     await advance(2000)               // 2 チャンク目の合成が返る
     expect(sources).toHaveLength(1)   // 予約されない
     expect(done).toBe(true)           // ここが false だと呼び出し側が 8 秒足止めされる
+  })
+})
+
+// 「1 音でも鳴ったか」（`SpeechOutcome.spoke`）。
+//
+// **呼び出し側の既読がこれに依存している。** この関数は例外を投げない設計で、VOICEVOX 未起動・
+// ネットワーク断でも正常終了するため、戻り値を見ないと「読み上げが完了した」と区別が付かず、
+// 1 音も出ていないのに既読が進む（→ `useLiveEventHandler` の EEW 各フェーズ）。
+//
+// **ここでしか実装経路を通らない。** `useLiveEventHandler` 側のテストは `./voicevox` を丸ごと
+// モックするので、`spoke` の値は手で書いたものが返るだけで、この判定は 1 行も走らない。
+describe('1 音でも鳴ったかを返す', () => {
+  // 正: 最後まで鳴れば真
+  it('全チャンクが鳴れば真', async () => {
+    synthDelaysMs = [100, 100]
+    const p = speakWithVoicevox('http://vv', TWO_CHUNKS, 1, 1)
+    await advance(2400)
+    expect((await p).spoke).toBe(true)
+  })
+
+  // 対照: 合成が 1 つも成功しなければ偽（VOICEVOX 未起動・ネットワーク断がこの形）
+  it('合成が 1 つも成功しなければ偽', async () => {
+    vi.stubGlobal('fetch', (url: string) => (String(url).includes('/synthesis')
+      ? Promise.resolve({ ok: false, status: 500 })
+      : Promise.resolve({ ok: true, json: () => Promise.resolve({ accent_phrases: [] }) })))
+    const p = speakWithVoicevox('http://vv', TWO_CHUNKS, 1, 1)
+    await advance(500)
+    expect((await p).spoke).toBe(false)
+    expect(sources).toHaveLength(0)
+  })
+
+  // 対照: 鳴り出す前に取り下げたら偽（合成を待つ間に情報が新しくなった）
+  it('1 音も鳴らさずに取り下げたら偽', async () => {
+    synthDelaysMs = [500]
+    const p = speakWithVoicevox('http://vv', TWO_CHUNKS, 1, 1, () => false)
+    await advance(600)
+    expect((await p).spoke).toBe(false)
+    expect(sources).toHaveLength(0)
+  })
+
+  // 対照: 合成が**応答を返さない**ときも偽。**ここが今回の要**（`CHUNK_SYNTH_TIMEOUT_MS`）——
+  // VOICEVOX への合成要求そのものには上限が無く、接続は受け付けるのに応答が返らない状況
+  // （機器のスリープ・経路が黙って捨てる）では、上限が無いと読み上げが完了も失敗もしないまま
+  // 宙に浮く。呼び出し側からは「鳴っている最中」と区別が付かず、**1 音も出ていないのに
+  // 既読が進む**（→ `useLiveEventHandler` の EEW 各フェーズ）。
+  it('合成が応答を返さなくても、上限で諦めて偽を返す', async () => {
+    vi.stubGlobal('fetch', (url: string, init?: { signal?: AbortSignal }) => abortedNow(init?.signal)
+      ?? (String(url).includes('/synthesis')
+        ? Promise.race([new Promise(() => { /* 応答を返さない */ }), rejectOnAbort(init?.signal)])
+        : Promise.race([
+          Promise.resolve({ ok: true, json: () => Promise.resolve({ accent_phrases: [] }) }),
+          rejectOnAbort(init?.signal),
+        ])))
+    // **1 チャンクの文で確かめる。** 複数チャンクだと上限がチャンクごとに掛かり、
+    // 待つ時間がテストの制限（5 秒）を越える。
+    const p = speakWithVoicevox('http://vv', '最大震度5弱です。', 1, 1)
+    await advance(6000)          // 上限（5 秒）を越える
+    expect((await p).spoke).toBe(false)
+    expect(sources).toHaveLength(0)
+  })
+
+  // 安全弁: **1 チャンクのタイムアウトが、後続のチャンクを巻き添えにしない。**
+  //
+  // 合成に渡す `signal` はその発話の全チャンクで共有している。上限で見切るときに abort すると
+  // `AbortSignal` は解除できないので、以降のチャンクは要求を送る前に即死する ——「このチャンク
+  // だけ諦める」が「残り全部を無音にする」に化ける。地方を列挙する読み上げなら、途中で 1 回
+  // 詰まっただけで残りの警戒対象が丸ごと声にならない。
+  it('1 チャンクが上限で諦めても、次のチャンクは鳴る', async () => {
+    let call = 0
+    vi.stubGlobal('fetch', (url: string, init?: { signal?: AbortSignal }) => {
+      const aborted = abortedNow(init?.signal)
+      if (aborted) return aborted
+      if (!String(url).includes('/synthesis')) {
+        return Promise.race([
+          Promise.resolve({ ok: true, json: () => Promise.resolve({ accent_phrases: [] }) }),
+          rejectOnAbort(init?.signal),
+        ])
+      }
+      call++
+      // 1 チャンク目だけ応答を返さない。2 チャンク目は正常に返る
+      if (call === 1) return Promise.race([new Promise(() => { /* 応答なし */ }), rejectOnAbort(init?.signal)])
+      return Promise.race([
+        Promise.resolve({ ok: true, arrayBuffer: () => Promise.resolve(new ArrayBuffer(8)) }),
+        rejectOnAbort(init?.signal),
+      ])
+    })
+    const p = speakWithVoicevox('http://vv', TWO_CHUNKS, 1, 1)
+    await advance(6000)          // 1 チャンク目の上限（5 秒）を越える
+    await advance(2000)          // 2 チャンク目が鳴り終わる
+    expect(sources).toHaveLength(1)   // 2 チャンク目だけが鳴る
+    expect((await p).spoke).toBe(true)
+  })
+
+  // 安全弁: **複数チャンクが連続して無応答でも、合成待ちの合計は予算内に収まる。**
+  //
+  // 合成待ちは直列に積み上がる（次のチャンクは前の結果が出てから始める）。チャンクごとの上限
+  // だけだと `チャンク数 × 5 秒` になり、発話チェーンの待ち上限（8 秒）を越える —— **チェーン側が
+  // 先に見切って「鳴っている最中」と誤認し、1 音も出ていないのに既読が進む**。
+  it('複数チャンクが無応答でも、合成待ちの合計は予算内で打ち切る', async () => {
+    vi.stubGlobal('fetch', (url: string, init?: { signal?: AbortSignal }) => abortedNow(init?.signal)
+      ?? (String(url).includes('/synthesis')
+        ? Promise.race([new Promise(() => { /* 応答なし */ }), rejectOnAbort(init?.signal)])
+        : Promise.race([
+          Promise.resolve({ ok: true, json: () => Promise.resolve({ accent_phrases: [] }) }),
+          rejectOnAbort(init?.signal),
+        ])))
+    let done = false
+    void speakWithVoicevox('http://vv', TWO_CHUNKS, 1, 1).then(() => { done = true })
+
+    // 予算（6 秒）を過ぎた時点で、2 チャンクとも諦めて完了しているはず。
+    // チャンクごとの上限だけなら 2 × 5 = 10 秒かかり、ここではまだ終わっていない。
+    await advance(SPEECH_SYNTH_BUDGET_MS + 500)
+    expect(done).toBe(true)
+    expect(sources).toHaveLength(0)
+  })
+
+  // 安全弁: 鳴り始めてから取り下げたら真。**「最後まで鳴ったか」ではなく「鳴ったか」**を返す
+  // ——聞き手には届いているので、既読を進める側から見れば鳴ったのと同じ。
+  //
+  // **予約が全部落ちる形はここで作れていない。** 判定は `scheduled.some(s => !s.dropped)` だが、
+  // 1 チャンク目は予約と同時に鳴り始めるため「鳴り始めの直前」の再判定を受けず、全件が
+  // `dropped` になる並びを組めない（`scheduled.length > 0` に書き換えてもこの 4 件は通る）。
+  it('鳴り始めてから取り下げたら真', async () => {
+    synthDelaysMs = [100, 100]
+    let valid = true
+    const p = speakWithVoicevox('http://vv', TWO_CHUNKS, 1, 1, () => valid)
+    await advance(300)
+    valid = false
+    await advance(900)
+    expect(sources[1].droppedBeforeSound).toBe(true)   // 続きは鳴っていない
+    expect((await p).spoke).toBe(true)                 // 1 チャンク目は鳴った
   })
 })
 
@@ -337,7 +498,7 @@ describe('切り出し語の作り置き', () => {
      * 2 文目は 1 文目の再生完了を待つので、残すと次のテストの時間送りでそこから鳴り出し、
      * 無関係なテストの合成回数・音源数が狂う（実際に既存テストを 1 件巻き込んだ）。
      */
-    const drain = async (p: Promise<void>) => { await advance(5000); await p }
+    const drain = async (p: Promise<unknown>) => { await advance(5000); await p }
 
     it('分けて渡すと 1 文目の末尾に間が入らない（正）', async () => {
       // 2 チャンク以上に割れていること自体を前提にする（割れ方が変わったら気づけるように）

@@ -9,6 +9,7 @@
 //    記憶を渡すと、一度も声にしていない観測点を「更新されました」と言う
 // 2. **観測点はカードの並びに揃えて渡す**（`sortObservationsForCardDisplay`）。電文順のままだと
 //    カード上を飛び回り、追従スクロールが上下に往復する（→ docs/spec/tsunami-spec.md §9）
+import type { SpeechOutcome } from '../utils/voicevox'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
@@ -21,7 +22,7 @@ const speakMock = vi.fn((_url: string, text: string) => {
     if (!s.done) { s.done = true; s.finish() }
   }
   let finish!: () => void
-  const p = new Promise<void>(r => { finish = r })
+  const p = new Promise<SpeechOutcome>(r => { finish = () => r({ spoke: true }) })
   speeches.push({ text, finish, done: false })
   return p
 })

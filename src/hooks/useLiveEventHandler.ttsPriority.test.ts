@@ -15,6 +15,7 @@
 // 新しい側の声を切っていた（原則が逆向きに破れる）。後から同格以上が予約されたら取り下げる。
 //
 // 読み上げの完了を任意の時点で起こせるよう、モックは解決関数を外に出して保持する。
+import type { SpeechOutcome } from '../utils/voicevox'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
@@ -35,7 +36,7 @@ const speakMock = vi.fn((_url: string, text: string) => {
     if (!s.done) { s.done = true; s.finish() }   // 割り込みで打ち切られた側は完了扱いになる
   }
   let finish!: () => void
-  const p = new Promise<void>(r => { finish = r })
+  const p = new Promise<SpeechOutcome>(r => { finish = () => r({ spoke: true }) })
   speeches.push({ text, finish, done: false })
   return p
 })

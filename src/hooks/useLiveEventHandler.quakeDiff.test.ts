@@ -9,6 +9,7 @@
 //
 // チャンクの分割は手書きせず実物（`splitIntoChunks`）を通す。分割の条件を変えたときに、
 // テストだけが古い境界を前提に通り続けるのを防ぐため。
+import type { SpeechOutcome } from '../utils/voicevox'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
@@ -46,7 +47,7 @@ vi.mock('../utils/voicevox', async () => {
         if (!s.done) { s.done = true; s.finish() }
       }
       let finish!: () => void
-      const p = new Promise<void>(r => { finish = r })
+      const p = new Promise<SpeechOutcome>(r => { finish = () => r({ spoke: true }) })
       speeches.push({ text, chunks: actual.splitIntoChunks(text), onChunk, finish, done: false })
       return p
     },
