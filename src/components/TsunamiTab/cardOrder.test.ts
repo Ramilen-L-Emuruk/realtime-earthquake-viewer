@@ -6,9 +6,6 @@
 // 読み上げはこの関数の返す順で観測点を読む（→ docs/spec/tsunami-spec.md §9）。関数はカードの
 // 入れ子を**写して**いるだけなので、カード側が並べ方を変えると黙って食い違い、追従スクロールが
 // カード上を往復する。写し間違いを検出できるのは、描いた結果と突き合わせるここだけ。
-//
-// JSX を使わず createElement で書くのは、このプロジェクトのテストが `src/**/*.test.ts` のみを
-// 対象にしているため（`RealtimeTab/index.test.ts` と同じ作法）。
 import { describe, it, expect, afterEach } from 'vitest'
 import { createElement } from 'react'
 import { render, cleanup } from '@testing-library/react'
