@@ -11,6 +11,7 @@
 //    持たないため、そのままタイトルにすると「最大震度不明」に落ちる。以前は `isNewQuake` を
 //    条件に含めていたが、震源情報は「その種別としての初報」＝新規になるため歯止めが一度も効いて
 //    いなかった。判定は既存カードが震度を持つかどうかで行う。
+import type { SpeechOutcome } from '../utils/voicevox'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
@@ -24,7 +25,7 @@ const speakMock = vi.fn((_url: string, text: string) => {
     if (!s.done) { s.done = true; s.finish() }   // 割り込まれた側は完了扱いになる（実装と同じ連鎖）
   }
   let finish!: () => void
-  const p = new Promise<void>(r => { finish = r })
+  const p = new Promise<SpeechOutcome>(r => { finish = () => r({ spoke: true }) })
   speeches.push({ text, finish, done: false })
   return p
 })
