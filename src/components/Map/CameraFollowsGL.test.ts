@@ -18,9 +18,6 @@ import { fitMaxZoom, focusMaxZoom } from './gl/camera'
 //   1. 候補へ寄せた直後に、検知終了の fitJapan がそれを上書きして一瞬ちらつく
 //   2. 1 を直す過程で、どちらのコンポーネントもカメラを動かさず、終了した検知の位置に取り残される
 // カメラを動かす API の呼び出しだけを観測し、どちらの状態にも戻らないことを保証する。
-//
-// JSX を使わず createElement で組むのは、vitest の include が `src/**/*.test.ts` に限られており
-// `.tsx` を拾わないため（既存の useReplayController.wiring.test.ts と同じ方針）。
 
 // maplibre-gl の実体は jsdom ではロードできない（WebGL・Worker 依存でワーカーが応答しなくなる）。
 // gl/camera.ts が実行時に使うのは LngLatBounds だけなので、矩形の合成と読み出しだけを持つ代替に差し替える。
@@ -75,7 +72,8 @@ const POINTS_PADDING = 60
 const INTERACTION_HOLD_SEC = 30
 
 // maplibregl.Map を模したフェイク（gl/camera.test.ts と同じ方針）。カメラ操作系は spy にして
-// 呼び出しを観測し、イベント API は登録と発火だけを再現する。
+// 呼び出しを観測し、イベント API は登録と発火だけを再現する。**レイヤーの出し入れは見ない**——
+// その用途の代役は `testing/fakeMapGL.ts` にあり、代役どうしの役割分担はそちらの冒頭に書いてある。
 //
 // 収め直しフォローは「寄り直したらズームが何段深まるか」と「中心がどれだけ動くか」で発火を
 // 決める（`refitDeltaForBounds`）。着地後に両方が 0 になって発火が止まることまで検証したいので、
