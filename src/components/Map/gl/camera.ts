@@ -92,6 +92,78 @@ export function focusMaxZoomForPane(shortSidePx: number): number {
 }
 
 /**
+ * 震度分布モードで寄り切ったときに残す視野の広さ（短辺・km）。**自動フィットの `FIT_MIN_SPAN_KM`・
+ * 一覧クリックの `FOCUS_SPAN_KM` とは別に持つ。**
+ *
+ * 分けて持つ理由と 5km の決め方は `docs/spec/quake-spec.md` §9「震度分布モード」が単一情報源。
+ * 要点だけ:
+ *
+ * - 分布モードの寄り先は**気象庁の推計が塗ってある範囲そのもの**で、見せたい対象が矩形として
+ *   定まっている。自動フィットの上限（震源と観測点から組んだ寄り先に合わせた値）を当てると、
+ *   分布が数十 km に収まる地震では面が小さいまま残る
+ * - **5km が担うのは、分布が極端に狭いときの歯止めだけ**（視野 5km には 250m メッシュが 20 セル
+ *   並ぶ ＝ 1 セルが画の短辺の 5%）。**実際の分布がこの上限に当たるかは数えていない**。
+ *   当たっても異常ではなく、面が画いっぱいになる手前で止まるだけ
+ *
+ * **`ABSOLUTE_MAX_ZOOM` のクランプは掛けない**（理由は `focusMaxZoom` と同じ）。
+ */
+export const DISTRIBUTION_SPAN_KM = 5
+
+/** 震度分布モードでの上限ズーム。 */
+export function distributionMaxZoom(map: maplibregl.Map): number {
+  return distributionMaxZoomForPane(paneShortSidePx(map))
+}
+
+/** 短辺 shortSidePx のペインでの震度分布モードの上限ズーム。`distributionMaxZoom` の実体。 */
+export function distributionMaxZoomForPane(shortSidePx: number): number {
+  return snapZoomNearest(zoomForSpanKm(DISTRIBUTION_SPAN_KM, shortSidePx), EEW_ZOOM_SNAP)
+}
+
+/**
+ * 寄り先の性質に応じた寄り上限の選び方。**いまこの仕組みに乗るのは地震モードのフィット
+ * （`QuakeFitGL`）だけ。** EEW 追従・揺れ検知・津波は `fitMaxZoom` / `focusMaxZoom` を直接呼ぶ
+ * （寄り先の種類が固定で、選び分ける余地が無いため）。
+ *
+ * **寄り先を組んだ側が選ぶ。** 上限は「その寄り先をどれだけ画に収めたいか」で決まるので、
+ * 寄り先の中身を知らないカメラ側では決められない（`useQuakeLayerData` の `quakeFitZoomPolicy`）。
+ *
+ * **値を足すときの保証は片側だけ。** `maxZoomForPolicy` の `switch` は追記を忘れると型検査が
+ * 止めるが、**選ぶ側**（`useQuakeLayerData` で寄り先を組む分岐）が新しい値を返し忘れて `'auto'` の
+ * ままにした場合は型検査も実行時の記録も止めない —— 着地が浅くなるだけなので画面からも
+ * 気づけない。寄り先の種類を足したら、その分岐のテストも対で足すこと。
+ */
+export type FitZoomPolicy =
+  /**
+   * 震源・観測点など、地震カードの状態から組んだ寄り先。自動フィットの寄り上限（`fitMaxZoom`）を
+   * 当てる。未入電モードの地点・長周期地震動の区域・遠地地震の「震源 ∪ 日本全体」もこちら。
+   */
+  | 'auto'
+  /** 気象庁の推計震度分布が塗ってある範囲。`distributionMaxZoom` を当てる。 */
+  | 'distribution'
+
+/**
+ * `policy` に対応する寄り上限ズーム。
+ *
+ * **`switch` の網羅性で書く。** 真偽の三項で書くと `FitZoomPolicy` へ値を足したときに追記なしで
+ * コンパイルが通り、新しい寄り先が黙って自動フィットの上限へ丸まる（着地が浅くなるだけで例外も
+ * 記録も出ない）。渡し忘れを型検査で止めている `QuakeFitGL` の `zoomPolicy` と同じ保証を、
+ * 値を上限へ写すこちら側にも置く。
+ */
+export function maxZoomForPolicy(map: maplibregl.Map, policy: FitZoomPolicy): number {
+  switch (policy) {
+    case 'auto': return fitMaxZoom(map)
+    case 'distribution': return distributionMaxZoom(map)
+    default: {
+      // 型を迂回した値（`never` のはずのもの）が来たら**記録して自動フィットの上限へ倒す**。
+      // そのまま返すと `number` でない値がカメラの着地ズームへ流れ、痕跡も残らない。
+      const exhaustive: never = policy
+      log.warn('[mapGL] 未知の寄り上限の選び方を受け取りました', String(exhaustive))
+      return fitMaxZoom(map)
+    }
+  }
+}
+
+/**
  * 基準ペイン（`REFERENCE_SHORT_SIDE_PX`）での寄り上限。
  *
  * 実際の判定には使わない（それは常に実ペイン寸法で換算する `fitMaxZoom`）。**端末に依らない
