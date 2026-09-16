@@ -5,7 +5,7 @@
 // 丸ごと不可能になっていた。また目録（telegrams.json）が無いアーカイブは無言で
 // 捨てられ、「電文 0 件だが成功」に化けて原因が追えなかった。
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest'
-import { fetchDmdataReplayEvents, fetchDmdataQuakeHistory, clearReplayCache, filterPreWindowEvents, MAX_HISTORY_DAYS } from './dmdataReplay'
+import { fetchDmdataReplayEvents, fetchDmdataQuakeHistory, clearReplayCache, clearArchiveCacheForTest, filterPreWindowEvents, isArchiveCacheable, MAX_HISTORY_DAYS } from './dmdataReplay'
 import { enumerateJstDates, MAX_ENUMERATED_DAYS } from './dmdataReplayLive'
 import type { JMATsunami, EEWAlert } from '../types/earthquake'
 import type { ReplayEntry } from '../types/replay'
@@ -133,6 +133,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
 
   beforeEach(() => {
     clearReplayCache()
+    clearArchiveCacheForTest()
     warns = []
     errors = []
     vi.spyOn(console, 'warn').mockImplementation((...a: unknown[]) => { warns.push(a.join(' ')) })
@@ -142,6 +143,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
   afterEach(() => {
     globalThis.fetch = originalFetch
     clearReplayCache()
+    clearArchiveCacheForTest()
     vi.restoreAllMocks()
   })
 
@@ -1035,10 +1037,11 @@ describe('fetchDmdataQuakeHistory', () => {
     ])
   }
 
-  beforeEach(() => { clearReplayCache() })
+  beforeEach(() => { clearReplayCache(); clearArchiveCacheForTest() })
   afterEach(() => {
     globalThis.fetch = originalFetch
     clearReplayCache()
+    clearArchiveCacheForTest()
     vi.restoreAllMocks()
   })
 
@@ -1563,5 +1566,113 @@ describe('遡れる日数の上限（MAX_HISTORY_DAYS）', () => {
   it('対照: 1 日でも超えると投げる', () => {
     const [from, to] = rangeFor(MAX_HISTORY_DAYS + 1)
     expect(() => enumerateJstDates(from, to)).toThrow(/対象期間が広すぎます/)
+  })
+})
+
+// リプレイの開始をまたいでアーカイブ本体を落とし直さないこと。
+//
+// **区間ごとにリプレイを開始し直す使い方（録画の自動化）で効く。** かつて
+// `clearReplayCache()` がアーカイブの控えまで捨てていたため、開始のたびに同じファイルを
+// 取り直していた（能登の録画計画 239 区間で 1,000〜3,800 リクエスト。実測 2026-09-16）。
+// アーカイブ id は内容に対して不変なので、落とし直す理由が無い。
+describe('アーカイブ本体の控えは開始をまたいで残る', () => {
+  const originalFetch = globalThis.fetch
+  const URL_A = 'https://x/a'
+
+  beforeEach(() => {
+    clearReplayCache()
+    clearArchiveCacheForTest()
+  })
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    clearReplayCache()
+    clearArchiveCacheForTest()
+    vi.restoreAllMocks()
+  })
+
+  function archiveGz(): Promise<Uint8Array> {
+    return makeTarGz([
+      { name: 'telegrams.json', content: JSON.stringify([manifestEntry('1234567abc')]) },
+      { name: '1234567abc_20260810120500000_0.xml', content: quakeBody('岩手県沖') },
+    ])
+  }
+
+  /** アーカイブ本体（目録ではない）を取りに行った回数。 */
+  function bodyFetches(mock: ReturnType<typeof vi.fn>): number {
+    return mock.mock.calls.filter(c => c[0] === URL_A).length
+  }
+
+  /** 目録を引いた回数。 */
+  function listFetches(mock: ReturnType<typeof vi.fn>): number {
+    return mock.mock.calls.filter(c => String(c[0]).includes('/v2/archive?')).length
+  }
+
+  it('正: clearReplayCache() を挟んでも本体を取り直さない', async () => {
+    const mock = mockArchives([{ url: URL_A, gz: await archiveGz() }])
+    globalThis.fetch = mock as unknown as typeof fetch
+
+    const first = await fetchDmdataReplayEvents('key', FROM, TO, false)
+    expect(first.entries).toHaveLength(1)
+    expect(bodyFetches(mock)).toBe(1)
+
+    // 区間が変わってリプレイを開始し直した、という状況
+    clearReplayCache()
+    const second = await fetchDmdataReplayEvents('key', FROM, TO, false)
+
+    // 中身は 1 度目と同じだけ取り込めている
+    expect(second.entries).toHaveLength(1)
+    // **本体は落とし直していない**
+    expect(bodyFetches(mock)).toBe(1)
+  })
+
+  it('対照: 控えを空にすれば取り直す（残っていただけで、取得経路が死んでいるのではない）', async () => {
+    const mock = mockArchives([{ url: URL_A, gz: await archiveGz() }])
+    globalThis.fetch = mock as unknown as typeof fetch
+
+    await fetchDmdataReplayEvents('key', FROM, TO, false)
+    clearArchiveCacheForTest()
+    const second = await fetchDmdataReplayEvents('key', FROM, TO, false)
+
+    expect(second.entries).toHaveLength(1)
+    expect(bodyFetches(mock)).toBe(2)
+  })
+
+  // 安全弁: 目録は控えない。新しく届いた電文が永久に見えなくなるのを防ぐため
+  // （理由は `dmdataReplayLive.ts` の `bodyCache` のコメントと同じ）。
+  it('安全弁: 目録は毎回引き直す', async () => {
+    const mock = mockArchives([{ url: URL_A, gz: await archiveGz() }])
+    globalThis.fetch = mock as unknown as typeof fetch
+
+    await fetchDmdataReplayEvents('key', FROM, TO, false)
+    const afterFirst = listFetches(mock)
+    clearReplayCache()
+    await fetchDmdataReplayEvents('key', FROM, TO, false)
+
+    expect(listFetches(mock)).toBeGreaterThan(afterFirst)
+  })
+})
+
+// 当日ぶんのアーカイブは控えない、という安全弁そのものを固定する。
+//
+// **この判定が壊れても、他のどのテストも落ちない。** 現状は目録に当日が現れないので分岐へ
+// 到達せず、実機で確かめることもできない（`uncacheable` は 0 のまま）。
+describe('当日ぶんのアーカイブは控えない（isArchiveCacheable）', () => {
+  // JST の 2026-09-16 09:00（UTC では 00:00）を「いま」とする
+  const nowMs = Date.parse('2026-09-16T09:00:00+09:00')
+
+  it('正: 当日と同じ日は控えない', () => {
+    expect(isArchiveCacheable('2026-09-16', nowMs)).toBe(false)
+  })
+
+  it('対照: 前日は控える', () => {
+    expect(isArchiveCacheable('2026-09-15', nowMs)).toBe(true)
+  })
+
+  // **日境界は JST で見る。** UTC で数えると、JST の 00:00〜09:00 のあいだ「今日」が
+  // 1 日前にずれ、当日ぶんを控えてしまう（いちばん弾きたい時間帯で弾けない）。
+  it('安全弁: JST の日境界で判定する（UTC 基準にずれない）', () => {
+    const justAfterJstMidnight = Date.parse('2026-09-16T00:30:00+09:00')
+    expect(isArchiveCacheable('2026-09-16', justAfterJstMidnight)).toBe(false)
+    expect(isArchiveCacheable('2026-09-15', justAfterJstMidnight)).toBe(true)
   })
 })
