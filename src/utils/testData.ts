@@ -363,7 +363,32 @@ export function createTestQuakeAmendment(useDmdataShape: boolean): { initial: JM
 export const TEST_REPORT_SEQUENCE_DELAY_MS = 3000
 
 /**
- * 種別が前後して届く地震情報のテストデータ（**4 通**）。
+ * 4 通目と 5 通目のあいだだけ長く取る。
+ *
+ * **4 通目を読み切る前に 5 通目が届くと、既読が「声になった分」までしか進まず、5 通目が
+ * 差分ではなく全文読みへ倒れる**（→ docs/spec/audio-tts-spec.md §4「既読になるのは「声に
+ * なった分」だけ」）。仕様どおりの安全側の動きだが、それでは**このボタンで確かめたい形
+ * （観測点だけが増えた続報）が一度も出ない**。実電文でも 00:13 → 00:16 と 3 分空いていた。
+ *
+ * **読み上げを最も詳しくした設定では、これでも足りないことがある**（能登本震は区域が数十あり
+ * 全区域を読むと 1 分を超える）。そのときは 5 通目が全文読みになるが、**それも仕様どおり**で
+ * 壊れてはいない。
+ */
+const TEST_REPORT_SEQUENCE_FOLLOWUP_DELAY_MS = 30000
+
+/**
+ * 4 通目の時点で「まだ入電していない」ことにする観測点・市町村の数（5 通目で出そろう）。
+ *
+ * **区域の最大震度を動かさない数と選び方にすること**（震度の弱いほうから採る）。動かすと
+ * 5 通目で区域の差分が出てしまい、**この 2 通で確かめたい形**——区域は据え置きのまま観測点
+ * だけが増える続報——が再現できない。区域の点（`isArea`）は電文が独立に持つので、観測点を
+ * 抜いても区域の最大震度は変わらない。
+ */
+const TEST_LATE_STATION_COUNT = 6
+const TEST_LATE_CITY_COUNT = 3
+
+/**
+ * 種別が前後して届く地震情報のテストデータ（**5 通**）。
  *
  * 気象庁は同じ地震について**種別の違う電文を前後して発表する**。能登 2024-01-01 の前震は
  * 震度速報 → 震源情報 → 震度速報 → 震源・震度情報 の順で届き、3 通目の時点で見出しが
@@ -381,6 +406,9 @@ export const TEST_REPORT_SEQUENCE_DELAY_MS = 3000
  *   `id` の末尾は 4 通とも `-1` のまま。**通数を数える鍵は電文の作成時刻**（`telegramKey`）で、
  *   ここを持たせないと 2 通目の震度速報が「同じ電文の再送」と見なされて数えられない
  * - **地震の時刻と識別情報は動かさない。** 動かすと別カードが立ち、同じカードへ届かない
+ * - **5 通目は観測点・市町村だけが増える。** 区域の最大震度も震源要素も据え置きなので、
+ *   読み上げの差分（区域まで）は空になる。「観測地点が追加されましたが、地域ごとの最大震度は
+ *   変わっていません。」と読む形を、実機で確かめられる唯一の入口
  */
 export function createTestQuakeReportSequence(useDmdataShape: boolean): JMAQuake[] {
   const base = createTestEarthquake(useDmdataShape)
@@ -443,6 +471,18 @@ export function createTestQuakeReportSequence(useDmdataShape: boolean): JMAQuake
     cities: undefined,
   }
 
+  // **4 通目は観測点がまだ出そろっていない。** 観測点は遅れて入電するため、実配信では
+  // 「区域の最大震度は据え置きのまま観測点だけが増える続報」が出る（実例は
+  // `docs/spec/audio-tts-spec.md` 改訂履歴 2026-09-17）。**読み上げは区域までしか語らないので、そこだけ見ると
+  // 差分が空になる** —— 5 通目がその経路を通り、「観測地点が追加されましたが、地域ごとの最大震度は
+  // 変わっていません。」と読む。**実機で確かめられる入口はここしかない。**
+  const lateStations = new Set(
+    base.points.filter(p => !p.isArea).sort((a, b) => a.scale - b.scale).slice(0, TEST_LATE_STATION_COUNT),
+  )
+  const lateCities = new Set(
+    [...(base.cities ?? [])].sort((a, b) => a.scale - b.scale).slice(0, TEST_LATE_CITY_COUNT),
+  )
+
   const detailTime = at(3)
   const detail: JMAQuake = {
     ...base,
@@ -451,9 +491,24 @@ export function createTestQuakeReportSequence(useDmdataShape: boolean): JMAQuake
     reportSerial: 1,
     time: detailTime,
     issue: { ...base.issue, time: detailTime },
+    points: base.points.filter(p => !lateStations.has(p)),
+    ...(base.cities ? { cities: base.cities.filter(c => !lateCities.has(c)) } : {}),
   }
 
-  return [prompt(0, firstPoints), destination, prompt(2, areaPoints), detail]
+  // 5 通目。**観測点・市町村が出そろうだけで、区域も震源要素も動かさない。**
+  // 間隔だけは他より長く取る（理由は `TEST_REPORT_SEQUENCE_FOLLOWUP_DELAY_MS`）。
+  const followUpTime = new Date(
+    new Date(at(3)).getTime() + TEST_REPORT_SEQUENCE_FOLLOWUP_DELAY_MS,
+  ).toISOString()
+  const followUp: JMAQuake = {
+    ...base,
+    telegramKey: followUpTime,
+    reportSerial: 2,
+    time: followUpTime,
+    issue: { ...base.issue, time: followUpTime },
+  }
+
+  return [prompt(0, firstPoints), destination, prompt(2, areaPoints), detail, followUp]
 }
 
 /**

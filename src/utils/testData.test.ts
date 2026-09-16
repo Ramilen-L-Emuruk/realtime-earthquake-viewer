@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { isEewArrivedKindCode, isEewPlumKindCode } from './eewKind'
 import { mergeQuakeInto, mergeQuakeHistory } from './quakeMerge'
+import { earthquakeToSegments, createQuakeSpokenState, applySpokenRefs } from './ttsText'
+import { joinSegments } from './ttsFollow'
 import type { JMAQuake } from '../types/earthquake'
 import { reportsText } from '../test-utils/quakeReports'
 import {
@@ -225,13 +227,47 @@ describe('地震情報テストの points 形状', () => {
   // 実電文の形（震度速報は震源を持たない・報番号は震源・震度情報だけ・鍵は報ごとに違う）を
   // 固定する（→ docs/spec/quake-spec.md §8「見出しには受け取った種別を並べる」）。
   describe('種別遷移テスト', () => {
-    // 正: 能登の前震と同じ順序で 4 通を返す。
-    it('震度速報 → 震源情報 → 震度速報 → 震源・震度情報 の順に 4 通を返す', () => {
+    // 正: 能登の前震と同じ順序で 5 通を返す（5 通目は観測点が出そろう続報）。
+    it('震度速報 → 震源情報 → 震度速報 → 震源・震度情報 → その続報 の順に 5 通を返す', () => {
       expect(createTestQuakeReportSequence(true).map(q => q.issue.type))
-        .toEqual(['震度速報', '震源情報', '震度速報', '震源・震度情報'])
+        .toEqual(['震度速報', '震源情報', '震度速報', '震源・震度情報', '震源・震度情報'])
       // standard 版は同じ内容の種別名が違う（P2PQuake の DetailScale）。
       expect(createTestQuakeReportSequence(false).map(q => q.issue.type))
-        .toEqual(['震度速報', '震源情報', '震度速報', '各地の震度情報'])
+        .toEqual(['震度速報', '震源情報', '震度速報', '各地の震度情報', '各地の震度情報'])
+    })
+
+    // 正: 5 通目は**観測点と市町村だけが増え、区域の最大震度は動かない**。読み上げが
+    // 「観測地点が追加されましたが、地域ごとの最大震度は変わっていません。」と読む形を作れているか
+    // （区域が動くと差分が出てしまい、この経路を一度も通らなくなる）。
+    it.each(QUAKE_VARIANTS)('5 通目は観測点だけが増え、区域の最大震度は動かない（$label 版）', ({ useDmdataShape }) => {
+      const reports = createTestQuakeReportSequence(useDmdataShape)
+      const [detail, followUp] = reports.slice(3)
+      const stationsOf = (q: JMAQuake) => q.points.filter(p => !p.isArea).length
+      expect(stationsOf(followUp)).toBeGreaterThan(stationsOf(detail))
+      // 区域の点は顔ぶれも震度も完全に同じ
+      const areasOf = (q: JMAQuake) => q.points.filter(p => p.isArea).map(p => `${p.addr}=${p.scale}`).sort()
+      expect(areasOf(followUp)).toEqual(areasOf(detail))
+      expect(followUp.earthquake.maxScale).toBe(detail.earthquake.maxScale)
+    })
+
+    // 正: **読み上げが実際に「観測地点が追加されましたが」と読むこと。**
+    //
+    // 上の 2 つのアサーション（区域点の一致・`maxScale` の一致）は、区域の点も `maxScale` も
+    // 観測点のフィルタの影響を受けない（`base` からそのまま複製している）ため**常に成立し、
+    // 抜き方を誤っても何も検知しない**。このデータの目的は「読み上げがその形を通ること」なので、
+    // 読み上げ文そのもので押さえる。
+    it.each(QUAKE_VARIANTS)('5 通目は「観測地点が追加されましたが」と読まれる（$label 版）', ({ useDmdataShape }) => {
+      const reports = createTestQuakeReportSequence(useDmdataShape)
+      const opts = { intensityLevels: 2, maxRegions: 0, alwaysReadScale: -1, regionTolerance: 0 }
+      const state = createQuakeSpokenState()
+      // 4 通目までを順に読み切る（最初の確定情報は地域を通しで読むので `readAllRegions` を渡す）。
+      reports.slice(0, 4).forEach((report, i) => {
+        const authoritative = report.issue.type === '震源・震度情報' || report.issue.type === '各地の震度情報'
+        const segs = earthquakeToSegments(report, opts, i === 0, state, authoritative)
+        applySpokenRefs(state, segs.flatMap(s => s.refs))
+      })
+      const fifth = joinSegments(earthquakeToSegments(reports[4], opts, false, state))
+      expect(fifth).toBe('地震情報が更新されました。観測地点が追加されましたが、地域ごとの最大震度は変わっていません。')
     })
 
     // 正: 見出しが「震度速報#2/震源情報」→「震源・震度情報」と動くこと。**この関数の目的そのもの**。
@@ -248,19 +284,20 @@ describe('地震情報テストの points 形状', () => {
       expect(headlineAfter(4)).toBe('震源・震度情報')
     })
 
-    // 安全弁: 鍵が報ごとに違うこと。**`id` は 4 通とも同じ**（`Head/Serial` が空の種別があるため）
+    // 安全弁: 鍵が報ごとに違うこと。**`id` は 5 通とも同じ**（`Head/Serial` が空の種別があるため）
     // なので、鍵を持たせないと 2 通目の震度速報が「同じ電文の再送」と見なされて数えられない。
-    it('一意鍵は報ごとに違い、id は 4 通とも同じ（実電文の形）', () => {
+    it('一意鍵は報ごとに違い、id は 5 通とも同じ（実電文の形）', () => {
       const reports = createTestQuakeReportSequence(true)
-      expect(new Set(reports.map(q => q.telegramKey)).size).toBe(4)
+      expect(new Set(reports.map(q => q.telegramKey)).size).toBe(5)
       expect(new Set(reports.map(q => q.id)).size).toBe(1)
       expect(reports[0].id.endsWith('-1')).toBe(true)
     })
 
     // 安全弁: 報番号を持つのは震源・震度情報だけ（実電文で連番を振るのはこの種別に限る）。
+    // 続報では 1 つ進む。
     it('報番号を持つのは震源・震度情報だけ', () => {
       expect(createTestQuakeReportSequence(true).map(q => q.reportSerial))
-        .toEqual([undefined, undefined, undefined, 1])
+        .toEqual([undefined, undefined, undefined, 1, 2])
     })
 
     // 対照: 震度速報は震源を持たず、震源情報は震度を持たない（種別ごとに構造が違う）。
@@ -313,17 +350,18 @@ describe('地震情報テストの points 形状', () => {
     // 「どのカードへ届くか」の判定（`sameQuakeEntry`）を通らない。**standard 版は識別情報を
     // 持たない**ので、震源名が空の震度速報を同じ地震と見なせるかはそちらの経路でしか分からない。
     // 合流しなければ実機でカードが 4 枚並ぶ。
-    it.each(QUAKE_VARIANTS)('受信経路を通すと 4 通が 1 枚のカードへ合流する（$label 版）', ({ useDmdataShape }) => {
+    it.each(QUAKE_VARIANTS)('受信経路を通すと 5 通が 1 枚のカードへ合流する（$label 版）', ({ useDmdataShape }) => {
       const merged = mergeQuakeHistory(createTestQuakeReportSequence(useDmdataShape), [], [], null)
       expect(merged).toHaveLength(1)
+      // 同じ種別を 2 通受け取るので通数が付く（→ docs/spec/quake-spec.md §8）。
       expect(reportsText(merged[0].reports, merged[0].issue.type))
-        .toBe(useDmdataShape ? '震源・震度情報' : '各地の震度情報')
+        .toBe(useDmdataShape ? '震源・震度情報#2' : '各地の震度情報#2')
       // 対の確認: 観測点まで届いている（震源・震度情報の中身が採られている）。
       expect(merged[0].points.some(p => !p.isArea)).toBe(true)
     })
 
     // 安全弁: 同じ地震として扱われること。地震の時刻と識別情報を動かすと別カードが立つ。
-    it('4 通が同じ地震を指し、地震の時刻は動かない', () => {
+    it('5 通が同じ地震を指し、地震の時刻は動かない', () => {
       const reports = createTestQuakeReportSequence(true)
       const eventIds = reports.map(q => extractQuakeEventIdFromId(q.id))
       expect(new Set(eventIds).size).toBe(1)
