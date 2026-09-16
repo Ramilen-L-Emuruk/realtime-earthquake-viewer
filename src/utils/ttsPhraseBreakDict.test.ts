@@ -323,4 +323,48 @@ describe('電文本文の語（実データの辞書で引く）', { timeout: 15
       findPhraseBreakMatch('プレート境界付近を震源とする深部低周波地震（微動）', dict)?.key,
     ).toBeUndefined()
   })
+
+  // 「心配は」「影響は」「ものは」（名詞＋係助詞）と述語「ありません」が 1 アクセント句へ融合する
+  // （実測: `シンパイワアリマセン` accent=9・10 モーラ）。読みそのものは正しいので誤読の判定には
+  // 掛からないが、文節の切れ目が消えて一息に上がりきる抑揚になる。読点を挟めばエンジン自身も
+  // `シンパイワ`（accent=5）と `アリマセン`（accent=4）に割るので、その形を辞書で固定する。
+  //
+  // 融合はエンジンの癖で**名詞を問わない**（「被害は」「変化は」「異常は」でも同じ）。それでも鍵を
+  // 「はありません」へ広げてはいけない。広げると切り出されるのは係助詞から始まる「ワアリマセン」で、
+  // 名詞から係助詞が剥がれて元より悪くなる。読み上げに乗る語形だけを、その形のまま収録する。
+  //
+  // 既知の限界: 鍵は部分一致なので「心配はありませんが、」のように後ろが続く形にも当たり、
+  // 「アリマセン」と「ガ」が別の句へ割れる（この 3 つに固有の話ではなく、部分一致で切り出す鍵は
+  // どれも同じ）。`public/data/historical-archives/*.json` と `src/data/*.json` を走査したところ、
+  // 現れる「ありません」767 件はすべて句点で終わっており、この形は無い。
+  it('「〜はありません」は名詞と述語の境界で割る', async () => {
+    const { findPhraseBreakMatch, isPlaceNameKey, dict } = await loadedRealDictModule()
+
+    // 正: 読み上げに乗る 3 つの形（津波区分「なし」／遠地地震の固定付加文／地震回数）
+    expect(findPhraseBreakMatch('この地震による津波の心配はありません。', dict)?.key)
+      .toBe('心配はありません')
+    expect(findPhraseBreakMatch('この地震による日本への津波の影響はありません。', dict)?.key)
+      .toBe('影響はありません')
+    expect(findPhraseBreakMatch('このうち、震度1以上を観測したものはありません。', dict)?.key)
+      .toBe('ものはありません')
+
+    // 正: 津波区分「若干の海面変動」の文も同じ鍵で当たる（実電文にある「被害の心配はありません」）
+    expect(
+      findPhraseBreakMatch('この地震による若干の海面変動が予想されますが、被害の心配はありません。', dict)?.key,
+    ).toBe('心配はありません')
+
+    // 対照: 語形が崩れた出現には当たらない。鍵は「名詞＋係助詞＋述語」の形のまま持つ
+    expect(findPhraseBreakMatch('津波の心配について', dict)?.key).toBeUndefined()
+    expect(findPhraseBreakMatch('日本への津波の影響について', dict)?.key).toBeUndefined()
+    expect(findPhraseBreakMatch('震度1以上を観測したものは1回です', dict)?.key).toBeUndefined()
+
+    // 安全弁: 述語側だけを鍵にしない（上のコメントの理由で、入れた瞬間に 3 つとも悪化する）
+    expect(Object.keys(dict)).not.toContain('ありません')
+    expect(Object.keys(dict)).not.toContain('はありません')
+
+    // 安全弁: 地名ではないので鍵の直後にポーズを挟まない（_terms に列挙する）
+    for (const key of ['心配はありません', '影響はありません', 'ものはありません']) {
+      expect(isPlaceNameKey(key), `「${key}」は地名ではない`).toBe(false)
+    }
+  })
 })
