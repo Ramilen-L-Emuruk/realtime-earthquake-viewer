@@ -93,7 +93,7 @@ export async function fetchP2PReplayEvents(fromTime: Date, toTime: Date): Promis
     skipped += results[i].skipped
   })
 
-  return { entries, skipped, failedArchiveUrls: [] }
+  return { entries, skipped, failedArchiveUrls: [], rateLimitedSources: [], rateLimitedTelegrams: 0 }
 }
 
 /** from〜to がまたぐ日（ローカル日付）を yyyyMMdd で列挙する。to は含まない。 */
@@ -281,5 +281,8 @@ export async function fetchP2PQuakeHistory(before: Date, targetEvents: number): 
 
   // P2PQuake は帯（地震回数・お知らせ・南海トラフ解説情報）も長周期も配信しないので常に空。
   // 津波もここでは返さない（standard 版の津波は初期状態の担当で、遡り幅も目的が違う）。
-  return { quakes, tsunamis: [], extras: [], skipped, failedArchiveUrls: [], hasMore: false }
+  return {
+    quakes, tsunamis: [], extras: [], skipped,
+    failedArchiveUrls: [], rateLimitedSources: [], rateLimitedTelegrams: 0, hasMore: false,
+  }
 }
