@@ -1726,6 +1726,45 @@ describe('合成が 1 音も鳴らなかったとき', () => {
     await flushMicrotasks()
     expect(spokenTexts().some(t => t.includes('警戒してください'))).toBe(false)
   })
+
+  // 正: **第 2 フェーズの既読も戻る。** 戻さないと、声になっていない予想震度が「伝え済み」に
+  // なり、次に階級だけが上がった続報が「予想最大階級3。」という短句へ落ちる —— その EEW では
+  // 予想震度が一度も声にならない。
+  //
+  // **震度が据え置きのまま階級だけ確定する続報を使うのは、そこだけが発話の差になるため。**
+  // 震度そのものが動いた続報では、既読が戻っていてもいなくても全文を読み直す（差が出ない）。
+  it('第 2 フェーズの既読も戻し、階級だけの短句に落ちない', async () => {
+    installSilentSpeak()
+    const handle = setup()
+    handle(makeEEW({ scaleTo: 50, lgIntTo: 2 }))
+    await vi.advanceTimersByTimeAsync(300)
+    await flushMicrotasks()
+
+    // ここから先は鳴る。震度は据え置きで、階級だけが上がる
+    speakMock.mockImplementation((() => Promise.resolve({ spoke: true })) as never)
+    speakMock.mockClear()
+    handle(makeEEW({ serial: 2, scaleTo: 50, lgIntTo: 3 }))
+    await vi.advanceTimersByTimeAsync(300)
+    await flushMicrotasks()
+    // 前置きが付くのは区分の既読（`spokenEEWLevelsRef`）も戻っているため —— 警報への格上げも
+    // まだ 1 音も声になっていない
+    expect(spokenTexts()).toEqual(['緊急地震速報に切り替わりました。予想最大震度5強。予想最大階級3。'])
+  })
+
+  // 対照: 鳴った回なら既読は残り、同じ続報は階級だけの短句になる（巻き戻しが常時効いて
+  // いるわけではないこと）。
+  it('鳴った回は第 2 フェーズの既読が残り、階級だけを読む', async () => {
+    const handle = setup()
+    handle(makeEEW({ scaleTo: 50, lgIntTo: 2 }))
+    await vi.advanceTimersByTimeAsync(300)
+    await flushMicrotasks()
+    speakMock.mockClear()
+
+    handle(makeEEW({ serial: 2, scaleTo: 50, lgIntTo: 3 }))
+    await vi.advanceTimersByTimeAsync(300)
+    await flushMicrotasks()
+    expect(spokenTexts()).toEqual(['予想最大階級3。'])
+  })
 })
 
 // リプレイを EEW の発表中から始めたときの既読の復元。

@@ -2633,13 +2633,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
                * 判定されて黙る。`eewPhase2DoneRef` も戻す —— 立ったままだと「一度は読んだ」扱いで
                * 上がった分しか読まなくなる。
                *
-               * **この 4 つをまとめて戻す形は、発話の差として観測する手を見つけられていない。**
-               * 第 2 フェーズが読み直されるには `confirmScale` / `confirmLpgm` が呼ばれる必要が
-               * あるが、確定値（`eewConfirmedScaleRef`）は巻き戻しの対象ではないため、値が
-               * 変わらない続報では予約そのものが作られない。戻す意味があるのは次に値が動いた
-               * ときに `eewPhase2DoneRef` が偽であること（＝上がり幅ではなく全文を読み直す）に
-               * 尽きる。**巻き戻しの不変条件そのものは `rollbackSpoken.test.ts` が、第 1・
-               * 第 1.5 フェーズの経路は「合成が 1 音も鳴らなかったとき」の describe が固定している。**
+               * **発話の差になるのは、震度が据え置きのまま階級だけ確定する続報。** 戻さないと
+               * 声になっていない予想震度が「伝え済み」になって下の `scaleUnchanged` が真になり、
+               * 続報が「予想最大階級3。」という短句へ落ちる —— その EEW では予想震度が一度も
+               * 声にならない。震度そのものが動いた続報では、戻っていてもいなくても全文を読み直す
+               * ので差が出ない。回帰テストは `useLiveEventHandler.eewTts.test.ts` の「合成が
+               * 1 音も鳴らなかったとき」の describe（巻き戻しの不変条件そのものは
+               * `rollbackSpoken.test.ts`）。
                *
                * `eewPhase2DoneRef` だけは Set なので「自分が立てたか」を値で照合できず、
                * 直前の状態（`wasPhase2Done`）で判断している。予約はトークンで 1 件に限られ、
