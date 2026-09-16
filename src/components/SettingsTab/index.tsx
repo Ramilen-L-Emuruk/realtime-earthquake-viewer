@@ -1599,7 +1599,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onRep
         <Row label="訂正報" description="地震情報を出し、3秒後に規模を訂正した報を流す（M7.4 → M7.6。2024年能登半島地震の実電文どおり）。同じカードが更新され、「震源を訂正」の印が付く。DMDSS 版では気象庁の「震源要素を訂正します。」の一文も並ぶ">
           <TestButton color="yellow" onClick={onTest.quakeAmendment}>訂正報テスト</TestButton>
         </Row>
-        <Row label="種別が前後する報" description="3秒おきに4通を流す（震度速報 → 震源情報 → 震度速報 → 震源・震度情報。2024年能登半島地震の前震と同じ順序）。カードの見出しが「震度速報#2/震源情報」と受け取った種別を並べ、最後の震源・震度情報で速報段階が畳まれる">
+        <Row label="種別が前後する報" description="3秒おきに4通を流し、その30秒後に5通目を流す（震度速報 → 震源情報 → 震度速報 → 震源・震度情報 → その続報。2024年能登半島地震の前震と同じ順序）。カードの見出しが「震度速報#2/震源情報」と受け取った種別を並べ、震源・震度情報で速報段階が畳まれる。5通目は観測地点が遅れて入電した形で、地域ごとの最大震度は変わらないため読み上げがその旨を伝える">
           <TestButton color="yellow" onClick={onTest.quakeReportSequence}>種別遷移テスト</TestButton>
         </Row>
         {isDmdss && onTest.trainingQuake && (
