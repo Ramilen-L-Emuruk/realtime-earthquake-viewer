@@ -103,7 +103,7 @@ describe('addLoss', () => {
     loss = addLoss(loss, 0, ['https://x/a', 'https://x/b'])
     loss = addLoss(loss, 0, ['https://x/a'])
 
-    expect(loss.failedArchives.size).toBe(2)
+    expect(loss.failedSources.size).toBe(2)
   })
 
   it('元の損失を書き換えない（不変）', () => {
@@ -111,7 +111,7 @@ describe('addLoss', () => {
     const next = addLoss(original, 1, ['https://x/a'])
 
     expect(original.skippedTelegrams).toBe(0)
-    expect(original.failedArchives.size).toBe(0)
+    expect(original.failedSources.size).toBe(0)
     expect(next.skippedTelegrams).toBe(1)
   })
 })
@@ -158,6 +158,6 @@ describe('addFailedPrefetch', () => {
     loss = addFailedPrefetch(loss)
     expect(loss.failedPrefetches).toBe(2)
     expect(loss.skippedTelegrams).toBe(2)
-    expect(loss.failedArchives.size).toBe(1)
+    expect(loss.failedSources.size).toBe(1)
   })
 })

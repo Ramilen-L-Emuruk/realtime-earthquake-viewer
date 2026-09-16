@@ -13,6 +13,7 @@ import { render, screen, cleanup } from '@testing-library/react'
 import { EarthquakeTab } from './index'
 import { quakeEventKey } from '../../utils/quakeMerge'
 import type { JMAQuake, EarthquakePoint, JMAQuakeCity } from '../../types/earthquake'
+import { createEmptyTelegramLoss } from '../../utils/telegramLoss'
 
 afterEach(cleanup)
 
@@ -60,6 +61,8 @@ const renderTab = (quake: JMAQuake, opts: { unreceivedOpen?: boolean } = {}) => 
     hasMore={false}
     onLoadMore={() => {}}
     error={null}
+    historyLoss={createEmptyTelegramLoss()}
+    loadMoreFailed={false}
     lpgmByEventId={new Map()}
     activeLpgmEventId={null}
     onToggleLpgm={() => {}}
@@ -115,6 +118,8 @@ describe('未入電トグル', () => {
         hasMore={false}
         onLoadMore={() => {}}
         error={null}
+        historyLoss={createEmptyTelegramLoss()}
+        loadMoreFailed={false}
         lpgmByEventId={new Map()}
         activeLpgmEventId={null}
         onToggleLpgm={() => {}}

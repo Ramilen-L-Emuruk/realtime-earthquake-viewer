@@ -15,6 +15,7 @@ import { EarthquakeTab } from './index'
 import { quakeEventKey } from '../../utils/quakeMerge'
 import { telegramTextSubject } from '../../utils/ttsFollow'
 import type { JMAQuake, JMALpgm } from '../../types/earthquake'
+import { createEmptyTelegramLoss } from '../../utils/telegramLoss'
 
 afterEach(cleanup)
 
@@ -81,6 +82,8 @@ const renderTab = (lpgm: JMALpgm) => render(
     hasMore={false}
     onLoadMore={() => {}}
     error={null}
+    historyLoss={createEmptyTelegramLoss()}
+    loadMoreFailed={false}
     lpgmByEventId={new Map([[EVENT_ID, lpgm]])}
     activeLpgmEventId={null}
     onToggleLpgm={() => {}}
@@ -105,6 +108,8 @@ const tabWith = (subject: string | null, lpgm: JMALpgm = makeLpgm()) => (
     hasMore={false}
     onLoadMore={() => {}}
     error={null}
+    historyLoss={createEmptyTelegramLoss()}
+    loadMoreFailed={false}
     lpgmByEventId={new Map([[EVENT_ID, lpgm]])}
     activeLpgmEventId={null}
     onToggleLpgm={() => {}}

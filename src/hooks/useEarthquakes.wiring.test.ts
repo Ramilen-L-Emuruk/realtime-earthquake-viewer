@@ -88,13 +88,17 @@ function history(opts: {
   tsunamis?: JMATsunami[]
   extras?: ReplayEntry[]
   hasMore?: boolean
+  /** 取り込めなかった電文の通数（一部失敗の再現用）。 */
+  skipped?: number
+  /** 読めなかった取得元（同上）。 */
+  failedArchiveUrls?: string[]
 } = {}) {
   return {
     quakes: opts.quakes ?? [],
     tsunamis: opts.tsunamis ?? [],
     extras: opts.extras ?? [],
-    skipped: 0,
-    failedArchiveUrls: [] as string[],
+    skipped: opts.skipped ?? 0,
+    failedArchiveUrls: opts.failedArchiveUrls ?? ([] as string[]),
     hasMore: opts.hasMore ?? false,
   }
 }
@@ -1624,6 +1628,39 @@ describe('DMDSS 版: 「もっと見る」で遡れる範囲', () => {
     expect(requestedDays()).toEqual([7, 14, 14])
     expect(h.current.earthquakes).toHaveLength(1)
   })
+
+  // **まるごと失敗したことも画面へ出す。** 出さないと「押したのに何も起きない」だけに見え、
+  // もう一度押せば直るのか、これ以上遡れないのかが分からない。
+  it('正: まるごと失敗したら印を立て、押し直して成功したら消す', async () => {
+    const h = setup({ offset: null })
+    await h.flush()
+    expect(h.current.loadMoreFailed).toBe(false)
+
+    vi.mocked(fetchDmdataQuakeHistory).mockRejectedValueOnce(new Error('取得に失敗'))
+    await act(async () => { await h.current.loadMoreEarthquakes() })
+    expect(h.current.loadMoreFailed).toBe(true)
+
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({ hasMore: true }))
+    await act(async () => { await h.current.loadMoreEarthquakes() })
+
+    expect(h.current.loadMoreFailed).toBe(false)
+  })
+
+  // 全滅では「その時点の全範囲」が得られていないので、前回の像をそのまま保つ
+  //（`historyLoss` は置き換える値が無い）。
+  it('安全弁: まるごと失敗しても、それまでに確定した損失は消さない', async () => {
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(
+      history({ hasMore: true, failedArchiveUrls: ['https://x/a'] }),
+    )
+    const h = setup({ offset: null })
+    await h.flush()
+
+    vi.mocked(fetchDmdataQuakeHistory).mockRejectedValueOnce(new Error('取得に失敗'))
+    await act(async () => { await h.current.loadMoreEarthquakes() })
+
+    expect(h.current.loadMoreFailed).toBe(true)
+    expect(h.current.historyLoss.failedSources.size).toBe(1)
+  })
 })
 
 describe('EEW の続報は古い報で退行しない', () => {
@@ -2900,5 +2937,101 @@ describe('後発地震注意情報の帯は期限で弾く', () => {
     expect(h.current.kohatsu).toBeNull()
     expect(vi.mocked(log.warn).mock.calls.map(c => c.join(' ')).join(' | '))
       .toContain('後発地震注意情報の期限を計算できません')
+  })
+})
+
+// 履歴取得は例外を投げずに一部の失敗を吸収するため `error` は立たない。欠けたことを
+// 状態へ残さないと、画面には「取れた分だけのカード」が出て失敗は何も出ない。
+describe('履歴取得の一部失敗は状態へ残す', () => {
+  it('正: 読めなかった取得元と取り込めなかった電文を積む', async () => {
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(
+      history({ skipped: 3, failedArchiveUrls: ['https://x/a', 'live:2026-09-15'] }),
+    )
+    const h = setup()
+    await h.flush()
+
+    expect(h.current.historyLoss.skippedTelegrams).toBe(3)
+    expect(h.current.historyLoss.failedSources.size).toBe(2)
+    // 全滅ではないので、全画面の失敗表示は出さない
+    expect(h.current.error).toBeNull()
+  })
+
+  it('対照: 何も欠けていなければ空のまま', async () => {
+    const h = setup()
+    await h.flush()
+
+    expect(h.current.historyLoss.skippedTelegrams).toBe(0)
+    expect(h.current.historyLoss.failedSources.size).toBe(0)
+  })
+
+  // 再生中はリプレイ側が自分の損失を出す。ライブで欠けた分を残すと同じ画面に 2 つの損失が並ぶ。
+  it('安全弁: 再生が始まったら落とす', async () => {
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({ skipped: 2 }))
+    const h = setup({ offset: null })
+    await h.flush()
+    expect(h.current.historyLoss.skippedTelegrams).toBe(2)
+
+    h.setOffset(-3_600_000)
+    await h.flush()
+
+    expect(h.current.historyLoss.skippedTelegrams).toBe(0)
+  })
+
+  // これから読み直す範囲の話なので、前の接続で欠けた分を持ち越すと直っても表示が消えない。
+  // **この取得は毎回「その時点の全範囲」を返す**（範囲は伸びるだけで縮まない）。積むと
+  // ①同じ損失を押した回数だけ数え ②取得が回復しても消えない。置き換えならどちらも起きない。
+  it('正: 2 度目の取得で回復したら消える', async () => {
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(
+      history({ hasMore: true, skipped: 2, failedArchiveUrls: ['https://x/a'] }),
+    )
+    const h = setup({ offset: null })
+    await h.flush()
+    expect(h.current.historyLoss.failedSources.size).toBe(1)
+
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({ hasMore: true }))
+    await act(async () => { await h.current.loadMoreEarthquakes() })
+
+    expect(h.current.historyLoss.skippedTelegrams).toBe(0)
+    expect(h.current.historyLoss.failedSources.size).toBe(0)
+  })
+
+  it('対照: 2 度目も同じ取得元が読めなければ残る', async () => {
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(
+      history({ hasMore: true, failedArchiveUrls: ['https://x/a'] }),
+    )
+    const h = setup({ offset: null })
+    await h.flush()
+    await act(async () => { await h.current.loadMoreEarthquakes() })
+
+    expect(h.current.historyLoss.failedSources.size).toBe(1)
+  })
+
+  // 解析に失敗した電文は控えないので、同じ日を走査するたびに同じ件数が返る。
+  // 積むと 1 通しか無い破損が押した回数だけ増える。
+  it('安全弁: 同じ取りこぼしを押した回数だけ数えない', async () => {
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({ hasMore: true, skipped: 1 }))
+    const h = setup({ offset: null })
+    await h.flush()
+
+    await act(async () => { await h.current.loadMoreEarthquakes() })
+    await act(async () => { await h.current.loadMoreEarthquakes() })
+
+    expect(h.current.historyLoss.skippedTelegrams).toBe(1)
+  })
+
+  it('安全弁: 接続をやり直したら空へ戻す', async () => {
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({ skipped: 2 }))
+    const h = setup({ offset: null })
+    await h.flush()
+    expect(h.current.historyLoss.skippedTelegrams).toBe(2)
+
+    // 再生へ入って戻す（接続 effect が張り直され、遡り幅と一緒に損失も初期化される）
+    h.setOffset(-3_600_000)
+    await h.flush()
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history())
+    h.setOffset(null)
+    await h.flush()
+
+    expect(h.current.historyLoss.skippedTelegrams).toBe(0)
   })
 })
