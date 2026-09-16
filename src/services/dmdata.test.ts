@@ -1,16 +1,11 @@
 // DMDATA クライアントの単体テスト。
 // WebSocket そのものは jsdom でもモックしないため、ここではモジュール公開の
 // ユーティリティ（close code 判定）と、fetch をモックできる REST 取得を対象にする。
-import { describe, it, expect, afterEach, vi } from 'vitest'
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import {
   isNonRecoverableCloseCode,
   fetchDmdataGdEarthquakes,
-  fetchDmdataEarthquakes,
-  fetchDmdataTsunamis,
-  fetchDmdataLpgms,
-  fetchDmdataNankai,
-  fetchDmdataNankaiCommentary,
-  fetchDmdataKohatsu,
+  fetchDmdataActiveEews,
   DmdataWebSocket,
   decodeTelegramText,
   needsBodyDecode,
@@ -19,6 +14,7 @@ import { isBinaryTelegramType } from './dmdataTelegramPayload'
 import { DmdataApiKeyError, DMDATA_API_KEY_INVALID_MESSAGE } from '../utils/dmdataApiKey'
 import { log } from '../utils/logger'
 import { serverNow } from '../utils/clock'
+import { setBodyGateIntervalForTest, resetTelegramBodyStatsForTest } from './telegramBody'
 
 // スキップ時の警告を検証したいので、ロガーは差し替えて呼び出しを記録する。
 // 間引き（createLogThrottle）は素通しにする。ここで見たいのは「警告を出したか」であって
@@ -107,6 +103,15 @@ function stubPagedFetch(pages: Array<{ items: unknown[]; nextToken?: string }>) 
   )
   return urls
 }
+
+// 発表中の緊急地震速報の復元は、電文本体を `fetchTelegramText` 経由で取る（控えと門を通すため。
+// → `services/telegramBody.ts`）。**本番の門は 6 秒に 1 件**なので、そのままでは 1 件取るだけで
+// 既定のタイムアウト（5 秒）を超える。門が効いているかは `utils/requestGate.test.ts` が本物の
+// 間隔で確かめているので、ここでは 0 にして経路だけを見る。
+beforeEach(() => {
+  setBodyGateIntervalForTest(0)
+  resetTelegramBodyStatsForTest()
+})
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -294,119 +299,6 @@ describe('fetchDmdataGdEarthquakes', () => {
     expect(log.error).not.toHaveBeenCalled()
   })
 })
-// 通信に載せられない文字（日本語入力の変換途中の値など）を含むキーが渡ったときの契約。
-// 呼び出し側（useEarthquakes）が通信前に弾くのが本筋だが、そこが漏れても
-// 「補助情報の取得は null / 空配列」「主系の取得は理由の分かる例外」という約束を守る。
-// 個別電文の取得で落ちた分を記録する。
-//
-// 取得できなかった電文は履歴からそのまま消え、**件数が減ったことにも気づけない**——
-// `cutoffTime` は取得できた分だけで決まるため、欠けたまま「揃った履歴」に見える。
-describe('個別電文の取得に失敗したときの記録', () => {
-  const KEY = 'valid-key'
-  const LIST_ITEM = { id: 'x1', url: 'https://data.api.dmdata.jp/v1/x1', head: { type: 'VXSE53' } }
-
-  /**
-   * 電文一覧は成功させ、個別電文の取得だけを `onTelegram` に委ねる fetch。
-   * 一覧（`/v2/telegram`）と本体（`data.api.dmdata.jp`）で応答を分ける。
-   */
-  function stubTelegramFetch(onTelegram: () => Promise<Response>) {
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-      if (url.includes('data.api.dmdata.jp')) return onTelegram()
-      // VXSE53 の一覧にだけ 1 件入れる（他の種別は空でよい）
-      const items = url.includes('type=VXSE53') ? [LIST_ITEM] : []
-      return { ok: true, json: async () => ({ items }) } as unknown as Response
-    }))
-  }
-  const warnings = () => vi.mocked(log.warn).mock.calls.map(c => c.join(' '))
-
-  // 正: HTTP エラーで落ちた電文を記録する
-  it('HTTP エラーで取得できなかった電文を記録する', async () => {
-    stubTelegramFetch(async () => ({ ok: false, status: 404 }) as unknown as Response)
-
-    await fetchDmdataEarthquakes(KEY, 10)
-
-    expect(warnings().filter(w => w.includes('電文を取得できませんでした'))).toHaveLength(1)
-    expect(warnings().find(w => w.includes('電文を取得できませんでした'))).toContain('404')
-  })
-
-  // 正: 例外（ネットワーク断・DNS 失敗）で落ちた件数を記録する。
-  // `Promise.allSettled` の `fulfilled` だけを残す形は、これを件数ごと消してしまう
-  it('例外で終わった電文の件数を記録する', async () => {
-    stubTelegramFetch(async () => { throw new Error('network down') })
-
-    await fetchDmdataEarthquakes(KEY, 10)
-
-    const hit = warnings().filter(w => w.includes('例外で終わりました'))
-    expect(hit).toHaveLength(1)
-    expect(hit[0]).toContain('network down')
-  })
-
-  // 対照: すべて取得できたときは何も記録しない。平常運転でログが埋まらないことの歯止め
-  it('すべて取得できれば記録しない', async () => {
-    stubTelegramFetch(async () => ({
-      ok: true,
-      // **中身がパースできる必要はない。** このファイルは node 環境で動くため `DOMParser` が
-      // 無く、電文の解釈は必ず失敗する。見たいのは「取得の層」の記録だけなので、
-      // 判定はその 2 つの文言に絞っている（解釈の失敗は別の文言で出る）
-      text: async () => '<Report/>',
-    }) as unknown as Response)
-
-    await fetchDmdataEarthquakes(KEY, 10)
-
-    expect(warnings().filter(w => w.includes('電文を取得できませんでした'))).toHaveLength(0)
-    expect(warnings().filter(w => w.includes('例外で終わりました'))).toHaveLength(0)
-  })
-})
-
-// 長周期地震動の履歴取得で、ページ送りを打ち切った理由を残す。
-//
-// **黙って `break` すると、取れたところまでが「全部取れた」ように返る。** 件数が減ったことに
-// 気づく手立てが無い。個別電文の取得側（`warnRejectedTelegrams`）と同じ形の穴が、
-// 同じ関数の一覧取得側に残っていた。
-describe('長周期地震動の一覧取得を打ち切ったときの記録', () => {
-  const KEY = 'valid-key'
-  const warnings = () => vi.mocked(log.warn).mock.calls.map(c => c.join(' '))
-
-  // 正: 一覧取得が HTTP エラーなら理由を残す
-  it('一覧が HTTP エラーなら打ち切りを記録する', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 503 }) as unknown as Response))
-
-    await fetchDmdataLpgms(KEY, '2026-09-01T00:00:00+09:00')
-
-    const hit = warnings().filter(w => w.includes('打ち切ります'))
-    expect(hit).toHaveLength(1)
-    expect(hit[0]).toContain('503')
-  })
-
-  // 正: 例外（ネットワーク断）でも理由を残す
-  it('一覧が例外で終わっても打ち切りを記録する', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('network down') }))
-
-    await fetchDmdataLpgms(KEY, '2026-09-01T00:00:00+09:00')
-
-    const hit = warnings().filter(w => w.includes('打ち切ります'))
-    expect(hit).toHaveLength(1)
-    expect(hit[0]).toContain('network down')
-  })
-
-  // 対照: 一覧が空で正常に終わるページ送りでは鳴らない。
-  // 「取り終えた」と「途中で諦めた」を混ぜると、平常運転でログが埋まる
-  it('一覧が空なら打ち切りを記録しない', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => ({
-      ok: true, json: async () => ({ items: [] }),
-    }) as unknown as Response))
-
-    await fetchDmdataLpgms(KEY, '2026-09-01T00:00:00+09:00')
-
-    expect(warnings().filter(w => w.includes('打ち切ります'))).toHaveLength(0)
-  })
-})
-
-// ライブ受信の body を復号できなかった理由を記録する。
-//
-// 呼び出し側（WebSocket の onmessage）は電文ログへ「復号に失敗した」とだけ残すので、
-// **4 つある失敗の別はここでしか分からない**。理由を debug 専用のログに書くと既定では
-// 何も残らないのに、コードは「記録しているから追える」と読める。
 describe('電文の body を復号できなかったときの記録', () => {
   const warnings = () => vi.mocked(log.warn).mock.calls.map(c => String(c[0]))
 
@@ -471,51 +363,18 @@ describe('電文の body を復号できなかったときの記録', () => {
   })
 })
 
+// 通信に載せられない文字（日本語入力の変換途中の値など）を含むキーが渡ったときの契約。
+// 呼び出し側（useEarthquakes）が通信前に弾くのが本筋だが、そこが漏れても
+// 「主系の取得は理由の分かる例外」という約束を守る。
 describe('APIキーが不正なときの取得の振る舞い', () => {
   const INVALID_KEY = 'abc123あ'
 
-  /** 呼ばれたら失敗する fetch。1 度も通信を試みないことを確かめる。 */
-  function stubForbiddenFetch() {
-    const spy = vi.fn(async () => { throw new Error('通信してはいけない') })
-    vi.stubGlobal('fetch', spy)
-    return spy
-  }
+  // 失敗を隠さず例外にする契約。投げるのは DOMException ではなく理由の分かる型。
+  it('震源カタログは DmdataApiKeyError を投げ、通信を試みない', async () => {
+    const fetchSpy = vi.fn(async () => { throw new Error('通信してはいけない') })
+    vi.stubGlobal('fetch', fetchSpy)
 
-  // 補助情報の 3 経路。以前はヘッダを組む行が try の外にあったため、ここの例外が
-  // Promise.all の .catch まで飛び「想定外の失敗」として記録されていた。
-  it.each([
-    ['南海トラフ地震臨時情報', () => fetchDmdataNankai(INVALID_KEY)],
-    ['後発地震注意情報', () => fetchDmdataKohatsu(INVALID_KEY)],
-    ['南海トラフ地震関連解説情報', () => fetchDmdataNankaiCommentary(INVALID_KEY)],
-  ])('%s は null を返し、例外を漏らさない', async (_name, call) => {
-    const fetchSpy = stubForbiddenFetch()
-
-    await expect(call()).resolves.toBeNull()
-
-    expect(fetchSpy).not.toHaveBeenCalled()
-    expect(log.error).toHaveBeenCalledTimes(1)
-    expect(String(vi.mocked(log.error).mock.calls[0][0])).toContain(DMDATA_API_KEY_INVALID_MESSAGE)
-  })
-
-  it('長周期地震動観測情報は空配列を返し、例外を漏らさない', async () => {
-    const fetchSpy = stubForbiddenFetch()
-
-    await expect(fetchDmdataLpgms(INVALID_KEY, new Date().toISOString())).resolves.toEqual([])
-
-    expect(fetchSpy).not.toHaveBeenCalled()
-    expect(log.error).toHaveBeenCalledTimes(1)
-  })
-
-  // 主系（地震・津波・震源カタログ）は失敗を隠さず例外にする契約のまま。
-  // 変えるのはメッセージだけで、DOMException ではなく理由の分かる型を投げる。
-  it.each([
-    ['地震履歴', () => fetchDmdataEarthquakes(INVALID_KEY, 10)],
-    ['津波履歴', () => fetchDmdataTsunamis(INVALID_KEY, 10)],
-    ['震源カタログ', () => fetchDmdataGdEarthquakes(INVALID_KEY, 30)],
-  ])('%s は DmdataApiKeyError を投げる', async (_name, call) => {
-    const fetchSpy = stubForbiddenFetch()
-
-    await expect(call()).rejects.toThrow(DmdataApiKeyError)
+    await expect(fetchDmdataGdEarthquakes(INVALID_KEY, 30)).rejects.toThrow(DmdataApiKeyError)
 
     expect(fetchSpy).not.toHaveBeenCalled()
   })
@@ -567,6 +426,105 @@ describe('DmdataWebSocket: APIキーが不正なとき', () => {
   })
 })
 
+
+// 同時接続数の上限（HTTP 409）で断られたときの待ち方。
+//
+// この状態は**こちら側の異常ではない**（契約の枠を別のタブ・端末が使っているだけ）ので
+// 停止させない。一方で通常の上限（30 秒）のまま待ち続けると、繋がらないと分かっている
+// 要求を毎時 120 回投げ続ける（実測 2026-09-13: 1 セッションが 2 時間 27 分・304 回）。
+describe('DmdataWebSocket: 同時接続数の上限で断られたとき', () => {
+  /** tryConnect は async。catch へ到達するまでマイクロタスクを流す。 */
+  async function drain() {
+    for (let i = 0; i < 5; i++) await Promise.resolve()
+  }
+
+  /**
+   * チケット要求に指定の `status` を返し続ける fetch と、**予約された待ち時間**を記録する
+   * `setTimeout` を仕込む。待ちの長さは private なので、予約の引数から見るしかない。
+   */
+  function stubCrowdedTicket(status: number) {
+    const requests = { count: 0 }
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      requests.count++
+      return {
+        status,
+        json: async () => ({ error: { code: status, message: 'The maximum number of simultaneous connections is full.' } }),
+      } as unknown as Response
+    }))
+    const delays: number[] = []
+    const fakeSetTimeout = globalThis.setTimeout
+    vi.stubGlobal('setTimeout', ((fn: Parameters<typeof globalThis.setTimeout>[0], ms?: number) => {
+      delays.push(ms ?? 0)
+      return fakeSetTimeout(fn, ms)
+    }) as typeof globalThis.setTimeout)
+    return { requests, delays }
+  }
+
+  // 通常の再接続の上限。`dmdata.ts` の RECONNECT_MAX_MS と揃える（export していないため写す）
+  const NORMAL_MAX_MS = 30_000
+
+  // 正: 409 が続くと待ちが通常の上限を超えて伸びる
+  it('409 が続くと待ちが通常の上限（30 秒）を超えて伸びる', async () => {
+    vi.useFakeTimers()
+    const { requests, delays } = stubCrowdedTicket(409)
+    const ws = new DmdataWebSocket('valid-key')
+
+    try {
+      ws.connect()
+      await drain()
+      // 上限へ達するまで進める（3 秒から 1.5 倍ずつなので 10 分あれば頭打ちに入る）
+      await vi.advanceTimersByTimeAsync(600_000)
+
+      expect(Math.max(...delays)).toBeGreaterThan(NORMAL_MAX_MS)
+      // 安全弁: 伸ばしただけで、止めてはいない（枠が空いたら自動で繋がるため）
+      expect(requests.count).toBeGreaterThan(1)
+    } finally {
+      ws.disconnect()
+      vi.useRealTimers()
+    }
+  })
+
+  // 対照: 409 以外の失敗では通常の上限に収まる。伸ばすのは「枠が埋まっている」ときだけで、
+  // ネットワーク断まで 5 分待たせると復帰がそのぶん遅れる
+  it('409 以外の失敗では通常の上限に収まる', async () => {
+    vi.useFakeTimers()
+    const { requests, delays } = stubCrowdedTicket(500)
+    const ws = new DmdataWebSocket('valid-key')
+
+    try {
+      ws.connect()
+      await drain()
+      await vi.advanceTimersByTimeAsync(600_000)
+
+      expect(Math.max(...delays)).toBeLessThanOrEqual(NORMAL_MAX_MS)
+      expect(requests.count).toBeGreaterThan(1)
+    } finally {
+      ws.disconnect()
+      vi.useRealTimers()
+    }
+  })
+
+  // 安全弁: 「切断」ではなく専用の状態を通知する。利用者がすべきことが違う
+  // （キーや回線ではなく、別のタブを閉じる）ため、画面の文言を分ける必要がある
+  it('接続状態に crowded を通知する', async () => {
+    vi.useFakeTimers()
+    stubCrowdedTicket(409)
+    const ws = new DmdataWebSocket('valid-key')
+    const statuses: string[] = []
+    ws.onStatusChange = (s) => { statuses.push(s) }
+
+    try {
+      ws.connect()
+      await drain()
+
+      expect(statuses).toContain('crowded')
+      expect(statuses).not.toContain('disconnected')
+    } finally {
+      ws.disconnect()
+      vi.useRealTimers()
+    }
+  })
+})
 
 // 電文の本文の復号。`formatMode: 'raw'` で購読しているので、届くのは base64 + gzip の XML。
 // ここが壊れると電文が 1 通も読めなくなるが、型検査では気づけない（`body` は unknown 由来）。
@@ -651,5 +609,213 @@ describe('needsBodyDecode', () => {
     expect(needsBodyDecode('VXSE42')).toBe(true)   // 配信テスト（疎通確認として記録する）
     expect(needsBodyDecode('VXSE43')).toBe(true)   // 購読外。届いたら警告＋電文ログ
     expect(needsBodyDecode('VXSE44')).toBe(true)   // 廃止予定の旧 EEW。電文ログへ残す
+  })
+})
+
+// 起動時の復元で「いま発表中の緊急地震速報」を取る経路。
+//
+// **電文の中身には踏み込まない。** ここで確かめるのは取得の組み立て（どのイベントの詳細を
+// 引くか・どの URL を叩くか・失敗をどう扱うか）で、XML の読み取りは `dmdataParser.test.ts`、
+// 有効性の判定は `utils/eew.test.ts` の `selectActiveEews` が持っている。
+describe('fetchDmdataActiveEews', () => {
+  const KEY = 'valid-key'
+  const warnings = () => vi.mocked(log.warn).mock.calls.map(c => c.join(' '))
+
+  /**
+   * 一覧・詳細・電文本体を URL で振り分ける fetch。叩かれた URL を記録して返す。
+   *
+   * 電文本体は 404 にする。中身を読ませたいわけではなく、**どの URL を叩いたか**だけを
+   * 見たいため（本文を返すとパーサーが走り、検証したい範囲の外の失敗が混ざる）。
+   */
+  function stubEewFetch(events: unknown[], reports: unknown[]): string[] {
+    const urls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      urls.push(url)
+      if (url.includes('data.api.dmdata.jp')) return { ok: false, status: 404 } as unknown as Response
+      if (url.includes('/gd/eew/')) {
+        return { ok: true, json: async () => ({ items: reports }) } as unknown as Response
+      }
+      return { ok: true, json: async () => ({ items: events }) } as unknown as Response
+    }))
+    return urls
+  }
+
+  const telegram = (o: Record<string, unknown>) => ({ items: [{ serial: 1, telegrams: [o] }] })
+
+  afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks() })
+
+  it('正: 窓の中で終わったイベントは詳細まで辿る', async () => {
+    const recent = new Date(serverNow() - 60_000).toISOString()
+    const urls = stubEewFetch(
+      [{ eventId: 'ev-recent', dateTime: recent }],
+      telegram({ id: 'xml-1', head: { type: 'VXSE45', test: false } }).items,
+    )
+
+    await fetchDmdataActiveEews(KEY)
+
+    expect(urls.some(u => u.includes('/gd/eew/ev-recent'))).toBe(true)
+  })
+
+  it('対照: 窓より前に終わったイベントは詳細を引かない（1 件につきリクエストがかかるため）', async () => {
+    const old = new Date(serverNow() - 60 * 60_000).toISOString()
+    const urls = stubEewFetch([{ eventId: 'ev-old', dateTime: old }], [])
+
+    await fetchDmdataActiveEews(KEY)
+
+    expect(urls.some(u => u.includes('/gd/eew/ev-old'))).toBe(false)
+  })
+
+  it('安全弁: 最終報の時刻を読めないイベントは落とさず詳細を引く', async () => {
+    const urls = stubEewFetch(
+      [{ eventId: 'ev-broken', dateTime: '壊れた値' }],
+      telegram({ id: 'xml-1', head: { type: 'VXSE45', test: false } }).items,
+    )
+
+    await fetchDmdataActiveEews(KEY)
+
+    expect(urls.some(u => u.includes('/gd/eew/ev-broken'))).toBe(true)
+  })
+
+  it('安全弁: 訓練・試験の報は電文本体を取りに行かない', async () => {
+    const recent = new Date(serverNow() - 60_000).toISOString()
+    const urls = stubEewFetch(
+      [{ eventId: 'ev-test', dateTime: recent }],
+      telegram({ id: 'xml-1', head: { type: 'VXSE45', test: true } }).items,
+    )
+
+    await fetchDmdataActiveEews(KEY)
+
+    expect(urls.some(u => u.includes('data.api.dmdata.jp'))).toBe(false)
+  })
+
+  it('JSON 版を指す報は、元の XML の id へ組み替えて取りに行く', async () => {
+    const recent = new Date(serverNow() - 60_000).toISOString()
+    const urls = stubEewFetch(
+      [{ eventId: 'ev1', dateTime: recent }],
+      telegram({ id: 'json-1', originalId: 'xml-1', head: { type: 'VXSE45', test: false } }).items,
+    )
+
+    await fetchDmdataActiveEews(KEY)
+
+    expect(urls.some(u => u.endsWith('/xml-1'))).toBe(true)
+    expect(urls.some(u => u.endsWith('/json-1'))).toBe(false)
+  })
+
+  it('報番号がいちばん大きいものを最新として採る', async () => {
+    const recent = new Date(serverNow() - 60_000).toISOString()
+    const urls = stubEewFetch([{ eventId: 'ev1', dateTime: recent }], [
+      { serial: 3, telegrams: [{ id: 'xml-3', head: { type: 'VXSE45', test: false } }] },
+      { serial: 1, telegrams: [{ id: 'xml-1', head: { type: 'VXSE45', test: false } }] },
+    ])
+
+    await fetchDmdataActiveEews(KEY)
+
+    expect(urls.some(u => u.endsWith('/xml-3'))).toBe(true)
+    expect(urls.some(u => u.endsWith('/xml-1'))).toBe(false)
+  })
+
+  it('一覧が失敗したら空配列を返し、失敗した事実を記録する', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 503 }) as unknown as Response))
+
+    await expect(fetchDmdataActiveEews(KEY)).resolves.toEqual([])
+
+    expect(warnings().some(w => w.includes('発表中の緊急地震速報の一覧'))).toBe(true)
+  })
+})
+
+describe('fetchDmdataActiveEews の部分失敗', () => {
+  const KEY = 'valid-key'
+  const warnings = () => vi.mocked(log.warn).mock.calls.map(c => c.join(' '))
+
+  afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks() })
+
+  it('安全弁: 1 件の詳細で例外が出ても、他の地震の取得は続ける', async () => {
+    const recent = new Date(serverNow() - 60_000).toISOString()
+    const urls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      urls.push(url)
+      // `!res.ok` では捕まらない失敗（ネットワーク断・JSON 破損）を再現する。
+      if (url.includes('/gd/eew/ev-broken')) throw new Error('network down')
+      if (url.includes('data.api.dmdata.jp')) return { ok: false, status: 404 } as unknown as Response
+      if (url.includes('/gd/eew/')) {
+        return {
+          ok: true,
+          json: async () => ({ items: [{ serial: 1, telegrams: [{ id: 'xml-ok', head: { type: 'VXSE45', test: false } }] }] }),
+        } as unknown as Response
+      }
+      return {
+        ok: true,
+        json: async () => ({ items: [{ eventId: 'ev-broken', dateTime: recent }, { eventId: 'ev-ok', dateTime: recent }] }),
+      } as unknown as Response
+    }))
+
+    await fetchDmdataActiveEews(KEY)
+
+    // 壊れた 1 件に引きずられず、健全な側の電文本体まで辿り着いている
+    expect(urls.some(u => u.endsWith('/xml-ok'))).toBe(true)
+    expect(warnings().some(w => w.includes('ev-broken'))).toBe(true)
+  })
+
+  it('安全弁: 2 ページ目の一覧が失敗しても、1 ページ目で得た地震は捨てない', async () => {
+    const recent = new Date(serverNow() - 60_000).toISOString()
+    const urls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      urls.push(url)
+      if (url.includes('data.api.dmdata.jp')) return { ok: false, status: 404 } as unknown as Response
+      if (url.includes('/gd/eew/')) {
+        return {
+          ok: true,
+          json: async () => ({ items: [{ serial: 1, telegrams: [{ id: 'xml-page1', head: { type: 'VXSE45', test: false } }] }] }),
+        } as unknown as Response
+      }
+      // 2 ページ目（cursorToken 付き）だけ落とす
+      if (url.includes('cursorToken')) return { ok: false, status: 503 } as unknown as Response
+      return {
+        ok: true,
+        json: async () => ({ items: [{ eventId: 'ev-page1', dateTime: recent }], nextToken: 'next' }),
+      } as unknown as Response
+    }))
+
+    await fetchDmdataActiveEews(KEY)
+
+    expect(urls.some(u => u.endsWith('/xml-page1'))).toBe(true)
+    expect(warnings().some(w => w.includes('ページ目'))).toBe(true)
+  })
+
+  it('安全弁: 読める電文が 1 通も無ければ記録する（訓練報だけのときは黙る）', async () => {
+    const recent = new Date(serverNow() - 60_000).toISOString()
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('data.api.dmdata.jp')) return { ok: false, status: 404 } as unknown as Response
+      if (url.includes('/gd/eew/')) {
+        // 種別を名乗らない報だけ＝訓練ではないのに読めない
+        return {
+          ok: true,
+          json: async () => ({ items: [{ serial: 1, telegrams: [{ id: 'x', head: {} }] }] }),
+        } as unknown as Response
+      }
+      return { ok: true, json: async () => ({ items: [{ eventId: 'ev1', dateTime: recent }] }) } as unknown as Response
+    }))
+
+    await fetchDmdataActiveEews(KEY)
+
+    expect(warnings().some(w => w.includes('読み取れませんでした'))).toBe(true)
+  })
+
+  it('対照: 訓練・試験の報だけだったときは「読み取れない」と記録しない', async () => {
+    const recent = new Date(serverNow() - 60_000).toISOString()
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('data.api.dmdata.jp')) return { ok: false, status: 404 } as unknown as Response
+      if (url.includes('/gd/eew/')) {
+        return {
+          ok: true,
+          json: async () => ({ items: [{ serial: 1, telegrams: [{ id: 'x', head: { type: 'VXSE45', test: true } }] }] }),
+        } as unknown as Response
+      }
+      return { ok: true, json: async () => ({ items: [{ eventId: 'ev1', dateTime: recent }] }) } as unknown as Response
+    }))
+
+    await fetchDmdataActiveEews(KEY)
+
+    expect(warnings().some(w => w.includes('読み取れませんでした'))).toBe(false)
   })
 })

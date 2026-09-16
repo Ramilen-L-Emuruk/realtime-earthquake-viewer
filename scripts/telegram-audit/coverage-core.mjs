@@ -2,12 +2,14 @@
 // スクリプトが持つと、片方だけ直したときに数字が食い違い、どちらが正しいか分からなくなる）。
 import fs from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { HANDLED, assertRoots } from './handled.mjs'
+import { REPO } from './repo-root.mjs'
 
-// リポジトリの根は自身の位置から導く。ワークツリーへ持っていっても、そのワークツリーの
-// 実装を読む（絶対パスを書くと、別の作業場の古い実装を測ってしまう）。
-export const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
+// 根のパスは `repo-root.mjs` が単一情報源。**このファイルは import した時点で
+// `TELEGRAM_AUDIT_DIR` を要求して throw する**ので、根だけが必要なモジュールを
+// ここへ依存させると環境変数に縛られる（理由は `repo-root.mjs`）。
+// 既存の `import { REPO } from './coverage-core.mjs'` を壊さないため再 export する。
+export { REPO }
 
 // **実電文のサンプルと解説資料はリポジトリに入っていない。** 前者は配信元の利用規約、
 // 後者は資料の再配布にあたるため。置き場所は環境変数で渡す

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { isValidLpgmClass, getLpgmClassLabel, getLpgmClassColor, getLpgmClassRadius, lpgmCategoryNote, lpgmPeriodLabel, buildLpgmRows, type LpgmRowDeps } from './lpgm'
-import type { LpgmPoint, LpgmRegion } from '../types/earthquake'
+import { isValidLpgmClass, getLpgmClassLabel, getLpgmClassColor, getLpgmClassRadius, lpgmCategoryNote, lpgmPeriodLabel, buildLpgmRows, canOpenLpgmNotes, type LpgmRowDeps } from './lpgm'
+import type { JMALpgm, LpgmPoint, LpgmRegion } from '../types/earthquake'
 import { LPGM_ICON_BASE_RADIUS } from '../components/Map/gl/lpgmIcons'
 
 describe('isValidLpgmClass', () => {
@@ -245,5 +245,38 @@ describe('buildLpgmRows', () => {
       [], deps,
     )
     expect(rows[0].areas[0].stations.map(s => s.name)).toEqual(['強いほう', '弱いほう'])
+  })
+})
+
+// 補足を開けるか。**カードの見出しを出す条件と、読み上げ側の診断で共有する**
+// （→ docs/spec/audio-tts-spec.md §6「読み上げに合わせて気象庁の文を開く」）。書き写すと、
+// 片方だけが「開ける」と判断して診断が鳴らない／正常な見送りで記録が埋まる、のどちらかになる。
+describe('canOpenLpgmNotes', () => {
+  const base = { id: 'l1', time: '', eventId: 'e1', originTime: '', maxClass: 3, cancelled: false }
+  const make = (over: Record<string, unknown>) => ({ ...base, ...over } as unknown as JMALpgm)
+
+  // 正: 添えられた文が 1 つでもあれば開ける
+  it('付加文が 1 つでもあれば開ける', () => {
+    expect(canOpenLpgmNotes(make({ forecastText: 'あ' }))).toBe(true)
+    expect(canOpenLpgmNotes(make({ varCommentText: 'あ' }))).toBe(true)
+    expect(canOpenLpgmNotes(make({ freeFormText: 'あ' }))).toBe(true)
+  })
+
+  // 正: 詳細ページへのリンクだけでも開ける（開けば行き先がある）
+  it('詳細ページへのリンクだけでも開ける', () => {
+    expect(canOpenLpgmNotes(make({ uri: 'https://example.invalid/' }))).toBe(true)
+  })
+
+  // 対照: 中身が 1 つも無ければ開けない（押せる見た目だけ与えない）
+  it('中身が 1 つも無ければ開けない', () => {
+    expect(canOpenLpgmNotes(make({}))).toBe(false)
+    expect(canOpenLpgmNotes(null)).toBe(false)
+    expect(canOpenLpgmNotes(undefined)).toBe(false)
+  })
+
+  // 安全弁: **階級を観測していない電文では見出しごと出ない。** 中身があっても開けないので、
+  // 読み上げ側はここを「開く先が無い」と判定できなければならない
+  it('階級を観測していなければ、中身があっても開けない', () => {
+    expect(canOpenLpgmNotes(make({ maxClass: 0, freeFormText: 'あ' }))).toBe(false)
   })
 })

@@ -17,6 +17,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
 import { DEFAULTS, type AppSettings } from './useSettings'
+import { telegramTextSubject } from '../utils/ttsFollow'
 import type { JMAQuake, JMATsunami, LiveEvent } from '../types/earthquake'
 
 const speeches: { text: string; finish: () => void; done: boolean }[] = []
@@ -85,6 +86,18 @@ function makeQuake(over: { id?: string; varCommentText?: string } = {}): JMAQuak
     points: [{ pref: '石川県', addr: '石川県能登', isArea: true, scale: 40 }],
     varCommentText: over.varCommentText ?? COMMENT,
   } as JMAQuake
+}
+
+/** 長周期地震動観測情報。**補足が畳んであるので開く先がある**側の題材。 */
+function makeLpgm(): LiveEvent {
+  return {
+    kind: 'lpgm',
+    data: {
+      id: 'lpgm-1', time: '2026-01-01T12:00:00Z', eventId: 'lpgm-event-1',
+      originTime: '2026-01-01T12:00:00Z', maxClass: 3, cancelled: false,
+      freeFormText: '各長周期地震動階級に対する簡易な現象表現です。',
+    },
+  } as unknown as LiveEvent
 }
 
 /** 南海トラフ地震臨時情報。**開く先があるので追従セッションが立つ側**の題材。 */
@@ -201,6 +214,16 @@ describe('気象庁が書いた文の読み上げ（配線）', () => {
     await drain()
     expect(telegramSpeeches()).toHaveLength(1)   // 読み上げ自体は起きる
     expect(followCalls).toEqual([])              // 追従だけ立たない
+  })
+
+  // 正: **長周期は主題に地震の識別子まで載せる。** 地震カードは複数並ぶので、種別だけでは
+  // どのカードの補足を開くか決まらない（バナーと津波の面は画面に 1 つしか無い）。
+  it('長周期では、主題に地震の識別子まで載せる', async () => {
+    const { handleLiveEvent } = setup()
+    handleLiveEvent(makeLpgm())
+    await drain()
+    expect(followCalls.map(c => c.kind)).toEqual(['begin', 'end'])
+    expect(followCalls[0].subject).toBe(telegramTextSubject('lpgm', 'lpgm-event-1'))
   })
 
   // 対照: 読まない電文では立てない（開く相手が無いのにセッションだけ始めない）

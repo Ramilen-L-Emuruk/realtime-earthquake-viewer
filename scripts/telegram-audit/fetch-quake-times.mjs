@@ -14,9 +14,9 @@
 //   （範囲を絞るなら FROM=2024-01-01 TO=2024-12-31、分類を変えるなら CLASSIFICATIONS=eew.forecast）
 import fs from 'node:fs'
 import path from 'node:path'
-import zlib from 'node:zlib'
 import { createRequire } from 'node:module'
 import { REPO, WORK } from './coverage-core.mjs'
+import { apiAuthHeader, listArchive, loadArchiveTar, tarEntries, reportArchiveCacheStats } from './archive-cache.mjs'
 
 const require = createRequire(path.join(REPO, 'package.json'))
 const { JSDOM } = require('jsdom')
@@ -25,51 +25,9 @@ const domParser = new (new JSDOM().window.DOMParser)()
 const OUT_DIR = path.join(WORK, process.env.OUT_DIR || 'quake-times')
 fs.mkdirSync(OUT_DIR, { recursive: true })
 
-// API キーは環境変数を先に見る。**ワークツリーには `.env.local` が無い**ことがある
-// （Git 管理外なので切っても付いてこない）。`fetch-samples.mjs` と同じ扱い。
-function apiKey() {
-  if (process.env.DMDATA_API_KEY) return process.env.DMDATA_API_KEY.trim()
-  const envPath = path.join(REPO, '.env.local')
-  if (fs.existsSync(envPath)) {
-    const m = fs.readFileSync(envPath, 'utf8').match(/^DMDATA_API_KEY=(.+)$/m)
-    if (m) return m[1].trim()
-  }
-  throw new Error(`DMDATA の API キーが見つかりません。DMDATA_API_KEY で渡すか ${envPath} に置いてください`)
-}
-const auth = { Authorization: 'Basic ' + Buffer.from(apiKey() + ':').toString('base64') }
-
-function* ents(buf) {
-  let o = 0
-  while (o + 512 <= buf.length) {
-    const n = buf.slice(o, o + 100).toString('utf8').replace(/\0.*$/, '')
-    if (!n) { o += 512; continue }
-    const s = parseInt(buf.slice(o + 124, o + 136).toString('utf8').replace(/\0.*$/, '').trim(), 8) || 0
-    yield { n, b: buf.slice(o + 512, o + 512 + s) }
-    o += 512 + Math.ceil(s / 512) * 512
-  }
-}
-
-// **分類ごとに分かれている。** 対象がどれに属するかを先に確かめること —— 2026-09-11 に
-// `telegram.earthquake` だけを見て「訓練の EEW は 1 通も無い」と誤った実績がある
-// （→ CLAUDE.md「調査レビュー」）。地震情報と津波はどちらも `telegram.earthquake`、
-// 緊急地震速報は `eew.forecast` / `eew.warning`。
-async function listAll(classification, from, to) {
-  const out = []
-  let token = null
-  for (;;) {
-    const u = new URL('https://api.dmdata.jp/v2/archive')
-    u.searchParams.set('datetime', `${from}~${to}`)
-    u.searchParams.set('classification', classification)
-    u.searchParams.set('limit', '100')
-    if (token) u.searchParams.set('cursorToken', token)
-    const j = await (await fetch(u, { headers: auth })).json()
-    if (j.status !== 'ok') throw new Error(`一覧の取得に失敗: ${classification}: ${JSON.stringify(j).slice(0, 300)}`)
-    out.push(...j.items)
-    if (!j.nextToken) break
-    token = j.nextToken
-  }
-  return out
-}
+// 取得・控え・レート制御は `archive-cache.mjs` に集約してある。**素の `fetch` を書き足さないこと**
+// —— 同じ日を何度も取り直す形に戻り、配信元の制限（アーカイブ本体は 50req/5min）を超える。
+const auth = apiAuthHeader()
 
 const textOf = (el) => el?.textContent?.trim() ?? ''
 // 子孫から localName 一致をすべて（`dmdataParser.ts` の `xmlAll` と同じ走査）
@@ -153,7 +111,14 @@ for (const cls of CLASSIFICATIONS) {
   const base = cls.replace(/\./g, '-')
   const outPath = path.join(OUT_DIR, `${base}.jsonl`)
   const metaPath = path.join(OUT_DIR, `${base}.meta.json`)
-  const items = await listAll(cls, FROM, TO)
+  // 一覧が取れなかった分類は飛ばして次へ（全体を止めない。失敗は控えの統計に残る）
+  let items
+  try {
+    items = await listArchive({ classification: cls, from: FROM, to: TO, auth })
+  } catch (e) {
+    console.error(`${cls}: ${e?.message ?? e}`)
+    continue
+  }
   console.error(`${cls}: ${items.length} 日分 (${FROM}~${TO})`)
   const out = fs.createWriteStream(outPath)
   const meta = { classification: cls, from: FROM, to: TO, days: items.length, dayList: [], failedDays: [], xmlTotal: 0 }
@@ -166,27 +131,18 @@ for (const cls of CLASSIFICATIONS) {
       if (!it) return
       const day = String(it.datetime ?? it.date ?? '?')
       let tar = null
-      let lastErr = null
-      // 一時的な失敗で日をまるごと落とさないよう 3 回試す。
+      // 一時的な失敗の待ち直しは `archive-cache.mjs` が持つ（レート制限の 429 を含む）。
       // **それでも駄目なら記録する** ——「見ていない」を「無い」に潰さないため。
-      for (let attempt = 1; attempt <= 3 && !tar; attempt++) {
-        try {
-          const r = await fetch(it.url, { headers: auth })
-          if (!r.ok) throw new Error(`HTTP ${r.status}`)
-          tar = zlib.gunzipSync(Buffer.from(await r.arrayBuffer()))
-        } catch (e) {
-          lastErr = e
-          if (attempt < 3) await new Promise(res => setTimeout(res, 1000 * attempt))
-        }
-      }
-      if (!tar) {
-        meta.failedDays.push({ day, error: String(lastErr?.message ?? lastErr) })
-        console.error(`  取得失敗 ${day}: ${lastErr?.message ?? lastErr}`)
+      try {
+        tar = await loadArchiveTar({ classification: cls, item: it, auth })
+      } catch (e) {
+        meta.failedDays.push({ day, error: String(e?.message ?? e) })
+        console.error(`  取得失敗 ${day}: ${e?.message ?? e}`)
         continue
       }
       const lines = []
       let xmlCount = 0
-      for (const { n, b } of ents(tar)) {
+      for (const { name: n, body: b } of tarEntries(tar)) {
         if (!/\.xml$/i.test(n)) continue
         xmlCount++
         try {
@@ -208,3 +164,10 @@ for (const cls of CLASSIFICATIONS) {
   fs.writeFileSync(metaPath, JSON.stringify(meta, null, 1))
   console.error(`${cls}: XML ${meta.xmlTotal} 通 / 取得失敗 ${meta.failedDays.length} 日 → ${outPath}`)
 }
+
+// 何件を控えで済ませたかを残す。2 回目以降の走査がリクエストを出していないことの確認にもなる。
+//
+// **走査できなかった範囲があれば exit code を立てる。** 出力は JSONL と meta.json なので
+// 印を載せる場所が無く、終了コードしか見ない経路（CI・シェルの `&&`）で気づけるようにする。
+// この走査の結果は「その期間に該当の電文は無い」という主張の根拠になる。
+if (reportArchiveCacheStats('アーカイブ（地震の時刻の抽出）') > 0) process.exitCode = 1

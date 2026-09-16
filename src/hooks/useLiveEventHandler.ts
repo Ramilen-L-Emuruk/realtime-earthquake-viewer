@@ -20,7 +20,7 @@ import { playAlertSound, ttsDelayFor, maxTtsDelay, type AlertSoundType } from '.
 import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, stopSpeech, type PrewarmedSpeech, type ShouldStillPlay, type SpeechOutcome } from '../utils/voicevox'
 import { rollbackSpokenEntry } from '../utils/rollbackSpoken'
 import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewWarningRegionsText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiAreaGradeChangeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, tsunamiMissingToSegments, selectMissingToSpeak, tsunamiWarningLevelToSegments, selectWarningLevelToSpeak, joinWithAlso, nankaiToText, nankaiCommentaryToText, kohatsuToText, earthquakeCountToText, estimatedIntensityToText, lpgmToText, telegramTextToSpeak, createQuakeSpokenState, applySpokenRefs, type TtsSpeechOptions, type QuakeSpokenState } from '../utils/ttsText'
-import { joinSegments, plain, hasFollowTarget, hasUnreceivedFollowTarget, hasTelegramTextFollowTarget, TELEGRAM_TEXT_OPEN_TARGET_KINDS, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
+import { joinSegments, plain, hasFollowTarget, hasUnreceivedFollowTarget, hasTelegramTextFollowTarget, TELEGRAM_TEXT_OPEN_TARGET_KINDS, telegramTextSubject, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
 import { log, createLogThrottle } from '../utils/logger'
 import { TAB_PRIORITY, type TabPriority } from '../utils/tabPriority'
 import { extractQuakeEventIdFromId, quakeEventKey, quakeKeyForLpgmEventId, sameQuakeEntry } from '../utils/quakeMerge'
@@ -819,17 +819,41 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   } | null>(null)
   // 間を置いてからの読み上げの予約（`scheduleSpeech`）。アンマウント・リプレイ切替で取り消す。
   const pendingSpeechRef = useRef<Set<{ id: number; onCancel?: () => void }>>(new Set())
-  // 非 EEW の読み上げに振る到来順の連番と、主題ごとの「最後に予約された連番」。
-  // **同格どうしの追い越し**を裁くために持つ（優先度だけでは同格を区別できず、`speechBlocker` は
-  // 厳密不等号で見るため）。詳細は `overtakenByLaterArrival`。
+  // 読み上げに振る到来順の連番と、「最後に予約された連番」を主題別・優先度別に持つ枠。
+  // **追い越し**を裁くために持つ（`overtakenByLaterArrival` / `overtakenByHeavierArrival`）。
+  //
+  // **EEW もこの軸に載せる。** EEW は優先度の尺度の外にあるが、「自分の予約より後に届いたか」は
+  // 同じ軸でしか比べられない。載せないと、待っている間に届いた EEW を追い越しとして裁けず、
+  // 待ち行列の非 EEW が EEW を読み終えた後ろで鳴って到来順が逆に聞こえる。
   //
   // **主題ごとに分けて持つこと。** 単一の枠に「最後に予約されたもの」だけを置くと、主題違いの
   // 予約が枠を奪った隙に同じ主題の後先が比べられなくなり、古い報が新しい報を切れてしまう。
   //
   // 連番はリプレイ切替でも戻さない（意図的）。単調に増えていれば後先の比較は成り立ち、0 へ戻すと
   // 切替前の値と混ざる。取り消しは Map 側の clear で足りる。
-  const nonEewSpeechSeqRef = useRef(0)
+  const speechArrivalSeqRef = useRef(0)
   const latestScheduledSeqByTopicRef = useRef<Map<SpeechTopic, number>>(new Map())
+  /**
+   * 優先度ごとの「最後に予約された連番」。**自分より重い相手に追い越されたか**を見るのに使う
+   * （`overtakenByHeavierArrival`）。主題別の枠と分けているのは問いが違うため —— あちらは
+   * 「同じ話題の新しい報が来たか」、こちらは「もっと重い話が後から割り込んだか」。
+   *
+   * 鍵は優先度なので要素数は `SPEECH_PRIORITY` の段数で頭打ちになる（主題別のような上限は要らない）。
+   */
+  const latestScheduledSeqByPriorityRef = useRef<Map<SpeechPriority, number>>(new Map())
+  /**
+   * EEW が最後に**新規発報**した到来連番。EEW は優先度の尺度の外なので別に持つ。
+   *
+   * **進めるのは新規発報のときだけ**（続報・第 2 フェーズ・言い直し・取消では進めない）。
+   * その EEW が到来したのは初報の時点であって、あとから続く発話はどれも同じ到来の続きだから。
+   * 発話のたびに進めると、**先に届いていた EEW の第 2 フェーズ**（安定待ちの後に鳴る）が
+   * 「後から来た重い読み上げ」に見え、順番どおり待っていた地震情報を取り下げてしまう。
+   *
+   * **リプレイ切替・アンマウントでは戻さない**（意図的。隣の Map 2 つは `clear()` しているので
+   * 並びから外れて見えるが、こちらは連番そのもので、単調に増えていれば比較は成り立つ。0 へ
+   * 戻すと切替前の値と混ざる）。
+   */
+  const latestEewSpeechSeqRef = useRef(0)
   const eewPhase2TokensRef = useRef<Map<string, object>>(new Map())
   // 第 1.5 フェーズ（警報の対象地方）で**声にした**地方（eventId 別）。
   //
@@ -1104,6 +1128,29 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   }
 
   /**
+   * 自分より**後に到来した、自分より重い**読み上げに追い越されているか（主題は問わない）。
+   *
+   * 上の `overtakenByLaterArrival` が同格の追い越しを裁くのに対し、こちらは優先度差のある
+   * 追い越しを裁く。**「いま塞がっているか」（`speechBlocker`）では代用できない** ——
+   * あちらは先に届いた重い相手でも真を返すので、到来順どおりに待っている側まで取り下げてしまう。
+   *
+   * **見るのは予約してから声に出す直前までのあいだ全部。** 予約と間が明けるまでの数百ミリ秒
+   * だけを見ていた頃は、待ち行列に入った後に届いた EEW を捕まえられなかった（実配信では
+   * 推計震度分布図の 5.5 秒後に EEW が届き、EEW を読み終えた後ろで分布図が鳴って画面を奪った）。
+   *
+   * **同格は見ない**（`p > priority` の厳密不等号）。同格どうしの裁きは主題で決まるので、
+   * ここで拾うと相互譲りの相手まで取り下げる。
+   */
+  const overtakenByHeavierArrival = (seq: number, priority: SpeechPriority): boolean => {
+    // EEW は優先度の尺度の外にいて、常に最も重い。
+    if (latestEewSpeechSeqRef.current > seq) return true
+    for (const [p, s] of latestScheduledSeqByPriorityRef.current) {
+      if (p > priority && s > seq) return true
+    }
+    return false
+  }
+
+  /**
    * 取り下げが決まった予約を「最後に予約されたもの」から降ろす。
    *
    * **降ろさないと取り下げが連鎖する。** 自分が一度も喋らずに消えたのに枠に残り続けると、自分より
@@ -1111,10 +1158,35 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
    *
    * 逆に、**読み終わった予約は降ろさない**（意図的）。後発を聞いたあとで先発を読めば、聞いている
    * 側には順序が入れ替わって聞こえる。到来順を守る規則はそれを避けるためのもの。
+   *
+   * **優先度の枠からも降ろすこと。** 主題の枠と同じ理屈で、取り下げられた重い予約が枠に残ると、
+   * それより前に予約されていた軽い読み上げが「後から重いものが来た」と誤認して取り下がる。
    */
-  const releaseLatestSchedule = (seq: number, topic: SpeechTopic): void => {
+  const releaseLatestSchedule = (seq: number, topic: SpeechTopic, priority: SpeechPriority): void => {
     if (latestScheduledSeqByTopicRef.current.get(topic) === seq) {
       latestScheduledSeqByTopicRef.current.delete(topic)
+    }
+    releaseScheduledPriority(seq, priority)
+  }
+
+  /**
+   * 優先度の枠だけを降ろす。**主題の枠とは降ろす時機が違う。**
+   *
+   * 優先度の枠が表すのは「**まだ鳴っていない、予約済みの重い読み上げ**」。自分が鳴り始めた
+   * 時点でその役目は終わる —— 以降は `speechBlocker` の `higher` が待たせるので、枠に残す
+   * 必要がない。
+   *
+   * **残したままにすると、鳴り終わった読み上げが永久に「追い越した側」であり続ける。**
+   * 実際にそれで壊れたのが解説情報（`SPEECH_PRIORITY.commentary`）で、あれは本体より後に
+   * 予約される設計のため、本体を待っているあいだに別の地震情報が 1 件でも届けば、その地震情報を
+   * 読み終えた後でも取り下げられていた（群発の最中はほぼ常に沈黙する）。
+   *
+   * 主題の枠を同じ時機で降ろさないのは、問いが違うから —— あちらは「同じ話題の新しい報が
+   * 来たか」で、**読み終わった報でも新しければ古い報を取り下げてよい**（最新だけ読めばよい）。
+   */
+  const releaseScheduledPriority = (seq: number, priority: SpeechPriority): void => {
+    if (latestScheduledSeqByPriorityRef.current.get(priority) === seq) {
+      latestScheduledSeqByPriorityRef.current.delete(priority)
     }
   }
 
@@ -1250,6 +1322,18 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
      * 自動開閉が対象の取り違えを避けるのに使う（→ `SpeechFollowSession.subject`）。
      */
     subject?: string,
+    /**
+     * **順番を待っているあいだに、より重い読み上げに追い越されたか**を問う
+     * （`speakNonEEWDelayed` 経由のときだけ渡る。実体は `overtakenByHeavierArrival` の判定）。
+     *
+     * ここで問い直すのが要るのは、**待ちに入った後の到来を見る場所が他に無い**ため。予約から
+     * 間が明けるまでの数百ミリ秒しか見ていなかった頃は、待ち行列に入った非 EEW が、あとから
+     * 届いた EEW を読み終えた後ろで鳴っていた（到来順が逆に聞こえ、画面も奪う）。
+     *
+     * 真を返したときの後始末（記録・枠から降りる・先行合成の破棄）は**渡す側で済ませる**ので、
+     * ここでは降りるだけでよい。
+     */
+    shouldWithdraw?: () => boolean,
   ) => {
     void (async () => {
       /**
@@ -1280,6 +1364,19 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       if (priority === SPEECH_PRIORITY.commentary && speechBlocker(priority, topic) !== null) {
         giveUpSilently()
         return
+      }
+      // **順番を待っているあいだに、より重い読み上げに追い越されていたら取り下げる。**
+      // 待ちに入った後の到来を見る場所はここしかない（→ 引数 `shouldWithdraw` の注記）。
+      // **`onSpeakStart` より前に置くこと** —— あちらは画面を動かし既読を進めるので、
+      // 後ろに置くと取り下げたのにタブだけ移り、読まなかった内容が既読になる。
+      //
+      // **例外は握って読み上げを続ける**（直後の `onSpeakStart` と同じ方針）。ここから例外が
+      // 抜けると本文が一言も鳴らないまま catch へ落ちる。判定に失敗したときは「取り下げない」
+      // ——声が余分に出るほうが、聞こえないより軽い。
+      try {
+        if (shouldWithdraw?.()) return
+      } catch (err) {
+        log.warn(`[tts] 追い越しの判定に失敗（読み上げは続行）topic=${topic}`, err)
       }
       // 自分の番が来た（これから声に出す）瞬間に画面を合わせ、読み上げた値を既読へ移す。
       // 待ち行列の後なので、重い電文の読み上げ中に届いた軽い電文は、その後になって初めてタブを取る。
@@ -1464,13 +1561,28 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     onSpeakStart?: () => void,
     /** この読み上げが何について語っているか（`speakNonEEW` へそのまま渡す）。 */
     subject?: string,
+    /**
+     * **追い越されて取り下げたときに呼ばれる。**「声にならなくても失ってはいけない一回性の処理」
+     * だけを渡すこと（いまの利用者は推計震度分布図の「分布モードを開く最後の機会」だけ）。
+     *
+     * **`onSpeakStart` の代わりではない。** あちらに相乗りしている処理のうち、既読の記録は
+     * 取り下げ時に進めてはいけない（「声になった分だけ既読にする」が崩れる）。タブ追従も渡さない
+     * ——画面は追い越した側に留めるのが到来順の規則（→ audio-tts-spec.md §6）。
+     *
+     * 分布モードを開くのがこちらへ来るのは、**タブを動かさず地図の中身と地震カードの選択だけを
+     * 変える**操作だから。逃すとその地震の分布は次の報が届くまで一度も出せず、しかも
+     * 開けなかった記録すら残らない。
+     */
+    onWithdrawn?: () => void,
   ) => {
-    // 予約した時点で、自分より重い読み上げが走っていたか。**発話の番でもう一度取って比べる**
-    // （下の「追い越し」の判定）。
+    // 予約した時点で、自分より重い読み上げが走っていたか。**先出しでタブを取るかの判断だけに使う**
+    // （取り下げの判定は下の連番で行う。あちらは到来順そのものを見るので、予約時に塞がっていたか
+    // を問う必要がない）。
     const blockedAtSchedule = speechBlocker(priority, topic)
-    // 到来順の連番を振り、自分をその主題の「最後に予約されたもの」として登録する。同格どうしの
-    // 追い越しは優先度では区別できないため、この連番で後先を比べる（`overtakenByLaterArrival`）。
-    const seq = ++nonEewSpeechSeqRef.current
+    // 到来順の連番を振り、自分を「その主題の最後に予約されたもの」「その優先度の最後に予約された
+    // もの」として登録する。追い越しは優先度だけでも到来順だけでも裁けないため、両方を持つ
+    // （`overtakenByLaterArrival` / `overtakenByHeavierArrival`）。
+    const seq = ++speechArrivalSeqRef.current
     if (latestScheduledSeqByTopicRef.current.size >= LATEST_SPEECH_TOPIC_MAX
       && !latestScheduledSeqByTopicRef.current.has(topic)) {
       // 捨てた事実を残す（`markQuakeReportSeen` と同じ流儀）。黙って消すと「取り下げが働かなかった」
@@ -1479,6 +1591,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       latestScheduledSeqByTopicRef.current.clear()
     }
     latestScheduledSeqByTopicRef.current.set(topic, seq)
+    latestScheduledSeqByPriorityRef.current.set(priority, seq)
     // **先出しで画面を取れたか。** これは下の `onSpeakStart` で `alreadyShown` として渡すだけで、
     // 追従を呼ぶかどうかの判断には使わない（理由はそちらのコメント）。
     let tabTakenByPreSpeech = false
@@ -1495,44 +1608,54 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // 間を置いている最中に合成を済ませておく。通知音が鳴り終わってから声が出るまでの空白は、
     // ほぼこの合成時間だった（実測: LAN 越しの VOICEVOX で 150〜350ms）。
     const prewarmed = prewarmVoicevox(settings.voicevoxUrl, text, settings.voicevoxSpeakerId)
+    /**
+     * 自分より後に到来した重い読み上げに追い越されていたら、取り下げて真を返す。
+     *
+     * **間が明けた時点と、順番を待ち終えた時点の 2 回問う。** 前者だけでは間（0.5〜2.8 秒）の
+     * あいだの到来しか見られず、待ち行列に入った後に届いたものを取りこぼす。後者は
+     * `speakNonEEW` へ渡して、声に出す直前に呼んでもらう。
+     */
+    const withdrawIfOvertaken = (where: string): boolean => {
+      if (!overtakenByHeavierArrival(seq, priority)) return false
+      log.info(`[tts] 後から届いた重い読み上げに追い越されたため取り下げる (${where}) topic=${topic} priority=${priority}`)
+      releaseLatestSchedule(seq, topic, priority)
+      prewarmed?.abort()
+      // **声にならなくても失ってはいけない処理だけをここで拾う**（→ 引数 `onWithdrawn` の注記）。
+      // 例外で取り下げそのものを壊さない（`onSpeakStart` と同じ方針）。
+      try { onWithdrawn?.() } catch (err) { log.warn(`[tts] 取り下げ時の後始末に失敗 topic=${topic}`, err) }
+      return true
+    }
     scheduleSpeech(
       delay,
       () => {
-        // **後から届いたものに追い越されたら取り下げる。** 予約した時点では空いていたのに、
-        // 間を置いているうちに重い読み上げが始まった場合がこれ。待って読むと、到来順とは逆に
-        // 「後から来た方が先、先に来た方が後」と喋ることになる。
+        // **後から届いたものに追い越されたら取り下げる。** 待って読むと、到来順とは逆に
+        // 「後から来た方が先、先に来た方が後」と喋ることになる。逆に、自分より**前**に届いた
+        // 重い読み上げは待って読むのが正しい（到来順どおり）——どちらも連番で見分ける。
         //
-        // 予約した時点で既に塞がっていたなら取り下げない（`speakNonEEW` の `waitForSpeechSlot`
-        // が待つ）。そちらは「重いものが先に来て、後から軽いものが届いた」形で到来順どおりなので、
-        // 待って読むのが正しい。
         // 同じ主題の読み上げが自分より後に予約されていたら取り下げる。**予約時に塞がっていたかを
         // 問わない**（相手はまだ喋り始めていないことも多く、`speechBlocker` には映らない）。
         if (overtakenByLaterArrival(seq, topic)) {
           log.info(`[tts] 同じ主題の新しい読み上げに追い越されたため取り下げる topic=${topic}`)
-          releaseLatestSchedule(seq, topic)
+          releaseLatestSchedule(seq, topic, priority)
           prewarmed?.abort()
+          // **ここでは `onWithdrawn` を呼ばない。** 追い越した後発は同じ主題＝同じ話題の新しい報で、
+          // 一回性の後始末はそちらが持つ。古い報の分だけ呼ぶと、別の地震へ入れ替わった推計震度
+          // 分布図で**古い地震のカードを開き直す**。
           return
         }
-        if (blockedAtSchedule === null) {
-          const overtakenBy = speechBlocker(priority, topic)
-          // **相互譲りで塞がっているだけなら取り下げない。** 取り下げる理由は「後から届いた
-          // *重い* 読み上げに追い越され、待って読むと到来順が逆に聞こえる」ことなので、
-          // 内容が重ならない同格（`MUTUAL_YIELD_TOPICS`）は当てはまらない——どちらも読みたい
-          // 相手であり、順序が入れ替わって聞こえる不利より、片方が消える不利の方が重い。
-          // ここで取り下げると「主題が違う同格は取り下げない」という原則そのものが破れる。
-          if (overtakenBy !== null && overtakenBy !== 'mutualYield') {
-            log.info(`[tts] 後から届いた読み上げに追い越されたため取り下げる (${overtakenBy}) priority=${priority}`)
-            releaseLatestSchedule(seq, topic)
-            prewarmed?.abort()
-            return
-          }
-        }
+        // 主題をまたぐ追い越し（自分より重い相手）。**相互譲りの相手では取り下げない** ——
+        // `overtakenByHeavierArrival` が厳密不等号で見るので同格はここへ来ない。どちらも
+        // 読みたい相手であり、順序が入れ替わって聞こえる不利より片方が消える不利の方が重い。
+        if (withdrawIfOvertaken('間が明けた時点')) return
         speakNonEEW(
           text,
           priority,
           topic,
           // 声に出す瞬間にまとめて行う（画面を合わせる・読み上げた値を既読へ移す）
           () => {
+            // **鳴り始めたら優先度の枠から降りる。** 残すと、自分より軽い読み上げが
+            // 「後から重いものが来た」と誤認して取り下がり続ける（→ `releaseScheduledPriority`）。
+            releaseScheduledPriority(seq, priority)
             onSpeakStart?.()
             // **先出しで既に画面を取れていたかを渡す。** 取れていた場合に取り返すかどうかは
             // 保持の中身を見て決める（`shouldRetakeAfterPreSpeech`）——揺れ検知に奪われたなら
@@ -1546,12 +1669,14 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           segments,
           onSpokenRefs,
           // 黙って見送るときも枠から降りる（降りないと前の予約を巻き込む。理由は引数の注記）
-          () => releaseLatestSchedule(seq, topic),
+          () => releaseLatestSchedule(seq, topic, priority),
           subject,
+          // 順番を待っているあいだの追い越しを、声に出す直前にもう一度見る
+          () => withdrawIfOvertaken('順番を待っているあいだ'),
         )
       },
       () => {
-        releaseLatestSchedule(seq, topic)
+        releaseLatestSchedule(seq, topic, priority)
         prewarmed?.abort()
       },
     )
@@ -1666,6 +1791,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           ttsDelayFor('earthquakeInfo'), 'estimatedIntensity',
           { tab: 'earthquake', priority: TAB_PRIORITY.quake },
           undefined, undefined, () => openDistribution(true),
+          // **取り下げられても分布モードを開く機会は残す。** 声が出ないことと地図に出ないことは
+          // 別の損失で、こちらは逃すとその地震の分布を一度も出せない（しかも記録も残らない）。
+          // タブは動かさないので、追い越した側が見せている画面は奪わない。
+          undefined, () => openDistribution(true),
         )
       }
       return
@@ -1835,13 +1964,19 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // （→ `ttsFollow.ts` の `telegramText`）。文の中身では分けず 1 つにまとめている ——
     // 求められているのは「読み始めたら開く」ことで、どの段落を読んでいるかの追従ではない。
     //
-    // **開く先がある種別にだけ参照を付ける。** 地震情報と長周期地震動観測情報の付加文は
-    // 元から畳んでいないので開く相手がいない。無条件に付けると、誰も反応しない追従セッションが
-    // 立ち上がっては終わる（症状が出ないぶん、後から読んで意図を確かめられない）。
+    // **開く先がある種別にだけ参照を付ける。** 地震情報の付加文は元から畳んでいないので
+    // 開く相手がいない。無条件に付けると、誰も反応しない追従セッションが立ち上がっては終わる
+    // （症状が出ないぶん、後から読んで意図を確かめられない）。
     const segments: SpeechSegment[] = [{
       text: speech.text,
       refs: TELEGRAM_TEXT_OPEN_TARGET_KINDS.has(event.kind) ? [{ kind: 'telegramText' }] : [],
     }]
+    // **長周期地震動観測情報だけ、どの地震の補足かまで主題に載せる。** 地震カードは複数
+    // 並ぶので、種別だけではどのカードを開くか決まらない（バナーと津波の面は画面に 1 つ）。
+    // 鍵は `eventId` —— カードが長周期を引き当てるのに使っているものと同じ（`lpgmByEventId`）。
+    const subject = event.kind === 'lpgm'
+      ? telegramTextSubject(event.kind, event.data.eventId)
+      : telegramTextSubject(event.kind)
     speakNonEEWDelayed(
       speech.text,
       SPEECH_PRIORITY.commentary,
@@ -1851,9 +1986,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       segments,
       undefined,
       () => { spokenTelegramTextRef.current.add(speech.body) },
-      // 追従する側が「どの電文の文か」を知るための主題。主題（topic）と同じ値にしてあるが、
-      // 別の役割 —— topic は到来順の裁きに、subject は画面の開閉に使う。
-      `telegramText:${event.kind}`,
+      // 追従する側が「どの電文の文か」を知るための主題。**topic とは役割が違う** ——
+      // topic は到来順の裁き（同じ種別は後発が勝つ）に、subject は画面のどこを開くかに使う。
+      // 長周期だけ地震の識別子まで含むのはそのため。
+      subject,
     )
   }
 
@@ -2226,6 +2362,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // 震度・長周期階級の引き上げはここでは見ない。読み上げ側は「実際に発話した値」と
       // 「発話する直前の最新値」を比べるため（enqueuePhase2）、受信時点の比較は使わない。
       const isNew = !activeEEWLevelsRef.current.has(key)
+      // **新規発報を到来順の軸へ刻む。** 予約済みの非 EEW は、これより後の連番なら「先に届いて
+      // いた」ので待って読み、これより前なら「後から重いものに追い越された」ので取り下げる
+      // （`overtakenByHeavierArrival`）。続報では進めない —— 理由は同 ref の注記。
+      if (isNew) latestEewSpeechSeqRef.current = ++speechArrivalSeqRef.current
       const prevLevel = activeEEWLevelsRef.current.get(key) ?? 0
       const levelUpgraded = !isNew && currentLevel > prevLevel
       // 区分（予報→警報）の格上げだけを見る特別扱い。`levelUpgraded` は警報→特別警報の
@@ -2823,8 +2963,6 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             // この発話がその EEW で最初の「警報になった」告知になる。区分を第 2 フェーズの
             // 前置きだけに任せると、そちらは予想値の安定待ち（300ms〜5 秒）を経てから鳴るため、
             // 「〇〇では強い揺れに警戒してください。」が先に出て順序が入れ替わる。
-            //
-            // 区分は引き下げない（`Math.max`）。第 1 フェーズ・第 2 フェーズと同じ方針。
             const announceUpgrade = levelUpgradeOf(latest).upgraded
               && !spokenEEWUpgradePhraseRef.current.has(key)
             const text = eewWarningRegionsText(speaking, spoken.size > 0, announceUpgrade)
@@ -3493,6 +3631,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       eewSpeechPendingRef.current = 0
       activeNonEewSpeechRef.current = null
       latestScheduledSeqByTopicRef.current.clear()
+      latestScheduledSeqByPriorityRef.current.clear()
       window.clearTimeout(obsStatusClearTimerRef.current)
       // 間を置いている最中の読み上げも捨てる（`resetTracking` と対称）
       cancelPendingSpeech()
@@ -3526,6 +3665,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     eewSpeechPendingRef.current = 0
     activeNonEewSpeechRef.current = null
     latestScheduledSeqByTopicRef.current.clear()
+    latestScheduledSeqByPriorityRef.current.clear()
     eewPhase2DoneRef.current.clear()
     // 第 1.5 フェーズ（警報の対象地方）の既読と予約。**第 2 フェーズの対と揃えて落とす** ——
     // 落とし忘れると、同じ `eventId` を再生し直したとき「もう声にした」と判定されて

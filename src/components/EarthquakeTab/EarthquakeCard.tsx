@@ -1,13 +1,16 @@
-import { useMemo, useRef, useEffect, useState } from 'react'
-import type { JMAQuake, JMALpgm, IssueType, EarthquakePoint, IntensityScale, JMAEstimatedIntensity } from '../../types/earthquake'
-import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor, lpgmCategoryNote, buildLpgmRows } from '../../utils/lpgm'
+import { Fragment, useMemo, useRef, useEffect, useState } from 'react'
+import type { JMAQuake, JMALpgm, IssueType, EarthquakePoint, IntensityScale, JMAEstimatedIntensity, QuakeReportRecord } from '../../types/earthquake'
+import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor, lpgmCategoryNote, buildLpgmRows, canOpenLpgmNotes } from '../../utils/lpgm'
 import { estimatedIntensityFor, estimatedIntensityAvailability } from '../../utils/estimatedIntensity'
+import { telegramTextSubject } from '../../utils/ttsFollow'
+import { useAutoOpenWhileSpeakingIn } from '../../hooks/useAutoOpenWhileSpeaking'
+import { SerialBadge } from '../SerialBadge'
 import {
   formatQuakeTime,
   formatDepth,
   formatDomesticTsunami,
   TSUNAMI_WARNING_GROUP_TITLE,
-  formatQuakeReports,
+  quakeReportLabels,
   formatCorrectType,
   hasHypocenterFacts,
   hasMagnitude,
@@ -356,12 +359,43 @@ interface Props {
   onToggleUnreceived?: () => void
   /** 一覧の行をクリックしたときに、その場所へ地図を寄せる（1 点でも範囲でも）。 */
   onFocusMap?: (positions: LatLng[]) => void
+  /**
+   * いま気象庁が書いた文を読み上げている主題（読んでいなければ null）。
+   * このカードの長周期の補足が対象なら、読み上げのあいだ開く（→ `useAutoOpenWhileSpeakingIn`）。
+   *
+   * **任意にしない**（理由は `EarthquakeTab` の同名 props）。
+   */
+  speakingTelegramTextSubject: string | null
+}
+
+/**
+ * 種別ヘッダーに出す「受け取った電文種別」。→ `quakeReportLabels`
+ *
+ * **報番号の見た目は緊急地震速報と共有する**（→ `components/SerialBadge.tsx`）。同じ器に出す
+ * もので、別々に書くと片方だけ変わる。
+ *
+ * **鍵には並び順も混ぜる。** 同じ種別が 2 件並ばないことは統合の側（`utils/quakeMerge.ts` の
+ * `mergeQuakeReports` が種別ごとに 1 件へ畳む）が保証しているが、**そこが崩れたときの症状が
+ * 「種別が 1 つ黙って消える」になる** —— React は鍵が重なった要素を畳むだけで例外を投げない。
+ */
+function QuakeReportHeading({ reports, fallback }: { reports?: QuakeReportRecord[]; fallback: IssueType }) {
+  return (
+    <>
+      {quakeReportLabels(reports, fallback).map((label, index) => (
+        <Fragment key={`${index}:${label.type}`}>
+          {index > 0 && ' / '}
+          {label.type}
+          {label.count != null && <SerialBadge serial={label.count} />}
+        </Fragment>
+      ))}
+    </>
+  )
 }
 
 export function EarthquakeCard({
   quake, isLatest, isSelected, onSelect, lpgm, activeLpgmEventId, onToggleLpgm,
   estimatedIntensity = null, distributionActive = false, onToggleDistribution,
-  unreceivedActive = false, onToggleUnreceived, onFocusMap,
+  unreceivedActive = false, onToggleUnreceived, onFocusMap, speakingTelegramTextSubject,
 }: Props) {
   const { earthquake, issue } = quake
   const { hypocenter, maxScale, domesticTsunami } = earthquake
@@ -375,14 +409,8 @@ export function EarthquakeCard({
   // 長周期の「観測情報の種類」から出す一文（値 2・4 のときだけ。→ `lpgmCategoryNote`）。
   // 条件と本文の両方で使うので一度だけ計算する。
   const categoryNote = lpgmCategoryNote(lpgm?.category)
-  /**
-   * 気象庁が長周期地震動に添えた補足（付加文 3 種＋詳細ページ）を 1 つでも持つか。
-   *
-   * **1 つも無ければ見出しを出さない。** 開いても何も出ないのに押せる見た目だけ与えると、
-   * 何が起きないのか利用者に分からない（津波の付加文と同じ考え方
-   * → docs/spec/tsunami-spec.md §9「気象庁が書いた文は、行動指示の行から開く」）。
-   */
-  const hasLpgmNotes = !!lpgm && !!(lpgm.forecastText || lpgm.varCommentText || lpgm.freeFormText || lpgm.uri)
+  /** 補足の見出しを出すか（判定は読み上げ側の診断と共有する → `canOpenLpgmNotes`）。 */
+  const hasLpgmNotes = canOpenLpgmNotes(lpgm)
   // 震度分布ボタン。**引き当てはここで行う** —— この電文は識別子を持たないので、
   // 発現時刻で突き合わせる（→ `estimatedIntensityFor`）。
   const matchedEstimated = estimatedIntensityFor(quake, estimatedIntensity)
@@ -422,6 +450,26 @@ export function EarthquakeCard({
     return next
   })
   const lpgmNotesOpen = expanded.has(LPGM_NOTES_KEY)
+  const setLpgmNotesOpen = (open: boolean) => setExpanded(prev => {
+    const next = new Set(prev)
+    if (open) next.add(LPGM_NOTES_KEY); else next.delete(LPGM_NOTES_KEY)
+    return next
+  })
+  /**
+   * **この地震の**長周期の補足をいま読み上げているか。
+   *
+   * 主題は電文の種別だけでなく地震の識別子まで含む（→ `telegramTextSubject`）。カードは
+   * 複数並ぶので、種別だけで判定すると読んでいるのとは別の地震の補足まで開く。
+   * **「いま選ばれているカード」で代用しない** —— 選択は受信した瞬間に動き、読み上げの
+   * 順番とは独立している（未入電モードの自動開閉と同じ規約）。
+   */
+  const speakingLpgmNotes = !!lpgm
+    && speakingTelegramTextSubject === telegramTextSubject('lpgm', lpgm.eventId)
+  // 読み上げているあいだだけ開く（自分が開いた分だけ閉じる）。**状態は `expanded` が持つ**
+  // ので、判定を書き写さず状態の持ち主を渡せる版を使う。
+  const setLpgmNotesOpenByUser = useAutoOpenWhileSpeakingIn(
+    speakingLpgmNotes, lpgmNotesOpen, setLpgmNotesOpen,
+  )
 
   /**
    * 未入電の点を切り分けた結果と、名前の解決に使う索引。**バッジとブロックで共有する。**
@@ -669,10 +717,10 @@ export function EarthquakeCard({
             borderBottom: `1px solid ${typeStyle.headerBorder}`,
           }}
         >
-          {/* 受け取った電文種別を `/` でつないで出す（→ `formatQuakeReports`）。気象庁は
+          {/* 受け取った電文種別を `/` でつないで出す（→ `QuakeReportHeading`）。気象庁は
               震度速報 → 震源情報 → 震度速報 … と前後して発表するため、最後に届いた 1 種別だけ
               だと「震源情報も受け取っている」ことが画面から消える。**色は代表種別のまま**。 */}
-          {formatQuakeReports(quake.reports, issue.type)}
+          <QuakeReportHeading reports={quake.reports} fallback={issue.type} />
           {/* 電文が自分で名乗っている運用種別（`Control/Status`）。訓練・試験のときだけ出す。
               **本物と見分けられるようにする** —— 検証用に受信した試験報もカードへ流している。 */}
           {quake.operationStatus && (
@@ -757,14 +805,16 @@ export function EarthquakeCard({
 
               開閉は `<div role="button">` で作る（カード自体が `<button>` なので入れ子にできない。
               震度一覧の行と同じ作法）。 */}
-          {lpgm && lpgm.maxClass >= 1 && hasLpgmNotes && (
+          {hasLpgmNotes && (
             <div
               role="button"
               tabIndex={0}
               aria-expanded={lpgmNotesOpen}
-              onClick={(e) => { e.stopPropagation(); toggle(LPGM_NOTES_KEY) }}
+              onClick={(e) => { e.stopPropagation(); setLpgmNotesOpenByUser(!lpgmNotesOpen) }}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); e.preventDefault(); toggle(LPGM_NOTES_KEY) }
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.stopPropagation(); e.preventDefault(); setLpgmNotesOpenByUser(!lpgmNotesOpen)
+                }
               }}
               className="text-secondary w-fit cursor-pointer hover:text-white transition-colors"
               style={{ fontSize: '0.75rem', lineHeight: 1.5 }}
@@ -1268,7 +1318,7 @@ export function EarthquakeCard({
             {/* 畳んだ表示。開いた表示（上）と同じ語を出す。 */}
             <span className="text-base text-secondary flex-shrink-0">{formatQuakeTime(earthquake.time) ?? '発生時刻不明'}</span>
             <span className={`text-xs px-1.5 py-0.5 rounded min-w-0 truncate ${issueTypeBadgeClass(issue.type)}`}>
-              {formatQuakeReports(quake.reports, issue.type)}
+              <QuakeReportHeading reports={quake.reports} fallback={issue.type} />
             </span>
             {quake.operationStatus && (
               <span className="text-xs px-1.5 py-0.5 rounded font-bold flex-shrink-0" style={{ backgroundColor: '#1f2937', color: '#fcd34d', border: '1px solid #d97706' }}>

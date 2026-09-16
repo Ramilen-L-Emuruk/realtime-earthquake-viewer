@@ -30,6 +30,43 @@ export const PRE_WINDOW_MS = 24 * 3600_000
 export const PREFETCH_MARGIN_MS = 10 * 60_000
 
 /**
+ * 再生を受け付ける最も古い時刻。**これより前はどの取得元にもデータが無い。**
+ *
+ * 同梱のローカル履歴アーカイブの最古が 2016 年（熊本地震）、DMDATA のアーカイブは
+ * 2020-11-18 から。ここは「明らかにあり得ない」だけを弾く下限で、実在する収録範囲の
+ * 判定ではない（そちらは `findCoveringArchiveSync` が持つ）。
+ *
+ * **入口で弾かないと、範囲外の指定がそのまま全取得元へ流れる。** 2026-09-15 に
+ * `window.__replay.start()` へ数値を渡して再生時刻が 1969 年になったとき、
+ * DMDATA の電文一覧へ 399 件・強震モニタへ 177 件のリクエストが飛んだ
+ * （どちらも対象のデータは 1 件も無い）。
+ */
+export const REPLAY_EARLIEST_MS = Date.UTC(2016, 0, 1)
+
+/**
+ * 再生を受け付ける未来側の余裕 (ms)。
+ *
+ * 「いま」を指定する操作は正常なので、時計のずれぶんは通す。それより先は電文が存在しない。
+ */
+export const REPLAY_FUTURE_MARGIN_MS = 60 * 60_000
+
+/**
+ * その時刻から再生を始めてよいか。**駄目な理由を文面で返す**（`null` なら始めてよい）。
+ *
+ * 取得を 1 件も投げる前に判定する。取得元ごとに「無い時代」の扱いが違うので、
+ * 下流へ流すと取得元の数だけ空振りのリクエストが出る。
+ */
+export function replayTargetProblem(targetDate: Date, nowMs: number): string | null {
+  const ms = targetDate.getTime()
+  if (!Number.isFinite(ms)) return '再生する日時として読み取れません'
+  if (ms < REPLAY_EARLIEST_MS) {
+    return `${new Date(REPLAY_EARLIEST_MS).getFullYear()} 年より前は再生できません（どの取得元にもデータがありません）`
+  }
+  if (ms > nowMs + REPLAY_FUTURE_MARGIN_MS) return '未来の時刻は再生できません'
+  return null
+}
+
+/**
  * 地震カードの履歴として集めるイベント数。
  *
  * ライブ接続時の初回履歴と同じ枚数にする。初期状態の 24 時間だけでカードを作ると、地震の
@@ -211,6 +248,14 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
   depsRef.current = deps
 
   const start = useCallback(async (targetDate: Date) => {
+    // **取得を 1 件も投げる前に弾く。** 範囲外の指定を下流へ流すと、取得元の数だけ
+    // 空振りのリクエストが出る（→ `replayTargetProblem`）。
+    const problem = replayTargetProblem(targetDate, Date.now())
+    if (problem !== null) {
+      log.error(`[replay] 再生を始められません: ${problem} (targetDate=${String(targetDate)})`)
+      setFetchError(problem)
+      return
+    }
     log.info(`[replay] リプレイ開始 targetDate=${targetDate.toISOString()}`)
     const session = guard.begin()
     const d = depsRef.current
