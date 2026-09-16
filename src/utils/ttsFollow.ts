@@ -28,6 +28,7 @@ import { log } from './logger'
  * |---|---|
  * | `grade` / `area` / `station` | 津波カードの行を引く（追従スクロール） |
  * | `quakeRegion` / `quakeFact` | 地震情報で「実際に声になった内容」を記録する（続報の差分） |
+ * | `quakeObserved` | 地震情報で「その報が運んでいた観測点・市町村」を記録する（区域より下の階層の差分） |
  * | `unreceivedNote` | 未入電の説明文（「…では、震度5弱以上と推定されますが、未入電です。」）。**名前を指さない** |
  *
  * `grade` は等級のカードそのもの（「大津波警報」「津波警報」の見出し）を指す。等級を言った
@@ -43,6 +44,7 @@ export type SpeechRef =
   | { kind: 'station'; name: string }
   | { kind: 'quakeRegion'; name: string; scale: number; unreceived?: boolean }
   | { kind: 'quakeFact'; fact: QuakeFact; value: string }
+  | { kind: 'quakeObserved'; observed: SpokenObservation }
   | { kind: 'unreceivedNote' }
   | { kind: 'telegramText' }
 
@@ -63,6 +65,46 @@ export type SpeechRef =
  * ためだけの印（→ {@link hasTelegramTextFollowTarget}）。どの電文の文かは参照ではなく
  * セッションの `subject` が持つ —— 参照に種別を持たせると、既読の記録へ混ざる形が増える。
  */
+
+/**
+ * 声になった報が運んでいた観測点・市町村。**区域より下の階層の差分を出すため**だけに持つ。
+ *
+ * 読み上げの地域名は一次細分区域までしか下りないので、区域の最大震度が据え置きのまま
+ * 観測点だけが増えた続報は差分が空になる（実例は `docs/spec/audio-tts-spec.md` 改訂履歴
+ * 2026-09-17）。それを「変わりはありません」と言い切ってしまわないよう、下の階層の変化を
+ * 見るための材料をここへ置く。
+ *
+ * **配列の参照をそのまま持つ。集合（Map）へ組み直さない。** 電文の `points` / `cities` は
+ * 地震カードが既に持っている配列で、こちらはそれを指すだけなのでメモリは増えない
+ * （`QuakeSpokenState` は最大 100 地震ぶんを抱えるので、1 件あたり数百〜千の観測点を持つ
+ * 大きな地震では Map を毎回作る作りが効いてくる）。
+ * 突き合わせは続報が届いた瞬間の 1 回だけで足りる（→ `ttsText.ts` の `observationChange`）。
+ *
+ * **型を `EarthquakePoint` / `JMAQuakeCity` で書かない。** このファイルは読み上げの追従を
+ * 計算する純関数の置き場で、電文の型へ依存させたくない。必要な分だけを構造で書けば実物は
+ * そのまま渡せる。
+ *
+ * **記録を進めるのは声になった時点**（地震側の他の参照と同じ規律 → {@link applySpokenRefs}）。
+ * 受信時に進めると、割り込みで鳴らなかった報の観測点まで「伝えた」ことになり、次の報で
+ * 「変わりはありません」と嘘を言う。
+ */
+export interface SpokenObservation {
+  /** 電文の `points`（区域・都道府県の集約点も混ざる。観測点は `isArea` が偽のものだけ） */
+  readonly points: readonly {
+    readonly addr: string
+    readonly code?: string
+    readonly scale: number
+    readonly isArea: boolean
+    readonly pref: string
+  }[]
+  /** 電文の `cities`（市町村。DMDATA の XML 経路でのみ入る） */
+  readonly cities: readonly {
+    readonly name: string
+    readonly code?: string
+    readonly scale: number
+    readonly pref: string
+  }[]
+}
 
 /**
  * 地震情報が伝える「震度の地域以外の事実」。続報で変化したものだけを読むための単位。
@@ -108,6 +150,10 @@ function sameRef(a: SpeechRef, b: SpeechRef): boolean {
   // 起きないが、名前だけで同一とみなすと将来そうなったときに階級の低い側へ丸められる。
   if (a.kind === 'quakeRegion' && b.kind === 'quakeRegion') return a.name === b.name && a.scale === b.scale && !a.unreceived === !b.unreceived
   if (a.kind === 'quakeFact' && b.kind === 'quakeFact') return a.fact === b.fact && a.value === b.value
+  // 観測点の記録は 1 つの読み上げ文に高々 1 つしか載らないので、**参照が同じか**で足りる。
+  // 中身（811 点になりうる）を突き合わせない —— ここは重複排除のための比較で、変化の検出は
+  // `ttsText.ts` の `observationChange` が担う。
+  if (a.kind === 'quakeObserved' && b.kind === 'quakeObserved') return a.observed === b.observed
   // 未入電の説明文の印は中身を持たないので、同じ種類なら同一。**扱わないと重複排除が効かない**
   // （`mapChunksToRefs` は `sameRef` で既出かを見るため、同じチャンクへ何度も積まれる）。
   if (a.kind === 'unreceivedNote' && b.kind === 'unreceivedNote') return true

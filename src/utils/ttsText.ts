@@ -2,7 +2,7 @@ import type { LiveEvent, EEWAlert, JMAQuake, JMATsunami, JMANankai, JMANankaiCom
 import { eewNoForecastReason, canPresentLpgmClass, type EewMaxScaleInfo } from './eew'
 import { getIntensityLabel, getIntensityLabelWithApproxAbove } from './intensity'
 import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, hasForecastHeight, compareObservedHeightDesc, overSuffixedHeight, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, TSUNAMI_GRADE_LIFTED, type TsunamiAreaGradeChange } from './tsunami'
-import { joinSegments, plain, type SpeechSegment, type SpeechRef, type QuakeFact } from './ttsFollow'
+import { joinSegments, plain, type SpeechSegment, type SpeechRef, type QuakeFact, type SpokenObservation } from './ttsFollow'
 import { getSubRegionsCache } from './subregions'
 import { getPrefecturesCache } from './prefectures'
 import { getStationCoordsCache, getAreaPrefIndexCache, buildStationPrefIndex, buildPrefAreaNamesIndex, buildRegionOrderIndex, regionOrderRank, sortByRegionOrder, lookupStationRegion, type StationCoordsData, type RegionOrderIndex } from './stationCoords'
@@ -305,6 +305,13 @@ export interface QuakeSpokenState {
   readonly regions: Map<string, SpokenRegion>
   /** 声になった震源要素・津波区分。キーごとに最後に伝えた値を持つ */
   readonly facts: Map<QuakeFact, string>
+  /**
+   * 最後に声にした報が運んでいた観測点・市町村（→ {@link SpokenObservation}）。
+   *
+   * **他の 2 つと違って履歴を積まず、最後の 1 つで置き換える。** 知りたいのは「前に伝えた報と
+   * 比べて増えたか」であって、どの観測点を読み上げたかではない（観測点名は声にならない）。
+   */
+  observed?: SpokenObservation
 }
 
 /** 空の {@link QuakeSpokenState} を作る。 */
@@ -332,6 +339,10 @@ export function applySpokenRefs(state: QuakeSpokenState, refs: readonly SpeechRe
       if (forward) state.regions.set(ref.name, { scale: ref.scale as IntensityScale, unreceived: !!ref.unreceived })
     } else if (ref.kind === 'quakeFact') {
       state.facts.set(ref.fact, ref.value)
+    } else if (ref.kind === 'quakeObserved') {
+      // **置き換える（積まない）。** 次の報と比べる基準は「最後に伝えた報」なので、
+      // 古い報の観測点を残しても使い道がない。
+      state.observed = ref.observed
     }
   }
 }
@@ -1429,16 +1440,173 @@ function changedFactSegments(event: JMAQuake, spoken: QuakeSpokenState, opts?: T
 }
 
 /**
+ * 区域より下の階層（観測点・市町村）に、前に声にした報から何が起きたか。
+ *
+ * | 値 | 意味 |
+ * |---|---|
+ * | `added` | 観測点か市町村が増えた |
+ * | `updated` | 顔ぶれは同じだが震度が動いた |
+ * | `none` | どちらも起きていない（＝本当に変化が無い） |
+ * | `unknown` | 比べる相手がいない（この地震でまだ 1 通も声にしていない） |
+ *
+ * **`none` と `unknown` を混ぜないこと。** 前者は「変わりはありません」と言い切ってよい根拠だが、
+ * 後者は何も判らないだけで、言い切ると嘘になりうる。
+ */
+type ObservationChange = 'added' | 'updated' | 'none' | 'unknown'
+
+/**
+ * 観測点を指す鍵。**コードがあれば優先する** —— 観測点名は全国で一意とは限らない。
+ * DMDATA の観測点は `pref` が空なので、名前へ落ちたときは実質 `addr` だけで引く。
+ */
+function stationKey(p: { code?: string; pref: string; addr: string }): string {
+  return p.code ? `c:${p.code}` : `n:${p.pref}|${p.addr}`
+}
+
+/** 市町村を指す鍵（観測点と同じ規則）。 */
+function cityKey(c: { code?: string; pref: string; name: string }): string {
+  return c.code ? `c:${c.code}` : `n:${c.pref}|${c.name}`
+}
+
+/**
+ * 前に声にした報と、いまの電文を突き合わせる。
+ *
+ * **なぜ電文の `Revise` を使わないか。** 気象庁は続報の観測点・市町村へ `追加` `上方修正`
+ * `下方修正` を書いており（→ `EarthquakePoint.revise`）、実電文で突き合わせの結果と一致することも
+ * 確かめた（実例は `docs/spec/audio-tts-spec.md` 改訂履歴 2026-09-17）。それでも採らない。
+ *
+ * - **問いが違う。** `Revise` が答えるのは「**直前の報**から何が変わったか」。こちらが要るのは
+ *   「**最後に声にした報**から何が変わったか」で、割り込みで鳴らなかった報があると食い違う
+ *   （記録を声になった分だけ進める規律の帰結 → `docs/spec/audio-tts-spec.md` §4）。
+ * - **P2PQuake 経路が `Revise` を持たない。** standard 版だけ黙ることになる。
+ *
+ * 突き合わせなら両方を満たせる。`Revise` は逆に**検証の材料**として使える（テストで実電文の
+ * 値と突き合わせの結果が一致することを固定してある）。
+ *
+ * **区域・都道府県の集約点（`isArea`）は数えない。** あれは区域の差分がもう見ており、
+ * 増えていればこの関数を呼ぶ経路（差分が空）へそもそも入らない。
+ */
+function observationChange(event: JMAQuake, spoken: QuakeSpokenState): ObservationChange {
+  const prev = spoken.observed
+  if (!prev) {
+    // **正常な見送りと、機能が死んでいるのを見分けられるようにする。** その地震でまだ 1 通も
+    // 声にしていないなら比べる相手がいないのは当たり前だが、区域や震源要素は何度も声にして
+    // いるのに観測点の記録だけ無いなら、**発話が毎回割り込まれて最後の断片まで届いていない**
+    // （記録はチャンク単位で進み、この参照は最後の断片に載っているため）。後者は黙るだけで
+    // 嘘は言わないが、この一文が永久に出なくなる。
+    if (spoken.regions.size > 0 || spoken.facts.size > 0) {
+      log.debug('[tts] 観測点の記録が無いため、区域より下の階層の変化を判定できない（発話が最後まで鳴っていない可能性）')
+    }
+    return 'unknown'
+  }
+
+  // 鍵が衝突したら記録を残す。**黙って上書きすると、別の観測点の震度と突き合わせて
+  // 「変わりなし」とも「更新された」とも誤りうる**（どちらも嘘）。`code` は実電文でほぼ必ず
+  // 入るので、ここへ来るのは配信の形が変わったとき。
+  const indexOf = <T,>(items: readonly T[], keyOf: (x: T) => string, scaleOf: (x: T) => number, what: string): Map<string, number> => {
+    const map = new Map<string, number>()
+    let collisions = 0
+    for (const item of items) {
+      const key = keyOf(item)
+      if (map.has(key)) collisions++
+      map.set(key, scaleOf(item))
+    }
+    if (collisions > 0) log.warn(`[tts] ${what}の鍵が重複した（${collisions} 件）。区域より下の階層の変化を誤って判定しうる`)
+    return map
+  }
+
+  const nowStations = event.points.filter(p => !p.isArea)
+  const prevStations = indexOf(prev.points.filter(p => !p.isArea), stationKey, p => p.scale, '観測点')
+  const nowCities = event.cities ?? []
+  const prevCities = indexOf(prev.cities, cityKey, c => c.scale, '市町村')
+
+  // **減ったことは見ない。** 気象庁は観測点を取り下げず（`Revise` の値域は追加・上方修正・
+  // 下方修正だけ）、減って見える形は**種別の違い**で起きる ―― 震度速報は区域までしか運ばないので、
+  // 地震情報のあとに震度速報が届けば観測点は「消えた」ように見える。それを変化として扱うと
+  // 種別が前後するたびに誤って読む。**実際に減る電文を観測したわけではなく、減らない前提を
+  // 置いている**（減った場合は黙って `none` へ落ちる）。
+  let updated = false
+  for (const p of nowStations) {
+    const before = prevStations.get(stationKey(p))
+    if (before === undefined) return 'added'
+    if (before !== p.scale) updated = true
+  }
+  for (const c of nowCities) {
+    const before = prevCities.get(cityKey(c))
+    if (before === undefined) return 'added'
+    if (before !== c.scale) updated = true
+  }
+  return updated ? 'updated' : 'none'
+}
+
+/**
+ * 「更新されました」のあとに続ける一文。**名乗りだけで終わらせないための断片。**
+ *
+ * 読み上げの地域名は一次細分区域までしか下りないので、区域の最大震度が据え置きのまま
+ * 観測点だけが増えた続報は差分が空になる。そのとき「更新されました。」で切ると、聞き手には
+ * 「何が？」しか残らない。
+ *
+ * **「地域ごとの最大震度」と言い切る。** 「各地の震度」では市町村の段を含んで読めてしまい、
+ * そちらは実際に上がっていることがある。読み上げが伝えてきた単位＝区域の最大震度に限れば、
+ * 据え置きであることは正しい（実例は `docs/spec/audio-tts-spec.md` 改訂履歴 2026-09-17）。
+ *
+ * **区域より下の階層を運ぶ種別（地震情報）専用。** 震度速報（区域まで）と震源情報（震源要素のみ）は
+ * **そもそも探す先が無い**ので、区域・震源要素の差分が空ならそれだけで「変わりはありません」と
+ * 言い切れる。観測点の記録を待たせない ―― あちらは `points` を運ばないので記録が作られず、
+ * 待たせると永久に名乗りだけで終わる。
+ *
+ * @param change 区域より下の階層で起きたこと
+ */
+function noRegionChangeSegments(change: ObservationChange): SpeechSegment[] {
+  if (change === 'unknown') return []
+  if (change === 'added') return [plain('観測地点が追加されましたが、地域ごとの最大震度は変わっていません。')]
+  if (change === 'updated') return [plain('観測された震度が更新されましたが、地域ごとの最大震度は変わっていません。')]
+  return [plain('内容に変わりはありません。')]
+}
+
+/**
+ * その報が運んでいた観測点・市町村を、**読み終えたときに記録する**ための参照を最後の断片へ足す。
+ *
+ * **最後の断片に載せる。** 途中で切られた発話は記録を進めない（次の報でもう一度伝える）。
+ * 断片を増やさず既存の最後のものへ足すのは、空文字の断片がチャンクの割り当てを乱すため。
+ * 割り当てはチャンク単位なので、その断片が読点で複数チャンクに割れればどれが鳴っても記録は進む。
+ *
+ * **観測点も市町村も運んでいない報では記録を発行しない。** 同じ地震の記録は種別を跨いで共有されるので
+ * （`quakeSpeechTopic`）、**空で上書きすると前に伝えた観測点が記録から消える**。次の報は
+ * 「比べる相手がいない」ではなく「全部が初出」と読み、何も増えていないのに
+ * 「観測地点が追加されました」と**嘘を言う**。気象庁は種別の違う電文を前後して発表するので、
+ * これは実運用で起きる順序（→ 設定タブ「種別遷移テスト」がその順序そのもの）。
+ *
+ * **数えるのは観測点（`isArea` が偽）と市町村だけ。`points` の件数で見ない。** 震度速報は
+ * `points` に**区域と都道府県の集約点だけ**を積むので、件数で見ると「運んでいる」と誤判定し、
+ * 観測点ゼロの記録で上書きしてしまう（震源情報・VXSE61 と同じ結果になる）。
+ */
+function withObservedRef(segments: SpeechSegment[], event: JMAQuake): SpeechSegment[] {
+  if (segments.length === 0) return segments
+  const carriesStations = event.points.some(p => !p.isArea)
+  if (!carriesStations && (event.cities?.length ?? 0) === 0) return segments
+  const observed: SpokenObservation = { points: event.points, cities: event.cities ?? [] }
+  const last = segments[segments.length - 1]
+  return [
+    ...segments.slice(0, -1),
+    { ...last, refs: [...last.refs, { kind: 'quakeObserved', observed }] },
+  ]
+}
+
+/**
  * VXSE51/52/53/61 地震情報の読み上げを断片列で生成する。
  * isNew=false のとき更新報として冒頭に通知する。
  *
  * `spoken` を渡すと**続報は差分だけを読む**（既に声になった区域・震源要素を省く）。
  * 省略すると全文を組み立てる（{@link earthquakeToText} 経由の呼び出し）。
  *
- * 差分が空になったときは**空配列を返す＝読み上げない**。ただしその地震について一度も何も
- * 声にしていない場合は黙らない（最大震度だけでも伝える）。
+ * 差分が空になっても**名乗りは読む**（黙らない。理由は下の `return` のコメント）。名乗りだけで
+ * 終わらせないための一文は {@link noRegionChangeSegments} が足す。
+ *
+ * **これは内側の組み立て。** 呼び出し側が使うのは {@link earthquakeToSegments} で、あちらが
+ * 観測点の記録（{@link withObservedRef}）を最後の断片へ載せる。ここへ直接足さないのは、
+ * `return` が 6 つあり 1 つ書き忘れても型検査もテストも通ってしまうため。
  */
-export function earthquakeToSegments(
+function buildEarthquakeSegments(
   event: JMAQuake,
   opts: TtsSpeechOptions,
   isNew: boolean,
@@ -1476,9 +1644,21 @@ export function earthquakeToSegments(
       ? maxScaleOnlySegments(maxScale, spoken, isMaxScaleUnreceived(maxScale, event.points))
       : []
     // **伝えることが無くても名乗りは読む。** 黙ると「電文が来たのに何も起きなかった」ようにしか
-    // 聞こえない。「更新されました」だけで終われば、変化が無かったことが対比で伝わる
-    // （docs/spec/audio-tts-spec.md §4）。
-    return [plain(prefix), ...fallback]
+    // 聞こえない（docs/spec/audio-tts-spec.md §4）。
+    //
+    // **ただし名乗りだけでは終わらせない。** 「更新されました」で切ると、聞き手には「何が？」しか
+    // 残らない。**震度速報は区域までしか運ばない種別**なので（実測: 電文に `IntensityStation` も
+    // `City` も 1 件も入らない）、区域の差分が空ならそれだけで「変わりがない」と言い切れる
+    // ―― 観測点の記録は見ない（この種別では作られないので、待たせると永久に名乗りだけで終わる）。
+    //
+    // **震度について何かを伝えたことがあるのを条件にする。** 区域を挙げた地震はもちろん、
+    // 地域名を作れず最大震度だけを伝えた地震（`maxScaleOnly`）でも「変わりはない」と言い切れる。
+    // どちらも無い（震度そのものを一度も声にしていない）なら根拠が無いので黙る。
+    const toldIntensity = !!spoken && (spoken.regions.size > 0 || spoken.facts.has('maxScaleOnly'))
+    const noChange = !isNew && spoken && fallback.length === 0 && toldIntensity
+      ? [plain('観測した震度に変わりはありません。')]
+      : []
+    return [plain(prefix), ...fallback, ...noChange]
   }
 
   const time = formatTime(event.earthquake.time)
@@ -1566,7 +1746,21 @@ export function earthquakeToSegments(
       ? maxScaleOnlySegments(maxScale, spoken, isMaxScaleUnreceived(maxScale, event.points))
       : []
     // 伝えることが無くても名乗りは読む（理由は震度速報の同じ箇所）。
-    return [plain(`${label}が更新されました。`), ...facts, ...regionSegs, ...unreceivedSegs, ...fallback]
+    //
+    // **名乗りだけで終わるなら、区域より下の階層を見て中身を足す。** 読み上げの地域名は
+    // 一次細分区域までしか下りないので、区域の最大震度が据え置きのまま観測点だけが増えた
+    // 続報はここへ落ちる（実例は `docs/spec/audio-tts-spec.md` 改訂履歴 2026-09-17）。
+    //
+    // **震源情報・その他（`isEpicenterOnly`）は震源要素しか運ばない**ので、その差分が空なら
+    // それだけで言い切れる（観測点の記録は見ない。この種別では作られない）。下の階層を持つのは
+    // 震源・震度情報（VXSE53）と各地の震度情報（P2PQuake）だけ。
+    const nothingSaid = facts.length === 0 && regionSegs.length === 0 && unreceivedSegs.length === 0 && fallback.length === 0
+    const noChange = !nothingSaid
+      ? []
+      : isEpicenterOnly
+        ? [plain('震源の内容に変わりはありません。')]
+        : noRegionChangeSegments(observationChange(event, spoken))
+    return [plain(`${label}が更新されました。`), ...facts, ...regionSegs, ...unreceivedSegs, ...fallback, ...noChange]
   }
 
   const prefix = isNew ? `${label}。` : `${label}が更新されました。`
@@ -1588,6 +1782,26 @@ export function earthquakeToSegments(
     else if (!spoken || spoken.regions.size === 0) segments.push(...maxScaleOnlySegments(maxScale, spoken, isMaxScaleUnreceived(maxScale, event.points)))
   }
   return segments
+}
+
+/**
+ * VXSE51/52/53/61 地震情報の読み上げを断片列で生成する（引数の意味は
+ * {@link buildEarthquakeSegments}）。
+ *
+ * 組み立てた断片列の**最後に、その報が運んでいた観測点・市町村への参照を足す**。これが
+ * 次の報で「区域の震度は据え置きだが観測点は増えた」を見分ける材料になる
+ * （→ {@link observationChange}）。**入口を 1 つにしてあるのは、内側の `return` が 6 つあり、
+ * 分岐ごとに足す形にすると書き忘れても何も起きないから**（読み上げは普段どおり鳴り、
+ * 続報で「変わりはありません」と嘘を言うようになるだけで、例外もログも出ない）。
+ */
+export function earthquakeToSegments(
+  event: JMAQuake,
+  opts: TtsSpeechOptions,
+  isNew: boolean,
+  spoken?: QuakeSpokenState,
+  readAllRegions = false,
+): SpeechSegment[] {
+  return withObservedRef(buildEarthquakeSegments(event, opts, isNew, spoken, readAllRegions), event)
 }
 
 /** VXSE51/52/53/61 地震情報の読み上げテキストを生成する。isNew=false のとき更新報として冒頭に通知する。 */
