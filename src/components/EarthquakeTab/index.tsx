@@ -3,6 +3,9 @@ import type { JMAQuake, JMALpgm, JMAEstimatedIntensity } from '../../types/earth
 import { EarthquakeCard } from './EarthquakeCard'
 import { extractQuakeEventId, quakeEventKey } from '../../utils/quakeMerge'
 import type { LatLng } from '../../utils/stationCoords'
+import {
+  type TelegramLoss, formatHistoryLossNotice, HISTORY_LOAD_MORE_FAILED_NOTICE,
+} from '../../utils/telegramLoss'
 
 interface Props {
   earthquakes: JMAQuake[]
@@ -13,6 +16,13 @@ interface Props {
   hasMore: boolean
   onLoadMore: () => void
   error: string | null
+  /**
+   * 履歴取得で確定した損失。**カードが 1 件も無いときも出す** —— 出さないと
+   * 「7 日のうち 6 日が落ちて 0 件」が「まったく静かな期間だった」と同じ画になる。
+   */
+  historyLoss: TelegramLoss
+  /** 直近の「もっと見る」がまるごと失敗したか（押し直せば回復しうる側）。 */
+  loadMoreFailed: boolean
   lpgmByEventId: ReadonlyMap<string, JMALpgm>
   activeLpgmEventId: string | null
   onToggleLpgm: (eventId: string) => void
@@ -36,10 +46,31 @@ interface Props {
   speakingTelegramTextSubject: string | null
 }
 
+/**
+ * 履歴の一部が欠けたことを知らせる帯。
+ *
+ * **全画面のエラー表示（`error`）とは分ける。** あちらは 1 件も取れなかったときのもので、
+ * こちらは取れた分のカードを覆ってはいけない。色は生成データの取得失敗（`MapDataStatus`）と
+ * 揃える —— どちらも「一部が欠けている」という同じ重さの知らせだから。
+ */
+function HistoryNotice({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-300 roomy:text-sm roomy:px-3 roomy:py-2">
+      {children}
+    </div>
+  )
+}
+
 // 地震情報タブの右パネル。地震カードの一覧を表示し、クリックで地図表示対象を選択する。
 // 地図そのものは App が常時表示する。
 // React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
-export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, error, lpgmByEventId, activeLpgmEventId, onToggleLpgm, estimatedIntensity, distributionQuakeKey, onToggleDistribution, unreceivedQuakeKey, onToggleUnreceived, onFocusMap, speakingTelegramTextSubject }: Props) {
+export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, error, historyLoss, loadMoreFailed, lpgmByEventId, activeLpgmEventId, onToggleLpgm, estimatedIntensity, distributionQuakeKey, onToggleDistribution, unreceivedQuakeKey, onToggleUnreceived, onFocusMap, speakingTelegramTextSubject }: Props) {
+  // 履歴の一部が欠けたことを知らせる帯。**2 つを別に持つ**（確定した損失と、押し直せば
+  // 回復しうる失敗）。混ぜると、戻せない損失と戻せる失敗が同じ重さに見える。
+  const notices = [
+    formatHistoryLossNotice(historyLoss),
+    loadMoreFailed ? HISTORY_LOAD_MORE_FAILED_NOTICE : null,
+  ].filter((t): t is string => t !== null)
   // **1 件も無いときだけ読み込み中の画面にする。**
   // DMDSS 版の初回は電文本体の取得が配信元の上限に合わせて直列化されるため、全件が揃うのは
   // 数分後になる（→ `docs/spec/data-sources-spec.md` §2「取得の間隔を空ける」）。取得側は
@@ -69,14 +100,22 @@ export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selected
 
   if (earthquakes.length === 0) {
     return (
-      <div className="flex items-center justify-center h-full">
-        <p className="text-secondary text-sm">地震情報はありません</p>
+      <div className="flex flex-col h-full">
+        {notices.length > 0 && (
+          <div className="p-2 space-y-1.5 roomy:p-3 roomy:space-y-2">
+            {notices.map(text => <HistoryNotice key={text}>{text}</HistoryNotice>)}
+          </div>
+        )}
+        <div className="flex-1 flex items-center justify-center">
+          <p className="text-secondary text-sm">地震情報はありません</p>
+        </div>
       </div>
     )
   }
 
   return (
     <div className="p-2 space-y-1.5 roomy:p-3 roomy:space-y-2">
+      {notices.map(text => <HistoryNotice key={text}>{text}</HistoryNotice>)}
       {earthquakes.map((quake, i) => (
         <EarthquakeCard
           // QUAKE-4: 続報で id 末尾の serial が変わるたびに EarthquakeCard がリマウントされ、

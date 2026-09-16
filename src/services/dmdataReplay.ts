@@ -129,9 +129,132 @@ async function downloadArchive(url: string, apiKey: string): Promise<Map<string,
   return promise
 }
 
+/**
+ * 目録（`telegrams.json`）のパース結果。鍵はアーカイブの URL。
+ *
+ * **同じアーカイブの目録を何度も読み直すため。** 「もっと見る」は遡る日数を伸ばして取り直す形
+ * なので、押すたびに既に読んだ日の目録も `JSON.parse` し直す。リプレイの先読みも、1 日の中を
+ * 窓ごとに前へ進むあいだ同じ日の目録を毎回読む。
+ *
+ * **返した配列は書き換えないこと。** 控えの実体をそのまま渡している。
+ *
+ * 捨てるのは `clearParseCachesForTest()` だけ（理由はそちら）。
+ */
+const manifestCache = new Map<string, ManifestEntry[]>()
+
+/**
+ * 電文 1 通のパース結果。鍵は目録のエントリ id。
+ *
+ * **鍵に採れる理由**: 電文の中身は不変で、パース結果は `head.type` と本体だけで決まる。
+ * 目録の絞り込み（`includeTest`・窓・打ち切り）はパースに効かないので鍵へ含めなくてよい。
+ *
+ * **失敗は控えない。** 再パースさせて、警告と取りこぼしの数え方を控える前と変えないため
+ * （実運用では 0 件なので、再パースの費用はかからない）。
+ *
+ * **控えるのは履歴の取得（`fetchDmdataQuakeHistory`）だけ。** リプレイ本編
+ * （`fetchDmdataReplayEvents`）は窓を前へ進めながら読むので同じ電文を二度パースせず、
+ * 控えても寿命の長い入れ物が増えるだけになる。
+ *
+ * **上限は置かない。** 遡れるのは `MAX_HISTORY_DAYS` までで、アーカイブ 1 日ぶんは
+ * XML 版 8 通ほど（→ `data-sources-spec.md` §2）。
+ *
+ * **返したオブジェクトは書き換えないこと。** 控えの実体をそのまま渡している。書き換えは控える
+ * 前から画面の状態を壊すが（同じ参照が state にも載る）、控えると次の取得の入力まで汚れる。
+ */
+type ParsedTelegram =
+  | { kind: 'quake'; quake: JMAQuake }
+  | { kind: 'tsunami'; tsunami: JMATsunami }
+  | { kind: 'extra'; key: string; payload: ReplayPayload }
+
+const parsedTelegramCache = new Map<string, ParsedTelegram>()
+
+/**
+ * 目録の発表時刻を**本体のファイル名から補ったとき**の結果。鍵は目録エントリの id。
+ *
+ * **補えたものだけを控える。** 目録の時刻が読める通常の経路は控えない（`new Date()` 1 回で済む）。
+ *
+ * **控える目的は、同じ電文について同じ警告を繰り返さないこと。** 「もっと見る」もリプレイの
+ * 先読みも同じ日を何度も走査するので、控えないと押した回数だけ同じ行が並び、他の異常が埋もれる。
+ * **黙らせるのではなく、二度目は「もう解けている」として警告の手前で返す** —— 補えなかった
+ * ときは控えないので、そちらの記録と取りこぼしの数え方は変わらない。
+ *
+ * 捨てるのは `clearParseCachesForTest()` だけ（理由はそちら）。
+ */
+const manifestFallbackTimeCache = new Map<string, Date>()
+
 export function clearReplayCache(): void {
   archiveCache.clear()
   clearLiveReplayCache()
+}
+
+/**
+ * テスト用。目録・電文のパース結果の控えを空にする。
+ *
+ * **`clearReplayCache()` では捨てない。** 3 つの控えはどれも**内容に対して不変な鍵**
+ * （アーカイブの URL・電文の id）で引くので、時間軸が変わっても中身は同じもの ——
+ * 捨てる正当性が無い。捨てると、同じ日を何度も再生し直す使い方でそのたびに解析し直す
+ * （アーカイブ本体の控えが「開始をまたいで残す」形へ変わったのと同じ理由。
+ * → `data-sources-spec.md` §2）。
+ *
+ * **テストだけは捨てる必要がある。** テストの目録は `aaaaaaa1` のような作り物の id を
+ * 使い回すので、残すと別のテストが仕込んだ中身を引く。
+ */
+export function clearParseCachesForTest(): void {
+  manifestCache.clear()
+  parsedTelegramCache.clear()
+  manifestFallbackTimeCache.clear()
+}
+
+/**
+ * アーカイブの中から、その目録エントリの本体ファイル名を探す。
+ *
+ * 目録の id は 8 桁目以降がアーカイブ内のファイル名と一致しないため、先頭 7 桁で引く。
+ */
+function findBodyFileName(
+  entryId: unknown,
+  files: Map<string, Uint8Array>,
+  suffix: string,
+): string | undefined {
+  if (typeof entryId !== 'string') return undefined
+  const idPrefix = entryId.slice(0, 7)
+  return [...files.keys()].find((n) => n.endsWith(suffix) && n.includes(idPrefix))
+}
+
+/**
+ * その電文が「いつのものか」。目録が名乗る発表時刻を使い、**読めなければ本体のファイル名に
+ * 埋め込まれた受信時刻で補う。**
+ *
+ * 文字列であることを先に確かめるのは、`new Date(null)` が Invalid Date ではなく 1970-01-01 を
+ * 返すため。数値チェックだけだと null がすり抜け、直後の窓の判定に「ただの古い電文」として
+ * 無言で吸収されてしまう（undefined は Invalid Date になる）。
+ *
+ * **ファイル名で補うのは代理値ではない。** 窓が問うのは「その時刻に存在したか」で、電文は
+ * 受信して初めて画面に出る。受信時刻は発表時刻以降なので、境界では採らない側（安全側）へ倒れる。
+ * リプレイ本編は正常時もこの値を再生時刻に使っている（秒で切り捨てられた発表時刻より精度が高い）。
+ *
+ * **当日経路（`classifyTelegram`）には同じ補いを置けない。** あちらは本体を取る前に判定するので、
+ * 補うにはリクエストが増える。**救える側だけ救う**（→ `data-sources-spec.md` §2）。
+ *
+ * @returns どちらも読めなければ null
+ */
+function resolveManifestTime(entry: ManifestEntry, files: Map<string, Uint8Array>): Date | null {
+  const announced = new Date(typeof entry.head?.time === 'string' ? entry.head.time : NaN)
+  if (!Number.isNaN(announced.getTime())) return announced
+  // 2 度目以降は控えから返す（警告の手前で返るので同じ行が並ばない）
+  const cached = typeof entry.id === 'string' ? manifestFallbackTimeCache.get(entry.id) : undefined
+  if (cached) return cached
+  const bodyName = findBodyFileName(entry.id, files, '.xml')
+    ?? findBodyFileName(entry.id, files, '.bin')
+  const received = bodyName ? parseMsFromFileName(bodyName) : null
+  if (received && !Number.isNaN(received.getTime())) {
+    log.warn(
+      '[replay] 目録の発表時刻が読めないため本体のファイル名から補った'
+      + ` id=${String(entry.id)} time=${String(entry.head?.time)} → ${received.toISOString()}`,
+    )
+    if (typeof entry.id === 'string') manifestFallbackTimeCache.set(entry.id, received)
+    return received
+  }
+  return null
 }
 
 /** 目録のページを辿る上限。理由は `dmdataReplayLive.ts` の `LIST_MAX_PAGES` と同じ。 */
@@ -270,24 +393,28 @@ export async function fetchDmdataReplayEvents(
         return
       }
 
-      const manifestBytes = files.get('telegrams.json')
-      if (!manifestBytes) {
-        // アーカイブは取得できたのに目録が無い＝そのアーカイブの中身を丸ごと読めない。
-        // 例外にせず他のアーカイブの処理は続けるが、無言で捨てると「電文 0 件だが成功」に
-        // 化けて原因が追えなくなるため、取得失敗と同じ扱いで数える。
-        log.warn(`[replay] アーカイブに telegrams.json が無いためスキップ date=${item.date} classification=${item.classification}`)
-        failedArchiveUrls.push(item.url)
-        return
-      }
-
-      let manifest: ManifestEntry[]
-      try {
-        manifest = JSON.parse(dec.decode(manifestBytes))
-      } catch (e) {
-        // 目録自体が壊れている場合も同様に、そのアーカイブのみ諦めて他は継続する。
-        log.error(`[replay] telegrams.json の解析に失敗したためスキップ date=${item.date} classification=${item.classification}`, e)
-        failedArchiveUrls.push(item.url)
-        return
+      // 目録は控えから読む（`manifestCache`）。先読みは 1 日の中を窓ごとに前へ進むため、
+      // 同じ日のアーカイブを何度も開くことになる。
+      let manifest = manifestCache.get(item.url)
+      if (!manifest) {
+        const manifestBytes = files.get('telegrams.json')
+        if (!manifestBytes) {
+          // アーカイブは取得できたのに目録が無い＝そのアーカイブの中身を丸ごと読めない。
+          // 例外にせず他のアーカイブの処理は続けるが、無言で捨てると「電文 0 件だが成功」に
+          // 化けて原因が追えなくなるため、取得失敗と同じ扱いで数える。
+          log.warn(`[replay] アーカイブに telegrams.json が無いためスキップ date=${item.date} classification=${item.classification}`)
+          failedArchiveUrls.push(item.url)
+          return
+        }
+        try {
+          manifest = JSON.parse(dec.decode(manifestBytes)) as ManifestEntry[]
+        } catch (e) {
+          // 目録自体が壊れている場合も同様に、そのアーカイブのみ諦めて他は継続する。
+          log.error(`[replay] telegrams.json の解析に失敗したためスキップ date=${item.date} classification=${item.classification}`, e)
+          failedArchiveUrls.push(item.url)
+          return
+        }
+        manifestCache.set(item.url, manifest)
       }
 
       for (const entry of manifest) {
@@ -304,15 +431,21 @@ export async function fetchDmdataReplayEvents(
         // （`Control/Status`）とは別の印で、こちらを見ないと訓練報だけが静かに落ちる。
         if (!includeTest && entry.head.test) continue
 
-        // 時刻が読めない電文をそのまま通すと replayTime が Invalid Date になり、
-        // 再生キューの並べ替え・発火判定が静かに破綻する。ここで弾く。
+        // manifest には同じ電文が XML 版と JSON 版の 2 エントリで載る。originalId を持つ方が
+        // JSON 版（XML から変換されたもの）で、その値は元の XML エントリの id を指す。
+        // **採るのは XML 版**（originalId 無し）。JSON 版を落とすのは同一電文の二重取り込みを
+        // 防ぐ正常な重複排除で、実データでは manifest の約半数がこれに該当するため警告は出さない。
         //
-        // 文字列であることを先に確かめるのは、new Date(null) が Invalid Date ではなく
-        // 1970-01-01 を返すため。数値チェックだけだと null がすり抜け、直後の範囲外判定に
-        // 「ただの古い電文」として無言で吸収されてしまう（undefined は Invalid Date になる）。
-        const entryTime = new Date(typeof entry.head.time === 'string' ? entry.head.time : NaN)
-        if (Number.isNaN(entryTime.getTime())) {
-          log.warn(`[replay] head.time が不正な電文をスキップ id=${entry.id} time=${String(entry.head.time)}`)
+        // **時刻を解く前に落とす**（履歴側と同じ順序）。あとで捨てるエントリに、本体の
+        // ファイル名を探させない。
+        if (entry.originalId) continue
+
+        // 時刻が読めない電文をそのまま通すと replayTime が Invalid Date になり、
+        // 再生キューの並べ替え・発火判定が静かに破綻する。**目録の発表時刻が読めなくても
+        // 本体のファイル名から補う**（`resolveManifestTime`）。どちらも読めなければ弾く。
+        const entryTime = resolveManifestTime(entry, files)
+        if (entryTime === null) {
+          log.warn(`[replay] 発表時刻も受信時刻も読めない電文をスキップ id=${entry.id} time=${String(entry.head.time)}`)
           skippedCount++
           continue
         }
@@ -326,18 +459,10 @@ export async function fetchDmdataReplayEvents(
         if (!HANDLED_TYPES.has(headType)) continue
 
         try {
-          const idPrefix = entry.id.slice(0, 7)
-
-          // manifest には同じ電文が XML 版と JSON 版の 2 エントリで載る。originalId を持つ方が
-          // JSON 版（XML から変換されたもの）で、その値は元の XML エントリの id を指す。
-          // **採るのは XML 版**（originalId 無し）。JSON 版を落とすのは同一電文の二重取り込みを
-          // 防ぐ正常な重複排除で、実データでは manifest の約半数がこれに該当するため警告は出さない。
-          if (entry.originalId) continue
-
           // 二進電文（IXAC41）は `.bin` で入り、512KiB を超えると複数エントリに分かれる。
           // **`dec.decode` を通してはいけない** —— 不正なバイトが U+FFFD へ潰れて戻せない。
           if (isBinaryTelegramType(headType)) {
-            const binName = [...files.keys()].find((n) => n.endsWith('.bin') && n.includes(idPrefix))
+            const binName = findBodyFileName(entry.id, files, '.bin')
             const binBytes = binName ? files.get(binName) : undefined
             if (!binBytes) {
               log.warn(`[replay] 二進電文の本体が見つからずスキップ id=${entry.id} type=${headType}`)
@@ -368,9 +493,7 @@ export async function fetchDmdataReplayEvents(
             continue
           }
 
-          const xmlFileName = [...files.keys()].find(
-            (n) => n.endsWith('.xml') && n.includes(idPrefix),
-          )
+          const xmlFileName = findBodyFileName(entry.id, files, '.xml')
           const bodyBytes = xmlFileName ? files.get(xmlFileName) : undefined
           if (!bodyBytes) {
             log.warn(`[replay] 電文の本体が見つからずスキップ id=${entry.id} type=${headType}`)
@@ -627,6 +750,50 @@ export function filterPreWindowEvents(
 }
 
 /**
+ * 履歴用に、目録のエントリ 1 件を本体からパースする。**成功したものだけを控える**
+ * （`parsedTelegramCache`。控える理由と鍵の取り方はそちらの注記）。
+ *
+ * @param want どの型として読むか。呼び出し側が種別から決める
+ * @returns 本体が見つからない・パースできないときは null（警告はここで出す。取りこぼしの
+ *   計上は呼び出し側）
+ */
+function parseHistoryTelegram(
+  entry: ManifestEntry,
+  files: Map<string, Uint8Array>,
+  dec: TextDecoder,
+  want: ParsedTelegram['kind'],
+): ParsedTelegram | null {
+  const cached = parsedTelegramCache.get(entry.id)
+  if (cached) return cached
+
+  const xmlFileName = findBodyFileName(entry.id, files, '.xml')
+  const bodyBytes = xmlFileName ? files.get(xmlFileName) : undefined
+  if (!bodyBytes) {
+    log.warn(`[replay] 履歴用電文の本体が見つからずスキップ id=${entry.id} type=${entry.head.type}`)
+    return null
+  }
+  const xml = dec.decode(bodyBytes)
+  let parsed: ParsedTelegram | null = null
+  if (want === 'extra') {
+    const payload = buildXmlPayload(entry.head.type, xml)
+    const key = payload ? historyExtraKey(payload) : null
+    if (payload && key !== null) parsed = { kind: 'extra', key, payload }
+  } else if (want === 'tsunami') {
+    const tsunami = parseTsunamiFromXml(entry.head.type, xml)
+    if (tsunami) parsed = { kind: 'tsunami', tsunami }
+  } else {
+    const quake = parseEarthquakeFromXml(entry.head.type, xml)
+    if (quake) parsed = { kind: 'quake', quake }
+  }
+  if (!parsed) {
+    log.warn(`[replay] 履歴用電文のパースに失敗しスキップ id=${entry.id} type=${entry.head.type}`)
+    return null
+  }
+  parsedTelegramCache.set(entry.id, parsed)
+  return parsed
+}
+
+/**
  * 指定時刻より前に発表された地震電文を、日次アーカイブを遡って集める（地震カードの履歴復元用）。
  *
  * 「初期状態」の取得（`fetchDmdataReplayEvents` の pre-window）と分けている理由:
@@ -640,6 +807,11 @@ export function filterPreWindowEvents(
  * ダウンロード自体は `maxDays` ぶんを並列で走らせる。日次アーカイブは 1 日 10〜70KB と小さく、
  * 逐次に落として都度判定すると往復のぶんだけ再生開始が遅れるため（ライブの履歴取得が
  * 電文 1 通ずつ数百リクエストを投げているのに比べれば、余分な数ファイルは誤差）。
+ *
+ * **「もっと見る」は遡る日数を伸ばして呼び直す形。** 通信はアーカイブの控え（`archiveCache`）で
+ * 増えないが、既に読んだ日の目録と電文も解析し直すことになるため、目録（`manifestCache`）と
+ * 電文のパース結果（`parsedTelegramCache`）も控える。**押した回数だけ同じ中身を解析し直す形
+ * だった**（上限まで押すと日ごとの解析が累計 311 日ぶん＝実日数 59 日の約 5 倍）。
  *
  * @param before この時刻より後に発表された電文は採らない（＝再生開始時刻）
  * @param targetEvents 集めたい地震イベント数（続報は 1 件と数える）
@@ -713,7 +885,8 @@ export async function fetchDmdataQuakeHistory(
    *
    * **地震の件数で打ち切らない。** 発表中の津波は数日前に出たものが続いていることがあり、
    * 地震のカードが揃った日で切ると拾えなくなる（帯と長周期を打ち切らないのと同じ理由）。
-   * 取得済みのアーカイブから拾うだけなので、増えるのは目録の走査とパースだけ。
+   * 取得済みのアーカイブから拾うだけなので、増えるのは目録の走査と、その日を初めて読むときの
+   * パースだけ（2 度目以降は `parsedTelegramCache` から返る）。
    *
    * **「いま発表中か」の判定はここでしない。** 期限の引き継ぎ・解除の照合は呼び出し側が持つ
    * （→ `tsunami-spec.md` §3「有効期限は報ではなく津波に付く」）。ここは電文を集めるだけ。
@@ -741,7 +914,7 @@ export async function fetchDmdataQuakeHistory(
     // **帯と長周期は打ち切らない**（`HISTORY_EXTRA_TYPES`）。7 日ぶん画面に出続けるもの・
     // 地震ごとに紐づくもので、**地震活動が多い期間ほど早く打ち切られる**と、いちばん復元
     // したい状況（群発の最中）で復元できない。アーカイブは上で並列にダウンロードしてあるので、
-    // 増えるのは目録の走査と 1 日数通のパースだけ。
+    // 増えるのは目録の走査と、その日を初めて読むときの 1 日数通のパースだけ。
     if (shouldStop?.()) { stoppedEarly = true; break }
     const takeQuakes = eventIds.size < targetEvents
     usedDays++
@@ -784,19 +957,24 @@ export async function fetchDmdataQuakeHistory(
     const { item, files } = source.archive
     if (!files) { failedArchiveUrls.push(item.url); continue }
 
-    const manifestBytes = files.get('telegrams.json')
-    if (!manifestBytes) {
-      log.warn(`[replay] 履歴用アーカイブに telegrams.json が無いためスキップ date=${item.date}`)
-      failedArchiveUrls.push(item.url)
-      continue
-    }
-    let manifest: ManifestEntry[]
-    try {
-      manifest = JSON.parse(dec.decode(manifestBytes))
-    } catch (e) {
-      log.error(`[replay] 履歴用アーカイブの telegrams.json 解析に失敗 date=${item.date}`, e)
-      failedArchiveUrls.push(item.url)
-      continue
+    // 目録は控えから読む（`manifestCache`）。「もっと見る」は遡る日数を伸ばして取り直す形
+    // なので、押すたびに既に読んだ日の目録も解析し直すことになる。
+    let manifest = manifestCache.get(item.url)
+    if (!manifest) {
+      const manifestBytes = files.get('telegrams.json')
+      if (!manifestBytes) {
+        log.warn(`[replay] 履歴用アーカイブに telegrams.json が無いためスキップ date=${item.date}`)
+        failedArchiveUrls.push(item.url)
+        continue
+      }
+      try {
+        manifest = JSON.parse(dec.decode(manifestBytes)) as ManifestEntry[]
+      } catch (e) {
+        log.error(`[replay] 履歴用アーカイブの telegrams.json 解析に失敗 date=${item.date}`, e)
+        failedArchiveUrls.push(item.url)
+        continue
+      }
+      manifestCache.set(item.url, manifest)
     }
 
     for (const entry of manifest) {
@@ -810,9 +988,10 @@ export async function fetchDmdataQuakeHistory(
       // （`fetchDmdataReplayEvents` と同じ重複排除。正常動作なので警告は出さない）。
       if (entry.originalId) continue
 
-      const entryTime = new Date(typeof entry.head.time === 'string' ? entry.head.time : NaN)
-      if (Number.isNaN(entryTime.getTime())) {
-        log.warn(`[replay] 履歴用電文の head.time が不正なためスキップ id=${entry.id}`)
+      // 目録の発表時刻が読めなければ本体のファイル名から補う（`resolveManifestTime`）。
+      const entryTime = resolveManifestTime(entry, files)
+      if (entryTime === null) {
+        log.warn(`[replay] 履歴用電文の発表時刻も受信時刻も読めないためスキップ id=${entry.id}`)
         skipped++
         continue
       }
@@ -821,48 +1000,30 @@ export async function fetchDmdataQuakeHistory(
       if (entryTime > before) continue
 
       try {
-        const idPrefix = entry.id.slice(0, 7)
-        const xmlFileName = [...files.keys()].find((n) => n.endsWith('.xml') && n.includes(idPrefix))
-        const bodyBytes = xmlFileName ? files.get(xmlFileName) : undefined
-        if (!bodyBytes) {
-          log.warn(`[replay] 履歴用電文の本体が見つからずスキップ id=${entry.id} type=${entry.head.type}`)
-          skipped++
-          continue
-        }
-        if (isExtra) {
-          // 帯と長周期は「種別ごとに最新 1 通」だけを残す（画面に出るのは 1 つ・長周期は
-          // 地震ごと）。古い報まで流すと、初期状態が入れた新しい値を上書きしうる。
-          const payload = buildXmlPayload(entry.head.type, dec.decode(bodyBytes))
-          const key = payload ? historyExtraKey(payload) : null
-          if (!payload || key === null) {
-            log.warn(`[replay] 履歴用電文のパースに失敗しスキップ id=${entry.id} type=${entry.head.type}`)
-            skipped++
-            continue
+        // **3 つのセットは互いに素**（`QUAKE_TYPES` / `TSUNAMI_TYPES` / `HISTORY_EXTRA_TYPES`）
+        // なので、種別からどの型として読むかが一意に決まる。
+        const parsed = parseHistoryTelegram(
+          entry, files, dec, isExtra ? 'extra' : isTsunami ? 'tsunami' : 'quake',
+        )
+        if (!parsed) { skipped++; continue }
+        switch (parsed.kind) {
+          case 'extra': {
+            // 帯と長周期は「種別ごとに最新 1 通」だけを残す（画面に出るのは 1 つ・長周期は
+            // 地震ごと）。古い報まで流すと、初期状態が入れた新しい値を上書きしうる。
+            const prev = extraLatest.get(parsed.key)
+            if (!prev || entryTime.getTime() > prev.timeMs) {
+              extraLatest.set(parsed.key, { payload: parsed.payload, timeMs: entryTime.getTime() })
+            }
+            break
           }
-          const prev = extraLatest.get(key)
-          if (!prev || entryTime.getTime() > prev.timeMs) {
-            extraLatest.set(key, { payload, timeMs: entryTime.getTime() })
-          }
-          continue
+          case 'tsunami':
+            tsunamis.push(parsed.tsunami)
+            break
+          case 'quake':
+            quakes.push(parsed.quake)
+            eventIds.add(extractQuakeEventIdFromId(parsed.quake.id) ?? parsed.quake.id)
+            break
         }
-        if (isTsunami) {
-          const tsunami = parseTsunamiFromXml(entry.head.type, dec.decode(bodyBytes))
-          if (!tsunami) {
-            log.warn(`[replay] 履歴用電文のパースに失敗しスキップ id=${entry.id} type=${entry.head.type}`)
-            skipped++
-            continue
-          }
-          tsunamis.push(tsunami)
-          continue
-        }
-        const quake = parseEarthquakeFromXml(entry.head.type, dec.decode(bodyBytes))
-        if (!quake) {
-          log.warn(`[replay] 履歴用電文のパースに失敗しスキップ id=${entry.id} type=${entry.head.type}`)
-          skipped++
-          continue
-        }
-        quakes.push(quake)
-        eventIds.add(extractQuakeEventIdFromId(quake.id) ?? quake.id)
       } catch (e) {
         log.error(`[replay] 履歴用電文の取り込みに失敗しスキップ id=${entry.id} type=${entry.head.type}`, e)
         skipped++

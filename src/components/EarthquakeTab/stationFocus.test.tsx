@@ -13,6 +13,7 @@ import { EarthquakeTab } from './index'
 import { quakeEventKey } from '../../utils/quakeMerge'
 import type { JMAQuake, JMALpgm, EarthquakePoint, JMAQuakeCity } from '../../types/earthquake'
 import { findIntensityRow, openIntensityRows } from '../../test-utils/intensityRow'
+import { createEmptyTelegramLoss } from '../../utils/telegramLoss'
 
 // `vi.mock` のファクトリより先に評価させる（巻き上げられるため、通常の定数は参照できない）。
 const f = vi.hoisted(() => {
@@ -118,6 +119,8 @@ function renderCard(
       hasMore={false}
       onLoadMore={() => {}}
       error={null}
+      historyLoss={createEmptyTelegramLoss()}
+      loadMoreFailed={false}
       lpgmByEventId={opts.lpgm ? new Map([[EVENT_ID, opts.lpgm]]) : new Map()}
       activeLpgmEventId={opts.lpgm ? EVENT_ID : null}
       onToggleLpgm={() => {}}

@@ -12,6 +12,7 @@ import { EarthquakeTab } from './index'
 import { quakeEventKey } from '../../utils/quakeMerge'
 import type { JMAQuake, EarthquakePoint, JMAQuakeCity } from '../../types/earthquake'
 import { findIntensityRow, intensityRowText, openIntensityRows } from '../../test-utils/intensityRow'
+import { createEmptyTelegramLoss } from '../../utils/telegramLoss'
 
 afterEach(cleanup)
 
@@ -58,6 +59,8 @@ const renderTab = (quake: JMAQuake) => render(
     hasMore={false}
     onLoadMore={() => {}}
     error={null}
+    historyLoss={createEmptyTelegramLoss()}
+    loadMoreFailed={false}
     lpgmByEventId={new Map()}
     activeLpgmEventId={null}
     onToggleLpgm={() => {}}
