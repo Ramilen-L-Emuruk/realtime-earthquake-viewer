@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useAutoOpenWhileSpeaking } from '../../hooks/useAutoOpenWhileSpeaking'
+import { telegramTextSubject } from '../../utils/ttsFollow'
 import type {
   EarthquakeInfoMeta, JMANankai, JMANankaiCommentary, JMAKohatsu, JMAQuakeNotice, JMAEarthquakeCount,
   TelegramOperationStatus,
@@ -129,7 +130,7 @@ export function SpecialInfoBanner({
    * この帯の文をいま読み上げているか。**主題は `telegramText:<電文の kind>`**
    * （→ `useLiveEventHandler` の `speakTelegramText`）。
    */
-  const speaking = (kind: string) => speakingTelegramTextSubject === `telegramText:${kind}`
+  const speaking = (kind: string) => speakingTelegramTextSubject === telegramTextSubject(kind)
   if (!nankai && !nankaiCommentary && !kohatsu && !quakeNotice && !earthquakeCount) return null
 
   return (

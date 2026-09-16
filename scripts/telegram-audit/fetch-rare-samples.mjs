@@ -17,50 +17,14 @@
 // 対象は `eew` / `ixac41` / `type:VXSE60` のいずれか（既定は `eew`）。
 import fs from 'node:fs'
 import path from 'node:path'
-import zlib from 'node:zlib'
-import { REPO, CACHE } from './coverage-core.mjs'
+import { CACHE } from './coverage-core.mjs'
+import { apiAuthHeader, listArchive, loadArchiveTar, tarEntries, reportArchiveCacheStats, withCompletenessMark } from './archive-cache.mjs'
 
 fs.mkdirSync(CACHE, { recursive: true })
 
-function apiKey() {
-  if (process.env.DMDATA_API_KEY) return process.env.DMDATA_API_KEY.trim()
-  const envPath = path.join(REPO, '.env.local')
-  if (fs.existsSync(envPath)) {
-    const m = fs.readFileSync(envPath, 'utf8').match(/^DMDATA_API_KEY=(.+)$/m)
-    if (m) return m[1].trim()
-  }
-  throw new Error(`DMDATA の API キーが見つかりません。環境変数 DMDATA_API_KEY で渡すか、${envPath} に置いてください`)
-}
-const auth = { Authorization: 'Basic ' + Buffer.from(apiKey() + ':').toString('base64') }
-
-function* ents(buf) {
-  let o = 0
-  while (o + 512 <= buf.length) {
-    const n = buf.slice(o, o + 100).toString('utf8').replace(/\0.*$/, '')
-    if (!n) { o += 512; continue }
-    const s = parseInt(buf.slice(o + 124, o + 136).toString('utf8').replace(/\0.*$/, '').trim(), 8) || 0
-    yield { n, b: buf.slice(o + 512, o + 512 + s) }
-    o += 512 + Math.ceil(s / 512) * 512
-  }
-}
-
-async function listAll(classification, from, to) {
-  const out = []
-  let token = null
-  for (;;) {
-    const u = new URL('https://api.dmdata.jp/v2/archive')
-    u.searchParams.set('datetime', `${from}~${to}`)
-    u.searchParams.set('classification', classification)
-    u.searchParams.set('limit', '100')
-    if (token) u.searchParams.set('cursorToken', token)
-    const j = await (await fetch(u, { headers: auth })).json()
-    if (j.status !== 'ok') { console.error('list error', JSON.stringify(j.error)); break }
-    out.push(...j.items)
-    if (!j.nextToken) break
-    token = j.nextToken
-  }
-  return out
-}
+// 取得・控え・レート制御は `archive-cache.mjs` に集約してある。**素の `fetch` を書き足さないこと**
+// —— この 3 つの集め方はどれも期間を区切って何度も走査するので、控えが無いと同じ日を繰り返し取る。
+const auth = apiAuthHeader()
 
 /** 条件付きの要素を持つ緊急地震速報を、欲しい形ごとに上限を決めて集める */
 async function fetchBigEew() {
@@ -70,13 +34,22 @@ async function fetchBigEew() {
     warning: { max: 6, test: x => /<WarningComment/.test(x), seen: new Set(), n: 0 },
     lgint: { max: 6, test: x => /forecastMaxLgInt|<LgInt>|MaxLgInt/.test(x), seen: new Set(), n: 0 },
   }
-  const items = await listAll('eew.forecast', '2025-01-01', '2026-09-06')
-  console.error(`eew.forecast: ${items.length} 日分`)
+  const cls = 'eew.forecast'
+  // 一覧が取れなければ**集めた数（この時点では 0）を返して終わる**。例外を素通しにすると
+  // 末尾の `reportArchiveCacheStats()` まで飛ばされ、失敗の記録ごと消える。
+  let items
+  try {
+    items = await listArchive({ classification: cls, from: '2025-01-01', to: '2026-09-06', auth })
+  } catch (e) {
+    console.error(`${cls}: ${e?.message ?? e}`)
+    return Object.fromEntries(Object.entries(want).map(([k, v]) => [k, v.n]))
+  }
+  console.error(`${cls}: ${items.length} 日分`)
   for (const it of items) {
     let tar
-    try { tar = zlib.gunzipSync(Buffer.from(await (await fetch(it.url, { headers: auth })).arrayBuffer())) }
+    try { tar = await loadArchiveTar({ classification: cls, item: it, auth }) }
     catch { continue }
-    for (const { n, b } of ents(tar)) {
+    for (const { name: n, body: b } of tarEntries(tar)) {
       if (!/^VXSE45_.*\.xml$/i.test(n)) continue
       const xml = b.toString('utf8')
       const ev = (xml.match(/<EventID>([^<]*)<\/EventID>/) || [])[1] ?? n
@@ -102,14 +75,21 @@ async function fetchIxac41(wantEvents = 8) {
   ]
   let events = 0
   for (const [from, to] of ranges) {
-    const items = await listAll('telegram.earthquake', from, to)
+    // 一覧が取れなかったレンジは飛ばして次へ（全体を止めない。失敗は控えの統計に残る）
+    let items
+    try {
+      items = await listArchive({ classification: 'telegram.earthquake', from, to, auth })
+    } catch (e) {
+      console.error(`${from}~${to}: ${e?.message ?? e}`)
+      continue
+    }
     console.error(`${from}~${to}: ${items.length} 日分`)
     for (const it of items) {
       let tar
-      try { tar = zlib.gunzipSync(Buffer.from(await (await fetch(it.url, { headers: auth })).arrayBuffer())) }
+      try { tar = await loadArchiveTar({ classification: 'telegram.earthquake', item: it, auth }) }
       catch { continue }
       const byTime = new Map()
-      for (const { n, b } of ents(tar)) {
+      for (const { name: n, body: b } of tarEntries(tar)) {
         const m = /^IXAC41_RJTD_(RR[A-X]_)?(\d{17})_/.exec(n)
         if (!m || !n.endsWith('.bin')) continue
         const t = m[2].slice(0, 12)
@@ -138,13 +118,20 @@ async function fetchByType(types, perType = 8) {
   ]
   const counts = new Map(); const seen = new Map()
   for (const [from, to] of ranges) {
-    const items = await listAll('telegram.earthquake', from, to)
+    // 一覧が取れなかったレンジは飛ばして次へ（全体を止めない。失敗は控えの統計に残る）
+    let items
+    try {
+      items = await listArchive({ classification: 'telegram.earthquake', from, to, auth })
+    } catch (e) {
+      console.error(`${from}~${to}: ${e?.message ?? e}`)
+      continue
+    }
     console.error(`${from}~${to}: ${items.length} 日分`)
     for (const it of items) {
       let tar
-      try { tar = zlib.gunzipSync(Buffer.from(await (await fetch(it.url, { headers: auth })).arrayBuffer())) }
+      try { tar = await loadArchiveTar({ classification: 'telegram.earthquake', item: it, auth }) }
       catch { continue }
-      for (const { n, b } of ents(tar)) {
+      for (const { name: n, body: b } of tarEntries(tar)) {
         if (!/\.xml$/i.test(n)) continue
         const type = n.split('_')[0]
         if (!want.has(type) || (counts.get(type) ?? 0) >= perType) continue
@@ -173,4 +160,8 @@ if (target === 'eew') result = await fetchBigEew()
 else if (target === 'ixac41') result = await fetchIxac41(Number(process.argv[3]) || 8)
 else if (target.startsWith('type:')) result = await fetchByType(target.slice(5).split(','), Number(process.argv[3]) || 8)
 else throw new Error(`対象は eew / ixac41 / type:<種別,...> のいずれか（渡された値: ${target}）`)
-console.log(JSON.stringify(result, null, 1))
+// **不完全なら結果そのものへ印を付ける。** この出力は「条件付きの要素を持つ電文は実配信に無い」
+// という主張の根拠になるので、走査できなかった範囲があることが JSON からも読めないといけない。
+console.log(JSON.stringify(withCompletenessMark(result), null, 1))
+// 走査できなかった範囲があれば exit code も立てる（終了コードしか見ない経路で気づけるように）
+if (reportArchiveCacheStats('アーカイブ（稀な種別の収集）') > 0) process.exitCode = 1

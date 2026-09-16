@@ -1,20 +1,35 @@
 import { useEffect, useRef, useState } from 'react'
 
 /**
- * 読み上げているあいだだけ開く折りたたみの状態。
+ * 読み上げているあいだだけ開く折りたたみ。**開閉の状態を呼び出し側が持つ版。**
  *
  * 気象庁が書いた文を読み上げ始めたら開き、読み終わったら閉じる（→ docs/spec/audio-tts-spec.md
- * §6「読み上げに合わせて気象庁の文を開く」）。**自分が開いた分しか閉じない** —— 利用者が手で
- * 開いていたものを読み終わりで閉じると、見ようとしていた中身を奪うことになる。
+ * §6「読み上げに合わせて気象庁の文を開く」）。
  *
- * **利用者が手で閉じたら、その読み上げのあいだは開き直さない。** 閉じたのに毎フレーム開き直る
- * 形にすると、操作を受け付けないように見える。
+ * - **自分が開いた分しか閉じない** —— 利用者が手で開いていたものを読み終わりで閉じると、
+ *   見ようとしていた中身を奪うことになる
+ * - **利用者が手で閉じたら、その読み上げのあいだは開き直さない** —— 閉じたのに開き直る形に
+ *   すると、操作を受け付けないように見える
+ *
+ * **状態を外に出せる形にしてあるのは、開閉の持ち方が置き場所で違うため。** 特別情報バナーと
+ * 津波の面は真偽値 1 つで足りるが、地震カードの「気象庁からの補足」は他の行の開閉と同じ
+ * 入れ物（開いている鍵の集合）に乗っている。**判定を書き写すと必ずずれる**ので、規約は
+ * この 1 本に閉じ込めて状態の持ち主だけ差し替える。
  *
  * @param speaking この表示に対応する文をいま読み上げているか
- * @returns `[open, setOpen]`。`setOpen` は利用者の操作から呼ぶ
+ * @param isOpen いま開いているか
+ * @param setOpen 開閉を書き換える
+ * @returns 利用者の操作から呼ぶ設定関数
  */
-export function useAutoOpenWhileSpeaking(speaking: boolean): [boolean, (open: boolean) => void] {
-  const [open, setOpen] = useState(false)
+export function useAutoOpenWhileSpeakingIn(
+  speaking: boolean,
+  isOpen: boolean,
+  setOpen: (open: boolean) => void,
+): (open: boolean) => void {
+  // 最新の値をエフェクトから読むための箱。**依存配列へは入れない** —— 入れると手で閉じた
+  // 直後に開き直す（`speaking` の変わり目でだけ判断する）。
+  const latest = useRef({ isOpen, setOpen })
+  latest.current = { isOpen, setOpen }
   /** この読み上げで自分が開いたか。手で開かれたものと混ぜないための印。 */
   const openedBySpeech = useRef(false)
   /** この読み上げのあいだ、利用者が手で閉じたか。 */
@@ -23,28 +38,36 @@ export function useAutoOpenWhileSpeaking(speaking: boolean): [boolean, (open: bo
   useEffect(() => {
     if (speaking) {
       if (dismissed.current) return
-      setOpen(prev => {
-        // 既に開いていた（利用者が手で開いた）なら、こちらの持ち物にしない
-        if (prev) return prev
-        openedBySpeech.current = true
-        return true
-      })
+      // 既に開いていた（利用者が手で開いた）なら、こちらの持ち物にしない
+      if (latest.current.isOpen) return
+      openedBySpeech.current = true
+      latest.current.setOpen(true)
       return
     }
     // 読み上げが終わった。**自分が開いた分だけ戻す。**
     dismissed.current = false
     if (!openedBySpeech.current) return
     openedBySpeech.current = false
-    setOpen(false)
+    latest.current.setOpen(false)
   }, [speaking])
 
-  const setOpenByUser = (next: boolean) => {
+  return (next: boolean) => {
     // 読み上げ中に手で閉じたら、その読み上げのあいだは開き直さない
     if (!next && speaking) dismissed.current = true
     // 手で開いたものは、読み終わりで閉じない（こちらの持ち物から外す）
     if (next) openedBySpeech.current = false
     setOpen(next)
   }
+}
 
+/**
+ * 読み上げているあいだだけ開く折りたたみ。**状態をこのフックが持つ版**（→ 上の注記）。
+ *
+ * @param speaking この表示に対応する文をいま読み上げているか
+ * @returns `[open, setOpen]`。`setOpen` は利用者の操作から呼ぶ
+ */
+export function useAutoOpenWhileSpeaking(speaking: boolean): [boolean, (open: boolean) => void] {
+  const [open, setOpen] = useState(false)
+  const setOpenByUser = useAutoOpenWhileSpeakingIn(speaking, open, setOpen)
   return [open, setOpenByUser]
 }

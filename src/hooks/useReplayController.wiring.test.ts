@@ -13,7 +13,11 @@
 // React を動かすため、このファイルだけ jsdom 環境で実行する（既定の node は変えない）。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act, cleanup } from '@testing-library/react'
-import { useReplayController, WINDOW_MS, PRE_WINDOW_MS, PREFETCH_MARGIN_MS, QUAKE_HISTORY_EVENTS, QUAKE_HISTORY_MAX_DAYS } from './useReplayController'
+import {
+  useReplayController, WINDOW_MS, PRE_WINDOW_MS, PREFETCH_MARGIN_MS,
+  QUAKE_HISTORY_EVENTS, QUAKE_HISTORY_MAX_DAYS,
+  REPLAY_EARLIEST_MS, REPLAY_FUTURE_MARGIN_MS, replayTargetProblem,
+} from './useReplayController'
 import type { ReplayEntry, ReplayFetchResult, QuakeHistoryResult } from '../types/replay'
 import type { JMAQuake } from '../types/earthquake'
 import { log } from '../utils/logger'
@@ -291,6 +295,58 @@ describe('useReplayController の start', () => {
   })
 })
 
+// **取得を 1 件も投げる前に弾く。** 2026-09-15 に `window.__replay.start()` へ数値を渡して
+// 再生時刻が 1969 年になったとき、DMDATA の電文一覧へ 399 件・強震モニタへ 177 件の
+// リクエストが飛んだ（どちらも対象のデータは 1 件も無い）。範囲外の指定を下流へ流すと、
+// 取得元の数だけ空振りのリクエストが出る。
+describe('範囲外の時刻では取得を始めない', () => {
+  describe('replayTargetProblem', () => {
+    const now = Date.UTC(2026, 8, 15)
+
+    it('正: 収録のある時刻は通す', () => {
+      expect(replayTargetProblem(new Date(Date.UTC(2026, 8, 13)), now)).toBeNull()
+      expect(replayTargetProblem(new Date(REPLAY_EARLIEST_MS), now)).toBeNull()
+    })
+
+    it('対照: 下限より前は理由を返す', () => {
+      expect(replayTargetProblem(new Date(REPLAY_EARLIEST_MS - 1), now)).toContain('再生できません')
+      expect(replayTargetProblem(new Date(Date.UTC(1969, 11, 30)), now)).toContain('再生できません')
+    })
+
+    it('対照: 未来は理由を返す（ただし時計のずれぶんは通す）', () => {
+      expect(replayTargetProblem(new Date(now + REPLAY_FUTURE_MARGIN_MS - 1), now)).toBeNull()
+      expect(replayTargetProblem(new Date(now + REPLAY_FUTURE_MARGIN_MS + 1), now)).toContain('未来')
+    })
+
+    it('安全弁: 日時として読めない値も弾く', () => {
+      expect(replayTargetProblem(new Date('これは日時ではない'), now)).toContain('読み取れません')
+    })
+  })
+
+  // 正: 入口で止まり、取得が 1 件も走らない。
+  it('正: 下限より前の時刻では取得を呼ばない', async () => {
+    const h = setup()
+    const started = h.start(new Date(Date.UTC(1969, 11, 30)))
+    await h.flush(started)
+
+    expect(h.fetches).toHaveLength(0)
+    expect(h.current.error).toContain('再生できません')
+    expect(h.current.isFetching).toBe(false)
+  })
+
+  // 対照: 正常な時刻では従来どおり取得へ進む（ガードが広すぎないこと）。
+  it('対照: 収録のある時刻では従来どおり取得へ進む', async () => {
+    const h = setup()
+    const started = h.start(quietTarget())
+    expect(h.fetches.length).toBeGreaterThan(0)
+    h.fetches[0].resolve(fetched([]))
+    h.fetches[1].resolve(fetched([]))
+    await h.flush(started)
+
+    expect(h.current.error).toBeNull()
+  })
+})
+
 describe('useReplayController の停止・再開', () => {
   // 停止も開始と同じ 3 つを落とす。**開始側だけを固定すると、片方だけ変更されて
   // 非対称になっても気づけない**（リプレイを止めたのに選択中の地震と追加表示が残る、
@@ -493,7 +549,7 @@ describe('useReplayController の地震カード履歴', () => {
   /** 履歴の結果。中身の統合は mergeQuakeHistory の担当なので、ここでは件数だけ数える。 */
   function history(count: number, skipped = 0, failedArchiveUrls: string[] = []): QuakeHistoryResult {
     const quakes = Array.from({ length: count }, (_, i) => ({ id: `q${i}` } as unknown as JMAQuake))
-    return { quakes, extras: [], skipped, failedArchiveUrls }
+    return { quakes, tsunamis: [], extras: [], skipped, failedArchiveUrls, hasMore: false }
   }
 
   it('再生開始時刻を境に、ライブと同じ件数を目標として履歴を取りに行く', async () => {
@@ -591,7 +647,7 @@ describe('useReplayController: 初期状態に無い帯・長周期を履歴か�
   }
 
   function historyWith(extras: ReplayEntry[]): QuakeHistoryResult {
-    return { quakes: [], extras, skipped: 0, failedArchiveUrls: [] }
+    return { quakes: [], tsunamis: [], extras, skipped: 0, failedArchiveUrls: [], hasMore: false }
   }
 
   it('正: 初期状態に無い種別は履歴から補い、初期状態と同じ時刻・無音で流す', async () => {
@@ -679,7 +735,7 @@ describe('useReplayController: 補完の結果を記録する', () => {
     h.deps.loadReplayEvents.mockClear()
 
     await act(async () => {
-      h.histories[0].resolve({ quakes: [], extras: [countEntry2('from-history')], skipped: 0, failedArchiveUrls: [] })
+      h.histories[0].resolve({ quakes: [], tsunamis: [], extras: [countEntry2('from-history')], skipped: 0, failedArchiveUrls: [], hasMore: false })
     })
 
     expect(h.deps.loadReplayEvents).not.toHaveBeenCalled()
@@ -697,7 +753,7 @@ describe('useReplayController: 補完の結果を記録する', () => {
     h.deps.loadReplayEvents.mockImplementationOnce(() => { throw new Error('積めなかった') })
 
     await act(async () => {
-      h.histories[0].resolve({ quakes: [], extras: [countEntry2('c1')], skipped: 0, failedArchiveUrls: [] })
+      h.histories[0].resolve({ quakes: [], tsunamis: [], extras: [countEntry2('c1')], skipped: 0, failedArchiveUrls: [], hasMore: false })
     })
 
     expect(vi.mocked(log.error)).toHaveBeenCalled()

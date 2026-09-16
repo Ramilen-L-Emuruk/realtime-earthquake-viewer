@@ -63,6 +63,23 @@ describe('shouldAcceptAutoTab', () => {
     expect(shouldAcceptAutoTab(held(TAB_PRIORITY.manual), TAB_PRIORITY.eewUpdate, NOW)).toBe(false)
   })
 
+  // 起動時の復元は片方向抑制の対象外。あの抑制は「続報が連投されて画面が往復する」のを防ぐ
+  // もので、接続ごとに 1 回きりの復元には当たらない。**弾くと優先度表が逆転する**——先に
+  // 完了した津波の復元が保持(3)を張ると、あとから来た EEW の復元(4) が越えられなくなる。
+  // 取得の速さで順序が決まるため、EEW と津波が同時に発表中のときほど起きやすい。
+  it('正: 起動時の復元による EEW の要求は、津波の保持を越える', () => {
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.tsunami), TAB_PRIORITY.eewUpdate, NOW, 'hold', false, true)).toBe(true)
+  })
+
+  it('対照: 同じ状況でも、通常の EEW 続報の受信は津波の保持を越えない', () => {
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.tsunami), TAB_PRIORITY.eewUpdate, NOW, 'hold', false, false)).toBe(false)
+  })
+
+  // 安全弁: 素通りさせるのは片方向抑制だけ。優先度そのものを無視させない。
+  it('安全弁: 起動時の復元でも、手動選択の保持は越えない', () => {
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.manual), TAB_PRIORITY.eewUpdate, NOW, 'hold', false, true)).toBe(false)
+  })
+
   // これも既存の挙動。危険の通知は手動選択より強い。
   it('手動選択の保持中でも、EEW の新規発報・レベルアップ・誤報取消は通す', () => {
     expect(shouldAcceptAutoTab(held(TAB_PRIORITY.manual), TAB_PRIORITY.eewUrgent, NOW)).toBe(true)

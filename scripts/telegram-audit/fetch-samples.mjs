@@ -5,60 +5,18 @@
 // docs/spec/telegram-coverage-audit.md §2。
 import fs from 'node:fs'
 import path from 'node:path'
-import zlib from 'node:zlib'
 import { HANDLED } from './handled.mjs'
-import { REPO, CACHE } from './coverage-core.mjs'
+import { CACHE } from './coverage-core.mjs'
+import { apiAuthHeader, listArchive, loadArchiveTar, tarEntries, reportArchiveCacheStats, withCompletenessMark } from './archive-cache.mjs'
 
 fs.mkdirSync(CACHE, { recursive: true })
 
-// API キーは環境変数を先に見る。**ワークツリーには `.env.local` が無い**ことがあるため
-// （Git 管理外なので切っても付いてこない。メインの checkout から複製するか、
-// `DMDATA_API_KEY` を渡す）。
-function apiKey() {
-  if (process.env.DMDATA_API_KEY) return process.env.DMDATA_API_KEY.trim()
-  const envPath = path.join(REPO, '.env.local')
-  if (fs.existsSync(envPath)) {
-    const m = fs.readFileSync(envPath, 'utf8').match(/^DMDATA_API_KEY=(.+)$/m)
-    if (m) return m[1].trim()
-  }
-  throw new Error(
-    `DMDATA の API キーが見つかりません。環境変数 DMDATA_API_KEY で渡すか、${envPath} に置いてください`
-  )
-}
-const auth = { Authorization: 'Basic ' + Buffer.from(apiKey() + ':').toString('base64') }
+// 取得・控え・レート制御は `archive-cache.mjs` に集約してある。**素の `fetch` を書き足さないこと**。
+const auth = apiAuthHeader()
 
 // 種別ごとに何通まで貯めるか。**増やすほど条件付きの要素に当たる見込みは上がる**が、
 // 同じ事象の続報は下で弾いているので、独立した事象がその数だけ必要になる。
 const PER_TYPE = Number(process.env.PER_TYPE) || 8
-
-function* ents(buf) {
-  let o = 0
-  while (o + 512 <= buf.length) {
-    const n = buf.slice(o, o + 100).toString('utf8').replace(/\0.*$/, '')
-    if (!n) { o += 512; continue }
-    const s = parseInt(buf.slice(o + 124, o + 136).toString('utf8').replace(/\0.*$/, '').trim(), 8) || 0
-    yield { n, b: buf.slice(o + 512, o + 512 + s) }
-    o += 512 + Math.ceil(s / 512) * 512
-  }
-}
-
-async function listAll(classification, from, to) {
-  const out = []
-  let token = null
-  for (;;) {
-    const u = new URL('https://api.dmdata.jp/v2/archive')
-    u.searchParams.set('datetime', `${from}~${to}`)
-    u.searchParams.set('classification', classification)
-    u.searchParams.set('limit', '100')
-    if (token) u.searchParams.set('cursorToken', token)
-    const j = await (await fetch(u, { headers: auth })).json()
-    if (j.status !== 'ok') { console.error('list error', classification); break }
-    out.push(...j.items)
-    if (!j.nextToken) break
-    token = j.nextToken
-  }
-  return out
-}
 
 // **同じ事象の続報を数えない。** 「最初に出会った 8 通」だと、1 つの地震の連続報で埋まる
 // （実際 EEW の 8 通は全部同じ地震のシーケンスだった）。区域構成・付加文・観測状態が似通うため、
@@ -69,13 +27,22 @@ for (const [cls, from, to] of [
   ['telegram.earthquake', '2024-01-01', '2026-09-06'],
   ['eew.forecast', '2026-06-01', '2026-09-06'],
 ]) {
-  const items = await listAll(cls, from, to)
+  // 一覧が取れなかった分類は飛ばして次へ。**全体を止めない** —— 止めると、それまでに
+  // 集めた分の集計も末尾の `reportArchiveCacheStats()` も出ないまま終わる。
+  // 失敗そのものは `listArchive` が控えの統計へ記録しており、末尾で必ず出る。
+  let items
+  try {
+    items = await listArchive({ classification: cls, from, to, auth })
+  } catch (e) {
+    console.error(`${cls}: ${e?.message ?? e}`)
+    continue
+  }
   console.error(`${cls}: ${items.length} 日分`)
   for (const it of items) {
     let tar
-    try { tar = zlib.gunzipSync(Buffer.from(await (await fetch(it.url, { headers: auth })).arrayBuffer())) }
+    try { tar = await loadArchiveTar({ classification: cls, item: it, auth }) }
     catch { continue }
-    for (const { n, b } of ents(tar)) {
+    for (const { name: n, body: b } of tarEntries(tar)) {
       if (!/\.xml$/i.test(n)) continue
       const type = n.split('_')[0]
       const c = counts.get(type) ?? 0
@@ -96,7 +63,24 @@ for (const [cls, from, to] of [
     // 対象の全種別が上限に達したら打ち切る（種別は handled.mjs の 13 件）
     // 打ち切りは**対象の種別だけ**で数える。全種別で数えると、対象外の種別が先に埋まって
     // 対象の収集が終わる前に止まる（実際 VYSE60 が 7 通で止まっていた）。
+    //
+    // **ただしこの打ち切りは現状ほぼ成立しない。** `HANDLED` には、下の走査対象をいくら
+    // 辿っても埋まらない種別が 2 つある ——
+    //   - `VYSE60`（北海道・三陸沖後発地震注意情報）: 運用開始以降の実配信が無い
+    //   - `VXSE45`（緊急地震速報（警報））: 分類 `eew.warning` にあり、走査対象
+    //     （`telegram.earthquake` / `eew.forecast`）に入っていない
+    // どちらも永久に `PER_TYPE` へ届かないため、**1 回の実行で毎回全期間を取り切る**
+    // （約 1,080 日分）。控え（`archive-cache.mjs`）を通すようにしたので 2 回目以降の
+    // リクエストは 0 になるが、初回の走査は全日分を通る。
+    //
+    // 直すなら「分類ごとに、そこで得られる種別だけを数える」形にする。ただしそれは
+    // **収集の網羅性の定義を変える**ことになる（VYSE60 のサンプルを持たないと確定させる／
+    // `eew.warning` を走査対象へ足す）ので、気づいた側で勝手に変えず設計として決めること。
     if (Object.keys(HANDLED).every(t => (counts.get(t) ?? 0) >= PER_TYPE)) break
   }
 }
-console.log(JSON.stringify(Object.fromEntries([...counts].sort()), null, 1))
+// **不完全なら結果そのものへ印を付ける。** 標準エラー（下の報告）を見ない運用でも、
+// 「集めたが 0 件」と「集められなかった」を JSON 単体で区別できるようにする。
+console.log(JSON.stringify(withCompletenessMark(Object.fromEntries([...counts].sort())), null, 1))
+// 走査できなかった範囲があれば exit code も立てる（終了コードしか見ない経路で気づけるように）
+if (reportArchiveCacheStats('アーカイブ（サンプル収集）') > 0) process.exitCode = 1

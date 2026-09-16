@@ -26,13 +26,26 @@ interface Props {
   onToggleUnreceived: (eventKey: string) => void
   /** 一覧の行をクリックしたときに、その場所へ地図を寄せる（1 点でも範囲でも）。 */
   onFocusMap: (positions: LatLng[]) => void
+  /**
+   * いま気象庁が書いた文を読み上げている主題（読んでいなければ null）。
+   * 長周期の補足を読み上げているあいだ、そのカードの補足を開く。
+   *
+   * **任意にしない。** 渡し忘れても画面が動かないだけで例外もログも出ないので、
+   * 型検査で止める唯一の機会がここ（→ audio-tts-spec.md §6）。
+   */
+  speakingTelegramTextSubject: string | null
 }
 
 // 地震情報タブの右パネル。地震カードの一覧を表示し、クリックで地図表示対象を選択する。
 // 地図そのものは App が常時表示する。
 // React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
-export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, error, lpgmByEventId, activeLpgmEventId, onToggleLpgm, estimatedIntensity, distributionQuakeKey, onToggleDistribution, unreceivedQuakeKey, onToggleUnreceived, onFocusMap }: Props) {
-  if (isLoading) {
+export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, error, lpgmByEventId, activeLpgmEventId, onToggleLpgm, estimatedIntensity, distributionQuakeKey, onToggleDistribution, unreceivedQuakeKey, onToggleUnreceived, onFocusMap, speakingTelegramTextSubject }: Props) {
+  // **1 件も無いときだけ読み込み中の画面にする。**
+  // DMDSS 版の初回は電文本体の取得が配信元の上限に合わせて直列化されるため、全件が揃うのは
+  // 数分後になる（→ `docs/spec/data-sources-spec.md` §2「取得の間隔を空ける」）。取得側は
+  // 取れた分から順に流しているので、`isLoading` だけで覆うと**その間ずっとスピナーのままになり、
+  // 逐次に出す仕組みが画面へ一度も現れない**。
+  if (isLoading && earthquakes.length === 0) {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="text-center">
@@ -84,6 +97,7 @@ export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selected
           unreceivedActive={quakeEventKey(quake) === unreceivedQuakeKey}
           onToggleUnreceived={() => onToggleUnreceived(quakeEventKey(quake))}
           onFocusMap={onFocusMap}
+          speakingTelegramTextSubject={speakingTelegramTextSubject}
         />
       ))}
       {hasMore && (
@@ -96,7 +110,12 @@ export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selected
         </button>
       )}
       {!hasMore && earthquakes.length > 0 && (
-        <p className="text-center text-xs text-secondary py-2">すべての履歴を表示しています</p>
+        // 「すべての履歴」とは書かない。**止まる理由はバリアントで違う**（`useEarthquakes` の
+        // `hasMore` の決め方 2 箇所）。DMDSS 版は遡れる日数の上限に達したときで、それより古い
+        // 地震が無いことを意味しない（アーカイブは実測で 135 日以上残る）。標準版は配信元の
+        // 応答が要求件数を下回ったとき＝その窓を使い切ったとき。
+        // どちらも「これ以上は遡れない」ことは共通なので、文言は 1 つで足りる。
+        <p className="text-center text-xs text-secondary py-2">これ以上は遡れません</p>
       )}
     </div>
   )

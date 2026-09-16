@@ -280,5 +280,6 @@ export async function fetchP2PQuakeHistory(before: Date, targetEvents: number): 
   }
 
   // P2PQuake は帯（地震回数・お知らせ・南海トラフ解説情報）も長周期も配信しないので常に空。
-  return { quakes, extras: [], skipped, failedArchiveUrls: [] }
+  // 津波もここでは返さない（standard 版の津波は初期状態の担当で、遡り幅も目的が違う）。
+  return { quakes, tsunamis: [], extras: [], skipped, failedArchiveUrls: [], hasMore: false }
 }

@@ -47,7 +47,7 @@ import { useKyoshinRealtime } from './hooks/useKyoshinRealtime'
 import { useKyoshinDetectorV2 } from './hooks/useKyoshinDetectorV2'
 import { useKyoshinMissingHold } from './hooks/useKyoshinMissingHold'
 import { useDetectionDiagnostics } from './hooks/useDetectionDiagnostics'
-import { createSpeechFollowController, type SpeechFollowSession } from './utils/ttsFollow'
+import { createSpeechFollowController, telegramTextSubject, type SpeechFollowSession } from './utils/ttsFollow'
 import { useTelegramTextSpeechFollow } from './hooks/useTelegramTextSpeechFollow'
 import { deriveKyoshinView } from './utils/kyoshinDetectionView'
 import { filterSubThresholdIndices } from './utils/kyoshinSubThresholdFilter'
@@ -59,7 +59,8 @@ import { getIntensityLabelWithOrAbove } from './utils/intensity'
 import { isMaxScaleUnreceived } from './utils/quakePoints'
 import { formatMagnitudeWithCondition, formatDateTimeLocal } from './utils/formatters'
 import { computeEEWLevel, eewMaxLpgmClass } from './utils/eew'
-import { quakeEventKey, quakeKeyForLpgmEventId } from './utils/quakeMerge'
+import { quakeEventKey, quakeKeyForLpgmEventId, extractQuakeEventId } from './utils/quakeMerge'
+import { canOpenLpgmNotes } from './utils/lpgm'
 import { estimatedIntensityFor, matchEstimatedIntensityArrival } from './utils/estimatedIntensity'
 import {
   type QuakeOverlay, toggleLpgmOverlay, toggleDistributionOverlay, toggleUnreceivedOverlay,
@@ -82,7 +83,7 @@ import { fetchP2PReplayEvents, fetchP2PQuakeHistory, clearP2PReplayCache } from 
 import { findCoveringArchiveSync, findArchiveJustEndedSync, fetchLocalArchiveEvents, fetchLocalArchiveQuakeHistory } from './services/localArchiveReplay'
 import { useHistoricalArchiveIndex } from './hooks/useHistoricalArchiveIndex'
 import { log } from './utils/logger'
-import { setReplayOffset as setClockReplayOffset, serverDate } from './utils/clock'
+import { setReplayOffset as setClockReplayOffset, serverDate, serverNow } from './utils/clock'
 import { isDmdss } from './utils/env'
 
 // 平常時のウィンドウタイトル（index.html の <title> と一致させる）。
@@ -109,7 +110,7 @@ const TAB_SCROLLER_CLASS = 'absolute inset-0 overflow-y-auto overflow-x-hidden o
 
 
 export function App() {
-  const { settings, updateSetting } = useSettings()
+  const { settings, updateSetting, replaceSettings } = useSettings()
   const [activeTab, setActiveTabState] = useState<TabId>(settings.defaultTab)
   // 津波タブを自動で見せた回数。増えるたびに津波カードのスクロールを先頭へ戻す
   // （増やす条件と理由は `requestAutoTab`）。
@@ -342,6 +343,13 @@ export function App() {
     // **既定値は置かない**（`source` と同じ理由）。渡し忘れの症状は「タブが動かない」で、
     // 例外もログも出ない。必須にしておけば、新しい呼び出しを足したときに型が捕まえる。
     follow: boolean,
+    // **起動時の復元による要求か。** 判定 3（EEW 続報の片方向抑制）だけを素通りさせる。
+    // あの抑制は「続報が連投されて画面が往復する」のを防ぐもので、接続ごとに 1 回きりの
+    // 復元には当たらない。**渡し忘れると優先度表が逆転する**——復元の EEW(4) が、先に
+    // 完了した津波の保持(3)を越えられなくなる（理由は `shouldAcceptAutoTab` の引数）。
+    //
+    // **既定値は置かない**（`source`・`follow` と同じ理由）。
+    isStartupRestore: boolean,
   ): boolean => {
     const hold = tabHoldRef.current
     const now = Date.now()
@@ -355,7 +363,7 @@ export function App() {
     // 見ても「受信時要求が抑制で弾かれた（意図どおり）」のか「追従が別の理由で弾かれた（疑わしい）」
     // のかを事後に切り分けられない。
     const followNote = follow ? '・追従' : ''
-    if (!shouldAcceptAutoTab(hold, priority, now, source, follow)) {
+    if (!shouldAcceptAutoTab(hold, priority, now, source, follow, isStartupRestore)) {
       // **保持の側の駆動源も出すこと。** どの優先度に負けたかだけでは「何がその保持を張ったか」が
       // 分からず、拒否の原因（受信時要求か・手動選択か・アイドル復帰か）を突き合わせられない。
       log.debug(`[tab] → ${tab} スキップ (優先度${priority}・駆動${source}${followNote} < 保持中${hold.priority}・駆動${hold.source}・残り${hold.until - now}ms)`)
@@ -446,7 +454,7 @@ export function App() {
   const forceTab = useCallback((tab: TabId, priority: TabPriority, source: TabHoldSource) => {
     tabHoldRef.current = { until: 0, priority: TAB_PRIORITY.quake, source: 'hold' }
     // 追従ではない。ユーザー操作と既定の状態への復帰はどちらも「いま声になる」経路ではない
-    requestAutoTab(tab, priority, source, false)
+    requestAutoTab(tab, priority, source, false, false)
   }, [requestAutoTab])
 
   /**
@@ -457,7 +465,7 @@ export function App() {
   const requestTabForKyoshin = useCallback((tab: TabId) => {
     // 駆動源は `'hold'`。**`'receipt'` にしない** ——揺れ検知も読み上げを持たない経路だが、
     // 移動先が realtime で、EEW の保持中はすでに realtime を出しているため越える必要がない。
-    requestAutoTab(tab, TAB_PRIORITY.kyoshin, 'hold', false)
+    requestAutoTab(tab, TAB_PRIORITY.kyoshin, 'hold', false, false)
   }, [requestAutoTab])
 
   /** ユーザー操作によるタブ移動。以後 TAB_HOLD_MS は自動切替に奪わせない。 */
@@ -479,7 +487,7 @@ export function App() {
   //   見えなくなる（この優先度の仕組みが最初に直した症状そのもの）
   const setActiveTabNonRealtime = useCallback((tab: Exclude<TabId, 'realtime'>) => {
     const source = resolveNonRealtimeTabSource(settings.voicevoxEnabled)
-    requestAutoTab(tab, tab === 'tsunami' ? TAB_PRIORITY.tsunami : TAB_PRIORITY.quake, source, false)
+    requestAutoTab(tab, tab === 'tsunami' ? TAB_PRIORITY.tsunami : TAB_PRIORITY.quake, source, false, false)
   }, [requestAutoTab, settings.voicevoxEnabled])
 
   /**
@@ -546,12 +554,12 @@ export function App() {
   // 続報。手動選択より弱く、地震情報・津波より強い。
   // 動いたときだけ記録する（拒否は requestAutoTab 側が debug で残す）。
   const setActiveTabRealtimeOnUpdate = useCallback(() => {
-    if (requestAutoTab('realtime', TAB_PRIORITY.eewUpdate, 'speech', false)) log.info('[tab] → realtime (EEW続報)')
+    if (requestAutoTab('realtime', TAB_PRIORITY.eewUpdate, 'speech', false, false)) log.info('[tab] → realtime (EEW続報)')
   }, [requestAutoTab])
 
   // 新規発報・レベルアップ・誤報取消。手動選択より強い。
   const setActiveTabRealtimeUrgent = useCallback(() => {
-    requestAutoTab('realtime', TAB_PRIORITY.eewUrgent, 'speech', false)
+    requestAutoTab('realtime', TAB_PRIORITY.eewUrgent, 'speech', false, false)
   }, [requestAutoTab])
 
   /**
@@ -585,7 +593,7 @@ export function App() {
       setPanelCollapsed(false)
       return
     }
-    requestAutoTab(tab, priority, 'speech', true)
+    requestAutoTab(tab, priority, 'speech', true, false)
   }, [requestAutoTab])
 
   /**
@@ -605,7 +613,7 @@ export function App() {
    * 取り返すかどうかの判断は保持の中身を見て決める（`shouldRetakeAfterPreSpeech`）。
    */
   const preSpeechTab = useCallback((tab: TabId, priority: TabPriority) => (
-    requestAutoTab(tab, priority, 'speech', false)
+    requestAutoTab(tab, priority, 'speech', false, false)
   ), [requestAutoTab])
 
   // デフォルトタブへ復帰する。デフォルトタブが realtime の場合は
@@ -657,10 +665,11 @@ export function App() {
   const [telegramTextFollowSession, setTelegramTextFollowSession] = useState<SpeechFollowSession | null>(null)
   const telegramTextFollow = useMemo(() => createSpeechFollowController(setTelegramTextFollowSession), [])
   /**
-   * いま気象庁の文を読み上げている電文の主題（`telegramText:<kind>`。読んでいなければ null）。
+   * いま気象庁の文を読み上げている電文の主題（読んでいなければ null。書式は
+   * `telegramTextSubject` が決める —— 長周期だけ地震の識別子まで含む）。
    *
-   * バナーと津波カードはこれを見て自分の表示を開く。**開いた側が「自分が開いた分」を覚える**
-   * ので、利用者が手で開いていたものを読み終わりで閉じることはない。
+   * バナー・津波カード・地震カードがこれを見て自分の表示を開く。**開いた側が「自分が開いた分」を
+   * 覚える**ので、利用者が手で開いていたものを読み終わりで閉じることはない。
    */
   const [speakingTelegramTextSubject, setSpeakingTelegramTextSubject] = useState<string | null>(null)
   useTelegramTextSpeechFollow({
@@ -687,6 +696,35 @@ export function App() {
   // 保存と画面表示は即座に反映したいので、遅らせるのはここだけにする。
   const debouncedApiKey = useDebouncedValue(settings.dmdataApiKey, API_KEY_DEBOUNCE_MS)
 
+  /**
+   * 起動時の復元で、発表中のものを画面へ見せる。
+   *
+   * **緊急地震速報は `eewUrgent`(6) ではなく `eewUpdate`(4) で出す。** 復元するのは新規発報では
+   * なく**既に出ている報**で、手動選択（5）を奪う理由が無い——履歴の取得は非同期なので、
+   * 完了までに利用者が設定タブなどを開いていることがある。何も触っていなければ保持が空なので
+   * そのまま通る（`tabHoldRef` の初期値は `until: 0`）。
+   *
+   * **津波は `tsunamiPriorityDefault` に従う。** 「津波発表中はどのタブを既定にするか」を利用者が
+   * 既に選んでいるので、起動時だけそれを無視する理由が無い（アイドル復帰では従来から効いていた）。
+   *
+   * **駆動源は `receipt` で固定しない。** 復元そのものが声にならないことと、**この端末が
+   * 読み上げを使わない**ことは別の話。`receipt` は `eewUpdate` の保持を無条件に越える特権を
+   * 持っており（`shouldAcceptAutoTab` の判定 4）、それは「読み上げが無効な端末だけがそこへ
+   * 来る」前提で成り立っている。読み上げが有効な端末で固定すると、**実際に声に出ている
+   * 緊急地震速報から画面を奪う**——この優先度の仕組みが最初に直した症状そのもの。
+   * 振り分けは電文の受信と同じ `resolveNonRealtimeTabSource` に任せる。
+   */
+  const handleStartupRestore = useCallback((tab: 'realtime' | 'tsunami') => {
+    if (tab === 'tsunami' && !settings.tsunamiPriorityDefault) return
+    requestAutoTab(
+      tab,
+      tab === 'realtime' ? TAB_PRIORITY.eewUpdate : TAB_PRIORITY.tsunami,
+      resolveNonRealtimeTabSource(settings.voicevoxEnabled),
+      false,
+      true,
+    )
+  }, [requestAutoTab, settings.tsunamiPriorityDefault, settings.voicevoxEnabled])
+
   const {
     earthquakes, tsunamis, activeEEWs, lpgmByEventId, nankai, nankaiCommentary, kohatsu, quakeNotice, earthquakeCount, estimatedIntensity, connectionStatus, lastUpdate, isLoading, isLoadingMore, hasMore, error,
     telegramLog, clearTelegramLog,
@@ -699,7 +737,7 @@ export function App() {
     simulateTrainingQuake, simulateUnreceivedQuake, simulateTsunamiGradeChange, simulateQuakeAmendment,
     simulateQuakeReportSequence,
     resetState, loadReplayEvents, restoreQuakeHistory,
-  } = useEarthquakes(handleLiveEvent, debouncedApiKey, settings.dmdataTestDelivery, replayTimeOffset)
+  } = useEarthquakes(handleLiveEvent, debouncedApiKey, settings.dmdataTestDelivery, replayTimeOffset, handleStartupRestore)
   earthquakesRef.current = earthquakes
   tsunamisRef.current = tsunamis
 
@@ -926,6 +964,41 @@ export function App() {
   })()
   // 地図に表示中の LPGM（バッジクリックでトグル）
   const activeLpgm = activeLpgmEventId ? (lpgmByEventId.get(activeLpgmEventId) ?? null) : null
+
+  /**
+   * 長周期の補足を読み上げたのに、開く先が最後まで無かったことを記録する。
+   *
+   * **画面には何も現れないのに声は本文を読む。** この機能が直したのと同じ症状（声だけが
+   * 本文を伝える）が別の理由で起きても、記録が無ければ気づけない —— 実際、長周期が対象から
+   * 漏れていた間、例外もログも出なかった（→ docs/spec/audio-tts-spec.md §6）。
+   *
+   * **残すのは「最後の機会」でだけ。** 読み上げの途中はカードがまだ無いことがありうるので、
+   * その場で残すと正常な経過で記録が埋まる（推計震度分布図の診断と同じ考え方）。
+   * 一度でも開ける状態になったかを覚えておき、読み終わりに判定する。
+   */
+  const lpgmNotesOpenableRef = useRef<{ subject: string; openable: boolean } | null>(null)
+  useEffect(() => {
+    const subject = speakingTelegramTextSubject
+    const prefix = telegramTextSubject('lpgm', '')
+    if (subject === null || !subject.startsWith(prefix)) {
+      const prev = lpgmNotesOpenableRef.current
+      lpgmNotesOpenableRef.current = null
+      // 読み上げが終わった（別の種別へ移った場合も含む）。開けないまま終わっていたら残す。
+      if (prev && !prev.openable) {
+        log.warn(`[quake] 長周期地震動の補足を読み上げたのに、開く先の地震カードがありませんでした（eventId ${prev.subject.slice(prefix.length)}）`)
+      }
+      return
+    }
+    const eventId = subject.slice(prefix.length)
+    const openable = earthquakes.some(q => extractQuakeEventId(q) === eventId)
+      && canOpenLpgmNotes(lpgmByEventId.get(eventId))
+    const prev = lpgmNotesOpenableRef.current
+    // 後からカードが届いて開けるようになった場合も拾う（依存に一覧を入れてあるのはこのため）
+    lpgmNotesOpenableRef.current = {
+      subject,
+      openable: (prev?.subject === subject && prev.openable) || openable,
+    }
+  }, [speakingTelegramTextSubject, earthquakes, lpgmByEventId])
 
   // 選択中の地震カードがキャンセル状態になったら即座に選択解除する。
   // **`selectQuake` を通す** —— 直に state を書くと前値の ref（`selectedQuakeIdRef`）が
@@ -1489,6 +1562,59 @@ export function App() {
     loadReplayEvents,
   })
 
+  // 外からリプレイを操るための診断アクセサ（`__frameProfiler`・`__cameraUpdateSkip` 等と同じ流儀）。
+  //
+  // **設定タブの UI を叩かせないために置いている** —— UI 経由にすると、文言やレイアウトを
+  // 変えるたびに外部からの操作が壊れ、「画面の見た目」と「外から操る口」が結びついてしまう。
+  //
+  // `speaking()` は「読み上げが終わったか」を待つために使う。固定の秒数で待つと、読み上げの
+  // 長さは読む地域の数で変わるぶん足りたり余ったりする。
+  const replayAccessRef = useRef({
+    offset: replayTimeOffset, fetching: replay.isFetching, error: replay.error,
+    start: replay.start, stop: replay.stop,
+  })
+  // レンダー中に ref を書き換えない（React が捨てたレンダーの書き込みだけが残りうるため）。
+  useEffect(() => {
+    replayAccessRef.current = {
+      offset: replayTimeOffset, fetching: replay.isFetching, error: replay.error,
+      start: replay.start, stop: replay.stop,
+    }
+  })
+  useEffect(() => {
+    ;(window as unknown as Record<string, unknown>).__replay = {
+      /** 再生中のシナリオ時刻（epoch ms）。ライブ中は実時刻。 */
+      now: () => serverNow(),
+      /** 壁時計に足しているオフセット(ms)。`null` ならライブ。 */
+      offset: () => replayAccessRef.current.offset,
+      /** 電文を取りに行っている最中か。落ち着いてから次の操作へ移るため。 */
+      fetching: () => replayAccessRef.current.fetching,
+      /**
+       * 取得の失敗。`null` なら失敗していない。
+       *
+       * **これが無いと、外から見て成功と失敗が同じ形になる** —— `fetching()` は成否に
+       * かかわらず最後は `false` へ戻るので、それだけを見ていると失敗を「開始できた」と読む。
+       */
+      error: () => replayAccessRef.current.error,
+      /** 読み上げの最中か。 */
+      speaking: () => isSpeaking(),
+      /** 指定した日時から再生を始める。 */
+      start: (iso: string) => {
+        const at = new Date(iso)
+        if (!Number.isFinite(at.getTime())) throw new Error(`日時として読めません: ${iso}`)
+        // **`void` で捨てない。** `useReplayController` の `start` は、取得処理こそ内部で
+        // 捕まえるが、その手前の同期処理（セッションの採番・状態のリセット・時刻オフセットの
+        // 適用）は try の外にある。そこで投げると拾い手のない拒否になり、ログにも画面にも
+        // 残らない。
+        replayAccessRef.current.start(at).catch((e: unknown) => {
+          log.error('[replay] __replay.start が失敗しました', e)
+        })
+      },
+      /** 再生を止めてライブへ戻す。 */
+      stop: () => { replayAccessRef.current.stop() },
+    }
+    return () => { delete (window as unknown as Record<string, unknown>).__replay }
+  }, [])
+
   // リプレイ中、対象時刻がローカル履歴アーカイブの収録範囲に重なる場合、そのidを
   // useKyoshinRealtime へ渡す。ローカル限定生成の強震モニタ風データ（scripts/capture-kyoshin-waveform.ts）
   // が存在すればそちらを使い、無ければ何も供給されない（従来どおりYahooには到達不能な時代のため）。
@@ -1764,9 +1890,13 @@ export function App() {
       : (isDmdss && nowTick !== null)
         ? nowTick
         : lastUpdate
-  // 更新がエラーで停止しているか（リアルタイム=取得連続失敗 / それ以外=WS切断）
+  // 更新がエラーで停止しているか（リアルタイム=取得連続失敗 / それ以外=WS切断）。
+  // **`crowded`（同時接続枠が埋まっている）も更新は止まっている**ので同じく警告を出す。
+  // 理由まで伝えるのは設定タブの接続状態の側（→ types/earthquake.ts の `ConnectionStatus`）。
   const overlayError =
-    mapTab === 'realtime' ? kyoshin.error : connectionStatus === 'disconnected'
+    mapTab === 'realtime'
+      ? kyoshin.error
+      : connectionStatus === 'disconnected' || connectionStatus === 'crowded'
 
   return (
     // 画面いっぱいの高さは h-dvh（100dvh）で取る。dvh はブラウザ UI の出入りに追従するため、
@@ -1913,6 +2043,7 @@ export function App() {
                 unreceivedQuakeKey={unreceivedQuakeKey}
                 onToggleUnreceived={toggleUnreceived}
                 onFocusMap={focusMapTarget}
+                speakingTelegramTextSubject={speakingTelegramTextSubject}
               />
             </ErrorBoundary>
           </div>
@@ -1942,7 +2073,7 @@ export function App() {
                 obsUpdateStatus={obsUpdateStatus}
               areaGradeChangedKeys={areaGradeChangedKeys}
                 speechSession={speechFollowSession}
-                speakingTelegramText={speakingTelegramTextSubject === 'telegramText:tsunami'}
+                speakingTelegramText={speakingTelegramTextSubject === telegramTextSubject('tsunami')}
                 /* 読み上げ追従の可否。タブは invisible で隠すだけなので**非表示でもスクロールは
                    効いてしまう**（戻ってきたら知らない位置にいる）。折りたたみ時はさらに幅か
                    高さが 0 になり、視野の高さが取れない。 */
@@ -1984,6 +2115,7 @@ export function App() {
               <SettingsTab
                 settings={settings}
                 onUpdate={updateSetting}
+                onReplaceSettings={replaceSettings}
                 dmdataConnectionStatus={connectionStatus}
                 onTest={testHandlers}
                 kyoshinTimeOffset={replayTimeOffset}

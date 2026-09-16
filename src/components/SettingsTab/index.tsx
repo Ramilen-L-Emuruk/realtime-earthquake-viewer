@@ -4,6 +4,7 @@ import { DAY_NIGHT_OPACITY_MIN, DAY_NIGHT_OPACITY_MAX } from '../../hooks/useSet
 import { Toggle } from '../Toggle'
 import { TELEGRAM_TEXT_BLOCK_KEYS, type TelegramTextBlockKey, type TelegramTextBlocks } from '../../utils/ttsText'
 import type { ConnectionStatus } from '../../types/earthquake'
+import { dmdataConnectionLabel } from './connectionLabel'
 import { INTENSITY_SCALE_COUNT, getIntensityLabel, getIntensityColor, INTENSITY_LABELS } from '../../utils/intensity'
 import { readableTextColor } from '../../utils/contrast'
 import { playAlertSound, playCountdownBeep, playKyoshinUpdateSound, unlockAudio } from '../../utils/alertSound'
@@ -20,8 +21,10 @@ import { useDebouncedValue } from '../../hooks/useDebouncedValue'
 import { DescriptionTip } from '../DescriptionTip'
 import { zipSync } from 'fflate'
 import { countRecords, listRecords, clearRecords, onRecordsChanged, hasStorageError } from '../../utils/detectionDiagnosticsDb'
+import { telegramCacheStats, hasTelegramCacheError, telegramCachePurgeStats, onTelegramCacheChanged } from '../../utils/telegramBodyCache'
 import { formatFileStamp } from '../../utils/formatters'
 import { useKyoshinImport } from '../../hooks/useKyoshinImport'
+import { buildSettingsFile, parseSettingsFile, settingsFileName, type SettingsVariant } from '../../utils/settingsIo'
 
 export interface TestFunctions {
   earthquake: () => void
@@ -60,6 +63,11 @@ export interface TestFunctions {
 interface Props {
   settings: AppSettings
   onUpdate: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void
+  /**
+   * 設定の読み込みで全項目をまとめて差し替える。渡す値は `sanitize()` 済みであること。
+   * 戻り値は「この端末へ保存できたか」。
+   */
+  onReplaceSettings: (next: AppSettings, keepApiKey?: boolean) => boolean
   onTest: TestFunctions
   /** リプレイ中なら再生時刻と実時刻の差（null = 再生していない）。「再生中」表示の判定に使う。 */
   kyoshinTimeOffset: number | null
@@ -94,6 +102,156 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       </div>
       <div className="divide-y divide-border">{children}</div>
     </section>
+  )
+}
+
+/**
+ * 電文の控えの状態（件数・容量・使えているか）。
+ *
+ * **控えが効かない端末では、起動のたびに電文を取り直す。** 配信元が「同じ`id`に対して
+ * 短期間にリクエストを繰り返さないように実装してください」と求めている以上、効いていない
+ * ことに気づける必要がある —— プライベートモードや容量不足では IndexedDB が使えず、
+ * それを知らせる手立てがコンソールの 1 行しか無かった
+ * （→ [`data-sources-spec.md`](../../../docs/spec/data-sources-spec.md) §2「リクエスト数を抑える」）。
+ */
+function TelegramCacheRow() {
+  const [stats, setStats] = useState<{ entries: number; bytes: number } | null>(null)
+  const [note, setNote] = useState<string | null>(null)
+  const refresh = useCallback(() => {
+    void telegramCacheStats().then(setStats)
+    if (hasTelegramCacheError()) {
+      setNote('この端末では控えを持てません（プライベートモード・容量不足など）。起動のたびに電文を取り直します')
+      return
+    }
+    // 上限に達して控えたばかりのものまで捨てている状態は、件数だけでは正常と見分けが付かない
+    const purge = telegramCachePurgeStats()
+    setNote(purge.purgedRecent > 0
+      ? `控えが上限に達しています（控えた直後に捨てた電文 ${purge.purgedRecent} 件）。同じ電文を取り直している可能性があります`
+      : null)
+  }, [])
+  // 控えが増減したら読み直す（通知はまとめて届く）。設定タブは常時マウントされたまま
+  // CSS で隠れるだけなので、一定間隔で問い合わせる作りにはしない
+  useEffect(() => {
+    refresh()
+    return onTelegramCacheChanged(refresh)
+  }, [refresh])
+
+  return (
+    <Row
+      label="電文の控え"
+      description="取得した電文をこのブラウザに控えて、同じ電文を取り直さないようにします。上限を超えた分は古い順に自動で捨てます"
+    >
+      <div className="flex flex-col items-end gap-1">
+        <span className="text-xs text-secondary">
+          {stats === null ? '—' : `${stats.entries} 件 / ${(stats.bytes / 1024 / 1024).toFixed(1)} MB`}
+        </span>
+        {note && <p className="text-xs text-amber-400 w-56 text-left leading-snug">{note}</p>}
+      </div>
+    </Row>
+  )
+}
+
+/**
+ * 設定の書き出しと読み込み。
+ *
+ * 端末を移るとき・ブラウザのデータを消すとき・用途別の設定一式を作り置きするときに使う。
+ * 設定は localStorage にしか無いので、これが無いと持ち出す手段が無い。
+ *
+ * 書式と検証は `utils/settingsIo.ts`。ここは画面の口だけを持つ。
+ */
+function SettingsIoRow({ settings, onReplace }: {
+  settings: AppSettings
+  onReplace: (s: AppSettings, keepApiKey?: boolean) => boolean
+}) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const variant: SettingsVariant = isDmdss ? 'dmdss' : 'standard'
+
+  const download = useCallback(() => {
+    setError(null)
+    setNotice(null)
+    try {
+      const now = new Date()
+      const blob = new Blob([JSON.stringify(buildSettingsFile(settings, variant, now), null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = settingsFileName(variant, now)
+      // 文書へ入れてから押す。入れずに click() を呼ぶと、環境によっては例外も出さずに
+      // 何も起きない（押しても反応が無い理由がどこにも残らない）。
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+      setNotice(isDmdss ? '書き出しました（APIキーは含まれていません）' : '書き出しました')
+    } catch (e) {
+      // 黙って飲み込むと、押しても何も起きない理由が利用者に分からない
+      setError(`書き出しに失敗しました（${e instanceof Error ? e.message : String(e)}）`)
+    }
+  }, [settings, variant])
+
+  const handleFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    // 同じファイルを選び直しても onChange が発火するようにする
+    e.target.value = ''
+    if (!file) return
+    setError(null)
+    setNotice(null)
+    let raw: unknown
+    try {
+      raw = JSON.parse(await file.text())
+    } catch (err) {
+      // 文面は原因を絞れないが、記録には残す。構文の誤り・読み取りの失敗・
+      // 文字コードの異常が同じ文言になるため、これが無いと原因を追えない。
+      log.warn('[settings] 設定ファイルを読めませんでした', err)
+      setError('このファイルは読み取れませんでした（設定ファイルではないようです）')
+      return
+    }
+    const result = parseSettingsFile(raw, settings)
+    if (!result.ok) {
+      setError(result.error)
+      return
+    }
+    const persisted = onReplace(result.settings, result.usedFileApiKey)
+
+    const notes: string[] = ['設定を読み込みました']
+    const exportedAt = result.exportedAt == null ? null : new Date(result.exportedAt)
+    if (exportedAt && Number.isFinite(exportedAt.getTime())) {
+      notes[0] += `（${exportedAt.toLocaleString('ja-JP')} に書き出されたファイル）`
+    }
+    // 保存できたかは必ず伝える。黙ると「反映された」と思ったまま端末を移して、次に開いたときに
+    // 元へ戻っていることになる。
+    if (!persisted) notes.push('※ この端末に保存できませんでした。次にアプリを開くと元の設定に戻ります')
+    // 値が入っていたのに読めなかった項目。黙ると、壊れたファイルでも成功にしか見えない。
+    if (result.rejectedKeys.length > 0) {
+      notes.push(`※ 次の項目は読めなかったため、はじめの値にしました: ${result.rejectedKeys.join('、')}`)
+    }
+    // バリアントが違っても拒否はしない（設定の型は同じ）。ただし片方にしか無い項目があるので黙らない。
+    if (result.variant !== variant) {
+      notes.push(result.variant === 'dmdss'
+        ? '※ DM-D.S.S 版で書き出したファイルです。この版に無い項目は効きません'
+        : '※ 通常版で書き出したファイルです。DM-D.S.S 固有の項目ははじめの値のままです')
+    }
+    // APIキーを使う経路があるのは DMDSS 版だけ。通常版では触れても意味が無いので言わない。
+    if (result.usedFileApiKey && isDmdss) notes.push('※ ファイルに APIキーが書かれていたため、それを使いました')
+    setNotice(notes.join('\n'))
+  }, [settings, onReplace, variant])
+
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <input ref={inputRef} type="file" accept=".json,application/json" onChange={e => { void handleFile(e) }} className="hidden" />
+      <div className="flex items-center gap-2">
+        <button onClick={download} className="px-3 py-1.5 rounded text-xs bg-panel border border-border text-white">
+          書き出す
+        </button>
+        <button onClick={() => inputRef.current?.click()} className="px-3 py-1.5 rounded text-xs bg-panel border border-border text-white">
+          読み込む
+        </button>
+      </div>
+      {notice && <span className="text-xs text-secondary text-right whitespace-pre-line">{notice}</span>}
+      {error && <span className="text-xs text-red-400 text-right">{error}</span>}
+    </div>
   )
 }
 
@@ -737,7 +895,7 @@ function HomeLocationSection({
 }
 
 // React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
-export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, kyoshinInputDateTime, onSetKyoshinInputDateTime, dmdataConnectionStatus, replayIsFetching, replayError, onStartReplay, onStopReplay, historicalArchives, historicalArchivesLoading, scenarioTest }: Props) {
+export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onReplaceSettings, onTest, kyoshinTimeOffset, kyoshinInputDateTime, onSetKyoshinInputDateTime, dmdataConnectionStatus, replayIsFetching, replayError, onStartReplay, onStopReplay, historicalArchives, historicalArchivesLoading, scenarioTest }: Props) {
   const [voicevoxStatus, setVoicevoxStatus] = useState<'idle' | 'checking' | 'available' | 'unavailable' | 'invalid'>('idle')
   const [voicevoxSpeakers, setVoicevoxSpeakers] = useState<VoicevoxSpeaker[]>([])
 
@@ -804,20 +962,16 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             <p className="text-yellow-400 text-xs">APIキーはこのブラウザにのみ保存されます。第三者と共有しないでください。</p>
           </div>
           <Row label="接続状態">
-            {dmdataConnectionStatus === 'connected' ? (
-              <span className="text-xs text-green-400 font-medium">接続中</span>
-            ) : dmdataConnectionStatus === 'connecting' ? (
-              <span className="text-xs text-blue-400">接続試行中...</span>
-            ) : dmdataConnectionStatus === 'replay' ? (
-              // 過去再生中はライブ受信を意図的に止めている。「切断」と出すと異常のように見え、
-              // 更新しないままだと「接続中」が残って実態と食い違うため、専用の文言にする。
-              <span className="text-xs text-blue-400">再生中（ライブ受信は停止）</span>
-            ) : (
-              // キーが不正なときは接続を試みていない。「切断」だと通信の失敗に見えるため区別する。
-              <span className={`text-xs ${isApiKeyInvalid ? 'text-red-400' : 'text-secondary'}`}>
-                {!settings.dmdataApiKey ? 'APIキー未設定' : isApiKeyInvalid ? 'APIキーが不正' : '切断'}
-              </span>
-            )}
+            {(() => {
+              // 文言と色の対応は `connectionLabel.ts` が単一情報源。**ここに分岐を戻さないこと**
+              // —— 三項演算子の連鎖は最後の `:` が全部を受けるので、`ConnectionStatus` に値を
+              // 足したときの書き忘れが型検査に掛からない。
+              const label = dmdataConnectionLabel(dmdataConnectionStatus, {
+                apiKeySet: Boolean(settings.dmdataApiKey),
+                apiKeyInvalid: isApiKeyInvalid,
+              })
+              return <span className={`text-xs ${label.className}`}>{label.text}</span>
+            })()}
           </Row>
           <Row label="APIキー" description="DMDATA.JP のAPIキーを入力してください">
             {/* 不正な文字は入力時に弾かず、入ったことを見せて本人に直させる。入力欄から黙って
@@ -844,6 +998,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
               onChange={v => onUpdate('dmdataTestDelivery', v)}
             />
           </Row>
+          <TelegramCacheRow />
 
         </Section>
       )}
@@ -1647,6 +1802,16 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
           hint="上の地震一覧にある地震のみ読み込めます"
         >
           <KyoshinImportRow historicalArchives={historicalArchives ?? EMPTY_HISTORICAL_ARCHIVES} />
+        </Row>
+      </Section>
+
+      <Section title="設定の書き出し・読み込み">
+        <Row
+          label="設定ファイル"
+          description={'いまの設定をファイルへ書き出し、別の端末やブラウザで読み込めます。' +
+            (isDmdss ? 'APIキーは書き出しに含まれません（読み込んでも、いま入力してある値は消えません）。' : '')}
+        >
+          <SettingsIoRow settings={settings} onReplace={onReplaceSettings} />
         </Row>
       </Section>
 

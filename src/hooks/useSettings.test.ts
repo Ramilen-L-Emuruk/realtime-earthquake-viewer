@@ -5,6 +5,7 @@ import {
   injectDevApiKey,
   resolveDevApiKey,
   stripDevApiKey,
+  settingsToStore,
   DAY_NIGHT_OPACITY_MIN,
   DAY_NIGHT_OPACITY_MAX,
 } from './useSettings'
@@ -332,5 +333,29 @@ describe('injectDevApiKey', () => {
     const base = sanitize({ dmdataApiKey: '' })
     expect(injectDevApiKey(base, undefined)).toBe(base)
     expect(injectDevApiKey(base, '')).toBe(base)
+  })
+})
+
+describe('settingsToStore', () => {
+  // ここを純関数にしてあるのは、フック越しだとテスト環境では注入値が常に undefined になり、
+  // 守りたい分岐（ファイルの値と注入値が一致する場合）を一度も踏めないため。
+  const withKey = (key: string) => sanitize({ dmdataApiKey: key })
+
+  it('正: 注入値と違うキーはそのまま保存する', () => {
+    expect(settingsToStore(withKey('typed-by-hand'), 'injected', false).dmdataApiKey).toBe('typed-by-hand')
+  })
+
+  it('安全弁: 注入値と同じキーは落とす（updateSetting と同じ扱い）', () => {
+    expect(settingsToStore(withKey('injected'), 'injected', false).dmdataApiKey).toBe('')
+  })
+
+  it('対照: keepApiKey なら、注入値と同じ文字列でも落とさない', () => {
+    // 利用者がファイルへ書いた値がたまたま dev の注入値と一致しただけで消える、を防ぐ分岐。
+    // この対照が無いと、keepApiKey を実装から消しても他のテストは通ってしまう。
+    expect(settingsToStore(withKey('injected'), 'injected', true).dmdataApiKey).toBe('injected')
+  })
+
+  it('安全弁: 注入値が無ければ何も落とさない', () => {
+    expect(settingsToStore(withKey('any'), undefined, false).dmdataApiKey).toBe('any')
   })
 })

@@ -21,6 +21,17 @@ vi.mock('../utils/logger', async (importOriginal) => ({
 
 const timeMock = vi.mocked(fetchServerTime)
 
+/** エポック秒を実装と同じ JST の 14 桁（YYYYMMDDHHmmss）にする。 */
+function tsOf(epochSec: number): string {
+  const d = new Date(epochSec * 1000)
+  const p = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  }).formatToParts(d)
+  const get = (t: string) => p.find(x => x.type === t)?.value ?? ''
+  return `${get('year')}${get('month')}${get('day')}${get('hour')}${get('minute')}${get('second')}`
+}
+
 describe('isRegistered', () => {
   const originalFetch = globalThis.fetch
 
@@ -232,6 +243,93 @@ describe('startClockSync の主経路とフォールバック', () => {
 
 // 較正を見送った 3 経路の記録。スロットルを 1 個共有すると、最初に鳴った理由が残りを
 // 5 分間隠してしまう（「無音経路に警告を足す」という目的が半分無効になる）。
+// **1 回の較正で最大 121 リクエストを投げていた経路。** 登録は時刻順に進むので「その秒が
+// 登録済みか」は単調で、二分探索なら同じ窓・同じ答えで 9 件で足りる。較正は 30 秒ごとに
+// 走るため、主経路（外部の時刻サービス）が失敗し続ける端末では毎分 240 件を超えていた。
+describe('クロック較正のフロンティア探索は線形に走査しない', () => {
+  const originalFetch = globalThis.fetch
+  let stop: (() => void) | null = null
+
+  /** 判定リクエストの秒（URL の 14 桁）を集める fetch。`boundary` 以下を登録済みとする。 */
+  function countingFetch(boundary: string | null) {
+    const asked: string[] = []
+    const fn = vi.fn(async (url: string) => {
+      const m = /RealTimeData\/\d{8}\/(\d{14})\.json/.exec(url)
+      if (!m) return { status: 200 } as Response
+      asked.push(m[1])
+      // 14 桁は 0 埋めなので辞書順の比較で時刻の前後になる
+      const registered = boundary !== null && m[1] <= boundary
+      return { status: registered ? 200 : 403 } as Response
+    })
+    return { fn, asked }
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    timeMock.mockReset()
+    setReplayOffset(null)
+    // 主経路は常に失敗させ、フォールバックだけを見る
+    timeMock.mockResolvedValue(null)
+  })
+  afterEach(() => {
+    stop?.()
+    stop = null
+    vi.useRealTimers()
+    globalThis.fetch = originalFetch
+    setReplayOffset(null)
+  })
+
+  // 正: 窓の中にフロンティアがあれば見つける（答えは線形走査と同じ）。
+  it('正: 窓の中のフロンティアを見つける', async () => {
+    // 現在秒の 3 秒前を境界にする（既定の窓は above=2 / below=4 なので中に入る）
+    const nowSec = Math.floor(serverNow() / 1000)
+    const boundaryTs = tsOf(nowSec - 3)
+    const { fn, asked } = countingFetch(boundaryTs)
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    stop = startClockSync()
+    await vi.advanceTimersByTimeAsync(0)
+
+    // 境界の秒を必ず判定している（見つけた証拠）
+    expect(asked).toContain(boundaryTs)
+  })
+
+  // 正（ここが本題）: 窓が上限まで広がっても判定は 12 件以下。**線形なら 121 件**。
+  it('正: 窓が上限まで広がっても判定は 12 件以下（線形なら 121 件）', async () => {
+    // 1 件も登録済みが無い応答にして、連続失敗で窓を上限まで広げる
+    const { fn, asked } = countingFetch(null)
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    stop = startClockSync()
+    // 30 秒周期を 10 回まわす（2^n で広がるので 6 回目には上限 ±60 へ届く）
+    for (let i = 0; i < 10; i++) await vi.advanceTimersByTimeAsync(30_000)
+
+    const perCycle = asked.length / 11
+    expect(perCycle).toBeLessThanOrEqual(12)
+    // 線形走査だった頃の 1 周期分（121 件）には遠く及ばないこと
+    expect(asked.length).toBeLessThan(121)
+  })
+
+  // 安全弁: 判定不能（5xx）が返ったらその回は諦める。単調性の前提が崩れた状態で
+  // 探索を続けると境界を取り違え、**誤った時刻を供給する**（画面には出ない）。
+  it('安全弁: 判定不能が返ったらその回の較正を諦める', async () => {
+    const asked: string[] = []
+    const fn = vi.fn(async (url: string) => {
+      const m = /RealTimeData\/\d{8}\/(\d{14})\.json/.exec(url)
+      if (!m) return { status: 200 } as Response
+      asked.push(m[1])
+      return { status: 503 } as Response
+    })
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    stop = startClockSync()
+    await vi.advanceTimersByTimeAsync(0)
+
+    // 1 件目で諦める（窓を最後まで舐めない）
+    expect(asked).toHaveLength(1)
+  })
+})
+
 describe('較正を見送った理由の記録', () => {
   const originalFetch = globalThis.fetch
   const warnOf = (fragment: string) =>
@@ -267,8 +365,12 @@ describe('較正を見送った理由の記録', () => {
 
   it('判定の取得に失敗したら、その理由を記録する', async () => {
     // フロンティア探索は成功させ、flip のポーリングだけを失敗させる。
+    //
+    // **1 件目を 200 にすると探索は 1 判定で終わる。** フロンティア探索は窓の上端から
+    // 訊き、そこが登録済みなら（窓の中ではそれが最新なので）即座に確定する。
+    // **窓の広さに依らないので、`syncConsecutiveFail` の持ち越しに影響されない**
+    // （呼び出し順に仕込む形では、走査の辿り方を変えた途端に崩れる）。
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce({ status: 403 } as Response)
       .mockResolvedValueOnce({ status: 200 } as Response)
       .mockRejectedValue(new TypeError('Failed to fetch'))
     globalThis.fetch = fetchMock as unknown as typeof fetch
@@ -289,8 +391,8 @@ describe('較正を見送った理由の記録', () => {
     expect(warnOf('開始時点で既に登録済み')).toHaveLength(1)
 
     // 2 周目: 直後（スロットル間隔 5 分の内側）に別の理由を起こす。共有していれば隠れる。
+    // 1 件目の 200 で探索を 1 判定で終わらせ、flip の初回を失敗させる（上と同じ理由）。
     globalThis.fetch = vi.fn()
-      .mockResolvedValueOnce({ status: 403 } as Response)
       .mockResolvedValueOnce({ status: 200 } as Response)
       .mockRejectedValue(new TypeError('Failed to fetch')) as unknown as typeof fetch
     const second = startClockSync()
