@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { isRegistered, startClockSync } from './kyoshin'
+import {
+  isRegistered, startClockSync, fetchRealtimeIntensity, clearKyoshinFrameCacheForTest,
+} from './kyoshin'
 import { fetchServerTime, type ServerTimeSample } from './akamaiClock'
 import { log } from '../utils/logger'
 import { serverNow, setReplayOffset } from '../utils/clock'
@@ -402,5 +404,119 @@ describe('較正を見送った理由の記録', () => {
     expect(warnOf('判定の取得に失敗')).toHaveLength(1)
     // 同じ理由は間引かれたまま（スロットル自体は効いている）。
     expect(warnOf('開始時点で既に登録済み')).toHaveLength(1)
+  })
+})
+
+// 秒フレームの控え。**リプレイの開始をまたいで同じ秒を取り直さない**こと。
+//
+// 助走（`utils/kyoshinWarmup`）は開始時刻より前の秒を遡って取るので、区間ごとに開始し直す
+// 使い方では同じ範囲を何度も取りに行く。実測で 1 回の開始あたり 667〜668 件・毎秒 185 件。
+describe('fetchRealtimeIntensity の控え', () => {
+  const originalFetch = globalThis.fetch
+  const TARGET = new Date('2024-01-01T16:16:29+09:00')
+  /** 観測点 3 点ぶんの応答。`intensity` の 1 文字が 1 点（文字コード − 100 が値）。 */
+  const BODY = {
+    realTimeData: { dataTime: '2024-01-01T16:16:29', siteConfigId: '20220301000000', intensity: 'def' },
+    hypoInfo: { items: [] },
+  }
+
+  function okFetch() {
+    return vi.fn(async () => ({ ok: true, json: async () => BODY }) as unknown as Response)
+  }
+
+  beforeEach(() => { clearKyoshinFrameCacheForTest() })
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    clearKyoshinFrameCacheForTest()
+  })
+
+  it('正: cache を渡すと 2 度目は取りに行かない', async () => {
+    const fn = okFetch()
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    const first = await fetchRealtimeIntensity(TARGET, { cache: true })
+    const second = await fetchRealtimeIntensity(TARGET, { cache: true })
+
+    expect(fn).toHaveBeenCalledTimes(1)
+    expect(second.indices).toEqual(first.indices)
+    expect(second.dataTime).toBe(first.dataTime)
+    expect(second.siteConfigId).toBe(first.siteConfigId)
+  })
+
+  // **ライブは控えない。** 毎秒「新しい時刻」を取るので当たらず、控えるとメモリを使うだけ。
+  //
+  // `cache` は省略できない（既定値を置くと、新しい呼び出し経路が判断しないまま通る）。
+  // ここは「明示的に false を渡した側」の挙動を固定する。
+  it('対照: cache に false を渡せば控えない', async () => {
+    const fn = okFetch()
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    await fetchRealtimeIntensity(TARGET, { cache: false })
+    await fetchRealtimeIntensity(TARGET, { cache: false })
+
+    expect(fn).toHaveBeenCalledTimes(2)
+  })
+
+  // **失敗は控えない。** まだ登録されていない秒（403）は、待てば現れる。
+  // 控えると、その秒は以後そのセッション中ずっと欠けたままになる。
+  it('安全弁: 失敗した秒は控えないので、次に成功したら取れる', async () => {
+    // west・east の両方が 403 → 1 回目は失敗
+    const fn = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 403 } as Response)
+      .mockResolvedValueOnce({ ok: false, status: 403 } as Response)
+      .mockResolvedValue({ ok: true, json: async () => BODY } as unknown as Response)
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    await expect(fetchRealtimeIntensity(TARGET, { cache: true })).rejects.toThrow()
+    const got = await fetchRealtimeIntensity(TARGET, { cache: true })
+
+    expect(got.indices).toEqual([0, 1, 2])
+  })
+
+  // **展開した配列は読むたびに作り直す。** 控えた配列をそのまま返すと読み手どうしで共有され、
+  // 書き換えられたときに控えの中身が化ける（症状は「前のフレームの値が混ざる」で、
+  // 例外もログも出ない）。
+  it('安全弁: 控えから返す配列は毎回別のもの（書き換えが漏れない）', async () => {
+    globalThis.fetch = okFetch() as unknown as typeof fetch
+
+    const first = await fetchRealtimeIntensity(TARGET, { cache: true })
+    first.indices[0] = 999
+    const second = await fetchRealtimeIntensity(TARGET, { cache: true })
+
+    expect(second.indices).not.toBe(first.indices)
+    expect(second.indices[0]).toBe(0)
+  })
+
+  // **`hypoInfo` も同じ扱いにする。** `indices` だけ作り直してこちらを素で返すと原則が
+  // 片方にしか掛からない —— しかも `useKyoshinRealtime` はこの配列をレンダーをまたいで
+  // 持ち続けるので、書き換える経路が増えたときに控えの中身が恒久的に化ける。
+  it('安全弁: hypoInfo も控えと共有しない', async () => {
+    const withHypo = {
+      realTimeData: { dataTime: '2024-01-01T16:16:29', siteConfigId: 'cfg', intensity: 'def' },
+      hypoInfo: { items: [{ reportId: 'a' }] },
+    }
+    globalThis.fetch = vi.fn(async () =>
+      ({ ok: true, json: async () => withHypo }) as unknown as Response) as unknown as typeof fetch
+
+    const first = await fetchRealtimeIntensity(TARGET, { cache: true })
+    first.hypoInfo.length = 0
+    const second = await fetchRealtimeIntensity(TARGET, { cache: true })
+
+    expect(second.hypoInfo).not.toBe(first.hypoInfo)
+    expect(second.hypoInfo).toHaveLength(1)
+  })
+
+  // 鍵はエッジを含めない。west が落ちて east で取れたものも、次の要求に使える
+  it('west が落ちて east で取れた分も控える', async () => {
+    const fn = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 403 } as Response)
+      .mockResolvedValueOnce({ ok: true, json: async () => BODY } as unknown as Response)
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    await fetchRealtimeIntensity(TARGET, { cache: true })
+    await fetchRealtimeIntensity(TARGET, { cache: true })
+
+    // 1 回目の west(403) + east(200) の 2 回だけ。2 回目は控えから
+    expect(fn).toHaveBeenCalledTimes(2)
   })
 })

@@ -3,7 +3,8 @@ import { parseTar } from '../utils/tarParser'
 import type { JMAQuake, EEWAlert, JMATsunami } from '../types/earthquake'
 import { selectActiveEews } from '../utils/eew'
 import { gunzip } from '../utils/gzip'
-import { log } from '../utils/logger'
+import { createArchiveBodyCache } from '../utils/archiveBodyCache'
+import { log, createLogThrottle } from '../utils/logger'
 import { authHeader } from '../utils/dmdataApiKey'
 import { extractQuakeEventIdFromId, QUAKE_ISSUE_PRIORITY } from '../utils/quakeMerge'
 import { latestValidDateTime } from '../utils/tsunami'
@@ -15,7 +16,7 @@ import {
 import { BufrFragmentStore, fragmentKey } from './bufrTelegramAssembly'
 import {
   clearLiveReplayCache, fetchLiveQuakeTelegrams, fetchLiveReplayEntries, resolveLiveDates,
-  MAX_ENUMERATED_DAYS, archiveDaysForWindow, archiveListRange,
+  MAX_ENUMERATED_DAYS, archiveDaysForWindow, archiveListRange, toJstDateStr,
 } from './dmdataReplayLive'
 
 /**
@@ -103,13 +104,55 @@ interface ManifestEntry {
   head: { type: string; time: string; test: boolean; designation?: string | null }
 }
 
-// 日次アーカイブのキャッシュ（URL → ファイル名マップ）
-const archiveCache = new Map<string, Promise<Map<string, Uint8Array>>>()
+/**
+ * 日次アーカイブの控え（URL → 展開済みのファイル名マップ）。
+ *
+ * **リプレイの開始をまたいで残る。** 同じ日を何度も再生し直す使い方で、そのたびに同じ
+ * ファイルを落とし直さないため（実測・上限の根拠・当日ぶんとの関係は
+ * `utils/archiveBodyCache.ts`）。取得の失敗を控え続けないことと、同じ URL への
+ * 同時要求を 1 本にまとめることも、あちらが担っている。
+ */
+const archiveCache = createArchiveBodyCache()
 
-async function downloadArchive(url: string, apiKey: string): Promise<Map<string, Uint8Array>> {
-  const cached = archiveCache.get(url)
-  if (cached) return cached
-  const promise = (async () => {
+if (typeof window !== 'undefined') {
+  // 控えが効いているかは画面に出ないので、検証で読めるようにしておく
+  // （電文本体の `window.__telegramBodyStats()` と同じ趣旨）。
+  ;(window as unknown as { __archiveCacheStats?: () => unknown }).__archiveCacheStats =
+    () => archiveCache.stats()
+}
+
+/**
+ * そのアーカイブ（`date` が覆う JST 日）を控えてよいか。**当日ぶんだけ控えない。**
+ *
+ * 目録に当日は現れず当日経路が受ける建て付けなので現状は起きないが、配信元が
+ * 「育っている途中の部分アーカイブ」を出す設計へ変われば、控えた側は途中までの中身を
+ * 返し続ける。**前提を実装で守り、崩れたら記録に残す**（控えの `uncacheable` が立つ）。
+ *
+ * **`nowMs` には壁時計（`Date.now()`）を渡すこと。`serverNow()` を渡してはいけない。**
+ * あちらはリプレイ中に**再生対象のシミュレート時刻**を返すので、`date`（再生している日）と
+ * 常に一致し、**再生中はこの述語がいつも偽になって控えが丸ごと効かなくなる**。
+ * ここが訊いているのは「そのファイルが現実にまだ育っている最中か」であって、
+ * 再生上の「いま」ではない。
+ */
+export function isArchiveCacheable(date: string, nowMs: number): boolean {
+  return date !== toJstDateStr(new Date(nowMs))
+}
+
+// 当日ぶんが目録に現れた、という到達しないはずの報せ。**間引く** —— 本編の窓は同じ日を
+// 繰り返し要求する構造なので、素の warn だと開始の回数だけ出て他の記録が埋もれる。
+const warnSameDayArchive = createLogThrottle(60_000)
+
+/**
+ * アーカイブ本体を落とす（控えを通す）。`date` はそのアーカイブが覆う JST 日。
+ */
+function downloadArchive(url: string, apiKey: string, date: string): Promise<Map<string, Uint8Array>> {
+  const cacheable = isArchiveCacheable(date, Date.now())
+  if (!cacheable) {
+    warnSameDayArchive(() => log.warn(
+      `[replay] 当日ぶんのアーカイブが目録に現れた（控えずに毎回取る） date=${date}`,
+    ))
+  }
+  return archiveCache.get(url, async () => {
     const res = await fetch(url, { headers: { Authorization: authHeader(apiKey) } })
     if (!res.ok) throw new Error(`Archive fetch failed: ${res.status}`)
     const gz = new Uint8Array(await res.arrayBuffer())
@@ -118,15 +161,11 @@ async function downloadArchive(url: string, apiKey: string): Promise<Map<string,
     for (const entry of parseTar(tar)) {
       files.set(entry.name, entry.content)
     }
-    return files
-  })()
-  archiveCache.set(url, promise)
-  // 失敗した Promise を残すと、以後そのセッション中は同じ URL が常にキャッシュ済みの失敗を返し、
-  // ネットワークが復旧しても再取得されない。先読み（App.tsx のプリフェッチ）は clearReplayCache() を
-  // 呼ばないため、一過性の障害で再生が無言のまま止まったきりになる。reject 時はキャッシュから外す。
-  // この catch はキャッシュ掃除専用で、エラー自体は返した promise 経由で呼び出し元へ伝わる。
-  promise.catch(() => archiveCache.delete(url))
-  return promise
+    // **バイト数は展開後の tar の長さで渡す。** `parseTar` が返すのは `subarray` の
+    // 切り出しなので、1 エントリでも参照が残ればバッファ全体が残る。エントリの合計で
+    // 数えると、使わなかった領域がまるごと数から漏れる。
+    return { files, bytes: tar.length, cacheable }
+  })
 }
 
 /**
@@ -182,8 +221,16 @@ const parsedTelegramCache = new Map<string, ParsedTelegram>()
  */
 const manifestFallbackTimeCache = new Map<string, Date>()
 
+/**
+ * 再生に使うセッション内の控えを捨てる。
+ *
+ * **アーカイブ本体の控えはここで捨てない。** 鍵（URL に入るアーカイブ id）は内容に対して
+ * 不変なので捨てる正当性が無く、捨てると**開始のたびに同じファイルを落とし直す** ——
+ * 区間ごとにリプレイを開始し直す使い方（録画の自動化）では実測 1,000〜3,800 リクエストに
+ * なっていた。メモリは本数とバイト数の上限で抑え、期限も置いてある
+ * （→ `utils/archiveBodyCache.ts`）。
+ */
 export function clearReplayCache(): void {
-  archiveCache.clear()
   clearLiveReplayCache()
 }
 
@@ -193,8 +240,8 @@ export function clearReplayCache(): void {
  * **`clearReplayCache()` では捨てない。** 3 つの控えはどれも**内容に対して不変な鍵**
  * （アーカイブの URL・電文の id）で引くので、時間軸が変わっても中身は同じもの ——
  * 捨てる正当性が無い。捨てると、同じ日を何度も再生し直す使い方でそのたびに解析し直す
- * （アーカイブ本体の控えが「開始をまたいで残す」形へ変わったのと同じ理由。
- * → `data-sources-spec.md` §2）。
+ * （アーカイブ本体の控え（`utils/archiveBodyCache.ts`）が「開始をまたいで残す」形である
+ * のと同じ理由。→ `data-sources-spec.md` §2「アーカイブ本体の控え」）。
  *
  * **テストだけは捨てる必要がある。** テストの目録は `aaaaaaa1` のような作り物の id を
  * 使い回すので、残すと別のテストが仕込んだ中身を引く。
@@ -255,6 +302,17 @@ function resolveManifestTime(entry: ManifestEntry, files: Map<string, Uint8Array
     return received
   }
   return null
+}
+
+/**
+ * テスト用。アーカイブ本体の控えを空にする。
+ *
+ * **`clearReplayCache()` とは別の口にしてある。** あちらは本番の経路で、そこで
+ * アーカイブの控えを残すことが今回の目的そのもの。テストは同じ URL に違う中身を載せて
+ * 使い回すため、こちらで明示的に空にする（本番の値を緩める口ではない）。
+ */
+export function clearArchiveCacheForTest(): void {
+  archiveCache.clear()
 }
 
 /** 目録のページを辿る上限。理由は `dmdataReplayLive.ts` の `LIST_MAX_PAGES` と同じ。 */
@@ -386,7 +444,7 @@ export async function fetchDmdataReplayEvents(
       // 「壊れたアーカイブだけ諦めて残りは活かす」を既定にする。
       let files: Map<string, Uint8Array>
       try {
-        files = await downloadArchive(item.url, apiKey)
+        files = await downloadArchive(item.url, apiKey, item.date)
       } catch (e) {
         log.error(`[replay] アーカイブの取得・展開に失敗したためスキップ date=${item.date} classification=${item.classification}`, e)
         failedArchiveUrls.push(item.url)
@@ -860,7 +918,7 @@ export async function fetchDmdataQuakeHistory(
 
   const downloaded = await Promise.all(targets.map(async (item) => {
     try {
-      return { date: item.date, item, files: await downloadArchive(item.url, apiKey) }
+      return { date: item.date, item, files: await downloadArchive(item.url, apiKey, item.date) }
     } catch (e) {
       log.error(`[replay] 履歴用アーカイブの取得・展開に失敗 date=${item.date}`, e)
       return { date: item.date, item, files: null }

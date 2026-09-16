@@ -4,7 +4,7 @@
 // **あちらは助走を止めてある**（取得の回数を数えるテストが多く、混ざると読めなくなるため）ので、
 // 助走そのものはこちらで見る。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { createYahooArchiveSource, type KyoshinFrame } from './kyoshinSource'
+import { createYahooArchiveSource, createYahooLiveSource, type KyoshinFrame } from './kyoshinSource'
 import { fetchRealtimeIntensity, fetchSiteList, startClockSync } from './kyoshin'
 import type { RealtimeIntensity } from './kyoshin'
 import { WARMUP_BLOCK_SEC, WARMUP_MAX_BLOCKS, WARMUP_QUIET_MAX_POINTS } from '../utils/kyoshinWarmup'
@@ -100,6 +100,35 @@ describe('Yahoo 強震モニタソース: 助走', () => {
     await flush()
 
     expect(sink.prefilled[0]).toHaveLength(WARMUP_BLOCK_SEC)
+    source.stop()
+  })
+
+  // 秒フレームの控え（`utils/kyoshinFrameCache`）を使うかどうかの配線。
+  //
+  // **この配線が壊れても、他のどのテストも落ちない。** 取り違えても「控えが効かない」
+  // （または「ライブで当たらない控えを溜める」）だけで、画面にも記録にも出ない ——
+  // しかも控えを入れた目的そのものが、区間ごとに開始し直したときの助走の取り直しを
+  // 止めることなので、黙って失効すると意味が消える。
+  it('正: 再生の助走は控えを使う（cache: true を渡す）', async () => {
+    fetchMock.mockImplementation(async (t: Date) => reply(t, QUIET_INDICES))
+    const source = createYahooArchiveSource(TARGET - NOW)
+    source.start(createSink())
+    await flush()
+
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(0)
+    for (const [, opts] of fetchMock.mock.calls) expect(opts).toEqual({ cache: true })
+    source.stop()
+  })
+
+  // **ライブは控えない。** 毎秒「新しい時刻」を取るので当たらず、控えるとメモリを使うだけ。
+  it('対照: ライブの助走は控えを使わない（cache: false を渡す）', async () => {
+    fetchMock.mockImplementation(async (t: Date) => reply(t, QUIET_INDICES))
+    const source = createYahooLiveSource()
+    source.start(createSink())
+    await flush()
+
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(0)
+    for (const [, opts] of fetchMock.mock.calls) expect(opts).toEqual({ cache: false })
     source.stop()
   })
 

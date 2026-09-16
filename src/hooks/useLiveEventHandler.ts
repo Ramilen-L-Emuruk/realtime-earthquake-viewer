@@ -17,7 +17,8 @@ import { hasKnownEpicenter, haversineKm } from '../utils/geo'
 import { showBrowserNotification } from '../utils/notifications'
 import { GRADE_PRIORITY, TSUNAMI_GRADE_LIFTED, isWarningLevelWhileObserving, tsunamiMaxGrade, tsunamiAreaGradeChanges, selectUnspokenAreaGradeChanges, rememberAreaGrades, tsunamiAreaKey, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, isTsunamiContinuation, matchesArea, sortAreasAcrossGradesForCardDisplay, sortObservationsForCardDisplay, mergeTsunamiObservations, isObservationMissing } from '../utils/tsunami'
 import { playAlertSound, ttsDelayFor, maxTtsDelay, type AlertSoundType } from '../utils/alertSound'
-import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, stopSpeech, type PrewarmedSpeech, type ShouldStillPlay } from '../utils/voicevox'
+import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, stopSpeech, type PrewarmedSpeech, type ShouldStillPlay, type SpeechOutcome } from '../utils/voicevox'
+import { rollbackSpokenEntry } from '../utils/rollbackSpoken'
 import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewWarningRegionsText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiAreaGradeChangeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, tsunamiMissingToSegments, selectMissingToSpeak, tsunamiWarningLevelToSegments, selectWarningLevelToSpeak, joinWithAlso, nankaiToText, nankaiCommentaryToText, kohatsuToText, earthquakeCountToText, estimatedIntensityToText, lpgmToText, telegramTextToSpeak, createQuakeSpokenState, applySpokenRefs, type TtsSpeechOptions, type QuakeSpokenState } from '../utils/ttsText'
 import { joinSegments, plain, hasFollowTarget, hasUnreceivedFollowTarget, hasTelegramTextFollowTarget, TELEGRAM_TEXT_OPEN_TARGET_KINDS, telegramTextSubject, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
 import { log, createLogThrottle } from '../utils/logger'
@@ -34,7 +35,7 @@ const EEW_PHASE2_MAX_WAIT_MS = 3000
 // 直列化した EEW 読み上げで、発話の完了を待つ上限。VOICEVOX への合成リクエストには
 // タイムアウトが無いため、応答が返らないまま待ち続けると後続の EEW が永久に読まれなくなる。
 // 打ち切って次へ進む（止まっていた側は次の発話開始時に abort される）。
-const EEW_SPEECH_CHAIN_MAX_WAIT_MS = 8000
+export const EEW_SPEECH_CHAIN_MAX_WAIT_MS = 8000
 
 /**
  * 非 EEW の読み上げの優先度。**割り込みを許すのは「自分の優先度が読み上げ中のものと同じか
@@ -277,11 +278,14 @@ const warnSpeechWaitGiveUp = createLogThrottle(30000)
  * リクエストにはタイムアウトが無く、応答が返らないまま止まると、待ち側だけに上限を置いても
  * 「発話が終わった」と数える処理（`eewSpeechPendingRef` の減算）が永久に走らない。
  */
-function capSpeechWait(p: Promise<void>, capMs = EEW_SPEECH_CHAIN_MAX_WAIT_MS): Promise<void> {
+function capSpeechWait<T>(p: Promise<T>, capMs = EEW_SPEECH_CHAIN_MAX_WAIT_MS): Promise<T | undefined> {
   let timer: ReturnType<typeof setTimeout> | undefined
-  const timeout = new Promise<void>(resolve => { timer = setTimeout(resolve, Math.max(0, capMs)) })
+  const timeout = new Promise<undefined>(resolve => {
+    timer = setTimeout(() => resolve(undefined), Math.max(0, capMs))
+  })
   return Promise.race([p, timeout]).finally(() => clearTimeout(timer))
 }
+
 
 /**
  * 設定から読み上げのオプションを組み立てる。
@@ -805,7 +809,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   const activeNonEewSpeechRef = useRef<{
     priority: SpeechPriority
     topic: SpeechTopic
-    done: Promise<void>
+    done: Promise<SpeechOutcome>
     /**
      * **そこまでに声になった分**を記録へ移す（実体は `speakNonEEW` の `flushSpokenRefs`）。
      * 次の電文の差分を組む前に呼ぶ ―― 呼ばないと、前の報を読み切る前に届いた続報が
@@ -855,6 +859,12 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   //
   // **記録するのは読み切った分だけ。** 途中で降りた発話は入れない —— 降りるのは「地方が増えた
   // から読み直す」ときで、その分を既読にすると読み直しから抜け落ちる。
+  //
+  // **ただし「読み切った」は「実際に音が出た」ことまでは保証しない。** 合成が 1 チャンクも
+  // 成功しなかった場合（VOICEVOX 未起動・瞬断）、`speakWithVoicevox` は例外を投げずに正常
+  // 終了するため、ここも通常どおり記録する。第 1・第 2 フェーズが発話の直前に記録するのと
+  // 同じ限界で、この経路だけの問題ではない（合成の失敗自体は `[VoiceVox] 音声を 1 つも
+  // 合成できなかった` として記録に残る）。
   const spokenEEWRegionsRef = useRef<Map<string, Set<string>>>(new Map())
   // 第 1.5 フェーズの予約を表す識別子（eventId 別）。第 2 フェーズと同じく、解決した時点で
   // 消して次の予約を受け付ける。
@@ -1003,14 +1013,28 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   }
 
   const chainEEWSpeech = (
-    speak: () => string | { text: string; shouldStillPlay?: ShouldStillPlay; onSettled?: () => void } | null,
+    speak: () => string | {
+      text: string
+      shouldStillPlay?: ShouldStillPlay
+      /**
+       * 発話が終わった（または黙る判断で降りた）ときに必ず呼ぶ。
+       *
+       * @param spoke **1 チャンクでも実際に鳴ったか**（{@link SpeechOutcome}）。合成が
+       *   1 つも成功しなければ偽になる —— `speakWithVoicevox` は VOICEVOX 未起動・
+       *   ネットワーク断でも例外を投げずに正常終了するため、これを見ないと
+       *   **1 音も出ていないのに既読が進む**。上限（`capSpeechWait`）で待ち切ったときも
+       *   偽へ倒す（応答が返っていない以上、鳴った証拠が無い）
+       */
+      onSettled?: (spoke: boolean) => void
+    } | null,
     follow?: () => void,
     cutCurrent = false,
   ) => {
     eewSpeechPendingRef.current++
     const prev = eewSpeechChainRef.current
     if (cutCurrent) stopSpeech()
-    let settled: (() => void) | undefined
+    let settled: ((spoke: boolean) => void) | undefined
+    let spoke = false
     eewSpeechChainRef.current = capSpeechWait(prev).then(() => {
       const spoken = speak()
       if (spoken === null) return
@@ -1024,10 +1048,25 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       try { follow?.() } catch (err) { log.warn('[eew] 読み上げ追従に失敗（読み上げは続行）', err) }
       return capSpeechWait(
         speakWithVoicevox(settings.voicevoxUrl, text, settings.voicevoxSpeakerId, settings.soundVolume, shouldStillPlay),
-      )
+      ).then(outcome => {
+        // **上限（`capSpeechWait`）で待ち切ったときは「鳴った」へ倒す。**
+        //
+        // 合成が失敗した場合、`speakOnce` は待たずに完了する（鳴るものが無いので待つ対象が
+        // 無い）。応答が返らない場合も、**発話 1 回で合成を待つ合計の予算**
+        // （`SPEECH_SYNTH_BUDGET_MS` = 6 秒）で打ち切られ、やはり 8 秒より先に完了する。
+        // **つまりここまで返ってこないのは、鳴っている最中**ということ —— 地方を多く列挙する
+        // 報ほど読み上げは長くなるが、鳴っている時間は予算から引かれない。
+        //
+        // ここを偽へ倒すと、長い読み上げのたびに既読を巻き戻して**同じ内容をもう一度読む**。
+        // 次の発話は冒頭で前の音を止めるので、聞こえ方は「途中で切られて最初から読み直し」。
+        //
+        // **この判断は合成側の予算がこちらより短いことに依存している。** 関係は
+        // `speechTimeouts.test.ts` が機械的に固定している（片方だけ動かすと落ちる）。
+        spoke = outcome?.spoke ?? true
+      })
     })
       .catch(err => log.warn('[eew] 読み上げに失敗', err))
-      .finally(() => { eewSpeechPendingRef.current--; settled?.() })
+      .finally(() => { eewSpeechPendingRef.current--; settled?.(spoke) })
   }
 
   /**
@@ -1157,7 +1196,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
    * 待たせる相手は 2 種類ある——**自分より優先度が高いもの**と、**同格でも内容が重ならないもの**
    * （`MUTUAL_YIELD_TOPICS`）。上限が違うので、理由の判定（`speechBlocker`）とは分けている。
    */
-  const speechBlockerPromise = (blocker: SpeechBlocker): Promise<void> | null => {
+  const speechBlockerPromise = (blocker: SpeechBlocker): Promise<unknown> | null => {
     switch (blocker) {
       case 'eewChain': return eewSpeechChainRef.current
       // 待つ相手の Promise はまだ無いので、短く眠って見直す。
@@ -2575,12 +2614,44 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
               && canPresentLpgmClass(confirmedScale.scale, confirmedLpgm)
               ? { cls: confirmedLpgm, over: confirmedLpgmInfo?.over === true }
               : { cls: 0, over: false }
+            // 1 音も鳴らなかったときに戻せるよう、書き換える前の値を控える（下の `onSettled`）。
+            const prevSpokenScale = spokenEEWScalesRef.current.get(key)
+            const prevSpokenLpgm = spokenEEWLpgmClassesRef.current.get(key)
+            const prevSpokenLevel = spokenEEWLevelsRef.current.get(key)
+            const wasPhase2Done = eewPhase2DoneRef.current.has(key)
             spokenEEWScalesRef.current.set(key, confirmedScale)
             spokenEEWLpgmClassesRef.current.set(key, spokenLpgm)
             spokenEEWLevelsRef.current.set(key, level)
             eewPhase2DoneRef.current.add(key)
             return {
               text,
+              /**
+               * 1 音も鳴らなかったなら、上で進めた既読をすべて戻す。
+               *
+               * 合成が 1 つも成功しない場合（VOICEVOX 未起動・瞬断）でも発話は正常終了するため、
+               * 戻さないと**声になっていない予想値が基準になり**、次の続報で同じ値が「据え置き」と
+               * 判定されて黙る。`eewPhase2DoneRef` も戻す —— 立ったままだと「一度は読んだ」扱いで
+               * 上がった分しか読まなくなる。
+               *
+               * **発話の差になるのは、震度が据え置きのまま階級だけ確定する続報。** 戻さないと
+               * 声になっていない予想震度が「伝え済み」になって下の `scaleUnchanged` が真になり、
+               * 続報が「予想最大階級3。」という短句へ落ちる —— その EEW では予想震度が一度も
+               * 声にならない。震度そのものが動いた続報では、戻っていてもいなくても全文を読み直す
+               * ので差が出ない。回帰テストは `useLiveEventHandler.eewTts.test.ts` の「合成が
+               * 1 音も鳴らなかったとき」の describe（巻き戻しの不変条件そのものは
+               * `rollbackSpoken.test.ts`）。
+               *
+               * `eewPhase2DoneRef` だけは Set なので「自分が立てたか」を値で照合できず、
+               * 直前の状態（`wasPhase2Done`）で判断している。予約はトークンで 1 件に限られ、
+               * チェーンは直列なので、同じ鍵へ別の第 2 フェーズが割り込む余地は無い。
+               */
+              onSettled: (spoke) => {
+                if (spoke) return
+                rollbackSpokenEntry(spokenEEWScalesRef.current, key, confirmedScale, prevSpokenScale)
+                rollbackSpokenEntry(spokenEEWLpgmClassesRef.current, key, spokenLpgm, prevSpokenLpgm)
+                rollbackSpokenEntry(spokenEEWLevelsRef.current, key, level, prevSpokenLevel)
+                if (!wasPhase2Done) eewPhase2DoneRef.current.delete(key)
+              },
               /**
                * この文面を作ったときの値より新しいものが確定していたら、そこから先は鳴らさない。
                *
@@ -2828,12 +2899,21 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
               // EEW でも「切り替わりました」と言ってしまう。**記録は発話の直前だけで行う**——
               // 予約の時点で記録すると、取消で声にならなかった区分まで伝え済みになり、以後
               // 格上げが一度も声にならない（第 2 フェーズが既読値の更新を発話直前に限るのと同じ理由）。
-              if (!hypoFarMoved && level >= 1) spokenEEWLevelsRef.current.set(key, level)
+              const recordsLevel = !hypoFarMoved && level >= 1
+              const prevSpokenLevel = spokenEEWLevelsRef.current.get(key)
+              if (recordsLevel) spokenEEWLevelsRef.current.set(key, level)
               updatePhase1Progress(key, { speakingToken: phase1Token })
               return {
                 text,
                 shouldStillPlay: () => !eewRetractedKeysRef.current.has(key),
-                onSettled: forgetSpeaking,
+                onSettled: (spoke) => {
+                  forgetSpeaking()
+                  // 1 音も鳴らなかったなら「区分を伝えた」ことにしない。残すと、その EEW では
+                  // 以後の格上げが一度も声にならない（`rollbackSpokenEntry`）。
+                  if (!spoke && recordsLevel) {
+                    rollbackSpokenEntry(spokenEEWLevelsRef.current, key, level, prevSpokenLevel)
+                  }
+                },
               }
             },
             () => followSpeechTab('realtime', isNew ? TAB_PRIORITY.eewUrgent : TAB_PRIORITY.eewUpdate),
@@ -2901,8 +2981,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
                 if (grown) { abandoned = true; return false }
                 return true
               },
-              onSettled: () => {
-                if (abandoned) return
+              onSettled: (spoke) => {
+                // 降りた回も、1 音も鳴らなかった回も既読にしない。前者は読み直しのため、
+                // 後者は**声になっていないものを「伝えた」と扱わない**ため。
+                if (abandoned || !spoke) return
                 // **前置きの記録も地方の既読と同じタイミングで行う。** 第 1・第 2 フェーズは
                 // 発話の直前に記録するが、この発話だけは「鳴っている最中に地方が増えたら
                 // 降りて読み直す」経路を持つ（上の `grown`）。直前に記録すると、降りた回で
