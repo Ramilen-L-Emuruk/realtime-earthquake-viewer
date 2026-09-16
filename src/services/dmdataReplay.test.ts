@@ -1797,14 +1797,13 @@ describe('アーカイブ本体の控えは開始をまたいで残る', () => {
   const originalFetch = globalThis.fetch
   const URL_A = 'https://x/a'
 
-  beforeEach(() => {
-    clearReplayCache()
-    clearArchiveCacheForTest()
-  })
+  // **パース結果の控えもここで空にする。** 目録の控えは `clearReplayCache()` では消えないので、
+  // この describe の各 `it` は同じ URL・同じ作り物の id を使い回すぶん、残すと 1 件目が入れた
+  // 目録を 2 件目以降が引く。いまは fixture の中身が同じなので揃って通っているだけ。
+  beforeEach(() => { clearAllCaches() })
   afterEach(() => {
     globalThis.fetch = originalFetch
-    clearReplayCache()
-    clearArchiveCacheForTest()
+    clearAllCaches()
     vi.restoreAllMocks()
   })
 
