@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import { ringBounds } from './psWaveRing'
-import { fitMaxZoomForPane, focusMaxZoomForPane, FOCUS_SPAN_KM, FIT_MIN_SPAN_KM, REFERENCE_FIT_MAX_ZOOM, EEW_ZOOM_SNAP, snapZoomDown, snapZoomNearest } from './camera'
+import { distributionMaxZoomForPane, DISTRIBUTION_SPAN_KM, fitMaxZoomForPane, focusMaxZoomForPane, FOCUS_SPAN_KM, FIT_MIN_SPAN_KM, REFERENCE_FIT_MAX_ZOOM, EEW_ZOOM_SNAP, snapZoomDown, snapZoomNearest } from './camera'
+import { CELL_LAT_DEG, CELL_LON_DEG } from '../../../utils/bufrEstimatedIntensity'
+import { EARTH_RADIUS_KM } from '../../../utils/geo'
+import narrowestDistribution from '../../../data/test-estimated-intensity.json'
 import {
   desiredTileZoom,
   GEBCO_HIRES_MIN_ZOOM,
@@ -153,6 +156,44 @@ describe('一覧クリックの寄り上限', () => {
   // ズーム上限は無い）。掛けると大画面で自動フィットと同じ値に潰れ、集約が解けなくなる。
   it('安全弁: 大きなペインでも絶対上限で頭打ちにしない', () => {
     expect(focusMaxZoomForPane(1600)).toBeGreaterThan(ABSOLUTE_MAX_ZOOM)
+  })
+})
+
+describe('震度分布モードの寄り上限', () => {
+  // 寄り先は気象庁の推計が塗ってある範囲そのもの（`useQuakeLayerData` の `quakeFitPositions`）。
+  // 自動フィットの上限を当てると、分布が数十 km に収まる地震では面が小さいまま残る。
+  it('正: どのペイン寸法でも、自動フィットと一覧クリックの寄り上限より深い', () => {
+    for (const pane of [375, 800, 1600]) {
+      expect(distributionMaxZoomForPane(pane)).toBeGreaterThan(fitMaxZoomForPane(pane))
+      expect(distributionMaxZoomForPane(pane)).toBeGreaterThan(focusMaxZoomForPane(pane))
+    }
+  })
+
+  // 対照: 上の関係は視野の広さの大小から来ている。km を逆転させれば成り立たない。
+  it('対照: 視野を一覧クリックより広く取れば、深くはならない', () => {
+    expect(DISTRIBUTION_SPAN_KM).toBeLessThan(FOCUS_SPAN_KM)
+  })
+
+  // 安全弁: **`ABSOLUTE_MAX_ZOOM` のクランプを掛けない**（`focusMaxZoom` と同じ理由。自動フィットが
+  // 大画面で際限なく寄らないための蓋で、分布そのものを見せる寄りには当たらない）。
+  it('安全弁: 大きなペインでも絶対上限で頭打ちにしない', () => {
+    expect(distributionMaxZoomForPane(1600)).toBeGreaterThan(ABSOLUTE_MAX_ZOOM)
+  })
+
+  // 安全弁: この上限が担うのは「分布が極端に狭いときの歯止め」だけ。**手元の実電文では当たらない**
+  // ことを、テストボタンのデータ（推計震度分布図が出た地震のうちセル数が最少のもの）の広がりから
+  // 確かめる —— 数字を写すと、データを作り直したときに古い値のまま緑になる。
+  // **これは「実配信のどの分布でも当たらない」の証明ではない**（セル数が最少であることは外接矩形が
+  // 最小であることを意味しない）。当たった場合も面が画いっぱいになる手前で止まるだけ。
+  it('安全弁: 手元の実電文の分布では、この上限に当たらない', () => {
+    const { latIdx, lonIdx } = narrowestDistribution.estimated
+    const kmPerDegree = (EARTH_RADIUS_KM * Math.PI) / 180
+    const southDeg = Math.min(...latIdx) * CELL_LAT_DEG
+    const spanLatKm = (Math.max(...latIdx) - Math.min(...latIdx) + 1) * CELL_LAT_DEG * kmPerDegree
+    const spanLonKm = (Math.max(...lonIdx) - Math.min(...lonIdx) + 1) * CELL_LON_DEG
+      * kmPerDegree * Math.cos((southDeg * Math.PI) / 180)
+    // 短い側がこの上限より広ければ、ペインの向きに関わらず上限へは届かない。
+    expect(Math.min(spanLatKm, spanLonKm)).toBeGreaterThan(DISTRIBUTION_SPAN_KM)
   })
 })
 

@@ -26,6 +26,8 @@ import {
   INTERACTION_HOLD_SEC,
   fitMaxZoom,
   focusMaxZoom,
+  maxZoomForPolicy,
+  type FitZoomPolicy,
 } from './gl/camera'
 import { decideTsunamiFit } from './gl/tsunamiFit'
 import { openPopupAt, closeMapPopup } from './gl/popupRegistry'
@@ -113,11 +115,18 @@ function useUserInteractionGuard(map: maplibregl.Map | null): [boolean, () => vo
 export function QuakeFitGL({
   signature,
   positions,
+  zoomPolicy,
   selectionTick = 0,
   lastConsumedTickRef,
 }: {
   signature: string
   positions: LatLng[]
+  /**
+   * 寄り上限の選び方。**既定値を置かない** —— 寄り先を組む側（`useQuakeLayerData`）が渡した値を
+   * そのまま使う。既定を持たせると、寄り先の種類を増やしたときに渡し忘れても型検査が通り、
+   * 上限だけが自動フィットのまま残る（画が浅く着地するだけなので画面からは気づけない）。
+   */
+  zoomPolicy: FitZoomPolicy
   selectionTick?: number
   lastConsumedTickRef: React.MutableRefObject<number>
 }) {
@@ -143,10 +152,10 @@ export function QuakeFitGL({
     }
     if (explicit) resetUserInteraction()
     lastFitRef.current = signature
-    log.debug(`[mapGL] quake fit (${positions.length}点${explicit ? ' 明示選択' : ''})`)
-    fitToPositions(map, positions, { padding: 48, durationSec: 1.0 })
+    log.debug(`[mapGL] quake fit (${positions.length}点${explicit ? ' 明示選択' : ''}・上限 ${zoomPolicy})`)
+    fitToPositions(map, positions, { padding: 48, durationSec: 1.0, maxZoom: maxZoomForPolicy(map, zoomPolicy) })
     // lastConsumedTickRef は ref なので依存配列に入れない（参照の同一性は保たれる）。
-  }, [map, signature, positions, selectionTick, isUserInteracting, resetUserInteraction])
+  }, [map, signature, positions, zoomPolicy, selectionTick, isUserInteracting, resetUserInteraction])
   return null
 }
 
