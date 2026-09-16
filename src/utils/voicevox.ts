@@ -75,6 +75,46 @@ const SPEECH_STALE_MS = 5 * 60_000
 // 起こるため、素通しにするとログが埋まって他の異常が見えなくなる。
 const warnNoAudio = createLogThrottle(30000)
 
+/**
+ * 合成 1 チャンクを待つ上限。超えたらそのチャンクは合成失敗と同じ扱いにする。
+ *
+ * **VOICEVOX への合成要求そのものにはタイムアウトが無い**（接続は受け付けるのに応答を返さない
+ * ——LAN 越しの機器がスリープに入る・経路が黙って捨てる、等。{@link FIXED_PHRASE_SYNTH_TIMEOUT_MS}
+ * と同じ事情）。上限が無いと、この読み上げは完了も失敗もしないまま宙に浮き、**呼び出し側からは
+ * 「鳴っている最中」と区別が付かない** —— 既読を進めるかどうかの判断がそこで狂う
+ * （→ `SpeechOutcome`）。
+ *
+ * 上限は発話チェーンの待ち上限（`useLiveEventHandler` の `EEW_SPEECH_CHAIN_MAX_WAIT_MS` = 8 秒）
+ * **より短く取ること**。長いと、チェーン側が先に見切りを付けてしまい「鳴っている最中」と
+ * 誤認する余地が残る。作り置き（10 秒）より短いのは、あちらが急がない合成だから。
+ *
+ * 合成の実測は 238〜697ms。正常な遅延を切らない幅を取っている。
+ */
+export const CHUNK_SYNTH_TIMEOUT_MS = 5000
+
+/**
+ * 1 回の発話で**合成を待つ合計時間**の予算。
+ *
+ * **チャンクごとの上限（{@link CHUNK_SYNTH_TIMEOUT_MS}）だけでは足りない。** 合成待ちは直列に
+ * 積み上がる（次のチャンクは前のチャンクの結果が出てから始める）ので、VOICEVOX が無応答なら
+ * `チャンク数 × 5 秒` になる。2 チャンクあれば発話チェーンの待ち上限（8 秒）を越え、**チェーン側が
+ * 先に見切って「鳴っている最中」と誤認する** —— 1 音も出ていないのに既読が進む。
+ *
+ * 予算はチェーン側の上限より短く取り、尽きたら以降のチャンクは待たない。
+ * **鳴っている時間は数えない**（差し引くのは合成を待った分だけ）ので、正常な読み上げが
+ * どれだけ長くても予算は減らない。
+ */
+export const SPEECH_SYNTH_BUDGET_MS = 6000
+
+// 合成が上限まで返らなかったときの警告の間引き。無応答は続けて起こるため、素通しにすると埋まる。
+const warnSynthTimeout = createLogThrottle(30000)
+
+// 合成そのものが失敗したときの警告の間引き（中断は別扱い。`synthesizeChunk` の catch）。
+const warnSynthFailed = createLogThrottle(30000)
+
+// 合成待ちの予算を使い切ったときの警告の間引き。
+const warnSynthBudgetOut = createLogThrottle(30000)
+
 // チャンク末尾の間を付けられなかったときの記録の間引き。応答形式が変わっていれば読み上げの
 // たびに全チャンクで起こるため、素通しにするとログが埋まる。
 const warnNoChunkBreak = createLogThrottle(30000)
@@ -627,8 +667,17 @@ async function synthesizeChunk(
 
     const wav = await synthRes.arrayBuffer()
     return await ctx.decodeAudioData(wav)
-  } catch {
+  } catch (err) {
     // abort による例外もここに落ちる。null で返して呼び出し元に「合成失敗」として扱わせる。
+    //
+    // **中断と通信障害は分けて残す。** どちらも同じ `null` になるので、記録しないと
+    // 「新しい読み上げに切り替わった（正常）」と「VOICEVOX が応答しない（異常）」を
+    // 後から切り分けられない。中断は日常的に起こるので `debug` に留める。
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      log.debug('[VoiceVox] 合成を中断した（新しい読み上げへの切り替え・セッションの終了）')
+    } else {
+      warnSynthFailed(() => log.warn('[VoiceVox] 合成に失敗した', err))
+    }
     return null
   }
 }
@@ -703,6 +752,44 @@ type FixedPhrase = {
 
 /** 合成済みの切り出し語。キーは句そのもの。 */
 const fixedPhrases = new Map<string, FixedPhrase>()
+
+/**
+ * 合成を上限つきで待つ。超えたら `null`（合成失敗と同じ扱い）を返す。
+ *
+ * **ここで `abort()` してはいけない。** 合成に渡している `signal` は**その発話の全チャンクで
+ * 共有**している（`speakOnce` が 1 回だけ `AbortController` を作る）。`AbortSignal` は一度
+ * abort すると解除できないので、1 チャンクを見切るつもりで abort すると、**以降のチャンクは
+ * 要求を送る前に即死する** —— 「このチャンクだけ諦める」が「残り全部を無音にする」に化ける。
+ * 地方を列挙する読み上げなら、途中で 1 回詰まっただけで残りの警戒対象が丸ごと声にならない。
+ *
+ * **負けた側（合成）は止まらないが、放置してよい。** `Promise.race` は敗者をキャンセルしない
+ * ので応答を待ち続けるリクエストが残るが、次の発話が始まるときに `speakOnce` の冒頭で
+ * `currentAbortController.abort()` が片付ける。
+ */
+async function raceSynthTimeout(
+  p: Promise<AudioBuffer | null>, waitMs: number,
+): Promise<AudioBuffer | null> {
+  // 予算が尽きた。**既に終わっているものは拾う**（`p` を先に置く）が、待ちはしない。
+  //
+  // **黙って飛ばさない。** ここを通ったチャンクは合成失敗でもタイムアウトでもない経路で
+  // 無音になるので、記録しないと「後半が読まれなかった」理由がどこにも残らない。
+  if (waitMs <= 0) {
+    warnSynthBudgetOut(() => log.warn(
+      `[VoiceVox] この発話の合成待ちが予算（${SPEECH_SYNTH_BUDGET_MS}ms）を使い切った（以降のチャンクは待たない）`,
+    ))
+    return Promise.race([p, Promise.resolve(null)])
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<null>(resolve => {
+    timer = setTimeout(() => {
+      warnSynthTimeout(() => log.warn(
+        `[VoiceVox] 合成の応答が ${waitMs}ms 以内に返らなかった（このチャンクは諦める）`,
+      ))
+      resolve(null)
+    }, waitMs)
+  })
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer))
+}
 
 /**
  * 作り置きの合成を諦めるまでの時間。
@@ -987,6 +1074,24 @@ export function stopSpeech(): void {
 }
 
 /**
+ * 読み上げ 1 本の結末。
+ *
+ * **「終わったか」ではなく「鳴ったか」を返すために要る。** この関数は例外を投げない設計で、
+ * VOICEVOX 未起動・ネットワーク断・話者 ID 不正のいずれでも正常終了する。呼び出し側が
+ * 戻り値を見ないと「読み上げが完了した」と区別できず、**1 音も出ていないのに既読を進める**。
+ */
+export type SpeechOutcome = {
+  /**
+   * 1 チャンクでも実際に鳴ったか。
+   *
+   * 偽になるのは 2 通り —— 合成が 1 つも成功しなかった場合と、鳴り始める前にすべて
+   * 取り下げた場合（`shouldStillPlay` が偽を返した）。**どちらも「声になっていない」**ので、
+   * 既読を進める側から見れば同じ扱いでよい。
+   */
+  spoke: boolean
+}
+
+/**
  * テキストを VOICEVOX で合成して再生する（パイプライン方式）。
  * テキストを句読点で分割し、最初のチャンクが合成できた時点で再生を開始する。
  * 再生中の音声があれば割り込み停止して新しいものを再生する。
@@ -994,7 +1099,7 @@ export function stopSpeech(): void {
  *
  * @param shouldStillPlay 各チャンクを鳴らす直前に呼ぶ妥当性の判定（省略時は常に鳴らす）
  */
-export function speakWithVoicevox(...args: Parameters<typeof speakOnce>): Promise<void> {
+export function speakWithVoicevox(...args: Parameters<typeof speakOnce>): Promise<SpeechOutcome> {
   // 読み上げの本数を数えるのはここ（{@link isSpeaking}）。**本体の中に置かない** —— 本体は
   // 途中で抜ける経路を複数持っていて、経路を足したときに減算を書き忘れると数が下がらず、
   // 既定の状態へ二度と戻らなくなる。包んでおけば書き忘れようがない。
@@ -1029,7 +1134,7 @@ async function speakOnce(
    * 画面を読み上げに追従させる側がこれを受け取る。
    */
   onChunkScheduled?: ChunkScheduledListener,
-): Promise<void> {
+): Promise<SpeechOutcome> {
   const startedAt = performance.now()
   log.debug(`[VoiceVox] 読み上げ: ${text}`, { speakerId, volume, prewarmed: !!prewarmed })
 
@@ -1072,12 +1177,12 @@ async function speakOnce(
   await loadSpeechDicts((err) => {
     log.debug('[VoiceVox] 句区切り辞書の取得に失敗（区切りなしで読み上げ）', err)
   })
-  if (currentSessionId !== sessionId) return  // 辞書待ちの間に割り込まれた
+  if (currentSessionId !== sessionId) return { spoke: false }  // 辞書待ちの間に割り込まれた
 
   const ctx = getAudioContext()
   if (!ctx) {
     log.debug('[VoiceVox] スキップ (AudioContext なし)')
-    return
+    return { spoke: false }
   }
   if (ctx.state === 'suspended') await ctx.resume()
   // soundEnabled が無効でも voicevoxEnabled だけで読み上げは鳴る（AUD-7）。この経路が
@@ -1133,6 +1238,13 @@ async function speakOnce(
   // 予約したチャンクと、その開始時刻（AudioContext の時間軸）。`dropped` は鳴らすのを
   // 取り下げた印、`ended` は再生が終わった印。完了を待つ対象を選ぶためにも使う。
   const scheduled: { source: AudioBufferSourceNode; startAt: number; dropped: boolean; ended: boolean }[] = []
+
+  /**
+   * ここまでに 1 チャンクでも鳴ったか（{@link SpeechOutcome}）。**取り下げられていない予約が
+   * 1 つでもあれば鳴った**と見なす —— 予約は再生の開始時刻付きで積まれ、落とすときは
+   * `dropped` が立つため。
+   */
+  const outcome = (): SpeechOutcome => ({ spoke: scheduled.some(s => !s.dropped) })
   // 妥当性を失ったと判断したか。以降は合成も予約もしない
   let abandoned = false
 
@@ -1196,11 +1308,30 @@ async function speakOnce(
     resolveWhenLastPlayingEnds()
   }
 
-  for (let i = 0; i < chunks.length; i++) {
-    if (currentSessionId !== sessionId) { completionResolve(); return }  // 割り込みされた
+  // この発話で合成を待てる残り（{@link SPEECH_SYNTH_BUDGET_MS}）。
+  //
+  // **起点は関数の開始（`startedAt`）で、合成ループの入口ではない。** 手前には辞書の取得待ち
+  // （最大 5 秒）がある。そこを数えないと、辞書が遅い日に「予算 6 秒」のつもりで実際には
+  // 11 秒待つことになり、**発話チェーン側の上限（8 秒）が先に尽きて「鳴っている最中」と
+  // 誤認される** —— 1 音も出ていないのに既読が進む。
+  let synthBudgetLeftMs = Math.max(0, SPEECH_SYNTH_BUDGET_MS - (performance.now() - startedAt))
 
-    const buffer = await nextBufferPromise
-    if (currentSessionId !== sessionId) { completionResolve(); return }  // await 中に割り込み
+  for (let i = 0; i < chunks.length; i++) {
+    if (currentSessionId !== sessionId) { completionResolve(); return outcome() }  // 割り込みされた
+
+    // **上限つきで待つ。** 1 チャンクの上限（{@link CHUNK_SYNTH_TIMEOUT_MS}）と、この発話で
+    // 合成を待てる残りの予算（{@link SPEECH_SYNTH_BUDGET_MS}）の短い方。超えたら合成失敗と
+    // 同じ扱いにして進む —— 待ち続けると、この読み上げが完了も失敗もしないまま宙に浮く。
+    //
+    // **差し引くのは合成を待った分だけ。** 鳴っている時間は数えないので、正常な読み上げが
+    // どれだけ長くても予算は減らない（先行合成は再生と並行して走り、待ちはほぼ 0 になる）。
+    // 計るのは `performance.now()`（単調増加）。壁時計は NTP 補正・スリープ復帰で前後する。
+    const waitStartedAt = performance.now()
+    const buffer = await raceSynthTimeout(
+      nextBufferPromise, Math.min(CHUNK_SYNTH_TIMEOUT_MS, synthBudgetLeftMs),
+    )
+    synthBudgetLeftMs = Math.max(0, synthBudgetLeftMs - (performance.now() - waitStartedAt))
+    if (currentSessionId !== sessionId) { completionResolve(); return outcome() }  // await 中に割り込み
     if (abandoned) break  // 鳴り始めの直前の判定で取り下げられた
 
     // 次チャンクの合成を先行開始（現在のチャンクの再生と並行）
@@ -1283,6 +1414,7 @@ async function speakOnce(
     completionResolve()
   }
   await completionPromise
+  return outcome()
 }
 
 /**
