@@ -198,7 +198,9 @@ export function createYahooArchiveSource(timeOffsetMs: number): KyoshinSource {
  * 助走の取得でしか使わない。通常の取得（`tick`）は失敗を再試行と「更新停止」の判定に使うが、
  * こちらは取れた分だけ使えばよいので、1 件ずつ握って先へ進む。
  */
-async function fetchFramesConcurrently(targets: Date[], isActive: () => boolean): Promise<KyoshinFrame[]> {
+async function fetchFramesConcurrently(
+  targets: Date[], isActive: () => boolean, cache: boolean,
+): Promise<KyoshinFrame[]> {
   const out: KyoshinFrame[] = []
   for (let i = 0; i < targets.length; i += WARMUP_CONCURRENCY) {
     if (!isActive()) return out
@@ -208,7 +210,7 @@ async function fetchFramesConcurrently(targets: Date[], isActive: () => boolean)
       // は中断の手段を持たないため、そこまでは諦める）。
       if (!isActive()) return null
       try {
-        const rt = await fetchRealtimeIntensity(t)
+        const rt = await fetchRealtimeIntensity(t, { cache })
         // **hypoInfo は載せない。** 助走は検知エンジンだけのもので、EEW の差分検出へ流すと
         // 開始より前に終わっていた速報が新規発報として鳴り直す。
         return { time: t, dataTime: rt.dataTime, sitesKey: rt.siteConfigId, indices: rt.indices }
@@ -227,7 +229,9 @@ async function fetchFramesConcurrently(targets: Date[], isActive: () => boolean)
  *
  * 返すのは時刻の昇順。`startTarget` そのものは含めない（そちらは通常の取得が拾う）。
  */
-async function fetchWarmupFrames(startTarget: Date, isActive: () => boolean): Promise<KyoshinFrame[]> {
+async function fetchWarmupFrames(
+  startTarget: Date, isActive: () => boolean, cache: boolean,
+): Promise<KyoshinFrame[]> {
   const blocks: KyoshinFrame[][] = []
   let requested = 0
   /** 遡りを終えた理由。記録に出す（下記参照）。 */
@@ -238,7 +242,7 @@ async function fetchWarmupFrames(startTarget: Date, isActive: () => boolean): Pr
     const targets: Date[] = []
     for (let s = WARMUP_BLOCK_SEC; s >= 1; s--) targets.push(new Date(blockEndMs - s * 1000))
     requested += targets.length
-    const block = await fetchFramesConcurrently(targets, isActive)
+    const block = await fetchFramesConcurrently(targets, isActive, cache)
     // 1 件も取れなかったブロックは静穏かどうかを確かめようがない。ここで止めて、
     // それまでに取れた分を助走にする（遡り続けても確かめられないまま伸びるだけ）。
     if (block.length === 0) { stoppedBy = '取得できない秒に当たった'; break }
@@ -319,7 +323,7 @@ function createYahooSource(timeOffsetMs: number | null): KyoshinSource {
       void (async () => {
         let frames: KyoshinFrame[] = []
         try {
-          frames = await fetchWarmupFrames(initialTarget, () => active)
+          frames = await fetchWarmupFrames(initialTarget, () => active, isReplay)
         } catch (err) {
           // 取得は 1 件ずつ握ってあるのでここへは来ない想定。来たとしても助走を諦めるだけで、
           // 通常の取得は動き続ける。
@@ -347,7 +351,10 @@ function createYahooSource(timeOffsetMs: number | null): KyoshinSource {
       // target: 今回取得するデータ時刻。retryCount: 同一データ時刻への再試行回数。
       const tick = (target: Date, retryCount = 0) => {
         const fetchStart = Date.now()
-        fetchRealtimeIntensity(target)
+        // **控えるのは再生のときだけ。** ライブは毎秒「新しい時刻」を取るので、控えても
+        // 一度も当たらない（当たらない控えはメモリを使うだけ）。再生では逆に、同じ秒を
+        // 助走と再生で何度も欲しがる（→ `utils/kyoshinFrameCache`）。
+        fetchRealtimeIntensity(target, { cache: isReplay })
           .then((rt) => {
             if (!active) return
             failingSince = null
