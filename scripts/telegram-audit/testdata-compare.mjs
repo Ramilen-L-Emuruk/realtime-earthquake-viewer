@@ -26,9 +26,15 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import { REPO, WORK } from './coverage-core.mjs'
+import { readArtifact, incompleteNotes, incompletenessBanner, reportIncompleteness } from '../lib/incompleteness.mjs'
 
 const ts = createRequire(path.join(REPO, 'package.json'))('typescript')
-const S = JSON.parse(fs.readFileSync(path.join(WORK, 'testdata-shapes.json'), 'utf8'))
+// **`readArtifact` を通す。** 上流（サンプル収集・P2PQuake の履歴・形の収集）が取りこぼした
+// ことは、読んだ時点で自分の台帳へ入る。引き継ぎのコードをこのファイルへ書かない。
+const S = readArtifact(path.join(WORK, 'testdata-shapes.json'), { source: 'テストデータの形' })
+if (!S) {
+  throw new Error(`testdata-shapes.json を読めません（testdata-shapes.mjs を先に実行してください）: ${path.join(WORK, 'testdata-shapes.json')}`)
+}
 
 /** ファイル内のオブジェクトリテラルのキー名をすべて集める（作れる項目の上限） */
 function literalKeys(file) {
@@ -132,16 +138,16 @@ w('')
 // 上の表は「実配信に 0 件だった」と「取れなかった」を同じ見た目で見せるので、ここで断らないと
 // 取得失敗による欠落を「実配信に存在しない」と誤読する。内訳は E 節へ出す。
 //
-// **「上の件数」のような位置参照で書かないこと。** `failed` に入るのは P2PQuake の取得失敗だけ
-// ではなく、DMDATA XML の個別サンプルの解析失敗・テストデータファクトリの実行失敗も混ざる。
+// **「上の件数」のような位置参照で書かないこと。** 台帳に入るのは P2PQuake の取得失敗だけ
+// ではなく、実電文サンプルの収集・個別サンプルの解析・テストデータファクトリの実行の失敗も混ざる。
 // 位置で指すと、P2PQuake が完全に取れている実行でも「この表が疑わしい」と読めてしまい、
 // 逆に本当に疑うべき節（解析に失敗したサンプルがあれば B・C・D の突き合わせ）を指さない。
 // **疑う対象はこのレポート全体**なので、そう書く。
-const inputFailures = S.meta.failed ?? []
+//
+// 文面は `incompletenessBanner` に任せる（`.md` と `.txt` で割れないように）。
+const inputFailures = incompleteNotes()
 if (inputFailures.length > 0) {
-  w(`> **入力の取得・解析に失敗したものがあります（${inputFailures.length} 件）。**`)
-  w('> **このレポートのどの節も「無い」の根拠にしないこと** —— 件数表・A〜D の突き合わせは、')
-  w('> 失敗した入力の分を黙って飛ばしている。何が失敗したかは E 節に並べてある。')
+  for (const line of incompletenessBanner('markdown')) w(line)
   w('')
 }
 
@@ -200,14 +206,16 @@ w('**「一致していた」ではなく「見ていない」。** B・C・D �
 if (unchecked.length === 0) w('無し（DM 表のすべての内部型に実電文の標本がある）。')
 else for (const [f, kind] of unchecked) w(`- **${f}** … 内部型 \`${kind}\` の実電文標本が 0 件`)
 
-// **入力そのものの取得・解析の失敗も「見ていない」。** `testdata-shapes.mjs` が集めた
-// `meta.failed` をここへ運ぶ。運ばないと、P2PQuake の取得が失敗した実行でも標本表は
-// 「code=552: 0」と正常時と同じ見た目になり、**この節の趣旨（「無い」と「見ていない」を分ける）が
-// 入力の側では果たされない**。控えの形が古い場合もここへ出る（その実行では A 節が
-// 偽陽性を大量に出すので、原因がこのレポート単体で辿れるようにしておく）。
+// **入力そのものの取得・解析の失敗も「見ていない」。** 上流が積んだ印は `readArtifact` を
+// 通った時点で台帳へ入っているので、ここではそれを並べる。運ばないと、P2PQuake の取得が
+// 失敗した実行でも標本表は「code=552: 0」と正常時と同じ見た目になり、**この節の趣旨
+// （「無い」と「見ていない」を分ける）が入力の側では果たされない**。実電文サンプルの収集が
+// 途中で落ちた場合・控えの形が古い場合もここへ出る（その実行では A 節が偽陽性を大量に出すので、
+// 原因がこのレポート単体で辿れるようにしておく）。
 w('\n### 入力の取得・解析に失敗したもの\n')
 if (inputFailures.length === 0) w('無し。')
 else for (const m of inputFailures) w(`- ${m}`)
 
 fs.writeFileSync(path.join(WORK, 'testdata-report.md'), out.join('\n'))
 console.log(out.join('\n'))
+if (reportIncompleteness('突き合わせの入力') > 0) process.exitCode = 1

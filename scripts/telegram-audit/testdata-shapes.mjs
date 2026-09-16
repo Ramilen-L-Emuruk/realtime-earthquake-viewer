@@ -15,6 +15,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import { REPO, WORK, CACHE } from './coverage-core.mjs'
+import { noteIncomplete, readArtifact, writeArtifact, reportIncompleteness } from '../lib/incompleteness.mjs'
+import { absorbSampleCollectionMarks } from './collection-mark.mjs'
 
 const req = createRequire(path.join(REPO, 'package.json'))
 const esbuild = req('esbuild')
@@ -120,6 +122,9 @@ const failed = []
 let parsed = 0
 
 // ---- 1. 実電文（XML） ----
+// **収集の札を先に読む。** ここから下はディレクトリに並んだファイルを数えるだけなので、
+// 収集が途中で失敗していても「その種別は 0 件」としか見えない（→ `collection-mark.mjs`）。
+absorbSampleCollectionMarks(CACHE)
 const all = fs.readdirSync(CACHE)
 const xmlFiles = all.filter(f => /\.xml$/i.test(f))
 for (const f of xmlFiles) {
@@ -177,16 +182,16 @@ for (const f of xmlFiles) {
 // ---- 3. 実 P2PQuake データ ----
 const histPath = path.join(WORK, 'p2p-history.json')
 const p2pCounts = {}
-if (fs.existsSync(histPath)) {
-  const hist = JSON.parse(fs.readFileSync(histPath, 'utf8'))
+{
+  // **`readArtifact` を通す。** 取得が不完全だったことは、読んだ時点で自分の台帳へ入り、
+  // 下の `writeArtifact` で自動的に出ていく（引き継ぎのコードをここへ書かない）。
+  // ファイルが無い・読めない場合も、それ自体が印として積まれる。
+  const hist = readArtifact(histPath, { source: 'P2PQuake の履歴' })
   // **古い形（種別を直下に持つ）は読まない。** 読めてしまうと、取得が不完全だったことを伝える
-  // `meta.incomplete` が無いまま件数だけが通り、**0 件が「この種別は実配信に無い」の根拠に化ける**。
-  if (!hist?.codes) {
+  // 印が無いまま件数だけが通り、**0 件が「この種別は実配信に無い」の根拠に化ける**。
+  if (hist && !hist.codes) {
     failed.push(`p2p-history.json が古い形です（fetch-p2p-history.mjs を再実行してください）: ${histPath}`)
-  } else {
-    // **取得が不完全だったことを引き継ぐ。** ここで拾わないと、下流の突き合わせレポートで
-    // 「集めたが 0 件」と「集められなかった」が区別できなくなる
-    if (hist.meta?.incomplete) failed.push(`P2PQuake: ${hist.meta.incomplete}`)
+  } else if (hist) {
     for (const [code, items] of Object.entries(hist.codes)) {
       p2pCounts[code] = items.length
       for (const it of items) {
@@ -199,8 +204,6 @@ if (fs.existsSync(histPath)) {
       }
     }
   }
-} else {
-  failed.push(`p2p-history.json がありません（fetch-p2p-history.mjs を先に実行）: ${histPath}`)
 }
 
 // ---- 4. Yahoo 強震モニタ由来の EEW ----
@@ -273,12 +276,18 @@ for (const [name, fn] of Object.entries(factories)) {
   td[name] = dump(m)
 }
 
+// **自分が取りこぼした分も台帳へ積む。** `meta.failed` は構造のまま残す内訳で、台帳は
+// 下流へ運ぶための印。ここで積まないと、`testdata-shapes.json` を単体で見たときに
+// 「解析に失敗したものがある」ことが読み取れない。
+for (const m of failed) noteIncomplete('テストデータの形の収集', m)
+
 result.meta = { xmlFiles: xmlFiles.length, parsed, p2pCounts, failed, cache: CACHE, sourceFiles }
 result.byKind = Object.fromEntries([...byKind].sort().map(([k, v]) => [k, dump(v)]))
 result.perType = Object.fromEntries([...perType].sort().map(([k, v]) => [k, dump(v)]))
 result.testData = td
-fs.writeFileSync(path.join(WORK, 'testdata-shapes.json'), JSON.stringify(result, null, 1))
+writeArtifact(path.join(WORK, 'testdata-shapes.json'), result)
 console.log(JSON.stringify({
   ...result.meta,
   sourceFiles: Object.fromEntries(Object.entries(sourceFiles).map(([k, v]) => [k, v.length])),
 }, null, 1))
+if (reportIncompleteness('テストデータの形の収集') > 0) process.exitCode = 1

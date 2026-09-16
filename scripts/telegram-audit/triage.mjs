@@ -15,12 +15,21 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { HANDLED } from './handled.mjs'
 import {
-  WORK, REPO, DECIDED_PATHS,
+  WORK, REPO, CACHE, DECIDED_PATHS,
   loadScopes, scanTelegrams, scanManual, occurrencesOf, decidedPathOf,
 } from './coverage-core.mjs'
+import { readArtifact, incompleteNotes, incompletenessBanner, reportIncompleteness } from '../lib/incompleteness.mjs'
+import { absorbSampleCollectionMarks } from './collection-mark.mjs'
 import { buildReadModel, readsElement, readsAttr } from './read-model.mjs'
 
-const dyn = JSON.parse(fs.readFileSync(path.join(WORK, 'dynamic-coverage.json'), 'utf8'))
+// **`readArtifact` を通す。** 計測台が引き継いだ取りこぼし（実電文サンプルの収集が
+// 途中で落ちた等）は、読んだ時点で自分の台帳へ入る。
+const dyn = readArtifact(path.join(WORK, 'dynamic-coverage.json'), { source: '実装の計測' })
+if (!dyn) {
+  throw new Error(`dynamic-coverage.json を読めません（計測台を先に実行してください）: ${path.join(WORK, 'dynamic-coverage.json')}`)
+}
+// 資料との突き合わせは `telegram-cache/` のファイルを直接数えるので、収集の札もここで読む
+absorbSampleCollectionMarks(CACHE)
 const tele = scanTelegrams()
 const manual = scanManual()
 const modelOf = new Map([...loadScopes()].map(([t, parts]) => [t, buildReadModel(parts)]))
@@ -210,6 +219,16 @@ if (keyMiss.length) {
   }
 }
 
+// **入力の取りこぼしは自己診断より先に断る。** この点検の数字はどれも「全 N のうち未読 M」の
+// 形で出るので、標本が欠けていることを先に言わないと、集められなかった種別が
+// 「読む要素が無かった」と読める。自己診断（点検そのものの壊れ）とは別の話なので節も分ける。
+const inputIncomplete = incompleteNotes()
+if (inputIncomplete.length) {
+  push('== 入力の取りこぼし ==')
+  for (const line of incompletenessBanner('plain')) push(`  ${line}`)
+  push('')
+}
+
 if (selfCheck.length) {
   push('== 自己診断（この点検そのものが壊れていないか）==')
   for (const s of selfCheck) push(`  ! ${s}`)
@@ -311,5 +330,8 @@ push('==== 静的が「読んでいる」と言ったが、実測では読んで
 for (const s of staticMissed) push(`  ${s}`)
 
 fs.writeFileSync(path.join(WORK, 'triage-result.txt'), out.join('\n'), 'utf8')
-// 自己診断が出た分だけ切り出す行を増やす（既定の 8 行では要約が押し出される）
-console.log(out.slice(0, 8 + (selfCheck.length ? selfCheck.length + 3 : 0)).join('\n'))
+// 自己診断・入力の取りこぼしが出た分だけ切り出す行を増やす（既定の 8 行では要約が押し出される）
+const extraHead = (selfCheck.length ? selfCheck.length + 3 : 0)
+  + (inputIncomplete.length ? incompletenessBanner('plain').length + 2 : 0)
+console.log(out.slice(0, 8 + extraHead).join('\n'))
+if (reportIncompleteness('点検の入力') > 0) process.exitCode = 1
