@@ -106,8 +106,14 @@ node scripts/telegram-audit/header-survey.mjs <実電文のディレクトリ>
 | `header-survey.mjs` | 実装を通さず、`Control` と `Head` の中身を種別ごとに並べる。判定を経由しないので `triage.mjs` とは独立に動く |
 | `where-defined.mjs` | 資料が同じ要素名を**どこで何回定義しているか**を並べる。未読を仕分けるときに通す（下記） |
 | `coverage-core.mjs`・`read-model.mjs`・`handled.mjs` | `triage.mjs` が使う判定（置き場所の解決と対象種別は `fetch-samples.mjs` も借りる）。**同じ判定を複数のスクリプトに持たせない**（片方だけ直すと数字が食い違い、どちらが正しいか分からなくなる） |
-| `archive-cache.mjs` | アーカイブの取得・ローカルの控え・レート制御。**DMDATA を叩く 3 本が必ず通る**（上記「アーカイブは一度取れば控えから読む」） |
-| `repo-root.mjs` | リポジトリの根のパスだけを持つ。`coverage-core.mjs` は import した時点で `TELEGRAM_AUDIT_DIR` を要求するため、**根だけが必要なモジュールをそちらへ依存させない**ために分けてある |
+| `archive-cache.mjs` | アーカイブの取得・ローカルの控え。**DMDATA を叩く 3 本が必ず通る**（上記「アーカイブは一度取れば控えから読む」）。取得の間隔は下記 `lib/rateGate.mjs` に任せる |
+
+次の 2 本は `scripts/lib/` にある（`telegram-audit/` の外）。**この棚卸し専用ではなく、生成スクリプトも使う**ため。
+
+| モジュール | すること |
+|---|---|
+| `lib/rateGate.mjs` | 取得の間隔を守る門（`gate`）。**取得元ごとに `kind` を分ける**汎用の仕組みで、`archive-cache.mjs`・`fetch-p2p-history.mjs`・`lib/stationSource.mjs` が同じものを通る。**待つ前に枠を予約する**（`await` の後に書き込むと並列呼び出しが一斉に発火する）。元は `archive-cache.mjs` の中にあり、DMDATA 専用に見えて他から使われていなかった |
+| `lib/repo-root.mjs` | リポジトリの根のパスだけを持つ。`coverage-core.mjs` は import した時点で `TELEGRAM_AUDIT_DIR` を要求するため、**根だけが必要なモジュールをそちらへ依存させない**ために分けてある |
 
 `where-defined.mjs` も計測を要らない。解説資料のテキストだけで動く。
 
@@ -603,3 +609,9 @@ P2PQuake の JSON も持つフィールドで、型から消すと両経路を�
   入れたとき直したのは、当時その受け皿を持っていた 6 つのパーサーだけで、別のパーサーを通る
   緊急地震速報は素読みのまま残っていた。**同じ性質の読み取りが何箇所あるかを、直す前に数え
   上げること。**
+- 2026-09-16: 取得の間隔を守る門を `scripts/lib/rateGate.mjs` へ切り出し、`repo-root.mjs` も
+  `scripts/lib/` へ移した（§2 のスクリプト表）。**あの門は `archive-cache.mjs` の中にあり、
+  DMDATA 専用に見えて他から使われていなかった** —— 取得元ごとに `kind` を分ける汎用の仕組みなので、
+  P2PQuake の履歴走査（`fetch-p2p-history.mjs`）と観測点リビジョンの走査（`lib/stationSource.mjs`）も
+  同じものを通す形にした。`repo-root.mjs` を一緒に移したのは、`scripts/lib/` から
+  `scripts/telegram-audit/` へ依存を張るのは向きが逆になるため

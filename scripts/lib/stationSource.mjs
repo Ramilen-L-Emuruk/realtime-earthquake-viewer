@@ -8,6 +8,10 @@
 // 実装を .ts へ移していないのは、`build-station-coords.mjs` が素の node で動かす規定
 // （`node scripts/build-station-coords.mjs`）で、そちらから import できる形を保つため。
 // TypeScript から呼ぶための宣言は `stationSource.d.mts` にある。
+import fs from 'node:fs'
+import path from 'node:path'
+import { REPO } from './repo-root.mjs'
+import { gate } from './rateGate.mjs'
 
 /**
  * 震度観測点一覧の取得元。**リビジョンを固定している**（生成のたびに中身が変わらないように）。
@@ -81,6 +85,96 @@ async function fetchText(url, what) {
 
 async function fetchJson(url, what) {
   return JSON.parse(await fetchText(url, what))
+}
+
+/**
+ * リビジョンの中身の控えの置き場所。`.claude/*` は `.gitignore` 済み
+ * （`dmdata-archive-cache` / `nii-cache` / `hypocenter-cache` と同じ扱い）。
+ *
+ * **期限を持たない。** gist のリビジョンはコミットハッシュで固定されているので、一度取った
+ * 中身は変わらない（DMDATA アーカイブの控えが「日ごとの不変ファイル」に効くのと同じ理屈）。
+ *
+ * **控えが無いと取得が倍になる。** 座標側（`build-station-coords.mjs`）と読み側
+ * （`build-station-readings.ts`）が同じ履歴を辿るので、続けて実行するだけで
+ * リビジョンの数 × 2 回ネットワークへ出ていた（2026-09 時点で 24 版 × 2）。
+ *
+ * **定数ではなく関数にしてある。** モジュール評価時に 1 度だけ決めると、テストが
+ * `STATION_REVISION_CACHE` を一時ディレクトリへ振り替えられない（import の時点で確定する）。
+ * 合成したリビジョン列で検証するテストが**前のテストの控えを読んで落ちる** —— 実際にそうなった。
+ */
+function revisionCacheDir() {
+  return process.env.STATION_REVISION_CACHE
+    || path.join(REPO, '.claude', 'station-revision-cache')
+}
+
+/**
+ * 各リビジョンの raw を取る間隔。
+ *
+ * **取得元は gist の raw CDN で、GitHub API の 60 回/時の制限には当たらない**
+ * （API を叩くのは {@link fetchRevisions} の 1 回だけ。そちらのコメント参照）。
+ * それでも間隔を置くのは、**明記された上限が無いことを「いくらでもよい」と読まない**ため
+ * （CLAUDE.md「調査で外部 API を叩くとき」）。
+ */
+const RAW_MIN_INTERVAL_MS = 200
+
+/** 控え・取得の実測値。走査の終わりに出して、何件をネットワークへ出したかを残す。 */
+const revisionStats = { cacheHits: 0, downloads: 0 }
+
+function revisionCachePath(revision) {
+  // リビジョンは 40 桁の 16 進数。上流が形を変えてもパスを壊さないよう英数字だけに絞る
+  const safe = String(revision).replace(/[^0-9a-zA-Z]/g, '').slice(0, 64)
+  return path.join(revisionCacheDir(), `${safe}.json`)
+}
+
+/**
+ * 控えから読む。無ければ `null`。
+ *
+ * **中身を疑う必要はない** —— 控えるのは JSON として読めたものだけにしてある
+ * （{@link collectUnlistedStations} 参照）。捨てるのは読み取りの I/O が失敗したときだけ。
+ *
+ * **残っている穴（対処していない）**: 配信が「壊れているが偶然 JSON の配列として読める」応答を
+ * 返した場合、それが無期限に焼き付く。JSON として読めない版だけは毎回取り直すので
+ * （{@link MIN_READABLE_REVISIONS} の歯止めに乗る）その経路は守られるが、こちらは通らない。
+ * 確度が低いので対処していない —— 直すならサイズやチェックサムを控えと一緒に残し、
+ * 次に読むときに突き合わせる形になる。
+ */
+function readRevisionCache(revision) {
+  const p = revisionCachePath(revision)
+  if (!fs.existsSync(p)) return null
+  try {
+    const text = fs.readFileSync(p, 'utf8')
+    revisionStats.cacheHits++
+    return text
+  } catch (e) {
+    console.log(`  控えが読めないため取り直します（${path.basename(p)}）: ${e.message ?? e}`)
+    try { fs.rmSync(p) } catch { /* 消せなくても取得は続ける */ }
+    return null
+  }
+}
+
+/** 控えへ書く。一時ファイルへ出してから `rename`（中断で半端なファイルを残さない）。 */
+function writeRevisionCache(revision, text) {
+  // **`tmp` は try の外で決める** —— 中で宣言すると catch から見えず、`rename` だけ失敗した
+  // ときに一時ファイルを片付けられない（次回は別の pid を使うので上書きもされず溜まる）
+  const p = revisionCachePath(revision)
+  const tmp = `${p}.tmp-${process.pid}`
+  try {
+    fs.mkdirSync(revisionCacheDir(), { recursive: true })
+    fs.writeFileSync(tmp, text)
+    fs.renameSync(tmp, p)
+  } catch (e) {
+    // 控えへ書けなくても走査は続く（次回また取るだけ）。**黙って流さない**
+    console.log(`  控えへ書けませんでした（次回また取得します）: ${e.message ?? e}`)
+    try { fs.rmSync(tmp) } catch { /* 消せなくても害は無い（.gitignore 済みの小さなファイル） */ }
+  }
+}
+
+/** ネットワークから取る。**間隔はここで置く**（控えから読めた分はこの門を通さない）。 */
+async function fetchRevisionText(revision, url) {
+  await gate('gist-raw', RAW_MIN_INTERVAL_MS)
+  const text = await fetchText(url, `リビジョン ${String(revision).slice(0, 8)} の観測点一覧`)
+  revisionStats.downloads++
+  return text
 }
 
 /**
@@ -178,9 +272,10 @@ export async function collectUnlistedStations(listed) {
   let noName = 0
   for (const revision of revisions) {
     const url = `https://gist.githubusercontent.com/${GIST_USER}/${GIST_ID}/raw/${revision}/${GIST_FILE}`
+    const cached = readRevisionCache(revision)
     // **取得そのものの失敗は止める。** 一時的な障害を黙って飲み込むと、欠けたことが
     // 生成物から分からないまま「拾えたつもり」の表ができあがる。
-    const text = await fetchText(url, `リビジョン ${revision.slice(0, 8)} の観測点一覧`)
+    const text = cached ?? await fetchRevisionText(revision, url)
     // **中身が読めないリビジョンは飛ばす。** 上流には保存が途中で切れたリビジョンが実在し
     // （2021-12-18 の版が 651,917 バイトで途切れている）、これを失敗にすると生成が
     // 永久に通らない。**飛ばした数は下の {@link MIN_READABLE_REVISIONS} が見る**ので、
@@ -195,6 +290,10 @@ export async function collectUnlistedStations(listed) {
       unreadable.push(revision.slice(0, 8))
       continue
     }
+    // **控えるのは JSON として読めたものだけ。** 途中で切れた応答を焼き付けると、以後
+    // 何度走っても同じ壊れたファイルを読み続ける（取り直す契機がどこにも無い）。
+    // 上流に実在する壊れた版は毎回取り直すことになるが、2026-09 時点で 24 版中 1 版だけ。
+    if (!cached) writeRevisionCache(revision, text)
     // **空の版も「読めた」と数えない。** 観測点を 1 件も提供していないのに下限の分母だけ
     // 満たすため、上流が一時的に空を返す形が起きると歯止めをすり抜ける。
     // 下の割合の判定では捕まらない —— `0 / 0` は `NaN` で、どんな比較も偽になる。
@@ -244,5 +343,12 @@ export async function collectUnlistedStations(listed) {
       + '取得元の形が変わったか、取得が一部失敗しています',
     )
   }
+  // **何件をネットワークへ出したかを残す。** 出さないと控えが効いているか分からず、
+  // 「2 回目以降は取らない」という約束が黙って壊れても気づけない
+  // （CLAUDE.md「進行と件数が見える形にする」）。
+  console.log(
+    `Revisions: ${revisionStats.cacheHits} from cache / ${revisionStats.downloads} downloaded`
+    + ` (interval ${RAW_MIN_INTERVAL_MS}ms, cache: ${revisionCacheDir()})`
+  )
   return unlisted
 }
