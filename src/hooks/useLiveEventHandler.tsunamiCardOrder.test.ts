@@ -15,6 +15,7 @@
 //
 // **渡し忘れても例外もログも出ない。** どの経路も「並びが違うだけ」で動いてしまうため、
 // 配線が外れたことはここでしか検出できない。
+import type { SpeechOutcome } from '../utils/voicevox'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import { showBrowserNotification } from '../utils/notifications'
@@ -28,7 +29,7 @@ const speakMock = vi.fn((_url: string, text: string) => {
     if (!s.done) { s.done = true; s.finish() }
   }
   let finish!: () => void
-  const p = new Promise<void>(r => { finish = r })
+  const p = new Promise<SpeechOutcome>(r => { finish = () => r({ spoke: true }) })
   speeches.push({ text, finish, done: false })
   return p
 })

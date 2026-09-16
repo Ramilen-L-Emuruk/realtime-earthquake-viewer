@@ -13,6 +13,7 @@ import type { EEWAlert, IntensityScale } from '../types/earthquake'
 import { feedServerSample, getServerClockSampleAgeMs, serverNow } from '../utils/clock'
 import { createLogThrottle, log } from '../utils/logger'
 import { fetchServerTime, SERVER_TIME_SKIPPED } from './akamaiClock'
+import { createKyoshinFrameCache } from '../utils/kyoshinFrameCache'
 
 /** 観測点座標の配列（[緯度, 経度]）。インデックスが intensity 文字列の位置に対応。 */
 export type SiteCoords = [number, number][]
@@ -212,11 +213,69 @@ export function hypoInfoItemToEEW(item: YahooHypoInfoItem): EEWAlert {
 }
 
 /**
+ * 秒フレームの控え。**再生を開始し直しても残る**（理由・上限の根拠は `utils/kyoshinFrameCache`）。
+ *
+ * 控えるのは呼び出し側が `cache: true` を渡したときだけ —— ライブは毎秒新しい時刻を取るので
+ * 当たらない。渡すのは再生の供給元（`services/kyoshinSource.ts`）。
+ */
+const frameCache = createKyoshinFrameCache()
+
+/** テスト用・検証用。控えを空にする。 */
+export function clearKyoshinFrameCacheForTest(): void {
+  frameCache.clear()
+}
+
+if (typeof window !== 'undefined') {
+  // 控えが効いているかは画面に出ないので、検証で読めるようにしておく
+  // （アーカイブ本体の `window.__archiveCacheStats()` と同じ趣旨）。
+  ;(window as unknown as { __kyoshinFrameCacheStats?: () => unknown }).__kyoshinFrameCacheStats =
+    () => frameCache.stats()
+}
+
+/**
  * 指定時刻のリアルタイム震度を取得する。
  * west エッジが失敗したら east エッジにフォールバックする。
+ *
+ * `cache` に `true` を渡すと、**取れたフレームを控え、次からは控えから返す**。秒ファイルは
+ * 時刻ごとに不変なので、同じ秒を取り直す理由が無い（助走は再生を開始するたびに同じ範囲を遡る。
+ * 不変であることの実測は `utils/kyoshinFrameCache`）。**失敗は控えない** ——
+ * まだ登録されていない秒（403）は、待てば現れる。
+ *
+ * **`cache` は省略できない。** 既定値を置くと、新しい呼び出し経路を足したときに
+ * 「控えるべきか」を決めないまま通ってしまう —— 渡し忘れても型検査は通り、
+ * 症状は「控えが効かない」だけなので**気づく手立てが無い**（逆向きに間違えれば、
+ * ライブで当たらない控えを溜め続ける）。判断を呼び出し側へ必ず要求する。
  */
-export async function fetchRealtimeIntensity(now: Date): Promise<RealtimeIntensity> {
+export async function fetchRealtimeIntensity(
+  now: Date, opts: { cache: boolean },
+): Promise<RealtimeIntensity> {
   const { dateStr, ts } = jstParts(now)
+  // 鍵はエッジを含めない。**west と east は同じ秒の同じ中身**を配っている ——
+  // 実測で同じ秒を両エッジから引き、6 秒前〜300 秒前の 6 標本すべてでバイト単位まで
+  // 一致した（2026-09-16）。どちらで取れたものでも次の要求に使える。
+  // **同じファイルに「west は east より登録が速い」と書いてある**ので（`SYNC_EDGE`）、
+  // 確かめずに前提にはできなかった —— 速さが違うことと中身が違うことは別。
+  const cacheKey = opts.cache ? `${dateStr}/${ts}` : null
+  if (cacheKey !== null) {
+    const hit = frameCache.get(cacheKey)
+    if (hit) {
+      // **配列は読むたびに作り直す。** 控えた配列を返すと読み手どうしで共有され、
+      // 書き換えられたときに控えの中身が化ける（→ `utils/kyoshinFrameCache`）。
+      //
+      // **`hypoInfo` も同じ扱いにする（浅い複製）。** `indices` だけ作り直して
+      // こちらを素で返すと原則が片方にしか掛からない —— しかも `useKyoshinRealtime` は
+      // この配列を `prevHypoInfoRef` にレンダーをまたいで持ち続けるので、いつか書き換える
+      // 経路が増えたときに**控えの中身が恒久的に化ける**（症状は「別の速報の値が混ざる／
+      // 消える」で、例外もログも出ない）。要素そのものは読み取りでしか使われていないので
+      // 浅い複製で足りる。
+      return {
+        dataTime: hit.dataTime,
+        siteConfigId: hit.siteConfigId,
+        indices: Array.from(hit.intensity, (c) => c.charCodeAt(0) - 100),
+        hypoInfo: [...hit.hypoInfo],
+      }
+    }
+  }
   let lastErr: unknown = null
   // AbortController は付けていない。呼び出し元（services/kyoshinSource.ts の Yahoo ソース）の
   // tick は .then/.catch 内でのみ次の setTimeout を仕込む設計で、1 本のソース内では直列。
@@ -247,7 +306,21 @@ export async function fetchRealtimeIntensity(now: Date): Promise<RealtimeIntensi
       const indices = Array.from(intensity, (c) => c.charCodeAt(0) - 100)
       const hypoInfo: YahooHypoInfoItem[] = json.hypoInfo?.items ?? []
       const siteConfigId = rt.siteConfigId ?? ''
-      return { dataTime: rt.dataTime ?? '', siteConfigId, indices, hypoInfo }
+      const dataTime = rt.dataTime ?? ''
+      // **取れた分だけ控える。** 失敗（未登録の秒・空の応答）は控えない —— 待てば現れる。
+      //
+      // **`hypoInfo` は複製して渡す。** 素で渡すと、いま返す配列と控えの配列が同じものになり、
+      // **呼び出し元が書き換えた瞬間に控えが化ける**（`useKyoshinRealtime` はこの配列を
+      // レンダーをまたいで持ち続ける）。読む側の複製だけでは足りない —— 漏れるのは
+      // **控えに入れたこの回**で、次に読んだときには既に壊れている。
+      //
+      // **複製するのはどちらか片方だけでよい**（ここは控えへ入れる側、控えから返すときは
+      // 戻り値の側）。要るのは「呼び出し元が持つ配列と控えが持つ配列が別物であること」で、
+      // 両方を複製しても得るものは無い。下の戻り値が元の配列のままなのはそのため。
+      if (cacheKey !== null) {
+        frameCache.set(cacheKey, { dataTime, siteConfigId, intensity, hypoInfo: [...hypoInfo] })
+      }
+      return { dataTime, siteConfigId, indices, hypoInfo }
     } catch (err) {
       lastErr = err
     }
