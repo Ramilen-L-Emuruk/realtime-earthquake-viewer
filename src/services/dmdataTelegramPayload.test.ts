@@ -8,7 +8,11 @@
 // この集合はライブ（services/dmdata.ts）とリプレイ（dmdataReplay.ts / dmdataReplayLive.ts）が
 // 共有する。かつて二重定義でライブ側だけ VXSE43 を含み、ライブでのみ塗りが削られていた。
 import { describe, it, expect } from 'vitest'
-import { CLASSIFICATIONS, EEW_TYPES, HANDLED_TYPES, buildXmlPayload } from './dmdataTelegramPayload'
+import {
+  CLASSIFICATIONS, EEW_TYPES, HANDLED_TYPES, buildXmlPayload,
+  buildBinaryPayload, isFilteredBinaryTelegram,
+} from './dmdataTelegramPayload'
+import { buildSampleTelegram } from '../test-utils/bufrBuild'
 
 // 2024-01-01 能登半島地震の緊急地震速報（地震動予報・警報級）を最小化したもの。
 const EEW_XML = `<?xml version="1.0" encoding="UTF-8"?>
@@ -89,5 +93,53 @@ describe('購読分類', () => {
   it('分類を絞ったうえで、種別フィルタでも VXSE43 を扱わない', () => {
     expect(EEW_TYPES.has('VXSE43')).toBe(false)
     expect(EEW_TYPES.has('VXSE45')).toBe(true)
+  })
+})
+
+// 非 XML 電文（推計震度分布図 IXAC41）の試験・訓練配信の抑制。
+//
+// **XML 側の抑制（`head.test` を見るもの）は、この電文に対して原理的に発火しない。**
+// 配信元が 2 つのことを別々に明記しているため:
+//   - `socket.start`: 「XML電文以外のテスト配信は no 時も配信されます」→ **届く**
+//   - `telegram.list` / `websocket`: 「XML電文以外のテスト配信は常に false になります」
+//     → **見分けられない**
+// だから本文の電文の種類（BUFR の `0-01-242`）で判定する。
+describe('非 XML 電文の試験・訓練配信の抑制', () => {
+  const payloadFor = (kind: number) => {
+    const p = buildBinaryPayload('IXAC41', buildSampleTelegram({ kind }), 'id-1', '2026-09-16T00:00:00Z')
+    if (!p) throw new Error('テスト用の BUFR を読めませんでした（テスト側の組み立てを確かめること）')
+    return p
+  }
+
+  // 正: 訓練等（0 以外）は、設定が無効なら流さない。
+  it('電文の種類が通常（0）以外なら、試験報の受信が無効のとき流さない', () => {
+    expect(isFilteredBinaryTelegram(payloadFor(1), false)).toBe(true)
+  })
+
+  // 対照: 通常の配信を止めてはいけない。これが無いと「常に true」でもテストが通る。
+  it('電文の種類が通常（0）なら流す', () => {
+    expect(isFilteredBinaryTelegram(payloadFor(0), false)).toBe(false)
+  })
+
+  // 安全弁: 検証用の設定を無視してはいけない。XML 側と同じ扱いにする。
+  it('試験報の受信が有効なら、通常（0）以外でも流す', () => {
+    expect(isFilteredBinaryTelegram(payloadFor(1), true)).toBe(false)
+  })
+
+  // 安全弁: XML 電文のペイロードは**型で**渡せない。
+  //
+  // かつては実行時に `kind` を見て `false`（流す）へ倒していたが、それは
+  // 「XML 電文を巻き込まない」と同時に「**将来増える二進電文も素通しする**」形だった
+  // （非 XML 電文は `test` フラグで見分けられないので、素通しは試験報が画面へ出ることを意味する）。
+  // いまは引数を `BinaryReplayPayload` に絞ってあり、**型検査が渡す側を止める**。
+  //
+  // `@ts-expect-error` は「エラーが出なければテストが落ちる」ので、
+  // **絞りが外れたらここで気づける**（実行はしないので中身の期待値は書かない）。
+  it('XML 電文のペイロードは型で渡せない', () => {
+    const xml = buildXmlPayload('VXSE45', EEW_XML)
+    expect(xml).not.toBeNull()
+    // @ts-expect-error 二進電文以外は渡せない（引数は `BinaryReplayPayload`）
+    const reject = () => isFilteredBinaryTelegram(xml!, false)
+    expect(typeof reject).toBe('function')
   })
 })

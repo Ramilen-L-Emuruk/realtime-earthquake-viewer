@@ -12,6 +12,36 @@ import type { ReplayEntry } from '../types/replay'
 import { DmdataApiKeyError } from '../utils/dmdataApiKey'
 import { log } from '../utils/logger'
 import { buildSampleTelegram } from '../test-utils/bufrBuild'
+import {
+  setDataApiGateIntervalForTest, resetDataApiGateForTest,
+  setApiGateIntervalForTest, resetApiGateForTest, resetRateLimitsForTest,
+} from './dmdataRequestGates'
+import { readArchiveBody, writeArchiveBody } from '../utils/archiveBodyCache'
+
+// **永続の控え（IndexedDB）はモックする。** 本物を通すと、テストごとに同じ URL を使う既存の
+// 70 件が「2 回目は取得しない」挙動になって壊れる。控え自身の振る舞いは
+// `utils/archiveBodyCache.test.ts` が `fake-indexeddb` で確かめている。
+vi.mock('../utils/archiveBodyCache', () => ({
+  readArchiveBody: vi.fn(async () => null),
+  writeArchiveBody: vi.fn(async () => {}),
+}))
+
+// **アーカイブ本体の取得も門（`services/dmdataRequestGates.ts`）を通る**ので、本番の 6 秒間隔のままでは
+// 1 件取るだけで既定のタイムアウト（5 秒）を超える。**門が効いているかは
+// `utils/requestGate.test.ts` が本物の間隔で確かめている**ので、ここでは 0 にして経路だけを見る。
+//
+// **トップレベルに置くのは、`describe` 内の `beforeEach` が兄弟の `describe` に届かないため。**
+// 待ち行列の持ち越しも切る（前のテストが残した待ちが次へ影響しないように）。
+beforeEach(() => {
+  setDataApiGateIntervalForTest(0)
+  resetDataApiGateForTest()
+  // 目録（`api.dmdata.jp/v2/archive`）の門も同じ理由で 0 にする。
+  setApiGateIntervalForTest(0)
+  resetApiGateForTest()
+  // **429 の窓も空にする。** 持ち越すと、前のテストが立てた窓で次のテストが取得を
+  // 見送り、症状が「なぜかそのテストだけ電文 0 件」になる。
+  resetRateLimitsForTest()
+})
 
 // 電文の読み取りが XML に一本化されたため DOMParser が要る。**環境ごと jsdom へ移さない**
 // ——このファイルの tar 生成は Blob.stream() と CompressionStream を使っており、jsdom の Blob は
@@ -125,6 +155,111 @@ function mockArchives(archives: Array<{ url: string; gz: Uint8Array | 'error' }>
     return { ok: true, arrayBuffer: async () => hit.gz as unknown as ArrayBuffer } as unknown as Response
   })
 }
+
+// アーカイブ本体（`data.api.dmdata.jp/v1/archive/:id`）が門を通ること。
+//
+// 配信元のレート表は電文本体（`/v1/:id`）とアーカイブ本体へ `rowspan` で 50req/5min を掛けており、
+// **「3 行それぞれ」とも「3 行の合計」とも読める**。合算として扱う判断をしたので、
+// **アーカイブ本体も電文本体と同じ門を共有する**（→ `services/dmdataRequestGates.ts`）。
+//
+// 門を通す前は素の `fetch` を `Promise.all` で**上限なく並列**に投げていた
+// （起動時の履歴は 7 日ぶん ＝ 瞬間 7req/s）。
+describe('アーカイブ本体の取得は門を通る', () => {
+  const originalFetch = globalThis.fetch
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    clearReplayCache()
+    setDataApiGateIntervalForTest(0)
+    // **モックの持ち越しを切る。** `mockResolvedValueOnce` が消費されないまま残ると、
+    // 次の describe のテストがそれを拾って別の結果になる（実際に 1 件巻き込んだ）。
+    vi.clearAllMocks()
+  })
+
+  // 正: 並列に投げても、門が間隔を空ける。
+  // **間隔は実時間で測る**（偽のタイマーでは門の `setTimeout` が進まない）。
+  it('並列に投げても間隔が空く', async () => {
+    const gz = await makeTarGz([
+      { name: 'telegrams.json', content: enc.encode(JSON.stringify([manifestEntry('a1', 'VXSE53')])) },
+      { name: 'a1.xml', content: enc.encode(quakeBody('石川県能登地方')) },
+    ])
+    const at: number[] = []
+    const base = mockArchives([
+      { url: 'https://data.api.dmdata.jp/v1/archive/d1', gz },
+      { url: 'https://data.api.dmdata.jp/v1/archive/d2', gz },
+    ])
+    globalThis.fetch = (async (input: string) => {
+      if (String(input).includes('/v1/archive/')) at.push(Date.now())
+      return base(String(input))
+    }) as unknown as typeof fetch
+
+    setDataApiGateIntervalForTest(60)
+    await fetchDmdataReplayEvents('key', FROM, TO, false)
+
+    expect(at.length).toBe(2)
+    // 門を通らなければ 2 件はほぼ同時（実測 1ms 未満）に飛ぶ。
+    expect(at[1] - at[0]).toBeGreaterThanOrEqual(50)
+  })
+
+  // 正: 取得したアーカイブは永続の控えへ書く。
+  // **これが無いとページを再読込するたびに同じ日を取り直す**（配信元が
+  // 「同じ id に対して短期間にリクエストを繰り返さないように」と求めている形）。
+  it('取得したアーカイブを永続の控えへ書く', async () => {
+    const gz = await makeTarGz([
+      { name: 'telegrams.json', content: enc.encode(JSON.stringify([manifestEntry('a1', 'VXSE53')])) },
+      { name: 'a1.xml', content: enc.encode(quakeBody('石川県能登地方')) },
+    ])
+    globalThis.fetch = mockArchives([
+      { url: 'https://data.api.dmdata.jp/v1/archive/d1', gz },
+    ]) as unknown as typeof fetch
+
+    await fetchDmdataReplayEvents('key', FROM, TO, false)
+
+    // **鍵は URL ではなく id。** クエリや基底が変われば同じアーカイブを別物として取り直す
+    expect(vi.mocked(writeArchiveBody)).toHaveBeenCalledWith('d1', expect.any(Uint8Array))
+  })
+
+  // 正: 控えから読めたら取得しない。
+  // **取得を失敗させたうえで成功することを見る** —— 控えを読んでいなければ電文が 1 通も出ない。
+  it('控えから読めたら取得しない', async () => {
+    const gz = await makeTarGz([
+      { name: 'telegrams.json', content: enc.encode(JSON.stringify([manifestEntry('a1', 'VXSE53')])) },
+      { name: 'a1.xml', content: enc.encode(quakeBody('石川県能登地方')) },
+    ])
+    vi.mocked(readArchiveBody).mockResolvedValueOnce(gz)
+    // 本体の取得は 500 を返す設定。控えが効かなければ取りこぼしになる
+    globalThis.fetch = mockArchives([
+      { url: 'https://data.api.dmdata.jp/v1/archive/d1', gz: 'error' },
+    ]) as unknown as typeof fetch
+
+    const res = await fetchDmdataReplayEvents('key', FROM, TO, false)
+
+    expect(res.entries.length).toBeGreaterThan(0)
+    expect(vi.mocked(writeArchiveBody)).not.toHaveBeenCalled()
+  })
+
+  // 対照: 控えから読めた分は門を通らない（通信しないので待つ理由がない）。
+  // これが無いと「常に待つ」実装でもテストが通り、同じ日を読み直すたびに待たされる。
+  it('控えから読めた分は待たない', async () => {
+    const gz = await makeTarGz([
+      { name: 'telegrams.json', content: enc.encode(JSON.stringify([manifestEntry('a1', 'VXSE53')])) },
+      { name: 'a1.xml', content: enc.encode(quakeBody('石川県能登地方')) },
+    ])
+    globalThis.fetch = mockArchives([
+      { url: 'https://data.api.dmdata.jp/v1/archive/d1', gz },
+    ]) as unknown as typeof fetch
+
+    // 1 回目で控えへ載せる（間隔 0 なので待たない）
+    setDataApiGateIntervalForTest(0)
+    await fetchDmdataReplayEvents('key', FROM, TO, false)
+
+    // 2 回目は控えから読むので、間隔を長くしても待たない
+    setDataApiGateIntervalForTest(5_000)
+    const started = Date.now()
+    await fetchDmdataReplayEvents('key', FROM, TO, false)
+
+    expect(Date.now() - started).toBeLessThan(1_000)
+  })
+})
 
 describe('fetchDmdataReplayEvents の耐障害性', () => {
   const originalFetch = globalThis.fetch
@@ -1129,6 +1264,163 @@ describe('fetchDmdataQuakeHistory', () => {
     const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
 
     expect(result.quakes.map(q => q.id.includes('20260809010000'))).toEqual([true, false])
+  })
+
+  // アーカイブ本体は 6 秒の門を通るので、**揃うまで待つと 7 日ぶんで 40 秒ちかく画面が空になる**
+  // （実測）。1 日ずつ落として、読めた日から `onPartial` へ流す。
+  describe('取れた日から順に反映する', () => {
+    // 正: 2 日ぶんのうち 1 日目を読み終えた時点で流れる。
+    // **`onPartial` の呼び出し回数ではなく「本体を全部落とし終える前に流れたか」を見る** ——
+    // 回数だけだと、`Promise.all` で揃えてから日ごとに流す形（＝直したかった形）でも通る。
+    it('本体を全部落とし終える前に流す', async () => {
+      const gz = await makeTarGz([
+        { name: 'telegrams.json', content: enc.encode(JSON.stringify([manifestEntry('h1', 'VXSE53')])) },
+        { name: 'h1.xml', content: enc.encode(historyBody('20260810120000', '2026-08-10T12:06:00+09:00')) },
+      ])
+      /** 何件目の本体を落としている時点で `onPartial` が呼ばれたか。 */
+      const partialAt: number[] = []
+      let downloaded = 0
+      const base = mockHistoryArchives([
+        { date: '2026-08-09', url: 'https://x/d09', gz },
+        { date: '2026-08-10', url: 'https://x/d10', gz },
+      ])
+      globalThis.fetch = (async (input: string) => {
+        if (String(input).startsWith('https://x/')) downloaded++
+        return base(String(input))
+      }) as unknown as typeof fetch
+
+      await fetchDmdataQuakeHistory(
+        'key', new Date('2026-08-10T23:00:00+09:00'), 50, 7, false,
+        () => { partialAt.push(downloaded) },
+      )
+
+      expect(downloaded).toBe(2)
+      // 2 件目を落とす前に 1 回は流れている（揃えてから流す形だと最小値が 2 になる）
+      expect(Math.min(...partialAt)).toBe(1)
+    })
+  })
+
+  // 429 の窓による見送りは「取得できなかった」ではない。**打てる手が違う**（取得の失敗は
+  // 再読み込み、こちらは窓が明けるまで待つ）ので、別の枠で数える。
+  describe('429 の窓による見送りは取得の失敗と分ける', () => {
+    /** 本体だけ 429 を返す（目録と当日経路は通す）。 */
+    function mock429(url: string) {
+      return vi.fn(async (input: string) => {
+        if (input.includes('/v2/archive?')) {
+          return {
+            ok: true,
+            json: async () => ({ status: 'ok', items: [{ classification: 'telegram.earthquake', date: '2026-08-10', url }] }),
+          } as unknown as Response
+        }
+        if (input.includes('/v2/telegram?')) {
+          return { ok: true, json: async () => ({ status: 'ok', items: [] }) } as unknown as Response
+        }
+        return { ok: false, status: 429 } as unknown as Response
+      })
+    }
+
+    // 正: 1 度 429 を受けたら窓が立ち、次は取りに行かず `rateLimitedSources` へ入る。
+    // **`failedArchiveUrls` へ入れてはいけない** —— 表示側がそれを読んで
+    // 「再読み込みで取得し直します」と案内するため、窓待ちには当たらない案内になる。
+    it('窓が立っているあいだは rateLimitedSources へ入り、failedArchiveUrls には入らない', async () => {
+      const url = 'https://data.api.dmdata.jp/v1/archive/rl1'
+      globalThis.fetch = mock429(url) as unknown as typeof fetch
+
+      // 1 回目: 配信元から 429 を受ける（ここは取得の失敗として数える）
+      const first = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T23:00:00+09:00'), 50, 7, false)
+      expect(first.failedArchiveUrls).toContain(url)
+      expect(first.rateLimitedSources).toEqual([])
+
+      // 2 回目: 窓が明けていないので投げずに見送る
+      clearReplayCache()
+      const second = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T23:00:00+09:00'), 50, 7, false)
+      expect(second.rateLimitedSources).toContain(url)
+      expect(second.failedArchiveUrls).not.toContain(url)
+    })
+
+    // 安全弁: 全部が見送りでも例外にしない。
+    // **全滅判定は認証切れ・全断を捕まえるためのもの**で、こちら側の意図的な待ちを混ぜると
+    // 窓が広いあいだ「取得に失敗した」として例外へ倒れ、取れていた分ごと捨てる。
+    it('全部が見送りでも例外にしない', async () => {
+      const url = 'https://data.api.dmdata.jp/v1/archive/rl2'
+      globalThis.fetch = mock429(url) as unknown as typeof fetch
+
+      await fetchDmdataQuakeHistory('key', new Date('2026-08-10T23:00:00+09:00'), 50, 7, false)
+      clearReplayCache()
+
+      // 窓が立った状態で呼び直す。この日以外の取得元は当日経路（電文なし）だけ
+      await expect(
+        fetchDmdataQuakeHistory('key', new Date('2026-08-10T23:00:00+09:00'), 50, 7, false),
+      ).resolves.toMatchObject({ rateLimitedSources: [url] })
+    })
+
+    // 安全弁: **失敗と見送りが混ざって「1 件も取れていない」ときは例外にする。**
+    //
+    // 分子（`failedArchiveUrls`）から見送りを外すだけでは足りない —— 分母（`usedDays`）は
+    // 見送った日も数えているので、そのままだと等号が成立せず**例外が飛ばない**。
+    // 認証切れ・全断を捕まえるための判定が握り潰され、「履歴 0 件の成功」に化ける。
+    it('失敗と見送りが混ざって 1 件も取れなければ例外にする', async () => {
+      const rlUrl = 'https://data.api.dmdata.jp/v1/archive/mix-rl'
+      const failUrl = 'https://data.api.dmdata.jp/v1/archive/mix-fail'
+      // **取得元を全部落とす。** 目録が返すのは 2 日ぶんで、残りの日は当日経路へ回るので、
+      // そちらも失敗させないと「全滅」にならない（当日経路が電文 0 件で成功すると、
+      // それは取得元として読めた日に数える）。
+      const mock = (rlStatus: number) => vi.fn(async (input: string) => {
+        if (String(input).includes('/v2/archive?')) {
+          return {
+            ok: true,
+            json: async () => ({
+              status: 'ok',
+              items: [
+                { classification: 'telegram.earthquake', date: '2026-08-10', url: rlUrl },
+                { classification: 'telegram.earthquake', date: '2026-08-09', url: failUrl },
+              ],
+            }),
+          } as unknown as Response
+        }
+        if (String(input).includes('/v2/telegram?')) return { ok: false, status: 500 } as unknown as Response
+        return { ok: false, status: String(input) === rlUrl ? rlStatus : 500 } as unknown as Response
+      })
+
+      // 1 回目: 429 と 500 をそれぞれ受ける（どちらも取得の失敗なので全滅）
+      globalThis.fetch = mock(429) as unknown as typeof fetch
+      await expect(
+        fetchDmdataQuakeHistory('key', new Date('2026-08-10T23:00:00+09:00'), 50, 7, false),
+      ).rejects.toThrow(/すべてを読み取れませんでした/)
+
+      // 2 回目: 429 側は窓で見送り、残りは取りに行って失敗する。
+      // **実質は 1 件も取れていない**ので、ここでも例外にならなければおかしい。
+      // 分母から見送りを引いていないと、等号が成立せず素通りする。
+      clearReplayCache()
+      await expect(
+        fetchDmdataQuakeHistory('key', new Date('2026-08-10T23:00:00+09:00'), 50, 7, false),
+      ).rejects.toThrow(/すべてを読み取れませんでした/)
+    })
+
+    // 対照: 429 以外の失敗では窓を置かない（次の操作で取り直してよい）。
+    it('429 以外の失敗では窓を置かない', async () => {
+      const url = 'https://data.api.dmdata.jp/v1/archive/rl3'
+      globalThis.fetch = vi.fn(async (input: string) => {
+        if (String(input).includes('/v2/archive?')) {
+          return {
+            ok: true,
+            json: async () => ({ status: 'ok', items: [{ classification: 'telegram.earthquake', date: '2026-08-10', url }] }),
+          } as unknown as Response
+        }
+        if (String(input).includes('/v2/telegram?')) {
+          return { ok: true, json: async () => ({ status: 'ok', items: [] }) } as unknown as Response
+        }
+        return { ok: false, status: 500 } as unknown as Response
+      }) as unknown as typeof fetch
+
+      await fetchDmdataQuakeHistory('key', new Date('2026-08-10T23:00:00+09:00'), 50, 7, false)
+      clearReplayCache()
+      const second = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T23:00:00+09:00'), 50, 7, false)
+
+      // 窓が立っていないので、2 回目も取りに行って失敗する
+      expect(second.failedArchiveUrls).toContain(url)
+      expect(second.rateLimitedSources).toEqual([])
+    })
   })
 
   // 打ち切りは正常系（`StrictMode` の二重実行・時間軸の切り替え・画面を離れた）。
