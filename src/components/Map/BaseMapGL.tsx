@@ -80,16 +80,17 @@ function addBathymetryLayer(map: MapLibreMap, opts: BathymetryLayerOptions): voi
 
 interface Props {
   showBathymetry: boolean
+  /** 録画モード。**海底地形の先読みはこのときだけ走る**（理由は下の先読みの effect）。 */
+  recording: boolean
 }
 
-export function BaseMapGL({ showBathymetry }: Props) {
+export function BaseMapGL({ showBathymetry, recording }: Props) {
   const map = useMapGL()
   const popupRef = useRef<PopupHandle | null>(null)
 
   useEffect(() => {
     if (!map) return
     let cancelled = false
-    const prefetchAbort = new AbortController()
     // 細線の下限ズームは視野の実距離で決まるため、ペインの寸法が変わるたび張り替える
     // （下の addOrderedLayer に渡す初期値と同じ関数を使う）。レイヤーは生成データの到着後に
     // 追加されるので、購読はここで先に張ってよい（無い間は飛ばされる）。
@@ -127,12 +128,6 @@ export function BaseMapGL({ showBathymetry }: Props) {
       visible: showBathymetry,
       minZoom: GEBCO_HIRES_MIN_ZOOM,
     })
-    // 日本の枠を高解像度まで、その外は世界全体を低ズームだけ、アイドル時にバックグラウンド先読み
-    // （範囲の決め方は gebcoPrefetch.ts）。初期表示（fitJapan）の通信と競合しないよう遅延なく
-    // 開始してよい（requestIdleCallback 経由でメインスレッドの空きを待つため即座には走らない）。
-    // 以後はタイルの有効期限に合わせて温め直すので、abort するまで動き続ける。
-    startBathymetryPrefetch(prefetchAbort.signal)
-
     // 陸地塗り・境界線は生成データ（遅延読込）の到着後に追加する。
     Promise.allSettled([loadPrefectures(), loadSubRegions()]).then(([prefRes, subRes]) => {
       if (cancelled) return
@@ -214,7 +209,6 @@ export function BaseMapGL({ showBathymetry }: Props) {
 
     return () => {
       cancelled = true
-      prefetchAbort.abort()
       unbindZoomRange()
       popupRef.current?.remove()
       popupRef.current = null
@@ -235,6 +229,32 @@ export function BaseMapGL({ showBathymetry }: Props) {
       if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', showBathymetry ? 'visible' : 'none')
     }
   }, [map, showBathymetry])
+
+  // 海底地形の先読みは**録画モードのときだけ**走らせる。
+  //
+  // 温めるのは 1 巡 1,911 枚（日本枠 569 ＋ 全球 1,342。実測値は `gebcoPrefetch.ts`）で、
+  // タイルの有効期限（1 時間）に合わせて巡回するため、据え置きで動かし続ける端末では
+  // **毎時その数のリクエストが配信元へ届く**。2 巡目以降は `If-None-Match` の再検証で
+  // 本体 0 バイトだが、リクエスト自体は到達する（＝アクセスログ・接続数としては数えられる）。
+  // **配信元に明記されたレート上限が無いことを「いくらでもよい」とは読まない**
+  // （CLAUDE.md「調査で外部 API を叩くとき」）。
+  //
+  // **止めると何が失われるか**: フィットした瞬間に海底地形が出ていない状態が数秒見える。
+  // **地震情報の読み取りには影響しない** —— 陸地塗り・県境・一次細分区域・震度の区域塗りは
+  // すべて生成データ（自サイト配信）なので、出ないのは海の下地だけ。その数秒が問題になるのは
+  // 動画を撮るときなので、録画モードに紐づけてある。
+  //
+  // **地図の初期化とは別の effect へ置く。** 同じ effect に入れると、録画モードを
+  // 切り替えるたびにレイヤーの追加までやり直すことになる。
+  useEffect(() => {
+    if (!map || !recording) return
+    // 初期表示（fitJapan）の通信と競合しないよう遅延なく開始してよい（requestIdleCallback
+    // 経由でメインスレッドの空きを待つため即座には走らない）。以後はタイルの有効期限に
+    // 合わせて温め直すので、abort するまで動き続ける。
+    const abort = new AbortController()
+    startBathymetryPrefetch(abort.signal)
+    return () => abort.abort()
+  }, [map, recording])
 
   return null
 }

@@ -178,15 +178,25 @@ for (const f of xmlFiles) {
 const histPath = path.join(WORK, 'p2p-history.json')
 const p2pCounts = {}
 if (fs.existsSync(histPath)) {
-  for (const [code, items] of Object.entries(JSON.parse(fs.readFileSync(histPath, 'utf8')))) {
-    p2pCounts[code] = items.length
-    for (const it of items) {
-      let ev = null
-      try { ev = M.convertEvent(it) } catch (e) { failed.push(`p2p ${code}: ${e.message}`); continue }
-      if (!ev) continue
-      const bk = `p2p:${ev.kind}`
-      if (!byKind.has(bk)) byKind.set(bk, new Map())
-      walk(ev, '', byKind.get(bk))
+  const hist = JSON.parse(fs.readFileSync(histPath, 'utf8'))
+  // **古い形（種別を直下に持つ）は読まない。** 読めてしまうと、取得が不完全だったことを伝える
+  // `meta.incomplete` が無いまま件数だけが通り、**0 件が「この種別は実配信に無い」の根拠に化ける**。
+  if (!hist?.codes) {
+    failed.push(`p2p-history.json が古い形です（fetch-p2p-history.mjs を再実行してください）: ${histPath}`)
+  } else {
+    // **取得が不完全だったことを引き継ぐ。** ここで拾わないと、下流の突き合わせレポートで
+    // 「集めたが 0 件」と「集められなかった」が区別できなくなる
+    if (hist.meta?.incomplete) failed.push(`P2PQuake: ${hist.meta.incomplete}`)
+    for (const [code, items] of Object.entries(hist.codes)) {
+      p2pCounts[code] = items.length
+      for (const it of items) {
+        let ev = null
+        try { ev = M.convertEvent(it) } catch (e) { failed.push(`p2p ${code}: ${e.message}`); continue }
+        if (!ev) continue
+        const bk = `p2p:${ev.kind}`
+        if (!byKind.has(bk)) byKind.set(bk, new Map())
+        walk(ev, '', byKind.get(bk))
+      }
     }
   }
 } else {

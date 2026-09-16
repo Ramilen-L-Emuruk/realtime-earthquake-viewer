@@ -102,6 +102,8 @@ npm run preview
 MIT License
 
 **データ・地図・フォントの出典**:
+- 地震情報・緊急地震速報・津波情報: 気象庁 — 配信は通常版が [P2PQuake API v2](https://www.p2pquake.net/)、DM-D.S.S 版が [DMDATA.JP](https://dmdata.jp/)
+- リアルタイム震度: [防災科学技術研究所 強震モニタ](https://www.kmoni.bosai.go.jp/) — 配信は [Yahoo!天気・災害](https://typhoon.yahoo.co.jp/weather/jp/earthquake/kyoshin/) 経由
 - 地図データ: 「気象庁 予報区等 GIS データ（都道府県・地震情報／細分区域・津波予報区）」
 - 震央地名: 気象庁「地震情報で用いる震央地名」「多言語辞書データ」 — データ整備: [0Quake/JMA_Region](https://github.com/0Quake/JMA_Region)（CC0 1.0）
 - 震度観測点の座標・読み: 気象庁「震度観測点一覧表」 — データ整備: [iku55 氏による JSON 化](https://gist.github.com/iku55/79005d1896631ad6117bbe327b8162c1)

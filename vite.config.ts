@@ -163,18 +163,21 @@ export default defineConfig(configEnv => ({
         navigateFallbackDenylist: isDmdss
           ? []
           : [/^\/realtime-earthquake-viewer\/dmdss(\/|$)/],
+        // **ここへ追記するときは、URL を正規表現リテラルで書くことに注意。**
+        // ソース上は `https:\/\/...` とエスケープされるため、`https://` を素の文字列として
+        // 探す走査には掛からない（外部への通信経路を数え上げる調査で実際に取りこぼした）。
+        //
+        // 地図タイルの CacheFirst 規則（`basemaps.cartocdn.com`）は初期実装の
+        // React-Leaflet + Carto Dark 時代の残りで、MapLibre へ移ったあとは叩く側が無かった
+        // ため外した（`package.json` に leaflet 依存は無く、地図は自前の GeoJSON 描画と
+        // GEBCO ラスタだけ）。GEBCO のタイルは配信元の `Cache-Control` に任せている。
+        //
+        // **既にあの規則でキャッシュを作った端末には `map-tiles` が残る。** `cleanupOutdatedCaches`
+        // が消すのはプリキャッシュだけで、`runtimeCaching` が作った独自の cacheName は誰も
+        // 消さない。ただし**読む側がもう居ないので実害は無い**（ディスクに残るだけ）ため、
+        // 後始末は入れていない。入れるなら Service Worker の `activate` で名指しで
+        // `caches.delete('map-tiles')` する形になる。
         runtimeCaching: [
-          {
-            urlPattern: /^https:\/\/[abc]\.basemaps\.cartocdn\.com\/.*/i,
-            handler: 'CacheFirst',
-            options: {
-              cacheName: 'map-tiles',
-              expiration: {
-                maxEntries: 1000,
-                maxAgeSeconds: 7 * 24 * 60 * 60,
-              },
-            },
-          },
           {
             urlPattern: /^https:\/\/api\.p2pquake\.net\/v2\/history.*/i,
             handler: 'NetworkFirst',

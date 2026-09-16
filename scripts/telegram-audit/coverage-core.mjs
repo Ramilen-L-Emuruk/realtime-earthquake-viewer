@@ -3,7 +3,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { HANDLED, assertRoots } from './handled.mjs'
-import { REPO } from './repo-root.mjs'
+import { REPO } from '../lib/repo-root.mjs'
 
 // 根のパスは `repo-root.mjs` が単一情報源。**このファイルは import した時点で
 // `TELEGRAM_AUDIT_DIR` を要求して throw する**ので、根だけが必要なモジュールを
