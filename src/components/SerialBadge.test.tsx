@@ -12,6 +12,7 @@ import { RealtimeTab } from './RealtimeTab'
 import { EarthquakeTab } from './EarthquakeTab'
 import { quakeEventKey } from '../utils/quakeMerge'
 import type { EEWAlert, JMAQuake, QuakeReportRecord } from '../types/earthquake'
+import { createEmptyTelegramLoss } from '../utils/telegramLoss'
 
 afterEach(cleanup)
 
@@ -70,6 +71,8 @@ const renderQuake = (quake: JMAQuake, selected = true) =>
       hasMore={false}
       onLoadMore={() => {}}
       error={null}
+      historyLoss={createEmptyTelegramLoss()}
+      loadMoreFailed={false}
       lpgmByEventId={new Map()}
       activeLpgmEventId={null}
       onToggleLpgm={() => {}}

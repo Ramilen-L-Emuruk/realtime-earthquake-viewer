@@ -727,6 +727,7 @@ export function App() {
 
   const {
     earthquakes, tsunamis, activeEEWs, lpgmByEventId, nankai, nankaiCommentary, kohatsu, quakeNotice, earthquakeCount, estimatedIntensity, connectionStatus, lastUpdate, isLoading, isLoadingMore, hasMore, error,
+    historyLoss, loadMoreFailed,
     telegramLog, clearTelegramLog,
     injectEvent, loadMoreEarthquakes,
     simulateEarthquake, simulateForeignQuake, simulateForeignQuakeHuge,
@@ -2034,6 +2035,8 @@ export function App() {
                 hasMore={hasMore}
                 onLoadMore={loadMoreEarthquakes}
                 error={error}
+                historyLoss={historyLoss}
+                loadMoreFailed={loadMoreFailed}
                 lpgmByEventId={lpgmByEventId}
                 activeLpgmEventId={activeLpgmEventId}
                 onToggleLpgm={toggleLpgmFromEarthquake}

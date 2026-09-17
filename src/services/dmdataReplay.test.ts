@@ -5,7 +5,23 @@
 // 丸ごと不可能になっていた。また目録（telegrams.json）が無いアーカイブは無言で
 // 捨てられ、「電文 0 件だが成功」に化けて原因が追えなかった。
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest'
-import { fetchDmdataReplayEvents, fetchDmdataQuakeHistory, clearReplayCache, clearArchiveCacheForTest, filterPreWindowEvents, isArchiveCacheable, MAX_HISTORY_DAYS } from './dmdataReplay'
+import {
+  fetchDmdataReplayEvents, fetchDmdataQuakeHistory, clearReplayCache, clearArchiveCacheForTest,
+  clearParseCachesForTest, filterPreWindowEvents, isArchiveCacheable, MAX_HISTORY_DAYS,
+} from './dmdataReplay'
+
+/**
+ * 控えを全部空にする。
+ *
+ * **本番の経路（`clearReplayCache()`）はアーカイブ本体もパース結果も捨てない** —— どちらも
+ * 内容に対して不変な鍵で引くため。テストは同じ URL・同じ id に違う中身を載せて使い回すので、
+ * ここで明示的に空にする。
+ */
+function clearAllCaches(): void {
+  clearReplayCache()
+  clearArchiveCacheForTest()
+  clearParseCachesForTest()
+}
 import { enumerateJstDates, MAX_ENUMERATED_DAYS } from './dmdataReplayLive'
 import type { JMATsunami, EEWAlert } from '../types/earthquake'
 import type { ReplayEntry } from '../types/replay'
@@ -239,8 +255,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
   let errors: string[]
 
   beforeEach(() => {
-    clearReplayCache()
-    clearArchiveCacheForTest()
+    clearAllCaches()
     warns = []
     errors = []
     vi.spyOn(console, 'warn').mockImplementation((...a: unknown[]) => { warns.push(a.join(' ')) })
@@ -249,8 +264,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
 
   afterEach(() => {
     globalThis.fetch = originalFetch
-    clearReplayCache()
-    clearArchiveCacheForTest()
+    clearAllCaches()
     vi.restoreAllMocks()
   })
 
@@ -847,27 +861,39 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     expect(warns.join('\n')).toMatch(/本体が見つからず/)
   })
 
-  it('head.time が不正な電文は警告を残してスキップする（Invalid Date を通さない）', async () => {
+  // かつては目録の時刻が読めないだけで落としていた（純粋な損失）。アーカイブ経路は本体が
+  // 既に手元にあるので、**追加リクエスト 0 で**ファイル名の受信時刻から救える。
+  it('正: 目録の発表時刻が読めなくても、本体のファイル名の受信時刻で救う', async () => {
     const gz = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('fffffff6', 'VXSE53', 'not-a-date')]) },
       { name: 'fffffff6_20260810120500000_0.xml', content: quakeBody('日向灘') },
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false)
+    const result = await fetchDmdataReplayEvents('key', FROM, TO, false)
 
-    expect(entries).toHaveLength(0)
-    expect(warns.join('\n')).toMatch(/head\.time/)
+    expect(result.entries).toHaveLength(1)
+    // 救えたものを取りこぼしに数えない
+    expect(result.skipped).toBe(0)
+    // 補ったことは残す（目録が壊れている事実は消えていない）
+    expect(warns.join('\n')).toMatch(/ファイル名から補った/)
   })
 
   // new Date(null) は Invalid Date ではなく 1970-01-01 を返す。数値チェックだけだと
   // すり抜けて、直後の「範囲外なら continue」に古い電文として無言で吸収される。
-  it('head.time が null の電文も警告を残してスキップする（1970年に化けさせない）', async () => {
+  //
+  // **この電文には本体が無い**（`nulltime` に対応する .xml/.bin がアーカイブに入っていない）ので、
+  // ファイル名からの補いも効かない ＝ 対照として「どちらも読めなければ落とす」を押さえている。
+  //
+  // **`originalId` は持たせない。** あれは JSON 版の印（値は元の XML エントリの id を指すので、
+  // 自分自身の id と同じにはならない）で、持たせると正常な重複排除で落ちてしまい
+  // 「時刻が読めないから落ちた」ことを確かめられない。
+  it('対照: 発表時刻も受信時刻も読めなければスキップする（1970年に化けさせない）', async () => {
     const gz = await makeTarGz([
       {
         name: 'telegrams.json',
         content: JSON.stringify([
-          { id: 'nulltime', originalId: 'nulltime', classification: 'telegram.earthquake', head: { type: 'VXSE53', time: null, test: false } },
+          { id: 'nulltime', classification: 'telegram.earthquake', head: { type: 'VXSE53', time: null, test: false } },
           manifestEntry('jjjjjjj0'),
         ]),
       },
@@ -879,7 +905,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
 
     expect(result.entries).toHaveLength(1)
     expect(result.skipped).toBe(1)
-    expect(warns.join('\n')).toMatch(/head\.time/)
+    expect(warns.join('\n')).toMatch(/発表時刻も受信時刻も読めない/)
   })
 
   it('対象外の種別は警告を出さない（正常運転でログを埋めない）', async () => {
@@ -1144,11 +1170,10 @@ describe('fetchDmdataQuakeHistory', () => {
     ])
   }
 
-  beforeEach(() => { clearReplayCache(); clearArchiveCacheForTest() })
+  beforeEach(() => { clearAllCaches() })
   afterEach(() => {
     globalThis.fetch = originalFetch
-    clearReplayCache()
-    clearArchiveCacheForTest()
+    clearAllCaches()
     vi.restoreAllMocks()
   })
 
@@ -1630,6 +1655,199 @@ describe('fetchDmdataQuakeHistory', () => {
       .rejects.toThrow(DmdataApiKeyError)
     expect(fetchSpy).not.toHaveBeenCalled()
   })
+
+  // 「もっと見る」は遡る日数を伸ばして呼び直す形なので、押すたびに既に読んだ日の目録と電文も
+  // 解析し直していた（上限まで押すと日ごとの解析が累計 311 日ぶん＝実日数 59 日の約 5 倍）。
+  //
+  // **控えが効いていることは同一参照で確かめる。** 解析し直せば別のオブジェクトになるので、
+  // 「同じ中身が返る」では区別が付かない。
+  describe('二度目の取得は控えから返す', () => {
+    const BEFORE = new Date('2026-08-10T13:00:00+09:00')
+
+    it('正: 日数を伸ばして呼び直しても、同じ日の電文を解析し直さない', async () => {
+      const gz = await dayArchive([
+        { id: 'ccccccc1', eventId: '20260810030000', time: '2026-08-10T12:05:00+09:00' },
+      ])
+      globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
+
+      const first = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+      const second = await fetchDmdataQuakeHistory('key', BEFORE, 100, 14, false)
+
+      expect(first.quakes).toHaveLength(1)
+      expect(second.quakes).toHaveLength(1)
+      expect(second.quakes[0]).toBe(first.quakes[0])
+    })
+
+    // **リプレイの開始（`clearReplayCache()`）では捨てない。** 捨てるのはテスト専用の
+    // `clearParseCachesForTest()` だけ（内容に対して不変な鍵で引くため）。
+    it('対照: 控えを捨てれば解析し直す', async () => {
+      const gz = await dayArchive([
+        { id: 'ccccccc2', eventId: '20260810030000', time: '2026-08-10T12:05:00+09:00' },
+      ])
+      globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
+
+      const first = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+      clearAllCaches()
+      const second = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+
+      expect(second.quakes[0]).not.toBe(first.quakes[0])
+      expect(second.quakes[0].id).toBe(first.quakes[0].id)
+    })
+
+    // **リプレイの開始で捨ててはいけない。** 鍵は内容に対して不変なので捨てる正当性が無く、
+    // 捨てると「同じ日を何度も再生し直す」使い方でそのたびに解析し直す。
+    // `clearReplayCache()` へ戻す変更が入ったとき、ここで止まる。
+    it('安全弁: リプレイの開始（clearReplayCache）では捨てない', async () => {
+      const gz = await dayArchive([
+        { id: 'ccccccc3', eventId: '20260810030000', time: '2026-08-10T12:05:00+09:00' },
+      ])
+      globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
+
+      const first = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+      clearReplayCache()
+      const second = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+
+      expect(second.quakes[0]).toBe(first.quakes[0])
+    })
+
+    // 控えるのは**実際に解析した分だけ**。打ち切りで読まなかった日の地震は控えに乗らないので、
+    // 目標件数を増やした 2 度目にはちゃんと読まれる（控えが打ち切りの意味を変えないこと）。
+    it('安全弁: 打ち切りで読まなかった日は、目標を増やせば読める', async () => {
+      const newer = await dayArchive([
+        { id: 'ddddddd1', eventId: '20260810030000', time: '2026-08-10T12:05:00+09:00' },
+      ])
+      const older = await dayArchive([
+        { id: 'eeeeeee1', eventId: '20260809030000', time: '2026-08-09T12:05:00+09:00' },
+      ])
+      globalThis.fetch = mockHistoryArchives([
+        { date: '2026-08-10', url: 'https://x/d10', gz: newer },
+        { date: '2026-08-09', url: 'https://x/d09', gz: older },
+      ]) as unknown as typeof fetch
+
+      const first = await fetchDmdataQuakeHistory('key', BEFORE, 1, 7, false)
+      expect(first.quakes).toHaveLength(1)
+
+      const second = await fetchDmdataQuakeHistory('key', BEFORE, 2, 7, false)
+      expect(second.quakes).toHaveLength(2)
+      // 1 度目に読んだ側は控えから返る
+      expect(second.quakes.some(q => q === first.quakes[0])).toBe(true)
+    })
+
+    // 失敗を控えると、警告も取りこぼしの件数も 1 度目しか出なくなる。実運用では 0 件なので、
+    // 解析し直させても費用はかからない。
+    it('安全弁: 解析に失敗した電文は控えないので、二度目も取りこぼしに数える', async () => {
+      const gz = await makeTarGz([
+        {
+          name: 'telegrams.json',
+          content: JSON.stringify([manifestEntry('fffffff1', 'VXSE53', '2026-08-10T12:05:00+09:00')]),
+        },
+        { name: 'fffffff1_20260810030500000_0.xml', content: '<Report><これは XML ではない' },
+      ])
+      globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
+
+      const first = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+      const second = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+
+      expect(first.skipped).toBe(1)
+      expect(second.skipped).toBe(1)
+    })
+  })
+
+  // 目録の発表時刻が読めない電文を、アーカイブ本体のファイル名（17 桁の受信時刻）で救う。
+  // 追加リクエストは 0 件。当日経路には同じ補いを置けない（本体を取る前に判定するため）。
+  describe('目録の発表時刻が読めないとき', () => {
+    /**
+     * 目録の時刻だけを壊した 1 日ぶん。
+     *
+     * @param fileStamp 本体のファイル名に埋める 17 桁（UTC）。受信時刻として読まれる
+     */
+    async function brokenTimeArchive(manifestTime: unknown, fileStamp: string) {
+      return makeTarGz([
+        {
+          name: 'telegrams.json',
+          content: JSON.stringify([
+            {
+              id: 'ggggggg1',
+              classification: 'telegram.earthquake',
+              head: { type: 'VXSE53', time: manifestTime, test: false },
+            },
+          ]),
+        },
+        {
+          name: 'ggggggg1_' + fileStamp + '_0.xml',
+          content: historyBody('20260810030000', '2026-08-10T12:05:00+09:00'),
+        },
+      ])
+    }
+
+    it('正: 本体のファイル名の受信時刻で救う', async () => {
+      // 03:05Z ＝ JST 12:05。指定時刻（JST 13:00）より前なので採る
+      const gz = await brokenTimeArchive('not-a-date', '20260810030500000')
+      globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
+
+      const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T13:00:00+09:00'), 50, 7, false)
+
+      expect(result.quakes).toHaveLength(1)
+      expect(result.skipped).toBe(0)
+    })
+
+    // 受信時刻は発表時刻以降なので、境界では**採らない側**（安全側）へ倒れる。
+    it('安全弁: 救った受信時刻でも窓の判定をする（指定時刻より後なら採らない）', async () => {
+      // 12:05Z ＝ JST 21:05。指定時刻（JST 13:00）より後
+      const gz = await brokenTimeArchive('not-a-date', '20260810120500000')
+      globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
+
+      const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T13:00:00+09:00'), 50, 7, false)
+
+      expect(result.quakes).toHaveLength(0)
+      // 窓の外なのは正常。取りこぼしには数えない
+      expect(result.skipped).toBe(0)
+    })
+
+    // 「もっと見る」もリプレイの先読みも同じ日を何度も走査するので、控えないと押した回数だけ
+    // 同じ行が並び、他の異常が埋もれる。**黙らせるのではなく、2 度目は控えから返す。**
+    it('安全弁: 同じ電文について警告を繰り返さない', async () => {
+      const warns: string[] = []
+      vi.spyOn(console, 'warn').mockImplementation((...a: unknown[]) => { warns.push(a.join(' ')) })
+      const gz = await brokenTimeArchive('not-a-date', '20260810030500000')
+      globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
+      const before = new Date('2026-08-10T13:00:00+09:00')
+
+      await fetchDmdataQuakeHistory('key', before, 50, 7, false)
+      await fetchDmdataQuakeHistory('key', before, 100, 14, false)
+
+      const filled = warns.filter(w => w.includes('ファイル名から補った'))
+      expect(filled).toHaveLength(1)
+    })
+
+    // `new Date(null)` は Invalid Date ではなく 1970-01-01 を返す。素通しさせると
+    // 窓の判定に「ただの古い電文」として無言で吸収される。
+    it('対照: 本体が見つからなければ落として取りこぼしに数える', async () => {
+      const gz = await makeTarGz([
+        {
+          name: 'telegrams.json',
+          content: JSON.stringify([
+            {
+              id: 'hhhhhhh1',
+              classification: 'telegram.earthquake',
+              head: { type: 'VXSE53', time: null, test: false },
+            },
+          ]),
+        },
+        // 対応する本体が無い（id の先頭 7 文字を含むファイルが 1 つも無い）
+        {
+          name: 'zzzzzzz9_20260810030500000_0.xml',
+          content: historyBody('20260810030000', '2026-08-10T12:05:00+09:00'),
+        },
+      ])
+      globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
+
+      const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T13:00:00+09:00'), 50, 7, false)
+
+      expect(result.quakes).toHaveLength(0)
+      expect(result.skipped).toBe(1)
+    })
+  })
 })
 
 describe('filterPreWindowEvents の津波', () => {
@@ -1843,14 +2061,13 @@ describe('アーカイブ本体の控えは開始をまたいで残る', () => {
   const originalFetch = globalThis.fetch
   const URL_A = 'https://x/a'
 
-  beforeEach(() => {
-    clearReplayCache()
-    clearArchiveCacheForTest()
-  })
+  // **パース結果の控えもここで空にする。** 目録の控えは `clearReplayCache()` では消えないので、
+  // この describe の各 `it` は同じ URL・同じ作り物の id を使い回すぶん、残すと 1 件目が入れた
+  // 目録を 2 件目以降が引く。いまは fixture の中身が同じなので揃って通っているだけ。
+  beforeEach(() => { clearAllCaches() })
   afterEach(() => {
     globalThis.fetch = originalFetch
-    clearReplayCache()
-    clearArchiveCacheForTest()
+    clearAllCaches()
     vi.restoreAllMocks()
   })
 

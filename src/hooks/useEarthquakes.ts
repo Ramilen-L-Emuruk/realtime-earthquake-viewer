@@ -10,6 +10,9 @@ import { DmdataWebSocket, fetchDmdataActiveEews } from '../services/dmdata'
 // 履歴の取得はリプレイ開始時の復元と実装を共有する（→ `data-sources-spec.md` §2
 // 「大量に取るならアーカイブを使う」）。同じ目的の実装を 2 本持たない。
 import { fetchDmdataQuakeHistory, MAX_HISTORY_DAYS } from '../services/dmdataReplay'
+import {
+  type TelegramLoss, createEmptyTelegramLoss, telegramLossFrom, isTelegramLossEmpty,
+} from '../utils/telegramLoss'
 import { mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes, extractQuakeEventId, quakeEventKey, coalesceByEventId, findExistingQuakeCard, isRetractedQuakeReport, quakeRetractionOf, addQuakeRetraction } from '../utils/quakeMerge'
 import type { QuakeRetraction } from '../utils/quakeMerge'
 import { loadStationCoords, onStationCoordsLoaded, buildAreaPrefIndex, getAreaPrefIndexCache } from '../utils/stationCoords'
@@ -401,6 +404,33 @@ export interface EarthquakeState {
   isLoadingMore: boolean
   hasMore: boolean
   error: string | null
+  /**
+   * 履歴取得で読めなかった取得元・取り込めなかった電文。**DMDSS 版限定。**
+   *
+   * 履歴取得は例外を投げずに一部の失敗を吸収するため、`error` は立たない。**画面には取れた分の
+   * カードだけが出て、失敗は何も出ない**状態だった。取得元が「日」単位になったぶん、1 日落ちれば
+   * 失う電文は多い（実測 2026-09-15: 起動時の電文本体 85 件のうち 81 件が 429 で失敗し、
+   * 4 件しか出ていなかった）。
+   *
+   * **取得のたびに置き換える（積まない）。** あの取得は毎回「その時点の全範囲」を走査して
+   * 数え直すので、積むと同じ損失を回数だけ数え、取得が回復しても消えない
+   * （→ `utils/telegramLoss.ts` の表）。
+   *
+   * **標準版（P2PQuake）では常に空。** あちらの履歴取得は「全部取れたか全滅か」で、部分的な
+   * 損失という概念を持たない（失敗は `error` へ落ちる）。**空であることは「欠けていない」ことの
+   * 保証ではない。**
+   *
+   * 空へ戻すのは接続をやり直すときだけ。契機は下の接続 effect の依存が単一情報源で、
+   * API キーの変更・試験報の受信設定の切り替え・リプレイの開始と終了が含まれる。
+   */
+  historyLoss: TelegramLoss
+  /**
+   * 直近の「もっと見る」がまるごと失敗したか。**両バリアント共通。**
+   *
+   * **`historyLoss` とは別に持つ。** こちらは押し直せば回復しうるもので、遡る日数も押す前の値へ
+   * 戻してある。次に成功したら消す。
+   */
+  loadMoreFailed: boolean
   telegramLog: TelegramLogEntry[]
 }
 
@@ -445,6 +475,8 @@ export function useEarthquakes(
     isLoadingMore: false,
     hasMore: false,
     error: null,
+    historyLoss: createEmptyTelegramLoss(),
+    loadMoreFailed: false,
     telegramLog: [],
   })
 
@@ -1487,6 +1519,13 @@ export function useEarthquakes(
     liveGenerationRef.current++
     // 遡り幅も初期値へ戻す（戻さないと、接続を張り直すたびに余計に遡る）
     historyDaysRef.current = HISTORY_INITIAL_DAYS
+    // 履歴の損失もここで空へ戻す。**これから読み直す範囲の話**なので、前の接続で欠けた分を
+    // 持ち越すと直っても表示が消えない。遡り幅と同じ同期ブロックで戻す。
+    setState(prev => (
+      isTelegramLossEmpty(prev.historyLoss) && !prev.loadMoreFailed
+        ? prev
+        : { ...prev, historyLoss: createEmptyTelegramLoss(), loadMoreFailed: false }
+    ))
 
     // VAR-1: リプレイ中はライブ接続を止める（両バリアント共通）。過去の電文を流している最中に
     // 現在時刻のライブ更新が混ざると、再生時刻より未来の地震がカードに並んで実際の経過を追えない。
@@ -1628,6 +1667,13 @@ export function useEarthquakes(
             isLoading: false,
             hasMore: history.hasMore,
             error: null,
+            // **一部が読めなかったことは画面へ出す。** ここへ来るのは「全滅しなかった」
+            // ときだけで、`error` は立たない。出さないと「取れた分だけのカード」が
+            // 「これが最新の地震情報のすべて」に見える。
+            //
+            // **積まずに置き換える。** この取得は毎回「その時点の全範囲」を走査して数え直す
+            // （→ `utils/telegramLoss.ts` の表）。
+            historyLoss: telegramLossFrom(history.skipped, history.failedArchiveUrls),
           }))
           // 発表中の津波は画面にも見せる。**設定を尊重するかどうかは受け取る側が決める**
           // （`tsunamiPriorityDefault`）——その設定は「津波発表中はどのタブを既定にするか」を
@@ -1968,6 +2014,14 @@ export function useEarthquakes(
             ...prev,
             earthquakes: merged,
             lpgmByEventId,
+            // 初回ロードと同じく置き換える。**ここが積む形だと 2 つの症状が出る** ——
+            // ①恒久的に壊れた 1 通を押した回数だけ数える（解析の失敗は控えないので毎回数える）
+            // ②アーカイブの取得が回復しても損失が消えない（失敗した取得は `archiveCache` から
+            // 外れて再試行され、429 なら普通に回復する）。範囲は伸びるだけで縮まないので、
+            // 今回の結果は前回の範囲を包含する。
+            historyLoss: telegramLossFrom(history.skipped, history.failedArchiveUrls),
+            // 押し直せば回復しうる側の表示は、成功したので消す
+            loadMoreFailed: false,
             // **打ち切るのは「これ以上遡れない」ときだけ。** 増えたかどうかでは判定しない ——
             // 1 週間まるごと震度1以上の地震が無いことは普通に起きるが、それは
             // 「もっと古い在庫が無い」ことを何も意味しない（実測でアーカイブの目録は
@@ -1988,6 +2042,8 @@ export function useEarthquakes(
           ...prev,
           earthquakes: mergeQuakeHistory(events, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache()),
           hasMore: events.length === LOAD_MORE_BATCH,
+          // 成功したので、押し直せば回復しうる側の表示は消す（DMDSS 版と揃える）
+          loadMoreFailed: false,
         }))
       }
     } catch (err) {
@@ -2003,6 +2059,9 @@ export function useEarthquakes(
       // 触らない）。ユーザーが再度押せる状態に戻すだけなので、理由はログに残す。
       log.error('[data] 地震履歴の追加読み込みに失敗', err)
       historyDaysRef.current = daysBeforeThisClick
+      // **画面にも出す。** 出さないと「押したのに何も起きない」だけに見え、もう一度押せば
+      // 直るのか、これ以上遡れないのかが分からない。遡り幅は上で戻したので押し直せる。
+      setState(prev => ({ ...prev, loadMoreFailed: true }))
     } finally {
       // **「取得中」の解除は抜け道を作らず、必ずここで行う。**
       // 成功パスの `setState` の中に混ぜていた頃は、`stale()` での早期 return だけが解除を
@@ -2383,6 +2442,11 @@ export function useEarthquakes(
       // になり、押すと `loadMoreEarthquakes` が**ライブの最新履歴**を取りに行って、再生時刻より
       // 未来の地震がカードに並ぶ。ライブへ戻る側は履歴の取得完了時に立て直すので落としてよい。
       hasMore: false,
+      // 履歴の損失も落とす。**再生中はリプレイ側が自分の損失を出す**ので、ライブで欠けた分を
+      // 残すと同じ画面に 2 つの損失が並び、どちらの話か読めない。ライブへ戻る側は履歴の取得
+      // 完了時に立て直すので落としてよい（`hasMore` と同じ理由）。
+      historyLoss: createEmptyTelegramLoss(),
+      loadMoreFailed: false,
     }))
     eventQueueRef.current.clear()
     quakeIntensityCacheRef.current.clear()
