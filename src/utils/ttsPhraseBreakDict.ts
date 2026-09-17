@@ -128,6 +128,45 @@ function indexOfStandalone(text: string, key: string): number {
 }
 
 /**
+ * 数字で始まる鍵か（`0時`・`17日`・`27分頃`）。**前が数字なら一致させない**ために使う。
+ *
+ * 曖昧なもの（日付か期間かで読みが変わる「1日」）は辞書に置かず、生成側で読みを確定させる
+ * （`ttsText` の `speakableDay`）。辞書は文字列しか見ないので、曖昧なものを入れると文脈を
+ * 見誤り、境界の条件を足し続けることになる。残ったこれらの鍵に期間の用法は無い
+ * （「0分程度」「0時間」とは言わない）ので、**見るのは前だけでよい**。
+ *
+ * 分は読み上げ文では「N分頃」、実電文の見出し文では「N分現在の、…」（津波観測情報）の形で出る。
+ * 前者は連濁（`ゴロ`）が落ちないよう「頃」まで鍵に含めるが、後者まで鍵にすると助詞の「の」が
+ * 独立したアクセント句になって浮く（実測）。そこで**数字の部分だけを鍵にし、後続で絞る**。
+ */
+const NUMERIC_KEY = /^[0-9]{1,2}(?:日|時|分|分頃|分ころ)$/
+
+/**
+ * 数字で始まる鍵が、前が数字でない位置に現れる最初の位置を返す。無ければ -1。
+ *
+ * **前が数字なら一致させない。** `0時` は `10時` `20時` の 2 文字目にも現れ、そのままだと
+ * 「イチ／レイジ」と読まれる（実際に起きた）。`0分` も `10分`〜`50分` で同じ。
+ *
+ * **`17日` のような 2 桁の鍵にも同じガードを掛ける。** `117日` の 2 文字目に当たると
+ * 「イチ｜ジュウシチニチ」と数値そのものを割って読む。いまは `normalizeDateTimeForSpeech`
+ * が 3 桁以上の数字を半角化しないので届かないが、**別々の正規表現が暗黙に支え合う形**に
+ * なるのを避ける。
+ *
+ * {@link indexOfStandalone} と同じく、**分割後の断片では「直前の文字」が失われる**。
+ * いまの読み上げ文では数字の直前に必ず「日」「時」が挟まるので実害は無いが、
+ * この判定を使う鍵を増やすときは見直すこと。
+ */
+function indexOfNumericKey(text: string, key: string): number {
+  for (let from = 0; from <= text.length - key.length; ) {
+    const index = text.indexOf(key, from)
+    if (index < 0) return -1
+    if (!/[0-9０-９]/.test(charBefore(text, index))) return index
+    from = index + 1
+  }
+  return -1
+}
+
+/**
  * `index` の直前・直後の 1 文字を返す（範囲外なら空文字）。
  *
  * `text[i]` ではなくコードポイント単位で取るのは、拡張漢字（U+10000 以降）がサロゲートペアで
@@ -149,7 +188,8 @@ function charAfter(text: string, index: number): string {
 /**
  * テキスト内に辞書のキーが含まれるか調べ、最初に出現する位置のものを返す。
  * 複数キーが同じ位置から始まる場合は長い方を優先する。見つからなければ null。
- * 単独語キー（{@link isStandaloneKey}）は地名の一部になっている出現を飛ばす。
+ * 単独語キー（{@link isStandaloneKey}）は地名の一部になっている出現を飛ばし、
+ * 数字で始まる鍵（{@link NUMERIC_KEY}）は前が数字でない位置だけを拾う。
  */
 export function findPhraseBreakMatch(
   text: string,
@@ -157,7 +197,9 @@ export function findPhraseBreakMatch(
 ): { key: string; index: number } | null {
   let best: { key: string; index: number } | null = null
   for (const key of Object.keys(dict)) {
-    const index = isStandaloneKey(key) ? indexOfStandalone(text, key) : text.indexOf(key)
+    const index = NUMERIC_KEY.test(key)
+      ? indexOfNumericKey(text, key)
+      : isStandaloneKey(key) ? indexOfStandalone(text, key) : text.indexOf(key)
     if (index < 0) continue
     if (best == null || index < best.index || (index === best.index && key.length > best.key.length)) {
       best = { key, index }

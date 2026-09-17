@@ -323,4 +323,181 @@ describe('電文本文の語（実データの辞書で引く）', { timeout: 15
       findPhraseBreakMatch('プレート境界付近を震源とする深部低周波地震（微動）', dict)?.key,
     ).toBeUndefined()
   })
+
+  // 「心配は」「影響は」「ものは」（名詞＋係助詞）と述語「ありません」が 1 アクセント句へ融合する
+  // （実測: `シンパイワアリマセン` accent=9・10 モーラ）。読みそのものは正しいので誤読の判定には
+  // 掛からないが、文節の切れ目が消えて一息に上がりきる抑揚になる。読点を挟めばエンジン自身も
+  // `シンパイワ`（accent=5）と `アリマセン`（accent=4）に割るので、その形を辞書で固定する。
+  //
+  // 融合はエンジンの癖で**名詞を問わない**（「被害は」「変化は」「異常は」でも同じ）。それでも鍵を
+  // 「はありません」へ広げてはいけない。広げると切り出されるのは係助詞から始まる「ワアリマセン」で、
+  // 名詞から係助詞が剥がれて元より悪くなる。読み上げに乗る語形だけを、その形のまま収録する。
+  //
+  // 既知の限界: 鍵は部分一致なので「心配はありませんが、」のように後ろが続く形にも当たり、
+  // 「アリマセン」と「ガ」が別の句へ割れる（この 3 つに固有の話ではなく、部分一致で切り出す鍵は
+  // どれも同じ）。`public/data/historical-archives/*.json` と `src/data/*.json` を走査したところ、
+  // 現れる「ありません」767 件はすべて句点で終わっており、この形は無い。
+  it('「〜はありません」は名詞と述語の境界で割る', async () => {
+    const { findPhraseBreakMatch, isPlaceNameKey, dict } = await loadedRealDictModule()
+
+    // 正: 読み上げに乗る 3 つの形（津波区分「なし」／遠地地震の固定付加文／地震回数）
+    expect(findPhraseBreakMatch('この地震による津波の心配はありません。', dict)?.key)
+      .toBe('心配はありません')
+    expect(findPhraseBreakMatch('この地震による日本への津波の影響はありません。', dict)?.key)
+      .toBe('影響はありません')
+    expect(findPhraseBreakMatch('このうち、震度1以上を観測したものはありません。', dict)?.key)
+      .toBe('ものはありません')
+
+    // 正: 津波区分「若干の海面変動」の文も同じ鍵で当たる（実電文にある「被害の心配はありません」）
+    expect(
+      findPhraseBreakMatch('この地震による若干の海面変動が予想されますが、被害の心配はありません。', dict)?.key,
+    ).toBe('心配はありません')
+
+    // 対照: 語形が崩れた出現には当たらない。鍵は「名詞＋係助詞＋述語」の形のまま持つ
+    expect(findPhraseBreakMatch('津波の心配について', dict)?.key).toBeUndefined()
+    expect(findPhraseBreakMatch('日本への津波の影響について', dict)?.key).toBeUndefined()
+    expect(findPhraseBreakMatch('震度1以上を観測したものは1回です', dict)?.key).toBeUndefined()
+
+    // 安全弁: 述語側だけを鍵にしない（上のコメントの理由で、入れた瞬間に 3 つとも悪化する）
+    expect(Object.keys(dict)).not.toContain('ありません')
+    expect(Object.keys(dict)).not.toContain('はありません')
+
+    // 安全弁: 地名ではないので鍵の直後にポーズを挟まない（_terms に列挙する）
+    for (const key of ['心配はありません', '影響はありません', 'ものはありません']) {
+      expect(isPlaceNameKey(key), `「${key}」は地名ではない`).toBe(false)
+    }
+  })
+
+  // 日付も「17日」→ `ジュウ[2] | シチニチ[2]` のように 2 つのアクセント句へ割れる。ただし
+  // **1 句へまとめてはいけない。** VOICEVOX は「核が 1 モーラ目なら頭高、2 モーラ目以降なら
+  // 頭は低い」という規則で鳴らすので、`ニジュウ[1]`（頭高）で始まる語を 1 句へ繋いだ瞬間に
+  // 頭が低くなる（実測: 186 件中 95 件で反転した）。**句の割り方はエンジンに任せ、核だけ直す。**
+  //
+  // 後半の核は末尾へ置く。単独の「N日」がどれも末尾核であることに合わせた
+  // （`1日`=イチニチ[4]・`2日`=フツカ[3]・`9日`=ココノカ[4]）。
+  //
+  // **「1日」「0時」「0分」は誤読**（`イチニチ`・`ゼロジ`・`ゼロフン`）。日付の「1日」は「ついたち」。
+  // **24日は鍵を置かない**（`ニジュウ[1] | ヨッカ[3]` で「ヨッカ」に「日」が溶けている）。
+  // **時刻と裸の分も鍵を置かない** —— エンジンの核がそのまま正しい。
+  it('日付は句の割り方を変えず、核だけ直す', async () => {
+    const { findPhraseBreakMatch, isPlaceNameKey, dict } = await loadedRealDictModule()
+
+    // 正: アプリが組む読み上げ文の形（ttsText の formatDayTime / formatCountSpanForSpeech）
+    expect(findPhraseBreakMatch('17日3時10分頃、', dict)?.key).toBe('17日')
+    expect(findPhraseBreakMatch('16日4時から', dict)?.key).toBe('16日')
+    // 値は 2 句のまま（`/` で繋ぐ）。1 句へまとめない
+    expect(dict['17日']).toContain('/')
+    expect(dict['21日']).toContain('/')
+
+    // 正: 分は「頃」「ころ」まで鍵に含める（切ると連濁が落ちて「ころ」に化ける）
+    expect(findPhraseBreakMatch('3時27分頃、', dict)?.key).toBe('27分頃')
+    expect(findPhraseBreakMatch('1時25分ころ、地震がありました', dict)?.key).toBe('25分ころ')
+
+    // 対照: **曖昧な鍵は辞書に置かない。** 「1日」は日付なら「ついたち」、期間なら「いちにち」で
+    // 読みが変わるが、辞書は文字列しか見ないので区別できない。アプリは `d.getDate()` から作って
+    // いて日付だと確定しているので、生成側で読みへ直す（`ttsText` の `speakableDay`）
+    expect(Object.keys(dict), '「1日」は辞書に置かない').not.toContain('1日')
+    expect(findPhraseBreakMatch('今後1日程度は注意してください', dict)?.key).toBeUndefined()
+
+    // 対照: エンジンの核がそのまま正しいものには鍵を置かない
+    for (const key of ['24日', '14日', '20日', '30日', '2日', '17時', '23時', '27分', '3分']) {
+      expect(Object.keys(dict), `「${key}」は鍵に入れない`).not.toContain(key)
+    }
+
+    // 安全弁: 地名ではないので鍵の直後にポーズを挟まない（_terms に列挙する）
+    for (const key of ['0時', '0分', '17日', '27分頃']) {
+      expect(isPlaceNameKey(key), `「${key}」は地名ではない`).toBe(false)
+    }
+  })
+
+  // 「0時」「0分」は読みを直す鍵（ゼロジ→レイジ／ゼロフン→レイフン）。**2 文字の鍵なので
+  // 長い語に食い込む** —— `10時` `20時` の 2 文字目、`10分`〜`50分` の 2 文字目にも現れる。
+  // 前が数字なら弾かないと「イチ | レイジ」と読まれる（鍵を外して実際に再現した）。
+  //
+  // 後続でも絞る。「後」「間」が続く形で切ると、後続が独立した文として合成されて
+  // `後` が `アト`、`間` が `アイダ` に化ける（実電文に「15分後」「1分間」がある）。
+  it('裸の「0時」「0分」は前後で絞る', async () => {
+    const { findPhraseBreakMatch, dict } = await loadedRealDictModule()
+
+    // 正: 単体で現れたときは当てる（読み上げ文は `3日0時0分` の形を作る）
+    expect(findPhraseBreakMatch('0時0分', dict)?.key).toBe('0時')
+    expect(findPhraseBreakMatch('0分現在の、', dict)?.key).toBe('0分')
+
+    // 安全弁: 長い語の 2 文字目には当てない。**2 桁の鍵にも同じガードが掛かる** ——
+    // `117日` で `17日` を拾うと「イチ｜ジュウシチニチ」と数値そのものを割って読む
+    expect(findPhraseBreakMatch('117日', dict)?.key).toBeUndefined()
+    expect(findPhraseBreakMatch('127分頃、', dict)?.key).toBeUndefined()
+    // 安全弁: 長い語の 2 文字目には当てない
+    expect(findPhraseBreakMatch('10時、', dict)?.key).toBeUndefined()
+    expect(findPhraseBreakMatch('20時5分', dict)?.key).toBeUndefined()
+    expect(findPhraseBreakMatch('30分現在の、', dict)?.key).toBeUndefined()
+    expect(findPhraseBreakMatch('50分、', dict)?.key).toBeUndefined()
+
+    // 正: **アプリが組む文の形も見る。** 取消の読み上げは `12時0分に発表された…` を組む
+    // （`ttsText` の eewCancelToText / earthquakeCancelToText）。後続の「に」は実電文の
+    // 自由文には 1 件も無く、電文だけを走査していたときはこの形を取りこぼしていた
+    expect(findPhraseBreakMatch('12時0分に発表された地震情報は取り消されました。', dict)?.key)
+      .toBe('0分')
+    expect(findPhraseBreakMatch('0時0分に発表された', dict)?.key).toBe('0時')
+
+    // 既知の限界: 後続は見ない。「0分後」「0分間」で切ると後続が独立した文として合成され
+    // `後` が `アト` に化けるが、**「0 分後」「0 分間」という言い方はしない**ので実害が無い。
+    // 期間の用法を持つ鍵（「1日」）を辞書へ置かないことで、この判定は「前が数字か」だけで済む
+  })
+
+  // 分は読み上げ文では必ず「N分頃」の形で出る（ttsText が `${time}頃、` を組む）。ここも 2 句へ
+  // 割れる（実測: `57分頃` → `ゴジュウ[3] | ナナフンゴロ[4]`）。型は「『分』の直後に核」で、
+  // エンジンが 1 句で読めている `30分頃`（サンジュップンゴロ[6]）・`5分頃`（ゴフンゴロ[3]）と同じ。
+  //
+  // **「N分」だけを鍵にしてはいけない。** 鍵の位置で切ると後続の「頃」が別に合成されて連濁が落ち、
+  // `ゴジュウナナフン | コロ` と「ころ」に化ける（実測）。だから「頃」まで鍵に含める。
+  //
+  // 気象庁が書いた文は「ころ」（ひらがな）で書かれる。そちらは連濁しないのが原文どおりなので、
+  // 読みを変えずに句だけ繋ぐ鍵を別に持つ。
+  it('分は「頃」まで鍵に含める', async () => {
+    const { findPhraseBreakMatch, dict } = await loadedRealDictModule()
+
+    // 正: アプリが組む形と、気象庁が書いた文（正規化後）の形
+    expect(findPhraseBreakMatch('2時57分頃、', dict)?.key).toBe('57分頃')
+    expect(findPhraseBreakMatch('1時25分ころ、地震がありました', dict)?.key).toBe('25分ころ')
+
+    // 安全弁: 元から 1 句で読める分にも「頃」版が要る。`50分` の鍵が先に当たると
+    // `ゴジュッ'プン` ＋「コロ」に切れて連濁が落ちる
+    for (const key of ['0分頃', '10分頃', '20分頃', '30分頃', '40分頃', '50分頃']) {
+      expect(Object.keys(dict), `「${key}」は連濁を落とさないために要る`).toContain(key)
+    }
+    expect(findPhraseBreakMatch('1時50分頃、', dict)?.key).toBe('50分頃')
+    expect(findPhraseBreakMatch('1時0分頃、', dict)?.key).toBe('0分頃')
+
+    // 対照: 1 桁の分は 1 句で読めるうえ `N分` の鍵も無いので、鍵を置かない
+    for (const key of ['5分頃', '7分頃', '5分', '7分']) {
+      expect(Object.keys(dict), `「${key}」は鍵に入れない`).not.toContain(key)
+    }
+  })
+
+
+  // 裸の鍵（`0時` `0分`）が引ける位置は、実電文の自由文とアプリが組む文の両方から
+  // 導く必要がある。**電文だけを走査していたときは取りこぼした** —— 取消の読み上げが組む
+  // `12時0分に発表された…` の「に」は、実電文の自由文には 1 件も無かった。
+  //
+  // ここでは `ttsText.ts` を読んで「日時を埋めた直後の文字」を機械的に集め、そのすべてで鍵が
+  // 引けることを確かめる。**新しいテンプレートを足して直後の文字が変わったら、ここが落ちる。**
+  it('日時を埋めるテンプレートの直後の文字を、辞書が覆っている', async () => {
+    const { findPhraseBreakMatch, dict } = await loadedRealDictModule()
+    const src = readFileSync('src/utils/ttsText.ts', 'utf8')
+
+    // `${time}頃、` `${formatted}に発表された…` のような形から、直後の 1 文字を集める
+    const suffixes = new Set<string>()
+    for (const m of src.matchAll(/\$\{(?:time|dayTime|formatted)\}([^`$\s{])/g)) suffixes.add(m[1])
+
+    // 1 つも拾えなかったら失敗させる（正規表現が実装とずれた合図）
+    expect(suffixes.size, 'ttsText.ts から日時テンプレートを拾えていない').toBeGreaterThan(0)
+
+    for (const suffix of suffixes) {
+      // 「頃」は `N分頃` の鍵が覆う（連濁を落とさないため「頃」まで鍵に含めてある）
+      const expected = suffix === '頃' ? '0分頃' : '0分'
+      expect(findPhraseBreakMatch(`0分${suffix}`, dict)?.key, `「0分${suffix}」が引けない`)
+        .toBe(expected)
+    }
+  })
 })

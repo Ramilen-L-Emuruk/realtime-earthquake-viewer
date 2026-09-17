@@ -3436,6 +3436,50 @@ describe('巨大地震に関する情報の共通要素（南海トラフ・後�
     expect(k.earthquakeInfoType).toBe('北海道・三陸沖後発地震注意情報')
   })
 
+  // 正: **後発地震注意情報に `NextAdvisory` は無い**（解説資料 Ⅱ.42）。共有の読み取りを通るので
+  // 値が入る余地は残っており、その形は**帯には出るのに読み上げだけ黙る**（読み上げ側はこの要素が
+  // 無い前提でブロックを持たせていない → `utils/ttsText.ts` の `TELEGRAM_TEXT_BLOCK_KEYS`）。
+  // 気づける場所はパーサーだけなので、届いたら記録する
+  it('後発地震注意情報に次回発表予定が入っていたら記録する', () => {
+    const warns: string[] = []
+    const spy = vi.spyOn(console, 'warn').mockImplementation((...a: unknown[]) => { warns.push(a.join(' ')) })
+    try {
+      const xml = KOHATSU_META_XML.replace(
+        '</EarthquakeInfo>',
+        '</EarthquakeInfo>\n    <NextAdvisory>次回の情報発表は、２１時頃を予定しています。</NextAdvisory>',
+      )
+      const k = parseVyse60FromXml(xml)!
+      expect(k.nextAdvisory).toContain('２１時頃')
+      expect(warns.join('\n')).toContain('VYSE60 に NextAdvisory が入っています')
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  // 対照: 実電文どおり要素が無ければ黙る（正常な形で警告を出すと、他の記録が埋もれる）
+  it('後発地震注意情報に次回発表予定が無ければ記録しない', () => {
+    const warns: string[] = []
+    const spy = vi.spyOn(console, 'warn').mockImplementation((...a: unknown[]) => { warns.push(a.join(' ')) })
+    try {
+      expect(parseVyse60FromXml(KOHATSU_META_XML)!.nextAdvisory).toBeUndefined()
+      expect(warns.join('\n')).not.toContain('NextAdvisory')
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  // 安全弁: 南海トラフ側は `NextAdvisory` を正規に持つ種別なので、同じ値でも記録しない
+  it('南海トラフ臨時情報の次回発表予定は記録しない', () => {
+    const warns: string[] = []
+    const spy = vi.spyOn(console, 'warn').mockImplementation((...a: unknown[]) => { warns.push(a.join(' ')) })
+    try {
+      expect(parseNankaiFromXml(NANKAI_META_XML)!.nextAdvisory).toContain('次回の情報発表は')
+      expect(warns.join('\n')).not.toContain('NextAdvisory')
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
   // 安全弁: 要約と本文を取り違えない。本文のほうが詳しく、要約はその結論だけ
   it('要約と本文はそれぞれ別に持つ', () => {
     const n = parseNankaiFromXml(NANKAI_META_XML)!

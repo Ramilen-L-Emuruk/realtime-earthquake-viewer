@@ -215,7 +215,11 @@ export const TELEGRAM_TEXT_BLOCK_KEYS = [
   // 南海トラフ地震関連解説情報
   'nankaiCommentarySummary', 'nankaiCommentaryBody', 'nankaiCommentaryNextAdvisory',
   // 北海道・三陸沖後発地震注意情報
-  'kohatsuSummary', 'kohatsuBody', 'kohatsuNextAdvisory',
+  // **次回発表予定は持たない。** 解説資料 Ⅱ.42 が定める VYSE60 の `Body` は `EarthquakeInfo` と
+  // `Text` だけで `NextAdvisory` を含まない（実電文 7 通でも 0 件。→ data-sources-spec.md
+  // 「3 種別に共通する要素は 1 箇所で読む」）。**切っても入れても何も起きない欄を設定に並べない。**
+  // 気象庁がこの要素を出すようになったら、キーと `telegramTextToSpeak` の `pick` を戻す。
+  'kohatsuSummary', 'kohatsuBody',
   // 地震回数に関する情報
   'earthquakeCountFreeText',
 ] as const
@@ -894,6 +898,36 @@ function formatTime(isoTime: string): string | null {
 }
 
 /**
+ * 日を読み上げ用の表記にする。**1 日だけ「ついたち」と書く。**
+ *
+ * 合成エンジンは `1日` を「いちにち」と読む（日付としては誤り）。句区切り辞書で直そうとすると、
+ * 期間を指す「1日程度」「1日おきに」まで拾ってしまう —— 辞書は文字列しか見ないので、日付か
+ * 期間かを区別できない。**アプリが組む文は `d.getDate()` から作っていて日付だと確定している**
+ * ので、ここで読みへ直せば曖昧さが残らない。
+ *
+ * **2 日以降は仮名で書かない。** エンジンがかえって崩す（実測: `じゅうしちにち` は
+ * `ジュウ[1] | シチニチ[2]` で頭高が反転し、`にじゅういちにち` は `ニジュウイチニ | チ` と
+ * 途中で割れる）。あちらは読みが正しく抑揚だけの問題なので、句区切り辞書で核を直す。
+ */
+function speakableDay(day: number): string {
+  return day === 1 ? 'ついたち' : `${day}日`
+}
+
+/**
+ * 気象庁が書いた文の中で、**日付として確定している「1日」だけ**を読みへ直す。
+ *
+ * **直後が「N時」の形に限る**（`1日16時27分現在の、`）。期間を指す「1日程度」「1日おきに」は
+ * もちろん、「1日2回」のような頻度表現も巻き込まない。前も見るのは `11日` `21日` `31日` の
+ * 2 文字目を拾わないため。
+ *
+ * 実電文由来のローカルデータを走査すると「N日＋数字」はすべて「N日N時」の形だったが、
+ * 自由付加文は書式が決まっていないので、数字が続くだけでは日付と決めつけない。
+ */
+function speakableDayInText(text: string): string {
+  return text.replace(/(^|[^0-9０-９])1日(?=[0-9０-９]{1,2}時)/g, '$1ついたち')
+}
+
+/**
  * 「10日21時34分」形式。遠地地震は発表が発生から数十分後になることがあり、
  * 日付をまたいで受信する場合があるため日から読み上げる。
  *
@@ -902,7 +936,7 @@ function formatTime(isoTime: string): string | null {
 function formatDayTime(isoTime: string): string | null {
   const d = readDateTime('ttsText.formatDayTime', isoTime)
   if (!d) return null
-  return `${d.getDate()}日${d.getHours()}時${d.getMinutes()}分`
+  return `${speakableDay(d.getDate())}${d.getHours()}時${d.getMinutes()}分`
 }
 
 /**
@@ -955,7 +989,10 @@ export function earthquakeCancelToText(time: string | null, cancelText?: string)
  *   記録が「画面には全文が出ます」と言い続けると、読み上げも表示も失われた事実が残らない。
  */
 function cancelReasonSentence(cancelText: string | undefined, staysOnScreen = true): string {
-  const text = cancelText?.replace(/\s+/g, ' ').trim()
+  // 取消の理由も気象庁が書いた文なので、日時は全角のゼロ埋めで来る（`１６日０１時２５分`）。
+  // 半角・ゼロ埋めなしへ揃えないと先頭の 0 が桁として読まれる（→ {@link normalizeDateTimeForSpeech}）。
+  // **この関数は 4 種別（EEW・地震情報・津波・地震回数）の取消が共有している。**
+  const text = normalizeDateTimeForSpeech(cancelText ?? '').replace(/\s+/g, ' ').trim()
   if (!text) return ''
   const subject = CANCEL_DECLARATION.exec(text)?.[1]
   if (subject !== undefined) {
@@ -2307,8 +2344,13 @@ export function tsunamiObservationUpdateToSegments(
   // 選抜した分を**入力の並びに戻して**読む（並びの根拠は上の説明）。
   const chosen = new Set(selected)
   const inReadingOrder = obs.filter(o => chosen.has(o))
-  // headline の全角数字・全角ｍ・全角ピリオドを半角に変換して VOICEVOX の誤読を防ぐ
-  const headlinePart = headline?.trim() ? tsunamiHeightToSpeech(headline.trim()) : ''
+  // headline の全角数字・全角ｍ・全角ピリオドを半角に変換して VOICEVOX の誤読を防ぐ。
+  // **日時のゼロ埋めと「1日」の読みもここで直す** —— 見出し文は気象庁が書いた文で、
+  // 半角にしただけでは `01日` が残り、合成エンジンが先頭の 0 を桁として読む（「ぜろ いちにち」）。
+  // 句区切り辞書の `1日`（→ ついたち）も、直前が数字だと当たらない。
+  const headlinePart = headline?.trim()
+    ? normalizeDateTimeForSpeech(tsunamiHeightToSpeech(headline.trim()))
+    : ''
   // **選抜した結果を分けるだけ。** 群ごとに選抜し直すと上限が実質 2 倍になり、既読を記録する側
   // （`selectObservationUpdatesToSpeak` を使う）と読み上げた集合が食い違う。
   const raised = inReadingOrder.filter(o => spokenHeights?.has(o.name) ?? false)
@@ -2624,7 +2666,7 @@ function formatCountSpanForSpeech(startTime: string, endTime: string): string {
   const start = new Date(startTime)
   const end = new Date(endTime)
   if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) return 'これまで'
-  const md = (d: Date) => `${d.getDate()}日${d.getHours()}時`
+  const md = (d: Date) => `${speakableDay(d.getDate())}${d.getHours()}時`
   return `${md(start)}から${md(end)}まで`
 }
 
@@ -2862,8 +2904,40 @@ function stripSkippedPhrases(text: string): string {
  */
 const LPGM_CLASS_TABLE_RE = /(階級[０-９0-9])(やや大きな揺れ|非常に大きな揺れ|極めて大きな揺れ|大きな揺れ)/g
 
+/**
+ * 気象庁が書いた文の日時表記を、読み上げの前に半角・ゼロ埋めなしへ揃える。
+ *
+ * 実電文は**全角でゼロ埋め**する（`１６日０１時２５分`）。合成エンジンは先頭の 0 を桁として
+ * 読むため、そのままでは「ぜろ いちじ」になる（`００分` なら「ぜろ ぜろふん」）。
+ * アプリが自分で組む読み上げ文はゼロ埋めしない（{@link formatDayTime}）ので、この崩れは
+ * **気象庁の文を読む設定を入れたときだけ**起きる。
+ *
+ * **句区切り辞書では手当てできない。** あの辞書は文字列の一致で引くので、全角とゼロ埋めの
+ * 組み合わせまで鍵に持つと日・時・分だけで数百件になる。ここで半角へ揃えておけば、辞書は
+ * 半角の形（`17日`・`0時`）だけで足りる。
+ *
+ * **対象は「1〜2 桁の数字＋日／時／分」に限る。** マグニチュード・震度・波高の数値には触らない。
+ * 単位が続く形（`2時間`・`10分の1`・`2日間`）も一致するが、半角へ直すだけで読みは変わらない。
+ *
+ * **直前が数字なら一致させない**（`(?<![0-9０-９])`）。これが無いと `{1,2}` が 3 桁以上の数字列の
+ * **末尾 2 桁だけ**を拾い、桁を静かに落とす —— `１５０分後` が `１50分後`、`1000分の1` が
+ * `100分の1` に化ける（半角でも起きる）。例外も NaN も出ないので、読み上げを聞くまで気づけない。
+ */
+const DATETIME_DIGITS_RE = /(?<![0-9０-９])([0-9０-９]{1,2})([日時分])/g
+
+function normalizeDateTimeForSpeech(text: string): string {
+  const halfWidth = text.replace(DATETIME_DIGITS_RE, (_match, digits: string, unit: string) => {
+    const half = digits.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+    return `${Number(half)}${unit}`
+  })
+  // **「1日」の読み直しもここに置く。** この関数を通る 3 経路（本文と付加文・津波観測情報の
+  // 見出し文・取消の理由）すべてで同じ手当てが要る。片方だけに掛けると、同じ「気象庁が書いた文」
+  // なのに読まれる場所によって「ついたち」と「いちにち」に分かれる。
+  return speakableDayInText(halfWidth)
+}
+
 function normalizeTelegramTextForSpeech(text: string): string {
-  return stripSkippedPhrases(stripUrlsForSpeech(text))
+  return normalizeDateTimeForSpeech(stripSkippedPhrases(stripUrlsForSpeech(text)))
     .replace(LPGM_CLASS_TABLE_RE, '$1 $2')
     .replace(/[\r\n\u3000\t]+/g, ' ')
     .replace(/ {2,}/g, ' ')
@@ -3073,10 +3147,12 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
     }
     case 'kohatsu': {
       if (event.data.cancelled) return null
+      // **`nextAdvisory` は読まない。** この種別の電文に `NextAdvisory` は無く（理由は
+      // `TELEGRAM_TEXT_BLOCK_KEYS` の「北海道・三陸沖後発地震注意情報」）、共有の読み取りを
+      // 通っているぶん型には残るが値は常に空。気象庁が出すようになったら設定キーと併せて戻す。
       const body = joinTelegramTexts([
         pick('kohatsuSummary', event.data.summary),
         pick('kohatsuBody', event.data.body),
-        pick('kohatsuNextAdvisory', event.data.nextAdvisory),
       ])
       return telegramSpeech(`北海道・三陸沖後発地震注意情報について、気象庁の文をお伝えします。`, body)
     }
