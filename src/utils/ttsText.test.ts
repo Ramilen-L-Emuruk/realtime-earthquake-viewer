@@ -1205,21 +1205,182 @@ describe('earthquakeToSegments: 続報は差分だけ読む', () => {
   })
 
   // 2026-08-22 に反転: 据え置きの続報でも**名乗りだけは読む**ようにした。黙ると「電文が来たのに
-  // 何も起きなかった」ようにしか聞こえないため（内容が続かないことで変化なしが伝わる）。
-  it('対照: 据え置きの続報は名乗りだけで終える（地域を挙げない）', () => {
+  // 何も起きなかった」ようにしか聞こえないため。
+  // 2026-09-17 にさらに反転: **名乗りだけでも終わらせない**ようにした。「更新されました。」で
+  // 切ると聞き手には「何が？」しか残らないという報告を受けたため（→ CLAUDE.md「続報は差分だけ
+  // 読む」）。震度速報は区域までしか運ばない種別なので、ここへ来たなら本当に変化が無い。
+  it('対照: 据え置きの続報は地域を挙げず、変化が無いことだけを言う', () => {
     const state = createQuakeSpokenState()
     const points = [area('宮城県', '宮城県北部', 40)]
     markSpoken(state, earthquakeToSegments(quakeOf(points, 40), OPTS, true, state))
     expect(joinSegments(earthquakeToSegments(quakeOf(points, 40), OPTS, false, state)))
-      .toBe('震度速報が更新されました。')
+      .toBe('震度速報が更新されました。観測した震度に変わりはありません。')
   })
 
   it('対照: 震度が下がった区域は読み直さない', () => {
     const state = createQuakeSpokenState()
     markSpoken(state, earthquakeToSegments(quakeOf([area('石川県', '石川県能登', 60)], 60), OPTS, true, state))
-    // 訂正で震度が下がるケース。既に伝えた値より低いので地域は挙げない（名乗りだけで終わる）
+    // 訂正で震度が下がるケース。既に伝えた値より低いので地域は挙げない。
+    // **区域の点しか動いていないので「変わりはありません」側へ落ちる** —— 観測点・市町村の
+    // 集合は変わっておらず、この種別はそもそもそれらを運ばない。
     expect(joinSegments(earthquakeToSegments(quakeOf([area('石川県', '石川県能登', 50)], 50), OPTS, false, state)))
-      .toBe('震度速報が更新されました。')
+      .toBe('震度速報が更新されました。観測した震度に変わりはありません。')
+  })
+
+  // ── 名乗りだけで終わらせない（2026-09-17 追加） ──────────────────────────
+  //
+  // 読み上げの地域名は一次細分区域までしか下りないので、区域の最大震度が据え置きのまま
+  // 観測点だけが増えた続報は差分が空になる。実配信で「地震情報が更新されました。」だけが
+  // 読まれ、何が更新されたのか分からないという報告を受けて足した
+  // （実例は `docs/spec/audio-tts-spec.md` 改訂履歴 2026-09-17）。
+  describe('区域より下の階層の変化', () => {
+    const station = (addr: string, scale: number, code?: string): EarthquakePoint =>
+      ({ pref: '', addr, isArea: false, scale: scale as IntensityScale, ...(code ? { code } : {}) })
+
+    /** 区域と観測点の両方を運ぶ電文（各地の震度情報）。市町村は任意。 */
+    const quakeWith = (points: EarthquakePoint[], cities?: JMAQuake['cities']): JMAQuake => {
+      const q = quakeOf(points, 30, { type: '各地の震度情報' })
+      return cities ? { ...q, cities } : q
+    }
+    const baseAreaAndStation = [area('神奈川県', '神奈川県東部', 30), station('横浜中区山下町', 20)]
+
+    it('正: 区域が据え置きでも、観測点が増えたことは伝える', () => {
+      const state = createQuakeSpokenState()
+      markSpoken(state, earthquakeToSegments(quakeWith(baseAreaAndStation), OPTS, true, state))
+      const second = earthquakeToSegments(
+        quakeWith([...baseAreaAndStation, station('横浜西区浜松町', 20)]), OPTS, false, state)
+      expect(joinSegments(second))
+        .toBe('地震情報が更新されました。観測地点が追加されましたが、地域ごとの最大震度は変わっていません。')
+    })
+
+    it('正: 顔ぶれが同じでも、観測点の震度が動いたことは伝える', () => {
+      const state = createQuakeSpokenState()
+      markSpoken(state, earthquakeToSegments(quakeWith(baseAreaAndStation), OPTS, true, state))
+      // 同じ観測点が 2 → 3。区域（神奈川県東部＝3）の最大は動かない
+      const second = earthquakeToSegments(
+        quakeWith([area('神奈川県', '神奈川県東部', 30), station('横浜中区山下町', 30)]), OPTS, false, state)
+      expect(joinSegments(second))
+        .toBe('地震情報が更新されました。観測された震度が更新されましたが、地域ごとの最大震度は変わっていません。')
+    })
+
+    it('正: 市町村だけが増えた続報も拾う（観測点を見るだけでは取りこぼす）', () => {
+      const state = createQuakeSpokenState()
+      const cities = [{ name: '横浜市西区', area: '神奈川県東部', pref: '神奈川県', scale: 20 as IntensityScale }]
+      markSpoken(state, earthquakeToSegments(quakeWith(baseAreaAndStation, cities), OPTS, true, state))
+      const second = earthquakeToSegments(
+        quakeWith(baseAreaAndStation, [
+          ...cities,
+          { name: '横浜市港北区', area: '神奈川県東部', pref: '神奈川県', scale: 20 as IntensityScale },
+        ]), OPTS, false, state)
+      expect(joinSegments(second)).toContain('観測地点が追加されましたが')
+    })
+
+    it('対照: 観測点も市町村も同じなら「変わりはありません」と言い切る', () => {
+      const state = createQuakeSpokenState()
+      markSpoken(state, earthquakeToSegments(quakeWith(baseAreaAndStation), OPTS, true, state))
+      expect(joinSegments(earthquakeToSegments(quakeWith(baseAreaAndStation), OPTS, false, state)))
+        .toBe('地震情報が更新されました。内容に変わりはありません。')
+    })
+
+    it('対照: 区域に差分がある続報はこの経路へ入らない（従来どおり地域を読む）', () => {
+      const state = createQuakeSpokenState()
+      markSpoken(state, earthquakeToSegments(quakeWith(baseAreaAndStation), OPTS, true, state))
+      const second = earthquakeToSegments(
+        quakeWith([...baseAreaAndStation, area('東京都', '東京都23区', 30), station('新宿区西新宿', 30)]),
+        OPTS, false, state)
+      expect(joinSegments(second)).toContain('新たに震度3を東京都23区で観測しました。')
+      expect(joinSegments(second)).not.toContain('変わっていません')
+    })
+
+    // 安全弁: 比べる相手がいないときに言い切らない。**`none` と `unknown` を混ぜると、
+    // 何も判らない状態で「変わりはありません」と断言することになる。**
+    it('安全弁: 観測点の記録が無い地震では「変わりはありません」と言わない', () => {
+      const state = createQuakeSpokenState()
+      const first = earthquakeToSegments(quakeWith(baseAreaAndStation), OPTS, true, state)
+      // 区域と震源要素は声になったが、**最後の断片（観測点の記録）だけ鳴らなかった**状況。
+      // 差分の経路へは入るが、比べる相手がいないので何も言い切れない。
+      markSpoken(state, first.slice(0, -1))
+      expect(state.observed).toBeUndefined()
+      const second = earthquakeToSegments(quakeWith(baseAreaAndStation), OPTS, false, state)
+      expect(joinSegments(second)).toBe('地震情報が更新されました。')
+    })
+
+    // 安全弁: 区域・都道府県の集約点を観測点として数えない。数えると、区域が増えた続報
+    // （＝区域の差分が出るのでこの経路へ入らないはずの報）の判定まで巻き込む。
+    it('安全弁: 区域の点が増えても「観測地点が追加」とは言わない', () => {
+      const state = createQuakeSpokenState()
+      markSpoken(state, earthquakeToSegments(quakeWith(baseAreaAndStation), OPTS, true, state))
+      // 区域の点だけを足すが、震度は既に声にした値と同じ（＝区域の差分は出ない）
+      const second = earthquakeToSegments(
+        quakeWith([...baseAreaAndStation, area('神奈川県', '神奈川県東部', 20)]), OPTS, false, state)
+      expect(joinSegments(second)).toBe('地震情報が更新されました。内容に変わりはありません。')
+    })
+
+    // 安全弁: **観測点を運ばない種別が挟まっても記録を消さない。**
+    //
+    // 記録は地震ごとで種別を跨いで共有されるので、震源情報（VXSE52）や顕著な地震の震源要素
+    // 更新のお知らせ（VXSE61）のように `points` も `cities` も持たない報で空に上書きすると、
+    // **既に伝えた観測点が記録から消え、次の報が「観測地点が追加されました」と嘘を言う。**
+    // 気象庁は震度速報と震源情報を前後して発表するので、実運用で起きる順序。
+    it('安全弁: 観測点を運ばない報（震源情報）が挟まっても記録は消えない', () => {
+      const state = createQuakeSpokenState()
+      markSpoken(state, earthquakeToSegments(quakeWith(baseAreaAndStation), OPTS, true, state))
+      const before = state.observed
+      expect(before?.points.length).toBeGreaterThan(0)
+
+      // 震源情報が届いて読み切られる（この種別は観測点も市町村も持たない）。
+      // **震源要素は同じ値にする** —— 変えると規模の差分が出て、この安全弁が見たい経路を通らない。
+      const epicenterOnly = quakeOf([], -1, { type: '震源情報' })
+      markSpoken(state, earthquakeToSegments(epicenterOnly, OPTS, false, state))
+      expect(state.observed, '観測点を運ばない報が記録を上書きした').toBe(before)
+
+      // 観測点が増えていない続報は「追加されました」と言わない
+      expect(joinSegments(earthquakeToSegments(quakeWith(baseAreaAndStation), OPTS, false, state)))
+        .toBe('地震情報が更新されました。内容に変わりはありません。')
+    })
+
+    // 安全弁: **震度速報が挟まっても記録は消えない。**
+    //
+    // 震度速報は `points` に**区域と都道府県の集約点だけ**を積む（観測点は 0 件）。件数だけで
+    // 「運んでいる」と判定すると、観測点ゼロの記録で上書きしてしまい、次の地震情報が全観測点を
+    // 「追加された」と読む。**気象庁は震度速報と震源・震度情報を前後して発表する**ので、
+    // 震源情報のケースより起きやすい。
+    it('安全弁: 区域の点しか持たない報（震度速報）が挟まっても記録は消えない', () => {
+      const state = createQuakeSpokenState()
+      markSpoken(state, earthquakeToSegments(quakeWith(baseAreaAndStation), OPTS, true, state))
+      const before = state.observed
+      expect(before?.points.some(p => !p.isArea)).toBe(true)
+
+      // 震度速報（区域の点だけ・観測点 0 件）が届いて読み切られる
+      const prompt = quakeOf([area('神奈川県', '神奈川県東部', 30)], 30, { type: '震度速報' })
+      markSpoken(state, earthquakeToSegments(prompt, OPTS, false, state))
+      expect(state.observed, '区域の点しか持たない報が記録を上書きした').toBe(before)
+
+      expect(joinSegments(earthquakeToSegments(quakeWith(baseAreaAndStation), OPTS, false, state)))
+        .toBe('地震情報が更新されました。内容に変わりはありません。')
+    })
+
+    // 対の確認: 記録を消さないだけで、**本当に増えた続報は従来どおり拾う**（上の安全弁が
+    // 効きすぎて記録が固まってしまわないこと）。
+    it('正: 震源情報を挟んだあとでも、観測点が増えれば拾う', () => {
+      const state = createQuakeSpokenState()
+      markSpoken(state, earthquakeToSegments(quakeWith(baseAreaAndStation), OPTS, true, state))
+      markSpoken(state, earthquakeToSegments(quakeOf([], -1, { type: '震源情報' }), OPTS, false, state))
+
+      const grown = earthquakeToSegments(
+        quakeWith([...baseAreaAndStation, station('横浜西区浜松町', 20)]), OPTS, false, state)
+      expect(joinSegments(grown)).toContain('観測地点が追加されましたが')
+    })
+
+    // 安全弁: 記録は**声になった分だけ**進む。最後まで鳴らなかった報の観測点を基準にすると、
+    // 次の報で「変わりはありません」と嘘を言う。
+    it('安全弁: 読み上げが完走しなければ観測点の記録は進まない', () => {
+      const state = createQuakeSpokenState()
+      const first = earthquakeToSegments(quakeWith(baseAreaAndStation), OPTS, true, state)
+      // 最後の断片（観測点の記録が載っている）を除いて記録＝途中で切られた発話
+      markSpoken(state, first.slice(0, -1))
+      expect(state.observed).toBeUndefined()
+    })
   })
 
   it('安全弁: 記録を渡さなければ全区域を読む（既存の全文経路が変わらない）', () => {
@@ -1256,7 +1417,11 @@ describe('earthquakeToSegments: 続報は差分だけ読む', () => {
     const segments = earthquakeToSegments(quakeOf([unreceived], 45), OPTS, true, state)
     const note = segments.find(seg => seg.text.includes('未入電です'))
     expect(note, '説明文の断片が見つからない').toBeTruthy()
-    expect(note!.refs).toEqual([{ kind: 'unreceivedNote' }])
+    expect(note!.refs).toContainEqual({ kind: 'unreceivedNote' })
+    // 2026-09-17: 最後の断片には「その報の観測点」の記録も載るようになった（→ `withObservedRef`）。
+    // 厳密一致をやめる代わりに、**名前を持つ種類が混ざっていない**ことを確かめる（この印を
+    // `quakeRegion` で足すと、その名前が既読の記録へ入ってしまう）。
+    expect(note!.refs.some(r => r.kind === 'quakeRegion')).toBe(false)
   })
 
   // 安全弁: その印を既読の記録へ混ぜない（名前を持たないので素通りする）。
@@ -1446,10 +1611,10 @@ describe('earthquakeToSegments: 続報は差分だけ読む', () => {
     ]
     const opts = { ...OPTS, intensityLevels: 1 }
     markSpoken(state, earthquakeToSegments(quakeOf(points, 50), opts, true, state))
-    // 震度3は初報でも読まれていない（階数 1 の外）。据え置きの続報でも繰り上げて読まない
-    // （地域を挙げないので名乗りだけで終わる）
+    // 震度3は初報でも読まれていない（階数 1 の外）。据え置きの続報でも繰り上げて読まない。
+    // 2026-09-17 に反転: 地域を挙げない報でも、変化が無いことは言うようになった。
     expect(joinSegments(earthquakeToSegments(quakeOf(points, 50), opts, false, state)))
-      .toBe('震度速報が更新されました。')
+      .toBe('震度速報が更新されました。観測した震度に変わりはありません。')
   })
 
   it('続報でマグニチュードが変われば、震度に変化が無くても読む', () => {
@@ -1500,10 +1665,12 @@ describe('earthquakeToSegments: 続報は差分だけ読む', () => {
     markSpoken(state, earthquakeToSegments(first, OPTS, true, state))
     expect(state.facts.has('depth')).toBe(false)
 
-    // 値に変化が無い続報。記録できない深さを待って全文へ戻ってはいけない（名乗りだけで終わる）
+    // 値に変化が無い続報。記録できない深さを待って全文へ戻ってはいけない。
+    // 2026-09-17 に反転: 名乗りだけでは終えず、変化が無いことを言う。**この種別は震源要素しか
+    // 運ばない**ので「震源の内容に」と言い切ってよい（観測点・市町村の段を持たない）。
     const second = quakeOf([], -1, { type: '震源情報', name: '', depth: 10, magnitude: 5.2, domesticTsunami: 'なし' })
     expect(joinSegments(earthquakeToSegments(second, OPTS, false, state)))
-      .toBe('震源情報が更新されました。')
+      .toBe('震源情報が更新されました。震源の内容に変わりはありません。')
   })
 
   it('深さの更新文で「深さ」が重ならない', () => {
@@ -1623,13 +1790,15 @@ describe('earthquakeToText: 座標テーブルが無いときの地域名', () =
       expect(joinSegments(segs)).toContain('最大震度5弱を観測しました。')
     })
 
-    it('対照: 震度が同じなら続報では言い直さない（名乗りだけで終わる）', () => {
+    // 2026-09-17 に反転: 名乗りだけでは終えず、変化が無いことを言う。観測点の顔ぶれも震度も
+    // 同じなので「内容に変わりはありません」側へ落ちる。
+    it('対照: 震度が同じなら続報では言い直さない（変化が無いことだけ言う）', () => {
       const state = createQuakeSpokenState()
       speakFirst(state, 40)
 
       const segs = earthquakeToSegments(
         makeLocalQuake('各地の震度情報', 40 as IntensityScale, unresolved(40)), TTS_OPTS, false, state)
-      expect(joinSegments(segs)).toBe('地震情報が更新されました。')
+      expect(joinSegments(segs)).toBe('地震情報が更新されました。内容に変わりはありません。')
     })
 
     // 震度が下がった続報も伝える。区域側（isUnspokenRegion）は上がったときしか読み直さないが、
@@ -1651,9 +1820,10 @@ describe('earthquakeToText: 座標テーブルが無いときの地域名', () =
       applySpokenRefs(state, first.flatMap(s => s.refs))
       expect(joinSegments(first)).toBe('震度速報。最大震度4を観測しました。')
 
+      // 2026-09-17 に反転: 名乗りだけでは終えない。
       const same = earthquakeToSegments(
         makeLocalQuake('震度速報', 40 as IntensityScale, unresolved(40)), TTS_OPTS, false, state)
-      expect(joinSegments(same)).toBe('震度速報が更新されました。')
+      expect(joinSegments(same)).toBe('震度速報が更新されました。観測した震度に変わりはありません。')
 
       const raised = earthquakeToSegments(
         makeLocalQuake('震度速報', 45 as IntensityScale, unresolved(45)), TTS_OPTS, false, state)
@@ -1671,7 +1841,9 @@ describe('earthquakeToText: 座標テーブルが無いときの地域名', () =
       expect(joinSegments(first)).toContain('最大震度4を宮城県北部で観測しました。')
       // 代替は記録に残らない。残ると、後で地域名が作れなくなったときに「既に伝えた」と誤判定する。
       expect(state.facts.has('maxScaleOnly')).toBe(false)
-      // 同じ内容の続報は差分が無いので名乗りだけで終わる（代替の一文も足さない）。
+      // 同じ内容の続報では代替の一文を足さない（**「最大震度4を観測しました」を言い直さない**のが
+      // この安全弁の主旨）。**「変わりはありません」も付かない** —— この電文は区域の点しか持たず
+      // 観測点が 0 件なので、観測点の記録が作られず区域より下について何も言い切れない（`unknown`）。
       const second = earthquakeToSegments(
         makeLocalQuake('各地の震度情報', 40 as IntensityScale, points), TTS_OPTS, false, state)
       expect(joinSegments(second)).toBe('地震情報が更新されました。')
@@ -2618,7 +2790,9 @@ describe('読み上げの詳しさの設定', () => {
       const first = quake()
       const segments = earthquakeToSegments(first, opts, true, state)
       applySpokenRefs(state, segments.flatMap(s => s.refs ?? []))
-      // 続報（同じ内容）が差分の経路に入り、名乗りだけで終わること
+      // 続報（同じ内容）が差分の経路に入ること。**震源要素を言い直さない**のがこの安全弁の主旨。
+      // **末尾に「変わりはありません」は付かない** —— この電文は観測点も市町村も持たないため
+      // 観測点の記録が作られず、区域より下の階層について何も言い切れない（`unknown`）。
       const follow = joinSegments(earthquakeToSegments(first, opts, false, state))
       expect(follow).toBe('地震情報が更新されました。')
     })

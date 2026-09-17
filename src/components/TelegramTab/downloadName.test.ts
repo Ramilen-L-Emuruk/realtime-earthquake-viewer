@@ -8,9 +8,6 @@ import { withTz } from '../../test-utils/withTz'
 
 // 電文ログのダウンロード名の時刻。UTC で作ると JST の端末では 9 時間ずれた名前が並び、
 // 画面に出ている受信時刻と突き合わせられない（診断ログ側と同じ穴）。
-//
-// JSX を使わず createElement で組むのは、vitest の include が `src/**/*.test.ts` に限られており
-// `.tsx` を拾わないため（CameraFollowsGL.test.ts と同じ方針）。
 
 /** ダウンロードを走らせず、`a.download` と Blob だけ捕まえる。 */
 function captureDownloads(): { names: string[]; blobs: Blob[]; restore: () => void } {

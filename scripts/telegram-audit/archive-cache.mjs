@@ -17,7 +17,13 @@ import zlib from 'node:zlib'
 // **`coverage-core.mjs` から取らない。** あちらは import した時点で `TELEGRAM_AUDIT_DIR` を
 // 要求して throw するため、このモジュール（根のパスしか要らない）まで環境変数に縛られ、
 // レート制御を単体テストへ掛けられなくなる。
-import { REPO } from './repo-root.mjs'
+import { REPO } from '../lib/repo-root.mjs'
+// レート制御は `scripts/lib/rateGate.mjs` に集約している。**DMDATA 専用ではない** ——
+// `kind` で取得元を分ける汎用の門で、P2PQuake の履歴走査・観測点索引の走査も同じものを通す。
+import { gate, resetRateGateForTest, sleep } from '../lib/rateGate.mjs'
+// 不完全さの印も共有の仕組みへ寄せる。**ここで積んだ分は、下流が `readArtifact` で読んだ
+// 時点で自動的に引き継がれる**（`scripts/lib/incompleteness.mjs`）。
+import { noteIncomplete, resetIncompletenessForTest } from '../lib/incompleteness.mjs'
 
 /** 控えの置き場所。`.claude/*` は `.gitignore` 済み（`nii-cache` / `hypocenter-cache` と同じ扱い）。 */
 export const ARCHIVE_CACHE_DIR = process.env.DMDATA_ARCHIVE_CACHE
@@ -55,28 +61,16 @@ export function archiveCacheStats() {
   return { ...stats, failures: [...stats.failures] }
 }
 
-const sleep = (ms) => new Promise(res => setTimeout(res, ms))
-
-// ホストごとに「次に投げてよい時刻」を持つ。呼び出し側が並列ワーカーで回していても、
-// 実効レートはここで決まる。
-const nextSlotAt = new Map()
-
 /**
- * 次の枠が来るまで待つ。
+ * 取得できなかった範囲を 1 箇所で記録する。
  *
- * **待つ前に枠を予約する。** `await` の後で時刻を書き込む形にすると、並列で入った呼び出しが
- * そろって同じ「前回の時刻」を読み、同じ待ち時間を計算して**一斉に発火する**
- * （実測: 5 本のワーカーで 1 本が即時・残り 4 本が 1 秒後にほぼ同時。
- * `CONCURRENCY=8` なら 6 秒ごとに 8 件のバーストになり、守るつもりだった
- * 50req/5min を 8 倍超える）。同期的に予約してから待てば、N 本目は
- * `前回 + N×間隔` へ並ぶ。
+ * **内訳（`stats.failures`）と共有の台帳の両方へ入れる。** 前者はこのモジュールの実測値
+ * （分類・日・理由を構造のまま持つ）で、後者は下流へ運ぶための印。2 箇所へ別々に書くと
+ * 片方だけ足し忘れる形の穴が開くので、必ずこの関数を通す。
  */
-export async function gate(kind, minIntervalMs) {
-  const now = Date.now()
-  const target = Math.max(now, nextSlotAt.get(kind) ?? 0)
-  nextSlotAt.set(kind, target + minIntervalMs)
-  const wait = target - now
-  if (wait > 0) await sleep(wait)
+function pushFailure(classification, day, error) {
+  stats.failures.push({ classification, day, error })
+  noteIncomplete('アーカイブの取得', `${classification} ${day}: ${error}`)
 }
 
 /**
@@ -86,7 +80,8 @@ export async function gate(kind, minIntervalMs) {
  * 「失敗が無いときの振る舞い」を確かめるテストが**実行順によって落ちる**。
  */
 export function resetArchiveCacheForTest() {
-  nextSlotAt.clear()
+  resetRateGateForTest()
+  resetIncompletenessForTest()
   stats.cacheHits = 0
   stats.downloads = 0
   stats.retryWaits = 0
@@ -162,11 +157,7 @@ export async function listArchive({ classification, from, to, auth }) {
       throw new Error(`ページ上限（${LIST_MAX_PAGES}）に達した。範囲指定が効いていない疑いがある`)
     }
   } catch (e) {
-    stats.failures.push({
-      classification,
-      day: `${from}~${to}（一覧）`,
-      error: String(e?.message ?? e),
-    })
+    pushFailure(classification, `${from}~${to}（一覧）`, String(e?.message ?? e))
     // **分類・期間を文面へ含めない。** 呼び出し側が文脈を付けて出すので、含めると二重になる
     // （`eew.forecast: 一覧の取得に失敗: eew.forecast 2025-01-01~...` のように）。
     throw new Error(`一覧の取得に失敗（${from}~${to}）: ${e?.message ?? e}`)
@@ -229,7 +220,7 @@ export async function loadArchiveTar({ classification, item, auth }) {
     fs.renameSync(tmp, cachePath)
     return tar
   } catch (e) {
-    stats.failures.push({ classification, day: dayOf(item), error: String(e?.message ?? e) })
+    pushFailure(classification, dayOf(item), String(e?.message ?? e))
     throw e
   }
 }
@@ -263,15 +254,13 @@ export function apiAuthHeader() {
 /**
  * 走査の終わりに実測値を出す。「何件を控えで済ませたか」が分かると、次の走査の見積もりが立つ。
  *
- * **取得できなかった範囲は必ず出す。** これらのスクリプトの出力は「この種別は 0 件だった」という
- * 主張の根拠になるので、**取りこぼしを黙って通すと「見ていない」が「無い」に化ける**
- * （2026-09-11 に走査先を間違えて同じ形の誤りを出した前例がある）。件数だけでなく
- * 見本も出すのは、レート制限なのかネットワーク断なのかで次の手が変わるため。
+ * **取得できなかった範囲はここでは出さない。** 印の報告は
+ * `scripts/lib/incompleteness.mjs` の `reportIncompleteness` に集約してある ——
+ * アーカイブ以外の取りこぼし（P2PQuake の履歴・上流から引き継いだ分）と同じ場所で
+ * 数えないと、経路ごとに数え方が割れる。呼び出し側は 2 つを並べて呼ぶ。
  *
  * 数えるのは**範囲**で、日数ではない —— アーカイブ本体は 1 日 1 ファイルなので日と一致するが、
  * 一覧の失敗は `2026-01-01~2026-01-02（一覧）` のようにレンジ単位で 1 件になる。
- *
- * @returns 取得できなかった件数。**呼び出し側はこれを見て exit code を立てる**
  */
 export function reportArchiveCacheStats(label = 'アーカイブ') {
   const s = archiveCacheStats()
@@ -281,32 +270,4 @@ export function reportArchiveCacheStats(label = 'アーカイブ') {
     + (s.retryWaits > 0 ? ` / 待ち直し ${s.retryWaits} 回（レート制限・サーバーエラー）` : '')
   )
   console.error(`  控えの場所: ${ARCHIVE_CACHE_DIR}`)
-  if (s.failures.length > 0) {
-    console.error(`  取得できなかった範囲: ${s.failures.length} 件 —— ここは「見ていない」ので、0 件を「無い」と読まないこと`)
-    for (const f of s.failures.slice(0, 5)) console.error(`    ${f.classification} ${f.day}: ${f.error}`)
-    if (s.failures.length > 5) console.error(`    ほか ${s.failures.length - 5} 件`)
-  }
-  return s.failures.length
-}
-
-/**
- * 走査が不完全だったことを、**標準出力の結果そのものへ**印として載せる。
- *
- * `reportArchiveCacheStats` は標準エラーへ出すので、**結果の JSON だけを保存する・受け渡す
- * 運用では失敗が見えない**。これらのスクリプトの出力は「この種別は 0 件だった」という主張の
- * 根拠になるため、「集めたが 0 件」と「集められなかった」が区別できない形で残ってはいけない
- * （CLAUDE.md「調査レビュー」に同じ形の事故が 2 件記録されている）。
- *
- * **exit code はここで立てない。** 副作用を「結果を整える関数」へ隠すと、テストが
- * ランナーの終了コードを汚す（この関数を呼ぶだけで失敗扱いになる）。終了コードは
- * `reportArchiveCacheStats` の戻り値を見て呼び出し側が立てる（3 本で同じ形）。
- */
-export function withCompletenessMark(result) {
-  const failures = archiveCacheStats().failures
-  if (failures.length === 0) return result
-  return {
-    ...result,
-    _incomplete: `取得できなかった範囲が ${failures.length} 件あります。この結果を「無い」の根拠にしないこと`
-      + `（内訳は標準エラー側）`,
-  }
 }

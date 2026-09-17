@@ -1,7 +1,15 @@
 import 'fake-indexeddb/auto'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { fetchTelegramText, telegramBodyStats, resetTelegramBodyStatsForTest, setBodyGateIntervalForTest } from './telegramBody'
+import {
+  fetchTelegramText, fetchTelegramBytes, telegramBodyStats,
+  resetTelegramBodyStatsForTest, setBodyGateIntervalForTest,
+} from './telegramBody'
 import { clearTelegramBodyCache, telegramCacheStats, MAX_ENTRIES } from '../utils/telegramBodyCache'
+import { resetRateLimitsForTest } from './dmdataRequestGates'
+
+// 429 を受けた id の「取りに行かない窓」はセッション内のメモリに残るので、テストごとに空にする。
+// **トップレベルに置くのは、`describe` 内の `beforeEach` が兄弟の `describe` に届かないため。**
+beforeEach(() => { resetRateLimitsForTest() })
 
 // 電文本体の控え。**配信元が名指しで求めている形**（「同じ`id`に対して短期間にリクエストを
 // 繰り返さないように実装してください」）を満たしているかを固定する。
@@ -92,6 +100,43 @@ describe('fetchTelegramText（電文本体の控え）', () => {
     await settle()
     const ok = await fetchTelegramText(KEY, url('cccccccc33'))
     expect(ok.xml).toBe('<Report>late</Report>')
+  })
+
+  // 正: 429 を受けた id は、窓が明けるまで取りに行かない。
+  //
+  // **配信元が指数バックオフを求めているのはこの形に対して。** 控えが効くのは成功した分だけ
+  // なので、429 で落ちた電文は操作のたびに再要求される（「もっと見る」は範囲をまるごと
+  // 問い合わせ直す）。**門の 6 秒はバックオフではない** —— 失敗が続いても伸びない。
+  it('429 を受けた id は、次に取りに行かない', async () => {
+    const spy = vi.fn(async () => ({ ok: false, status: 429 }) as unknown as Response)
+    vi.stubGlobal('fetch', spy)
+
+    const first = await fetchTelegramText(KEY, url('dddddddd44'))
+    expect(first.status).toBe(429)
+    expect(spy).toHaveBeenCalledTimes(1)
+
+    // 2 回目は通信せず 429 を返す（**門の枠も使わない**）
+    await settle()
+    const second = await fetchTelegramText(KEY, url('dddddddd44'))
+    expect(second.xml).toBeNull()
+    expect(second.status).toBe(429)
+    expect(spy).toHaveBeenCalledTimes(1)
+  })
+
+  // 対照: 429 以外の失敗では窓を置かない。
+  // **これが無いと、一時的な 500 でもその id を数分間取りに行かなくなる。**
+  it('429 以外の失敗では窓を置かない（次に取り直せる）', async () => {
+    let attempt = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      attempt++
+      if (attempt === 1) return { ok: false, status: 500 } as unknown as Response
+      return { ok: true, status: 200, text: async () => '<Report>retry</Report>' } as unknown as Response
+    }))
+
+    expect((await fetchTelegramText(KEY, url('eeeeeeee55'))).status).toBe(500)
+    await settle()
+
+    expect((await fetchTelegramText(KEY, url('eeeeeeee55'))).xml).toBe('<Report>retry</Report>')
   })
 
   // 安全弁: 通信そのものの例外は**潰さずに投げる**。
@@ -251,5 +296,103 @@ describe('fetchTelegramText（同時要求のまとめ）', () => {
     // まとめが残っていれば、この取得も失敗した Promise を返してしまう
     const retry = await fetchTelegramText(KEY, url('hhhhhhhh88'))
     expect(retry.xml).toBe('<Report>recovered</Report>')
+  })
+})
+
+/**
+ * 429 の窓で「取りに行かなかった」ことを、配信元から受けた 429 と見分けられる形で返す。
+ *
+ * **呼び出し側が利用者へ伝える内容が違う。** 受けた側は「配信元から断られた」で、こちらは
+ * 「こちらの判断で待っている」—— 混ぜると**待てば取れるものが恒久的な喪失として**
+ * 記録（`log.error`）と画面に出る。アーカイブ本体の側は 1 巡目でこの分離を入れたが、
+ * 電文本体の側が取り残されていた（2 巡目の指摘）。
+ */
+describe('429 の窓による見送りを、配信元から受けた 429 と見分ける', () => {
+  const KEY = 'valid-key'
+  const rlUrl = (id: string) => `https://data.api.dmdata.jp/v1/${id}`
+  /**
+   * 同時要求のまとめ（`inFlight`）から外れるのを待つ。
+   *
+   * **`await` した直後にはまだ残っている**（登録を外すのは解決後のマイクロタスク）。
+   * 待たずに同じ id を要求すると「まとめ」として 1 回目の結果が返り、**窓を見に行かない**。
+   * 上の describe にも同じヘルパーがあるが、スコープが別なのでここにも置く。
+   */
+  const settle = () => new Promise((r) => setTimeout(r, 0))
+
+  beforeEach(() => {
+    resetRateLimitsForTest()
+    resetTelegramBodyStatsForTest()
+    setBodyGateIntervalForTest(0)
+  })
+
+  // 正: 1 度 429 を受けたら、次は投げずに窓の時刻を返す。
+  it('窓が立っているあいだは rateLimitedUntil に時刻が入る', async () => {
+    const spy = vi.fn(async () => ({ ok: false, status: 429 }) as unknown as Response)
+    vi.stubGlobal('fetch', spy)
+
+    // 1 回目: 配信元から 429 を受ける（投げている）
+    const first = await fetchTelegramText(KEY, rlUrl('rl000001'))
+    expect(first.status).toBe(429)
+    expect(first.rateLimitedUntil).toBeNull()
+    expect(spy).toHaveBeenCalledTimes(1)
+
+    // 2 回目: 窓が明けていないので投げない
+    await settle()
+    const second = await fetchTelegramText(KEY, rlUrl('rl000001'))
+    expect(second.status).toBe(429)
+    expect(second.rateLimitedUntil).not.toBeNull()
+    expect(second.rateLimitedUntil).toBeGreaterThan(Date.now())
+    // **投げていないことが要点**（窓の意味はここにある）
+    expect(spy).toHaveBeenCalledTimes(1)
+  })
+
+  // 対照: 429 以外の失敗では窓を立てない（次の操作で取り直してよい）。
+  it('429 以外の失敗では窓を立てない', async () => {
+    const spy = vi.fn(async () => ({ ok: false, status: 500 }) as unknown as Response)
+    vi.stubGlobal('fetch', spy)
+
+    await fetchTelegramText(KEY, rlUrl('rl000002'))
+    await settle()
+    const second = await fetchTelegramText(KEY, rlUrl('rl000002'))
+
+    expect(second.rateLimitedUntil).toBeNull()
+    expect(spy).toHaveBeenCalledTimes(2)
+  })
+
+  // 安全弁: 見送りを `failed` に数えない。
+  // **`fetched + fromCache + failed` が実際の試行数と合わなくなる** —— この統計は
+  // 削減できたかの判断に使うので、投げていないものを失敗に混ぜると読めなくなる。
+  it('見送りは failed ではなく rateLimited に数える', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 429 }) as unknown as Response))
+
+    await fetchTelegramText(KEY, rlUrl('rl000003'))
+    const afterFirst = telegramBodyStats()
+    expect(afterFirst.failed).toBe(1)
+    expect(afterFirst.rateLimited).toBe(0)
+
+    await settle()
+    await fetchTelegramText(KEY, rlUrl('rl000003'))
+    const afterSecond = telegramBodyStats()
+    // 投げていないので `failed` は増えない
+    expect(afterSecond.failed).toBe(1)
+    expect(afterSecond.rateLimited).toBe(1)
+  })
+
+  // 正: バイト列版（二進電文）も同じ窓を共有する。
+  // **同じエンドポイントなので、別々に持つと合算で上限を超える。**
+  it('バイト列版もテキスト版と同じ窓を共有する', async () => {
+    const spy = vi.fn(async () => ({ ok: false, status: 429 }) as unknown as Response)
+    vi.stubGlobal('fetch', spy)
+
+    // テキスト版で 429 を受けて窓を立てる
+    await fetchTelegramText(KEY, rlUrl('rl000004'))
+    expect(spy).toHaveBeenCalledTimes(1)
+
+    await settle()
+    // 同じ id をバイト列版で取ろうとしても、窓が明けていないので投げない
+    const bytes = await fetchTelegramBytes(KEY, rlUrl('rl000004'))
+    expect(bytes.bytes).toBeNull()
+    expect(bytes.rateLimitedUntil).not.toBeNull()
+    expect(spy).toHaveBeenCalledTimes(1)
   })
 })

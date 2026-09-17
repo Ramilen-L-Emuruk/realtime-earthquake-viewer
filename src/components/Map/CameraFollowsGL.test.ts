@@ -4,23 +4,20 @@ import { createElement as h } from 'react'
 import { render, cleanup, act } from '@testing-library/react'
 import type * as maplibregl from 'maplibre-gl'
 import { MapGLContext } from './mapGLContext'
-import { FitToCandidateGL, FitToDetectionGL, FitToEEWGL, TsunamiFitGL, FocusObsGL, FocusTargetGL } from './CameraFollowsGL'
+import { FitToCandidateGL, FitToDetectionGL, FitToEEWGL, TsunamiFitGL, FocusObsGL, FocusTargetGL, QuakeFitGL } from './CameraFollowsGL'
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
 import type { LatLng } from '../../utils/stationCoords'
 import type { EEWAlert } from '../../types/earthquake'
 import type { ShakeFocus } from './mapTypes'
 import type { PsWaveCircle } from '../../services/kyoshin'
 import { openPopupAt, closeMapPopup } from './gl/popupRegistry'
-import { fitMaxZoom, focusMaxZoom } from './gl/camera'
+import { distributionMaxZoom, fitMaxZoom, focusMaxZoom } from './gl/camera'
 
 // 「確定検知の終了」と「候補クラスタの継続」が重なる遷移を固定する回帰テスト。
 // この組み合わせはタイミング依存で、実機（Playwright）では再現が難しい。過去に 2 度作り込んでいる:
 //   1. 候補へ寄せた直後に、検知終了の fitJapan がそれを上書きして一瞬ちらつく
 //   2. 1 を直す過程で、どちらのコンポーネントもカメラを動かさず、終了した検知の位置に取り残される
 // カメラを動かす API の呼び出しだけを観測し、どちらの状態にも戻らないことを保証する。
-//
-// JSX を使わず createElement で組むのは、vitest の include が `src/**/*.test.ts` に限られており
-// `.tsx` を拾わないため（既存の useReplayController.wiring.test.ts と同じ方針）。
 
 // maplibre-gl の実体は jsdom ではロードできない（WebGL・Worker 依存でワーカーが応答しなくなる）。
 // gl/camera.ts が実行時に使うのは LngLatBounds だけなので、矩形の合成と読み出しだけを持つ代替に差し替える。
@@ -75,7 +72,8 @@ const POINTS_PADDING = 60
 const INTERACTION_HOLD_SEC = 30
 
 // maplibregl.Map を模したフェイク（gl/camera.test.ts と同じ方針）。カメラ操作系は spy にして
-// 呼び出しを観測し、イベント API は登録と発火だけを再現する。
+// 呼び出しを観測し、イベント API は登録と発火だけを再現する。**レイヤーの出し入れは見ない**——
+// その用途の代役は `testing/fakeMapGL.ts` にあり、代役どうしの役割分担はそちらの冒頭に書いてある。
 //
 // 収め直しフォローは「寄り直したらズームが何段深まるか」と「中心がどれだけ動くか」で発火を
 // 決める（`refitDeltaForBounds`）。着地後に両方が 0 になって発火が止まることまで検証したいので、
@@ -130,6 +128,13 @@ function createFakeMap({ zoom: initialZoom = 4, fitZoom: initialFitZoom = 7 }: {
    * 残骸を後続の別経路の `flyTo`（1 点への直行など）が拾って寄り先を偽る。
    */
   const moves: { padding?: number; west?: number }[] = []
+  /**
+   * `cameraForBounds` へ渡された寄り上限の時系列（寄り先ごとの上限の選び方を観測する）。
+   *
+   * **寄り直しの判定（`refitDeltaForBounds`）での呼び出しも記録される**（上の `pendingFit` の
+   * 説明を参照）。フィットの分だけを見たいテストでは、呼び出し回数も併せて確かめること。
+   */
+  const boundsMaxZooms: (number | undefined)[] = []
   let pendingFit: { padding?: number; west: number; center: [number, number] } | null = null
   // 直近のカメラ操作へ渡されたイベントデータ（`beginProgrammaticFlight` の戻り値）。
   // `completeFlight` が moveend でそのまま返し、飛行ロックを解かせる。
@@ -224,12 +229,16 @@ function createFakeMap({ zoom: initialZoom = 4, fitZoom: initialFitZoom = 7 }: {
     },
     // 着地ズームは `fitZoom`（上記）を返す。中心は本物と同じく目標の中心を返す
     // （収め直しフォローの「中心の移動量」がこれで決まる）。
-    cameraForBounds: (bounds: FakeBoundsLike, opts?: { padding?: number }) => {
+    cameraForBounds: (bounds: FakeBoundsLike, opts?: { padding?: number; maxZoom?: number }) => {
       const target = boundsCenter(bounds)
       pendingFit = { padding: opts?.padding, west: boundsWest(bounds), center: target }
+      // 着地ズームは固定値を返す（このフェイクは投影を持たない）ので、**寄り上限が効いたかは
+      // 着地からは読めない**。どの上限を渡したかをそのまま記録して観測できるようにする。
+      boundsMaxZooms.push(opts?.maxZoom)
       return { center: target, zoom: fitZoom }
     },
     moves,
+    boundsMaxZooms,
     /** 検知範囲が狭まって（広がって）、寄り直しの着地が深く（浅く）なった状況を作る。 */
     setFitZoom: (z: number) => {
       fitZoom = z
@@ -2229,5 +2238,43 @@ describe('一覧の行クリックによる地点フォーカス', () => {
 
     expect(openPopupAt).toHaveBeenCalledTimes(1)
     expect(openPopupAt).toHaveBeenCalledWith(map, [140.0, 38.0])
+  })
+})
+
+// ── 地震モードのフィット（QuakeFitGL）の寄り上限 ────────────────────────────────
+// 寄り先の性質ごとに上限を選び分ける。震度分布モードの寄り先は「気象庁の推計が塗ってある範囲」
+// そのもので、自動フィットの上限（視野の短辺 400km）を当てると分布が数十 km の地震では面が
+// 小さいまま残る。上限の値は `gl/zoomConstants.test.ts`、どの寄り先にどちらを当てるかは
+// `useQuakeLayerData.regionRollup.test.ts` が固定しており、ここで見るのは**その選択が
+// 実際にカメラへ渡っているか**。
+/** `cameraForBounds` へ渡された寄り上限（どの上限を選んだかの判別に使う）。 */
+function boundsMaxZooms(map: maplibregl.Map): (number | undefined)[] {
+  return (map as unknown as { boundsMaxZooms: (number | undefined)[] }).boundsMaxZooms
+}
+
+function quakeFitHarness(map: maplibregl.Map, zoomPolicy: 'auto' | 'distribution') {
+  return h(
+    MapGLContext.Provider,
+    { value: map },
+    h(QuakeFitGL, {
+      signature: `sig-${zoomPolicy}`,
+      positions: [[32.6, 130.7], [32.7, 130.8]] as LatLng[],
+      zoomPolicy,
+      lastConsumedTickRef: { current: 0 },
+    }),
+  )
+}
+
+describe('地震モードのフィットの寄り上限', () => {
+  it('分布の範囲へ寄せるときは分布向けの上限を渡す', () => {
+    const map = createFakeMap()
+    render(quakeFitHarness(map, 'distribution'))
+    expect(boundsMaxZooms(map)).toEqual([distributionMaxZoom(map)])
+  })
+
+  it('対照: いつもの寄り先なら自動フィットの上限を渡す', () => {
+    const map = createFakeMap()
+    render(quakeFitHarness(map, 'auto'))
+    expect(boundsMaxZooms(map)).toEqual([fitMaxZoom(map)])
   })
 })

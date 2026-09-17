@@ -18,6 +18,9 @@ import type { ReplayEntry, ReplayFetchResult, QuakeHistoryResult } from '../type
 import type { JMAQuake } from '../types/earthquake'
 import { serverNow, serverDate } from '../utils/clock'
 import { log } from '../utils/logger'
+import {
+  type TelegramLoss, createEmptyTelegramLoss, addTelegramLoss, describeTelegramLossParts,
+} from '../utils/telegramLoss'
 
 // この 3 つを公開しているのは、結線テストが取得の日付範囲と「先読みが走る/走らない」境界を
 // これらから組み立てるため。テスト側で値を複製すると、しきい値を広げたときにテストは
@@ -160,13 +163,10 @@ export function createSessionGuard(): SessionGuard {
 /**
  * このセッションで取りこぼした総量。再生を止めるまで積み上げる。
  *
- * 一度失われた電文は後続の取得が成功しても戻らない。回復しうる一過性のエラーと違い、
- * 確定した事実なので、成功で上書きして消してはいけない。
+ * 積み上げ方（電文の通数と取得元の集合）は**ライブの履歴取得と共有する**
+ * （`utils/telegramLoss.ts`）。こちらは先読みの失敗だけを足す。
  */
-export interface ReplayLoss {
-  skippedTelegrams: number
-  /** 読めなかったアーカイブの URL。同じアーカイブを複数回読むため集合で持つ。 */
-  failedArchives: Set<string>
+export interface ReplayLoss extends TelegramLoss {
   /**
    * 先読みに失敗した区間の数。
    *
@@ -179,14 +179,12 @@ export interface ReplayLoss {
 }
 
 export function createEmptyLoss(): ReplayLoss {
-  return { skippedTelegrams: 0, failedArchives: new Set(), failedPrefetches: 0 }
+  return { ...createEmptyTelegramLoss(), failedPrefetches: 0 }
 }
 
-/** 取得結果を損失に足し込む（URL は集合なので二重計上されない）。 */
+/** 取得結果を損失に足し込む（取得元は集合なので二重計上されない）。 */
 export function addLoss(loss: ReplayLoss, skipped: number, failedArchiveUrls: string[]): ReplayLoss {
-  const failedArchives = new Set(loss.failedArchives)
-  for (const url of failedArchiveUrls) failedArchives.add(url)
-  return { ...loss, skippedTelegrams: loss.skippedTelegrams + skipped, failedArchives }
+  return addTelegramLoss(loss, skipped, failedArchiveUrls)
 }
 
 /** 先読み 1 区間ぶんの失敗を損失に足し込む。 */
@@ -197,17 +195,14 @@ export function addFailedPrefetch(loss: ReplayLoss): ReplayLoss {
 /**
  * 損失から UI 用のメッセージを組み立てる。何も欠けていなければ null。
  *
- * アーカイブ単位の失敗（丸ごと読めなかった日）と電文単位の失敗（1 通ずつの破損）は
- * 粒度が違うので分けて数える。前者は「その日の電文が何通あったか」すら分からないため、
- * 電文数に合算できない。
+ * 取得元と電文の言い方は `describeTelegramLossParts` に任せる（ライブの履歴取得と同じ語を
+ * 使う。片方だけ言い換えると、同じ障害が経路によって別の重さに見える）。
  *
  * 「再生は継続中」を必ず添えるのは、これが失敗通知と同じ赤字で出るため。
  * 添えないと再生が止まったと誤読される。
  */
 export function formatLossNotice(loss: ReplayLoss): string | null {
-  const parts: string[] = []
-  if (loss.failedArchives.size > 0) parts.push(`${loss.failedArchives.size} 件の取得元`)
-  if (loss.skippedTelegrams > 0) parts.push(`${loss.skippedTelegrams} 件の電文`)
+  const parts = describeTelegramLossParts(loss)
   if (loss.failedPrefetches > 0) parts.push(`${loss.failedPrefetches} 区間ぶんの先読み`)
   if (parts.length === 0) return null
   return `${parts.join('・')}を取り込めませんでした（再生は継続中。詳細はコンソール）`

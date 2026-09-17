@@ -10,9 +10,6 @@
 // ここを固定するのは、以前カード側が同じ入力から同じ計算を自分で組み立てていたため。
 // 「同じ結果になること」に頼る形だと、片方の実装を変えた時点で黙って食い違う。点列を
 // props で受け取る形に変えた今、その受け取り方が壊れていないことを守るのがこのテスト。
-//
-// JSX を使わず createElement で書くのは、このプロジェクトのテストが `src/**/*.test.ts` のみを
-// 対象にしているため（拡張子を .tsx にすると拾われない）。
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { createElement } from 'react'
 import { render, cleanup, screen, act } from '@testing-library/react'

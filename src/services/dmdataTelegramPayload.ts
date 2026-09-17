@@ -10,7 +10,7 @@ import {
   parseNankaiFromXml, parseNankaiCommentaryFromXml, parseVyse60FromXml,
   parseQuakeNoticeFromXml, parseEarthquakeCountFromXml,
 } from './dmdataParser'
-import { decodeEstimatedIntensity } from '../utils/bufrEstimatedIntensity'
+import { decodeEstimatedIntensity, TELEGRAM_KIND_NORMAL } from '../utils/bufrEstimatedIntensity'
 import { log } from '../utils/logger'
 import type { ReplayPayload } from '../types/replay'
 
@@ -177,15 +177,84 @@ export function buildXmlPayload(headType: string, xml: string): ReplayPayload | 
  * @param id 電文 id
  * @param time 発表時刻
  */
+/**
+ * 二進電文から作れるペイロード。
+ *
+ * **ここへ種別を足すと `BINARY_TEST_PREDICATES` が型エラーになる。** 非 XML 電文は `test`
+ * フラグで見分けられないので（`isFilteredBinaryTelegram` の説明）、抑制の判定を書き足し
+ * 忘れると**試験・訓練の配信がそのまま画面へ出る** —— しかも例外もログも出ないので、
+ * 気づく手がかりが無い。
+ */
+export type BinaryReplayPayload = Extract<ReplayPayload, { kind: 'estimatedIntensity' }>
+
+/**
+ * 種別ごとの「試験・訓練の配信か」の判定。**網羅の見張りを兼ねる。**
+ *
+ * `satisfies` が `BinaryReplayPayload` の全種別を要求するので、**種別を足すとここが
+ * 型エラーになる**。
+ *
+ * **持たせるのは述語そのもの。** 種別の名前だけを並べた表にすると、型エラーを消すために
+ * キーを 1 行足すだけで通ってしまい、**判定を書き忘れたまま新しい種別が素通しする**
+ * （非 XML 電文は `test` フラグで見分けられないので、素通しは試験報が画面へ出ることを意味する）。
+ * 述語を要求すれば、書かずに型検査を通す道が無い。
+ *
+ * **判別可能ユニオンの `switch` では見張れない。** いまは種別が 1 つだけで、絞り込みは
+ * ユニオンにしか効かないため `default` 節の `never` チェックが成立しない
+ * （2 つ目が入るまで型検査が止まらないので、いちばん必要なときに効かない）。
+ */
+const BINARY_TEST_PREDICATES = {
+  // 推計震度分布図（IXAC41）。本文の電文の種類（BUFR の `0-01-242`）で見分ける
+  estimatedIntensity: p => p.data.telegramKind !== TELEGRAM_KIND_NORMAL,
+} satisfies {
+  [K in BinaryReplayPayload['kind']]: (payload: Extract<BinaryReplayPayload, { kind: K }>) => boolean
+}
+
 export function buildBinaryPayload(
   headType: string,
   bytes: Uint8Array,
   id: string,
   time: string,
-): ReplayPayload | null {
+): BinaryReplayPayload | null {
   if (ESTIMATED_INTENSITY_TYPES.has(headType)) {
     const data = decodeEstimatedIntensity(bytes, id, time)
     return data ? { kind: 'estimatedIntensity', data } : null
   }
   return null
+}
+
+/**
+ * 二進電文が試験・訓練の配信で、いま流すべきでないかを判定する。
+ *
+ * **非 XML 電文では、一覧・WebSocket の `test` フラグで判定できない。** 配信元の
+ * リファレンスが 2 つのことを別々に明記している。
+ *
+ * - `socket.start` の `test` パラメータ:
+ *   「XML電文以外のテスト配信は no 時も配信されます。本文中を参照するようにしてください。」
+ *   —— つまり `test: "no"`（このアプリの既定）でも**届く**
+ * - `telegram.list` / `websocket` の `test` フィールド:
+ *   「XML電文以外のテスト配信は常に false になります。本文中を参照するようにしてください。」
+ *   —— つまり届いたものを**見分けられない**
+ *
+ * **2 つが揃うと、XML 側の抑制（`head.test` を見るもの）は原理的に発火しない。**
+ * だから本文から読んだ電文の種類（BUFR の `0-01-242`）で判定する。
+ *
+ * **判定をここへ集約するのは、取得元が 3 つあるため**（ライブ・アーカイブ経路・当日経路）。
+ * 呼び出し側ごとに書くと、経路によって試験報が出たり出なかったりする。
+ *
+ * **戻り値を `buildBinaryPayload` の `null` に混ぜないこと。** あちらの `null` は
+ * 「読み取りに失敗した」で、呼び出し元 3 箇所がそれを異常として記録する。試験報は正常な
+ * 配信なので、同じ値で返すと**記録が「読み取りに失敗」と嘘をつく**。
+ *
+ * **引数は `BinaryReplayPayload` に絞ってある。** `ReplayPayload` で受けると、下の `switch` が
+ * 二進以外の種別まで抱えることになり「網羅していない」を型検査に見せられない。
+ *
+ * @param payload `buildBinaryPayload` が返したペイロード
+ * @param includeTest 設定「試験報を受信（検証用）」が有効か
+ * @returns 流さないなら true
+ */
+export function isFilteredBinaryTelegram(payload: BinaryReplayPayload, includeTest: boolean): boolean {
+  if (includeTest) return false
+  // 種別ごとの述語を引く。**表に無い種別は型検査が先に止めるので、ここへは来ない**
+  const predicate = BINARY_TEST_PREDICATES[payload.kind] as (p: BinaryReplayPayload) => boolean
+  return predicate(payload)
 }

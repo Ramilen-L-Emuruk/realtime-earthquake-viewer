@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { collectUnlistedStations, MIN_READABLE_REVISIONS, STATION_SOURCE_URL, stationKeyOf } from './stationSource.mjs'
+// @ts-expect-error -- 型定義を持たない .mjs
+import { setRateGateDisabledForTest } from './rateGate.mjs'
 
 // 上流のリビジョン履歴を辿る処理（`collectUnlistedStations`）を、合成したリビジョン列で検証する。
 //
@@ -77,12 +82,29 @@ function revisionsWith(options: { newer?: Station[]; retired?: Station[]; olderC
   return list
 }
 
+/**
+ * リビジョンの中身の控えの置き場所。**テストごとに隔離する。**
+ *
+ * リビジョン ID を合成で固定しているので（`revisionsWith`）、控えを共有すると 2 件目以降が
+ * 前のテストの中身を読み、`stubUpstream` でモックした応答が使われない。実際にそうなって
+ * 7 件が落ちた。実装が置き場所を関数で解決している（`revisionCacheDir`）のはこのため。
+ */
+let revisionCacheDir: string
+
 beforeEach(() => {
+  revisionCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'station-revision-cache-'))
+  process.env.STATION_REVISION_CACHE = revisionCacheDir
+  // **取得の間隔は飛ばす。** 22 版 × 200ms を実時間で待つとこの 1 ファイルで 44 秒かかる。
+  // 間隔そのものの検証は `rateGate.test.ts` の担当（あちらでは無効化しない）。
+  setRateGateDisabledForTest(true)
   vi.spyOn(console, 'log').mockImplementation(() => {})
   vi.spyOn(console, 'warn').mockImplementation(() => {})
 })
 
 afterEach(() => {
+  setRateGateDisabledForTest(false)
+  delete process.env.STATION_REVISION_CACHE
+  fs.rmSync(revisionCacheDir, { recursive: true, force: true })
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
@@ -192,5 +214,60 @@ describe('collectUnlistedStations', () => {
     const unlisted = await collectUnlistedStations(LISTED)
 
     expect([...unlisted.keys()]).toContain('宮崎県|廃止された点')
+  })
+})
+
+// リビジョンの中身の控え。**期限を持たない**（コミットハッシュで固定されているので不変）。
+//
+// 控えが無いと、座標側（`build-station-coords.mjs`）と読み側（`build-station-readings.ts`）が
+// 同じ履歴をそれぞれ辿るため、続けて実行するだけで取得がリビジョン数 × 2 回になる。
+describe('リビジョンの中身の控え', () => {
+  /** リビジョンの中身（raw）を取りに行った回数。上流の一覧（commits API）は数えない。 */
+  function rawFetchCount(): number {
+    const mock = (globalThis.fetch as unknown as { mock?: { calls: unknown[][] } }).mock
+    if (!mock) throw new Error('fetch がモックされていません')
+    return mock.calls.filter(c => String(c[0]).includes('/raw/')).length
+  }
+
+  // 正: 2 回目は 1 件も取りに行かない
+  it('正: 2 回目は控えから読んで取得しない', async () => {
+    stubUpstream(revisionsWith())
+    await collectUnlistedStations(LISTED)
+    expect(rawFetchCount()).toBeGreaterThan(0)
+
+    // 控えのディレクトリは同じまま、モックを張り直して回数を 0 から数える
+    stubUpstream(revisionsWith())
+    await collectUnlistedStations(LISTED)
+
+    expect(rawFetchCount()).toBe(0)
+  })
+
+  // 対照: 控えが無ければ取りに行く（控えを消したら元の回数へ戻ること）
+  it('対照: 控えを消せば取り直す', async () => {
+    stubUpstream(revisionsWith())
+    await collectUnlistedStations(LISTED)
+    const first = rawFetchCount()
+
+    fs.rmSync(revisionCacheDir, { recursive: true, force: true })
+    stubUpstream(revisionsWith())
+    await collectUnlistedStations(LISTED)
+
+    expect(rawFetchCount()).toBe(first)
+  })
+
+  // 安全弁: **JSON として読めない応答は控えない。** 焼き付けると、以後何度走っても
+  // 同じ壊れたファイルを読み続ける（取り直す契機がどこにも無い）。
+  // 上流には保存が途中で切れた版が実在するので、その 1 版だけは毎回取り直す形になる。
+  it('安全弁: JSON として読めない版は控えないので 2 回目も取りに行く', async () => {
+    const broken = revisionsWith()
+    broken[broken.length - 1].body = '{壊れた本文'
+    stubUpstream(broken)
+    await collectUnlistedStations(LISTED)
+
+    stubUpstream(broken)
+    await collectUnlistedStations(LISTED)
+
+    // 読めた版は控えから、壊れた 1 版だけ取りに行く
+    expect(rawFetchCount()).toBe(1)
   })
 })
