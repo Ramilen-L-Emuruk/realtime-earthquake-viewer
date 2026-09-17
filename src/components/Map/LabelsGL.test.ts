@@ -15,8 +15,6 @@
 // 順序を入れ替えても 200ms のデバウンスが明ける頃には全部そろっている。実際、倍率 effect の同期
 // 要求を削ってもこのテストは 3 件とも通る（＝マウント時に空振りしていることの裏返し）。順序そのものを
 // 守りたいなら、effect の間にマイクロタスク境界を挟む別の作りが要る。
-//
-// JSX を使わないのは、vitest の include が `src/**/*.test.ts` だけを拾うため（`.tsx` は走らない）。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createElement } from 'react'
 import { render, cleanup } from '@testing-library/react'
@@ -53,7 +51,13 @@ const PANE_HEIGHT = 600
 const CENTER = { lng: 135.4, lat: 35 }
 const PX_PER_DEG = 30
 
-/** 判定が走った回数を数えられる最小の map。判定は queryRenderedFeatures の呼び出しで観測する。 */
+/**
+ * 判定が走った回数を数えられる最小の map。判定は queryRenderedFeatures の呼び出しで観測する。
+ *
+ * **`testing/fakeMapGL.ts` の器へは寄せていない。** `getLayer` の意味が逆で（あちらは `addLayer` した
+ * id を返す台帳式。こちらは判定対象のレイヤーが 1 つ在ることだけを表す固定値）、台帳式にすると
+ * 判定対象が 0 件になって重なり判定が 1 回も走らない。代役どうしの役割分担はあちらの冒頭。
+ */
 function fakeMap() {
   const sources = new Map<string, { setData: ReturnType<typeof vi.fn> }>()
   const handlers = new Map<string, (() => void)[]>()

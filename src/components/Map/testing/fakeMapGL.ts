@@ -10,14 +10,28 @@
 // コンポーネントが別のメソッドへ移ったことに気づけず、テストだけが通る状態になる。
 // 新しいコンポーネントのテストを足すときは、落ちたぶんをここへ追加していけばよい。
 //
-// **同じ役割の代役が、これとは別に 2 つある。** 用途が違うので統合していない。
-//   - `CameraFollowsGL.test.ts` の `createFakeMap()` —— カメラ操作（`flyTo`・`fitBounds`）を
-//     spy にして呼び出しを観測するためのもの。視野やズームの状態を持ち、レイヤーの出し入れは見ない
-//   - `LabelsGL.test.ts` のインラインのスタブ —— レイヤーとソースの出し入れを見る点はこちらと同じで、
-//     加えて `getContainer` でペイン寸法を与える（ラベルの閾値が視野の実距離で決まるため）
+// **同じ役割の代役が他にもある。** 分かれる軸は 2 つ——**どこへ渡すか**（`MapGLContext` か、
+// `gl/*.ts` の純関数へ直接か）と、**何を観測するか**。
 //
-// **`LabelsGL.test.ts` の側とは役割が重なる。** 寄せるなら向こうをこちらへ移す形になるが、
-// ペイン寸法を持つ必要があり、このファイルにその口はまだ無い。
+//   `MapGLContext` へ渡すもの（jsdom）—— 統合の論点があるのはこの 3 つ
+//     - これ —— レイヤーとソースの出し入れ
+//     - `LabelsGL.test.ts` の `fakeMap()` —— 重なり判定が走った回数（`queryRenderedFeatures`）と、
+//       その結果の書き戻し（`setData`）。ペイン寸法と投影も持つ（ラベルの閾値が視野の実距離で決まるため）
+//     - `CameraFollowsGL.test.ts` の `createFakeMap()` —— カメラ操作の時系列。視野とズームの状態を
+//       実際に動かす。レイヤーの出し入れは見ない
+//
+//   `gl/*.ts` の純関数へ直接渡すもの（node）—— `gl/*.test.ts` が、対象の関数ごとに別々の代役を
+//   持つ。**ここへ一覧も総数も書かない**——形も粒度もまちまちで（ヘルパー関数のものもあれば
+//   その場のオブジェクトリテラルのものもある）、テストが増えるたび腐るため。数え上げたいときは
+//   `MapLibreMap` / `maplibregl.Map` へのキャストを grep すること
+//
+// **`LabelsGL.test.ts` とはレイヤー・ソースを扱う点だけが似ているが、寄せられない。** 理由は 3 つ。
+//   - `getLayer` の意味が逆。こちらは台帳を引く（`addLayer` した id が返る）。向こうは `addLayer` を
+//     台帳へ入れず、`getLayer` は「判定対象のレイヤーが 1 つ在る」ことだけを表す固定値を返す。
+//     台帳式へ寄せると判定対象が 0 件になり、重なり判定が 1 回も走らなくなる
+//   - `getSource` の返すものが違う（下記の `FakeMapMethods`）
+//   - 寄せるには `queryRenderedFeatures` と `project` をここへ生やすことになり、上記の
+//     「実際に通る経路で呼ぶメソッドだけ」が崩れる
 import type {
   CustomLayerInterface,
   LayerSpecification,
@@ -36,6 +50,12 @@ type MapEventHandler = (...args: never[]) => void
  */
 interface FakeMapMethods {
   addSource: (id: string, spec: SourceSpecification) => void
+  /**
+   * **本物と返すものが違う。** MapLibre の `getSource` が返すのは `GeoJSONSource` 等のオブジェクトで、
+   * `addSource` へ渡した spec ではない。いま使っている側が戻り値の中身を見ないので済んでいる。
+   * `getSource(id).setData(...)` を呼ぶコンポーネントのテストを足すときは本物の形へ直すこと
+   * （`LabelsGL.test.ts` の `fakeMap()` が既にその形になっている）。
+   */
   getSource: (id: string) => SourceSpecification | undefined
   removeSource: (id: string) => void
   addLayer: (layer: AnyLayer, beforeId?: string) => void
