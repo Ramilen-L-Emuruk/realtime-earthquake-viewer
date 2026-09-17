@@ -9,6 +9,7 @@
 //
 // チャンクの分割は手書きせず実物（`splitIntoChunks`）を通す。分割の条件を変えたときに、
 // テストだけが古い境界を前提に通り続けるのを防ぐため。
+import type { SpeechOutcome } from '../utils/voicevox'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
@@ -46,7 +47,7 @@ vi.mock('../utils/voicevox', async () => {
         if (!s.done) { s.done = true; s.finish() }
       }
       let finish!: () => void
-      const p = new Promise<void>(r => { finish = r })
+      const p = new Promise<SpeechOutcome>(r => { finish = () => r({ spoke: true }) })
       speeches.push({ text, chunks: actual.splitIntoChunks(text), onChunk, finish, done: false })
       return p
     },
@@ -184,7 +185,11 @@ describe('地震情報の続報: 既読は声になった分だけ進む', () =>
   ]
 
   // 2026-08-22 に反転: 変化のない続報でも**名乗りだけは読む**（黙ると電文が来たことが伝わらない）。
-  it('正: 最後まで鳴ったら、変化のない続報は名乗りだけで終える', async () => {
+  // 2026-09-17 に反転: 名乗りだけでは終えず「変わりはありません」まで言うようにした。
+  // **このテストの主旨は「地域を言い直さない」＝記録が最後まで進んだこと**で、そこは変わらない。
+  // 末尾の一文が出ること自体が、最後の断片に載せた観測点の記録（`withObservedRef`）が
+  // 完走時に届いている証拠にもなっている（届かなければ `unknown` で何も足さない）。
+  it('正: 最後まで鳴ったら、変化のない続報は地域を言い直さない', async () => {
     const handle = setup()
     handle(makeQuake(threeAreas))
     await settle()
@@ -193,7 +198,7 @@ describe('地震情報の続報: 既読は声になった分だけ進む', () =>
 
     handle(makeQuake(threeAreas))
     await settle()
-    expect(spokenTexts()[1]).toBe('震度速報が更新されました。')
+    expect(spokenTexts()[1]).toBe('震度速報が更新されました。観測した震度に変わりはありません。')
   })
 
   // 差分が空でも読み上げ文は非空（名乗りが残る）ため、タブ移動は**読み上げ追従が担う**。
