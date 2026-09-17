@@ -2906,6 +2906,52 @@ function joinTelegramTexts(parts: readonly (string | undefined)[]): string {
 }
 
 /**
+ * 気象庁が書いた文を既読と照合する単位（1 文）。
+ *
+ * **鍵と読み上げの素材を分けて持つ。** 本文は電文の改行を空白へ直したもので
+ * （`normalizeTelegramTextForSpeech`）、文と文のあいだにその空白が残る。鍵にまで含めると
+ * 同じ文が位置によって別物になるので鍵は前後を削り、読み上げには空白ごと使って元の間を保つ。
+ */
+export interface TelegramTextUnit {
+  /** 既読の照合に使う形（前後の空白を落とした 1 文）。 */
+  readonly key: string
+  /** 読み上げに使う形（後ろに続く空白まで含む。すべて繋ぐと元の本文に戻る）。 */
+  readonly text: string
+}
+
+/** 文の終わりとみなす記号。`joinTelegramTexts` がブロックの末尾に足す「。」と揃える。 */
+const SENTENCE_END = new Set(['。', '！', '？'])
+
+/**
+ * 気象庁が書いた文を、既読と照合できる単位（文）へ割る。
+ *
+ * **後読み（lookbehind）の正規表現を使わないこと。** 対応していない実行環境があり、
+ * そこでは読み込みの時点で落ちる ―― 読み上げどころかアプリ全体が動かなくなる。
+ *
+ * 繋ぎ直したときに元の本文へ戻ることは `ttsText.telegramTextUnits.test.ts` が実データで固定する。
+ */
+export function splitTelegramTextUnits(body: string): TelegramTextUnit[] {
+  const units: TelegramTextUnit[] = []
+  let start = 0
+  const push = (end: number) => {
+    const text = body.slice(start, end)
+    const key = text.trim()
+    if (key.length > 0) units.push({ key, text })
+    start = end
+  }
+  for (let i = 0; i < body.length; i++) {
+    if (!SENTENCE_END.has(body[i])) continue
+    // 句点に続く空白まで 1 単位へ入れる（繋ぎ直しても間が変わらないように）。
+    let end = i + 1
+    while (end < body.length && body[end] === ' ') end++
+    push(end)
+    i = end - 1
+  }
+  if (start < body.length) push(body.length)
+  return units
+}
+
+/**
  * {@link telegramTextToSpeak} が返す読み上げ。
  *
  * **`topic` を本体の読み上げと同じにしないこと。** 同じ主題だと、到来順の裁き
@@ -2915,8 +2961,24 @@ function joinTelegramTexts(parts: readonly (string | undefined)[]): string {
 export interface TelegramTextSpeech {
   /** 読み上げ文（前置き＋本文）。 */
   readonly text: string
-  /** 前置きを除いた本文。既読の照合に使う（前置きは種別ごとに固定なので混ぜると比較が鈍る）。 */
+  /** 前置きを除いた本文。**既読の照合は {@link units} で行う**（本文全体では下記の理由で粗すぎる）。 */
   readonly body: string
+  /** 種別ごとの前置き。未読の文だけを読むときに繋ぎ直すために持つ。 */
+  readonly prefix: string
+  /**
+   * 本文を文で割ったもの。**既読はこの単位で持つ。**
+   *
+   * 本文まるごとを鍵にすると、1 文が増減しただけで既に読んだ分まで読み直す。津波の避難行動の
+   * 固定付加文は等級が動くたびに節が増減するため、能登半島地震（2024-01-01）の実電文では
+   * 800 字超の同じ文が 3 回読まれていた（3 通目は 1 文も新しくない）。
+   */
+  readonly units: readonly TelegramTextUnit[]
+}
+
+/** 前置きと本文から {@link TelegramTextSpeech} を組む。本文が空なら読み上げない。 */
+function telegramSpeech(prefix: string, body: string): TelegramTextSpeech | null {
+  if (!body) return null
+  return { text: `${prefix}${body}`, body, prefix, units: splitTelegramTextUnits(body) }
 }
 
 /**
@@ -2962,7 +3024,7 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
         pick('quakeVarComment', event.varCommentText),
         pick('quakeFreeText', event.freeText),
       ])
-      return body ? { text: `地震情報について、気象庁の文をお伝えします。${body}`, body } : null
+      return telegramSpeech(`地震情報について、気象庁の文をお伝えします。`, body)
     }
     case 'tsunami': {
       // 解除・失効・取消とも `cancelled` が立つ（理由は上の EEW 分岐のコメント）。
@@ -2980,7 +3042,7 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
         ...(on('tsunamiVarComment') ? (event.warningComments ?? []).map(c => c.text) : []),
         pick('tsunamiFreeText', event.freeText),
       ])
-      return body ? { text: `津波情報について、気象庁の文をお伝えします。${body}`, body } : null
+      return telegramSpeech(`津波情報について、気象庁の文をお伝えします。`, body)
     }
     case 'lpgm': {
       // **他の種別と同じく明示して弾く。** いまは取消のパースが付加文を 1 つも持たないので
@@ -2993,7 +3055,7 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
         pick('lpgmVarComment', event.data.varCommentText),
         pick('lpgmFreeText', event.data.freeFormText),
       ])
-      return body ? { text: `長周期地震動観測情報について、気象庁の文をお伝えします。${body}`, body } : null
+      return telegramSpeech(`長周期地震動観測情報について、気象庁の文をお伝えします。`, body)
     }
     case 'nankai':
     case 'nankaiCommentary': {
@@ -3007,7 +3069,7 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
         pick(isAdvisory ? 'nankaiNextAdvisory' : 'nankaiCommentaryNextAdvisory', event.data.nextAdvisory),
       ])
       const label = isAdvisory ? '南海トラフ地震臨時情報' : '南海トラフ地震関連解説情報'
-      return body ? { text: `${label}について、気象庁の文をお伝えします。${body}`, body } : null
+      return telegramSpeech(`${label}について、気象庁の文をお伝えします。`, body)
     }
     case 'kohatsu': {
       if (event.data.cancelled) return null
@@ -3016,14 +3078,12 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
         pick('kohatsuBody', event.data.body),
         pick('kohatsuNextAdvisory', event.data.nextAdvisory),
       ])
-      return body
-        ? { text: `北海道・三陸沖後発地震注意情報について、気象庁の文をお伝えします。${body}`, body }
-        : null
+      return telegramSpeech(`北海道・三陸沖後発地震注意情報について、気象庁の文をお伝えします。`, body)
     }
     case 'earthquakeCount': {
       if (event.data.cancelled) return null
       const body = joinTelegramTexts([pick('earthquakeCountFreeText', event.data.freeText)])
-      return body ? { text: `地震回数に関する情報について、気象庁の文をお伝えします。${body}`, body } : null
+      return telegramSpeech(`地震回数に関する情報について、気象庁の文をお伝えします。`, body)
     }
     // 推計震度分布図は二進電文で、気象庁が書いた文を運ばない。
     case 'estimatedIntensity':

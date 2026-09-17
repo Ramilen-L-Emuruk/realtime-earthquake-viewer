@@ -1813,3 +1813,51 @@ describe('警報の対象地方: リプレイを途中から始めたとき', ()
     ])
   })
 })
+
+/**
+ * 録画モードでは、窓の手前（`restorePreWindowTracking`）で告知した震源も復元する。
+ *
+ * **これは既読の復元と向きが逆で、読み上げを増やす側。** 復元しないと「震源名が変わったか」の
+ * 比較対象が無く、区間の境目で震源が 50km 超動いても言い直さない —— 前の区間で旧震源を聞いた
+ * 視聴者には、震源が黙って入れ替わったように見える。
+ *
+ * **誤報取消の識別（`eewRetractedKeysRef`）はここで固定していない。** 効くのは「取消のあとに
+ * その EEW の報が届く」異常系だけで、正常な運用では起きない（→ eew-spec.md §10）。
+ */
+describe('録画モードの既読復元（緊急地震速報の震源）', () => {
+  /** 窓の手前の EEW を `silent` で流したことにする。 */
+  function preWindow(eew: EEWAlert) {
+    return [{ payload: { kind: 'event', event: eew }, replayTime: new Date(0), silent: true }] as never
+  }
+
+  // 正: 窓の手前で告知した震源から 50km 超動いたら言い直す。
+  it('窓の手前の震源からの大幅更新を言い直す', async () => {
+    const { handleLiveEvent, restore } = setupFull({ recordingMode: true })
+    restore(preWindow(makeEEW({ scaleTo: 50 })))
+    handleLiveEvent(makeEEW({ serial: 2, scaleTo: 50, hypocenter: { name: '種子島近海', latitude: 30.5, longitude: 131.0 } }))
+    await vi.advanceTimersByTimeAsync(2000)
+    await flushMicrotasks()
+    expect(spokenTexts().some(t => t.includes('震源を更新'))).toBe(true)
+  })
+
+  // 対照: 録画モードでなければ比較対象を持たないので言い直さない
+  //（窓から聞き始めた視聴者は旧震源を一度も聞いていない）。
+  it('録画モードでなければ、窓の手前の震源とは比べない', async () => {
+    const { handleLiveEvent, restore } = setupFull()
+    restore(preWindow(makeEEW({ scaleTo: 50 })))
+    handleLiveEvent(makeEEW({ serial: 2, scaleTo: 50, hypocenter: { name: '種子島近海', latitude: 30.5, longitude: 131.0 } }))
+    await vi.advanceTimersByTimeAsync(2000)
+    await flushMicrotasks()
+    expect(spokenTexts().some(t => t.includes('震源を更新'))).toBe(false)
+  })
+
+  // 安全弁: 復元しても、震源が動いていなければ言い直さない。
+  it('震源が同じなら言い直さない', async () => {
+    const { handleLiveEvent, restore } = setupFull({ recordingMode: true })
+    restore(preWindow(makeEEW({ scaleTo: 50 })))
+    handleLiveEvent(makeEEW({ serial: 2, scaleTo: 50 }))
+    await vi.advanceTimersByTimeAsync(2000)
+    await flushMicrotasks()
+    expect(spokenTexts().some(t => t.includes('震源を更新'))).toBe(false)
+  })
+})

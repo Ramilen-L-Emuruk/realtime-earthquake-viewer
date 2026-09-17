@@ -3,7 +3,7 @@ import type { AppEvent, ExtraLiveEvent, LiveEvent, EEWAlert, Hypocenter, JMAQuak
 import type { TabId } from '../components/IconNav'
 import type { AppSettings } from './useSettings'
 import type { AlertTitleApi } from './useAlertTitle'
-import type { ReplayEntry } from '../types/replay'
+import type { ReplayEntry, ReplayPayload } from '../types/replay'
 import { getIntensityLabelWithOrAbove, getIntensityLabelWithApproxAbove } from '../utils/intensity'
 import { isMaxScaleUnreceived } from '../utils/quakePoints'
 import { formatMagnitudeWithCondition } from '../utils/formatters'
@@ -23,7 +23,7 @@ import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewWarningRegionsTex
 import { joinSegments, plain, hasFollowTarget, hasUnreceivedFollowTarget, hasTelegramTextFollowTarget, TELEGRAM_TEXT_OPEN_TARGET_KINDS, telegramTextSubject, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
 import { log, createLogThrottle } from '../utils/logger'
 import { TAB_PRIORITY, type TabPriority } from '../utils/tabPriority'
-import { extractQuakeEventIdFromId, quakeEventKey, quakeKeyForLpgmEventId, sameQuakeEntry } from '../utils/quakeMerge'
+import { extractQuakeEventIdFromId, mergeQuakeInto, quakeEventKey, quakeKeyForLpgmEventId, sameQuakeEntry } from '../utils/quakeMerge'
 import { getAreaPrefIndexCache } from '../utils/stationCoords'
 
 // EEW 読み上げ第 2 フェーズ（予想値）のタイミング。
@@ -216,6 +216,15 @@ const MUTUAL_YIELD_SPEECH_MAX_WAIT_MS = 180000
  */
 const TELEGRAM_TEXT_SPEECH_RESERVE_DELAY_MS = maxTtsDelay() + 500
 
+/**
+ * 気象庁が書いた文の既読（`spokenTelegramTextRef`）を保つ件数の上限。超えたらまとめて捨てる。
+ *
+ * **数えるのは本文ではなく文。** 1 通で最大 29 文（実電文の津波の避難行動の固定付加文）、
+ * 能登半島地震の 1 日ぶん（178 通）を通しても 40 文ほどなので、この深さは数十日ぶんに相当する。
+ * 長期セッションで無制限に増えるのを防ぐためだけの歯止めで、捨てた直後は既読の文が読み直される。
+ */
+const TELEGRAM_TEXT_SPOKEN_MAX = 2000
+
 // 予想震度が付くのを待っている EEW があるとき、非 EEW 側が状況を見直す間隔。
 // この待機中は「これから話す」状態で、待つ相手の Promise がまだ存在しないため、
 // 短く眠って作り直す（`EEW_PHASE2_MAX_WAIT_MS` の 3 秒に対して十分細かい刻み）。
@@ -355,6 +364,101 @@ function quakeSpokenStateFor(states: Map<string, QuakeSpokenState>, eventKey: st
   const created = createQuakeSpokenState()
   states.set(eventKey, created)
   return created
+}
+
+/**
+ * 窓の手前の電文が運ぶ「気象庁が書いた文」を既読へ入れる（録画モードの復元専用）。
+ *
+ * **読み上げるときと同じ関数で本文を組むこと。** 別に組むと、設定でブロックを切っている端末で
+ * 鍵が食い違い、既読が効かない。
+ */
+function rememberTelegramTextAsSpoken(payload: ReplayPayload, spoken: Set<string>, opts: TtsSpeechOptions): void {
+  // 読み上げの経路（`LiveEvent`）に乗らない 2 種別はここでも対象外。「地震・津波に関するお知らせ」は
+  // 流さないと決めた種別で、推計震度分布図は気象庁が書いた文を運ばない（二進電文）。
+  if (payload.kind === 'quakeNotice' || payload.kind === 'estimatedIntensity') return
+  const event: LiveEvent = payload.kind === 'event' ? payload.event : payload
+  const speech = telegramTextToSpeak(event, opts)
+  if (!speech) return
+  for (const u of speech.units) spoken.add(u.key)
+}
+
+/**
+ * 窓の手前の地震に、読み上げの主題を割り当てる関数を作る（録画モードの復元専用）。
+ *
+ * **ライブ経路と同じカードを組み立てて、その鍵を使う。** 主題は地震カードの `eventKey` から作られ、
+ * その値は最初に処理された報で固定される（`mergeQuakeInto`）。生の電文へ `quakeEventKey` を直に
+ * 当てると、識別子を持たない経路（P2PQuake）では `p2p:<地震の時刻>#<その報の id>` になり、
+ * **続報のたびに別の鍵**になる。窓の手前に同じ地震の報が 2 通以上あると、2 通目以降の記憶が
+ * ライブ経路から参照されない鍵の下へ入り、その報で初めて現れた地域が区間の最初の続報で
+ * 読み直される —— この復元が消したかった症状そのものが、standard 版でだけ残る。
+ *
+ * **突き合わせる相手を自前で最新化しないこと。** 初出の報を握り続けると、`sameQuakeEntry` の
+ * 震源名の照合が「片方が空なら矛盾なし」へ倒れて**同じ分の別の地震を吸い込み**、かといって
+ * 「空 → 判明」のときだけ差し替える形では訂正報・震源要素更新による**名前の再変更に追随できない**。
+ * どちらも「カードがどう育つか」を部分的に真似たことが原因なので、真似ずに `mergeQuakeInto` を
+ * そのまま通す。育て方の規律はあちらが単一情報源で、ライブ経路と食い違いようがなくなる。
+ *
+ * **地震の時刻で束ねる。** `sameQuakeEntry` は時刻の一致を必ず要求するので、束ねても判定は
+ * 変わらず、突き合わせる相手が同じ時刻のものだけになる。群発の 24 時間を遡る復元では窓の手前の
+ * 地震が数百件になりうるため、総当たりだと二乗で効く。
+ *
+ * 同じ分に起きた別の地震を分離しきれない限界は残るが、それはライブ経路と同じもの
+ * （→ docs/spec/quake-spec.md §6.1）。
+ *
+ * **ここで組むカードは主題を決めるための使い捨てで、画面の状態には入らない。** 同じ電文は
+ * このあと `loadReplayEvents` からも流れてカードになる（そちらが画面に出るもの）。そのため
+ * `mergeQuakeInto` が出す診断ログが同じ報について 2 度出ることがあるが、実害は無い。
+ */
+export function createPreWindowQuakeTopics(): (quake: JMAQuake) => string {
+  const buckets = new Map<string, JMAQuake[]>()
+  return (quake: JMAQuake): string => {
+    const bucket = buckets.get(quake.earthquake.time) ?? []
+    const index = bucket.findIndex(card => sameQuakeEntry(card, quake, getAreaPrefIndexCache()))
+    if (index >= 0) {
+      bucket[index] = mergeQuakeInto(bucket[index], quake)
+      return `quake:${quakeEventKey(bucket[index])}`
+    }
+    const card = mergeQuakeInto(undefined, quake)
+    bucket.push(card)
+    buckets.set(quake.earthquake.time, bucket)
+    return `quake:${quakeEventKey(card)}`
+  }
+}
+
+/**
+ * 窓の手前の地震情報が伝えた地域・震源要素を既読へ入れる（録画モードの復元専用）。
+ *
+ * **通しで読んだのと同じ形（`readAllRegions`）で断片を組む。** 意図（この報が伝えた全部を
+ * 既読にする）がコードから読み取れるようにするため。
+ *
+ * **同じ地震について何度も呼ばれる**（窓の手前の報を 1 通ずつ舐めるため）。`applySpokenRefs` は
+ * 震度が上がったときだけ書き換える単調なマージなので、繰り返し呼んでも最終状態は変わらない。
+ *
+ * **主題は呼び出し側が決める。** 報ごとに `quakeEventKey` を呼ぶと、識別子を持たない経路
+ * （P2PQuake）では報ごとに別の鍵になる（理由は呼び出し側の注記）。
+ */
+function rememberQuakeSpeechAsSpoken(
+  quake: JMAQuake,
+  topic: string,
+  states: Map<string, QuakeSpokenState>,
+  authoritative: Set<string>,
+  opts: TtsSpeechOptions,
+): void {
+  const state = quakeSpokenStateFor(states, topic)
+  applySpokenRefs(state, earthquakeToSegments(quake, opts, true, state, true).flatMap(seg => seg.refs))
+  if (!isAuthoritativeQuakeReport(quake)) return
+  // **既に積んである主題では容量を見ない。** 同じ地震の確定情報は窓の手前に何通もあり、
+  // そのたびに判定すると、上限へ届いた後は「積み直すだけ」で記憶が丸ごと消える。
+  // ライブ経路も `quakeSpokenStateFor` も「無ければ作る」ときだけ容量を見る。
+  if (authoritative.has(topic)) return
+  // 上限と捨て方はライブ経路に合わせる（同じ地震の記憶なので歩調を揃える）。**記録も含めて揃える**
+  // —— 捨てた事実が残らないと、あとから「なぜあの地震だけ全文で読み直したのか」を追えない。
+  // 群発が続いた期間を遡る復元では 1 回で多数を積むので、ここは実際に上限へ届きうる。
+  if (authoritative.size >= SPOKEN_QUAKE_STATES_MAX) {
+    log.debug(`[quake] 確定情報の通し読みの記憶が上限に達したため捨てた (${authoritative.size} 件)`)
+    authoritative.clear()
+  }
+  authoritative.add(topic)
 }
 
 // 観測点リストから、属する予報区（districtCode/districtName）を重複なく列挙する
@@ -650,6 +754,14 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     closeDistributionOnQuakeReport,
   } = deps
 
+  /**
+   * 最新の設定。**`useCallback([])` で包んだ関数から読むためだけに持つ**
+   * （`restorePreWindowTracking`。あちらは参照を安定させる必要があり、`settings` を直に掴むと
+   * 古い値で固まる）。フック本体は毎レンダー走るので、この代入で常に最新へ更新される。
+   */
+  const settingsRef = useRef(settings)
+  settingsRef.current = settings
+
   // 「新規地震」として注目を移した報のキー（`eventKey:issue.type`）。
   // 同一イベント・同一種別の続報では新規扱いにせず、読み上げの冒頭を「更新されました」にする。
   //
@@ -926,13 +1038,17 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   // TSU-3 で同一スロットに別 eventId を上書きするケースもあるため eventId 単位で管理する。
   // 直前状態（lastTsunamiGradeRef===null）で判定するとリロード後の初回解除を握り潰す。
   /**
-   * 気象庁が書いた文のうち、**既に声にした本文そのもの**（→ `speakTelegramText`）。
+   * 気象庁が書いた文のうち、**既に声にした文**（→ `speakTelegramText`）。鍵は 1 文
+   * （`TelegramTextUnit.key`）。
    *
    * **電文やイベントを鍵にしない。** 生の電文は統合前で `eventKey` を持たず、P2PQuake 経路の
    * 鍵（`initialQuakeKey`）は電文の `id` を含むため、**続報のたびに別の鍵になって既読が効かない**
-   * （同じ「＊印は…」を報のたびに読むことになる）。本文そのものを覚えれば経路によらず効く。
+   * （同じ「＊印は…」を報のたびに読むことになる）。文そのものを覚えれば経路によらず効く。
    *
-   * 副作用として、別の地震でも本文が同じなら 2 度目以降は読まない。付加文の大半は定型文なので
+   * **本文まるごとではなく文で持つ。** 津波の避難行動の固定付加文は等級が動くたびに節が増減し、
+   * まるごとを鍵にすると 1 文増えただけで既に読んだ 800 字を読み直す（→ `TelegramTextSpeech.units`）。
+   *
+   * 副作用として、別の地震でも同じ文なら 2 度目以降は読まない。付加文の大半は定型文なので
    * これは望ましい挙動。内容の異なる本文（南海トラフの要約・本文など）は文字列が違うので残る。
    */
   const spokenTelegramTextRef = useRef(new Set<string>())
@@ -1946,12 +2062,23 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     if (!settings.voicevoxEnabled) return
     const speech = telegramTextToSpeak(event, ttsRegionOptions(settings))
     if (!speech) return
-    // 既読の更新は**声に出す瞬間**（`onSpeakStart`）。予約した時点で更新すると、待ちきれず
-    // 黙った本文まで既読になり、二度と読まれない（他の既読と同じ規約）。
-    if (spokenTelegramTextRef.current.has(speech.body)) return
-    // 際限なく溜めない（津波の取消の既読と同じ方式）。定型文が大半なので実運用でこの数に
-    // 達することはまず無いが、長時間の運用で増え続ける入れ物を残さない。
-    if (spokenTelegramTextRef.current.size > 200) spokenTelegramTextRef.current.clear()
+    // **まだ声にしていない文だけを読む。** 既読の更新は**声に出す瞬間**（`onSpeakStart`）で、
+    // 予約した時点で更新すると待ちきれず黙った分まで既読になり二度と読まれない（他の既読と同じ規約）。
+    const fresh = speech.units.filter(u => !spokenTelegramTextRef.current.has(u.key))
+    if (fresh.length === 0) return
+    // **全文が未読なら元の文をそのまま使う。** 繋ぎ直すと文のあいだの空白の扱いが変わりうるので、
+    // 変える必要が無いときは触らない（合成エンジンが置く間は空白の有無で変わる）。
+    const text = fresh.length === speech.units.length
+      ? speech.text
+      : `${speech.prefix}${fresh.map(u => u.text).join('')}`
+    // 際限なく溜めない（津波の取消の既読と同じ方式）。**文の単位なので本文まるごとより速く増える**
+    // ——実電文で 1 通あたり最大 29 文、能登半島地震の 1 日ぶん（178 通）で 40 文ほど。
+    if (spokenTelegramTextRef.current.size > TELEGRAM_TEXT_SPOKEN_MAX) {
+      // **捨てた事実を残す**（同種の記憶と同じ流儀）。捨てた直後は既読の文が読み直されるので、
+      // 記録が無いと「なぜ同じ文をもう一度読んだのか」を追えない。
+      log.debug(`[tts] 気象庁が書いた文の既読が上限に達したため捨てた (${spokenTelegramTextRef.current.size} 件)`)
+      spokenTelegramTextRef.current.clear()
+    }
     // **`speakNonEEWDelayed` を経由する。`speakNonEEW` を直接呼ばない。**
     // 到来順の裁き（`overtakenByLaterArrival`）と予約の枠の管理を持っているのはこちらだけで、
     // 直接呼ぶと**先発がまだ鳴り出す前に後発が届いたとき、両方がキューに入って重なる**
@@ -1968,7 +2095,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // 開く相手がいない。無条件に付けると、誰も反応しない追従セッションが立ち上がっては終わる
     // （症状が出ないぶん、後から読んで意図を確かめられない）。
     const segments: SpeechSegment[] = [{
-      text: speech.text,
+      text,
       refs: TELEGRAM_TEXT_OPEN_TARGET_KINDS.has(event.kind) ? [{ kind: 'telegramText' }] : [],
     }]
     // **長周期地震動観測情報だけ、どの地震の補足かまで主題に載せる。** 地震カードは複数
@@ -1978,14 +2105,16 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       ? telegramTextSubject(event.kind, event.data.eventId)
       : telegramTextSubject(event.kind)
     speakNonEEWDelayed(
-      speech.text,
+      text,
       SPEECH_PRIORITY.commentary,
       0,
       `telegramText:${event.kind}`,
       undefined,
       segments,
       undefined,
-      () => { spokenTelegramTextRef.current.add(speech.body) },
+      // **読んだ分だけ既読にする。** 声にしなかった文（上限で落ちた分は無いが、
+      // 未読でなかった文）まで入れると、次の報でそれらが読まれなくなる。
+      () => { for (const u of fresh) spokenTelegramTextRef.current.add(u.key) },
       // 追従する側が「どの電文の文か」を知るための主題。**topic とは役割が違う** ——
       // topic は到来順の裁き（同じ種別は後発が勝つ）に、subject は画面のどこを開くかに使う。
       // 長周期だけ地震の識別子まで含むのはそのため。
@@ -3720,19 +3849,73 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
 
   // pre-window イベントから T 時点の追跡 ref を復元する（サイレント注入後の正確な音判定に必要）
   const restorePreWindowTracking = useCallback((preFiltered: ReplayEntry[]) => {
+    /**
+     * **録画モードでは、窓の手前で伝えた内容も「もう伝えた」として扱う。**
+     *
+     * 通常の再生で復元しないのは「窓から聞き始めた人は一度も聞いていない」ため（下の地震の
+     * 分岐を参照）。録画は区間を繋いで 1 本の動画にするので、その前提が成り立たない ——
+     * 前の区間で既に画面にも声にも出ている。復元しないと区間の境目で同じ長文を読み直す。
+     */
+    const recording = settingsRef.current.recordingMode
+    const opts = ttsRegionOptions(settingsRef.current)
+    /**
+     * 窓の手前で見た地震と、そこへ与えた読み上げの主題。
+     *
+     * **報ごとに鍵を作らないこと。** ライブ経路が使う主題はカードの `eventKey` から作られ、
+     * その値は**最初に処理された報**で固定される（`mergeQuakeInto`）。一方 `quakeEventKey` を
+     * 生の電文へ直に当てると、識別子を持たない経路（P2PQuake）では `p2p:<地震の時刻>#<その報の id>`
+     * になり、**続報のたびに別の鍵**になる。窓の手前に同じ地震の報が 2 通以上あると、2 通目以降の
+     * 記憶がライブ経路から参照されない鍵の下へ入り、その報で初めて現れた地域が区間の最初の続報で
+     * 読み直される —— この復元が消したかった症状そのものが、standard 版でだけ残る。
+     *
+     * 同一性の判定はライブ経路と同じ `sameQuakeEntry`。
+     */
+    const quakeTopicFor = createPreWindowQuakeTopics()
+    /**
+     * 録画モードの復元を 1 件ぶん行う。**例外で復元ループごと止めないこと。**
+     *
+     * ここが呼ぶのは読み上げ文を組む処理（`telegramTextToSpeak` / `earthquakeToSegments`）で、
+     * 単なる ref の更新よりはるかに多くの分岐を通る。1 通の異常な過去電文で投げると、
+     * 呼び出し元（`useReplayController`）の `catch` まで飛んで**「リプレイデータ取得失敗」として
+     * 扱われ、電文の再生自体が始まらない** —— 原因と表示が食い違ううえ、どの電文で失敗したかも残らない。
+     */
+    const restoreForRecording = (payload: ReplayPayload, run: () => void) => {
+      try { run() } catch (err) {
+        log.warn(`[replay] 録画モードの既読復元に失敗しました（この電文だけ飛ばします）: kind=${payload.kind}`, err)
+      }
+    }
     for (const { payload } of preFiltered) {
+      // 気象庁が書いた文は電文の種別を問わないので、種別ごとの分岐より先に見る。
+      if (recording) {
+        restoreForRecording(payload, () => rememberTelegramTextAsSpoken(payload, spokenTelegramTextRef.current, opts))
+      }
       if (payload.kind === 'event') {
         const ev = payload.event
         if (ev.kind === 'quake') {
           // ライブ経路（上の handleLiveEvent）と同じキーの組み立て方にそろえる。
-          // なおこの復元は DMDATA archive の再生専用で、standard 版からは呼ばれない
-          // （`App.tsx` が onStartReplay を isDmdss のときだけ配線している）。
+          // **この復元はバリアントを問わず呼ばれる。** リプレイの配線（`App.tsx` の
+          // `onStartReplay`）は 1 つで、バリアントで分かれるのは取得元だけ。そのため
+          // 識別子を持たない経路（P2PQuake）でも通り、鍵の作り方に注意が要る
+          // （上の `quakeTopicFor` の注記）。
           //
           // **「声にした内容」（`spokenQuakeStatesRef`）は復元しない。意図的。** 窓の手前の報は
           // 再生されておらず、聞き手は一度も聞いていない。既読として積むと、再生開始直後の
           // 続報が「聞いたことのない地域」を省いて読む。復元しない結果その報は全文で読まれるが、
           // それが窓から聞き始めた人にとって正しい（冒頭は「更新されました」になる）。
           markQuakeReportSeen(seenQuakeReportKeysRef.current, newQuakeTrackingKey(ev as JMAQuake))
+          // 録画モードだけは上の理由が成り立たないので、地域と震源要素も既読にする
+          // （区間の最初の確定情報が全区域を読み直すのを防ぐ）。
+          //
+          // **取消の報は対象にしない。** ライブ経路も取消では本体の読み上げを組まない。
+          // 取消電文の震源要素はセンチネル（震央名が空・規模 0・位置 -200）で埋まっており、
+          // `hasMagnitude(0)` は真なので「Ｍ０．０」として記録され、窓に入った最初の報が
+          // 「マグニチュードが更新されました」と**余計に**言うことになる。
+          if (recording && !(ev as JMAQuake).cancelled) {
+            const quake = ev as JMAQuake
+            restoreForRecording(payload, () => rememberQuakeSpeechAsSpoken(
+              quake, quakeTopicFor(quake), spokenQuakeStatesRef.current, authoritativeReadQuakesRef.current, opts,
+            ))
+          }
         } else if (ev.kind === 'eew') {
           const eew = ev as EEWAlert
           const key = eew.issue?.eventId ?? eew.id
@@ -3767,12 +3950,34 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // いまは前置きの判定が「区分が上がったか」を併せて見るので相乗りで防げているが、
           // その依存はどこにも書かれていない。対で復元して切っておく。
           if (restoredLevel >= 1) spokenEEWUpgradePhraseRef.current.add(key)
+          if (recording) {
+            // 誤報取消（訂正）を受けた事実。自動解除（`expired`）とは区別する
+            // ——ライブ経路（`handleLiveEventInner`）と同じ条件。
+            if (eew.cancelled && !eew.expired) eewRetractedKeysRef.current.add(key)
+            // 最後に第 1 フェーズを読んだときの震源。落とすと、窓に入った最初の続報で
+            // 震源の大幅更新の判定に使う比較対象が無くなる。
+            //
+            // **取消の報では消す。** ライブ経路が取消でこの記憶を `delete` する側なので、
+            // 文字どおり同じ操作にする（`set` を飛ばすだけだと、取消より前の報で入れた震源が
+            // そのまま残る）。取消電文の震源はセンチネルなので下の `hasKnownEpicenter` でも
+            // 弾かれるが、弾かれることに頼ると電文の埋め方が変わったときに静かに通る。
+            if (eew.cancelled) {
+              activeEEWAnnouncedHypocentersRef.current.delete(key)
+            } else {
+              const hypo = eew.earthquake?.hypocenter
+              if (hypo && hasKnownEpicenter(hypo.latitude, hypo.longitude)) {
+                activeEEWAnnouncedHypocentersRef.current.set(key, { name: hypo.name, lat: hypo.latitude, lng: hypo.longitude })
+              }
+            }
+          }
         } else if (ev.kind === 'tsunami') {
           const tsunami = ev as JMATsunami
           // **ライブ経路と同じ形で進めること**（電文は時系列順に渡ってくる）。片方だけずらすと、
           // リプレイを途中から始めたときだけ「解除で終わった津波の観測点が既読のまま残る」
           // （＝次の津波で到達を伝えられない）という、ライブでは起きない食い違いになる。
           if (tsunami.cancelled) {
+            // 録画モードでは取消の読み上げも済ませた扱いにする（鍵はライブ経路と同じ組み立て）。
+            if (recording) spokenTsunamiCancelEventIdsRef.current.add(tsunami.eventId || tsunami.id)
             lastTsunamiGradeRef.current = null
             lastTsunamiRef.current = null
             lastMaxObsHeightRef.current.clear()
