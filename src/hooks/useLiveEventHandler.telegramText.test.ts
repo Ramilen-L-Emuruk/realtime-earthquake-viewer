@@ -12,6 +12,7 @@
 //    載る（→ quake-spec.md §3）ので、電文ごとに読むと「＊印は…」を毎報聞かされる。
 // 3. **リプレイのリセットで既読が落ちること。** 落とさないと、同じシナリオを再生し直したときに
 //    本文が前回と一致して「読んだこと」になり、新しいセッションで一度も声にならない。
+import type { SpeechOutcome } from '../utils/voicevox'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
@@ -25,7 +26,7 @@ const speakMock = vi.fn((_url: string, text: string) => {
     if (!s.done) { s.done = true; s.finish() }
   }
   let finish!: () => void
-  const p = new Promise<void>(r => { finish = r })
+  const p = new Promise<SpeechOutcome>(r => { finish = () => r({ spoke: true }) })
   speeches.push({ text, finish, done: false })
   return p
 })

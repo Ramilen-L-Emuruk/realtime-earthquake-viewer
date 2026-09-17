@@ -3,7 +3,8 @@ import { parseTar } from '../utils/tarParser'
 import type { JMAQuake, EEWAlert, JMATsunami } from '../types/earthquake'
 import { selectActiveEews } from '../utils/eew'
 import { gunzip } from '../utils/gzip'
-import { log } from '../utils/logger'
+import { createArchiveBodyCache } from '../utils/archiveBodyCache'
+import { log, createLogThrottle } from '../utils/logger'
 import { authHeader } from '../utils/dmdataApiKey'
 import { extractQuakeEventIdFromId, QUAKE_ISSUE_PRIORITY } from '../utils/quakeMerge'
 import { latestValidDateTime } from '../utils/tsunami'
@@ -16,13 +17,12 @@ import {
 import { BufrFragmentStore, fragmentKey } from './bufrTelegramAssembly'
 import {
   clearLiveReplayCache, fetchLiveQuakeTelegrams, fetchLiveReplayEntries, resolveLiveDates,
-  MAX_ENUMERATED_DAYS, archiveDaysForWindow, archiveListRange,
+  MAX_ENUMERATED_DAYS, archiveDaysForWindow, archiveListRange, toJstDateStr,
 } from './dmdataReplayLive'
 import {
   waitForDataApiSlot, waitForApiSlot, rateLimitedUntil, noteRateLimited, noteRateLimitCleared,
   RateLimitWindowError,
 } from './dmdataRequestGates'
-import { readArchiveBody, writeArchiveBody } from '../utils/archiveBodyCache'
 
 /**
  * `fetchDmdataQuakeHistory` の `maxDays` に渡してよい上限。
@@ -109,23 +109,32 @@ interface ManifestEntry {
   head: { type: string; time: string; test: boolean; designation?: string | null }
 }
 
-// 日次アーカイブのキャッシュ（URL → ファイル名マップ）。
-//
-// **これはセッション内のメモリだけ。** ページを再読込すると消えるので、**永続の控えは
-// `utils/archiveBodyCache.ts` が別に持つ**（配信元が `Archive Data v1` の「注意」で
-// 「同じ id に対して短期間にリクエストを繰り返さないように実装してください」と求めている）。
-// こちらは同じセッション内で展開済みの結果を使い回すためのもので、役割が違う。
-const archiveCache = new Map<string, Promise<Map<string, Uint8Array>>>()
+/**
+ * 日次アーカイブの控え（URL → 展開済みのファイル名マップ）。
+ *
+ * **リプレイの開始をまたいで残る。** 同じ日を何度も再生し直す使い方で、そのたびに同じ
+ * ファイルを落とし直さないため（実測・上限の根拠・当日ぶんとの関係は
+ * `utils/archiveBodyCache.ts`）。取得の失敗を控え続けないことと、同じ URL への
+ * 同時要求を 1 本にまとめることも、あちらが担っている。
+ */
+const archiveCache = createArchiveBodyCache()
+
+if (typeof window !== 'undefined') {
+  // 控えが効いているかは画面に出ないので、検証で読めるようにしておく
+  // （電文本体の `window.__telegramBodyStats()` と同じ趣旨）。
+  ;(window as unknown as { __archiveCacheStats?: () => unknown }).__archiveCacheStats =
+    () => archiveCache.stats()
+}
 
 /**
  * アーカイブ本体の URL から id を取り出す（`https://data.api.dmdata.jp/v1/archive/{id}` の末尾）。
  *
- * **URL をそのまま控えの鍵にしない。** クエリや基底が変われば同じアーカイブを別物として
- * 取り直すことになる（`services/telegramBody.ts` の `telegramIdFromUrl` と同じ考え）。
+ * **429 の窓の鍵に使う。** 窓は id ごとに持つので（配信元は「同じ id への繰り返し」に 429 を
+ * 返す）、URL をそのまま鍵にするとクエリや基底が変わるだけで別物として扱われる。
  *
  * **長さの下限は置かない。** 電文本体の側（`telegramIdFromUrl`）は 8 文字以上を要求しているが、
  * **アーカイブ id の長さは確かめていない**ので決め打たない。空でなければ鍵として使える
- * （短すぎる値を弾く理由が無く、弾くと控えが黙って効かなくなる）。
+ * （短すぎる値を弾く理由が無く、弾くと窓が黙って効かなくなる）。
  */
 function archiveIdFromUrl(url: string): string | null {
   try {
@@ -136,44 +145,50 @@ function archiveIdFromUrl(url: string): string | null {
   }
 }
 
-/** gzip された tar を展開してファイル名 → 中身の対応にする。 */
-async function expandArchive(gz: Uint8Array): Promise<Map<string, Uint8Array>> {
-  const tar = await gunzip(gz)
-  const files = new Map<string, Uint8Array>()
-  for (const entry of parseTar(tar)) {
-    files.set(entry.name, entry.content)
-  }
-  return files
+/**
+ * そのアーカイブ（`date` が覆う JST 日）を控えてよいか。**当日ぶんだけ控えない。**
+ *
+ * 目録に当日は現れず当日経路が受ける建て付けなので現状は起きないが、配信元が
+ * 「育っている途中の部分アーカイブ」を出す設計へ変われば、控えた側は途中までの中身を
+ * 返し続ける。**前提を実装で守り、崩れたら記録に残す**（控えの `uncacheable` が立つ）。
+ *
+ * **`nowMs` には壁時計（`Date.now()`）を渡すこと。`serverNow()` を渡してはいけない。**
+ * あちらはリプレイ中に**再生対象のシミュレート時刻**を返すので、`date`（再生している日）と
+ * 常に一致し、**再生中はこの述語がいつも偽になって控えが丸ごと効かなくなる**。
+ * ここが訊いているのは「そのファイルが現実にまだ育っている最中か」であって、
+ * 再生上の「いま」ではない。
+ */
+export function isArchiveCacheable(date: string, nowMs: number): boolean {
+  return date !== toJstDateStr(new Date(nowMs))
 }
 
-async function downloadArchive(url: string, apiKey: string): Promise<Map<string, Uint8Array>> {
-  const cached = archiveCache.get(url)
-  if (cached) return cached
-  const promise = (async () => {
-    const id = archiveIdFromUrl(url)
-    // **まず永続の控えを見る。** 同じ日のアーカイブは中身が変わらないので、一度取れば
-    // 取り直す理由が無い（→ `utils/archiveBodyCache.ts`）。**控えから読めたときは門を通らない**
-    // （通信しないので待つ理由がない）。
-    if (id) {
-      const cachedGz = await readArchiveBody(id)
-      if (cachedGz) return await expandArchive(cachedGz)
-    }
-    // **枠を待ってから投げる。** 呼び出し側は `Promise.all` で複数のアーカイブを並べてくるので、
-    // ここで直列化しないと配信元の上限をそのまま超える（起動時の履歴は 7 日ぶん ＝ 瞬間 7req/s）。
-    // **電文本体と枠を共有する** —— 同じ 50req/5min の対象で、レート表の読み方が
-    // 「3 行それぞれ」とも「3 行の合計」とも取れるため合算として扱う（→ `services/dmdataRequestGates.ts`）。
-    // **控えから読めた分はここを通らない**（上の `archiveCache.get` で返る）。
-    // **`urgent` は渡さない** —— アーカイブは履歴なので、発表中の緊急地震速報の復元より後でよい。
-    //
+// 当日ぶんが目録に現れた、という到達しないはずの報せ。**間引く** —— 本編の窓は同じ日を
+// 繰り返し要求する構造なので、素の warn だと開始の回数だけ出て他の記録が埋もれる。
+const warnSameDayArchive = createLogThrottle(60_000)
+
+/**
+ * アーカイブ本体を落とす（控えを通す）。`date` はそのアーカイブが覆う JST 日。
+ */
+function downloadArchive(url: string, apiKey: string, date: string): Promise<Map<string, Uint8Array>> {
+  const cacheable = isArchiveCacheable(date, Date.now())
+  if (!cacheable) {
+    warnSameDayArchive(() => log.warn(
+      `[replay] 当日ぶんのアーカイブが目録に現れた（控えずに毎回取る） date=${date}`,
+    ))
+  }
+  return archiveCache.get(url, async () => {
     // **429 を受けたばかりの id は取りに行かない**（→ `services/dmdataRequestGates.ts`）。
-    // 門の枠を使う前に見る。
+    // **門の枠を使う前に見る** —— 取りに行かないものに 6 秒の枠を消費させない。
+    // 専用の型で投げるのは、呼び出し側が通常の取得失敗と別の枠で数えるため
+    // （→ `types/replay.ts` の `rateLimitedSources`）。
+    const id = archiveIdFromUrl(url)
     const until = id ? rateLimitedUntil('archive', id) : null
-    if (id && until !== null) {
-      // **専用の型で投げる。** 呼び出し側が通常の取得失敗と別の枠で数える
-      // （→ `types/replay.ts` の `rateLimitedSources`）。文面だけで区別させると、
-      // 呼び出し側が文字列を見ることになり、文面を変えたときに黙って壊れる。
-      throw new RateLimitWindowError(id, until)
-    }
+    if (id && until !== null) throw new RateLimitWindowError(id, until)
+    // **枠を待ってから投げる。** 呼び出し側は複数のアーカイブを並べてくるので、ここで
+    // 直列化しないと配信元の上限をそのまま超える。**電文本体と枠を共有する** —— 同じ
+    // 50req/5min の対象で、レート表の読み方が「3 行それぞれ」とも「3 行の合計」とも
+    // 取れるため合算として扱う（→ `services/dmdataRequestGates.ts`）。
+    // **控えから読めた分はここを通らない**（`archiveCache.get` が返す）。
     await waitForDataApiSlot()
     const res = await fetch(url, { headers: { Authorization: authHeader(apiKey) } })
     if (!res.ok) {
@@ -184,32 +199,40 @@ async function downloadArchive(url: string, apiKey: string): Promise<Map<string,
     // **成功したら窓と回数を捨てる**
     if (id) noteRateLimitCleared('archive', id)
     const gz = new Uint8Array(await res.arrayBuffer())
-    // **控えの失敗で取得を止めない。** IndexedDB が使えない環境（プライベートモード・容量超過）でも
-    // 通常の取得で動く必要がある（`telegramBody.ts` と同じ思想）。
-    if (id) void writeArchiveBody(id, gz).catch(() => {})
-    return await expandArchive(gz)
-  })()
-  archiveCache.set(url, promise)
-  // 失敗した Promise を残すと、以後そのセッション中は同じ URL が常にキャッシュ済みの失敗を返し、
-  // ネットワークが復旧しても再取得されない。先読み（App.tsx のプリフェッチ）は clearReplayCache() を
-  // 呼ばないため、一過性の障害で再生が無言のまま止まったきりになる。reject 時はキャッシュから外す。
-  // この catch はキャッシュ掃除専用で、エラー自体は返した promise 経由で呼び出し元へ伝わる。
-  promise.catch(() => archiveCache.delete(url))
-  return promise
+    const tar = await gunzip(gz)
+    const files = new Map<string, Uint8Array>()
+    for (const entry of parseTar(tar)) {
+      files.set(entry.name, entry.content)
+    }
+    // **バイト数は展開後の tar の長さで渡す。** `parseTar` が返すのは `subarray` の
+    // 切り出しなので、1 エントリでも参照が残ればバッファ全体が残る。エントリの合計で
+    // 数えると、使わなかった領域がまるごと数から漏れる。
+    return { files, bytes: tar.length, cacheable }
+  })
 }
 
 /**
- * 再生用の控えを捨てる（リプレイの開始・時刻変更で呼ぶ）。
+ * 再生に使うセッション内の控えを捨てる。
  *
- * **永続の控え（`utils/archiveBodyCache.ts`）は捨てない。** アーカイブの中身は時間軸が
- * 変わっても同じもので、捨てると再生の開始ごとに取り直すことになる —— 配信元が避けるよう
- * 求めている「同じ id への短期間の繰り返し」そのものになる。
- *
- * ここで捨てるのは**セッション内のメモリだけ**（展開済みの結果と目録のパース結果）。
+ * **アーカイブ本体の控えはここで捨てない。** 鍵（URL に入るアーカイブ id）は内容に対して
+ * 不変なので捨てる正当性が無く、捨てると**開始のたびに同じファイルを落とし直す** ——
+ * 区間ごとにリプレイを開始し直す使い方（録画の自動化）では実測 1,000〜3,800 リクエストに
+ * なっていた。メモリは本数とバイト数の上限で抑え、期限も置いてある
+ * （→ `utils/archiveBodyCache.ts`）。
  */
 export function clearReplayCache(): void {
-  archiveCache.clear()
   clearLiveReplayCache()
+}
+
+/**
+ * テスト用。アーカイブ本体の控えを空にする。
+ *
+ * **`clearReplayCache()` とは別の口にしてある。** あちらは本番の経路で、そこで
+ * アーカイブの控えを残すことが今回の目的そのもの。テストは同じ URL に違う中身を載せて
+ * 使い回すため、こちらで明示的に空にする（本番の値を緩める口ではない）。
+ */
+export function clearArchiveCacheForTest(): void {
+  archiveCache.clear()
 }
 
 /** 目録のページを辿る上限。理由は `dmdataReplayLive.ts` の `LIST_MAX_PAGES` と同じ。 */
@@ -358,7 +381,7 @@ export async function fetchDmdataReplayEvents(
       // 「壊れたアーカイブだけ諦めて残りは活かす」を既定にする。
       let files: Map<string, Uint8Array>
       try {
-        files = await downloadArchive(item.url, apiKey)
+        files = await downloadArchive(item.url, apiKey, item.date)
       } catch (e) {
         if (e instanceof RateLimitWindowError) {
           // **正常な待ちなので `error` では記録しない。** 待てば取れる
@@ -911,7 +934,7 @@ export async function fetchDmdataQuakeHistory(
     // **ここで初めて本体を落とす**（上の `sources` の注記のとおり、1 日ずつ）。
     let files: Map<string, Uint8Array>
     try {
-      files = await downloadArchive(item.url, apiKey)
+      files = await downloadArchive(item.url, apiKey, item.date)
     } catch (e) {
       if (e instanceof RateLimitWindowError) {
         // **取得の失敗と別の枠で数える。** 打てる手が違い（こちらは窓が明けるまで待つ）、
