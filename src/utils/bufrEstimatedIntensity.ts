@@ -78,8 +78,16 @@ const DESCRIPTORS_TSUNAMI = DESCRIPTORS_PLAIN
  */
 const TSUNAMI_BLOCK_BITS = 46
 
-/** 電文の種類（0-01-242）が 0 以外なら訓練等。実配信 13 か月では 0 しか観測できていない。 */
-const KIND_NORMAL = 0
+/**
+ * 電文の種類（0-01-242）が 0 以外なら訓練等。実配信 13 か月では 0 しか観測できていない。
+ *
+ * **この値は抑制の判定に使う。** 非 XML 電文（この BUFR がアプリで唯一のもの）では
+ * 一覧・WebSocket の `test` フラグが**常に false** で、`test: "no"` を指定しても試験配信は
+ * 届く —— 配信元のリファレンスが両方を明記している（`socket.start` の `test` パラメータと、
+ * `telegram.list` / `websocket` の `test` フィールド）。**だから本文のこの値しか手掛かりが無い。**
+ * 判定は `services/dmdataTelegramPayload.ts` の `isFilteredBinaryTelegram` に集約している。
+ */
+export const TELEGRAM_KIND_NORMAL = 0
 
 /** マグニチュード（0-60-001）の特殊値。別紙4 ※1。 */
 const MAG_UNKNOWN = 0
@@ -343,7 +351,7 @@ export function decodeEstimatedIntensity(
     // 色分けの根拠が消えるので、読めたことにしない。
     return refuse('階級震度の凡例が 1 件もありません')
   }
-  if (telegramKind !== KIND_NORMAL) {
+  if (telegramKind !== TELEGRAM_KIND_NORMAL) {
     log.warn(`${PREFIX} 電文の種類が通常（0）ではありません: ${telegramKind}`)
   }
 

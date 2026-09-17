@@ -12,12 +12,17 @@ import type { ReplayEntry, ReplayPayload, ReplayFetchResult, QuakeHistoryResult 
 import {
   HANDLED_TYPES, QUAKE_TYPES, TSUNAMI_TYPES, HISTORY_EXTRA_TYPES, historyExtraKey,
   buildXmlPayload, CLASSIFICATIONS, isBinaryTelegramType, buildBinaryPayload,
+  isFilteredBinaryTelegram,
 } from './dmdataTelegramPayload'
 import { BufrFragmentStore, fragmentKey } from './bufrTelegramAssembly'
 import {
   clearLiveReplayCache, fetchLiveQuakeTelegrams, fetchLiveReplayEntries, resolveLiveDates,
   MAX_ENUMERATED_DAYS, archiveDaysForWindow, archiveListRange, toJstDateStr,
 } from './dmdataReplayLive'
+import {
+  waitForDataApiSlot, waitForApiSlot, rateLimitedUntil, noteRateLimited, noteRateLimitCleared,
+  RateLimitWindowError,
+} from './dmdataRequestGates'
 
 /**
  * `fetchDmdataQuakeHistory` の `maxDays` に渡してよい上限。
@@ -122,6 +127,25 @@ if (typeof window !== 'undefined') {
 }
 
 /**
+ * アーカイブ本体の URL から id を取り出す（`https://data.api.dmdata.jp/v1/archive/{id}` の末尾）。
+ *
+ * **429 の窓の鍵に使う。** 窓は id ごとに持つので（配信元は「同じ id への繰り返し」に 429 を
+ * 返す）、URL をそのまま鍵にするとクエリや基底が変わるだけで別物として扱われる。
+ *
+ * **長さの下限は置かない。** 電文本体の側（`telegramIdFromUrl`）は 8 文字以上を要求しているが、
+ * **アーカイブ id の長さは確かめていない**ので決め打たない。空でなければ鍵として使える
+ * （短すぎる値を弾く理由が無く、弾くと窓が黙って効かなくなる）。
+ */
+function archiveIdFromUrl(url: string): string | null {
+  try {
+    const id = new URL(url).pathname.split('/').pop() ?? ''
+    return id.length > 0 ? id : null
+  } catch {
+    return null
+  }
+}
+
+/**
  * そのアーカイブ（`date` が覆う JST 日）を控えてよいか。**当日ぶんだけ控えない。**
  *
  * 目録に当日は現れず当日経路が受ける建て付けなので現状は起きないが、配信元が
@@ -153,8 +177,27 @@ function downloadArchive(url: string, apiKey: string, date: string): Promise<Map
     ))
   }
   return archiveCache.get(url, async () => {
+    // **429 を受けたばかりの id は取りに行かない**（→ `services/dmdataRequestGates.ts`）。
+    // **門の枠を使う前に見る** —— 取りに行かないものに 6 秒の枠を消費させない。
+    // 専用の型で投げるのは、呼び出し側が通常の取得失敗と別の枠で数えるため
+    // （→ `types/replay.ts` の `rateLimitedSources`）。
+    const id = archiveIdFromUrl(url)
+    const until = id ? rateLimitedUntil('archive', id) : null
+    if (id && until !== null) throw new RateLimitWindowError(id, until)
+    // **枠を待ってから投げる。** 呼び出し側は複数のアーカイブを並べてくるので、ここで
+    // 直列化しないと配信元の上限をそのまま超える。**電文本体と枠を共有する** —— 同じ
+    // 50req/5min の対象で、レート表の読み方が「3 行それぞれ」とも「3 行の合計」とも
+    // 取れるため合算として扱う（→ `services/dmdataRequestGates.ts`）。
+    // **控えから読めた分はここを通らない**（`archiveCache.get` が返す）。
+    await waitForDataApiSlot()
     const res = await fetch(url, { headers: { Authorization: authHeader(apiKey) } })
-    if (!res.ok) throw new Error(`Archive fetch failed: ${res.status}`)
+    if (!res.ok) {
+      // **429 だけは窓を置く**（他の失敗は次の操作で取り直してよい）
+      if (id && res.status === 429) noteRateLimited('archive', id)
+      throw new Error(`Archive fetch failed: ${res.status}`)
+    }
+    // **成功したら窓と回数を捨てる**
+    if (id) noteRateLimitCleared('archive', id)
     const gz = new Uint8Array(await res.arrayBuffer())
     const tar = await gunzip(gz)
     const files = new Map<string, Uint8Array>()
@@ -233,6 +276,10 @@ async function listArchives(
       limit: String(ARCHIVE_LIST_LIMIT),
     })
     if (cursorToken) params.set('cursorToken', cursorToken)
+    // **枠を待ってから投げる。** ここは `api.dmdata.jp` なので本体の門（6 秒）ではなく
+    // そちら側の門（500ms）を通る。**ページを辿るループの中なので、応答が速ければ
+    // 待ちなしで連投される**（→ `services/dmdataRequestGates.ts`）。
+    await waitForApiSlot()
     const listRes = await fetch(
       `https://api.dmdata.jp/v2/archive?${params.toString()}`,
       { headers: { Authorization: authHeader(apiKey) } },
@@ -312,6 +359,19 @@ export async function fetchDmdataReplayEvents(
   // ケースも含める。これらは「アーカイブは落ちてきたが中身を 1 通も読めない」状態であり、
   // 取得エラーと同じく丸ごと欠落する。数え漏らすと UI が無警告のまま「電文 0 件の成功」に化ける。
   const failedArchiveUrls: string[] = []
+  /**
+   * 429 の窓で見送った取得元。**上の枠と分ける**（→ `types/replay.ts` の
+   * `rateLimitedSources`）。混ぜると「すべて読めなかった」の判定に入り、
+   * 窓が広いあいだ取れていた分ごと捨てる。
+   */
+  const rateLimitedSources: string[] = []
+  /**
+   * 429 の窓で見送った**電文**の数。
+   *
+   * **取得元（`rateLimitedSources`）とは単位が違う**ので別に数える。表示側は
+   * 「N 件の取得元」「M 件の電文」と単位を分けて出すため、混ぜると文面が嘘になる。
+   */
+  let rateLimitedTelegrams = 0
 
   await Promise.all(
     targets.map(async (item) => {
@@ -323,6 +383,16 @@ export async function fetchDmdataReplayEvents(
       try {
         files = await downloadArchive(item.url, apiKey, item.date)
       } catch (e) {
+        if (e instanceof RateLimitWindowError) {
+          // **正常な待ちなので `error` では記録しない。** 待てば取れる
+          log.info(
+            `[replay] アーカイブは 429 の窓が明けるまで取りに行きません date=${item.date}`
+            + ` classification=${item.classification}`
+            + `（あと ${Math.max(0, Math.round((e.until - Date.now()) / 1000))} 秒）`,
+          )
+          rateLimitedSources.push(item.url)
+          return
+        }
         log.error(`[replay] アーカイブの取得・展開に失敗したためスキップ date=${item.date} classification=${item.classification}`, e)
         failedArchiveUrls.push(item.url)
         return
@@ -416,6 +486,14 @@ export async function fetchDmdataReplayEvents(
             // アーカイブの後続エントリに入っており、揃った時点で 1 通として積まれる。
             if (!joined) continue
             const binPayload = buildBinaryPayload(headType, joined, entry.id, entry.head.time)
+            // **試験報は取りこぼしに数えない。** 正常な配信で、読めなかったわけではない
+            // （非 XML 電文は `entry.head.test` で弾けないため本文で判定する
+            // → `isFilteredBinaryTelegram`）。**捨てたことは記録する** —— 理由は
+            // `dmdataReplayLive.ts` の同じ判定にある。
+            if (binPayload && isFilteredBinaryTelegram(binPayload, includeTest)) {
+              log.info(`[replay] 二進電文の試験報を流しません id=${entry.id} type=${headType}`)
+              continue
+            }
             if (binPayload) {
               const replayTime = (binName ? parseMsFromFileName(binName) : null) ?? entryTime
               entries.push({ payload: binPayload, replayTime })
@@ -486,6 +564,7 @@ export async function fetchDmdataReplayEvents(
       const live = await fetchLiveReplayEntries(apiKey, fromTime, toTime, liveDates, includeTest)
       entries.push(...live.entries)
       skippedCount += live.skipped
+      rateLimitedTelegrams += live.rateLimitedTelegrams
       failedArchiveUrls.push(...live.failedSources)
     } catch (e) {
       // アーカイブ 1 日ぶんが読めなかったときと同じ扱いにする。ここで素通しすると、当日の
@@ -508,9 +587,19 @@ export async function fetchDmdataReplayEvents(
   // **数えるのは `targets`（実際に落とした分）で、`items`（目録の全件）ではない。**
   // 目録は窓より広く引いているので、`items` を分母にすると落としてもいない日で分母が膨らみ、
   // **全滅が「一部は読めた」に化ける**（認証切れ・全断のときに例外が上がらなくなる）。
-  const sourceDays = targets.length + liveDates.length
+  //
+  // **429 の窓で見送った分は分母からも分子からも外す。** こちら側の意図的な待ちなので、
+  // 混ぜると窓が広いあいだ「取得に失敗した」として例外へ倒れ、取れていた分ごと捨てる。
+  // 全部が見送りだった場合は下の記録で手がかりを残す。
+  const sourceDays = targets.length + liveDates.length - rateLimitedSources.length
   if (sourceDays > 0 && failedSourceDays === sourceDays) {
     throw new Error(`Archive fetch failed: ${sourceDays} 件の取得元すべてを読み取れませんでした`)
+  }
+  if (rateLimitedSources.length > 0) {
+    log.info(
+      `[replay] ${rateLimitedSources.length} 件の取得元は 429 の窓が明けるまで`
+      + '取りに行きませんでした（待てば取れます）',
+    )
   }
 
   if (failedArchiveUrls.length > 0) {
@@ -539,7 +628,7 @@ export async function fetchDmdataReplayEvents(
     }
   }
 
-  return { entries, skipped: skippedCount, failedArchiveUrls }
+  return { entries, skipped: skippedCount, failedArchiveUrls, rateLimitedSources, rateLimitedTelegrams }
 }
 
 /** 初期状態に載せるかどうかを、津波イベント単位で決めた結果。 */
@@ -744,23 +833,20 @@ export async function fetchDmdataQuakeHistory(
     log.debug(`[replay] 履歴用アーカイブ本体は ${targets.length}/${items.length} 件だけ落とす`)
   }
 
-  const downloaded = await Promise.all(targets.map(async (item) => {
-    try {
-      return { date: item.date, item, files: await downloadArchive(item.url, apiKey, item.date) }
-    } catch (e) {
-      log.error(`[replay] 履歴用アーカイブの取得・展開に失敗 date=${item.date}`, e)
-      return { date: item.date, item, files: null }
-    }
-  }))
-
   // アーカイブがまだ生成されていない日は当日経路で埋める（`fetchDmdataReplayEvents` と同じ理由）。
   // これが無いと、今日を指定した再生で「開始時刻より前の今日の地震」がカードに出ない。
   const liveDays = resolveLiveDates(startObj, new Date(before.getTime() + 1), items.map(i => i.date))
 
   // 新しい日から使う（カードは新しい順に並ぶため、打ち切りで欠けてよいのは古い側）。
   // アーカイブの日と当日経路の日は排他なので、日付だけで一本に並べられる。
-  const sources: Array<{ date: string; archive?: typeof downloaded[number] }> = [
-    ...downloaded.map(d => ({ date: d.date, archive: d })),
+  //
+  // **本体は下のループの中で 1 日ずつ落とす。まとめて `Promise.all` で待たない。**
+  // アーカイブ本体は 6 秒の門（`waitForDataApiSlot`）を通るので、揃うまで待つと 7 日ぶんで
+  // 40 秒ちかく `onPartial` が一度も呼ばれず、そのあいだカードが空のままになる（実測）。
+  // 取得の合計時間は変わらない（門が直列化するので並列にしても速くならない）ので、
+  // **取れた日から流すほうが一方的に良い。** 打ち切り（`shouldStop`）も残りの日に効くようになる。
+  const sources: Array<{ date: string; item?: ArchiveItem }> = [
+    ...targets.map(item => ({ date: item.date, item })),
     ...liveDays.map(date => ({ date })),
   ].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
 
@@ -785,6 +871,10 @@ export async function fetchDmdataQuakeHistory(
   const tsunamis: JMATsunami[] = []
   const eventIds = new Set<string>()
   const failedArchiveUrls: string[] = []
+  /** 429 の窓で見送った取得元。**`failedArchiveUrls` とは別に数える**（理由は型の説明）。 */
+  const rateLimitedSources: string[] = []
+  /** 429 の窓で見送った**電文**の数（取得元とは単位が違う）。 */
+  let rateLimitedTelegrams = 0
   /** 帯と長周期は種別ごとに最新 1 通だけ残す（鍵の作り方は `historyExtraKey`）。 */
   const extraLatest = new Map<string, { payload: ReplayPayload; timeMs: number }>()
   let skipped = 0
@@ -804,7 +894,7 @@ export async function fetchDmdataQuakeHistory(
     const takeQuakes = eventIds.size < targetEvents
     usedDays++
 
-    if (!source.archive) {
+    if (!source.item) {
       // 当日経路。読めなくてもアーカイブ側の成果は活かす（アーカイブ 1 日ぶんが読めなかったときと
       // 同じ扱い）。ここで例外にすると、当日の一覧 API が一度こけただけで過去数日ぶんの
       // カードごと消える。
@@ -824,6 +914,7 @@ export async function fetchDmdataQuakeHistory(
           if (!prev || timeMs > prev.timeMs) extraLatest.set(key, { payload: e.payload, timeMs })
         }
         skipped += live.skipped
+        rateLimitedTelegrams += live.rateLimitedTelegrams
       } catch (e) {
         log.error(`[replay] 履歴用の当日経路の取得に失敗 date=${source.date}`, e)
         failedArchiveUrls.push(liveSourceId(source.date))
@@ -839,8 +930,26 @@ export async function fetchDmdataQuakeHistory(
       continue
     }
 
-    const { item, files } = source.archive
-    if (!files) { failedArchiveUrls.push(item.url); continue }
+    const { item } = source
+    // **ここで初めて本体を落とす**（上の `sources` の注記のとおり、1 日ずつ）。
+    let files: Map<string, Uint8Array>
+    try {
+      files = await downloadArchive(item.url, apiKey, item.date)
+    } catch (e) {
+      if (e instanceof RateLimitWindowError) {
+        // **取得の失敗と別の枠で数える。** 打てる手が違い（こちらは窓が明けるまで待つ）、
+        // 全滅判定の分母にも混ぜない（→ `types/replay.ts` の `rateLimitedSources`）。
+        log.info(
+          `[replay] 履歴用アーカイブは 429 の窓が明けるまで取りに行きません date=${item.date}`
+          + `（あと ${Math.max(0, Math.round((e.until - Date.now()) / 1000))} 秒）`,
+        )
+        rateLimitedSources.push(item.url)
+      } else {
+        log.error(`[replay] 履歴用アーカイブの取得・展開に失敗 date=${item.date}`, e)
+        failedArchiveUrls.push(item.url)
+      }
+      continue
+    }
 
     const manifestBytes = files.get('telegrams.json')
     if (!manifestBytes) {
@@ -944,8 +1053,25 @@ export async function fetchDmdataQuakeHistory(
   // それは「もう要らない」状態で、呼び出し側は結果ごと捨てる（`usedDays` は打ち切り判定の
   // **後**に増えるので、数日失敗してから打ち切られた形で両方が成立しうる）。例外にすると、
   // API キーの差し替えやリプレイの開始のたびに「取得に失敗した」という記録が残る。
-  if (!stoppedEarly && usedDays > 0 && failedArchiveUrls.length === usedDays) {
-    throw new Error(`Archive fetch failed: ${usedDays} 件の取得元すべてを読み取れませんでした`)
+  // **429 の窓で見送った日は分母からも外す。** この判定は認証切れ・全断のような共通原因を
+  // 捕まえるためのもので、こちら側の意図的な見送りを混ぜると、窓が広いあいだ
+  // **取れていた日のカードごと捨てる**（例外にすると呼び出し側は結果を使わない）。
+  //
+  // **分子だけ外しても足りない。** `usedDays` は見送った日も数えているので、分母をそのままに
+  // すると「一部は本当に失敗し、残りは見送られた」＝**その回で 1 件も取れていない**状態で
+  // 等号が成立せず、例外が飛ばない —— 握り潰して「履歴 0 件の成功」に化ける。
+  // 兄弟関数（`fetchDmdataReplayEvents` の `sourceDays`）と同じ形に揃える。
+  const judgedDays = usedDays - rateLimitedSources.length
+  if (!stoppedEarly && judgedDays > 0 && failedArchiveUrls.length === judgedDays) {
+    throw new Error(`Archive fetch failed: ${judgedDays} 件の取得元すべてを読み取れませんでした`)
+  }
+  // **見送りは例外にしない**（待てば取れる）。ただし全部が見送りだと画面は
+  // 「静かな期間だった」と見えるので、手がかりを残す。
+  if (rateLimitedSources.length > 0) {
+    log.info(
+      `[replay] 履歴用の取得元 ${usedDays} 日ぶんのうち ${rateLimitedSources.length} 件は`
+      + '429 の窓が明けるまで取りに行きませんでした（待てば取れます）',
+    )
   }
   // 「取得元が 1 つも無い」は取得の失敗として現れないため、例外にも損失にもならない。
   // 黙って空を返すと「静かな期間だった」と区別が付かないので、手がかりだけは残す。
@@ -997,5 +1123,8 @@ export async function fetchDmdataQuakeHistory(
   //
   // 打ち切った場合は「もう要らない」ので真にしない（`stoppedEarly`）。
   const hasMore = !stoppedEarly && sources.length > 0
-  return { quakes: orderedForMerge(quakes), tsunamis, extras, skipped, failedArchiveUrls, hasMore }
+  return {
+    quakes: orderedForMerge(quakes), tsunamis, extras, skipped,
+    failedArchiveUrls, rateLimitedSources, rateLimitedTelegrams, hasMore,
+  }
 }

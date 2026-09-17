@@ -157,7 +157,7 @@ export async function fetchLocalArchiveEvents(
   const file = await loadFile(meta.id)
   if (!file) {
     // 一覧には載っていたが本体が読めない = 全滅扱い（dmdataReplay.ts の「全アーカイブ失敗」と同じ粒度）。
-    return { entries: [], skipped: 0, failedArchiveUrls: [fileUrl(meta.id)] }
+    return { entries: [], skipped: 0, failedArchiveUrls: [fileUrl(meta.id)], rateLimitedSources: [], rateLimitedTelegrams: 0 }
   }
 
   const entries: ReplayEntry[] = file.entries
@@ -169,7 +169,7 @@ export async function fetchLocalArchiveEvents(
 
   entries.sort((a, b) => a.replayTime.getTime() - b.replayTime.getTime())
 
-  return { entries, skipped: 0, failedArchiveUrls: [] }
+  return { entries, skipped: 0, failedArchiveUrls: [], rateLimitedSources: [], rateLimitedTelegrams: 0 }
 }
 
 /**
@@ -189,7 +189,10 @@ export async function fetchLocalArchiveQuakeHistory(
   if (!file) {
     // ローカル履歴アーカイブは帯・長周期を収録していないので `extras` は常に空。
     // 津波は収録しているが、ここで返すのは地震カードの厚みだけ（津波は初期状態の担当）。
-    return { quakes: [], tsunamis: [], extras: [], skipped: 0, failedArchiveUrls: [fileUrl(meta.id)], hasMore: false }
+    return {
+      quakes: [], tsunamis: [], extras: [], skipped: 0,
+      failedArchiveUrls: [fileUrl(meta.id)], rateLimitedSources: [], rateLimitedTelegrams: 0, hasMore: false,
+    }
   }
 
   // 並べ替えは payload 内部の event.time ではなくエントリ自身の time で行う。
@@ -201,5 +204,8 @@ export async function fetchLocalArchiveQuakeHistory(
     .slice(0, targetEvents)
     .map((e) => (e.payload as { kind: 'event'; event: JMAQuake }).event)
 
-  return { quakes, tsunamis: [], extras: [], skipped: 0, failedArchiveUrls: [], hasMore: false }
+  return {
+    quakes, tsunamis: [], extras: [], skipped: 0,
+    failedArchiveUrls: [], rateLimitedSources: [], rateLimitedTelegrams: 0, hasMore: false,
+  }
 }

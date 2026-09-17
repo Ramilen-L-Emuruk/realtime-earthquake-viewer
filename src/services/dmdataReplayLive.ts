@@ -19,13 +19,16 @@
 // アーカイブとの同等性は実データで確認済み。詳細は docs/spec/settings-pwa-spec.md §6。
 import { log } from '../utils/logger'
 import { authHeader } from '../utils/dmdataApiKey'
-import { fetchTelegramText } from './telegramBody'
+import { fetchTelegramText, fetchTelegramBytes, telegramIdFromUrl } from './telegramBody'
+import { RateLimitWindowError } from './dmdataRequestGates'
 import type { JMAQuake, JMATsunami } from '../types/earthquake'
 import type { ReplayEntry } from '../types/replay'
 import {
   HANDLED_TYPES, QUAKE_TYPES, TSUNAMI_TYPES, HISTORY_EXTRA_TYPES, historyExtraKey,
   buildXmlPayload, isBinaryTelegramType, buildBinaryPayload, TELEGRAM_DATA_BASE,
+  isFilteredBinaryTelegram,
 } from './dmdataTelegramPayload'
+import { waitForApiSlot } from './dmdataRequestGates'
 import { BufrFragmentStore, fragmentKey } from './bufrTelegramAssembly'
 
 const API_BASE = 'https://api.dmdata.jp/v2'
@@ -263,6 +266,14 @@ async function mapWithLimit<T>(items: T[], limit: number, fn: (item: T) => Promi
 }
 
 async function getJson<T>(url: string, apiKey: string, what: string): Promise<T> {
+  // **枠を待ってから投げる。** ここを通るのは `api.dmdata.jp` の一覧・目録・EEW の詳細で、
+  // **どれもページを辿るループの中にいる** —— 応答が速ければ待ちなしで次のページへ進むので、
+  // 門が無いと瞬間のレートが上限へ寄る。配信元は「定常的に 2req/s 以上のアクセスはお控え
+  // いただき」と求めている（→ `services/dmdataRequestGates.ts`）。
+  //
+  // **共通の口へ置く。** 呼び出し側ごとに書くと、経路を足したときに掛け忘れる
+  // （実際に一覧の 3 経路が素通ししていた）。
+  await waitForApiSlot()
   const res = await fetch(url, { headers: { Authorization: authHeader(apiKey) } })
   if (!res.ok) throw new Error(`${what} failed: ${res.status}`)
   const json = (await res.json()) as { status?: string } & T
@@ -283,6 +294,14 @@ function fetchBody(url: string, apiKey: string): Promise<string> {
   if (cached) return cached
   const promise = (async () => {
     const body = await fetchTelegramText(apiKey, url)
+    // **429 の窓で見送った分は専用の型で投げる。** アーカイブ本体と同じ扱いにする
+    // （→ `services/dmdataRequestGates.ts` の `RateLimitWindowError`）。通常の失敗と
+    // 混ぜると、待てば取れるものが恒久的な喪失として記録・画面に出る
+    // **渡すのは id で URL ではない**（アーカイブ側と意味を揃える。→ `telegramIdFromUrl`）。
+    // 取り出せない URL では窓も立たないので、そのときは URL をそのまま添える
+    if (body.rateLimitedUntil !== null) {
+      throw new RateLimitWindowError(telegramIdFromUrl(url) ?? url, body.rateLimitedUntil)
+    }
     if (body.xml === null) {
       throw new Error(`Telegram body fetch failed: ${body.status === null ? 'network' : body.status}`)
     }
@@ -297,17 +316,27 @@ function fetchBody(url: string, apiKey: string): Promise<string> {
 }
 
 /**
- * 二進電文の本体をバイト列で取る。**`res.text()` を通さない** —— 不正なバイトが U+FFFD へ
- * 潰れて元へ戻せなくなる。キャッシュはテキスト側と分ける（同じ URL を両方で引くことは無い）。
+ * 二進電文の本体をバイト列で取る。
+ *
+ * **取得は `fetchTelegramBytes` に任せる**（→ `services/telegramBody.ts`）。同じ
+ * エンドポイント（`data.api.dmdata.jp/v1/:id`）なので、門（6 秒）と 429 の窓をテキスト側と
+ * 共有しなければ合算で配信元の上限を超える。**素の `fetch` で取っていた頃は、呼び出し側の
+ * `BODY_CONCURRENCY`（8）のまま門を通らず瞬間 8req/s になっていた。**
+ *
+ * セッション内の控えはここが持つ（URL を鍵にする）。テキスト側と分けているのは、同じ URL を
+ * 両方で引くことが無いため。
  */
 const binaryBodyCache = new Map<string, Promise<Uint8Array>>()
 function fetchBinaryBody(url: string, apiKey: string): Promise<Uint8Array> {
   const cached = binaryBodyCache.get(url)
   if (cached) return cached
   const promise = (async () => {
-    const res = await fetch(url, { headers: { Authorization: authHeader(apiKey) } })
-    if (!res.ok) throw new Error(`Telegram body fetch failed: ${res.status}`)
-    return new Uint8Array(await res.arrayBuffer())
+    const { bytes, status, rateLimitedUntil } = await fetchTelegramBytes(apiKey, url)
+    if (rateLimitedUntil !== null) {
+      throw new RateLimitWindowError(telegramIdFromUrl(url) ?? url, rateLimitedUntil)
+    }
+    if (bytes === null) throw new Error(`Telegram body fetch failed: ${status ?? 'network'}`)
+    return bytes
   })()
   binaryBodyCache.set(url, promise)
   promise.catch(() => binaryBodyCache.delete(url))
@@ -486,6 +515,9 @@ async function listEewTelegrams(
   let skipped = 0
   await mapWithLimit(targets, BODY_CONCURRENCY, async (ev) => {
     try {
+      // **`BODY_CONCURRENCY` は 8 だが、`getJson` が `api.dmdata.jp` の門（500ms）で
+      // 直列化する**ので瞬間 8req/s にはならない（同じ定数を使う電文本体の取得は
+      // 6 秒の門で直列化されている）。
       const json = await getJson<{ items?: Array<{ telegrams?: TelegramListItem[] }> }>(
         `${API_BASE}/gd/eew/${encodeURIComponent(ev.eventId)}`, apiKey, 'EEW detail',
       )
@@ -530,6 +562,14 @@ export interface LiveReplayResult {
    * アーカイブの失敗と同じ集合へ積む。
    */
   failedSources: string[]
+  /**
+   * 429 の窓が明けるまで取りに行かなかった電文の数。
+   *
+   * **`skipped` とは別に数える。** あちらは恒久的に失ったもので、こちらは待てば取れる。
+   * 混ぜると画面が「読めなかった」と伝え、記録も `error` で残って本当の障害と
+   * 見分けがつかない（→ `types/replay.ts` の `rateLimitedTelegrams`）。
+   */
+  rateLimitedTelegrams: number
 }
 
 /**
@@ -550,7 +590,7 @@ export async function fetchLiveReplayEntries(
   days: string[],
   includeTest: boolean,
 ): Promise<LiveReplayResult> {
-  if (days.length === 0) return { entries: [], skipped: 0, failedSources: [] }
+  if (days.length === 0) return { entries: [], skipped: 0, failedSources: [], rateLimitedTelegrams: 0 }
   const daySet = new Set(days)
   const { from: utcFrom, to: utcTo } = utcRangeForJstDates(days)
 
@@ -586,6 +626,8 @@ export async function fetchLiveReplayEntries(
 
   // EEW の一覧を組み立てる段で落ちた報も取りこぼしに含める。
   let skipped = eew.skipped
+  /** 429 の窓で見送った電文の数。**取りこぼしとは別に数える**（待てば取れる）。 */
+  let rateLimitedTelegrams = 0
   // EEW は /v2/gd/eew から来るが、XML 版を指す形へ組み替えてあるので同じ判定に掛けられる。
   const targets: TelegramListItem[] = []
   for (const item of [...telegramList, ...eew.items]) {
@@ -599,6 +641,14 @@ export async function fetchLiveReplayEntries(
   const bufrFragments = new BufrFragmentStore()
   /** 本体の取得が落ちて、既に取りこぼしとして数えた二進電文の識別名。 */
   const countedBinaryKeys = new Set<string>()
+  /**
+   * 429 の窓で見送った二進電文の識別名。
+   *
+   * **`countedBinaryKeys` とは別に持つ。** あちらは「恒久的に失ったので `skipped` へ数えた」印で、
+   * こちらは「待てば取れるので数えない」印。同じ集合にすると、下の掃引で見送りと失敗の
+   * どちらだったか分からなくなる。
+   */
+  const rateLimitedBinaryKeys = new Set<string>()
   await mapWithLimit(targets, BODY_CONCURRENCY, async (item) => {
     const headType = item.head.type
     try {
@@ -616,6 +666,16 @@ export async function fetchLiveReplayEntries(
           skipped++
           return
         }
+        // **試験報は取りこぼしに数えない**（正常な配信。非 XML 電文は `item.head.test` で
+        // 弾けないため本文で判定する → `isFilteredBinaryTelegram`）。
+        //
+        // **捨てたことは記録する。** リプレイはこの判定の一次検証手段なので、誤って通常の
+        // 電文まで弾いていても「なぜかその電文だけ画面に出ない」以上の手がかりが残らない
+        // （ライブ経路は元から記録している。片方だけ無音にしない）。
+        if (isFilteredBinaryTelegram(binPayload, includeTest)) {
+          log.info(`[replay] 二進電文の試験報を流しません id=${item.id} type=${headType}`)
+          return
+        }
         entries.push({ payload: binPayload, replayTime: new Date(item.receivedTime) })
         return
       }
@@ -629,6 +689,32 @@ export async function fetchLiveReplayEntries(
       // 発表時刻（分単位）より細かいため、報が連続する EEW でも順序と間隔が保たれる。
       entries.push({ payload, replayTime: new Date(item.receivedTime) })
     } catch (e) {
+      // **429 の窓で見送った分は取りこぼしに数えない。** 待てば取れるものを恒久的な喪失として
+      // 数えると、画面が「読めなかった」と伝え、記録も `error` で残って本当の障害と見分けが
+      // つかない（→ `types/replay.ts` の `rateLimitedTelegrams`）。
+      if (e instanceof RateLimitWindowError) {
+        log.info(
+          `[replay] 電文は 429 の窓が明けるまで取りに行きません id=${item.id} type=${headType}`
+          + `（あと ${Math.max(0, Math.round((e.until - Date.now()) / 1000))} 秒）`,
+        )
+        // **二進電文は電文ごとに 1 度だけ数える**（通常の失敗と同じ理由。分割は最大 24 断片
+        // あり、窓は断片ごとの id に立つので複数が同時に見送られる）。
+        //
+        // **覚えておくのは、下の `pendingKeys` で `skipped` へ数えないため。** 一部の断片だけが
+        // 見送られると、残りは入れ物に入ったまま「揃わなかった断片」として掃引に掛かる ——
+        // そこで数えると、**同じ電文が「待っている」と「恒久的に失った」の両方に計上される**
+        // （2 巡目で入れたこの早期 return が、`countedBinaryKeys` に触らなかったために作った穴）。
+        if (isBinaryTelegramType(headType)) {
+          const key = fragmentKey(headType, 'RJTD', item.head.time)
+          if (rateLimitedBinaryKeys.has(key)) return
+          // **恒久的に失った側が既に数えていたら、こちらでは数えない。** 同じ電文の別の断片が
+          // 通信エラーで落ちていれば、その電文は待っても揃わない（下の「恒久失敗が勝つ」）
+          if (countedBinaryKeys.has(key)) return
+          rateLimitedBinaryKeys.add(key)
+        }
+        rateLimitedTelegrams++
+        return
+      }
       // 1 通の失敗（取得エラー・JSON 破損・パーサ内の例外）で全体を落とさない。
       log.error(`[replay] 電文の取り込みに失敗しスキップ id=${item.id} type=${headType}`, e)
       // **二進電文は電文ごとに 1 度だけ数える。** 分割は最大 24 断片あり、通信の不調では
@@ -640,6 +726,11 @@ export async function fetchLiveReplayEntries(
       if (isBinaryTelegramType(headType)) {
         const key = fragmentKey(headType, 'RJTD', item.head.time)
         if (countedBinaryKeys.has(key)) return
+        // **恒久失敗が勝つ。** 同じ電文の断片が「1 つは通信エラー・1 つは 429 の窓」に分かれる
+        // ことがある（本体は 8 並列で取るため）。そのとき「待てば取れます」と伝えるのは嘘 ——
+        // 恒久的に失った断片がある電文は、窓が明けても揃わない。**待っている側から取り下げて
+        // こちらへ移す**（両方に 1 件ずつ入れると、1 通の障害が 2 件に見える）
+        if (rateLimitedBinaryKeys.delete(key)) rateLimitedTelegrams--
         countedBinaryKeys.add(key)
       }
       skipped++
@@ -651,13 +742,17 @@ export async function fetchLiveReplayEntries(
   for (const key of bufrFragments.pendingKeys) {
     // 取得そのものが落ちて既に数えた電文は、ここでは数えない（上の注記）。
     if (countedBinaryKeys.has(key)) continue
+    // **429 で見送った電文も数えない。** 断片が揃っていないのは事実だが、原因は
+    // 「こちらが待っている」ことなので恒久的な喪失ではない（既に `rateLimitedTelegrams` で
+    // 数えている）。ここで数えると同じ電文が両方の枠に入る
+    if (rateLimitedBinaryKeys.has(key)) continue
     log.warn(`[replay] 二進電文の断片が揃いませんでした（分布は出ません）key=${key}`)
     skipped++
   }
 
   const failedSources = [...listFailures, ...eew.failedSources]
   log.info(`[replay] アーカイブ未生成の日を当日経路で補完 日=${dayLabel} 電文=${entries.length} 取りこぼし=${skipped} 読めなかった取得元=${failedSources.length}`)
-  return { entries, skipped, failedSources }
+  return { entries, skipped, failedSources, rateLimitedTelegrams }
 }
 
 /**
@@ -677,7 +772,12 @@ export async function fetchLiveQuakeTelegrams(
   day: string,
   before: Date,
   includeTest: boolean,
-): Promise<{ quakes: JMAQuake[]; tsunamis: JMATsunami[]; extras: ReplayEntry[]; skipped: number }> {
+): Promise<{
+  quakes: JMAQuake[]; tsunamis: JMATsunami[]; extras: ReplayEntry[]
+  skipped: number
+  /** 429 の窓で見送った電文の数（`skipped` とは別に数える。理由は `LiveReplayResult`）。 */
+  rateLimitedTelegrams: number
+}> {
   const daySet = new Set([day])
   const { from: utcFrom, to: utcTo } = utcRangeForJstDates([day])
   // 下限は日の始まりより 1 日ぶん手前に置く。担当日の切り出しは `daySet`（受信時刻の JST 日）が
@@ -693,6 +793,8 @@ export async function fetchLiveQuakeTelegrams(
 
   const list = await listTelegrams(apiKey, utcFrom, utcTo, includeTest)
   let skipped = 0
+  /** 429 の窓で見送った電文の数。**取りこぼしとは別に数える**（待てば取れる）。 */
+  let rateLimitedTelegrams = 0
   const targets: TelegramListItem[] = []
   for (const item of list) {
     const type = item.head?.type
@@ -738,9 +840,18 @@ export async function fetchLiveQuakeTelegrams(
       }
       quakes.push(payload.event)
     } catch (e) {
+      // 429 の窓による見送りは取りこぼしに数えない（上と同じ理由）
+      if (e instanceof RateLimitWindowError) {
+        log.info(
+          `[replay] 履歴用電文は 429 の窓が明けるまで取りに行きません id=${item.id} type=${item.head.type}`
+          + `（あと ${Math.max(0, Math.round((e.until - Date.now()) / 1000))} 秒）`,
+        )
+        rateLimitedTelegrams++
+        return
+      }
       log.error(`[replay] 履歴用電文の取り込みに失敗しスキップ id=${item.id} type=${item.head.type}`, e)
       skipped++
     }
   })
-  return { quakes, tsunamis, extras, skipped }
+  return { quakes, tsunamis, extras, skipped, rateLimitedTelegrams }
 }
