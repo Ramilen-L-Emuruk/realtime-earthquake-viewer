@@ -10,8 +10,8 @@
 // 先読みの中身（巡回・打ち切り・節約設定の判定）は `utils/gebcoPrefetch.test.ts` の担当。
 // ここで見るのは**呼ばれるか・呼ばれないか**と、やめたときに止まるかだけ。
 //
-// 偽 map は `./testing/fakeMapGL`（同じ役割の代役が `CameraFollowsGL.test.ts` と
-// `LabelsGL.test.ts` にもある。用途の違いと寄せるときの論点は `fakeMapGL.ts` の冒頭）。
+// 偽 map は `./testing/fakeMapGL`（同じ役割の代役は他にもある。役割の違いと寄せていない理由は
+// `fakeMapGL.ts` の冒頭）。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, cleanup } from '@testing-library/react'
 import type { Map as MapLibreMap } from 'maplibre-gl'
