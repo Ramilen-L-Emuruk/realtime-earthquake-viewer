@@ -15,12 +15,18 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { WORK } from './coverage-core.mjs'
+import { readArtifact, incompleteNotes, incompletenessBanner, reportIncompleteness } from '../lib/incompleteness.mjs'
 
 const DATA = path.join(WORK, process.env.OUT_DIR || 'quake-times')
 const file = process.argv[2] || 'telegram-earthquake'
 const L = fs.readFileSync(path.join(DATA, `${file}.jsonl`), 'utf8')
   .trim().split('\n').filter(Boolean).map(s => JSON.parse(s))
-const meta = JSON.parse(fs.readFileSync(path.join(DATA, `${file}.meta.json`), 'utf8'))
+// **`readArtifact` を通す。** 走査できなかった範囲があったことは、読んだ時点で台帳へ入る
+// （抽出の本体は `.jsonl` だが、あれは 1 行 1 電文の羅列で印を載せる場所が無い）。
+const meta = readArtifact(path.join(DATA, `${file}.meta.json`), { source: '地震の時刻の抽出' })
+if (!meta) {
+  throw new Error(`${file}.meta.json を読めません（fetch-quake-times.mjs を先に実行してください）: ${DATA}`)
+}
 
 const p = (n, d) => d ? `${n} 件（${(n / d * 100).toFixed(1)}%）` : `${n} 件`
 const out = []
@@ -39,6 +45,14 @@ say(`走査: ${meta.classification}  指定 ${meta.from} ~ ${meta.to}`)
 const days = meta.dayList.map(d => d.day).sort()
 say(`  実際に返った日: ${days[0]} ~ ${days[days.length - 1]}（${meta.days} 日）`)
 say(`  XML ${meta.xmlTotal} 通 / 取得できなかった日 ${meta.failedDays.length}${meta.failedDays.length ? '（' + meta.failedDays.map(f => f.day).join(', ') + '）' : ''}`)
+
+// **走査できなかった範囲があれば、集計の手前で断る。** 以下の節はどれも「N 件中 M 件」の形で
+// 出るので、断らないと取りこぼした分を「そういう電文が無かった」と読める。
+// 文面は `incompletenessBanner` に任せる（`.md` 側と割れないように）。
+if (incompleteNotes().length > 0) {
+  say('')
+  for (const line of incompletenessBanner('plain')) say(line)
+}
 
 say('')
 say('## 0. 想定外の形')
@@ -239,3 +253,4 @@ for (const s of samples6) {
 const text = out.join('\n')
 console.log(text)
 fs.writeFileSync(path.join(DATA, `report-${file}.txt`), text)
+if (reportIncompleteness('集計の入力') > 0) process.exitCode = 1

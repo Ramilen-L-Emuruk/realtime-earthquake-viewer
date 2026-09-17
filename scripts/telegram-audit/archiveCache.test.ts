@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 // @ts-expect-error -- 型定義を持たない .mjs（`scripts/lib/stationSource.mjs` と同じ扱い）
-import { resetArchiveCacheForTest, listArchive, withCompletenessMark, archiveCacheStats } from './archive-cache.mjs'
+import { resetArchiveCacheForTest, listArchive, archiveCacheStats } from './archive-cache.mjs'
+// @ts-expect-error -- 同上
+import { markResult, incompleteNotes } from '../lib/incompleteness.mjs'
 
 // **レート制御（`gate`）のテストは `scripts/lib/rateGate.test.ts` にある。**
 // あの門は DMDATA 専用ではなく取得元ごとに `kind` を分ける汎用の仕組みなので、
@@ -11,7 +13,7 @@ import { resetArchiveCacheForTest, listArchive, withCompletenessMark, archiveCac
 // 失敗の内訳は標準エラーへ出るが、これらのスクリプトの出力（標準出力の JSON）だけを
 // 保存・受け渡しする運用では見えない。「集めたが 0 件」と「集められなかった」が
 // 区別できない形で残ると、それが「この種別は実配信に無い」という主張の根拠になる。
-describe('withCompletenessMark（走査の不完全さを結果へ載せる）', () => {
+describe('走査の不完全さが結果へ載る', () => {
   beforeEach(() => {
     // **統計も空にする。** 前のテストが残した失敗が見えると、「失敗が無いとき」の
     // 振る舞いを確かめるテストが実行順によって落ちる
@@ -28,7 +30,7 @@ describe('withCompletenessMark（走査の不完全さを結果へ載せる）',
     expect(archiveCacheStats().failures).toHaveLength(0)
 
     const result = { VXSE53: 8 }
-    expect(withCompletenessMark(result)).toEqual({ VXSE53: 8 })
+    expect(markResult(result)).toEqual({ VXSE53: 8 })
   })
 
   // 正: 一覧の取得に失敗した範囲があれば、結果へ印が載る。
@@ -51,10 +53,13 @@ describe('withCompletenessMark（走査の不完全さを結果へ載せる）',
     await pending
 
     expect(archiveCacheStats().failures.length).toBeGreaterThan(0)
+    // **共有の台帳へも積まれること。** ここが下流への引き継ぎの入口で、内訳
+    // （`archiveCacheStats().failures`）だけに書くと `writeArtifact` の印に載らない
+    expect(incompleteNotes().some((n: string) => n.startsWith('アーカイブの取得:'))).toBe(true)
 
     // 「0 件だった」ように見える結果に、不完全であることの印が付く
-    const marked = withCompletenessMark({ areas: 0, warning: 0, lgint: 0 }) as Record<string, unknown>
-    expect(marked._incomplete).toContain('「無い」の根拠にしないこと')
+    const marked = markResult({ areas: 0, warning: 0, lgint: 0 }) as Record<string, any>
+    expect(marked._incomplete.warning).toContain('「無い」の根拠にしないこと')
     // 元の値は保つ（印を足すだけで、集計を書き換えない）
     expect(marked.areas).toBe(0)
   })
@@ -108,7 +113,7 @@ describe('一覧のページ送りは上限で打ち切る', () => {
     expect(listCalls()).toBe(20)
     expect(archiveCacheStats().failures.length).toBeGreaterThan(0)
     // 集計へ「無いの根拠にしないこと」の印が載る
-    const marked = withCompletenessMark({ VXSE53: 0 }) as Record<string, unknown>
+    const marked = markResult({ VXSE53: 0 }) as Record<string, any>
     expect(marked._incomplete).toBeDefined()
   })
 
