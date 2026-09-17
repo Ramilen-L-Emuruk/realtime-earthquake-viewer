@@ -215,7 +215,11 @@ export const TELEGRAM_TEXT_BLOCK_KEYS = [
   // 南海トラフ地震関連解説情報
   'nankaiCommentarySummary', 'nankaiCommentaryBody', 'nankaiCommentaryNextAdvisory',
   // 北海道・三陸沖後発地震注意情報
-  'kohatsuSummary', 'kohatsuBody', 'kohatsuNextAdvisory',
+  // **次回発表予定は持たない。** 解説資料 Ⅱ.42 が定める VYSE60 の `Body` は `EarthquakeInfo` と
+  // `Text` だけで `NextAdvisory` を含まない（実電文 7 通でも 0 件。→ data-sources-spec.md
+  // 「3 種別に共通する要素は 1 箇所で読む」）。**切っても入れても何も起きない欄を設定に並べない。**
+  // 気象庁がこの要素を出すようになったら、キーと `telegramTextToSpeak` の `pick` を戻す。
+  'kohatsuSummary', 'kohatsuBody',
   // 地震回数に関する情報
   'earthquakeCountFreeText',
 ] as const
@@ -3011,10 +3015,12 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
     }
     case 'kohatsu': {
       if (event.data.cancelled) return null
+      // **`nextAdvisory` は読まない。** この種別の電文に `NextAdvisory` は無く（理由は
+      // `TELEGRAM_TEXT_BLOCK_KEYS` の「北海道・三陸沖後発地震注意情報」）、共有の読み取りを
+      // 通っているぶん型には残るが値は常に空。気象庁が出すようになったら設定キーと併せて戻す。
       const body = joinTelegramTexts([
         pick('kohatsuSummary', event.data.summary),
         pick('kohatsuBody', event.data.body),
-        pick('kohatsuNextAdvisory', event.data.nextAdvisory),
       ])
       return body
         ? { text: `北海道・三陸沖後発地震注意情報について、気象庁の文をお伝えします。${body}`, body }

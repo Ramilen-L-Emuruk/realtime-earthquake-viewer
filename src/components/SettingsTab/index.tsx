@@ -422,26 +422,40 @@ function KyoshinImportRow({ historicalArchives }: { historicalArchives: Historic
  * 気象庁の表現と揃える方針（→ quake-spec.md §8）に沿うが、語だけでは何が読まれるか判らない。
  * 同じ画面に「固定付加文」と「固定付加文（その他）」が並ぶ種別もあるので、中身で見分けられる
  * ようにここで補う。
+ *
+ * **実例（「例:」）を添えるのは、実配信の電文でその文を確かめられたものだけ。** 語の説明だけでは
+ * 何が声になるか想像が付かないため添えているが、**確かめていない文を例として書くと、アプリの
+ * 作文が気象庁の文の顔をして画面に出る**。
+ *
+ * **「例:」を持たない項目が 5 つあり、理由は 2 通り。** 混ぜて書くと、次に足す人が「まだ
+ * 調べていないもの」と「調べたうえで引かなかったもの」を取り違える。
+ * - 電文の文面を確かめられていない: `nankaiSummary` / `nankaiBody` / `kohatsuSummary` / `kohatsuBody`
+ * - 確かめてあるが**一文では引けない**: `nankaiCommentaryBody`（節立ての長文なので、節の名前で構成を示す）
+ *
+ * **長い文は冒頭の一文だけを引き、続きは中身で示す。** 全文を入れると吹き出しが画面を覆う
+ * （実測で最長 118 字で、既定の UI 倍率なら 288x97px。吹き出しの幅はビューポートと UI 倍率で
+ * 変わるので、揃えるなら字数を見る）。**字数を添えるのは、読み上げの長さが設定の判断に効くものだけ**
+ * —— 津波の固定付加文（約 600 字）と南海トラフの本文（1000 字・1600 字）で、200〜300 字のものには
+ * 付けない。全部に付けると説明が数字で埋まる。
  */
 const TELEGRAM_TEXT_BLOCK_DESCRIPTIONS: Record<TelegramTextBlockKey, string> = {
-  quakeVarComment: '気象庁以外が運用する観測点（＊印）の説明や、「震源要素を訂正します。」といった定型文です',
-  quakeFreeText: 'その電文にだけ添えられる説明です。内容は報ごとに変わります',
-  tsunamiBody: '津波がいつ来て、いつまで続くかの説明です。津波予報では区域に波高も到達時刻も付かないため、この文にしか書かれていません',
-  tsunamiVarComment: '避難の呼びかけ、満潮時刻、沿岸・沖合の観測についての定型文です。避難の呼びかけ自体は、この設定によらず読み上げます',
-  tsunamiFreeText: 'その電文にだけ添えられる説明です',
+  quakeVarComment: '気象庁以外が運用する観測点（＊印）の説明や、「震源要素を訂正します。」といった定型文です。例:「＊印は気象庁以外の震度観測点についての情報です。」',
+  quakeFreeText: 'その電文にだけ添えられる説明です。内容は報ごとに変わります。例:「この地震とほぼ同時刻に別の地震が発生していますが、緊急作業中で震度を分離できないため、この情報で震度を取りまとめて発表しています。」',
+  tsunamiBody: '津波がいつ来て、いつまで続くかの説明です。津波予報では区域に波高も到達時刻も付かないため、この文にしか書かれていません。例:「これらの沿岸では今後２、３時間程度は若干の海面変動が継続する可能性が高いと考えられます。」',
+  tsunamiVarComment: '避難の呼びかけ、満潮時刻、沿岸・沖合の観測についての定型文です。避難の呼びかけ自体は、この設定によらず読み上げます。例:「ただちに避難してください。」に続けて、大津波警報・津波警報・津波注意報それぞれの行動が書かれます（約 600 字）',
+  tsunamiFreeText: 'その電文にだけ添えられる説明です。例:「［予想される津波の高さの解説］」に続けて、１０ｍ超から１ｍまで 5 段階の被害が書かれます',
   lpgmForecast: '「この地震について、緊急地震速報を発表しています。」のような定型文です',
-  lpgmVarComment: '気象庁以外が運用する観測点（＊印）の説明です',
-  lpgmFreeText: '階級と揺れの大きさの対応表など、その電文の補足です',
-  nankaiSummary: '発表内容を一文にまとめたものです。画面の帯に出ている見出しと同じ文です',
+  lpgmVarComment: '気象庁以外が運用する観測点（＊印）の説明です。例:「＊印は気象庁以外の長周期地震動観測点についての情報です。」',
+  lpgmFreeText: '階級と揺れの大きさの対応表など、その電文の補足です。例:「各長周期地震動階級に対する簡易な現象表現」に続けて「階級１やや大きな揺れ」から階級４までが並び、詳しい観測結果の参照先が付きます',
+  nankaiSummary: '発表内容を一文にまとめたものです。画面の帯に出ている見出しと同じ文です。地震の発生時刻・震源・規模に続けて、想定震源域の状況と防災対応の呼びかけが書かれます',
   nankaiBody: '調査の結果や評価の根拠です。実際の電文では 1000 字を超えることがあります',
-  nankaiNextAdvisory: '次の情報がいつ出るかの案内です',
-  nankaiCommentarySummary: '発表内容を一文にまとめたものです。画面の帯に出ている見出しと同じ文です',
-  nankaiCommentaryBody: '地殻活動の観測状況と評価です。実際の電文では 1600 字を超えることがあります',
-  nankaiCommentaryNextAdvisory: '次の情報がいつ出るかの案内です',
-  kohatsuSummary: '発表内容を一文にまとめたものです。画面の帯に出ている見出しと同じ文です',
+  nankaiNextAdvisory: '次の情報がいつ出るかの案内です。例:「次回の情報発表は、２１時頃を予定しています。」',
+  nankaiCommentarySummary: '発表内容を一文にまとめたものです。画面の帯に出ている見出しと同じ文です。例:「第１０９回南海トラフ沿いの地震に関する評価検討会で、南海トラフ周辺の地殻活動を評価しました。」',
+  nankaiCommentaryBody: '地殻活動の観測状況と評価です。実際の電文では 1600 字を超えることがあります。地震の観測状況・地殻変動の観測状況・地殻活動の評価の 3 節立てで、深部低周波地震が起きた区間などを日付付きで挙げます',
+  nankaiCommentaryNextAdvisory: '次の情報がいつ出るかの案内です。例:「次回の情報発表は、２２日１５時３０分頃を予定しています。」',
+  kohatsuSummary: '発表内容を一文にまとめたものです。画面の帯に出ている見出しと同じ文です。地震の発生と、想定震源域で大規模地震の可能性が平常時より高まっていることが書かれます',
   kohatsuBody: '発表の理由と、とるべき防災対応の説明です',
-  kohatsuNextAdvisory: '次の情報がいつ出るかの案内です',
-  earthquakeCountFreeText: '地震回数の補足です',
+  earthquakeCountFreeText: '地震回数の補足です。例:「８月２４日１５時過ぎから伊豆半島東方沖で地震が発生しています。」に続けて、震度２以下はこの情報でまとめて発表する旨が書かれます',
 }
 
 const TELEGRAM_TEXT_BLOCK_LABELS: Record<TelegramTextBlockKey, string> = {
@@ -461,7 +475,6 @@ const TELEGRAM_TEXT_BLOCK_LABELS: Record<TelegramTextBlockKey, string> = {
   nankaiCommentaryNextAdvisory: '次回発表予定',
   kohatsuSummary: '要約',
   kohatsuBody: '本文',
-  kohatsuNextAdvisory: '次回発表予定',
   earthquakeCountFreeText: '自由付加文',
 }
 
@@ -485,8 +498,9 @@ const TELEGRAM_TEXT_BLOCK_GROUPS: readonly {
     keys: ['nankaiCommentarySummary', 'nankaiCommentaryBody', 'nankaiCommentaryNextAdvisory'],
   },
   {
+    // **次回発表予定は無い。** 理由は `TELEGRAM_TEXT_BLOCK_KEYS`（`utils/ttsText.ts`）
     title: '後発地震注意情報',
-    keys: ['kohatsuSummary', 'kohatsuBody', 'kohatsuNextAdvisory'],
+    keys: ['kohatsuSummary', 'kohatsuBody'],
   },
   { title: '地震回数に関する情報', keys: ['earthquakeCountFreeText'] },
 ]
@@ -494,7 +508,7 @@ const TELEGRAM_TEXT_BLOCK_GROUPS: readonly {
 /**
  * 気象庁が書いた文の内訳（電文種別 × ブロック）。
  *
- * **既定は畳んでおく。** 18 行＋グループの見出し 7 行を常に開くと、設定タブの中でこの
+ * **既定は畳んでおく。** 17 行＋グループの見出し 7 行を常に開くと、設定タブの中でこの
  * セクションだけが突出して伸びる。見出しには「何個を読む設定か」を出す —— 畳んだままでも、
  * 全部読むのか一部だけかが分かる。
  */
