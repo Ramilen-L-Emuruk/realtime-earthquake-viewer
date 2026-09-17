@@ -128,6 +128,23 @@ for (const [t, fs_] of Object.entries(S.meta.sourceFiles ?? {})) {
 for (const [code, n] of Object.entries(S.meta.p2pCounts)) w(`| P2PQuake code=${code} | ${n} |`)
 w('')
 
+// **入力の取得・解析に失敗したものがあれば、件数表のすぐ下で断る。**
+// 上の表は「実配信に 0 件だった」と「取れなかった」を同じ見た目で見せるので、ここで断らないと
+// 取得失敗による欠落を「実配信に存在しない」と誤読する。内訳は E 節へ出す。
+//
+// **「上の件数」のような位置参照で書かないこと。** `failed` に入るのは P2PQuake の取得失敗だけ
+// ではなく、DMDATA XML の個別サンプルの解析失敗・テストデータファクトリの実行失敗も混ざる。
+// 位置で指すと、P2PQuake が完全に取れている実行でも「この表が疑わしい」と読めてしまい、
+// 逆に本当に疑うべき節（解析に失敗したサンプルがあれば B・C・D の突き合わせ）を指さない。
+// **疑う対象はこのレポート全体**なので、そう書く。
+const inputFailures = S.meta.failed ?? []
+if (inputFailures.length > 0) {
+  w(`> **入力の取得・解析に失敗したものがあります（${inputFailures.length} 件）。**`)
+  w('> **このレポートのどの節も「無い」の根拠にしないこと** —— 件数表・A〜D の突き合わせは、')
+  w('> 失敗した入力の分を黙って飛ばしている。何が失敗したかは E 節に並べてある。')
+  w('')
+}
+
 w('\n## A. standard 版のテストボタンが持つ、P2PQuake 経路では作れない項目\n')
 w('実測と `p2pquake.ts` / `kyoshin.ts` のリテラルのキー（**経路の全セグメント**で照合）の')
 w('どちらにも無いものだけを挙げる。\n')
@@ -178,10 +195,19 @@ for (const [f, kind] of Object.entries(DM)) {
   if (rows.length) w(`\n**${f}**\n` + rows.join('\n'))
 }
 
-w('\n\n## E. 突き合わせできなかったもの（実電文の標本 0 件）\n')
+w('\n\n## E. 突き合わせできなかったもの（実電文の標本 0 件・入力の取得失敗）\n')
 w('**「一致していた」ではなく「見ていない」。** B・C・D はこれらを黙って飛ばすので、ここへ明示する。\n')
 if (unchecked.length === 0) w('無し（DM 表のすべての内部型に実電文の標本がある）。')
 else for (const [f, kind] of unchecked) w(`- **${f}** … 内部型 \`${kind}\` の実電文標本が 0 件`)
+
+// **入力そのものの取得・解析の失敗も「見ていない」。** `testdata-shapes.mjs` が集めた
+// `meta.failed` をここへ運ぶ。運ばないと、P2PQuake の取得が失敗した実行でも標本表は
+// 「code=552: 0」と正常時と同じ見た目になり、**この節の趣旨（「無い」と「見ていない」を分ける）が
+// 入力の側では果たされない**。控えの形が古い場合もここへ出る（その実行では A 節が
+// 偽陽性を大量に出すので、原因がこのレポート単体で辿れるようにしておく）。
+w('\n### 入力の取得・解析に失敗したもの\n')
+if (inputFailures.length === 0) w('無し。')
+else for (const m of inputFailures) w(`- ${m}`)
 
 fs.writeFileSync(path.join(WORK, 'testdata-report.md'), out.join('\n'))
 console.log(out.join('\n'))

@@ -669,3 +669,72 @@ describe('convertEvent', () => {
     })
   })
 })
+
+// ヒートマップ用の遡り取得が、**ページ上限に達したことを記録する**こと。
+//
+// 黙って切ると、遡り切れなかった期間が「地震が無かった」に化けてヒートマップが実際より
+// 静かに見える（1 ページ 100 件なので、群発期ほど届かなくなる）。**投げないのは意図したもの**で、
+// 呼び出し側（`useQuakeHeatmap`）が 6 時間キャッシュへ焼くため、例外にすると取れていた分まで
+// 捨てることになる。同じ配信元でもリプレイ側（`p2pquakeReplay.ts` の `MAX_PAGES_PER_DAY`）は
+// 投げる —— あちらは取りこぼしを画面へ出す仕組みを持つ。
+describe('fetchJmaQuakeHistory（ヒートマップ用の遡り取得）', () => {
+  /** 1 ページぶんの偽レスポンス。`convertEvent` を通るので実レスポンスの形をそのまま使う。 */
+  function page(count: number): unknown[] {
+    return Array.from({ length: count }, (_, i) => ({ ...REAL_QUAKE, id: `stub-${i}-${Math.random()}` }))
+  }
+
+  /**
+   * `fetch` を偽物に差し替えて `fetchJmaQuakeHistory` を回す。
+   *
+   * `days` を極端に大きく取るのは、`REAL_QUAKE` の地震時刻が cutoff より古いかどうかに
+   * 依存させないため（cutoff で抜けてしまうとページ送りの上限に到達しない）。
+   */
+  async function runHistory(perPage: number): Promise<{ calls: number; result: unknown[] }> {
+    let calls = 0
+    vi.stubGlobal('fetch', async () => {
+      calls++
+      return { ok: true, status: 200, json: async () => page(perPage) }
+    })
+    const { fetchJmaQuakeHistory } = await import('./p2pquake')
+    const running = fetchJmaQuakeHistory(365_000)
+    // ページ間の待ち（6.5 秒 × 最大 19 回）を偽の時計で飛ばす
+    await vi.advanceTimersByTimeAsync(6_500 * 25)
+    return { calls, result: await running }
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  // 正: 100 件が返り続けたら上限で打ち切り、**記録を残す**
+  it('正: ページ上限に達したら記録する', async () => {
+    const { calls } = await runHistory(100)
+
+    expect(calls).toBe(20)
+    const hit = warnSpy.mock.calls.find((c: unknown[]) => String(c[0]).includes('ページ上限'))
+    expect(hit).toBeDefined()
+    expect(String(hit?.[0])).toContain('遡り切れていない可能性')
+  })
+
+  // 対照: ページが尽きれば上限に触れないので記録しない（正常系でログを埋めない）
+  it('対照: ページが尽きれば記録しない', async () => {
+    const { calls } = await runHistory(50)
+
+    expect(calls).toBe(1)
+    expect(warnSpy.mock.calls.some((c: unknown[]) => String(c[0]).includes('ページ上限'))).toBe(false)
+  })
+
+  // 安全弁: 上限に達しても**投げず、読めた分を返す**こと。投げる形へ変えると
+  // 呼び出し側の 6 時間キャッシュへ空が入り、取れていた分まで捨てる
+  it('安全弁: 上限に達しても投げずに読めた分を返す', async () => {
+    const { result } = await runHistory(100)
+
+    expect(Array.isArray(result)).toBe(true)
+    expect(result.length).toBeGreaterThan(0)
+  })
+})
