@@ -159,6 +159,11 @@ describe('アーカイブ本体の取得は門を通る', () => {
   afterEach(() => {
     globalThis.fetch = originalFetch
     clearReplayCache()
+    // **アーカイブ本体の控えも空にする。** `clearReplayCache()` は**これを捨てない**
+    // （開始をまたいで残すのが設計）ので、呼ばないとテスト間で持ち越す。
+    // **同じ URL を使うテストが並ぶと、後のテストが前の書き込みを読んでしまい、
+    // 「1 回目で控えへ載る」経路を一度も通らない** —— 書き込みが壊れても通り続ける。
+    clearArchiveCacheForTest()
     setDataApiGateIntervalForTest(0)
     // **モックの持ち越しを切る。** `mockResolvedValueOnce` が消費されないまま残ると、
     // 次の describe のテストがそれを拾って別の結果になる（実際に 1 件巻き込んだ）。
@@ -194,26 +199,37 @@ describe('アーカイブ本体の取得は門を通る', () => {
   // **控えそのものの振る舞い**（書く・読む・当日は控えない・開始をまたいで残る）は
   // `utils/archiveBodyCache.test.ts` とこのファイルの「アーカイブ本体の控え」節が見る。
   // ここで見るのは**門との噛み合わせ**だけ。
-  // これが無いと「常に待つ」実装でもテストが通り、同じ日を読み直すたびに待たされる。
-  it('控えから読めた分は待たない', async () => {
+  //
+  // **測るのは取得回数で、経過時間ではない。** 当初は「間隔を長くしても待たない」形で
+  // 書いていたが、`setDataApiGateIntervalForTest` は**門を作り直す**（前回の発火時刻も
+  // 消える）ので、控えが効いていなくても待たずに通った —— **控えの書き込みを止めても
+  // 通る**ことを検算で確かめた。通信しなければ門も通らないので、「取りに行かない」ことを
+  // 見れば足りる。
+  it('控えから読めた分は取りに行かない', async () => {
     const gz = await makeTarGz([
       { name: 'telegrams.json', content: enc.encode(JSON.stringify([manifestEntry('a1', 'VXSE53')])) },
       { name: 'a1.xml', content: enc.encode(quakeBody('石川県能登地方')) },
     ])
-    globalThis.fetch = mockArchives([
+    /** 本体を取りに行った回数（目録は数えない）。 */
+    let bodyFetches = 0
+    const base = mockArchives([
       { url: 'https://data.api.dmdata.jp/v1/archive/d1', gz },
-    ]) as unknown as typeof fetch
+    ])
+    globalThis.fetch = (async (input: string) => {
+      if (String(input).includes('/v1/archive/')) bodyFetches++
+      return base(String(input))
+    }) as unknown as typeof fetch
 
-    // 1 回目で控えへ載せる（間隔 0 なので待たない）
-    setDataApiGateIntervalForTest(0)
+    await fetchDmdataReplayEvents('key', FROM, TO, false)
+    const afterFirst = bodyFetches
+    expect(afterFirst).toBeGreaterThan(0)
+
+    // **セッション内の展開結果だけ捨てる。** 控えは開始をまたいで残るのが設計なので、
+    // 2 回目は本体を取りに行かない（→ `utils/archiveBodyCache.ts`）
+    clearReplayCache()
     await fetchDmdataReplayEvents('key', FROM, TO, false)
 
-    // 2 回目は控えから読むので、間隔を長くしても待たない
-    setDataApiGateIntervalForTest(5_000)
-    const started = Date.now()
-    await fetchDmdataReplayEvents('key', FROM, TO, false)
-
-    expect(Date.now() - started).toBeLessThan(1_000)
+    expect(bodyFetches).toBe(afterFirst)
   })
 })
 
