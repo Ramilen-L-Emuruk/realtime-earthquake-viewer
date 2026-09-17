@@ -13,6 +13,7 @@ import { pointInRings, normalizeEpicenterLng, hasKnownEpicenter } from '../utils
 import { ringsBounds, type SubRegion } from '../utils/subregions'
 import { extractQuakeEventId } from '../utils/quakeMerge'
 import { japanWideCornersLatLng } from '../components/Map/gl/bounds'
+import type { FitZoomPolicy } from '../components/Map/gl/camera'
 import { log } from '../utils/logger'
 
 // 地震モードの描画に必要な派生データ（観測点ごとの震度点／一次細分区域集約／震源）を
@@ -177,6 +178,8 @@ export interface QuakeLayerData {
   lpgmRegionAggregates: LpgmRegionAggregate[]
   /** 地震モードのカメラフィット対象（各観測点＋震源）。 */
   quakeFitPositions: LatLng[]
+  /** `quakeFitPositions` へ寄るときの寄り上限の選び方。 */
+  quakeFitZoomPolicy: FitZoomPolicy
   /** カメラフィットの発火判定用シグネチャ（変化時のみフィット）。 */
   quakeSignature: string
 }
@@ -513,20 +516,25 @@ export function useQuakeLayerData(
   // 地震一覧の各行から eventId 単位で個別にトグルできる（App.tsx の onToggleLpgm は
   // selectedQuakeId を変えない）ため、選択中の quake と表示中の LPGM が別の地震のことがある。
   // quake 側のデータでフィットすると無関係な地震の位置にカメラが留まったままになる。
-  const quakeFitPositions = useMemo<LatLng[]>(() => {
+  // **寄り上限の選び方（`zoomPolicy`）も同じ判定から出す。** 上限は「この寄り先をどれだけ画に
+  // 収めたいか」で決まるので、寄り先を組んだここが決める（呼び出し側で組み直すと、同じ条件を
+  // 2 箇所で書くことになり片方が古くなる）。
+  const quakeFit = useMemo<{ positions: LatLng[]; zoomPolicy: FitZoomPolicy }>(() => {
     // 震度分布モードで気象庁の推計が出ているときは、**塗りがある範囲**へ寄せる。
     // 区域ポリゴンで寄せると、分布が届いていない区域まで枠に含めてしまい、
     // 見せたい面が画の隅へ追いやられる。範囲は復号のときに求めてある（走査し直さない）。
+    // 寄り上限も分布向けのもの（`distributionMaxZoom`）へ切り替える —— 自動フィットの上限を
+    // 当てると、分布が数十 km に収まる地震では面が小さいまま残る。
     if (distributionMode && estimatedIntensity) {
       const b = estimatedIntensity.bounds
-      return [[b.south, b.west], [b.north, b.east]]
+      return { positions: [[b.south, b.west], [b.north, b.east]], zoomPolicy: 'distribution' }
     }
     // 未入電モードは**未入電の地点だけ**へ寄せる。震源も観測点も混ぜない —— 見たいのは
     // 「震度が届いていない場所がどこか」で、他を含めると画が広がってそこが小さくなる。
     // 1 点も置けなかったとき（座標表を引けない）は通常の寄り先へ落とす。空を返すと
     // カメラが動かないままになり、モードへ入ったこと自体が画面に出ない。
     if (unreceivedMode && unreceivedMarkers.length > 0) {
-      return unreceivedMarkers.map((m) => m.position)
+      return { positions: unreceivedMarkers.map((m) => m.position), zoomPolicy: 'auto' }
     }
     if (lpgmActive) {
       const positions: LatLng[] = []
@@ -544,7 +552,7 @@ export function useQuakeLayerData(
       if (epicenter && quake && lpgm && extractQuakeEventId(quake) === lpgm.eventId) {
         positions.push(epicenter)
       }
-      return positions
+      return { positions, zoomPolicy: 'auto' }
     }
     const positions: LatLng[] = []
     for (const e of subregionIndex) {
@@ -564,7 +572,7 @@ export function useQuakeLayerData(
     if (quake?.issue.type === '遠地地震' && hasEpicenter) {
       positions.push(...japanWideCornersLatLng())
     }
-    return positions
+    return { positions, zoomPolicy: 'auto' }
   }, [distributionMode, estimatedIntensity, unreceivedMode, unreceivedMarkers, lpgmActive, lpgm, lpgmMarkers, regionMaxByName, subregionIndex, intensityMarkers, epicenter, hasEpicenter, quake])
 
   // LPGM 表示の切替（同じ quake のまま lpgmActive だけが変わる、あるいは別イベントの LPGM に
@@ -572,7 +580,10 @@ export function useQuakeLayerData(
   // **震度分布モードの別も入れる。** 寄り先は座標の配列で渡すが、シグネチャは長さしか見ない。
   // モードを切り替えた前後でたまたま同じ本数（分布モードは常に 2 点）になると、
   // 同じ地震のままでは値が変わらず、カメラが寄り直さない。
-  const quakeSignature = `${quake?.id ?? ''}:${lpgmActive ? (lpgm?.eventId ?? '') : ''}:${distributionMode ? 'D' : ''}${unreceivedMode ? 'U' : ''}:${quakeFitPositions.length}`
+  // **寄り上限の別（`zoomPolicy`）も入れる。** 分布モードへ入ったまま公式の分布が後から届くと
+  // 寄り先と上限が同時に変わるが、そのとき区域の点がちょうど 2 つだった地震では本数も
+  // 分布モードの別も変わらず、寄り直しが起きない。
+  const quakeSignature = `${quake?.id ?? ''}:${lpgmActive ? (lpgm?.eventId ?? '') : ''}:${distributionMode ? 'D' : ''}${unreceivedMode ? 'U' : ''}:${quakeFit.zoomPolicy}:${quakeFit.positions.length}`
 
   return {
     intensityMarkers,
@@ -587,7 +598,8 @@ export function useQuakeLayerData(
     lpgmActive,
     lpgmMarkers,
     lpgmRegionAggregates,
-    quakeFitPositions,
+    quakeFitPositions: quakeFit.positions,
+    quakeFitZoomPolicy: quakeFit.zoomPolicy,
     quakeSignature,
   }
 }
