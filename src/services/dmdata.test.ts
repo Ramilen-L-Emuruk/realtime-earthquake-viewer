@@ -5,6 +5,7 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import {
   isNonRecoverableCloseCode,
   fetchDmdataGdEarthquakes,
+  releaseSocket,
   fetchDmdataActiveEews,
   DmdataWebSocket,
   decodeTelegramText,
@@ -15,6 +16,7 @@ import { DmdataApiKeyError, DMDATA_API_KEY_INVALID_MESSAGE } from '../utils/dmda
 import { log } from '../utils/logger'
 import { serverNow } from '../utils/clock'
 import { setBodyGateIntervalForTest, resetTelegramBodyStatsForTest } from './telegramBody'
+import { setApiGateIntervalForTest, resetApiGateForTest } from './dmdataRequestGates'
 
 // スキップ時の警告を検証したいので、ロガーは差し替えて呼び出しを記録する。
 // 間引き（createLogThrottle）は素通しにする。ここで見たいのは「警告を出したか」であって
@@ -111,6 +113,10 @@ function stubPagedFetch(pages: Array<{ items: unknown[]; nextToken?: string }>) 
 beforeEach(() => {
   setBodyGateIntervalForTest(0)
   resetTelegramBodyStatsForTest()
+  // 一覧・カタログ・EEW 詳細は `api.dmdata.jp` の門（500ms）を通る。件数が多いテストでは
+  // 積み上がるので 0 にする（門の効きは `utils/requestGate.test.ts` が確かめている）。
+  setApiGateIntervalForTest(0)
+  resetApiGateForTest()
 })
 
 afterEach(() => {
@@ -297,6 +303,63 @@ describe('fetchDmdataGdEarthquakes', () => {
     expect(log.warn).toHaveBeenCalledTimes(1)
     expect(String(vi.mocked(log.warn).mock.calls[0][0])).toContain('取得失敗')
     expect(log.error).not.toHaveBeenCalled()
+  })
+
+  // ページ上限（GD_EARTHQUAKE_MAX_PAGES = 20）に達したときの扱い。
+  // **他の一覧はいずれも上限到達を投げるか warn するのに、ここだけ無言で終わっていた**
+  // （→ `data-sources-spec.md` §2「ページを辿るループには上限を置く」）。
+  // 正・対照・安全弁の 3 つで固定する。
+  it('ページ上限に達したら記録を残し、読めた分は返す（黙って切らない）', async () => {
+    // 期間（30 日）に届く前にページが尽きない並び。各ページ 1 件・すべて cutoff の手前なので、
+    // 打ち切りの条件（期間の端・1 ページ全滅）はどちらも成立せず、上限だけが効く。
+    const urls = stubPagedFetch(
+      Array.from({ length: 25 }, (_, i) => ({
+        items: [gdItem({ eventId: `e${i}`, daysAgo: 1 })],
+        nextToken: `T${i + 1}`,
+      })),
+    )
+
+    const items = await fetchDmdataGdEarthquakes('dummy-key', 30)
+
+    // **投げない。** 呼び出し側が結果を 6 時間キャッシュするので、例外にすると空が居座る。
+    expect(urls).toHaveLength(20)
+    expect(items).toHaveLength(20)
+    expect(log.warn).toHaveBeenCalledTimes(1)
+    const message = String(vi.mocked(log.warn).mock.calls[0][0])
+    expect(message).toContain('ページ上限（20）')
+    expect(message).toContain('取れた 20 件')
+  })
+
+  // 対照: 上限の手前で終わった取得を「打ち切った」と記録してはいけない。
+  // これが無いと、正常な取得のたびに警告が出る実装でもテストが通ってしまう。
+  it('上限の手前で nextToken が尽きたら上限の記録は出ない', async () => {
+    const urls = stubPagedFetch([
+      { items: [gdItem({ eventId: 'a', daysAgo: 1 })], nextToken: 'T2' },
+      { items: [gdItem({ eventId: 'b', daysAgo: 2 })] },
+    ])
+
+    await fetchDmdataGdEarthquakes('dummy-key', 30)
+
+    expect(urls).toHaveLength(2)
+    expect(log.warn).not.toHaveBeenCalled()
+  })
+
+  // 安全弁: 上限の記録を足したことで、既存の「捨てた項目の内訳」の記録を潰していないこと。
+  // 2 つは別の事実（前者は期間が欠けた・後者は項目が読めなかった）なので、両方出る。
+  it('上限の記録と、捨てた項目の記録は別々に出る', async () => {
+    stubPagedFetch(
+      Array.from({ length: 25 }, (_, i) => ({
+        items: [gdItem({ eventId: `e${i}`, daysAgo: 1 }), gdItemWithoutHypocenter(`bad${i}`)],
+        nextToken: `T${i + 1}`,
+      })),
+    )
+
+    await fetchDmdataGdEarthquakes('dummy-key', 30)
+
+    expect(log.warn).toHaveBeenCalledTimes(2)
+    const messages = vi.mocked(log.warn).mock.calls.map(c => String(c[0]))
+    expect(messages.some(m => m.includes('ページ上限（20）'))).toBe(true)
+    expect(messages.some(m => m.includes('発生時刻なし 20 件'))).toBe(true)
   })
 })
 describe('電文の body を復号できなかったときの記録', () => {
@@ -528,6 +591,215 @@ describe('DmdataWebSocket: 同時接続数の上限で断られたとき', () =>
 
 // 電文の本文の復号。`formatMode: 'raw'` で購読しているので、届くのは base64 + gzip の XML。
 // ここが壊れると電文が 1 通も読めなくなるが、型検査では気づけない（`body` は unknown 由来）。
+
+// 同時接続数の上限（409）で自分の古い枠を返す仕組み。
+//
+// 配信元のリファレンス（`WebSocket v2` の「その他」）が求めている ——「正常にClose処理が
+// なされないWebSocket切断が発生するとサーバー側で切断が検知できなくなり、PingTimeoutが発生し
+// 切断処理が実行されるまで、接続数を消費します。そのため、**同時接続数に余裕がなくすぐに
+// 再接続を行いたい場合は、Socket Close v2を実行するよう実装する必要があります**」。
+//
+// 枠は 3 本しかないので、前の接続の残骸が自分で自分を塞ぐ形が起きる。
+describe('releaseSocket（自分の枠を返す）', () => {
+  // 正: 返せたら true。
+  it('200 が返れば true', async () => {
+    const spy = vi.fn(async () => ({ ok: true, status: 200 }) as unknown as Response)
+    vi.stubGlobal('fetch', spy)
+
+    await expect(releaseSocket('key', 42, false)).resolves.toBe('closed')
+    expect(spy).toHaveBeenCalledTimes(1)
+    const [url, init] = vi.mocked(spy).mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toContain('/socket/42')
+    expect(init.method).toBe('DELETE')
+  })
+
+  // 対照: 403（API キーに socket.close スコープが無い）は `permanent`。
+  // **繰り返しても同じ結果**なので、呼び出し元は id を忘れる。
+  // **error ではなく warn に留める** —— 枠を返せないだけで、待てば PingTimeout で解放される。
+  it('403（スコープ無し）なら permanent を返し、warn に留める', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 403 }) as unknown as Response))
+
+    await expect(releaseSocket('key', 7, false)).resolves.toBe('permanent')
+    expect(log.warn).toHaveBeenCalledTimes(1)
+    expect(String(vi.mocked(log.warn).mock.calls[0][0])).toContain('socket の枠を返せませんでした')
+    expect(log.error).not.toHaveBeenCalled()
+  })
+
+  // 安全弁: 通信そのものが失敗しても**投げない**。ここで投げると、呼び出し元（409 の処理）が
+  // 再接続の予約を置く前に抜けてしまい、**そのセッションで二度と繋がらなくなる**。
+  it('通信が失敗しても投げずに transient を返す', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('ネットワーク断') }))
+
+    await expect(releaseSocket('key', 7, false)).resolves.toBe('transient')
+    expect(log.warn).toHaveBeenCalledTimes(1)
+  })
+
+  // 正: 一時的な失敗（配信元の 5xx）と恒久的な失敗（権限不足）を言い分ける。
+  // **まとめて「駄目だった」にすると、呼び出し元が id を忘れて次の機会に試せない** ——
+  // 枠は 3 本しかないので、返し損ねたセッションが PingTimeout まで自分を塞ぐ。
+  it('5xx は transient（次の機会に試す価値がある）', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 503 }) as unknown as Response))
+
+    await expect(releaseSocket('key', 7, false)).resolves.toBe('transient')
+  })
+})
+
+describe('409 を受けたときに自分の枠を返すか', () => {
+  async function drain() {
+    for (let i = 0; i < 8; i++) await Promise.resolve()
+  }
+
+  /** 最小の WebSocket の替え玉。`start` を流して `socketId` を覚えさせるために要る。 */
+  class FakeWs {
+    static last: FakeWs | null = null
+    onopen: (() => void) | null = null
+    onmessage: ((ev: { data: string }) => void) | null = null
+    onclose: ((ev: { code: number; reason: string }) => void) | null = null
+    onerror: (() => void) | null = null
+    readyState = 1
+    constructor() { FakeWs.last = this }
+    send() {}
+    close() { this.onclose?.({ code: 1006, reason: '' }) }
+  }
+
+  /**
+   * チケット要求に `ticketStatus` を返す fetch。叩かれた URL とメソッドを記録する。
+   * 1 回目だけ 200 を返して `start` を流せるようにし、2 回目以降を 409 にする使い方をする。
+   *
+   * `deleteStatuses` を渡すと、枠を返す要求（DELETE）の応答を順に差し替えられる
+   * （一時的な失敗のあとで再試行するかを見るため）。
+   */
+  function stubFetch(statuses: number[], deleteStatuses: number[] = []) {
+    const calls: Array<{ url: string; method: string }> = []
+    let i = 0
+    let d = 0
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, method: init?.method ?? 'GET' })
+      if (init?.method === 'DELETE') {
+        const s = deleteStatuses.length > 0 ? deleteStatuses[Math.min(d++, deleteStatuses.length - 1)] : 200
+        return { ok: s >= 200 && s < 300, status: s } as unknown as Response
+      }
+      const status = statuses[Math.min(i++, statuses.length - 1)]
+      return {
+        status,
+        json: async () => (status === 200
+          ? { websocket: { url: 'wss://example.invalid/ws' } }
+          : { error: { code: status, message: 'full' } }),
+      } as unknown as Response
+    }))
+    return calls
+  }
+
+  // 正: start で socketId を得た後に 409 を受けたら、その id の枠を返す。
+  it('start で socketId を得た後の 409 では、その枠を返す', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('WebSocket', FakeWs as unknown as typeof WebSocket)
+    const calls = stubFetch([200, 409])
+    const ws = new DmdataWebSocket('valid-key')
+
+    try {
+      ws.connect()
+      await drain()
+      // 購読開始を流して socketId を覚えさせる
+      FakeWs.last?.onmessage?.({ data: JSON.stringify({ type: 'start', socketId: 99 }) })
+      await drain()
+      // 切断 → 再接続で 409 を食う
+      FakeWs.last?.close()
+      await vi.advanceTimersByTimeAsync(10_000)
+      await drain()
+
+      const deletes = calls.filter(c => c.method === 'DELETE')
+      expect(deletes).toHaveLength(1)
+      expect(deletes[0].url).toContain('/socket/99')
+    } finally {
+      ws.disconnect()
+      vi.useRealTimers()
+    }
+  })
+
+  // 正: 枠を返す要求が**一時的に**失敗したら、次の 409 でもう一度試す。
+  //
+  // **`releaseSocket` の戻り値を 3 値にした狙いはここ。** 一時的な失敗（ネットワーク断・
+  // 配信元の 5xx）でも id を忘れる作りだと、**枠を返し損ねたセッションが PingTimeout まで
+  // 自分を塞いだまま**になる（枠は 3 本しかない）。権限不足（403）は `permanent` なので
+  // 繰り返し投げることにはならない（下の対照）。
+  it('枠を返す要求が 5xx で失敗したら、次の 409 でもう一度試す', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('WebSocket', FakeWs as unknown as typeof WebSocket)
+    // チケットは 200 → 以後 409。DELETE は 1 回目 503（一時失敗）→ 2 回目 200
+    const calls = stubFetch([200, 409], [503, 200])
+    const ws = new DmdataWebSocket('valid-key')
+
+    try {
+      ws.connect()
+      await drain()
+      FakeWs.last?.onmessage?.({ data: JSON.stringify({ type: 'start', socketId: 77 }) })
+      await drain()
+
+      // 409 を繰り返し受けるあいだ、覚え直した id で何度も試す。
+      // **1 回で諦めないことが要点** —— 一時的な失敗なら枠はまだ残っているので、
+      // 返せれば繋がる（403 のときに繰り返さないことは下の対照テストが見ている）。
+      FakeWs.last?.close()
+      await vi.advanceTimersByTimeAsync(10_000)
+      await drain()
+      const deletes = calls.filter(c => c.method === 'DELETE')
+      expect(deletes.length).toBeGreaterThanOrEqual(2)
+      // **同じ id を指していること**（別の枠を当てずっぽうで閉じにいかない）
+      expect(deletes.every(c => c.url.includes('/socket/77'))).toBe(true)
+    } finally {
+      ws.disconnect()
+      vi.useRealTimers()
+    }
+  })
+
+  // 対照: 権限不足（403）は繰り返さない。**恒久的な失敗なので、投げ続けても同じ結果。**
+  it('枠を返す要求が 403 で失敗したら、次の 409 では試さない', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('WebSocket', FakeWs as unknown as typeof WebSocket)
+    const calls = stubFetch([200, 409], [403])
+    const ws = new DmdataWebSocket('valid-key')
+
+    try {
+      ws.connect()
+      await drain()
+      FakeWs.last?.onmessage?.({ data: JSON.stringify({ type: 'start', socketId: 88 }) })
+      await drain()
+
+      FakeWs.last?.close()
+      await vi.advanceTimersByTimeAsync(10_000)
+      await drain()
+      await vi.advanceTimersByTimeAsync(60_000)
+      await drain()
+
+      expect(calls.filter(c => c.method === 'DELETE')).toHaveLength(1)
+    } finally {
+      ws.disconnect()
+      vi.useRealTimers()
+    }
+  })
+
+  // 対照: 一度も繋がっていない（socketId が無い）なら DELETE を投げない。
+  // **他人の枠を当てずっぽうで閉じにいかないこと**の担保でもある。
+  it('socketId を持っていなければ枠を返す要求は出さない', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('WebSocket', FakeWs as unknown as typeof WebSocket)
+    const calls = stubFetch([409])
+    const ws = new DmdataWebSocket('valid-key')
+
+    try {
+      ws.connect()
+      await drain()
+      await vi.advanceTimersByTimeAsync(10_000)
+      await drain()
+
+      expect(calls.filter(c => c.method === 'DELETE')).toHaveLength(0)
+    } finally {
+      ws.disconnect()
+      vi.useRealTimers()
+    }
+  })
+})
+
 describe('decodeTelegramText', () => {
   /** base64 + gzip に包む（DMDATA が配る形）。 */
   async function pack(text: string): Promise<string> {
@@ -654,6 +926,30 @@ describe('fetchDmdataActiveEews', () => {
     await fetchDmdataActiveEews(KEY)
 
     expect(urls.some(u => u.includes('/gd/eew/ev-recent'))).toBe(true)
+  })
+
+  // 復元の歩留まりの記録。**画面には「発表中のものが無かった」と「取れなかった」が同じ形
+  // （どちらも何も出ない）で現れる**ので、記録が唯一の手掛かりになる。配信元がこの API を
+  // 「事後参照用」と定めている（→ `eew-spec.md` §2）ため、実配信のあとにこの記録を読んで
+  // この経路が機能したかを確かめる。
+  it('一覧に件数があれば復元の歩留まりを記録する', async () => {
+    const recent = new Date(serverNow() - 60_000).toISOString()
+    stubEewFetch([{ eventId: 'ev-log', dateTime: recent }], [])
+
+    await fetchDmdataActiveEews(KEY)
+
+    const infos = vi.mocked(log.info).mock.calls.map(c => String(c[0]))
+    expect(infos.some(m => m.includes('発表中の緊急地震速報の復元'))).toBe(true)
+  })
+
+  // 対照: 平常時（発表中のものが無い）は黙る。毎回出しても読まれないログになる。
+  // これが無いと「常に記録する」実装でもテストが通ってしまう。
+  it('一覧が 0 件なら復元の記録を出さない', async () => {
+    stubEewFetch([], [])
+
+    await fetchDmdataActiveEews(KEY)
+
+    expect(log.info).not.toHaveBeenCalled()
   })
 
   it('対照: 窓より前に終わったイベントは詳細を引かない（1 件につきリクエストがかかるため）', async () => {

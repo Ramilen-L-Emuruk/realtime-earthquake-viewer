@@ -14,12 +14,26 @@ import {
   fetchLiveReplayEntries, fetchLiveQuakeTelegrams, clearLiveReplayCache,
 } from './dmdataReplayLive'
 import { setBodyGateIntervalForTest } from './telegramBody'
+import {
+  setApiGateIntervalForTest, resetApiGateForTest,
+  noteRateLimited, resetRateLimitsForTest,
+} from './dmdataRequestGates'
 
 // 電文本体の取得は配信元の上限に合わせて 6 秒に 1 件へ直列化されている
 // （→ `services/telegramBody.ts`）。このファイルが見たいのは取り込みの中身なので間隔を外す。
 // **門そのものは `utils/requestGate.test.ts`、門と並行取得の噛み合わせは下記
 // 「電文本体を一斉に投げない」が確かめる。**
-beforeEach(() => { setBodyGateIntervalForTest(0) })
+//
+// `api.dmdata.jp` の側（一覧・EEW の詳細）も同じ理由で外す。**こちらは 500ms なので
+// 既定のタイムアウト（5 秒）まで余裕があるが、テストが増えれば詰まる**ので先に外しておく。
+beforeEach(() => {
+  setBodyGateIntervalForTest(0)
+  setApiGateIntervalForTest(0)
+  resetApiGateForTest()
+  // **429 の窓も空にする。** 持ち越すと、前のテストが立てた窓で次のテストが取得を
+  // 見送り、症状が「なぜかそのテストだけ電文 0 件」になる。
+  resetRateLimitsForTest()
+})
 
 /** 電文一覧が返す 1 件分。 */
 interface MockTelegram {
@@ -364,7 +378,7 @@ describe('fetchLiveReplayEntries', () => {
     const { fn } = mockLive({})
     globalThis.fetch = fn as unknown as typeof fetch
     const result = await fetchLiveReplayEntries('key', FROM, TO, [], false)
-    expect(result).toEqual({ entries: [], skipped: 0, failedSources: [] })
+    expect(result).toEqual({ entries: [], skipped: 0, failedSources: [], rateLimitedTelegrams: 0 })
     expect(fn).not.toHaveBeenCalled()
   })
 
@@ -497,6 +511,69 @@ describe('fetchLiveReplayEntries', () => {
 
     expect(result.entries).toHaveLength(0)
     expect(result.skipped).toBe(1)
+  })
+
+  // 安全弁: **429 の窓で見送った電文を、恒久的な取りこぼしとしても数えない。**
+  //
+  // 一部の断片だけが見送られると、残りは入れ物に入ったまま「揃わなかった断片」として
+  // 掃引に掛かる。そこで数えると、**同じ電文が「待っている」と「恒久的に失った」の両方**に
+  // 計上され、画面には「読めなかった」として出る（待てば取れるのに）。
+  //
+  // **この組み合わせ（一部成功・一部 429）が既存のテストに無く、3 巡目のレビューまで
+  // 見逃していた。** 窓による見送りを足したときの早期 return が、電文ごとの重複排除
+  // （`countedBinaryKeys`）に触らなかったことが原因。
+  it('429 の窓で見送った断片を、恒久的な取りこぼしとしても数えない', async () => {
+    const bin = buildSampleTelegram()
+    // **id は 8 文字以上にする**（`telegramIdFromUrl` がそれ未満を鍵として採らないため、
+    // 短いと窓を見に行かず、このテストが何も確かめないまま通る）
+    const okUrl = 'https://data.api.dmdata.jp/v1/ixok0001'
+    const rlUrl = 'https://data.api.dmdata.jp/v1/ixrl0001'
+    // 片方の id に窓を立てておく（配信元から 429 を受けた直後の状態）
+    noteRateLimited('body', 'ixrl0001')
+
+    const { fn } = mockLive({
+      list: [
+        { id: 'ixC', type: 'IXAC41', headTime: '2026-08-23T02:05:00Z', receivedTime: '2026-08-23T02:05:02.000Z', url: okUrl, designation: null },
+        { id: 'ixD', type: 'IXAC41', headTime: '2026-08-23T02:05:00Z', receivedTime: '2026-08-23T02:05:03.000Z', url: rlUrl, designation: 'RRA' },
+      ],
+      binaries: { [okUrl]: bin.slice(0, 32) },
+    })
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false)
+
+    // 待っている側で 1 件だけ数える
+    expect(result.rateLimitedTelegrams).toBe(1)
+    // **恒久的な取りこぼしには数えない**（ここが 1 になるのが二重計上）
+    expect(result.skipped).toBe(0)
+    expect(result.entries).toHaveLength(0)
+  })
+
+  // 安全弁: **断片が「通常失敗」と「429 の見送り」に分かれても、1 通として数える。**
+  //
+  // 本体は 8 並列で取るので、同じ電文の断片が別々の結果になりうる。両方の枠へ 1 件ずつ入れると
+  // **1 通の障害が 2 件に見え**、しかも「待てば取れます」という案内が付く —— 恒久的に失った断片が
+  // ある電文は、窓が明けても揃わないので嘘になる。**恒久失敗が勝つ**形で押さえる。
+  it('断片が通常失敗と 429 見送りに分かれても、恒久失敗として 1 件だけ数える', async () => {
+    const okUrl = 'https://data.api.dmdata.jp/v1/ixmix001'   // 429 の窓を立てる側
+    const badUrl = 'https://data.api.dmdata.jp/v1/ixmix002'  // 本体を用意せず通常失敗させる
+    noteRateLimited('body', 'ixmix001')
+
+    const { fn } = mockLive({
+      list: [
+        { id: 'ixE', type: 'IXAC41', headTime: '2026-08-23T02:05:00Z', receivedTime: '2026-08-23T02:05:02.000Z', url: okUrl, designation: null },
+        { id: 'ixF', type: 'IXAC41', headTime: '2026-08-23T02:05:00Z', receivedTime: '2026-08-23T02:05:03.000Z', url: badUrl, designation: 'RRA' },
+      ],
+      binaries: {},   // どちらの本体も用意しない（badUrl は 500 で落ちる）
+    })
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false)
+
+    // **合計で 1 件。** 恒久失敗の側だけが数える
+    expect(result.skipped).toBe(1)
+    expect(result.rateLimitedTelegrams).toBe(0)
+    expect(result.entries).toHaveLength(0)
   })
 
   // 対照: 別々の電文なら別々に数える（まとめすぎていないこと）。
@@ -886,6 +963,82 @@ describe('電文本体を一斉に投げない', () => {
     await fetchLiveQuakeTelegrams('key', '2026-08-23', new Date('2026-08-23T03:00:00Z'), false)
 
     expect(Date.now() - start).toBeLessThan(1_000)
+  })
+})
+
+// EEW の詳細取得（`/v2/gd/eew/:eventId`）を一斉に投げないこと。
+//
+// **ここは `api.dmdata.jp` なので電文本体の門（6 秒）ではなく、そちら側の門（500ms）を通る。**
+// 上限の根拠が別で、配信元が「**定常的に 2req/s 以上のアクセスはお控えいただき**」と書いている。
+// `BODY_CONCURRENCY`（8）の枠で並べるので、門が無いと瞬間 8req/s になる
+// （同じ定数を使う電文本体の取得は 6 秒の門で元から直列化されている）。
+describe('EEW の詳細取得を一斉に投げない', () => {
+  const originalFetch = globalThis.fetch
+
+  beforeEach(() => {
+    clearLiveReplayCache()
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    clearLiveReplayCache()
+    setApiGateIntervalForTest(0)
+    vi.restoreAllMocks()
+  })
+
+  /** 4 イベントぶんの EEW を返し、詳細を要求した時刻（相対ミリ秒）を記録する。 */
+  function mockEewTiming(interval: number) {
+    setApiGateIntervalForTest(interval)
+    const at: number[] = []
+    const start = Date.now()
+    const { fn } = mockLive({
+      eew: ['e1', 'e2', 'e3', 'e4'].map(id => ({
+        eventId: id,
+        dateTime: '2026-08-23T09:05:00+09:00',
+        telegrams: [{
+          id: `j-${id}`, originalId: `xml-${id}`, type: 'VXSE45',
+          headTime: '2026-08-23T00:05:00Z', receivedTime: '2026-08-23T00:05:01.000Z',
+          url: `https://b/j-${id}`,
+        }],
+      })),
+      // 本体は落とす（見たいのは詳細を投げた時刻だけ）
+      bodies: {},
+    })
+    globalThis.fetch = (async (input: string) => {
+      if (String(input).includes('/v2/gd/eew/')) at.push(Date.now() - start)
+      return fn(String(input))
+    }) as unknown as typeof fetch
+    return at
+  }
+
+  const run = () => fetchLiveReplayEntries(
+    'key', new Date('2026-08-23T00:00:00Z'), new Date('2026-08-23T03:00:00Z'), ['2026-08-23'], false,
+  )
+
+  // 正: 間隔を空けて順に投げる。一斉に投げる実装なら隣り合う差は 0ms 付近になる。
+  it('複数イベントの詳細を、取得間隔を空けて順に投げる', async () => {
+    const at = mockEewTiming(80)
+
+    await run()
+
+    expect(at).toHaveLength(4)
+    at.sort((a, b) => a - b)
+    for (let i = 1; i < at.length; i++) {
+      // タイマー精度を見込んで間隔の 7 割で判定する
+      expect(at[i] - at[i - 1]).toBeGreaterThanOrEqual(56)
+    }
+  })
+
+  // 対照: 間隔を外せば待たない（門が効きすぎて常に待つ形になっていないこと）。
+  it('間隔が 0 なら待たずに全件投げる', async () => {
+    const at = mockEewTiming(0)
+
+    await run()
+
+    expect(at).toHaveLength(4)
+    expect(Math.max(...at) - Math.min(...at)).toBeLessThan(56)
   })
 })
 

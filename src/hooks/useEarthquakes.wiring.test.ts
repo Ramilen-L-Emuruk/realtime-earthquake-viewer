@@ -95,6 +95,8 @@ function history(opts: {
     extras: opts.extras ?? [],
     skipped: 0,
     failedArchiveUrls: [] as string[],
+    rateLimitedSources: [] as string[],
+    rateLimitedTelegrams: 0,
     hasMore: opts.hasMore ?? false,
   }
 }
