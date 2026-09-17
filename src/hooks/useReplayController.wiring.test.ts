@@ -273,6 +273,28 @@ describe('useReplayController の start', () => {
     expect(h.current.error).toMatch(/継続中/)
   })
 
+  // 安全弁: 窓の手前からの復元が投げても、電文の再生は始まる。
+  //
+  // 復元と loadReplayEvents は同じ try の中にいる。囲わずに投げさせると catch まで飛び、
+  // **取得は成功しているのに「リプレイデータ取得失敗」と出たまま電文が 1 通も再生されない**。
+  // 復元が触るのは既読の記録だけなので、飛んでも再生は成立する（窓の手前の内容を読み直すだけ）。
+  it('窓の手前からの復元が投げても、電文を積んで再生を始める', async () => {
+    const h = setup()
+    h.deps.restorePreWindowTracking.mockImplementationOnce(() => { throw new Error('復元で投げた') })
+    const started = h.start(quietTarget())
+    h.fetches[0].resolve(fetched([entry('normal-1')]))
+    h.fetches[1].resolve(fetched([entry('pre-1')]))
+    await h.flush(started)
+    expect(h.deps.loadReplayEvents).toHaveBeenCalledTimes(1)
+    expect(h.deps.loadReplayEvents.mock.calls[0][0].map(idOf)).toEqual(['pre-1', 'normal-1'])
+    // 取得は成功しているので、取得失敗の赤字は出さない
+    expect(h.current.error).toBeNull()
+    expect(h.current.isFetching).toBe(false)
+    // 黙って捨てない
+    const messages = vi.mocked(log.error).mock.calls.map(c => c.map(v => String(v)).join(' '))
+    expect(messages.some(m => m.includes('窓の手前からの状態復元に失敗'))).toBe(true)
+  })
+
   it('取得より前に時計を進め、照合を挟んでから state を触る', async () => {
     const h = setup()
     const started = h.start(quietTarget())
