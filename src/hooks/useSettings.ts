@@ -77,8 +77,8 @@ export interface AppSettings {
    * `TELEGRAM_TEXT_BLOCK_KEYS`）。**`ttsReadTelegramText` が偽ならここの指定は効かない** ——
    * あちらがマスタートグルで、こちらはその内訳。
    *
-   * **この設定だけオブジェクトで持っている。** 18 個をフラットに並べると、型定義・既定値・
-   * `sanitize` の 3 箇所へ 18 行ずつ増えて画面や音の設定と混ざる。ブロックの集合は電文の
+   * **この設定だけオブジェクトで持っている。** 17 個をフラットに並べると、型定義・既定値・
+   * `sanitize` の 3 箇所へ 17 行ずつ増えて画面や音の設定と混ざる。ブロックの集合は電文の
    * 構造に由来するまとまりなので、1 つにしてキーの一覧から導く。
    */
   ttsTelegramTextBlocks: TelegramTextBlocks
