@@ -24,6 +24,7 @@ import path from 'node:path'
 import { WORK } from './coverage-core.mjs'
 import { REPO } from '../lib/repo-root.mjs'
 import { gate } from '../lib/rateGate.mjs'
+import { noteIncomplete, markResult, reportIncompleteness, writeArtifact } from '../lib/incompleteness.mjs'
 
 // 551=地震情報 / 552=津波予報 / 556=緊急地震速報（警報）
 const CODES = [551, 552, 556]
@@ -156,49 +157,36 @@ for (const code of CODES) {
     console.error(`code=${code}: ${items.length} 件`)
   } catch (e) {
     // **1 種別の失敗で他を止めない。** ただし取りこぼしたことは必ず残す
+    // （内訳は `meta.failures`・下流へ運ぶ印は共有の台帳。片方だけに書かない）
     stats.failures.push({ code, error: String(e?.message ?? e) })
+    noteIncomplete('P2PQuake の履歴', `code=${code}: ${e?.message ?? e}`)
     all[code] = []
     console.error(`code=${code}: 取得に失敗 —— ${e?.message ?? e}`)
   }
 }
 
 /**
- * 不完全さの文面。**永続化するファイルと標準出力の両方へ同じものを載せる。**
- *
- * **ファイルの中へ入れるのが肝心。** 下流（`testdata-shapes.mjs`）は `p2p-history.json` を
+ * **永続化するファイルへ印を載せる。** 下流（`testdata-shapes.mjs`）は `p2p-history.json` を
  * 直接読んで件数を数えるので、標準出力にだけ印を出すと**消費経路では印が消える**。
- * `archive-cache.mjs` の `withCompletenessMark` は「標準出力の JSON が結果そのもの」の
- * スクリプト向けの仕組みで、**ここは前提が違う**（同じ形に倣って一度誤った）。
+ *
+ * 載せ方は `writeArtifact` に任せる —— 台帳に積んだ分が `_incomplete` として自動で入り、
+ * 下流が `readArtifact` で読めばそのまま引き継がれる。**`codes` の外へ出る**ので、
+ * 種別と並べて文字列が混ざる事故（`Object.entries(codes)` が文字数を件数として数える）も起きない。
+ * `meta.failures` は内訳として別に残す（どの種別が落ちたかを構造のまま見たいとき用）。
  */
-const incomplete = stats.failures.length === 0
-  ? null
-  : `取得できなかった種別が ${stats.failures.length} 件あります。この結果を「無い」の根拠にしないこと`
-
-// **`codes` の外へ置くこと。** 下流は `Object.entries(codes)` で回して `items.length` を取るので、
-// 種別と並べて文字列を混ぜると**文字数を件数として数える**（例外もログも出ない）。
-fs.writeFileSync(path.join(WORK, 'p2p-history.json'), JSON.stringify({
+writeArtifact(path.join(WORK, 'p2p-history.json'), {
   codes: all,
-  meta: {
-    fetchedAt: Date.now(),
-    ...(incomplete ? { incomplete, failures: stats.failures } : {}),
-  },
-}))
+  meta: { fetchedAt: Date.now(), failures: stats.failures },
+}, { space: 0 })
 
 console.error(
   `P2PQuake 履歴: 控えから ${stats.cacheHits} 種別 / 取得 ${stats.downloads} ページ`
   + `（間隔 ${MIN_INTERVAL_MS}ms・控えの有効期間 ${Math.round(CACHE_TTL_MS / 3600_000)} 時間）`
 )
 console.error(`  控えの場所: ${CACHE_DIR}`)
-if (stats.failures.length > 0) {
-  console.error(`  取得できなかった種別: ${stats.failures.length} 件 —— ここは「見ていない」ので、0 件を「無い」と読まないこと`)
-  for (const f of stats.failures) console.error(`    code=${f.code}: ${f.error}`)
-}
 
 // 標準出力にも同じ印を載せる（標準エラーだけに出すと、この出力を保存・受け渡しする運用で
 // 失敗が見えない）。**永続化するファイル側にも入れてある**のが本体で、こちらは人が読む用。
 const counts = Object.fromEntries(Object.entries(all).map(([k, v]) => [k, v.length]))
-const result = incomplete === null
-  ? counts
-  : { ...counts, _incomplete: `${incomplete}（内訳は標準エラー側）` }
-console.log(JSON.stringify(result, null, 1))
-if (stats.failures.length > 0) process.exitCode = 1
+console.log(JSON.stringify(markResult(counts), null, 1))
+if (reportIncompleteness('P2PQuake の履歴') > 0) process.exitCode = 1

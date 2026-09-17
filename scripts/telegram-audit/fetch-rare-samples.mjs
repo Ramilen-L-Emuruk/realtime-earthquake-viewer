@@ -18,9 +18,22 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { CACHE } from './coverage-core.mjs'
-import { apiAuthHeader, listArchive, loadArchiveTar, tarEntries, reportArchiveCacheStats, withCompletenessMark } from './archive-cache.mjs'
+import { apiAuthHeader, listArchive, loadArchiveTar, tarEntries, reportArchiveCacheStats } from './archive-cache.mjs'
+import { markResult, reportIncompleteness, writeArtifact } from '../lib/incompleteness.mjs'
+import { rareSampleCollectionMarkPath, clearCollectionMark } from './collection-mark.mjs'
 
 fs.mkdirSync(CACHE, { recursive: true })
+
+// **対象は走査の前に決める。** 札は対象ごとに分かれるので、消すときにも要る
+// （対象で分けないと、取りこぼした収集の直後に別の対象を成功させただけで印が消える）。
+// 対象名の検証もここで済ませる —— 走査を終えてから弾いても、その時間が無駄になる。
+const target = process.argv[2] || 'eew'
+if (target !== 'eew' && target !== 'ixac41' && !target.startsWith('type:')) {
+  throw new Error(`対象は eew / ixac41 / type:<種別,...> のいずれか（渡された値: ${target}）`)
+}
+const markPath = rareSampleCollectionMarkPath(CACHE, target)
+// **走査を始める前に古い札を消す。** 途中で落ちたら札が無い＝「不明」へ倒す
+clearCollectionMark(markPath)
 
 // 取得・控え・レート制御は `archive-cache.mjs` に集約してある。**素の `fetch` を書き足さないこと**
 // —— この 3 つの集め方はどれも期間を区切って何度も走査するので、控えが無いと同じ日を繰り返し取る。
@@ -154,14 +167,18 @@ async function fetchByType(types, perType = 8) {
   return Object.fromEntries([...want].map(t => [t, counts.get(t) ?? 0]))
 }
 
-const target = process.argv[2] || 'eew'
 let result
 if (target === 'eew') result = await fetchBigEew()
 else if (target === 'ixac41') result = await fetchIxac41(Number(process.argv[3]) || 8)
-else if (target.startsWith('type:')) result = await fetchByType(target.slice(5).split(','), Number(process.argv[3]) || 8)
-else throw new Error(`対象は eew / ixac41 / type:<種別,...> のいずれか（渡された値: ${target}）`)
+else result = await fetchByType(target.slice(5).split(','), Number(process.argv[3]) || 8)
+
+// **札を必ず置く**（理由は `collection-mark.mjs` の冒頭）。この収集も `telegram-cache/` へ
+// ファイルを足すので、取りこぼしを下流へ渡す手段は札しかない。
+writeArtifact(markPath, { collectedAt: Date.now(), target, collected: result })
+
 // **不完全なら結果そのものへ印を付ける。** この出力は「条件付きの要素を持つ電文は実配信に無い」
 // という主張の根拠になるので、走査できなかった範囲があることが JSON からも読めないといけない。
-console.log(JSON.stringify(withCompletenessMark(result), null, 1))
-// 走査できなかった範囲があれば exit code も立てる（終了コードしか見ない経路で気づけるように）
-if (reportArchiveCacheStats('アーカイブ（稀な種別の収集）') > 0) process.exitCode = 1
+console.log(JSON.stringify(markResult(result), null, 1))
+reportArchiveCacheStats('アーカイブ（稀な種別の収集）')
+// 取りこぼしがあれば exit code も立てる（終了コードしか見ない経路で気づけるように）
+if (reportIncompleteness('稀な種別の収集') > 0) process.exitCode = 1

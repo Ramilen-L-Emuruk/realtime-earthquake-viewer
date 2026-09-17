@@ -17,6 +17,7 @@ import path from 'node:path'
 import { createRequire } from 'node:module'
 import { REPO, WORK } from './coverage-core.mjs'
 import { apiAuthHeader, listArchive, loadArchiveTar, tarEntries, reportArchiveCacheStats } from './archive-cache.mjs'
+import { writeArtifact, reportIncompleteness, checkpoint } from '../lib/incompleteness.mjs'
 
 const require = createRequire(path.join(REPO, 'package.json'))
 const { JSDOM } = require('jsdom')
@@ -108,6 +109,10 @@ const TO = process.env.TO || new Date(Date.now() + 86400_000).toISOString().slic
 const CONCURRENCY = Number(process.env.CONCURRENCY) || 8
 
 for (const cls of CLASSIFICATIONS) {
+  // **この分類の走査だけを印の対象にする。** 台帳はプロセス全体で 1 本なので、区切らないと
+  // 別の分類の取りこぼしがこの分類の `meta.json` へ載る。下流（`compare-quake-times.mjs`）は
+  // 分類ごとに別々に読むので、**完璧に走査できた分類のレポートに「信用するな」と出てしまう**。
+  const cp = checkpoint()
   const base = cls.replace(/\./g, '-')
   const outPath = path.join(OUT_DIR, `${base}.jsonl`)
   const metaPath = path.join(OUT_DIR, `${base}.meta.json`)
@@ -161,13 +166,16 @@ for (const cls of CLASSIFICATIONS) {
   await Promise.all(Array.from({ length: CONCURRENCY }, worker))
   await new Promise(res => out.end(res))
   meta.dayList.sort((a, b) => a.day.localeCompare(b.day))
-  fs.writeFileSync(metaPath, JSON.stringify(meta, null, 1))
+  // **その分類が終わった時点で書く。** 後ろへ寄せると、後続の分類でプロセスが落ちたときに
+  // **完走した分類の `.jsonl` に対応する `meta.json` が 1 つも書かれない**（抽出のやり直しになる）。
+  writeArtifact(metaPath, meta, { since: cp })
   console.error(`${cls}: XML ${meta.xmlTotal} 通 / 取得失敗 ${meta.failedDays.length} 日 → ${outPath}`)
 }
 
 // 何件を控えで済ませたかを残す。2 回目以降の走査がリクエストを出していないことの確認にもなる。
-//
-// **走査できなかった範囲があれば exit code を立てる。** 出力は JSONL と meta.json なので
-// 印を載せる場所が無く、終了コードしか見ない経路（CI・シェルの `&&`）で気づけるようにする。
-// この走査の結果は「その期間に該当の電文は無い」という主張の根拠になる。
-if (reportArchiveCacheStats('アーカイブ（地震の時刻の抽出）') > 0) process.exitCode = 1
+reportArchiveCacheStats('アーカイブ（地震の時刻の抽出）')
+
+// **走査できなかった範囲があれば exit code を立てる。** 印は `meta.json` に載るので下流
+// （`compare-quake-times.mjs`）は読めるが、終了コードしか見ない経路（CI・シェルの `&&`）
+// にも伝える。この走査の結果は「その期間に該当の電文は無い」という主張の根拠になる。
+if (reportIncompleteness('地震の時刻の抽出') > 0) process.exitCode = 1
