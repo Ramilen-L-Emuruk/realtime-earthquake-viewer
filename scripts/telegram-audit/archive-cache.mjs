@@ -17,7 +17,10 @@ import zlib from 'node:zlib'
 // **`coverage-core.mjs` から取らない。** あちらは import した時点で `TELEGRAM_AUDIT_DIR` を
 // 要求して throw するため、このモジュール（根のパスしか要らない）まで環境変数に縛られ、
 // レート制御を単体テストへ掛けられなくなる。
-import { REPO } from './repo-root.mjs'
+import { REPO } from '../lib/repo-root.mjs'
+// レート制御は `scripts/lib/rateGate.mjs` に集約している。**DMDATA 専用ではない** ——
+// `kind` で取得元を分ける汎用の門で、P2PQuake の履歴走査・観測点索引の走査も同じものを通す。
+import { gate, resetRateGateForTest, sleep } from '../lib/rateGate.mjs'
 
 /** 控えの置き場所。`.claude/*` は `.gitignore` 済み（`nii-cache` / `hypocenter-cache` と同じ扱い）。 */
 export const ARCHIVE_CACHE_DIR = process.env.DMDATA_ARCHIVE_CACHE
@@ -55,30 +58,6 @@ export function archiveCacheStats() {
   return { ...stats, failures: [...stats.failures] }
 }
 
-const sleep = (ms) => new Promise(res => setTimeout(res, ms))
-
-// ホストごとに「次に投げてよい時刻」を持つ。呼び出し側が並列ワーカーで回していても、
-// 実効レートはここで決まる。
-const nextSlotAt = new Map()
-
-/**
- * 次の枠が来るまで待つ。
- *
- * **待つ前に枠を予約する。** `await` の後で時刻を書き込む形にすると、並列で入った呼び出しが
- * そろって同じ「前回の時刻」を読み、同じ待ち時間を計算して**一斉に発火する**
- * （実測: 5 本のワーカーで 1 本が即時・残り 4 本が 1 秒後にほぼ同時。
- * `CONCURRENCY=8` なら 6 秒ごとに 8 件のバーストになり、守るつもりだった
- * 50req/5min を 8 倍超える）。同期的に予約してから待てば、N 本目は
- * `前回 + N×間隔` へ並ぶ。
- */
-export async function gate(kind, minIntervalMs) {
-  const now = Date.now()
-  const target = Math.max(now, nextSlotAt.get(kind) ?? 0)
-  nextSlotAt.set(kind, target + minIntervalMs)
-  const wait = target - now
-  if (wait > 0) await sleep(wait)
-}
-
 /**
  * テスト用。**モジュールに溜まる状態をまとめて空にする**（枠の予約と取得の実測値）。
  *
@@ -86,7 +65,7 @@ export async function gate(kind, minIntervalMs) {
  * 「失敗が無いときの振る舞い」を確かめるテストが**実行順によって落ちる**。
  */
 export function resetArchiveCacheForTest() {
-  nextSlotAt.clear()
+  resetRateGateForTest()
   stats.cacheHits = 0
   stats.downloads = 0
   stats.retryWaits = 0

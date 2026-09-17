@@ -548,7 +548,8 @@ export async function fetchJmaQuakeHistory(days: number): Promise<JMAQuake[]> {
   const cutoffMs = serverNow() - days * 24 * 60 * 60 * 1000
   const collected: JMAQuake[] = []
   let offset = 0
-  for (let page = 0; page < JMA_QUAKE_HISTORY_MAX_PAGES; page++) {
+  let page = 0
+  for (; page < JMA_QUAKE_HISTORY_MAX_PAGES; page++) {
     const batch = await fetchJmaQuake({ limit: 100, offset })
     if (batch.length === 0) break
     collected.push(...batch)
@@ -556,6 +557,17 @@ export async function fetchJmaQuakeHistory(days: number): Promise<JMAQuake[]> {
     if (oldestTime < cutoffMs || batch.length < 100) break
     offset += batch.length
     await new Promise(resolve => setTimeout(resolve, JMA_QUAKE_HISTORY_REQUEST_INTERVAL_MS))
+  }
+  // **上限に達したことは記録する。** ここは読めた分を返す経路なので投げない（投げると
+  // 呼び出し側の 6 時間キャッシュへ空が入り、取れていた分まで捨てることになる）。
+  // ただし黙って切ると、遡り切れなかった期間が「地震が無かった」に化けてヒートマップが
+  // 実際より静かに見える —— 群発期ほど起きやすい（1 ページ 100 件なので、
+  // `days` 日で 100×`JMA_QUAKE_HISTORY_MAX_PAGES` 件を超えると届かなくなる）。
+  if (page >= JMA_QUAKE_HISTORY_MAX_PAGES) {
+    log.warn(
+      `[p2pquake] 地震履歴のページ上限（${JMA_QUAKE_HISTORY_MAX_PAGES}）に達した`
+      + `（${days} 日分を遡り切れていない可能性がある・取得 ${collected.length} 件）`
+    )
   }
   // 同一地震でも「震度速報→震源情報→震源・震度情報→各地の震度情報」と複数の issue が
   // 別レコードとして history に載るため重複排除する（id は issue ごとに異なりキーにならない）。
