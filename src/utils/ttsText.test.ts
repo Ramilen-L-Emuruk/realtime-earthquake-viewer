@@ -920,6 +920,20 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
 
   // 安全弁: 数字の直後だけを置き換える。headline は電文の文章なので、無条件に m を替えると
   // 文中の語を壊す。大文字の M を対象にしないのはマグニチュード（「M7.6」）と衝突するため。
+  // 見出し文は気象庁が書いた文で、日時は全角のゼロ埋め（`０１日１６時１０分`）。半角へ直すだけでは
+  // `01日` が残り、合成エンジンが先頭の 0 を桁として読む（実測: `ゼロ | イチニチ`）。句区切り辞書の
+  // `1日`（→ ついたち）も直前が数字だと当たらない。**能登半島地震の観測情報がこの形**。
+  it('見出し文の日時はゼロ埋めを外す', () => {
+    const text = tsunamiObservationUpdateToText(
+      [{ name: '輪島港', districtCode: '213', districtName: '石川県能登', height: { value: 1.2, description: '1.2m' } }],
+      '０１日１６時１０分現在、津波を観測しています。',
+    )
+    // 「1日」は生成側で読みへ直す（辞書に置くと「1日程度」まで拾うため）
+    expect(text).toContain('ついたち16時10分現在')
+    expect(text).not.toContain('01日')
+    expect(text).not.toContain('1日16時')
+  })
+
   it('文章に含まれるマグニチュード表記は壊さない', () => {
     const text = tsunamiObservationUpdateToText(
       [{ name: '宮古', districtCode: '210', districtName: '岩手県', height: { value: 1.2, description: '1.2m' } }],
@@ -2264,6 +2278,25 @@ describe('tsunamiWarningLevelToText', () => {
 // 続けて読むと同じことを 2 度言う。そのため宣言だけの形は落とす（→ `CANCEL_DECLARATION` で形を
 // 捉え、`CANCEL_DECLARATION_SUBJECTS` で主語を照合する）。
 describe('取消の理由を読み上げる', () => {
+  // 取消の理由も気象庁が書いた文なので、日時は全角のゼロ埋めで来る。半角・ゼロ埋めなしへ
+  // 揃えないと先頭の 0 が桁として読まれる（`０１時` → 「ぜろ いちじ」）。**この関数は
+  // EEW・地震情報・津波・地震回数の 4 種別が共有する**ので、漏らすと広く効く。
+  it('理由に含まれる日時のゼロ埋めを外す', () => {
+    const text = tsunamiCancelToText('retracted', '１６日０１時２５分に発表した情報の内容に誤りがありました。')
+    expect(text).toContain('16日1時25分')
+    expect(text).not.toContain('０１時')
+    expect(text).not.toContain('01時')
+  })
+
+  // 「1日」の読み直しも同じ経路に掛かる。**3 経路（本文と付加文・津波観測情報の見出し文・
+  // 取消の理由）で揃える** —— 片方だけだと、同じ気象庁の文が読まれる場所によって
+  // 「ついたち」と「いちにち」に分かれる
+  it('理由に含まれる「1日」を読みへ直す', () => {
+    const text = tsunamiCancelToText('retracted', '０１日１６時１０分に発表した情報に誤りがありました。')
+    expect(text).toContain('ついたち16時10分')
+    expect(text).not.toContain('1日16時')
+  })
+
   // 正: 実電文で観測できた本文（4 通り）と電文解説資料の記載例は、どれも読み上げない。
   // 定型文だけが残る
   it.each([
@@ -2421,6 +2454,38 @@ describe('earthquakeCountToText', () => {
       ...over,
     }
   }
+
+  // 合成エンジンは `1日` を「いちにち」と読む（日付としては誤り）。句区切り辞書で直そうとすると、
+  // 期間を指す「1日程度」「1日おきに」まで拾ってしまう —— 辞書は文字列しか見ないので日付か期間かを
+  // 区別できない。**アプリが組む文は `d.getDate()` から作っていて日付だと確定している**ので、
+  // 生成側で読みへ直す（`speakableDay`）。
+  //
+  // 2 日以降を仮名で書かないのは、エンジンがかえって崩すため（実測: `じゅうしちにち` →
+  // `ジュウ[1] | シチニチ[2]` で頭高が反転、`にじゅういちにち` → `ニジュウイチニ | チ` と割れる）。
+  // あちらは読みが正しく抑揚だけの問題なので、句区切り辞書で核を直す側の担当。
+  describe('日付の「1日」は生成側で読みへ直す', () => {
+    const countAt = (day: number) => earthquakeCountToText(makeCount({
+      items: [{
+        type: '累積地震回数',
+        startTime: `2026-01-${String(day).padStart(2, '0')}T04:00:00+09:00`,
+        endTime: `2026-01-${String(day).padStart(2, '0')}T10:00:00+09:00`,
+        number: 10,
+        feltNumber: 1,
+      }],
+    }))
+
+    it('1 日は「ついたち」と書く', () => {
+      expect(countAt(1)).toContain('ついたち4時')
+      expect(countAt(1)).not.toContain('1日4時')
+    })
+
+    // 対照: 2 日以降は数字のまま（辞書が核を直す）
+    it('2 日以降は数字のまま', () => {
+      expect(countAt(2)).toContain('2日4時')
+      expect(countAt(17)).toContain('17日4時')
+      expect(countAt(21)).toContain('21日4時')
+    })
+  })
 
   // 正: 累積の総数と有感の数を読む。**1 時間ごとの区間は読まない**（数字の羅列になって
   // 総数が耳に残らない。経過の細かさは画面のカードに委ねる）。
