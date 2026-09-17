@@ -766,6 +766,11 @@ async function main(): Promise<void> {
   const breakdown = [...bySource].map(([source, count]) => `${source} ${count}`).join(' / ')
   const rate = (misreadTargets.length / targets.length * 100).toFixed(1)
   console.log(`Wrote ${OUT_FILE} (収録 ${misreadTargets.length} / 全 ${targets.length} 点・${rate}%・${breakdown})`)
+  // **読みを作り直したら、助詞を連結しても句が増えないことを確かめ直す。** 増えると助詞が
+  // 独立した句として浮き、辞書該当語の繋ぎ目で元の症状が戻る（→ `docs/spec/audio-tts-spec.md`
+  // §3「助詞は辞書の読みへ取り込む」）。CI では判定に音声合成エンジンが要るため回せないので、
+  // 生成した本人に促す以外の手立てが無い。
+  console.log('次は `npm run verify-particle-phrases` を回すこと（助詞を連結しても句が増えないかの確認）')
 }
 
 /**
