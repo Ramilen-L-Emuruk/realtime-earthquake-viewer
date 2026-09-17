@@ -4,18 +4,26 @@
 // 何がどう入っているかを見るため（未読の仕分けは triage.mjs の担当）。
 import fs from 'node:fs'
 import path from 'node:path'
+import { incompleteNotes, incompletenessBanner, reportIncompleteness } from '../lib/incompleteness.mjs'
+import { absorbSampleCollectionMarks } from './collection-mark.mjs'
 
 // 実電文の置き場所。引数 > TELEGRAM_CACHE > TELEGRAM_AUDIT_DIR/telegram-cache の順で探す。
 const DIR = process.argv[2]
   || process.env.TELEGRAM_CACHE
   || (process.env.TELEGRAM_AUDIT_DIR && path.join(process.env.TELEGRAM_AUDIT_DIR, 'telegram-cache'))
 if (!DIR) throw new Error('実電文のディレクトリを引数か TELEGRAM_CACHE で渡してください')
+
+// **収集の札を読む。** このスクリプトもディレクトリに並ぶファイルを数えて「一致 X / Y」の
+// 形で出すので、収集が途中で落ちていると母数が本来より小さいまま出る（→ `collection-mark.mjs`）。
+absorbSampleCollectionMarks(DIR)
 const pick = (s, tag) => {
   const m = s.match(new RegExp('<' + tag + '>([^]*?)</' + tag + '>'))
   return m ? m[1].trim() : null
 }
 const rows = []
 for (const f of fs.readdirSync(DIR)) {
+  // `_` で始まるものは電文ではなく収集の札（`collection-mark.mjs`）。数に入れない
+  if (f.startsWith('_')) continue
   const s = fs.readFileSync(path.join(DIR, f), 'utf8')
   const type = f.split('_')[0]
   const ctrl = s.slice(s.indexOf('<Control>'), s.indexOf('</Control>'))
@@ -42,6 +50,12 @@ for (const r of rows) {
   const b = r.hReport && new Date(r.hReport).getTime()
   if (a && b && a === b) same++
   else diff.push(`${r.type} ${r.f}: Control=${r.cDateTime} Head=${r.hReport} 差=${(b - a) / 1000}秒`)
+}
+// **分母の前に断る。** この先の集計はどれも「一致 X / Y」の形で出るので、収集が
+// 途中で落ちていたことを先に言わないと、集まらなかった分を「そういう電文が無かった」と読める。
+if (incompleteNotes().length > 0) {
+  for (const line of incompletenessBanner('plain')) console.log(line)
+  console.log('')
 }
 console.log(`Control/DateTime と Head/ReportDateTime: 一致 ${same} / ${rows.length}`)
 for (const d of diff) console.log('  差: ' + d)
@@ -76,3 +90,5 @@ for (const r of rows) {
   td.get(r.type).push(r.hTarget === null ? 'なし' : `${(b - a) / 1000}`)
 }
 for (const [k, v] of [...td].sort()) console.log(`  ${k}  ${v.join(' ')}`)
+
+if (reportIncompleteness('ヘッダ調査の入力') > 0) process.exitCode = 1

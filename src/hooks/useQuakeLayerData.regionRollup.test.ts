@@ -149,3 +149,52 @@ describe('震度分布モードのシグネチャ', () => {
     expect(dropCount(on.quakeSignature)).not.toBe(dropCount(off.quakeSignature))
   })
 })
+
+// 寄り上限の選び方（`quakeFitZoomPolicy`）。
+//
+// 分布の寄り先は「塗りがある範囲」そのものなので、自動フィットの寄り上限（視野の短辺 400km）を
+// 当てると、分布が数十 km に収まる地震では画の中心に来るだけで面が小さいまま残る。上限の値は
+// `gl/zoomConstants.test.ts` が固定しており、ここで見るのは**どの寄り先にどちらを当てるか**。
+describe('震度分布モードの寄り上限の選び方', () => {
+  const EI = {
+    id: 'ix1', time: '2026-07-28T16:32:00+09:00', arrivalTime: '2026-07-28T07:27:00.000Z',
+    hypocenter: { lat: 32.6, lon: 130.7, depthKm: 10 },
+    magnitude: 4.2, areaCode: 741, telegramKind: 0,
+    grades: [{ scale: 4, modifier: 'none' as const, lower: 35, upper: 44 }],
+    count: 1, lat: new Float32Array([32.6]), lon: new Float32Array([130.7]), si: new Uint8Array([42]),
+    bounds: { south: 32.6, north: 32.7, west: 130.7, east: 130.8 },
+  }
+  const POINTS: EarthquakePoint[] = [{ addr: '奈良県', pref: '奈良県', isArea: true, scale: 40 }]
+
+  function render(distributionMode: boolean, estimated: typeof EI | null) {
+    const { result } = renderHook(() =>
+      useQuakeLayerData('quake', makeQuake(POINTS), VIEW, null, distributionMode, estimated ?? undefined))
+    return result.current
+  }
+
+  // 正: 分布を出しているときは分布向けの上限を選ぶ。
+  it('分布を出しているときは分布向けの上限を選ぶ', () => {
+    expect(render(true, EI).quakeFitZoomPolicy).toBe('distribution')
+  })
+
+  // 対照: モードを切れば自動フィットの上限に戻る。
+  it('モードを切れば自動フィットの上限に戻る', () => {
+    expect(render(false, EI).quakeFitZoomPolicy).toBe('auto')
+  })
+
+  // 安全弁: **モードだけを見て選ばない。** 気象庁の推計が届いていない間の寄り先は通常の区域範囲
+  // （自前の面を出している状態）なので、分布向けの上限を当てると県ひとつの区域塗りへ
+  // 数 km まで寄る画になる。寄り先と上限は同じ条件から出すこと。
+  it('安全弁: モードに入っていても推計が届いていなければ自動フィットの上限', () => {
+    expect(render(true, null).quakeFitZoomPolicy).toBe('auto')
+  })
+
+  // 安全弁: 推計が後から届いたときに寄り直せること。**モードの別だけではこの変化を表せない**
+  // （どちらも分布モードのまま）。本数の項を取り除いても差が残ることで、差の出どころが
+  // 寄り上限の別であることを確かめる——区域が 1 つの地震では本数も一致しうる。
+  it('安全弁: シグネチャに寄り上限の別が入っている', () => {
+    const before = render(true, null), after = render(true, EI)
+    const dropCount = (sig: string) => sig.slice(0, sig.lastIndexOf(':'))
+    expect(dropCount(after.quakeSignature)).not.toBe(dropCount(before.quakeSignature))
+  })
+})

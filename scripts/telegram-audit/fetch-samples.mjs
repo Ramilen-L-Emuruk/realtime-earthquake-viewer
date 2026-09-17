@@ -7,9 +7,15 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { HANDLED } from './handled.mjs'
 import { CACHE } from './coverage-core.mjs'
-import { apiAuthHeader, listArchive, loadArchiveTar, tarEntries, reportArchiveCacheStats, withCompletenessMark } from './archive-cache.mjs'
+import { apiAuthHeader, listArchive, loadArchiveTar, tarEntries, reportArchiveCacheStats } from './archive-cache.mjs'
+import { markResult, reportIncompleteness, writeArtifact } from '../lib/incompleteness.mjs'
+import { sampleCollectionMarkPath, clearCollectionMark } from './collection-mark.mjs'
 
 fs.mkdirSync(CACHE, { recursive: true })
+
+// **走査を始める前に古い札を消す。** 途中で落ちたら札が無い＝「不明」へ倒す
+// （残すと、前回成功したときの札が今回の成果物に対する「完了報告」として読まれる）。
+clearCollectionMark(sampleCollectionMarkPath(CACHE))
 
 // 取得・控え・レート制御は `archive-cache.mjs` に集約してある。**素の `fetch` を書き足さないこと**。
 const auth = apiAuthHeader()
@@ -79,8 +85,16 @@ for (const [cls, from, to] of [
     if (Object.keys(HANDLED).every(t => (counts.get(t) ?? 0) >= PER_TYPE)) break
   }
 }
+const collected = Object.fromEntries([...counts].sort())
+
+// **札を必ず置く。** 集めた成果物は `telegram-cache/` に並ぶ XML そのもので、ファイルの山へは
+// 印を載せられない。取りこぼしがあったかどうかは、この札でしか下流へ渡せない
+// （成功しても書く理由は `collection-mark.mjs` の冒頭）。
+writeArtifact(sampleCollectionMarkPath(CACHE), { collectedAt: Date.now(), perType: collected })
+
 // **不完全なら結果そのものへ印を付ける。** 標準エラー（下の報告）を見ない運用でも、
 // 「集めたが 0 件」と「集められなかった」を JSON 単体で区別できるようにする。
-console.log(JSON.stringify(withCompletenessMark(Object.fromEntries([...counts].sort())), null, 1))
-// 走査できなかった範囲があれば exit code も立てる（終了コードしか見ない経路で気づけるように）
-if (reportArchiveCacheStats('アーカイブ（サンプル収集）') > 0) process.exitCode = 1
+console.log(JSON.stringify(markResult(collected), null, 1))
+reportArchiveCacheStats('アーカイブ（サンプル収集）')
+// 取りこぼしがあれば exit code も立てる（終了コードしか見ない経路で気づけるように）
+if (reportIncompleteness('サンプル収集') > 0) process.exitCode = 1

@@ -50,8 +50,34 @@ export interface ReplayFetchResult {
    *
    * これは DMDSS 版の取得に固有の概念。P2PQuake 経路は 1 日ぶんの取得が失敗した
    * 時点で例外にする（部分的に欠けたまま再生しない）ため、常に空配列を返す。
+   *
+   * **429 の窓で見送った取得元はここへ入れない**（→ `rateLimitedSources`）。
    */
   failedArchiveUrls: string[]
+  /**
+   * 429 の窓が明けるまで取りに行かなかった取得元の識別子（DMDSS 版のみ）。
+   *
+   * **`failedArchiveUrls` と分ける。** 混ぜると 3 つが壊れる:
+   *
+   * 1. **利用者に打てる手が違う。** 取得の失敗は再読み込みで直りうるが、こちらは窓が明けるまで
+   *    （最長 30 分）待つのが正しい。同じ枠にすると「再読み込みで取得し直します」という
+   *    案内が嘘になる
+   * 2. **全滅判定の分母が変わる。** 「使おうとした取得元がすべて読めなかった」ときだけ例外に
+   *    する仕組みは認証切れ・全断を捕まえるためのもので、こちら側の意図的な見送りを混ぜると、
+   *    窓が広いあいだ**取れていた分ごと捨てる**
+   * 3. 表示側が文面を分けられない
+   */
+  rateLimitedSources: string[]
+  /**
+   * 429 の窓が明けるまで取りに行かなかった**電文**の数。
+   *
+   * **`rateLimitedSources`（取得元）とは単位が違う**ので別に持つ。`skipped` と
+   * `failedArchiveUrls` を分けているのと同じ理由で、表示側は「N 件の取得元」
+   * 「M 件の電文」と単位を分けて出すため、混ぜると文面が嘘になる。
+   *
+   * **`skipped` にも数えない。** あちらは恒久的に失ったもので、こちらは待てば取れる。
+   */
+  rateLimitedTelegrams: number
 }
 
 /**
@@ -111,6 +137,16 @@ export interface QuakeHistoryResult {
    * アーカイブはその URL、アーカイブがまだ無い日を埋める当日経路は `live:<JST 日付>`。
    * 両者を 1 本の集合で持つのは全滅判定（共通原因の検出）を成立させるため
    * （`dmdataReplay.ts` の `liveSourceId` 参照）。
+   *
+   * **429 の窓で見送った取得元はここへ入れない**（→ `rateLimitedSources`）。
    */
   failedArchiveUrls: string[]
+  /**
+   * 429 の窓が明けるまで取りに行かなかった取得元の識別子（DMDSS 版のみ）。
+   *
+   * 分ける理由は `ReplayFetchResult.rateLimitedSources` と同じ。
+   */
+  rateLimitedSources: string[]
+  /** 429 の窓で見送った**電文**の数（単位が違うので取得元とは別に持つ）。 */
+  rateLimitedTelegrams: number
 }

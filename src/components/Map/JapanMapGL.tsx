@@ -181,6 +181,7 @@ export function JapanMapGL({
     lpgmMarkers,
     lpgmRegionAggregates,
     quakeFitPositions,
+    quakeFitZoomPolicy,
     quakeSignature,
   } = useQuakeLayerData(mode, quake, { zoom, aggregateMaxZoom }, lpgm, distributionMode, estimatedIntensity, unreceivedMode)
   // 気象庁の推計震度分布図を出しているか。**引き当ては呼び出し側の担当**で、ここへ来る時点で
@@ -520,7 +521,7 @@ export function JapanMapGL({
       <div ref={containerRef} className="h-full w-full">
         <MapGLContext.Provider value={map}>
           {/* 後続フェーズのレイヤーコンポーネントはここに置く（map を Context で購読） */}
-          <BaseMapGL showBathymetry={showBathymetry} />
+          <BaseMapGL showBathymetry={showBathymetry} recording={recording} />
           {/* 地名ラベル（地方/県/区域名・最前面）。 */}
           <LabelsGL overlapSignature={overlapSignature} iconScale={iconScale} recording={recording} />
           {/* 活断層・プレート境界（quake/kyoshin モード）。kyoshin ドット群の下に敷く。 */}
@@ -645,6 +646,7 @@ export function JapanMapGL({
               <QuakeFitGL
                 signature={quakeSignature}
                 positions={quakeFitPositions}
+                zoomPolicy={quakeFitZoomPolicy}
                 selectionTick={quakeSelectionTick}
                 lastConsumedTickRef={lastConsumedQuakeTickRef}
               />

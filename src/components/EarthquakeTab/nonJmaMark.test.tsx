@@ -16,6 +16,7 @@ import type { JMAQuake, JMALpgm, EarthquakePoint, JMAQuakeCity } from '../../typ
 // 地名と `＊` は右端を揃えるために別の要素へ分けてある（→ `IntensityRow`）。
 // `getByText('〇〇＊')` では引けないので、行ごと見る。
 import { intensityRowText as rowText, openIntensityRows } from '../../test-utils/intensityRow'
+import { createEmptyTelegramLoss } from '../../utils/telegramLoss'
 
 afterEach(cleanup)
 
@@ -85,6 +86,8 @@ const renderTab = (quake: JMAQuake, lpgm?: JMALpgm, opts: { unreceivedOpen?: boo
     hasMore={false}
     onLoadMore={() => {}}
     error={null}
+    historyLoss={createEmptyTelegramLoss()}
+    loadMoreFailed={false}
     lpgmByEventId={lpgm ? new Map([[EVENT_ID, lpgm]]) : new Map()}
     activeLpgmEventId={lpgm ? EVENT_ID : null}
     onToggleLpgm={() => {}}

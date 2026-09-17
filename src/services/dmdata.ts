@@ -14,12 +14,14 @@ import { gunzip } from '../utils/gzip'
 import {
   CLASSIFICATIONS, EEW_TYPES, NANKAI_TYPES, COMMENTARY_TYPES, KOHATSU_TYPES, NOTICE_TYPES,
   QUAKE_COUNT_TYPES, HANDLED_TYPES, isBinaryTelegramType, buildBinaryPayload, buildXmlPayload,
+  isFilteredBinaryTelegram,
   TELEGRAM_DATA_BASE,
 } from './dmdataTelegramPayload'
 import { BufrFragmentStore, fragmentKey } from './bufrTelegramAssembly'
 import { log, createLogThrottle } from '../utils/logger'
 import { authHeader, DmdataApiKeyError, dmdataApiKeyProblem, dmdataApiKeyMessage } from '../utils/dmdataApiKey'
 import { fetchTelegramText } from './telegramBody'
+import { waitForApiSlot } from './dmdataRequestGates'
 
 const API_BASE = 'https://api.dmdata.jp/v2'
 // 種別の集合は `dmdataTelegramPayload.ts` が単一情報源。ここで定義し直すと、種別を足したとき
@@ -252,6 +254,14 @@ async function tryFetchTicket(
 ): Promise<{ url: string; status: number; body: unknown }> {
   const testParam = includeTest ? 'including' : 'no'
   if (debug) dlog('socket チケット要求', { classifications, test: testParam })
+  // **`api.dmdata.jp` の枠を待つ。** ここは 1 回の接続で 1 度しか叩かないが、門は
+  // ホストごとに共有なので、同時に走っている一覧の取得と合算で 2req/s を超えない
+  // （→ `services/dmdataRequestGates.ts`）。枠が空いていれば待たずに通る。
+  //
+  // **順番は先に通す**（`urgent`）。これは電文の受信そのものの起点で、起動直後は一覧・目録・
+  // 震源カタログが同じ門に並ぶため、後ろへ回すと**緊急地震速報の受信開始が遅れる**。
+  // 間隔は変えない（変えればレート制限に触れる）。
+  await waitForApiSlot({ urgent: true })
   const res = await fetch(`${API_BASE}/socket`, {
     method: 'POST',
     headers: {
@@ -289,6 +299,65 @@ async function fetchTicketUrl(apiKey: string, includeTest: boolean, debug: boole
   throw new Error(`ticket: ${result.status}`)
 }
 
+/**
+ * 枠を返そうとした結果。
+ *
+ * **「駄目だった」を 2 つに分ける。** 権限不足（403）は繰り返しても同じ結果だが、ネットワーク断や
+ * 配信元の 5xx は次の機会に試す価値がある —— **まとめて忘れると、枠を返し損ねたセッションが
+ * PingTimeout まで自分を塞いだままになる**（枠は 3 本しかない）。
+ */
+export type ReleaseSocketOutcome = 'closed' | 'permanent' | 'transient'
+
+/**
+ * 自分が掴んでいた WebSocket の枠を返す（`DELETE /v2/socket/:id`）。
+ *
+ * **なぜ要るか。** 配信元のリファレンス（`WebSocket v2` の「その他」）にこうある ——
+ * 「正常にClose処理がなされないWebSocket切断が発生するとサーバー側で切断が検知できなくなり、
+ * PingTimeoutが発生し切断処理が実行されるまで、接続数を消費します。そのため、**同時接続数に
+ * 余裕がなくすぐに再接続を行いたい場合は、Socket Close v2を実行するよう実装する必要があります**」。
+ *
+ * `ws.close()` は正常な Close 処理にあたるので通常はこれで足りる。効くのは**それが届かなかった
+ * 場合**（タブのクラッシュ・強制終了・ネットワーク断）で、枠が PingTimeout まで残る。
+ *
+ * **閉じる相手は「このセッションで掴んだ `socketId`」だけに限る。** 前回の起動の分まで閉じたく
+ * なるが、`localStorage` へ持つと**同じ API キーを使う他の端末の接続を閉じうる**（実機と共有して
+ * いる場合に起きる）。ページを再読込すると自分の id は失われるが、それは受け入れる。
+ *
+ * **失敗は致命的ではない。** `socket.close` スコープが API キーに付いていなければ 403 が返るだけで、
+ * その場合は従来どおり PingTimeout を待つことになる（＝この変更が入る前と同じ振る舞い）。
+ *
+ * **テストのために export している**（`isNonRecoverableCloseCode` と同じ扱い）。
+ * 呼ぶのは `DmdataWebSocket` の中だけ。
+ *
+ * @returns 閉じられたか、駄目だったならもう一度試す価値があるか
+ */
+export async function releaseSocket(
+  apiKey: string, socketId: number, debug: boolean,
+): Promise<ReleaseSocketOutcome> {
+  try {
+    // 枠の解放も先に通す（塞がっている枠を返すのが早いほど、次の接続が早く繋がる）
+    await waitForApiSlot({ urgent: true })
+    const res = await fetch(`${API_BASE}/socket/${socketId}`, {
+      method: 'DELETE',
+      headers: { Authorization: authHeader(apiKey) },
+    })
+    if (debug) dlog('socket の枠を返した', { socketId, status: res.status })
+    if (!res.ok) {
+      // 403 は `socket.close` スコープが無い場合。**警告に留める** —— 枠を返せないだけで、
+      // 待てば PingTimeout で解放される。error にすると復旧不能のように読める。
+      log.warn(`[DMDSS] socket の枠を返せませんでした（socketId=${socketId} status=${res.status}）`
+        + `。枠が空くまで待ちます（socket.close スコープが必要）`)
+      // **4xx は繰り返しても同じ結果。** 5xx は配信元側の一時的な不調なので、もう一度試す価値がある
+      return res.status >= 500 ? 'transient' : 'permanent'
+    }
+    return 'closed'
+  } catch (err) {
+    // ネットワーク断・中断。**枠はまだ残っているので、次の機会に試す価値がある**
+    log.warn('[DMDSS] socket の枠を返す要求が失敗しました。枠が空くまで待ちます', err)
+    return 'transient'
+  }
+}
+
 export type DmdataEvent =
   | { kind: 'eew'; data: EEWAlert }
   | { kind: 'quake'; data: JMAQuake }
@@ -303,6 +372,10 @@ export type DmdataEvent =
 
 export class DmdataWebSocket {
   private ws: WebSocket | null = null
+  // このセッションで掴んだ WebSocket の id（`type: start` が名乗る）。同時接続数の上限
+  // （409）で断られたときに、自分の古い枠を返すために使う（→ `releaseSocket`）。
+  // **前回の起動の分は持たない**（他端末の接続を閉じる危険があるため）。
+  private lastSocketId: number | null = null
   private reconnectAttempt = 0
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private stopped = false
@@ -368,6 +441,27 @@ export class DmdataWebSocket {
       // （理由は `RECONNECT_CROWDED_MAX_MS`）。停止はしない。
       if (err instanceof SocketCrowdedError) {
         this.onStatusChange?.('crowded')
+        // **自分の古い枠が残っているなら返す。** 前の接続が正常に Close されなかった場合
+        // （タブのクラッシュ・ネットワーク断）、その枠は PingTimeout まで残り、枠が 3 本しか
+        // ない契約では自分で自分を塞ぐ。配信元が「すぐに再接続を行いたい場合は Socket Close v2 を
+        // 実行するよう実装する必要があります」と書いているのはこの場面（→ `releaseSocket`）。
+        //
+        // **閉じても即座に繋ぎ直さない。** 予約はそのまま置く —— 枠が空いたことの確認を
+        // 兼ねて、次の試行で繋がるかを見る。失敗しても従来どおり待つだけ。
+        if (this.lastSocketId !== null) {
+          const id = this.lastSocketId
+          // **待つ前に忘れる。** 同じ id へ二度 DELETE を投げないため
+          this.lastSocketId = null
+          const outcome = await releaseSocket(this.apiKey, id, this.debug)
+          // **一時的な失敗なら覚え直す。** ネットワーク断や配信元の 5xx で失敗しただけなら
+          // 枠はまだ残っており、次に 409 を受けたときに試す価値がある。**忘れてしまうと、
+          // 枠を返し損ねたセッションが PingTimeout まで自分を塞いだままになる**
+          // （権限不足なら `permanent` なので、繰り返し投げることにはならない）。
+          //
+          // **既に新しい id を覚えていたら上書きしない** —— `await` のあいだに接続が
+          // 成立して `type: start` が入ることがあり、そちらのほうが新しい。
+          if (outcome === 'transient' && this.lastSocketId === null) this.lastSocketId = id
+        }
         this.scheduleReconnect({ crowded: true })
         return
       }
@@ -508,6 +602,20 @@ export class DmdataWebSocket {
       ))
       return
     }
+    // **非 XML 電文の試験配信は、上の `head.test` では弾けない。** 配信元は「XML電文以外の
+    // テスト配信は no 時も配信されます」「（test フラグは）常に false になります」と両方を明記して
+    // いるので、`isTest` は届いた試験報に対して偽のまま。**本文の電文の種類で判定する。**
+    if (isFilteredBinaryTelegram(payload, this.includeTest)) {
+      if (this.debug) {
+        dlog('二進電文の試験報を破棄（includeTest 無効）', { headType, telegramKind: payload.data.telegramKind })
+      }
+      this.onRawMessage?.(this.makeLogEntry(
+        headType, head,
+        `（BUFR ${joined.length} バイト・電文の種類 ${payload.data.telegramKind}）`,
+        true, 'filtered',
+      ))
+      return
+    }
     if (this.debug) dlog('推計震度分布図を受信', { bytes: joined.length, cells: payload.data.count })
     this.onRawMessage?.(this.makeLogEntry(
       headType, head, `（BUFR ${joined.length} バイト・${payload.data.count} セル）`,
@@ -545,7 +653,15 @@ export class DmdataWebSocket {
       // STABLE_CONNECTION_MS 継続で reconnectAttempt をリセット。
       // start 直後の即時リセットだと start→即切断のフラッピングでバックオフが効かない。
       this.scheduleStableReset()
-      if (this.debug) dlog('start（購読開始）', { classifications: (msg as { classifications?: unknown }).classifications })
+      // **枠の id を覚える。** 409 で断られたときに自分の古い枠を返すのに使う。
+      const socketId = (msg as { socketId?: unknown }).socketId
+      if (typeof socketId === 'number') this.lastSocketId = socketId
+      if (this.debug) {
+        dlog('start（購読開始）', {
+          classifications: (msg as { classifications?: unknown }).classifications,
+          socketId: this.lastSocketId,
+        })
+      }
       this.onStatusChange?.('connected')
       return
     }
@@ -582,6 +698,12 @@ export class DmdataWebSocket {
       })
     }
     // 試験報・訓練報は includeTest 有効時のみ通す（既定は無効＝従来どおり破棄）。
+    //
+    // **これが効くのは XML 電文だけ。** 配信元は「XML電文以外のテスト配信は常に false に
+    // なります」と明記していて、非 XML 電文（このアプリでは推計震度分布図 IXAC41 だけ）では
+    // `head.test` が届いた試験報に対しても偽のまま。しかも「XML電文以外のテスト配信は
+    // no 時も配信されます」ともあるので、`test: "no"` で購読していても届く。
+    // **非 XML 電文の判定は本文から読む**（下の `isFilteredBinaryTelegram`）。
     if (isTest && !this.includeTest) {
       if (this.debug) dlog('試験報を破棄（includeTest 無効）', { headType })
       if (headType) this.onRawMessage?.(this.makeLogEntry(headType, head, msg.body, true, 'filtered'))
@@ -837,8 +959,12 @@ export async function fetchDmdataGdEarthquakes(apiKey: string, days: number): Pr
   // 期間の端まで到達したか。ページを跨いで保持する（末尾の全滅判定が読む）。
   let reachedCutoff = false
 
-  for (let page = 0; page < GD_EARTHQUAKE_MAX_PAGES; page++) {
+  let page = 0
+  for (; page < GD_EARTHQUAKE_MAX_PAGES; page++) {
     const qs = cursorToken ? `&cursorToken=${cursorToken}` : ''
+    // **ページを辿るループの中なので枠を待つ。** 応答が速ければ待ちなしで次のページへ
+    // 進むため、門が無いと瞬間のレートが上限へ寄る（→ `services/dmdataRequestGates.ts`）。
+    await waitForApiSlot()
     const res = await fetch(`${API_BASE}/gd/earthquake?limit=100${qs}`, { headers })
     if (!res.ok) {
       // 呼び出し側は失敗の中身で挙動を変えないため、恒久（スコープ不足）と一時（500 等）の
@@ -899,6 +1025,23 @@ export async function fetchDmdataGdEarthquakes(apiKey: string, days: number): Pr
     //   ぶんのリクエストを空振りに費やしてから例外になる。）
     if (collected.length === 0) break
     cursorToken = json.nextToken
+  }
+
+  // **上限で切れたことは必ず記録する。** 他の一覧（`listArchives` / `listTelegrams` /
+  // `listEewTelegrams` / `fetchDmdataActiveEews`）はいずれも上限到達を投げるか warn するのに、
+  // ここだけ無言で終わっていた（→ `data-sources-spec.md` §2「ページを辿るループには上限を置く」が
+  // 「達したら記録を残す。黙って切ると取りこぼしが『静かな時間帯』に化ける」と定めている）。
+  //
+  // **投げないのは意図。** 呼び出し側（`useQuakeHeatmap`）は結果を 6 時間 localStorage へ焼くので、
+  // 例外にすると直前まで出ていたヒートマップを消したうえで空が 6 時間居座る。読めた分は活かす。
+  //
+  // 欠けるのは**期間の古い側**——地震活動が活発な月ほど起きやすい。`reachedCutoff` が false のまま
+  // 件数は非 0 なので下の全滅判定にも掛からず、画面には「欠けた分が出ない」としか現れない。
+  if (page >= GD_EARTHQUAKE_MAX_PAGES) {
+    log.warn(
+      `[DMDSS] GD Earthquake List: ページ上限（${GD_EARTHQUAKE_MAX_PAGES}）に達したため打ち切りました`
+      + `（取れた ${collected.length} 件 / 要求した期間 ${days} 日）。期間の古い側が欠けている可能性があります`,
+    )
   }
 
   const skipped = skippedNoTime + skippedNoCoord
@@ -967,6 +1110,8 @@ const ACTIVE_EEW_MAX_PAGES = 10
 async function fetchLatestEewReport(
   apiKey: string, headers: Record<string, string>, eventId: string,
 ): Promise<EEWAlert | null> {
+  // **発表中の件数だけ繰り返し呼ばれる**ので枠を待つ（→ `services/dmdataRequestGates.ts`）。
+  await waitForApiSlot()
   const res = await fetch(`${API_BASE}/gd/eew/${encodeURIComponent(eventId)}`, { headers })
   if (!res.ok) { logRestFailure(`緊急地震速報の詳細 (${eventId})`, res.status); return null }
   const json = await res.json() as { items?: GdEewReportItem[] }
@@ -987,6 +1132,9 @@ async function fetchLatestEewReport(
     // **訓練・試験の報は復元しない。** ライブ受信であえて流しているのは検証のためで
     // （`EEWAlert.test` とは別物。→ quake-spec.md §5「電文の運用種別」）、起動した利用者の
     // 画面へ訓練報を出す理由は無い。
+    // **この判定は通らない見込み。** 配信元は `GD Eew List v2` / `GD Eew Event v2` の
+    // 「APIの情報」に「テスト電文はこのAPIでは扱いません」と書いている。**それでも残してある**
+    // —— 実測しておらず、資料が変われば通る（下の `allTest` も同じ理由で残している）。
     if (tg.head?.test) continue
     // 一覧が返すのは JSON 版を指す形のことがある。読み取りは XML へ一本化しているので
     // 元の XML の id（`originalId`）へ組み替える。XML 版がそのまま返る場合はそれを持たない。
@@ -1045,6 +1193,8 @@ export async function fetchDmdataActiveEews(apiKey: string): Promise<EEWAlert[]>
     for (let page = 0; page < ACTIVE_EEW_MAX_PAGES; page++) {
       const params = new URLSearchParams({ datetime: `${from}~${to}`, limit: '100' })
       if (cursorToken) params.set('cursorToken', cursorToken)
+      // **ページを辿るループの中なので枠を待つ**（→ `services/dmdataRequestGates.ts`）。
+      await waitForApiSlot()
       const res = await fetch(`${API_BASE}/gd/eew?${params.toString()}`, { headers })
       // **集めた分は捨てない。** 2 ページ目以降で落ちたときに諦めると、1 ページ目で確認できて
       // いた発表中の緊急地震速報まで消える。ページが分かれるほど発表が集中している状況
@@ -1072,7 +1222,22 @@ export async function fetchDmdataActiveEews(apiKey: string): Promise<EEWAlert[]>
       const last = Date.parse(ev.dateTime)
       return !Number.isFinite(last) || last >= since
     })
-    if (targets.length === 0) return []
+    if (targets.length === 0) {
+      // **一覧に件数があったなら記録する。** 配信元はこの API を**事後参照用**と定めていて
+      // （`GD Eew List v2` の「### APIの情報」。理由は「緊急地震速報の最終報を受信したのち
+      // データが更新されますので」）、**発表中のものが取れる保証は資料に無い**。
+      // 記録が無いと「発表中の緊急地震速報が無かった」と「この API では取れなかった」を
+      // 後から区別できない —— **どちらも画面には何も出ない。**
+      //
+      // 一覧が 0 件のときは黙る（平常時に毎回出しても読まれない）。
+      if (events.length > 0) {
+        log.info(
+          `[DMDSS] 発表中の緊急地震速報の復元: 一覧 ${events.length} 件のうち、窓`
+          + `（${Math.round(ACTIVE_EEW_WINDOW_MS / 60_000)} 分）に入るものは 0 件でした`,
+        )
+      }
+      return []
+    }
 
     const reports: Array<{ eew: EEWAlert; value: EEWAlert }> = []
     for (const ev of targets) {
@@ -1088,7 +1253,17 @@ export async function fetchDmdataActiveEews(apiKey: string): Promise<EEWAlert[]>
       }
     }
     // 取消済み・自動解除済みはここで落ちる。判定はリプレイの初期状態と共有している。
-    return selectActiveEews(reports, now, 'startup')
+    const active = selectActiveEews(reports, now, 'startup')
+    // **復元の歩留まりを記録する。** ①と同じ理由 —— この API が発表中のものを返すかどうかは
+    // 資料からは読めないので、**実配信の EEW が起きたあとにここを読めば確かめられる**ようにする。
+    // 一覧に件数があったときだけ出す。
+    if (events.length > 0) {
+      log.info(
+        `[DMDSS] 発表中の緊急地震速報の復元: 一覧 ${events.length} 件 → 窓に入る ${targets.length} 件`
+        + ` → 報を読めた ${reports.length} 件 → 有効 ${active.length} 件`,
+      )
+    }
+    return active
   } catch (err) {
     log.error('[DMDSS] 発表中の緊急地震速報の取得に失敗', err)
     return []

@@ -24,6 +24,10 @@ import {
   parseEEWFromXml, parseEarthquakeFromXml, parseTsunamiFromXml,
   parseLpgmFromXml, parseNankaiFromXml, parseNankaiCommentaryFromXml, parseVyse60FromXml,
 } from './dmdataParser'
+// @ts-expect-error -- 型定義を持たない .mjs（`scripts/lib/rateGate.mjs` と同じ扱い）
+import { writeArtifact, noteIncomplete } from '../../scripts/lib/incompleteness.mjs'
+// @ts-expect-error -- 同上
+import { absorbSampleCollectionMarks } from '../../scripts/telegram-audit/collection-mark.mjs'
 
 const CACHE = process.env.TELEGRAM_CACHE ?? ''
 const OUT = process.env.COVERAGE_OUT ?? ''
@@ -144,8 +148,17 @@ describe('電文と実装の突き合わせ（動的計測）', () => {
       const fileRead = new Set<string>()
       const fileAttrs = new Set<string>()
       const restore = instrument(fileRead, fileAttrs)
+      // **1 通のパース失敗で計測ごと止めない。** 投げたまま素通しにすると、その 1 通で
+      // テストが落ちて `writeArtifact` まで到達せず、**生データが 1 件も更新されない**。
+      // 取りこぼしとして記録すれば、残りの電文の計測は続き、失敗したことは印として
+      // 下流（`triage.mjs`）へ運ばれる。
+      //
+      // **ここで読めなかった経路は「読んでいない」に数えられる**（`fileRead` が空のまま）。
+      // その電文の分だけ「未読」が増えて見えるので、印が無いと誤った棚卸しの根拠になる。
       try {
         run(type, xml)
+      } catch (e) {
+        noteIncomplete('電文の計測', `${f}: ${(e as Error)?.message ?? e}`)
       } finally {
         restore()
       }
@@ -172,7 +185,17 @@ describe('電文と実装の突き合わせ（動的計測）', () => {
       types: Object.keys(perType).length,
       parserSha: parserSha(fs.readFileSync(PARSER_PATH, 'utf8')),
     }
-    fs.writeFileSync(OUT, JSON.stringify({ __meta: meta, ...result }, null, 1), 'utf8')
+    // **収集の札を読んでから書く。** 計測の入力は `telegram-cache/` に並ぶファイルそのもので、
+    // 収集が途中で落ちていても「その種別の電文が無い」としか見えない。札を読めば、その
+    // 取りこぼしが `writeArtifact` の印として生データへ載り、突き合わせ側（`triage.mjs`）へ
+    // そのまま渡る（→ `scripts/telegram-audit/collection-mark.mjs`）。
+    absorbSampleCollectionMarks(CACHE)
+    writeArtifact(OUT, { __meta: meta, ...result })
     expect(Object.keys(result).length).toBeGreaterThan(0)
+    // **1 件も読み取れていない状態で緑にしない。** パース失敗を印にして先へ進むようにしたので、
+    // **全滅しても上の行は通る** —— 電文の全要素（`rec.all`）は計装の外で作るため、
+    // `run()` が毎回投げてもキーは埋まる。以前は例外がそのまま落ちて全滅を教えていた。
+    // ここで止めないと、このテスト単体の緑が「全滅していない」ことの根拠に見える。
+    expect(readPaths.size).toBeGreaterThan(0)
   })
 })

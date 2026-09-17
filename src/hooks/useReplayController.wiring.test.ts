@@ -77,7 +77,7 @@ function idOf(e: ReplayEntry): string {
 }
 
 function fetched(entries: ReplayEntry[], skipped = 0, failedArchiveUrls: string[] = []): ReplayFetchResult {
-  return { entries, skipped, failedArchiveUrls }
+  return { entries, skipped, failedArchiveUrls, rateLimitedSources: [], rateLimitedTelegrams: 0 }
 }
 
 /**
@@ -549,7 +549,7 @@ describe('useReplayController の地震カード履歴', () => {
   /** 履歴の結果。中身の統合は mergeQuakeHistory の担当なので、ここでは件数だけ数える。 */
   function history(count: number, skipped = 0, failedArchiveUrls: string[] = []): QuakeHistoryResult {
     const quakes = Array.from({ length: count }, (_, i) => ({ id: `q${i}` } as unknown as JMAQuake))
-    return { quakes, tsunamis: [], extras: [], skipped, failedArchiveUrls, hasMore: false }
+    return { quakes, tsunamis: [], extras: [], skipped, failedArchiveUrls, rateLimitedSources: [], rateLimitedTelegrams: 0, hasMore: false }
   }
 
   it('再生開始時刻を境に、ライブと同じ件数を目標として履歴を取りに行く', async () => {
@@ -647,7 +647,10 @@ describe('useReplayController: 初期状態に無い帯・長周期を履歴か�
   }
 
   function historyWith(extras: ReplayEntry[]): QuakeHistoryResult {
-    return { quakes: [], tsunamis: [], extras, skipped: 0, failedArchiveUrls: [], hasMore: false }
+    return {
+      quakes: [], tsunamis: [], extras, skipped: 0,
+      failedArchiveUrls: [], rateLimitedSources: [], rateLimitedTelegrams: 0, hasMore: false,
+    }
   }
 
   it('正: 初期状態に無い種別は履歴から補い、初期状態と同じ時刻・無音で流す', async () => {
@@ -735,7 +738,10 @@ describe('useReplayController: 補完の結果を記録する', () => {
     h.deps.loadReplayEvents.mockClear()
 
     await act(async () => {
-      h.histories[0].resolve({ quakes: [], tsunamis: [], extras: [countEntry2('from-history')], skipped: 0, failedArchiveUrls: [], hasMore: false })
+      h.histories[0].resolve({
+        quakes: [], tsunamis: [], extras: [countEntry2('from-history')], skipped: 0,
+        failedArchiveUrls: [], rateLimitedSources: [], rateLimitedTelegrams: 0, hasMore: false,
+      })
     })
 
     expect(h.deps.loadReplayEvents).not.toHaveBeenCalled()
@@ -753,7 +759,10 @@ describe('useReplayController: 補完の結果を記録する', () => {
     h.deps.loadReplayEvents.mockImplementationOnce(() => { throw new Error('積めなかった') })
 
     await act(async () => {
-      h.histories[0].resolve({ quakes: [], tsunamis: [], extras: [countEntry2('c1')], skipped: 0, failedArchiveUrls: [], hasMore: false })
+      h.histories[0].resolve({
+        quakes: [], tsunamis: [], extras: [countEntry2('c1')], skipped: 0,
+        failedArchiveUrls: [], rateLimitedSources: [], rateLimitedTelegrams: 0, hasMore: false,
+      })
     })
 
     expect(vi.mocked(log.error)).toHaveBeenCalled()
