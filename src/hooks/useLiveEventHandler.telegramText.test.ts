@@ -376,4 +376,84 @@ describe('気象庁が書いた文の読み上げ（配線）', () => {
     await drain()
     expect(telegramSpeeches()).toHaveLength(2)
   })
+  // 正: 本文の一部だけが新しい続報では、**新しい文だけ**を読む。
+  //
+  // 津波の避難行動の固定付加文は等級が動くたびに節が増減する。本文まるごとを鍵にしていた頃は
+  // 1 文増えただけで既に読んだ 800 字を読み直しており、能登半島地震（2024-01-01）の実電文では
+  // 同じ長文が 3 回読まれていた。
+  it('本文に文が足された続報では、新しい文だけ読む', async () => {
+    const { handleLiveEvent } = setup()
+    handleLiveEvent(makeQuake({ id: 'quake-1', varCommentText: '一つ目の文です。' }))
+    await drain()
+    handleLiveEvent(makeQuake({ id: 'quake-2', varCommentText: '一つ目の文です。二つ目の文です。' }))
+    await drain()
+    expect(telegramSpeeches()).toHaveLength(2)
+    expect(telegramSpeeches()[1]).toContain('二つ目の文です。')
+    expect(telegramSpeeches()[1]).not.toContain('一つ目の文です。')
+    // 前置きは残す（本文だけを裸で鳴らすと、何についての文か分からない）。
+    expect(telegramSpeeches()[1]).toContain('気象庁の文をお伝えします')
+  })
+
+  // 対照: 文が減っただけの続報（すべて既読）では読まない。**ここが「変更がないなら読まない」の本体。**
+  it('文が減っただけの続報では読まない', async () => {
+    const { handleLiveEvent } = setup()
+    handleLiveEvent(makeQuake({ id: 'quake-1', varCommentText: '一つ目の文です。二つ目の文です。' }))
+    await drain()
+    handleLiveEvent(makeQuake({ id: 'quake-2', varCommentText: '一つ目の文です。' }))
+    await drain()
+    expect(telegramSpeeches()).toHaveLength(1)
+  })
+
+  // 安全弁: 並び替わっただけの本文も読み直さない（鍵は文なので順序に依らない）。
+  it('文の並びが変わっただけの続報では読まない', async () => {
+    const { handleLiveEvent } = setup()
+    handleLiveEvent(makeQuake({ id: 'quake-1', varCommentText: '一つ目の文です。二つ目の文です。' }))
+    await drain()
+    handleLiveEvent(makeQuake({ id: 'quake-2', varCommentText: '二つ目の文です。一つ目の文です。' }))
+    await drain()
+    expect(telegramSpeeches()).toHaveLength(1)
+  })
+})
+
+/**
+ * 録画モードでは、窓の手前で伝えた本文も既読として復元する
+ * （→ `restorePreWindowTracking`・settings-pwa-spec.md §2「主な項目の補足」）。
+ *
+ * 通常の再生で復元しないのは「窓から聞き始めた人は一度も聞いていない」ため。録画は区間を繋いで
+ * 1 本の動画にするので、区間の境目で同じ長文を読み直すと通しで見たときに繰り返しになる。
+ */
+describe('録画モードの既読復元（気象庁が書いた文）', () => {
+  /** 窓の手前の電文 1 通を `silent` で流したことにする（リプレイの初期状態の再現と同じ形）。 */
+  function preWindow(event: LiveEvent) {
+    return [{ payload: { kind: 'event', event }, replayTime: new Date(0), silent: true }] as never
+  }
+
+  // 正: 録画モードなら、窓の手前で発表済みの本文は窓内で読み直さない。
+  it('録画モードでは、窓の手前の本文を読み直さない', async () => {
+    const { handleLiveEvent, restorePreWindowTracking } = setup({ recordingMode: true })
+    restorePreWindowTracking(preWindow(makeQuake({ id: 'pre' })))
+    handleLiveEvent(makeQuake({ id: 'quake-1' }))
+    await drain()
+    expect(telegramSpeeches()).toHaveLength(0)
+  })
+
+  // 対照: 録画モードが無効なら従来どおり読む（聞き手はその本文を一度も聞いていない）。
+  it('録画モードでなければ、窓の手前の本文でも読む', async () => {
+    const { handleLiveEvent, restorePreWindowTracking } = setup()
+    restorePreWindowTracking(preWindow(makeQuake({ id: 'pre' })))
+    handleLiveEvent(makeQuake({ id: 'quake-1' }))
+    await drain()
+    expect(telegramSpeeches()).toHaveLength(1)
+  })
+
+  // 安全弁: 復元しても、窓に入ってから新しく現れた文は読む（黙らせすぎていないこと）。
+  it('窓の手前に無かった文は読む', async () => {
+    const { handleLiveEvent, restorePreWindowTracking } = setup({ recordingMode: true })
+    restorePreWindowTracking(preWindow(makeQuake({ id: 'pre', varCommentText: '一つ目の文です。' })))
+    handleLiveEvent(makeQuake({ id: 'quake-1', varCommentText: '一つ目の文です。二つ目の文です。' }))
+    await drain()
+    expect(telegramSpeeches()).toHaveLength(1)
+    expect(telegramSpeeches()[0]).toContain('二つ目の文です。')
+    expect(telegramSpeeches()[0]).not.toContain('一つ目の文です。')
+  })
 })
