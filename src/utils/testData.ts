@@ -33,6 +33,11 @@ const hyuganadaQuake = hyuganadaQuakeJson as unknown as Omit<
 // テスト発報（EEW・津波）の自動解除までの時間。実発報の解除ロジックとは無関係の、テスト表示専用の固定値。
 export const TEST_AUTO_DISMISS_MS = 90000
 
+// 区域ごとに等級が動く続報のあと、各地の満潮時刻の報を流すまでの間（→ `createTestTsunamiHighTide`）。
+// **カードの印（「〇〇から引き上げ」）の寿命より短くすること。** 印が寿命で消えたのか、
+// 等級を語らない報で消されたのかを実機で見分けられなくなる。
+export const TEST_TSUNAMI_HIGH_TIDE_DELAY_MS = 15000
+
 // eventId は DMDATA 電文が共有する14桁タイムスタンプ（YYYYMMDDHHmmss）形式。
 // quake.id を `dmdata-quake-{eventId}-1` にすることで extractQuakeEventId が拾えるようにし、
 // createTestLpgm が同じ eventId の長周期地震動データを lpgmByEventId に正しく紐づけられるようにする。
@@ -1436,6 +1441,44 @@ export function createTestTsunamiGradeChange(base: JMATsunami): JMATsunami {
           : { maxHeight: undefined }),
       }
     }),
+  }
+}
+
+/**
+ * 区域ごとに等級が動いた続報のあとに届く「各地の満潮時刻・津波到達予想時刻に関する情報」
+ * （VTSE51）。
+ *
+ * **等級について何も言っていない報。** 区域一覧も前回の等級（`LastKind`）も前報のまま載せて
+ * 届く —— 2024 年能登半島地震では、16:22 の引き上げ（VTSE41）と 16:23 のこの報（VTSE51）に
+ * 同じ組が並んでいた。アプリから見れば「まだ声にしていない等級変化が 1 件も無い報」になるので、
+ * **カードの「〇〇から引き上げ」がこの報で消えないことを実機で確かめる唯一の入口**になる
+ * （→ docs/spec/tsunami-spec.md §10「受信時スクロールとカードの表示」）。
+ *
+ * 潮位観測点（満潮時刻・地点ごとの到達予想）を運ぶのはこの種別。等級の報（VTSE41）は区域一覧
+ * しか運ばないので、`base` が持つ地点をここで載せ直す（→ §5「続報で前報から引き継ぐもの」）。
+ *
+ * @param base 発表報。潮位観測点の出どころ
+ * @param prev 直前の報（区域ごとに等級が動いた続報）。区域の等級と前回の等級の出どころ
+ */
+export function createTestTsunamiHighTide(base: JMATsunami, prev: JMATsunami): JMATsunami {
+  const now = new Date(serverNow()).toISOString()
+  const stationsByKey = new Map(base.areas.map(a => [a.code ?? a.name, a.stations]))
+  return {
+    ...prev,
+    id: `${prev.id}-hightide`,
+    time: now,
+    issue: { ...prev.issue, time: now },
+    infoName: '各地の満潮時刻・津波到達予想時刻に関する情報',
+    carriesForecastStations: true,
+    areas: prev.areas.map(a => ({ ...a, stations: stationsByKey.get(a.code ?? a.name) })),
+    // 固定付加文は満潮の注記だけ。避難の呼びかけ（VTSE41 の主題）は前報のものが残る
+    warningComments: [{ key: 'VTSE51|各地の満潮時刻・津波到達予想時刻に関する情報', text: '津波と満潮が重なると、津波はより高くなりますので一層厳重な警戒が必要です。' }],
+    // 観測値・沖合の推定・本文・自由付加文はこの種別に入らない（前報から継がれることを画面で確かめる）
+    observations: undefined,
+    observationDateTime: undefined,
+    estimations: undefined,
+    bodyText: undefined,
+    freeText: undefined,
   }
 }
 
