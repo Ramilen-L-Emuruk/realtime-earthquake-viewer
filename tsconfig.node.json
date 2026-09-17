@@ -48,6 +48,7 @@
     "scripts/epicenterAccent.test.ts",
     "scripts/build-epicenter-accents.ts",
     "scripts/epicenterAccents.test.ts",
+    "scripts/verify-particle-phrases.ts",
     "src/types/fft-js.d.ts"
   ]
 }
