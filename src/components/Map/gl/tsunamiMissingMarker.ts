@@ -1,6 +1,6 @@
 import type * as maplibregl from 'maplibre-gl'
 import type { TsunamiMissingMarker } from '../../../hooks/useTsunamiLayerData'
-import { isOnVisibleSide } from './tsunamiObsBar'
+import { isOnVisibleSide, BADGE_SHADOW_COLOR, BADGE_SHADOW_BLUR } from './tsunamiObsBar'
 import { arrivalMetrics, ARRIVAL_RING_COLOR, ARRIVAL_OPACITY } from './tsunamiArrivalMarker'
 import { TSUNAMI_MISSING_COLOR } from '../../../utils/tsunamiStyle'
 import { log } from '../../../utils/logger'
@@ -79,8 +79,8 @@ export function drawTsunamiMissingMarkers(
     // 芯とフチを重ねずに描く理由は到達確認マーカーと同じ（重ねると帯だけ濃くなる）。
     ctx.save()
     ctx.globalAlpha = ARRIVAL_OPACITY
-    ctx.shadowColor = 'rgba(0,0,0,0.7)'
-    ctx.shadowBlur = 3
+    ctx.shadowColor = BADGE_SHADOW_COLOR
+    ctx.shadowBlur = BADGE_SHADOW_BLUR
     ctx.strokeStyle = ARRIVAL_RING_COLOR
     ctx.lineWidth = ring
     ctx.beginPath()
