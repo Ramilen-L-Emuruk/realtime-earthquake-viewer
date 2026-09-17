@@ -1282,3 +1282,64 @@ describe('テスト EEW の最大予測値の変化は実電文の形をして�
     expect(changeOf(1)).toBeUndefined()
   })
 })
+
+// 生成スクリプト（`scripts/build-test-*.ts`）が「報ごとに変わる項目」を落としていること。
+//
+// **型検査では捕まらない。** 読む側（`testData.ts`）は生成物を `as unknown as Omit<JMAQuake, ...>`
+// でキャストするので、その宣言と実際のキーが食い違っても何も言われない。2026-09-14 に
+// `telegramKey` / `reportSerial` がパーサーへ入ったとき落とす一覧が取り残され、
+// **生成物を作り直すまで症状が出なかった**（作り直した人が差分に気づくかに任せる形だった）。
+//
+// **害の出方は生成物ごとに違う。** 未入電テストと推計震度分布図テストの地震情報は読む側が
+// まるごと展開する（`...hyuganadaQuake` / `...src.quake`）ので、混ざれば収録した電文の値が
+// そのまま使われる —— `telegramKey` なら数年前の電文作成時刻が重複排除の鍵になる。
+// **地震テスト（能登本震）は観測点・市町村・付加文だけを個別に読むので実害は出ない**が、
+// 同じ規約を掛ける —— 生成の仕方が同じで、読み方が変わった日に穴が開く。
+describe('テストデータに報ごとに変わる項目が混ざっていない', () => {
+  // **落とす集合は生成物ごとに違う。** 推計震度分布図の地震情報だけ `kind` と `issue` を
+  // 残す（読む側が `Omit<JMAQuake, 'id' | 'eventId' | 'time'>` として受けるため）。
+  // 長周期に `telegramKey` / `reportSerial` を挙げないのは、パーサーがそれを読まないから。
+  const generated = [
+    {
+      label: '地震テスト（能登本震）',
+      keys: Object.keys(readJson('src/data/noto-honshin-2024-quake.json') as object),
+      forbidden: ['kind', 'id', 'eventId', 'time', 'issue', 'telegramKey', 'reportSerial'],
+      required: ['points', 'cities', 'earthquake'],
+    },
+    {
+      label: '未入電テスト（日向灘 2022）',
+      keys: Object.keys(readJson('src/data/hyuganada-2022-quake.json') as object),
+      forbidden: ['kind', 'id', 'eventId', 'time', 'issue', 'telegramKey', 'reportSerial'],
+      required: ['points', 'cities', 'earthquake'],
+    },
+    {
+      label: '長周期テスト（能登本震）',
+      keys: Object.keys(readJson('src/data/noto-honshin-2024-lpgm.json') as object),
+      forbidden: ['id', 'eventId', 'time', 'cancelled'],
+      required: ['points', 'regions', 'prefs', 'maxClass'],
+    },
+    {
+      label: '推計震度分布図テストの地震情報',
+      keys: Object.keys((readJson('src/data/test-estimated-intensity.json') as { quake: object }).quake),
+      forbidden: ['id', 'eventId', 'time', 'telegramKey', 'reportSerial'],
+      required: ['points', 'earthquake', 'kind', 'issue'],
+    },
+  ]
+
+  // 正: 報ごとに変わる項目が 1 つも入っていない
+  it.each(generated)('$label', ({ keys, forbidden, required }) => {
+    expect(forbidden.filter(k => keys.includes(k))).toEqual([])
+    // 対照: 落としすぎていない（電文が運ぶ中身は残っている）
+    expect(required.filter(k => !keys.includes(k))).toEqual([])
+  })
+
+  // 安全弁: 検査そのものが空振りしていないこと。生成物を足したのにここへ足し忘れる・
+  // キーの読み取りが壊れる、のどちらも上のテストが通り続けるので気づけない
+  it('検査そのものが素通りしない', () => {
+    expect(generated).toHaveLength(4)
+    for (const g of generated) {
+      expect(g.keys.length).toBeGreaterThan(3)
+      expect(g.forbidden.length).toBeGreaterThan(0)
+    }
+  })
+})
