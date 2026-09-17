@@ -2970,10 +2970,24 @@ export function parseVyse60FromXml(xml: string): JMAKohatsu | null {
   }
   const expireAt = new Date(kohatsuReportMs + 7 * 24 * 3600 * 1000).toISOString()
 
+  const kohatsuMeta = readEarthquakeInfoMeta(doc)
+  // **この種別に `NextAdvisory` は無い。** 解説資料 Ⅱ.42 が定める `Body` は `EarthquakeInfo`
+  // （`InfoKind` / `Text` / `Appendix`）と `Text` だけで、実電文 7 通でも 0 件
+  // （→ docs/spec/data-sources-spec.md §2「3 種別に共通する要素は 1 箇所で読む」）。
+  //
+  // **それでも記録する。** 共有の読み取りを通るぶん値が入る余地は残っており、その形は
+  // **帯には「次の情報」として出るのに読み上げだけ黙る**ことになる —— 読み上げ側は
+  // この要素が無い前提でブロックを持たせていない（→ `utils/ttsText.ts` の
+  // `TELEGRAM_TEXT_BLOCK_KEYS`）。気象庁が出すようになったことに気づける場所はここだけで、
+  // 黙って通すと非対称の痕跡がどこにも残らない。
+  if (kohatsuMeta.nextAdvisory) {
+    log.warn(`${DMDATA_LOG_PREFIX} VYSE60 に NextAdvisory が入っています（解説資料 Ⅱ.42 は定めていません。読み上げには載りません）: "${kohatsuMeta.nextAdvisory}"`)
+  }
+
   return {
     ...(kohatsuOperationStatus && { operationStatus: kohatsuOperationStatus }),
     id, time: reportDateTime, eventId, headline, body: bodyText,
-    ...readEarthquakeInfoMeta(doc),
+    ...kohatsuMeta,
     cancelled: false, reportDateTime, expireAt,
   }
 }

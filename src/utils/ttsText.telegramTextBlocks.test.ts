@@ -187,7 +187,15 @@ describe('気象庁が書いた文をブロックごとに選ぶ', () => {
   // 正: 後発地震注意情報（南海トラフ系と同じ構造だが、設定は別）
   it('後発地震注意情報の本文だけを切れる', () => {
     const speech = telegramTextToSpeak(kohatsu(), { ...BASE, telegramTextBlocks: blocksWithout('kohatsuBody') })
-    expect(speech?.body).toBe('後発地震の要約です。後発地震の次回発表予定です。')
+    expect(speech?.body).toBe('後発地震の要約です。')
+  })
+
+  // 正: **この種別の電文に `NextAdvisory` は無い**（解説資料 Ⅱ.42。→ `TELEGRAM_TEXT_BLOCK_KEYS`）
+  // ので、値が入っていても声にしない。**fixture はあえてその値を持たせている** —— 共有の
+  // 読み取りを通るぶん型には残るため、読む側が拾い直す変更が入ったときにここで止める。
+  // 対照は上の「指定が無ければ全ブロックを読む」（南海トラフ側は同じ構造で次回発表予定を読む）
+  it('後発地震注意情報の次回発表予定は、値があっても読まない', () => {
+    expect(telegramTextToSpeak(kohatsu(), BASE)?.body).toBe('後発地震の要約です。後発地震の本文です。')
   })
 
   // 正: 地震回数は 1 ブロックしかないので、切れば `null`
