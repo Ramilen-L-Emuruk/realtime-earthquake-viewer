@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { JMA_TEC_MATERIAL, mergeFurigana } from './build-station-readings'
+import { JMA_TEC_MATERIAL, entryFromFurigana, mergeFurigana } from './build-station-readings'
+import { buildCityIndex, splitStationName } from './stationPhrase'
 import { STATION_SOURCE_URL } from './lib/stationSource.mjs'
 import { isHeaderOnlyStationName, isOffshoreStationName } from './tsunamiStationReading'
 
@@ -182,5 +183,28 @@ describe('tts-station-readings.json', () => {
     expect(offshore.length).toBeGreaterThan(0)
     const bad = offshore.filter(([, kana]) => !kana.includes('キロメ') || kana.includes('クム'))
     expect(bad).toEqual([])
+  })
+})
+
+describe('entryFromFurigana', () => {
+  // 震度観測点と沿岸の潮位観測点が通る唯一の合流点。`kind` の判定を取り違えると全件に効く。
+  const cities = buildCityIndex([['石狩市', 'いしかりし']])
+  const split = splitStationName('石狩市花川', 'いしかりしはなかわ', cities)
+  const skipped = splitStationName('宮古島平良', 'みやこじまひらら', cities)
+
+  it('割れたら句割りを返し、市町村の核を当てる（正）', () => {
+    expect(entryFromFurigana('いしかりしはなかわ', split, new Map([['石狩市', 4]])))
+      .toBe("イシカリ'シ/ハナカワ'")
+  })
+
+  it('核を採れていない市町村なら末尾核へ倒す（対照）', () => {
+    expect(entryFromFurigana('いしかりしはなかわ', split, new Map()))
+      .toBe("イシカリシ'/ハナカワ'")
+  })
+
+  it('割らなかったら 1 句のカナを返す（安全弁）', () => {
+    // 句割りを持たない点に核の表を渡しても、1 句の形から動かないこと。
+    expect(entryFromFurigana('みやこじまひらら', skipped, new Map([['石狩市', 4]])))
+      .toBe("ミヤコジマヒララ'")
   })
 })
