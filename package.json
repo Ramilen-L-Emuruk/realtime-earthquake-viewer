@@ -16,6 +16,7 @@
     "build-test-lpgm": "tsx scripts/build-test-lpgm.ts",
     "build-test-quake": "tsx scripts/build-test-quake.ts",
     "build-test-quake-unreceived": "tsx scripts/build-test-quake.ts --event=20220122010844 --out=src/data/hyuganada-2022-quake.json --require-city-unreceived",
+    "build-test-quake-max-unreceived": "tsx scripts/build-test-quake.ts --event=20241126224709 --out=src/data/ishikawa-seihooki-2024-quake.json --require-max-scale-unreceived",
     "bench-kyoshin": "tsx scripts/bench-kyoshin.ts",
     "build-hypocenter-catalog": "tsx scripts/build-hypocenter-catalog.ts",
     "capture-kyoshin-waveform": "tsx scripts/capture-kyoshin-waveform.ts",

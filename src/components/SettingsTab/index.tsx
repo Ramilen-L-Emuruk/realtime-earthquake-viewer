@@ -55,6 +55,7 @@ export interface TestFunctions {
   quakeAmendment: () => void
   quakeReportSequence: () => void
   unreceivedQuake?: () => void
+  maxScaleOrAboveQuake?: () => void
   tsunamiGradeChange?: () => void
   estimatedIntensity?: () => void
   notification: () => void
@@ -1602,6 +1603,11 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onRep
         {isDmdss && onTest.unreceivedQuake && (
           <Row label="地震情報（震度を入手していない地点が多い報）" description="日向灘 M6.4 最大震度5強（実データ）– 震度を入手していない地点が 60。震度一覧では、その地点を含む市町村・区域・県の行に「未入電あり」の印が付く。市町村の値そのものが届いていない 18 市町村は「5弱以上」と出る">
             <TestButton color="orange" onClick={onTest.unreceivedQuake}>未入電テスト</TestButton>
+          </Row>
+        )}
+        {isDmdss && onTest.maxScaleOrAboveQuake && (
+          <Row label="地震情報（最大震度が「5弱以上」になる報）" description="石川県西方沖 M6.4 最大震度5弱（実データ）– 震度を入手していない地点が 1。観測できた最大震度と同じ階級のため、カードの最大震度が「5弱以上」と出る（この形になるのは最大震度が5弱の地震だけで、地震テストの震度7・未入電テストの5強では出ない）">
+            <TestButton color="orange" onClick={onTest.maxScaleOrAboveQuake}>5弱以上テスト</TestButton>
           </Row>
         )}
         <Row label="遠地地震" description="メキシコ・チアパス州沿岸 M7.4 深さ不明（実データ）– earthquakeInfo 音 / 国内震度なし・日本への津波影響なし">
