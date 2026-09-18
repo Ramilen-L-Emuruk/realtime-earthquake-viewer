@@ -5,6 +5,7 @@ import { log } from './logger'
 import notoHonshinPoints from '../data/noto-honshin-2024-points.json'
 import notoHonshinQuake from '../data/noto-honshin-2024-quake.json'
 import hyuganadaQuakeJson from '../data/hyuganada-2022-quake.json'
+import ishikawaSeihookiQuakeJson from '../data/ishikawa-seihooki-2024-quake.json'
 import notoHonshinLpgmJson from '../data/noto-honshin-2024-lpgm.json'
 import testEstimatedIntensityJson from '../data/test-estimated-intensity.json'
 import { CELL_LAT_DEG, CELL_LON_DEG } from './bufrEstimatedIntensity'
@@ -27,6 +28,14 @@ const notoHonshinLpgm = notoHonshinLpgmJson as unknown as Omit<
  * （識別子・発表時刻）だけをファクトリ側で作る。
  */
 const hyuganadaQuake = hyuganadaQuakeJson as unknown as Omit<
+  JMAQuake, 'kind' | 'id' | 'eventId' | 'time' | 'issue'
+>
+
+/**
+ * 最大震度に「以上」が付く地震情報のデータ（2024-11-26 22:47 石川県西方沖 M6.4 最大震度5弱）。
+ * 上と同じく実電文をパーサーへ通したもの。
+ */
+const ishikawaSeihookiQuake = ishikawaSeihookiQuakeJson as unknown as Omit<
   JMAQuake, 'kind' | 'id' | 'eventId' | 'time' | 'issue'
 >
 
@@ -541,6 +550,39 @@ export function createTestUnreceivedQuake(): JMAQuake {
     // 震源要素は実電文のまま。地震の時刻だけ「いま」へ寄せる（カードの並びと自動タブ切替が
     // 実運用と同じところを踏むようにするため）。
     earthquake: { ...hyuganadaQuake.earthquake, time: now },
+  }
+}
+
+/**
+ * 最大震度に「以上」が付く地震情報のテストデータ
+ * （2024-11-26 22:47 石川県西方沖 M6.4 最大震度5弱・各地の震度情報）。
+ *
+ * **他の地震テストでは出ない形。** 未入電の観測点は下限の 45（5弱）へ寄せてあるので、
+ * 電文全体の最大震度が 45 の地震でだけ階級が一致し、カードの最大震度が「5弱以上」になる
+ * （`isMaxScaleUnreceived`。→ docs/spec/quake-spec.md §4「震度5弱以上未入電」）。
+ * 地震テスト（能登本震）は震度7、未入電テスト（日向灘）は5強なので、どちらもこの形を持たない。
+ *
+ * **この 2 文字の差が表示を壊しうる** —— 最大震度の欄は値を大きく出すため、
+ * 「以上」が加わると桁数が倍になる。実機で確かめる入口はこのボタンだけ。
+ *
+ * 未入電は羽咋市旭町の 1 地点（気象庁以外が運用する観測点）で、その市町村の行には
+ * 「未入電あり」の印が付く（市町村自身は震度4を観測している）。
+ *
+ * **DMDSS 版のみ。** 未入電は DMDATA 経路でしか配信されない。
+ */
+export function createTestMaxScaleOrAboveQuake(): JMAQuake {
+  const nowDate = serverDate()
+  const now = nowDate.toISOString()
+  const eventId = toEventIdTimestamp(nowDate)
+  return {
+    ...ishikawaSeihookiQuake,
+    kind: 'quake',
+    id: `dmdata-quake-${eventId}-1`,
+    eventId,
+    time: now,
+    issue: { source: 'テスト', time: now, type: '震源・震度情報', correct: 'なし' },
+    // 震源要素は実電文のまま。地震の時刻だけ「いま」へ寄せる（`createTestUnreceivedQuake` と同じ）。
+    earthquake: { ...ishikawaSeihookiQuake.earthquake, time: now },
   }
 }
 

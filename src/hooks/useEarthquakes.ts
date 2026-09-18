@@ -2194,6 +2194,21 @@ export function useEarthquakes(
   }, [handleEvent])
 
   /**
+   * 最大震度に「以上」が付く地震情報のテスト（石川県西方沖 2024-11-26）。
+   *
+   * **他の地震テストでは出ない形。** 未入電の観測点は下限の 45（5弱）へ寄せてあるので、
+   * 電文全体の最大震度が 45 の地震でだけ階級が一致し、カードの最大震度が「5弱以上」になる
+   * （→ docs/spec/quake-spec.md §4「震度5弱以上未入電」）。地震テスト（能登本震・震度7）と
+   * 未入電テスト（日向灘・震度5強）はどちらも階級が一致しないため、この形を持たない。
+   *
+   * **DMDSS 版のみ。** 未入電は DMDATA 経路でしか配信されない。
+   */
+  const simulateMaxScaleOrAboveQuake = useCallback(async () => {
+    const { createTestMaxScaleOrAboveQuake } = await loadTestData()
+    handleEvent(createTestMaxScaleOrAboveQuake())
+  }, [handleEvent])
+
+  /**
    * 推計震度分布図のテスト。**地震情報を先に出し、少し置いてから分布を流す。**
    *
    * 実運用では地震から数分後に届くもので、そのころ地震カードは既に画面にある。
@@ -2504,7 +2519,7 @@ export function useEarthquakes(
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
     simulateQuakeNotice, simulateEarthquakeCount, simulateEarthquakeCountRetraction, simulateEstimatedIntensity,
-    simulateTrainingQuake, simulateUnreceivedQuake, simulateTsunamiGradeChange, simulateQuakeAmendment,
+    simulateTrainingQuake, simulateUnreceivedQuake, simulateMaxScaleOrAboveQuake, simulateTsunamiGradeChange, simulateQuakeAmendment,
     simulateQuakeReportSequence,
     resetState,
     loadReplayEvents,
