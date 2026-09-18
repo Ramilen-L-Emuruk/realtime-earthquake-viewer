@@ -14,6 +14,10 @@ describe('辞書キーの直後の助詞', () => {
     expect(leadingParticle('では、震度5弱以上と推定されますが、未入電です。'))
       .toEqual({ surface: 'では', kana: 'デワ' })
     expect(leadingParticle('は欠測となっています。')).toEqual({ surface: 'は', kana: 'ワ' })
+    // 主格の `が` は津波の等級が動く報に現れる。**辞書キーが地名でない（`_terms` の）形なので、
+    // 地名の後ろだけを見ていると取りこぼす** —— 実際に一度落としていた。
+    expect(leadingParticle('が津波注意報に切り替えられました。')).toEqual({ surface: 'が', kana: 'ガ' })
+    expect(leadingParticle('が発表されました。')).toEqual({ surface: 'が', kana: 'ガ' })
   })
 
   it('長い助詞を先に当てる（「では」を「で」で切らない）', () => {
@@ -37,15 +41,17 @@ describe('辞書キーの直後の助詞', () => {
     expect(leadingParticle('')).toBeNull()
   })
 
-  it('【安全弁】読み上げ文に現れない助詞は取り込まない', () => {
+  it('【安全弁】切り出すのは列挙したものだけ', () => {
     // 判定は字面だけなので、助詞に見えて語の一部である並びを切りうる。列挙を憶測で増やさないため、
-    // 「読み上げ文に現れないものは入っていない」ことを固定する
+    // 「列挙に無いものは切り出さない」ことを固定する
     // （`も` を入れると気象庁が書いた文の「もしくは」を `モ` ＋「しくは」に割る）
     expect(leadingParticle('もしくは津波注意報が発表されます。')).toBeNull()
-    expect(leadingParticle('から南へ')).toBeNull()
-    expect(leadingParticle('が発表されました。')).toBeNull()
     expect(leadingParticle('として扱われます。')).toBeNull()
     expect(leadingParticle('へ避難してください。')).toBeNull()
+    // **`から` は辞書キーの直後に実在する**（日付・時刻のキー。「9日0時から24時まで」）。
+    // それでも入れていないのは、切り出さなくても独立した句にならないため —— 後続と 1 句へ
+    // まとまるので浮かない（実測）。**現れないから入れない、ではない。**
+    expect(leadingParticle('から南へ')).toBeNull()
   })
 
   it('【安全弁】外部依存を持たない（検証スクリプトが Node から読める）', () => {
