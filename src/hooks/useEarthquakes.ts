@@ -249,8 +249,8 @@ function enrichEEWPref(eew: EEWAlert, index: Map<string, string> | null): EEWAle
 }
 
 type TestEEWKind = 'special' | 'warning' | 'forecast' | 'assumed' | 'deep'
-// 初報の基準時刻（baseTime）を続報・最終報まで持ち回る。**現在時刻から作り直すと予報円が
-// 続報ごとに中心へ戻る**ため（→ `runSimulateEEW` のコメント）。
+// baseTime（**地震発現時刻**の基準）を初報から続報・最終報まで持ち回る
+// （→ `runSimulateEEW` のコメント）。
 type TestEEWEntry = { eventId: string; serial: number; baseTime: Date; finalizeTimer: number }
 type TestEEWRetractionEntry = { eventId: string; serial: number; baseTime: Date; cancelTimer: number }
 
@@ -303,13 +303,13 @@ function runSimulateTsunami(
 // 報の推移は実運用（dmdataParser.parseEEW）に合わせる:
 //   - 報番号（issue.serial）・id・発表時刻（time / issue.time）は報ごとに進める。
 //     最終報も独立した 1 報なので、直前の電文を流用せず serial を 1 つ進めて作り直す。
-//   - 震源時刻（originTime）と到達予想時刻は baseTime を持ち回って固定する。**現在時刻から
-//     作り直すと予報円が続報ごとに中心へ戻り、実運用では起きない挙動になる。**
-//     **ただし実電文の震源時刻は完全に不変ではない** —— 震源推定が更新されるたび動く。1 日分・
-//     VXSE45 の実測で 15 地震のうち 11 件が動き、**同じ地震の中での振れ幅は 1〜6 秒**。
-//     **前の報より戻ることもある**（報番号順の差分は進んだ 10 件・戻った 12 件で、最大 −6 秒）
-//     （→ `docs/spec/eew-spec.md` §3
-//     「地震の時刻は発生時刻を出す」）。ここで固定しているのはテストデータ側の簡略化。
+//   - baseTime（地震発現時刻の基準）を持ち回る。**現在時刻から作り直すと予報円が続報ごとに
+//     中心へ戻り、実運用では起きない挙動になる。** 地震発現時刻は実電文でも続報で動かないので
+//     （1 日分・VXSE45 の実測で 15 地震すべてが不動）、この基準は固定でよい。
+//   - **震源時刻はその基準からずらす。** 実電文は震源推定が更新されるたび動く。ずらす値と
+//     根拠は `utils/testData.ts` の `EEW_ORIGIN_DRIFT_SEC`（→ `docs/spec/eew-spec.md` §3
+//     「地震の時刻は発生時刻を出す」）。**区域の到達予想時刻は震源時刻に追従する** ——
+//     理由は `EEW_ORIGIN_DRIFT_SEC` の直上に書いてある。
 function runSimulateEEW(
   kind: TestEEWKind,
   createFn: (eventId: string, serial: number, baseTime: Date) => EEWAlert,
@@ -324,9 +324,19 @@ function runSimulateEEW(
   const baseTime = isContinuation ? prev.baseTime : serverDate()
   if (prev) window.clearTimeout(prev.finalizeTimer)
   handleEvent(createFn(eventId, serial, baseTime))
+  // **後始末は `finally` で保証する。** `createFn` や `handleEvent` が投げると `timers` に古い
+  // 報番号が残り、次の押下が「続報」と誤認されて同じ報番号が二度出る。
+  //
+  // **`catch` は置かない。** `setTimeout` の中の例外はここで握らなくても
+  // `utils/globalErrorLog.ts` がアプリ時計つきで拾う（あのモジュールは `setTimeout` を名指しで
+  // 守備範囲に入れている）。握ると記録がそちらへ届かなくなるうえ、**止めたいのは `createFn` の
+  // 失敗なのに `handleEvent`（状態更新・音・読み上げ・タブ移動の入口）の例外まで飲む。**
   const finalizeTimer = window.setTimeout(() => {
-    handleEvent({ ...createFn(eventId, serial + 1, baseTime), isFinal: true })
-    timers.delete(kind)
+    try {
+      handleEvent({ ...createFn(eventId, serial + 1, baseTime), isFinal: true })
+    } finally {
+      timers.delete(kind)
+    }
   }, silenceMs)
   timers.set(kind, { eventId, serial, baseTime, finalizeTimer })
 }
@@ -350,37 +360,41 @@ function runSimulateEEWRetraction(
   const baseTime = prev ? prev.baseTime : serverDate()
   if (prev) window.clearTimeout(prev.cancelTimer)
   handleEvent(createFn(eventId, serial, baseTime))
+  // 後始末は `finally` で保証する（理由は `runSimulateEEW` のコメント）。
   const cancelTimer = window.setTimeout(() => {
-    const report = createFn(eventId, serial + 1, baseTime)
-    handleEvent({
-      ...report,
-      cancelled: true,
-      // 取消しの概要（電文の `Body/Text`）。**実電文の値をそのまま置く** —— アプリが受信する
-      // VXSE45（地震動予報）の取消の本文は、観測できた 23 通すべてがこの 1 文で理由を含まない
-      // （走査の範囲と通数は → quake-spec.md §8「取消しの理由は電文にしかない」）。この形で
-      // ないと、読み上げが宣言だけの本文を落とす経路（→ audio-tts-spec.md §4「取消の宣言だけの
-      // 本文は読まない」）を EEW で一度も実機で通れない。**理由が入っている本文を読む側は
-      // `ttsText.test.ts` が両方向とも固定している** —— 文字列の判定だけで画面・音・タブ移動を
-      // 伴わないので、実在しない形をテストボタンへ置いてまで実機で押す必要はない。
-      // **このボタンは警報級を取り消すが、本文の名前は予報級のまま** —— VXSE45 の種別名は区分に
-      // 関わらずこれ 1 つで（→ eew-spec.md §3）、警報かどうかは電文内の `isWarning` が示す。
-      // 警報級を取り消した実電文の標本は無いので、名前が変わる形は置かない。
-      // **DMDSS 版限定**: この項目を作れるのは XML を読む dmdataParser だけで、
-      // P2PQuake 経路（standard 版）には対応するフィールドが無い。津波の解除テストと同じ扱い
-      ...(isDmdss ? { cancelText: '先ほどの、緊急地震速報（地震動予報）を取り消します。' } : {}),
-      areas: [],
-      // **「程度以上」の印も値と一緒に落とす。** 印だけ残ると、値が無いのに上限が定まって
-      // いないことになり、表示・読み上げが語を補う条件（→ eew-spec.md §4）と食い違う。
-      forecastMaxScale: undefined,
-      forecastMaxScaleOrAbove: undefined,
-      forecastMaxLpgmClass: undefined,
-      forecastMaxLpgmClassOver: undefined,
-      earthquake: {
-        ...report.earthquake,
-        hypocenter: { ...report.earthquake.hypocenter, latitude: 0, longitude: 0 },
-      },
-    })
-    ref.current = null
+    try {
+      const report = createFn(eventId, serial + 1, baseTime)
+      handleEvent({
+        ...report,
+        cancelled: true,
+        // 取消しの概要（電文の `Body/Text`）。**実電文の値をそのまま置く** —— アプリが受信する
+        // VXSE45（地震動予報）の取消の本文は、観測できた 23 通すべてがこの 1 文で理由を含まない
+        // （走査の範囲と通数は → quake-spec.md §8「取消しの理由は電文にしかない」）。この形で
+        // ないと、読み上げが宣言だけの本文を落とす経路（→ audio-tts-spec.md §4「取消の宣言だけの
+        // 本文は読まない」）を EEW で一度も実機で通れない。**理由が入っている本文を読む側は
+        // `ttsText.test.ts` が両方向とも固定している** —— 文字列の判定だけで画面・音・タブ移動を
+        // 伴わないので、実在しない形をテストボタンへ置いてまで実機で押す必要はない。
+        // **このボタンは警報級を取り消すが、本文の名前は予報級のまま** —— VXSE45 の種別名は区分に
+        // 関わらずこれ 1 つで（→ eew-spec.md §3）、警報かどうかは電文内の `isWarning` が示す。
+        // 警報級を取り消した実電文の標本は無いので、名前が変わる形は置かない。
+        // **DMDSS 版限定**: この項目を作れるのは XML を読む dmdataParser だけで、
+        // P2PQuake 経路（standard 版）には対応するフィールドが無い。津波の解除テストと同じ扱い
+        ...(isDmdss ? { cancelText: '先ほどの、緊急地震速報（地震動予報）を取り消します。' } : {}),
+        areas: [],
+        // **「程度以上」の印も値と一緒に落とす。** 印だけ残ると、値が無いのに上限が定まって
+        // いないことになり、表示・読み上げが語を補う条件（→ eew-spec.md §4）と食い違う。
+        forecastMaxScale: undefined,
+        forecastMaxScaleOrAbove: undefined,
+        forecastMaxLpgmClass: undefined,
+        forecastMaxLpgmClassOver: undefined,
+        earthquake: {
+          ...report.earthquake,
+          hypocenter: { ...report.earthquake.hypocenter, latitude: 0, longitude: 0 },
+        },
+      })
+    } finally {
+      ref.current = null
+    }
   }, cancelMs)
   ref.current = { eventId, serial, baseTime, cancelTimer }
 }
