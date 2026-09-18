@@ -259,6 +259,14 @@ const SEEN_QUAKE_REPORT_KEYS_MAX = 200
 // （その回だけ従来どおり割り込みで裁かれる）。
 const LATEST_SPEECH_TOPIC_MAX = 200
 
+// 津波カードの「今回の受信で何が変わったか」を示す印（観測点の新規/更新バッジと、区域の
+// 「〇〇から切り替え」）が消えるまでの時間。
+//
+// **2 つの印は起点が違うが、長さは揃える。** 観測点の印は津波情報を受けるたびに置き換わるので
+// 起点は「最後の受信」、区域の印は等級が動いた報でだけ置き換わるので起点は「その報」。
+// 利用者から見ればどちらも「さっき変わったところ」の印で、長さを違える理由が説明できない。
+const TSUNAMI_BADGE_TTL_MS = 60000
+
 /** 指定時間だけ待つ（優先度の待ち合わせで、待つ相手の Promise がまだ無いときに使う）。 */
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => { setTimeout(resolve, ms) })
@@ -1092,8 +1100,19 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   // **`lastGrade` だけで出してはいけない。** `LastKind` は変化した後の続報にも載り続けるため、
   // 区域の値だけを見ると何通も後まで「たった今切り替わった」ように見え続ける（読み上げは既読で
   // 1 回に絞っているのに、画面だけ持続する非対称になる）。観測点のバッジ（`obsUpdateStatus`）と
-  // 同じく「今回分だけ」に置き換え、同じタイマーで消す。
+  // 同じく「今回分だけ」に置き換え、`TSUNAMI_BADGE_TTL_MS` で消す。
+  //
+  // **置き換えるのは、まだ声にしていない等級変化を持つ報のときだけ。** 津波の続報には等級に
+  // ついて何も言っていないものがある —— 各地の満潮時刻・津波到達予想時刻に関する情報と津波観測に
+  // 関する情報は、区域一覧も `LastKind` も前報のまま載せて届く（2024 年能登半島地震では、
+  // 16:22 の引き上げの 30 秒後に満潮時刻の報が来ている）。それらは `selectUnspokenAreaGradeChanges`
+  // が既読として全部落とすので、無条件に置き換えていたころは**等級が動いたことを伝える印が
+  // 寿命を待たずに消えていた**。
+  //
+  // **タイマーも観測点と分ける。** 共有したままだと、等級を語らない続報が届くたびに張り直されて
+  // 寿命が伸び続ける（津波が続いている間は数分おきに届くので、事実上消えなくなる）。
   const [areaGradeChangedKeys, setAreaGradeChangedKeys] = useState<Set<string>>(() => new Set())
+  const areaGradeClearTimerRef = useRef<number>(0)
   // 津波イベント受信時にスクロールでフォーカスする予報区（今回の受信で変更があった区域全部＋その中の最高波高区域）。
   // 対象区域が特定できない受信（区域のみの発表・実質変化なしの続報・解除）は top: null（一番上へ戻す）で表す。
   // 形の意味は受け取る側（`FocusedDistrict`）に書いてある。`resetToTop` に既定値を置かないのは、
@@ -2173,6 +2192,17 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // 続報のたびに画面を持って行くと、EEW を見ている最中に何度も津波タブへ引っ張られる
     // （従来 CRIT-4 として抑制していた挙動を、追従の側でも踏襲する）。
     let tsunamiIsNewOrUpgraded = false
+    // 別の津波（別イベント）への切り替わりか。**区域の印を落とす契機として使う。**
+    // 格上げ（同じ津波の等級が上がった報）は含めない —— あちらは同じカードの続きなので、
+    // 印はその報自身が持つ等級変化で置き換わればよい。
+    //
+    // **判定の相手は `tsunamisRef` ではなく `lastTsunamiRef`。** あちらは App の render 本体で
+    // 代入されるため、同一 tick に複数の電文が捌けると（アーカイブ再生の追いつき・長時間
+    // バックグラウンド後の復帰）tick 開始前の値に取り残される。そちらと比べると、**新しい津波の
+    // 2 通目以降まで「新規発報」に見えて、1 通目が立てた印を消す** —— 直そうとしている症状
+    // （等級を語らない報で印が消える）を別の経路から再現することになる。
+    // 罠の詳細は `lastTsunamiRef` の宣言箇所。
+    let tsunamiIsNewFire = false
     // 津波の続報が「観測情報」か（等級が動いていない続報。区域が空の電文を含み、引き下げは含めない）。
     // **音の種別判定で立てて、読み上げの優先度と主題で消費する。** 同じ判定を書き分けると
     // 「更新音が鳴ったのに、読み上げは発報の重みで地震情報を切る」形の食い違いになる
@@ -2314,9 +2344,17 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       const isNew = isTsunamiNewFire(event, current)
       const upgraded = isTsunamiGradeUpgrade(event, current)
       tsunamiIsNewOrUpgraded = isNew || upgraded
+      // **読み取りを先に済ませてから更新する。** この 2 つを直接並べると、行を入れ替えただけで
+      // `isTsunamiNewFire(event, event)` になり（`eventId` が一致するので常に偽）、以後どんな別の
+      // 津波が来ても印を落とせなくなる —— 例外もログも出ない。退避しておけば入れ替えは型で落ちる。
+      const previousTsunami = lastTsunamiRef.current ?? undefined
       // 解除の照合に使うので、受信した順で覚える（理由は宣言箇所）。タブ切替の判定が
       // `tsunamisRef` を見ているのは従来どおり（あちらは「画面がいま何を出しているか」の話）。
       lastTsunamiRef.current = event
+      // **タブ切替の `isNew` を流用しないこと**（宣言箇所に理由）。あちらは `tsunamisRef` 由来で、
+      // 同一 tick に取り残された値を見る。タブが余分に動くだけなら実害は小さいが、印を消す判定に
+      // 使うと消えてはいけない印が消える。
+      tsunamiIsNewFire = isTsunamiNewFire(event, previousTsunami)
       if (!settings.voicevoxEnabled) {
         if (tsunamiIsNewOrUpgraded) {
           log.info(`[tab] tsunami を要求 (${isNew ? '新規発報' : 'グレード格上げ'}・読み上げ無効)`)
@@ -2410,6 +2448,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         spokenObsWarningLevelRef.current.clear()
         spokenAreaGradeRef.current.clear()
         window.clearTimeout(obsStatusClearTimerRef.current)
+        window.clearTimeout(areaGradeClearTimerRef.current)
         setObsUpdateStatus(new Map())
         setAreaGradeChangedKeys(new Set())
         // 解除はカードの中身が消えるので前の位置に意味が無い。先頭へ戻す。
@@ -3796,15 +3835,40 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       }
 
       // 津波情報を受信するたびに obsUpdateStatus を今回分だけの Map に置き換える（前回分は破棄）。
-      // 60秒以内に次の情報が来なければ obsStatusClearTimerRef が空 Map にする。
+      // TSUNAMI_BADGE_TTL_MS 以内に次の情報が来なければ obsStatusClearTimerRef が空 Map にする。
       setObsUpdateStatus(new Map(newStatusEntries))
-      // 等級が動いた区域も「今回分だけ」に置き換える（持続させない理由は宣言箇所）
-      setAreaGradeChangedKeys(new Set(tsunamiAreaChanges.flatMap(c => c.areas.map(tsunamiAreaKey))))
       window.clearTimeout(obsStatusClearTimerRef.current)
-      obsStatusClearTimerRef.current = window.setTimeout(() => {
-        setObsUpdateStatus(new Map())
+      obsStatusClearTimerRef.current = window.setTimeout(() => setObsUpdateStatus(new Map()), TSUNAMI_BADGE_TTL_MS)
+      // **別の津波へ切り替わったら印を落とす。** 印の鍵は区域コード（`tsunamiAreaKey`）だけで、
+      // どの津波のものかを持たない。気象庁の津波予報区コードは固定なので、前の津波で動いた区域と
+      // 同じコードが次の津波にも現れる。**据え置くようにしたぶん、ここで落とさないと前の津波の印が
+      // 新しいカードへ持ち越される**（据え置く前は毎報置き換えていたので、次の報が来た時点で
+      // 必ず消えていた）。解除を受けずに別の津波へ移る経路がこれに当たる。
+      //
+      // カード側（`TsunamiTab`）は「その区域がいま `lastGrade !== grade` か」も併せて見るので、
+      // これが無くても持ち越した印がそのまま画面に出るわけではない。**それでも落とす** ——
+      // 表示の正しさを別ファイルの独立した判定に頼る形にすると、そちらの条件を緩めたときに
+      // 前の津波の印が黙って出る。
+      if (tsunamiIsNewFire) {
+        window.clearTimeout(areaGradeClearTimerRef.current)
         setAreaGradeChangedKeys(new Set())
-      }, 60000)
+      }
+      // 等級が動いた区域も「今回分だけ」に置き換える。**ただし、まだ声にしていない等級変化を
+      // 持つ報のときだけ。** 等級を語らない続報（満潮時刻・観測情報）で消さない理由と、タイマーを
+      // 観測点と分ける理由は宣言箇所。
+      //
+      // **既読を除く前の値（`tsunamiAreaGradeChanges(event)` の生の結果）で判定しないこと。**
+      // 満潮時刻・観測情報の続報も `LastKind` を前報のまま載せるので、そちらを見ると毎報が
+      // 「等級を語る報」になり、置き換え自体は同じ中身でもタイマーが張り直されて寿命が伸び続ける。
+      if (tsunamiAreaChanges.length > 0) {
+        setAreaGradeChangedKeys(new Set(tsunamiAreaChanges.flatMap(c => c.areas.map(tsunamiAreaKey))))
+        window.clearTimeout(areaGradeClearTimerRef.current)
+        areaGradeClearTimerRef.current = window.setTimeout(() => setAreaGradeChangedKeys(new Set()), TSUNAMI_BADGE_TTL_MS)
+      } else {
+        // **据え置いたことを残す。** 実機で「この報でなぜ印が変わらなかったのか」を後から追える
+        // 唯一の手がかりになる（画面には「変わらなかった」という痕跡が出ない）。
+        log.debug('[tsunami] 声にしていない等級変化が無いため、区域の印を据え置く')
+      }
 
       // 画面用の記憶だけをここで進める。読み上げ用（`spokenObsHeightRef`）は発話を始める瞬間まで
       // 待つ（受信時に進めると、鳴らなかった観測値まで既読になり二度と読まれない）。
@@ -3823,6 +3887,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       latestScheduledSeqByTopicRef.current.clear()
       latestScheduledSeqByPriorityRef.current.clear()
       window.clearTimeout(obsStatusClearTimerRef.current)
+      window.clearTimeout(areaGradeClearTimerRef.current)
       // 間を置いている最中の読み上げも捨てる（`resetTracking` と対称）
       cancelPendingSpeech()
     }
@@ -3886,9 +3951,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // 前回と一致して「読んだこと」になり、**新しいセッションで一度も声にならない**
     // （鍵はイベント単位なので、同じ地震を再生すれば必ず一致する）。
     spokenTelegramTextRef.current.clear()
-    // 60秒 obs バッジ自動消去タイマーもリプレイ切替時に持ち越さない（アンマウント経路と対称）
+    // バッジ自動消去タイマーもリプレイ切替時に持ち越さない（アンマウント経路と対称）
     window.clearTimeout(obsStatusClearTimerRef.current)
     obsStatusClearTimerRef.current = 0
+    window.clearTimeout(areaGradeClearTimerRef.current)
+    areaGradeClearTimerRef.current = 0
     // タイマーを止めるだけだと「60 秒で必ず消える」保証が外れ、次の津波電文が来るまで古い
     // バッジと寄せ先が無期限に居座る（表示対象が消えているので画面では気づけない）。中身も落とす。
     setObsUpdateStatus(new Map())

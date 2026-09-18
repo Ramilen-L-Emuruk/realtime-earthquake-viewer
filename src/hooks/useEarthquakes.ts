@@ -2123,15 +2123,20 @@ export function useEarthquakes(
   /**
    * 津波の続報で区域ごとに等級が動くテスト（一部解除・一部引き上げ）。
    *
-   * 発表 → `TEST_AUTO_DISMISS_MS` の半分で続報 → 満了で解除、と 3 段で進む。**続報を挟むのが
-   * 要点** —— 「〇〇から切り替え」の印は前報との比較（`areaGradeChangedKeys`）で立つので、
-   * 1 通だけ流しても出ない。全体の最上位等級は大津波警報のまま動かないため、区域単位の
-   * 変化を見る経路（→ docs/spec/tsunami-spec.md §10）はここでしか通らない。
+   * 発表 → `TEST_AUTO_DISMISS_MS` の半分で続報 → その `TEST_TSUNAMI_HIGH_TIDE_DELAY_MS` 後に
+   * 各地の満潮時刻の報 → 満了で解除、と 4 段で進む。**続報を挟むのが要点** ——
+   * 「〇〇から切り替え」の印は前報との比較（`areaGradeChangedKeys`）で立つので、1 通だけ流しても
+   * 出ない。全体の最上位等級は大津波警報のまま動かないため、区域単位の変化を見る経路
+   * （→ docs/spec/tsunami-spec.md §10）はここでしか通らない。
+   *
+   * **4 段目（満潮時刻の報）は、その印が消えないことを確かめるためにある。** 等級について何も
+   * 言っていない続報で、アプリから見れば「まだ声にしていない等級変化が 1 件も無い報」になる。
+   * かつては受信のたびに印を置き換えていたので、**これが届くと印が寿命を待たずに消えていた**。
    *
    * **DMDSS 版のみ。** 前回の等級（`LastKind`）は P2PQuake が配信しない。
    */
   const simulateTsunamiGradeChange = useCallback(async () => {
-    const { createTestTsunami, createTestTsunamiGradeChange, TEST_AUTO_DISMISS_MS } = await loadTestData()
+    const { createTestTsunami, createTestTsunamiGradeChange, createTestTsunamiHighTide, TEST_AUTO_DISMISS_MS, TEST_TSUNAMI_HIGH_TIDE_DELAY_MS } = await loadTestData()
     const base = createTestTsunami(isDmdss)
     if (testTsunamiGradeChangeTimerRef.current !== undefined) {
       window.clearTimeout(testTsunamiGradeChangeTimerRef.current)
@@ -2147,7 +2152,15 @@ export function useEarthquakes(
       testTsunamiGradeChangeTimerRef.current = undefined
       // 解除が先に走った後は流さない（ボタンを押し直したときに古い続報が紛れ込む）
       if (testTsunamiRef.current?.tsunami.id !== base.id) return
-      handleEvent(createTestTsunamiGradeChange(base))
+      const changed = createTestTsunamiGradeChange(base)
+      handleEvent(changed)
+      // 4 段目。**同じ ref を使い回す** —— 追う先が 1 本なら、リセットとアンマウントの落とし方を
+      // 増やさずに済む（2 本目を足すと、どちらかを落とし忘れても型検査には掛からない）。
+      testTsunamiGradeChangeTimerRef.current = window.setTimeout(() => {
+        testTsunamiGradeChangeTimerRef.current = undefined
+        if (testTsunamiRef.current?.tsunami.id !== base.id) return
+        handleEvent(createTestTsunamiHighTide(base, changed))
+      }, TEST_TSUNAMI_HIGH_TIDE_DELAY_MS)
     }, TEST_AUTO_DISMISS_MS / 2)
   }, [handleEvent])
 
