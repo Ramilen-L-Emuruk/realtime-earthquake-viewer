@@ -99,27 +99,36 @@ beforeEach(() => {
 })
 afterEach(() => { vi.restoreAllMocks() })
 
+/**
+ * その読みで `/accent_phrases` を要求したか。
+ *
+ * **完全一致では見ない。** 辞書キーの直後に助詞が続く読み上げ文では、その助詞の読みが辞書の値へ
+ * 足されて渡る（`buildAccentPhrases` の `particle`）。この describe が固めたいのは
+ * 「どの辞書の読みが使われたか」なので、助詞の集合を変えてもここが落ちない形にしておく。
+ */
+const askedReading = (reading: string) => kanaRequests.some(k => k.startsWith(reading))
+
 describe('読み上げ辞書の合成', () => {
   it('観測点の読みも句区切り辞書と同じ経路で合成に渡る', async () => {
     const { speakWithVoicevox: speak } = await freshVoicevox()
     await speak('http://vv', '輪島市門前町走出では、震度5弱以上と推定されますが、未入電です。', 0, 1)
 
-    expect(kanaRequests).toContain("ワジマシモンゼンマチハシリデ'")
+    expect(askedReading("ワジマシモンゼンマチハシリデ'")).toBe(true)
   })
 
   it('句区切り辞書のキーも従来どおり引ける', async () => {
     const { speakWithVoicevox: speak } = await freshVoicevox()
     await speak('http://vv', '震度5弱を石川県能登で観測しました。', 0, 1)
 
-    expect(kanaRequests).toContain("イシカワ'ケン/ノト'")
+    expect(askedReading("イシカワ'ケン/ノト'")).toBe(true)
   })
 
   it('キーが衝突したら句区切り辞書の読みが使われる', async () => {
     const { speakWithVoicevox: speak } = await freshVoicevox()
     await speak('http://vv', '能登町柳田では、震度5弱以上と推定されますが、未入電です。', 0, 1)
 
-    expect(kanaRequests).toContain("ノトチョウ'ヤナギダ")
-    expect(kanaRequests).not.toContain("ノトチョウヤナギダ'")
+    expect(askedReading("ノトチョウ'ヤナギダ")).toBe(true)
+    expect(askedReading("ノトチョウヤナギダ'")).toBe(false)
   })
 
   it('観測点の読みが取れていなければ句区切り辞書だけで進む', async () => {
@@ -144,6 +153,6 @@ describe('読み上げ辞書の合成', () => {
     stationReadingsAvailable = true
     await speak('http://vv', text, 0, 1)
 
-    expect(kanaRequests).toContain("ワジマシモンゼンマチハシリデ'")
+    expect(askedReading("ワジマシモンゼンマチハシリデ'")).toBe(true)
   })
 })

@@ -1,7 +1,7 @@
 {
   "name": "realtime-earthquake-viewer",
   "private": true,
-  "version": "5.18.1",
+  "version": "5.18.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -22,7 +22,8 @@
     "capture-kyoshin-waveform": "tsx scripts/capture-kyoshin-waveform.ts",
     "build-test-estimated-intensity": "tsx scripts/build-test-estimated-intensity.ts",
     "build-station-readings": "tsx scripts/build-station-readings.ts",
-    "build-epicenter-accents": "tsx scripts/build-epicenter-accents.ts"
+    "build-epicenter-accents": "tsx scripts/build-epicenter-accents.ts",
+    "verify-particle-phrases": "tsx scripts/verify-particle-phrases.ts"
   },
   "dependencies": {
     "fflate": "^0.8.3",
