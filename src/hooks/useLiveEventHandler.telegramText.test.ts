@@ -68,10 +68,10 @@ function telegramSpeeches(): string[] {
 }
 
 // **題材に「＊印は…」を使わない** —— あれは読み上げから落とす定型文
-// （`TELEGRAM_TEXT_SKIPPED_PHRASES`）なので、使うと本文が鳴らずテストが成り立たない。
+// （`TELEGRAM_BOILERPLATE_SPECS` の `starMark`）なので、使うと本文が鳴らずテストが成り立たない。
 const COMMENT = '震源要素を訂正します。'
 
-function makeQuake(over: { id?: string; varCommentText?: string } = {}): JMAQuake {
+function makeQuake(over: { id?: string; varCommentText?: string; freeText?: string } = {}): JMAQuake {
   return {
     kind: 'quake',
     id: over.id ?? 'quake-1',
@@ -85,6 +85,7 @@ function makeQuake(over: { id?: string; varCommentText?: string } = {}): JMAQuak
     },
     points: [{ pref: '石川県', addr: '石川県能登', isArea: true, scale: 40 }],
     varCommentText: over.varCommentText ?? COMMENT,
+    ...(over.freeText !== undefined && { freeText: over.freeText }),
   } as JMAQuake
 }
 
@@ -272,7 +273,13 @@ describe('気象庁が書いた文の読み上げ（配線）', () => {
     const { handleLiveEvent } = setup()
     handleLiveEvent(makeQuake({ id: 'quake-1' }))
     await drain()
-    handleLiveEvent(makeQuake({ id: 'quake-2', varCommentText: 'この地震について、緊急地震速報を発表しています。' }))
+    // **題材に定型文を使わない** —— 「この地震について、緊急地震速報を発表しています。」は
+    // 読み上げから落とす対象（→ `utils/ttsText.ts` の `TELEGRAM_BOILERPLATE_KEYS`）なので、
+    // 足しても本文が増えない。実電文で自由付加文に入る形を使う。
+    handleLiveEvent(makeQuake({
+      id: 'quake-2',
+      freeText: 'なお、有明・八代海に津波警報等（大津波警報・津波警報あるいは津波注意報）を発表中です。',
+    }))
     await drain()
     expect(telegramSpeeches()).toHaveLength(2)
   })

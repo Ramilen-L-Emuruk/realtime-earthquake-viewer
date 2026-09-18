@@ -337,6 +337,17 @@ export interface JMAQuake {
    */
   varCommentText?: string
   /**
+   * 固定付加文のコード（`VarComment/Code`）。**読み上げの落とし漏れを検出するためだけに持つ。**
+   *
+   * 読み上げから定型文を落とす判定は文字列の一致で行う（並び順に頼らないため。理由は
+   * `utils/ttsText.ts` の `TELEGRAM_BOILERPLATE_KEYS`）。文面が変われば一致しなくなり、
+   * そのときは「読まれるようになる」だけで異常として現れない。コードが付いているのに文面が
+   * 一致しなかった電文を記録するための材料（→ `warnUnmatchedBoilerplate`）。
+   *
+   * **画面には出さない**（電文のコード値は出さない方針。→ quake-spec.md §8「電文のコード値」）。
+   */
+  varCommentCodes?: readonly string[]
+  /**
    * 気象庁の自由付加文（`Comments/FreeFormComment`）の原文。DMDATA 経路でのみ得られる。
    *
    * 固定付加文（`forecastText`）が津波区分ごとの定型文であるのに対し、こちらは電文ごとに
@@ -1235,8 +1246,12 @@ export interface JMALpgm {
    * 例:「この地震について、緊急地震速報を発表しています。」
    */
   forecastText?: string
+  /** 固定付加文のコード（`ForecastComment/Code`）。用途は {@link JMAQuake.varCommentCodes} と同じ。 */
+  forecastCodes?: readonly string[]
   /** 固定付加文（その他。`Comments/VarComment/Text`） */
   varCommentText?: string
+  /** 固定付加文（その他）のコード（`VarComment/Code`）。用途は {@link JMAQuake.varCommentCodes} と同じ。 */
+  varCommentCodes?: readonly string[]
   /**
    * 自由付加文（`Comments/FreeFormComment`）。階級ごとの揺れの言い換えと、
    * 詳細ページへの案内が入る。**改行と空白を保つ**（地震情報側と同じ扱い）。
