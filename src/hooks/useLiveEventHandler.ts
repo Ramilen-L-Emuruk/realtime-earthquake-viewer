@@ -20,10 +20,11 @@ import { playAlertSound, ttsDelayFor, maxTtsDelay, type AlertSoundType } from '.
 import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, stopSpeech, type PrewarmedSpeech, type ShouldStillPlay, type SpeechOutcome } from '../utils/voicevox'
 import { rollbackSpokenEntry } from '../utils/rollbackSpoken'
 import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewWarningRegionsText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiAreaGradeChangeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, tsunamiMissingToSegments, selectMissingToSpeak, tsunamiWarningLevelToSegments, selectWarningLevelToSpeak, joinWithAlso, nankaiToText, nankaiCommentaryToText, kohatsuToText, earthquakeCountToText, estimatedIntensityToText, lpgmToText, telegramTextToSpeak, createQuakeSpokenState, applySpokenRefs, type TtsSpeechOptions, type QuakeSpokenState } from '../utils/ttsText'
-import { joinSegments, plain, hasFollowTarget, hasUnreceivedFollowTarget, hasTelegramTextFollowTarget, TELEGRAM_TEXT_OPEN_TARGET_KINDS, telegramTextSubject, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
+import { joinSegments, plain, hasFollowTarget, hasUnreceivedFollowTarget, hasTelegramTextFollowTarget, hasBorrowedHypocenterFollowTarget, TELEGRAM_TEXT_OPEN_TARGET_KINDS, telegramTextSubject, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
 import { log, createLogThrottle } from '../utils/logger'
 import { TAB_PRIORITY, type TabPriority } from '../utils/tabPriority'
 import { extractQuakeEventIdFromId, mergeQuakeInto, quakeEventKey, quakeKeyForLpgmEventId, sameQuakeEntry } from '../utils/quakeMerge'
+
 import { getAreaPrefIndexCache } from '../utils/stationCoords'
 
 // EEW 読み上げ第 2 フェーズ（予想値）のタイミング。
@@ -705,6 +706,16 @@ export interface LiveEventHandlerDeps {
    */
   telegramTextFollow?: SpeechFollowApi
   /**
+   * 津波の読み上げが**借りた震源**を語っているあいだ、その原因地震のカードを見せるための受け口。
+   *
+   * **上の 3 つとは別の枠**にする。ほかは津波カードの行・未入電の一覧・気象庁の文を見ており、
+   * どれも対象が違う（→ `ttsFollow.ts` の門）。
+   *
+   * 渡すのは**津波の読み上げだけ**。震源を借りるのは震源が未確定の地震で、その震源を語るのは
+   * 津波を受け取った時点だけだから（→ `utils/borrowFromTsunami.ts`）。
+   */
+  borrowedHypocenterFollow?: SpeechFollowApi
+  /**
    * 特別情報（南海トラフ臨時情報・後発地震注意情報・関連解説情報）の受信でパネルを開く。
    *
    * これらは地図に重ねた帯で伝える情報で、パネル側に居場所がない（切り替えるタブが無い）。
@@ -749,6 +760,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     settings, title, earthquakesRef, tsunamisRef, kyoshinDetectedRef, defaultTabRef,
     setActiveTabRealtimeForKyoshin, setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate,
     setActiveTabRealtimeUrgent, followSpeechTab, preSpeechTab, speechFollow, unreceivedFollow, telegramTextFollow,
+    borrowedHypocenterFollow,
     expandPanelForSpecialInfo,
     revertToDefaultTab, selectQuake, openLpgmFromQuake, openEstimatedIntensity,
     closeDistributionOnQuakeReport,
@@ -860,6 +872,12 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   // 照合の基準も揃えるのが筋が通る（`useEarthquakes` 側は state の整合のために `prev.tsunamis[0]`
   // を見る。基準が違っても、判定そのものは同じ関数を共有している）。
   const lastTsunamiRef = useRef<JMATsunami | null>(null)
+  // 震源要素を載せていた直近の津波。震源を持たない地震電文（震度速報）へ貸す
+  // （→ `utils/borrowFromTsunami.ts`）。
+  //
+  // **`lastTsunamiRef` とは別に持つ。** あちらは「直前に受信した津波」で、満潮時刻や観測情報の
+  // ように震源を載せない報でも上書きされる。貸せる相手が要るのは震源だけなので、載せていた報を
+  // 覚えておく。
   // 観測点ごとに受信済みの最大波高。**画面（バッジ・スクロール）用**で、読み上げの有無に関わらず
   // 受信時に進める。
   const lastMaxObsHeightRef = useRef<Map<string, { value: number; over?: boolean }>>(new Map())
@@ -1525,6 +1543,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       const telegramTextToken = hasTelegramTextFollowTarget(segments)
         ? telegramTextFollow?.begin(segments!, subject)
         : undefined
+      // 借りた震源のカード表示も同じ位置で始める。**どの地震のカードかは `subject` が持つ**
+      // （津波の読み上げなので、主題には原因地震の鍵が入っている）。
+      const borrowedHypocenterToken = hasBorrowedHypocenterFollowTarget(segments)
+        ? borrowedHypocenterFollow?.begin(segments!, subject)
+        : undefined
       // 予約の通知を溜めておき、読み上げが終わってから「実際に鳴った範囲」を割り出す
       // （`spokenChunkIndices`）。合成は再生より先へ進むため、予約が通っただけでは鳴った
       // ことにならない。
@@ -1535,6 +1558,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         if (followToken !== undefined) speechFollow?.schedule(followToken, index, startAt, chunks)
         if (unreceivedToken !== undefined) unreceivedFollow?.schedule(unreceivedToken, index, startAt, chunks)
         if (telegramTextToken !== undefined) telegramTextFollow?.schedule(telegramTextToken, index, startAt, chunks)
+        if (borrowedHypocenterToken !== undefined) borrowedHypocenterFollow?.schedule(borrowedHypocenterToken, index, startAt, chunks)
         if (onSpokenRefs && segments) {
           chunkRefs ??= mapChunksToRefs(segments, chunks)
           chunkCount = chunks.length
@@ -1596,6 +1620,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         if (unreceivedToken !== undefined) unreceivedFollow?.end(unreceivedToken)
         // 気象庁の文を読み終えた（割り込まれた場合も含む）。開いた表示はここで閉じる側が戻す。
         if (telegramTextToken !== undefined) telegramTextFollow?.end(telegramTextToken)
+        // 借りた震源の追従もここで終える。**セッションを畳むだけで、見せたカードは戻さない**
+        // —— 震源の句は津波の読み上げの末尾にあり、戻すと画面が一瞬で往復するだけになる。
+        if (borrowedHypocenterToken !== undefined) borrowedHypocenterFollow?.end(borrowedHypocenterToken)
         flushSpokenRefs(true)
         // 自分より後に始まった読み上げに置き換わっている場合は触らない（消すと待ち側が
         // 「誰も読んでいない」と誤認し、進行中の読み上げに割り込む）
@@ -3344,9 +3371,41 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           }
           authoritativeReadQuakesRef.current.add(quakeSpeechTopic)
         }
+        // **借りた震源はここへ持ち込まない。** 借りた値を声にするのは、それを運んできた津波電文の
+        // 読み上げの側（`tsunamiToSegments`）で、地震情報の側では語らない（理由は
+        // `buildEarthquakeSegments` の震度速報分岐）。
+        //
+        // **持ち込むと、語らないのに副作用だけが残る。** `earthquakeToSegments` は震源を
+        // 区域の選抜へも渡していて（`selectRegionNames`）、座標が入ると並びが気象庁の標準順から
+        // **震源距離順**へ反転する。読む区域と「ほか○地域」へ丸める区域の集合まで変わるので、
+        // 「震源を持たない電文は距離で選ばない」という決まり（docs/spec/audio-tts-spec.md §4）に
+        // 反する ―― 震度速報が津波から震源を借りた瞬間だけ、区域の選び方が静かに変わっていた。
         ttsSegments = earthquakeToSegments(event, ttsRegionOptions(settings), isNewQuake, quakeSpokenState, readAllRegions)
         ttsText = joinSegments(ttsSegments)
       } else if (event.kind === 'tsunami') {
+        // 津波の読み上げは**原因地震の震源**を語りうる（→ `ttsText.ts` の
+        // `sourceHypocenterSegments`）。語ってよいか・語ったことをどこへ記録するかは
+        // **その地震の既読**が決めるので、津波の主題ではなく地震の主題で引く。
+        //
+        // **記録は地震ごとに種別を跨いで共有する。** これを引いておくと、津波で震源を伝えた
+        // あとに届く地震情報が震源を言い直さない（`applySpokenRefs` が走るのは下の投入箇所で、
+        // `quakeSpokenState` が非 null のときだけ）。
+        //
+        // **カードがあればその `eventKey` を使う。** DMDATA ではどちらも `eventId` だが、
+        // 暫定 EventID の採り直しがあった地震ではカード側が統合で安定した鍵を持っている。
+        // カードがまだ無いのは津波が先に届いた順序で、そのときは電文の `eventId` で足りる。
+        if (!event.cancelled && event.eventId) {
+          const card = earthquakesRef.current.find(q => extractQuakeEventIdFromId(q.id) === event.eventId)
+          quakeSpokenState = quakeSpokenStateFor(
+            spokenQuakeStatesRef.current,
+            `quake:${card ? quakeEventKey(card) : event.eventId}`,
+          )
+          // **震源を語っているあいだ、その地震のカードを見せる**ための主題（→ `ttsFollow.ts` の
+          // `hasBorrowedHypocenterFollowTarget`）。**カードがあるときだけ立てる** —— 津波が先に
+          // 届いた順序ではまだ画面にカードが無く、見せる相手がいない（そのときは震源を語る前に
+          // 地震電文が届き、次の報から追従できる）。
+          if (card) quakeSubjectKey = quakeEventKey(card)
+        }
         /**
          * 今回の電文が運んできた観測点を、**カードの並び**で返す。
          *
@@ -3506,7 +3565,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // 戻り、実測波高の順に並んでいるカードの上を追従スクロールが往復する。
           ttsSegments = isDowngrade
             ? tsunamiDowngradeToSegments(event, tsunamiCardBasis.observations)
-            : tsunamiToSegments(event, tsunamiCardBasis.observations)
+            : tsunamiToSegments(event, tsunamiCardBasis.observations, quakeSpokenState ?? undefined, ttsRegionOptions(settings))
           // グレード変化と同時に観測中（波高未確定）で新規到達した観測点も読み上げに含める
           // （こちらもカードの並びに揃える。理由は観測点更新側と同じ）
           const obsOnGradeChange = observationsInCardOrder(event)
@@ -3622,9 +3681,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
               if (areasToMark) rememberAreaGrades(areasToMark, spokenAreaGradeRef.current)
             }
             : undefined,
-          // **どの地震について語っているか。** 未入電モードの自動開閉が、順番待ちのあいだに
-          // 選択が別の地震へ移っていないかを突き合わせるのに使う（津波では持たない）。
-          event.kind !== 'tsunami' ? quakeSubjectKey ?? undefined : undefined,
+          // **どの地震について語っているか。** 順番待ちのあいだに選択が別の地震へ移っていないかを
+          // 突き合わせるのに使う。使う側は 2 つ ―― 地震情報では未入電モードの自動開閉、
+          // 津波では**借りた震源を語っているあいだのカード表示**（どちらも
+          // `SpeechFollowSession.subject` を見る）。津波の主題ではなく**原因地震**の鍵が入る。
+          quakeSubjectKey ?? undefined,
         )
       } else if (event.kind === 'tsunami' && tsunamiIsNewOrUpgraded) {
         // 読み上げ文が組めなかった津波の新規発報・格上げ（保険。理由は宣言箇所）
@@ -3845,7 +3906,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // 切り替え前の読み上げが自然に終わるまで（南海トラフ臨時情報なら約 3 分）
     // 無関係なバナーが開いたままになる。
     telegramTextFollow?.reset()
-  }, [cancelPendingSpeech, speechFollow, unreceivedFollow, telegramTextFollow])
+    borrowedHypocenterFollow?.reset()
+  }, [cancelPendingSpeech, speechFollow, unreceivedFollow, telegramTextFollow, borrowedHypocenterFollow])
 
   // pre-window イベントから T 時点の追跡 ref を復元する（サイレント注入後の正確な音判定に必要）
   const restorePreWindowTracking = useCallback((preFiltered: ReplayEntry[]) => {
@@ -3911,6 +3973,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // `hasMagnitude(0)` は真なので「Ｍ０．０」として記録され、窓に入った最初の報が
           // 「マグニチュードが更新されました」と**余計に**言うことになる。
           if (recording && !(ev as JMAQuake).cancelled) {
+            // **ライブ経路と同じ材料で既読にする。** あちらが借りた震源を持ち込まなくなったので
+            // こちらも渡さない —— この関数は `earthquakeToSegments` を通して既読を作るため、
+            // 渡すと既読にする区域の集合まで震源距離順で切られる（ライブ側と同じ副作用）。
+            // 地震電文の側は震源を語らないので、借りても震源の既読は増えない。
             const quake = ev as JMAQuake
             restoreForRecording(payload, () => rememberQuakeSpeechAsSpoken(
               quake, quakeTopicFor(quake), spokenQuakeStatesRef.current, authoritativeReadQuakesRef.current, opts,
@@ -3991,6 +4057,21 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             const grade = tsunamiMaxGrade(tsunami)
             if (grade !== 'Unknown') lastTsunamiGradeRef.current = grade
             lastTsunamiRef.current = tsunami
+            // **録画モードでは、津波が語った震源も「もう伝えた」扱いにする。**
+            //
+            // 津波の読み上げは末尾で原因地震の震源を語り、その既読は**地震の主題**へ積まれる
+            // （→ `ttsText.ts` の `sourceHypocenterSegments`）。ここで積まないと、区間の境目で
+            // 次の津波が同じ震源を語り直す —— 録画は区間を繋ぐので、通しで聞くと二度述べになる。
+            //
+            // **主題の組み立てはライブ経路と揃える。** あちらはカードがあればその `eventKey` を
+            // 使うが、復元は状態更新の外で流れるためカードを引けない。DMDATA ではどちらも
+            // `eventId` なので実運用では一致する（識別子を持たない経路はそもそも震源を貸さない）。
+            if (recording && tsunami.eventId) {
+              const quakeState = quakeSpokenStateFor(spokenQuakeStatesRef.current, `quake:${tsunami.eventId}`)
+              // 既読を渡して組み、返ってきた参照をその既読へ積む。まだ語っていない事実だけが
+              // 文になるので、同じ震源を載せた続報が何通あっても二重には積まれない。
+              applySpokenRefs(quakeState, tsunamiToSegments(tsunami, undefined, quakeState, opts).flatMap(seg => seg.refs))
+            }
             // T 時点までの観測点は「もう伝えた」ものとして扱う。**読み上げ用も埋めること。**
             // 埋め忘れると、注入後の最初の観測情報でそれまでの全観測点が読み直され、途中から
             // 再生を始めたのに津波の到達をいまさら読み上げることになる。

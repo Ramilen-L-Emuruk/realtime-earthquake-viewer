@@ -1847,6 +1847,111 @@ describe('受け取った電文種別の記録', () => {
 // 取消の台帳は複数の経路から埋まる —— 履歴の途中経過と最後の集約、ライブ受信と履歴の重なり、
 // 「もっと見る」での読み直し。**重複を許すと上限が同じ取消だけで埋まり、まだ生きている
 // 別の取消の記録を押し出す**（取り下げ済みの地震カードが復活する）。
+describe('借りた津波区分の出どころ（domesticTsunamiSource）', () => {
+  // 震源側と対の規律。印は「いまの津波区分が借り物か」の単一の目印で、借り物かどうかで
+  // 津波の続報に追随するかが決まる（→ `utils/borrowFromTsunami.ts`）。
+  const borrowedSource = { shortLabel: '津波情報', infoName: '津波警報・津波注意報・津波予報', reportTime: '2024-01-01T07:12:00Z' }
+  const borrowedCard = (): JMAQuake => ({
+    ...makePrompt(),
+    earthquake: { ...makePrompt().earthquake, domesticTsunami: '警報等' },
+    domesticTsunamiSource: borrowedSource,
+  })
+
+  // 正: 震度速報の続報は既存の区分を据え置くので、出どころも一緒に据え置く。
+  it('震度速報の続報が、既存カードの借り物の津波区分と出どころを引き継ぐ', () => {
+    const merged = mergeQuakeInto(borrowedCard(), makePrompt({ maxScale: 70 }))
+    expect(merged.earthquake.domesticTsunami).toBe('警報等')
+    expect(merged.domesticTsunamiSource).toEqual(borrowedSource)
+  })
+
+  // 対照: 気象庁自身の判断が入る報では印を持ち込まない（incoming を土台に組むので自然に落ちる）。
+  it('津波区分を自前で持つ電文が届いたら、出どころの印は残らない', () => {
+    const merged = mergeQuakeInto(borrowedCard(), makeQuake({ type: '震源・震度情報' }))
+    expect(merged.domesticTsunamiSource).toBeUndefined()
+  })
+
+  // 対照: VXSE61 は既存カードを土台に組むので、明示的に落とさないと印だけが残る。
+  it('震源要素更新が津波区分を伝えたら、出どころの印は落ちる', () => {
+    const merged = mergeQuakeInto(borrowedCard(), makeQuake({
+      type: '顕著な地震の震源要素更新のお知らせ',
+      tsunami: 'なし',
+    }))
+    expect(merged.earthquake.domesticTsunami).toBe('なし')
+    expect(merged.domesticTsunamiSource).toBeUndefined()
+  })
+
+  // 安全弁: **その報が区分を伝えていなければ据え置くので、印も残す。** 落とすと画面から
+  // 出どころだけが消え、借り物が気象庁の判断のように見える。
+  it('震源要素更新が津波区分を伝えなければ、借り物のまま据え置く', () => {
+    const merged = mergeQuakeInto(borrowedCard(), makeQuake({
+      type: '顕著な地震の震源要素更新のお知らせ',
+      tsunami: '不明',
+    }))
+    expect(merged.earthquake.domesticTsunami).toBe('警報等')
+    expect(merged.domesticTsunamiSource).toEqual(borrowedSource)
+  })
+})
+
+describe('借りた震源の出どころ（hypocenterSource）', () => {
+  // 印は「いまの震源が借り物か」の単一の目印。借り物かどうかで、津波の続報に追随するかが
+  // 決まる（→ `utils/borrowFromTsunami.ts`）。
+  const borrowedSource = { shortLabel: '津波情報', infoName: '津波警報・津波注意報・津波予報', reportTime: '2024-01-01T07:12:00Z' }
+  const borrowedCard = (): JMAQuake => ({
+    ...makePrompt(),
+    earthquake: {
+      ...makePrompt().earthquake,
+      hypocenter: { name: '石川県能登地方', latitude: 37.5, longitude: 137.2, depth: 0, magnitude: 7.4 },
+    },
+    hypocenterSource: borrowedSource,
+  })
+
+  // 正: 震源を引き継ぐ経路では、出どころも一緒に運ぶ。
+  it('震度速報の続報が、既存カードの借り物の震源と出どころを引き継ぐ', () => {
+    const merged = mergeQuakeInto(borrowedCard(), makePrompt({ maxScale: 70 }))
+    expect(merged.earthquake.hypocenter.name).toBe('石川県能登地方')
+    expect(merged.hypocenterSource).toEqual(borrowedSource)
+  })
+
+  // 対照: 自前の震源が入る報では印を持ち込まない（incoming を土台に組むので自然に落ちる）。
+  it('震源を伴う電文が届いたら、出どころの印は残らない', () => {
+    const merged = mergeQuakeInto(borrowedCard(), makeQuake({ type: '震源・震度情報' }))
+    expect(merged.earthquake.hypocenter.name).toBe('熊本県熊本地方')
+    expect(merged.hypocenterSource).toBeUndefined()
+  })
+
+  // 安全弁: 借りた震源で同一性の判定を狂わせないこと。`sameQuakeEntry` は「震源未確定の電文 ×
+  // 震源が判明した電文」の組でしか暫定 EventID の採り直しが起きないことを根拠にしている。
+  // 借り物で「判明した」側へ移ると、後から届く確定報が別の地震と見なされ、**eventId が違うので
+  // `coalesceByEventId` でも畳めず重複カードが残り続ける**。
+  it('借りた震源では、暫定 EventID の採り直しの照合が壊れない', () => {
+    const points = [{ pref: '石川県', addr: '石川県能登', isArea: true, scale: 60 as IntensityScale }]
+    // 暫定 EventID の震度速報。津波から震源を借りた状態。
+    const borrowed: JMAQuake = {
+      ...makePrompt({ id: 'dmdata-quake-20240101161010-1', points }),
+      earthquake: {
+        ...makePrompt({ points }).earthquake,
+        hypocenter: { name: '石川県能登地方', latitude: 37.5, longitude: 137.2, depth: 0, magnitude: 7.4 },
+      },
+      hypocenterSource: borrowedSource,
+    }
+    // 震源が決まってから採り直された EventID の確定報。
+    const confirmed = makeQuake({
+      id: 'dmdata-quake-20240101161017-1', type: '震源・震度情報',
+      hypoName: '石川県能登地方', points,
+    })
+    expect(sameQuakeEntry(borrowed, confirmed, null)).toBe(true)
+  })
+
+  // 安全弁: 震源要素更新（VXSE61）だけは既存カードを土台に組むので、明示的に落とさないと
+  // 印が残り、自前の震源が津波の続報で上書きされる。
+  it('震源要素更新（VXSE61）でも出どころの印は落ちる', () => {
+    const amendment = makeNoIntensity({ type: '顕著な地震の震源要素更新のお知らせ', hypoName: '石川県能登地方', mag: 7.6 })
+    const merged = mergeQuakeInto(borrowedCard(), amendment)
+    expect(merged.earthquake.hypocenter.magnitude).toBe(7.6)
+    expect(merged.hypocenterSource).toBeUndefined()
+  })
+})
+
 describe('addQuakeRetraction', () => {
   const retractionOf = (id: string, reportTime: string) =>
     quakeRetractionOf(

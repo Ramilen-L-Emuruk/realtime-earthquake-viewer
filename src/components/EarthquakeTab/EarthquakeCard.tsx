@@ -1,5 +1,5 @@
 import { Fragment, useMemo, useRef, useEffect, useState } from 'react'
-import type { JMAQuake, JMALpgm, IssueType, EarthquakePoint, IntensityScale, JMAEstimatedIntensity, QuakeReportRecord } from '../../types/earthquake'
+import type { JMAQuake, JMALpgm, IssueType, EarthquakePoint, IntensityScale, JMAEstimatedIntensity, QuakeReportRecord, BorrowedFromTsunami } from '../../types/earthquake'
 import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor, lpgmCategoryNote, buildLpgmRows, canOpenLpgmNotes } from '../../utils/lpgm'
 import { estimatedIntensityFor, estimatedIntensityAvailability } from '../../utils/estimatedIntensity'
 import { telegramTextSubject } from '../../utils/ttsFollow'
@@ -17,6 +17,7 @@ import {
   formatMagnitudeValue,
   formatMagnitudeWithCondition,
   formatCoordinate,
+  formatTimeMin,
   NON_JMA_MARK,
   NON_JMA_MARK_TITLE,
   withNonJmaMark,
@@ -378,6 +379,56 @@ interface Props {
  * `mergeQuakeReports` が種別ごとに 1 件へ畳む）が保証しているが、**そこが崩れたときの症状が
  * 「種別が 1 つ黙って消える」になる** —— React は鍵が重なった要素を畳むだけで例外を投げない。
  */
+/** 津波電文から借りた値の欄に添える印。説明は {@link borrowedSourceNote} がカードへ 1 行出す。 */
+const BORROWED_MARK = '※'
+
+/**
+ * 借りた値の欄へ添える印。
+ *
+ * **前に空白を置く。** 直前の文字（震央地名・「深さ」など）へ貼り付くと、名前の一部に見える。
+ */
+function BorrowedMark() {
+  return <span className="ml-0.5 align-super text-[0.625rem] font-normal opacity-80">{BORROWED_MARK}</span>
+}
+
+/**
+ * 借りた値の説明（→ `utils/borrowFromTsunami.ts`）。**常に 1 行**で、詳しい出どころは
+ * ホバーの説明（`title`）へ回す。
+ *
+ * **「電文」「借りる」のような内部の言い回しを画面へ出さない。** 印が「どれが」を示すので、
+ * 文は出どころを名指しするだけでよい。述語を足すと説明くさくなるうえ、開発側の語彙が混ざる。
+ *
+ * **震源と津波区分で行を分けない。** 借りる報は実際には別になりうる —— 震源は「震源を載せた
+ * 最新の報」、区分は「等級を載せた最新の報」から採るため、能登の実電文では 16:22 と 16:12 に
+ * 分かれる。だが読み手にとっては同じ津波の情報で、報の違いまで並べても判断は変わらない。
+ *
+ * **等級を名乗らない**（「津波警報より」と書くと大津波警報の地震で一段軽く見える。
+ * → `docs/spec/quake-spec.md` §3）。正確な名乗りと発表時刻は `title` に持つ。
+ */
+function borrowedSourceNote(
+  hypocenter: BorrowedFromTsunami | undefined,
+  domesticTsunami: BorrowedFromTsunami | undefined,
+): { text: string; title: string } | null {
+  if (!hypocenter && !domesticTsunami) return null
+  // **文として読めるように書く。** 「震源: 〜／津波区分: 〜」の列挙は開発者向けの体裁で、
+  // ホバーを開いた利用者が読む文になっていない。
+  const sentence = (src: BorrowedFromTsunami, what: string) => {
+    const at = formatTimeMin(src.reportTime)
+    // 時刻を読めない電文では時刻だけ落とす。文そのものは出す ——
+    // どの情報が伝えたかは時刻が無くても伝わる。
+    return at
+      ? `${what}は${at}に発表された${src.infoName}で伝えられました。`
+      : `${what}は${src.infoName}で伝えられました。`
+  }
+  const parts: string[] = []
+  if (hypocenter) parts.push(sentence(hypocenter, '震源'))
+  if (domesticTsunami) parts.push(sentence(domesticTsunami, '津波の有無'))
+  return {
+    text: `${BORROWED_MARK} 津波情報より`,
+    title: parts.join(''),
+  }
+}
+
 function QuakeReportHeading({ reports, fallback }: { reports?: QuakeReportRecord[]; fallback: IssueType }) {
   return (
     <>
@@ -406,6 +457,19 @@ export function EarthquakeCard({
   const hasLocation = hasKnownEpicenter(hypocenter.latitude, hypocenter.longitude)
   // 規模・深さは位置と別に判定する（→ `hasHypocenterFacts`）
   const hasFacts = hasHypocenterFacts(hypocenter)
+  // 津波電文から借りた値の印と、その説明（→ `utils/borrowFromTsunami.ts`）。
+  //
+  // **借りた欄すべてに印を付け、説明はカードに 1 行だけ置く。** 欄ごとに「津波情報より」と
+  // 書くと同じ語が並んで冗長になり、逆に 1 行へまとめるだけだと**どの欄に掛かるのかが消える**
+  // （震源は名前・座標・規模・深さの 4 欄にまたがる）。印なら両方を満たせる —— `＊`（気象庁
+  // 以外の観測点）と同じ流儀。
+  //
+  // **記号は `＊` と分ける。** あちらは観測点名の末尾に付き、こちらは震源と津波区分の欄に付く。
+  // 出る場所も説明文も違うので混ざらないが、同じ記号にすると説明が 2 つ並んで読み手が迷う。
+  const borrowedHypocenter = quake.hypocenterSource
+  const borrowedDomesticTsunami = quake.domesticTsunamiSource
+  // 説明は**常に 1 行**。詳しい出どころ（名乗り・発表時刻）はホバーの説明へ回す。
+  const borrowedNote = borrowedSourceNote(borrowedHypocenter, borrowedDomesticTsunami)
   // 長周期の「観測情報の種類」から出す一文（値 2・4 のときだけ。→ `lpgmCategoryNote`）。
   // 条件と本文の両方で使うので一度だけ計算する。
   const categoryNote = lpgmCategoryNote(lpgm?.category)
@@ -876,10 +940,18 @@ export function EarthquakeCard({
               あいだに規模・津波・付加文を挟むと、震央地名を読んだあとに座標を探すことになる。 */}
           <div className="font-bold text-white leading-tight text-[1.375rem] roomy:text-[1.875rem]">
             {hasLocation ? hypocenter.name : '震源調査中'}
+            {/* **「震源調査中」には印を付けない。** 借りた原因地震に震央地名はあるのに座標を
+                読めなかった形（`readHypocenterAreaDetail` が座標を落とす経路）では、名前を出せず
+                固定文言へ倒れる。そこへ印を足すと「震源調査中」という文言そのものが津波から
+                来たように読め、しかも借りたはずなのに調査中という矛盾した見た目になる。
+                **借りた名前が画面に出ないこと自体は別の穴**（この分岐が名前の表示を座標の有無で
+                決めているため）で、今回の変更が作ったものではない。 */}
+            {borrowedHypocenter && hasLocation && <BorrowedMark />}
           </div>
           {hasLocation && (
             <div className="text-xs text-secondary roomy:text-sm">
               {formatCoordinate(hypocenter.latitude, hypocenter.longitude)}
+              {borrowedHypocenter && <BorrowedMark />}
             </div>
           )}
 
@@ -895,6 +967,7 @@ export function EarthquakeCard({
               >
                 <span className="text-xs font-medium tracking-wide" style={{ color: magColor }}>
                   マグニチュード
+                  {borrowedHypocenter && <BorrowedMark />}
                 </span>
                 {/* 規模不明（-1／NaN）を toFixed に通すと "-1.0"／"NaN" と表示される。深さ側の formatDepth と揃える。
                     数値が無くても気象庁が説明を添えていればそれを出す（「Ｍ８を超える巨大地震」を
@@ -915,6 +988,7 @@ export function EarthquakeCard({
               >
                 <span className="text-xs font-medium tracking-wide" style={{ color: depthColor }}>
                   深さ
+                  {borrowedHypocenter && <BorrowedMark />}
                 </span>
                 <span className="font-black leading-none text-[1.375rem] roomy:text-[1.75rem]" style={{ color: '#ffffff' }}>
                   {formatDepth(hypocenter.depth)}
@@ -934,7 +1008,15 @@ export function EarthquakeCard({
             }}
           >
             {tsunamiInfo.text}
+            {borrowedDomesticTsunami && <BorrowedMark />}
           </div>
+          {/* 借りた値の説明。**印を付けた欄より後ろへ置く** —— 記号を見てから意味を探すので、
+              説明が先にあると「何の話か」が分からないまま読むことになる。 */}
+          {borrowedNote && (
+            <div className="text-xs text-secondary roomy:text-sm" title={borrowedNote.title}>
+              {borrowedNote.text}
+            </div>
+          )}
 
           {/* 固定付加文（その他）。長周期地震動の同じ枠と揃えて出す。 */}
           {quake.varCommentText && (
