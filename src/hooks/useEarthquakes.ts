@@ -532,6 +532,8 @@ export function useEarthquakes(
   const testNankaiRetractionTimerRef = useRef<number | undefined>(undefined)
   const testEarthquakeCountRetractionTimerRef = useRef<number | undefined>(undefined)
   const testTsunamiGradeChangeTimerRef = useRef<number | undefined>(undefined)
+  // 「変化の小さい続報」テストが 6 通を順に流すあいだの待ち（`simulateTsunamiQuietReports`）。
+  const testTsunamiQuietTimerRef = useRef<number | undefined>(undefined)
 
   /**
    * テストボタンが張った「待ち」をすべて落とす。**アンマウントと `resetState` の両方から呼ぶ。**
@@ -575,6 +577,10 @@ export function useEarthquakes(
     if (testTsunamiGradeChangeTimerRef.current !== undefined) {
       window.clearTimeout(testTsunamiGradeChangeTimerRef.current)
       testTsunamiGradeChangeTimerRef.current = undefined
+    }
+    if (testTsunamiQuietTimerRef.current !== undefined) {
+      window.clearTimeout(testTsunamiQuietTimerRef.current)
+      testTsunamiQuietTimerRef.current = undefined
     }
   }, [])
   // 帯に出している南海トラフ臨時情報・後発地震注意情報の識別情報（無ければ null）。取消の照合に使う。
@@ -2185,6 +2191,63 @@ export function useEarthquakes(
   }, [handleEvent])
 
   /**
+   * 「変化の小さい続報」テスト（DMDSS 版のみ）。
+   *
+   * **通知音だけが鳴って何も声にならなかった報を、実機で確かめる唯一の入口。**
+   * 2024 年能登半島地震の 26 時間では、取消を除く津波電文 56 通のうち 7 通がこの形だった
+   * （→ docs/spec/tsunami-spec.md §10「変化を伝えない続報」）。発表 → 7 通の続報 → 満了で解除、
+   * と進む。
+   *
+   * | 段 | 報 | 確かめるもの |
+   * |---|---|---|
+   * | 1 | 観測情報 | 波高の文（既存）。**次の段の前提** —— ここで波高が既読にならないと、時刻だけの更新が波高の文に食われる |
+   * | 2 | 観測情報 | 「最大波の観測時刻が更新されました」 |
+   * | 3 | 観測情報 | 「観測された波高に変わりはありません」 |
+   * | 4 | 満潮時刻 | 名乗りだけ（初報） |
+   * | 5 | 満潮時刻 | 「満潮時刻が更新されました」 |
+   * | 6 | 満潮時刻 | 「津波の到達状況が更新されました」 |
+   * | 7 | 満潮時刻 | 「内容に変わりはありません」 |
+   *
+   * **間隔は読み上げが終わる程度に空ける**（`TEST_TSUNAMI_QUIET_STEP_MS`）。これらは最下位の層で
+   * 読むので、前の発話が続いていると待たされ、待ちきれなければ黙る。
+   */
+  const simulateTsunamiQuietReports = useCallback(async () => {
+    const {
+      createTestTsunami, createTestTsunamiObservationReport, createTestTsunamiMaxHeightTimeUpdate,
+      createTestTsunamiObservationNoChange, createTestTsunamiHighTide, createTestTsunamiHighTideFollowUp,
+      TEST_AUTO_DISMISS_MS, TEST_TSUNAMI_QUIET_STEP_MS,
+    } = await loadTestData()
+    const base = createTestTsunami(isDmdss)
+    if (testTsunamiQuietTimerRef.current !== undefined) {
+      window.clearTimeout(testTsunamiQuietTimerRef.current)
+    }
+    runSimulateTsunami(() => base, TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent)
+    // **同じ ref を使い回して連鎖させる**（等級変化テストと同じ流儀。追う先が 1 本なら、
+    // リセットとアンマウントの落とし方を増やさずに済む）。
+    const steps: ((prev: JMATsunami) => JMATsunami)[] = [
+      createTestTsunamiObservationReport,
+      createTestTsunamiMaxHeightTimeUpdate,
+      createTestTsunamiObservationNoChange,
+      prev => createTestTsunamiHighTide(base, prev),
+      prev => createTestTsunamiHighTideFollowUp(prev, 'tide'),
+      prev => createTestTsunamiHighTideFollowUp(prev, 'arrival'),
+      prev => createTestTsunamiHighTideFollowUp(prev, 'none'),
+    ]
+    let prev = base
+    const runStep = (i: number) => {
+      testTsunamiQuietTimerRef.current = window.setTimeout(() => {
+        testTsunamiQuietTimerRef.current = undefined
+        // 解除が先に走った後は流さない（ボタンを押し直したときに古い続報が紛れ込む）
+        if (testTsunamiRef.current?.tsunami.id !== base.id) return
+        prev = steps[i](prev)
+        handleEvent(prev)
+        if (i + 1 < steps.length) runStep(i + 1)
+      }, TEST_TSUNAMI_QUIET_STEP_MS)
+    }
+    runStep(0)
+  }, [handleEvent, isDmdss])
+
+  /**
    * 訓練報のテスト。
    *
    * 気象庁は訓練・試験の電文をヘッダ（`Control/Status`）でだけ区別し、中身は本物と同じ形で
@@ -2604,7 +2667,7 @@ export function useEarthquakes(
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
     simulateQuakeNotice, simulateEarthquakeCount, simulateEarthquakeCountRetraction, simulateEstimatedIntensity,
-    simulateTrainingQuake, simulateUnreceivedQuake, simulateMaxScaleOrAboveQuake, simulateTsunamiGradeChange, simulateQuakeAmendment,
+    simulateTrainingQuake, simulateUnreceivedQuake, simulateMaxScaleOrAboveQuake, simulateTsunamiGradeChange, simulateTsunamiQuietReports, simulateQuakeAmendment,
     simulateQuakeReportSequence,
     simulateHypocenterFromTsunami,
     resetState,

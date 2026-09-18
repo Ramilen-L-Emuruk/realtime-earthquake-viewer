@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { hasUnreadableFurigana, isMisreading, normalizeReading, stripReadingTail, toKanaEntry } from './stationReading'
+import { countMoras, hasUnreadableFurigana, isMisreading, normalizeReading, splitIntoMoras, stripReadingTail, toKanaEntry } from './stationReading'
 
 // 震度観測点名の読みを突き合わせる処理の検証。
 // 「同じ音の別表記」を吸収しつつ「別の地名に聞こえる誤読」は残す、という線引きを固定する。
@@ -111,5 +111,29 @@ describe('hasUnreadableFurigana', () => {
   it('空と漢字混じりは読めない', () => {
     expect(hasUnreadableFurigana('')).toBe(true)
     expect(hasUnreadableFurigana('石狩市はなかわ')).toBe(true)
+  })
+})
+
+describe('splitIntoMoras / countMoras', () => {
+  it('小書きのかなは直前へ吸収する（正）', () => {
+    expect(splitIntoMoras('チョウ')).toEqual(['チョ', 'ウ'])
+    expect(countMoras('サッポロトヨヒラク')).toBe(9)
+  })
+
+  it('`ッ` と `ー` は自分で 1 モーラを作る', () => {
+    expect(countMoras('サッポロ')).toBe(4)
+    expect(countMoras('センター')).toBe(4)
+  })
+
+  it('ひらがなでもカタカナでも同じ値', () => {
+    expect(countMoras('しんおんせんちょう')).toBe(countMoras('シンオンセンチョウ'))
+  })
+
+  // 安全弁 —— 記号を数えないこと。**アクセント核と句区切りだけでは足りない。**
+  it('無声化記号（`_`）もアクセント核・句区切りと同じく数えない', () => {
+    // 手で書いた句区切り辞書の値には `_` が入るものがある（`tts-phrase-break-dict.json`）。
+    // 1 文字として数えると静かに 1〜2 モーラ多く出る。
+    expect(countMoras("キタ_キュウシュウ'シ")).toBe(countMoras('キタキュウシュウシ'))
+    expect(splitIntoMoras("ア_イ/ウ'")).toEqual(['ア', 'イ', 'ウ'])
   })
 })
