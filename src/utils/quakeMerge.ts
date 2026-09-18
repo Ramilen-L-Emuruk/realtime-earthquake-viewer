@@ -298,7 +298,11 @@ function hasDisjointAreas(a: JMAQuake, b: JMAQuake, areaPrefIndex: AreaPrefIndex
 // 判定の優先順は「安定キー → eventId → 地震の時刻＋震源名＋区域の重なり」。
 //
 // DMDATA は震度速報が targetDateTime、以降が arrivalTime を earthquake.time に使い、
-// 同じ地震なら同じ値になる（発生時刻 originTime とは 1 分ずれることがあるため採らない）。
+// 多くの場合は同じ値になる（発生時刻 originTime とは 1 分ずれることがあるため採らない）。
+// **一致は保証されない** —— targetDateTime は震源が決まる前の値なので、確定報の arrivalTime が
+// 分をまたぐとずれ、採り直しの救済に入ってもここで落ちてカードが 2 枚残る。**それを同じ地震と
+// みなしてよいかは電文からは決められない**（実例と、時刻の照合を緩める案を採らない理由は
+// `docs/spec/quake-spec.md` §6.1「時刻がずれた 2 枚」）。
 // P2PQuake は eventId が無いため地震の時刻で比較するが、同時刻は分単位でしか一致しない
 // （P2PQuake の地震の時刻は秒が常に 00）ので、震源名まで見て「同じ分に起きた別の地震」を分離する。
 //

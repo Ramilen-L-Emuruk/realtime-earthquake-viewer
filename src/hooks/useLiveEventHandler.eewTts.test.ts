@@ -1793,10 +1793,13 @@ describe('警報の対象地方（第 1.5 フェーズ）', () => {
     expect(spokenTexts().some(t => t.includes('切り替わりました'))).toBe(false)
   })
 
-  // 安全弁: 鳴っている最中に地方が増えたら降りる。**降りた回は既読にしない** ——
-  // 前置き（格上げの告知）も地方名も記録せず、読み直しで両方が改めて声になる。
-  // 記録を発話の直前で行うと、降りた回で前置きが言った扱いになり格上げが一度も声にならない。
-  it('鳴っている最中に地方が増えたら、前置きごと読み直す', async () => {
+  // 正: 鳴っている最中に地方が増えたら降りて読み直すが、**前置きは繰り返さない**。
+  //
+  // 地方名は文の後半にあり、降りた時点ではまだ声になっていないので読み直す。前置きは先頭
+  // チャンクなので既に声になっており、記録しないと第 2 フェーズが「まだ区分を言っていない」と
+  // 判定して重ねる —— 実配信では 2024-06-03 06:31 の石川県能登で、格上げの 0.45 秒後に地方が
+  // 増えて「緊急地震速報に切り替わりました。」が実際に 2 回鳴った。
+  it('鳴っている最中に地方が増えたら、地方名だけ読み直す（前置きは繰り返さない）', async () => {
     const heard: string[] = []
     installChunkedSpeak(heard)
     const handle = setup()
@@ -1812,10 +1815,49 @@ describe('警報の対象地方（第 1.5 フェーズ）', () => {
     handle(makeEEW({ serial: 3, scaleTo: 50, severity: 'Warning', warningRegions: ['北陸', '甲信'] }))
     await advance(SPEAK_SYNTH_MS * 4 + SPEAK_CHUNK_MS * 8)
 
-    // 降りた回は既読にしない。北陸も前置きも記録されないので、読み直しは初回の形へ戻る。
-    // 既読にしてしまうと「新たに、甲信でも〜」だけになり、**一度も読み切っていない北陸が
-    // 読まれないまま終わる**（格上げの告知も同じように失われる）。
+    // 安全弁: 降りた回の**地方名**は既読にしない。既読にすると「新たに、甲信でも〜」だけに
+    // なり、**一度も読み切っていない北陸が読まれないまま終わる**。
     expect(spokenTexts()).toContain('北陸、甲信では強い揺れに警戒してください。')
+    // 正: 前置きは 1 回だけ。発話の組み立てでも、実際に鳴ったチャンクでも重ならない。
+    expect(spokenTexts().filter(t => t.includes('切り替わりました'))).toHaveLength(1)
+    expect(heard.filter(h => h.includes('切り替わりました'))).toHaveLength(1)
+  })
+
+  // 安全弁: **誤報取消を受けたら、前置きも地方名も既読にしない。** 取消はその発話ごと
+  // 無かったことにする側で、受信した時点で同期に既読を消している。降りた発話が後から
+  // 記録し直すと、同じ eventId で再発報したときに何も声にならない。
+  //
+  // **取消を送るのは「最後のチャンクを鳴らしている最中」。** `shouldStillPlay` は
+  // チャンクの切れ目でしか呼ばれないので、ここでは判定の機会が無いまま `onSettled` へ
+  // 来る —— 発話中に立てたフラグだけを見る実装では捉えられず、**書き込む直前に
+  // `eewRetractedKeysRef` を見て初めて弾ける**。前置きのチャンクで取消を送ると既存の
+  // 早期 return に弾かれてしまい、この経路を通らない（落ちないテストになる）。
+  it('最後のチャンクを鳴らしている最中の誤報取消でも、再発報で前置きと地方名を読み直す', async () => {
+    const heard: string[] = []
+    installChunkedSpeak(heard)
+    const handle = setup()
+
+    handle(makeEEW({ scaleTo: 50, severity: 'Forecast' }))
+    await advance(SPEAK_SYNTH_MS + SPEAK_CHUNK_MS * 3)
+    handle(makeEEW({ serial: 2, scaleTo: 50, severity: 'Warning', warningRegions: ['北陸'] }))
+    // 地方名のチャンク（最後のチャンク）が鳴り始めるまで待つ
+    await advanceUntil(() => heard.some(h => h.includes('警戒してください')))
+
+    handle(makeEEW({ serial: 3, cancelled: true }))
+    await advance(SPEAK_SYNTH_MS * 4 + SPEAK_CHUNK_MS * 8)
+
+    // 同じ eventId で再発報し、あらためて予報から警報へ上がる
+    speakMock.mockClear()
+    heard.length = 0
+    handle(makeEEW({ serial: 4, scaleTo: 50, severity: 'Forecast' }))
+    await advance(SPEAK_SYNTH_MS * 2 + SPEAK_CHUNK_MS * 4)
+    handle(makeEEW({ serial: 5, scaleTo: 50, severity: 'Warning', warningRegions: ['北陸'] }))
+    await advance(SPEAK_SYNTH_MS * 6 + SPEAK_CHUNK_MS * 12)
+
+    // 前置きだけでなく**地方名そのもの**も読み直す。地方名の既読が残っていると
+    // `enqueueWarningRegions` の起動条件（未読の地方があるか）で弾かれ、警報の中身が
+    // 丸ごと声にならない。
+    expect(spokenTexts()).toContain('緊急地震速報に切り替わりました。北陸では強い揺れに警戒してください。')
   })
 
   // 安全弁: 声になる前に誤報取消が届いたら読まない（第 1・第 2 フェーズと同じ）。

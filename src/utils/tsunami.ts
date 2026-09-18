@@ -1,4 +1,4 @@
-import type { JMATsunami, TsunamiArea, TsunamiEstimation, TsunamiEstimationCondition, TsunamiGrade, TsunamiObservation, TsunamiObservationCondition, TsunamiSourceEarthquake, TsunamiWarningComment } from '../types/earthquake'
+import type { JMATsunami, TsunamiArea, TsunamiEstimation, TsunamiEstimationCondition, TsunamiGrade, TsunamiObservation, TsunamiObservationCondition, TsunamiSourceEarthquake, TsunamiStation, TsunamiWarningComment } from '../types/earthquake'
 import { formatTimeMin } from './formatters'
 import { log } from './logger'
 
@@ -585,6 +585,124 @@ export function rememberAreaGrades(
 }
 
 // ============================================================
+// 満潮時刻・津波到達予想時刻（区域の潮位観測点）
+// ============================================================
+
+/**
+ * 「各地の満潮時刻・津波到達予想時刻に関する情報」の情報名（`Head/Title`）。
+ *
+ * **津波情報（VTSE51）は 2 つの情報を名乗り分ける**（もう一方は「津波観測に関する情報」）。
+ * どちらも区域の潮位観測点（`stations`）を運ぶので、**中身からは見分けられない** ――
+ * 2024 年能登半島地震では観測情報の側も 52 地点ぶんの満潮時刻を載せていた。
+ * 満潮時刻を主題にしているのはこちらだけなので、名乗りで判定する。
+ */
+export const TIDE_REPORT_INFO_NAME = '各地の満潮時刻・津波到達予想時刻に関する情報'
+
+/** その報が「各地の満潮時刻・津波到達予想時刻に関する情報」か（→ {@link TIDE_REPORT_INFO_NAME}）。 */
+export function isTideReport(tsunami: JMATsunami): boolean {
+  return tsunami.infoName === TIDE_REPORT_INFO_NAME
+}
+
+/**
+ * 各地の満潮時刻・津波到達予想時刻に関する情報が、前に声にしたときから何を動かしたか。
+ *
+ * **この電文はほとんどの場合、等級も観測波高も動かさない。** 気象庁は等級を動かすと
+ * その直後（実電文で 0〜60 秒後）に満潮時刻を出し直すため、区域の顔ぶれも観測点も
+ * 直前の報と同じまま届く。読み上げの他の経路はどれも差分が空になるので、この電文が
+ * 何を新しく伝えているかは `stations` を突き合わせないと判らない。
+ *
+ * - `first`   ―― まだ一度も満潮時刻を声にしていない（名乗りだけで意味が通る）
+ * - `tide`    ―― 満潮時刻が動いた地点がある（初出の地点を含む）
+ * - `arrival` ―― 満潮時刻は据え置きで、到達状況だけが動いた
+ * - `none`    ―― どちらも動いていない
+ *
+ * **`tide` と `arrival` を混ぜないこと。** 2024 年能登半島地震では、6 通のうち 2 通
+ * （01/01 20:30・01/02 02:31）が「満潮時刻は 1 つも動かず到達状況だけ変わった」報だった。
+ * 一括りに「満潮時刻が更新されました」と読むと、気象庁が言っていないことを言うことになる。
+ */
+export type TideReportChange = 'first' | 'tide' | 'arrival' | 'none'
+
+/**
+ * 声にした満潮時刻と到達状況（潮位観測点ごと）。
+ *
+ * 画面用の記憶は持たない（カードは電文の値をそのまま描くため、突き合わせが要るのは
+ * 読み上げだけ）。記録を進めるのは**発話を始める瞬間**で、受信時ではない
+ * （理由は `useLiveEventHandler` の `spokenObsHeightRef` の宣言箇所）。
+ */
+export interface SpokenTideEntry {
+  highTide?: string
+  arrival?: string
+}
+
+/**
+ * 潮位観測点を既読の記録で引くときのキー。
+ *
+ * **区域コードまで含める。** 潮位観測点のコードは電文の中で一意に見えるが、それを前提に
+ * 置くと、同じ地点が 2 つの予報区に載った電文で片方の変化を取りこぼす。区域を跨いで
+ * 同じ地点を別々に覚えても害は無い（多く覚えるほうへ倒す）。
+ */
+export function tideStationKey(area: TsunamiArea, station: TsunamiStation): string {
+  return `${area.code ?? area.name}/${station.code ?? station.name}`
+}
+
+/** その報が載せている満潮時刻・到達状況を、既読の記録と同じ形にして返す。 */
+export function collectTideEntries(areas: readonly TsunamiArea[]): Map<string, SpokenTideEntry> {
+  const entries = new Map<string, SpokenTideEntry>()
+  for (const area of areas) {
+    for (const station of area.stations ?? []) {
+      entries.set(tideStationKey(area, station), {
+        highTide: station.highTideDateTime,
+        arrival: station.arrivalCondition,
+      })
+    }
+  }
+  return entries
+}
+
+/**
+ * 満潮時刻の報が何を動かしたかを判定する。
+ *
+ * **初出の地点は `tide` 側に入れる。** その地点の満潮時刻をまだ一度も伝えていないので、
+ * 「満潮時刻が更新されました」と言ってよい（到達状況だけが新しいわけではない）。
+ *
+ * @param areas この報の区域一覧（`stations` を持つ種別でのみ意味がある）
+ * @param spoken 声にした満潮時刻・到達状況の記録
+ */
+export function tideReportChange(
+  areas: readonly TsunamiArea[],
+  spoken: ReadonlyMap<string, SpokenTideEntry>,
+): TideReportChange {
+  if (spoken.size === 0) return 'first'
+  let tideChanged = false
+  let arrivalChanged = false
+  for (const [key, entry] of collectTideEntries(areas)) {
+    const prev = spoken.get(key)
+    if (!prev) { tideChanged = true; continue }
+    if (prev.highTide !== entry.highTide) tideChanged = true
+    if (prev.arrival !== entry.arrival) arrivalChanged = true
+  }
+  if (tideChanged) return 'tide'
+  if (arrivalChanged) return 'arrival'
+  return 'none'
+}
+
+/**
+ * 声にした満潮時刻・到達状況を既読へ移す。
+ *
+ * **その報の全地点を記録してよい。** 読み上げは地点名を読まない（46〜52 地点あって
+ * 読み切れない）ので、件数上限で落ちた分を既読にしてしまう心配が無い ―― 観測点の記憶
+ * （`selectObservationUpdatesToSpeak` で絞る）と違うのはそのため。
+ *
+ * **呼ぶのは発話を始める瞬間だけ**（`rememberAreaGrades` と同じ規約）。
+ */
+export function rememberTideEntries(
+  areas: readonly TsunamiArea[],
+  spoken: Map<string, SpokenTideEntry>,
+): void {
+  for (const [key, entry] of collectTideEntries(areas)) spoken.set(key, entry)
+}
+
+// ============================================================
 // 観測状態（電文の Condition）
 // ============================================================
 
@@ -979,7 +1097,7 @@ export function mergeTsunamiWarningComments(
  */
 export const WARNING_COMMENT_ORDER: readonly string[] = [
   'VTSE41',
-  'VTSE51|各地の満潮時刻・津波到達予想時刻に関する情報',
+  `VTSE51|${TIDE_REPORT_INFO_NAME}`,
   'VTSE51|津波観測に関する情報',
   'VTSE52',
 ]
