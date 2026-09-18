@@ -8,6 +8,7 @@ import { getPrefecturesCache } from './prefectures'
 import { getStationCoordsCache, getAreaPrefIndexCache, buildStationPrefIndex, buildPrefAreaNamesIndex, buildRegionOrderIndex, regionOrderRank, sortByRegionOrder, lookupStationRegion, type StationCoordsData, type RegionOrderIndex } from './stationCoords'
 import { isAreaPoint, isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel } from './quakePoints'
 import { hasMagnitude, hasDepth, readDateTime } from './formatters'
+import { tsunamiSourceHypocenter } from './borrowFromTsunami'
 import { createLogThrottle, log } from './logger'
 import { hasKnownEpicenter } from './geo'
 
@@ -1666,6 +1667,10 @@ function buildEarthquakeSegments(
 
   if (type === '震度速報') {
     const prefix = isNew ? '震度速報。' : '震度速報が更新されました。'
+    // **震度速報では震源を語らない。** 借りた震源（→ `utils/borrowFromTsunami.ts`）を
+    // ここで読むと、気象庁が震度速報で震源を発表していないのに**震源情報（VXSE52）を
+    // 受け取ったように聞こえる**。借りた震源を声にするのは、その値を運んできた津波電文の
+    // 読み上げの側（`tsunamiToSegments`）。画面のカードには出どころ付きで出している。
     const regionSegs = buildRegionSegments(event.points, maxScale, opts, hypocenter, spoken)
     // 未入電の区域は述語が違うので別の文にする（→ `unreceivedRegionSegments`）。
     const unreceivedSegs = unreceivedRegionSegments(event.points, opts, hypocenter, spoken)
@@ -1801,6 +1806,10 @@ function buildEarthquakeSegments(
   }
 
   const prefix = isNew ? `${label}。` : `${label}が更新されました。`
+  // **津波電文が先に震源を伝えていても、ここでは通しで読む。** 津波は「震源を伝える電文」の
+  // 1 つとして震源情報（VXSE52）と同じ扱いにしてあり、特別扱いしない —— 震源情報が先に震源を
+  // 伝えた地震でも、種別ごとの初報では通しで言う（速報を細切れに聞いた耳へ、確定した観測を
+  // 1 度まとめて示すため）。同じ種別の続報で言い直さないのは差分の経路が見る。
   const segments: SpeechSegment[] = [
     // 時刻が読めなければ句ごと落とす。この後に続く `quakeOccurrenceSegments` が震源名から
     // 読み始めるので、文としては「地震情報。石川県能登地方で地震が発生しました。」になる。
@@ -2052,9 +2061,83 @@ function observationsForAreaOrder(
  * `observationsForOrder` は区域の並べ替えにだけ使う（→ `observationsForAreaOrder`）。
  * 読み上げる内容は `event` だけで決まる ―― 等級の発表では観測点の実測値を読まない。
  */
+/**
+ * 津波電文が載せている原因地震の震源を伝える断片列。まだ声にしていない事実が無ければ空。
+ *
+ * **津波警報を伴う地震では、この震源が地震情報より数分早く届く**（能登 2024/1/1 は津波警報が
+ * 16:12・地震情報が 16:16）。震源を持たない震度速報が何通も流れるあいだ、震源を知らせられるのは
+ * この電文だけ（→ `utils/borrowFromTsunami.ts`）。
+ *
+ * **語順は津波の文脈に合わせる。** 地震情報は「〇〇、深さ…を震源とするマグニチュード…の地震が
+ * 発生しました。」と震源から入るが、ここは等級と区域を言い終えた後に続く文なので、何の震源かを
+ * 先に示す。**「震源情報」の語は使わない** —— 気象庁は津波電文で震源を伝えているのであって、
+ * 地震情報の「震源情報」（VXSE52）を出したわけではない。
+ *
+ * **まだ声にしていない事実があるときだけ言う。** 記録は地震ごとに種別を跨いで共有するので、
+ * 地震情報が先に震源を伝えていれば黙る。津波の続報は 40 通を超えるため、これが無いと毎報で繰り返す。
+ *
+ * **追従用の印（`borrowedHypocenter`）を全断片へ付ける。** 読んでいるあいだ、その地震のカードを
+ * 見せるため（→ `ttsFollow.ts`）。震源そのものは `quakeFact` で別に記録される。
+ */
+function sourceHypocenterSegments(
+  event: JMATsunami,
+  spoken?: QuakeSpokenState,
+  opts?: TtsSpeechOptions,
+): SpeechSegment[] {
+  const src = event.sourceEarthquakes?.[0]
+  if (!src?.hypocenterName) return []
+  const hypocenter = tsunamiSourceHypocenter(src)
+  const tellable = tellableHypocenterFacts(hypocenter, opts)
+  // **震源名が無ければ文ごと出さない。** 規模だけを「この地震の震源は、マグニチュードは…」と
+  // 繋ぐと主語を欠いた文になる。
+  if (!tellable.has('hypocenterName')) return []
+  // **見るのは「その事実を一度でも声にしたか」だけで、値が変わったかは見ない。**
+  // 地震情報の続報（`changedFactSegments`）は値を比べて「マグニチュードが更新されました」と
+  // 言い直すが、こちらは言い直さない —— **見たうえでそうしている**。
+  //
+  // ①この分岐へ来るのは等級が動いた報だけで、震源の更新はたいてい観測情報の続報に乗る
+  //   （能登の実電文では M7.4→7.6 が 16:22 の津波情報。等級は大津波警報のまま動いていない）。
+  // ②語り直すとこの文は全部の事実を並べ直すので、等級が動くたびに震源を丸ごと繰り返すことになる。
+  // ③更新そのものは地震情報が伝える（能登では 16:24。津波の 2 分後）。
+  //
+  // 「等級が動く報と震源の更新が同じ通に重なる」形は実データで確かめていない。重なったときに
+  // 更新が声にならないのは承知のうえで、冗長さを避ける側に倒している。
+  if (![...tellable].every(fact => spoken?.facts.has(fact))) {
+    const follow: SpeechRef = { kind: 'borrowedHypocenter' }
+    const segments: SpeechSegment[] = [{ text: 'この地震の震源は', refs: [follow] }]
+    segments.push({
+      text: hypocenter.name,
+      refs: [{ kind: 'quakeFact', fact: 'hypocenterName', value: hypocenter.name }, follow],
+    })
+    if (tellable.has('depth')) {
+      segments.push({ text: '、', refs: [follow] })
+      segments.push({
+        text: depthSourcePhrase(hypocenter.depth),
+        refs: [{ kind: 'quakeFact', fact: 'depth', value: String(hypocenter.depth) }, follow],
+      })
+    }
+    const magRef: SpeechRef[] = [{ kind: 'quakeFact', fact: 'magnitude', value: magnitudeFactValue(hypocenter) }, follow]
+    const numeric = hasMagnitude(hypocenter.magnitude) ? magnitudeText(hypocenter.magnitude) : ''
+    if (tellable.has('magnitude') && numeric) {
+      segments.push({ text: '、マグニチュードは', refs: [follow] })
+      segments.push({ text: numeric, refs: magRef })
+    }
+    segments.push({ text: 'です。', refs: [follow] })
+    // 数値にならない規模（「Ｍ８を超える巨大地震」）は別の文で伝える。句へ差し込むと
+    // 「マグニチュードはＭ８を超える巨大地震です」と重なる（地震情報側と同じ扱い）。
+    if (tellable.has('magnitude') && !numeric) {
+      segments.push({ text: magnitudeConditionSentence(hypocenter), refs: magRef })
+    }
+    return segments
+  }
+  return []
+}
+
 export function tsunamiToSegments(
   event: JMATsunami,
   observationsForOrder?: readonly TsunamiObservation[],
+  quakeSpoken?: QuakeSpokenState,
+  opts?: TtsSpeechOptions,
 ): SpeechSegment[] {
   const topGrade = GRADE_ORDER.find(g => event.areas.some(a => a.grade === g))
   if (!topGrade) return []
@@ -2067,6 +2150,8 @@ export function tsunamiToSegments(
     : topGrade === 'Warning' ? '海岸から離れてください。'
     : topGrade === 'Forecast' ? '若干の海面変動が予想されますが、被害の心配はありません。' : ''
   const heights = areaHeightSentence(rawTopAreas, observations)
+  // **震源は最後に置く。** 等級・行動・区域を言い終えてから足す（→ `sourceHypocenterSegments`）。
+  const source = sourceHypocenterSegments(event, quakeSpoken, opts)
 
   // **等級と行動を先に言い切る。** 区域を全部読んでから避難を促すと、予報区が多いほど行動指示が
   // 遅れる。区域名は次の文で波高と一緒に挙げるので、聞き手が待たされるのは高さの情報だけ。
@@ -2076,6 +2161,7 @@ export function tsunamiToSegments(
       ...heights,
       ...areasWithoutHeightSentence(rawTopAreas, observations, gradeLabel),
       ...lowerGradeSentence(event.areas, topGrade, observations),
+      ...source,
     ]
   }
   // 波高がまだ付いていない（続報で後から付く）場合は、区域名を直接挙げる。
@@ -2089,6 +2175,7 @@ export function tsunamiToSegments(
     ...areaNameSegments(orderAreasForSpeech(rawTopAreas, observations)),
     plain(`に${gradeLabel}が発表されました。${action}`),
     ...lowerGradeSentence(event.areas, topGrade, observations),
+    ...source,
   ]
 }
 

@@ -1,5 +1,5 @@
 import { Fragment, useMemo, useRef, useEffect, useState } from 'react'
-import type { JMAQuake, JMALpgm, IssueType, EarthquakePoint, IntensityScale, JMAEstimatedIntensity, QuakeReportRecord } from '../../types/earthquake'
+import type { JMAQuake, JMALpgm, IssueType, EarthquakePoint, IntensityScale, JMAEstimatedIntensity, QuakeReportRecord, BorrowedFromTsunami } from '../../types/earthquake'
 import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor, lpgmCategoryNote, buildLpgmRows, canOpenLpgmNotes } from '../../utils/lpgm'
 import { estimatedIntensityFor, estimatedIntensityAvailability } from '../../utils/estimatedIntensity'
 import { telegramTextSubject } from '../../utils/ttsFollow'
@@ -17,6 +17,7 @@ import {
   formatMagnitudeValue,
   formatMagnitudeWithCondition,
   formatCoordinate,
+  formatTimeMin,
   NON_JMA_MARK,
   NON_JMA_MARK_TITLE,
   withNonJmaMark,
@@ -378,6 +379,27 @@ interface Props {
  * `mergeQuakeReports` が種別ごとに 1 件へ畳む）が保証しているが、**そこが崩れたときの症状が
  * 「種別が 1 つ黙って消える」になる** —— React は鍵が重なった要素を畳むだけで例外を投げない。
  */
+/**
+ * 値を別の種別の電文から借りたときに、その欄へ添える注記を組む（→ `utils/borrowFromTsunami.ts`）。
+ *
+ * **震源と津波区分で同じ関数を通す。** 別々に書くと、片方だけ書式を変えたときに画面の中で
+ * 文の形が食い違う。違うのは「何を借りたか」を述べる末尾（`what`）だけ。
+ *
+ * **短い語（`shortLabel`）は等級を名乗らない**（「津波警報より」と書くと大津波警報の地震で
+ * 一段軽く見える。→ `docs/spec/quake-spec.md` §3）。正確な名乗りと発表時刻は説明へ回す。
+ * 記号だけでは何を指しているのか分からないので、`＊`（気象庁以外の観測点）と同じく説明を添える。
+ */
+function borrowedSourceNote(src: BorrowedFromTsunami | undefined, what: string): { label: string; title: string } | null {
+  if (!src) return null
+  const at = formatTimeMin(src.reportTime)
+  return {
+    label: `${src.shortLabel}より`,
+    // 時刻を読めない電文では時刻だけ落とす。注記そのものは出す ——
+    // 「どの電文から借りたか」は時刻が無くても伝わる。
+    title: at ? `${src.infoName}（${at} 発表）${what}` : `${src.infoName}${what}`,
+  }
+}
+
 function QuakeReportHeading({ reports, fallback }: { reports?: QuakeReportRecord[]; fallback: IssueType }) {
   return (
     <>
@@ -406,6 +428,17 @@ export function EarthquakeCard({
   const hasLocation = hasKnownEpicenter(hypocenter.latitude, hypocenter.longitude)
   // 規模・深さは位置と別に判定する（→ `hasHypocenterFacts`）
   const hasFacts = hasHypocenterFacts(hypocenter)
+  // 震源を別の種別の電文から借りたときの注記（→ `utils/borrowFromTsunami.ts`）。
+  //
+  // **短い語は等級を名乗らない**（「津波警報より」と書くと大津波警報の地震で一段軽く見える。
+  // → `docs/spec/quake-spec.md` §3）。正確な名乗りと発表時刻は説明へ回す。記号だけでは何を
+  // 指しているのか分からないので、`＊`（気象庁以外の観測点）と同じく説明を添える。
+  const hypocenterSourceNote = borrowedSourceNote(quake.hypocenterSource, 'で伝えられた震源です')
+  // 津波区分を津波電文の等級から借りたときの注記（同じ仕組み・同じ見た目）。
+  //
+  // **「伝えられた」とは書かない。** 気象庁が地震カードの区分として言った値ではなく、
+  // 津波電文の等級からアプリが写した値だから（→ `utils/borrowFromTsunami.ts`）。
+  const domesticTsunamiSourceNote = borrowedSourceNote(quake.domesticTsunamiSource, 'の等級から出した区分です')
   // 長周期の「観測情報の種類」から出す一文（値 2・4 のときだけ。→ `lpgmCategoryNote`）。
   // 条件と本文の両方で使うので一度だけ計算する。
   const categoryNote = lpgmCategoryNote(lpgm?.category)
@@ -882,6 +915,13 @@ export function EarthquakeCard({
               {formatCoordinate(hypocenter.latitude, hypocenter.longitude)}
             </div>
           )}
+          {/* 震源を別の種別の電文から借りたときの出どころ。**震源・座標のすぐ下に置く** ——
+              この欄が指しているのは震源であって、カード全体の出どころではない。 */}
+          {hypocenterSourceNote && (
+            <div className="text-xs text-secondary roomy:text-sm" title={hypocenterSourceNote.title}>
+              {hypocenterSourceNote.label}
+            </div>
+          )}
 
           {/* マグニチュード・深さ（2カラムグリッド） */}
           {hasFacts && (
@@ -935,6 +975,13 @@ export function EarthquakeCard({
           >
             {tsunamiInfo.text}
           </div>
+          {/* 津波区分を津波電文の等級から借りたときの出どころ。**区分のすぐ下に置く** ——
+              震源側の注記と同じ理由で、この欄が指しているのは区分であってカード全体ではない。 */}
+          {domesticTsunamiSourceNote && (
+            <div className="text-center text-xs text-secondary roomy:text-sm" title={domesticTsunamiSourceNote.title}>
+              {domesticTsunamiSourceNote.label}
+            </div>
+          )}
 
           {/* 固定付加文（その他）。長周期地震動の同じ枠と揃えて出す。 */}
           {quake.varCommentText && (

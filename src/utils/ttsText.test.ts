@@ -31,14 +31,21 @@ function makeQuake(over: {
     issue: { source: '気象庁', time: '2026-07-17T23:52:00+09:00', type: over.type ?? '遠地地震', correct: 'なし' },
     earthquake: {
       time: '2026-07-17T23:49:00+09:00',
-      hypocenter: {
-        name: over.name ?? 'メキシコ、チアパス州沿岸',
-        latitude: 14.4,
-        longitude: -93.0,
-        depth: over.depth ?? -1,
-        magnitude: over.magnitude ?? 7.4,
-        ...(over.magnitudeCondition && { magnitudeCondition: over.magnitudeCondition }),
-      },
+      // **震度速報は震源要素を持たない**（実電文に Earthquake 要素が無く、パーサーが震源名を
+      // 空・座標を -200・深さを -1・規模を NaN で埋める）。持たせたままにすると、借りた震源を
+      // 語る経路（→ `utils/borrowFromTsunami.ts`）が震度速報のテストでも走り、測りたい
+      // 地域の読み方と無関係な震源の文が混ざる。**震源を明示したテストはそちらを優先する**
+      // （`name` を渡した呼び出しは、震度速報でも震源を持つ形を意図している）。
+      hypocenter: over.type === '震度速報' && over.name === undefined
+        ? { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: NaN }
+        : {
+          name: over.name ?? 'メキシコ、チアパス州沿岸',
+          latitude: 14.4,
+          longitude: -93.0,
+          depth: over.depth ?? -1,
+          magnitude: over.magnitude ?? 7.4,
+          ...(over.magnitudeCondition && { magnitudeCondition: over.magnitudeCondition }),
+        },
       maxScale: over.maxScale ?? -1,
       domesticTsunami: over.domesticTsunami ?? 'なし',
     },
@@ -345,7 +352,7 @@ describe('earthquakeToText: 震度階級ごとの地域列挙', () => {
       ...base,
       earthquake: {
         ...base.earthquake,
-        hypocenter: { ...base.earthquake.hypocenter, name: '宮城県沖', latitude: 0, longitude: 0 },
+        hypocenter: { ...base.earthquake.hypocenter, name: '', latitude: 0, longitude: 0 },
       },
       points,
     }
@@ -446,7 +453,7 @@ describe('earthquakeToText: 階数の下限震度と地域数の許容超過', (
       ...base,
       earthquake: {
         ...base.earthquake,
-        hypocenter: { ...base.earthquake.hypocenter, name: '宮城県沖', latitude: 0, longitude: 0 },
+        hypocenter: { ...base.earthquake.hypocenter, name: '', latitude: 0, longitude: 0 },
       },
       points,
     }
@@ -1066,7 +1073,7 @@ describe('earthquakeToSegments: 続報は差分だけ読む', () => {
       ...base,
       earthquake: {
         ...base.earthquake,
-        hypocenter: { ...base.earthquake.hypocenter, name: over.name ?? '宮城県沖', latitude: 0, longitude: 0 },
+        hypocenter: { ...base.earthquake.hypocenter, name: over.name ?? '', latitude: 0, longitude: 0 },
       },
       points,
     }
@@ -1707,12 +1714,17 @@ describe('earthquakeToText: 座標テーブルが無いときの地域名', () =
     maxScale: IntensityScale,
     points: EarthquakePoint[],
   ): JMAQuake {
-    const base = makeQuake({ type, name: '新潟県中越地方', maxScale })
+    // **震度速報では震源を持たせない**（実電文どおり。→ `makeQuake` の注記）。持たせると
+    // 借りた震源を語る経路が走り、地域の読み方を測るこのテストに震源の文が混ざる。
+    const isPrompt = type === '震度速報'
+    const base = makeQuake({ type, ...(isPrompt ? {} : { name: '新潟県中越地方' }), maxScale })
     return {
       ...base,
       earthquake: {
         ...base.earthquake,
-        hypocenter: { ...base.earthquake.hypocenter, latitude: 0, longitude: 0, depth: 10, magnitude: 5.0 },
+        hypocenter: isPrompt
+          ? base.earthquake.hypocenter
+          : { ...base.earthquake.hypocenter, latitude: 0, longitude: 0, depth: 10, magnitude: 5.0 },
       },
       points,
     }
@@ -2678,7 +2690,7 @@ describe('読み上げの詳しさの設定', () => {
       ...base,
       earthquake: {
         ...base.earthquake,
-        hypocenter: { ...base.earthquake.hypocenter, name: '宮城県沖', latitude: 0, longitude: 0 },
+        hypocenter: { ...base.earthquake.hypocenter, name: '', latitude: 0, longitude: 0 },
       },
       points,
     }
