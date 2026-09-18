@@ -33,11 +33,27 @@
  *
  * 実電文そのものはリポジトリへ入れられない（配信元の利用規約。
  * → docs/spec/telegram-coverage-audit.md §2）。ここが書き出すのは**読み取った後の値**。
+ *
+ * ## 取得は共通の口を通す
+ *
+ * アーカイブの一覧・本体の取得は `telegram-audit/archive-cache.mjs` に集約してある。
+ * **素の `fetch` を書き足さないこと** —— 控えもレート制御も 429 のバックオフも通らず、
+ * 同じ日を何度でも取り直す形になる（→ `docs/spec/data-sources-spec.md` §2
+ * 「リクエスト数を抑える」）。控えは分類・日・アーカイブ id で引くので、
+ * **監査スクリプトが既に取った日はここでもリクエストを出さない**（逆も同じ）。
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import zlib from 'node:zlib'
 import { fileURLToPath } from 'node:url'
+import {
+  apiAuthHeader,
+  dayOf,
+  EARTHQUAKE_CLASSIFICATION,
+  listArchive,
+  loadArchiveTar,
+  runArchiveScript,
+  tarEntries,
+} from './telegram-audit/archive-cache.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const OUT = path.join(ROOT, 'src/data/test-estimated-intensity.json')
@@ -51,48 +67,26 @@ function arg(name: string, fallback: string): string {
   return hit ? hit.slice(name.length + 3) : fallback
 }
 
-function readApiKey(): string {
-  if (process.env.DMDATA_API_KEY) return process.env.DMDATA_API_KEY.trim()
-  const envPath = path.join(ROOT, '.env.local')
-  if (!fs.existsSync(envPath)) {
-    throw new Error(`.env.local がありません（${envPath}）。DMDATA_API_KEY を置いてください`)
-  }
-  const key = (fs.readFileSync(envPath, 'utf8').match(/^DMDATA_API_KEY=(.+)$/m) ?? [])[1]?.trim()
-  if (!key) throw new Error('.env.local に DMDATA_API_KEY がありません')
-  return key
-}
-
-function* tarEntries(buf: Buffer): Generator<{ name: string; body: Buffer }> {
-  let o = 0
-  while (o + 512 <= buf.length) {
-    const name = buf.subarray(o, o + 100).toString('utf8').replace(/\0.*$/, '')
-    if (!name) { o += 512; continue }
-    const size = parseInt(buf.subarray(o + 124, o + 136).toString('utf8').replace(/\0.*$/, '').trim(), 8) || 0
-    yield { name, body: buf.subarray(o + 512, o + 512 + size) }
-    o += 512 + Math.ceil(size / 512) * 512
-  }
-}
-
-async function main() {
+async function build() {
   const arrival = arg('arrival', '2026-07-28T10:03')
   const wanted = new Date(`${arrival}:00Z`).toISOString().slice(0, 16)
   if (wanted === 'Invalid Date'.slice(0, 16)) throw new Error(`--arrival を日時として読めません: ${arrival}`)
   // アーカイブは JST 日で束ねられている。発現時刻（UTC）から JST の日付を出す。
   const day = new Date(new Date(`${arrival}:00Z`).getTime() + 9 * 3600_000).toISOString().slice(0, 10)
-  const auth = { Authorization: 'Basic ' + Buffer.from(readApiKey() + ':').toString('base64') }
+  const auth = apiAuthHeader()
 
-  const u = new URL('https://api.dmdata.jp/v2/archive')
   // 両端より広く取らないと目的の日が返らない（→ CLAUDE.md「読み取りの変更はリプレイで確かめる」）。
   const from = new Date(new Date(`${day}T00:00:00Z`).getTime() - 86400000).toISOString().slice(0, 10)
   const to = new Date(new Date(`${day}T00:00:00Z`).getTime() + 86400000).toISOString().slice(0, 10)
-  u.searchParams.set('datetime', `${from}~${to}`)
-  u.searchParams.set('classification', 'telegram.earthquake')
-  u.searchParams.set('limit', '100')
-  const list = await (await fetch(u, { headers: auth })).json() as { items?: { date: string; url: string }[] }
-  const item = (list.items ?? []).find(i => i.date === day)
-  if (!item) throw new Error(`${day} のアーカイブが見つかりません`)
+  const items = await listArchive({ classification: EARTHQUAKE_CLASSIFICATION, from, to, auth })
+  // **1 日 1 分類につきアーカイブは 1 ファイル**なので先頭を採ってよい。他の 2 本
+  // （`build-test-quake` / `build-test-lpgm`）が全件をループするのは「1 ファイルの中に
+  // 同じ地震の電文が複数ある」からで、ファイルが複数あるからではない。
+  const item = items.find(i => dayOf(i).startsWith(day))
+  // 件数を添えるのは「一覧は取れたがその日が無い」と「一覧そのものが空」を区別するため。
+  if (!item) throw new Error(`${day} のアーカイブが見つかりません（一覧 ${items.length} 件）`)
 
-  const tar = zlib.gunzipSync(Buffer.from(await (await fetch(item.url, { headers: auth })).arrayBuffer()))
+  const tar = await loadArchiveTar({ classification: EARTHQUAKE_CLASSIFICATION, item, auth })
   const files = new Map<string, Buffer>()
   for (const e of tarEntries(tar)) files.set(e.name, e.body)
 
@@ -152,8 +146,14 @@ async function main() {
     lonIdx.push(Math.round(estimated.lon[i] * LON_STEPS))
     si.push(estimated.si[i])
   }
-  // 報ごとに変わるもの（識別子・発表時刻）はテスト側で作るので落とす。
-  const { id: _qid, eventId: _qeid, time: _qtime, ...quakeRest } = quake
+  // 報ごとに変わるもの（識別子・発表時刻・電文を数える鍵・電文が名乗った報番号）は
+  // テスト側で作るので落とす。**パーサーへ報ごとの項目を足したらここへも足すこと**
+  // （理由は `build-test-quake.ts` の同じ箇所。検査は `src/utils/testData.test.ts`）。
+  const {
+    id: _qid, eventId: _qeid, time: _qtime,
+    telegramKey: _qTelegramKey, reportSerial: _qReportSerial,
+    ...quakeRest
+  } = quake
   const out = {
     quake: quakeRest,
     estimated: {
@@ -173,4 +173,5 @@ async function main() {
   )
 }
 
-main().catch((e) => { console.error(e); process.exit(1) })
+runArchiveScript('アーカイブ（推計震度分布図のテストデータ）', build)
+  .catch((e) => { console.error(e); process.exit(1) })
