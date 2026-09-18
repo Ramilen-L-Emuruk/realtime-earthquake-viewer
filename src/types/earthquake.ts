@@ -389,6 +389,47 @@ export interface JMAQuake {
    * 見出しを `issue.type` 単独へ落とす。
    */
   reports?: QuakeReportRecord[]
+  /**
+   * 震源要素を別の種別の電文から借りたときの出どころ。→ {@link BorrowedFromTsunami}
+   *
+   * **震度速報は震源要素を持たない電文**だが、津波警報等（VTSE41/VTSE51）は同じ地震の
+   * 震源を載せて先に届く（能登 2024/1/1 の本震では、地震情報が震源を伝える 16:16 より
+   * 4 分早い 16:12 に「石川県能登地方・Ｍ７．４・ごく浅い」が届いていた）。その値を
+   * 借りて震度速報のカードへ出すとき、どの電文が伝えたのかをここに持つ。
+   *
+   * **借りていない（その電文自身が震源を伝えた）カードでは持たない。** 画面はこの有無で
+   * 出どころの注記を出し分けるので、常に埋めると自前の震源にまで注記が付く。
+   */
+  hypocenterSource?: BorrowedFromTsunami
+  /**
+   * 津波区分（`earthquake.domesticTsunami`）を津波電文の等級から借りたときの出どころ。
+   * → {@link BorrowedFromTsunami}
+   *
+   * **震源の印と分けて持つ。** 片方だけ自前の値へ置き換わる報がありうるので、1 つの印に
+   * 兼ねさせると残ったほうの出どころが画面から消える（→ `utils/borrowFromTsunami.ts`）。
+   */
+  domesticTsunamiSource?: BorrowedFromTsunami
+}
+
+/**
+ * 借りた値の出どころ（震源要素・津波区分に共通）。
+ * → {@link JMAQuake.hypocenterSource} / {@link JMAQuake.domesticTsunamiSource}
+ *
+ * **短い語は等級を名乗らないものにすること。** 画面には `shortLabel` を出すが、そこへ
+ * 「津波警報」と書くと、大津波警報へ引き上げられた地震で一段軽く見える
+ * （→ `docs/spec/quake-spec.md` §3「「警報等」を「津波警報」と書かない」）。正確な名乗りは
+ * `infoName` に持ち、記号に添える説明として出す。
+ */
+export interface BorrowedFromTsunami {
+  /** 画面の震源の行に添える短い語。等級を名乗らない（例: 津波情報） */
+  shortLabel: string
+  /**
+   * 電文が名乗る情報名（`Head/Title`）。実電文では「津波警報・津波注意報・津波予報」
+   * （VTSE41）と「津波情報」（VTSE51）。
+   */
+  infoName: string
+  /** その電文の発表時刻（`Head/ReportDateTime`）。説明に「16:12 発表」の形で添える */
+  reportTime: string
 }
 
 export type TsunamiGrade = 'MajorWarning' | 'Warning' | 'Watch' | 'Forecast' | 'Unknown'

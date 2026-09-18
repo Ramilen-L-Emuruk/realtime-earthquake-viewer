@@ -17,6 +17,8 @@ import {
   hasFollowTarget,
   hasUnreceivedFollowTarget,
   unreceivedChunkRange,
+  hasBorrowedHypocenterFollowTarget,
+  borrowedHypocenterChunkRange,
   spokenChunkIndices,
   type SpeechFollowSession,
   type SpeechRef,
@@ -36,8 +38,9 @@ function refNames(segments: SpeechSegment[]): string[][] {
         : r.kind === 'quakeFact' ? r.value
           : r.kind === 'unreceivedNote' ? '(未入電の説明)'
             : r.kind === 'telegramText' ? '(気象庁が書いた文)'
-              : r.kind === 'quakeObserved' ? '(その報の観測点)'
-                : r.name
+              : r.kind === 'borrowedHypocenter' ? '(借りた震源)'
+                : r.kind === 'quakeObserved' ? '(その報の観測点)'
+                  : r.name
     )))
 }
 
@@ -708,6 +711,63 @@ describe('hasTelegramTextFollowTarget', () => {
   it('区域や未入電の参照では、この門は開かない', () => {
     expect(hasTelegramTextFollowTarget([seg('岩手県', area('岩手県', '210'))])).toBe(false)
     expect(hasTelegramTextFollowTarget([{ text: '未入電です。', refs: [{ kind: 'unreceivedNote' }] }])).toBe(false)
+  })
+})
+
+// 借りた震源のカード表示の門（4 本目）。**他の 3 つと別に持つ**という設計を排他性まで固定する。
+describe('hasBorrowedHypocenterFollowTarget', () => {
+  const borrowedSeg: SpeechSegment = {
+    text: 'この地震の震源は石川県能登地方、ごく浅い場所、マグニチュードは7.4です。',
+    refs: [{ kind: 'borrowedHypocenter' }],
+  }
+
+  // 正
+  it('借りた震源の参照があれば真', () => {
+    expect(hasBorrowedHypocenterFollowTarget([borrowedSeg])).toBe(true)
+  })
+
+  // 対照
+  it('参照が無ければ偽（津波の等級だけを読む文で始めない）', () => {
+    expect(hasBorrowedHypocenterFollowTarget([plain('大津波警報が発表されました。')])).toBe(false)
+    expect(hasBorrowedHypocenterFollowTarget(undefined)).toBe(false)
+  })
+
+  // 安全弁: **他の 3 つの門はこの参照に反応しない。** 相乗りすると、震源を語っているあいだに
+  // 津波カードが動く・未入電の一覧が開く・気象庁の文が開く。
+  it('津波カード・未入電・気象庁の文の門は、この参照では開かない', () => {
+    expect(hasFollowTarget([borrowedSeg])).toBe(false)
+    expect(hasUnreceivedFollowTarget([borrowedSeg])).toBe(false)
+    expect(hasTelegramTextFollowTarget([borrowedSeg])).toBe(false)
+  })
+
+  // 対照（逆向き）: 他の参照でこの門が開かない
+  it('区域・未入電・気象庁の文の参照では、この門は開かない', () => {
+    expect(hasBorrowedHypocenterFollowTarget([seg('岩手県', area('岩手県', '210'))])).toBe(false)
+    expect(hasBorrowedHypocenterFollowTarget([{ text: '未入電です。', refs: [{ kind: 'unreceivedNote' }] }])).toBe(false)
+    expect(hasBorrowedHypocenterFollowTarget([{ text: '気象庁の文です。', refs: [{ kind: 'telegramText' }] }])).toBe(false)
+  })
+})
+
+// 範囲は実データから求める（「文の末尾まで」と決め打たない）。
+describe('borrowedHypocenterChunkRange', () => {
+  const borrowed = (): SpeechRef => ({ kind: 'borrowedHypocenter' })
+
+  // 正: 印の付いたチャンクの最初と最後を返す
+  it('印の付いたチャンクの範囲を返す', () => {
+    const refsPerChunk: SpeechRef[][] = [[], [area('岩手県', '210')], [borrowed()], [borrowed()], []]
+    expect(borrowedHypocenterChunkRange(refsPerChunk)).toEqual({ first: 2, last: 3 })
+  })
+
+  // 対照: 印が無ければ null（セッションを立てない側の判断と揃う）
+  it('印が 1 つも無ければ null', () => {
+    expect(borrowedHypocenterChunkRange([[area('岩手県', '210')], []])).toBeNull()
+    expect(borrowedHypocenterChunkRange([])).toBeNull()
+  })
+
+  // 安全弁: **他の種類の印を拾わない。** 拾うと、未入電や気象庁の文を読んでいる最中に
+  // 地震カードへ画面が飛ぶ。
+  it('未入電・気象庁の文の印では範囲を作らない', () => {
+    expect(borrowedHypocenterChunkRange([[{ kind: 'unreceivedNote' }], [{ kind: 'telegramText' }]])).toBeNull()
   })
 })
 

@@ -15,6 +15,7 @@ import {
 } from '../utils/telegramLoss'
 import { mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes, extractQuakeEventId, quakeEventKey, coalesceByEventId, findExistingQuakeCard, isRetractedQuakeReport, quakeRetractionOf, addQuakeRetraction } from '../utils/quakeMerge'
 import type { QuakeRetraction } from '../utils/quakeMerge'
+import { withBorrowedFromTsunami, borrowFromTsunamiIntoCards } from '../utils/borrowFromTsunami'
 import { loadStationCoords, onStationCoordsLoaded, buildAreaPrefIndex, getAreaPrefIndexCache } from '../utils/stationCoords'
 import type { AreaPrefIndex } from '../utils/quakePoints'
 import { calcEEWCancelTime, eewSerial, eewEventKey } from '../utils/eew'
@@ -1249,8 +1250,18 @@ export function useEarthquakes(
             return prev
           }
           const existing = findExistingQuakeCard(prev.earthquakes, quake, getAreaPrefIndexCache())
-          const merged = mergeQuakeInto(existing, quake)
-          if (merged === existing) return prev
+          const mergedCard = mergeQuakeInto(existing, quake)
+          if (mergedCard === existing) return prev
+          // 震源が未確定のまま残ったら、同じ地震の津波電文が載せている震源を借りる。
+          // 津波警報を伴う地震では、気象庁は地震情報より先に津波電文で震源を伝える
+          // （能登 2024/1/1 は 16:12 の津波警報が最初の震源で、地震情報は 16:16）。
+          //
+          // **統合の後に置くこと。** 既存カードが地震情報由来の震源を持っていれば
+          // `mergeQuakeInto` がそちらを補うので、借り物で上書きしなくなる。
+          // **据え置き（`mergedCard === existing`）の経路は上で抜けている** —— そこで借りると
+          // 中身が同じでも参照だけが変わり、「変化なし＝同一参照」の約束が崩れる。
+          // 津波が後から届く順序は、下の 'tsunami' 側が拾う。
+          const merged = withBorrowedFromTsunami(mergedCard, prev.tsunamis)
           // 統合の結果、暫定 ID で作られたカードが確定 ID を持つカードと重複することがある。
           // 履歴経路（mergeQuakeHistory）と同じ畳み込みをここでも通す（理由は coalesceByEventId）。
           //
@@ -1312,7 +1323,16 @@ export function useEarthquakes(
             // 履歴からの復元（`withInheritedTsunamiFacts`）との間で片方だけに項目が足され、
             // 「ライブ受信では出るのにリロードすると消える」形の欠落が生まれる（実際に
             // 繰り返し起きた）。何をどう引き継ぐかはあちらの表を見ること。
-            return { ...prev, tsunamis: [mergeTsunamiReports(current, tsunami)], lastUpdate: now }
+            const mergedTsunami = mergeTsunamiReports(current, tsunami)
+            return {
+              ...prev,
+              tsunamis: [mergedTsunami],
+              // 津波が先に震源を伝える順序を拾う（→ `borrowFromTsunamiIntoCards`）。
+              // 続報でも配り直すのは、津波電文の震源が更新されるため（能登では 16:22 に
+              // Ｍ７．４→Ｍ７．６。地震情報が同じ更新を伝えるのは 2 分後の 16:24）。
+              earthquakes: borrowFromTsunamiIntoCards(prev.earthquakes, [mergedTsunami]),
+              lastUpdate: now,
+            }
           }
           // TSU-3: 別 eventId の tsunami で既存を上書きするケースを検知したら警告する。
           // 実装は 1 件スロットのまま（複数同時発表は稀なため型変更はスコープ外）だが、
@@ -1321,7 +1341,13 @@ export function useEarthquakes(
               && current.eventId !== tsunami.eventId && !current.cancelledAt) {
             log.warn(`[tsunami] 別 eventId の tsunami で上書き（複数同時発表・実装は 1 件スロット）: prev=${current.eventId} next=${tsunami.eventId}`)
           }
-          return { ...prev, tsunamis: [tsunami], lastUpdate: now }
+          return {
+            ...prev,
+            tsunamis: [tsunami],
+            // 続報側と同じ理由（→ `borrowFromTsunamiIntoCards`）。
+            earthquakes: borrowFromTsunamiIntoCards(prev.earthquakes, [tsunami]),
+            lastUpdate: now,
+          }
         }
         case 'eew': {
           const eew = event as EEWAlert
@@ -1593,7 +1619,7 @@ export function useEarthquakes(
         // 同じ部分結果を重ねて当てても結果は変わらない）。
         setState(prev => ({
           ...prev,
-          earthquakes: mergeQuakeHistory(partial, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache()),
+          earthquakes: borrowFromTsunamiIntoCards(mergeQuakeHistory(partial, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache()), prev.tsunamis),
           lastUpdate: serverDate(),
         }))
         // **触るのは地震だけ。** 津波・長周期・補助情報は別経路で、ここで混ぜると
@@ -1660,7 +1686,9 @@ export function useEarthquakes(
             // ライブで届いた地震が最後に消える。取得が 6 秒に 1 件へ直列化されたことで
             // その窓が数分に伸びたため、取りこぼしが実際に起きうる
             // （→ `services/telegramBody.ts` の取得間隔）。
-            earthquakes: mergeQuakeHistory(quakeEvents, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache()),
+            // **貸し手は同じ更新で復元する `tsunamis`。`prev.tsunamis` ではない** ——
+            // 起動時の復元では前の状態が空なので、そちらを見ると 1 枚も借りられない。
+            earthquakes: borrowFromTsunamiIntoCards(mergeQuakeHistory(quakeEvents, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache()), tsunamis),
             tsunamis,
             lpgmByEventId,
             lastUpdate: serverDate(),
@@ -1864,7 +1892,10 @@ export function useEarthquakes(
         p2pRawOffsetRef.current = quakeEvents.length
         setState(prev => ({
           ...prev,
-          earthquakes,
+          // ライブ経路・DMDSS の復元と同じ扱いを通す。**standard 版では貸し手が居ない**
+          // （P2PQuake は津波電文の原因地震を配信しない）ので実際には何も変わらないが、
+          // 経路ごとに扱いを違えない —— 片方だけ直すと、次に触る人がどちらが正なのか判らない。
+          earthquakes: borrowFromTsunamiIntoCards(earthquakes, tsunamis),
           tsunamis,
           lastUpdate: serverDate(),
           isLoading: false,
@@ -1973,7 +2004,7 @@ export function useEarthquakes(
           rememberQuakeRetractionsFromBatch(partial)
           setState(prev => ({
             ...prev,
-            earthquakes: mergeQuakeHistory(partial, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache()),
+            earthquakes: borrowFromTsunamiIntoCards(mergeQuakeHistory(partial, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache()), prev.tsunamis),
           }))
         }
         // **目標件数を増やして呼び直す。** カーソルは使わない —— アーカイブ経由は件数基準で
@@ -2009,7 +2040,7 @@ export function useEarthquakes(
             const existing = lpgmByEventId.get(lpgm.eventId)
             if (!existing || lpgm.time > existing.time) lpgmByEventId.set(lpgm.eventId, lpgm)
           }
-          const merged = mergeQuakeHistory(events, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache())
+          const merged = borrowFromTsunamiIntoCards(mergeQuakeHistory(events, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache()), prev.tsunamis)
           return {
             ...prev,
             earthquakes: merged,
@@ -2040,7 +2071,7 @@ export function useEarthquakes(
         rememberQuakeRetractionsFromBatch(events)
         setState(prev => ({
           ...prev,
-          earthquakes: mergeQuakeHistory(events, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache()),
+          earthquakes: borrowFromTsunamiIntoCards(mergeQuakeHistory(events, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache()), prev.tsunamis),
           hasMore: events.length === LOAD_MORE_BATCH,
           // 成功したので、押し直せば回復しうる側の表示は消す（DMDSS 版と揃える）
           loadMoreFailed: false,
@@ -2179,6 +2210,22 @@ export function useEarthquakes(
   const simulateQuakeReportSequence = useCallback(async () => {
     const { createTestQuakeReportSequence } = await loadTestData()
     for (const report of createTestQuakeReportSequence(isDmdss)) {
+      eventQueueRef.current.push({ eventTime: new Date(report.time), payload: { kind: 'event', event: report } })
+    }
+  }, [])
+
+  /**
+   * 震源を津波電文から借りる場面のテスト（→ `createTestHypocenterFromTsunami`）。
+   *
+   * **受信と同じ経路（イベントキュー）へ積む。** 借りる処理は状態更新と読み上げの両方に
+   * 入っているので、`handleEvent` を直接呼ぶと片方しか踏まない。
+   *
+   * **DMDSS 版のみ。** P2PQuake は津波電文の原因地震を配信しないため、standard 版では
+   * 借りる相手が居ない。
+   */
+  const simulateHypocenterFromTsunami = useCallback(async () => {
+    const { createTestHypocenterFromTsunami } = await loadTestData()
+    for (const report of createTestHypocenterFromTsunami()) {
       eventQueueRef.current.push({ eventTime: new Date(report.time), payload: { kind: 'event', event: report } })
     }
   }, [])
@@ -2488,7 +2535,7 @@ export function useEarthquakes(
   const restoreQuakeHistory = useCallback((quakes: JMAQuake[]) => {
     if (quakes.length === 0) return
     rememberQuakeRetractionsFromBatch(quakes)
-    setState(prev => ({ ...prev, earthquakes: mergeQuakeHistory(quakes, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache()) }))
+    setState(prev => ({ ...prev, earthquakes: borrowFromTsunamiIntoCards(mergeQuakeHistory(quakes, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache()), prev.tsunamis) }))
   }, [])
 
   const loadReplayEvents = useCallback((entries: import('../types/replay').ReplayEntry[]) => {
@@ -2511,6 +2558,7 @@ export function useEarthquakes(
     simulateQuakeNotice, simulateEarthquakeCount, simulateEarthquakeCountRetraction, simulateEstimatedIntensity,
     simulateTrainingQuake, simulateUnreceivedQuake, simulateTsunamiGradeChange, simulateQuakeAmendment,
     simulateQuakeReportSequence,
+    simulateHypocenterFromTsunami,
     resetState,
     loadReplayEvents,
     restoreQuakeHistory,

@@ -128,7 +128,14 @@ function makeQuake(
     issue: { source: 'JMA', time: at, type: over.type ?? '震度速報', correct: 'なし' },
     earthquake: {
       time: at,
-      hypocenter: { name: over.name ?? '石川県能登地方', latitude: 0, longitude: 0, depth: 10, magnitude: over.magnitude ?? 5.2 },
+      // **震度速報は震源要素を持たない**（実電文に Earthquake 要素が無く、パーサーが
+      // 震源名を空・座標を -200・深さを -1・規模を NaN で埋める）。持たせたままにすると、
+      // 借りた震源を語る経路（→ `utils/borrowFromTsunami.ts`）がこのテストでも走り、
+      // 測りたい既読の進み方と無関係な震源の文が混ざる。
+      // 他の種別では従来どおり震源を持たせる（座標 0 は震源距離での並べ替えを通さないため）。
+      hypocenter: (over.type ?? '震度速報') === '震度速報' && over.name === undefined
+        ? { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: NaN }
+        : { name: over.name ?? '石川県能登地方', latitude: 0, longitude: 0, depth: 10, magnitude: over.magnitude ?? 5.2 },
       maxScale,
       domesticTsunami: 'なし',
     },
@@ -175,6 +182,128 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
+})
+
+/**
+ * 震源を持たない震度速報（実電文どおり震源名が空）。
+ *
+ * `makeQuake` の震度速報は既にこの形（宣言箇所の注記）なので、これは意図を名前で示すための
+ * 薄い別名。借りる経路を測るテストが「震源を持たない電文を流している」ことを読めるようにする。
+ */
+function makePromptWithoutHypocenter(points: EarthquakePoint[], over: { eventId?: string } = {}): JMAQuake {
+  return makeQuake(points, over)
+}
+
+/** 読み上げ文の最後（`Array.prototype.at` は tsconfig の lib に無い）。 */
+function lastSpoken(): string {
+  const texts = spokenTexts()
+  return texts[texts.length - 1]
+}
+
+/** 原因地震（震源）を載せた津波警報。`eventId` を地震側と揃えると借りられる。 */
+function makeTsunamiWithSource(over: { eventId?: string; magnitude?: number; grade?: 'Warning' | 'MajorWarning' } = {}): JMATsunami {
+  const at = '2026-01-01T12:00:00Z'
+  const eventId = over.eventId ?? '20260101210000'
+  return {
+    kind: 'tsunami',
+    id: `test-tsunami-${eventId}-${over.grade ?? 'Warning'}`,
+    eventId,
+    time: at,
+    cancelled: false,
+    infoName: '津波警報・津波注意報・津波予報',
+    issue: { source: 'JMA', time: at, type: 'Focus' },
+    areas: [{ grade: over.grade ?? 'Warning', immediate: true, name: '石川県能登' }],
+    sourceEarthquakes: [{
+      hypocenterName: '石川県能登地方',
+      magnitude: over.magnitude ?? 7.4,
+      originTime: at,
+      latitude: 37.5,
+      longitude: 137.2,
+      depth: 0,
+    }],
+  } as JMATsunami
+}
+
+// 読み上げ文は**受信した電文から組む**（画面のカードは state 側で別に補完される）。ここで
+// 補完を通し忘れると、画面には震源が出ているのに声にだけ出ない形になる。実電文では、震度速報が
+// 7 通届くあいだ震源はどこにも無く、津波警報だけが持っていた（能登 2024/1/1）。
+// 津波警報を伴う地震では、気象庁は地震情報より先に津波電文で震源を伝える（能登 2024/1/1 は
+// 津波警報 16:12・地震情報 16:16）。**その震源を声にするのは津波の読み上げ**で、震度速報では
+// 語らない —— 気象庁は震度速報で震源を発表していないので、そこで語ると震源情報（VXSE52）を
+// 受け取ったように聞こえる。画面のカードには出どころ付きで出す。
+describe('津波の読み上げが原因地震の震源を語る', () => {
+  const areas = [area('石川県', '石川県能登', 40)]
+
+  it('正: 津波の読み上げの末尾で、原因地震の震源を語る', async () => {
+    const handle = setup()
+    handle(makeTsunamiWithSource() as never)
+    await settle()
+    expect(spokenTexts()[0]).toContain('この地震の震源は石川県能登地方')
+    expect(spokenTexts()[0]).toContain('マグニチュードは7.4')
+  })
+
+  it('正: 等級・行動・区域を言い終えてから震源を言う', async () => {
+    const handle = setup()
+    handle(makeTsunamiWithSource() as never)
+    await settle()
+    const text = spokenTexts()[0]
+    // 避難の呼びかけより後ろに置く（→ audio-tts-spec §4「等級と行動を先に言い切る」）。
+    expect(text.indexOf('この地震の震源は')).toBeGreaterThan(text.indexOf('海岸から離れてください'))
+  })
+
+  // 対照: 同じ震源を載せた続報が何通も届くので、一度声にしたら繰り返さない。
+  // **等級が上がる続報で確かめる** —— 中身が同じ続報では読み上げ自体が起きないため、
+  // そちらで見ると「語らなかった」のか「そもそも読み上げが無かった」のか区別が付かない。
+  it('対照: 既に震源を声にしていれば、津波の続報では語らない', async () => {
+    const handle = setup()
+    handle(makeTsunamiWithSource() as never)
+    await settle()
+    await playSpeech(0, speeches[0].chunks.length)
+
+    handle(makeTsunamiWithSource({ grade: 'MajorWarning' }) as never)
+    await settle()
+    // 等級の引き上げは読み上げられる（＝この報でも読み上げは起きている）。
+    expect(lastSpoken()).toContain('大津波警報')
+    expect(lastSpoken()).not.toContain('この地震の震源は')
+  })
+
+  // 安全弁: 借りた震源を読み上げ経路へ持ち込まない。
+  //
+  // **語らないだけでは足りない。** `earthquakeToSegments` は震源を区域の選抜
+  // （`selectRegionNames`）へも渡していて、座標が入ると並びが気象庁の標準順から**震源距離順**へ
+  // 反転する。読む区域と「ほか○地域」へ丸める区域の集合まで変わるので、震源を語らなくても
+  // 借りた値を渡すだけで読み上げの中身が変わってしまう。
+  //
+  // **並びが両者で変わる組を選ぶこと。** 震源（石川県能登地方）に近い区域を標準順で後ろに置く
+  // ——「石狩地方南部（北海道）」は標準順では先頭側だが、震源からは遠い。同じ順になる組で
+  // 確かめると、借りが復活しても気づけない。
+  it('安全弁: 津波から震源を借りても、震度速報の区域は標準順のまま', async () => {
+    const handle = setup()
+    handle(makeTsunamiWithSource() as never)
+    await settle()
+    await playSpeech(0, speeches[0].chunks.length)
+
+    handle(makePromptWithoutHypocenter([
+      area('北海道', '石狩地方南部', 40),
+      area('石川県', '石川県能登', 40),
+    ]))
+    await settle()
+    // 震源距離順なら「石川県能登、石狩地方南部」になる。
+    expect(lastSpoken()).toContain('石狩地方南部、石川県能登')
+  })
+
+  // 安全弁: 震度速報は震源を語らない。借りた震源は画面のカードにだけ出す。
+  it('安全弁: 震度速報は震源を語らない', async () => {
+    const handle = setup()
+    handle(makeTsunamiWithSource() as never)
+    await settle()
+    await playSpeech(0, speeches[0].chunks.length)
+
+    handle(makePromptWithoutHypocenter(areas))
+    await settle()
+    expect(lastSpoken()).not.toContain('この地震の震源は')
+    expect(lastSpoken()).not.toContain('石川県能登地方')
+  })
 })
 
 describe('地震情報の続報: 既読は声になった分だけ進む', () => {

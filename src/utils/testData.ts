@@ -1341,6 +1341,102 @@ function tsunamiOriginDate(now: Date): Date {
 // standard 版でこれらを持たせると、実運用では通らない経路（eventId による同一性判定・
 // 期限切れ失効）をテストだけが通ってしまうため、バリアントに合わせて省く。
 // @param withDmdssFields DMDSS 版のとき true
+/** 震源を津波から借りるテストの、電文と電文のあいだ（秒）。実電文の 1 分間隔を詰めたもの。 */
+const TEST_HYPOCENTER_BORROW_STEP_SEC = 4
+
+/**
+ * 震源を津波電文から借りる場面のテスト（2024 年能登半島地震の本震と同じ順序）。
+ *
+ * 実電文では、震度速報が 16:11〜16:14 に 7 通届くあいだ**震源がどこにも無く**、16:12 の
+ * 津波警報が最初に「石川県能登地方・Ｍ７．４・ごく浅い」を伝えた。地震情報として震源が
+ * 届くのは 16:16。揺れがいちばん強い数分間、震源だけが画面から消えるのはこのため。
+ *
+ * 流す順序（実電文を詰めたもの）:
+ *   1. 震度速報（最大震度6強・震源なし）
+ *   2. 津波警報（Ｍ７．４。**ここで震度速報のカードに震源が入る**）
+ *   3. 震度速報の続報（最大震度7・震源はやはり無い＝借りたまま保つことを見る）
+ *   4. 津波の続報（Ｍ７．６へ更新。実電文では 16:22 で、地震情報の更新 16:24 より 2 分早い）
+ *
+ * **DMDSS 版のみ。** P2PQuake は津波電文の原因地震を配信しないので、standard 版では
+ * 借りる相手が居ない（ボタン自体を DMDSS 版に限っている）。
+ */
+export function createTestHypocenterFromTsunami(): (JMAQuake | JMATsunami)[] {
+  const base = createTestEarthquake(true)
+  const eventId = base.eventId ?? ''
+  const baseMs = new Date(base.time).getTime()
+  const at = (step: number) => new Date(baseMs + step * TEST_HYPOCENTER_BORROW_STEP_SEC * 1000).toISOString()
+  // 震度速報が運ぶのは区域と都道府県の点だけ（観測点は震源・震度情報から届く）。
+  const areaPoints = (base.points as EarthquakePoint[]).filter(p => p.isArea)
+  const maxScaleOf = (points: EarthquakePoint[]): IntensityScale =>
+    points.reduce<IntensityScale>((max, p) => (p.scale > max ? p.scale : max), -1)
+  // 1 通目は揺れの強い区域から 6 割だけ。続報で全区域そろい、最大震度が上がる。
+  const firstPoints = [...areaPoints].sort((a, b) => b.scale - a.scale).slice(0, Math.ceil(areaPoints.length * 0.6))
+
+  const prompt = (step: number, points: EarthquakePoint[]): JMAQuake => {
+    const time = at(step)
+    return {
+      ...base,
+      telegramKey: time,
+      time,
+      issue: { ...base.issue, time, type: '震度速報' },
+      earthquake: {
+        ...base.earthquake,
+        // **震源要素を持たせない。** 実際の VXSE51 は電文に Earthquake 要素が無く、パーサーは
+        // 震源名を空・座標を -200・深さを -1・規模を NaN で埋める。ここで値を入れると、
+        // 借りる経路がテストで一度も通らない。
+        hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: NaN },
+        maxScale: maxScaleOf(points),
+        // 種別に付く定型文で、その報の判断ではない（→ docs/spec/quake-spec.md §6.4）。
+        domesticTsunami: '調査中',
+      },
+      points,
+      // 市町村の段は震源・震度情報だけが運ぶ。
+      cities: undefined,
+    }
+  }
+
+  const tsunami = (step: number, magnitude: number, infoName: string): JMATsunami => {
+    const time = at(step)
+    return {
+      kind: 'tsunami',
+      id: `test-tsunami-hypo-${eventId}-${step}`,
+      // **地震側と同じ `eventId` にする。** 借りる条件はこの一致だけで、食い違えば借りない
+      // （→ `utils/borrowFromTsunami.ts`）。揃えないとテストが何も確かめない。
+      eventId,
+      time,
+      cancelled: false,
+      infoName,
+      issue: { source: 'テスト', time, type: 'Focus' },
+      areas: [
+        { grade: 'MajorWarning', immediate: true, name: '石川県能登' },
+        { grade: 'Warning', immediate: false, name: '新潟県上中下越' },
+        { grade: 'Warning', immediate: false, name: '富山県' },
+      ],
+      // 16:12 の実電文が載せていた値（座標・深さ・震央補助表現まで実物どおり）。
+      sourceEarthquakes: [{
+        hypocenterName: '石川県能登地方',
+        magnitude,
+        magnitudeType: 'Mj',
+        originTime: base.earthquake.time,
+        latitude: 37.5,
+        longitude: 137.2,
+        // **0 は「ごく浅い」という有効値。** -1（読めなかった）と混ぜない。
+        depth: 0,
+        nameFromMark: '輪島の東北東３０ｋｍ付近',
+      }],
+    }
+  }
+
+  return [
+    prompt(0, firstPoints),
+    // 実電文の名乗りは `Head/Title`。VTSE41 は「津波警報・津波注意報・津波予報」。
+    tsunami(1, 7.4, '津波警報・津波注意報・津波予報'),
+    prompt(2, areaPoints),
+    // 続報は VTSE51「津波情報」。規模だけが上がる。
+    tsunami(3, 7.6, '津波情報'),
+  ]
+}
+
 export function createTestTsunamiForecast(withDmdssFields: boolean): JMATsunami {
   const now = serverDate()
   const nowIso = now.toISOString()
