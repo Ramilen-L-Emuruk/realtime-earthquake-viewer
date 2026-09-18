@@ -1553,7 +1553,11 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   // その範囲に未入電の観測点しか無い場合は **`MaxInt` 要素そのものが出現しない**（未入電の
   // 文字列は入らない）。実電文 853 通でも `MaxInt` に現れたことは無い。
   // 仕様が変わってここへ入った場合に `-1` へ落として最大震度を失わないよう、読めるようにだけ
-  // しておく。**この保険が働かない限り `isMaxScaleUnreceived` は真にならない。**
+  // しておく。
+  //
+  // **この保険と `isMaxScaleUnreceived` の真偽は別の話。** あの述語は `MaxInt` を見ておらず、
+  // 最大震度と観測点の階級が一致するかだけを見るので、**観測できた最大が5弱の地震**では
+  // 保険が働かなくても真になる（→ `utils/quakePoints.ts`）。
   const obsEl = xmlQ(doc, 'Observation')
   const maxIntStr = obsEl ? xmlText(xmlQ(obsEl, 'MaxInt')) : ''
   const { scale: maxScale } = readIntensity(maxIntStr || null)

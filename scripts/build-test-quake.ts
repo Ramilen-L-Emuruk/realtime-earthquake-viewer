@@ -14,8 +14,9 @@
  * ## 使い方
  *
  * ```
- * npm run build-test-quake              # 地震テスト（能登半島地震の本震）
- * npm run build-test-quake-unreceived   # 未入電テスト（日向灘 2022-01-22）
+ * npm run build-test-quake                   # 地震テスト（能登半島地震の本震）
+ * npm run build-test-quake-unreceived        # 未入電テスト（日向灘 2022-01-22）
+ * npm run build-test-quake-max-unreceived    # 最大震度が「以上」になるテスト（石川県西方沖 2024-11-26）
  * ```
  *
  * **要 DMDATA.JP API キー**（リポジトリ直下の `.env.local` の `DMDATA_API_KEY`。
@@ -31,6 +32,7 @@
  * | `--event=<EventID>` | 電文の `EventID`（14 桁）。既定は能登半島地震の本震 |
  * | `--out=<パス>` | 書き込み先。リポジトリ直下からの相対パスで、**`src/data` 直下に限る** |
  * | `--require-city-unreceived` | 市町村の未入電（`City/Condition`）を持つ電文であることを要求する |
+ * | `--require-max-scale-unreceived` | 電文全体の最大震度と同じ階級に未入電の観測点があることを要求する |
  *
  * **データごとの引数は `package.json` の script に焼く。** 手で打つ形にしておくと、
  * `--require-city-unreceived` のような検査の指定を落としたまま実行できてしまい、
@@ -56,6 +58,9 @@ import {
   runArchiveScript,
   tarEntries,
 } from './telegram-audit/archive-cache.mjs'
+// 最大震度が「以上」になるかの判定は**実装と同じ述語を通す**。ここで数え方を書き写すと、
+// 本体の判定を変えたときに検査だけ古い条件のまま通り続ける。
+import { isMaxScaleUnreceived } from '../src/utils/quakePoints'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 /** 既定の出力先。**ラベルにも使う**ので定数にしてある（下記の呼び出し）。 */
@@ -89,6 +94,7 @@ async function build() {
   const eventId = arg('event', '20240101161010')
   const out = resolveOut(arg('out', DEFAULT_OUT))
   const requireCityUnreceived = flag('require-city-unreceived')
+  const requireMaxScaleUnreceived = flag('require-max-scale-unreceived')
   const day = arg('date', `${eventId.slice(0, 4)}-${eventId.slice(4, 6)}-${eventId.slice(6, 8)}`)
   const auth = apiAuthHeader()
 
@@ -162,13 +168,27 @@ async function build() {
     throw new Error(`${picked.name}: 市町村の未入電（City/Condition）が 1 件もありません`)
   }
 
+  // 電文全体の最大震度に「以上」が付くか（→ quake-spec.md §4「震度5弱以上未入電」）。
+  // **観測できた最大が5弱の地震でしか起きない** —— 未入電の観測点は下限の 45（5弱）へ
+  // 寄せてあるので、最大震度が 45 のときだけ階級が一致する。
+  const maxScale = rest.earthquake?.maxScale
+  const maxScaleUnreceived = maxScale === undefined
+    ? false
+    : isMaxScaleUnreceived(maxScale, rest.points ?? [])
+  if (requireMaxScaleUnreceived && !maxScaleUnreceived) {
+    throw new Error(
+      `${picked.name}: 最大震度（${maxScale}）と同じ階級の未入電の観測点がありません`
+      + '（この電文では最大震度に「以上」が付きません）',
+    )
+  }
+
   fs.writeFileSync(out, JSON.stringify(rest), 'utf8')
   console.log(
     `${picked.name} から作りました: 点 ${rest.points?.length ?? 0}`
     + `（うち市町村に紐付いた観測点 ${withCity}・未入電の観測点 ${(rest.points ?? []).filter(p => p.unreceived).length}）`
     + `・市町村 ${rest.cities?.length ?? 0}`
     + `（未入電あり ${cityHasUnreceived}・値そのものが未入電 ${cityUnreceived}）`
-    + `・最大震度 ${rest.earthquake?.maxScale}`
+    + `・最大震度 ${maxScale}${maxScaleUnreceived ? '（「以上」が付く）' : ''}`
     + ` → ${path.relative(ROOT, out)}`,
   )
 }
