@@ -3914,8 +3914,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     /**
      * **録画モードでは、窓の手前で伝えた内容も「もう伝えた」として扱う。**
      *
-     * 通常の再生で復元しないのは「窓から聞き始めた人は一度も聞いていない」ため（下の地震の
-     * 分岐を参照）。録画は区間を繋いで 1 本の動画にするので、その前提が成り立たない ——
+     * 通常の再生で復元しないのは「窓から聞き始めた人は一度も聞いていない」ため（`restoreOne` の
+     * 地震の分岐に理由がある）。録画は区間を繋いで 1 本の動画にするので、その前提が成り立たない ——
      * 前の区間で既に画面にも声にも出ている。復元しないと区間の境目で同じ長文を読み直す。
      */
     const recording = settingsRef.current.recordingMode
@@ -3934,22 +3934,12 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
      */
     const quakeTopicFor = createPreWindowQuakeTopics()
     /**
-     * 録画モードの復元を 1 件ぶん行う。**例外で復元ループごと止めないこと。**
-     *
-     * ここが呼ぶのは読み上げ文を組む処理（`telegramTextToSpeak` / `earthquakeToSegments`）で、
-     * 単なる ref の更新よりはるかに多くの分岐を通る。1 通の異常な過去電文で投げると、
-     * 呼び出し元（`useReplayController`）の `catch` まで飛んで**「リプレイデータ取得失敗」として
-     * 扱われ、電文の再生自体が始まらない** —— 原因と表示が食い違ううえ、どの電文で失敗したかも残らない。
+     * 電文 1 通ぶんの復元。**呼び出し側のループが 1 通ずつ例外を受け止める。**
      */
-    const restoreForRecording = (payload: ReplayPayload, run: () => void) => {
-      try { run() } catch (err) {
-        log.warn(`[replay] 録画モードの既読復元に失敗しました（この電文だけ飛ばします）: kind=${payload.kind}`, err)
-      }
-    }
-    for (const { payload } of preFiltered) {
+    const restoreOne = (payload: ReplayPayload) => {
       // 気象庁が書いた文は電文の種別を問わないので、種別ごとの分岐より先に見る。
       if (recording) {
-        restoreForRecording(payload, () => rememberTelegramTextAsSpoken(payload, spokenTelegramTextRef.current, opts))
+        rememberTelegramTextAsSpoken(payload, spokenTelegramTextRef.current, opts)
       }
       if (payload.kind === 'event') {
         const ev = payload.event
@@ -3978,17 +3968,48 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             // 渡すと既読にする区域の集合まで震源距離順で切られる（ライブ側と同じ副作用）。
             // 地震電文の側は震源を語らないので、借りても震源の既読は増えない。
             const quake = ev as JMAQuake
-            restoreForRecording(payload, () => rememberQuakeSpeechAsSpoken(
+            rememberQuakeSpeechAsSpoken(
               quake, quakeTopicFor(quake), spokenQuakeStatesRef.current, authoritativeReadQuakesRef.current, opts,
-            ))
+            )
           }
         } else if (ev.kind === 'eew') {
           const eew = ev as EEWAlert
           const key = eew.issue?.eventId ?? eew.id
+          /**
+           * **投げうる計算を先に済ませてから ref へ書く。**
+           *
+           * ここは複数の ref を順に埋めるが、そのうち `activeEEWLevelsRef` だけは意味が違う
+           * ——ライブ経路の `isNew`（新規発報か）がこれだけを見る。途中で投げてこれだけが
+           * 残ると、**続報が「既存」と判定されて第 1 フェーズ（「緊急地震速報、〇〇で地震。」）が
+           * 一度も鳴らない**。他の ref は欠けても「既読が足りない＝読み直す」側なので、
+           * ここだけ失敗の向きが逆になる。
+           *
+           * 書き込みの直前に例外の余地を残さなければ、この分岐は全部書くか 1 つも書かないかに
+           * なる。値を束ねたぶん `eewMaxScaleInfo` / `eewMaxLpgmClassInfo` の二度手間も消える。
+           */
           const restoredLevel = computeSingleEEWLevel(eew)
+          const restoredScale = eewMaxScaleInfo(eew)
+          const restoredLpgm = eewMaxLpgmClassInfo(eew)
+          const restoredRegions = eew.warningRegions?.length
+            ? [...(spokenEEWRegionsRef.current.get(key) ?? []), ...eew.warningRegions]
+            : null
+          // 最後に告知した震源。**3 通りある。**
+          // - 取消の報は**消す**（ライブ経路が取消で `delete` する側なので、文字どおり同じ操作に
+          //   する。`set` を飛ばすだけだと取消より前の報の震源が残る）。取消電文の震源は
+          //   センチネルなので `hasKnownEpicenter` でも弾かれるが、弾かれることに頼ると
+          //   電文の埋め方が変わったときに静かに通る
+          // - 震源が読めない報は**触らない**（前の報で入れた震源を消さない）
+          // - それ以外は入れ替える
+          const announcedHypo = eew.cancelled ? null : eew.earthquake?.hypocenter
+          const restoredHypo: { name: string; lat: number; lng: number } | 'delete' | 'keep' =
+            eew.cancelled ? 'delete'
+              : announcedHypo && hasKnownEpicenter(announcedHypo.latitude, announcedHypo.longitude)
+                ? { name: announcedHypo.name, lat: announcedHypo.latitude, lng: announcedHypo.longitude }
+                : 'keep'
+
           activeEEWLevelsRef.current.set(key, restoredLevel)
-          spokenEEWScalesRef.current.set(key, eewMaxScaleInfo(eew))
-          spokenEEWLpgmClassesRef.current.set(key, eewMaxLpgmClassInfo(eew))
+          spokenEEWScalesRef.current.set(key, restoredScale)
+          spokenEEWLpgmClassesRef.current.set(key, restoredLpgm)
           // 区分も復元する。落とすと注入後の最初の続報で「警報。」が付き直し、
           // 途中から再生を始めた地震がその場で警報化したように聞こえる。
           spokenEEWLevelsRef.current.set(key, restoredLevel)
@@ -3997,8 +4018,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           eewPhase2DoneRef.current.add(key)
           // 安定待ちの確定値も復元する。復元しないと注入後最初の続報の跳躍幅計算が
           // 「自分自身」を基準にしてしまい（跳躍0扱い）、実際より短い安定待ちになる。
-          eewConfirmedScaleRef.current.set(key, eewMaxScaleInfo(eew))
-          eewConfirmedLpgmRef.current.set(key, eewMaxLpgmClassInfo(eew))
+          eewConfirmedScaleRef.current.set(key, restoredScale)
+          eewConfirmedLpgmRef.current.set(key, restoredLpgm)
           // 警報の対象地方も既読にする。**ここが漏れていると、この EEW について他は何も
           // 声にしないのに地方だけが鳴る** —— 第 1 フェーズは `activeEEWLevelsRef` で、
           // 第 2 フェーズは `eewPhase2DoneRef` で止まるのに、地方は「まだ声にしていない地方が
@@ -4007,11 +4028,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // **上書きではなく積む。** 他の値（区分・予想値）は最後の報が最新なので上書きでよいが、
           // 地方は「その報が載せた顔ぶれ」であって累積ではない。窓の境界直前の報がたまたま
           // 地方を持たなければ、それ以前に発表済みの地方が未読へ戻る。
-          if (eew.warningRegions?.length) {
-            const spokenRegions = spokenEEWRegionsRef.current.get(key) ?? new Set<string>()
-            for (const region of eew.warningRegions) spokenRegions.add(region)
-            spokenEEWRegionsRef.current.set(key, spokenRegions)
-          }
+          if (restoredRegions) spokenEEWRegionsRef.current.set(key, new Set(restoredRegions))
           // 格上げの前置きも伝え済みにする。**`spokenEEWLevelsRef` の復元に頼らない** ——
           // いまは前置きの判定が「区分が上がったか」を併せて見るので相乗りで防げているが、
           // その依存はどこにも書かれていない。対で復元して切っておく。
@@ -4021,20 +4038,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             // ——ライブ経路（`handleLiveEventInner`）と同じ条件。
             if (eew.cancelled && !eew.expired) eewRetractedKeysRef.current.add(key)
             // 最後に第 1 フェーズを読んだときの震源。落とすと、窓に入った最初の続報で
-            // 震源の大幅更新の判定に使う比較対象が無くなる。
-            //
-            // **取消の報では消す。** ライブ経路が取消でこの記憶を `delete` する側なので、
-            // 文字どおり同じ操作にする（`set` を飛ばすだけだと、取消より前の報で入れた震源が
-            // そのまま残る）。取消電文の震源はセンチネルなので下の `hasKnownEpicenter` でも
-            // 弾かれるが、弾かれることに頼ると電文の埋め方が変わったときに静かに通る。
-            if (eew.cancelled) {
-              activeEEWAnnouncedHypocentersRef.current.delete(key)
-            } else {
-              const hypo = eew.earthquake?.hypocenter
-              if (hypo && hasKnownEpicenter(hypo.latitude, hypo.longitude)) {
-                activeEEWAnnouncedHypocentersRef.current.set(key, { name: hypo.name, lat: hypo.latitude, lng: hypo.longitude })
-              }
-            }
+            // 震源の大幅更新の判定に使う比較対象が無くなる（取消での扱いは上の `restoredHypo`）。
+            if (restoredHypo === 'delete') activeEEWAnnouncedHypocentersRef.current.delete(key)
+            else if (restoredHypo !== 'keep') activeEEWAnnouncedHypocentersRef.current.set(key, restoredHypo)
           }
         } else if (ev.kind === 'tsunami') {
           const tsunami = ev as JMATsunami
@@ -4110,6 +4116,57 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       } else if (payload.kind === 'lpgm' && !payload.data.cancelled) {
         seenLpgmEventIdsRef.current.add(payload.data.eventId)
       }
+    }
+    /**
+     * **1 通の失敗で復元ループごと止めない。**
+     *
+     * 呼び出し元（`useReplayController`）はこの復元と `loadReplayEvents` を同じ `try` に
+     * 入れており、その `catch` は「リプレイデータ取得失敗」として扱う。投げたまま抜けると
+     * **電文の再生自体が始まらない**——取得は成功しているので、原因と表示も食い違う。
+     *
+     * **握ってよいのは、この復元の失敗に「上へ伝えるべきもの」が無いから。** 値を返さず、
+     * 触るのは既読の記録だけで、失敗しても再生は成立する（窓の手前で伝えた内容を読み直す
+     * ——読み上げが増える側へ倒れる）。取得そのものの失敗は `fetchEvents` の `.catch` が
+     * 別に投げるので、ここで握っても取りこぼしは隠れない。**痕跡は残す。**
+     *
+     * **囲うのは 1 通ずつで、ループ全体ではない。** まとめて囲うと、1 通目で投げたときに
+     * 残り全部の復元が飛ぶ。
+     *
+     * **単位は電文であってステップではない。** 1 通の中で先に走る処理（気象庁が書いた文の
+     * 復元）が投げれば、同じ電文の地震・緊急地震速報・津波の復元も走らない。欠ける向きは
+     * どれも「既読が足りない＝読み直す」側に揃えてあるので、揃えたまま電文単位で切る
+     * （**緊急地震速報だけは向きが逆になりうるので、その分岐の中で塞いである** —— 下記）。
+     *
+     * **録画モードの復元だけを囲っていた頃の非対称は解いた。** 呼ぶ処理の分岐の数（＝投げる
+     * 確率）は違っても、投げたときに起きることは緊急地震速報・津波の復元とまったく同じ。
+     */
+    const failures: { kind: string; err: unknown }[] = []
+    for (const { payload } of preFiltered) {
+      try {
+        restoreOne(payload)
+      } catch (err) {
+        failures.push({ kind: payload.kind, err })
+      }
+    }
+    /**
+     * **記録は 1 回の復元につき 1 行へまとめる。**
+     *
+     * 窓の手前は最大 24 時間ぶんで、群発なら 1 回の復元で数百通を積む。共有ロジックの回帰で
+     * 同じ形の電文がまとめて読めなくなると、素通しでは同期ループから数百行が出て、単発の
+     * 異常となし崩しの系統障害が見分けられなくなる（読めなかったものの記録は他も同じ形で
+     * まとめている。→ `docs/spec/data-sources-spec.md` §2「読めなかったものは記録する」）。
+     *
+     * **黙らせるのではなく畳む。** 件数・種別の内訳・見本 3 件を出すので、何が起きたかは残る。
+     */
+    if (failures.length > 0) {
+      const byKind = new Map<string, number>()
+      for (const f of failures) byKind.set(f.kind, (byKind.get(f.kind) ?? 0) + 1)
+      const breakdown = [...byKind].map(([kind, n]) => `${kind}=${n}`).join('・')
+      log.warn(
+        `[replay] 窓の手前の電文から状態を復元できませんでした（飛ばした電文は既読にならず、`
+        + `窓に入ってから読み直します）: ${failures.length}/${preFiltered.length} 通（${breakdown}）。見本:`,
+        ...failures.slice(0, 3).map(f => f.err),
+      )
     }
   }, [])
 
