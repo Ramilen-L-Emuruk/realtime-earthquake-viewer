@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
   mergeQuakeInto,
   mergeQuakeHistory as mergeQuakeHistoryWithIndex,
@@ -517,15 +517,27 @@ describe('mergeQuakeInto — VXSE61（顕著地震）', () => {
 
   // 震度速報が続報として届く経路。**震度速報は固定付加文（その他）を持たない**ので、
   // incoming を採ると前の報が伝えた注記が消える（津波区分・固定付加文と同じ扱い）。
+  //
+  // **既存は完全版にしない。** `makeQuake()` の既定は `各地の震度情報`（完全版）で、そのままだと
+  // 「完全版を受けた後の速報段階は据え置く」（→ `isSupersededByExistingCard`）が先に効き、
+  // **このテストが守るはずの引き継ぎロジックを一度も通らずに緑になる**。下の対照と同じ理由。
   it('震度速報の続報でも既存の固定付加文（その他）が残る', () => {
-    const e: JMAQuake = { ...makeQuake(), varCommentText: '震源要素を訂正します。' }
+    const e: JMAQuake = {
+      ...makeQuake({ type: '震度速報', maxScale: 40, time: '2026-07-28T07:20:00Z' }),
+      varCommentText: '震源要素を訂正します。',
+    }
     const n = makeQuake({ type: '震度速報', id: 'dmdata-quake-20260728162718-2' })
     expect(mergeQuakeInto(e, n).varCommentText).toBe('震源要素を訂正します。')
   })
 
   // 対照: 既存が持たなければ、震度速報側の値をそのまま使う（握り潰さない）。
+  //
+  // **既存は完全版にしない。** 完全版を受けた後の速報段階は中身ごと据え置くようになったため
+  // （→「完全版を受けた後の速報段階は据え置く」）、既存を完全版にすると採る／採らないの検証に
+  // ならない。実電文の震度速報は固定付加文（その他）を持たない（`VarComment` 要素が無い）ので、
+  // どちらにせよこの経路が実運用で効くことはない。
   it('既存が固定付加文（その他）を持たなければ震度速報側を採る', () => {
-    const e = makeQuake()
+    const e = makeQuake({ type: '震度速報', maxScale: 40, time: '2026-07-28T07:20:00Z' })
     const n: JMAQuake = {
       ...makeQuake({ type: '震度速報', id: 'dmdata-quake-20260728162718-2' }),
       varCommentText: '新しい注記。',
@@ -566,20 +578,32 @@ describe('mergeQuakeInto — 顕著地震カードが先にある場合（本バ
 })
 
 describe('mergeQuakeInto — 通常電文どうし', () => {
-  // 仕様変更（能登 2024/1/1 実データの回帰修正）: incoming が実震度を持つ続報は issue.type の
-  // 優先度ではなく発表時刻で判定する。同じ分（気象庁電文の time は分精度）に届けば種別を問わず
-  // 受け入れる。理由は quakeMerge.ts の据え置き判定コメントを参照。
-  it('各地の震度(既存) に 同時刻の震度速報 が来たら受け入れる（種別優先度ではなく時刻で判定）', () => {
+  // **旧テスト「各地の震度(既存) に 同時刻の震度速報 が来たら受け入れる」を覆した。**
+  // 完全版を受けた後の速報段階は、発表時刻が新しくても据え置くことにしたため
+  // （理由と実データは「完全版を受けた後の速報段階は据え置く」）。
+  //
+  // 「実震度を持つ続報は種別優先度ではなく発表時刻で判定する」規則そのものは生きている
+  // （能登 2024/1/1 実データの回帰修正）。効く範囲が「完全版より前」に狭まっただけで、
+  // それを下の対照が固定する。
+  it('各地の震度(既存) に 同時刻の震度速報 が来ても据え置く', () => {
     // time を明示的に完全一致させ、等号側の分岐（incoming.time === existing.time）を
     // 正面から検証する。気象庁電文の time は分単位までしか精度が無く、同じ分に複数種別の
-    // 電文が発表されることは実データでも確認済み（震源情報と震度速報の続報。下の
-    // describe ブロック参照）。
+    // 電文が発表されることは実データでも確認済み。
     const time = '2026-07-28T07:27:30Z'
     const e = makeQuake({ type: '各地の震度情報', maxScale: 70, time })
     const n = makeQuake({ type: '震度速報', maxScale: 50, time })
     const merged = mergeQuakeInto(e, n)
-    expect(merged.issue.type).toBe('震度速報')
-    expect(merged.earthquake.maxScale).toBe(50)
+    expect(merged.issue.type).toBe('各地の震度情報')
+    expect(merged.earthquake.maxScale).toBe(70)
+  })
+
+  it('対照: 速報段階どうしなら、同時刻の続報を発表時刻で判定して受け入れる', () => {
+    // 時刻で判定する規則が残っていることの確認。ここまで止めると、能登 2024/1/1 で
+    // 新潟県佐渡が増えた続報が反映されない状態へ逆戻りする。
+    const time = '2026-07-28T07:27:30Z'
+    const e = makeQuake({ type: '震度速報', maxScale: 40, time })
+    const n = makeQuake({ type: '震度速報', maxScale: 50, time })
+    expect(mergeQuakeInto(e, n).earthquake.maxScale).toBe(50)
   })
 
   it('各地の震度(既存) に 発表が古い震度速報 が来たら据え置く（対照）', () => {
@@ -822,6 +846,252 @@ describe('mergeQuakeInto — 通常電文どうし', () => {
   })
 })
 
+// --- 完全版を受けた後の速報段階は据え置く ---
+//
+// 気象庁は「完全版 → 震度速報」の順で発表することが実際にある。DMDATA のアーカイブを走査した
+// ところ（控えにある 5 日分・電文 386 通・地震 274 件）、完全版の後に速報段階が届いたのは 8 件で、
+// うち 7 件が完全版と食い違う区域・震度を主張していた。**その 7 件はいずれも、後続の完全版で
+// 裏付けられていない**（気象庁はその地震について震源・震度情報の続報を出していない）。
+//
+// 実例（2024-11-26 EventID=20241126224512・大阪府北部 M2.4 深さ12km）:
+//   22:47:47 VXSE53 最大震度1 区域1 市町村1 観測点1（枚方市大垣内）
+//   22:48:42 VXSE51 最大震度3 区域2（福井県嶺南・滋賀県北部）
+// 福井・滋賀は震源から 80〜95km 離れており、M2.4 でその距離が震度3 になることはない。同じ 2 区域・
+// 同じ震度3 は 1 分後の石川県西方沖 M6.6（EventID=20241126224709）の電文にも載っていて、近接した
+// 時刻の別の地震の揺れが紛れ込んだもの。気象庁は訂正報も出していない。
+//
+// 加えて**震度速報は区域の最大震度しか持たない**（電文の `CodeDefine` が `Pref/Code` と
+// `Pref/Area/Code` の 2 つだけで、`City` も `IntensityStation` も無い）。採ると市町村・観測点の段が
+// 丸ごと消え、震度一覧が 4 段から 1 段へ落ちる。
+//
+// **完全版を受ける前の震度速報は従来どおり受け入れる。** 能登 2024/1/1 の前震で新潟県佐渡が
+// 増えたのは完全版より前の続報（→ 下の「対照」）。
+describe('完全版を受けた後の速報段階は据え置く', () => {
+  const OSAKA = '20241126224512'
+  const 完全版 = () => makeQuake({
+    type: '震源・震度情報', eventId: OSAKA, id: `dmdata-quake-${OSAKA}-1`,
+    telegramKey: '2024-11-26T13:47:46Z', time: '2024-11-26T22:47:00+09:00',
+    reportSerial: 1, maxScale: 10, hypoName: '大阪府北部', mag: 2.5,
+    points: [{ pref: '大阪府', addr: '枚方市大垣内＊', isArea: false, scale: 10 }],
+  })
+  /** 完全版より後に届いた、速報段階の訂正報（実配信では観測していない形）。 */
+  const 訂正の速報 = () => makePrompt({
+    eventId: OSAKA, id: `dmdata-quake-${OSAKA}-1`, correct: '震度・震源を訂正',
+    telegramKey: '2024-11-26T13:48:42Z', time: '2024-11-26T22:48:00+09:00',
+    maxScale: 30,
+    points: [{ pref: '', addr: '福井県嶺南', isArea: true, scale: 30 }],
+  })
+  /** 完全版より後に届いた震度速報（実電文どおり区域しか持たない）。 */
+  const 後発の速報 = () => makePrompt({
+    eventId: OSAKA, id: `dmdata-quake-${OSAKA}-1`,
+    telegramKey: '2024-11-26T13:48:42Z', time: '2024-11-26T22:48:00+09:00',
+    maxScale: 30,
+    points: [
+      { pref: '', addr: '福井県嶺南', isArea: true, scale: 30 },
+      { pref: '', addr: '滋賀県北部', isArea: true, scale: 30 },
+    ],
+  })
+
+  it('正: 発表時刻が新しくても、完全版の観測点・最大震度を上書きしない', () => {
+    const merged = mergeQuakeInto(完全版(), 後発の速報())
+    expect(merged.points.map(p => p.addr)).toEqual(['枚方市大垣内＊'])
+    expect(merged.earthquake.maxScale).toBe(10)
+  })
+
+  it('正: カードの色の材料（issue.type）も完全版のまま保たれる', () => {
+    // 見出し（`reports`）は速報段階を呑み込むので「震源・震度情報」と出る。ここが
+    // `issue.type` だけ「震度速報」へ倒れると、見出しは完全版なのに色だけオレンジになる。
+    //
+    // **既存カードは `mergeQuakeInto` 経由で作る。** 生電文をそのまま既存として渡すと
+    // `reports` が無く、記録が incoming のぶんだけで作り直されて見出しの検証にならない
+    // （実運用のカードは必ずこの関数を通って作られる）。
+    const card = mergeQuakeInto(undefined, 完全版())
+    const merged = mergeQuakeInto(card, 後発の速報())
+    expect(merged.issue.type).toBe('震源・震度情報')
+    expect(reportsText(merged.reports, merged.issue.type)).toBe('震源・震度情報')
+  })
+
+  it('正: 震源要素（震源名・マグニチュード）も完全版のまま残る', () => {
+    const merged = mergeQuakeInto(完全版(), 後発の速報())
+    expect(merged.earthquake.hypocenter.name).toBe('大阪府北部')
+    expect(merged.earthquake.hypocenter.magnitude).toBe(2.5)
+  })
+
+  it('安全弁: 震度を持たない訂正報（震源情報型）も同じ扱いになる', () => {
+    // **「訂正は採る」を残していたときは、ここだけ優先度判定へ落ちて結局据え置かれていた**
+    // ——コメントと仕様書が「訂正は採る」と書いているのに半分しか成り立たない状態だった。
+    // 据え置きで統一したので、震度の有無で扱いが分かれない。
+    const 訂正の震源情報 = {
+      ...makeNoIntensity({
+        type: '震源情報', eventId: OSAKA, id: `dmdata-quake-${OSAKA}-1`,
+        telegramKey: '2024-11-26T13:50:39Z', time: '2024-11-26T22:50:00+09:00',
+        hypoName: '大阪府北部（訂正後）', mag: 3.1,
+      }),
+      issue: {
+        source: 'dmdata', time: '2024-11-26T22:50:00+09:00',
+        type: '震源情報' as const, correct: '震源を訂正' as const,
+      },
+    }
+    const merged = mergeQuakeInto(完全版(), 訂正の震源情報)
+    expect(merged.issue.type).toBe('震源・震度情報')
+    expect(merged.earthquake.hypocenter.name).toBe('大阪府北部')
+  })
+
+  it('正: 震源情報（震度を持たない速報段階）も同じく据え置かれる', () => {
+    const 後発の震源情報 = makeNoIntensity({
+      type: '震源情報', eventId: OSAKA, id: `dmdata-quake-${OSAKA}-1`,
+      telegramKey: '2024-11-26T13:50:39Z', time: '2024-11-26T22:50:00+09:00',
+      hypoName: '大阪府北部', mag: 2.5,
+    })
+    const merged = mergeQuakeInto(完全版(), 後発の震源情報)
+    expect(merged.issue.type).toBe('震源・震度情報')
+    expect(merged.points.map(p => p.addr)).toEqual(['枚方市大垣内＊'])
+  })
+
+  it('正: 受け取った事実は記録に残る（見出しには出ないが、統合の記録からは消えない）', () => {
+    // 据え置くのは中身だけ。電文を受け取ったこと自体は `reports` に積む（→ `holdBack`）。
+    const merged = mergeQuakeInto(完全版(), 後発の速報())
+    expect(merged.reports?.map(r => r.type)).toContain('震度速報')
+  })
+
+  it('対照: 完全版を受ける前なら、震度速報の続報は従来どおり取り込む', () => {
+    // 能登 2024/1/1 の前震（16:07:42 速報 → 16:08:42 速報で新潟県佐渡が増えた）。
+    // 完全版（16:10:05）より前なので、この変更では止めない。
+    const NOTO = '20240101160608'
+    const 速報1 = makePrompt({
+      eventId: NOTO, id: `dmdata-quake-${NOTO}-1`,
+      telegramKey: '2024-01-01T07:07:42Z', time: '2024-01-01T16:07:00+09:00',
+      points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
+    })
+    const 速報2 = makePrompt({
+      eventId: NOTO, id: `dmdata-quake-${NOTO}-1`,
+      telegramKey: '2024-01-01T07:08:42Z', time: '2024-01-01T16:08:00+09:00',
+      points: [
+        { pref: '', addr: '石川県能登', isArea: true, scale: 50 },
+        { pref: '', addr: '新潟県佐渡', isArea: true, scale: 30 },
+      ],
+    })
+    expect(mergeQuakeInto(速報1, 速報2).points.map(p => p.addr)).toContain('新潟県佐渡')
+  })
+
+  it('安全弁: 完全版どうしの続報は普通に置き換わる', () => {
+    // 止めるのは「速報段階が完全版を上書きすること」だけ。完全版の続報まで止めると、
+    // 観測点が増えた続報が反映されなくなる。
+    const 続報 = makeQuake({
+      type: '各地の震度情報', eventId: OSAKA, id: `dmdata-quake-${OSAKA}-1`,
+      telegramKey: '2024-11-26T13:55:00Z', time: '2024-11-26T22:55:00+09:00',
+      reportSerial: 2, maxScale: 30,
+      points: [
+        { pref: '大阪府', addr: '枚方市大垣内＊', isArea: false, scale: 10 },
+        { pref: '大阪府', addr: '高槻市', isArea: false, scale: 30 },
+      ],
+    })
+    const merged = mergeQuakeInto(完全版(), 続報)
+    expect(merged.points.map(p => p.addr)).toContain('高槻市')
+    expect(merged.earthquake.maxScale).toBe(30)
+  })
+
+  // --- 記録（ログ）の発火条件 ---
+  //
+  // **挙動ではなく「気づけるか」を固定する。** 据え置きは中身を黙って捨てる操作なので、
+  // 何を記録するかがこの機能の安全装置そのもの。ここを固定しないと、次にガードの順序を
+  // 入れ替えたときにテストは全部通ったまま記録だけが消える。
+  describe('据え置きの記録', () => {
+    afterEach(() => { vi.restoreAllMocks() })
+
+    it('正: 発表時刻が新しいのに据え置いたときは記録する（電文を指す値つき）', () => {
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+      mergeQuakeInto(完全版(), 後発の速報())
+      const line = info.mock.calls.find(c => String(c[1]).includes('完全版を受けた後の速報段階を据え置いた'))
+      expect(line).toBeDefined()
+      // **どの電文を捨てたか辿れること。** ここが無いと、誤って捨てたと疑ったときに
+      // アーカイブの全件走査からやり直すことになる。
+      expect(line?.[2]).toMatchObject({ incomingTelegramKey: '2024-11-26T13:48:42Z' })
+    })
+
+    it('対照: 発表時刻が古い電文では記録しない（この条件が無くても据え置かれるため）', () => {
+      // 絞る前は起動 1 回で 96 件出て、うち 94 件がこちらだった。理由を偽るうえ他の警告を埋める。
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+      const 古い速報 = makePrompt({
+        eventId: OSAKA, id: `dmdata-quake-${OSAKA}-1`,
+        telegramKey: '2024-11-26T13:40:00Z', time: '2024-11-26T22:40:00+09:00',
+        maxScale: 30,
+        points: [{ pref: '', addr: '福井県嶺南', isArea: true, scale: 30 }],
+      })
+      mergeQuakeInto(完全版(), 古い速報)
+      expect(info.mock.calls.some(c => String(c[1]).includes('完全版を受けた後の速報段階を据え置いた'))).toBe(false)
+    })
+
+    it('正: 速報段階の訂正報を据え置いたときは警告で残す（実配信で観測していない形のため）', () => {
+      // **`log.info` ではなく `log.warn`。** 訂正は本来なら内容を採りたい報で、据え置きは
+      // 「粒度の整合を優先した妥協」。観測されたら気づけるよう重みを上げてある。
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      mergeQuakeInto(完全版(), 訂正の速報())
+      const line = warn.mock.calls.find(c => String(c[1]).includes('速報段階の訂正報が届いた'))
+      expect(line).toBeDefined()
+      expect(line?.[2]).toMatchObject({ correct: '震度・震源を訂正' })
+    })
+
+    it('対照: 訂正でない速報段階は警告にしない（通常の据え置きは info）', () => {
+      // 訂正の警告が普通の据え置きにまで出ると、実在しない形の見張りとして機能しなくなる。
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      mergeQuakeInto(完全版(), 後発の速報())
+      expect(warn.mock.calls.some(c => String(c[1]).includes('速報段階の訂正報が届いた'))).toBe(false)
+    })
+
+    it('安全弁: 発表時刻が空の電文では、据え置きより先に「発表時刻が空」の警告が出る', () => {
+      // **判定の順序を固定する。** `!incoming.time` のチェックを据え置き判定より後ろへ置くと、
+      // 完全版の後に来た時刻不明の電文で警告が出なくなる（据え置き側が先に return するため）。
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const 時刻なし = makePrompt({
+        eventId: OSAKA, id: `dmdata-quake-${OSAKA}-1`, telegramKey: 'k', time: '',
+        maxScale: 30,
+        points: [{ pref: '', addr: '福井県嶺南', isArea: true, scale: 30 }],
+      })
+      mergeQuakeInto(完全版(), 時刻なし)
+      expect(warn.mock.calls.some(c => String(c[1]).includes('発表時刻が空の電文を受信'))).toBe(true)
+    })
+  })
+
+  it('安全弁: 既存が各地の震度情報でも、後発の震度速報は据え置かれる', () => {
+    // 完全版は 2 種別ある。片方だけ守ると、各地の震度情報で終わった地震が速報で潰れる。
+    const 各地 = makeQuake({
+      type: '各地の震度情報', eventId: OSAKA, id: `dmdata-quake-${OSAKA}-1`,
+      telegramKey: '2024-11-26T13:47:46Z', time: '2024-11-26T22:47:00+09:00',
+      maxScale: 10,
+      points: [{ pref: '大阪府', addr: '枚方市大垣内＊', isArea: false, scale: 10 }],
+    })
+    const merged = mergeQuakeInto(各地, 後発の速報())
+    expect(merged.issue.type).toBe('各地の震度情報')
+    expect(merged.points.map(p => p.addr)).toEqual(['枚方市大垣内＊'])
+  })
+
+  // **一度は「訂正報は据え置かない」側へ倒し、取り下げた。** 速報段階の訂正報を採ると、
+  // この据え置きが塞いだはずの不整合をそのまま再現する —— 区域だけの粒度で完全版を上書きして
+  // 観測点・市町村が消え、`issue.type`（＝カードの色）は速報段階へ倒れるのに見出しは完全版のまま。
+  // 実配信で観測していない形のために、実在する不整合を作らない（→ `isSupersededByExistingCard`）。
+  it('正: 訂正報も据え置く（見出しと中身が食い違わない）', () => {
+    const merged = mergeQuakeInto(mergeQuakeInto(undefined, 完全版()), 訂正の速報())
+    expect(merged.issue.type).toBe('震源・震度情報')
+    expect(merged.points.map(p => p.addr)).toEqual(['枚方市大垣内＊'])
+    // **見出しと色の材料が一致していること。** ここを見ないと、据え置きを外したときに
+    // 「見出しは完全版・色は速報段階」の状態を検出できない。
+    expect(reportsText(merged.reports, merged.issue.type)).toBe('震源・震度情報')
+  })
+
+  it('安全弁: 顕著な地震の震源要素更新は据え置きに巻き込まれない', () => {
+    // VXSE61 は速報段階ではなく、専用の分岐（A）で扱う。ここを巻き込むと震源の確定が入らない。
+    const 更新 = makeNoIntensity({
+      type: '顕著な地震の震源要素更新のお知らせ', eventId: OSAKA, id: `dmdata-quake-${OSAKA}-1`,
+      telegramKey: '2024-11-26T13:58:00Z', time: '2024-11-26T22:58:00+09:00',
+      hypoName: '大阪府北部', mag: 2.8,
+    })
+    const merged = mergeQuakeInto(完全版(), 更新)
+    expect(merged.issue.type).toBe('顕著な地震の震源要素更新のお知らせ')
+    expect(merged.earthquake.hypocenter.magnitude).toBe(2.8)
+  })
+})
+
 describe('mergeQuakeHistory', () => {
   it('単一バッチに 51/52/53/61 が順不同で混在しても1カードに統合する', () => {
     const v51 = makeQuake({ type: '震度速報', maxScale: 50, time: '2026-07-28T07:28:00Z' })
@@ -867,16 +1137,21 @@ describe('mergeQuakeHistory', () => {
     expect(merged[0].earthquake.maxScale).toBe(70)
   })
 
-  it('既知の限界: 同じ分で「詳しい→粗い」の順（発表順に反する）だと、粗い方に後退する', () => {
+  // **旧テスト「既知の限界: 同じ分で『詳しい→粗い』の順だと、粗い方に後退する」を覆した。**
+  // かつては入力順で後退するのを既知の限界として許容し、`orderedForMerge`（呼び出し側）が
+  // 「速報→詳細」の順に並べ直すことで避けていた。完全版を受けた後の速報段階を据え置くように
+  // したので、入力順によらず後退しない（→「完全版を受けた後の速報段階は据え置く」）。
+  //
+  // **`orderedForMerge` は残す。** ここで消えるのは「完全版 ⇄ 速報段階」の逆転だけで、
+  // 速報段階どうし・完全版どうしの同時刻の並びは依然として入力順に依存する。
+  it('同じ分で「詳しい→粗い」の順で入力されても、粗い方に後退しない', () => {
     const time = '2026-07-28T07:30:00Z'
     const detailed = makeQuake({ type: '各地の震度情報', maxScale: 70, time })
     const prompt = makeQuake({ type: '震度速報', maxScale: 50, time })
     const merged = mergeQuakeHistory([detailed, prompt])
     expect(merged).toHaveLength(1)
-    // 現状の仕様（意図した動作ではないが既知の限界）。`orderedForMerge` 側が
-    // 常に「速報→詳細」の順で結合することでこの逆転を避けている。
-    expect(merged[0].issue.type).toBe('震度速報')
-    expect(merged[0].earthquake.maxScale).toBe(50)
+    expect(merged[0].issue.type).toBe('各地の震度情報')
+    expect(merged[0].earthquake.maxScale).toBe(70)
   })
 
   it('バッチ跨ぎ: 既存の完成カードは維持し、新バッチの別イベントを追加する（回帰テスト）', () => {

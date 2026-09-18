@@ -438,8 +438,7 @@ export function createTestQuakeReportSequence(useDmdataShape: boolean): JMAQuake
   const maxScaleOf = (points: EarthquakePoint[]): IntensityScale =>
     points.reduce<IntensityScale>((max, p) => (p.scale > max ? p.scale : max), -1)
 
-  const prompt = (index: number, points: EarthquakePoint[]): JMAQuake => {
-    const time = at(index)
+  const prompt = (time: string, points: EarthquakePoint[]): JMAQuake => {
     return {
       ...base,
       telegramKey: time,
@@ -508,7 +507,29 @@ export function createTestQuakeReportSequence(useDmdataShape: boolean): JMAQuake
     issue: { ...base.issue, time: followUpTime },
   }
 
-  return [prompt(0, firstPoints), destination, prompt(2, areaPoints), detail, followUp]
+  // 6 通目。**完全版のあとに届く震度速報。**
+  //
+  // 気象庁は「震源・震度情報 → 震度速報」の順で発表することが実際にある。近接した時刻に 2 つの
+  // 地震が起きると、あとから入電した区域の震度が先に検知していた別の地震へ紐づくため（実例:
+  // 2024-11-26 22:47 の大阪府北部 M2.4 に、1 分前の石川県西方沖 M6.6 による福井県嶺南・
+  // 滋賀県北部の震度3 が載った）。**震度速報は区域の最大震度しか運ばない**ので、そのまま採ると
+  // カードの中身が区域だけへ痩せ、観測点も市町村も消える。
+  //
+  // **据え置くのが正しい挙動**（→ `utils/quakeMerge.ts` の `isSupersededByExistingCard`）。実機では
+  // 次がどれも動かないことを見る —— 見出し「震源・震度情報#2」・カードの色（青）・観測点と市町村の段・
+  // 最大震度。**区域を 1 通目と同じ一部だけにしてある**ので、据え置きが効いていなければ区域の行も減る。
+  const supersededTime = new Date(
+    new Date(followUpTime).getTime() + TEST_REPORT_SEQUENCE_DELAY_MS,
+  ).toISOString()
+
+  return [
+    prompt(at(0), firstPoints),
+    destination,
+    prompt(at(2), areaPoints),
+    detail,
+    followUp,
+    prompt(supersededTime, firstPoints),
+  ]
 }
 
 /**
