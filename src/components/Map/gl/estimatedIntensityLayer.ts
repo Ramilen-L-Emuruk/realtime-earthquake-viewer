@@ -1,4 +1,5 @@
 import * as maplibregl from 'maplibre-gl'
+import type { OrderedCustomLayer } from './layerOrder'
 import { applyProjectionUniforms, createProjectionProgramCache } from './projectionProgram'
 import { guardRender } from './guardRender'
 import { clearRenderFailure, clearRenderFailuresFor, reportRenderFailure } from '../../../utils/renderHealth'
@@ -129,7 +130,7 @@ void main() {
 
 export interface EstimatedIntensityLayer {
   /** MapLibre へ addLayer する custom レイヤー本体。 */
-  layer: maplibregl.CustomLayerInterface
+  layer: OrderedCustomLayer
   /**
    * 描く分布を差し替える。**焼き直しは次の描画で行う**（GL の文脈はそのときしか触れない）。
    * 反映には呼び出し側の `triggerRepaint` が必要。
@@ -312,7 +313,7 @@ ${VS_BODY}`,
     indexCount = mesh.indices.length
   }
 
-  const layer: maplibregl.CustomLayerInterface = {
+  const layer: OrderedCustomLayer = {
     id: LYR,
     type: 'custom',
     onAdd(_map: maplibregl.Map, gl: WebGL2RenderingContext) {

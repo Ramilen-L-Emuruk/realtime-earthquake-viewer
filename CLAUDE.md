@@ -1086,6 +1086,11 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 
 **レイヤーを 1 枚足すときは、下記「地図: カメラ・投影・表示閾値」も併せて見ること。** 表示範囲（`minzoom`/`maxzoom`）の決め方とカスタムレイヤーの投影対応はそちらにある。震度の面と区域塗りを重ねない規則は「地震情報」節。
 
+[`map-rendering-spec.md`](docs/spec/map-rendering-spec.md) の実装列挙のうち 4 つは [`scripts/mapRenderingSpecLists.test.ts`](scripts/mapRenderingSpecLists.test.ts) が `npm test` で実装と突き合わせるので、手で数え直さなくてよい——§3 カスタムレイヤーの id・§6 投影ごとのプログラムが要るファイル・§12 コンテキストロストから載せ直すコンポーネント・§13 の `gl/` ファイル構成。見るのは**両方向**で、足したものを一覧へ書き忘れても、消したものが一覧に残っていても落ちる。
+**§7「mode 別レイヤー一覧」は名前が実在するかだけで、どの mode に出るかは手作業のまま**（JSX の条件分岐から機械的に導けない）。ほかの節の列挙（§8 の毎秒更新レイヤー・§13 の `gl/` 以外の行など）も手作業。
+
+**`MAP_LAYER_ORDER`（描画順の単一情報源）への登録漏れは型で落ちる。** 忘れるとそのレイヤーだけ最前面に積まれ、描画順が静かに崩れる。仕組みと、カスタムレイヤーを作るときに使う型は [`map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §3。
+
 | 項目 | 単一情報源となる仕様書 |
 |---|---|
 | 点滅する Marker を作り直さないこと（差分更新キーに**報番号を含めない**／内容が変わらないなら `innerHTML` を触らない。片方だけでは作り直しの経路が残り、点滅が止まってポップアップも閉じる） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §10・[`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §10（キーの取り方） |
