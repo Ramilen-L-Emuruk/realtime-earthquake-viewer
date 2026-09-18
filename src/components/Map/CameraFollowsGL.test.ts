@@ -1111,8 +1111,9 @@ describe('EEW の初期フレーミング', () => {
 // 猶予はコンポーネント内の setTimeout で数えるため、実機（Playwright）では 1 ケースにつき
 // 30 秒以上待つことになり条件の組み合わせを網羅できない。ここはフェイクタイマーで固定する。
 
-/** 津波の観測棒（TsunamiFitGL が見るのは名前・座標・波高値だけ）。 */
-const bar = (name: string, lat: number, lng: number, value: number) => ({ name, lat, lng, height: { value } })
+/** 津波の観測棒（TsunamiFitGL が見るのは名前・座標・波高だけ）。 */
+const bar = (name: string, lat: number, lng: number, value: number, over?: boolean) =>
+  ({ name, lat, lng, height: over ? { value, over } : { value } })
 
 // 観測点は九州沖、海岸線は三陸沖に置き、fitBounds に渡った矩形の西端で寄り先を判別する。
 const OBS_BARS = [bar('A', 33.0, 130.0, 1.0), bar('B', 34.0, 131.0, 2.0)]
@@ -1139,7 +1140,7 @@ interface TsunamiProps {
   mode?: string
   signature?: string
   coast?: LatLng[]
-  bars?: typeof OBS_BARS
+  bars?: { name: string; lat: number; lng: number; height: { value: number; over?: boolean }; maxHeightDateTime?: string; maxHeightRevise?: string }[]
   arrivals?: typeof ARRIVALS
   missing?: typeof ARRIVALS
   focus?: { name: string; ts: number } | null
@@ -1293,6 +1294,98 @@ describe('津波モードの帰還（観測点 → 俯瞰）', () => {
 
     // Assert: 日本全体へ帰る（寄ったまま取り残されない）。
     expect(fitTargets(map).slice(before)).toEqual([-1])
+  })
+
+  // ── 観測波高の「変化」の見方 ────────────────────────────────────────────────
+  // 判定は 2 つの述語の OR（値・`over` の変化と、最大波の観測時刻の更新）。3 つとも
+  // カメラ経由で押さえる —— 述語そのものは `utils/tsunami.test.ts` が固めているので、
+  // ここで見るのは**結線**（どちらかが欠けても、OR を取り違えても落ちる）。
+
+  it('波高の値が上がったら、その観測点へ寄る', () => {
+    // Arrange: 観測点へ一度寄り、猶予を待っている状態。
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map, { bars: OBS_BARS }))
+    const before = fitTargets(map).length
+
+    // Act: 素直に値だけが上がった続報（`over` も最大波の観測時刻も動かない）。
+    view.rerender(tsunamiHarness(map, { bars: [bar('A', 33.0, 130.0, 1.6), bar('B', 34.0, 131.0, 2.4)] }))
+
+    // Assert: その観測点へ寄り直す。
+    expect(fitTargets(map).slice(before)).toEqual([OBS_WEST])
+  })
+
+  // 波高は値のほかに「○m以上」（over＝潮位計が振り切れた・被災した）という状態を持ち、
+  // 値が据え置きのまま over だけが付く続報が実在する（2024-01-01 16:35 の輪島港
+  // 「１．２ｍ」→「１．２ｍ以上」）。読み上げとカードのバッジはこれを更新として扱うので、
+  // 地図だけが数値で見ていると「声は言い、棒は点滅するのに、地図は寄らない」になる。
+
+  it('値が据え置きでも「○m以上」が付いたら、その観測点へ寄る', () => {
+    // Arrange: 観測点へ一度寄り、猶予を待っている状態。
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map, { bars: OBS_BARS }))
+    const before = fitTargets(map).length
+
+    // Act: 値は同じまま、潮位計が振り切れて「以上」が付いた続報が届く。
+    view.rerender(tsunamiHarness(map, { bars: [bar('A', 33.0, 130.0, 1.0, true), bar('B', 34.0, 131.0, 2.0, true)] }))
+
+    // Assert: その観測点へ寄り直す。
+    expect(fitTargets(map).slice(before)).toEqual([OBS_WEST])
+  })
+
+  it('値も「○m以上」も同じ再送では寄り直さない', () => {
+    // Arrange: 「以上」付きの観測点へ寄った状態。
+    const OVER_BARS = [bar('A', 33.0, 130.0, 1.0, true), bar('B', 34.0, 131.0, 2.0, true)]
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map, { bars: OVER_BARS }))
+    const before = fitTargets(map).length
+
+    // Act: 同じ内容のまま配列だけ作り直される（続報の再送）。
+    view.rerender(tsunamiHarness(map, { bars: [...OVER_BARS] }))
+    view.rerender(tsunamiHarness(map, { bars: [bar('A', 33.0, 130.0, 1.0, true), bar('B', 34.0, 131.0, 2.0, true)] }))
+
+    // Assert: カメラは動かない（over を見る判定にしても、再送で落ち着かなくならない）。
+    expect(fitTargets(map).length).toBe(before)
+  })
+
+  // 実配信でも複数の観測点が同じ報で更新される（2024-01-02 00:51 は舞鶴と玄海町仮屋の 2 点）。
+  // 1 点だけだと fitToPositions が退化矩形を避けて flyTo へ落ち、fitBounds の記録に現れない。
+  it('波高は据え置きでも、最大波の観測時刻が更新されたらその観測点へ寄る', () => {
+    // Arrange: 観測点へ一度寄り、猶予を待っている状態。
+    const T1 = '2024-01-02T00:20:00+09:00'
+    const T2 = '2024-01-02T00:45:00+09:00'
+    const at = (name: string, lat: number, lng: number, value: number, time: string, revise?: string) =>
+      ({ ...bar(name, lat, lng, value), maxHeightDateTime: time, maxHeightRevise: revise })
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map, {
+      bars: [at('A', 33.0, 130.0, 1.0, T1), at('B', 34.0, 131.0, 2.0, T1)],
+    }))
+    const before = fitTargets(map).length
+
+    // Act: 波高は 1.0 / 2.0 のまま、気象庁が最大波の時刻だけを進めた続報が届く。
+    view.rerender(tsunamiHarness(map, {
+      bars: [at('A', 33.0, 130.0, 1.0, T2, '更新'), at('B', 34.0, 131.0, 2.0, T2, '更新')],
+    }))
+
+    // Assert: その観測点へ寄り直す（読み上げが名指ししている観測点を画面も示す）。
+    expect(fitTargets(map).slice(before)).toEqual([OBS_WEST])
+  })
+
+  it('最大波の観測時刻が同じままの再送では寄り直さない', () => {
+    // Arrange: 時刻つきの観測点へ寄った状態。
+    const T1 = '2024-01-02T00:20:00+09:00'
+    const BARS = [
+      { ...bar('A', 33.0, 130.0, 1.0), maxHeightDateTime: T1, maxHeightRevise: '更新' },
+      { ...bar('B', 34.0, 131.0, 2.0), maxHeightDateTime: T1, maxHeightRevise: '更新' },
+    ]
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map, { bars: BARS }))
+    const before = fitTargets(map).length
+
+    // Act: 同じ内容のまま配列だけ作り直される（Revise は「更新」のまま残り続ける）。
+    view.rerender(tsunamiHarness(map, { bars: [...BARS] }))
+
+    // Assert: カメラは動かない。`Revise` の有無だけで判定していたら、続報のたびに寄り直す。
+    expect(fitTargets(map).length).toBe(before)
   })
 
   // ── 到達確認（波高が「観測中」）の観測点への追従 ──────────────────────────
