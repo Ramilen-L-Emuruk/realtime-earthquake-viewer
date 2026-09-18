@@ -314,6 +314,7 @@ function ttsRegionOptions(settings: AppSettings): TtsSpeechOptions {
     readEewLpgmClass: settings.ttsReadEewLpgmClass,
     readTelegramText: settings.ttsReadTelegramText,
     telegramTextBlocks: settings.ttsTelegramTextBlocks,
+    telegramBoilerplate: settings.ttsTelegramBoilerplate,
     maxObservationPoints: settings.ttsMaxObservationPoints,
   }
 }

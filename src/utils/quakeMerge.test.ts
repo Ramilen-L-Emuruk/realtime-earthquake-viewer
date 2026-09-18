@@ -534,6 +534,98 @@ describe('mergeQuakeInto — VXSE61（顕著地震）', () => {
   })
 })
 
+// 固定付加文（その他）の原文（`VarComment/Text`）とコード（`VarComment/Code`）は
+// **同じ報から採る**（`pickVarComment`）。
+//
+// コードは読み上げの落とし漏れの検出に使うので（→ `utils/ttsText.ts` の
+// `warnUnmatchedBoilerplate`）、原文と組が崩れると**別の報の原文と突き合わせて**一致・不一致を
+// 誤る —— 気象庁が文面を変えたことに気づけなくなるか、正常な電文で警告が出る。同じ電文が運ぶ
+// 同じ事実なので、震度を補うときに市町村も一緒に補うのと同じ規律（→ quake-spec.md §6.4）。
+//
+// **`mergeQuakeInto` が原文を選び直す 4 分岐すべてを並べる。** 共有の関数を通しているとはいえ、
+// 分岐ごとに土台（`...existing` / `...incoming`）が違うので、スプレッドの順序を崩せば
+// どれか 1 つだけが壊れうる。
+describe('mergeQuakeInto — 固定付加文（その他）のコードは原文と同じ報から採る', () => {
+  // ① 顕著地震（VXSE61）を受け取る分岐。あちらは訂正の説明をここへ載せる（コード 0256）。
+  it('顕著地震の原文を採れば、コードもその報のものになる', () => {
+    const e: JMAQuake = { ...makeQuake(), varCommentText: '更新前の注記。', varCommentCodes: ['0262'] }
+    const n: JMAQuake = {
+      ...makeNoIntensity({ type: '顕著な地震の震源要素更新のお知らせ' }),
+      varCommentText: '震源要素を訂正します。',
+      varCommentCodes: ['0256'],
+    }
+    const merged = mergeQuakeInto(e, n)
+    expect(merged.varCommentText).toBe('震源要素を訂正します。')
+    expect(merged.varCommentCodes).toEqual(['0256'])
+  })
+
+  // ② 震度欠落の後続電文で既存を補完する分岐。**土台は後続（`...result`）側**なので、原文を
+  // 既存から採るときにコードを一緒に運ばないと、**既存の原文に後続のコード（ここでは undefined）が
+  // 付く**形になる。
+  it('震度欠落の後続電文が原文を持たなければ、既存の原文とコードが残る', () => {
+    const e: JMAQuake = { ...makeQuake({ type: '震度速報' }), varCommentText: '既存の注記。', varCommentCodes: ['0262'] }
+    const n = makeNoIntensity({ type: '震源情報' })
+    const merged = mergeQuakeInto(e, n)
+    expect(merged.varCommentText).toBe('既存の注記。')
+    expect(merged.varCommentCodes).toEqual(['0262'])
+  })
+
+  // 対照: 同じ分岐で後続が原文を持てば、コードも後続側になる。
+  it('震度欠落の後続電文が原文を持てば、コードもその報のものになる', () => {
+    const e: JMAQuake = { ...makeQuake({ type: '震度速報' }), varCommentText: '既存の注記。', varCommentCodes: ['0262'] }
+    const n: JMAQuake = {
+      ...makeNoIntensity({ type: '震源情報' }),
+      varCommentText: '震源要素を訂正します。',
+      varCommentCodes: ['0256'],
+    }
+    const merged = mergeQuakeInto(e, n)
+    expect(merged.varCommentText).toBe('震源要素を訂正します。')
+    expect(merged.varCommentCodes).toEqual(['0256'])
+  })
+
+  // ③ 震度速報の続報で既存を据え置く分岐。**震度速報は固定付加文（その他）を持たない**ので、
+  // `makePrompt`（実電文どおりの震度速報）を使う —— `makeQuake({ type: '震度速報' })` では
+  // 震源要素まで持たせてしまう（このファイルの `makePrompt` の説明を参照）。
+  it('震度速報の続報では、既存の原文とコードが残る', () => {
+    const e: JMAQuake = { ...makeQuake(), varCommentText: '既存の注記。', varCommentCodes: ['0262'] }
+    const n = makePrompt({ id: 'dmdata-quake-20260728162718-2' })
+    const merged = mergeQuakeInto(e, n)
+    expect(merged.varCommentText).toBe('既存の注記。')
+    expect(merged.varCommentCodes).toEqual(['0262'])
+  })
+
+  // ④ 既存の VXSE61 が新しく、後から震度電文が届く分岐（§8 QUAKE-4 の経路）。
+  // 土台が incoming（震度電文）へ替わるので、明示しないと VXSE61 側の組が消える。
+  it('既存の顕著地震が新しければ、その原文とコードが残る', () => {
+    const e: JMAQuake = {
+      ...makeNoIntensity({ type: '顕著な地震の震源要素更新のお知らせ', time: '2026-07-28T07:40:00Z' }),
+      varCommentText: '震源要素を訂正します。',
+      varCommentCodes: ['0256'],
+    }
+    const n: JMAQuake = {
+      ...makeQuake({ time: '2026-07-28T07:30:00Z' }),
+      varCommentText: '震度電文の注記。',
+      varCommentCodes: ['0262'],
+    }
+    const merged = mergeQuakeInto(e, n)
+    expect(merged.varCommentText).toBe('震源要素を訂正します。')
+    expect(merged.varCommentCodes).toEqual(['0256'])
+  })
+
+  // 安全弁: 原文を採った側がコードを持たなければ、**土台に残っていたコードも消す**。
+  // 残すと「別の報のコード × この報の原文」という組ができ、検出が誤る。
+  it('原文を採った側がコードを持たなければ、コードは残らない', () => {
+    const e: JMAQuake = { ...makeQuake(), varCommentText: '既存の注記。', varCommentCodes: ['0262'] }
+    const n: JMAQuake = {
+      ...makeNoIntensity({ type: '顕著な地震の震源要素更新のお知らせ' }),
+      varCommentText: 'コードを持たない報の注記。',
+    }
+    const merged = mergeQuakeInto(e, n)
+    expect(merged.varCommentText).toBe('コードを持たない報の注記。')
+    expect(merged.varCommentCodes).toBeUndefined()
+  })
+})
+
 describe('mergeQuakeInto — 顕著地震カードが先にある場合（本バグの核心）', () => {
   // 震度が復活する経路では土台が incoming（震度電文）に替わる。明示的に採らないと
   // VXSE61 が伝える精査後の Mw が、震度が確定した瞬間に消える

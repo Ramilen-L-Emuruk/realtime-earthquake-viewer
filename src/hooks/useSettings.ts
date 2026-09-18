@@ -4,11 +4,11 @@ import { isDmdss } from '../utils/env'
 import { isValidIntensityScale } from '../utils/intensity'
 // 読み上げ文の作り方を決める値なので、定義は読み上げ側（`utils/ttsText.ts`）に置く。
 // ここ（設定）から生やすと utils → hooks の向きで参照が要り、依存が逆流する。
-import type { TtsUnreceivedDetail, TelegramTextBlockKey, TelegramTextBlocks } from '../utils/ttsText'
-import { TELEGRAM_TEXT_BLOCK_KEYS } from '../utils/ttsText'
+import type { TtsUnreceivedDetail, TelegramTextBlockKey, TelegramTextBlocks, TelegramBoilerplateKey, TelegramBoilerplateReads } from '../utils/ttsText'
+import { TELEGRAM_TEXT_BLOCK_KEYS, TELEGRAM_BOILERPLATE_KEYS, TELEGRAM_BOILERPLATE_DEFAULT_READS } from '../utils/ttsText'
 
 export type { TtsUnreceivedDetail, TelegramTextBlockKey, TelegramTextBlocks }
-export { TELEGRAM_TEXT_BLOCK_KEYS }
+export { TELEGRAM_TEXT_BLOCK_KEYS, TELEGRAM_BOILERPLATE_KEYS }
 
 // アイドル復帰時に戻すデフォルトタブの選択肢（津波情報・設定は対象外）
 export type DefaultTabSetting = 'earthquake' | 'realtime'
@@ -82,6 +82,14 @@ export interface AppSettings {
    * 構造に由来するまとまりなので、1 つにしてキーの一覧から導く。
    */
   ttsTelegramTextBlocks: TelegramTextBlocks
+  /**
+   * 気象庁が書いた文のうち、どの定型文を読むか（一覧は `TELEGRAM_BOILERPLATE_KEYS`）。
+   * 上の `ttsTelegramTextBlocks` が「付加文の枠ごと」を切るのに対し、こちらは**枠の中の
+   * 特定の文だけ**を落とす。`ttsReadTelegramText` が偽ならどちらの指定も効かない。
+   *
+   * **こちらだけ既定が「読まない」側**（理由は `TELEGRAM_BOILERPLATE_DEFAULT_READS`）。
+   */
+  ttsTelegramBoilerplate: TelegramBoilerplateReads
   ttsUnreceivedDetail: TtsUnreceivedDetail  // 「震度5弱以上・未入電」の読み方
   ttsMaxObservationPoints: number  // 津波の観測点を読み上げる件数（波高更新・到達確認・欠測・警報相当で共通）
   ttsReadHypocenterDetail: boolean // 震源の深さ・規模を読む（無効なら震源名だけ）
@@ -173,6 +181,9 @@ export const DEFAULTS: AppSettings = {
   ttsTelegramTextBlocks: Object.fromEntries(
     TELEGRAM_TEXT_BLOCK_KEYS.map(key => [key, true]),
   ) as TelegramTextBlocks,
+  // **既定は落とす側。** 上の 5 項目と違って「設定を入れる前の挙動」に揃えていない理由は
+  // 定義側（`TELEGRAM_BOILERPLATE_DEFAULT_READS`）に書いた。
+  ttsTelegramBoilerplate: TELEGRAM_BOILERPLATE_DEFAULT_READS,
   ttsUnreceivedDetail: 'stations',
   ttsMaxObservationPoints: 5,
   ttsReadHypocenterDetail: true,
@@ -219,6 +230,20 @@ function ensureTelegramTextBlocks(value: unknown): TelegramTextBlocks {
       ensureBool(saved[key], DEFAULTS.ttsTelegramTextBlocks[key]),
     ]),
   ) as TelegramTextBlocks
+}
+
+/**
+ * 定型文の読み上げ指定を整える。**隣の `ensureTelegramTextBlocks` と同じ作り**で、
+ * 欠けたキーは既定（落とす）で埋める。
+ */
+function ensureTelegramBoilerplate(value: unknown): TelegramBoilerplateReads {
+  const saved = (value ?? {}) as Partial<Record<TelegramBoilerplateKey, unknown>>
+  return Object.fromEntries(
+    TELEGRAM_BOILERPLATE_KEYS.map(key => [
+      key,
+      ensureBool(saved[key], DEFAULTS.ttsTelegramBoilerplate[key]),
+    ]),
+  ) as TelegramBoilerplateReads
 }
 
 // 震度は気象庁の階級値（10/20/30/40/45/50/55/60/70）と、無効を表す -1 しか取らない。
@@ -288,6 +313,7 @@ export function sanitize(partial: Partial<AppSettings>): AppSettings {
     ttsRegionTolerance: clampNumber(partial.ttsRegionTolerance, 0, 100, DEFAULTS.ttsRegionTolerance),
     ttsReadTelegramText: ensureBool(partial.ttsReadTelegramText, DEFAULTS.ttsReadTelegramText),
     ttsTelegramTextBlocks: ensureTelegramTextBlocks(partial.ttsTelegramTextBlocks),
+    ttsTelegramBoilerplate: ensureTelegramBoilerplate(partial.ttsTelegramBoilerplate),
     ttsUnreceivedDetail: ensureUnreceivedDetail(partial.ttsUnreceivedDetail, DEFAULTS.ttsUnreceivedDetail),
     // `0` は無制限（`ttsMaxRegions` と同じ意味。選抜が `slice(0, maxPoints || Infinity)` を通す）。
     ttsMaxObservationPoints: clampNumber(
