@@ -1319,6 +1319,10 @@ export function eewIntensityText(
    */
   opts?: TtsSpeechOptions,
 ): string {
+  // **この前置きを短くするなら、`splitIntoChunks` の `MIN_CHUNK` との関係を見直すこと。**
+  // 呼び出し側（`useLiveEventHandler` の第 2 フェーズ）は「前置きは独立した先頭チャンクなので、
+  // 1 音でも鳴っていれば声になっている」という前提で既読の巻き戻し先を決めている。`MIN_CHUNK`
+  // 未満の長さになると震度の句と 1 チャンクへ結合され、その前提が静かに崩れる。
   const prefix = announceUpgrade ? '緊急地震速報に切り替わりました。' : ''
   // 上限が定まらない報（仮定震源要素の初報など）は「震度4以上」と読む。値だけ読むと
   // 下限を断定した放送になる（判定は eewMaxScaleInfo・語の付け方は表示と共通）。

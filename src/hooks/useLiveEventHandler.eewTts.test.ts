@@ -25,6 +25,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
 import { splitIntoChunks, type SpeechOutcome } from '../utils/voicevox'
+// 安定待ちの猶予は定数から取る（数値を写すと、値を変えたときにテストだけが古い前提で通り続ける）
+import { EEW_PHASE2_STABILITY_SMALL_MS, EEW_PHASE2_STABILITY_LARGE_MS } from '../utils/eew'
 import { DEFAULTS, type AppSettings } from './useSettings'
 import type { EEWAlert, EEWRegion, IntensityScale, LpgmClass, JMAQuake, JMATsunami } from '../types/earthquake'
 
@@ -1500,6 +1502,172 @@ describe('EEW 読み上げの文言と発話順序', () => {
       await advance(CHUNK_MS * 2)
 
       expect(heard).toContain('予想最大階級1。')
+    })
+
+    // **安定待ちに入った時点で降りる**（上の「鳴っている途中に予想が上がったら」は確定してから
+    // 降りる話で、こちらはその手前）。安定待ちは震度 1 段階でも 2000ms あり、チャンク 1 つの
+    // 再生（1200ms）より長いため、確定を待つ作りだと**古い震度の文脈で階級の句が鳴り切る**。
+    //
+    // 実配信の例: 2024/11/26 22:47 石川県西方沖（EventID 20241126224709・VXSE45）。
+    // 22:47:16 の第 5 報で震度4・階級1 に下がり、22:47:19 の第 7 報で 5弱 へ戻っている。
+    // 震度4 で確定して読み始めた 1 秒後に 5弱 が届くため、この穴に落ちていた。
+    describe('より高い予想が安定待ちに入ったとき', () => {
+      /** 実配信と同じ並び（震度4・階級1 → 5弱）を作る。文面は 2 チャンクに割れる。 */
+      const startPhase2WithScale4 = async (heard: string[]) => {
+        const handle = setup()
+        handle(makeEEW({ scaleTo: 40, lgIntTo: 1 }))
+        await flushMicrotasks()
+        await advance(SYNTH_MS + CHUNK_MS * 2)   // 第1フェーズ
+        await advance(SYNTH_MS)                  // 第2フェーズの合成待ち
+        expect(heard[heard.length - 1]).toBe('予想最大震度4。')
+        return handle
+      }
+
+      // 正: 確定を待たずに降りる。**震度の句は鳴り終える**（鳴り始めたチャンクは切らない）。
+      it('確定を待たずに、そこから先のチャンクを鳴らさない', async () => {
+        const heard: string[] = []
+        installChunkedSpeak(heard)
+        const handle = await startPhase2WithScale4(heard)
+
+        // 5弱 の報。安定待ち（跳躍1段階=large=2000ms）はチャンク 1 つの再生より長いので、
+        // 次のチャンクの判定はまだ「確定は震度4・安定待ちは 5弱」の状態で走る
+        await advance(100)
+        handle(makeEEW({ serial: 2, scaleTo: 45, lgIntTo: 1 }))
+        await advance(CHUNK_MS)
+        expect(heard).not.toContain('予想最大階級1。')
+
+        // 5弱 が確定したら全文を読み直す（降りた分は取りこぼしにならない）
+        await advance(2000)
+        await advance(SYNTH_MS + CHUNK_MS * 2)
+        expect(heard).toEqual([
+          '緊急地震速報、', '日向灘で地震。',
+          '予想最大震度4。',
+          '予想最大震度5弱。', '予想最大階級1。',
+        ])
+      })
+
+      // 対照: 引き下げでは降りない（下がった値は読まない方針なので、降りると代わりに読むものが無い）。
+      it('予想が下がった報では取り下げない', async () => {
+        const heard: string[] = []
+        installChunkedSpeak(heard)
+        const handle = setup()
+        handle(makeEEW({ scaleTo: 45, lgIntTo: 1 }))
+        await flushMicrotasks()
+        await advance(SYNTH_MS + CHUNK_MS * 2)
+        await advance(SYNTH_MS)
+        expect(heard[heard.length - 1]).toBe('予想最大震度5弱。')
+
+        await advance(100)
+        handle(makeEEW({ serial: 2, scaleTo: 40, lgIntTo: 1 }))
+        await advance(CHUNK_MS)
+
+        expect(heard).toContain('予想最大階級1。')
+      })
+
+      // 安全弁: **見るのは震度だけ。** 階級の安定待ちで震度の発話を止めない
+      // （「震度は階級の確定を待たない」非対称ルール）。階級の安定待ちは 300ms 固定なので、
+      // チャンクの再生を 200ms にして「階級が確定する前に次のチャンクを鳴らす」状況を作る。
+      it('階級だけが上がった報では、震度の発話を止めない', async () => {
+        const heard: string[] = []
+        const SHORT_CHUNK_MS = 200
+        installChunkedSpeak(heard, { chunkMs: SHORT_CHUNK_MS })
+        const handle = setup()
+        handle(makeEEW({ scaleTo: 45, lgIntTo: 1 }))
+        await flushMicrotasks()
+        await advance(SYNTH_MS + SHORT_CHUNK_MS * 2)
+        await advance(SYNTH_MS)
+        expect(heard[heard.length - 1]).toBe('予想最大震度5弱。')
+
+        handle(makeEEW({ serial: 2, scaleTo: 45, lgIntTo: 2 }))
+        await advance(SHORT_CHUNK_MS)
+
+        expect(heard).toContain('予想最大階級1。')
+      })
+
+      // 既読の巻き戻し: 降りた発話は 1 音鳴っているので `spoke` は真だが、**文の残りは
+      // 声になっていない**。戻さないと、待っていた高い震度が確定せず元へ戻った続報で
+      // 震度も階級も据え置き判定になり、その EEW で階級が一度も声にならない。
+      it('待っていた予想が確定せず元へ戻ったら、読めなかった分を読み直す', async () => {
+        const heard: string[] = []
+        installChunkedSpeak(heard)
+        const handle = await startPhase2WithScale4(heard)
+
+        await advance(100)
+        handle(makeEEW({ serial: 2, scaleTo: 45, lgIntTo: 1 }))
+        await advance(CHUNK_MS)
+        expect(heard).not.toContain('予想最大階級1。')
+
+        // 震度4 へ戻る。サイクル開始時点の確定値と一致するので短い猶予（300ms）で確定し、
+        // 5弱 の安定待ちタイマー（2000ms）を追い越す
+        handle(makeEEW({ serial: 3, scaleTo: 40, lgIntTo: 1 }))
+        await advance(EEW_PHASE2_STABILITY_SMALL_MS + SYNTH_MS + CHUNK_MS * 2)
+
+        // **全文で突き合わせる。** 末尾 2 件だけを見ると、降りずに階級を鳴らし切って以後黙る
+        // 挙動（この修正の前）でも同じ並びになり、テストが何も守らない
+        expect(heard).toEqual([
+          '緊急地震速報、', '日向灘で地震。',
+          '予想最大震度4。',
+          '予想最大震度4。', '予想最大階級1。',
+        ])
+      })
+
+      // 安全弁: **区分の告知は戻さない。** 前置き「緊急地震速報に切り替わりました。」は文の先頭
+      // チャンクなので、1 音でも鳴っていれば声になっている。値と一緒に戻すと `levelUpgraded` が
+      // 再び真になり、続く読み直しで前置きをもう一度言う。
+      //
+      // **警報の対象地方を読まない設定で露出する。** 既定（読む）では第 1.5 フェーズが前置きを
+      // 引き受けて `spokenEEWUpgradePhraseRef` を立てるため、そちらの歯止めに隠れる。
+      it('予報から警報へ上がった報の発話中に降りても、区分の告知は繰り返さない', async () => {
+        const heard: string[] = []
+        installChunkedSpeak(heard)
+        const handle = setup({ ttsReadEewWarningRegions: false })
+
+        // 予報として発報し、第 1・第 2 フェーズを鳴らし切る
+        handle(makeEEW({ severity: 'Forecast', scaleTo: 30, lgIntTo: 1 }))
+        await flushMicrotasks()
+        await advance(SYNTH_MS + CHUNK_MS * 2)
+        await advance(SYNTH_MS + CHUNK_MS * 2)
+        expect(heard).toContain('地震動予報、')
+
+        // 警報へ格上げ。安定待ちを経ず即座に確定し、前置き付きで読み始める
+        handle(makeEEW({ serial: 2, severity: 'Warning', scaleTo: 40, lgIntTo: 1 }))
+        await advance(SYNTH_MS)
+        expect(heard).toContain('緊急地震速報に切り替わりました。')
+
+        // 前置きを鳴らしている最中に 5弱 が届き、次のチャンクの直前で降りる
+        handle(makeEEW({ serial: 3, severity: 'Warning', scaleTo: 45, lgIntTo: 1 }))
+        await advance(CHUNK_MS)
+        await advance(EEW_PHASE2_STABILITY_LARGE_MS + SYNTH_MS + CHUNK_MS * 3)
+
+        expect(heard).toContain('予想最大震度5弱。')
+        expect(heard.filter(c => c === '緊急地震速報に切り替わりました。')).toHaveLength(1)
+      })
+
+      // 安全弁: 待っていた値が**確定に至らず、さらに低い値へ置き換わる**形。
+      // 安定待ちのサイクルは値が変わるたび張り替わるので、譲った先の値が確定するとは限らない。
+      // 既読を戻していないと、下がった値は読まない方針と噛み合って**その EEW で予想値が
+      // 一度も声にならない**（震度の句は途中まで鳴っても、階級の句は落ちたまま終わる）。
+      it('待っていた予想が確定せず、より低い値へ置き換わっても読み直す', async () => {
+        const heard: string[] = []
+        installChunkedSpeak(heard)
+        const handle = await startPhase2WithScale4(heard)
+
+        // 6強 の報で降りる（この値は確定しない）
+        await advance(100)
+        handle(makeEEW({ serial: 2, scaleTo: 60, lgIntTo: 1 }))
+        await advance(CHUNK_MS)
+        expect(heard).not.toContain('予想最大階級1。')
+
+        // 確定する前に震度3 へ。サイクルは張り替わり、6強 は一度も確定しない
+        handle(makeEEW({ serial: 3, scaleTo: 30, lgIntTo: 1 }))
+        await advance(EEW_PHASE2_STABILITY_LARGE_MS + SYNTH_MS + CHUNK_MS * 2)
+
+        expect(heard).toEqual([
+          '緊急地震速報、', '日向灘で地震。',
+          '予想最大震度4。',
+          '予想最大震度3。', '予想最大階級1。',
+        ])
+      })
     })
 
   })
