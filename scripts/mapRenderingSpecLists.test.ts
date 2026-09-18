@@ -102,10 +102,22 @@ describe('地図描画仕様書 §3（カスタムレイヤーの列挙）', () 
     expect(body).not.toBeNull()
   })
 
+  /**
+   * 同じファイルの `const LYR` からレイヤー id を引く。
+   * 文字列を直に持つ形と、別の定数を指す形（`const LYR = DAY_NIGHT_LAYER_ID`）の 2 つを見る。
+   */
+  function lyrOf(text: string): string | undefined {
+    const direct = text.match(/^const LYR = '([^']+)'/m)
+    if (direct) return direct[1]
+    const alias = text.match(/^const LYR = (\w+)$/m)
+    if (!alias) return undefined
+    return text.match(new RegExp(`^(?:export )?const ${alias[1]} = '([^']+)'`, 'm'))?.[1]
+  }
+
   // 実装側: `type: 'custom'` を書いているファイルから id を集める。
   // id を引数で受け取る生成関数（`gl/depthPointLayer.ts`）は、呼び出し元の `const LYR` から採る。
   // **どちらの形でも拾えなかったら落とす** —— 収集規則が実装に追いついていない印で、
-  // 黙って無視すると列挙の抜けを見逃す側へ倒れる。
+  // 黙って無視すると列挙の抜けを見逃す側へ倒れる（実際に `gl/dayNightLayer.ts` がここで落ちた）。
   function customLayerIds(): string[] {
     const ids: string[] = []
     for (const path of files) {
@@ -113,9 +125,9 @@ describe('地図描画仕様書 §3（カスタムレイヤーの列挙）', () 
       // クォートの種類を固定しない。片方だけを見ると、もう片方で書いた新しいカスタムレイヤーが
       // 収集の対象から外れ、§3 へ書き忘れても 0 件のまま緑になる。
       if (!/type:\s*["']custom["']/.test(text)) continue
-      const own = text.match(/^const LYR = '([^']+)'/m)
+      const own = lyrOf(text)
       if (own) {
-        ids.push(own[1])
+        ids.push(own)
         continue
       }
       const factory = text.match(/export function (\w+)\(\s*id: string/)

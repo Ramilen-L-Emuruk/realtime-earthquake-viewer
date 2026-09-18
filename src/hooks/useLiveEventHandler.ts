@@ -259,6 +259,14 @@ const SEEN_QUAKE_REPORT_KEYS_MAX = 200
 // （その回だけ従来どおり割り込みで裁かれる）。
 const LATEST_SPEECH_TOPIC_MAX = 200
 
+// 津波カードの「今回の受信で何が変わったか」を示す印（観測点の新規/更新バッジと、区域の
+// 「〇〇から切り替え」）が消えるまでの時間。
+//
+// **2 つの印は起点が違うが、長さは揃える。** 観測点の印は津波情報を受けるたびに置き換わるので
+// 起点は「最後の受信」、区域の印は等級が動いた報でだけ置き換わるので起点は「その報」。
+// 利用者から見ればどちらも「さっき変わったところ」の印で、長さを違える理由が説明できない。
+const TSUNAMI_BADGE_TTL_MS = 60000
+
 /** 指定時間だけ待つ（優先度の待ち合わせで、待つ相手の Promise がまだ無いときに使う）。 */
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => { setTimeout(resolve, ms) })
@@ -1092,8 +1100,19 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   // **`lastGrade` だけで出してはいけない。** `LastKind` は変化した後の続報にも載り続けるため、
   // 区域の値だけを見ると何通も後まで「たった今切り替わった」ように見え続ける（読み上げは既読で
   // 1 回に絞っているのに、画面だけ持続する非対称になる）。観測点のバッジ（`obsUpdateStatus`）と
-  // 同じく「今回分だけ」に置き換え、同じタイマーで消す。
+  // 同じく「今回分だけ」に置き換え、`TSUNAMI_BADGE_TTL_MS` で消す。
+  //
+  // **置き換えるのは、まだ声にしていない等級変化を持つ報のときだけ。** 津波の続報には等級に
+  // ついて何も言っていないものがある —— 各地の満潮時刻・津波到達予想時刻に関する情報と津波観測に
+  // 関する情報は、区域一覧も `LastKind` も前報のまま載せて届く（2024 年能登半島地震では、
+  // 16:22 の引き上げの 30 秒後に満潮時刻の報が来ている）。それらは `selectUnspokenAreaGradeChanges`
+  // が既読として全部落とすので、無条件に置き換えていたころは**等級が動いたことを伝える印が
+  // 寿命を待たずに消えていた**。
+  //
+  // **タイマーも観測点と分ける。** 共有したままだと、等級を語らない続報が届くたびに張り直されて
+  // 寿命が伸び続ける（津波が続いている間は数分おきに届くので、事実上消えなくなる）。
   const [areaGradeChangedKeys, setAreaGradeChangedKeys] = useState<Set<string>>(() => new Set())
+  const areaGradeClearTimerRef = useRef<number>(0)
   // 津波イベント受信時にスクロールでフォーカスする予報区（今回の受信で変更があった区域全部＋その中の最高波高区域）。
   // 対象区域が特定できない受信（区域のみの発表・実質変化なしの続報・解除）は top: null（一番上へ戻す）で表す。
   // 形の意味は受け取る側（`FocusedDistrict`）に書いてある。`resetToTop` に既定値を置かないのは、
@@ -2173,6 +2192,17 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // 続報のたびに画面を持って行くと、EEW を見ている最中に何度も津波タブへ引っ張られる
     // （従来 CRIT-4 として抑制していた挙動を、追従の側でも踏襲する）。
     let tsunamiIsNewOrUpgraded = false
+    // 別の津波（別イベント）への切り替わりか。**区域の印を落とす契機として使う。**
+    // 格上げ（同じ津波の等級が上がった報）は含めない —— あちらは同じカードの続きなので、
+    // 印はその報自身が持つ等級変化で置き換わればよい。
+    //
+    // **判定の相手は `tsunamisRef` ではなく `lastTsunamiRef`。** あちらは App の render 本体で
+    // 代入されるため、同一 tick に複数の電文が捌けると（アーカイブ再生の追いつき・長時間
+    // バックグラウンド後の復帰）tick 開始前の値に取り残される。そちらと比べると、**新しい津波の
+    // 2 通目以降まで「新規発報」に見えて、1 通目が立てた印を消す** —— 直そうとしている症状
+    // （等級を語らない報で印が消える）を別の経路から再現することになる。
+    // 罠の詳細は `lastTsunamiRef` の宣言箇所。
+    let tsunamiIsNewFire = false
     // 津波の続報が「観測情報」か（等級が動いていない続報。区域が空の電文を含み、引き下げは含めない）。
     // **音の種別判定で立てて、読み上げの優先度と主題で消費する。** 同じ判定を書き分けると
     // 「更新音が鳴ったのに、読み上げは発報の重みで地震情報を切る」形の食い違いになる
@@ -2314,9 +2344,17 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       const isNew = isTsunamiNewFire(event, current)
       const upgraded = isTsunamiGradeUpgrade(event, current)
       tsunamiIsNewOrUpgraded = isNew || upgraded
+      // **読み取りを先に済ませてから更新する。** この 2 つを直接並べると、行を入れ替えただけで
+      // `isTsunamiNewFire(event, event)` になり（`eventId` が一致するので常に偽）、以後どんな別の
+      // 津波が来ても印を落とせなくなる —— 例外もログも出ない。退避しておけば入れ替えは型で落ちる。
+      const previousTsunami = lastTsunamiRef.current ?? undefined
       // 解除の照合に使うので、受信した順で覚える（理由は宣言箇所）。タブ切替の判定が
       // `tsunamisRef` を見ているのは従来どおり（あちらは「画面がいま何を出しているか」の話）。
       lastTsunamiRef.current = event
+      // **タブ切替の `isNew` を流用しないこと**（宣言箇所に理由）。あちらは `tsunamisRef` 由来で、
+      // 同一 tick に取り残された値を見る。タブが余分に動くだけなら実害は小さいが、印を消す判定に
+      // 使うと消えてはいけない印が消える。
+      tsunamiIsNewFire = isTsunamiNewFire(event, previousTsunami)
       if (!settings.voicevoxEnabled) {
         if (tsunamiIsNewOrUpgraded) {
           log.info(`[tab] tsunami を要求 (${isNew ? '新規発報' : 'グレード格上げ'}・読み上げ無効)`)
@@ -2410,6 +2448,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         spokenObsWarningLevelRef.current.clear()
         spokenAreaGradeRef.current.clear()
         window.clearTimeout(obsStatusClearTimerRef.current)
+        window.clearTimeout(areaGradeClearTimerRef.current)
         setObsUpdateStatus(new Map())
         setAreaGradeChangedKeys(new Set())
         // 解除はカードの中身が消えるので前の位置に意味が無い。先頭へ戻す。
@@ -3796,15 +3835,40 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       }
 
       // 津波情報を受信するたびに obsUpdateStatus を今回分だけの Map に置き換える（前回分は破棄）。
-      // 60秒以内に次の情報が来なければ obsStatusClearTimerRef が空 Map にする。
+      // TSUNAMI_BADGE_TTL_MS 以内に次の情報が来なければ obsStatusClearTimerRef が空 Map にする。
       setObsUpdateStatus(new Map(newStatusEntries))
-      // 等級が動いた区域も「今回分だけ」に置き換える（持続させない理由は宣言箇所）
-      setAreaGradeChangedKeys(new Set(tsunamiAreaChanges.flatMap(c => c.areas.map(tsunamiAreaKey))))
       window.clearTimeout(obsStatusClearTimerRef.current)
-      obsStatusClearTimerRef.current = window.setTimeout(() => {
-        setObsUpdateStatus(new Map())
+      obsStatusClearTimerRef.current = window.setTimeout(() => setObsUpdateStatus(new Map()), TSUNAMI_BADGE_TTL_MS)
+      // **別の津波へ切り替わったら印を落とす。** 印の鍵は区域コード（`tsunamiAreaKey`）だけで、
+      // どの津波のものかを持たない。気象庁の津波予報区コードは固定なので、前の津波で動いた区域と
+      // 同じコードが次の津波にも現れる。**据え置くようにしたぶん、ここで落とさないと前の津波の印が
+      // 新しいカードへ持ち越される**（据え置く前は毎報置き換えていたので、次の報が来た時点で
+      // 必ず消えていた）。解除を受けずに別の津波へ移る経路がこれに当たる。
+      //
+      // カード側（`TsunamiTab`）は「その区域がいま `lastGrade !== grade` か」も併せて見るので、
+      // これが無くても持ち越した印がそのまま画面に出るわけではない。**それでも落とす** ——
+      // 表示の正しさを別ファイルの独立した判定に頼る形にすると、そちらの条件を緩めたときに
+      // 前の津波の印が黙って出る。
+      if (tsunamiIsNewFire) {
+        window.clearTimeout(areaGradeClearTimerRef.current)
         setAreaGradeChangedKeys(new Set())
-      }, 60000)
+      }
+      // 等級が動いた区域も「今回分だけ」に置き換える。**ただし、まだ声にしていない等級変化を
+      // 持つ報のときだけ。** 等級を語らない続報（満潮時刻・観測情報）で消さない理由と、タイマーを
+      // 観測点と分ける理由は宣言箇所。
+      //
+      // **既読を除く前の値（`tsunamiAreaGradeChanges(event)` の生の結果）で判定しないこと。**
+      // 満潮時刻・観測情報の続報も `LastKind` を前報のまま載せるので、そちらを見ると毎報が
+      // 「等級を語る報」になり、置き換え自体は同じ中身でもタイマーが張り直されて寿命が伸び続ける。
+      if (tsunamiAreaChanges.length > 0) {
+        setAreaGradeChangedKeys(new Set(tsunamiAreaChanges.flatMap(c => c.areas.map(tsunamiAreaKey))))
+        window.clearTimeout(areaGradeClearTimerRef.current)
+        areaGradeClearTimerRef.current = window.setTimeout(() => setAreaGradeChangedKeys(new Set()), TSUNAMI_BADGE_TTL_MS)
+      } else {
+        // **据え置いたことを残す。** 実機で「この報でなぜ印が変わらなかったのか」を後から追える
+        // 唯一の手がかりになる（画面には「変わらなかった」という痕跡が出ない）。
+        log.debug('[tsunami] 声にしていない等級変化が無いため、区域の印を据え置く')
+      }
 
       // 画面用の記憶だけをここで進める。読み上げ用（`spokenObsHeightRef`）は発話を始める瞬間まで
       // 待つ（受信時に進めると、鳴らなかった観測値まで既読になり二度と読まれない）。
@@ -3823,6 +3887,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       latestScheduledSeqByTopicRef.current.clear()
       latestScheduledSeqByPriorityRef.current.clear()
       window.clearTimeout(obsStatusClearTimerRef.current)
+      window.clearTimeout(areaGradeClearTimerRef.current)
       // 間を置いている最中の読み上げも捨てる（`resetTracking` と対称）
       cancelPendingSpeech()
     }
@@ -3886,9 +3951,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // 前回と一致して「読んだこと」になり、**新しいセッションで一度も声にならない**
     // （鍵はイベント単位なので、同じ地震を再生すれば必ず一致する）。
     spokenTelegramTextRef.current.clear()
-    // 60秒 obs バッジ自動消去タイマーもリプレイ切替時に持ち越さない（アンマウント経路と対称）
+    // バッジ自動消去タイマーもリプレイ切替時に持ち越さない（アンマウント経路と対称）
     window.clearTimeout(obsStatusClearTimerRef.current)
     obsStatusClearTimerRef.current = 0
+    window.clearTimeout(areaGradeClearTimerRef.current)
+    areaGradeClearTimerRef.current = 0
     // タイマーを止めるだけだと「60 秒で必ず消える」保証が外れ、次の津波電文が来るまで古い
     // バッジと寄せ先が無期限に居座る（表示対象が消えているので画面では気づけない）。中身も落とす。
     setObsUpdateStatus(new Map())
@@ -3914,8 +3981,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     /**
      * **録画モードでは、窓の手前で伝えた内容も「もう伝えた」として扱う。**
      *
-     * 通常の再生で復元しないのは「窓から聞き始めた人は一度も聞いていない」ため（下の地震の
-     * 分岐を参照）。録画は区間を繋いで 1 本の動画にするので、その前提が成り立たない ——
+     * 通常の再生で復元しないのは「窓から聞き始めた人は一度も聞いていない」ため（`restoreOne` の
+     * 地震の分岐に理由がある）。録画は区間を繋いで 1 本の動画にするので、その前提が成り立たない ——
      * 前の区間で既に画面にも声にも出ている。復元しないと区間の境目で同じ長文を読み直す。
      */
     const recording = settingsRef.current.recordingMode
@@ -3934,22 +4001,12 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
      */
     const quakeTopicFor = createPreWindowQuakeTopics()
     /**
-     * 録画モードの復元を 1 件ぶん行う。**例外で復元ループごと止めないこと。**
-     *
-     * ここが呼ぶのは読み上げ文を組む処理（`telegramTextToSpeak` / `earthquakeToSegments`）で、
-     * 単なる ref の更新よりはるかに多くの分岐を通る。1 通の異常な過去電文で投げると、
-     * 呼び出し元（`useReplayController`）の `catch` まで飛んで**「リプレイデータ取得失敗」として
-     * 扱われ、電文の再生自体が始まらない** —— 原因と表示が食い違ううえ、どの電文で失敗したかも残らない。
+     * 電文 1 通ぶんの復元。**呼び出し側のループが 1 通ずつ例外を受け止める。**
      */
-    const restoreForRecording = (payload: ReplayPayload, run: () => void) => {
-      try { run() } catch (err) {
-        log.warn(`[replay] 録画モードの既読復元に失敗しました（この電文だけ飛ばします）: kind=${payload.kind}`, err)
-      }
-    }
-    for (const { payload } of preFiltered) {
+    const restoreOne = (payload: ReplayPayload) => {
       // 気象庁が書いた文は電文の種別を問わないので、種別ごとの分岐より先に見る。
       if (recording) {
-        restoreForRecording(payload, () => rememberTelegramTextAsSpoken(payload, spokenTelegramTextRef.current, opts))
+        rememberTelegramTextAsSpoken(payload, spokenTelegramTextRef.current, opts)
       }
       if (payload.kind === 'event') {
         const ev = payload.event
@@ -3978,17 +4035,48 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             // 渡すと既読にする区域の集合まで震源距離順で切られる（ライブ側と同じ副作用）。
             // 地震電文の側は震源を語らないので、借りても震源の既読は増えない。
             const quake = ev as JMAQuake
-            restoreForRecording(payload, () => rememberQuakeSpeechAsSpoken(
+            rememberQuakeSpeechAsSpoken(
               quake, quakeTopicFor(quake), spokenQuakeStatesRef.current, authoritativeReadQuakesRef.current, opts,
-            ))
+            )
           }
         } else if (ev.kind === 'eew') {
           const eew = ev as EEWAlert
           const key = eew.issue?.eventId ?? eew.id
+          /**
+           * **投げうる計算を先に済ませてから ref へ書く。**
+           *
+           * ここは複数の ref を順に埋めるが、そのうち `activeEEWLevelsRef` だけは意味が違う
+           * ——ライブ経路の `isNew`（新規発報か）がこれだけを見る。途中で投げてこれだけが
+           * 残ると、**続報が「既存」と判定されて第 1 フェーズ（「緊急地震速報、〇〇で地震。」）が
+           * 一度も鳴らない**。他の ref は欠けても「既読が足りない＝読み直す」側なので、
+           * ここだけ失敗の向きが逆になる。
+           *
+           * 書き込みの直前に例外の余地を残さなければ、この分岐は全部書くか 1 つも書かないかに
+           * なる。値を束ねたぶん `eewMaxScaleInfo` / `eewMaxLpgmClassInfo` の二度手間も消える。
+           */
           const restoredLevel = computeSingleEEWLevel(eew)
+          const restoredScale = eewMaxScaleInfo(eew)
+          const restoredLpgm = eewMaxLpgmClassInfo(eew)
+          const restoredRegions = eew.warningRegions?.length
+            ? [...(spokenEEWRegionsRef.current.get(key) ?? []), ...eew.warningRegions]
+            : null
+          // 最後に告知した震源。**3 通りある。**
+          // - 取消の報は**消す**（ライブ経路が取消で `delete` する側なので、文字どおり同じ操作に
+          //   する。`set` を飛ばすだけだと取消より前の報の震源が残る）。取消電文の震源は
+          //   センチネルなので `hasKnownEpicenter` でも弾かれるが、弾かれることに頼ると
+          //   電文の埋め方が変わったときに静かに通る
+          // - 震源が読めない報は**触らない**（前の報で入れた震源を消さない）
+          // - それ以外は入れ替える
+          const announcedHypo = eew.cancelled ? null : eew.earthquake?.hypocenter
+          const restoredHypo: { name: string; lat: number; lng: number } | 'delete' | 'keep' =
+            eew.cancelled ? 'delete'
+              : announcedHypo && hasKnownEpicenter(announcedHypo.latitude, announcedHypo.longitude)
+                ? { name: announcedHypo.name, lat: announcedHypo.latitude, lng: announcedHypo.longitude }
+                : 'keep'
+
           activeEEWLevelsRef.current.set(key, restoredLevel)
-          spokenEEWScalesRef.current.set(key, eewMaxScaleInfo(eew))
-          spokenEEWLpgmClassesRef.current.set(key, eewMaxLpgmClassInfo(eew))
+          spokenEEWScalesRef.current.set(key, restoredScale)
+          spokenEEWLpgmClassesRef.current.set(key, restoredLpgm)
           // 区分も復元する。落とすと注入後の最初の続報で「警報。」が付き直し、
           // 途中から再生を始めた地震がその場で警報化したように聞こえる。
           spokenEEWLevelsRef.current.set(key, restoredLevel)
@@ -3997,8 +4085,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           eewPhase2DoneRef.current.add(key)
           // 安定待ちの確定値も復元する。復元しないと注入後最初の続報の跳躍幅計算が
           // 「自分自身」を基準にしてしまい（跳躍0扱い）、実際より短い安定待ちになる。
-          eewConfirmedScaleRef.current.set(key, eewMaxScaleInfo(eew))
-          eewConfirmedLpgmRef.current.set(key, eewMaxLpgmClassInfo(eew))
+          eewConfirmedScaleRef.current.set(key, restoredScale)
+          eewConfirmedLpgmRef.current.set(key, restoredLpgm)
           // 警報の対象地方も既読にする。**ここが漏れていると、この EEW について他は何も
           // 声にしないのに地方だけが鳴る** —— 第 1 フェーズは `activeEEWLevelsRef` で、
           // 第 2 フェーズは `eewPhase2DoneRef` で止まるのに、地方は「まだ声にしていない地方が
@@ -4007,11 +4095,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // **上書きではなく積む。** 他の値（区分・予想値）は最後の報が最新なので上書きでよいが、
           // 地方は「その報が載せた顔ぶれ」であって累積ではない。窓の境界直前の報がたまたま
           // 地方を持たなければ、それ以前に発表済みの地方が未読へ戻る。
-          if (eew.warningRegions?.length) {
-            const spokenRegions = spokenEEWRegionsRef.current.get(key) ?? new Set<string>()
-            for (const region of eew.warningRegions) spokenRegions.add(region)
-            spokenEEWRegionsRef.current.set(key, spokenRegions)
-          }
+          if (restoredRegions) spokenEEWRegionsRef.current.set(key, new Set(restoredRegions))
           // 格上げの前置きも伝え済みにする。**`spokenEEWLevelsRef` の復元に頼らない** ——
           // いまは前置きの判定が「区分が上がったか」を併せて見るので相乗りで防げているが、
           // その依存はどこにも書かれていない。対で復元して切っておく。
@@ -4021,20 +4105,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             // ——ライブ経路（`handleLiveEventInner`）と同じ条件。
             if (eew.cancelled && !eew.expired) eewRetractedKeysRef.current.add(key)
             // 最後に第 1 フェーズを読んだときの震源。落とすと、窓に入った最初の続報で
-            // 震源の大幅更新の判定に使う比較対象が無くなる。
-            //
-            // **取消の報では消す。** ライブ経路が取消でこの記憶を `delete` する側なので、
-            // 文字どおり同じ操作にする（`set` を飛ばすだけだと、取消より前の報で入れた震源が
-            // そのまま残る）。取消電文の震源はセンチネルなので下の `hasKnownEpicenter` でも
-            // 弾かれるが、弾かれることに頼ると電文の埋め方が変わったときに静かに通る。
-            if (eew.cancelled) {
-              activeEEWAnnouncedHypocentersRef.current.delete(key)
-            } else {
-              const hypo = eew.earthquake?.hypocenter
-              if (hypo && hasKnownEpicenter(hypo.latitude, hypo.longitude)) {
-                activeEEWAnnouncedHypocentersRef.current.set(key, { name: hypo.name, lat: hypo.latitude, lng: hypo.longitude })
-              }
-            }
+            // 震源の大幅更新の判定に使う比較対象が無くなる（取消での扱いは上の `restoredHypo`）。
+            if (restoredHypo === 'delete') activeEEWAnnouncedHypocentersRef.current.delete(key)
+            else if (restoredHypo !== 'keep') activeEEWAnnouncedHypocentersRef.current.set(key, restoredHypo)
           }
         } else if (ev.kind === 'tsunami') {
           const tsunami = ev as JMATsunami
@@ -4110,6 +4183,57 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       } else if (payload.kind === 'lpgm' && !payload.data.cancelled) {
         seenLpgmEventIdsRef.current.add(payload.data.eventId)
       }
+    }
+    /**
+     * **1 通の失敗で復元ループごと止めない。**
+     *
+     * 呼び出し元（`useReplayController`）はこの復元と `loadReplayEvents` を同じ `try` に
+     * 入れており、その `catch` は「リプレイデータ取得失敗」として扱う。投げたまま抜けると
+     * **電文の再生自体が始まらない**——取得は成功しているので、原因と表示も食い違う。
+     *
+     * **握ってよいのは、この復元の失敗に「上へ伝えるべきもの」が無いから。** 値を返さず、
+     * 触るのは既読の記録だけで、失敗しても再生は成立する（窓の手前で伝えた内容を読み直す
+     * ——読み上げが増える側へ倒れる）。取得そのものの失敗は `fetchEvents` の `.catch` が
+     * 別に投げるので、ここで握っても取りこぼしは隠れない。**痕跡は残す。**
+     *
+     * **囲うのは 1 通ずつで、ループ全体ではない。** まとめて囲うと、1 通目で投げたときに
+     * 残り全部の復元が飛ぶ。
+     *
+     * **単位は電文であってステップではない。** 1 通の中で先に走る処理（気象庁が書いた文の
+     * 復元）が投げれば、同じ電文の地震・緊急地震速報・津波の復元も走らない。欠ける向きは
+     * どれも「既読が足りない＝読み直す」側に揃えてあるので、揃えたまま電文単位で切る
+     * （**緊急地震速報だけは向きが逆になりうるので、その分岐の中で塞いである** —— 下記）。
+     *
+     * **録画モードの復元だけを囲っていた頃の非対称は解いた。** 呼ぶ処理の分岐の数（＝投げる
+     * 確率）は違っても、投げたときに起きることは緊急地震速報・津波の復元とまったく同じ。
+     */
+    const failures: { kind: string; err: unknown }[] = []
+    for (const { payload } of preFiltered) {
+      try {
+        restoreOne(payload)
+      } catch (err) {
+        failures.push({ kind: payload.kind, err })
+      }
+    }
+    /**
+     * **記録は 1 回の復元につき 1 行へまとめる。**
+     *
+     * 窓の手前は最大 24 時間ぶんで、群発なら 1 回の復元で数百通を積む。共有ロジックの回帰で
+     * 同じ形の電文がまとめて読めなくなると、素通しでは同期ループから数百行が出て、単発の
+     * 異常となし崩しの系統障害が見分けられなくなる（読めなかったものの記録は他も同じ形で
+     * まとめている。→ `docs/spec/data-sources-spec.md` §2「読めなかったものは記録する」）。
+     *
+     * **黙らせるのではなく畳む。** 件数・種別の内訳・見本 3 件を出すので、何が起きたかは残る。
+     */
+    if (failures.length > 0) {
+      const byKind = new Map<string, number>()
+      for (const f of failures) byKind.set(f.kind, (byKind.get(f.kind) ?? 0) + 1)
+      const breakdown = [...byKind].map(([kind, n]) => `${kind}=${n}`).join('・')
+      log.warn(
+        `[replay] 窓の手前の電文から状態を復元できませんでした（飛ばした電文は既読にならず、`
+        + `窓に入ってから読み直します）: ${failures.length}/${preFiltered.length} 通（${breakdown}）。見本:`,
+        ...failures.slice(0, 3).map(f => f.err),
+      )
     }
   }, [])
 

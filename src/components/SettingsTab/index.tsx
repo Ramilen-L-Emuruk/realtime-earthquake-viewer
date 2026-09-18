@@ -56,6 +56,7 @@ export interface TestFunctions {
   quakeReportSequence: () => void
   borrowFromTsunami?: () => void
   unreceivedQuake?: () => void
+  maxScaleOrAboveQuake?: () => void
   tsunamiGradeChange?: () => void
   estimatedIntensity?: () => void
   notification: () => void
@@ -1605,6 +1606,11 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onRep
             <TestButton color="orange" onClick={onTest.unreceivedQuake}>未入電テスト</TestButton>
           </Row>
         )}
+        {isDmdss && onTest.maxScaleOrAboveQuake && (
+          <Row label="地震情報（最大震度が「5弱以上」になる報）" description="石川県西方沖 M6.4 最大震度5弱（実データ）– 震度を入手していない地点が 1。観測できた最大震度と同じ階級のため、カードの最大震度が「5弱以上」と出る（この形になるのは最大震度が5弱の地震だけで、地震テストの震度7・未入電テストの5強では出ない）">
+            <TestButton color="orange" onClick={onTest.maxScaleOrAboveQuake}>5弱以上テスト</TestButton>
+          </Row>
+        )}
         <Row label="遠地地震" description="メキシコ・チアパス州沿岸 M7.4 深さ不明（実データ）– earthquakeInfo 音 / 国内震度なし・日本への津波影響なし">
           <TestButton color="purple" onClick={onTest.foreignQuake}>遠地地震テスト</TestButton>
         </Row>
@@ -1641,7 +1647,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onRep
           <TestButton color="purple" onClick={onTest.tsunami}>大警報テスト</TestButton>
         </Row>
         {isDmdss && onTest.tsunamiGradeChange && (
-          <Row label="津波警報（区域ごとに等級が動く続報）" description="大津波警報 → 45秒後に続報（岩手・福島は津波警報へ降格／青森県太平洋沿岸は注意報へ／茨城は大津波警報へ引き上げ／北海道は津波予報へ／青森県日本海沿岸は解除）→ 90秒後に全解除。全体の最上位等級は動かないので、区域ごとの「〇〇から切り替え」「〇〇から引き上げ」と、いちばん下の「解除」の枠でしか変化が分からない">
+          <Row label="津波警報（区域ごとに等級が動く続報）" description="大津波警報 → 45秒後に続報（岩手・福島は津波警報へ降格／青森県太平洋沿岸は注意報へ／茨城は大津波警報へ引き上げ／北海道は津波予報へ／青森県日本海沿岸は解除）→ 60秒後に各地の満潮時刻の報 → 90秒後に全解除。全体の最上位等級は動かないので、区域ごとの「〇〇から切り替え」「〇〇から引き上げ」と、いちばん下の「解除」の枠でしか変化が分からない。満潮時刻の報は等級について何も言わないので、そこで印が消えないことも確かめられる">
             <TestButton color="orange" onClick={onTest.tsunamiGradeChange}>区域の等級変化テスト</TestButton>
           </Row>
         )}

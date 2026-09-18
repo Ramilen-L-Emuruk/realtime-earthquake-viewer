@@ -1,8 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { resetArchiveCacheForTest, listArchive, archiveCacheStats, runArchiveScript } from './archive-cache.mjs'
 // @ts-expect-error -- 型定義を持たない .mjs（`scripts/lib/stationSource.mjs` と同じ扱い）
-import { resetArchiveCacheForTest, listArchive, archiveCacheStats } from './archive-cache.mjs'
-// @ts-expect-error -- 同上
-import { markResult, incompleteNotes } from '../lib/incompleteness.mjs'
+import { markResult, incompleteNotes, noteIncomplete } from '../lib/incompleteness.mjs'
+
+// **中身は使わない。** どのテストも `fetch` をスタブするのでネットワークへは出ない。
+// 型が要求するので置いてあるだけで、実際のキーとは関係しない。
+const auth = { Authorization: 'Basic (テスト)' }
 
 // **レート制御（`gate`）のテストは `scripts/lib/rateGate.test.ts` にある。**
 // あの門は DMDATA 専用ではなく取得元ごとに `kind` を分ける汎用の仕組みなので、
@@ -46,7 +49,7 @@ describe('走査の不完全さが結果へ載る', () => {
       classification: 'telegram.earthquake',
       from: '2026-01-01',
       to: '2026-01-02',
-      auth: {},
+      auth,
     }).catch((e: unknown) => e)
     // 待ち直し（指数バックオフ）を飛ばす
     await vi.advanceTimersByTimeAsync(120_000)
@@ -104,7 +107,7 @@ describe('一覧のページ送りは上限で打ち切る', () => {
       classification: 'telegram.earthquake',
       from: '2026-01-01',
       to: '2026-01-02',
-      auth: {},
+      auth,
     }).catch((e: unknown) => e)
     await vi.advanceTimersByTimeAsync(300_000)
     const outcome = await pending
@@ -133,12 +136,71 @@ describe('一覧のページ送りは上限で打ち切る', () => {
       classification: 'telegram.earthquake',
       from: '2026-01-01',
       to: '2026-01-02',
-      auth: {},
+      auth,
     })
     await vi.advanceTimersByTimeAsync(300_000)
     await pending
 
     expect(calls).toBe(3)
     expect(archiveCacheStats().failures).toHaveLength(0)
+  })
+})
+
+// `runArchiveScript` は、3 本の生成スクリプト（`build-test-quake` / `build-test-lpgm` /
+// `build-test-estimated-intensity`）が共有する実行の定型。
+//
+// **1 箇所に寄せた意義は「報告の形を変えるときに 1 箇所で直せる」ことだが、振る舞いを
+// 固定していないと次に触ったときの退行を検出できない。** もともと 3 本それぞれが
+// `try / finally` を書いていて、寄せた結果ここが単一の急所になった。
+describe('アーカイブを取るスクリプトの定型', () => {
+  let saved: typeof process.exitCode
+
+  beforeEach(() => {
+    resetArchiveCacheForTest()
+    // **終了コードを退避する。** このテストが立てた値を残すと、`npm test` 全体が失敗扱いになる。
+    //
+    // **プロセス全体の状態に触っているが、他のテストファイルへは漏れない** —— vitest は
+    // 既定でファイルごとに別プロセスへ隔離する（`pool: 'forks'` ＋ `isolate: true`。
+    // `vitest.config.ts` はどちらも指定していないので既定のまま）。
+    // **隔離を切る設定を入れるなら、このテストを見直すこと。**
+    saved = process.exitCode
+  })
+  afterEach(() => {
+    process.exitCode = saved
+    vi.restoreAllMocks()
+  })
+
+  // 正: 取りこぼしが残ったまま本体が完走したら、終了コードを立てて中身も出す
+  it('取りこぼしが残って完走したら終了コードを立てる', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await runArchiveScript('テストの定型', async () => {
+      noteIncomplete('テストの取得', '2026-01-01 は読めなかった')
+    })
+
+    expect(process.exitCode).toBe(1)
+    // **終了コードだけでは「何を見ていないか」が分からない。** 内容も出ること
+    expect(errors.mock.calls.flat().join(' ')).toContain('2026-01-01 は読めなかった')
+  })
+
+  // 対照: 取りこぼしが無ければ終了コードを触らない（正常終了を失敗に見せない）
+  it('取りこぼしが無ければ終了コードを触らない', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    process.exitCode = 0
+
+    await runArchiveScript('テストの定型', async () => { /* 何も取りこぼさない */ })
+
+    expect(process.exitCode).toBe(0)
+  })
+
+  // 安全弁: **本体が投げても実測値を出す。** 失敗した回こそ「何件を控えで済ませ、何回
+  // 待ち直したか」が要る。あわせて例外を握り潰さないこと（`finally` が元の例外を置き換えない）
+  it('本体が投げても実測値を出し、例外はそのまま通す', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const boom = new Error('取得に失敗しました')
+
+    await expect(runArchiveScript('テストの定型', async () => { throw boom })).rejects.toBe(boom)
+
+    expect(errors.mock.calls.flat().join(' ')).toContain('控えから')
   })
 })

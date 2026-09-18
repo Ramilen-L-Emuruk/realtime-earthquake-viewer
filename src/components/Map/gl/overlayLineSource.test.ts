@@ -23,14 +23,21 @@ function lineFeature(name: string): Feature<MultiLineString> {
 }
 
 /**
- * overlayLineSource が触る 4 つの API だけ持つフェイク。
+ * overlayLineSource が触る 5 つの API だけ持つフェイク。
  *
  * `removeSourceFails` は「参照するレイヤーが残っていて削除できない」状態を模す。**MapLibre の
  * `removeSource` はこのとき例外を投げず、何もせずに戻る**（エラーイベントを出すだけ）。呼びっぱなし
  * では気づけない失敗なので、フェイク側でもその形を再現する。
+ *
+ * `loseStyle()` はスタイルを失った後を模す（`Map.remove()` された後、または WebGL コンテキスト
+ * ロスト中）。MapLibre は以後 `getSource()` / `getStyle()` をそろって undefined で返す
+ * （どちらも `this.style?.…`）。`dropSourceExternally()` はスタイルが生きたままソースだけが
+ * 消えた状態——こちらは本物の異常。
  */
 function fakeMap(opts: { removeSourceFails?: boolean } = {}) {
   let source: { setData: ReturnType<typeof vi.fn>; data: unknown } | null = null
+  let styleGone = false
+  let getStyleCalls = 0
   const addSource = vi.fn((_id: string, spec: { data: unknown }) => {
     source = { setData: vi.fn((d: unknown) => { source!.data = d }), data: spec.data }
   })
@@ -38,12 +45,19 @@ function fakeMap(opts: { removeSourceFails?: boolean } = {}) {
   const map = {
     addSource,
     removeSource,
-    getSource: (id: string) => (id === OVERLAY_LINE_SRC ? source : undefined),
+    getSource: (id: string) => (styleGone || id !== OVERLAY_LINE_SRC ? undefined : source),
+    getStyle: () => {
+      getStyleCalls++
+      return styleGone ? undefined : {}
+    },
   } as unknown as MapLibreMap
   return {
     map,
     addSource,
     removeSource,
+    loseStyle: () => { styleGone = true },
+    dropSourceExternally: () => { source = null },
+    getStyleCalls: () => getStyleCalls,
     setDataCalls: () => source?.setData.mock.calls.length ?? 0,
     names: () => {
       const fc = source?.data as { features?: Feature<MultiLineString>[] } | undefined
@@ -123,6 +137,56 @@ describe('putOverlayLines / dropOverlayLines', () => {
     } finally {
       errorSpy.mockRestore()
     }
+  })
+
+  // 「ソースが引けない」ことの意味は 2 つある。**片方だけが異常**なので、下の 3 件で
+  // 正（スタイルを失っていれば黙る）・対照（スタイルが生きていれば記録する）・
+  // 安全弁（正常系ではスタイルを覗きに行かない）を対にして固定する。
+  it('地図がスタイルを失った後に降りても記録しない', () => {
+    // HMR で `JapanMapGL` の初期化 effect が再実行されると、古い地図が `remove()` された後に
+    // 子コンポーネントの cleanup が走る。残った提供元のレイヤーも一緒に消えているので、
+    // ここで鳴らしても直すものが無い。
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const f = fakeMap()
+      putOverlayLines(f.map, 'plate', [lineFeature('境界')])
+      putOverlayLines(f.map, 'fault', [lineFeature('断層')])
+      f.loseStyle()
+      dropOverlayLines(f.map, 'plate')
+      expect(errorSpy).not.toHaveBeenCalled()
+      // 続いて残りの提供元が降りても、削除を試みずに静かに終わる。
+      dropOverlayLines(f.map, 'fault')
+      expect(f.removeSource).not.toHaveBeenCalled()
+      expect(errorSpy).not.toHaveBeenCalled()
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
+
+  it('スタイルが生きているのにソースだけ消えていたら記録する', () => {
+    // このモジュールを通さずに消された場合。残った側のレイヤーは以後何も描かなくなる。
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const f = fakeMap()
+      putOverlayLines(f.map, 'plate', [lineFeature('境界')])
+      putOverlayLines(f.map, 'fault', [lineFeature('断層')])
+      f.dropSourceExternally()
+      dropOverlayLines(f.map, 'plate')
+      expect(errorSpy).toHaveBeenCalledTimes(1)
+      expect(String(errorSpy.mock.calls[0]?.[1])).toContain(OVERLAY_LINE_SRC)
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
+
+  it('ソースが引けている間はスタイルを覗きに行かない', () => {
+    // `getStyle()` はスタイル全体を直列化する。正常な経路で呼ぶと、提供元が降りるたびに
+    // その代価を払うことになる。
+    const f = fakeMap()
+    putOverlayLines(f.map, 'plate', [lineFeature('境界')])
+    putOverlayLines(f.map, 'fault', [lineFeature('断層')])
+    dropOverlayLines(f.map, 'plate')
+    expect(f.getStyleCalls()).toBe(0)
   })
 
   it('降りたあとに戻ってきたらソースを作り直す', () => {

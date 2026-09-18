@@ -5,6 +5,7 @@ import type { TsunamiArrivalMarker } from '../../hooks/useTsunamiLayerData'
 import {
   arrivalMetrics, popupOffset, ARRIVAL_COLOR, ARRIVAL_RING_COLOR, ARRIVAL_OPACITY,
 } from './gl/tsunamiArrivalMarker'
+import { BADGE_SHADOW_BLUR, BADGE_SHADOW_COLOR } from './gl/tsunamiObsBar'
 import { formatTimeMin } from '../../utils/formatters'
 
 // 津波の到達確認マーカー（波高が「観測中」の観測点）を描画する。
@@ -51,7 +52,7 @@ function updateMarkerEl(el: HTMLDivElement, marker: TsunamiArrivalMarker, iconSc
   el.innerHTML =
     `<div style="position:absolute;inset:0;box-sizing:border-box;border-radius:50%;` +
     `background:${ARRIVAL_COLOR};border:${ring}px solid ${ARRIVAL_RING_COLOR};` +
-    `box-shadow:0 0 3px rgba(0,0,0,0.7);opacity:${ARRIVAL_OPACITY}"></div>`
+    `box-shadow:0 0 ${BADGE_SHADOW_BLUR}px ${BADGE_SHADOW_COLOR};opacity:${ARRIVAL_OPACITY}"></div>`
 }
 
 export function buildArrivalMarkerEl(marker: TsunamiArrivalMarker, iconScale: number): HTMLDivElement {
