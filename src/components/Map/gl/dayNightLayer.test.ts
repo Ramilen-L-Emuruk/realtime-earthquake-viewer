@@ -10,8 +10,8 @@ import { getRenderHealth, resetRenderHealthForTest } from '../../../utils/render
 // **「描けないと分かったことが画面へ届くか」**だけ（濃さが理論どおりかはブラウザで測る。
 // 手順は docs/spec/map-rendering-spec.md §18「実測で確かめること」）。
 
-/** `gl` の呼び出しを数える最小の偽物。**リンクの成否だけ差し替えられる。** */
-function fakeGl(options: { linkOk: boolean }) {
+/** `gl` の呼び出しを数える最小の偽物。**リンクの成否と資源の生成を差し替えられる。** */
+function fakeGl(options: { linkOk: boolean; resourcesFail?: boolean }) {
   const counts = { createProgram: 0, useProgram: 0, drawElements: 0, deleteProgram: 0 }
   const gl = {
     VERTEX_SHADER: 1,
@@ -56,7 +56,7 @@ function fakeGl(options: { linkOk: boolean }) {
     uniform3f: () => {},
     uniform4fv: () => {},
     uniformMatrix4fv: () => {},
-    createBuffer: () => ({}),
+    createBuffer: () => (options.resourcesFail ? null : {}),
     bindBuffer: () => {},
     bufferData: () => {},
     enableVertexAttribArray: () => {},
@@ -157,6 +157,32 @@ describe('makeDayNightLayer', () => {
     layer.layer.render(gl, renderArgs('globe'))
     layer.layer.render(gl, renderArgs('mercator'))
     expect(counts.createProgram).toBe(2)
+  })
+
+  it('GL の資源を作れなければ画面に出し、描かない', () => {
+    // 対照。**生成関数は失敗しても例外ではなく null を返す。** 判定に入れていないと、
+    // バッファの無いまま `vertexAttribPointer` を呼んで内部のエラーフラグが立つだけになり、
+    // 例外にも画面にも出ない（docs/spec/map-rendering-spec.md §16「`onAdd` は投げない」）。
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { gl, counts } = fakeGl({ linkOk: true, resourcesFail: true })
+    const layer = makeDayNightLayer(SUN, Date.UTC(2026, 0, 1), 0.5)
+    expect(() => layer.layer.onAdd?.(null as unknown as maplibregl.Map, gl)).not.toThrow()
+    layer.layer.render(gl, renderArgs('mercator'))
+    expect(counts.drawElements).toBe(0)
+    expect(getRenderHealth().broken).toEqual([DAY_NIGHT_LAYER_LABEL])
+  })
+
+  it('隠したら「描けていない」も取り下げる', () => {
+    // 安全弁。`render()` は `!visible` で資源の判定より手前に抜けるので、
+    // **壊れた状態で隠すと取り下げる機会が無い**（意図的に隠しているだけなのに残る）。
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { gl } = fakeGl({ linkOk: false })
+    const layer = makeDayNightLayer(SUN, Date.UTC(2026, 0, 1), 0.5)
+    layer.layer.onAdd?.(null as unknown as maplibregl.Map, gl)
+    layer.layer.render(gl, renderArgs('mercator'))
+    expect(getRenderHealth().broken).toEqual([DAY_NIGHT_LAYER_LABEL])
+    layer.setVisible(false)
+    expect(getRenderHealth().broken).toEqual([])
   })
 
   it('表示していなければ描かない', () => {

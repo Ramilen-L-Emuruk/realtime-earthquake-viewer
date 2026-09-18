@@ -949,7 +949,13 @@ export function createDepthPointLayer(id: MapLayerId, map: MapLibreMap, label: s
       const gl = gl2 as WebGL2RenderingContext
       const display = displayCache.get(gl, args)
       const picker = pickCache.get(gl, args)
-      if (!display || !picker || !vao) {
+      // **資源も揃っているか見る**（docs/spec/map-rendering-spec.md §16「`onAdd` は投げない」）。
+      // `createVertexArray` / `createBuffer` は失敗しても例外ではなく null を返すので、
+      // 揃っていない状態で進むとバッファの無い `vertexAttribPointer` が内部のエラーフラグを
+      // 立てるだけになる ——例外にならず、画面にも何も出ない。
+      // **1 つでも欠けたら全部止める。** 同じ `onAdd` で作るものなので、片方だけ失敗するのは
+      // 文脈そのものが不調なとき。柄だけ・判定だけを選り分けて続ける意味は無い。
+      if (!display || !picker || !vao || !pickVao || !buffer || !lineVao || !lineBuffer) {
         // シェーダーのリンクに失敗している。原因はキャッシュ側で 1 度記録されるが、以後は
         // 「描かれない・クリックできない」だけが延々続く。**その状態にいることを 1 度だけ残す。**
         if (!warnedDisabled) {
