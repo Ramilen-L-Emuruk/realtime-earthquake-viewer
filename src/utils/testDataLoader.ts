@@ -3,9 +3,9 @@
  *
  * ## なぜ静的に取り込まないのか
  *
- * `testData.ts` が抱える実データ 5 本（`src/data/noto-honshin-2024-*.json` の 3 つと
- * `src/data/test-estimated-intensity.json`・`src/data/hyuganada-2022-quake.json`）は合わせて
- * 1.1 MB ある。静的に取り込むと
+ * `testData.ts` が抱える実データ 6 本（`src/data/noto-honshin-2024-*.json` の 3 つと
+ * `src/data/test-estimated-intensity.json`・`src/data/hyuganada-2022-quake.json`・
+ * `src/data/ishikawa-seihooki-2024-quake.json`）は合わせて 1.4 MB ある。静的に取り込むと
  * **テストボタンを一度も押さない利用者にも初回表示で届く**うえ、2026-09-09 にはメインバンドルが
  * Service Worker のプリキャッシュ上限
  * （`vite.config.ts` の `maximumFileSizeToCacheInBytes`＝2 MiB）を超えて本番ビルドが落ちた。

@@ -452,7 +452,14 @@ export function EarthquakeCard({
   const { hypocenter, maxScale, domesticTsunami } = earthquake
   // 電文全体の最大震度が「5弱以上・未入電」だったとき、見出しにも「以上」を付ける。
   // 付けないと、実際にはもっと強い可能性があることが見出しから読み取れない。
-  const maxScaleLabel = maxScale === -1 ? '?' : getIntensityLabelWithOrAbove(maxScale, isMaxScaleUnreceived(maxScale, quake.points))
+  //
+  // **値と語を分けて持つ。** 最大震度は大きく出す欄なので、語を同じ大きさで並べると
+  // 「5弱以上」で桁数が倍になり、器に収まらず折り返す（畳んだ表示は 7rem 角に固定、
+  // 開いた表示も横並びのラベルと競る）。**語は本体より小さく添える** —— EEW の予想最大震度
+  // バナーが「程度以上」で同じ形を採っている（`RealtimeTab/index.tsx`）。
+  // **語は縮められない**（気象庁の表現をそのまま使う決まり）ので、大きさで受ける。
+  const maxScaleLabel = maxScale === -1 ? '?' : getIntensityLabel(maxScale)
+  const maxScaleOrAbove = maxScale !== -1 && isMaxScaleUnreceived(maxScale, quake.points)
   const tsunamiInfo = formatDomesticTsunami(domesticTsunami)
   const hasLocation = hasKnownEpicenter(hypocenter.latitude, hypocenter.longitude)
   // 規模・深さは位置と別に判定する（→ `hasHypocenterFacts`）
@@ -813,6 +820,11 @@ export function EarthquakeCard({
               style={{ color: '#ffffff' }}
             >
               {maxScaleLabel}
+              {/* 「以上」は本体より小さく添える（→ `maxScaleOrAbove` の注記）。同じ大きさで
+                  並べると横並びのラベルと競って折り返す。 */}
+              {maxScaleOrAbove && (
+                <span className="font-bold text-[1.25rem] roomy:text-[1.75rem]">以上</span>
+              )}
             </span>
           </div>
 
@@ -1379,6 +1391,17 @@ export function EarthquakeCard({
           >
             {maxScaleLabel}
           </span>
+          {/* **ここだけ値の下へ置く。** バッジは 7rem 角に固定してあり、「5弱」で幅をほぼ
+              使い切るため横には添えられない（→ `maxScaleOrAbove` の注記）。縦並びの器なので
+              下へ置けば正方形は崩れない。 */}
+          {maxScaleOrAbove && (
+            <span
+              className="text-sm font-bold leading-none"
+              style={{ color: getIntensityColor(maxScale) }}
+            >
+              以上
+            </span>
+          )}
         </div>
 
         {/* 地震詳細 */}
