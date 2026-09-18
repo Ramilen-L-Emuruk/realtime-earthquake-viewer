@@ -1,6 +1,7 @@
 import type { CustomLayerInterface, Map as MapLibreMap } from 'maplibre-gl'
 import { log } from '../../../utils/logger'
-import { reportRenderFailure, clearRenderFailure } from '../../../utils/renderHealth'
+import { reportRenderFailure, clearRenderFailure, clearRenderFailuresFor } from '../../../utils/renderHealth'
+import type { MapLayerId } from './layerOrder'
 import { applyProjectionUniforms, createProjectionProgramCache } from './projectionProgram'
 import { guardRender } from './guardRender'
 
@@ -582,6 +583,8 @@ export function stemScreenLengthPx(
 export type DepthPickResult = number | null | 'pending'
 
 export interface DepthPointLayer extends CustomLayerInterface {
+  /** 描画順の配列に載っている id に限る（登録漏れを型で弾く。`gl/layerOrder.ts`）。 */
+  id: MapLayerId
   /** 描く点を差し替える。 */
   setPoints(points: readonly DepthPoint[]): void
   /**
@@ -612,7 +615,7 @@ export interface DepthPointLayer extends CustomLayerInterface {
   pick(x: number, y: number, forClick?: boolean): DepthPickResult
 }
 
-export function createDepthPointLayer(id: string, map: MapLibreMap, label: string): DepthPointLayer {
+export function createDepthPointLayer(id: MapLayerId, map: MapLibreMap, label: string): DepthPointLayer {
   // 表示・判定・柄の 3 プログラム。**投影が切り替わると中身が作り直される**ため、
   // ロケーションはフレームごとにキャッシュから引く（gl/projectionProgram.ts）。
   const displayCache = createProjectionProgramCache({
@@ -977,7 +980,7 @@ export function createDepthPointLayer(id: string, map: MapLibreMap, label: strin
       const gl = gl2 as WebGL2RenderingContext
       // **画面から外れたら不調の記録も消す。** 残すと、もう出てこない描画物の名前が居座る。
       brokenReported = false
-      clearRenderFailure(id, 'draw')
+      clearRenderFailuresFor(id)
       // 予約を残すと、レイヤーが消えた後も再描画を起こし続ける。
       blink.dispose()
       displayCache.dispose(gl)
