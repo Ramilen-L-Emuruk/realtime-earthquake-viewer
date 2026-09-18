@@ -11,6 +11,7 @@ import {
   shareOrDownloadImage,
 } from '../utils/shareCard'
 import { buildShareCardContent, type ShareCardContentInput } from '../utils/shareCardContent'
+import type { LegendBlock } from '../components/MapLegend/legendBlocks'
 
 // 共有カードを作る一連の流れ（撮影 → 合成 → 共有／保存）をまとめる。
 //
@@ -32,7 +33,15 @@ export interface UseShareCard {
   ready: boolean
 }
 
-export function useShareCard(handle: MapHandle | null, content: ShareCardContentInput): UseShareCard {
+/**
+ * @param legend 地図へ焼く凡例。**画面に出しているものと同じ組を渡す**（`buildLegendBlocks` の結果）。
+ *   設定で凡例を切っているときは空配列を渡すこと——画面に無いものを画像へ焼かない。
+ */
+export function useShareCard(
+  handle: MapHandle | null,
+  content: ShareCardContentInput,
+  legend: LegendBlock[],
+): UseShareCard {
   const [state, setState] = useState<ShareCardState>('idle')
   // 見出しの材料は毎レンダー新しいオブジェクトになる。依存に置くと share が作り直され、
   // それを受け取るボタンも毎回描き直しになるため、ref 越しに読む。
@@ -40,6 +49,11 @@ export function useShareCard(handle: MapHandle | null, content: ShareCardContent
   useEffect(() => {
     contentRef.current = content
   }, [content])
+  // 凡例も同じ理由で ref 越しに読む（毎レンダー新しい配列になる）。
+  const legendRef = useRef(legend)
+  useEffect(() => {
+    legendRef.current = legend
+  }, [legend])
   // 二重起動の防止は ref で持つ。state を条件にすると、押した直後の再レンダーが来る前の
   // 2 回目のクリックを通してしまい、撮影が二重に走る（寸法の退避と復元が交錯する）。
   const busyRef = useRef(false)
@@ -63,7 +77,7 @@ export function useShareCard(handle: MapHandle | null, content: ShareCardContent
             height: shareCardMapHeight(format, built.notices.length),
             drawOverlay: handle.drawExtras,
           })
-          const blob = await composeShareCard({ capture, header: built.header, notices: built.notices, format })
+          const blob = await composeShareCard({ capture, header: built.header, notices: built.notices, format, legend: legendRef.current })
           // 保存名の時刻は**書き出した時刻**なので壁時計で採る（アプリ時計 `serverNow` ではない）。
           // 電文ログ・診断ログのダウンロードも同じで、データ自身の時刻を名前にするときだけ
           // そのデータの時刻を渡す（`components/TelegramTab` / `components/SettingsTab`）。

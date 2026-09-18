@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   attributionLine,
   DEFAULT_SHARE_CARD_FORMAT,
+  legendChipLayout,
   shareCardMapHeight,
   shareOrDownloadImage,
   standardAppUrl,
@@ -205,5 +206,29 @@ describe('shareOrDownloadImage', () => {
     expect(outcome).toEqual({ result: 'downloaded', textCopied: true })
     expect(saved).toEqual(['quake_x.png'])
     expect(copied).toEqual([TEXT])
+  })
+})
+
+// 凡例の色見本は、形ごとに幅が違う（縦棒だけ細い）。**幅の計測と描画がずれると画像だけが崩れる**
+// ——予約した幅より文字が右へ出れば隣の組と重なり、狭ければ見本と文字のあいだが空く。どちらも
+// 型検査では捕まらないので、内訳を値で固定する。
+describe('legendChipLayout', () => {
+  const shapes = ['line', 'dot', 'bar'] as const
+
+  it('文字の位置は必ず「見本の幅＋間隔」になる', () => {
+    for (const shape of shapes) {
+      const { markWidth, labelOffset } = legendChipLayout(shape)
+      expect(labelOffset).toBe(markWidth + 6)
+      expect(markWidth).toBeGreaterThan(0)
+    }
+  })
+
+  it('縦棒は線・丸より細い（画面の凡例と同じ見え方にする）', () => {
+    expect(legendChipLayout('bar').markWidth).toBeLessThan(legendChipLayout('line').markWidth)
+    expect(legendChipLayout('line')).toEqual(legendChipLayout('dot'))
+  })
+
+  it('線・丸の文字位置は従来どおり 24px（縦棒を足しても見た目を変えない）', () => {
+    expect(legendChipLayout('line').labelOffset).toBe(24)
   })
 })

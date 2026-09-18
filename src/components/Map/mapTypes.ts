@@ -3,7 +3,8 @@ import type { JMAQuake, JMATsunami, TsunamiObservation, EEWAlert, JMALpgm, JMAEs
 import type { SiteCoords, PsWaveCircle } from '../../services/kyoshin'
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
 import type { HeatPoint } from '../../utils/quakeHeatmap'
-import type { CatalogPointCloud } from '../../utils/hypocenterCatalogView'
+import type { CatalogPointCloud, CatalogColorBy } from '../../utils/hypocenterCatalogView'
+import type { MapLegendSources } from '../MapLegend/legendBlocks'
 import type { LatLng } from '../../utils/stationCoords'
 
 // 地図コンポーネントの契約（Props とモード）の単一情報源。
@@ -99,6 +100,24 @@ export interface JapanMapProps {
    * カタログの読み込みにも条件にも関わらない（点数が多く、条件が変わるたびに詰め直すため）。
    */
   catalogCloud?: CatalogPointCloud | null
+  /**
+   * 点群を何で色分けしているか（`catalog` モードのときだけ意味を持つ）。凡例が色帯を選ぶのに使う。
+   *
+   * **点群を作るのに使ったのと同じ値を渡すこと**（呼び出し側は待ちを挟んでから作り直すので、
+   * 生の選択値を渡すと、つまみを動かした瞬間に凡例だけ先に変わる）。
+   */
+  catalogColorBy?: CatalogColorBy | null
+  /**
+   * いま地図が描いている色スケールが変わったときに呼ぶ（地図の外に置く凡例のため）。
+   *
+   * **凡例の中身を地図モードから組み直さないこと。** ここで渡すのは各レイヤーの表示条件から
+   * 導いた値で、モードだけでは決まらないものがある（津波の海岸線は全モードで描かれ、
+   * 活断層は津波モードでは描かれない）。
+   *
+   * **地図を出す画面は必ず渡すこと。** 省略しても型検査は通り、例外も出ない——凡例が空のまま
+   * 何も起きないだけなので、渡し忘れたことに気づく手立てが無い。
+   */
+  onLegendSourcesChange?: (sources: MapLegendSources) => void
   showBathymetry?: boolean
   showActiveFaults?: boolean
   activeFaultOpacity?: number

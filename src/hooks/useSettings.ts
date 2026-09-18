@@ -13,6 +13,15 @@ export { TELEGRAM_TEXT_BLOCK_KEYS, TELEGRAM_BOILERPLATE_KEYS }
 // アイドル復帰時に戻すデフォルトタブの選択肢（津波情報・設定は対象外）
 export type DefaultTabSetting = 'earthquake' | 'realtime'
 
+/**
+ * 地図の凡例を畳んでいるか。
+ *
+ * `'auto'` は「利用者がまだ開閉していない」状態で、地図の高さから決める
+ * （`LEGEND_AUTO_COLLAPSE_MAP_HEIGHT_PX`）。一度開閉したらその選択を固定する——画面の回転や
+ * パネルの比率で勝手に開き直すと、閉じたつもりのものが戻ってくる。
+ */
+export type MapLegendCollapseSetting = 'auto' | 'open' | 'collapsed'
+
 /** 津波の観測点を読み上げる件数の上限（設定で選べる範囲）。**`0` は無制限**（`ttsMaxRegions` と同じ意味）。 */
 export const TTS_MAX_OBSERVATION_POINTS_MIN = 0
 export const TTS_MAX_OBSERVATION_POINTS_MAX = 20
@@ -39,6 +48,8 @@ export interface AppSettings {
   activeFaultOpacity: number // 活断層線の不透明度（濃さ、0.05〜1.0）
   showQuakeHeatmap: boolean // 地震情報・リアルタイムタブの地図に直近1ヶ月の地震活動ヒートマップを表示する
   showPlateBoundaries: boolean // 地震情報・リアルタイムタブの地図にプレート境界線を表示する
+  showMapLegend: boolean    // 地図に色の凡例（震度・津波の等級・深さなど）を重ねる
+  mapLegendCollapsed: MapLegendCollapseSetting // 凡例を畳んでいるか（'auto' = 地図の高さで決める）
   showDayNight: boolean     // 地図に夜の側を重ねる（日の入りから夜が深まるまでを濃淡で表す）
   dayNightOpacity: number   // 夜側の濃さ（0.2〜0.95）
   defaultTab: DefaultTabSetting    // 起動時・アイドル復帰時に表示するタブ
@@ -147,6 +158,10 @@ export const DEFAULTS: AppSettings = {
   activeFaultOpacity: 0.4,
   showQuakeHeatmap: false,
   showPlateBoundaries: true,
+  showMapLegend: true,
+  // 既定は画面任せ。**利用者が一度も触っていない状態を表す値**で、`true`/`false` を初期値に
+  // すると狭い画面と広い画面のどちらかで必ず具合が悪くなる。
+  mapLegendCollapsed: 'auto',
   showDayNight: true,
   // 下げると海の上で効かなくなる（ベースマップの海がもともと濃紺のため）。上げると夜側の陸地と
   // 海底地形が読めなくなる。掛かるのは地形だけで、境界線・震度の面・観測点はこのレイヤーより
@@ -210,6 +225,10 @@ function ensureString(value: unknown, fallback: string): string {
 
 function ensureDefaultTab(value: unknown, fallback: DefaultTabSetting): DefaultTabSetting {
   return value === 'earthquake' || value === 'realtime' ? value : fallback
+}
+
+function ensureMapLegendCollapse(value: unknown, fallback: MapLegendCollapseSetting): MapLegendCollapseSetting {
+  return value === 'auto' || value === 'open' || value === 'collapsed' ? value : fallback
 }
 
 function ensureUnreceivedDetail(value: unknown, fallback: TtsUnreceivedDetail): TtsUnreceivedDetail {
@@ -287,6 +306,8 @@ export function sanitize(partial: Partial<AppSettings>): AppSettings {
     activeFaultOpacity: clampNumber(partial.activeFaultOpacity, 0.05, 1, DEFAULTS.activeFaultOpacity),
     showQuakeHeatmap: ensureBool(partial.showQuakeHeatmap, DEFAULTS.showQuakeHeatmap),
     showPlateBoundaries: ensureBool(partial.showPlateBoundaries, DEFAULTS.showPlateBoundaries),
+    showMapLegend: ensureBool(partial.showMapLegend, DEFAULTS.showMapLegend),
+    mapLegendCollapsed: ensureMapLegendCollapse(partial.mapLegendCollapsed, DEFAULTS.mapLegendCollapsed),
     showDayNight: ensureBool(partial.showDayNight, DEFAULTS.showDayNight),
     dayNightOpacity: clampNumber(partial.dayNightOpacity, DAY_NIGHT_OPACITY_MIN, DAY_NIGHT_OPACITY_MAX, DEFAULTS.dayNightOpacity),
     defaultTab: ensureDefaultTab(partial.defaultTab, DEFAULTS.defaultTab),
