@@ -14,6 +14,7 @@ import {
   putOverlayLines,
   type OverlayLineProps,
 } from './gl/overlayLineSource'
+import { FAULT_COLOR } from './gl/overlayLineStyle'
 
 // 全国活断層線（産総研 活断層データベース）を描画する MapLibre 版（Leaflet の ActiveFaultsLayer 相当）。
 // セグメント1件=MultiLineString feature 1件（約580件）にまとめ、1枚の line レイヤーで描く。
@@ -24,7 +25,7 @@ import {
 // で区別し、レイヤー側は filter で拾う。
 
 // ダーク地図に馴染ませた控えめな活断層色（鮮やかな #c2410c は目立ちすぎるため彩度を落とした暗い赤茶）。
-const FAULT_COLOR = '#96421f'
+// 色は gl/overlayLineStyle.ts が単一情報源（凡例と共有する）。
 // 線クリックの当たり判定許容（px）。旧 Leaflet の Canvas ヒットレンダラー tolerance:8 に揃える。
 const HIT_TOL_PX = 8
 

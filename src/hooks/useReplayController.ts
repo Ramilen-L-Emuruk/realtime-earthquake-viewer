@@ -324,7 +324,18 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
       // フェッチ中に WS 切断タイミングで ref が再セットされる競合を排除するため直前に再リセット
       d.resetTracking()
       // pre-window イベントから T 時点の追跡 ref を復元する（サイレント注入後の正確な音判定に必要）
-      d.restorePreWindowTracking(preFiltered)
+      //
+      // **復元の失敗で再生を止めない。** 下の `catch` は「リプレイデータ取得失敗」の文面を出すが、
+      // ここまで来ていれば取得は成功している。投げたまま抜けると `loadReplayEvents` へ届かず、
+      // **電文が 1 通も再生されないまま取得失敗と表示される**。復元側も 1 通ずつ例外を受け止めて
+      // いる（`restorePreWindowTracking`）ので、ここへ届くのはその外側——渡す値の組み立てや、
+      // あとから前処理を足したときに投げるもの。**復元が丸ごと飛んでも再生は成立する**
+      // （窓の手前で伝えた内容を読み直すだけ）。
+      try {
+        d.restorePreWindowTracking(preFiltered)
+      } catch (e) {
+        log.error('[replay] 窓の手前からの状態復元に失敗（再生は継続）', e)
+      }
 
       d.loadReplayEvents([...preFiltered, ...normal.entries])
 

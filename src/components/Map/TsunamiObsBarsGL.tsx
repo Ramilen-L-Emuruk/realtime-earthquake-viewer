@@ -2,7 +2,9 @@ import { useEffect, useRef } from 'react'
 import * as maplibregl from 'maplibre-gl'
 import { useMapGL } from './mapGLContext'
 import type { TsunamiObsBar } from '../../hooks/useTsunamiLayerData'
-import { barMetrics, popupOffset, BAR_RADIUS } from './gl/tsunamiObsBar'
+import {
+  barMetrics, popupOffset, BAR_RADIUS, BAR_RING_COLOR, BADGE_SHADOW_BLUR, BADGE_SHADOW_COLOR,
+} from './gl/tsunamiObsBar'
 import { overSuffixedHeight } from '../../utils/tsunami'
 
 // 津波観測棒（波高バー）を描画する MapLibre 版（Leaflet の tsunami-obs-bars 相当）。
@@ -25,17 +27,33 @@ function tooltipHtml(bar: TsunamiObsBar): string {
 // 既存 el の見た目だけ更新する。className の丸ごと代入は Marker がコンストラクタで付与する
 // 'maplibregl-marker' クラスを消してしまうため、blink クラスは classList.toggle で足し引きする。
 function updateBarEl(el: HTMLDivElement, bar: TsunamiObsBar, iconScale: number): void {
-  const { w, foot, barPx } = barMetrics(bar, iconScale)
+  const { w, foot, ring, outerW, outerH } = barMetrics(bar, iconScale)
   // 角丸だけは倍率を掛けない（枠線・影と同じ装飾の扱い・gl/tsunamiObsBar.ts 参照）。
   const r = BAR_RADIUS
   // 寸法は幅・高さとも毎回ここで書く。倍率変更時は観測点名キーで既存マーカーを再利用する（下の
   // 差分更新）ため、生成時にしか設定しない値があると、その値だけ古い倍率のまま取り残される。
+  //
+  // 根の幅は脚に合わせる（フチを付けた本体の外形は、どの倍率でも脚の幅以下になる）。
   el.style.width = `${w + foot}px`
-  el.style.height = `${barPx + foot}px`
+  el.style.height = `${outerH + foot}px`
   el.classList.toggle('tsunami-obs-blink', bar.blinking)
+  const shadow = `box-shadow:0 0 ${BADGE_SHADOW_BLUR}px ${BADGE_SHADOW_COLOR}`
+  // **白フチと影を持たせる理由は `gl/tsunamiObsBar.ts` の `BAR_RING`。** 要約すると、観測点は
+  // 海岸線上にあるので棒は必ず津波予報区の線の上に立ち、その線の等級色と棒の観測階級色は値が
+  // 一致する（どちらも気象庁の配色なので動かせない）。輪郭が無いと同色の線に溶ける。
+  //
+  // フチは `box-sizing: border-box` で外形の内側に収める。外形は `outerW`（= 芯 + 左右のフチ）で、
+  // 芯の幅・高さは現状どおり `w` / `barPx` のまま——波高が持つ色の面積を減らさない。
+  // 下端のフチだけ落とすのは、脚に接する辺に白線が入ると棒と台座が分断されて見えるため。
+  //
+  // 不透明度は中の要素に置く（`maplibregl.Marker` が根の要素の `opacity` を自前で管理して
+  // 上書きするため。docs/spec/map-rendering-spec.md §10）。
   el.innerHTML =
-    `<div style="width:${w}px;height:${barPx}px;background:${bar.color};border-radius:${r}px ${r}px 0 0;opacity:0.9"></div>` +
-    `<div style="width:${w + foot}px;height:${foot}px;background:${bar.color};border-radius:0 0 ${r}px ${r}px;opacity:0.3"></div>`
+    `<div style="width:${outerW}px;height:${outerH}px;box-sizing:border-box;` +
+    `border:${ring}px solid ${BAR_RING_COLOR};border-bottom-width:0;` +
+    `background:${bar.color};border-radius:${r}px ${r}px 0 0;${shadow};opacity:0.9"></div>` +
+    `<div style="width:${w + foot}px;height:${foot}px;background:${bar.color};` +
+    `border-radius:0 0 ${r}px ${r}px;${shadow};opacity:0.3"></div>`
 }
 
 function buildBarEl(bar: TsunamiObsBar, iconScale: number): HTMLDivElement {
