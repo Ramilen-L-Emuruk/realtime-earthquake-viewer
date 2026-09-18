@@ -28,7 +28,9 @@ import {
   writePointInto,
   POINT_LAYOUT,
   STRIDE_FLOATS,
+  createDepthPointLayer,
 } from './depthPointLayer'
+import type * as maplibregl from 'maplibre-gl'
 
 describe('toMercator', () => {
   it('地表（深さ 0）は z が 0', () => {
@@ -471,5 +473,84 @@ describe('writePointInto', () => {
       expected += size
     }
     expect(expected).toBe(STRIDE_FLOATS)
+  })
+})
+
+// WebGL の文脈が復旧したときの載せ直し。**MapLibre はカスタムレイヤーを戻さないので、
+// コンポーネントが同じレイヤーオブジェクトを渡し直す**（`HypocenterDepthGL` /
+// `EewEpicentersGL` / `HypocenterCatalogGL` の 3 つが `createDepthPointLayer` を使い回す）。
+// つまり `onAdd` は「新しい文脈で作り直す」を自分で完結させる必要がある。
+// 背景は docs/spec/map-rendering-spec.md §6「地図の投影」。
+describe('createDepthPointLayer の載せ直し', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  /** `onAdd` / `onRemove` が触るぶんだけの偽 GL。描画は通さない。 */
+  function fakeGl() {
+    return {
+      ARRAY_BUFFER: 1,
+      FLOAT: 2,
+      createBuffer: () => ({}),
+      createVertexArray: () => ({}),
+      bindVertexArray: () => {},
+      bindBuffer: () => {},
+      enableVertexAttribArray: () => {},
+      vertexAttribPointer: () => {},
+      deleteBuffer: () => {},
+      deleteVertexArray: () => {},
+      deleteTexture: () => {},
+      deleteFramebuffer: () => {},
+      deleteProgram: () => {},
+    } as unknown as WebGL2RenderingContext
+  }
+
+  function setup() {
+    const triggerRepaint = vi.fn()
+    const map = { triggerRepaint } as unknown as maplibregl.Map
+    const layer = createDepthPointLayer('eew-epicenters', map, '緊急地震速報の震源')
+    return { layer, triggerRepaint, gl: fakeGl() }
+  }
+
+  const BLINKING = { lng: 139, lat: 35, depthKm: 10, color: [1, 0, 0] as const, sizePx: 10, blink: { high: 1, low: 0.3 } }
+  const STEADY = { lng: 139, lat: 35, depthKm: 10, color: [1, 0, 0] as const, sizePx: 10 }
+
+  /** タイマーを進めて、点滅の予約が生きているか（再描画を要求するか）を見る。 */
+  function blinkFires(triggerRepaint: { mock: { calls: unknown[][] } }): boolean {
+    const before = triggerRepaint.mock.calls.length
+    vi.advanceTimersByTime(BLINK_PERIOD_MS)
+    return triggerRepaint.mock.calls.length > before
+  }
+
+  // 正: 文脈を作り直したあとも点滅が続く。
+  it('載せ直したら点滅の予約を張り直す', () => {
+    const { layer, triggerRepaint, gl } = setup()
+    layer.setPoints([BLINKING])
+    layer.onAdd?.({} as maplibregl.Map, gl)
+    expect(blinkFires(triggerRepaint)).toBe(true)
+    // 文脈喪失（MapLibre 6.9.0 は `Style.destroy()` から `onRemove` を呼ぶ）→ 復旧で載せ直し。
+    layer.onRemove?.({} as maplibregl.Map, gl)
+    layer.onAdd?.({} as maplibregl.Map, gl)
+    // **点は変わっていない。** 張り直す契機が `setPoints` だけだと、ここで予約が復活しない。
+    expect(blinkFires(triggerRepaint)).toBe(true)
+  })
+
+  // 対照: 明滅しない点しか無ければ、載せ直しても予約は張らない。
+  it('明滅しない点だけなら載せ直しても予約しない', () => {
+    const { layer, triggerRepaint, gl } = setup()
+    layer.setPoints([STEADY])
+    layer.onAdd?.({} as maplibregl.Map, gl)
+    layer.onRemove?.({} as maplibregl.Map, gl)
+    layer.onAdd?.({} as maplibregl.Map, gl)
+    expect(blinkFires(triggerRepaint)).toBe(false)
+  })
+
+  // 安全弁: 画面から外したら止まったままであること（`onAdd` で張り直す形にした副作用で、
+  // 外した後まで鳴り続けては困る）。
+  it('画面から外したら予約は止まる', () => {
+    const { layer, triggerRepaint, gl } = setup()
+    layer.setPoints([BLINKING])
+    layer.onAdd?.({} as maplibregl.Map, gl)
+    layer.onRemove?.({} as maplibregl.Map, gl)
+    expect(blinkFires(triggerRepaint)).toBe(false)
   })
 })

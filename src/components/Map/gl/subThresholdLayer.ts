@@ -196,6 +196,19 @@ ${POINT_VS_BODY}`,
     type: 'custom',
     onAdd(map: maplibregl.Map, gl: WebGL2RenderingContext) {
       mapRef = map
+      // **新しい文脈で作り直させるため、抱えているプログラムを捨てる**（理由は
+      // `gl/projectionProgram.ts` の `dispose`）。**GL の資源を作る前に置く。**
+      pointCache.dispose(gl)
+      // **オフスクリーンテクスチャの寸法の覚えも、ここで落とす。** 下で作り直す `tex` は
+      // まだ寸法を持たず、`fbo` には何も付いていない。文脈を作り直したときはキャンバスの
+      // 実寸が前と同じことがあり、覚えが残ると描画側の張り直し（`texW !== w`）を素通りして
+      // **色を付ける先が無いまま**描き続ける。不完全な FBO への描画は例外も投げない。
+      //
+      // **資源を作る前に置くのは、下の `linkProg` が投げうるため。** 投げても MapLibre は
+      // レイヤーを登録したまま（`Style.addLayer` は `_layers[id]` へ入れてから `onAdd` を呼ぶ）
+      // `render()` を回し続けるので、後ろに置くとこのリセットだけが飛ぶ。
+      texW = 0
+      texH = 0
       quadProg = linkProg(gl, QUAD_VS, QUAD_FS)
       uTex = gl.getUniformLocation(quadProg, 'u_tex')
       uOpacity = gl.getUniformLocation(quadProg, 'u_opacity')

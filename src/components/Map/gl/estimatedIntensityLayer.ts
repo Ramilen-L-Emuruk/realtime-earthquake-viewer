@@ -317,6 +317,9 @@ ${VS_BODY}`,
     id: LYR,
     type: 'custom',
     onAdd(_map: maplibregl.Map, gl: WebGL2RenderingContext) {
+      // **新しい文脈で作り直させるため、抱えているプログラムを捨てる**（理由は
+      // `gl/projectionProgram.ts` の `dispose`）。**GL の資源を作る前に置く。**
+      programCache.dispose(gl)
       // 文脈を作り直した場合もここを通る。焼いたものは失われているので次の描画で焼き直す。
       // **リソースを作る前に立てる** —— 途中で諦めても、次の描画が結果（`raster === null`）
       // から不調を拾えるようにしておく。

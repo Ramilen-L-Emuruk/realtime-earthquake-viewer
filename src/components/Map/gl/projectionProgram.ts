@@ -73,7 +73,26 @@ export interface ProjectionProgramSpec<K extends string> {
 export interface ProjectionProgramCache<K extends string> {
   /** いまの投影に合うプログラムを返す。用意できなければ null。 */
   get(gl: WebGL2RenderingContext, args: CustomRenderMethodInput): ProjectionProgram<K> | null
-  /** 抱えているプログラムをすべて解放する（`onRemove` で呼ぶ）。 */
+  /**
+   * 抱えているプログラムをすべて解放する。
+   *
+   * **呼ぶのは `onRemove` と `onAdd` の 2 つ。** 後者は「新しい文脈で作り直させる」ための
+   * 呼び出し。文脈が失われると前のプログラムは無効になるが、このキャッシュは「作った」ことだけを
+   * 覚えているのでそのまま返してしまう。**無効なプログラムへの `useProgram` は例外を投げない**ので、
+   * `gl/guardRender.ts` にも `utils/renderHealth.ts` の自己申告（プログラムが得られないときだけ
+   * 報告する）にも掛からず、そのレイヤーだけが無音で描かれなくなる。
+   *
+   * **`onRemove` だけに任せない。** MapLibre 6.9.0 は文脈が失われたとき `Style.destroy()` から
+   * カスタムレイヤーの `onRemove` を呼ぶので、いまはそこで捨てられている（実測。→
+   * `docs/spec/map-rendering-spec.md` §6「地図の投影」）。ただし**そのループはレイヤーごとに
+   * try/catch を持たない**ため、どれか 1 枚が投げれば以降のレイヤーは呼ばれない。依存の指定は
+   * `^6.9.0` なので解体順そのものも保証ではない。`onAdd` で捨てておけば、どちらに転んでも
+   * 次の描画で作り直す。
+   *
+   * 初回の `onAdd` では抱えているものが無いので何も起きない。古い文脈のオブジェクトを新しい
+   * 文脈へ渡した場合も、WebGL は `INVALID_OPERATION` を立てるだけで例外は投げない
+   * （このリポジトリは `gl.getError()` をどこでも読んでいないので、誰も拾わない）。
+   */
   dispose(gl: WebGL2RenderingContext): void
 }
 

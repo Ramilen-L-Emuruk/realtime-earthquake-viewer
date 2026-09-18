@@ -178,12 +178,14 @@ ${VERT_BODY}`,
     id: LYR,
     type: 'custom',
     onAdd(_map: maplibregl.Map, gl: WebGL2RenderingContext) {
-      // **載せ直しに備えてプログラムを捨てる。** WebGL の文脈が失われると前のプログラムは
-      // 無効になるが、キャッシュは「作った」ことだけを覚えているのでそのまま返してしまう
-      // （無効なプログラムへの `useProgram` は例外を投げない）。ここで捨てれば次の描画で
-      // 作り直す。初回は空なので何も起きず、古い文脈のオブジェクトの削除は WebGL が黙って
-      // 無視する。
+      // **新しい文脈で作り直させるため、抱えているプログラムを捨てる**（理由は
+      // `gl/projectionProgram.ts` の `dispose`）。**GL の資源を作る前に置く。**
       cache.dispose(gl)
+      // 診断の「一度きり」も文脈ごとに戻す（`gl/depthPointLayer.ts` と同じ扱い）。
+      // `onRemove` でも戻しているが、そちらは**通らないことがある**——MapLibre の
+      // `Style.destroy()` はレイヤーを回す途中で例外を受け止めないので、手前の 1 枚が
+      // 投げれば以降は呼ばれない。
+      warnedDisabled = false
       vertexBuf = gl.createBuffer() as WebGLBuffer
       gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuf)
       gl.bufferData(gl.ARRAY_BUFFER, grid.vertices, gl.STATIC_DRAW)
