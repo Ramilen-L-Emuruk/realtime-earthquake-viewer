@@ -422,6 +422,19 @@ function readCommentText(commentEl: Element | null, label: string, logPrefix: st
   return ''
 }
 
+/**
+ * 付加文のコード（`Code`）を読む。**読み上げの落とし漏れの検出にだけ使う**
+ * （→ `utils/ttsText.ts` の `warnUnmatchedBoilerplate`）。
+ *
+ * 実電文はスペース区切りで 1 要素にまとまる（`<Code>0211 0241</Code>`）が、兄弟要素へ
+ * 分かれた場合も取りこぼさないよう配下をすべて集める（地震情報の `ForecastComment` から
+ * 津波区分を導く処理と同じ扱い）。
+ */
+function readCommentCodes(commentEl: Element | null): string[] {
+  if (!commentEl) return []
+  return xmlAll(commentEl, 'Code').flatMap(el => xmlText(el).split(/\s+/)).filter(Boolean)
+}
+
 function extractForecastText(rawText: string, codes: unknown[]): string {
   const text = normalizeForecastText(rawText)
   if (!text && codes.length > 0) {
@@ -1553,7 +1566,11 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   // その範囲に未入電の観測点しか無い場合は **`MaxInt` 要素そのものが出現しない**（未入電の
   // 文字列は入らない）。実電文 853 通でも `MaxInt` に現れたことは無い。
   // 仕様が変わってここへ入った場合に `-1` へ落として最大震度を失わないよう、読めるようにだけ
-  // しておく。**この保険が働かない限り `isMaxScaleUnreceived` は真にならない。**
+  // しておく。
+  //
+  // **この保険と `isMaxScaleUnreceived` の真偽は別の話。** あの述語は `MaxInt` を見ておらず、
+  // 最大震度と観測点の階級が一致するかだけを見るので、**観測できた最大が5弱の地震**では
+  // 保険が働かなくても真になる（→ `utils/quakePoints.ts`）。
   const obsEl = xmlQ(doc, 'Observation')
   const maxIntStr = obsEl ? xmlText(xmlQ(obsEl, 'MaxInt')) : ''
   const { scale: maxScale } = readIntensity(maxIntStr || null)
@@ -1739,7 +1756,9 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   // 固定付加文（その他）（VarComment > Text）。実電文で現れるのは観測点名に付く `＊` の
   // 説明（コード 0262）で、**震度を伝える電文のほぼ全てに入る**。アプリは印を名前へ戻して
   // 出しているので、その説明もそのまま出す（→ `stripNonJmaMark` / `withNonJmaMark`）。
-  const varCommentText = readCommentText(xmlQ(doc, 'VarComment'), '固定付加文（その他）', DMDATA_LOG_PREFIX)
+  const varCommentEl = xmlQ(doc, 'VarComment')
+  const varCommentText = readCommentText(varCommentEl, '固定付加文（その他）', DMDATA_LOG_PREFIX)
+  const varCommentCodes = readCommentCodes(varCommentEl)
   // 自由付加文（FreeFormComment）。`xmlText` が前後の空白だけを落とす。
   const freeText = xmlText(xmlQ(doc, 'FreeFormComment'))
 
@@ -1783,6 +1802,7 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
     ...(cities.length > 0 && { cities }),
     forecastText: forecastText || undefined,
     varCommentText: varCommentText || undefined,
+    ...(varCommentCodes.length > 0 && { varCommentCodes }),
     freeText: freeText || undefined,
   }
 }
@@ -2657,8 +2677,10 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
   const lpgmCommentsEl = xmlQ(doc, 'Comments')
   const lpgmForecastEl = lpgmCommentsEl ? xmlChild(lpgmCommentsEl, 'ForecastComment') : null
   const lpgmForecastText = readCommentText(lpgmForecastEl, '固定付加文', DMDATA_LOG_PREFIX)
+  const lpgmForecastCodes = readCommentCodes(lpgmForecastEl)
   const lpgmVarEl = lpgmCommentsEl ? xmlChild(lpgmCommentsEl, 'VarComment') : null
   const lpgmVarText = readCommentText(lpgmVarEl, '固定付加文（その他）', DMDATA_LOG_PREFIX)
+  const lpgmVarCodes = readCommentCodes(lpgmVarEl)
   const lpgmFreeText = lpgmCommentsEl ? xmlText(xmlChild(lpgmCommentsEl, 'FreeFormComment')) : ''
   const lpgmUri = lpgmCommentsEl ? xmlText(xmlChild(lpgmCommentsEl, 'URI')) : ''
   const lpgmHeadline = readHeadlineText(doc)
@@ -2675,7 +2697,9 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
     ...(lpgmArrivalTime && { arrivalTime: lpgmArrivalTime }),
     ...(lpgmHypocenter && { hypocenter: lpgmHypocenter }),
     ...(lpgmForecastText && { forecastText: lpgmForecastText }),
+    ...(lpgmForecastCodes.length > 0 && { forecastCodes: lpgmForecastCodes }),
     ...(lpgmVarText && { varCommentText: lpgmVarText }),
+    ...(lpgmVarCodes.length > 0 && { varCommentCodes: lpgmVarCodes }),
     ...(lpgmFreeText && { freeFormText: lpgmFreeText }),
     ...(lpgmUri && { uri: lpgmUri }),
     // 見出し文。地震情報と同じ扱い（持つだけで画面には出さない）。

@@ -49,7 +49,7 @@ import { usePlateBoundaries } from '../../hooks/usePlateBoundaries'
 import { useQuakeLayerData } from '../../hooks/useQuakeLayerData'
 import { useTsunamiLayerData } from '../../hooks/useTsunamiLayerData'
 import { useEewLayerData } from '../../hooks/useEewLayerData'
-import type { JapanMapProps, MapHandle } from './mapTypes'
+import type { JapanMapProps, MapHandle, MapMode } from './mapTypes'
 import { drawTsunamiObsBars } from './gl/tsunamiObsBar'
 import { drawTsunamiArrivalMarkers } from './gl/tsunamiArrivalMarker'
 import { drawTsunamiMissingMarkers } from './gl/tsunamiMissingMarker'
@@ -60,6 +60,7 @@ import { serverNow } from '../../utils/clock'
 import { syncEewFirstSeen } from './gl/eewFirstSeen'
 import { applyFrontSortKeys, bearingChangedEnough } from './gl/screenDepth'
 import { installNoopCameraUpdateSkip } from './gl/skipNoopCameraUpdate'
+import type { MapLegendSources, LegendKey } from '../MapLegend/legendBlocks'
 
 // MapLibre GL JS 版の地図コンポーネント（Leaflet 版 JapanMap と同一 Props）。
 // MapLibre 移行計画 docs/webgl-migration-implementation-plan.md のフェーズ順に、
@@ -78,6 +79,19 @@ maplibregl.setWorkerUrl(maplibreWorkerUrl)
 
 // 初期ズーム（load 後に fitJapan で日本全体フレーミングへ合わせるため暫定値）。
 const INITIAL_ZOOM = 5
+
+/**
+ * 凡例で先に読ませるもの（モードごと）。**畳んだときに残る 1 つもここの先頭で決まる。**
+ *
+ * 出すかどうかは各レイヤーの表示条件が決める（`legendSources` の真偽値）。ここが決めるのは順番
+ * だけで、載っていない鍵も後ろへ回るだけで消えない。
+ */
+const LEGEND_PRIMARY_BY_MODE: Record<MapMode, LegendKey[]> = {
+  quake: ['intensity', 'unreceived', 'lpgm'],
+  kyoshin: ['intensity', 'lpgm', 'psWave'],
+  tsunami: ['tsunamiGrade', 'tsunamiObsHeight', 'tsunamiStation'],
+  catalog: ['catalog'],
+}
 
 export function JapanMapGL({
   mode,
@@ -110,6 +124,8 @@ export function JapanMapGL({
   recording = false,
   hypocenterDepthScale = 1,
   catalogCloud = null,
+  catalogColorBy = null,
+  onLegendSourcesChange,
   showActiveFaults = true,
   activeFaultOpacity = 0.4,
   showPlateBoundaries = true,
@@ -129,6 +145,11 @@ export function JapanMapGL({
   useEffect(() => {
     onMapReadyRef.current = onMapReady
   }, [onMapReady])
+  // 凡例への通知も同じ理由で ref 越しに呼ぶ（下の「凡例へ知らせる」を参照）。
+  const onLegendSourcesChangeRef = useRef(onLegendSourcesChange)
+  useEffect(() => {
+    onLegendSourcesChangeRef.current = onLegendSourcesChange
+  }, [onLegendSourcesChange])
   // 集約切替（zoom <= 寄り上限 で一次細分区域集約）判定のため現在ズームを追跡する。
   const [zoom, setZoom] = useState(INITIAL_ZOOM)
   // 集約切替の閾値。カメラの寄り上限と同値にすることで「自動フィット着地後は必ず区域集約＝震度塗り」
@@ -497,6 +518,58 @@ export function JapanMapGL({
       m.remove()
     }
   }, [])
+
+  // 地図の外に置く凡例へ「いま描いている色スケール」を知らせる。
+  //
+  // **各レイヤーの `visible` と同じ式から組むこと。** 地図モードから組み直すと、モードだけでは
+  // 決まらないもので食い違う——津波の海岸線は全モードで描かれ（`TsunamiLinesGL`）、活断層と
+  // プレート境界は津波モードでは描かれない（`showOverlayLines`）。
+  //
+  // **中身が空のものは数えない。** `visible` が真でも件数が 0 なら地図に色は出ていないので、
+  // 凡例に並べると「地図に無い色」を探させることになる。
+  //
+  // 震度の配色を使う描画物を 1 つの真偽値へまとめないのは、見出しに用途を並べるため
+  // （観測値・リアルタイム・予想はどれも同じ色だが意味が違う）。まとめ方は `buildLegendBlocks`。
+  const legendSources: MapLegendSources = {
+    quakeIntensity:
+      (mode === 'quake' && aggregateByRegion && !lpgmActive && !distributionMode && !unreceivedMode && regionAggregates.length > 0)
+      || (mode === 'quake' && !aggregateByRegion && !lpgmActive && !unreceivedMode && !distributionMode && stationMarkers.length > 0)
+      || (showDistribution && !estimatedIntensityActive && stationMarkers.length > 0)
+      // 推計震度分布図も気象庁の震度配色で描く（`QuakeEstimatedIntensityGL` が `getIntensityColor` を通る）。
+      || (showDistribution && estimatedIntensityActive),
+    // 観測点の丸と検知点は出る条件が同じ（どちらも `mode === 'kyoshin'`）なので 1 つで表す。
+    realtimeIntensity: mode === 'kyoshin' && kyoshinIndices.length > 0,
+    eewIntensity: mode === 'kyoshin' && eewAreaFills.length > 0 && eewLpgmRegionAggregates.length === 0,
+    unreceived:
+      mode === 'quake' && !lpgmActive && !distributionMode
+      && (unreceivedMode || !aggregateByRegion ? unreceivedMarkers.length > 0 : orphanUnreceivedMarkers.length > 0),
+    lpgm: mode === 'quake' && lpgmActive && (aggregateByRegion ? lpgmRegionAggregates.length > 0 : lpgmMarkers.length > 0),
+    eewLpgm: mode === 'kyoshin' && eewLpgmRegionAggregates.length > 0,
+    // **予報円はリアルタイム震度モードのときだけ凡例へ出す。** 描画自体は全モードで走るが、
+    // それ以外のモードでは半透明で添えるだけ（`PsWaveGL` の `fullOpacity`）。同じ扱いの
+    // EEW 震源の×印を凡例に入れていないので、こちらだけ枠を取ると釣り合わない。
+    psWave: mode === 'kyoshin' && kyoshinPsWave.length > 0,
+    tsunamiGrade: tsunamiLines.length > 0,
+    tsunamiObsHeight: mode === 'tsunami' && observationBars.length > 0,
+    tsunamiArrival: mode === 'tsunami' && arrivalMarkers.length > 0,
+    tsunamiMissing: mode === 'tsunami' && missingMarkers.length > 0,
+    heatmap: (mode === 'quake' || mode === 'kyoshin') && !!heatPoints && heatPoints.length > 0,
+    activeFaults: showOverlayLines && showActiveFaults && (activeFaults?.length ?? 0) > 0,
+    plateBoundaries: showOverlayLines && showPlateBoundaries && (plateBoundaries?.length ?? 0) > 0,
+    // いま見ている画面の主役。**中身を絞るのではなく並べる順を決める**（`MapLegendSources.primary`）。
+    // モードで決めてよいのはここだけ——「何を出すか」は上の真偽値が各レイヤーの表示条件から導く。
+    primary: LEGEND_PRIMARY_BY_MODE[mode],
+    catalogColorBy: mode === 'catalog' && catalogCloud && catalogCloud.columns.count > 0 ? catalogColorBy : null,
+    catalogYearRange: catalogCloud?.timeRange ?? null,
+  }
+  // **中身が変わったときだけ知らせる。** この関数は強震モニタの毎秒更新で呼び直されるので、
+  // 素直に依存へ置くと毎秒通知が飛ぶ。小さなオブジェクトなので文字列にして比べる。
+  const legendSignature = JSON.stringify(legendSources)
+  const legendSourcesRef = useRef(legendSources)
+  legendSourcesRef.current = legendSources
+  useEffect(() => {
+    onLegendSourcesChangeRef.current?.(legendSourcesRef.current)
+  }, [legendSignature])
 
   // MapLibre は container に position:relative を強制するため、地図領域を埋める absolute inset-0 は
   // 外側ラッパーに掛け、MapLibre コンテナ自身は h-full/w-full でラッパーいっぱいに広げる

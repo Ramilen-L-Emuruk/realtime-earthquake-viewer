@@ -9,7 +9,7 @@ import { getStationCoordsCache, getAreaPrefIndexCache, buildStationPrefIndex, bu
 import { isAreaPoint, isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel } from './quakePoints'
 import { hasMagnitude, hasDepth, readDateTime } from './formatters'
 import { tsunamiSourceHypocenter } from './borrowFromTsunami'
-import { createLogThrottle, log } from './logger'
+import { createLogThrottle, createPerLabelLogGate, log } from './logger'
 import { hasKnownEpicenter } from './geo'
 
 /**
@@ -228,6 +228,61 @@ export const TELEGRAM_TEXT_BLOCK_KEYS = [
 export type TelegramTextBlockKey = typeof TELEGRAM_TEXT_BLOCK_KEYS[number]
 export type TelegramTextBlocks = Readonly<Record<TelegramTextBlockKey, boolean>>
 
+/**
+ * 気象庁が書いた文のうち、**文の単位で**読み上げから落とせる定型文。
+ *
+ * ブロック（{@link TELEGRAM_TEXT_BLOCK_KEYS}）は「電文種別 × 付加文の枠」をまるごと切るもので、
+ * こちらは**枠の中の特定の文だけ**を落とす。枠ごと切ると、その枠にだけ入ってくる非定型の告知まで
+ * 消える —— 実配信で文面を確かめられた例が 2 つある（震源・震度情報の自由付加文に入った
+ * 震度速報の訂正、震源要素更新の自由付加文に足された精査後のモーメントマグニチュード）。
+ * 文で落とせば、定型のあとに何か足された報ではその足された分だけが声になる。
+ *
+ * **判定は文字列の一致で行い、固定付加文のコードでは行わない。** 固定付加文は 1 要素に複数の
+ * コードと複数行が入り（`Code="0211 0241"` に対して `Text` が 2 行）、どの行がどのコードかは
+ * 並び順しか手掛かりが無い。順序が食い違った日に「別の文を落とす」——落とし漏れより重い失敗に
+ * なる。文字列なら一致しなければ落とさないだけで、失敗の向きが安全。
+ *
+ * **コードは落とし漏れに気づくために持つ**（{@link TELEGRAM_BOILERPLATE_SPECS} の `codes`）。
+ * 文面が一字変われば一致しなくなり、そのときは黙って壊れずに「読まれるようになる」だけだが、
+ * 落ちていないことに気づく手掛かりがどこにも無い。実際に `＊` 印の説明で踏んだ ——
+ * 文面が種別で違う（0262 は「震度観測点」・0263 は「長周期地震動観測点」）ことを見落とし、
+ * 長周期の報だけ落ちない状態が残っていた。自由付加文はコードを持たないので検出できない。
+ *
+ * **一覧はここが単一情報源。** 設定の既定値・設定タブのラベルと説明・落とす判定がこの型から
+ * 導かれるので、足したものを書き忘れると型検査で止まる。
+ */
+export const TELEGRAM_BOILERPLATE_KEYS = [
+  'starMark',
+  'eewIssued',
+  'lpgmClassTable',
+  'tsunamiHeightLegend',
+] as const
+
+export type TelegramBoilerplateKey = typeof TELEGRAM_BOILERPLATE_KEYS[number]
+/** 真 = 読む（落とさない）。向きは {@link TelegramTextBlocks} と揃えてある。 */
+export type TelegramBoilerplateReads = Readonly<Record<TelegramBoilerplateKey, boolean>>
+
+/**
+ * 落とす・読むの既定。**「音にして伝わらないもの」と「アプリが別の経路で伝えているもの」は
+ * 落とす側に倒す。**
+ *
+ * 他の読み上げ設定は「設定を入れる前の挙動」を既定にしてあるが（→ `useSettings.ts` の
+ * `DEFAULTS`）、ここはその原則を当てられない —— `＊` 印の説明は**この設定より前から無条件で
+ * 落ちていた**ので、読む側を既定にすると設定を足した瞬間に鳴り出す。逆向きの破壊になる。
+ *
+ * 落とす側へ倒す根拠は項目ごとに違う。`starMark` は記号が音にならないので何と対比しているか
+ * 伝わらない。`lpgmClassTable` と `tsunamiHeightLegend` は等級・階級の意味を説明する表で、
+ * 声にすると一続きに聞こえるうえ事象に依らない（津波の高さの目安は 307 字で、読み上げの実測
+ * レート 5.8 字/秒なら約 53 秒）。`eewIssued` はアプリが緊急地震速報そのものを画面と音で
+ * 扱っているため二度述べになる。**画面には従来どおり全文を出す**ので、情報は失われない。
+ */
+export const TELEGRAM_BOILERPLATE_DEFAULT_READS: TelegramBoilerplateReads = {
+  starMark: false,
+  eewIssued: false,
+  lpgmClassTable: false,
+  tsunamiHeightLegend: false,
+}
+
 export interface TtsSpeechOptions {
   intensityLevels: number   // 最大震度に加えて何階級下まで読むか（0 = 最大のみ。観測がある階級だけを数える）
   maxRegions: number        // 読み上げる最大地域数（0 = 無制限）
@@ -278,6 +333,14 @@ export interface TtsSpeechOptions {
    * 黙って消えないようにするため。`readTelegramText` が偽ならブロックの指定によらず何も読まない。
    */
   telegramTextBlocks?: TelegramTextBlocks
+  /**
+   * 気象庁が書いた文のうち、どの定型文を読むか（→ {@link TELEGRAM_BOILERPLATE_KEYS}）。
+   *
+   * **省略時は落とす側**（{@link TELEGRAM_BOILERPLATE_DEFAULT_READS}）。隣の
+   * `telegramTextBlocks` が「省略したキーは読む側」なのと逆向きだが、こちらは既定そのものが
+   * 落とす側なので揃えてある（理由は既定値の側に書いた）。
+   */
+  telegramBoilerplate?: TelegramBoilerplateReads
 }
 
 /**
@@ -1256,6 +1319,10 @@ export function eewIntensityText(
    */
   opts?: TtsSpeechOptions,
 ): string {
+  // **この前置きを短くするなら、`splitIntoChunks` の `MIN_CHUNK` との関係を見直すこと。**
+  // 呼び出し側（`useLiveEventHandler` の第 2 フェーズ）は「前置きは独立した先頭チャンクなので、
+  // 1 音でも鳴っていれば声になっている」という前提で既読の巻き戻し先を決めている。`MIN_CHUNK`
+  // 未満の長さになると震度の句と 1 チャンクへ結合され、その前提が静かに崩れる。
   const prefix = announceUpgrade ? '緊急地震速報に切り替わりました。' : ''
   // 上限が定まらない報（仮定震源要素の初報など）は「震度4以上」と読む。値だけ読むと
   // 下限を断定した放送になる（判定は eewMaxScaleInfo・語の付け方は表示と共通）。
@@ -2942,26 +3009,179 @@ export function estimatedIntensityToText(arrivalTime: string, isNew: boolean): s
  * そのまま渡すと合成エンジンが空白の数だけ間を作る。句読点は残す（文の切れ目そのものなので）。
  */
 /**
- * 読み上げから落とす定型文。**画面には従来どおり出す。**
+ * 落とす定型文の定義。**画面には従来どおり全文を出す**ので、ここで落とすのは声だけ。
  *
- * 観測点名の `＊` を画面に出している以上その説明も要る（→ quake-spec.md §8「気象庁以外が
- * 運用する観測点」）が、読み上げでは事情が違う ——
- *
- * - **震度を伝える電文のほぼ全てに入る**ので、有効にすると毎報聞かされる
- * - **`＊` が音にならない**（合成エンジンは記号を読まず「シルシワ」と読む）ので、
- *   何と対比しているのかが声だけでは伝わらない
- *
- * 実データでの表記は 1 通り（地震情報のコード 0262・長周期地震動観測情報の 0263 とも同じ文）。
- * **表記が変われば落ちなくなる** —— そのときは読まれるようになるだけで、黙って壊れはしない。
+ * 落とす単位・文字列で判定する理由・コードの役割・既定値の向きは
+ * {@link TELEGRAM_BOILERPLATE_KEYS} に書いた。
  */
-const TELEGRAM_TEXT_SKIPPED_PHRASES: readonly string[] = [
-  '＊印は気象庁以外の震度観測点についての情報です。',
+interface TelegramBoilerplateSpec {
+  readonly key: TelegramBoilerplateKey
+  /**
+   * 落とす句。**行の中に現れても落とす**（部分一致）。
+   *
+   * 1 行に収まる定型文はこちら。電文は本来 1 文ごとに改行する（解説資料が「複数の固定付加文を
+   * 記載する場合、Text においては改行し」と定めており、実電文の `Code="0256 0262"` も改行区切り）
+   * が、**行で照合する形にすると連結された形を落とせない**。落とした跡は前後の文が繋がる。
+   */
+  readonly phrases?: readonly string[]
+  /**
+   * 落とす行。原文を改行で割り、{@link boilerplateLineKey} を通した形と突き合わせる。
+   *
+   * **複数行にわたる表はこちら。** 句として部分一致で落とすには改行と全角スペースの並びまで
+   * 鍵に含めることになり、気象庁が桁揃えを変えただけで効かなくなる。行ごとに照合すれば空白の
+   * 畳み方に依存しない。
+   */
+  readonly lines?: readonly (string | RegExp)[]
+  /** その文を載せる固定付加文のコード。**落とし漏れの検出にだけ使う。** */
+  readonly codes?: readonly string[]
+}
+
+/**
+ * どちらの形でも「**文面はすべて実配信の電文から採る**」。推測で書いた文面を置くと、一致しない
+ * まま「落としているつもり」になる（その形で 1 度踏んでいる。→ {@link TELEGRAM_BOILERPLATE_KEYS}）。
+ */
+
+/**
+ * 落とし漏れの記録の間引き。**電文種別 × 項目**を札にし、同じ組は 1 度だけ出す。
+ * 上限を超えても黙らせず、そこから先は時間で間引いて出し続ける（→ `logger.ts`）。
+ */
+const boilerplateMismatchGate = createPerLabelLogGate(4, 60_000)
+
+const TELEGRAM_BOILERPLATE_SPECS: readonly TelegramBoilerplateSpec[] = [
+  {
+    // 観測点名の `＊` を画面に出している以上その説明も要る（→ quake-spec.md §8「気象庁以外が
+    // 運用する観測点」）が、読み上げでは事情が違う ——
+    //
+    // - **震度を伝える電文のほぼ全てに入る**ので、読むと毎報聞かされる
+    // - **`＊` が音にならない**（合成エンジンは記号を読まず「シルシワ」と読む）ので、
+    //   何と対比しているのかが声だけでは伝わらない
+    //
+    // **文面は種別で違う。** 地震情報のコード 0262 は「震度観測点」・長周期地震動観測情報の
+    // 0263 は「長周期地震動観測点」で、**どちらも要る** —— 以前は 0262 の側だけを落としていて、
+    // 長周期の報が観測点を載せたときだけこの説明が声になっていた。
+    key: 'starMark',
+    phrases: [
+      '＊印は気象庁以外の震度観測点についての情報です。',
+      '＊印は気象庁以外の長周期地震動観測点についての情報です。',
+    ],
+    codes: ['0262', '0263'],
+  },
+  {
+    // アプリは緊急地震速報そのものを画面と音で扱っているので、声にすると二度述べになる。
+    // **同じ文面・同じコードが地震情報にも入る**（実電文の VXSE53 で `0211 0241` の形）。
+    // 地震情報のこの文が乗るのは固定付加文（その他）（`VarComment`）で、そちらは読み上げの
+    // ブロック（`quakeVarComment`）が既定で読む側なので、**この項目を落とす設定のままなら
+    // 地震情報側でも現に落ちる**。文面で落とす形にしてあるので、種別をまたいで揃う。
+    key: 'eewIssued',
+    phrases: ['この地震について、緊急地震速報を発表しています。'],
+    codes: ['0241'],
+  },
+  {
+    // 長周期地震動階級の目安表と、詳細ページの案内。**事象に依らない**（実電文で異なるのは
+    // 案内の URL に入る地震ごとの識別子だけ）。表を声にすると 4 行が一続きに聞こえるため、
+    // 読む側に倒したときは LPGM_CLASS_TABLE_RE が階級と現象表現のあいだへ空白を挟む。
+    key: 'lpgmClassTable',
+    lines: [
+      '各長周期地震動階級に対する簡易な現象表現',
+      // 階級の行。実電文の数字は全角だが半角も受ける（現象表現の語との組でしか当たらないので
+      // 一致が増えても誤爆しない）。語彙は LPGM_CLASS_TABLE_RE と揃える。
+      /^階級[０-９0-9](やや大きな揺れ|非常に大きな揺れ|極めて大きな揺れ|大きな揺れ)$/,
+      // 案内の行。URL は地震ごとに変わるので括弧の中は見ない。
+      /^波形、スペクトル等、本地震の長周期地震動に関する詳細な情報は気象庁の長周期地震動に関する観測情報のウェブサイト\s*[（(][^）)]*[）)]\s*もあわせてご活用ください。$/,
+    ],
+  },
+  {
+    // 予想される津波の高さと被害の対応表。実電文で 307 字あり、読み上げの実測レート
+    // （5.8 字/秒）なら約 53 秒 —— 津波警報等が出るたび、区域と波高を伝えたあとに流れる。
+    // 波高の区分は気象庁の津波警報の段階そのもので、事象によって変わらない。
+    key: 'tsunamiHeightLegend',
+    lines: [
+      '［予想される津波の高さの解説］',
+      '予想される津波が高いほど、より甚大な被害が生じます。',
+      '１０ｍ超 巨大な津波が襲い壊滅的な被害が生じる。木造家屋が全壊・流失し、人は津波による流れに巻き込まれる。',
+      '１０ｍ 巨大な津波が襲い甚大な被害が生じる。木造家屋が全壊・流失し、人は津波による流れに巻き込まれる。',
+      '５ｍ 津波が襲い甚大な被害が生じる。木造家屋が全壊・流失し、人は津波による流れに巻き込まれる。',
+      '３ｍ 標高の低いところでは津波が襲い被害が生じる。木造家屋で浸水被害が発生し、人は津波による流れに巻き込まれる。',
+      '１ｍ 海の中では人は速い流れに巻き込まれる。養殖いかだが流失し小型船舶が転覆する。',
+    ],
+  },
 ]
 
-function stripSkippedPhrases(text: string): string {
-  let out = text
-  for (const phrase of TELEGRAM_TEXT_SKIPPED_PHRASES) out = out.split(phrase).join('')
+/**
+ * 行の照合キー。前後を削り、内部の空白を 1 つへ畳む。
+ *
+ * **気象庁は桁を揃えるために全角スペースを並べる**（津波の高さの目安は波高と被害説明のあいだに
+ * 3 つ）ので、空白の数へ依存させない。`\s` は全角スペース（U+3000）も含む。
+ */
+function boilerplateLineKey(line: string): string {
+  return line.replace(/\s+/g, ' ').trim()
+}
+
+function matchesBoilerplateLine(spec: TelegramBoilerplateSpec, key: string): boolean {
+  return (spec.lines ?? []).some(line => (typeof line === 'string' ? line === key : line.test(key)))
+}
+
+/** その文面が原文に含まれているか（句・行のどちらの形でも見る）。落とし漏れの検出に使う。 */
+function containsBoilerplate(spec: TelegramBoilerplateSpec, text: string): boolean {
+  if ((spec.phrases ?? []).some(phrase => text.includes(phrase))) return true
+  return text.split('\n').some(line => matchesBoilerplateLine(spec, boilerplateLineKey(line)))
+}
+
+/**
+ * 読み上げから定型文を落とす。**設定で「読む」にしている項目は落とさない。**
+ *
+ * **整える処理より前に通す。** 照合の相手は電文の原文（改行と全角スペースが残り、URL も
+ * 付いたまま）で、整えたあとの形を鍵にすると空白の畳み方や URL の落とし方に依存してしまう。
+ */
+function stripBoilerplate(text: string, reads: TelegramBoilerplateReads): string {
+  const dropped = TELEGRAM_BOILERPLATE_SPECS.filter(spec => !reads[spec.key])
+  if (dropped.length === 0) return text
+  // 行として落とすもの（複数行の表）を先に外し、残った行から句を消す。
+  const kept = text
+    .split('\n')
+    .filter(line => {
+      const key = boilerplateLineKey(line)
+      // 空行は文の区切りとして意味を持つので残す（落とすのは中身のある行だけ）。
+      if (!key) return true
+      return !dropped.some(spec => matchesBoilerplateLine(spec, key))
+    })
+    .join('\n')
+  let out = kept
+  for (const spec of dropped) {
+    for (const phrase of spec.phrases ?? []) out = out.split(phrase).join('')
+  }
   return out
+}
+
+/**
+ * 落とすはずの定型文が、文面が変わって一致しなくなったことに気づくための記録。
+ *
+ * **固定付加文のコードが付いているのに、その文が原文の中に見つからない**ときだけ鳴らす。
+ * 落ちなくなっても症状は「読まれるようになる」だけなので、記録が無いと気づく手掛かりが
+ * どこにもない（`＊` 印の説明で実際にそうなっていた）。
+ *
+ * **落とす設定の項目だけを見る。** 読む側にしてある項目は一致しなくても構わない。
+ * 自由付加文はコードを持たないので、この検出は掛からない（掛けられない）。
+ */
+export function warnUnmatchedBoilerplate(
+  codes: readonly string[] | undefined,
+  text: string | undefined,
+  reads: TelegramBoilerplateReads,
+  label: string,
+): void {
+  if (!codes?.length || !text) return
+  for (const spec of TELEGRAM_BOILERPLATE_SPECS) {
+    if (reads[spec.key] || !spec.codes) continue
+    const code = spec.codes.find(c => codes.includes(c))
+    if (!code) continue
+    if (containsBoilerplate(spec, text)) continue
+    boilerplateMismatchGate(`${label}:${spec.key}`, code, (overflowed) => {
+      log.warn(
+        `[tts] ${label} に固定付加文コード ${code} がありますが、読み上げから落とす文面（${spec.key}）と一致しません`
+          + `（文面が変わった可能性があります。この報ではその文も読み上げます）${overflowed ? '（以後は間引きます）' : ''}`,
+      )
+    })
+  }
 }
 
 /**
@@ -3023,8 +3243,8 @@ function normalizeDateTimeForSpeech(text: string): string {
   return speakableDayInText(halfWidth)
 }
 
-function normalizeTelegramTextForSpeech(text: string): string {
-  return normalizeDateTimeForSpeech(stripSkippedPhrases(stripUrlsForSpeech(text)))
+function normalizeTelegramTextForSpeech(text: string, reads: TelegramBoilerplateReads): string {
+  return normalizeDateTimeForSpeech(stripUrlsForSpeech(stripBoilerplate(text, reads)))
     .replace(LPGM_CLASS_TABLE_RE, '$1 $2')
     .replace(/[\r\n\u3000\t]+/g, ' ')
     .replace(/ {2,}/g, ' ')
@@ -3058,9 +3278,12 @@ function stripUrlsForSpeech(text: string): string {
 }
 
 /** 空でないものだけを句点区切りで繋ぐ。既に句点で終わっているものは重ねない。 */
-function joinTelegramTexts(parts: readonly (string | undefined)[]): string {
+function joinTelegramTexts(
+  parts: readonly (string | undefined)[],
+  reads: TelegramBoilerplateReads,
+): string {
   const kept = parts
-    .map(t => (t ? normalizeTelegramTextForSpeech(t) : ''))
+    .map(t => (t ? normalizeTelegramTextForSpeech(t, reads) : ''))
     .filter(t => t.length > 0)
   if (kept.length === 0) return ''
   return kept.map(t => (/[。！？]$/.test(t) ? t : `${t}。`)).join('')
@@ -3173,6 +3396,9 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
   // **指定が無いブロックは読む側へ倒す。** 設定を足しただけで、これまで声になっていた文が
   // 黙って消えないようにするため（テストも 1 件ずつ指定しなくて済む）。
   const on = (key: TelegramTextBlockKey): boolean => opts.telegramTextBlocks?.[key] ?? true
+  // **定型文の落とし方は既定が「落とす」側。** 向きが上の `on` と逆なのは、`＊` 印の説明が
+  // この設定より前から無条件で落ちていたため（→ `TELEGRAM_BOILERPLATE_DEFAULT_READS`）。
+  const reads = opts.telegramBoilerplate ?? TELEGRAM_BOILERPLATE_DEFAULT_READS
   /** 読むと決めたブロックだけを残す。 */
   const pick = (key: TelegramTextBlockKey, text: string | undefined) => (on(key) ? text : undefined)
 
@@ -3181,10 +3407,15 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
       // 取消の報は理由を本体の読み上げが読む。付加文は添えない。
       // 見るのは `cancelled`（理由は上の EEW 分岐のコメント）。
       if (event.cancelled) return null
+      // **落とし漏れの検出は、その枠を読む設定のときだけ。** 枠ごと切っているなら定型文も
+      // 声にならないので、一致しなくても困らない。
+      if (on('quakeVarComment')) {
+        warnUnmatchedBoilerplate(event.varCommentCodes, event.varCommentText, reads, '地震情報の固定付加文（その他）')
+      }
       const body = joinTelegramTexts([
         pick('quakeVarComment', event.varCommentText),
         pick('quakeFreeText', event.freeText),
-      ])
+      ], reads)
       return telegramSpeech(`地震情報について、気象庁の文をお伝えします。`, body)
     }
     case 'tsunami': {
@@ -3202,7 +3433,7 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
         // 行動指示が声から消えることはない。
         ...(on('tsunamiVarComment') ? (event.warningComments ?? []).map(c => c.text) : []),
         pick('tsunamiFreeText', event.freeText),
-      ])
+      ], reads)
       return telegramSpeech(`津波情報について、気象庁の文をお伝えします。`, body)
     }
     case 'lpgm': {
@@ -3211,11 +3442,17 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
       // （取消では読まない）はコードから読み取れない。将来あちらが付加文を持つようになった
       // とき、この経路だけ黙って取消の本文を読む。
       if (event.data.cancelled) return null
+      if (on('lpgmForecast')) {
+        warnUnmatchedBoilerplate(event.data.forecastCodes, event.data.forecastText, reads, '長周期地震動観測情報の固定付加文')
+      }
+      if (on('lpgmVarComment')) {
+        warnUnmatchedBoilerplate(event.data.varCommentCodes, event.data.varCommentText, reads, '長周期地震動観測情報の固定付加文（その他）')
+      }
       const body = joinTelegramTexts([
         pick('lpgmForecast', event.data.forecastText),
         pick('lpgmVarComment', event.data.varCommentText),
         pick('lpgmFreeText', event.data.freeFormText),
-      ])
+      ], reads)
       return telegramSpeech(`長周期地震動観測情報について、気象庁の文をお伝えします。`, body)
     }
     case 'nankai':
@@ -3228,7 +3465,7 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
         pick(isAdvisory ? 'nankaiSummary' : 'nankaiCommentarySummary', event.data.summary),
         pick(isAdvisory ? 'nankaiBody' : 'nankaiCommentaryBody', event.data.body),
         pick(isAdvisory ? 'nankaiNextAdvisory' : 'nankaiCommentaryNextAdvisory', event.data.nextAdvisory),
-      ])
+      ], reads)
       const label = isAdvisory ? '南海トラフ地震臨時情報' : '南海トラフ地震関連解説情報'
       return telegramSpeech(`${label}について、気象庁の文をお伝えします。`, body)
     }
@@ -3240,12 +3477,12 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
       const body = joinTelegramTexts([
         pick('kohatsuSummary', event.data.summary),
         pick('kohatsuBody', event.data.body),
-      ])
+      ], reads)
       return telegramSpeech(`北海道・三陸沖後発地震注意情報について、気象庁の文をお伝えします。`, body)
     }
     case 'earthquakeCount': {
       if (event.data.cancelled) return null
-      const body = joinTelegramTexts([pick('earthquakeCountFreeText', event.data.freeText)])
+      const body = joinTelegramTexts([pick('earthquakeCountFreeText', event.data.freeText)], reads)
       return telegramSpeech(`地震回数に関する情報について、気象庁の文をお伝えします。`, body)
     }
     // 推計震度分布図は二進電文で、気象庁が書いた文を運ばない。

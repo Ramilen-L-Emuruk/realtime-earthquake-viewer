@@ -195,13 +195,13 @@ describe('録画モードの既読復元', () => {
   })
   // 安全弁: 窓の手前の 1 件が壊れていても、残りの復元は続く。
   //
-  // ここが呼ぶのは読み上げ文を組む処理で、単なる ref の更新よりはるかに多くの分岐を通る。
   // 投げたまま抜けると呼び出し元の `catch` まで飛び、**「リプレイデータ取得失敗」として
   // 電文の再生自体が始まらない**（原因と表示が食い違う）。
+  //
+  // **種別を問わず隔離する**（緊急地震速報・津波の分も含む。→ 下の describe）。
   it('壊れた電文が混ざっても、残りの復元は続く', async () => {
     const { handleLiveEvent, restorePreWindowTracking } = setup({ recordingMode: true })
-    // 気象庁の文の復元だけが触る種別で壊す（`payload.kind === 'event'` の分岐は既存の処理で、
-    // そちらが投げる形は今回の変更の範囲外）。
+    // 気象庁が書いた文の復元だけが触る種別で壊す。
     const broken = { payload: { kind: 'nankai', data: null }, replayTime: new Date(0), silent: true }
     const ok = { payload: { kind: 'event', event: makeQuake({ id: 'pre' }) }, replayTime: new Date(0), silent: true }
     expect(() => restorePreWindowTracking([broken, ok] as never)).not.toThrow()
@@ -324,5 +324,129 @@ describe('窓の手前の地震に割り当てる主題', () => {
     const topic = topicFor(first)
     expect(topicFor(amended), '訂正報が別の主題になっている').toBe(topic)
     expect(topicFor(next), '訂正後の続報が別の主題になっている').toBe(topic)
+  })
+})
+
+// 窓の手前の復元は、電文 1 通ごとに例外を受け止める。
+//
+// 復元が投げると呼び出し元（`useReplayController`）の `catch` へ飛び、**取得は成功している
+// のに「リプレイデータ取得失敗」と表示されたまま電文が 1 通も再生されない**。
+//
+// **録画モードの分だけを囲っていた頃の非対称は解いた。** 呼ぶ処理の分岐の数（＝投げる確率）は
+// 違っても、投げたときに起きることは緊急地震速報・津波の復元とまったく同じ。
+//
+// **ここで作る「壊れた電文」は隔離の機構そのものを試すためのもので、実際の入力形状の再現では
+// ない。** 型定義上ありえない値（配列でない区域・区域の欠落）を差し込んでいるので、本物の
+// パーサーの出力がこの形になることはない。**通っても「実運用で安全」の保証にはならず、
+// 保証するのは「投げたときに 1 通ぶんで止まる」ことだけ。**
+describe('窓の手前の復元は電文 1 通ずつ隔離する', () => {
+  /** 津波の復元で投げる形（`tsunamiMaxGrade` が `tsunami.areas` を無ガードで舐める）。 */
+  function makeBrokenTsunami(): JMATsunami {
+    return {
+      kind: 'tsunami', id: 't-broken', eventId: 'e-broken', time: '2026-01-01T12:30:00Z',
+      cancelled: false,
+      issue: { source: 'JMA', time: '2026-01-01T12:30:00Z', type: 'Focus' },
+      // `areas` を持たせない。
+    } as unknown as JMATsunami
+  }
+
+  /** 緊急地震速報の復元で投げる形（`eewMaxScaleInfo` が区域を舐める）。 */
+  function makeBrokenEew(): LiveEvent {
+    return {
+      kind: 'eew', id: 'eew-broken', time: '2026-01-01T12:30:00Z',
+      issue: { source: 'JMA', time: '2026-01-01T12:30:00Z', eventId: 'evt-1' },
+      areas: 1 as never, // 配列ではないので `for...of` が投げる
+    } as unknown as LiveEvent
+  }
+
+  // 正: 津波の復元で投げても、後続の電文の復元は効く。
+  it('津波の復元で投げても、後続の電文の復元は効く', async () => {
+    const { handleLiveEvent, restorePreWindowTracking } = setup({ recordingMode: true })
+    const entries = preWindow(makeBrokenTsunami() as unknown as LiveEvent, makeQuake({ id: 'pre' }) as unknown as LiveEvent)
+    expect(() => restorePreWindowTracking(entries)).not.toThrow()
+    handleLiveEvent(makeQuake({ id: 'quake-1' }) as unknown as LiveEvent)
+    await drain()
+    expect(mainSpeeches().join('')).not.toContain('富山県東部')
+  })
+
+  // 正: 緊急地震速報の復元で投げても同じ。
+  it('緊急地震速報の復元で投げても、後続の電文の復元は効く', async () => {
+    const { handleLiveEvent, restorePreWindowTracking } = setup({ recordingMode: true })
+    const entries = preWindow(makeBrokenEew(), makeQuake({ id: 'pre' }) as unknown as LiveEvent)
+    expect(() => restorePreWindowTracking(entries)).not.toThrow()
+    handleLiveEvent(makeQuake({ id: 'quake-1' }) as unknown as LiveEvent)
+    await drain()
+    expect(mainSpeeches().join('')).not.toContain('富山県東部')
+  })
+
+  /** 正常な緊急地震速報（警報級）。壊れた復元のあとに続報として流す。 */
+  function makeEew(serial: number): LiveEvent {
+    return {
+      kind: 'eew', id: `eew-${serial}`, time: '2026-01-01T12:00:00Z', test: false,
+      earthquake: {
+        originTime: '2026-01-01T12:00:00Z', arrivalTime: '2026-01-01T12:00:20Z', condition: '',
+        hypocenter: { name: '日向灘', latitude: 32.0, longitude: 132.0, depth: 30, magnitude: 6.5 },
+      },
+      severity: 'Warning', cancelled: false,
+      issue: { eventId: 'evt-1', serial: String(serial), time: '2026-01-01T12:00:00Z' },
+      areas: [{ pref: '宮崎県', name: '宮崎県北部平野部', scaleFrom: 30, scaleTo: 45, kindCode: '10', arrivalTime: null }],
+    } as unknown as LiveEvent
+  }
+
+  // 正: 緊急地震速報の復元が投げたら、**新規かどうかの判定に使う記録も残さない**。
+  //
+  // この分岐は複数の記録を順に埋めるが、`activeEEWLevelsRef` だけは意味が違う ——
+  // ライブ経路の「新規発報か」がこれだけを見る。先に書いてから投げると、続報が「既存」と
+  // 判定されて**第 1 フェーズ（「緊急地震速報、〇〇で地震。」）が一度も鳴らない**。
+  // 他の記録は欠けても「既読が足りない＝読み直す」側なので、ここだけ失敗の向きが逆になる。
+  it('緊急地震速報の復元が投げたら、続報を新規として読む', async () => {
+    const { handleLiveEvent, restorePreWindowTracking } = setup({ recordingMode: true })
+    restorePreWindowTracking(preWindow(makeBrokenEew()))
+    handleLiveEvent(makeEew(2))
+    await drain()
+    // **語ではなく文で見る。** 部分適用のまま続報を受けると「緊急地震速報に切り替わりました。」
+    // という格上げの告知に化けるので、語の一致では素通りする（実際に素通りした）。第 1 フェーズは
+    // 震源名を伴う。
+    expect(mainSpeeches().join(''), '第 1 フェーズが鳴っていない').toContain('日向灘で地震')
+  })
+
+  // 対照: 復元が通った緊急地震速報では、続報で第 1 フェーズを読み直さない。
+  //
+  // **上の正が「投げたら全部書かない」を確かめるには、これと対で要る** —— 片方だけだと
+  // 「そもそも復元が何も効いていない」状態でも通ってしまう。
+  it('復元が通った緊急地震速報は、続報で読み直さない', async () => {
+    const { handleLiveEvent, restorePreWindowTracking } = setup({ recordingMode: true })
+    restorePreWindowTracking(preWindow(makeEew(1)))
+    handleLiveEvent(makeEew(2))
+    await drain()
+    expect(mainSpeeches().join(''), '復元したのに第 1 フェーズが鳴っている').not.toContain('日向灘で地震')
+  })
+  // 対照: 壊れた電文が無ければ記録も残さない。
+  //
+  // **握り潰しが常時発火していないことの確認。** ここが鳴りっぱなしだと、本物の異常が
+  // 埋もれて痕跡を残す意味が無くなる。
+  it('壊れた電文が無ければ復元の失敗を記録しない', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const { restorePreWindowTracking } = setup({ recordingMode: true })
+      restorePreWindowTracking(preWindow(makeQuake({ id: 'pre' }) as unknown as LiveEvent))
+      const messages = warn.mock.calls.map(c => c.map(v => String(v)).join(' '))
+      expect(messages.filter(m => m.includes('窓の手前の電文から状態を復元できませんでした'))).toEqual([])
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  // 安全弁: 飛ばしたことは記録に残す（黙って捨てない）。
+  it('飛ばした電文は記録に残す', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const { restorePreWindowTracking } = setup({ recordingMode: true })
+      restorePreWindowTracking(preWindow(makeBrokenTsunami() as unknown as LiveEvent))
+      const messages = warn.mock.calls.map(c => c.map(v => String(v)).join(' '))
+      expect(messages.some(m => m.includes('窓の手前の電文から状態を復元できませんでした'))).toBe(true)
+    } finally {
+      warn.mockRestore()
+    }
   })
 })

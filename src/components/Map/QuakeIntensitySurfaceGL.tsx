@@ -4,6 +4,7 @@ import { useMapGL } from './mapGLContext'
 import { getIntensityColor } from '../../utils/intensity'
 import type { IntensityMarker } from '../../hooks/useQuakeLayerData'
 import { addOrderedLayer } from './gl/layerOrder'
+import { isMapStyleGone } from './gl/mapStyleGone'
 import { isFinitePair } from './gl/labelOverlap'
 import { loadPrefectures, type Prefectures } from '../../utils/prefectures'
 import {
@@ -288,6 +289,11 @@ export function QuakeIntensitySurfaceGL({ markers, visible }: Props) {
       const src = map.getSource(SRC) as CanvasSource | undefined
       if (!canvas || !offscreen || !src || !map.getLayer(LYR)) {
         // addedRef が true の間は揃っているはずなので、ここへ来ること自体が異常。
+        //
+        // **ただし地図がスタイルを失った後は正常に成立する。** HMR で古い地図が `remove()` された
+        // 後も、この購読と effect はその地図を掴んでいる（→ `gl/mapStyleGone.ts`）。そのとき
+        // ソースもレイヤーも引けないが、消すものも残っていないので `hide()` も通さず帰る。
+        if (isMapStyleGone(map)) return
         giveUp('missing-objects', 'canvas / source / layer が揃っていない')
         return
       }

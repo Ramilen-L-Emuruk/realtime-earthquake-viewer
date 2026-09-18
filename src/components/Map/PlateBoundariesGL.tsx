@@ -12,6 +12,7 @@ import {
   putOverlayLines,
   type OverlayLineProps,
 } from './gl/overlayLineSource'
+import { SUBDUCTION_COLOR, PLATE_OTHER_COLOR } from './gl/overlayLineStyle'
 
 // 全球のプレート境界線（PB2002モデル）を描画する MapLibre 版（Leaflet の PlateBoundariesLayer 相当）。
 // セグメント1件=MultiLineString feature 1件にまとめ、1枚の line レイヤーで描く。沈み込み境界と
@@ -21,8 +22,8 @@ import {
 // geojson ソースは活断層線と共有する（gl/overlayLineSource.ts）。自分の分は `kind: 'plate'` で
 // 区別し、レイヤー側は filter で拾う。
 
-const SUBDUCTION_COLOR = '#b91c1c'
-const OTHER_COLOR = '#1d4ed8'
+// 色は gl/overlayLineStyle.ts が単一情報源（凡例と共有する）。
+const OTHER_COLOR = PLATE_OTHER_COLOR
 // 線クリックの当たり判定許容（px）。旧 Leaflet の Canvas ヒットレンダラー tolerance:8 に揃える。
 const HIT_TOL_PX = 8
 

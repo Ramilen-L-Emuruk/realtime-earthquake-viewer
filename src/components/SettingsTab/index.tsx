@@ -2,7 +2,7 @@ import { memo, useState, useCallback, useEffect, useRef } from 'react'
 import type { AppSettings, TtsUnreceivedDetail } from '../../hooks/useSettings'
 import { DAY_NIGHT_OPACITY_MIN, DAY_NIGHT_OPACITY_MAX } from '../../hooks/useSettings'
 import { Toggle } from '../Toggle'
-import { TELEGRAM_TEXT_BLOCK_KEYS, type TelegramTextBlockKey, type TelegramTextBlocks } from '../../utils/ttsText'
+import { TELEGRAM_TEXT_BLOCK_KEYS, TELEGRAM_BOILERPLATE_KEYS, type TelegramTextBlockKey, type TelegramTextBlocks, type TelegramBoilerplateKey, type TelegramBoilerplateReads } from '../../utils/ttsText'
 import type { ConnectionStatus } from '../../types/earthquake'
 import { dmdataConnectionLabel } from './connectionLabel'
 import { INTENSITY_SCALE_COUNT, getIntensityLabel, getIntensityColor, INTENSITY_LABELS } from '../../utils/intensity'
@@ -56,6 +56,7 @@ export interface TestFunctions {
   quakeReportSequence: () => void
   borrowFromTsunami?: () => void
   unreceivedQuake?: () => void
+  maxScaleOrAboveQuake?: () => void
   tsunamiGradeChange?: () => void
   estimatedIntensity?: () => void
   notification: () => void
@@ -554,6 +555,88 @@ function TelegramTextBlockRows({ blocks, onChange }: {
           ))}
         </div>
       ))}
+    </>
+  )
+}
+
+/**
+ * 読み上げから落とす定型文のラベル。**`Record` で持つ**のは、キーを足してここへ書き忘れたときに
+ * 型検査で止めるため（隣の `TELEGRAM_TEXT_BLOCK_LABELS` と同じ理由）。
+ */
+const TELEGRAM_BOILERPLATE_LABELS: Record<TelegramBoilerplateKey, string> = {
+  starMark: '＊印の説明',
+  eewIssued: '緊急地震速報の発表告知',
+  lpgmClassTable: '長周期地震動階級の目安',
+  tsunamiHeightLegend: '津波の高さの目安',
+}
+
+/**
+ * 同じ項目の説明。**実例はすべて実配信の電文で文面を確かめたもの**（→
+ * `TELEGRAM_TEXT_BLOCK_DESCRIPTIONS` と同じ規約。確かめていない文を例として書かない）。
+ *
+ * **落としても画面には出ることを書く。** ここで切るのは声だけだと分からないと、
+ * 情報そのものを捨てる設定に見える。
+ */
+const TELEGRAM_BOILERPLATE_DESCRIPTIONS: Record<TelegramBoilerplateKey, string> = {
+  starMark: '気象庁以外が運用する観測点（＊印）の説明です。例:「＊印は気象庁以外の震度観測点についての情報です。」（長周期地震動観測情報では「長周期地震動観測点」）。読み上げでは＊が音にならないため、何と対比しているのかが伝わりません',
+  eewIssued: '例:「この地震について、緊急地震速報を発表しています。」緊急地震速報そのものは画面と音でお知らせしているため、切っても取り逃しません',
+  lpgmClassTable: '階級と揺れの大きさの対応表と、詳しい観測結果の参照先です。例:「各長周期地震動階級に対する簡易な現象表現」に続けて「階級１やや大きな揺れ」から階級４までが並びます。長周期地震動観測情報のほぼ全報に入ります',
+  tsunamiHeightLegend: '予想される津波の高さと被害の対応表です。例:「［予想される津波の高さの解説］」に続けて、１０ｍ超から１ｍまで 5 段階の被害が書かれます（307 字。読み上げるとおよそ 50 秒）',
+}
+
+/**
+ * 毎報ほぼ同じ定型文を、文の単位で読み上げから落とす指定。
+ *
+ * **上の「読み上げる文の内訳」より細かい。** あちらは付加文の枠ごと切るので、その枠にだけ入る
+ * 非定型の告知（震度速報の訂正・精査後のマグニチュードなど）まで一緒に消える。こちらは文で
+ * 落とすため、定型のあとに何か足された報ではその足された分だけが声になる。
+ *
+ * **既定は全項目オフ（＝読み上げない）。** 理由は `TELEGRAM_BOILERPLATE_DEFAULT_READS`。
+ * 畳んでおくのと見出しに件数を出すのは内訳と同じ。
+ */
+function TelegramBoilerplateRows({ reads, onChange }: {
+  reads: TelegramBoilerplateReads
+  onChange: (next: TelegramBoilerplateReads) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const enabled = TELEGRAM_BOILERPLATE_KEYS.filter(key => reads[key]).length
+  return (
+    <>
+      <div className="px-4 py-3">
+        <button
+          type="button"
+          onClick={() => setOpen(v => !v)}
+          aria-expanded={open}
+          className="w-full flex items-center justify-between gap-2 text-left"
+        >
+          <span className="text-white text-sm">
+            定型文の読み上げ
+            <span className="text-secondary text-xs ml-2">
+              {enabled} / {TELEGRAM_BOILERPLATE_KEYS.length} 項目
+            </span>
+          </span>
+          <span className="text-secondary text-xs">{open ? '閉じる' : '開く'}</span>
+        </button>
+      </div>
+      {open && (
+        <div>
+          <div className="px-4 py-1.5 bg-panel/60 text-secondary text-xs">
+            事象によらずほぼ同じ文です。切っても画面には出ます
+          </div>
+          {TELEGRAM_BOILERPLATE_KEYS.map(key => (
+            <Row
+              key={key}
+              label={TELEGRAM_BOILERPLATE_LABELS[key]}
+              description={TELEGRAM_BOILERPLATE_DESCRIPTIONS[key]}
+            >
+              <Toggle
+                checked={reads[key]}
+                onChange={v => onChange({ ...reads, [key]: v })}
+              />
+            </Row>
+          ))}
+        </div>
+      )}
     </>
   )
 }
@@ -1132,6 +1215,12 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onRep
             onChange={v => onUpdate('showQuakeHeatmap', v)}
           />
         </Row>
+        <Row label="凡例を表示" description="地図の左下に、いま地図で使っている色の意味（震度・津波の等級・震源の深さなど）を重ねます。見出しをタップすると畳めます">
+          <Toggle
+            checked={settings.showMapLegend}
+            onChange={v => onUpdate('showMapLegend', v)}
+          />
+        </Row>
       </Section>
 
       <Section title="ホーム地点">
@@ -1471,6 +1560,12 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onRep
               onChange={next => onUpdate('ttsTelegramTextBlocks', next)}
             />
           )}
+          {settings.ttsReadTelegramText && (
+            <TelegramBoilerplateRows
+              reads={settings.ttsTelegramBoilerplate}
+              onChange={next => onUpdate('ttsTelegramBoilerplate', next)}
+            />
+          )}
         </Section>
       )}
 
@@ -1605,6 +1700,11 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onRep
             <TestButton color="orange" onClick={onTest.unreceivedQuake}>未入電テスト</TestButton>
           </Row>
         )}
+        {isDmdss && onTest.maxScaleOrAboveQuake && (
+          <Row label="地震情報（最大震度が「5弱以上」になる報）" description="石川県西方沖 M6.4 最大震度5弱（実データ）– 震度を入手していない地点が 1。観測できた最大震度と同じ階級のため、カードの最大震度が「5弱以上」と出る（この形になるのは最大震度が5弱の地震だけで、地震テストの震度7・未入電テストの5強では出ない）">
+            <TestButton color="orange" onClick={onTest.maxScaleOrAboveQuake}>5弱以上テスト</TestButton>
+          </Row>
+        )}
         <Row label="遠地地震" description="メキシコ・チアパス州沿岸 M7.4 深さ不明（実データ）– earthquakeInfo 音 / 国内震度なし・日本への津波影響なし">
           <TestButton color="purple" onClick={onTest.foreignQuake}>遠地地震テスト</TestButton>
         </Row>
@@ -1641,7 +1741,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onRep
           <TestButton color="purple" onClick={onTest.tsunami}>大警報テスト</TestButton>
         </Row>
         {isDmdss && onTest.tsunamiGradeChange && (
-          <Row label="津波警報（区域ごとに等級が動く続報）" description="大津波警報 → 45秒後に続報（岩手・福島は津波警報へ降格／青森県太平洋沿岸は注意報へ／茨城は大津波警報へ引き上げ／北海道は津波予報へ／青森県日本海沿岸は解除）→ 90秒後に全解除。全体の最上位等級は動かないので、区域ごとの「〇〇から切り替え」「〇〇から引き上げ」と、いちばん下の「解除」の枠でしか変化が分からない">
+          <Row label="津波警報（区域ごとに等級が動く続報）" description="大津波警報 → 45秒後に続報（岩手・福島は津波警報へ降格／青森県太平洋沿岸は注意報へ／茨城は大津波警報へ引き上げ／北海道は津波予報へ／青森県日本海沿岸は解除）→ 60秒後に各地の満潮時刻の報 → 90秒後に全解除。全体の最上位等級は動かないので、区域ごとの「〇〇から切り替え」「〇〇から引き上げ」と、いちばん下の「解除」の枠でしか変化が分からない。満潮時刻の報は等級について何も言わないので、そこで印が消えないことも確かめられる">
             <TestButton color="orange" onClick={onTest.tsunamiGradeChange}>区域の等級変化テスト</TestButton>
           </Row>
         )}

@@ -1753,6 +1753,165 @@ describe('fetchDmdataQuakeHistory', () => {
     })
   })
 
+  // アーカイブ本体を「控えが外れた日だけ」落とす。
+  //
+  // **控えの寿命が揃っていない。** 目録（`manifestCache`）と電文のパース結果
+  // （`parsedTelegramCache`）は上限も期限も持たないのに、本体の控え
+  // （`utils/archiveBodyCache.ts`）は 96 本・128MB・12 時間で落ちる。そのため
+  // 「解析結果は手元にあるのに本体だけ消えた」状態が普通に起き、かつてはそこで
+  // 落とし直した本体を 1 バイトも読まずに捨てていた。
+  describe('控えで読み切れる日は本体を落とさない', () => {
+    const BEFORE = new Date('2026-08-10T13:00:00+09:00')
+
+    /**
+     * 本体を取りに行った回数を数える fetch を差す（目録・当日経路は数えない）。
+     *
+     * **測るのは取得回数で、結果の中身ではない。** 中身は控えから返るので、落とし直しても
+     * 画面に出るものは変わらない —— 回数を見なければ無駄なダウンロードに気づけない。
+     */
+    function countingFetch(archives: Array<{ date: string; url: string; gz: Uint8Array | 'error' }>) {
+      const base = mockHistoryArchives(archives)
+      const counter = { bodies: 0 }
+      globalThis.fetch = (async (input: string) => {
+        if (archives.some(a => a.url === String(input))) counter.bodies++
+        return base(String(input))
+      }) as unknown as typeof fetch
+      return counter
+    }
+
+    it('正: 本体の控えだけが落ちても、解析結果で読み切れるなら落とし直さない', async () => {
+      const gz = await dayArchive([
+        { id: 'hhhhhhh1', eventId: '20260810030000', time: '2026-08-10T12:05:00+09:00' },
+      ])
+      const counter = countingFetch([{ date: '2026-08-10', url: 'https://x/d10', gz }])
+
+      const first = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+      expect(first.quakes).toHaveLength(1)
+      expect(counter.bodies).toBe(1)
+
+      // 期限切れ・追い出しで本体だけが消えた状態（目録とパース結果は残る）
+      clearArchiveCacheForTest()
+      const second = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+
+      expect(counter.bodies).toBe(1)
+      // 控えから返っているので同一参照（解析し直せば別のオブジェクトになる）
+      expect(second.quakes[0]).toBe(first.quakes[0])
+    })
+
+    // 解析に失敗した電文は控えに乗らない（`parsedTelegramCache` は成功分だけ）。
+    // 読むものが残っているなら、本体は要る。
+    it('対照: 解析結果が控えに無い電文が残っていれば落とし直す', async () => {
+      const gz = await makeTarGz([
+        {
+          name: 'telegrams.json',
+          content: JSON.stringify([manifestEntry('hhhhhhh2', 'VXSE53', '2026-08-10T12:05:00+09:00')]),
+        },
+        { name: 'hhhhhhh2_20260810030500000_0.xml', content: '<Report><これは XML ではない' },
+      ])
+      const counter = countingFetch([{ date: '2026-08-10', url: 'https://x/d10', gz }])
+
+      const first = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+      expect(first.skipped).toBe(1)
+      expect(counter.bodies).toBe(1)
+
+      clearArchiveCacheForTest()
+      const second = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+
+      expect(counter.bodies).toBe(2)
+      expect(second.skipped).toBe(1)
+    })
+
+    // 目録は本体の中に入っているので、そちらが控えに無ければ落とすしかない。
+    it('対照: 目録の控えも落ちていれば落とす', async () => {
+      const gz = await dayArchive([
+        { id: 'hhhhhhh3', eventId: '20260810030000', time: '2026-08-10T12:05:00+09:00' },
+      ])
+      const counter = countingFetch([{ date: '2026-08-10', url: 'https://x/d10', gz }])
+
+      await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+      expect(counter.bodies).toBe(1)
+
+      clearAllCaches()
+      await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+
+      expect(counter.bodies).toBe(2)
+    })
+
+    // 打ち切り（`takeQuakes`）は計画にも効く。目標に達した時点より古い日は読まないので
+    // 本体も要らないが、**目標を増やせば落としに行く**（控えに乗っていないため）。
+    it('安全弁: 打ち切りで読まなかった日は、目標を増やせば落としに行く', async () => {
+      const newer = await dayArchive([
+        { id: 'hhhhhhh4', eventId: '20260810030000', time: '2026-08-10T12:05:00+09:00' },
+      ])
+      const older = await dayArchive([
+        { id: 'hhhhhhh5', eventId: '20260809030000', time: '2026-08-09T12:05:00+09:00' },
+      ])
+      const counter = countingFetch([
+        { date: '2026-08-10', url: 'https://x/d10', gz: newer },
+        { date: '2026-08-09', url: 'https://x/d09', gz: older },
+      ])
+
+      // 目標 1 件。新しい日で足りるので古い日の地震は読まない（目録のために落ちる）
+      const first = await fetchDmdataQuakeHistory('key', BEFORE, 1, 7, false)
+      expect(first.quakes).toHaveLength(1)
+      const afterFirst = counter.bodies
+
+      clearArchiveCacheForTest()
+      const second = await fetchDmdataQuakeHistory('key', BEFORE, 2, 7, false)
+
+      expect(second.quakes).toHaveLength(2)
+      // 新しい日は控えで済み、古い日だけを落としに行く
+      expect(counter.bodies).toBe(afterFirst + 1)
+    })
+
+    // 同じ日に「控え済み」と「未控え」が混じる形。**1 件でも要れば落とす**（`planNeedsBody`）。
+    //
+    // **これは普通に起きる。** 再生開始時刻より後に発表された電文はその時点で存在しないので
+    // 読まないが、時刻が進めば同じ日の中で読む対象に変わる。
+    it('正: 同じ日に未控えの電文が 1 件でも残っていれば落とす', async () => {
+      const gz = await dayArchive([
+        { id: 'hhhhhhh7', eventId: '20260810030000', time: '2026-08-10T12:05:00+09:00' },
+        { id: 'hhhhhhh8', eventId: '20260810090000', time: '2026-08-10T18:05:00+09:00' },
+      ])
+      const counter = countingFetch([{ date: '2026-08-10', url: 'https://x/d10', gz }])
+
+      // 13:00 時点では 18:05 の電文はまだ存在しないので読まない（控えにも乗らない）
+      const first = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+      expect(first.quakes).toHaveLength(1)
+      expect(counter.bodies).toBe(1)
+
+      clearArchiveCacheForTest()
+      // 19:00 時点では 2 件とも対象。1 件は控えにあるが、もう 1 件のために本体が要る
+      const second = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T19:00:00+09:00'), 50, 7, false)
+
+      expect(counter.bodies).toBe(2)
+      expect(second.quakes).toHaveLength(2)
+      // 控えにあった側は同一参照で返る（解析し直していない）
+      expect(second.quakes.some(q => q === first.quakes[0])).toBe(true)
+    })
+
+    // **落とさない日を「読めなかった日」に数えないこと。** 数えると全滅判定の分母
+    // （`judgedDays`）と等号が成立して例外になり、控えから読めていたカードごと捨てられる。
+    it('安全弁: 落とさない日は取得の失敗に数えない', async () => {
+      const gz = await dayArchive([
+        { id: 'hhhhhhh6', eventId: '20260810030000', time: '2026-08-10T12:05:00+09:00' },
+      ])
+      countingFetch([{ date: '2026-08-10', url: 'https://x/d10', gz }])
+      const first = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+      expect(first.quakes).toHaveLength(1)
+
+      // 本体の控えだけを捨て、以後その URL は落とせない状態にする
+      clearArchiveCacheForTest()
+      countingFetch([{ date: '2026-08-10', url: 'https://x/d10', gz: 'error' }])
+
+      const second = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+
+      expect(second.failedArchiveUrls).toEqual([])
+      expect(second.rateLimitedSources).toEqual([])
+      expect(second.quakes).toHaveLength(1)
+    })
+  })
+
   // 目録の発表時刻が読めない電文を、アーカイブ本体のファイル名（17 桁の受信時刻）で救う。
   // 追加リクエストは 0 件。当日経路には同じ補いを置けない（本体を取る前に判定するため）。
   describe('目録の発表時刻が読めないとき', () => {
@@ -2155,5 +2314,86 @@ describe('当日ぶんのアーカイブは控えない（isArchiveCacheable）'
     const justAfterJstMidnight = Date.parse('2026-09-16T00:30:00+09:00')
     expect(isArchiveCacheable('2026-09-16', justAfterJstMidnight)).toBe(false)
     expect(isArchiveCacheable('2026-09-15', justAfterJstMidnight)).toBe(true)
+  })
+})
+
+// 本編の再生でも、窓に 1 件も入らない日は本体を落とさない。
+//
+// **履歴側と条件が違う。** 本編はパース結果を控えない（窓を前へ進めるので同じ電文を二度
+// 読まない）ので、窓に入るエントリがあれば必ず本体が要る。効くのは静かな窓のほうで、
+// そこでは目録だけで「読むものが無い」と決められる。
+describe('窓に入る電文が無い日は本体を落とさない', () => {
+  const originalFetch = globalThis.fetch
+  const URL_D1 = 'https://x/only'
+  /** 目録の唯一の電文。JST 12:00 発表。 */
+  const ENTRY_TIME = '2026-08-10T12:00:00+09:00'
+  /** 上の電文を含まない窓（JST 01:00〜02:00）。 */
+  const QUIET_FROM = new Date('2026-08-10T01:00:00+09:00')
+  const QUIET_TO = new Date('2026-08-10T02:00:00+09:00')
+
+  beforeEach(() => { clearAllCaches() })
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    clearAllCaches()
+    vi.restoreAllMocks()
+  })
+
+  async function oneEntryArchive(): Promise<Uint8Array> {
+    return makeTarGz([
+      {
+        name: 'telegrams.json',
+        content: JSON.stringify([manifestEntry('i1', 'VXSE53', ENTRY_TIME)]),
+      },
+      { name: 'i1.xml', content: quakeBody('石川県能登地方') },
+    ])
+  }
+
+  /** 本体を取りに行った回数を数える fetch を差す。 */
+  function countingFetch(gz: Uint8Array): { bodies: number } {
+    const base = mockArchives([{ url: URL_D1, gz }])
+    const counter = { bodies: 0 }
+    globalThis.fetch = (async (input: string) => {
+      if (String(input) === URL_D1) counter.bodies++
+      return base(String(input))
+    }) as unknown as typeof fetch
+    return counter
+  }
+
+  it('正: 目録が控えにあり窓に 1 件も入らないなら落とさない', async () => {
+    const counter = countingFetch(await oneEntryArchive())
+
+    // 1 回目は目録のために落とす（窓はその電文を含む）
+    const first = await fetchDmdataReplayEvents('key', FROM, TO, false)
+    expect(first.entries).toHaveLength(1)
+    expect(counter.bodies).toBe(1)
+
+    // 本体の控えだけが落ちた状態で、静かな窓を再生する
+    clearArchiveCacheForTest()
+    const quiet = await fetchDmdataReplayEvents('key', QUIET_FROM, QUIET_TO, false)
+
+    expect(quiet.entries).toHaveLength(0)
+    expect(counter.bodies).toBe(1)
+  })
+
+  it('対照: 窓に入る電文が 1 件でもあれば落とす', async () => {
+    const counter = countingFetch(await oneEntryArchive())
+
+    await fetchDmdataReplayEvents('key', FROM, TO, false)
+    expect(counter.bodies).toBe(1)
+
+    clearArchiveCacheForTest()
+    const again = await fetchDmdataReplayEvents('key', FROM, TO, false)
+
+    expect(again.entries).toHaveLength(1)
+    expect(counter.bodies).toBe(2)
+  })
+
+  it('安全弁: 目録の控えが無ければ、静かな窓でも落とす', async () => {
+    const counter = countingFetch(await oneEntryArchive())
+
+    const quiet = await fetchDmdataReplayEvents('key', QUIET_FROM, QUIET_TO, false)
+
+    expect(quiet.entries).toHaveLength(0)
+    expect(counter.bodies).toBe(1)
   })
 })

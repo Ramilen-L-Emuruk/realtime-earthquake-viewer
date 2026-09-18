@@ -25,11 +25,27 @@
  * 取得先は DMDATA アーカイブで、`--date`（既定は `EventID` の先頭 8 桁から組む）の
  * `telegram.earthquake` から VXSE62 を探す。同じ `EventID` の電文が複数あるときは
  * **最大階級がいちばん大きいもの**を採る（続報で階級が確定するため）。
+ *
+ * ## 取得は共通の口を通す
+ *
+ * アーカイブの一覧・本体の取得は `telegram-audit/archive-cache.mjs` に集約してある。
+ * **素の `fetch` を書き足さないこと** —— 控えもレート制御も 429 のバックオフも通らず、
+ * 同じ日を何度でも取り直す形になる（→ `docs/spec/data-sources-spec.md` §2
+ * 「リクエスト数を抑える」）。控えは分類・日・アーカイブ id で引くので、
+ * **`build-test-quake` が同じ日を取っていればここではリクエストを出さない**。
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import zlib from 'node:zlib'
 import { fileURLToPath } from 'node:url'
+import {
+  apiAuthHeader,
+  dayOf,
+  EARTHQUAKE_CLASSIFICATION,
+  listArchive,
+  loadArchiveTar,
+  runArchiveScript,
+  tarEntries,
+} from './telegram-audit/archive-cache.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const OUT = path.join(ROOT, 'src/data/noto-honshin-2024-lpgm.json')
@@ -39,46 +55,28 @@ function arg(name: string, fallback: string): string {
   return hit ? hit.slice(name.length + 3) : fallback
 }
 
-function readApiKey(): string {
-  const envPath = path.join(ROOT, '.env.local')
-  if (!fs.existsSync(envPath)) {
-    throw new Error(`.env.local がありません（${envPath}）。DMDATA_API_KEY を置いてください`)
-  }
-  const key = (fs.readFileSync(envPath, 'utf8').match(/^DMDATA_API_KEY=(.+)$/m) ?? [])[1]?.trim()
-  if (!key) throw new Error('.env.local に DMDATA_API_KEY がありません')
-  return key
-}
-
-/** tar の展開（アーカイブは tar.gz で配られる） */
-function* tarEntries(buf: Buffer): Generator<{ name: string; body: Buffer }> {
-  let o = 0
-  while (o + 512 <= buf.length) {
-    const name = buf.subarray(o, o + 100).toString('utf8').replace(/\0.*$/, '')
-    if (!name) { o += 512; continue }
-    const size = parseInt(buf.subarray(o + 124, o + 136).toString('utf8').replace(/\0.*$/, '').trim(), 8) || 0
-    yield { name, body: buf.subarray(o + 512, o + 512 + size) }
-    o += 512 + Math.ceil(size / 512) * 512
-  }
-}
-
-async function main() {
+async function build() {
   const eventId = arg('event', '20240101161010')
   const day = arg('date', `${eventId.slice(0, 4)}-${eventId.slice(4, 6)}-${eventId.slice(6, 8)}`)
-  const auth = { Authorization: 'Basic ' + Buffer.from(readApiKey() + ':').toString('base64') }
+  const auth = apiAuthHeader()
 
-  const url = new URL('https://api.dmdata.jp/v2/archive')
   // **両端は広めに取る。** ちょうどの日付だけを指定するとその日が返らないことがある。
   const from = new Date(`${day}T00:00:00Z`); from.setUTCDate(from.getUTCDate() - 1)
   const to = new Date(`${day}T00:00:00Z`); to.setUTCDate(to.getUTCDate() + 1)
-  url.searchParams.set('datetime', `${from.toISOString().slice(0, 10)}~${to.toISOString().slice(0, 10)}`)
-  url.searchParams.set('classification', 'telegram.earthquake')
-  url.searchParams.set('limit', '100')
+  const items = await listArchive({
+    classification: EARTHQUAKE_CLASSIFICATION,
+    from: from.toISOString().slice(0, 10),
+    to: to.toISOString().slice(0, 10),
+    auth,
+  })
 
-  const list = await (await fetch(url, { headers: auth })).json() as { items?: { date: string; url: string }[] }
+  // 件数を先に出しておくのは、下の「見つかりません」で**「読んだが無い」と「そもそも
+  // 読んでいない」を区別する**ため（理由は `build-test-quake.ts` の同じ箇所）。
+  const matched = items.filter(it => dayOf(it).startsWith(day))
+
   const found: { name: string; xml: string; maxClass: number }[] = []
-  for (const it of list.items ?? []) {
-    if (!String(it.date).startsWith(day)) continue
-    const tar = zlib.gunzipSync(Buffer.from(await (await fetch(it.url, { headers: auth })).arrayBuffer()))
+  for (const it of matched) {
+    const tar = await loadArchiveTar({ classification: EARTHQUAKE_CLASSIFICATION, item: it, auth })
     for (const { name, body } of tarEntries(tar)) {
       if (!/^VXSE62_.*\.xml$/i.test(name)) continue
       const xml = body.toString('utf8')
@@ -86,7 +84,12 @@ async function main() {
       found.push({ name, xml, maxClass: parseInt((xml.match(/<MaxLgInt>(\d+)<\/MaxLgInt>/) ?? [])[1] ?? '0', 10) })
     }
   }
-  if (!found.length) throw new Error(`${day} の ${eventId} に対する VXSE62 が見つかりません`)
+  if (!found.length) {
+    throw new Error(
+      `${day} の ${eventId} に対する VXSE62 が見つかりません`
+      + `（一覧 ${items.length} 件・うち ${day} のアーカイブ ${matched.length} 件を読みました）`,
+    )
+  }
   found.sort((a, b) => b.maxClass - a.maxClass)
   const picked = found[0]
 
@@ -107,4 +110,5 @@ async function main() {
   )
 }
 
-main().catch(e => { console.error(e instanceof Error ? e.message : e); process.exit(1) })
+runArchiveScript('アーカイブ（長周期地震動のテストデータ）', build)
+  .catch(e => { console.error(e instanceof Error ? e.message : e); process.exit(1) })

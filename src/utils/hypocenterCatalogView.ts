@@ -62,10 +62,18 @@ export interface CatalogPointCloud {
   timeMs: Float64Array
   /** マグニチュード。 */
   magnitude: Float32Array
+  /**
+   * 発生年で色を付けるときに使った両端（UTC epoch ミリ秒）。点が 1 つも残らなければ `null`。
+   *
+   * **絞り込みに残った点だけで測った値で、期間の指定そのものではない。** 色の位置はこの幅で
+   * 正規化される（下の `TIME_RAMP` の呼び出し）ので、凡例が期間の指定を目盛りに書くと
+   * 実際の色と食い違う（深さや M で絞った結果、指定の端まで点が無いことがある）。
+   */
+  timeRange: { lo: number; hi: number } | null
 }
 
 /** 色の段。位置（0〜1）と RGB（0〜1）。 */
-type Ramp = readonly (readonly [number, number, number, number])[]
+export type Ramp = readonly (readonly [number, number, number, number])[]
 
 /**
  * 深さの色。**浅いほど暖色**——地震学の図でこの向きが定着しており、逆にすると読み違えられる。
@@ -75,7 +83,7 @@ type Ramp = readonly (readonly [number, number, number, number])[]
  * 深発地震の主体は 300〜450km（収録の 2.2%・約 2.2 万件）でちょうどそこが潰れるため、
  * シアン → 青 → 紫 → マゼンタと色相を動かして 100km 刻みで見分けられるようにしている。
  */
-const DEPTH_RAMP: Ramp = [
+export const DEPTH_RAMP: Ramp = [
   [0.0, 0.94, 0.26, 0.21],
   [0.08, 0.98, 0.55, 0.15],
   [0.2, 0.96, 0.85, 0.25],
@@ -103,7 +111,7 @@ export const DEPTH_RAMP_MAX_KM = 750
  * 地震どうしを見分けられない。段が上端ほど詰まっているのは、件数の多い M2〜5 の帯
  * （収録の 99% 以上）で色が動く余地を残すため。
  */
-const MAGNITUDE_RAMP: Ramp = [
+export const MAGNITUDE_RAMP: Ramp = [
   [0.0, 0.35, 0.6, 0.95],
   [0.3, 0.35, 0.85, 0.6],
   [0.5, 0.95, 0.85, 0.3],
@@ -133,7 +141,7 @@ export const MAGNITUDE_FILTER_RANGE = { min: 2, max: 9 } as const
 export const MAGNITUDE_RAMP_RANGE = { min: 2, max: 9.5 } as const
 
 /** 発生年の色。古いほど暗く沈む。 */
-const TIME_RAMP: Ramp = [
+export const TIME_RAMP: Ramp = [
   [0.0, 0.25, 0.3, 0.45],
   [0.5, 0.4, 0.6, 0.75],
   [1.0, 0.95, 0.95, 0.7],
@@ -727,5 +735,9 @@ export function buildCatalogPointCloud(
     columns: { count, lng, lat, depthKm, color, sizePx, shape: 'circle' },
     timeMs,
     magnitude,
+    // **色を付けるのに使った幅をそのまま渡す。** 凡例が期間の指定から目盛りを組むと、
+    // 絞り込みで端まで点が残っていないときに色と食い違う。点が 0 件なら `timeLo` は
+    // `Infinity` のままなので `null` にする（そのまま渡すと目盛りが 1970 年になる）。
+    timeRange: count > 0 ? { lo: timeLo, hi: timeHi } : null,
   }
 }

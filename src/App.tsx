@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback, type CSSProperties } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, type CSSProperties } from 'react'
 import type { MapHandle } from './components/Map/mapTypes'
 import { IconNav, TAB_LABELS, type TabId } from './components/IconNav'
 import { ErrorBoundary } from './components/ErrorBoundary'
@@ -33,6 +33,10 @@ import {
   type CatalogFilter, type CatalogViewOptions, type CatalogPointCloud,
 } from './utils/hypocenterCatalogView'
 import { SpecialInfoBanner } from './components/SpecialInfoBanner'
+import { MapLegend } from './components/MapLegend'
+import { isMapAreaShort } from './components/MapLegend/autoCollapse'
+import { buildLegendBlocks, EMPTY_LEGEND_SOURCES, type MapLegendSources, type LegendBlock } from './components/MapLegend/legendBlocks'
+
 import { ActionChecklist } from './components/ActionChecklist'
 import { useActionChecklist } from './hooks/useActionChecklist'
 import { useStationCoords } from './hooks/useStationCoords'
@@ -86,6 +90,9 @@ import { useHistoricalArchiveIndex } from './hooks/useHistoricalArchiveIndex'
 import { log } from './utils/logger'
 import { setReplayOffset as setClockReplayOffset, serverDate, serverNow } from './utils/clock'
 import { isDmdss } from './utils/env'
+
+/** 凡例を切っているときに渡す空の組。**同一参照を使い回す**（毎回作ると共有カードの ref 更新が空回りする）。 */
+const EMPTY_LEGEND_BLOCKS: LegendBlock[] = []
 
 // 平常時のウィンドウタイトル（index.html の <title> と一致させる）。
 // AutoHotKey 等が、情報更新時のタイトル変化を検知してイベントを発火できるようにする。
@@ -745,7 +752,7 @@ export function App() {
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
     simulateQuakeNotice, simulateEarthquakeCount, simulateEarthquakeCountRetraction, simulateEstimatedIntensity,
-    simulateTrainingQuake, simulateUnreceivedQuake, simulateTsunamiGradeChange, simulateQuakeAmendment,
+    simulateTrainingQuake, simulateUnreceivedQuake, simulateMaxScaleOrAboveQuake, simulateTsunamiGradeChange, simulateQuakeAmendment,
     simulateQuakeReportSequence, simulateHypocenterFromTsunami,
     resetState, loadReplayEvents, restoreQuakeHistory,
   } = useEarthquakes(handleLiveEvent, debouncedApiKey, settings.dmdataTestDelivery, replayTimeOffset, handleStartupRestore)
@@ -814,6 +821,7 @@ export function App() {
     quakeReportSequence: simulateQuakeReportSequence,
     borrowFromTsunami: isDmdss ? simulateHypocenterFromTsunami : undefined,
     unreceivedQuake:   simulateUnreceivedQuake,
+    maxScaleOrAboveQuake: simulateMaxScaleOrAboveQuake,
     tsunamiGradeChange: simulateTsunamiGradeChange,
     estimatedIntensity: simulateEstimatedIntensity,
     notification:      () => {
@@ -833,7 +841,7 @@ export function App() {
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
     simulateQuakeNotice, simulateEarthquakeCount, simulateEarthquakeCountRetraction, simulateEstimatedIntensity,
-    simulateTrainingQuake, simulateUnreceivedQuake, simulateTsunamiGradeChange, simulateQuakeAmendment,
+    simulateTrainingQuake, simulateUnreceivedQuake, simulateMaxScaleOrAboveQuake, simulateTsunamiGradeChange, simulateQuakeAmendment,
     simulateQuakeReportSequence, simulateHypocenterFromTsunami,
   ])
   // IconNav の onTabChange。手動選択は必ず即時反映し、以後 TAB_HOLD_MS の間は自動切替に
@@ -1529,6 +1537,49 @@ export function App() {
    * `defaultTabRef` と同じ作法で ref 経由に渡す（実体の代入は下方・呼ばれるのは
    * 常にレンダー後なのでタイミング上問題ない）。
    */
+  // 地図に重ねる凡例。**中身は地図が決める** —— 各レイヤーの表示条件から組んだものを受け取り、
+  // ここでは並べ方（`buildLegendBlocks`）だけを担う。
+  const [legendSources, setLegendSources] = useState<MapLegendSources>(EMPTY_LEGEND_SOURCES)
+  const legendBlocks = useMemo(() => buildLegendBlocks(legendSources), [legendSources])
+  // 地図が低い画面では畳んだ状態から始める。**測るのは地図領域の実寸**で、画面の幅や
+  // ブレークポイントでは決まらない（上下分割の比率つまみと折りたたみで変わる）。
+  const mapAreaRef = useRef<HTMLDivElement | null>(null)
+  const [mapAreaShort, setMapAreaShort] = useState(false)
+  // 判定は `isMapAreaShort` の 1 つだけ（`undefined` は「決めない」＝前の判定を据え置く）。
+  // **初回だけは描画の前に測る。** `ResizeObserver` のコールバックは必ず非同期で来るので、
+  // 待つと狭い画面（既定は畳む）でも 1 フレームだけ開いた凡例が見えてから畳まれる。
+  // `useLayoutEffect` ならブラウザが描く前に state が確定する。
+  useLayoutEffect(() => {
+    const short = isMapAreaShort(mapAreaRef.current?.getBoundingClientRect().height)
+    if (short !== undefined) setMapAreaShort(short)
+  }, [])
+  useEffect(() => {
+    const el = mapAreaRef.current
+    // **測れないときは記録を残す。** `mapAreaShort` は偽のままなので「狭い画面でも畳まない」側へ
+    // 倒れるが、画面には「`auto` なのに一度も畳まれない」としか現れず、機能が発火していないことに
+    // 気づけない。
+    if (!el || typeof ResizeObserver === 'undefined') {
+      log.warn('[legend] 地図領域の高さを測れないため、凡例の自動折りたたみは働きません', {
+        hasElement: !!el,
+        hasResizeObserver: typeof ResizeObserver !== 'undefined',
+      })
+      return
+    }
+    const ro = new ResizeObserver((entries) => {
+      const short = isMapAreaShort(entries[0]?.contentRect.height)
+      if (short !== undefined) setMapAreaShort(short)
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  // `'auto'` は「まだ触っていない」状態。触ったらその選択を設定へ固定する。
+  const legendCollapsed = settings.mapLegendCollapsed === 'auto'
+    ? mapAreaShort
+    : settings.mapLegendCollapsed === 'collapsed'
+  const toggleLegend = useCallback(() => {
+    updateSetting('mapLegendCollapsed', legendCollapsed ? 'open' : 'collapsed')
+  }, [legendCollapsed, updateSetting])
+
   const resetActionChecklistRef = useRef<() => void>(() => {})
   /** 別地点発報のエピソード状態のリセット。上と同じ理由で ref 経由に渡す。 */
   const resetKyoshinAlertsRef = useRef<() => void>(() => {})
@@ -1925,7 +1976,7 @@ export function App() {
     showBathymetry: settings.showBathymetry,
     showActiveFaults: settings.showActiveFaults,
     showPlateBoundaries: settings.showPlateBoundaries,
-  })
+  }, settings.showMapLegend ? legendBlocks : EMPTY_LEGEND_BLOCKS)
 
   // 地図左上の更新時刻: リアルタイム表示はリアルタイム震度(kyoshin)の更新時刻、
   // DMDSS版かつWS接続中は現在時刻を毎秒更新、それ以外は最終受信時刻を表示する。
@@ -1961,7 +2012,7 @@ export function App() {
         style={{ '--panel-ratio': panelCollapsed ? 0 : panelRatio } as CSSProperties}
       >
         {/* 常時表示の地図エリア（タブに応じて内容を切替） */}
-        <div className="relative flex-1 min-h-0">
+        <div ref={mapAreaRef} className="relative flex-1 min-h-0">
           {/* **包むのは地図だけ。** ここで受け止めれば App の state は生きたままなので、地図が
               落ちてもカード・ブラウザ通知・読み上げは動き続ける。同じ親にいる左上の情報ブロック・
               行動チェックリスト・特別情報バナーは境界の外に残す——中へ入れると地図と一緒に消える。
@@ -1971,6 +2022,8 @@ export function App() {
             <MapView
               mode={mapMode}
               catalogCloud={catalogCloud}
+              catalogColorBy={settledView.colorBy}
+              onLegendSourcesChange={setLegendSources}
               quake={mapQuake}
               tsunamis={tsunamis}
               observations={latestTsunamiObservations}
@@ -2045,7 +2098,15 @@ export function App() {
               onRestore={actionChecklist.restore}
             />
           )}
-          <SpecialInfoBanner nankai={nankai} nankaiCommentary={nankaiCommentary} kohatsu={kohatsu} quakeNotice={quakeNotice} earthquakeCount={earthquakeCount} speakingTelegramTextSubject={speakingTelegramTextSubject} />
+          {/* 地図の下端に積む枠。上から凡例・特別情報バナーの順で、**バナーが出れば凡例が
+              押し上がる**（凡例を別に絶対配置すると、下端全幅のバナーに隠れる）。
+              z は左上の情報ブロックと同じ理由で高く取る。 */}
+          <div className="absolute bottom-0 left-0 right-0 z-[99999] pointer-events-none flex flex-col items-start">
+            {settings.showMapLegend && (
+              <MapLegend blocks={legendBlocks} collapsed={legendCollapsed} onToggle={toggleLegend} compact={mapAreaShort} />
+            )}
+            <SpecialInfoBanner nankai={nankai} nankaiCommentary={nankaiCommentary} kohatsu={kohatsu} quakeNotice={quakeNotice} earthquakeCount={earthquakeCount} speakingTelegramTextSubject={speakingTelegramTextSubject} />
+          </div>
         </div>
 
         {/* 地図とパネルの境界（縦積み時のみ）。ドラッグで高さ比率を変え、タップで折りたたむ。 */}
