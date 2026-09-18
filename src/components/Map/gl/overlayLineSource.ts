@@ -1,6 +1,7 @@
 import type { Feature, FeatureCollection, MultiLineString } from 'geojson'
 import type { ExpressionSpecification, GeoJSONSource, Map as MapLibreMap } from 'maplibre-gl'
 import { log } from '../../../utils/logger'
+import { isMapStyleGone } from './mapStyleGone'
 
 // プレート境界線・活断層線のように「読み込んだら変わらない線データ」を 1 つの geojson ソースへ
 // 相乗りさせるための小さな受け皿。レイヤーは `kind` の filter で自分の分だけを描く。
@@ -78,6 +79,9 @@ export function putOverlayLines(
  * 戻るだけなので（MapLibre 実装）、呼びっぱなしでは気づけない。気づかないまま登録簿を空にすると、
  * 残ったソースへ次の提供元が `setData` した時点で、外し忘れたレイヤーは自分の feature を失って
  * **無言で空になる**。削除できたことを確かめてから登録簿を畳む。
+ *
+ * **その地図がスタイルを失っている場合は、上記のいずれでもない。** ソースもレイヤーも一緒に消えて
+ * いるので外すものが残っておらず、何もせずに帰ってよい（→ `gl/mapStyleGone.ts`）。
  */
 export function dropOverlayLines(map: MapLibreMap, kind: OverlayLineKind): void {
   const parts = registry.get(map)
@@ -85,10 +89,18 @@ export function dropOverlayLines(map: MapLibreMap, kind: OverlayLineKind): void 
   parts.delete(kind)
   if (parts.size > 0) {
     const source = map.getSource(OVERLAY_LINE_SRC) as GeoJSONSource | undefined
-    // まだ提供元が残っているのにソースが無いのは、このモジュールを通さずに消された場合だけ。
-    // 残った側のレイヤーは以後何も描かなくなるので、黙って通さず記録する。
-    if (source) source.setData(toFeatureCollection(parts))
-    else log.error(`[overlayLineSource] 共有ソース ${OVERLAY_LINE_SRC} が見当たらない`, { droppedKind: kind })
+    if (source) {
+      source.setData(toFeatureCollection(parts))
+      return
+    }
+    // まだ提供元が残っているのにソースが無い理由は 2 つあり、**片方だけが異常**。
+    //   - このモジュールを通さずに消された: 残った側のレイヤーは以後何も描かなくなる。記録する
+    //   - その地図がスタイルを失った: 残った側のレイヤーも一緒に消えている。何も失われていない
+    // 後者を異常として扱うと、HMR のたびに `log.error` が出る（開発時は毎回この経路を通る）。
+    // 登録簿はそのまま残す——その地図のぶんは WeakMap が地図ごと落とす。
+    if (!isMapStyleGone(map)) {
+      log.error(`[overlayLineSource] 共有ソース ${OVERLAY_LINE_SRC} が見当たらない`, { droppedKind: kind })
+    }
     return
   }
   if (map.getSource(OVERLAY_LINE_SRC)) {

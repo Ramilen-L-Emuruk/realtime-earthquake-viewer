@@ -3,6 +3,7 @@ import type { CanvasSource } from 'maplibre-gl'
 import { useMapGL } from './mapGLContext'
 import { getIntensityColor } from '../../utils/intensity'
 import { addOrderedLayer } from './gl/layerOrder'
+import { isMapStyleGone } from './gl/mapStyleGone'
 import { mercatorY } from '../../utils/isoseismal'
 import { buildSiToScale } from '../../utils/estimatedIntensity'
 import { CELL_LAT_DEG, CELL_LON_DEG } from '../../utils/bufrEstimatedIntensity'
@@ -127,6 +128,11 @@ export function QuakeEstimatedIntensityGL({ data, visible }: Props) {
       const canvas = canvasRef.current
       const src = map.getSource(SRC) as CanvasSource | undefined
       if (!canvas || !src || !map.getLayer(LYR)) {
+        // **ただし地図がスタイルを失った後は正常に成立する。** HMR で古い地図が `remove()` された
+        // 後も、この購読と effect はその地図を掴んでいる（→ `gl/mapStyleGone.ts`）。そのとき
+        // ソースもレイヤーも引けないが、消すものも残っていないので `hide()` も通さず帰る。
+        // 震度の面（`QuakeIntensitySurfaceGL`）と対になる判定で、片方だけに置かないこと。
+        if (isMapStyleGone(map)) return
         giveUp('missing-objects', 'canvas / source / layer が揃っていない')
         return
       }
