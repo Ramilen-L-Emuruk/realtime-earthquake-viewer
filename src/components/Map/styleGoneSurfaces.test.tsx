@@ -1,27 +1,27 @@
 // @vitest-environment jsdom
 //
-// 面を敷く 2 つのコンポーネント（自前の推定＝`QuakeIntensitySurfaceGL` と気象庁の推計震度分布図＝
-// `QuakeEstimatedIntensityGL`）が、**スタイルを失った地図に対して異常を記録しない**ことを固定する。
+// canvas source で面を敷くコンポーネント（自前の推定＝`QuakeIntensitySurfaceGL`）が、
+// **スタイルを失った地図に対して異常を記録しない**ことを固定する。
 //
-// この 2 つは `moveend` を購読して面を描き直す作りで、**購読と effect が地図を掴んだまま、その
+// これは `moveend` を購読して面を描き直す作りで、**購読と effect が地図を掴んだまま、その
 // 地図がスタイルを失う**ことがある（HMR で起きる。詳細は `gl/mapStyleGone.ts`）。そのとき
 // canvas・source・layer は揃って引けなくなるので、素通しにすると開発のたびに
 // 「描けなかった」が出る。
 //
-// **2 つまとめて見るのは、片方だけにガードを置いても気づけないため。** 作りが対称なので
-// 判定も対称に置く必要があるが、**どちらか一方でしか観測されないことがある**——依存配列に
-// 参照の変わる値を持つかどうかで effect が走る機会が違い、実機では震度の面だけが鳴っていた。
-// 観測の有無を根拠に片方を省くと、条件が揃ったときにもう一方から同じ文言が出る。
+// **気象庁の推計震度分布図（`QuakeEstimatedIntensityGL`）は対象ではない。** かつては同じ
+// canvas source の作りで、対称に判定を置く必要があった（片方でしか観測されない形があるため）。
+// WebGL のカスタムレイヤーへ移した後は `moveend` も canvas source も持たず、テクスチャを
+// 地理座標へ固定して焼くので、この判定が守る経路そのものが無い。**新しく canvas source で
+// 面を敷くものを足したら、ここへ並べること。**
 //
-// ここで見るのは記録を出すか出さないかだけで、面の中身（補間・セルの塗り）は
-// `utils/isoseismal.test.ts` / `utils/bufrEstimatedIntensity.test.ts` の担当。
+// ここで見るのは記録を出すか出さないかだけで、面の中身（補間）は
+// `utils/isoseismal.test.ts` の担当。
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, cleanup } from '@testing-library/react'
 import type { ReactElement } from 'react'
 import { MapGLContext } from './mapGLContext'
 import { createFakeMapGL, type FakeMapGL } from './testing/fakeMapGL'
 import { QuakeIntensitySurfaceGL } from './QuakeIntensitySurfaceGL'
-import { QuakeEstimatedIntensityGL } from './QuakeEstimatedIntensityGL'
 
 // 県境は遅延読込で、届くと陸クリップ用の外接矩形を組む。解決しない Promise で止めて
 // 「読み込み待ち」のまま走らせる——このテストが見るガードはその手前にあるので通る
@@ -50,11 +50,6 @@ const SURFACES: Surface[] = [
     name: '震度の面',
     view: () => <QuakeIntensitySurfaceGL markers={[]} visible={false} />,
     logPhrase: '震度の面を描けなかった',
-  },
-  {
-    name: '推計震度分布図',
-    view: () => <QuakeEstimatedIntensityGL data={null} visible={false} />,
-    logPhrase: '推計震度分布図を描けなかった',
   },
 ]
 

@@ -114,6 +114,22 @@ export const LAYER_WITH_AS_CONST: Sample = {
 }
 
 /**
+ * id を公開用の `const` から**別名で受けて**使うレイヤー（`gl/dayNightLayer.ts` と同じ形）。
+ *
+ * id を外へ出す必要があるファイルは `export const 〜_LAYER_ID = '...'` を置き、ファイル内では
+ * 短い名前を作る。文字列リテラルしか見ない作りでは**この正しい書き方で検査が落ちる**ので、
+ * 同じファイルの中の別名は辿る（二重管理へ追い込まないため）。
+ */
+export const LAYER_WITH_ALIASED_ID: Sample = {
+  path: 'src/fake/AliasedIdLayer.ts',
+  text: [
+    "export const ALIASED_LAYER_ID = 'aliased-id-layer'",
+    'const LYR = ALIASED_LAYER_ID',
+    "export const layer = { id: LYR, type: 'custom' as const }",
+  ].join('\n'),
+}
+
+/**
  * どの検査にも引っかかってはいけないファイル。
  *
  * **ブロックコメントの継続行に `*` を置かない書き方**（このリポジトリで主流）で、
@@ -143,11 +159,13 @@ export const ALL: Sample[] = [
   CALLER_OF_ARROW,
   LAYER_WITH_AS_CONST,
   LAYER_WITH_OUTER_CONST_ID,
+  LAYER_WITH_ALIASED_ID,
   RED_HERRING,
 ]
 
 /** 実装として数えてほしい id（`ALL` を走査したときの期待値）。 */
 export const EXPECTED_IDS = [
+  'aliased-id-layer',
   'as-const-layer',
   'caller-a',
   'caller-b',

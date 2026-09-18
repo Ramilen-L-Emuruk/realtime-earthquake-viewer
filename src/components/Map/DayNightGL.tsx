@@ -9,7 +9,7 @@ import {
 } from './gl/dayNightLayer'
 import { subsolarPoint } from '../../utils/solarPosition'
 import { serverNow } from '../../utils/clock'
-import { clearRenderFailure, reportRenderFailure } from '../../utils/renderHealth'
+import { clearRenderFailure, clearRenderFailuresFor, reportRenderFailure } from '../../utils/renderHealth'
 import { log } from '../../utils/logger'
 
 // 夜の側を地図に重ねる。面の中身（濃さの計算・ディザ）は gl/dayNightLayer.ts が持ち、ここは
@@ -75,8 +75,12 @@ interface Props {
  *
  * **描画側（`render()` の中）とは別の鍵にする。** 同じ鍵だと、報告する主体が 2 つに増えるのに
  * 取り下げは互いの内部状態を見て決めるため、片方の報告がもう片方の取り下げで消えたり、
- * 逆に永久に残ったりする。`utils/renderHealth.ts` の取り下げは `<鍵>:` に前方一致するので、
- * レイヤー側の `clearRenderFailure(DAY_NIGHT_LAYER_ID, 'draw')` はこちらも一緒に消す。
+ * 逆に永久に残ったりする。
+ *
+ * **鍵を分けたぶん、取り下げはこちらの持ち物になる。** `clearRenderFailure` はその鍵 1 件だけを
+ * 消すので、レイヤー側の `clearRenderFailure(DAY_NIGHT_LAYER_ID, 'draw')` はこれを消さない。
+ * 載せられた時点と外す時点の 2 つで自分で消す（外すときは `clearRenderFailuresFor`。
+ * `gl/guardRender.ts` が `<ID>:uncaught` で持つ記録も、そこでしか消せない）。
  */
 export const MOUNT_HEALTH_ID = `${DAY_NIGHT_LAYER_ID}:mount`
 
@@ -100,7 +104,7 @@ export function DayNightGL({ visible, opacity }: Props) {
       reportRenderFailure(MOUNT_HEALTH_ID, DAY_NIGHT_LAYER_LABEL, 'draw')
       // **取り下げる主体をここに置く。** レイヤーが無いので `render()` は一度も呼ばれず、
       // 描画側の取り下げには永久に届かない。返さないと、次に作れたときも印だけが残り続ける。
-      return () => clearRenderFailure(MOUNT_HEALTH_ID, 'draw')
+      return () => clearRenderFailuresFor(DAY_NIGHT_LAYER_ID)
     }
     created.setVisible(visible)
     layerRef.current = created
@@ -119,8 +123,10 @@ export function DayNightGL({ visible, opacity }: Props) {
 
     // **WebGL の文脈が失われて復旧したとき、MapLibre はカスタムレイヤーを戻さない。**
     // 載せ直さなければ `render()` が二度と呼ばれず、夜の側だけが無音で消える（旧実装は
-    // style spec のレイヤーだったので MapLibre 側の復旧に乗っていた）。既存のカスタム
-    // レイヤー 4 枚と同じ手当て —— スタイルの読み込みを待ってから載せ直す。
+    // style spec のレイヤーだったので MapLibre 側の復旧に乗っていた）。他のカスタムレイヤーと
+    // 同じ手当て —— スタイルの読み込みを待ってから載せ直す（一覧は
+    // docs/spec/map-rendering-spec.md §12）。**同じレイヤーオブジェクトを渡し直すだけでよい** ——
+    // 表示の可否と濃さはこのオブジェクトが抱えたままで、GL の資源は `onAdd` が作り直す。
     const onRestored = () => {
       log.warn('[day-night] WebGL の文脈が復旧したのでレイヤーを載せ直します')
       if (map.isStyleLoaded()) add()
@@ -132,7 +138,10 @@ export function DayNightGL({ visible, opacity }: Props) {
       map.off('webglcontextrestored', onRestored)
       layerRef.current = null
       if (map.getLayer(created.layer.id)) map.removeLayer(created.layer.id)
-      clearRenderFailure(MOUNT_HEALTH_ID, 'draw')
+      // **画面から外すのでまとめて消す。** マウントの失敗（`<ID>:mount`）とレイヤー自身の申告の
+      // ほかに、`gl/guardRender.ts` が受け止めた例外が `<ID>:uncaught` で残っていることがある。
+      // `render()` はもう呼ばれないので、それを消せるのはここだけ（`utils/renderHealth.ts`）。
+      clearRenderFailuresFor(DAY_NIGHT_LAYER_ID)
     }
     // visible と opacity は初期値としてだけ使う。以降の変更は下の useEffect が担う。
     // eslint-disable-next-line react-hooks/exhaustive-deps

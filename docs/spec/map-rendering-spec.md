@@ -54,9 +54,9 @@ const mapMode = mapTab === 'tsunami' ? 'tsunami'
 （`gl/depthPointLayer.ts` の `DepthPointLayer` がその形。3 枚がこれを共有する）。
 
 **カスタムレイヤーの注意**: MapLibre の `type: 'custom'` レイヤーは `getStyle().layers` に現れない。
-順序確認は `map.style._order` を見る。現状は 6 つ——`kyoshin-subthreshold`・`pswave`・
-`quake-estimated-intensity` と、`gl/depthPointLayer.ts` を共有する `hypocenter-depth`・
-`hypocenter-catalog`・`eew-epicenters`。
+順序確認は `map.style._order` を見る。現状は 7 つ——`kyoshin-subthreshold`・`pswave`・
+`quake-estimated-intensity`・`day-night` と、`gl/depthPointLayer.ts` を共有する
+`hypocenter-depth`・`hypocenter-catalog`・`eew-epicenters`。
 
 ## 4. ベースマップ
 
@@ -780,7 +780,7 @@ mode を全 Fit*GL に配って優先度で調停する大規模リファクタ�
 境目は実測で **zoom 11 と 12 のあいだ**（`shaderData.variantName` が `globe` → `mercator`）。
 
 投影が変わると、カスタムレイヤー（`gl/depthPointLayer.ts` / `gl/subThresholdLayer.ts` /
-`PsWaveGL.tsx` / `gl/estimatedIntensityLayer.ts`）に渡される座標変換の仕組みも丸ごと
+`PsWaveGL.tsx` / `gl/estimatedIntensityLayer.ts` / `gl/dayNightLayer.ts`）に渡される座標変換の仕組みも丸ごと
 入れ替わる。**`u_projection_matrix` に行列を
 入れるだけの実装では、どちらか片方でしか正しく描けない。** MapLibre はこれを見越して、
 `render()` の引数で**投影ごとの GLSL 断片**（`shaderData.vertexShaderPrelude`）を配る。これを
@@ -802,8 +802,8 @@ mode を全 Fit*GL に配って優先度で調停する大規模リファクタ�
   にも `utils/renderHealth.ts` の自己申告（プログラムが得られないときだけ報告する）にも掛からず、
   **そのレイヤーだけが無音で描かれなくなる**。
   **`onAdd` で捨てているのは `gl/dayNightLayer.ts` だけで、`PsWaveGL.tsx` /
-  `gl/subThresholdLayer.ts` / `gl/depthPointLayer.ts` の 3 枚は載せ直しだけで未対応**（`onRemove`
-  でしか捨てていない。文脈喪失では `onRemove` が呼ばれない）
+  `gl/subThresholdLayer.ts` / `gl/depthPointLayer.ts` / `gl/estimatedIntensityLayer.ts` の 4 枚は
+  載せ直しだけで未対応**（`onRemove` でしか捨てていない。文脈喪失では `onRemove` が呼ばれない）
 - **`projectTileFor3D` の elevation は投影で単位が違う。** 球ではメートル（負で地球中心へ向かう）、
   平面では Mercator 座標系の z（緯度で縮む）。バッファはメートルで持ち、シェーダーが換算する
   （`mercatorElevationZ`）
@@ -1402,6 +1402,11 @@ restore 時に手動で `addOrderedLayer` 経由で再追加する:
   作り直し、現在の props（分布と表示の可否）を再適用する。**載せ直せたら前回の失敗の記録を
   取り下げる**——新しいレイヤーは「報告済み」の覚えを持たないので、取り下げる機会がここ以外に
   無い（§16「描けているかを画面に出す」）。
+- `day-night`（`DayNightGL.tsx`）: `pswave` と同じく**同一のレイヤーオブジェクトを再追加**する。
+  `onAdd` が新しい gl からバッファを作り直し、**そのとき投影ごとのプログラムのキャッシュも捨てる**
+  （捨てないと無効なプログラムを返し続ける。理由と実測は §18「WebGL の文脈が復旧したら
+  載せ直す」）。表示の可否と濃さはレイヤーオブジェクトのクロージャに残るので、`kyoshin-subthreshold`
+  のような props の再適用は要らない。
 - `hypocenter-depth`（`HypocenterDepthGL.tsx`）・`hypocenter-catalog`（`HypocenterCatalogGL.tsx`）・
   `eew-epicenters`（`EewEpicentersGL.tsx`）: `gl/depthPointLayer.ts` を共有する 3 つ。`pswave` と
   同じく同一のレイヤーオブジェクトを再追加し、`onAdd` が新しい gl から作り直す。載せ直せたら
@@ -1458,6 +1463,8 @@ MapLibre v6 の `_contextRestored` は `setStyle(..., {diff:false})` を呼ん�
   - `geojson.ts` — GeoJSON 生成ヘルパー
   - `basemapFeatures.ts` — ベースマップ共有ソース（`basemap-shapes`）の feature 組み立てと filter（§9）
   - `overlayLineSource.ts` — 線の共有ソース（`overlay-lines`）の調停（§9）
+  - `overlayLineStyle.ts` — 活断層・プレート境界の線の色。描画と凡例で共有する（§20）
+  - `heatmapRamp.ts` — 地震活動ヒートマップの色の段。描画と凡例で共有する（§14・§20）
   - `skipNoopCameraUpdate.ts` — カメラ更新の空振り省略と、その前提が崩れていないかの自己確認（§9）
   - `mapStyleGone.ts` — その地図がスタイルを失っているかの判定（後始末の記録の選り分け・§9・§17）
   - `projectionProgram.ts` — 投影ごとの WebGL プログラムの用意と使い回し（§6「地図の投影」）
@@ -1468,9 +1475,11 @@ MapLibre v6 の `_contextRestored` は `setStyle(..., {diff:false})` を呼ん�
   - `estimatedIntensityLayer.ts` — 推計震度分布図のカスタムレイヤー（§19）
   - `estimatedIntensityRaster.ts` — 同じ分布を GPU へ渡す形（値テクスチャ・凡例・メッシュ）へ落とす純粋関数（§19）
   - `psWaveRing.ts` — EEW 予報円の頂点計算（[`eew-spec.md`](eew-spec.md) §6）
+  - `psWaveStyle.ts` — 予報円の色。描画（シェーダー）と凡例（CSS）で共有する（§20）
   - `eewFirstSeen.ts` — EEW を初めて見た時刻の台帳（第一報のフォーカスと入室の区別。§6）
   - `kyoshinDetectedFeatures.ts` — 揺れ検知点マーカーの feature 組み立て
   - `tsunamiObsBar.ts` — 津波観測バーの寸法計算と共有カードへの描き直し（地図アイコン倍率の適用範囲を含む）
+  - `tsunamiObsBarStyle.ts` — 観測棒の段と色。描画と凡例で共有する（§20）
   - `tsunamiArrivalMarker.ts` — 津波の到達確認マーカーの寸法計算と共有カードへの描き直し
   - `tsunamiMissingMarker.ts` — 津波の欠測マーカーの寸法計算と共有カードへの描き直し
   - `captureMap.ts` — 地図キャンバスの写し取り（[`share-card-spec.md`](share-card-spec.md)）
@@ -2178,9 +2187,10 @@ canvas は視野を少し広げた範囲を覆い、短辺を 512px 相当にと
 **「異常で出せない」に見えて異常でないものが 1 つある。** 地図がスタイルを失った後
 （`Map.remove()` された後、または WebGL コンテキストロスト中）は canvas・source・layer が
 そろって引けないため上の 2 つ目に当たるが、**消すものも残っていない**ので記録しない
-（判定は `gl/mapStyleGone.ts`）。**この判定は震度の面と推計震度分布図の両方に置くこと**——
-同じ作りの対なので、片方だけに置くと残った側から同じ文言の警告が出る
-（`styleGoneSurfaces.test.tsx` が 2 つまとめて固定する）。
+（判定は `gl/mapStyleGone.ts`）。**canvas source で面を敷くものを新しく足したら、同じ判定を
+置くこと**——作りが同じなら同じ経路で同じ文言の警告が出る（`styleGoneSurfaces.test.tsx` が
+固定する）。気象庁の推計震度分布図はかつてこの対だったが、WebGL のカスタムレイヤーへ移って
+canvas source も `moveend` の購読も持たなくなったため、いまは対象ではない（§19）。
 
 ## 18. 夜の側（`DayNightGL`）
 
@@ -2351,17 +2361,23 @@ ErrorBoundary まで飛ばさない——夜の側は装飾で、包まないと
 描く側（`render()`）で、取り下げはそれぞれ「自分が報告したか」という内部状態で決める。同じ鍵に
 すると、載せられなかった報告を取り下げられる者がいなくなる（`render()` が呼ばれないため）か、
 逆に描画側の取り下げが載せる側の報告を消す。鍵を分ければ互いに干渉しない
-（`guardRender` が `${ID}:uncaught` で 3 つ目の鍵を持つのと同じ理由）。**取り下げの前方一致は
-効かせたまま**にしてあるので、レイヤー側が「描けるようになった」と取り下げるときは載せる側の
-報告も一緒に消える——載って描けているなら「載せられなかった」は嘘だから、消える側が正しい。
+（`guardRender` が `${ID}:uncaught` で 3 つ目の鍵を持つのと同じ理由）。
+
+**取り下げは報告した側が行う。** `clearRenderFailure` はその鍵 1 件だけを消すので、レイヤー側が
+「描けるようになった」と取り下げても載せる側の報告は残る。載せる側は自分で消す ——
+`addOrderedLayer` が通った時点（載ったのだから「載せられなかった」は嘘になる）と、レイヤーを
+外す時点の 2 つ。**外すときは `clearRenderFailuresFor` を使う**——`${ID}:mount` も
+`${ID}:uncaught` もまとめて消せるのはこちらだけで、`render()` が呼ばれなくなった後に
+取り下げる機会は他に無い（§16「描けているかを画面に出す」の取り下げ 2 系統）。
 
 ### WebGL の文脈が復旧したら載せ直す
 
 **MapLibre はカスタムレイヤーを復元しない。** 文脈が失われて復旧すると、組み込みのレイヤーは
 MapLibre が作り直すが、カスタムレイヤーは地図から外れたまま戻らない。載せ直さなければ
 `render()` は二度と呼ばれず、**夜の側だけが無音で消える**（旧実装は style spec のレイヤーだったので
-MapLibre 側の復旧に乗っていた）。既存のカスタムレイヤー 4 枚と同じ手当てを置く ——
-`webglcontextrestored` で、スタイルの読み込みを待ってから載せ直す。
+MapLibre 側の復旧に乗っていた）。他のカスタムレイヤーと同じ手当てを置く ——
+`webglcontextrestored` で、スタイルの読み込みを待ってから載せ直す（載せ直す全レイヤーの
+一覧は §12「コンテキストロスト」）。
 
 **プログラムも作り直す。** 文脈が変わると前のプログラムは無効になるが、投影ごとのキャッシュは
 「作った」ことだけを覚えているのでそのまま返してしまう（無効なプログラムへの `useProgram` は

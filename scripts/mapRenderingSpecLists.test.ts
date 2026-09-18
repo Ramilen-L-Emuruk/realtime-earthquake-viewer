@@ -132,15 +132,31 @@ function propertyName(p: ts.ObjectLiteralElementLike): string | null {
   return null
 }
 
-/** `const <name> = '<値>'` の値を返す（ファイル内のどこにあってもよい）。 */
-function constString(file: SourceFile, name: string): string | null {
+/**
+ * `const <name> = '<値>'` の値を返す（ファイル内のどこにあってもよい）。
+ *
+ * **別の `const` を経由していても辿る。** id を外へ公開する必要があるファイルは
+ * `export const DAY_NIGHT_LAYER_ID = 'day-night'` を置いたうえで `const LYR = DAY_NIGHT_LAYER_ID`
+ * と短い名前を作る（`gl/dayNightLayer.ts`）。リテラルしか見ない作りでは、この**正しい書き方で
+ * 検査が落ちる**——しかも症状は「レイヤーの id を引けない」で、一覧の当否とは無関係に見える。
+ * 二重管理（同じ文字列を 2 箇所に書く）へ追い込まないこと。
+ */
+function constString(file: SourceFile, name: string, seen: Set<string> = new Set()): string | null {
+  // `const a = b; const b = a` のような循環で止まらなくなるのを防ぐ。
+  if (seen.has(name)) return null
+  seen.add(name)
   let found: string | null = null
+  let alias: string | null = null
   walk(file.ast, n => {
-    if (found !== null) return
+    if (found !== null || alias !== null) return
     if (!ts.isVariableDeclaration(n) || !ts.isIdentifier(n.name) || n.name.text !== name) return
-    if (n.initializer && ts.isStringLiteral(n.initializer)) found = n.initializer.text
+    if (!n.initializer) return
+    const e = unwrapExpression(n.initializer)
+    if (ts.isStringLiteral(e)) found = e.text
+    else if (ts.isIdentifier(e)) alias = e.text
   })
-  return found
+  if (found !== null) return found
+  return alias === null ? null : constString(file, alias, seen)
 }
 
 /** `import ... from '<パス>/<moduleBase>'` で読み込んでいるか。 */
@@ -473,6 +489,12 @@ describe('実装側の走査（構文木）', () => {
     expect(ids).toContain('caller-a')
     expect(ids).toContain('caller-d')
     expect(ids).toContain('outer-const-layer')
+  })
+
+  it('id を別の `const` から受け取っていても辿る', () => {
+    // id を外へ公開するファイルは `export const 〜_LAYER_ID` を置いて別名で使う（`gl/dayNightLayer.ts`）。
+    // リテラルしか見ない作りだと**正しい書き方で落ちる**——実際にそれで検査が落ちた。
+    expect(customLayerIdsFromImplementation(files)).toContain('aliased-id-layer')
   })
 
   it('値を変えない包み（括弧・`as`）を剥がして読む', () => {
