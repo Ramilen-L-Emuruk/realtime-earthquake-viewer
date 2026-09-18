@@ -1721,6 +1721,10 @@ export function createTestTsunamiHighTide(base: JMATsunami, prev: JMATsunami): J
     time: now,
     issue: { ...prev.issue, time: now },
     infoName: '各地の満潮時刻・津波到達予想時刻に関する情報',
+    // **見出し文もこの種別のものへ差し替える。** 読み上げの名乗りはここから採るので
+    // （→ `tsunamiTideToSegments`）、前報のまま残すと「津波警報を津波注意報に切り替えました」と
+    // 名乗ってから満潮時刻の話を始める形になる。文面は 2024-01-01 能登半島地震の実電文。
+    headline: '各地の満潮時刻と津波到達予想時刻をお知らせします。',
     carriesForecastStations: true,
     areas: prev.areas.map(a => ({ ...a, stations: stationsByKey.get(a.code ?? a.name) })),
     // 固定付加文は満潮の注記だけ。避難の呼びかけ（VTSE41 の主題）は前報のものが残る
@@ -1731,6 +1735,108 @@ export function createTestTsunamiHighTide(base: JMATsunami, prev: JMATsunami): J
     estimations: undefined,
     bodyText: undefined,
     freeText: undefined,
+  }
+}
+
+/**
+ * 「変化の小さい続報」テストの、電文と電文のあいだ（ミリ秒）。
+ *
+ * **読み上げが終わる程度には空ける。** これらの報は最下位の層（`SPEECH_PRIORITY.commentary`）で
+ * 読むので、前の発話が続いていると待たされ、待ちきれなければ黙る —— 間隔が短いと、
+ * 確かめたい文がどれも鳴らないまま終わる。解除（`TEST_AUTO_DISMISS_MS` = 90 秒）までに
+ * 7 通が収まる値でもある（7 × 10 秒 = 70 秒）。
+ */
+export const TEST_TSUNAMI_QUIET_STEP_MS = 10000
+
+/** 観測情報の報に共通の差し替え（種別の名乗りと見出し文）。 */
+function asObservationReport(base: JMATsunami, suffix: string): JMATsunami {
+  const nowDate = serverDate()
+  const now = nowDate.toISOString()
+  // 見出し文の日時は**全角**（気象庁が書いた文をそのまま出すため。読み上げ側は
+  // `normalizeDateTimeForSpeech` で半角へ直してから読む）。
+  const fullWidth = (s: string) => s.replace(/\d/g, c => String.fromCharCode(c.charCodeAt(0) + 0xFEE0))
+  const pad2 = (n: number) => String(n).padStart(2, '0')
+  const target = new Date(nowDate.getTime() - 2 * 60000)
+  return {
+    ...base,
+    id: `${base.id}-${suffix}`,
+    time: now,
+    issue: { ...base.issue, time: now },
+    infoName: '津波観測に関する情報',
+    // 実電文の見出し文（時刻は観測状況を確定した時刻＝発表の数分前）。
+    headline: `${fullWidth(String(target.getDate()))}日${fullWidth(pad2(target.getHours()))}時${fullWidth(pad2(target.getMinutes()))}分現在の、津波の観測値をお知らせします。`,
+  }
+}
+
+/**
+ * 観測情報の報（発表報の観測値をそのまま載せ直したもの）。
+ *
+ * **この 1 通を先に流すことに意味がある。** 等級の発表では観測点の実測値を読まない規約なので
+ * （→ docs/spec/audio-tts-spec.md §4）、発表報だけでは波高が既読にならない。既読にしておかないと
+ * 次の「最大波の時刻だけ更新」の報で波高の文のほうが読まれ、確かめたい文が出ない。
+ */
+export function createTestTsunamiObservationReport(base: JMATsunami): JMATsunami {
+  return asObservationReport(base, 'obs')
+}
+
+/**
+ * 波高は据え置きのまま、最大波の観測時刻だけが動いた観測情報の報。
+ *
+ * 2024 年能登半島地震の 01/02 00:51 と同じ形 —— 舞鶴 0.4m・玄海町仮屋 0.1m の値はそのままに、
+ * 気象庁が `MaxHeight/Revise` へ「更新」と書いて最大波の時刻だけを進めていた。かつては
+ * 読み上げ文が空になり、通知音だけが鳴っていた（→ `tsunamiMaxHeightTimeToSegments`）。
+ *
+ * **沿岸の観測点だけに立てる。** 沖合で「観測中」のまま `Revise` が「更新」になるのは
+ * 「津波警報相当を観測」という別の合図で（→ `isWarningLevelWhileObserving`）、そちらの文が出る。
+ */
+export function createTestTsunamiMaxHeightTimeUpdate(prev: JMATsunami): JMATsunami {
+  const report = asObservationReport(prev, 'maxheighttime')
+  const advanced = new Date(new Date(report.time).getTime() - 60000).toISOString()
+  return {
+    ...report,
+    observations: (prev.observations ?? []).map(o =>
+      o.height && !o.offshore && !o.condition?.maxHeightMissing
+        ? { ...o, maxHeightRevise: '更新', maxHeightDateTime: advanced }
+        : o),
+  }
+}
+
+/**
+ * 何も動いていない観測情報の報（同じ値の再送）。
+ *
+ * **実配信の標本を持たない形**（→ `tsunamiObservationNoChangeSegments`）。構造としては
+ * 起こりうるので、実機で文を確かめられるようにここへ置く。
+ */
+export function createTestTsunamiObservationNoChange(prev: JMATsunami): JMATsunami {
+  return asObservationReport(prev, 'obs-nochange')
+}
+
+/**
+ * 各地の満潮時刻・津波到達予想時刻に関する情報の続報。
+ *
+ * 実配信では 6 通のうち 2 通が「満潮時刻は 1 つも動かず到達状況だけ変わった」報だった
+ * （2024 年能登半島地震の 01/01 20:30・01/02 02:31）。**3 通りを撃ち分けられないと、
+ * 読み上げの言い分け（→ `tideReportChange`）を実機で確かめられない。**
+ *
+ * @param kind `tide` 満潮時刻を進める／`arrival` 到達状況だけ変える／`none` 何も変えない
+ */
+export function createTestTsunamiHighTideFollowUp(
+  prev: JMATsunami,
+  kind: 'tide' | 'arrival' | 'none',
+): JMATsunami {
+  const now = new Date(serverNow()).toISOString()
+  const base: JMATsunami = { ...prev, id: `${prev.id}-${kind}`, time: now, issue: { ...prev.issue, time: now } }
+  if (kind === 'none') return base
+  return {
+    ...base,
+    areas: prev.areas.map(a => ({
+      ...a,
+      stations: a.stations?.map(s => kind === 'tide'
+        // 次の満潮へ進む（実電文でも半日ほど先へ飛ぶ）。
+        ? { ...s, highTideDateTime: s.highTideDateTime ? new Date(new Date(s.highTideDateTime).getTime() + 12 * 3600_000).toISOString() : undefined }
+        // 到達状況だけが確定へ変わる（「津波到達中と推測」→「第１波の到達を確認」）。
+        : { ...s, arrivalCondition: '第１波の到達を確認' }),
+    })),
   }
 }
 
