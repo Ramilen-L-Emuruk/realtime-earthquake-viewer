@@ -32,13 +32,23 @@ import * as fixture from './mapRenderingSpecListsScanner.fixture'
 // **§7「mode 別レイヤー一覧」の mode との対応は検査していない。** あれは `JapanMapGL.tsx` の
 // JSX の条件分岐（`mode === 'quake' && ...`）と、無条件にマウントしてコンポーネント内部で
 // 出し入れするものが混ざっており、どの mode でどれが出るかは構文木からも決まらない（値の評価が要る）。
-// 代わりに「挙げたコンポーネントが実在するか」だけを見る（リネームの取り残しは捕まる）。
-// 逆向き（実在するのに §7 に無い）も見ていない —— 載せないと決めたものが実際にあるため
-// （`CameraFollowsGL` はレイヤーではない・`JapanMapGL` は配線の中枢）。
+// 見るのは名前だけ —— 「挙げたコンポーネントが実在するか」（リネームの取り残し）と、
+// **逆向きに「実在するのに 1 つのモードにも挙げていないか」**（足したものの書き忘れ）。
+//
+// 逆向きは「載せないと決めたものが実際にある」ことを理由に見送っていたが、その顔ぶれは
+// 2 つしかないので `NOT_A_LAYER` へ書き出した。**実際に `catalog` モードの項がまるごと無く、
+// `HypocenterCatalogGL` がどこにも載っていない状態が残っていた**（2026-09-18 に揃えた）。
 
 const SPEC = 'docs/spec/map-rendering-spec.md'
 const MAP_DIR = 'src/components/Map'
 const GL_DIR = `${MAP_DIR}/gl`
+
+// §7 に挙げない地図コンポーネント。**レイヤーではないものだけ**を入れる。
+// 「まだ書いていない」ものを避難させる場所ではない。
+const NOT_A_LAYER = [
+  'JapanMapGL', // 地図の中枢。レイヤーを配る側
+  'CameraFollowsGL', // カメラ追従。描画物を持たない
+]
 
 // ---- 仕様書側の読み取り ----
 
@@ -453,10 +463,35 @@ describe('map-rendering-spec.md の実装列挙', () => {
     const absent = listed.filter(name => !existsSync(join(MAP_DIR, `${name}.tsx`))).sort()
     expect(absent, '§7 が実在しないコンポーネントを挙げている（リネームの取り残し）').toEqual([])
   })
+
+  it('§7 が実在するレイヤーを 1 つも漏らしていない', async () => {
+    const spec = await readFile(SPEC, 'utf8')
+    // **拾うのは mode の小見出しより後だけ。** 節の頭のリード文にも共通レイヤーの名前が並ぶので、
+    // そこまで数えると「リード文に書いただけで、どのモードにも挙げていない」形を通してしまう。
+    const modes = section(spec, /^##\s*7\./).split(/^### /m).slice(1).join('\n')
+    const listed = new Set(backticked(modes, /^[A-Z][A-Za-z0-9]*GL$/))
+    expect(listed.size, '§7 の mode の節がコンポーネントを 1 件も挙げていない').toBeGreaterThan(0)
+
+    const actual = readdirSync(MAP_DIR)
+      .filter(name => /^[A-Z][A-Za-z0-9]*GL\.tsx$/.test(name))
+      .map(name => name.replace(/\.tsx$/, ''))
+    // 1 件も拾えていなければ、上の絞り込みが実態と合っていない。
+    expect(actual.length, `${MAP_DIR} から地図コンポーネントを 1 つも拾えていない`).toBeGreaterThan(0)
+
+    const unlisted = actual.filter(name => !listed.has(name) && !NOT_A_LAYER.includes(name)).sort()
+    expect(unlisted, '実在するのに §7 のどのモードにも挙がっていない').toEqual([])
+  })
+
+  // 除外リストがリネームで空振りすると、上の検査が黙って緩む。
+  it('§7 から外したもの（レイヤーではない）が実在する', () => {
+    const gone = NOT_A_LAYER.filter(name => !existsSync(join(MAP_DIR, `${name}.tsx`))).sort()
+    expect(gone, 'NOT_A_LAYER に実在しない名前がある').toEqual([])
+  })
 })
 
-// 上の 5 件は実リポジトリを突き合わせるだけなので、**走査そのものが壊れても
-// `src` に該当する書き方が現れるまで気づけない。** 標本で振る舞いを固定する
+// 上の検査はどれも実リポジトリを突き合わせるだけなので、**走査そのものが壊れても
+// `src` に該当する書き方が現れるまで気づけない。** 構文木で実装を読む 5 件（§3・§6・§12・§13 と
+// §7 の実在）については標本で振る舞いを固定する
 // （標本は `mapRenderingSpecListsScanner.fixture.ts`。走査の対象から外れる `scripts/` 配下）。
 //
 // 固定するのは「コメントに書いた使用例を実装として数えないこと」。正規表現で走査していた頃は

@@ -7,11 +7,12 @@
 ## 1. 概要
 
 MapLibre GL JS v6（WebGL 描画）で地図を表示する。全レイヤーが WebGL / DOM Marker のいずれかで実装され、
-ラスタタイル画像は最小限（背景の海底地形のみ、オプショナル）。地図モードは 3 種類:
+ラスタタイル画像は最小限（背景の海底地形のみ、オプショナル）。地図モードは 4 種類:
 
 - `quake` — 地震情報タブで表示（観測点ドット・区域塗り・震源）
 - `tsunami` — 津波情報タブで表示（海岸線・観測バー）
 - `kyoshin` — リアルタイム震度タブで表示（強震モニタドット・EEW 予想塗り・予報円）
+- `catalog` — 震源カタログタブで表示（長期震源カタログの点群）
 
 ## 2. モード決定
 
@@ -20,6 +21,7 @@ MapLibre GL JS v6（WebGL 描画）で地図を表示する。全レイヤーが
 ```ts
 const mapMode = mapTab === 'tsunami' ? 'tsunami'
               : mapTab === 'realtime' ? 'kyoshin'
+              : mapTab === 'catalog' ? 'catalog'
               : 'quake'
 ```
 
@@ -984,6 +986,21 @@ mode を全 Fit*GL に配って優先度で調停する大規模リファクタ�
 
 ## 7. mode 別レイヤー一覧
 
+mode は 4 つ（`quake` / `tsunami` / `kyoshin` / `catalog`。§2）。**全モードに出るもの
+（`BaseMapGL`・`DayNightGL`・`LabelsGL`・`TsunamiLinesGL`・`PsWaveGL`・`EewEpicentersGL`）も
+各モードへ重ねて挙げる** —— ここは「そのモードの画面に何が載るか」を読む一覧なので、
+共通のものを別扱いにすると 1 つのモードの全体像が読めなくなる。
+
+**どのモードに出るかは機械検査されない。** 出し分けの書き方が 2 通りあるため
+（多くは `visible` prop ―― モードを跨ぐたびに GeoJSON ソースを付け外しすると、非同期の
+タイル化を待つあいだ数フレーム空白になる。震源の × 印と津波の DOM マーカー系は JSX の条件分岐）、
+しかもどちらも props と派生フラグの組み合わせで決まるので、対応を静的に導けない。
+**この表を直すときは実装（`JapanMapGL.tsx`）を読むこと。**
+`scripts/mapRenderingSpecLists.test.ts` がこの表について見るのは名前だけ —— 「挙げたものが
+実在するか」と「実在するのに 1 つのモードにも挙げていないか」。**レイヤーではないものは
+そのファイルの `NOT_A_LAYER` へ書き出してある**（`JapanMapGL` と `CameraFollowsGL` の 2 つ。
+「まだ書いていない」ものをそこへ逃がさないこと）。
+
 ### quake モード
 - `BaseMapGL`（ベース）
 - `DayNightGL`（夜の側・任意。全モード共通。§18）
@@ -991,12 +1008,17 @@ mode を全 Fit*GL に配って優先度で調停する大規模リファクタ�
 - `QuakeRegionFillGL`（区域塗り＋区域中心震度バッジ）
 - `QuakeIntensitySurfaceGL`（震度の面。観測点表示のときだけ敷く＝区域塗りとは排他。
   出す条件は [`quake-spec.md`](quake-spec.md) §9、描き方は §17）
-- `QuakeEstimatedIntensityGL`（気象庁の推計震度分布図。震度分布モードのときだけ敷く＝上の
-  自前の面とは排他。出す条件は [`quake-spec.md`](quake-spec.md) §9、描き方は §19）
+- `QuakeEstimatedIntensityGL`（気象庁の推計震度分布図。**届いていれば自前の面に代えて出す**
+  ＝上の自前の面とは排他で、震度分布モードの有無によらない。出す条件と、そのモードが何を
+  引っ込めるかは [`quake-spec.md`](quake-spec.md) §9、描き方は §19）
 - `QuakeIntensityPointsGL`（観測点ドット）
+- `QuakeUnreceivedPointsGL`（震度が届いていない観測点の印。観測点ドットとは出す条件が 1 つ違い、
+  未入電トグルを開いている間は寄り具合に関わらず出す → [`quake-spec.md`](quake-spec.md) §4）
 - `LpgmPointsGL` / `LpgmRegionFillGL`（長周期・DMDSS 版のみ）
 - `HypocenterDepthGL`（震源の × 印・震央の印・柄。深さを持つ点として地下へ描く。§16）
-- `EewEpicentersGL`（EEW 震源×印・全モード表示だが kyoshin 以外は半透明）
+- `TsunamiLinesGL`（津波海岸線・発報中は全モード）
+- `PsWaveGL`（P/S 波予報円・半透明）
+- `EewEpicentersGL`（EEW 震源×印・半透明）
 - `LabelsGL`（地名ラベル）
 - `ActiveFaultsGL` / `PlateBoundariesGL`（任意）
 
@@ -1006,12 +1028,16 @@ mode を全 Fit*GL に配って優先度で調停する大規模リファクタ�
 - `TsunamiLinesGL`（海岸線・等級色・点滅）
 - `TsunamiObsBarsGL`（観測点バー）
 - `TsunamiArrivalMarkersGL`（到達確認マーカー・波高が出ていない観測点）
-- `EewEpicentersGL`（EEW 震源×印）
+- `TsunamiMissingMarkersGL`（欠測マーカー・観測データが得られていない観測点。到達確認とは意味が
+  違うので別の印 → [`tsunami-spec.md`](tsunami-spec.md) §8「欠測マーカー」）
+- `PsWaveGL`（P/S 波予報円・半透明）
+- `EewEpicentersGL`（EEW 震源×印・半透明）
 - `LabelsGL`
 
 ### kyoshin モード
 - `BaseMapGL`
 - `DayNightGL`（夜の側・任意。§18）
+- `QuakeHeatmapGL`（ヒートマップ・任意。quake と共通）
 - `KyoshinSubThresholdGL`（震度 0 以下ドット・カスタムレイヤー）
 - `KyoshinPointsGL`（震度 1+ 観測点）
 - `KyoshinDetectedPointsGL`（揺れ検知点ハイライト。描く点集合と下限はリアルタイムタブの検知カードと揃える。
@@ -1021,9 +1047,21 @@ mode を全 Fit*GL に配って優先度で調停する大規模リファクタ�
   「〜以上」の報でも色は下限の階級色。語はポップアップとバッジの文言で補う。
   S 波到達の行は震源が確定している EEW のときだけ出る → [`eew-spec.md`](eew-spec.md) §4・§5）
 - `EewLpgmRegionFillGL`（EEW 予想長周期塗り・kyoshin 限定）
+- `TsunamiLinesGL`（津波海岸線・発報中は全モード）
 - `PsWaveGL`（P/S 波予報円・カスタムレイヤー・100ms 更新）
 - `EewEpicentersGL`（EEW 震源×印）
 - `ActiveFaultsGL` / `PlateBoundariesGL`（任意）
+- `LabelsGL`
+
+### catalog モード
+- `BaseMapGL`
+- `DayNightGL`（夜の側・任意。§18）
+- `TsunamiLinesGL`（津波海岸線・発報中は全モード）
+- `PsWaveGL`（P/S 波予報円・半透明）
+- `HypocenterCatalogGL`（長期震源カタログの点群・カスタムレイヤー。深さを持つ点として地下へ描く。
+  §16「長期震源カタログの点群」）
+- `EewEpicentersGL`（EEW 震源×印・半透明）
+- `ActiveFaultsGL` / `PlateBoundariesGL`（任意。このモードでも出す理由は §16「長期震源カタログの点群」）
 - `LabelsGL`
 
 ## 8. 毎秒更新レイヤー（強震モニタ 1Hz）
@@ -3090,3 +3128,14 @@ canvas source へ視野ぶんだけ焼いていた頃は、2 つの限界があ�
   透視の視差とは別の、跳びとして現れる**。球のときだけ混ぜ合わせを自前で書き、項ごとに正しい単位を
   渡す形へ変えた。震源の × と柄・緊急地震速報の震源・長期震源カタログの全点・クリック判定が対象で、
   深さ 0 の震央の印だけは単位に依らないため影響を受けていなかった（× が単独で動いて見えた理由）
+- 2026-09-18: §7 の mode 別レイヤー一覧を実装と 1 対 1 に揃えた。`catalog` モードの項がまるごと
+  無く（§1 の列挙も 3 種類・§2 のコード片も 3 分岐のままだった）、`HypocenterCatalogGL` は
+  どのモードにも載っていなかった。既存 3 モードにも `QuakeUnreceivedPointsGL`・
+  `TsunamiMissingMarkersGL`・`PsWaveGL`・`TsunamiLinesGL`・`QuakeHeatmapGL`（kyoshin 側）の
+  抜けがあった。**抜けとは別に**、`QuakeEstimatedIntensityGL` は一覧にはあったが出す条件の
+  記述が実装と違っていた（震度分布モードのときだけではなく、届いていればモードによらず出す）
+  ので、そちらも直した。あわせて `scripts/mapRenderingSpecLists.test.ts` へ**逆向きの検査**
+  （実在するのに 1 つのモードにも挙げていないもの）を足した。見送られていた
+  理由は「載せないと決めたものがある」ことだったが、その顔ぶれは 2 つしかないので
+  `NOT_A_LAYER` へ書き出した。**mode との対応は静的に導けないまま**（出し分けが `visible` prop と
+  JSX の条件分岐に分かれ、どちらも props と派生フラグで決まる）なので、表を直すときは実装を読む
