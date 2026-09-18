@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 // `data-sources-spec.md` §2「配信元が定める要件」は、配信元の一次資料から数え上げた要件を
@@ -59,32 +60,58 @@ describe('配信元が定める要件の件数', () => {
  */
 describe('ページを辿るループの上限', () => {
   /**
-   * 実装にある `*_MAX_PAGES` / `MAX_PAGES_*` の定数名を集める。
+   * 走査するファイルを列挙する（ディレクトリの列挙だけは同期のまま。中身を読まないので軽い）。
    *
    * **`src` 配下を再帰で走査する。** いまは全部 `src/services` 直下にあるが、そこだけを見る
    * 形では**別のディレクトリへ足したときに黙って通る** —— 「機械的に数え上げたつもりで対象を
    * 取りこぼす」形（CLAUDE.md「調査レビュー」が挙げている失敗）そのものになる。
    */
-  function pageLimitConstants(dir = 'src'): string[] {
-    const names = new Set<string>()
+  function listSourceFiles(dir: string, out: string[] = []): string[] {
     for (const e of readdirSync(dir, { withFileTypes: true })) {
       const p = join(dir, e.name)
       if (e.isDirectory()) {
-        for (const n of pageLimitConstants(p)) names.add(n)
+        listSourceFiles(p, out)
         continue
       }
       if (!e.name.endsWith('.ts') && !e.name.endsWith('.tsx')) continue
       if (e.name.endsWith('.test.ts') || e.name.endsWith('.test.tsx')) continue
-      const src = readFileSync(p, 'utf8')
+      out.push(p)
+    }
+    return out
+  }
+
+  /**
+   * 実装にある `*_MAX_PAGES` / `MAX_PAGES_*` の定数名を集める。
+   *
+   * **ファイルを 1 件ずつ順番に読まない。** 対象は 236 件・4.49MB（2026-09-18 時点）で、
+   * `readFileSync` で回すと待ちが件数だけ積み上がる。**並列実行のときだけ既定の 5 秒を超え、
+   * 単独で回すと通る**という形で落ちた（`npm test` 全件で時間切れ・単独実行では 4 件とも 2 秒）。
+   * `Promise.all` でまとめて投げれば待ちを重ねられる。
+   *
+   * 上限を延ばす手当て（`{ timeout: 15_000 }`）も、待ちをフックへ逃がす手当て（`beforeAll`）も
+   * 採らない。**`npm test` 全件のなかでこのテストは 504 / 164 / 92ms**（2026-09-18・3 回の実測）で
+   * **最も遅い回でも** 5 秒に対して 9 倍以上の余裕があるうえ、枠を緩めると**このテストに入り込んだ
+   * 性能劣化を見逃す網**になる（`vitest.config.ts` が既定の 5 秒を据え置いている理由と同じ）。
+   *
+   * **走査の速さを測り直すときは、方式ごとにプロセスを分けること。** 同じプロセスで同期と
+   * 非同期を交互に回すと後のラウンドの同期側が実際より遅く出る（同一プロセスでは 1209ms まで
+   * 伸びたが、別プロセスで測ると同期 132〜212ms・非同期 43〜53ms）。**判断に使うのは並列実行下の
+   * 値**（上記）—— 単体の実測は他ワーカーとの競合が乗らないぶん桁ひとつ小さく出ることがあり、
+   * 余裕の根拠にはならない。
+   */
+  async function pageLimitConstants(root = 'src'): Promise<string[]> {
+    const names = new Set<string>()
+    const sources = await Promise.all(listSourceFiles(root).map(p => readFile(p, 'utf8')))
+    for (const src of sources) {
       for (const m of src.matchAll(/^const (\w*MAX_PAGES\w*) = \d+/gm)) names.add(m[1])
     }
     return [...names].sort()
   }
 
   // 正: 実装にある定数はすべて表に載っている。
-  it('実装の定数がすべて仕様書の表に載っている', () => {
+  it('実装の定数がすべて仕様書の表に載っている', async () => {
     const text = readFileSync(SPEC, 'utf8')
-    const names = pageLimitConstants()
+    const names = await pageLimitConstants()
 
     // 1 つも拾えないなら、この検査は何も守っていない（命名を変えたときに黙って無効になるのを防ぐ）
     expect(names.length).toBeGreaterThan(3)
