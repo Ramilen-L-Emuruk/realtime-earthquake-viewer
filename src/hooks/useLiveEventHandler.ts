@@ -3290,8 +3290,30 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             const announceUpgrade = levelUpgradeOf(latest).upgraded
               && !spokenEEWUpgradePhraseRef.current.has(key)
             const text = eewWarningRegionsText(speaking, spoken.size > 0, announceUpgrade)
+            // **前置きは発話の直前に記録する**（第 1・第 2 フェーズと同じ規律）。
+            //
+            // 読み切ってから（`onSettled`）記録する形では**間に合わない**。チェーンの待ちには
+            // 上限（`EEW_SPEECH_CHAIN_MAX_WAIT_MS`・8 秒）があり、この発話は地方を多く列挙する
+            // ほど長くなる —— 上限を超えると第 2 フェーズが `onSettled` を待たずに走り出し、
+            // 記録が空のまま「まだ区分を言っていない」と判定して前置きを重ねる。
+            // 2024-06-03 06:31 の石川県能登（6 地方）が実際にそうなった。
+            //
+            // 記録してよいのは、この発話がこれから前置きを声にするときだけ（`announceUpgrade`
+            // が既に「まだ記録されていない」ことを含んでいる）。鳴らなかった分は下の
+            // `onSettled` で自分が書いたぶんだけ戻す。
+            //
+            // **読み上げ文を先に作り、書き換えはその後に置くこと**（第 1 フェーズと同じ順序）。
+            // 間に例外を投げうる処理を挟むと、`return` に到達しないまま記録だけが残り、
+            // `onSettled` も登録されないので二度と戻せない —— その EEW では以後、格上げが
+            // 一度も声にならない。
+            //
+            // **第 2 フェーズはこの記録を書かない。** あちらは前置きを言うときに
+            // `spokenEEWLevelsRef` を進めるので、そちらが「もう区分を伝えた」の歯止めになる
+            // （`levelUpgradeOf` が偽を返す）。旗を 2 つとも書く形にはしていない。
+            const recordsUpgrade = announceUpgrade
+            if (recordsUpgrade) spokenEEWUpgradePhraseRef.current.add(key)
             // 鳴り始めてから地方が増えたら降りる（増えた分を含めて読み直すため）。降りた回を
-            // 既読にしないよう、記録は `onSettled` で「降りていないとき」だけ行う。
+            // 既読にしないよう、地方名の記録は `onSettled` で「降りていないとき」だけ行う。
             let abandoned = false
             // 降りた理由が誤報取消か（下の `onSettled`）。
             //
@@ -3330,14 +3352,20 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
                 // 書き込む直前に最新の状態を見る。逆に `retracted` を落とせないのは、再発報が
                 // `eewRetractedKeysRef` を消してから `onSettled` が走る順序がありうるため
                 // （そのときは「この発話は取り消された」という事実がこちらにしか残らない）。
-                if (retracted || eewRetractedKeysRef.current.has(key)) return
-                // **前置きは、地方が増えて降りた回でも記録する。** 前置きは文の先頭チャンク
-                // なので、1 音でも鳴っていれば声になっている（第 2 フェーズが「区分の告知は
-                // 戻さない」と判断しているのと同じ理由。`enqueuePhase2` の `onSettled` の
-                // コメント）。記録しないと、地方を読み直しているあいだに第 2 フェーズが
-                // 「まだ区分を言っていない」と判定して前置きを重ねる —— 実配信では
-                // 2024-06-03 06:31 の石川県能登で、格上げの 0.45 秒後に地方が増えて実際に
-                // そうなった（「緊急地震速報に切り替わりました。」が 2 回）。
+                // **前置きは、書いたぶんを戻すときだけここで触る。** 記録そのものは発話の
+                // 直前に済ませてある（上の `recordsUpgrade`）。戻すのは**1 音も鳴らなかった
+                // ときだけ** —— 声になっていないものを「伝えた」と扱うと、その EEW では
+                // 格上げが一度も声にならない。
+                //
+                // **誤報取消ではここで消さない。** 取消は受信した時点で記録ごと消していて
+                // （`eewRetractedKeysRef` の宣言箇所の少し下）、こちらの記録はその前に
+                // 書かれているので既に消えている。重ねて消すと、**取消の直後に再発報した
+                // 新しい発話が書いた記録まで巻き込む**（チェーンが追い越されると、古い発話の
+                // `onSettled` が新しい発話の記録より後に走りうる）。
+                //
+                // **地方が増えて降りた回も戻さない。** 前置きは文の先頭チャンクなので、降りた
+                // 時点では既に声になっている（第 2 フェーズが「区分の告知は戻さない」と
+                // 判断しているのと同じ理由。`enqueuePhase2` の `onSettled` のコメント）。
                 //
                 // **`spoke` は「1 チャンクでも鳴ったか」で、「前置きのチャンクが鳴ったか」
                 // ではない。** 前置きは先頭チャンクなので通常は一致するが、そのチャンクだけ
@@ -3346,7 +3374,15 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
                 // 同じ粒度**なので、ここだけ細かくしても全体は揃わない。厳密にするならチャンク
                 // 単位の通知（`ChunkScheduledListener`）を EEW の発話へ配線することになる。
                 // **見たうえで既存の粒度に合わせている。**
-                if (spoke && announceUpgrade) spokenEEWUpgradePhraseRef.current.add(key)
+                if (recordsUpgrade && !spoke) spokenEEWUpgradePhraseRef.current.delete(key)
+                const cancelled = retracted || eewRetractedKeysRef.current.has(key)
+                // **誤報取消を受けていたら地方名も記録しない。** 取消はその発話ごと無かった
+                // ことにする側で、書き戻すと再発報で地方名が声にならない（`enqueueWarningRegions`
+                // の起動条件が「未読の地方があるか」なので、既読が残ると発話ごと立たない）。
+                // **判定は発話中に立てたフラグと書き込む直前の状態の両方で行う** ——
+                // `shouldStillPlay` はチャンクの切れ目でしか呼ばれないので、最後のチャンクを
+                // 鳴らしている最中に届いた取消は捉えられない。
+                if (cancelled) return
                 // 地方の既読は、降りた回も 1 音も鳴らなかった回も進めない。前者は増えた分を
                 // 含めて読み直すため、後者は声になっていないため。**前置きと条件が違うのは、
                 // 地方名が文の後半にあって降りた時点では声になっていないから。**
