@@ -1,6 +1,6 @@
 import type { CustomLayerInterface, Map as MapLibreMap } from 'maplibre-gl'
 import { log } from '../../../utils/logger'
-import { reportRenderFailure, clearRenderFailure } from '../../../utils/renderHealth'
+import { reportRenderFailure, clearRenderFailure, clearRenderFailuresFor } from '../../../utils/renderHealth'
 import { applyProjectionUniforms, createProjectionProgramCache } from './projectionProgram'
 import { guardRender } from './guardRender'
 
@@ -977,7 +977,7 @@ export function createDepthPointLayer(id: string, map: MapLibreMap, label: strin
       const gl = gl2 as WebGL2RenderingContext
       // **画面から外れたら不調の記録も消す。** 残すと、もう出てこない描画物の名前が居座る。
       brokenReported = false
-      clearRenderFailure(id, 'draw')
+      clearRenderFailuresFor(id)
       // 予約を残すと、レイヤーが消えた後も再描画を起こし続ける。
       blink.dispose()
       displayCache.dispose(gl)
