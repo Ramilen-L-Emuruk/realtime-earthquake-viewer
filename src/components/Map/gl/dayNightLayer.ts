@@ -1,4 +1,5 @@
 import * as maplibregl from 'maplibre-gl'
+import type { OrderedCustomLayer } from './layerOrder'
 import { applyProjectionUniforms, createProjectionProgramCache } from './projectionProgram'
 import { buildDayNightGrid, FLOATS_PER_VERTEX } from './dayNightGrid'
 import { shadingDepthGlsl } from '../../../utils/solarShading'
@@ -100,7 +101,7 @@ void main() {
 
 export interface DayNightLayer {
   /** MapLibre へ addLayer する custom レイヤー本体。 */
-  layer: maplibregl.CustomLayerInterface
+  layer: OrderedCustomLayer
   /**
    * 太陽の位置を時刻から決め直す。**描き直しは呼び出し側の `triggerRepaint`**。
    *
@@ -173,7 +174,7 @@ ${VERT_BODY}`,
   }
   applyTime(initialTimeMs)
 
-  const layer: maplibregl.CustomLayerInterface = {
+  const layer: OrderedCustomLayer = {
     id: LYR,
     type: 'custom',
     onAdd(_map: maplibregl.Map, gl: WebGL2RenderingContext) {

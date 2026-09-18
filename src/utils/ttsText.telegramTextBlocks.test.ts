@@ -11,13 +11,27 @@
 //           （前置きだけが鳴る形にしない）
 import { describe, it, expect } from 'vitest'
 import {
-  telegramTextToSpeak, TELEGRAM_TEXT_BLOCK_KEYS,
+  telegramTextToSpeak, TELEGRAM_TEXT_BLOCK_KEYS, TELEGRAM_BOILERPLATE_KEYS,
   type TtsSpeechOptions, type TelegramTextBlockKey, type TelegramTextBlocks,
+  type TelegramBoilerplateReads,
 } from './ttsText'
 import type { LiveEvent } from '../types/earthquake'
 
+/**
+ * **定型文の落とし方はここでは無効にする**（全項目を読む側へ倒す）。
+ *
+ * あちらは「枠の中の特定の文だけ」を落とす別の仕組みで、既定では落とす側
+ * （→ `ttsText.telegramBoilerplate.test.ts`）。題材に使っている長周期の固定付加文
+ * （「この地震について、緊急地震速報を発表しています。」）はその対象なので、無効にしないと
+ * **ブロック単位の切り分けを確かめられない**。
+ */
+const allBoilerplateRead = Object.fromEntries(
+  TELEGRAM_BOILERPLATE_KEYS.map(key => [key, true]),
+) as TelegramBoilerplateReads
+
 const BASE: TtsSpeechOptions = {
   intensityLevels: 2, maxRegions: 0, alwaysReadScale: -1, regionTolerance: 0, readTelegramText: true,
+  telegramBoilerplate: allBoilerplateRead,
 }
 
 /** 指定したキーだけを切った指定を作る（残りは読む）。 */
@@ -70,7 +84,7 @@ const lpgm = (): LiveEvent => ({
     id: 'l1', time: '', eventId: 'e1', originTime: '', maxClass: 3, cancelled: false,
     forecastText: 'この地震について、緊急地震速報を発表しています。',
     // **題材に「＊印は…」を使わない** —— あれは読み上げから落とす定型文
-    // （TELEGRAM_TEXT_TEXT_SKIPPED）なので、切り分けを確かめられない
+    // （`TELEGRAM_BOILERPLATE_SPECS` の `starMark`）なので、切り分けを確かめられない
     varCommentText: '震源要素を訂正します。',
     freeFormText: '階級４ 極めて大きな揺れ',
   },
