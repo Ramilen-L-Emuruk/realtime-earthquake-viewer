@@ -1,5 +1,6 @@
 import { getAudioContext, getMasterInput, syncKeepAlive } from './alertSound'
 import { findPhraseBreakMatch, getTtsPhraseBreakDictCache, isPlaceNameKey, loadTtsPhraseBreakDict } from './ttsPhraseBreakDict'
+import { leadingParticle } from './ttsTrailingParticles'
 import { getTtsStationReadingsCache, loadTtsStationReadings } from './ttsStationReadings'
 import { getTtsEpicenterAccentsCache, loadTtsEpicenterAccents } from './ttsEpicenterAccents'
 import { mergeSpeechDicts } from './ttsGeneratedDict'
@@ -126,10 +127,23 @@ const warnNoEstimatedPause = createLogThrottle(30000)
 // 句区切り辞書の組み直しに使う取得が失敗したときの記録の間引き。**辞書の読みだけでなく、
 // 分割で落ちた句読点の補いもこの取得の上に乗っている**（失敗するとチャンク全体の
 // /audio_query 結果へ落ちるので、間は残るが読みが崩れる）。記録が無いと切り分けられない。
-const warnAccentPhrasesFailed = createLogThrottle(30000)
+//
+// **断片の取得と辞書エントリの取得で分ける。** 間引きは呼び出し元を区別しないので、1 個を
+// 共有すると VOICEVOX が不調で両方が同時に失敗したとき、**どちらが記録に出るかが偶然で決まる**
+// —— 辞書エントリ側にしか無い助詞のカナが、いちばん切り分けたい場面で消える。
+// `logger.ts` の createPerLabelLogGate が種類ごとにゲートを配るのと同じ理由。
+const warnTextFragmentFailed = createLogThrottle(30000)
+const warnDictEntryFailed = createLogThrottle(30000)
 
-// 句区切り辞書エントリの accent_phrases 取得結果キャッシュ（"speakerId:キー" -> AccentPhrase[]）。
-// 同じ地名・同じ話者の組み合わせで毎回 /accent_phrases を叩き直さないようにする。
+// 辞書の組み直しが例外で終わったときの記録の間引き。**取得の失敗（上）とは分ける。**
+// あちらは非 200 応答という外の事情だが、こちらは組み直しそのものの実装の誤りで、
+// 同じ記録に混ぜると「VOICEVOX が不調」と読み違える。
+const warnDictRebuildFailed = createLogThrottle(30000)
+
+// 句区切り辞書エントリの accent_phrases 取得結果キャッシュ
+// （"speakerId:キー:助詞のカナ" -> AccentPhrase[]）。同じ地名・同じ話者・同じ助詞の組み合わせで
+// 毎回 /accent_phrases を叩き直さないようにする。**助詞ごとに別エントリになる**（連結した形で
+// 取得するため）ので、同じ地名でも最大「助詞なし＋助詞の数」通りが載る。
 const phraseBreakCache = new Map<string, AccentPhrase[]>()
 
 /**
@@ -148,8 +162,15 @@ function pauseMora(vowelLength: number): AccentPhrase {
 }
 
 // 辞書該当「地名」の直後に挿入する短いポーズ。
-// 抑揚の不連続そのものは {@link refineProsody} が引き直して解消するが、地名の切れ目には短い間があった方が
-// 「区切って言い直した」ように聞こえて自然なため残している。
+//
+// **付属語を取り込めた切れ目には置かない**（`buildAccentPhrases` の `particle`）。間を置いていたのは
+// 助詞が 1 モーラで独立したアクセント句になり、自ら核を持って浮くため。「区切って言い直した」ように
+// 聞かせて隠していたにすぎず、読みを同じ句へ入れられるなら間そのものが要らない
+// （→ `docs/spec/audio-tts-spec.md` §3「助詞は辞書の読みへ取り込む」）。
+//
+// 残るのは `leadingParticle` が助詞を切り出せなかった切れ目 —— 漢字・数字が直に続く形と、
+// **列挙に無い助詞・助動詞が続く形**（`が` `と` `から` 等。読み上げ文の文型に無いので列挙していない）。
+// 抑揚の不連続は {@link refineProsody} が引き直すが、句の切れ目であること自体は変わらないので短い間を挟む。
 // 「深発地震」「遠地地震」等の一般用語（isPlaceNameKey が false を返すもの）は文中に自然に溶け込む語なので対象外。
 const DICT_TRAILING_PAUSE = pauseMora(0.12)
 
@@ -424,7 +445,7 @@ async function fetchAccentPhrasesForText(
     { method: 'POST', signal },
   )
   if (!res.ok) {
-    warnAccentPhrasesFailed(() => log.debug(
+    warnTextFragmentFailed(() => log.debug(
       '[VoiceVox] 句区切りの断片の取得が非 200 応答（辞書の組み直しを諦める）', { status: res.status, text },
     ))
     return null
@@ -437,25 +458,37 @@ async function fetchAccentPhrasesForText(
  * 句区切り辞書エントリ（AquesTalk風カナ表記）を /accent_phrases(is_kana=true) にかけて
  * 句区切り・アクセント位置を指定通りに確定した accent_phrases を取得する。
  * 同じ話者・同じキーの結果はキャッシュして再利用する。失敗時は null。
+ *
+ * @param particleKana 辞書キーの直後に続く付属語の読み（無ければ空文字）。**辞書の値へ連結して
+ *   1 つのカナ表記として渡す。** 記法上はただの文字列連結で、句を割る `/` を含めない限り
+ *   アクセント句の数は変わらない（3 辞書の全 3032 エントリ × 全 7 助詞 ＝ 21224 件で実測。
+ *   句数・モーラ列とも連結前と一致した）。**句が増えれば助詞が独立した句として浮き、この仕組みが
+ *   直そうとした症状（1 モーラで自ら核を持つ句）がそのまま戻る**ので、助詞の読みを増やすときは
+ *   `npm run verify-particle-phrases` で確かめること。キャッシュキーにも含める —— 同じキーでも
+ *   助詞ごとに別の結果になる。
  */
 async function fetchAccentPhrasesForKey(
   baseUrl: string,
   key: string,
   kanaReading: string,
+  particleKana: string,
   speakerId: number,
   signal?: AbortSignal,
 ): Promise<AccentPhrase[] | null> {
-  const cacheKey = `${speakerId}:${key}`
+  const cacheKey = `${speakerId}:${key}:${particleKana}`
   const cached = phraseBreakCache.get(cacheKey)
   if (cached) return cached
 
   const res = await fetch(
-    `${apiBase(baseUrl)}/accent_phrases?text=${encodeURIComponent(kanaReading)}&speaker=${speakerId}&is_kana=true`,
+    `${apiBase(baseUrl)}/accent_phrases?text=${encodeURIComponent(kanaReading + particleKana)}&speaker=${speakerId}&is_kana=true`,
     { method: 'POST', signal },
   )
   if (!res.ok) {
-    warnAccentPhrasesFailed(() => log.debug(
-      '[VoiceVox] 辞書エントリの取得が非 200 応答（辞書の組み直しを諦める）', { status: res.status, key },
+    // **`particleKana` も残す。** 助詞を連結した形だけが拒否される場合と、辞書の読み単体でも
+    // 起きていた失敗（サーバー不調・接続断）を、記録から切り分けられるようにするため。
+    warnDictEntryFailed(() => log.debug(
+      '[VoiceVox] 辞書エントリの取得が非 200 応答（辞書の組み直しを諦める）',
+      { status: res.status, key, particleKana: particleKana || '(なし)' },
     ))
     return null
   }
@@ -468,7 +501,8 @@ async function fetchAccentPhrasesForKey(
  * テキストを accent_phrases の配列に変換する。句区切り辞書のキーを含む場合は、
  * その部分だけ /accent_phrases(is_kana=true) で処理し、前後の通常テキストと結合する
  * （キーを含まない後続部分にさらに別のキーが含まれる場合は再帰的に処理する）。
- * 該当語の直後には短いポーズ（DICT_TRAILING_PAUSE）を挟み、区切りとして自然に聞こえるようにする。
+ * **該当語の直後に続く付属語（助詞）は、読みを辞書の値へ足して同じアクセント句に入れる**
+ * （{@link leadingParticle}）。取り込めない切れ目にだけ短いポーズ（{@link DICT_TRAILING_PAUSE}）を挟む。
  * **この関数が返す時点では、繋ぎ目の音素長と音高はまだ独立取得のまま**（前半の末尾が文末扱いで
  * 伸び、音高も下がりきっている）。呼び出し側が {@link refineProsody} で引き直すこと。
  * 失敗時は null。
@@ -499,11 +533,28 @@ async function buildAccentPhrases(
   }
 
   const pre = text.slice(0, match.index)
-  const post = text.slice(match.index + match.key.length)
+  const afterKey = text.slice(match.index + match.key.length)
+
+  // 辞書キーの直後に続く付属語は、辞書の読みへ取り込んで同じアクセント句に入れる
+  // （→ ttsTrailingParticles の `leadingParticle`）。取り込めないものは従来どおりここで句を切る。
+  //
+  // **ただし辞書キーの一致を優先する。** 助詞と同じ字面で始まる辞書キーがあり（実データでは
+  // `にかほ市金浦` の 1 件。先頭の `に` が助詞と同形）、そこで切ると残りは辞書に無い形になって
+  // **その名前の読みが二度と当たらない** —— 誤読を直すために置いた辞書が、助詞 1 文字のために
+  // 無効化される。記録も残らないので、聞くまで気づけない。
+  // 直前の辞書キーとの間に区切り文字があればこの形にはならないが、**「読み上げ文には必ず読点が
+  // 入る」ことに頼らない** —— 気象庁が書いた文（自由文）も同じ経路を通る。
+  const particleRaw = leadingParticle(afterKey)
+  const particle = particleRaw && findPhraseBreakMatch(afterKey, phraseBreakDict)?.index === 0
+    ? null
+    : particleRaw
+  const post = particle ? afterKey.slice(particle.surface.length) : afterKey
 
   const [preBuilt, matchedPhrasesRaw, postBuilt] = await Promise.all([
     buildAccentPhrases(baseUrl, pre, speakerId, phraseBreakDict, signal),
-    fetchAccentPhrasesForKey(baseUrl, match.key, phraseBreakDict[match.key], speakerId, signal),
+    fetchAccentPhrasesForKey(
+      baseUrl, match.key, phraseBreakDict[match.key], particle?.kana ?? '', speakerId, signal,
+    ),
     buildAccentPhrases(baseUrl, post, speakerId, phraseBreakDict, signal),
   ])
   if (!preBuilt || !matchedPhrasesRaw || !postBuilt) return null
@@ -534,10 +585,13 @@ async function buildAccentPhrases(
   const postLeadsWithGap = hasInnerLeadingGap(post)
   const matchedPhrases = postLeadsWithGap
     ? withTrailingPause(matchedPhrasesRaw, SPLIT_PUNCT_PAUSE)
-    // 一般用語（「深発地震」等）は文中に自然に溶け込む語なので、区切り文字が無ければ間を入れない
-    : isPlaceNameKey(match.key)
-      ? withTrailingPause(matchedPhrasesRaw, DICT_TRAILING_PAUSE)
-      : matchedPhrasesRaw
+    // 付属語を取り込めたなら切れ目は句の内側へ移っているので、間を置かない（置くと取り込んだ意味が無い）
+    : particle != null
+      ? matchedPhrasesRaw
+      // 一般用語（「深発地震」等）は文中に自然に溶け込む語なので、区切り文字が無ければ間を入れない
+      : isPlaceNameKey(match.key)
+        ? withTrailingPause(matchedPhrasesRaw, DICT_TRAILING_PAUSE)
+        : matchedPhrasesRaw
   if (postLeadsWithGap) punctAt.push(prePhrases.length + matchedPhrases.length - 1)
 
   const offset = prePhrases.length + matchedPhrases.length
@@ -621,7 +675,23 @@ async function synthesizeChunk(
     // 辞書にマッチする地名（区域名・観測点名）を含む場合は、accent_phrases を指定通りに組み直す
     const phraseBreakDict = speechDict()
     if (phraseBreakDict && findPhraseBreakMatch(chunk, phraseBreakDict)) {
-      const built = await buildAccentPhrases(baseUrl, chunk, speakerId, phraseBreakDict, signal)
+      // **組み直しの例外はここで受け止める。** 下の catch まで飛ばすと `return null` へ落ち、
+      // **そのチャンクが無音のまま脱落する**（呼び出し側は `if (!buffer) continue`）。組み直しを
+      // 諦めるだけなら素の `/audio_query` の結果で鳴るので、読みが崩れても声は続く。
+      // 取得が非 200 だった場合（`buildAccentPhrases` が null を返す経路）は元からこの形。
+      let built: BuiltPhrases | null = null
+      try {
+        built = await buildAccentPhrases(baseUrl, chunk, speakerId, phraseBreakDict, signal)
+      } catch (err) {
+        // 割り込みは正常系。**素の読みで合成を続けてはいけない**ので投げ直す（下の catch が拾う）。
+        if (err instanceof DOMException && err.name === 'AbortError') throw err
+        // それ以外は組み直しの実装の誤り。**既定で残る側へ出す** —— 読みが崩れたことは
+        // 聞くまで分からず、画面にも出ないため。すぐ下の refineProsody の失敗が debug 止まりなのは、
+        // あちらが諦めても間は種の値で残る（縮退が軽い）から。こちらは辞書の読みそのものが効かない。
+        warnDictRebuildFailed(() => log.warn(
+          '[VoiceVox] 辞書の組み直しで例外（読みの補正を諦めて素のまま合成する）', { chunk, err },
+        ))
+      }
       // 結合したままだと繋ぎ目の直前（多くは助詞）が文末扱いになるため、長さと音高を引き直す。
       // 分割で落ちた句読点（`punctAt`）の間の長さも、ここで文脈から決めてもらう。
       // signal は下の /synthesis と必ず共有すること。共有していれば、割り込みで中断された場合に
