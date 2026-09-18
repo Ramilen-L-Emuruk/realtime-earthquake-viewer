@@ -1,5 +1,6 @@
 // リアルタイムタブの右パネル。地図エリアは JapanMap が強震モニタ（観測点）と
-// 予報円を描画し、ここでは EEW 情報カード・強震モニタ検知(V2)カード・震度スケール凡例・注記を表示する。
+// 予報円を描画し、ここでは EEW 情報カード・強震モニタ検知(V2)カード・注記を表示する。
+// 震度スケールの凡例は地図へ重ねる `MapLegend` が持つ（同じものを 2 箇所に出さない）。
 import { memo, useEffect, useRef, useState } from 'react'
 import type { EEWAlert } from '../../types/earthquake'
 import type { DetectionEvent, Confidence } from '../../utils/kyoshinDetector'
@@ -18,20 +19,6 @@ import { SerialBadge } from '../SerialBadge'
 import { isEewWarningKindCode, isEewPlumKindCode } from '../../utils/eewKind'
 import { serverNow } from '../../utils/clock'
 import { log } from '../../utils/logger'
-
-// 凡例は地図と同じ気象庁の震度配色（getIntensityColor）を使う。scale=0 は震度0（灰色）。
-const SCALE_LEGEND: { label: string; scale: number }[] = [
-  { label: '0', scale: 0 },
-  { label: '1', scale: 10 },
-  { label: '2', scale: 20 },
-  { label: '3', scale: 30 },
-  { label: '4', scale: 40 },
-  { label: '5弱', scale: 45 },
-  { label: '5強', scale: 50 },
-  { label: '6弱', scale: 55 },
-  { label: '6強', scale: 60 },
-  { label: '7', scale: 70 },
-]
 
 interface Props {
   eews: EEWAlert[]
@@ -1174,21 +1161,7 @@ export const RealtimeTab = memo(function RealtimeTab({ eews, kyoshinV2Detections
           </p>
         </div>
 
-        {/* 震度スケール凡例 */}
-        <div className="bg-card rounded-lg p-3 border border-border">
-          <p className="text-white text-xs font-bold mb-2">震度スケール</p>
-          <div className="flex gap-2 flex-wrap">
-            {SCALE_LEGEND.map((item) => (
-              <div key={item.label} className="flex items-center gap-1">
-                <div
-                  className="w-4 h-4 rounded-sm flex-shrink-0"
-                  style={{ backgroundColor: item.scale === 0 ? SHINDO0_COLOR : getIntensityColor(item.scale) }}
-                />
-                <span className="text-xs text-secondary">{item.label}</span>
-              </div>
-            ))}
-          </div>
-        </div>
+        {/* 震度スケールの凡例は地図側（`MapLegend`）へ一本化した。同じものを画面に 2 つ置かない。 */}
 
         {/* 注記 */}
         <div className="bg-card rounded-lg p-3 border border-border">

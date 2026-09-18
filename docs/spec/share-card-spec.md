@@ -119,6 +119,21 @@ WebGL のキャンバスは、合成が済むと中身が捨てられる。地�
 
 将来カメラを動かす経路を足すなら、**`camera.ts` の fit 系関数を通し、`beginProgrammaticFlight` の印を eventData へ渡すこと**。印の無いカメラ操作はユーザーの手動操作として扱われ（`ensureUserInteractionState`）、地図の自動追従が `INTERACTION_HOLD_SEC` 秒止まる。
 
+### 凡例も焼く
+
+画面の左下に出している凡例を、画像の同じ位置へ描き足す（`drawLegend`）。画像は単体で流通するので、
+色の意味が読めないと震度も等級も伝わらない。**下の津波の観測棒と同じく、地図へ重ねた DOM なので
+WebGL のキャンバスには写らない** —— 撮った画像へ 2D で描き直す。
+
+- **中身は画面と同じ組を渡す**（`buildLegendBlocks` の結果）。設定で凡例を切っているときは
+  空配列で、そのときは焼かない —— 画面に無いものを画像へ入れない
+- **畳んだ状態は反映しない。** 画像は後から開けないので、常に開いた形で焼く
+- **画面側の「狭い画面ではひと段小さくする」も反映しない**（→ [`map-rendering-spec.md`](map-rendering-spec.md) §20）。
+  出力は 1600×900 で固定なので、撮った端末によって画像の中の凡例の大きさが変わるほうが困る
+- **色見本の幅は形ごとに違う**（縦棒は細い）。幅の計測と描画は `legendChipLayout` の 1 つから
+  読む —— 別々に持つと、予約した幅と文字の位置がずれて隣の組と重なる
+- 何をブロックへ並べるかは [`map-rendering-spec.md`](map-rendering-spec.md) §20 の担当
+
 ### 地図キャンバスに写らないもの
 
 津波の観測棒と到達確認マーカーは `maplibregl.Marker`（DOM 要素）なので WebGL のキャンバスには含まれない。撮影した 2D キャンバスへ同じ形を描き直す（`gl/tsunamiObsBar.ts` の `drawTsunamiObsBars` と `gl/tsunamiArrivalMarker.ts` の `drawTsunamiArrivalMarkers`）。形と不透明度はそれぞれ画面側の DOM（`updateBarEl` と `TsunamiArrivalMarkersGL` の `updateMarkerEl`）と対応させてある——**片方だけ変えると、画面と画像で見た目がずれる**。
