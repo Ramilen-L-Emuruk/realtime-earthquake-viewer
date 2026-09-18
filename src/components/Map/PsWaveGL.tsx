@@ -10,7 +10,7 @@ import { ringVertex } from './gl/psWaveRing'
 import { addOrderedLayer } from './gl/layerOrder'
 import { log } from '../../utils/logger'
 import { guardRender } from './gl/guardRender'
-import { clearRenderFailure } from '../../utils/renderHealth'
+import { clearRenderFailuresFor } from '../../utils/renderHealth'
 
 // 緊急地震速報の予報円（S波=塗りつぶし＋後端フェード / P波=破線外周）を描画する MapLibre 版。
 //
@@ -316,7 +316,7 @@ ${VERT_BODY}`,
         const gl = gl2 as WebGL2RenderingContext
         // **画面から外れたら不調の記録も消す**（docs/spec/map-rendering-spec.md §16）。
         // `gl/guardRender.ts` が受け止めた例外の記録も、この 1 行でまとめて消える。
-        clearRenderFailure(LYR, 'draw')
+        clearRenderFailuresFor(LYR)
         cache.dispose(gl)
         if (vbo) gl.deleteBuffer(vbo)
         if (ibo) gl.deleteBuffer(ibo)

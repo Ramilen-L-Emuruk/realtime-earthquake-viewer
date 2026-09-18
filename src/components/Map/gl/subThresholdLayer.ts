@@ -2,7 +2,7 @@ import * as maplibregl from 'maplibre-gl'
 import { applyProjectionUniforms, createProjectionProgramCache } from './projectionProgram'
 import { SHINDO0_COLOR } from '../../../utils/kyoshinIntensity'
 import { guardRender } from './guardRender'
-import { clearRenderFailure } from '../../../utils/renderHealth'
+import { clearRenderFailuresFor } from '../../../utils/renderHealth'
 
 // 強震モニタの震度0以下（index 1〜6）を描く MapLibre カスタムレイヤーの GL 実装。
 // Leaflet の KyoshinSubThreshold は「同レベルのドット同士が重なっても濃くならない」非加算合成
@@ -304,7 +304,7 @@ ${POINT_VS_BODY}`,
     onRemove(_map: maplibregl.Map, gl: WebGL2RenderingContext) {
       // **画面から外れたら不調の記録も消す**（docs/spec/map-rendering-spec.md §16）。
       // `guardRender.ts` が受け止めた例外の記録も、この 1 行でまとめて消える。
-      clearRenderFailure(LYR, 'draw')
+      clearRenderFailuresFor(LYR)
       pointCache.dispose(gl)
       gl.deleteProgram(quadProg)
       gl.deleteFramebuffer(fbo)
