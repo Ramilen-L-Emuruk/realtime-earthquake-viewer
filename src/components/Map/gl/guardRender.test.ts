@@ -5,7 +5,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { CustomRenderMethodInput } from 'maplibre-gl'
 import { guardRender } from './guardRender'
-import { getRenderHealth, reportRenderFailure, clearRenderFailure, resetRenderHealthForTest } from '../../../utils/renderHealth'
+import { getRenderHealth, reportRenderFailure, clearRenderFailure, resetRenderHealthForTest, clearRenderFailuresFor } from '../../../utils/renderHealth'
 
 const ARGS = {} as CustomRenderMethodInput
 
@@ -277,18 +277,42 @@ describe('guardRender — レイヤー自身の報告との住み分け', () => 
 })
 
 describe('guardRender — レイヤーを外したとき', () => {
-  // 安全弁: **画面から外れたら記録も消えること。**
+  // 正: **画面から外れたら記録も消えること。**
   // ここが消えないと、正しく描けるようになっても「描けていません」が恒久的に居座る
   //（`render()` はもう呼ばれないので、ガードの側に取り下げる機会が無い）。
   // 各レイヤーの `onRemove` が呼ぶ 1 行で、レイヤー自身の申告と一緒に消える仕掛け。
-  it('レイヤーの ID で後始末すると、ガードが残した記録も消える', () => {
+  it('レイヤーの ID でまとめて後始末すると、ガードが残した記録も消える', () => {
     const guarded = guardRender('lyr', '予報円', () => {
       throw new Error('boom')
     })
     guarded(GL, ARGS)
     expect(getRenderHealth().broken).toEqual(['予報円'])
 
+    clearRenderFailuresFor('lyr')
+    expect(getRenderHealth().broken).toEqual([])
+  })
+
+  // 安全弁: **レイヤー自身の取り下げでは消えないこと。**
+  // ガードは「自分が報告したか」をクロージャの中だけで覚えている。外から消すと消されたことに
+  // 気づけず、**例外が続いていても二度と報告しない**（画面は「描けている」と言い続ける）。
+  // だから「直った・隠した」で取り下げるときは 1 件だけ消す（`utils/renderHealth.ts`）。
+  it('レイヤー自身の取り下げでは、ガードが残した記録を巻き込まない', () => {
+    let explode = true
+    const guarded = guardRender('lyr', '予報円', () => {
+      if (explode) throw new Error('boom')
+    })
+    guarded(GL, ARGS)
+    expect(getRenderHealth().broken).toEqual(['予報円'])
+
+    // レイヤーが自分の申告を取り下げても、ガードの記録は残る。
     clearRenderFailure('lyr', 'draw')
+    expect(getRenderHealth().broken).toEqual(['予報円'])
+
+    // **巻き込まれていないからこそ、例外が止まったフレームで自分で取り下げられる。**
+    // 外から消されていると、ガードは「報告済み」を覚えたまま消えたことに気づけず、
+    // 取り下げも再報告もできなくなる。
+    explode = false
+    guarded(GL, ARGS)
     expect(getRenderHealth().broken).toEqual([])
   })
 })

@@ -1,4 +1,5 @@
 import type { Map as MapLibreMap, LayerSpecification, CustomLayerInterface } from 'maplibre-gl'
+import { log } from '../../../utils/logger'
 
 // 地図オーバーレイ全レイヤーの描画順（先頭ほど下＝背面、末尾ほど前面）を単一の情報源に定める。
 // MapLibre の addLayer は既定でスタック最上段に積むため、データ到着タイミングの差でマウント順が
@@ -91,10 +92,33 @@ export function firstExistingLayerId(map: MapLibreMap, ids: readonly string[]): 
   return undefined
 }
 
+/** `addOrderedLayer` へ渡せるレイヤー。**id は `MAP_LAYER_ORDER` に載っているものに限る。** */
+export type OrderedLayer = (LayerSpecification | CustomLayerInterface) & { id: MapLayerId }
+
+/**
+ * カスタムレイヤーを作る側が使う型。
+ *
+ * **`OrderedLayer` を使ってはいけない。** あちらは共用体との交差なので、
+ * `onAdd` / `render` のようにカスタムレイヤー側にしかないメンバーを引けない
+ * （型を狭める作業で実際にそこへ突っ込んだ）。
+ */
+export type OrderedCustomLayer = CustomLayerInterface & { id: MapLayerId }
+
 // layer を MAP_LAYER_ORDER の正しいスロットへ追加する。自分より後段（前面）に来るべき既存レイヤーの
 // うち最初のものを beforeId に指定して、その直前へ挿入する（該当が無ければ最上段）。
-export function addOrderedLayer(map: MapLibreMap, layer: LayerSpecification | CustomLayerInterface): void {
-  const selfPos = MAP_LAYER_ORDER.indexOf(layer.id as MapLayerId)
+//
+// **配列への登録漏れは型で弾く**（`id: MapLayerId`）。id が配列に無いレイヤーは beforeId が
+// 付かず最上段に積まれるため、忘れるとそのレイヤーだけ最前面へ出て描画順が静かに崩れる。
+// 以前はそれを黙って通していた（実行しても警告が出ず、目視でしか気づけなかった）。
+// **`const LYR = 'x'` から書くぶんにはこの縛りで何も要らない** —— リテラル型が推論されるので、
+// 配列へ足し忘れたときだけ `npx tsc -b` が落ちる。
+export function addOrderedLayer(map: MapLibreMap, layer: OrderedLayer): void {
+  const selfPos = MAP_LAYER_ORDER.indexOf(layer.id)
+  // 型を `as` で迂回して呼ばれたときの保険。well-typed な呼び出しではここへ来ない。
+  // **黙って積まない** —— 崩れた描画順は画面から読み取れないので、記録だけは残す。
+  if (selfPos < 0) {
+    log.error(`[layerOrder] '${layer.id}' は MAP_LAYER_ORDER に無い。最上段に積むので描画順が崩れる`)
+  }
   const beforeId =
     selfPos >= 0 ? firstExistingLayerId(map, MAP_LAYER_ORDER.slice(selfPos + 1)) : undefined
   map.addLayer(layer, beforeId)

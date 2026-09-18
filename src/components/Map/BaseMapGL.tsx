@@ -4,7 +4,7 @@ import { useMapGL } from './mapGLContext'
 import { loadPrefectures } from '../../utils/prefectures'
 import { loadSubRegions } from '../../utils/subregions'
 import { basemapKindFilter, buildBasemapFC } from './gl/basemapFeatures'
-import { addOrderedLayer } from './gl/layerOrder'
+import { addOrderedLayer, type MapLayerId } from './gl/layerOrder'
 import { detailMinZoom } from './gl/zoomLevels'
 import { bindDynamicZoomRange, clampMinZoom } from './gl/viewSpan'
 import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
@@ -46,7 +46,7 @@ const LYR_PREF = 'pref-borders'
 
 interface BathymetryLayerOptions {
   sourceId: string
-  layerId: string
+  layerId: MapLayerId
   /** ソース側の最大タイル z（タイル座標系）。マップズームがこれを超えると MapLibre はこの z のタイルを拡大して描き続ける。 */
   sourceMaxZoom: number
   visible: boolean

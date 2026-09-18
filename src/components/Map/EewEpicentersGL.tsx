@@ -9,7 +9,7 @@ import { addOrderedLayer } from './gl/layerOrder'
 import { createDepthPointLayer, type DepthPoint, type DepthPointLayer } from './gl/depthPointLayer'
 import { badgeHtml, escapeHtml } from './gl/popupHtml'
 import { log } from '../../utils/logger'
-import { reportRenderFailure, clearRenderFailure } from '../../utils/renderHealth'
+import { reportRenderFailure, clearRenderFailure, clearRenderFailuresFor } from '../../utils/renderHealth'
 
 // EEW（緊急地震速報）の震源（×印・点滅）。全モードで表示し、リアルタイム震度モード以外は
 // 半透明にする。複数 EEW 時は全震源を表示する。
@@ -255,8 +255,9 @@ export function EewEpicentersGL({ epicenters, iconScale, fullOpacity }: Props) {
 
     return () => {
       popup?.remove()
-      // 画面から外れたら不調の記録も消す（残すと、もう出てこないものの名前が居座る）。
-      clearRenderFailure(LYR, 'interact')
+      // **画面から外れたら不調の記録も消す**（残すと、もう出てこないものの名前が居座る）。
+      // `draw` 側と `gl/guardRender.ts` が受け止めた例外の記録も、この 1 行でまとめて消える。
+      clearRenderFailuresFor(LYR)
       map.off('webglcontextrestored', onRestored)
       map.off('style.load', add)
       layerRef.current = null

@@ -3,8 +3,15 @@ import * as maplibregl from 'maplibre-gl'
 import { useMapGL } from './mapGLContext'
 import type { SiteCoords } from '../../services/kyoshin'
 import { addOrderedLayer } from './gl/layerOrder'
-import { makeSubThresholdLayer, MAX_SUB_IDX, type SubThresholdLayer } from './gl/subThresholdLayer'
+import {
+  makeSubThresholdLayer,
+  MAX_SUB_IDX,
+  SUB_THRESHOLD_LABEL,
+  SUB_THRESHOLD_LAYER_ID,
+  type SubThresholdLayer,
+} from './gl/subThresholdLayer'
 import { log } from '../../utils/logger'
+import { reportRenderFailure, clearRenderFailure, clearRenderFailuresFor } from '../../utils/renderHealth'
 
 // 強震モニタの震度0以下（index 1〜6）を描画する MapLibre 版（Leaflet の KyoshinSubThreshold 相当）。
 // index 0（データ無し）と index 7+（震度1以上・KyoshinPoints が描画）は対象外。
@@ -52,12 +59,18 @@ export function KyoshinSubThresholdGL({ sites, indices, iconScale, visible }: Pr
     // 新オブジェクトを指す）は起きない。
     const makeAndAdd = (): SubThresholdLayer | null => {
       // 既存レイヤーが残っていれば無駄な再生成を避ける（PsWaveGL の再追加パターンと対称）。
-      if (map.getLayer('kyoshin-subthreshold')) return layerRef.current
+      if (map.getLayer(SUB_THRESHOLD_LAYER_ID)) return layerRef.current
       const sub = makeSubThresholdLayer(positions, sites.length, iconScaleRef.current)
       try {
         addOrderedLayer(map, sub.layer)
+        // 載せられたら前回の失敗の記録を消す（引きずらない）。
+        clearRenderFailure(SUB_THRESHOLD_LAYER_ID, 'draw')
       } catch (err) {
         log.error('[KyoshinSubThresholdGL] custom layer re-add failed', err)
+        // **載せられなかったら画面へ出す。** 載せられなければ `render()` が一度も呼ばれず、
+        // 描画側の検出（`gl/guardRender.ts`）には永久に到達しない —— 利用者には
+        // 「なぜか震度0以下の点だけ出ない」状態が手掛かりなしで続く。
+        reportRenderFailure(SUB_THRESHOLD_LAYER_ID, SUB_THRESHOLD_LABEL, 'draw')
         return null
       }
       // restore 時にマウント時点の値ではなく現在の props/直近 levels を反映する。
@@ -87,6 +100,10 @@ export function KyoshinSubThresholdGL({ sites, indices, iconScale, visible }: Pr
       // 登録されていない fn への off は no-op のため、常に呼んで cleanup を対称にする。
       map.off('style.load', doReadd)
       if (sub && map.getLayer(sub.layer.id)) map.removeLayer(sub.layer.id)
+      // **画面から外れたら不調の記録も消す**（残すと、もう出てこないものの名前が居座る）。
+      // レイヤーの `onRemove` も同じことをするが、**載せられなかったときはそこを通らない**
+      // ——`removeLayer` を呼ぶ相手がいないため、報告した失敗が消えずに残る。
+      clearRenderFailuresFor(SUB_THRESHOLD_LAYER_ID)
       layerRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
