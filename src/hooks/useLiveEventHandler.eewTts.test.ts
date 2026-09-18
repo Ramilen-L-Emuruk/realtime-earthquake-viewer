@@ -2071,3 +2071,63 @@ describe('録画モードの既読復元（緊急地震速報の震源）', () =
     expect(spokenTexts().some(t => t.includes('震源を更新'))).toBe(false)
   })
 })
+
+// 第 1.5 フェーズの発話が、チェーンの待ち上限（`EEW_SPEECH_CHAIN_MAX_WAIT_MS`・8 秒）より
+// 長くなる場合。**地方を多く列挙する報ほど起きやすい。**
+//
+// 第 2 フェーズは上限で待ちを打ち切って走り出すので、第 1.5 の `onSettled` はまだ呼ばれて
+// いない。既読の記録をそこまで遅らせると、第 2 が「まだ区分を言っていない」と判定して
+// 前置き（「緊急地震速報に切り替わりました。」）を重ねる。
+describe('読み切る前に追い越されたとき（第 1.5 フェーズ）', () => {
+  /** 実機と同じ並びを作る。2024-06-03 06:31 の石川県能登（予報 → 警報・6 地方）。 */
+  async function playRealSequence(heard: string[], handle: ReturnType<typeof setup>) {
+    // 1 報: 予報・仮定震源要素（予想震度が付かない）
+    handle(makeEEW({ severity: 'Forecast', condition: '仮定震源要素', noAreas: true }))
+    // 第 1 フェーズを読み終え、「予想震度なし」を鳴らしている最中に格上げが届く
+    await advanceUntil(() => heard.some(h => h.includes('予想震度なし')))
+    // 4 報: 警報へ格上げ・地方 4 つ。5 報: 0.45 秒後に 6 つへ（どちらも第 1.5 が鳴る前）
+    handle(makeEEW({ serial: 4, severity: 'Warning', scaleTo: 60, lgIntTo: 2, warningRegions: ['北陸', '甲信', '東海', '関東'] }))
+    await advance(450)
+    handle(makeEEW({ serial: 5, severity: 'Warning', scaleTo: 60, lgIntTo: 2, warningRegions: ['北陸', '甲信', '東海', '関東', '東北', '近畿'] }))
+    await advance(SPEAK_SYNTH_MS * 12 + SPEAK_CHUNK_MS * 24)
+  }
+
+  // 正: 読み切る前に第 2 フェーズへ追い越されても、前置きは 1 回だけ。
+  it('前置きを繰り返さない', async () => {
+    const heard: string[] = []
+    // 6 地方を列挙する文は長い。1 チャンク 3.5 秒＝チェーンの待ち上限を超える
+    installChunkedSpeak(heard, { chunkMs: 3500 })
+    await playRealSequence(heard, setup())
+
+    expect(spokenTexts().filter(t => t.includes('切り替わりました'))).toHaveLength(1)
+    // 前置きを担うのは第 1.5 フェーズの側（地方の文）。第 2 フェーズは値だけを読む
+    expect(spokenTexts()).toContain('緊急地震速報に切り替わりました。東北、関東、北陸、甲信、東海、近畿では強い揺れに警戒してください。')
+    expect(spokenTexts()).toContain('予想最大震度6強。予想最大階級2。')
+  })
+
+  // 対照: 追い越されない長さなら、従来どおり 1 回だけ（この経路が上限に依存していないこと）。
+  it('追い越されない長さでも 1 回だけ', async () => {
+    const heard: string[] = []
+    installChunkedSpeak(heard)
+    await playRealSequence(heard, setup())
+
+    expect(spokenTexts().filter(t => t.includes('切り替わりました'))).toHaveLength(1)
+  })
+
+  // 安全弁: 1 音も鳴らなければ記録しない。合成が回復した続報で前置きから読み直す。
+  it('1 音も鳴らなければ既読にせず、鳴るようになった続報で読み直す', async () => {
+    speakMock.mockImplementation((() => Promise.resolve({ spoke: false })) as never)
+    const handle = setup()
+    handle(makeEEW({ severity: 'Forecast', condition: '仮定震源要素', noAreas: true }))
+    await advance(20000)
+    handle(makeEEW({ serial: 4, severity: 'Warning', scaleTo: 55, lgIntTo: 2, warningRegions: ['北陸'] }))
+    await advance(20000)
+
+    speakMock.mockImplementation((() => Promise.resolve({ spoke: true })) as never)
+    speakMock.mockClear()
+    handle(makeEEW({ serial: 5, severity: 'Warning', scaleTo: 55, lgIntTo: 2, warningRegions: ['北陸'] }))
+    await advance(20000)
+
+    expect(spokenTexts().some(t => t.includes('切り替わりました'))).toBe(true)
+  })
+})
