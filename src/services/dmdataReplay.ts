@@ -106,6 +106,19 @@ interface ManifestEntry {
   originalId?: string
   classification: string
   /**
+   * アーカイブ内の本体ファイル名。**本体を引く唯一の鍵**（`findBodyFileName`）。
+   *
+   * **確かめた範囲では常に入る** —— 手元の控え（2022-01-22・2024-01-01・2024-11-26・
+   * 2026-06-25・2026-07-28 の 5 日を抜き取ったもの。**全期間は数えていない**）で、本体を
+   * 引く対象になる 690 件が欠落 0 件。tar 内のファイル名と 1 対 1 で一致し、同じ名前を
+   * 2 件が指すこともなかった。
+   *
+   * **それでも任意にしてある。** 目録は外部の JSON を `as ManifestEntry[]` で受けているだけで、
+   * この型は実行時を保証しない（`head` を `entry?.head` で確かめているのと同じ理由）。必須に
+   * すると `string` として扱えてしまい、無いときの経路を書かなくても型検査が通る。
+   */
+  filename?: string
+  /**
    * `designation` は分割配信された二進電文の 2 報目以降にだけ入る（`RRA`〜`RRX`）。
    * 実アーカイブで確認済み（2026-07-28 の IXAC41 が 1 報目 null・2 報目 "RRA"）。
    */
@@ -299,18 +312,65 @@ export function clearParseCachesForTest(): void {
 }
 
 /**
- * アーカイブの中から、その目録エントリの本体ファイル名を探す。
+ * 本体を引けなかった理由。**呼び出し側の記録へ毎回埋める。**
  *
- * 目録の id は 8 桁目以降がアーカイブ内のファイル名と一致しないため、先頭 7 桁で引く。
+ * 「目録が名乗っていない」と「名乗っているがアーカイブに無い」は原因も対応も違う ——
+ * 前者は配信元が目録の形を変えた合図、後者はアーカイブ側の欠落（部分破損の疑い）。
+ * 呼び出し側の記録はどちらも「本体が見つからず」なので、**区別はここでしか付かない。**
+ *
+ * **専用の行を別に立てて間引く形にしない。** 間引かない汎用の行が同じ数だけ出るので
+ * 「コンソールを埋めない」目的は達せないまま、原因だけが読めなくなる（間引きの窓に
+ * 入った 2 件目以降は理由を失う）。電文ごとに 1 行出るのはこの経路の元からの形で、
+ * 足すのは理由だけにとどめる。
  */
-function findBodyFileName(
-  entryId: unknown,
-  files: Map<string, Uint8Array>,
-  suffix: string,
-): string | undefined {
-  if (typeof entryId !== 'string') return undefined
-  const idPrefix = entryId.slice(0, 7)
-  return [...files.keys()].find((n) => n.endsWith(suffix) && n.includes(idPrefix))
+function bodyMissReason(entry: ManifestEntry): string {
+  const name = entry.filename
+  return typeof name === 'string' && name !== ''
+    ? `目録は ${name} と名乗っているがアーカイブに入っていない`
+    : '目録が filename を持たない（目録の形が変わったか、この 1 件だけ壊れている）'
+}
+
+/**
+ * 発表時刻も受信時刻も読めなかった理由（`resolveManifestTime` が `null` を返したとき）。
+ *
+ * **`bodyMissReason` をそのまま使えない。** あちらは「本体を引けなかった」ことが確定した
+ * 文脈の関数で、本体が手元にある場合まで「アーカイブに入っていない」と書いてしまう。
+ * ここは**本体を引けたが時刻が読めなかった**場合と分ける必要がある。
+ *
+ * **この経路の電文は本体読み取りへ進まない。** 呼び出し側は時刻が決まらない時点で
+ * `continue` するので、理由をここで添えないと「目録の形が変わった」と
+ * 「アーカイブ側の欠落」を切り分ける手掛かりがどこにも残らない。
+ */
+function manifestTimeMissReason(entry: ManifestEntry, files: Map<string, Uint8Array>): string {
+  const name = findBodyFileName(entry, files)
+  return name ? `本体（${name}）のファイル名に受信時刻が入っていない` : bodyMissReason(entry)
+}
+
+/**
+ * アーカイブの中から、その目録エントリの本体ファイル名を返す。
+ *
+ * **目録が名乗る `filename` をそのまま引く。** かつては id の先頭 7 桁を部分一致で探して
+ * いたが、ファイル名は受信時刻を 17 桁の数字で含むので、id の先頭が全数字だとその並びに
+ * 偶然含まれる余地が構造として残っていた（控えの全エントリ 1352 件 —— 対象外の種別と
+ * JSON 版を含む —— のうち 45 件が全数字。上の 690 件とは母集団が違う）。
+ * **誤って別の本体を引いた例は観測していない** —— 直したのは実害ではなく、推測していたこと。
+ *
+ * **拡張子では絞らない。** `filename` が拡張子まで名乗っているので、呼び出し側が
+ * `.xml` / `.bin` を渡し分ける必要が無い。アーカイブには XML 以外の形式で届く電文
+ * （`.txt` の WEPA60 など）も混ざるが、扱う種別の外なので計画の段（`isReplayTarget` /
+ * `planHistoryEntries`）で落ち、ここへ来ない。
+ *
+ * **引けなかった理由は呼び出し側が記録へ添える**（本体を読む 3 経路は `bodyMissReason`、
+ * 発表時刻を補う経路は `manifestTimeMissReason`）。黙って undefined を返すだけだと、
+ * 目録の形が変わったのか、その本体だけアーカイブに入っていないのかが読み手に伝わらない。
+ *
+ * @returns 目録が名乗らない・その名前が tar に無いときは undefined
+ *   （どちらも呼び出し側が記録して取りこぼしに数える）
+ */
+function findBodyFileName(entry: ManifestEntry, files: Map<string, Uint8Array>): string | undefined {
+  const name = entry.filename
+  if (typeof name !== 'string' || name === '') return undefined
+  return files.has(name) ? name : undefined
 }
 
 /**
@@ -346,13 +406,15 @@ function manifestTimeWithoutBody(entry: ManifestEntry): Date | null {
  * **当日経路（`classifyTelegram`）には同じ補いを置けない。** あちらは本体を取る前に判定するので、
  * 補うにはリクエストが増える。**救える側だけ救う**（→ `data-sources-spec.md` §2）。
  *
+ * **拡張子を問わず補える。** 目録の `filename` をそのまま引くので、XML でも二進でも平文でも
+ * 同じ 1 本で足りる（`findBodyFileName`）。
+ *
  * @returns どちらも読めなければ null
  */
 function resolveManifestTime(entry: ManifestEntry, files: Map<string, Uint8Array>): Date | null {
   const withoutBody = manifestTimeWithoutBody(entry)
   if (withoutBody) return withoutBody
-  const bodyName = findBodyFileName(entry.id, files, '.xml')
-    ?? findBodyFileName(entry.id, files, '.bin')
+  const bodyName = findBodyFileName(entry, files)
   const received = bodyName ? parseMsFromFileName(bodyName) : null
   if (received && !Number.isNaN(received.getTime())) {
     log.warn(
@@ -722,6 +784,9 @@ export async function fetchDmdataReplayEvents(
         // 本体のファイル名から補う**（`resolveManifestTime`）。どちらも読めなければ弾く。
         let entryTime = plan.time
         let include = plan.include
+        // 読めなかったときの理由。**この経路は本体読み取りへ進まない**ので、ここで添えないと
+        // 切り分けの手掛かりが残らない（`manifestTimeMissReason`）
+        let timeMissReason = ''
         if (entryTime === null) {
           if (files === undefined) {
             warnBodyNotDownloaded(entry, item.date, '発表時刻の補い')
@@ -732,9 +797,10 @@ export async function fetchDmdataReplayEvents(
           entryTime = resolveManifestTime(entry, files)
           // 補えたので、**計画が使ったのと同じ述語**で対象かを決め直す
           if (entryTime !== null) include = isReplayTarget(entry, entryTime, fromTime, toTime)
+          else timeMissReason = manifestTimeMissReason(entry, files)
         }
         if (entryTime === null) {
-          log.warn(`[replay] 発表時刻も受信時刻も読めない電文をスキップ id=${entry.id} time=${String(entry.head.time)}`)
+          log.warn(`[replay] 発表時刻も受信時刻も読めない電文をスキップ id=${entry.id} time=${String(entry.head.time)}（${timeMissReason}）`)
           skippedCount++
           continue
         }
@@ -755,10 +821,10 @@ export async function fetchDmdataReplayEvents(
           // 二進電文（IXAC41）は `.bin` で入り、512KiB を超えると複数エントリに分かれる。
           // **`dec.decode` を通してはいけない** —— 不正なバイトが U+FFFD へ潰れて戻せない。
           if (isBinaryTelegramType(headType)) {
-            const binName = findBodyFileName(entry.id, files, '.bin')
+            const binName = findBodyFileName(entry, files)
             const binBytes = binName ? files.get(binName) : undefined
             if (!binBytes) {
-              log.warn(`[replay] 二進電文の本体が見つからずスキップ id=${entry.id} type=${headType}`)
+              log.warn(`[replay] 二進電文の本体が見つからずスキップ id=${entry.id} type=${headType}（${bodyMissReason(entry)}）`)
               // **電文ごとに 1 度だけ数える。** 分割は最大 24 断片あり、アーカイブの部分破損では
               // 複数が同時に欠ける。断片ごとに数えると 1 通の障害が断片の数だけ膨らむ。
               // 覚えておくのは、下の `pendingKeys` でもう一度数えないため。
@@ -794,10 +860,10 @@ export async function fetchDmdataReplayEvents(
             continue
           }
 
-          const xmlFileName = findBodyFileName(entry.id, files, '.xml')
+          const xmlFileName = findBodyFileName(entry, files)
           const bodyBytes = xmlFileName ? files.get(xmlFileName) : undefined
           if (!bodyBytes) {
-            log.warn(`[replay] 電文の本体が見つからずスキップ id=${entry.id} type=${headType}`)
+            log.warn(`[replay] 電文の本体が見つからずスキップ id=${entry.id} type=${headType}（${bodyMissReason(entry)}）`)
             skippedCount++
             continue
           }
@@ -1149,10 +1215,10 @@ function parseHistoryTelegram(
     return null
   }
 
-  const xmlFileName = findBodyFileName(entry.id, files, '.xml')
+  const xmlFileName = findBodyFileName(entry, files)
   const bodyBytes = xmlFileName ? files.get(xmlFileName) : undefined
   if (!bodyBytes) {
-    log.warn(`[replay] 履歴用電文の本体が見つからずスキップ id=${entry.id} type=${entry.head.type}`)
+    log.warn(`[replay] 履歴用電文の本体が見つからずスキップ id=${entry.id} type=${entry.head.type}（${bodyMissReason(entry)}）`)
     return null
   }
   const xml = dec.decode(bodyBytes)
@@ -1412,6 +1478,8 @@ export async function fetchDmdataQuakeHistory(
       // 目録の発表時刻が読めなければ本体のファイル名から補う（`resolveManifestTime`）。
       let entryTime = plan.time
       let include = plan.include
+      // 本編と同じ理由で、読めなかった理由をここで添える（`manifestTimeMissReason`）
+      let timeMissReason = ''
       if (entryTime === null) {
         if (files === undefined) {
           warnBodyNotDownloaded(entry, item.date, '発表時刻の補い')
@@ -1422,9 +1490,10 @@ export async function fetchDmdataQuakeHistory(
         entryTime = resolveManifestTime(entry, files)
         // 補えたので、**計画が使ったのと同じ述語**で対象かを決め直す
         if (entryTime !== null) include = isHistoryTarget(entryTime, before)
+        else timeMissReason = manifestTimeMissReason(entry, files)
       }
       if (entryTime === null) {
-        log.warn(`[replay] 履歴用電文の発表時刻も受信時刻も読めないためスキップ id=${entry.id}`)
+        log.warn(`[replay] 履歴用電文の発表時刻も受信時刻も読めないためスキップ id=${entry.id}（${timeMissReason}）`)
         skipped++
         continue
       }
