@@ -58,6 +58,7 @@ export interface TestFunctions {
   unreceivedQuake?: () => void
   maxScaleOrAboveQuake?: () => void
   tsunamiGradeChange?: () => void
+  tsunamiQuietReports?: () => void
   estimatedIntensity?: () => void
   notification: () => void
 }
@@ -1743,6 +1744,11 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onRep
         {isDmdss && onTest.tsunamiGradeChange && (
           <Row label="津波警報（区域ごとに等級が動く続報）" description="大津波警報 → 45秒後に続報（岩手・福島は津波警報へ降格／青森県太平洋沿岸は注意報へ／茨城は大津波警報へ引き上げ／北海道は津波予報へ／青森県日本海沿岸は解除）→ 60秒後に各地の満潮時刻の報 → 90秒後に全解除。全体の最上位等級は動かないので、区域ごとの「〇〇から切り替え」「〇〇から引き上げ」と、いちばん下の「解除」の枠でしか変化が分からない。満潮時刻の報は等級について何も言わないので、そこで印が消えないことも確かめられる">
             <TestButton color="orange" onClick={onTest.tsunamiGradeChange}>区域の等級変化テスト</TestButton>
+          </Row>
+        )}
+        {isDmdss && onTest.tsunamiQuietReports && (
+          <Row label="津波警報（変化の小さい続報）" description="大津波警報 → 10秒おきに続報を7通（観測値 → 最大波の観測時刻だけ更新 → 変化なし → 各地の満潮時刻 → 満潮時刻の更新 → 到達状況の更新 → 変化なし）→ 90秒後に全解除。気象庁が続報を出しているのに、等級も観測波高も動かない報がどう読み上げられるかを確かめる。これらは緊急地震速報や津波警報の読み上げを切らないので、そうした上位の読み上げが続いている間は鳴らずに見送られる">
+            <TestButton color="blue" onClick={onTest.tsunamiQuietReports}>変化の小さい続報テスト</TestButton>
           </Row>
         )}
         <Row label="津波警報（誤報取消）" description={`青森・北海道等 – tsunami 音 / 90秒後に${isDmdss ? '誤報として取消' : '解除（standard 版は取消と解除を区別できないため「解除」表示）'}`}>
