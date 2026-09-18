@@ -207,10 +207,28 @@ function hasConflictingHypocenter(a: JMAQuake, b: JMAQuake): boolean {
 // 実例: 2026-08-24 04:05 の地震（熊本県天草・芦北地方）で、震度速報が 20260824040519、
 // 震源情報以降が 20260824040526。震度速報は気象庁本庁、震源情報は大阪管区気象台の発表で、
 // 官署の引き継ぎに伴って採り直された。
-function isHypocenterPending(q: JMAQuake): boolean {
+export function isHypocenterPending(q: JMAQuake): boolean {
   // **取消電文を除くこと。** 取消はパーサが種別を問わず震源名を空で作るため、
   // 除かないと「震源未確定」として内容照合へ落ちる。取消は eventId でのみ照合する。
   return !q.cancelled && !q.earthquake.hypocenter.name
+}
+
+/**
+ * **その電文自身が震源要素を運んできたか**（津波電文から借りた震源は数えない）。
+ *
+ * `isHypocenterPending` の裏返しに見えるが、**用途が違うので分けてある**。
+ *
+ * - `isHypocenterPending` ＝「震源の欄が空か」。震源を補う側（`mergeQuakeInto`）が使う。
+ *   借りて埋まったら偽になるのが正しい（もう補う必要が無い）
+ * - こちら ＝「気象庁がこの地震の震源を発表した報を受け取ったか」。**同一性の判定**が使う
+ *
+ * 分けないと、借りた瞬間に暫定 EventID の採り直しの検出（`sameQuakeEntry`）が狂う。あの判定は
+ * 「震源未確定の電文 × 震源が判明した電文」の組でしか採り直しが起きないことを根拠にしており、
+ * **借り物で「判明した」側へ移ると、後から届く確定報が別の地震と見なされてカードが重複する**
+ * （`eventId` が違うので `coalesceByEventId` でも畳めず、重複が残り続ける）。
+ */
+export function hasOwnHypocenter(q: JMAQuake): boolean {
+  return !isHypocenterPending(q) && !q.hypocenterSource
 }
 
 // 一次細分区域の名前の集合。震度速報も、震度を伴う続報も同じ粒度で持つ。
@@ -282,7 +300,10 @@ export function sameQuakeEntry(a: JMAQuake, b: JMAQuake, areaPrefIndex: AreaPref
     // 暫定 ID の採り直しは「震源未確定の電文 × 震源が判明した電文」の組でしか起きない。
     // 同じ地震の震度速報どうしは同じ ID を共有する（2026-08-23 22:45 の 2 通で確認）ため、
     // **両方が震源未確定なら別々の地震**。片方でも震源が判明していなければ救済しない。
-    if (isHypocenterPending(a) === isHypocenterPending(b)) return false
+    // **判定は `hasOwnHypocenter`。`isHypocenterPending` を使わない。** 津波電文から借りた
+    // 震源で欄が埋まっても、その地震の震源を気象庁が発表した報はまだ受け取っていない
+    // （宣言箇所に、取り違えたときの症状）。
+    if (hasOwnHypocenter(a) === hasOwnHypocenter(b)) return false
   }
   // 地震の時刻が空の電文（取消）は内容照合の材料を持たない。空どうしを「一致」と
   // 数えないよう、値があることまで要求する。
@@ -351,6 +372,17 @@ export function mergeQuakeInto(existing: JMAQuake | undefined, incoming: JMAQuak
           ? incoming.earthquake.domesticTsunami
           : existing.earthquake.domesticTsunami,
       },
+      // **借り物の印は落とす。** この報は震源そのものを更新するので、以後の震源は自前。
+      // `...existing` を土台にしているため、明示的に消さないと印だけが残り、画面に
+      // 「津波情報より」と出続けるうえ、津波の続報で震源を上書きされる
+      // （→ `utils/borrowFromTsunami.ts`。印の有無が借り物かどうかの目印）。
+      hypocenterSource: undefined,
+      // 津波区分の印も同じ扱い。**ただし落とすのは自前の値を採ったときだけ** —— この報が
+      // 区分を伝えていなければ（`不明`）既存の借り物を据え置くので、印も残さないと
+      // 出どころだけが画面から消える。
+      domesticTsunamiSource: incoming.earthquake.domesticTsunami !== '不明'
+        ? undefined
+        : existing.domesticTsunamiSource,
       // VXSE61 は自由付加文を必ず持ち、定型文だけのこともあれば**精査後のモーメント
       // マグニチュード**が添えられることもある。`...existing` を土台にしているため、
       // 明示的に採らないとその報だけが持つ情報が捨てられ、更新前の付加文が残り続ける。
@@ -488,6 +520,12 @@ export function mergeQuakeInto(existing: JMAQuake | undefined, incoming: JMAQuak
     result = {
       ...result,
       earthquake: { ...result.earthquake, hypocenter: existing.earthquake.hypocenter },
+      // **出どころの印も震源と一緒に運ぶ。** 既存カードの震源が津波電文から借りたものなら、
+      // それを引き継いだ側も借り物。印を落とすと画面から出どころが消えるだけでなく、
+      // 「自前の震源を持つカード」と見分けが付かなくなり、津波の続報で震源が更新されても
+      // 追随しなくなる（印の有無が借り物かどうかの単一の目印。
+      // → `utils/borrowFromTsunami.ts`）。震度・市町村を一緒に補うのと同じ考え方。
+      ...(existing.hypocenterSource && { hypocenterSource: existing.hypocenterSource }),
     }
   }
 
@@ -519,6 +557,13 @@ export function mergeQuakeInto(existing: JMAQuake | undefined, incoming: JMAQuak
           ? existing.earthquake.domesticTsunami
           : result.earthquake.domesticTsunami,
       },
+      // **出どころの印も区分と一緒に運ぶ。** 既存の区分が津波電文の等級から借りたものなら、
+      // それを据え置いた側も借り物。落とすと画面から出どころが消えるだけでなく、
+      // 「気象庁が判断を示した値」と見分けが付かなくなり、津波の続報で等級が上がっても
+      // 追随しなくなる（印の有無が借り物かどうかの単一の目印。
+      // → `utils/borrowFromTsunami.ts`）。震源の印を運ぶのと同じ考え方。
+      ...(existing.earthquake.domesticTsunami !== '不明' && existing.domesticTsunamiSource
+        && { domesticTsunamiSource: existing.domesticTsunamiSource }),
       forecastText: existing.forecastText ?? result.forecastText,
       // 固定付加文（その他）も既存を残す。**震度速報はこれを持たない**（実電文の付加文は
       // 津波区分のコード 0217 だけ）ので、incoming を採ると前の報が伝えた注記が消える。
