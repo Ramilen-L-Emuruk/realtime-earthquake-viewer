@@ -7,6 +7,7 @@ import { computeSWaveRadiusAtTime, computeSWaveTravelTimeSec } from '../../hooks
 import { calcShakingDurationSec } from '../../utils/eew'
 import { EARTH_RADIUS_KM } from '../../utils/geo'
 import { ringVertex } from './gl/psWaveRing'
+import { S_WAVE_FILL_RGB, S_WAVE_STROKE_RGB, P_WAVE_STROKE_RGB, S_WAVE_FILL_ALPHA } from './gl/psWaveStyle'
 import { addOrderedLayer } from './gl/layerOrder'
 import { log } from '../../utils/logger'
 import { guardRender } from './gl/guardRender'
@@ -45,10 +46,11 @@ const STROKE_PX = 2
 // P 波の破線の 1 周期あたりの画面長（px）。Canvas2D 版の setLineDash([4,4]) と揃える。
 const DASH_PERIOD_PX = 8
 
-const S_FILL: readonly [number, number, number] = [255 / 255, 60 / 255, 0]
-const S_FILL_ALPHA = 0.12
-const S_STROKE: readonly [number, number, number] = [255 / 255, 60 / 255, 0]
-const P_STROKE: readonly [number, number, number] = [56 / 255, 189 / 255, 248 / 255]
+// 配色は gl/psWaveStyle.ts が単一情報源（凡例と共有する）。
+const S_FILL = S_WAVE_FILL_RGB
+const S_STROKE = S_WAVE_STROKE_RGB
+const P_STROKE = P_WAVE_STROKE_RGB
+const S_FILL_ALPHA = S_WAVE_FILL_ALPHA
 
 // 頂点シェーダーの本体。座標変換は MapLibre が配る投影シェーダーに任せる（gl/projectionProgram.ts）ため、
 // `#version` と prelude はプログラム生成側で前置きする。

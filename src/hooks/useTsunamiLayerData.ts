@@ -4,6 +4,7 @@ import type { LatLng } from '../utils/tsunamiZones'
 import { useTsunamiZones } from './useTsunamiZones'
 import { useTsunamiObsCoords } from './useTsunamiObsCoords'
 import { GRADE_PRIORITY, isObservationMissing } from '../utils/tsunami'
+import { tsunamiObsBarColor } from '../components/Map/gl/tsunamiObsBarStyle'
 import { log } from '../utils/logger'
 
 // 津波モードの描画に必要な派生データ（海岸線＋観測棒）を計算する共有フック。
@@ -116,8 +117,8 @@ export function useTsunamiLayerData(
       if (!latLng) continue
       const v = o.height.value
       const barPx = Math.round(Math.max(OBS_MIN_PX, Math.min(OBS_MAX_PX, (v / OBS_MAX_M) * OBS_MAX_PX)))
-      // 気象庁津波観測階級: 3m以上=紫, 1m以上=赤, 0.2m以上=オレンジ, 0.2m未満=シアン。
-      const color = v >= 3 ? '#a855f7' : v >= 1 ? '#ef4444' : v >= 0.2 ? '#f97316' : '#22d3ee'
+      // 気象庁の津波観測階級で 4 段（段と色は `gl/tsunamiObsBarStyle.ts` が単一情報源。凡例も同じ表を読む）。
+      const color = tsunamiObsBarColor(v)
       const blinking = obsUpdateStatus?.has(o.name) ?? false
       bars.push({ name: o.name, lat: latLng[0], lng: latLng[1], barPx, color, height: o.height, blinking })
     }

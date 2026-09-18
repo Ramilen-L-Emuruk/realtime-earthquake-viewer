@@ -776,6 +776,10 @@ JSON 変換が自ら `${value}m以上` を組むこと、`overSuffixedHeight` �
   （カード側には実測値が出るため、地図と一覧で見え方が食い違う）
 - ツールチップの波高は `overSuffixedHeight` を通す（「以上」の扱いは §6「観測波高の「以上」」）。
   **棒の高さは `value` だけで決まり「以上」を区別しない**（飽和値までしか伸びない）
+- 色は気象庁の津波観測階級で 4 段。段と色は
+  [`Map/gl/tsunamiObsBarStyle.ts`](../../src/components/Map/gl/tsunamiObsBarStyle.ts) が単一情報源で、
+  **地図の凡例も同じ表を読む**。**等級の色（`utils/tsunamiStyle.ts`）とは別物**で、凡例では別の
+  ブロックへ分けている（理由は [`map-rendering-spec.md`](map-rendering-spec.md) §20）
 - 更新は観測点名をキーにした差分更新（HTML マーカーを使い回して中身だけ書き換える）。
   受信のたびに全マーカーを作り直すと、発報中の高頻度な更新で棒が一瞬消えてちらつく
 - カメラがこのバーへ寄る条件と俯瞰への帰り方は [`map-rendering-spec.md`](map-rendering-spec.md) §6
@@ -1924,3 +1928,6 @@ EEW の発表状況は判定に入れない（下記「優先度ルール」参�
 - 2026-09-14: 観測点の行から寄せたときの着地の深さを、地震カードの一覧と同じにした（同節）。
   一覧の行から寄せるときの上限だけを深くした際、この経路だけ自動フィットの上限のまま
   取り残されていた。**同じ操作が一覧によって違う深さへ着地していた**
+- 2026-09-18: 観測点バーの段と色を [`Map/gl/tsunamiObsBarStyle.ts`](../../src/components/Map/gl/tsunamiObsBarStyle.ts)
+  へ切り出した（§8）。地図の凡例が同じ表を読むため。等級の色と 2 色が値まで一致するので、凡例では
+  別のブロックへ分けて見本の形も変えている（→ [`map-rendering-spec.md`](map-rendering-spec.md) §20）
