@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import type { CustomLayerInterface } from 'maplibre-gl'
+import type { OrderedCustomLayer } from './gl/layerOrder'
 import { applyProjectionUniforms, createProjectionProgramCache } from './gl/projectionProgram'
 import { useMapGL } from './mapGLContext'
 import type { PsWaveCircle } from '../../services/kyoshin'
@@ -9,8 +9,8 @@ import { EARTH_RADIUS_KM } from '../../utils/geo'
 import { ringVertex } from './gl/psWaveRing'
 import { addOrderedLayer } from './gl/layerOrder'
 import { log } from '../../utils/logger'
+import { reportRenderFailure, clearRenderFailure, clearRenderFailuresFor } from '../../utils/renderHealth'
 import { guardRender } from './gl/guardRender'
-import { clearRenderFailuresFor } from '../../utils/renderHealth'
 
 // 緊急地震速報の予報円（S波=塗りつぶし＋後端フェード / P波=破線外周）を描画する MapLibre 版。
 //
@@ -234,7 +234,7 @@ ${VERT_BODY}`,
       return Math.max(4, Math.round((2 * Math.PI * rPx) / DASH_PERIOD_PX))
     }
 
-    const customLayer: CustomLayerInterface = {
+    const customLayer: OrderedCustomLayer = {
       id: LYR,
       type: 'custom',
       renderingMode: '2d',
@@ -328,7 +328,20 @@ ${VERT_BODY}`,
     }
 
 
-    addOrderedLayer(map, customLayer)
+    // **載せられなかったら画面へ出す。** 載せられなければ `render()` が一度も呼ばれず、
+    // 描画側の検出（`gl/guardRender.ts`）には永久に到達しない —— 予報円だけが理由もなく
+    // 消えたまま残る。ここを `console` 止まりにしていたのが、兄弟の 4 つと非対称だった。
+    const add = () => {
+      try {
+        if (!map.getLayer(LYR)) addOrderedLayer(map, customLayer)
+        // 載せられたら前回の失敗の記録を消す（引きずらない）。
+        clearRenderFailure(LYR, 'draw')
+      } catch (err) {
+        log.error('[PsWaveGL] custom layer add failed', err)
+        reportRenderFailure(LYR, LABEL, 'draw')
+      }
+    }
+    add()
     const requestRepaint = () => map.triggerRepaint()
     triggerRef.current = requestRepaint
     map.on('move', requestRepaint)
@@ -345,12 +358,8 @@ ${VERT_BODY}`,
     // → `map.isStyleLoaded()` が false の間は `map.once('style.load', ...)` で待ってから追加し、
     //    各コンポーネントが try/catch で例外を隔離する。
     const readdLayer = () => {
-      try {
-        if (!map.getLayer(LYR)) addOrderedLayer(map, customLayer)
-        requestRepaint()
-      } catch (err) {
-        log.error('[PsWaveGL] custom layer re-add failed', err)
-      }
+      add()
+      requestRepaint()
     }
     const onRestored = () => {
       log.warn('[PsWaveGL] WebGL context restored, re-adding custom layer')
@@ -368,6 +377,10 @@ ${VERT_BODY}`,
       map.off('style.load', readdLayer)
       triggerRef.current = null
       if (map.getLayer(LYR)) map.removeLayer(LYR)
+      // **画面から外れたら不調の記録も消す**（§16）。レイヤーの `onRemove` も同じことをするが、
+      // **載せられなかったときはそこを通らない** ——`removeLayer` を呼ぶ相手がいないため、
+      // 報告した失敗が消えずに残る。
+      clearRenderFailuresFor(LYR)
     }
   }, [map])
 

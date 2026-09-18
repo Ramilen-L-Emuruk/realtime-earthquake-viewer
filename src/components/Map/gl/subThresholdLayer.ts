@@ -1,4 +1,5 @@
 import * as maplibregl from 'maplibre-gl'
+import type { OrderedCustomLayer } from './layerOrder'
 import { applyProjectionUniforms, createProjectionProgramCache } from './projectionProgram'
 import { SHINDO0_COLOR } from '../../../utils/kyoshinIntensity'
 import { guardRender } from './guardRender'
@@ -27,6 +28,10 @@ const MAX_UINT16_POINTS = 65535
 // レイヤー ID と、描画の不調を知らせるときの表示名（`utils/renderHealth.ts`）。
 const LYR = 'kyoshin-subthreshold'
 const LABEL = '弱い揺れの観測点'
+
+// **id と表示名は 1 箇所に置く。** 載せる側（`KyoshinSubThresholdGL.tsx`）も不調の記録に同じ値が
+// 要るので、あちらで文字列を書き直すと片方だけ古くなる（以前は id のリテラルが二重にあった）。
+export { LYR as SUB_THRESHOLD_LAYER_ID, LABEL as SUB_THRESHOLD_LABEL }
 
 // index 0→0、index 6→0.35 の指数カーブ（Leaflet 版 subThresholdOpacity と一致）。
 export function subThresholdOpacity(idx: number): number {
@@ -85,7 +90,7 @@ void main() {
 
 export interface SubThresholdLayer {
   /** MapLibre へ addLayer する custom レイヤー本体。 */
-  layer: maplibregl.CustomLayerInterface
+  layer: OrderedCustomLayer
   /** 毎秒の震度更新。levels は各点のレベル(0〜6)。GPU 反映と再描画は呼び出し側の triggerRepaint。 */
   setLevels(levels: Uint8Array): void
   /** UI 倍率の変化で点の半径を更新（次フレームから反映）。呼び出し側で triggerRepaint する。 */
@@ -186,7 +191,7 @@ ${POINT_VS_BODY}`,
     return p
   }
 
-  const layer: maplibregl.CustomLayerInterface = {
+  const layer: OrderedCustomLayer = {
     id: LYR,
     type: 'custom',
     onAdd(map: maplibregl.Map, gl: WebGL2RenderingContext) {
