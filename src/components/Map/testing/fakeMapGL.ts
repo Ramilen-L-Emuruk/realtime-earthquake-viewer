@@ -37,6 +37,7 @@ import type {
   LayerSpecification,
   Map as MapLibreMap,
   SourceSpecification,
+  StyleSpecification,
 } from 'maplibre-gl'
 
 type AnyLayer = LayerSpecification | CustomLayerInterface
@@ -64,6 +65,12 @@ interface FakeMapMethods {
   setLayoutProperty: (id: string, name: string, value: unknown) => void
   on: (type: string, handler: MapEventHandler) => void
   off: (type: string, handler: MapEventHandler) => void
+  /**
+   * **戻り値の型を本物より広く取っている。** MapLibre の宣言は `StyleSpecification` 固定だが、
+   * 実装はスタイルが無ければ undefined を返す（`gl/mapStyleGone.ts`）。ここで固定の型に
+   * 合わせると、模したい状態そのものを書けない。
+   */
+  getStyle: () => StyleSpecification | undefined
 }
 
 export interface FakeMapGL {
@@ -73,6 +80,17 @@ export interface FakeMapGL {
   layerIds: () => string[]
   /** いま載っているソースの id（`addSource` の呼び出し順）。 */
   sourceIds: () => string[]
+  /**
+   * スタイルを失った状態にする（`Map.remove()` された後、または WebGL コンテキストロスト中）。
+   * 以後 `getStyle` / `getSource` / `getLayer` はそろって undefined を返す——**本物が
+   * `this.style?.…` を共有しているため**（`gl/mapStyleGone.ts`）。片方だけ落とすと、
+   * コンポーネント側のガードが通る／通らないをテストの都合で作れてしまう。
+   */
+  loseStyle: () => void
+  /** 登録された購読を呼ぶ（`moveend` 等）。 */
+  emit: (type: string) => void
+  /** `getStyle` が呼ばれた回数。**正常系で呼ばれていないこと**を見るために持つ。 */
+  getStyleCalls: () => number
 }
 
 /**
@@ -86,12 +104,14 @@ export function createFakeMapGL(): FakeMapGL {
   const sources = new Map<string, SourceSpecification>()
   const layers = new Map<string, AnyLayer>()
   const listeners = new Map<string, MapEventHandler[]>()
+  let styleGone = false
+  let getStyleCalls = 0
 
   const methods: FakeMapMethods = {
     addSource: (id, spec) => {
       sources.set(id, spec)
     },
-    getSource: id => sources.get(id),
+    getSource: id => (styleGone ? undefined : sources.get(id)),
     removeSource: id => {
       sources.delete(id)
     },
@@ -101,7 +121,7 @@ export function createFakeMapGL(): FakeMapGL {
     addLayer: layer => {
       layers.set(layer.id, layer)
     },
-    getLayer: id => layers.get(id),
+    getLayer: id => (styleGone ? undefined : layers.get(id)),
     removeLayer: id => {
       layers.delete(id)
     },
@@ -117,11 +137,23 @@ export function createFakeMapGL(): FakeMapGL {
       const at = list.indexOf(handler)
       if (at >= 0) list.splice(at, 1)
     },
+    getStyle: () => {
+      getStyleCalls++
+      return styleGone ? undefined : ({} as StyleSpecification)
+    },
   }
 
   return {
     map: methods as unknown as MapLibreMap,
     layerIds: () => [...layers.keys()],
     sourceIds: () => [...sources.keys()],
+    loseStyle: () => {
+      styleGone = true
+    },
+    // 呼び出し中に `off` されても走っている列を壊さないよう複製してから回す。
+    emit: type => {
+      for (const handler of [...(listeners.get(type) ?? [])]) handler()
+    },
+    getStyleCalls: () => getStyleCalls,
   }
 }
