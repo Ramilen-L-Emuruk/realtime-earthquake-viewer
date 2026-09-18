@@ -1,6 +1,8 @@
 import type * as maplibregl from 'maplibre-gl'
 import type { TsunamiArrivalMarker } from '../../../hooks/useTsunamiLayerData'
-import { isOnVisibleSide, BAR_WIDTH, BAR_FOOT } from './tsunamiObsBar'
+import {
+  isOnVisibleSide, BAR_WIDTH, BAR_FOOT, BAR_RING, BADGE_SHADOW_COLOR, BADGE_SHADOW_BLUR,
+} from './tsunamiObsBar'
 import { log } from '../../../utils/logger'
 
 // 津波の到達確認マーカー（TsunamiArrivalMarkersGL）の寸法と、共有カードへの描き直し。
@@ -27,14 +29,15 @@ import { log } from '../../../utils/logger'
  */
 export const BADGE_RADIUS = (BAR_WIDTH + BAR_FOOT) / 2
 /**
- * 白フチの太さの上限（px）。**倍率で太らせない**——枠線・影は装飾のヘアラインとして扱う
- * （settings-pwa-spec.md §2「倍率の適用範囲」。観測棒の角丸と同じ扱い）。
+ * 白フチの太さの上限（px）。**観測棒のフチ（`BAR_RING`）と同じ値を使う**——地図に並ぶ印の輪郭が
+ * 太さで食い違わないようにする。**倍率で太らせない**のは枠線・影を装飾のヘアラインとして扱う方針
+ * （settings-pwa-spec.md §2「主な項目の補足」。観測棒の角丸と同じ扱い）。
  *
  * ただし**細らせることはする**。倍率の下限 0.5 では直径が 4.5px まで縮み、この太さのまま内側へ
  * 引くと灰色の芯が 1.5px しか残らず、印が「ほぼ白い丸」になって色が担っていた「値が無い」の
  * 合図が消える。芯の取り分は `MIN_CORE_RATIO` で保つ。
  */
-export const BADGE_RING = BAR_FOOT / 2
+export const BADGE_RING = BAR_RING
 /**
  * 直径のうち灰色の芯が占める最小の割合。等倍がちょうどこの比（芯 6px / 直径 9px）なので、
  * 等倍以上では上記の上限が効き、下回る倍率でだけフチが細くなる。
@@ -110,8 +113,8 @@ export function drawTsunamiArrivalMarkers(
     // 白フチ（外側の帯）。影はいちばん外の要素に付ける（丸バッジと同じ落とし方）。
     ctx.save()
     ctx.globalAlpha = ARRIVAL_OPACITY
-    ctx.shadowColor = 'rgba(0,0,0,0.7)'
-    ctx.shadowBlur = 3
+    ctx.shadowColor = BADGE_SHADOW_COLOR
+    ctx.shadowBlur = BADGE_SHADOW_BLUR
     ctx.strokeStyle = ARRIVAL_RING_COLOR
     ctx.lineWidth = ring
     ctx.beginPath()

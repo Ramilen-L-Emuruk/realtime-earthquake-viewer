@@ -1364,7 +1364,7 @@ MapLibre v6 の `_contextRestored` は `setStyle(..., {diff:false})` を呼ん�
   - `overlayLineSource.ts` — 線の共有ソース（`overlay-lines`）の調停（§9）
   - `skipNoopCameraUpdate.ts` — カメラ更新の空振り省略と、その前提が崩れていないかの自己確認（§9）
   - `subThresholdLayer.ts` — 震度 0 ドットのカスタムレイヤー
-  - `tsunamiObsBar.ts` — 津波観測バーの寸法計算（地図アイコン倍率の適用範囲を含む）
+  - `tsunamiObsBar.ts` — 津波観測バーの寸法計算と共有カードへの描き直し（地図アイコン倍率の適用範囲を含む）
   - `tsunamiArrivalMarker.ts` — 津波の到達確認マーカーの寸法計算と共有カードへの描き直し
   - `fontStack.ts` — グリフスタック設定
   - `intensityIcons.ts` / `lpgmIcons.ts` / `kyoshinDetectedIcons.ts` — 事前ラスタライズアイコン
