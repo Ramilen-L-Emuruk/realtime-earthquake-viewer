@@ -42,6 +42,7 @@ import { useSettings } from './hooks/useSettings'
 import { useAlertTitle } from './hooks/useAlertTitle'
 import { useLiveEventHandler } from './hooks/useLiveEventHandler'
 import { useUnreceivedSpeechFollow } from './hooks/useUnreceivedSpeechFollow'
+import { useBorrowedHypocenterFollow, type BorrowedHypocenterShowResult } from './hooks/useBorrowedHypocenterFollow'
 import { useKyoshinAlerts } from './hooks/useKyoshinAlerts'
 import { useKyoshinRealtime } from './hooks/useKyoshinRealtime'
 import { useKyoshinDetectorV2 } from './hooks/useKyoshinDetectorV2'
@@ -198,11 +199,15 @@ export function App() {
   // QuakeFitGL に「電文起点の自動更新」として扱わせる（isUserInteracting を尊重）。
   // explicit=true の呼び出しだけが quakeSelectionTick を進め、QuakeFitGL が isUserInteracting
   // を無視して強制フィットする（CameraFollowsGL.tsx の QuakeFitGL 参照）。
-  const selectQuake = useCallback((id: string | null, opts?: { explicit?: boolean }) => {
+  //
+  // **受け取るのはカードの `eventKey` で、生電文の `id` ではない。** 引数名でそれを示す ——
+  // 選択中カードの導出は `quakeEventKey(q)` と突き合わせるので、`id` を渡すとどのカードにも
+  // 一致せず、黙って「一覧の最新カード」へ落ちる（例外もログも出ない）。
+  const selectQuake = useCallback((eventKey: string | null, opts?: { explicit?: boolean }) => {
     // **追加表示を閉じるのは、別の地震へ移るときだけ**（判定と理由は `shouldCloseOverlayOnSelection`）。
-    const closeOverlay = shouldCloseOverlayOnSelection(selectedQuakeIdRef.current, id)
-    selectedQuakeIdRef.current = id
-    setSelectedQuakeId(id)
+    const closeOverlay = shouldCloseOverlayOnSelection(selectedQuakeIdRef.current, eventKey)
+    selectedQuakeIdRef.current = eventKey
+    setSelectedQuakeId(eventKey)
     if (closeOverlay) setQuakeOverlay(null)
     if (opts?.explicit) setQuakeSelectionTick(t => t + 1)
   }, [])
@@ -677,12 +682,17 @@ export function App() {
     onSubjectChange: setSpeakingTelegramTextSubject,
   })
 
+  // 借りた震源のカード表示も同じ仕組みで動かす（4 本目）。**枠を分ける理由は上の 2 つと同じ。**
+  const [borrowedHypocenterFollowSession, setBorrowedHypocenterFollowSession] = useState<SpeechFollowSession | null>(null)
+  const borrowedHypocenterFollow = useMemo(() => createSpeechFollowController(setBorrowedHypocenterFollowSession), [])
+
   // ライブイベント受信処理（通知音・タイトル・タブ切替・読み上げ・ブラウザ通知）
   const { handleLiveEvent, resetTracking, restorePreWindowTracking, obsUpdateStatus, areaGradeChangedKeys, focusedDistrict } = useLiveEventHandler({
     settings, title, earthquakesRef, tsunamisRef, kyoshinDetectedRef, defaultTabRef,
     setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate, setActiveTabRealtimeUrgent,
     setActiveTabRealtimeForKyoshin: () => requestTabForKyoshin('realtime'),
     followSpeechTab, preSpeechTab, speechFollow, unreceivedFollow, telegramTextFollow,
+    borrowedHypocenterFollow,
     expandPanelForSpecialInfo,
     revertToDefaultTab, selectQuake, openLpgmFromQuake, openEstimatedIntensity,
     closeDistributionOnQuakeReport,
@@ -736,7 +746,7 @@ export function App() {
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
     simulateQuakeNotice, simulateEarthquakeCount, simulateEarthquakeCountRetraction, simulateEstimatedIntensity,
     simulateTrainingQuake, simulateUnreceivedQuake, simulateTsunamiGradeChange, simulateQuakeAmendment,
-    simulateQuakeReportSequence,
+    simulateQuakeReportSequence, simulateHypocenterFromTsunami,
     resetState, loadReplayEvents, restoreQuakeHistory,
   } = useEarthquakes(handleLiveEvent, debouncedApiKey, settings.dmdataTestDelivery, replayTimeOffset, handleStartupRestore)
   earthquakesRef.current = earthquakes
@@ -802,6 +812,7 @@ export function App() {
     trainingQuake:     simulateTrainingQuake,
     quakeAmendment:    simulateQuakeAmendment,
     quakeReportSequence: simulateQuakeReportSequence,
+    borrowFromTsunami: isDmdss ? simulateHypocenterFromTsunami : undefined,
     unreceivedQuake:   simulateUnreceivedQuake,
     tsunamiGradeChange: simulateTsunamiGradeChange,
     estimatedIntensity: simulateEstimatedIntensity,
@@ -823,7 +834,7 @@ export function App() {
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
     simulateQuakeNotice, simulateEarthquakeCount, simulateEarthquakeCountRetraction, simulateEstimatedIntensity,
     simulateTrainingQuake, simulateUnreceivedQuake, simulateTsunamiGradeChange, simulateQuakeAmendment,
-    simulateQuakeReportSequence,
+    simulateQuakeReportSequence, simulateHypocenterFromTsunami,
   ])
   // IconNav の onTabChange。手動選択は必ず即時反映し、以後 TAB_HOLD_MS の間は自動切替に
   // 奪わせない（EEW の新規発報・レベルアップ・誤報取消だけはこれより強い）。
@@ -1865,6 +1876,41 @@ export function App() {
     isOpen: unreceivedQuakeKey !== null,
     open: openUnreceivedForSpeech,
     close: closeUnreceivedForSpeech,
+  })
+  /**
+   * 津波の読み上げが借りた震源を語っているあいだ、その原因地震のカードを見せる。
+   *
+   * **見送る条件は 1 つだけ**（主題を持たない読み上げ＝`declined`）。未入電の自動開閉が 4 つ
+   * 持っているのに対して少ないのは、**要求する中身が「排他の追加表示を開くこと」ではなく
+   * 「タブとカードの選択」だから** —— 他人が開いたものを閉じることも、地図の画を作り替える
+   * こともしない。見ているタブで絞らないのも同じ理由で、津波タブを見ている最中に震源を語るのは
+   * まさに追従したい場面（→ `hooks/useBorrowedHypocenterFollow.ts`）。
+   *
+   * **カードが見つからないのは `mismatch`。** 震源を借りられるのはカードがある地震だけなので、
+   * 語っているのに相手がいないのは読み上げ文と画面が食い違っている印。
+   *
+   * 優先度は地震情報のもの（`quake`）。津波の追従（`tsunami`）より低いが、**読み上げ追従どうしは
+   * 保持を見ない**ので弾かれない（→ `utils/tabPriority.ts` の `shouldAcceptAutoTab`）。
+   */
+  const showQuakeForBorrowedHypocenter = useCallback((subject: string | undefined): BorrowedHypocenterShowResult => {
+    if (!subject) return 'declined'
+    const card = earthquakesRef.current.find(q => quakeEventKey(q) === subject)
+    if (!card) return 'mismatch'
+    // **渡すのはカードの `eventKey`（＝ここでは `subject` そのもの）で、`card.id` ではない。**
+    // `selectedQuakeId` は選択中カードの導出で `quakeEventKey(q)` と突き合わされるため、生電文の
+    // `id` を入れるとどのカードにも一致せず、**黙って「一覧の最新カード」へ落ちる**
+    // （`latestNonCancelled` のフォールバック）。語っている地震とは別のカードが選ばれるのに、
+    // 例外もログも出ない。
+    //
+    // **`explicit` は渡さない。** 利用者の操作ではないので、地図の強制フィットまでは起こさない
+    // （電文起点の自動追従と同じ扱い → `selectQuake` の注記）。
+    selectQuake(subject)
+    followSpeechTab('earthquake', TAB_PRIORITY.quake)
+    return 'shown'
+  }, [selectQuake, followSpeechTab])
+  useBorrowedHypocenterFollow({
+    session: borrowedHypocenterFollowSession,
+    show: showQuakeForBorrowedHypocenter,
   })
   // 共有カード（表示中の地図を 1 枚の画像にする）。撮影は地図そのものを操作するため実体が要る
   // ——地図の生成時に受け取って持つ。地図へ重ねる UI は App が配置する決まりなので、

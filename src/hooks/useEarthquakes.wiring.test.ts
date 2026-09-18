@@ -1015,6 +1015,96 @@ describe('南海トラフ関連解説情報の帯は期限で畳む', () => {
   })
 })
 
+describe('震源・津波区分を津波電文から借りる結線', () => {
+  // **借りる契機は両方向に要る**（地震が先・津波が先）。どちらが先かは決まっていないのに、
+  // 片方の配線が落ちても画面には「その順序のときだけ震源が出ない」としか現れない。
+  // 純関数（`utils/borrowFromTsunami.ts`）のテストでは、reducer のどの分岐に繋いだかを見られない。
+  const EVENT_ID = '20240101161010'
+
+  /** 震源を持たない震度速報（実電文と同じくセンチネルで埋める）。 */
+  function prompt(): JMAQuake {
+    const at = serverDate().toISOString()
+    return {
+      kind: 'quake',
+      id: `dmdata-quake-${EVENT_ID}-1`,
+      time: at,
+      issue: { source: 'dmdata', time: at, type: '震度速報', correct: 'なし' },
+      earthquake: {
+        time: at,
+        hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: NaN },
+        maxScale: 70,
+        domesticTsunami: '調査中',
+      },
+      points: [{ pref: '石川県', addr: '石川県能登', isArea: true, scale: 70 }],
+    }
+  }
+
+  /** 原因地震（震源）と大津波警報を載せた津波。 */
+  function tsunami(over: { eventId?: string } = {}): JMATsunami {
+    const at = serverDate().toISOString()
+    return {
+      kind: 'tsunami',
+      id: `dmdata-tsunami-${EVENT_ID}-1`,
+      eventId: over.eventId ?? EVENT_ID,
+      time: at,
+      cancelled: false,
+      infoName: '津波警報・津波注意報・津波予報',
+      issue: { source: 'dmdata', time: at, type: 'Focus' },
+      areas: [{ grade: 'MajorWarning', immediate: true, name: '石川県能登' }],
+      sourceEarthquakes: [{
+        hypocenterName: '石川県能登地方',
+        magnitude: 7.4,
+        originTime: at,
+        latitude: 37.5,
+        longitude: 137.2,
+        depth: 0,
+      }],
+    }
+  }
+
+  /** 地震・津波は AppEvent の入口（`injectEvent`）から流す。 */
+  function push(h: ReturnType<typeof setup>, event: JMAQuake | JMATsunami) {
+    act(() => { h.current.injectEvent(event) })
+  }
+
+  // 正: 津波が先。受信側（'quake' ケース）が、既に画面にある津波から借りる。
+  it('津波が先に届いていれば、あとから来た震度速報が震源と津波区分を借りる', async () => {
+    const h = setup()
+    await h.flush()
+    push(h, tsunami())
+    push(h, prompt())
+    const card = h.current.earthquakes[0]
+    expect(card.earthquake.hypocenter.name).toBe('石川県能登地方')
+    expect(card.earthquake.domesticTsunami).toBe('警報等')
+    expect(card.hypocenterSource?.shortLabel).toBe('津波情報')
+    expect(card.domesticTsunamiSource?.shortLabel).toBe('津波情報')
+  })
+
+  // 正: 地震が先。配る側（'tsunami' ケース）が、既にあるカードへ配る。
+  it('震度速報が先に届いていれば、あとから来た津波がカードへ配る', async () => {
+    const h = setup()
+    await h.flush()
+    push(h, prompt())
+    expect(h.current.earthquakes[0].earthquake.hypocenter.name).toBe('')
+    push(h, tsunami())
+    const card = h.current.earthquakes[0]
+    expect(card.earthquake.hypocenter.name).toBe('石川県能登地方')
+    expect(card.earthquake.domesticTsunami).toBe('警報等')
+  })
+
+  // 安全弁: 別の地震の津波からは借りない（結ぶ根拠は `eventId` の一致だけ）。
+  it('eventId が違う津波からは借りない', async () => {
+    const h = setup()
+    await h.flush()
+    push(h, tsunami({ eventId: '20240101999999' }))
+    push(h, prompt())
+    const card = h.current.earthquakes[0]
+    expect(card.earthquake.hypocenter.name).toBe('')
+    expect(card.earthquake.domesticTsunami).toBe('調査中')
+    expect(card.hypocenterSource).toBeUndefined()
+  })
+})
+
 describe('地震・津波に関するお知らせ（VZSE40）と地震回数（VXSE60）の結線', () => {
   // どちらも**実配信では観測できていない種別**（電文一覧 13 か月で 0 通）。実機で偶然踏んで
   // 気づくことが期待できないぶん、畳み方と取消の照合はここで固定しておく。
