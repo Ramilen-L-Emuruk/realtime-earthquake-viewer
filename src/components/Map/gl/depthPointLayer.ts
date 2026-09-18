@@ -18,7 +18,9 @@ import { guardRender } from './guardRender'
 //
 // 投影は地球儀（globe）と Mercator を行き来する（寄ると MapLibre が自動で切り替える）。
 // 座標変換は MapLibre が配る投影シェーダーに任せ、プログラムは投影ごとに持つ（gl/projectionProgram.ts）。
-// **深さの単位だけは投影で違う**ため、シェーダー内で出し分けている（`elevationForProjection`）。
+// **深さの単位だけは投影で違う**（球はメートル・平面は Mercator 座標系の z）ため、シェーダー内で
+// 出し分けている。**球から平面へ渡る帯では両方が同時に効く**ので、`projectDepthPoint` はそこだけ
+// 混ぜ合わせを自前で書き、項ごとに正しい単位を渡す（そのコメントに経緯がある）。
 
 /** 地下に置く 1 点。 */
 export interface DepthPoint {
@@ -90,8 +92,8 @@ export const BLINK_PERIOD_MS = 1200
  * 緯度経度と深さを、頂点バッファに詰める 3 つ組へ。
  *
  * x・y は Mercator 座標（0〜1）、**z は標高（m）で地下が負**。MapLibre の投影関数
- * （`projectTileFor3D`）が globe で受け取る単位に合わせてある。Mercator ではシェーダー側で
- * Mercator 座標系の z へ換算する（`elevationForProjection`）。
+ * （`projectTileFor3D`）が globe で受け取る単位に合わせてある。平面側で要る Mercator 座標系の z は
+ * シェーダーが換算する（`mercatorElevationZ`）。
  */
 export function toMercator(lng: number, lat: number, depthKm: number): [number, number, number] {
   return [mercatorX(lng), mercatorY(lat), elevationMetersFromDepthKm(depthKm)]
@@ -121,11 +123,22 @@ export function elevationMetersFromDepthKm(depthKm: number): number {
  * Mercator 座標の y（0〜1）から緯度の余弦を求める。
  *
  * 等長緯度 psi = π(1 - 2y) に対して cos(lat) = 1 / cosh(psi) が成り立つ（グーデルマン関数）。
- * **シェーダー側の `elevationForProjection` と同じ式**で、深さを Mercator 座標系の z へ
+ * **シェーダー側の `mercatorElevationZ` と同じ式**で、深さを Mercator 座標系の z へ
  * 換算するのに使う。ここに置いてあるのは、その一致を単体テストで確かめるため。
  */
 export function cosLatFromMercatorY(y: number): number {
   return 1 / Math.cosh(Math.PI * (1 - 2 * y))
+}
+
+/**
+ * 深さ（標高メートル・地下が負）を Mercator 座標系の z へ換算する。
+ *
+ * **シェーダー側の `mercatorElevationZ` と同じ式。** ここに置いてあるのは、
+ * **メートルと Mercator の z がどれだけ違うか**を単体テストで固定するため——
+ * 1 つの値で両方の投影を兼ねさせると点が明後日の位置へ飛ぶ（`projectDepthPoint` のコメント）。
+ */
+export function mercatorElevationZ(elevMeters: number, mercY: number): number {
+  return elevMeters / (EARTH_CIRCUMFERENCE_M * cosLatFromMercatorY(mercY))
 }
 
 /** MapLibre が球を描くときの地球半径（m）。globe のシェーダー断片が `GLOBE_RADIUS` として宣言する値。 */
@@ -141,7 +154,7 @@ const MAX_UNDERGROUND_FRACTION = 0.95
 /**
  * 球で使う標高（m）を、地球の中心を越えない範囲へ収める。
  *
- * **シェーダー側の `elevationForProjection` と同じ計算**（GLSL には定数を差し込んでいる）。
+ * **シェーダー側の `clampElevationForGlobe` と同じ計算**（GLSL には定数を差し込んでいる）。
  * ここに置いてあるのは、境界を単体テストで固定するため。
  */
 export function clampElevationForGlobe(elevMeters: number): number {
@@ -153,8 +166,12 @@ export function clampElevationForGlobe(elevMeters: number): number {
  *
  * **表と裏で頂点の式が食い違うと、見えている位置と当たり判定がずれる。** 1 箇所に置いて
  * 必ず同じ式を使う。
+ *
+ * **export しているのは単体テストのため。** 深さをどの単位でどちらの投影へ渡すかは GLSL の
+ * 分岐で決まり、間違えても型検査もリンクも通る（実際に 1 単位で両方を兼ねていた）。
+ * 投影ごとの受け渡しを `depthPointLayer.test.ts` が文面から検査する。
  */
-const SHARED_VERT = `
+export const SHARED_VERT = `
 precision highp float;
 uniform float u_exaggeration;
 uniform float u_nearZ;
@@ -167,23 +184,31 @@ const float MERC_PI = 3.141592653589793;
 const float EARTH_CIRCUMFERENCE_M = 40075016.686;
 const float MAX_UNDERGROUND_FRACTION = MAX_UNDERGROUND_FRACTION_VALUE;
 
-// **\`projectTileFor3D\` の elevation は投影で単位が違う。** globe はメートル、Mercator は
-// Mercator 座標系の z（緯度で縮む）。バッファはメートルで持ち、ここだけで吸収する。
-// Mercator 座標の y から緯度の余弦を戻す式は cosLatFromMercatorY と同じもの。
+// **深さの単位は投影で違う。** 球（globe）はメートル、平面（Mercator）は Mercator 座標系の
+// z（緯度で縮む）。バッファはメートルで持ち、投影へ渡す直前にここで換算する。
 //
+// **2 つを 1 つの値で兼ねさせないこと。** 球から平面へ渡る帯では両方の投影が同時に効くため、
+// 片方の単位で渡すともう片方が桁違いの値を受け取る（下記 \`projectDepthPoint\`）。
+//
+// Mercator 座標の y から緯度の余弦を戻す式は cosLatFromMercatorY と同じもの。
+float mercatorElevationZ(float elevMeters, float mercY) {
+  float cosLat = 1.0 / cosh(MERC_PI * (1.0 - 2.0 * mercY));
+  return elevMeters / (EARTH_CIRCUMFERENCE_M * cosLat);
+}
+
+#ifdef GLOBE
 // **球では地球の中心を越えさせない。** MapLibre は球面上の点を
 // \`spherePos * (1.0 + elevation / GLOBE_RADIUS)\` で置くので、elevation が -GLOBE_RADIUS を
 // 下回ると係数が負になり、**点が地球の反対側へ写る**。深さ 700km 級の深発地震に強調 10 倍を
 // 掛けるだけで届く（700 × 10 > 6371）。地表の震央だけ正しい位置に残り、震源だけがあり得ない
 // 場所へ飛ぶ形になるので、手前で止める。
-float elevationForProjection(float elevMeters, float mercY) {
-#ifdef GLOBE
+//
+// **平面側には掛けない。** Mercator 単体の経路が掛けていないので、掛けると帯の上端
+// （純平面へ渡るところ）で不連続になる。
+float clampElevationForGlobe(float elevMeters) {
   return max(elevMeters, -GLOBE_RADIUS * MAX_UNDERGROUND_FRACTION);
-#else
-  float cosLat = 1.0 / cosh(MERC_PI * (1.0 - 2.0 * mercY));
-  return elevMeters / (EARTH_CIRCUMFERENCE_M * cosLat);
-#endif
 }
+#endif
 
 // **地下の点は 2 つの理由で消える。どちらも z の書き換えで避ける。**
 //
@@ -209,13 +234,43 @@ float slabZ(float w) {
 
 // 深さ（z）にだけ誇張率を掛ける。水平方向は実スケールのまま。
 //
+// **球では \`projectTileFor3D\` を使えない。** MapLibre は球から平面へ渡る帯で 2 つの投影を混ぜるが、
+// その \`interpolateProjectionFor3D\` は受け取った elevation を**球側ではメートル・平面側では
+// Mercator 座標系の z** として使う。単位は緯度 37.5 度で 3 千万倍違うため、1 つの値では両方を
+// 満たせない。片方の単位で渡すと、混ざっている間だけ点が本来と無関係な位置へ飛ぶ。
+//
+// そこで球では混ぜ合わせだけ自前で書き、**混ぜ合わせる 2 つの位置（\`flatPos\` と球側の \`pos\`）へ
+// それぞれ正しい単位を渡す**。帯の両端（純球・純平面）では MapLibre と同じ式に戻るため、境目は
+// 連続する。**表示・判定・柄の 3 つがこの式を共有する**ので、ずれればクリック判定にも同じだけ及ぶ。
+// 帯の範囲・実測値・MapLibre を上げたときに確かめることは docs/spec/map-rendering-spec.md §6
+// 「地図の投影」が単一情報源。
+//
+// **\`u_projection_transition\` は検分しない。** 異常値を \`clamp\` で手当てすると MapLibre と違う
+// 規則で点を置くことになり、上の「境目が連続する」という保証を自ら崩す（理由は同 §6）。
+//
 // **球の裏側へ回った点も消えない。意図した挙動なので、消す方向へ直さないこと。**
-// \`projectTileFor3D\` は水平線のクリッピング（\`globeComputeClippingZ\`）を掛けず、
-// 加えて上の z の書き換えがそれを打ち消す。遠地地震の震源は日本と同じ視野に入らないため、
-// 透けて見えるほうを採っている
+// 水平線のクリッピング（\`globeComputeClippingZ\`）を掛けず、加えて下の z の書き換えがそれを
+// 打ち消す。遠地地震の震源は日本と同じ視野に入らないため、透けて見えるほうを採っている
 // （docs/spec/map-rendering-spec.md §16「球の裏側にある点は透けたまま残す」）。
 vec4 projectDepthPoint(vec3 p) {
-  vec4 pos = projectTileFor3D(p.xy, elevationForProjection(p.z * u_exaggeration, p.y));
+  float elevMeters = p.z * u_exaggeration;
+  vec4 pos;
+#ifdef GLOBE
+  // 球側はメートル。\`projectTileFor3D\` が呼ぶ球の項と同じ式。
+  vec3 spherePos = projectToSphere(p.xy, p.xy);
+  float globeElev = clampElevationForGlobe(elevMeters);
+  pos = u_projection_matrix * vec4(spherePos * (1.0 + globeElev / GLOBE_RADIUS), 1.0);
+  // MapLibre が投影ごとに配る GLSL 断片（prelude。gl/projectionProgram.ts）が宣言する varying。
+  // \`clipAntimeridian()\` を使う断片があれば読む先なので埋めておく。
+  v_projection_tile_x = p.x;
+  // 混ざる帯だけ平面側を足す。閾値は MapLibre の \`interpolateProjectionFor3D\` と同じ。
+  if (u_projection_transition <= 0.999) {
+    vec4 flatPos = u_projection_fallback_matrix * vec4(p.xy, mercatorElevationZ(elevMeters, p.y), 1.0);
+    pos = mix(flatPos, pos, u_projection_transition);
+  }
+#else
+  pos = projectTileFor3D(p.xy, mercatorElevationZ(elevMeters, p.y));
+#endif
   pos.z = slabZ(pos.w);
   return pos;
 }
@@ -492,8 +547,10 @@ const HIT_PAD_PX = 6
 const FAR_MARGIN = 1.2
 
 /**
- * 柄がこの長さ（CSS px）を下回ったら、補助の点と柄を隠す。
+ * `stemScreenLengthPx` がこの値（CSS px）を下回ったら、補助の点と柄を隠す。
  * 主役の点の半径ぶんに満たなければ、描いても重なって潰れるだけなので出さない。
+ *
+ * **比べる相手は「画面上の実際の長さ」ではない**（`stemScreenLengthPx` の説明）。
  */
 const MIN_STEM_PX = 10
 
@@ -557,10 +614,15 @@ function applyDepthSlab(
 }
 
 /**
- * 柄（地表から震源までの縦線）が画面上で持つ長さ（CSS px）。
+ * 柄（地表から震源までの縦線）が**傾きによって縦に伸びる分**（CSS px）。補助の点と柄を隠すかの判定に使う。
+ *
+ * **名前に反して「画面上の実際の長さ」ではない。** 正射影で測った量で、透視投影の視差を含まない。
+ * そのため真上（pitch 0）では深さもズームに関わらず必ず 0 を返す——**真上から見ているあいだは丸と
+ * 縦線を出さない**という意図した判定で、測り損ねているのではない。実際の長さとの差（zoom 15・pitch 0 で
+ * 0px 対 278px 等）と、閾値を触るときの注意は docs/spec/map-rendering-spec.md §16「補助の点と柄」。
  *
  * **dpr で割らないこと。** `metersPerPixel` はタイル 512px を基準にした CSS px あたりの値なので、
- * ここで得られる長さも最初から CSS px。割ると Hi-DPI 端末でだけ閾値が dpr 倍きつくなり、
+ * ここで得られる値も最初から CSS px。割ると Hi-DPI 端末でだけ閾値が dpr 倍きつくなり、
  * 震央の印と柄が消えやすくなる。
  */
 export function stemScreenLengthPx(
@@ -869,8 +931,9 @@ export function createDepthPointLayer(id: string, map: MapLibreMap, label: strin
       const depthPx = ((maxDepthKm * 1000) / mpp) * exaggeration
       const slab = depthSlabRange(args.nearZ, args.farZ, depthPx)
       const phase = blinkPhaseAt(performance.now())
-      // 柄が画面上でどれだけの長さになるか。**傾き・深さ・誇張率のどれが小さくても短くなる**ので、
-      // ここ 1 箇所で「重なって潰れるか」を判定できる（透視は無視した近似で、判定には足りる）。
+      // 補助の点と柄を「重なって潰れるか」で隠すかの判定値。**傾き・深さ・誇張率・ズームのどれが
+      // 小さくても小さくなる**ので、ここ 1 箇所で決められる。**柄が画面上で実際に持つ長さではなく**、
+      // 真上（pitch 0）で必ず 0 になるのは意図した挙動（`stemScreenLengthPx` の説明）。
       const hideAux = stemScreenLengthPx(maxDepthKm, exaggeration, mpp, map.getPitch()) < MIN_STEM_PX
 
       if (dirty) {
