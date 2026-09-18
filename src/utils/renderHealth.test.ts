@@ -1,13 +1,7 @@
 // 描画物の不調の集約を固定する。
 // 背景は docs/spec/map-rendering-spec.md §16「描けているかを画面に出す」。
 import { describe, it, expect, beforeEach } from 'vitest'
-import {
-  reportRenderFailure,
-  clearRenderFailure,
-  subscribeRenderHealth,
-  getRenderHealth,
-  resetRenderHealthForTest,
-} from './renderHealth'
+import { reportRenderFailure, clearRenderFailure, subscribeRenderHealth, getRenderHealth, resetRenderHealthForTest, clearRenderFailuresFor } from './renderHealth'
 
 beforeEach(() => {
   resetRenderHealthForTest()
@@ -115,17 +109,42 @@ describe('renderHealth', () => {
   })
 })
 
-describe('レイヤーを外したときの後始末', () => {
-  // 安全弁: **ガードが足した記録も、レイヤーの ID で消せること。**
-  // `Map/gl/guardRender.ts` は受け止めた例外を `<id>:uncaught` という別の鍵で記録する
-  //（レイヤー自身の申告と取り消し合わないため）。鍵が違うぶん本人は消せず、外れた後は
-  // `render()` も呼ばれないのでガードの側にも機会が無い。ここで一緒に消さないと、
-  // 画面から消えた描画物の名前が永久に居座る。
-  it('レイヤーの ID で消すと、そこへ付けられた記録もまとめて消える', () => {
+describe('自分が置いた報告だけ取り下げる（clearRenderFailure）', () => {
+  // 安全弁: **ガードが別の鍵で付けた記録を巻き込まないこと。**
+  // `Map/gl/guardRender.ts` は受け止めた例外を `<id>:uncaught` という別の鍵で記録し、
+  // 「自分が報告したか」をクロージャの中だけで覚えている。外から消すと消されたことに
+  // 気づけず、**例外が続いていても二度と報告しない**（画面は「描けている」と言い続ける）。
+  it('ガードが別の鍵で付けた記録は巻き込まない', () => {
     reportRenderFailure('pswave', '予報円', 'draw')
     reportRenderFailure('pswave:uncaught', '予報円', 'draw')
     clearRenderFailure('pswave', 'draw')
+    // 表示名は同じなので畳まれるが、記録自体は残っている（ガードが自分で取り下げる）。
+    expect(getRenderHealth().broken).toEqual(['予報円'])
+    clearRenderFailure('pswave:uncaught', 'draw')
     expect(getRenderHealth().broken).toEqual([])
+  })
+
+  // 対照: 種別が違うものは残すこと（描けないのを消したからといって、掴めないほうまで消さない）。
+  it('種別が違う記録は残る', () => {
+    reportRenderFailure('a', '震源カタログ', 'draw')
+    reportRenderFailure('a', '震源カタログ', 'interact')
+    clearRenderFailure('a', 'draw')
+    expect(getRenderHealth().broken).toEqual([])
+    expect(getRenderHealth().uninteractive).toEqual(['震源カタログ'])
+  })
+})
+
+describe('レイヤーを外したときの後始末（clearRenderFailuresFor）', () => {
+  // 正: **ガードが足した記録も、レイヤーの ID で消せること。**
+  // 鍵が違うぶん本人は消せず、外れた後は `render()` も呼ばれないのでガードの側にも
+  // 機会が無い。ここで一緒に消さないと、画面から消えた描画物の名前が永久に居座る。
+  it('その ID に付けられた記録を、種別も派生鍵もまとめて消す', () => {
+    reportRenderFailure('pswave', '予報円', 'draw')
+    reportRenderFailure('pswave:uncaught', '予報円', 'draw')
+    reportRenderFailure('pswave', '予報円', 'interact')
+    clearRenderFailuresFor('pswave')
+    expect(getRenderHealth().broken).toEqual([])
+    expect(getRenderHealth().uninteractive).toEqual([])
   })
 
   // 対照: **名前が似ているだけの別レイヤーを巻き込まないこと。** 区切りまで見ずに前方一致で
@@ -133,16 +152,7 @@ describe('レイヤーを外したときの後始末', () => {
   it('ID が前方一致するだけの別レイヤーは巻き込まない', () => {
     reportRenderFailure('hypocenter-depth', '地震の震源', 'draw')
     reportRenderFailure('hypocenter-depth-2', 'もう一つの震源', 'draw')
-    clearRenderFailure('hypocenter-depth', 'draw')
+    clearRenderFailuresFor('hypocenter-depth')
     expect(getRenderHealth().broken).toEqual(['もう一つの震源'])
-  })
-
-  // 対照: 種別が違うものは残すこと（描けないのを消したからといって、掴めないほうまで消さない）。
-  it('種別が違う記録は残る', () => {
-    reportRenderFailure('a:uncaught', '震源カタログ', 'draw')
-    reportRenderFailure('a', '震源カタログ', 'interact')
-    clearRenderFailure('a', 'draw')
-    expect(getRenderHealth().broken).toEqual([])
-    expect(getRenderHealth().uninteractive).toEqual(['震源カタログ'])
   })
 })

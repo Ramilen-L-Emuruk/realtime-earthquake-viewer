@@ -35,7 +35,7 @@ VOICEVOX の誤読を洗い出し、読み仮名辞書 `public/data/tts-phrase-b
 | 震度観測点 | 震度観測点一覧表を JSON 化したもの（`scripts/lib/stationSource.mjs` の `STATION_SOURCE_URL`。全点の `furigana` を持つ）。**現行の一覧だけでなく、そこから遡れる履歴の観測点も対象**（同ファイルの `collectUnlistedStations`） | JSON・依存なしで読める |
 | 震央地名 | [0Quake/JMA_Region](https://github.com/0Quake/JMA_Region) の `震央地名.geojson` の `name_kana`（CC0 1.0・出典は気象庁の境界線と多言語辞書データ） | JSON・依存なしで読める |
 | 潮位観測点・長周期観測点 | 気象庁 [防災情報XML 技術資料](https://xml.kishou.go.jp/tec_material.html) の「個別コード表」zip。中身は個別の xlsx 群で、**リポジトリ内のヘルパー（`scripts/lib/xlsx.mjs` の `findWorkbookInZip`）で読める**。潮位観測点はシート 35（PointTsunami）で、`scripts/build-station-readings.ts` と `build-tsunami-obs-coords.mjs` が実際にこれを読んでいる | xlsx・依存を足さずに抽出できる |
-| 都道府県 | **ふりがなが無い。** 読みを目視で確かめ、疑わしいものは公的資料で裏を取る | — |
+| 都道府県 | 震度観測点一覧の `pref.furigana`（全 47 件・読みの重複なし。2026-09-18 に確認） | JSON・依存なしで読める |
 
 **気象庁の[多言語辞書データ](https://www.data.jma.go.jp/developer/multilingual.html)（`jma_multilingual.xlsx`）は
 読みの出どころとして使えない。** 震央地名 345 件が `AreaEpicenter` として入っており、セルの
@@ -94,11 +94,22 @@ zip 内のファイル名は cp932 のため展開時に文字化けする。名
 ふりがな（ひらがな）と VOICEVOX の出力（カタカナ・長音は母音表記）を比べるので、正規化してから比較する。
 
 ```python
-# ひらがな→カタカナ、おう→オオ、えい→エエ、ヅ→ズ、ヂ→ジ。記号は落とす
+# ひらがな→カタカナ、**長音記号は直前の母音へ開く**、おう→オオ、えい→エエ、ヅ→ズ、ヂ→ジ。記号は落とす
+# **「ー」を落とすと誤検出する** —— `おほーつくかいえんがん` が `オホツク…` になり、正しい読み
+# `オホオツク…` と食い違って「誤読」に見える（2026-09-18 に実際に踏んだ）
 ODAN, EDAN = 'オコソトノホモヨロヲゴゾドボポョ', 'エケセテネヘメレゲゼデベペェ'
+VOWEL = {**{k: 'ア' for k in 'アカサタナハマヤラワガザダバパ'},
+         **{k: 'イ' for k in 'イキシチニヒミリギジビピ'},
+         **{k: 'ウ' for k in 'ウクスツヌフムユルグズブプ'},
+         **{k: 'エ' for k in 'エケセテネヘメレゲゼデベペ'},
+         **{k: 'オ' for k in 'オコソトノホモヨロゴゾドボポ'}}
 def norm(s):
     s = ''.join(chr(ord(c)+0x60) if 'ぁ' <= c <= 'ゖ' else c for c in s)
-    s = re.sub(r'[^ァ-ヴ]', '', s)
+    # 長音記号は直前のモーラの母音へ開く（落とすと本物の読みと食い違う）
+    opened = []
+    for c in s:
+        opened.append(VOWEL.get(opened[-1], 'ー') if c == 'ー' and opened else c)
+    s = re.sub(r'[^ァ-ヴ]', '', ''.join(opened))
     out = []
     for c in s:
         if c == 'ウ' and out and out[-1] in ODAN: out.append('オ')

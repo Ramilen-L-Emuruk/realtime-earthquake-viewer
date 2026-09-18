@@ -6,7 +6,7 @@ import { createDepthPointLayer, type DepthPointLayer } from './gl/depthPointLaye
 import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
 import { formatCoordinate, formatMagnitude } from '../../utils/formatters'
 import { log } from '../../utils/logger'
-import { reportRenderFailure, clearRenderFailure } from '../../utils/renderHealth'
+import { reportRenderFailure, clearRenderFailure, clearRenderFailuresFor } from '../../utils/renderHealth'
 import type { CatalogPointCloud } from '../../utils/hypocenterCatalogView'
 
 // 長期震源カタログの点群。**深さを持つ点**として地下へ描く（gl/depthPointLayer.ts）。
@@ -141,8 +141,9 @@ export function HypocenterCatalogGL({ cloud, exaggeration, visible }: Props) {
 
     return () => {
       popup?.remove()
-      // 画面から外れたら不調の記録も消す（残すと、もう出てこないものの名前が居座る）。
-      clearRenderFailure(LYR, 'interact')
+      // **画面から外れたら不調の記録も消す**（残すと、もう出てこないものの名前が居座る）。
+      // `draw` 側と `gl/guardRender.ts` が受け止めた例外の記録も、この 1 行でまとめて消える。
+      clearRenderFailuresFor(LYR)
       map.off('webglcontextrestored', onRestored)
       map.off('style.load', add)
       layerRef.current = null

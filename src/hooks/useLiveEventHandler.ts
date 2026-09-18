@@ -323,6 +323,7 @@ function ttsRegionOptions(settings: AppSettings): TtsSpeechOptions {
     readEewLpgmClass: settings.ttsReadEewLpgmClass,
     readTelegramText: settings.ttsReadTelegramText,
     telegramTextBlocks: settings.ttsTelegramTextBlocks,
+    telegramBoilerplate: settings.ttsTelegramBoilerplate,
     maxObservationPoints: settings.ttsMaxObservationPoints,
   }
 }
@@ -2814,6 +2815,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             const prevSpokenLpgm = spokenEEWLpgmClassesRef.current.get(key)
             const prevSpokenLevel = spokenEEWLevelsRef.current.get(key)
             const wasPhase2Done = eewPhase2DoneRef.current.has(key)
+            /**
+             * より高い震度の確定を待つため、**鳴っている途中で**残りのチャンクを降りたか
+             * （下の `shouldStillPlay`）。既読を戻すかの判断に使う（下の `onSettled`）。
+             */
+            let yieldedToPendingScale = false
             spokenEEWScalesRef.current.set(key, confirmedScale)
             spokenEEWLpgmClassesRef.current.set(key, spokenLpgm)
             spokenEEWLevelsRef.current.set(key, level)
@@ -2839,33 +2845,85 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
                * `eewPhase2DoneRef` だけは Set なので「自分が立てたか」を値で照合できず、
                * 直前の状態（`wasPhase2Done`）で判断している。予約はトークンで 1 件に限られ、
                * チェーンは直列なので、同じ鍵へ別の第 2 フェーズが割り込む余地は無い。
+               *
+               * **より高い震度の確定を待って途中で降りた場合も戻す**（`yieldedToPendingScale`）。
+               * 1 音は鳴っているが**文の残りは声になっていない**ので、そのまま既読にすると
+               * 言っていない値を基準にしてしまう。多くの場合は待っていた高い震度が確定して
+               * 全文を読み直すが、**その値が確定せず別の値へ変わる続報**（2024/01/01 能登本震の
+               * 第 13 報のような 6強 → 7 → 6強。安定待ちのサイクルは値が変わるたび張り替わるので、
+               * 譲った先の値が確定するとは限らない）では震度も階級も据え置き・引き下げの判定に
+               * なって黙るため、戻さないとその EEW で階級が一度も声にならない。
+               *
+               * **どのチャンクまで鳴ったかは発話側から分からない**ので、値（震度・階級）は進めた分を
+               * まとめて戻し、読む側へ倒している（同じ値を読み直すことはあっても、声にならないより軽い）。
+               *
+               * **ただし区分（`spokenEEWLevelsRef`）は、途中で降りた場合は戻さない。** 値の再読みと
+               * 違い、前置き「緊急地震速報に切り替わりました。」は**その EEW で一度だけ**の遷移の
+               * 告知で、文の**先頭**チャンクにある —— 1 音でも鳴っていれば声になっている。戻すと
+               * `levelUpgraded` が再び真になり、続く読み直しで前置きをもう一度言う（予報から警報へ
+               * 上がった報の発話中に、さらに高い震度が安定待ちへ入ると起きる。第 1.5 フェーズが
+               * 前置きを引き受けている場合は `spokenEEWUpgradePhraseRef` が抑えるが、警報の対象地方を
+               * 読まない設定ではその歯止めが無い）。**1 音も鳴らなかった場合は従来どおり戻す** ——
+               * そのときは前置きも声になっていない。
+               *
+               * **`spoke` は「1 チャンクでも鳴ったか」で、「前置きのチャンクが鳴ったか」ではない。**
+               * 前置きは先頭チャンクなので通常は一致するが、そのチャンクだけ合成に失敗すると
+               * （`utils/voicevox.ts` は失敗したチャンクを飛ばして次へ進む）声になっていないのに
+               * 伝えた扱いになる。**第 1.5 フェーズの前置きの記録も同じ粒度**（あちらも `spoke` で
+               * 判定する）なので、ここだけ細かくしても全体は揃わない。厳密にするならチャンク単位の
+               * 通知（`ChunkScheduledListener`）を EEW の発話へ配線することになる。**見たうえで
+               * 既存の粒度に合わせている。**
                */
               onSettled: (spoke) => {
-                if (spoke) return
+                if (spoke && !yieldedToPendingScale) return
                 rollbackSpokenEntry(spokenEEWScalesRef.current, key, confirmedScale, prevSpokenScale)
                 rollbackSpokenEntry(spokenEEWLpgmClassesRef.current, key, spokenLpgm, prevSpokenLpgm)
-                rollbackSpokenEntry(spokenEEWLevelsRef.current, key, level, prevSpokenLevel)
+                if (!spoke) rollbackSpokenEntry(spokenEEWLevelsRef.current, key, level, prevSpokenLevel)
                 if (!wasPhase2Done) eewPhase2DoneRef.current.delete(key)
               },
               /**
-               * この文面を作ったときの値より新しいものが確定していたら、そこから先は鳴らさない。
+               * チャンクを鳴らす直前に、この文面がまだ最新かを確かめる。降りる理由は 3 つ。
                *
-               * 安定待ちを経てもなお、確定から発話までの合成の往復（実測 238〜697ms）の間に
-               * 次の確定が挟まることはある。取り下げても取りこぼしにはならない: 上がった確定を
-               * 受けた時点で次の第 2 フェーズが予約済みで、そちらが最新値を読む。
+               *   1. 誤報取消（訂正）が届いた
+               *   2. この文面を作ったときより**高い値が確定した**
+               *   3. この文面を作ったときより**高い震度が安定待ちに入った**（確定はまだ）
+               *
+               * 安定待ちを経てもなお、確定から発話までの合成の往復（実測 238〜697ms）と
+               * チャンクの再生時間のあいだに次の報は届く。取り下げても取りこぼしにはならない ——
+               * 上がった確定を受けた時点で次の第 2 フェーズが予約され、そちらが最新値を読む
+               * （3 の担保は `enqueuePhase2` のガードに挙げた 4 通りと同じ）。
+               *
+               * **3 は `enqueuePhase2` が発話の順番が来た時点で見るものと同じ判定。** 鳴っている
+               * 途中も同じ基準で見続けるためにここへも置く。無いと、震度の句を鳴らし終えた後に
+               * 続く階級の句だけが古い震度の文脈で声になる（2024/11/26 22:47 石川県西方沖:
+               * 震度4 で確定して読み始めた 1 秒後に 5弱 の報が届き、その安定待ち中に
+               * 「予想最大震度4。予想最大階級1。」を読み切っていた）。**鳴り始めたチャンクは
+               * 切らない**ので、既に声になった句はそのまま鳴り終わる。
                *
                * ここで「上がったときだけ」に限るのは、引き下げを追わない方針（黙る）と揃えるため。
                * 下がったことを理由に取り下げると、代わりに読むものが無く無音で終わる。
+               * **待つのは震度だけ** —— 階級の安定待ちで震度の発話を止めてはならない
+               * （「震度は階級の確定を待たない」非対称ルール）。
                *
-               * 見るのは**確定値**（`eewConfirmedScaleRef`）であって生イベントの最新値ではない。
-               * 安定待ちの途中（まだ確定していない暫定候補）で発話を止めてしまうと、安定待ちを
-               * 導入した意味が無くなる。
+               * 2 で見るのは**確定値**（`eewConfirmedScaleRef`）であって生イベントの最新値ではない。
+               * 生の値で比べると、瞬間的に跳ねただけの報で取り下げてしまう。
                */
               shouldStillPlay: () => {
                 if (eewRetractedKeysRef.current.has(key)) return false  // 誤報取消（訂正）
                 const now = eewTtsEventsRef.current.get(key)
                 // 自動解除で消えた場合は鳴らし続ける。発表は終わったが、読んでいる値は誤りではない
                 if (!now) return true
+                // 3: より高い震度が安定待ちに入った。**進めた既読は `onSettled` で戻す** ——
+                // 文の残りは声になっていないので、そのままだと言っていない値が基準になる。
+                const pendingScaleCycle = eewScaleStabilityRef.current.get(key)
+                if (pendingScaleCycle && isForecastScaleHigher(pendingScaleCycle.scaleInfo, confirmedScale)) {
+                  // 判定は 1 発話で何度も呼ばれるので、記録は降りた最初の 1 回だけ
+                  if (!yieldedToPendingScale) {
+                    log.debug('[eew] より高い予想震度の確定を待つため、残りのチャンクを降りる', key)
+                  }
+                  yieldedToPendingScale = true
+                  return false
+                }
                 const nowScale = eewConfirmedScaleRef.current.get(key)
                 if (!nowScale) return true
                 const nowLpgm = eewConfirmedLpgmRef.current.get(key)?.cls ?? 0

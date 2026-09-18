@@ -41,6 +41,11 @@ const failures = new Map<string, { label: string; kind: RenderFailureKind }>()
  *
  * **種別を先に置く。** 種別は 2 語しか無く区切り文字を含まないため、ID に何が入っても
  * 別の組み合わせと衝突しない（後ろに置くと `a:b` と `draw` の組が別の ID と重なりうる）。
+ *
+ * **レイヤー ID に `:` を入れないこと。** `Map/gl/guardRender.ts` が派生鍵を
+ * `<ID>:uncaught` の形で作るため、{@link clearRenderFailuresFor} は `<ID>:` で始まる鍵を
+ * 「その描画物の派生」として消す。ID 自体に `:` があると、`a` の後始末が別レイヤー `a:b` の
+ * 記録まで巻き込む。現在の ID はすべて英小文字とハイフンだけで付けてある。
  */
 function keyOf(id: string, kind: RenderFailureKind): string {
   return `${kind}:${id}`
@@ -90,22 +95,38 @@ export function reportRenderFailure(id: string, label: string, kind: RenderFailu
 }
 
 /**
- * 不調の記録を消す。**直った場合と、そのレイヤーが画面から外れた場合の両方で呼ぶ。**
- * 外れたときに消さないと、二度と出てこない描画物の名前が居座る。
+ * 自分が置いた不調の記録を取り下げる。**その ID・その種別の 1 件だけ。**
  *
- * **そのレイヤーに付けられた記録をまとめて消す。** `Map/gl/guardRender.ts` は受け止めた例外を
- * `<id>:uncaught` という別の鍵で記録する（レイヤー自身の申告と取り消し合わないようにするため）。
- * 鍵が違うぶん、**レイヤーを外すときに本人が消せない**——`render()` はもう呼ばれないので、
- * ガードの側にも消す機会が無い。ここでまとめて消すことで、レイヤーは自分の ID だけ知っていれば
- * 後始末を終えられる。
+ * 直ったとき・隠したときはこちらを使う。**`Map/gl/guardRender.ts` が別の鍵
+ * （`<id>:uncaught`）で記録した例外は消さない。** あちらは「自分が報告したか」を
+ * クロージャの中だけで覚えているので、外から消すと消されたことに気づけず、
+ * **例外が続いていても二度と報告しなくなる**（画面は「描けている」と言い続ける）。
+ *
+ * 画面から外すときは {@link clearRenderFailuresFor} を使うこと。
  */
 export function clearRenderFailure(id: string, kind: RenderFailureKind): void {
-  const self = keyOf(id, kind)
-  // 区切りまで含めて見る。`hypocenter-depth` の後始末で `hypocenter-depth-2` を巻き込まない。
-  const prefix = `${self}:`
+  if (!failures.delete(keyOf(id, kind))) return
+  publish()
+}
+
+/**
+ * その描画物に付いた記録を、種別も派生鍵もまとめて消す。**画面から外すときだけ使う。**
+ *
+ * `Map/gl/guardRender.ts` は受け止めた例外を `<id>:uncaught` という別の鍵で記録する
+ * （レイヤー自身の申告と取り消し合わないようにするため）。鍵が違うぶん、**レイヤーを外すときに
+ * 本人が消せない**——`render()` はもう呼ばれないので、ガードの側にも消す機会が無い。ここで
+ * まとめて消すことで、レイヤーは自分の ID だけ知っていれば後始末を終えられる。
+ *
+ * **逆に、外していないのにこれを呼ぶと `guardRender` の未解決の報告まで消える。** 直った・
+ * 隠した、という理由で取り下げるときは {@link clearRenderFailure} を使うこと。
+ */
+export function clearRenderFailuresFor(id: string): void {
   let changed = false
   for (const key of [...failures.keys()]) {
-    if (key !== self && !key.startsWith(prefix)) continue
+    // 鍵は `<種別>:<ID>`。種別に `:` は入らないので、最初の区切りで ID 側を切り出せる。
+    const idPart = key.slice(key.indexOf(':') + 1)
+    // 区切りまで含めて見る。`hypocenter-depth` の後始末で `hypocenter-depth-2` を巻き込まない。
+    if (idPart !== id && !idPart.startsWith(`${id}:`)) continue
     failures.delete(key)
     changed = true
   }

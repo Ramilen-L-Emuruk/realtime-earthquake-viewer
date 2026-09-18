@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import type { CustomLayerInterface } from 'maplibre-gl'
+import type { OrderedCustomLayer } from './gl/layerOrder'
 import { applyProjectionUniforms, createProjectionProgramCache } from './gl/projectionProgram'
 import { useMapGL } from './mapGLContext'
 import type { PsWaveCircle } from '../../services/kyoshin'
@@ -7,10 +7,11 @@ import { computeSWaveRadiusAtTime, computeSWaveTravelTimeSec } from '../../hooks
 import { calcShakingDurationSec } from '../../utils/eew'
 import { EARTH_RADIUS_KM } from '../../utils/geo'
 import { ringVertex } from './gl/psWaveRing'
+import { S_WAVE_FILL_RGB, S_WAVE_STROKE_RGB, P_WAVE_STROKE_RGB, S_WAVE_FILL_ALPHA } from './gl/psWaveStyle'
 import { addOrderedLayer } from './gl/layerOrder'
 import { log } from '../../utils/logger'
+import { reportRenderFailure, clearRenderFailure, clearRenderFailuresFor } from '../../utils/renderHealth'
 import { guardRender } from './gl/guardRender'
-import { clearRenderFailure } from '../../utils/renderHealth'
 
 // 緊急地震速報の予報円（S波=塗りつぶし＋後端フェード / P波=破線外周）を描画する MapLibre 版。
 //
@@ -45,10 +46,11 @@ const STROKE_PX = 2
 // P 波の破線の 1 周期あたりの画面長（px）。Canvas2D 版の setLineDash([4,4]) と揃える。
 const DASH_PERIOD_PX = 8
 
-const S_FILL: readonly [number, number, number] = [255 / 255, 60 / 255, 0]
-const S_FILL_ALPHA = 0.12
-const S_STROKE: readonly [number, number, number] = [255 / 255, 60 / 255, 0]
-const P_STROKE: readonly [number, number, number] = [56 / 255, 189 / 255, 248 / 255]
+// 配色は gl/psWaveStyle.ts が単一情報源（凡例と共有する）。
+const S_FILL = S_WAVE_FILL_RGB
+const S_STROKE = S_WAVE_STROKE_RGB
+const P_STROKE = P_WAVE_STROKE_RGB
+const S_FILL_ALPHA = S_WAVE_FILL_ALPHA
 
 // 頂点シェーダーの本体。座標変換は MapLibre が配る投影シェーダーに任せる（gl/projectionProgram.ts）ため、
 // `#version` と prelude はプログラム生成側で前置きする。
@@ -234,7 +236,7 @@ ${VERT_BODY}`,
       return Math.max(4, Math.round((2 * Math.PI * rPx) / DASH_PERIOD_PX))
     }
 
-    const customLayer: CustomLayerInterface = {
+    const customLayer: OrderedCustomLayer = {
       id: LYR,
       type: 'custom',
       renderingMode: '2d',
@@ -316,7 +318,7 @@ ${VERT_BODY}`,
         const gl = gl2 as WebGL2RenderingContext
         // **画面から外れたら不調の記録も消す**（docs/spec/map-rendering-spec.md §16）。
         // `gl/guardRender.ts` が受け止めた例外の記録も、この 1 行でまとめて消える。
-        clearRenderFailure(LYR, 'draw')
+        clearRenderFailuresFor(LYR)
         cache.dispose(gl)
         if (vbo) gl.deleteBuffer(vbo)
         if (ibo) gl.deleteBuffer(ibo)
@@ -328,7 +330,20 @@ ${VERT_BODY}`,
     }
 
 
-    addOrderedLayer(map, customLayer)
+    // **載せられなかったら画面へ出す。** 載せられなければ `render()` が一度も呼ばれず、
+    // 描画側の検出（`gl/guardRender.ts`）には永久に到達しない —— 予報円だけが理由もなく
+    // 消えたまま残る。ここを `console` 止まりにしていたのが、兄弟の 4 つと非対称だった。
+    const add = () => {
+      try {
+        if (!map.getLayer(LYR)) addOrderedLayer(map, customLayer)
+        // 載せられたら前回の失敗の記録を消す（引きずらない）。
+        clearRenderFailure(LYR, 'draw')
+      } catch (err) {
+        log.error('[PsWaveGL] custom layer add failed', err)
+        reportRenderFailure(LYR, LABEL, 'draw')
+      }
+    }
+    add()
     const requestRepaint = () => map.triggerRepaint()
     triggerRef.current = requestRepaint
     map.on('move', requestRepaint)
@@ -345,12 +360,8 @@ ${VERT_BODY}`,
     // → `map.isStyleLoaded()` が false の間は `map.once('style.load', ...)` で待ってから追加し、
     //    各コンポーネントが try/catch で例外を隔離する。
     const readdLayer = () => {
-      try {
-        if (!map.getLayer(LYR)) addOrderedLayer(map, customLayer)
-        requestRepaint()
-      } catch (err) {
-        log.error('[PsWaveGL] custom layer re-add failed', err)
-      }
+      add()
+      requestRepaint()
     }
     const onRestored = () => {
       log.warn('[PsWaveGL] WebGL context restored, re-adding custom layer')
@@ -368,6 +379,10 @@ ${VERT_BODY}`,
       map.off('style.load', readdLayer)
       triggerRef.current = null
       if (map.getLayer(LYR)) map.removeLayer(LYR)
+      // **画面から外れたら不調の記録も消す**（§16）。レイヤーの `onRemove` も同じことをするが、
+      // **載せられなかったときはそこを通らない** ——`removeLayer` を呼ぶ相手がいないため、
+      // 報告した失敗が消えずに残る。
+      clearRenderFailuresFor(LYR)
     }
   }, [map])
 

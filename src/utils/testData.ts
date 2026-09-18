@@ -452,8 +452,7 @@ export function createTestQuakeReportSequence(useDmdataShape: boolean): JMAQuake
   const maxScaleOf = (points: EarthquakePoint[]): IntensityScale =>
     points.reduce<IntensityScale>((max, p) => (p.scale > max ? p.scale : max), -1)
 
-  const prompt = (index: number, points: EarthquakePoint[]): JMAQuake => {
-    const time = at(index)
+  const prompt = (time: string, points: EarthquakePoint[]): JMAQuake => {
     return {
       ...base,
       telegramKey: time,
@@ -522,7 +521,29 @@ export function createTestQuakeReportSequence(useDmdataShape: boolean): JMAQuake
     issue: { ...base.issue, time: followUpTime },
   }
 
-  return [prompt(0, firstPoints), destination, prompt(2, areaPoints), detail, followUp]
+  // 6 通目。**完全版のあとに届く震度速報。**
+  //
+  // 気象庁は「震源・震度情報 → 震度速報」の順で発表することが実際にある。近接した時刻に 2 つの
+  // 地震が起きると、あとから入電した区域の震度が先に検知していた別の地震へ紐づくため（実例:
+  // 2024-11-26 22:47 の大阪府北部 M2.4 に、1 分前の石川県西方沖 M6.6 による福井県嶺南・
+  // 滋賀県北部の震度3 が載った）。**震度速報は区域の最大震度しか運ばない**ので、そのまま採ると
+  // カードの中身が区域だけへ痩せ、観測点も市町村も消える。
+  //
+  // **据え置くのが正しい挙動**（→ `utils/quakeMerge.ts` の `isSupersededByExistingCard`）。実機では
+  // 次がどれも動かないことを見る —— 見出し「震源・震度情報#2」・カードの色（青）・観測点と市町村の段・
+  // 最大震度。**区域を 1 通目と同じ一部だけにしてある**ので、据え置きが効いていなければ区域の行も減る。
+  const supersededTime = new Date(
+    new Date(followUpTime).getTime() + TEST_REPORT_SEQUENCE_DELAY_MS,
+  ).toISOString()
+
+  return [
+    prompt(at(0), firstPoints),
+    destination,
+    prompt(at(2), areaPoints),
+    detail,
+    followUp,
+    prompt(supersededTime, firstPoints),
+  ]
 }
 
 /**
@@ -1734,8 +1755,14 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
     // 電文の本文（`Body/Text` 相当）。等級の定型文とも自由付加文とも別で、同じ電文に 3 つとも入る。
     bodyText: '津波の第一波は、早い沿岸で０８日０３時３５分頃に到達すると予想されます。\n　これらの沿岸では今後１日程度は津波が継続する可能性が高いと考えられます。',
     // 自由付加文。種別ごとの定型文（上の `warningComments`）と違い、電文ごとに書き起こされる。
-    // 実電文と同じく見出しの角括弧と全角スペースの整形を含める（画面が改行と空白を保つことの確認）。
-    freeText: '［予想される津波の高さの解説］\n予想される津波が高いほど、より甚大な被害が生じます。\n　１０ｍ超　　木造家屋が全壊・流失し、人は津波による流れに巻き込まれます。\n　　１ｍ　　　海の中では人は流されます。',
+    //
+    // **実電文の全文を入れる（近似で縮めない）。** 見出しの角括弧と全角スペースの整形が
+    // 画面で保たれることの確認に加えて、**読み上げから「津波の高さの目安」を落とす指定を
+    // 実機で確かめる唯一の入口**になる（→ `utils/ttsText.ts` の `TELEGRAM_BOILERPLATE_SPECS`）。
+    // あちらは実配信の文面と行ごとに突き合わせるので、短縮版では一致せず、既定で落ちるはずの
+    // 表がテストボタンでだけ声になる。文面は 2024-01-01 能登半島地震の VTSE41（手元の
+    // アーカイブ 5 通が数字まで同一）。
+    freeText: '［予想される津波の高さの解説］\n予想される津波が高いほど、より甚大な被害が生じます。\n１０ｍ超　　巨大な津波が襲い壊滅的な被害が生じる。木造家屋が全壊・流失し、人は津波による流れに巻き込まれる。\n１０ｍ　　　巨大な津波が襲い甚大な被害が生じる。木造家屋が全壊・流失し、人は津波による流れに巻き込まれる。\n　５ｍ　　　津波が襲い甚大な被害が生じる。木造家屋が全壊・流失し、人は津波による流れに巻き込まれる。\n　３ｍ　　　標高の低いところでは津波が襲い被害が生じる。木造家屋で浸水被害が発生し、人は津波による流れに巻き込まれる。\n　１ｍ　　　海の中では人は速い流れに巻き込まれる。養殖いかだが流失し小型船舶が転覆する。',
     // M8 を超える地震では規模を速報できないため、気象庁は「Ｍ８を超える巨大地震」と書き、
     // 予想波高も数値ではなく「巨大」で発表する（下の岩手県）。**第一報で最も起きる形**なので
     // テストにも入れておく。2 件目は、短い間に起きた地震がまとめて 1 通で届く場合の形。

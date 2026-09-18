@@ -227,13 +227,13 @@ describe('地震情報テストの points 形状', () => {
   // 実電文の形（震度速報は震源を持たない・報番号は震源・震度情報だけ・鍵は報ごとに違う）を
   // 固定する（→ docs/spec/quake-spec.md §8「見出しには受け取った種別を並べる」）。
   describe('種別遷移テスト', () => {
-    // 正: 能登の前震と同じ順序で 5 通を返す（5 通目は観測点が出そろう続報）。
-    it('震度速報 → 震源情報 → 震度速報 → 震源・震度情報 → その続報 の順に 5 通を返す', () => {
+    // 正: 能登の前震と同じ順序に、完全版のあとに届く震度速報（6 通目）を足した 6 通を返す。
+    it('震度速報 → 震源情報 → 震度速報 → 震源・震度情報 → その続報 → 完全版後の震度速報 の順に 6 通を返す', () => {
       expect(createTestQuakeReportSequence(true).map(q => q.issue.type))
-        .toEqual(['震度速報', '震源情報', '震度速報', '震源・震度情報', '震源・震度情報'])
+        .toEqual(['震度速報', '震源情報', '震度速報', '震源・震度情報', '震源・震度情報', '震度速報'])
       // standard 版は同じ内容の種別名が違う（P2PQuake の DetailScale）。
       expect(createTestQuakeReportSequence(false).map(q => q.issue.type))
-        .toEqual(['震度速報', '震源情報', '震度速報', '各地の震度情報', '各地の震度情報'])
+        .toEqual(['震度速報', '震源情報', '震度速報', '各地の震度情報', '各地の震度情報', '震度速報'])
     })
 
     // 正: 5 通目は**観測点と市町村だけが増え、区域の最大震度は動かない**。読み上げが
@@ -284,11 +284,11 @@ describe('地震情報テストの points 形状', () => {
       expect(headlineAfter(4)).toBe('震源・震度情報')
     })
 
-    // 安全弁: 鍵が報ごとに違うこと。**`id` は 5 通とも同じ**（`Head/Serial` が空の種別があるため）
+    // 安全弁: 鍵が報ごとに違うこと。**`id` は 6 通とも同じ**（`Head/Serial` が空の種別があるため）
     // なので、鍵を持たせないと 2 通目の震度速報が「同じ電文の再送」と見なされて数えられない。
-    it('一意鍵は報ごとに違い、id は 5 通とも同じ（実電文の形）', () => {
+    it('一意鍵は報ごとに違い、id は 6 通とも同じ（実電文の形）', () => {
       const reports = createTestQuakeReportSequence(true)
-      expect(new Set(reports.map(q => q.telegramKey)).size).toBe(5)
+      expect(new Set(reports.map(q => q.telegramKey)).size).toBe(6)
       expect(new Set(reports.map(q => q.id)).size).toBe(1)
       expect(reports[0].id.endsWith('-1')).toBe(true)
     })
@@ -297,7 +297,40 @@ describe('地震情報テストの points 形状', () => {
     // 続報では 1 つ進む。
     it('報番号を持つのは震源・震度情報だけ', () => {
       expect(createTestQuakeReportSequence(true).map(q => q.reportSerial))
-        .toEqual([undefined, undefined, undefined, 1, 2])
+        .toEqual([undefined, undefined, undefined, 1, 2, undefined])
+    })
+
+    // 正: **6 通目（完全版のあとの震度速報）は据え置かれ、カードの中身を痩せさせない。**
+    // これが実機で見る形そのもので、据え置きが効いていないと観測点・市町村の段が丸ごと消える
+    // （→ `utils/quakeMerge.ts` の `isSupersededByExistingCard`）。
+    it.each(QUAKE_VARIANTS)('6 通目を流してもカードの中身が動かない（$label 版）', ({ useDmdataShape }) => {
+      const reports = createTestQuakeReportSequence(useDmdataShape)
+      let card: JMAQuake | undefined
+      for (const report of reports.slice(0, 5)) card = mergeQuakeInto(card, report)
+      const before = card!
+      const after = mergeQuakeInto(before, reports[5])
+      expect(after.points.filter(p => !p.isArea).length).toBe(before.points.filter(p => !p.isArea).length)
+      expect(after.points.filter(p => p.isArea).length).toBe(before.points.filter(p => p.isArea).length)
+      expect(after.cities?.length).toBe(before.cities?.length)
+      expect(after.earthquake.maxScale).toBe(before.earthquake.maxScale)
+      expect(after.earthquake.hypocenter.name).toBe(before.earthquake.hypocenter.name)
+      // カードの色の材料（`issue.type`）と見出しも動かない。
+      expect(after.issue.type).toBe(before.issue.type)
+      expect(reportsText(after.reports, after.issue.type)).toBe(reportsText(before.reports, before.issue.type))
+    })
+
+    // 対照: **6 通目は据え置きが無ければ中身を痩せさせる**（据え置きの効きを測る土台の確認）。
+    // 6 通目を「完全版が既に持っている内容の再送」にしてしまうと、上の正のテストが
+    // 据え置きを外しても通ってしまう。
+    it('6 通目は完全版より内容が乏しい（据え置きが無ければ後退する形）', () => {
+      const reports = createTestQuakeReportSequence(true)
+      const detail = reports[4]
+      const superseded = reports[5]
+      expect(superseded.points.every(p => p.isArea)).toBe(true)
+      expect(superseded.cities).toBeUndefined()
+      expect(superseded.points.length).toBeLessThan(detail.points.length)
+      // 発表時刻は完全版より新しい（時刻だけで判定する経路なら採られてしまう位置にある）。
+      expect(superseded.time > detail.time).toBe(true)
     })
 
     // 対照: 震度速報は震源を持たず、震源情報は震度を持たない（種別ごとに構造が違う）。
