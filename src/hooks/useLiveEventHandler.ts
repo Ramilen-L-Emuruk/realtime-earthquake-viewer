@@ -3222,10 +3222,23 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             // 鳴り始めてから地方が増えたら降りる（増えた分を含めて読み直すため）。降りた回を
             // 既読にしないよう、記録は `onSettled` で「降りていないとき」だけ行う。
             let abandoned = false
+            // 降りた理由が誤報取消か（下の `onSettled`）。
+            //
+            // **この変数は現状のテストで守れていない。** 効くのは「取消を検知して降りた後、
+            // `onSettled` が走る前に同じ eventId の報が届いて `eewRetractedKeysRef` が
+            // 消される」という順序だけで、そこは偽タイマーの粒度では作れなかった（外しても
+            // 全件通る）。**落ちないテストを書くより、守れていないことを書き残す方を採った。**
+            // 残しているのは、取消の記録は次の報を受けた時点で必ず落ちる作りなので
+            // （`eewRetractedKeysRef` の宣言箇所）、ref だけを見ると取り消された発話の
+            // 記録が蘇る余地が残るため。
+            let retracted = false
             return {
               text,
               shouldStillPlay: () => {
-                if (eewRetractedKeysRef.current.has(key)) { abandoned = true; return false }
+                // 取消でも「降りた」ことに変わりはないので `abandoned` も立てる（下の
+                // `onSettled` は取消を先に見て降りるので読まれないが、降りたのに偽のまま
+                // 残す方が後から読み違える）。
+                if (eewRetractedKeysRef.current.has(key)) { abandoned = true; retracted = true; return false }
                 const now = eewTtsEventsRef.current.get(key)
                 // 自動解除で消えた場合は鳴らし続ける（第 2 フェーズと同じ。発表は終わったが、
                 // 読んでいる地方が誤りだったわけではない）。
@@ -3235,14 +3248,38 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
                 return true
               },
               onSettled: (spoke) => {
-                // 降りた回も、1 音も鳴らなかった回も既読にしない。前者は読み直しのため、
-                // 後者は**声になっていないものを「伝えた」と扱わない**ため。
+                // **誤報取消を受けていたら何も記録しない**（前置きも地方名も）。取消は
+                // その発話ごと無かったことにする側で、受信した時点で**同期に**既読を消して
+                // いる（`eewRetractedKeysRef` の宣言箇所の少し下）。ここで書き戻すと消した
+                // 記録が蘇り、同じ eventId で再発報したときに格上げも地方名も声にならない。
+                //
+                // **`retracted` だけでは足りない。** あれは `shouldStillPlay` の中でしか
+                // 立たず、チャンクの切れ目でしか呼ばれない —— **最後のチャンクを鳴らして
+                // いる最中に届いた取消は判定の機会が無い**まま `onSettled` へ来る。だから
+                // 書き込む直前に最新の状態を見る。逆に `retracted` を落とせないのは、再発報が
+                // `eewRetractedKeysRef` を消してから `onSettled` が走る順序がありうるため
+                // （そのときは「この発話は取り消された」という事実がこちらにしか残らない）。
+                if (retracted || eewRetractedKeysRef.current.has(key)) return
+                // **前置きは、地方が増えて降りた回でも記録する。** 前置きは文の先頭チャンク
+                // なので、1 音でも鳴っていれば声になっている（第 2 フェーズが「区分の告知は
+                // 戻さない」と判断しているのと同じ理由。`enqueuePhase2` の `onSettled` の
+                // コメント）。記録しないと、地方を読み直しているあいだに第 2 フェーズが
+                // 「まだ区分を言っていない」と判定して前置きを重ねる —— 実配信では
+                // 2024-06-03 06:31 の石川県能登で、格上げの 0.45 秒後に地方が増えて実際に
+                // そうなった（「緊急地震速報に切り替わりました。」が 2 回）。
+                //
+                // **`spoke` は「1 チャンクでも鳴ったか」で、「前置きのチャンクが鳴ったか」
+                // ではない。** 前置きは先頭チャンクなので通常は一致するが、そのチャンクだけ
+                // 合成に失敗すると（`utils/voicevox.ts` は失敗したチャンクを飛ばして次へ
+                // 進む）声になっていないのに伝えた扱いになる。**第 2 フェーズの前置きの記録も
+                // 同じ粒度**なので、ここだけ細かくしても全体は揃わない。厳密にするならチャンク
+                // 単位の通知（`ChunkScheduledListener`）を EEW の発話へ配線することになる。
+                // **見たうえで既存の粒度に合わせている。**
+                if (spoke && announceUpgrade) spokenEEWUpgradePhraseRef.current.add(key)
+                // 地方の既読は、降りた回も 1 音も鳴らなかった回も進めない。前者は増えた分を
+                // 含めて読み直すため、後者は声になっていないため。**前置きと条件が違うのは、
+                // 地方名が文の後半にあって降りた時点では声になっていないから。**
                 if (abandoned || !spoke) return
-                // **前置きの記録も地方の既読と同じタイミングで行う。** 第 1・第 2 フェーズは
-                // 発話の直前に記録するが、この発話だけは「鳴っている最中に地方が増えたら
-                // 降りて読み直す」経路を持つ（上の `grown`）。直前に記録すると、降りた回で
-                // 言った扱いになり、読み直しでは前置きが付かない ―― 格上げが一度も声にならない。
-                if (announceUpgrade) spokenEEWUpgradePhraseRef.current.add(key)
                 const set = spokenEEWRegionsRef.current.get(key) ?? new Set<string>()
                 speaking.forEach(r => set.add(r))
                 spokenEEWRegionsRef.current.set(key, set)
