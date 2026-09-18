@@ -3,6 +3,7 @@ import { redrawIntervalMs, MOUNT_HEALTH_ID } from './DayNightGL'
 import { DAY_NIGHT_LAYER_ID, DAY_NIGHT_LAYER_LABEL } from './gl/dayNightLayer'
 import {
   clearRenderFailure,
+  clearRenderFailuresFor,
   getRenderHealth,
   reportRenderFailure,
   resetRenderHealthForTest,
@@ -86,11 +87,20 @@ describe('描けなかったことを画面へ出す鍵', () => {
     expect(getRenderHealth().broken).toEqual([])
   })
 
-  it('レイヤー側の取り下げはマウントの失敗も消す', () => {
-    // 安全弁。載って描けているなら「載せられなかった」は嘘なので、消える側が正しい
-    //（`utils/renderHealth.ts` が `<鍵>:` の前方一致でも消すことに依っている）。
+  it('レイヤー側の取り下げはマウントの失敗を消さない', () => {
+    // 対照。`clearRenderFailure` はその鍵 1 件だけを消す（`utils/renderHealth.ts`）。
+    // **描けるようになったことは、載せられたことの証明にはならない** —— 載せ直しに失敗した
+    // まま前のレイヤーが描き続けている形がありうるので、消せるのは報告した側だけ。
     reportRenderFailure(MOUNT_HEALTH_ID, DAY_NIGHT_LAYER_LABEL, 'draw')
     clearRenderFailure(DAY_NIGHT_LAYER_ID, 'draw')
+    expect(getRenderHealth().broken).toEqual([DAY_NIGHT_LAYER_LABEL])
+  })
+
+  it('画面から外すときの後始末はマウントの失敗も消す', () => {
+    // 安全弁。`render()` が呼ばれなくなった後にこの鍵を消せる者は他にいない。
+    // ここが効かないと、二度と出てこない描画物の名前がバナーに居座る。
+    reportRenderFailure(MOUNT_HEALTH_ID, DAY_NIGHT_LAYER_LABEL, 'draw')
+    clearRenderFailuresFor(DAY_NIGHT_LAYER_ID)
     expect(getRenderHealth().broken).toEqual([])
   })
 
