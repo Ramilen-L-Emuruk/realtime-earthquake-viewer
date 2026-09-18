@@ -212,6 +212,10 @@ ${VERT_BODY}`,
         'u_innerR', 'u_fadeOuterR', 'u_strokePx', 'u_dashCount', 'u_opacity',
       ] as const,
     })
+    /** 画面へ「描けていない」と出している状態か。直ったら取り下げるために持つ。 */
+    let brokenReported = false
+    /** シェーダーを用意できない旨をログへ残したか（毎フレーム通るので 1 度だけ）。 */
+    let warnedDisabled = false
     let vao: WebGLVertexArrayObject | null = null
     let vbo: WebGLBuffer | null = null
     let ibo: WebGLBuffer | null = null
@@ -245,6 +249,8 @@ ${VERT_BODY}`,
         // **新しい文脈で作り直させるため、抱えているプログラムを捨てる**（理由は
         // `gl/projectionProgram.ts` の `dispose`）。**GL の資源を作る前に置く。**
         cache.dispose(gl)
+        // 診断の「一度きり」も文脈ごとに戻す（`gl/depthPointLayer.ts` と同じ扱い）。
+        warnedDisabled = false
         // **プログラムはここでは作らない。** どの投影のシェーダーが要るかは render の引数で
         // 初めて分かるうえ、途中で切り替わる。属性の番号は固定してあるので VAO は 1 つで足りる。
         const { verts, indices } = buildRingMesh()
@@ -264,11 +270,40 @@ ${VERT_BODY}`,
       },
       render: guardRender(LYR, LABEL, (gl2, args) => {
         const gl = gl2 as WebGL2RenderingContext
-        if (!vao) return
         const circles = psWaveRef.current
-        if (circles.length === 0) return
+        if (circles.length === 0) {
+          // **描くものが無くなったら取り下げる**（§16「隠したら取り下げる」）。予報円は
+          // 緊急地震速報が失効すれば消えるので、残すと**平常時にバナーが居座る**
+          // ——しかもこのレイヤーはもう何も描かないので、自力で取り下げる機会が他に無い。
+          if (brokenReported) {
+            brokenReported = false
+            clearRenderFailure(LYR, 'draw')
+          }
+          return
+        }
         const prog = cache.get(gl, args)
-        if (!prog) return
+        // **シェーダーと GL の資源が揃っていなければ、まとめて画面へ出す。**
+        // 資源（`vao` / `vbo` / `ibo`）の生成関数も失敗時に例外ではなく null を返すので、
+        // 揃っていない状態は「用意できなかった」の一種。`gl/depthPointLayer.ts` も
+        // `vao` を報告条件に含めている。**この判定は「描くものがある」ときだけ通る** ——
+        // 予報円が無い平常時に出すと偽の警告になるため、上の早期 return の後ろへ置く。
+        if (!prog || !vao || !vbo || !ibo) {
+          // **用意できないことを画面へ出す**（docs/spec/map-rendering-spec.md §16
+          // 「`onAdd` は投げない」の節と同じ規律）。ここは例外を投げないので
+          // `gl/guardRender.ts` にも掛からず、黙ると予報円だけが理由もなく消える。
+          if (!warnedDisabled) {
+            warnedDisabled = true
+            log.error('[PsWaveGL] シェーダーまたは GL の資源を用意できず、予報円の描画を止めています')
+          }
+          brokenReported = true
+          reportRenderFailure(LYR, LABEL, 'draw')
+          return
+        }
+        if (brokenReported) {
+          // 投影が切り替わってプログラムを作り直せたら通ることがある。**直ったら画面から消す。**
+          brokenReported = false
+          clearRenderFailure(LYR, 'draw')
+        }
         const u = prog.u
 
         gl.useProgram(prog.program)
@@ -322,6 +357,10 @@ ${VERT_BODY}`,
         // **画面から外れたら不調の記録も消す**（docs/spec/map-rendering-spec.md §16）。
         // `gl/guardRender.ts` が受け止めた例外の記録も、この 1 行でまとめて消える。
         clearRenderFailuresFor(LYR)
+        // **2 つとも戻す。** 片方だけ残すと、次に載せたとき症状が変わっても包括のログが
+        // 二度と出ない（`gl/dayNightLayer.ts` と同じ理由）。
+        brokenReported = false
+        warnedDisabled = false
         cache.dispose(gl)
         if (vbo) gl.deleteBuffer(vbo)
         if (ibo) gl.deleteBuffer(ibo)

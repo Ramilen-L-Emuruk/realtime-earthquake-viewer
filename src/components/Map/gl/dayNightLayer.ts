@@ -4,7 +4,7 @@ import { applyProjectionUniforms, createProjectionProgramCache } from './project
 import { buildDayNightGrid, FLOATS_PER_VERTEX } from './dayNightGrid'
 import { shadingDepthGlsl } from '../../../utils/solarShading'
 import { guardRender } from './guardRender'
-import { clearRenderFailure, reportRenderFailure } from '../../../utils/renderHealth'
+import { clearRenderFailure, clearRenderFailuresFor, reportRenderFailure } from '../../../utils/renderHealth'
 import { log } from '../../../utils/logger'
 
 // 夜の側を 1 枚の面として描く MapLibre カスタムレイヤー。
@@ -146,8 +146,12 @@ ${VERT_BODY}`,
     uniforms: ['u_sinSunLat', 'u_cosSunLat', 'u_sunLonRad', 'u_nightOpacity', 'u_color', 'u_dither'] as const,
   })
 
-  let vertexBuf: WebGLBuffer
-  let indexBuf: WebGLBuffer
+  // **GL の生成関数は失敗しても例外ではなく null を返す**（文脈を失っているとき等）。
+  // 非 null と決めつけると、バッファの無いまま `vertexAttribPointer` を呼んで
+  // 内部のエラーフラグが立つだけになる ——例外にはならず、画面にも何も出ない
+  // （docs/spec/map-rendering-spec.md §16「`onAdd` は投げない」）。
+  let vertexBuf: WebGLBuffer | null = null
+  let indexBuf: WebGLBuffer | null = null
   /** 画面へ「描けていない」と出している状態か。直ったら取り下げるために持つ。 */
   let brokenReported = false
   /** シェーダーを用意できない旨をログへ残したか（毎フレーム通るので 1 度だけ）。 */
@@ -186,17 +190,18 @@ ${VERT_BODY}`,
       // `Style.destroy()` はレイヤーを回す途中で例外を受け止めないので、手前の 1 枚が
       // 投げれば以降は呼ばれない。
       warnedDisabled = false
-      vertexBuf = gl.createBuffer() as WebGLBuffer
+      vertexBuf = gl.createBuffer()
       gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuf)
       gl.bufferData(gl.ARRAY_BUFFER, grid.vertices, gl.STATIC_DRAW)
-      indexBuf = gl.createBuffer() as WebGLBuffer
+      indexBuf = gl.createBuffer()
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuf)
       gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, grid.indices, gl.STATIC_DRAW)
     },
     render: guardRender(LYR, LABEL, (gl: WebGL2RenderingContext, args: maplibregl.CustomRenderMethodInput) => {
       if (!visible) return
       const prog = cache.get(gl, args)
-      if (!prog) {
+      // **シェーダーと GL の資源が揃っていなければ、まとめて画面へ出す**（§16）。
+      if (!prog || !vertexBuf || !indexBuf) {
         // **用意できないことを画面へ出す**（docs/spec/map-rendering-spec.md §16）。キャッシュ側が
         // 残すのはコンソールだけで、ここは例外を投げないので `guardRender` の検出にも掛からない。
         // 黙ると、夜の側が出ないまま利用者にも開発者にも痕跡が残らない。
@@ -242,15 +247,21 @@ ${VERT_BODY}`,
       gl.disableVertexAttribArray(aLonLat)
     }),
     onRemove(_map: maplibregl.Map, gl: WebGL2RenderingContext) {
-      // **画面から外れたら不調の記録も消す**（docs/spec/map-rendering-spec.md §16）。
-      clearRenderFailure(LYR, 'draw')
+      // **画面から外れたらまとめて消す**（docs/spec/map-rendering-spec.md §16）。
+      // `gl/guardRender.ts` は受け止めた例外を `<id>:uncaught` という別の鍵で記録し、
+      // **「自分が報告したか」をクロージャの中だけで覚えている**。外した後は `render()` が
+      // 呼ばれないので、その鍵を消せるのはここだけ。1 件だけ消す版では取り残す。
+      clearRenderFailuresFor(LYR)
       // **2 つとも戻す。** 片方だけ残すと、次に載せたとき症状が変わっても包括のログが
       // 二度と出ない（詳細は `gl/projectionProgram.ts` が投影ごとに残す）。
       brokenReported = false
       warnedDisabled = false
       cache.dispose(gl)
+      // **`delete*` は null を渡しても無害に無視される**ので、ガードは置かない。
       gl.deleteBuffer(vertexBuf)
       gl.deleteBuffer(indexBuf)
+      vertexBuf = null
+      indexBuf = null
     },
   }
 
@@ -263,7 +274,16 @@ ${VERT_BODY}`,
       nightOpacity = opacity
     },
     setVisible(v: boolean): void {
+      if (visible === v) return
       visible = v
+      // **隠したら「描けていない」も取り下げる**（docs/spec/map-rendering-spec.md §16）。
+      // `render()` は `!visible` で資源の判定より手前に抜けるので、**壊れた状態で隠すと
+      // 取り下げる機会が無い** ——意図的に隠しているだけなのにバナーが残り続ける。
+      // `gl/subThresholdLayer.ts` / `gl/depthPointLayer.ts` の `setVisible` と同じ扱い。
+      if (!v && brokenReported) {
+        brokenReported = false
+        clearRenderFailure(LYR, 'draw')
+      }
     },
   }
 }
