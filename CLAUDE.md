@@ -1103,6 +1103,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 地震活動ヒートマップの色ランプ・拡散半径・不透明度の決め方（対数配置・高ズームは地理的距離に追従・寄るほど薄く） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §14 |
 | バッジの文字色（塗り色から白/黒を自動選択・気象庁配色は変更不可）と地図バッジの半径テーブル・アイコン倍率とぼやけの関係 | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §15 |
 | 地図を作れなかったときに画面全体を落とさないこと（`new maplibregl.Map()` は WebGL2 の文脈を作れないと**同期的に投げる**。**このアプリに ErrorBoundary は無い**ので、握らないと地震情報も通知も設定も消える／**例外の型で選り分けない**＝`GPUInitializationError` に絞ると `getContext` 自体が投げる端末を取りこぼし、いちばん救いたい相手で白画面のままになる／**代わりに画面では原因を断定しない**＝オプション値の不整合も同じ場所から投げられ、「WebGL が無い」と言い切れば嘘になる。実際の例外はログへ残す／覆うのは地図領域だけ） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §12 |
+| 凡例に出すものと並べる順（**中身は各レイヤーの表示条件から組む**＝`MapLegendSources`。地図モードで決め打たない／**色は描いている側と同じ定数から採る**／**半透明で添えるだけの描画物は主役のモードでだけ出す**＝予報円と EEW 震源の×印／**並べる順と畳んだときの代表はモードで決める**＝`LEGEND_PRIMARY_BY_MODE`／**器を中身より大きくしない**＝専用の見出し行を持たず、狭い画面ではひと段詰める） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §20・[`docs/spec/share-card-spec.md`](docs/spec/share-card-spec.md)（画像への焼き込み） |
 
 ### 地図: カメラ・投影・表示閾値
 

@@ -5,6 +5,7 @@ import { useMapGL } from './mapGLContext'
 import type { HeatPoint } from '../../utils/quakeHeatmap'
 import { formatMagnitude, formatDepth, formatDateTimeMin } from '../../utils/formatters'
 import { getMagnitudeColor } from '../../utils/intensity'
+import { heatmapColorExpression } from './gl/heatmapRamp'
 import { addOrderedLayer } from './gl/layerOrder'
 import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
 import { badgeHtml, escapeHtml } from './gl/popupHtml'
@@ -153,22 +154,9 @@ export function QuakeHeatmapGL({ points, iconScale, visible }: Props) {
         'heatmap-weight': ['coalesce', ['get', 'weight'], 0.5],
         // 密度強度。ズームで上げるが、値そのものは低く抑える。理由は下の色ランプのコメント参照。
         'heatmap-intensity': ['interpolate', ['linear'], ['zoom'], 0, 0.04, HEAT_MAX_ZOOM, 0.09],
-        // 密度→色。**折れ点を対数的に配置する**（等間隔にしない）。
-        // 地震活動は場所によって桁で違う。実データでは 0.1 度メッシュあたりの重み合計が
-        // 中央値 0.15 に対し最大 16.6 と 100 倍以上開く。これを等間隔のランプで写すと、
-        // 濃い側は上限に張り付いて一様な赤（境界のはっきりした塊）になり、薄い側は透明に
-        // 潰れて、結局どちらの濃淡も読めなくなる。低い側を引き延ばして高い側を圧縮する。
-        'heatmap-color': [
-          'interpolate',
-          ['linear'],
-          ['heatmap-density'],
-          0, 'rgba(0,0,255,0)',
-          0.005, 'rgba(0,0,255,0.45)',
-          0.02, 'rgba(0,170,255,0.6)',
-          0.08, 'rgba(0,255,128,0.7)',
-          0.3, 'rgba(255,238,0,0.8)',
-          0.9, 'rgba(255,0,0,0.9)',
-        ],
+        // 密度→色。段は gl/heatmapRamp.ts が単一情報源（凡例と共有する）。折れ点を対数的に
+        // 配置している理由もそちらに書いてある。
+        'heatmap-color': heatmapColorExpression() as never,
         'heatmap-radius': heatRadiusExpr(iconScaleRef.current),
         // 寄るほど薄くする。半径を地理的な距離に合わせて伸ばす（heatRadiusExpr 参照）ため、
         // 濃さを保ったままだと高ズームでは画面全体が塗り潰されて地図が読めなくなる。
