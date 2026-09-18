@@ -47,6 +47,7 @@ export type SpeechRef =
   | { kind: 'quakeObserved'; observed: SpokenObservation }
   | { kind: 'unreceivedNote' }
   | { kind: 'telegramText' }
+  | { kind: 'borrowedHypocenter' }
 
 /**
  * `unreceivedNote` は**未入電モードの自動開閉のためだけ**に置いてある印。
@@ -64,6 +65,11 @@ export type SpeechRef =
  * `telegramText` も同じ役目で、**気象庁が書いた文を読んでいるあいだ、その表示を開いておく**
  * ためだけの印（→ {@link hasTelegramTextFollowTarget}）。どの電文の文かは参照ではなく
  * セッションの `subject` が持つ —— 参照に種別を持たせると、既読の記録へ混ざる形が増える。
+ *
+ * `borrowedHypocenter` も同じ役目。**津波の読み上げが、その津波の原因地震の震源を語っている
+ * あいだ、その地震のカードを見せる**ための印（→ `utils/borrowFromTsunami.ts`）。震源そのものは
+ * `quakeFact` で別に記録されるので、この印は既読へ混ざらない（{@link applySpokenRefs} は
+ * `quakeRegion` / `quakeFact` だけを見る）。どの地震かは参照ではなくセッションの主題が持つ。
  */
 
 /**
@@ -157,6 +163,8 @@ function sameRef(a: SpeechRef, b: SpeechRef): boolean {
   // 未入電の説明文の印は中身を持たないので、同じ種類なら同一。**扱わないと重複排除が効かない**
   // （`mapChunksToRefs` は `sameRef` で既出かを見るため、同じチャンクへ何度も積まれる）。
   if (a.kind === 'unreceivedNote' && b.kind === 'unreceivedNote') return true
+  // 借りた震源の印も中身を持たないので、同じ種類なら同一（`unreceivedNote` と同じ理由）。
+  if (a.kind === 'borrowedHypocenter' && b.kind === 'borrowedHypocenter') return true
   return false
 }
 
@@ -206,6 +214,17 @@ export function hasUnreceivedFollowTarget(segments: readonly SpeechSegment[] | u
  */
 export function hasTelegramTextFollowTarget(segments: readonly SpeechSegment[] | undefined): boolean {
   return segments?.some(s => s.refs.some(r => r.kind === 'telegramText')) ?? false
+}
+
+/**
+ * 借りた震源を読み上げているか（＝その地震のカードを見せる対象か）。
+ *
+ * **門は他の 3 つと別に持つ。** 津波カードの追従（`hasFollowTarget`）へ相乗りさせると、
+ * 震源を語っているあいだも津波カードのスクロールが動こうとする。未入電・気象庁の文の門も
+ * それぞれ別の参照を見るためのもので、対象が違う（同じ理由は `hasTelegramTextFollowTarget`）。
+ */
+export function hasBorrowedHypocenterFollowTarget(segments: readonly SpeechSegment[] | undefined): boolean {
+  return segments?.some(s => s.refs.some(r => r.kind === 'borrowedHypocenter')) ?? false
 }
 
 /**
@@ -263,6 +282,28 @@ export function unreceivedChunkRange(
   let last = -1
   refsPerChunk.forEach((refs, i) => {
     if (!refs.some(isUnreceivedRef)) return
+    if (first < 0) first = i
+    last = i
+  })
+  return first < 0 ? null : { first, last }
+}
+
+/**
+ * チャンクごとの参照から、「借りた震源を声にしているチャンク」の範囲を返す。
+ *
+ * 未入電側（{@link unreceivedChunkRange}）と同じく**範囲は実データから求める**。震源の句は
+ * 津波の読み上げ文の末尾に置いてあるが、「最後まで」と決め打つと文の並びを変えたときに
+ * 黙ってずれる。
+ *
+ * 該当するチャンクが 1 つも無ければ `null`。
+ */
+export function borrowedHypocenterChunkRange(
+  refsPerChunk: readonly (readonly SpeechRef[])[],
+): { first: number; last: number } | null {
+  let first = -1
+  let last = -1
+  refsPerChunk.forEach((refs, i) => {
+    if (!refs.some(r => r.kind === 'borrowedHypocenter')) return
     if (first < 0) first = i
     last = i
   })
