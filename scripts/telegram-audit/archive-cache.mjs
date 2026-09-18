@@ -1,4 +1,10 @@
-// DMDATA アーカイブ（日ごとの `.tar.gz`）の取得を 1 箇所へ集約する。
+// DMDATA アーカイブ（日ごとの `.tar.gz`）の取得と、**それを使うスクリプトの定型**を
+// 1 箇所へ集約する。
+//
+// **取得だけのモジュールではない。** API キーの読み取り（`apiAuthHeader`）・取得の実測値の
+// 報告（`reportArchiveCacheStats`）・実行の定型（`runArchiveScript`）も持つ。取得ロジック
+// だけが欲しい利用者が現れたら、そのとき切り分けを考えること —— いま使っている 6 本
+// （監査 3 本・テストデータの生成 3 本）はどれも報告まで必要とする。
 //
 // **同じ日を二度取らない。** アーカイブは 1 日分を締めたあとに生成される不変のファイルなので、
 // 一度取ればローカルの控えで足りる。集約する前は 3 本のスクリプトがそれぞれ素の `fetch` で
@@ -23,7 +29,7 @@ import { REPO } from '../lib/repo-root.mjs'
 import { gate, resetRateGateForTest, sleep } from '../lib/rateGate.mjs'
 // 不完全さの印も共有の仕組みへ寄せる。**ここで積んだ分は、下流が `readArtifact` で読んだ
 // 時点で自動的に引き継がれる**（`scripts/lib/incompleteness.mjs`）。
-import { noteIncomplete, resetIncompletenessForTest } from '../lib/incompleteness.mjs'
+import { noteIncomplete, reportIncompleteness, resetIncompletenessForTest } from '../lib/incompleteness.mjs'
 
 /** 控えの置き場所。`.claude/*` は `.gitignore` 済み（`nii-cache` / `hypocenter-cache` と同じ扱い）。 */
 export const ARCHIVE_CACHE_DIR = process.env.DMDATA_ARCHIVE_CACHE
@@ -122,6 +128,15 @@ async function fetchWithRate(url, { auth, kind, minIntervalMs }) {
 }
 
 /**
+ * 地震情報・津波・長周期地震動・推計震度分布図が入る分類。
+ *
+ * **呼び出し側で文字列を書かないこと。** 3 本の生成スクリプトが個別に同じ定数を持っていた。
+ * 緊急地震速報は別（`eew.forecast` / `eew.warning`）で、そちらは対象が 2 つあるため
+ * 定数にしていない —— 使う側がどちらを見るか選ぶ必要がある。
+ */
+export const EARTHQUAKE_CLASSIFICATION = 'telegram.earthquake'
+
+/**
  * アーカイブの一覧を全ページ辿って返す。
  *
  * **分類ごとに分かれている。** 対象がどれに属するかを先に確かめること —— 2026-09-11 に
@@ -165,8 +180,14 @@ export async function listArchive({ classification, from, to, auth }) {
   return out
 }
 
-/** 一覧のアイテムが指す日。控えの名前と失敗の記録で同じ値を使う。 */
-function dayOf(item) {
+/**
+ * 一覧のアイテムが指す日。控えの名前と失敗の記録で同じ値を使う。
+ *
+ * **`item.datetime ?? item.date` を呼び出し側で書き写さないこと。** 上流はどちらの名前でも
+ * 返しうるので、片方だけを見る形にすると、名前が変わった日に「その日のアーカイブが無い」へ
+ * 化ける。生成スクリプト 3 本（`build-test-quake` ほか）が `date` だけを見ていた。
+ */
+export function dayOf(item) {
   return String(item.datetime ?? item.date ?? 'unknown')
 }
 
@@ -270,4 +291,36 @@ export function reportArchiveCacheStats(label = 'アーカイブ') {
     + (s.retryWaits > 0 ? ` / 待ち直し ${s.retryWaits} 回（レート制限・サーバーエラー）` : '')
   )
   console.error(`  控えの場所: ${ARCHIVE_CACHE_DIR}`)
+}
+
+/**
+ * アーカイブを取るスクリプトの定型。**取得の実測値と取りこぼしの印を、成功・失敗のどちらでも出す。**
+ *
+ * **`finally` で出す理由は、失敗した回こそ見たい情報だから。** 何件を控えで済ませたか・
+ * 429 で何回待ち直したかはここにしか出ない —— 本体の末尾で出す形にすると、途中で投げた回は
+ * 1 件も出ないまま「エラー 1 行」で終わる。
+ *
+ * **2 つを並べて呼ぶ**のは、数える場所が別だから（取得の実測値はこのモジュール、
+ * 取りこぼしの印は `lib/incompleteness.mjs`）。片方だけ呼ぶと「何件取ったか」か
+ * 「何を見ていないか」のどちらかが消える。実際、テストデータの生成スクリプト 3 本が
+ * 前者だけを呼んでいた。
+ *
+ * 印が残ったまま本体が完走した場合は終了コードを立てる。**いまは取得の失敗が必ず例外になるので
+ * その経路は無いが、「失敗は必ず throw される」という前提に頼らない。**
+ *
+ * **監査スクリプト（`fetch-samples.mjs` ほか）はこれを通らない。** あちらはトップレベルで
+ * 処理してから末尾で 2 つを並べて呼ぶ形で、包む本体を持たない。**寄せるなら向こうの構造ごと
+ * 変える必要がある**ので、いまは同じ規約を別の形で満たしている状態。
+ *
+ * @param {string} label 報告の見出し。**同じスクリプトを引数違いで走らせる場合は変えること** ——
+ *   固定にすると、ログからどちらを実行した結果か分からない
+ * @param {() => Promise<void>} build 本体
+ */
+export async function runArchiveScript(label, build) {
+  try {
+    await build()
+  } finally {
+    reportArchiveCacheStats(label)
+    if (reportIncompleteness(label) > 0) process.exitCode = 1
+  }
 }
