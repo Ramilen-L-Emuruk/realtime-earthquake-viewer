@@ -290,6 +290,8 @@ async function main(): Promise<void> {
   await mkdir(OUT_DIR, { recursive: true })
   await writeFile(OUT_FILE, `${JSON.stringify(output, null, 2)}\n`)
   console.log(`Wrote ${OUT_FILE} (収録 ${entries.size} / 全 ${names.length} 件)`)
+  // 読みを作り直したら助詞の連結を確かめ直す（理由は `build-station-readings.ts` の同じ箇所）
+  console.log('次は `npm run verify-particle-phrases` を回すこと（助詞を連結しても句が増えないかの確認）')
 }
 
 /**
