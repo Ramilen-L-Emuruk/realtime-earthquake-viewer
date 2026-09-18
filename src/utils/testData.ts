@@ -717,6 +717,77 @@ function toP2pArea(area: EEWRegion): EEWRegion {
   }
 }
 
+// 続報で震源時刻（`originTime`）をずらす秒数（第 1 報からの差）。
+//
+// **実電文の震源時刻は続報で動く。** 震源推定が更新されるたび作り直されるためで、1 日分・
+// VXSE45 の実測では 15 地震のうち 11 件が動き、同じ地震の中での振れ幅は 1〜6 秒だった。
+// **前の報より戻ることもある**（報番号順の差分は進んだ 10 件・戻った 12 件で、最大 −6 秒）。
+// 固定したままだと、**予報円の半径が続報のたびに跳ねる形を実機で一度も見られない**
+// （半径は `now - originTime` で決まる。→ `docs/spec/eew-spec.md` §3
+// 「地震の時刻は発生時刻を出す」の「`originTime` を読む場所」）。
+//
+// **値は実電文の系列をそのまま置く。** 2024-11-26 21:18 の陸奥湾（VXSE45 全 7 報）で、
+// 第 1 報からのずれが 0, −3, −5, −3, −4, −4, −4 だったもの。**動いて・戻って・落ち着く**の
+// 3 つが 1 本に入っているのでこれを採った。振れ幅は深さや規模と対応していなかったため
+// （最大の −6 秒は深さ 10km の地震）、震源の違うテストへ同じ系列を当てて構わない。
+//
+// 報番号が系列より先まで進んだら最後の値で止める（実電文も途中から落ち着く）。
+//
+// **系列を差し替えるなら、値が 0 以下であることを確かめる。** 正の値を入れると震源時刻が基準より
+// 未来へ行き、押した直後に予報円が消える（半径は `now - originTime` で、`usePsWaveCalc` は負の
+// 経過時間で `null` を返す）。いまの系列は全要素が 0 以下なのでその経路に入らない。
+const EEW_ORIGIN_DRIFT_SEC = [0, -3, -5, -3, -4, -4, -4] as const
+
+/**
+ * 報番号に対応する震源時刻のずれ [ms]。→ {@link EEW_ORIGIN_DRIFT_SEC}
+ *
+ * **報番号が整数でなければずらさない。** 添字が `NaN` になると `undefined * 1000` を経て
+ * `Invalid Date` ができ、**`toISOString()` が例外を投げてテストボタンごと死ぬ**
+ * （現在の呼び出し元は必ず 1 以上の整数を渡すので通らない経路）。
+ */
+function eewOriginDriftMs(serial: number): number {
+  if (!Number.isInteger(serial)) {
+    // **呼び出し規約違反なので記録する。** 黙って 0 へ倒すと、震源時刻がずれていないことに
+    // 気づく手段がテスト以外に無くなる（→ CLAUDE.md「ログ設計」）。
+    log.error(`[testData] EEW の報番号が整数ではありません serial=${String(serial)}`)
+    return 0
+  }
+  const i = Math.min(Math.max(serial, 1), EEW_ORIGIN_DRIFT_SEC.length) - 1
+  return EEW_ORIGIN_DRIFT_SEC[i] * 1000
+}
+
+// 地震発現時刻（`arrivalTime`）が震源時刻から遅れる秒数。**震源からいちばん近い観測点まで
+// P 波が伝わる時間**なので、深さと観測点までの距離で決まる。
+//
+// **実測（1 日分・VXSE45 の 91 通）は深さと対応していた。** 同じ深さでも幅があり、これは最寄り
+// 観測点までの距離の違い（内陸で観測点が密なところは短く、海域は長い）。**分布の全体は
+// `docs/spec/settings-pwa-spec.md` §7「実電文の形に合わせる」** —— ここでは下の 4 値の根拠だけ
+// 各フィールドに書く。
+//
+// **テストごとに、その震源の深さに合う実測値を置く。** アプリは最寄り観測点までの距離を
+// 知らないので計算では出せない。**実測が無い深さは走時からの外挿になる** —— そのフィールドの
+// 説明にその旨を書く（いまは深さ 450km の 1 件だけ）。
+//
+// **続報では動かさない。** 実測では 15 地震すべてで地震発現時刻が 1 通も動かなかった
+// （観測点が実際に検知した時刻で、震源推定の更新とは無関係）。基準は `anchor` に取る。
+//
+// **つまりこの値は初報での「震源時刻からの遅れ」。** 続報では震源時刻がずれるぶん実際の差が
+// 変わる（`arrivalTime - origin = この値 - ドリフト`）。**それが実電文の形** —— 発現時刻は
+// 動かないのに震源時刻が動くので、両者の差は報ごとに変わってよい。
+const EEW_ARRIVAL_DELAY_MS = {
+  /** 三陸沖・深さ 24km（海域）。実測の深さ 10〜30km 帯の中央値 */
+  sanriku: 6000,
+  /** 日向灘・深さ 30km（海域）。実測の深さ 30km の値 */
+  hyuganada: 6000,
+  /** 宮城県沖・深さ 60km（海域）。**同じ震央地名・深さ 50/70km の実電文が 8〜10 秒**（4 報） */
+  miyagi: 9000,
+  /**
+   * 小笠原諸島西方沖・深さ 450km。**この深さの実測は無い**（測れた最深は 130km）。
+   * Pn（7.8km/s）で 450km を伝わると約 58 秒なので、この値は走時と整合する。
+   */
+  ogasawara: 60000,
+} as const
+
 // EEW テストの kindCode は気象庁コード表12（緊急地震速報種別）に従う。
 //   00 / 01 / 09 = 予報（未到達 / 既に到達 / PLUM法で到達予想なし）
 //   10 / 11 / 19 = 警報（同順）
@@ -749,12 +820,19 @@ function toP2pArea(area: EEWRegion): EEWRegion {
 //   P2PQuake code=556 が区域と震源要素だけを後から注ぎ足す（`useEarthquakes.ts` の
 //   `enrichEEW`）。そのため震源要素の精度・内陸/海域・短縮名・固定付加文・最大予測値の変化・
 //   長周期地震動階級は**どちらの経路も運ばない**。false を渡すとそれらを持たない形になる。
-// @param baseTime 震源時刻の基準。同一イベントの続報・最終報では初報の値を渡して固定する
-//   （実運用の続報は originTime を変えない）。発表時刻（time / issue.time）は常に呼び出し時点。
+// @param baseTime **地震発現時刻**の基準。同一イベントの続報・最終報では初報の値を渡す
+//   （実電文の発現時刻は続報で動かない）。**震源時刻はここから続報ごとにずらす**
+//   （→ `EEW_ORIGIN_DRIFT_SEC`）。発表時刻（time / issue.time）は常に呼び出し時点。
 export function createTestEEWWarning(withDmdssFields: boolean, eventId?: string, serial = 1, baseTime?: Date): EEWAlert {
-  const origin = baseTime ?? serverDate()
+  // 地震発現時刻の基準。**続報でも動かさない**（→ `EEW_ARRIVAL_DELAY_MS`）
+  const anchor = baseTime ?? serverDate()
+  // 震源時刻は続報でずれる（→ `EEW_ORIGIN_DRIFT_SEC`）
+  const origin = new Date(anchor.getTime() + eewOriginDriftMs(serial))
   const report = serverDate().toISOString()
   const eid = eventId ?? `test-warn-${Date.now()}`
+  // 区域の到達予測時刻。**震源時刻に追従させる** —— 値は「震源距離 ÷ 見かけ速度」で作って
+  // あるので（下記の実測）、震源時刻がずれた続報で基準を動かさないと見かけ速度が実測の範囲を
+  // 外れる。実電文も震源要素が更新されれば到達予測時刻を作り直す。
   const at = (offsetMs: number) => new Date(origin.getTime() + offsetMs).toISOString()
   const forecastChange: EEWForecastChange | undefined =
     serial <= 1 ? undefined
@@ -768,7 +846,7 @@ export function createTestEEWWarning(withDmdssFields: boolean, eventId?: string,
     test: false,
     earthquake: {
       originTime: origin.toISOString(),
-      arrivalTime: new Date(origin.getTime() + 20000).toISOString(),
+      arrivalTime: new Date(anchor.getTime() + EEW_ARRIVAL_DELAY_MS.hyuganada).toISOString(),
       // 震源要素の補足情報（電文の `Condition`）。**値域は「仮定震源要素」の 1 つだけ**で、
       // 該当しなければ要素ごと出ない（電文解説資料 Ⅱ.21 1-2）。仮定震源要素でない報は空。
       condition: '',
@@ -856,9 +934,13 @@ export function createTestEEWWarning(withDmdssFields: boolean, eventId?: string,
 // **区域そのものに下限は無い**が、警報級のテスト（`createTestEEWWarning` / `createTestEEW`）で
 // 震度 3 の区域を持たせてあるため、こちらは境目ちょうどの形を受け持つ。
 export function createTestEEWForecast(withDmdssFields: boolean, eventId?: string, serial = 1, baseTime?: Date): EEWAlert {
-  const origin = baseTime ?? serverDate()
+  // 地震発現時刻の基準。**続報でも動かさない**（→ `EEW_ARRIVAL_DELAY_MS`）
+  const anchor = baseTime ?? serverDate()
+  // 震源時刻は続報でずれる（→ `EEW_ORIGIN_DRIFT_SEC`）
+  const origin = new Date(anchor.getTime() + eewOriginDriftMs(serial))
   const report = serverDate().toISOString()
   const eid = eventId ?? `test-forecast-${Date.now()}`
+  // 区域の到達予測時刻。震源時刻に追従させる（理由は `createTestEEWWarning` の同じ箇所）
   const at = (offsetMs: number) => new Date(origin.getTime() + offsetMs).toISOString()
   return {
     kind: 'eew',
@@ -867,7 +949,7 @@ export function createTestEEWForecast(withDmdssFields: boolean, eventId?: string
     test: false,
     earthquake: {
       originTime: origin.toISOString(),
-      arrivalTime: new Date(origin.getTime() + 20000).toISOString(),
+      arrivalTime: new Date(anchor.getTime() + EEW_ARRIVAL_DELAY_MS.miyagi).toISOString(),
       condition: '',
       hypocenter: { name: '宮城県沖', latitude: 38.3, longitude: 141.8, depth: 60, magnitude: 4.5 },
     },
@@ -898,9 +980,13 @@ export function createTestEEWForecast(withDmdssFields: boolean, eventId?: string
 // 気象庁が仮定震源要素に入れる固定値（深さ 10km・M1.0）から確定値（深さ 30km・M6.5）へ
 // 更新する形にしてある。
 export function createTestEEWAssumed(withDmdssFields: boolean, eventId?: string, serial = 1, baseTime?: Date): EEWAlert {
-  const origin = baseTime ?? serverDate()
+  // 地震発現時刻の基準。**続報でも動かさない**（→ `EEW_ARRIVAL_DELAY_MS`）
+  const anchor = baseTime ?? serverDate()
+  // 震源時刻は続報でずれる（→ `EEW_ORIGIN_DRIFT_SEC`）
+  const origin = new Date(anchor.getTime() + eewOriginDriftMs(serial))
   const report = serverDate().toISOString()
   const eid = eventId ?? `test-assumed-${Date.now()}`
+  // 区域の到達予測時刻。震源時刻に追従させる（理由は `createTestEEWWarning` の同じ箇所）
   const at = (offsetMs: number) => new Date(origin.getTime() + offsetMs).toISOString()
   const isAssumed = serial === 1
   return {
@@ -910,7 +996,7 @@ export function createTestEEWAssumed(withDmdssFields: boolean, eventId?: string,
     test: false,
     earthquake: {
       originTime: origin.toISOString(),
-      arrivalTime: new Date(origin.getTime() + 20000).toISOString(),
+      arrivalTime: new Date(anchor.getTime() + EEW_ARRIVAL_DELAY_MS.hyuganada).toISOString(),
       condition: isAssumed ? '仮定震源要素' : '',
       // 仮定震源要素では震源要素そのものが固定の仮定値（気象庁は観測点直下・深さ 10km・M1.0 を入れる）。
       // カード・地図側もこれを見て M・深さを隠す（docs/spec/eew-spec.md §5）
@@ -949,7 +1035,10 @@ export function createTestEEWAssumed(withDmdssFields: boolean, eventId?: string,
 // **severity は続報も含めて予報級に固定する。** 気象庁は深さ 150km を超える地震に緊急地震速報
 // （警報）を発表しないため、警報級の深発 EEW は実電文として存在しない。
 export function createTestEEWDeep(withDmdssFields: boolean, eventId?: string, serial = 1, baseTime?: Date): EEWAlert {
-  const origin = baseTime ?? serverDate()
+  // 地震発現時刻の基準。**続報でも動かさない**（→ `EEW_ARRIVAL_DELAY_MS`）
+  const anchor = baseTime ?? serverDate()
+  // 震源時刻は続報でずれる（→ `EEW_ORIGIN_DRIFT_SEC`）
+  const origin = new Date(anchor.getTime() + eewOriginDriftMs(serial))
   const report = serverDate().toISOString()
   const eid = eventId ?? `test-deep-${Date.now()}`
   return {
@@ -959,7 +1048,7 @@ export function createTestEEWDeep(withDmdssFields: boolean, eventId?: string, se
     test: false,
     earthquake: {
       originTime: origin.toISOString(),
-      arrivalTime: new Date(origin.getTime() + 60000).toISOString(),
+      arrivalTime: new Date(anchor.getTime() + EEW_ARRIVAL_DELAY_MS.ogasawara).toISOString(),
       condition: '',
       // 2015/05/30 小笠原諸島西方沖（深さ 682km）を参考にした深発地震のパラメータ
       hypocenter: { name: '小笠原諸島西方沖', latitude: 27.9, longitude: 140.5, depth: 450, magnitude: 6.5 },
@@ -980,9 +1069,13 @@ export function createTestEEWDeep(withDmdssFields: boolean, eventId?: string, se
 }
 
 export function createTestEEW(withDmdssFields: boolean, eventId?: string, serial = 1, baseTime?: Date): EEWAlert {
-  const origin = baseTime ?? serverDate()
+  // 地震発現時刻の基準。**続報でも動かさない**（→ `EEW_ARRIVAL_DELAY_MS`）
+  const anchor = baseTime ?? serverDate()
+  // 震源時刻は続報でずれる（→ `EEW_ORIGIN_DRIFT_SEC`）
+  const origin = new Date(anchor.getTime() + eewOriginDriftMs(serial))
   const report = serverDate().toISOString()
   const eid = eventId ?? `test-${Date.now()}`
+  // 区域の到達予測時刻。震源時刻に追従させる（理由は `createTestEEWWarning` の同じ箇所）
   const at = (offsetMs: number) => new Date(origin.getTime() + offsetMs).toISOString()
   const isFirstReport = serial <= 1
   return {
@@ -992,7 +1085,7 @@ export function createTestEEW(withDmdssFields: boolean, eventId?: string, serial
     test: false,
     earthquake: {
       originTime: origin.toISOString(),
-      arrivalTime: at(20000),
+      arrivalTime: new Date(anchor.getTime() + EEW_ARRIVAL_DELAY_MS.sanriku).toISOString(),
       condition: '',
       // 2011年東北地方太平洋沖地震を参考にしたパラメータ（EEW初報はM7.2前後だった）
       hypocenter: { name: '三陸沖', latitude: 38.1, longitude: 142.9, depth: 24, magnitude: 7.2 },
