@@ -249,7 +249,8 @@ function enrichEEWPref(eew: EEWAlert, index: Map<string, string> | null): EEWAle
 }
 
 type TestEEWKind = 'special' | 'warning' | 'forecast' | 'assumed' | 'deep'
-// originTime は同一イベントで不変なので初報の基準時刻（baseTime）を続報・最終報まで持ち回る。
+// 初報の基準時刻（baseTime）を続報・最終報まで持ち回る。**現在時刻から作り直すと予報円が
+// 続報ごとに中心へ戻る**ため（→ `runSimulateEEW` のコメント）。
 type TestEEWEntry = { eventId: string; serial: number; baseTime: Date; finalizeTimer: number }
 type TestEEWRetractionEntry = { eventId: string; serial: number; baseTime: Date; cancelTimer: number }
 
@@ -302,8 +303,13 @@ function runSimulateTsunami(
 // 報の推移は実運用（dmdataParser.parseEEW）に合わせる:
 //   - 報番号（issue.serial）・id・発表時刻（time / issue.time）は報ごとに進める。
 //     最終報も独立した 1 報なので、直前の電文を流用せず serial を 1 つ進めて作り直す。
-//   - 震源時刻（originTime）と到達予想時刻は同一イベントで不変。baseTime を持ち回って固定する
-//     （作り直すと予報円が続報ごとに中心へ戻り、実運用では起きない挙動になる）。
+//   - 震源時刻（originTime）と到達予想時刻は baseTime を持ち回って固定する。**現在時刻から
+//     作り直すと予報円が続報ごとに中心へ戻り、実運用では起きない挙動になる。**
+//     **ただし実電文の震源時刻は完全に不変ではない** —— 震源推定が更新されるたび動く。1 日分・
+//     VXSE45 の実測で 15 地震のうち 11 件が動き、**同じ地震の中での振れ幅は 1〜6 秒**。
+//     **前の報より戻ることもある**（報番号順の差分は進んだ 10 件・戻った 12 件で、最大 −6 秒）
+//     （→ `docs/spec/eew-spec.md` §3
+//     「地震の時刻は発生時刻を出す」）。ここで固定しているのはテストデータ側の簡略化。
 function runSimulateEEW(
   kind: TestEEWKind,
   createFn: (eventId: string, serial: number, baseTime: Date) => EEWAlert,
