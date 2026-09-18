@@ -12,6 +12,8 @@ import {
   toMercator,
   cosLatFromMercatorY,
   clampElevationForGlobe,
+  mercatorElevationZ,
+  SHARED_VERT,
   GLOBE_RADIUS_M,
   metersPerPixelAt,
   depthSlabRange,
@@ -58,7 +60,7 @@ describe('toMercator', () => {
 })
 
 describe('cosLatFromMercatorY', () => {
-  // シェーダーの elevationForProjection が Mercator 側で使う換算。**ここがずれると、平面のとき
+  // シェーダーの mercatorElevationZ が使う換算。**ここがずれると、平面のとき
   // だけ深さが緯度に応じて狂う**（緯度 60 度で 2 倍）。素直に緯度から求めた値と突き合わせる。
   const mercY = (lat: number) =>
     (180 - (180 / Math.PI) * Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360))) / 360
@@ -101,6 +103,104 @@ describe('clampElevationForGlobe', () => {
   it('地表と上空は触らない（安全弁）', () => {
     expect(clampElevationForGlobe(0)).toBe(0)
     expect(clampElevationForGlobe(5000)).toBe(5000)
+  })
+})
+
+describe('mercatorElevationZ', () => {
+  // 平面（Mercator）の投影は深さを「Mercator 座標系の z」で受け取る。球はメートルで受け取る。
+  const mercY37 = mercatorY(37.5)
+
+  it('深さ 16km・北緯 37.5 度は Mercator の z で約 -5.03e-4（正）', () => {
+    expect(mercatorElevationZ(-16_000, mercY37)).toBeCloseTo(-5.03245e-4, 9)
+  })
+
+  it('メートルと Mercator の z は 3 千万倍違う（安全弁）', () => {
+    // **この倍率が「1 つの値で両方の投影を兼ねられない」理由。** 球はメートル・平面は
+    // Mercator の z を期待するので、メートルを平面側へ渡すと桁違いの値になり、
+    // 2 つの投影が混ざる帯で点が明後日の位置へ飛ぶ（projectDepthPoint のコメント）。
+    const ratio = Math.abs(-16_000 / mercatorElevationZ(-16_000, mercY37))
+    expect(ratio).toBeCloseTo(3.179e7, -5)
+  })
+
+  it('高緯度ほど絶対値が大きい（緯度で縮む）', () => {
+    const shallow = Math.abs(mercatorElevationZ(-16_000, mercatorY(0)))
+    const high = Math.abs(mercatorElevationZ(-16_000, mercatorY(60)))
+    expect(high).toBeGreaterThan(shallow)
+  })
+
+  it('地表（0）はどちらの単位でも 0（対照）', () => {
+    // **震央の印だけが跳ばなかった理由。** 深さ 0 の点は単位を取り違えても影響を受けない。
+    expect(mercatorElevationZ(0, mercY37)).toBe(0)
+  })
+})
+
+describe('projectDepthPoint のシェーダー（深さの単位を投影ごとに渡す）', () => {
+  // **文面で検査している理由。** どちらの投影へどの単位を渡すかは GLSL の分岐で決まり、
+  // 取り違えても型検査もシェーダーのリンクも通る。実際に 1 つの値で両方を兼ねていて、
+  // 球から平面へ渡る帯（zoom 11 超〜12）でだけ深さを持つ点が画面中心へ潰れていた。
+  // 位置そのものの正しさはブラウザ確認の担当（docs/spec/map-rendering-spec.md §6「地図の投影」）。
+  const body = SHARED_VERT.slice(SHARED_VERT.indexOf('vec4 projectDepthPoint(vec3 p) {'))
+  const globeBranch = body.slice(body.indexOf('#ifdef GLOBE'), body.indexOf('#else'))
+  const flatBranch = body.slice(body.indexOf('#else'), body.indexOf('#endif'))
+  /** コメント行を除いたコード行。文面の検査がコメントの書き換えで揺れないようにする。 */
+  const code = (src: string) =>
+    src
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0 && !l.startsWith('//'))
+  const lineWith = (src: string, needle: string) => code(src).filter((l) => l.includes(needle))
+
+  it('分岐を切り出せている（前提）', () => {
+    expect(body).toContain('projectDepthPoint')
+    expect(globeBranch).toContain('#ifdef GLOBE')
+    expect(flatBranch).toContain('#else')
+    expect(globeBranch.length).toBeGreaterThan(0)
+    expect(flatBranch.length).toBeGreaterThan(0)
+  })
+
+  it('球側はメートルを渡す（正）', () => {
+    const lines = lineWith(globeBranch, 'u_projection_matrix')
+    expect(lines).toHaveLength(1)
+    // 球は spherePos * (1 + elevation / GLOBE_RADIUS) で置くのでメートルでなければならない。
+    expect(lines[0]).toContain('globeElev / GLOBE_RADIUS')
+    expect(lines[0]).not.toContain('mercatorElevationZ')
+  })
+
+  it('平面側は Mercator の z を渡す（正）', () => {
+    const lines = lineWith(globeBranch, 'u_projection_fallback_matrix')
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toContain('mercatorElevationZ(elevMeters, p.y)')
+    // メートルをそのまま渡すと帯の中で点が飛ぶ。ここが元の欠陥。
+    expect(lines[0]).not.toContain('globeElev')
+  })
+
+  it('球の分岐では projectTileFor3D を呼ばない（対照）', () => {
+    // MapLibre の projectTileFor3D は elevation を 1 つしか受け取らず、それを
+    // 球側と平面側の両方へ別の単位として流す。だから球では使えない。
+    expect(code(globeBranch).join('\n')).not.toContain('projectTileFor3D')
+  })
+
+  it('純平面では projectTileFor3D をそのまま使う（対照）', () => {
+    // 平面単体なら投影は 1 つしかないので、MapLibre の関数に任せられる。
+    const lines = lineWith(flatBranch, 'projectTileFor3D')
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toContain('mercatorElevationZ(elevMeters, p.y)')
+  })
+
+  it('地球の中心を越えない頭打ちは球側だけに掛かる（安全弁）', () => {
+    expect(lineWith(globeBranch, 'globeElev =')[0]).toContain('clampElevationForGlobe(elevMeters)')
+    // 平面側に掛けると帯の上端（純平面へ渡るところ）で不連続になる。
+    expect(code(globeBranch).join('\n')).toContain('clampElevationForGlobe')
+    expect(lineWith(globeBranch, 'u_projection_fallback_matrix')[0]).not.toContain(
+      'clampElevationForGlobe',
+    )
+    expect(code(flatBranch).join('\n')).not.toContain('clampElevationForGlobe')
+  })
+
+  it('混ぜる閾値が MapLibre と同じ（安全弁）', () => {
+    // MapLibre の interpolateProjectionFor3D は transition > 0.999 で球だけを返す。
+    // ここがずれると、純球のはずの帯で平面側が混ざる（またはその逆）。
+    expect(lineWith(globeBranch, 'u_projection_transition <=')[0]).toContain('0.999')
   })
 })
 
@@ -157,9 +257,12 @@ describe('depthSlabRange', () => {
 })
 
 describe('stemScreenLengthPx', () => {
+  // 返すのは**傾きによる縦の伸び**（正射影）で、柄が画面上で実際に持つ長さではない。
+  // 透視投影の視差を含まないため真上では必ず 0 になり、それが意図した判定
+  // （docs/spec/map-rendering-spec.md §16「補助の点と柄」）。
   const mpp = metersPerPixelAt(37.5, 9)
 
-  it('真上（傾き 0）では長さ 0', () => {
+  it('真上（傾き 0）では 0（丸と縦線を出さない側へ倒す）', () => {
     expect(stemScreenLengthPx(16, 1, mpp, 0)).toBe(0)
   })
 
