@@ -4,6 +4,7 @@ import { useMapGL } from './mapGLContext'
 import type { TsunamiMissingMarker } from '../../hooks/useTsunamiLayerData'
 import { arrivalMetrics, popupOffset, ARRIVAL_RING_COLOR, ARRIVAL_OPACITY } from './gl/tsunamiArrivalMarker'
 import { missingMarkMetrics } from './gl/tsunamiMissingMarker'
+import { BADGE_SHADOW_BLUR, BADGE_SHADOW_COLOR } from './gl/tsunamiObsBar'
 import { TSUNAMI_MISSING_COLOR } from '../../utils/tsunamiStyle'
 import { overSuffixedHeight } from '../../utils/tsunami'
 import { formatTimeMin } from '../../utils/formatters'
@@ -45,7 +46,7 @@ function updateMarkerEl(el: HTMLDivElement, marker: TsunamiMissingMarker, iconSc
   el.innerHTML =
     `<div style="position:absolute;inset:0;box-sizing:border-box;border-radius:50%;` +
     `background:${TSUNAMI_MISSING_COLOR};border:${ring}px solid ${ARRIVAL_RING_COLOR};` +
-    `box-shadow:0 0 3px rgba(0,0,0,0.7);opacity:${ARRIVAL_OPACITY}">` +
+    `box-shadow:0 0 ${BADGE_SHADOW_BLUR}px ${BADGE_SHADOW_COLOR};opacity:${ARRIVAL_OPACITY}">` +
     `<div style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);` +
     `width:${length}px;height:${thickness}px;background:${ARRIVAL_RING_COLOR}"></div>` +
     `</div>`
