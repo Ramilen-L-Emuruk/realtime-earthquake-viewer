@@ -2,7 +2,7 @@ import { memo, useState, useCallback, useEffect, useRef } from 'react'
 import type { AppSettings, TtsUnreceivedDetail } from '../../hooks/useSettings'
 import { DAY_NIGHT_OPACITY_MIN, DAY_NIGHT_OPACITY_MAX } from '../../hooks/useSettings'
 import { Toggle } from '../Toggle'
-import { TELEGRAM_TEXT_BLOCK_KEYS, type TelegramTextBlockKey, type TelegramTextBlocks } from '../../utils/ttsText'
+import { TELEGRAM_TEXT_BLOCK_KEYS, TELEGRAM_BOILERPLATE_KEYS, type TelegramTextBlockKey, type TelegramTextBlocks, type TelegramBoilerplateKey, type TelegramBoilerplateReads } from '../../utils/ttsText'
 import type { ConnectionStatus } from '../../types/earthquake'
 import { dmdataConnectionLabel } from './connectionLabel'
 import { INTENSITY_SCALE_COUNT, getIntensityLabel, getIntensityColor, INTENSITY_LABELS } from '../../utils/intensity'
@@ -555,6 +555,88 @@ function TelegramTextBlockRows({ blocks, onChange }: {
           ))}
         </div>
       ))}
+    </>
+  )
+}
+
+/**
+ * 読み上げから落とす定型文のラベル。**`Record` で持つ**のは、キーを足してここへ書き忘れたときに
+ * 型検査で止めるため（隣の `TELEGRAM_TEXT_BLOCK_LABELS` と同じ理由）。
+ */
+const TELEGRAM_BOILERPLATE_LABELS: Record<TelegramBoilerplateKey, string> = {
+  starMark: '＊印の説明',
+  eewIssued: '緊急地震速報の発表告知',
+  lpgmClassTable: '長周期地震動階級の目安',
+  tsunamiHeightLegend: '津波の高さの目安',
+}
+
+/**
+ * 同じ項目の説明。**実例はすべて実配信の電文で文面を確かめたもの**（→
+ * `TELEGRAM_TEXT_BLOCK_DESCRIPTIONS` と同じ規約。確かめていない文を例として書かない）。
+ *
+ * **落としても画面には出ることを書く。** ここで切るのは声だけだと分からないと、
+ * 情報そのものを捨てる設定に見える。
+ */
+const TELEGRAM_BOILERPLATE_DESCRIPTIONS: Record<TelegramBoilerplateKey, string> = {
+  starMark: '気象庁以外が運用する観測点（＊印）の説明です。例:「＊印は気象庁以外の震度観測点についての情報です。」（長周期地震動観測情報では「長周期地震動観測点」）。読み上げでは＊が音にならないため、何と対比しているのかが伝わりません',
+  eewIssued: '例:「この地震について、緊急地震速報を発表しています。」緊急地震速報そのものは画面と音でお知らせしているため、切っても取り逃しません',
+  lpgmClassTable: '階級と揺れの大きさの対応表と、詳しい観測結果の参照先です。例:「各長周期地震動階級に対する簡易な現象表現」に続けて「階級１やや大きな揺れ」から階級４までが並びます。長周期地震動観測情報のほぼ全報に入ります',
+  tsunamiHeightLegend: '予想される津波の高さと被害の対応表です。例:「［予想される津波の高さの解説］」に続けて、１０ｍ超から１ｍまで 5 段階の被害が書かれます（307 字。読み上げるとおよそ 50 秒）',
+}
+
+/**
+ * 毎報ほぼ同じ定型文を、文の単位で読み上げから落とす指定。
+ *
+ * **上の「読み上げる文の内訳」より細かい。** あちらは付加文の枠ごと切るので、その枠にだけ入る
+ * 非定型の告知（震度速報の訂正・精査後のマグニチュードなど）まで一緒に消える。こちらは文で
+ * 落とすため、定型のあとに何か足された報ではその足された分だけが声になる。
+ *
+ * **既定は全項目オフ（＝読み上げない）。** 理由は `TELEGRAM_BOILERPLATE_DEFAULT_READS`。
+ * 畳んでおくのと見出しに件数を出すのは内訳と同じ。
+ */
+function TelegramBoilerplateRows({ reads, onChange }: {
+  reads: TelegramBoilerplateReads
+  onChange: (next: TelegramBoilerplateReads) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const enabled = TELEGRAM_BOILERPLATE_KEYS.filter(key => reads[key]).length
+  return (
+    <>
+      <div className="px-4 py-3">
+        <button
+          type="button"
+          onClick={() => setOpen(v => !v)}
+          aria-expanded={open}
+          className="w-full flex items-center justify-between gap-2 text-left"
+        >
+          <span className="text-white text-sm">
+            定型文の読み上げ
+            <span className="text-secondary text-xs ml-2">
+              {enabled} / {TELEGRAM_BOILERPLATE_KEYS.length} 項目
+            </span>
+          </span>
+          <span className="text-secondary text-xs">{open ? '閉じる' : '開く'}</span>
+        </button>
+      </div>
+      {open && (
+        <div>
+          <div className="px-4 py-1.5 bg-panel/60 text-secondary text-xs">
+            事象によらずほぼ同じ文です。切っても画面には出ます
+          </div>
+          {TELEGRAM_BOILERPLATE_KEYS.map(key => (
+            <Row
+              key={key}
+              label={TELEGRAM_BOILERPLATE_LABELS[key]}
+              description={TELEGRAM_BOILERPLATE_DESCRIPTIONS[key]}
+            >
+              <Toggle
+                checked={reads[key]}
+                onChange={v => onChange({ ...reads, [key]: v })}
+              />
+            </Row>
+          ))}
+        </div>
+      )}
     </>
   )
 }
@@ -1470,6 +1552,12 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onRep
             <TelegramTextBlockRows
               blocks={settings.ttsTelegramTextBlocks}
               onChange={next => onUpdate('ttsTelegramTextBlocks', next)}
+            />
+          )}
+          {settings.ttsReadTelegramText && (
+            <TelegramBoilerplateRows
+              reads={settings.ttsTelegramBoilerplate}
+              onChange={next => onUpdate('ttsTelegramBoilerplate', next)}
             />
           )}
         </Section>

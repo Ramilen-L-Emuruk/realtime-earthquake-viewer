@@ -2904,6 +2904,13 @@ describe('telegramTextToSpeak: 気象庁が書いた文', () => {
   // 合成エンジンが置く間は同じだが、読点だと `splitIntoChunks` がそこでチャンクを割り、
   // 間がチャンク末尾の足し分（0.11 秒）に変わって文中の読点より短くなる（実機で確認）。
   describe('階級と現象表現の対応表', () => {
+    // **この表は既定では読み上げから落ちる**（毎報同じで、事象に依らないため。
+    // → `ttsText.telegramBoilerplate.test.ts`）。ここで見たいのは落とすかどうかではなく
+    // 読む側にしたときの整形なので、その項目だけ読む指定にして回す。
+    const ON_WITH_TABLE: TtsSpeechOptions = {
+      ...ON,
+      telegramBoilerplate: { starMark: false, eewIssued: false, lpgmClassTable: true, tsunamiHeightLegend: false },
+    }
     const lpgmWithFreeText = (freeFormText: string): LiveEvent => ({
       kind: 'lpgm',
       data: { id: 'l1', time: '', eventId: 'e1', originTime: '', maxClass: 4, cancelled: false, freeFormText },
@@ -2914,7 +2921,7 @@ describe('telegramTextToSpeak: 気象庁が書いた文', () => {
     it('階級と現象表現のあいだに空白を挟む', () => {
       const speech = telegramTextToSpeak(lpgmWithFreeText(
         '各長周期地震動階級に対する簡易な現象表現\n 階級１やや大きな揺れ\n 階級２大きな揺れ\n 階級３非常に大きな揺れ\n 階級４極めて大きな揺れ',
-      ), ON)
+      ), ON_WITH_TABLE)
       expect(speech?.body).toBe(
         '各長周期地震動階級に対する簡易な現象表現 階級１ やや大きな揺れ 階級２ 大きな揺れ 階級３ 非常に大きな揺れ 階級４ 極めて大きな揺れ。',
       )
@@ -2923,7 +2930,7 @@ describe('telegramTextToSpeak: 気象庁が書いた文', () => {
     // 安全弁: 挟むのは空白で、**読点にしない**。読点は `splitIntoChunks` がチャンクを割る文字
     // なので、ここへ入れると間がチャンク末尾の足し分（0.11 秒）に変わって文中の読点より短くなる
     it('読点は挟まない（チャンクを割る文字なので間が短くなる）', () => {
-      const body = telegramTextToSpeak(lpgmWithFreeText('階級４極めて大きな揺れ'), ON)?.body ?? ''
+      const body = telegramTextToSpeak(lpgmWithFreeText('階級４極めて大きな揺れ'), ON_WITH_TABLE)?.body ?? ''
       expect(body).toBe('階級４ 極めて大きな揺れ。')
       expect(body).not.toContain('階級４、')
     })
@@ -3048,7 +3055,8 @@ describe('気象庁が書いた文の URL', () => {
   })
 })
 
-// 読み上げから落とす定型文（→ `TELEGRAM_TEXT_SKIPPED_PHRASES`）。
+// 読み上げから落とす定型文（→ `TELEGRAM_BOILERPLATE_SPECS`）。**句として部分一致で落とす**もの
+// なので、同じ行に並んだ別の文は残る（下の「前後の文を巻き込まない」）。
 describe('気象庁が書いた文のうち読み上げから落とす定型文', () => {
   const ON: TtsSpeechOptions = {
     intensityLevels: 2, maxRegions: 0, alwaysReadScale: -1, regionTolerance: 0, readTelegramText: true,
