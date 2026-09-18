@@ -2,6 +2,8 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { DATA_FETCH_TIMEOUT_MS } from './fetchJson'
 import { DICT_FETCH_TIMEOUT_MS } from './ttsPhraseBreakDict'
+import { INTENSITY_LABELS, getIntensityLabelWithApproxAbove } from './intensity'
+import { getLpgmClassLabelWithApproxAbove } from './lpgm'
 
 // この辞書のローダは読み上げ本体（speakWithVoicevox）が取得を待つため、
 // 生成データ共通の 60 秒ではなく短いタイムアウトを使う。その差が保たれているかを検証する。
@@ -366,6 +368,106 @@ describe('電文本文の語（実データの辞書で引く）', { timeout: 15
     for (const key of ['心配はありません', '影響はありません', 'ものはありません']) {
       expect(isPlaceNameKey(key), `「${key}」は地名ではない`).toBe(false)
     }
+  })
+
+  // 緊急地震速報の予想値（「予想最大震度4程度以上。」「予想最大階級3程度以上。」）は、
+  // **VOICEVOX が丸ごと 1 アクセント句にまとめて震度の核を落とす**。実測（四国めたん・ツンツン）:
+  // `ヨソオサイダイシンドヨンテ'エド | イ'ジョオ` で核が「テ」に移り、「よそーさいだいしんどよんてー」
+  // まで高いまま上がり続ける。「程度以上」が付かない報は `ヨソオサイダイシンドヨ'ン` で核が「ヨン」に
+  // 来るので、**値の在り処が抑揚から消えるのは「程度以上」が付いたときだけ**。
+  //
+  // **鍵は数値から始める。** 「程度以上」だけを鍵にすると数値が前半へ残り
+  // （`ヨソオサイダイシンドヨ'ン | テエドイ'ジョオ`）、割れ目が数値の後ろに来る。数値ごと後半へ
+  // 寄せると `ヨソオサイダイシ'ンド | ヨンテエドイ'ジョオ` になり、前半の核はエンジンの解析のまま
+  // （**句の割り方はエンジンに任せ、核だけ直す**——日付の鍵と同じ方針）。
+  //
+  // 長周期地震動階級のラベルは「階級3程度以上」なので、**震度の 1〜4 の鍵がそのまま覆う**
+  // （階級の値域は 1〜4。`isValidLpgmClass`）。
+  it('緊急地震速報の「程度以上」は数値ごと後半へ寄せて割る', async () => {
+    const { findPhraseBreakMatch, isPlaceNameKey, dict } = await loadedRealDictModule()
+
+    // 正: 読み上げ文の形（`ttsText` の `eewScaleOnlyText` / `eewLpgmOnlyText`）
+    expect(findPhraseBreakMatch('予想最大震度4程度以上。', dict)?.key).toBe('4程度以上')
+    expect(findPhraseBreakMatch('予想最大震度5弱程度以上。', dict)?.key).toBe('5弱程度以上')
+    expect(findPhraseBreakMatch('予想最大震度6強程度以上。', dict)?.key).toBe('6強程度以上')
+    expect(findPhraseBreakMatch('予想最大階級3程度以上。', dict)?.key).toBe('3程度以上')
+    // 正: 格上げの前置きが付いた形でも当たる（`eewIntensityText` の `announceUpgrade`）
+    expect(
+      findPhraseBreakMatch('緊急地震速報に切り替わりました。予想最大震度6強程度以上。', dict)?.key,
+    ).toBe('6強程度以上')
+
+    // 正: **語を付ける全語形に鍵がある。** 震度階級が増えたらここで落ちる（実装から導く）
+    const approxLabels = Object.keys(INTENSITY_LABELS)
+      .map((s) => getIntensityLabelWithApproxAbove(Number(s), true))
+      .filter((label) => label.endsWith('程度以上'))
+    expect(approxLabels).toHaveLength(9)
+    for (const label of approxLabels) {
+      expect(findPhraseBreakMatch(`予想最大震度${label}。`, dict)?.key, `「${label}」に鍵が無い`)
+        .toBe(label)
+    }
+    // 正: 階級も同じ鍵で覆える（ラベルは「階級N程度以上」なので数値部分が一致する）
+    for (const cls of [1, 2, 3, 4] as const) {
+      const label = getLpgmClassLabelWithApproxAbove(cls, true)
+      expect(findPhraseBreakMatch(`予想最大${label}。`, dict)?.key, `「${label}」に鍵が無い`)
+        .toBe(`${cls}程度以上`)
+    }
+
+    // 対照: 上限が定まった報（「程度以上」が付かない）には当たらない。1 句のままでよい
+    expect(findPhraseBreakMatch('予想最大震度4。', dict)?.key).toBeUndefined()
+    expect(findPhraseBreakMatch('予想最大階級3。', dict)?.key).toBeUndefined()
+
+    // 安全弁: **述語側だけを鍵にしない。** 入れた瞬間に最左一致でそちらが勝ち、数値が前半へ残る
+    expect(Object.keys(dict)).not.toContain('程度以上')
+    expect(Object.keys(dict)).not.toContain('以上')
+    // 安全弁: 前半を鍵にしない（通常文まで割れる。そちらの抑揚は崩れていない）
+    expect(Object.keys(dict)).not.toContain('予想最大震度')
+    expect(Object.keys(dict)).not.toContain('予想最大階級')
+
+    // 安全弁: 数字で始まる鍵なので、前が数字の位置では一致しない（`NUMERIC_KEY`）
+    expect(findPhraseBreakMatch('12程度以上', dict)?.key).toBeUndefined()
+
+    // 安全弁: 地名ではないので鍵の直後にポーズを挟まない（_terms に列挙する）
+    for (const label of approxLabels) {
+      expect(isPlaceNameKey(label), `「${label}」は地名ではない`).toBe(false)
+    }
+  })
+
+  // 「津波警報等」はエンジンが 1 アクセント句へまとめ、核を 8 モーラ目（「ト」）へ置く
+  // （`ツナミケエホオトオ[8]`）。「ケイホウ」で下がらないまま「トウ」が文中で最も高くなる。
+  // 単独の「津波警報」は `ツナミケエホオ[4]` で正しく下がるので、崩れるのは「等」が付いた形だけ。
+  // **誤読ではないので、読ませて聞き比べない限り気づけない。**
+  //
+  // **「等」単体は鍵にできない。** あの字は「など」「ひとしい」とも読み、「等級」の一部にもなる。
+  // 語形を丸ごと鍵にする。
+  //
+  // **助詞込みの鍵（「津波警報等を」「津波警報等は」）は並べない。** 鍵の後ろで割れた助詞は
+  // 1 モーラの独立した句になるが、`refineProsody`（voicevox.ts）の引き直しで通しと同じ高さまで
+  // 下がる（実測は docs/spec/audio-tts-spec.md §3「何を収録するか」）。
+  it('「津波警報等」は警報と「等」の境界で割る', async () => {
+    const { findPhraseBreakMatch, isPlaceNameKey, dict } = await loadedRealDictModule()
+
+    // 正: 読み上げに乗る 3 つの形（津波区分「警報等」／全解除／誤報取消。いずれも ttsText.ts）
+    expect(findPhraseBreakMatch('現在津波警報等を発表中です。', dict)?.key).toBe('津波警報等')
+    expect(findPhraseBreakMatch('津波警報等は全て解除されました。', dict)?.key).toBe('津波警報等')
+    expect(findPhraseBreakMatch('津波警報等は誤って発表されたため取り消されました。', dict)?.key)
+      .toBe('津波警報等')
+
+    // 正: 値は 2 句のまま（「等」を別のアクセント句へ出す）。1 句へまとめない
+    expect(dict['津波警報等']).toBe("ツナミケ'イホオ/ト'オ")
+
+    // 対照: 「等」が付かない形には鍵を置かない（素の核がそのまま正しい）
+    expect(findPhraseBreakMatch('現在津波警報を発表中です。', dict)?.key).toBeUndefined()
+    expect(Object.keys(dict), '「津波警報」は鍵に入れない').not.toContain('津波警報')
+
+    // 対照: 「大津波警報等」では左にある長い鍵が勝ち、「等」は後続側へ回る
+    // （`オオツナミケ'イホオ` ＋ 独立句の「等」。こちらも 1 句への融合は起きない）
+    expect(findPhraseBreakMatch('大津波警報等を発表中です。', dict)?.key).toBe('大津波警報')
+
+    // 安全弁: 「等」だけを鍵にしない（「等級」にも「〜など」にも食い込む）
+    expect(Object.keys(dict)).not.toContain('等')
+
+    // 安全弁: 地名ではないので鍵の直後にポーズを挟まない（_terms に列挙する）
+    expect(isPlaceNameKey('津波警報等'), '「津波警報等」は地名ではない').toBe(false)
   })
 
   // 日付も「17日」→ `ジュウ[2] | シチニチ[2]` のように 2 つのアクセント句へ割れる。ただし
