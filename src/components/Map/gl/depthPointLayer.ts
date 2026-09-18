@@ -719,6 +719,15 @@ export function createDepthPointLayer(id: MapLayerId, map: MapLibreMap, label: s
   let warnedPointLimit = false
   let visible = true
   const blink = createBlinkScheduler(() => map.triggerRepaint())
+  /**
+   * いま抱えている点に明滅するものがあるか。
+   *
+   * **`blink` 自身に訊けない。** `dispose()` は予約を落とすついでに「点滅する点がある」という
+   * 覚えも消すので、`onRemove` を通ったあとは false になっている。点滅を張り直す契機は
+   * 点の差し替え（`finishPointUpdate`）だけなので、ここで別に覚えておかないと
+   * **文脈を作り直したあと、次に点が変わるまで予約が復活しない**。
+   */
+  let blinkWanted = false
   let maxDepthKm = 0
   let lineVao: WebGLVertexArrayObject | null = null
   let lineBuffer: WebGLBuffer | null = null
@@ -792,6 +801,7 @@ export function createDepthPointLayer(id: MapLayerId, map: MapLibreMap, label: s
 
   /** 点を差し替えたあとの後始末。**2 つの入口で必ず同じことをする**ための 1 箇所。 */
   const finishPointUpdate = (anyBlink: boolean) => {
+    blinkWanted = anyBlink
     blink.setBlinking(anyBlink)
     dirty = true
     // 判定のキャッシュは点が変わった時点で無効。
@@ -876,6 +886,34 @@ export function createDepthPointLayer(id: MapLayerId, map: MapLibreMap, label: s
 
     onAdd(_m, gl2) {
       const gl = gl2 as WebGL2RenderingContext
+      // **新しい文脈で作り直させるため、抱えているプログラムを捨てる**（理由は
+      // `gl/projectionProgram.ts` の `dispose`）。**GL の資源を作る前に置く。**
+      displayCache.dispose(gl)
+      pickCache.dispose(gl)
+      lineCache.dispose(gl)
+      // **判定用の FBO の覚えも落とす。** `ensureFbo` は「同じ寸法なら作り直さない」ので、
+      // 文脈を作り直したときにキャンバスの実寸が前と同じだと、**無効になった FBO を掴んだまま
+      // 早期 return する**。不完全・無効な FBO への描画は例外を投げず `readPixels` は 0 を
+      // 返すだけなので、「クリックしても何も返らない」が手掛かりなしで続く。
+      //
+      // **捨ててから落とすのは `onRemove` と形を揃えるため。** ここへ古い参照が残っているのは
+      // `onRemove` を通らずに載せ直された場合だけで、そのとき参照先は失われた文脈のものなので
+      // **この削除は何も解放しない**（WebGL が黙って無視する）。
+      // **守っているのはこの 2 つだけ。** 下で作り直す VAO・バッファは前の値を消さずに上書きして
+      // いるので、「生きている文脈で `onAdd` が 2 度通っても掴んだままにならない」とは言えない
+      // （MapLibre は同じ id の再追加に先立って必ず `removeLayer` を要求するので、いまは起きない）。
+      if (fboTex) gl.deleteTexture(fboTex)
+      if (fbo) gl.deleteFramebuffer(fbo)
+      fbo = null
+      fboTex = null
+      fboSize = [0, 0]
+      // **診断の「一度きり」も文脈ごとに戻す。** どちらも「同じ理由を繰り返し出さない」ための
+      // 抑制で、文脈が変われば別の理由で起きうる。残すと**2 度目以降は記録にも残らない**
+      // （`warnedFbo` は画面へ出す経路を持たないので、コンソールが唯一の手掛かり）。
+      // **`warnedPointLimit` は戻さない** —— あれは点の数についての警告で、文脈とは無関係。
+      // 戻すと載せ直すたびに同じ内容が出るだけになる。
+      warnedDisabled = false
+      warnedFbo = false
       // **プログラムはここでは作らない。** どの投影のシェーダーが要るかは render の引数で初めて
       // 分かるうえ、途中で切り替わる。VAO だけ先に用意しておく（属性の番号は固定してある）。
       buffer = gl.createBuffer()
@@ -894,6 +932,11 @@ export function createDepthPointLayer(id: MapLayerId, map: MapLibreMap, label: s
       bindAttribs(gl, LINE_LAYOUT, LINE_ATTRIBS, LINE_STRIDE_FLOATS * 4)
       gl.bindVertexArray(null)
       dirty = true
+      // **点滅の予約を張り直す。** `onRemove` が `blink.dispose()` で落としており、点が
+      // 変わるまで復活しない（`blinkWanted` の説明）。位相は全点共通で時刻から決まるので、
+      // 張り直しても明滅の足並みは崩れない。
+      blink.setBlinking(blinkWanted)
+      blink.schedule()
     },
 
     render: guardRender(id, label, (gl2, args) => {

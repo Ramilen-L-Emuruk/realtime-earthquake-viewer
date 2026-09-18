@@ -338,6 +338,190 @@ function stringValueOf(file: SourceFile, expression: ts.Expression, label: strin
   throw new Error(`${label}: 値を引けない形（${ts.SyntaxKind[e.kind]}）`)
 }
 
+/**
+ * `createProjectionProgramCache` の、このファイルでの束縛名（無ければ null）。
+ *
+ * **名前を決め打たない。** 別名で import されると（`createProjectionProgramCache as makeCache`）
+ * 呼び出しを 1 つも拾えず、**そのファイルが検査の対象からまるごと外れる**——検査が緩む方向へ
+ * 静かに壊れる形なので、import 宣言から実際の名前を引く。
+ */
+function projectionCacheFactoryName(file: SourceFile): string | null | 'namespace' {
+  let found: string | null | 'namespace' = null
+  walk(file.ast, n => {
+    if (found !== null || !ts.isImportDeclaration(n) || !n.importClause) return
+    const spec = n.moduleSpecifier
+    if (!ts.isStringLiteral(spec) || !spec.text.endsWith('/projectionProgram')) return
+    const bindings = n.importClause.namedBindings
+    if (!bindings) return
+    // **名前空間 import は黙って読み飛ばさない。** 呼び出しが `pp.createProjectionProgramCache(...)`
+    // という別の形になり、下の走査では 1 つも拾えない——**ファイルがまるごと検査から外れる**。
+    // 支えるより落とす側へ倒す（この書き方は 1 件も無く、必要になったらここを直せばよい）。
+    if (ts.isNamespaceImport(bindings)) {
+      found = 'namespace'
+      return
+    }
+    if (!ts.isNamedImports(bindings)) return
+    for (const e of bindings.elements) {
+      if ((e.propertyName?.text ?? e.name.text) === 'createProjectionProgramCache') found = e.name.text
+    }
+  })
+  return found
+}
+
+/**
+ * キャッシュを作った呼び出しと、その結果を受けた変数名（識別子へ入れていなければ null）。
+ *
+ * **スコープは `declaration` から取る。** 呼び出しを入れ子の関数へ切り出しても
+ * （`const cache = (() => createProjectionProgramCache({...}))()`）、
+ * 変数がどこに属するかは宣言の位置で決まる。呼び出しの位置で見ると、
+ * その内側の関数がレイヤーを含まないぶん**「見えていない」と誤判定して検査を飛ばす**。
+ */
+type CacheBinding = { name: string | null; call: ts.CallExpression; declaration: ts.Node }
+
+/**
+ * `<factory>(...)` の呼び出しを、束縛先の変数名とともに全件返す。
+ *
+ * **識別子へ入れていない呼び出しも返す**（`name` を null にして）。分割代入やプロパティへ
+ * 入れる書き方を黙って読み飛ばすと、そのキャッシュは検査されないまま通る。
+ */
+function projectionCacheBindings(file: SourceFile, factory: string): CacheBinding[] {
+  const out: CacheBinding[] = []
+  walk(file.ast, n => {
+    if (!ts.isCallExpression(n)) return
+    if (!ts.isIdentifier(n.expression) || n.expression.text !== factory) return
+    // 値を変えない包み（括弧・`as` 等）を跨いで、入れ物の宣言まで遡る。
+    let holder: ts.Node = n
+    while (
+      holder.parent &&
+      (ts.isParenthesizedExpression(holder.parent) ||
+        ts.isAsExpression(holder.parent) ||
+        ts.isSatisfiesExpression(holder.parent) ||
+        ts.isNonNullExpression(holder.parent))
+    ) {
+      holder = holder.parent
+    }
+    const declaration = holder.parent
+    const named = declaration && ts.isVariableDeclaration(declaration) && ts.isIdentifier(declaration.name)
+    out.push({
+      name: named ? (declaration.name as ts.Identifier).text : null,
+      call: n,
+      declaration: named ? declaration : n,
+    })
+  })
+  return out
+}
+
+/** その節点を囲む、いちばん内側の関数（無ければファイル自身）。 */
+function enclosingScope(node: ts.Node): ts.Node {
+  for (let n: ts.Node | undefined = node.parent; n; n = n.parent) {
+    if (
+      ts.isFunctionDeclaration(n) ||
+      ts.isFunctionExpression(n) ||
+      ts.isArrowFunction(n) ||
+      ts.isMethodDeclaration(n)
+    ) {
+      return n
+    }
+  }
+  return node.getSourceFile()
+}
+
+/** `outer` が `inner` を字面の範囲として含むか。 */
+function nodeContains(file: SourceFile, outer: ts.Node, inner: ts.Node): boolean {
+  return outer.getStart(file.ast) <= inner.getStart(file.ast) && inner.getEnd() <= outer.getEnd()
+}
+
+/**
+ * 「投影プログラムのキャッシュを `onAdd` で捨てていない」箇所を集める（空なら健全）。
+ *
+ * **レイヤーごとに見る。** ファイル単位で捨てた名前を合算すると、1 ファイルに 2 枚あるとき
+ * 片方の捨て忘れをもう片方の `onAdd` が覆い隠す。対応づけは、キャッシュを宣言したスコープが
+ * そのレイヤーを含むか（＝そのレイヤーから見えるか）で決める。
+ *
+ * **見るのは「書いてあるか」だけ。** 実行時にそこへ到達するか（手前の文が投げないか）は
+ * 構文木からは決まらないので、そちらは各レイヤーの単体テストとブラウザ確認の担当。
+ */
+function onAddDisposeProblems(files: SourceFile[]): string[] {
+  const problems: string[] = []
+  for (const file of files) {
+    const factory = projectionCacheFactoryName(file)
+    if (factory === null) continue
+    if (factory === 'namespace') {
+      problems.push(`${file.path}: 名前空間 import には未対応（この検査が呼び出しを拾えない）`)
+      continue
+    }
+    const bindings = projectionCacheBindings(file, factory)
+    // 型や `applyProjectionUniforms` だけを import したファイルは呼び出しを持たない。
+    if (bindings.length === 0) continue
+    for (const b of bindings) {
+      if (b.name === null) {
+        problems.push(`${file.path}:${lineOf(file, b.call)}: キャッシュを変数へ入れていないので追えない`)
+      }
+    }
+    const layers = customLayerObjects(file)
+    if (layers.length === 0) {
+      problems.push(`${file.path}: キャッシュはあるのに \`type: 'custom'\` のオブジェクトが無い`)
+      continue
+    }
+    const seen = new Set<string>()
+    for (const object of layers) {
+      const at = `${file.path}:${lineOf(file, object)}`
+      const visible = bindings.filter(
+        b => b.name !== null && nodeContains(file, enclosingScope(b.declaration), object),
+      )
+      for (const b of visible) seen.add(b.name as string)
+      if (visible.length === 0) continue
+      const body = functionProperty(object, 'onAdd')
+      if (body === null) {
+        problems.push(`${at}: \`onAdd\` が無い（見えているキャッシュ: ${visible.map(b => b.name).join(', ')}）`)
+        continue
+      }
+      const disposed = disposedNamesIn(body)
+      for (const b of visible) {
+        if (!disposed.has(b.name as string)) {
+          problems.push(`${at}: \`${b.name}.dispose(gl)\` が \`onAdd\` に無い`)
+        }
+      }
+    }
+    // **どのレイヤーからも見えなかったキャッシュは、ここで落とす。**
+    // 名前は引けていても、宣言が入れ子の関数の中に閉じていると（外へはラッパーだけ返す形）
+    // どのレイヤーとも対応づかない。黙って飛ばすと**検査が空振りしたことに気づけない**。
+    for (const b of bindings) {
+      if (b.name !== null && !seen.has(b.name)) {
+        problems.push(
+          `${file.path}:${lineOf(file, b.declaration)}: \`${b.name}\` がどのレイヤーからも見えない位置で作られている（この検査が追えない）`,
+        )
+      }
+    }
+  }
+  return problems.sort()
+}
+
+/** オブジェクトリテラルの `<name>` を、メソッド記法と関数を入れた書き方の両方で拾う。 */
+function functionProperty(object: ts.ObjectLiteralExpression, name: string): ts.Node | null {
+  for (const p of object.properties) {
+    if (propertyName(p) !== name) continue
+    if (ts.isMethodDeclaration(p)) return p.body ?? null
+    if (ts.isPropertyAssignment(p)) {
+      const value = unwrapExpression(p.initializer)
+      if (ts.isFunctionExpression(value) || ts.isArrowFunction(value)) return value.body
+    }
+  }
+  return null
+}
+
+/** `<name>.dispose(...)` を呼んでいる相手の名前を、そのノードの中から集める。 */
+function disposedNamesIn(node: ts.Node): Set<string> {
+  const out = new Set<string>()
+  walk(node, n => {
+    if (!ts.isCallExpression(n)) return
+    const callee = n.expression
+    if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== 'dispose') return
+    if (ts.isIdentifier(callee.expression)) out.add(callee.expression.text)
+  })
+  return out
+}
+
 // ---- 実装側の事実（モジュール読み込み時に一度だけ求める） ----
 
 /**
@@ -352,6 +536,8 @@ function stringValueOf(file: SourceFile, expression: ts.Expression, label: strin
  * 「どの検査が何で落ちたか」が消える。抱えて `unwrap` で該当の検査だけ落とす。
  */
 type ImplementationFacts = {
+  /** 解析済みの `src` 配下。**構文木を直接見る検査**（§6 の `onAdd`）が使う。 */
+  files: SourceFile[]
   customLayerIds: string[] | Error
   projectionProgramImporters: string[]
   contextRestoredSubscribers: string[]
@@ -366,6 +552,7 @@ async function readImplementation(): Promise<ImplementationFacts> {
     customLayerIds = e instanceof Error ? e : new Error(String(e))
   }
   return {
+    files,
     customLayerIds,
     // 一覧は `src/components/Map/` からの相対で書いてあるので、そこへ揃えて比べる。
     projectionProgramImporters: files
@@ -378,6 +565,7 @@ async function readImplementation(): Promise<ImplementationFacts> {
 }
 
 const implementation = await readImplementation()
+const implementationFiles = implementation.files
 
 function unwrap<T>(value: T | Error): T {
   if (value instanceof Error) throw value
@@ -424,6 +612,27 @@ describe('map-rendering-spec.md の実装列挙', () => {
 
     // 根拠は `gl/projectionProgram.ts` を import しているかどうか（本文中の言及では数えない）。
     expectSameSet(listed, implementation.projectionProgramImporters, '§6「地図の投影」のファイル一覧が実装とずれている')
+  })
+
+  // §6 は「どのレイヤーも `onAdd` で投影プログラムのキャッシュを捨てる」と書いている。
+  // **これは文面だけでは守れない。** 捨て忘れたレイヤーは無効なプログラムで `useProgram` を
+  // 呼び、WebGL は例外を投げないので `gl/guardRender.ts` にも `utils/renderHealth.ts` の
+  // 自己申告にも掛からず、そのレイヤーだけが無音で描かれなくなる。
+  //
+  // **各レイヤーの単体テストでは覆えない。** `PsWaveGL.tsx` はレイヤーを `useEffect` の中で
+  // 組み立てるので、React を描かないと `onAdd` を呼べない。ここなら構文木から直接見られる。
+  it('§6 投影プログラムのキャッシュを onAdd で捨てている', () => {
+    const owners = implementationFiles.filter(f => projectionCacheFactoryName(f) !== null)
+
+    expect(
+      owners.map(f => f.path).sort(),
+      'キャッシュを作る関数を import したファイルが 1 件も見つからない（走査の当て先が違う）',
+    ).not.toEqual([])
+
+    expect(
+      onAddDisposeProblems(implementationFiles),
+      '`onAdd` で投影プログラムのキャッシュを捨てていないレイヤーがある（理由は gl/projectionProgram.ts の `dispose`）',
+    ).toEqual([])
   })
 
   it('§12 コンテキストロストから載せ直すコンポーネントが実装と一致する', async () => {
@@ -552,5 +761,121 @@ describe('実装側の走査（構文木）', () => {
         ? parseSource(s.path, s.text.replace('createFakeLayer(LYR)', 'createFakeLayer(makeId())'))
         : parseSource(s.path, s.text))
     expect(() => customLayerIdsFromImplementation(broken)).toThrow(/値を引けない形/)
+  })
+
+  // 正: 1 ファイルに 2 枚あるとき、捨て忘れた側を名指しで落とす。
+  // **ファイル単位で捨てた名前を合算する作りではここが通ってしまう**（B が捨てているので
+  // 集合としては足りて見える）。実リポジトリは 1 ファイル 1 枚なので、標本でしか固定できない。
+  it('レイヤーごとに見る（片方の捨て忘れを、もう片方の onAdd で覆い隠さない）', () => {
+    const sample = parseSource(
+      fixture.TWO_LAYERS_SHARED_CACHE.path,
+      fixture.TWO_LAYERS_SHARED_CACHE.text,
+    )
+    expect(onAddDisposeProblems([sample])).toEqual([
+      "src/fake/TwoLayers.ts:4: `shared.dispose(gl)` が `onAdd` に無い",
+    ])
+  })
+
+  // 対照: 両方が捨てていれば何も出ない（見えるだけで要求する作りになっていないこと）。
+  it('両方が捨てていれば何も出ない', () => {
+    const sample = parseSource(
+      fixture.TWO_LAYERS_BOTH_DISPOSE.path,
+      fixture.TWO_LAYERS_BOTH_DISPOSE.text,
+    )
+    expect(onAddDisposeProblems([sample])).toEqual([])
+  })
+
+  // 安全弁: 識別子へ入れていない呼び出しを黙って読み飛ばさない（検査が空振りする形）。
+  it('キャッシュを変数へ入れていない書き方は落とす', () => {
+    const sample = parseSource(
+      'src/fake/Destructured.ts',
+      [
+        "import { createProjectionProgramCache } from './projectionProgram'",
+        'export function make(id: string) {',
+        '  const { get } = createProjectionProgramCache({} as never)',
+        "  return { id, type: 'custom' as const, onAdd() { void get }, render() {} }",
+        '}',
+      ].join('\n'),
+    )
+    expect(onAddDisposeProblems([sample])).toEqual([
+      'src/fake/Destructured.ts:3: キャッシュを変数へ入れていないので追えない',
+    ])
+  })
+
+  // 安全弁: 呼び出しを入れ子の関数へ直に包むと、スコープの対応づけより先に
+  // 「変数へ入れていない」で落ちる。**黙って飛ばされないことが要点。**
+  // 名前が引ける形でも対応づかない場合はある（下の「どのレイヤーからも見えない位置」）ので、
+  // **「名前が引けるなら必ず対応づく」とは考えないこと。**
+  it('呼び出しを入れ子の関数へ切り出した形は落とす', () => {
+    const sample = parseSource(
+      'src/fake/Nested.ts',
+      [
+        "import { createProjectionProgramCache } from './projectionProgram'",
+        'export function make(id: string) {',
+        '  const cache = (() => createProjectionProgramCache({} as never))()',
+        "  return { id, type: 'custom' as const, onAdd() { void cache }, render() {} }",
+        '}',
+      ].join('\n'),
+    )
+    expect(onAddDisposeProblems([sample])).toEqual([
+      'src/fake/Nested.ts:3: キャッシュを変数へ入れていないので追えない',
+    ])
+  })
+
+  // 安全弁: 名前は引けるのに、どのレイヤーからも見えない位置にあるキャッシュ。
+  // **これは 2 巡目の指摘へ「反例は作れない」と答えたのが誤りだった形。** 呼び出しを即時関数の
+  // 中に置き、外へはラッパーだけ返すと名前解決は通る（`const cache = ...` だから）のに、
+  // 宣言スコープがレイヤーを含まないので対応づかない。黙って合格にしてはいけない。
+  it('どのレイヤーからも見えない位置のキャッシュを落とす', () => {
+    const sample = parseSource(
+      'src/fake/Wrapped.ts',
+      [
+        "import { createProjectionProgramCache } from './projectionProgram'",
+        'export function make(id: string) {',
+        '  const owner = (() => {',
+        '    const cache = createProjectionProgramCache({} as never)',
+        '    return { release: (gl: never) => void [cache, gl] }',
+        '  })()',
+        "  return { id, type: 'custom' as const, onAdd() { void owner }, render() {} }",
+        '}',
+      ].join('\n'),
+    )
+    expect(onAddDisposeProblems([sample])).toEqual([
+      'src/fake/Wrapped.ts:4: `cache` がどのレイヤーからも見えない位置で作られている（この検査が追えない）',
+    ])
+  })
+
+  // 安全弁: 名前空間 import は支えていないので、黙って通さず落ちる。
+  it('名前空間 import は落とす（黙って検査から外れない）', () => {
+    const sample = parseSource(
+      'src/fake/Namespace.ts',
+      [
+        "import * as pp from './projectionProgram'",
+        'export function make(id: string) {',
+        '  const cache = pp.createProjectionProgramCache({} as never)',
+        "  return { id, type: 'custom' as const, onAdd() { void cache }, render() {} }",
+        '}',
+      ].join('\n'),
+    )
+    expect(onAddDisposeProblems([sample])).toEqual([
+      'src/fake/Namespace.ts: 名前空間 import には未対応（この検査が呼び出しを拾えない）',
+    ])
+  })
+
+  // 安全弁: 別名 import でも検査の対象から外れない。
+  it('別名で import しても検査の対象に入る', () => {
+    const sample = parseSource(
+      'src/fake/Aliased.ts',
+      [
+        "import { createProjectionProgramCache as makeCache } from './projectionProgram'",
+        'export function make(id: string) {',
+        '  const cache = makeCache({} as never)',
+        "  return { id, type: 'custom' as const, onAdd() { void cache }, render() {} }",
+        '}',
+      ].join('\n'),
+    )
+    expect(onAddDisposeProblems([sample])).toEqual([
+      'src/fake/Aliased.ts:4: `cache.dispose(gl)` が `onAdd` に無い',
+    ])
   })
 })

@@ -242,6 +242,9 @@ ${VERT_BODY}`,
       renderingMode: '2d',
       onAdd(_m, gl2) {
         const gl = gl2 as WebGL2RenderingContext
+        // **新しい文脈で作り直させるため、抱えているプログラムを捨てる**（理由は
+        // `gl/projectionProgram.ts` の `dispose`）。**GL の資源を作る前に置く。**
+        cache.dispose(gl)
         // **プログラムはここでは作らない。** どの投影のシェーダーが要るかは render の引数で
         // 初めて分かるうえ、途中で切り替わる。属性の番号は固定してあるので VAO は 1 つで足りる。
         const { verts, indices } = buildRingMesh()
