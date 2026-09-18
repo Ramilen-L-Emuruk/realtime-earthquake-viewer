@@ -346,6 +346,26 @@ export function sortQuakes(arr: JMAQuake[]): JMAQuake[] {
 //
 // 統合結果には必ず eventKey を持たせる。既存カードがあればそのキーを引き継ぐため、
 // P2PQuake のように続報で id が変わる経路でも、カードのキーは初報のまま不変になる。
+/**
+ * 固定付加文（その他）の原文とコードを**同じ報から**採る。
+ *
+ * コードは読み上げの落とし漏れの検出に使う（→ `utils/ttsText.ts` の
+ * `warnUnmatchedBoilerplate`）ので、**原文と組が崩れると別の報の原文と突き合わせて
+ * 一致・不一致を誤る** —— 気象庁が文面を変えたことに気づけなくなるか、正常な電文で
+ * 警告が出るかのどちらかになる。同じ電文が運ぶ同じ事実なので、片方だけ選ばない
+ * （震度を補うときに市町村も一緒に補うのと同じ規律。→ quake-spec.md §6.4）。
+ *
+ * **戻り値はスプレッドで使う。** 採った側がコードを持たなければ `undefined` で上書きされ、
+ * 土台（`...existing` / `...incoming`）に残っていたコードは消える —— それが正しい。
+ */
+function pickVarComment(
+  primary: Pick<JMAQuake, 'varCommentText' | 'varCommentCodes'>,
+  fallback: Pick<JMAQuake, 'varCommentText' | 'varCommentCodes'>,
+): Pick<JMAQuake, 'varCommentText' | 'varCommentCodes'> {
+  const from = primary.varCommentText !== undefined ? primary : fallback
+  return { varCommentText: from.varCommentText, varCommentCodes: from.varCommentCodes }
+}
+
 export function mergeQuakeInto(existing: JMAQuake | undefined, incoming: JMAQuake): JMAQuake {
   const eventKey = existing?.eventKey ?? quakeEventKey(incoming)
   // 受け取った電文種別の記録。**据え置く経路でも更新する** ——「震源情報も受け取った」ことは、
@@ -392,7 +412,7 @@ export function mergeQuakeInto(existing: JMAQuake | undefined, incoming: JMAQuak
       // 固定付加文（その他）も同じ側を採る。**震源要素更新は訂正の説明をここへ載せる**
       // （コード 0256「震源要素を訂正します。」）ので、`...existing` の土台のままだと
       // その報だけが持つ文が捨てられる。
-      varCommentText: incoming.varCommentText ?? existing.varCommentText,
+      ...pickVarComment(incoming, existing),
       // 見出し文も自由付加文と同じ「その報だけが持つ文」なので同じ側を採る。
       // **いまは画面に出していないが、扱いを揃えておく** —— 出すようになったとき、
       // この経路だけ古い見出しが残る形になる。
@@ -482,7 +502,7 @@ export function mergeQuakeInto(existing: JMAQuake | undefined, incoming: JMAQuak
       // 「津波注意報を発表中です」のような状況説明が後続の震源情報で静かに消える。
       freeText: result.freeText ?? existing.freeText,
       // 固定付加文（その他）も同じ考え方で補う。
-      varCommentText: result.varCommentText ?? existing.varCommentText,
+      ...pickVarComment(result, existing),
       // 見出し文も自由付加文と同じ「その報だけが持つ文」なので同じ側を採る。
       // **いまは画面に出していないが、扱いを揃えておく** —— 出すようになったとき、
       // この経路だけ古い見出しが残る形になる。
@@ -569,7 +589,7 @@ export function mergeQuakeInto(existing: JMAQuake | undefined, incoming: JMAQuak
       // 津波区分のコード 0217 だけ）ので、incoming を採ると前の報が伝えた注記が消える。
       // 自由付加文と扱いが分かれるのはここ ―― あちらは「その報が書き起こした本文」で、
       // 報が変われば書き直される。こちらは報が繰り返さないだけで取り消されてはいない。
-      varCommentText: existing.varCommentText ?? result.varCommentText,
+      ...pickVarComment(existing, result),
     }
   }
 
@@ -586,7 +606,7 @@ export function mergeQuakeInto(existing: JMAQuake | undefined, incoming: JMAQuak
       // VXSE61 が先に立ったカードへ後から震度電文が届く経路は実運用で起きる（§8 QUAKE-4）。
       freeText: existing.freeText ?? result.freeText,
       // 固定付加文（その他）も新しい側（＝ここでは震源要素更新）を残す。
-      varCommentText: existing.varCommentText ?? result.varCommentText,
+      ...pickVarComment(existing, result),
       // 見出し文も自由付加文と同じ「その報だけが持つ文」なので同じ側を採る。
       // **いまは画面に出していないが、扱いを揃えておく** —— 出すようになったとき、
       // この経路だけ古い見出しが残る形になる。
