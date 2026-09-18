@@ -1,7 +1,7 @@
 import type { LiveEvent, EEWAlert, JMAQuake, JMATsunami, JMANankai, JMANankaiCommentary, JMAKohatsu, JMAEarthquakeCount, JMALpgm, IntensityScale, TsunamiGrade, TsunamiArea, EarthquakePoint, DomesticTsunami, TsunamiObservation, Hypocenter } from '../types/earthquake'
 import { eewNoForecastReason, canPresentLpgmClass, type EewMaxScaleInfo } from './eew'
 import { getIntensityLabel, getIntensityLabelWithApproxAbove } from './intensity'
-import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, hasForecastHeight, compareObservedHeightDesc, overSuffixedHeight, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, TSUNAMI_GRADE_LIFTED, type TsunamiAreaGradeChange } from './tsunami'
+import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, hasForecastHeight, compareObservedHeightDesc, overSuffixedHeight, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, TSUNAMI_GRADE_LIFTED, type TsunamiAreaGradeChange, type TideReportChange } from './tsunami'
 import { joinSegments, plain, type SpeechSegment, type SpeechRef, type QuakeFact, type SpokenObservation } from './ttsFollow'
 import { getSubRegionsCache } from './subregions'
 import { getPrefecturesCache } from './prefectures'
@@ -2605,6 +2605,101 @@ export function tsunamiArrivalToSegments(obs: TsunamiObservation[], maxPoints = 
 
 export function tsunamiArrivalToText(obs: TsunamiObservation[], maxPoints = 5): string {
   return joinSegments(tsunamiArrivalToSegments(obs, maxPoints))
+}
+
+/** 最大波の観測時刻だけが更新された観測点を読み上げる件数の上限。 */
+export const MAX_HEIGHT_TIME_SPEAK_MAX_POINTS = 5
+
+/**
+ * 最大波の観測時刻の更新のうち**実際に読み上げる分**を選ぶ（渡された並びの先頭から上限まで）。
+ *
+ * **既読として記録する側も必ずこの関数で絞ること**（`useLiveEventHandler` の
+ * `spokenObsMaxHeightTimeRef`）。上限で読まなかった観測点まで既読にすると、その更新は
+ * 二度と読まれない（到達確認・欠測・波高更新と同じ約束）。
+ */
+export function selectMaxHeightTimeUpdatesToSpeak(
+  obs: readonly TsunamiObservation[],
+  maxPoints = MAX_HEIGHT_TIME_SPEAK_MAX_POINTS,
+): TsunamiObservation[] {
+  return obs.slice(0, maxPoints || Infinity)
+}
+
+/**
+ * 波高は据え置きのまま、最大波の観測時刻だけが更新された観測点を読み上げる。
+ *
+ * **気象庁が「更新した」と言っているのに、アプリだけが黙っていた電文**がこれ。
+ * 波高の既読判定（`hasObservedHeightRisen`）は値が上がったときだけ通すので、
+ * 2024 年能登半島地震の 01/02 00:51 のように「舞鶴 0.4m・玄海町仮屋 0.1m のまま、
+ * 最大波の時刻だけが動いた」報は読み上げ文が空になり、通知音だけが鳴っていた。
+ *
+ * **同じ高さの波がまた来たという事実を伝える。** 危険度が上がったわけではないので、
+ * 波高は読まない（前の報で既に声にしている値を繰り返すだけになる）。地点名だけを読む。
+ *
+ * **読む順は渡された並びのまま**（波高更新・到達確認と同じ。呼び出し側がカードの並びで渡す）。
+ */
+export function tsunamiMaxHeightTimeToSegments(
+  obs: TsunamiObservation[],
+  maxPoints = MAX_HEIGHT_TIME_SPEAK_MAX_POINTS,
+): SpeechSegment[] {
+  if (obs.length === 0) return []
+  const shown = selectMaxHeightTimeUpdatesToSpeak(obs, maxPoints)
+  return [
+    plain('津波観測情報。'),
+    ...observationDetailSegments(shown, () => ''),
+    plain('で、最大波の観測時刻が更新されました。'),
+    ...omittedPointsSentence(obs.length, shown.length, '更新されています'),
+  ]
+}
+
+/**
+ * 観測情報の続報で、読み上げるべき変化が 1 つも無かったときの一文。
+ *
+ * **名乗りだけで終わらせないための断片**（地震情報の `noRegionChangeSegments` と同じ考え方）。
+ * 「津波観測情報。」で切ると聞き手には「何が？」しか残らない。
+ *
+ * **言い切ってよい範囲を波高に限る。** 読み上げが伝えてきた単位は観測点の波高なので、
+ * そこが据え置きであることは正しい。最大波の時刻・到達状況まで含めて「変わりはありません」
+ * と言うと、この文が出る報でも実際には動いていることがある。
+ *
+ * **実配信の標本を持たない。** 2024 年能登半島地震の 26 時間（観測点を載せた報 47 通）を
+ * 走査しても、波高・最大波の時刻・到達確認・欠測のいずれも動かない報は 1 通も無かった。
+ * 構造としては起こりうるので用意してあるが、実際に声になるところは確かめていない。
+ */
+export function tsunamiObservationNoChangeSegments(): SpeechSegment[] {
+  return [plain('津波観測情報。観測された波高に変わりはありません。')]
+}
+
+/** 満潮時刻の報の名乗り（電文が見出し文を持たないときに使う）。 */
+const TIDE_REPORT_FALLBACK_HEADLINE = '各地の満潮時刻と津波到達予想時刻をお知らせします。'
+
+/**
+ * 各地の満潮時刻・津波到達予想時刻に関する情報の読み上げ。
+ *
+ * **名乗りは気象庁の見出し文をそのまま使う。** この電文の `headline` は
+ * 「各地の満潮時刻と津波到達予想時刻をお知らせします。」で、公式の言い方がそのまま手に入る
+ * （利用者へ出す語は気象庁の表現に揃える決まり → quake-spec.md §8）。読めなければ
+ * 同じ文を定数から補う。
+ *
+ * **続く一文は変化の中身で選ぶ**（判定は `tideReportChange`）。初報は名乗りだけで意味が
+ * 通るので何も足さない ―― まだ一度も伝えていないものを「更新されました」とは言えない。
+ *
+ * **地点名も件数も読まない。** 満潮時刻は 46〜52 地点ぶん載るので読み切れず、件数を言っても
+ * 聞き手にできることが増えない（どこが動いたかはカードで見る）。
+ */
+export function tsunamiTideToSegments(
+  change: TideReportChange,
+  headline?: string,
+): SpeechSegment[] {
+  // 見出し文は気象庁が書いた文なので、日時のゼロ埋めと全角の単位を読み上げ向きへ直してから使う
+  // （観測情報の見出しと同じ前処理。2 か所に分けない）。
+  const headlinePart = headline?.trim()
+    ? normalizeDateTimeForSpeech(tsunamiHeightToSpeech(headline.trim()))
+    : TIDE_REPORT_FALLBACK_HEADLINE
+  const tail = change === 'tide' ? '満潮時刻が更新されました。'
+    : change === 'arrival' ? '津波の到達状況が更新されました。'
+    : change === 'none' ? '内容に変わりはありません。'
+    : ''
+  return [plain(`${headlinePart}${tail}`)]
 }
 
 /** 欠測で読み上げる件数の上限（多いときは渡された並びの先頭から採る）。 */
