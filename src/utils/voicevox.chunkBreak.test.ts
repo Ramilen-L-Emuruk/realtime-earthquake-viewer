@@ -21,7 +21,13 @@ import { prewarmVoicevox, speakWithVoicevox, splitIntoChunks } from './voicevox'
 
 // 辞書は既定で使わない。安全弁のテストだけ findPhraseBreakMatch を差し替える。
 const dictState: { key: string | null } = { key: null }
-vi.mock('./ttsPhraseBreakDict', () => ({
+// **実物を土台にして、差し替えるのは辞書の中身と引き当てだけ。** いま代役が覆っているのは
+// `voicevox.ts` が使う export と同じ集合なので、丸ごと代役にしても症状は出ない。それでも実物を
+// 土台にしておくのは、**次に `voicevox.ts` が別の export を使い始めたときに黙って壊れないため**
+// —— 代役に無い export は undefined になり、例外で `synthesizeChunk` の catch へ落ちて
+// **そのチャンクが無音で脱落する**（助詞の切り出しを別モジュールへ分ける前に実際に踏んだ形）。
+vi.mock('./ttsPhraseBreakDict', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./ttsPhraseBreakDict')>(),
   loadTtsPhraseBreakDict: async () => (dictState.key ? { [dictState.key]: 'テ,スト' } : null),
   getTtsPhraseBreakDictCache: () => (dictState.key ? { [dictState.key]: 'テ,スト' } : null),
   findPhraseBreakMatch: (text: string) => {
