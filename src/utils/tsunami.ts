@@ -1214,6 +1214,62 @@ export function compareObservedHeightDesc(a: ObservedHeightRank, b: ObservedHeig
 }
 
 /**
+ * 観測波高に、画面へ見せ直す値打ちのある変化があったか。
+ *
+ * **「深刻になったか」を問う側と対になる述語。** 読み上げ（`hasObservedHeightRisen`）と
+ * カードのバッジ・自動スクロール（どちらも `useLiveEventHandler`）は上がったときだけ通す。
+ * こちらは向きを問わず「動いたか」を問う ―― 地図のカメラは、下方修正でもその観測点を見せ直す。
+ * **いまこれを使うのはカメラだけ**で、向きの違いは意図したもの。
+ *
+ * **数値の等値比較だけで判定しないこと。** `over`（「○m以上」）は値と別に意味を持つ。
+ * 2024-01-01 16:35 の津波観測情報では、輪島港が「１．２ｍ」から「１．２ｍ以上」へ変わった一方、
+ * 電文の値は 1.2 のまま動いていない。数値だけを見ると「変化なし」になるが、実際には
+ * 潮位計が振り切れて真の波高が読めなくなったという、いちばん見せたい変化が起きている。
+ * 値の比較で済ませていたころは、読み上げが「１．２メートル以上」と言い観測棒が点滅するのに、
+ * 地図だけがその観測点へ寄らなかった。
+ *
+ * `over` が外れる向き（上限の無い発表が確定値へ置き換わる）も変化として扱う。実電文では
+ * 観測していないが、起きれば「真の波高が判った」という同じ値打ちの更新にあたる。
+ *
+ * **読み上げとカードが持つ記憶は高水位マーク式で、外れる向きを記録しない**
+ * （`useLiveEventHandler` の `rememberObservationHeights`）。あちらは「これまでの最大波」を
+ * 追う記憶なので下げないのが正しく、**この非対称は意図したもの**。
+ */
+export function hasObservedHeightChanged(
+  current: ObservedHeightRank,
+  prev: ObservedHeightRank | undefined,
+): boolean {
+  if (!prev) return true
+  if (current.value !== prev.value) return true
+  return !!current.over !== !!prev.over
+}
+
+/**
+ * 気象庁が「最大波の観測時刻を更新した」と言っていて、その時刻がまだ見ていないものか。
+ *
+ * **判定は電文が直接言っているもの（`MaxHeight/Revise` = 更新）を見る。** 時刻の比較だけで
+ * 決めると、気象庁が更新と認めていない揺れまで拾う。
+ *
+ * 同じ高さの波がもう一度来た報がこの形で届く ―― 波高は据え置きなので
+ * {@link hasObservedHeightChanged} では捉えられない。2024 年能登半島地震の 01/01〜01/02 では、
+ * 延べ 44 観測点・21 通の報がこの形だった（01/02 00:51 の舞鶴 0.4m・玄海町仮屋 0.1m など）。
+ *
+ * **読み上げと画面（バッジ・カードのスクロール・地図のカメラ）が揃ってこれを見ること。**
+ * 読み上げだけが「最大波の観測時刻が更新されました」と言い、画面が黙っていたころは、
+ * 声が名指しした観測点をどこにも示せていなかった。なお読み上げ側は、文が二重にならないよう
+ * 追加の条件（欠測を除く・波高が上がった観測点を除く）を重ねる ―― そちらは
+ * `useLiveEventHandler` の `hasMaxHeightTimeChanged` が持つ。
+ */
+export function hasMaxHeightTimeAdvanced(
+  obs: { maxHeightRevise?: string; maxHeightDateTime?: string },
+  prevDateTime: string | undefined,
+): boolean {
+  if (obs.maxHeightRevise !== '更新') return false
+  if (!obs.maxHeightDateTime) return false
+  return prevDateTime !== obs.maxHeightDateTime
+}
+
+/**
  * 観測波高の表示文字列に「以上」（観測可能範囲の超過）を必要なだけ補う。
  *
  * `description` は over のとき既に「以上」を含む（`dmdataParser` が `${value}m以上` を組む）ため、

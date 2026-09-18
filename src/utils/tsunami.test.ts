@@ -19,6 +19,8 @@ import {
   sortObservationsForCardDisplay,
   GRADES_IN_CARD_ORDER,
   compareObservedHeightDesc,
+  hasObservedHeightChanged,
+  hasMaxHeightTimeAdvanced,
   overSuffixedHeight,
   latestValidDateTime,
   withInheritedTsunamiFacts,
@@ -538,6 +540,74 @@ describe('compareObservedHeightDesc', () => {
   it('over の undefined と false を同じ扱いにする', () => {
     expect(compareObservedHeightDesc({ value: 2.0, over: false }, { value: 2.0 })).toBe(0)
     expect(compareObservedHeightDesc({ value: 2.0, over: undefined }, { value: 2.0, over: false })).toBe(0)
+  })
+})
+
+// 観測波高が動いたか（地図のカメラが見せ直す判定）。
+// → docs/spec/tsunami-spec.md §6「観測波高の「以上」」・map-rendering-spec.md §6「津波追従の目標範囲」
+describe('hasObservedHeightChanged', () => {
+  // 正: 値が据え置きでも over が付いたら変化として扱う
+  // （2024-01-01 16:35 の輪島港「１．２ｍ」→「１．２ｍ以上」。値は 1.2 のまま動かない）
+  it('値が同じでも over が新しく付いたら真', () => {
+    expect(hasObservedHeightChanged({ value: 1.2, over: true }, { value: 1.2 })).toBe(true)
+  })
+
+  // 対照: 値も over も同じなら偽（同じ内容の再送で寄り直さない）
+  it('値も over も同じなら偽', () => {
+    expect(hasObservedHeightChanged({ value: 1.2 }, { value: 1.2 })).toBe(false)
+    expect(hasObservedHeightChanged({ value: 1.2, over: true }, { value: 1.2, over: true })).toBe(false)
+  })
+
+  // 対照: over の undefined と false を同じ扱いにする（パーサは `over || undefined` で落とす）
+  it('over の undefined と false を同じ扱いにする', () => {
+    expect(hasObservedHeightChanged({ value: 1.2, over: false }, { value: 1.2 })).toBe(false)
+    expect(hasObservedHeightChanged({ value: 1.2, over: undefined }, { value: 1.2, over: false })).toBe(false)
+  })
+
+  // 安全弁: 初出は常に真（記憶が無い観測点を取りこぼさない）
+  it('記憶が無ければ真', () => {
+    expect(hasObservedHeightChanged({ value: 0.1 }, undefined)).toBe(true)
+  })
+
+  // 安全弁: 深刻さが下がる向きの変化でも真。読み上げの hasObservedHeightRisen と違い、
+  // こちらは「動いたか」を問う（下方修正でも地図はその観測点を見せ直す）
+  it('値が下がっても・over が外れても真', () => {
+    expect(hasObservedHeightChanged({ value: 0.8 }, { value: 1.2 })).toBe(true)
+    expect(hasObservedHeightChanged({ value: 1.2 }, { value: 1.2, over: true })).toBe(true)
+  })
+})
+
+// 最大波の観測時刻だけが進んだ報。→ docs/spec/tsunami-spec.md §10「変化を伝えない続報」
+describe('hasMaxHeightTimeAdvanced', () => {
+  const T1 = '2024-01-02T00:20:00+09:00'
+  const T2 = '2024-01-02T00:45:00+09:00'
+
+  // 正: 電文が「更新」と言い、時刻が既知と違えば真
+  // （2024-01-02 00:51 の舞鶴・玄海町仮屋。波高は据え置きのまま時刻だけが進んだ）
+  it('Revise が「更新」で時刻が変わっていれば真', () => {
+    expect(hasMaxHeightTimeAdvanced({ maxHeightRevise: '更新', maxHeightDateTime: T2 }, T1)).toBe(true)
+  })
+
+  // 対照: 同じ時刻の再送では偽（同じ更新を二度伝えない）
+  it('同じ時刻の再送では偽', () => {
+    expect(hasMaxHeightTimeAdvanced({ maxHeightRevise: '更新', maxHeightDateTime: T2 }, T2)).toBe(false)
+  })
+
+  // 対照: 電文が更新と言っていなければ偽。時刻の比較だけで決めると、気象庁が更新と
+  // 認めていない揺れまで拾う（「追加」は実配信にあり、能登の 2 日で 5 件観測している）
+  it('Revise が「更新」でなければ偽', () => {
+    expect(hasMaxHeightTimeAdvanced({ maxHeightDateTime: T2 }, T1)).toBe(false)
+    expect(hasMaxHeightTimeAdvanced({ maxHeightRevise: '追加', maxHeightDateTime: T2 }, T1)).toBe(false)
+  })
+
+  // 安全弁: 時刻そのものが無ければ偽（進める値が無いので、記憶と比べても意味を持たない）
+  it('最大波の観測時刻が無ければ偽', () => {
+    expect(hasMaxHeightTimeAdvanced({ maxHeightRevise: '更新' }, T1)).toBe(false)
+  })
+
+  // 安全弁: 記憶が無い初出でも、電文が「更新」と言っていれば真
+  it('記憶が無くても Revise が「更新」なら真', () => {
+    expect(hasMaxHeightTimeAdvanced({ maxHeightRevise: '更新', maxHeightDateTime: T2 }, undefined)).toBe(true)
   })
 })
 
