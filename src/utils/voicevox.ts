@@ -766,6 +766,20 @@ export async function buildChunkQuery(
   hasNextChunk = false,
   phraseBreakDict: Record<string, string> | null = speechDict(),
 ): Promise<Record<string, unknown> | null> {
+  const built = await buildChunkQueryWithStatus(baseUrl, chunk, speakerId, signal, hasNextChunk, phraseBreakDict)
+  return built?.query ?? null
+}
+
+/** 補正に失敗しても再生は続けるが、その音を控えに残して復旧後の再試行を妨げない。 */
+async function buildChunkQueryWithStatus(
+  baseUrl: string,
+  chunk: string,
+  speakerId: number,
+  signal: AbortSignal | undefined,
+  hasNextChunk: boolean,
+  phraseBreakDict: Record<string, string> | null,
+): Promise<{ query: Record<string, unknown>; cacheable: boolean } | null> {
+  let cacheable = true
   const queryRes = await fetch(
     `${apiBase(baseUrl)}/audio_query?text=${encodeURIComponent(chunk)}&speaker=${speakerId}`,
     { method: 'POST', signal },
@@ -802,6 +816,9 @@ export async function buildChunkQuery(
         baseUrl, built.phrases, speakerId, signal, new Set(built.punctAt),
       )
       query.accent_phrases = refined ?? built.phrases
+      if (!refined) cacheable = false
+    } else {
+      cacheable = false
     }
   }
 
@@ -824,7 +841,7 @@ export async function buildChunkQuery(
   }
 
   query.speedScale = 1.2
-  return query
+  return { query, cacheable }
 }
 
 /**
@@ -843,18 +860,32 @@ async function synthesizeChunk(
   ctx: AudioContext,
   signal?: AbortSignal,
   hasNextChunk = false,
+  speculative = false,
+): Promise<AudioBuffer | null> {
+  const result = await synthesizeChunkWithStatus(baseUrl, chunk, speakerId, ctx, signal, hasNextChunk, speculative)
+  return result?.buffer ?? null
+}
+
+/** 保存してよい音かを作り置きにも伝える。通常の再生は補正失敗時も音を使える。 */
+async function synthesizeChunkWithStatus(
+  baseUrl: string,
+  chunk: string,
+  speakerId: number,
+  ctx: AudioContext,
+  signal?: AbortSignal,
+  hasNextChunk = false,
   /**
    * 投機（{@link prefetchSpeechTexts}）からの呼び出しか。**記録の間引きを分けるためだけに使う**
    * （理由は {@link warnPrefetchSynthFailed}）。合成の中身は変えない。
    */
   speculative = false,
-): Promise<AudioBuffer | null> {
+): Promise<{ buffer: AudioBuffer; cacheable: boolean } | null> {
   invalidateCacheOnDictChange()
   // **鍵に `speedScale` は含めていない。** いまは下で 1.2 に固定しているため。設定で変えられる
   // ようにするなら、鍵にも足すこと —— さもないと速度を変えても古い音が鳴り続ける。
   const cacheKey = speechChunkKey(baseUrl, speakerId, chunk, hasNextChunk)
   const cached = takeCachedChunk(cacheKey)
-  if (cached) return cached
+  if (cached) return { buffer: cached, cacheable: true }
   /**
    * 合成を始めた時点の辞書。**読みの組み立てと、控えへ書いてよいかの判定の両方に使う。**
    *
@@ -870,8 +901,9 @@ async function synthesizeChunk(
    */
   const dictAtStart = speechDict()
   try {
-    const query = await buildChunkQuery(baseUrl, chunk, speakerId, signal, hasNextChunk, dictAtStart)
-    if (!query) return null
+    const built = await buildChunkQueryWithStatus(baseUrl, chunk, speakerId, signal, hasNextChunk, dictAtStart)
+    if (!built) return null
+    const { query, cacheable } = built
 
     const synthRes = await fetch(
       `${apiBase(baseUrl)}/synthesis?speaker=${speakerId}`,
@@ -892,12 +924,12 @@ async function synthesizeChunk(
     // **待っている間に辞書が入れ替わっていたら書かない**（理由は `dictAtStart`）。この音は
     // 古い読みで作られているので、控えへ入れると誤読が固定される。鳴らすのはそのまま
     // 続ける —— 既に合成できているものを捨てて無音にするほうが害が大きい。
-    if (speechDict() === dictAtStart) {
+    if (cacheable && speechDict() === dictAtStart) {
       putCachedChunk(cacheKey, buffer)
-    } else {
+    } else if (speechDict() !== dictAtStart) {
       log.debug('[VoiceVox] 合成中に辞書が入れ替わったため、この音は控えへ入れない', { chunk })
     }
-    return buffer
+    return { buffer, cacheable: cacheable && speechDict() === dictAtStart }
   } catch (err) {
     // abort による例外もここに落ちる。null で返して呼び出し元に「合成失敗」として扱わせる。
     //
@@ -1131,10 +1163,10 @@ export function warmFixedPhrases(baseUrl: string, speakerId: number, phrases: re
       // 読み上げ文の 1 チャンク目で、後ろに震源名が続く。既定の false で焼くと、**作り置きが
       // 当たったときだけ末尾の間が消える**（合成し直した経路は `chunks.length > 1` を渡すため)。
       // どちらの経路が先にキャッシュを埋めたかで間が変わる、非決定的な不揃いになる。
-      const buf = await synthesizeChunk(baseUrl, phrase, speakerId, ctx, ctrl.signal, true)
+      const result = await synthesizeChunkWithStatus(baseUrl, phrase, speakerId, ctx, ctrl.signal, true)
       // 張り替えられていたら触らない（新しい方を消してしまわないため）
       if (fixedPhrases.get(phrase) !== entry) return
-      if (buf) { entry.buffer = buf; return }
+      if (result?.cacheable) { entry.buffer = result.buffer; return }
       // 失敗は覚えない。VOICEVOX を後から起動することがあるため、作り直す余地を残す。
       fixedPhrases.delete(phrase)
       // 記録しないと「作り置きが一度も効いていない」ことに誰も気づけない。読み上げ本体と違い、
@@ -1715,16 +1747,16 @@ async function speakOnce(
 
     // hasNextChunk は先行合成（prewarmVoicevox）・作り置き（warmFixedPhrases）と必ず同じ判定に
     // すること。食い違うと、合成済みのものを使えたときと作り直したときで末尾の間が変わる。
-    const built = await synthesizeChunk(baseUrl, chunks[0], speakerId, ctx, signal, chunks.length > 1)
+    const built = await synthesizeChunkWithStatus(baseUrl, chunks[0], speakerId, ctx, signal, chunks.length > 1)
     // 作り置きの更新に失敗しても読み上げ自体は成立させる（この関数は例外を投げない約束）
-    if (built) {
+    if (built?.cacheable) {
       try {
-        rememberFixedPhrase(baseUrl, speakerId, chunks[0], built)
+        rememberFixedPhrase(baseUrl, speakerId, chunks[0], built.buffer)
       } catch (err) {
         log.debug('[VoiceVox] 作り置きの更新に失敗（読み上げは続行）', err)
       }
     }
-    return built
+    return built?.buffer ?? null
   })()
 
   // 次のチャンクを再生開始する予定時刻（AudioContext の時間軸）

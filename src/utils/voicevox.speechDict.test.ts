@@ -35,12 +35,14 @@ const STATION_READINGS = {
 
 /** 観測点の読みを取得できるか。false のときは fetch が失敗する（未取得の状態を作る）。 */
 let stationReadingsAvailable = true
+let correctionFailure: 'status' | 'throw' | 'prosody' | null = null
+let synthesisCalls = 0
 
 const fakeCtx = {
   state: 'running' as AudioContextState,
   currentTime: 0,
   resume: vi.fn(async () => {}),
-  decodeAudioData: vi.fn(async () => ({ duration: 0.4 }) as unknown as AudioBuffer),
+  decodeAudioData: vi.fn(async () => ({ duration: 0.4, length: 19200, numberOfChannels: 1 }) as unknown as AudioBuffer),
   createGain: () => ({ gain: { value: 0 }, connect: vi.fn() }),
   createBufferSource: () => ({
     buffer: null as AudioBuffer | null,
@@ -73,6 +75,8 @@ function installFetch() {
     }
     if (url.includes('is_kana=true')) {
       kanaRequests.push(new URL(url).searchParams.get('text') ?? '')
+      if (correctionFailure === 'status') return { ok: false, status: 503 } as Response
+      if (correctionFailure === 'throw') throw new TypeError('temporary connection failure')
       return {
         ok: true,
         json: async () => [{ moras: [{ text: 'ア', vowel: 'a', vowel_length: 0.1 }], pause_mora: null }],
@@ -86,9 +90,11 @@ function installFetch() {
       } as unknown as Response
     }
     if (/mora_data/.test(url)) {
+      if (correctionFailure === 'prosody') return { ok: false, status: 503 } as Response
       const body = JSON.parse(String(init?.body)) as unknown[]
       return { ok: true, json: async () => body } as unknown as Response
     }
+    if (url.includes('/synthesis')) synthesisCalls++
     return { ok: true, arrayBuffer: async () => new ArrayBuffer(8) } as unknown as Response
   }) as unknown as typeof fetch
 }
@@ -99,6 +105,8 @@ function installFetch() {
 // 他の `voicevox.*.test.ts` はモジュールを作り直さないため、あちらではリセットが要る。
 beforeEach(() => {
   stationReadingsAvailable = true
+  correctionFailure = null
+  synthesisCalls = 0
   installFetch()
 })
 afterEach(() => { vi.restoreAllMocks() })
@@ -113,6 +121,59 @@ afterEach(() => { vi.restoreAllMocks() })
 const askedReading = (reading: string) => kanaRequests.some(k => k.startsWith(reading))
 
 describe('読み上げ辞書の合成', () => {
+  it.each(['status', 'throw', 'prosody'] as const)('補正が %s で失敗した音は再生するが、復旧したら合成し直す', async failure => {
+    const { prewarmVoicevox } = await freshVoicevox()
+    const text = '石川県能登で観測しました。'
+    correctionFailure = failure
+    expect(await prewarmVoicevox('http://vv', text, 0)!.first).not.toBeNull()
+    expect(synthesisCalls).toBe(1)
+
+    correctionFailure = null
+    expect(await prewarmVoicevox('http://vv', text, 0)!.first).not.toBeNull()
+    expect(synthesisCalls).toBe(2)
+
+    // 復旧後の正常な音は保存される。失敗を避けるためにキャッシュ自体を無効にしていない。
+    expect(await prewarmVoicevox('http://vv', text, 0)!.first).not.toBeNull()
+    expect(synthesisCalls).toBe(2)
+  })
+
+  it('最初から補正できた音は次回の合成を省く', async () => {
+    const { prewarmVoicevox } = await freshVoicevox()
+    for (let i = 0; i < 2; i++) {
+      expect(await prewarmVoicevox('http://vv', '石川県能登で観測しました。', 0)!.first).not.toBeNull()
+    }
+    expect(synthesisCalls).toBe(1)
+  })
+
+  it('補正に失敗した切り出し語も作り置きに固定せず、復旧後に焼き直す', async () => {
+    const { warmFixedPhrases } = await freshVoicevox()
+    const phrases = ['石川県能登で、']
+    correctionFailure = 'status'
+    warmFixedPhrases('http://vv', 0, phrases)
+    await vi.waitFor(() => expect(synthesisCalls).toBe(1))
+    correctionFailure = null
+    warmFixedPhrases('http://vv', 0, phrases)
+    await vi.waitFor(() => expect(synthesisCalls).toBe(2))
+    warmFixedPhrases('http://vv', 0, phrases)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(synthesisCalls).toBe(2)
+  })
+
+  it('本再生からの作り置き補充も、補正に失敗した音を残さない', async () => {
+    const { warmFixedPhrases, speakWithVoicevox: speak } = await freshVoicevox()
+    correctionFailure = 'status'
+    warmFixedPhrases('http://vv', 0, ['石川県能登で、'])
+    await vi.waitFor(() => expect(synthesisCalls).toBe(1))
+    const text = '石川県能登で、続報をお伝えします。'
+    await speak('http://vv', text, 0, 1)
+    expect(synthesisCalls).toBe(3)
+    correctionFailure = null
+    await speak('http://vv', text, 0, 1)
+    expect(synthesisCalls).toBe(4)
+    await speak('http://vv', text, 0, 1)
+    expect(synthesisCalls).toBe(4)
+  })
+
   it('観測点の読みも句区切り辞書と同じ経路で合成に渡る', async () => {
     const { speakWithVoicevox: speak } = await freshVoicevox()
     await speak('http://vv', '輪島市門前町走出では、震度5弱以上と推定されますが、未入電です。', 0, 1)
