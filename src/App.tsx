@@ -41,6 +41,7 @@ import { ActionChecklist } from './components/ActionChecklist'
 import { useActionChecklist } from './hooks/useActionChecklist'
 import { useStationCoords } from './hooks/useStationCoords'
 import { useEarthquakes } from './hooks/useEarthquakes'
+import { useFetchThrottled } from './hooks/useFetchThrottled'
 import { useTestScenarios } from './hooks/useTestScenarios'
 import { useSettings } from './hooks/useSettings'
 import { useAlertTitle } from './hooks/useAlertTitle'
@@ -757,6 +758,12 @@ export function App() {
     resetState, loadReplayEvents, restoreQuakeHistory,
   } = useEarthquakes(handleLiveEvent, debouncedApiKey, settings.dmdataTestDelivery, replayTimeOffset, handleStartupRestore)
   earthquakesRef.current = earthquakes
+  // 配信元の上限に達して取得を待たせているあいだ、地震タブにその旨を出す。
+  // **損失とは別**（枠が空けばそのまま取りに行くので、欠けは出ない）。
+  //
+  // **標準版では見張らない。** あちらは DMDATA を使わないので門は常に空で、
+  // 周期処理だけが無駄に走る。
+  const fetchThrottled = useFetchThrottled(isDmdss)
   tsunamisRef.current = tsunamis
 
   // EarthquakeTab のカードクリックからの選択。ユーザーが自らカードをクリックした挙動なので
@@ -2145,6 +2152,7 @@ export function App() {
                 error={error}
                 historyLoss={historyLoss}
                 loadMoreFailed={loadMoreFailed}
+                fetchThrottled={fetchThrottled}
                 lpgmByEventId={lpgmByEventId}
                 activeLpgmEventId={activeLpgmEventId}
                 onToggleLpgm={toggleLpgmFromEarthquake}

@@ -113,9 +113,19 @@ export function hasTelegramCacheError(): boolean {
 
 /** パージの実測値。**控えが効かない状態を検知するために数える**（下記 `THRASH_WINDOW_MS`）。 */
 const purgeStats = { purged: 0, purgedRecent: 0 }
-/** 控えを捨てた件数（設定タブと検証で読む）。 */
-export function telegramCachePurgeStats(): { purged: number; purgedRecent: number } {
-  return { ...purgeStats }
+
+/**
+ * 上限を確かめる読み取りが失敗した回数。
+ *
+ * **「読めなかった」と「0 件だった」を潰さないために数える。** 潰すと、上限を超えているのに
+ * 追い出しが走らないまま肥大化する経路ができる。**`warnOnce` では足りない** ——
+ * あちらは一度鳴らすと二度と鳴らないので、繰り返し起きていることが記録に残らない。
+ */
+const readFailures = { limitCheck: 0 }
+
+/** 控えを捨てた件数と、上限の確認に失敗した回数（設定タブと検証で読む）。 */
+export function telegramCachePurgeStats(): { purged: number; purgedRecent: number; limitCheckFailures: number } {
+  return { ...purgeStats, limitCheckFailures: readFailures.limitCheck }
 }
 
 /**
@@ -310,18 +320,28 @@ export async function writeTelegramBody(id: string, xml: string): Promise<void> 
   if (!ok) return
   markUsable()
   notifyChanged()
-  const n = (await tx<number>(STORE_META, 'readonly', (s) => s.count())) ?? 0
-  if (n <= MAX_ENTRIES) {
+  // **読み取りの失敗を「0 件」に潰さない。** 潰すと「上限を超えているのに読めなかった」が
+  // 「上限以内」と同じ扱いになり、**追い出しが黙って走らなくなる**。
+  const n = await tx<number>(STORE_META, 'readonly', (s) => s.count())
+  if (n === null) {
+    readFailures.limitCheck++
+  } else if (n <= MAX_ENTRIES) {
     // 件数が上限以内でも、大きい電文が並べば合計は超えうる。目録は軽いので数える
     const bytesTotal = await totalBytes()
-    if (bytesTotal <= MAX_TOTAL_BYTES) return
+    if (bytesTotal === null) readFailures.limitCheck++
+    else if (bytesTotal <= MAX_TOTAL_BYTES) return
   }
   await purgeOldest()
 }
 
-/** 目録から合計バイト数を数える（本体は読まない）。 */
-async function totalBytes(): Promise<number> {
-  const all = (await tx<MetaEntry[]>(STORE_META, 'readonly', (s) => s.getAll() as IDBRequest<MetaEntry[]>)) ?? []
+/**
+ * 目録から合計バイト数を数える（本体は読まない）。**読めなければ `null`。**
+ *
+ * 「0 バイトだった」と区別する（→ `readFailures`）。
+ */
+async function totalBytes(): Promise<number | null> {
+  const all = await tx<MetaEntry[]>(STORE_META, 'readonly', (s) => s.getAll() as IDBRequest<MetaEntry[]>)
+  if (all === null) return null
   return all.reduce((sum, e) => sum + (e.bytes ?? 0), 0)
 }
 
@@ -332,7 +352,14 @@ async function totalBytes(): Promise<number> {
  * ずれる。捨てるときだけ実際の値を見れば、ずれが積み上がらない。
  */
 async function purgeOldest(): Promise<void> {
-  const all = (await tx<MetaEntry[]>(STORE_META, 'readonly', (s) => s.getAll() as IDBRequest<MetaEntry[]>)) ?? []
+  const all = await tx<MetaEntry[]>(STORE_META, 'readonly', (s) => s.getAll() as IDBRequest<MetaEntry[]>)
+  // **「読めなかった」と「0 件」を潰さない。** 潰すと、上限超えと判定されて呼ばれたのに
+  // **何も消さずに黙って返る** —— しかも数えていないので、追い出しが機能していないことが
+  // どの記録にも出ない（アーカイブ本体の控えと同じ規律。→ `utils/archiveBodyDb.ts`）。
+  if (all === null) {
+    readFailures.limitCheck++
+    return
+  }
   if (all.length === 0) return
   // 古い順（`lastUsedAt` 昇順）。時刻を持たない壊れた記録は先に捨てる
   all.sort((a, b) => (a.lastUsedAt ?? 0) - (b.lastUsedAt ?? 0))
@@ -375,8 +402,12 @@ async function purgeOldest(): Promise<void> {
 }
 
 /** 控えの件数と合計バイト数（設定タブの表示用）。**本体は読まない**。 */
-export async function telegramCacheStats(): Promise<{ entries: number; bytes: number }> {
-  const all = (await tx<MetaEntry[]>(STORE_META, 'readonly', (s) => s.getAll() as IDBRequest<MetaEntry[]>)) ?? []
+export async function telegramCacheStats(): Promise<{ entries: number; bytes: number } | null> {
+  const all = await tx<MetaEntry[]>(STORE_META, 'readonly', (s) => s.getAll() as IDBRequest<MetaEntry[]>)
+  // **「0 件」と「読めなかった」を分ける。** 潰すと、読みが失敗した瞬間だけ画面が
+  // 「0 件 / 0.0 MB」と言い、控えが空になったかのように見える
+  // （表示側の `stats === null ? '—' : ...` はこのために書かれていた）。
+  if (all === null) return null
   return { entries: all.length, bytes: all.reduce((sum, e) => sum + (e.bytes ?? 0), 0) }
 }
 

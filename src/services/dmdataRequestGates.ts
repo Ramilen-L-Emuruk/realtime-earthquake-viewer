@@ -1,14 +1,18 @@
 /**
- * DMDATA への取得を直列化する門。**ホストごとに枠を分けている。**
+ * DMDATA への取得が配信元の上限に触れないようにする門。**ホストごとに枠を分けている。**
  *
- * | ホスト | 何を取るか | 間隔 | 根拠 |
- * |---|---|---|---|
- * | `data.api.dmdata.jp` | 電文本体・アーカイブ本体 | 6 秒 | 50req/5min |
- * | `api.dmdata.jp` | 一覧・目録・EEW の詳細 | 500ms | 「定常的に 2req/s 以上のアクセスはお控えいただき」 |
+ * | ホスト | 何を取るか | 守る上限 |
+ * |---|---|---|
+ * | `data.api.dmdata.jp` | 電文本体・アーカイブ本体 | 50req/5min ＋ 2000req/10min |
+ * | `api.dmdata.jp` | 一覧・目録・EEW の詳細 | 2000req/10min |
  *
- * **枠を 1 つにまとめない。** 上限の根拠が別で、電文本体の 6 秒を一覧にも掛けると起動が
- * 目に見えて遅くなる（一覧は 1 回の操作で数件しか出ない）。逆に一覧の 500ms を電文本体へ
- * 当てれば 50req/5min を超える。
+ * **これは配信元の表をそのまま写したもの**（[API v2 リファレンス](https://dmdata.jp/docs/reference/api/v2/)
+ * 「レートリミット」）。**上限に達するまでは 1 件も待たせない** —— 配信元が定めているのは
+ * 窓ごとの上限であって配り方ではないので、間隔を空ける理由がない（→ `utils/requestGate.ts`）。
+ *
+ * **枠を 1 つにまとめない。** 2000req/10min は**ドメインと IP の組み合わせごと**に掛かるので、
+ * 別ドメインの `api.dmdata.jp` と `data.api.dmdata.jp` はそれぞれ 2000 を持つ。まとめると
+ * 実際より厳しく数えることになる。
  *
  * ---
  *
@@ -16,50 +20,58 @@
  *
  * **電文本体（`/v1/:id`）とアーカイブ本体（`/v1/archive/:id`）が同じ枠を共有する。**
  *
- * 配信元のレート表（[API v2 リファレンス](https://dmdata.jp/docs/reference/api/v2/)
- * 「レートリミット」）は、3 つの URL に `rowspan` で 50req/5min を掛けている ——
+ * 配信元のレート表は、3 つの URL に `rowspan` で 50req/5min を掛けている ——
  * `data.api.dmdata.jp/v1/:id`・`jmafiledata.api.dmdata.jp/v1/:id`・
  * `data.api.dmdata.jp/v1/archive/:id`。**「3 行それぞれ」とも「3 行の合計」とも読める**
- * （表の書き方からは決まらない）。
+ * （HTML の `rowspan=3` を実際に確かめたが、表の書き方からは決まらない）。
  *
  * **合算として扱う。** アプリは `jmafiledata` を使わないので、実際に共有するのは電文本体と
  * アーカイブ本体の 2 つ。どちらの読み方でも上限に触れない側へ倒す。
- *
- * > 上限のうち「定常的に」の語をこちら側に都合よく読む必要があり、**既に配信元から利用量の
- * > 指摘を受けている状況で際どい解釈に頼るのは筋が悪い**。どの読み方でも安全側へ倒す。
- *
- * この判断は電文本体の門に元から書いてあったもので、**アーカイブ本体にも当てる**ことにした
- * （2026-09-16 の棚卸し。→ [`data-sources-spec.md`](../../docs/spec/data-sources-spec.md)
- * §2「取得の間隔を空ける」）。当てていなかった頃、アーカイブ本体は素の `fetch` を
- * `Promise.all` で**上限なく並列**に投げていた（起動時の履歴で 7 日ぶん ＝ 瞬間 7req/s）。
  *
  * **独立したファイルに置いているのは、門の名前を取得対象に縛らないため。** 元は
  * `telegramBody.ts` の中にあり `bodyGate` という名前だったので、アーカイブ本体から
  * 使うと名前が実態と食い違った。
  */
-import { createRateGate } from '../utils/requestGate'
+import { createRateGate, type RateLimitWindow } from '../utils/requestGate'
 import { log } from '../utils/logger'
 
 /**
- * `data.api.dmdata.jp` への取得間隔。上限の 50req/5min ＝ 6 秒に 1 件。
+ * `data.api.dmdata.jp` が守る上限。
  *
- * **この値を下げないこと。** 下げれば制限に触れ、触れなくても配信元が求める
- * 「定常的に 2req/s 以下」から外れる。初回起動が数分かかるのは承知のうえで、
- * **控えが効く 2 回目以降はほとんど通らない**（電文本体は IndexedDB・アーカイブ本体も同じ）。
+ * **配信元の表と 1 対 1。勝手に足したり削ったりしないこと。**
+ * 50req/5min は電文本体とアーカイブ本体の合算として扱う（このファイルの冒頭）。
  *
- * バーストを許す形（直近 5 分で 50 件まで、間隔は 500ms）も考えたが採らなかった
- * （理由はこのファイルの冒頭）。
+ * **均等割りに戻さないこと。** 5 分あたりの総量はどちらの方式でも 50 件が上限で、
+ * **配信元にかかる量は変わらない**のに、均等割りはまとまった取得を「本数 × 6 秒」
+ * そのまま待たせる（起動時の履歴で約 42 秒・リプレイの開始で約 96 秒かかっていた）。
  */
-const MIN_INTERVAL_MS = 6_000
-
-let gate = createRateGate(MIN_INTERVAL_MS)
+const DATA_API_LIMITS: readonly RateLimitWindow[] = [
+  { windowMs: 5 * 60_000, max: 50 },
+  { windowMs: 10 * 60_000, max: 2000 },
+]
 
 /**
- * 枠が空くまで待つ。
+ * `api.dmdata.jp` が守る上限。
  *
- * `urgent` を渡すと、待っている通常の取得を追い越す。**間隔そのものは変わらない。**
+ * **このホストに固有の上限は無い**（パラメータ系の 20req/2min を除くが、そこは使っていない）。
+ * 掛かるのはドメイン×IP の 2000req/10min だけ。
+ *
+ * **実運用では届かない**（一覧は 1 回の操作で数件しか出ない）。置いているのは、範囲指定が
+ * 効かなくなったときの歯止め —— ページを辿るループの上限（`LIST_MAX_PAGES` ほか）と同じ役目で、
+ * こちらは件数ではなくレートの側から押さえる。
+ */
+const API_LIMITS: readonly RateLimitWindow[] = [
+  { windowMs: 10 * 60_000, max: 2000 },
+]
+
+let gate = createRateGate(DATA_API_LIMITS)
+
+/**
+ * `data.api.dmdata.jp` の枠が空くまで待つ。**上限に達していなければ待たない。**
+ *
+ * `urgent` を渡すと、待っている通常の取得を追い越す。**枠そのものは増えない。**
  * 渡すのは「待たせると意味が薄れるもの」だけ —— いまは起動時に発表中の緊急地震速報を
- * 復元する経路だけが使う（履歴の後ろに並ぶと最悪 24 秒遅れて画面に出る）。
+ * 復元する経路だけが使う。
  * **履歴・補助情報・リプレイ・アーカイブ本体には渡さないこと**（全部が urgent なら
  * 優先度は意味を失う）。
  */
@@ -73,69 +85,66 @@ export function dataApiGateWaiting(): number {
 }
 
 /**
- * テスト用。門の間隔を差し替える。
+ * テスト用。門の制限を差し替える。
  *
- * **門が効いているかは `utils/requestGate.test.ts` が本物の間隔で確かめる。** ここで
- * 差し替えるのは、控えの振る舞い（上限で古い順に捨てる等）を確かめるテストが 600 件を
- * 順に取るためで、6 秒間隔のままだと 1 時間かかる。**本番の値を緩める口ではない。**
+ * **`ms` は「その間隔で 1 件」という制限に変換する**（`{ windowMs: ms, max: 1 }`）——
+ * 窓ごとの上限という一般形で固定間隔も表せるため、間隔を渡していた既存のテストが
+ * そのまま通る。`0` 以下は「制限なし」。
+ *
+ * **門が効いているかは `utils/requestGate.test.ts` が本物の制限で確かめる。** ここで
+ * 差し替えるのは、控えの振る舞い（上限で古い順に捨てる等）を確かめるテストのため。
+ * **本番の値を緩める口ではない。**
  */
 export function setDataApiGateIntervalForTest(ms: number): void {
-  gate = createRateGate(ms)
+  gate = createRateGate(ms > 0 ? [{ windowMs: ms, max: 1 }] : [])
 }
 
 /**
  * テスト用。待っている全員を通して門を初期化する。
  *
- * **間隔は変えない**（差し替えたいなら `setDataApiGateIntervalForTest`）。テストの
+ * **制限は変えない**（差し替えたいなら `setDataApiGateIntervalForTest`）。テストの
  * あいだに残った待ち行列が次のテストへ持ち越されるのを防ぐためのもの。
  */
 export function resetDataApiGateForTest(): void {
   gate.resetForTest()
 }
 
-// ---
-// ## `api.dmdata.jp` の枠
-//
-// 一覧（`/v2/telegram`・`/v2/archive`・`/v2/gd/eew`）と EEW の詳細（`/v2/gd/eew/:eventId`）。
-//
-// **このホストに固有の上限は無い**（パラメータ系の 20req/2min を除くが、そこは使っていない）。
-// 掛かるのは①ドメイン×IP で 10 分 2000（＝3.3req/s）と②「**定常的に 2req/s 以上のアクセスは
-// お控えいただき**」で、**厳しいのは②**なのでそちらへ合わせる。
+let apiGate = createRateGate(API_LIMITS)
 
 /**
- * `api.dmdata.jp` への取得間隔。配信元が求める「定常的に 2req/s 以下」に合わせる。
+ * `api.dmdata.jp` の枠が空くまで待つ。**実運用では待たない**（上の `API_LIMITS`）。
  *
- * **この値を下げないこと。** 下げれば 2req/s を超える。
- * 一覧は 1 回の操作で数件しか出ないので、500ms でも体感には出ない。
- */
-const API_MIN_INTERVAL_MS = 500
-
-let apiGate = createRateGate(API_MIN_INTERVAL_MS)
-
-/**
- * `api.dmdata.jp` の枠が空くまで待つ。
- *
- * **並列で呼んでも直列化される。** リプレイの当日経路は EEW の詳細を
- * `BODY_CONCURRENCY`（8）の枠で並べるので、門が無いと瞬間 8req/s になる
- * （電文本体の側はこの門ではなく上の 6 秒の門を通るため元から直列）。
- *
- * `urgent` を渡すと、待っている通常の要求を追い越す。**間隔そのものは変わらない**
- * （変えればレート制限に触れる）。渡すのは **WebSocket の開始と枠の解放**だけ ——
- * あれは電文の受信そのものの起点で、一覧や目録の待ち行列の後ろに回すと EEW の受信開始が
- * 遅れる。**一覧・目録・詳細には渡さないこと**（全部が urgent なら優先度は意味を失う）。
+ * `urgent` を渡すと、待っている通常の要求を追い越す。渡すのは **WebSocket の開始と枠の解放**
+ * だけ —— あれは電文の受信そのものの起点で、一覧や目録の待ち行列の後ろに回すと EEW の
+ * 受信開始が遅れる。
  */
 export function waitForApiSlot(opts?: { urgent?: boolean }): Promise<void> {
   return apiGate.wait(opts)
 }
 
-/** テスト用。`api.dmdata.jp` の門の間隔を差し替える。 */
+/** テスト用。`api.dmdata.jp` の門の制限を差し替える（変換の仕方は `setDataApiGateIntervalForTest`）。 */
 export function setApiGateIntervalForTest(ms: number): void {
-  apiGate = createRateGate(ms)
+  apiGate = createRateGate(ms > 0 ? [{ windowMs: ms, max: 1 }] : [])
 }
 
 /** テスト用。`api.dmdata.jp` の門の待ち行列を空にする。 */
 export function resetApiGateForTest(): void {
   apiGate.resetForTest()
+}
+
+/**
+ * いずれかの門が上限で取得を待たせているなら、次の枠が空く時刻。待ちが無ければ `null`。
+ *
+ * **画面の「取得制限中」はこれを読む。** 2 つの門を 1 つの答えにまとめるのは、利用者に
+ * とってはどちらのホストで待っているかに意味が無いため。両方が待たせているときは
+ * **遅いほうを返す** —— 早いほうを返すと、その時刻を過ぎても表示が消えない。
+ */
+export function dmdataThrottledUntil(): number | null {
+  const a = gate.throttledUntil()
+  const b = apiGate.throttledUntil()
+  if (a === null) return b
+  if (b === null) return a
+  return Math.max(a, b)
 }
 
 // ---
@@ -150,7 +159,7 @@ export function resetApiGateForTest(): void {
 // - 控えが効くのは**成功した分だけ**。429 で落ちたものは控えに載らないので、次の操作で再要求される
 // - 「もっと見る」はクリックごとに範囲をまるごと問い合わせ直す（目録と当日の一覧は控えが効かない）
 //
-// 間隔は空くが（上の門）、**それはバックオフではない**——失敗が続いても伸びない。
+// 上の門は上限に達するまで待たせないので、**それはバックオフではない**。
 // ここで「取りに行かない窓」を持ち、429 を受けるたびに倍にする。
 //
 // **429 は id 単位で返る。** 実測した応答の本文は「Don't try to get the same data.」と書いており、
