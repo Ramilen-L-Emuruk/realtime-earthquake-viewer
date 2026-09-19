@@ -513,14 +513,19 @@ async function fetchAccentPhrasesForKey(
  * **分割の切れ目に来た句読点は音にならない**（理由は {@link SPLIT_PUNCT_PAUSE}）。その位置には種の
  * 無音を置き、`punctAt` でどこに置いたかを返す。呼び出し側はそれを {@link refineProsody} の
  * `keepEstimatedPauseAt` へ渡すこと。渡さないと種の値がそのまま残り、間の長さが文脈に合わなくなる。
+ *
+ * **export しているのは、読み上げ文の抑揚を測る計測台（`ttsSentenceSweep.probe.test.ts`）が
+ * 実運用と同じ組み立てを通すため。** 写し取って書き直すと、辞書の当たり方・助詞の取り込み・
+ * 間の置き方のどれかがずれたときに**計測だけが古い組み立てで通り続ける**（そして食い違いは
+ * 音を聞くまで出ない）。アプリ本体からの呼び出しは {@link synthesizeChunk} の 1 箇所だけ。
  */
-type BuiltPhrases = {
+export type BuiltPhrases = {
   phrases: AccentPhrase[]
   /** 分割で落ちた句読点を補った句の位置（`phrases` 内の添字）。 */
   punctAt: readonly number[]
 }
 
-async function buildAccentPhrases(
+export async function buildAccentPhrases(
   baseUrl: string,
   text: string,
   speakerId: number,
@@ -652,11 +657,91 @@ async function loadSpeechDicts(onPhraseBreakError: (err: unknown) => void): Prom
 }
 
 /**
- * 1チャンクを audio_query → synthesis して AudioBuffer を返す。失敗時は null。
+ * 1 チャンクぶんの `/audio_query` を組み立てる（辞書の組み直し・繋ぎ目の引き直し・
+ * チャンク末尾の間・話速まで）。**`/synthesis` へそのまま渡せる形**で返す。失敗時は null。
+ *
+ * **合成と分けてあるのは、読み上げ文の抑揚を測る計測台（`ttsSentenceSweep.probe.test.ts`）が
+ * 本番と同じ音を作れるようにするため。** ここを写し取って書き直すと、話速・間・辞書の当たり方の
+ * どれかがずれた音で判断することになる（一度それで、直そうとした症状そのものを聞き逃した）。
+ * ブラウザの外では `AudioContext` を作れないので、切れ目は復号の手前に置いてある。
  *
  * @param hasNextChunk 後続のチャンクがあるか。真のとき、末尾の句読点に間を持たせる
  *   （{@link CHUNK_BREAK_PAUSE}）。**最後のチャンクには渡さないこと。** 読み終わりに無音が伸び、
  *   再生完了を待っている次の読み上げがその分遅れる。
+ */
+export async function buildChunkQuery(
+  baseUrl: string,
+  chunk: string,
+  speakerId: number,
+  signal?: AbortSignal,
+  hasNextChunk = false,
+): Promise<Record<string, unknown> | null> {
+  const queryRes = await fetch(
+    `${apiBase(baseUrl)}/audio_query?text=${encodeURIComponent(chunk)}&speaker=${speakerId}`,
+    { method: 'POST', signal },
+  )
+  if (!queryRes.ok) return null
+
+  const query = await queryRes.json() as Record<string, unknown>
+
+  // 辞書にマッチする地名（区域名・観測点名）を含む場合は、accent_phrases を指定通りに組み直す
+  const phraseBreakDict = speechDict()
+  if (phraseBreakDict && findPhraseBreakMatch(chunk, phraseBreakDict)) {
+    // **組み直しの例外はここで受け止める。** 下の catch まで飛ばすと `return null` へ落ち、
+    // **そのチャンクが無音のまま脱落する**（呼び出し側は `if (!buffer) continue`）。組み直しを
+    // 諦めるだけなら素の `/audio_query` の結果で鳴るので、読みが崩れても声は続く。
+    // 取得が非 200 だった場合（`buildAccentPhrases` が null を返す経路）は元からこの形。
+    let built: BuiltPhrases | null = null
+    try {
+      built = await buildAccentPhrases(baseUrl, chunk, speakerId, phraseBreakDict, signal)
+    } catch (err) {
+      // 割り込みは正常系。**素の読みで合成を続けてはいけない**ので投げ直す（下の catch が拾う）。
+      if (err instanceof DOMException && err.name === 'AbortError') throw err
+      // それ以外は組み直しの実装の誤り。**既定で残る側へ出す** —— 読みが崩れたことは
+      // 聞くまで分からず、画面にも出ないため。すぐ下の refineProsody の失敗が debug 止まりなのは、
+      // あちらが諦めても間は種の値で残る（縮退が軽い）から。こちらは辞書の読みそのものが効かない。
+      warnDictRebuildFailed(() => log.warn(
+        '[VoiceVox] 辞書の組み直しで例外（読みの補正を諦めて素のまま合成する）', { chunk, err },
+      ))
+    }
+    // 結合したままだと繋ぎ目の直前（多くは助詞）が文末扱いになるため、長さと音高を引き直す。
+    // 分割で落ちた句読点（`punctAt`）の間の長さも、ここで文脈から決めてもらう。
+    // signal は下の /synthesis と必ず共有すること。共有していれば、割り込みで中断された場合に
+    // 補正前の accent_phrases がそのまま合成まで進むことがない（refineProsody の catch 参照）。
+    if (built) {
+      const refined = await refineProsody(
+        baseUrl, built.phrases, speakerId, signal, new Set(built.punctAt),
+      )
+      query.accent_phrases = refined ?? built.phrases
+    }
+  }
+
+  // チャンク末尾の句読点は /audio_query では音にならないため、ここで間を持たせる（理由は
+  // CHUNK_BREAK_PAUSE）。**辞書の組み直しと引き直しの後に置くこと。** refineProsody は
+  // pause_mora を引き直し前の値へ戻すので、先に付けても消えはしないが、辞書地名が末尾に
+  // 来たときにどちらの間が残るかが読み取りづらくなる。
+  if (hasNextChunk && CHUNK_TAIL_RE.test(chunk)) {
+    const phrases = query.accent_phrases
+    if (Array.isArray(phrases)) {
+      query.accent_phrases = withTrailingPause(phrases as AccentPhrase[], CHUNK_BREAK_PAUSE)
+    } else {
+      // 応答形式が想定と違う。**音は鳴るので気づけない**が、句読点の間が入らないまま合成が
+      // 続き、地名を読点で並べても一続きに聞こえる状態（この処理を入れた理由そのもの）へ
+      // 静かに戻る。全チャンク失敗の警告（warnNoAudio）にも引っかからないため、ここで残す。
+      warnNoChunkBreak(() => log.debug(
+        '[VoiceVox] accent_phrases が配列でないため句読点の間を付けられない', { chunk },
+      ))
+    }
+  }
+
+  query.speedScale = 1.2
+  return query
+}
+
+/**
+ * 1チャンクを audio_query → synthesis して AudioBuffer を返す。失敗時は null。
+ *
+ * @param hasNextChunk {@link buildChunkQuery} に同じ。
  */
 async function synthesizeChunk(
   baseUrl: string,
@@ -667,65 +752,8 @@ async function synthesizeChunk(
   hasNextChunk = false,
 ): Promise<AudioBuffer | null> {
   try {
-    const queryRes = await fetch(
-      `${apiBase(baseUrl)}/audio_query?text=${encodeURIComponent(chunk)}&speaker=${speakerId}`,
-      { method: 'POST', signal },
-    )
-    if (!queryRes.ok) return null
-
-    const query = await queryRes.json() as Record<string, unknown>
-
-    // 辞書にマッチする地名（区域名・観測点名）を含む場合は、accent_phrases を指定通りに組み直す
-    const phraseBreakDict = speechDict()
-    if (phraseBreakDict && findPhraseBreakMatch(chunk, phraseBreakDict)) {
-      // **組み直しの例外はここで受け止める。** 下の catch まで飛ばすと `return null` へ落ち、
-      // **そのチャンクが無音のまま脱落する**（呼び出し側は `if (!buffer) continue`）。組み直しを
-      // 諦めるだけなら素の `/audio_query` の結果で鳴るので、読みが崩れても声は続く。
-      // 取得が非 200 だった場合（`buildAccentPhrases` が null を返す経路）は元からこの形。
-      let built: BuiltPhrases | null = null
-      try {
-        built = await buildAccentPhrases(baseUrl, chunk, speakerId, phraseBreakDict, signal)
-      } catch (err) {
-        // 割り込みは正常系。**素の読みで合成を続けてはいけない**ので投げ直す（下の catch が拾う）。
-        if (err instanceof DOMException && err.name === 'AbortError') throw err
-        // それ以外は組み直しの実装の誤り。**既定で残る側へ出す** —— 読みが崩れたことは
-        // 聞くまで分からず、画面にも出ないため。すぐ下の refineProsody の失敗が debug 止まりなのは、
-        // あちらが諦めても間は種の値で残る（縮退が軽い）から。こちらは辞書の読みそのものが効かない。
-        warnDictRebuildFailed(() => log.warn(
-          '[VoiceVox] 辞書の組み直しで例外（読みの補正を諦めて素のまま合成する）', { chunk, err },
-        ))
-      }
-      // 結合したままだと繋ぎ目の直前（多くは助詞）が文末扱いになるため、長さと音高を引き直す。
-      // 分割で落ちた句読点（`punctAt`）の間の長さも、ここで文脈から決めてもらう。
-      // signal は下の /synthesis と必ず共有すること。共有していれば、割り込みで中断された場合に
-      // 補正前の accent_phrases がそのまま合成まで進むことがない（refineProsody の catch 参照）。
-      if (built) {
-        const refined = await refineProsody(
-          baseUrl, built.phrases, speakerId, signal, new Set(built.punctAt),
-        )
-        query.accent_phrases = refined ?? built.phrases
-      }
-    }
-
-    // チャンク末尾の句読点は /audio_query では音にならないため、ここで間を持たせる（理由は
-    // CHUNK_BREAK_PAUSE）。**辞書の組み直しと引き直しの後に置くこと。** refineProsody は
-    // pause_mora を引き直し前の値へ戻すので、先に付けても消えはしないが、辞書地名が末尾に
-    // 来たときにどちらの間が残るかが読み取りづらくなる。
-    if (hasNextChunk && CHUNK_TAIL_RE.test(chunk)) {
-      const phrases = query.accent_phrases
-      if (Array.isArray(phrases)) {
-        query.accent_phrases = withTrailingPause(phrases as AccentPhrase[], CHUNK_BREAK_PAUSE)
-      } else {
-        // 応答形式が想定と違う。**音は鳴るので気づけない**が、句読点の間が入らないまま合成が
-        // 続き、地名を読点で並べても一続きに聞こえる状態（この処理を入れた理由そのもの）へ
-        // 静かに戻る。全チャンク失敗の警告（warnNoAudio）にも引っかからないため、ここで残す。
-        warnNoChunkBreak(() => log.debug(
-          '[VoiceVox] accent_phrases が配列でないため句読点の間を付けられない', { chunk },
-        ))
-      }
-    }
-
-    query.speedScale = 1.2
+    const query = await buildChunkQuery(baseUrl, chunk, speakerId, signal, hasNextChunk)
+    if (!query) return null
 
     const synthRes = await fetch(
       `${apiBase(baseUrl)}/synthesis?speaker=${speakerId}`,
@@ -940,6 +968,13 @@ export function warmFixedPhrases(baseUrl: string, speakerId: number, phrases: re
   /** 1 件を合成して作り置きへ収める。 */
   const synthesizeOne = async ({ phrase, entry, ctrl }: typeof queued[number]) => {
     // 順番待ちの間に捨てられた・張り替えられたなら、もう要らない
+    if (fixedPhrases.get(phrase) !== entry) return
+    // **辞書を待ってから焼く。** ここは起動直後に走るので、待たないと辞書のキャッシュが空のまま
+    // 合成され、**辞書を当てていない音が作り置きに居座る**。作り置きは当たれば合成を丸ごと省く
+    // ので、以後その句だけ辞書が効かない——しかも音は鳴るため、聞くまで気づけない。
+    // 他の 2 経路（`prewarmVoicevox` / `speakOnce`）は既に待っている。
+    // **待ちはタイムアウトの外に置く**（下の「持ち時間に数えない」と同じ理由）。
+    await loadSpeechDicts(() => { /* 区切りなしで合成する */ })
     if (fixedPhrases.get(phrase) !== entry) return
     // タイムアウトは順番が回ってきてから張る（待ち時間を持ち時間に数えない）
     const timer = setTimeout(() => ctrl.abort(), FIXED_PHRASE_SYNTH_TIMEOUT_MS)
