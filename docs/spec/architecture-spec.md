@@ -497,7 +497,7 @@ React の ErrorBoundary が捕まえるのは**レンダー・ライフサイク
 | 仕組み | 拾うもの | 画面 |
 |---|---|---|
 | `components/ErrorBoundary.tsx` | レンダー・`useMemo`・`useEffect` の同期本体の例外 | その範囲をフォールバック表示へ差し替える |
-| `components/Map/gl/guardRender.ts` | カスタムレイヤーの `render()` の例外（MapLibre の描画ループ） | 「地図に描けていないものがあります」（`utils/renderHealth.ts`） |
+| `components/Map/gl/guardRender.ts` | カスタムレイヤーの `render()` の例外（MapLibre の描画ループ） | 「〇〇を描けず」（`utils/renderHealth.ts`） |
 | `utils/globalErrorLog.ts` | 上のどちらにも入らない例外・未処理の Promise 拒否 | **出さない**（記録のみ） |
 
 - **描画ループの中は境界が原理的に届かない。** `render()` を呼ぶのは MapLibre 自身で、React の

@@ -214,12 +214,15 @@ export function addFailedPrefetch(loss: ReplayLoss): ReplayLoss {
  *
  * 「再生は継続中」を必ず添えるのは、これが失敗通知と同じ赤字で出るため。
  * 添えないと再生が止まったと誤読される。
+ *
+ * 主節の形（言い切り）と語（「取り込めず」）も `formatHistoryLossNotice` に揃える。
+ * 同じ障害を再生とライブで別の重さに見せないため。
  */
 export function formatLossNotice(loss: ReplayLoss): string | null {
   const parts = describeTelegramLossParts(loss)
-  if (loss.failedPrefetches > 0) parts.push(`${loss.failedPrefetches} 区間ぶんの先読み`)
+  if (loss.failedPrefetches > 0) parts.push(`先読み${loss.failedPrefetches}区間`)
   if (parts.length === 0) return null
-  return `${parts.join('・')}を取り込めませんでした（再生は継続中。詳細はコンソール）`
+  return `${parts.join('・')}を取り込めず（再生は継続中・詳細はコンソール）`
 }
 
 export function useReplayController(deps: ReplayControllerDeps): ReplayController {

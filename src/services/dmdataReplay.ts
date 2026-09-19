@@ -665,7 +665,7 @@ export async function fetchDmdataReplayEvents(
    * 429 の窓で見送った**電文**の数。
    *
    * **取得元（`rateLimitedSources`）とは単位が違う**ので別に数える。表示側は
-   * 「N 件の取得元」「M 件の電文」と単位を分けて出すため、混ぜると文面が嘘になる。
+   * 「取得元N件」「電文N件」と単位を分けて出すため、混ぜると文面が嘘になる。
    */
   let rateLimitedTelegrams = 0
 
@@ -913,11 +913,11 @@ export async function fetchDmdataReplayEvents(
   // 全部が見送りだった場合は下の記録で手がかりを残す。
   const sourceDays = targets.length + liveDates.length - rateLimitedSources.length
   if (sourceDays > 0 && failedSourceDays === sourceDays) {
-    throw new Error(`Archive fetch failed: ${sourceDays} 件の取得元すべてを読み取れませんでした`)
+    throw new Error(`Archive fetch failed: 取得元${sourceDays}件すべてを読み取れませんでした`)
   }
   if (rateLimitedSources.length > 0) {
     log.info(
-      `[replay] ${rateLimitedSources.length} 件の取得元は 429 の窓が明けるまで`
+      `[replay] 取得元${rateLimitedSources.length}件は 429 の窓が明けるまで`
       + '取りに行きませんでした（待てば取れます）',
     )
   }
@@ -934,7 +934,7 @@ export async function fetchDmdataReplayEvents(
     )
   }
   if (skippedCount > 0) {
-    log.warn(`[replay] ${skippedCount} 件の電文を取り込めなかった（範囲 ${fromTime.toISOString()}〜${toTime.toISOString()}）`)
+    log.warn(`[replay] 電文${skippedCount}件を取り込めなかった（範囲 ${fromTime.toISOString()}〜${toTime.toISOString()}）`)
   }
   if (sourceDays > 0 && entries.length === 0) {
     // 取得元は引けたのに 1 件も取り込めなかった状態。指定期間に本当に電文が
@@ -1588,7 +1588,7 @@ export async function fetchDmdataQuakeHistory(
   // 兄弟関数（`fetchDmdataReplayEvents` の `sourceDays`）と同じ形に揃える。
   const judgedDays = usedDays - rateLimitedSources.length
   if (!stoppedEarly && judgedDays > 0 && failedArchiveUrls.length === judgedDays) {
-    throw new Error(`Archive fetch failed: ${judgedDays} 件の取得元すべてを読み取れませんでした`)
+    throw new Error(`Archive fetch failed: 取得元${judgedDays}件すべてを読み取れませんでした`)
   }
   // **見送りは例外にしない**（待てば取れる）。ただし全部が見送りだと画面は
   // 「静かな期間だった」と見えるので、手がかりを残す。
