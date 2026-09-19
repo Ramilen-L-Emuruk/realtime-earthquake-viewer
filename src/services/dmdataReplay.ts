@@ -4,6 +4,7 @@ import type { JMAQuake, EEWAlert, JMATsunami } from '../types/earthquake'
 import { selectActiveEews } from '../utils/eew'
 import { gunzip } from '../utils/gzip'
 import { createArchiveBodyCache } from '../utils/archiveBodyCache'
+import { readArchiveBody, writeArchiveBody } from '../utils/archiveBodyDb'
 import { log, createLogThrottle } from '../utils/logger'
 import { authHeader } from '../utils/dmdataApiKey'
 import { extractQuakeEventIdFromId, QUAKE_ISSUE_PRIORITY } from '../utils/quakeMerge'
@@ -113,14 +114,51 @@ interface ManifestEntry {
 }
 
 /**
+ * gzip のアーカイブを展開して tar の中身にする。**通信は伴わない。**
+ *
+ * **2 か所から呼ぶので関数にしてある** —— 配信元から落としたときと、端末の控えから
+ * 読み出したとき。片方だけ直すと、控えに当たった再生だけが別の中身で動く。
+ *
+ * **バイト数は展開後の tar の長さで返す。** `parseTar` が返すのは `subarray` の切り出しなので、
+ * エントリの合計で数えると**使わなかった領域がまるごと数から漏れる**（1 エントリでも参照が
+ * 残ればバッファ全体が残る）。
+ */
+async function expandArchive(gz: Uint8Array): Promise<{ files: Map<string, Uint8Array>; bytes: number }> {
+  const tar = await gunzip(gz)
+  const files = new Map<string, Uint8Array>()
+  for (const entry of parseTar(tar)) {
+    files.set(entry.name, entry.content)
+  }
+  return { files, bytes: tar.length }
+}
+
+/**
  * 日次アーカイブの控え（URL → 展開済みのファイル名マップ）。
  *
- * **リプレイの開始をまたいで残る。** 同じ日を何度も再生し直す使い方で、そのたびに同じ
- * ファイルを落とし直さないため（実測・上限の根拠・当日ぶんとの関係は
- * `utils/archiveBodyCache.ts`）。取得の失敗を控え続けないことと、同じ URL への
- * 同時要求を 1 本にまとめることも、あちらが担っている。
+ * **二層ある。**
+ *
+ * | 層 | 中身 | 残る範囲 |
+ * |---|---|---|
+ * | メモリ | 展開後のファイル名マップ | そのタブが開いているあいだ |
+ * | 端末（IndexedDB） | **gzip のまま**の原本 | タブを閉じても残る（→ `utils/archiveBodyDb.ts`） |
+ *
+ * **端末の層が効くのは「タブを開き直したとき」。** アプリの起動・リロード・録画で区間ごとに
+ * 再生を開始し直す使い方では、メモリ層が空の状態から始まるので、そこが無いと毎回
+ * 落とし直していた（起動時の履歴 7 本・リプレイの開始 16 本）。
+ *
+ * **配信元が名指しで求めているのはこの控え**（「同じ`id`に対して短期間にリクエストを
+ * 繰り返さないように実装してください」）。取得の間隔を空けることはこの要請に何も寄与しない。
+ *
+ * 取得の失敗を控え続けないことと、同じ URL への同時要求を 1 本にまとめることは
+ * `utils/archiveBodyCache.ts` が担っている。
  */
-const archiveCache = createArchiveBodyCache()
+const archiveCache = createArchiveBodyCache({
+  persist: {
+    read: readArchiveBody,
+    write: writeArchiveBody,
+    expand: expandArchive,
+  },
+})
 
 if (typeof window !== 'undefined') {
   // 控えが効いているかは画面に出ないので、検証で読めるようにしておく
@@ -202,15 +240,9 @@ function downloadArchive(url: string, apiKey: string, date: string): Promise<Map
     // **成功したら窓と回数を捨てる**
     if (id) noteRateLimitCleared('archive', id)
     const gz = new Uint8Array(await res.arrayBuffer())
-    const tar = await gunzip(gz)
-    const files = new Map<string, Uint8Array>()
-    for (const entry of parseTar(tar)) {
-      files.set(entry.name, entry.content)
-    }
-    // **バイト数は展開後の tar の長さで渡す。** `parseTar` が返すのは `subarray` の
-    // 切り出しなので、1 エントリでも参照が残ればバッファ全体が残る。エントリの合計で
-    // 数えると、使わなかった領域がまるごと数から漏れる。
-    return { files, bytes: tar.length, cacheable }
+    const { files, bytes } = await expandArchive(gz)
+    // **`gz` も渡す。** 端末の控えは圧縮のまま置く（展開比は実測 ×11.5〜×18.1）。
+    return { files, bytes, cacheable, gz }
   })
 }
 
@@ -1070,6 +1102,26 @@ export function filterPreWindowEvents(
 }
 
 /**
+ * 先行して投げた本体の取得の結果。
+ *
+ * **拒否のまま持たない。** 打ち切り（`shouldStop`）で残りの日を読まずに抜けると、
+ * 誰も `await` しない Promise が残る —— そのまま拒否させると **unhandled rejection** になり、
+ * 取得の失敗とは無関係な場所でエラーとして現れる。結果に畳んでおけば、読まれなければ
+ * 黙って捨てられるだけで済む。
+ */
+type PrefetchedBody =
+  | { files: Map<string, Uint8Array> }
+  | { error: unknown }
+
+/** 本体の取得を投げて、結果に畳む（失敗も値として持つ。理由は `PrefetchedBody`）。 */
+function prefetchArchiveBody(item: ArchiveItem, apiKey: string): Promise<PrefetchedBody> {
+  return downloadArchive(item.url, apiKey, item.date).then(
+    files => ({ files }),
+    (error: unknown) => ({ error }),
+  )
+}
+
+/**
  * 履歴の取得（`fetchDmdataQuakeHistory`）向けの計画。**本体を落とさずに決まることだけ**を
  * 1 パスで求める（設計の意図は `ManifestPlan`）。
  *
@@ -1216,8 +1268,16 @@ export async function fetchDmdataQuakeHistory(
   /**
    * 途中で打ち切ってよいかを訊く。**日ごとに、読み始める前に見る。**
    *
-   * 取得のあいだにリプレイが始まる・API キーが変わる・画面を離れることがある。
-   * 放っておくと、もう要らない取得が当日経路の門の枠を予約し続ける。
+   * 立つのは接続 effect のクリーンアップ 1 箇所（`useEarthquakes`）で、実際の契機は
+   * リプレイの開始・停止／API キーの変更／試験配信の切り替え／画面を離れること。
+   *
+   * **見る場所は 2 つ**＝本体を投げる前（`prefetchedBodies` の構築ループ）と、日ごとの解析の前。
+   * 前者があるので、打ち切られた時点から先の日は**ネットワークへ出ない**。
+   * 止められないのは「打ち切りが立つ前に投げた分」だけ。
+   *
+   * かつては「もう要らない取得が門の枠を予約し続ける」ことを防ぐ意味もあったが、
+   * **門が上限まで待たせなくなったのでその理由は消えた**。残る意味は無駄なリクエストと
+   * 解析を出さないこと。
    */
   shouldStop?: () => boolean,
 ): Promise<QuakeHistoryResult> {
@@ -1248,15 +1308,47 @@ export async function fetchDmdataQuakeHistory(
   // 新しい日から使う（カードは新しい順に並ぶため、打ち切りで欠けてよいのは古い側）。
   // アーカイブの日と当日経路の日は排他なので、日付だけで一本に並べられる。
   //
-  // **本体は下のループの中で 1 日ずつ落とす。まとめて `Promise.all` で待たない。**
-  // アーカイブ本体は 6 秒の門（`waitForDataApiSlot`）を通るので、揃うまで待つと 7 日ぶんで
-  // 40 秒ちかく `onPartial` が一度も呼ばれず、そのあいだカードが空のままになる（実測）。
-  // 取得の合計時間は変わらない（門が直列化するので並列にしても速くならない）ので、
-  // **取れた日から流すほうが一方的に良い。** 打ち切り（`shouldStop`）も残りの日に効くようになる。
+  // **本体の取得はループへ入る前にまとめて投げ、処理だけ日付順に行う**（→ `prefetchedBodies`）。
+  // 取れた日から `onPartial` で流す点は変わらない —— 揃うまで待つ形にすると、
+  // そのあいだカードが空のままになる。
   const sources: Array<{ date: string; item?: ArchiveItem }> = [
     ...targets.map(item => ({ date: item.date, item })),
     ...liveDays.map(date => ({ date })),
   ].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
+
+  /**
+   * ループへ入る前に投げておく本体の取得（アーカイブの URL → 結果）。
+   *
+   * **かつては 1 日ずつ順に落としていた。** 6 秒の固定間隔の門があったころは並列にしても
+   * 門が直列化するので速くならず、むしろ「取れた日から順に流す」ほうが一方的に良かったため。
+   * **門を窓ごとの上限へ変えて上限まで待たせなくなったので、その前提は崩れた** ——
+   * 直列のままだと往復がそのまま積み上がる（実測: 7 本で 28.8 秒 ＝ 1 本あたり約 4 秒）。
+   *
+   * **先行させるのは「目録が控えに無い日」だけ。** 目録が控えにある日は、本体が要るかどうかを
+   * 計画（`planNeedsBody`）が決める —— そこを飛ばして全件を落とすと、
+   * **控えで読み切れる日の本体まで落とす**ことになり、落とした物が 1 バイトも読まれずに捨てられる。
+   * 目録が控えに無い日は、目録そのものが本体の中にあるのでどのみち要る。
+   *
+   * **処理は日付順のまま**（下のループ）。受け取り順で処理すると `onPartial` が新しい日から
+   * 順に流れなくなる（カードは新しい順に並ぶ）。
+   *
+   * **打ち切り（`shouldStop`）はこのループの各反復で見る。** 見ないと、既に要らないと
+   * 決まった取得でも全日ぶんがネットワークへ出る —— **`StrictMode` の二重実行では
+   * 1 回目が即座に打ち切られる**ので、dev では毎回それを踏む。
+   * 止められないのは「打ち切りが立つ前に投げた分」だけで、そこは結果に畳んで捨てる
+   * （→ `PrefetchedBody`）。
+   */
+  const prefetchedBodies = new Map<string, Promise<PrefetchedBody>>()
+  for (const source of sources) {
+    // **投げる前に打ち切りを見る。** ここを見ないと、既に要らないと決まった取得でも
+    // 全日ぶんがネットワークへ出てしまう —— **`StrictMode` の二重実行では 1 回目の
+    // 取得が即座に打ち切られる**ので、dev では毎回それが起きる。
+    // 見ても止まらないのは「この反復より前に投げた分」だけになる。
+    if (shouldStop?.()) break
+    if (!source.item) continue
+    if (manifestCache.has(source.item.url)) continue
+    prefetchedBodies.set(source.item.url, prefetchArchiveBody(source.item, apiKey))
+  }
 
   const dec = new TextDecoder()
   const quakes: JMAQuake[] = []
@@ -1355,6 +1447,14 @@ export async function fetchDmdataQuakeHistory(
      */
     const loadBody = async (): Promise<Map<string, Uint8Array> | undefined> => {
       try {
+        // **先に投げてあるならそれを使う**（→ `prefetchedBodies`）。投げていないのは
+        // 目録が控えにあった日で、そのときだけここで落とす。
+        const pre = prefetchedBodies.get(item.url)
+        if (pre) {
+          const got = await pre
+          if ('error' in got) throw got.error
+          return got.files
+        }
         return await downloadArchive(item.url, apiKey, item.date)
       } catch (e) {
         if (e instanceof RateLimitWindowError) {

@@ -41,6 +41,7 @@ function renderTab(opts: {
   earthquakes?: JMAQuake[]
   historyLoss?: TelegramLoss
   loadMoreFailed?: boolean
+  fetchThrottled?: boolean
   error?: string | null
 }) {
   const earthquakes = opts.earthquakes ?? [QUAKE]
@@ -56,6 +57,7 @@ function renderTab(opts: {
       error={opts.error ?? null}
       historyLoss={opts.historyLoss ?? createEmptyTelegramLoss()}
       loadMoreFailed={opts.loadMoreFailed ?? false}
+      fetchThrottled={opts.fetchThrottled ?? false}
       lpgmByEventId={new Map()}
       activeLpgmEventId={null}
       onToggleLpgm={() => {}}
@@ -137,5 +139,57 @@ describe('履歴の一部が取れなかったときの帯', () => {
 
     expect(screen.getByText('データの取得に失敗しました')).toBeTruthy()
     expect(screen.queryByText(/取り込めませんでした（再読み込み/)).toBeNull()
+  })
+})
+
+// 配信元の上限に達したことを画面へ出す。**2 つは性質が違う** ——
+// 待っているだけ（欠けない）か、その回は見送った（欠けている）か。
+describe('取得制限中の帯', () => {
+  // 正: 待たされているあいだは出す。**利用者から見れば「止まっている」ようにしか見えない**ので、
+  // 理由が画面に無いと故障と区別が付かない。
+  it('正: 上限に達して待っているあいだ、自動で再開すると伝える', () => {
+    renderTab({ fetchThrottled: true })
+
+    expect(screen.getByText('リクエスト過多のため、取得制限中（自動で再開します）')).toBeTruthy()
+  })
+
+  // 対照: 待っていなければ出さない
+  it('対照: 待っていなければ出さない', () => {
+    renderTab({})
+
+    expect(screen.queryByText(/取得制限中/)).toBeNull()
+  })
+
+  // 正: 429 の窓で見送った分は、件数を添えて出す。
+  // **この経路は型と集計だけがあって消費先が 1 つも無く、画面に一度も出ていなかった。**
+  it('正: 429 で見送った分を、取得元と電文それぞれの件数で出す', () => {
+    renderTab({
+      historyLoss: addTelegramLoss(createEmptyTelegramLoss(), 0, [], {
+        sources: ['https://x/a', 'https://x/b'], telegrams: 5,
+      }),
+    })
+
+    expect(screen.getByText('リクエスト過多のため、取得制限中（取得元2件・電文5件が未取得）')).toBeTruthy()
+  })
+
+  // 安全弁: **取得元と電文は単位が違うので合算しない。** 取得元単位で見送った日は
+  // 「その日に何通あったか」すら分からないため、電文数へ足せない。
+  it('安全弁: 取得元だけのときに電文の件数を足さない', () => {
+    renderTab({
+      historyLoss: addTelegramLoss(createEmptyTelegramLoss(), 0, [], { sources: ['https://x/a'] }),
+    })
+
+    expect(screen.getByText('リクエスト過多のため、取得制限中（取得元1件が未取得）')).toBeTruthy()
+  })
+
+  // 安全弁: **見送りと確定した損失は別の帯で出す。** 混ぜると、待てば取れるものが
+  // 取り返しのつかない損失として読まれる。
+  it('安全弁: 確定した損失と見送りは別々の帯になる', () => {
+    renderTab({
+      historyLoss: addTelegramLoss(createEmptyTelegramLoss(), 3, ['https://x/a'], { telegrams: 2 }),
+    })
+
+    expect(screen.getByText(/取り込めませんでした（再読み込み/)).toBeTruthy()
+    expect(screen.getByText('リクエスト過多のため、取得制限中（電文2件が未取得）')).toBeTruthy()
   })
 })
