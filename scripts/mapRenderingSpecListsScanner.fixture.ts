@@ -149,6 +149,44 @@ export const RED_HERRING: Sample = {
   ].join('\n'),
 }
 
+/**
+ * 1 ファイルに 2 枚のカスタムレイヤーがあり、**両方から見えるキャッシュを 1 つが捨て忘れる**形。
+ *
+ * B は捨てているが A は捨てていない。捨てた名前を**ファイル単位で合算**する作りでは、
+ * A の捨て忘れが B の `onAdd` に覆い隠されて通ってしまう（レイヤー単位で見れば落ちる）。
+ *
+ * **`ALL` には入れない。** あちらは id の突き合わせに使う標本で、期待値（`EXPECTED_IDS`）が
+ * 増えてしまう。ここは `onAdd` の検査だけが使う。
+ */
+export const TWO_LAYERS_SHARED_CACHE: Sample = {
+  path: 'src/fake/TwoLayers.ts',
+  text: [
+    "import { createProjectionProgramCache } from './projectionProgram'",
+    'const shared = createProjectionProgramCache({} as never)',
+    'export function makeA(id: string) {',
+    "  return { id, type: 'custom' as const, onAdd() {}, render() {} }",
+    '}',
+    'export function makeB(id: string) {',
+    "  return { id, type: 'custom' as const, onAdd(_m: unknown, gl: never) { shared.dispose(gl) }, render() {} }",
+    '}',
+  ].join('\n'),
+}
+
+/** 上の形で、**両方が捨てている**もの（対照）。 */
+export const TWO_LAYERS_BOTH_DISPOSE: Sample = {
+  path: 'src/fake/TwoLayersOk.ts',
+  text: [
+    "import { createProjectionProgramCache } from './projectionProgram'",
+    'const shared = createProjectionProgramCache({} as never)',
+    'export function makeA(id: string) {',
+    "  return { id, type: 'custom' as const, onAdd(_m: unknown, gl: never) { shared.dispose(gl) }, render() {} }",
+    '}',
+    'export function makeB(id: string) {',
+    "  return { id, type: 'custom' as const, onAdd(_m: unknown, gl: never) { shared.dispose(gl) }, render() {} }",
+    '}',
+  ].join('\n'),
+}
+
 /** 上のすべてをまとめたもの（走査は「ファイルの集まり」を受け取る）。 */
 export const ALL: Sample[] = [
   FACTORY,
