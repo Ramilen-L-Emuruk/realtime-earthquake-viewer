@@ -3,6 +3,9 @@
 //
 //   TTS_SWEEP_OUT=<書き出し先.json> npx vitest run src/utils/ttsSentenceSweep.probe.test.ts
 //
+// `VOICEVOX_URL` を併せて渡すと `<書き出し先>.built.json`（句の並び）と
+// `<書き出し先>.counts.json`（数え上げ。仕様書 §3「対象を数え上げる」の表の出どころ）も書く。
+//
 // 【なぜ Vitest の中に置くか】`ttsText.ts` は `import.meta.env`（Vite が注入する値）を踏む
 // モジュールを芋づるで読むため、素の Node からは import できない。実測の口はここしかない。
 //
@@ -32,6 +35,7 @@ import { findPhraseBreakMatch, loadTtsPhraseBreakDict, getTtsPhraseBreakDictCach
 import { loadTtsStationReadings, getTtsStationReadingsCache } from './ttsStationReadings'
 import { loadTtsEpicenterAccents, getTtsEpicenterAccentsCache } from './ttsEpicenterAccents'
 import { mergeSpeechDicts } from './ttsGeneratedDict'
+import { TRAILING_PARTICLES } from './ttsTrailingParticles'
 import { TSUNAMI_GRADE_LIFTED, type TsunamiAreaGradeChange } from './tsunami'
 import type {
   LiveEvent,
@@ -47,6 +51,12 @@ const SPEAKER = Number(process.env.VOICEVOX_SPEAKER ?? 6)
 /** 音の書き出し先と、聞く文の一覧（1 行 1 文）。どちらも渡したときだけ最後の段が動く。 */
 const WAV_DIR = process.env.TTS_SWEEP_WAV ?? ''
 const TEXTS = process.env.TTS_SWEEP_TEXTS ?? ''
+
+/**
+ * 「1 句で長い」と見なす下限。震央地名の句割り（`build-epicenter-accents`）が使う値に合わせる。
+ * ここを動かすと仕様書の表（§3「対象を数え上げる」）の内訳も変わる。
+ */
+const LONG_PHRASE_MORAS = 8
 
 /** 句を落とさせない設定（読み上げの詳しさは既定で全部読む側へ寄せる）。 */
 const OPTS: TtsSpeechOptions = { intensityLevels: 0, maxRegions: 0, alwaysReadScale: -1, regionTolerance: 0 }
@@ -432,12 +442,56 @@ describe('読み上げ文の骨格の総当たり（計測台）', () => {
     await Promise.all(Array.from({ length: CONCURRENCY }, (_, i) =>
       lane(chunks.filter((_, j) => j % CONCURRENCY === i))))
 
+    // **句の内訳もここで数える。** 仕様書（§3「対象を数え上げる」）の表はこの出力が出どころで、
+    // 数え方を外のスクリプトへ置くと**次に触る人が絶対値を検算できない**。
+    //
+    // 「辞書が指定した句」は**読みの一致**で見る。辞書の値は句ごとに `/` で区切られ、核と
+    // 無声化の印を持つので、それを落としたカナで突き合わせる。助詞は読みへ連結される
+    // （`TRAILING_PARTICLES`）ので、末尾に足した形も同じ扱いにする。
+    //
+    // **たまたま一致するだけの句が混じる。** 深さの「10キロメートルを」（`ジュッキロメエトルオ`）は
+    // 沖合の潮位観測点名に同じ読みの句があるため、手を入れていないのに除かれる側へ落ちる。
+    const dictPhrases = new Set<string>()
+    for (const value of Object.values(dict)) {
+      for (const part of value.split('/')) dictPhrases.add(part.replace(/['_]/g, ''))
+    }
+    const isDictPhrase = (kana: string): boolean => dictPhrases.has(kana)
+      || TRAILING_PARTICLES.some(([, k]) =>
+        kana.endsWith(k) && dictPhrases.has(kana.slice(0, -k.length)))
+
+    const uniq = new Set<string>()
+    const longUniq = new Set<string>()
+    let long = 0
+    let longDict = 0
+    for (const v of built.values()) {
+      if (!Array.isArray(v)) continue
+      for (const ph of v) {
+        const kana = ph.moras.map(m => m.text).join('')
+        if (kana.length === 0) continue
+        const mine = isDictPhrase(kana)
+        if (!mine) uniq.add(kana)
+        if (ph.moras.length >= LONG_PHRASE_MORAS) {
+          long += 1
+          if (mine) longDict += 1
+          else longUniq.add(kana)
+        }
+      }
+    }
+
     const hit = chunks.filter(c => findPhraseBreakMatch(c, dict) != null)
-    console.log(JSON.stringify({
+    const counts = {
       チャンク: chunks.length,
       辞書が当たったチャンク: hit.length,
       組み立てに失敗: [...built.values()].filter(v => !Array.isArray(v)).length,
-    }, null, 2))
+      句の異なり_辞書が指定した句を除く: uniq.size,
+      [`${LONG_PHRASE_MORAS}モーラ以上の句_延べ`]: long,
+      [`${LONG_PHRASE_MORAS}モーラ以上の句_うち辞書が指定した句`]: longDict,
+      [`${LONG_PHRASE_MORAS}モーラ以上の句_異なり_辞書が指定した句を除く`]: longUniq.size,
+    }
+    console.log(JSON.stringify(counts, null, 2))
+    // **数え上げはファイルにも残す。** 出力をリダイレクトすると Vitest が `console.log` を
+    // 捕まえてしまい、ログに何も出ない。仕様書の表はこの数字が出どころなので、確実に残す。
+    writeFileSync(`${OUT}.counts.json`, JSON.stringify(counts, null, 2), 'utf8')
     writeFileSync(`${OUT}.built.json`, JSON.stringify(Object.fromEntries(built)), 'utf8')
   })
 
