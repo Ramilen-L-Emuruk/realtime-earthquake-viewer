@@ -70,6 +70,8 @@ function quakeXml(eventId: string, reportTime: string): string {
 const MANIFEST = [{
   id: 'w1',
   classification: 'telegram.earthquake',
+  // tar 側の名前と必ず一致させる。本体はこの値だけで引く（`findBodyFileName`）
+  filename: 'w1.xml',
   head: { type: 'VXSE51', time: '2026-08-10T03:05:00Z', test: false },
 }]
 

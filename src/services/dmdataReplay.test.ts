@@ -476,9 +476,9 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
       {
         name: 'telegrams.json',
         content: JSON.stringify([
-          manifestEntry('bin0100', 'IXAC40', BIN_TIME, 'PAA'),
-          manifestEntry('bin0101', 'IXAC40', BIN_TIME, 'PAB'),
-          manifestEntry('bin0102', 'IXAC40', BIN_TIME, 'PZC'),
+          manifestEntry('bin0100', 'IXAC40', BIN_TIME, 'PAA', 'bin0100_20260810120600000_0.bin'),
+          manifestEntry('bin0101', 'IXAC40', BIN_TIME, 'PAB', 'bin0101_20260810120600100_0.bin'),
+          manifestEntry('bin0102', 'IXAC40', BIN_TIME, 'PZC', 'bin0102_20260810120600200_0.bin'),
         ]),
       },
       { name: 'bin0100_20260810120600000_0.bin', content: withWmoHeading('PAA', bin.slice(0, a)) },
