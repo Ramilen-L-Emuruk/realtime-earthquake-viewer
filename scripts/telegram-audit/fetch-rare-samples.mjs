@@ -3,8 +3,9 @@
 // `fetch-samples.mjs` は対象の全種別が上限に達した時点で走査を打ち切るため、**頻度の低い
 // 種別は集まらないまま終わる**。実際、既定の集め方では次の 3 つが欠けていた。
 //
-//   - IXAC41（推計震度分布図）… **二進電文で拡張子が `.bin`**。`.xml` しか採らない
-//     `fetch-samples.mjs` では 1 通も入らない
+//   - IXAC41・IXAC40（推計震度分布図）… **二進電文で拡張子が `.bin`**。`.xml` しか採らない
+//     `fetch-samples.mjs` では 1 通も入らない。**IXAC40 は 2026-02-02 に配信終了**したので
+//     新しい日からは採れないが、それより前のアーカイブには残っている
 //   - VXSE60（地震回数に関する情報）… 2024-01-01〜2026-09-06 の全アーカイブを走査しても 0 件。
 //     **配信実績が無い**（→ docs/spec/data-sources-spec.md §2）。突き合わせには気象庁公式の
 //     サンプル電文を使う
@@ -101,20 +102,25 @@ async function fetchIxac41(wantEvents = 8) {
       let tar
       try { tar = await loadArchiveTar({ classification: 'telegram.earthquake', item: it, auth }) }
       catch { continue }
-      const byTime = new Map()
+      // **束ねる鍵に種別を含める。** IXAC41 と IXAC40 は並行配信されていた期間があり、
+      // 時刻だけで束ねると**別種別の断片が同じ報として混ざる**（断片数の集計も、そこから
+      // 選ぶ「いちばん多い報」も意味を失う）。
+      const byKey = new Map()
       for (const { name: n, body: b } of tarEntries(tar)) {
-        const m = /^IXAC41_RJTD_(RR[A-X]_)?(\d{17})_/.exec(n)
+        // IXAC41 は分割されたときだけ符号が入るが、**IXAC40 は常に入る**（`PAA` 等）。
+        const m = /^(IXAC4[01])_RJTD_(?:(RR[A-X]|P[A-Z][A-Z])_)?(\d{17})_/.exec(n)
         if (!m || !n.endsWith('.bin')) continue
-        const t = m[2].slice(0, 12)
-        if (!byTime.has(t)) byTime.set(t, [])
-        byTime.get(t).push({ n, b })
+        const [, type, , stamp] = m
+        const key = `${type} ${stamp.slice(0, 12)}`
+        if (!byKey.has(key)) byKey.set(key, [])
+        byKey.get(key).push({ n, b })
       }
-      if (byTime.size === 0) continue
+      if (byKey.size === 0) continue
       // 1 日から採るのは 1 事象だけ（同じ地震の続報で埋めない）。断片がいちばん多い報を採る
-      const [t, parts] = [...byTime].sort((a, b) => b[1].length - a[1].length)[0]
+      const [key, parts] = [...byKey].sort((a, b) => b[1].length - a[1].length)[0]
       for (const { n, b } of parts) fs.writeFileSync(path.join(CACHE, n), b)
       events++
-      console.error(`  + ${it.date} ${t}（${parts.length} 断片）`)
+      console.error(`  + ${it.date} ${key}（${parts.length} 断片）`)
       if (events >= wantEvents) return { events }
     }
   }

@@ -1,8 +1,11 @@
-// 推計震度分布図（IXAC41）の BUFR を組み立てる。**テスト専用。**
+// 推計震度分布図（IXAC41・IXAC40）の BUFR を組み立てる。**テスト専用。**
 //
 // 読み取り側（`src/utils/bufrEstimatedIntensity.ts`）と対になる。実電文は
 // 最小でも 40KB あり、リポジトリへ置けるものではないので、**資料が「このビット列は
 // この値」と書いている組をそのまま組み立てて**読み取りを固定する。
+//
+// **2 種別を作れる**（`Build.mesh`）。IXAC41 は最下段が 1/2・1/4 地域メッシュ、
+// IXAC40 は 3 次メッシュ。第4節の末尾に置く余分のオクテット数も違う（下記 `finish`）。
 //
 // 分割配信の結合（`src/services/dmdataReplay.ts`）からも使う。あちらは
 // 「二進を文字列へ通していないか」を見るので、**中身が読める電文でないと確かめられない**。
@@ -12,10 +15,16 @@ class BitWriter {
     for (let i = width - 1; i >= 0; i--) this.bits.push((value >> i) & 1)
     return this
   }
-  /** バイト境界まで 0 で埋めてから、保留 1 オクテットを足す。 */
-  finish(): Uint8Array {
+  /**
+   * バイト境界まで 0 で埋めてから、末尾の余分を足す。
+   *
+   * **余分のオクテット数は種別で違う** —— 実電文を measure したところ IXAC41 は 1、
+   * IXAC40 は 2。読み取り側は余りビットの範囲で読み方のずれを見ているので、
+   * **ここを揃えないと正しい電文が弾かれる**（`FORMS` の `leftoverMin`/`leftoverMax`）。
+   */
+  finish(extraOctets: number): Uint8Array {
     while (this.bits.length % 8 !== 0) this.bits.push(0)
-    this.bits.push(...new Array(8).fill(0))
+    this.bits.push(...new Array(8 * extraOctets).fill(0))
     const out = new Uint8Array(this.bits.length / 8)
     for (let i = 0; i < this.bits.length; i++) {
       if (this.bits[i]) out[i >> 3] |= 0x80 >> (i & 7)
@@ -24,13 +33,26 @@ class BitWriter {
   }
 }
 
-export const DESCS_PLAIN = [
+/** 前半 17 記述子。**2 種別で完全に同一。** */
+const DESCS_HEAD = [
   '1-05-000', '0-31-001', '0-08-193', '0-08-198', '0-60-003', '0-60-002', '0-60-002',
   '0-01-242', '3-01-011', '3-01-012', '0-01-240',
   '0-05-002', '0-06-002', '2-02-123', '0-07-061', '2-02-000', '0-60-001',
+]
+
+/** IXAC41（250m メッシュ）。最下段が 1/2・1/4 地域メッシュ。 */
+export const DESCS_PLAIN = [
+  ...DESCS_HEAD,
   '1-13-000', '0-31-002', '0-05-240', '0-06-240', '0-05-241', '0-06-241',
   '1-07-000', '0-31-001', '0-05-242', '0-06-242',
   '1-03-000', '0-31-003', '0-05-243', '0-06-243', '0-60-002',
+]
+
+/** IXAC40（1km メッシュ）。**IXAC41 から 1 段少なく**、最下段の 3 次メッシュに計測震度が付く。 */
+export const DESCS_PLAIN_1KM = [
+  ...DESCS_HEAD,
+  '1-09-000', '0-31-002', '0-05-240', '0-06-240', '0-05-241', '0-06-241',
+  '1-03-000', '0-31-001', '0-05-242', '0-06-242', '0-60-002',
 ]
 const TSUNAMI_BLOCK = ['0-08-194', '0-01-241', '0-05-021', '2-02-126', '0-06-021', '2-02-000']
 export function withTsunamiBlock(list: string[]): string[] {
@@ -52,10 +74,15 @@ function descBytes(list: string[]): Uint8Array {
 export interface Grade { mod: number; scale: number; lo: number; hi: number }
 export interface Cell { half: number; quarter: number; si: number }
 export interface Mesh3 {
-  r3: number; w3: number; cells: Cell[]
+  r3: number; w3: number
+  /** IXAC41（`mesh: 'quarter'`）の最下段。1/2・1/4 地域メッシュのセル列。 */
+  cells?: Cell[]
+  /** IXAC40（`mesh: 'third'`）の計測震度。**3 次メッシュが最下段**なのでセル列を持たない。 */
+  si?: number
   /**
    * 電文が名乗るセル数を実際とわざと食い違わせる。**読み取り側は反復回数に電文の値を
    * そのまま使う**ので、水増しすると第4節の外まで読み進めようとする（その歯止めの再現）。
+   * IXAC40 にはセル数の場が無いので効かない。
    */
   declaredCellCount?: number
 }
@@ -71,6 +98,11 @@ export interface Build {
   areaCode?: number
   latRaw: number; lonRaw: number; depthKm: number; magRaw: number
   mesh2: Mesh2[]
+  /**
+   * 最下段の形。既定は `quarter`（IXAC41）。`third` にすると IXAC40 の形になり、
+   * 記述子列・セルの書き方・第4節末尾の余分がまとめて切り替わる。
+   */
+  mesh?: 'quarter' | 'third'
   tsunami?: boolean
   edition?: number
   descs?: string[]
@@ -88,6 +120,7 @@ export interface Build {
 }
 
 export function build(b: Build): Uint8Array {
+  const mesh = b.mesh ?? 'quarter'
   const w = new BitWriter()
   w.write(b.declaredGradeCount ?? b.grades.length, 8)
   for (const g of b.grades) {
@@ -104,13 +137,28 @@ export function build(b: Build): Uint8Array {
     w.write(m2.p1, 7).write(m2.u1, 7).write(m2.q2, 4).write(m2.v2, 4)
       .write(m2.declaredMesh3Count ?? m2.mesh3.length, 8)
     for (const m3 of m2.mesh3) {
-      w.write(m3.r3, 4).write(m3.w3, 4).write(m3.declaredCellCount ?? m3.cells.length, 8)
-      for (const c of m3.cells) w.write(c.half, 3).write(c.quarter, 3).write(c.si, 7)
+      w.write(m3.r3, 4).write(m3.w3, 4)
+      // **`mesh` と中身の食い違いはここで落とす。** `cells` を必須から任意へ変えたので、
+      // quarter 形で書き忘れても型検査は通る —— そのまま組み立てると**セル数 0 の空メッシュ**に
+      // なり、他に有効なセルがあるテストでは「静かに件数が減った」状態で緑になる。
+      // 判別可能ユニオン（`mesh` を `Mesh3` 側にも持たせる）なら型で止められるが、既存の
+      // 呼び出しを全部書き換えることになるので、テスト専用のこのビルダーでは throw で足りる。
+      if (mesh === 'third') {
+        // IXAC40。**3 次メッシュが最下段**なので、セル数の場も 1/2・1/4 の場も無い。
+        if (m3.si === undefined) throw new Error(`mesh: 'third' では Mesh3.si が要ります（r3=${m3.r3} w3=${m3.w3}）`)
+        w.write(m3.si, 7)
+        continue
+      }
+      if (m3.cells === undefined) throw new Error(`mesh: 'quarter' では Mesh3.cells が要ります（r3=${m3.r3} w3=${m3.w3}）`)
+      const cells = m3.cells
+      w.write(m3.declaredCellCount ?? cells.length, 8)
+      for (const c of cells) w.write(c.half, 3).write(c.quarter, 3).write(c.si, 7)
     }
   }
-  const payload = w.finish()
+  const payload = w.finish(mesh === 'third' ? 2 : 1)
 
-  const descs = b.descs ?? (b.tsunami ? withTsunamiBlock(DESCS_PLAIN) : DESCS_PLAIN)
+  const base = mesh === 'third' ? DESCS_PLAIN_1KM : DESCS_PLAIN
+  const descs = b.descs ?? (b.tsunami ? withTsunamiBlock(base) : base)
   const db = descBytes(descs)
   let s3len = 7 + db.length
   if (s3len % 2 !== 0) s3len++
@@ -151,6 +199,37 @@ export const SAMPLE_GRADES: Grade[] = [
   { mod: 2, scale: 5, lo: 50, hi: 54 },
   { mod: 1, scale: 6, lo: 55, hi: 59 },
 ]
+
+/**
+ * WMO の見出しを付ける（`IXAC40 RJTD 211614 PAA` の 22 バイト）。
+ *
+ * **IXAC40 の実配信の形。全断片に付く。** IXAC41 は見出しを持たない（DMDATA が
+ * `head.designation` へ出す）ので、こちらには使わない。
+ */
+export function withWmoHeading(designation: string, body: Uint8Array): Uint8Array {
+  const h = new TextEncoder().encode(`IXAC40 RJTD 211614 ${designation}`)
+  const out = new Uint8Array(h.length + body.length)
+  out.set(h, 0)
+  out.set(body, h.length)
+  return out
+}
+
+/**
+ * IXAC40（1km メッシュ）の最小の電文。`buildSampleTelegram` と震源・凡例は同じで、
+ * **最下段が 3 次メッシュ**（1/2・1/4 の段が無い）ところだけが違う。
+ */
+export function buildSample1kmTelegram(over: Partial<Build> = {}): Uint8Array {
+  return build({
+    grades: SAMPLE_GRADES,
+    latRaw: 12484, lonRaw: 31562, depthKm: 10, magRaw: 61,
+    mesh: 'third',
+    mesh2: [{
+      p1: 52, u1: 35, q2: 0, v2: 6,
+      mesh3: [{ r3: 0, w3: 0, si: 42 }, { r3: 0, w3: 1, si: 43 }],
+    }],
+    ...over,
+  })
+}
 
 /** 別紙4 の実バイナリ例そのもの。読み取れた値は同ファイルのテストが固定している。 */
 export function buildSampleTelegram(over: Partial<Build> = {}): Uint8Array {

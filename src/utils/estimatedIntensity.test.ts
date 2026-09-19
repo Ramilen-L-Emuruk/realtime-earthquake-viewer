@@ -1,4 +1,4 @@
-// 推計震度分布図（IXAC41）を地震カードへ結び付ける規則。
+// 推計震度分布図を地震カードへ結び付ける規則。
 //
 // **この電文は識別子を持たない**ので、突き合わせを外すとボタンが出ないまま黙る。
 // 逆に緩すぎると、別の地震の分布を「気象庁の推計」として見せてしまう。両側を固定する。
@@ -9,6 +9,7 @@ import {
   rememberShownEstimatedIntensity, MAX_SHOWN_ESTIMATED_INTENSITY_ARRIVALS,
 } from './estimatedIntensity'
 import type { JMAQuake, JMAEstimatedIntensity, IntensityScale } from '../types/earthquake'
+import { CELL_LAT_DEG, CELL_LON_DEG } from './bufrEstimatedIntensity'
 
 function quake(time: string, lat = 32.6, lng = 130.7, maxScale: IntensityScale = 70): JMAQuake {
   return {
@@ -35,6 +36,7 @@ function ei(arrivalTime: string, lat = 32.6, lon = 130.7): JMAEstimatedIntensity
     magnitude: 7.1, areaCode: 741, telegramKind: 0,
     grades: [{ scale: 4, modifier: 'none', lower: 35, upper: 44 }],
     count: 1, lat: new Float32Array([32.6]), lon: new Float32Array([130.7]), si: new Uint8Array([42]),
+    cellLatDeg: CELL_LAT_DEG, cellLonDeg: CELL_LON_DEG,
     bounds: { south: 32.6, north: 32.61, west: 130.7, east: 130.71 },
   }
 }
