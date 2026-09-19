@@ -52,7 +52,16 @@ vi.mock('../utils/voicevox', () => ({
   prewarmVoicevox: () => null,
   // 鳴ったチャンクの判定に使う（このモックはチャンクの通知を出さないので常に null で足りる）
   getSpeechClock: () => null,
+  // **待ちの上限は「声が出ている間は計時しない」形なので、ここを模さないと上限まわりを
+  // 何も検査できない。**
+  //
+  // 既定は「鳴っていない」。このファイルで発話を終わらせずに置く箇所はどれも**合成の無応答**
+  // を模したもので（解決しない Promise ＝ 声が出ないまま返ってこない）、実物もそのときは
+  // 偽を返す。**声が出ている状態を検査したいテストだけ `mockSpeaking` を真にする。**
+  isAudioPlaying: () => mockSpeaking,
 }))
+/** 声が出ている状態を模すか（既定は「鳴っていない」＝合成の無応答）。 */
+let mockSpeaking = false
 // 音の実体だけ差し替える。**通知音との間（`ttsDelayFor`）は本物を使う** ―― 読み上げの順番と
 // 待ち合わせはこの間の長さで決まるため、模擬すると検証の前提が変わる。
 vi.mock('../utils/alertSound', async (importOriginal) => {
@@ -253,6 +262,8 @@ beforeEach(() => {
   speeches.length = 0
   speakMock.mockClear()
   openEstimatedIntensitySpy.mockClear()
+  // 持ち越すと、次のテストが「ずっと誰かが鳴っている」世界で走って待ちの上限が効かなくなる
+  mockSpeaking = false
 })
 
 afterEach(() => {
@@ -421,8 +432,63 @@ describe('非 EEW の読み上げの優先度', () => {
     expect(spokenTexts()[1]).toContain('長周期')
   })
 
-  // 待ちきれなかったときは割り込むことを選ぶ。ここが無いと、VOICEVOX が無応答になった端末で
-  // 優先度の低い読み上げが永久に出てこなくなる。
+  // 正: **声が出ている間は、上限を過ぎても割り込まない。** 待ちの上限は「合成が返ってこない」
+  // ための保険で、鳴っている読み上げを切るためのものではない。
+  //
+  // 実在する長い読み上げ（地震情報の「各地の震度」は 2 分近い・気象庁が書いた文はさらに長い）は
+  // この上限を超える。切っていた頃は、後から届いた軽い読み上げが読み上げ中の警報を消していた。
+  it('声が出ている間は、上限を過ぎても割り込まない', async () => {
+    mockSpeaking = true
+    const handle = setup()
+    handle(makeTsunami())
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)
+
+    handle(makeQuake())
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)   // 待っている
+
+    // 上限（90 秒）を大きく越えても、音が出ているので割り込まない
+    // （**延長そのものの上限（4 分）より手前で見ること** —— そこまで進めると次のテストの
+    // 検査対象と重なり、どちらが効いて割り込んだのか分からなくなる）
+    await vi.advanceTimersByTimeAsync(180000)
+    await flush()
+    expect(spokenTexts()).toHaveLength(1)
+
+    // 鳴り終われば読まれる
+    mockSpeaking = false
+    finishSpeech(0)
+    await settle()
+    expect(spokenTexts()).toHaveLength(2)
+    expect(spokenTexts()[1]).toContain('震度速報')
+  })
+
+  // 安全弁: **音が鳴り続けても、延長には終わりがある。**
+  //
+  // 「鳴っている間は待つ」を無条件にすると、待ち始めからの絶対的な上限がどこにも無くなる。
+  // 実在する最長の読み上げ（南海トラフ地震臨時情報の本文・約 3 分）は切らない値なので、
+  // ここに達するのは異常系だけ。
+  it('音が鳴り続けても、延長の上限で打ち切る', async () => {
+    mockSpeaking = true
+    const handle = setup()
+    handle(makeTsunami())
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)
+
+    handle(makeQuake())
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)   // 待っている
+
+    // 鳴らしたまま、延長の上限（4 分）を越える
+    await vi.advanceTimersByTimeAsync(300000)
+    await flush()
+    expect(spokenTexts()).toHaveLength(2)
+    expect(spokenTexts()[1]).toContain('震度速報')
+  })
+
+  // 対照: 待ちきれなかったときは割り込むことを選ぶ。ここが無いと、VOICEVOX が無応答になった
+  // 端末で優先度の低い読み上げが永久に出てこなくなる。**上のテストとの違いは「音が出ているか」
+  // だけ** —— こちらは解決しない Promise で合成の無応答を模している。
   it('優先度の高い読み上げが終わらなくても、上限を過ぎれば割り込んで読む', async () => {
     const handle = setup()
     handle(makeTsunami())

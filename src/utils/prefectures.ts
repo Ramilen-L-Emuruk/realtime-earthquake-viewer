@@ -52,7 +52,7 @@ export function loadPrefectures(): Promise<Prefectures> {
       // 呼び出し側は「取得成功・県 0 件」として扱ってしまい、**陸地塗りも県境も県名ラベルも出ない
       // 状態が失敗として検知されない**（BaseMapGL・LabelsGL は Promise が rejected のときだけ
       // 警告を出す）。通信失敗と同じ扱いにするため、取得側の `validate` に渡す——ここで投げれば
-      // 地図の「データの一部を取得できませんでした」にも計上される（`.then()` では計上されない）。
+      // 地図の「データN件を取り込めず」にも計上される（`.then()` では計上されない）。
       // 各県の中身（`rings` を持つか等）までは見ていない。subregions 側も同じ粒度。
       validate: (data) => {
         if (!data || typeof data !== 'object' || Array.isArray(data) || Object.keys(data).length === 0) {

@@ -24,6 +24,15 @@ export interface TsunamiObsBar {
   barPx: number
   color: string
   height: { value: number; description: string; over?: boolean }
+  /**
+   * 最大波の観測時刻と、その報での位置づけ（`MaxHeight/DateTime` と `MaxHeight/Revise`）。
+   *
+   * **描画には使わない。カメラ追従（`TsunamiFitGL`）が「この報で動いた観測点」を見分けるために持つ。**
+   * 波高が据え置きのまま気象庁が最大波の時刻だけを進める報があり、波高だけを見ていると
+   * その観測点へ寄れない（→ `utils/tsunami.ts` の `hasMaxHeightTimeAdvanced`）。
+   */
+  maxHeightDateTime?: string
+  maxHeightRevise?: string
   blinking: boolean
 }
 
@@ -120,7 +129,10 @@ export function useTsunamiLayerData(
       // 気象庁の津波観測階級で 4 段（段と色は `gl/tsunamiObsBarStyle.ts` が単一情報源。凡例も同じ表を読む）。
       const color = tsunamiObsBarColor(v)
       const blinking = obsUpdateStatus?.has(o.name) ?? false
-      bars.push({ name: o.name, lat: latLng[0], lng: latLng[1], barPx, color, height: o.height, blinking })
+      bars.push({
+        name: o.name, lat: latLng[0], lng: latLng[1], barPx, color, height: o.height,
+        maxHeightDateTime: o.maxHeightDateTime, maxHeightRevise: o.maxHeightRevise, blinking,
+      })
     }
     // 北→南（後に描くほど手前）。
     return bars.sort((a, b) => b.lat - a.lat)

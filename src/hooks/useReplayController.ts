@@ -20,6 +20,7 @@ import { serverNow, serverDate } from '../utils/clock'
 import { log } from '../utils/logger'
 import {
   type TelegramLoss, createEmptyTelegramLoss, addTelegramLoss, describeTelegramLossParts,
+  formatRateLimitedNotice,
 } from '../utils/telegramLoss'
 
 // この 3 つを公開しているのは、結線テストが取得の日付範囲と「先読みが走る/走らない」境界を
@@ -182,9 +183,22 @@ export function createEmptyLoss(): ReplayLoss {
   return { ...createEmptyTelegramLoss(), failedPrefetches: 0 }
 }
 
-/** 取得結果を損失に足し込む（取得元は集合なので二重計上されない）。 */
-export function addLoss(loss: ReplayLoss, skipped: number, failedArchiveUrls: string[]): ReplayLoss {
-  return addTelegramLoss(loss, skipped, failedArchiveUrls)
+/**
+ * 取得結果を損失に足し込む（取得元は集合なので二重計上されない）。
+ *
+ * **結果オブジェクトを丸ごと受け取る。** 項目を個別に渡す形だと、429 の見送りのように
+ * 後から足した枠を**渡し忘れても型検査が通り、画面に出ないだけ**になる（実際に
+ * `rateLimitedSources` は型と集計だけがあって消費先が 1 つも無い状態が続いていた）。
+ */
+export function addLoss(loss: ReplayLoss, r: {
+  skipped: number
+  failedArchiveUrls: string[]
+  rateLimitedSources: string[]
+  rateLimitedTelegrams: number
+}): ReplayLoss {
+  return addTelegramLoss(loss, r.skipped, r.failedArchiveUrls, {
+    sources: r.rateLimitedSources, telegrams: r.rateLimitedTelegrams,
+  })
 }
 
 /** 先読み 1 区間ぶんの失敗を損失に足し込む。 */
@@ -200,12 +214,15 @@ export function addFailedPrefetch(loss: ReplayLoss): ReplayLoss {
  *
  * 「再生は継続中」を必ず添えるのは、これが失敗通知と同じ赤字で出るため。
  * 添えないと再生が止まったと誤読される。
+ *
+ * 主節の形（言い切り）と語（「取り込めず」）も `formatHistoryLossNotice` に揃える。
+ * 同じ障害を再生とライブで別の重さに見せないため。
  */
 export function formatLossNotice(loss: ReplayLoss): string | null {
   const parts = describeTelegramLossParts(loss)
-  if (loss.failedPrefetches > 0) parts.push(`${loss.failedPrefetches} 区間ぶんの先読み`)
+  if (loss.failedPrefetches > 0) parts.push(`先読み${loss.failedPrefetches}区間`)
   if (parts.length === 0) return null
-  return `${parts.join('・')}を取り込めませんでした（再生は継続中。詳細はコンソール）`
+  return `${parts.join('・')}を取り込めず（再生は継続中・詳細はコンソール）`
 }
 
 export function useReplayController(deps: ReplayControllerDeps): ReplayController {
@@ -286,7 +303,7 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
         // 取りこぼしは本編・初期状態と同じ枠で申告する。履歴は初期状態と日付範囲が重なるため、
         // 同じ電文の破損を二重に数えることがある（アーカイブ単位は URL の集合で重複が除かれる）。
         // 少なく見せて「静かな時間帯だった」と誤読されるより、多めに申告する側へ倒す。
-        setLoss(prev => addLoss(prev, result.skipped, result.failedArchiveUrls))
+        setLoss(prev => addLoss(prev, result))
       })
       .catch((e) => {
         log.error('[replay] 地震カードの履歴取得に失敗', e)
@@ -388,8 +405,8 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
       // 「そういう時間帯だった」と見分けが付かず、テスト結果の誤読につながる。
       // 本編と初期状態は日付範囲が重なり同じアーカイブを読むため、URL の集合で重複を除く。
       setLoss(prev => addLoss(
-        addLoss(prev, normal.skipped, normal.failedArchiveUrls),
-        pre.skipped, pre.failedArchiveUrls,
+        addLoss(prev, normal),
+        pre,
       ))
     } catch (e) {
       log.error('[replay] リプレイデータ取得失敗', e)
@@ -456,7 +473,7 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
         // 取得自体は通ったので、一過性のエラー表示は消してよい（残ったままだと
         // 「まだ失敗中」と誤認される）。ただし確定した損失はここでは消さない。
         setFetchError(null)
-        setLoss(prev => addLoss(prev, result.skipped, result.failedArchiveUrls))
+        setLoss(prev => addLoss(prev, result))
       })
       .catch((e) => {
         log.error('[replay] 先読み取得失敗', e)
@@ -480,7 +497,10 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
   // 取りこぼしがいったん画面から消え、後で復活するという分かりにくい挙動になる。
   // 取得エラーを先に置くのは、再生が止まっているか以後の電文が届かない状態を示すため
   //（履歴の失敗はカードの一覧が薄くなるだけで、再生そのものには影響しない）。
-  const error = [fetchError, historyError, formatLossNotice(loss)].filter(Boolean).join(' / ') || null
+  // 429 の見送りは**最後に置く**。取りこぼしとは別の事実（待てば取れる）で、
+  // 上の 3 つより軽い —— 先に置くと、再生が止まっている事実の前に出てしまう。
+  const error = [fetchError, historyError, formatLossNotice(loss), formatRateLimitedNotice(loss)]
+    .filter(Boolean).join(' / ') || null
 
   return { isFetching, error, start, stop }
 }

@@ -10,7 +10,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   createEmptyTelegramLoss, addTelegramLoss, telegramLossFrom, isTelegramLossEmpty,
-  describeTelegramLossParts, formatHistoryLossNotice,
+  describeTelegramLossParts, formatHistoryLossNotice, formatRateLimitedNotice,
+  FETCH_THROTTLED_NOTICE,
 } from './telegramLoss'
 
 describe('addTelegramLoss', () => {
@@ -99,7 +100,7 @@ describe('describeTelegramLossParts', () => {
   it('取得元と電文を別に数える', () => {
     const parts = describeTelegramLossParts(addTelegramLoss(createEmptyTelegramLoss(), 5, ['https://x/a']))
 
-    expect(parts).toEqual(['1 件の取得元', '5 件の電文'])
+    expect(parts).toEqual(['取得元1件', '電文5件'])
   })
 
   it('何も欠けていなければ空', () => {
@@ -117,20 +118,29 @@ describe('formatHistoryLossNotice', () => {
   it('正: 取得元 1 件でも出す', () => {
     const msg = formatHistoryLossNotice(addTelegramLoss(createEmptyTelegramLoss(), 0, ['https://x/a']))
 
-    expect(msg).toMatch(/1 件の取得元/)
+    expect(msg).toMatch(/取得元1件/)
   })
 
   it('正: 電文 1 件でも出す', () => {
     const msg = formatHistoryLossNotice(addTelegramLoss(createEmptyTelegramLoss(), 1, []))
 
-    expect(msg).toMatch(/1 件の電文/)
+    expect(msg).toMatch(/電文1件/)
   })
 
   it('両方欠けたときは両方を並べる', () => {
     const msg = formatHistoryLossNotice(addTelegramLoss(createEmptyTelegramLoss(), 5, ['https://x/a']))
 
-    expect(msg).toMatch(/1 件の取得元/)
-    expect(msg).toMatch(/5 件の電文/)
+    expect(msg).toMatch(/取得元1件/)
+    expect(msg).toMatch(/電文5件/)
+  })
+
+  // **429 の見送り（`formatRateLimitedNotice`）と同じ `notices` に並びうる。** 通知の形を
+  // 揃えたぶん、「取りに行って失敗した」と「上限で取りに行かなかった」の差は語だけが担う。
+  it('安全弁: 見送りの「未取得」と語を分ける', () => {
+    const msg = formatHistoryLossNotice(addTelegramLoss(createEmptyTelegramLoss(), 1, []))
+
+    expect(msg).toMatch(/取り込めず/)
+    expect(msg).not.toMatch(/未取得/)
   })
 
   // 自動では取り直さないので、添えないと打てる手が分からない。
@@ -138,5 +148,95 @@ describe('formatHistoryLossNotice', () => {
     const msg = formatHistoryLossNotice(addTelegramLoss(createEmptyTelegramLoss(), 1, []))
 
     expect(msg).toMatch(/再読み込み/)
+  })
+})
+
+// 429 の窓で**取りに行かなかった**分。**取得の失敗とは別の枠で数える**——
+// あちらは恒久的な喪失、こちらは待てば取れる（→ `types/replay.ts` の `rateLimitedSources`）。
+describe('429 の見送りは取得の失敗と別に数える', () => {
+  // 正: 見送りを積める
+  it('正: 取得元と電文をそれぞれ積む', () => {
+    const loss = addTelegramLoss(createEmptyTelegramLoss(), 0, [], {
+      sources: ['https://x/a'], telegrams: 3,
+    })
+
+    expect(loss.rateLimitedSources.size).toBe(1)
+    expect(loss.rateLimitedTelegrams).toBe(3)
+  })
+
+  // 対照: 取得の失敗の枠へは混ざらない（混ぜると「再読み込みで取得し直します」が嘘になる）
+  it('対照: 取得の失敗の枠へは入れない', () => {
+    const loss = addTelegramLoss(createEmptyTelegramLoss(), 0, [], {
+      sources: ['https://x/a'], telegrams: 3,
+    })
+
+    expect(loss.failedSources.size).toBe(0)
+    expect(loss.skippedTelegrams).toBe(0)
+  })
+
+  // 安全弁: 同じ取得元を二重に数えない（取得の失敗と同じ規律）
+  it('安全弁: 同じ取得元を二重に数えない', () => {
+    let loss = addTelegramLoss(createEmptyTelegramLoss(), 0, [], { sources: ['https://x/a'] })
+    loss = addTelegramLoss(loss, 0, [], { sources: ['https://x/a', 'https://x/b'] })
+
+    expect(loss.rateLimitedSources.size).toBe(2)
+  })
+
+  // 見送りがあるだけでも「何も欠けていない」とは言わない
+  it('見送りだけでも空とみなさない', () => {
+    const loss = telegramLossFrom(0, [], { telegrams: 1 })
+
+    expect(isTelegramLossEmpty(loss)).toBe(false)
+  })
+
+  it('見送りが無ければ空', () => {
+    expect(isTelegramLossEmpty(telegramLossFrom(0, []))).toBe(true)
+  })
+})
+
+describe('formatRateLimitedNotice', () => {
+  // 対照: 見送りが無ければ出さない
+  it('対照: 見送りが無ければ null', () => {
+    expect(formatRateLimitedNotice(createEmptyTelegramLoss())).toBeNull()
+    expect(formatRateLimitedNotice(addTelegramLoss(createEmptyTelegramLoss(), 5, ['https://x/a']))).toBeNull()
+  })
+
+  // 正: 両方あれば両方の単位で出す
+  it('正: 取得元と電文を単位ごとに出す', () => {
+    const msg = formatRateLimitedNotice(addTelegramLoss(createEmptyTelegramLoss(), 0, [], {
+      sources: ['https://x/a', 'https://x/b'], telegrams: 5,
+    }))
+
+    expect(msg).toBe('リクエスト過多のため、取得制限中（取得元2件・電文5件が未取得）')
+  })
+
+  // 安全弁: **単位を混ぜない。** 取得元単位で見送った日は「その日に何通あったか」すら
+  // 分からないので、電文数へ合算できない。
+  it('安全弁: 取得元だけのとき、電文の件数を書かない', () => {
+    const msg = formatRateLimitedNotice(addTelegramLoss(createEmptyTelegramLoss(), 0, [], {
+      sources: ['https://x/a'],
+    }))
+
+    expect(msg).toBe('リクエスト過多のため、取得制限中（取得元1件が未取得）')
+  })
+
+  it('安全弁: 電文だけのとき、取得元の件数を書かない', () => {
+    const msg = formatRateLimitedNotice(addTelegramLoss(createEmptyTelegramLoss(), 0, [], {
+      telegrams: 2,
+    }))
+
+    expect(msg).toBe('リクエスト過多のため、取得制限中（電文2件が未取得）')
+  })
+
+  // **待っているだけの告知と主節をそろえる。** 利用者にとっては同じ「アプリが自分で絞っている」
+  // 事実で、違うのは結果だけ（待てば取れる／その回は取らなかった）。
+  it('待ちの告知と主節がそろっている', () => {
+    const msg = formatRateLimitedNotice(telegramLossFrom(0, [], { telegrams: 1 }))
+    const head = 'リクエスト過多のため、取得制限中'
+
+    expect(FETCH_THROTTLED_NOTICE.startsWith(head)).toBe(true)
+    expect(msg?.startsWith(head)).toBe(true)
+    // 括弧の中だけが違う
+    expect(FETCH_THROTTLED_NOTICE).not.toBe(msg)
   })
 })
