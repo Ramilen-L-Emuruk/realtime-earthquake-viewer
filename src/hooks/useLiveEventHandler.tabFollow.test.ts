@@ -473,7 +473,9 @@ describe('読み上げとタブ切替の同調', () => {
     await settle()
 
     // Assert: 値だけを見ていたころは何も付かなかった。
-    expect(result.current.obsUpdateStatus.get('輪島港')?.status).toBe('updated')
+    // **印は `changed`（向きの無い変化）。** 時刻が進んだことに大小は無い
+    // （→ `utils/updateMark.ts` の `UpdateStatus`）。
+    expect(result.current.obsUpdateStatus.get('輪島港')?.status).toBe('changed')
   })
 
   // ── 項目ごとの印（カードの時刻欄の文字色） ────────────────────────────────

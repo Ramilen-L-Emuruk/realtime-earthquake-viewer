@@ -65,6 +65,7 @@ const renderTab = (quake: JMAQuake, opts: { unreceivedOpen?: boolean } = {}) => 
     loadMoreFailed={false}
     fetchThrottled={false}
     lpgmByEventId={new Map()}
+    updateMarks={new Map()}
     activeLpgmEventId={null}
     onToggleLpgm={() => {}}
     estimatedIntensity={null}
@@ -123,6 +124,7 @@ describe('未入電トグル', () => {
         loadMoreFailed={false}
         fetchThrottled={false}
         lpgmByEventId={new Map()}
+        updateMarks={new Map()}
         activeLpgmEventId={null}
         onToggleLpgm={() => {}}
         estimatedIntensity={null}

@@ -744,7 +744,7 @@ export function App() {
   }, [requestAutoTab, settings.tsunamiPriorityDefault, settings.voicevoxEnabled])
 
   const {
-    earthquakes, tsunamis, activeEEWs, lpgmByEventId, nankai, nankaiCommentary, kohatsu, quakeNotice, earthquakeCount, estimatedIntensity, connectionStatus, lastUpdate, isLoading, isLoadingMore, hasMore, error,
+    earthquakes, tsunamis, activeEEWs, lpgmByEventId, quakeUpdateMarks, nankai, nankaiCommentary, kohatsu, quakeNotice, earthquakeCount, estimatedIntensity, connectionStatus, lastUpdate, isLoading, isLoadingMore, hasMore, error,
     historyLoss, loadMoreFailed,
     telegramLog, clearTelegramLog,
     injectEvent, loadMoreEarthquakes,
@@ -2154,6 +2154,7 @@ export function App() {
                 loadMoreFailed={loadMoreFailed}
                 fetchThrottled={fetchThrottled}
                 lpgmByEventId={lpgmByEventId}
+                updateMarks={quakeUpdateMarks}
                 activeLpgmEventId={activeLpgmEventId}
                 onToggleLpgm={toggleLpgmFromEarthquake}
                 estimatedIntensity={estimatedIntensity}
