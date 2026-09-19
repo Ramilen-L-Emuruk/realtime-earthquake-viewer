@@ -73,6 +73,7 @@ const renderQuake = (quake: JMAQuake, selected = true) =>
       error={null}
       historyLoss={createEmptyTelegramLoss()}
       loadMoreFailed={false}
+      fetchThrottled={false}
       lpgmByEventId={new Map()}
       activeLpgmEventId={null}
       onToggleLpgm={() => {}}

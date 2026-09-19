@@ -63,6 +63,7 @@ const renderTab = (quake: JMAQuake, opts: { unreceivedOpen?: boolean } = {}) => 
     error={null}
     historyLoss={createEmptyTelegramLoss()}
     loadMoreFailed={false}
+    fetchThrottled={false}
     lpgmByEventId={new Map()}
     activeLpgmEventId={null}
     onToggleLpgm={() => {}}
@@ -120,6 +121,7 @@ describe('未入電トグル', () => {
         error={null}
         historyLoss={createEmptyTelegramLoss()}
         loadMoreFailed={false}
+        fetchThrottled={false}
         lpgmByEventId={new Map()}
         activeLpgmEventId={null}
         onToggleLpgm={() => {}}

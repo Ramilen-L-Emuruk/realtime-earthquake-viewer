@@ -121,6 +121,7 @@ function renderCard(
       error={null}
       historyLoss={createEmptyTelegramLoss()}
       loadMoreFailed={false}
+      fetchThrottled={false}
       lpgmByEventId={opts.lpgm ? new Map([[EVENT_ID, opts.lpgm]]) : new Map()}
       activeLpgmEventId={opts.lpgm ? EVENT_ID : null}
       onToggleLpgm={() => {}}

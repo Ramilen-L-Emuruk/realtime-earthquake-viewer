@@ -268,8 +268,8 @@ describe('useReplayController の start', () => {
 
     expect(h.deps.loadReplayEvents).toHaveBeenCalledTimes(1)
     // URL の集合で重複を除くので、1 件の障害が 2 件に膨らまない
-    expect(h.current.error).toMatch(/1 件の取得元/)
-    expect(h.current.error).toMatch(/2 件の電文/)
+    expect(h.current.error).toMatch(/取得元1件/)
+    expect(h.current.error).toMatch(/電文2件/)
     expect(h.current.error).toMatch(/継続中/)
   })
 
@@ -457,7 +457,7 @@ describe('useReplayController の停止・再開', () => {
     h.fetches[0].resolve(fetched([entry('old-normal')], 3, ['https://example/a']))
     h.fetches[1].resolve(fetched([]))
     await h.flush(first)
-    expect(h.current.error).toMatch(/3 件の電文/)
+    expect(h.current.error).toMatch(/電文3件/)
 
     // 設定画面の「確定」は再生中も押せる。停止を挟まずに start が再度呼ばれる経路。
     const second = h.start(quietTarget(-30 * 60_000))
@@ -492,7 +492,7 @@ describe('useReplayController の停止・再開', () => {
     h.fetches[0].resolve(fetched([entry('normal-1')], 2, ['https://example/a']))
     h.fetches[1].resolve(fetched([]))
     await h.flush(started)
-    expect(h.current.error).toMatch(/2 件の電文/)
+    expect(h.current.error).toMatch(/電文2件/)
 
     h.stop()
 
@@ -549,7 +549,7 @@ describe('useReplayController の先読み', () => {
     await h.flush()
 
     expect(h.current.error).toMatch(/再生されません/)
-    expect(h.current.error).toMatch(/1 区間ぶんの先読み/)
+    expect(h.current.error).toMatch(/先読み1区間/)
   })
 
   it('先読みが成功すれば、続きの電文を積んで取得中表示を戻す', async () => {
@@ -644,8 +644,8 @@ describe('useReplayController の地震カード履歴', () => {
     h.histories[0].resolve(history(1, 2, ['https://x/a']))
     await h.flush(started)
 
-    expect(h.current.error).toMatch(/1 件の取得元/)
-    expect(h.current.error).toMatch(/2 件の電文/)
+    expect(h.current.error).toMatch(/取得元1件/)
+    expect(h.current.error).toMatch(/電文2件/)
   })
 })
 

@@ -146,7 +146,7 @@ describe('fetchTelegramText（電文本体の控え）', () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('network down') }))
 
     await expect(fetchTelegramText(KEY, url('dddddddd44'))).rejects.toThrow('network down')
-    expect((await telegramCacheStats()).entries).toBe(0)
+    expect((await telegramCacheStats())?.entries).toBe(0)
   })
 
   // 安全弁: 鍵を作れない URL では控えを使わず、素の取得へ落ちる。
@@ -158,7 +158,7 @@ describe('fetchTelegramText（電文本体の控え）', () => {
     await fetchTelegramText(KEY, 'not-a-url')
     await fetchTelegramText(KEY, 'not-a-url')
 
-    expect((await telegramCacheStats()).entries).toBe(0)
+    expect((await telegramCacheStats())?.entries).toBe(0)
     expect(telegramBodyStats().fetched).toBe(2)   // 控えないので 2 回
     void requested
   })
@@ -178,7 +178,7 @@ describe('fetchTelegramText（電文本体の控え）', () => {
     // **控えへの書き込みは待たない設計**（電文はもう手元にあるので先へ進む）。
     // そのぶんパージは非同期に走るので、収まるまで待つ
     await vi.waitFor(async () => {
-      expect((await telegramCacheStats()).entries).toBeLessThanOrEqual(MAX_ENTRIES)
+      expect((await telegramCacheStats())?.entries).toBeLessThanOrEqual(MAX_ENTRIES)
     }, { timeout: 20_000 })
     // 最後に入れたものは残っている（古い順に捨てるので）
     await settle()
