@@ -24,7 +24,10 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isMisreading, stripReadingTail } from './stationReading'
-import { splitEpicenter, toAccentEntry } from './epicenterAccent'
+import {
+  endsWithChihou, MIN_TAIL_MORAS, splitEpicenterDetailed, toAccentEntry,
+  type ComponentAccents, type EpicenterSplit, type UnsplitReason,
+} from './epicenterAccent'
 
 /**
  * 震央地名の一覧（名前＋ふりがな）の取得元。
@@ -39,13 +42,23 @@ export const SOURCE_URL =
 
 const DEFAULT_ENGINE = 'http://localhost:50021'
 const DEFAULT_SPEAKER = 6
+/**
+ * 構成要素の核を実測できた割合の下限。**下回ったら辞書を書かない。**
+ *
+ * 実測が全滅しても末尾核へ倒れるだけなので、句数も読みも検証を通ってしまう（変わるのは核の位置
+ * だけで、それを見る検査が他に無い）。`build-station-readings.ts` が句割りの割合に下限を置いて
+ * いるのと同じ趣旨。2026-09-19 時点の実測は 9 割で、余裕を見て半分に置いた。
+ */
+const MIN_MEASURED_RATIO = 0.5
+
 const CONCURRENCY = 8
 
 /**
  * 句を割る対象にするモーラ数の下限。
  *
  * **これは耳で確かめた「破綻する境界」ではない。** 9 モーラの `宮古島近海` が不自然だという指摘を
- * 起点に、同じ構成の `能登半島沖`（8 モーラ）まで含める値として選んだもの。
+ * 起点に、8 モーラ帯まで含める値として選んだもの。ここを通っても後部要素が短ければ
+ * `MIN_TAIL_MORAS` で落ちる（`能登半島沖` がそれ）。
  *
  * 1 句にまとまる震央地名の分布は実測してある（2026-09 時点・全 331 件のうち 155 件が 1 句）。
  * 4 モーラ 9 件／5 モーラ 13 件／6 モーラ 18 件／**7 モーラ 28 件**／8 モーラ 13 件／9 モーラ 23 件／
@@ -103,7 +116,7 @@ function parseArgs(argv: readonly string[]): { engine: string; speaker: number }
   return { engine: engine.replace(/\/+$/, ''), speaker }
 }
 
-type Phrase = { moras: { text: string }[] }
+type Phrase = { accent: number; moras: { text: string }[] }
 
 async function accentPhrases(
   engine: string, speaker: number, text: string, isKana = false,
@@ -139,6 +152,26 @@ async function isLongSinglePhrase(engine: string, speaker: number, name: string)
   const phrases = await accentPhrases(engine, speaker, `${name}、`)
   if (phrases.length !== 1) return false
   return phrases[0].moras.length >= MIN_MORAS_TO_SPLIT
+}
+
+/**
+ * 構成要素を単独で読ませ、**1 句にまとまって読みがふりがなと一致したときだけ**核を返す。
+ * 採れなければ null（→ `epicenterAccent.ts` の `toAccentEntry` が代わりの位置を決める）。
+ *
+ * **単独で読ませるのは、そこで採れた核がその句の核になるから。** 句へ割っている以上、各句は
+ * 単独語と同じアクセントを持つ。2 句に割れる語（`〜地方`）と誤読する語（`渡島` → トトオ）は
+ * ここで弾かれ、呼び出し先の規則へ落ちる。
+ *
+ * **読点の前では平板と尾高を区別できない**（後続が無いので accent = モーラ数 で返る）。ただし
+ * どちらでも組み立てる値は末尾核と同じ文字列になるので、出力に差は出ない。
+ */
+async function measureAccent(
+  engine: string, speaker: number, part: string, partKana: string,
+): Promise<number | null> {
+  const phrases = await accentPhrases(engine, speaker, `${part}、`)
+  if (phrases.length !== 1) return null
+  if (isMisreading(readingOf(phrases), partKana)) return null
+  return phrases[0].accent
 }
 
 /**
@@ -247,18 +280,76 @@ async function main(): Promise<void> {
     )
   }
 
-  // 句へ割る。割れないものは記録して落とす（後部要素の表に無い構成）
+  // 句へ割る。割れないものは理由別に記録して落とす
   const entries = new Map<string, string>()
-  const unsplit: string[] = []
+  const unsplit = new Map<UnsplitReason, string[]>()
+  const splits = new Map<string, EpicenterSplit>()
   for (const name of targets) {
     const kana = kanaOf.get(name) as string
-    const split = splitEpicenter(name, kana)
-    if (!split) { unsplit.push(`${name}（${kana}）`); continue }
-    entries.set(name, toAccentEntry(split))
+    const outcome = splitEpicenterDetailed(name, kana)
+    if ('split' in outcome) { splits.set(name, outcome.split); continue }
+    const list = unsplit.get(outcome.reason) ?? []
+    list.push(`${name}（${kana}）`)
+    unsplit.set(outcome.reason, list)
   }
-  if (unsplit.length > 0) {
-    console.log(`  割れなかった ${unsplit.length} 件（後部要素の表に無い構成）:`)
-    for (const u of unsplit) console.log(`    ${u}`)
+  // 1 件も割れなかったときは、後部要素の表（SUFFIXES）を疑う。
+  // この先の実測割合の歯止め（MIN_MEASURED_RATIO）は 0 / 0 語でも発火するが、
+  // 文面が「エンジンの応答が壊れている」と言うので原因を取り違える
+  if (splits.size === 0) {
+    throw new Error(
+      `句へ割れた震央地名が 1 件もありません（対象 ${targets.length} 件）。`
+      + '後部要素の表（SUFFIXES）を見直してください。辞書は書きません。',
+    )
+  }
+
+  // 構成要素の核をエンジンへ訊く。同じ語は何度も出るので 1 度だけ測る。
+  // **「〜地方」の前部要素は訊かない** —— 核は実測より優先して「チ」へ置くので、訊いても結果が
+  // 使われず、実測できた割合の数字だけが狂う（→ epicenterAccent.ts の `phraseEntry`）。
+  // **鍵は「表記と読み」の組** —— 同じ表記で読みが違う構成要素が来たとき、片方の核でもう片方を
+  // 塗り潰さないため（実データでは 0 件だが、起きても読みは変わらないので検証を素通りする）。
+  const accentOf = new Map<string, number | null>()
+  const parts = new Map<string, { text: string; kana: string }>()
+  const partKey = (text: string, kana: string) => JSON.stringify([text, kana])
+  for (const split of splits.values()) {
+    if (!endsWithChihou(split.headKana)) parts.set(partKey(split.head, split.headKana), { text: split.head, kana: split.headKana })
+    parts.set(partKey(split.tail, split.tailKana), { text: split.tail, kana: split.tailKana })
+  }
+  await runPooled([...parts.entries()], async ([key, { text, kana }]) => {
+    accentOf.set(key, await measureAccent(engine, speaker, text, kana))
+  })
+  const missed = [...parts.entries()].filter(([key]) => accentOf.get(key) == null).map(([, p]) => p.text)
+  console.log(`  構成要素の核: ${parts.size - missed.length} / ${parts.size} 語で実測できました`
+    + `（「〜地方」の前部要素は対象外。核は「チ」へ置きます）`)
+  if (missed.length > 0) {
+    // 採れない理由は「単独では 2 句に割れる」か「単独では誤読する」のどちらか。どちらも末尾核へ倒れる
+    console.log(`  実測できなかった ${missed.length} 語（末尾核へ倒します）: ${missed.join('・')}`)
+  }
+  // **実測だけが黙って死にうる。** 採れなければ末尾核へ倒れるので、全滅しても辞書は書き出され、
+  // 句数も読みも検証を通る —— 変わるのは核の位置だけで、それを見る検査はここにしか無い。
+  // 割合で止める（件数で見ると上流の増減で意味が変わる）。実測は 2026-09-19 時点で 9 割。
+  const measuredRatio = parts.size > 0 ? (parts.size - missed.length) / parts.size : 0
+  if (measuredRatio < MIN_MEASURED_RATIO) {
+    throw new Error(
+      `構成要素の核をほとんど実測できていません（${parts.size - missed.length} / ${parts.size} 語 ＝ `
+      + `${(measuredRatio * 100).toFixed(0)}%。下限 ${(MIN_MEASURED_RATIO * 100).toFixed(0)}%）。`
+      + 'エンジンの応答か読みの突き合わせが壊れている可能性が高いので、辞書は書きません。',
+    )
+  }
+  for (const [name, split] of splits) {
+    const accents: ComponentAccents = {
+      head: accentOf.get(partKey(split.head, split.headKana)) ?? null,
+      tail: accentOf.get(partKey(split.tail, split.tailKana)) ?? null,
+    }
+    entries.set(name, toAccentEntry(split, accents))
+  }
+  const UNSPLIT_LABEL: Record<UnsplitReason, string> = {
+    'no-suffix': '後部要素の表に無い構成',
+    'empty-head': '後部要素だけの名前（前部要素が空）',
+    'tail-too-short': `後部要素が ${MIN_TAIL_MORAS} モーラ未満（割らないと決めた形）`,
+  }
+  for (const [reason, names] of unsplit) {
+    console.log(`  割れなかった ${names.length} 件（${UNSPLIT_LABEL[reason]}）:`)
+    for (const u of names) console.log(`    ${u}`)
   }
   if (entries.size === 0) throw new Error('句へ割れた震央地名が 1 件もありません')
 
