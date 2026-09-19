@@ -17,6 +17,7 @@ import { renderHook } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
 import { playAlertSound } from '../utils/alertSound'
 import { TAB_PRIORITY } from '../utils/tabPriority'
+import { CELL_LAT_DEG, CELL_LON_DEG } from '../utils/bufrEstimatedIntensity'
 import { DEFAULTS, type AppSettings } from './useSettings'
 import type { JMAQuake, JMATsunami, IssueType, EEWAlert, ExtraLiveEvent } from '../types/earthquake'
 
@@ -613,7 +614,7 @@ describe('リプレイの開始で、津波の取消を「もう伝えた」記�
   })
 })
 
-// 推計震度分布図（IXAC41）のタブ切替。
+// 推計震度分布図のタブ切替。
 //
 // 直したかった症状（2026-07-28 16:37 の実機）: 地震情報を読み上げている最中に分布図が届き、
 // 続けて緊急地震速報が割り込んだ。EEW を読み終えたあと分布図の番が回ってきたが、画面は
@@ -632,6 +633,7 @@ describe('推計震度分布図のタブ切替', () => {
         magnitude: 6.0, areaCode: 100, telegramKind: 0,
         grades: [{ scale: 4, modifier: 'none', lower: 35, upper: 44 }],
         count: 1, lat: new Float32Array([35]), lon: new Float32Array([139]), si: new Uint8Array([42]),
+        cellLatDeg: CELL_LAT_DEG, cellLonDeg: CELL_LON_DEG,
         bounds: { south: 35, north: 35.1, west: 139, east: 139.1 },
       },
     }

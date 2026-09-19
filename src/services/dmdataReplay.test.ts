@@ -27,7 +27,7 @@ import type { JMATsunami, EEWAlert } from '../types/earthquake'
 import type { ReplayEntry } from '../types/replay'
 import { DmdataApiKeyError } from '../utils/dmdataApiKey'
 import { log } from '../utils/logger'
-import { buildSampleTelegram } from '../test-utils/bufrBuild'
+import { buildSampleTelegram, buildSample1kmTelegram, withWmoHeading } from '../test-utils/bufrBuild'
 import {
   setDataApiGateIntervalForTest, resetDataApiGateForTest,
   setApiGateIntervalForTest, resetApiGateForTest, resetRateLimitsForTest,
@@ -371,9 +371,10 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     expect(result.failedArchiveUrls).toHaveLength(0)
   })
 
-  // ── 二進電文（IXAC41 推計震度分布図） ──
+  // ── 二進電文（IXAC41・IXAC40 推計震度分布図） ──
   //
-  // アーカイブの中では `.bin` で入り、512KiB を超えると**目録の複数エントリに分かれる**。
+  // アーカイブの中では `.bin` で入り、分割されると**目録の複数エントリに分かれる**
+  // （IXAC41 は 512KiB を超えたとき・IXAC40 はもっと小さい単位で、実測 31KB が 3 断片）。
   // 分割の結合はライブ経路と同じ入れ物を使うが、**呼び出し方はここにしか無い**。
 
   const BIN_TIME = '2026-08-10T12:06:00+09:00'
@@ -417,6 +418,46 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     expect(skipped).toBe(0)
     expect(entries).toHaveLength(1)
     expect(entries[0].payload.kind).toBe('estimatedIntensity')
+  })
+
+  // 正: **IXAC40（1km メッシュ）を実配信の形で取り込む。**
+  //
+  // **実機で最初に落ちたのがこの経路。** 結合（`fragmentIndex`）と復号（`FORMS`）の単体テストは
+  // 全部通っていたのに、**本体に WMO の見出しが付いたまま**渡っていたので「1 報目が BUFR で
+  // 始まっていない」で電文ごと捨てていた。ここが見るのは関数それぞれの正しさではなく、
+  // `head.designation` の受け渡しと見出しの剥がしが噛み合っているか——**配線**。
+  //
+  // IXAC41 との違いは 2 点とも再現する（セグメント符号・全断片に付く見出し）。
+  it('IXAC40 を見出し付きのセグメント 3 断片から取り込む', async () => {
+    const bin = buildSample1kmTelegram()
+    const a = Math.floor(bin.length / 3)
+    const b = a * 2
+    const gz = await makeTarGz([
+      {
+        name: 'telegrams.json',
+        content: JSON.stringify([
+          manifestEntry('bin0100', 'IXAC40', BIN_TIME, 'PAA'),
+          manifestEntry('bin0101', 'IXAC40', BIN_TIME, 'PAB'),
+          manifestEntry('bin0102', 'IXAC40', BIN_TIME, 'PZC'),
+        ]),
+      },
+      { name: 'bin0100_20260810120600000_0.bin', content: withWmoHeading('PAA', bin.slice(0, a)) },
+      { name: 'bin0101_20260810120600100_0.bin', content: withWmoHeading('PAB', bin.slice(a, b)) },
+      { name: 'bin0102_20260810120600200_0.bin', content: withWmoHeading('PZC', bin.slice(b)) },
+    ])
+    globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
+
+    const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO, false)
+    expect(skipped).toBe(0)
+    expect(entries).toHaveLength(1)
+    const payload = entries[0].payload
+    expect(payload.kind).toBe('estimatedIntensity')
+    // **セル寸法まで見る。** 250m で返ってきたら IXAC41 の形で読んだことになり、
+    // テクスチャの解像度と矩形の閉じ方が 4 倍ずれる（例外もログも出ない）。
+    if (payload.kind === 'estimatedIntensity') {
+      expect(payload.data.cellLatDeg).toBeCloseTo(2 / 3 / 80, 9)
+      expect(payload.data.count).toBe(2)
+    }
   })
 
   // 安全弁: **揃わなかった断片を取りこぼしに数える。** 数えないと、他の電文は全部

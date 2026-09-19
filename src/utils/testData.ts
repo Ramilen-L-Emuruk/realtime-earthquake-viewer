@@ -2105,6 +2105,8 @@ export function createTestEstimatedIntensity(): {
     telegramKind: e.telegramKind,
     grades: e.grades,
     count: n, lat, lon, si,
+    // テストボタンのデータは IXAC41（250m メッシュ）の実電文から作っている。
+    cellLatDeg: CELL_LAT_DEG, cellLonDeg: CELL_LON_DEG,
     bounds: { south, north: north + CELL_LAT_DEG, west, east: east + CELL_LON_DEG },
   }
 

@@ -4,7 +4,8 @@
 // 順不同で壊れないことを、合成データで固定しておく——実物が来た日に静かに末尾を欠いた分布が
 // 出るのがいちばん困る。
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { BufrFragmentStore, fragmentIndex, fragmentKey } from './bufrTelegramAssembly'
+import { BufrFragmentStore, fragmentIndex, fragmentKey, stripWmoHeading } from './bufrTelegramAssembly'
+import { withWmoHeading } from '../test-utils/bufrBuild'
 import { log } from '../utils/logger'
 
 // **部分モックにする。** 丸ごと置き換えると、logger が新しい関数を export した日に
@@ -36,6 +37,52 @@ function tail(size: number, seed: number): Uint8Array {
 
 const KEY = fragmentKey('IXAC41', 'RJTD', '2026-04-20T08:25:00.000Z')
 
+describe('stripWmoHeading', () => {
+  // 正: IXAC40 は全断片に見出しが付く。**剥がさないと 1 報目が BUFR で始まらず電文ごと捨てる**
+  // ——実機で最初に落ちたのがこれ。
+  it('WMO の見出しを剥がす', () => {
+    const body = head(30, 10)
+    expect([...stripWmoHeading(withWmoHeading('PAA', body), 'PAA')]).toEqual([...body])
+    // 2 報目以降（BUFR で始まらない）も剥がせること。
+    const cont = tail(10, 1)
+    expect([...stripWmoHeading(withWmoHeading('PAB', cont), 'PAB')]).toEqual([...cont])
+  })
+
+  // 対照: IXAC41 の本体は `BUFR` で始まる（DMDATA が見出しを `designation` へ出す）。触らない。
+  it('BUFR で始まる本体はそのまま', () => {
+    const body = head(30, 10)
+    expect(stripWmoHeading(body, null)).toBe(body)
+    expect(stripWmoHeading(body, 'RRA')).toBe(body)
+  })
+
+  // 安全弁: 見出しが名乗る符号と `designation` が食い違えば剥がさない。
+  // **緩めると本体の先頭 22 バイトを黙って削った電文を読もうとする。**
+  it('見出しの符号が designation と違えば剥がさず記録する', () => {
+    const wrong = withWmoHeading('PAB', head(30, 10))
+    expect(stripWmoHeading(wrong, 'PAA')).toBe(wrong)
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('designation と違う'))
+  })
+
+  // 安全弁: 見出しの書式でなければそのまま返す（二進データの先頭を削らない）。
+  // **セグメント符号のときは記録する** —— IXAC40 は全断片に見出しが付く前提なので、
+  // 無いのは配信の形が変わった印。剥がせないまま進むと「BUFR で始まっていない」や
+  // 「宣言全長を超えました」として現れ、**どちらも根本原因を名指ししない**。
+  it('セグメント断片に見出しが無ければ剥がさず記録する', () => {
+    const b = tail(30, 5)
+    expect(stripWmoHeading(b, 'PAB')).toBe(b)
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('見出しが見つかりません'))
+  })
+
+  // 対照: 遅延報（IXAC41）の継続断片は見出しを持たないのが正常。
+  // **ここで鳴らすと、正常な分割配信のたびに警告が出る。**
+  it('遅延報の継続断片では記録しない', () => {
+    const b = tail(30, 5)
+    expect(stripWmoHeading(b, 'RRA')).toBe(b)
+    expect(stripWmoHeading(b, null)).toBe(b)
+    expect(log.warn).not.toHaveBeenCalled()
+  })
+})
+
 describe('fragmentIndex', () => {
   // 正: 1 報目は符号を持たない。2 報目以降が RRA から順に付く。
   it('分割報符号を並び順の番号にする', () => {
@@ -53,6 +100,23 @@ describe('fragmentIndex', () => {
     for (const d of ['RRY', 'RRZ', 'rra', 'CCA', 'AAX', 'RR', 'RRAA']) {
       expect(fragmentIndex(d), d).toBeNull()
     }
+  })
+
+  // 正: IXAC40 のセグメント符号。**1 報目から符号が付く**ので、BUFR ヘッダを持つ `PAA` が 0。
+  // 順序は 3 文字目で決まる（2 文字目は最終セグメントの印と見ている）。
+  it('セグメント符号を並び順の番号にする', () => {
+    expect(fragmentIndex('PAA')).toBe(0)
+    expect(fragmentIndex('PAB')).toBe(1)
+    expect(fragmentIndex('PZC')).toBe(2)   // 実配信の 3 断片目。2 文字目が Z
+    expect(fragmentIndex('PAZ')).toBe(25)
+    expect(log.warn).not.toHaveBeenCalled()
+  })
+
+  // 安全弁: 2 文字目が A・Z 以外でも順序は 3 文字目で決めるが、記録は残す。
+  // **セグメント符号の読みが違っていたことに気づける場所が他に無い。**
+  it('セグメント符号の 2 文字目が想定外なら記録する', () => {
+    expect(fragmentIndex('PMC')).toBe(2)
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('2 文字目が想定外'))
   })
 })
 
@@ -206,5 +270,47 @@ describe('BufrFragmentStore', () => {
     s.add(KEY, null, head(150, 100), 0)
     s.clear()
     expect(s.pendingCount).toBe(0)
+  })
+
+  // 正: IXAC40 のセグメント符号で 3 断片を結合する。**1 報目から符号が付く**体系なので、
+  // `PAA` を 0 として扱えていないと全長を読む相手がおらず、永久に揃わない。
+  it('セグメント符号の 3 断片を結合する', () => {
+    const s = new BufrFragmentStore()
+    expect(s.add(KEY, 'PAA', head(30, 10), 0)).toBeNull()
+    expect(s.add(KEY, 'PAB', tail(10, 1), 0)).toBeNull()
+    const out = s.add(KEY, 'PZC', tail(10, 2), 0)
+    expect(out).not.toBeNull()
+    expect(out!.length).toBe(30)
+    // 3 文字目の順に並ぶ（BUFR ヘッダを持つ `PAA` が先頭）。
+    expect([...out!.slice(0, 4)]).toEqual([0x42, 0x55, 0x46, 0x52])
+    expect([...out!.slice(10, 13)]).toEqual([...tail(10, 1).slice(0, 3)])
+    expect([...out!.slice(20, 23)]).toEqual([...tail(10, 2).slice(0, 3)])
+  })
+
+  // 正: **実配信の形**（全断片に WMO の見出しが付く）で結合する。
+  // **これが本番で最初に落ちた形** —— 見出しを剥がさないと 1 報目の全長が読めない。
+  it('見出し付きのセグメント 3 断片を結合する', () => {
+    const s = new BufrFragmentStore()
+    const p0 = head(30, 10), p1 = tail(10, 1), p2 = tail(10, 2)
+    expect(s.add(KEY, 'PAA', withWmoHeading('PAA', p0), 0)).toBeNull()
+    expect(s.add(KEY, 'PAB', withWmoHeading('PAB', p1), 0)).toBeNull()
+    const out = s.add(KEY, 'PZC', withWmoHeading('PZC', p2), 0)
+    expect(out).not.toBeNull()
+    // 見出しのぶん（22 バイト × 3）は落ちて、宣言どおりの 30 バイトになる。
+    expect(out!.length).toBe(30)
+    expect([...out!.slice(0, 4)]).toEqual([0x42, 0x55, 0x46, 0x52])
+    expect([...out!.slice(20, 23)]).toEqual([...p2.slice(0, 3)])
+  })
+
+  // 正: 順不同でも 3 文字目の順に並ぶ。**最終セグメント（2 文字目 Z）が先に届いても**
+  // 全長で完了を判定するので、末尾を欠いたまま結合することはない。
+  it('セグメント符号が順不同で届いても正しい順に結合する', () => {
+    const s = new BufrFragmentStore()
+    expect(s.add(KEY, 'PZC', tail(10, 2), 0)).toBeNull()
+    expect(s.add(KEY, 'PAB', tail(10, 1), 0)).toBeNull()
+    const out = s.add(KEY, 'PAA', head(30, 10), 0)
+    expect(out).not.toBeNull()
+    expect([...out!.slice(0, 4)]).toEqual([0x42, 0x55, 0x46, 0x52])
+    expect([...out!.slice(20, 23)]).toEqual([...tail(10, 2).slice(0, 3)])
   })
 })

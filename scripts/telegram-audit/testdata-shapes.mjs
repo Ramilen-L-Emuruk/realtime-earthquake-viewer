@@ -112,7 +112,7 @@ const TYPE_TO_KIND = {
   VXSE51: 'quake', VXSE52: 'quake', VXSE53: 'quake', VXSE61: 'quake',
   VXSE62: 'lpgm', VYSE50: 'nankai', VYSE51: 'nankaiCommentary', VYSE52: 'nankaiCommentary',
   VYSE60: 'kohatsu', VZSE40: 'quakeNotice', VXSE60: 'earthquakeCount',
-  IXAC41: 'estimatedIntensity',
+  IXAC41: 'estimatedIntensity', IXAC40: 'estimatedIntensity',
 }
 
 const byKind = new Map()
@@ -147,33 +147,46 @@ for (const f of xmlFiles) {
   walk(obj, '', byKind.get(bk))
 }
 
-// ---- 2. 推計震度分布図（IXAC41・BUFR） ----
+// ---- 2. 推計震度分布図（IXAC41・IXAC40・BUFR） ----
 // **このアプリで唯一の二進電文。** XML の経路に載らないので別に扱う。分割配信されるため、
 // 同じ発表時刻の断片を本物の結合器へ順に入れてから復号する。
+//
+// **2 種別を数える。** IXAC41（250m メッシュ）と IXAC40（1km メッシュ・2026-02-02 に配信終了）。
+// 片方だけを走査すると、**アーカイブに実在するのに「1 通も無い」と読める** —— 走査先が対象を
+// 含んでいない形の事故（CLAUDE.md「調査レビュー」の 2026-09-11）と同じ穴になる。
+//
+// **ファイル名の形が違う。** IXAC41 は分割されたときだけ符号が入る（`IXAC41_RJTD_RRA_…`）が、
+// IXAC40 は常に入る（`IXAC40_RJTD_PAA_…`）。
 {
-  const byTime = new Map()
-  for (const f of all.filter(f => /^IXAC41_.*\.bin$/i.test(f))) {
-    const m = /^IXAC41_RJTD_(RR[A-X]_)?(\d{17})_/.exec(f)
+  const byKey = new Map()
+  for (const f of all.filter(f => /^IXAC4[01]_.*\.bin$/i.test(f))) {
+    const m = /^(IXAC4[01])_RJTD_(?:(RR[A-X]|P[A-Z][A-Z])_)?(\d{17})_/.exec(f)
     if (!m) { failed.push(`${f}: ファイル名を読めません`); continue }
-    const t = m[2].slice(0, 12)
-    if (!byTime.has(t)) byTime.set(t, [])
-    byTime.get(t).push({ f, designation: m[1] ? m[1].slice(0, 3) : null })
+    const [, type, designation, stamp] = m
+    const t = stamp.slice(0, 12)
+    const key = `${type} ${t}`
+    if (!byKey.has(key)) byKey.set(key, { type, t, parts: [] })
+    byKey.get(key).parts.push({ f, designation: designation ?? null })
   }
   const store = new M.BufrFragmentStore()
-  for (const [t, parts] of byTime) {
+  for (const [key, { type, t, parts }] of byKey) {
     let joined = null
     for (const p of parts.sort((a, b) => a.f.localeCompare(b.f))) {
-      joined = store.add(M.fragmentKey('IXAC41', 'RJTD', t), p.designation, new Uint8Array(fs.readFileSync(path.join(CACHE, p.f))), Date.now())
+      joined = store.add(M.fragmentKey(type, 'RJTD', t), p.designation, new Uint8Array(fs.readFileSync(path.join(CACHE, p.f))), Date.now())
     }
-    if (!joined) { failed.push(`IXAC41 ${t}: 断片が揃いませんでした`); continue }
+    if (!joined) { failed.push(`${key}: 断片が揃いませんでした`); continue }
     let obj = null
-    try { obj = M.decodeEstimatedIntensity(joined, `audit-${t}`, `${t}`) }
-    catch (e) { failed.push(`IXAC41 ${t}: ${e.message}`); continue }
-    if (!obj) { failed.push(`IXAC41 ${t}: null`); continue }
+    // **第 4 引数（種別）を渡す。** 読み取りは記述子列に従うが、記録の接頭辞と
+    // 「名乗りと中身の食い違い」の検出にこれを使う。渡さないと例外で落ちる。
+    try { obj = M.decodeEstimatedIntensity(joined, `audit-${t}`, `${t}`, type) }
+    catch (e) { failed.push(`${key}: ${e.message}`); continue }
+    if (!obj) { failed.push(`${key}: null`); continue }
     parsed++
-    ;(sourceFiles.IXAC41 ??= []).push(parts.map(p => p.f).join('+'))
-    if (!perType.has('dmdata:IXAC41')) perType.set('dmdata:IXAC41', new Map())
-    walk(obj, '', perType.get('dmdata:IXAC41'))
+    ;(sourceFiles[type] ??= []).push(parts.map(p => p.f).join('+'))
+    if (!perType.has(`dmdata:${type}`)) perType.set(`dmdata:${type}`, new Map())
+    walk(obj, '', perType.get(`dmdata:${type}`))
+    // **種別をまたいで 1 つの読み取り結果へ集める。** 同じ型（`JMAEstimatedIntensity`）へ
+    // 読むので、要素の網羅性は種別で分けずに数える。
     if (!byKind.has('dmdata:estimatedIntensity')) byKind.set('dmdata:estimatedIntensity', new Map())
     walk(obj, '', byKind.get('dmdata:estimatedIntensity'))
   }
