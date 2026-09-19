@@ -2236,19 +2236,20 @@ export function useEarthquakes(
    *
    * **通知音だけが鳴って何も声にならなかった報を、実機で確かめる唯一の入口。**
    * 2024 年能登半島地震の 26 時間では、取消を除く津波電文 56 通のうち 7 通がこの形だった
-   * （→ docs/spec/tsunami-spec.md §10「変化を伝えない続報」）。発表 → 8 通の続報 → 満了で解除、
+   * （→ docs/spec/tsunami-spec.md §10「変化を伝えない続報」）。発表 → 9 通の続報 → 満了で解除、
    * と進む。
    *
    * | 段 | 報 | 確かめるもの |
    * |---|---|---|
    * | 1 | 観測情報 | 波高の文（既存）。**次の段の前提** —— ここで波高が既読にならないと、続く 2 段が波高の文に食われる |
    * | 2 | 観測情報 | 波高の値は据え置きで「○m以上」だけが付いた報。読み上げ・バッジ・地図のカメラが揃って動く |
-   * | 3 | 観測情報 | 「最大波の観測時刻が更新されました」 |
-   * | 4 | 観測情報 | 「観測された波高に変わりはありません」 |
-   * | 5 | 満潮時刻 | 名乗りだけ（初報） |
-   * | 6 | 満潮時刻 | 「満潮時刻が更新されました」 |
-   * | 7 | 満潮時刻 | 「津波の到達状況が更新されました」 |
-   * | 8 | 満潮時刻 | 「内容に変わりはありません」 |
+   * | 3 | 観測情報 | 「次の地点で最大波の観測時刻が更新されました」 |
+   * | 4 | 観測情報 | 「次の地点で第1波が更新されました」（到達時刻の訂正。→ `createTestTsunamiFirstWaveUpdate`） |
+   * | 5 | 観測情報 | 「観測された波高に変わりはありません」 |
+   * | 6 | 満潮時刻 | 名乗りだけ（初報） |
+   * | 7 | 満潮時刻 | 「満潮時刻が更新されました」 |
+   * | 8 | 満潮時刻 | 「津波の到達状況が更新されました」 |
+   * | 9 | 満潮時刻 | 「内容に変わりはありません」 |
    *
    * **間隔は読み上げが終わる程度に空ける**（`TEST_TSUNAMI_QUIET_STEP_MS`）。これらは最下位の層で
    * 読むので、前の発話が続いていると待たされ、待ちきれなければ黙る。
@@ -2256,7 +2257,7 @@ export function useEarthquakes(
   const simulateTsunamiQuietReports = useCallback(async () => {
     const {
       createTestTsunami, createTestTsunamiObservationReport, createTestTsunamiObservationOverUpgrade,
-      createTestTsunamiMaxHeightTimeUpdate,
+      createTestTsunamiMaxHeightTimeUpdate, createTestTsunamiFirstWaveUpdate,
       createTestTsunamiObservationNoChange, createTestTsunamiHighTide, createTestTsunamiHighTideFollowUp,
       TEST_TSUNAMI_QUIET_STEP_MS, TEST_TSUNAMI_QUIET_TAIL_MS,
     } = await loadTestData()
@@ -2270,6 +2271,7 @@ export function useEarthquakes(
       createTestTsunamiObservationReport,
       createTestTsunamiObservationOverUpgrade,
       createTestTsunamiMaxHeightTimeUpdate,
+      createTestTsunamiFirstWaveUpdate,
       createTestTsunamiObservationNoChange,
       prev => createTestTsunamiHighTide(base, prev),
       prev => createTestTsunamiHighTideFollowUp(prev, 'tide'),

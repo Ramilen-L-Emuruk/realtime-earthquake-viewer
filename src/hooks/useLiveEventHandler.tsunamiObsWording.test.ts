@@ -242,7 +242,7 @@ describe('津波観測情報の読み上げ: 新旧の言い分けと並び', ()
     const handle = setup()
     handle(makeObsReport([{ name: '輪島港', district: '石川県能登', code: '360', value: 0.3 }]) as never)
     await settle()
-    expect(spokenTexts()[0]).toContain('新たに石川県能登、輪島港で0.3メートルを観測しました。')
+    expect(spokenTexts()[0]).toContain('新たに、次の地点で津波を観測しました。石川県能登、輪島港で0.3メートルを観測しました。')
 
     // 同じ観測点の波高が上がり、別の観測点が新たに加わる（実電文は既報も載せ続ける）
     handle(makeObsReport([
@@ -252,7 +252,7 @@ describe('津波観測情報の読み上げ: 新旧の言い分けと並び', ()
     await settle()
     // 深刻なのは更新された輪島港なので、更新の文が先に来て「また、」で新規が続く
     expect(spokenTexts()[1]).toContain('石川県能登、輪島港で1.2メートルに更新されました。')
-    expect(spokenTexts()[1]).toContain('また、新たに石川県能登、珠洲市長橋で0.5メートルを観測しました。')
+    expect(spokenTexts()[1]).toContain('また、新たに、次の地点で津波を観測しました。石川県能登、珠洲市長橋で0.5メートルを観測しました。')
   })
 
   // 安全弁: 鳴らなかった観測点を既読にしない。前回の読み上げが割り込まれていれば、
@@ -266,7 +266,7 @@ describe('津波観測情報の読み上げ: 新旧の言い分けと並び', ()
     ], [], 'tsunami-obs-2') as never)
     await settle()
     expect(spokenTexts()).toHaveLength(1)
-    expect(spokenTexts()[0]).toContain('新たに石川県能登、輪島港で0.3メートルを観測しました。')
+    expect(spokenTexts()[0]).toContain('新たに、次の地点で津波を観測しました。石川県能登、輪島港で0.3メートルを観測しました。')
     expect(spokenTexts()[0]).not.toContain('更新')
   })
 
@@ -365,7 +365,7 @@ describe('津波の読み上げ: 話題が変わるところを「また、」�
     ]) as never)
     await settle()
     expect(spokenTexts()[0])
-      .toContain('新たに隠岐、隠岐西郷で0.1メートルを観測しました。また、兵庫県北部、豊岡市津居山で到達を確認しました。')
+      .toContain('新たに、次の地点で津波を観測しました。隠岐、隠岐西郷で0.1メートルを観測しました。また、兵庫県北部、豊岡市津居山で到達を確認しました。')
   })
 
   // 正: 等級の発表と同時に到達が確認された場合も同じ（連結している箇所が別なので個別に固定する）
@@ -396,7 +396,7 @@ describe('津波の読み上げ: 話題が変わるところを「また、」�
     await settle()
     const text = spokenTexts()[1]
     expect(text).toContain('石川県能登、輪島港で1.2メートルに更新されました。')
-    expect(text).toContain('また、新たに石川県能登、珠洲市長橋で0.5メートルを観測しました。')
+    expect(text).toContain('また、新たに、次の地点で津波を観測しました。石川県能登、珠洲市長橋で0.5メートルを観測しました。')
     expect(text).toContain('また、石川県能登、七尾港で到達を確認しました。')
     expect(text.match(/また、/g)).toHaveLength(2)
     // 到達確認は最後（波高の 2 群を読み終えてから継ぐ）
@@ -569,7 +569,7 @@ describe('津波観測情報の読み上げ: 欠測と波高更新の切り分�
     const handle = setup()
     handle(makeObsReport([{ name: '輪島港', district: '石川県能登', code: '360', value: 1.2 }]) as never)
     await settle()
-    expect(spokenTexts()[0]).toContain('新たに石川県能登、輪島港で1.2メートルを観測しました。')
+    expect(spokenTexts()[0]).toContain('新たに、次の地点で津波を観測しました。石川県能登、輪島港で1.2メートルを観測しました。')
   })
 
   it('安全弁: 欠測の観測点と普通の観測点が混ざっても、それぞれ 1 度だけ読む', async () => {
@@ -585,7 +585,7 @@ describe('津波観測情報の読み上げ: 欠測と波高更新の切り分�
     const text = spokenTexts()[0]
     expect(text.match(/珠洲市長橋/g)).toHaveLength(1)
     expect(text.match(/輪島港/g)).toHaveLength(1)
-    expect(text).toContain('新たに石川県能登、珠洲市長橋で0.5メートルを観測しました。')
+    expect(text).toContain('新たに、次の地点で津波を観測しました。石川県能登、珠洲市長橋で0.5メートルを観測しました。')
     expect(text).toContain('また、これまでに石川県能登、輪島港で1.2メートルを観測したのち、欠測となっています。')
   })
 })
