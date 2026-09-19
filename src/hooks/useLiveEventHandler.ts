@@ -17,7 +17,7 @@ import { hasKnownEpicenter, haversineKm } from '../utils/geo'
 import { showBrowserNotification } from '../utils/notifications'
 import { GRADE_PRIORITY, TSUNAMI_GRADE_LIFTED, isWarningLevelWhileObserving, tsunamiMaxGrade, tsunamiAreaGradeChanges, selectUnspokenAreaGradeChanges, rememberAreaGrades, tsunamiAreaKey, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, isTsunamiContinuation, matchesArea, sortAreasAcrossGradesForCardDisplay, sortObservationsForCardDisplay, mergeTsunamiObservations, isObservationMissing, isTideReport, tideReportChange, rememberTideEntries, type SpokenTideEntry } from '../utils/tsunami'
 import { playAlertSound, ttsDelayFor, maxTtsDelay, type AlertSoundType } from '../utils/alertSound'
-import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, stopSpeech, type PrewarmedSpeech, type ShouldStillPlay, type SpeechOutcome } from '../utils/voicevox'
+import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, stopSpeech, isAudioPlaying, type PrewarmedSpeech, type ShouldStillPlay, type SpeechOutcome } from '../utils/voicevox'
 import { rollbackSpokenEntry } from '../utils/rollbackSpoken'
 import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewWarningRegionsText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiAreaGradeChangeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, tsunamiMissingToSegments, selectMissingToSpeak, tsunamiWarningLevelToSegments, selectWarningLevelToSpeak, joinWithAlso, nankaiToText, nankaiCommentaryToText, kohatsuToText, earthquakeCountToText, estimatedIntensityToText, lpgmToText, telegramTextToSpeak, createQuakeSpokenState, applySpokenRefs, tsunamiTideToSegments, tsunamiMaxHeightTimeToSegments, selectMaxHeightTimeUpdatesToSpeak, tsunamiObservationNoChangeSegments, type TtsSpeechOptions, type QuakeSpokenState } from '../utils/ttsText'
 import { joinSegments, plain, hasFollowTarget, hasUnreceivedFollowTarget, hasTelegramTextFollowTarget, hasBorrowedHypocenterFollowTarget, TELEGRAM_TEXT_OPEN_TARGET_KINDS, telegramTextSubject, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
@@ -232,7 +232,7 @@ const HIGHER_PRIORITY_SPEECH_MAX_WAIT_MS = 90000
 // 「内容が重ならない同格どうしは互いに切らない」という宣言がそこで破れる（相互譲りを入れた
 // 意味が無くなる）。上位を待つ場合の上限とは別に持つのは、あちらを延ばすと VOICEVOX 無応答の
 // 保険が緩むため。
-const MUTUAL_YIELD_SPEECH_MAX_WAIT_MS = 180000
+export const MUTUAL_YIELD_SPEECH_MAX_WAIT_MS = 180000
 
 /**
  * 気象庁が書いた文を**予約する**までの間（→ `handleLiveEvent`）。
@@ -314,6 +314,23 @@ function magnitudeTitlePart(hypocenter: Hypocenter): string {
 // 間引くが、優先度の高い読み上げを消す判断なので必ず残す（黙って消すと事後に追えない）。
 const warnSpeechWaitGiveUp = createLogThrottle(30000)
 
+// 上限に達したあと、音が止むのを待つあいだの見直し間隔。**上限そのものとは別の値**——
+// あちらは「無応答をどこで見切るか」で、こちらは「鳴り止んだことにどれだけ早く気づくか」。
+// 短くしても待ちは伸びない（鳴っていれば待つだけ）ので、気づきの遅れだけを決める。
+const SPEECH_WAIT_RECHECK_MS = 250
+
+// **延長そのものの上限。** 鳴り続けていてもここで打ち切る。
+//
+// 実在する最長の読み上げ（南海トラフ地震臨時情報の本文・約 3 分）を切らない値を選ぶ。
+// **`isSpeaking` の 5 分（`SPEECH_STALE_MS`）には委ねられない** —— あちらの起点は読み上げが
+// 始まるたび引き直されるので、群発で読み上げが途切れない間は永久に発火しない。ここは待ち始めを
+// 起点に測るので、鳴り続けていても必ず明ける。
+export const SPEECH_WAIT_HARD_CAP_MS = 240000
+
+// 鳴っているのに延長の上限で打ち切った記録。**正常系では出ない** —— 実在する最長の読み上げより
+// 長く音が続いたということなので、出ていたら読み上げの組み立てか合成の側を疑う。
+const warnSpeechWaitHardCap = createLogThrottle(30000)
+
 /**
  * 発話の完了を待つ（上限付き）。EEW の読み上げは 1 本のチェーンで直列化するため、
  * 1 件の遅延が全体を止めないようにする。
@@ -321,11 +338,53 @@ const warnSpeechWaitGiveUp = createLogThrottle(30000)
  * **直前の発話を待つ側と、発話そのものを待つ側の両方に掛けること。** VOICEVOX への合成
  * リクエストにはタイムアウトが無く、応答が返らないまま止まると、待ち側だけに上限を置いても
  * 「発話が終わった」と数える処理（`eewSpeechPendingRef` の減算）が永久に走らない。
+ *
+ * **音が出ている間は計時しない。** この上限は「合成が返ってこない」ための保険で、鳴っている
+ * 読み上げを切るためのものではない。上限に達しても音が出ていれば、止むまで待つ。
+ *
+ * 待たずに打ち切っていた頃は、**上限より長い読み上げが必ず途中で切られていた** —— 待ちが
+ * 明けた側が発話を始めると、`speakWithVoicevox` は冒頭で鳴っている音を止めるため。
+ * 2024-06-03 06:31 の石川県能登では、警報の対象地方 6 つを列挙する文が読み終わる前に
+ * 予想値の読み上げが始まっていた。**リプレイで VOICEVOX へ渡る文とその時刻を記録して確かめた**
+ * —— 地方の文の最後のチャンクから 6.9 秒で予想値が始まっており、直す前は上限（8 秒）で
+ * 叩き切られていた。同じことが非 EEW 側の待ち（`HIGHER_PRIORITY_SPEECH_MAX_WAIT_MS`・
+ * 2 分近い「各地の震度」）でも起きる。
+ *
+ * **見るのは `isAudioPlaying`（音が出ているか）で、`isSpeaking`（読み上げの処理中か）では
+ * ない。** あちらは合成待ちでも真を返すので、**合成が無応答でハングしたときにこそ延長が
+ * 掛かり、保険が要る場面で保険が効かなくなる**（`isSpeaking` は `speakOnce` を呼ぶ前に
+ * 数を増やす）。
+ *
+ * **延長にも終わりを置く**（`SPEECH_WAIT_HARD_CAP_MS`）。音が鳴り続ける限り待つ形にすると、
+ * 待ち始めからの絶対的な上限がどこにも無くなる —— `isSpeaking` の 5 分は起点が引き直される
+ * ので群発では発火しない。
+ *
+ * **ループで呼び直す側は `hardCapFrom` に「待ち始め」を渡すこと。** 既定はこの呼び出しの
+ * 開始時刻なので、呼び直すたびに起点も取り直され、絶対上限の意味が消える
+ * （`waitForSpeechSlot` は待つ相手が入れ替わるたびに呼び直す）。
  */
-function capSpeechWait<T>(p: Promise<T>, capMs = EEW_SPEECH_CHAIN_MAX_WAIT_MS): Promise<T | undefined> {
+export function capSpeechWait<T>(
+  p: Promise<T>,
+  capMs = EEW_SPEECH_CHAIN_MAX_WAIT_MS,
+  hardCapFrom = Date.now(),
+): Promise<T | undefined> {
   let timer: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<undefined>(resolve => {
-    timer = setTimeout(() => resolve(undefined), Math.max(0, capMs))
+    const giveUp = () => {
+      const waited = Date.now() - hardCapFrom
+      if (isAudioPlaying() && waited < SPEECH_WAIT_HARD_CAP_MS) {
+        timer = setTimeout(giveUp, SPEECH_WAIT_RECHECK_MS)
+        return
+      }
+      // 鳴っているのに打ち切るのは異常。黙って切ると事後に追えない
+      if (isAudioPlaying()) {
+        warnSpeechWaitHardCap(() => log.warn(
+          `[tts] 音が鳴り続けたまま ${Math.round(waited / 1000)} 秒に達したため、発話の完了待ちを打ち切りました`,
+        ))
+      }
+      resolve(undefined)
+    }
+    timer = setTimeout(giveUp, Math.max(0, capMs))
   })
   return Promise.race([p, timeout]).finally(() => clearTimeout(timer))
 }
@@ -1272,17 +1331,18 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       ).then(outcome => {
         // **上限（`capSpeechWait`）で待ち切ったときは「鳴った」へ倒す。**
         //
-        // 合成が失敗した場合、`speakOnce` は待たずに完了する（鳴るものが無いので待つ対象が
-        // 無い）。応答が返らない場合も、**発話 1 回で合成を待つ合計の予算**
-        // （`SPEECH_SYNTH_BUDGET_MS` = 6 秒）で打ち切られ、やはり 8 秒より先に完了する。
-        // **つまりここまで返ってこないのは、鳴っている最中**ということ —— 地方を多く列挙する
-        // 報ほど読み上げは長くなるが、鳴っている時間は予算から引かれない。
+        // ここへ来る（`outcome` が undefined になる）のは 2 通りしかない。`capSpeechWait` は
+        // 音が出ている間は計時しないので、**「長い読み上げだから打ち切られた」は起こらない**。
+        //   ① 音が出ていないまま上限に達した（合成が返ってこない）
+        //   ② 音が鳴り続けたまま延長の上限（`SPEECH_WAIT_HARD_CAP_MS`）に達した
         //
-        // ここを偽へ倒すと、長い読み上げのたびに既読を巻き戻して**同じ内容をもう一度読む**。
-        // 次の発話は冒頭で前の音を止めるので、聞こえ方は「途中で切られて最初から読み直し」。
+        // ②は鳴っているので「鳴った」で正しい。①は 1 音も出ていないので本来は偽だが、
+        // **ここは偽へ倒さない** —— 合成が詰まっている状況で既読を巻き戻しても、読み直した
+        // 発話がまた鳴らないだけ。逆に巻き戻しを常時効かせると、その端末では同じ内容を
+        // 報のたびに読み直し続けることになる。
         //
-        // **この判断は合成側の予算がこちらより短いことに依存している。** 関係は
-        // `speechTimeouts.test.ts` が機械的に固定している（片方だけ動かすと落ちる）。
+        // なお、1 音も鳴らなかったことが**戻り値で分かる**場合（`outcome.spoke === false`）は
+        // 別で、そちらは呼び出し側が既読を巻き戻す（`rollbackSpokenEntry`）。
         spoke = outcome?.spoke ?? true
       })
     })
@@ -1479,7 +1539,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       }
       // 待つ対象が reject しても待ちを続ける（相手の失敗で自分を道連れにしない）。
       // 相手側の speakNonEEW / chainEEWSpeech が独立に記録するため、ここは debug に留める
-      await capSpeechWait(busy, remaining).catch(err => log.debug('[tts] 待っていた読み上げが異常終了', err))
+      // **延長の上限には `waitingSince` を渡す。** ここは待つ相手が入れ替わるたびに呼び直すので、
+      // 既定（この呼び出しの開始）のままだと起点も取り直され、「待ち始めから 4 分」が
+      // 「入れ替わるたびに 4 分」に化ける。
+      await capSpeechWait(busy, remaining, waitingSince).catch(err => log.debug('[tts] 待っていた読み上げが異常終了', err))
     }
     warnSpeechWaitGiveUp(() => log.warn(
       `[tts] 待ち合わせの反復上限に達したため割り込んで読み上げる priority=${priority} topic=${topic}`,
