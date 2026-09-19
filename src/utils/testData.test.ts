@@ -844,7 +844,7 @@ describe('テスト EEW の kindCode と予想震度の整合', () => {
     }
   })
 
-  // 震源時刻を固定した版。時刻の前後（未来か過去か）を確かめるには基準が要る。
+  // 基準時刻（`baseTime`）を固定した版。時刻の前後（未来か過去か）を確かめるには基準が要る。
   const BASE = new Date('2026-01-01T12:00:00Z')
   const basedCases = [
     ['createTestEEW（特別警報・三陸沖）', createTestEEW(true, 'evt', 1, BASE)],
@@ -964,10 +964,92 @@ describe('予想震度が付かないテスト EEW', () => {
       .toBe(createTestEEWAssumed(true, 'evt', 1, base).earthquake.hypocenter.name)
   })
 
-  // 実運用の続報は震源時刻を変えない（発表時刻だけが進む）。
-  it('単独点処理の続報は震源時刻を引き継ぐ', () => {
-    expect(createTestEEWAssumed(true, 'evt', 2, base).earthquake.originTime)
-      .toBe(createTestEEWAssumed(true, 'evt', 1, base).earthquake.originTime)
+  // **かつて「続報は震源時刻を引き継ぐ」と固定していたテストを覆したもの。** 実電文の震源時刻は
+  // 震源推定が更新されるたび動く（1 日分・VXSE45 の実測で 15 地震のうち 11 件）。
+  // → `docs/spec/eew-spec.md` §3「地震の時刻は発生時刻を出す」
+  //
+  // 正: 続報で震源時刻がずれる（実電文の系列どおり第 2 報は −3 秒）
+  it('単独点処理の続報は震源時刻を実電文の系列どおりずらす', () => {
+    const first = createTestEEWAssumed(true, 'evt', 1, base).earthquake.originTime
+    const second = createTestEEWAssumed(true, 'evt', 2, base).earthquake.originTime
+    expect(Date.parse(second) - Date.parse(first)).toBe(-3_000)
+  })
+
+  // 対照: 地震発現時刻は動かさない（実測では 15 地震すべてで 1 通も動かなかった）。
+  // **ここが動くと、震源時刻をずらした意味が逆転する** —— 実電文で不変なのはこちら。
+  it('単独点処理の続報は地震発現時刻を引き継ぐ', () => {
+    expect(createTestEEWAssumed(true, 'evt', 2, base).earthquake.arrivalTime)
+      .toBe(createTestEEWAssumed(true, 'evt', 1, base).earthquake.arrivalTime)
+  })
+
+  // 安全弁: 報番号が系列（7 報）より先まで進んでも、最後の値で止まる。
+  // 止めないと添字が範囲外になり、震源時刻が `Invalid Date` になる。
+  it('報番号が系列より先まで進んでも震源時刻のずれは最後の値で止まる', () => {
+    const last = createTestEEWAssumed(true, 'evt', 7, base).earthquake.originTime
+    for (const serial of [8, 20, 100]) {
+      const later = createTestEEWAssumed(true, 'evt', serial, base).earthquake.originTime
+      expect(Number.isNaN(Date.parse(later))).toBe(false)
+      expect(later).toBe(last)
+    }
+  })
+
+  // 安全弁: 基準（baseTime）を渡している限り、震源時刻は現在時刻から作り直されない。
+  // 作り直すと予報円が続報ごとに中心へ戻る（`useEarthquakes.ts` の `runSimulateEEW`）。
+  it('基準を渡した続報の震源時刻は現在時刻に依存しない', () => {
+    const a = createTestEEWAssumed(true, 'evt', 2, base).earthquake.originTime
+    const b = createTestEEWAssumed(true, 'evt', 2, base).earthquake.originTime
+    expect(a).toBe(b)
+    expect(Date.parse(a)).toBeLessThan(base.getTime() + 1)
+  })
+
+  // 安全弁: 報番号が整数でなくても例外を投げない。添字が `NaN` になると `Invalid Date` ができ、
+  // `toISOString()` が **投げて**テストボタンごと死ぬ（他の「読めない値」は NaN のまま流れるが、
+  // ここだけ例外になる）。現在の呼び出し元は必ず 1 以上の整数を渡すので通らない経路。
+  it('報番号が整数でなくても震源時刻を作れる', () => {
+    for (const serial of [NaN, 1.5, Infinity, -1]) {
+      const iso = createTestEEWAssumed(true, 'evt', serial, base).earthquake.originTime
+      expect(Number.isNaN(Date.parse(iso))).toBe(false)
+    }
+  })
+
+  // 安全弁: 区域の到達予測時刻は震源時刻に追従する。値は「震源距離 ÷ 見かけ速度」で作ってあり、
+  // 震源時刻がずれた続報で基準を動かさないと**見かけ速度が実測の範囲（4.2〜5.2km/s）を外れる**
+  // （第 3 報では震源時刻が 5 秒戻るので、66km の区域が 3.3km/s になる）。
+  //
+  // **4 つの生成関数すべてに当てる。** `at()` は関数ごとに書き写されているので、1 つだけ
+  // 見ていると別の関数が基準を取り違えても捕まえられない（`createTestEEWDeep` は区域を持たない）。
+  // **区域名ごとに比べる** —— 報によって区域の並びが変わる関数があるため、添字で拾うと別の区域を
+  // 突き合わせてしまう。
+  it.each([
+    ['createTestEEW', createTestEEW],
+    ['createTestEEWWarning', createTestEEWWarning],
+    ['createTestEEWForecast', createTestEEWForecast],
+    ['createTestEEWAssumed', createTestEEWAssumed],
+  ] as const)('区域の到達予測時刻は報をまたいで震源時刻との差を保つ（%s）', (_name, create) => {
+    const gapsByArea = new Map<string, Set<number>>()
+    const reportsByArea = new Map<string, number>()
+    for (const serial of [1, 2, 3, 4]) {
+      const eew = create(true, 'evt', serial, base)
+      const originMs = Date.parse(eew.earthquake.originTime)
+      expect(Number.isNaN(originMs)).toBe(false)
+      for (const area of eewAreas(eew)) {
+        if (!area.arrivalTime) continue
+        const gap = Date.parse(area.arrivalTime) - originMs
+        const seen = gapsByArea.get(area.name) ?? new Set<number>()
+        seen.add(gap)
+        gapsByArea.set(area.name, seen)
+        reportsByArea.set(area.name, (reportsByArea.get(area.name) ?? 0) + 1)
+      }
+    }
+    // **標本の数そのものを固定する。** 区域名ごとに 1 報しか集まらないと「差が 1 通り」は自明で、
+    // 何も守らないテストになる。実測では 3〜4 報ぶん集まる（仮定震源要素の初報だけ区域を持たない
+    // ので、あの関数は 3 報）。
+    expect(gapsByArea.size).toBeGreaterThan(0)
+    const thin = [...reportsByArea].filter(([, reports]) => reports < 2).map(([name]) => name)
+    expect(thin).toEqual([])
+    // 正: どの区域も、震源時刻との差が報をまたいで 1 通りに保たれる
+    const drifted = [...gapsByArea].filter(([, gaps]) => gaps.size > 1).map(([name]) => name)
+    expect(drifted).toEqual([])
   })
 
   // 気象庁は深さ 150km を超える地震に緊急地震速報（警報）を発表しない。続報でも予報級のまま。
