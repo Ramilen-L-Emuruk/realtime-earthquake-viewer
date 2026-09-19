@@ -126,7 +126,7 @@ async function build() {
       joined = store.add(fragmentKey('IXAC41', 'RJTD', t), p.designation, new Uint8Array(p.body), Date.now())
     }
     if (!joined) continue
-    const decoded = decodeEstimatedIntensity(joined, `test-${t}`, quake.time)
+    const decoded = decodeEstimatedIntensity(joined, `test-${t}`, quake.time, 'IXAC41')
     if (!decoded) continue
     if (decoded.arrivalTime.slice(0, 16) !== wanted) continue
     // 続報があれば**セルが多いほう**を採る（分布が広く出ている報のほうがテストに向く）。

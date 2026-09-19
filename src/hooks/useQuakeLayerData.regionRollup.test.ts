@@ -16,6 +16,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import type { JMAQuake, EarthquakePoint } from '../types/earthquake'
 import type { SubRegion } from '../utils/subregions'
+import { CELL_LAT_DEG, CELL_LON_DEG } from '../utils/bufrEstimatedIntensity'
 
 function sub(name: string, lat: number, lng: number): SubRegion {
   return {
@@ -117,6 +118,7 @@ describe('震度分布モードのシグネチャ', () => {
     magnitude: 4.2, areaCode: 741, telegramKind: 0,
     grades: [{ scale: 4, modifier: 'none' as const, lower: 35, upper: 44 }],
     count: 1, lat: new Float32Array([32.6]), lon: new Float32Array([130.7]), si: new Uint8Array([42]),
+    cellLatDeg: CELL_LAT_DEG, cellLonDeg: CELL_LON_DEG,
     bounds: { south: 32.6, north: 32.7, west: 130.7, east: 130.8 },
   }
   const POINTS: EarthquakePoint[] = [{ addr: '奈良県', pref: '奈良県', isArea: true, scale: 40 }]
@@ -162,6 +164,7 @@ describe('震度分布モードの寄り上限の選び方', () => {
     magnitude: 4.2, areaCode: 741, telegramKind: 0,
     grades: [{ scale: 4, modifier: 'none' as const, lower: 35, upper: 44 }],
     count: 1, lat: new Float32Array([32.6]), lon: new Float32Array([130.7]), si: new Uint8Array([42]),
+    cellLatDeg: CELL_LAT_DEG, cellLonDeg: CELL_LON_DEG,
     bounds: { south: 32.6, north: 32.7, west: 130.7, east: 130.8 },
   }
   const POINTS: EarthquakePoint[] = [{ addr: '奈良県', pref: '奈良県', isArea: true, scale: 40 }]

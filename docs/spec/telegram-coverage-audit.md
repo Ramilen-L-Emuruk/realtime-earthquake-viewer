@@ -303,7 +303,7 @@ grep -oE "[A-Za-z_][A-Za-z0-9_:]*【" <作業ディレクトリ>/eq_manual.txt |
 | スクリプト | 役割 |
 |---|---|
 | `fetch-p2p-history.mjs` | P2PQuake の公開 API から履歴を集める（**認証不要**）。standard 版が実際に受け取る形の標本 |
-| `fetch-rare-samples.mjs` | `fetch-samples.mjs` が取りこぼす標本を名指しで集める（二進電文の IXAC41・頻度の低い種別・条件付きの要素を持つ EEW） |
+| `fetch-rare-samples.mjs` | `fetch-samples.mjs` が取りこぼす標本を名指しで集める（二進電文の IXAC41・IXAC40・頻度の低い種別・条件付きの要素を持つ EEW） |
 | `testdata-shapes.mjs` | 実電文とテストデータを**本物のパーサー・本物のファクトリへ通し**、出来上がった内部型のプロパティ経路を記録する |
 | `testdata-compare.mjs` | 突き合わせて A〜E の 5 表を書く |
 

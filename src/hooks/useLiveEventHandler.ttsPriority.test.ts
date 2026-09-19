@@ -18,6 +18,7 @@
 import type { SpeechOutcome } from '../utils/voicevox'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
+import { CELL_LAT_DEG, CELL_LON_DEG } from '../utils/bufrEstimatedIntensity'
 import { useLiveEventHandler } from './useLiveEventHandler'
 import { DEFAULTS, type AppSettings } from './useSettings'
 import type { JMAQuake, JMATsunami, IssueType, EEWAlert, ExtraLiveEvent } from '../types/earthquake'
@@ -924,6 +925,7 @@ describe('内容が重ならない同格どうしは互いに待つ', () => {
         magnitude: 6.0, areaCode: 100, telegramKind: 0,
         grades: [{ scale: 4, modifier: 'none', lower: 35, upper: 44 }],
         count: 1, lat: new Float32Array([35]), lon: new Float32Array([139]), si: new Uint8Array([42]),
+        cellLatDeg: CELL_LAT_DEG, cellLonDeg: CELL_LON_DEG,
         bounds: { south: 35, north: 35.1, west: 139, east: 139.1 },
       },
     }
