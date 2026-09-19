@@ -4,27 +4,47 @@
  * **リプレイとライブの両方が使う。** リプレイは `ReplayLoss`（`hooks/useReplayController.ts`）
  * として先読みの失敗も足す。数え方を 2 本持つと、片方だけ「同じ取得元を二重に数えない」を落とす。
  *
- * **置き換えてよいのは、その入れ物がその取得の結果だけを持つときに限る。** 取り違えると、
- * 直したはずの「失敗が画面に出ない」の裏返し（取れているのに失敗中と出続ける）を作る。
+ * **合流の仕方は 3 つあり、「何を合流するのか」で決まる。** 取り違えると、直したはずの
+ * 「失敗が画面に出ない」の裏返し（取れているのに失敗中と出続ける）か、その逆（欠けている
+ * のに何も出ない）を作る。
  *
- * | 入れ物 | 中身 | 使う関数 |
+ * | 場面 | 使う関数 | 電文（`skippedByDay`）の扱い |
  * |---|---|---|
- * | ライブの `historyLoss`（`hooks/useEarthquakes.ts`） | 履歴の取得 1 本だけ。**毎回その時点の全範囲**を数え直して返る | `telegramLossFrom`（置き換える） |
- * | リプレイの `ReplayLoss`（`hooks/useReplayController.ts`） | 本編・初期状態・履歴・先読みを**同じ入れ物へ集める** | `addTelegramLoss`（積む） |
+ * | 起点になる取得（起動時の履歴・時間軸が変わった後の読み直し） | `telegramLossFrom` | 前の値を引き継がない |
+ * | **別々のもの**を 1 つの入れ物へ集める（リプレイの本編・初期状態・履歴・先読み） | `addTelegramLoss` | **足す** |
+ * | **同じ範囲をもう一度読む**ことがある（ライブの「もっと見る」） | `mergeHistoryLoss` | 同じ日は**置き換える** |
  *
- * **リプレイも同じ `fetchDmdataQuakeHistory` を呼ぶが、そちらは積む。** 入れ物を他の取得と
- * 共有しているので、置き換えると他の取得の損失を消してしまう。あちらは 1 セッションにつき
- * 1 回しか呼ばず、空の状態から足すので「回数だけ数える」問題は起きない。**リプレイ側から
- * 同じ取得を複数回呼ぶようにするなら、その分だけを別に持ってから集める形へ直すこと。**
+ * **「別々のものを集める」ところで置き換えてはいけない。** 同じ日に別々の電文が壊れていれば
+ * それは足すべき 2 件で、片方を捨ててよいものではない。日付範囲が重なる取得どうしで同じ破損を
+ * 二度数えることはあるが、**少なく見せて「静かな時間帯だった」と誤読されるより、多めに申告する
+ * 側へ倒す**（旧実装からの方針）。
  *
- * 積む側は、一度失われた電文が後続の取得では戻らないので成功で上書きして消してはいけない。
- * 置き換える側は、範囲が伸びるだけで縮まないため次の呼び出しの結果が前回を包含する ——
- * 積むと **①同じ壊れた電文を呼び出しの回数だけ数える ②取得が回復しても損失が消えない**
- * （アーカイブ本体の失敗は控えから外れて再試行され、429 なら普通に回復する）。
+ * ## 持ち方のほうを疑う
+ *
+ * **「積むか置き換えるか」で悩んだら、中身の持ち方を疑うこと。** 「同じものを二度数えうる」形
+ * （＝ただの件数）だと、積めば重複し、置き換えれば前に確定した分が消える —— **どちらを選んでも
+ * 正しくならない**。鍵を持たせれば（取得元は識別子の集合・電文は日ごと）、少なくとも
+ * 「同じものか別のものか」を問える形になる。
+ *
+ * 同じ落とし穴を 3 度踏んでいる。`failedSources` を集合にしたとき、`skippedByDay` を日ごとに
+ * したとき、そして**日ごとにした直後に「同じ日は上書き」を全部の合流へ当ててしまったとき**。
+ * 3 つ目は、カーソル方式の「もっと見る」（窓が重ならない）でだけ正しい規則を、別々のものを
+ * 集めるリプレイ側にも当てていた。
  */
 export interface TelegramLoss {
-  /** 取り込めなかった電文の通数。 */
-  skippedTelegrams: number
+  /**
+   * 取り込めなかった電文の通数を、**JST 日ごとに**持つ。画面へ出すのは合計（`totalSkipped`）。
+   *
+   * **件数ひとつで持たない。** 同じ日を二度読めば同じ壊れた電文を二度数えることになり、
+   * かといって置き換えると、別の日で確定していた損失が消える —— **件数で持つ限り、積んでも
+   * 置き換えても正しくならない**。日を鍵にすれば、同じ日は上書き・別の日は加算で両方が立つ。
+   *
+   * これは `failedSources` を集合にしたのと同じ理屈（そちらの注記も参照）。**あちらが通った道を
+   * こちらだけ通っていなかった。**
+   *
+   * 日が分からない取りこぼしは `UNKNOWN_SKIP_DAY` へまとめる。
+   */
+  skippedByDay: ReadonlyMap<string, number>
   /**
    * 読めなかった取得元の識別子。
    *
@@ -53,9 +73,96 @@ export interface TelegramLoss {
   rateLimitedTelegrams: number
 }
 
+/**
+ * 取りこぼした日が分からないときの鍵。
+ *
+ * 電文を捨てる場所のうち、どの日のものか辿れないものをここへまとめる。**同じ日として
+ * 上書きされる**ので、日が分かる分と混ぜて数えると取りこぼしを少なく見せうるが、
+ * 鍵を持たない以上これ以上は分けられない。
+ */
+export const UNKNOWN_SKIP_DAY = '(日付不明)'
+
+/**
+ * 取りこぼしを日ごとに数える入れ物。取得側が積み、最後に `toMap()` で取り出す。
+ *
+ * **数える側に「どの日か」を必ず渡させるために用意している。** 素の数値カウンタだと、
+ * 呼び出し箇所を足したときに日を添え忘れても型検査を通ってしまい、その分が
+ * `UNKNOWN_SKIP_DAY` へも入らず**丸ごと消える**。
+ */
+export interface SkipCounter {
+  /** 1 通ぶん数える。日が辿れないときは `UNKNOWN_SKIP_DAY`。 */
+  add(day: string): void
+  /**
+   * 別の取得（当日経路など）の結果を取り込む。**同じ日でも足す。**
+   *
+   * **上書きにしてはいけない。** ここで合流するのは「同じ範囲を読み直した結果」ではなく
+   * **別々のものを読んだ結果**（アーカイブ経路と当日経路・当日経路の複数日）。同じ日に
+   * 別々の電文が壊れていれば、それは足すべき 2 件で、片方を捨ててよいものではない。
+   *
+   * **とくに `UNKNOWN_SKIP_DAY` で効く。** あれは窓を持たない固定の鍵なので、上書きにすると
+   * 「日が辿れない取りこぼし」を複数の取得が報告したときに必ず 1 件ぶんしか残らない。
+   */
+  addAll(other: ReadonlyMap<string, number>): void
+  toMap(): Map<string, number>
+}
+
+export function createSkipCounter(): SkipCounter {
+  const byDay = new Map<string, number>()
+  return {
+    add(day) { byDay.set(day, (byDay.get(day) ?? 0) + 1) },
+    addAll(other) { for (const [day, n] of other) byDay.set(day, (byDay.get(day) ?? 0) + n) },
+    toMap() { return new Map(byDay) },
+  }
+}
+
+/** 日ごとの取りこぼしの合計（画面へ出すのはこの数）。 */
+export function totalSkipped(loss: TelegramLoss): number {
+  let total = 0
+  for (const n of loss.skippedByDay.values()) total += n
+  return total
+}
+
+/**
+ * 日ごとの取りこぼしを**足し合わせる**（同じ日でも加える）。
+ *
+ * **別々のものを読んだ結果を集めるとき**に使う —— リプレイは本編・初期状態・履歴・先読みを
+ * 1 つの入れ物へ集めており、同じ日に別々の電文が壊れていれば足すべき 2 件になる。
+ * 1 回の取得の中でも、**互いに素だと分かっている 2 つの集計を束ねる**のに使う
+ * （→ `services/dmdataReplay.ts` の `scanSkips` / `windowSkips`）。
+ * 日付範囲が重なる取得どうしで同じ破損を二度数えることはあるが、**少なく見せて「静かな
+ * 時間帯だった」と誤読されるより、多めに申告する側へ倒す**（旧実装からの方針）。
+ */
+export function sumSkippedByDay(
+  base: ReadonlyMap<string, number>,
+  add: ReadonlyMap<string, number>,
+): Map<string, number> {
+  const merged = new Map(base)
+  for (const [day, n] of add) merged.set(day, (merged.get(day) ?? 0) + n)
+  return merged
+}
+
+/**
+ * 日ごとの取りこぼしを合流し、**同じ日は新しい結果で置き換える**。
+ *
+ * **「同じ範囲をもう一度読んだ」ときだけ**使える。その日の最新の事実が新しい結果だから。
+ * カーソル方式の「もっと見る」（→ `mergeHistoryLoss`）がこれにあたり、カーソルが停滞して
+ * 同じ窓を読み直したときに件数が無制限に積み上がるのを防ぐ。
+ *
+ * **別々のものを読んだ結果に当てないこと**（そちらは `sumSkippedByDay`）。同じ日に別々の
+ * 電文が壊れていたとき、片方を黙って捨てる。
+ */
+function replaceSkippedByDay(
+  base: ReadonlyMap<string, number>,
+  fresh: ReadonlyMap<string, number>,
+): Map<string, number> {
+  const merged = new Map(base)
+  for (const [day, n] of fresh) merged.set(day, n)
+  return merged
+}
+
 export function createEmptyTelegramLoss(): TelegramLoss {
   return {
-    skippedTelegrams: 0,
+    skippedByDay: new Map(),
     failedSources: new Set(),
     rateLimitedSources: new Set(),
     rateLimitedTelegrams: 0,
@@ -63,14 +170,14 @@ export function createEmptyTelegramLoss(): TelegramLoss {
 }
 
 /**
- * 取得結果を損失に足し込む（取得元は集合なので二重計上されない）。
+ * 取得結果を損失に足し込む（取得元は集合・電文は日ごとなので二重計上されない）。
  *
  * 元の損失は書き換えない。`ReplayLoss` のように項目を足した型でもそのまま使えるよう、
  * 受け取った型を保って返す。
  */
 export function addTelegramLoss<T extends TelegramLoss>(
   loss: T,
-  skipped: number,
+  skippedByDay: ReadonlyMap<string, number>,
   failedSourceIds: readonly string[],
   rateLimited?: { sources?: readonly string[]; telegrams?: number },
 ): T {
@@ -80,7 +187,7 @@ export function addTelegramLoss<T extends TelegramLoss>(
   for (const id of rateLimited?.sources ?? []) rateLimitedSources.add(id)
   return {
     ...loss,
-    skippedTelegrams: loss.skippedTelegrams + skipped,
+    skippedByDay: sumSkippedByDay(loss.skippedByDay, skippedByDay),
     failedSources,
     rateLimitedSources,
     rateLimitedTelegrams: loss.rateLimitedTelegrams + (rateLimited?.telegrams ?? 0),
@@ -88,29 +195,59 @@ export function addTelegramLoss<T extends TelegramLoss>(
 }
 
 /**
- * 取得結果**そのもの**を損失にする（積まない）。
+ * 取得結果**そのもの**を損失にする（前の値を引き継がない）。
  *
- * **その入れ物がその取得の結果だけを持つときに使う**（上の表を参照）。積むと、同じ壊れた電文を
- * 呼び出しの回数だけ数え、取得が回復しても損失が消えない。
+ * **その入れ物がその取得の結果だけを持つときに使う**（上の表を参照）。遡りの起点になる
+ * 取得 —— 起動時の履歴と、時間軸が変わった後の読み直し —— がこれにあたる。
  *
- * **前回より狭い範囲の結果で置き換えないこと。** 遡る日数は伸びるだけで縮まないという前提に
- * 乗っている。狭い範囲の結果を当てると、範囲の外で確定していた損失が黙って消える。
+ * **続きを読む取得には使わない。** 窓が重ならないので、前の窓で確定した損失を消してしまう
+ * （そちらは `addTelegramLoss` で合流する）。
  */
 export function telegramLossFrom(
-  skipped: number,
+  skippedByDay: ReadonlyMap<string, number>,
   failedSourceIds: readonly string[],
   rateLimited?: { sources?: readonly string[]; telegrams?: number },
 ): TelegramLoss {
   return {
-    skippedTelegrams: skipped,
+    skippedByDay: new Map(skippedByDay),
     failedSources: new Set(failedSourceIds),
     rateLimitedSources: new Set(rateLimited?.sources ?? []),
     rateLimitedTelegrams: rateLimited?.telegrams ?? 0,
   }
 }
 
+/**
+ * 履歴の取得結果を、いま画面に出ている損失へ合流する（「もっと見る」で続きを読んだとき）。
+ *
+ * **中身によって残し方が違うので、呼び出し側に選ばせない。**
+ *
+ * | 中身 | 扱い | 理由 |
+ * |---|---|---|
+ * | 壊れた電文（`skippedByDay`） | 前の窓の分を残す | 取り直しても直らない。窓は重ならないので次の取得では 0 件になり、捨てると**何も直っていないのに表示だけ消える** |
+ * | 取得元の失敗・429 の見送り | その取得の結果で置き換える | **失敗した日でカーソルが止まる**（→ `QuakeHistoryResult.oldestLoadedDay`）ので、次に押せば必ず読み直す。消えた表示は「もう再試行した」か「いま再試行できる」のどちらか |
+ *
+ * **カーソルが失敗日を跨ぐ作りへ戻すなら、取得元の側も残す形へ変えること。** 跨いだ日は
+ * 二度と要求されないのに表示だけが消える —— いちばん質の悪い形になる。
+ */
+export function mergeHistoryLoss(
+  prev: TelegramLoss,
+  result: {
+    skippedByDay: ReadonlyMap<string, number>
+    failedArchiveUrls: readonly string[]
+    rateLimitedSources: readonly string[]
+    rateLimitedTelegrams: number
+  },
+): TelegramLoss {
+  return {
+    skippedByDay: replaceSkippedByDay(prev.skippedByDay, result.skippedByDay),
+    failedSources: new Set(result.failedArchiveUrls),
+    rateLimitedSources: new Set(result.rateLimitedSources),
+    rateLimitedTelegrams: result.rateLimitedTelegrams,
+  }
+}
+
 export function isTelegramLossEmpty(loss: TelegramLoss): boolean {
-  return loss.skippedTelegrams === 0 && loss.failedSources.size === 0
+  return loss.skippedByDay.size === 0 && loss.failedSources.size === 0
     && loss.rateLimitedSources.size === 0 && loss.rateLimitedTelegrams === 0
 }
 
@@ -138,7 +275,7 @@ function countParts(sources: number, telegrams: number): string[] {
  * よって別の重さに見える。
  */
 export function describeTelegramLossParts(loss: TelegramLoss): string[] {
-  return countParts(loss.failedSources.size, loss.skippedTelegrams)
+  return countParts(loss.failedSources.size, totalSkipped(loss))
 }
 
 /**

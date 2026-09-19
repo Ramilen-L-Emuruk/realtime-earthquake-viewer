@@ -12,7 +12,7 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest'
 import {
   fetchDmdataReplayEvents, fetchDmdataQuakeHistory, clearReplayCache, clearArchiveCacheForTest,
-  clearParseCachesForTest, filterPreWindowEvents, isArchiveCacheable, MAX_HISTORY_DAYS,
+  clearParseCachesForTest, filterPreWindowEvents, isArchiveCacheable, HISTORY_WINDOW_DAYS,
 } from './dmdataReplay'
 import { clearArchiveBodyDb } from '../utils/archiveBodyDb'
 
@@ -66,6 +66,11 @@ beforeEach(async () => {
 // ——このファイルの tar 生成は Blob.stream() と CompressionStream を使っており、jsdom の Blob は
 // stream() を持たないため全件が落ちる。必要な 1 つだけを node 環境へ足す。
 import { JSDOM } from 'jsdom'
+
+/** テスト用: 日ごとの取りこぼしを合計する（実装が日ごとに持つようになったため）。 */
+function skippedTotal(m: ReadonlyMap<string, number>): number {
+  return [...m.values()].reduce((a, b) => a + b, 0)
+}
 globalThis.DOMParser = new JSDOM().window.DOMParser
 // 差したままにしない。vitest はファイルごとに実行コンテキストを分けるので現状は漏れないが、
 // 分離設定に依存した「たまたま漏れていない」状態を残さない。
@@ -340,10 +345,10 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     // この判定より後段の `HANDLED_TYPES` で落ちる（→ dmdataTelegramPayload.ts）。
     it('既定では試験報を取り込まない', async () => {
       globalThis.fetch = mockArchives([{ url: 'https://x/a', gz: await archiveWithBoth() }]) as unknown as typeof fetch
-      const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO, false)
+      const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false)
       expect(entries).toHaveLength(1)
       // 落としたのは「対象外」であって取りこぼしではない
-      expect(skipped).toBe(0)
+      expect(skippedTotal(skippedByDay)).toBe(0)
     })
 
     // 正: 設定を入れれば通る。**ここが落ちると、訓練報は実電文では一生画面に出ない。**
@@ -407,7 +412,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     const result = await fetchDmdataReplayEvents('key', FROM, TO, false)
 
     expect(result.entries).toHaveLength(1)
-    expect(result.skipped).toBe(3)
+    expect(skippedTotal(result.skippedByDay)).toBe(3)
     expect(result.failedArchiveUrls).toHaveLength(0)
   })
 
@@ -430,8 +435,8 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO, false)
-    expect(skipped).toBe(0)
+    const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false)
+    expect(skippedTotal(skippedByDay)).toBe(0)
     expect(entries).toHaveLength(1)
     expect(entries[0].payload.kind).toBe('estimatedIntensity')
   })
@@ -454,8 +459,8 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO, false)
-    expect(skipped).toBe(0)
+    const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false)
+    expect(skippedTotal(skippedByDay)).toBe(0)
     expect(entries).toHaveLength(1)
     expect(entries[0].payload.kind).toBe('estimatedIntensity')
   })
@@ -487,8 +492,8 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO, false)
-    expect(skipped).toBe(0)
+    const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false)
+    expect(skippedTotal(skippedByDay)).toBe(0)
     expect(entries).toHaveLength(1)
     const payload = entries[0].payload
     expect(payload.kind).toBe('estimatedIntensity')
@@ -513,9 +518,9 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO, false)
+    const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false)
     expect(entries).toHaveLength(0)
-    expect(skipped).toBe(1)
+    expect(skippedTotal(skippedByDay)).toBe(1)
     expect(warns.join(' ')).toContain('断片が揃いませんでした')
   })
 
@@ -526,9 +531,9 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO, false)
+    const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false)
     expect(entries).toHaveLength(0)
-    expect(skipped).toBe(1)
+    expect(skippedTotal(skippedByDay)).toBe(1)
     expect(warns.join(' ')).toContain('二進電文の本体が見つからず')
     // 理由まで出す（二進の経路でも `bodyMissReason` を通していること）
     expect(warns.join(' ')).toContain('アーカイブに入っていない')
@@ -551,9 +556,9 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO, false)
+    const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false)
     expect(entries).toHaveLength(0)
-    expect(skipped).toBe(1)
+    expect(skippedTotal(skippedByDay)).toBe(1)
   })
 
   // 安全弁: **断片が 2 つとも欠けても 1 件。** アーカイブの部分破損では複数が同時に欠ける。
@@ -570,9 +575,9 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO, false)
+    const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false)
     expect(entries).toHaveLength(0)
-    expect(skipped).toBe(1)
+    expect(skippedTotal(skippedByDay)).toBe(1)
   })
 
   // 対照: 別々の電文なら別々に数える（まとめすぎていないこと）。
@@ -588,8 +593,8 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { skipped } = await fetchDmdataReplayEvents('key', FROM, TO, false)
-    expect(skipped).toBe(2)
+    const { skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false)
+    expect(skippedTotal(skippedByDay)).toBe(2)
   })
 
   it('一部のアーカイブが失敗した件数を戻り値で返す', async () => {
@@ -874,7 +879,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     const result = await fetchDmdataReplayEvents('key', FROM, TO, false)
 
     expect(result.entries).toHaveLength(1)
-    expect(result.skipped).toBe(0)
+    expect(skippedTotal(result.skippedByDay)).toBe(0)
     expect(result.failedArchiveUrls).toHaveLength(0)
   })
 
@@ -957,7 +962,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
 
     expect(result.entries).toHaveLength(1)
     // 救えたものを取りこぼしに数えない
-    expect(result.skipped).toBe(0)
+    expect(skippedTotal(result.skippedByDay)).toBe(0)
     // 補ったことは残す（目録が壊れている事実は消えていない）
     expect(warns.join('\n')).toMatch(/ファイル名から補った/)
   })
@@ -989,7 +994,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     const result = await fetchDmdataReplayEvents('key', FROM, TO, false)
 
     expect(result.entries).toHaveLength(1)
-    expect(result.skipped).toBe(1)
+    expect(skippedTotal(result.skippedByDay)).toBe(1)
     // **この経路の電文は本体読み取りへ進まない**（時刻が決まらない時点で落ちる）ので、
     // 目録の形が変わったのかアーカイブの部分破損かは、ここで添える理由にしか残らない
     expect(warns.join('\n')).toMatch(/発表時刻も受信時刻も読めない.*アーカイブに入っていない/)
@@ -1137,6 +1142,95 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     expect(warns.join('\n')).toMatch(/head を持たない/)
   })
 
+  // リプレイ本編は同じ日を何度も走査する（初期状態 24 時間・本編 1 時間・毎時の先読み）。
+  // 走査のたびに数え直すと、**壊れた 1 通が走査した回数だけ増える**。
+  //
+  // **報告するのは前回からの増分だけ**（→ `reportedReplaySkipCounts`）。「報告済みの日」の
+  // 集合で持つと、当日ぶんに後から届いた電文が壊れていても「その日はもう見た」として黙る。
+  describe('本編の取りこぼしは前回からの増分だけ報告する', () => {
+    /** `head` を持たない（＝取りこぼしとして数える）エントリ n 件と、正常な電文 1 件。 */
+    const archiveWith = (broken: number) => makeTarGz([
+      {
+        name: 'telegrams.json',
+        content: JSON.stringify([
+          ...Array.from({ length: broken }, (_, i) => ({ id: `nohead0${i}`, classification: 'telegram.earthquake' })),
+          manifestEntry('5555555m'),
+        ]),
+      },
+      { name: '5555555m_20260810120500000_0.xml', content: quakeBody('紀伊水道') },
+    ])
+
+    it('対照: 同じ日を読み直しても二度は数えない', async () => {
+      globalThis.fetch = mockArchives([{ url: 'https://x/a', gz: await archiveWith(1) }]) as unknown as typeof fetch
+
+      const first = await fetchDmdataReplayEvents('key', FROM, TO, false)
+      const second = await fetchDmdataReplayEvents('key', FROM, TO, false)
+
+      expect(first.skippedByDay).toEqual(new Map([['2026-08-10', 1]]))
+      expect(second.skippedByDay).toEqual(new Map())
+    })
+
+    // 当日ぶんのアーカイブは控えないので、走査のたびに件数が増えうる。
+    // ここでは別 URL の目録を返して同じ形を作る（本体の控えは URL を鍵にするため）。
+    it('正: 破損が増えたら、増えた分だけ報告する', async () => {
+      globalThis.fetch = mockArchives([{ url: 'https://x/a', gz: await archiveWith(1) }]) as unknown as typeof fetch
+      const first = await fetchDmdataReplayEvents('key', FROM, TO, false)
+      expect(first.skippedByDay).toEqual(new Map([['2026-08-10', 1]]))
+
+      globalThis.fetch = mockArchives([{ url: 'https://x/b', gz: await archiveWith(3) }]) as unknown as typeof fetch
+      const second = await fetchDmdataReplayEvents('key', FROM, TO, false)
+
+      // **増えた 2 件だけ。** 3 件だと最初の 1 通を二度報告することになる
+      expect(second.skippedByDay).toEqual(new Map([['2026-08-10', 2]]))
+    })
+
+    // **窓が違えば、同じ日でも別の電文が壊れている。**
+    //
+    // リプレイの開始は本編（`[T, T+1h)`）と初期状態（`[T-24h, T)`）を**並行に**読む
+    // （`useReplayController`）。どちらの窓も `T` の日を含むので、その日を 2 回走査する
+    // ことになるが、**窓の中でしか判らない破損（本体が無い・パースできない）は
+    // 互いに素**——窓は重ならないので、1 通はどちらか片方にしか入らない。
+    //
+    // 「日ごとの件数」で増分を取ると、この 2 つが同じ日の集計値 1 と 1 になって
+    // **後から報告した側が丸ごと消える**。取りこぼしを少なく見せる側の壊れ方で、
+    // 画面には「静かな時間帯だった」としか出ない。
+    it('正: 窓が違えば、同じ日でも別の破損として数える', async () => {
+      // 09:00 の電文は前半の窓だけ、11:00 の電文は後半の窓だけに入る。
+      // どちらも本体を置かないので「本体が見つからず」で取りこぼしになる
+      const gz = await makeTarGz([
+        {
+          name: 'telegrams.json',
+          content: JSON.stringify([
+            manifestEntry('early001', 'VXSE53', '2026-08-10T09:00:00+09:00'),
+            manifestEntry('late0001', 'VXSE53', '2026-08-10T11:00:00+09:00'),
+          ]),
+        },
+      ])
+      globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
+
+      const mid = new Date('2026-08-10T10:00:00+09:00')
+      const [pre, main] = await Promise.all([
+        fetchDmdataReplayEvents('key', FROM, mid, false),
+        fetchDmdataReplayEvents('key', mid, TO, false),
+      ])
+
+      const total = skippedTotal(pre.skippedByDay) + skippedTotal(main.skippedByDay)
+      expect(total).toBe(2)
+    })
+
+    // 安全弁: 時間軸が変わったら数え直す。別の再生で同じ日を読むのは別の取得。
+    it('安全弁: リプレイの開始（clearReplayCache）では数え直す', async () => {
+      globalThis.fetch = mockArchives([{ url: 'https://x/a', gz: await archiveWith(1) }]) as unknown as typeof fetch
+
+      const first = await fetchDmdataReplayEvents('key', FROM, TO, false)
+      clearReplayCache()
+      const second = await fetchDmdataReplayEvents('key', FROM, TO, false)
+
+      expect(first.skippedByDay).toEqual(new Map([['2026-08-10', 1]]))
+      expect(second.skippedByDay).toEqual(new Map([['2026-08-10', 1]]))
+    })
+  })
+
   it('取得に失敗したアーカイブはキャッシュに残らず、次の試行で再取得される', async () => {
     // 1 回目は 500、2 回目は成功する fetch を用意する
     const good = await makeTarGz([
@@ -1279,6 +1373,188 @@ describe('fetchDmdataQuakeHistory', () => {
 
     expect(result.quakes).toHaveLength(1)
     expect(result.quakes[0].id).toContain('20260810090000')
+  })
+
+  // **`head` を持たない目録エントリは取りこぼしとして数える**（本編の `planReplayEntries` と
+  // 同じ扱い）。黙って落とすと、**目録が壊れている日ほど「静かな日」に見える**。
+  //
+  // 鍵まで見る —— 日を取り違えても合計だけなら通ってしまう。
+  it('head を持たない目録エントリを取りこぼしとして数える', async () => {
+    const gz = await makeTarGz([
+      {
+        name: 'telegrams.json',
+        content: JSON.stringify([
+          { id: 'nohead01', classification: 'telegram.earthquake' },
+          manifestEntry('aaaaaaa1', 'VXSE53', '2026-08-10T09:05:00+09:00'),
+        ]),
+      },
+      {
+        name: 'aaaaaaa1_20260810120500000_0.xml',
+        content: historyBody('20260810090000', '2026-08-10T09:05:00+09:00'),
+      },
+    ])
+    globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
+
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
+
+    // 壊れた 1 件を数えつつ、残りは取り込む
+    expect(result.quakes).toHaveLength(1)
+    expect(result.skippedByDay).toEqual(new Map([['2026-08-10', 1]]))
+  })
+
+  // ここから 4 件はカーソル（`oldestLoadedDay`）と在庫判定（`hasMore`）。
+  //
+  // **この 2 つが噛み合わないと「押しても増えないボタン」か「読み残したまま死ぬボタン」に
+  // なる。** どちらも取得は成功しているので、画面には何の警告も出ない。
+  //
+  // 直近の日（`LIVE_FALLBACK_DAYS` ぶん）まで目録で埋めておく。埋めないとその日は当日経路の
+  // 担当になり、**当日経路で読み切った日のほうが古くなる**ので、カーソルが目録の最古の日には
+  // ならない（当日経路の日も読み切っている以上、カーソルに入るのは正しい）。
+  it('正: 読み切った最古の日をカーソルとして返す', async () => {
+    const gz8 = await dayArchive([{ id: 'ccccccc3', eventId: '20260808010000', time: '2026-08-08T01:05:00+09:00' }])
+    const gz9 = await dayArchive([{ id: 'aaaaaaa1', eventId: '20260809010000', time: '2026-08-09T01:05:00+09:00' }])
+    const gz10 = await dayArchive([{ id: 'bbbbbbb2', eventId: '20260810010000', time: '2026-08-10T01:05:00+09:00' }])
+    globalThis.fetch = mockHistoryArchives([
+      { date: '2026-08-08', url: 'https://x/d08', gz: gz8 },
+      { date: '2026-08-09', url: 'https://x/d09', gz: gz9 },
+      { date: '2026-08-10', url: 'https://x/d10', gz: gz10 },
+    ]) as unknown as typeof fetch
+
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
+
+    expect(result.oldestLoadedDay).toBe('2026-08-08')
+    expect(result.hasMore).toBe(true)
+  })
+
+  // **安全弁に達した日は読んでいない**（打ち切りの判定は日の頭で見る）。その日をカーソルに
+  // 含めると、次の窓がそこより古い範囲から始まり、読み残した日の地震が二度と出ない。
+  //
+  // 実運用では窓（7 日）を丸ごと読み切るのでここへは達しない。効くのは群発の最中だけ
+  // （→ `HISTORY_EVENT_SAFETY_CAP`）。ここでは上限 1 件にして同じ経路を通す。
+  it('対照: 件数の安全弁で読まなかった日はカーソルに含めない', async () => {
+    const gz9 = await dayArchive([{ id: 'aaaaaaa1', eventId: '20260809010000', time: '2026-08-09T01:05:00+09:00' }])
+    const gz10 = await dayArchive([{ id: 'bbbbbbb2', eventId: '20260810010000', time: '2026-08-10T01:05:00+09:00' }])
+    globalThis.fetch = mockHistoryArchives([
+      { date: '2026-08-09', url: 'https://x/d09', gz: gz9 },
+      { date: '2026-08-10', url: 'https://x/d10', gz: gz10 },
+    ]) as unknown as typeof fetch
+
+    // 上限 1 件 → 新しい日（08-10）で達し、08-09 は地震を取り込まない
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 1, 7, false)
+
+    expect(result.oldestLoadedDay).toBe('2026-08-10')
+    // 読み残した日があるので、まだ押せる
+    expect(result.hasMore).toBe(true)
+  })
+
+  // **カーソルは取得に失敗した日を跨いではいけない。**
+  //
+  // 窓は重ならないので、跨ぐとその日は二度と要求されない。とくに 429 は「窓が明けるまで
+  // 待てば取れる」ものなので、跨ぐと設計意図ごと失われる。
+  it('安全弁: 取得に失敗した日でカーソルを止める', async () => {
+    const gz8 = await dayArchive([{ id: 'ccccccc3', eventId: '20260808010000', time: '2026-08-08T01:05:00+09:00' }])
+    const gz10 = await dayArchive([{ id: 'bbbbbbb2', eventId: '20260810010000', time: '2026-08-10T01:05:00+09:00' }])
+    globalThis.fetch = mockHistoryArchives([
+      { date: '2026-08-08', url: 'https://x/d08', gz: gz8 },
+      { date: '2026-08-09', url: 'https://x/d09', gz: 'error' },
+      { date: '2026-08-10', url: 'https://x/d10', gz: gz10 },
+    ]) as unknown as typeof fetch
+
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
+
+    // 08-09 で止まる。**08-08 まで進めてはいけない**（読めてはいるが、その手前に穴がある）
+    expect(result.oldestLoadedDay).toBe('2026-08-10')
+    expect(result.failedArchiveUrls).toContain('https://x/d09')
+    // 失敗しても、読めた日のカードは捨てない
+    expect(result.quakes).toHaveLength(2)
+    // まだ在庫はあるので押せる（押し直せば 08-09 から読み直す）
+    expect(result.hasMore).toBe(true)
+  })
+
+  // **カーソルは「どの担当にもならなかった日」も跨いではいけない。**
+  //
+  // アーカイブの目録にも当日経路の範囲（`LIVE_FALLBACK_DAYS`）にも当たらない日は `sources` に
+  // 現れない。`sources` を素直に辿るだけだと、配列に無い日は `break` の対象にすらならず
+  // **素通りしてさらに古い日までカーソルが進む** —— 窓は重ならないので、その日は二度と
+  // 要求されない。記録（`log.warn`）は残るが画面には何も出ないので、静かに欠ける。
+  it('安全弁: どの担当にもならなかった日でカーソルを止める', async () => {
+    const gz10 = await dayArchive([{ id: 'bbbbbbb2', eventId: '20260810010000', time: '2026-08-10T01:05:00+09:00' }])
+    const gz6 = await dayArchive([{ id: 'ccccccc3', eventId: '20260806010000', time: '2026-08-06T01:05:00+09:00' }])
+    // 08-07 は目録に無く、当日経路の範囲（上端から 2 日）からも外れる＝どの担当にもならない
+    globalThis.fetch = mockHistoryArchives([
+      { date: '2026-08-10', url: 'https://x/d10', gz: gz10 },
+      { date: '2026-08-06', url: 'https://x/d06', gz: gz6 },
+    ]) as unknown as typeof fetch
+
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
+
+    // 当日経路が埋める 08-09・08-08 までで止まる。**08-06 まで進めてはいけない**
+    expect(result.oldestLoadedDay).toBe('2026-08-08')
+    // 読めた日のカードは捨てない
+    expect(result.quakes.length).toBeGreaterThan(0)
+    expect(result.hasMore).toBe(true)
+  })
+
+  // **止まった状態は画面に出す。** 欠落が解消しない限りカーソルは進まず、押しても同じ窓を
+  // 読み直すだけになる。**それ自体は正しい**（跨げばその日は永久に失われる）が、出さないと
+  // 「押しても何も増えないボタン」が理由の分からないまま残る。
+  it('対照: 担当外の日は「読めなかった取得元」として画面へ出す', async () => {
+    const gz10 = await dayArchive([{ id: 'bbbbbbb2', eventId: '20260810010000', time: '2026-08-10T01:05:00+09:00' }])
+    const gz6 = await dayArchive([{ id: 'ccccccc3', eventId: '20260806010000', time: '2026-08-06T01:05:00+09:00' }])
+    globalThis.fetch = mockHistoryArchives([
+      { date: '2026-08-10', url: 'https://x/d10', gz: gz10 },
+      { date: '2026-08-06', url: 'https://x/d06', gz: gz6 },
+    ]) as unknown as typeof fetch
+    const before = new Date('2026-08-10T12:00:00+09:00')
+
+    const first = await fetchDmdataQuakeHistory('key', before, 50, 7, false)
+    expect(first.failedArchiveUrls).toContain('uncovered:2026-08-07')
+
+    // カーソルは欠落日の手前（08-08）で止まる
+    expect(first.oldestLoadedDay).toBe('2026-08-08')
+
+    // **押し直せば前へ進む。恒久的には詰まらない。** 次の窓の上端は欠落日そのものになり、
+    // 当日経路が担当するのは上端から `LIVE_FALLBACK_DAYS`（2 日）ぶんなので、
+    // **前の窓で担当外だった日が次の窓では担当内に入る**。欠落が何日続いても
+    // 1 回につき 2 日ずつは前へ進む
+    const second = await fetchDmdataQuakeHistory(
+      'key', new Date(new Date('2026-08-08T00:00:00+09:00').getTime() - 1), 50, 7, false,
+    )
+    expect(second.oldestLoadedDay).not.toBe(null)
+    expect(second.oldestLoadedDay! < '2026-08-08').toBe(true)
+    expect(second.hasMore).toBe(true)
+  })
+
+  // 止まってよい理由は「窓が保存開始（2020-11-18）より古い」ことだけ。
+  //
+  // **「目録が空だから在庫の端」と決めつけないこと。** 一時的な障害や生成の遅れでも目録は
+  // 空になる。そこで打ち切ると、**読めるはずの期間を「もう無い」として閉じてしまう**
+  // （窓は重ならないので、閉じた先は押し直しても戻らない）。
+  //
+  // かつては「目録が空なら押せなくする」で、当日経路の日を在庫と数えない対照としていた。
+  // 数えないことは今も正しいが、**押せなくする理由にはしない**。
+  it('目録が空でも、窓が在庫の範囲に掛かるうちは押せる', async () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    globalThis.fetch = mockHistoryArchives([]) as unknown as typeof fetch
+
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
+
+    expect(result.hasMore).toBe(true)
+    // 読めなかった日は黙って消さない（三層の記録のどれにも載らない日なので、ここが唯一の痕跡）
+    expect(warn.mock.calls.flat().join(' ')).toMatch(/アーカイブにも当日経路にも当たらない日/)
+  })
+
+  // 対照: 在庫の端より古い窓まで来たら止める。
+  it('対照: 窓が保存開始より古くなったら押せなくする', async () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    globalThis.fetch = mockHistoryArchives([]) as unknown as typeof fetch
+
+    // 窓 7 日 → 2020-11-04〜11-10。どの日も保存開始（2020-11-18）より古い
+    const result = await fetchDmdataQuakeHistory('key', new Date('2020-11-10T12:00:00+09:00'), 50, 7, false)
+
+    expect(result.hasMore).toBe(false)
+    // 在庫の外なので、読めなかったことを鳴らさない（遡り切るたびに警告が出ても困る）
+    expect(warn.mock.calls.flat().join(' ')).not.toMatch(/アーカイブにも当日経路にも当たらない日/)
   })
 
   // `mergeQuakeHistory` は安定ソートで畳み込むため、**発表時刻が同値の電文どうしは入力配列の
@@ -1714,7 +1990,10 @@ describe('fetchDmdataQuakeHistory', () => {
     const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
 
     expect(result.quakes).toHaveLength(1)
-    expect(result.failedArchiveUrls).toEqual(['https://x/d10'])
+    expect(result.failedArchiveUrls).toContain('https://x/d10')
+    // 目録に無く当日経路の範囲からも外れる日は `uncovered:<日>` として同じ枠に出る
+    // （この mock は 2 日ぶんしか目録を返さないので、窓 7 日の残りがそれに当たる）
+    expect(result.failedArchiveUrls.filter(u => !u.startsWith('uncovered:'))).toEqual(['https://x/d10'])
   })
 
   // 全滅は共通原因（認証切れ・全断）のことがほとんど。握り潰すと「履歴 0 件の成功」に化ける。
@@ -1849,8 +2128,8 @@ describe('fetchDmdataQuakeHistory', () => {
       const first = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
       const second = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
 
-      expect(first.skipped).toBe(1)
-      expect(second.skipped).toBe(1)
+      expect(skippedTotal(first.skippedByDay)).toBe(1)
+      expect(skippedTotal(second.skippedByDay)).toBe(1)
     })
   })
 
@@ -1912,14 +2191,14 @@ describe('fetchDmdataQuakeHistory', () => {
       const counter = countingFetch([{ date: '2026-08-10', url: 'https://x/d10', gz }])
 
       const first = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
-      expect(first.skipped).toBe(1)
+      expect(skippedTotal(first.skippedByDay)).toBe(1)
       expect(counter.bodies).toBe(1)
 
       clearArchiveCacheForTest()
       const second = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
 
       expect(counter.bodies).toBe(2)
-      expect(second.skipped).toBe(1)
+      expect(skippedTotal(second.skippedByDay)).toBe(1)
     })
 
     // 目録は本体の中に入っているので、そちらが控えに無ければ落とすしかない。
@@ -2007,7 +2286,9 @@ describe('fetchDmdataQuakeHistory', () => {
 
       const second = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
 
-      expect(second.failedArchiveUrls).toEqual([])
+      // 見るのは取得の失敗だけ。`uncovered:<日>`（目録にも当日経路にも当たらない日）は
+      // この mock が 1 日ぶんしか目録を返さないことの現れで、落とさなかった日の話ではない
+      expect(second.failedArchiveUrls.filter(u => !u.startsWith('uncovered:'))).toEqual([])
       expect(second.rateLimitedSources).toEqual([])
       expect(second.quakes).toHaveLength(1)
     })
@@ -2047,7 +2328,7 @@ describe('fetchDmdataQuakeHistory', () => {
       const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T13:00:00+09:00'), 50, 7, false)
 
       expect(result.quakes).toHaveLength(1)
-      expect(result.skipped).toBe(0)
+      expect(skippedTotal(result.skippedByDay)).toBe(0)
     })
 
     // 受信時刻は発表時刻以降なので、境界では**採らない側**（安全側）へ倒れる。
@@ -2060,7 +2341,7 @@ describe('fetchDmdataQuakeHistory', () => {
 
       expect(result.quakes).toHaveLength(0)
       // 窓の外なのは正常。取りこぼしには数えない
-      expect(result.skipped).toBe(0)
+      expect(skippedTotal(result.skippedByDay)).toBe(0)
     })
 
     // 「もっと見る」もリプレイの先読みも同じ日を何度も走査するので、控えないと押した回数だけ
@@ -2109,7 +2390,7 @@ describe('fetchDmdataQuakeHistory', () => {
       const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T13:00:00+09:00'), 50, 7, false)
 
       expect(result.quakes).toHaveLength(0)
-      expect(result.skipped).toBe(1)
+      expect(skippedTotal(result.skippedByDay)).toBe(1)
       // 履歴側でも理由を添える（この経路も本体読み取りへは進まない）
       expect(warns.join('\n')).toMatch(/履歴用電文の発表時刻も受信時刻も読めない.*アーカイブに入っていない/)
     })
@@ -2131,7 +2412,7 @@ describe('fetchDmdataQuakeHistory', () => {
       const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T13:00:00+09:00'), 50, 7, false)
 
       expect(result.quakes).toHaveLength(0)
-      expect(result.skipped).toBe(1)
+      expect(skippedTotal(result.skippedByDay)).toBe(1)
       expect(warns.join('\n')).toMatch(/履歴用電文の本体が見つからず.*アーカイブに入っていない/)
     })
   })
@@ -2314,26 +2595,28 @@ describe('filterPreWindowEvents の EEW（解除時刻を決められないと�
   })
 })
 
-// `MAX_HISTORY_DAYS` は `MAX_ENUMERATED_DAYS` から 1 日引いただけの値で、引き算そのものが
-// 正しいかは型でも実行でも確かめられない。**1 日ずれても症状は「8 回目に押したときだけ
-// 例外」**で、通常の検証には現れないため、ここで境界を固定する。
+// かつてここは「`MAX_HISTORY_DAYS` が `MAX_ENUMERATED_DAYS` - 1 であること」を固定していた。
+// **遡り幅の上限そのものを撤廃した**（カーソル方式）ので、その境界は無くなっている。
 //
-// `fetchDmdataQuakeHistory` が当日経路へ列挙させる範囲は `[before - maxDays, before + 1ms)`。
-describe('遡れる日数の上限（MAX_HISTORY_DAYS）', () => {
+// 代わりに固定するのは、**窓の広さが当日経路の暴走防止に触れないこと**。ここが崩れると、
+// 窓を広げた瞬間に「押すたび例外を投げるだけのボタン」へ戻る（元の不具合がまさにそれ）。
+describe('当日経路の列挙は窓の広さに引きずられない', () => {
   const before = new Date('2026-09-15T03:00:00Z')
-  const rangeFor = (maxDays: number) => {
+  const rangeFor = (days: number) => {
     const from = new Date(before)
-    from.setDate(from.getDate() - maxDays)
+    from.setDate(from.getDate() - days)
     return [from, new Date(before.getTime() + 1)] as const
   }
 
-  it('正: 上限ちょうどの日数なら列挙できる', () => {
-    const [from, to] = rangeFor(MAX_HISTORY_DAYS)
-    expect(enumerateJstDates(from, to)).toHaveLength(MAX_ENUMERATED_DAYS)
+  // 実際に当日経路へ渡るのは `LIVE_FALLBACK_DAYS` ぶんだけだが、窓の幅をそのまま渡しても
+  // 歯止めに触れない余裕を保っておく（絞り込みを外しても即座に壊れない側へ倒す）。
+  it('正: 1 回の窓の幅を渡しても列挙できる', () => {
+    const [from, to] = rangeFor(HISTORY_WINDOW_DAYS)
+    expect(enumerateJstDates(from, to)).toHaveLength(HISTORY_WINDOW_DAYS + 1)
   })
 
-  it('対照: 1 日でも超えると投げる', () => {
-    const [from, to] = rangeFor(MAX_HISTORY_DAYS + 1)
+  it('対照: 歯止め自体は生きている', () => {
+    const [from, to] = rangeFor(MAX_ENUMERATED_DAYS)
     expect(() => enumerateJstDates(from, to)).toThrow(/対象期間が広すぎます/)
   })
 })
@@ -2565,10 +2848,10 @@ describe('本体は目録の filename で引く', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO, false)
+    const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false)
 
     expect(entries).toHaveLength(1)
-    expect(skipped).toBe(0)
+    expect(skippedTotal(skippedByDay)).toBe(0)
   })
 
   // 対照: `filename` が無ければ引けない。**その 1 通だけ落とし、理由まで記録する** ——
@@ -2587,11 +2870,11 @@ describe('本体は目録の filename で引く', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO, false)
+    const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false)
 
     // 巻き添えにしない
     expect(entries).toHaveLength(1)
-    expect(skipped).toBe(1)
+    expect(skippedTotal(skippedByDay)).toBe(1)
     expect(warns.join('\n')).toMatch(/本体が見つからずスキップ.*filename を持たない/)
     // 部分破損と取り違えさせない
     expect(warns.join('\n')).not.toMatch(/アーカイブに入っていない/)
@@ -2612,10 +2895,10 @@ describe('本体は目録の filename で引く', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO, false)
+    const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false)
 
     expect(entries).toHaveLength(0)
-    expect(skipped).toBe(1)
+    expect(skippedTotal(skippedByDay)).toBe(1)
     // 理由まで出す（目録の形が変わった側と取り違えさせない）
     expect(warns.join('\n')).toMatch(/本体が見つからずスキップ.*アーカイブに入っていない/)
     expect(warns.join('\n')).not.toMatch(/filename を持たない/)
