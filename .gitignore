@@ -93,3 +93,9 @@ public/data/historical-archives-kyoshin/
 scripts/probe-*.ts
 scripts/_*.ts
 scripts/_*.cjs
+# dotagents: Codex temporary output
+.codex/worktrees/
+.codex/logs/
+.codex/screenshots/
+.codex/release.lock
+.codex/import-backup/
