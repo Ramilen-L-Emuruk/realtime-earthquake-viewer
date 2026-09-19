@@ -1,17 +1,21 @@
-// 推計震度分布図（IXAC41）の BUFR 読み取り。
+// 推計震度分布図（IXAC41・IXAC40）の BUFR 読み取り。
 //
 // **正にしているのは「配信資料に関するお知らせ 2023-01-11」の別紙4**（第4節の実バイナリ例）。
 // 資料が「このビット列はこの値」と書いている組をそのまま組み立てて、同じ値が返ることを見る。
 //
 // 実電文で「ビット列が第4節の末尾ぴったりで終わる」ことは確認済みだが、**あの判定だけでは
-// 足りない** —— 詰め物の余地が 8〜23 ビットあるので、幅が 1 ビットずれた読み方も通りうる。
-// 資料の値と突き合わせて初めて幅が確定する。
+// 足りない** —— 余りの許容幅が 16 ビットある（IXAC41 は 8〜23・IXAC40 は 16〜31）ので、
+// 幅が 1 ビットずれた読み方も通りうる。資料の値と突き合わせて初めて幅が確定する。
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
   decodeEstimatedIntensity, bufrDeclaredLength, cellCapacityFor, CELL_LAT_DEG, CELL_LON_DEG,
+  CELL_LAT_DEG_1KM, CELL_LON_DEG_1KM,
 } from './bufrEstimatedIntensity'
 // 組み立て側はリプレイのテストと共有する（`src/test-utils/bufrBuild.ts`）。
-import { build, DESCS_PLAIN, SAMPLE_GRADES, type Build, type Mesh2, type Mesh3 } from '../test-utils/bufrBuild'
+import {
+  build, DESCS_PLAIN, DESCS_PLAIN_1KM, SAMPLE_GRADES, buildSampleTelegram,
+  type Build, type Mesh2, type Mesh3,
+} from '../test-utils/bufrBuild'
 import { log } from './logger'
 
 // **部分モックにする。** 丸ごと置き換えると、logger が新しい関数を export した日に
@@ -57,7 +61,7 @@ describe('decodeEstimatedIntensity（別紙4 の実バイナリ例）', () => {
         ] }],
       }],
     })
-    const r = decodeEstimatedIntensity(bytes, 'id1', '2026-04-20T08:25:00Z')
+    const r = decodeEstimatedIntensity(bytes, 'id1', '2026-04-20T08:25:00Z', 'IXAC41')
     expect(r).not.toBeNull()
     expect(r!.hypocenter).toEqual({ lat: 34.84, lon: 135.62, depthKm: 10 })
     expect(r!.magnitude).toBeCloseTo(6.1, 5)
@@ -77,7 +81,7 @@ describe('decodeEstimatedIntensity（別紙4 の実バイナリ例）', () => {
       grades: SAMPLE_GRADES, latRaw: 12484, lonRaw: 31562, depthKm: 10, magRaw: 61,
       mesh2: [{ p1: 52, u1: 35, q2: 0, v2: 6, mesh3: [{ r3: 0, w3: 0, cells: [{ half: 1, quarter: 1, si: 42 }] }] }],
     })
-    const r = decodeEstimatedIntensity(bytes, 'id', 't')!
+    const r = decodeEstimatedIntensity(bytes, 'id', 't', 'IXAC41')!
     expect(r.grades).toEqual([
       { scale: 4, modifier: 'none', lower: 35, upper: 44 },
       { scale: 5, modifier: 'weak', lower: 45, upper: 49 },
@@ -98,7 +102,7 @@ describe('decodeEstimatedIntensity（別紙4 の実バイナリ例）', () => {
         { half: 4, quarter: 4, si: 43 },   // 北東の北東
       ] }] }],
     })
-    const r = decodeEstimatedIntensity(bytes, 'id', 't')!
+    const r = decodeEstimatedIntensity(bytes, 'id', 't', 'IXAC41')!
     const baseLat = 52 * (2 / 3), baseLon = 135
     // 小数 4 桁（約 11m）で見る。**Float32 で持っているため**、経度 135 度付近では
     // 表せる刻みが約 1.3m あり、5 桁（約 1m）だと量子化そのものに引っかかる。
@@ -136,7 +140,7 @@ describe('decodeEstimatedIntensity（別紙4 の実バイナリ例）', () => {
       grades: SAMPLE_GRADES, latRaw: 12484, lonRaw: 31562, depthKm: 10, magRaw,
       mesh2: [{ p1: 52, u1: 35, q2: 0, v2: 6, mesh3: [{ r3: 0, w3: 0, cells: [{ half: 1, quarter: 1, si: 42 }] }] }],
     })
-    const r = decodeEstimatedIntensity(bytes, 'id', 't')!
+    const r = decodeEstimatedIntensity(bytes, 'id', 't', 'IXAC41')!
     expect(Number.isNaN(r.magnitude)).toBe(true)
     expect(r.magnitudeCondition).toBe(expected)
   })
@@ -148,8 +152,8 @@ describe('decodeEstimatedIntensity（別紙4 の実バイナリ例）', () => {
       grades: SAMPLE_GRADES, latRaw: 12484, lonRaw: 31562, depthKm: 10, magRaw: 61,
       mesh2: [{ p1: 52, u1: 35, q2: 0, v2: 6, mesh3: [{ r3: 0, w3: 0, cells: [{ half: 2, quarter: 3, si: 55 }] }] }],
     }
-    const plain = decodeEstimatedIntensity(build(common), 'id', 't')!
-    const tsu = decodeEstimatedIntensity(build({ ...common, tsunami: true }), 'id', 't')!
+    const plain = decodeEstimatedIntensity(build(common), 'id', 't', 'IXAC41')!
+    const tsu = decodeEstimatedIntensity(build({ ...common, tsunami: true }), 'id', 't', 'IXAC41')!
     expect(tsu.hypocenter).toEqual(plain.hypocenter)
     expect(tsu.arrivalTime).toBe(plain.arrivalTime)
     expect([...tsu.si.slice(0, 1)]).toEqual([...plain.si.slice(0, 1)])
@@ -168,14 +172,14 @@ describe('decodeEstimatedIntensity（読めないもの）', () => {
   // 並びが違えば幅もずれうる。読めてしまうと画面に嘘の分布が出る。
   it('知らない記述子の並びは読まずに記録する', () => {
     const bytes = build({ ...ok, descs: [...DESCS_PLAIN, '0-01-999'] })
-    expect(decodeEstimatedIntensity(bytes, 'id', 't')).toBeNull()
+    expect(decodeEstimatedIntensity(bytes, 'id', 't', 'IXAC41')).toBeNull()
     expect(String(vi.mocked(log.warn).mock.calls[0][0])).toContain('記述子の並び')
   })
 
   // 安全弁: 分割の結合漏れ。長さで弾かないと、途中で切れたビット列を読み進めてしまう。
   it('宣言された全長と実際の長さが違えば読まない', () => {
     const bytes = build({ ...ok, declaredLengthOverride: 999999 })
-    expect(decodeEstimatedIntensity(bytes, 'id', 't')).toBeNull()
+    expect(decodeEstimatedIntensity(bytes, 'id', 't', 'IXAC41')).toBeNull()
     expect(String(vi.mocked(log.warn).mock.calls[0][0])).toContain('長さが宣言と違います')
   })
 
@@ -185,7 +189,7 @@ describe('decodeEstimatedIntensity（読めないもの）', () => {
   // 電文の外へ後退するので、**「第4節の中」という言い方が成り立たなくなる**。
   it('第4節の長さが電文に収まらなければ読まない', () => {
     const bytes = build({ ...ok, section4LengthOverride: 0xffffff })
-    expect(decodeEstimatedIntensity(bytes, 'id', 't')).toBeNull()
+    expect(decodeEstimatedIntensity(bytes, 'id', 't', 'IXAC41')).toBeNull()
     expect(String(vi.mocked(log.warn).mock.calls[0][0])).toContain('第4節の長さが電文に収まりません')
   })
 
@@ -194,7 +198,7 @@ describe('decodeEstimatedIntensity（読めないもの）', () => {
   it('第4節の長さが第5節の直前を指すなら弾かない', () => {
     const origin = build(ok)
     const bytes = build({ ...ok, section4LengthOverride: origin.length - 4 - section4(origin).offset })
-    expect(decodeEstimatedIntensity(bytes, 'id', 't')).not.toBeNull()
+    expect(decodeEstimatedIntensity(bytes, 'id', 't', 'IXAC41')).not.toBeNull()
     expect(log.warn).not.toHaveBeenCalled()
   })
 
@@ -202,7 +206,7 @@ describe('decodeEstimatedIntensity（読めないもの）', () => {
   // 4 を下回ると読み始めの時点でもう歯止めの外にいて、最初の 1 オクテットが素通しで読まれる。
   it.each([0, 3])('第4節の長さが %i オクテットなら読まない', (s4len) => {
     const bytes = build({ ...ok, section4LengthOverride: s4len })
-    expect(decodeEstimatedIntensity(bytes, 'id', 't')).toBeNull()
+    expect(decodeEstimatedIntensity(bytes, 'id', 't', 'IXAC41')).toBeNull()
     expect(String(vi.mocked(log.warn).mock.calls[0][0])).toContain('第4節の長さが電文に収まりません')
   })
 
@@ -210,7 +214,7 @@ describe('decodeEstimatedIntensity（読めないもの）', () => {
   it('第4節の長さが第5節へ 1 オクテット食い込めば読まない', () => {
     const origin = build(ok)
     const bytes = build({ ...ok, section4LengthOverride: origin.length - 3 - section4(origin).offset })
-    expect(decodeEstimatedIntensity(bytes, 'id', 't')).toBeNull()
+    expect(decodeEstimatedIntensity(bytes, 'id', 't', 'IXAC41')).toBeNull()
     expect(String(vi.mocked(log.warn).mock.calls[0][0])).toContain('第4節の長さが電文に収まりません')
   })
 
@@ -219,20 +223,20 @@ describe('decodeEstimatedIntensity（読めないもの）', () => {
   // 無関係な値で組み上がる**（配列外は 0 が返るだけで例外にならない）。
   it('凡例の件数を水増しした電文は読み位置で止める', () => {
     const bytes = build({ ...ok, declaredGradeCount: 255 })
-    expect(decodeEstimatedIntensity(bytes, 'id', 't')).toBeNull()
+    expect(decodeEstimatedIntensity(bytes, 'id', 't', 'IXAC41')).toBeNull()
     expect(String(vi.mocked(log.warn).mock.calls[0][0])).toContain('凡例の途中で第4節を超えました')
   })
 
   it('BUFR の版が 3 でなければ読まない', () => {
     const bytes = build({ ...ok, edition: 4 })
-    expect(decodeEstimatedIntensity(bytes, 'id', 't')).toBeNull()
+    expect(decodeEstimatedIntensity(bytes, 'id', 't', 'IXAC41')).toBeNull()
     expect(String(vi.mocked(log.warn).mock.calls[0][0])).toContain('版が 3 ではありません')
   })
 
   it('BUFR で始まらなければ読まない', () => {
     const bytes = build(ok)
     bytes[0] = 0x00
-    expect(decodeEstimatedIntensity(bytes, 'id', 't')).toBeNull()
+    expect(decodeEstimatedIntensity(bytes, 'id', 't', 'IXAC41')).toBeNull()
   })
 
   // 対照: 範囲外のメッシュ番号はそのセルだけ落として、残りは読む。
@@ -246,7 +250,7 @@ describe('decodeEstimatedIntensity（読めないもの）', () => {
         { half: 2, quarter: 2, si: 44 },   // 正常
       ] }] }],
     })
-    const r = decodeEstimatedIntensity(bytes, 'id', 't')
+    const r = decodeEstimatedIntensity(bytes, 'id', 't', 'IXAC41')
     expect(r).not.toBeNull()
     expect(r!.count).toBe(1)
     expect(r!.si[0]).toBe(44)
@@ -256,13 +260,13 @@ describe('decodeEstimatedIntensity（読めないもの）', () => {
   // 安全弁: セルが 1 件も無い電文は「読めた」ことにしない（空の分布を描いても意味が無い）。
   it('セルが 1 件も無ければ読まない', () => {
     const bytes = build({ ...ok, mesh2: [] })
-    expect(decodeEstimatedIntensity(bytes, 'id', 't')).toBeNull()
+    expect(decodeEstimatedIntensity(bytes, 'id', 't', 'IXAC41')).toBeNull()
   })
 
   // 安全弁: 凡例が無いと、どの計測震度がどの階級かを電文から言えない。
   it('凡例が 1 件も無ければ読まない', () => {
     const bytes = build({ ...ok, grades: [] })
-    expect(decodeEstimatedIntensity(bytes, 'id', 't')).toBeNull()
+    expect(decodeEstimatedIntensity(bytes, 'id', 't', 'IXAC41')).toBeNull()
   })
 
   // 安全弁: **凡例の 1 行だけが妙でも黙らない。** 全滅していないので描画側の異常検知には
@@ -276,7 +280,7 @@ describe('decodeEstimatedIntensity（読めないもの）', () => {
         { mod: 0, scale: 5, lo: 60, hi: 50 },   // 下限 > 上限
       ],
     })
-    const r = decodeEstimatedIntensity(bytes, 'id', 't')
+    const r = decodeEstimatedIntensity(bytes, 'id', 't', 'IXAC41')
     expect(r).not.toBeNull()
     expect(r!.grades).toHaveLength(3)
     const msg = String(vi.mocked(log.warn).mock.calls[0][0])
@@ -285,14 +289,14 @@ describe('decodeEstimatedIntensity（読めないもの）', () => {
 
   // 対照: まともな凡例では鳴らない（正常運転でログを埋めない）。
   it('凡例が揃っていれば記録しない', () => {
-    decodeEstimatedIntensity(build(ok), 'id', 't')
+    decodeEstimatedIntensity(build(ok), 'id', 't', 'IXAC41')
     expect(log.warn).not.toHaveBeenCalled()
   })
 
   // 対照: 訓練等の電文（種類 0 以外）は読むが記録する。実配信 13 か月では 0 しか出ていない。
   it('電文の種類が通常でなければ記録する（読み取りは続ける）', () => {
     const bytes = build({ ...ok, kind: 1 })
-    const r = decodeEstimatedIntensity(bytes, 'id', 't')
+    const r = decodeEstimatedIntensity(bytes, 'id', 't', 'IXAC41')
     expect(r).not.toBeNull()
     expect(r!.telegramKind).toBe(1)
     expect(String(vi.mocked(log.warn).mock.calls[0][0])).toContain('電文の種類')
@@ -308,7 +312,7 @@ describe('decodeEstimatedIntensity（確保長は読み位置の歯止めに包�
 
   // 確保長は**実装の関数をそのまま呼ぶ**。式を書き写すと、1 セルのビット幅を変えたときに
   // 片方だけ直っても、ここはずれた関係を検査したまま緑で通る。
-  const capacityOf = (bytes: Uint8Array) => cellCapacityFor(section4(bytes).length)
+  const capacityOf = (bytes: Uint8Array) => cellCapacityFor(section4(bytes).length, 13)
 
   /**
    * セルを最も密に詰めた電文の中身。1 つの 3 次メッシュへ 255 件（セル数の幅の上限）まで
@@ -333,7 +337,7 @@ describe('decodeEstimatedIntensity（確保長は読み位置の歯止めに包�
     const bytes = build({ ...base, mesh2: densest(cellCount) })
     const s4 = section4(bytes)
     expect(s4.offset + s4.length + 4).toBe(bytes.length)   // 辿り方の自己確認（末尾 4 オクテットは 7777）
-    const r = decodeEstimatedIntensity(bytes, 'id', 't')
+    const r = decodeEstimatedIntensity(bytes, 'id', 't', 'IXAC41')
     expect(r).not.toBeNull()
     expect(r!.count).toBe(cellCount)
     expect(capacityOf(bytes) - r!.count).toBeGreaterThanOrEqual(16)
@@ -344,7 +348,7 @@ describe('decodeEstimatedIntensity（確保長は読み位置の歯止めに包�
   it('確保長がセル数に足りなくても、先に効くのは読み位置の歯止め', () => {
     const bytes = build({ ...base, mesh2: densest(255), section4LengthOverride: 200 })
     expect(capacityOf(bytes)).toBeLessThan(255)
-    expect(decodeEstimatedIntensity(bytes, 'id', 't')).toBeNull()
+    expect(decodeEstimatedIntensity(bytes, 'id', 't', 'IXAC41')).toBeNull()
     expect(String(vi.mocked(log.warn).mock.calls[0][0])).toContain('第4節を超えました')
   })
 
@@ -362,7 +366,7 @@ describe('decodeEstimatedIntensity（確保長は読み位置の歯止めに包�
       bytes[offset] = (s4len >> 16) & 0xff
       bytes[offset + 1] = (s4len >> 8) & 0xff
       bytes[offset + 2] = s4len & 0xff
-      decodeEstimatedIntensity(bytes, 'id', 't')
+      decodeEstimatedIntensity(bytes, 'id', 't', 'IXAC41')
       const msgs = vi.mocked(log.warn).mock.calls.map((c) => String(c[0]))
       expect(msgs.filter((m) => m.includes('セルが確保長'))).toEqual([])
     }
@@ -377,7 +381,7 @@ describe('decodeEstimatedIntensity（確保長は読み位置の歯止めに包�
     ['2 次メッシュ', { ...base, mesh2: densest(255), declaredMesh2Count: 100 }],
     ['3 次メッシュ', { ...base, mesh2: [{ ...densest(255)[0], declaredMesh3Count: 100 }] }],
   ])('%s の数を水増しした電文は読み位置で止める', (_label, spec) => {
-    expect(decodeEstimatedIntensity(build(spec), 'id', 't')).toBeNull()
+    expect(decodeEstimatedIntensity(build(spec), 'id', 't', 'IXAC41')).toBeNull()
     expect(String(vi.mocked(log.warn).mock.calls[0][0])).toContain('メッシュの途中で第4節を超えました')
   })
 
@@ -393,7 +397,7 @@ describe('decodeEstimatedIntensity（確保長は読み位置の歯止めに包�
         mesh3: [{ r3: 0, w3: 0, cells: [{ half: 1, quarter: 1, si: 42 }], declaredCellCount: 100 }],
       }],
     })
-    expect(decodeEstimatedIntensity(bytes, 'id', 't')).toBeNull()
+    expect(decodeEstimatedIntensity(bytes, 'id', 't', 'IXAC41')).toBeNull()
     expect(String(vi.mocked(log.warn).mock.calls[0][0])).toContain('（セル ')
   })
 })
@@ -413,5 +417,125 @@ describe('bufrDeclaredLength', () => {
 
   it('8 バイト未満なら null', () => {
     expect(bufrDeclaredLength(new Uint8Array([0x42, 0x55, 0x46, 0x52]))).toBeNull()
+  })
+})
+
+// IXAC40（1km メッシュ）。IXAC41 の前身で、気象庁が 2026-02-02 に配信を終了した種別。
+//
+// **ライブでは届かない**が、読めなければ IXAC41 提供開始前（2022 年度後半より前）の地震を
+// 再生したときに推計震度分布図が出ない。実電文（2022-01-22 日向灘）で記述子列・セル寸法・
+// 第4節の余りを確かめ、その形をここで固定する。
+describe('IXAC40（1km メッシュ）', () => {
+  /** 1 次メッシュ 52-35・2 次メッシュ 0-6 に 3 次メッシュのセルを 3 つ置く。 */
+  const build1km = (over: Partial<Build> = {}): Uint8Array => build({
+    grades: SAMPLE_GRADES, latRaw: 12484, lonRaw: 31562, depthKm: 10, magRaw: 61,
+    mesh: 'third',
+    mesh2: [{
+      p1: 52, u1: 35, q2: 0, v2: 6,
+      mesh3: [{ r3: 0, w3: 0, si: 42 }, { r3: 0, w3: 1, si: 43 }, { r3: 1, w3: 0, si: 44 }],
+    }],
+    ...over,
+  })
+  /** 2 次メッシュ 52-35-0-6 の南西端。1 次メッシュ 52 → 緯度 34.666…°、35 → 経度 135°。 */
+  const baseLat = 52 * (2 / 3)
+  const baseLon = 135 + 6 / 8
+  /**
+   * 座標の比較の桁数。**`Float32Array` で持つので有効桁は 7 桁ほど** —— 緯度 34.67 の絶対誤差が
+   * 4e-6、経度 135.75 では 1.6e-5 になる。6 桁（5e-7 以内）を要求すると正しい値でも落ちる。
+   * セル 1 つ分（緯度 8.3e-3・経度 1.25e-2）はこの桁でも十分に見分けられる。
+   */
+  const COORD_DIGITS = 4
+
+  // 正: 3 次メッシュが最下段の形を読み、座標をその南西端にする。
+  it('3 次メッシュのセルを読む', () => {
+    const r = decodeEstimatedIntensity(build1km(), 'id', 't', 'IXAC40')
+    expect(r).not.toBeNull()
+    expect(r!.count).toBe(3)
+    expect([...r!.si.slice(0, 3)]).toEqual([42, 43, 44])
+    expect(r!.lat[0]).toBeCloseTo(baseLat, COORD_DIGITS)
+    expect(r!.lon[0]).toBeCloseTo(baseLon, COORD_DIGITS)
+    // 3 次メッシュ 1 つ分ずれる（1/2・1/4 の項は入らない）。
+    expect(r!.lon[1]).toBeCloseTo(baseLon + CELL_LON_DEG_1KM, COORD_DIGITS)
+    expect(r!.lat[2]).toBeCloseTo(baseLat + CELL_LAT_DEG_1KM, COORD_DIGITS)
+    // 前半 17 記述子は IXAC41 と同一なので、震源・規模・時刻の読み方も変わらない。
+    expect(r!.hypocenter).toEqual({ lat: 34.84, lon: 135.62, depthKm: 10 })
+    expect(r!.arrivalTime).toBe('2018-06-17T22:58:00.000Z')
+    expect(log.warn).not.toHaveBeenCalled()
+  })
+
+  // 正: セルの寸法を電文の形から決め、矩形もそのぶんだけ閉じる。
+  it('セルの寸法を 1km で返し、矩形をその 1 セル分だけ閉じる', () => {
+    const r = decodeEstimatedIntensity(build1km(), 'id', 't', 'IXAC40')!
+    expect(r.cellLatDeg).toBeCloseTo(CELL_LAT_DEG_1KM, 9)
+    expect(r.cellLonDeg).toBeCloseTo(CELL_LON_DEG_1KM, 9)
+    expect(r.bounds.south).toBeCloseTo(baseLat, COORD_DIGITS)
+    expect(r.bounds.west).toBeCloseTo(baseLon, COORD_DIGITS)
+    // 南西端の最大（r3=1 / w3=1）にセル 1 つ分を足した位置。
+    expect(r.bounds.north).toBeCloseTo(baseLat + 2 * CELL_LAT_DEG_1KM, COORD_DIGITS)
+    expect(r.bounds.east).toBeCloseTo(baseLon + 2 * CELL_LON_DEG_1KM, COORD_DIGITS)
+  })
+
+  // 対照: IXAC41 の形では 250m のまま。**寸法は 4 倍違う**ので、取り違えると
+  // テクスチャの解像度と矩形の閉じ方がまとめてずれる。
+  it('IXAC41 の形では 250m の寸法のまま', () => {
+    const r = decodeEstimatedIntensity(buildSampleTelegram(), 'id', 't', 'IXAC41')!
+    expect(r.cellLatDeg).toBeCloseTo(CELL_LAT_DEG, 9)
+    expect(r.cellLonDeg).toBeCloseTo(CELL_LON_DEG, 9)
+    expect(r.cellLatDeg * 4).toBeCloseTo(CELL_LAT_DEG_1KM, 9)
+    expect(r.cellLonDeg * 4).toBeCloseTo(CELL_LON_DEG_1KM, 9)
+  })
+
+  // 安全弁: 3 次メッシュが最下段になるので、その値域（0〜9）を外れたセルを落とす。
+  // 幅は 4 ビットあるので 10〜15 も表せてしまう。
+  it('3 次メッシュ番号が 10 以上のセルを落とす', () => {
+    const r = decodeEstimatedIntensity(build1km({
+      mesh2: [{
+        p1: 52, u1: 35, q2: 0, v2: 6,
+        mesh3: [{ r3: 0, w3: 0, si: 42 }, { r3: 10, w3: 0, si: 43 }, { r3: 0, w3: 15, si: 44 }],
+      }],
+    }), 'id', 't', 'IXAC40')!
+    expect(r.count).toBe(1)
+    expect([...r.si.slice(0, 1)]).toEqual([42])
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('範囲外のメッシュ番号'))
+  })
+
+  // 安全弁: 記述子列が既知の形と 1 つでも違えば読まない。**幅は資料から写した値を当てて
+  // いるだけ**なので、並びが変われば幅もずれ、画面に嘘の分布が出る。
+  it('メッシュ部の記述子が 1 つ欠けたら読まない', () => {
+    const bytes = build1km({ descs: DESCS_PLAIN_1KM.slice(0, -1) })
+    expect(decodeEstimatedIntensity(bytes, 'id', 't', 'IXAC40')).toBeNull()
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('記述子の並びが既知の'))
+  })
+
+  // 安全弁: IXAC41 の記述子列を IXAC40 と名乗る電文は、**読めるが記録に残す**。
+  // 読み取りは中身（記述子列）に従う —— 名乗りで幅を決めると、種別の使い分けが変わった日に
+  // 嘘の分布が出る。
+  it('名乗りと中身が食い違えば読んだうえで記録する', () => {
+    const r = decodeEstimatedIntensity(buildSampleTelegram(), 'id', 't', 'IXAC40')
+    expect(r).not.toBeNull()
+    expect(r!.cellLatDeg).toBeCloseTo(CELL_LAT_DEG, 9)   // 中身のとおり 250m で読む
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('名乗りと中身が食い違います'))
+  })
+
+  // 安全弁: 確保長は 1 セルのビット幅から決まる。IXAC40 は 15 ビットなので、
+  // 同じ第4節長でも IXAC41（13 ビット）より小さくなる。
+  it('確保長は 1 セルのビット幅で変わる', () => {
+    expect(cellCapacityFor(1000, 15)).toBeLessThan(cellCapacityFor(1000, 13))
+  })
+
+  // 安全弁: **標本を持たない形**（IXAC40 × 津波ブロック）も既知の 4 形に入れてある。
+  // 津波ブロックは 2 種別に共通の前半へ挟まるので IXAC41 の形から機械的に導けるが、
+  // **導き方が合っているかを確かめられるのはここだけ**（実電文が無い）。
+  // 記述子列は `.replace()` での文字列結合なので、位置や空白の扱いで静かに壊れうる。
+  it('津波ブロック付き（標本なし）でも震源とセルがずれない', () => {
+    const plain = decodeEstimatedIntensity(build1km(), 'id', 't', 'IXAC40')!
+    const tsu = decodeEstimatedIntensity(build1km({ tsunami: true }), 'id', 't', 'IXAC40')
+    expect(tsu).not.toBeNull()
+    expect(tsu!.hypocenter).toEqual(plain.hypocenter)
+    expect(tsu!.arrivalTime).toBe(plain.arrivalTime)
+    expect(tsu!.count).toBe(plain.count)
+    expect([...tsu!.si.slice(0, 3)]).toEqual([...plain.si.slice(0, 3)])
+    expect(tsu!.cellLatDeg).toBeCloseTo(CELL_LAT_DEG_1KM, 9)
+    expect(log.warn).not.toHaveBeenCalled()
   })
 })

@@ -23,6 +23,7 @@ import type { JMAKohatsu } from '../types/earthquake'
 import { serverDate, setReplayOffset } from '../utils/clock'
 import { DMDATA_API_KEY_INVALID_MESSAGE } from '../utils/dmdataApiKey'
 import { log } from '../utils/logger'
+import { CELL_LAT_DEG, CELL_LON_DEG } from '../utils/bufrEstimatedIntensity'
 // **テストボタンのデータをここで先に読む。** 値は使わないが、これが無いと
 // `simulate*` を最初に呼ぶテストが「このファイルで初回のモジュール解決・変換」を
 // テスト本体の中で行うことになる —— 実データ 3 つで 824 KB あり、全ファイル並列実行では
@@ -1321,13 +1322,13 @@ describe('地震・津波に関するお知らせ（VZSE40）と地震回数（V
   })
 })
 
-// 推計震度分布図（IXAC41）の結線。
+// 推計震度分布図の結線。
 //
 // 判定そのものは純関数へ切り出してテストしてある（`utils/estimatedIntensity.test.ts`）。
 // **ここで見るのは包み側** —— 反映しないと決めた報で `onLiveEvent` まで止まること。
 // 止め損ねると、画面の分布は据え置きのまま**音と読み上げだけが鳴り、分布モードが勝手に開く**。
 // 判定が正しくても包み側で漏れるので、純関数のテストでは捕まらない。
-describe('推計震度分布図（IXAC41）の結線', () => {
+describe('推計震度分布図の結線', () => {
   function ei(arrivalTime: string, time: string, count: number): JMAEstimatedIntensity {
     return {
       id: `ix-${time}`, time, arrivalTime,
@@ -1336,6 +1337,7 @@ describe('推計震度分布図（IXAC41）の結線', () => {
       grades: [{ scale: 4, modifier: 'none', lower: 35, upper: 44 }],
       count,
       lat: new Float32Array([32.6]), lon: new Float32Array([130.7]), si: new Uint8Array([42]),
+      cellLatDeg: CELL_LAT_DEG, cellLonDeg: CELL_LON_DEG,
       bounds: { south: 32.6, north: 32.61, west: 130.7, east: 130.71 },
     }
   }

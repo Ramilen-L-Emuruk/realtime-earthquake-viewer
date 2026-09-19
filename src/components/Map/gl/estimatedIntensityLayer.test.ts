@@ -46,6 +46,7 @@ function makeData(si: number, grades: JMAEstimatedIntensityGrade[] = GRADES): JM
     lat: new Float32Array([35]),
     lon: new Float32Array([135]),
     si: new Uint8Array([si]),
+    cellLatDeg: CELL_LAT_DEG, cellLonDeg: CELL_LON_DEG,
     bounds: { south: 35, north: 35 + CELL_LAT_DEG, west: 135, east: 135 + CELL_LON_DEG },
   }
 }

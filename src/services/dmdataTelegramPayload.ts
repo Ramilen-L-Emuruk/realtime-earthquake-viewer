@@ -43,14 +43,18 @@ export const KOHATSU_TYPES = new Set(['VYSE60'])
 // VZSE40=地震・津波に関するお知らせ（観測点の入電停止・配信試験・訓練の予告などの運用連絡）。
 // VXSE60=地震回数に関する情報（群発時の回数経過）。どちらも `telegram.earthquake` に含まれ、
 // 追加の契約は要らない。**扱っていない種別を洗い出した経緯と、扱わないと決めたもの
-// （IXAC41・WEPA60・VXSE56）の理由は docs/spec/data-sources-spec.md §2「扱う電文種別」。**
+// （WEPA60・VXSE56）の理由は docs/spec/data-sources-spec.md §2「扱う電文種別」。**
 export const NOTICE_TYPES = new Set(['VZSE40'])
 export const QUAKE_COUNT_TYPES = new Set(['VXSE60'])
-// IXAC41=推計震度分布図作図用データ。**このアプリで唯一の二進電文（BUFR）**で、
-// XML でも JSON でも届かない。512KiB を超えると分割配信されるため、読む前に結合が要る
-// （→ `bufrTelegramAssembly.ts`）。経路ごとに本文の取り方が違うので、
-// **`buildXmlPayload` ではなく `buildBinaryPayload` を通す。**
-export const ESTIMATED_INTENSITY_TYPES = new Set(['IXAC41'])
+// 推計震度分布図作図用データ。**このアプリで唯一の二進電文（BUFR）**で、XML でも JSON でも
+// 届かない。大きい電文は分割配信されるため、読む前に結合が要る（→ `bufrTelegramAssembly.ts`）。
+// 経路ごとに本文の取り方が違うので、**`buildXmlPayload` ではなく `buildBinaryPayload` を通す。**
+//
+// **2 種別ある。** IXAC41 が 250m メッシュ、**IXAC40 はその前身で 1km メッシュ**。気象庁は
+// 2026-02-02 に IXAC40 の配信を終了したので、**ライブで届くのは IXAC41 だけ** —— IXAC40 は
+// IXAC41 提供開始前の地震を再生したときにだけ現れる。**分割の符号の体系も違う**ので、
+// 種別を足すだけでは結合できない（→ `bufrTelegramAssembly.ts` の `fragmentIndex`）。
+export const ESTIMATED_INTENSITY_TYPES = new Set(['IXAC41', 'IXAC40'])
 
 /** その種別が二進で届くか。取得元ごとに本文の取り方（テキストか bytes か）を分けるのに使う。 */
 export function isBinaryTelegramType(headType: string): boolean {
@@ -77,8 +81,8 @@ export const HANDLED_TYPES = new Set([
  * **津波・緊急地震速報は入れない。** 「その時刻に発表中だったか」の判定は初期状態の担当で、
  * 遡り幅も目的も違う（イベント単位の生存判定が要る）。
  *
- * **推計震度分布図（IXAC41）も入れない。** 最新 1 通しか持たない設計で、遡っても過去の
- * カードには紐づかない（引き当ては地震発現時刻）。理由は settings-pwa-spec.md §6。
+ * **推計震度分布図（IXAC41・IXAC40）も入れない。** 最新 1 通しか持たない設計で、遡っても
+ * 過去のカードには紐づかない（引き当ては地震発現時刻）。理由は settings-pwa-spec.md §6。
  */
 export const HISTORY_EXTRA_TYPES = new Set([
   ...LPGM_TYPES, ...NANKAI_TYPES, ...COMMENTARY_TYPES, ...KOHATSU_TYPES,
@@ -203,7 +207,7 @@ export type BinaryReplayPayload = Extract<ReplayPayload, { kind: 'estimatedInten
  * （2 つ目が入るまで型検査が止まらないので、いちばん必要なときに効かない）。
  */
 const BINARY_TEST_PREDICATES = {
-  // 推計震度分布図（IXAC41）。本文の電文の種類（BUFR の `0-01-242`）で見分ける
+  // 推計震度分布図（IXAC41・IXAC40）。本文の電文の種類（BUFR の `0-01-242`）で見分ける
   estimatedIntensity: p => p.data.telegramKind !== TELEGRAM_KIND_NORMAL,
 } satisfies {
   [K in BinaryReplayPayload['kind']]: (payload: Extract<BinaryReplayPayload, { kind: K }>) => boolean
@@ -216,7 +220,7 @@ export function buildBinaryPayload(
   time: string,
 ): BinaryReplayPayload | null {
   if (ESTIMATED_INTENSITY_TYPES.has(headType)) {
-    const data = decodeEstimatedIntensity(bytes, id, time)
+    const data = decodeEstimatedIntensity(bytes, id, time, headType)
     return data ? { kind: 'estimatedIntensity', data } : null
   }
   return null

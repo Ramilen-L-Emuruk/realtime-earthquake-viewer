@@ -1,5 +1,4 @@
 import type { JMAEstimatedIntensity } from '../../../types/earthquake'
-import { CELL_LAT_DEG, CELL_LON_DEG } from '../../../utils/bufrEstimatedIntensity'
 import { buildSiToScale } from '../../../utils/estimatedIntensity'
 import { getIntensityColor } from '../../../utils/intensity'
 import { mercatorY } from '../../../utils/isoseismal'
@@ -130,8 +129,10 @@ export function rasterizeEstimatedIntensity(
   if (!(b.east > b.west) || !(b.north > b.south)) return null
 
   // セル 1 つが画素 1 つになる寸法（余白を含まない）。
-  let innerWidth = Math.max(1, Math.round((b.east - b.west) / CELL_LON_DEG))
-  let innerHeight = Math.max(1, Math.round((b.north - b.south) / CELL_LAT_DEG))
+  // **寸法は電文が持っているものを使う** —— モジュール定数から引くと、IXAC40（1km メッシュ）で
+  // 4 倍細かい格子を取り、上限への縮小が無用に掛かる。
+  let innerWidth = Math.max(1, Math.round((b.east - b.west) / data.cellLonDeg))
+  let innerHeight = Math.max(1, Math.round((b.north - b.south) / data.cellLatDeg))
   let scaled = false
   const cap = Math.max(MIN_TEXTURE_SIZE, Math.floor(maxTextureSize))
   // **余白のぶんを引いた上限に収める。** 縮めた後で余白を足すので、上限を越えない。
@@ -170,8 +171,8 @@ export function rasterizeEstimatedIntensity(
   // 分布が半セル分だけ広がる。中心なら許容誤差が半画素あるので、その丸めでは動かない。
   //
   // 縮めた画で 1 セルが 1 画素に満たなくても、中心の画素は必ず塗られる（潰れて消えない）。
-  const halfLon = CELL_LON_DEG / 2
-  const halfLat = CELL_LAT_DEG / 2
+  const halfLon = data.cellLonDeg / 2
+  const halfLat = data.cellLatDeg / 2
   for (let i = 0; i < data.count; i++) {
     const v = data.si[i]
     // 計測震度 0 は「セルが無い」と区別できない。震度4未満はそもそも配信されないので、
