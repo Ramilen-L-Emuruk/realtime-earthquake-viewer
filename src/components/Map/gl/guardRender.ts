@@ -47,7 +47,7 @@ type GL = WebGLRenderingContext | WebGL2RenderingContext
  *
  * **いまの MapLibre では、これが無くても描き先と合成は元へ戻る。** `drawCustom` は `render()` が
  * 戻った直後に `context.setDirty()` と `bindFramebuffer.set(null)` を無条件で走らせ、次のレイヤーの
- * `setColorMode()` が合成を張り直す（6.9.0 で確認）。ここは例外を握って**再スローしない**ので、
+ * `setColorMode()` が合成を張り直す（6.10.0 で確認）。ここは例外を握って**再スローしない**ので、
  * MapLibre からは「正常に戻った」ように見え、その後処理が必ず動くため。実機でも、この復元を
  * 外した状態で `gl/subThresholdLayer.ts` のオフスクリーン切り替え直後に落とし、地図が壊れないことを
  * 確かめてある。**「戻さないと地図が固まる」とは書かないこと。**
@@ -57,7 +57,7 @@ type GL = WebGLRenderingContext | WebGL2RenderingContext
  * - **矩形の切り抜き（`SCISSOR_TEST`）は MapLibre が追跡していない。** `setDirty()` の対象外なので、
  *   有効にしたまま抜けたレイヤーがあると、後続のレイヤーがその枠の外へ描けなくなる。いま包んでいる
  *   3 本は使っていないため、これは**将来のための備え**
- * - **上の後処理は MapLibre の実装詳細で、公開された約束ではない。** 依存指定は `^6.0.0` で
+ * - **上の後処理は MapLibre の実装詳細で、公開された約束ではない。** 依存指定は `^6.10.0` で
  *   マイナー更新が自動的に入る（同じ理由で `docs/spec/map-rendering-spec.md` §9 が、カメラ更新の
  *   空振り省略について「上げたら実装差分を目で確かめる」と定めている）
  *
