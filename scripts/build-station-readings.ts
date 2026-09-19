@@ -29,19 +29,25 @@
 // （docs/spec/audio-tts-spec.md §3）。エンジンが正しく読める語を辞書へ入れると、エンジン側の
 // 改善が届かなくなる。
 //
+// 【収録する値は市町村の境界で 2 句に割る】ふりがなから組んだ値は末尾に核を 1 つ置くだけなので、
+// 長い名前がひと息の 1 アクセント句になる。割り方と根拠は `stationPhrase.ts`。前半に置く核だけは
+// エンジンへ訊く（ふりがなはアクセントを持たないため）。
+//
 // 出力: public/data/tts-station-readings.json
-//   { "札幌北区太平": "サッポロキタクタイヘイ'", "宮城沖５０ｋｍＢ": "ミヤギ'オキ/ゴジュッキロメ'エトル/ビ'イ" }
+//   { "札幌北区太平": "サッポロキ'タク/タイヘイ'", "宮城沖５０ｋｍＢ": "ミヤギ'オキ/ゴジュッキロメ'エトル/ビ'イ" }
 //
 // データ出典:
 //   - 震度観測点一覧表（iku55 氏が JSON 化したものを利用）
 //     https://gist.github.com/iku55/79005d1896631ad6117bbe327b8162c1
-//   - 気象庁 防災情報XML 個別コード表（PointTsunami）
+//   - 気象庁 防災情報XML 個別コード表（PointTsunami・AreaInformationCity）
 //     https://xml.kishou.go.jp/tec_material.html
 
 import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { hasUnreadableFurigana, normalizeReading, stripReadingTail, toKanaEntry } from './stationReading'
+import { hasUnreadableFurigana, isMisreading, normalizeReading, stripReadingTail, toKanaEntry } from './stationReading'
+import { buildCityIndex, splitStationName, toStationAccentEntry } from './stationPhrase'
+import type { CityIndex, SplitOutcome, SplitSkipReason } from './stationPhrase'
 import { classifyTsunamiStation, offshoreExpectedReading, splitDistance } from './tsunamiStationReading'
 import type { TsunamiStationShape } from './tsunamiStationReading'
 import { findWorkbookInZip } from './lib/xlsx.mjs'
@@ -57,6 +63,16 @@ export const JMA_TEC_MATERIAL = 'https://xml.kishou.go.jp/tec_material.html'
 
 /** 個別コード表の中で PointTsunami（潮位観測点）が載るシート。 */
 const POINT_TSUNAMI_SHEET = '35'
+
+/**
+ * 個別コード表の中で市町村（AreaInformationCity）が載るシート。
+ *
+ * このシートは 1 行に「一次細分区域 / 市町村 / 震度観測点」の 3 組（Code・Name・ふりがな）を並べる。
+ * 使うのは市町村の組だけ —— 観測点名の句割りで、割れ目とその読みを決めるのに要る
+ * （→ `stationPhrase.ts`）。観測点のふりがなはこちらから取らない（現行の一覧しか持たないため。
+ * 履歴の観測点まで含む `lib/stationSource.mjs` を使う）。
+ */
+const CITY_SHEET = '24'
 
 const DEFAULT_ENGINE = 'http://localhost:50021'
 /** 読み（モーラ列）は話者に依らないが、問い合わせに話者の指定が要るので既定を置く。 */
@@ -74,6 +90,12 @@ const CONCURRENCY = 8
 const EXPECTED_TIDAL_COUNT_RANGE = { min: 450, max: 900 } as const
 
 /**
+ * 市町村の件数として受け入れる幅。2026-09 時点で 1894 件（市町村の組に現れる名前で数えた値。
+ * 行数は震度観測点の数だけあるので、同じ市町村が何度も現れる）。
+ */
+const EXPECTED_CITY_COUNT_RANGE = { min: 1500, max: 2300 } as const
+
+/**
  * 誤読として収録する割合の上限。これを超えたら判定か正規化が壊れたと見て止める。
  *
  * **上限が要るのは「誤読 0 件」だけが異常ではないから。** 正規化の条件が反転すれば全点が誤読と
@@ -81,6 +103,22 @@ const EXPECTED_TIDAL_COUNT_RANGE = { min: 450, max: 900 } as const
  * しか捕まらず、生成コマンドは正常終了してしまう。
  */
 const MAX_MISREAD_RATIO = 0.9
+
+/**
+ * 収録した点のうち、句割りを作れる割合の下限。下回ったら判定か上流が壊れたと見て止める。
+ *
+ * **`console.log` で済ませてはいけない。** `splitStationName` が壊れて常に見送りへ倒れると、
+ * ①割った件数が 0 になり ②句数の検証（句割りを指定した点だけを見る）が一度も発火せず
+ * ③辞書は従来どおりの 1 句・末尾核で書き出されるので、**句割りが丸ごと死んだまま正常終了する**。
+ * 上流の件数・誤読の割合には既に同じ形の歯止めがあり、ここだけ非対称だった。
+ *
+ * **分母は「句割りの判定に掛けた点」**で、沖合の潮位観測点（構造的に必ず対象外）は含めない。
+ * 2026-09 時点の実測は 92.5%（2381 / 2573 件）。判定に掛けて見送った 192 件の内訳は
+ * 8 モーラ未満 162・市町村が当たらない 29・句が短すぎる 1（別に沖合 96 件が対象外）。
+ * 下限を 0.8 に置いたのは、この内訳が倍近くまで増えるのは上流か判定が変わったときだけで、
+ * そのときは中身を見るべきだという判断。**門（`MIN_MORAS_TO_SPLIT` 等）を動かすならここも見直す。**
+ */
+const MIN_SPLIT_RATIO = 0.8
 
 /** 読み上げ文が観測点名の後ろに置く形と、その形で末尾に乗る助詞の読み。 */
 type SpeechContext = { readonly suffix: string; readonly tail: string }
@@ -138,6 +176,19 @@ const TIDAL_FURIGANA_FIXTURES: readonly (readonly [string, string])[] = [
   ['釧路沖１００ｋｍＡ', 'くしろおき１００ｋｍＡ'],
   // ヘッダ部でのみ使う簡略名（識別英字が付かない）。
   ['宮城沖５０ｋｍ', 'みやぎおき５０ｋｍ'],
+]
+
+/**
+ * 市町村側の同じ照合。**句割りの割れ目と読みはここから作る**ので、取得元が入れ替われば
+ * 全件の句割りが崩れる。「町」の ちょう／まち・行政区・都道府県の冠が付く形をそれぞれ通す。
+ */
+const CITY_FURIGANA_FIXTURES: readonly (readonly [string, string])[] = [
+  ['石狩市', 'いしかりし'],
+  ['札幌豊平区', 'さっぽろとよひらく'],
+  ['当別町', 'とうべつちょう'],
+  ['苓北町', 'れいほくまち'],
+  // 同じ市町村名が他県にもあるとき、コード表は都道府県の冠を付ける。
+  ['長崎対馬市', 'ながさきつしまし'],
 ]
 
 /**
@@ -207,8 +258,35 @@ type Target = {
   /** 期待する読み（{@link normalizeReading} 済み）。 */
   readonly expected: string
   readonly contexts: readonly SpeechContext[]
-  /** 誤読だったときに辞書へ入れる値を作る。**誤読した点だけで呼ぶ。** */
-  readonly entryOf: () => Promise<string>
+  /**
+   * 市町村の境界で割れるか（割らないなら理由付き）。**エンジンを使わない純粋な判定**なので
+   * 照合より前に決まる。沖合の潮位観測点は対象外（値がエンジン自身のカナ表記で、既に句を含む）。
+   */
+  readonly splitOutcome: SplitOutcome
+  /**
+   * 誤読だったときに辞書へ入れる値を作る。**誤読した点だけで呼ぶ。**
+   *
+   * @param cityAccents 市町村ごとのアクセント核の位置（→ {@link fetchCityAccents}）。
+   *   句割りを持たない点は使わない。
+   */
+  readonly entryOf: (cityAccents: ReadonlyMap<string, number>) => Promise<string>
+}
+
+/**
+ * 句割りがあればそれを、無ければ 1 句のカナを返す。**震度観測点と沿岸の潮位観測点で共通。**
+ * 別々に書くと、片方だけ句割りを通す形で静かに食い違う。
+ *
+ * export しているのはテストのため。**両方の列挙元が通る唯一の合流点**なので、`kind` の
+ * 判定を取り違えると生成物の全件に効く（型検査では捕まらない）。
+ */
+export function entryFromFurigana(
+  furigana: string,
+  outcome: SplitOutcome,
+  cityAccents: ReadonlyMap<string, number>,
+): string {
+  if (outcome.kind === 'skipped') return toKanaEntry(furigana)
+  const { split } = outcome
+  return toStationAccentEntry(split, cityAccents.get(split.city) ?? null)
 }
 
 function parseArgs(argv: readonly string[]): { engine: string; speaker: number } {
@@ -224,15 +302,22 @@ function parseArgs(argv: readonly string[]): { engine: string; speaker: number }
   return { engine: engine.replace(/\/+$/, ''), speaker }
 }
 
-/** エンジンにテキストを読ませ、モーラ列を連結して返す。 */
-async function readingOf(engine: string, speaker: number, text: string, isKana = false): Promise<string> {
+/** エンジンにテキストを読ませ、アクセント句の配列を返す。 */
+async function accentPhrasesOf(
+  engine: string, speaker: number, text: string, isKana = false,
+): Promise<{ accent: number; moras: { text: string }[] }[]> {
   const url = `${engine}/accent_phrases?text=${encodeURIComponent(text)}`
     + `&speaker=${speaker}&is_kana=${isKana}`
   const res = await fetch(url, { method: 'POST' })
   if (!res.ok) {
     throw new Error(`エンジンが非 200 応答（${res.status}）: ${text}${isKana ? '（カナ指定）' : ''}`)
   }
-  const phrases = await res.json() as { moras: { text: string }[] }[]
+  return await res.json() as { accent: number; moras: { text: string }[] }[]
+}
+
+/** エンジンにテキストを読ませ、モーラ列を連結して返す。 */
+async function readingOf(engine: string, speaker: number, text: string, isKana = false): Promise<string> {
+  const phrases = await accentPhrasesOf(engine, speaker, text, isKana)
   return phrases.map(p => p.moras.map(m => m.text).join('')).join('')
 }
 
@@ -428,14 +513,10 @@ export function mergeFurigana(groups: readonly (readonly UpstreamStation[])[]): 
 }
 
 /**
- * 潮位観測点のふりがな表を取る（気象庁 個別コード表 PointTsunami）。
- *
- * **ヘッダ部でのみ使う簡略名も含める。** 津波観測情報の読み上げは電文の見出し文を読む
- * （`ttsText.ts` の `tsunamiObservationToSegments` が `headline` を通す）ため、簡略名も声になる。
- * 座標が要らない `build-tsunami-obs-coords.mjs` 側はここで簡略名を落としており、そこと範囲が
- * 違うのは意図したもの。
+ * 気象庁 個別コード表（地震火山関連）のブックを取る。**潮位観測点と市町村の読みで共有する** ——
+ * zip は 1.6MB あり、シートごとに落とし直す理由が無い。
  */
-async function fetchTidalFurigana(): Promise<Map<string, string>> {
+async function fetchCodeTableBook(): Promise<Map<string, unknown[][]>> {
   console.log(`Fetching ${JMA_TEC_MATERIAL} ...`)
   const indexRes = await fetch(JMA_TEC_MATERIAL)
   if (!indexRes.ok) throw new Error(`気象庁 技術資料ページの取得に失敗: ${indexRes.status}`)
@@ -450,7 +531,25 @@ async function fetchTidalFurigana(): Promise<Map<string, string>> {
 
   const book = findWorkbookInZip(zip, (sheets) =>
     String(sheets.get(POINT_TSUNAMI_SHEET)?.[0]?.[0] ?? '').includes('PointTsunami'))
-  const rows = book?.get(POINT_TSUNAMI_SHEET)
+  if (!book) {
+    throw new Error(
+      '個別コード表に地震火山関連のブック（PointTsunami のシートを持つもの）がありません。'
+      + 'コード表の構成が変わっていないか確かめてください。',
+    )
+  }
+  return book
+}
+
+/**
+ * 潮位観測点のふりがな表を読む（気象庁 個別コード表 PointTsunami）。
+ *
+ * **ヘッダ部でのみ使う簡略名も含める。** 津波観測情報の読み上げは電文の見出し文を読む
+ * （`ttsText.ts` の `tsunamiObservationToSegments` が `headline` を通す）ため、簡略名も声になる。
+ * 座標が要らない `build-tsunami-obs-coords.mjs` 側はここで簡略名を落としており、そこと範囲が
+ * 違うのは意図したもの。
+ */
+function readTidalFurigana(book: ReadonlyMap<string, unknown[][]>): Map<string, string> {
+  const rows = book.get(POINT_TSUNAMI_SHEET)
   if (!rows) {
     throw new Error(
       `個別コード表に PointTsunami のシート（地震火山関連コード表のシート ${POINT_TSUNAMI_SHEET}）が`
@@ -485,6 +584,100 @@ async function fetchTidalFurigana(): Promise<Map<string, string>> {
   console.log(`Loaded ${furiganaOf.size} tidal stations`)
   checkFurigana('潮位観測点', furiganaOf, TIDAL_FURIGANA_FIXTURES)
   return furiganaOf
+}
+
+/**
+ * 市町村のふりがな表を読む（気象庁 個別コード表 AreaInformationCity）。
+ *
+ * **観測点名の句割りの割れ目と、その前半の読みはここから決まる**（→ `stationPhrase.ts`）。
+ * 同じ市町村が観測点の数だけ行に現れるので重複は正常。**同じ名前で違うふりがなが現れたら止める**
+ * —— どちらが正しいか機械的に決められず、誤った読みで全件の句割りを作ることになる。
+ */
+function readCityFurigana(book: ReadonlyMap<string, unknown[][]>): Map<string, string> {
+  const rows = book.get(CITY_SHEET)
+  if (!rows) {
+    throw new Error(
+      `個別コード表に市町村のシート（地震火山関連コード表のシート ${CITY_SHEET}）がありません。`
+      + 'コード表の構成が変わっていないか確かめてください。',
+    )
+  }
+  // 1 行の並びは [区域Code, 区域Name, 区域ふりがな, 市町村Code, 市町村Name, 市町村ふりがな,
+  // 観測点Code, 観測点Name, 観測点ふりがな]。先頭 3 行は見出し。
+  const furiganaOf = new Map<string, string>()
+  const conflicts: string[] = []
+  const malformed: string[] = []
+  for (const row of rows.slice(3)) {
+    const code = row[3]
+    const name = row[4]
+    const kana = row[5]
+    // **市町村の Code は文字列**（`"0123500"`。先頭ゼロを保つため）。潮位観測点のシートは
+    // 同じ位置が数値なので、**姉妹関数（{@link readTidalFurigana}）と型検査を揃えてはいけない** ——
+    // 揃えると全 4361 行が弾かれる（実際に踏んだ）。同じシートでも区域の Code だけは数値。
+    if (typeof code === 'string' && code && typeof name === 'string' && name
+      && typeof kana === 'string' && kana) {
+      const known = furiganaOf.get(name)
+      if (known !== undefined && known !== kana) conflicts.push(`${name}（${known} / ${kana}）`)
+      furiganaOf.set(name, kana)
+      continue
+    }
+    // **完全に空の行だけを黙って飛ばす。** シートの末尾に余白がある（2026-09 時点で 12 行）。
+    if (row.every(cell => cell === null || cell === undefined || cell === '')) continue
+    // **中身があるのに市町村を読めない行は止める。** 2026-09 時点で 0 件なので、現れたら列が
+    // ずれたか形式が変わったということ。黙って飛ばすと、その市町村に属する観測点が静かに
+    // 句割りの対象から落ちる（件数の幅と既知の照合はどちらも部分的な欠落を捕まえられない）。
+    malformed.push(JSON.stringify([code, name, kana]))
+  }
+  if (malformed.length > 0) {
+    throw new Error(
+      `市町村のシートに、中身はあるのに市町村を読めない行が ${malformed.length} 件あります: `
+      + `${malformed.slice(0, 5).join(' / ')}。列の位置が変わっていないか確かめてください。`,
+    )
+  }
+  if (conflicts.length > 0) {
+    throw new Error(
+      `市町村に、同じ名前で違うふりがなを持つ行が ${conflicts.length} 件あります: `
+      + `${conflicts.slice(0, 5).join(' / ')}。コード表の形式を確かめてください。`,
+    )
+  }
+  if (furiganaOf.size < EXPECTED_CITY_COUNT_RANGE.min || furiganaOf.size > EXPECTED_CITY_COUNT_RANGE.max) {
+    throw new Error(
+      `市町村の件数が想定の幅（${EXPECTED_CITY_COUNT_RANGE.min}〜${EXPECTED_CITY_COUNT_RANGE.max}）を`
+      + `外れています: ${furiganaOf.size} 件。コード表の形式が変わっていないか確かめてください。`,
+    )
+  }
+  console.log(`Loaded ${furiganaOf.size} cities`)
+  checkFurigana('市町村', furiganaOf, CITY_FURIGANA_FIXTURES)
+  return furiganaOf
+}
+
+/**
+ * 句割りの前半（市町村名）に置くアクセント核の位置をエンジンから引く。
+ *
+ * **ふりがなはアクセントを持たない**ので、核の位置はエンジンに訊くしかない
+ * （置かないと `toStationAccentEntry` が末尾へ倒す。理由と実測はそちらの JSDoc）。
+ * 読ませるときに読点を付けるのは、観測点名の照合と同じ条件に揃えるため。
+ *
+ * **採るのは「1 句で返り、読みがふりがなと一致した」ときだけ。** エンジンが市町村名を誤読する
+ * ことは多く（「町」の ちょう／まち が大半）、そのまま核だけ採ると**別の語の抑揚を当てる**ことに
+ * なる。採れなかった市町村は呼び出し側が数えて出す。
+ */
+async function fetchCityAccents(
+  engine: string,
+  speaker: number,
+  cityFurigana: ReadonlyMap<string, string>,
+  cities: readonly string[],
+): Promise<Map<string, number>> {
+  const accents = new Map<string, number>()
+  await runPooled(cities, async (city) => {
+    const furigana = cityFurigana.get(city)
+    if (furigana === undefined) return
+    const phrases = await accentPhrasesOf(engine, speaker, `${city}、`)
+    if (phrases.length !== 1) return
+    const reading = phrases[0].moras.map(m => m.text).join('')
+    if (isMisreading(reading, furigana)) return
+    accents.set(city, phrases[0].accent)
+  })
+  return accents
 }
 
 /**
@@ -564,6 +757,7 @@ async function buildTidalTargets(
   engine: string,
   speaker: number,
   furiganaOf: ReadonlyMap<string, string>,
+  cities: CityIndex,
 ): Promise<Target[]> {
   // 読み解けなかった点は下で全部投げるので、ここには残る 2 つの形だけを入れる。
   const shapes = new Map<string, Exclude<TsunamiStationShape, { kind: 'unreadable' }>>()
@@ -590,13 +784,16 @@ async function buildTidalTargets(
   for (const [name, shape] of shapes) {
     const furigana = furiganaOf.get(name) as string
     if (shape.kind === 'coastal') {
+      // 沿岸の名前は震度観測点と同じ形（市町村＋地点）なので句割りの対象。
+      const splitOutcome = splitStationName(name, furigana, cities)
       targets.push({
         source: '潮位観測点',
         name,
         furigana,
         expected: normalizeReading(furigana),
         contexts: TIDAL_SPEECH_CONTEXTS,
-        entryOf: async () => toKanaEntry(furigana),
+        splitOutcome,
+        entryOf: async (cityAccents) => entryFromFurigana(furigana, splitOutcome, cityAccents),
       })
       continue
     }
@@ -608,6 +805,9 @@ async function buildTidalTargets(
       furigana,
       expected,
       contexts: TIDAL_SPEECH_CONTEXTS,
+      // 沖合の名前は市町村の構造を持たない（`宮城沖５０ｋｍＢ`）。値もエンジン自身のカナ表記で
+      // 既に句を含むため、句割りの対象にしない。
+      splitOutcome: { kind: 'skipped', reason: '沖合で対象外' },
       // 沖合の名前はふりがなから読みを組めないので、**正しく読める形での読みをそのまま写す**。
       // 写す前にその形が本当に正しいことを確かめる —— ここが崩れているものを採ると、
       // 誤読をそのまま辞書へ焼き込むことになる。
@@ -646,17 +846,24 @@ async function main(): Promise<void> {
   console.log(`Engine ${engine} (VOICEVOX ${version}), speaker ${speaker}`)
 
   const seismicFurigana = await fetchSeismicFurigana()
-  const tidalFurigana = await fetchTidalFurigana()
+  const codeTable = await fetchCodeTableBook()
+  const tidalFurigana = readTidalFurigana(codeTable)
+  const cityFurigana = readCityFurigana(codeTable)
+  const cities = buildCityIndex(cityFurigana)
 
-  const seismicTargets: Target[] = [...seismicFurigana].map(([name, furigana]) => ({
-    source: '震度観測点',
-    name,
-    furigana,
-    expected: normalizeReading(furigana),
-    contexts: STATION_SPEECH_CONTEXTS,
-    entryOf: async () => toKanaEntry(furigana),
-  }))
-  const tidalTargets = await buildTidalTargets(engine, speaker, tidalFurigana)
+  const seismicTargets: Target[] = [...seismicFurigana].map(([name, furigana]) => {
+    const splitOutcome = splitStationName(name, furigana, cities)
+    return {
+      source: '震度観測点',
+      name,
+      furigana,
+      expected: normalizeReading(furigana),
+      contexts: STATION_SPEECH_CONTEXTS,
+      splitOutcome,
+      entryOf: async (cityAccents) => entryFromFurigana(furigana, splitOutcome, cityAccents),
+    }
+  })
+  const tidalTargets = await buildTidalTargets(engine, speaker, tidalFurigana, cities)
 
   // 同じ名前が両方の列挙元にあるときは 1 つへまとめる。**辞書のキーは 1 つしか持てない**ので、
   // 2 つのまま流すと辞書の値が並行処理の完了順で決まり、実行のたびに変わりうる
@@ -667,6 +874,7 @@ async function main(): Promise<void> {
   const targets: Target[] = []
   const indexByName = new Map<string, number>()
   const shared: string[] = []
+  const spellingDiffs: string[] = []
   for (const target of [...seismicTargets, ...tidalTargets]) {
     const at = indexByName.get(target.name)
     if (at === undefined) {
@@ -688,11 +896,26 @@ async function main(): Promise<void> {
     for (const context of target.contexts) {
       if (!contexts.some(c => c.suffix === context.suffix)) contexts.push(context)
     }
+    // **生のふりがなが食い違っていたら記録する。** 上の検査は正規化した読み（`expected`）で
+    // 通しているので、表記だけが違う形（`とうべつ` と `とおべつ` 等）はここまで来る。
+    // 残すのは `existing` 側の値なので、**句割りと辞書の値はそちらの表記から作られる** ——
+    // 採った側が列挙の順で決まることを見えるようにしておく。2026-09 時点で 0 件。
+    if (existing.furigana !== target.furigana) {
+      spellingDiffs.push(
+        `${target.name}（${existing.source}: ${existing.furigana} / ${target.source}: ${target.furigana}）`,
+      )
+    }
     targets[at] = { ...existing, source: `${existing.source}・${target.source}`, contexts }
     shared.push(target.name)
   }
   if (shared.length > 0) {
     console.log(`両方の列挙元にある名前: ${shared.length} 件（${shared.join('・')}。読みは一致）`)
+  }
+  if (spellingDiffs.length > 0) {
+    console.log(
+      `  うち生のふりがなの表記が違うもの: ${spellingDiffs.length} 件（`
+      + `${spellingDiffs.slice(0, 5).join(' / ')}。前者の表記を採る）`,
+    )
   }
   console.log(`照合する観測点: ${targets.length} 点`)
 
@@ -718,21 +941,40 @@ async function main(): Promise<void> {
     )
   }
 
+  // 句割りを持つ点の市町村だけ、アクセント核をエンジンへ訊く。**全 1894 件は訊かない** ——
+  // 誤読する点に現れない市町村の核は使われない。
+  const splitCities = [...new Set(misreadTargets.flatMap(
+    t => t.splitOutcome.kind === 'split' ? [t.splitOutcome.split.city] : [],
+  ))]
+  const cityAccents = await fetchCityAccents(engine, speaker, cityFurigana, splitCities)
+  console.log(
+    `句割りの前半に核を置ける市町村: ${cityAccents.size} / ${splitCities.length} 件`
+    + `（採れないものは末尾核へ倒す。2026-09 時点では「町」の ちょう／まち の誤読が大半だった）`,
+  )
+
   // 誤読した点だけ、辞書へ入れる値を作る。
   await runPooled(misreadTargets, async (target) => {
-    misread.set(target.name, await target.entryOf())
+    misread.set(target.name, await target.entryOf(cityAccents))
   })
 
   // 作った値をエンジンへ戻し、狙った読みになるかを確かめる。カナ表記には使えない文字があり
   // （AquesTalk 風カナが受け付けるモーラは限られる）、通らないものを混ぜると読み上げのその
   // 箇所だけが黙って辞書なしへ落ちる。
+  // **句割りを指定した点は、句が本当に 2 つ以上になることまで確かめる。** 記法が壊れていても
+  // エンジンは読み自体は返しうるので、読みの一致だけでは「割れていない」を見逃す
+  // （割れていなければ 1 句の末尾核へ戻り、直そうとした症状がそのまま残る）。
   const roundTripFailed: string[] = []
   await runPooled(misreadTargets, async (target) => {
     const kana = misread.get(target.name) as string
     try {
-      const back = await readingOf(engine, speaker, kana, true)
+      const phrases = await accentPhrasesOf(engine, speaker, kana, true)
+      const back = phrases.map(ph => ph.moras.map(m => m.text).join('')).join('')
       if (normalizeReading(back) !== target.expected) {
         roundTripFailed.push(`${target.name} → ${kana} → ${back}（期待 ${target.expected}）`)
+        return
+      }
+      if (target.splitOutcome.kind === 'split' && phrases.length < 2) {
+        roundTripFailed.push(`${target.name} → ${kana} は句が割れていません（${phrases.length} 句）`)
       }
     } catch (err) {
       roundTripFailed.push(`${target.name} → ${kana}（${err instanceof Error ? err.message : String(err)}）`)
@@ -746,11 +988,46 @@ async function main(): Promise<void> {
     )
   }
 
+  // **句割りの件数を理由別に出す。** 合計だけだと「割れる名前が少なかった」と「どの門が
+  // 効きすぎているのか」を見分けられない。見送りはどれも 1 句のまま残る（悪化はしない）。
+  const splitCount = misreadTargets.filter(t => t.splitOutcome.kind === 'split').length
+  const byReason = new Map<SplitSkipReason, Target[]>()
+  for (const target of misreadTargets) {
+    if (target.splitOutcome.kind === 'split') continue
+    const list = byReason.get(target.splitOutcome.reason) ?? []
+    list.push(target)
+    byReason.set(target.splitOutcome.reason, list)
+  }
+  // **分母は「句割りの判定に掛けた点」。** 沖合の潮位観測点は構造的に必ず見送りへ入るので外す ——
+  // 入れたままだと、エンジンの版が上がって誤読と判定される点が減ったとき、沖合の件数だけが
+  // 残って割合が下がり、**句割りの判定は正しいのに止まる**。
+  const offshoreCount = byReason.get('沖合で対象外')?.length ?? 0
+  const judgedCount = misreadTargets.length - offshoreCount
+  // 0 除算は `NaN` になり `NaN < MIN_SPLIT_RATIO` が偽になるので、**歯止めが素通りする**。
+  // 判定に掛けた点が 1 つも無いのはそれ自体が異常なので、0 へ倒して下の throw へ入れる。
+  const splitRatio = judgedCount > 0 ? splitCount / judgedCount : 0
+  console.log(
+    `句割り: ${splitCount} / ${judgedCount} 件（判定に掛けた点あたり ${(splitRatio * 100).toFixed(1)}%・`
+    + `収録した全 ${misreadTargets.length} 件のうち見送り ${misreadTargets.length - splitCount} 件）`,
+  )
+  for (const [reason, list] of byReason) {
+    console.log(`  ${reason}: ${list.length} 件（例: ${list.slice(0, 3).map(t => t.name).join('・')}）`)
+  }
+  if (splitRatio < MIN_SPLIT_RATIO) {
+    throw new Error(
+      `句割りを作れた点が少なすぎます（${splitCount} / ${judgedCount} 件・`
+      + `${(splitRatio * 100).toFixed(1)}%。下限 ${(MIN_SPLIT_RATIO * 100).toFixed(0)}%）。`
+      + '市町村の読み表か句割りの判定が壊れている可能性が高いので、辞書は書きません。'
+      + `見送りの内訳: ${[...byReason].map(([r, l]) => `${r} ${l.length}`).join(' / ')}`,
+    )
+  }
+
   // 上流の並び順を保つ（震度観測点 → 潮位観測点）。station-coords.json・コード表と同じ並びに
   // なり、突き合わせるときに追いやすい。
   const output: Record<string, string> = {
     _comment: '観測点名の読み。気象庁のふりがなから、音声合成エンジンが誤読する点だけを収録。'
       + '対象は震度観測点（「5弱以上・未入電」の地点名）と潮位観測点（津波の観測情報）。'
+      + '長い名前は市町村の境界で 2 つのアクセント句に割る。'
       + 'キーは観測点名、値は AquesTalk 風カナ（\' はアクセント核、/ は句区切り）。'
       + '生成: npm run build-station-readings',
   }
@@ -766,6 +1043,7 @@ async function main(): Promise<void> {
   const breakdown = [...bySource].map(([source, count]) => `${source} ${count}`).join(' / ')
   const rate = (misreadTargets.length / targets.length * 100).toFixed(1)
   console.log(`Wrote ${OUT_FILE} (収録 ${misreadTargets.length} / 全 ${targets.length} 点・${rate}%・${breakdown})`)
+
   // **読みを作り直したら、助詞を連結しても句が増えないことを確かめ直す。** 増えると助詞が
   // 独立した句として浮き、辞書該当語の繋ぎ目で元の症状が戻る（→ `docs/spec/audio-tts-spec.md`
   // §3「助詞は辞書の読みへ取り込む」）。CI では判定に音声合成エンジンが要るため回せないので、
