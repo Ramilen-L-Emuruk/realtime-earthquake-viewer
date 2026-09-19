@@ -1650,10 +1650,19 @@ export function createTestTsunamiHighTide(base: JMATsunami, prev: JMATsunami): J
  *
  * **読み上げが終わる程度には空ける。** これらの報は最下位の層（`SPEECH_PRIORITY.commentary`）で
  * 読むので、前の発話が続いていると待たされ、待ちきれなければ黙る —— 間隔が短いと、
- * 確かめたい文がどれも鳴らないまま終わる。解除（`TEST_AUTO_DISMISS_MS` = 90 秒）までに
- * 7 通が収まる値でもある（7 × 10 秒 = 70 秒）。
+ * 確かめたい文がどれも鳴らないまま終わる。
  */
 export const TEST_TSUNAMI_QUIET_STEP_MS = 10000
+
+/**
+ * 「変化の小さい続報」テストで、最後の報を流してから全解除までに残す余裕。
+ *
+ * **解除までの時間は段数から導く**（`TEST_TSUNAMI_QUIET_STEP_MS × 段数 + この値`）。
+ * 固定値（`TEST_AUTO_DISMISS_MS` = 90 秒）から引き算する形にしていたころ、段を 1 つ足しただけで
+ * 最後の報の余裕が 20 秒から 10 秒へ縮んだ —— **段を足した人にはその劣化が見えない**。
+ * 導く形にすれば、段が増えても最後の報は同じだけ読む時間を持てる。
+ */
+export const TEST_TSUNAMI_QUIET_TAIL_MS = 20000
 
 /** 観測情報の報に共通の差し替え（種別の名乗りと見出し文）。 */
 function asObservationReport(base: JMATsunami, suffix: string): JMATsunami {
@@ -1704,6 +1713,35 @@ export function createTestTsunamiMaxHeightTimeUpdate(prev: JMATsunami): JMATsuna
     observations: (prev.observations ?? []).map(o =>
       o.height && !o.offshore && !o.condition?.maxHeightMissing
         ? { ...o, maxHeightRevise: '更新', maxHeightDateTime: advanced }
+        : o),
+  }
+}
+
+/**
+ * 波高の値は据え置きのまま、「○m以上」（`over`）だけが後から付く観測情報の報。
+ *
+ * 2024 年能登半島地震の 01/01 16:35 と同じ形 —— 輪島港の値は 1.2 のままで、電文の
+ * `description` だけが「１．２ｍ」から「１．２ｍ以上」へ変わった（`MaxHeight/Revise` も無い）。
+ * 潮位計が振り切れて真の波高が読めなくなった、という**いちばん見せたい変化**が、
+ * 数値の上では何も動かない形で届く。
+ *
+ * **この形はテストボタンでしか作れない。** 値が変わらないので「値の変化で判定する」仕組みでは
+ * 作れず、実機で確かめる入口がここにしか無い（「観測中」のまま `Revise` が「更新」になる
+ * 沖合の報と同じ事情）。読み上げ・カードのバッジ・地図のカメラが揃って反応することを見る。
+ *
+ * **沿岸の観測点 1 つだけを昇格させる。** 全部を一度に振り切れさせると、どの観測点が動いたのか
+ * 画面から読み取れない。
+ */
+const OVER_UPGRADE_STATION = '八戸港'
+
+export function createTestTsunamiObservationOverUpgrade(prev: JMATsunami): JMATsunami {
+  const report = asObservationReport(prev, 'obs-over')
+  return {
+    ...report,
+    observations: (prev.observations ?? []).map(o =>
+      o.name === OVER_UPGRADE_STATION && o.height
+        // `description` は実電文をパーサーが通した後の形（半角・「以上」を含む）に揃える。
+        ? { ...o, height: { ...o.height, description: `${o.height.value}m以上`, over: true } }
         : o),
   }
 }

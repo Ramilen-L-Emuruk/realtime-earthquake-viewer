@@ -184,6 +184,33 @@ function makeTsunamiObsUpdate(): JMATsunami {
   } as unknown as JMATsunami
 }
 
+/**
+ * 波高は据え置きのまま、気象庁が最大波の観測時刻だけを進めた続報。
+ *
+ * 2024-01-02 00:51 の舞鶴・玄海町仮屋と同じ形（→ `utils/tsunami.ts` の `hasMaxHeightTimeAdvanced`）。
+ * 値が動かないので、波高だけを見る仕組みでは「変化なし」に見える。
+ */
+function makeTsunamiMaxHeightTimeUpdate(over: { at?: string } = {}): JMATsunami {
+  return {
+    kind: 'tsunami',
+    id: 'tsunami-3',
+    eventId: 'tsunami-evt',
+    time: '2026-01-01T12:15:00Z',
+    cancelled: false,
+    issue: { source: 'JMA', time: '2026-01-01T12:15:00Z', type: 'Focus' },
+    areas: [{ grade: 'MajorWarning', immediate: true, name: '石川県能登', maxHeight: { description: '5m', value: 5 } }],
+    observations: [{
+      name: '輪島港',
+      districtCode: '360',
+      districtName: '石川県能登',
+      // 直前の報（`makeTsunamiObsUpdate`）と同じ 3.4m。動くのは時刻だけ。
+      height: { value: 3.4, over: false, description: '3.4m' },
+      maxHeightDateTime: over.at ?? '2026-01-01T12:14:00Z',
+      maxHeightRevise: '更新',
+    }],
+  } as unknown as JMATsunami
+}
+
 function makeEEW(over: { serial?: string } = {}): EEWAlert {
   return {
     kind: 'eew',
@@ -428,6 +455,39 @@ describe('読み上げとタブ切替の同調', () => {
     handle(makeTsunamiObsUpdate())
     await settle()
     expect(spies.setActiveTabNonRealtime).toHaveBeenCalledWith('tsunami')
+  })
+
+  // ── 波高が動かない報でも画面を動かす ──────────────────────────────────────
+  // 読み上げは「最大波の観測時刻が更新されました」と読むのに、バッジもカードのスクロールも
+  // 動いていなかった回帰。2024 年能登半島地震の 01/01〜01/02 では延べ 44 観測点がこの形だった。
+
+  it('波高が据え置きでも、最大波の観測時刻が更新されたらバッジが付く', async () => {
+    const { handle, result } = setup({ voicevoxEnabled: false })
+    handle(makeTsunami())
+    handle(makeTsunamiObsUpdate())
+    await settle()
+
+    // Act: 波高 3.4m のまま、最大波の観測時刻だけが進んだ続報。
+    handle(makeTsunamiMaxHeightTimeUpdate())
+    await settle()
+
+    // Assert: 値だけを見ていたころは何も付かなかった。
+    expect(result.current.obsUpdateStatus.get('輪島港')).toBe('updated')
+  })
+
+  it('同じ最大波の観測時刻の再送ではバッジが付かない', async () => {
+    const { handle, result } = setup({ voicevoxEnabled: false })
+    handle(makeTsunami())
+    handle(makeTsunamiObsUpdate())
+    handle(makeTsunamiMaxHeightTimeUpdate())
+    await settle()
+
+    // Act: 同じ時刻のまま再送される（`Revise` は「更新」のまま残り続ける）。
+    handle(makeTsunamiMaxHeightTimeUpdate())
+    await settle()
+
+    // Assert: 付かない。`Revise` の有無だけで判定していたら、再送のたびに点滅する。
+    expect(result.current.obsUpdateStatus.get('輪島港')).toBeUndefined()
   })
 
   // 解除では観測点の記憶を落とす。**画面用も読み上げ用と揃えて落とすこと。** 片方だけ残すと
