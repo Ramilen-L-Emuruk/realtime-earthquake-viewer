@@ -10,6 +10,7 @@ import { ErrorBoundary } from './components/ErrorBoundary'
 import { log } from './utils/logger'
 import { installFrameProfiler } from './utils/frameProfiler'
 import { installGlobalErrorLog } from './utils/globalErrorLog'
+import { installSpeechCacheProbe } from './utils/speechAudioCache'
 
 // コマ落ちの診断（`window.__frameProfiler`）を使えるようにする。**呼び口を用意するだけで、
 // `start()` を呼ぶまで何も記録しない**（utils/frameProfiler.ts の `arm`）。このアプリは地震の
@@ -20,6 +21,10 @@ installFrameProfiler()
 // 投げられた例外を、アプリ時計のタイムスタンプ付きで記録に残す。ErrorBoundary はそこへ届かない。
 // **画面には何も出さない**（理由は utils/globalErrorLog.ts の冒頭）。
 installGlobalErrorLog()
+
+// 合成済みチャンクの控えと投機の効きを外から読めるようにする（`window.__speechCache()`）。
+// 呼び口を生やすだけで、何も記録し始めない（統計は控え側が常時数えている）。
+installSpeechCacheProbe()
 
 // autoUpdate モードで新 SW がコントローラーになったら sw-updated イベントを発火する。
 // 初回インストール時（controller が null → SW）は除外し、更新時のみ通知する。

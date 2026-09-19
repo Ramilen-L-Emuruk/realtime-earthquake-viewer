@@ -4,6 +4,7 @@ import { leadingParticle } from './ttsTrailingParticles'
 import { getTtsStationReadingsCache, loadTtsStationReadings } from './ttsStationReadings'
 import { getTtsEpicenterAccentsCache, loadTtsEpicenterAccents } from './ttsEpicenterAccents'
 import { mergeSpeechDicts } from './ttsGeneratedDict'
+import { speechChunkKey, takeCachedChunk, hasCachedChunk, putCachedChunk, clearSpeechAudioCache, registerSpeechCacheExtraStats } from './speechAudioCache'
 import { log, createLogThrottle } from './logger'
 
 /**
@@ -107,14 +108,71 @@ export const CHUNK_SYNTH_TIMEOUT_MS = 5000
  * 予算はチェーン側の上限より短く取り、尽きたら以降のチャンクは待たない。
  * **鳴っている時間は数えない**（差し引くのは合成を待った分だけ）ので、正常な読み上げが
  * どれだけ長くても予算は減らない。
+ *
+ * **さらに、音が出ている間の合成待ちも数えない**（{@link isAudioPlaying}）。この予算が防ぎたい
+ * 誤認は「1 音も出ていないのに鳴っている最中だと思われる」ことで、それはチェーン側
+ * （`capSpeechWait`）が**同じ判定で**待ちを延ばすようになった時点で解消している。鳴り始めた
+ * 後まで待ちを積むと、**合成が再生に追いつかないだけで以降のチャンクが丸ごと無音になる** ——
+ * 録画中のように負荷で合成が遅れる場面では、1 チャンクあたり 200ms の遅れが 30 チャンク目で
+ * 予算を使い切る（南海トラフ解説の本文は 65 チャンクある）。
+ *
+ * 音が {@link AUDIO_GAP_GRACE_MS} を超えて途切れたら消費を再開する。そこまで途切れているなら
+ * チェーン側も打ち切る側へ倒れるので、宙吊りの保険は保たれる。
  */
 export const SPEECH_SYNTH_BUDGET_MS = 6000
+
+/**
+ * 録画モードでの合成待ちの予算。
+ *
+ * **効くのは「音が途切れている間の待ち」の累計だけ**（鳴っている間は数えない。→
+ * {@link SPEECH_SYNTH_BUDGET_MS}）。録画中は負荷で音が {@link AUDIO_GAP_GRACE_MS} を超えて
+ * 途切れることがあり、そのたびに予算を削られると長い文の後半が落ちる。**録画は後で編集
+ * するので、多少間が空いても最後まで読み切るほうが価値がある。**
+ *
+ * **この値が上限を決めるのは「音が途切れている間」だけ。** 鳴り続けている限り予算は減らない
+ * ので、負荷で毎回ぎりぎり合成が成功し続ける劣化状態では、1 回の発話は
+ * `CHUNK_SYNTH_TIMEOUT_MS × チャンク数`（南海トラフ解説の 65 チャンクなら理屈の上で 325 秒）
+ * まで伸びうる。**それでよい** —— 音は出続けているので、聞き手には読み上げが続いている。
+ * 最終的な歯止めは呼び出し側の `SPEECH_WAIT_HARD_CAP_MS`（`useLiveEventHandler`）が持つ。
+ *
+ * **それでも無制限にしないのは、1 音も鳴らないまま無応答になる場合のため。** そこでは
+ * 予算がそのまま効き、この値で見切る。
+ */
+export const RECORDING_SYNTH_BUDGET_MS = 30_000
+
+/** 録画モードか（合成待ちの予算を切り替える。{@link setSpeechSynthBudgetRelaxed}）。 */
+let synthBudgetRelaxed = false
+
+/**
+ * 合成待ちの予算を録画向けに緩めるかどうかを切り替える。
+ *
+ * **引数で渡さないのはなぜか。** 読み上げを始める口は `speakWithVoicevox` ひとつだが、
+ * 呼び出し元は 20 箇所を超える。1 つ足すたびに渡し忘れる余地ができ、忘れても
+ * **症状は「録画中にたまに後半が落ちる」だけ**で型検査にも掛からない。
+ */
+export function setSpeechSynthBudgetRelaxed(relaxed: boolean): void {
+  synthBudgetRelaxed = relaxed
+}
 
 // 合成が上限まで返らなかったときの警告の間引き。無応答は続けて起こるため、素通しにすると埋まる。
 const warnSynthTimeout = createLogThrottle(30000)
 
 // 合成そのものが失敗したときの警告の間引き（中断は別扱い。`synthesizeChunk` の catch）。
 const warnSynthFailed = createLogThrottle(30000)
+
+/**
+ * 投機（`prefetchSpeechTexts`）由来の合成失敗の間引き。**本番と分ける。**
+ *
+ * 投機はリプレイ中 2 秒おきに何十件も投げる高頻度の呼び出し元で、{@link warnSynthFailed} を
+ * 共有すると**投機の失敗が 30 秒の窓を使い切り、直後に起きた本物の読み上げの失敗が記録に
+ * 出ない**（VOICEVOX 未起動でリプレイだけ先に始まった、など）。「読み上げが鳴らない」は
+ * 実運用でいちばん知りたい異常なので、そこをノイズで潰さない。
+ * 辞書の取得失敗を呼び出し元ごとに分けているのと同じ理由（{@link warnTextFragmentFailed}）。
+ */
+const warnPrefetchSynthFailed = createLogThrottle(30000)
+
+/** 投機のループが例外で終わったときの間引き（合成の失敗とは別。実装の誤りを拾う枠）。 */
+const warnPrefetchLoopFailed = createLogThrottle(30000)
 
 // 合成待ちの予算を使い切ったときの警告の間引き。
 const warnSynthBudgetOut = createLogThrottle(30000)
@@ -652,7 +710,42 @@ async function loadSpeechDicts(onPhraseBreakError: (err: unknown) => void): Prom
 }
 
 /**
+ * 直前に控えの有効性を確かめたときの辞書の参照（{@link invalidateCacheOnDictChange}）。
+ * `undefined` は「まだ一度も見ていない」。
+ */
+let cacheDictRef: Record<string, string> | null | undefined = undefined
+
+/**
+ * 辞書が入れ替わっていたら控えを捨てる。
+ *
+ * **辞書は後から届く。** `loadSpeechDicts` は取得に失敗しても合成を続ける設計なので、
+ * 辞書が無い状態で焼いた音が控えに残り、あとから辞書が取れても**素の読みのまま鳴り続ける**
+ * ことが起こる。読みが崩れていることは聞くまで分からず、画面にもログにも出ない。
+ *
+ * 効くのは起動直後だけだが、**1 回とは限らない。** 辞書は 3 つ（句区切り・観測点の読み・
+ * 震央地名の句割り）あって個別に取得され、`speechDict()` はその組が変わるたびに新しい
+ * オブジェクトを返す。揃う順によっては数回続けて発火する（そのぶん焼いた音は無駄になるが、
+ * 誤読を残すよりよい）。読み込まれてしまえば以後は変わらない。
+ *
+ * **ここだけでは足りない。** この判定は「いま」の辞書しか見ないので、合成の往復の最中に
+ * 入れ替わった場合は取りこぼす。書き込む側でも見比べること（`synthesizeChunk` の
+ * `dictAtStart`）。
+ */
+function invalidateCacheOnDictChange(): void {
+  const dict = speechDict()
+  if (cacheDictRef === undefined) { cacheDictRef = dict; return }
+  if (cacheDictRef === dict) return
+  cacheDictRef = dict
+  clearSpeechAudioCache()
+  log.debug('[VoiceVox] 読み上げ辞書が入れ替わったため合成済みチャンクの控えを捨てた')
+}
+
+/**
  * 1チャンクを audio_query → synthesis して AudioBuffer を返す。失敗時は null。
+ *
+ * **合成済みの控え（`speechAudioCache.ts`）はここで引く。** 合成を投げる経路は先行合成・
+ * 作り置き・投機・本再生と 4 つあるが、いずれも最後はこの関数を通るので、ここ 1 箇所で全部に
+ * 効く。呼び出し側それぞれに書くと、経路を足したときに 1 つだけ控えを通らない形ができる。
  *
  * @param hasNextChunk 後続のチャンクがあるか。真のとき、末尾の句読点に間を持たせる
  *   （{@link CHUNK_BREAK_PAUSE}）。**最後のチャンクには渡さないこと。** 読み終わりに無音が伸び、
@@ -665,7 +758,32 @@ async function synthesizeChunk(
   ctx: AudioContext,
   signal?: AbortSignal,
   hasNextChunk = false,
+  /**
+   * 投機（{@link prefetchSpeechTexts}）からの呼び出しか。**記録の間引きを分けるためだけに使う**
+   * （理由は {@link warnPrefetchSynthFailed}）。合成の中身は変えない。
+   */
+  speculative = false,
 ): Promise<AudioBuffer | null> {
+  invalidateCacheOnDictChange()
+  // **鍵に `speedScale` は含めていない。** いまは下で 1.2 に固定しているため。設定で変えられる
+  // ようにするなら、鍵にも足すこと —— さもないと速度を変えても古い音が鳴り続ける。
+  const cacheKey = speechChunkKey(baseUrl, speakerId, chunk, hasNextChunk)
+  const cached = takeCachedChunk(cacheKey)
+  if (cached) return cached
+  /**
+   * 合成を始めた時点の辞書。**読みの組み立てと、控えへ書いてよいかの判定の両方に使う。**
+   *
+   * **入口の `invalidateCacheOnDictChange()` だけでは足りない。** あちらは「いま辞書が
+   * 入れ替わっていたら控えを捨てる」だけで、この関数は以降 `/audio_query` →
+   * `/accent_phrases` → `/synthesis` と往復する。**その最中に別の発話が辞書を取り直すと、
+   * 控えは捨てられた後にこちらが古い読みの音を書き込む**ことになる。辞書はその後安定するので
+   * 二度と捨てられず、**そのチャンクだけセッション中ずっと誤読のまま固定される** ——
+   * 無音にもならず例外も出ないので、聞くまで気づけない。
+   *
+   * 辞書の取得は失敗しても次の発話でやり直される設計（`loadTtsPhraseBreakDict`）なので、
+   * 「未取得のまま合成が始まり、その最中に取得が成功する」並びは起動直後に現実に起こる。
+   */
+  const dictAtStart = speechDict()
   try {
     const queryRes = await fetch(
       `${apiBase(baseUrl)}/audio_query?text=${encodeURIComponent(chunk)}&speaker=${speakerId}`,
@@ -675,8 +793,10 @@ async function synthesizeChunk(
 
     const query = await queryRes.json() as Record<string, unknown>
 
-    // 辞書にマッチする地名（区域名・観測点名）を含む場合は、accent_phrases を指定通りに組み直す
-    const phraseBreakDict = speechDict()
+    // 辞書にマッチする地名（区域名・観測点名）を含む場合は、accent_phrases を指定通りに組み直す。
+    // **ここで `speechDict()` を読み直さない。** 読み直すと、控えへ書いてよいかの判定
+    // （下の `dictAtStart` との突き合わせ）が「合成に使った辞書」とずれる。
+    const phraseBreakDict = dictAtStart
     if (phraseBreakDict && findPhraseBreakMatch(chunk, phraseBreakDict)) {
       // **組み直しの例外はここで受け止める。** 下の catch まで飛ばすと `return null` へ落ち、
       // **そのチャンクが無音のまま脱落する**（呼び出し側は `if (!buffer) continue`）。組み直しを
@@ -739,7 +859,19 @@ async function synthesizeChunk(
     if (!synthRes.ok) return null
 
     const wav = await synthRes.arrayBuffer()
-    return await ctx.decodeAudioData(wav)
+    const buffer = await ctx.decodeAudioData(wav)
+    // **控えるのは合成しきったものだけ。** 失敗は覚えない（`fixedPhrases` と同じ理由 ——
+    // VOICEVOX を後から起動することがあるので、作り直す余地を残す）。
+    //
+    // **待っている間に辞書が入れ替わっていたら書かない**（理由は `dictAtStart`）。この音は
+    // 古い読みで作られているので、控えへ入れると誤読が固定される。鳴らすのはそのまま
+    // 続ける —— 既に合成できているものを捨てて無音にするほうが害が大きい。
+    if (speechDict() === dictAtStart) {
+      putCachedChunk(cacheKey, buffer)
+    } else {
+      log.debug('[VoiceVox] 合成中に辞書が入れ替わったため、この音は控えへ入れない', { chunk })
+    }
+    return buffer
   } catch (err) {
     // abort による例外もここに落ちる。null で返して呼び出し元に「合成失敗」として扱わせる。
     //
@@ -748,6 +880,8 @@ async function synthesizeChunk(
     // 後から切り分けられない。中断は日常的に起こるので `debug` に留める。
     if (err instanceof DOMException && err.name === 'AbortError') {
       log.debug('[VoiceVox] 合成を中断した（新しい読み上げへの切り替え・セッションの終了）')
+    } else if (speculative) {
+      warnPrefetchSynthFailed(() => log.warn('[VoiceVox] 投機の合成に失敗した', err))
     } else {
       warnSynthFailed(() => log.warn('[VoiceVox] 合成に失敗した', err))
     }
@@ -786,6 +920,13 @@ export function prewarmVoicevox(baseUrl: string, text: string, speakerId: number
   if (!ctx) return null
   const chunks = splitIntoChunks(text)
   if (chunks.length === 0) return null
+
+  // **投機を止めてから始める**（→ {@link abortSpeechPrefetch}）。ここが呼ばれるのは通知音との
+  // 間（0.5〜2.7 秒）で、そのとき直前の発話は終わっていることが多く `isSpeaking()` は偽 ——
+  // つまり**投機は自制しない**。止めずに始めると、投機の要求が VOICEVOX の直列処理を占有した
+  // まま先行合成が後ろに並び、「間が明けた瞬間に声を出す」という目的そのものが果たせない。
+  // `speakOnce` の冒頭と同じ流儀。
+  abortSpeechPrefetch()
 
   const ctrl = new AbortController()
   const first = (async () => {
@@ -841,6 +982,15 @@ const fixedPhrases = new Map<string, FixedPhrase>()
  */
 async function raceSynthTimeout(
   p: Promise<AudioBuffer | null>, waitMs: number,
+  /**
+   * この発話に適用された予算（記録の文面に出す）。
+   *
+   * **その発話の開始時に確定した値を渡すこと。** ここでモジュールの
+   * {@link synthBudgetRelaxed} を読み直すと、長い発話の最中に録画モードを切り替えたとき
+   * **実際に適用された値と記録が食い違う** —— この記録は「録画中に後半が無音になった」
+   * 原因を追うための手掛かりなので、そこで嘘をつくと使えない。
+   */
+  budgetMs: number,
 ): Promise<AudioBuffer | null> {
   // 予算が尽きた。**既に終わっているものは拾う**（`p` を先に置く）が、待ちはしない。
   //
@@ -848,7 +998,7 @@ async function raceSynthTimeout(
   // 無音になるので、記録しないと「後半が読まれなかった」理由がどこにも残らない。
   if (waitMs <= 0) {
     warnSynthBudgetOut(() => log.warn(
-      `[VoiceVox] この発話の合成待ちが予算（${SPEECH_SYNTH_BUDGET_MS}ms）を使い切った（以降のチャンクは待たない）`,
+      `[VoiceVox] この発話の合成待ちが予算（${budgetMs}ms）を使い切った（以降のチャンクは待たない）`,
     ))
     return Promise.race([p, Promise.resolve(null)])
   }
@@ -1001,6 +1151,215 @@ function rememberFixedPhrase(baseUrl: string, speakerId: number, chunk: string, 
   // 二度と埋まらず、作り置きが永久に効かなくなる。
   existing?.abort()
   fixedPhrases.set(chunk, { buffer, abort: () => { /* 合成済み。打ち切るものがない */ } })
+}
+
+// ─── 投機的な先行合成（リプレイ） ────────────────────────────────
+
+/**
+ * 投機で進行中の合成を打ち切る持ち手。**本番の読み上げが始まったら即座に止める。**
+ *
+ * VOICEVOX は合成を直列に捌くので、投機が走っている最中に本物が来ると 1 件ぶん待たされる。
+ * 1 件ずつ順に投げる（下記）ことで待ちはその 1 件に収まるが、止められるものは止める。
+ */
+let prefetchAbort: AbortController | null = null
+
+/** 投機のループが回っているか。二重に走らせない。 */
+let prefetchRunning = false
+
+/**
+ * 投機の 1 件を諦めるまでの時間。
+ *
+ * **VOICEVOX への合成要求そのものにはタイムアウトが無い**（{@link CHUNK_SYNTH_TIMEOUT_MS} と
+ * 同じ事情）。ここで上限を張らないと、無応答の 1 件で `await` が永久に解けず、
+ * **{@link prefetchRunning} が真のまま固まって以後の投機が丸ごと死ぬ** —— しかも症状は
+ * 「なんとなく速くならない」だけで、ログにも画面にも出ない。復帰するのは次の本物の読み上げが
+ * {@link abortSpeechPrefetch} を呼んだときだけで、発話の少ない区間では長く死んだままになる。
+ *
+ * **値は作り置き（{@link FIXED_PHRASE_SYNTH_TIMEOUT_MS}）と同じだが、定数は分ける。** 急がない
+ * 合成という性格は同じでも、片方を動かしたときにもう片方まで変える理由はない。
+ */
+export const PREFETCH_SYNTH_TIMEOUT_MS = 10000
+
+/**
+ * 続けてこの件数だけ焼けなかったら、そのバッチを諦める。
+ *
+ * **1 件ごとに持ち手を分けたことの裏返し。** 詰まった 1 件で残りを巻き込まないようにした結果、
+ * VOICEVOX が落ちている場面では**全件が順に上限まで待つ**（`PREFETCH_SYNTH_TIMEOUT_MS` ×
+ * チャンク数）。数十件並ぶバッチでは何分も投機が居座ることになる。
+ *
+ * 諦めても損はない —— 焼けなかったチャンクは控えに入らないので、次のティック（2 秒後）で
+ * また積まれる。リプレイの取得が「1 件も無い範囲では打ち切る」のと同じ考え方
+ * （`REPLAY_MAX_CONSECUTIVE_GIVEUPS`）。
+ */
+const PREFETCH_MAX_CONSECUTIVE_FAILURES = 2
+
+// 投機の統計（`window.__speechCache()` から読む）。**焼いた件数だけでは足りない** ——
+// 控えのヒット率と並べて初めて「投機が当たっているか」が読める。
+let prefetchSynthesized = 0
+let prefetchAborted = 0
+
+registerSpeechCacheExtraStats(() => ({
+  prefetchSynthesized,
+  prefetchAborted,
+  prefetchRunning,
+}))
+
+/**
+ * これから読まれる見込みの文を、**再生せずに**先に合成して控えへ入れる。
+ *
+ * リプレイは窓ぶんの電文を先に持っているので、次に何が来るかが分かる（→ `speechPrefetch.ts`）。
+ * その文を先に焼いておけば、実際に読む番が来たときには往復が丸ごと省ける。
+ *
+ * **本番を邪魔しないことが最優先。** 読み上げの最中は投げない・本番が始まったら打ち切る・
+ * 1 件ずつ順に投げる（`warmFixedPhrases` と同じ流儀）。投機は「間に合っていれば速い」ための
+ * 仕掛けであって、急ぐものではない。
+ *
+ * **セッションには関与しない。** 進行中の再生を止めず、`currentSessionId` も動かさない。
+ *
+ * @param texts 投機する読み上げ文。チャンクに割って、控えに無いものだけ焼く
+ */
+export function prefetchSpeechTexts(baseUrl: string, texts: readonly string[], speakerId: number): void {
+  // 読み上げの最中は手を出さない。次の駆動で呼び直される（覗き直せば同じ文がまた並ぶ）。
+  if (isSpeaking() || prefetchRunning) return
+  const ctx = getAudioContext()
+  if (!ctx) return
+
+  // **控えに既にあるチャンクは並べない。** 同じチャンクが複数の文に現れることもあるので
+  // 一意にもする。
+  //
+  // **見るのは `hasCachedChunk` で、`takeCachedChunk` ではない。** 後者はヒット数を数えるので、
+  // ここで引くと**投機が自分の焼いたものを引き直した回数**が混ざり、`window.__speechCache()` の
+  // ヒット数から「本番の読み上げが控えから出た回数」を読めなくなる（実測でそうなっていた ——
+  // 28 件焼いたはずが手元に 18 件しか無く、差は投機自身のヒットだった）。
+  const pending = new Map<string, { chunk: string; hasNext: boolean }>()
+  for (const text of texts) {
+    const chunks = splitIntoChunks(text)
+    for (let i = 0; i < chunks.length; i++) {
+      const hasNext = i + 1 < chunks.length
+      const key = speechChunkKey(baseUrl, speakerId, chunks[i], hasNext)
+      if (pending.has(key) || hasCachedChunk(key)) continue
+      pending.set(key, { chunk: chunks[i], hasNext })
+    }
+  }
+  if (pending.size === 0) return
+
+  const ctrl = new AbortController()
+  prefetchAbort = ctrl
+  prefetchRunning = true
+  void (async () => {
+    try {
+      // 辞書が無いまま焼くと、素の読みが控えへ入って**あとから辞書が取れても崩れたまま鳴る**
+      // （`synthesizeChunk` が書き込み直前に見比べて弾くので誤読は固定されないが、
+      // 投機ぶんが丸ごと無駄になる）。
+      await loadSpeechDicts(() => { /* 取れなくても本再生と同じ扱いで進む */ })
+      const items = [...pending.values()]
+      /** 続けて焼けなかった件数（{@link PREFETCH_MAX_CONSECUTIVE_FAILURES}）。 */
+      let consecutiveFailures = 0
+      for (let i = 0; i < items.length; i++) {
+        // **1 件ごとに見直す。** 読み上げが始まっていれば、そこで降りる。
+        // **残り全部を諦めた件数として数える。** 1 件ずつしか数えないと、
+        // 「焼けた数＋諦めた数」が試みた数と合わず、効きを読む数字として使えない。
+        if (ctrl.signal.aborted || isSpeaking()) { prefetchAborted += items.length - i; return }
+        const { chunk, hasNext } = items[i]
+        /**
+         * **この 1 件だけを打ち切るための持ち手。バッチ全体の `ctrl` とは分ける。**
+         *
+         * 上限（{@link PREFETCH_SYNTH_TIMEOUT_MS}）で `ctrl` を止めてしまうと、`AbortController`
+         * は一度 abort すると戻せないので、**残りの未処理チャンクまで巻き添えで打ち切られる**。
+         * 止めたいのは詰まった 1 件で、そのバッチ全部ではない（作り置き `warmFixedPhrases` も
+         * 1 件ごとに持ち手を分けている）。
+         *
+         * バッチ全体の打ち切り（本番の読み上げが始まった・再生が切り替わった）は `ctrl` から
+         * ここへ中継する。
+         */
+        const itemCtrl = new AbortController()
+        const relayAbort = () => itemCtrl.abort()
+        ctrl.signal.addEventListener('abort', relayAbort, { once: true })
+        // 順番が回ってきてから張るのは作り置きと同じ（待ち時間を持ち時間に数えない）
+        const timer = setTimeout(() => itemCtrl.abort(), PREFETCH_SYNTH_TIMEOUT_MS)
+        try {
+          const buf = await synthesizeChunk(baseUrl, chunk, speakerId, ctx, itemCtrl.signal, hasNext, true)
+          if (buf) {
+            prefetchSynthesized++
+            consecutiveFailures = 0
+          } else {
+            // **焼けなかった分はここで数える**（上限で諦めた・合成が失敗した・打ち切られた）。
+            // ループ先頭の判定は「次へ進む前」にしか効かないので、これが無いと合計が合わない。
+            prefetchAborted++
+            // **バッチ全体が打ち切られたのなら、それは「焼けなかった」ではない。** 本番の
+            // 読み上げが始まった・再生が切り替わった、であって VOICEVOX の不調ではないので、
+            // 下の「続けて焼けなかった」に数えると記録が原因を取り違えて語る。
+            if (ctrl.signal.aborted) { prefetchAborted += items.length - i - 1; return }
+            // 続けて焼けないならバッチごと降りる（理由は {@link PREFETCH_MAX_CONSECUTIVE_FAILURES}）
+            if (++consecutiveFailures >= PREFETCH_MAX_CONSECUTIVE_FAILURES) {
+              prefetchAborted += items.length - i - 1
+              log.debug(`[VoiceVox] 投機を続けて ${consecutiveFailures} 件焼けなかったため、このバッチを降りる`)
+              return
+            }
+          }
+        } finally {
+          clearTimeout(timer)
+          ctrl.signal.removeEventListener('abort', relayAbort)
+        }
+      }
+    } catch (err) {
+      // **中断（正常系）と実装の誤りを分ける。** 一緒くたに debug へ落とすと、読み上げ文の
+      // 組み立てに潜む不具合で投機が一度も動かなくなっても、本番では何も残らない
+      // （`synthesizeChunk` の catch が同じ区別をしているのと揃える）。
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        log.debug('[VoiceVox] 投機の先行合成を中断した')
+      } else {
+        warnPrefetchLoopFailed(() => log.warn('[VoiceVox] 投機の先行合成が例外で終わった', err))
+      }
+    } finally {
+      // **自分がまだ現役のときだけ降ろす。** 打ち切られた後は
+      // {@link abortSpeechPrefetch} が同期で降ろし済みで、そこへ新しいバッチが始まっている
+      // ことがある —— 条件を付けずに書くと、**走り出したばかりの次のバッチの旗を倒す**。
+      if (prefetchAbort === ctrl) {
+        prefetchRunning = false
+        prefetchAbort = null
+      }
+    }
+  })()
+}
+
+/**
+ * 投機の合成を打ち切る。**本番の読み上げを始める直前に呼ぶ。**
+ *
+ * 打ち切っても、その 1 件の応答は返ってくるまで VOICEVOX を占有しうる（`AbortSignal` は
+ * 送信済みの要求を取り消せるが、サーバー側の処理が止まる保証はない）。それでも呼ぶのは、
+ * **残りのキューを止められる**のが大きいため —— 数十件が並んでいれば、そちらの影響が桁違い。
+ */
+export function abortSpeechPrefetch(): void {
+  if (!prefetchAbort) return
+  try { prefetchAbort.abort() } catch { /* 二重 abort は無視 */ }
+  prefetchAbort = null
+  // **旗はここで同期に降ろす。** ループの `finally` まで待つと、そこへ届くのは中断された
+  // 要求の拒否がマイクロタスクとして処理された後 —— つまり**次の投機が「まだ走っている」と
+  // 誤認されて黙って見送られる**。再生を切り替えた直後の 1 回目がまさにそれで、
+  // いちばん効いてほしい区間の立ち上がりで 1 周期ぶん空振りする。
+  // ループ側は「自分がまだ現役なら」を確かめてから降ろすので、二重には書かない。
+  prefetchRunning = false
+}
+
+/**
+ * テスト用に「最後に音が止んだ時刻」を捨てる（本番経路では呼ばない）。
+ *
+ * {@link isAudioPlaying} は音が途切れてから {@link AUDIO_GAP_GRACE_MS} のあいだ真を返す。
+ * この値はモジュールに居座るので、**前のテストで鳴らした音の余韻が次のテストへ持ち越される** ——
+ * 「1 音も鳴っていない」状況を作ったつもりが `isAudioPlaying()` が真を返し、合成待ちの予算が
+ * 消費されないまま待ち続ける（→ {@link SPEECH_SYNTH_BUDGET_MS}）。
+ */
+export function __resetAudioPlaybackStateForTest(): void {
+  lastAudioEndedAt = 0
+}
+
+/** テスト用に投機の状態を捨てる（本番経路では呼ばない）。 */
+export function __resetSpeechPrefetchForTest(): void {
+  abortSpeechPrefetch()
+  prefetchRunning = false
+  prefetchSynthesized = 0
+  prefetchAborted = 0
 }
 
 /** テスト用に作り置きを捨てる（本番経路では呼ばない）。 */
@@ -1257,6 +1616,10 @@ async function speakOnce(
   if (prewarmed) activePrewarms.delete(prewarmed)
   for (const p of activePrewarms) p.abort()
 
+  // 投機の合成も止める（→ {@link abortSpeechPrefetch}）。**先行合成より件数が多い**ので、
+  // 止め忘れると数十件が VOICEVOX の直列処理に並んだまま、これから読む方が後ろで待つ。
+  abortSpeechPrefetch()
+
   // 旧セッションの in-flight fetch を打ち切る（AUD-4）。abort() は同期完了なので
   // ここから先の await は新しいコントローラーの signal を使う。
   if (currentAbortController) {
@@ -1417,7 +1780,8 @@ async function speakOnce(
   // （最大 5 秒）がある。そこを数えないと、辞書が遅い日に「予算 6 秒」のつもりで実際には
   // 11 秒待つことになり、**発話チェーン側の上限（8 秒）が先に尽きて「鳴っている最中」と
   // 誤認される** —— 1 音も出ていないのに既読が進む。
-  let synthBudgetLeftMs = Math.max(0, SPEECH_SYNTH_BUDGET_MS - (performance.now() - startedAt))
+  const synthBudgetMs = synthBudgetRelaxed ? RECORDING_SYNTH_BUDGET_MS : SPEECH_SYNTH_BUDGET_MS
+  let synthBudgetLeftMs = Math.max(0, synthBudgetMs - (performance.now() - startedAt))
 
   for (let i = 0; i < chunks.length; i++) {
     if (currentSessionId !== sessionId) { completionResolve(); return outcome() }  // 割り込みされた
@@ -1426,14 +1790,34 @@ async function speakOnce(
     // 合成を待てる残りの予算（{@link SPEECH_SYNTH_BUDGET_MS}）の短い方。超えたら合成失敗と
     // 同じ扱いにして進む —— 待ち続けると、この読み上げが完了も失敗もしないまま宙に浮く。
     //
+    // **ただし音が出ている間は予算を見ない。** 宙吊りの誤認はチェーン側（`capSpeechWait`）が
+    // 同じ判定で待ちを延ばすことで防がれており、鳴っている最中の待ちまで予算に数えると
+    // 「合成が再生に追いつかないだけ」で以降のチャンクが丸ごと無音になる（理由は
+    // {@link SPEECH_SYNTH_BUDGET_MS}）。この判定を消すときは、あちらの注記も併せて見ること。
+    //
     // **差し引くのは合成を待った分だけ。** 鳴っている時間は数えないので、正常な読み上げが
     // どれだけ長くても予算は減らない（先行合成は再生と並行して走り、待ちはほぼ 0 になる）。
     // 計るのは `performance.now()`（単調増加）。壁時計は NTP 補正・スリープ復帰で前後する。
+    //
+    // **待ちの前後の両方で見て、片方でも偽なら消費する。** 待っている最中に音が尽きた場合は
+    // 「鳴っている間の待ち」とは言えないので、安全側（消費する）へ倒す。
+    //
+    // **「この発話が鳴ったか」まで見る。`isAudioPlaying()` だけでは足りない。** あちらは音が
+    // 止んでから {@link AUDIO_GAP_GRACE_MS} のあいだ真を返し、しかも `lastAudioEndedAt` を
+    // 更新するのは `onended`（非同期）—— **割り込みで止めた前の発話の `ended` が、この発話の
+    // 最初の待ちの最中に発火する**。そのとき 1 音も鳴らしていないのに免除が働き、予算が
+    // いちばん効くべき「最初の合成が返るか」の瞬間だけ素通りする。
+    // 予約が 1 つでもあれば、この発話は鳴り始めている（`outcome()` と同じ述語）。
+    const playingBeforeWait = scheduled.some(s => !s.dropped) && isAudioPlaying()
     const waitStartedAt = performance.now()
     const buffer = await raceSynthTimeout(
-      nextBufferPromise, Math.min(CHUNK_SYNTH_TIMEOUT_MS, synthBudgetLeftMs),
+      nextBufferPromise,
+      playingBeforeWait ? CHUNK_SYNTH_TIMEOUT_MS : Math.min(CHUNK_SYNTH_TIMEOUT_MS, synthBudgetLeftMs),
+      synthBudgetMs,
     )
-    synthBudgetLeftMs = Math.max(0, synthBudgetLeftMs - (performance.now() - waitStartedAt))
+    if (!(playingBeforeWait && isAudioPlaying())) {
+      synthBudgetLeftMs = Math.max(0, synthBudgetLeftMs - (performance.now() - waitStartedAt))
+    }
     if (currentSessionId !== sessionId) { completionResolve(); return outcome() }  // await 中に割り込み
     if (abandoned) break  // 鳴り始めの直前の判定で取り下げられた
 

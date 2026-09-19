@@ -45,7 +45,8 @@ import { useFetchThrottled } from './hooks/useFetchThrottled'
 import { useTestScenarios } from './hooks/useTestScenarios'
 import { useSettings } from './hooks/useSettings'
 import { useAlertTitle } from './hooks/useAlertTitle'
-import { useLiveEventHandler } from './hooks/useLiveEventHandler'
+import { useLiveEventHandler, ttsRegionOptions } from './hooks/useLiveEventHandler'
+import { useSpeechPrefetch } from './hooks/useSpeechPrefetch'
 import { useUnreceivedSpeechFollow } from './hooks/useUnreceivedSpeechFollow'
 import { useBorrowedHypocenterFollow, type BorrowedHypocenterShowResult } from './hooks/useBorrowedHypocenterFollow'
 import { useKyoshinAlerts } from './hooks/useKyoshinAlerts'
@@ -80,7 +81,7 @@ import { playCountdownBeep, unlockAudio, setSoundVolume, setKeepAliveEnabled } f
 import { loadTtsPhraseBreakDict } from './utils/ttsPhraseBreakDict'
 import { loadTtsStationReadings } from './utils/ttsStationReadings'
 import { loadTtsEpicenterAccents } from './utils/ttsEpicenterAccents'
-import { warmFixedPhrases, isValidVoicevoxUrl, VOICEVOX_URL_DEBOUNCE_MS, isSpeaking, onSpeechIdle } from './utils/voicevox'
+import { warmFixedPhrases, isValidVoicevoxUrl, VOICEVOX_URL_DEBOUNCE_MS, isSpeaking, onSpeechIdle, setSpeechSynthBudgetRelaxed } from './utils/voicevox'
 import { EEW_LEAD_PHRASES } from './utils/ttsText'
 import type { EEWAlert, JMAQuake, JMATsunami } from './types/earthquake'
 import { useReplayController, WINDOW_MS as REPLAY_WINDOW_MS, PRE_WINDOW_MS as REPLAY_PRE_WINDOW_MS } from './hooks/useReplayController'
@@ -755,7 +756,7 @@ export function App() {
     simulateQuakeNotice, simulateEarthquakeCount, simulateEarthquakeCountRetraction, simulateEstimatedIntensity,
     simulateTrainingQuake, simulateUnreceivedQuake, simulateMaxScaleOrAboveQuake, simulateTsunamiGradeChange, simulateTsunamiQuietReports, simulateQuakeAmendment,
     simulateQuakeReportSequence, simulateHypocenterFromTsunami,
-    resetState, loadReplayEvents, restoreQuakeHistory,
+    resetState, loadReplayEvents, peekUpcomingPayloads, restoreQuakeHistory,
   } = useEarthquakes(handleLiveEvent, debouncedApiKey, settings.dmdataTestDelivery, replayTimeOffset, handleStartupRestore)
   earthquakesRef.current = earthquakes
   // 配信元の上限に達して取得を待たせているあいだ、地震タブにその旨を出す。
@@ -951,6 +952,25 @@ export function App() {
     }
     warmFixedPhrases(debouncedVoicevoxUrl, settings.voicevoxSpeakerId, EEW_LEAD_PHRASES)
   }, [settings.voicevoxEnabled, debouncedVoicevoxUrl, settings.voicevoxSpeakerId])
+
+  // 録画中は合成待ちの予算を緩める（→ `RECORDING_SYNTH_BUDGET_MS`）。負荷で音が途切れた
+  // ぶんだけ予算が削られるため、既定のままだと長い文の後半が落ちる。
+  useEffect(() => {
+    setSpeechSynthBudgetRelaxed(settings.recordingMode)
+  }, [settings.recordingMode])
+
+  // リプレイ中は、これから届く電文の読み上げを先に合成しておく（→ hooks/useSpeechPrefetch.ts）。
+  // 負荷で合成が再生に追いつかなくなる場面（録画中）への手当てで、**投機は本番を邪魔しない**
+  // （読み上げ中は投げず、始まれば打ち切る）。設定の入口は作り置きと同じものを通す。
+  const ttsSpeechOptions = useMemo(() => ttsRegionOptions(settings), [settings])
+  useSpeechPrefetch({
+    enabled: replayTimeOffset !== null && settings.voicevoxEnabled,
+    replayKey: replayTimeOffset,
+    peekUpcoming: peekUpcomingPayloads,
+    baseUrl: debouncedVoicevoxUrl,
+    speakerId: settings.voicevoxSpeakerId,
+    opts: ttsSpeechOptions,
+  })
 
   // ブラウザの自動再生制限に対応: 初回のユーザー操作で音声を有効化する
   useEffect(() => {

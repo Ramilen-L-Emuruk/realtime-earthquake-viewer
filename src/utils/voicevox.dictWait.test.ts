@@ -12,6 +12,8 @@
 // **ファイルを分けている理由。** 辞書のモックは `vi.mock` でファイル全体に効くため、取得を
 // 遅らせると `voicevox.test.ts` の全テストの時間軸が動く。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { __resetSpeechAudioCacheForTest } from './speechAudioCache'
+import { __resetAudioPlaybackStateForTest } from './voicevox'
 import { speakWithVoicevox, SPEECH_SYNTH_BUDGET_MS, CHUNK_SYNTH_TIMEOUT_MS } from './voicevox'
 
 /** 句区切り辞書の取得にかかる時間（ms）。テストごとに差し替える。 */
@@ -111,6 +113,11 @@ beforeEach(() => {
   baseMs = Date.now()
   dict.delayMs = 0
   synthDelayMs = 0
+  // 合成済みチャンクの控えはモジュールに居座る。捨てないと、同じ文を 2 度読むテストの
+  // 2 度目が控えから出て「合成が走らない」ことになる（辞書エントリのキャッシュと同じ事情）。
+  __resetSpeechAudioCacheForTest()
+  // 音の余韻（isAudioPlaying の猶予）も持ち越さない。残ると「1 音も鳴っていない」状況が作れない。
+  __resetAudioPlaybackStateForTest()
   installFetch()
 })
 afterEach(() => {

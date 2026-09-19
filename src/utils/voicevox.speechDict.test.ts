@@ -93,6 +93,10 @@ function installFetch() {
   }) as unknown as typeof fetch
 }
 
+// **このファイルは控え・音の余韻のリセットを呼ばない。** 各テストが `freshVoicevox()`
+// （`vi.resetModules()` ＋ 動的 import）で**モジュールごと作り直す**ので、静的 import した
+// リセット関数は「作り直す前の、もう誰も使わないインスタンス」を掃除するだけになる。
+// 他の `voicevox.*.test.ts` はモジュールを作り直さないため、あちらではリセットが要る。
 beforeEach(() => {
   stationReadingsAvailable = true
   installFetch()
