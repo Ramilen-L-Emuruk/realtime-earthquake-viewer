@@ -995,24 +995,24 @@ describe('津波観測情報の読み上げ: 新規と更新の言い分け', ()
   // 正: 前に声にした波高が無い観測点は「新たに」を冠する
   it('前値の無い観測点は「新たに」を付けて読む', () => {
     const text = tsunamiObservationUpdateToText([MIYAKO], undefined, undefined, new Set<string>())
-    expect(text).toContain('新たに岩手県、宮古で1.2メートルを観測しました。')
+    expect(text).toContain('新たに、次の地点で津波を観測しました。岩手県、宮古で1.2メートルを観測しました。')
     expect(text).not.toContain('更新')
   })
 
   // 対照: 前値のある観測点は「更新されました」で、「新たに」を付けない
   it('前値のある観測点は「更新されました」と読む', () => {
     const text = tsunamiObservationUpdateToText([OFUNATO], undefined, undefined, new Set(['大船渡']))
-    expect(text).toContain('岩手県、大船渡で3.0メートルに更新されました。')
+    expect(text).toContain('次の地点で最大波が更新されました。岩手県、大船渡で3.0メートルに更新されました。')
     expect(text).not.toContain('新たに')
   })
 
   // 正: 両方が混ざったら 2 文に分け、後ろを「また、」で継ぐ。深刻な波高を含む群が先に来る
   it('深刻な波高を含む群を先に読み、後ろを「また、」で継ぐ', () => {
     const raisedIsWorse = tsunamiObservationUpdateToText([MIYAKO, OFUNATO], undefined, undefined, new Set(['大船渡']))
-    expect(raisedIsWorse).toContain('津波観測情報。岩手県、大船渡で3.0メートルに更新されました。また、新たに岩手県、宮古で1.2メートルを観測しました。')
+    expect(raisedIsWorse).toContain('津波観測情報。次の地点で最大波が更新されました。岩手県、大船渡で3.0メートルに更新されました。また、新たに、次の地点で津波を観測しました。岩手県、宮古で1.2メートルを観測しました。')
 
     const firstTimeIsWorse = tsunamiObservationUpdateToText([MIYAKO, OFUNATO], undefined, undefined, new Set(['宮古']))
-    expect(firstTimeIsWorse).toContain('津波観測情報。新たに岩手県、大船渡で3.0メートルを観測しました。また、岩手県、宮古で1.2メートルに更新されました。')
+    expect(firstTimeIsWorse).toContain('津波観測情報。新たに、次の地点で津波を観測しました。岩手県、大船渡で3.0メートルを観測しました。また、次の地点で最大波が更新されました。岩手県、宮古で1.2メートルに更新されました。')
   })
 
   // 対照: 群が 1 つしかできない電文では「また、」を出さない
@@ -1024,15 +1024,15 @@ describe('津波観測情報の読み上げ: 新規と更新の言い分け', ()
   // 安全弁: 前値の記憶を渡さない経路（既定）は全件を初出として扱う。初報がこの形になる
   it('前値の記憶が無ければ全件を初出として読む', () => {
     const text = tsunamiObservationUpdateToText([MIYAKO, OFUNATO])
-    expect(text).toContain('新たに岩手県、宮古で1.2メートル、大船渡で3.0メートルを観測しました。')
+    expect(text).toContain('新たに、次の地点で津波を観測しました。岩手県、宮古で1.2メートルを観測、大船渡で3.0メートルを観測しました。')
     expect(text).not.toContain('更新')
   })
 
   // 正: 読む順は渡された並び（呼び出し側がカードの並びで渡す）。深刻な順に読み直さない。
   // 読み直すとカード上を上下に往復する（→ docs/spec/tsunami-spec.md §9）
   it('読む順は渡された並びのまま（深刻な順に読み直さない）', () => {
-    expect(tsunamiObservationUpdateToText([MIYAKO, OFUNATO])).toContain('宮古で1.2メートル、大船渡で3.0メートル')
-    expect(tsunamiObservationUpdateToText([OFUNATO, MIYAKO])).toContain('大船渡で3.0メートル、宮古で1.2メートル')
+    expect(tsunamiObservationUpdateToText([MIYAKO, OFUNATO])).toContain('宮古で1.2メートルを観測、大船渡で3.0メートルを観測しました。')
+    expect(tsunamiObservationUpdateToText([OFUNATO, MIYAKO])).toContain('大船渡で3.0メートルを観測、宮古で1.2メートルを観測しました。')
   })
 
   // 安全弁: 並び順を入力に委ねても、**どれを読むかの選抜は深刻な順**のまま。
@@ -1055,8 +1055,8 @@ describe('津波観測情報の読み上げ: 新規と更新の言い分け', ()
     ]
     // 上限 2 件。深刻な順は 大船渡(3.0) → 釜石(2.8) → 宮古(1.2) なので宮古が落ちる
     const text = tsunamiObservationUpdateToText(obs, undefined, 2, new Set(['釜石']))
-    expect(text).toContain('新たに岩手県、大船渡で3.0メートルを観測しました。')
-    expect(text).toContain('また、岩手県、釜石で2.8メートルに更新されました。')
+    expect(text).toContain('新たに、次の地点で津波を観測しました。岩手県、大船渡で3.0メートルを観測しました。')
+    expect(text).toContain('また、次の地点で最大波が更新されました。岩手県、釜石で2.8メートルに更新されました。')
     expect(text).not.toContain('宮古')
     expect(text).toContain('ほか1地点でも観測しています。')
   })
@@ -2057,14 +2057,14 @@ describe('tsunamiArrivalToText: 微弱の言い分け', () => {
     const text = tsunamiArrivalToText([
       { name: '釧路', districtName: '北海道太平洋沿岸東部', arrivalTime: at, condition: { weak: true } },
     ])
-    expect(text).toBe('北海道太平洋沿岸東部、釧路で到達を確認しました。最大波高は微弱です。')
+    expect(text).toBe('次の地点で津波の到達を確認しました。北海道太平洋沿岸東部、釧路で10時0分に第一波を観測しました。最大波高は微弱です。')
   })
 
   it('対照: 微弱でない観測点は従来どおり「最大波高は観測中です」', () => {
     const text = tsunamiArrivalToText([
       { name: '釧路', districtName: '北海道太平洋沿岸東部', arrivalTime: at },
     ])
-    expect(text).toBe('北海道太平洋沿岸東部、釧路で到達を確認しました。最大波高は観測中です。')
+    expect(text).toBe('次の地点で津波の到達を確認しました。北海道太平洋沿岸東部、釧路で10時0分に第一波を観測しました。最大波高は観測中です。')
   })
 
   it('正: 観測中と微弱が混ざったら群を分けて「また、」で継ぐ', () => {
@@ -2072,7 +2072,7 @@ describe('tsunamiArrivalToText: 微弱の言い分け', () => {
       { name: '大洗', districtName: '茨城県', arrivalTime: at },
       { name: '釧路', districtName: '北海道太平洋沿岸東部', arrivalTime: at, condition: { weak: true } },
     ])
-    expect(text).toBe('茨城県、大洗で到達を確認しました。最大波高は観測中です。また、北海道太平洋沿岸東部、釧路で到達を確認しました。最大波高は微弱です。')
+    expect(text).toBe('次の地点で津波の到達を確認しました。茨城県、大洗で10時0分に第一波を観測しました。最大波高は観測中です。また、北海道太平洋沿岸東部、釧路で10時0分に第一波を観測しました。最大波高は微弱です。')
   })
 
   it('安全弁: 片方の群だけなら「また、」を付けない', () => {

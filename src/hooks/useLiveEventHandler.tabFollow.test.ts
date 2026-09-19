@@ -473,7 +473,74 @@ describe('読み上げとタブ切替の同調', () => {
     await settle()
 
     // Assert: 値だけを見ていたころは何も付かなかった。
-    expect(result.current.obsUpdateStatus.get('輪島港')).toBe('updated')
+    expect(result.current.obsUpdateStatus.get('輪島港')?.status).toBe('updated')
+  })
+
+  // ── 項目ごとの印（カードの時刻欄の文字色） ────────────────────────────────
+  // 行の左端の縦線は「この地点で何かあった」までしか言わない。時刻しか動いていない報では
+  // 行の中身が 1 ドットも変わらないので、**どの項目が動いたのか**を別に持つ（→ `ObsUpdateMark`）。
+
+  // 正: 最大波の時刻だけが動いた報は、その項目に印が立つ
+  it('最大波の時刻だけが動いたら、その項目に印が立つ', async () => {
+    const { handle, result } = setup({ voicevoxEnabled: false })
+    handle(makeTsunami())
+    handle(makeTsunamiObsUpdate())
+    await settle()
+
+    handle(makeTsunamiMaxHeightTimeUpdate())
+    await settle()
+    expect(result.current.obsUpdateStatus.get('輪島港')?.fields.has('maxHeightTime')).toBe(true)
+  })
+
+  // 対照: 波高だけが動いた報では、最大波の時刻に印を立てない
+  // （`MaxHeight/Revise` が「更新」でなければ、気象庁は時刻を更新したと言っていない）
+  it('波高だけが動いた報では、時刻の項目に印を立てない', async () => {
+    const { handle, result } = setup({ voicevoxEnabled: false })
+    handle(makeTsunami())
+    await settle()
+
+    handle(makeTsunamiObsUpdate())
+    await settle()
+    // 行の印そのものは立つ（波高が動いているので）。立たないのは**時刻の項目**だけ。
+    expect(result.current.obsUpdateStatus.get('輪島港')).toBeDefined()
+    expect(result.current.obsUpdateStatus.get('輪島港')?.fields.has('maxHeightTime')).toBe(false)
+  })
+
+  // 正: 第1波だけが動いた報でも、行の印と項目の印が立つ。
+  // **読み上げは「第一波が更新されました」と名指しするので、画面が黙ると声が指した観測点を
+  // どこにも示せない**（最大波の時刻で一度踏んだ穴と同型）。
+  it('第1波だけが動いた報でも印が立つ', async () => {
+    const { handle, result } = setup({ voicevoxEnabled: false })
+    handle(makeTsunami())
+    handle(makeTsunamiObsUpdate())
+    await settle()
+
+    // 波高も最大波の時刻も据え置きで、第1波の到達時刻だけが付いた続報
+    handle({
+      ...makeTsunamiObsUpdate(),
+      id: 'tsunami-fw',
+      observations: [{
+        name: '輪島港', districtCode: '360', districtName: '石川県能登',
+        height: { value: 3.4, over: false, description: '3.4m' },
+        arrivalTime: '2026-01-01T11:40:00Z', initial: '押し',
+      }],
+    } as unknown as JMATsunami)
+    await settle()
+    expect(result.current.obsUpdateStatus.get('輪島港')).toBeDefined()
+    expect(result.current.obsUpdateStatus.get('輪島港')?.fields.has('firstWave')).toBe(true)
+  })
+
+  // 安全弁: 同じ内容の再送では印が空になる（印が居座ると、動いていない項目が塗られ続ける）
+  it('同じ内容の再送では項目の印が付かない', async () => {
+    const { handle, result } = setup({ voicevoxEnabled: false })
+    handle(makeTsunami())
+    handle(makeTsunamiObsUpdate())
+    handle(makeTsunamiMaxHeightTimeUpdate())
+    await settle()
+
+    handle(makeTsunamiMaxHeightTimeUpdate())
+    await settle()
+    expect(result.current.obsUpdateStatus.get('輪島港')?.fields.has('maxHeightTime') ?? false).toBe(false)
   })
 
   it('同じ最大波の観測時刻の再送ではバッジが付かない', async () => {
@@ -500,7 +567,7 @@ describe('読み上げとタブ切替の同調', () => {
     const { handle, result } = setup({ voicevoxEnabled: false })
     handle(makeTsunamiArrivalOnly())
     await settle()
-    expect(result.current.obsUpdateStatus.get('輪島港')).toBe('new')
+    expect(result.current.obsUpdateStatus.get('輪島港')?.status).toBe('new')
 
     // 直前に受信した津波に向けた解除（`eventId` を揃える）
     handle(makeTsunamiCancelEvent({ eventId: 'tsunami-arr-1' }))
@@ -509,7 +576,7 @@ describe('読み上げとタブ切替の同調', () => {
     // 別の津波で同じ観測点に再び到達（画面用の記憶も落ちているので新規として扱われる）
     handle(makeTsunamiArrivalOnly({ id: 'tsunami-arr-2' }))
     await settle()
-    expect(result.current.obsUpdateStatus.get('輪島港')).toBe('new')
+    expect(result.current.obsUpdateStatus.get('輪島港')?.status).toBe('new')
   })
 
   // 安全弁。津波は 1 件スロットなので、別イベントの遅延到達した解除で進行中の津波の記憶を
@@ -519,7 +586,7 @@ describe('読み上げとタブ切替の同調', () => {
     const { handle, result } = setup({ voicevoxEnabled: false })
     handle(makeTsunamiArrivalOnly())
     await settle()
-    expect(result.current.obsUpdateStatus.get('輪島港')).toBe('new')
+    expect(result.current.obsUpdateStatus.get('輪島港')?.status).toBe('new')
 
     // 別イベントの解除が遅れて届く
     handle(makeTsunamiCancelEvent({ eventId: 'other-evt' }))

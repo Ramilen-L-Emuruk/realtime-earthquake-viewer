@@ -155,7 +155,7 @@ describe('tsunamiMaxHeightTimeToSegments', () => {
   // 正: 地点名と述語を読む
   it('予報区と地点名を並べて述語を付ける', () => {
     const t = text(tsunamiMaxHeightTimeToSegments([obs('宮古', 0.4), obs('釜石', 0.1)]))
-    expect(t).toBe('津波観測情報。岩手県、宮古、釜石で、最大波の観測時刻が更新されました。')
+    expect(t).toBe('岩手県、宮古、釜石で、最大波の観測時刻が更新されました。')
   })
 
   // 対照: 対象が無ければ何も返さない（空の断片列が名乗りだけの発話になるのを防ぐ）
