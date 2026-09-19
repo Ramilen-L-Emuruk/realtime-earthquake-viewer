@@ -11,7 +11,7 @@ import { createArchiveBodyCache, MAX_ENTRIES, MAX_TOTAL_BYTES } from './archiveB
 // トップレベルで読んでいるので、待ちは 1 件目の所要時間には乗らない
 // （→ `rules/common/testing.md`「テスト本体の中で対象モジュールを初めて読まないこと」）。
 import { QUAKE_HISTORY_MAX_DAYS, PRE_WINDOW_MS, WINDOW_MS } from '../hooks/useReplayController'
-import { MAX_HISTORY_DAYS } from '../services/dmdataReplay'
+import { HISTORY_WINDOW_DAYS } from '../services/dmdataReplay'
 
 /** 展開済みアーカイブの代わり。`bytes` は展開後の tar の長さに相当する。 */
 function archive(name: string, bytes = 1000) {
@@ -185,19 +185,25 @@ describe('createArchiveBodyCache', () => {
   //
   // **数字を写さずに窓の定数から導く。** 写すと、窓を広げたとき（`QUAKE_HISTORY_MAX_DAYS` を
   // 7 → 14 日にする等）にこの境界テストが無反応で通り続ける。**片方の取得だけを見て上限を
-  // 決めると足りない** —— 再生の開始（16 本）に合わせた値では「もっと見る」（59 本）を割る。
+  // 決めると足りない** —— 再生の開始（16 本）に合わせた値では「もっと見る」（8 本）を割る。
   it('上限は、まとまった取得が同時に落とす本数を上回る', () => {
     const DAY_MS = 24 * 60 * 60 * 1000
     // リプレイの開始: 履歴の窓 ∪ 初期状態 ∪ 本編。分類は 2 つ（eew.forecast / telegram.earthquake）
     const replayDays = QUAKE_HISTORY_MAX_DAYS
       + Math.ceil(PRE_WINDOW_MS / DAY_MS) + Math.ceil(WINDOW_MS / DAY_MS)
     const replayNeed = (replayDays + 1) * 2
-    // 「もっと見る」を限界まで押した状態。分類は telegram.earthquake だけ
-    const loadMoreNeed = MAX_HISTORY_DAYS + 1
+    // 「もっと見る」1 回ぶん。分類は telegram.earthquake だけ。
+    //
+    // **カーソル方式では押した回数で増えない。** 窓どうしが重ならないので、同時に落とすのは
+    // 常にこの 1 窓ぶん（かつては押すたび範囲を広げて読み直しており、限界まで押した 59 本が
+    // 同時に要った）。
+    const loadMoreNeed = HISTORY_WINDOW_DAYS + 1
 
     expect(MAX_ENTRIES).toBeGreaterThanOrEqual(replayNeed + loadMoreNeed)
     // バイト数は実測から（8 日 × 2 分類で約 55MB・「もっと見る」は測れた 58 日で約 41MB）。
-    // 日数ではなく「地震の多い日を何本抱えるか」で決まるので、こちらは実測値を下限に置く
+    // 日数ではなく「地震の多い日を何本抱えるか」で決まるので、こちらは実測値を下限に置く。
+    // **1 窓が 30 日になっても下限は下げない** —— 測ったのは 58 日ぶんだが、重い日が
+    // 1 窓に集中する可能性は消えていない（能登本震の当日は 1 日で展開 30MB）。
     expect(MAX_TOTAL_BYTES).toBeGreaterThanOrEqual((55 + 41) * 1024 * 1024)
   })
 })

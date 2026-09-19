@@ -19,6 +19,11 @@ import {
   noteRateLimited, resetRateLimitsForTest,
 } from './dmdataRequestGates'
 
+/** テスト用: 日ごとの取りこぼしを合計する（実装が日ごとに持つようになったため）。 */
+function skippedTotal(m: ReadonlyMap<string, number>): number {
+  return [...m.values()].reduce((a, b) => a + b, 0)
+}
+
 // 電文本体の取得は配信元の上限に合わせて 6 秒に 1 件へ直列化されている
 // （→ `services/telegramBody.ts`）。このファイルが見たいのは取り込みの中身なので間隔を外す。
 // **門そのものは `utils/requestGate.test.ts`、門と並行取得の噛み合わせは下記
@@ -199,7 +204,7 @@ describe('JST 日付の扱い', () => {
 
   // 黙って切ると、落とした日ぶんの電文が取りこぼしとして数えられないまま消える。
   // 「もっと見る」で日数を伸ばす経路はこの手前で止まる（→ `dmdataReplay.ts` の
-  // `MAX_HISTORY_DAYS`）ので、ここへ到達すること自体が呼び出し側の異常。
+  // `LIVE_FALLBACK_DAYS`）ので、ここへ到達すること自体が呼び出し側の異常。
   it('期間が上限を超えたら黙って切らずに投げる', () => {
     const from = new Date('2026-01-01T00:00:00Z')
     const to = new Date('2026-06-01T00:00:00Z')
@@ -378,7 +383,9 @@ describe('fetchLiveReplayEntries', () => {
     const { fn } = mockLive({})
     globalThis.fetch = fn as unknown as typeof fetch
     const result = await fetchLiveReplayEntries('key', FROM, TO, [], false)
-    expect(result).toEqual({ entries: [], skipped: 0, failedSources: [], rateLimitedTelegrams: 0 })
+    expect(result).toEqual({
+      entries: [], skippedByDay: new Map(), scanSkippedByDay: new Map(), failedSources: [], rateLimitedTelegrams: 0,
+    })
     expect(fn).not.toHaveBeenCalled()
   })
 
@@ -409,7 +416,7 @@ describe('fetchLiveReplayEntries', () => {
     const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false)
 
     expect(result.entries).toHaveLength(1)
-    expect(result.skipped).toBe(0)
+    expect(skippedTotal(result.skippedByDay)).toBe(0)
     expect(result.entries[0].payload.kind).toBe('event')
     // 再生時刻は受信時刻（ミリ秒精度）
     expect(result.entries[0].replayTime.toISOString()).toBe('2026-08-23T02:00:01.500Z')
@@ -432,7 +439,7 @@ describe('fetchLiveReplayEntries', () => {
 
     const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false)
 
-    expect(result.skipped).toBe(0)
+    expect(skippedTotal(result.skippedByDay)).toBe(0)
     expect(result.entries).toHaveLength(1)
     expect(result.entries[0].payload.kind).toBe('estimatedIntensity')
     expect(result.entries[0].replayTime.toISOString()).toBe('2026-08-23T02:05:02.250Z')
@@ -454,7 +461,7 @@ describe('fetchLiveReplayEntries', () => {
 
     const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false)
 
-    expect(result.skipped).toBe(0)
+    expect(skippedTotal(result.skippedByDay)).toBe(0)
     expect(result.entries).toHaveLength(1)
     expect(result.entries[0].payload.kind).toBe('estimatedIntensity')
   })
@@ -472,7 +479,7 @@ describe('fetchLiveReplayEntries', () => {
     const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false)
 
     expect(result.entries).toHaveLength(0)
-    expect(result.skipped).toBe(1)
+    expect(skippedTotal(result.skippedByDay)).toBe(1)
   })
 
   // 安全弁: **1 通の障害を 2 件に数えない。** 断片の取得が落ちたとき、その電文は二度と
@@ -492,7 +499,7 @@ describe('fetchLiveReplayEntries', () => {
     const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false)
 
     expect(result.entries).toHaveLength(0)
-    expect(result.skipped).toBe(1)
+    expect(skippedTotal(result.skippedByDay)).toBe(1)
   })
 
   // 安全弁: **断片が 2 つとも落ちても 1 件。** 分割は最大 24 断片あり、通信の不調では
@@ -510,7 +517,7 @@ describe('fetchLiveReplayEntries', () => {
     const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false)
 
     expect(result.entries).toHaveLength(0)
-    expect(result.skipped).toBe(1)
+    expect(skippedTotal(result.skippedByDay)).toBe(1)
   })
 
   // 安全弁: **429 の窓で見送った電文を、恒久的な取りこぼしとしても数えない。**
@@ -545,7 +552,7 @@ describe('fetchLiveReplayEntries', () => {
     // 待っている側で 1 件だけ数える
     expect(result.rateLimitedTelegrams).toBe(1)
     // **恒久的な取りこぼしには数えない**（ここが 1 になるのが二重計上）
-    expect(result.skipped).toBe(0)
+    expect(skippedTotal(result.skippedByDay)).toBe(0)
     expect(result.entries).toHaveLength(0)
   })
 
@@ -571,7 +578,7 @@ describe('fetchLiveReplayEntries', () => {
     const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false)
 
     // **合計で 1 件。** 恒久失敗の側だけが数える
-    expect(result.skipped).toBe(1)
+    expect(skippedTotal(result.skippedByDay)).toBe(1)
     expect(result.rateLimitedTelegrams).toBe(0)
     expect(result.entries).toHaveLength(0)
   })
@@ -589,7 +596,7 @@ describe('fetchLiveReplayEntries', () => {
 
     const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false)
 
-    expect(result.skipped).toBe(2)
+    expect(skippedTotal(result.skippedByDay)).toBe(2)
   })
 
   it('南海トラフ系も XML 版だけを取り込む', async () => {
@@ -629,7 +636,7 @@ describe('fetchLiveReplayEntries', () => {
 
     expect(result.entries).toHaveLength(0)
     // 落としたのは「対象外」であって取りこぼしではない
-    expect(result.skipped).toBe(0)
+    expect(skippedTotal(result.skippedByDay)).toBe(0)
   })
 
   // 当日経路（アーカイブがまだ無い日）も同じ扱いにする。**ただしこちらは一覧 API が
@@ -654,7 +661,7 @@ describe('fetchLiveReplayEntries', () => {
       const decoded = urls.map(u => decodeURIComponent(u))
       expect(decoded.some(u => u.includes('/v2/telegram?') && u.includes('test='))).toBe(false)
       expect(result.entries).toHaveLength(1)
-      expect(result.skipped).toBe(0)
+      expect(skippedTotal(result.skippedByDay)).toBe(0)
     })
 
     // 正: 設定を入れたら一覧へ `test=including` を付けて要求し、取り込む。
@@ -680,7 +687,7 @@ describe('fetchLiveReplayEntries', () => {
       globalThis.fetch = fn as unknown as typeof fetch
       const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, true)
       expect(result.entries).toHaveLength(0)
-      expect(result.skipped).toBe(0)
+      expect(skippedTotal(result.skippedByDay)).toBe(0)
     })
 
     // 安全弁: 緩めるのは `head.test` だけ。担当日でない電文まで通してはいけない。
@@ -695,7 +702,7 @@ describe('fetchLiveReplayEntries', () => {
       globalThis.fetch = fn as unknown as typeof fetch
       const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, true)
       expect(result.entries).toHaveLength(0)
-      expect(result.skipped).toBe(0)
+      expect(skippedTotal(result.skippedByDay)).toBe(0)
     })
   })
 
@@ -751,7 +758,9 @@ describe('fetchLiveReplayEntries', () => {
     const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false)
 
     expect(result.entries).toHaveLength(1)
-    expect(result.skipped).toBe(1)
+    // **窓を見る前に落ちた分**なので `scanSkippedByDay` 側（呼び出し元は両方を合わせて出す）
+    expect(skippedTotal(result.scanSkippedByDay)).toBe(1)
+    expect(skippedTotal(result.skippedByDay)).toBe(0)
     // 失ったのが 1 通と分かっているので、取得元（イベント丸ごと）としては数えない
     expect(result.failedSources).toEqual([])
   })
@@ -790,7 +799,7 @@ describe('fetchLiveReplayEntries', () => {
     const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false)
 
     expect(result.entries).toHaveLength(1)
-    expect(result.skipped).toBe(1)
+    expect(skippedTotal(result.skippedByDay)).toBe(1)
   })
 
   // 電文の件数と「取得元」は単位が違う。数十報のイベントを失っても電文 1 件として
@@ -813,7 +822,7 @@ describe('fetchLiveReplayEntries', () => {
 
     const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false)
 
-    expect(result.skipped).toBe(0)
+    expect(skippedTotal(result.skippedByDay)).toBe(0)
     expect(result.failedSources).toEqual(['eew:20260823110000'])
   })
 
@@ -832,7 +841,9 @@ describe('fetchLiveReplayEntries', () => {
     const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false)
 
     expect(result.entries).toHaveLength(0)
-    expect(result.skipped).toBe(2)
+    // 時刻が読めない電文は窓に当てられないので `scanSkippedByDay` 側
+    expect(skippedTotal(result.scanSkippedByDay)).toBe(2)
+    expect(skippedTotal(result.skippedByDay)).toBe(0)
   })
 
   // 2 本の一覧は互いに隔離する。片方の一時障害でもう片方の成果まで捨てると、
@@ -1148,7 +1159,7 @@ describe('fetchLiveQuakeTelegrams', () => {
 
     expect(result.quakes).toHaveLength(0)
     expect(result.tsunamis).toHaveLength(0)
-    expect(result.skipped).toBe(0)   // 取りに行っていないので取りこぼしにも数えない
+    expect(skippedTotal(result.skippedByDay)).toBe(0)   // 取りに行っていないので取りこぼしにも数えない
   })
 
   // 正: 津波は地震と同じ一覧から拾う。**当日ぶんだけ落ちると、発表中の津波が
@@ -1167,6 +1178,6 @@ describe('fetchLiveQuakeTelegrams', () => {
     expect(result.tsunamis).toHaveLength(1)
     expect(result.tsunamis[0].areas.map(a => a.name)).toContain('岩手県')
     expect(result.quakes).toHaveLength(0)   // 地震としては数えない
-    expect(result.skipped).toBe(0)
+    expect(skippedTotal(result.skippedByDay)).toBe(0)
   })
 })

@@ -92,16 +92,19 @@ function history(opts: {
   skipped?: number
   /** 読めなかった取得元（同上）。 */
   failedArchiveUrls?: string[]
+  /** 読み切った最古の JST 日（＝次のカーソル）。省略すると「1 件も読まなかった」。 */
+  oldestLoadedDay?: string | null
 } = {}) {
   return {
     quakes: opts.quakes ?? [],
     tsunamis: opts.tsunamis ?? [],
     extras: opts.extras ?? [],
-    skipped: opts.skipped ?? 0,
+    skippedByDay: skips(opts.skipped ?? 0),
     failedArchiveUrls: opts.failedArchiveUrls ?? ([] as string[]),
     rateLimitedSources: [] as string[],
     rateLimitedTelegrams: 0,
     hasMore: opts.hasMore ?? false,
+    oldestLoadedDay: opts.oldestLoadedDay ?? null,
   }
 }
 
@@ -123,7 +126,7 @@ vi.mock('../services/dmdata', () => ({
 
 // 履歴の取得はアーカイブ経由の 1 本へ寄せてある（→ `services/dmdataReplay.ts` の
 // `fetchDmdataQuakeHistory`）。地震・津波・帯・長周期がまとめて返る。
-// **こちらは `importOriginal` を混ぜる** —— `MAX_HISTORY_DAYS` 等の定数を実物から採るため。
+// **こちらは `importOriginal` を混ぜる** —— `HISTORY_WINDOW_DAYS` 等の定数を実物から採るため。
 // 通信するのは `fetchDmdataQuakeHistory` 1 本なので、それを差し替えれば漏れは出ない。
 vi.mock('../services/dmdataReplay', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../services/dmdataReplay')>()),
@@ -136,9 +139,9 @@ vi.mock('../services/p2pquake', () => ({
   fetchJmaQuake: vi.fn(),
 }))
 
-// 遡れる日数の上限は実装側の定数を正とする（テストへ数値を書き写すと、上限を動かしたときに
+// 1 回の窓の幅は実装側の定数を正とする（テストへ数値を書き写すと、窓を動かしたときに
 // テストだけが古い値のまま通ってしまう）。モックのファクトリで実物を展開しているので本物が来る。
-const { fetchDmdataQuakeHistory, MAX_HISTORY_DAYS } = await import('../services/dmdataReplay')
+const { fetchDmdataQuakeHistory, HISTORY_WINDOW_DAYS } = await import('../services/dmdataReplay')
 const { fetchHistory, fetchJmaQuake } = await import('../services/p2pquake')
 
 const { useEarthquakes } = await import('./useEarthquakes')
@@ -160,6 +163,20 @@ const { useEarthquakes } = await import('./useEarthquakes')
 // 引き換えに、読み込みに失敗したときはこのファイルが丸ごと落ちる（前は `simulate*` を使う
 // テストだけが落ちた）。読むのは生成済みの JSON なので失敗の目は薄いと見て、単純さを採る。
 await import('../utils/testData')
+const { totalSkipped } = await import('../utils/telegramLoss')
+
+
+/**
+ * テスト用: 取りこぼしを日ごとの Map にする。
+ *
+ * 実装が件数ひとつから日ごとへ変わったのは、同じ日を二度読んでも二重に数えず、別の日の分も
+ * 失わないため（→ `utils/telegramLoss.ts` の `skippedByDay`）。日を書き分けたいテストは
+ * 第 2 引数を渡す。
+ */
+function skips(count: number, day = '2026-08-10'): Map<string, number> {
+  return count > 0 ? new Map([[day, count]]) : new Map()
+}
+
 
 beforeEach(() => {
   sockets.length = 0
@@ -1596,9 +1613,14 @@ describe('DMDSS 版: 「もっと見る」で遡れる範囲', () => {
     return vi.mocked(fetchDmdataQuakeHistory).mock.calls.map(c => c[3])
   }
 
+  /** 呼ばれたときの窓の上端（第 2 引数＝カーソル）を ISO で順に返す。 */
+  function requestedBefore(): string[] {
+    return vi.mocked(fetchDmdataQuakeHistory).mock.calls.map(c => c[1].toISOString())
+  }
+
   beforeEach(() => {
-    // 呼び出し履歴（`requestedDays`）を見るので、前のテストのぶんを消しておく
-    // （このファイルは `clearMocks` を使っていないため、同じ `vi.fn()` に積まれ続ける）。
+    // 呼び出し履歴（`requestedDays` / `requestedBefore`）を見るので、前のテストのぶんを消して
+    // おく（このファイルは `clearMocks` を使っていないため、同じ `vi.fn()` に積まれ続ける）。
     vi.mocked(fetchDmdataQuakeHistory).mockClear()
     vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({ hasMore: true }))
   })
@@ -1616,32 +1638,62 @@ describe('DMDSS 版: 「もっと見る」で遡れる範囲', () => {
     expect(h.current.hasMore).toBe(true)
   })
 
-  it('正: 押すたびに遡る日数が伸びる', async () => {
+  // **カーソル方式の要。** 押すたびに「前回読み切った最古の日の直前」を次の窓の上端にする。
+  // 窓が重ならないので、遡るほど読み直す量が増えることがない。
+  it('正: 押すたびに、前回読み切った日の手前から続きを読む', async () => {
     const h = setup({ offset: null })
     await h.flush()
 
+    // **`setup()` の初回取得より後に仕込む**（理由は下の「取得中の解除」テストと同じ）。
+    vi.mocked(fetchDmdataQuakeHistory)
+      .mockResolvedValueOnce(history({ hasMore: true, oldestLoadedDay: '2026-08-20' }))
+      .mockResolvedValue(history({ hasMore: true, oldestLoadedDay: '2026-08-01' }))
+
     await act(async () => { await h.current.loadMoreEarthquakes() })
     await act(async () => { await h.current.loadMoreEarthquakes() })
 
-    // 初回（起動時）=7 日、以後 1 回につき +7 日
-    expect(requestedDays()).toEqual([7, 14, 21])
+    // 上端は「前回読み切った最古の日の 00:00 JST の 1ms 前」
+    const [, , third] = requestedBefore()
+    expect(third).toBe(new Date(Date.parse('2026-08-20T00:00:00+09:00') - 1).toISOString())
   })
 
-  // 当日経路の日付列挙には上限があり、越えると例外で止まる（→ `MAX_HISTORY_DAYS`）。
-  // 越えた日数を渡し続けると、押すたびに同じ例外を投げるだけのボタンが残る。
-  it('対照: 上限に達したらそれ以上は要求せず、押せなくする', async () => {
+  // 窓の幅は毎回同じ。**日数を伸ばしていく形へ戻さないこと** —— あれは押すたびに範囲全体を
+  // 読み直す作りで、遡るほど 1 回の解析量が増えていた。
+  it('正: 窓の幅は毎回一定', async () => {
+    const h = setup({ offset: null })
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(
+      history({ hasMore: true, oldestLoadedDay: '2026-08-20' }),
+    )
+    await h.flush()
+
+    await act(async () => { await h.current.loadMoreEarthquakes() })
+    await act(async () => { await h.current.loadMoreEarthquakes() })
+
+    // 初回（起動時）だけは起動用の短い窓、以後は「もっと見る」の窓
+    expect(requestedDays().slice(1)).toEqual([HISTORY_WINDOW_DAYS, HISTORY_WINDOW_DAYS])
+  })
+
+  // **元の不具合の回帰テスト。** 件数の安全弁に達して打ち切った回（窓の途中までしか読んで
+  // いない）でも、在庫が残っているなら押せたままでなければならない。
+  //
+  // かつては呼び出し側が「要求した日数が上限に達したか」を重ねて見ており、件数で打ち切って
+  // 読み残した日があってもボタンが死んだ。**症状は「9/19 に見ているのに 8/3 より前へ行けない」**で、
+  // 取得は成功しているので画面には何の警告も出ない。
+  it('安全弁: 件数で打ち切った回でも、在庫が残っていれば押せるままにする', async () => {
     const h = setup({ offset: null })
     await h.flush()
 
-    // 上限まで（+1 回ぶん余分に）押す
-    for (let i = 0; i < Math.ceil(MAX_HISTORY_DAYS / 7) + 2; i++) {
-      if (!h.current.hasMore) break
+    // 窓の途中で目標に達した（＝読み切った最古の日が窓の下端より新しい）形
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(
+      history({ hasMore: true, oldestLoadedDay: '2026-09-10' }),
+    )
+    for (let i = 0; i < 12; i++) {
       await act(async () => { await h.current.loadMoreEarthquakes() })
     }
 
-    expect(h.current.hasMore).toBe(false)
-    expect(Math.max(...requestedDays())).toBe(MAX_HISTORY_DAYS)
+    expect(h.current.hasMore).toBe(true)
   })
+
 
   // 取得側が「もう要らない（打ち切った）」と言ったら従う。日数の上限とは別の理由。
   it('対照: 取得側が打ち切ったら押せなくする', async () => {
@@ -1676,48 +1728,65 @@ describe('DMDSS 版: 「もっと見る」で遡れる範囲', () => {
     expect(h.current.isLoadingMore).toBe(false)
   })
 
-  // 接続を張り直す effect は、世代を進めるのと同じ同期ブロックで遡り幅を初期値へ戻す。
-  // catch がそれを無条件に書き戻すと、**差し替えた直後の 1 回目だけ旧世代の広い範囲を読み直す**。
-  it('安全弁: 世代が変わった後の失敗では、遡り幅の初期化を踏み潰さない', async () => {
+  // 接続を張り直す effect は、世代を進めるのと同じ同期ブロックでカーソルを初期値へ戻す。
+  // 旧世代の取得結果でカーソルを進めると、**新しい時間軸の「もっと見る」が旧世代で読んだ
+  // 位置から続きを読む**（その範囲は新しい軸ではまだ一度も読んでいない）。
+  it('安全弁: 世代が変わった後は、旧世代の結果でカーソルを進めない', async () => {
     const h = setup({ offset: null })
     await h.flush()
-    // 1 回押して 14 日まで伸ばす
+    // 1 回押してカーソルを進めておく
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValueOnce(
+      history({ hasMore: true, oldestLoadedDay: '2026-08-20' }),
+    )
     await act(async () => { await h.current.loadMoreEarthquakes() })
 
-    let reject: (e: unknown) => void = () => {}
-    vi.mocked(fetchDmdataQuakeHistory).mockReturnValueOnce(new Promise((_r, rj) => { reject = rj }))
+    let settle: (v: ReturnType<typeof history>) => void = () => {}
+    vi.mocked(fetchDmdataQuakeHistory).mockReturnValueOnce(new Promise((r) => { settle = r }))
     const click = act(async () => { await h.current.loadMoreEarthquakes() })
-    // 待っているあいだに世代が進む（= 遡り幅は 7 日へ戻っている）
+    // 待っているあいだに世代が進む（= カーソルは null へ戻っている）
     h.setOffset(-3600_000)
-    reject(new Error('旧世代の取得が失敗'))
+    settle(history({ hasMore: true, oldestLoadedDay: '2026-07-01' }))
     await click
 
-    // 再生をやめて押し直すと、初期値からの 1 回目（14 日）を読む。21 日にはならない
+    // 再生をやめて押し直すと、初回ロードが置いたカーソル（ここでは null＝現在時刻）から読む。
+    // 旧世代が返した 2026-07-01 は使わない
     h.setOffset(null)
     await h.flush()
     vi.mocked(fetchDmdataQuakeHistory).mockClear()
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({ hasMore: true }))
     await act(async () => { await h.current.loadMoreEarthquakes() })
 
-    expect(requestedDays()).toEqual([14])
+    const stale = new Date(Date.parse('2026-07-01T00:00:00+09:00') - 1).toISOString()
+    expect(requestedBefore()).not.toContain(stale)
   })
 
-  // 失敗した回のぶんまで日数を進めたままにすると、飛ばした 1 週間ぶんの履歴が二度と読まれない。
-  it('安全弁: 失敗したら伸ばした日数を戻し、押し直しで同じ範囲を読む', async () => {
+  // 失敗した回のぶんまでカーソルを進めると、飛ばした範囲の履歴が二度と読まれない。
+  it('安全弁: 失敗したらカーソルを進めず、押し直しで同じ範囲を読む', async () => {
     const h = setup({ offset: null })
     await h.flush()
-    vi.mocked(fetchDmdataQuakeHistory).mockRejectedValueOnce(new Error('取得に失敗'))
+    // 1 回目を成功させてカーソルを進めておく（進んでいない状態では「据え置き」を確かめられない）
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValueOnce(
+      history({ hasMore: true, oldestLoadedDay: '2026-08-20' }),
+    )
+    await act(async () => { await h.current.loadMoreEarthquakes() })
 
+    vi.mocked(fetchDmdataQuakeHistory).mockRejectedValueOnce(new Error('取得に失敗'))
     await act(async () => { await h.current.loadMoreEarthquakes() })
     expect(h.current.isLoadingMore).toBe(false)
     expect(h.current.hasMore).toBe(true)
 
     vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(
-      history({ hasMore: true, quakes: [quakeTelegram('20260810010000', '2026-08-10T01:05:00+09:00')] }),
+      history({
+        hasMore: true, oldestLoadedDay: '2026-08-01',
+        quakes: [quakeTelegram('20260810010000', '2026-08-10T01:05:00+09:00')],
+      }),
     )
     await act(async () => { await h.current.loadMoreEarthquakes() })
 
-    // 失敗した回と同じ 14 日を読み直す（21 日へ飛ばさない）
-    expect(requestedDays()).toEqual([7, 14, 14])
+    // 失敗した回と、その次の回が同じ上端を要求している（先へ飛ばさない）
+    const [, , failed, retried] = requestedBefore()
+    expect(retried).toBe(failed)
+    expect(failed).toBe(new Date(Date.parse('2026-08-20T00:00:00+09:00') - 1).toISOString())
     expect(h.current.earthquakes).toHaveLength(1)
   })
 
@@ -3042,7 +3111,7 @@ describe('履歴取得の一部失敗は状態へ残す', () => {
     const h = setup()
     await h.flush()
 
-    expect(h.current.historyLoss.skippedTelegrams).toBe(3)
+    expect(totalSkipped(h.current.historyLoss)).toBe(3)
     expect(h.current.historyLoss.failedSources.size).toBe(2)
     // 全滅ではないので、全画面の失敗表示は出さない
     expect(h.current.error).toBeNull()
@@ -3052,7 +3121,7 @@ describe('履歴取得の一部失敗は状態へ残す', () => {
     const h = setup()
     await h.flush()
 
-    expect(h.current.historyLoss.skippedTelegrams).toBe(0)
+    expect(totalSkipped(h.current.historyLoss)).toBe(0)
     expect(h.current.historyLoss.failedSources.size).toBe(0)
   })
 
@@ -3061,30 +3130,52 @@ describe('履歴取得の一部失敗は状態へ残す', () => {
     vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({ skipped: 2 }))
     const h = setup({ offset: null })
     await h.flush()
-    expect(h.current.historyLoss.skippedTelegrams).toBe(2)
+    expect(totalSkipped(h.current.historyLoss)).toBe(2)
 
     h.setOffset(-3_600_000)
     await h.flush()
 
-    expect(h.current.historyLoss.skippedTelegrams).toBe(0)
+    expect(totalSkipped(h.current.historyLoss)).toBe(0)
   })
 
-  // これから読み直す範囲の話なので、前の接続で欠けた分を持ち越すと直っても表示が消えない。
-  // **この取得は毎回「その時点の全範囲」を返す**（範囲は伸びるだけで縮まない）。積むと
-  // ①同じ損失を押した回数だけ数え ②取得が回復しても消えない。置き換えならどちらも起きない。
-  it('正: 2 度目の取得で回復したら消える', async () => {
+  // **取得元の失敗は置き換え、壊れた電文は積む。** 直り方が違うので扱いを分ける。
+  //
+  // 取得元（日）の失敗は、その日でカーソルが止まるので次に押せば必ず読み直す
+  // （→ 取得側の `oldestLoadedDay`）。だから消えてよい。
+  it('正: 2 度目の取得で取得元が回復したら、その分は消える', async () => {
     vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(
-      history({ hasMore: true, skipped: 2, failedArchiveUrls: ['https://x/a'] }),
+      history({ hasMore: true, failedArchiveUrls: ['https://x/a'] }),
     )
     const h = setup({ offset: null })
     await h.flush()
     expect(h.current.historyLoss.failedSources.size).toBe(1)
 
-    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({ hasMore: true }))
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(
+      history({ hasMore: true, oldestLoadedDay: '2026-08-20' }),
+    )
     await act(async () => { await h.current.loadMoreEarthquakes() })
 
-    expect(h.current.historyLoss.skippedTelegrams).toBe(0)
     expect(h.current.historyLoss.failedSources.size).toBe(0)
+  })
+
+  // **壊れた電文は取り直しても直らない。** その日自体は読み切れているのでカーソルは進み、
+  // 窓は重ならないので次の取得では 0 件になる。置き換えると**何も直っていないのに表示だけ
+  // 消え、「もう欠けは無い」と読める**。
+  it('正: 壊れた電文の分は、次に押しても消さずに積む', async () => {
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(
+      history({ hasMore: true, skipped: 2, oldestLoadedDay: '2026-09-10' }),
+    )
+    const h = setup({ offset: null })
+    await h.flush()
+    expect(totalSkipped(h.current.historyLoss)).toBe(2)
+
+    // 次の窓には壊れた電文が無い（窓が重ならないので当然）
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(
+      history({ hasMore: true, oldestLoadedDay: '2026-09-03' }),
+    )
+    await act(async () => { await h.current.loadMoreEarthquakes() })
+
+    expect(totalSkipped(h.current.historyLoss)).toBe(2)
   })
 
   it('対照: 2 度目も同じ取得元が読めなければ残る', async () => {
@@ -3098,24 +3189,33 @@ describe('履歴取得の一部失敗は状態へ残す', () => {
     expect(h.current.historyLoss.failedSources.size).toBe(1)
   })
 
-  // 解析に失敗した電文は控えないので、同じ日を走査するたびに同じ件数が返る。
-  // 積むと 1 通しか無い破損が押した回数だけ増える。
-  it('安全弁: 同じ取りこぼしを押した回数だけ数えない', async () => {
-    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({ hasMore: true, skipped: 1 }))
+  // **壊れた電文は積むが、押した回数だけ増えてはいけない。**
+  //
+  // カーソル方式では窓が重ならないので、同じ日を二度走査しない —— 1 通の破損は 1 回しか
+  // 数えられない。**旧実装（毎回いちばん新しい日から読み直す）では同じ日を何度も走査するため、
+  // 積む形にすると押した回数だけ増えていた**。窓が重ならないことが、積んでよい前提。
+  it('安全弁: 壊れた電文は積むが、窓が進めば押した回数だけ増えない', async () => {
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(
+      history({ hasMore: true, skipped: 1, oldestLoadedDay: '2026-09-10' }),
+    )
     const h = setup({ offset: null })
     await h.flush()
 
+    // 以後の窓に破損は無い（同じ日を読み直さないので当然）
+    vi.mocked(fetchDmdataQuakeHistory)
+      .mockResolvedValueOnce(history({ hasMore: true, oldestLoadedDay: '2026-09-03' }))
+      .mockResolvedValue(history({ hasMore: true, oldestLoadedDay: '2026-08-27' }))
     await act(async () => { await h.current.loadMoreEarthquakes() })
     await act(async () => { await h.current.loadMoreEarthquakes() })
 
-    expect(h.current.historyLoss.skippedTelegrams).toBe(1)
+    expect(totalSkipped(h.current.historyLoss)).toBe(1)
   })
 
   it('安全弁: 接続をやり直したら空へ戻す', async () => {
     vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({ skipped: 2 }))
     const h = setup({ offset: null })
     await h.flush()
-    expect(h.current.historyLoss.skippedTelegrams).toBe(2)
+    expect(totalSkipped(h.current.historyLoss)).toBe(2)
 
     // 再生へ入って戻す（接続 effect が張り直され、遡り幅と一緒に損失も初期化される）
     h.setOffset(-3_600_000)
@@ -3124,6 +3224,6 @@ describe('履歴取得の一部失敗は状態へ残す', () => {
     h.setOffset(null)
     await h.flush()
 
-    expect(h.current.historyLoss.skippedTelegrams).toBe(0)
+    expect(totalSkipped(h.current.historyLoss)).toBe(0)
   })
 })

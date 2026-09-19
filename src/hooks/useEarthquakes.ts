@@ -9,9 +9,10 @@ import { fetchHistory, fetchJmaQuake, P2PQuakeWebSocket } from '../services/p2pq
 import { DmdataWebSocket, fetchDmdataActiveEews } from '../services/dmdata'
 // 履歴の取得はリプレイ開始時の復元と実装を共有する（→ `data-sources-spec.md` §2
 // 「大量に取るならアーカイブを使う」）。同じ目的の実装を 2 本持たない。
-import { fetchDmdataQuakeHistory, MAX_HISTORY_DAYS } from '../services/dmdataReplay'
+import { fetchDmdataQuakeHistory, HISTORY_WINDOW_DAYS, HISTORY_EVENT_SAFETY_CAP } from '../services/dmdataReplay'
 import {
   type TelegramLoss, createEmptyTelegramLoss, telegramLossFrom, isTelegramLossEmpty,
+  mergeHistoryLoss,
 } from '../utils/telegramLoss'
 import { mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes, extractQuakeEventId, quakeEventKey, coalesceByEventId, findExistingQuakeCard, isRetractedQuakeReport, quakeRetractionOf, addQuakeRetraction } from '../utils/quakeMerge'
 import type { QuakeRetraction } from '../utils/quakeMerge'
@@ -36,22 +37,45 @@ import { loadTestData } from '../utils/testDataLoader'
 export const MAX_HISTORY_RETAINED = 50
 const LOAD_MORE_BATCH = 50        // 「もっと見る」1回あたりの取得件数
 const MAX_TELEGRAM_LOG = 200      // 電文ログの最大保持件数
-/**
- * 起動時にアーカイブを遡る日数。
- *
- * リプレイ開始時の履歴復元と同じ値。**日数がそのままリクエスト数になる**（1 日 1 ファイル・
- * 実測 gzip 10KB）ので、起動時は短く取る。件数が早く揃えばここまで遡らない。
- */
-const HISTORY_INITIAL_DAYS = 7
 
 /**
- * 「もっと見る」1 回で伸ばす日数。
+ * 起動後、地震カードの履歴をどこから先へ遡るか（次の窓の上端）。
  *
- * **遡れるのは `MAX_HISTORY_DAYS` まで。** アーカイブの在庫はそれより遥かに古くまであるので
- * （実測: 目録は 135 日以上さかのぼれた）、「在庫が尽きて自然に止まる」ことは起きない。
- * 止まるのは当日経路の日付列挙の上限で、そこへ達したら `hasMore` を偽にして押せなくする。
+ * **DMDSS 版の「もっと見る」はこのカーソルを進めて呼び直す。** 窓どうしが重ならないので、
+ * 押しても既に読んだ日を読み直さない。区切りは日数（`HISTORY_WINDOW_DAYS`）で、1 回押すたびに
+ * 窓 1 つぶんを丸ごと読む。
+ *
+ * **遡れる範囲に上限は置かない。** 在庫はアーカイブの保存開始（地震津波関連は 2020-11-18）まで
+ * あり、目録が空になった時点で `hasMore` が偽になって自然に止まる。
+ *
+ * かつてはここが「要求する日数」で、押すたびに 7 日ずつ伸ばして**毎回いちばん新しい日から
+ * 読み直して**いた。しかも上限（当日経路の暴走防止から導いた 59 日）に達すると押せなくなり、
+ * **件数で打ち切って読み残した日があってもボタンが死んでいた**。
+ *
+ * `null` は「まだ初回の履歴を読んでいない」。P2PQuake 版は `offset` で遡るので使わない。
  */
-const HISTORY_MORE_DAYS = 7
+type HistoryCursor = Date | null
+
+/**
+ * 読み終えた最古の JST 日から、次の窓の上端を作る。
+ *
+ * その日は丸ごと読み切っているので、**上端はその日の直前**（前日の 23:59:59.999 JST）。
+ * 取得側は `entryTime > before` で捨てるため、同じ日を二度読まずに続きへ進める。
+ *
+ * **日付として読めなければ `null` を返す。** カーソルが `null` なら次は初回と同じ範囲を
+ * 読み直すので、進まないだけで壊れない（`Date.parse` の `NaN` をそのまま渡すと、窓の両端が
+ * `NaN` になって目録を 1 件も引けなくなる）。値は目録の `date` 由来なので通常は起きないが、
+ * 起きたら記録を残す —— 画面には「押しても増えない」としか出ない。
+ */
+function historyCursorFromOldestDay(day: string | null): HistoryCursor {
+  if (!day) return null
+  const ms = Date.parse(`${day}T00:00:00+09:00`)
+  if (!Number.isFinite(ms)) {
+    log.warn(`[data] 履歴のカーソルを日付として読めませんでした（次は初回と同じ範囲を読み直します）: ${day}`)
+    return null
+  }
+  return new Date(ms - 1)
+}
 
 const MAX_QUAKE_RETRACTIONS = 20  // 取消を見た事実の台帳の最大保持件数（`rememberQuakeRetraction`）
 
@@ -632,12 +656,12 @@ export function useEarthquakes(
   const dmdataTestDeliveryRef = useRef(dmdataTestDelivery)
   dmdataTestDeliveryRef.current = dmdataTestDelivery
   /**
-   * いまアーカイブを何日ぶん遡っているか。**「もっと見る」のたびに伸ばす。**
+   * 次に読む窓の上端（→ `HistoryCursor`）。**「もっと見る」のたびに古い方へ進める。**
    *
-   * 件数だけを増やしても、日数が足りなければ在庫を読み切ったところで止まる
-   * （7 日分で 43 件しか無ければ、目標 50 件には永久に届かない）。
+   * 初回の履歴を読み終えるまでは `null`。初回が読めなかった場合もそのままなので、
+   * その状態で押されたら現在時刻から読み直す（＝初回と同じ範囲をもう一度試す）。
    */
-  const historyDaysRef = useRef(HISTORY_INITIAL_DAYS)
+  const historyCursorRef = useRef<HistoryCursor>(null)
   // 通常版「もっと見る」用の生 API 取得件数（重複除去後の earthquakes.length とは別管理）
   // offset = earthquakes.length だと重複除去ズレで古いデータが抜け落ちるため、API 呼び出し回数ベースで管理する
   const p2pRawOffsetRef = useRef(0)
@@ -1549,8 +1573,9 @@ export function useEarthquakes(
     let cancelled = false
     // 時間軸が変わった印。ここより前に始まった取得は、以後の結果を捨てる
     liveGenerationRef.current++
-    // 遡り幅も初期値へ戻す（戻さないと、接続を張り直すたびに余計に遡る）
-    historyDaysRef.current = HISTORY_INITIAL_DAYS
+    // カーソルも初期値へ戻す（戻さないと、接続を張り直したあとの「もっと見る」が
+    // 前の時間軸で読んだ位置から続きを読む）
+    historyCursorRef.current = null
     // 履歴の損失もここで空へ戻す。**これから読み直す範囲の話**なので、前の接続で欠けた分を
     // 持ち越すと直っても表示が消えない。遡り幅と同じ同期ブロックで戻す。
     setState(prev => (
@@ -1644,11 +1669,17 @@ export function useEarthquakes(
       // 実装はリプレイ開始時の履歴復元と共有する（`fetchDmdataQuakeHistory`）。同じ目的の
       // 実装を 2 本持つと、片方だけがアーカイブを使う今までの形に戻る。
       fetchDmdataQuakeHistory(
-        dmdataApiKey, serverDate(), MAX_HISTORY_RETAINED, HISTORY_INITIAL_DAYS, dmdataTestDelivery,
+        dmdataApiKey, serverDate(), HISTORY_EVENT_SAFETY_CAP, HISTORY_WINDOW_DAYS, dmdataTestDelivery,
         applyPartialQuakes, () => cancelled,
       )
         .then((history) => {
           if (cancelled) return
+          // **「もっと見る」はここの続きから読む。** 初回が読めなければ `null` のままで、
+          // 押されたときは初回と同じ範囲をもう一度試す。
+          //
+          // **`cancelled` を見たあとに置くこと。** 時間軸が変わった後の結果でカーソルを
+          // 進めると、新しい時間軸の「もっと見る」が古い軸で読んだ位置から続きを読む。
+          historyCursorRef.current = historyCursorFromOldestDay(history.oldestLoadedDay)
           const quakeEvents = history.quakes
           const tsunamiEvents = history.tsunamis
           // 種別横断の生電文を eventId ごとに統合（リアルタイムと同一ロジック）。
@@ -1705,9 +1736,9 @@ export function useEarthquakes(
             // ときだけで、`error` は立たない。出さないと「取れた分だけのカード」が
             // 「これが最新の地震情報のすべて」に見える。
             //
-            // **積まずに置き換える。** この取得は毎回「その時点の全範囲」を走査して数え直す
-            // （→ `utils/telegramLoss.ts` の表）。
-            historyLoss: telegramLossFrom(history.skipped, history.failedArchiveUrls, {
+            // **置き換える。** ここは起動時の 1 回きりで、遡りの起点になる
+            // （「もっと見る」側は壊れた電文だけ積む —— 理由はそちら）。
+            historyLoss: telegramLossFrom(history.skippedByDay, history.failedArchiveUrls, {
               sources: history.rateLimitedSources, telegrams: history.rateLimitedTelegrams,
             }),
           }))
@@ -1991,20 +2022,10 @@ export function useEarthquakes(
     // 作り直しのたびに進む世代の番号で見分ける。
     const generation = liveGenerationRef.current
     const stale = () => liveGenerationRef.current !== generation
-    // **失敗したら伸ばした日数を戻す。** 戻さないと、一過性の失敗で飛ばした 1 週間ぶんの
-    // 履歴が二度と読まれない（次に押したときはさらに古い範囲を読むため）。
-    //
-    // **ただし戻すのは自分の世代のときだけ**（下の catch）。接続を張り直す effect は
-    // `liveGenerationRef` を進めるのと同じ同期ブロックで `historyDaysRef` を初期値へ戻すので、
-    // 世代が変わった後に無条件で書き戻すと**そのリセットを踏み潰す**。症状は
-    // 「キーを差し替えた直後の 1 回目のクリックだけ、旧世代の広い範囲を読み直す」で、
-    // 画面には何も出ない（このセッションで避けたいのは、まさに余計なリクエスト）。
-    const daysBeforeThisClick = historyDaysRef.current
     setState(prev => ({ ...prev, isLoadingMore: true }))
     try {
       if (isDmdss) {
         const apiKey = dmdataApiKeyRef.current
-        const existingQuakes = stateRef.current.earthquakes
         // 初回と同じ理由で逐次に反映する。**控えが空のうちは 1 件 6 秒**なので、
         // 揃うまで待つ形だと押してから数分ボタンが無反応に見える。
         const applyPartialMore = (partial: JMAQuake[]): void => {
@@ -2015,21 +2036,37 @@ export function useEarthquakes(
             earthquakes: borrowFromTsunamiIntoCards(mergeQuakeHistory(partial, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache()), prev.tsunamis),
           }))
         }
-        // **目標件数を増やして呼び直す。** カーソルは使わない —— アーカイブ経由は件数基準で
-        // 遡る作りで、**読んだ日はキャッシュに残る**ので追加の通信は新しい日のぶんだけ。
-        const target = existingQuakes.length + LOAD_MORE_BATCH
-        // **日数も伸ばす。** 件数だけ増やしても、在庫を読み切った日より前へは進めない。
+        // **前回の続きから、窓 1 つぶんを丸ごと読む**（→ `historyCursorRef`）。件数は目標では
+        // なく安全弁なので、既存カードとの合計も渡さない（→ `HISTORY_EVENT_SAFETY_CAP`）。
         //
-        // **上限で頭を打つ。** 越えた日数を渡すと当日経路の日付列挙が投げる
-        // （→ `MAX_HISTORY_DAYS`）。押すたびに同じ例外を投げるボタンを残さないため、
-        // 越えないところで止め、下で `hasMore` を偽にする。
-        historyDaysRef.current = Math.min(historyDaysRef.current + HISTORY_MORE_DAYS, MAX_HISTORY_DAYS)
+        // カーソルが無いのは初回の履歴を読めていない場合。そのときは初回と同じ範囲を
+        // もう一度試す（進めないだけで、押しても何も起きない状態にはしない）。
+        const before = historyCursorRef.current ?? serverDate()
         const history = await fetchDmdataQuakeHistory(
-          apiKey, serverDate(), target, historyDaysRef.current, dmdataTestDeliveryRef.current,
+          apiKey, before, HISTORY_EVENT_SAFETY_CAP, HISTORY_WINDOW_DAYS, dmdataTestDeliveryRef.current,
           applyPartialMore, stale,
         )
         // 時間軸が変わっていたら、取れた分ごと捨てる（「取得中」の解除は finally が担う）
         if (stale()) return
+        // **カーソルを進めるのは成功したときだけ。** 失敗（catch）や時間軸の変化では据え置き、
+        // 次に押したとき同じ窓を読み直す。先に進めて失敗時に戻す形にすると、接続を張り直す
+        // effect のリセット（`historyCursorRef.current = null`）を後から踏み潰しうる。
+        //
+        // **進まなかったのに「まだある」と言われたら記録する。** 押しても永久に増えない状態で、
+        // 画面には何の痕跡も出ない。取得側は読み切った日をカーソルにするので（地震が 0 件の日も
+        // 含む）、通常は在庫がある限り必ず進む。
+        const nextCursor = historyCursorFromOldestDay(history.oldestLoadedDay)
+        if (nextCursor) historyCursorRef.current = nextCursor
+        else if (history.hasMore) {
+          // **429 の待機と本物の不具合を混ぜない。** 窓の最新の日が 429 の窓に入っていると
+          // その日は読み切れず、カーソルは進まない —— それは待てば解ける正常な足踏みで、
+          // 警告にすると解消するまで押すたび出続けて診断の価値が落ちる。
+          if (history.rateLimitedSources.length > 0) {
+            log.info('[data] 履歴のカーソルは進みませんでした（429 の窓が明けるまでの足踏み）')
+          } else {
+            log.warn('[data] 履歴のカーソルが進みませんでした（押しても増えない状態になります）')
+          }
+        }
         const events = history.quakes
         // 既存カード群を base に、新バッチの生電文を eventId ごとに統合する。
         // これによりバッチ跨ぎ（先に届いた VXSE61 単独カードへ後続の VXSE53 の震度を合流など）も
@@ -2053,22 +2090,21 @@ export function useEarthquakes(
             ...prev,
             earthquakes: merged,
             lpgmByEventId,
-            // 初回ロードと同じく置き換える。**ここが積む形だと 2 つの症状が出る** ——
-            // ①恒久的に壊れた 1 通を押した回数だけ数える（解析の失敗は控えないので毎回数える）
-            // ②アーカイブの取得が回復しても損失が消えない（失敗した取得は `archiveCache` から
-            // 外れて再試行され、429 なら普通に回復する）。範囲は伸びるだけで縮まないので、
-            // 今回の結果は前回の範囲を包含する。
-            historyLoss: telegramLossFrom(history.skipped, history.failedArchiveUrls, {
-              sources: history.rateLimitedSources, telegrams: history.rateLimitedTelegrams,
-            }),
+            // **残し方の判断は `mergeHistoryLoss` が持つ**（中身によって違う。理由はそちら）。
+            //
+            // **「積むか置き換えるか」をここで決めないこと。** そう見えるときは、中身が
+            // 「同じものを二度数えうる」形になっている —— 直す先は持ち方のほう。
+            historyLoss: mergeHistoryLoss(prev.historyLoss, history),
             // 押し直せば回復しうる側の表示は、成功したので消す
             loadMoreFailed: false,
-            // **打ち切るのは「これ以上遡れない」ときだけ。** 増えたかどうかでは判定しない ——
-            // 1 週間まるごと震度1以上の地震が無いことは普通に起きるが、それは
-            // 「もっと古い在庫が無い」ことを何も意味しない（実測でアーカイブの目録は
-            // 135 日以上さかのぼれた）。増えなかったら止める作りにしていた頃は、
-            // 静かな 1 週間に当たった時点で以後の遡りが永久に塞がっていた。
-            hasMore: history.hasMore && historyDaysRef.current < MAX_HISTORY_DAYS,
+            // **判定は取得側に任せる**（在庫＝アーカイブの目録が空になったか。→ `hasMore`）。
+            //
+            // 増えたかどうかでは判定しない —— 30 日まるごと震度1以上の地震が無いことは
+            // 起きうるが、それは「もっと古い在庫が無い」ことを何も意味しない。
+            //
+            // **遡り幅の上限も見ない。** かつてここで「要求した日数が上限に達したか」を
+            // 重ねており、件数で打ち切って読み残した日があってもボタンが死んでいた。
+            hasMore: history.hasMore,
           }
         })
       } else {
@@ -2090,18 +2126,19 @@ export function useEarthquakes(
     } catch (err) {
       // **時間軸が変わった後の失敗は「失敗」として記録しない。** 結果ごと捨てる取得なので、
       // 誰も困っていない。理由が本物なら新しい世代が同じ理由で失敗して、そちらが記録する。
-      // 巻き戻しを見送るのと同じ基準で揃える（片方だけガードすると、記録だけが残って
-      // 「失敗したのに遡り幅が戻っていない」と読める）。痕跡は詳細ログへ落とす。
+      // 痕跡は詳細ログへ落とす。
       if (stale()) {
         log.debug('[data] 古い世代の追加読み込みが失敗（結果は破棄）', err)
         return
       }
       // 追加読み込みの失敗は画面では「増えなかった」だけに見える（初回ロード用の error state は
       // 触らない）。ユーザーが再度押せる状態に戻すだけなので、理由はログに残す。
+      //
+      // **カーソルは触らない。** 進めるのは成功した後だけなので、ここへ来た時点で前回の位置の
+      // まま。押し直せば同じ窓をもう一度読む。
       log.error('[data] 地震履歴の追加読み込みに失敗', err)
-      historyDaysRef.current = daysBeforeThisClick
       // **画面にも出す。** 出さないと「押したのに何も起きない」だけに見え、もう一度押せば
-      // 直るのか、これ以上遡れないのかが分からない。遡り幅は上で戻したので押し直せる。
+      // 直るのか、これ以上遡れないのかが分からない。
       setState(prev => ({ ...prev, loadMoreFailed: true }))
     } finally {
       // **「取得中」の解除は抜け道を作らず、必ずここで行う。**

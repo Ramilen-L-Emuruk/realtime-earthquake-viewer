@@ -157,7 +157,7 @@ export async function fetchLocalArchiveEvents(
   const file = await loadFile(meta.id)
   if (!file) {
     // 一覧には載っていたが本体が読めない = 全滅扱い（dmdataReplay.ts の「全アーカイブ失敗」と同じ粒度）。
-    return { entries: [], skipped: 0, failedArchiveUrls: [fileUrl(meta.id)], rateLimitedSources: [], rateLimitedTelegrams: 0 }
+    return { entries: [], skippedByDay: new Map(), failedArchiveUrls: [fileUrl(meta.id)], rateLimitedSources: [], rateLimitedTelegrams: 0 }
   }
 
   const entries: ReplayEntry[] = file.entries
@@ -169,7 +169,7 @@ export async function fetchLocalArchiveEvents(
 
   entries.sort((a, b) => a.replayTime.getTime() - b.replayTime.getTime())
 
-  return { entries, skipped: 0, failedArchiveUrls: [], rateLimitedSources: [], rateLimitedTelegrams: 0 }
+  return { entries, skippedByDay: new Map(), failedArchiveUrls: [], rateLimitedSources: [], rateLimitedTelegrams: 0 }
 }
 
 /**
@@ -190,8 +190,9 @@ export async function fetchLocalArchiveQuakeHistory(
     // ローカル履歴アーカイブは帯・長周期を収録していないので `extras` は常に空。
     // 津波は収録しているが、ここで返すのは地震カードの厚みだけ（津波は初期状態の担当）。
     return {
-      quakes: [], tsunamis: [], extras: [], skipped: 0,
+      quakes: [], tsunamis: [], extras: [], skippedByDay: new Map(),
       failedArchiveUrls: [fileUrl(meta.id)], rateLimitedSources: [], rateLimitedTelegrams: 0, hasMore: false,
+      oldestLoadedDay: null,
     }
   }
 
@@ -204,8 +205,11 @@ export async function fetchLocalArchiveQuakeHistory(
     .slice(0, targetEvents)
     .map((e) => (e.payload as { kind: 'event'; event: JMAQuake }).event)
 
+  // **カーソルは持たない**（`oldestLoadedDay`）。ローカル履歴アーカイブは 1 ファイルで完結して
+  // いて、その外に遡る先が無い。
   return {
-    quakes, tsunamis: [], extras: [], skipped: 0,
+    quakes, tsunamis: [], extras: [], skippedByDay: new Map(),
     failedArchiveUrls: [], rateLimitedSources: [], rateLimitedTelegrams: 0, hasMore: false,
+    oldestLoadedDay: null,
   }
 }
