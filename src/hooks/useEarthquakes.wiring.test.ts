@@ -608,11 +608,14 @@ describe('キューは配列を差し替えない（同じ電文を二度処理�
 
 // EEW 発報テスト（設定タブのテストボタン）が作る「報の推移」。
 //
-// 実運用（dmdataParser.parseEEW）では 1 報ごとに報番号・id・発表時刻が進み、震源時刻は
-// 同一イベントで不変。テスト側がここを取り違えると、
+// 実運用（dmdataParser.parseEEW）では 1 報ごとに報番号・id・発表時刻が進み、**震源時刻も
+// 続報でずれる**（実電文は震源推定が更新されるたび作り直す）。**一方、地震発現時刻は不変** ——
+// 観測点が実際に検知した時刻なので震源推定の更新とは無関係（実測は → `docs/spec/eew-spec.md` §3）。
+// テスト側がここを取り違えると、
 //   - 最終報の報番号が進まない → 「#1 → #1 最終報」という実運用ではあり得ない推移になる
-//   - 続報で震源時刻が現在時刻へ張り替わる → 予報円が押すたび中心に戻り、発生時刻表示も動く
-// のどちらも画面上は「それらしく」見えてしまうため、値そのものを固定して守る。
+//   - 基準時刻が現在時刻へ張り替わる → 予報円が押すたび中心に戻り、発生時刻表示も動く
+//   - 震源時刻まで固定される → 続報で予報円の半径が跳ねる形を実機で一度も見られない
+// のいずれも画面上は「それらしく」見えてしまうため、値そのものを固定して守る。
 describe('EEW 発報テストの報の推移', () => {
   beforeEach(() => { vi.useFakeTimers() })
   afterEach(() => { vi.useRealTimers() })
@@ -624,7 +627,9 @@ describe('EEW 発報テストの報の推移', () => {
     return list[0]
   }
 
-  it('続報は報番号と発表時刻だけを進め、震源時刻は初報のまま保つ', async () => {
+  // **かつて「震源時刻は初報のまま保つ」と固定していたテストを覆したもの。** 実電文の震源時刻は
+  // 続報で動く（→ `docs/spec/eew-spec.md` §3「地震の時刻は発生時刻を出す」）。
+  it('続報は報番号・発表時刻・震源時刻を進め、地震発現時刻だけを引き継ぐ', async () => {
     const h = setup()
 
     await act(async () => { await h.current.simulateEEWForecast() })
@@ -639,9 +644,11 @@ describe('EEW 発報テストの報の推移', () => {
 
     expect(second.issue?.serial).toBe('2')
     expect(second.isFinal).toBeFalsy()
-    // 震源時刻・到達予想時刻は動かない
-    expect(second.earthquake.originTime).toBe(first.earthquake.originTime)
+    // 対照: 地震発現時刻は動かない（実測では 15 地震すべてで 1 通も動かなかった）
     expect(second.earthquake.arrivalTime).toBe(first.earthquake.arrivalTime)
+    // 正: 震源時刻はずれる。実電文は震源推定が更新されるたび動くため
+    // （`utils/testData.ts` の `EEW_ORIGIN_DRIFT_SEC`）
+    expect(Date.parse(second.earthquake.originTime) - Date.parse(first.earthquake.originTime)).toBe(-3_000)
     // 発表時刻と id は報ごとに変わる（issue.time は型上 optional なので解釈可能かも見る）
     const firstIssued = Date.parse(first.issue?.time ?? '')
     const secondIssued = Date.parse(second.issue?.time ?? '')
@@ -662,7 +669,9 @@ describe('EEW 発報テストの報の推移', () => {
 
     expect(final.isFinal).toBe(true)
     expect(final.issue?.serial).toBe('2')
-    expect(final.earthquake.originTime).toBe(first.earthquake.originTime)
+    // 同じ地震の報なので地震発現時刻は引き継ぐ（震源時刻は続報と同じくずれる）
+    expect(final.earthquake.arrivalTime).toBe(first.earthquake.arrivalTime)
+    expect(Date.parse(final.earthquake.originTime) - Date.parse(first.earthquake.originTime)).toBe(-3_000)
   })
 
   // activeEEWs は取消を受けても直前の確定状態を保つ（表示を空にしないための実装）ため、
