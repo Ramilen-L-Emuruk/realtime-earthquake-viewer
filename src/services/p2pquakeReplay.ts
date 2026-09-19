@@ -22,6 +22,7 @@ import { convertEvent, fetchJmaArchiveRaw } from './p2pquake'
 import { sameQuakeEntry } from '../utils/quakeMerge'
 import { getAreaPrefIndexCache } from '../utils/stationCoords'
 import { log } from '../utils/logger'
+import { createSkipCounter, UNKNOWN_SKIP_DAY } from '../utils/telegramLoss'
 
 /** 1 ページの取得件数（API 側の上限）。 */
 const PAGE_SIZE = 100
@@ -49,17 +50,46 @@ const MAX_DAYS_PER_FETCH = 3
 interface DayResult {
   entries: ReplayEntry[]
   /** 内部型へ変換できず捨てた電文の数。 */
-  skipped: number
+  skippedByDay: ReadonlyMap<string, number>
 }
 
 // 日付（yyyyMMdd）→ その日ぶんの全電文。
 const dayCache = new Map<string, Promise<DayResult>>()
-// 取りこぼしを計上済みの日。本編と初期状態は同じ日を読むため、これが無いと二重に数える。
-const countedSkipDays = new Set<string>()
+/**
+ * 当日ぶんの控えを捨てるまでの時間。
+ *
+ * **過去の日は不変なので控えを永続させてよいが、当日は違う。** その日の電文はこれからも増える
+ * ので、最初の取得結果を持ち続けると**後から届いた電文が二度と見えない**（再生もされない）。
+ *
+ * レート制限（`/jma` は 10 リクエスト/分）があるので毎回取り直すことはできない。1 分は
+ * 「1 日ぶんを 2 資源ぶん引く」（2 リクエスト）が上限に収まる間隔で、再生の粒度（窓 1 時間）
+ * から見ても十分細かい。
+ */
+const TODAY_CACHE_TTL_MS = 60_000
+
+/** その日の控えを作った時刻（当日ぶんの寿命の判定にだけ使う）。 */
+const dayCachedAt = new Map<string, number>()
+
+/**
+ * 日 → その日についてこれまでに報告した取りこぼしの件数。
+ *
+ * **日を鍵にしても要る。** 合流する側（`addTelegramLoss`）は**別々の取得を集める前提で足す**
+ * ので、同じ日を 2 度返すと 2 倍に数えられる。同じ日を読み直しただけなら新しい破損ではない。
+ *
+ * **「報告済みの日」の集合ではなく件数で持つ。** 当日ぶんは控えが古びると取り直すので、
+ * 後から届いた電文が壊れていれば件数が増える —— 集合だと増えた分を報告できず、
+ * 「その日はもう見た」として黙る。差分（増えた分）だけを報告すれば、読み直しでは 0 件、
+ * 増えたときはその増分だけが出る。
+ *
+ * 一度これを撤去して「鍵があるから不要」としたが、そのときは合流が上書きだった。**合流の
+ * 規則を変えるときは、ここも併せて見ること。**
+ */
+const reportedSkipCounts = new Map<string, number>()
 
 export function clearP2PReplayCache(): void {
   dayCache.clear()
-  countedSkipDays.clear()
+  dayCachedAt.clear()
+  reportedSkipCounts.clear()
 }
 
 export async function fetchP2PReplayEvents(fromTime: Date, toTime: Date): Promise<ReplayFetchResult> {
@@ -80,20 +110,25 @@ export async function fetchP2PReplayEvents(fromTime: Date, toTime: Date): Promis
     })
     .sort((a, b) => a.replayTime.getTime() - b.replayTime.getTime())
 
-  // 取りこぼしはその日を初めて読んだときだけ数える。日単位のキャッシュがあるため、
-  // 同じ日を再び読んでも実際には取得していない（数えると実数より多く表示される）。
+  // **同じ日を二度数えない**（本編と初期状態は同じ日を読む）。合流する側は別々の取得を集める
+  // 前提で足すので、キャッシュから返しただけの日を報告すると 2 倍に数えられる。
+  // **当日ぶんは寿命が切れると取り直すので、そのとき `loadDay` がこの台帳からも外す**
+  // （後から届いた電文の破損を数えられるようにするため）。
   //
   // 数える対象は「その日ぶんの取得で読めなかった電文」であり、再生窓の内側に限らない。
   // 読めなかった電文は時刻も読めないことが多く、窓の内外を判定できないため。結果として
   // 窓の外の破損まで数えることがあるが、少なく見せるより多く申告する側に倒している。
-  let skipped = 0
-  days.forEach((day, i) => {
-    if (countedSkipDays.has(day)) return
-    countedSkipDays.add(day)
-    skipped += results[i].skipped
-  })
+  const skippedByDay = new Map<string, number>()
+  for (const r of results) {
+    for (const [day, n] of r.skippedByDay) {
+      const reported = reportedSkipCounts.get(day) ?? 0
+      if (n <= reported) continue
+      skippedByDay.set(day, (skippedByDay.get(day) ?? 0) + (n - reported))
+      reportedSkipCounts.set(day, n)
+    }
+  }
 
-  return { entries, skipped, failedArchiveUrls: [], rateLimitedSources: [], rateLimitedTelegrams: 0 }
+  return { entries, skippedByDay, failedArchiveUrls: [], rateLimitedSources: [], rateLimitedTelegrams: 0 }
 }
 
 /** from〜to がまたぐ日（ローカル日付）を yyyyMMdd で列挙する。to は含まない。 */
@@ -126,9 +161,14 @@ function toDateParam(d: Date): string {
 
 function loadDay(dateParam: string): Promise<DayResult> {
   const cached = dayCache.get(dateParam)
-  if (cached) return cached
+  // **当日ぶんだけ寿命で捨てる。** 判定は「いま」の日付で行う —— 再生時刻ではない。
+  // 控えが古びるかどうかは配信元にこれから電文が増えるかで決まり、それは実時間の話。
+  const isToday = dateParam === toDateParam(new Date())
+  const staleToday = isToday && (Date.now() - (dayCachedAt.get(dateParam) ?? 0)) > TODAY_CACHE_TTL_MS
+  if (cached && !staleToday) return cached
   const promise = fetchDay(dateParam)
   dayCache.set(dateParam, promise)
+  dayCachedAt.set(dateParam, Date.now())
   // 失敗した Promise を残すと、以後そのセッション中は同じ日が常にキャッシュ済みの失敗を返し、
   // ネットワークが復旧しても再取得されない（dmdataReplay の downloadArchive と同じ理由）。
   // この catch はキャッシュ掃除専用で、エラー自体は返した promise 経由で呼び出し元へ伝わる。
@@ -146,10 +186,11 @@ async function fetchDay(dateParam: string): Promise<DayResult> {
     fetchAllPages('quake', dateParam),
     fetchAllPages('tsunami', dateParam),
   ])
-  return {
-    entries: [...quake.entries, ...tsunami.entries],
-    skipped: quake.skipped + tsunami.skipped,
-  }
+  // **同じ日の 2 資源なので足す**（別々の電文を数えているので重複しない）。
+  const skippedByDay = new Map<string, number>()
+  const total = (quake.skippedByDay.get(dateParam) ?? 0) + (tsunami.skippedByDay.get(dateParam) ?? 0)
+  if (total > 0) skippedByDay.set(dateParam, total)
+  return { entries: [...quake.entries, ...tsunami.entries], skippedByDay }
 }
 
 /**
@@ -160,7 +201,8 @@ async function fetchDay(dateParam: string): Promise<DayResult> {
  */
 async function fetchAllPages(resource: 'quake' | 'tsunami', dateParam: string): Promise<DayResult> {
   const entries: ReplayEntry[] = []
-  let skipped = 0
+  // **この関数は 1 日ぶんを担当する**（`dateParam`）ので、取りこぼしはすべてその日に付く。
+  const skipCounter = createSkipCounter()
   for (let page = 0; page < MAX_PAGES_PER_DAY; page++) {
     const raws = await fetchJmaArchiveRaw(resource, {
       sinceDate: dateParam,
@@ -173,7 +215,7 @@ async function fetchAllPages(resource: 'quake' | 'tsunami', dateParam: string): 
       // 種別そのものが読めない電文は「正常なフィルタ」ではなく破損。無言で捨てると検知できない。
       if (typeof raw?.code !== 'number') {
         log.warn(`[replay] code を読めない電文をスキップ date=${dateParam} resource=${resource}`)
-        skipped++
+        skipCounter.add(dateParam)
         continue
       }
       // 再生対象外の種別は取りこぼしではない（`/jma` 配下に EEW は無いため通常は 0 件だが、
@@ -181,9 +223,9 @@ async function fetchAllPages(resource: 'quake' | 'tsunami', dateParam: string): 
       if (!isReplayableCode(raw.code)) continue
       const entry = toEntry(raw)
       if (entry) entries.push(entry)
-      else skipped++
+      else skipCounter.add(dateParam)
     }
-    if (raws.length < PAGE_SIZE) return { entries, skipped }
+    if (raws.length < PAGE_SIZE) return { entries, skippedByDay: skipCounter.toMap() }
   }
   throw new Error(
     `${dateParam} の電文が多すぎて全件を取得できません（${resource} が ${MAX_PAGES_PER_DAY * PAGE_SIZE} 件超）`,
@@ -239,12 +281,18 @@ export async function fetchP2PQuakeHistory(before: Date, targetEvents: number): 
   // `order: -1` を渡しているので応答は既に新しい順のはずだが、**どこで切るかを外部 API の
   // 並び順に委ねない**（並びが崩れると、古い地震で目標に達して新しい地震を落としうる）。
   const candidates: { event: JMAQuake; time: number }[] = []
-  let skipped = 0
+  // **日ごとに数える**（理由は `utils/telegramLoss.ts` の `skippedByDay`）。この経路は
+  // `offset` で遡るので日で区切られておらず、鍵には「その電文が属する日」を使う。
+  const skipCounter = createSkipCounter()
+  const dayOf = (raw: RawP2PEvent | undefined): string => {
+    const ms = Date.parse(typeof raw?.time === 'string' ? raw.time : '')
+    return Number.isFinite(ms) ? toDateParam(new Date(ms)) : UNKNOWN_SKIP_DAY
+  }
   for (const raw of raws) {
     // 種別そのものが読めない電文は「正常なフィルタ」ではなく破損（fetchAllPages と同じ扱い）。
     if (typeof raw?.code !== 'number') {
       log.warn(`[replay] 履歴用電文の code を読めずスキップ until=${toDateParam(before)}`)
-      skipped++
+      skipCounter.add(dayOf(raw))
       continue
     }
     // `/jma/quake` は地震情報しか返さないが、想定外の種別が混ざったときに
@@ -252,13 +300,13 @@ export async function fetchP2PQuakeHistory(before: Date, targetEvents: number): 
     if (raw.code !== 551) continue
     const event = convertEvent(raw)
     if (!event || event.kind !== 'quake') {
-      skipped++
+      skipCounter.add(dayOf(raw))
       continue
     }
     const time = new Date(event.time).getTime()
     if (!Number.isFinite(time)) {
       log.warn(`[replay] 履歴用電文の時刻を読めずスキップ id=${event.id} time=${event.time}`)
-      skipped++
+      skipCounter.add(dayOf(raw))
       continue
     }
     if (time > before.getTime()) continue
@@ -281,8 +329,12 @@ export async function fetchP2PQuakeHistory(before: Date, targetEvents: number): 
 
   // P2PQuake は帯（地震回数・お知らせ・南海トラフ解説情報）も長周期も配信しないので常に空。
   // 津波もここでは返さない（standard 版の津波は初期状態の担当で、遡り幅も目的が違う）。
+  //
+  // **カーソルは持たない**（`oldestLoadedDay`）。standard 版の「もっと見る」は日ではなく
+  // `offset` で遡るので、日付で続きを指す必要がない（→ `useEarthquakes` の P2PQuake 側）。
   return {
-    quakes, tsunamis: [], extras: [], skipped,
+    quakes, tsunamis: [], extras: [], skippedByDay: skipCounter.toMap(),
     failedArchiveUrls: [], rateLimitedSources: [], rateLimitedTelegrams: 0, hasMore: false,
+    oldestLoadedDay: null,
   }
 }

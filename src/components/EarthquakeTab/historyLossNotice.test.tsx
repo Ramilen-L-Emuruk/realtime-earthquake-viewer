@@ -16,6 +16,17 @@ import { quakeEventKey } from '../../utils/quakeMerge'
 import type { JMAQuake } from '../../types/earthquake'
 import { createEmptyTelegramLoss, addTelegramLoss, type TelegramLoss } from '../../utils/telegramLoss'
 
+/**
+ * テスト用: 取りこぼしを日ごとの Map にする。
+ *
+ * 実装が件数ひとつから日ごとへ変わったのは、同じ日を二度読んでも二重に数えず、別の日の分も
+ * 失わないため（→ `utils/telegramLoss.ts` の `skippedByDay`）。日を書き分けたいテストは
+ * 第 2 引数を渡す。
+ */
+function skips(count: number, day = '2026-08-10'): Map<string, number> {
+  return count > 0 ? new Map([[day, count]]) : new Map()
+}
+
 afterEach(cleanup)
 
 HTMLElement.prototype.scrollIntoView = () => {}
@@ -74,14 +85,14 @@ function renderTab(opts: {
 
 describe('履歴の一部が取れなかったときの帯', () => {
   it('正: 取得元が 1 件でも読めなければ帯を出す', () => {
-    renderTab({ historyLoss: addTelegramLoss(createEmptyTelegramLoss(), 0, ['https://x/a']) })
+    renderTab({ historyLoss: addTelegramLoss(createEmptyTelegramLoss(), skips(0), ['https://x/a']) })
 
     expect(screen.getByText(/取得元1件.*取り込めず/)).toBeTruthy()
   })
 
   // **カードは覆わない。** 全画面のエラー表示と違って、取れた分は見られなければならない。
   it('正: 帯を出してもカードは残る', () => {
-    renderTab({ historyLoss: addTelegramLoss(createEmptyTelegramLoss(), 2, []) })
+    renderTab({ historyLoss: addTelegramLoss(createEmptyTelegramLoss(), skips(2), []) })
 
     expect(screen.getByText(/電文2件/)).toBeTruthy()
     expect(screen.getByText('石川県能登地方')).toBeTruthy()
@@ -91,7 +102,7 @@ describe('履歴の一部が取れなかったときの帯', () => {
   it('正: カードが 0 件でも帯を出す（「地震情報はありません」だけにしない）', () => {
     renderTab({
       earthquakes: [],
-      historyLoss: addTelegramLoss(createEmptyTelegramLoss(), 0, ['https://x/a', 'https://x/b']),
+      historyLoss: addTelegramLoss(createEmptyTelegramLoss(), skips(0), ['https://x/a', 'https://x/b']),
     })
 
     expect(screen.getByText('地震情報はありません')).toBeTruthy()
@@ -121,7 +132,7 @@ describe('履歴の一部が取れなかったときの帯', () => {
 
   it('正: 両方あれば両方出す', () => {
     renderTab({
-      historyLoss: addTelegramLoss(createEmptyTelegramLoss(), 1, []),
+      historyLoss: addTelegramLoss(createEmptyTelegramLoss(), skips(1), []),
       loadMoreFailed: true,
     })
 
@@ -134,7 +145,7 @@ describe('履歴の一部が取れなかったときの帯', () => {
   it('安全弁: 全滅の表示中は帯を出さない', () => {
     renderTab({
       error: '取得失敗',
-      historyLoss: addTelegramLoss(createEmptyTelegramLoss(), 1, ['https://x/a']),
+      historyLoss: addTelegramLoss(createEmptyTelegramLoss(), skips(1), ['https://x/a']),
     })
 
     expect(screen.getByText('データの取得に失敗しました')).toBeTruthy()
@@ -164,7 +175,7 @@ describe('取得制限中の帯', () => {
   // **この経路は型と集計だけがあって消費先が 1 つも無く、画面に一度も出ていなかった。**
   it('正: 429 で見送った分を、取得元と電文それぞれの件数で出す', () => {
     renderTab({
-      historyLoss: addTelegramLoss(createEmptyTelegramLoss(), 0, [], {
+      historyLoss: addTelegramLoss(createEmptyTelegramLoss(), skips(0), [], {
         sources: ['https://x/a', 'https://x/b'], telegrams: 5,
       }),
     })
@@ -176,7 +187,7 @@ describe('取得制限中の帯', () => {
   // 「その日に何通あったか」すら分からないため、電文数へ足せない。
   it('安全弁: 取得元だけのときに電文の件数を足さない', () => {
     renderTab({
-      historyLoss: addTelegramLoss(createEmptyTelegramLoss(), 0, [], { sources: ['https://x/a'] }),
+      historyLoss: addTelegramLoss(createEmptyTelegramLoss(), skips(0), [], { sources: ['https://x/a'] }),
     })
 
     expect(screen.getByText('リクエスト過多のため、取得制限中（取得元1件が未取得）')).toBeTruthy()
@@ -186,7 +197,7 @@ describe('取得制限中の帯', () => {
   // 取り返しのつかない損失として読まれる。
   it('安全弁: 確定した損失と見送りは別々の帯になる', () => {
     renderTab({
-      historyLoss: addTelegramLoss(createEmptyTelegramLoss(), 3, ['https://x/a'], { telegrams: 2 }),
+      historyLoss: addTelegramLoss(createEmptyTelegramLoss(), skips(3), ['https://x/a'], { telegrams: 2 }),
     })
 
     expect(screen.getByText(/取り込めず（再読み込み/)).toBeTruthy()

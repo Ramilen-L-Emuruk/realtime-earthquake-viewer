@@ -22,6 +22,17 @@ import type { ReplayEntry, ReplayFetchResult, QuakeHistoryResult } from '../type
 import type { JMAQuake } from '../types/earthquake'
 import { log } from '../utils/logger'
 
+
+/**
+ * テスト用: 取りこぼしを日ごとの Map にする。
+ *
+ * 実装が件数ひとつから日ごとへ変わったのは、同じ日を二度読んでも二重に数えず、別の日の分も
+ * 失わないため（→ `utils/telegramLoss.ts` の `skippedByDay`）。
+ */
+function skips(count: number, day = '2026-08-10'): Map<string, number> {
+  return count > 0 ? new Map([[day, count]]) : new Map()
+}
+
 // 外部 I/O（取得）とキャッシュ破棄は deps 経由で注入されるため、ここでは偽物を渡すだけでよい。
 // Hook が内部で使う filterPreWindowEvents は本物のまま動く（後述の長周期地震動電文は
 // 無加工で素通しされるため、結線の観察を邪魔しない）。
@@ -77,7 +88,7 @@ function idOf(e: ReplayEntry): string {
 }
 
 function fetched(entries: ReplayEntry[], skipped = 0, failedArchiveUrls: string[] = []): ReplayFetchResult {
-  return { entries, skipped, failedArchiveUrls, rateLimitedSources: [], rateLimitedTelegrams: 0 }
+  return { entries, skippedByDay: skips(skipped), failedArchiveUrls, rateLimitedSources: [], rateLimitedTelegrams: 0 }
 }
 
 /**
@@ -571,7 +582,7 @@ describe('useReplayController の地震カード履歴', () => {
   /** 履歴の結果。中身の統合は mergeQuakeHistory の担当なので、ここでは件数だけ数える。 */
   function history(count: number, skipped = 0, failedArchiveUrls: string[] = []): QuakeHistoryResult {
     const quakes = Array.from({ length: count }, (_, i) => ({ id: `q${i}` } as unknown as JMAQuake))
-    return { quakes, tsunamis: [], extras: [], skipped, failedArchiveUrls, rateLimitedSources: [], rateLimitedTelegrams: 0, hasMore: false }
+    return { quakes, tsunamis: [], extras: [], skippedByDay: skips(skipped), failedArchiveUrls, rateLimitedSources: [], rateLimitedTelegrams: 0, hasMore: false, oldestLoadedDay: null }
   }
 
   it('再生開始時刻を境に、ライブと同じ件数を目標として履歴を取りに行く', async () => {
@@ -670,8 +681,8 @@ describe('useReplayController: 初期状態に無い帯・長周期を履歴か�
 
   function historyWith(extras: ReplayEntry[]): QuakeHistoryResult {
     return {
-      quakes: [], tsunamis: [], extras, skipped: 0,
-      failedArchiveUrls: [], rateLimitedSources: [], rateLimitedTelegrams: 0, hasMore: false,
+      quakes: [], tsunamis: [], extras, skippedByDay: skips(0),
+      failedArchiveUrls: [], rateLimitedSources: [], rateLimitedTelegrams: 0, hasMore: false, oldestLoadedDay: null,
     }
   }
 
@@ -761,8 +772,8 @@ describe('useReplayController: 補完の結果を記録する', () => {
 
     await act(async () => {
       h.histories[0].resolve({
-        quakes: [], tsunamis: [], extras: [countEntry2('from-history')], skipped: 0,
-        failedArchiveUrls: [], rateLimitedSources: [], rateLimitedTelegrams: 0, hasMore: false,
+        quakes: [], tsunamis: [], extras: [countEntry2('from-history')], skippedByDay: skips(0),
+        failedArchiveUrls: [], rateLimitedSources: [], rateLimitedTelegrams: 0, hasMore: false, oldestLoadedDay: null,
       })
     })
 
@@ -782,8 +793,8 @@ describe('useReplayController: 補完の結果を記録する', () => {
 
     await act(async () => {
       h.histories[0].resolve({
-        quakes: [], tsunamis: [], extras: [countEntry2('c1')], skipped: 0,
-        failedArchiveUrls: [], rateLimitedSources: [], rateLimitedTelegrams: 0, hasMore: false,
+        quakes: [], tsunamis: [], extras: [countEntry2('c1')], skippedByDay: skips(0),
+        failedArchiveUrls: [], rateLimitedSources: [], rateLimitedTelegrams: 0, hasMore: false, oldestLoadedDay: null,
       })
     })
 
