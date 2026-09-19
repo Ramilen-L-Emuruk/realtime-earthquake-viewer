@@ -1172,6 +1172,65 @@ describe('earthquakeToSegments: 続報は差分だけ読む', () => {
     expect(text).not.toContain('また、')
   })
 
+  // ── 「最大」は群ではなく事実で決める（2026-09-20 追加） ──────────────────
+  //
+  // **初出の区域がいきなり最大震度を持つ続報は実際に起きる。** 揺れの強い地域ほど観測点からの
+  // 通信が遅れ、最初の報に入らないため。2024-01-01 18:08:21 の地震は 18:09 の震度速報が
+  // 新潟・富山だけの最大震度4で、18:10 に石川県能登の5強が初出で入った。かつては初出の群で
+  // 冠さなかったので、**いちばん強い揺れを伝える報でだけ最大震度が声から消えていた**。
+
+  it('正: 初出の区域しか無くても、最大震度に一致する階級には「最大」を冠する', () => {
+    const state = createQuakeSpokenState()
+    // 初報（2024-01-01 18:09 の震度速報）: 新潟・富山の 3 区域が震度4
+    markSpoken(state, earthquakeToSegments(quakeOf([
+      area('新潟県', '新潟県上越', 40), area('富山県', '富山県東部', 40), area('富山県', '富山県西部', 40),
+    ], 40), OPTS, true, state))
+
+    // 続報（18:10）: 石川県能登が5強で初出。震度4の 3 区域は据え置きで落ちる
+    const second = earthquakeToSegments(quakeOf([
+      area('石川県', '石川県能登', 50),
+      area('新潟県', '新潟県上越', 40), area('富山県', '富山県東部', 40), area('富山県', '富山県西部', 40),
+      area('新潟県', '新潟県中越', 30),
+    ], 50), OPTS, false, state)
+    expect(joinSegments(second)).toBe(
+      '震度速報が更新されました。新たに最大震度5強を石川県能登、震度3を新潟県中越で観測しました。',
+    )
+  })
+
+  it('対照: 最大震度の区域がどちらの群にも残らない続報では「最大」を冠さない', () => {
+    const state = createQuakeSpokenState()
+    // 初報: 石川県能登=5強（この地震の最大震度）
+    markSpoken(state, earthquakeToSegments(
+      quakeOf([area('石川県', '石川県能登', 50)], 50), OPTS, true, state))
+
+    // 続報: 能登は据え置きで落ち、新潟県中越が初出で4。最大震度（5強）の句がどこにも無い
+    const second = earthquakeToSegments(quakeOf([
+      area('石川県', '石川県能登', 50), area('新潟県', '新潟県中越', 40),
+    ], 50), OPTS, false, state)
+    // 先頭の句に無条件で付けると「最大震度4を」と、電文が伝えていない最大震度を語ることになる
+    expect(joinSegments(second)).toBe('震度速報が更新されました。新たに震度4を新潟県中越で観測しました。')
+  })
+
+  it('安全弁: 上がりと初出の両方に最大震度があっても「最大」は 1 度だけ', () => {
+    const state = createQuakeSpokenState()
+    // 初報: 石川県能登=4、富山県東部=3
+    markSpoken(state, earthquakeToSegments(quakeOf([
+      area('石川県', '石川県能登', 40), area('富山県', '富山県東部', 30),
+    ], 40), OPTS, true, state))
+
+    // 続報: 能登が 4→5強（上がり）、山形県村山が5強で初出。**同じ最大震度に両群が並ぶ**
+    const second = earthquakeToSegments(quakeOf([
+      area('石川県', '石川県能登', 50), area('山形県', '山形県村山', 50), area('富山県', '富山県東部', 30),
+    ], 50), OPTS, false, state)
+    const text = joinSegments(second)
+    expect(text).toBe(
+      '震度速報が更新されました。最大震度5強を石川県能登で観測しました。'
+      + 'また、新たに震度5強を山形県村山で観測しました。',
+    )
+    // 冠すのは先に回る群（上がり）だけ
+    expect(text.match(/最大/g)).toHaveLength(1)
+  })
+
   it('安全弁: 地域数の上限は群ごとに数える（「ほかN地域」が両群で出る）', () => {
     const state = createQuakeSpokenState()
     const upgradedNames = ['青森県津軽北部', '青森県津軽南部', '青森県三八上北']
@@ -1317,7 +1376,9 @@ describe('earthquakeToSegments: 続報は差分だけ読む', () => {
       const second = earthquakeToSegments(
         quakeWith([...baseAreaAndStation, area('東京都', '東京都23区', 30), station('新宿区西新宿', 30)]),
         OPTS, false, state)
-      expect(joinSegments(second)).toContain('新たに震度3を東京都23区で観測しました。')
+      // 東京都23区（震度3）はこの電文の最大震度に一致する初出なので「最大」を冠する
+      // （規則そのものは「初出の群でも最大震度は冠する」の 3 件で固定している）。
+      expect(joinSegments(second)).toContain('新たに最大震度3を東京都23区で観測しました。')
       expect(joinSegments(second)).not.toContain('変わっていません')
     })
 
@@ -1623,8 +1684,8 @@ describe('earthquakeToSegments: 続報は差分だけ読む', () => {
     const state = createQuakeSpokenState()
     const points = [area('石川県', '石川県能登', 60), area('富山県', '富山県東部', 40)]
     markSpoken(state, earthquakeToSegments(quakeOf(points, 60), OPTS, true, state))
-    // 最大震度の区域は据え置き。残る震度4の句に「最大」を付けてはいけない
-    // （初出の群なので、そもそも「最大」は冠さない）
+    // 最大震度の区域（石川県能登＝震度6強）は据え置きで落ちる。残る震度4の句は
+    // この電文の最大震度と一致しないので「最大」を付けてはいけない（群とは無関係）
     const second = earthquakeToSegments(
       quakeOf([...points, area('新潟県', '新潟県中越', 40)], 60), OPTS, false, state,
     )
