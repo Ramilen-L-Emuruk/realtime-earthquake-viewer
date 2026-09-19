@@ -1,6 +1,7 @@
 import type { JMATsunami, TsunamiArea, TsunamiEstimation, TsunamiEstimationCondition, TsunamiGrade, TsunamiObservation, TsunamiObservationCondition, TsunamiSourceEarthquake, TsunamiStation, TsunamiWarningComment } from '../types/earthquake'
-import { formatTimeMin } from './formatters'
+import { formatTimeMin, readDateTime } from './formatters'
 import { log } from './logger'
+import type { UpdateMark } from './updateMark'
 
 /**
  * 等級の重さ。値が大きいほど深刻。
@@ -1267,6 +1268,67 @@ export function hasMaxHeightTimeAdvanced(
   if (obs.maxHeightRevise !== '更新') return false
   if (!obs.maxHeightDateTime) return false
   return prevDateTime !== obs.maxHeightDateTime
+}
+
+/**
+ * カードで「この項目が動いた」と示せる欄。
+ *
+ * **波高は含めない。** 右の大きな数字は等級の色（`GradeStyle.heightColor`）で塗ってあり、
+ * 色を変えると等級の意味と衝突する。そもそも波高が動いた報では数字そのものが変わるので、
+ * 行の左端の縦線だけで足りる —— **印が要るのは、見た目が変わらない時刻の方**。
+ */
+export type ObsUpdateField = 'maxHeightTime' | 'firstWave'
+
+/**
+ * 観測点ごとの更新の印。色と 2 段構えの考え方は `utils/updateMark.ts` が単一情報源。
+ *
+ * **満潮時刻は `fields` に入れない。** 2024-01-01〜02 の VTSE51 全 49 報で満潮時刻が動いたのは
+ * 2 報だけで、しかも動くときは 41/52 点が一斉に動く（前の満潮を過ぎて次の満潮へ進んだ形）。
+ * 印としての選別力が無く、カードが総黄色になるだけ。
+ */
+export type ObsUpdateMark = UpdateMark<ObsUpdateField>
+
+/**
+ * その報で動いた項目を数え上げる（カードの項目ごとの印に使う）。
+ *
+ * **判定は画面用の記憶と突き合わせる。** 読み上げ用の記憶（声にした分だけ進む）を渡しては
+ * いけない —— 上位の読み上げに待たされて見送られた報でも、画面には届いているため。
+ */
+export function changedObservationFields(
+  obs: { maxHeightRevise?: string; maxHeightDateTime?: string; arrivalTime?: string; initial?: string },
+  prevMaxHeightTime: string | undefined,
+  prevFirstWave: string | undefined,
+): Set<ObsUpdateField> {
+  const fields = new Set<ObsUpdateField>()
+  if (hasMaxHeightTimeAdvanced(obs, prevMaxHeightTime)) fields.add('maxHeightTime')
+  const firstWave = firstWaveSpokenKey(obs)
+  if (firstWave && firstWave !== prevFirstWave) fields.add('firstWave')
+  return fields
+}
+
+/**
+ * 第1波（`FirstHeight`）の内容を 1 つの鍵にする。伝えるものが無ければ `null`。
+ *
+ * **記録する側と比べる側で必ずこの関数を通すこと。** 別々に組むと、押し引きだけが直った
+ * 報で片方が変化を見落とす。
+ *
+ * **鍵にするのは到達時刻と押し引きの組。** 第1波は点ごとに一度きりの事実に見えるが、
+ * 気象庁は `FirstHeight/Revise` に「更新」と書いて訂正してくる（2024 年能登半島地震の
+ * 佐渡市鷲崎は到達時刻が 16:10 → 16:32 へ動いた）。名前だけで既読にすると、誤った時刻を
+ * 言ったまま訂正が届かない。
+ *
+ * **到達時刻が無ければ `null`。** 第1波を識別できなかった観測点（`FirstHeight` が
+ * `Condition`「第１波識別不能」だけを持つ形）は、時刻も押し引きも声にできない。
+ */
+export function firstWaveSpokenKey(
+  obs: { arrivalTime?: string; initial?: string },
+): string | null {
+  // **日時として読めない値では鍵を作らない。** 値の有無だけを見ると、壊れた到達時刻でも
+  // 「変化あり」と判定してしまう一方、実際に声にする側（`firstWaveParts`）は `formatTime` が
+  // `null` を返して句ごと落とすため、**「いつの・どちらの第1波か」を一言も言わない空疎な
+  // 発話**になる（「〇〇で更新されました。」だけ）。判定と発話で同じ条件を見る。
+  if (!obs.arrivalTime || !readDateTime('tsunami.firstWaveSpokenKey', obs.arrivalTime)) return null
+  return `${obs.arrivalTime}|${obs.initial ?? ''}`
 }
 
 /**

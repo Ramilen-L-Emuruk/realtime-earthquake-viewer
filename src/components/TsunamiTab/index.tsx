@@ -1,10 +1,11 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useAutoOpenWhileSpeaking } from '../../hooks/useAutoOpenWhileSpeaking'
 import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation, TsunamiWarningComment } from '../../types/earthquake'
 import { formatDateTimeMin, formatDepth, formatMagnitudeCondition, formatTimeMin, hasDepth } from '../../utils/formatters'
 import { quakeEventKey } from '../../utils/quakeMerge'
-import { groupAreasForCardDisplay, tsunamiAreaGradeChanges, TSUNAMI_GRADE_LIFTED, matchesArea, observationBadges, observationHeightText, observationArrivalFallbackText, observationMaxHeightTimeText, estimationBadges, estimationHeightText, forecastHeightImportantBadge, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, isTsunamiGradeRaised, sourceEarthquakeTime, tsunamiAreaKey, evacuationActionLine } from '../../utils/tsunami'
+import { groupAreasForCardDisplay, tsunamiAreaGradeChanges, TSUNAMI_GRADE_LIFTED, matchesArea, observationBadges, observationHeightText, observationArrivalFallbackText, observationMaxHeightTimeText, estimationBadges, estimationHeightText, forecastHeightImportantBadge, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, isTsunamiGradeRaised, sourceEarthquakeTime, tsunamiAreaKey, evacuationActionLine, type ObsUpdateMark, type ObsUpdateField } from '../../utils/tsunami'
 import { TSUNAMI_MISSING_COLOR as MISSING_COLOR } from '../../utils/tsunamiStyle'
+import { UPDATE_MARK_COLOR } from '../../utils/updateMark'
 import { mapChunksToRefs, planFollowScroll, type FollowRect, type SpeechFollowSession, type SpeechRef } from '../../utils/ttsFollow'
 import { getSpeechClock } from '../../utils/voicevox'
 import { INTERACTION_HOLD_SEC } from '../Map/gl/camera'
@@ -50,7 +51,7 @@ interface Props {
   /** 区域名をクリックしたときに、その予報区の範囲へ地図を寄せる。 */
   onFocusMap?: (positions: LatLng[]) => void
   focusedDistrict?: FocusedDistrict | null
-  obsUpdateStatus?: Map<string, 'new' | 'updated'>
+  obsUpdateStatus?: Map<string, ObsUpdateMark>
   /**
    * 直近の受信で等級が動いた区域（`tsunamiAreaKey`）。この集合にある区域だけが
    * 「〇〇から切り替え」を出す。**区域が持つ `lastGrade` だけで出さないこと** ――
@@ -251,7 +252,7 @@ const ARRIVAL_CONDITION_BADGE: Record<string, string> = {
   '第1波の到達を確認': '第1波到達',
 }
 
-function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocusObs, onAreaFocus, isChanged, isTop, registerRow, registerSpeechRow, obsUpdateStatus, areaGradeChangedKeys }: { area: TsunamiArea; observations: TsunamiObservation[]; style: GradeStyle; onObservationClick?: (name: string) => void; canFocusObs: (name: string) => boolean; onAreaFocus?: (name: string) => (() => void) | undefined; isChanged: boolean; isTop: boolean; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void; obsUpdateStatus?: Map<string, 'new' | 'updated'>; areaGradeChangedKeys?: ReadonlySet<string> }) {
+function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocusObs, onAreaFocus, isChanged, isTop, registerRow, registerSpeechRow, obsUpdateStatus, areaGradeChangedKeys }: { area: TsunamiArea; observations: TsunamiObservation[]; style: GradeStyle; onObservationClick?: (name: string) => void; canFocusObs: (name: string) => boolean; onAreaFocus?: (name: string) => (() => void) | undefined; isChanged: boolean; isTop: boolean; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void; obsUpdateStatus?: Map<string, ObsUpdateMark>; areaGradeChangedKeys?: ReadonlySet<string> }) {
   const areaFocus = onAreaFocus?.(area.name)
   const setRowRef = useCallback((el: HTMLDivElement | null) => {
     registerRow?.(area, isChanged, isTop, el)
@@ -356,12 +357,21 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
           {/* 実測値あり観測点 */}
           {observations.map((obs, i) => {
             const clickable = !!onObservationClick && canFocusObs(obs.name)
-            const updateStatus = obsUpdateStatus?.get(obs.name)
-            const borderLeftStyle = updateStatus === 'new'
-              ? '3px solid #4ade80'
-              : updateStatus === 'updated'
-                ? '3px solid #fbbf24'
-                : `1px solid ${style.cardBorder}38`
+            const updateMark = obsUpdateStatus?.get(obs.name)
+            const markColor = updateMark ? UPDATE_MARK_COLOR[updateMark.status] : null
+            const borderLeftStyle = markColor
+              ? `3px solid ${markColor}`
+              : `1px solid ${style.cardBorder}38`
+            /**
+             * 時刻欄のその項目に色を当てるか。**縦線と同じ色**を使う（同じ出来事を指す印なので、
+             * 別の色にすると 2 つの語彙を覚えることになる）。縦線が「この地点で何かあった」、
+             * 文字色が「この項目よ」の 2 段構え。
+             *
+             * **波高（右の大きな数字）には当てない。** あちらは等級の色で塗ってあり、変えると
+             * 等級の意味と衝突する。そもそも波高が動いた報では数字そのものが変わるので、縦線で足りる。
+             */
+            const fieldColor = (field: ObsUpdateField): string | undefined =>
+              markColor && updateMark?.fields.has(field) ? markColor : undefined
             const matched = stations.find(s => s.name === obs.name)
             // 実測の到達時刻が出せていない行に、予報側が持っている到達予想を添える。
             //
@@ -382,18 +392,25 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
             const matchedHighTideHm = matched?.highTideDateTime ? formatTimeMin(matched.highTideDateTime) : null
             // この欄は空になりうる要素が並ぶ。**区切りを前置きする書き方にしない** —— 先頭が
             // 空のとき字下げだけが残る（到達予想を足す前から、欠測の行の満潮時刻がそうなっていた）。
-            const timeTexts = [
-              obsArrivalHm
-                ? `${obsArrivalHm}${obs.initial ? ` ${obs.initial}波` : ''}`
-                : observationArrivalFallbackText(obs),
+            // **項目ごとに色を分けるので、1 本の文字列へ繋がない。** 動いた項目だけを塗るには
+            // 区切って描くしかない（間の全角空白も要素として挟む）。
+            const timeParts: { text: string; color?: string }[] = [
+              {
+                text: obsArrivalHm
+                  ? `${obsArrivalHm}${obs.initial ? ` ${obs.initial}波` : ''}`
+                  : observationArrivalFallbackText(obs),
+                // 到達時刻が出せていない行（「到達時刻不明」）には色を当てない —— 動いたのは
+                // 第1波そのものではないため。
+                color: obsArrivalHm ? fieldColor('firstWave') : undefined,
+              },
               // 第1波についての話が続くので、実測の到達時刻と同じ位置に置く。
-              forecastArrivalText,
+              { text: forecastArrivalText },
               // 最大波を観測した時刻。第1波の到達時刻と紛れないよう語を冠する
               // （決め方は `observationMaxHeightTimeText`）。
-              observationMaxHeightTimeText(obs),
+              { text: observationMaxHeightTimeText(obs), color: fieldColor('maxHeightTime') },
               // 同名 station があれば満潮時刻をここに表示
-              matchedHighTideHm ? `満潮 ${matchedHighTideHm}` : '',
-            ].filter(Boolean)
+              { text: matchedHighTideHm ? `満潮 ${matchedHighTideHm}` : '' },
+            ].filter(p => p.text)
             return (
               <div
                 key={i}
@@ -423,9 +440,16 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
                         </span>
                       ))}
                     </div>
-                    {timeTexts.length > 0 && (
+                    {timeParts.length > 0 && (
                       <div className="mt-1" style={{ fontSize: '0.6875rem', color: '#9ca3af' }}>
-                        {timeTexts.join('　')}
+                        {timeParts.map((part, pi) => (
+                          // **区切りの空白は色を当てる範囲の外に置く。** 中へ入れると、動いた項目の
+                          // 手前の空白まで塗られて色の帯が項目からずれる。
+                          <Fragment key={pi}>
+                            {pi > 0 ? '　' : ''}
+                            <span style={part.color ? { color: part.color, fontWeight: 600 } : undefined}>{part.text}</span>
+                          </Fragment>
+                        ))}
                       </div>
                     )}
                   </div>
@@ -534,7 +558,7 @@ function TsunamiObservationRow({ obs, onObservationClick, canFocusObs, registerS
   )
 }
 
-function TsunamiGradeCard({ grade, areas, observations, onObservationClick, canFocusObs, onAreaFocus, focusedDistrict, registerRow, registerSpeechRow, registerSpeechAnchor, obsUpdateStatus, areaGradeChangedKeys }: { grade: TsunamiGrade; areas: TsunamiArea[]; observations: TsunamiObservation[]; onObservationClick?: (name: string) => void; canFocusObs: (name: string) => boolean; onAreaFocus?: (name: string) => (() => void) | undefined; focusedDistrict?: FocusedDistrict | null; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void; registerSpeechAnchor?: (keys: string[], el: HTMLElement | null) => void; obsUpdateStatus?: Map<string, 'new' | 'updated'>; areaGradeChangedKeys?: ReadonlySet<string> }) {
+function TsunamiGradeCard({ grade, areas, observations, onObservationClick, canFocusObs, onAreaFocus, focusedDistrict, registerRow, registerSpeechRow, registerSpeechAnchor, obsUpdateStatus, areaGradeChangedKeys }: { grade: TsunamiGrade; areas: TsunamiArea[]; observations: TsunamiObservation[]; onObservationClick?: (name: string) => void; canFocusObs: (name: string) => boolean; onAreaFocus?: (name: string) => (() => void) | undefined; focusedDistrict?: FocusedDistrict | null; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void; registerSpeechAnchor?: (keys: string[], el: HTMLElement | null) => void; obsUpdateStatus?: Map<string, ObsUpdateMark>; areaGradeChangedKeys?: ReadonlySet<string> }) {
   if (areas.length === 0) return null
   const style = getGradeStyle(grade)
   const groups = groupAreasForCardDisplay(areas, observations)

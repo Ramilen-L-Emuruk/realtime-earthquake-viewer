@@ -24,6 +24,8 @@
 //
 // 併せて、引き直しが失敗したときに種が残ること（＝無音ではなく妥当な間へ倒れること）も固定する。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { __resetSpeechAudioCacheForTest } from './speechAudioCache'
+import { __resetAudioPlaybackStateForTest } from './voicevox'
 import { speakWithVoicevox, splitIntoChunks, __resetPhraseBreakCacheForTest } from './voicevox'
 import { log } from './logger'
 
@@ -195,6 +197,11 @@ beforeEach(() => {
   // 辞書エントリのキャッシュはモジュールに居座る。捨てないと、同じキーを別の句数で使うテストが
   // 実行順に依存して結果を変える（先に走った側の句数を掴む）
   __resetPhraseBreakCacheForTest()
+  // 合成済みチャンクの控えはモジュールに居座る。捨てないと、同じ文を 2 度読むテストの
+  // 2 度目が控えから出て「合成が走らない」ことになる（辞書エントリのキャッシュと同じ事情）。
+  __resetSpeechAudioCacheForTest()
+  // 音の余韻（isAudioPlaying の猶予）も持ち越さない。残ると「1 音も鳴っていない」状況が作れない。
+  __resetAudioPlaybackStateForTest()
   installFetch()
 })
 afterEach(() => { vi.restoreAllMocks() })

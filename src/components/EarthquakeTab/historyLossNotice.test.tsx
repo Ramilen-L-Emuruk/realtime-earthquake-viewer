@@ -70,6 +70,7 @@ function renderTab(opts: {
       loadMoreFailed={opts.loadMoreFailed ?? false}
       fetchThrottled={opts.fetchThrottled ?? false}
       lpgmByEventId={new Map()}
+      updateMarks={new Map()}
       activeLpgmEventId={null}
       onToggleLpgm={() => {}}
       estimatedIntensity={null}

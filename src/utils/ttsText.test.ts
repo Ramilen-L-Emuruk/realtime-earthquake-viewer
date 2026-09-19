@@ -995,24 +995,24 @@ describe('津波観測情報の読み上げ: 新規と更新の言い分け', ()
   // 正: 前に声にした波高が無い観測点は「新たに」を冠する
   it('前値の無い観測点は「新たに」を付けて読む', () => {
     const text = tsunamiObservationUpdateToText([MIYAKO], undefined, undefined, new Set<string>())
-    expect(text).toContain('新たに岩手県、宮古で1.2メートルを観測しました。')
+    expect(text).toContain('新たに、次の地点で津波を観測しました。岩手県、宮古で1.2メートルを観測しました。')
     expect(text).not.toContain('更新')
   })
 
   // 対照: 前値のある観測点は「更新されました」で、「新たに」を付けない
   it('前値のある観測点は「更新されました」と読む', () => {
     const text = tsunamiObservationUpdateToText([OFUNATO], undefined, undefined, new Set(['大船渡']))
-    expect(text).toContain('岩手県、大船渡で3.0メートルに更新されました。')
+    expect(text).toContain('次の地点で最大波が更新されました。岩手県、大船渡で3.0メートルに更新されました。')
     expect(text).not.toContain('新たに')
   })
 
   // 正: 両方が混ざったら 2 文に分け、後ろを「また、」で継ぐ。深刻な波高を含む群が先に来る
   it('深刻な波高を含む群を先に読み、後ろを「また、」で継ぐ', () => {
     const raisedIsWorse = tsunamiObservationUpdateToText([MIYAKO, OFUNATO], undefined, undefined, new Set(['大船渡']))
-    expect(raisedIsWorse).toContain('津波観測情報。岩手県、大船渡で3.0メートルに更新されました。また、新たに岩手県、宮古で1.2メートルを観測しました。')
+    expect(raisedIsWorse).toContain('津波観測情報。次の地点で最大波が更新されました。岩手県、大船渡で3.0メートルに更新されました。また、新たに、次の地点で津波を観測しました。岩手県、宮古で1.2メートルを観測しました。')
 
     const firstTimeIsWorse = tsunamiObservationUpdateToText([MIYAKO, OFUNATO], undefined, undefined, new Set(['宮古']))
-    expect(firstTimeIsWorse).toContain('津波観測情報。新たに岩手県、大船渡で3.0メートルを観測しました。また、岩手県、宮古で1.2メートルに更新されました。')
+    expect(firstTimeIsWorse).toContain('津波観測情報。新たに、次の地点で津波を観測しました。岩手県、大船渡で3.0メートルを観測しました。また、次の地点で最大波が更新されました。岩手県、宮古で1.2メートルに更新されました。')
   })
 
   // 対照: 群が 1 つしかできない電文では「また、」を出さない
@@ -1024,15 +1024,15 @@ describe('津波観測情報の読み上げ: 新規と更新の言い分け', ()
   // 安全弁: 前値の記憶を渡さない経路（既定）は全件を初出として扱う。初報がこの形になる
   it('前値の記憶が無ければ全件を初出として読む', () => {
     const text = tsunamiObservationUpdateToText([MIYAKO, OFUNATO])
-    expect(text).toContain('新たに岩手県、宮古で1.2メートル、大船渡で3.0メートルを観測しました。')
+    expect(text).toContain('新たに、次の地点で津波を観測しました。岩手県、宮古で1.2メートルを観測、大船渡で3.0メートルを観測しました。')
     expect(text).not.toContain('更新')
   })
 
   // 正: 読む順は渡された並び（呼び出し側がカードの並びで渡す）。深刻な順に読み直さない。
   // 読み直すとカード上を上下に往復する（→ docs/spec/tsunami-spec.md §9）
   it('読む順は渡された並びのまま（深刻な順に読み直さない）', () => {
-    expect(tsunamiObservationUpdateToText([MIYAKO, OFUNATO])).toContain('宮古で1.2メートル、大船渡で3.0メートル')
-    expect(tsunamiObservationUpdateToText([OFUNATO, MIYAKO])).toContain('大船渡で3.0メートル、宮古で1.2メートル')
+    expect(tsunamiObservationUpdateToText([MIYAKO, OFUNATO])).toContain('宮古で1.2メートルを観測、大船渡で3.0メートルを観測しました。')
+    expect(tsunamiObservationUpdateToText([OFUNATO, MIYAKO])).toContain('大船渡で3.0メートルを観測、宮古で1.2メートルを観測しました。')
   })
 
   // 安全弁: 並び順を入力に委ねても、**どれを読むかの選抜は深刻な順**のまま。
@@ -1055,8 +1055,8 @@ describe('津波観測情報の読み上げ: 新規と更新の言い分け', ()
     ]
     // 上限 2 件。深刻な順は 大船渡(3.0) → 釜石(2.8) → 宮古(1.2) なので宮古が落ちる
     const text = tsunamiObservationUpdateToText(obs, undefined, 2, new Set(['釜石']))
-    expect(text).toContain('新たに岩手県、大船渡で3.0メートルを観測しました。')
-    expect(text).toContain('また、岩手県、釜石で2.8メートルに更新されました。')
+    expect(text).toContain('新たに、次の地点で津波を観測しました。岩手県、大船渡で3.0メートルを観測しました。')
+    expect(text).toContain('また、次の地点で最大波が更新されました。岩手県、釜石で2.8メートルに更新されました。')
     expect(text).not.toContain('宮古')
     expect(text).toContain('ほか1地点でも観測しています。')
   })
@@ -1170,6 +1170,65 @@ describe('earthquakeToSegments: 続報は差分だけ読む', () => {
     const text = joinSegments(second)
     expect(text).toContain('新たに')
     expect(text).not.toContain('また、')
+  })
+
+  // ── 「最大」は群ではなく事実で決める（2026-09-20 追加） ──────────────────
+  //
+  // **初出の区域がいきなり最大震度を持つ続報は実際に起きる。** 揺れの強い地域ほど観測点からの
+  // 通信が遅れ、最初の報に入らないため。2024-01-01 18:08:21 の地震は 18:09 の震度速報が
+  // 新潟・富山だけの最大震度4で、18:10 に石川県能登の5強が初出で入った。かつては初出の群で
+  // 冠さなかったので、**いちばん強い揺れを伝える報でだけ最大震度が声から消えていた**。
+
+  it('正: 初出の区域しか無くても、最大震度に一致する階級には「最大」を冠する', () => {
+    const state = createQuakeSpokenState()
+    // 初報（2024-01-01 18:09 の震度速報）: 新潟・富山の 3 区域が震度4
+    markSpoken(state, earthquakeToSegments(quakeOf([
+      area('新潟県', '新潟県上越', 40), area('富山県', '富山県東部', 40), area('富山県', '富山県西部', 40),
+    ], 40), OPTS, true, state))
+
+    // 続報（18:10）: 石川県能登が5強で初出。震度4の 3 区域は据え置きで落ちる
+    const second = earthquakeToSegments(quakeOf([
+      area('石川県', '石川県能登', 50),
+      area('新潟県', '新潟県上越', 40), area('富山県', '富山県東部', 40), area('富山県', '富山県西部', 40),
+      area('新潟県', '新潟県中越', 30),
+    ], 50), OPTS, false, state)
+    expect(joinSegments(second)).toBe(
+      '震度速報が更新されました。新たに最大震度5強を石川県能登、震度3を新潟県中越で観測しました。',
+    )
+  })
+
+  it('対照: 最大震度の区域がどちらの群にも残らない続報では「最大」を冠さない', () => {
+    const state = createQuakeSpokenState()
+    // 初報: 石川県能登=5強（この地震の最大震度）
+    markSpoken(state, earthquakeToSegments(
+      quakeOf([area('石川県', '石川県能登', 50)], 50), OPTS, true, state))
+
+    // 続報: 能登は据え置きで落ち、新潟県中越が初出で4。最大震度（5強）の句がどこにも無い
+    const second = earthquakeToSegments(quakeOf([
+      area('石川県', '石川県能登', 50), area('新潟県', '新潟県中越', 40),
+    ], 50), OPTS, false, state)
+    // 先頭の句に無条件で付けると「最大震度4を」と、電文が伝えていない最大震度を語ることになる
+    expect(joinSegments(second)).toBe('震度速報が更新されました。新たに震度4を新潟県中越で観測しました。')
+  })
+
+  it('安全弁: 上がりと初出の両方に最大震度があっても「最大」は 1 度だけ', () => {
+    const state = createQuakeSpokenState()
+    // 初報: 石川県能登=4、富山県東部=3
+    markSpoken(state, earthquakeToSegments(quakeOf([
+      area('石川県', '石川県能登', 40), area('富山県', '富山県東部', 30),
+    ], 40), OPTS, true, state))
+
+    // 続報: 能登が 4→5強（上がり）、山形県村山が5強で初出。**同じ最大震度に両群が並ぶ**
+    const second = earthquakeToSegments(quakeOf([
+      area('石川県', '石川県能登', 50), area('山形県', '山形県村山', 50), area('富山県', '富山県東部', 30),
+    ], 50), OPTS, false, state)
+    const text = joinSegments(second)
+    expect(text).toBe(
+      '震度速報が更新されました。最大震度5強を石川県能登で観測しました。'
+      + 'また、新たに震度5強を山形県村山で観測しました。',
+    )
+    // 冠すのは先に回る群（上がり）だけ
+    expect(text.match(/最大/g)).toHaveLength(1)
   })
 
   it('安全弁: 地域数の上限は群ごとに数える（「ほかN地域」が両群で出る）', () => {
@@ -1317,7 +1376,9 @@ describe('earthquakeToSegments: 続報は差分だけ読む', () => {
       const second = earthquakeToSegments(
         quakeWith([...baseAreaAndStation, area('東京都', '東京都23区', 30), station('新宿区西新宿', 30)]),
         OPTS, false, state)
-      expect(joinSegments(second)).toContain('新たに震度3を東京都23区で観測しました。')
+      // 東京都23区（震度3）はこの電文の最大震度に一致する初出なので「最大」を冠する
+      // （規則そのものは「初出の群でも最大震度は冠する」の 3 件で固定している）。
+      expect(joinSegments(second)).toContain('新たに最大震度3を東京都23区で観測しました。')
       expect(joinSegments(second)).not.toContain('変わっていません')
     })
 
@@ -1623,8 +1684,8 @@ describe('earthquakeToSegments: 続報は差分だけ読む', () => {
     const state = createQuakeSpokenState()
     const points = [area('石川県', '石川県能登', 60), area('富山県', '富山県東部', 40)]
     markSpoken(state, earthquakeToSegments(quakeOf(points, 60), OPTS, true, state))
-    // 最大震度の区域は据え置き。残る震度4の句に「最大」を付けてはいけない
-    // （初出の群なので、そもそも「最大」は冠さない）
+    // 最大震度の区域（石川県能登＝震度6強）は据え置きで落ちる。残る震度4の句は
+    // この電文の最大震度と一致しないので「最大」を付けてはいけない（群とは無関係）
     const second = earthquakeToSegments(
       quakeOf([...points, area('新潟県', '新潟県中越', 40)], 60), OPTS, false, state,
     )
@@ -2057,14 +2118,14 @@ describe('tsunamiArrivalToText: 微弱の言い分け', () => {
     const text = tsunamiArrivalToText([
       { name: '釧路', districtName: '北海道太平洋沿岸東部', arrivalTime: at, condition: { weak: true } },
     ])
-    expect(text).toBe('北海道太平洋沿岸東部、釧路で到達を確認しました。最大波高は微弱です。')
+    expect(text).toBe('次の地点で津波の到達を確認しました。北海道太平洋沿岸東部、釧路で10時0分に第一波を観測しました。最大波高は微弱です。')
   })
 
   it('対照: 微弱でない観測点は従来どおり「最大波高は観測中です」', () => {
     const text = tsunamiArrivalToText([
       { name: '釧路', districtName: '北海道太平洋沿岸東部', arrivalTime: at },
     ])
-    expect(text).toBe('北海道太平洋沿岸東部、釧路で到達を確認しました。最大波高は観測中です。')
+    expect(text).toBe('次の地点で津波の到達を確認しました。北海道太平洋沿岸東部、釧路で10時0分に第一波を観測しました。最大波高は観測中です。')
   })
 
   it('正: 観測中と微弱が混ざったら群を分けて「また、」で継ぐ', () => {
@@ -2072,7 +2133,7 @@ describe('tsunamiArrivalToText: 微弱の言い分け', () => {
       { name: '大洗', districtName: '茨城県', arrivalTime: at },
       { name: '釧路', districtName: '北海道太平洋沿岸東部', arrivalTime: at, condition: { weak: true } },
     ])
-    expect(text).toBe('茨城県、大洗で到達を確認しました。最大波高は観測中です。また、北海道太平洋沿岸東部、釧路で到達を確認しました。最大波高は微弱です。')
+    expect(text).toBe('次の地点で津波の到達を確認しました。茨城県、大洗で10時0分に第一波を観測しました。最大波高は観測中です。また、北海道太平洋沿岸東部、釧路で10時0分に第一波を観測しました。最大波高は微弱です。')
   })
 
   it('安全弁: 片方の群だけなら「また、」を付けない', () => {

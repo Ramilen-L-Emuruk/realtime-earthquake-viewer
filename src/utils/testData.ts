@@ -2,6 +2,7 @@ import type { JMAQuake, JMATsunami, EEWAlert, EEWForecastChange, JMANankai, JMAN
 import { serverNow, serverDate } from './clock'
 import { extractQuakeEventIdFromId } from './quakeMerge'
 import { log } from './logger'
+import { INTENSITY_SCALES_ASC } from './intensity'
 import notoHonshinPoints from '../data/noto-honshin-2024-points.json'
 import notoHonshinQuake from '../data/noto-honshin-2024-quake.json'
 import hyuganadaQuakeJson from '../data/hyuganada-2022-quake.json'
@@ -377,6 +378,23 @@ export function createTestQuakeAmendment(useDmdataShape: boolean): { initial: JM
 export const TEST_REPORT_SEQUENCE_DELAY_MS = 3000
 
 /**
+ * 7 通目で震度を 1 段上げる観測点の数。
+ *
+ * **実配信の規模に合わせる。** 控え 60 日の実測で、各地の震度どうしの続報で値が動いた行は
+ * 中央値 0 行・最大 34 行だった。全部を上げると印が一覧を埋め、確かめたい「動いた行だけが
+ * 光る」形にならない。
+ */
+const TEST_RAISED_STATION_COUNT = 5
+
+/**
+ * 7 通目で震度を 1 段下げる観測点の数。
+ *
+ * **上がる形だけにしない。** 印は向きで色が変わるので、下がった側を実機で一度も
+ * 確かめられなくなる。上げる数より少なくしてあるのは、実配信でも下方修正のほうが稀なため。
+ */
+const TEST_LOWERED_STATION_COUNT = 2
+
+/**
  * 4 通目と 5 通目のあいだだけ長く取る。
  *
  * **4 通目を読み切る前に 5 通目が届くと、既読が「声になった分」までしか進まず、5 通目が
@@ -536,6 +554,49 @@ export function createTestQuakeReportSequence(useDmdataShape: boolean): JMAQuake
     new Date(followUpTime).getTime() + TEST_REPORT_SEQUENCE_DELAY_MS,
   ).toISOString()
 
+  // 7 通目。**震度が上がった続報。**
+  //
+  // 5 通目までは「増える」しか起きないので、カードの印はどれも初出（緑）にしかならない。
+  // 更新（黄）を実機で確かめられる入口がこれ以外に無い —— 訂正報テストは震源要素（規模）の
+  // 更新は出せるが、**震度一覧の行**が動く形は出せない。
+  //
+  // 実配信でも「各地の震度どうしの続報で行の値が動く」のは稀で、控え 60 日の 14 組のうち
+  // 6 組・動く行は中央値 0 行（最大 34 行）だった。稀だからこそ、偶然に任せず入口を作る。
+  //
+  // **上げるのは観測点と、その観測点を含む区域・市町村。** 観測点だけ上げると、配下から
+  // 積み上げる区域の行と食い違う（区域の最大震度は配下の最大なので、実電文でも一緒に動く）。
+  const raisedTime = new Date(
+    new Date(supersededTime).getTime() + TEST_REPORT_SEQUENCE_DELAY_MS,
+  ).toISOString()
+  const movable = base.points.filter(p => !p.isArea && p.scale >= 0).sort((a, b) => a.scale - b.scale)
+  const raiseTargets = new Set(movable.slice(0, TEST_RAISED_STATION_COUNT).map(p => p.addr))
+  // **下がる観測点も入れる。** 印は向きで色が変わるので、上がる形しか無いと
+  // 下がった側の色を実機で一度も確かめられない。実電文でも下方修正は起こる
+  // （電文の `Revise` に「下方修正」の値がある）。
+  const lowerTargets = new Set(
+    movable.filter(p => !raiseTargets.has(p.addr) && p.scale > 10)
+      .slice(-TEST_LOWERED_STATION_COUNT).map(p => p.addr),
+  )
+  const raiseOne = (scale: IntensityScale): IntensityScale =>
+    INTENSITY_SCALES_ASC.find(v => v > scale) ?? scale
+  const lowerOne = (scale: IntensityScale): IntensityScale =>
+    [...INTENSITY_SCALES_ASC].reverse().find(v => v < scale) ?? scale
+  const raisedPoints = base.points.map(p => {
+    if (p.isArea) return p
+    if (raiseTargets.has(p.addr)) return { ...p, scale: raiseOne(p.scale) }
+    if (lowerTargets.has(p.addr)) return { ...p, scale: lowerOne(p.scale) }
+    return p
+  })
+  const raised: JMAQuake = {
+    ...base,
+    telegramKey: raisedTime,
+    reportSerial: 3,
+    time: raisedTime,
+    issue: { ...base.issue, time: raisedTime },
+    points: raisedPoints,
+    earthquake: { ...base.earthquake, maxScale: maxScaleOf(raisedPoints) },
+  }
+
   return [
     prompt(at(0), firstPoints),
     destination,
@@ -543,6 +604,7 @@ export function createTestQuakeReportSequence(useDmdataShape: boolean): JMAQuake
     detail,
     followUp,
     prompt(supersededTime, firstPoints),
+    raised,
   ]
 }
 
@@ -756,6 +818,34 @@ function eewOriginDriftMs(serial: number): number {
   return EEW_ORIGIN_DRIFT_SEC[i] * 1000
 }
 
+/**
+ * 報番号に対応する規模と深さ。**続報で動く** —— 実電文もそうなっている。
+ *
+ * **控え 8 日・続報 1,184 通の実測**で、規模は 45.0%・深さは 12.9% の続報で動いていた
+ * （震央地名 15.1%・座標 35.9%）。テストデータを固定値のままにすると、緊急地震速報カードの
+ * 「動いた欄が 1 秒かけて元の色へ戻る」形が**実機で一度も出ない**
+ * （→ `hooks/useFieldFlash.ts`・docs/spec/eew-spec.md §4「続報で動いた欄を示す」）。
+ *
+ * **深さは規模より動く回数を少なくする。** 実測の比（45% 対 13%）に倣い、深さは 1 度だけ動かす。
+ * 毎報すべてが動く形にすると、逆に「どれが動いたか」を確かめられなくなる。
+ *
+ * **上がるだけでなく下がる形も入れる**（5 通目で 7.1 → 6.9）。印は向きで色が変わるので、
+ * 上がる形しか無いと**下がった側の色を実機で一度も確かめられない**。実電文でも規模の推定は
+ * 続報で上下する。
+ */
+const EEW_WARNING_MAGNITUDE = [6.5, 6.8, 7.1, 7.1, 6.9, 6.9, 6.9] as const
+const EEW_WARNING_DEPTH_KM = [30, 30, 20, 20, 20, 20, 20] as const
+
+/** 報番号に対応する震源要素。範囲外の報番号は末尾へ丸める（→ {@link eewOriginDriftMs} と同じ扱い）。 */
+function eewWarningHypocenterFacts(serial: number): { magnitude: number; depth: number } {
+  if (!Number.isInteger(serial)) {
+    log.error(`[testData] EEW の報番号が整数ではありません serial=${String(serial)}`)
+    return { magnitude: EEW_WARNING_MAGNITUDE[0], depth: EEW_WARNING_DEPTH_KM[0] }
+  }
+  const i = Math.min(Math.max(serial, 1), EEW_WARNING_MAGNITUDE.length) - 1
+  return { magnitude: EEW_WARNING_MAGNITUDE[i], depth: EEW_WARNING_DEPTH_KM[i] }
+}
+
 // 地震発現時刻（`arrivalTime`）が震源時刻から遅れる秒数。**震源からいちばん近い観測点まで
 // P 波が伝わる時間**なので、深さと観測点までの距離で決まる。
 //
@@ -850,7 +940,9 @@ export function createTestEEWWarning(withDmdssFields: boolean, eventId?: string,
       // 震源要素の補足情報（電文の `Condition`）。**値域は「仮定震源要素」の 1 つだけ**で、
       // 該当しなければ要素ごと出ない（電文解説資料 Ⅱ.21 1-2）。仮定震源要素でない報は空。
       condition: '',
-      hypocenter: { name: '日向灘', latitude: 32.0, longitude: 132.0, depth: 30, magnitude: 6.5 },
+      // 規模と深さは続報で動く（→ `EEW_WARNING_MAGNITUDE`）。**動かさないと、カードの
+      // 「動いた欄が元の色へ戻る」形を実機で一度も確かめられない。**
+      hypocenter: { name: '日向灘', latitude: 32.0, longitude: 132.0, ...eewWarningHypocenterFacts(serial) },
     },
     severity: 'Warning',
     cancelled: false,
@@ -1810,6 +1902,39 @@ export function createTestTsunamiMaxHeightTimeUpdate(prev: JMATsunami): JMATsuna
   }
 }
 
+/** 第1波の訂正テストで、到達時刻を直す観測点。 */
+const FIRST_WAVE_UPDATE_STATION = '室蘭港'
+
+/**
+ * 第1波の到達時刻だけが訂正された観測情報の報（`FirstHeight/Revise` = 更新）。
+ *
+ * 2024 年能登半島地震の 17:09 と同じ形 —— 佐渡市鷲崎の第1波の到達時刻が 16時10分 から
+ * 16時32分 へ 22 分ぶん動いた。**第1波は点ごとに一度きりの事実に見えるが、気象庁は訂正する。**
+ * 一度読んだら二度と読まない作りだと、誤った時刻を言ったまま訂正が届かない
+ * （→ `tsunamiFirstWaveUpdateToSegments`）。
+ *
+ * **1 観測点だけを直す。** 全部を一度に動かすと、どの地点が訂正されたのか画面から読み取れない。
+ * 「○m以上」の昇格（`OVER_UPGRADE_STATION`）とは別の地点にして、段ごとに動く場所を分ける。
+ *
+ * **押し引きは変えない。** 実電文で観測できた訂正は到達時刻だけで、押し引きが変わる形は
+ * 見ていない（既読の鍵には押し引きも含めてあるので、そちらは実装側の備え）。
+ */
+export function createTestTsunamiFirstWaveUpdate(prev: JMATsunami): JMATsunami {
+  const report = asObservationReport(prev, 'firstwave')
+  return {
+    ...report,
+    observations: (prev.observations ?? []).map(o =>
+      o.name === FIRST_WAVE_UPDATE_STATION && o.arrivalTime
+        ? {
+          ...o,
+          // 22 分ぶん後ろへ直す（実電文と同じ向き・同じ幅）。
+          arrivalTime: new Date(new Date(o.arrivalTime).getTime() + 22 * 60000).toISOString(),
+          firstHeightRevise: '更新',
+        }
+        : o),
+  }
+}
+
 /**
  * 波高の値は据え置きのまま、「○m以上」（`over`）だけが後から付く観測情報の報。
  *
@@ -2188,7 +2313,11 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
       // **欠測とは別物** —— 津波は観測できていて到達も確定しており、時刻だけが出せない。
       // 時刻の欄に「到達時刻不明」と理由が出る（`utils/tsunami.ts` の
       // `observationArrivalFallbackText`）。到達確認の扱いは欠測と違って抑制しない。
-      { name: '久慈港', districtCode: '210', districtName: '岩手県', height: { value: 4.4, description: '4.4m' }, initial: '押し', maxHeightDateTime: t(-2), condition: { firstWaveUnidentifiable: true } },
+      // **押し引き（`initial`）は持たせない。** 第1波を識別できていないので、気象庁も押しか
+      // 引きかを書けない。実電文でも `FirstHeight` の中身は「到達時刻＋押し引き」か
+      // 「`Condition` だけ」のどちらかで、両方が同居する形は観測していない
+      // （2024-01-01 の VTSE51/52 全 76 通を走査。1 地震ぶんなので「起きない」とまでは言えない）。
+      { name: '久慈港', districtCode: '210', districtName: '岩手県', height: { value: 4.4, description: '4.4m' }, maxHeightDateTime: t(-2), condition: { firstWaveUnidentifiable: true } },
       // 津波注意報の区域で、これまでの最大波がごく小さい（数値を発表しない）。
       { name: '釧路',   districtCode: '100', districtName: '北海道太平洋沿岸東部', arrivalTime: t(-2), initial: '押し', condition: { weak: true } },
       // 津波予報まで下がった区域の実測。等級が下がっても観測は続く（区域の側は上の `areas` を見る）。
