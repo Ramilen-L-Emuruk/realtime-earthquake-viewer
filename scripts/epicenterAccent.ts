@@ -155,6 +155,83 @@ function phraseEntry(kana: string, accent: number | null, isHead: boolean): stri
  * 割った震央地名を AquesTalk 風カナへ変換する（`ミヤコジマ'/キンカイ'`）。
  * `/` が句区切り、`'` がアクセント核。核の決め方は {@link phraseEntry}。
  */
+/** 「〜地方」の核を当てられなかった理由。**見送りを黙って落とさない**ために区別する。 */
+export type ChihouSkipReason =
+  /** 「〜地方」で終わらない（大多数。正常な見送り） */
+  | 'not-chihou'
+  /** 中黒を含む（割れ目が 3 つになる。手書きの句区切り辞書の担当） */
+  | 'nakaguro'
+  /** 「県」の読みを切り出せない */
+  | 'no-prefecture-reading'
+  /** 「県」または「けん」が 2 つ以上あり、どこで割るか決められない */
+  | 'ambiguous-prefecture'
+
+export type ChihouOutcome =
+  | {
+    readonly entry: string
+    /**
+     * 値の句に対応する漢字。**呼び出し側が割り直さずに済むように返す** —— 同じ計算を
+     * 2 箇所に置くと、割り方を変えたときに片方だけ古い分割点で組み立て続ける
+     * （句の漢字が実際とずれても、揃えの対象から静かに漏れるだけで誰も気づかない）。
+     */
+    readonly origin: readonly string[]
+  }
+  | { readonly reason: ChihouSkipReason }
+
+/**
+ * 「〜地方」で終わる名前のエントリ。**句割りの門（モーラ数・句数）を通さずに当てる。**
+ *
+ * エンジンは「チホオ」の**「ホ」の後**へ核を置く（`キタミチホ＼オ`・`アバシリチホ＼オ`）。
+ * 手書きの句区切り辞書と UniDic の `地方`（aType=1）はどちらも「チ」なので、放っておくと
+ * 同じ「〜地方」が辞書のあるものと無いもので違う位置に割れる。**短い名前ほど句割りの門
+ * （8 モーラ以上の 1 句）に掛からないので、そこで落ちたものが崩れたまま残っていた**
+ * （`檜山地方` は 6 モーラで、しかもエンジンは `ヒヤマ / チホオ` と 2 句に割る）。
+ *
+ * 割り方は 2 通り。
+ *
+ * - **県名が前に付くなら「県」の後で割る** —— `石川県能登地方` は `イシカワ'ケン/ノトチ'ホオ`。
+ *   手書き辞書が持つ形（`ニイガタ'ケン/チュウエツチ'ホオ`）と揃える。県名の核は「県」の直前で、
+ *   これはエンジンの実測とも一致する（`イシカワケン` は核4）
+ * - **付かないなら割らない** —— `檜山地方` は `ヒヤマチ'ホオ` の 1 句
+ *
+ * **中黒を含む名前は扱わない**（`熊本県天草・芦北地方`）。割れ目が 3 つになり、中黒の前後を
+ * どう分けるかはこの規則からは決まらない。手書きの句区切り辞書の担当。
+ *
+ * @returns 当てられないときは理由（→ {@link ChihouSkipReason}）。
+ */
+export function chihouAccentEntry(name: string, kana: string): ChihouOutcome {
+  if (!endsWithChihou(kana)) return { reason: 'not-chihou' }
+  // **中黒を含む名前は扱わない**（割れ目が 3 つになる）。見送ったことは呼び出し側が記録する
+  if (name.includes('・')) return { reason: 'nakaguro' }
+  const at = name.indexOf('県')
+  if (at < 0) return { entry: phraseEntry(kana, null, true), origin: [name] }
+  // **漢字の位置と読みの位置は独立に求めている**ので、どちらも 1 回だけ現れるときに限る。
+  // 2 つ以上あるとどれが対応するか決められず、誤った位置で割った値を検証なしに書き出しうる
+  // （連結すれば元の読みに戻るので、生成時の往復検証では捕まらない）。
+  if (name.indexOf('県', at + 1) >= 0) return { reason: 'ambiguous-prefecture' }
+  const head = name.slice(0, at + 1)
+  const tail = name.slice(at + 1)
+  const normalized = normalizeReading(kana)
+  const kanaAt = normalized.indexOf('けん')
+  if (!head || !tail || kanaAt < 0) return { reason: 'no-prefecture-reading' }
+  if (normalized.indexOf('けん', kanaAt + 2) >= 0) return { reason: 'ambiguous-prefecture' }
+  const headKana = kana.slice(0, kanaAt + 2)
+  const tailKana = kana.slice(kanaAt + 2)
+  if (!headKana || !tailKana) return { reason: 'no-prefecture-reading' }
+  return {
+    entry: `${prefectureEntry(headKana)}/${phraseEntry(tailKana, null, true)}`,
+    origin: [head, tail],
+  }
+}
+
+/** 「〇〇県」の核は「県」の直前に置く（`イシカワ'ケン`）。エンジンの実測とも一致する。 */
+function prefectureEntry(kana: string): string {
+  const moras = splitIntoMoras(toKana(kana))
+  const at = moras.length - 2                       // 「ケン」の直前
+  if (at < 1) return toKanaEntry(kana)
+  return `${moras.slice(0, at).join('')}'${moras.slice(at).join('')}`
+}
+
 export function toAccentEntry(split: EpicenterSplit, accents?: ComponentAccents): string {
   return `${phraseEntry(split.headKana, accents?.head ?? null, true)}`
     + `/${phraseEntry(split.tailKana, accents?.tail ?? null, false)}`

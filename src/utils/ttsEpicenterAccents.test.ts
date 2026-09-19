@@ -66,7 +66,10 @@ describe('実データの震央地名の句割り', () => {
     // `ヨオロ'ッパ`・`カ'ントウ` のように途中へ来る（→ scripts/epicenterAccent.ts の `phraseEntry`）。
     const bad = names.filter(name => {
       const parts = epicenters[name].split('/')
-      if (parts.length !== 2) return true
+      // 「〜地方」は句を割らずに核だけ置くことがある（県名が前に付けば 2 句）。
+      // 割り方の担当は scripts/build-epicenter-accents.ts の `chihouAccentEntry`
+      const allowed = name.endsWith('地方') ? [1, 2] : [2]
+      if (!allowed.includes(parts.length)) return true
       return parts.some(part => !/^[ァ-ヴ]*'[ァ-ヴ]*$/.test(part) || part.replace(/'/g, '') === '')
     })
     expect(bad).toEqual([])

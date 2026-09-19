@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { MIN_TAIL_MORAS, SUFFIXES, splitEpicenter, toAccentEntry, type EpicenterSplit } from './epicenterAccent'
+import {
+  MIN_TAIL_MORAS, SUFFIXES, chihouAccentEntry, splitEpicenter, toAccentEntry,
+  type EpicenterSplit,
+} from './epicenterAccent'
 import { countMoras, toKana } from './stationReading'
 
 // 震央地名の句割りの検証。
@@ -103,5 +106,52 @@ describe('SUFFIXES の並び', () => {
     const firstShort = short.indexOf(true)
     expect(firstShort).toBeGreaterThanOrEqual(0)
     expect(short.slice(firstShort).every(Boolean)).toBe(true)
+  })
+})
+
+describe('chihouAccentEntry', () => {
+  const entryOf = (name: string, kana: string) => {
+    const outcome = chihouAccentEntry(name, kana)
+    return 'entry' in outcome ? outcome.entry : null
+  }
+  const reasonOf = (name: string, kana: string) => {
+    const outcome = chihouAccentEntry(name, kana)
+    return 'entry' in outcome ? null : outcome.reason
+  }
+
+  // **長音はここでは開かない。** ふりがなをそのままカナにするので `ホウ` のまま出る。
+  // 開くのは生成の最終段階（→ `scripts/lib/longVowel.ts`）で、生成物は `チ'ホオ` になる。
+
+  // 正: 県名が前に付かなければ割らずに核だけ「チ」へ置く
+  it('県名が付かない名前は割らずに核を「チ」へ置く', () => {
+    expect(entryOf('檜山地方', 'ひやまちほう')).toBe("ヒヤマチ'ホウ")
+    expect(entryOf('北見地方', 'きたみちほう')).toBe("キタミチ'ホウ")
+  })
+
+  // 正: 県名が前に付けば「県」の後で割る。県の核は「県」の直前
+  it('県名が付く名前は「県」の後で割る', () => {
+    expect(entryOf('石川県能登地方', 'いしかわけんのとちほう')).toBe("イシカワ'ケン/ノトチ'ホウ")
+    expect(entryOf('岐阜県飛騨地方', 'ぎふけんひだちほう')).toBe("ギフ'ケン/ヒダチ'ホウ")
+  })
+
+  // 対照: 「〜地方」で終わらない名前は扱わない（句割りの担当）
+  it('「〜地方」で終わらない名前は扱わない', () => {
+    expect(reasonOf('十勝地方北部', 'とかちちほうほくぶ')).toBe('not-chihou')
+    expect(reasonOf('宮古島近海', 'みやこじまきんかい')).toBe('not-chihou')
+  })
+
+  // 対照: 中黒を含む名前は扱わない（割れ目が 3 つになる）
+  it('中黒を含む名前は扱わない', () => {
+    expect(reasonOf('熊本県天草・芦北地方', 'くまもとけんあまくさあしきたちほう')).toBe('nakaguro')
+  })
+
+  // 安全弁: 漢字と読みの「県」が 1 対 1 に対応しないときは割らない。
+  // 連結すれば元の読みへ戻るので、生成時の往復検証では誤った割り方を捕まえられない
+  it('「県」が 2 つあるときは割らない', () => {
+    expect(reasonOf('東京県大阪県地方', 'とうきょうけんおおさかけんちほう')).toBe('ambiguous-prefecture')
+  })
+
+  it('読みに「けん」が 2 つあるときは割らない', () => {
+    expect(reasonOf('三重県剣岳地方', 'みえけんけんだけちほう')).toBe('ambiguous-prefecture')
   })
 })

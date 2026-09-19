@@ -36,6 +36,9 @@ import { fileURLToPath } from 'node:url'
 import { EEW_WARNING_REGION_ORDER } from '../src/utils/eewWarningRegions'
 import { toKana, splitIntoMoras } from './stationReading'
 import { SOURCE_URL as EPICENTER_SOURCE_URL } from './build-epicenter-accents'
+import { splitEpicenterDetailed } from './epicenterAccent'
+import { buildCityIndex, splitStationName } from './stationPhrase'
+import { fetchCodeTableBook, readCityFurigana } from './build-station-readings'
 import { fetchListedStations } from './lib/stationSource.mjs'
 
 const scriptDir = dirname(fileURLToPath(import.meta.url))
@@ -165,7 +168,7 @@ function readJson<T>(rel: string): T {
   return JSON.parse(readFileSync(resolve(ROOT, rel), 'utf8')) as T
 }
 
-async function collectTargets(withUpstream: boolean): Promise<Target[]> {
+async function collectTargets(withUpstream: boolean, withComponents: boolean): Promise<Target[]> {
   const found = new Map<string, Target>()
   const put = (name: string, kind: string, dictValue?: string) => {
     if (!name) return
@@ -192,14 +195,53 @@ async function collectTargets(withUpstream: boolean): Promise<Target[]> {
   for (const key of Object.keys(readJson<Record<string, unknown>>('public/data/prefectures.json'))) put(key, '都道府県')
   for (const region of EEW_WARNING_REGION_ORDER) put(region, 'EEW地方')
 
-  if (withUpstream) {
+  if (withUpstream || withComponents) {
     const res = await fetch(EPICENTER_SOURCE_URL)
     if (!res.ok) throw new Error(`震央地名の取得に失敗しました（${res.status}）`)
     const geo = await res.json() as { features: { properties: Record<string, string> }[] }
-    for (const feature of geo.features) put(feature.properties.name, '震央地名')
-    for (const station of await fetchListedStations()) put(station.name as string, '観測点')
+    const stations = await fetchListedStations() as { name?: string; furigana?: string }[]
+    if (withUpstream) {
+      for (const feature of geo.features) put(feature.properties.name, '震央地名')
+      for (const station of stations) put(station.name as string, '観測点')
+    }
+    if (withComponents) await putComponents(put, geo.features, stations)
   }
   return [...found.values()]
+}
+
+/**
+ * 名前を割った**構成要素**を対象へ加える。
+ *
+ * **いま末尾核で鳴っている語は、ここでしか裏が取れない。** 震央地名の前部・後部要素も、
+ * 観測点名の前半（市町村名）も、エンジンへ訊いて 1 句にまとまらなかった・誤読したものは
+ * 末尾核で近似してある（`build-epicenter-accents.ts` の `measureAccent`／
+ * `build-station-readings.ts` の `fetchCityAccents`）。**名前まるごとは複合語なので UniDic に
+ * 載らないが、構成要素は単語として載ることがある。**
+ *
+ * 割り方は生成側と同じものを通す（`splitEpicenterDetailed` / `splitStationName`）——
+ * 別の割り方で集めると、実際に鳴っている句とは違うものを検べることになる。
+ */
+async function putComponents(
+  put: (name: string, kind: string) => void,
+  features: readonly { properties: Record<string, string> }[],
+  stations: readonly { name?: string; furigana?: string }[],
+): Promise<void> {
+  for (const feature of features) {
+    const name = feature.properties?.name
+    const kana = feature.properties?.name_kana
+    if (!name || !kana) continue
+    const outcome = splitEpicenterDetailed(name, kana)
+    if (!('split' in outcome)) continue
+    put(outcome.split.head, '震央地名(前部)')
+    put(outcome.split.tail, '震央地名(後部)')
+  }
+  const cities = buildCityIndex(readCityFurigana(await fetchCodeTableBook()))
+  for (const station of stations) {
+    if (!station.name || !station.furigana) continue
+    const outcome = splitStationName(station.name, station.furigana, cities)
+    if (outcome.kind !== 'split') continue
+    put(outcome.split.city, '観測点(市町村)')
+  }
 }
 
 // ---------------------------------------------------------------- いまの核
@@ -250,6 +292,31 @@ function accentTypesOf(word: UnidicWord): number[] {
 
 type Finding = { target: Target; phrase: Phrase; types: number[]; pos: string[] }
 
+/** エンジンが 1 語として読めず、いま末尾核へ倒れている語。UniDic に核がある分だけ拾う。 */
+type FallbackCandidate = { target: Target; moras: string; types: number[]; pos: string[] }
+
+/**
+ * 1 句に収まらなかった語を、UniDic に載っていれば候補として控える。
+ *
+ * **読みの照合は句を連結して行う。** 割れているのはエンジンが語の切れ目を見つけられなかった
+ * だけで、読み自体は同じもの。連結しないと同じ表記の別語を弾けない。
+ */
+function collectFallbackCandidate(
+  target: Target,
+  phrases: readonly Phrase[],
+  words: readonly UnidicWord[],
+  out: FallbackCandidate[],
+): void {
+  const moras = phrases.map((p) => p.moras).join('')
+  const sameReading = words.filter((w) => toKana(w.pron) === toKana(moras))
+  if (!sameReading.length) return
+  const places = sameReading.filter((w) => w.pos.includes('地名'))
+  const use = places.length ? places : sameReading
+  const types = [...new Set(use.flatMap(accentTypesOf))]
+  if (!types.length) return
+  out.push({ target, moras, types, pos: [...new Set(use.map((w) => w.pos))] })
+}
+
 /** 読点なしで読みが変わる語＝エンジンの辞書に 1 語として無い語を列挙する。 */
 async function reportBareCheck(engine: string, speaker: number, targets: readonly Target[]): Promise<void> {
   // 辞書に値がある語は素の読みを使わないので対象外
@@ -286,9 +353,10 @@ async function main(): Promise<void> {
   const speaker = Number(argOf('--speaker', '6'))
   const withUpstream = args.includes('--upstream')
   const bareCheck = args.includes('--bare-check')
+  const withComponents = args.includes('--components')
 
   console.log('対象語を集めています…')
-  const targets = await collectTargets(withUpstream)
+  const targets = await collectTargets(withUpstream, withComponents)
   const byKind: Record<string, number> = {}
   for (const target of targets) for (const kind of target.kinds) byKind[kind] = (byKind[kind] ?? 0) + 1
   console.log(`  ${targets.length} 語`, byKind)
@@ -302,6 +370,7 @@ async function main(): Promise<void> {
 
   // 比べられるのは「名前まるごとが UniDic にある」ものだけなので、エンジンへ訊くのもその分でよい
   const findings: Finding[] = []
+  const fallbackCandidates: FallbackCandidate[] = []
   let single = 0
   let readingMismatch = 0
   let noType = 0
@@ -311,7 +380,15 @@ async function main(): Promise<void> {
     const phrases = target.dictValue
       ? parseAquesTalk(target.dictValue)
       : await withComma(engine, speaker, target.name)
-    if (phrases.length !== 1) continue
+    if (phrases.length !== 1) {
+      // **エンジンが 1 語として読めなかった語。** 生成側もここで実測を諦めて末尾核へ倒している
+      // （`build-epicenter-accents.ts` の `measureAccent` / `build-station-readings.ts` の
+      // `fetchCityAccents` は、どちらも 1 句に収まらなければ採らない）。**UniDic に載っているなら
+      // そちらから核を採れる** —— 黙って飛ばすと、末尾核のまま直せる語があることに気づけない。
+      // 辞書に値がある語は意図して句へ割ったものなので、この枠では見ない
+      if (!target.dictValue) collectFallbackCandidate(target, phrases, words, fallbackCandidates)
+      continue
+    }
     single++
     const phrase = phrases[0]
     const pron = toKana(phrase.moras)
@@ -330,6 +407,23 @@ async function main(): Promise<void> {
   console.log(`\n1 句で読まれる語 ${single} 件のうち、読みも一致して比べられたのは ${single - readingMismatch - noType} 件`)
   if (readingMismatch) console.log(`  ${readingMismatch} 件は UniDic 側が同じ表記の別語で、読みが合わない`)
   if (noType) console.log(`  ${noType} 件はアクセント型を持たない`)
+
+  // **0 件でも出す。**「見つからなかった」と「見ていない」を読み手が区別できるように
+  if (!fallbackCandidates.length) {
+    console.log()
+    console.log('エンジンが 1 語として読めない語のうち、UniDic に核があるものはありません。')
+  } else {
+    console.log()
+    console.log(
+      `=== エンジンが 1 語として読めず、UniDic に核がある ${fallbackCandidates.length} 件 ===`,
+    )
+    console.log('  いまは末尾核へ倒れている。UniDic の値を当てれば直せる見込みがある。')
+    for (const c of fallbackCandidates) {
+      console.log(`  ${c.target.name}  [${c.target.kinds.join(',')}]`)
+      console.log(`      読み     ${c.moras}`)
+      console.log(`      UniDic   aType=${c.types.join(',')}  ${c.pos.join(' ')}`)
+    }
+  }
 
   if (!findings.length) {
     console.log('\n食い違いはありません。')
