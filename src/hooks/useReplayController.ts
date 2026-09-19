@@ -191,12 +191,12 @@ export function createEmptyLoss(): ReplayLoss {
  * `rateLimitedSources` は型と集計だけがあって消費先が 1 つも無い状態が続いていた）。
  */
 export function addLoss(loss: ReplayLoss, r: {
-  skipped: number
+  skippedByDay: ReadonlyMap<string, number>
   failedArchiveUrls: string[]
   rateLimitedSources: string[]
   rateLimitedTelegrams: number
 }): ReplayLoss {
-  return addTelegramLoss(loss, r.skipped, r.failedArchiveUrls, {
+  return addTelegramLoss(loss, r.skippedByDay, r.failedArchiveUrls, {
     sources: r.rateLimitedSources, telegrams: r.rateLimitedTelegrams,
   })
 }

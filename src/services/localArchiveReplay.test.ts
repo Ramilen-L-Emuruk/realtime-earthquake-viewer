@@ -19,6 +19,11 @@ import {
   clearLocalArchiveCache,
 } from './localArchiveReplay'
 
+/** テスト用: 日ごとの取りこぼしを合計する（実装が日ごとに持つようになったため）。 */
+function skippedTotal(m: ReadonlyMap<string, number>): number {
+  return [...m.values()].reduce((a, b) => a + b, 0)
+}
+
 const mockFetchJson = vi.mocked(fetchJsonWithTimeout)
 
 const meta: HistoricalArchiveMeta = {
@@ -167,7 +172,7 @@ describe('fetchLocalArchiveEvents', () => {
 
     expect(result.entries).toHaveLength(1)
     expect(result.entries[0].replayTime.toISOString()).toBe('2011-03-11T05:49:00.000Z')
-    expect(result.skipped).toBe(0)
+    expect(skippedTotal(result.skippedByDay)).toBe(0)
     expect(result.failedArchiveUrls).toEqual([])
   })
 
@@ -233,7 +238,7 @@ describe('fetchLocalArchiveQuakeHistory', () => {
     const result = await fetchLocalArchiveQuakeHistory(meta, new Date('2011-03-11T05:50:00Z'), 10)
 
     expect(result.quakes.map(q => q.id)).toEqual(['q2', 'q1']) // 新しい順
-    expect(result.skipped).toBe(0)
+    expect(skippedTotal(result.skippedByDay)).toBe(0)
     expect(result.failedArchiveUrls).toEqual([])
   })
 

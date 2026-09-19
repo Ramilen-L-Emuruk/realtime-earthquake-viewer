@@ -18,24 +18,90 @@ import {
 import { BufrFragmentStore, fragmentKey } from './bufrTelegramAssembly'
 import {
   clearLiveReplayCache, fetchLiveQuakeTelegrams, fetchLiveReplayEntries, resolveLiveDates,
-  MAX_ENUMERATED_DAYS, archiveDaysForWindow, archiveListRange, toJstDateStr,
+  archiveDaysForWindow, archiveListRange, toJstDateStr,
 } from './dmdataReplayLive'
 import {
   waitForDataApiSlot, waitForApiSlot, rateLimitedUntil, noteRateLimited, noteRateLimitCleared,
   RateLimitWindowError,
 } from './dmdataRequestGates'
+import { createSkipCounter, sumSkippedByDay, UNKNOWN_SKIP_DAY } from '../utils/telegramLoss'
 
 /**
- * `fetchDmdataQuakeHistory` の `maxDays` に渡してよい上限。
+ * 履歴を 1 回で読む窓の幅（日）。起動時の初回ロードと「もっと見る」1 回ぶんで共通。
  *
- * この関数が当日経路へ列挙させる範囲は `[before - maxDays, before]` ＝ **maxDays + 1 日**で、
- * `MAX_ENUMERATED_DAYS` を超えると `enumerateJstDates` が投げる。1 日ぶんを差し引いた値が、
- * 例外にならずに渡せる最大。
+ * **遡れる範囲の上限ではない。** 上端はカーソル（前回読んだ最古の日の手前）が決めるので、
+ * 押し続ければ在庫の端（地震津波関連は 2020-11-18）まで届く。ここが決めているのは
+ * 「1 回で読む幅」だけ。
  *
- * **「もっと見る」で日数を伸ばす側がこの値で止まること。** 止めないと、上限を越えた時点から
- * 押すたびに同じ例外を投げるだけのボタンが残る（画面には「増えなかった」としか出ない）。
+ * ## 件数ではなく日数で区切る理由
+ *
+ * **アーカイブは日単位でしか落とせない。** 打ち切りの判定も日の頭でしか置けない（日の途中で
+ * 切ると同一地震の続報が分断され、震度速報だけのカードが残る）。つまり件数を目標にしても
+ * 実際には日で丸められるので、**目標という形をとっているだけで区切りは日**だった。
+ *
+ * 日数で区切ると、落とした本体を全部使い切れる。件数目標だった頃は**窓の全日ぶんを落として
+ * おきながら、目標に達した日から先は地震を取り込まなかった** —— 30 日窓の実測で 32 ファイルを
+ * 落として地震に使ったのは 12 日ぶん。残りは帯と長周期のためだけに解析され、その長周期は
+ * 紐づく地震カードが無いまま捨てられていた。
+ *
+ * ## 7 日にした根拠
+ *
+ * リクエスト数は窓の日数にそのまま比例するので、**どの窓でも「在庫の端まで遡るのにかかる
+ * 合計時間」は変わらない**（配信元の窓ごとの上限が律速する）。変わるのは 1 回の重さだけ。
+ *
+ * | 窓 | 1 回のリクエスト | 1 回で増えるカード |
+ * |---|---|---|
+ * | **7 日** | **8 件**（目録 1 ＋ 本体 7） | **40〜50 件** |
+ * | 14 日 | 15 件 | 80〜100 件 |
+ * | 30 日 | 32 件 | 200 件前後 |
+ *
+ * 日常的には数回押すだけなので、1 回が軽いほうを採る。7 日ぶんの有感地震は実測で 44 件
+ * （長期震源カタログの確定値 1997〜2023 年で 1 日平均 7.3 件）。
  */
-export const MAX_HISTORY_DAYS = MAX_ENUMERATED_DAYS - 1
+export const HISTORY_WINDOW_DAYS = 7
+
+/**
+ * 1 回の取得で取り込む地震イベント数の**安全弁**。
+ *
+ * **目標ではない。** 通常は窓（`HISTORY_WINDOW_DAYS`）を丸ごと読み切るので、ここへ達しない。
+ * 効くのは群発の最中だけ —— 能登半島地震の本震当日のように 1 日で数百件になると、日数だけで
+ * 切った場合にカードが一度に千枚単位で増える。
+ *
+ * 達した日で地震の取り込みをやめ、カーソル（`oldestLoadedDay`）もそこで止まるので、続きは
+ * 次に押したときに読める。
+ */
+export const HISTORY_EVENT_SAFETY_CAP = 500
+
+/**
+ * アーカイブの保存開始日（JST。地震津波関連の分類）。
+ *
+ * **これが遡りの本当の端。** 契約の保存期間として配信元が定めている値で、ここより古い日に
+ * アーカイブが無いのは当たり前 —— 取りこぼしとして記録しないし、押せなくしてよい唯一の理由。
+ *
+ * **「目録が空だから端に来た」と読み替えないこと。** 一時的な障害や生成の遅れでも目録は空に
+ * なる。区別せずに扱うと、**障害のときに黙ってボタンが死に、その窓の日がどの記録にも残らない**。
+ *
+ * 緊急地震速報（`eew.forecast` / `eew.warning`）は 2022-07-20 15:00 からで日が違うが、履歴の
+ * 取得が引くのは `telegram.earthquake` だけなのでここでは扱わない
+ * （→ `data-sources-spec.md` §2 の契約 B4）。
+ */
+const ARCHIVE_START_DAY = '2020-11-18'
+
+/**
+ * 当日経路が埋めてよい「直近」の日数。
+ *
+ * アーカイブは日次で生成されるので、目録に載っていない日は**当日ぶん**か、生成が遅れている
+ * 直近だけ。それより古い日に目録が無ければ、それは在庫の端であって当日経路の出番ではない。
+ *
+ * **範囲全体を当日経路に任せないこと。** かつては窓の全日を `resolveLiveDates` へ渡していて、
+ * 2 つのことが起きていた —— ①`enumerateJstDates` の暴走防止（`MAX_ENUMERATED_DAYS` ＝ 60 日）に
+ * 触れるため、遡れる幅がその歯止めに縛られていた（歯止めは「呼び出し側の異常を検出する値」で
+ * 遡り範囲の設計値ではない、とあちらのコメント自身が断っている）②在庫の端を越えた窓で、
+ * アーカイブが無い日を全部「当日経路が埋める日」と見なして `/v2/telegram` を叩いていた。
+ */
+const LIVE_FALLBACK_DAYS = 2
+
+const DAY_MS = 86_400_000
 
 /**
  * 地震電文を「速報→詳細」の並びに揃える。
@@ -262,8 +328,10 @@ function downloadArchive(url: string, apiKey: string, date: string): Promise<Map
 /**
  * 目録（`telegrams.json`）のパース結果。鍵はアーカイブの URL。
  *
- * **同じアーカイブの目録を何度も読み直すため。** 「もっと見る」は遡る日数を伸ばして取り直す形
- * なので、押すたびに既に読んだ日の目録も `JSON.parse` し直す。リプレイの先読みも、1 日の中を
+ * **同じアーカイブの目録を何度も読み直すため。** かつて「もっと見る」が遡る日数を伸ばして
+ * 取り直す形だった頃は、押すたびに既に読んだ日の目録も `JSON.parse` し直していた。
+ * カーソル方式では窓が重ならないので、いま効くのは初回ロードとリプレイ開始時の復元が
+ * 重なる場面と、`StrictMode` の二重実行だけ。リプレイの先読みも、1 日の中を
  * 窓ごとに前へ進むあいだ同じ日の目録を毎回読む。
  *
  * **返した配列は書き換えないこと。** 控えの実体をそのまま渡している。
@@ -285,8 +353,15 @@ const manifestCache = new Map<string, ManifestEntry[]>()
  * （`fetchDmdataReplayEvents`）は窓を前へ進めながら読むので同じ電文を二度パースせず、
  * 控えても寿命の長い入れ物が増えるだけになる。
  *
- * **上限は置かない。** 遡れるのは `MAX_HISTORY_DAYS` までで、アーカイブ 1 日ぶんは
- * XML 版 8 通ほど（→ `data-sources-spec.md` §2）。
+ * **上限は置かない。** カーソル方式（`oldestLoadedDay`）では窓が重ならないので、「もっと見る」を
+ * 押しても同じ電文を二度パースしない —— 控えが効くのは初回ロードとリプレイ開始時の復元が
+ * 重なる場面と、`StrictMode` の二重実行だけ。増分は 1 回につき窓 7 日 × 1 日 8 通ほど
+ * （→ `data-sources-spec.md` §2）で、在庫の端（2020-11-18）まで押し切っても約 17,000 件。
+ *
+ * **上限（LRU）を足すなら、`planNeedsBody` との噛み合わせを先に見ること。** あちらは
+ * 「控えにあるか」で本体を落とすかを決め、本体を読む段で控えにも無ければ
+ * `planMismatch`（実装の不具合）として数える。1 回の取得の途中で追い出しが起きると、
+ * **正常な動作が実装の不具合として記録される。**
  *
  * **返したオブジェクトは書き換えないこと。** 控えの実体をそのまま渡している。書き換えは控える
  * 前から画面の状態を壊すが（同じ参照が state にも載る）、控えると次の取得の入力まで汚れる。
@@ -313,6 +388,26 @@ const parsedTelegramCache = new Map<string, ParsedTelegram>()
 const manifestFallbackTimeCache = new Map<string, Date>()
 
 /**
+ * リプレイ本編（`fetchDmdataReplayEvents`）で、JST 日ごとにこれまで報告した取りこぼしの件数。
+ *
+ * **同じ日を何度も読むから要る。** 本編は初期状態（24 時間）・本編（1 時間）・毎時の先読みで
+ * 同じ日を繰り返し走査する（アーカイブは控えから返るので通信は増えないが、**目録の走査は
+ * 毎回走る**）。時刻が読めない電文は窓の絞り込みより前に数えるため、その日に留まっている
+ * あいだ読むたびに加算され、**壊れた 1 通が 5 件にも 20 件にも見える**。
+ *
+ * 合流する側（`addTelegramLoss`）は別々の取得を集める前提で足すので、ここで止めるしかない。
+ * P2PQuake 経路の `reportedSkipCounts` と同じ役目 —— **あちらにあってこちらに無かった。**
+ *
+ * **「報告済みの日」の集合ではなく件数で持つ。** 当日ぶんは控えないので走査のたびに取り直し、
+ * 後から届いた電文が壊れていれば件数が増える —— 集合だと増えた分を報告できず、
+ * 「その日はもう見た」として黙る。差分（増えた分）だけを報告すれば、読み直しでは 0 件、
+ * 増えたときはその増分だけが出る。
+ *
+ * 時間軸が変わったら捨てる（`clearReplayCache`）。同じ日でも別の再生では数え直してよい。
+ */
+const reportedReplaySkipCounts = new Map<string, number>()
+
+/**
  * 再生に使うセッション内の控えを捨てる。
  *
  * **アーカイブ本体の控えはここで捨てない。** 鍵（URL に入るアーカイブ id）は内容に対して
@@ -323,6 +418,7 @@ const manifestFallbackTimeCache = new Map<string, Date>()
  */
 export function clearReplayCache(): void {
   clearLiveReplayCache()
+  reportedReplaySkipCounts.clear()
 }
 
 /**
@@ -703,14 +799,30 @@ export async function fetchDmdataReplayEvents(
   /** 本体が見つからず、既に取りこぼしとして数えた二進電文の識別名。 */
   const countedBinaryKeys = new Set<string>()
 
-  // 取り込めなかった電文の総数。1 通ごとの詳細は log.warn / log.error に出るが、
-  // 「取りこぼしがあったか」だけは最後にまとめて 1 行で分かるようにする。
-  let skippedCount = 0
+  // 取り込めなかった電文。1 通ごとの詳細は log.warn / log.error に出るが、「取りこぼしが
+  // あったか」だけは最後にまとめて 1 行で分かるようにする。
+  //
+  // **日ごとに数え**（理由は `utils/telegramLoss.ts` の `skippedByDay`）、さらに
+  // **窓を見る前に落ちた分と、窓の中で落ちた分を分ける。** リプレイは窓を進めながら何度も
+  // この関数を呼ぶので、片方だけが二重に数えられる。
+  //
+  // - `scanSkips` ＝ **窓を見る前**（目録の構造異常・時刻が読めない）。その日を走査すれば
+  //   毎回同じ顔ぶれが出るので、同じ日の 2 度目以降は報告しない（`reportedReplaySkipCounts`）
+  // - `windowSkips` ＝ **窓の中**（本体が無い・パースできない・断片が揃わない）。窓は
+  //   重ならないので 1 通はどれか 1 つの窓にしか入らず、足し合わせても重複しない
+  //
+  // **混ぜてはいけない。** リプレイの開始は本編（`[T, T+1h)`）と初期状態（`[T-24h, T)`）を
+  // 並行に読み、どちらも `T` の日を含む。窓の中の破損は互いに素なのに、日ごとの件数ひとつで
+  // 増分を取ると**後から報告した側が丸ごと消える** —— 取りこぼしを少なく見せる壊れ方で、
+  // 画面には「静かな時間帯だった」としか出ない。
+  const scanSkips = createSkipCounter()
+  const windowSkips = createSkipCounter()
   /**
    * 事前判定がずれて本体を読めなかった電文の数（→ `warnBodyNotDownloaded`）。
    *
-   * **`skippedCount` に混ぜたままにしない。** あちらは「壊れた電文」「揃わなかった断片」と
-   * 同じ入れ物なので、実装の不具合がその中に埋もれる。
+   * **取りこぼしにも数えたうえで、別に集計する。** 取りこぼしとしては事実（その電文は
+   * 取り込めていない）だが、原因は実装の不具合なので、「壊れた電文」「揃わなかった断片」と
+   * 同じ入れ物に埋もれさせない。
    */
   let planMismatchCount = 0
   // 読み取れなかったアーカイブの URL。取得・展開の失敗だけでなく、目録が無い・壊れている
@@ -806,7 +918,7 @@ export async function fetchDmdataReplayEvents(
         // 失敗に化ける。1 件のおかしな行で他の電文まで落とさないよう、計画の段で分けてある。
         if (plan.kind === 'malformed') {
           log.warn(`[replay] head を持たない目録エントリをスキップ id=${plan.entry?.id ?? '(不明)'}`)
-          skippedCount++
+          scanSkips.add(item.date)
           continue
         }
         const { entry } = plan
@@ -823,7 +935,7 @@ export async function fetchDmdataReplayEvents(
           if (files === undefined) {
             warnBodyNotDownloaded(entry, item.date, '発表時刻の補い')
             planMismatchCount++
-            skippedCount++
+            scanSkips.add(item.date)
             continue
           }
           entryTime = resolveManifestTime(entry, files)
@@ -833,7 +945,7 @@ export async function fetchDmdataReplayEvents(
         }
         if (entryTime === null) {
           log.warn(`[replay] 発表時刻も受信時刻も読めない電文をスキップ id=${entry.id} time=${String(entry.head.time)}（${timeMissReason}）`)
-          skippedCount++
+          scanSkips.add(item.date)
           continue
         }
         // 窓の外と、この実装が扱わない種別はここで落とす（どちらも通常運転で起きるので
@@ -845,7 +957,7 @@ export async function fetchDmdataReplayEvents(
         if (files === undefined) {
           warnBodyNotDownloaded(entry, item.date, '電文の読み取り')
           planMismatchCount++
-          skippedCount++
+          windowSkips.add(item.date)
           continue
         }
 
@@ -863,7 +975,7 @@ export async function fetchDmdataReplayEvents(
               const key = fragmentKey(headType, 'RJTD', entry.head.time)
               if (!countedBinaryKeys.has(key)) {
                 countedBinaryKeys.add(key)
-                skippedCount++
+                windowSkips.add(item.date)
               }
               continue
             }
@@ -887,7 +999,7 @@ export async function fetchDmdataReplayEvents(
               entries.push({ payload: binPayload, replayTime })
             } else {
               log.warn(`[replay] 二進電文の読み取りに失敗しスキップ id=${entry.id} type=${headType}`)
-              skippedCount++
+              windowSkips.add(item.date)
             }
             continue
           }
@@ -896,7 +1008,7 @@ export async function fetchDmdataReplayEvents(
           const bodyBytes = xmlFileName ? files.get(xmlFileName) : undefined
           if (!bodyBytes) {
             log.warn(`[replay] 電文の本体が見つからずスキップ id=${entry.id} type=${headType}（${bodyMissReason(entry)}）`)
-            skippedCount++
+            windowSkips.add(item.date)
             continue
           }
 
@@ -909,7 +1021,7 @@ export async function fetchDmdataReplayEvents(
             entries.push({ payload, replayTime })
           } else {
             log.warn(`[replay] 電文のパースに失敗しスキップ id=${entry.id} type=${headType}`)
-            skippedCount++
+            windowSkips.add(item.date)
           }
         } catch (e) {
           // 1 通の想定外の例外で全体を落とさない（XML の破損はパーサが null を返すため
@@ -917,7 +1029,7 @@ export async function fetchDmdataReplayEvents(
           // try/catch が無く、壊れた電文が 1 通あるだけで Promise.all ごと reject し、
           // その日を含む期間の再生が丸ごと不可能になっていた。
           log.error(`[replay] 電文の取り込みに失敗しスキップ id=${entry.id} type=${headType}`, e)
-          skippedCount++
+          windowSkips.add(item.date)
         }
       }
     }),
@@ -929,8 +1041,9 @@ export async function fetchDmdataReplayEvents(
   for (const key of bufrFragments.pendingKeys) {
     // 本体が見つからず既に数えた電文は、ここでは数えない（上の注記）。
     if (countedBinaryKeys.has(key)) continue
+    // **鍵からは日を復元できない**ので不明扱い（鍵は種別と発表時刻から作った文字列）。
     log.warn(`[replay] 二進電文の断片が揃いませんでした（分布は出ません）key=${key}`)
-    skippedCount++
+    windowSkips.add(UNKNOWN_SKIP_DAY)
   }
 
   // 全アーカイブが読めなかった場合だけは例外にする。認証エラー・権限不足・ネットワーク全断など、
@@ -949,7 +1062,8 @@ export async function fetchDmdataReplayEvents(
     try {
       const live = await fetchLiveReplayEntries(apiKey, fromTime, toTime, liveDates, includeTest)
       entries.push(...live.entries)
-      skippedCount += live.skipped
+      windowSkips.addAll(live.skippedByDay)
+      scanSkips.addAll(live.scanSkippedByDay)
       rateLimitedTelegrams += live.rateLimitedTelegrams
       failedArchiveUrls.push(...live.failedSources)
     } catch (e) {
@@ -999,8 +1113,31 @@ export async function fetchDmdataReplayEvents(
       + '（その分は取り込めていません。実装の不具合です）',
     )
   }
-  if (skippedCount > 0) {
-    log.warn(`[replay] 電文${skippedCount}件を取り込めなかった（範囲 ${fromTime.toISOString()}〜${toTime.toISOString()}）`)
+  // **窓を見る前に落ちた分だけ、前回からの増分にする**（→ `reportedReplaySkipCounts`）。
+  // その日を走査すれば窓に関わらず毎回同じ顔ぶれが出るので、数え直すと壊れた 1 通が
+  // 走査した回数だけ増える。当日ぶんは走査のたびに取り直すため件数が増えることがあり、
+  // そのときは増えた分だけが出る。
+  //
+  // **窓の中で落ちた分（`windowSkips`）はそのまま足す。** 窓は重ならないので 1 通は
+  // どれか 1 つの窓にしか入らず、増分にすると**並行して読んだ別の窓の分が丸ごと消える**
+  // （理由は `scanSkips` の宣言）。
+  //
+  // **記録（`log.warn`）には報告前の値を使う。** 数えたこと自体は毎回の事実なので、
+  // 「2 度目だから 0 件」と記録すると、その回に何が起きたか追えなくなる。
+  const scanSkippedAll = scanSkips.toMap()
+  const windowSkippedByDay = windowSkips.toMap()
+  const replaySkippedTotal = [...scanSkippedAll.values(), ...windowSkippedByDay.values()]
+    .reduce((a, b) => a + b, 0)
+  const scanSkippedByDay = new Map<string, number>()
+  for (const [day, n] of scanSkippedAll) {
+    const reported = reportedReplaySkipCounts.get(day) ?? 0
+    if (n <= reported) continue
+    scanSkippedByDay.set(day, n - reported)
+    reportedReplaySkipCounts.set(day, n)
+  }
+  const replaySkippedByDay = sumSkippedByDay(scanSkippedByDay, windowSkippedByDay)
+  if (replaySkippedTotal > 0) {
+    log.warn(`[replay] 電文${replaySkippedTotal}件を取り込めなかった（範囲 ${fromTime.toISOString()}〜${toTime.toISOString()}）`)
   }
   if (sourceDays > 0 && entries.length === 0) {
     // 取得元は引けたのに 1 件も取り込めなかった状態。指定期間に本当に電文が
@@ -1022,7 +1159,7 @@ export async function fetchDmdataReplayEvents(
     }
   }
 
-  return { entries, skipped: skippedCount, failedArchiveUrls, rateLimitedSources, rateLimitedTelegrams }
+  return { entries, skippedByDay: replaySkippedByDay, failedArchiveUrls, rateLimitedSources, rateLimitedTelegrams }
 }
 
 /** 初期状態に載せるかどうかを、津波イベント単位で決めた結果。 */
@@ -1195,11 +1332,12 @@ function prefetchArchiveBody(item: ArchiveItem, apiKey: string): Promise<Prefetc
  * 時刻。**パース結果が控えにある電文は本体を要らない**ので、その日の全件が控えに揃っていれば
  * ダウンロードごと省ける。
  *
- * `head` を持たないエントリは黙って落とす（消費側も記録していない）。
+ * **`head` を持たないエントリは取りこぼしとして数える**（本編の `planReplayEntries` と同じ）。
+ * 黙って落とすと、目録が壊れている日ほど「静かな日」に見える。
  */
-interface HistoryPlan extends ManifestPlan {
-  kind: ParsedTelegram['kind']
-}
+type HistoryPlan =
+  | { kind: 'malformed'; entry: ManifestEntry | undefined; needsBody: false }
+  | ({ kind: 'entry'; want: ParsedTelegram['kind'] } & ManifestPlan)
 
 /**
  * 履歴の取得で、その電文を取り込む対象か。**再生開始時刻より後に発表された電文は、その時点で
@@ -1218,7 +1356,11 @@ function planHistoryEntries(
 ): HistoryPlan[] {
   const plans: HistoryPlan[] = []
   for (const entry of manifest) {
-    if (!entry?.head || (!opts.includeTest && entry.head.test)) continue
+    if (!entry?.head) {
+      plans.push({ kind: 'malformed', entry, needsBody: false })
+      continue
+    }
+    if (!opts.includeTest && entry.head.test) continue
     const isQuake = QUAKE_TYPES.has(entry.head.type)
     const isExtra = HISTORY_EXTRA_TYPES.has(entry.head.type)
     const isTsunami = TSUNAMI_TYPES.has(entry.head.type)
@@ -1227,18 +1369,18 @@ function planHistoryEntries(
     // XML 版と JSON 版の 2 エントリで載るうち、XML 版（originalId 無し）だけを拾う
     if (entry.originalId) continue
     // **3 つのセットは互いに素**なので、種別からどの型として読むかが一意に決まる。
-    const kind: ParsedTelegram['kind'] = isExtra ? 'extra' : isTsunami ? 'tsunami' : 'quake'
+    const want: ParsedTelegram['kind'] = isExtra ? 'extra' : isTsunami ? 'tsunami' : 'quake'
     const time = manifestTimeWithoutBody(entry)
     // 時刻が決まらないなら、補うために本体が要る（`resolveManifestTime`）。
     // **対象かどうかは時刻が決まるまで判らない**ので `include` は未定のまま。
     if (time === null) {
-      plans.push({ entry, kind, time: null, include: null, needsBody: true })
+      plans.push({ kind: 'entry', entry, want, time: null, include: null, needsBody: true })
       continue
     }
     const include = isHistoryTarget(time, opts.before)
     // **控えにある電文は本体を要らない。** 同じ日に控え済みと未控えが混じることは普通に起き、
     // そのときは 1 件でも要れば落とす（`planNeedsBody`）。
-    plans.push({ entry, kind, time, include, needsBody: include && !parsedTelegramCache.has(entry.id) })
+    plans.push({ kind: 'entry', entry, want, time, include, needsBody: include && !parsedTelegramCache.has(entry.id) })
   }
   return plans
 }
@@ -1309,14 +1451,20 @@ function parseHistoryTelegram(
  * 逐次に落として都度判定すると往復のぶんだけ再生開始が遅れるため（ライブの履歴取得が
  * 電文 1 通ずつ数百リクエストを投げているのに比べれば、余分な数ファイルは誤差）。
  *
- * **「もっと見る」は遡る日数を伸ばして呼び直す形。** 通信はアーカイブの控え（`archiveCache`）で
- * 増えないが、既に読んだ日の目録と電文も解析し直すことになるため、目録（`manifestCache`）と
- * 電文のパース結果（`parsedTelegramCache`）も控える。**押した回数だけ同じ中身を解析し直す形
- * だった**（上限まで押すと日ごとの解析が累計 311 日ぶん＝実日数 59 日の約 5 倍）。
+ * **「もっと見る」はカーソルを進めて呼び直す形。** 呼び出し側は前回の `oldestLoadedDay` の
+ * 手前を次の `before` にするので、**窓どうしは重ならない**（→ `useEarthquakes` の
+ * `historyCursorRef`）。
  *
- * @param before この時刻より後に発表された電文は採らない（＝再生開始時刻）
- * @param targetEvents 集めたい地震イベント数（続報は 1 件と数える）
- * @param maxDays 遡ってよい日数の上限
+ * かつては遡る日数を伸ばして**毎回いちばん新しい日から読み直して**いた。通信はアーカイブの
+ * 控え（`archiveCache`）で増えないが、目録と電文は押した回数だけ解析し直していた
+ * （上限まで押すと日ごとの解析が累計 311 日ぶん＝実日数 59 日の約 5 倍）。目録
+ * （`manifestCache`）と電文のパース結果（`parsedTelegramCache`）を控えているのはその名残で、
+ * カーソル方式では初回ロードとリプレイ復元が重なる場面にしか効かない。
+ *
+ * @param before この時刻より後に発表された電文は採らない（＝窓の上端。カーソル）
+ * @param targetEvents 取り込む地震イベント数の**上限**（続報は 1 件と数える）。
+ *   **目標ではない** —— 通常は窓を丸ごと読み切るので達しない（→ `HISTORY_EVENT_SAFETY_CAP`）
+ * @param maxDays この窓で読む日数（→ `HISTORY_WINDOW_DAYS`）。**遡れる範囲の上限ではない**
  */
 export async function fetchDmdataQuakeHistory(
   apiKey: string,
@@ -1369,7 +1517,47 @@ export async function fetchDmdataQuakeHistory(
 
   // アーカイブがまだ生成されていない日は当日経路で埋める（`fetchDmdataReplayEvents` と同じ理由）。
   // これが無いと、今日を指定した再生で「開始時刻より前の今日の地震」がカードに出ない。
-  const liveDays = resolveLiveDates(startObj, new Date(before.getTime() + 1), items.map(i => i.date))
+  //
+  // **列挙するのは窓の上端から `LIVE_FALLBACK_DAYS` ぶんだけ**（理由はその定数）。窓の全日を
+  // 渡すと、在庫の端を越えた窓でアーカイブが無い日を全部「当日経路が埋める日」と見なして
+  // `/v2/telegram` を叩き、そのぶん無駄なリクエストが出る。
+  const liveFloorMs = before.getTime() - LIVE_FALLBACK_DAYS * DAY_MS
+  const liveFrom = new Date(Math.max(startObj.getTime(), liveFloorMs))
+  const liveDays = resolveLiveDates(liveFrom, new Date(before.getTime() + 1), items.map(i => i.date))
+
+  // **どちらの担当にもならなかった日は記録する。**
+  //
+  // 窓の中で「アーカイブの目録に無い」かつ「当日経路の範囲より古い」日は、`sources` に
+  // 一度も現れない —— ループを回らないので `usedDays` にも `failedArchiveUrls` にも
+  // `skipped` にも載らず、**三層の記録のどれにも引っかからないまま消える**
+  // （→ `data-sources-spec.md` §2「読めなかったものは記録する」）。
+  //
+  // 当日経路を直近へ絞った副作用で、配信元のアーカイブ生成が `LIVE_FALLBACK_DAYS` を超えて
+  // 遅れると起きる。起きること自体は避けようがない（当日経路も過去日は返さない）ので、
+  // **せめて黙って消えないようにする。**
+  //
+  // **鳴らさない条件は「在庫の端より古い日」だけ**（`ARCHIVE_START_DAY`）。保存開始より前に
+  // アーカイブが無いのは当たり前で、遡り切るたびに警告が出ても困る。
+  //
+  // **「目録が空だから在庫の端」と決めつけないこと。** 一時的な障害や生成の遅れでも目録は
+  // 空になる。そこで鳴らさない作りにしていたため、**この記録がいちばん要る場面でだけ黙る**
+  // 状態だった（当日経路の日が残っていると `sources.length === 0` の警告にも掛からず、
+  // 最大 `HISTORY_WINDOW_DAYS - LIVE_FALLBACK_DAYS` 日が三層のどこにも載らずに消える）。
+  //
+  // **`before` より後の日も数えない。** `archiveDaysForWindow` は配信の遅れを見込んで翌日まで
+  // 列挙するが、`resolveLiveDates` は `before` までしか見ない。カーソルは「その日の直前」＝
+  // 23:59:59.999 を指すので、この差だけで毎回 1 日が未担当に見えてしまう。
+  const covered = new Set([...targets.map(t => t.date), ...liveDays])
+  const lastDay = toJstDateStr(before)
+  const uncovered = [...wantedDays]
+    .filter(d => d <= lastDay && d >= ARCHIVE_START_DAY && !covered.has(d))
+    .sort()
+  if (uncovered.length > 0) {
+    log.warn(
+      `[replay] 履歴用に、アーカイブにも当日経路にも当たらない日が ${uncovered.length} 日ありました`
+      + `（その日の電文は取り込めていません）: ${uncovered.join(', ')}`,
+    )
+  }
 
   // 新しい日から使う（カードは新しい順に並ぶため、打ち切りで欠けてよいのは古い側）。
   // アーカイブの日と当日経路の日は排他なので、日付だけで一本に並べられる。
@@ -1444,7 +1632,8 @@ export async function fetchDmdataQuakeHistory(
   let rateLimitedTelegrams = 0
   /** 帯と長周期は種別ごとに最新 1 通だけ残す（鍵の作り方は `historyExtraKey`）。 */
   const extraLatest = new Map<string, { payload: ReplayPayload; timeMs: number }>()
-  let skipped = 0
+  /** 取りこぼしは**日ごとに**数える（理由は `utils/telegramLoss.ts` の `skippedByDay`）。 */
+  const skipCounter = createSkipCounter()
   /**
    * 事前判定がずれて本体を読めなかった電文の数（→ `warnBodyNotDownloaded`）。
    *
@@ -1455,10 +1644,21 @@ export async function fetchDmdataQuakeHistory(
   let usedDays = 0
   /** 打ち切ったか。**まだ遡れるかの判定と混ぜない** —— 打ち切りは「もう要らない」、遡れるかは在庫の話。 */
   let stoppedEarly = false
+  /**
+   * 地震を最後まで読み切れた日（`sources` の日付そのもの）。
+   *
+   * **「読んだ日」ではなく「読み切った日」を集めること。** 件数の安全弁に達したあとの日も
+   * 帯と長周期のために走査は続くので、`usedDays` で代用すると読んでいない日までカーソルが
+   * 進み、その範囲の地震が二度と読まれない。
+   *
+   * **カーソルにするのは、ここから「新しい側から連続している範囲」だけ**（下の
+   * `oldestLoadedDay` の組み立て）。1 日でも失敗を挟んだら、その手前で止める。
+   */
+  const loadedDays = new Set<string>()
 
   for (const source of sources) {
-    // **地震は目標件数に達した日で打ち切る。** 日の途中で切ると同一イベントの続報が分断され、
-    // 震度速報だけのカードが残りうる。
+    // **地震は上限に達した日で打ち切る**（群発の最中だけ効く安全弁。通常は窓を丸ごと読み切る）。
+    // 日の途中で切ると同一イベントの続報が分断され、震度速報だけのカードが残りうる。
     //
     // **帯と長周期は打ち切らない**（`HISTORY_EXTRA_TYPES`）。7 日ぶん画面に出続けるもの・
     // 地震ごとに紐づくもので、**地震活動が多い期間ほど早く打ち切られる**と、いちばん復元
@@ -1467,6 +1667,19 @@ export async function fetchDmdataQuakeHistory(
     if (shouldStop?.()) { stoppedEarly = true; break }
     const takeQuakes = eventIds.size < targetEvents
     usedDays++
+
+    /**
+     * その日を最後まで読み切ったことを記録する（＝カーソルをここまで進めてよい）。
+     *
+     * **呼ぶのは成功が確定した地点だけ。** ループの頭で済ませていた頃は、この後に続く
+     * `continue`（本体の取得失敗・429・`telegrams.json` の欠落・目録の解析失敗・当日経路の
+     * 例外）のどれを通ってもカーソルが進み、**窓が重ならない設計と噛み合って失敗した日が
+     * 二度と要求されなくなっていた**。429 は「窓が明けるまで待てば取れる」ものなので、
+     * とりわけ取り返しがつかない。
+     *
+     * 失敗した日で止めておけば、次に押したときその日から読み直せる。
+     */
+    const markDayLoaded = () => { if (takeQuakes) loadedDays.add(source.date) }
 
     if (!source.item) {
       // 当日経路。読めなくてもアーカイブ側の成果は活かす（アーカイブ 1 日ぶんが読めなかったときと
@@ -1487,8 +1700,18 @@ export async function fetchDmdataQuakeHistory(
           const prev = extraLatest.get(key)
           if (!prev || timeMs > prev.timeMs) extraLatest.set(key, { payload: e.payload, timeMs })
         }
-        skipped += live.skipped
+        skipCounter.addAll(live.skippedByDay)
         rateLimitedTelegrams += live.rateLimitedTelegrams
+        // **429 で見送った電文があれば、その日は読み切っていない。**
+        //
+        // 当日経路は個々の電文が 429 を受けても例外を投げず `rateLimitedTelegrams` を数えて
+        // 先へ進むので、ここは成功として返ってくる。そのまま読み切った扱いにするとカーソルが
+        // 前進し、**待てば取れるはずの電文がその日ごと二度と要求されない**。
+        // `rateLimitedTelegrams` はスカラーなので、次の窓の結果で表示まで消える。
+        //
+        // アーカイブ経路は 429 を `continue` で抜けるのでカーソルが止まる。**当日経路だけが
+        // 非対称だった。**
+        if (live.rateLimitedTelegrams === 0) markDayLoaded()
       } catch (e) {
         log.error(`[replay] 履歴用の当日経路の取得に失敗 date=${source.date}`, e)
         failedArchiveUrls.push(liveSourceId(source.date))
@@ -1540,8 +1763,8 @@ export async function fetchDmdataQuakeHistory(
     }
 
     let files: Map<string, Uint8Array> | undefined
-    // 目録は控えから読む（`manifestCache`）。「もっと見る」は遡る日数を伸ばして取り直す形
-    // なので、押すたびに既に読んだ日の目録も解析し直すことになる。
+    // 目録は控えから読む（`manifestCache`）。カーソル方式では「もっと見る」が同じ日を
+    // 読み直さないので、当たるのは初回ロードとリプレイ開始時の復元が重なる場面だけ。
     // **控えに無いときだけ本体を落とす。**
     let manifest = manifestCache.get(item.url)
     if (!manifest) {
@@ -1574,6 +1797,11 @@ export async function fetchDmdataQuakeHistory(
     }
 
     for (const plan of plans) {
+      if (plan.kind === 'malformed') {
+        log.warn(`[replay] 履歴用に head を持たない目録エントリをスキップ id=${plan.entry?.id ?? '(不明)'}`)
+        skipCounter.add(item.date)
+        continue
+      }
       const { entry } = plan
       // 目録の発表時刻が読めなければ本体のファイル名から補う（`resolveManifestTime`）。
       let entryTime = plan.time
@@ -1584,7 +1812,7 @@ export async function fetchDmdataQuakeHistory(
         if (files === undefined) {
           warnBodyNotDownloaded(entry, item.date, '発表時刻の補い')
           planMismatch++
-          skipped++
+          skipCounter.add(item.date)
           continue
         }
         entryTime = resolveManifestTime(entry, files)
@@ -1594,7 +1822,7 @@ export async function fetchDmdataQuakeHistory(
       }
       if (entryTime === null) {
         log.warn(`[replay] 履歴用電文の発表時刻も受信時刻も読めないためスキップ id=${entry.id}（${timeMissReason}）`)
-        skipped++
+        skipCounter.add(item.date)
         continue
       }
       if (!include) continue
@@ -1604,8 +1832,8 @@ export async function fetchDmdataQuakeHistory(
         // **本体が無いのに要求された場合も `null`** が返る（`warnBodyNotDownloaded` が鳴る）。
         // その 1 件は事前判定のずれとして別に数える。
         if (files === undefined && !parsedTelegramCache.has(entry.id)) planMismatch++
-        const parsed = parseHistoryTelegram(entry, files, dec, plan.kind, item.date)
-        if (!parsed) { skipped++; continue }
+        const parsed = parseHistoryTelegram(entry, files, dec, plan.want, item.date)
+        if (!parsed) { skipCounter.add(item.date); continue }
         switch (parsed.kind) {
           case 'extra': {
             // 帯と長周期は「種別ごとに最新 1 通」だけを残す（画面に出るのは 1 つ・長周期は
@@ -1626,9 +1854,13 @@ export async function fetchDmdataQuakeHistory(
         }
       } catch (e) {
         log.error(`[replay] 履歴用電文の取り込みに失敗しスキップ id=${entry.id} type=${entry.head.type}`, e)
-        skipped++
+        skipCounter.add(item.date)
       }
     }
+    // ここまで来たらその日は読み切っている（本体も目録も取れ、全エントリを回し終えた）。
+    // **個々の電文の解析失敗（`skipped`）は日の失敗にしない** —— 壊れた 1 通のために
+    // その日ごと読み直しても、次も同じ 1 通で失敗する。
+    markDayLoaded()
     // **1 日ぶん読み終えたところで流す。** 流し先の例外で取得を止めない —— 投げると
     // 残りの日を見捨てたうえで呼び出し側が「全滅」として受け取る。
     if (onPartial) {
@@ -1638,6 +1870,31 @@ export async function fetchDmdataQuakeHistory(
         log.warn('[replay] 履歴の途中経過を反映できませんでした（取得は続けます）', e)
       }
     }
+  }
+
+  // **カーソルは「新しい側から連続して読み切れた範囲」の最古まで。**
+  //
+  // `sources` は新しい日から並ぶので、頭から見て最初に読み切れていない日が現れたところで
+  // 止める。**「読み切った日のうち最も古いもの」を採ってはいけない** —— 失敗した日を挟んで
+  // さらに古い日が成功していると、その穴を跨いでカーソルが進み、窓が重ならない設計と
+  // 噛み合って**失敗した日が二度と要求されなくなる**。
+  //
+  // 止まる理由は 4 つとも同じ扱いでよい（どれも「その日から先はまだ読んでいない」）。
+  //   - その日の取得に失敗した（`markDayLoaded` を呼ばずに `continue` した）
+  //   - 件数の安全弁に達して地震を取り込まなかった（`takeQuakes` が偽）
+  //   - `shouldStop` で打ち切った（そもそもループに入っていない）
+  //   - **どの担当にもならなかった**（`uncovered`。下記）
+  //
+  // **`sources` を辿るだけでは足りない。** どの担当にもならなかった日はこの配列に現れないので、
+  // `break` の対象にすらならず素通りする —— そのまま進むと、窓が重ならない設計と噛み合って
+  // **その日が二度と要求されない**。`log.warn` は残るが画面には何も出ないので静かに欠ける。
+  // 最も新しい未担当日（`uncovered` は昇順）より古い日は、読めていても採らない。
+  const newestUncovered = uncovered.length > 0 ? uncovered[uncovered.length - 1] : null
+  let oldestLoadedDay: string | null = null
+  for (const source of sources) {
+    if (!loadedDays.has(source.date)) break
+    if (newestUncovered !== null && source.date <= newestUncovered) break
+    oldestLoadedDay = source.date
   }
 
   // 使おうとした日がすべて読めなかった場合だけ例外にする（認証エラー・全断などの共通原因が
@@ -1667,6 +1924,8 @@ export async function fetchDmdataQuakeHistory(
       + '429 の窓が明けるまで取りに行きませんでした（待てば取れます）',
     )
   }
+  const historySkippedByDay = skipCounter.toMap()
+  const historySkippedTotal = [...historySkippedByDay.values()].reduce((a, b) => a + b, 0)
   // 「取得元が 1 つも無い」は取得の失敗として現れないため、例外にも損失にもならない。
   // 黙って空を返すと「静かな期間だった」と区別が付かないので、手がかりだけは残す。
   //
@@ -1679,7 +1938,7 @@ export async function fetchDmdataQuakeHistory(
   if (failedArchiveUrls.length > 0) {
     log.warn(
       `[replay] 履歴用の取得元 ${usedDays} 日ぶんのうち ${failedArchiveUrls.length} 件を読めなかった`
-      + `（読めた地震電文=${quakes.length} 件・扱えなかった電文=${skipped} 件）`,
+      + `（読めた地震電文=${quakes.length} 件・扱えなかった電文=${historySkippedTotal} 件）`,
     )
   }
   // **事前判定のずれは必ず要約を出す。** 出さないと、その日は「静かな日」と見分けが付かない
@@ -1716,17 +1975,38 @@ export async function fetchDmdataQuakeHistory(
       + ` 走査日数=${usedDays}（うち当日経路=${liveDays.length}）帯と長周期=${extras.length}`,
     )
   }
-  // **「まだ試す余地があるか」。** 「もう無い」とは言い切らない。
+  // **「さらに古い方に在庫がありそうか」。**
   //
-  // 件数で判定していた頃（目標に達して、かつ読んでいない日が残っている）は、
-  // **在庫が目標に届かないと永久に偽**になった —— 7 日分で 43 件しか無ければ目標 50 件には
-  // 届かず、範囲を広げる機会が来ない。範囲の外に在庫があるかはここでは分からないので、
-  // **取得元が 1 つでもあれば真**にして、呼び出し側が「押しても増えなかった」で打ち切る。
+  // 止めてよい理由は 2 つだけ ——「窓が保存開始（`ARCHIVE_START_DAY`）より古い」か「打ち切った」。
+  //
+  // **「目録が空だから在庫の端」で止めないこと。** 一時的な障害や生成の遅れでも目録は空に
+  // なるので、そこで押せなくすると**障害のあいだ黙ってボタンが死ぬ**（しかもその窓の日は
+  // どの記録にも残らない。上の `uncovered` と同じ思い込みだった）。押し直せば取り直せる形の
+  // ほうが安全側 —— 在庫が本当に尽きていれば、窓が保存開始を越えた時点で止まる。
+  //
+  // **`sources` で数えないこと**（当日経路の日を含むので、在庫の端でも真を返し続ける）。
+  //
+  // **目標件数に達したかどうかは見ない。** 達していても在庫は残っているので、呼び出し側は
+  // カーソル（`oldestLoadedDay`）を進めて次の窓を読める。かつては呼び出し側が遡り幅の上限に
+  // 達したかどうかで判定していて、**件数で打ち切った回も上限に達したと見なして押せなく
+  // なっていた**（読み残した日を抱えたままボタンが死ぬ）。
   //
   // 打ち切った場合は「もう要らない」ので真にしない（`stoppedEarly`）。
-  const hasMore = !stoppedEarly && sources.length > 0
+  const windowReachesInventory = [...wantedDays].some(d => d >= ARCHIVE_START_DAY)
+  const hasMore = !stoppedEarly && windowReachesInventory
   return {
-    quakes: orderedForMerge(quakes), tsunamis, extras, skipped,
-    failedArchiveUrls, rateLimitedSources, rateLimitedTelegrams, hasMore,
+    quakes: orderedForMerge(quakes), tsunamis, extras, skippedByDay: historySkippedByDay,
+    // **どの担当にもならなかった日も「読めなかった取得元」として画面へ出す。** カーソルは
+    // その日で止まるので（上記）、出さないと**押しても何も増えないボタンが、理由の分からない
+    // まま残る** —— 記録は `log.warn` にしかなく、利用者には「静かな期間だった」としか見えない。
+    //
+    // **積むのはここ（返す直前）で、`failedArchiveUrls` そのものへは入れない。** あちらは
+    // 全滅判定（`failedArchiveUrls.length === judgedDays`）の分子なので、取りに行っていない日を
+    // 混ぜると等号が成立して、読めていたカードごと例外で捨てることになる。
+    //
+    // 日を識別子にするのは当日経路の `live-telegram:<日>` と同じ形。呼び出し側は集合へ積むので
+    // 同じ日を何度返しても 1 件のまま。
+    failedArchiveUrls: [...failedArchiveUrls, ...uncovered.map(d => `uncovered:${d}`)],
+    rateLimitedSources, rateLimitedTelegrams, hasMore, oldestLoadedDay,
   }
 }

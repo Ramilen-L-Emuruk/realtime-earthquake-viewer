@@ -120,7 +120,8 @@ async function main(): Promise<void> {
   const args = parseCliArgs()
 
   console.log(`DMDATA archiveから ${args.from.toISOString()} 〜 ${args.to.toISOString()} を取得中...`)
-  const { entries, skipped, failedArchiveUrls } = await fetchDmdataReplayEvents(args.apiKey, args.from, args.to, false)
+  const { entries, skippedByDay, failedArchiveUrls } = await fetchDmdataReplayEvents(args.apiKey, args.from, args.to, false)
+  const skipped = [...skippedByDay.values()].reduce((a, b) => a + b, 0)
   // 収録したシナリオが「実際より静かな」ものになっていないか判断できるよう、
   // 取りこぼしがあれば件数を出す（詳細は取得時の警告ログを参照）。
   // 0 件で終了する場合こそこの情報が要る（本当に静かだったのか、取りこぼして
