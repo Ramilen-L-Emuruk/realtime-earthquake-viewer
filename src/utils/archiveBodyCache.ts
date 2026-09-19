@@ -3,7 +3,7 @@
  *
  * ## なぜ開始をまたいで残す必要があるのか
  *
- * かつてこの控えはメモリだけに持ち、**リプレイを開始するたびに丸ごと捨てていた**
+ * かつてこの控えは**リプレイを開始するたびに丸ごと捨てていた**
  * （`dmdataReplay.ts` の `clearReplayCache`）。1 回再生するだけなら害は無いが、
  * **同じ日を何度も再生し直す使い方では、そのたびに同じファイルを取り直す**。
  *
@@ -32,12 +32,21 @@
  * （tar のヘッダぶんだけ少なく出る、という程度の差ではない —— 使わなかったエントリの
  * 領域がまるごと数から漏れる）。
  *
- * ## メモリだけに持つ（IndexedDB へ置かない）
+ * ## 端末（IndexedDB）にも置く — 2026-09-19 に判断を覆した
  *
- * 開始をまたいで残すだけで 3,800 → 16 まで落ちる。**そこから先の取り分は
- * 「タブを開き直したとき」に限られる**のに対し、置く物は数十 MB あるので採らなかった。
- * 電文本体を IndexedDB へ置いているのは、あちらが 1 通ずつ数百通に及び、
- * 控えが無いと起動のたびに 85 件取り直していたため —— 事情が違う。
+ * **かつてはメモリだけに持っていた。** 再生の開始をまたいで残すだけでリクエストが
+ * 3,800 → 16 まで落ちるので、「そこから先の取り分は**タブを開き直したとき**に限られる」のに
+ * 置く物は数十 MB ある、という理由で採らなかった。
+ *
+ * **その「タブを開き直したとき」が、実際にはいちばん多い。** アプリの起動・リロード・
+ * 録画で区間ごとに再生を開始し直す使い方では、毎回メモリ層が空の状態から始まる
+ * （実測 2026-09-19: 起動時の履歴 7 本で 28.8 秒 → 端末の層に当たれば通信 0 件）。
+ *
+ * **「置く物が数十 MB」も、gzip のまま置けば当たらない。** 展開比は実測 ×11.5〜×18.1 で、
+ * 「もっと見る」の最大 59 日ぶんは gz 合計 2.3MB（展開後 41MB）。展開は読むたびにやり直す。
+ *
+ * 置き場所と上限は `utils/archiveBodyDb.ts`。この層は `ArchivePersistence` として**注入**で
+ * 受け取るので、ここは gzip も tar も知らない。
  */
 import { log, createLogThrottle } from './logger'
 
@@ -138,6 +147,16 @@ export interface DownloadedArchive {
   /** 展開後の tar の長さ。 */
   bytes: number
   /**
+   * 配信元から受け取ったままの gzip。**端末の控え（`persist`）はこれを置く。**
+   *
+   * **展開後ではなく圧縮のまま持つ。** 展開比は実測で ×11.5〜×18.1 あり、置く物としては
+   * 桁が違う（→ `utils/archiveBodyDb.ts`）。展開は読むたびにやり直せばよい。
+   *
+   * **省略すると端末の控えへ書かない。** 取得の形が gzip とは限らない経路から使われても
+   * 壊れないようにしてある（いまの呼び出し元は必ず渡す）。
+   */
+  gz?: Uint8Array
+  /**
    * 控えてよいか。既定は `true`。
    *
    * **「まだ育っているかもしれないファイル」を控えないための口。** 上記 `MAX_AGE_MS` が
@@ -148,9 +167,36 @@ export interface DownloadedArchive {
   cacheable?: boolean
 }
 
+/**
+ * 端末に残す二層目（IndexedDB）。**省略すると、この控えはメモリだけで動く。**
+ *
+ * **注入にしているのは、控えの層がアーカイブの形式を知らずに済むため。** gzip と tar は
+ * 取得側の都合で、控えが持つべき知識ではない。テストから偽の実装を差し込めるという副次的な
+ * 利点もある（IndexedDB を持たない実行環境でテストが回る）。
+ */
+export interface ArchivePersistence {
+  /** 控えから gzip のまま読む。無ければ `null`。 */
+  read: (key: string) => Promise<Uint8Array | null>
+  /** 控えへ gzip のまま書く。**呼び出し側は完了を待たない。** */
+  write: (key: string, gz: Uint8Array) => Promise<void>
+  /**
+   * gzip を展開して tar の中身にする。**通信は伴わない。**
+   *
+   * `bytes` は展開後の長さ（メモリ層の上限はこちらで数える）。
+   */
+  expand: (gz: Uint8Array) => Promise<{ files: Map<string, Uint8Array>; bytes: number }>
+}
+
 export interface ArchiveBodyCacheStats {
-  /** 控えから返した回数。 */
+  /** メモリの控えから返した回数。 */
   hits: number
+  /**
+   * 端末の控え（`persist`）から返した回数。
+   *
+   * **`misses` に数えない。** 配信元へは出ていないので、あちらに混ぜると
+   * 「控えが効いているか」を読む値として使えなくなる。
+   */
+  persistHits: number
   /** 取得した回数（＝実際に配信元へ出た回数）。 */
   misses: number
   /** 取得中のものへ相乗りした回数。 */
@@ -186,17 +232,20 @@ export function createArchiveBodyCache(opts?: {
   maxEntries?: number
   maxTotalBytes?: number
   now?: () => number
+  /** 端末に残す二層目。省略するとメモリだけで動く（→ `ArchivePersistence`）。 */
+  persist?: ArchivePersistence
 }): ArchiveBodyCache {
   const maxEntries = opts?.maxEntries ?? MAX_ENTRIES
   const maxTotalBytes = opts?.maxTotalBytes ?? MAX_TOTAL_BYTES
   const now = opts?.now ?? (() => Date.now())
+  const persist = opts?.persist
 
   const entries = new Map<string, Entry>()
   /** 読み直しの順番を刻む連番（時計の分解能に依らせないため。→ `Entry.usedSeq`）。 */
   let seq = 0
   const inFlight = new Map<string, Promise<Map<string, Uint8Array>>>()
   const counters = {
-    hits: 0, misses: 0, coalesced: 0, evicted: 0, evictedRecent: 0, expired: 0, uncacheable: 0,
+    hits: 0, persistHits: 0, misses: 0, coalesced: 0, evicted: 0, evictedRecent: 0, expired: 0, uncacheable: 0,
   }
   const warnThrashing = createLogThrottle(60_000)
 
@@ -204,6 +253,27 @@ export function createArchiveBodyCache(opts?: {
     let sum = 0
     for (const e of entries.values()) sum += e.bytes
     return sum
+  }
+
+  /**
+   * 端末の控えから読んで展開する。読めない・壊れているときは `null`（取得へ落とす）。
+   *
+   * **読みと展開の失敗を分けずにまとめて握る。** どちらも「控えが使えないので取り直す」で
+   * 手当てが同じで、原因は `archiveBodyDb` 側の警告に残る。ここで投げると、控えが壊れた
+   * 端末で**取得そのものが失敗するようになる** —— 速くするための仕組みが機能を止めてしまう。
+   */
+  async function readPersisted(
+    key: string,
+  ): Promise<{ files: Map<string, Uint8Array>; bytes: number } | null> {
+    if (!persist) return null
+    try {
+      const gz = await persist.read(key)
+      if (!gz) return null
+      return await persist.expand(gz)
+    } catch (e) {
+      log.warn('[replay] 端末の控えからアーカイブを読めませんでした（取得し直します）', e)
+      return null
+    }
   }
 
   /** 古い順に追い出して、本数とバイト数の両方を上限以下へ戻す。 */
@@ -250,7 +320,8 @@ export function createArchiveBodyCache(opts?: {
         counters.coalesced++
         return pending
       }
-      counters.misses++
+      // **`misses` はここでは数えない。** 端末の控えから読めれば配信元へは出ないので、
+      // 数えるのは実際に `download` を呼ぶ直前（→ `ArchiveBodyCacheStats.persistHits`）。
       // **取得中の印を外すのは `finally` で行う（別のチェーンに分けない）。**
       // かつては `promise.catch(() => {}).then(() => inFlight.delete(url))` と書いていたが、
       // あれは `catch` が作った別の Promise へさらに繋ぐ形なので、**外すのが 1 マイクロタスク
@@ -260,15 +331,38 @@ export function createArchiveBodyCache(opts?: {
       let settledSync = false
       const promise = (async () => {
         try {
+          // **端末の控えを先に見る。** ここに当たれば配信元へ 1 件も出ない ——
+          // タブを開き直したあとの起動・再生がまるごと通信なしで済む経路。
+          //
+          // **読めなかった・展開できなかったときは黙って取得へ落ちる。** 控えは速くするための
+          // ものなので、壊れていたら取り直せばよい（`archiveBodyDb` 側が警告を出している）。
+          const fromDisk = persist ? await readPersisted(url) : null
+          if (fromDisk) {
+            counters.persistHits++
+            const t = now()
+            entries.set(url, { files: fromDisk.files, bytes: fromDisk.bytes, usedSeq: ++seq, createdAt: t })
+            evict()
+            return fromDisk.files
+          }
+          counters.misses++
           const got = await download()
           if (got.cacheable === false) {
             // 呼び出し側が「控えるな」と言っている。**取得はできているので値は返す。**
+            // **端末の控えへも書かない** —— 期限より前に前提が崩れたときの歯止めなので、
+            // 寿命の長い側にこそ効かせる必要がある。
             counters.uncacheable++
             return got.files
           }
           const t = now()
           entries.set(url, { files: got.files, bytes: got.bytes, usedSeq: ++seq, createdAt: t })
           evict()
+          // **書き込みは待たない。** 端末へ残すのは次回以降のためで、この呼び出しの結果には
+          // 関係がない。待つと、控えが遅い端末で取得そのものが遅くなる。
+          if (persist && got.gz) {
+            void persist.write(url, got.gz).catch((e: unknown) => {
+              log.warn('[replay] アーカイブを端末の控えへ書けませんでした', e)
+            })
+          }
           return got.files
         } finally {
           settledSync = true
@@ -286,6 +380,7 @@ export function createArchiveBodyCache(opts?: {
       entries.clear()
       inFlight.clear()
       counters.hits = 0
+      counters.persistHits = 0
       counters.misses = 0
       counters.coalesced = 0
       counters.evicted = 0

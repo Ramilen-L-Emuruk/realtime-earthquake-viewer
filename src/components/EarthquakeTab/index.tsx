@@ -5,6 +5,7 @@ import { extractQuakeEventId, quakeEventKey } from '../../utils/quakeMerge'
 import type { LatLng } from '../../utils/stationCoords'
 import {
   type TelegramLoss, formatHistoryLossNotice, HISTORY_LOAD_MORE_FAILED_NOTICE,
+  formatRateLimitedNotice, FETCH_THROTTLED_NOTICE,
 } from '../../utils/telegramLoss'
 
 interface Props {
@@ -23,6 +24,12 @@ interface Props {
   historyLoss: TelegramLoss
   /** 直近の「もっと見る」がまるごと失敗したか（押し直せば回復しうる側）。 */
   loadMoreFailed: boolean
+  /**
+   * いま配信元の上限に達していて、取得が待たされているか（→ `hooks/useFetchThrottled.ts`）。
+   *
+   * **損失ではない。** 枠が空けばそのまま取りに行くので、欠けは出ない。
+   */
+  fetchThrottled: boolean
   lpgmByEventId: ReadonlyMap<string, JMALpgm>
   activeLpgmEventId: string | null
   onToggleLpgm: (eventId: string) => void
@@ -47,15 +54,26 @@ interface Props {
 }
 
 /**
- * 履歴の一部が欠けたことを知らせる帯。
+ * 履歴について知らせる帯。
  *
  * **全画面のエラー表示（`error`）とは分ける。** あちらは 1 件も取れなかったときのもので、
- * こちらは取れた分のカードを覆ってはいけない。色は生成データの取得失敗（`MapDataStatus`）と
- * 揃える —— どちらも「一部が欠けている」という同じ重さの知らせだから。
+ * こちらは取れた分のカードを覆ってはいけない。
+ *
+ * **色は 2 通り。**
+ *
+ * | `tone` | 意味 | 色 |
+ * |---|---|---|
+ * | `loss` | **何かが欠けている。** 生成データの取得失敗（`MapDataStatus`）と揃える | 琥珀 |
+ * | `info` | **欠けていない。** いま待っているだけで、放っておけば取れる | 青 |
+ *
+ * **待ちを琥珀で出さないこと。** あれは損失の色で、並べると「取りこぼした」と読まれる。
  */
-function HistoryNotice({ children }: { children: React.ReactNode }) {
+function HistoryNotice({ tone, children }: { tone: 'loss' | 'info'; children: React.ReactNode }) {
+  const color = tone === 'info'
+    ? 'border-sky-500/40 bg-sky-500/10 text-sky-300'
+    : 'border-amber-500/40 bg-amber-500/10 text-amber-300'
   return (
-    <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-300 roomy:text-sm roomy:px-3 roomy:py-2">
+    <div className={`rounded-lg border px-2 py-1.5 text-xs roomy:text-sm roomy:px-3 roomy:py-2 ${color}`}>
       {children}
     </div>
   )
@@ -64,13 +82,18 @@ function HistoryNotice({ children }: { children: React.ReactNode }) {
 // 地震情報タブの右パネル。地震カードの一覧を表示し、クリックで地図表示対象を選択する。
 // 地図そのものは App が常時表示する。
 // React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
-export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, error, historyLoss, loadMoreFailed, lpgmByEventId, activeLpgmEventId, onToggleLpgm, estimatedIntensity, distributionQuakeKey, onToggleDistribution, unreceivedQuakeKey, onToggleUnreceived, onFocusMap, speakingTelegramTextSubject }: Props) {
-  // 履歴の一部が欠けたことを知らせる帯。**2 つを別に持つ**（確定した損失と、押し直せば
-  // 回復しうる失敗）。混ぜると、戻せない損失と戻せる失敗が同じ重さに見える。
-  const notices = [
+export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, error, historyLoss, loadMoreFailed, fetchThrottled, lpgmByEventId, activeLpgmEventId, onToggleLpgm, estimatedIntensity, distributionQuakeKey, onToggleDistribution, unreceivedQuakeKey, onToggleUnreceived, onFocusMap, speakingTelegramTextSubject }: Props) {
+  // 履歴について知らせる帯。**4 つを別に持つ**（確定した損失／429 で見送った分／押し直せば
+  // 回復しうる失敗／いま待っているだけ）。混ぜると、戻せない損失と戻せるものが同じ重さに見える。
+  //
+  // **待っているだけの告知は最後・青で出す。** 上の 3 つは「何かが欠けた・失敗した」だが、
+  // これは欠けていない（枠が空けばそのまま取りに行く）。
+  const notices: Array<{ text: string; tone: 'loss' | 'info' }> = [
     formatHistoryLossNotice(historyLoss),
+    formatRateLimitedNotice(historyLoss),
     loadMoreFailed ? HISTORY_LOAD_MORE_FAILED_NOTICE : null,
-  ].filter((t): t is string => t !== null)
+  ].filter((t): t is string => t !== null).map(text => ({ text, tone: 'loss' as const }))
+  if (fetchThrottled) notices.push({ text: FETCH_THROTTLED_NOTICE, tone: 'info' })
   // **1 件も無いときだけ読み込み中の画面にする。**
   // DMDSS 版の初回は電文本体の取得が配信元の上限に合わせて直列化されるため、全件が揃うのは
   // 数分後になる（→ `docs/spec/data-sources-spec.md` §2「取得の間隔を空ける」）。取得側は
@@ -103,7 +126,7 @@ export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selected
       <div className="flex flex-col h-full">
         {notices.length > 0 && (
           <div className="p-2 space-y-1.5 roomy:p-3 roomy:space-y-2">
-            {notices.map(text => <HistoryNotice key={text}>{text}</HistoryNotice>)}
+            {notices.map(n => <HistoryNotice key={n.text} tone={n.tone}>{n.text}</HistoryNotice>)}
           </div>
         )}
         <div className="flex-1 flex items-center justify-center">
@@ -115,7 +138,7 @@ export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selected
 
   return (
     <div className="p-2 space-y-1.5 roomy:p-3 roomy:space-y-2">
-      {notices.map(text => <HistoryNotice key={text}>{text}</HistoryNotice>)}
+      {notices.map(n => <HistoryNotice key={n.text} tone={n.tone}>{n.text}</HistoryNotice>)}
       {earthquakes.map((quake, i) => (
         <EarthquakeCard
           // QUAKE-4: 続報で id 末尾の serial が変わるたびに EarthquakeCard がリマウントされ、

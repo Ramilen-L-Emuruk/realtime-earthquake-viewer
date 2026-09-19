@@ -22,6 +22,9 @@ import { DescriptionTip } from '../DescriptionTip'
 import { zipSync } from 'fflate'
 import { countRecords, listRecords, clearRecords, onRecordsChanged, hasStorageError } from '../../utils/detectionDiagnosticsDb'
 import { telegramCacheStats, hasTelegramCacheError, telegramCachePurgeStats, onTelegramCacheChanged } from '../../utils/telegramBodyCache'
+import {
+  archiveBodyDbStats, hasArchiveCacheError, archiveCachePurgeStats, onArchiveCacheChanged,
+} from '../../utils/archiveBodyDb'
 import { formatFileStamp } from '../../utils/formatters'
 import { useKyoshinImport } from '../../hooks/useKyoshinImport'
 import { buildSettingsFile, parseSettingsFile, settingsFileName, type SettingsVariant } from '../../utils/settingsIo'
@@ -128,8 +131,13 @@ function TelegramCacheRow() {
     }
     // 上限に達して控えたばかりのものまで捨てている状態は、件数だけでは正常と見分けが付かない
     const purge = telegramCachePurgeStats()
-    setNote(purge.purgedRecent > 0
-      ? `控えが上限に達しています（控えた直後に捨てた電文 ${purge.purgedRecent} 件）。同じ電文を取り直している可能性があります`
+    if (purge.purgedRecent > 0) {
+      setNote(`控えが上限に達しています（控えた直後に捨てた電文 ${purge.purgedRecent} 件）。同じ電文を取り直している可能性があります`)
+      return
+    }
+    // 上限を確かめる読み取りが失敗していると、超えていても追い出しが走らない
+    setNote(purge.limitCheckFailures > 0
+      ? `控えの上限を確かめられませんでした（${purge.limitCheckFailures} 回）。容量が上限を超えている可能性があります`
       : null)
   }, [])
   // 控えが増減したら読み直す（通知はまとめて届く）。設定タブは常時マウントされたまま
@@ -147,6 +155,54 @@ function TelegramCacheRow() {
       <div className="flex flex-col items-end gap-1">
         <span className="text-xs text-secondary">
           {stats === null ? '—' : `${stats.entries} 件 / ${(stats.bytes / 1024 / 1024).toFixed(1)} MB`}
+        </span>
+        {note && <p className="text-xs text-amber-400 w-56 text-left leading-snug">{note}</p>}
+      </div>
+    </Row>
+  )
+}
+
+/**
+ * アーカイブ本体の控えの状態（本数・容量・使えているか）。
+ *
+ * **電文の控え（`TelegramCacheRow`）と対にする。** アーカイブの控えは
+ * 「タブを開き直しても残る」ために置いたもので、効いていなければ起動・再生のたびに
+ * 1 日ぶんのファイルを落とし直す —— 電文本体と同じ理由で、効いていないことに
+ * 気づける必要がある。**コンソールの 1 行しか手立てが無い状態にしない。**
+ */
+function ArchiveCacheRow() {
+  const [stats, setStats] = useState<{ entries: number; bytes: number } | null>(null)
+  const [note, setNote] = useState<string | null>(null)
+  const refresh = useCallback(() => {
+    // 読めなければ `null` が返る。**「0 本」とは書かない**（→ `archiveBodyDbStats`）
+    void archiveBodyDbStats().then(setStats)
+    if (hasArchiveCacheError()) {
+      setNote('この端末では控えを持てません（プライベートモード・容量不足など）。起動や再生のたびにアーカイブを取り直します')
+      return
+    }
+    const purge = archiveCachePurgeStats()
+    if (purge.purgedRecent > 0) {
+      setNote(`控えが上限に達しています（控えた直後に捨てた本数 ${purge.purgedRecent} 本）。同じアーカイブを取り直している可能性があります`)
+      return
+    }
+    // 上限を確かめる読み取りが失敗していると、超えていても追い出しが走らない
+    setNote(purge.limitCheckFailures > 0
+      ? `控えの上限を確かめられませんでした（${purge.limitCheckFailures} 回）。容量が上限を超えている可能性があります`
+      : null)
+  }, [])
+  useEffect(() => {
+    refresh()
+    return onArchiveCacheChanged(refresh)
+  }, [refresh])
+
+  return (
+    <Row
+      label="アーカイブの控え"
+      description="取得した 1 日ぶんのアーカイブを圧縮したままこのブラウザに控えて、同じ日を取り直さないようにします。上限を超えた分は古い順に自動で捨てます"
+    >
+      <div className="flex flex-col items-end gap-1">
+        <span className="text-xs text-secondary">
+          {stats === null ? '—' : `${stats.entries} 本 / ${(stats.bytes / 1024 / 1024).toFixed(1)} MB`}
         </span>
         {note && <p className="text-xs text-amber-400 w-56 text-left leading-snug">{note}</p>}
       </div>
@@ -1098,7 +1154,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onRep
             />
           </Row>
           <TelegramCacheRow />
-
+          <ArchiveCacheRow />
         </Section>
       )}
 

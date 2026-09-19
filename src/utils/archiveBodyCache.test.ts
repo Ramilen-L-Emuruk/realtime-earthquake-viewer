@@ -201,3 +201,149 @@ describe('createArchiveBodyCache', () => {
     expect(MAX_TOTAL_BYTES).toBeGreaterThanOrEqual((55 + 41) * 1024 * 1024)
   })
 })
+
+// 端末に残す二層目（本番は IndexedDB）。**タブを開き直したあとに効く層**で、
+// ここが無いと起動・リプレイの開始のたびにアーカイブを落とし直す。
+describe('端末の控え（persist）', () => {
+  /** 偽の永続層。実体の代わりに Map を持つ。 */
+  function fakePersist(seed?: Map<string, Uint8Array>) {
+    const store = seed ?? new Map<string, Uint8Array>()
+    const calls = { read: 0, write: 0, expand: 0 }
+    return {
+      store,
+      calls,
+      persist: {
+        read: async (key: string) => { calls.read++; return store.get(key) ?? null },
+        write: async (key: string, gz: Uint8Array) => { calls.write++; store.set(key, gz) },
+        expand: async (gz: Uint8Array) => {
+          calls.expand++
+          return { files: new Map([[`from-disk-${gz[0]}`, new Uint8Array(1)]]), bytes: 1000 }
+        },
+      },
+    }
+  }
+
+  // 正: **メモリが空でも、端末の控えに当たれば配信元へ出ない。**
+  // これがタブを開き直したときに効く経路そのもの。
+  it('端末の控えに当たれば、取得を呼ばない', async () => {
+    const f = fakePersist(new Map([['u1', new Uint8Array([7])]]))
+    const cache = createArchiveBodyCache({ persist: f.persist })
+    const download = vi.fn()
+
+    const files = await cache.get('u1', download)
+
+    expect(download).not.toHaveBeenCalled()
+    expect([...files.keys()]).toEqual(['from-disk-7'])
+    // 配信元へ出ていないので `misses` では数えない（数えると控えの効きが読めなくなる）
+    expect(cache.stats().persistHits).toBe(1)
+    expect(cache.stats().misses).toBe(0)
+  })
+
+  // 正: 取得したものは端末へ書く（次のタブで効くように）
+  it('取得したアーカイブを gzip のまま端末へ書く', async () => {
+    const f = fakePersist()
+    const cache = createArchiveBodyCache({ persist: f.persist })
+    const gz = new Uint8Array([1, 2, 3])
+
+    await cache.get('u1', async () => ({ ...archive('a.xml'), gz }))
+    // 書き込みは待たないので、マイクロタスクを 1 周回す
+    await Promise.resolve()
+
+    expect(f.store.get('u1')).toBe(gz)
+  })
+
+  // 対照: **「控えるな」と言われたら端末へも書かない。** 当日ぶんのアーカイブがこれ。
+  // メモリだけ弾いて端末へ書くと、寿命の長い側に育ち途中の中身が残る。
+  it('cacheable が false なら端末へ書かない', async () => {
+    const f = fakePersist()
+    const cache = createArchiveBodyCache({ persist: f.persist })
+
+    await cache.get('u1', async () => ({ ...archive('a.xml'), gz: new Uint8Array([1]), cacheable: false }))
+    await Promise.resolve()
+
+    expect(f.store.size).toBe(0)
+  })
+
+  // 対照: gzip を渡さない取得元では書かない（書くものが無い）
+  it('gz を渡さなければ端末へ書かない', async () => {
+    const f = fakePersist()
+    const cache = createArchiveBodyCache({ persist: f.persist })
+
+    await cache.get('u1', async () => archive('a.xml'))
+    await Promise.resolve()
+
+    expect(f.store.size).toBe(0)
+  })
+
+  // 安全弁: **控えが壊れていても取得へ落ちるだけ。** 速くするための仕組みが
+  // 機能そのものを止めてはいけない。
+  it('端末の控えが読めなくても、取得へ落ちて値を返す', async () => {
+    const cache = createArchiveBodyCache({
+      persist: {
+        read: async () => { throw new Error('disk broken') },
+        write: async () => {},
+        expand: async () => ({ files: new Map(), bytes: 0 }),
+      },
+    })
+
+    const files = await cache.get('u1', async () => archive('a.xml'))
+
+    expect([...files.keys()]).toEqual(['a.xml'])
+  })
+
+  // 安全弁: 展開に失敗した場合も同じ（壊れた gzip が居座らない）
+  it('端末の控えを展開できなくても、取得へ落ちて値を返す', async () => {
+    const cache = createArchiveBodyCache({
+      persist: {
+        read: async () => new Uint8Array([9]),
+        write: async () => {},
+        expand: async () => { throw new Error('bad gzip') },
+      },
+    })
+
+    const files = await cache.get('u1', async () => archive('a.xml'))
+
+    expect([...files.keys()]).toEqual(['a.xml'])
+  })
+
+  // 安全弁: **書き込みの失敗で取得そのものを壊さない。** 端末へ残すのは次回以降のためで、
+  // この呼び出しの結果には関係がない。
+  it('端末へ書けなくても、取得した値はそのまま返る', async () => {
+    const cache = createArchiveBodyCache({
+      persist: {
+        read: async () => null,
+        write: async () => { throw new Error('quota exceeded') },
+        expand: async () => ({ files: new Map(), bytes: 0 }),
+      },
+    })
+
+    const files = await cache.get('u1', async () => ({ ...archive('a.xml'), gz: new Uint8Array([1]) }))
+    await Promise.resolve()
+
+    expect([...files.keys()]).toEqual(['a.xml'])
+  })
+
+  // 対照: メモリに載っていれば端末を読みに行かない（二層の順序）
+  it('メモリに載っていれば端末を読まない', async () => {
+    const f = fakePersist()
+    const cache = createArchiveBodyCache({ persist: f.persist })
+    await cache.get('u1', async () => ({ ...archive('a.xml'), gz: new Uint8Array([1]) }))
+    const before = f.calls.read
+
+    await cache.get('u1', () => { throw new Error('取得も端末も見てはいけない') })
+
+    expect(f.calls.read).toBe(before)
+  })
+
+  // 対照: **persist を渡さなければ従来どおりメモリだけで動く。**
+  it('persist を渡さなければ、端末の層は無いものとして動く', async () => {
+    const cache = createArchiveBodyCache()
+    const download = vi.fn(async () => archive('a.xml'))
+
+    await cache.get('u1', download)
+    await cache.get('u1', download)
+
+    expect(download).toHaveBeenCalledTimes(1)
+    expect(cache.stats().persistHits).toBe(0)
+  })
+})

@@ -88,6 +88,7 @@ const renderTab = (quake: JMAQuake, lpgm?: JMALpgm, opts: { unreceivedOpen?: boo
     error={null}
     historyLoss={createEmptyTelegramLoss()}
     loadMoreFailed={false}
+    fetchThrottled={false}
     lpgmByEventId={lpgm ? new Map([[EVENT_ID, lpgm]]) : new Map()}
     activeLpgmEventId={lpgm ? EVENT_ID : null}
     onToggleLpgm={() => {}}

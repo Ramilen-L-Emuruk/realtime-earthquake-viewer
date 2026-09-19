@@ -1707,7 +1707,9 @@ export function useEarthquakes(
             //
             // **積まずに置き換える。** この取得は毎回「その時点の全範囲」を走査して数え直す
             // （→ `utils/telegramLoss.ts` の表）。
-            historyLoss: telegramLossFrom(history.skipped, history.failedArchiveUrls),
+            historyLoss: telegramLossFrom(history.skipped, history.failedArchiveUrls, {
+              sources: history.rateLimitedSources, telegrams: history.rateLimitedTelegrams,
+            }),
           }))
           // 発表中の津波は画面にも見せる。**設定を尊重するかどうかは受け取る側が決める**
           // （`tsunamiPriorityDefault`）——その設定は「津波発表中はどのタブを既定にするか」を
@@ -2056,7 +2058,9 @@ export function useEarthquakes(
             // ②アーカイブの取得が回復しても損失が消えない（失敗した取得は `archiveCache` から
             // 外れて再試行され、429 なら普通に回復する）。範囲は伸びるだけで縮まないので、
             // 今回の結果は前回の範囲を包含する。
-            historyLoss: telegramLossFrom(history.skipped, history.failedArchiveUrls),
+            historyLoss: telegramLossFrom(history.skipped, history.failedArchiveUrls, {
+              sources: history.rateLimitedSources, telegrams: history.rateLimitedTelegrams,
+            }),
             // 押し直せば回復しうる側の表示は、成功したので消す
             loadMoreFailed: false,
             // **打ち切るのは「これ以上遡れない」ときだけ。** 増えたかどうかでは判定しない ——
