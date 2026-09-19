@@ -35,10 +35,31 @@ export interface TelegramLoss {
    * 「1 日ぶんの取得元」なので同じ枠で数える。
    */
   failedSources: Set<string>
+  /**
+   * 429 の窓が明けていないため**取りに行かなかった**取得元。
+   *
+   * **`failedSources` と分ける。** あちらは「投げたのに駄目だった」で恒久的な喪失、
+   * こちらは「こちらの判断で待っている」もの。混ぜると**待てば取れるものが取り返しの
+   * つかない損失として画面に出る**うえ、「すべて読めなかった」の判定に入って
+   * **取れていた分ごと捨てる**（→ `types/replay.ts` の `rateLimitedSources`）。
+   */
+  rateLimitedSources: Set<string>
+  /**
+   * 429 の窓で見送った**電文**の数。
+   *
+   * **取得元とは単位が違う**ので別に数える。取得元単位で見送った日は「その日に何通
+   * あったか」すら分からないため、電文数へ合算できない。
+   */
+  rateLimitedTelegrams: number
 }
 
 export function createEmptyTelegramLoss(): TelegramLoss {
-  return { skippedTelegrams: 0, failedSources: new Set() }
+  return {
+    skippedTelegrams: 0,
+    failedSources: new Set(),
+    rateLimitedSources: new Set(),
+    rateLimitedTelegrams: 0,
+  }
 }
 
 /**
@@ -51,10 +72,19 @@ export function addTelegramLoss<T extends TelegramLoss>(
   loss: T,
   skipped: number,
   failedSourceIds: readonly string[],
+  rateLimited?: { sources?: readonly string[]; telegrams?: number },
 ): T {
   const failedSources = new Set(loss.failedSources)
   for (const id of failedSourceIds) failedSources.add(id)
-  return { ...loss, skippedTelegrams: loss.skippedTelegrams + skipped, failedSources }
+  const rateLimitedSources = new Set(loss.rateLimitedSources)
+  for (const id of rateLimited?.sources ?? []) rateLimitedSources.add(id)
+  return {
+    ...loss,
+    skippedTelegrams: loss.skippedTelegrams + skipped,
+    failedSources,
+    rateLimitedSources,
+    rateLimitedTelegrams: loss.rateLimitedTelegrams + (rateLimited?.telegrams ?? 0),
+  }
 }
 
 /**
@@ -66,12 +96,22 @@ export function addTelegramLoss<T extends TelegramLoss>(
  * **前回より狭い範囲の結果で置き換えないこと。** 遡る日数は伸びるだけで縮まないという前提に
  * 乗っている。狭い範囲の結果を当てると、範囲の外で確定していた損失が黙って消える。
  */
-export function telegramLossFrom(skipped: number, failedSourceIds: readonly string[]): TelegramLoss {
-  return { skippedTelegrams: skipped, failedSources: new Set(failedSourceIds) }
+export function telegramLossFrom(
+  skipped: number,
+  failedSourceIds: readonly string[],
+  rateLimited?: { sources?: readonly string[]; telegrams?: number },
+): TelegramLoss {
+  return {
+    skippedTelegrams: skipped,
+    failedSources: new Set(failedSourceIds),
+    rateLimitedSources: new Set(rateLimited?.sources ?? []),
+    rateLimitedTelegrams: rateLimited?.telegrams ?? 0,
+  }
 }
 
 export function isTelegramLossEmpty(loss: TelegramLoss): boolean {
   return loss.skippedTelegrams === 0 && loss.failedSources.size === 0
+    && loss.rateLimitedSources.size === 0 && loss.rateLimitedTelegrams === 0
 }
 
 /**
@@ -117,3 +157,43 @@ export function formatHistoryLossNotice(loss: TelegramLoss): string | null {
  * （戻らない／もう一度で直るかもしれない）を読み飛ばされる。
  */
 export const HISTORY_LOAD_MORE_FAILED_NOTICE = '続きの読み込みに失敗しました（もう一度お試しください）'
+
+/**
+ * いま配信元の上限に達していて、取得を待たせていることを知らせる一文。
+ *
+ * **失敗ではない。** 枠が空けばそのまま取りに行くので、欠けは出ない —— だから
+ * 損失の帯とは別の見た目で出す（→ `components/EarthquakeTab/index.tsx`）。
+ *
+ * **「間をおいてください」と依頼形にしない。** 利用者が何かを間違えたわけではないし、
+ * 待てば自動で再開するので、依頼にすると「何かしないといけない」と読まれる。
+ *
+ * 下の `formatRateLimitedNotice` と**主節をそろえてある** —— 利用者にとっては
+ * どちらも「アプリが自分で取得を絞っている」という同じ事実で、違うのは結果だけ。
+ */
+export const FETCH_THROTTLED_NOTICE = 'リクエスト過多のため、取得制限中（自動で再開します）'
+
+/**
+ * 429 の窓で取りに行かなかった分を知らせる一文。見送りが無ければ null。
+ *
+ * **上の `FETCH_THROTTLED_NOTICE` と主節をそろえ、括弧だけ変える。** あちらは「待っていて、
+ * これから取る」、こちらは「その回は取らずに先へ進んだ」。
+ *
+ * **取得元と電文は単位が違うので混ぜない**（`describeTelegramLossParts` と同じ理由）。
+ * 取得元単位で見送った日は、その日に何通あったかが分からないため電文数へ足せない。
+ *
+ * **兄弟の通知と違って、括弧の中に行動の案内を書いていない。** あちら 3 つ
+ * （「再読み込みで取得し直します」「もう一度お試しください」「自動で再開します」）と
+ * 揃っていないのは承知のうえで、**簡潔さを採った** —— 控えを端末へ残し、門を窓ごとの
+ * 上限へ変えた今、この見送り自体がほとんど起きない（429 は「同じ id の取り直し」に返るもので、
+ * 控えが効いていれば取り直さない）。**起きる頻度が上がったら、そのとき案内を足すこと。**
+ *
+ * **語順も `describeTelegramLossParts`（`N 件の取得元`）と逆**（こちらは `取得元N件`）。
+ * 同じ画面に並びうるので、揃える判断もありうる。短さを採って揃えていない。
+ */
+export function formatRateLimitedNotice(loss: TelegramLoss): string | null {
+  const parts: string[] = []
+  if (loss.rateLimitedSources.size > 0) parts.push(`取得元${loss.rateLimitedSources.size}件`)
+  if (loss.rateLimitedTelegrams > 0) parts.push(`電文${loss.rateLimitedTelegrams}件`)
+  if (parts.length === 0) return null
+  return `リクエスト過多のため、取得制限中（${parts.join('・')}が未取得）`
+}

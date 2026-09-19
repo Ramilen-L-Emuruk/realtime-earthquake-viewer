@@ -4,11 +4,17 @@
 // 従来は電文 1 通の破損で Promise.all ごと reject し、その日を含む期間の再生が
 // 丸ごと不可能になっていた。また目録（telegrams.json）が無いアーカイブは無言で
 // 捨てられ、「電文 0 件だが成功」に化けて原因が追えなかった。
+//
+// **このファイルは IndexedDB を用意しない（`fake-indexeddb` を入れない）。** ここが測るのは
+// 「本体を落とすかどうかの判定」（`planNeedsBody` と窓の絞り込み）で、その物差しは
+// `fetch` の呼び出し回数。**端末の控えを挟むと 2 回目が必ず 0 回になり、判定そのものを
+// 測れなくなる。** 端末の控えを通した結線は `archivePersistWiring.test.ts` が見る。
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest'
 import {
   fetchDmdataReplayEvents, fetchDmdataQuakeHistory, clearReplayCache, clearArchiveCacheForTest,
   clearParseCachesForTest, filterPreWindowEvents, isArchiveCacheable, MAX_HISTORY_DAYS,
 } from './dmdataReplay'
+import { clearArchiveBodyDb } from '../utils/archiveBodyDb'
 
 /**
  * 控えを全部空にする。
@@ -17,10 +23,14 @@ import {
  * 内容に対して不変な鍵で引くため。テストは同じ URL・同じ id に違う中身を載せて使い回すので、
  * ここで明示的に空にする。
  */
-function clearAllCaches(): void {
+async function clearAllCaches(): Promise<void> {
   clearReplayCache()
   clearArchiveCacheForTest()
   clearParseCachesForTest()
+  // **端末の控え（IndexedDB）も空にする。** ここを落とすと、メモリ層だけ空にしても
+  // 端末層が本体を返すので「取り直すはず」のテストが取り直さない —— 控えが二層に
+  // なった以上、**片方だけ空にするのは「控えを空にした」ことにならない**。
+  await clearArchiveBodyDb()
 }
 import { enumerateJstDates, MAX_ENUMERATED_DAYS } from './dmdataReplayLive'
 import type { JMATsunami, EEWAlert } from '../types/earthquake'
@@ -38,7 +48,10 @@ import {
 //
 // **トップレベルに置くのは、`describe` 内の `beforeEach` が兄弟の `describe` に届かないため。**
 // 待ち行列の持ち越しも切る（前のテストが残した待ちが次へ影響しないように）。
-beforeEach(() => {
+beforeEach(async () => {
+  // **端末の控えも空にする。** 残すとテスト間で同じ URL の中身を引き継ぐ
+  // （このファイルは作り物の URL を使い回すため）。
+  await clearArchiveBodyDb()
   setDataApiGateIntervalForTest(0)
   resetDataApiGateForTest()
   // 目録（`api.dmdata.jp/v2/archive`）の門も同じ理由で 0 にする。
@@ -254,17 +267,17 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
   let warns: string[]
   let errors: string[]
 
-  beforeEach(() => {
-    clearAllCaches()
+  beforeEach(async () => {
+    await clearAllCaches()
     warns = []
     errors = []
     vi.spyOn(console, 'warn').mockImplementation((...a: unknown[]) => { warns.push(a.join(' ')) })
     vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => { errors.push(a.join(' ')) })
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     globalThis.fetch = originalFetch
-    clearAllCaches()
+    await clearAllCaches()
     vi.restoreAllMocks()
   })
 
@@ -1170,10 +1183,10 @@ describe('fetchDmdataQuakeHistory', () => {
     ])
   }
 
-  beforeEach(() => { clearAllCaches() })
-  afterEach(() => {
+  beforeEach(async () => { await clearAllCaches() })
+  afterEach(async () => {
     globalThis.fetch = originalFetch
-    clearAllCaches()
+    await clearAllCaches()
     vi.restoreAllMocks()
   })
 
@@ -1270,37 +1283,35 @@ describe('fetchDmdataQuakeHistory', () => {
     expect(result.quakes.map(q => q.id.includes('20260809010000'))).toEqual([true, false])
   })
 
-  // アーカイブ本体は 6 秒の門を通るので、**揃うまで待つと 7 日ぶんで 40 秒ちかく画面が空になる**
-  // （実測）。1 日ずつ落として、読めた日から `onPartial` へ流す。
+  // 全日ぶんの解析を待ってから流すと、そのあいだカードが空のままになる。1 日読み終えるたびに流す。
   describe('取れた日から順に反映する', () => {
-    // 正: 2 日ぶんのうち 1 日目を読み終えた時点で流れる。
-    // **`onPartial` の呼び出し回数ではなく「本体を全部落とし終える前に流れたか」を見る** ——
-    // 回数だけだと、`Promise.all` で揃えてから日ごとに流す形（＝直したかった形）でも通る。
-    it('本体を全部落とし終える前に流す', async () => {
-      const gz = await makeTarGz([
+    // 正: 2 日ぶんのうち 1 日目を解析し終えた時点で、その 1 件だけが流れる。
+    //
+    // **見るのは「流れた時点で解析が終わっている日数」**。かつては「何件目の本体を
+    // 落としている時点か」で測っていたが、**本体はループへ入る前にまとめて投げる形へ
+    // 変えた**ので（→ `prefetchedBodies`）、ダウンロード数では測れなくなった。
+    // 揃えてから流す形なら 1 回目で 2 件とも来るので、この形でも見分けは付く。
+    it('全日ぶんの解析を待たずに、読み終えた日から流す', async () => {
+      const day = async (eventId: string, time: string) => makeTarGz([
         { name: 'telegrams.json', content: enc.encode(JSON.stringify([manifestEntry('h1', 'VXSE53')])) },
-        { name: 'h1.xml', content: enc.encode(historyBody('20260810120000', '2026-08-10T12:06:00+09:00')) },
+        { name: 'h1.xml', content: enc.encode(historyBody(eventId, time)) },
       ])
-      /** 何件目の本体を落としている時点で `onPartial` が呼ばれたか。 */
-      const partialAt: number[] = []
-      let downloaded = 0
-      const base = mockHistoryArchives([
-        { date: '2026-08-09', url: 'https://x/d09', gz },
-        { date: '2026-08-10', url: 'https://x/d10', gz },
-      ])
-      globalThis.fetch = (async (input: string) => {
-        if (String(input).startsWith('https://x/')) downloaded++
-        return base(String(input))
-      }) as unknown as typeof fetch
+      /** `onPartial` が呼ばれたときの件数。 */
+      const partialCounts: number[] = []
+      globalThis.fetch = mockHistoryArchives([
+        { date: '2026-08-09', url: 'https://x/d09', gz: await day('20260809010000', '2026-08-09T01:05:00+09:00') },
+        { date: '2026-08-10', url: 'https://x/d10', gz: await day('20260810120000', '2026-08-10T12:06:00+09:00') },
+      ]) as unknown as typeof fetch
 
       await fetchDmdataQuakeHistory(
         'key', new Date('2026-08-10T23:00:00+09:00'), 50, 7, false,
-        () => { partialAt.push(downloaded) },
+        (quakes) => { partialCounts.push(quakes.length) },
       )
 
-      expect(downloaded).toBe(2)
-      // 2 件目を落とす前に 1 回は流れている（揃えてから流す形だと最小値が 2 になる）
-      expect(Math.min(...partialAt)).toBe(1)
+      // **1 回目が 1 件**であること（揃えてから流す形だと 1 回目から 2 件になる）。
+      // 呼び出し回数そのものは見ない —— アーカイブが無い日は当日経路を通り、そちらも流すため。
+      expect(partialCounts[0]).toBe(1)
+      expect(partialCounts[partialCounts.length - 1]).toBe(2)
     })
   })
 
@@ -1436,7 +1447,10 @@ describe('fetchDmdataQuakeHistory', () => {
     const warnings = () => captured.warn
     const infos = () => captured.info
 
-    beforeEach(() => {
+    beforeEach(async () => {
+      // **控えを空にする（メモリと端末の両方）。** この describe は同じ URL に違う中身を
+      // 載せた 2 つのテストを並べているので、残すと 2 件目が 1 件目の中身を引く。
+      await clearAllCaches()
       captured.warn = []
       captured.info = []
       vi.spyOn(log, 'warn').mockImplementation((...a: unknown[]) => { captured.warn.push(a.join(' ')) })
@@ -1461,9 +1475,16 @@ describe('fetchDmdataQuakeHistory', () => {
       expect(infos().filter(m => m.includes('履歴を復元'))).toHaveLength(0)
     })
 
+    // **上のテストと URL を分ける。**
+    //
+    // 上のテストは `shouldStop` が最初から真なので、実際には**本体を 1 件も投げない**
+    // （`prefetchedBodies` の構築ループが最初の反復で `break` する）。ここで URL を
+    // 分けているのは保険で、**打ち切りが途中から真になる形**（`StrictMode` の二重実行など）
+    // では投げた分が控えへ載り、しかもそれが**このテストが始まったあと**に届きうるため。
+    // `beforeEach` で空にしても間に合わないので、同じ URL に違う中身を載せない形にしておく。
     it('対照: 打ち切っていない 0 件は従来どおり警告として残す', async () => {
       const gz = await dayArchive([])
-      globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
+      globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10-empty', gz }]) as unknown as typeof fetch
 
       const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
 
@@ -1691,7 +1712,7 @@ describe('fetchDmdataQuakeHistory', () => {
       globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
 
       const first = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
-      clearAllCaches()
+      await clearAllCaches()
       const second = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
 
       expect(second.quakes[0]).not.toBe(first.quakes[0])
@@ -1835,7 +1856,7 @@ describe('fetchDmdataQuakeHistory', () => {
       await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
       expect(counter.bodies).toBe(1)
 
-      clearAllCaches()
+      await clearAllCaches()
       await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
 
       expect(counter.bodies).toBe(2)
@@ -2227,10 +2248,10 @@ describe('アーカイブ本体の控えは開始をまたいで残る', () => {
   // **パース結果の控えもここで空にする。** 目録の控えは `clearReplayCache()` では消えないので、
   // この describe の各 `it` は同じ URL・同じ作り物の id を使い回すぶん、残すと 1 件目が入れた
   // 目録を 2 件目以降が引く。いまは fixture の中身が同じなので揃って通っているだけ。
-  beforeEach(() => { clearAllCaches() })
-  afterEach(() => {
+  beforeEach(async () => { await clearAllCaches() })
+  afterEach(async () => {
     globalThis.fetch = originalFetch
-    clearAllCaches()
+    await clearAllCaches()
     vi.restoreAllMocks()
   })
 
@@ -2335,10 +2356,10 @@ describe('窓に入る電文が無い日は本体を落とさない', () => {
   const QUIET_FROM = new Date('2026-08-10T01:00:00+09:00')
   const QUIET_TO = new Date('2026-08-10T02:00:00+09:00')
 
-  beforeEach(() => { clearAllCaches() })
-  afterEach(() => {
+  beforeEach(async () => { await clearAllCaches() })
+  afterEach(async () => {
     globalThis.fetch = originalFetch
-    clearAllCaches()
+    await clearAllCaches()
     vi.restoreAllMocks()
   })
 
