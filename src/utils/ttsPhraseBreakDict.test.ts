@@ -391,31 +391,44 @@ describe('電文本文の語（実データの辞書で引く）', { timeout: 15
     }
   })
 
-  // 緊急地震速報の予想値（「予想最大震度4程度以上。」「予想最大階級3程度以上。」）は、
-  // **VOICEVOX が丸ごと 1 アクセント句にまとめて震度の核を落とす**。実測（四国めたん・ツンツン）:
-  // `ヨソオサイダイシンドヨンテ'エド | イ'ジョオ` で核が「テ」に移り、「よそーさいだいしんどよんてー」
-  // まで高いまま上がり続ける。「程度以上」が付かない報は `ヨソオサイダイシンドヨ'ン` で核が「ヨン」に
-  // 来るので、**値の在り処が抑揚から消えるのは「程度以上」が付いたときだけ**。
+  // 緊急地震速報の予想値（「予想最大震度4。」「予想最大震度4程度以上。」「予想最大階級3。」）は、
+  // **VOICEVOX が丸ごと 1 アクセント句にまとめる**。実測（四国めたん・ツンツン）:
+  // 「程度以上」付きは `ヨソオサイダイシンドヨンテ'エド | イ'ジョオ` で核が「テ」に移り、
+  // 付かない形も `ヨソオサイダイシンドヨ'ン` の 12 モーラ 1 句になる。**どちらも値の在り処が
+  // 抑揚から読み取りにくい**ので、「最大震度Nを」と同じく「予想最大震度」で割る。
   //
-  // **鍵は数値から始める。** 「程度以上」だけを鍵にすると数値が前半へ残り
-  // （`ヨソオサイダイシンドヨ'ン | テエドイ'ジョオ`）、割れ目が数値の後ろに来る。数値ごと後半へ
-  // 寄せると `ヨソオサイダイシ'ンド | ヨンテエドイ'ジョオ` になり、前半の核はエンジンの解析のまま
-  // （**句の割り方はエンジンに任せ、核だけ直す**——日付の鍵と同じ方針）。
+  // **鍵は 2 段に分ける。**
+  // - 前半（`予想最大震度` / `予想最大階級`）—— 値が何であっても割れ目はここ
+  // - 後半（`4程度以上` 等）—— 「程度以上」が付く形だけ、値ごと 1 句へまとめて核を値へ戻す
+  //
+  // 同じ位置に立つ鍵は長い方が勝つが、この 2 つは**位置が違う**（前半は 0、後半は 6）ので
+  // 最左一致で前半が先に当たり、後半は再帰した先で当たる。結果の句は前半を入れる前と同じ
+  // （`ヨソオサイダイシ'ンド | ヨンテエドイ'ジョオ`）。
+  //
+  // **「程度以上」だけを鍵にはしない。** 数値が前半へ残り、割れ目が数値の後ろに来る。
   //
   // 長周期地震動階級のラベルは「階級3程度以上」なので、**震度の 1〜4 の鍵がそのまま覆う**
   // （階級の値域は 1〜4。`isValidLpgmClass`）。
-  it('緊急地震速報の「程度以上」は数値ごと後半へ寄せて割る', async () => {
+  it('緊急地震速報の予想値は「予想最大〜」と値で割る', async () => {
     const { findPhraseBreakMatch, isPlaceNameKey, dict } = await loadedRealDictModule()
 
-    // 正: 読み上げ文の形（`ttsText` の `eewScaleOnlyText` / `eewLpgmOnlyText`）
-    expect(findPhraseBreakMatch('予想最大震度4程度以上。', dict)?.key).toBe('4程度以上')
-    expect(findPhraseBreakMatch('予想最大震度5弱程度以上。', dict)?.key).toBe('5弱程度以上')
-    expect(findPhraseBreakMatch('予想最大震度6強程度以上。', dict)?.key).toBe('6強程度以上')
-    expect(findPhraseBreakMatch('予想最大階級3程度以上。', dict)?.key).toBe('3程度以上')
-    // 正: 格上げの前置きが付いた形でも当たる（`eewIntensityText` の `announceUpgrade`）
-    expect(
-      findPhraseBreakMatch('緊急地震速報に切り替わりました。予想最大震度6強程度以上。', dict)?.key,
-    ).toBe('6強程度以上')
+    // 正: 読み上げ文の形（`ttsText` の `eewScaleOnlyText` / `eewLpgmOnlyText`）。
+    // 前半が先に当たり、残りで後半の鍵が当たる
+    const rest = (text: string, key: string): string => {
+      const m = findPhraseBreakMatch(text, dict)
+      expect(m?.key, `「${text}」の前半`).toBe(key)
+      return text.slice((m?.index ?? 0) + key.length)
+    }
+    expect(findPhraseBreakMatch(rest('予想最大震度4程度以上。', '予想最大震度'), dict)?.key).toBe('4程度以上')
+    expect(findPhraseBreakMatch(rest('予想最大震度5弱程度以上。', '予想最大震度'), dict)?.key).toBe('5弱程度以上')
+    expect(findPhraseBreakMatch(rest('予想最大震度6強程度以上。', '予想最大震度'), dict)?.key).toBe('6強程度以上')
+    expect(findPhraseBreakMatch(rest('予想最大階級3程度以上。', '予想最大階級'), dict)?.key).toBe('3程度以上')
+    // 正: 格上げの前置きが付いた形でも当たる（`eewIntensityText` の `announceUpgrade`）。
+    // **前置きの側にも鍵がある**（`緊急地震速報`）ので、最左一致はそちらから。実運用では
+    // `splitIntoChunks` が句点で割るため別チャンクになるが、ここは 1 本の文字列で辿る。
+    expect(findPhraseBreakMatch(rest(rest(
+      '緊急地震速報に切り替わりました。予想最大震度6強程度以上。', '緊急地震速報',
+    ), '予想最大震度'), dict)?.key).toBe('6強程度以上')
 
     // 正: **語を付ける全語形に鍵がある。** 震度階級が増えたらここで落ちる（実装から導く）
     const approxLabels = Object.keys(INTENSITY_LABELS)
@@ -423,32 +436,38 @@ describe('電文本文の語（実データの辞書で引く）', { timeout: 15
       .filter((label) => label.endsWith('程度以上'))
     expect(approxLabels).toHaveLength(9)
     for (const label of approxLabels) {
-      expect(findPhraseBreakMatch(`予想最大震度${label}。`, dict)?.key, `「${label}」に鍵が無い`)
-        .toBe(label)
+      expect(
+        findPhraseBreakMatch(rest(`予想最大震度${label}。`, '予想最大震度'), dict)?.key,
+        `「${label}」に鍵が無い`,
+      ).toBe(label)
     }
     // 正: 階級も同じ鍵で覆える（ラベルは「階級N程度以上」なので数値部分が一致する）
     for (const cls of [1, 2, 3, 4] as const) {
       const label = getLpgmClassLabelWithApproxAbove(cls, true)
-      expect(findPhraseBreakMatch(`予想最大${label}。`, dict)?.key, `「${label}」に鍵が無い`)
-        .toBe(`${cls}程度以上`)
+      expect(
+        findPhraseBreakMatch(rest(`予想最大${label}。`, '予想最大階級'), dict)?.key,
+        `「${label}」に鍵が無い`,
+      ).toBe(`${cls}程度以上`)
     }
 
-    // 対照: 上限が定まった報（「程度以上」が付かない）には当たらない。1 句のままでよい
-    expect(findPhraseBreakMatch('予想最大震度4。', dict)?.key).toBeUndefined()
-    expect(findPhraseBreakMatch('予想最大階級3。', dict)?.key).toBeUndefined()
+    // 正: 上限が定まった報（「程度以上」が付かない）も前半で割る。後半は素の読みでよい
+    expect(rest('予想最大震度4。', '予想最大震度')).toBe('4。')
+    expect(findPhraseBreakMatch('4。', dict)).toBeNull()
+    expect(rest('予想最大階級3。', '予想最大階級')).toBe('3。')
 
     // 安全弁: **述語側だけを鍵にしない。** 入れた瞬間に最左一致でそちらが勝ち、数値が前半へ残る
     expect(Object.keys(dict)).not.toContain('程度以上')
     expect(Object.keys(dict)).not.toContain('以上')
-    // 安全弁: 前半を鍵にしない（通常文まで割れる。そちらの抑揚は崩れていない）
-    expect(Object.keys(dict)).not.toContain('予想最大震度')
-    expect(Object.keys(dict)).not.toContain('予想最大階級')
+    // 安全弁: 前半の鍵に値を含めない。含めると「程度以上」の鍵と同じ位置で競り、長い方が勝って
+    // 値ごと後半へ寄せる形が壊れる
+    expect(Object.keys(dict)).not.toContain('予想最大震度4')
+    expect(Object.keys(dict)).not.toContain('予想最大階級3')
 
     // 安全弁: 数字で始まる鍵なので、前が数字の位置では一致しない（`NUMERIC_KEY`）
     expect(findPhraseBreakMatch('12程度以上', dict)?.key).toBeUndefined()
 
     // 安全弁: 地名ではないので鍵の直後にポーズを挟まない（_terms に列挙する）
-    for (const label of approxLabels) {
+    for (const label of [...approxLabels, '予想最大震度', '予想最大階級']) {
       expect(isPlaceNameKey(label), `「${label}」は地名ではない`).toBe(false)
     }
   })
