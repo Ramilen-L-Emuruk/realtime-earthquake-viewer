@@ -6,6 +6,7 @@ import { isValidIntensityScale } from './intensity'
 import { isValidLpgmClass } from './lpgm'
 import { hypoInfoItemToEEW, type YahooHypoInfoItem } from '../services/kyoshin'
 import { isEewArrivedKindCode } from './eewKind'
+import { EEW_WARNING_REGION_ORDER } from './eewWarningRegions'
 import { log } from './logger'
 
 // 司・翠川(1999)の距離減衰式を使ってEEW最終報後の自動解除秒数を計算する。
@@ -663,21 +664,6 @@ export function eewForecastChangeText(eew: EEWAlert): string {
 }
 
 
-/**
- * 地方予報区の標準順（気象庁のコード 9910〜9960 の並び。おおむね北から南）。
- *
- * **電文の文書順に依存しない。** 実配信では同じ地震の続報で並びが入れ替わる
- * （2024-01-01 能登本震で「北陸 / 甲信 / 東海 / 関東 / 東北 / 近畿」→「… / 東北 / 関東 / …」）。
- * 気象庁が `Item` を「既に警報だった地方」「新たに加わった地方」の 2 つへ分けるため、
- * 文書順は「いつ警報対象になったか」を反映していて、地理的な並びではない。
- *
- * **地図の地方名ラベル（`utils/regions.ts`）とは別物。** あちらは一般の地方区分で、
- * 中部がひとまとめ・島嶼を持たない。名前が重なるものがあっても流用しないこと。
- */
-const EEW_WARNING_REGION_ORDER: readonly string[] = [
-  '北海道', '東北', '関東', '伊豆諸島', '小笠原', '北陸', '甲信',
-  '東海', '近畿', '中国', '四国', '九州', '奄美', '沖縄',
-]
 
 /**
  * 警報の対象地方を標準順へ並べ替える。**画面と読み上げの両方でこれを通すこと** ——
