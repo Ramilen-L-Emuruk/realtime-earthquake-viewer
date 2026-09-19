@@ -6,7 +6,7 @@
 // 読めなくなるため）。
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { leadingParticle } from './ttsTrailingParticles'
+import { leadingParticle, endsWithParticle, TRAILING_PARTICLES } from './ttsTrailingParticles'
 
 describe('辞書キーの直後の助詞', () => {
   it('読み上げ文に現れる形を切り出せる', () => {
@@ -62,5 +62,30 @@ describe('辞書キーの直後の助詞', () => {
     const src = readFileSync('src/utils/ttsTrailingParticles.ts', 'utf8')
     const imports = [...src.matchAll(/^\s*import\s/gm)]
     expect(imports.length, `import を足すと検証が実装から離れる: ${imports.length} 件`).toBe(0)
+  })
+})
+
+describe('辞書キーが助詞で終わるか', () => {
+  // 見分けたいのは**助詞まで鍵に含めた形**。その鍵の直後は名前の切れ目ではなく文の途中なので、
+  // `voicevox.ts` が間を挟まない（→ そちらのテスト「辞書キーの直後の間」）。
+  it('助詞まで含めた鍵を見分ける', () => {
+    expect(endsWithParticle('最大震度4を')).toBe(true)
+    expect(endsWithParticle('グアテマラを')).toBe(true)
+    expect(endsWithParticle('地域の方は')).toBe(true)
+  })
+
+  it('【対照】助詞で終わらない鍵は偽', () => {
+    expect(endsWithParticle('グアテマラ')).toBe(false)
+    expect(endsWithParticle('緊急地震速報')).toBe(false)
+    expect(endsWithParticle('')).toBe(false)
+    // 「と」は列挙に無い（`巨大地震と` は核を助詞へ置くための鍵だが、切り出しの対象外）。
+    // ここが真になると、列挙に無い助詞で終わる鍵の直後からも間が消える
+    expect(endsWithParticle('巨大地震と')).toBe(false)
+  })
+
+  it('【安全弁】列挙と同じ集合を見る', () => {
+    for (const [surface] of TRAILING_PARTICLES) {
+      expect(endsWithParticle(`能登地方${surface}`), surface).toBe(true)
+    }
   })
 })

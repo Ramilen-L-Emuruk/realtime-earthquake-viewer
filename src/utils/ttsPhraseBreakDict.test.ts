@@ -5,6 +5,7 @@ import { DICT_FETCH_TIMEOUT_MS } from './ttsPhraseBreakDict'
 import { INTENSITY_LABELS, getIntensityLabelWithApproxAbove } from './intensity'
 import type { LpgmClass } from '../types/earthquake'
 import { getLpgmClassLabelWithApproxAbove } from './lpgm'
+import { endsWithParticle, TRAILING_PARTICLES } from './ttsTrailingParticles'
 
 /** 長周期地震動階級の値域（`LpgmClass`）。型は実行時に無いので、ここへ写して使う。 */
 const LPGM_CLASSES = [1, 2, 3, 4] as const satisfies readonly LpgmClass[]
@@ -508,6 +509,86 @@ describe('電文本文の語（実データの辞書で引く）', { timeout: 15
     // 安全弁: 地名ではないので鍵の直後にポーズを挟まない（`_terms` に列挙する）
     for (const cls of LPGM_CLASSES) {
       expect(isPlaceNameKey(`長周期地震動階級${cls}を`), `階級${cls}`).toBe(false)
+    }
+  })
+
+  // `endsWithParticle`（`voicevox.ts` が「鍵の直後に間を挟むか」を決めるのに使う）の判定は
+  // **字面だけ**で、助詞の字で終わる地名（「えびの」「〜が丘」の類）も真を返しうる。
+  // 真になった鍵は間を挟まれなくなるので、**意図せず該当する鍵が混じっていないか**をここで見る。
+  //
+  // 助詞で終わってよいのは次のどちらか。
+  //   - `_terms` の一般用語（`最大震度4を`・`地域の方は`）。元から間を挟まない側
+  //   - 助詞を取り除いた残りが辞書のキーである（`グアテマラを` に対する `グアテマラ`）
+  //     ＝ 核を助詞へ置くために作った鍵
+  // どちらでもない鍵が現れたら、それは**助詞の字で終わる地名**の疑いがある。
+  it('【安全弁】助詞で終わる鍵は、一般用語か「核を助詞へ置くために作った鍵」だけ', async () => {
+    const { dict } = await loadedRealDictModule()
+    const terms = new Set((readDictData() as { _terms?: string[] })._terms ?? [])
+    const keys = Object.keys(dict)
+
+    const suspicious = keys.filter((key) => {
+      if (!endsWithParticle(key)) return false
+      if (terms.has(key)) return false
+      return !TRAILING_PARTICLES.some(([surface]) =>
+        key.endsWith(surface) && keys.includes(key.slice(0, -surface.length)))
+    })
+    expect(suspicious, '助詞の字で終わる地名が混じると、必要な間が入らなくなる').toEqual([])
+  })
+
+  // 海外の地名は、エンジンが外来語の規則で核を推定する。**読みも句数も正しいので誤読の
+  // 突き合わせにも句割りの判定にも掛からず**、UniDic（`npm run audit-accent-unidic`）と
+  // 突き合わせて初めて外れが見えた（→ `docs/spec/audio-tts-spec.md` §3
+  // 「エンジンが置く核が外れているとき」）。
+  //
+  // **平板の語は助詞込みの鍵も並べる。** この記法では平板を書けず末尾核で近似するので、
+  // 助詞が付く形では核が名前の最後に来てしまう（「グアテマラ＼を」）。核を助詞へ置くには
+  // 鍵の側へ助詞を含めるしかない。
+  it('海外の地名は単独語キーにし、平板のものは助詞込みの鍵も持つ', async () => {
+    const { findPhraseBreakMatch, isStandaloneKey, dict } = await loadedRealDictModule()
+
+    // UniDic が平板（aType=0）と言った語。助詞込みの鍵で核を助詞へ置く
+    const FLAT = ['グアテマラ', 'ニカラグア', 'ミンダナオ', 'シチリア'] as const
+    // 核が語中にある語。素の鍵だけでよい（助詞は読みへ連結され、核の位置は変わらない）
+    const NUCLEUS_INSIDE = ['ベリーズ', 'パラワン', 'キルギス', 'マラウイ', 'タジキスタン', 'ブルキナファソ'] as const
+
+    // 正: 読み上げ文の形（`ttsText` の `quakeOccurrenceSegments`）で鍵が当たる
+    for (const name of [...FLAT, ...NUCLEUS_INSIDE]) {
+      const text = `${name}を震源とするマグニチュード7.0の地震が発生しました。`
+      const key = findPhraseBreakMatch(text, dict)?.key
+      // 平板の語は助詞込みの鍵が勝つ（最左一致で同位置なら長い方）
+      expect(key, text).toBe(FLAT.includes(name as typeof FLAT[number]) ? `${name}を` : name)
+    }
+
+    // 正: 平板の語は、震央地名の文型に実在する助詞すべてに鍵がある
+    //（`ttsText.ts`: 「〇〇を震源とする」「震源は〇〇に更新されました」「〇〇で地震。」「〇〇の地震について、」）
+    for (const name of FLAT) {
+      for (const particle of ['を', 'に', 'で', 'の']) {
+        const value = dict[`${name}${particle}`]
+        expect(value, `${name}${particle}`).toBeDefined()
+        // 核は助詞の後ろ（値の末尾）に置く＝助詞まで高いまま
+        expect(value?.endsWith("'"), `${name}${particle} の核が末尾にない`).toBe(true)
+      }
+    }
+
+    // 対照: **長い名前の一部では一致させない。** エンジンは「グアテマラ沿岸」を
+    // `グアテマラエンガン`（「沿岸」の頭に核）と複合語として正しく読むので、切ると
+    // かえって不自然になる
+    for (const text of ['グアテマラ沿岸', 'ニカラグア沿岸', 'アフガニスタン／タジキスタン国境']) {
+      const m = findPhraseBreakMatch(text, dict)
+      const cut = m != null && [...FLAT, ...NUCLEUS_INSIDE].some(n => m.key === n)
+      expect(cut, `${text} を語中で切っている`).toBe(false)
+    }
+
+    // 安全弁: 素の鍵は単独語キーにする（上の対照はこれが効いている）
+    for (const name of [...FLAT, ...NUCLEUS_INSIDE]) {
+      expect(isStandaloneKey(name), name).toBe(true)
+    }
+    // 安全弁: **助詞込みの鍵は単独語キーにしない。** 入れると直後が漢字（「震源」）の位置で
+    // 一致しなくなり、鍵そのものが死ぬ
+    for (const name of FLAT) {
+      for (const particle of ['を', 'に', 'で', 'の']) {
+        expect(isStandaloneKey(`${name}${particle}`), `${name}${particle}`).toBe(false)
+      }
     }
   })
 
