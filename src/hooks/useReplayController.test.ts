@@ -10,6 +10,15 @@
 import { describe, it, expect } from 'vitest'
 import { createSessionGuard, createEmptyLoss, addLoss, addFailedPrefetch, formatLossNotice } from './useReplayController'
 
+/** テスト用: 日ごとの取りこぼしを合計する（実装が日ごとに持つようになったため）。 */
+function skips(count: number, day = '2026-08-10'): Map<string, number> {
+  return count > 0 ? new Map([[day, count]]) : new Map()
+}
+
+function skippedTotal(m: ReadonlyMap<string, number>): number {
+  return [...m.values()].reduce((a, b) => a + b, 0)
+}
+
 describe('createSessionGuard', () => {
   it('開始した直後のセッションは現役', () => {
     const guard = createSessionGuard()
@@ -97,9 +106,11 @@ function lossOf(
   skipped: number,
   failedArchiveUrls: string[],
   rateLimited?: { sources?: string[]; telegrams?: number },
-): { skipped: number; failedArchiveUrls: string[]; rateLimitedSources: string[]; rateLimitedTelegrams: number } {
+  /** 取りこぼしを付ける日。**別の日として数えたいテストだけ変える**（同じ日は上書きされる）。 */
+  day = '2026-08-10',
+): { skippedByDay: ReadonlyMap<string, number>; failedArchiveUrls: string[]; rateLimitedSources: string[]; rateLimitedTelegrams: number } {
   return {
-    skipped,
+    skippedByDay: skips(skipped, day),
     failedArchiveUrls,
     rateLimitedSources: rateLimited?.sources ?? [],
     rateLimitedTelegrams: rateLimited?.telegrams ?? 0,
@@ -107,13 +118,28 @@ function lossOf(
 }
 
 describe('addLoss', () => {
-  it('電文の取りこぼしを積み上げる', () => {
+  it('別の日の取りこぼしは積み上げる', () => {
     let loss = createEmptyLoss()
-    loss = addLoss(loss, lossOf(3, []))
-    loss = addLoss(loss, lossOf(2, []))
+    loss = addLoss(loss, lossOf(3, [], {}, '2026-08-10'))
+    loss = addLoss(loss, lossOf(2, [], {}, '2026-08-11'))
 
     // 一度失われた電文は後続の取得が成功しても戻らないので、消さずに積む
-    expect(loss.skippedTelegrams).toBe(5)
+    expect(skippedTotal(loss.skippedByDay)).toBe(5)
+  })
+
+  // **同じ日でも足す。** ここが集めるのは本編・初期状態・履歴・先読みという**別々の取得**で、
+  // 同じ日に別々の電文が壊れていれば足すべき 2 件になる。日付範囲が重なる取得どうしで同じ破損を
+  // 二度数えることはあるが、**少なく見せて「静かな時間帯だった」と誤読されるより、多めに申告
+  // する側へ倒す**（旧実装からの方針）。
+  //
+  // **同じ日を読み直しただけのときに二重で数えない責任は、取得側が持つ** —— P2PQuake 経路は
+  // 読み直した日は報告済みの件数を覚えて増分だけを報告する（`reportedSkipCounts`）。
+  it('同じ日でも、別の取得から来た分は足す', () => {
+    let loss = createEmptyLoss()
+    loss = addLoss(loss, lossOf(3, [], {}, '2026-08-10'))
+    loss = addLoss(loss, lossOf(3, [], {}, '2026-08-10'))
+
+    expect(skippedTotal(loss.skippedByDay)).toBe(6)
   })
 
   // 本編と初期状態は日付範囲が重なるため同じアーカイブを両方が読む。件数で合算すると
@@ -130,9 +156,9 @@ describe('addLoss', () => {
     const original = createEmptyLoss()
     const next = addLoss(original, lossOf(1, ['https://x/a']))
 
-    expect(original.skippedTelegrams).toBe(0)
+    expect(skippedTotal(original.skippedByDay)).toBe(0)
     expect(original.failedSources.size).toBe(0)
-    expect(next.skippedTelegrams).toBe(1)
+    expect(skippedTotal(next.skippedByDay)).toBe(1)
   })
 })
 
@@ -177,7 +203,7 @@ describe('addFailedPrefetch', () => {
     loss = addFailedPrefetch(loss)
     loss = addFailedPrefetch(loss)
     expect(loss.failedPrefetches).toBe(2)
-    expect(loss.skippedTelegrams).toBe(2)
+    expect(skippedTotal(loss.skippedByDay)).toBe(2)
     expect(loss.failedSources.size).toBe(1)
   })
 })
