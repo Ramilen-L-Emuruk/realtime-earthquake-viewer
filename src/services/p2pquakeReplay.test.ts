@@ -7,6 +7,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { fetchP2PReplayEvents, fetchP2PQuakeHistory, clearP2PReplayCache } from './p2pquakeReplay'
 import { fetchJmaArchiveRaw } from './p2pquake'
 import type { RawP2PEvent } from './p2pquake'
+import { addTelegramLoss, createEmptyTelegramLoss } from '../utils/telegramLoss'
+
+/** テスト用: 日ごとの取りこぼしを合計する（実装が日ごとに持つようになったため）。 */
+function skippedTotal(m: ReadonlyMap<string, number>): number {
+  return [...m.values()].reduce((a, b) => a + b, 0)
+}
 
 vi.mock('./p2pquake', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./p2pquake')>()
@@ -76,7 +82,7 @@ describe('fetchP2PReplayEvents', () => {
     const result = await fetchP2PReplayEvents(T, new Date(T.getTime() + 3600_000))
 
     expect(result.entries.map(e => e.replayTime.getTime())).toEqual([inside.getTime(), later.getTime()])
-    expect(result.skipped).toBe(0)
+    expect(skippedTotal(result.skippedByDay)).toBe(0)
     // アーカイブ単位の失敗は DMDSS 版に固有の概念で、この経路では常に空
     expect(result.failedArchiveUrls).toEqual([])
   })
@@ -159,9 +165,17 @@ describe('fetchP2PReplayEvents', () => {
     const result = await fetchP2PReplayEvents(T, new Date(T.getTime() + 3600_000))
 
     expect(result.entries).toHaveLength(1)
-    expect(result.skipped).toBe(1)
+    expect(skippedTotal(result.skippedByDay)).toBe(1)
   })
 
+  // **二重計上を防ぐ責任は取得側が持つ。**
+  //
+  // 合流する側（`addTelegramLoss`）は**別々の取得を集める前提で足す**ので、同じ日を 2 度
+  // 報告すると 2 倍に数えられる。ここはキャッシュから同じ結果を返しているだけで新しい破損では
+  // ないため、2 度目からは報告しない（`reportedSkipCounts`）。
+  //
+  // **合流の規則を変えるならここも併せて見ること** —— 一度「合流が上書きだから台帳は不要」と
+  // して撤去したが、合流を足す形へ戻したときに二重計上が復活した。
   it('取りこぼしは日ごとに一度しか数えない', async () => {
     const at = new Date(2024, 0, 1, 16, 20, 0)
     const broken = { ...quake('broken', at), time: 'not-a-time' }
@@ -171,8 +185,92 @@ describe('fetchP2PReplayEvents', () => {
     // 同じ日を含む別の範囲。キャッシュから返るため実際には取得していない
     const second = await fetchP2PReplayEvents(new Date(T.getTime() - 3600_000), T)
 
-    expect(first.skipped).toBe(1)
-    expect(second.skipped).toBe(0)
+    expect(skippedTotal(first.skippedByDay)).toBe(1)
+    expect(skippedTotal(second.skippedByDay)).toBe(0)
+    // 合流しても 1 件のまま
+    let loss = addTelegramLoss(createEmptyTelegramLoss(), first.skippedByDay, [])
+    loss = addTelegramLoss(loss, second.skippedByDay, [])
+    expect(skippedTotal(loss.skippedByDay)).toBe(1)
+  })
+
+  // **鍵まで見る。** 合計だけを見ると、日を取り違えても通ってしまう（日ごとに持つ意味が
+  // 検査から抜ける）。
+  it('取りこぼしは「その電文が属する日」を鍵にする', async () => {
+    const at = new Date(2024, 0, 1, 16, 20, 0)
+    const broken = { ...quake('broken', at), time: 'not-a-time' }
+    respondWith({ quake: [[quake('ok', at), broken]] })
+
+    const result = await fetchP2PReplayEvents(T, new Date(T.getTime() + 3600_000))
+
+    expect(result.skippedByDay).toEqual(new Map([['20240101', 1]]))
+  })
+
+  // **当日ぶんの控えは寿命を持つ**（`TODAY_CACHE_TTL_MS`）。その日の電文はこれからも増えるので、
+  // 最初の取得結果を持ち続けると後から届いた電文が二度と見えない。
+  //
+  // 取りこぼしも同じで、報告済みの「日」ではなく**件数**で覚えて差分だけを出す ——
+  // 集合だと増えた分を報告できず、「その日はもう見た」として黙る。
+  it('正: 当日ぶんは寿命が切れたら取り直し、増えた破損だけを報告する', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date(2024, 0, 1, 17, 0, 0))
+      const at = new Date(2024, 0, 1, 16, 20, 0)
+      const broken = { ...quake('broken', at), time: 'not-a-time' }
+      respondWith({ quake: [[quake('ok', at), broken]] })
+
+      const first = await fetchP2PReplayEvents(T, new Date(T.getTime() + 3600_000))
+      expect(first.skippedByDay).toEqual(new Map([['20240101', 1]]))
+
+      // 寿命が切れたあと、後から届いた電文がもう 1 通壊れている
+      vi.setSystemTime(new Date(2024, 0, 1, 17, 1, 1))
+      const broken2 = { ...quake('broken2', at), time: 'not-a-time' }
+      respondWith({ quake: [[quake('ok', at), broken, broken2]] })
+      const second = await fetchP2PReplayEvents(T, new Date(T.getTime() + 3600_000))
+
+      // **増えた 1 件だけ。** 2 件だと同じ破損を二度報告することになる
+      expect(second.skippedByDay).toEqual(new Map([['20240101', 1]]))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('対照: 寿命の内なら当日ぶんも取り直さない', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date(2024, 0, 1, 17, 0, 0))
+      respondWith({ quake: [[quake('q', new Date(2024, 0, 1, 16, 20, 0))]] })
+
+      await fetchP2PReplayEvents(T, new Date(T.getTime() + 3600_000))
+      const callsAfterFirst = mockFetch.mock.calls.length
+
+      vi.setSystemTime(new Date(2024, 0, 1, 17, 0, 30))
+      await fetchP2PReplayEvents(T, new Date(T.getTime() + 3600_000))
+
+      expect(mockFetch.mock.calls.length).toBe(callsAfterFirst)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // 安全弁: **過去の日は不変なので寿命を持たせない。** 持たせると、録画のように区間ごとに
+  // 開始し直す使い方でレート制限（10 リクエスト/分）に触れる。
+  it('安全弁: 過去の日は寿命が切れても取り直さない', async () => {
+    vi.useFakeTimers()
+    try {
+      // 「いま」は翌日。T の日（2024-01-01）はもう過去
+      vi.setSystemTime(new Date(2024, 0, 2, 17, 0, 0))
+      respondWith({ quake: [[quake('q', new Date(2024, 0, 1, 16, 20, 0))]] })
+
+      await fetchP2PReplayEvents(T, new Date(T.getTime() + 3600_000))
+      const callsAfterFirst = mockFetch.mock.calls.length
+
+      vi.setSystemTime(new Date(2024, 0, 2, 18, 0, 0))
+      await fetchP2PReplayEvents(T, new Date(T.getTime() + 3600_000))
+
+      expect(mockFetch.mock.calls.length).toBe(callsAfterFirst)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('取得に失敗した日はキャッシュに残さず、次の要求で取り直す', async () => {
@@ -220,7 +318,7 @@ describe('fetchP2PQuakeHistory', () => {
     const result = await fetchP2PQuakeHistory(T, 50)
 
     expect(result.quakes).toHaveLength(0)
-    expect(result.skipped).toBe(1)
+    expect(skippedTotal(result.skippedByDay)).toBe(1)
   })
 
   // 取得は 1 リクエストで完結するため、途中まで読めた状態が無い。

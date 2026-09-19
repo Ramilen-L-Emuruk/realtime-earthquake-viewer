@@ -30,6 +30,7 @@ import {
 } from './dmdataTelegramPayload'
 import { waitForApiSlot } from './dmdataRequestGates'
 import { BufrFragmentStore, fragmentKey } from './bufrTelegramAssembly'
+import { createSkipCounter, UNKNOWN_SKIP_DAY } from '../utils/telegramLoss'
 
 const API_BASE = 'https://api.dmdata.jp/v2'
 /** 電文本体の配信元。一覧が返す `url` と同じ形を id から組むのに使う。 */
@@ -72,8 +73,13 @@ const DAY_MS = 86_400_000
  *
  * **これは呼び出し側の異常を検出するための歯止めで、遡れる範囲の設計値ではない。**
  * 上限に達したら切り詰めずに投げる（切ると落とした日ぶんの電文が取りこぼしとして数えられない）。
- * 「もっと見る」で日数を伸ばす経路はこの手前で止まる必要があるため、
- * 渡してよい日数の上限を `MAX_HISTORY_DAYS`（→ `dmdataReplay.ts`）が導いている。
+ *
+ * **この値を遡れる範囲の上限として流用しないこと。** かつて履歴の取得が窓の全日を
+ * `resolveLiveDates` へ渡していたため、ここから 1 日引いた値（59 日）がそのまま
+ * 「地震カードを遡れる日数」になっていた。設計した値ではないのに上限として振る舞い、
+ * **アーカイブの在庫（地震津波関連は 2020-11-18 以降）のごく一部しか見られなかった**。
+ * いまは当日経路へ渡す範囲を直近数日に絞ってあるので、遡り幅がここに触れることはない
+ * （→ `dmdataReplay.ts` の `LIVE_FALLBACK_DAYS`）。
  */
 export const MAX_ENUMERATED_DAYS = 60
 
@@ -112,6 +118,23 @@ export function clearLiveReplayCache(): void {
 /** 日時を JST 日付文字列（YYYY-MM-DD）に変換する。 */
 export function toJstDateStr(d: Date): string {
   return new Date(d.getTime() + JST_OFFSET_MS).toISOString().slice(0, 10)
+}
+
+/**
+ * 取りこぼした電文を数えるときの日（→ `utils/telegramLoss.ts` の `skippedByDay`）。
+ *
+ * **見るのは `receivedTime`。** 担当日を決めているのが受信時刻だから（`classifyTelegram` の
+ * 「担当日の判定は受信時刻で行う」）。**発表時刻（`head.time`）で数えると軸がずれる** ——
+ * JST の日境界をまたいで配信された電文は、担当していない日に取りこぼしが付き、
+ * アーカイブ経路がその日に付けた値と混ざる。
+ *
+ * **日時として読めなければ `UNKNOWN_SKIP_DAY` へ落とす。** 受信時刻が読めないこと自体が
+ * 捨てた理由になりうるので、ここで弾かれる前提で書く。落として数えないと、取りこぼしが
+ * どの枠にも入らず消える。
+ */
+function skipDayOf(receivedTime: string | undefined): string {
+  const ms = Date.parse(receivedTime ?? '')
+  return Number.isFinite(ms) ? toJstDateStr(new Date(ms)) : UNKNOWN_SKIP_DAY
 }
 
 /**
@@ -470,7 +493,7 @@ async function listEewTelegrams(
   utcTo: string,
   fromTime: Date,
   toTime: Date,
-): Promise<{ items: TelegramListItem[]; failedSources: string[]; skipped: number }> {
+): Promise<{ items: TelegramListItem[]; failedSources: string[]; skippedByDay: ReadonlyMap<string, number> }> {
   const events: EewListItem[] = []
   let cursorToken: string | undefined
   let page = 0
@@ -510,9 +533,10 @@ async function listEewTelegrams(
 
   const failedSources: string[] = []
   const items: TelegramListItem[] = []
-  // 組み替えに失敗した報の数。**取得元ではなく電文の件数として数える** ―― 失ったのが
-  // 「1 通」と分かっているため（イベント丸ごとを失う failedSources とは単位が違う）。
-  let skipped = 0
+  // 組み替えに失敗した報。**取得元ではなく電文として数える** ―― 失ったのが「1 通」と
+  // 分かっているため（イベント丸ごとを失う failedSources とは単位が違う）。
+  // **日ごとに数える**（理由は `utils/telegramLoss.ts` の `skippedByDay`）。
+  const skipCounter = createSkipCounter()
   await mapWithLimit(targets, BODY_CONCURRENCY, async (ev) => {
     try {
       // **`BODY_CONCURRENCY` は 8 だが、`getJson` が `api.dmdata.jp` の門（500ms）で
@@ -531,7 +555,7 @@ async function listEewTelegrams(
             // 実測では常に付いてくるが、無ければ XML の在り処が分からず読めない。
             // 黙って捨てると「取りこぼし 0 件」の表示のまま報が欠ける。
             log.warn(`[replay] EEW の電文に originalId が無く XML を引けないためスキップ id=${tg.id}`)
-            skipped++
+            skipCounter.add(skipDayOf(tg.receivedTime))
             continue
           }
           items.push({ ...tg, id: xmlId, originalId: undefined, url: `${TELEGRAM_DATA_BASE}${xmlId}` })
@@ -545,13 +569,27 @@ async function listEewTelegrams(
       failedSources.push(`eew:${ev.eventId}`)
     }
   })
-  return { items, failedSources, skipped }
+  return { items, failedSources, skippedByDay: skipCounter.toMap() }
 }
 
 export interface LiveReplayResult {
   entries: ReplayEntry[]
-  /** 取り込めなかった電文の数。 */
-  skipped: number
+  /**
+   * 取り込めなかった電文の数を JST 日ごとに（理由は `utils/telegramLoss.ts` の `skippedByDay`）。
+   *
+   * **窓の中で落ちた分だけ**（本体を読めない・パースできない・断片が揃わない）。窓は
+   * 重ならないので 1 通はどれか 1 つの窓にしか入らず、呼び出し元は足し合わせてよい。
+   */
+  skippedByDay: ReadonlyMap<string, number>
+  /**
+   * 窓を見る前に落ちた電文の数を JST 日ごとに。
+   *
+   * **`skippedByDay` と分ける。** こちらは一覧に載っている電文の構造異常（受信時刻・発表時刻が
+   * 読めない）と EEW の全報を組み立てる段で落ちた分で、**その日を走査すれば窓に関わらず
+   * 毎回同じ顔ぶれが出る**。呼び出し元は同じ日の 2 度目以降を報告しない側へ回す
+   * （→ `dmdataReplay.ts` の `reportedReplaySkipCounts`）。
+   */
+  scanSkippedByDay: ReadonlyMap<string, number>
   /**
    * 読めなかった取得元の識別子。
    *
@@ -590,7 +628,9 @@ export async function fetchLiveReplayEntries(
   days: string[],
   includeTest: boolean,
 ): Promise<LiveReplayResult> {
-  if (days.length === 0) return { entries: [], skipped: 0, failedSources: [], rateLimitedTelegrams: 0 }
+  if (days.length === 0) {
+    return { entries: [], skippedByDay: new Map(), scanSkippedByDay: new Map(), failedSources: [], rateLimitedTelegrams: 0 }
+  }
   const daySet = new Set(days)
   const { from: utcFrom, to: utcTo } = utcRangeForJstDates(days)
 
@@ -617,22 +657,28 @@ export async function fetchLiveReplayEntries(
     return fallback
   }
   const telegramList = take(settled[0], 'live-telegram', [] as TelegramListItem[])
-  const eew = take(settled[1], 'live-eew', { items: [] as TelegramListItem[], failedSources: [] as string[], skipped: 0 })
+  const eew = take(settled[1], 'live-eew', {
+    items: [] as TelegramListItem[], failedSources: [] as string[],
+    skippedByDay: new Map<string, number>() as ReadonlyMap<string, number>,
+  })
   // 2 本とも引けなければ、その日ぶんは 1 通も取れていない。呼び出し元が「その日の取得元が
   // 読めなかった」として扱えるよう投げる（部分的に取れた場合と区別が付かなくなるため）。
   if (failedListCount === settled.length) {
     throw new Error(`Live fetch failed: 当日経路の一覧をすべて取得できませんでした（日=${dayLabel}）`)
   }
 
-  // EEW の一覧を組み立てる段で落ちた報も取りこぼしに含める。
-  let skipped = eew.skipped
+  // EEW の一覧を組み立てる段で落ちた報も取りこぼしに含める。**窓を見る前の分**なので
+  // `scanSkipCounter` 側（理由は `LiveReplayResult.scanSkippedByDay`）。
+  const skipCounter = createSkipCounter()
+  const scanSkipCounter = createSkipCounter()
+  scanSkipCounter.addAll(eew.skippedByDay)
   /** 429 の窓で見送った電文の数。**取りこぼしとは別に数える**（待てば取れる）。 */
   let rateLimitedTelegrams = 0
   // EEW は /v2/gd/eew から来るが、XML 版を指す形へ組み替えてあるので同じ判定に掛けられる。
   const targets: TelegramListItem[] = []
   for (const item of [...telegramList, ...eew.items]) {
     const verdict = classifyTelegram(item, fromTime, toTime, daySet, includeTest)
-    if (verdict === 'malformed') skipped++
+    if (verdict === 'malformed') scanSkipCounter.add(skipDayOf(item.receivedTime))
     else if (verdict === 'include') targets.push(item)
   }
 
@@ -663,7 +709,7 @@ export async function fetchLiveReplayEntries(
         const binPayload = buildBinaryPayload(headType, joined, item.id, item.head.time)
         if (!binPayload) {
           log.warn(`[replay] 二進電文の読み取りに失敗しスキップ id=${item.id} type=${headType}`)
-          skipped++
+          skipCounter.add(skipDayOf(item.receivedTime))
           return
         }
         // **試験報は取りこぼしに数えない**（正常な配信。非 XML 電文は `item.head.test` で
@@ -682,7 +728,7 @@ export async function fetchLiveReplayEntries(
       const payload = buildXmlPayload(headType, await fetchBody(item.url, apiKey))
       if (!payload) {
         log.warn(`[replay] 電文のパースに失敗しスキップ id=${item.id} type=${headType}`)
-        skipped++
+        skipCounter.add(skipDayOf(item.receivedTime))
         return
       }
       // 受信時刻はミリ秒精度。アーカイブ経路がファイル名の 17 桁から取っている値と同じもので、
@@ -733,7 +779,7 @@ export async function fetchLiveReplayEntries(
         if (rateLimitedBinaryKeys.delete(key)) rateLimitedTelegrams--
         countedBinaryKeys.add(key)
       }
-      skipped++
+      skipCounter.add(skipDayOf(item.receivedTime))
     }
   })
 
@@ -746,13 +792,17 @@ export async function fetchLiveReplayEntries(
     // 「こちらが待っている」ことなので恒久的な喪失ではない（既に `rateLimitedTelegrams` で
     // 数えている）。ここで数えると同じ電文が両方の枠に入る
     if (rateLimitedBinaryKeys.has(key)) continue
+    // **鍵からは日を復元できない**ので不明扱い（鍵は種別と発表時刻から作った文字列）。
     log.warn(`[replay] 二進電文の断片が揃いませんでした（分布は出ません）key=${key}`)
-    skipped++
+    skipCounter.add(UNKNOWN_SKIP_DAY)
   }
 
   const failedSources = [...listFailures, ...eew.failedSources]
-  log.info(`[replay] アーカイブ未生成の日を当日経路で補完 日=${dayLabel} 電文=${entries.length} 取りこぼし=${skipped} 読めなかった取得元=${failedSources.length}`)
-  return { entries, skipped, failedSources, rateLimitedTelegrams }
+  const skippedByDay = skipCounter.toMap()
+  const scanSkippedByDay = scanSkipCounter.toMap()
+  const skippedTotal = [...skippedByDay.values(), ...scanSkippedByDay.values()].reduce((a, b) => a + b, 0)
+  log.info(`[replay] アーカイブ未生成の日を当日経路で補完 日=${dayLabel} 電文=${entries.length} 取りこぼし=${skippedTotal} 読めなかった取得元=${failedSources.length}`)
+  return { entries, skippedByDay, scanSkippedByDay, failedSources, rateLimitedTelegrams }
 }
 
 /**
@@ -774,8 +824,8 @@ export async function fetchLiveQuakeTelegrams(
   includeTest: boolean,
 ): Promise<{
   quakes: JMAQuake[]; tsunamis: JMATsunami[]; extras: ReplayEntry[]
-  skipped: number
-  /** 429 の窓で見送った電文の数（`skipped` とは別に数える。理由は `LiveReplayResult`）。 */
+  skippedByDay: ReadonlyMap<string, number>
+  /** 429 の窓で見送った電文の数（取りこぼしとは別に数える。理由は `LiveReplayResult`）。 */
   rateLimitedTelegrams: number
 }> {
   const daySet = new Set([day])
@@ -792,7 +842,8 @@ export async function fetchLiveQuakeTelegrams(
   const until = new Date(before.getTime() + 1)
 
   const list = await listTelegrams(apiKey, utcFrom, utcTo, includeTest)
-  let skipped = 0
+  // **この関数は 1 日ぶんを担当する**（引数 `day`）ので、取りこぼしはすべてその日に付く。
+  const skipCounter = createSkipCounter()
   /** 429 の窓で見送った電文の数。**取りこぼしとは別に数える**（待てば取れる）。 */
   let rateLimitedTelegrams = 0
   const targets: TelegramListItem[] = []
@@ -804,7 +855,10 @@ export async function fetchLiveQuakeTelegrams(
     // 発表中の津波が「アーカイブのある日に出たものだけ」になる。
     if (!QUAKE_TYPES.has(type) && !HISTORY_EXTRA_TYPES.has(type) && !TSUNAMI_TYPES.has(type)) continue
     const verdict = classifyTelegram(item, windowFrom, until, daySet, includeTest)
-    if (verdict === 'malformed') skipped++
+    // **この関数は 1 日ぶんを担当するので `day` で数える**（`skipDayOf` は複数日を担当する
+    // `fetchLiveReplayEntries` 用）。`malformed` は受信時刻が読めないときにも成立するので、
+    // そちらから導くと**担当日が分かっているのに `UNKNOWN_SKIP_DAY` へ落ちる**。
+    if (verdict === 'malformed') skipCounter.add(day)
     else if (verdict === 'include') targets.push(item)
   }
 
@@ -817,7 +871,7 @@ export async function fetchLiveQuakeTelegrams(
       if (HISTORY_EXTRA_TYPES.has(item.head.type)) {
         if (payload === null || historyExtraKey(payload) === null) {
           log.warn(`[replay] 履歴用電文のパースに失敗しスキップ id=${item.id} type=${item.head.type}`)
-          skipped++
+          skipCounter.add(day)
           return
         }
         // 発表時刻を入れておく（呼び出し側が種別ごとに最新 1 通へ畳むときの比較に使う）。
@@ -827,7 +881,7 @@ export async function fetchLiveQuakeTelegrams(
       if (TSUNAMI_TYPES.has(item.head.type)) {
         if (payload?.kind !== 'event' || payload.event.kind !== 'tsunami') {
           log.warn(`[replay] 履歴用電文のパースに失敗しスキップ id=${item.id} type=${item.head.type}`)
-          skipped++
+          skipCounter.add(day)
           return
         }
         tsunamis.push(payload.event)
@@ -835,7 +889,7 @@ export async function fetchLiveQuakeTelegrams(
       }
       if (payload?.kind !== 'event' || payload.event.kind !== 'quake') {
         log.warn(`[replay] 履歴用電文のパースに失敗しスキップ id=${item.id} type=${item.head.type}`)
-        skipped++
+        skipCounter.add(day)
         return
       }
       quakes.push(payload.event)
@@ -850,8 +904,8 @@ export async function fetchLiveQuakeTelegrams(
         return
       }
       log.error(`[replay] 履歴用電文の取り込みに失敗しスキップ id=${item.id} type=${item.head.type}`, e)
-      skipped++
+      skipCounter.add(day)
     }
   })
-  return { quakes, tsunamis, extras, skipped, rateLimitedTelegrams }
+  return { quakes, tsunamis, extras, skippedByDay: skipCounter.toMap(), rateLimitedTelegrams }
 }
