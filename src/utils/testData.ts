@@ -1810,6 +1810,39 @@ export function createTestTsunamiMaxHeightTimeUpdate(prev: JMATsunami): JMATsuna
   }
 }
 
+/** 第1波の訂正テストで、到達時刻を直す観測点。 */
+const FIRST_WAVE_UPDATE_STATION = '室蘭港'
+
+/**
+ * 第1波の到達時刻だけが訂正された観測情報の報（`FirstHeight/Revise` = 更新）。
+ *
+ * 2024 年能登半島地震の 17:09 と同じ形 —— 佐渡市鷲崎の第1波の到達時刻が 16時10分 から
+ * 16時32分 へ 22 分ぶん動いた。**第1波は点ごとに一度きりの事実に見えるが、気象庁は訂正する。**
+ * 一度読んだら二度と読まない作りだと、誤った時刻を言ったまま訂正が届かない
+ * （→ `tsunamiFirstWaveUpdateToSegments`）。
+ *
+ * **1 観測点だけを直す。** 全部を一度に動かすと、どの地点が訂正されたのか画面から読み取れない。
+ * 「○m以上」の昇格（`OVER_UPGRADE_STATION`）とは別の地点にして、段ごとに動く場所を分ける。
+ *
+ * **押し引きは変えない。** 実電文で観測できた訂正は到達時刻だけで、押し引きが変わる形は
+ * 見ていない（既読の鍵には押し引きも含めてあるので、そちらは実装側の備え）。
+ */
+export function createTestTsunamiFirstWaveUpdate(prev: JMATsunami): JMATsunami {
+  const report = asObservationReport(prev, 'firstwave')
+  return {
+    ...report,
+    observations: (prev.observations ?? []).map(o =>
+      o.name === FIRST_WAVE_UPDATE_STATION && o.arrivalTime
+        ? {
+          ...o,
+          // 22 分ぶん後ろへ直す（実電文と同じ向き・同じ幅）。
+          arrivalTime: new Date(new Date(o.arrivalTime).getTime() + 22 * 60000).toISOString(),
+          firstHeightRevise: '更新',
+        }
+        : o),
+  }
+}
+
 /**
  * 波高の値は据え置きのまま、「○m以上」（`over`）だけが後から付く観測情報の報。
  *
@@ -2188,7 +2221,11 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
       // **欠測とは別物** —— 津波は観測できていて到達も確定しており、時刻だけが出せない。
       // 時刻の欄に「到達時刻不明」と理由が出る（`utils/tsunami.ts` の
       // `observationArrivalFallbackText`）。到達確認の扱いは欠測と違って抑制しない。
-      { name: '久慈港', districtCode: '210', districtName: '岩手県', height: { value: 4.4, description: '4.4m' }, initial: '押し', maxHeightDateTime: t(-2), condition: { firstWaveUnidentifiable: true } },
+      // **押し引き（`initial`）は持たせない。** 第1波を識別できていないので、気象庁も押しか
+      // 引きかを書けない。実電文でも `FirstHeight` の中身は「到達時刻＋押し引き」か
+      // 「`Condition` だけ」のどちらかで、両方が同居する形は観測していない
+      // （2024-01-01 の VTSE51/52 全 76 通を走査。1 地震ぶんなので「起きない」とまでは言えない）。
+      { name: '久慈港', districtCode: '210', districtName: '岩手県', height: { value: 4.4, description: '4.4m' }, maxHeightDateTime: t(-2), condition: { firstWaveUnidentifiable: true } },
       // 津波注意報の区域で、これまでの最大波がごく小さい（数値を発表しない）。
       { name: '釧路',   districtCode: '100', districtName: '北海道太平洋沿岸東部', arrivalTime: t(-2), initial: '押し', condition: { weak: true } },
       // 津波予報まで下がった区域の実測。等級が下がっても観測は続く（区域の側は上の `areas` を見る）。

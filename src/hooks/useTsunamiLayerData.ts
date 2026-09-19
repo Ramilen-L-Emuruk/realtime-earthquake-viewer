@@ -3,7 +3,7 @@ import type { JMATsunami, TsunamiGrade, TsunamiObservation } from '../types/eart
 import type { LatLng } from '../utils/tsunamiZones'
 import { useTsunamiZones } from './useTsunamiZones'
 import { useTsunamiObsCoords } from './useTsunamiObsCoords'
-import { GRADE_PRIORITY, isObservationMissing } from '../utils/tsunami'
+import { GRADE_PRIORITY, isObservationMissing, type ObsUpdateMark } from '../utils/tsunami'
 import { tsunamiObsBarColor } from '../components/Map/gl/tsunamiObsBarStyle'
 import { log } from '../utils/logger'
 
@@ -84,7 +84,7 @@ const OBS_MIN_PX = 8
 export function useTsunamiLayerData(
   tsunamis: JMATsunami[],
   observations: TsunamiObservation[],
-  obsUpdateStatus?: Map<string, 'new' | 'updated'>,
+  obsUpdateStatus?: Map<string, ObsUpdateMark>,
 ): {
   tsunamiLines: TsunamiLine[]
   observationBars: TsunamiObsBar[]

@@ -130,8 +130,13 @@ function makeTsunamiObs(
     id?: string
     name?: string
     value?: number
-    /** 観測点を累積で並べる（実電文は既報の観測点も載せ続ける）。 */
-    points?: { name: string; value: number }[]
+    /**
+     * 観測点を累積で並べる（実電文は既報の観測点も載せ続ける）。
+     *
+     * 最大波の時刻と `Revise` は**観測点ごとに**上書きできる。同じ報の中で「波高が上がった
+     * 観測点」と「時刻だけが動いた観測点」を同居させるために要る（実配信ではその形が普通）。
+     */
+    points?: { name: string; value: number; maxHeightDateTime?: string; maxHeightRevise?: string; arrivalTime?: string; initial?: string }[]
     /** 最大波の観測時刻（`MaxHeight/DateTime`）。 */
     maxHeightDateTime?: string
     /** 続報での位置づけ（`MaxHeight/Revise`）。「更新」で最大波の時刻だけが動いた報を作れる。 */
@@ -150,8 +155,16 @@ function makeTsunamiObs(
       name: p.name,
       height: { value: p.value, description: `${p.value}m` },
       districtCode: '360', districtName: '石川県能登',
-      ...(over.maxHeightDateTime ? { maxHeightDateTime: over.maxHeightDateTime } : {}),
-      ...(over.maxHeightRevise ? { maxHeightRevise: over.maxHeightRevise } : {}),
+      ...((p as { maxHeightDateTime?: string }).maxHeightDateTime ?? over.maxHeightDateTime
+        ? { maxHeightDateTime: (p as { maxHeightDateTime?: string }).maxHeightDateTime ?? over.maxHeightDateTime }
+        : {}),
+      ...((p as { maxHeightRevise?: string }).maxHeightRevise ?? over.maxHeightRevise
+        ? { maxHeightRevise: (p as { maxHeightRevise?: string }).maxHeightRevise ?? over.maxHeightRevise }
+        : {}),
+      // 第1波（到達時刻・押し引き）。観測点ごとに付け外しできる —— 「波高を先に声にした地点へ、
+      // あとから第1波が付く」形を作るために要る。
+      ...((p as { arrivalTime?: string }).arrivalTime ? { arrivalTime: (p as { arrivalTime?: string }).arrivalTime } : {}),
+      ...((p as { initial?: string }).initial ? { initial: (p as { initial?: string }).initial } : {}),
     })),
   } as unknown as JMATsunami
 }
@@ -1390,7 +1403,105 @@ describe('読み上げた観測点の既読', () => {
 
     handle(makeTsunamiObs({ id: 'tsunami-obs-2', maxHeightDateTime: '2026-01-01T12:05:00Z', maxHeightRevise: '更新' }))
     await settle()
-    expect(spokenTexts()[1]).toBe('津波観測情報。石川県能登、輪島港で、最大波の観測時刻が更新されました。')
+    expect(spokenTexts()[1]).toBe('津波観測情報。次の地点で最大波の観測時刻が更新されました。石川県能登、輪島港で21時5分へ更新されました。')
+  })
+
+  // 正: 同じ報で波高が上がった観測点がいても、時刻だけが動いた観測点を譲らない。
+  //
+  // **かつては譲っていた**（波高の文があるときは時刻の群を落としていた）。譲られた側は
+  // 「丸めの中で育っている」という事実を運んでいて、実配信ではそれが 82% の確率でその後の
+  // 波高上昇に繋がる —— 収束の印ではなく継続の印なので落とせない
+  // （→ docs/spec/tsunami-spec.md §10「変化を伝えない続報」）。
+  it('波高が上がった観測点がいても、時刻だけ動いた観測点を譲らない', async () => {
+    const handle = setup()
+    handle(makeTsunamiObs({
+      points: [
+        { name: '輪島港', value: 0.3, maxHeightDateTime: '2026-01-01T11:50:00Z' },
+        { name: '珠洲市長橋', value: 0.2, maxHeightDateTime: '2026-01-01T11:50:00Z' },
+      ],
+    }))
+    await settle()
+    finishSpeech(0)
+    await flush()
+
+    handle(makeTsunamiObs({
+      id: 'tsunami-obs-2',
+      points: [
+        // 波高が上がった
+        { name: '輪島港', value: 0.5, maxHeightDateTime: '2026-01-01T12:05:00Z', maxHeightRevise: '更新' },
+        // 波高は据え置きで時刻だけ動いた
+        { name: '珠洲市長橋', value: 0.2, maxHeightDateTime: '2026-01-01T12:10:00Z', maxHeightRevise: '更新' },
+      ],
+    }))
+    await settle()
+    const t = spokenTexts()[1]
+    expect(t).toContain('次の地点で最大波が更新されました。石川県能登、輪島港で21時5分に0.5メートルに更新されました。')
+    expect(t).toContain('また、次の地点で最大波の観測時刻が更新されました。石川県能登、珠洲市長橋で21時10分へ更新されました。')
+  })
+
+  // 正: **波高を先に声にした地点へ、あとから第1波が付いた報を読む。**
+  //
+  // `FirstHeight` が `Condition`「第１波識別不能」だけだった観測点が、続報で到達時刻を得る形。
+  // 波高が上がらないので波高の文に入らず、`height` を持つので到達確認の文にも入らない ——
+  // **受け皿が無いと一度も声にならないうえ、記録も空のままなので以後の本物の訂正まで永久に
+  // 読めなくなる**（既読が `undefined` から動かないため）。
+  it('波高を先に読んだ地点へ、あとから付いた第1波を読む', async () => {
+    const handle = setup()
+    // 第1波を識別できていない状態で波高だけが届く
+    handle(makeTsunamiObs({ points: [{ name: '久慈港', value: 4.4, maxHeightDateTime: '2026-01-01T11:50:00Z' }] }))
+    await settle()
+    expect(spokenTexts()[0]).toContain('4.4メートル')
+    finishSpeech(0)
+    await flush()
+
+    // 波高も最大波の時刻も据え置きで、第1波だけが付いた続報
+    handle(makeTsunamiObs({
+      id: 'tsunami-obs-2',
+      points: [{
+        name: '久慈港', value: 4.4, maxHeightDateTime: '2026-01-01T11:50:00Z',
+        arrivalTime: '2026-01-01T11:40:00Z', initial: '押し',
+      }],
+    }))
+    await settle()
+    expect(spokenTexts()[1]).toContain('次の地点で第一波の到達を確認しました。')
+    expect(spokenTexts()[1]).toContain('久慈港で20時40分に押し波を観測しました。')
+    // **「変わりはありません」へ落ちない** —— 電文は新しい事実を運んでいる
+    expect(spokenTexts()[1]).not.toContain('変わりはありません')
+  })
+
+  // 安全弁: いま読んだ第1波は既読になり、次の報では読み直さない（毎報繰り返さない）
+  it('読んだ第1波は次の報で読み直さない', async () => {
+    const handle = setup()
+    const withFirstWave = {
+      name: '久慈港', value: 4.4, maxHeightDateTime: '2026-01-01T11:50:00Z',
+      arrivalTime: '2026-01-01T11:40:00Z', initial: '押し',
+    }
+    handle(makeTsunamiObs({ points: [{ name: '久慈港', value: 4.4, maxHeightDateTime: '2026-01-01T11:50:00Z' }] }))
+    await settle()
+    finishSpeech(0)
+    await flush()
+    handle(makeTsunamiObs({ id: 'tsunami-obs-2', points: [withFirstWave] }))
+    await settle()
+    finishSpeech(1)
+    await flush()
+
+    handle(makeTsunamiObs({ id: 'tsunami-obs-3', points: [withFirstWave] }))
+    await settle()
+    expect(spokenTexts()[2]).not.toContain('第一波')
+  })
+
+  // 安全弁: 時刻だけの群は**波高を言わない**。言い直すと、値が上がったのか時刻だけが
+  // 動いたのかを聞き分けられなくなる（群を分けている意味がそこにある）。
+  it('時刻だけの群は波高を読まない', async () => {
+    const handle = setup()
+    handle(makeTsunamiObs({ maxHeightDateTime: '2026-01-01T11:50:00Z' }))
+    await settle()
+    finishSpeech(0)
+    await flush()
+
+    handle(makeTsunamiObs({ id: 'tsunami-obs-2', maxHeightDateTime: '2026-01-01T12:05:00Z', maxHeightRevise: '更新' }))
+    await settle()
+    expect(spokenTexts()[1]).not.toContain('0.3メートル')
   })
 
   // 安全弁: 波高の文を読んだ観測点の時刻も既読にする。**記録しないと、次の静穏な報で同じ
