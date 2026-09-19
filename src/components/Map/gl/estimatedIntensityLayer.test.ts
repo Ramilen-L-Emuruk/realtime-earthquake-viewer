@@ -51,6 +51,11 @@ function makeData(si: number, grades: JMAEstimatedIntensityGrade[] = GRADES): JM
   }
 }
 
+/** `makeGl` が配る定数と同じ値（実装が渡す先を見分けるためだけのもの）。 */
+const GL_MIN_FILTER = 3
+const GL_MAG_FILTER = 4
+const GL_NEAREST = 8
+
 interface GlOptions {
   /** `createTexture` / `createBuffer` を null で返す（文脈を失っているときの挙動）。 */
   resourcesFail?: boolean
@@ -70,12 +75,21 @@ interface MockGl {
     /** 行の詰め方が合わず、WebGL なら転送を拒否されていた回数（下記 `texImage2D` を参照）。 */
     unpackRejected: number
   }
+  /**
+   * テクスチャごとに設定されたパラメータ（`texParameteri`）。鍵は作られた順の番号で、
+   * 1 が値テクスチャ・2 が凡例テクスチャ（実装がこの順に作る）。
+   */
+  texParams: Map<number, Record<number, number>>
 }
 
 function makeGl(opts: GlOptions = {}): MockGl {
   const counts = { drawElements: 0, texImage2D: 0, deleteTexture: 0, deleteBuffer: 0, unpackRejected: 0 }
   /** WebGL の既定値。実装が転送の前後で出し入れする。 */
   let unpackAlignment = 4
+  /** 作った順の番号でテクスチャを見分ける（`texParameteri` は「いま束ねているもの」に掛かる）。 */
+  let texSeq = 0
+  let boundTex: { texId: number } | null = null
+  const texParams = new Map<number, Record<number, number>>()
   const noop = () => {}
   const gl = {
     // 定数（値そのものに意味は無く、実装が渡す先を区別するだけ）。
@@ -113,10 +127,15 @@ function makeGl(opts: GlOptions = {}): MockGl {
     pixelStorei: (p: number, v: number) => {
       if (p === 29) unpackAlignment = v
     },
-    createTexture: () => (opts.resourcesFail ? null : {}),
+    createTexture: () => (opts.resourcesFail ? null : { texId: ++texSeq }),
     createBuffer: () => (opts.resourcesFail || opts.buffersFail ? null : {}),
-    bindTexture: noop,
-    texParameteri: noop,
+    bindTexture: (_target: number, tex: { texId: number } | null) => { boundTex = tex },
+    texParameteri: (_target: number, pname: number, value: number) => {
+      if (!boundTex) return
+      const rec = texParams.get(boundTex.texId) ?? {}
+      rec[pname] = value
+      texParams.set(boundTex.texId, rec)
+    },
     // **WebGL と同じ検証を入れてある。** 本物は 1 行が `UNPACK_ALIGNMENT` の倍数に
     // なっていることを要求し、渡された配列がそれに足りなければ**例外を投げずに**転送を
     // 拒否する（GL 内部のエラーになるだけ）。実測で 3x3 の RG8 は既定の境界（4）で
@@ -166,7 +185,7 @@ function makeGl(opts: GlOptions = {}): MockGl {
     },
     bindFramebuffer: noop,
   }
-  return { gl: gl as unknown as WebGL2RenderingContext, counts }
+  return { gl: gl as unknown as WebGL2RenderingContext, counts, texParams }
 }
 
 const MAP = {} as maplibregl.Map
@@ -195,6 +214,20 @@ describe('makeEstimatedIntensityLayer', () => {
     layer.layer.render(gl, ARGS)
     expect(counts.drawElements).toBe(1)
     expect(isBroken()).toBe(false)
+  })
+
+  // 正: **値テクスチャを最近傍で引く。** 線形補間だと隣り合うセルのあいだに電文が持たない
+  // 値が作られ、狭い範囲ほど面積と形が崩れる（実測は docs/spec/map-rendering-spec.md §19）。
+  // 対照: 凡例テクスチャも最近傍のまま——こちらを補間すると階級の色そのものが混ざる。
+  it('値テクスチャも凡例テクスチャも最近傍で引く', () => {
+    const { gl, texParams } = makeGl()
+    const layer = makeEstimatedIntensityLayer()
+    layer.layer.onAdd!(MAP, gl)
+    // 1 が値テクスチャ・2 が凡例テクスチャ（実装がこの順に作る）。
+    for (const texId of [1, 2]) {
+      expect(texParams.get(texId)?.[GL_MIN_FILTER]).toBe(GL_NEAREST)
+      expect(texParams.get(texId)?.[GL_MAG_FILTER]).toBe(GL_NEAREST)
+    }
   })
 
   // 正: **幅が奇数だと既定の境界（4）では転送ごと拒否される。** セル 1 つの分布は
