@@ -42,6 +42,10 @@ const prewarmMock = vi.fn((_url: string, text: string) => ({
 vi.mock('../utils/voicevox', () => ({
   speakWithVoicevox: (...args: unknown[]) => speakMock(...(args as [string, string])),
   prewarmVoicevox: (...args: unknown[]) => prewarmMock(...(args as [string, string])),
+  // 待ちの上限は「声が出ている間は計時しない」形なので、実装がこれを呼ぶ。**このファイルは
+  // 上限そのものを検査しないので、常に「鳴っていない」で足りる** —— 解決しない発話を置いて
+  // いる箇所はどれも合成の無応答を模したもので、そのときは実物も偽を返す。
+  isAudioPlaying: () => false,
 }))
 // 音の実体だけ差し替える。**通知音との間（`ttsDelayFor`）は本物を使う** ―― 読み上げの順番と
 // 待ち合わせはこの間の長さで決まるため、模擬すると検証の前提が変わる。
@@ -70,10 +74,15 @@ async function settle() {
 /**
  * 指定時間だけ進める。
  *
- * **EEW チェーンの待ちは `EEW_SPEECH_CHAIN_MAX_WAIT_MS`（8 秒）で打ち切られる**ため、
- * 「EEW を読んでいる間」を観察したいテストでは 8 秒を超えて進めてはいけない。
- * 超えると実装が「EEW の発話が異常に長引いた」と判断して待ちを解放し、
- * 後続が正しく割り込んでくる（それ自体は仕様どおりの挙動）。
+ * **このファイルでは EEW チェーンの待ちが `EEW_SPEECH_CHAIN_MAX_WAIT_MS`（8 秒）で
+ * 打ち切られる**ため、「EEW を読んでいる間」を観察したいテストでは 8 秒を超えて進めては
+ * いけない。超えると実装が「EEW の発話が異常に長引いた」と判断して待ちを解放し、後続が
+ * 正しく割り込んでくる（それ自体は仕様どおりの挙動）。
+ *
+ * **実運用では 8 秒ちょうどで切れるとは限らない。** 音が出ている間は計時しないので、
+ * 長い読み上げは鳴り終わるまで待つ（→ `useLiveEventHandler` の `capSpeechWait`）。
+ * ここで 8 秒と言い切れるのは、このファイルが `isAudioPlaying` を常に偽でモックして
+ * いるから。延長そのものの挙動は `useLiveEventHandler.ttsPriority.test.ts` が検査する。
  */
 async function advance(ms: number) {
   await vi.advanceTimersByTimeAsync(ms)

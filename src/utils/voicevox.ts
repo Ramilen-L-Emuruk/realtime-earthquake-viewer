@@ -28,6 +28,9 @@ type AccentPhrase = Record<string, unknown>
 
 // 再生中のソース一覧（パイプライン再生中は複数になる）
 let activeSources: AudioBufferSourceNode[] = []
+// 最後に音源が空になった時刻（{@link isAudioPlaying} がチャンクの切れ目を跨ぐために使う）。
+// 0 は「一度も鳴っていない」。
+let lastAudioEndedAt = 0
 // 現在のセッション ID。新しい読み上げが来たら古いパイプラインを打ち切るために使う
 let currentSessionId = 0
 // 現在のセッションで進行中の fetch を一括中断するための AbortController（AUD-4）。
@@ -1057,6 +1060,32 @@ export function getSpeechClock(): number | null {
   return getAudioContext()?.currentTime ?? null
 }
 
+/** 音が途切れてから「まだ鳴っている」と見なす猶予（→ {@link isAudioPlaying}）。 */
+const AUDIO_GAP_GRACE_MS = 1000
+
+/**
+ * いま**音が出ているか**（合成待ちは含まない）。
+ *
+ * 使うのは**鳴っている読み上げを切らないための待ち**（`useLiveEventHandler` の
+ * `capSpeechWait`）。{@link isSpeaking} とは問いが違うので使い分けること ——
+ * あちらは「読み上げの処理中か」で合成待ちも真になる。**待ちの判定にあちらを使うと、
+ * 合成が無応答でハングしたときにこそ「鳴っている」と誤認して待ち続ける**（打ち切りの
+ * 保険が要るのは、まさにその場面）。
+ *
+ * **チャンクの切れ目は跨ぐ。** 正常な読み上げは次のチャンクを先行合成して詰めて鳴らすので
+ * 切れ目はほぼ無いが、合成が少し遅れると一瞬だけ音源が空になる。そこで偽へ落とすと、
+ * 鳴っている読み上げを切らないという目的を取りこぼす。**逆に猶予を合成の上限
+ * （{@link CHUNK_SYNTH_TIMEOUT_MS}）まで延ばさないのは、そこまで音が途切れているなら
+ * 「詰まっている」と見て打ち切る側が正しいため。**
+ */
+export function isAudioPlaying(): boolean {
+  if (activeSources.length > 0) return true
+  // 一度も鳴っていなければ猶予も無い（`performance.now()` はページ読み込みからの経過なので、
+  // 起動直後は差が小さく、初期値 0 のままだと真に見えてしまう）
+  if (lastAudioEndedAt === 0) return false
+  return performance.now() - lastAudioEndedAt <= AUDIO_GAP_GRACE_MS
+}
+
 /**
  * いま読み上げの最中か（合成待ち・チャンクの隙間も含む）。
  *
@@ -1135,6 +1164,10 @@ export function stopSpeech(): void {
     try { src.stop() } catch { /* already stopped */ }
   }
   activeSources = []
+  // **ここでも控える。** `onended` は `stop()` から非同期に発火するので、それだけに任せると
+  // 止めた直後の一瞬だけ {@link isAudioPlaying} が「まだ鳴っている」と答える
+  // （直前のチャンクの切れ目で起点が更新されていた場合）。
+  lastAudioEndedAt = performance.now()
   if (currentAbortController) {
     try { currentAbortController.abort() } catch { /* 二重 abort は無視 */ }
   }
@@ -1435,6 +1468,8 @@ async function speakOnce(
     source.onended = () => {
       entry.ended = true
       activeSources = activeSources.filter(s => s !== source)
+      // 空になった瞬間を控える（→ {@link isAudioPlaying} の猶予の起点）
+      if (activeSources.length === 0) lastAudioEndedAt = performance.now()
     }
     source.start(startAt)
     // **追従の通知で読み上げを壊さない。** この関数は例外を投げない契約（VOICEVOX 未起動・
