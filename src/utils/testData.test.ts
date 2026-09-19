@@ -227,13 +227,37 @@ describe('地震情報テストの points 形状', () => {
   // 実電文の形（震度速報は震源を持たない・報番号は震源・震度情報だけ・鍵は報ごとに違う）を
   // 固定する（→ docs/spec/quake-spec.md §8「見出しには受け取った種別を並べる」）。
   describe('種別遷移テスト', () => {
-    // 正: 能登の前震と同じ順序に、完全版のあとに届く震度速報（6 通目）を足した 6 通を返す。
-    it('震度速報 → 震源情報 → 震度速報 → 震源・震度情報 → その続報 → 完全版後の震度速報 の順に 6 通を返す', () => {
+    // 正: 能登の前震と同じ順序に、完全版のあとに届く震度速報（6 通目）と
+    // 震度が上がった続報（7 通目）を足した 7 通を返す。
+    it('震度速報 → 震源情報 → 震度速報 → 震源・震度情報 → その続報 → 完全版後の震度速報 → 震度が上がった続報 の順に 7 通を返す', () => {
       expect(createTestQuakeReportSequence(true).map(q => q.issue.type))
-        .toEqual(['震度速報', '震源情報', '震度速報', '震源・震度情報', '震源・震度情報', '震度速報'])
+        .toEqual(['震度速報', '震源情報', '震度速報', '震源・震度情報', '震源・震度情報', '震度速報', '震源・震度情報'])
       // standard 版は同じ内容の種別名が違う（P2PQuake の DetailScale）。
       expect(createTestQuakeReportSequence(false).map(q => q.issue.type))
-        .toEqual(['震度速報', '震源情報', '震度速報', '各地の震度情報', '各地の震度情報', '震度速報'])
+        .toEqual(['震度速報', '震源情報', '震度速報', '各地の震度情報', '各地の震度情報', '震度速報', '各地の震度情報'])
+    })
+
+    // 正: 7 通目で**観測点の震度が上がり、区域と最大震度も追随する**。カードの更新の印
+    // （黄＝値が動いた）を実機で確かめられる入口がここしかないので、形を固定する
+    // （→ docs/spec/quake-spec.md §8「カードの更新の印」）。
+    it.each(QUAKE_VARIANTS)('7 通目は観測点の震度が上がる（$label 版）', ({ useDmdataShape }) => {
+      const reports = createTestQuakeReportSequence(useDmdataShape)
+      const followUp = reports[4]
+      const raised = reports[6]
+      const scaleByAddr = (q: JMAQuake) =>
+        new Map(q.points.filter(p => !p.isArea).map(p => [p.addr, p.scale]))
+      const before = scaleByAddr(followUp)
+      const after = scaleByAddr(raised)
+      const risen = [...after].filter(([addr, scale]) => (before.get(addr) ?? -1) < scale)
+      expect(risen.length).toBeGreaterThan(0)
+      // 正: **下がる観測点も混ぜる。** 印は向きで色が変わるので、上がる形しか無いと
+      // 下がった側の色を実機で一度も確かめられない。
+      const fallen = [...after].filter(([addr, scale]) => (before.get(addr) ?? -1) > scale)
+      expect(fallen.length).toBeGreaterThan(0)
+      // 対照: 動いたのは一部だけ（全部が動くと印が一覧を埋め、確かめたい形にならない）。
+      expect(risen.length + fallen.length).toBeLessThan(before.size)
+      // 安全弁: 顔ぶれは増えも減りもしない（増やすと初出の印と混ざって見分けが付かない）。
+      expect([...after.keys()].sort()).toEqual([...before.keys()].sort())
     })
 
     // 正: 5 通目は**観測点と市町村だけが増え、区域の最大震度は動かない**。読み上げが
@@ -284,11 +308,11 @@ describe('地震情報テストの points 形状', () => {
       expect(headlineAfter(4)).toBe('震源・震度情報')
     })
 
-    // 安全弁: 鍵が報ごとに違うこと。**`id` は 6 通とも同じ**（`Head/Serial` が空の種別があるため）
+    // 安全弁: 鍵が報ごとに違うこと。**`id` は 7 通とも同じ**（`Head/Serial` が空の種別があるため）
     // なので、鍵を持たせないと 2 通目の震度速報が「同じ電文の再送」と見なされて数えられない。
-    it('一意鍵は報ごとに違い、id は 6 通とも同じ（実電文の形）', () => {
+    it('一意鍵は報ごとに違い、id は 7 通とも同じ（実電文の形）', () => {
       const reports = createTestQuakeReportSequence(true)
-      expect(new Set(reports.map(q => q.telegramKey)).size).toBe(6)
+      expect(new Set(reports.map(q => q.telegramKey)).size).toBe(7)
       expect(new Set(reports.map(q => q.id)).size).toBe(1)
       expect(reports[0].id.endsWith('-1')).toBe(true)
     })
@@ -297,7 +321,7 @@ describe('地震情報テストの points 形状', () => {
     // 続報では 1 つ進む。
     it('報番号を持つのは震源・震度情報だけ', () => {
       expect(createTestQuakeReportSequence(true).map(q => q.reportSerial))
-        .toEqual([undefined, undefined, undefined, 1, 2, undefined])
+        .toEqual([undefined, undefined, undefined, 1, 2, undefined, 3])
     })
 
     // 正: **6 通目（完全版のあとの震度速報）は据え置かれ、カードの中身を痩せさせない。**
@@ -388,7 +412,7 @@ describe('地震情報テストの points 形状', () => {
       expect(merged).toHaveLength(1)
       // 同じ種別を 2 通受け取るので通数が付く（→ docs/spec/quake-spec.md §8）。
       expect(reportsText(merged[0].reports, merged[0].issue.type))
-        .toBe(useDmdataShape ? '震源・震度情報#2' : '各地の震度情報#2')
+        .toBe(useDmdataShape ? '震源・震度情報#3' : '各地の震度情報#3')
       // 対の確認: 観測点まで届いている（震源・震度情報の中身が採られている）。
       expect(merged[0].points.some(p => !p.isArea)).toBe(true)
     })

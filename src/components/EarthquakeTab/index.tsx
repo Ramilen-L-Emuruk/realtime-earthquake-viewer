@@ -2,6 +2,7 @@ import { memo } from 'react'
 import type { JMAQuake, JMALpgm, JMAEstimatedIntensity } from '../../types/earthquake'
 import { EarthquakeCard } from './EarthquakeCard'
 import { extractQuakeEventId, quakeEventKey } from '../../utils/quakeMerge'
+import { lpgmMarkKey, type QuakeCardMarks } from '../../utils/quakeUpdateMark'
 import type { LatLng } from '../../utils/stationCoords'
 import {
   type TelegramLoss, formatHistoryLossNotice, HISTORY_LOAD_MORE_FAILED_NOTICE,
@@ -31,6 +32,11 @@ interface Props {
    */
   fetchThrottled: boolean
   lpgmByEventId: ReadonlyMap<string, JMALpgm>
+  /**
+   * カードの更新の印。鍵は地震が `quakeEventKey`、長周期が {@link lpgmMarkKey}。
+   * **同じ入れ物に入っているので、引くときは鍵の作り方を間違えないこと。**
+   */
+  updateMarks: ReadonlyMap<string, QuakeCardMarks>
   activeLpgmEventId: string | null
   onToggleLpgm: (eventId: string) => void
   /** アプリが持っている最新の推計震度分布図（IXAC41）。どのカードのものかはカード側で引き当てる。 */
@@ -82,7 +88,7 @@ function HistoryNotice({ tone, children }: { tone: 'loss' | 'info'; children: Re
 // 地震情報タブの右パネル。地震カードの一覧を表示し、クリックで地図表示対象を選択する。
 // 地図そのものは App が常時表示する。
 // React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
-export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, error, historyLoss, loadMoreFailed, fetchThrottled, lpgmByEventId, activeLpgmEventId, onToggleLpgm, estimatedIntensity, distributionQuakeKey, onToggleDistribution, unreceivedQuakeKey, onToggleUnreceived, onFocusMap, speakingTelegramTextSubject }: Props) {
+export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, error, historyLoss, loadMoreFailed, fetchThrottled, lpgmByEventId, updateMarks, activeLpgmEventId, onToggleLpgm, estimatedIntensity, distributionQuakeKey, onToggleDistribution, unreceivedQuakeKey, onToggleUnreceived, onFocusMap, speakingTelegramTextSubject }: Props) {
   // 履歴について知らせる帯。**4 つを別に持つ**（確定した損失／429 で見送った分／押し直せば
   // 回復しうる失敗／いま待っているだけ）。混ぜると、戻せない損失と戻せるものが同じ重さに見える。
   //
@@ -151,6 +157,8 @@ export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selected
           isSelected={quakeEventKey(quake) === selectedId}
           onSelect={() => onSelect(quakeEventKey(quake))}
           lpgm={lpgmByEventId.get(extractQuakeEventId(quake) ?? '')}
+          marks={updateMarks.get(quakeEventKey(quake))}
+          lpgmMarks={updateMarks.get(lpgmMarkKey(extractQuakeEventId(quake) ?? ''))}
           activeLpgmEventId={activeLpgmEventId}
           onToggleLpgm={onToggleLpgm}
           estimatedIntensity={estimatedIntensity}
