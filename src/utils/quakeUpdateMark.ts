@@ -328,19 +328,12 @@ export function advanceQuakeMarks(args: {
   for (const [k, v] of prev.marks) {
     if (k !== key && liveKeys.has(k) && now - v.markedAt < UPDATE_MARK_TTL_MS) marks.set(k, v)
   }
-  if (facts.size > 0 || rows.size > 0) {
-    marks.set(key, { facts, rows, markedAt: now })
-  } else {
-    // **動いたものが無い報では、前の印を消さずに残す。**
-    //
-    // 「差分が空」は「何も起きていない」ではない。`mergeQuakeInto` は中身を据え置いた報でも
-    // 新しいオブジェクトを返すことがある（受け取った種別の記録が増えるため）ので、
-    // 種別の違う報が続けて届くだけでここへ来る。消してしまうと、直前の報で付いた印が
-    // 利用者の目に入る前に消える。**寿命（`UPDATE_MARK_TTL_MS`）が決めるのは「次の報が
-    // 来ないまま置かれたとき」の上限**という約束を、ここで守る。
-    const kept = prev.marks.get(key)
-    if (kept && now - kept.markedAt < UPDATE_MARK_TTL_MS) marks.set(key, kept)
-  }
+  // **報が来たら、その報の差分で付け直す。前の印は引き継がない。**
+  //
+  // 続報が届いた時点でカードの表示は新しくなっているので、そこに前の報の印が残っていると
+  // 「いまの報で動いた」と読めてしまう。動いたものが無い報では印が消えるのが正しい。
+  // 寿命（`UPDATE_MARK_TTL_MS`）が決めるのは**次の報が来ないまま置かれたとき**の上限だけ。
+  if (facts.size > 0 || rows.size > 0) marks.set(key, { facts, rows, markedAt: now })
   return { memory, marks }
 }
 

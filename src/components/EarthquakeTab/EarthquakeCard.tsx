@@ -28,6 +28,7 @@ import { hasKnownEpicenter } from '../../utils/geo'
 import { buildAreaPrefIndex, buildRegionOrderIndex, buildStationPrefIndex, lookupPointCoords, lookupStationRegion, regionOrderRank, type LatLng } from '../../utils/stationCoords'
 import { isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel, buildIntensityRows, makeAreaPrefResolver, cityKey, type IntensityStationRow, type IntensityRegionRow } from '../../utils/quakePoints'
 import { rowMarkKey, rowMarkOf, type QuakeCardMarks, type QuakeUpdateField } from '../../utils/quakeUpdateMark'
+import { intensityRowsToExpand, lpgmRowsToExpand, mergeAutoExpanded } from '../../utils/autoExpandMarkedRows'
 import { UPDATE_MARK_COLOR, UPDATE_MARK_TITLE, type UpdateStatus } from '../../utils/updateMark'
 
 import { useStationCoords } from '../../hooks/useStationCoords'
@@ -54,6 +55,14 @@ function regionDescendantKeys(region: IntensityRegionRow): string[] {
  * （行の側は `pref:` / `area:` / `city:` / `lpgm:pref:` / `lpgm:area:` を使う）。
  */
 const LPGM_NOTES_KEY = 'lpgm:notes'
+
+/**
+ * 自動展開へ「開く先が無い」と渡すための空集合。
+ *
+ * **その場で `new Set()` を作らない** —— 呼ぶたびに別の参照になり、中身が変わらないのに
+ * 変わったように見える。
+ */
+const EMPTY_KEYS: ReadonlySet<string> = new Set()
 
 
 /**
@@ -826,6 +835,61 @@ export function EarthquakeCard({
       rank: name => regionOrderRank(name, order),
     })
   }, [isSelected, lpgm, stationData])
+
+  /**
+   * 印の付いた行が見えるように、その祖先を自動で開く。
+   *
+   * **カードを畳んでいる間は判定ごと止める。** 行の木は選択中のカードでしか組み立てないので、
+   * 通すと開く先が無いまま「この印は見た」だけが記録され、あとで開いても一度も展開しない。
+   *
+   * **印が消えたら、自分が開いた分だけ畳む。** 手で開いていた行まで閉じると、見ようとしていた
+   * 中身を奪うことになる（読み上げ中の自動開閉と同じ規約）。手で閉じた行も追いかけない ——
+   * 次の報で新しく印が付けば、そのときあらためて開く。
+   *
+   * **震度一覧と長周期は別々に進める。** 開閉の入れ物は共有するが、印の出どころは 2 つあり
+   * （地震の報と長周期の報）別々のときに別々の参照へ変わる。1 つの真偽値へ畳むと、**長周期の報が
+   * 届いただけで震度一覧の「手で閉じた行」が開き直す**（逆も同じ）。鍵の名前空間が分かれている
+   * （長周期は `lpgm:` を冠する）ので、同じ集合へ順に当てても互いを踏まない。
+   *
+   * 開く行が多すぎる報では**何も開かない**（→ `AUTO_EXPAND_MAX_VISIBLE_ROWS`。上限は一覧ごと）。
+   */
+  const autoOpenedRef = useRef<{ rows: ReadonlySet<string>; lpgm: ReadonlySet<string> }>({ rows: new Set(), lpgm: new Set() })
+  /** 前回この効果を走らせたときの印。**参照で比べる** —— 印は報ごとに作り直される。 */
+  const seenMarksRef = useRef<{ marks?: QuakeCardMarks; lpgm?: QuakeCardMarks }>({})
+  const rowsToExpand = useMemo(
+    () => intensityRowsToExpand(prefGroups, marks?.rows),
+    [prefGroups, marks],
+  )
+  const lpgmToExpand = useMemo(
+    () => lpgmRowsToExpand(lpgmGroups, lpgmMarks?.rows),
+    [lpgmGroups, lpgmMarks],
+  )
+  useEffect(() => {
+    // **カードを畳んでいる間は何もしない。** `prefGroups` / `lpgmGroups` は選択中でなければ
+    // 空配列を返すので、ここを通すと**開く先が無いまま「この印は見た」の記録だけが進む**。
+    // あとでカードを開いても印の参照は変わっていないので `marksChanged` が偽になり、
+    // **一度も自動で開かないまま終わる** —— 別のカードを見ている間に届いた続報という、
+    // この仕掛けがいちばん効くはずの場面がちょうど抜ける。
+    if (!isSelected) return
+    // **印が新しくなった報でだけ開く**（理由は `mergeAutoExpanded`）。**2 つの出どころは
+    // 別々に見る** —— 畳むと片方の報がもう片方の「手で閉じた行」を開き直す（上の JSDoc）。
+    const rowsChanged = seenMarksRef.current.marks !== marks
+    const lpgmChanged = seenMarksRef.current.lpgm !== lpgmMarks
+    seenMarksRef.current = { marks, lpgm: lpgmMarks }
+    // **更新関数の中で ref を書き換えない。** React は開発時に更新関数を 2 回呼んで純粋さを
+    // 確かめるので、中で `autoOpenedRef` を書くと 2 回目が別の入力で走る。
+    const byRows = mergeAutoExpanded({
+      prev: expanded, want: rowsToExpand ?? EMPTY_KEYS,
+      autoOpened: autoOpenedRef.current.rows, marksChanged: rowsChanged,
+    })
+    const byLpgm = mergeAutoExpanded({
+      prev: byRows.next, want: lpgmToExpand ?? EMPTY_KEYS,
+      autoOpened: autoOpenedRef.current.lpgm, marksChanged: lpgmChanged,
+    })
+    autoOpenedRef.current = { rows: byRows.autoOpened, lpgm: byLpgm.autoOpened }
+    // 中身が変わらなければ同じ参照が返るので、そこで止まる（`expanded` を依存に入れても回らない）。
+    if (byLpgm.next !== expanded) setExpanded(byLpgm.next)
+  }, [isSelected, rowsToExpand, lpgmToExpand, marks, lpgmMarks, expanded])
 
   if (isSelected) {
     const typeStyle = getIssueTypeStyle(issue.type)

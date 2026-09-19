@@ -313,12 +313,9 @@ describe('地震カードの更新の印', () => {
       expect(second.marks.has('q1')).toBe(false)
     })
 
-    // 安全弁: **動いたものが無い報で、前の印を消さない。**
-    //
-    // `mergeQuakeInto` は中身を据え置いた報でも新しいオブジェクトを返すことがある（受け取った
-    // 種別の記録が増えるため）ので、種別の違う報が続けて届くだけで差分が空のまま呼ばれる。
-    // そこで消すと、直前の報で付いた印が利用者の目に入る前に消える。
-    it('動いたものが無い報では前の印を残す', () => {
+    // 正: **報が来たら、その報の差分で付け直す。** 続報が届いた時点で表示は新しくなって
+    // いるので、前の報の印が残っていると「いまの報で動いた」と読めてしまう。
+    it('動いたものが無い報では前の印を引き継がない', () => {
       const first = advanceQuakeMarks({
         prev: { memory: new Map(), marks: new Map() },
         key: 'q1',
@@ -339,31 +336,7 @@ describe('地震カードの更新の印', () => {
         snapshot: memoryOf(makeQuake({ magnitude: 7.6 }), [station('輪島', 50)]),
         liveKeys: new Set(['q1']), now: 3000,
       })
-      expect(third.marks.get('q1')?.facts.get('magnitude')).toBe('raised')
-      expect(third.marks.get('q1')?.markedAt).toBe(1000 + 1000)
-    })
-
-    // 対照: 寿命を過ぎていれば残さない（残す条件は TTL の中だけ）。
-    it('寿命を過ぎた印は、動きの無い報で残さない', () => {
-      const first = advanceQuakeMarks({
-        prev: { memory: new Map(), marks: new Map() },
-        key: 'q1',
-        snapshot: memoryOf(makeQuake({ magnitude: 7.4 }), [station('輪島', 50)]),
-        liveKeys: new Set(['q1']), now: 1000,
-      })
-      const second = advanceQuakeMarks({
-        prev: { memory: first.memory, marks: first.marks },
-        key: 'q1',
-        snapshot: memoryOf(makeQuake({ magnitude: 7.6 }), [station('輪島', 50)]),
-        liveKeys: new Set(['q1']), now: 2000,
-      })
-      const later = advanceQuakeMarks({
-        prev: { memory: second.memory, marks: second.marks },
-        key: 'q1',
-        snapshot: memoryOf(makeQuake({ magnitude: 7.6 }), [station('輪島', 50)]),
-        liveKeys: new Set(['q1']), now: 2000 + UPDATE_MARK_TTL_MS,
-      })
-      expect(later.marks.has('q1')).toBe(false)
+      expect(third.marks.has('q1')).toBe(false)
     })
 
     // 安全弁: 一覧から消えたカードの記憶と印は捨てる（群発で観測点の写しが積み上がる）。
