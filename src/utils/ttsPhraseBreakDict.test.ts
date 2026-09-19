@@ -3,7 +3,11 @@ import { readFileSync } from 'node:fs'
 import { DATA_FETCH_TIMEOUT_MS } from './fetchJson'
 import { DICT_FETCH_TIMEOUT_MS } from './ttsPhraseBreakDict'
 import { INTENSITY_LABELS, getIntensityLabelWithApproxAbove } from './intensity'
+import type { LpgmClass } from '../types/earthquake'
 import { getLpgmClassLabelWithApproxAbove } from './lpgm'
+
+/** 長周期地震動階級の値域（`LpgmClass`）。型は実行時に無いので、ここへ写して使う。 */
+const LPGM_CLASSES = [1, 2, 3, 4] as const satisfies readonly LpgmClass[]
 
 // この辞書のローダは読み上げ本体（speakWithVoicevox）が取得を待つため、
 // 生成データ共通の 60 秒ではなく短いタイムアウトを使う。その差が保たれているかを検証する。
@@ -469,6 +473,41 @@ describe('電文本文の語（実データの辞書で引く）', { timeout: 15
     // 安全弁: 地名ではないので鍵の直後にポーズを挟まない（_terms に列挙する）
     for (const label of [...approxLabels, '予想最大震度', '予想最大階級']) {
       expect(isPlaceNameKey(label), `「${label}」は地名ではない`).toBe(false)
+    }
+  })
+
+  // 長周期地震動の階級は 17 モーラの 1 句にまとまり、核が値を飲み込んでいた
+  // （`チョオシュウキジシンドオカイキュウサ'ンオ`）。「長周期地震動階級」と「Nを」で割る。
+  // **後半の読みは「最大震度Nを」と揃える** —— 同じ数字・同じ助詞・同じ述語なので、揃えないと
+  // 同じ値が文型によって違う抑揚で鳴る。
+  it('長周期地震動の階級は「長周期地震動階級」と値で割る', async () => {
+    const { findPhraseBreakMatch, isPlaceNameKey, dict } = await loadedRealDictModule()
+
+    // 正: 読み上げ文の形（`ttsText` の `lpgmToText`）。値まで含めた鍵が 1 つで当たる
+    for (const cls of LPGM_CLASSES) {
+      const text = `長周期地震動階級${cls}を東京都23区で観測しました。`
+      expect(findPhraseBreakMatch(text, dict)?.key, text).toBe(`長周期地震動階級${cls}を`)
+    }
+
+    // 正: 後半（値＋助詞）の読みは「最大震度Nを」の後半と同じ
+    const tail = (value: string | undefined): string | undefined => {
+      const parts = value?.split('/')
+      return parts?.[parts.length - 1]
+    }
+    for (const cls of LPGM_CLASSES) {
+      expect(tail(dict[`長周期地震動階級${cls}を`]), `階級${cls}`)
+        .toBe(tail(dict[`最大震度${cls}を`]))
+    }
+
+    // 対照: 緊急地震速報の「予想最大階級」は別の文型。当たり方を変えていない
+    expect(findPhraseBreakMatch('予想最大階級3。', dict)?.key).toBe('予想最大階級')
+
+    // 安全弁: **前半だけの鍵を置かない。** 置くと最左一致でそちらが勝ち、値が後半の句へ
+    // 残って「値の在り処が抑揚から読めない」元の形に戻る
+    expect(Object.keys(dict)).not.toContain('長周期地震動階級')
+    // 安全弁: 地名ではないので鍵の直後にポーズを挟まない（`_terms` に列挙する）
+    for (const cls of LPGM_CLASSES) {
+      expect(isPlaceNameKey(`長周期地震動階級${cls}を`), `階級${cls}`).toBe(false)
     }
   })
 
