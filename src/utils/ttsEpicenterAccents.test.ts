@@ -62,7 +62,13 @@ describe('実データの震央地名の句割り', () => {
 
   it('値は句区切りを 1 つ持つ AquesTalk 風カナ', () => {
     // 句を割るのが目的なので、`/` が無い値は用を成さない。核は各句に 1 つずつ。
-    const bad = names.filter(name => !/^[ァ-ヴ]+'\/[ァ-ヴ]+'$/.test(epicenters[name]))
+    // **位置は句末とは限らない** —— 構成要素を単独で読ませて採れた核を使うため、
+    // `ヨオロ'ッパ`・`カ'ントウ` のように途中へ来る（→ scripts/epicenterAccent.ts の `phraseEntry`）。
+    const bad = names.filter(name => {
+      const parts = epicenters[name].split('/')
+      if (parts.length !== 2) return true
+      return parts.some(part => !/^[ァ-ヴ]*'[ァ-ヴ]*$/.test(part) || part.replace(/'/g, '') === '')
+    })
     expect(bad).toEqual([])
   })
 
