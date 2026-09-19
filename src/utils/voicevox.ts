@@ -1,6 +1,6 @@
 import { getAudioContext, getMasterInput, syncKeepAlive } from './alertSound'
 import { findPhraseBreakMatch, getTtsPhraseBreakDictCache, isPlaceNameKey, loadTtsPhraseBreakDict } from './ttsPhraseBreakDict'
-import { leadingParticle } from './ttsTrailingParticles'
+import { leadingParticle, endsWithParticle } from './ttsTrailingParticles'
 import { getTtsStationReadingsCache, loadTtsStationReadings } from './ttsStationReadings'
 import { getTtsEpicenterAccentsCache, loadTtsEpicenterAccents } from './ttsEpicenterAccents'
 import { mergeSpeechDicts } from './ttsGeneratedDict'
@@ -654,10 +654,14 @@ export async function buildAccentPhrases(
     // 付属語を取り込めたなら切れ目は句の内側へ移っているので、間を置かない（置くと取り込んだ意味が無い）
     : particle != null
       ? matchedPhrasesRaw
-      // 一般用語（「深発地震」等）は文中に自然に溶け込む語なので、区切り文字が無ければ間を入れない
-      : isPlaceNameKey(match.key)
-        ? withTrailingPause(matchedPhrasesRaw, DICT_TRAILING_PAUSE)
-        : matchedPhrasesRaw
+      // **鍵そのものが助詞で終わる形も同じ。** そこは名前の切れ目ではなく文の途中で、
+      // 間を入れると述語から切り離れて聞こえる（→ {@link endsWithParticle}）
+      : endsWithParticle(match.key)
+        ? matchedPhrasesRaw
+        // 一般用語（「深発地震」等）は文中に自然に溶け込む語なので、区切り文字が無ければ間を入れない
+        : isPlaceNameKey(match.key)
+          ? withTrailingPause(matchedPhrasesRaw, DICT_TRAILING_PAUSE)
+          : matchedPhrasesRaw
   if (postLeadsWithGap) punctAt.push(prePhrases.length + matchedPhrases.length - 1)
 
   const offset = prePhrases.length + matchedPhrases.length
