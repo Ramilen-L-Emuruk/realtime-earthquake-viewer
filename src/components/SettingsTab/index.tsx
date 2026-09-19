@@ -177,12 +177,12 @@ function ArchiveCacheRow() {
     // 読めなければ `null` が返る。**「0 本」とは書かない**（→ `archiveBodyDbStats`）
     void archiveBodyDbStats().then(setStats)
     if (hasArchiveCacheError()) {
-      setNote('この端末では控えを持てません（プライベートモード・容量不足など）。起動や再生のたびにアーカイブを取り直します')
+      setNote('この端末では控えを持てません（プライベートモード・容量不足など）。起動や再生のたびに取り直します')
       return
     }
     const purge = archiveCachePurgeStats()
     if (purge.purgedRecent > 0) {
-      setNote(`控えが上限に達しています（控えた直後に捨てた本数 ${purge.purgedRecent} 本）。同じアーカイブを取り直している可能性があります`)
+      setNote(`控えが上限に達しています（控えた直後に捨てた記録 ${purge.purgedRecent} 件）。同じ日を取り直している可能性があります`)
       return
     }
     // 上限を確かめる読み取りが失敗していると、超えていても追い出しが走らない
@@ -197,12 +197,12 @@ function ArchiveCacheRow() {
 
   return (
     <Row
-      label="アーカイブの控え"
-      description="取得した 1 日ぶんのアーカイブを圧縮したままこのブラウザに控えて、同じ日を取り直さないようにします。上限を超えた分は古い順に自動で捨てます"
+      label="過去の電文の控え"
+      description="過去の日付を再生するとき、その日の電文をまとめた記録を圧縮したままこのブラウザに控えて、同じ日を取り直さないようにします。上限を超えた分は古い順に自動で捨てます"
     >
       <div className="flex flex-col items-end gap-1">
         <span className="text-xs text-secondary">
-          {stats === null ? '—' : `${stats.entries} 本 / ${(stats.bytes / 1024 / 1024).toFixed(1)} MB`}
+          {stats === null ? '—' : `${stats.entries} 件 / ${(stats.bytes / 1024 / 1024).toFixed(1)} MB`}
         </span>
         {note && <p className="text-xs text-amber-400 w-56 text-left leading-snug">{note}</p>}
       </div>
