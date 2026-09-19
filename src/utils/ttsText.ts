@@ -677,19 +677,18 @@ function buildRegionSegments(
   }
 
   const mentioned = new Set<string>()  // 上位階で読み上げ済みの地域名
+  // 「最大」を冠したか。同じ文で二度冠さないためだけに持つ（→ `collectParts`）。
+  let maxPrefixUsed = false
 
   /**
    * 階級ごとの句を組む。`accept` に通った区域だけを対象にする。
    *
-   * **`mentioned` は群をまたいで共有する。** 県単位に丸めた名前は複数の階級に現れうるので
-   * （`aggregateAreaNamesByPref`）、群を分けても「上位で挙げた区域は下位で繰り返さない」を
-   * 保つ必要がある。上がった群を先に回すこと。
-   *
-   * @param withMax その階級が電文の最大震度と一致するとき「最大」を冠するか
+   * **`mentioned` と `maxPrefixUsed` は群をまたいで共有する。** 県単位に丸めた名前は複数の
+   * 階級に現れうるので（`aggregateAreaNamesByPref`）、群を分けても「上位で挙げた区域は下位で
+   * 繰り返さない」を保つ必要がある。上がった群を先に回すこと。
    */
   const collectParts = (
     accept: (name: string, scale: IntensityScale) => boolean,
-    withMax: boolean,
   ): SpeechSegment[][] => {
     const parts: SpeechSegment[][] = []
     for (let rank = 0; rank < observed.length; rank++) {
@@ -714,9 +713,15 @@ function buildRegionSegments(
       // 「最大」を冠せるのは、その階級がこの電文の最大震度に一致するときだけ。
       // **句の並び順で決めてはいけない**——差分では最大震度の区域が据え置きで落ちることがあり、
       // 先頭の句に無条件で付けると「最大震度4を…」と、電文が伝えていない最大震度を語る。
-      // 初出の群では冠しない（`withMax`）。「新たに最大震度7を」は据わりが悪く、最大震度は
-      // 地震全体の値なので「新たに」と並べる語ではない。
-      const head = withMax && scale === maxScale ? '最大' : ''
+      //
+      // **群でも決めてはいけない。** かつては初出の群で冠さなかった（「新たに最大震度7を」の
+      // 据わりを嫌った）が、**初出の区域がいきなり最大震度を持つ続報は実際に起きる** ――
+      // 揺れの強い地域ほど観測点からの通信が遅れ、最初の報に入らず次の報で最大を塗り替えるため、
+      // **いちばん強い揺れを伝える報でだけ最大震度が声から消える**（実例は
+      // docs/spec/audio-tts-spec.md §4「続報は差分だけ読む」）。冠すかどうかは事実（その階級が
+      // 電文の最大震度に一致するか）だけで決め、**同じ文で二度言わないことだけ**を持ち回る。
+      const head = !maxPrefixUsed && scale === maxScale ? '最大' : ''
+      if (head) maxPrefixUsed = true
       const segments: SpeechSegment[] = [plain(`${head}震度${intensityText(scale)}を`)]
       names.forEach((name, i) => {
         if (i > 0) segments.push(plain('、'))
@@ -776,16 +781,19 @@ function buildRegionSegments(
   // 判定は `spoken` の有無ではなく**区域を一度でも声にしたか**で行う。記録は地震の初報でも
   // 渡ってくる（空の状態で）ので、有無で見ると初報から「新たに」が付く。
   if (!spoken || spoken.regions.size === 0) {
-    const all = toSentence(collectParts(() => true, true), '')
+    const all = toSentence(collectParts(() => true), '')
     if (all.length === 0) warnIfNoRegionNames()
     return all
   }
 
   // 差分は 2 群に分け、**上がった分を先に**読む。境目の「また、」で耳が切り替わり、
   // 「新たに」が後半だけに掛かることが伝わる。
-  const upgraded = toSentence(collectParts((n, sc) => regionDiffKind(spoken, n, sc) === 'upgraded', true), '')
+  //
+  // **「最大」を冠す権利は先に回るこの群が持つ**（`maxPrefixUsed`）。上がり群に最大震度の
+  // 階級が無ければ、初出群の句がそれを冠する。
+  const upgraded = toSentence(collectParts((n, sc) => regionDiffKind(spoken, n, sc) === 'upgraded'), '')
   const fresh = toSentence(
-    collectParts((n, sc) => regionDiffKind(spoken, n, sc) === 'fresh', false),
+    collectParts((n, sc) => regionDiffKind(spoken, n, sc) === 'fresh'),
     upgraded.length > 0 ? 'また、新たに' : '新たに',
   )
   if (upgraded.length === 0 && fresh.length === 0) {
