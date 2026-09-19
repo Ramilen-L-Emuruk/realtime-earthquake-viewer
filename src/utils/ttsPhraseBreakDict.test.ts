@@ -223,6 +223,27 @@ describe('findPhraseBreakMatch（単独語キー）', { timeout: 15_000 }, () =>
     }
   })
 
+  // 下の総当たりは生成データ（区域名・予報区名・観測点名）しか見ない。**緊急地震速報の警報対象
+  // 地方は `utils/eew.ts` の一覧にしか無く、生成データに現れない**ので、その文型はここで押さえる。
+  // 単独語キーを足したら、その語が実運用の文でどう現れるかをこの形で固定すること。
+  it('実運用の文型で単独語キーの境界が保たれる', async () => {
+    const { findPhraseBreakMatch, dict } = await loadedRealDictModule()
+    const keyOf = (text: string) => findPhraseBreakMatch(text, dict)?.key
+
+    // ttsText の eewWarningRegionsText が作る 2 つの形（末尾の地方は「では」、追加分は「でも」）
+    expect(keyOf('甲信では強い揺れに警戒してください。')).toBe('甲信')
+    expect(keyOf('新たに、甲信でも強い揺れに警戒してください。')).toBe('甲信')
+    expect(keyOf('小笠原では強い揺れに警戒してください。')).toBe('小笠原')
+    expect(keyOf('神津島で震度3を観測しました。')).toBe('神津島')
+    expect(keyOf('鳥羽で0.2メートルを観測しました。')).toBe('鳥羽')
+
+    // 長い側はエンジンが正しく読むので語中で切らない。気象庁が書いた文にも現れうる
+    expect(keyOf('甲信越')).not.toBe('甲信')
+    expect(keyOf('関東甲信地方')).not.toBe('甲信')
+    expect(keyOf('小笠原諸島')).not.toBe('小笠原')
+    expect(keyOf('神津島村金長')).not.toBe('神津島')
+  })
+
   // 生成データ（区域名・予報区名・津波観測点名）の側が変わったときに気付けるようにする。
   // 合成した文字列だけで検証していると、観測点名が増減しても境界判定の当否が目視任せになる。
   it('実データの地名に対して単独出現だけを拾う', async () => {
