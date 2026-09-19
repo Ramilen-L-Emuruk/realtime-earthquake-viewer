@@ -200,6 +200,24 @@ interface EventQueue {
    * 読めない時刻が来たときにどちらへ転ぶかを `push` の注記で確かめてから変えること。**
    */
   shiftReady(now: Date): QueueEntry | undefined
+  /**
+   * 発火時刻が `now` より後、`now + horizonMs` までのエントリを**読むだけ**で列挙する。
+   *
+   * リプレイは窓ぶんの電文を先に持っているので、ここを覗けば「次に何が来るか」が分かる。
+   * 読み上げの投機的な先行合成（`utils/speechPrefetch.ts`）がそれを使う。
+   *
+   * **`retain` を流用しないこと。** あちらの述語は「フィールドの参照だけに留める」規約で、
+   * 例外を投げると詰め直しが途中で止まる。覗くだけの用途に副作用を持ちうる口を使うと、
+   * その規約が破られたときに**キューが壊れる**（症状は同じ電文の再処理）。
+   *
+   * **返すのは配列の浅いコピー。** 配列そのものを外へ出さない設計は保つが、要素
+   * （`QueueEntry`）は共有されるので、**受け取った側は中身を書き換えてはならない**。
+   * 投機は payload を読むだけ。
+   *
+   * 発火時刻が既に来ているもの（`eventTime <= now`）は含めない —— 次のティックで取り出される
+   * ので、いまから合成を始めても間に合わない。
+   */
+  peekUpcoming(now: Date, horizonMs: number): readonly QueueEntry[]
   /** すべて捨てる。 */
   clear(): void
 }
@@ -235,6 +253,22 @@ function createEventQueue(): EventQueue {
     shiftReady(now) {
       if (entries.length === 0 || entries[0].eventTime > now) return undefined
       return entries.shift()
+    },
+    peekUpcoming(now, horizonMs) {
+      const from = now.getTime()
+      const until = from + horizonMs
+      // 呼び出し側が壊れた値を渡しても走査を暴走させない（`NaN` はどの比較とも偽になるため、
+      // 判定の書き方次第で「全部返す」にも「何も返さない」にも転ぶ。返さない側へ倒す）。
+      if (!Number.isFinite(from) || !Number.isFinite(until)) return []
+      const out: QueueEntry[] = []
+      for (const entry of entries) {
+        const t = entry.eventTime.getTime()
+        if (t <= from) continue
+        // 並びは昇順（`push` が保つ）なので、範囲を出たらそれ以降も全部範囲外
+        if (t > until) break
+        out.push(entry)
+      }
+      return out
     },
     clear() { entries.length = 0 },
   }
@@ -2846,6 +2880,32 @@ export function useEarthquakes(
     return () => window.clearTimeout(timer)
   }, [quakeUpdateMarks])
 
+  /**
+   * 近く発火する電文を覗く（読み上げの投機的先行合成が使う。→ `utils/speechPrefetch.ts`）。
+   *
+   * **返すのは payload だけ。** キューの内部型（`QueuePayload`）には表示を片付けるための
+   * 予約（`purge-*`）が混ざっていて、電文ではないので投機の対象にならない。ここで
+   * `ReplayPayload` へ絞っておけば、受け取る側が電文だけを見ればよくなる。
+   *
+   * **`silent` のエントリは外す。** 初期状態の復元（窓の手前 24 時間ぶん）は音も読み上げも
+   * 鳴らさずに状態だけ入れるもので、焼いても一度も使われない。発火時刻が過去なので
+   * `peekUpcoming` の時点でも落ちるが、**その理由に頼らない** —— サイレント注入の時刻の
+   * 決め方が変われば、大量の無駄な合成が静かに始まる。
+   */
+  const peekUpcomingPayloads = useCallback((horizonMs: number): import('../types/replay').ReplayPayload[] => {
+    const upcoming = eventQueueRef.current.peekUpcoming(getTimeRef.current(), horizonMs)
+    const out: import('../types/replay').ReplayPayload[] = []
+    for (const entry of upcoming) {
+      if (entry.silent) continue
+      const payload = entry.payload
+      if (payload.kind === 'purge-cancelled-quake') continue
+      if (payload.kind === 'purge-cancelled-eew') continue
+      if (payload.kind === 'purge-cancelled-tsunami') continue
+      out.push(payload)
+    }
+    return out
+  }, [])
+
   return {
     ...state,
     injectEvent: handleEvent,
@@ -2863,6 +2923,7 @@ export function useEarthquakes(
     simulateHypocenterFromTsunami,
     resetState,
     loadReplayEvents,
+    peekUpcomingPayloads,
     restoreQuakeHistory,
   }
 }

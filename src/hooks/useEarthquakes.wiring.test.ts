@@ -3238,3 +3238,106 @@ describe('履歴取得の一部失敗は状態へ残す', () => {
     expect(totalSkipped(h.current.historyLoss)).toBe(0)
   })
 })
+
+// 近く発火する電文を覗く口（`peekUpcomingPayloads`）。リプレイ中の投機的先行合成
+// （`utils/speechPrefetch.ts`）だけが使う。
+//
+// **返す顔ぶれが狂っても画面には何も出ない。** 投機が空振りするか、要らないものを焼いて
+// 控えを圧迫するだけで、症状は「なんとなく速くならない」にしかならない。
+//
+// 正・対照・安全弁の分担:
+//   正   ＝ 地平線の内側にある未来の電文を返す
+//   対照 ＝ 地平線の外と、もう時刻が来たものは返さない
+//   安全弁＝ 焼いても使われないもの（サイレント注入・表示の片付け）を混ぜない
+describe('近く発火する電文を覗く', () => {
+  function commentaryPayload(id: string): ReplayPayload {
+    const now = serverDate()
+    return {
+      kind: 'nankaiCommentary',
+      data: {
+        id,
+        time: now.toISOString(),
+        eventId: `${id}-event`,
+        serialCode: '200',
+        serialName: '定例解説',
+        headline: '南海トラフ地震関連解説情報',
+        summary: '要約',
+        body: '本文',
+        cancelled: false,
+        reportDateTime: now.toISOString(),
+        expireAt: new Date(now.getTime() + 7 * 86_400_000).toISOString(),
+      },
+    }
+  }
+  /** `payload` から識別子だけ取り出す（比較を読みやすくするため）。 */
+  const idsOf = (payloads: readonly ReplayPayload[]) =>
+    payloads.map(p => (p.kind === 'nankaiCommentary' ? p.data.id : p.kind))
+
+  it('地平線の内側にある未来の電文を返す（正）', async () => {
+    const h = setup()
+    await h.flush()
+    const now = serverDate()
+    act(() => {
+      h.current.loadReplayEvents([
+        { payload: commentaryPayload('in-10s'), replayTime: new Date(now.getTime() + 10_000) },
+        { payload: commentaryPayload('in-30s'), replayTime: new Date(now.getTime() + 30_000) },
+      ])
+    })
+    expect(idsOf(h.current.peekUpcomingPayloads(60_000))).toEqual(['in-10s', 'in-30s'])
+  })
+
+  it('地平線より先の電文は返さない（対照）', async () => {
+    const h = setup()
+    await h.flush()
+    const now = serverDate()
+    act(() => {
+      h.current.loadReplayEvents([
+        { payload: commentaryPayload('in-10s'), replayTime: new Date(now.getTime() + 10_000) },
+        { payload: commentaryPayload('in-5m'), replayTime: new Date(now.getTime() + 300_000) },
+      ])
+    })
+    expect(idsOf(h.current.peekUpcomingPayloads(60_000))).toEqual(['in-10s'])
+  })
+
+  // 時刻が来たものは次のティックで取り出される。いまから焼いても間に合わない。
+  it('もう時刻が来た電文は返さない（対照）', async () => {
+    const h = setup()
+    await h.flush()
+    const now = serverDate()
+    act(() => {
+      h.current.loadReplayEvents([
+        { payload: commentaryPayload('past'), replayTime: new Date(now.getTime() - 1000) },
+        { payload: commentaryPayload('future'), replayTime: new Date(now.getTime() + 10_000) },
+      ])
+    })
+    expect(idsOf(h.current.peekUpcomingPayloads(60_000))).toEqual(['future'])
+  })
+
+  // **サイレント注入は音も読み上げも鳴らさない**（初期状態の復元）。焼いても一度も使われない。
+  // 発火時刻が過去なので上の判定でも落ちるが、**その理由に頼らない** —— 注入の時刻の決め方が
+  // 変われば、大量の無駄な合成が静かに始まる。
+  it('サイレント注入の電文は返さない（安全弁）', async () => {
+    const h = setup()
+    await h.flush()
+    const now = serverDate()
+    act(() => {
+      h.current.loadReplayEvents([
+        { payload: commentaryPayload('silent'), replayTime: new Date(now.getTime() + 10_000), silent: true },
+        { payload: commentaryPayload('normal'), replayTime: new Date(now.getTime() + 20_000) },
+      ])
+    })
+    expect(idsOf(h.current.peekUpcomingPayloads(60_000))).toEqual(['normal'])
+  })
+
+  it('日時として読めない地平線では何も返さない（安全弁）', async () => {
+    const h = setup()
+    await h.flush()
+    const now = serverDate()
+    act(() => {
+      h.current.loadReplayEvents([
+        { payload: commentaryPayload('in-10s'), replayTime: new Date(now.getTime() + 10_000) },
+      ])
+    })
+    expect(h.current.peekUpcomingPayloads(Number.NaN)).toEqual([])
+  })
+})
