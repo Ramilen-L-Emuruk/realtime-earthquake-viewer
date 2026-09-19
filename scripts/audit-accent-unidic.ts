@@ -168,6 +168,46 @@ function readJson<T>(rel: string): T {
   return JSON.parse(readFileSync(resolve(ROOT, rel), 'utf8')) as T
 }
 
+/** 個別コード表の中で詳細震央地名（AreaEpicenterDetail）が載るシート。 */
+const EPICENTER_DETAIL_SHEET = '43'
+
+/** 上流が変わったことに気づくための下限（2026-09-20 時点で 757 件）。 */
+const MIN_DETAILED_EPICENTERS = 600
+
+/**
+ * 個別コード表のブックは 1.6MB ある。`--upstream`（詳細震央地名）と `--components`（市町村の
+ * ふりがな）の両方が要るので、1 回だけ取って使い回す。
+ */
+let codeTableBook: Promise<ReadonlyMap<string, unknown[][]>> | null = null
+const codeTable = (): Promise<ReadonlyMap<string, unknown[][]>> => (codeTableBook ??= fetchCodeTableBook())
+
+/**
+ * 詳細震央地名を読む（気象庁 個別コード表 AreaEpicenterDetail）。
+ *
+ * **ふりがなを持たない列構成**（Code・Name の 2 列）なので名前だけを返す —— 読みはエンジンへ
+ * 訊く。遠地地震の震央はここから声になり、**読みは 2026-08-22 の棚卸しで目で通したが核は
+ * 見ていない**（→ `docs/spec/audio-tts-spec.md` §3「エンジンが置く核が外れているとき」）。
+ */
+function readDetailedEpicenters(book: ReadonlyMap<string, unknown[][]>): string[] {
+  const rows = book.get(EPICENTER_DETAIL_SHEET)
+  if (!rows) {
+    throw new Error(
+      `個別コード表に AreaEpicenterDetail のシート（${EPICENTER_DETAIL_SHEET}）がありません。`
+      + 'コード表の構成が変わっていないか確かめてください。',
+    )
+  }
+  // 先頭 3 行は見出し（コード表の題・種別・列名）。
+  const names = rows.slice(3)
+    .map((row) => row[1])
+    .filter((name): name is string => typeof name === 'string' && name.length > 0)
+  if (names.length < MIN_DETAILED_EPICENTERS) {
+    throw new Error(
+      `詳細震央地名が ${names.length} 件しか読めませんでした（${MIN_DETAILED_EPICENTERS} 件以上を想定）。`,
+    )
+  }
+  return names
+}
+
 async function collectTargets(withUpstream: boolean, withComponents: boolean): Promise<Target[]> {
   const found = new Map<string, Target>()
   const put = (name: string, kind: string, dictValue?: string) => {
@@ -203,6 +243,13 @@ async function collectTargets(withUpstream: boolean, withComponents: boolean): P
     if (withUpstream) {
       for (const feature of geo.features) put(feature.properties.name, '震央地名')
       for (const station of stations) put(station.name as string, '観測点')
+      for (const name of readDetailedEpicenters(await codeTable())) {
+        put(name, '詳細震央地名')
+        // **読点で割った部分も入れる。** 読み上げはそこでチャンクを割るので（`splitIntoChunks`）、
+        // 「米国、アラスカ州中央部」は 2 つの単位として別々に合成される。まるごとでは
+        // 単語辞書に載らないが、`米国` のような部分なら載る。
+        if (name.includes('、')) for (const part of name.split('、')) put(part, '詳細震央地名(読点で分割)')
+      }
     }
     if (withComponents) await putComponents(put, geo.features, stations)
   }
@@ -235,7 +282,7 @@ async function putComponents(
     put(outcome.split.head, '震央地名(前部)')
     put(outcome.split.tail, '震央地名(後部)')
   }
-  const cities = buildCityIndex(readCityFurigana(await fetchCodeTableBook()))
+  const cities = buildCityIndex(readCityFurigana(await codeTable()))
   for (const station of stations) {
     if (!station.name || !station.furigana) continue
     const outcome = splitStationName(station.name, station.furigana, cities)

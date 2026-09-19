@@ -52,6 +52,22 @@ export const TRAILING_PARTICLES: readonly (readonly [surface: string, kana: stri
 ]
 
 /**
+ * `key` が {@link TRAILING_PARTICLES} の助詞で終わるか。**辞書キーを渡すこと。**
+ *
+ * 見分けたいのは**助詞まで鍵に含めた形**（`最大震度4を`・`グアテマラを`）。記法では核の位置を
+ * 辞書の値の中にしか書けないので、核を助詞へ置きたいときは鍵の側へ含めるしかない
+ * （→ `docs/spec/audio-tts-spec.md` §3「鍵に助詞まで含める場合」）。
+ *
+ * **その鍵の直後は名前の切れ目ではなく文の途中**なので、間を挟まない（挟むと
+ * 「〇〇を［間］震源とする」と述語から切り離れて聞こえる）。判定は字面だけなので、
+ * 助詞に見えて語の一部である並び（ひらがなで終わる地名）も真を返しうるが、**外れても
+ * 間が入らなくなるだけ**で読みは変わらない。
+ */
+export function endsWithParticle(key: string): boolean {
+  return TRAILING_PARTICLES.some(([surface]) => key.endsWith(surface))
+}
+
+/**
  * `text` の先頭にある付属語を返す（無ければ null）。辞書キーの直後の断片を渡すこと。
  *
  * **これを取り込む目的は、助詞が独立したアクセント句になるのを防ぐこと。** 辞書キーだけを
