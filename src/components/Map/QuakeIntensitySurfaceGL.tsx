@@ -201,7 +201,7 @@ export function QuakeIntensitySurfaceGL({ markers, visible }: Props) {
   const anomalyLogRef = useRef(createAnomalyLog())
 
   // 県境は陸クリップに使う。BaseMapGL が既に読んでいればキャッシュが返る（二重取得にならない）。
-  // 取得の失敗は fetchJsonWithTimeout が地図の「データの一部を取得できませんでした」へ計上する。
+  // 取得の失敗は fetchJsonWithTimeout が地図の「データN件を取り込めず」へ計上する。
   useEffect(() => {
     let alive = true
     loadPrefectures()

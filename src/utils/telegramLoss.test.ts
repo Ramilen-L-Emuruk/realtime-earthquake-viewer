@@ -100,7 +100,7 @@ describe('describeTelegramLossParts', () => {
   it('取得元と電文を別に数える', () => {
     const parts = describeTelegramLossParts(addTelegramLoss(createEmptyTelegramLoss(), 5, ['https://x/a']))
 
-    expect(parts).toEqual(['1 件の取得元', '5 件の電文'])
+    expect(parts).toEqual(['取得元1件', '電文5件'])
   })
 
   it('何も欠けていなければ空', () => {
@@ -118,20 +118,29 @@ describe('formatHistoryLossNotice', () => {
   it('正: 取得元 1 件でも出す', () => {
     const msg = formatHistoryLossNotice(addTelegramLoss(createEmptyTelegramLoss(), 0, ['https://x/a']))
 
-    expect(msg).toMatch(/1 件の取得元/)
+    expect(msg).toMatch(/取得元1件/)
   })
 
   it('正: 電文 1 件でも出す', () => {
     const msg = formatHistoryLossNotice(addTelegramLoss(createEmptyTelegramLoss(), 1, []))
 
-    expect(msg).toMatch(/1 件の電文/)
+    expect(msg).toMatch(/電文1件/)
   })
 
   it('両方欠けたときは両方を並べる', () => {
     const msg = formatHistoryLossNotice(addTelegramLoss(createEmptyTelegramLoss(), 5, ['https://x/a']))
 
-    expect(msg).toMatch(/1 件の取得元/)
-    expect(msg).toMatch(/5 件の電文/)
+    expect(msg).toMatch(/取得元1件/)
+    expect(msg).toMatch(/電文5件/)
+  })
+
+  // **429 の見送り（`formatRateLimitedNotice`）と同じ `notices` に並びうる。** 通知の形を
+  // 揃えたぶん、「取りに行って失敗した」と「上限で取りに行かなかった」の差は語だけが担う。
+  it('安全弁: 見送りの「未取得」と語を分ける', () => {
+    const msg = formatHistoryLossNotice(addTelegramLoss(createEmptyTelegramLoss(), 1, []))
+
+    expect(msg).toMatch(/取り込めず/)
+    expect(msg).not.toMatch(/未取得/)
   })
 
   // 自動では取り直さないので、添えないと打てる手が分からない。
