@@ -15,7 +15,7 @@ import {
 } from '../utils/eew'
 import { hasKnownEpicenter, haversineKm } from '../utils/geo'
 import { showBrowserNotification } from '../utils/notifications'
-import { GRADE_PRIORITY, TSUNAMI_GRADE_LIFTED, isWarningLevelWhileObserving, tsunamiMaxGrade, tsunamiAreaGradeChanges, selectUnspokenAreaGradeChanges, rememberAreaGrades, tsunamiAreaKey, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, isTsunamiContinuation, matchesArea, sortAreasAcrossGradesForCardDisplay, sortObservationsForCardDisplay, mergeTsunamiObservations, isObservationMissing, isTideReport, tideReportChange, rememberTideEntries, type SpokenTideEntry } from '../utils/tsunami'
+import { GRADE_PRIORITY, TSUNAMI_GRADE_LIFTED, isWarningLevelWhileObserving, tsunamiMaxGrade, tsunamiAreaGradeChanges, selectUnspokenAreaGradeChanges, rememberAreaGrades, tsunamiAreaKey, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, isTsunamiContinuation, matchesArea, sortAreasAcrossGradesForCardDisplay, sortObservationsForCardDisplay, mergeTsunamiObservations, isObservationMissing, hasMaxHeightTimeAdvanced, isTideReport, tideReportChange, rememberTideEntries, type SpokenTideEntry } from '../utils/tsunami'
 import { playAlertSound, ttsDelayFor, maxTtsDelay, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, stopSpeech, isAudioPlaying, type PrewarmedSpeech, type ShouldStillPlay, type SpeechOutcome } from '../utils/voicevox'
 import { rollbackSpokenEntry } from '../utils/rollbackSpoken'
@@ -647,6 +647,29 @@ function rememberObservations(
 }
 
 /**
+ * 画面（バッジ・カードのスクロール・地図のカメラ）用の記憶をまとめて進める。
+ *
+ * **読み上げ用には使わない。** 最大波の観測時刻の進め方が両者で違う ―― 画面は受信した全観測点を
+ * 常に最新へ進めるが、読み上げは**声にした分だけ**進める（待たされた末に見送られた観測点まで
+ * 既読にすると、その更新は二度と読まれない）。読み上げ側は `rememberObservations` を呼んだうえで、
+ * 時刻を進める観測点を発話の直前に選び直している。
+ *
+ * 時刻を波高と別の `Map` に持つのは、進め方が違うため。波高は「上がったときだけ」更新する
+ * （→ {@link rememberObservationHeights}）ので、混ぜると波高が据え置きの報で時刻だけが取り残される。
+ */
+function rememberObservationsForDisplay(
+  obs: readonly import('../types/earthquake').TsunamiObservation[],
+  names: Set<string>,
+  heights: Map<string, { value: number; over?: boolean }>,
+  maxHeightTimes: Map<string, string>,
+): void {
+  rememberObservations(obs, names, heights)
+  for (const o of obs) {
+    if (o.maxHeightDateTime) maxHeightTimes.set(o.name, o.maxHeightDateTime)
+  }
+}
+
+/**
  * その報が伝える観測状態の変わり目を、読み上げ用の記憶へ反映する。
  *
  * **ライブ経路（`handleLiveEvent`）とリプレイ復元（`restorePreWindowTracking`）の両方から呼ぶこと。**
@@ -717,11 +740,12 @@ function hasMaxHeightTimeChanged(
   spokenHeights: ReadonlyMap<string, { value: number; over?: boolean }>,
   spokenTimes: ReadonlyMap<string, string>,
 ): boolean {
-  if (!obs.height || !obs.maxHeightDateTime) return false
-  if (obs.maxHeightRevise !== '更新') return false
+  if (!obs.height) return false
   if (isObservationMissing(obs)) return false
   if (hasObservedHeightRisen(obs, spokenHeights)) return false
-  return spokenTimes.get(obs.name) !== obs.maxHeightDateTime
+  // 「電文が更新と言っていて、その時刻がまだ見ていないものか」は画面側と共有する述語で見る
+  // （`utils/tsunami.ts`）。ここで重ねている 3 つの条件は読み上げだけの都合。
+  return hasMaxHeightTimeAdvanced(obs, spokenTimes.get(obs.name))
 }
 
 /**
@@ -731,6 +755,15 @@ function hasMaxHeightTimeChanged(
  * 欠測となっています」の形で波高を声にするため、波高は既読へ進めるのが正しい（声になった分だけ
  * 記録する規約）。一方**名前を到達確認の記憶（`spokenObsNamesRef`）へ入れてはいけない**——
  * 入れると、観測が復帰して到達が確認できたときに「もう読んだ」と見なされて黙る。
+ *
+ * **記憶は高水位マーク式**（値が上がったとき・`over` が新しく付いたときだけ進める）。電文の
+ * `MaxHeight` は「これまでの最大波」なので下がらないのが常で、下がる報は訂正にあたる。深刻さが
+ * 後退したことを「更新」として扱わないための形。
+ *
+ * **`over` が外れる向きも記録しない。** 地図のカメラ（`utils/tsunami.ts` の
+ * `hasObservedHeightChanged`）が向きを問わず拾うのとは**意図的に非対称**で、あちらは「動いたか」、
+ * こちらは「深刻になったか」を問う。そのぶん「`over` が外れ、また付く」続報では 2 度目の昇格を
+ * 取りこぼすが、その形は実配信で観測していない（→ docs/spec/tsunami-spec.md §6）。
  */
 function rememberObservationHeights(
   obs: readonly import('../types/earthquake').TsunamiObservation[],
@@ -1000,6 +1033,12 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   // 観測点ごとに受信済みの最大波高。**画面（バッジ・スクロール）用**で、読み上げの有無に関わらず
   // 受信時に進める。
   const lastMaxObsHeightRef = useRef<Map<string, { value: number; over?: boolean }>>(new Map())
+  // 観測点ごとに受信済みの「最大波の観測時刻」。上と同じく画面用で、受信時に進める。
+  //
+  // **波高の記憶と分けて持つ。** 波高が据え置きのまま気象庁が最大波の時刻だけを進める報が
+  // あり（→ `utils/tsunami.ts` の `hasMaxHeightTimeAdvanced`）、その報で画面を動かすには
+  // 時刻そのものを覚えておくしかない。読み上げ側が `spokenObsMaxHeightTimeRef` を別に持つのと同じ形。
+  const lastMaxObsTimeRef = useRef<Map<string, string>>(new Map())
   // これまでに一度でも受信した観測点名（波高未確定＝観測中のまま新規到達した観測点の検出用）。上と同じく画面用。
   const seenObsNamesRef = useRef<Set<string>>(new Set())
   // 同じものを**読み上げ用**に別で持つ。こちらは受信時ではなく**発話を始める瞬間**に進める
@@ -2574,6 +2613,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         // 画面用と読み上げ用のどちらか片方だけ落とすと、「声は到達を伝えるのにバッジが付かない」
         // （またはその逆）になる。判定は同じ観測点集合を見るので、揃えて落とすこと。
         lastMaxObsHeightRef.current.clear()
+        lastMaxObsTimeRef.current.clear()
         seenObsNamesRef.current.clear()
         spokenObsHeightRef.current.clear()
         spokenObsNamesRef.current.clear()
@@ -4106,6 +4146,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
 
       // obsUpdateStatus・focusedDistrict の更新（lastMaxObsHeightRef 更新前に判定する）
       const prevMap552 = lastMaxObsHeightRef.current
+      const prevTimes552 = lastMaxObsTimeRef.current
       const newStatusEntries: [string, 'new' | 'updated'][] = []
 
       // 等級を伝えていない電文（区域が空）も観測点更新として扱う。読み上げ側と同じ判定に
@@ -4114,9 +4155,16 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         || (prevGrade552 !== null && GRADE_PRIORITY[grade] === GRADE_PRIORITY[prevGrade552])) {
         const updatedObs552 = (event.observations ?? []).filter(o => {
           if (!o.height) return false
+          // 波高が据え置きのまま、気象庁が最大波の観測時刻だけを進めた報。**読み上げはこれを
+          // 「最大波の観測時刻が更新されました」と読むので、画面も揃って動かす**（判定の本体は
+          // `utils/tsunami.ts`）。値だけを見ていたころは、声が名指しした観測点のバッジが点滅せず、
+          // カードもそこへスクロールしなかった。
+          if (hasMaxHeightTimeAdvanced(o, prevTimes552.get(o.name))) return true
           const prev = prevMap552.get(o.name)
           if (prev === undefined) return true
           if (o.height.value > prev.value) return true
+          // **`over` は付いた向きだけを見る**（記憶が高水位マーク式なのと対。地図のカメラは
+          // 向きを問わず拾うので、そこだけ意図的に非対称。→ `rememberObservationHeights`）。
           if (o.height.over && !prev.over && o.height.value >= prev.value) return true
           return false
         })
@@ -4230,7 +4278,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
 
       // 画面用の記憶だけをここで進める。読み上げ用（`spokenObsHeightRef`）は発話を始める瞬間まで
       // 待つ（受信時に進めると、鳴らなかった観測値まで既読になり二度と読まれない）。
-      rememberObservations(event.observations ?? [], seenObsNamesRef.current, lastMaxObsHeightRef.current)
+      rememberObservationsForDisplay(event.observations ?? [], seenObsNamesRef.current, lastMaxObsHeightRef.current, lastMaxObsTimeRef.current)
     }
   }
 
@@ -4292,6 +4340,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // 解除の照合に使う直前の津波も落とす（残すと、リプレイ後の解除を切替前の津波と照合する）
     lastTsunamiRef.current = null
     lastMaxObsHeightRef.current.clear()
+    lastMaxObsTimeRef.current.clear()
     seenObsNamesRef.current.clear()
     // 読み上げ用の既読も落とす（画面用と対称。残すとリプレイ後の観測情報が「更新なし」になる）
     spokenObsHeightRef.current.clear()
@@ -4480,6 +4529,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             lastTsunamiGradeRef.current = null
             lastTsunamiRef.current = null
             lastMaxObsHeightRef.current.clear()
+            lastMaxObsTimeRef.current.clear()
             seenObsNamesRef.current.clear()
             spokenObsHeightRef.current.clear()
             spokenObsNamesRef.current.clear()
@@ -4510,7 +4560,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             // T 時点までの観測点は「もう伝えた」ものとして扱う。**読み上げ用も埋めること。**
             // 埋め忘れると、注入後の最初の観測情報でそれまでの全観測点が読み直され、途中から
             // 再生を始めたのに津波の到達をいまさら読み上げることになる。
-            rememberObservations(tsunami.observations ?? [], seenObsNamesRef.current, lastMaxObsHeightRef.current)
+            rememberObservationsForDisplay(tsunami.observations ?? [], seenObsNamesRef.current, lastMaxObsHeightRef.current, lastMaxObsTimeRef.current)
             // ライブ経路が持つ「等級を語れない電文では既読にしない」ガード（`canTellGrade`）は
             // ここに無い。この復元は DMDSS 版のリプレイ専用で、DMDATA は未知の区分を安全側で
             // 津波警報へ丸めるため（`dmdataParser` の Kind/Code 判定）、区域が残ったまま等級だけ
