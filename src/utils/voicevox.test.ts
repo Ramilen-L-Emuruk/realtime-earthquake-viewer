@@ -13,6 +13,8 @@
 // AudioContext は偽物に差し替える。fake timers の時間軸に `currentTime` を合わせ、再生の終わりも
 // タイマーで起こすことで、本物の音声グラフと同じ順序で 'ended' が届く。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { __resetSpeechAudioCacheForTest } from './speechAudioCache'
+import { __resetAudioPlaybackStateForTest } from './voicevox'
 import { speakWithVoicevox, speakSequentially, warmFixedPhrases, splitIntoChunks, __resetFixedPhrasesForTest, SPEECH_SYNTH_BUDGET_MS } from './voicevox'
 import { eewAlertToText, EEW_LEAD_PHRASES, voicevoxPreviewTexts } from './ttsText'
 import type { EEWAlert } from '../types/earthquake'
@@ -167,6 +169,11 @@ beforeEach(() => {
   synthCallCount = 0
   synthBodies = []
   accentPhrasesFixture = []
+  // 合成済みチャンクの控えはモジュールに居座る。捨てないと、同じ文を 2 度読むテストの
+  // 2 度目が控えから出て「合成が走らない」ことになる（辞書エントリのキャッシュと同じ事情）。
+  __resetSpeechAudioCacheForTest()
+  // 音の余韻（isAudioPlaying の猶予）も持ち越さない。残ると「1 音も鳴っていない」状況が作れない。
+  __resetAudioPlaybackStateForTest()
   installFetch()
 })
 afterEach(() => {
@@ -474,8 +481,11 @@ describe('切り出し語の作り置き', () => {
       await advance(10)
       const warmBody = synthBodies[0]
 
-      // 作り置きを捨てて、同じ句を読み上げ経路で合成し直す
+      // 作り置きを捨てて、同じ句を読み上げ経路で合成し直す。
+      // **控えも一緒に捨てる**（`speechAudioCache`）。作り置きだけ捨てても控えが当たって
+      // 合成し直しが起きず、「合成し直した経路」を観測できない。
       __resetFixedPhrasesForTest()
+      __resetSpeechAudioCacheForTest()
       synthBodies = []
       synthCallCount = 0
       synthDelaysMs = [0, 0]
@@ -668,7 +678,10 @@ describe('切り出し語の作り置き', () => {
     void speakWithVoicevox('http://vv', EEW_TEXT, 1, 1)
     await advance(2000)
 
-    // 2 回目: 埋め直した作り置きが効く（「登録済みなら触らない」だと永久に効かない）
+    // 2 回目: 埋め直した作り置きが効く（「登録済みなら触らない」だと永久に効かない）。
+    // **控えは捨てる。** ここで見たいのは作り置きの効きで、控え（`speechAudioCache`）が
+    // 残っていると 2 チャンク目まで即座に鳴り、作り置きが効いたかどうかが読めない。
+    __resetSpeechAudioCacheForTest()
     sources = []
     synthCallCount = 0
     synthDelaysMs = [800]
@@ -692,6 +705,8 @@ describe('切り出し語の作り置き', () => {
     expect(sources).toHaveLength(0)   // まだ待たされる
     await advance(2000)
 
+    // 控えは捨てる（理由は 1 つ上のテストと同じ。見たいのは作り置きの効き）
+    __resetSpeechAudioCacheForTest()
     sources = []
     synthCallCount = 0
     synthDelaysMs = [800]

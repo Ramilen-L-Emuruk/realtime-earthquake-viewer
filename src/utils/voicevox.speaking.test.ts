@@ -7,6 +7,8 @@
 //   - 真へ張り付く  → 既定のタブへ二度と戻らなくなる（安全弁のテストが見る）
 //   - 早く偽へ落ちる → 読み上げの最中に画面を持っていかれる（正・対照のテストが見る）
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { __resetSpeechAudioCacheForTest } from './speechAudioCache'
+import { __resetAudioPlaybackStateForTest } from './voicevox'
 import { speakWithVoicevox, stopSpeech, isSpeaking, onSpeechIdle } from './voicevox'
 
 // ---- AudioContext の代役（`voicevox.prewarm.test.ts` と同じ作り） ----------
@@ -92,6 +94,11 @@ beforeEach(() => {
   synthesisFails = false
   synthesisHangs = false
   fakeCtx = makeFakeCtx()
+  // 合成済みチャンクの控えはモジュールに居座る。捨てないと、同じ文を 2 度読むテストの
+  // 2 度目が控えから出て「合成が走らない」ことになる（辞書エントリのキャッシュと同じ事情）。
+  __resetSpeechAudioCacheForTest()
+  // 音の余韻（isAudioPlaying の猶予）も持ち越さない。残ると「1 音も鳴っていない」状況が作れない。
+  __resetAudioPlaybackStateForTest()
   installFetch()
 })
 

@@ -17,6 +17,8 @@
 // **間を入れるかどうかは呼び出し側が渡す引数で決まる**。渡し忘れると黙って「間なし」に倒れ、
 // 直したはずの症状へ静かに戻るため、`prewarmVoicevox` 経由の経路も個別に固定する。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { __resetSpeechAudioCacheForTest } from './speechAudioCache'
+import { __resetAudioPlaybackStateForTest } from './voicevox'
 import { prewarmVoicevox, speakWithVoicevox, splitIntoChunks } from './voicevox'
 
 // 辞書は既定で使わない。安全弁のテストだけ findPhraseBreakMatch を差し替える。
@@ -120,6 +122,11 @@ function trailingPauses(): (number | null)[] {
 
 beforeEach(() => {
   dictState.key = null
+  // 合成済みチャンクの控えはモジュールに居座る。捨てないと、同じ文を 2 度読むテストの
+  // 2 度目が控えから出て「合成が走らない」ことになる（辞書エントリのキャッシュと同じ事情）。
+  __resetSpeechAudioCacheForTest()
+  // 音の余韻（isAudioPlaying の猶予）も持ち越さない。残ると「1 音も鳴っていない」状況が作れない。
+  __resetAudioPlaybackStateForTest()
   installFetch()
 })
 afterEach(() => { vi.restoreAllMocks() })

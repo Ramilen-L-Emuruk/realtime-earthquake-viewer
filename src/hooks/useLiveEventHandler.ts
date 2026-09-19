@@ -402,7 +402,7 @@ export function capSpeechWait<T>(
  * ここで拾い漏らすと設定タブの項目が何も効かない（型検査には掛からない ―― `TtsSpeechOptions`
  * の詳細度の項目はすべて省略可で、省略時は従来の挙動になるため）。
  */
-function ttsRegionOptions(settings: AppSettings): TtsSpeechOptions {
+export function ttsRegionOptions(settings: AppSettings): TtsSpeechOptions {
   return {
     intensityLevels: settings.ttsIntensityLevels,
     maxRegions: settings.ttsMaxRegions,
