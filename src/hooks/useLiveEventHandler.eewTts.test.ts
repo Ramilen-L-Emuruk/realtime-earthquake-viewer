@@ -33,6 +33,23 @@ import type { EEWAlert, EEWRegion, IntensityScale, LpgmClass, JMAQuake, JMATsuna
 // 「鳴っている最中」を再現するための保留。`holdNextSpeech()` で次の 1 回だけ保留にする。
 let holdNextCall = false
 let releaseHeld: (() => void) | null = null
+
+// モックの発話が鳴っているあいだ真を返すための数。**実物の `isAudioPlaying` は再生中の
+// 音源を数えるが、その本体を差し替えているので、ここで同じ役を持たせないと「誰も鳴って
+// いない」世界でテストすることになる** —— 待ちの上限が「音が出ている間は計時しない」形に
+// なっているため、それでは上限まわりを何も守れない。
+//
+// **数えるのは音が出ている間だけで、合成待ちは含めない**（`installChunkedSpeak` を見ること）。
+// ここを「発話を呼んでから終わるまで」にすると実物の `isSpeaking` と同じ粒度になり、
+// **合成が無応答でハングしたときに待ちが延びる**という、この修正が避けたかった形を
+// テストでは再現できなくなる。
+let mockSpeakingCount = 0
+/** 鳴っている数を増やし、減らす手を返す（二重に減らさない）。 */
+function beginMockSpeech(): () => void {
+  mockSpeakingCount++
+  let done = false
+  return () => { if (!done) { done = true; mockSpeakingCount-- } }
+}
 /** 鳴っているものを止める（実物の `activeSources.stop()` / `stopSpeech()` に相当）。 */
 function releaseCurrentSpeech() {
   releaseHeld?.()
@@ -48,7 +65,10 @@ const speakMock = vi.fn((..._args: unknown[]) => {
   releaseCurrentSpeech()
   if (!holdNextCall) return Promise.resolve({ spoke: true })
   holdNextCall = false
-  return new Promise<SpeechOutcome>(resolve => { releaseHeld = () => resolve({ spoke: true }) })
+  const endSpeech = beginMockSpeech()
+  return new Promise<SpeechOutcome>(resolve => {
+    releaseHeld = () => { endSpeech(); resolve({ spoke: true }) }
+  })
 })
 vi.mock('../utils/voicevox', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../utils/voicevox')>()),
@@ -58,6 +78,8 @@ vi.mock('../utils/voicevox', async (importOriginal) => ({
   // 鳴ったチャンクの判定に使う（このモックはチャンクの通知を出さないので常に null で足りる）
   getSpeechClock: () => null,
   stopSpeech: () => releaseCurrentSpeech(),
+  // 本体を差し替えた以上、「鳴っているか」もこちらで数える（`beginMockSpeech`）。
+  isAudioPlaying: () => mockSpeakingCount > 0,
 }))
 // 音の実体だけ差し替える。**通知音との間（`ttsDelayFor`）は本物を使う** ―― 読み上げの順番と
 // 待ち合わせはこの間の長さで決まるため、模擬すると検証の前提が変わる。
@@ -220,16 +242,23 @@ function installChunkedSpeak(heard: string[], opts?: { synthMs?: number; chunkMs
     const shouldStillPlay = args[4] as (() => boolean) | undefined
     const chunks = splitIntoChunks(text)
     return (async (): Promise<SpeechOutcome> => {
+      // 合成待ちのあいだは「鳴っていない」。声が出るのは最初のチャンクからで、
+      // 待ちの上限が「声が出ている間は計時しない」形なのでここを混ぜてはいけない。
       await new Promise<void>(r => { setTimeout(r, synthMs) })
       let spoke = false
-      for (const chunk of chunks) {
-        // 1 チャンクも鳴らずに降りたら `spoke: false`（実物の `speakWithVoicevox` と同じ）
-        if (shouldStillPlay && !shouldStillPlay()) return { spoke }
-        heard.push(chunk)
-        spoke = true
-        await new Promise<void>(r => { setTimeout(r, chunkMs) })
+      const endSpeech = beginMockSpeech()
+      try {
+        for (const chunk of chunks) {
+          // 1 チャンクも鳴らずに降りたら `spoke: false`（実物の `speakWithVoicevox` と同じ）
+          if (shouldStillPlay && !shouldStillPlay()) return { spoke }
+          heard.push(chunk)
+          spoke = true
+          await new Promise<void>(r => { setTimeout(r, chunkMs) })
+        }
+        return { spoke }
+      } finally {
+        endSpeech()
       }
-      return { spoke }
     })()
   }))
 }
@@ -255,6 +284,10 @@ beforeEach(() => {
   // 保留を持ち越すと、次のテストの 1 発話目が解決しないまま止まる
   holdNextCall = false
   releaseHeld = null
+  // **鳴っている数も持ち越さない。** 解決しない発話を残したままテストが終わると減算に
+  // 到達せず、次のテストが「ずっと誰かが鳴っている」世界で走る —— 待ちの上限が
+  // 効かなくなり、そのテストだけが単独実行では通るのに全体では落ちる形になる。
+  mockSpeakingCount = 0
 })
 
 afterEach(() => {
@@ -1129,25 +1162,28 @@ describe('EEW 読み上げの文言と発話順序', () => {
       expect(spokenTexts().filter(t => t === '緊急地震速報、種子島近海で地震。')).toHaveLength(1)
     })
 
-    // 発話の完了待ちには上限（`EEW_SPEECH_CHAIN_MAX_WAIT_MS`）がある。VOICEVOX が極端に遅いと
-    // **まだ鳴っているのに「鳴っている」記録が先に消える**ため、言い直しは発火しない。既知の
-    // 限界だが、そのときは第 2 フェーズの前置きが伝える ―― **区分が声にならない方には倒れない**。
-    it('発話の完了待ちが上限に達した後の格上げは、前置きで伝わる', async () => {
+    // **鳴っている間は完了待ちの上限に達しない**（`capSpeechWait` は声が出ているあいだ計時
+    // しない）。以前はここで 8 秒を越えると「鳴っている」記録が先に降り、言い直しが発火せず
+    // 第 2 フェーズの前置きに委ねていた。その限界を解いたので、格上げは言い直しで伝わる。
+    it('鳴っている間は完了待ちの上限に達せず、格上げは言い直しで伝わる', async () => {
       const handle = setup()
-      holdNextSpeech()
+      const release = holdNextSpeech()
       handle(makeEEW({ scaleTo: 50, severity: 'Forecast' }))
       await flushMicrotasks()
       expect(spokenTexts()).toEqual(['地震動予報、日向灘で地震。'])
 
-      // 上限を越えさせる（ここで「鳴っている」記録が降りる）
+      // 上限（8 秒）を越えても、声が出ているので打ち切られない
       await vi.advanceTimersByTimeAsync(8000)
       await flushMicrotasks()
 
       handle(makeEEW({ serial: 2, scaleTo: 50, severity: 'Warning' }))
       await flushMicrotasks()
+      release()
+      await vi.advanceTimersByTimeAsync(20000)
+      await flushMicrotasks()
 
-      expect(spokenTexts().filter(t => t === '緊急地震速報、日向灘で地震。')).toHaveLength(0)
-      expect(spokenTexts().some(t => t.includes('切り替わりました'))).toBe(true)
+      // 鳴っている最中の格上げなので、第 1 フェーズが警報として言い直す
+      expect(spokenTexts().filter(t => t === '緊急地震速報、日向灘で地震。')).toHaveLength(1)
     })
 
     // 初報から警報なら、区分は切り出しの「緊急地震速報、〇〇で地震。」で伝わっている。
@@ -1903,12 +1939,16 @@ describe('合成が 1 音も鳴らなかったとき', () => {
     expect(spokenTexts()).toContain('緊急地震速報に切り替わりました。北陸では強い揺れに警戒してください。')
   })
 
-  // 安全弁: **上限（8 秒）まで待ち切った発話は既読にする。**
+  // 対照: **音が出ていなければ、上限（8 秒）で打ち切る。**
   //
-  // 合成が全滅した場合は待たずに完了するので（鳴らすものが無い）、上限まで返らないのは
-  // 鳴っている最中ということ。ここを「鳴らなかった」へ倒すと、地方を多く列挙する長い
-  // 読み上げのたびに既読を巻き戻し、**同じ内容を最初から読み直す**。
-  it('上限まで待ち切った発話は既読にする（鳴っている最中とみなす）', async () => {
+  // ここがこの上限の本来の役目 —— VOICEVOX への合成要求が返ってこないまま止まったとき、
+  // 後続の緊急地震速報を道連れにしない。**音が出ている間の延長と混ぜないこと**（そちらは
+  // 「読み切ってから次が始まる」で検査する）。このモックは解決しない Promise を返すだけで
+  // 1 音も鳴らさないので、`isAudioPlaying` は偽のまま＝延長は掛からない。
+  //
+  // 打ち切った発話は既読へ倒す。「鳴らなかった」へ倒すと、長い読み上げのたびに既読を
+  // 巻き戻して**同じ内容を最初から読み直す**（1 音も鳴らなかった場合の取りこぼしより重い）。
+  it('合成が返らないまま上限に達したら打ち切り、既読にする', async () => {
     speakMock.mockImplementation((() => new Promise(() => { /* 解決しない＝鳴り続けている */ })) as never)
     const handle = setup()
     handle(makeEEW({ scaleTo: 50, warningRegions: ['北陸'] }))
@@ -2075,10 +2115,11 @@ describe('録画モードの既読復元（緊急地震速報の震源）', () =
 // 第 1.5 フェーズの発話が、チェーンの待ち上限（`EEW_SPEECH_CHAIN_MAX_WAIT_MS`・8 秒）より
 // 長くなる場合。**地方を多く列挙する報ほど起きやすい。**
 //
-// 第 2 フェーズは上限で待ちを打ち切って走り出すので、第 1.5 の `onSettled` はまだ呼ばれて
-// いない。既読の記録をそこまで遅らせると、第 2 が「まだ区分を言っていない」と判定して
-// 前置き（「緊急地震速報に切り替わりました。」）を重ねる。
-describe('読み切る前に追い越されたとき（第 1.5 フェーズ）', () => {
+// 守ることが 2 つある。
+//   ① 読み切ってから次が始まる（声が出ている間は待ちを計時しない）
+//   ② 前置き（「緊急地震速報に切り替わりました。」）を重ねない。既読の記録は発話の直前に
+//      行うので、仮に追い越されても第 2 フェーズは「もう区分を言った」と判定できる
+describe('上限より長い発話（第 1.5 フェーズ）', () => {
   /** 実機と同じ並びを作る。2024-06-03 06:31 の石川県能登（予報 → 警報・6 地方）。 */
   async function playRealSequence(heard: string[], handle: ReturnType<typeof setup>) {
     // 1 報: 予報・仮定震源要素（予想震度が付かない）
@@ -2092,7 +2133,25 @@ describe('読み切る前に追い越されたとき（第 1.5 フェーズ）',
     await advance(SPEAK_SYNTH_MS * 12 + SPEAK_CHUNK_MS * 24)
   }
 
-  // 正: 読み切る前に第 2 フェーズへ追い越されても、前置きは 1 回だけ。
+  // 正: 上限（8 秒）より長くても、読み切ってから次が始まる。
+  //
+  // 待ちが声の出ている時間まで計時していた頃は、地方を列挙する文が読み終わる前に予想値の
+  // 読み上げが始まり、前の音を止めていた（2024-06-03 06:31 の石川県能登・対象地方 6 つ）。
+  it('読み切ってから次が始まる', async () => {
+    const heard: string[] = []
+    // 1 チャンク 3.5 秒 × 3 チャンク＝上限を大きく超える長さ
+    installChunkedSpeak(heard, { chunkMs: 3500 })
+    await playRealSequence(heard, setup())
+
+    const lastRegion = heard.findIndex(h => h.includes('警戒してください'))
+    const firstValue = heard.findIndex(h => h.includes('予想最大震度'))
+    // 地方の文の最後のチャンクが鳴っている（切られていない）
+    expect(lastRegion).toBeGreaterThanOrEqual(0)
+    // そのうえで予想値が後に来る
+    expect(firstValue).toBeGreaterThan(lastRegion)
+  })
+
+  // 正: 前置きは 1 回だけ。
   it('前置きを繰り返さない', async () => {
     const heard: string[] = []
     // 6 地方を列挙する文は長い。1 チャンク 3.5 秒＝チェーンの待ち上限を超える
