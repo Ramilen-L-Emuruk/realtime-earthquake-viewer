@@ -4,6 +4,7 @@ import type { SiteCoords, PsWaveCircle } from '../../services/kyoshin'
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
 import type { HeatPoint } from '../../utils/quakeHeatmap'
 import type { CatalogPointCloud, CatalogColorBy } from '../../utils/hypocenterCatalogView'
+import type { ObsUpdateMark } from '../../utils/tsunami'
 import type { MapLegendSources } from '../MapLegend/legendBlocks'
 import type { LatLng } from '../../utils/stationCoords'
 
@@ -175,7 +176,7 @@ export interface JapanMapProps {
    * 引く仕組みで、震度観測点と潮位観測点は名前が衝突しうる。
    */
   focusTarget?: MapFocusTarget | null
-  obsUpdateStatus?: Map<string, 'new' | 'updated'>
+  obsUpdateStatus?: Map<string, ObsUpdateMark>
   /**
    * 地震カードをユーザーが明示的に選んだ回数（単調増加）。QuakeFitGL が「明示選択」と
    * 「電文更新起点の自動追従」を区別するために使う。ズーム/パン中でもカードクリックには

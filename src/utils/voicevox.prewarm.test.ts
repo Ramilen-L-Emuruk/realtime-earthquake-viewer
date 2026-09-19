@@ -8,6 +8,8 @@
 //   2. 使わなかった先行合成は次の読み上げが始まるときに打ち切る（VOICEVOX の直列処理を明け渡す）
 //   3. 打ち切られていた・失敗していたら再生側で合成し直す（**無音にしない**）
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { __resetSpeechAudioCacheForTest } from './speechAudioCache'
+import { __resetAudioPlaybackStateForTest } from './voicevox'
 // `speakWithVoicevox` の第 5 引数は「鳴らす直前の見直し」（`shouldStillPlay`）で、
 // 先行合成は第 6 引数。ここでは前者を使わないので undefined を渡している。
 import { prewarmVoicevox, speakWithVoicevox } from './voicevox'
@@ -104,6 +106,11 @@ beforeEach(() => {
   started.length = 0
   synthesisDelay = 0
   fakeCtx = makeFakeCtx()
+  // 合成済みチャンクの控えはモジュールに居座る。捨てないと、同じ文を 2 度読むテストの
+  // 2 度目が控えから出て「合成が走らない」ことになる（辞書エントリのキャッシュと同じ事情）。
+  __resetSpeechAudioCacheForTest()
+  // 音の余韻（isAudioPlaying の猶予）も持ち越さない。残ると「1 音も鳴っていない」状況が作れない。
+  __resetAudioPlaybackStateForTest()
   installFetch()
 })
 

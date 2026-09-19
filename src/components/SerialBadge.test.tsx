@@ -75,6 +75,7 @@ const renderQuake = (quake: JMAQuake, selected = true) =>
       loadMoreFailed={false}
       fetchThrottled={false}
       lpgmByEventId={new Map()}
+      updateMarks={new Map()}
       activeLpgmEventId={null}
       onToggleLpgm={() => {}}
       estimatedIntensity={null}

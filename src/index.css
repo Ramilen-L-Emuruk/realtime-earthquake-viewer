@@ -122,3 +122,35 @@ body {
    対する既定の見た目が付いてこないので、自分で薄くする。 */
 .range-thumb-only:disabled::-webkit-slider-thumb { opacity: 0.4; cursor: default; }
 .range-thumb-only:disabled::-moz-range-thumb { opacity: 0.4; cursor: default; }
+
+/* カードの「この欄が動いた」を、印を残さずその場の減衰で示す（→ `hooks/useFieldFlash.ts`）。
+   緊急地震速報は秒の単位で続報が届くので、印を持続させると光りっぱなしになる。
+
+   **`from` だけを書く。** 終値を書かないと、ブラウザがその要素自身の計算済みの色へ向けて
+   補間する ＝「元の色へなめらかに戻る」になる。終値を書くと、震度階級の色や規模の色を
+   こちらで持つことになり、値が変わるたびに書き写しがずれる。
+
+   **点滅させない。** 秒ごとに届く続報のたびに点けたり消したりすると目が休まらない。
+   減衰なら、動いた瞬間がいちばん濃く、見逃しても余韻で気づける。 */
+@keyframes update-fade-text {
+  0%, 35% { color: var(--update-mark-color); }
+}
+@keyframes update-fade-bg {
+  0%, 35% { background-color: var(--update-mark-color); }
+}
+.update-fade-text {
+  animation: update-fade-text var(--update-fade-ms, 1000ms) ease-out;
+}
+.update-fade-bg {
+  animation: update-fade-bg var(--update-fade-ms, 1000ms) ease-out;
+}
+/* 「視差効果を減らす」を選んでいる利用者には、色を滑らかに動かさない。
+
+   **ただし印そのものは消さない。** `animation: none` にすると、この経路（緊急地震速報）では
+   色が最初から最後まで元のままになり、「この欄が動いた」という手掛かりが**丸ごと失われる**。
+   保持のあいだ色を出し、そこから段階を踏まずに戻す（`steps(1, end)`）——
+   変化の量は同じで、途中の滑らかさだけを落とす。 */
+@media (prefers-reduced-motion: reduce) {
+  .update-fade-text,
+  .update-fade-bg { animation-timing-function: steps(1, end); }
+}

@@ -100,10 +100,9 @@ void main() {
 /** 属性名。**並び順がそのままロケーション番号になる。** */
 const ATTRIBS = ['a_pos', 'a_uv'] as const
 
-// フラグメントシェーダー。**値を補間してから階級へ写す**のがこのレイヤーの要点。
+// フラグメントシェーダー。**電文のセルをそのまま階級へ写す**のがこのレイヤーの要点。
 //
-// - `u_value` は線形補間で引く（メッシュの矩形が立たない）
-// - `u_legend` は最近傍で引く（階級の境目が混ざらない）
+// - `u_value` も `u_legend` も最近傍で引く（値を作らず、階級の境目も混ぜない）
 //
 // **`highp` を明示する。** `mediump` は相対精度が 2^-10 ほどしかなく、計測震度へ戻すために
 // 255 を掛ける時点で階級 1 段ぶんに届く誤差が乗りうる。
@@ -116,13 +115,14 @@ in vec2 v_uv;
 out vec4 fragColor;
 void main() {
   vec2 s = texture(u_value, v_uv).rg;
-  // セルが無いところ。縁は半セル外側で切れる（G を線形補間しているため）。
+  // セルが無いところ。最近傍なので 0 か 1 しか来ないが、閾値で読むのは変えない
+  // （縮小フィルタを線形へ戻しても、縁の切れ方が同じままになる）。
   if (s.g < 0.5) discard;
   float si = s.r * 255.0;
   // 場は 7 ビットなので 128 以上は現れない。壊れた値を CLAMP_TO_EDGE で
   // 最上位の階級として描かないよう弾く。
   if (si > 127.5) discard;
-  // 画素の中心を指す。最近傍で引くので、ここが階級への写し（四捨五入）も兼ねる。
+  // 画素の中心を指す。8 ビットを 255 倍して戻すぶんの誤差はここで吸収される。
   vec4 c = texture(u_legend, vec2((si + 0.5) / ${SI_RANGE}.0, 0.5));
   // 凡例のどの範囲にも入らない計測震度（震度4未満）は塗らない。
   if (c.a < 0.5) discard;
@@ -338,10 +338,11 @@ ${VS_BODY}`,
         note('gl-resources', 'GL のテクスチャ・バッファを作成できなかった')
         return
       }
-      // 値は線形補間で引く（メッシュの矩形を立てない）。
+      // **値も最近傍で引く。** セル 1 つがそのまま画面の 1 区画になり、面積と形が電文どおりに
+      // 出る（線形補間をやめた経緯は `gl/estimatedIntensityRaster.ts` の冒頭）。
       gl.bindTexture(gl.TEXTURE_2D, valueTex)
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
       // 凡例は最近傍。**補間すると階級の境目が混ざる**（このレイヤーの要点が消える）。
