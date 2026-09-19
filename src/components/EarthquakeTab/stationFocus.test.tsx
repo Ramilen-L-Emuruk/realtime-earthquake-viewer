@@ -123,6 +123,7 @@ function renderCard(
       loadMoreFailed={false}
       fetchThrottled={false}
       lpgmByEventId={opts.lpgm ? new Map([[EVENT_ID, opts.lpgm]]) : new Map()}
+      updateMarks={new Map()}
       activeLpgmEventId={opts.lpgm ? EVENT_ID : null}
       onToggleLpgm={() => {}}
       estimatedIntensity={null}

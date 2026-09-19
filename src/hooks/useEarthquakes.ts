@@ -15,6 +15,8 @@ import {
   mergeHistoryLoss,
 } from '../utils/telegramLoss'
 import { mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes, extractQuakeEventId, quakeEventKey, coalesceByEventId, findExistingQuakeCard, isRetractedQuakeReport, quakeRetractionOf, addQuakeRetraction } from '../utils/quakeMerge'
+import { advanceQuakeMarks, pruneQuakeMarks, quakeFactSnapshot, quakeRowSnapshot, lpgmRowSnapshot, lpgmMarkKey, type QuakeCardMarks, type QuakeMarkMemory } from '../utils/quakeUpdateMark'
+import { UPDATE_MARK_TTL_MS } from '../utils/updateMark'
 import type { QuakeRetraction } from '../utils/quakeMerge'
 import { withBorrowedFromTsunami, borrowFromTsunamiIntoCards } from '../utils/borrowFromTsunami'
 import { loadStationCoords, onStationCoordsLoaded, buildAreaPrefIndex, getAreaPrefIndexCache } from '../utils/stationCoords'
@@ -423,6 +425,28 @@ function runSimulateEEWRetraction(
   ref.current = { eventId, serial, baseTime, cancelTimer }
 }
 
+/**
+ * 印と記憶を残しておく鍵の集合（地震カードと長周期）。
+ *
+ * **両方を数えること。** 片方の種別を受けたときにもう片方の鍵を渡し忘れると、その記憶が
+ * 捨てられ、次に届いた続報が初報として扱われて印が出なくなる（初報では印を出さないため、
+ * 症状は「印が出ない」だけで例外もログも出ない）。
+ */
+/** 履歴を取り込んだときに印と記憶を落とす（→ 呼び出し元のコメント）。 */
+function clearedMarks(): Pick<EarthquakeState, 'quakeUpdateMarks' | 'quakeMarkMemory'> {
+  return { quakeUpdateMarks: new Map(), quakeMarkMemory: new Map() }
+}
+
+function liveMarkKeys(
+  earthquakes: readonly JMAQuake[],
+  lpgmByEventId: ReadonlyMap<string, JMALpgm>,
+): Set<string> {
+  const keys = new Set<string>()
+  for (const q of earthquakes) keys.add(quakeEventKey(q))
+  for (const id of lpgmByEventId.keys()) keys.add(lpgmMarkKey(id))
+  return keys
+}
+
 export interface EarthquakeState {
   earthquakes: JMAQuake[]
   tsunamis: JMATsunami[]
@@ -443,6 +467,20 @@ export interface EarthquakeState {
    * 新しいものが来た＝より新しい大きな地震か、同じ地震の続報のどちらか。
    */
   estimatedIntensity: JMAEstimatedIntensity | null
+  /**
+   * 地震カードの更新の印（鍵は `quakeEventKey`）。**ライブで受けた続報にだけ付く。**
+   *
+   * 履歴の取り込み（起動時・「もっと見る」）では付けない —— あちらは何通もまとめて
+   * 畳み込むので「この報で動いた」を指せない。
+   */
+  quakeUpdateMarks: ReadonlyMap<string, QuakeCardMarks>
+  /**
+   * 印を出すための、1 つ前のカードの写し（鍵は `quakeEventKey`）。
+   *
+   * **状態に持つ。ref にしない。** 差分は状態の更新関数の中で取るので、そこから ref へ
+   * 書き込むと更新関数が純粋でなくなる（React が 2 度走らせたときに記憶が二重に進む）。
+   */
+  quakeMarkMemory: ReadonlyMap<string, QuakeMarkMemory>
   connectionStatus: ConnectionStatus
   lastUpdate: Date | null
   isLoading: boolean
@@ -514,6 +552,8 @@ export function useEarthquakes(
     quakeNotice: null,
     earthquakeCount: null,
     estimatedIntensity: null,
+    quakeUpdateMarks: new Map(),
+    quakeMarkMemory: new Map(),
     connectionStatus: (isDmdss && !isValidDmdataApiKey(dmdataApiKey)) ? 'disconnected' : 'connecting',
     lastUpdate: null,
     isLoading: !(isDmdss && !isValidDmdataApiKey(dmdataApiKey)),
@@ -1321,9 +1361,34 @@ export function useEarthquakes(
             merged,
             ...prev.earthquakes.filter(e => e.cancelledAt || !sameQuakeEntry(e, quake, getAreaPrefIndexCache())),
           ])
+          // カードの更新の印。**併合が済んだここで取る** —— 続報の持ち越し規則（§6.4）を
+          // 適用したあとの「画面に出ている値」どうしを比べたいので、電文の側では取れない。
+          // 受信ハンドラ（`useLiveEventHandler`）はこの統合より前に呼ばれるため、あちらでも取れない。
+          //
+          // **写すのは畳み込みまで済んだカード。** `coalesceByEventId` は暫定 ID と確定 ID の
+          // カードを 1 枚へ畳むとき、もう一方の中身を吸収する。`merged` を写すと、その吸収分が
+          // この報の印から漏れ、記憶にも入らないので**次の報で「いま動いた」と誤って光る**。
+          const settled = next.find(c => sameQuakeEntry(c, quake, getAreaPrefIndexCache())) ?? merged
+          const markState = advanceQuakeMarks({
+            prev: { memory: prev.quakeMarkMemory, marks: prev.quakeUpdateMarks },
+            key: quakeEventKey(settled),
+            snapshot: {
+              facts: quakeFactSnapshot(settled),
+              rows: quakeRowSnapshot(settled.points, settled.cities ?? []),
+            },
+            // **長周期の鍵も数える。** 地震の鍵だけを渡すと、地震を 1 通受けただけで
+            // 長周期の記憶が丸ごと捨てられ、その次の長周期の続報が初報として扱われる。
+            liveKeys: liveMarkKeys(next, prev.lpgmByEventId),
+            // **実時計で測る。** `now` は再生時計になりうる（`getTimeRef`）ので、
+            // 印の寿命に使うと再生中は消えないか、即座に消えるかのどちらかになる。
+            // 印は「画面に出してから何秒経ったか」の話なので、電文の時刻軸には乗せない。
+            now: Date.now(),
+          })
           return {
             ...prev,
             earthquakes: sortQuakes(next),
+            quakeUpdateMarks: markState.marks,
+            quakeMarkMemory: markState.memory,
             lastUpdate: now,
           }
         }
@@ -1496,7 +1561,29 @@ export function useEarthquakes(
             const next = new Map(prev.lpgmByEventId)
             if (lpgm.cancelled) next.delete(lpgm.eventId)
             else next.set(lpgm.eventId, lpgm)
-            return { ...prev, lpgmByEventId: next }
+            // 長周期の一覧にも、震度一覧と同じ印を付ける。取消では付けない（一覧ごと消えるため）。
+            //
+            // **控えの 60 日では長周期の続報が 1 通も無かった**（24 件すべて単発）。ただし
+            // それは「見つからなかった」であって「来ない」ではないので、同じ構造の震度一覧に
+            // 印を付ける以上こちらだけ出ない形にはしない（→ `lpgmRowSnapshot`）。
+            if (lpgm.cancelled) return { ...prev, lpgmByEventId: next }
+            const markState = advanceQuakeMarks({
+              prev: { memory: prev.quakeMarkMemory, marks: prev.quakeUpdateMarks },
+              key: lpgmMarkKey(lpgm.eventId),
+              snapshot: {
+                // 長周期は震源要素の欄を持たない（震源はカードの地震情報側が出す）。
+                facts: new Map(),
+                rows: lpgmRowSnapshot(lpgm.regions ?? [], lpgm.points ?? [], lpgm.prefs ?? []),
+              },
+              liveKeys: liveMarkKeys(prev.earthquakes, next),
+              now: Date.now(),
+            })
+            return {
+              ...prev,
+              lpgmByEventId: next,
+              quakeUpdateMarks: markState.marks,
+              quakeMarkMemory: markState.memory,
+            }
           })
           if (!silent && !lpgm.cancelled && lpgm.maxClass >= 1) {
             onLiveEventRef.current?.({ kind: 'lpgm', data: lpgm })
@@ -1514,10 +1601,20 @@ export function useEarthquakes(
           }
         } else if (payload.kind === 'purge-cancelled-quake') {
           const { id } = payload
-          setState(prev => ({
-            ...prev,
-            earthquakes: prev.earthquakes.filter(e => e.id !== id || !e.cancelledAt),
-          }))
+          setState(prev => {
+            const earthquakes = prev.earthquakes.filter(e => e.id !== id || !e.cancelledAt)
+            if (earthquakes.length === prev.earthquakes.length) return prev
+            // 消えたカードの印と記憶もここで落とす。**次のライブ電文まで待たない** ——
+            // `advanceQuakeMarks` の `liveKeys` による刈り込みは受信のときしか走らないので、
+            // 静かな時間帯が続くと観測点の写し（大きいもので数千件）が残り続ける。
+            const live = liveMarkKeys(earthquakes, prev.lpgmByEventId)
+            return {
+              ...prev,
+              earthquakes,
+              quakeUpdateMarks: new Map([...prev.quakeUpdateMarks].filter(([k]) => live.has(k))),
+              quakeMarkMemory: new Map([...prev.quakeMarkMemory].filter(([k]) => live.has(k))),
+            }
+          })
         } else if (payload.kind === 'purge-cancelled-eew') {
           const { key } = payload
           setState(prev => {
@@ -1670,6 +1767,10 @@ export function useEarthquakes(
         // 同じ部分結果を重ねて当てても結果は変わらない）。
         setState(prev => ({
           ...prev,
+          // **履歴を取り込んだら印の記憶を捨てる。** あれは何通もまとめて畳み込むので、記憶が指す
+          // 「1 つ前のカード」と実際のカードがずれる。残すと、履歴が変えた値まで次のライブの続報で
+          // 「いま動いた」として光る。捨てれば、その 1 通ぶん印が出ないだけ。
+          ...clearedMarks(),
           earthquakes: borrowFromTsunamiIntoCards(mergeQuakeHistory(partial, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache()), prev.tsunamis),
           lastUpdate: serverDate(),
         }))
@@ -1745,6 +1846,10 @@ export function useEarthquakes(
             // （→ `services/telegramBody.ts` の取得間隔）。
             // **貸し手は同じ更新で復元する `tsunamis`。`prev.tsunamis` ではない** ——
             // 起動時の復元では前の状態が空なので、そちらを見ると 1 枚も借りられない。
+            // **履歴を取り込んだら印の記憶を捨てる。** あれは何通もまとめて畳み込むので、記憶が指す
+            // 「1 つ前のカード」と実際のカードがずれる。残すと、履歴が変えた値まで次のライブの続報で
+            // 「いま動いた」として光る。捨てれば、その 1 通ぶん印が出ないだけ。
+            ...clearedMarks(),
             earthquakes: borrowFromTsunamiIntoCards(mergeQuakeHistory(quakeEvents, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache()), tsunamis),
             tsunamis,
             lpgmByEventId,
@@ -2053,6 +2158,10 @@ export function useEarthquakes(
           rememberQuakeRetractionsFromBatch(partial)
           setState(prev => ({
             ...prev,
+            // **履歴を取り込んだら印の記憶を捨てる。** あれは何通もまとめて畳み込むので、記憶が指す
+            // 「1 つ前のカード」と実際のカードがずれる。残すと、履歴が変えた値まで次のライブの続報で
+            // 「いま動いた」として光る。捨てれば、その 1 通ぶん印が出ないだけ。
+            ...clearedMarks(),
             earthquakes: borrowFromTsunamiIntoCards(mergeQuakeHistory(partial, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache()), prev.tsunamis),
           }))
         }
@@ -2108,6 +2217,8 @@ export function useEarthquakes(
           const merged = borrowFromTsunamiIntoCards(mergeQuakeHistory(events, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache()), prev.tsunamis)
           return {
             ...prev,
+            // 履歴の取り込みなので印の記憶を捨てる（理由は他の取り込み経路と同じ）。
+            ...clearedMarks(),
             earthquakes: merged,
             lpgmByEventId,
             // **残し方の判断は `mergeHistoryLoss` が持つ**（中身によって違う。理由はそちら）。
@@ -2137,6 +2248,10 @@ export function useEarthquakes(
         rememberQuakeRetractionsFromBatch(events)
         setState(prev => ({
           ...prev,
+          // **履歴を取り込んだら印の記憶を捨てる。** あれは何通もまとめて畳み込むので、記憶が指す
+          // 「1 つ前のカード」と実際のカードがずれる。残すと、履歴が変えた値まで次のライブの続報で
+          // 「いま動いた」として光る。捨てれば、その 1 通ぶん印が出ないだけ。
+          ...clearedMarks(),
           earthquakes: borrowFromTsunamiIntoCards(mergeQuakeHistory(events, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache()), prev.tsunamis),
           hasMore: events.length === LOAD_MORE_BATCH,
           // 成功したので、押し直せば回復しうる側の表示は消す（DMDSS 版と揃える）
@@ -2651,6 +2766,10 @@ export function useEarthquakes(
       quakeNotice: null,
       earthquakeCount: null,
       estimatedIntensity: null,
+      // 時間軸が変わるので、印とその記憶も落とす（残すと再生開始直後の報が
+      // 旧い軸のカードとの差分で光る）。
+      quakeUpdateMarks: new Map(),
+      quakeMarkMemory: new Map(),
       // 「最終更新」も落とす。残すと、リプレイ開始直後（まだ 1 件も処理していない間）に
       // 地図の更新時刻へ**リプレイ前のライブ受信時刻**が出たままになる。
       lastUpdate: null,
@@ -2699,7 +2818,8 @@ export function useEarthquakes(
   const restoreQuakeHistory = useCallback((quakes: JMAQuake[]) => {
     if (quakes.length === 0) return
     rememberQuakeRetractionsFromBatch(quakes)
-    setState(prev => ({ ...prev, earthquakes: borrowFromTsunamiIntoCards(mergeQuakeHistory(quakes, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache()), prev.tsunamis) }))
+    // 履歴の取り込みなので印の記憶を捨てる（理由は他の取り込み経路と同じ）。
+    setState(prev => ({ ...prev, ...clearedMarks(), earthquakes: borrowFromTsunamiIntoCards(mergeQuakeHistory(quakes, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache()), prev.tsunamis) }))
   }, [])
 
   const loadReplayEvents = useCallback((entries: import('../types/replay').ReplayEntry[]) => {
@@ -2707,6 +2827,24 @@ export function useEarthquakes(
       eventQueueRef.current.push({ eventTime: replayTime, payload, silent })
     }
   }, [])
+
+  // 印の寿命の掃除。**次の報が来ればそちらで置き換わる**ので、ここが受け持つのは
+  // 「次が来ないまま置かれた印」だけ。いちばん古い印が寿命を迎える時刻に 1 度起こし、
+  // 印ごとにタイマーを張らない（群発では 1 分のあいだに何枚ものカードが印を持つ）。
+  const { quakeUpdateMarks } = state
+  useEffect(() => {
+    if (quakeUpdateMarks.size === 0) return
+    let oldest = Infinity
+    for (const m of quakeUpdateMarks.values()) oldest = Math.min(oldest, m.markedAt)
+    const timer = window.setTimeout(() => {
+      setState(prev => {
+        const kept = pruneQuakeMarks(prev.quakeUpdateMarks, Date.now())
+        // 落とすものが無ければ同じ参照を返す（「変化なし＝同一参照」の約束を保つ）。
+        return kept === prev.quakeUpdateMarks ? prev : { ...prev, quakeUpdateMarks: kept }
+      })
+    }, Math.max(0, UPDATE_MARK_TTL_MS - (Date.now() - oldest)))
+    return () => window.clearTimeout(timer)
+  }, [quakeUpdateMarks])
 
   return {
     ...state,

@@ -1,6 +1,7 @@
 import type { JMATsunami, TsunamiArea, TsunamiEstimation, TsunamiEstimationCondition, TsunamiGrade, TsunamiObservation, TsunamiObservationCondition, TsunamiSourceEarthquake, TsunamiStation, TsunamiWarningComment } from '../types/earthquake'
 import { formatTimeMin, readDateTime } from './formatters'
 import { log } from './logger'
+import type { UpdateMark } from './updateMark'
 
 /**
  * 等級の重さ。値が大きいほど深刻。
@@ -1279,19 +1280,13 @@ export function hasMaxHeightTimeAdvanced(
 export type ObsUpdateField = 'maxHeightTime' | 'firstWave'
 
 /**
- * 観測点ごとの更新の印。
- *
- * `status` は行の左端の縦線（緑＝初出・黄＝更新）、`fields` は行の中のどの項目が動いたか。
- * **同じ語彙の 2 段構え** ―― 縦線が「この地点で何かあった」、文字色が「この項目よ」。
+ * 観測点ごとの更新の印。色と 2 段構えの考え方は `utils/updateMark.ts` が単一情報源。
  *
  * **満潮時刻は `fields` に入れない。** 2024-01-01〜02 の VTSE51 全 49 報で満潮時刻が動いたのは
  * 2 報だけで、しかも動くときは 41/52 点が一斉に動く（前の満潮を過ぎて次の満潮へ進んだ形）。
  * 印としての選別力が無く、カードが総黄色になるだけ。
  */
-export type ObsUpdateMark = {
-  status: 'new' | 'updated'
-  fields: ReadonlySet<ObsUpdateField>
-}
+export type ObsUpdateMark = UpdateMark<ObsUpdateField>
 
 /**
  * その報で動いた項目を数え上げる（カードの項目ごとの印に使う）。
