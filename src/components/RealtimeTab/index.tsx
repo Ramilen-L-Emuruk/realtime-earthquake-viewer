@@ -2,6 +2,8 @@
 // 予報円を描画し、ここでは EEW 情報カード・強震モニタ検知(V2)カード・注記を表示する。
 // 震度スケールの凡例は地図へ重ねる `MapLegend` が持つ（同じものを 2 箇所に出さない）。
 import { memo, useEffect, useRef, useState } from 'react'
+import { useFieldFlash, type FieldFlash } from '../../hooks/useFieldFlash'
+import { EEW_FLASH_COLOR, UPDATE_MARK_WASH, EEW_HIGHLIGHT_FADE_MS } from '../../utils/updateMark'
 import type { EEWAlert } from '../../types/earthquake'
 import type { DetectionEvent, Confidence } from '../../utils/kyoshinDetector'
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
@@ -238,6 +240,57 @@ function EEWCard({ eew, visible, activeLpgmEventId, onToggleLpgm, onDeactivateLp
   const isAssumed = eew.earthquake.condition === '仮定震源要素'
   const prefAreas = areas.filter(a => a.pref)
 
+  /**
+   * 続報で動いた欄を、1 秒かけて元の色へ戻す形で示す（→ `hooks/useFieldFlash.ts`）。
+   *
+   * **印を持続させない。** 緊急地震速報は秒の単位で続報が届くので、地震カードのように
+   * 印を残すと次が来る前に消えず、光りっぱなしになって「いま動いた」を指せなくなる。
+   *
+   * 当てる先は**その欄で色に意味を持たない文字** —— 震源名と、規模・深さ・予想最大震度の
+   * 「値の数字」（どれも白）。隣のラベルと枠は震度階級・段階の色なので触らない
+   * （地震カードと同じ線引き。→ `utils/updateMark.ts`）。
+   */
+  const flash = useFieldFlash(eew.issue?.eventId ?? eew.id, {
+    // 震央地名には大小が無いので `rank` を付けない（動いたことしか言えない）。
+    hypocenterName: hypocenter.name ? { key: hypocenter.name } : undefined,
+    magnitude: isAssumed ? undefined : { key: hypocenter.magnitude.toFixed(1), rank: hypocenter.magnitude },
+    // **浅いほど危険なので順序は符号を反転させる**（地震カードと揃える）。
+    depth: isAssumed ? undefined : { key: String(hypocenter.depth), rank: -hypocenter.depth },
+    maxScale: maxScale >= 0
+      // 上限が定まらない報（「震度4程度以上」）は同じ階級でも別の値。**順序は階級で見る**
+      // —— 「程度以上」が付いたかどうかは大小ではない。
+      ? { key: `${maxScale}${maxScaleOrAbove ? '+' : ''}`, rank: maxScale }
+      : undefined,
+  })
+  /**
+   * 減衰させる欄に渡す `key`・`className`・`style`。
+   *
+   * **一度も動いていない欄にはクラスを当てない。** CSS アニメーションは要素が現れた時点で
+   * 走るので、常に当てていると**カードが初めて出たときに全欄が光る** —— 「初めて現れた値は
+   * 動いていない」という `useFieldFlash` の決まりと食い違う（実機で起きた）。
+   *
+   * `key` は値が動くたびに変わる。同じ要素のままではアニメーションが再生し直されないため、
+   * 作り直させて減衰をやり直す。
+   *
+   * 色は向きで変わる（上がった＝赤・下がった＝緑・向きの無い変化＝白。→ `EEW_FLASH_COLOR`）。
+   * **向きで分けるのはこのカードだけ** —— 値が秒ごとに書き換わって追えないため。
+   * 地震・津波のカードは印が持続するので、値を見れば向きが分かる（→ `UPDATE_MARK_COLOR`）。
+   *
+   * **白は元から白い文字に効かない**ので、そのときは背後を光らせる（`UPDATE_MARK_WASH`）。
+   */
+  const fade = (f: FieldFlash | undefined, baseIsWhite = true) => {
+    if (!f) return { key: 'fade-0', className: '', style: undefined }
+    const wash = baseIsWhite && f.status === 'changed'
+    return {
+      key: `fade-${f.tick}`,
+      className: wash ? ' update-fade-bg' : ' update-fade-text',
+      style: {
+        '--update-mark-color': wash ? UPDATE_MARK_WASH : EEW_FLASH_COLOR[f.status],
+        '--update-fade-ms': `${EEW_HIGHLIGHT_FADE_MS}ms`,
+      } as React.CSSProperties,
+    }
+  }
+
   // 気象庁が別の電文として発表する区分なので、その名称に合わせて名前も分ける（予報級＝VXSE45
   // 「緊急地震速報（地震動予報）」／警報級＝VXSE43「緊急地震速報（警報）」）。アプリが受信するのは
   // VXSE45 だけで、区分を決めるのは `severity`（→ utils/eew.ts の `eewKindLabel`）。
@@ -406,7 +459,11 @@ function EEWCard({ eew, visible, activeLpgmEventId, onToggleLpgm, onDeactivateLp
                 **語は「程度以上」**（気象庁の表現。→ `getIntensityLabelWithApproxAbove`）。
                 ここだけ自前で組んでいるため、語を変えたときに取り残されやすい —— 実際に
                 タイトル・読み上げ・共有カードだけ直り、このバナーが「以上」のまま残った。 */}
-            <span className="font-black leading-none text-[3rem] roomy:text-[4.5rem]" style={{ color: '#ffffff' }}>
+            <span
+              key={fade(flash.maxScale).key}
+              className={`font-black leading-none text-[3rem] roomy:text-[4.5rem] rounded${fade(flash.maxScale).className}`}
+              style={{ color: '#ffffff', ...fade(flash.maxScale).style }}
+            >
               {getIntensityLabel(maxScale)}
               {maxScaleOrAbove && <span className="font-bold text-[1.25rem] roomy:text-[1.75rem]">程度以上</span>}
             </span>
@@ -512,7 +569,11 @@ function EEWCard({ eew, visible, activeLpgmEventId, onToggleLpgm, onDeactivateLp
 
         {/* 震源名。仮定震源要素のときの地名は「最初に揺れを捉えた観測点の所在地」であって
             震源の推定位置ではないため、断定して見えないよう注記を添える（M・深さを伏せるのと同じ理由）。 */}
-        <div className="font-bold text-white leading-tight text-[1.25rem] roomy:text-[1.625rem]">
+        <div
+          key={fade(flash.hypocenterName).key}
+          className={`font-bold text-white leading-tight text-[1.25rem] roomy:text-[1.625rem] rounded${fade(flash.hypocenterName).className}`}
+          style={fade(flash.hypocenterName).style}
+        >
           {hypocenter.name || '震源調査中'}
           {isAssumed && hypocenter.name && (
             <span className="ml-1.5 font-medium text-[0.8125rem] roomy:text-[1rem]" style={{ color: '#9ca3af' }}>
@@ -553,7 +614,11 @@ function EEWCard({ eew, visible, activeLpgmEventId, onToggleLpgm, onDeactivateLp
               <span className="text-xs font-medium tracking-wide" style={{ color: magColor }}>
                 マグニチュード
               </span>
-              <span className="font-black leading-none text-[1.25rem] roomy:text-[1.5rem]" style={{ color: '#ffffff' }}>
+              <span
+                key={fade(flash.magnitude).key}
+                className={`font-black leading-none text-[1.25rem] roomy:text-[1.5rem] rounded${fade(flash.magnitude).className}`}
+                style={{ color: '#ffffff', ...fade(flash.magnitude).style }}
+              >
                 {hypocenter.magnitude.toFixed(1)}
               </span>
             </div>
@@ -567,7 +632,11 @@ function EEWCard({ eew, visible, activeLpgmEventId, onToggleLpgm, onDeactivateLp
               <span className="text-xs font-medium tracking-wide" style={{ color: depthColor }}>
                 深さ
               </span>
-              <span className="font-black leading-none text-[1.25rem] roomy:text-[1.5rem]" style={{ color: '#ffffff' }}>
+              <span
+                key={fade(flash.depth).key}
+                className={`font-black leading-none text-[1.25rem] roomy:text-[1.5rem] rounded${fade(flash.depth).className}`}
+                style={{ color: '#ffffff', ...fade(flash.depth).style }}
+              >
                 {hypocenter.depth}km
               </span>
             </div>

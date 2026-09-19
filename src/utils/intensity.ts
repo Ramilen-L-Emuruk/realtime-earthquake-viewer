@@ -58,6 +58,16 @@ export const INTENSITY_BG_COLORS: Record<number, string> = {
 export const INTENSITY_SCALE_COUNT = Object.keys(INTENSITY_LABELS)
   .filter(k => Number(k) >= 0).length
 
+/**
+ * 階級値を小さい順に並べたもの（`-1` = 不明を除く）。
+ *
+ * **段数と同じ表から導く。** 並びを別に書くと、階級が増減したときに片方だけ古くなる。
+ */
+export const INTENSITY_SCALES_ASC: readonly IntensityScale[] = Object.keys(INTENSITY_LABELS)
+  .map(Number)
+  .filter(v => v >= 0)
+  .sort((a, b) => a - b) as IntensityScale[]
+
 export function isValidIntensityScale(scale: number): scale is IntensityScale {
   // 型が効かない経路を守るための関数なので、自分自身は引数の型を当てにしない。
   // `in` 演算子や添字アクセスは継承プロパティも拾うため（`'toString' in INTENSITY_LABELS` は true）、

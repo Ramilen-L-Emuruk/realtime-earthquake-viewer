@@ -4248,7 +4248,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
        *
        * `status` は行の左端の縦線で、従来どおり「その地点で何かあった」だけを言う。
        */
-      const pushStatus = (o: import('../types/earthquake').TsunamiObservation, status: 'new' | 'updated') => {
+      const pushStatus = (o: import('../types/earthquake').TsunamiObservation, status: 'new' | 'changed') => {
         newStatusEntries.push([o.name, {
           status,
           fields: changedObservationFields(o, prevTimes552.get(o.name), prevFirstWaves552.get(o.name)),
@@ -4325,7 +4325,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // 再送（中身が前報と同じ）も同じ扱いでよい —— 位置を変える理由が無い。
           setFocusedDistrict({ districts: [], top: null, resetToTop: false, ts: Date.now() })
         }
-        for (const o of updatedObs552) pushStatus(o, prevMap552.has(o.name) ? 'updated' : 'new')
+        for (const o of updatedObs552) pushStatus(o, prevMap552.has(o.name) ? 'changed' : 'new')
         for (const o of newlyShownObs552) pushStatus(o, 'new')
       } else {
         const obsWithHeight552 = (event.observations ?? []).filter(o => !!o.height)

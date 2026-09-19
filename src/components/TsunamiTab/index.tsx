@@ -5,6 +5,7 @@ import { formatDateTimeMin, formatDepth, formatMagnitudeCondition, formatTimeMin
 import { quakeEventKey } from '../../utils/quakeMerge'
 import { groupAreasForCardDisplay, tsunamiAreaGradeChanges, TSUNAMI_GRADE_LIFTED, matchesArea, observationBadges, observationHeightText, observationArrivalFallbackText, observationMaxHeightTimeText, estimationBadges, estimationHeightText, forecastHeightImportantBadge, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, isTsunamiGradeRaised, sourceEarthquakeTime, tsunamiAreaKey, evacuationActionLine, type ObsUpdateMark, type ObsUpdateField } from '../../utils/tsunami'
 import { TSUNAMI_MISSING_COLOR as MISSING_COLOR } from '../../utils/tsunamiStyle'
+import { UPDATE_MARK_COLOR } from '../../utils/updateMark'
 import { mapChunksToRefs, planFollowScroll, type FollowRect, type SpeechFollowSession, type SpeechRef } from '../../utils/ttsFollow'
 import { getSpeechClock } from '../../utils/voicevox'
 import { INTERACTION_HOLD_SEC } from '../Map/gl/camera'
@@ -104,21 +105,6 @@ interface Props {
  * （永久に待つ）のに比べれば軽い。
  */
 const SPEECH_FOLLOW_GRACE_MS = 20000
-
-/**
- * 観測点の行に付く更新の印の色。緑＝その地点が初めて出た、黄＝既にあった地点が更新された。
- *
- * **行の左端の縦線と、時刻欄の項目ごとの文字色で共有する。** 同じ出来事を指す印なので、
- * 色を分けると読み手が 2 つの語彙を覚えることになる。縦線が「この地点で何かあった」、
- * 文字色が「この項目よ」の 2 段構えにする。
- *
- * 寿命はどちらも `TSUNAMI_BADGE_TTL_MS`（印の出どころが同じ `obsUpdateStatus` なので、
- * 別々に消えることはない）。
- */
-const OBS_UPDATE_COLOR: Record<ObsUpdateMark['status'], string> = {
-  new: '#4ade80',
-  updated: '#fbbf24',
-}
 
 /**
  * 追従用の行の登録キー。区域は code を優先し、無ければ名前で引く（`matchesArea` と同じ順序）。
@@ -372,7 +358,7 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
           {observations.map((obs, i) => {
             const clickable = !!onObservationClick && canFocusObs(obs.name)
             const updateMark = obsUpdateStatus?.get(obs.name)
-            const markColor = updateMark ? OBS_UPDATE_COLOR[updateMark.status] : null
+            const markColor = updateMark ? UPDATE_MARK_COLOR[updateMark.status] : null
             const borderLeftStyle = markColor
               ? `3px solid ${markColor}`
               : `1px solid ${style.cardBorder}38`

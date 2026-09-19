@@ -26,12 +26,27 @@ import { getIntensityLabel, getIntensityLabelWithOrAbove, getIntensityColor, get
 import { hasKnownEpicenter } from '../../utils/geo'
 
 import { buildAreaPrefIndex, buildRegionOrderIndex, buildStationPrefIndex, lookupPointCoords, lookupStationRegion, regionOrderRank, type LatLng } from '../../utils/stationCoords'
-import { isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel, buildIntensityRows, makeAreaPrefResolver, cityKey, type IntensityStationRow } from '../../utils/quakePoints'
+import { isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel, buildIntensityRows, makeAreaPrefResolver, cityKey, type IntensityStationRow, type IntensityRegionRow } from '../../utils/quakePoints'
+import { rowMarkKey, rowMarkOf, type QuakeCardMarks, type QuakeUpdateField } from '../../utils/quakeUpdateMark'
+import { intensityRowsToExpand, lpgmRowsToExpand, mergeAutoExpanded } from '../../utils/autoExpandMarkedRows'
+import { UPDATE_MARK_COLOR, UPDATE_MARK_TITLE, type UpdateStatus } from '../../utils/updateMark'
+
 import { useStationCoords } from '../../hooks/useStationCoords'
 import { useSubRegions } from '../../hooks/useSubRegions'
 import { usePrefectures } from '../../hooks/usePrefectures'
 import { ringsBoundsIndex, EMPTY_BOUNDS_INDEX, type RingsBounds } from '../../utils/subregions'
 import { groupUnreceivedPointNames, type UnreceivedPointGroup } from './unreceivedPointNames'
+
+/**
+ * 区域の行より下にある行の鍵をすべて集める。**親の行へ印を上げるために要る**
+ * （一覧は既定で畳んであるので、配下にだけ付けると開かないと気づけない）。
+ */
+function regionDescendantKeys(region: IntensityRegionRow): string[] {
+  return [
+    ...region.cities.flatMap(c => [rowMarkKey.city(region.name, c.name), ...c.stations.map(st => rowMarkKey.station(st.name))]),
+    ...region.stations.map(st => rowMarkKey.station(st.name)),
+  ]
+}
 
 /**
  * 長周期地震動に添える気象庁からの補足（付加文 3 種＋詳細ページ）の開閉キー。
@@ -40,6 +55,14 @@ import { groupUnreceivedPointNames, type UnreceivedPointGroup } from './unreceiv
  * （行の側は `pref:` / `area:` / `city:` / `lpgm:pref:` / `lpgm:area:` を使う）。
  */
 const LPGM_NOTES_KEY = 'lpgm:notes'
+
+/**
+ * 自動展開へ「開く先が無い」と渡すための空集合。
+ *
+ * **その場で `new Set()` を作らない** —— 呼ぶたびに別の参照になり、中身が変わらないのに
+ * 変わったように見える。
+ */
+const EMPTY_KEYS: ReadonlySet<string> = new Set()
 
 
 /**
@@ -56,7 +79,7 @@ const LPGM_NOTES_KEY = 'lpgm:notes'
  * 入れ子を許さない。長周期のトグルと同じ作法）。開けない段には `role` も `tabIndex` も
  * 与えない —— 押せない行がタブ移動で止まると邪魔になる。
  */
-function IntensityRow({ label, scale, unreceived, unreceivedIsOwn, hasUnreceived, nonJma, depth, expandKey, expanded, onToggle, onFocus }: {
+function IntensityRow({ label, scale, unreceived, unreceivedIsOwn, hasUnreceived, nonJma, depth, expandKey, expanded, onToggle, onFocus, mark }: {
   label: string
   scale: IntensityScale
   /** その行の震度が未入電の値から来ている（ラベルへ「以上」を足す）。 */
@@ -90,6 +113,13 @@ function IntensityRow({ label, scale, unreceived, unreceivedIsOwn, hasUnreceived
    * 「地名を押せば寄る」は成り立つ（→ docs/spec/quake-spec.md §8）。
    */
   onFocus?: () => void
+  /**
+   * この報でこの行（または配下の行）が動いたか。行の左端の縦線で出す。
+   *
+   * **縦線は印が無くても幅を取る**（透明で置く）。付いたり消えたりで地名の位置がずれると、
+   * 一覧を目で追っているときに行がまとめて動いて見える。
+   */
+  mark?: UpdateStatus
 }) {
   const canExpand = expandKey != null
   const isOpen = canExpand && expanded.has(expandKey)
@@ -117,6 +147,7 @@ function IntensityRow({ label, scale, unreceived, unreceivedIsOwn, hasUnreceived
         },
       } : {})}
       className={`flex items-center ${pad} pr-2 py-0.5 ${depth === 0 ? 'roomy:py-1.5' : ''} ${size}${activate ? ' cursor-pointer hover:bg-white/5' : ''}`}
+      style={{ borderLeft: `3px solid ${mark ? UPDATE_MARK_COLOR[mark] : 'transparent'}` }}
     >
       {/* 震度と、その値についての印（未入電）を左に置く。**印を地名の側へ置かない** ——
           置くと右端を揃えるためにいちばん長い「未入電あり」ぶんの枠を全行で空けることになり、
@@ -163,6 +194,10 @@ function IntensityRow({ label, scale, unreceived, unreceivedIsOwn, hasUnreceived
         {/* `text-right` は**折り返した 2 行目以降のため**。1 行に収まるあいだは上の
             `justify-end` が寄せるので効かないが、長い観測点名（実データで最長 12 文字）が
             折り返したとき、これが無いと 2 行目だけ左へ流れる。 */}
+        {/* 印が付いた行は**地名を印の色にする**。段の色（県の行だけ白）より優先させる ——
+            段は字下げと文字の大きさでも分かるが、動いたかどうかはここでしか分からない。
+            行の左端の縦線と 2 段構えにしてあるのは、**畳んだ親の行のため** —— 親の地名を
+            塗ると「その地名自身が動いた」に見えるので、配下が動いただけのときは縦線が担う。 */}
         <span className="min-w-0 text-right" style={{ color: depth === 0 ? '#ffffff' : '#d1d5db' }}>
           {/* 気象庁以外が運用する観測点には電文どおり `＊` を付ける。読み取りの側では
               引き当てのために外してあるので、戻すのは表示のここ。記号だけでは何と対比して
@@ -213,7 +248,7 @@ function IntensityRow({ label, scale, unreceived, unreceivedIsOwn, hasUnreceived
  * **階級の色（`getLpgmClassColor`）は値だけで決め、段では変えない** —— 段の区別に流用すると、
  * 色が二通りの意味を持つ。並べる震度も値によらずグレーで、こちらは階級の補足として置いている。
  */
-function LpgmRow({ label, lgInt, int, nonJma, depth, expandKey, expanded, onToggle, onFocus }: {
+function LpgmRow({ label, lgInt, int, nonJma, depth, expandKey, expanded, onToggle, onFocus, mark }: {
   label: string
   lgInt: number
   /** その範囲の最大震度。階級と並べると「揺れは小さいのに高層階が大きく揺れた」形が出る */
@@ -230,6 +265,8 @@ function LpgmRow({ label, lgInt, int, nonJma, depth, expandKey, expanded, onTogg
    * 扱いは `IntensityRow` の同名 props と同じ（開閉があればそちらが取る）。
    */
   onFocus?: () => void
+  /** この報でこの行（または配下）が動いたか（→ {@link IntensityRow} の同名プロップ）。 */
+  mark?: UpdateStatus
 }) {
   const canExpand = expandKey != null
   const isOpen = canExpand && expanded.has(expandKey)
@@ -253,6 +290,7 @@ function LpgmRow({ label, lgInt, int, nonJma, depth, expandKey, expanded, onTogg
         },
       } : {})}
       className={`flex items-center ${pad} pr-2 py-0.5 ${depth === 0 ? 'roomy:py-1.5' : ''} ${size}${activate ? ' cursor-pointer hover:bg-white/5' : ''}`}
+      style={{ borderLeft: `3px solid ${mark ? UPDATE_MARK_COLOR[mark] : 'transparent'}` }}
     >
       {/* 階級と、その範囲の最大震度を左に置く。**震度一覧と同じ並べ方**（値についての情報は
           左、地名は右で揃える）。地名の側へ置くと、付いている行だけ地名が左へ押される。 */}
@@ -270,6 +308,10 @@ function LpgmRow({ label, lgInt, int, nonJma, depth, expandKey, expanded, onTogg
           （→ `IntensityRow`。`justify-between` を使わない理由と `text-right` の役目も
           そちらに書いてある）。 */}
       <span className="flex items-center justify-end min-w-0 flex-1">
+        {/* 印が付いた行は**地名を印の色にする**。段の色（県の行だけ白）より優先させる ——
+            段は字下げと文字の大きさでも分かるが、動いたかどうかはここでしか分からない。
+            行の左端の縦線と 2 段構えにしてあるのは、**畳んだ親の行のため** —— 親の地名を
+            塗ると「その地名自身が動いた」に見えるので、配下が動いただけのときは縦線が担う。 */}
         <span className="min-w-0 text-right" style={{ color: depth === 0 ? '#ffffff' : '#d1d5db' }}>
           {/* 気象庁以外が運用する観測点の印。震度一覧・地図の吹き出しと同じ扱い。 */}
           <span
@@ -344,6 +386,24 @@ function getIssueTypeStyle(type: IssueType): IssueTypeStyle {
 
 interface Props {
   quake: JMAQuake
+  /**
+   * この報で動いた欄と行の印。**ライブで受けた続報にだけ付く**（→ `utils/quakeUpdateMark.ts`）。
+   *
+   * 履歴から組んだカードや、そのカードで最初に見た報には付かない。前report が無ければ
+   * 全欄・全行が「初出」になり、印が画面を埋めるだけで何も指さないため。
+   */
+  /**
+   * **任意にしない。** 渡し忘れても画面は正常に見え、印が出ないことに気づけない
+   * （呼び出し元が増えたときに黙って抜ける）。印が無いときは空の印を渡す。
+   */
+  marks: QuakeCardMarks | undefined
+  /**
+   * 長周期地震動の一覧の印。**震度一覧とは別に受け取る。**
+   *
+   * 2 つの一覧はカードの中で切り替えて出るが、行の鍵（`area:` / `st:`）は同じ名前空間を
+   * 使うので、1 つにまとめると同じ区域名の行どうしで印が混ざる。
+   */
+  lpgmMarks: QuakeCardMarks | undefined
   isLatest?: boolean
   isSelected?: boolean
   onSelect?: () => void
@@ -447,7 +507,40 @@ export function EarthquakeCard({
   quake, isLatest, isSelected, onSelect, lpgm, activeLpgmEventId, onToggleLpgm,
   estimatedIntensity = null, distributionActive = false, onToggleDistribution,
   unreceivedActive = false, onToggleUnreceived, onFocusMap, speakingTelegramTextSubject,
+  marks, lpgmMarks,
 }: Props) {
+  /**
+   * 印は**文字色**で出す。当てる先はその欄で「色に意味を持たない文字」。
+   *
+   * - 震央地名・座標 … 文字そのもの（白・灰）
+   * - 最大震度・規模・深さ … **値の数字**（白）。隣のラベルと枠は階級・段階の色なので触らない
+   * - 津波区分 … **文字が区分の色そのもの**なので塗り替えられない。ここだけ枠で囲む
+   *
+   * 色に意味がある文字を塗り替えると、別の値を指しているように見える（津波カードが波高を
+   * 印の対象から外しているのと同じ理由。→ `utils/updateMark.ts`）。
+   */
+  const markText = (field: QuakeUpdateField): React.CSSProperties | undefined => {
+    const status = marks?.facts.get(field)
+    return status ? { color: UPDATE_MARK_COLOR[status] } : undefined
+  }
+  /** 印の意味を言葉でも添える（色を読み取れない利用者向け。→ `UPDATE_MARK_TITLE`）。 */
+  const markTitle = (field: QuakeUpdateField) => {
+    const status = marks?.facts.get(field)
+    return status ? UPDATE_MARK_TITLE[status] : undefined
+  }
+  const markRing = (field: QuakeUpdateField) => {
+    const status = marks?.facts.get(field)
+    // 枠は文字色を触らないので、向きの無い変化でも白のまま出せる。
+    return status ? { outline: `2px solid ${UPDATE_MARK_COLOR[status]}`, outlineOffset: '2px' } : undefined
+  }
+  /**
+   * 行の印。**配下に動いた行があれば親にも出す** —— 一覧は既定でどの段も畳んであるので、
+   * 配下にだけ付けると「開かないと気づけない印」になる（→ `rowMarkOf`）。
+   */
+  const rowMark = (key: string, descendants: readonly string[] = []) =>
+    marks ? rowMarkOf(key, descendants, marks.rows) : undefined
+  const lpgmRowMark = (key: string, descendants: readonly string[] = []) =>
+    lpgmMarks ? rowMarkOf(key, descendants, lpgmMarks.rows) : undefined
   const { earthquake, issue } = quake
   const { hypocenter, maxScale, domesticTsunami } = earthquake
   // 電文全体の最大震度が「5弱以上・未入電」だったとき、見出しにも「以上」を付ける。
@@ -743,6 +836,61 @@ export function EarthquakeCard({
     })
   }, [isSelected, lpgm, stationData])
 
+  /**
+   * 印の付いた行が見えるように、その祖先を自動で開く。
+   *
+   * **カードを畳んでいる間は判定ごと止める。** 行の木は選択中のカードでしか組み立てないので、
+   * 通すと開く先が無いまま「この印は見た」だけが記録され、あとで開いても一度も展開しない。
+   *
+   * **印が消えたら、自分が開いた分だけ畳む。** 手で開いていた行まで閉じると、見ようとしていた
+   * 中身を奪うことになる（読み上げ中の自動開閉と同じ規約）。手で閉じた行も追いかけない ——
+   * 次の報で新しく印が付けば、そのときあらためて開く。
+   *
+   * **震度一覧と長周期は別々に進める。** 開閉の入れ物は共有するが、印の出どころは 2 つあり
+   * （地震の報と長周期の報）別々のときに別々の参照へ変わる。1 つの真偽値へ畳むと、**長周期の報が
+   * 届いただけで震度一覧の「手で閉じた行」が開き直す**（逆も同じ）。鍵の名前空間が分かれている
+   * （長周期は `lpgm:` を冠する）ので、同じ集合へ順に当てても互いを踏まない。
+   *
+   * 開く行が多すぎる報では**何も開かない**（→ `AUTO_EXPAND_MAX_VISIBLE_ROWS`。上限は一覧ごと）。
+   */
+  const autoOpenedRef = useRef<{ rows: ReadonlySet<string>; lpgm: ReadonlySet<string> }>({ rows: new Set(), lpgm: new Set() })
+  /** 前回この効果を走らせたときの印。**参照で比べる** —— 印は報ごとに作り直される。 */
+  const seenMarksRef = useRef<{ marks?: QuakeCardMarks; lpgm?: QuakeCardMarks }>({})
+  const rowsToExpand = useMemo(
+    () => intensityRowsToExpand(prefGroups, marks?.rows),
+    [prefGroups, marks],
+  )
+  const lpgmToExpand = useMemo(
+    () => lpgmRowsToExpand(lpgmGroups, lpgmMarks?.rows),
+    [lpgmGroups, lpgmMarks],
+  )
+  useEffect(() => {
+    // **カードを畳んでいる間は何もしない。** `prefGroups` / `lpgmGroups` は選択中でなければ
+    // 空配列を返すので、ここを通すと**開く先が無いまま「この印は見た」の記録だけが進む**。
+    // あとでカードを開いても印の参照は変わっていないので `marksChanged` が偽になり、
+    // **一度も自動で開かないまま終わる** —— 別のカードを見ている間に届いた続報という、
+    // この仕掛けがいちばん効くはずの場面がちょうど抜ける。
+    if (!isSelected) return
+    // **印が新しくなった報でだけ開く**（理由は `mergeAutoExpanded`）。**2 つの出どころは
+    // 別々に見る** —— 畳むと片方の報がもう片方の「手で閉じた行」を開き直す（上の JSDoc）。
+    const rowsChanged = seenMarksRef.current.marks !== marks
+    const lpgmChanged = seenMarksRef.current.lpgm !== lpgmMarks
+    seenMarksRef.current = { marks, lpgm: lpgmMarks }
+    // **更新関数の中で ref を書き換えない。** React は開発時に更新関数を 2 回呼んで純粋さを
+    // 確かめるので、中で `autoOpenedRef` を書くと 2 回目が別の入力で走る。
+    const byRows = mergeAutoExpanded({
+      prev: expanded, want: rowsToExpand ?? EMPTY_KEYS,
+      autoOpened: autoOpenedRef.current.rows, marksChanged: rowsChanged,
+    })
+    const byLpgm = mergeAutoExpanded({
+      prev: byRows.next, want: lpgmToExpand ?? EMPTY_KEYS,
+      autoOpened: autoOpenedRef.current.lpgm, marksChanged: lpgmChanged,
+    })
+    autoOpenedRef.current = { rows: byRows.autoOpened, lpgm: byLpgm.autoOpened }
+    // 中身が変わらなければ同じ参照が返るので、そこで止まる（`expanded` を依存に入れても回らない）。
+    if (byLpgm.next !== expanded) setExpanded(byLpgm.next)
+  }, [isSelected, rowsToExpand, lpgmToExpand, marks, lpgmMarks, expanded])
+
   if (isSelected) {
     const typeStyle = getIssueTypeStyle(issue.type)
     const magColor = getMagnitudeColor(hypocenter.magnitude)
@@ -810,6 +958,7 @@ export function EarthquakeCard({
             style={{
               backgroundColor: getIntensityBgColor(maxScale),
               border: `2px solid ${getIntensityColor(maxScale)}`,
+              // 枠は震度階級の色なので触らない。印は下の白い数字の文字色で出す。
             }}
           >
             <span className="text-sm font-medium roomy:text-base" style={{ color: getIntensityColor(maxScale) }}>
@@ -817,7 +966,7 @@ export function EarthquakeCard({
             </span>
             <span
               className="font-black leading-none text-[3.25rem] roomy:text-[5.5rem]"
-              style={{ color: '#ffffff' }}
+              style={{ color: '#ffffff', ...markText('maxScale') }}
             >
               {maxScaleLabel}
               {/* 「以上」は本体より小さく添える（→ `maxScaleOrAbove` の注記）。同じ大きさで
@@ -950,7 +1099,14 @@ export function EarthquakeCard({
 
           {/* 震源地。**緯度・経度はこの直下に置く** —— どちらも「どこで起きたか」を言う欄で、
               あいだに規模・津波・付加文を挟むと、震央地名を読んだあとに座標を探すことになる。 */}
-          <div className="font-bold text-white leading-tight text-[1.375rem] roomy:text-[1.875rem]">
+          {/* **印は名前を出しているときだけ。** 座標を読めない報では名前の代わりに固定文言
+              「震源調査中」が出るので、そこへ印を当てると**文言そのものが新しくなった**ように
+              読める（借りた震源で名前はあるのに座標が無い形が実際に起こりうる）。 */}
+          <div
+            className="font-bold text-white leading-tight text-[1.375rem] roomy:text-[1.875rem] rounded"
+            style={hasLocation ? markText('hypocenterName') : undefined}
+            title={hasLocation ? markTitle('hypocenterName') : undefined}
+          >
             {hasLocation ? hypocenter.name : '震源調査中'}
             {/* **「震源調査中」には印を付けない。** 借りた原因地震に震央地名はあるのに座標を
                 読めなかった形（`readHypocenterAreaDetail` が座標を落とす経路）では、名前を出せず
@@ -961,7 +1117,7 @@ export function EarthquakeCard({
             {borrowedHypocenter && hasLocation && <BorrowedMark />}
           </div>
           {hasLocation && (
-            <div className="text-xs text-secondary roomy:text-sm">
+            <div className="text-xs text-secondary roomy:text-sm" style={markText('coordinate')} title={markTitle('coordinate')}>
               {formatCoordinate(hypocenter.latitude, hypocenter.longitude)}
               {borrowedHypocenter && <BorrowedMark />}
             </div>
@@ -975,6 +1131,7 @@ export function EarthquakeCard({
                 style={{
                   backgroundColor: `${magColor}26`,
                   border: `2px solid ${magColor}`,
+                  // 枠は器の色（規模の段階）なので触らない。印は下の白い数字の文字色で出す。
                 }}
               >
                 <span className="text-xs font-medium tracking-wide" style={{ color: magColor }}>
@@ -986,7 +1143,7 @@ export function EarthquakeCard({
                     「不明」で潰さない）。説明は数値より長いので、そのときだけ字を小さくする。 */}
                 <span
                   className={`font-black leading-none ${hypocenter.magnitudeCondition && !hasMagnitude(hypocenter.magnitude) ? 'text-[0.9375rem] roomy:text-[1.125rem] leading-snug' : 'text-[1.375rem] roomy:text-[1.75rem]'}`}
-                  style={{ color: '#ffffff' }}
+                  style={{ color: '#ffffff', ...markText('magnitude') }}
                 >
                   {formatMagnitudeValue(hypocenter.magnitude, hypocenter.magnitudeCondition)}
                 </span>
@@ -996,13 +1153,14 @@ export function EarthquakeCard({
                 style={{
                   backgroundColor: `${depthColor}26`,
                   border: `2px solid ${depthColor}`,
+                  // 同上（枠は深さの段階の色）。
                 }}
               >
                 <span className="text-xs font-medium tracking-wide" style={{ color: depthColor }}>
                   深さ
                   {borrowedHypocenter && <BorrowedMark />}
                 </span>
-                <span className="font-black leading-none text-[1.375rem] roomy:text-[1.75rem]" style={{ color: '#ffffff' }}>
+                <span className="font-black leading-none text-[1.375rem] roomy:text-[1.75rem]" style={{ color: '#ffffff', ...markText('depth') }}>
                   {formatDepth(hypocenter.depth)}
                 </span>
               </div>
@@ -1017,6 +1175,7 @@ export function EarthquakeCard({
               backgroundColor: `${tsunamiInfo.color}22`,
               border: `1px solid ${tsunamiInfo.color}`,
               color: tsunamiInfo.color,
+              ...markRing('domesticTsunami'),
             }}
           >
             {tsunamiInfo.text}
@@ -1126,6 +1285,10 @@ export function EarthquakeCard({
                         label={prefRow.name}
                         lgInt={prefRow.maxLgInt}
                         int={prefRow.maxInt}
+                        mark={lpgmRowMark(rowMarkKey.pref(prefRow.name), [
+                          ...prefRow.areas.flatMap(a => [rowMarkKey.area(a.name), ...a.stations.map(st => rowMarkKey.station(st.name))]),
+                          ...prefRow.stations.map(st => rowMarkKey.station(st.name)),
+                        ])}
                         depth={0}
                         expandKey={prefRow.areas.length > 0 || prefRow.stations.length > 0 ? topKey : null}
                         expanded={expanded}
@@ -1140,6 +1303,7 @@ export function EarthquakeCard({
                                 label={area.name}
                                 lgInt={area.maxLgInt}
                                 int={area.maxInt}
+                                mark={lpgmRowMark(rowMarkKey.area(area.name), area.stations.map(st => rowMarkKey.station(st.name)))}
                                 depth={1}
                                 expandKey={area.stations.length > 0 ? `lpgm:area:${area.name}` : null}
                                 expanded={expanded}
@@ -1153,6 +1317,7 @@ export function EarthquakeCard({
                                   lgInt={st.lgInt}
                                   int={st.int}
                                   nonJma={st.nonJma}
+                                  mark={lpgmRowMark(rowMarkKey.station(st.name))}
                                   depth={2}
                                   expandKey={null}
                                   expanded={expanded}
@@ -1170,6 +1335,7 @@ export function EarthquakeCard({
                               lgInt={st.lgInt}
                               int={st.int}
                               nonJma={st.nonJma}
+                              mark={lpgmRowMark(rowMarkKey.station(st.name))}
                               depth={1}
                               expandKey={null}
                               expanded={expanded}
@@ -1263,6 +1429,7 @@ export function EarthquakeCard({
                       scale={prefRow.scale}
                       unreceived={prefRow.unreceived}
                       hasUnreceived={prefRow.hasUnreceived}
+                      mark={rowMark(rowMarkKey.pref(prefRow.pref), prefRow.regions.flatMap(r => [rowMarkKey.area(r.name), ...regionDescendantKeys(r)]))}
                       depth={0}
                       expandKey={prefRow.regions.length > 0 ? `pref:${prefRow.pref}` : null}
                       expanded={expanded}
@@ -1276,6 +1443,7 @@ export function EarthquakeCard({
                           scale={region.scale}
                           unreceived={region.unreceived}
                           hasUnreceived={region.hasUnreceived}
+                          mark={rowMark(rowMarkKey.area(region.name), regionDescendantKeys(region))}
                           depth={1}
                           expandKey={region.cities.length > 0 || region.stations.length > 0 ? `area:${region.name}` : null}
                           expanded={expanded}
@@ -1292,6 +1460,7 @@ export function EarthquakeCard({
                                   unreceived={city.unreceived}
                                   unreceivedIsOwn={city.unreceived}
                                   hasUnreceived={city.hasUnreceived}
+                                  mark={rowMark(rowMarkKey.city(region.name, city.name), city.stations.map(st => rowMarkKey.station(st.name)))}
                                   depth={2}
                                   expandKey={city.stations.length > 0 ? `city:${region.name}/${city.name}` : null}
                                   expanded={expanded}
@@ -1306,6 +1475,7 @@ export function EarthquakeCard({
                                     unreceived={st.unreceived}
                                     unreceivedIsOwn={st.unreceived}
                                     nonJma={st.nonJma}
+                                    mark={rowMark(rowMarkKey.station(st.name))}
                                     depth={3}
                                     expandKey={null}
                                     expanded={expanded}
@@ -1325,6 +1495,7 @@ export function EarthquakeCard({
                                 unreceived={st.unreceived}
                                 unreceivedIsOwn={st.unreceived}
                                 nonJma={st.nonJma}
+                                mark={rowMark(rowMarkKey.station(st.name))}
                                 depth={2}
                                 expandKey={null}
                                 expanded={expanded}
