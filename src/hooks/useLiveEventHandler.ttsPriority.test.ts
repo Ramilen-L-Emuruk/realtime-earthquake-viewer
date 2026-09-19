@@ -123,6 +123,10 @@ function makeTsunamiObs(
     value?: number
     /** 観測点を累積で並べる（実電文は既報の観測点も載せ続ける）。 */
     points?: { name: string; value: number }[]
+    /** 最大波の観測時刻（`MaxHeight/DateTime`）。 */
+    maxHeightDateTime?: string
+    /** 続報での位置づけ（`MaxHeight/Revise`）。「更新」で最大波の時刻だけが動いた報を作れる。 */
+    maxHeightRevise?: string
   } = {},
 ): JMATsunami {
   const points = over.points ?? [{ name: over.name ?? '輪島港', value: over.value ?? 0.3 }]
@@ -137,6 +141,8 @@ function makeTsunamiObs(
       name: p.name,
       height: { value: p.value, description: `${p.value}m` },
       districtCode: '360', districtName: '石川県能登',
+      ...(over.maxHeightDateTime ? { maxHeightDateTime: over.maxHeightDateTime } : {}),
+      ...(over.maxHeightRevise ? { maxHeightRevise: over.maxHeightRevise } : {}),
     })),
   } as unknown as JMATsunami
 }
@@ -1064,6 +1070,14 @@ describe('内容が重ならない同格どうしは互いに待つ', () => {
     expect(spokenTexts().some(t => t.includes('大津波警報'))).toBe(true)
   })
 
+  // **変化を伝えない続報（`tsunamiObsQuiet` / `tsunamiTide`）についても同じ分離をしているが、
+  // ここにテストは無い。** 「上位を待っている実測の予約を、あとから届いた『変わりはありません』が
+  // 追い越して取り下げる」という経路を作ろうとしたが、**再現できなかった** ――
+  // 実測が待たされている間は既読が進まないので、次の報の同じ観測点も「変化あり」と判定され、
+  // 静穏な報にならない。静穏になるには既読が進んでいる必要があり、それには実測が鳴り終えて
+  // いる必要がある。**分離そのものは既存の規約（同じ主題の中では優先度は常に等しい）に従った
+  // もので、この経路が起きにくいことは分離をやめてよい理由にはならない。**
+
   it('津波の読み上げ中に南海トラフ臨時情報が届いても、互いに切らない', async () => {
     const handle = setup()
     handle(makeTsunami())
@@ -1290,7 +1304,46 @@ describe('読み上げた観測点の既読', () => {
 
     handle(makeTsunamiArrival({ id: 'tsunami-arr-2' }))
     await settle()
-    expect(spokenTexts()).toHaveLength(1)   // 読み上げ文が組まれない
+    // **到達確認は読み直さない。** ただし黙りはしない —— 観測点を運ぶ報で伝える変化が
+    // 1 つも無いときは、変化が無いこと自体を伝える（→ `tsunamiObservationNoChangeSegments`）。
+    // かつてはここで読み上げ文が空になり、通知音だけが鳴っていた。
+    expect(spokenTexts()).toHaveLength(2)
+    expect(spokenTexts()[1]).not.toContain('到達を確認しました')
+    expect(spokenTexts()[1]).toBe('津波観測情報。観測された波高に変わりはありません。')
+  })
+
+  // 正: 波高が据え置きのまま `MaxHeight/Revise` が「更新」になったら、その事実を読む
+  // （2024 年能登半島地震の 01/02 00:51 と同じ形。かつては読み上げ文が空になっていた）
+  it('最大波の観測時刻だけが動いた報を読む', async () => {
+    const handle = setup()
+    handle(makeTsunamiObs({ maxHeightDateTime: '2026-01-01T11:50:00Z' }))
+    await settle()
+    expect(spokenTexts()[0]).toContain('0.3メートル')
+    finishSpeech(0)
+    await flush()
+
+    handle(makeTsunamiObs({ id: 'tsunami-obs-2', maxHeightDateTime: '2026-01-01T12:05:00Z', maxHeightRevise: '更新' }))
+    await settle()
+    expect(spokenTexts()[1]).toBe('津波観測情報。石川県能登、輪島港で、最大波の観測時刻が更新されました。')
+  })
+
+  // 安全弁: 波高の文を読んだ観測点の時刻も既読にする。**記録しないと、次の静穏な報で同じ
+  // 観測点が「時刻が更新された」と読み直される**（記録が無い＝変わった、と判定されるため）。
+  // 波高の文は時刻そのものを読まないが、その報で最大波が更新されたことは伝えている。
+  it('波高の文を読んだ観測点の最大波の時刻は、次の報で読み直さない', async () => {
+    const handle = setup()
+    // 波高が上がった報。`Revise` は「更新」で、時刻も載っている
+    handle(makeTsunamiObs({ maxHeightDateTime: '2026-01-01T11:50:00Z', maxHeightRevise: '更新' }))
+    await settle()
+    expect(spokenTexts()[0]).toContain('0.3メートル')
+    finishSpeech(0)
+    await flush()
+
+    // 同じ内容の再送。時刻も `Revise` も変わっていない
+    handle(makeTsunamiObs({ id: 'tsunami-obs-2', maxHeightDateTime: '2026-01-01T11:50:00Z', maxHeightRevise: '更新' }))
+    await settle()
+    expect(spokenTexts()[1]).not.toContain('最大波の観測時刻')
+    expect(spokenTexts()[1]).toBe('津波観測情報。観測された波高に変わりはありません。')
   })
 
   // 安全弁。波高が上がった観測点は、一度読んでいても読み直す（既読は「読んだ値」を持つ）。

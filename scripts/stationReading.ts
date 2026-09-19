@@ -37,6 +37,36 @@ const IGNORED_IN_READING = /['/_、。？\s]/g
  */
 const PROLONGED_MARKS = /[\u30FC\u002D\u2010-\u2015\uFF0D\u2212\uFF70]/
 
+/**
+ * 直前のかなへ吸収されて 1 モーラを作る小書きのかな。`ッ` と `ー` は自分で 1 モーラを作るので
+ * 含めない（`センター` は 4 モーラ）。
+ */
+const COMBINING_KANA = /[ぁぃぅぇぉゃゅょゎァィゥェォャュョヮ]/
+
+/**
+ * 読みをモーラ単位へ割る。**記号は {@link IGNORED_IN_READING} と同じ集合を落とす** ——
+ * アクセント核（`'`）・句区切り（`/`）だけでなく**無声化記号（`_`）も落とす**こと。
+ * 手で書いた句区切り辞書の値には `_` が入るものがあり、1 文字として数えると
+ * 静かに 1〜2 モーラ多く出る（辞書全体では 52 件が該当。いずれも現状の判定には
+ * 掛からない位置にあるが、数え方として誤りなので集合を揃えてある）。
+ *
+ * ひらがな・カタカナのどちらで来ても同じ割り方になる。**記号を落とすので、割った結果を
+ * 繋ぎ直しても元の文字列には戻らない**（核や句区切りを含む値を渡した場合）。
+ */
+export function splitIntoMoras(reading: string): string[] {
+  const moras: string[] = []
+  for (const ch of reading.replace(IGNORED_IN_READING, '')) {
+    if (moras.length > 0 && COMBINING_KANA.test(ch)) moras[moras.length - 1] += ch
+    else moras.push(ch)
+  }
+  return moras
+}
+
+/** 読みのモーラ数。モーラの境界の決め方は {@link splitIntoMoras} が単一情報源。 */
+export function countMoras(reading: string): number {
+  return splitIntoMoras(reading).length
+}
+
 export function toKatakana(text: string): string {
   return text.replace(/[ぁ-ゖ]/g, ch => String.fromCharCode(ch.charCodeAt(0) + KANA_OFFSET))
 }
@@ -133,7 +163,17 @@ export function stripReadingTail(reading: string, tail: string): string | null {
  * （そちらのキーが優先される）。
  */
 export function toKanaEntry(furigana: string): string {
-  return `${toKatakana(expandProlongedMarks(toHiragana(furigana)))}'`
+  return `${toKana(furigana)}'`
+}
+
+/**
+ * ふりがなを、アクセント核を付けないカタカナへ変換する（長音記号は母音の重ねへ開く）。
+ *
+ * {@link toKanaEntry} が末尾へ核を置く前の形。核の位置を呼び出し側が決める場合
+ * （→ `stationPhrase.ts` の `toStationAccentEntry`）と、ふりがなを読みとして突き合わせる場合に使う。
+ */
+export function toKana(furigana: string): string {
+  return toKatakana(expandProlongedMarks(toHiragana(furigana)))
 }
 
 /**
