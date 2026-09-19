@@ -181,7 +181,7 @@ describe('取得状況の集約', { timeout: 15_000 }, () => {
   })
 
   // validate をこの関数の中で呼ぶ理由がここにある。呼び出し側の .then() で検証すると、
-  // 既に「成功」として数え終わった後なので、地図の「データの一部を取得できませんでした」に出ない。
+  // 既に「成功」として数え終わった後なので、地図の「データN件を取り込めず」に出ない。
   it('validate が投げたら通信失敗と同じく failed に数える', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => okResponse({})))
     const { fetchJsonWithTimeout, getDataLoadStatus } = await freshModule()

@@ -143,7 +143,7 @@ describe('formatLossNotice', () => {
 
   it('電文の取りこぼしを件数付きで知らせる', () => {
     const msg = formatLossNotice(addLoss(createEmptyLoss(), lossOf(3, [])))
-    expect(msg).toMatch(/3 件の電文/)
+    expect(msg).toMatch(/電文3件/)
     // 失敗と誤読されないよう、再生が続いていることを必ず添える
     expect(msg).toMatch(/継続中/)
   })
@@ -152,21 +152,21 @@ describe('formatLossNotice', () => {
   // 黙らせると「1 日分まるごと欠けた再生」を成功と見分けられなくなる。
   it('アーカイブ単位の失敗も知らせる', () => {
     const msg = formatLossNotice(addLoss(createEmptyLoss(), lossOf(0, ['https://x/a', 'https://x/b'])))
-    expect(msg).toMatch(/2 件の取得元/)
+    expect(msg).toMatch(/取得元2件/)
     expect(msg).toMatch(/継続中/)
   })
 
   it('両方欠けたときは両方を並べる', () => {
     const msg = formatLossNotice(addLoss(createEmptyLoss(), lossOf(5, ['https://x/a'])))
-    expect(msg).toMatch(/1 件の取得元/)
-    expect(msg).toMatch(/5 件の電文/)
+    expect(msg).toMatch(/取得元1件/)
+    expect(msg).toMatch(/電文5件/)
   })
 
   // 先読みは失敗した区間を読み直さない（同上の理由）。件数を出さないと、その 1 時間ぶんが
   // 欠けたまま「静かな時間帯だった」ようにしか見えなくなる。
   it('先読みの失敗も区間数で知らせる', () => {
     const msg = formatLossNotice(addFailedPrefetch(createEmptyLoss()))
-    expect(msg).toMatch(/1 区間ぶんの先読み/)
+    expect(msg).toMatch(/先読み1区間/)
     expect(msg).toMatch(/継続中/)
   })
 })

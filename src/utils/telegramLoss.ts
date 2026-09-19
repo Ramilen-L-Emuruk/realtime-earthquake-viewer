@@ -115,6 +115,19 @@ export function isTelegramLossEmpty(loss: TelegramLoss): boolean {
 }
 
 /**
+ * 取得元と電文の件数を語に直す（0 件のものは並べない）。
+ *
+ * **確定した損失（`describeTelegramLossParts`）と 429 の見送り（`formatRateLimitedNotice`）で
+ * 共有する。** 同じ画面に並びうるので、片方だけ語順を変えると同じ内訳が別物に見える。
+ */
+function countParts(sources: number, telegrams: number): string[] {
+  const parts: string[] = []
+  if (sources > 0) parts.push(`取得元${sources}件`)
+  if (telegrams > 0) parts.push(`電文${telegrams}件`)
+  return parts
+}
+
+/**
  * 損失の内訳を語に直す（何も欠けていなければ空）。
  *
  * **取得元単位の失敗（丸ごと読めなかった 1 日）と電文単位の失敗（1 通ずつの破損）は粒度が
@@ -125,10 +138,7 @@ export function isTelegramLossEmpty(loss: TelegramLoss): boolean {
  * よって別の重さに見える。
  */
 export function describeTelegramLossParts(loss: TelegramLoss): string[] {
-  const parts: string[] = []
-  if (loss.failedSources.size > 0) parts.push(`${loss.failedSources.size} 件の取得元`)
-  if (loss.skippedTelegrams > 0) parts.push(`${loss.skippedTelegrams} 件の電文`)
-  return parts
+  return countParts(loss.failedSources.size, loss.skippedTelegrams)
 }
 
 /**
@@ -139,11 +149,18 @@ export function describeTelegramLossParts(loss: TelegramLoss): string[] {
  *
  * **「取得し直す手立て」を必ず添える。** 自動では取り直さないため、添えないと打てる手が
  * 分からない（生成データの `MapDataStatus` と同じ書き方に揃えてある）。
+ *
+ * **語は「取り込めず」で、`formatRateLimitedNotice` の「未取得」と分ける。** 2 つは同じ
+ * `notices` に並びうる（→ `components/EarthquakeTab/index.tsx`）。こちらは取りに行って
+ * 失敗した確定の損失、あちらは上限で取りに行かなかった分で、形を揃えたぶん差は語が担う。
+ *
+ * 文の形の規約（言い切りで止める理由・括弧の中身の決め方）は
+ * `docs/spec/settings-pwa-spec.md` §5.5「通知の文の形」が単一情報源。
  */
 export function formatHistoryLossNotice(loss: TelegramLoss): string | null {
   const parts = describeTelegramLossParts(loss)
   if (parts.length === 0) return null
-  return `${parts.join('・')}を取り込めませんでした（再読み込みで取得し直します）`
+  return `${parts.join('・')}を取り込めず（再読み込みで取得し直します）`
 }
 
 /**
@@ -156,7 +173,7 @@ export function formatHistoryLossNotice(loss: TelegramLoss): string | null {
  * 出す」）、末尾の括弧書きだけが違う形にすると、同じ主張が重複しているように見えて肝心の差
  * （戻らない／もう一度で直るかもしれない）を読み飛ばされる。
  */
-export const HISTORY_LOAD_MORE_FAILED_NOTICE = '続きの読み込みに失敗しました（もう一度お試しください）'
+export const HISTORY_LOAD_MORE_FAILED_NOTICE = '続きの読み込みに失敗（もう一度お試しください）'
 
 /**
  * いま配信元の上限に達していて、取得を待たせていることを知らせる一文。
@@ -181,19 +198,20 @@ export const FETCH_THROTTLED_NOTICE = 'リクエスト過多のため、取得�
  * **取得元と電文は単位が違うので混ぜない**（`describeTelegramLossParts` と同じ理由）。
  * 取得元単位で見送った日は、その日に何通あったかが分からないため電文数へ足せない。
  *
- * **兄弟の通知と違って、括弧の中に行動の案内を書いていない。** あちら 3 つ
- * （「再読み込みで取得し直します」「もう一度お試しください」「自動で再開します」）と
- * 揃っていないのは承知のうえで、**簡潔さを採った** —— 控えを端末へ残し、門を窓ごとの
- * 上限へ変えた今、この見送り自体がほとんど起きない（429 は「同じ id の取り直し」に返るもので、
- * 控えが効いていれば取り直さない）。**起きる頻度が上がったら、そのとき案内を足すこと。**
+ * **この見送り自体がほとんど起きない。** 控えを端末へ残し、門を窓ごとの上限へ変えた今、
+ * 429 は「同じ id の取り直し」に返るもので、控えが効いていれば取り直さない。
  *
- * **語順も `describeTelegramLossParts`（`N 件の取得元`）と逆**（こちらは `取得元N件`）。
- * 同じ画面に並びうるので、揃える判断もありうる。短さを採って揃えていない。
+ * **内訳の語は `countParts` を `describeTelegramLossParts` と共有する。** 同じ画面に並びうる
+ * ので、片方だけ語順を変えると同じ内訳が別物に見える。
+ *
+ * **主節の語は「未取得」で、`formatHistoryLossNotice` の「取り込めず」と分ける。**
+ * 形を揃えたぶん、「取りに行って失敗した」と「上限で取りに行かなかった」の差は語だけが担う。
+ *
+ * 文の形の規約（括弧へ行動ではなく内訳を入れる理由も含む）は
+ * `docs/spec/settings-pwa-spec.md` §5.5「通知の文の形」が単一情報源。
  */
 export function formatRateLimitedNotice(loss: TelegramLoss): string | null {
-  const parts: string[] = []
-  if (loss.rateLimitedSources.size > 0) parts.push(`取得元${loss.rateLimitedSources.size}件`)
-  if (loss.rateLimitedTelegrams > 0) parts.push(`電文${loss.rateLimitedTelegrams}件`)
+  const parts = countParts(loss.rateLimitedSources.size, loss.rateLimitedTelegrams)
   if (parts.length === 0) return null
   return `リクエスト過多のため、取得制限中（${parts.join('・')}が未取得）`
 }
