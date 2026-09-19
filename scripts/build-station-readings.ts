@@ -47,6 +47,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { hasUnreadableFurigana, isMisreading, normalizeReading, stripReadingTail, toKanaEntry } from './stationReading'
 import { buildCityIndex, splitStationName, toStationAccentEntry } from './stationPhrase'
+import { openLongVowelsInEntries, verifyOpenedEntries, type PhraseOrigin } from './lib/longVowel'
 import type { CityIndex, SplitOutcome, SplitSkipReason } from './stationPhrase'
 import { classifyTsunamiStation, offshoreExpectedReading, splitDistance } from './tsunamiStationReading'
 import type { TsunamiStationShape } from './tsunamiStationReading'
@@ -516,7 +517,7 @@ export function mergeFurigana(groups: readonly (readonly UpstreamStation[])[]): 
  * 気象庁 個別コード表（地震火山関連）のブックを取る。**潮位観測点と市町村の読みで共有する** ——
  * zip は 1.6MB あり、シートごとに落とし直す理由が無い。
  */
-async function fetchCodeTableBook(): Promise<Map<string, unknown[][]>> {
+export async function fetchCodeTableBook(): Promise<Map<string, unknown[][]>> {
   console.log(`Fetching ${JMA_TEC_MATERIAL} ...`)
   const indexRes = await fetch(JMA_TEC_MATERIAL)
   if (!indexRes.ok) throw new Error(`気象庁 技術資料ページの取得に失敗: ${indexRes.status}`)
@@ -593,7 +594,7 @@ function readTidalFurigana(book: ReadonlyMap<string, unknown[][]>): Map<string, 
  * 同じ市町村が観測点の数だけ行に現れるので重複は正常。**同じ名前で違うふりがなが現れたら止める**
  * —— どちらが正しいか機械的に決められず、誤った読みで全件の句割りを作ることになる。
  */
-function readCityFurigana(book: ReadonlyMap<string, unknown[][]>): Map<string, string> {
+export function readCityFurigana(book: ReadonlyMap<string, unknown[][]>): Map<string, string> {
   const rows = book.get(CITY_SHEET)
   if (!rows) {
     throw new Error(
@@ -1027,13 +1028,51 @@ async function main(): Promise<void> {
   const output: Record<string, string> = {
     _comment: '観測点名の読み。気象庁のふりがなから、音声合成エンジンが誤読する点だけを収録。'
       + '対象は震度観測点（「5弱以上・未入電」の地点名）と潮位観測点（津波の観測情報）。'
-      + '長い名前は市町村の境界で 2 つのアクセント句に割る。'
+      + '長い名前は市町村の境界で 2 つのアクセント句に割り、長音は母音の重ねで書く。'
       + 'キーは観測点名、値は AquesTalk 風カナ（\' はアクセント核、/ は句区切り）。'
       + '生成: npm run build-station-readings',
   }
   for (const target of targets) {
     const kana = misread.get(target.name)
     if (kana) output[target.name] = kana
+  }
+
+  // **読みの長音を母音の重ねへ開く。** 気象庁のふりがなは長音を「う」「い」で書くので
+  // （`ちょう`・`せいぶ`）、そのまま渡すと `ho`+`u` の 2 音として合成され長音にならない。
+  // 語の切れ目でしか判定できないため形態素解析を通す（→ `scripts/lib/longVowel.ts`）。
+  // **句に対応する漢字を渡す。** 揃えるときの鍵に使う —— 読みだけを鍵にすると、同じ読みで
+  // 別の語を指す句（`鷹栖町` と `高鷲町` はどちらも `タカスチョウ`。実データで 37 件）で
+  // 誤って開いてしまう（→ `scripts/lib/longVowel.ts` の `unifyOpenedPhrases`）
+  const origins = new Map<string, PhraseOrigin[]>()
+  for (const target of targets) {
+    if (target.splitOutcome.kind !== 'split') continue
+    if (!Object.prototype.hasOwnProperty.call(output, target.name)) continue
+    const city = target.splitOutcome.split.city
+    origins.set(target.name, [{ kanji: city }, { kanji: target.name.slice(city.length) }])
+  }
+  const opened = openLongVowelsInEntries(
+    new Map(Object.entries(output).filter(([k]) => !k.startsWith('_'))),
+    origins,
+  )
+  const openedPairs: { name: string; before: string; after: string }[] = []
+  for (const [name, value] of opened) {
+    if (output[name] !== value) openedPairs.push({ name, before: output[name], after: value })
+    output[name] = value
+  }
+  console.log(`読みの長音を開いた点: ${openedPairs.length} / ${opened.size} 件`)
+
+  // **開いた後の値もエンジンへ戻して確かめる。** 上の往復検証は開く前の値に掛かっており、
+  // 開く処理はそのあとで走る（→ `scripts/lib/longVowel.ts` の `verifyOpenedEntries`）
+  const openedProblems = await verifyOpenedEntries(
+    openedPairs,
+    (entry) => readingOf(engine, speaker, entry, true),
+    normalizeReading,
+  )
+  if (openedProblems.length > 0) {
+    throw new Error(
+      `長音を開いた値の検証で ${openedProblems.length} 件が通りませんでした:\n`
+      + openedProblems.slice(0, 10).map(p => `  ${p}`).join('\n'),
+    )
   }
 
   await mkdir(OUT_DIR, { recursive: true })

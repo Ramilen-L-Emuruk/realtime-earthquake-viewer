@@ -23,11 +23,13 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { isMisreading, stripReadingTail } from './stationReading'
+import { isMisreading, normalizeReading, stripReadingTail } from './stationReading'
 import {
-  endsWithChihou, MIN_TAIL_MORAS, splitEpicenterDetailed, toAccentEntry,
+  chihouAccentEntry, endsWithChihou, MIN_TAIL_MORAS, splitEpicenterDetailed, toAccentEntry,
+  type ChihouSkipReason,
   type ComponentAccents, type EpicenterSplit, type UnsplitReason,
 } from './epicenterAccent'
+import { openLongVowelsInEntries, verifyOpenedEntries, type PhraseOrigin } from './lib/longVowel'
 
 /**
  * 震央地名の一覧（名前＋ふりがな）の取得元。
@@ -180,10 +182,15 @@ async function measureAccent(
  */
 async function verify(
   engine: string, speaker: number, name: string, kana: string, entry: string,
+  minPhrases: number,
 ): Promise<string | null> {
-  // カナ指定で読ませ、狙った読みとアクセント句の数になるか
+  // カナ指定で読ませ、狙った読みとアクセント句の数になるか。
+  // **期待する句数は呼び出し側が渡す** —— 句割りは 2 句だが、「〜地方」は核を動かすだけで
+  // 割らない（1 句）。ここで一律に 2 を求めると、意図して 1 句にしたものが弾かれる。
   const kanaPhrases = await accentPhrases(engine, speaker, entry, true)
-  if (kanaPhrases.length < 2) return `句が割れていない（${kanaPhrases.length} 句）`
+  if (kanaPhrases.length < minPhrases) {
+    return `句の数が足りない（${kanaPhrases.length} 句・${minPhrases} 句以上を期待）`
+  }
   const back = readingOf(kanaPhrases)
   if (isMisreading(back, kana)) return `カナ指定で読ませると「${back}」（正: ${kana}）`
   // 読み上げ文の形でも、名前部分の読みが変わらないこと
@@ -342,6 +349,49 @@ async function main(): Promise<void> {
     }
     entries.set(name, toAccentEntry(split, accents))
   }
+
+  // **「〜地方」は句割りの門を通さずに当てる。** エンジンは核を「チホオ」の「ホ」の後へ置くので
+  // （`キタミチホ＼オ`）、8 モーラ未満で門に掛からない名前がそのまま崩れて残る
+  // （`檜山地方` は 6 モーラで、しかも `ヒヤマ / チホオ` と 2 句に割れる）。
+  /** 意図して 1 句にしたもの（「〜地方」で県名が前に付かない名前）。 */
+  const singlePhrase = new Set<string>()
+  /** 「〜地方」で核を当てられなかったもの（`not-chihou` は正常なので数えない）。 */
+  const chihouSkipped = new Map<ChihouSkipReason, string[]>()
+  /** 「〜地方」の句に対応する漢字（`chihouAccentEntry` が返したもの）。 */
+  const chihouOrigins = new Map<string, PhraseOrigin[]>()
+  let chihouCount = 0
+  for (const name of names) {
+    if (entries.has(name)) continue          // 句割りで既に手当てできたものは触らない
+    const kana = kanaOf.get(name)
+    if (!kana) continue
+    const outcome = chihouAccentEntry(name, kana)
+    if (!('entry' in outcome)) {
+      // **見送りを黙って落とさない。** 大多数は「〜地方で終わらない」で正常だが、
+      // 中黒を含むもの（手書きの句区切り辞書の担当）は数が動いたら気づきたい
+      if (outcome.reason !== 'not-chihou') {
+        const list = chihouSkipped.get(outcome.reason) ?? []
+        list.push(`${name}（${kana}）`)
+        chihouSkipped.set(outcome.reason, list)
+      }
+      continue
+    }
+    entries.set(name, outcome.entry)
+    // **句の漢字は返ってきたものを使う。** ここで割り直すと、割り方を変えたときに食い違う
+    chihouOrigins.set(name, outcome.origin.map(kanji => ({ kanji })))
+    // **割らずに核だけ置いたものは覚えておく**（検証で求める句数が違う）
+    if (!outcome.entry.includes('/')) singlePhrase.add(name)
+    chihouCount += 1
+  }
+  console.log(`「〜地方」の核を当てた名前: ${chihouCount} 件`)
+  const CHIHOU_SKIP_LABEL: Record<Exclude<ChihouSkipReason, 'not-chihou'>, string> = {
+    nakaguro: '中黒を含む（手書きの句区切り辞書の担当）',
+    'no-prefecture-reading': '「県」の読みを切り出せない',
+    'ambiguous-prefecture': '「県」または「けん」が 2 つ以上あり、割る位置が決まらない',
+  }
+  for (const [reason, list] of chihouSkipped) {
+    const label = CHIHOU_SKIP_LABEL[reason as Exclude<ChihouSkipReason, 'not-chihou'>]
+    console.log(`  「〜地方」で見送った ${list.length} 件（${label}）: ${list.join('・')}`)
+  }
   const UNSPLIT_LABEL: Record<UnsplitReason, string> = {
     'no-suffix': '後部要素の表に無い構成',
     'empty-head': '後部要素だけの名前（前部要素が空）',
@@ -356,7 +406,10 @@ async function main(): Promise<void> {
   // 作った値を検証する。1 件でも通らなければ止める（黙って辞書なしへ落ちるのを防ぐ）
   const failed: string[] = []
   await runPooled([...entries.entries()], async ([name, entry]) => {
-    const problem = await verify(engine, speaker, name, kanaOf.get(name) as string, entry)
+    const problem = await verify(
+      engine, speaker, name, kanaOf.get(name) as string, entry,
+      singlePhrase.has(name) ? 1 : 2,
+    )
     if (problem) failed.push(`${name} → ${entry}: ${problem}`)
   })
   if (failed.length > 0) {
@@ -371,11 +424,46 @@ async function main(): Promise<void> {
   const output: Record<string, string> = {
     _comment: '震央地名の句割り。音声合成エンジンが 1 アクセント句にまとめてしまう長い名前を、'
       + '前部要素と後部要素の境界で割る指定。キーは震央地名、値は AquesTalk 風カナ'
-      + '（/ が句区切り、\' がアクセント核）。生成: npm run build-epicenter-accents',
+      + '（/ が句区切り、\' がアクセント核。長音は母音の重ねで書く）。生成: npm run build-epicenter-accents',
   }
   for (const name of names) {
     const entry = entries.get(name)
     if (entry) output[name] = entry
+  }
+
+  // **読みの長音を母音の重ねへ開く**（理由と仕組みは `scripts/lib/longVowel.ts`）。
+  // **句に対応する漢字を渡す**（理由は `scripts/lib/longVowel.ts` の `unifyOpenedPhrases`）。
+  // 句割りは前部要素と後部要素、「〜地方」は県名とそれ以降（割らないものは 1 句）
+  const origins = new Map<string, PhraseOrigin[]>()
+  for (const [name, split] of splits) {
+    if (entries.has(name)) origins.set(name, [{ kanji: split.head }, { kanji: split.tail }])
+  }
+  for (const [name, origin] of chihouOrigins) {
+    if (!origins.has(name) && entries.has(name)) origins.set(name, origin)
+  }
+  const opened = openLongVowelsInEntries(
+    new Map(Object.entries(output).filter(([k]) => !k.startsWith('_'))),
+    origins,
+  )
+  const openedPairs: { name: string; before: string; after: string }[] = []
+  for (const [name, value] of opened) {
+    if (output[name] !== value) openedPairs.push({ name, before: output[name], after: value })
+    output[name] = value
+  }
+  console.log(`読みの長音を開いた名前: ${openedPairs.length} / ${opened.size} 件`)
+
+  // **開いた後の値もエンジンへ戻して確かめる。** 上の `verify` は開く前の値に掛かっており、
+  // 開く処理はそのあとで走る（→ `scripts/lib/longVowel.ts` の `verifyOpenedEntries`）
+  const openedProblems = await verifyOpenedEntries(
+    openedPairs,
+    async (entry) => readingOf(await accentPhrases(engine, speaker, entry, true)),
+    normalizeReading,
+  )
+  if (openedProblems.length > 0) {
+    throw new Error(
+      `長音を開いた値の検証で ${openedProblems.length} 件が通りませんでした:\n`
+      + openedProblems.slice(0, 10).map(p => `  ${p}`).join('\n'),
+    )
   }
 
   await mkdir(OUT_DIR, { recursive: true })
