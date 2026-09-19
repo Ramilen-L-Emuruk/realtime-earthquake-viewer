@@ -95,8 +95,8 @@ export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selected
   ].filter((t): t is string => t !== null).map(text => ({ text, tone: 'loss' as const }))
   if (fetchThrottled) notices.push({ text: FETCH_THROTTLED_NOTICE, tone: 'info' })
   // **1 件も無いときだけ読み込み中の画面にする。**
-  // DMDSS 版の初回は電文本体の取得が配信元の上限に合わせて直列化されるため、全件が揃うのは
-  // 数分後になる（→ `docs/spec/data-sources-spec.md` §2「取得の間隔を空ける」）。取得側は
+  // DMDSS 版は日ごとにアーカイブを読むので、全件が揃うのは数秒後になる
+  // （→ `docs/spec/data-sources-spec.md` §2「窓ごとの上限を守る」）。取得側は
   // 取れた分から順に流しているので、`isLoading` だけで覆うと**その間ずっとスピナーのままになり、
   // 逐次に出す仕組みが画面へ一度も現れない**。
   if (isLoading && earthquakes.length === 0) {
