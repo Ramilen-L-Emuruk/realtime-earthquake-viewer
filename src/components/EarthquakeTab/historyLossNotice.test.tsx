@@ -76,14 +76,14 @@ describe('履歴の一部が取れなかったときの帯', () => {
   it('正: 取得元が 1 件でも読めなければ帯を出す', () => {
     renderTab({ historyLoss: addTelegramLoss(createEmptyTelegramLoss(), 0, ['https://x/a']) })
 
-    expect(screen.getByText(/1 件の取得元.*取り込めませんでした/)).toBeTruthy()
+    expect(screen.getByText(/取得元1件.*取り込めず/)).toBeTruthy()
   })
 
   // **カードは覆わない。** 全画面のエラー表示と違って、取れた分は見られなければならない。
   it('正: 帯を出してもカードは残る', () => {
     renderTab({ historyLoss: addTelegramLoss(createEmptyTelegramLoss(), 2, []) })
 
-    expect(screen.getByText(/2 件の電文/)).toBeTruthy()
+    expect(screen.getByText(/電文2件/)).toBeTruthy()
     expect(screen.getByText('石川県能登地方')).toBeTruthy()
   })
 
@@ -95,20 +95,20 @@ describe('履歴の一部が取れなかったときの帯', () => {
     })
 
     expect(screen.getByText('地震情報はありません')).toBeTruthy()
-    expect(screen.getByText(/2 件の取得元/)).toBeTruthy()
+    expect(screen.getByText(/取得元2件/)).toBeTruthy()
   })
 
   it('対照: 何も欠けていなければ帯は出ない', () => {
     renderTab({})
 
-    expect(screen.queryByText(/取り込めませんでした/)).toBeNull()
+    expect(screen.queryByText(/取り込めず/)).toBeNull()
   })
 
   it('対照: カードが 0 件でも、欠けていなければ帯は出ない', () => {
     renderTab({ earthquakes: [] })
 
     expect(screen.getByText('地震情報はありません')).toBeTruthy()
-    expect(screen.queryByText(/取り込めませんでした/)).toBeNull()
+    expect(screen.queryByText(/取り込めず/)).toBeNull()
   })
 
   // 確定した損失と、押し直せば回復しうる失敗は別の文面で出す。混ぜると、戻せない損失と
@@ -116,7 +116,7 @@ describe('履歴の一部が取れなかったときの帯', () => {
   it('正: 「もっと見る」の失敗は別の文面で出す', () => {
     renderTab({ loadMoreFailed: true })
 
-    expect(screen.getByText(/続きの読み込みに失敗しました/)).toBeTruthy()
+    expect(screen.getByText(/続きの読み込みに失敗/)).toBeTruthy()
   })
 
   it('正: 両方あれば両方出す', () => {
@@ -125,8 +125,8 @@ describe('履歴の一部が取れなかったときの帯', () => {
       loadMoreFailed: true,
     })
 
-    expect(screen.getByText(/1 件の電文/)).toBeTruthy()
-    expect(screen.getByText(/続きの読み込みに失敗しました/)).toBeTruthy()
+    expect(screen.getByText(/電文1件/)).toBeTruthy()
+    expect(screen.getByText(/続きの読み込みに失敗/)).toBeTruthy()
   })
 
   // 安全弁: 1 件も取れなかったとき（`error`）は全画面の失敗表示が出る。そこへ帯を重ねない
@@ -138,7 +138,7 @@ describe('履歴の一部が取れなかったときの帯', () => {
     })
 
     expect(screen.getByText('データの取得に失敗しました')).toBeTruthy()
-    expect(screen.queryByText(/取り込めませんでした（再読み込み/)).toBeNull()
+    expect(screen.queryByText(/取り込めず（再読み込み/)).toBeNull()
   })
 })
 
@@ -189,7 +189,10 @@ describe('取得制限中の帯', () => {
       historyLoss: addTelegramLoss(createEmptyTelegramLoss(), 3, ['https://x/a'], { telegrams: 2 }),
     })
 
-    expect(screen.getByText(/取り込めませんでした（再読み込み/)).toBeTruthy()
+    expect(screen.getByText(/取り込めず（再読み込み/)).toBeTruthy()
     expect(screen.getByText('リクエスト過多のため、取得制限中（電文2件が未取得）')).toBeTruthy()
+    // **形をそろえたぶん、差は語だけが担う。** 確定した損失は「取り込めず」、
+    // 見送りは「未取得」。片方の帯にもう片方の語が混ざっていないことまで見る。
+    expect(screen.getByText(/取り込めず（再読み込み/).textContent).not.toMatch(/未取得/)
   })
 })

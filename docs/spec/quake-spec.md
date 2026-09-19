@@ -761,7 +761,7 @@ XML 20,661 通）を走査すると、`City/Condition` に未入電が入って�
 
 | 場所 | すり抜けたときに起きること |
 |---|---|
-| `usePsWaveCalc` の `computeEewCircle` | 予報円が `map.project([-200, -200])` を呼び、MapLibre が緯度の範囲外として例外を投げる（実測: 「Invalid LngLat latitude value: must be between -90 and 90」）。**例外は MapLibre の描画ループの中で起きるため、React の ErrorBoundary は届かない。** かつては予報円だけでは済まず、MapLibre がレイヤーごとに例外を捕まえないぶん `MAP_LAYER_ORDER` で予報円より後ろにある EEW の震源マーカー・震度点・強震モニタ表示・地名ラベルまで、そのフレームの描画が丸ごと止まっていた。いまは `gl/guardRender.ts` が各レイヤーの `render()` を包むので、被害は予報円 1 枚に収まり、画面にも「地図に描けていないものがあります」が出る |
+| `usePsWaveCalc` の `computeEewCircle` | 予報円が `map.project([-200, -200])` を呼び、MapLibre が緯度の範囲外として例外を投げる（実測: 「Invalid LngLat latitude value: must be between -90 and 90」）。**例外は MapLibre の描画ループの中で起きるため、React の ErrorBoundary は届かない。** かつては予報円だけでは済まず、MapLibre がレイヤーごとに例外を捕まえないぶん `MAP_LAYER_ORDER` で予報円より後ろにある EEW の震源マーカー・震度点・強震モニタ表示・地名ラベルまで、そのフレームの描画が丸ごと止まっていた。いまは `gl/guardRender.ts` が各レイヤーの `render()` を包むので、被害は予報円 1 枚に収まり、画面にも「〇〇を描けず」が出る |
 | `useKyoshinAlerts` の `extractEewInfo` | 「有効な EEW がある」と数えたうえで距離判定に必ず外れ、通常の距離フォールバックへ到達しないまま別地震と答える（同じ地震の揺れを「別地点」として余分に鳴らす側へ倒れる） |
 | `useLiveEventHandler` の震源移動の判定 | `-200` を相手に距離を測り、「50km 超動いた」と誤判定して読み上げを言い直す |
 

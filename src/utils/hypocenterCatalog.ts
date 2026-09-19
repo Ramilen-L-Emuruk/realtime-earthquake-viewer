@@ -174,7 +174,7 @@ export function loadHypocenterIndex(): Promise<HypocenterIndex> {
   if (indexCache) return Promise.resolve(indexCache)
   if (!indexInflight) {
     indexInflight = fetchJsonWithTimeout<HypocenterIndex>(`${BASE_URL}/index.json`, 'hypocenter-index', {
-      // 地図の表示には関わらないため、地図の「データの一部を取得できませんでした」には計上しない
+      // 地図の表示には関わらないため、地図の「データN件を取り込めず」には計上しない
       // （TTS 辞書・テストシナリオと同じ扱い）。
       trackStatus: false,
       validate: (data) => {
