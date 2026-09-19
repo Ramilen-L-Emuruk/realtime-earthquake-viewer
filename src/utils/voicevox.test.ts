@@ -17,9 +17,15 @@ import { speakWithVoicevox, speakSequentially, warmFixedPhrases, splitIntoChunks
 import { eewAlertToText, EEW_LEAD_PHRASES, voicevoxPreviewTexts } from './ttsText'
 import type { EEWAlert } from '../types/earthquake'
 
+/**
+ * 「辞書の読み込み」と「合成」が呼ばれた順。作り置きが辞書を待っているかを見るのに使う
+ * （→「作り置きは辞書を待ってから焼く」）。`vi.mock` は巻き上げられるので `vi.hoisted` で作る。
+ */
+const order = vi.hoisted(() => ({ log: [] as string[] }))
+
 // 句区切り辞書は使わない（この検証の対象外。読みの補正が挟まると合成回数が増えて筋が追いにくい）
 vi.mock('./ttsPhraseBreakDict', () => ({
-  loadTtsPhraseBreakDict: () => Promise.resolve(null),
+  loadTtsPhraseBreakDict: () => { order.log.push('dict'); return Promise.resolve(null) },
   getTtsPhraseBreakDictCache: () => null,
   findPhraseBreakMatch: () => null,
   isPlaceNameKey: () => false,
@@ -122,6 +128,7 @@ function installFetch() {
     const aborted = abortedNow(init?.signal)
     if (aborted) return aborted
     if (String(url).includes('/synthesis')) {
+      order.log.push('synthesis')
       const delay = synthDelaysMs[synthCallCount] ?? 0
       synthCallCount++
       synthBodies.push(init?.body ?? '')
@@ -152,6 +159,7 @@ async function advance(ms: number) {
 const TWO_CHUNKS = '予想最大震度5弱。予想最大階級1。'
 
 beforeEach(() => {
+  order.log = []
   vi.useFakeTimers()
   baseMs = Date.now()
   sources = []
@@ -408,6 +416,25 @@ describe('切り出し語の作り置き', () => {
 
     await advance(120)
     expect(synthCallCount).toBe(2)   // 1 件目が終わってから 2 件目
+  })
+
+  // **作り置きは辞書を待ってから焼くこと。** ここは起動直後に走るので、待たないと辞書の
+  // キャッシュが空のまま合成され、**辞書を当てていない音が作り置きに居座る**。作り置きは
+  // 当たれば合成を丸ごと省くので、以後その句だけ辞書が効かない —— しかも音は鳴るため
+  // 聞くまで気づけない（実際に「緊急地震速報」を辞書へ入れる直前に見つけた）。
+  //
+  // `warmFixedPhrases` の `await loadSpeechDicts(...)` を外すと、`/synthesis` が辞書より先に
+  // 飛んでここが落ちる（確認済み）。他の 2 経路（`prewarmVoicevox` / `speakOnce`）は元から待つ。
+  it('作り置きは辞書を待ってから焼く', async () => {
+    synthDelaysMs = [0]
+    warmFixedPhrases('http://vv', 1, [LEAD])
+    await advance(10)
+
+    const dictAt = order.log.indexOf('dict')
+    const synthAt = order.log.indexOf('synthesis')
+    expect(dictAt, '辞書を読みに行っていない').toBeGreaterThanOrEqual(0)
+    expect(synthAt, '合成していない').toBeGreaterThanOrEqual(0)
+    expect(dictAt).toBeLessThan(synthAt)
   })
 
   // 作り置きと合成し直しは、同じ句に**同じ末尾の間**を付けなければならない。

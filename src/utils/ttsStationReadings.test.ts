@@ -156,10 +156,24 @@ describe('実データの部分一致の安全性', () => {
     expect(risky.length).toBeGreaterThan(0)  // 検査対象が無くなっていたら気づけるように
     for (const { name, area } of risky) {
       const match = await loadedMatch(`${area}では、震度5弱以上と推定されますが、未入電です。`)
-      // 区域名の側が辞書にあればそれが選ばれ、無ければ何も選ばれない（エンジンの素の読みに任せる）。
-      expect(match?.key, `${name} ⊂ ${area}`).toBe(dictKeys.has(area) ? area : undefined)
+      // 区域名の側が辞書にあればそれが選ばれ、無ければ**名前の中では**何も選ばれない
+      // （エンジンの素の読みに任せる）。
+      if (dictKeys.has(area)) expect(match?.key, `${name} ⊂ ${area}`).toBe(area)
+      else expect(notCutInside(match, area), `${name} ⊂ ${area}（${match?.key}）`).toBe(true)
     }
   })
+
+  /**
+   * 名前が**その中で**切られていないこと。
+   *
+   * 検査文には名前のほかに述語（「では、震度5弱以上と推定されますが、未入電です。」）も入る。
+   * そちらに用語の鍵が当たるのは正常なので、「何も一致しない」を条件にすると、**述語側へ鍵を
+   * 足しただけでこの検査が落ちる**（実際に `震度5弱以上と` を足して落ちた）。見るのは
+   * 「一致した位置が名前より後ろか」。
+   */
+  const notCutInside = (
+    match: { key: string; index: number } | null | undefined, name: string,
+  ): boolean => match == null || match.index >= name.length
 
   it('別の観測点名の内部に現れても、長い側が選ばれる（辞書に無い側でも）', async () => {
     // 検査対象は**座標表の全観測点名**。辞書のキーどうしで探すと、`宮古島市下地` ⊂
@@ -171,7 +185,8 @@ describe('実データの部分一致の安全性', () => {
     expect(pairs.length).toBeGreaterThan(0)  // 検査対象が無くなっていたら気づけるように
     for (const { short, long } of pairs) {
       const match = await loadedMatch(`${long}では、震度5弱以上と推定されますが、未入電です。`)
-      expect(match?.key, `${short} ⊂ ${long}`).toBe(names.includes(long) ? long : undefined)
+      if (names.includes(long)) expect(match?.key, `${short} ⊂ ${long}`).toBe(long)
+      else expect(notCutInside(match, long), `${short} ⊂ ${long}（${match?.key}）`).toBe(true)
     }
   })
 
