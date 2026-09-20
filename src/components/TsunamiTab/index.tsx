@@ -363,12 +363,12 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
               ? `3px solid ${markColor}`
               : `1px solid ${style.cardBorder}38`
             /**
-             * 時刻欄のその項目に色を当てるか。**縦線と同じ色**を使う（同じ出来事を指す印なので、
-             * 別の色にすると 2 つの語彙を覚えることになる）。縦線が「この地点で何かあった」、
+             * その項目に当てる文字色。**縦線と同じ色**を使う（同じ出来事を指す印なので、別の色に
+             * すると読み手が 2 つの語彙を覚えることになる）。縦線が「この地点で何かあった」、
              * 文字色が「この項目よ」の 2 段構え。
              *
-             * **波高（右の大きな数字）には当てない。** あちらは等級の色で塗ってあり、変えると
-             * 等級の意味と衝突する。そもそも波高が動いた報では数字そのものが変わるので、縦線で足りる。
+             * **波高にも当てる。** 観測点の行の波高は既定を白にしてあるので、等級の色と衝突しない
+             * （等級は等級カードの枠と見出しが示す。→ `docs/spec/tsunami-spec.md` §9）。
              */
             const fieldColor = (field: ObsUpdateField): string | undefined =>
               markColor && updateMark?.fields.has(field) ? markColor : undefined
@@ -392,7 +392,7 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
             const matchedHighTideHm = matched?.highTideDateTime ? formatTimeMin(matched.highTideDateTime) : null
             // この欄は空になりうる要素が並ぶ。**区切りを前置きする書き方にしない** —— 先頭が
             // 空のとき字下げだけが残る（到達予想を足す前から、欠測の行の満潮時刻がそうなっていた）。
-            // **項目ごとに色を分けるので、1 本の文字列へ繋がない。** 動いた項目だけを塗るには
+            // **項目ごとに印を分けるので、1 本の文字列へ繋がない。** 動いた項目の肩へ点を置くには
             // 区切って描くしかない（間の全角空白も要素として挟む）。
             const timeParts: { text: string; color?: string }[] = [
               {
@@ -453,8 +453,13 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
                       </div>
                     )}
                   </div>
+                  {/* **波高の既定は白。** 等級は等級カードの枠と見出しが示しているので、ここを
+                      等級の色で塗るのは同じ事実の繰り返しで、動いた項目に文字色を当てる余地も
+                      失っていた（→ `docs/spec/tsunami-spec.md` §9）。 */}
                   {obs.height ? (
-                    <span className="font-bold flex-shrink-0" style={{ fontSize: '1.25rem', color: style.heightColor }}>{observationHeightText(obs)}</span>
+                    <span className="font-bold flex-shrink-0" style={{ fontSize: '1.25rem', color: fieldColor('height') ?? '#ffffff' }}>
+                      {observationHeightText(obs)}
+                    </span>
                   ) : observationHeightText(obs) && (
                     <span className="flex-shrink-0" style={{ fontSize: '0.8125rem', color: '#9ca3af' }}>{observationHeightText(obs)}</span>
                   )}
@@ -495,10 +500,25 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
   )
 }
 
-function TsunamiObservationRow({ obs, onObservationClick, canFocusObs, registerSpeechRow }: { obs: TsunamiObservation; onObservationClick?: (name: string) => void; canFocusObs: (name: string) => boolean; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void }) {
+/**
+ * 区域に紐づかない観測点（沖合）の行。
+ *
+ * **更新の印は区域の下の行と同じものを出す。** 判定（`changedObservationFields`）は沖合の
+ * 観測点についても作られているのに、この行がそれを受け取っていなかったため、**沖合だけ
+ * 縦線も項目の印も出ていなかった**。読み上げは同じように読むので、声が名指しした観測点を
+ * 画面が示せない状態になる。
+ */
+function TsunamiObservationRow({ obs, onObservationClick, canFocusObs, registerSpeechRow, obsUpdateStatus }: { obs: TsunamiObservation; onObservationClick?: (name: string) => void; canFocusObs: (name: string) => boolean; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void; obsUpdateStatus?: ReadonlyMap<string, ObsUpdateMark> }) {
   const clickable = !!onObservationClick && canFocusObs(obs.name)
   // 日時として読めない到達時刻は、時刻が無い電文と同じ落とし先（下の fallback 群）へ回す。
   const arrivalHm = obs.arrivalTime ? formatTimeMin(obs.arrivalTime) : null
+  const updateMark = obsUpdateStatus?.get(obs.name)
+  const markColor = updateMark ? UPDATE_MARK_COLOR[updateMark.status] : null
+  /** 区域の行と同じ規約（色は縦線と共有・動いた項目だけ塗る）。 */
+  const fieldColor = (field: ObsUpdateField): string | undefined =>
+    markColor && updateMark?.fields.has(field) ? markColor : undefined
+  const maxHeightTimeText = observationMaxHeightTimeText(obs)
+  const arrivalFallbackText = observationArrivalFallbackText(obs)
   return (
     <div
       /* 追従スクロールの引き当て用。この行は区域に紐づかない観測点（沖合）で、読み上げは
@@ -506,6 +526,9 @@ function TsunamiObservationRow({ obs, onObservationClick, canFocusObs, registerS
          動かず、引き当て失敗の診断も鳴る */
       ref={el => registerSpeechRow?.([`station:${obs.name}`], el)}
       className={`flex items-center gap-2 px-3 py-2 border-b border-white/5 last:border-0 roomy:gap-3 roomy:px-4 roomy:py-3${clickable ? ' cursor-pointer hover:brightness-125 transition-[filter]' : ''}`}
+      /* **印が無い行でも幅を取る**（透明で置く）。付いたり消えたりで行の中身が横へずれると、
+         一覧を目で追っているときに行がまとめて動いて見える。 */
+      style={{ borderLeft: `3px solid ${markColor ?? 'transparent'}` }}
       onClick={clickable ? () => onObservationClick!(obs.name) : undefined}
       role={clickable ? 'button' : undefined}
       tabIndex={clickable ? 0 : undefined}
@@ -534,23 +557,29 @@ function TsunamiObservationRow({ obs, onObservationClick, canFocusObs, registerS
             最大波は観測できている電文がある）。区域に紐づく行と同じ述語を通す。 */}
         {arrivalHm ? (
           <span className="block mt-1 text-secondary" style={{ fontSize: '0.8125rem' }}>
-            到達: {arrivalHm}{obs.initial ? `（${obs.initial}）` : ''}
-            {observationMaxHeightTimeText(obs) && `　${observationMaxHeightTimeText(obs)}`}
+            <span style={fieldColor('firstWave') ? { color: fieldColor('firstWave'), fontWeight: 600 } : undefined}>
+              到達: {arrivalHm}{obs.initial ? `（${obs.initial}）` : ''}
+            </span>
+            {maxHeightTimeText && <>　<span style={fieldColor('maxHeightTime') ? { color: fieldColor('maxHeightTime'), fontWeight: 600 } : undefined}>{maxHeightTimeText}</span></>}
             {/* 特殊観測機器（「ＧＮＳＳ波浪計」「水圧計」）。沖合の観測点だけが持つ。
                 電文の語をそのまま出す —— 言い換えると、どちらの計器が測った値か分からなくなる。
                 **括弧で括る** —— 「到達: 」のラベルは時刻にしか掛かっておらず、素で並べると
                 地名や別の値と読める。 */}
             {obs.sensor && `　（${obs.sensor}）`}
           </span>
-        ) : (observationArrivalFallbackText(obs) || observationMaxHeightTimeText(obs) || obs.sensor) && (
+        ) : (arrivalFallbackText || maxHeightTimeText || obs.sensor) && (
           <span className="block mt-1 text-secondary" style={{ fontSize: '0.8125rem' }}>
-            {[observationArrivalFallbackText(obs), observationMaxHeightTimeText(obs)].filter(Boolean).join('　')}
-            {obs.sensor && `${observationArrivalFallbackText(obs) || observationMaxHeightTimeText(obs) ? '　' : ''}（${obs.sensor}）`}
+            {arrivalFallbackText}
+            {maxHeightTimeText && <>{arrivalFallbackText ? '　' : ''}<span style={fieldColor('maxHeightTime') ? { color: fieldColor('maxHeightTime'), fontWeight: 600 } : undefined}>{maxHeightTimeText}</span></>}
+            {obs.sensor && `${arrivalFallbackText || maxHeightTimeText ? '　' : ''}（${obs.sensor}）`}
           </span>
         )}
       </div>
       {observationHeightText(obs) && (
-        <span className="text-secondary flex-shrink-0" style={{ fontSize: '1rem' }}>
+        <span
+          className={fieldColor('height') ? 'flex-shrink-0' : 'text-secondary flex-shrink-0'}
+          style={{ fontSize: '1rem', ...(fieldColor('height') ? { color: fieldColor('height'), fontWeight: 600 } : {}) }}
+        >
           {observationHeightText(obs)}
         </span>
       )}
@@ -1463,7 +1492,7 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
                   </div>
                 )}
                 {unmatched.map((obs, i) => (
-                  <TsunamiObservationRow key={i} obs={obs} onObservationClick={onObservationClick} canFocusObs={canFocusObs} registerSpeechRow={registerSpeechRow} />
+                  <TsunamiObservationRow key={i} obs={obs} onObservationClick={onObservationClick} canFocusObs={canFocusObs} registerSpeechRow={registerSpeechRow} obsUpdateStatus={obsUpdateStatus} />
                 ))}
                 {/* 沖合の観測から導いた沿岸への推定。実測とは別のものなので実測の下に区切って
                     並べる。**推定したのは気象庁で、アプリ側の計算ではない**ことを見出しに書く。 */}

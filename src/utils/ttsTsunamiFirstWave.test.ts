@@ -35,20 +35,36 @@ const toyama = (over: Partial<TsunamiObservation> = {}): TsunamiObservation => (
 describe('第1波を波高の文へ織り込む', () => {
   // 正: まだ声にしていない第1波は、その地点の句の中で読む（地点名を 2 回読まないため）
   it('第1波が未読なら、波高の句へ織り込む', () => {
-    const t = tsunamiObservationUpdateToText([toyama()], undefined, undefined, new Set<string>(), new Set<string>())
+    const t = tsunamiObservationUpdateToText([toyama()], undefined, undefined, new Set<string>(), new Map<string, string>())
     expect(t).toContain('富山県、富山で、16時13分に引き波が到達し、16時23分に0.5メートルを観測しました。')
   })
 
   // 対照: 既に声にした第1波は織り込まない（二度読まない）
   it('第1波が既読なら織り込まない', () => {
-    const t = tsunamiObservationUpdateToText([toyama()], undefined, undefined, new Set<string>(), new Set(['富山']))
+    const t = tsunamiObservationUpdateToText([toyama()], undefined, undefined, new Set<string>(), new Map([['富山', firstWaveSpokenKey(toyama())!]]))
     expect(t).toContain('富山県、富山で16時23分に0.5メートルを観測しました。')
     expect(t).not.toContain('引き波')
   })
 
+  // 対照: **訂正された第1波は織り込まない。** この句の言い回しは「〜に◯◯波が到達し」で
+  // 初出の形なので、訂正をここへ入れると訂正だと聞き分けられない（訂正は「〜の◯◯波に
+  // 更新されました」という別の文型で読む）。訂正を拾うのは `firstWaveChanged` の側で、
+  // **そちらの除外条件も「初出だけ外す」に揃えてある**（揃えないと訂正がどの文からも落ちる）。
+  it('第1波が訂正されたら織り込まない（専用の文へ回す）', () => {
+    const corrected = toyama({ arrivalTime: AT2 })
+    const t = tsunamiObservationUpdateToText(
+      [corrected], undefined, undefined,
+      new Set(['富山']),
+      // 前に声にしたのは訂正前の内容。
+      new Map([['富山', firstWaveSpokenKey(toyama())!]]),
+    )
+    expect(t).toContain('富山県、富山で16時23分に0.5メートルに更新されました。')
+    expect(t).not.toContain('到達し')
+  })
+
   // 安全弁: 押し引きが無い電文（`Initial` は必須でない）でも到達時刻だけは読む
   it('押し引きが無ければ「第一波」と呼ぶ', () => {
-    const t = tsunamiObservationUpdateToText([toyama({ initial: undefined })], undefined, undefined, new Set<string>(), new Set<string>())
+    const t = tsunamiObservationUpdateToText([toyama({ initial: undefined })], undefined, undefined, new Set<string>(), new Map<string, string>())
     expect(t).toContain('16時13分に第一波が到達し')
   })
 
@@ -56,7 +72,7 @@ describe('第1波を波高の文へ織り込む', () => {
   it('到達時刻が無ければ何も織り込まない', () => {
     const t = tsunamiObservationUpdateToText(
       [toyama({ arrivalTime: undefined, initial: undefined })],
-      undefined, undefined, new Set<string>(), new Set<string>(),
+      undefined, undefined, new Set<string>(), new Map<string, string>(),
     )
     expect(t).toContain('富山県、富山で16時23分に0.5メートルを観測しました。')
     expect(t).not.toContain('到達し')
@@ -64,7 +80,7 @@ describe('第1波を波高の文へ織り込む', () => {
 
   // 安全弁: 押し引きを最大波の句へ混ぜない（別の波の属性なので嘘になる）
   it('最大波の時刻に押し引きを付けない', () => {
-    const t = tsunamiObservationUpdateToText([toyama()], undefined, undefined, new Set<string>(), new Set<string>())
+    const t = tsunamiObservationUpdateToText([toyama()], undefined, undefined, new Set<string>(), new Map<string, string>())
     expect(t).not.toContain('16時23分に引き波')
   })
 })
@@ -92,6 +108,27 @@ describe('到達確認の文にも第1波を添える', () => {
   it('時刻のある地点と無い地点を 1 文に並べる', () => {
     const t = tsunamiArrivalToText([nanao, { name: '岩美町田後', districtCode: '690', districtName: '鳥取県' }])
     expect(t).toContain('石川県能登、七尾港で16時13分に押し波を観測、鳥取県、岩美町田後で到達を確認しました。')
+  })
+
+  // 対照: **織り込むのは初出だけ。** この句の言い回し「〜に押し波を観測」は初出の形なので、
+  // 訂正をここへ入れると訂正だと聞き分けられない。訂正は専用の文が読む。
+  //
+  // **切り分けを波高の文と揃えないと二重読みになる** —— 欠測から復帰した観測点は到達確認の
+  // 既読（観測点名）だけが落ち、第1波の既読は残る。この文が既読を見ずに織り込むと、同じ
+  // 第1波が「〜に押し波を観測」と「〜の押し波に更新されました」の両方で読まれる。
+  it('第1波が既読なら織り込まず、従来の形に戻る', () => {
+    const t = tsunamiArrivalToText([nanao], undefined, new Map([['七尾港', firstWaveSpokenKey(nanao)!]]))
+    expect(t).toBe('石川県能登、七尾港で到達を確認しました。最大波高は観測中です。')
+    expect(t).not.toContain('押し波')
+  })
+
+  // 正: 内容が変わっていれば（訂正）も織り込まない —— 判定は「一度でも声にしたか」で、
+  // 内容の一致は見ない。訂正を読むのは専用の文の役目。
+  it('第1波が訂正されていても織り込まない', () => {
+    const corrected = { ...nanao, arrivalTime: AT2 }
+    const t = tsunamiArrivalToText([corrected], undefined, new Map([['七尾港', firstWaveSpokenKey(nanao)!]]))
+    expect(t).toBe('石川県能登、七尾港で到達を確認しました。最大波高は観測中です。')
+    expect(t).not.toContain('16時35分')
   })
 })
 

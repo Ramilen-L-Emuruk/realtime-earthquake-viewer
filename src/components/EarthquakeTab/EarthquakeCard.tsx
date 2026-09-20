@@ -29,7 +29,8 @@ import { buildAreaPrefIndex, buildRegionOrderIndex, buildStationPrefIndex, looku
 import { isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel, buildIntensityRows, makeAreaPrefResolver, cityKey, type IntensityStationRow, type IntensityRegionRow } from '../../utils/quakePoints'
 import { rowMarkKey, rowMarkOf, type QuakeCardMarks, type QuakeUpdateField } from '../../utils/quakeUpdateMark'
 import { intensityRowsToExpand, lpgmRowsToExpand, mergeAutoExpanded } from '../../utils/autoExpandMarkedRows'
-import { UPDATE_MARK_COLOR, UPDATE_MARK_TITLE, type UpdateStatus } from '../../utils/updateMark'
+import { UPDATE_MARK_COLOR, type UpdateStatus } from '../../utils/updateMark'
+import { UpdateDot } from '../UpdateDot'
 
 import { useStationCoords } from '../../hooks/useStationCoords'
 import { useSubRegions } from '../../hooks/useSubRegions'
@@ -510,28 +511,15 @@ export function EarthquakeCard({
   marks, lpgmMarks,
 }: Props) {
   /**
-   * 印は**文字色**で出す。当てる先はその欄で「色に意味を持たない文字」。
+   * 印は**値の肩に置く点**で出す（→ `components/UpdateDot.tsx`）。文字色も器の色も触らない。
    *
-   * - 震央地名・座標 … 文字そのもの（白・灰）
-   * - 最大震度・規模・深さ … **値の数字**（白）。隣のラベルと枠は階級・段階の色なので触らない
-   * - 津波区分 … **文字が区分の色そのもの**なので塗り替えられない。ここだけ枠で囲む
-   *
-   * 色に意味がある文字を塗り替えると、別の値を指しているように見える（津波カードが波高を
-   * 印の対象から外しているのと同じ理由。→ `utils/updateMark.ts`）。
+   * **どの欄も同じ表し方にする。** 文字色で出していた頃は、文字そのものが区分の色である
+   * 津波区分だけ塗り替えられず枠で囲んでいた。同じ「この報で動いた」を欄によって別の形で
+   * 示すと、読み手は見た目の違いに意味があるのかを考えることになる。
    */
-  const markText = (field: QuakeUpdateField): React.CSSProperties | undefined => {
+  const markDot = (field: QuakeUpdateField, size: 'sm' | 'md' | 'lg' = 'md', className = '') => {
     const status = marks?.facts.get(field)
-    return status ? { color: UPDATE_MARK_COLOR[status] } : undefined
-  }
-  /** 印の意味を言葉でも添える（色を読み取れない利用者向け。→ `UPDATE_MARK_TITLE`）。 */
-  const markTitle = (field: QuakeUpdateField) => {
-    const status = marks?.facts.get(field)
-    return status ? UPDATE_MARK_TITLE[status] : undefined
-  }
-  const markRing = (field: QuakeUpdateField) => {
-    const status = marks?.facts.get(field)
-    // 枠は文字色を触らないので、向きの無い変化でも白のまま出せる。
-    return status ? { outline: `2px solid ${UPDATE_MARK_COLOR[status]}`, outlineOffset: '2px' } : undefined
+    return status ? <UpdateDot status={status} size={size} className={className} /> : null
   }
   /**
    * 行の印。**配下に動いた行があれば親にも出す** —— 一覧は既定でどの段も畳んであるので、
@@ -954,11 +942,11 @@ export function EarthquakeCard({
         <div className="flex flex-col gap-1.5 p-2 roomy:gap-2 roomy:p-3">
           {/* 最大震度（横並び） */}
           <div
-            className="w-full rounded-lg py-1.5 px-3 flex items-center justify-center gap-2 roomy:py-3 roomy:px-5 roomy:gap-4"
+            className="relative w-full rounded-lg py-1.5 px-3 flex items-center justify-center gap-2 roomy:py-3 roomy:px-5 roomy:gap-4"
             style={{
               backgroundColor: getIntensityBgColor(maxScale),
               border: `2px solid ${getIntensityColor(maxScale)}`,
-              // 枠は震度階級の色なので触らない。印は下の白い数字の文字色で出す。
+              // 枠は震度階級の色なので触らない。印は値の肩の点で出す（→ `markDot`）。
             }}
           >
             <span className="text-sm font-medium roomy:text-base" style={{ color: getIntensityColor(maxScale) }}>
@@ -966,7 +954,7 @@ export function EarthquakeCard({
             </span>
             <span
               className="font-black leading-none text-[3.25rem] roomy:text-[5.5rem]"
-              style={{ color: '#ffffff', ...markText('maxScale') }}
+              style={{ color: '#ffffff' }}
             >
               {maxScaleLabel}
               {/* 「以上」は本体より小さく添える（→ `maxScaleOrAbove` の注記）。同じ大きさで
@@ -975,6 +963,9 @@ export function EarthquakeCard({
                 <span className="font-bold text-[1.25rem] roomy:text-[1.75rem]">以上</span>
               )}
             </span>
+            {/* **中央寄せの計算から外す。** 器は `justify-center` なので、印を flex の子として
+                足すと出た瞬間に「最大震度」と数字が印の幅＋隙間のぶん左へずれる。 */}
+            {markDot('maxScale', 'lg', 'absolute right-2 top-2 roomy:right-3 roomy:top-3')}
           </div>
 
           {/* 長周期地震動観測情報（クリックで地図表示トグル）。
@@ -1102,11 +1093,7 @@ export function EarthquakeCard({
           {/* **印は名前を出しているときだけ。** 座標を読めない報では名前の代わりに固定文言
               「震源調査中」が出るので、そこへ印を当てると**文言そのものが新しくなった**ように
               読める（借りた震源で名前はあるのに座標が無い形が実際に起こりうる）。 */}
-          <div
-            className="font-bold text-white leading-tight text-[1.375rem] roomy:text-[1.875rem] rounded"
-            style={hasLocation ? markText('hypocenterName') : undefined}
-            title={hasLocation ? markTitle('hypocenterName') : undefined}
-          >
+          <div className="font-bold text-white leading-tight text-[1.375rem] roomy:text-[1.875rem] rounded">
             {hasLocation ? hypocenter.name : '震源調査中'}
             {/* **「震源調査中」には印を付けない。** 借りた原因地震に震央地名はあるのに座標を
                 読めなかった形（`readHypocenterAreaDetail` が座標を落とす経路）では、名前を出せず
@@ -1115,11 +1102,13 @@ export function EarthquakeCard({
                 **借りた名前が画面に出ないこと自体は別の穴**（この分岐が名前の表示を座標の有無で
                 決めているため）で、今回の変更が作ったものではない。 */}
             {borrowedHypocenter && hasLocation && <BorrowedMark />}
+            {hasLocation && markDot('hypocenterName', 'md', 'align-top ml-1')}
           </div>
           {hasLocation && (
-            <div className="text-xs text-secondary roomy:text-sm" style={markText('coordinate')} title={markTitle('coordinate')}>
+            <div className="text-xs text-secondary roomy:text-sm">
               {formatCoordinate(hypocenter.latitude, hypocenter.longitude)}
               {borrowedHypocenter && <BorrowedMark />}
+              {markDot('coordinate', 'sm', 'align-top ml-1')}
             </div>
           )}
 
@@ -1131,7 +1120,7 @@ export function EarthquakeCard({
                 style={{
                   backgroundColor: `${magColor}26`,
                   border: `2px solid ${magColor}`,
-                  // 枠は器の色（規模の段階）なので触らない。印は下の白い数字の文字色で出す。
+                  // 枠は器の色（規模の段階）なので触らない。印は値の肩の点で出す。
                 }}
               >
                 <span className="text-xs font-medium tracking-wide" style={{ color: magColor }}>
@@ -1143,9 +1132,10 @@ export function EarthquakeCard({
                     「不明」で潰さない）。説明は数値より長いので、そのときだけ字を小さくする。 */}
                 <span
                   className={`font-black leading-none ${hypocenter.magnitudeCondition && !hasMagnitude(hypocenter.magnitude) ? 'text-[0.9375rem] roomy:text-[1.125rem] leading-snug' : 'text-[1.375rem] roomy:text-[1.75rem]'}`}
-                  style={{ color: '#ffffff', ...markText('magnitude') }}
+                  style={{ color: '#ffffff' }}
                 >
                   {formatMagnitudeValue(hypocenter.magnitude, hypocenter.magnitudeCondition)}
+                  {markDot('magnitude', 'md', 'align-top ml-1')}
                 </span>
               </div>
               <div
@@ -1160,8 +1150,9 @@ export function EarthquakeCard({
                   深さ
                   {borrowedHypocenter && <BorrowedMark />}
                 </span>
-                <span className="font-black leading-none text-[1.375rem] roomy:text-[1.75rem]" style={{ color: '#ffffff', ...markText('depth') }}>
+                <span className="font-black leading-none text-[1.375rem] roomy:text-[1.75rem]" style={{ color: '#ffffff' }}>
                   {formatDepth(hypocenter.depth)}
+                  {markDot('depth', 'md', 'align-top ml-1')}
                 </span>
               </div>
             </div>
@@ -1169,17 +1160,20 @@ export function EarthquakeCard({
 
           {/* 国内津波情報。「津波警報等」だけは語に何が含まれるか説明を添える（→ `formatDomesticTsunami`）。 */}
           <div
-            className="w-full rounded-lg py-1 px-3 text-center font-bold text-sm roomy:py-2 roomy:text-base"
+            className="relative w-full rounded-lg py-1 px-3 text-center font-bold text-sm roomy:py-2 roomy:text-base"
             title={domesticTsunami === '警報等' ? TSUNAMI_WARNING_GROUP_TITLE : undefined}
             style={{
               backgroundColor: `${tsunamiInfo.color}22`,
               border: `1px solid ${tsunamiInfo.color}`,
               color: tsunamiInfo.color,
-              ...markRing('domesticTsunami'),
             }}
           >
             {tsunamiInfo.text}
             {borrowedDomesticTsunami && <BorrowedMark />}
+            {/* **この欄も他と同じ肩の印。** 文字が区分の色そのものなので文字色は触れないが、
+                点なら同じ表し方で置ける（枠で囲んでいた頃は、ここだけ別の見た目だった）。
+                最大震度の欄と同じく、中央寄せの計算から外す。 */}
+            {markDot('domesticTsunami', 'sm', 'absolute right-2 top-1/2 -translate-y-1/2')}
           </div>
           {/* 借りた値の説明。**印を付けた欄より後ろへ置く** —— 記号を見てから意味を探すので、
               説明が先にあると「何の話か」が分からないまま読むことになる。 */}
