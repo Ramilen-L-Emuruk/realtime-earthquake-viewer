@@ -1116,8 +1116,10 @@ DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`）が来た場
 2. **続報の最終報**（`!isNew && !levelUpgraded && isFinal`）→ `eewFinal`（穏やかな終了音）
 3. **通常続報**（上記のいずれでもない）→ `eewUpdate`
 
-ただし現状は続報時の音・読み上げの多重発火防止に弱い箇所がある（`useLiveEventHandler.ts` 内の
-5 箇所の setTimeout が未追跡）。
+> **かつてここに「`useLiveEventHandler.ts` 内の 5 箇所の setTimeout が未追跡」と書いていたが、
+> 2026-09-20 に数え直して解消を確かめた。** 状態を跨いで生き続ける予約はすべて ref で追跡し、
+> アンマウント時とリプレイ切替時の両方で `clearTimeout` している
+> （→ [`audio-tts-spec.md`](audio-tts-spec.md) §6「解消済み」）。
 
 ## 10. `activeEEWs` の状態遷移
 
