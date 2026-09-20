@@ -326,9 +326,13 @@ export function JapanMapGL({
   useEffect(() => {
     if (!containerRef.current) return
     // **地図を作れないと、ここで投げる。** MapLibre 6.7.0 からの挙動で、それ以前は誰も
-    // 聞いていない `error` イベントを発火して「描けない Map」を返していた。このアプリに
-    // ErrorBoundary は無いので、捕まえないと地図どころか画面全体が消える（地震情報も通知も
-    // 設定も出せなくなる）。地図だけ諦めて、残りは動かす。
+    // 聞いていない `error` イベントを発火して「描けない Map」を返していた。
+    //
+    // **ここで握るのは、境界へ渡さないため。** 地図には ErrorBoundary が置いてあるので
+    // （docs/spec/architecture-spec.md §4.6）、握り損ねても差し替わるのは地図領域だけ。
+    // それでも自分で捕まえるのは、**原因が判っているぶん伝えられることが多いから** ——
+    // 境界は何が起きたかを知らないので、案内できるのは作り直しか再読み込みだけになる
+    // （握り方の方針は docs/spec/map-rendering-spec.md §12）。
     let m: maplibregl.Map
     try {
       m = new maplibregl.Map({
