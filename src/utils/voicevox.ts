@@ -1,5 +1,6 @@
 import { getAudioContext, getMasterInput, syncKeepAlive } from './alertSound'
 import { findPhraseBreakMatch, getTtsPhraseBreakDictCache, isPlaceNameKey, loadTtsPhraseBreakDict } from './ttsPhraseBreakDict'
+import { CHUNK_BREAK_PUNCTUATION as SHARED_CHUNK_BREAK_PUNCTUATION } from './ttsPunctuation'
 import { leadingParticle, endsWithParticle } from './ttsTrailingParticles'
 import { getTtsStationReadingsCache, loadTtsStationReadings } from './ttsStationReadings'
 import { getTtsEpicenterAccentsCache, loadTtsEpicenterAccents } from './ttsEpicenterAccents'
@@ -439,7 +440,9 @@ export async function fetchVoicevoxSpeakers(baseUrl: string): Promise<VoicevoxSp
 // チャンクの区切りに使う句読点。**分割位置の判定（{@link splitIntoChunks}）と、チャンク末尾に
 // 間を持たせる判定（{@link CHUNK_BREAK_PAUSE}）で同じ集合を使うこと。** 片方だけ増やすと、
 // 増やした文字で割れたのに間が入らないチャンクができる。
-const CHUNK_BREAK_PUNCTUATION = '。、！？'
+// **書き写さない。** 文末とみなす記号（`SENTENCE_END`）との部分集合の関係を保つため、
+// 1 つのモジュールから導出する（理由は `ttsPunctuation.ts`）。
+const CHUNK_BREAK_PUNCTUATION = SHARED_CHUNK_BREAK_PUNCTUATION
 const CHUNK_SPLIT_RE = new RegExp(`(?<=[${CHUNK_BREAK_PUNCTUATION}])`)
 const CHUNK_TAIL_RE = new RegExp(`[${CHUNK_BREAK_PUNCTUATION}]$`)
 
