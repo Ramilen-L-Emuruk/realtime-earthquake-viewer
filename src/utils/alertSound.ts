@@ -995,14 +995,17 @@ const BEEP_PATTERNS: ByBeepLevel<BeepPattern> = [
 /**
  * 音の合成で例外が出ても外へ投げない。**通知音の失敗でアプリを落とさないため。**
  *
- * 呼び出し元（`useKyoshinAlerts` の useEffect・`useLiveEventHandler` のイベント処理・
- * `App` の S 波カウントダウン）はいずれも try/catch を持たず、このアプリには
- * Error Boundary が無い。React 18 は捕捉されない例外でツリー全体をアンマウントする
- * ため、音の不具合ひとつで地図もカードも読み上げも消える。
+ * 呼び出し元はいずれも try/catch を持たない。**Error Boundary は入っている**
+ * （3 層＝根・地図・各タブ。→ docs/spec/architecture-spec.md §4.6）が、それでもこの契約は要る。
  *
- * また `useLiveEventHandler` は通知音を鳴らした**後**にブラウザ通知と読み上げを
- * 出すので、ここで throw すると「音も声も通知も出なかった」という形になる。
- * 音だけを諦めて後続を通す。無音は気づけないので必ず error で残す。
+ * | 呼び出し元 | 境界が受け止めるか |
+ * |---|---|
+ * | `useLiveEventHandler` のイベント処理（WebSocket の受信から同期で走る） | **届かない。** React の境界はイベントハンドラと非同期コードを捕まえない |
+ * | `useKyoshinAlerts` の `useEffect`・`App` の S 波カウントダウン（同じく `useEffect`） | 届くが、**受け止めるのは根の境界＝画面全体が消える**。地図・各タブの境界は `App` が返す JSX の中にいる**子**なので、`App` 自身の effect の祖先になれない（同じ理屈は architecture-spec.md §4.6「`App` 自身のレンダー例外は根でしか拾えない」）。音が鳴らないだけの不具合で全画面を落とすのは釣り合わない |
+ *
+ * **境界と無関係な理由がもう 1 つある。** `useLiveEventHandler` は通知音を鳴らした**後**に
+ * ブラウザ通知と読み上げを出すので、ここで throw すると「音も声も通知も出なかった」という
+ * 形になる。音だけを諦めて後続を通す。無音は気づけないので必ず error で残す。
  */
 function playGuarded(label: string, play: () => void): void {
   try {
@@ -1165,8 +1168,8 @@ export function playKyoshinUpdateSound(maxIndex: number, gainScale = 1): void {
   syncKeepAlive()
   const base = ctx.currentTime + 0.02
   // **再生に関わる計算はガードの内側に置くこと。** 外に出すと、そこで出た例外は
-  // `[sound] ... の再生に失敗` に残らず、Error Boundary を持たないこのアプリでは
-  // 画面全体のアンマウントになる。
+  // `[sound] ... の再生に失敗` に残らず、画面全体がエラー表示に置き換わる
+  // （受け止めるのは根の境界だけ。理由は {@link playGuarded}）。
   playGuarded(`playKyoshinUpdateSound(${maxIndex})`, () => {
     const level = kyoshinLevel(maxIndex)
     const p = BEEP_PATTERNS[level]
