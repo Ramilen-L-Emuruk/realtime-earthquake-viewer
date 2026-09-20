@@ -1,4 +1,4 @@
-import type { JMAQuake, JMAQuakeCity, EarthquakePoint } from '../types/earthquake'
+import type { JMAQuake, JMAQuakeCity, EarthquakePoint, IssueType } from '../types/earthquake'
 import { cityKey } from './quakePoints'
 import { UPDATE_MARK_TTL_MS, statusOf, type SnapshotValue, type UpdateStatus } from './updateMark'
 
@@ -196,30 +196,57 @@ export function quakeRowSnapshot(
 /**
  * 行のスナップショットどうしを突き合わせて、行ごとの印を出す。
  *
- * **その段が初めて現れた報では印を付けない。** 「震度速報 → 各地の震度」の遷移では観測点の行が
- * いっぺんに全部現れる（控え 60 日の実測で中央値 26 行・最大 2,825 行）。そこへ初出の印を
- * 付けると一覧が丸ごと光り、「この報で何が変わったか」を指せなくなる。**段ごとに見る**のは、
- * 段によって初めて現れる報が違うため（区域は震度速報、観測点と市町村は各地の震度）。
+ * **「値が動いたか」と「行が初めて出たか」で、比べる相手を分ける。**
+ *
+ * 値が動いたかは**直前の報**と比べる。気象庁が震度を引き上げた事実は、報の種別が変わっても
+ * 伝える価値があるため。
+ *
+ * 行が初めて出たかは**同じ情報種別で前に見た報**と比べる。気象庁は同じ地震について載せる範囲の
+ * 違う電文を発表する —— 震度速報は震度3以上の区域しか載せず、震源・震度情報は震度1以上の全区域を
+ * 載せる。種別をまたいで比べると区域と県が一斉に増え、それが「初出」として光る（能登本震の実電文で
+ * 33 県 75 区域 → 44 県 118 区域。11 県・43 区域が該当）。**それは新しく揺れが観測されたのでは
+ * なく、報の粒度が変わっただけ。**
+ *
+ * **初出の判定に「直前の報の種別」を使ってはいけない。** 気象庁は種別を前後させる ——
+ * 2024-01-01 16:06 の前震では震度速報（16:07）→ 震源情報 → 震度速報（16:08）の順で届く。
+ * 「直前と種別が違えば初出を出さない」という形にすると、**震度速報どうしの続報が種別の変わり目と
+ * して扱われ**、その報で本当に増えた区域（新潟県佐渡）の印まで消える。種別ごとに写しを持つのは
+ * このため（→ {@link QuakeMarkMemory}）。
+ *
+ * **その種別を初めて見た報では初出を出さない**（`prevSameType` が無い）。比べる相手が無いので、
+ * 増えた行はすべて初出に見える。
+ *
+ * **段が初めて現れた報でも印を付けない。** 「震度速報 → 各地の震度」では観測点の行がいっぺんに
+ * 全部現れる（控え 60 日の実測で中央値 26 行・最大 2,825 行）。種別ごとに比べるようになって
+ * 重なる場面が増えたが、**同じ種別のまま段が増える経路も残る**ので置いたままにする —— 市町村に
+ * 紐づかない観測点しか持たない報のあとに市町村付きの報が来る形（`points` の振り分けは電文の
+ * 入れ子で決まる）がそれにあたる。
  *
  * 2 通目以降は素直に差分を出す。実測では観測点の行のうち印が付くのは中央値 3.2% だった。
  */
 export function diffQuakeRows(
   cur: RowSnapshot,
+  /** 直前の報の写し（種別を問わない）。**値が動いたか**はこれと比べる。 */
   prev: RowSnapshot | undefined,
+  /** 同じ情報種別で前に見た写し。**行が初めて出たか**はこれと比べる。 */
+  prevSameType: RowSnapshot | undefined,
 ): Map<string, UpdateStatus> {
   const out = new Map<string, UpdateStatus>()
-  if (!prev) return out
+  // 段の既出は**同じ種別の写し**で見る。種別をまたぐと段の顔ぶれが変わるため。
   const seenKinds = new Set<string>()
-  for (const key of prev.keys()) seenKinds.add(kindOf(key))
+  for (const key of prevSameType?.keys() ?? []) seenKinds.add(kindOf(key))
   for (const [key, value] of cur) {
-    const before = prev.get(key)
-    if (before === undefined) {
-      if (!seenKinds.has(kindOf(key))) continue
-      out.set(key, 'new')
+    const before = prev?.get(key)
+    if (before !== undefined) {
+      const status = statusOf(before, value)
+      if (status) out.set(key, status)
       continue
     }
-    const status = statusOf(before, value)
-    if (status) out.set(key, status)
+    // 直前の報に無い行。**初出と言えるのは、同じ種別の写しにも無いときだけ。**
+    if (!prevSameType) continue
+    if (prevSameType.has(key)) continue
+    if (!seenKinds.has(kindOf(key))) continue
+    out.set(key, 'new')
   }
   return out
 }
@@ -279,11 +306,66 @@ export interface QuakeCardMarks {
   markedAt: number
 }
 
-/** 次の報と突き合わせるための、いまカードが見せている値の写し。 */
-export interface QuakeMarkMemory {
+/** 1 通ぶんの写し（`advanceQuakeMarks` へ渡す入力）。 */
+export interface QuakeMarkSnapshot {
   facts: QuakeFactSnapshot
   rows: RowSnapshot
+  /**
+   * その報の情報種別。**行の写しをこの単位で持つ**（→ {@link QuakeMarkMemory}）。
+   *
+   * **`headType` ではなく `issue.type` を見る。** 知りたいのは「載せる範囲が同じか」で、
+   * 種別の名前が同じなら範囲も同じ。`resolveIssueType` が未知の `headType` を
+   * `'震源・震度情報'` へ落とす点は、ここでは「未知の種別どうしを同じ範囲とみなす」に留まる。
+   */
+  reportType: MarkReportType
 }
+
+/** 次の報と突き合わせるための、いまカードが見せている値の写し。 */
+export interface QuakeMarkMemory {
+  /**
+   * 震源要素・最大震度。**種別で分けない** —— 欄の顔ぶれはどの種別でも同じで、
+   * 震源要素更新（VXSE61）のように必ず種別が変わる報でも値の変化を伝えたいため。
+   */
+  facts: QuakeFactSnapshot
+  /** 直前の報の行。**値が動いたか**はこれと比べる（種別を問わない）。 */
+  rows: RowSnapshot
+  /**
+   * **情報種別ごとの行の写し。行が初めて出たかはこれと比べる。** 種別をまたいで比べると、
+   * 報の粒度の違い（震度速報は震度3以上の区域まで・震源・震度情報は震度1以上の観測点まで）が
+   * 「初出」として光る。
+   *
+   * **「直前の報の種別」を覚える形では足りない。** 気象庁は種別を前後させるので
+   * （震度速報 → 震源情報 → 震度速報）、直前と比べると**震度速報どうしの続報が種別の
+   * 変わり目に見え**、その報で本当に増えた区域の印まで消える（2024-01-01 16:06 の前震で実際に
+   * そうなった）。種別ごとに持てば、いつでも「同じ範囲を載せる報どうし」を比べられる。
+   *
+   * **種別数に上限を置かない。** 鍵の値域は {@link MarkReportType} が定める 8 値で、
+   * 型として有限なので溜まりようがない。**上限は「持ち物が膨らむこと」の代理値**で、
+   * 実際に効くのはカードの枚数（`liveKeys` に無い地震の記憶は捨てる）。上限を置いていた頃は
+   * 「震度速報 → 震源情報 → 震源・震度情報 → 各地の震度情報」というありふれた遷移で
+   * 最初の種別が追い出され、**その種別が再び届いたとき初出の印が出なかった**。
+   *
+   * **どの種別の写しも大きくなりうる。** 写す先は電文ではなく**併合後のカード**なので、
+   * その報自体が観測点を運ばない種別（震源情報・顕著な地震の震源要素更新）でも、先行する報が
+   * 積んだ点をそのまま引き継いだ状態が写る（→ §6.4 の持ち越し規則）。空になるのは、その種別が
+   * そのカードで最初の報だったときだけ。
+   *
+   * それでも溜まらないのは、**種別の数が型で有限**（高々 8）で、**カードの数にも上限がある**から
+   * （{@link MARK_MEMORY_MAX_ENTRIES}）。能登本震の各地の震度情報で 2,829 行という大きさは、
+   * この 2 つの上限の内側に収まる。
+   */
+  rowsByType: ReadonlyMap<MarkReportType, RowSnapshot>
+}
+
+/**
+ * 写しを作った報の種別。地震カードは情報種別をそのまま使い、長周期地震動は
+ * 1 種類しか無いので専用の値を置く。
+ *
+ * **長周期を `IssueType` のどれかで代用しない。** 地震カードと長周期は同じ入れ物
+ * （`quakeMarkMemory`）に鍵を分けて同居するので、代用すると「種別が変わった」の意味が
+ * 2 つの一覧で違ってしまう。
+ */
+export type MarkReportType = IssueType | 'lpgm'
 
 /**
  * 1 通ぶん、記憶を進めて印を出す。**純関数** —— 状態の更新関数の中から呼ぶので、
@@ -301,7 +383,7 @@ export function advanceQuakeMarks(args: {
   /** 印を付ける対象の地震（`quakeEventKey`）。 */
   key: string
   /** 併合後のカードから作った写し。 */
-  snapshot: QuakeMarkMemory
+  snapshot: QuakeMarkSnapshot
   /** いま一覧に残っているカードの鍵。これ以外の記憶と印は捨てる。 */
   liveKeys: ReadonlySet<string>
   now: number
@@ -309,11 +391,20 @@ export function advanceQuakeMarks(args: {
   const { prev, key, snapshot, liveKeys, now } = args
   const before = prev.memory.get(key)
   const facts = changedQuakeFacts(snapshot.facts, before?.facts)
-  const rows = diffQuakeRows(snapshot.rows, before?.rows)
+  // 欄（`facts`）は種別をまたいでも差分を取る。**震源要素更新（VXSE61）は必ず種別が変わる報**
+  // なので、ここまで種別で止めると座標・深さが動いた印が出なくなる。
+  //
+  // 行は**値の変化を直前の報と、初出を同じ種別で前に見た報と**比べる（→ `diffQuakeRows`）。
+  const rows = diffQuakeRows(snapshot.rows, before?.rows, before?.rowsByType.get(snapshot.reportType))
+
+  // 種別ごとの写しを進める。**捨てない** —— 鍵の値域は有限で、溜まりようがない
+  // （→ `QuakeMarkMemory.rowsByType`）。
+  const rowsByType = new Map<MarkReportType, RowSnapshot>(before?.rowsByType ?? [])
+  rowsByType.set(snapshot.reportType, snapshot.rows)
 
   const memory = new Map<string, QuakeMarkMemory>()
   for (const [k, v] of prev.memory) if (liveKeys.has(k) && k !== key) memory.set(k, v)
-  memory.set(key, snapshot)
+  memory.set(key, { facts: snapshot.facts, rows: snapshot.rows, rowsByType })
   // **持ち回る数に上限を置く。** `liveKeys` はカード一覧の件数までしか絞らず、その一覧に
   // 件数の上限が無い。観測点の写しは大きい地震で数千件になるので、群発で長く動かしていると
   // 積み上がる。`Map` は挿入順を保ち、上でいま触った鍵を末尾へ置き直しているので、

@@ -1028,6 +1028,42 @@ describe('津波観測情報の読み上げ: 新規と更新の言い分け', ()
     expect(text).not.toContain('更新')
   })
 
+  // 最大波の観測時刻を添えるかどうか。**前に声にしたものと変わったときだけ**添える
+  // （波高だけが上がった報で同じ時刻を言い直していた）。
+  describe('最大波の観測時刻', () => {
+    const withTime = (o: TsunamiObservation, dt: string): TsunamiObservation => ({ ...o, maxHeightDateTime: dt })
+    const T1 = '2024-01-01T16:23:00+09:00'
+    const T2 = '2024-01-01T16:41:00+09:00'
+
+    // 正: 前に声にした時刻と違えば添える（聞き手はその時刻をまだ知らない）
+    it('前に声にした時刻と違えば添える', () => {
+      const text = tsunamiObservationUpdateToText(
+        [withTime(OFUNATO, T2)], undefined, undefined,
+        new Set(['大船渡']), new Map<string, string>(), new Map([['大船渡', T1]]),
+      )
+      expect(text).toContain('16時41分に3.0メートルに更新されました。')
+    })
+
+    // 対照: **波高だけが上がって時刻が据え置きなら添えない。**
+    it('時刻が前と同じなら添えない', () => {
+      const text = tsunamiObservationUpdateToText(
+        [withTime(OFUNATO, T1)], undefined, undefined,
+        new Set(['大船渡']), new Map<string, string>(), new Map([['大船渡', T1]]),
+      )
+      expect(text).toContain('大船渡で3.0メートルに更新されました。')
+      expect(text).not.toContain('16時23分')
+    })
+
+    // 安全弁: 記憶が無い（その地点の時刻をまだ一度も声にしていない）なら添える
+    it('記憶が無ければ添える', () => {
+      const text = tsunamiObservationUpdateToText(
+        [withTime(MIYAKO, T1)], undefined, undefined,
+        new Set<string>(), new Map<string, string>(), new Map<string, string>(),
+      )
+      expect(text).toContain('16時23分に1.2メートルを観測しました。')
+    })
+  })
+
   // 正: 読む順は渡された並び（呼び出し側がカードの並びで渡す）。深刻な順に読み直さない。
   // 読み直すとカード上を上下に往復する（→ docs/spec/tsunami-spec.md §9）
   it('読む順は渡された並びのまま（深刻な順に読み直さない）', () => {

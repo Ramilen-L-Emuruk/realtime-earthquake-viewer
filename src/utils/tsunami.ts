@@ -1246,6 +1246,26 @@ export function hasObservedHeightChanged(
 }
 
 /**
+ * 記憶した波高より上がったか。
+ *
+ * **波高更新の読み上げ・カードの印・欠測のまま値だけ上がった続報の検出で同じ述語を使うこと。**
+ * 別々に書くと、片方だけ「以上」への昇格を見落とすなどして黙って食い違う。
+ *
+ * 向きを問わない {@link hasObservedHeightChanged} とは対で、あちらは地図のカメラが使う。
+ */
+export function hasObservedHeightRisen(
+  obs: { name: string; height?: ObservedHeightRank },
+  spoken: ReadonlyMap<string, { value: number; over?: boolean }>,
+): boolean {
+  if (!obs.height) return false
+  const prev = spoken.get(obs.name)
+  if (prev === undefined) return true
+  if (obs.height.value > prev.value) return true
+  // 同値でも over フラグへの昇格（センサー上限超過）は伝える価値がある
+  return !!obs.height.over && !prev.over && obs.height.value >= prev.value
+}
+
+/**
  * 気象庁が「最大波の観測時刻を更新した」と言っていて、その時刻がまだ見ていないものか。
  *
  * **判定は電文が直接言っているもの（`MaxHeight/Revise` = 更新）を見る。** 時刻の比較だけで
@@ -1273,11 +1293,13 @@ export function hasMaxHeightTimeAdvanced(
 /**
  * カードで「この項目が動いた」と示せる欄。
  *
- * **波高は含めない。** 右の大きな数字は等級の色（`GradeStyle.heightColor`）で塗ってあり、
- * 色を変えると等級の意味と衝突する。そもそも波高が動いた報では数字そのものが変わるので、
- * 行の左端の縦線だけで足りる —— **印が要るのは、見た目が変わらない時刻の方**。
+ * **波高も含める。** 区域に紐づく行の波高の既定色を白へ変えたので、
+ * 等級の色で塗ってある数字にも同じ印を当てられる（文字色で出していた頃は、色が衝突する
+ * 波高だけ対象から外していた）。波高が動いた報では数字そのものも変わるが、**どの項目が
+ * 動いたかを 1 つの語彙で示せることの方が大きい** —— 行に時刻・波高・第1波が並ぶので、
+ * 縦線だけでは「この行の何が」が読み取れない。
  */
-export type ObsUpdateField = 'maxHeightTime' | 'firstWave'
+export type ObsUpdateField = 'maxHeightTime' | 'firstWave' | 'height'
 
 /**
  * 観測点ごとの更新の印。色と 2 段構えの考え方は `utils/updateMark.ts` が単一情報源。
@@ -1295,14 +1317,25 @@ export type ObsUpdateMark = UpdateMark<ObsUpdateField>
  * いけない —— 上位の読み上げに待たされて見送られた報でも、画面には届いているため。
  */
 export function changedObservationFields(
-  obs: { maxHeightRevise?: string; maxHeightDateTime?: string; arrivalTime?: string; initial?: string },
+  obs: {
+    name: string
+    height?: ObservedHeightRank
+    maxHeightRevise?: string
+    maxHeightDateTime?: string
+    arrivalTime?: string
+    initial?: string
+  },
   prevMaxHeightTime: string | undefined,
   prevFirstWave: string | undefined,
+  prevHeights: ReadonlyMap<string, { value: number; over?: boolean }>,
 ): Set<ObsUpdateField> {
   const fields = new Set<ObsUpdateField>()
   if (hasMaxHeightTimeAdvanced(obs, prevMaxHeightTime)) fields.add('maxHeightTime')
   const firstWave = firstWaveSpokenKey(obs)
   if (firstWave && firstWave !== prevFirstWave) fields.add('firstWave')
+  // **波高は「深刻になったか」で見る**（→ {@link hasObservedHeightRisen}）。記憶が高水位マーク式
+  // なのと対で、下方修正では印を付けない。向きを問わず拾うのは地図のカメラだけ。
+  if (hasObservedHeightRisen(obs, prevHeights)) fields.add('height')
   return fields
 }
 

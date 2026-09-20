@@ -1409,6 +1409,8 @@ export function useEarthquakes(
             snapshot: {
               facts: quakeFactSnapshot(settled),
               rows: quakeRowSnapshot(settled.points, settled.cities ?? []),
+              // 種別が変わった報では行の初出に印を付けない（→ `diffQuakeRows`）。
+              reportType: settled.issue.type,
             },
             // **長周期の鍵も数える。** 地震の鍵だけを渡すと、地震を 1 通受けただけで
             // 長周期の記憶が丸ごと捨てられ、その次の長周期の続報が初報として扱われる。
@@ -1608,6 +1610,8 @@ export function useEarthquakes(
                 // 長周期は震源要素の欄を持たない（震源はカードの地震情報側が出す）。
                 facts: new Map(),
                 rows: lpgmRowSnapshot(lpgm.regions ?? [], lpgm.points ?? [], lpgm.prefs ?? []),
+                // 長周期地震動観測情報は 1 種類しか無いので、種別が変わることがない。
+                reportType: 'lpgm',
               },
               liveKeys: liveMarkKeys(prev.earthquakes, next),
               now: Date.now(),
@@ -2385,7 +2389,7 @@ export function useEarthquakes(
    *
    * **通知音だけが鳴って何も声にならなかった報を、実機で確かめる唯一の入口。**
    * 2024 年能登半島地震の 26 時間では、取消を除く津波電文 56 通のうち 7 通がこの形だった
-   * （→ docs/spec/tsunami-spec.md §10「変化を伝えない続報」）。発表 → 9 通の続報 → 満了で解除、
+   * （→ docs/spec/tsunami-spec.md §10「変化を伝えない続報」）。発表 → 10 通の続報 → 満了で解除、
    * と進む。
    *
    * | 段 | 報 | 確かめるもの |
@@ -2394,11 +2398,12 @@ export function useEarthquakes(
    * | 2 | 観測情報 | 波高の値は据え置きで「○m以上」だけが付いた報。読み上げ・バッジ・地図のカメラが揃って動く |
    * | 3 | 観測情報 | 「次の地点で最大波の観測時刻が更新されました」 |
    * | 4 | 観測情報 | 「次の地点で第1波が更新されました」（到達時刻の訂正。→ `createTestTsunamiFirstWaveUpdate`） |
-   * | 5 | 観測情報 | 「観測された波高に変わりはありません」 |
-   * | 6 | 満潮時刻 | 名乗りだけ（初報） |
-   * | 7 | 満潮時刻 | 「満潮時刻が更新されました」 |
-   * | 8 | 満潮時刻 | 「津波の到達状況が更新されました」 |
-   * | 9 | 満潮時刻 | 「内容に変わりはありません」 |
+   * | 5 | 沖合の観測情報 | 沖合の観測点の最大波の観測時刻が動く。**カードの沖合の行に印が出るのはここだけ** |
+   * | 6 | 観測情報 | 「観測された波高に変わりはありません」 |
+   * | 7 | 満潮時刻 | 名乗りだけ（初報） |
+   * | 8 | 満潮時刻 | 「満潮時刻が更新されました」 |
+   * | 9 | 満潮時刻 | 「津波の到達状況が更新されました」 |
+   * | 10 | 満潮時刻 | 「内容に変わりはありません」 |
    *
    * **間隔は読み上げが終わる程度に空ける**（`TEST_TSUNAMI_QUIET_STEP_MS`）。これらは最下位の層で
    * 読むので、前の発話が続いていると待たされ、待ちきれなければ黙る。
@@ -2407,6 +2412,7 @@ export function useEarthquakes(
     const {
       createTestTsunami, createTestTsunamiObservationReport, createTestTsunamiObservationOverUpgrade,
       createTestTsunamiMaxHeightTimeUpdate, createTestTsunamiFirstWaveUpdate,
+      createTestTsunamiOffshoreMaxHeightTimeUpdate,
       createTestTsunamiObservationNoChange, createTestTsunamiHighTide, createTestTsunamiHighTideFollowUp,
       TEST_TSUNAMI_QUIET_STEP_MS, TEST_TSUNAMI_QUIET_TAIL_MS,
     } = await loadTestData()
@@ -2421,6 +2427,7 @@ export function useEarthquakes(
       createTestTsunamiObservationOverUpgrade,
       createTestTsunamiMaxHeightTimeUpdate,
       createTestTsunamiFirstWaveUpdate,
+      createTestTsunamiOffshoreMaxHeightTimeUpdate,
       createTestTsunamiObservationNoChange,
       prev => createTestTsunamiHighTide(base, prev),
       prev => createTestTsunamiHighTideFollowUp(prev, 'tide'),
