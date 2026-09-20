@@ -2,6 +2,7 @@ import type { LiveEvent, EEWAlert, JMAQuake, JMATsunami, JMANankai, JMANankaiCom
 import { eewNoForecastReason, canPresentLpgmClass, type EewMaxScaleInfo } from './eew'
 import { getIntensityLabel, getIntensityLabelWithApproxAbove } from './intensity'
 import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, hasForecastHeight, compareObservedHeightDesc, overSuffixedHeight, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, TSUNAMI_GRADE_LIFTED, type TsunamiAreaGradeChange, type TideReportChange } from './tsunami'
+import { SENTENCE_END, SENTENCE_END_RE } from './ttsPunctuation'
 import { joinSegments, plain, type SpeechSegment, type SpeechRef, type QuakeFact, type SpokenObservation } from './ttsFollow'
 import { getSubRegionsCache } from './subregions'
 import { getPrefecturesCache } from './prefectures'
@@ -1086,8 +1087,9 @@ function cancelReasonSentence(cancelText: string | undefined, staysOnScreen = tr
     log.info(`[tts] 取消しの概要が長いため読み上げを省きました（${text.length}文字。${where}）`)
     return ''
   }
-  // 電文の本文は句点で終わることが多いが、終わっていなければ足す（次の文と繋がって聞こえないため）
-  return /[。．]$/.test(text) ? text : `${text}。`
+  // 電文の本文は句点で終わることが多いが、終わっていなければ足す（次の文と繋がって
+  // 聞こえないため）。**述語は 5 箇所で共有する**（→ {@link endTelegramSentence}）。
+  return endTelegramSentence(text)
 }
 
 /**
@@ -1824,9 +1826,9 @@ function buildEarthquakeSegments(
     // 付加文の原文を優先する。遠地地震は 022x/023x 系の付加文を併用するため、
     // domesticTsunami（021x 系の区分）へ丸めると意味が落ちる。
     // 原文を持たない経路（P2PQuake）は従来どおり区分から文を起こす。
-    const tail = event.forecastText
-      ? plain(event.forecastText)
-      : domesticTsunamiSegment(domesticTsunami)
+    // **空白だけの付加文もここで区分側へ倒れる**（{@link endTelegramSentence} が空を返す）。
+    const forecast = endTelegramSentence(event.forecastText)
+    const tail = forecast ? plain(forecast) : domesticTsunamiSegment(domesticTsunami)
     // 時刻が日時として読めなければ句ごと落とす（上の地震情報と同じ扱い）。
     const dayTime = formatDayTime(event.earthquake.time)
     return [
@@ -2575,13 +2577,9 @@ export function tsunamiObservationUpdateToSegments(
   // 選抜した分を**入力の並びに戻して**読む（並びの根拠は上の説明）。
   const chosen = new Set(selected)
   const inReadingOrder = obs.filter(o => chosen.has(o))
-  // headline の全角数字・全角ｍ・全角ピリオドを半角に変換して VOICEVOX の誤読を防ぐ。
-  // **日時のゼロ埋めと「1日」の読みもここで直す** —— 見出し文は気象庁が書いた文で、
-  // 半角にしただけでは `01日` が残り、合成エンジンが先頭の 0 を桁として読む（「ぜろ いちにち」）。
-  // 句区切り辞書の `1日`（→ ついたち）も、直前が数字だと当たらない。
-  const headlinePart = headline?.trim()
-    ? normalizeDateTimeForSpeech(tsunamiHeightToSpeech(headline.trim()))
-    : ''
+  // 見出し文の前処理は満潮時刻の報と共有する（→ {@link speakableHeadline}）。
+  // **末尾の句点もそこで足る** —— 直後に観測点の文が続くので、無いと 1 文に聞こえる。
+  const headlinePart = speakableHeadline(headline)
   // **選抜した結果を分けるだけ。** 群ごとに選抜し直すと上限が実質 2 倍になり、既読を記録する側
   // （`selectObservationUpdatesToSpeak` を使う）と読み上げた集合が食い違う。
   const raised = inReadingOrder.filter(o => spokenHeights?.has(o.name) ?? false)
@@ -2895,10 +2893,10 @@ export function tsunamiTideToSegments(
   headline?: string,
 ): SpeechSegment[] {
   // 見出し文は気象庁が書いた文なので、日時のゼロ埋めと全角の単位を読み上げ向きへ直してから使う
-  // （観測情報の見出しと同じ前処理。2 か所に分けない）。
-  const headlinePart = headline?.trim()
-    ? normalizeDateTimeForSpeech(tsunamiHeightToSpeech(headline.trim()))
-    : TIDE_REPORT_FALLBACK_HEADLINE
+  // （観測情報の見出しと同じ前処理。2 か所に分けない → {@link speakableHeadline}）。
+  // **末尾の句点を落とさない** —— 下の `tail` が直に続くので、無いと 1 つの文に聞こえる
+  // （{@link endTelegramSentence}。断片へ分けても同じで、逃げ道は無い）。
+  const headlinePart = speakableHeadline(headline) || TIDE_REPORT_FALLBACK_HEADLINE
   const tail = change === 'tide' ? '満潮時刻が更新されました。'
     : change === 'arrival' ? '津波の到達状況が更新されました。'
     : change === 'none' ? '内容に変わりはありません。'
@@ -3125,8 +3123,10 @@ function formatCountSpanForSpeech(startTime: string, endTime: string): string {
 
 /** 北海道・三陸沖後発地震注意情報（VYSE60）の読み上げテキストを生成する。 */
 export function kohatsuToText(event: JMAKohatsu): string {
-  const headline = event.headline.replace(/北海道・三陸沖後発地震注意情報/g, '')
-  return `北海道・三陸沖後発地震注意情報。${headline ? headline + '。' : ''}今後、大規模地震の発生可能性が平常時より高まっています。防災対応の確認をしてください。`
+  // **句点は無条件に足さない** —— 気象庁の見出し文は句点で終わることが多く、
+  // 重ねると「。。」になる（→ {@link endTelegramSentence}）。
+  const headline = endTelegramSentence(event.headline.replace(/北海道・三陸沖後発地震注意情報/g, ''))
+  return `北海道・三陸沖後発地震注意情報。${headline}今後、大規模地震の発生可能性が平常時より高まっています。防災対応の確認をしてください。`
 }
 
 // 一次細分区域名のリストのうち、県内全区域が同じ階級で揃っているものを「〇〇県」1件にまとめる。
@@ -3542,13 +3542,82 @@ function normalizeDateTimeForSpeech(text: string): string {
   return speakableDayInText(halfWidth)
 }
 
+/**
+ * 気象庁が書いた文を読み上げへ差し込むときに、末尾へ句点を足す。
+ *
+ * **電文の文が句点で終わるとは限らない。** 控えにある 5 日分の電文では、見出し文 505 件のうち
+ * 29 件が句点以外で終わっていた（緊急地震速報 27・地震・津波に関するお知らせ 1・長周期地震動
+ * 観測情報 1。いずれも「…石川西方沖で地震　北陸で強い揺れ」のように体言で切る）。**そのどれも
+ * 読み上げで見出し文を使わない種別**なので、いま声になる経路では観測できていない ―― 手当ては
+ * 「壊れているから」ではなく「気象庁が句点を保証していないから」置く。
+ *
+ * 足さずに繋ぐと**後ろに続く文との間が丸ごと消える**。各地の満潮時刻の見出し文で実測すると、
+ * 句点があれば「…お知らせします」の後ろに **0.355 秒**の間が入り、無ければ 0 になる
+ * （句数 11・核の位置はどちらも同じ）。**読みも句割りも正常なので、誤読の突き合わせにも
+ * 句割りの判定にも掛からない** —— 崩れるのは間だけ。読点でも同じ 0.355 秒が入るので、
+ * 読点と句点のどちらで継ぐかは音に影響しない（→ docs/spec/tts-sentence-inventory.md §5）。
+ *
+ * 直後に文が来るのは津波観測情報（観測点の文）と各地の満潮時刻（「満潮時刻が更新されました。」）。
+ * **断片列（{@link SpeechSegment}）に分けても逃げられない** —— 合成へ渡る前に
+ * {@link joinSegments} が区切り文字なしで 1 本の文字列へ潰すので、チャンクを割る側が見るのは
+ * 繋がった文字列だけ。**2 つとも同じように間が消える。**
+ *
+ * **気象庁が書いた文を読み上げへ差し込む箇所は、すべてこの述語を通すこと。** 5 箇所あり
+ * （取消の理由・遠地地震の付加文・津波観測情報の見出し文・各地の満潮時刻の見出し文・
+ * 後発地震注意情報の見出し文）、かつては「条件付きで足す」「何もしない」「無条件に足す」の
+ * 3 通りに分かれていた（→ docs/spec/tts-sentence-inventory.md §4-8）。無条件に足す形は
+ * 句点で終わる文を「。。」にする。
+ *
+ * **文末とみなす記号を独自に決めないこと。** {@link SENTENCE_END} から組む。この述語が
+ * 「もう終わっている」と判断した文字は、**下流の 2 つも同じ判断をしていなければならない**
+ * （集合の関係そのものは `ttsPunctuation.ts` が持つ）。
+ *
+ * | 下流 | 揃っていないと |
+ * |---|---|
+ * | `ttsPunctuation.ts` の `CHUNK_BREAK_PUNCTUATION`（チャンクを割る文字） | **チャンクが割れず、この関数が入れようとした 0.355 秒の間がそのまま消える** ―― 直そうとした症状に戻る |
+ * | {@link SENTENCE_END}（既読の単位へ割る文字） | 2 つのブロックが 1 つの既読単位へ融合する。片方だけ変わった続報で鍵ごと未読へ戻り、**既に読んだ分まで読み直す** |
+ *
+ * **`．`（全角ピリオド）を入れてはいけない。** 下流のどちらも見ていないため、上の 2 つが
+ * 同時に起きる。割る側へ足して揃える手も無い ―― `Ｍ７．１` が文の切れ目になる。
+ * **この関数の前身（`cancelReasonSentence` の `／[。．]$／`）が `．` を受け入れており、
+ * そこから引き写したのが誤りの発端だった。** 揃いは
+ * `ttsText.telegramSentenceEnd.test.ts` の安全弁が公開 API 越しに固定している。
+ */
+function endTelegramSentence(text: string | undefined): string {
+  const trimmed = text?.trim() ?? ''
+  if (!trimmed) return ''
+  return SENTENCE_END_RE.test(trimmed) ? trimmed : `${trimmed}。`
+}
+
+
+/**
+ * 津波電文の見出し文を読み上げ向きへ整える。
+ *
+ * 全角数字・全角ｍ・全角ピリオドを半角へ直し（{@link tsunamiHeightToSpeech}）、日時のゼロ埋めと
+ * 「1日」の読みを直し（{@link normalizeDateTimeForSpeech}）、末尾へ句点を足す
+ * （{@link endTelegramSentence}）。半角にしただけでは `01日` が残り、合成エンジンが先頭の 0 を
+ * 桁として読む（「ぜろ いちにち」）。句区切り辞書の `1日`（→ ついたち）も、直前が数字だと当たらない。
+ *
+ * **式を書き写さないこと。** かつて津波観測情報と各地の満潮時刻に同じ式が並んでおり、
+ * **どちらにも句点の手当てが入っていなかった**。1 つにまとめてあれば、新しい箇所もここを
+ * 呼ぶだけで揃う（書き写しの再発は `ttsText.telegramSentenceEnd.test.ts` が落とす）。
+ *
+ * **空白だけの見出し文は空を返す**（呼び出し側のフォールバックへ倒れる）。実電文の経路では
+ * 起きないが、手で組んだテストデータでは起こせる。
+ */
+function speakableHeadline(headline: string | undefined): string {
+  const trimmed = headline?.trim()
+  if (!trimmed) return ''
+  return endTelegramSentence(normalizeDateTimeForSpeech(tsunamiHeightToSpeech(trimmed)))
+}
+
 function normalizeTelegramTextForSpeech(text: string, reads: TelegramBoilerplateReads): string {
   return normalizeDateTimeForSpeech(stripUrlsForSpeech(stripBoilerplate(text, reads)))
     .replace(LPGM_CLASS_TABLE_RE, '$1 $2')
     .replace(/[\r\n\u3000\t]+/g, ' ')
     .replace(/ {2,}/g, ' ')
     // 括弧ごと落とした跡に残る「〜 、」「〜 。」を詰める。句読点の顔ぶれは
-    // `voicevox.ts` の `CHUNK_BREAK_PUNCTUATION`（チャンクを割る文字）と揃えておく
+    // `ttsPunctuation.ts` の `CHUNK_BREAK_PUNCTUATION`（チャンクを割る文字）と揃えておく
     .replace(/\s+([\u3001\u3002\uff01\uff1f\u300d\uff09)])/g, '$1')
     .trim()
 }
@@ -3576,7 +3645,11 @@ function stripUrlsForSpeech(text: string): string {
     .replace(/https?:\/\/[^\s\uff08\uff09()\u3001\u3002\uff01\uff1f\u300d\u300f\u3015]+/g, '')
 }
 
-/** 空でないものだけを句点区切りで繋ぐ。既に句点で終わっているものは重ねない。 */
+/**
+ * 空でないものだけを句点区切りで繋ぐ。既に句点で終わっているものは重ねない。
+ *
+ * 句点を足す述語は上の 5 箇所と共有する（→ {@link endTelegramSentence}）。
+ */
 function joinTelegramTexts(
   parts: readonly (string | undefined)[],
   reads: TelegramBoilerplateReads,
@@ -3585,7 +3658,7 @@ function joinTelegramTexts(
     .map(t => (t ? normalizeTelegramTextForSpeech(t, reads) : ''))
     .filter(t => t.length > 0)
   if (kept.length === 0) return ''
-  return kept.map(t => (/[。！？]$/.test(t) ? t : `${t}。`)).join('')
+  return kept.map(t => endTelegramSentence(t)).join('')
 }
 
 /**
@@ -3601,9 +3674,6 @@ export interface TelegramTextUnit {
   /** 読み上げに使う形（後ろに続く空白まで含む。すべて繋ぐと元の本文に戻る）。 */
   readonly text: string
 }
-
-/** 文の終わりとみなす記号。`joinTelegramTexts` がブロックの末尾に足す「。」と揃える。 */
-const SENTENCE_END = new Set(['。', '！', '？'])
 
 /**
  * 気象庁が書いた文を、既読と照合できる単位（文）へ割る。
