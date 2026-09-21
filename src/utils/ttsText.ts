@@ -2315,7 +2315,8 @@ export function tsunamiDowngradeToText(
  *
  * **動いた区域だけを挙げ、残っている区域は語らない。** この報で聞き手が知りたいのは自分の
  * 地域が変わったかどうかで、発表中の区域の全体像はカードが示す。全区域を読む発表文
- * （`tsunamiToSegments`）と役割を分けている。
+ * （`tsunamiToSegments`）と役割を分けている。**ここでいう「発表文」は津波の等級を全区域ぶん読む
+ * 文のことで、利用者が耳にする「気象庁の発表文」（→ `telegramTextToSpeak`）とは別物。**
  *
  * **行動指示（「海岸から離れてください」等）も付けない。** 等級の発表と違い、この報は
  * 「どこがどう変わったか」を伝えるためのもの。
@@ -3802,6 +3803,19 @@ function telegramSpeech(prefix: string, body: string): TelegramTextSpeech | null
  * **どのブロックを読むかは設定で選べる**（`opts.telegramTextBlocks`。一覧は
  * {@link TELEGRAM_TEXT_BLOCK_KEYS}）。全部切れば本文が空になり、この関数は `null` を返す ——
  * 前置きだけが鳴る形にはならない。
+ *
+ * **前置きで名乗る語は「気象庁の発表文」。設定タブのトグルのラベルと同じ語にする** ——
+ * 音声だけを聞いている利用者が、いま流れているものがどの設定で切れるのかを辿れるようにするため。
+ * 片方だけ変えないこと。
+ *
+ * **「付加文」とは言わない。** 読む中身は種別で違い、南海トラフ地震臨時情報・同関連解説情報・
+ * 北海道・三陸沖後発地震注意情報の 3 種別は見出し文（要約）・本文・次回発表予定だけで、付加文を
+ * 1 件も読まない（津波も `Body/Text` の本文を含む）。しかも南海トラフの 2 種別は本文が 1000 字を
+ * 超えていちばん長く鳴る（臨時情報 1055 字・関連解説情報 1600 字超。後発地震注意情報の字数は
+ * 確かめていない）。「本文」も同じ理由で使えない（地震情報・長周期・地震回数は付加文しか読まない）。
+ *
+ * **コード内の「発表文」とは別物** —— あちらは津波の等級を全区域ぶん読む文（`tsunamiToSegments`）を
+ * 指す内部用語で、この前置きの語は利用者向け。`grep` で両方が引っかかる。
  */
 export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): TelegramTextSpeech | null {
   // **緊急地震速報の固定付加文は読まない。** 秒を争うため、定型文を挟むと肝心の震度・地域が
@@ -3833,7 +3847,7 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
         pick('quakeVarComment', event.varCommentText),
         pick('quakeFreeText', event.freeText),
       ], reads)
-      return telegramSpeech(`地震情報について、気象庁の文をお伝えします。`, body)
+      return telegramSpeech(`地震情報について、気象庁の発表文をお伝えします。`, body)
     }
     case 'tsunami': {
       // 解除・失効・取消とも `cancelled` が立つ（理由は上の EEW 分岐のコメント）。
@@ -3851,7 +3865,7 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
         ...(on('tsunamiVarComment') ? (event.warningComments ?? []).map(c => c.text) : []),
         pick('tsunamiFreeText', event.freeText),
       ], reads)
-      return telegramSpeech(`津波情報について、気象庁の文をお伝えします。`, body)
+      return telegramSpeech(`津波情報について、気象庁の発表文をお伝えします。`, body)
     }
     case 'lpgm': {
       // **他の種別と同じく明示して弾く。** いまは取消のパースが付加文を 1 つも持たないので
@@ -3870,7 +3884,7 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
         pick('lpgmVarComment', event.data.varCommentText),
         pick('lpgmFreeText', event.data.freeFormText),
       ], reads)
-      return telegramSpeech(`長周期地震動観測情報について、気象庁の文をお伝えします。`, body)
+      return telegramSpeech(`長周期地震動観測情報について、気象庁の発表文をお伝えします。`, body)
     }
     case 'nankai':
     case 'nankaiCommentary': {
@@ -3884,7 +3898,7 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
         pick(isAdvisory ? 'nankaiNextAdvisory' : 'nankaiCommentaryNextAdvisory', event.data.nextAdvisory),
       ], reads)
       const label = isAdvisory ? '南海トラフ地震臨時情報' : '南海トラフ地震関連解説情報'
-      return telegramSpeech(`${label}について、気象庁の文をお伝えします。`, body)
+      return telegramSpeech(`${label}について、気象庁の発表文をお伝えします。`, body)
     }
     case 'kohatsu': {
       if (event.data.cancelled) return null
@@ -3895,12 +3909,12 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
         pick('kohatsuSummary', event.data.summary),
         pick('kohatsuBody', event.data.body),
       ], reads)
-      return telegramSpeech(`北海道・三陸沖後発地震注意情報について、気象庁の文をお伝えします。`, body)
+      return telegramSpeech(`北海道・三陸沖後発地震注意情報について、気象庁の発表文をお伝えします。`, body)
     }
     case 'earthquakeCount': {
       if (event.data.cancelled) return null
       const body = joinTelegramTexts([pick('earthquakeCountFreeText', event.data.freeText)], reads)
-      return telegramSpeech(`地震回数に関する情報について、気象庁の文をお伝えします。`, body)
+      return telegramSpeech(`地震回数に関する情報について、気象庁の発表文をお伝えします。`, body)
     }
     // 推計震度分布図は二進電文で、気象庁が書いた文を運ばない。
     case 'estimatedIntensity':
