@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest'
 import {
   advanceQuakeMarks, changedQuakeFacts, diffQuakeRows, lpgmMarkKey, lpgmRowSnapshot,
   pruneQuakeMarks, quakeFactSnapshot, quakeRowSnapshot, rowMarkKey, rowMarkOf,
-  type QuakeMarkMemory,
+  type QuakeMarkSnapshot,
+  type MarkReportType,
 } from './quakeUpdateMark'
 import { UPDATE_MARK_TTL_MS } from './updateMark'
 import type { EarthquakePoint, IntensityScale, JMAQuake, JMAQuakeCity } from '../types/earthquake'
@@ -48,6 +49,13 @@ const city = (name: string, areaName: string, scale: IntensityScale, over: Parti
 
 const snapRows = (points: EarthquakePoint[], cities: JMAQuakeCity[] = []) =>
   quakeRowSnapshot(points, cities)
+
+/**
+ * 同じ情報種別の続報として差分を取る（このファイルの多くのテストが見たい形）。
+ * 値の変化は直前の報と、初出は同じ種別で前に見た報と比べるので、同じ種別なら両方とも同じ写し。
+ */
+const diffSameType = (cur: ReturnType<typeof snapRows>, prev: ReturnType<typeof snapRows> | undefined) =>
+  diffQuakeRows(cur, prev, prev)
 
 /**
  * 都道府県ロールアップ点（電文の `Pref/MaxInt` 由来）。**`isArea` が真で `pref` を持つ。**
@@ -157,7 +165,7 @@ describe('地震カードの更新の印', () => {
     it('観測点の震度が上がったら上がったの印が出る', () => {
       const before = snapRows([station('輪島', 50), station('珠洲', 40)])
       const after = snapRows([station('輪島', 60), station('珠洲', 40)])
-      const marks = diffQuakeRows(after, before)
+      const marks = diffSameType(after, before)
       expect(marks.get(rowMarkKey.station('輪島'))).toBe('raised')
       expect(marks.has(rowMarkKey.station('珠洲'))).toBe(false)
     })
@@ -166,14 +174,14 @@ describe('地震カードの更新の印', () => {
     it('観測点の震度が下がったら下がったの印が出る', () => {
       const before = snapRows([station('輪島', 60)])
       const after = snapRows([station('輪島', 50)])
-      expect(diffQuakeRows(after, before).get(rowMarkKey.station('輪島'))).toBe('lowered')
+      expect(diffSameType(after, before).get(rowMarkKey.station('輪島'))).toBe('lowered')
     })
 
     // 正: その段が既に出ている報で新しい行が増えたら「初出」。
     it('観測点が増えたら初出の印が出る', () => {
       const before = snapRows([station('輪島', 50)])
       const after = snapRows([station('輪島', 50), station('珠洲', 40)])
-      expect(diffQuakeRows(after, before).get(rowMarkKey.station('珠洲'))).toBe('new')
+      expect(diffSameType(after, before).get(rowMarkKey.station('珠洲'))).toBe('new')
     })
 
     // 対照: **その段が初めて現れた報では印を付けない。**
@@ -181,7 +189,7 @@ describe('地震カードの更新の印', () => {
     it('観測点の段が初めて現れた報では印を付けない', () => {
       const prompt = snapRows([area('能登', 70)])
       const detail = snapRows([area('能登', 70), station('輪島', 70), station('珠洲', 60)])
-      const marks = diffQuakeRows(detail, prompt)
+      const marks = diffSameType(detail, prompt)
       expect(marks.has(rowMarkKey.station('輪島'))).toBe(false)
       expect(marks.has(rowMarkKey.station('珠洲'))).toBe(false)
     })
@@ -196,7 +204,7 @@ describe('地震カードの更新の印', () => {
       expect([...prompt.keys()].some(k => k.startsWith('st:'))).toBe(false)
       // その結果、次の報で初めて現れる観測点は抑止される。
       const detail = snapRows([prefRollup('石川県', 70), area('能登', 70), station('輪島', 70)])
-      expect(diffQuakeRows(detail, prompt).has(rowMarkKey.station('輪島'))).toBe(false)
+      expect(diffSameType(detail, prompt).has(rowMarkKey.station('輪島'))).toBe(false)
     })
 
     // 対照: ロールアップ点は県の最大としては効く（落としているのではなく、行にしないだけ）。
@@ -208,14 +216,14 @@ describe('地震カードの更新の印', () => {
     it('既に出ている段の行は、同じ報でも印が付く', () => {
       const prompt = snapRows([area('能登', 70)])
       const detail = snapRows([area('能登', 70), area('加賀', 50), station('輪島', 70)])
-      const marks = diffQuakeRows(detail, prompt)
+      const marks = diffSameType(detail, prompt)
       expect(marks.get(rowMarkKey.area('加賀'))).toBe('new')
       expect(marks.has(rowMarkKey.station('輪島'))).toBe(false)
     })
 
     // 対照: 前が無ければ何も出ない。
     it('そのカードで最初に見た報では行の印を出さない', () => {
-      expect(diffQuakeRows(snapRows([station('輪島', 50)]), undefined).size).toBe(0)
+      expect(diffSameType(snapRows([station('輪島', 50)]), undefined).size).toBe(0)
     })
 
     // 安全弁: 未入電は下限の 45 が入るので、階級だけで比べると観測値が届いた瞬間を取りこぼす。
@@ -223,14 +231,14 @@ describe('地震カードの更新の印', () => {
       const before = snapRows([station('輪島', 45, { unreceived: true })])
       const after = snapRows([station('輪島', 45)])
       // 階級は動いていないので**向きは言わない**。未入電が解けたのは大小の話ではない。
-      expect(diffQuakeRows(after, before).get(rowMarkKey.station('輪島'))).toBe('changed')
+      expect(diffSameType(after, before).get(rowMarkKey.station('輪島'))).toBe('changed')
     })
 
     // 安全弁: 市町村は区域との組で鍵にする（名前だけでは一意にならない）。
     it('同名の市町村を区域で見分ける', () => {
       const before = snapRows([], [city('府中市', '東京都多摩北部', 30), city('府中市', '広島県南西部', 20)])
       const after = snapRows([], [city('府中市', '東京都多摩北部', 40), city('府中市', '広島県南西部', 20)])
-      const marks = diffQuakeRows(after, before)
+      const marks = diffSameType(after, before)
       expect(marks.get(rowMarkKey.city('東京都多摩北部', '府中市'))).toBe('raised')
       expect(marks.has(rowMarkKey.city('広島県南西部', '府中市'))).toBe(false)
     })
@@ -241,6 +249,50 @@ describe('地震カードの更新の印', () => {
       const descending = snapRows([station('b', 60), station('a', 30)])
       expect(ascending.get(rowMarkKey.pref('石川県'))?.key).toBe('60')
       expect(descending.get(rowMarkKey.pref('石川県'))?.key).toBe('60')
+    })
+  })
+
+  describe('比べる相手を、値の変化と初出で分ける', () => {
+    // 正: **その種別を初めて見た報では初出を出さない。**
+    // 震度速報は震度3以上の区域しか載せず、震源・震度情報は震度1以上を全部載せる。
+    // 能登本震の実電文では 33 県 75 区域 → 44 県 118 区域で、11 県・43 区域が光っていた。
+    it('種別を初めて見た報では、区域が一斉に増えても初出の印を付けない', () => {
+      const prompt = snapRows([area('能登', 70), area('加賀', 50)])
+      const detail = snapRows([area('能登', 70), area('加賀', 50), area('広島県南東部', 20), area('高知県東部', 20)])
+      // 直前の報は震度速報（prompt）。その種別の写しはまだ無い。
+      const marks = diffQuakeRows(detail, prompt, undefined)
+      expect(marks.has(rowMarkKey.area('広島県南東部'))).toBe(false)
+      expect(marks.has(rowMarkKey.area('高知県東部'))).toBe(false)
+    })
+
+    // 対照: **同じ種別の続報なら初出の印は出る。** 増えた区域はその報が伝えた新しい事実。
+    it('同じ種別の続報なら初出の印が出る', () => {
+      const first = snapRows([area('能登', 70)])
+      const second = snapRows([area('能登', 70), area('鹿児島県薩摩', 20)])
+      expect(diffSameType(second, first).get(rowMarkKey.area('鹿児島県薩摩'))).toBe('new')
+    })
+
+    // 正: **種別が前後しても、同じ種別どうしなら初出は出る。**
+    // 気象庁は 2024-01-01 16:06 の前震で 震度速報(16:07) → 震源情報 → 震度速報(16:08) の順に
+    // 発表した。「直前の報と種別が違うか」で判定すると、この 16:08 の続報で本当に増えた区域
+    // （新潟県佐渡）の印まで消える。
+    it('種別が前後しても、同じ種別で前に見た報と比べる', () => {
+      const sokuho1 = snapRows([area('石川県能登', 55), area('新潟県上越', 40)])
+      // あいだに震源情報が挟まる（震度は前報から引き継がれるので行は同じ）。
+      const hypocenter = sokuho1
+      const sokuho2 = snapRows([area('石川県能登', 55), area('新潟県上越', 40), area('新潟県佐渡', 30)])
+      const marks = diffQuakeRows(sokuho2, hypocenter, sokuho1)
+      expect(marks.get(rowMarkKey.area('新潟県佐渡'))).toBe('new')
+    })
+
+    // 安全弁: **値が動いた行の印は種別をまたいでも出す。** 気象庁が震度を引き上げた事実は
+    // 報の粒度の違いでは説明できない。
+    it('種別を初めて見た報でも、値が上がった行には印を付ける', () => {
+      const prompt = snapRows([area('能登', 60)])
+      const detail = snapRows([area('能登', 70), area('加賀', 30)])
+      const marks = diffQuakeRows(detail, prompt, undefined)
+      expect(marks.get(rowMarkKey.area('能登'))).toBe('raised')
+      expect(marks.has(rowMarkKey.area('加賀'))).toBe(false)
     })
   })
 
@@ -277,8 +329,13 @@ describe('地震カードの更新の印', () => {
   })
 
   describe('記憶の持ち回り', () => {
-    const memoryOf = (q: JMAQuake, points: EarthquakePoint[]): QuakeMarkMemory =>
-      ({ facts: quakeFactSnapshot(q), rows: snapRows(points) })
+    // 種別は既定を持たせる（このブロックの主題ではないため）。種別をまたぐ挙動は
+    // 「種別が変わった報」の describe で明示的に渡して確かめる。
+    const memoryOf = (
+      q: JMAQuake,
+      points: EarthquakePoint[],
+      reportType: MarkReportType = '震源・震度情報',
+    ): QuakeMarkSnapshot => ({ facts: quakeFactSnapshot(q), rows: snapRows(points), reportType })
 
     // 正: 続報で動いた分が印になり、記憶は進む。
     it('続報で動いた分を印にして記憶を進める', () => {
@@ -299,6 +356,143 @@ describe('地震カードの更新の印', () => {
       })
       expect(second.marks.get('q1')?.facts.get('magnitude')).toBe('raised')
       expect(second.marks.get('q1')?.rows.get(rowMarkKey.station('輪島'))).toBe('raised')
+    })
+
+    // 安全弁: **震源要素更新（VXSE61）は必ず種別が変わる報。** 行の初出を止める判定を
+    // 欄（`facts`）まで広げると、座標・深さが動いた印がこの種別でだけ出なくなる。
+    it('震源要素更新でも欄の印は出る（種別が変わっても止めない）', () => {
+      const first = advanceQuakeMarks({
+        prev: { memory: new Map(), marks: new Map() },
+        key: 'q1',
+        snapshot: memoryOf(makeQuake({ lng: 137.2, depth: 0 }), [station('輪島', 70)]),
+        liveKeys: new Set(['q1']),
+        now: 1000,
+      })
+      const amended = advanceQuakeMarks({
+        prev: { memory: first.memory, marks: first.marks },
+        key: 'q1',
+        // 2024-01-01 21:30 の実電文と同じ動き（経度 137.2 → 137.3・深さ 0 → 20km）。
+        snapshot: memoryOf(
+          makeQuake({ lng: 137.3, depth: 20 }),
+          [station('輪島', 70)],
+          '顕著な地震の震源要素更新のお知らせ',
+        ),
+        liveKeys: new Set(['q1']),
+        now: 2000,
+      })
+      expect(amended.marks.get('q1')?.facts.get('coordinate')).toBe('changed')
+      expect(amended.marks.get('q1')?.facts.get('depth')).toBe('lowered')
+    })
+
+    // 正: **種別が前後しても、同じ種別で前に見た報と比べる。**
+    // 2024-01-01 16:06 の前震は 震度速報(16:07) → 震源情報 → 震度速報(16:08) の順に届いた。
+    // 「直前の報の種別」で判定すると、16:08 の続報で本当に増えた区域の印まで消える。
+    it('種別が前後しても、同じ種別どうしの続報で初出の印が出る', () => {
+      const run = (
+        prev: ReturnType<typeof advanceQuakeMarks>,
+        points: EarthquakePoint[],
+        type: MarkReportType,
+        now: number,
+      ) => advanceQuakeMarks({
+        prev: { memory: prev.memory, marks: prev.marks },
+        key: 'q1',
+        snapshot: memoryOf(makeQuake(), points, type),
+        liveKeys: new Set(['q1']),
+        now,
+      })
+      const empty = { memory: new Map(), marks: new Map() } as ReturnType<typeof advanceQuakeMarks>
+
+      const sokuho1 = run(empty, [area('石川県能登', 55), area('新潟県上越', 40)], '震度速報', 1000)
+      // 震源情報は震度を持たないが、カードは前報の震度を引き継ぐので行は同じ顔ぶれ。
+      const hypocenter = run(sokuho1, [area('石川県能登', 55), area('新潟県上越', 40)], '震源情報', 2000)
+      const sokuho2 = run(
+        hypocenter,
+        [area('石川県能登', 55), area('新潟県上越', 40), area('新潟県佐渡', 30)],
+        '震度速報', 3000,
+      )
+      expect(sokuho2.marks.get('q1')?.rows.get(rowMarkKey.area('新潟県佐渡'))).toBe('new')
+    })
+
+    // 対照: **その種別を初めて見た報では、行が一斉に増えても初出を出さない。**
+    // 震度速報（震度3以上の区域まで）→ 震源・震度情報（震度1以上の全区域）の遷移がこれで、
+    // 直前の報とだけ比べる形にすると能登本震で 11 県・43 区域が光る。
+    it('種別を初めて見た報では、行が一斉に増えても初出を出さない', () => {
+      const run = (
+        prev: ReturnType<typeof advanceQuakeMarks>,
+        points: EarthquakePoint[],
+        type: MarkReportType,
+        now: number,
+      ) => advanceQuakeMarks({
+        prev: { memory: prev.memory, marks: prev.marks },
+        key: 'q1',
+        snapshot: memoryOf(makeQuake(), points, type),
+        liveKeys: new Set(['q1']),
+        now,
+      })
+      const empty = { memory: new Map(), marks: new Map() } as ReturnType<typeof advanceQuakeMarks>
+
+      const sokuho = run(empty, [area('石川県能登', 55)], '震度速報', 1000)
+      const detail = run(
+        sokuho,
+        [area('石川県能登', 55), area('石川県加賀', 30), area('富山県東部', 30)],
+        '震源・震度情報', 2000,
+      )
+      expect(detail.marks.get('q1')?.rows.get(rowMarkKey.area('石川県加賀'))).toBeUndefined()
+      expect(detail.marks.get('q1')?.rows.get(rowMarkKey.area('富山県東部'))).toBeUndefined()
+    })
+
+    // 安全弁: **種別ごとの写しを捨てない。** 鍵の値域は有限なので溜まりようがなく、
+    // 上限で古いものから落とすと「ありふれた遷移で最初の種別が追い出される」形になる。
+    // ここが壊れると、下の「一巡して戻ってきた種別」の初出が出なくなる。
+    //
+    // **落ちることを確かめてある。** 種別数の上限を再導入すると、上限 5 ではこの 1 件が、
+    // 上限 3 では下の 1 件も落ちる。**3 はこの変更に入るまで実際に置いていた値**で、
+    // そこで初出の印が消えていた。
+    it('種別ごとの写しは、種別が増えても捨てない', () => {
+      const types: MarkReportType[] = [
+        '震度速報', '震源情報', '震源・震度情報', '各地の震度情報',
+        '顕著な地震の震源要素更新のお知らせ', '遠地地震', 'その他',
+      ]
+      let state = { memory: new Map(), marks: new Map() } as ReturnType<typeof advanceQuakeMarks>
+      types.forEach((type, i) => {
+        state = advanceQuakeMarks({
+          prev: { memory: state.memory, marks: state.marks },
+          key: 'q1',
+          snapshot: memoryOf(makeQuake(), [area('能登', 55)], type),
+          liveKeys: new Set(['q1']),
+          now: 1000 * (i + 1),
+        })
+      })
+      expect([...(state.memory.get('q1')?.rowsByType.keys() ?? [])]).toEqual(types)
+    })
+
+    // 正: **一巡して戻ってきた種別でも、同じ種別どうしで比べる。** 上限で写しを落として
+    // いた頃は、4 種別を経ただけで最初の種別が追い出され、その種別が再び届いたとき
+    // 「初めて見る種別」として初出が出なかった（M5 程度以上でありふれた遷移）。
+    it('多くの種別を経たあとでも、最初の種別の続報で初出が出る', () => {
+      const path: MarkReportType[] = [
+        '震度速報', '震源情報', '震源・震度情報', '各地の震度情報',
+        '顕著な地震の震源要素更新のお知らせ',
+      ]
+      let state = { memory: new Map(), marks: new Map() } as ReturnType<typeof advanceQuakeMarks>
+      path.forEach((type, i) => {
+        state = advanceQuakeMarks({
+          prev: { memory: state.memory, marks: state.marks },
+          key: 'q1',
+          snapshot: memoryOf(makeQuake(), [area('能登', 55)], type),
+          liveKeys: new Set(['q1']),
+          now: 1000 * (i + 1),
+        })
+      })
+      // 最初の種別（震度速報）が区域を 1 つ増やして戻ってくる。
+      const back = advanceQuakeMarks({
+        prev: { memory: state.memory, marks: state.marks },
+        key: 'q1',
+        snapshot: memoryOf(makeQuake(), [area('能登', 55), area('佐渡', 30)], '震度速報'),
+        liveKeys: new Set(['q1']),
+        now: 9000,
+      })
+      expect(back.marks.get('q1')?.rows.get(rowMarkKey.area('佐渡'))).toBe('new')
     })
 
     // 対照: 動いたものが無ければ印を置かない（TTL の掃除が空の鍵を抱えないように）。
@@ -371,7 +565,7 @@ describe('地震カードの更新の印', () => {
       const withLpgm = advanceQuakeMarks({
         prev: { memory: withQuake.memory, marks: withQuake.marks },
         key: lpgmMarkKey('20240101161000'),
-        snapshot: { facts: new Map(), rows: lpgmRowSnapshot([{ name: '能登', maxLgInt: 4 }], [], []) },
+        snapshot: { facts: new Map(), rows: lpgmRowSnapshot([{ name: '能登', maxLgInt: 4 }], [], []), reportType: 'lpgm' as const },
         liveKeys: new Set(['q1', lpgmMarkKey('20240101161000')]),
         now: 2000,
       })
@@ -392,14 +586,14 @@ describe('地震カードの更新の印', () => {
     it('階級が上がったら上がったの印が出る', () => {
       const before = lpgmRowSnapshot([{ name: '能登', maxLgInt: 3 }], [], [])
       const after = lpgmRowSnapshot([{ name: '能登', maxLgInt: 4 }], [], [])
-      expect(diffQuakeRows(after, before).get(rowMarkKey.area('能登'))).toBe('raised')
+      expect(diffSameType(after, before).get(rowMarkKey.area('能登'))).toBe('raised')
     })
 
     // 安全弁: 階級が据え置きでも震度だけが動いたら印が出る（カードは 2 つを並べて出す）。
     it('階級が同じでも震度が動いたら印が出る', () => {
       const before = lpgmRowSnapshot([{ name: '能登', maxLgInt: 4, maxInt: 50 }], [], [])
       const after = lpgmRowSnapshot([{ name: '能登', maxLgInt: 4, maxInt: 60 }], [], [])
-      expect(diffQuakeRows(after, before).get(rowMarkKey.area('能登'))).toBe('raised')
+      expect(diffSameType(after, before).get(rowMarkKey.area('能登'))).toBe('raised')
     })
 
     // 安全弁: 順序は**階級を主、震度を従**にする。階級が下がったなら、震度が上がっていても
@@ -407,7 +601,7 @@ describe('地震カードの更新の印', () => {
     it('階級が下がれば、震度が上がっていても下がったの印が出る', () => {
       const before = lpgmRowSnapshot([{ name: '能登', maxLgInt: 4, maxInt: 10 }], [], [])
       const after = lpgmRowSnapshot([{ name: '能登', maxLgInt: 3, maxInt: 70 }], [], [])
-      expect(diffQuakeRows(after, before).get(rowMarkKey.area('能登'))).toBe('lowered')
+      expect(diffSameType(after, before).get(rowMarkKey.area('能登'))).toBe('lowered')
     })
   })
 })

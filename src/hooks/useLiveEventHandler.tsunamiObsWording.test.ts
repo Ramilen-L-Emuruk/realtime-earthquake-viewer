@@ -74,7 +74,12 @@ const EVENT_ID = 'evt-1'
 function makeObsReport(
   // 沖合の潮位観測点は津波予報区に所属しないため、電文の Area は常に空になる
   // （解説資料 Ⅱ.13 1-1-2-1）。その形を作れるよう `district` / `code` は省略できる。
-  points: { name: string; district?: string; code?: string; value?: number; offshore?: boolean }[],
+  points: {
+    name: string; district?: string; code?: string; value?: number; offshore?: boolean
+    /** 第1波の到達時刻（ISO）。押し引きと対で渡す。 */
+    arrivalTime?: string
+    initial?: string
+  }[],
   areas: { name: string; code: string; grade: string }[] = [],
   id = 'tsunami-obs',
 ): JMATsunami {
@@ -91,6 +96,8 @@ function makeObsReport(
       districtCode: p.code,
       districtName: p.district,
       ...(p.offshore && { offshore: true }),
+      ...(p.arrivalTime && { arrivalTime: p.arrivalTime }),
+      ...(p.initial && { initial: p.initial }),
       height: p.value === undefined ? undefined : { value: p.value, description: `${p.value}m` },
     })),
   } as unknown as JMATsunami
@@ -253,6 +260,35 @@ describe('津波観測情報の読み上げ: 新旧の言い分けと並び', ()
     // 深刻なのは更新された輪島港なので、更新の文が先に来て「また、」で新規が続く
     expect(spokenTexts()[1]).toContain('石川県能登、輪島港で1.2メートルに更新されました。')
     expect(spokenTexts()[1]).toContain('また、新たに、次の地点で津波を観測しました。石川県能登、珠洲市長橋で0.5メートルを観測しました。')
+  })
+
+  // 正: **同じ報で波高が上がった観測点の第1波が訂正されたら、専用の文で読む。**
+  //
+  // 波高の句へ織り込む形（「〜に押し波が到達し」）は**初出の言い回し**なので、訂正をそこへ
+  // 任せると訂正だと聞き分けられない。加えて織り込む側は既読の地点を落とすため、任せると
+  // **訂正がどの文からも落ちたまま既読になる**（記録は選抜した分をまとめて進めるため）。
+  it('波高が上がった観測点の第1波の訂正は、専用の文で読む', async () => {
+    const handle = setup()
+    handle(makeObsReport([{
+      name: '輪島港', district: '石川県能登', code: '360', value: 0.3,
+      arrivalTime: '2026-01-01T21:10:00+09:00', initial: '押し',
+    }]) as never)
+    await settle()
+    // 初出はその地点の句へ織り込む（地点名を 2 回読まないため）。
+    expect(spokenTexts()[0]).toContain('輪島港で、21時10分に押し波が到達し、0.3メートルを観測しました。')
+
+    // 続報で波高が上がり、同じ報で第1波が訂正される（気象庁の `FirstHeight/Revise` = 更新）。
+    handle(makeObsReport([{
+      name: '輪島港', district: '石川県能登', code: '360', value: 1.2,
+      arrivalTime: '2026-01-01T21:32:00+09:00', initial: '押し',
+    }], [], 'tsunami-obs-2') as never)
+    await settle()
+    const second = spokenTexts()[1]
+    // 波高の句には織り込まない（初出の言い回しになってしまうため）。
+    expect(second).toContain('輪島港で1.2メートルに更新されました。')
+    expect(second).not.toContain('21時32分に押し波が到達し')
+    // 訂正は専用の文で、助詞は「の」。
+    expect(second).toContain('21時32分の押し波に更新されました。')
   })
 
   // 安全弁: 鳴らなかった観測点を既読にしない。前回の読み上げが割り込まれていれば、

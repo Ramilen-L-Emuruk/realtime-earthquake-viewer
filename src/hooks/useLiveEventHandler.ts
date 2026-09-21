@@ -16,7 +16,7 @@ import {
 } from '../utils/eew'
 import { hasKnownEpicenter } from '../utils/geo'
 import { showBrowserNotification } from '../utils/notifications'
-import { GRADE_PRIORITY, TSUNAMI_GRADE_LIFTED, isWarningLevelWhileObserving, tsunamiMaxGrade, tsunamiAreaGradeChanges, selectUnspokenAreaGradeChanges, rememberAreaGrades, tsunamiAreaKey, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, isTsunamiContinuation, matchesArea, sortAreasAcrossGradesForCardDisplay, sortObservationsForCardDisplay, mergeTsunamiObservations, isObservationMissing, hasMaxHeightTimeAdvanced, firstWaveSpokenKey, changedObservationFields, type ObsUpdateMark, isTideReport, tideReportChange, rememberTideEntries, type SpokenTideEntry } from '../utils/tsunami'
+import { GRADE_PRIORITY, TSUNAMI_GRADE_LIFTED, isWarningLevelWhileObserving, tsunamiMaxGrade, tsunamiAreaGradeChanges, selectUnspokenAreaGradeChanges, rememberAreaGrades, tsunamiAreaKey, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, isTsunamiContinuation, matchesArea, sortAreasAcrossGradesForCardDisplay, sortObservationsForCardDisplay, mergeTsunamiObservations, isObservationMissing, hasMaxHeightTimeAdvanced, hasObservedHeightRisen, firstWaveSpokenKey, changedObservationFields, type ObsUpdateMark, isTideReport, tideReportChange, rememberTideEntries, type SpokenTideEntry } from '../utils/tsunami'
 import { playAlertSound, ttsDelayFor, maxTtsDelay, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, stopSpeech, isAudioPlaying, type PrewarmedSpeech, type ShouldStillPlay, type SpeechOutcome } from '../utils/voicevox'
 import { rollbackSpokenEntry } from '../utils/rollbackSpoken'
@@ -712,24 +712,6 @@ function forgetSpokenOnObservationStateChange(
     // その状態へ戻ることは起こりうるので、片道にしない（欠測と同じ考え方）。
     if (!isWarningLevelWhileObserving(o)) spokenWarningLevel.delete(o.name)
   }
-}
-
-/**
- * 記憶した波高より上がったか。
- *
- * **波高更新の読み上げと、欠測のまま値だけ上がった続報の検出で同じ述語を使うこと。**
- * 別々に書くと、片方だけ「以上」への昇格を見落とすなどして黙って食い違う。
- */
-function hasObservedHeightRisen(
-  obs: import('../types/earthquake').TsunamiObservation,
-  spoken: ReadonlyMap<string, { value: number; over?: boolean }>,
-): boolean {
-  if (!obs.height) return false
-  const prev = spoken.get(obs.name)
-  if (prev === undefined) return true
-  if (obs.height.value > prev.value) return true
-  // 同値でも over フラグへの昇格（センサー上限超過）は伝える価値がある
-  return !!obs.height.over && !prev.over && obs.height.value >= prev.value
 }
 
 /**
@@ -4015,16 +3997,25 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             const key = firstWaveSpokenKey(o)
             if (!key) return false
             // その報で波高の文・到達確認の文へ織り込まれる地点は、そちらが読むので外す。
-            if (firstWaveFoldedIn.has(o)) return false
+            //
+            // **ただし外すのは初出だけ。** 織り込みの句は「〜に◯◯波が到達し」という初出の
+            // 言い回しなので、訂正（前に別の内容を声にした地点）をそこへ任せると訂正だと
+            // 聞き分けられない。加えて、織り込む側は既読の地点を落とすため、**訂正がどの文からも
+            // 落ちたまま既読になる**（記録は選抜した分をまとめて進める）。訂正はここで拾う。
+            if (firstWaveFoldedIn.has(o) && !spokenObsFirstWaveRef.current.has(o.name)) return false
             return spokenObsFirstWaveRef.current.get(o.name) !== key
           })
           const firstWaveNewObs = firstWaveChanged.filter(o => !spokenObsFirstWaveRef.current.has(o.name))
           const firstWaveUpdatedObs = firstWaveChanged.filter(o => spokenObsFirstWaveRef.current.has(o.name))
           // 第 4 引数の `prevMap` が「新たに」と「更新」の言い分けを決める（読み上げ用の記憶を
           // 渡すこと。理由は `SpokenHeightLookup` の宣言箇所）。件数上限は既定のままなので
-          // 第 3 引数は省略の意で undefined を渡す。第 5 引数は第1波を織り込むかの判定。
+          // 第 3 引数は省略の意で undefined を渡す。第 5 引数は第1波を織り込むかの判定で、
+          // **第 6 引数は最大波の観測時刻を添えるかの判定**（前に声にしたものと同じなら添えない）。
           const updateSegments = updatedObs.length > 0
-            ? tsunamiObservationUpdateToSegments(updatedObs, event.headline, maxObsPoints, prevMap, spokenObsFirstWaveRef.current)
+            ? tsunamiObservationUpdateToSegments(
+                updatedObs, event.headline, maxObsPoints, prevMap,
+                spokenObsFirstWaveRef.current, spokenObsMaxHeightTimeRef.current,
+              )
             : []
           const timeSegments = tsunamiMaxHeightTimeToSegments(timeUpdatedObs, maxObsPoints)
           // **初出と訂正は文型が違うので別の文にする**（初出＝「〜に押し波を観測しました」／
@@ -4033,7 +4024,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             tsunamiFirstWaveToSegments(firstWaveNewObs, 'new', maxObsPoints),
             tsunamiFirstWaveToSegments(firstWaveUpdatedObs, 'updated', maxObsPoints),
           )
-          const arrivalSegments = tsunamiArrivalToSegments(newlyArrivedObs, maxObsPoints)
+          const arrivalSegments = tsunamiArrivalToSegments(newlyArrivedObs, maxObsPoints, spokenObsFirstWaveRef.current)
           const missingSegments = tsunamiMissingToSegments(newlyMissingObs, maxObsPoints)
           // 数値が無いので他のどの文にも乗らない（→ `tsunamiWarningLevelToSegments`）。
           const newlyWarningLevelObs = obsInCardOrder.filter(o => isWarningLevelWorthSpeaking(o))
@@ -4129,7 +4120,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
               ...ttsSegments,
               ...joinWithAlso(
                 tsunamiWarningLevelToSegments(newlyWarningLevelObsOnAreaChange, maxObsPoints),
-                tsunamiArrivalToSegments(newlyArrivedObsOnAreaChange, maxObsPoints),
+                tsunamiArrivalToSegments(newlyArrivedObsOnAreaChange, maxObsPoints, spokenObsFirstWaveRef.current),
               ),
             ],
             tsunamiMissingToSegments(newlyMissingObsOnAreaChange, maxObsPoints),
@@ -4179,7 +4170,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
               ? joinWithAlso(
                 joinWithAlso(
                   tsunamiWarningLevelToSegments(newlyWarningLevelObsOnGradeChange, maxObsPoints),
-                  tsunamiArrivalToSegments(newlyArrivedObsOnGradeChange, maxObsPoints),
+                  tsunamiArrivalToSegments(newlyArrivedObsOnGradeChange, maxObsPoints, spokenObsFirstWaveRef.current),
                 ),
                 tsunamiMissingToSegments(newlyMissingObsOnGradeChange, maxObsPoints),
               )
@@ -4256,9 +4247,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
               if (obsToMark) {
                 rememberObservations(obsToMark, spokenObsNamesRef.current, spokenObsHeightRef.current)
                 // **波高の文を読んだ観測点は、その報が伝えた最大波の時刻も既読にする。**
-                // 記録しないと、次の変化を伝えない報で同じ観測点が「最大波の観測時刻が更新されました」と
-                // 読み直される（記録が無い＝変わった、と判定されるため）。波高の文は時刻そのものを
-                // 読まないが、**その報で最大波が更新されたことは伝えている**。
+                // 波高の文はその時刻を（前に声にしたものと違えば）読んでいるので、ここで記録
+                // しないと同じ時刻を次の報でも読み直す。記録しないと「最大波の観測時刻が
+                // 更新されました」の文でも読み直される（記録が無い＝変わった、と判定される）。
                 for (const o of obsToMark) {
                   if (o.maxHeightDateTime) spokenObsMaxHeightTimeRef.current.set(o.name, o.maxHeightDateTime)
                 }
@@ -4335,14 +4326,14 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       const prevFirstWaves552 = lastMaxObsFirstWaveRef.current
       const newStatusEntries: [string, ObsUpdateMark][] = []
       /**
-       * 1 観測点ぶんの印を積む。**どの項目が動いたかまで持つ**（カードの時刻欄の文字色）。
+       * 1 観測点ぶんの印を積む。**どの項目が動いたかまで持つ**（カードの行で、動いた項目を印の色で塗る）。
        *
        * `status` は行の左端の縦線で、従来どおり「その地点で何かあった」だけを言う。
        */
       const pushStatus = (o: import('../types/earthquake').TsunamiObservation, status: 'new' | 'changed') => {
         newStatusEntries.push([o.name, {
           status,
-          fields: changedObservationFields(o, prevTimes552.get(o.name), prevFirstWaves552.get(o.name)),
+          fields: changedObservationFields(o, prevTimes552.get(o.name), prevFirstWaves552.get(o.name), prevMap552),
         }])
       }
 
@@ -4350,26 +4341,14 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // 揃えること。片方だけずらすと「読み上げはするのに画面が動かない」が生まれる。
       if (isTsunamiObservationOnly(event)
         || (prevGrade552 !== null && GRADE_PRIORITY[grade] === GRADE_PRIORITY[prevGrade552])) {
-        const updatedObs552 = (event.observations ?? []).filter(o => {
-          if (!o.height) return false
-          // 波高が据え置きのまま、気象庁が最大波の観測時刻だけを進めた報。**読み上げはこれを
-          // 「最大波の観測時刻が更新されました」と読むので、画面も揃って動かす**（判定の本体は
-          // `utils/tsunami.ts`）。値だけを見ていたころは、声が名指しした観測点のバッジが点滅せず、
-          // カードもそこへスクロールしなかった。
-          if (hasMaxHeightTimeAdvanced(o, prevTimes552.get(o.name))) return true
-          // **第1波の変化も同じ扱い。** 読み上げは「第一波が更新されました」と名指しするのに、
-          // ここを見落とすと行の印も自動スクロールも動かず、声が指した観測点を画面が示せない
-          // （最大波の時刻で一度踏んだ穴と同型）。
-          const firstWave = firstWaveSpokenKey(o)
-          if (firstWave && firstWave !== prevFirstWaves552.get(o.name)) return true
-          const prev = prevMap552.get(o.name)
-          if (prev === undefined) return true
-          if (o.height.value > prev.value) return true
-          // **`over` は付いた向きだけを見る**（記憶が高水位マーク式なのと対。地図のカメラは
-          // 向きを問わず拾うので、そこだけ意図的に非対称。→ `rememberObservationHeights`）。
-          if (o.height.over && !prev.over && o.height.value >= prev.value) return true
-          return false
-        })
+        // **バッジ・自動スクロールの対象と、行に出す項目の印は同じ判定から出す**
+        // （`changedObservationFields`）。別々に書いていた頃は、読み上げが名指しした観測点の
+        // バッジが点滅せずカードもそこへスクロールしない、という食い違いを 2 度作り込んだ
+        // （最大波の観測時刻・第1波の訂正）。**判定の本体は `utils/tsunami.ts`。**
+        //
+        // 波高を持たない観測点（到達確認・欠測）は下の `newlyShownObs552` が担う。
+        const updatedObs552 = (event.observations ?? []).filter(o => o.height
+          && changedObservationFields(o, prevTimes552.get(o.name), prevFirstWaves552.get(o.name), prevMap552).size > 0)
         // 波高を持たずに初めて現れた観測点（到達確認・欠測のどちらも）をスクロール・バッジ表示の
         // 対象にする。**欠測を除外しないのは意図的** ―― 観測できなくなったこと自体が新しい事実で、
         // 画面に出す価値がある（読み上げ側は文を言い分ける必要があるので除外しているが、
