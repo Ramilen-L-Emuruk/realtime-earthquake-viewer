@@ -480,7 +480,8 @@ describe('電文本文の語（実データの辞書で引く）', { timeout: 15
   // 長周期地震動の階級は 17 モーラの 1 句にまとまり、核が値を飲み込んでいた
   // （`チョオシュウキジシンドオカイキュウサ'ンオ`）。「長周期地震動階級」と「Nを」で割る。
   // **後半の読みは「最大震度Nを」と揃える** —— 同じ数字・同じ助詞・同じ述語なので、揃えないと
-  // 同じ値が文型によって違う抑揚で鳴る。
+  // 同じ値が文型によって違う抑揚で鳴る。**2 だけは割らないので対象外**（下の
+  // 「値が 1 モーラの「2」だけは割らない」）。
   it('長周期地震動の階級は「長周期地震動階級」と値で割る', async () => {
     const { findPhraseBreakMatch, isPlaceNameKey, dict } = await loadedRealDictModule()
 
@@ -490,12 +491,13 @@ describe('電文本文の語（実データの辞書で引く）', { timeout: 15
       expect(findPhraseBreakMatch(text, dict)?.key, text).toBe(`長周期地震動階級${cls}を`)
     }
 
-    // 正: 後半（値＋助詞）の読みは「最大震度Nを」の後半と同じ
+    // 正: 後半（値＋助詞）の読みは「最大震度Nを」の後半と同じ。
+    // **2 だけは割らないので対象外**（下の「値が 1 モーラの 2 は割らない」）。
     const tail = (value: string | undefined): string | undefined => {
       const parts = value?.split('/')
       return parts?.[parts.length - 1]
     }
-    for (const cls of LPGM_CLASSES) {
+    for (const cls of LPGM_CLASSES.filter(c => c !== 2)) {
       expect(tail(dict[`長周期地震動階級${cls}を`]), `階級${cls}`)
         .toBe(tail(dict[`最大震度${cls}を`]))
     }
@@ -510,6 +512,51 @@ describe('電文本文の語（実データの辞書で引く）', { timeout: 15
     for (const cls of LPGM_CLASSES) {
       expect(isPlaceNameKey(`長周期地震動階級${cls}を`), `階級${cls}`).toBe(false)
     }
+  })
+
+  // **値が 1 モーラの「2」だけは割らない。**
+  //
+  // 割ると値の句が `ニオ` の 2 モーラになり、核を先頭へ置いても下がる先が助詞 1 つしかない。
+  // 実測すると下がり幅が消える —— 本番の組み立てで `/audio_query` を引いた値（話速 1.2）:
+  //
+  //   最大震度2を         ニ:5.57 → オ:5.57（0.00）／ 最大震度1を は イ:5.40 チ:5.74 オ:5.66
+  //   長周期地震動階級2を ニ:5.50 → オ:5.49（0.01）／ 長周期地震動階級3を は サ:5.67 ン:5.64 オ:5.46
+  //
+  // **同じ「3」でも震度と長周期で値が違う**（震度は サ:5.76）。先行する句が違うと音高が変わる
+  // ので、鍵をまたいで数字を比べないこと。
+  //
+  // **文の中で一番大事な数字が、いちばん目立たない音になる。** 核を助詞へ移しても直らない
+  // （ニ:5.40 オ:5.42）。前の句の核を動かせば数字は立つが、そちらは 1・3・4 と共有している
+  // 「最大震度」「長周期地震動階級」の抑揚まで変わる。
+  //
+  // そこで**2 だけ割らず、前の句へ続ける**。前半の核（`シ` / `カ`）は 1・3・4 と同じ位置の
+  // ままなので、**変わるのは値を独立した句にしないことだけ**。数字は下がりの途中に来るが、
+  // `ニオ` が独立した 1 句として「にお」という単語のように鳴る形は消える。
+  //
+  // 同じ実測値が `docs/spec/audio-tts-spec.md` §3「値が 1 モーラなら割らない」にもある。
+  // **片方を測り直したら、もう片方も直すこと。**
+  it('値が 1 モーラの「2」だけは割らない', async () => {
+    const { dict } = await loadedRealDictModule()
+    const head = (value: string | undefined): string => value?.split('/')[0] ?? ''
+
+    // 正: 2 は割れていない。**前半は 1 と同じ**（核の位置まで含めて）
+    for (const [two, other] of [['最大震度2を', '最大震度1を'],
+                                ['長周期地震動階級2を', '長周期地震動階級1を']]) {
+      expect(dict[two], two).not.toContain('/')
+      expect(dict[two], two).toBe(`${head(dict[other])}ニオ`)
+    }
+
+    // 対照: 値が 2 モーラ以上の階級は割ったまま（2 だけの例外であることを固定する）
+    for (const cls of LPGM_CLASSES.filter(c => c !== 2)) {
+      expect(dict[`長周期地震動階級${cls}を`], `階級${cls}`).toContain('/')
+      expect(dict[`最大震度${cls}を`], `震度${cls}`).toContain('/')
+    }
+
+    // 安全弁: **値が 1 モーラの鍵を、割ったまま増やさない。** 「〇〇2を」の形は
+    // この 2 つだけで、どちらも割らない側にいること
+    const oneMoraValue = Object.keys(dict).filter(k => /2を$/.test(k))
+    expect(oneMoraValue.sort()).toEqual(['最大震度2を', '長周期地震動階級2を'])
+    for (const k of oneMoraValue) expect(dict[k], k).not.toContain('/')
   })
 
   // `endsWithParticle`（`voicevox.ts` が「鍵の直後に間を挟むか」を決めるのに使う）の判定は
