@@ -2479,7 +2479,24 @@ function firstWaveParts(o: TsunamiObservation): { time: string; initial: string 
 }
 
 /** 「まだ第1波を声にしていない観測点名」を引ける最小の形（`Set` でも `Map` でもそのまま渡せる）。 */
-type SpokenFirstWaveLookup = { has(name: string): boolean }
+/**
+ * 「前に声にした第1波の内容」を引ける最小の形（`Map<観測点名, 鍵>` をそのまま渡せる）。
+ *
+ * **名前ではなく内容（`firstWaveSpokenKey` の鍵）で引く。** 名前だけで既読を判定していた頃は、
+ * 同じ観測点で「波高が上がった」と「第1波が訂正された」が同じ報に来ると、訂正された第1波が
+ * 一度も声にならないまま既読として記録されていた（波高の文は名前が既読なら織り込まず、
+ * 第1波の文は「波高の文で読まれるはず」として除外するため、どちらからも落ちる）。
+ */
+type SpokenFirstWaveLookup = { get(name: string): string | undefined }
+
+/**
+ * 「前に声にした最大波の観測時刻」を引ける最小の形（`Map<観測点名, ISO 時刻>` をそのまま渡せる）。
+ *
+ * 渡すのは**読み上げ用の記憶**（`useLiveEventHandler` の `spokenObsMaxHeightTimeRef`）。画面用の
+ * 記憶を渡すと、割り込みで鳴らなかった報の時刻が「既に伝えた」ことになり、その時刻を一度も
+ * 声にしないまま次へ進む。
+ */
+type SpokenMaxHeightTimeLookup = { get(name: string): string | undefined }
 
 /**
  * `maxPoints` で読み上げから外した地点数を伝える一文を返す（外していなければ空の断片列）。
@@ -2566,6 +2583,7 @@ export function tsunamiObservationUpdateToSegments(
   maxPoints = OBS_UPDATE_SPEAK_MAX_POINTS,
   spokenHeights?: SpokenHeightLookup,
   spokenFirstWaves?: SpokenFirstWaveLookup,
+  spokenMaxHeightTimes?: SpokenMaxHeightTimeLookup,
 ): SpeechSegment[] {
   // 選抜は selectObservationUpdatesToSpeak に集約する（既読を記録する側と同じ絞り方にするため）。
   // obs は「波高を持つ総数」で、読み上げなかった件数（omittedPointsSentence）を数えるのに要る。
@@ -2595,8 +2613,17 @@ export function tsunamiObservationUpdateToSegments(
    * （→ {@link observationListSegments}）。
    */
   const clauseOf = (o: TsunamiObservation, stem: string): string => {
-    const fw = spokenFirstWaves?.has(o.name) ? null : firstWaveParts(o)
-    const at = o.maxHeightDateTime ? formatTime(o.maxHeightDateTime) : null
+    // **折り込むのは初出の第1波だけ。** 訂正（前に別の内容を声にした地点）はここへ入れない ——
+    // この句の言い回しは「〜に◯◯波が到達し」で、**初出の形**（助詞が「に」）。訂正は
+    // 「〜の◯◯波に更新されました」という別の文型で読む決まりなので（助詞は述語で決まる）、
+    // 折り込むと訂正であることが聞き分けられない。訂正を拾うのは `firstWaveChanged` の側。
+    const fw = spokenFirstWaves?.get(o.name) === undefined ? firstWaveParts(o) : null
+    // **最大波の観測時刻は、前に声にしたものと変わったときだけ添える。** 波高だけが上がった
+    // 報でも時刻を読んでいた頃は、同じ時刻を報のたびに言い直していた（電文の波高は 0.1m 刻みで、
+    // 実測が動いても表示が変わらない間は時刻だけが進む —— その逆に、時刻が据え置きのまま
+    // 波高だけ上がる形も起きる）。前が無い（初出）なら読む —— 聞き手はその時刻を知らない。
+    const spokenAt = spokenMaxHeightTimes?.get(o.name)
+    const at = o.maxHeightDateTime && o.maxHeightDateTime !== spokenAt ? formatTime(o.maxHeightDateTime) : null
     const value = tsunamiHeightToSpeech(overSuffixedHeight(o.height!))
     return `で${fw ? `、${fw.time}に${fw.initial}が到達し、` : ''}${at ? `${at}に` : ''}${value}${stem}`
   }
@@ -2633,8 +2660,11 @@ export function tsunamiObservationUpdateToText(
   maxPoints = OBS_UPDATE_SPEAK_MAX_POINTS,
   spokenHeights?: SpokenHeightLookup,
   spokenFirstWaves?: SpokenFirstWaveLookup,
+  spokenMaxHeightTimes?: SpokenMaxHeightTimeLookup,
 ): string {
-  return joinSegments(tsunamiObservationUpdateToSegments(updatedObs, headline, maxPoints, spokenHeights, spokenFirstWaves))
+  return joinSegments(tsunamiObservationUpdateToSegments(
+    updatedObs, headline, maxPoints, spokenHeights, spokenFirstWaves, spokenMaxHeightTimes,
+  ))
 }
 
 /**
@@ -2684,18 +2714,32 @@ export function selectArrivalsToSpeak(
  * （`sortObservationsForCardDisplay`）で渡すこと。上限で落とすのも先頭からなので、並びが
  * カードと違うとカード上で飛び飛びの地点が読まれる。
  */
-export function tsunamiArrivalToSegments(obs: TsunamiObservation[], maxPoints = ARRIVAL_SPEAK_MAX_POINTS): SpeechSegment[] {
+export function tsunamiArrivalToSegments(
+  obs: TsunamiObservation[],
+  maxPoints = ARRIVAL_SPEAK_MAX_POINTS,
+  spokenFirstWaves?: SpokenFirstWaveLookup,
+): SpeechSegment[] {
   if (obs.length === 0) return []
   const shown = selectArrivalsToSpeak(obs, maxPoints)
   // **「微弱」の観測点に「観測中」と言わない。** 微弱は「観測した波がごく小さい」ことを
   // 気象庁が伝えている状態で、値がこれから出るわけではない（電文解説資料 Ⅱ.12）。
   const weak = shown.filter(o => o.condition?.weak)
   const observing = shown.filter(o => !o.condition?.weak)
+  /**
+   * 織り込める第1波（**初出だけ**）。訂正は専用の文へ回す —— この句の言い回し
+   * 「〜に◯◯波を観測」は初出の形で、訂正は「〜の◯◯波に更新されました」と読む決まり。
+   *
+   * **波高の文（`tsunamiObservationUpdateToSegments`）と切り分けを揃えること。** 揃えないと、
+   * 欠測から復帰した観測点（到達確認の既読は落ちるが第1波の既読は残る）で、同じ第1波が
+   * この文と訂正の文の両方に出る。
+   */
+  const foldable = (o: TsunamiObservation) =>
+    spokenFirstWaves?.get(o.name) === undefined ? firstWaveParts(o) : null
   // 第1波の時刻が読めた地点は「〇時〇分に押し波を観測」、読めない地点（`FirstHeight` が
   // `Condition`「第１波識別不能」だけを持つ形）は従来どおり「到達を確認」。**地点ごとに
   // 述語の語幹を持たせる**ので、両方が混じっても 1 文に並べられる。
   const clauseOf = (o: TsunamiObservation): string => {
-    const fw = firstWaveParts(o)
+    const fw = foldable(o)
     return fw ? `で${fw.time}に${fw.initial}を観測` : 'で到達を確認'
   }
   // **第1波の時刻を読める地点が 1 つも無ければ、従来の一文へ落とす。** 句が「〇〇で到達を
@@ -2704,7 +2748,7 @@ export function tsunamiArrivalToSegments(obs: TsunamiObservation[], maxPoints = 
   //
   // **見出しは「観測中」「微弱」の 2 群に 1 回だけ。** 群ごとに付けると、両方が揃った報で
   // 同じ見出しが「また、」を挟んで 2 回鳴る。
-  const anyTimed = shown.some(o => firstWaveParts(o) !== null)
+  const anyTimed = shown.some(o => foldable(o) !== null)
   const listOf = (items: TsunamiObservation[], tail: string): SpeechSegment[] => {
     if (items.length === 0) return []
     return anyTimed
@@ -2721,8 +2765,12 @@ export function tsunamiArrivalToSegments(obs: TsunamiObservation[], maxPoints = 
   ]
 }
 
-export function tsunamiArrivalToText(obs: TsunamiObservation[], maxPoints = 5): string {
-  return joinSegments(tsunamiArrivalToSegments(obs, maxPoints))
+export function tsunamiArrivalToText(
+  obs: TsunamiObservation[],
+  maxPoints = 5,
+  spokenFirstWaves?: SpokenFirstWaveLookup,
+): string {
+  return joinSegments(tsunamiArrivalToSegments(obs, maxPoints, spokenFirstWaves))
 }
 
 /** 最大波の観測時刻だけが更新された観測点を読み上げる件数の上限。 */

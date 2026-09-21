@@ -1581,7 +1581,9 @@ describe で固定してある。
   standard は `validDateTime` を持たないため、同じ 90 秒後に解除電文で消える
 - **津波誤報取消**: `TEST_AUTO_DISMISS_MS`（90 秒）後に取消電文が届き 10 秒間の解除表示（DMDSS は `retracted` で「取消」表示、standard は理由なしで「解除」表示）
 - **変化の小さい続報テスト**: ここだけ `TEST_AUTO_DISMISS_MS` を使わず、**段数から導く**
-  （`TEST_TSUNAMI_QUIET_STEP_MS` × 段数 ＋ `TEST_TSUNAMI_QUIET_TAIL_MS`。現在は 10 秒 × 8 段 ＋ 20 秒）。
+  （`TEST_TSUNAMI_QUIET_STEP_MS` × 段数 ＋ `TEST_TSUNAMI_QUIET_TAIL_MS`）。**段数はここへ書かない**
+  —— 実装（`simulateTsunamiQuietReports` の `steps`）が持つ値で、段を足すたびに写した数だけが古くなる
+  （実際にずれていた）。
   固定値から引き算する形にしていたころ、段を 1 つ足しただけで最後の報の余裕が 20 秒から 10 秒へ縮んだ
   —— **段を足した人にはその劣化が見えない**。導く形にすれば、段が増えても最後の報は同じだけ読む時間を持てる
 

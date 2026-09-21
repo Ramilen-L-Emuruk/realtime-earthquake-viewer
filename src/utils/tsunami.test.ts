@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
   isWarningLevelWhileObserving,
+  changedObservationFields,
   importantBadgeText,
   forecastHeightImportantBadge,
   estimationBadges,
@@ -1300,6 +1301,60 @@ describe('observationMaxHeightTimeText: 最大波の観測時刻', () => {
       maxHeightDateTime: '2026-01-01T12:40:00+09:00',
       condition: { maxHeightMissing: true },
     }))).toBe('')
+  })
+})
+
+// カードの行に出す「どの項目が動いたか」の印。波高の既定色を白へ変えたので、
+// 等級の色で塗ってある波高も対象になった（文字色で出していた頃は色が衝突して当てられなかった）。
+describe('changedObservationFields: どの項目が動いたか', () => {
+  const obs = (o: Partial<TsunamiObservation>): TsunamiObservation => ({ name: '大船渡', ...o })
+  const heights = (v?: { value: number; over?: boolean }) =>
+    new Map(v ? [['大船渡', v]] : [])
+
+  // 正: 波高が上がったら波高の印
+  it('正: 波高が上がったら波高に印が付く', () => {
+    const f = changedObservationFields(
+      obs({ height: { value: 3.0, description: '3.0m' } }), undefined, undefined, heights({ value: 1.2 }),
+    )
+    expect(f.has('height')).toBe(true)
+  })
+
+  // 対照: 据え置きなら付かない（下方修正も。記憶が高水位マーク式なのと対）
+  it('対照: 波高が据え置き・下方修正なら印は付かない', () => {
+    const same = changedObservationFields(
+      obs({ height: { value: 3.0, description: '3.0m' } }), undefined, undefined, heights({ value: 3.0 }),
+    )
+    expect(same.has('height')).toBe(false)
+    const lowered = changedObservationFields(
+      obs({ height: { value: 1.2, description: '1.2m' } }), undefined, undefined, heights({ value: 3.0 }),
+    )
+    expect(lowered.has('height')).toBe(false)
+  })
+
+  // 安全弁: 「○m以上」への昇格は値が同じでも印を付ける（潮位計が振り切れた＝いちばん見せたい変化）
+  it('安全弁: 値が同じでも「以上」が付いたら印が付く', () => {
+    const f = changedObservationFields(
+      obs({ height: { value: 1.2, description: '1.2m以上', over: true } }),
+      undefined, undefined, heights({ value: 1.2 }),
+    )
+    expect(f.has('height')).toBe(true)
+  })
+
+  // 安全弁: 時刻・第1波の判定は波高と独立（別の軸で動く）
+  it('安全弁: 波高が動かなくても時刻・第1波は別に判定する', () => {
+    const f = changedObservationFields(
+      obs({
+        height: { value: 3.0, description: '3.0m' },
+        maxHeightRevise: '更新',
+        maxHeightDateTime: '2024-01-01T16:41:00+09:00',
+        arrivalTime: '2024-01-01T16:13:00+09:00',
+        initial: '引き',
+      }),
+      '2024-01-01T16:23:00+09:00', undefined, heights({ value: 3.0 }),
+    )
+    expect(f.has('maxHeightTime')).toBe(true)
+    expect(f.has('firstWave')).toBe(true)
+    expect(f.has('height')).toBe(false)
   })
 })
 

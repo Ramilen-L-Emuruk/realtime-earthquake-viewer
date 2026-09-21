@@ -1902,6 +1902,36 @@ export function createTestTsunamiMaxHeightTimeUpdate(prev: JMATsunami): JMATsuna
   }
 }
 
+/**
+ * 沖合の観測点で、最大波の観測時刻だけが更新された報。
+ *
+ * **沖合の行に印が出るところは、ここでしか実機に出せない。** 沖合の観測点を載せるのは
+ * 沖合の津波観測に関する情報（VTSE52）だけで、他の段はどれも沿岸の観測点しか動かさない。
+ * カードの沖合の行は別のコンポーネント（`TsunamiObservationRow`）で描いているので、
+ * 判定結果の受け渡しを落としても**そこだけ印が出ない**という形で静かに壊れる（実際に壊れていた）。
+ *
+ * **沖合の観測点だけを載せる。** 実電文では沿岸（VTSE51）と沖合（VTSE52）が別の電文で、
+ * 1 通に混ぜた形は存在しない。沿岸の観測点は続報のマージが前報から引き継ぐ
+ * （→ `mergeTsunamiObservations`。沿岸と沖合は別の集合として upsert する）。
+ *
+ * **「観測中」の点は動かさない。** 沖合で `Condition` が「観測中」のまま `Revise` が「更新」に
+ * なるのは「津波警報相当を観測」という別の合図なので（→ `isWarningLevelWhileObserving`）、
+ * 時刻の更新と混ぜると確かめたい文が変わる。
+ */
+export function createTestTsunamiOffshoreMaxHeightTimeUpdate(prev: JMATsunami): JMATsunami {
+  const report = asObservationReport(prev, 'offshore-maxheighttime')
+  const advanced = new Date(new Date(report.time).getTime() - 60000).toISOString()
+  return {
+    ...report,
+    infoName: '沖合の津波観測に関する情報',
+    observations: (prev.observations ?? [])
+      .filter(o => o.offshore)
+      .map(o => o.height && !o.condition?.observing
+        ? { ...o, maxHeightRevise: '更新', maxHeightDateTime: advanced }
+        : o),
+  }
+}
+
 /** 第1波の訂正テストで、到達時刻を直す観測点。 */
 const FIRST_WAVE_UPDATE_STATION = '室蘭港'
 
