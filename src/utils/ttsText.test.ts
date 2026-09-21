@@ -334,7 +334,7 @@ describe('eewIntensityToText: 長周期地震動階級の読み上げ', () => {
 })
 
 // 助詞「で」は末尾（述語の直前）にだけ置く。階級ごとの句末に付けると一文字の「で」が
-// 読点で挟まれ、読み上げがぶつ切りに聞こえるため（ttsText.ts の buildRegionText 参照）。
+// 読点で挟まれ、読み上げがぶつ切りに聞こえるため（ttsText.ts の buildRegionSegments 参照）。
 // 観測点座標（station-coords.json）は未読み込みのため、区域名は県単位にまとめられず
 // points の addr がそのまま列挙される。
 describe('earthquakeToText: 震度階級ごとの地域列挙', () => {
