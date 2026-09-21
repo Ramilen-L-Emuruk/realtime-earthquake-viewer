@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { eewEpicenterRankLabel, eewMagnitudeRankLabel, eewMagnitudePointsLabel, isEewHypocenterSettled, eewForecastChangeText, calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, calcEEWCancelTime, calcFeltRadiusKm, diffHypoInfoEvents, computeSingleEEWLevel, eewMaxLpgmClass, eewMaxScale, eewMaxScaleInfo, isForecastScaleHigher, eewNoForecastReason, canPresentLpgmClass, eewSerial, selectEEWSoundType, eewPhase2ScaleStabilityMs, EEW_PHASE2_STABILITY_SMALL_MS, EEW_PHASE2_STABILITY_LARGE_MS, isEewAreaArrived, selectActiveEews, type HypoInfoPendingMissing } from './eew'
+import { eewEpicenterRankLabel, eewMagnitudeRankLabel, eewMagnitudePointsLabel, isEewHypocenterSettled, eewForecastChangeText, calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, calcEEWCancelTime, calcFeltRadiusKm, diffHypoInfoEvents, computeSingleEEWLevel, eewMaxLpgmClass, eewMaxScale, eewMaxScaleInfo, isForecastScaleHigher, eewNoForecastReason, canPresentLpgmClass, eewSerial, selectEEWSoundType, eewPhase2ScaleStabilityMs, EEW_PHASE2_STABILITY_SMALL_MS, EEW_PHASE2_STABILITY_LARGE_MS, isEewAreaArrived, selectActiveEews, isUnannouncedHypocenter, EEW_HYPOCENTER_RESTATE_KM, type HypoInfoPendingMissing, type AnnouncedHypocenter } from './eew'
 import type { YahooHypoInfoItem } from '../services/kyoshin'
 import type { EEWAlert, EEWRegion, IntensityScale, LpgmClass } from '../types/earthquake'
 
@@ -450,6 +450,61 @@ describe('isForecastScaleHigher', () => {
     // 震度が取れない報（scale=0）では読む値が無い。「以上」が立っていても真にしない
     expect(isForecastScaleHigher({ scale: 0, orAbove: false }, undefined)).toBe(false)
     expect(isForecastScaleHigher({ scale: 0, orAbove: true }, undefined)).toBe(false)
+  })
+})
+
+describe('isUnannouncedHypocenter（震源の言い直しを判定する）', () => {
+  // 2024-01-03 18:48（石川県能登地方 M5.0）の実電文が 5.4 秒で辿った推移。
+  const NOTO_LAND = { name: '石川県能登地方', lat: 37.4, lng: 136.9 }
+  const NOTO_SEA = { name: '能登半島沖', lat: 37.7, lng: 136.3 }
+
+  const hypo = (name: string, latitude: number, longitude: number) => ({ name, latitude, longitude })
+
+  it('正: 名乗ったどれとも違う地名で、どれからも離れていれば言い直す', () => {
+    // 石川県能登地方 → 日本海中部（117km）。実電文の第 2 報がこれ
+    expect(isUnannouncedHypocenter([NOTO_LAND], hypo('日本海中部', 38.1, 135.9))).toBe(true)
+  })
+
+  it('対照: 一度名乗った場所へ戻っただけなら黙る（直前とだけ比べない）', () => {
+    // 実電文の第 7 報。直前に名乗った能登半島沖からは 69km 離れているが、
+    // 初報で名乗った石川県能登地方からは 11km しかない
+    const announced = [NOTO_LAND, NOTO_SEA]
+    expect(isUnannouncedHypocenter(announced, hypo('石川県能登地方', 37.3, 136.9))).toBe(false)
+    // 相手が直前の 1 つだけなら「動いた」と判定されてしまう（この修正が覆した挙動）
+    expect(isUnannouncedHypocenter([NOTO_SEA], hypo('石川県能登地方', 37.3, 136.9))).toBe(true)
+  })
+
+  it('対照: 地名が同じなら、どれだけ離れていても黙る', () => {
+    expect(isUnannouncedHypocenter([NOTO_LAND], hypo('石川県能登地方', 30.0, 131.0))).toBe(false)
+  })
+
+  it('対照: 地名が新しくても、名乗ったどれかの近くなら黙る（区域の境目をまたいだだけ）', () => {
+    expect(isUnannouncedHypocenter([NOTO_LAND], hypo('能登半島沖', 37.5, 136.7))).toBe(false)
+  })
+
+  it('境界: ちょうど下限の距離では黙る（超えたぶんだけ言い直す）', () => {
+    // 経度を固定して真北へ、ちょうど下限だけ離れた点を作る
+    const deltaDeg = EEW_HYPOCENTER_RESTATE_KM / 111.19492664455873
+    expect(isUnannouncedHypocenter([NOTO_LAND], hypo('別の場所', NOTO_LAND.lat + deltaDeg, NOTO_LAND.lng)))
+      .toBe(false)
+    expect(isUnannouncedHypocenter([NOTO_LAND], hypo('別の場所', NOTO_LAND.lat + deltaDeg * 1.01, NOTO_LAND.lng)))
+      .toBe(true)
+  })
+
+  it('安全弁: まだ何も名乗っていなければ偽（初報を読むかは別の判定が決める）', () => {
+    expect(isUnannouncedHypocenter([], hypo('石川県能登地方', 37.4, 136.9))).toBe(false)
+  })
+
+  it('安全弁: 位置不明のセンチネルへ落ちた続報では言い直さない', () => {
+    expect(isUnannouncedHypocenter([NOTO_LAND], hypo('遠地地震', -200, -200))).toBe(false)
+  })
+
+  it('安全弁: 位置を持たない記録は距離の比較に参加しないが、地名の一致では黙らせる', () => {
+    const unknownPos: AnnouncedHypocenter = { name: '震源不明', lat: null, lng: null }
+    // 地名が違えば、位置を持たない記録は言い直しを止めない
+    expect(isUnannouncedHypocenter([unknownPos], hypo('石川県能登地方', 37.4, 136.9))).toBe(true)
+    // 同じ地名なら黙る
+    expect(isUnannouncedHypocenter([unknownPos], hypo('震源不明', 37.4, 136.9))).toBe(false)
   })
 })
 

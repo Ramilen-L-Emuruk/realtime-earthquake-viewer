@@ -1102,10 +1102,10 @@ describe('EEW 読み上げの文言と発話順序', () => {
       ])
     })
 
-    // 震源の大幅更新は古い音を止めずに予約を積み直す（文面が「震源を更新、」で区分に触れない
-    // ため、止める価値がない）。そのとき「鳴っている」という記録まで落としてしまうと、直後の
-    // 格上げで言い直しが発火せず、区分の告知が第 2 フェーズの前置きまで遅れる。
-    it('震源の大幅更新を挟んでも、鳴っている最中の格上げは言い直しになる', async () => {
+    // 震源の大幅更新と格上げが重なったら、**1 本にまとめる**。第 1 フェーズの予約は key ごとに
+    // 1 件で、発話の直前に震源も区分も決め直すため、「緊急地震速報、〇〇で地震。」が新しい震源の
+    // 告知を兼ねる。かつては 2 本積み、同じ地名を「震源を更新」「緊急地震速報」と続けて読んでいた。
+    it('震源の大幅更新と格上げが重なったら、警報の名乗りが震源の言い直しを兼ねる', async () => {
       const moved = { name: '種子島近海', latitude: 30.5, longitude: 131.0 }
       const handle = setup()
       const release = holdNextSpeech()
@@ -1123,20 +1123,18 @@ describe('EEW 読み上げの文言と発話順序', () => {
       release()
       await flushMicrotasks()
 
-      // 震源更新を伝えたうえで、格上げは言い直しで伝わる（前置きへ落ちない）
+      // 新しい震源と格上げが 1 本で伝わる（前置きへ落ちない・同じ地名を 2 回読まない）
       expect(spokenTexts()).toEqual([
         '地震動予報、日向灘で地震。',
-        '震源を更新、種子島近海で地震。',
         '緊急地震速報、種子島近海で地震。',
         '予想最大震度5強。',
       ])
       expect(spokenTexts().some(t => t.includes('切り替わりました'))).toBe(false)
     })
 
-    // 同じ EEW でも予約は積み直される（震源の大幅更新は古い音を止めずに積む）ので、同一 eventId に
-    // 複数の予約が並ぶ。**記録を消すときに「自分が置いた分か」を見ないと、震源更新の予約が
-    // 言い直しの予約の印まで落とし**、二重読みが復活する。
-    it('震源更新の予約が先に順番を迎えても、言い直しの予約は消されない', async () => {
+    // 続報が密集しても、警報の名乗りは 1 回だけ。予約が key ごとに 1 件へ絞られたことと、
+    // 声にした区分の記録（`spokenEEWLevelsRef`）の両方で重複を防いでいる。
+    it('震源更新と格上げの続報が連投されても、警報の名乗りは 1 回だけ', async () => {
       const moved = { name: '種子島近海', latitude: 30.5, longitude: 131.0 }
       const handle = setup()
       const release1 = holdNextSpeech()
@@ -1305,6 +1303,25 @@ describe('EEW 読み上げの文言と発話順序', () => {
       await vi.advanceTimersByTimeAsync(300)
       await flushMicrotasks()
       expect(spokenTexts()).toEqual(['震源を更新、安芸灘で地震。', '予想最大震度5弱。'])
+    })
+
+    // 震源が未名乗りの場所へ一度動いてすぐ既知の場所へ戻る並び。言い直しは黙るのが正しいが、
+    // **黙るなら第 2 フェーズの既読も元へ戻さなければならない** —— 受信時に「旧震源の値を
+    // 基準に残さない」として落とした既読が消えたままだと、震度が 1 段も動いていないのに
+    // 「予想最大震度〇〇。」だけが理由の説明も無く二度読まれる（元のバグが形を変えただけになる）。
+    it('言い直しを黙らせたら、予想値の既読も元へ戻す（同じ震度を二度読まない）', async () => {
+      const handle = setup()
+      handle(makeEEW({ scaleTo: 50, severity: 'Forecast' }))
+      await advance(300)
+      expect(spokenTexts()).toEqual(['地震動予報、日向灘で地震。', '予想最大震度5強。'])
+      speakMock.mockClear()
+
+      // 未名乗りの場所へ動いた続報のすぐ後に、初報で名乗った場所へ戻る続報。震度は据え置き
+      handle(makeEEW({ serial: 2, scaleTo: 50, severity: 'Forecast', hypocenter: FAR_HYPO }))
+      handle(makeEEW({ serial: 3, scaleTo: 50, severity: 'Forecast' }))
+      await advance(5000)
+
+      expect(spokenTexts()).toEqual([])
     })
 
     // 旧震源での値を既読として残すと、新震源で確定した値が旧値を超えたときだけ報じられ、
@@ -2188,5 +2205,96 @@ describe('上限より長い発話（第 1.5 フェーズ）', () => {
     await advance(20000)
 
     expect(spokenTexts().some(t => t.includes('切り替わりました'))).toBe(true)
+  })
+})
+
+// 2024-01-03 18:48（石川県能登地方 M5.0）の実電文。**震源推定が 5.4 秒で 4 つの地名を辿った**
+// 速報の初期を、発表時刻と座標そのままで再生する。
+//
+// **区分と対象地方も実電文どおり**にすること（VXSE45 の 12 報は全報が警報級で、警報の対象地方は
+// 全報「北陸」）。予報級に置き換えると第 1.5 フェーズ（対象地方）が発火せず、発話の並びが実機と
+// 変わってしまう —— 実際に一度そう書いて、仕様書に載せた実機の記録と食い違った。
+//
+// 直す前はここで第 1 フェーズが 4 本チェーンへ積み上がり、実機で次のように鳴っていた（Playwright
+// ＋ 実 VOICEVOX で観測）。2 番目は 0.3 秒で差し替わった推定で、4 番目は初報と同じ地名。
+//
+//   緊急地震速報、石川県能登地方で地震。／北陸では強い揺れに警戒してください。
+//   ／震源を更新、日本海中部で地震。／震源を更新、能登半島沖で地震。
+//   ／震源を更新、石川県能登地方で地震。／予想最大震度5弱。
+describe('2024-01-03 18:48 の実電文（震源が区域の境目を往復する）', () => {
+  /** VXSE45 の 12 報。[初報からの経過 ms, 震央地名, 緯度, 経度]。 */
+  const REPORTS: [number, string, number, number][] = [
+    [0, '石川県能登地方', 37.4, 136.9],
+    [704, '日本海中部', 38.1, 135.9],
+    [1017, '能登半島沖', 37.7, 136.3],
+    [2457, '能登半島沖', 37.7, 136.3],
+    [4045, '能登半島沖', 37.5, 136.6],
+    [4585, '能登半島沖', 37.4, 136.7],
+    [5415, '石川県能登地方', 37.3, 136.9],
+    [13510, '石川県能登地方', 37.3, 136.9],
+    [22537, '能登半島沖', 37.5, 136.7],
+    [28291, '能登半島沖', 37.5, 136.7],
+    [48221, '能登半島沖', 37.5, 136.7],
+    [58317, '能登半島沖', 37.5, 136.7],
+  ]
+
+  async function replayReports(handle: ReturnType<typeof setup>) {
+    let now = 0
+    for (let i = 0; i < REPORTS.length; i++) {
+      const [at, name, latitude, longitude] = REPORTS[i]
+      await advance(at - now)
+      now = at
+      handle(makeEEW({
+        serial: i + 1, scaleTo: 45, severity: 'Warning', warningRegions: ['北陸'],
+        hypocenter: { name, latitude, longitude },
+      }))
+    }
+    await advance(60_000)
+  }
+
+  // **実機（DMDSS 版 dev ＋ 実 VOICEVOX）で同じ再生をしたときと同じ並びになる。** 言い直しが
+  // 1 度も要らないのは、警報級では第 1.5 フェーズ（対象地方）が挟まるぶん第 1 フェーズの予約に
+  // 順番が回るのが遅く、そのころには震源が初報の近くへ戻っているため。
+  //
+  // **「0 回」は実装の必然ではなく、この電文のこの並びでの結果。** 予約に順番が回るのは
+  // 初報（2 チャンク）＋対象地方（1 チャンク）＝ `SPEAK_SYNTH_MS * 2 + SPEAK_CHUNK_MS * 3`
+  // ＝ 4400ms 後で、そのとき最新なのは 4045ms の報（初報の震源から 28.7km ＝ 下限以内）。
+  // ひとつ前の 2457ms の報は 62.5km あり、**余裕は 355ms しかない**。`SPEAK_SYNTH_MS` /
+  // `SPEAK_CHUNK_MS` を触るか、初報・対象地方の文言でチャンク数が変わると 1 回へ転ぶ ——
+  // そのときは実装の劣化ではなく「発話の直前に決め直す」設計が働いた結果なので、期待値の側を
+  // 実機で測り直すこと。**回帰として本当に守りたいのは「積み上がらない」ことで**、そちらは
+  // 次のテスト（差し替わった推定・出戻りを読まない）が担う。
+  it('正: 実機と同じ 3 文に収まり、震源の言い直しは 1 度も要らない', async () => {
+    installChunkedSpeak([])
+    const handle = setup()
+    await replayReports(handle)
+
+    expect(spokenTexts()).toEqual([
+      '緊急地震速報、石川県能登地方で地震。',
+      '北陸では強い揺れに警戒してください。',
+      '予想最大震度5弱。',
+    ])
+  })
+
+  it('正: 差し替わった推定も、初報と同じ地名への出戻りも声にならない', async () => {
+    installChunkedSpeak([])
+    const handle = setup()
+    await replayReports(handle)
+
+    // 0.3 秒で差し替わった第 2 報の推定。受信時の報で文を固定していたころは読んでいた
+    expect(spokenTexts().some(t => t.includes('日本海中部'))).toBe(false)
+    // 初報と同じ地名へ戻った第 7 報も言い直さない（名乗りの 1 回だけ）
+    expect(spokenTexts().filter(t => t.includes('石川県能登地方'))).toHaveLength(1)
+    expect(spokenTexts().some(t => t.startsWith('震源を更新'))).toBe(false)
+  })
+
+  it('安全弁: 名乗り・対象地方・予想値はどれも声になる', async () => {
+    installChunkedSpeak([])
+    const handle = setup()
+    await replayReports(handle)
+
+    expect(spokenTexts()[0]).toBe('緊急地震速報、石川県能登地方で地震。')
+    expect(spokenTexts()).toContain('北陸では強い揺れに警戒してください。')
+    expect(spokenTexts()).toContain('予想最大震度5弱。')
   })
 })
