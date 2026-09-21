@@ -11,7 +11,7 @@ import {
   eewMaxScaleInfo, isForecastScaleHigher, isForecastLpgmHigher, eewNoForecastReason, computeSingleEEWLevel, canPresentLpgmClass,
   selectEEWSoundType, eewKindLabel, eewPhase2ScaleStabilityMs, sortEewWarningRegions,
   EEW_PHASE2_STABILITY_MAX_WAIT_MS, EEW_PHASE2_LPGM_STABILITY_MS, eewMaxLpgmClassInfo,
-  isUnannouncedHypocenter,
+  isUnannouncedHypocenter, eewEventKey,
   type EewMaxScaleInfo, type EewMaxLpgmClassInfo, type AnnouncedHypocenter,
 } from '../utils/eew'
 import { hasKnownEpicenter } from '../utils/geo'
@@ -21,6 +21,7 @@ import { playAlertSound, ttsDelayFor, maxTtsDelay, type AlertSoundType } from '.
 import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, stopSpeech, isAudioPlaying, type PrewarmedSpeech, type ShouldStillPlay, type SpeechOutcome } from '../utils/voicevox'
 import { rollbackSpokenEntry } from '../utils/rollbackSpoken'
 import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewWarningRegionsText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiAreaGradeChangeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, tsunamiMissingToSegments, selectMissingToSpeak, tsunamiWarningLevelToSegments, selectWarningLevelToSpeak, joinWithAlso, nankaiToText, nankaiCommentaryToText, kohatsuToText, earthquakeCountToText, estimatedIntensityToText, lpgmToText, telegramTextToSpeak, createQuakeSpokenState, applySpokenRefs, tsunamiTideToSegments, tsunamiMaxHeightTimeToSegments, selectMaxHeightTimeUpdatesToSpeak, tsunamiFirstWaveToSegments, selectFirstWaveUpdatesToSpeak, tsunamiObservationNoChangeSegments, type TtsSpeechOptions, type QuakeSpokenState } from '../utils/ttsText'
+import { type EewSpeakingCardFollow } from './useEewSpeakingCard'
 import { joinSegments, plain, hasFollowTarget, hasUnreceivedFollowTarget, hasTelegramTextFollowTarget, hasBorrowedHypocenterFollowTarget, TELEGRAM_TEXT_OPEN_TARGET_KINDS, telegramTextSubject, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
 import { log, createLogThrottle } from '../utils/logger'
 import { TAB_PRIORITY, type TabPriority } from '../utils/tabPriority'
@@ -860,6 +861,15 @@ export interface LiveEventHandlerDeps {
    */
   borrowedHypocenterFollow?: SpeechFollowApi
   /**
+   * 緊急地震速報の読み上げが、いまどの地震を語っているかを画面へ伝える受け口。
+   *
+   * **上の 4 つとは別の仕組み**にする。あちらは読み上げ文の断片（`SpeechSegment`）が持つ参照を
+   * 見て範囲を判定するもので、緊急地震速報の読み上げは断片列を通らない（`chainEEWSpeech` は
+   * 文字列を 1 本渡すだけ）。ここが必要とするのは対象の eventId だけなので、範囲の判定も
+   * rAF も要らない。
+   */
+  eewSpeakingCard?: EewSpeakingCardFollow
+  /**
    * 特別情報（南海トラフ臨時情報・後発地震注意情報・関連解説情報）の受信でパネルを開く。
    *
    * これらは地図に重ねた帯で伝える情報で、パネル側に居場所がない（切り替えるタブが無い）。
@@ -904,7 +914,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     settings, title, earthquakesRef, tsunamisRef, kyoshinDetectedRef, defaultTabRef,
     setActiveTabRealtimeForKyoshin, setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate,
     setActiveTabRealtimeUrgent, followSpeechTab, preSpeechTab, speechFollow, unreceivedFollow, telegramTextFollow,
-    borrowedHypocenterFollow,
+    borrowedHypocenterFollow, eewSpeakingCard,
     expandPanelForSpecialInfo,
     revertToDefaultTab, selectQuake, openLpgmFromQuake, openEstimatedIntensity,
     closeDistributionOnQuakeReport,
@@ -1349,6 +1359,16 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   }
 
   const chainEEWSpeech = (
+    /**
+     * 語る対象の eventId（{@link eewEventKey}）。**画面側で「いま声が語っているカード」を
+     * 示すために使う** —— 同時多発すると読み上げは eventId をまたいで交錯し、震源名を声に
+     * するのは第 1 フェーズだけなので、予想値の発話だけでは何の地震か判らない（理由の詳細は
+     * `useEewSpeakingCard`）。
+     *
+     * **省略可能にしないこと。** 渡し忘れても画面が動かないだけで例外もログも出ないため、
+     * 経路を足したときの抜けを型検査で捕まえる。
+     */
+    key: string,
     speak: () => string | {
       text: string
       shouldStillPlay?: ShouldStillPlay
@@ -1371,6 +1391,14 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     if (cutCurrent) stopSpeech()
     let settled: ((spoke: boolean) => void) | undefined
     let spoke = false
+    /**
+     * 「語っているカード」の印を持つ世代（{@link EewSpeakingCardFollow}）。黙る予約では null のまま。
+     *
+     * **eventId ではなく世代で後始末する。** 文字列で照合すると、リプレイの開始・停止をまたいで
+     * 同じ eventId が復帰したときに、取り残されたこの発話の後始末が新しい発話の印を落とす
+     * （理由は `useEewSpeakingCard`）。
+     */
+    let speakingCardToken: number | null = null
     eewSpeechChainRef.current = capSpeechWait(prev).then(() => {
       const spoken = speak()
       if (spoken === null) return
@@ -1379,8 +1407,19 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         : spoken
       settled = onSettled
       // 声に出すものが決まった瞬間に画面も合わせる。黙る予約（spoken === null）では動かさない。
-      // **追従の失敗で読み上げを落とさない。** ここから例外が抜けると本文が鳴らないまま catch に
-      // 落ち、警報が声にならない（`voicevox.ts` の `onChunkScheduled` と同じ方針）。
+      //
+      // **画面を合わせる処理の失敗で読み上げを落とさない。** ここから例外が抜けると本文が
+      // 鳴らないまま catch に落ち、警報が声にならない（`voicevox.ts` の `onChunkScheduled` と
+      // 同じ方針）。カードの印もタブ追従も、どちらも「声に出すものが決まった」この位置で
+      // 画面を動かすものなので、両方を守る。
+      //
+      // **ただし 1 つの try へまとめないこと。** まとめると先に置いた方（印）が投げただけで
+      // タブ追従が一度も呼ばれず、**おまけの表示の失敗が既存の機能を巻き込む**。記録も 1 本に
+      // なってどちらが落ちたか読めない。引用元の `onChunkScheduled` も、囲っているのは
+      // 単一の副作用だけ。
+      try {
+        speakingCardToken = eewSpeakingCard?.begin(key) ?? null
+      } catch (err) { log.warn('[eew] 語っているカードの印を立てられず（読み上げは続行）', err) }
       try { follow?.() } catch (err) { log.warn('[eew] 読み上げ追従に失敗（読み上げは続行）', err) }
       return capSpeechWait(
         speakWithVoicevox(settings.voicevoxUrl, text, settings.voicevoxSpeakerId, settings.soundVolume, shouldStillPlay),
@@ -1403,7 +1442,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       })
     })
       .catch(err => log.warn('[eew] 読み上げに失敗', err))
-      .finally(() => { eewSpeechPendingRef.current--; settled?.(spoke) })
+      .finally(() => {
+        eewSpeechPendingRef.current--
+        settled?.(spoke)
+        // 印を立てた発話だけが後始末する。**立てていない発話（黙る予約・`begin` が投げた回）から
+        // 呼ばないこと** —— 受け口は世代で照合するので害は無いが、渡すトークンが無い。
+        if (speakingCardToken !== null) eewSpeakingCard?.end(speakingCardToken)
+      })
   }
 
   /**
@@ -2654,7 +2699,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     } else if (event.kind === 'eew') {
       if (event.test) return
 
-      const key = event.issue?.eventId ?? event.id
+      // **述語を共有する。** この鍵は読み上げ側の記憶に加えて、画面が「いま声が語っている
+      // カード」を引き当てる鍵も兼ねる（`RealtimeTab` 側も `eewEventKey` で引く）。
+      // 導出を書き写すと、片方だけ変えたときの症状が「カードが光らない」だけで
+      // 例外もログも出ない。
+      const key = eewEventKey(event)
 
       if (event.cancelled) {
         // EEW キャンセル（誤報取消）または解除（最終報満了）: レベル追跡から除去
@@ -2680,6 +2729,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
               // 誤報取消は「手動選択より強い」側の通知なので、追従も eewUrgent で出す
               // （eewUpdate だと、取消を読み上げる直前に手動で別タブへ移られた場合に弾かれる）。
               scheduleSpeech(ttsDelayFor('eewCancel'), () => chainEEWSpeech(
+                key,
                 () => eewCancelToText(event),
                 () => followSpeechTab('realtime', TAB_PRIORITY.eewUrgent),
               ))
@@ -2856,7 +2906,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           if (eewPhase2TokensRef.current.has(key)) return
           const token = {}
           eewPhase2TokensRef.current.set(key, token)
-          chainEEWSpeech(() => {
+          chainEEWSpeech(key, () => {
             // 震源の大幅更新で予約を破棄した場合、この予約はここで降りる
             // （Promise は途中で止められないため、識別子の一致で判別する）。
             if (eewPhase2TokensRef.current.get(key) !== token) return null
@@ -3359,6 +3409,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // 新規発報は「手動選択より強い」側なので追従も eewUrgent。震源の大幅更新・警報への
           // 言い直しは既に発表中の EEW の言い直しなので eewUpdate（受信時要求の使い分けと揃える）。
           chainEEWSpeech(
+            key,
             () => {
               // 自分が言い直しとして積まれていたなら、その予約はここで消化される。以後の格上げは
               // 改めて言い直せる（警報を読めば下で既読の区分が入るので既読側で弾かれ、取消で
@@ -3473,7 +3524,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           if (eewRegionTokensRef.current.has(key)) return
           const token = {}
           eewRegionTokensRef.current.set(key, token)
-          chainEEWSpeech(() => {
+          chainEEWSpeech(key, () => {
             if (eewRegionTokensRef.current.get(key) !== token) return null
             eewRegionTokensRef.current.delete(key)
             // 取消・自動解除で消えていたら読まない（第 1・第 2 フェーズと同じ）。
@@ -4567,7 +4618,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // 無関係なバナーが開いたままになる。
     telegramTextFollow?.reset()
     borrowedHypocenterFollow?.reset()
-  }, [cancelPendingSpeech, speechFollow, unreceivedFollow, telegramTextFollow, borrowedHypocenterFollow])
+    // 「いま声が語っている緊急地震速報」の印も落とす。切り替え前の eventId が残ると、
+    // 新しい時間軸で同じ eventId の地震が来るまで消えない（猶予のタイマーは鳴り終わりで
+    // 張るので、割り込みで消えた発話の分は張られない）。
+    eewSpeakingCard?.reset()
+  }, [cancelPendingSpeech, speechFollow, unreceivedFollow, telegramTextFollow, borrowedHypocenterFollow, eewSpeakingCard])
 
   // pre-window イベントから T 時点の追跡 ref を復元する（サイレント注入後の正確な音判定に必要）
   const restorePreWindowTracking = useCallback((preFiltered: ReplayEntry[]) => {
@@ -4634,7 +4689,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           }
         } else if (ev.kind === 'eew') {
           const eew = ev as EEWAlert
-          const key = eew.issue?.eventId ?? eew.id
+          const key = eewEventKey(eew)
           /**
            * **投げうる計算を先に済ませてから ref へ書く。**
            *
