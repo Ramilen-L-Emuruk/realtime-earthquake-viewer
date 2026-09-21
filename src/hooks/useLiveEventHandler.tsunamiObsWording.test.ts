@@ -258,7 +258,7 @@ describe('津波観測情報の読み上げ: 新旧の言い分けと並び', ()
     ], [], 'tsunami-obs-2') as never)
     await settle()
     // 深刻なのは更新された輪島港なので、更新の文が先に来て「また、」で新規が続く
-    expect(spokenTexts()[1]).toContain('石川県能登、輪島港で1.2メートルに更新されました。')
+    expect(spokenTexts()[1]).toContain('石川県能登、輪島港で1.2メートルへ更新されました。')
     expect(spokenTexts()[1]).toContain('また、新たに、次の地点で津波を観測しました。石川県能登、珠洲市長橋で0.5メートルを観測しました。')
   })
 
@@ -285,10 +285,10 @@ describe('津波観測情報の読み上げ: 新旧の言い分けと並び', ()
     await settle()
     const second = spokenTexts()[1]
     // 波高の句には織り込まない（初出の言い回しになってしまうため）。
-    expect(second).toContain('輪島港で1.2メートルに更新されました。')
+    expect(second).toContain('輪島港で1.2メートルへ更新されました。')
     expect(second).not.toContain('21時32分に押し波が到達し')
     // 訂正は専用の文で、助詞は「の」。
-    expect(second).toContain('21時32分の押し波に更新されました。')
+    expect(second).toContain('21時32分の押し波へ更新されました。')
   })
 
   // 安全弁: 鳴らなかった観測点を既読にしない。前回の読み上げが割り込まれていれば、
@@ -431,7 +431,7 @@ describe('津波の読み上げ: 話題が変わるところを「また、」�
     ], [], 'tsunami-obs-2') as never)
     await settle()
     const text = spokenTexts()[1]
-    expect(text).toContain('石川県能登、輪島港で1.2メートルに更新されました。')
+    expect(text).toContain('石川県能登、輪島港で1.2メートルへ更新されました。')
     expect(text).toContain('また、新たに、次の地点で津波を観測しました。石川県能登、珠洲市長橋で0.5メートルを観測しました。')
     expect(text).toContain('また、石川県能登、七尾港で到達を確認しました。')
     expect(text.match(/また、/g)).toHaveLength(2)

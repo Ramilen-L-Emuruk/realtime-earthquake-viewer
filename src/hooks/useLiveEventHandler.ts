@@ -299,6 +299,14 @@ const LATEST_SPEECH_TOPIC_MAX = 200
 // 利用者から見ればどちらも「さっき変わったところ」の印で、長さを違える理由が説明できない。
 const TSUNAMI_BADGE_TTL_MS = 60000
 
+/**
+ * 新規発報で「前値なし」として渡す空の記憶（→ `fieldsOf552`）。
+ *
+ * 毎回 `new Map()` を作らずに使い回す。**中身を書き換えないこと** —— 読む側
+ * （`changedObservationFields`）は `get` しかしないので、共有して差し支えない。
+ */
+const NO_PREV_HEIGHTS: ReadonlyMap<string, { value: number; over?: boolean }> = new Map()
+
 /** 指定時間だけ待つ（優先度の待ち合わせで、待つ相手の Promise がまだ無いときに使う）。 */
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => { setTimeout(resolve, ms) })
@@ -4019,7 +4027,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             : []
           const timeSegments = tsunamiMaxHeightTimeToSegments(timeUpdatedObs, maxObsPoints)
           // **初出と訂正は文型が違うので別の文にする**（初出＝「〜に押し波を観測しました」／
-          // 訂正＝「〜の押し波に更新されました」。助詞は述語で決まる）。
+          // 訂正＝「〜の押し波へ更新されました」。助詞は述語で決まる）。
           const firstWaveSegments = joinWithAlso(
             tsunamiFirstWaveToSegments(firstWaveNewObs, 'new', maxObsPoints),
             tsunamiFirstWaveToSegments(firstWaveUpdatedObs, 'updated', maxObsPoints),
@@ -4326,15 +4334,34 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       const prevFirstWaves552 = lastMaxObsFirstWaveRef.current
       const newStatusEntries: [string, ObsUpdateMark][] = []
       /**
+       * その報で動いた項目。**判定の本体は `utils/tsunami.ts`**（記憶は画面用を渡す）。
+       *
+       * **新規発報（`fresh`）では前値を渡さない。** 観測点の記憶は津波をまたいで残るので、前の津波で
+       * 見た同名の観測点と比べると「動いていない」に見える。**縦線（`status`）だけを `'new'` にしても
+       * 足りない** —— 項目の色はこの判定から出るので、行だけ緑で値が白いという中途半端な行になる
+       * （この巡で直した「初出なのに最大波の観測時刻だけ白」と同じ症状が、津波を跨いだときに戻る）。
+       * 前値が無ければ `changedObservationFields` は「値を持つ項目すべて」を返す。
+       */
+      const fieldsOf552 = (o: import('../types/earthquake').TsunamiObservation, fresh = false) =>
+        changedObservationFields(
+          o,
+          fresh ? undefined : prevTimes552.get(o.name),
+          fresh ? undefined : prevFirstWaves552.get(o.name),
+          fresh ? NO_PREV_HEIGHTS : prevMap552,
+        )
+      /**
        * 1 観測点ぶんの印を積む。**どの項目が動いたかまで持つ**（カードの行で、動いた項目を印の色で塗る）。
        *
        * `status` は行の左端の縦線で、従来どおり「その地点で何かあった」だけを言う。
        */
-      const pushStatus = (o: import('../types/earthquake').TsunamiObservation, status: 'new' | 'changed') => {
-        newStatusEntries.push([o.name, {
-          status,
-          fields: changedObservationFields(o, prevTimes552.get(o.name), prevFirstWaves552.get(o.name), prevMap552),
-        }])
+      const pushStatus = (
+        o: import('../types/earthquake').TsunamiObservation,
+        status: 'new' | 'changed',
+        fresh = false,
+        // 呼び出し側が既に数えていれば受け取る（同じ引数で 2 度評価しないため）
+        fields = fieldsOf552(o, fresh),
+      ) => {
+        newStatusEntries.push([o.name, { status, fields }])
       }
 
       // 等級を伝えていない電文（区域が空）も観測点更新として扱う。読み上げ側と同じ判定に
@@ -4347,13 +4374,23 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         // （最大波の観測時刻・第1波の訂正）。**判定の本体は `utils/tsunami.ts`。**
         //
         // 波高を持たない観測点（到達確認・欠測）は下の `newlyShownObs552` が担う。
-        const updatedObs552 = (event.observations ?? []).filter(o => o.height
-          && changedObservationFields(o, prevTimes552.get(o.name), prevFirstWaves552.get(o.name), prevMap552).size > 0)
-        // 波高を持たずに初めて現れた観測点（到達確認・欠測のどちらも）をスクロール・バッジ表示の
-        // 対象にする。**欠測を除外しないのは意図的** ―― 観測できなくなったこと自体が新しい事実で、
+        const updatedObs552 = (event.observations ?? []).filter(o => o.height && fieldsOf552(o).size > 0)
+        // 波高を持たない観測点（到達確認・欠測のどちらも）をスクロール・バッジ表示の対象にする。
+        // **欠測を除外しないのは意図的** ―― 観測できなくなったこと自体が新しい事実で、
         // 画面に出す価値がある（読み上げ側は文を言い分ける必要があるので除外しているが、
         // 「この報で行が変わった」という画面の印は同じ扱いでよい）。
-        const newlyShownObs552 = (event.observations ?? []).filter(o => !o.height && !seenObsNamesRef.current.has(o.name))
+        //
+        // **「初めて現れたか」だけで絞らない。** 一度でも載った名前は `seenObsNamesRef` に入るので、
+        // 名前の新しさだけで見ると**二度目以降は何が変わっても印が付かない**。実際に起きるのは
+        // 第1波の訂正（`FirstHeight/Revise` = 更新）と、到達確認だけだった地点に到達時刻が付く形で、
+        // **読み上げは両方とも名指しして読む**（`firstWaveChanged`）のに画面だけが黙っていた。
+        //
+        // **欠測へ転じたことは、いまも印にできない。** 画面用の記憶（`lastMaxObsHeightRef`）は
+        // 高水位マーク式で値を消さないため、「前の報では観測できていた」と「欠測のまま続いている」を
+        // 見分けられない。名前の有無で判定すると欠測の間ずっと毎報光る。**欠測のバッジ自体は出る**ので
+        // 情報は落ちないが、縦線の合図は付かない。直すには「前の報で欠測だったか」の記憶が要る。
+        const newlyShownObs552 = (event.observations ?? []).filter(o => !o.height
+          && (!seenObsNamesRef.current.has(o.name) || fieldsOf552(o).size > 0))
         if (updatedObs552.length > 0 || newlyShownObs552.length > 0) {
           // **読み上げが無い端末のタブ移動もここで出す。** 観測が動いたかどうかを知る判定は
           // ここにしかないため（読み上げが有効なら、同じ契機で TTS ブロックの追従が動くので
@@ -4396,11 +4433,15 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           setFocusedDistrict({ districts: [], top: null, resetToTop: false, ts: Date.now() })
         }
         for (const o of updatedObs552) pushStatus(o, prevMap552.has(o.name) ? 'changed' : 'new')
-        for (const o of newlyShownObs552) pushStatus(o, 'new')
+        // **波高を持たない行は「名前を前に見たか」で新旧を決める。** `prevMap552` は波高の記憶で、
+        // この群の観測点は一度も入らない —— それを使うと第1波が訂正された既出の地点まで
+        // 「初めて出た値です」になる。
+        for (const o of newlyShownObs552) pushStatus(o, seenObsNamesRef.current.has(o.name) ? 'changed' : 'new')
       } else {
         const obsWithHeight552 = (event.observations ?? []).filter(o => !!o.height)
-        // 上と同じ（欠測を除外しない理由も同じ）。
-        const newlyShownObs552b = (event.observations ?? []).filter(o => !o.height && !seenObsNamesRef.current.has(o.name))
+        // 上と同じ（欠測を除外しない理由も、名前の新しさだけで絞らない理由も同じ）。
+        const newlyShownObs552b = (event.observations ?? []).filter(o => !o.height
+          && (!seenObsNamesRef.current.has(o.name) || fieldsOf552(o).size > 0))
         if (obsWithHeight552.length > 0 || newlyShownObs552b.length > 0) {
           const topObs = obsWithHeight552.length > 0 ? obsWithHeight552.reduce((a, b) => (b.height!.value > a.height!.value ? b : a)) : null
           setFocusedDistrict({
@@ -4417,8 +4458,35 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // どちらもカードの構成が入れ替わるため前の位置に意味が無い。
           setFocusedDistrict({ districts: [], top: null, resetToTop: true, ts: Date.now() })
         }
-        for (const o of obsWithHeight552) pushStatus(o, 'new')
-        for (const o of newlyShownObs552b) pushStatus(o, 'new')
+        // **等級が動いた報では、動いたものだけに印を付ける**（上の枝と同じ判定）。その報には
+        // **値が 1 つも変わっていない観測点が同梱されうる**。全件を無条件に `'new'` で押していた
+        // ころは、何も変わっていない行に「最新の情報で初めて出た値です」という案内が付いていた。
+        //
+        // **ただし新規発報では絞らない。** 観測点の記憶（`prevMap552` ほか）は**津波をまたいで
+        // 残る** —— 落とすのは表示中の津波へ向けた解除とリプレイのリセットだけで、別の津波へ
+        // 移るだけでは落ちない（すぐ下の `tsunamiIsNewFire` の分岐が区域の印しか落としていない
+        // のはそのため）。観測点名は全国共通なので前の津波で見た名前が次の津波にも現れ、波高が
+        // 前より低ければ「動いていない」と判定される。**新しい津波の初報にその判定は意味が無く、
+        // 絞ると印も地図の点滅も出ないまま終わる**（`useTsunamiLayerData` の `blinking` がこの印を
+        // 見る）。同じ理由で `'changed'` にも倒さない —— 前の津波で見た名前でも、この津波では初出。
+        //
+        // **寄せ先（`focusedDistrict`）は上で全件から決めたまま。** 等級が動くとカードの構成が
+        // 入れ替わるので、変化の有無に関わらず見せ直すのが正しい。
+        // **「まだ何も見ていない」は等級ではなく記憶の空で見る。** `lastTsunamiGradeRef` は等級を
+        // 伝えない電文（区域を持たない観測情報）では進まないのに、観測点の記憶はその報でも埋まる。
+        // 等級で判定すると、進行中の津波へ途中から接続した直後の報で、正当な継続を「初出」と扱う。
+        const noMemory552 = prevMap552.size === 0 && prevTimes552.size === 0
+          && prevFirstWaves552.size === 0 && seenObsNamesRef.current.size === 0
+        const freshFire552 = tsunamiIsNewFire || noMemory552
+        for (const o of obsWithHeight552) {
+          // 1 回だけ数える（フィルタと `pushStatus` で同じ引数を 2 度評価しない）
+          const fields = fieldsOf552(o, freshFire552)
+          if (!freshFire552 && fields.size === 0) continue
+          pushStatus(o, !freshFire552 && prevMap552.has(o.name) ? 'changed' : 'new', freshFire552, fields)
+        }
+        for (const o of newlyShownObs552b) {
+          pushStatus(o, !freshFire552 && seenObsNamesRef.current.has(o.name) ? 'changed' : 'new', freshFire552)
+        }
       }
 
       // 津波情報を受信するたびに obsUpdateStatus を今回分だけの Map に置き換える（前回分は破棄）。

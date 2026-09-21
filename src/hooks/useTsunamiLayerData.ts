@@ -33,6 +33,15 @@ export interface TsunamiObsBar {
    */
   maxHeightDateTime?: string
   maxHeightRevise?: string
+  /**
+   * 第1波（`FirstHeight` の到達時刻と押し引き）。**これも描画には使わない。**
+   *
+   * 気象庁は第1波を訂正してくる（`FirstHeight/Revise` = 更新）。カードの文字色も読み上げも
+   * それを名指しするのに、カメラだけが波高と最大波の時刻しか見ておらず、**声が指した観測点へ
+   * 地図が寄らなかった**（→ `utils/tsunami.ts` の `firstWaveSpokenKey`）。
+   */
+  arrivalTime?: string
+  initial?: string
   blinking: boolean
 }
 
@@ -131,7 +140,8 @@ export function useTsunamiLayerData(
       const blinking = obsUpdateStatus?.has(o.name) ?? false
       bars.push({
         name: o.name, lat: latLng[0], lng: latLng[1], barPx, color, height: o.height,
-        maxHeightDateTime: o.maxHeightDateTime, maxHeightRevise: o.maxHeightRevise, blinking,
+        maxHeightDateTime: o.maxHeightDateTime, maxHeightRevise: o.maxHeightRevise,
+        arrivalTime: o.arrivalTime, initial: o.initial, blinking,
       })
     }
     // 北→南（後に描くほど手前）。

@@ -6,7 +6,7 @@ import { quakeEventKey } from '../../utils/quakeMerge'
 import { groupAreasForCardDisplay, tsunamiAreaGradeChanges, TSUNAMI_GRADE_LIFTED, matchesArea, observationBadges, observationHeightText, observationArrivalFallbackText, observationMaxHeightTimeText, estimationBadges, estimationHeightText, forecastHeightImportantBadge, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, isTsunamiGradeRaised, sourceEarthquakeTime, tsunamiAreaKey, evacuationActionLine, type ObsUpdateMark, type ObsUpdateField } from '../../utils/tsunami'
 import { TSUNAMI_MISSING_COLOR as MISSING_COLOR } from '../../utils/tsunamiStyle'
 import { UPDATE_MARK_COLOR } from '../../utils/updateMark'
-import { mapChunksToRefs, planFollowScroll, type FollowRect, type SpeechFollowSession, type SpeechRef } from '../../utils/ttsFollow'
+import { mapChunksToRefs, planFollowScroll, hasFollowContext, type FollowRect, type SpeechFollowSession, type SpeechRef } from '../../utils/ttsFollow'
 import { getSpeechClock } from '../../utils/voicevox'
 import { INTERACTION_HOLD_SEC } from '../Map/gl/camera'
 import { log } from '../../utils/logger'
@@ -252,7 +252,7 @@ const ARRIVAL_CONDITION_BADGE: Record<string, string> = {
   '第1波の到達を確認': '第1波到達',
 }
 
-function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocusObs, onAreaFocus, isChanged, isTop, registerRow, registerSpeechRow, obsUpdateStatus, areaGradeChangedKeys }: { area: TsunamiArea; observations: TsunamiObservation[]; style: GradeStyle; onObservationClick?: (name: string) => void; canFocusObs: (name: string) => boolean; onAreaFocus?: (name: string) => (() => void) | undefined; isChanged: boolean; isTop: boolean; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void; obsUpdateStatus?: Map<string, ObsUpdateMark>; areaGradeChangedKeys?: ReadonlySet<string> }) {
+function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocusObs, onAreaFocus, isChanged, isTop, registerRow, registerSpeechRow, registerSpeechAnchor, obsUpdateStatus, areaGradeChangedKeys }: { area: TsunamiArea; observations: TsunamiObservation[]; style: GradeStyle; onObservationClick?: (name: string) => void; canFocusObs: (name: string) => boolean; onAreaFocus?: (name: string) => (() => void) | undefined; isChanged: boolean; isTop: boolean; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void; registerSpeechAnchor: (keys: string[], el: HTMLElement | null) => void; obsUpdateStatus?: Map<string, ObsUpdateMark>; areaGradeChangedKeys?: ReadonlySet<string> }) {
   const areaFocus = onAreaFocus?.(area.name)
   const setRowRef = useCallback((el: HTMLDivElement | null) => {
     registerRow?.(area, isChanged, isTop, el)
@@ -306,7 +306,26 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
 
   return (
     <div ref={setRowRef} className="border-b border-white/5 last:border-0">
-      <div className="flex items-center gap-2 px-3 py-2 roomy:gap-3 roomy:px-4 roomy:py-3">
+      {/* 読み上げが配下の観測点を読むときの前置き。**この見出し 1 行だけを登録する** ――
+          読み上げ文は読点でチャンクが割れるので「石川県能登、」と「輪島港で〜」は別のチャンクに
+          なり、観測点のチャンクに入った時点でここが視野から流れ出る（→ `contextElementFor`）。
+          区域行の外枠を渡すと、観測点を多く抱えた区域では視野に収まらず前置きごと捨てられる。
+
+          **`useCallback` で安定化していないのは、`observations` が毎レンダー新しい配列だから**
+          （呼び出し側が `observations.filter(...)` で作る）。依存に入れても毎回作り直されるので、
+          安定化しても登録のやり直しは減らない。`Map` への delete → set が対で走るだけで害は無い。
+
+          **この結線は自動テストが無い。** jsdom はレイアウトを持たないため追従の effect
+          （`planFollowScroll` を呼ぶ側）を発火させられなかった。確かめるときは実機で測る ――
+          DMDSS 版の dev サーバーで設定タブの「変化の小さい続報テスト」を流し、
+          `Element.prototype.scrollTo` を差し替えて送り先を記録する。**送り先は「区域見出しの
+          上端 − 余白 24px − バナーの高さ」**になる（バナーは sticky で、追従は
+          `viewTop = containerRect.top + bannerHeight` を見る。実測で約 190px あった）。
+          前置きが効いていなければ、同じ式が観測点の行の上端に一致する。 */}
+      <div ref={el => {
+        for (const obs of observations) registerSpeechAnchor(speechRowKeys({ kind: 'station', name: obs.name }), el)
+      }}
+        className="flex items-center gap-2 px-3 py-2 roomy:gap-3 roomy:px-4 roomy:py-3">
         <div className="flex-1 min-w-0">
           {/* 区域名を押すとその予報区の海岸線が入る範囲へ地図が寄る。**押せるのは境界を引ける
               区域だけ**（観測点の行と同じ規律 → §9「観測点の行・区域名をクリックしたときの寄り先」）。
@@ -587,7 +606,7 @@ function TsunamiObservationRow({ obs, onObservationClick, canFocusObs, registerS
   )
 }
 
-function TsunamiGradeCard({ grade, areas, observations, onObservationClick, canFocusObs, onAreaFocus, focusedDistrict, registerRow, registerSpeechRow, registerSpeechAnchor, obsUpdateStatus, areaGradeChangedKeys }: { grade: TsunamiGrade; areas: TsunamiArea[]; observations: TsunamiObservation[]; onObservationClick?: (name: string) => void; canFocusObs: (name: string) => boolean; onAreaFocus?: (name: string) => (() => void) | undefined; focusedDistrict?: FocusedDistrict | null; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void; registerSpeechAnchor?: (keys: string[], el: HTMLElement | null) => void; obsUpdateStatus?: Map<string, ObsUpdateMark>; areaGradeChangedKeys?: ReadonlySet<string> }) {
+function TsunamiGradeCard({ grade, areas, observations, onObservationClick, canFocusObs, onAreaFocus, focusedDistrict, registerRow, registerSpeechRow, registerSpeechAnchor, obsUpdateStatus, areaGradeChangedKeys }: { grade: TsunamiGrade; areas: TsunamiArea[]; observations: TsunamiObservation[]; onObservationClick?: (name: string) => void; canFocusObs: (name: string) => boolean; onAreaFocus?: (name: string) => (() => void) | undefined; focusedDistrict?: FocusedDistrict | null; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void; registerSpeechAnchor: (keys: string[], el: HTMLElement | null) => void; obsUpdateStatus?: Map<string, ObsUpdateMark>; areaGradeChangedKeys?: ReadonlySet<string> }) {
   if (areas.length === 0) return null
   const style = getGradeStyle(grade)
   const groups = groupAreasForCardDisplay(areas, observations)
@@ -601,7 +620,7 @@ function TsunamiGradeCard({ grade, areas, observations, onObservationClick, canF
       {/* 区域を読むときの合わせ先はこの帯（どの等級の話かが視野から消えないように） */}
       <div ref={el => {
         for (const area of areas) {
-          registerSpeechAnchor?.(speechRowKeys({ kind: 'area', code: area.code, name: area.name }), el)
+          registerSpeechAnchor(speechRowKeys({ kind: 'area', code: area.code, name: area.name }), el)
         }
       }}
         className="w-full py-1.5 px-4 text-center text-xs font-bold tracking-widest"
@@ -624,6 +643,7 @@ function TsunamiGradeCard({ grade, areas, observations, onObservationClick, canF
               isTop={focusedDistrict?.top != null && districtMatchesArea(focusedDistrict.top, area)}
               registerRow={registerRow}
               registerSpeechRow={registerSpeechRow}
+              registerSpeechAnchor={registerSpeechAnchor}
               obsUpdateStatus={obsUpdateStatus}
               areaGradeChangedKeys={areaGradeChangedKeys}
             />
@@ -645,7 +665,7 @@ function TsunamiGradeCard({ grade, areas, observations, onObservationClick, canF
  * 付く（`areaGradeChangedKeys`。`lastGrade` が続報にも載り続けるため）が、こちらは枠そのものが
  * 「この報で解除された区域」を意味するので、印を絞る理由が無い。
  */
-function TsunamiCancelledCard({ areas, focusedDistrict, registerRow, registerSpeechRow, registerSpeechAnchor }: { areas: TsunamiArea[]; focusedDistrict?: FocusedDistrict | null; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void; registerSpeechAnchor?: (keys: string[], el: HTMLElement | null) => void }) {
+function TsunamiCancelledCard({ areas, focusedDistrict, registerRow, registerSpeechRow, registerSpeechAnchor }: { areas: TsunamiArea[]; focusedDistrict?: FocusedDistrict | null; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void; registerSpeechAnchor: (keys: string[], el: HTMLElement | null) => void }) {
   if (areas.length === 0) return null
   // 無彩色。解除は「もう出ていない」という報せなので、等級の色を借りない。
   const style = getGradeStyle('Unknown')
@@ -657,7 +677,7 @@ function TsunamiCancelledCard({ areas, focusedDistrict, registerRow, registerSpe
       style={{ border: `2px solid ${style.cardBorder}`, boxShadow: `0 0 0 1px ${style.cardBorder}40` }}>
       <div ref={el => {
         for (const area of areas) {
-          registerSpeechAnchor?.(speechRowKeys({ kind: 'area', code: area.code, name: area.name }), el)
+          registerSpeechAnchor(speechRowKeys({ kind: 'area', code: area.code, name: area.name }), el)
         }
       }}
         className="w-full py-1.5 px-4 text-center text-xs font-bold tracking-widest"
@@ -1019,15 +1039,24 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
       lookup(speechRowElsRef.current, ref)
 
     /**
-     * 併せて視野に入れたい前置き。区域では**その等級カードの頭**。
+     * 併せて視野に入れたい前置き。区域では**その等級カードの頭**、観測点では**その区域の見出し**
+     * （沖合の観測点なら「沖合観測」の帯）。
      *
-     * 区域行だけを上端に合わせると、どの等級の話をしているのかが視野から消える。ただし
-     * これを「読んでいる箇所」に混ぜてはいけない。混ぜると送り先の上端が常にカードの頭に
+     * 区域行だけを上端に合わせると、どの等級の話をしているのかが視野から消える。**観測点も同じで、
+     * 読み上げ文は読点でチャンクが割れるため「石川県能登、」と「輪島港で〜」は別チャンクになる**
+     * —— 観測点のチャンクへ進んだ時点で前置きが無いと、その行だけが上端へ揃えられ、直前に読んだ
+     * 区域名が視野の外へ流れる。
+     *
+     * ただしこれを「読んでいる箇所」に混ぜてはいけない。混ぜると送り先の上端が常にカードの頭に
      * なり、等級のところで一度寄せた後は区域行がどれだけ見切れていても動かなくなる
      * （`planFollowScroll` の JSDoc 参照）。前置きとして別に渡し、収まるときだけ含める。
+     *
+     * **前置きに区域行そのもの（`TsunamiAreaRow` の外枠）を渡さないこと。** あれは配下の観測点を
+     * 全部抱えているので、観測点の多い区域では視野に収まらず前置きごと捨てられる —— いちばん
+     * 見切れやすい場面で効かなくなる。渡すのは見出しの 1 行だけ。
      */
     const contextElementFor = (ref: SpeechRef): HTMLElement | null =>
-      ref.kind === 'area' ? lookup(speechAnchorElsRef.current, ref) : null
+      hasFollowContext(ref) ? lookup(speechAnchorElsRef.current, ref) : null
 
     // 差し替えで DOM から外れた要素は矩形が全 0 になる。そのまま使うと巨大なスクロールになる
     const rectsFor = (
@@ -1486,7 +1515,12 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
                 style={{ border: '2px solid #1d4ed8', boxShadow: '0 0 0 1px rgba(29,78,216,0.25)' }}>
                 {/* 実測が 1 件も無く推定だけが届く電文もあるので、見出しは中身に合わせる。 */}
                 {unmatched.length > 0 && (
-                  <div className="w-full py-1.5 px-4 text-center text-xs font-bold tracking-widest"
+                  /* 沖合の観測点を読むときの前置き。区域に紐づく行が区域の見出しを前置きにするのと
+                     同じ扱いで、この帯が視野から流れると何の一覧を読んでいるのか分からなくなる。 */
+                  <div ref={el => {
+                    for (const obs of unmatched) registerSpeechAnchor(speechRowKeys({ kind: 'station', name: obs.name }), el)
+                  }}
+                    className="w-full py-1.5 px-4 text-center text-xs font-bold tracking-widest"
                     style={{ backgroundColor: '#0c1a3a', color: '#93c5fd', borderBottom: '1px solid #1d4ed8' }}>
                     沖合観測
                   </div>
