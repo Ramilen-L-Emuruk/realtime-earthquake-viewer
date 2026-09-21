@@ -154,7 +154,7 @@ describe('気象庁が書いた文をブロックごとに選ぶ', () => {
     expect(speech?.body).toBe('自由付加文の本文です。')
   })
 
-  // 安全弁: 全部切れば `null`。前置き（「地震情報について、気象庁の文をお伝えします。」）だけが
+  // 安全弁: 全部切れば `null`。前置き（「地震情報について、気象庁の発表文をお伝えします。」）だけが
   // 鳴る形にしない
   it('全ブロックを切ると何も返さない（前置きだけを鳴らさない）', () => {
     for (const event of [quake(), tsunami(), lpgm(), nankai(), nankaiCommentary(), kohatsu(), earthquakeCount()]) {

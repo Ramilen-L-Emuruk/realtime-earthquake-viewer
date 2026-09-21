@@ -2952,7 +2952,7 @@ describe('telegramTextToSpeak: 気象庁が書いた文', () => {
   // 正: 有効にすると、何についての文かを添えて返す。
   it('有効にすると前置きを付けて返す', () => {
     const speech = telegramTextToSpeak(quakeWithComment(), ON)
-    expect(speech?.text).toBe('地震情報について、気象庁の文をお伝えします。震源要素を訂正します。')
+    expect(speech?.text).toBe('地震情報について、気象庁の発表文をお伝えします。震源要素を訂正します。')
     // 既読の照合には前置きを含めない（種別ごとに固定の文なので、混ぜると比較が鈍る）
     expect(speech?.body).toBe('震源要素を訂正します。')
   })
