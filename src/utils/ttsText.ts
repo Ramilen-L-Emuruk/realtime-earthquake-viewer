@@ -3717,7 +3717,13 @@ function joinTelegramTexts(
  * 同じ文が位置によって別物になるので鍵は前後を削り、読み上げには空白ごと使って元の間を保つ。
  */
 export interface TelegramTextUnit {
-  /** 既読の照合に使う形（前後の空白を落とした 1 文）。 */
+  /**
+   * 既読の照合に使う形（主題 ＋ 前後の空白を落とした 1 文）。
+   *
+   * **主題は {@link telegramTextSpokenSubject} が組み、この値へ織り込んである。**
+   * 使う側が自分で繋ぐ形にすると、読み上げる側（`speakTelegramText`）と録画モードの復元
+   * （`rememberTelegramTextAsSpoken`）で書き写しになり、片方を直し忘れれば既読が噛み合わない。
+   */
   readonly key: string
   /** 読み上げに使う形（後ろに続く空白まで含む。すべて繋ぐと元の本文に戻る）。 */
   readonly text: string
@@ -3774,12 +3780,68 @@ export interface TelegramTextSpeech {
    * 800 字超の同じ文が 3 回読まれていた（3 通目は 1 文も新しくない）。
    */
   readonly units: readonly TelegramTextUnit[]
+  /**
+   * 既読の鍵へ織り込んだ主題（→ {@link telegramTextSpokenSubject}）。
+   *
+   * **持たせるのは記録のため。** 鍵は {@link units} が完成形を持っているので、読み書きする側が
+   * これを使って組み直すことはない（組み直す形にすると書き写しになる）。全文が既読で黙ったとき、
+   * どの事象について黙ったのかを記録へ出すのに使う —— 種別と件数だけでは、群発のさなかに
+   * どの地震で黙ったのかを後から特定できない。
+   */
+  readonly subject: string
 }
 
-/** 前置きと本文から {@link TelegramTextSpeech} を組む。本文が空なら読み上げない。 */
-function telegramSpeech(prefix: string, body: string): TelegramTextSpeech | null {
+/**
+ * 既読の鍵へ織り込む主題（「どの事象について書かれた文か」）を組む。
+ *
+ * **`ttsFollow.ts` の `telegramTextSubject` とは別物。** 名前も引数の形も似ているが、
+ * あちらは読み上げているあいだ画面のどこを開くかを指す。取り違えても型検査は通るので、混ぜないこと。
+ *
+ * **数えた範囲と件数は、この注記が挙げる事実も含めて
+ * docs/spec/audio-tts-spec.md §6「気象庁が書いた文は最下位の層で読む」が単一情報源。**
+ *
+ * **文字列だけを鍵にすると、別の地震・別の津波でも同じ文なら二度と読まない。**
+ * 気象庁の付加文は同じ文面が続くことが多く、実電文では自由付加文「この地震の付近で地震が
+ * 連続して発生したため…」が別々の地震に同じ文面で入っていた。その但し書きは電文ごとの注記
+ * なので、地震が変われば改めて意味を持つ。
+ *
+ * **同じ事象の続報では同じ値になること。** 電文の識別子（`id`）を混ぜると報ごとに別の鍵になり、
+ * 「＊印は…」のような定型文を報のたびに読む（それを避けるために既読を入れた経緯がある）。
+ *
+ * **地震情報の `eventId` は、同じ地震でも震源決定の前と後で採り直されることがある**
+ * （実例は `utils/quakeMerge.ts` の `isHypocenterPending`。`JMAQuake.eventId` の型定義も
+ * 「同一性判定には使わない」と断っている）。**それでもここで使えるのは、採り直しの境目にいる
+ * 震源決定前の電文（震度速報）が付加文を 1 つも運ばないから** —— 運ばなければ本文が空になり、
+ * この既読へは何も記録されない。**この前提が崩れたら**（震度速報が付加文を運ぶようになったら）、
+ * 同じ地震の注記が境目で二度読まれる。
+ *
+ * **種別も含める。** 同じ `eventId` を持つ地震情報と長周期地震動観測情報が同じ文を載せたとき、
+ * 種別ごとに前置き（「地震情報について、〜」「長周期地震動観測情報について、〜」）が違うため、
+ * 片方だけ読んだ状態で他方を黙らせると前置きだけ聞いた文が残る。
+ *
+ * **事象の識別子を持たない電文では種別だけになる**（＝従来どおり文字列だけで既読）。
+ * 付加文を運ぶのは DMDATA の XML 経路だけで、そこでは全種別が `EventID` を持つため、
+ * 実運用では起きない。**起きたときは黙って旧来の挙動へ戻る**ので、`speakTelegramText` の
+ * 記録に主題を出して気づけるようにしてある。
+ */
+function telegramTextSpokenSubject(kind: LiveEvent['kind'], eventId: string | undefined): string {
+  return `${kind}:${eventId ?? ''}`
+}
+
+/**
+ * 前置きと本文から {@link TelegramTextSpeech} を組む。本文が空なら読み上げない。
+ *
+ * `subject` は既読の鍵へ織り込む（→ {@link telegramTextSpokenSubject}）。読み上げる文そのものは
+ * 変わらない。
+ */
+function telegramSpeech(prefix: string, body: string, subject: string): TelegramTextSpeech | null {
   if (!body) return null
-  return { text: `${prefix}${body}`, body, prefix, units: splitTelegramTextUnits(body) }
+  // 区切りに改行を使えるのは、本文が `normalizeTelegramTextForSpeech` を通って
+  // 改行を空白へ置き換えた後だから（1 文の中に改行は残らない）。**この関数へ正規化前の文字列を
+  // 渡さないこと** —— 渡すと主題と本文の境目が曖昧になり、既読の鍵が衝突するか分裂する
+  // （どちらも例外もログも出ない）。
+  const units = splitTelegramTextUnits(body).map(u => ({ ...u, key: `${subject}\n${u.key}` }))
+  return { text: `${prefix}${body}`, body, prefix, units, subject }
 }
 
 /**
@@ -3833,7 +3895,7 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
         pick('quakeVarComment', event.varCommentText),
         pick('quakeFreeText', event.freeText),
       ], reads)
-      return telegramSpeech(`地震情報について、気象庁の文をお伝えします。`, body)
+      return telegramSpeech(`地震情報について、気象庁の文をお伝えします。`, body, telegramTextSpokenSubject(event.kind, event.eventId))
     }
     case 'tsunami': {
       // 解除・失効・取消とも `cancelled` が立つ（理由は上の EEW 分岐のコメント）。
@@ -3851,7 +3913,7 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
         ...(on('tsunamiVarComment') ? (event.warningComments ?? []).map(c => c.text) : []),
         pick('tsunamiFreeText', event.freeText),
       ], reads)
-      return telegramSpeech(`津波情報について、気象庁の文をお伝えします。`, body)
+      return telegramSpeech(`津波情報について、気象庁の文をお伝えします。`, body, telegramTextSpokenSubject(event.kind, event.eventId))
     }
     case 'lpgm': {
       // **他の種別と同じく明示して弾く。** いまは取消のパースが付加文を 1 つも持たないので
@@ -3870,7 +3932,7 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
         pick('lpgmVarComment', event.data.varCommentText),
         pick('lpgmFreeText', event.data.freeFormText),
       ], reads)
-      return telegramSpeech(`長周期地震動観測情報について、気象庁の文をお伝えします。`, body)
+      return telegramSpeech(`長周期地震動観測情報について、気象庁の文をお伝えします。`, body, telegramTextSpokenSubject(event.kind, event.data.eventId))
     }
     case 'nankai':
     case 'nankaiCommentary': {
@@ -3884,7 +3946,7 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
         pick(isAdvisory ? 'nankaiNextAdvisory' : 'nankaiCommentaryNextAdvisory', event.data.nextAdvisory),
       ], reads)
       const label = isAdvisory ? '南海トラフ地震臨時情報' : '南海トラフ地震関連解説情報'
-      return telegramSpeech(`${label}について、気象庁の文をお伝えします。`, body)
+      return telegramSpeech(`${label}について、気象庁の文をお伝えします。`, body, telegramTextSpokenSubject(event.kind, event.data.eventId))
     }
     case 'kohatsu': {
       if (event.data.cancelled) return null
@@ -3895,12 +3957,12 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
         pick('kohatsuSummary', event.data.summary),
         pick('kohatsuBody', event.data.body),
       ], reads)
-      return telegramSpeech(`北海道・三陸沖後発地震注意情報について、気象庁の文をお伝えします。`, body)
+      return telegramSpeech(`北海道・三陸沖後発地震注意情報について、気象庁の文をお伝えします。`, body, telegramTextSpokenSubject(event.kind, event.data.eventId))
     }
     case 'earthquakeCount': {
       if (event.data.cancelled) return null
       const body = joinTelegramTexts([pick('earthquakeCountFreeText', event.data.freeText)], reads)
-      return telegramSpeech(`地震回数に関する情報について、気象庁の文をお伝えします。`, body)
+      return telegramSpeech(`地震回数に関する情報について、気象庁の文をお伝えします。`, body, telegramTextSpokenSubject(event.kind, event.data.eventId))
     }
     // 推計震度分布図は二進電文で、気象庁が書いた文を運ばない。
     case 'estimatedIntensity':
