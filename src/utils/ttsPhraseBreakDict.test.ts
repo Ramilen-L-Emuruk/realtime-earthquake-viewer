@@ -2,13 +2,21 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { DATA_FETCH_TIMEOUT_MS } from './fetchJson'
 import { DICT_FETCH_TIMEOUT_MS } from './ttsPhraseBreakDict'
-import { INTENSITY_LABELS, getIntensityLabelWithApproxAbove } from './intensity'
+import { INTENSITY_LABELS, getIntensityLabel, getIntensityLabelWithApproxAbove } from './intensity'
 import type { LpgmClass } from '../types/earthquake'
 import { getLpgmClassLabelWithApproxAbove } from './lpgm'
 import { endsWithParticle, TRAILING_PARTICLES } from './ttsTrailingParticles'
 
 /** 長周期地震動階級の値域（`LpgmClass`）。型は実行時に無いので、ここへ写して使う。 */
 const LPGM_CLASSES = [1, 2, 3, 4] as const satisfies readonly LpgmClass[]
+
+/**
+ * 読み上げ文が「震度〇を」の形で並べる震度の語形。**実装から導く** ——
+ * `ttsText.ts` の `intensityText` は震度不明（0 以下）で空文字を返すので、その値は文型に現れない。
+ * 震度階級が増えたら、これを使うテストで落ちる。
+ */
+const SCALE_LABELS = Object.keys(INTENSITY_LABELS)
+  .map(Number).filter(n => n > 0).map(getIntensityLabel)
 
 // この辞書のローダは読み上げ本体（speakWithVoicevox）が取得を待つため、
 // 生成データ共通の 60 秒ではなく短いタイムアウトを使う。その差が保たれているかを検証する。
@@ -553,10 +561,110 @@ describe('電文本文の語（実データの辞書で引く）', { timeout: 15
     }
 
     // 安全弁: **値が 1 モーラの鍵を、割ったまま増やさない。** 「〇〇2を」の形は
-    // この 2 つだけで、どちらも割らない側にいること
+    // この 4 つだけで、どれも割らない側にいること（冠の無い形は下の
+    // 「「最大」「長周期地震動」が付かない形も同じ鍵で割る」）
     const oneMoraValue = Object.keys(dict).filter(k => /2を$/.test(k))
-    expect(oneMoraValue.sort()).toEqual(['最大震度2を', '長周期地震動階級2を'])
+    expect(oneMoraValue.sort()).toEqual(
+      ['最大震度2を', '長周期地震動階級2を', '震度2を', '階級2を'].sort())
     for (const k of oneMoraValue) expect(dict[k], k).not.toContain('/')
+  })
+
+  // **複数の震度・階級が 1 文に並ぶと、2 つ目以降は冠が付かない。**
+  //
+  // 読み上げ文は「最大震度4を〈地域〉、震度3を〈地域〉、震度1を〈地域〉で観測しました。」の形で
+  // （`ttsText.ts` の `buildRegionSegments`）、**「最大」が付くのは最大震度に一致する最初の句だけ**。
+  // 長周期も同じで、「長周期地震動」が付くのは先頭の句だけ（`buildLpgmRegionText`）。
+  // **冠が付くのは何句読んでも 1 句だけ**なので、句が増えるほどこの形の割合が上がる。読む句数の
+  // 上限は種別で違い、階級は `ttsIntensityLevels`（既定 2）だけで打ち切るが、震度は
+  // `ttsAlwaysReadScale`（既定＝震度3）以上をランクによらず全部読むので 3 句を超えうる。
+  //
+  // 冠の無い形には鍵が無く、エンジンが素で読むと「震度」の頭高（シ＼ンド）が消えて値と融合する。
+  // 本番の組み立てで `/audio_query` を引いた音高（話速 1.2）:
+  //
+  //   鍵なし  シンドイチオ（1 句・核 3）  シ:5.75 ン:5.83 ド:5.87 イ:5.85 チ:5.65 オ:5.45
+  //   鍵あり  シンド（核 1）｜イチオ（核 2） シ:5.81 ン:5.84 ド:5.61 ｜ イ:5.41 チ:5.74 オ:5.65
+  //
+  // 鍵が無いと山が「ド」に来て、**数字が下がり坂に乗る**。割ると「震度」が頭高に戻り、値が
+  // 自分の句を持つ。「階級」も同じ。
+  //
+  // **冠の核は、その語を単独で読ませた実測を写す**（震央地名・観測点名の句割りと同じ規律）:
+  //
+  //   震度 → シンド[1]   最大震度 → サイダイシンド[5]
+  //   階級 → カイキュウ[4] 長周期地震動階級 → チョオシュウキジシンドオカイキュウ[11]
+  //
+  // **同じ語でも複合語の中では核の位置が変わる**（「階級」は単独で末尾・複合語では「カ」）。
+  // 日本語の複合語アクセントとして正常で、震度側と対称でないことを不整合と見ないこと。
+  // なお `名前、` の形では平板と尾高を区別できないが、この記法では平板を書けないので
+  // どちらでも末尾核になる（→ `docs/spec/audio-tts-spec.md` §3「エンジンが置く核が外れているとき」）。
+  //
+  // **後半は冠ありの鍵と同じ読みにする** —— 同じ値・同じ助詞・同じ述語なので、揃えないと
+  // 同じ数字が冠の有無で違う抑揚で鳴る。割らない「2」も同じ扱い（上の
+  // 「値が 1 モーラの「2」だけは割らない」）。
+  //
+  // 同じ実測値が `docs/spec/audio-tts-spec.md` §3「冠が付かない形にも同じ鍵を置く」にもある。
+  // **片方を測り直したら、もう片方も直すこと。**
+  it('「最大」「長周期地震動」が付かない形も同じ鍵で割る', async () => {
+    const { findPhraseBreakMatch, isPlaceNameKey, dict } = await loadedRealDictModule()
+
+    // 冠の側を取り除いた残り（`/イチ'オ` か、割らない値なら `ニオ`）。
+    const afterPrefix = (key: string, prefix: string): string => {
+      const value = dict[key]
+      expect(value, key).toBeDefined()
+      expect(value?.startsWith(prefix), `「${key}」が「${prefix}」で始まっていない`).toBe(true)
+      return value!.slice(prefix.length)
+    }
+
+    // 正: 冠の無い形に鍵がある。**チャンクは読点で割れる**ので、辞書が見るのは
+    // 「、」より後ろの断片（`splitIntoChunks`）。ここはその断片を直接渡している
+    for (const label of SCALE_LABELS) {
+      const chunk = `震度${label}を富山県東部で観測しました。`
+      expect(findPhraseBreakMatch(chunk, dict)?.key, chunk).toBe(`震度${label}を`)
+    }
+    for (const cls of LPGM_CLASSES) {
+      const chunk = `階級${cls}を富山県東部で観測しました。`
+      expect(findPhraseBreakMatch(chunk, dict)?.key, chunk).toBe(`階級${cls}を`)
+    }
+
+    // 正: 後半（値＋助詞）の読みは冠ありの鍵と同じ。割らない「2」もここで揃う
+    for (const label of SCALE_LABELS) {
+      expect(afterPrefix(`震度${label}を`, "シ'ンド"), `震度${label}`)
+        .toBe(afterPrefix(`最大震度${label}を`, "サイダイシ'ンド"))
+    }
+    for (const cls of LPGM_CLASSES) {
+      expect(afterPrefix(`階級${cls}を`, "カイキュウ'"), `階級${cls}`)
+        .toBe(afterPrefix(`長周期地震動階級${cls}を`, "チョオシュウキジシンドオカ'イキュウ"))
+    }
+
+    // 対照: 冠がある形では**長い鍵が勝つ**（最左一致・同位置なら長い方）。短い鍵に食われない
+    for (const label of SCALE_LABELS) {
+      const text = `最大震度${label}を石川県能登で観測しました。`
+      expect(findPhraseBreakMatch(text, dict)?.key, text).toBe(`最大震度${label}を`)
+    }
+    for (const cls of LPGM_CLASSES) {
+      const text = `長周期地震動階級${cls}を石川県能登で観測しました。`
+      expect(findPhraseBreakMatch(text, dict)?.key, text).toBe(`長周期地震動階級${cls}を`)
+    }
+
+    // 対照: 地震回数に関する情報の「震度1以上を」には当たらない（助詞まで鍵に含めているため）
+    const countText = 'このうち、震度1以上を観測したのは3回です。'
+    expect(findPhraseBreakMatch(countText, dict)?.key).not.toBe('震度1を')
+
+    // 対照: **気象庁が書いた文を割らない。** 実電文の階級は全角（`階級４`）で、鍵は半角
+    const tableText = '長周期地震動階級４を観測した地域があります。'
+    expect(findPhraseBreakMatch(tableText, dict)?.key).not.toBe('階級4を')
+
+    // 安全弁: **前半だけの鍵を置かない。** 置くと最左一致でそちらが勝ち、値が後半へ残って
+    // 「値の在り処が抑揚から読めない」元の形に戻る
+    expect(Object.keys(dict)).not.toContain('震度')
+    expect(Object.keys(dict)).not.toContain('階級')
+
+    // 安全弁: 地名ではないので鍵の直後にポーズを挟まない（`_terms` に列挙する）
+    for (const label of SCALE_LABELS) {
+      expect(isPlaceNameKey(`震度${label}を`), `震度${label}`).toBe(false)
+    }
+    for (const cls of LPGM_CLASSES) {
+      expect(isPlaceNameKey(`階級${cls}を`), `階級${cls}`).toBe(false)
+    }
   })
 
   // `endsWithParticle`（`voicevox.ts` が「鍵の直後に間を挟むか」を決めるのに使う）の判定は
