@@ -19,6 +19,7 @@ import { ShareCardButton } from './components/ShareCardButton'
 import { useShareCard } from './hooks/useShareCard'
 import { EarthquakeTab } from './components/EarthquakeTab'
 import { RealtimeTab } from './components/RealtimeTab'
+import { useEewSpeakingCard } from './hooks/useEewSpeakingCard'
 import { TsunamiTab } from './components/TsunamiTab'
 import { SettingsTab } from './components/SettingsTab'
 import { prefetchTestData } from './utils/testDataLoader'
@@ -707,13 +708,18 @@ export function App() {
   const [borrowedHypocenterFollowSession, setBorrowedHypocenterFollowSession] = useState<SpeechFollowSession | null>(null)
   const borrowedHypocenterFollow = useMemo(() => createSpeechFollowController(setBorrowedHypocenterFollowSession), [])
 
+  // 「いま声が語っている緊急地震速報」の印。**上の 4 本とは別の仕組み** —— あちらは読み上げ文の
+  // 断片が持つ参照から範囲を判定するもので、緊急地震速報の読み上げは断片列を通らない
+  // （理由は `useEewSpeakingCard`）。
+  const { speakingKey: speakingEewKey, follow: eewSpeakingCard } = useEewSpeakingCard()
+
   // ライブイベント受信処理（通知音・タイトル・タブ切替・読み上げ・ブラウザ通知）
   const { handleLiveEvent, resetTracking, restorePreWindowTracking, obsUpdateStatus, areaGradeChangedKeys, focusedDistrict } = useLiveEventHandler({
     settings, title, earthquakesRef, tsunamisRef, kyoshinDetectedRef, defaultTabRef,
     setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate, setActiveTabRealtimeUrgent,
     setActiveTabRealtimeForKyoshin: () => requestTabForKyoshin('realtime'),
     followSpeechTab, preSpeechTab, speechFollow, unreceivedFollow, telegramTextFollow,
-    borrowedHypocenterFollow,
+    borrowedHypocenterFollow, eewSpeakingCard,
     expandPanelForSpecialInfo,
     revertToDefaultTab, selectQuake, openLpgmFromQuake, openEstimatedIntensity,
     closeDistributionOnQuakeReport,
@@ -2207,6 +2213,7 @@ export function App() {
                 kyoshinDetectedPoints={kyoshinDetectedPoints}
                 swaveArrival={swaveArrival}
                 visible={activeTab === 'realtime' && !panelCollapsed}
+                speakingEewKey={speakingEewKey}
                 activeLpgmEventId={activeLpgmEventId}
                 onToggleLpgm={toggleLpgmFromEew}
                 onDeactivateLpgm={deactivateLpgm}

@@ -12,7 +12,7 @@ import { usePageVisible } from '../../hooks/usePageVisible'
 import { formatDateTime } from '../../utils/formatters'
 import { getIntensityColor, getIntensityLabel, getIntensityLabelWithApproxAbove, getIntensityBgColor, getMagnitudeColor, getDepthColor } from '../../utils/intensity'
 import { getLpgmClassLabelWithApproxAbove, getLpgmClassColor, getLpgmClassBgColor } from '../../utils/lpgm'
-import { eewAreas, eewMaxScaleInfo, eewMaxLpgmClassInfo, eewSerial, computeSingleEEWLevel, eewNoForecastReason, canPresentLpgmClass, eewEpicenterRankLabel, eewMagnitudeRankLabel, eewMagnitudePointsLabel, eewForecastChangeText, isEewHypocenterSettled, isEewAreaArrived, sortEewWarningRegions } from '../../utils/eew'
+import { eewAreas, eewEventKey, eewMaxScaleInfo, eewMaxLpgmClassInfo, eewSerial, computeSingleEEWLevel, eewNoForecastReason, canPresentLpgmClass, eewEpicenterRankLabel, eewMagnitudeRankLabel, eewMagnitudePointsLabel, eewForecastChangeText, isEewHypocenterSettled, isEewAreaArrived, sortEewWarningRegions } from '../../utils/eew'
 import { kyoshinIndexToJma, kyoshinIndexToLabel, kyoshinIntensityColor, SHINDO0_COLOR } from '../../utils/kyoshinIntensity'
 import { readableTextColor } from '../../utils/contrast'
 import { gateNotes, gateRows, gateShortfall } from '../../utils/detectionGates'
@@ -24,6 +24,15 @@ import { log } from '../../utils/logger'
 
 interface Props {
   eews: EEWAlert[]
+  /**
+   * いま読み上げが語っている緊急地震速報の識別子（`eewEventKey`）。語っていなければ null。
+   *
+   * **同時に複数が発表されると、読み上げは eventId をまたいで交錯する** —— 発話そのものは
+   * 1 本の待ち行列で直列化しているが、予想値の発火は eventId ごとに独立した安定待ちを経るため
+   * 発報順とは一致せず、しかも震源名を声にするのは第 1 フェーズだけなので、予想値の発話を聞いても
+   * それがどの地震のものか判らない。**「どちらか」は画面が担う**（詳細は `useEewSpeakingCard`）。
+   */
+  speakingEewKey?: string | null
   swaveArrival: SWaveArrival | null
   /** V2 検知エンジンの検知イベント（音・自動タブ切替・自動フィット・カード表示を駆動）。 */
   kyoshinV2Detections: DetectionEvent[]
@@ -212,7 +221,7 @@ function arrivalEtaSec(arrivalTime: string, nowMs: number): number | null {
   return Number.isFinite(ms) ? Math.round((ms - nowMs) / 1000) : null
 }
 
-function EEWCard({ eew, visible, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
+function EEWCard({ eew, visible, speaking, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
   eew: EEWAlert
   /**
    * このカードが利用者の目に入っているか（リアルタイムタブが選ばれていて、パネルが畳まれておらず、
@@ -220,6 +229,13 @@ function EEWCard({ eew, visible, activeLpgmEventId, onToggleLpgm, onDeactivateLp
    * 検知カードが受け取るものと同じ合成（→ `KyoshinDetectionSummary`）。
    */
   visible: boolean
+  /**
+   * 読み上げがいまこの地震を語っているか。縁を強調し、視野に無ければ寄せる。
+   *
+   * **語り終わってすぐには偽へ戻らない**（`EEW_SPEAKING_CARD_LINGER_MS` の猶予がある）。
+   * 予想値の発話は短いので、鳴り終わりで落とすと声で気づいて目を移した人に何も残らない。
+   */
+  speaking?: boolean
   activeLpgmEventId?: string | null
   onToggleLpgm?: (eventId: string) => void
   onDeactivateLpgm?: () => void
@@ -387,12 +403,38 @@ function EEWCard({ eew, visible, activeLpgmEventId, onToggleLpgm, onDeactivateLp
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [brokenArrivalsKey])
 
+  /**
+   * 読み上げが語り始めたら、そのカードを視野へ入れる。
+   *
+   * **`block: 'nearest'` は視野内なら動かさない** —— 見ている位置を奪わないための指定で、
+   * 津波カードの追従が明示的に持っている「視野内なら動かさない」判定をここでは
+   * ブラウザ側に任せている（対象が 1 枚のカードなので、送り先を計算する必要が無い）。
+   *
+   * **`visible` を見る** —— 別のタブを見ている・パネルを畳んでいる間に寄せても意味が無く、
+   * 戻ってきたときに勝手に位置が動いていることになる。タブへ移った直後は `visible` が
+   * 真へ変わった時点で寄せる（声はまだ語っている）。
+   */
+  const cardRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!speaking || !visible) return
+    cardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  }, [speaking, visible])
+
   return (
     <div
+      ref={cardRef}
       className="bg-card rounded-lg overflow-hidden relative"
       style={{
         border: `2px solid ${cardBorder}`,
-        boxShadow: `0 0 0 1px ${cardBorder}40`,
+        // 語っているあいだは区分の色のリングを太く・不透明にし、外側へ白を添える。
+        //
+        // **区分の色（`border`）は触らない** —— あれは予報／警報／特別警報を表しており、
+        // 強調のために塗り替えると区分が読めなくなる。**白を足すのは太さだけでは足りないため**
+        // ＝同時に発表される 2 件は同じ区分になりやすく（同じ震源域で連続して起きるので）、
+        // 区分の色だけを太らせても隣のカードと見分けにくい。
+        boxShadow: speaking
+          ? `0 0 0 3px ${cardBorder}, 0 0 0 5px rgba(255,255,255,0.5)`
+          : `0 0 0 1px ${cardBorder}40`,
       }}
       onClick={onDeactivateLpgm}
     >
@@ -1181,7 +1223,7 @@ function KyoshinDetectionSummary({ events, points, visible }: {
 }
 
 // React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
-export const RealtimeTab = memo(function RealtimeTab({ eews, kyoshinV2Detections, kyoshinDetectedPoints, swaveArrival, visible, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: Props) {
+export const RealtimeTab = memo(function RealtimeTab({ eews, kyoshinV2Detections, kyoshinDetectedPoints, swaveArrival, visible, speakingEewKey, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: Props) {
   // ブラウザのタブ・ウィンドウ側の可視性は App では判らないため、ここで合成する。
   const pageVisible = usePageVisible()
   return (
@@ -1194,6 +1236,7 @@ export const RealtimeTab = memo(function RealtimeTab({ eews, kyoshinV2Detections
             key={eew.issue?.eventId ?? eew.id}
             eew={eew}
             visible={visible && pageVisible}
+            speaking={speakingEewKey !== null && speakingEewKey !== undefined && eewEventKey(eew) === speakingEewKey}
             activeLpgmEventId={activeLpgmEventId}
             onToggleLpgm={onToggleLpgm}
             onDeactivateLpgm={onDeactivateLpgm}
