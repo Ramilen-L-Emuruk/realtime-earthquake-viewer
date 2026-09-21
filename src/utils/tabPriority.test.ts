@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   TAB_PRIORITY, TAB_HOLD_MS, TAB_FOLLOW_MIN_DWELL_MS,
-  shouldAcceptAutoTab, shouldFollowNow, idleRevertPriority, resolveNonRealtimeTabSource,
+  shouldAcceptAutoTab, shouldFollowNow, decideFollowNow, idleRevertPriority, resolveNonRealtimeTabSource,
   shouldDeferRevertWhileSpeaking,
   shouldRetakeAfterPreSpeech,
   type TabHold,
@@ -341,21 +341,71 @@ describe('shouldRetakeAfterPreSpeech', () => {
 })
 
 describe('shouldFollowNow', () => {
+  /** このセッションで一度も音が鳴っていない（VOICEVOX 未起動の端末）。 */
+  const NO_AUDIO = null
+
   it('直前の追従がなければ通す', () => {
-    expect(shouldFollowNow(null, TAB_PRIORITY.quake, NOW)).toBe(true)
+    expect(shouldFollowNow(null, TAB_PRIORITY.quake, NOW, NO_AUDIO)).toBe(true)
   })
 
   it('床の内側は間引くが、境界ちょうどは通す', () => {
     const last = { at: NOW, priority: TAB_PRIORITY.quake }
-    expect(shouldFollowNow(last, TAB_PRIORITY.quake, NOW + TAB_FOLLOW_MIN_DWELL_MS - 1)).toBe(false)
-    expect(shouldFollowNow(last, TAB_PRIORITY.quake, NOW + TAB_FOLLOW_MIN_DWELL_MS)).toBe(true)
+    expect(shouldFollowNow(last, TAB_PRIORITY.quake, NOW + TAB_FOLLOW_MIN_DWELL_MS - 1, NO_AUDIO)).toBe(false)
+    expect(shouldFollowNow(last, TAB_PRIORITY.quake, NOW + TAB_FOLLOW_MIN_DWELL_MS, NO_AUDIO)).toBe(true)
   })
 
   it('直前より重い情報は床を待たずに通す', () => {
     // 津波の読み上げに EEW が割り込んだ場合。声が切り替わっているのに画面が遅れては困る。
     const last = { at: NOW, priority: TAB_PRIORITY.tsunami }
-    expect(shouldFollowNow(last, TAB_PRIORITY.eewUpdate, NOW + 1)).toBe(true)
-    expect(shouldFollowNow(last, TAB_PRIORITY.tsunami, NOW + 1)).toBe(false)
+    expect(shouldFollowNow(last, TAB_PRIORITY.eewUpdate, NOW + 1, NO_AUDIO)).toBe(true)
+    expect(shouldFollowNow(last, TAB_PRIORITY.tsunami, NOW + 1, NO_AUDIO)).toBe(false)
+  })
+
+  // 声が出ているのに床が効いて画面だけ取り残される症状の回帰テスト。
+  // 実測（2024/1/1 18:06:33 のリプレイ）: EEW 第 2 フェーズ「予想最大震度4。」が 1364ms で
+  // 鳴り終わり、その直後に順番が来た震度速報（優先度 1）の追従が床に 136ms 足りず弾かれた。
+  it('正: 床と同じ窓の中に音があれば、床の内側でも軽い情報を通す', () => {
+    const last = { at: NOW, priority: TAB_PRIORITY.eewUpdate }
+    // 鳴り終わった直後（＝いま鳴っている扱いの 0）
+    expect(shouldFollowNow(last, TAB_PRIORITY.quake, NOW + 1364, 0)).toBe(true)
+    // 音が止んで 1.2 秒。**ここが 2 つの尺度を揃えた効き目**——「鳴っているか」を真偽で借りると
+    // 1.0 秒の猶予を過ぎて偽になり、床 1.5 秒には届かず間引かれていた
+    expect(shouldFollowNow(last, TAB_PRIORITY.quake, NOW + 1364, 1200)).toBe(true)
+  })
+
+  it('対照: 音が床と同じ長さ途切れていれば間引く（境界ちょうども間引く側）', () => {
+    const last = { at: NOW, priority: TAB_PRIORITY.eewUpdate }
+    expect(shouldFollowNow(last, TAB_PRIORITY.quake, NOW + 1364, TAB_FOLLOW_MIN_DWELL_MS - 1)).toBe(true)
+    expect(shouldFollowNow(last, TAB_PRIORITY.quake, NOW + 1364, TAB_FOLLOW_MIN_DWELL_MS)).toBe(false)
+  })
+
+  it('対照: 1 音も鳴っていなければ、従来どおり床で間引く', () => {
+    // VOICEVOX が起動していない端末。合成が 1 チャンクも通らず発話が即座に終わるので、
+    // 免除すると「声は一切出ないのにタブだけが激しく入れ替わる」が戻る。
+    const last = { at: NOW, priority: TAB_PRIORITY.eewUpdate }
+    expect(shouldFollowNow(last, TAB_PRIORITY.quake, NOW + 1364, NO_AUDIO)).toBe(false)
+  })
+
+  it('安全弁: 音があっても優先度の規則は迂回しない（免除が効くのは床だけ）', () => {
+    // 音があることは「間引かない」理由にはなっても、床より前の判定を書き換えてはいけない。
+    // 免除の印（`audible`）が付くのは床の内側に入ったときだけで、重い情報・初回はこれまでどおり
+    // `pass` のまま通る。ここが崩れると、記録から「免除が効いた場面」を数えられなくなる。
+    const last = { at: NOW, priority: TAB_PRIORITY.tsunami }
+    expect(decideFollowNow(last, TAB_PRIORITY.eewUpdate, NOW + 1, 0)).toBe('pass')
+    expect(decideFollowNow(null, TAB_PRIORITY.quake, NOW, 0)).toBe('pass')
+    // 床を過ぎていれば、音があっても「床に掛からなかった」側
+    expect(decideFollowNow(last, TAB_PRIORITY.tsunami, NOW + TAB_FOLLOW_MIN_DWELL_MS, 0)).toBe('pass')
+  })
+})
+
+describe('decideFollowNow', () => {
+  // 通した理由を記録へ出すための述語。**真偽だけでは「床を音で免除した」のと
+  // 「そもそも床に掛からなかった」のを区別できず、免除が効かなくなっても気づけない。**
+  it('床の内側を音で通したときだけ audible を返す', () => {
+    const last = { at: NOW, priority: TAB_PRIORITY.eewUpdate }
+    expect(decideFollowNow(last, TAB_PRIORITY.quake, NOW + 1364, 0)).toBe('audible')
+    expect(decideFollowNow(last, TAB_PRIORITY.quake, NOW + 1364, null)).toBe('throttle')
+    expect(decideFollowNow(last, TAB_PRIORITY.quake, NOW + TAB_FOLLOW_MIN_DWELL_MS, null)).toBe('pass')
   })
 })
 
