@@ -1,7 +1,7 @@
 {
   "name": "realtime-earthquake-viewer",
   "private": true,
-  "version": "5.23.3",
+  "version": "5.23.4",
   "type": "module",
   "scripts": {
     "dev": "vite",
