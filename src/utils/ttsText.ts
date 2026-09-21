@@ -3162,7 +3162,7 @@ function aggregateLpgmNamesByPref(
   return result
 }
 
-// 長周期地震動の観測地域テキストを生成する（buildRegionText の LPGM 版）
+// 長周期地震動の観測地域テキストを生成する（buildRegionSegments の LPGM 版）
 function buildLpgmRegionText(lpgm: JMALpgm, opts: TtsSpeechOptions): string {
   if (!lpgm.regions || lpgm.regions.length === 0) return ''
 
@@ -3201,7 +3201,7 @@ function buildLpgmRegionText(lpgm: JMALpgm, opts: TtsSpeechOptions): string {
     }
     let names = aggregated.filter(n => !mentioned.has(n))
     if (names.length === 0) continue
-    // 地域数の打ち切りは buildRegionText と同じ（許容超過の範囲内は省略せず全地域を読む）
+    // 地域数の打ち切りは buildRegionSegments と同じ（許容超過の範囲内は省略せず全地域を読む）
     let omittedCount = 0
     if (opts.maxRegions > 0 && names.length > opts.maxRegions + opts.regionTolerance) {
       omittedCount = names.length - opts.maxRegions
@@ -3216,7 +3216,7 @@ function buildLpgmRegionText(lpgm: JMALpgm, opts: TtsSpeechOptions): string {
   }
 
   if (parts.length === 0) return ''
-  // 助詞「で」の置き方は buildRegionText と同じ（末尾のみ）
+  // 助詞「で」の置き方は buildRegionSegments と同じ（末尾のみ）
   return parts.join('、') + 'で観測しました。'
 }
 
