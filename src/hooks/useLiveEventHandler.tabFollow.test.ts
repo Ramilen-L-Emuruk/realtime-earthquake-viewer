@@ -532,6 +532,115 @@ describe('読み上げとタブ切替の同調', () => {
     expect(result.current.obsUpdateStatus.get('輪島港')?.fields.has('firstWave')).toBe(true)
   })
 
+  // 正: **波高を持たない観測点でも、二度目以降の変化を拾う。** 到達確認だけで現れた観測点に
+  // 続報で到達時刻が付く形（`FirstHeight` が「第１波識別不能」だけだった地点）と、第1波の訂正が
+  // これに当たる。「名前を初めて見たか」だけで絞っていたころは、読み上げが名指しして読むのに
+  // 画面だけが黙っていた。
+  it('波高を持たない観測点でも、第1波が付いたら印が立つ', async () => {
+    const { handle, result } = setup({ voicevoxEnabled: false })
+    handle(makeTsunamiArrivalOnly())
+    await settle()
+    expect(result.current.obsUpdateStatus.get('輪島港')?.status).toBe('new')
+
+    // 同じ観測点に到達時刻が付く（波高はまだ出ていない）
+    const withFirstWave = {
+      ...makeTsunamiArrivalOnly({ id: 'tsunami-arr-2' }),
+      observations: [{
+        name: '輪島港', districtCode: '360', districtName: '石川県能登',
+        arrivalTime: '2026-01-01T12:05:00Z', initial: '押し',
+      }],
+    } as unknown as JMATsunami
+    handle(withFirstWave)
+    await settle()
+    // 名前は既出なので「初めて出た値です」ではなく「動いた」側
+    expect(result.current.obsUpdateStatus.get('輪島港')?.status).toBe('changed')
+    expect(result.current.obsUpdateStatus.get('輪島港')?.fields.has('firstWave')).toBe(true)
+
+    // 対照: 同じ内容の再送では印が付かない（絞り込みを外した結果、毎報光るようにはしない）
+    handle({ ...withFirstWave, id: 'tsunami-arr-3' } as unknown as JMATsunami)
+    await settle()
+    expect(result.current.obsUpdateStatus.get('輪島港')).toBeUndefined()
+  })
+
+  // 正: **等級が動いた報に同梱された、値が 1 つも変わっていない観測点へ印を付けない。**
+  // 等級不変の枝は動いたものだけに絞っているのに、こちらは全件を無条件に「初めて出た値です」
+  // （緑）で押していた。
+  it('等級が動いた報でも、変わっていない観測点には印を付けない', async () => {
+    const { handle, result } = setup({ voicevoxEnabled: false })
+    handle(makeTsunami())
+    handle(makeTsunamiObsUpdate())
+    await settle()
+    expect(result.current.obsUpdateStatus.get('輪島港')).toBeDefined()
+
+    // 大津波警報 → 津波警報へ下がった報。観測点は前報とまったく同じ値のまま載る。
+    handle({
+      ...makeTsunamiObsUpdate(),
+      id: 'tsunami-downgrade',
+      areas: [{ grade: 'Warning', immediate: false, name: '石川県能登', maxHeight: { description: '3m', value: 3 } }],
+    } as unknown as JMATsunami)
+    await settle()
+    expect(result.current.obsUpdateStatus.get('輪島港')).toBeUndefined()
+  })
+
+  // 対照: 等級が動いた報でも、値が動いていれば従来どおり印が付く（絞り込みが効きすぎていないこと）
+  it('等級が動いた報で値も動いていれば印が付く', async () => {
+    const { handle, result } = setup({ voicevoxEnabled: false })
+    handle(makeTsunami())
+    handle(makeTsunamiObsUpdate())
+    await settle()
+
+    handle({
+      ...makeTsunamiObsUpdate(),
+      id: 'tsunami-downgrade-2',
+      areas: [{ grade: 'Warning', immediate: false, name: '石川県能登', maxHeight: { description: '3m', value: 3 } }],
+      observations: [{ name: '輪島港', height: { value: 4.2, over: false, description: '4.2m' }, time: '2026-01-01T12:18:00Z' }],
+    } as unknown as JMATsunami)
+    await settle()
+    expect(result.current.obsUpdateStatus.get('輪島港')?.status).toBe('changed')
+    expect(result.current.obsUpdateStatus.get('輪島港')?.fields.has('height')).toBe(true)
+  })
+
+  // 安全弁: 新規発報では全件に印が付く（絞り込みを足したせいで最初の報が無印になっていないこと）
+  it('新規発報では観測点に印が付く', async () => {
+    const { handle, result } = setup({ voicevoxEnabled: false })
+    handle(makeTsunamiObsUpdate())
+    await settle()
+    expect(result.current.obsUpdateStatus.get('輪島港')?.status).toBe('new')
+  })
+
+  // 安全弁: **前の津波の記憶が残っていても、新しい津波の初報では絞り込みを当てない。**
+  //
+  // 観測点の記憶（`lastMaxObsHeightRef` ほか）が落ちるのは、表示中の津波へ向けた解除と
+  // リプレイのリセットだけ。解除を受けずに別の津波へ移る経路では前の値が残るので、
+  // 観測点名が全国共通であることと相まって「前より低い波高の同名観測点」が
+  // **動いていないと判定されうる**。絞り込みをそこへ当てると、カードの縦線も地図の点滅も
+  // 出ないまま新しい津波が始まる。
+  //
+  // **この枝（等級が動いた報）に限った話。** 前の津波と等級が同じまま別の津波が発報された報は
+  // 上の枝（等級不変の続報）へ入り、そちらの絞り込みは以前からある。記憶が津波をまたいで残ること
+  // 自体が根にあるので、そこは別途扱う。
+  it('前の津波より低い波高でも、等級の違う別の津波の初報なら印が付く', async () => {
+    const { handle, result } = setup({ voicevoxEnabled: false })
+    handle(makeTsunami())
+    handle(makeTsunamiObsUpdate()) // 輪島港 3.4m を記憶させる
+    await settle()
+
+    // 解除を挟まずに別の津波（`eventId` が違う）が発報され、同じ観測点が前より低い値で載る。
+    // 最大波の観測時刻も第1波も持たないので、記憶と突き合わせると「何も動いていない」に見える。
+    handle({
+      ...makeTsunamiObsUpdate(),
+      id: 'tsunami-other-1',
+      eventId: 'tsunami-evt-2',
+      areas: [{ grade: 'Warning', immediate: false, name: '石川県能登', maxHeight: { description: '3m', value: 3 } }],
+      observations: [{ name: '輪島港', height: { value: 0.5, over: false, description: '0.5m' }, time: '2026-01-01T13:00:00Z' }],
+    } as unknown as JMATsunami)
+    await settle()
+    expect(result.current.obsUpdateStatus.get('輪島港')?.status).toBe('new')
+    // **縦線だけでは足りない。** 項目の色も前の津波の記憶と比べて決まるので、そこを守らないと
+    // 「行は緑なのに値が白い」中途半端な行になる（初出の印を入れた意味が津波を跨ぐと消える）。
+    expect(result.current.obsUpdateStatus.get('輪島港')?.fields.has('height')).toBe(true)
+  })
+
   // 安全弁: 同じ内容の再送では印が空になる（印が居座ると、動いていない項目が塗られ続ける）
   it('同じ内容の再送では項目の印が付かない', async () => {
     const { handle, result } = setup({ voicevoxEnabled: false })

@@ -30,7 +30,7 @@ import {
   type FitZoomPolicy,
 } from './gl/camera'
 import { decideTsunamiFit } from './gl/tsunamiFit'
-import { hasObservedHeightChanged, hasMaxHeightTimeAdvanced, type ObservedHeightRank } from '../../utils/tsunami'
+import { hasObservedHeightChanged, hasMaxHeightTimeAdvanced, firstWaveSpokenKey, type ObservedHeightRank } from '../../utils/tsunami'
 import type { TsunamiObsBar } from '../../hooks/useTsunamiLayerData'
 import { openPopupAt, closeMapPopup } from './gl/popupRegistry'
 import { log } from '../../utils/logger'
@@ -1179,7 +1179,7 @@ export function TsunamiFitGL({
    * 描画用の `description` は要らない。テストが実データを組まずに済む。
    */
   observationBars: (
-    Pick<TsunamiObsBar, 'name' | 'lat' | 'lng' | 'maxHeightDateTime' | 'maxHeightRevise'>
+    Pick<TsunamiObsBar, 'name' | 'lat' | 'lng' | 'maxHeightDateTime' | 'maxHeightRevise' | 'arrivalTime' | 'initial'>
     & { height: ObservedHeightRank }
   )[]
   /** 到達は確認されたが波高がまだ出ていない観測点。値が付くと observationBars へ移る。 */
@@ -1203,7 +1203,7 @@ export function TsunamiFitGL({
   // 判定されるが、そのぶんは入室時・アイドル復帰・消滅時の帰還が寄せ直すため実害は無い
   // （帰還経路を消すとこの前提も崩れるので、経路を減らすときは併せて見直すこと）。
   const lastTsunamiSigRef = useRef<string>('')
-  const prevObsMapRef = useRef<Map<string, ObservedHeightRank & { maxHeightDateTime?: string }>>(new Map())
+  const prevObsMapRef = useRef<Map<string, ObservedHeightRank & { maxHeightDateTime?: string; firstWave?: string | null }>>(new Map())
   // 到達確認は波高を持たないため、値ではなく「名前が新しく現れたか」で見る。点滅（blinking）は
   // 60 秒で落ちるが名前は残るので、点滅が消えただけで寄り直すことはない。
   const prevArrivalNamesRef = useRef<Set<string>>(new Set())
@@ -1281,18 +1281,26 @@ export function TsunamiFitGL({
     // モードを問わず記録するため、津波タブを離れている間の更新も入室時に反映される。
     //
     // **判定は述語へ預ける（数値の比較で済ませない）。** 波高が動かないまま画面へ見せ直す値打ちの
-    // ある変化が 2 通りある —— 「○m以上」（`over`）が付くことと、気象庁が最大波の観測時刻だけを
-    // 進めることで、どちらも実配信で起きる。読み上げとカードのバッジは両方を更新として扱うので、
-    // ここだけ値で見ていると「声は言い、棒は点滅するのに、地図は寄らない」という食い違いになる
-    // （→ utils/tsunami.ts の `hasObservedHeightChanged` / `hasMaxHeightTimeAdvanced`）。
+    // ある変化が 3 通りある —— 「○m以上」（`over`）が付くこと、気象庁が最大波の観測時刻だけを
+    // 進めること、そして**第1波（到達時刻・押し引き）の訂正**で、いずれも実配信で起きる。
+    // 読み上げとカードのバッジは 3 つとも更新として扱うので、ここだけ見落とすと「声は言い、
+    // 棒は点滅するのに、地図は寄らない」という食い違いになる（→ utils/tsunami.ts の
+    // `hasObservedHeightChanged` / `hasMaxHeightTimeAdvanced` / `firstWaveSpokenKey`）。
     const prevMap = prevObsMapRef.current
     const updatedBars = observationBars.filter((b) => {
       const prev = prevMap.get(b.name)
-      return hasObservedHeightChanged(b.height, prev) || hasMaxHeightTimeAdvanced(b, prev?.maxHeightDateTime)
+      if (hasObservedHeightChanged(b.height, prev) || hasMaxHeightTimeAdvanced(b, prev?.maxHeightDateTime)) return true
+      // **鍵が組めない報（到達時刻が読めない）では動いたとみなさない。** `null !== undefined` が
+      // 真になるので、素の比較だとその観測点へ毎報寄り直す。
+      const firstWave = firstWaveSpokenKey(b)
+      return firstWave !== null && firstWave !== (prev?.firstWave ?? null)
     })
-    const newMap = new Map<string, ObservedHeightRank & { maxHeightDateTime?: string }>()
+    const newMap = new Map<string, ObservedHeightRank & { maxHeightDateTime?: string; firstWave?: string | null }>()
     for (const b of observationBars) {
-      newMap.set(b.name, { value: b.height.value, over: b.height.over, maxHeightDateTime: b.maxHeightDateTime })
+      newMap.set(b.name, {
+        value: b.height.value, over: b.height.over, maxHeightDateTime: b.maxHeightDateTime,
+        firstWave: firstWaveSpokenKey(b),
+      })
     }
     prevObsMapRef.current = newMap
 
