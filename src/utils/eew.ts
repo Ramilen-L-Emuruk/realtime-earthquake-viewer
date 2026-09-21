@@ -1,5 +1,5 @@
 import type { EEWAlert, EEWRegion } from '../types/earthquake'
-import { hypocentralDistanceKm } from './geo'
+import { hasKnownEpicenter, haversineKm, hypocentralDistanceKm } from './geo'
 import type { AlertSoundType } from './alertSound'
 import { computeSWaveTravelTimeSec } from '../hooks/usePsWaveCalc'
 import { isValidIntensityScale } from './intensity'
@@ -236,6 +236,55 @@ export function eewMaxScaleInfo(eew: EEWAlert): EewMaxScaleInfo {
 /** 対象地域の最大予想震度（scale 値）。震度が取れないときは 0 を返す。判定は `eewMaxScaleInfo`。 */
 export function eewMaxScale(eew: EEWAlert): number {
   return eewMaxScaleInfo(eew).scale
+}
+
+/**
+ * 第 1 フェーズで**声にした**震源。{@link isUnannouncedHypocenter} が比較の相手にする。
+ *
+ * 位置が読めなかった報（震源要素不明のセンチネル）でも、名前は声になっているので記録する。
+ * その要素は距離の比較に参加せず、地名の一致だけが効く。
+ */
+export interface AnnouncedHypocenter {
+  name: string
+  /** 位置が読めなかった報では null。 */
+  lat: number | null
+  lng: number | null
+}
+
+/**
+ * 「震源を更新、〇〇で地震。」と言い直す距離の下限。これ以下しか動いていなければ、
+ * 地名が変わっていても同じ場所を指しているとみなす。
+ */
+export const EEW_HYPOCENTER_RESTATE_KM = 50
+
+/**
+ * 続報の震源が「まだ一度も声にしていない場所」か。
+ *
+ * **比較の相手は、その EEW で声にした震源の全部**（直前の 1 つではない）。速報の初期は
+ * 震源推定が定まらず、地名が区域の境目を何度も往復する —— 直前とだけ比べると、既に名乗った
+ * 場所へ戻っただけの続報でも「震源を更新」と言い直してしまう（2024-01-03 18:48 の実電文では
+ * 5.4 秒のあいだに 石川県能登地方 → 日本海中部 → 能登半島沖 → 石川県能登地方 と動き、
+ * そのうち 3 回が言い直しの条件を満たしていた）。
+ *
+ * **地名と距離の両方で黙らせる。** 地名が既出ならその時点で黙り、地名が新しくても既出の
+ * どれかから {@link EEW_HYPOCENTER_RESTATE_KM} 以内なら黙る（区域の境目をまたいだだけ）。
+ *
+ * @param announced その EEW で声にした震源（空＝まだ一度も声にしていない）。**空なら常に偽** ——
+ *   比較の相手が無い状態を「大きく動いた」と読むと、位置不明で始まった EEW が位置を得ただけで
+ *   言い直しになる。初報を読むかどうかは呼び出し側の別の判定が決める
+ */
+export function isUnannouncedHypocenter(
+  announced: readonly AnnouncedHypocenter[],
+  hypo: { name: string; latitude: number; longitude: number },
+): boolean {
+  if (announced.length === 0) return false
+  // 位置不明のセンチネル（-200）は有限なので `Number.isFinite` をすり抜け、距離が無意味に
+  // 大きく出て「大きく動いた」と誤判定する。
+  if (!hasKnownEpicenter(hypo.latitude, hypo.longitude)) return false
+  return !announced.some(a =>
+    a.name === hypo.name
+    || (a.lat !== null && a.lng !== null
+      && haversineKm(hypo.latitude, hypo.longitude, a.lat, a.lng) <= EEW_HYPOCENTER_RESTATE_KM))
 }
 
 /**
