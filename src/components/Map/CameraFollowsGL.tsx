@@ -1162,6 +1162,7 @@ export function FitToEEWGL({
 export function TsunamiFitGL({
   mode,
   tsunamiSignature,
+  tsunamiEventId,
   tsunamiFitPositions,
   observationBars,
   arrivalMarkers,
@@ -1171,6 +1172,14 @@ export function TsunamiFitGL({
 }: {
   mode: string
   tsunamiSignature: string
+  /**
+   * 表示中の津波の識別子（無ければ空文字）。**観測点の差分の基準が、いま見ている津波のもので
+   * あることを確かめるために要る**（下の `obsBaselineStale`）。
+   *
+   * **既定値を置かない。** 渡し忘れても画面は動いてしまい、気象庁が解除を経ずに別の津波へ
+   * 差し替えた報でだけ、観測点の差分が丸ごと「更新」として扱われる —— 例外もログも出ない。
+   */
+  tsunamiEventId: string
   tsunamiFitPositions: LatLng[]
   /**
    * 観測棒。**フィールド名は `TsunamiObsBar` から引く**（名前を変えたらここで型が落ちる）。
@@ -1210,6 +1219,11 @@ export function TsunamiFitGL({
   // 欠測も到達確認と同じく「名前が新しく現れたか」で見る（波高を持つ欠測もあるが、値の変化は
   // 観測棒の側が拾うので、ここで見るのは欠測になったこと自体）。
   const prevMissingNamesRef = useRef<Set<string>>(new Set())
+  // 直前の評価で見た海岸線 signature と津波の識別子。**カメラへ反映済みの `lastTsunamiSigRef` とは
+  // 別物**——この 2 つは「観測点の差分の基準が、いま見ている津波のものか」を見るために持つ
+  // （下の `obsBaselineStale`）。
+  const prevSeenSigRef = useRef<string>('')
+  const prevEventIdRef = useRef<string>('')
   const pendingObsPositionsRef = useRef<LatLng[]>([])
   const prevModeRef = useRef<string>(mode)
   const prevInteractingRef = useRef(false)
@@ -1276,6 +1290,28 @@ export function TsunamiFitGL({
     const enteredTsunamiMode = mode === 'tsunami' && prevModeRef.current !== 'tsunami'
     prevModeRef.current = mode
 
+    // 観測点の差分の基準（下の 3 つの ref）が、いま見ている津波のものになっていないか。
+    // **この状態で差分を取ると、相手が無い／別の津波のものなので全件が「更新された」と出る。**
+    // 当たるのは 2 通りある。
+    //
+    // - **現れた**: signature が空から変わった。初期状態の復元（リプレイの開始・起動時の履歴の
+    //   遡り）はここで、区域も観測点も一度に揃えて流し込む（その前に `tsunamis` が空へ戻る）。
+    //   新しく発表された津波の第一報も同じ形。**signature が空になる理由はそれだけではない**
+    //   —— 区域の海岸線は生成データの遅延読込に依存するので、読み込みが終わるまでは津波が
+    //   あっても空になる（`useTsunamiLayerData` は海岸線を引けない区域の行を作らない）。
+    //   どちらでも扱いは同じでよい —— まだ寄り先を持っていない状態なので、基準を作り直して
+    //   対象海域から見せる
+    // - **差し替わった**: 気象庁が解除を経ずに別の津波を発表した（`useEarthquakes` の
+    //   「別 eventId の tsunami で上書き」）。**signature は非空のまま変わる**ので、空を経由したか
+    //   だけでは見分けられない。**両方の識別子が取れるときだけ見る** —— 片方でも空なら「別物」と
+    //   言えないので従来どおり差分を取る（標準版は識別子を持たないため常にこちら）
+    const tsunamiPresent = tsunamiSignature !== ''
+    const tsunamiSwitched = tsunamiPresent && !!tsunamiEventId && !!prevEventIdRef.current
+      && tsunamiEventId !== prevEventIdRef.current
+    const obsBaselineStale = (tsunamiPresent && !prevSeenSigRef.current) || tsunamiSwitched
+    prevSeenSigRef.current = tsunamiSignature
+    prevEventIdRef.current = tsunamiEventId
+
     // 更新された観測バーを検出して持ち越しに積む。海岸線 sig はここで消費して競合を防ぐ
     // （寄り先が観測点と海岸線で二重に決まると、直後に引き直しが起きて二段のカメラ移動になる）。
     // モードを問わず記録するため、津波タブを離れている間の更新も入室時に反映される。
@@ -1315,7 +1351,39 @@ export function TsunamiFitGL({
     const newMissing = missingMarkers.filter((m) => !prevMissing.has(m.name))
     prevMissingNamesRef.current = new Set(missingMarkers.map((m) => m.name))
 
-    if (updatedBars.length > 0 || newArrivals.length > 0 || newMissing.length > 0) {
+    const hasObsDiff = updatedBars.length > 0 || newArrivals.length > 0 || newMissing.length > 0
+
+    // **基準が古い評価では積まない。** 上の 3 つが答えた「更新」は、「たったいま更新された」では
+    // なく「その時刻に出ていた」（または別の津波のもの）。積むと、次に津波タブへ入った瞬間に
+    // 持ち越しが入室時の海岸線フィットを潰し、観測点の和へ引いた画になる（2024-01-01 20:30 の
+    // 等級切り替えで実測——復元された 26 点・ズーム 4）。ここで基準だけ作り、寄るのは次の電文から。
+    //
+    // **画面が止まるわけではない。** 現れた評価では signature も空から変わり、差し替わった評価でも
+    // 区域は入れ替わるので、下の海岸線フィットが当たって対象海域全体が出る。
+    //
+    // **溜めてあった持ち越しも捨てる。** 積まないだけでは、前の津波を見ていたあいだに溜めた分が
+    // 残り、入室時にそちらへ寄ってしまう（差し替わった後では、画面に無い場所を見せることになる）。
+    //
+    // **捨てたことは記録する。** 画面には「観測点へ寄らなかった」としか現れず、入室時の俯瞰が
+    // 出たのか観測点フィットが落ちたのかを後から切り分けられない。捨てるものがあるときだけ出すので、
+    // 津波が無い平常時のログは増えない。
+    if (obsBaselineStale) {
+      const dropped = pendingObsPositionsRef.current.length
+      if (hasObsDiff || dropped > 0) {
+        // **初出の側は理由を 1 つに絞れない。** signature が空から変わる契機は「津波が現れた」
+        // だけでなく「海岸線データの読み込みが終わった」でもあり、実行時には見分けられない。
+        // 片方だけを名乗ると、ログを読む側が起きていないことを起きたと読む。
+        // **2 つの条件は同時に成立しうる**（読み込みを待つあいだに別の津波へ差し替わった場合）。
+        // そのときは差し替えの側を名乗る —— カメラにとって効く事実はそちらなので。
+        log.debug(`[mapGL] 津波フィット 観測点を見送り (${tsunamiSwitched ? '別の津波へ差し替え' : '津波の初出か海岸線データの読込完了'}・差分 棒${updatedBars.length}/到達${newArrivals.length}/欠測${newMissing.length}点・持ち越し${dropped}点を破棄)`)
+      }
+      pendingObsPositionsRef.current = []
+      // **海岸線 signature の記録も落とす。** signature は `区域名:等級` の連結でしかないので、
+      // 別の津波へ差し替わっても前の津波とたまたま同じ文字列になりうる。そのままだと下の判定が
+      // 「区域・等級は変わっていない」と読み、観測点を捨てた直後のこの評価でカメラが何も動かない
+      // （差し替わったことが画面のどこにも現れない）。落としておけば対象海域全体が必ず出る。
+      lastTsunamiSigRef.current = ''
+    } else if (hasObsDiff) {
       // 持ち越しは「最後に届いたぶん」で置き換える（溜めて合成しない）。フィットを見送っている間に
       // 複数の電文が届いた場合、全部を束ねると離れた観測点の和で引きの画になり、どこで新しく
       // 観測されたのかが読めなくなる。取りこぼすのは枠の選び方だけで、観測値はカードにも
@@ -1373,8 +1441,8 @@ export function TsunamiFitGL({
     log.debug('[mapGL] fitJapan (津波の帰還: 海岸線なし or 発表終了)')
     fitJapan(map, 1.0)
   }, [
-    map, mode, tsunamiSignature, tsunamiFitPositions, observationBars, arrivalMarkers, missingMarkers, isUserInteracting,
-    idleReturnTick, armIdleReturnTimer, clearIdleReturnTimer,
+    map, mode, tsunamiSignature, tsunamiEventId, tsunamiFitPositions, observationBars, arrivalMarkers, missingMarkers,
+    isUserInteracting, idleReturnTick, armIdleReturnTimer, clearIdleReturnTimer,
   ])
 
   return null
