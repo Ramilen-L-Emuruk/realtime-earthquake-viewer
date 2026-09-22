@@ -1518,6 +1518,25 @@ export function isAudioPlaying(): boolean {
 }
 
 /**
+ * **最後に音が出ていたのはどれだけ前か**（ms）。鳴っている最中なら 0、
+ * このセッションで一度も鳴っていなければ `null`。
+ *
+ * {@link isAudioPlaying} と問いが違う。あちらは {@link AUDIO_GAP_GRACE_MS} という
+ * **固有の猶予で真偽へ畳んだもの**で、その猶予は「鳴っている読み上げを切らない」という
+ * あちらの用途に合わせて決めてある。**別の用途が真偽だけを借りると、借りた側の尺度と
+ * 猶予の長さが食い違ったぶんが隙間になる** —— 自動タブ切替の追従の床
+ * （`utils/tabPriority.ts` の `TAB_FOLLOW_MIN_DWELL_MS` = 1500ms）で実際に起きた:
+ * 猶予 1000ms を過ぎ床 1500ms には届かない帯で、声は正常に出ているのに間引かれる。
+ *
+ * そこで**畳む前の値**を返し、猶予の長さは使う側がその尺度で決める。
+ */
+export function msSinceAudible(): number | null {
+  if (activeSources.length > 0) return 0
+  if (lastAudioEndedAt === 0) return null
+  return performance.now() - lastAudioEndedAt
+}
+
+/**
  * いま読み上げの最中か（合成待ち・チャンクの隙間も含む）。
  *
  * 使うのは**既定の状態へ戻す操作を見送る**側（`App.tsx` の `revertToDefaultTab` とアイドル
