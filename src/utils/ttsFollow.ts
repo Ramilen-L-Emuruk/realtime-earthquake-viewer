@@ -181,6 +181,21 @@ export function hasFollowTarget(segments: readonly SpeechSegment[] | undefined):
 }
 
 /**
+ * その参照は「併せて視野に入れたい前置き」を持つか（→ {@link planFollowScroll} の `contextRects`）。
+ *
+ * - **区域**は等級カードの頭。区域行だけを上端へ揃えると、どの等級の話かが視野から消える
+ * - **観測点**はその区域の見出し（沖合なら「沖合観測」の帯）。**読み上げ文は読点でチャンクが
+ *   割れる**ので「石川県能登、」と「輪島港で〜」は別チャンクになり、観測点のチャンクへ進んだ
+ *   時点で前置きが無いと直前に読んだ区域名が視野の外へ流れる
+ * - **等級**は自分がカードの頭なので前置きを持たない
+ *
+ * 引く先（要素）は呼び出し側が登録する。ここで決めるのは**どの種別が前置きを持つか**だけ。
+ */
+export function hasFollowContext(ref: SpeechRef): boolean {
+  return ref.kind === 'area' || ref.kind === 'station'
+}
+
+/**
  * その読み上げ文が「震度が届いていない地点」を含むか（未入電モードの自動開閉に使う）。
  *
  * **{@link hasFollowTarget} を広げないこと。** あちらは津波カードの行を引ける 3 種だけを
@@ -254,6 +269,10 @@ export const TELEGRAM_TEXT_OPEN_TARGET_KINDS: ReadonlySet<string> = new Set([
  *
  * **開く側と読む側が同じ関数を通ること。** 文字列を手で組み立てると、片方だけ書式を変えた
  * ときに黙って開かなくなる（画面が動かないだけで、例外もログも出ない）。
+ *
+ * **`ttsText.ts` の `telegramTextSpokenSubject` とは別物。** 名前も引数の形も似ているが、
+ * あちらは既読の鍵（同じ文を二度読まないための「事象」）で、こちらは画面のどこを開くかを
+ * 指す。取り違えても型検査は通るので、混ぜないこと。
  *
  * @param kind 電文の種別
  * @param target 同じ種別の表示が画面に複数あるとき、どれを開くかを決める識別子。

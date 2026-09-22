@@ -54,7 +54,14 @@ export function decideTsunamiFit(input: TsunamiFitInput): TsunamiFitAction {
   if (input.isUserInteracting) return 'none'
   if (input.hasPendingObs) return 'obs'
   // 区域・等級が変わったとき（新規発表・格上げ・区域追加）は対象海域を出し直す。
-  if (input.signature && input.signature !== input.lastSignature && input.hasCoastPositions) return 'coast'
+  // **海岸線が引けなければ日本全体で代替する**（入室・アイドル復帰と同じ構え）。上の
+  // `hasCoastPositions` の注記どおり、両者は同時に空になる前提なのでここへ落ちるのは
+  // その前提が崩れたときだけだが、**そこで 'none' を返すとカメラが一切動かない** ——
+  // 呼び出し側は「基準が別の津波のものになった」評価で観測点の持ち越しを捨てるので、
+  // 寄り先の候補がここしか残らない。
+  if (input.signature && input.signature !== input.lastSignature) {
+    return input.hasCoastPositions ? 'coast' : 'japan'
+  }
   // 発表中だった津波が消えた（解除表示の 10 秒後の purge・有効期間の満了）。寄ったままにせず帰る。
   if (!input.signature && input.lastSignature) return 'japan'
   // 入室時・アイドル復帰時は俯瞰へ。海岸線が引けない場合（生成データの取得失敗）は日本全体で代替する。

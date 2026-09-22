@@ -1330,7 +1330,19 @@ export function changedObservationFields(
   prevHeights: ReadonlyMap<string, { value: number; over?: boolean }>,
 ): Set<ObsUpdateField> {
   const fields = new Set<ObsUpdateField>()
-  if (hasMaxHeightTimeAdvanced(obs, prevMaxHeightTime)) fields.add('maxHeightTime')
+  // **初出も印を付ける。** `hasMaxHeightTimeAdvanced` は「気象庁が更新と言ったか」
+  // （`MaxHeight/Revise` = 更新）を問う述語なので、その観測点が初めて現れた報では必ず偽になる
+  // —— 初報の電文は `Revise` を持たない。それをそのまま印の判定に使っていたころは、
+  // **行の縦線も波高も第1波も緑なのに最大波の観測時刻だけ白** という中途半端な画になっていた
+  // （読み上げはその時刻を読んでいる）。下の 2 項目が「前値が無ければ変化あり」と見るのに合わせる。
+  //
+  // **`hasMaxHeightTimeAdvanced` 自体は変えないこと。** あれは読み上げ・地図のカメラ・
+  // カードのバッジが共有する「更新されたか」の述語で、初出まで真にすると
+  // 「最大波の観測時刻が更新されました」と初めての観測点について読んでしまう。
+  if (obs.maxHeightDateTime
+    && (prevMaxHeightTime === undefined || hasMaxHeightTimeAdvanced(obs, prevMaxHeightTime))) {
+    fields.add('maxHeightTime')
+  }
   const firstWave = firstWaveSpokenKey(obs)
   if (firstWave && firstWave !== prevFirstWave) fields.add('firstWave')
   // **波高は「深刻になったか」で見る**（→ {@link hasObservedHeightRisen}）。記憶が高水位マーク式
