@@ -192,7 +192,7 @@ export const DEFAULTS: AppSettings = {
   // 届く内容を、設定を足しただけで変えないため。
   ttsReadTelegramText: false,
   // **全ブロックを読む。** マスタートグル（`ttsReadTelegramText`）を入れた利用者は
-  // 「気象庁の文を読む」ことを選んだのだから、内訳の既定は全部読む側へ倒す。
+  // 「気象庁の発表文を読む」ことを選んだのだから、内訳の既定は全部読む側へ倒す。
   ttsTelegramTextBlocks: Object.fromEntries(
     TELEGRAM_TEXT_BLOCK_KEYS.map(key => [key, true]),
   ) as TelegramTextBlocks,

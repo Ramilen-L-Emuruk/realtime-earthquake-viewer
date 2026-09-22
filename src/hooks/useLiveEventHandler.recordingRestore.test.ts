@@ -52,7 +52,7 @@ async function drain() {
 
 /** 電文本体の読み上げだけを拾う（気象庁が書いた文の発話と混ざらないように）。 */
 function mainSpeeches(): string[] {
-  return speeches.map(s => s.text).filter(t => !t.includes('気象庁の文をお伝えします'))
+  return speeches.map(s => s.text).filter(t => !t.includes('気象庁の発表文をお伝えします'))
 }
 
 /**

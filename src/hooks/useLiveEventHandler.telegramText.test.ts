@@ -64,7 +64,7 @@ async function drain() {
 
 /** 本文の読み上げだけを拾う（電文本体の読み上げと混ざらないように） */
 function telegramSpeeches(): string[] {
-  return speeches.map(s => s.text).filter(t => t.includes('気象庁の文をお伝えします'))
+  return speeches.map(s => s.text).filter(t => t.includes('気象庁の発表文をお伝えします'))
 }
 
 // **題材に「＊印は…」を使わない** —— あれは読み上げから落とす定型文
@@ -297,8 +297,8 @@ describe('気象庁が書いた文の読み上げ（配線）', () => {
     const order = speeches.map(s => s.text)
     // **本体の判定を前置きの語で書かない** —— 本文も「地震情報について、…」で始まるので
     // `startsWith('地震情報')` では本文自身を拾ってしまう。本文以外の最初の発話を本体とみなす。
-    const bodyIdx = order.findIndex(t => t.includes('気象庁の文をお伝えします'))
-    const mainIdx = order.findIndex(t => !t.includes('気象庁の文をお伝えします'))
+    const bodyIdx = order.findIndex(t => t.includes('気象庁の発表文をお伝えします'))
+    const mainIdx = order.findIndex(t => !t.includes('気象庁の発表文をお伝えします'))
     expect(mainIdx, '電文本体が鳴っていない').toBeGreaterThanOrEqual(0)
     expect(bodyIdx, '本文が鳴っていない').toBeGreaterThanOrEqual(0)
     expect(mainIdx).toBeLessThan(bodyIdx)
@@ -398,7 +398,7 @@ describe('気象庁が書いた文の読み上げ（配線）', () => {
     expect(telegramSpeeches()[1]).toContain('二つ目の文です。')
     expect(telegramSpeeches()[1]).not.toContain('一つ目の文です。')
     // 前置きは残す（本文だけを裸で鳴らすと、何についての文か分からない）。
-    expect(telegramSpeeches()[1]).toContain('気象庁の文をお伝えします')
+    expect(telegramSpeeches()[1]).toContain('気象庁の発表文をお伝えします')
   })
 
   // 対照: 文が減っただけの続報（すべて既読）では読まない。**ここが「変更がないなら読まない」の本体。**
