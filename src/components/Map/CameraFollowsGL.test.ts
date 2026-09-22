@@ -1140,7 +1140,7 @@ interface TsunamiProps {
   mode?: string
   signature?: string
   coast?: LatLng[]
-  bars?: { name: string; lat: number; lng: number; height: { value: number; over?: boolean }; maxHeightDateTime?: string; maxHeightRevise?: string }[]
+  bars?: { name: string; lat: number; lng: number; height: { value: number; over?: boolean }; maxHeightDateTime?: string; maxHeightRevise?: string; arrivalTime?: string; initial?: string }[]
   arrivals?: typeof ARRIVALS
   missing?: typeof ARRIVALS
   focus?: { name: string; ts: number } | null
@@ -1385,6 +1385,61 @@ describe('津波モードの帰還（観測点 → 俯瞰）', () => {
     view.rerender(tsunamiHarness(map, { bars: [...BARS] }))
 
     // Assert: カメラは動かない。`Revise` の有無だけで判定していたら、続報のたびに寄り直す。
+    expect(fitTargets(map).length).toBe(before)
+  })
+
+  // 正: 第1波（到達時刻・押し引き）の訂正でもその観測点へ寄る。
+  //
+  // 気象庁は第1波を訂正してくる（2024 年能登半島地震の佐渡市鷲崎は 16:10 → 16:32）。カードの
+  // 文字色も読み上げも名指しするのに、**カメラだけが波高と最大波の時刻しか見ていなかった**。
+  it('波高も最大波の時刻も据え置きで、第1波だけが訂正されたらその観測点へ寄る', () => {
+    const T1 = '2024-01-01T16:10:00+09:00'
+    const T2 = '2024-01-01T16:32:00+09:00'
+    const fw = (name: string, lat: number, lng: number, value: number, arrivalTime: string) =>
+      ({ ...bar(name, lat, lng, value), arrivalTime, initial: '押し' })
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map, {
+      bars: [fw('A', 33.0, 130.0, 1.0, T1), fw('B', 34.0, 131.0, 2.0, T1)],
+    }))
+    const before = fitTargets(map).length
+
+    // Act: 波高も最大波の時刻も動かず、第1波の到達時刻だけが訂正された続報。
+    view.rerender(tsunamiHarness(map, {
+      bars: [fw('A', 33.0, 130.0, 1.0, T2), fw('B', 34.0, 131.0, 2.0, T2)],
+    }))
+
+    expect(fitTargets(map).slice(before)).toEqual([OBS_WEST])
+  })
+
+  // 対照: 同じ第1波の再送では寄り直さない
+  it('第1波が同じままの再送では寄り直さない', () => {
+    const T1 = '2024-01-01T16:10:00+09:00'
+    const BARS = [
+      { ...bar('A', 33.0, 130.0, 1.0), arrivalTime: T1, initial: '押し' },
+      { ...bar('B', 34.0, 131.0, 2.0), arrivalTime: T1, initial: '押し' },
+    ]
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map, { bars: BARS }))
+    const before = fitTargets(map).length
+
+    view.rerender(tsunamiHarness(map, { bars: [...BARS] }))
+
+    expect(fitTargets(map).length).toBe(before)
+  })
+
+  // 安全弁: 到達時刻を読めない報では「動いた」とみなさない。鍵は `null` になるので、素の比較
+  // （`null !== undefined`）だとその観測点へ毎報寄り直す。
+  it('到達時刻が読めない報では寄り直さない', () => {
+    const BARS = [
+      { ...bar('A', 33.0, 130.0, 1.0), arrivalTime: '読めない値', initial: '押し' },
+      { ...bar('B', 34.0, 131.0, 2.0), arrivalTime: '読めない値', initial: '押し' },
+    ]
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map, { bars: BARS }))
+    const before = fitTargets(map).length
+
+    view.rerender(tsunamiHarness(map, { bars: [...BARS] }))
+
     expect(fitTargets(map).length).toBe(before)
   })
 
