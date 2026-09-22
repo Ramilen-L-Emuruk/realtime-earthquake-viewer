@@ -1121,6 +1121,9 @@ const COAST: LatLng[] = [[38.0, 141.0], [41.0, 143.0]]
 const OBS_WEST = 130.0
 const COAST_WEST = 141.0
 const SIG = '岩手県:MajorWarning'
+/** 表示中の津波の識別子。別の津波へ差し替わる場面だけ `EVENT_ID_B` を渡す。 */
+const EVENT_ID = '20240101160010'
+const EVENT_ID_B = '20240101183000'
 
 // 到達確認だけの観測点（波高なし）。北海道沖に 2 点置き、寄り先を矩形の西端で判別する。
 // **2 点以上にすること**——1 点だと fitToPositions が退化矩形を避けて flyTo へ落ち、
@@ -1139,6 +1142,7 @@ function fitTargets(map: maplibregl.Map): (number | undefined)[] {
 interface TsunamiProps {
   mode?: string
   signature?: string
+  eventId?: string
   coast?: LatLng[]
   bars?: { name: string; lat: number; lng: number; height: { value: number; over?: boolean }; maxHeightDateTime?: string; maxHeightRevise?: string }[]
   arrivals?: typeof ARRIVALS
@@ -1154,6 +1158,7 @@ function tsunamiHarness(map: maplibregl.Map, props: TsunamiProps = {}) {
     h(TsunamiFitGL, {
       mode: props.mode ?? 'tsunami',
       tsunamiSignature: props.signature ?? SIG,
+      tsunamiEventId: props.eventId ?? EVENT_ID,
       tsunamiFitPositions: props.coast ?? COAST,
       observationBars: props.bars ?? [],
       arrivalMarkers: props.arrivals ?? [],
@@ -1162,6 +1167,19 @@ function tsunamiHarness(map: maplibregl.Map, props: TsunamiProps = {}) {
       focusTarget: props.focusTarget ?? null,
     }),
   )
+}
+
+/**
+ * 観測点へ寄った状態を作る（Arrange 用）。
+ *
+ * **津波が現れる評価と、観測点が届く評価を分けること。** 発表中の津波が無い状態から現れた評価では
+ * 持ち越さない規則があるため、1 回のレンダーで区域と観測点を同時に渡すと観測点フィットは走らない。
+ * 実運用の順序も同じで、津波警報等（第一報）は区域一覧しか運ばない。
+ */
+function renderWithObsUpdate(map: maplibregl.Map, props: TsunamiProps = {}) {
+  const view = render(tsunamiHarness(map, { ...props, bars: [], arrivals: [], missing: [] }))
+  view.rerender(tsunamiHarness(map, props))
+  return view
 }
 
 describe('津波モードの帰還（観測点 → 俯瞰）', () => {
@@ -1195,7 +1213,7 @@ describe('津波モードの帰還（観測点 → 俯瞰）', () => {
   it('猶予の満了前に観測行がクリックされたら、クリック時点から数え直す', () => {
     // Arrange: 観測点へ寄った状態。
     const map = createFakeMap()
-    const view = render(tsunamiHarness(map, { bars: OBS_BARS }))
+    const view = renderWithObsUpdate(map, { bars: OBS_BARS })
     const before = fitTargets(map).length
 
     // Act 1: 猶予の途中でユーザーが観測行をクリックする（FocusObsGL がその観測点へ寄せる）。
@@ -1224,7 +1242,7 @@ describe('津波モードの帰還（観測点 → 俯瞰）', () => {
   it('津波モードを離れたら猶予タイマーを解除する（裏に浮かせない）', () => {
     // Arrange: 観測点へ寄って猶予を待っている状態。
     const map = createFakeMap()
-    const view = render(tsunamiHarness(map, { bars: OBS_BARS }))
+    const view = renderWithObsUpdate(map, { bars: OBS_BARS })
     const before = fitTargets(map).length
     expect(vi.getTimerCount()).toBeGreaterThan(0)
 
@@ -1244,7 +1262,7 @@ describe('津波モードの帰還（観測点 → 俯瞰）', () => {
   it('座標が無い観測点のクリックでは猶予を数え直さない', () => {
     // Arrange: 観測点へ寄った状態（猶予は 30 秒）。
     const map = createFakeMap()
-    const view = render(tsunamiHarness(map, { bars: OBS_BARS }))
+    const view = renderWithObsUpdate(map, { bars: OBS_BARS })
     const before = fitTargets(map).length
 
     // Act: 猶予の途中で、観測棒が無い観測点（座標未収録）の行をクリックする。
@@ -1265,7 +1283,7 @@ describe('津波モードの帰還（観測点 → 俯瞰）', () => {
     // ここで固定できるのは「固定時間で帰る」ことだけ。設定と結合させようとすると props が
     // 増えて型が変わるので、その回帰は型検査が止める。
     const map = createFakeMap()
-    render(tsunamiHarness(map, { bars: OBS_BARS }))
+    renderWithObsUpdate(map, { bars: OBS_BARS })
     const before = fitTargets(map).length
 
     // Act: 固定時間の直前までは帰らない。
@@ -1286,7 +1304,7 @@ describe('津波モードの帰還（観測点 → 俯瞰）', () => {
   it('発表中だった津波が消えたら日本全体へ帰る', () => {
     // Arrange: 観測点へ寄った状態。
     const map = createFakeMap()
-    const view = render(tsunamiHarness(map, { bars: OBS_BARS }))
+    const view = renderWithObsUpdate(map, { bars: OBS_BARS })
     const before = fitTargets(map).length
 
     // Act: 解除表示の 10 秒後の purge で津波が消える（海岸線も観測棒も無くなる）。
@@ -1304,7 +1322,7 @@ describe('津波モードの帰還（観測点 → 俯瞰）', () => {
   it('波高の値が上がったら、その観測点へ寄る', () => {
     // Arrange: 観測点へ一度寄り、猶予を待っている状態。
     const map = createFakeMap()
-    const view = render(tsunamiHarness(map, { bars: OBS_BARS }))
+    const view = renderWithObsUpdate(map, { bars: OBS_BARS })
     const before = fitTargets(map).length
 
     // Act: 素直に値だけが上がった続報（`over` も最大波の観測時刻も動かない）。
@@ -1322,7 +1340,7 @@ describe('津波モードの帰還（観測点 → 俯瞰）', () => {
   it('値が据え置きでも「○m以上」が付いたら、その観測点へ寄る', () => {
     // Arrange: 観測点へ一度寄り、猶予を待っている状態。
     const map = createFakeMap()
-    const view = render(tsunamiHarness(map, { bars: OBS_BARS }))
+    const view = renderWithObsUpdate(map, { bars: OBS_BARS })
     const before = fitTargets(map).length
 
     // Act: 値は同じまま、潮位計が振り切れて「以上」が付いた続報が届く。
@@ -1336,7 +1354,7 @@ describe('津波モードの帰還（観測点 → 俯瞰）', () => {
     // Arrange: 「以上」付きの観測点へ寄った状態。
     const OVER_BARS = [bar('A', 33.0, 130.0, 1.0, true), bar('B', 34.0, 131.0, 2.0, true)]
     const map = createFakeMap()
-    const view = render(tsunamiHarness(map, { bars: OVER_BARS }))
+    const view = renderWithObsUpdate(map, { bars: OVER_BARS })
     const before = fitTargets(map).length
 
     // Act: 同じ内容のまま配列だけ作り直される（続報の再送）。
@@ -1378,7 +1396,7 @@ describe('津波モードの帰還（観測点 → 俯瞰）', () => {
       { ...bar('B', 34.0, 131.0, 2.0), maxHeightDateTime: T1, maxHeightRevise: '更新' },
     ]
     const map = createFakeMap()
-    const view = render(tsunamiHarness(map, { bars: BARS }))
+    const view = renderWithObsUpdate(map, { bars: BARS })
     const before = fitTargets(map).length
 
     // Act: 同じ内容のまま配列だけ作り直される（Revise は「更新」のまま残り続ける）。
@@ -1424,7 +1442,7 @@ describe('津波モードの帰還（観測点 → 俯瞰）', () => {
   it('既に出ている欠測では寄り直さない（配列が作り直されただけで動かさない）', () => {
     // Arrange: 欠測へ寄った状態。
     const map = createFakeMap()
-    const view = render(tsunamiHarness(map, { missing: ARRIVALS }))
+    const view = renderWithObsUpdate(map, { missing: ARRIVALS })
     const before = fitTargets(map).length
 
     // Act: 同じ観測点のまま配列だけ作り直される（続報の再送・点滅の解除など）。
@@ -1451,7 +1469,7 @@ describe('津波モードの帰還（観測点 → 俯瞰）', () => {
   it('既に出ている到達確認では寄り直さない（点滅が落ちただけで動かさない）', () => {
     // Arrange: 到達確認へ寄った状態。
     const map = createFakeMap()
-    const view = render(tsunamiHarness(map, { arrivals: ARRIVALS }))
+    const view = renderWithObsUpdate(map, { arrivals: ARRIVALS })
     const before = fitTargets(map).length
 
     // Act: 同じ観測点のまま配列だけ作り直される（続報の再送・点滅の解除など）。
@@ -1478,7 +1496,7 @@ describe('津波モードの帰還（観測点 → 俯瞰）', () => {
   it('到達確認へ寄った後も、猶予が満了すれば対象海域全体へ帰る', () => {
     // Arrange: 到達確認へ寄った状態（実測と同じく寄りっぱなしにしない）。
     const map = createFakeMap()
-    render(tsunamiHarness(map, { arrivals: ARRIVALS }))
+    renderWithObsUpdate(map, { arrivals: ARRIVALS })
     const before = fitTargets(map).length
 
     // Act: 以後何も起きないまま猶予が満了する。
@@ -1493,7 +1511,7 @@ describe('津波モードの帰還（観測点 → 俯瞰）', () => {
   it('到達確認だけの観測点でも、行のクリックで猶予を数え直す', () => {
     // Arrange: 到達確認へ寄った状態。
     const map = createFakeMap()
-    const view = render(tsunamiHarness(map, { arrivals: ARRIVALS }))
+    const view = renderWithObsUpdate(map, { arrivals: ARRIVALS })
     const before = fitTargets(map).length
 
     // Act 1: 猶予の途中でその行をクリックする（FocusObsGL がその観測点へ寄せる）。
@@ -1515,7 +1533,7 @@ describe('津波モードの帰還（観測点 → 俯瞰）', () => {
   // 猶予が延びないと、直前のフィットが張った残り時間だけでユーザーが選んだ表示が巻き戻る。
   it('区域名のクリックでも猶予を数え直す', () => {
     const map = createFakeMap()
-    const view = render(tsunamiHarness(map, { arrivals: ARRIVALS }))
+    const view = renderWithObsUpdate(map, { arrivals: ARRIVALS })
     const before = fitTargets(map).length
 
     act(() => { vi.advanceTimersByTime(20_000) })
@@ -1533,7 +1551,7 @@ describe('津波モードの帰還（観測点 → 俯瞰）', () => {
   it('同じ寄せ要求で再レンダーされても猶予は延びない', () => {
     const map = createFakeMap()
     const target = { positions: [[38.0, 141.0], [39.0, 142.0]] as LatLng[], ts: 1 }
-    const view = render(tsunamiHarness(map, { arrivals: ARRIVALS, focusTarget: target }))
+    const view = renderWithObsUpdate(map, { arrivals: ARRIVALS, focusTarget: target })
     const before = fitTargets(map).length
 
     // 同じ要求のまま描き直しながら猶予ぶん進める。
@@ -1549,6 +1567,150 @@ describe('津波モードの帰還（観測点 → 俯瞰）', () => {
   // 津波モード以外では帰還そのものが起きないので、猶予を張ったかどうかを外から観測できない
   // （モードを戻すと入室フィットが走り、猶予の満了と区別が付かない）。要求の消費だけは
   // モードに関わらず行う —— その理由は実装側のコメントに書いてある。
+
+  it('津波が現れた評価で一度に届いた観測点は持ち越さない（入室時は対象海域へ）', () => {
+    // Arrange: 発表中の津波が無く、津波タブの外にいる。
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map, { mode: 'kyoshin', signature: '', coast: [] }))
+
+    // Act 1: 初期状態の復元で、区域も観測点も一度に入る（リプレイの開始・起動時の履歴の遡り）。
+    view.rerender(tsunamiHarness(map, { mode: 'kyoshin', bars: OBS_BARS }))
+    expect(fitTargets(map)).toEqual([])
+
+    // Act 2: 津波タブへ移る。
+    view.rerender(tsunamiHarness(map, { mode: 'tsunami', bars: OBS_BARS }))
+
+    // Assert: 復元された観測点ではなく対象海域全体が出る。
+    expect(fitTargets(map)).toEqual([COAST_WEST])
+  })
+
+  it('津波が現れた後の観測更新は、津波タブの外で受けても入室時にその観測点へ寄る', () => {
+    // Arrange: 津波が現れたところまで進め、津波タブの外にいる。
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map, { mode: 'kyoshin', signature: '', coast: [] }))
+    view.rerender(tsunamiHarness(map, { mode: 'kyoshin' }))
+
+    // Act: 観測情報が届く（まだ津波タブの外）→ 津波タブへ移る。
+    view.rerender(tsunamiHarness(map, { mode: 'kyoshin', bars: OBS_BARS }))
+    view.rerender(tsunamiHarness(map, { mode: 'tsunami', bars: OBS_BARS }))
+
+    // Assert: 溜まっていた観測点へ寄る（速報性のある変化を入室時も先に見せる）。
+    expect(fitTargets(map)).toEqual([OBS_WEST])
+  })
+
+  it('津波モードにいても、現れた評価では観測点より対象海域を先に出す', () => {
+    // Arrange: 津波タブにいて、発表中の津波はまだ無い。
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map, { signature: '', coast: [] }))
+
+    // Act: 区域と観測点が同じ評価で現れる。
+    view.rerender(tsunamiHarness(map, { bars: OBS_BARS }))
+
+    // Assert: 対象海域全体だけが出る（観測点への寄り直しを重ねない）。
+    expect(fitTargets(map)).toEqual([COAST_WEST])
+  })
+
+  // 別の津波（B）の区域と観測点。A（`SIG` / `OBS_BARS`）と重ならない場所に置く。
+  const SIG_B = '青森県太平洋沿岸:Warning'
+  const OBS_BARS_B = [bar('X', 40.0, 137.0, 1.0), bar('Y', 41.0, 138.0, 2.0)]
+  const OBS_B_WEST = 137.0
+
+  it('解除を経ずに別の津波へ差し替わったら、観測点を持ち越さない', () => {
+    // Arrange: 津波 A が現れて観測点も届いた状態。津波タブの外にいる。
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map, { mode: 'kyoshin', signature: '', eventId: '', coast: [] }))
+    view.rerender(tsunamiHarness(map, { mode: 'kyoshin' }))
+    view.rerender(tsunamiHarness(map, { mode: 'kyoshin', bars: OBS_BARS }))
+
+    // Act: 解除を経ずに別の津波 B が上書きする（区域も観測点も入れ替わる）→ 津波タブへ移る。
+    const b = { eventId: EVENT_ID_B, signature: SIG_B, bars: OBS_BARS_B }
+    view.rerender(tsunamiHarness(map, { mode: 'kyoshin', ...b }))
+    view.rerender(tsunamiHarness(map, { mode: 'tsunami', ...b }))
+
+    // Assert: B の観測点（A の基準と比べて全件が「新規」に見える）ではなく対象海域全体が出る。
+    expect(fitTargets(map)).toEqual([COAST_WEST])
+  })
+
+  it('同じ津波の続報で区域が増えたときは、観測点の持ち越しを続ける', () => {
+    // Arrange: 津波 A が現れて観測点も届いた状態。津波タブの外にいる。
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map, { mode: 'kyoshin', signature: '', eventId: '', coast: [] }))
+    view.rerender(tsunamiHarness(map, { mode: 'kyoshin' }))
+
+    // Act: 識別子はそのままで区域が増え、観測点も更新される → 津波タブへ移る。
+    const next = { signature: `${SIG},${SIG_B}`, bars: OBS_BARS }
+    view.rerender(tsunamiHarness(map, { mode: 'kyoshin', ...next }))
+    view.rerender(tsunamiHarness(map, { mode: 'tsunami', ...next }))
+
+    // Assert: 差し替えではないので観測点へ寄る。
+    expect(fitTargets(map)).toEqual([OBS_WEST])
+  })
+
+  it('差し替わった津波の区域名が前と同じでも、対象海域を出し直す', () => {
+    // Arrange: 津波 A が現れて観測点も届いた状態。津波タブにいる。
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map, { signature: '', eventId: '', coast: [] }))
+    view.rerender(tsunamiHarness(map, {}))
+    view.rerender(tsunamiHarness(map, { bars: OBS_BARS }))
+    const before = fitTargets(map).length
+
+    // Act: 識別子だけが変わり、区域名と等級はたまたま前と同じ（signature は動かない）。
+    view.rerender(tsunamiHarness(map, { eventId: EVENT_ID_B, bars: OBS_BARS_B }))
+
+    // Assert: 対象海域全体を出し直す。signature の一致に任せると、観測点を捨てた直後の
+    // この評価でカメラが何も動かず、差し替わったことが画面のどこにも現れない。
+    expect(fitTargets(map).slice(before)).toEqual([COAST_WEST])
+  })
+
+  it('海岸線を引けない津波へ差し替わっても、カメラを止めずに日本全体へ帰る', () => {
+    // Arrange: 津波 A が現れて観測点も届いた状態。津波タブにいる。
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map, { signature: '', eventId: '', coast: [] }))
+    view.rerender(tsunamiHarness(map, {}))
+    view.rerender(tsunamiHarness(map, { bars: OBS_BARS }))
+    const before = fitTargets(map).length
+
+    // Act: 別の津波へ差し替わるが、その区域の海岸線を引けない（生成データに無い等）。
+    view.rerender(tsunamiHarness(map, {
+      eventId: EVENT_ID_B, signature: SIG_B, coast: [], bars: OBS_BARS_B,
+    }))
+
+    // Assert: 持ち越しは捨てた後なので寄り先が残らない。そこで止めると差し替わったことが
+    // 画面のどこにも出ないため、日本全体へ帰る（-1 は日本全体のフィット）。
+    expect(fitTargets(map).slice(before)).toEqual([-1])
+  })
+
+  it('津波タブの外で現れて消えた津波でも、入室時には日本全体へ帰る', () => {
+    // Arrange: 津波タブの外で津波が現れる。ここで海岸線 signature の記録が落ちる。
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map, { mode: 'kyoshin', signature: '', eventId: '', coast: [] }))
+    view.rerender(tsunamiHarness(map, { mode: 'kyoshin', bars: OBS_BARS }))
+
+    // Act: 津波タブへ入る前に津波が消え、そのあとで入室する。
+    const gone = { signature: '', eventId: '', coast: [] }
+    view.rerender(tsunamiHarness(map, { mode: 'kyoshin', ...gone }))
+    view.rerender(tsunamiHarness(map, { mode: 'tsunami', ...gone }))
+
+    // Assert: 記録を落としたせいで「発表中だった津波が消えた」判定は成立しないが、
+    // 入室時の分岐が拾って日本全体へ帰る。**この救済は分岐の並び順に依っている**ので、
+    // `decideTsunamiFit` の順序を変えるときはここが落ちないか見ること。
+    expect(fitTargets(map)).toEqual([-1])
+  })
+
+  it('識別子を取れない経路では差し替えを判定しない（標準版は「別物」と言えない）', () => {
+    // Arrange: 識別子が空のまま津波が現れ、観測点も届いた状態。
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map, { mode: 'kyoshin', signature: '', eventId: '', coast: [] }))
+    view.rerender(tsunamiHarness(map, { mode: 'kyoshin', eventId: '' }))
+
+    // Act: 区域も観測点も入れ替わるが、識別子は空のまま → 津波タブへ移る。
+    const b = { eventId: '', signature: SIG_B, bars: OBS_BARS_B }
+    view.rerender(tsunamiHarness(map, { mode: 'kyoshin', ...b }))
+    view.rerender(tsunamiHarness(map, { mode: 'tsunami', ...b }))
+
+    // Assert: 別物と断定できないので従来どおり差分を取り、観測点へ寄る。
+    expect(fitTargets(map)).toEqual([OBS_B_WEST])
+  })
 })
 
 // ── 観測行クリックによるフォーカス（FocusObsGL） ────────────────────────────────
