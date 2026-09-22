@@ -101,6 +101,7 @@ export function useTsunamiLayerData(
   missingMarkers: TsunamiMissingMarker[]
   tsunamiFitPositions: LatLng[]
   tsunamiSignature: string
+  tsunamiEventId: string
 } {
   const tsunamiZones = useTsunamiZones()
   const tsunamiObsCoords = useTsunamiObsCoords()
@@ -226,5 +227,18 @@ export function useTsunamiLayerData(
   )
   const tsunamiSignature = tsunamiLines.map((l) => `${l.name}:${l.grade}`).join(',')
 
-  return { tsunamiLines, observationBars, arrivalMarkers, missingMarkers, tsunamiFitPositions, tsunamiSignature }
+  // 表示中の津波の識別子。**カメラ（`TsunamiFitGL`）が「観測点の差分の基準が別の津波のものに
+  // なっていないか」を確かめるために持つ。** 気象庁は解除を経ずに別の津波へ差し替えることがあり
+  // （`useEarthquakes` の「別 eventId の tsunami で上書き」）、そのとき区域も観測点も丸ごと
+  // 入れ替わるのに signature は非空のまま変わるため、空を経由したかどうかでは見分けられない。
+  //
+  // **識別子が無ければ空文字。** 標準版（P2PQuake）は `eventId` を持たないので常に空になり、
+  // 切り替わりを判定しない —— `isTsunamiNewFire` が識別子を取れないときに「保守的に続報扱い」
+  // （`utils/tsunami.ts`）へ倒れるのと同じ構えで、あちらが判定できないものをここだけ断定しない。
+  const tsunamiEventId = tsunamis.find((t) => !t.cancelled)?.eventId ?? ''
+
+  return {
+    tsunamiLines, observationBars, arrivalMarkers, missingMarkers,
+    tsunamiFitPositions, tsunamiSignature, tsunamiEventId,
+  }
 }
