@@ -253,8 +253,9 @@ const TELEGRAM_TEXT_SPEECH_RESERVE_DELAY_MS = maxTtsDelay() + 500
 /**
  * 気象庁が書いた文の既読（`spokenTelegramTextRef`）を保つ件数の上限。超えたらまとめて捨てる。
  *
- * **数えるのは本文ではなく文。** 1 通で最大 29 文（実電文の津波の避難行動の固定付加文）、
- * 能登半島地震の 1 日ぶん（178 通）を通しても 40 文ほどなので、この深さは数十日ぶんに相当する。
+ * **数えるのは本文ではなく「事象 × 文」**（鍵の作り方は `telegramTextSpokenSubject`）。
+ * 1 通で最大 29 文（実電文の津波の避難行動の固定付加文）。能登半島地震の 1 日ぶん（付加文を
+ * 運ぶ電文 138 通）を通して 158 件で、この深さは十数日ぶんに相当する。
  * 長期セッションで無制限に増えるのを防ぐためだけの歯止めで、捨てた直後は既読の文が読み直される。
  */
 const TELEGRAM_TEXT_SPOKEN_MAX = 2000
@@ -1257,18 +1258,20 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   // TSU-3 で同一スロットに別 eventId を上書きするケースもあるため eventId 単位で管理する。
   // 直前状態（lastTsunamiGradeRef===null）で判定するとリロード後の初回解除を握り潰す。
   /**
-   * 気象庁が書いた文のうち、**既に声にした文**（→ `speakTelegramText`）。鍵は 1 文
-   * （`TelegramTextUnit.key`）。
+   * 気象庁が書いた文のうち、**既に声にした文**（→ `speakTelegramText`）。鍵は「事象 × 1 文」
+   * （`TelegramTextUnit.key`。組み立ては `telegramTextSpokenSubject`）。
    *
-   * **電文やイベントを鍵にしない。** 生の電文は統合前で `eventKey` を持たず、P2PQuake 経路の
+   * **電文の `id` を鍵にしない。** 生の電文は統合前で `eventKey` を持たず、P2PQuake 経路の
    * 鍵（`initialQuakeKey`）は電文の `id` を含むため、**続報のたびに別の鍵になって既読が効かない**
-   * （同じ「＊印は…」を報のたびに読むことになる）。文そのものを覚えれば経路によらず効く。
+   * （同じ「＊印は…」を報のたびに読むことになる）。事象の識別子（`eventId`）なら続報で共有される。
    *
    * **本文まるごとではなく文で持つ。** 津波の避難行動の固定付加文は等級が動くたびに節が増減し、
    * まるごとを鍵にすると 1 文増えただけで既に読んだ 800 字を読み直す（→ `TelegramTextSpeech.units`）。
    *
-   * 副作用として、別の地震でも同じ文なら 2 度目以降は読まない。付加文の大半は定型文なので
-   * これは望ましい挙動。内容の異なる本文（南海トラフの要約・本文など）は文字列が違うので残る。
+   * **同じ文でも事象が変われば読み直す。** 文字列だけを鍵にしていた頃は、別々の地震に付いた
+   * 同じ但し書きが最初の 1 回しか声にならなかった（→ `telegramTextSpokenSubject`）。
+   * 事象をまたいで繰り返される定型文（`＊` の説明など）は、
+   * 定型文の設定（`TELEGRAM_BOILERPLATE_KEYS`）が既定で落とす。
    */
   const spokenTelegramTextRef = useRef(new Set<string>())
 
@@ -2345,14 +2348,26 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // **まだ声にしていない文だけを読む。** 既読の更新は**声に出す瞬間**（`onSpeakStart`）で、
     // 予約した時点で更新すると待ちきれず黙った分まで既読になり二度と読まれない（他の既読と同じ規約）。
     const fresh = speech.units.filter(u => !spokenTelegramTextRef.current.has(u.key))
-    if (fresh.length === 0) return
+    if (fresh.length === 0) {
+      // **全文が既読で黙ったことを残す。** ここで返ると読み上げの予約自体が立たないので、
+      // 以降のどの記録（取り下げ・待ちきれずの見送り）にも現れない —— 「本文が鳴らなかった」
+      // 理由を後から切り分ける手掛かりがこの 1 行しかない。
+      // **音の有無では観測できない**（合成した音はチャンク単位で控えるので、2 度目は
+      // `/audio_query` すら飛ばない）。
+      //
+      // **主題まで出す。** 種別と件数だけでは、群発のさなかにどの地震で黙ったのかを特定できない。
+      // 主題が `<種別>:` で終わっていれば、事象の識別子を取れずに旧来の挙動（文字列だけの既読）へ
+      // 落ちた合図でもある（→ `telegramTextSpokenSubject`）。
+      log.debug(`[tts] 気象庁が書いた文は全文が既読のため読まない subject=${speech.subject} 文数=${speech.units.length}`)
+      return
+    }
     // **全文が未読なら元の文をそのまま使う。** 繋ぎ直すと文のあいだの空白の扱いが変わりうるので、
     // 変える必要が無いときは触らない（合成エンジンが置く間は空白の有無で変わる）。
     const text = fresh.length === speech.units.length
       ? speech.text
       : `${speech.prefix}${fresh.map(u => u.text).join('')}`
-    // 際限なく溜めない（津波の取消の既読と同じ方式）。**文の単位なので本文まるごとより速く増える**
-    // ——実電文で 1 通あたり最大 29 文、能登半島地震の 1 日ぶん（178 通）で 40 文ほど。
+    // 際限なく溜めない（津波の取消の既読と同じ方式）。**鍵は「事象 × 文」なので本文まるごとより
+    // 速く増える** ——実電文で 1 通あたり最大 29 文、能登半島地震の 1 日ぶんで 158 件。
     if (spokenTelegramTextRef.current.size > TELEGRAM_TEXT_SPOKEN_MAX) {
       // **捨てた事実を残す**（同種の記憶と同じ流儀）。捨てた直後は既読の文が読み直されるので、
       // 記録が無いと「なぜ同じ文をもう一度読んだのか」を追えない。
