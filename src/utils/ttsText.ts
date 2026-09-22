@@ -2615,8 +2615,8 @@ export function tsunamiObservationUpdateToSegments(
    */
   const clauseOf = (o: TsunamiObservation, stem: string): string => {
     // **折り込むのは初出の第1波だけ。** 訂正（前に別の内容を声にした地点）はここへ入れない ——
-    // この句の言い回しは「〜に◯◯波が到達し」で、**初出の形**（助詞が「に」）。訂正は
-    // 「〜の◯◯波に更新されました」という別の文型で読む決まりなので（助詞は述語で決まる）、
+    // この句の言い回しは「〜に◯◯波が到達し」で、**初出の形**（動詞が続くので助詞は「に」）。訂正は
+    // 「〜の◯◯波へ更新されました」という別の文型で読む決まりなので（→ {@link tsunamiFirstWaveToSegments}）、
     // 折り込むと訂正であることが聞き分けられない。訂正を拾うのは `firstWaveChanged` の側。
     const fw = spokenFirstWaves?.get(o.name) === undefined ? firstWaveParts(o) : null
     // **最大波の観測時刻は、前に声にしたものと変わったときだけ添える。** 波高だけが上がった
@@ -2639,7 +2639,13 @@ export function tsunamiObservationUpdateToSegments(
       plain(isRaised ? '次の地点で最大波が更新されました。' : '新たに、次の地点で津波を観測しました。'),
       ...observationListSegments(
         items,
-        o => clauseOf(o, isRaised ? 'に更新' : 'を観測'),
+        // **更新の着点は「へ」。** この句には最大波の観測時刻（「16時41分に」）も入るので、
+        // 「に」で受けると「16時41分に3.0メートルに更新されました」と同じ助詞が 2 度続く。
+        // しかも `MaxHeight/DateTime` は**波を観測した時刻**であって更新（発表）の時刻ではないため、
+        // 着点が「に」のままだと「16時41分に更新した」とも読める。着点を「へ」にすれば
+        // 「に」＝いつ観測したか・「へ」＝何に変わったか、と役割で分かれる
+        // （→ {@link tsunamiMaxHeightTimeToSegments} / {@link tsunamiFirstWaveToSegments} と同じ規律）。
+        o => clauseOf(o, isRaised ? 'へ更新' : 'を観測'),
         isRaised ? 'されました。' : 'しました。',
       ),
     ]
@@ -2728,7 +2734,7 @@ export function tsunamiArrivalToSegments(
   const observing = shown.filter(o => !o.condition?.weak)
   /**
    * 織り込める第1波（**初出だけ**）。訂正は専用の文へ回す —— この句の言い回し
-   * 「〜に◯◯波を観測」は初出の形で、訂正は「〜の◯◯波に更新されました」と読む決まり。
+   * 「〜に◯◯波を観測」は初出の形で、訂正は「〜の◯◯波へ更新されました」と読む決まり。
    *
    * **波高の文（`tsunamiObservationUpdateToSegments`）と切り分けを揃えること。** 揃えないと、
    * 欠測から復帰した観測点（到達確認の既読は落ちるが第1波の既読は残る）で、同じ第1波が
@@ -2804,9 +2810,11 @@ export function selectMaxHeightTimeUpdatesToSpeak(
  * 新しい観測時刻だけ。波高を言い直すと、値が上がったのか時刻だけが動いたのかを聞き分け
  * られなくなる —— 群を分けている意味がそこにある。
  *
- * **助詞は「へ」。** 「23時26分**に**更新」だと「23時26分に更新した」とも読め、更新の時刻
- * なのか更新後の観測時刻なのか紛れる（値が「メートル」の群では起きない取り違え）。「へ」なら
- * 変化の行き先だとはっきりする。
+ * **更新の着点は「へ」。** 「23時26分**に**更新」だと「23時26分に更新した」とも読め、更新の時刻
+ * なのか更新後の観測時刻なのか紛れる。「へ」なら変化の行き先だとはっきりする。
+ * **これは観測情報の 3 つの群に共通する規律**で、波高の更新（{@link tsunamiObservationUpdateToSegments}）も
+ * 第1波の訂正（{@link tsunamiFirstWaveToSegments}）も「〜へ更新されました」で閉じる。
+ * 着点でない観測時刻だけが「に」（波高の群）か「の」（第1波の群。時刻が着点の中身なので名詞句へ畳む）を取る。
  *
  * **読む順は渡された並びのまま**（波高更新・到達確認と同じ。呼び出し側がカードの並びで渡す）。
  */
@@ -2836,6 +2844,10 @@ export function tsunamiMaxHeightTimeToSegments(
       ]
       : [
         ...observationDetailSegments(shown, () => ''),
+        // **読点は述語の形で決まる。** ここは「で」のあとに別の主語（「最大波の観測時刻が」）が
+        // 続くので、読点を挟まないと最後の地点名と主語が繋がって聞こえる。到達確認の受け皿
+        // （{@link tsunamiArrivalToSegments}）が「で到達を確認しました」と読点なしなのは、
+        // あちらは「で」の直後が動詞句だから。**形を揃えるために片方を機械的に合わせない。**
         plain('で、最大波の観測時刻が更新されました。'),
       ]),
     ...omittedPointsSentence(obs.length, shown.length, '更新されています'),
@@ -2873,8 +2885,12 @@ export function selectFirstWaveUpdatesToSpeak(
  * 第1波は一度も声にならず、記録も空のままなので以後の本物の訂正まで永久に拾えなくなる。**
  *
  * **助詞は述語で決まる。** 訂正は時刻と押し引きを 1 つの名詞句（「16時32分の押し波」）にして
- * 「に更新」で受けるので「の」。初出は動詞が続くので「16時13分**に**押し波を観測」
+ * 「へ更新」で受けるので「の」。初出は動詞が続くので「16時13分**に**押し波を観測」
  * （{@link tsunamiArrivalToSegments} と同じ形）。
+ *
+ * **時刻を「に」で切り離さないこと。** 「16時32分に押し波へ更新」にすると、訂正されたのが
+ * 到達時刻そのもの（16時10分 → 16時32分）だという事実が文から消えるうえ、「16時32分に更新した」
+ * とも読める。着点を「へ」で受ける規律は 3 群に共通（→ {@link tsunamiMaxHeightTimeToSegments}）。
  *
  * **初出でも「最大波高は観測中です」は付けない。** ここへ来る地点は波高を持っているので、
  * 到達確認の文の末尾をそのまま借りると嘘になる。
@@ -2893,8 +2909,13 @@ export function tsunamiFirstWaveToSegments(
       shown,
       o => {
         const fw = firstWaveParts(o)
+        // **この分岐へは現状到達しない。** 呼び出し元（`useLiveEventHandler` の `firstWaveChanged`）が
+        // `firstWaveSpokenKey` の成立を要求し、あれは到達時刻が日時として読めることを条件にしている。
+        // 姉妹の 2 群（到達確認・最大波の観測時刻）が持つ「1 件も読めなければ見出しを外す」ガードを
+        // ここに置いていないのはそのため —— 発火しないガードを足しても確かめる手段が無い。
+        // **呼び出し元の絞り込みを緩めるなら、このガードも併せて用意すること。**
         if (!fw) return isUpdate ? 'で更新' : 'で到達を確認'
-        return isUpdate ? `で${fw.time}の${fw.initial}に更新` : `で${fw.time}に${fw.initial}を観測`
+        return isUpdate ? `で${fw.time}の${fw.initial}へ更新` : `で${fw.time}に${fw.initial}を観測`
       },
       isUpdate ? 'されました。' : 'しました。',
     ),
@@ -3053,6 +3074,11 @@ export function selectWarningLevelToSpeak(
  * 伝えるのは気象庁が言ったことだけ ―― 警報に相当する津波を観測している、という事実。
  *
  * **読む順は渡された並びのまま**（呼び出し側がカードの並びで渡す。欠測・到達確認と同じ）。
+ *
+ * **省略件数の助詞は既定（「ほか○地点でも」）。** 主文が「〇〇**では**、〜を観測しています」と
+ * 場所を示しているので、続く一文も場所の「で」を保つ。**欠測の群が「も」へ落とすのは
+ * 観測点そのものの状態を述べるから**で（→ {@link omittedPointsSentence}）、その場所で観測が
+ * 起きているこちらには当てはまらない。
  */
 export function tsunamiWarningLevelToSegments(
   obs: TsunamiObservation[],
@@ -3063,7 +3089,7 @@ export function tsunamiWarningLevelToSegments(
   return [
     ...observationDetailSegments(shown, () => ''),
     plain('では、津波警報に相当する津波を観測しています。'),
-    ...omittedPointsSentence(obs.length, shown.length, '津波警報に相当する津波を観測しています', 'も'),
+    ...omittedPointsSentence(obs.length, shown.length, '津波警報に相当する津波を観測しています'),
   ]
 }
 

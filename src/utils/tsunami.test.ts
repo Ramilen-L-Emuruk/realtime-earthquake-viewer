@@ -1356,6 +1356,51 @@ describe('changedObservationFields: どの項目が動いたか', () => {
     expect(f.has('firstWave')).toBe(true)
     expect(f.has('height')).toBe(false)
   })
+
+  // 観測点が初めて現れた報。**3 項目とも「初めて値が付いた」として扱う。**
+  //
+  // 初報の電文は `MaxHeight/Revise` を持たないので、更新を問う述語
+  // （`hasMaxHeightTimeAdvanced`）は必ず偽になる。それをそのまま印の判定に使っていたころは、
+  // 行の縦線も波高も第1波も緑なのに**最大波の観測時刻だけ白**という中途半端な画になっていた。
+  describe('初出の報', () => {
+    const firstReport = obs({
+      height: { value: 1.2, description: '1.2m' },
+      maxHeightDateTime: '2024-01-01T16:23:00+09:00',
+      arrivalTime: '2024-01-01T16:13:00+09:00',
+      initial: '押し',
+    })
+
+    // 正: 前に時刻を見ていなければ、`Revise` が無くても印を付ける
+    it('正: 初出なら Revise が無くても最大波の観測時刻に印が付く', () => {
+      const f = changedObservationFields(firstReport, undefined, undefined, heights())
+      expect(f.has('maxHeightTime')).toBe(true)
+      // 同じ報で他の 2 項目も立つ（3 項目そろって初出として扱う）
+      expect(f.has('height')).toBe(true)
+      expect(f.has('firstWave')).toBe(true)
+    })
+
+    // 対照: 一度見た時刻は、`Revise` が無ければ据え置きとして扱う（毎報光らせない）
+    it('対照: 前に見た時刻と同じで Revise も無ければ印は付かない', () => {
+      const f = changedObservationFields(
+        firstReport, '2024-01-01T16:23:00+09:00', undefined, heights({ value: 1.2 }),
+      )
+      expect(f.has('maxHeightTime')).toBe(false)
+    })
+
+    // 対照: 時刻を持たない電文では印を作らない（色を当てる先が無い）
+    it('対照: 最大波の観測時刻が無ければ印は付かない', () => {
+      const f = changedObservationFields(
+        obs({ height: { value: 1.2, description: '1.2m' } }), undefined, undefined, heights(),
+      )
+      expect(f.has('maxHeightTime')).toBe(false)
+    })
+
+    // 安全弁: 読み上げ・地図のカメラが共有する述語まで初出で真にしない。
+    // 真にすると、初めて現れた観測点について「最大波の観測時刻が更新されました」と読む。
+    it('安全弁: hasMaxHeightTimeAdvanced は初出では偽のまま', () => {
+      expect(hasMaxHeightTimeAdvanced(firstReport, undefined)).toBe(false)
+    })
+  })
 })
 
 // 「重要」（`MaxHeight/Condition`）の意味は電文で違う。語をそのまま出しても伝わらないので
