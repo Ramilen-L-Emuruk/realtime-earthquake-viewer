@@ -236,7 +236,10 @@ export function JapanMapGL({
     && (!aggregateByRegion || distributionMode)
   // 津波の派生データ（海岸線＋観測棒＋到達確認マーカー＋欠測マーカー）。発報中は全モードで海岸線を
   // 描くため常時計算する。
-  const { tsunamiLines, observationBars, arrivalMarkers, missingMarkers, tsunamiFitPositions, tsunamiSignature } = useTsunamiLayerData(
+  const {
+    tsunamiLines, observationBars, arrivalMarkers, missingMarkers,
+    tsunamiFitPositions, tsunamiSignature, tsunamiEventId,
+  } = useTsunamiLayerData(
     tsunamis,
     observations,
     obsUpdateStatus,
@@ -818,6 +821,7 @@ export function JapanMapGL({
           <TsunamiFitGL
             mode={mode}
             tsunamiSignature={tsunamiSignature}
+            tsunamiEventId={tsunamiEventId}
             tsunamiFitPositions={tsunamiFitPositions}
             observationBars={observationBars}
             arrivalMarkers={arrivalMarkers}
