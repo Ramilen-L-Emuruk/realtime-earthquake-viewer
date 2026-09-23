@@ -257,3 +257,41 @@ describe('地震情報を受けたら震度分布モードを閉じる', () => {
     expect(closeDistribution).toHaveBeenCalledTimes(1)
   })
 })
+
+// 据え置き（カードが内容を採らない電文）の印は**止める範囲を持っている**。音・読み上げ・
+// ウィンドウタイトルは起こさないが、震度分布モードを閉じることは通す —— あちらは「その地震の
+// 電文を受けたら閉じる。種別も、自動で開いたか手で開いたかも問わない」（docs/spec/quake-spec.md
+// §9「震度分布モード」）ので、カードが内容を採ったかどうかとは無関係。
+//
+// 当初は `onLiveEvent` の呼び出しごと止める形で書いていて、**分布モードが閉じなくなっていた**
+// （開いたままだと、その地震の続報が伝えてきた震度が地図に一度も現れない）。カードの選択と
+// 「この報は見た」の記録も同じ理由で通す。
+//
+// **通知音はこのハーネスでは見られない**（`setup` の設定が `soundEnabled: false` 固定）。
+// 読み上げと同じ印（`quakeHeldBack`）で止めているので、片方だけ外れることはない。
+describe('据え置きの印が立った地震情報', () => {
+  it('音・読み上げ・タイトルは起こさないが、分布モードは閉じる', async () => {
+    const closeDistributionOnQuakeReport = vi.fn()
+    const handle = setup([], { closeDistributionOnQuakeReport })
+
+    handle(makeQuake({ type: '震度速報' }), { quakeHeldBack: true })
+    await settle()
+
+    expect(spokenTexts()).toEqual([])
+    expect(titles).toEqual([])
+    expect(closeDistributionOnQuakeReport).toHaveBeenCalledTimes(1)
+  })
+
+  // 対照: 印が無ければ従来どおり読み上げもタイトルも起きる（止める範囲が広がっていない）
+  it('印が無ければ読み上げもタイトルも従来どおり', async () => {
+    const closeDistributionOnQuakeReport = vi.fn()
+    const handle = setup([], { closeDistributionOnQuakeReport })
+
+    handle(makeQuake({ type: '震度速報' }))
+    await settle()
+
+    expect(spokenTexts()).toHaveLength(1)
+    expect(titles).toHaveLength(1)
+    expect(closeDistributionOnQuakeReport).toHaveBeenCalledTimes(1)
+  })
+})

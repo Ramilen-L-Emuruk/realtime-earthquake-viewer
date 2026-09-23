@@ -464,3 +464,25 @@ describe('録画モードの既読復元（気象庁が書いた文）', () => {
     expect(telegramSpeeches()[0]).not.toContain('一つ目の文です。')
   })
 })
+
+// 据え置き（カードが内容を採らない電文）では、気象庁が書いた本文も声にしない。**本体の震度・
+// 地域を伝えていないのに補足だけ読むことになる**ため。抑止は本体の処理が立てる印
+// （`skipTelegramTextRef`）に相乗りしていて、その印は「本体が処理を打ち切った電文では本文を
+// 読まない」という既存の仕組みのもの。
+// → docs/spec/quake-spec.md §6.3「据え置いた電文は、音・読み上げ・タイトル・タブ移動も起こさない」
+describe('据え置きの印が立った地震情報の本文', () => {
+  it('印が立っていれば本文も読まない（正）', async () => {
+    const { handleLiveEvent } = setup()
+    handleLiveEvent(makeQuake(), { quakeHeldBack: true })
+    await drain()
+    expect(telegramSpeeches()).toHaveLength(0)
+  })
+
+  // 対照: 印が無ければ従来どおり読む（止める範囲が「据え置かれた電文」より広がっていない）
+  it('印が無ければ従来どおり読む', async () => {
+    const { handleLiveEvent } = setup()
+    handleLiveEvent(makeQuake())
+    await drain()
+    expect(telegramSpeeches()).toHaveLength(1)
+  })
+})
