@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { AppEvent, ExtraLiveEvent, LiveEvent, EEWAlert, Hypocenter, JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation, TsunamiGrade } from '../types/earthquake'
+import type { AppEvent, ExtraLiveEvent, LiveEvent, LiveEventMeta, EEWAlert, Hypocenter, JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation, TsunamiGrade } from '../types/earthquake'
 import type { TabId } from '../components/IconNav'
 import type { AppSettings } from './useSettings'
 import type { AlertTitleApi } from './useAlertTitle'
@@ -2425,7 +2425,14 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     )
   }
 
-  const handleLiveEventInner = (event: LiveEvent) => {
+  const handleLiveEventInner = (event: LiveEvent, meta?: LiveEventMeta) => {
+    // **カードが内容を採らない地震情報か**（→ `LiveEventMeta.quakeHeldBack`）。真なら音・読み上げ・
+    // ウィンドウタイトル・自動タブ切替を起こさない（判定は受信側が済ませていて、ここは印を読むだけ）。
+    //
+    // **導出はこの 1 か所だけ。** 止める先は離れた場所に 4 つあるので、それぞれが `meta` を
+    // 読み直す形にすると、片方だけ条件を足したときにどれかが抑制から外れる —— 仕様書自身が
+    // 「片方だけ直されると画面と声が食い違う」と書いている形を、修正の中に持ち込むことになる。
+    const quakeHeldBack = event.kind === 'quake' && meta?.quakeHeldBack === true
     // **地震・津波・EEW 以外はここで降ろす。** 以降の分岐はこの 3 種別の状態を突き合わせる
     // 処理で、ほかの電文はどれにも当てはまらない（→ `handleExtraLiveEvent`）。先に降ろすので、
     // この行から下の `event` は `AppEvent` に絞られている。
@@ -2528,10 +2535,19 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         )
       }
     } else if (event.kind === 'quake') {
+      // **止めるのは音・読み上げ・ウィンドウタイトル・自動タブ切替の 4 つだけ**（印は入口で
+      // 導出済み＝`quakeHeldBack`）。すぐ下の `selectQuake` と `closeDistributionOnQuakeReport`、
+      // それに「この報は見た」の記録（`markQuakeReportSeen`）は通す —— どれもカードが内容を
+      // 採ったかどうかと無関係に要る（分布モードは「その地震の電文を受けたら閉じる」「種別で
+      // 絞らない。手で開いた分も閉じる」＝ docs/spec/quake-spec.md §9）。
       // 読み上げがあるならタブ移動は読み上げに任せる（共通の TTS ブロックが follow を渡す）。
       // 重い電文（EEW・津波）の読み上げ中に届いた地震情報は、その読み上げが終わって
       // 自分の番が来たときに画面を取る。地震情報の読み上げ文は常に非空。
-      if (!settings.voicevoxEnabled) {
+      if (quakeHeldBack) {
+        // **止めたことを残す。** 読み上げが無効な端末では、この 1 行が自動タブ切替の唯一の
+        // 経路 —— 音・読み上げ側の記録（下）は読み上げブロックの中なので、そちらでは出ない。
+        log.debug('[tab] カードが採らない電文なのでタブ移動を起こさない')
+      } else if (!settings.voicevoxEnabled) {
         log.info('[tab] earthquake を要求 (地震情報 VXSE51/52/53/61・読み上げ無効)')
         setActiveTabNonRealtime('earthquake')
       }
@@ -2571,7 +2587,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // イベントのカードは国内震度を持たないためこの歯止めに掛からず、規模が確定した続報はタイトルに
       // 反映される（`isForeignQuake` をここで除外する必要はない）。
       const keepsKnownScale = maxScale < 0 && (existingCard?.earthquake.maxScale ?? -1) >= 0
-      if (keepsKnownScale) {
+      if (quakeHeldBack) {
+        // カードが内容を採らない電文（宣言箇所に理由）。タイトルはカードと同じものを出す欄なので、
+        // ここで更新すると**カードが据え置いた震度・震央地名がタイトルにだけ出る**。
+        // 2024-11-26 22:48 の震度速報では「地震情報  最大震度3」（震央地名は空・カードは震度1）に
+        // なっていた。**復帰の予約も張らない** —— 変えていないものを戻す必要は無い。
+        log.debug('[title] カードが採らない電文なのでタイトルを更新しない')
+      } else if (keepsKnownScale) {
         // 残した事実を記録する。逆に「残すべきだったのに落ちた」ときも、この行が出ていないことで
         // 既存カードを引けなかった（同一 tick に複数電文が捌けて `earthquakesRef` が追いつかない）
         // と切り分けられる。
@@ -2584,7 +2606,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // ウィンドウタイトルも断定形にしない（理由は App.tsx の通知と同じ）。
           : `地震情報 ${hypocenter.name} 最大震度${getIntensityLabelWithOrAbove(maxScale, isMaxScaleUnreceived(maxScale, event.points))}`)
       }
-      title.scheduleTitleRevert('earthquake')
+      if (!quakeHeldBack) title.scheduleTitleRevert('earthquake')
     } else if (event.kind === 'tsunami' && !event.cancelled) {
       // タブ移動の規則:
       //   - 読み上げがあるなら**読み上げに任せる**（共通の TTS ブロックが follow を渡す）。
@@ -3843,10 +3865,22 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       skipTelegramTextRef.current = true
       return
     }
-    if (settings.soundEnabled) playAlertSound(type)
+    // **カードが内容を採らない地震情報では、音も読み上げも起こさない**（印は入口で導出済み）。
+    // 気象庁が書いた本文も声にしない —— 本体を伝えていないのに補足だけ読むことになる。
+    //
+    // **上の `if (!type)` へ相乗りさせない。** あちらは「音の種別が決まらない電文」の経路で、
+    // 津波向けの分岐（新規発報のタブ要求）を通るうえ `return` するので、この下に増える処理が
+    // あったときに黙って飛ぶ。
+    if (quakeHeldBack) skipTelegramTextRef.current = true
+    // **止めたことを残す。** タイトル側（上の quake 分岐）には記録があるのに、音と読み上げには
+    // 無かった —— 「鳴らなかった」はいちばん体感される症状なのに、痕跡がどこにも出ない。
+    // 受信側の記録は頻度の高い据え置き（発表時刻が古いだけ等）で黙るので、そちらと合わせても
+    // 「この報で止めた」ことは追えない（→ `QuakeHoldBack.notable`）。
+    if (quakeHeldBack) log.debug('[quake] カードが採らない電文なので音と読み上げを起こさない')
+    if (settings.soundEnabled && !quakeHeldBack) playAlertSound(type)
 
     // VOICEVOX 読み上げ（新しい情報が来たら再生中を割り込み停止して読み直す）
-    if (settings.voicevoxEnabled) {
+    if (settings.voicevoxEnabled && !quakeHeldBack) {
       let ttsText: string | null = null
       // 読み上げ文は断片列でも作る。**用途は種別で違う。**
       //   津波 … カードを読み上げに追従させる（どの語がどの区域・観測点を指すか。`ttsFollow`）
@@ -5001,9 +5035,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
    * 種別ごとの抑制（試験報・重複報など）による `return` が多数あり、その末尾へ置くと
    * 通らない経路ができる。
    */
-  const handleLiveEvent = (event: LiveEvent) => {
+  const handleLiveEvent = (event: LiveEvent, meta?: LiveEventMeta) => {
     skipTelegramTextRef.current = false
-    handleLiveEventInner(event)
+    handleLiveEventInner(event, meta)
     if (skipTelegramTextRef.current) return
     // **予約そのものを遅らせる。発火を遅らせるのではない。**
     //
