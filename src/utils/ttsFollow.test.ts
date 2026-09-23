@@ -15,6 +15,7 @@ import {
   telegramTextSubject,
   planFollowScroll,
   hasFollowTarget,
+  hasFollowContext,
   hasUnreceivedFollowTarget,
   unreceivedChunkRange,
   hasBorrowedHypocenterFollowTarget,
@@ -556,6 +557,28 @@ describe('hasFollowTarget', () => {
   it('断片が無い・参照が無いときも false', () => {
     expect(hasFollowTarget(undefined)).toBe(false)
     expect(hasFollowTarget([plain('津波警報を解除しました。')])).toBe(false)
+  })
+})
+
+// 「併せて視野に入れたい前置き」を持つ種別。**観測点を外すと区域名が見切れる** ――
+// 読み上げ文は読点でチャンクが割れるため「石川県能登、」と「輪島港で〜」は別チャンクになり、
+// 観測点のチャンクへ進んだ時点で前置きが無いとその行だけが上端へ揃えられる。
+describe('hasFollowContext', () => {
+  // 正: 区域は等級カードの頭を、観測点は区域の見出しを前置きに持つ
+  it('正: 区域と観測点は前置きを持つ', () => {
+    expect(hasFollowContext(area('石川県能登', '360'))).toBe(true)
+    expect(hasFollowContext(station('輪島港'))).toBe(true)
+  })
+
+  // 対照: 等級は自分がカードの頭なので前置きを持たない（自分を前置きにしても動かない）
+  it('対照: 等級は前置きを持たない', () => {
+    expect(hasFollowContext({ kind: 'grade', grade: 'MajorWarning' })).toBe(false)
+  })
+
+  // 安全弁: 地震情報の参照は津波カードを引かないので前置きも持たない
+  it('安全弁: 地震情報の参照は前置きを持たない', () => {
+    expect(hasFollowContext({ kind: 'quakeRegion', name: '宮城県北部', scale: 40 })).toBe(false)
+    expect(hasFollowContext({ kind: 'quakeFact', fact: 'magnitude', value: '7.6' })).toBe(false)
   })
 })
 

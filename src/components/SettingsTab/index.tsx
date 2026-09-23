@@ -1525,7 +1525,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onRep
       </Section>
 
       {/* 読み上げの詳しさ。VOICEVOX を有効にしたときだけ出す（無効な端末では何も効かないため）。
-          並びは「地域の列挙 → 1 件ごとの詳しさ → 気象庁が書いた文」。中の順序は
+          並びは「地域の列挙 → 1 件ごとの詳しさ → 気象庁の発表文」。中の順序は
           通知設定・テスト機能と同じカテゴリ順（地震情報 → 津波情報 → 緊急地震速報）。 */}
       {settings.voicevoxEnabled && (
         <Section title="読み上げ設定">
@@ -1618,7 +1618,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onRep
               onChange={v => onUpdate('ttsReadEewWarningRegions', v)}
             />
           </Row>
-          <Row label="気象庁が書いた文" description="電文に添えられた本文・付加文（南海トラフ地震臨時情報の本文など）を読み上げます。震度や津波の読み上げが終わってから読むため、電文が続いている間は読み上げられないことがあります">
+          <Row label="気象庁の発表文" description="電文に添えられた本文・付加文（南海トラフ地震臨時情報の本文など）を読み上げます。震度や津波の読み上げが終わってから読むため、電文が続いている間は読み上げられないことがあります">
             <Toggle
               checked={settings.ttsReadTelegramText}
               onChange={v => onUpdate('ttsReadTelegramText', v)}

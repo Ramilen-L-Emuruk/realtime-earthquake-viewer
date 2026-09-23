@@ -174,7 +174,33 @@ let capturedResult: ReturnType<typeof useLiveEventHandler> | null = null
  * @param over 設定の上書き。読み上げの詳しさの設定を切り替えるテストで使う。
  *   **既定は「設定を入れる前の挙動」**（`DEFAULTS`）なので、渡さなければ従来どおり。
  */
-function setup(over: Partial<AppSettings> = {}) {
+/**
+ * 「いま声が語っているカード」の受け口のスタブ。`setup` の第 2 引数で渡すと、
+ * `begin` / `end` の呼び出し順序と引数を検証できる。
+ *
+ * **世代トークンを返すところまで模す** —— `chainEEWSpeech` は `begin` の戻り値を保持して
+ * `end` へ渡すので、返さないと後始末の経路を一度も通らない。
+ */
+function makeSpeakingCardStub() {
+  const calls: string[] = []
+  let seq = 0
+  const keyOf = new Map<number, string>()
+  return {
+    calls,
+    follow: {
+      begin: (key: string) => { const t = ++seq; keyOf.set(t, key); calls.push(`begin:${key}`); return t },
+      end: (token: number) => { calls.push(`end:${keyOf.get(token) ?? `?${token}`}`) },
+      reset: () => { calls.push('reset') },
+    },
+  }
+}
+
+function setup(
+  over: Partial<AppSettings> = {},
+  eewSpeakingCard?: ReturnType<typeof makeSpeakingCardStub>['follow'],
+  /** タブ追従の呼び出しを覗きたいテストで渡す（既定は素の `vi.fn()`）。 */
+  followSpeechTabSpy?: (tab: unknown, priority: unknown) => void,
+) {
   const settings = { ...DEFAULTS,
     voicevoxEnabled: true,
     voicevoxUrl: 'http://localhost:50021',
@@ -205,12 +231,13 @@ function setup(over: Partial<AppSettings> = {}) {
     setActiveTabNonRealtime: vi.fn(),
     setActiveTabRealtimeOnUpdate: vi.fn(),
     setActiveTabRealtimeUrgent: vi.fn(),
-    followSpeechTab: vi.fn(), preSpeechTab: vi.fn(() => true), expandPanelForSpecialInfo: vi.fn(),
+    followSpeechTab: (followSpeechTabSpy ?? vi.fn()) as never, preSpeechTab: vi.fn(() => true), expandPanelForSpecialInfo: vi.fn(),
     revertToDefaultTab: vi.fn(),
     selectQuake: vi.fn(),
     openLpgmFromQuake: vi.fn(),
     openEstimatedIntensity: vi.fn(),
     closeDistributionOnQuakeReport: vi.fn(),
+    eewSpeakingCard,
   }))
   capturedResult = result.current
   return result.current.handleLiveEvent
@@ -2296,5 +2323,77 @@ describe('2024-01-03 18:48 の実電文（震源が区域の境目を往復す�
     expect(spokenTexts()[0]).toBe('緊急地震速報、石川県能登地方で地震。')
     expect(spokenTexts()).toContain('北陸では強い揺れに警戒してください。')
     expect(spokenTexts()).toContain('予想最大震度5弱。')
+  })
+})
+
+// 「いま声が語っているカード」の配線。**この機能の存在理由そのものが同時多発の場面**なので、
+// 受け口を単体で叩くテスト（`useEewSpeakingCard.test.ts`）だけでは守れない —— `chainEEWSpeech`
+// の 4 つの呼び出しが正しい eventId で駆動することは、ここでしか固定できない。
+describe('いま声が語っているカードの配線', () => {
+  // 正: 1 件なら、その eventId で印を立てて後始末する。
+  it('語り始めと語り終わりが、その eventId で呼ばれる', async () => {
+    const stub = makeSpeakingCardStub()
+    const handle = setup({}, stub.follow)
+    handle(makeEEW({ eventId: 'evt-A', scaleTo: 50 }))
+    await vi.advanceTimersByTimeAsync(3000)
+    await flushMicrotasks()
+    expect(stub.calls).toContain('begin:evt-A')
+    expect(stub.calls).toContain('end:evt-A')
+    // 別の eventId は混ざらない
+    expect(stub.calls.every(c => c === 'reset' || c.endsWith(':evt-A'))).toBe(true)
+  })
+
+  // 正: **2 件が交錯しても鍵が混ざらない。** 発話は 1 本の待ち行列で直列化されるので、
+  // 印も「立てる → 後始末する」の対で並ぶ（入れ違いにならない）。
+  it('2 件の緊急地震速報が交錯しても、印の鍵がそれぞれの eventId になる', async () => {
+    const stub = makeSpeakingCardStub()
+    const handle = setup({}, stub.follow)
+    handle(makeEEW({ eventId: 'evt-A', scaleTo: 40, hypocenter: { name: '宮城県沖', latitude: 38.2, longitude: 142.0 } }))
+    await vi.advanceTimersByTimeAsync(500)
+    handle(makeEEW({ eventId: 'evt-B', scaleTo: 50 }))
+    // **釣り合いを数えるので、発話が全部片付くまで進める。** 予想値の安定待ち（最大 5 秒）と
+    // チェーンの待ち上限（8 秒）が eventId ごとに積み上がるため、8 秒では最後の発話の
+    // 後始末が済んでいない（偽の時計なので長く進めるコストは無い）。
+    await vi.advanceTimersByTimeAsync(60000)
+    await flushMicrotasks()
+
+    const marks = stub.calls.filter(c => c !== 'reset')
+    expect(marks.some(c => c === 'begin:evt-A')).toBe(true)
+    expect(marks.some(c => c === 'begin:evt-B')).toBe(true)
+    // 片方の後始末がもう片方の鍵で呼ばれていない（`?<token>` は未知の世代＝取り違え）
+    expect(marks.some(c => c.startsWith('end:?'))).toBe(false)
+    // 立てた数と後始末の数が釣り合う
+    expect(marks.filter(c => c.startsWith('begin:'))).toHaveLength(marks.filter(c => c.startsWith('end:')).length)
+  })
+
+  // 安全弁: **印を立てられなくても、タブ追従と読み上げは巻き込まれない。** 両方を 1 つの
+  // try へまとめていた頃は、先に置いた印が投げるだけでタブ追従が一度も呼ばれなかった ——
+  // おまけの表示の失敗が既存の機能を塞ぐ形。
+  it('印を立てられなくても、タブ追従と読み上げは続く', async () => {
+    const broken = {
+      begin: () => { throw new Error('印を立てられない') },
+      end: vi.fn(),
+      reset: vi.fn(),
+    }
+    const followSpy = vi.fn()
+    const handle = setup({}, broken as never, followSpy)
+    handle(makeEEW({ eventId: 'evt-A', scaleTo: 50 }))
+    await vi.advanceTimersByTimeAsync(3000)
+    await flushMicrotasks()
+    expect(followSpy).toHaveBeenCalled()
+    expect(spokenTexts().length).toBeGreaterThan(0)
+    // 印を立てられていないので後始末も呼ばない（渡すトークンが無い。黙る判断で降りた回も同じ）
+    expect(broken.end).not.toHaveBeenCalled()
+  })
+
+  // 安全弁: 時間軸が変わったら印ごと落とす。**これを呼び忘れても画面が光り続けるだけで
+  // 例外もログも出ない**ので、配線として固定する。
+  it('リプレイのリセットで印も落とす', async () => {
+    const stub = makeSpeakingCardStub()
+    const handle = setup({}, stub.follow)
+    handle(makeEEW({ eventId: 'evt-A', scaleTo: 50 }))
+    await vi.advanceTimersByTimeAsync(1000)
+    capturedResult!.resetTracking()
+    expect(stub.calls).toContain('reset')
   })
 })
