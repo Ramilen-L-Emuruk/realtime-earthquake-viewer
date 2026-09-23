@@ -43,6 +43,10 @@ export function useSubRegions(): SubRegionsState {
       lastFailureLogAt = -Infinity
       if (active) setState({ data: d, failed: false })
     })
+    // 成功の受け取りは購読だけに任せる。`onSubRegionsLoaded` は購読の時点で控えがあれば
+    // 同期で渡し（`utils/subregions.ts`）、無ければ待ち行列へ入れて解決時に通知するので、
+    // 後から購読を始めた利用者も取りこぼさない。**ここで戻り値からも `setState` すると、
+    // 同じ値で 2 度更新するだけ**（`useSubRegions` の利用者すべてに余分な再描画が出る）。
     loadSubRegions().catch((err) => {
       // 区域データが取得できなくても地図自体は表示する。地震モードの震度は区域塗りをやめて
       // 観測点ドットで描く（useQuakeLayerData.aggregateByRegion のフォールバック）。

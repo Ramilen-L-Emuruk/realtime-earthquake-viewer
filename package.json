@@ -23,6 +23,8 @@
     "build-test-estimated-intensity": "tsx scripts/build-test-estimated-intensity.ts",
     "build-station-readings": "tsx scripts/build-station-readings.ts",
     "build-epicenter-accents": "tsx scripts/build-epicenter-accents.ts",
+    "build-travel-time-table": "tsx scripts/build-travel-time-table.ts",
+    "sign-arrival-token": "tsx scripts/sign-arrival-token.ts",
     "verify-particle-phrases": "tsx scripts/verify-particle-phrases.ts",
     "audit-accent-unidic": "tsx scripts/audit-accent-unidic.ts"
   },

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { eewEpicenterRankLabel, eewMagnitudeRankLabel, eewMagnitudePointsLabel, isEewHypocenterSettled, eewForecastChangeText, calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, calcEEWCancelTime, calcFeltRadiusKm, diffHypoInfoEvents, computeSingleEEWLevel, eewMaxLpgmClass, eewMaxScale, eewMaxScaleInfo, isForecastScaleHigher, eewNoForecastReason, canPresentLpgmClass, eewSerial, selectEEWSoundType, eewPhase2ScaleStabilityMs, EEW_PHASE2_STABILITY_SMALL_MS, EEW_PHASE2_STABILITY_LARGE_MS, isEewAreaArrived, selectActiveEews, isUnannouncedHypocenter, EEW_HYPOCENTER_RESTATE_KM, type HypoInfoPendingMissing, type AnnouncedHypocenter } from './eew'
+import { eewEpicenterRankLabel, eewMagnitudeRankLabel, eewMagnitudePointsLabel, isEewHypocenterSettled, eewForecastChangeText, calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, calcEEWCancelTime, calcFeltRadiusKm, diffHypoInfoEvents, computeSingleEEWLevel, eewMaxLpgmClass, eewMaxScale, eewMaxScaleInfo, isForecastScaleHigher, eewNoForecastReason, canPresentLpgmClass, eewSerial, selectEEWSoundType, eewPhase2ScaleStabilityMs, EEW_PHASE2_STABILITY_SMALL_MS, EEW_PHASE2_STABILITY_LARGE_MS, isEewAreaArrived, selectActiveEews, isUnannouncedHypocenter, EEW_HYPOCENTER_RESTATE_KM, mergeEewAreaArrival, NO_EEW_AREA_ARRIVAL, eewArrivalEtaSecFromMs, type HypoInfoPendingMissing, type AnnouncedHypocenter } from './eew'
 import type { YahooHypoInfoItem } from '../services/kyoshin'
 import type { EEWAlert, EEWRegion, IntensityScale, LpgmClass } from '../types/earthquake'
 
@@ -1045,5 +1045,64 @@ describe('selectActiveEews（その時刻に発表中だった緊急地震速報
     const got = selectActiveEews(wrap(a1, a2, b1), WITHIN, 'test')
     expect(got).toHaveLength(2)
     expect(got).toEqual(expect.arrayContaining([a2, b1]))
+  })
+})
+
+// 区域の到達の畳み込み。**優先順位の単一情報源そのもの**を直接固定する
+// （利用側 3 経路のテストは `useEewLayerData` / `useHomeAreaArrival` / `useSWaveCountdown` が持つ）。
+describe('mergeEewAreaArrival', () => {
+  const T1 = '2024-01-01T16:19:10+09:00'
+  const T2 = '2024-01-01T16:19:30+09:00'
+  const area = (over: Partial<EEWRegion> = {}): EEWRegion => ({
+    pref: '石川県', name: '石川県能登', scaleFrom: 40, scaleTo: 40,
+    kindCode: '10', arrivalTime: null, ...over,
+  })
+  const fold = (areas: EEWRegion[]) =>
+    areas.reduce((acc, a) => mergeEewAreaArrival(acc, a), NO_EEW_AREA_ARRIVAL)
+
+  it('到達予測時刻を持つ区域は forecast になる（正）', () => {
+    expect(fold([area({ arrivalTime: T2 })])).toEqual({ kind: 'forecast', arrivalMs: Date.parse(T2) })
+  })
+
+  it('いちばん早い予測を採る', () => {
+    expect(fold([area({ arrivalTime: T2 }), area({ arrivalTime: T1 })]).arrivalMs).toBe(Date.parse(T1))
+    // 逆順でも同じ答えになる（畳む順序に依らない）
+    expect(fold([area({ arrivalTime: T1 }), area({ arrivalTime: T2 })]).arrivalMs).toBe(Date.parse(T1))
+  })
+
+  it('未到達の予測は到達済みより優先する（順序に依らない）', () => {
+    const arrived = area({ kindCode: '11', arrived: true })
+    const forecast = area({ arrivalTime: T2 })
+    for (const order of [[arrived, forecast], [forecast, arrived]]) {
+      expect(fold(order)).toEqual({ kind: 'forecast', arrivalMs: Date.parse(T2) })
+    }
+  })
+
+  it('到達済みだけなら arrived（対照）', () => {
+    expect(fold([area({ kindCode: '11', arrived: true })])).toEqual({ kind: 'arrived', arrivalMs: null })
+  })
+
+  it('PLUM 法の区域は時刻を持っていても何も足さない（安全弁）', () => {
+    // あの時刻は過去の時刻。素朴に「時刻がある方を採る」と書くと先着が勝つ。
+    expect(fold([area({ kindCode: '19', arrivalTime: T1 })])).toEqual(NO_EEW_AREA_ARRIVAL)
+    expect(fold([area({ kindCode: '19', arrivalTime: T1 }), area({ arrivalTime: T2 })]).arrivalMs)
+      .toBe(Date.parse(T2))
+  })
+
+  it('日時として読めない時刻・時刻なしは捨てる（安全弁）', () => {
+    expect(fold([area({ arrivalTime: 'こわれた値' })])).toEqual(NO_EEW_AREA_ARRIVAL)
+    expect(fold([area({ arrivalTime: null })])).toEqual(NO_EEW_AREA_ARRIVAL)
+  })
+})
+
+describe('eewArrivalEtaSecFromMs', () => {
+  it('残り秒数を丸めて返す（正）', () => {
+    expect(eewArrivalEtaSecFromMs(10_400, 0)).toBe(10)
+  })
+
+  it('有限でない値は null（安全弁）', () => {
+    // `NaN > 0` は偽なので、素通しすると壊れた値が「まもなく」へ化ける。
+    expect(eewArrivalEtaSecFromMs(NaN, 0)).toBeNull()
+    expect(eewArrivalEtaSecFromMs(Infinity, 0)).toBeNull()
   })
 })

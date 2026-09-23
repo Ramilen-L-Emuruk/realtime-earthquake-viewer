@@ -108,30 +108,14 @@ describe('useEewLayerData: eewAreaFills', () => {
     expect(fill.scaleOrAbove).toBe(true)
   })
 
-  // 仮定震源要素の M・深さは仮定値（実データでは M1・深さ10km 固定）。これで走時を解くと
-  // 根拠のない到達秒数が出るため、震源として採らない。
-  it('仮定震源要素の震源は S 波到達の根拠にしない', () => {
-    const [fill] = fillsOf([
-      makeEEW({ id: 'a', condition: '仮定震源要素', magnitude: 1, depth: 10, areas: [area({ scaleToOrAbove: true })] }),
-    ])
-    expect(fill.origin).toBeNull()
-  })
-
-  it('確定震源なら S 波到達の根拠に使う（対照）', () => {
-    const [fill] = fillsOf([makeEEW({ id: 'a', areas: [area()] })])
-    expect(fill.origin).not.toBeNull()
-    expect(fill.origin!.depth).toBe(20)
-  })
-
-  // 実データで起きた並び。仮定震源要素の初報と確定震源の続報が同じ階級を出す局面で、
-  // 先着（仮定）の null が残ると到達秒数が出せないままになる。
-  it('同じ階級を先に出したのが仮定震源要素なら、確定震源の側で震源を埋める', () => {
-    const [fill] = fillsOf([
-      makeEEW({ id: 'a', condition: '仮定震源要素', magnitude: 1, depth: 10, areas: [area({ scaleTo: 45 })] }),
-      makeEEW({ id: 'b', depth: 20, areas: [area({ scaleTo: 45 })] }),
-    ])
-    expect(fill.origin).not.toBeNull()
-    expect(fill.origin!.depth).toBe(20)
+  // 区域の塗りは**震源を持たない**。区域への到達は気象庁の発表値だけを使うと決めたので
+  // （→ `docs/forecast-computation-audit.md` の 2）、震源を渡す形へ戻すとその判断ごと崩れる。
+  // 型だけでは守れない（フィールドを足しても既存の消費側は壊れない）ため、ここで固定する。
+  it('区域の塗りに震源を持たせない（自前計算へ戻さない歯止め）', () => {
+    const [fill] = fillsOf([makeEEW({ id: 'a', depth: 20, areas: [area()] })])
+    expect(Object.keys(fill).sort()).toEqual(
+      ['arrival', 'isWarning', 'name', 'rings', 'scale', 'scaleOrAbove'],
+    )
   })
 
   // 震源×印のポップアップも「以上」を出す。ここの配線を取り違えても型では捕まらない
@@ -194,5 +178,71 @@ describe('useEewLayerData: eewEpicenters の差分更新キー', () => {
     const base = makeEEW({ id: 'no-issue', areas: [area()] })
     const [ep] = epicentersOf([{ ...base, issue: undefined }])
     expect(ep.id).toBe('no-issue')
+  })
+})
+
+// 区域ごとの到達（`EewAreaFill.arrival`）の畳み込み。
+//
+// **優先順位を持っているのは `utils/eew.ts` の `mergeEewAreaArrival`** で、ここで見るのは
+// 「区域塗りがそれを通っているか」。同じ優先順位を登録地点のカウントダウン
+// （`useHomeAreaArrival`）とも共有しているので、片方だけ変わると声と画面が食い違う。
+describe('useEewLayerData: eewAreaFills の到達', () => {
+  const FORECAST = '2024-01-01T16:19:30+09:00'
+  const EARLIER = '2024-01-01T16:19:10+09:00'
+
+  it('気象庁が出した到達予測時刻が区域まで伝わる（正）', () => {
+    const [fill] = fillsOf([
+      makeEEW({ id: 'a', areas: [area({ kindCode: '10', arrivalTime: FORECAST })] }),
+    ])
+    expect(fill.arrival).toEqual({ kind: 'forecast', arrivalMs: Date.parse(FORECAST) })
+  })
+
+  it('PLUM 法の区域の時刻は採らない（対照）', () => {
+    // あの時刻は到達の予測ではなく「その震度を初めて予測した時刻」＝過去の時刻。
+    const [fill] = fillsOf([
+      makeEEW({ id: 'a', areas: [area({ kindCode: '19', arrivalTime: FORECAST })] }),
+    ])
+    expect(fill.arrival).toEqual({ kind: 'none', arrivalMs: null })
+  })
+
+  it('PLUM 法の報が先に来ても、後から来た予測時刻を弾かない（安全弁）', () => {
+    // PLUM の区域は**時刻を持っている**ので、「時刻がある方を採る」と書くと先着が勝ち、
+    // 正当な予測が画面から消える。
+    const [fill] = fillsOf([
+      makeEEW({ id: 'a', areas: [area({ kindCode: '19', arrivalTime: EARLIER })] }),
+      makeEEW({ id: 'b', areas: [area({ kindCode: '10', arrivalTime: FORECAST })] }),
+    ])
+    expect(fill.arrival).toEqual({ kind: 'forecast', arrivalMs: Date.parse(FORECAST) })
+  })
+
+  it('別の地震が未到達の予測を出していれば、到達済みより優先する（安全弁）', () => {
+    const [fill] = fillsOf([
+      makeEEW({ id: 'a', areas: [area({ kindCode: '11', arrived: true })] }),
+      makeEEW({ id: 'b', areas: [area({ kindCode: '10', arrivalTime: FORECAST })] }),
+    ])
+    expect(fill.arrival).toEqual({ kind: 'forecast', arrivalMs: Date.parse(FORECAST) })
+  })
+
+  it('どの報も到達済みしか伝えていなければ到達済みを返す（対照）', () => {
+    const [fill] = fillsOf([makeEEW({ id: 'a', areas: [area({ kindCode: '11', arrived: true })] })])
+    expect(fill.arrival).toEqual({ kind: 'arrived', arrivalMs: null })
+  })
+
+  it('日時として読めない時刻は捨てる（安全弁）', () => {
+    // 引き算して NaN を通すと `NaN > 0` が偽なので「まもなく」側へ落ちる。
+    const [fill] = fillsOf([
+      makeEEW({ id: 'a', areas: [area({ kindCode: '10', arrivalTime: 'こわれた値' })] }),
+    ])
+    expect(fill.arrival).toEqual({ kind: 'none', arrivalMs: null })
+  })
+
+  it('予想震度がより低い報の到達予測も採る（階級とは別に畳む）', () => {
+    // 「この区域へいつ届くか」は、どの報が最大震度を与えたかとは別の問い。
+    const [fill] = fillsOf([
+      makeEEW({ id: 'a', areas: [area({ scaleTo: 55, kindCode: '11', arrived: true })] }),
+      makeEEW({ id: 'b', areas: [area({ scaleTo: 40, kindCode: '10', arrivalTime: FORECAST })] }),
+    ])
+    expect(fill.scale).toBe(55)
+    expect(fill.arrival).toEqual({ kind: 'forecast', arrivalMs: Date.parse(FORECAST) })
   })
 })

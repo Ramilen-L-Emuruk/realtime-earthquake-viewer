@@ -6,7 +6,7 @@ import {
   OUTBREAK_PROPAGATION_WINDOW_MS, NEW_REGION_COOLDOWN_MS, NEW_REGION_MIN_INDEX,
   PROPAGATION_MAX_KM, isSameShakeAsBefore, type AlertRegion,
 } from './useKyoshinAlerts'
-import { computeSWaveRadiusAtTime } from './usePsWaveCalc'
+import { reachRadiusKm } from '../utils/travelTime'
 import type { EEWAlert, Hypocenter } from '../types/earthquake'
 import type { ConfirmedShock } from '../utils/kyoshinDetectionView'
 import { haversineKm } from '../utils/geo'
@@ -50,7 +50,7 @@ describe('dynamicRegionThresholdKm', () => {
   it('EEW無し・経過時間が十分長ければ DEFAULT_VIRTUAL_DEPTH_KM での S波半径×安全マージンまで拡大する', () => {
     const region = fakeRegion({ firstSeenAtMs: 0 })
     const nowMs = 90_000 // 90秒経過
-    const expectedRadius = computeSWaveRadiusAtTime(90, DEFAULT_VIRTUAL_DEPTH_KM) * DYNAMIC_THRESHOLD_SAFETY_FACTOR
+    const expectedRadius = reachRadiusKm('S', 90, DEFAULT_VIRTUAL_DEPTH_KM) * DYNAMIC_THRESHOLD_SAFETY_FACTOR
     expect(expectedRadius).toBeGreaterThan(REGION_MATCH_KM)
     expect(dynamicRegionThresholdKm(region, nowMs, null)).toBeCloseTo(expectedRadius, 5)
   })
@@ -82,7 +82,7 @@ describe('isSameEarthquake', () => {
     const eew = fakeEEW('eew-1', originTime, hypocenter)
     const nowMs = new Date(originTime).getTime() + 90_000 // 発生90秒後
     // 90秒後の動的閾値(下限超)以内に収まる、能登から少し離れた点
-    const radius = computeSWaveRadiusAtTime(90, 10) * DYNAMIC_THRESHOLD_SAFETY_FACTOR
+    const radius = reachRadiusKm('S', 90, 10) * DYNAMIC_THRESHOLD_SAFETY_FACTOR
     expect(radius).toBeGreaterThan(REGION_MATCH_KM)
     // 経度方向に radius の半分程度ずらした点（同一緯度なので近似的に km ≒ 度 * 111 * cos(lat)）
     const dLng = (radius * 0.8) / (111 * Math.cos((37.5 * Math.PI) / 180))
@@ -110,7 +110,7 @@ describe('isSameEarthquake', () => {
     const targetLng = 135.09
 
     // 能登(94秒経過)の動的閾値なら十分カバーできる距離であることを前提として確認
-    const notoRadius = computeSWaveRadiusAtTime(94, 10) * DYNAMIC_THRESHOLD_SAFETY_FACTOR
+    const notoRadius = reachRadiusKm('S', 94, 10) * DYNAMIC_THRESHOLD_SAFETY_FACTOR
     const distFromNoto = Math.sqrt(
       ((targetLat - 37.6) * 111) ** 2 + ((targetLng - 137.2) * 111 * Math.cos((37.6 * Math.PI) / 180)) ** 2,
     )
