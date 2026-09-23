@@ -8,7 +8,7 @@ import { kyoshinIndexToLabel } from '../utils/kyoshinIntensity'
 import { showBrowserNotification } from '../utils/notifications'
 import { hasKnownEpicenter, haversineKm } from '../utils/geo'
 import { log } from '../utils/logger'
-import { computeSWaveRadiusAtTime } from './usePsWaveCalc'
+import { reachRadiusKm } from '../utils/travelTime'
 import type { ConfirmedShock } from '../utils/kyoshinDetectionView'
 import { PARAMS } from '../utils/kyoshinDetector'
 
@@ -181,7 +181,7 @@ function extractEewInfo(eew: EEWAlert): NearestEewInfo | null {
  * 地域の「同一地震」とみなす動的な距離閾値(km)を計算する。
  *
  * nearestEew（震源要素確定済みの EEW 情報）があれば、その震源・発生時刻から S波の地表到達半径
- * （usePsWaveCalc と同じ2層速度モデル）を計算して使う。無ければ地域自身の初検知時刻を仮の発生
+ * （予報円と同じ JMA2001 走時表）を計算して使う。無ければ地域自身の初検知時刻を仮の発生
  * 時刻、DEFAULT_VIRTUAL_DEPTH_KM を仮の震源深さとして近似する。いずれも REGION_MATCH_KM を
  * 下限に保証する（発生直後の判定を安定させるため）。
  *
@@ -206,7 +206,7 @@ export function dynamicRegionThresholdKm(
 function thresholdFromOrigin(originMs: number, depth: number, nowMs: number): number {
   const elapsedSec = (nowMs - originMs) / 1000
   if (!Number.isFinite(elapsedSec) || elapsedSec <= 0) return REGION_MATCH_KM
-  const radius = computeSWaveRadiusAtTime(elapsedSec, depth) * DYNAMIC_THRESHOLD_SAFETY_FACTOR
+  const radius = reachRadiusKm('S', elapsedSec, depth) * DYNAMIC_THRESHOLD_SAFETY_FACTOR
   return Math.min(Math.max(REGION_MATCH_KM, radius), PROPAGATION_MAX_KM)
 }
 

@@ -1019,7 +1019,7 @@ function HomeLocationSection({
 
   return (
     <div className="px-4 py-3 space-y-2">
-      <p className="text-xs text-secondary">現在地をS波到達の基準点として使用します。HTTPS または localhost が必要です。</p>
+      <p className="text-xs text-secondary">現在地を主要動到達の基準点として使用します。HTTPS または localhost が必要です。</p>
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <span className="text-xs text-white font-mono">
           {isSet
@@ -1286,6 +1286,20 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onRep
           homeLng={settings.homeLng}
           onUpdate={onUpdate}
         />
+        <Row
+          label="到達予想キー"
+          description="お持ちの方のみ（配布は限定的です）。入力すると、地域ごとの発表値ではなくホーム地点そのものへの到達予想を表示します"
+        >
+          <input
+            type="password"
+            value={settings.arrivalToken}
+            onChange={e => onUpdate('arrivalToken', e.target.value)}
+            placeholder="未設定"
+            autoComplete="off"
+            spellCheck={false}
+            className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 w-56 font-mono focus:outline-none focus:border-blue-500"
+          />
+        </Row>
       </Section>
 
       <Section title="タブ自動切替設定">

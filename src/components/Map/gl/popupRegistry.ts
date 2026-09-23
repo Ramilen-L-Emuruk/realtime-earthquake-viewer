@@ -38,7 +38,7 @@ export interface PopupSource {
   buildClickHtml: (feature: MapGeoJSONFeature) => string
   /**
    * 指定するとクリックポップアップを開いている間この間隔(ms)で本文を作り直す。
-   * EEW の「S波到達まで あと何秒」のように、時間経過で内容が古くなる表示に使う。
+   * EEW の「主要動の到達まで 約N秒」のように、時間経過で内容が古くなる表示に使う。
    */
   refreshMs?: number
   /**
