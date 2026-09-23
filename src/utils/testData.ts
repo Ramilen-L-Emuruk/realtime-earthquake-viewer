@@ -2359,7 +2359,12 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
       // 推定される高さが 3m 超に届かないときの形で、**津波警報に相当する津波を観測している**
       // ことを気象庁が示す（電文解説資料 Ⅱ.13 1-1-2-2-2）。値が変わらないので、アプリの
       // 「値の変化で判定する」仕組みでは作れない状態 —— テストボタンに無いと実機で一度も見られない。
-      { name: '沖合80km', offshore: true, sensor: '水圧計', arrivalTime: t(-2), condition: { observing: true }, maxHeightRevise: '更新' },
+      // **名前は実在の観測点から採る**（気象庁の個別コード表 PointTsunami。「〜沖 N km」形式は
+      // 海底水圧計の側の命名で `sensor` とも揃う）。波高を持たないこの観測点は地図に到達確認の
+      // 印が出る経路に乗るので、座標表（`tsunami-obs-coords.json`）を引けない架空名を置くと
+      // 印が出ない。上の `沖合40km` が架空名なのは、予報区に紐づかない観測のフォールバックを
+      // 確かめるという別の目的があるため。
+      { name: '岩手沖８０ｋｍＡ', offshore: true, sensor: '水圧計', arrivalTime: t(-2), condition: { observing: true }, maxHeightRevise: '更新' },
     ],
     // 沖合の観測から導いた沿岸への推定（電文の `Estimation`）。沖合の観測点は沿岸より先に
     // 津波を捉えるため、**まだ到達していない沿岸**の到達予想と高さが入る。

@@ -33,6 +33,15 @@ export interface TsunamiObsBar {
    */
   maxHeightDateTime?: string
   maxHeightRevise?: string
+  /**
+   * 第1波（`FirstHeight` の到達時刻と押し引き）。**これも描画には使わない。**
+   *
+   * 気象庁は第1波を訂正してくる（`FirstHeight/Revise` = 更新）。カードの文字色も読み上げも
+   * それを名指しするのに、カメラだけが波高と最大波の時刻しか見ておらず、**声が指した観測点へ
+   * 地図が寄らなかった**（→ `utils/tsunami.ts` の `firstWaveSpokenKey`）。
+   */
+  arrivalTime?: string
+  initial?: string
   blinking: boolean
 }
 
@@ -92,6 +101,7 @@ export function useTsunamiLayerData(
   missingMarkers: TsunamiMissingMarker[]
   tsunamiFitPositions: LatLng[]
   tsunamiSignature: string
+  tsunamiEventId: string
 } {
   const tsunamiZones = useTsunamiZones()
   const tsunamiObsCoords = useTsunamiObsCoords()
@@ -131,7 +141,8 @@ export function useTsunamiLayerData(
       const blinking = obsUpdateStatus?.has(o.name) ?? false
       bars.push({
         name: o.name, lat: latLng[0], lng: latLng[1], barPx, color, height: o.height,
-        maxHeightDateTime: o.maxHeightDateTime, maxHeightRevise: o.maxHeightRevise, blinking,
+        maxHeightDateTime: o.maxHeightDateTime, maxHeightRevise: o.maxHeightRevise,
+        arrivalTime: o.arrivalTime, initial: o.initial, blinking,
       })
     }
     // 北→南（後に描くほど手前）。
@@ -216,5 +227,18 @@ export function useTsunamiLayerData(
   )
   const tsunamiSignature = tsunamiLines.map((l) => `${l.name}:${l.grade}`).join(',')
 
-  return { tsunamiLines, observationBars, arrivalMarkers, missingMarkers, tsunamiFitPositions, tsunamiSignature }
+  // 表示中の津波の識別子。**カメラ（`TsunamiFitGL`）が「観測点の差分の基準が別の津波のものに
+  // なっていないか」を確かめるために持つ。** 気象庁は解除を経ずに別の津波へ差し替えることがあり
+  // （`useEarthquakes` の「別 eventId の tsunami で上書き」）、そのとき区域も観測点も丸ごと
+  // 入れ替わるのに signature は非空のまま変わるため、空を経由したかどうかでは見分けられない。
+  //
+  // **識別子が無ければ空文字。** 標準版（P2PQuake）は `eventId` を持たないので常に空になり、
+  // 切り替わりを判定しない —— `isTsunamiNewFire` が識別子を取れないときに「保守的に続報扱い」
+  // （`utils/tsunami.ts`）へ倒れるのと同じ構えで、あちらが判定できないものをここだけ断定しない。
+  const tsunamiEventId = tsunamis.find((t) => !t.cancelled)?.eventId ?? ''
+
+  return {
+    tsunamiLines, observationBars, arrivalMarkers, missingMarkers,
+    tsunamiFitPositions, tsunamiSignature, tsunamiEventId,
+  }
 }

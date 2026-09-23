@@ -64,17 +64,20 @@ async function drain() {
 
 /** 本文の読み上げだけを拾う（電文本体の読み上げと混ざらないように） */
 function telegramSpeeches(): string[] {
-  return speeches.map(s => s.text).filter(t => t.includes('気象庁の文をお伝えします'))
+  return speeches.map(s => s.text).filter(t => t.includes('気象庁の発表文をお伝えします'))
 }
 
 // **題材に「＊印は…」を使わない** —— あれは読み上げから落とす定型文
 // （`TELEGRAM_BOILERPLATE_SPECS` の `starMark`）なので、使うと本文が鳴らずテストが成り立たない。
 const COMMENT = '震源要素を訂正します。'
 
-function makeQuake(over: { id?: string; varCommentText?: string; freeText?: string } = {}): JMAQuake {
+function makeQuake(over: { id?: string; eventId?: string; varCommentText?: string; freeText?: string } = {}): JMAQuake {
   return {
     kind: 'quake',
     id: over.id ?? 'quake-1',
+    // **既定では持たせない。** DMDATA の電文は必ず `EventID` を持つが、既読の鍵が
+    // 事象の識別子を持たない電文でも従来どおり効くことを、既定の側で確かめておく。
+    ...(over.eventId !== undefined && { eventId: over.eventId }),
     time: '2026-01-01T12:00:00Z',
     issue: { source: 'JMA', time: '2026-01-01T12:00:00Z', type: '震度速報', correct: 'なし' },
     earthquake: {
@@ -259,6 +262,7 @@ describe('気象庁が書いた文の読み上げ（配線）', () => {
   })
 
   // 安全弁: 同じ本文の続報では読み直さない（固定付加文は続報でも同じ値が載る）。
+  // **事象の識別子を持たない電文**（P2PQuake 経路）でも効くことを、ここで押さえる。
   it('同じ本文の続報では読み直さない', async () => {
     const { handleLiveEvent } = setup()
     handleLiveEvent(makeQuake({ id: 'quake-1' }))
@@ -266,6 +270,58 @@ describe('気象庁が書いた文の読み上げ（配線）', () => {
     handleLiveEvent(makeQuake({ id: 'quake-2' }))
     await drain()
     expect(telegramSpeeches()).toHaveLength(1)
+  })
+
+  // 正: **別の地震に付いた同じ文は読み直す。** 気象庁の付加文は同じ文面が続くことが多く、
+  // 2024-01-01 の実電文では「この地震の付近で地震が連続して発生したため…」が別々の 32 の
+  // 地震に同じ文面で入っていた。文字列だけを鍵にしていた頃は、この但し書きが最初の 1 回しか
+  // 声にならなかった（→ `telegramTextSpokenSubject`）。
+  it('別の地震に付いた同じ文は読み直す', async () => {
+    const { handleLiveEvent } = setup()
+    handleLiveEvent(makeQuake({ id: 'quake-1', eventId: 'event-1' }))
+    await drain()
+    handleLiveEvent(makeQuake({ id: 'quake-2', eventId: 'event-2' }))
+    await drain()
+    expect(telegramSpeeches()).toHaveLength(2)
+  })
+
+  // 対照: **同じ地震の続報では読み直さない。** 上を「電文ごとに読み直す」で実装すると、
+  // 続報のたびに同じ付加文を聞かされる（既読を入れた元の理由）。境界は事象で、報ではない。
+  it('同じ地震の続報では読み直さない', async () => {
+    const { handleLiveEvent } = setup()
+    handleLiveEvent(makeQuake({ id: 'quake-1', eventId: 'event-1' }))
+    await drain()
+    handleLiveEvent(makeQuake({ id: 'quake-2', eventId: 'event-1' }))
+    await drain()
+    expect(telegramSpeeches()).toHaveLength(1)
+  })
+
+  // 安全弁: **同じ地震でも `eventId` が採り直されたら読み直す。** 気象庁は震源決定の前と後で
+  // 別々に採番することがある（`isHypocenterPending` の実例）。境目にいる震源決定前の電文
+  // （震度速報）は付加文を運ばないので実運用では起きないが、**前提が崩れたときにどう転ぶかを
+  // ここで明示しておく** —— 転ぶ先は「同じ注記を二度読む」（安全側）であって、黙り込む側ではない。
+  it('同じ地震でも識別子が採り直されたら読み直す（安全側へ倒れることの確認）', async () => {
+    const { handleLiveEvent } = setup()
+    handleLiveEvent(makeQuake({ id: 'quake-1', eventId: '20260824040519' }))
+    await drain()
+    handleLiveEvent(makeQuake({ id: 'quake-2', eventId: '20260824040526' }))
+    await drain()
+    expect(telegramSpeeches()).toHaveLength(2)
+  })
+
+  // 安全弁: **文単位の既読は主題を足しても保たれる。** 同じ地震で 1 文増えた続報では、
+  // 増えた分だけを読む（既に読んだ文は繰り返さない）。鍵を「主題 × 本文まるごと」にすると
+  // ここが崩れ、津波の避難行動の付加文のように節が増減する本文を毎回読み直す。
+  it('同じ地震で文が増えたら、増えた文だけを読む', async () => {
+    const extra = 'なお、有明・八代海に津波警報等（大津波警報・津波警報あるいは津波注意報）を発表中です。'
+    const { handleLiveEvent } = setup()
+    handleLiveEvent(makeQuake({ id: 'quake-1', eventId: 'event-1' }))
+    await drain()
+    handleLiveEvent(makeQuake({ id: 'quake-2', eventId: 'event-1', freeText: extra }))
+    await drain()
+    expect(telegramSpeeches()).toHaveLength(2)
+    expect(telegramSpeeches()[1]).toContain(extra)
+    expect(telegramSpeeches()[1]).not.toContain(COMMENT)
   })
 
   // 正: 本文が変わったら読み直す（鍵はイベント単位だが、値は本文そのもの）。
@@ -297,8 +353,8 @@ describe('気象庁が書いた文の読み上げ（配線）', () => {
     const order = speeches.map(s => s.text)
     // **本体の判定を前置きの語で書かない** —— 本文も「地震情報について、…」で始まるので
     // `startsWith('地震情報')` では本文自身を拾ってしまう。本文以外の最初の発話を本体とみなす。
-    const bodyIdx = order.findIndex(t => t.includes('気象庁の文をお伝えします'))
-    const mainIdx = order.findIndex(t => !t.includes('気象庁の文をお伝えします'))
+    const bodyIdx = order.findIndex(t => t.includes('気象庁の発表文をお伝えします'))
+    const mainIdx = order.findIndex(t => !t.includes('気象庁の発表文をお伝えします'))
     expect(mainIdx, '電文本体が鳴っていない').toBeGreaterThanOrEqual(0)
     expect(bodyIdx, '本文が鳴っていない').toBeGreaterThanOrEqual(0)
     expect(mainIdx).toBeLessThan(bodyIdx)
@@ -398,7 +454,7 @@ describe('気象庁が書いた文の読み上げ（配線）', () => {
     expect(telegramSpeeches()[1]).toContain('二つ目の文です。')
     expect(telegramSpeeches()[1]).not.toContain('一つ目の文です。')
     // 前置きは残す（本文だけを裸で鳴らすと、何についての文か分からない）。
-    expect(telegramSpeeches()[1]).toContain('気象庁の文をお伝えします')
+    expect(telegramSpeeches()[1]).toContain('気象庁の発表文をお伝えします')
   })
 
   // 対照: 文が減っただけの続報（すべて既読）では読まない。**ここが「変更がないなら読まない」の本体。**

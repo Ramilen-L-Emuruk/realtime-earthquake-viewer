@@ -1002,17 +1002,17 @@ describe('津波観測情報の読み上げ: 新規と更新の言い分け', ()
   // 対照: 前値のある観測点は「更新されました」で、「新たに」を付けない
   it('前値のある観測点は「更新されました」と読む', () => {
     const text = tsunamiObservationUpdateToText([OFUNATO], undefined, undefined, new Set(['大船渡']))
-    expect(text).toContain('次の地点で最大波が更新されました。岩手県、大船渡で3.0メートルに更新されました。')
+    expect(text).toContain('次の地点で最大波が更新されました。岩手県、大船渡で3.0メートルへ更新されました。')
     expect(text).not.toContain('新たに')
   })
 
   // 正: 両方が混ざったら 2 文に分け、後ろを「また、」で継ぐ。深刻な波高を含む群が先に来る
   it('深刻な波高を含む群を先に読み、後ろを「また、」で継ぐ', () => {
     const raisedIsWorse = tsunamiObservationUpdateToText([MIYAKO, OFUNATO], undefined, undefined, new Set(['大船渡']))
-    expect(raisedIsWorse).toContain('津波観測情報。次の地点で最大波が更新されました。岩手県、大船渡で3.0メートルに更新されました。また、新たに、次の地点で津波を観測しました。岩手県、宮古で1.2メートルを観測しました。')
+    expect(raisedIsWorse).toContain('津波観測情報。次の地点で最大波が更新されました。岩手県、大船渡で3.0メートルへ更新されました。また、新たに、次の地点で津波を観測しました。岩手県、宮古で1.2メートルを観測しました。')
 
     const firstTimeIsWorse = tsunamiObservationUpdateToText([MIYAKO, OFUNATO], undefined, undefined, new Set(['宮古']))
-    expect(firstTimeIsWorse).toContain('津波観測情報。新たに、次の地点で津波を観測しました。岩手県、大船渡で3.0メートルを観測しました。また、次の地点で最大波が更新されました。岩手県、宮古で1.2メートルに更新されました。')
+    expect(firstTimeIsWorse).toContain('津波観測情報。新たに、次の地点で津波を観測しました。岩手県、大船渡で3.0メートルを観測しました。また、次の地点で最大波が更新されました。岩手県、宮古で1.2メートルへ更新されました。')
   })
 
   // 対照: 群が 1 つしかできない電文では「また、」を出さない
@@ -1041,7 +1041,10 @@ describe('津波観測情報の読み上げ: 新規と更新の言い分け', ()
         [withTime(OFUNATO, T2)], undefined, undefined,
         new Set(['大船渡']), new Map<string, string>(), new Map([['大船渡', T1]]),
       )
-      expect(text).toContain('16時41分に3.0メートルに更新されました。')
+      expect(text).toContain('16時41分に3.0メートルへ更新されました。')
+      // 安全弁: 更新の着点は「へ」。「に」で受けると観測時刻の「に」と 2 度続くうえ、
+      // `MaxHeight/DateTime` は波を観測した時刻なので「16時41分に更新した」とも読める。
+      expect(text).not.toContain('メートルに更新')
     })
 
     // 対照: **波高だけが上がって時刻が据え置きなら添えない。**
@@ -1050,7 +1053,7 @@ describe('津波観測情報の読み上げ: 新規と更新の言い分け', ()
         [withTime(OFUNATO, T1)], undefined, undefined,
         new Set(['大船渡']), new Map<string, string>(), new Map([['大船渡', T1]]),
       )
-      expect(text).toContain('大船渡で3.0メートルに更新されました。')
+      expect(text).toContain('大船渡で3.0メートルへ更新されました。')
       expect(text).not.toContain('16時23分')
     })
 
@@ -1092,7 +1095,7 @@ describe('津波観測情報の読み上げ: 新規と更新の言い分け', ()
     // 上限 2 件。深刻な順は 大船渡(3.0) → 釜石(2.8) → 宮古(1.2) なので宮古が落ちる
     const text = tsunamiObservationUpdateToText(obs, undefined, 2, new Set(['釜石']))
     expect(text).toContain('新たに、次の地点で津波を観測しました。岩手県、大船渡で3.0メートルを観測しました。')
-    expect(text).toContain('また、次の地点で最大波が更新されました。岩手県、釜石で2.8メートルに更新されました。')
+    expect(text).toContain('また、次の地点で最大波が更新されました。岩手県、釜石で2.8メートルへ更新されました。')
     expect(text).not.toContain('宮古')
     expect(text).toContain('ほか1地点でも観測しています。')
   })
@@ -2389,10 +2392,15 @@ describe('tsunamiWarningLevelToText', () => {
   })
 
   // 安全弁: 件数上限を超えた分は数で伝える。黙って落とすと、読まれなかった観測点の存在が消える。
+  //
+  // 助詞は主文（「〇〇**では**、〜を観測しています」）に合わせて場所の「で」を保つ。欠測の群だけが
+  // 「ほか○地点**も**」へ落とすのは、あちらが観測点そのものの状態を述べる文だから。
   it('件数上限を超えた分は数で伝える', () => {
     const many = Array.from({ length: 8 }, (_, i) => obs(`沖合${i + 1}`))
     const text = tsunamiWarningLevelToText(many)
-    expect(text).toContain('ほか3地点')
+    expect(text).toContain('ほか3地点でも津波警報に相当する津波を観測しています。')
+    // 対照: 欠測の群の言い回し（場所の「で」を落とした形）へ寄せない。
+    expect(text).not.toContain('ほか3地点も')
   })
 
   // 安全弁: 既読の記録に載せるのは実際に読んだ分だけ（絞り込みは文の生成と共有する）。
@@ -2952,7 +2960,7 @@ describe('telegramTextToSpeak: 気象庁が書いた文', () => {
   // 正: 有効にすると、何についての文かを添えて返す。
   it('有効にすると前置きを付けて返す', () => {
     const speech = telegramTextToSpeak(quakeWithComment(), ON)
-    expect(speech?.text).toBe('地震情報について、気象庁の文をお伝えします。震源要素を訂正します。')
+    expect(speech?.text).toBe('地震情報について、気象庁の発表文をお伝えします。震源要素を訂正します。')
     // 既読の照合には前置きを含めない（種別ごとに固定の文なので、混ぜると比較が鈍る）
     expect(speech?.body).toBe('震源要素を訂正します。')
   })
