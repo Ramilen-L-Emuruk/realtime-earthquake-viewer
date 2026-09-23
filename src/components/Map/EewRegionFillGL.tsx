@@ -4,9 +4,8 @@ import type { Feature, FeatureCollection, Polygon } from 'geojson'
 import { useMapGL } from './mapGLContext'
 import { getIntensityColor, getIntensityLabelWithApproxAbove } from '../../utils/intensity'
 import type { EewAreaFill } from '../../hooks/useEewLayerData'
-import { haversineKm } from '../../utils/geo'
 import { serverNow } from '../../utils/clock'
-import { computeSWaveTravelTimeSec } from '../../hooks/usePsWaveCalc'
+import { eewArrivalEtaSecFromMs } from '../../utils/eew'
 import { ringToLngLat } from './gl/geojson'
 import { addOrderedLayer } from './gl/layerOrder'
 import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
@@ -16,7 +15,12 @@ import { badgeHtml, escapeHtml } from './gl/popupHtml'
 // 警報域（種別コードで判定。→ `isEewWarningKindCode`）は fillOpacity 0.55・枠 weight2 で強調、予報域は 0.3・weight1。
 // 塗り色は予想震度色(getIntensityColor)。区域中心マーカーは持たない（Leaflet 版と同じ）。
 //
-// クリックで区域名・予想震度・警報種別に加え、その区域へのS波到達までの秒数を出す。
+// クリックで区域名・予想震度・警報種別に加え、その区域への主要動到達までの秒数を出す。
+//
+// **秒数は気象庁が電文で出した到達予測時刻（`Area/ArrivalTime`）から作る。** 自前で走時を解いて
+// 「この区域へ何秒後」を出すのは、気象庁が許可制と定める地震動の予報業務に当たりうる
+// （→ `docs/spec/eew-spec.md` §6）。ここは気象庁の値をそのまま伝える側。
+//
 // 秒数は時間経過で変わるため、到達の**絶対時刻**を feature に持たせ、表示のたびに現在時刻との差へ直す
 // （ポップアップを開いている間は popupRegistry の refreshMs が毎秒作り直す）。
 
@@ -34,25 +38,12 @@ interface Props {
   visible: boolean
 }
 
-/**
- * 区域代表点へのS波到達時刻(epoch ms)を求める。震源未確定なら -1。
- * 距離・深さから走時を解いて発生時刻に足す（自宅向けの useSWaveCountdown と同じ2層速度モデル）。
- */
-function sArrivalMsOf(a: EewAreaFill): number {
-  if (!a.origin) return -1
-  const distanceKm = haversineKm(a.origin.lat, a.origin.lng, a.label[0], a.label[1])
-  const travelSec = computeSWaveTravelTimeSec(distanceKm, a.origin.depth)
-  const originMs = new Date(a.origin.originTime).getTime()
-  if (!Number.isFinite(originMs)) return -1
-  return originMs + travelSec * 1000
-}
-
 // 各区域の全リングを塗り用 Feature 群にする。弱い予想震度が先（下）・強い方が後（前面）。
 function buildFC(areaFills: EewAreaFill[]): FeatureCollection<Polygon> {
   const features: Feature<Polygon>[] = []
   for (const a of areaFills) {
     const color = getIntensityColor(a.scale)
-    const sArrivalMs = sArrivalMsOf(a)
+    const { kind: arrivalKind, arrivalMs } = a.arrival
     for (const ring of a.rings) {
       features.push({
         type: 'Feature',
@@ -64,7 +55,9 @@ function buildFC(areaFills: EewAreaFill[]): FeatureCollection<Polygon> {
           scale: a.scale,
           scaleOrAbove: a.scaleOrAbove,
           isWarning: a.isWarning,
-          sArrivalMs,
+          // GeoJSON の属性は原始値しか持てないので、組を解いて 2 つの属性へ入れる。
+          arrivalKind,
+          arrivalMs: arrivalMs ?? -1,
         },
         geometry: { type: 'Polygon', coordinates: [ringToLngLat(ring)] },
       })
@@ -91,11 +84,27 @@ function hoverHtml(f: MapGeoJSONFeature): string {
   )
 }
 
-/** S波到達の一行。到達済み・推定不能は文言を変える。 */
-function arrivalRowHtml(sArrivalMs: number): string {
-  if (!(sArrivalMs > 0)) return ''
-  const etaSec = Math.round((sArrivalMs - serverNow()) / 1000)
-  const text = etaSec > 0 ? `S波到達まで 約${etaSec}秒` : 'S波到達済み'
+/**
+ * 主要動到達の一行。**気象庁が到達を伝えていない区域では行そのものを出さない。**
+ *
+ * 「約」を付けているのは、これが**区域という単位に対する発表値**で、同じ区域の中でも場所に
+ * よって到達が変わるため。**気象庁がこの値をどう算出しているかは確かめていない**ので、
+ * 算出の方法には踏み込まない（区域の代表点に対する値だ、とは書けない）。
+ */
+function arrivalRowHtml(f: MapGeoJSONFeature): string {
+  const kind = String(f.properties?.arrivalKind ?? 'none')
+  if (kind === 'none') return ''
+  if (kind === 'arrived') {
+    return `<div style="margin-top:4px;font-size:12px;font-weight:700;color:#94a3b8">主要動 到達済み</div>`
+  }
+  // **属性の値をそのまま信じない。** GeoJSON の属性は何でも入りうるうえ、到達の情報が無い区域は
+  // `-1` が入る（原始値しか持てないので「無い」を数値で表している）。有限で正の値だけ通す。
+  const arrivalMs = Number(f.properties?.arrivalMs ?? NaN)
+  if (!(arrivalMs > 0)) return ''
+  // 残り秒数の丸めは `eewArrivalEtaSecFromMs` の 1 箇所に任せる（出す先が 3 つあるため）。
+  const etaSec = eewArrivalEtaSecFromMs(arrivalMs, serverNow())
+  if (etaSec === null) return ''
+  const text = etaSec > 0 ? `主要動の到達まで 約${etaSec}秒` : '主要動 到達済み'
   const color = etaSec > 0 ? '#fca5a5' : '#94a3b8'
   return `<div style="margin-top:4px;font-size:12px;font-weight:700;color:${color}">${text}</div>`
 }
@@ -113,7 +122,7 @@ function clickHtml(f: MapGeoJSONFeature): string {
     `${badgeHtml(scaleLabelOf(f), getIntensityColor(scale))}` +
     `<span style="color:#cbd5e1">予想震度 ${escapeHtml(scaleLabelOf(f))}</span>` +
     `<span style="color:${kindColor};font-weight:700">${kind}</span></div>` +
-    arrivalRowHtml(Number(f.properties?.sArrivalMs ?? -1)) +
+    arrivalRowHtml(f) +
     `</div>`
   )
 }

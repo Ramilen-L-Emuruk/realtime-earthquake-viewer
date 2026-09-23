@@ -28,9 +28,13 @@ export const SETTINGS_FILE_VERSION = 1
 /**
  * 書き出す中身を組み立てる。
  *
- * **API キーは含めない。** 書き出したファイルはディスクに残り、人に渡ることも、うっかり
- * リポジトリへ入ることもある。`stripDevApiKey`（`useSettings.ts`）が dev の注入値を
+ * **API キーと到達予想トークンは含めない。** 書き出したファイルはディスクに残り、人に渡ることも、
+ * うっかりリポジトリへ入ることもある。`stripDevApiKey`（`useSettings.ts`）が dev の注入値を
  * localStorage へ保存しないのと同じ考え方で、ここでも外に出さない。
+ *
+ * **トークンを外に出さない理由は API キーと同じではない。** あちらは他人に使われると配信元の
+ * 契約枠を消費する。こちらは「渡した相手だけが使える」ことが仕組みの前提なので、
+ * 設定ファイルに同梱すると、そのファイルを受け取った人へ意図せず渡ることになる。
  */
 export function buildSettingsFile(settings: AppSettings, variant: SettingsVariant, now = new Date()): SettingsFile {
   return {
@@ -39,7 +43,7 @@ export function buildSettingsFile(settings: AppSettings, variant: SettingsVarian
     version: SETTINGS_FILE_VERSION,
     variant,
     exportedAt: now.toISOString(),
-    settings: { ...settings, dmdataApiKey: '' },
+    settings: { ...settings, dmdataApiKey: '', arrivalToken: '' },
   }
 }
 
@@ -105,13 +109,17 @@ export function parseSettingsFile(raw: unknown, current: AppSettings): ParseResu
   const usedFileApiKey = fileKey !== ''
   settings.dmdataApiKey = usedFileApiKey ? fileKey : current.dmdataApiKey
 
+  // 到達予想トークンも同じ扱い（書き出しに含めないので、空なら今の値を残す）。
+  const fileToken = typeof incoming.arrivalToken === 'string' ? incoming.arrivalToken : ''
+  settings.arrivalToken = fileToken !== '' ? fileToken : current.arrivalToken
+
   return {
     ok: true,
     settings,
     variant: o.variant === 'dmdss' ? 'dmdss' : 'standard',
     exportedAt: typeof o.exportedAt === 'string' ? o.exportedAt : null,
     usedFileApiKey,
-    rejectedKeys: rejectedKeys.filter(k => k !== 'dmdataApiKey'),
+    rejectedKeys: rejectedKeys.filter(k => k !== 'dmdataApiKey' && k !== 'arrivalToken'),
   }
 }
 

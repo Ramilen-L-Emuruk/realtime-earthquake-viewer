@@ -12,13 +12,13 @@ import { usePageVisible } from '../../hooks/usePageVisible'
 import { formatDateTime } from '../../utils/formatters'
 import { getIntensityColor, getIntensityLabel, getIntensityLabelWithApproxAbove, getIntensityBgColor, getMagnitudeColor, getDepthColor } from '../../utils/intensity'
 import { getLpgmClassLabelWithApproxAbove, getLpgmClassColor, getLpgmClassBgColor } from '../../utils/lpgm'
-import { eewAreas, eewEventKey, eewMaxScaleInfo, eewMaxLpgmClassInfo, eewSerial, computeSingleEEWLevel, eewNoForecastReason, canPresentLpgmClass, eewEpicenterRankLabel, eewMagnitudeRankLabel, eewMagnitudePointsLabel, eewForecastChangeText, isEewHypocenterSettled, isEewAreaArrived, sortEewWarningRegions } from '../../utils/eew'
+import { eewAreas, eewEventKey, eewMaxScaleInfo, eewMaxLpgmClassInfo, eewSerial, computeSingleEEWLevel, eewNoForecastReason, canPresentLpgmClass, eewEpicenterRankLabel, eewMagnitudeRankLabel, eewMagnitudePointsLabel, eewForecastChangeText, isEewHypocenterSettled, isEewAreaArrived, sortEewWarningRegions, eewAreaArrivalKind, eewArrivalEtaSec } from '../../utils/eew'
 import { kyoshinIndexToJma, kyoshinIndexToLabel, kyoshinIntensityColor, SHINDO0_COLOR } from '../../utils/kyoshinIntensity'
 import { readableTextColor } from '../../utils/contrast'
 import { gateNotes, gateRows, gateShortfall } from '../../utils/detectionGates'
 import { DescriptionTip } from '../DescriptionTip'
 import { SerialBadge } from '../SerialBadge'
-import { isEewWarningKindCode, isEewPlumKindCode } from '../../utils/eewKind'
+import { isEewWarningKindCode } from '../../utils/eewKind'
 import { serverNow } from '../../utils/clock'
 import { log } from '../../utils/logger'
 
@@ -202,24 +202,6 @@ function useSecondTick(active: boolean): number {
   return now
 }
 
-/**
- * 区域の到達予測時刻から残り秒数を出す。**読めない時刻は `null` を返す。**
- *
- * `EEWRegion.arrivalTime` は XML 経路では読めることを確かめてある（`dmdataParser.ts` の
- * `readTelegramDateTime`）が、**そこを通らない経路がある**（テストデータ・履歴アーカイブ）。
- * 素朴に引き算すると `NaN` になり、
- * **`NaN > 0` が偽なので「まもなく」へ落ちる** —— 壊れた値が「もうすぐ来る」という
- * 確度の高い表示に化ける。旧実装（絶対時刻をそのまま出す）は `NaN:NaN:NaN` と出て
- * 異常だと判った。**読めないものは読めないと出す。**
- *
- * **記録はここでしない。** この関数はレンダーのたび（毎秒の再描画を含む）に区域の数だけ
- * 呼ばれるので、ここへログを置くと壊れた区域 1 つで 1 秒ごとに記録が出続ける。
- * 記録は `EEWCard` 側で**報ごとに 1 行へまとめる**（→ docs/spec/data-sources-spec.md §2）。
- */
-function arrivalEtaSec(arrivalTime: string, nowMs: number): number | null {
-  const ms = new Date(arrivalTime).getTime()
-  return Number.isFinite(ms) ? Math.round((ms - nowMs) / 1000) : null
-}
 
 function EEWCard({ eew, visible, speaking, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
   eew: EEWAlert
@@ -362,11 +344,6 @@ function EEWCard({ eew, visible, speaking, activeLpgmEventId, onToggleLpgm, onDe
   // **このファイルには `arrived` が 2 つある。** ここで扱う区域の `arrived` は電文が伝える
   // 「既に主要動到達と推測」。下の S 波カウントダウンが持つ `SWaveArrival.arrived` は別物で、
   // 利用者が登録した地点への走時計算から出す到達済みフラグ（`nearbyStations.ts`）。
-  const arrivalKindOf = (a: typeof areas[number]): 'arrived' | 'plum' | 'forecast' => {
-    if (isEewAreaArrived(a)) return 'arrived'
-    if (isEewPlumKindCode(a.kindCode)) return 'plum'
-    return 'forecast'
-  }
   // 並びは時間の順 ―― 到達済み → 未到達（到達の早い順）→ 到達時刻が判らないもの。
   //
   // **PLUM 法を末尾へ置く。** 以前は到達済みの次に置いていたが、この区域が持つ時刻は到達の
@@ -376,7 +353,7 @@ function EEWCard({ eew, visible, speaking, activeLpgmEventId, onToggleLpgm, onDe
   const areasWithArrival = areas
     .filter(a => a.arrivalTime || isEewAreaArrived(a))
     .sort((a, b) => {
-      const d = ARRIVAL_KIND_ORDER[arrivalKindOf(a)] - ARRIVAL_KIND_ORDER[arrivalKindOf(b)]
+      const d = ARRIVAL_KIND_ORDER[eewAreaArrivalKind(a)] - ARRIVAL_KIND_ORDER[eewAreaArrivalKind(b)]
       if (d !== 0) return d
       // 同じ種類どうし。時刻を持たない組み合わせでは電文の順のまま並べる。
       if (!a.arrivalTime || !b.arrivalTime) return 0
@@ -385,14 +362,14 @@ function EEWCard({ eew, visible, speaking, activeLpgmEventId, onToggleLpgm, onDe
   // 見出しの右肩に出す内訳。**PLUM 法の区域は「未到達」に数える** —— 気象庁は到達したと推測した
   // 区域に `Condition` を出すので、それが無い区域は到達済みとして扱えない（→ `isEewAreaArrived`）。
   // 行の右端には別途「時刻不明」と出るので、内訳と行のあいだで食い違いは起きない。
-  const arrivedCount = areasWithArrival.filter(a => arrivalKindOf(a) === 'arrived').length
+  const arrivedCount = areasWithArrival.filter(a => eewAreaArrivalKind(a) === 'arrived').length
   // 残り秒数を 1 秒ごとに数え直す。欄を出していないカードと、画面に出ていない間はタイマーを持たない。
   const nowMs = useSecondTick(areasWithArrival.length > 0 && visible)
   // 日時として読めなかった到達予測時刻。**報ごとに 1 行へまとめて記録する** ——
   // 区域は数十個あり、しかも毎秒描き直すので、1 件ずつ出すと他の記録が埋もれる。
   // 鍵に値そのものを使うのは、同じ内容で描き直しただけのときに二重で記録しないため。
   const brokenArrivals = areasWithArrival
-    .filter(a => arrivalKindOf(a) === 'forecast' && a.arrivalTime && !Number.isFinite(new Date(a.arrivalTime).getTime()))
+    .filter(a => eewAreaArrivalKind(a) === 'forecast' && a.arrivalTime && !Number.isFinite(new Date(a.arrivalTime).getTime()))
     .map(a => `${a.name}="${a.arrivalTime}"`)
   const brokenArrivalsKey = brokenArrivals.join('|')
   useEffect(() => {
@@ -772,12 +749,12 @@ function EEWCard({ eew, visible, speaking, activeLpgmEventId, onToggleLpgm, onDe
               }}
             >
               {areasWithArrival.map((a, i) => {
-                const kind = arrivalKindOf(a)
+                const kind = eewAreaArrivalKind(a)
                 // 残り秒数。**到達予測時刻を持つ区域だけ**が対象で、PLUM 法の時刻は使わない
                 // （値は到達の予測ではなく、その震度を初めて予測した時刻 ＝ 過去）。
-                // 読めない時刻は `null` が返り、下で「不明」と出す（→ `arrivalEtaSec`）。
+                // 読めない時刻は `null` が返り、下で「不明」と出す（→ `eewArrivalEtaSec`）。
                 const etaSec = kind === 'forecast' && a.arrivalTime
-                  ? arrivalEtaSec(a.arrivalTime, nowMs)
+                  ? eewArrivalEtaSec(a.arrivalTime, nowMs)
                   : null
                 // **震度スケール外の値でも区域を落とさない。** `eewMaxScaleInfo` は最大値を
                 // 求める関数なので `isValidIntensityScale` で弾くが、この欄は「電文が載せた区域を
@@ -909,8 +886,19 @@ function EEWCard({ eew, visible, speaking, activeLpgmEventId, onToggleLpgm, onDe
 // 震度ラベルの降順（表示ソート用）
 const LABEL_ORDER = ['7', '6強', '6弱', '5強', '5弱', '4', '3', '2', '1', '0']
 
+/**
+ * 主要動の到達カウントダウン。
+ *
+ * **どの範囲に対する値かを必ず出す。** 既定では気象庁が区域ごとに出した到達予測時刻を伝えて
+ * おり（→ `useHomeAreaArrival`）、区域は都道府県を 3〜4 つに分けた広さがある。範囲を示さないと
+ * 区域の値が登録地点そのものの値として読まれる。**自前計算（`source === 'own'`）のときだけ
+ * 地点の値**で、そちらは発行済みトークンを持つ端末に限られる。
+ */
 function SWaveArrivalCard({ arrival }: { arrival: SWaveArrival }) {
   const borderColor = arrival.arrived ? '#ef4444' : '#f97316'
+  const scopeLabel = arrival.source === 'telegram' && arrival.areaName
+    ? arrival.areaName
+    : 'ご自宅付近'
   // 余白のみ圧縮する。カウントダウンの数字は緊急度が高く、一目で読めることが要るため縮めない。
   return (
     <div className="bg-card rounded-lg p-2 border-2 roomy:p-3" style={{ borderColor }}>
@@ -920,12 +908,15 @@ function SWaveArrivalCard({ arrival }: { arrival: SWaveArrival }) {
           style={{ backgroundColor: borderColor }}
         />
         <span className="text-xs font-bold" style={{ color: borderColor }}>
-          {arrival.arrived ? 'S波 到達済み' : 'S波 到達カウントダウン'}
+          {arrival.arrived ? '主要動 到達済み' : '主要動 到達カウントダウン'}
         </span>
-        <span className="text-xs text-secondary ml-auto">震源から {arrival.distanceKm.toFixed(0)} km</span>
+        {arrival.distanceKm !== null && (
+          <span className="text-xs text-secondary ml-auto">震源から {arrival.distanceKm.toFixed(0)} km</span>
+        )}
       </div>
+      <p className="text-xs text-secondary mb-1">{scopeLabel}</p>
       {arrival.arrived ? (
-        <p className="text-red-400 font-bold text-sm">ご自宅付近にS波が到達しています</p>
+        <p className="text-red-400 font-bold text-sm">主要動が到達しています</p>
       ) : arrival.etaSec !== null ? (
         <div className="flex items-baseline gap-2">
           <span className="text-4xl font-black text-white">{arrival.etaSec}</span>
@@ -934,7 +925,11 @@ function SWaveArrivalCard({ arrival }: { arrival: SWaveArrival }) {
       ) : (
         <p className="text-sm text-secondary">到達時間を推定中…</p>
       )}
-      <p className="text-xs text-secondary mt-1">※推定値。実際の到達時間は異なる場合があります</p>
+      <p className="text-xs text-secondary mt-1">
+        {arrival.source === 'telegram'
+          ? '※気象庁が発表した地域ごとの到達予測時刻です。同じ地域の中でも場所によって異なります'
+          : '※推定値。実際の到達時間は異なる場合があります'}
+      </p>
     </div>
   )
 }
