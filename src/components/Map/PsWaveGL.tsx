@@ -3,7 +3,7 @@ import type { OrderedCustomLayer } from './gl/layerOrder'
 import { applyProjectionUniforms, createProjectionProgramCache } from './gl/projectionProgram'
 import { useMapGL } from './mapGLContext'
 import type { PsWaveCircle } from '../../services/kyoshin'
-import { computeSWaveRadiusAtTime, computeSWaveTravelTimeSec } from '../../hooks/usePsWaveCalc'
+import { reachRadiusKm, travelTimeSec } from '../../utils/travelTime'
 import { calcShakingDurationSec } from '../../utils/eew'
 import { EARTH_RADIUS_KM } from '../../utils/geo'
 import { ringVertex } from './gl/psWaveRing'
@@ -322,9 +322,9 @@ ${VERT_BODY}`,
 
           if (c.sRadius > 0) {
             const durationSec = calcShakingDurationSec(c.magnitude, c.sRadius)
-            const tNow = computeSWaveTravelTimeSec(c.sRadius, c.depth)
+            const tNow = travelTimeSec('S', c.sRadius, c.depth)
             const tTrailing = tNow - durationSec
-            const sInnerKm = tTrailing > 0 ? computeSWaveRadiusAtTime(tTrailing, c.depth) : 0
+            const sInnerKm = tTrailing > 0 ? reachRadiusKm('S', tTrailing, c.depth) : 0
             const fadeWidthKm = Math.max(TRAILING_EDGE_FADE_MIN_KM, c.sRadius * TRAILING_EDGE_FADE_RATIO)
             const innerR = sInnerKm > 0 && sInnerKm < c.sRadius ? sInnerKm / c.sRadius : 0
             const fadeOuterR = innerR > 0 ? Math.min((sInnerKm + fadeWidthKm) / c.sRadius, 1) : 0

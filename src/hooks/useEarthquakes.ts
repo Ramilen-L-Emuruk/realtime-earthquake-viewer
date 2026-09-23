@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useLazyRef } from './useLazyRef'
-import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMANankaiCommentary, JMAKohatsu, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity, EEWAlert, IntensityScale, EarthquakePoint, AppEvent, LiveEvent, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
+import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMANankaiCommentary, JMAKohatsu, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity, EEWAlert, IntensityScale, EarthquakePoint, AppEvent, LiveEvent, LiveEventMeta, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
 import { fetchHistory, fetchJmaQuake, P2PQuakeWebSocket } from '../services/p2pquake'
 // 種別ごとの取得関数（`fetchDmdataEarthquakes` ほか 8 本）は撤去済み。履歴はアーカイブ経由の
 // 1 本へ寄せてある（→ `data-sources-spec.md` §2「大量に取るならアーカイブを使う」）。
@@ -14,7 +14,7 @@ import {
   type TelegramLoss, createEmptyTelegramLoss, telegramLossFrom, isTelegramLossEmpty,
   mergeHistoryLoss,
 } from '../utils/telegramLoss'
-import { mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes, extractQuakeEventId, quakeEventKey, coalesceByEventId, findExistingQuakeCard, isRetractedQuakeReport, quakeRetractionOf, addQuakeRetraction } from '../utils/quakeMerge'
+import { mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes, extractQuakeEventId, quakeEventKey, coalesceByEventId, findExistingQuakeCard, isRetractedQuakeReport, quakeRetractionOf, addQuakeRetraction, quakeHoldBack } from '../utils/quakeMerge'
 import { advanceQuakeMarks, pruneQuakeMarks, quakeFactSnapshot, quakeRowSnapshot, lpgmRowSnapshot, lpgmMarkKey, type QuakeCardMarks, type QuakeMarkMemory } from '../utils/quakeUpdateMark'
 import { UPDATE_MARK_TTL_MS } from '../utils/updateMark'
 import type { QuakeRetraction } from '../utils/quakeMerge'
@@ -552,7 +552,7 @@ export interface EarthquakeState {
 }
 
 export function useEarthquakes(
-  onLiveEvent?: (event: LiveEvent) => void,
+  onLiveEvent?: (event: LiveEvent, meta?: LiveEventMeta) => void,
   dmdataApiKey = '',
   dmdataTestDelivery = false,
   replayTimeOffset: number | null = null,
@@ -697,6 +697,25 @@ export function useEarthquakes(
   // 現在の state を WS コールバック内から参照するための ref
   const stateRef = useRef(state)
   stateRef.current = state
+  /**
+   * **同じティックで受理した地震カードの写し**（同じ地震につき 1 枚）。
+   *
+   * 据え置き判定（`isQuakeReportHeldBack`）は既存カードと突き合わせるが、`stateRef` は
+   * **レンダー時にしか進まない**。キューのディスパッチャは 1 ティックで発火済みのエントリを
+   * すべて捌くので（`shiftReady` のループ）、そのあいだ判定は直前に受理した報を見られない。
+   * 判定のたびに `stateRef` の古さを例外で埋める形にすると、鮮度が足りない場面が見つかるたびに
+   * ガードが増える —— 実際に「取消の台帳と照合する」「その照合に発表時刻の境界を置く」と
+   * 2 段継ぎ足し、どちらも別の抜け道を残した。**参照そのものを進めるほうが筋がよい。**
+   *
+   * **画面の状態そのものではない。** 統合の畳み込み（`coalesceByEventId`・津波からの借り物・
+   * 取消の 10 秒後の purge）は再現しない —— 据え置き判定が見るのは種別・発表時刻・震度の有無・
+   * 取消済みかの 4 つだけ（→ `quakeHoldBack`）で、そこに足りる粒度で足りる。
+   *
+   * レンダーが走れば `stateRef` が追いつくので、そこで捨てる（上限は置かない。溜まるのは
+   * 1 ティックのあいだだけで、レンダーが走らない状況ではアプリ自体が動いていない）。
+   */
+  const pendingQuakeCardsRef = useRef<JMAQuake[]>([])
+  pendingQuakeCardsRef.current = []
   // 受理した EEW の報番号（キーは `eewEventKey`）。古い報の判定に使う。
   //
   // **`stateRef` では判定できない。** あれはレンダー時にしか進まないが、キューのディスパッチャは
@@ -1168,6 +1187,135 @@ export function useEarthquakes(
     }
   }, [rememberQuakeRetraction])
 
+  /**
+   * 据え置き判定に使う既存カードを引く。**同じティックで受理した写しを先に見る。**
+   *
+   * `stateRef` はレンダー時にしか進まないので、それだけを見ると同じティックで捌かれた直前の報を
+   * 反映できない（理由と、継ぎ足しで埋めようとして失敗した経緯は `pendingQuakeCardsRef`）。
+   */
+  /**
+   * 震度を持たない電文（VXSE52/53）を、震度速報の震度で補う。
+   *
+   * **統合側と据え置き判定側で同じ述語を通す。** 補完の有無で `hasIntensity(incoming)` が
+   * 変わり、`quakeHoldBack` はそこで判定軸を切り替える（実震度を持つなら発表時刻・
+   * 持たないなら種別優先度）。片方だけ補完すると、**同じ電文について統合は受け入れ・判定は
+   * 据え置きと答える**形でずれる。
+   */
+  const fillIntensityFromCache = useCallback((quake: JMAQuake): JMAQuake => {
+    if (quake.earthquake.maxScale >= 0 || quake.points.length > 0) return quake
+    const cached = quakeIntensityCacheRef.current.get(quakeEventKey(quake))
+    if (!cached) return quake
+    return {
+      ...quake,
+      earthquake: { ...quake.earthquake, maxScale: cached.maxScale },
+      points: cached.points,
+    }
+  }, [])
+
+  const findQuakeCardForHoldBack = useCallback((quake: JMAQuake, index: AreaPrefIndex) => {
+    const pending = pendingQuakeCardsRef.current
+    // **写しにその地震が載っているなら、そちらで完結させる**（`?? stateRef` へ落とさない）。
+    // 取消済みとして載っている場合、`findExistingQuakeCard` はそれを候補から外して `undefined`
+    // を返す —— そこで `stateRef` へ落ちると**取消前のカードを拾う**ことになり、この写しを
+    // 置いた理由そのものが消える。
+    if (pending.some(c => sameQuakeEntry(c, quake, index))) {
+      return findExistingQuakeCard(pending, quake, index)
+    }
+    return findExistingQuakeCard(stateRef.current.earthquakes, quake, index)
+  }, [])
+
+  /**
+   * 受理した電文を、同じティックの写し（`pendingQuakeCardsRef`）へ載せる。
+   *
+   * **取消も載せる。** 取消済みのカードは `findExistingQuakeCard` が候補から外すので、以後の
+   * 判定は「既存カードなし」＝据え置かない側へ倒れる。統合側（`setState` の中）も取消済みの
+   * カードを外して**別カードとして立てる**ので、両者の見え方が揃う。
+   *
+   * **統合と同じ述語（`mergeQuakeInto`）を通す。** 生の電文をそのまま載せると、続報で上書き
+   * するときの引き継ぎ（§6.4。震度速報に震源要素は無い等）が反映されず、`hasIntensity` の
+   * 見え方が統合側とずれる。
+   */
+  const trackPendingQuakeCard = useCallback((existing: JMAQuake | undefined, quake: JMAQuake, index: AreaPrefIndex) => {
+    // 取消は「対象のカードを取消済みにする」だけ。**対象の絞り込みは統合側と同じ述語
+    // （`isQuakeCancelTarget`）を通す** —— `sameQuakeEntry` だけで当てると、種別の違う取消報
+    // （遠地地震は VXSE53 を共有する）が無関係なカードを取消済みにして、直後の続報の判定が
+    // 「取消済みだから受け入れる」側へ誤って倒れる。**探し方まで揃える**（下の `canceled`）。
+    //
+    // **`cancelledAt` の値は真偽としてしか読まれない**（`findExistingQuakeCard` も
+    // `quakeHoldBack` も有無だけを見る）。写しは次のレンダーで捨てるので、リプレイ時計に
+    // 乗せる意味も無い —— それでも時計を揃えるのは、値を読む経路が増えたときに壁時計が
+    // 混ざらないようにするため。
+    // **取消の対象は `existing` を流用せず、統合側と同じ探し方で選ぶ。** `existing` は据え置き
+    // 判定のために `findExistingQuakeCard` で引いたもので、`sameQuakeEntry` の一致だけを見て
+    // **発表時刻がいちばん早い 1 枚**を返す（種別は見ない）。`sameQuakeEntry` で一致するカードが
+    // 2 枚並ぶ状態（暫定 ID と確定 ID。→ `coalesceByEventId`）では、**早い方が取消対象でないと
+    // 写しに何も載らない** —— 直後に同じティックで届く電文の判定が、取消済みのカードを
+    // 「まだ生きている既存」として見ることになる。
+    const canceled = quake.cancelled
+      ? findQuakeCancelTarget(pendingQuakeCardsRef.current, quake, index)
+        ?? findQuakeCancelTarget(stateRef.current.earthquakes, quake, index)
+      : undefined
+    const card = quake.cancelled
+      ? (canceled ? { ...canceled, cancelledAt: getTimeRef.current() } : undefined)
+      // 記録は統合側（`setState` の中）が出す。ここで出すと同じ電文について二重に残る。
+      : mergeQuakeInto(existing, quake, { quiet: true })
+    if (!card) return
+    const list = pendingQuakeCardsRef.current
+    const at = list.findIndex(c => sameQuakeEntry(c, card, index))
+    if (at < 0) list.push(card)
+    else list[at] = card
+  }, [])
+
+  /**
+   * その地震情報を**地震カードが採らないか**（据え置くか）。真なら音・読み上げ・ウィンドウ
+   * タイトル・自動タブ切替を起こさない（→ {@link LiveEventMeta.quakeHeldBack}。何を止めるかは
+   * 受け取る側が決める）。
+   *
+   * **判定は `quakeHoldBack` を統合側と共有する**（写しを持たない）。実例: 2024-11-26
+   * 22:47 の大阪府北部（完全版・最大震度1）の 55 秒後に、1 分後に起きた石川県西方沖の揺れが
+   * 紛れ込んだ震度速報（福井県嶺南・滋賀県北部の震度3）が同じ EventID で届く。カードは
+   * 据え置いていたのに、読み上げだけが「新たに最大震度3を…観測しました」と言い、ウィンドウ
+   * タイトルも「最大震度3」へ変わっていた。
+   * → docs/spec/quake-spec.md §6.3「据え置いた電文は、音・読み上げ・タイトル・タブ移動も起こさない」
+   *
+   * **既存カードは同じティックの写しから引く**（`findQuakeCardForHoldBack`）。`stateRef` だけを
+   * 見ると鮮度が足りず、取消を処理した直後に**取消前のカードを既存として拾って**「画面には
+   * 新しいカードが出ているのに声だけ止まる」逆向きの食い違いを作る。
+   */
+  const isQuakeReportHeldBack = useCallback((existing: JMAQuake | undefined, quake: JMAQuake, retracted: boolean): boolean => {
+    // **統合側がその報を採らない門は 2 つある。** 片方だけを見ると、もう片方で捨てられた電文が
+    // 音・読み上げ・タイトル・タブ移動だけを動かす（→ docs/spec/quake-spec.md §6.3
+    //「カードが採らない門は 2 つ」）。
+    //
+    // ① 取消より前に発表された報（§6.2）。**`existing` を見ても分からない** —— 対象カードは
+    //    取消済みなので `findExistingQuakeCard` が候補から外し、`existing` は `undefined` に
+    //    なる。そのまま「据え置かない」へ倒すと、**画面には何も出ないのに声だけが鳴る**。
+    //    判定は統合側と同じ述語をそのまま使う（狭い条件＝種別一致・同じ地震・取消以前を持って
+    //    いる。ここを「取消を見たか」へ広げると、取消を経験した地震で以後ずっと黙る）。
+    //    **判断は受け取るだけ**（`retracted`）—— 入口で 1 回決めて、写しの更新と状態更新にも
+    //    同じ値が渡る（理由は `handleEvent` の `quakeRetracted`）。
+    if (retracted) {
+      log.info('[quake] 取消以前に発表された報なので音・読み上げ・タイトル・タブ移動を起こさない', {
+        incomingId: quake.id, incomingType: quake.issue.type, incomingTime: quake.time,
+      })
+      return true
+    }
+    // ② 据え置き（`quakeHoldBack`）。
+    if (!existing) return false
+    const held = quakeHoldBack(existing, quake)
+    if (!held) return false
+    // **記録するかも述語が決める**（`notable`）。ここで条件を書き下すと統合側の絞り込みを
+    // 書き写すことになり、片方だけ古くなったときにこちらの記録だけが溢れる。
+    if (held.notable) {
+      log.info('[quake] カードが採らない電文なので音・読み上げ・タイトル・タブ移動を起こさない', {
+        reason: held.reason, incomingId: quake.id, incomingType: quake.issue.type,
+        existingType: existing.issue.type,
+        droppedMaxScale: quake.earthquake.maxScale, droppedPoints: quake.points.length,
+      })
+    }
+    return true
+  }, [])
+
   const handleEvent = useCallback((event: AppEvent) => {
     // 古い報は**入口で**捨てる。この下の通知（読み上げ・ウィンドウタイトル）と自動解除の予約は
     // setState の外で走るため、状態更新の直前で弾いても間に合わない。地図・カードだけが新しい報を
@@ -1188,8 +1336,82 @@ export function useEarthquakes(
         if (incomingSerial !== null) acceptedEewSerialRef.current.set(key, incomingSerial)
       }
     }
+    // 地震情報は**入口で**「カードが内容を採るか」を見て、採らない電文では音・読み上げ・
+    // ウィンドウタイトル・自動タブ切替を起こさない。理由は上の EEW と同じ ——「地図・カードだけが
+    // 新しい報を保ち、読み上げとタイトルが別の報で上書きされる」状態を作らないため。
+    //
+    // **`onLiveEvent` を呼ばない形にはしない。** 止めたいのはその 4 つだけで、カードの選択・
+    // 震度分布モードを閉じること・「この報は見た」の記録は、カードが内容を採ったかどうかと
+    // 無関係に要る（分布モードは §9 が「その地震の電文を受けたら閉じる」「種別で絞らない。
+    // 手で開いた分も閉じる」と定めている）。印だけを渡し、何を止めるかは受け取る側が決める。
+    //
+    // **判定が投げても本体を止めない。** ここは `setState` より手前で、しかも呼び出し元
+    // （キューのディスパッチャ・WebSocket の受信）は例外を受け止めない。投げると状態更新まで
+    // 到達せず**その電文が画面からも丸ごと消える**（例外は `globalErrorLog` に残るだけで、画面には
+    // 何も起きない）。従来どおり通知する側へ倒して記録を残す。
+    //
+    // **判定と写しの更新で受け止めを分ける。** 1 つの `try` にまとめると、判定が済んだあとに
+    // 写しの更新だけが投げたときに**確定していた「据え置く」を握り潰す**（記録の文面も嘘になる）。
+    // 逆に写しが更新できなかったことは、同じティックで続く電文の判定が画面の状態（レンダー待ち
+    // で古い）へ落ちることを意味するので、そちらも別の言葉で残す。
+    // **震度の補完は入口で 1 回だけ行い、判定と統合が同じ値を見る。** あの補完は
+    // `hasIntensity(incoming)` を変え、据え置き判定はそこで判定軸を切り替える（実震度を持つなら
+    // 発表時刻・持たないなら種別優先度）。**`setState` の更新関数はレンダー時に走る**ので、
+    // 中で補完し直すと「判定は補完前・統合は補完後」の組み合わせが起きる —— 同じティックで
+    // 震源情報のあとに震度速報が捌かれると、震度速報の書き込みが両者のあいだに挟まる。
+    const filledQuake = event.kind === 'quake' ? fillIntensityFromCache(event) : undefined
+    /**
+     * **その電文を状態がそもそも受理しないか**（取消より前に発表された報。→ §6.2）。
+     *
+     * **入口で 1 回だけ決め、この報を扱う 3 か所すべてが共有する** —— 据え置き判定・同じ
+     * ティックの写しの更新・状態更新。**別々に呼ぶ形にしない**: 同じ判断が 3 か所へ分かれて
+     * いて、**写しの更新だけがこの門を通っていなかった** ―― 取消より前に発表された報が写しの
+     * 取消済みカードを未取消カードで上書きし、そのあとに届いた正規の再発表が汚染された写しを
+     * 既存として見て据え置き扱いになる（画面には新しいカードが出るのに声だけ止まる）。
+     */
+    const quakeRetracted = filledQuake !== undefined
+      && isRetractedQuakeReport(quakeRetractionsRef.current, filledQuake, getAreaPrefIndexCache())
+    let quakeHeldBack = false
+    if (event.kind === 'quake') {
+      const index = getAreaPrefIndexCache()
+      const quake = filledQuake ?? event
+      let existing: JMAQuake | undefined
+      // **既存カードを引けたかどうかを別に持つ。** 引けずに投げたときの `undefined` を
+      // 「既存カードが無い」として下の写しへ渡すと、`mergeQuakeInto(undefined, ...)` が
+      // **新規カード相当のスタブ**を作り、同じ地震について積み上げてきた写しをそれで置き換える
+      // （以後その地震の判定は、震源も震度も欠けた写しを既存として見る）。
+      let resolved = false
+      try {
+        existing = findQuakeCardForHoldBack(quake, index)
+        resolved = true
+        // 取消は内容の更新ではなくカードを消す操作なので、据え置き判定の対象外。
+        if (!isSilentRef.current && !event.cancelled) {
+          quakeHeldBack = isQuakeReportHeldBack(existing, quake, quakeRetracted)
+        }
+      } catch (e) {
+        log.error('[quake] 据え置き判定に失敗したので、従来どおり音・読み上げ・タイトル・タブ移動を起こす', {
+          incomingId: event.id, incomingType: event.issue.type, error: e,
+        })
+        quakeHeldBack = false
+      }
+      // **引けなかった電文は写しへ載せない。** 判定が投げた場合と、写しの更新そのものが投げた
+      // 場合の両方で、**その地震の写しは 1 つ前の電文のまま残る**（`findQuakeCardForHoldBack` は
+      // 写しにその地震が載っていれば画面の状態へ落ちないので、以後の判定もその写しを見る）。
+      // **状態が受理しない報は写しへも載せない**（`quakeRetracted`）。状態更新は同じ判断で
+      // `return prev`（何も触らない）へ倒れるので、写しだけが進むと両者が食い違う。
+      if (resolved && !quakeRetracted) {
+        try {
+          // **写しは取消もサイレント注入も含めて進める。** 次の電文の判定がこれを既存として見る。
+          trackPendingQuakeCard(existing, quake, index)
+        } catch (e) {
+          log.error('[quake] 同じティックの写しを更新できなかった（以後この地震の判定は、直前に書けた写しか画面の状態を見る）', {
+            incomingId: event.id, incomingType: event.issue.type, error: e,
+          })
+        }
+      }
+    }
     // ライブ受信／テスト送信のイベントを通知（サイレントモード中は抑制）
-    if (!isSilentRef.current) onLiveEventRef.current?.(event)
+    if (!isSilentRef.current) onLiveEventRef.current?.(event, { quakeHeldBack })
 
     // 556（EEW）: 最終報受信時、解除時刻にキャンセルイベントをキューへ挿入する。
     // standard版の Yahoo hypoInfo 経由 EEW は useKyoshinRealtime 側の消滅検出（diffHypoInfoEvents）
@@ -1345,20 +1567,10 @@ export function useEarthquakes(
             return { ...prev, earthquakes, lastUpdate: now }
           }
 
-          // キーの決め方と P2PQuake での扱いは上の同名変数（震度キャッシュ更新側）と同じ。
-          const cacheKey = quakeEventKey(quake)
-
-          // VXSE52/53: 震度がない場合に VXSE51 キャッシュから maxScale・points を補完する
-          if (quake.earthquake.maxScale < 0 && quake.points.length === 0) {
-            const cachedIntensity = quakeIntensityCacheRef.current.get(cacheKey)
-            if (cachedIntensity) {
-              quake = {
-                ...quake,
-                earthquake: { ...quake.earthquake, maxScale: cachedIntensity.maxScale },
-                points: cachedIntensity.points,
-              }
-            }
-          }
+          // VXSE52/53 の震度の補完（VXSE51 キャッシュから maxScale・points を補う）は
+          // **入口で済ませてある** —— 判定と同じ値を見るため（理由は `handleEvent` の
+          // `filledQuake` のコメント）。ここで呼び直すと、そのあいだに進んだキャッシュを読む。
+          quake = filledQuake ?? quake
 
           // 同一イベントの既存カードを探し、リアルタイム統合コアで1枚に統合する。
           // 同一性の判定は sameQuakeEntry、VXSE61 の震源マージ・震度保持・優先度判定は
@@ -1367,7 +1579,9 @@ export function useEarthquakes(
           // 扱うかで統合後の eventKey が変わるため、選び方は findExistingQuakeCard に集約する。
           // 取消の後に届いた報のうち、取消より前に発表されたもの（＝取り下げ済みの内容）は
           // 採らない。判定の中身と 2 通りの異常の切り分けは `isRetractedQuakeReport`。
-          if (isRetractedQuakeReport(quakeRetractionsRef.current, quake, getAreaPrefIndexCache())) {
+          // **判断は入口で 1 回だけ**（`quakeRetracted`）。ここで呼び直すと、この更新関数は
+          // レンダー時に走るぶん、判定・写しとは別の時点の台帳を読む。
+          if (quakeRetracted) {
             log.warn('[quake] 取消以前に発表された報を捨てた', {
               id: quake.id, issueType: quake.issue.type, time: quake.time,
             })

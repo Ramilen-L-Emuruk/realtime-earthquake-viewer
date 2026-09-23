@@ -5,6 +5,9 @@ import {
   injectDevApiKey,
   resolveDevApiKey,
   stripDevApiKey,
+  injectDevArrivalToken,
+  resolveDevArrivalToken,
+  stripDevArrivalToken,
   settingsToStore,
   DAY_NIGHT_OPACITY_MIN,
   DAY_NIGHT_OPACITY_MAX,
@@ -342,20 +345,66 @@ describe('settingsToStore', () => {
   const withKey = (key: string) => sanitize({ dmdataApiKey: key })
 
   it('正: 注入値と違うキーはそのまま保存する', () => {
-    expect(settingsToStore(withKey('typed-by-hand'), 'injected', false).dmdataApiKey).toBe('typed-by-hand')
+    expect(settingsToStore(withKey('typed-by-hand'), 'injected', false, undefined).dmdataApiKey).toBe('typed-by-hand')
   })
 
   it('安全弁: 注入値と同じキーは落とす（updateSetting と同じ扱い）', () => {
-    expect(settingsToStore(withKey('injected'), 'injected', false).dmdataApiKey).toBe('')
+    expect(settingsToStore(withKey('injected'), 'injected', false, undefined).dmdataApiKey).toBe('')
   })
 
   it('対照: keepApiKey なら、注入値と同じ文字列でも落とさない', () => {
     // 利用者がファイルへ書いた値がたまたま dev の注入値と一致しただけで消える、を防ぐ分岐。
     // この対照が無いと、keepApiKey を実装から消しても他のテストは通ってしまう。
-    expect(settingsToStore(withKey('injected'), 'injected', true).dmdataApiKey).toBe('injected')
+    expect(settingsToStore(withKey('injected'), 'injected', true, undefined).dmdataApiKey).toBe('injected')
   })
 
   it('安全弁: 注入値が無ければ何も落とさない', () => {
-    expect(settingsToStore(withKey('any'), undefined, false).dmdataApiKey).toBe('any')
+    expect(settingsToStore(withKey('any'), undefined, false, undefined).dmdataApiKey).toBe('any')
+  })
+})
+
+describe('到達予想トークンの dev 注入', () => {
+  it('未設定のときだけ注入する（正）', () => {
+    expect(injectDevArrivalToken(sanitize({ arrivalToken: '' }), 'dev-token').arrivalToken).toBe('dev-token')
+  })
+
+  it('手入力した値は踏み潰さない（対照）', () => {
+    expect(injectDevArrivalToken(sanitize({ arrivalToken: 'typed' }), 'dev-token').arrivalToken).toBe('typed')
+  })
+
+  it('注入値が無ければ同じ参照を返す', () => {
+    const s = sanitize({ arrivalToken: '' })
+    expect(injectDevArrivalToken(s, undefined)).toBe(s)
+  })
+
+  it('注入値は localStorage へ保存しない（安全弁）', () => {
+    // 保存すると以降は手入力と区別できず、`.env.local` を書き換えても反映されない端末が残る。
+    const s = sanitize({ arrivalToken: 'dev-token' })
+    expect(stripDevArrivalToken(s, 'dev-token').arrivalToken).toBe('')
+  })
+
+  it('手入力した値は保存する', () => {
+    const s = sanitize({ arrivalToken: 'typed' })
+    expect(stripDevArrivalToken(s, 'dev-token').arrivalToken).toBe('typed')
+  })
+
+  it('build には注入されない（env.DEV が偽）', () => {
+    expect(resolveDevArrivalToken({ DEV: false, MODE: 'production', ARRIVAL_TOKEN: 'x' })).toBeUndefined()
+  })
+
+  it('テスト実行時は注入されない', () => {
+    expect(resolveDevArrivalToken({ DEV: true, MODE: 'test', ARRIVAL_TOKEN: 'x' })).toBeUndefined()
+  })
+
+  it('dev なら注入値を返す。**バリアントを問わない**（API キーと違う点）', () => {
+    expect(resolveDevArrivalToken({ DEV: true, MODE: 'development', ARRIVAL_TOKEN: 'x' })).toBe('x')
+  })
+
+  it('settingsToStore はトークンを外す（keepApiKey に関わらず）', () => {
+    // `keepApiKey` は「ファイルに明示された API キーを残す」ための指示で、トークンには
+    // 対応する指示が無い。外しても次の読み込みで注入し直される。
+    const s = sanitize({ arrivalToken: 'dev-token', dmdataApiKey: 'k' })
+    expect(settingsToStore(s, 'k', true, 'dev-token').arrivalToken).toBe('')
+    expect(settingsToStore(s, 'k', false, 'dev-token').arrivalToken).toBe('')
   })
 })
