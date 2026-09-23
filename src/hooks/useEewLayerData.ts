@@ -3,7 +3,7 @@ import type { EEWAlert } from '../types/earthquake'
 import type { LatLng } from '../utils/stationCoords'
 import { useSubRegions } from './useSubRegions'
 import { ringsBounds, type SubRegion } from '../utils/subregions'
-import { eewAreas, eewMaxScaleInfo } from '../utils/eew'
+import { NO_EEW_AREA_ARRIVAL, eewAreas, eewMaxScaleInfo, mergeEewAreaArrival, type EewAreaArrival } from '../utils/eew'
 import { isValidIntensityScale } from '../utils/intensity'
 import { isValidLpgmClass } from '../utils/lpgm'
 import { hasKnownEpicenter, normalizeEpicenterLng } from '../utils/geo'
@@ -15,14 +15,6 @@ import { isEewWarningKindCode } from '../utils/eewKind'
 
 const JAPAN_CENTER_LNG = 137.7
 
-/** 予想震度の根拠になった EEW の震源要素（区域へのS波到達推定に使う）。 */
-export interface EewOrigin {
-  lat: number
-  lng: number
-  depth: number
-  originTime: string
-}
-
 export interface EewAreaFill {
   name: string
   scale: number
@@ -33,10 +25,19 @@ export interface EewAreaFill {
   scaleOrAbove: boolean
   isWarning: boolean
   rings: LatLng[][]
-  /** 区域の代表点。この点までの距離からS波到達を推定する。 */
-  label: LatLng
-  /** 予想震度の根拠になった EEW の震源。震源未確定なら null。 */
-  origin: EewOrigin | null
+  /**
+   * その区域について**気象庁が電文で出した**主要動の到達（→ `mergeEewAreaArrival`）。
+   *
+   * **予想震度の最大値を与えた報に縛らない。** 「この区域へいつ届くか」は、どの報が最大震度を
+   * 与えたかとは別の問いなので、区域を名乗る報すべてから畳む。優先順位は
+   * 「いちばん早い未到達の予測 ＞ 到達済み ＞ 出せるものが無い」。
+   *
+   * **震源はこの型に持たない。** 区域への到達を自前の走時計算で解くのは気象庁が許可制と定める
+   * 地震動の予報業務に当たりうるのでやめた（→ `docs/spec/eew-spec.md` §6）。**トークンによる
+   * 切り替えも置かない** —— 区域は気象庁が値を出す単位そのものなので、自前で解き直す理由が無い
+   * （→ `docs/forecast-computation-audit.md` の 2）。震源を渡す形へ戻すと、その判断ごと崩れる。
+   */
+  arrival: EewAreaArrival
 }
 
 export interface EewLpgmRegionAggregate {
@@ -101,36 +102,24 @@ export function useEewLayerData(
     const maxByName = new Map<string, number>()
     // 最大値を与えた区域が「〜以上」表現だったか（同じ階級で片方だけ「以上」なら「以上」を採る）。
     const orAboveByName = new Map<string, boolean>()
-    // 予想震度の最大値を与えた EEW の震源を、区域ごとに覚えておく（S波到達の推定に使う）。
-    const originByName = new Map<string, EewOrigin | null>()
+    // 同じ報が電文で名乗っている到達（こちらが公開版の表示に使う値）。
+    const arrivalByName = new Map<string, EewAreaArrival>()
     const warningNames = new Set<string>()
     for (const eew of eews) {
-      const hc = eew.earthquake.hypocenter
-      // 仮定震源要素（震源未確定）の震源は使わない。M・深さが仮定値のため、これで走時を
-      // 解くと根拠のない到達秒数になる。予報円を出さない・カードで M/深さを隠す・
-      // useKyoshinAlerts が震源に採らないのと同じ扱いを、S波到達の推定にも与える。
-      const origin: EewOrigin | null =
-        hasKnownEpicenter(hc.latitude, hc.longitude) && eew.earthquake.condition !== '仮定震源要素'
-          ? {
-              lat: hc.latitude,
-              lng: normalizeEpicenterLng(hc.longitude, JAPAN_CENTER_LNG),
-              depth: hc.depth,
-              originTime: eew.earthquake.originTime,
-            }
-          : null
       for (const a of eewAreas(eew)) {
+        // **到達は震度の有効性より先に畳む。** 「この区域へいつ届くか」は階級とは別の問いで、
+        // 弾くと**別の報が同じ区域へ有効な階級を与えて塗りが作られたとき、到達の情報だけが
+        // 欠けた塗り**ができる（→ `docs/spec/eew-spec.md` §4「震度スケール外の値でも区域を
+        // 落とさない」と同じ理由）。優先順位は `mergeEewAreaArrival` が持つ。
+        arrivalByName.set(a.name, mergeEewAreaArrival(arrivalByName.get(a.name), a))
         // 震度スケール外の値は塗りに使わない（eewMaxScale と同じ理由。詳細は docs/spec/eew-spec.md §4）。
         if (!isValidIntensityScale(a.scaleTo)) continue
-        const cur = maxByName.get(a.name)
-        if (cur == null || a.scaleTo > cur) {
+        const curMax = maxByName.get(a.name)
+        if (curMax == null || a.scaleTo > curMax) {
           maxByName.set(a.name, a.scaleTo)
           orAboveByName.set(a.name, a.scaleToOrAbove === true)
-          originByName.set(a.name, origin)
-        } else if (a.scaleTo === cur) {
+        } else if (a.scaleTo === curMax) {
           if (a.scaleToOrAbove) orAboveByName.set(a.name, true)
-          // 同じ階級を与える報が複数あるとき、先着が仮定震源要素で origin を持たなければ
-          // 確定震源の側で埋める（到達秒数を出せる根拠があるならそれを使う）。
-          if (origin && !originByName.get(a.name)) originByName.set(a.name, origin)
         }
         if (isEewWarningKindCode(a.kindCode)) warningNames.add(a.name)
       }
@@ -145,8 +134,7 @@ export function useEewLayerData(
           scaleOrAbove: orAboveByName.get(name) === true,
           isWarning: warningNames.has(name),
           rings: sr.rings,
-          label: sr.label,
-          origin: originByName.get(name) ?? null,
+          arrival: arrivalByName.get(name) ?? NO_EEW_AREA_ARRIVAL,
         })
       }
     }

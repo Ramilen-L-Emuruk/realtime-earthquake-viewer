@@ -92,7 +92,9 @@ describe('computeEewCircle', () => {
   })
 
   it('発生直後（数秒以内）は深さぶんの走時に届かず円がまだ無い', () => {
-    // Arrange: depth=24km・VP1=6.0km/s なら P波が地表に届くまで depth/VP1=4秒かかる
+    // Arrange: 深さ 24km の震源から P 波が地表（震央）へ届くまでの走時は JMA2001 走時表で
+    // 約 4.1 秒。発生から 1 秒では届いていないので円は無い（値は表が決めるので、
+    // ここでは「数秒では届かない」ことだけに依存する）。
     const eew = makeEEW({
       earthquake: {
         originTime: '2026-01-01T12:00:00Z',

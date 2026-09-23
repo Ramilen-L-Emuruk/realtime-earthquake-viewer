@@ -59,6 +59,7 @@ import { useTelegramTextSpeechFollow } from './hooks/useTelegramTextSpeechFollow
 import { deriveKyoshinView } from './utils/kyoshinDetectionView'
 import { filterSubThresholdIndices } from './utils/kyoshinSubThresholdFilter'
 import { useSWaveCountdown } from './hooks/useSWaveCountdown'
+import { useArrivalTokenValid } from './hooks/useArrivalToken'
 import { usePsWaveCalc } from './hooks/usePsWaveCalc'
 import { useQuakeHeatmap } from './hooks/useQuakeHeatmap'
 import { useDebouncedValue } from './hooks/useDebouncedValue'
@@ -1826,7 +1827,11 @@ export function App() {
       : null),
     [settings.homeLat, settings.homeLng],
   )
-  const swaveArrival = useSWaveCountdown(psWave, home, hasActiveEEW)
+  // 地点ごとの到達予想を自前の走時計算で出してよいか。**トークンが有効なときだけ true。**
+  // 自前で出すのは気象業務法第 17 条の許可を要する地震動の予報業務に当たりうるため、既定では
+  // 気象庁が区域ごとに出した到達予測時刻を伝えるだけにする（→ `utils/arrivalToken.ts`）。
+  const allowOwnArrivalCalc = useArrivalTokenValid(settings.arrivalToken)
+  const swaveArrival = useSWaveCountdown(psWave, eewsForMap, home, hasActiveEEW, allowOwnArrivalCalc)
 
   // 地震後の行動チェックリスト。EEW・強震モニタ・地震情報の 3 経路で発火する（詳細は
   // useActionChecklist）。観測点座標は他の利用箇所と同じキャッシュを共有するため、ここで
