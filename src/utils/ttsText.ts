@@ -2315,7 +2315,8 @@ export function tsunamiDowngradeToText(
  *
  * **動いた区域だけを挙げ、残っている区域は語らない。** この報で聞き手が知りたいのは自分の
  * 地域が変わったかどうかで、発表中の区域の全体像はカードが示す。全区域を読む発表文
- * （`tsunamiToSegments`）と役割を分けている。
+ * （`tsunamiToSegments`）と役割を分けている。**ここでいう「発表文」は津波の等級を全区域ぶん読む
+ * 文のことで、利用者が耳にする「気象庁の発表文」（→ `telegramTextToSpeak`）とは別物。**
  *
  * **行動指示（「海岸から離れてください」等）も付けない。** 等級の発表と違い、この報は
  * 「どこがどう変わったか」を伝えるためのもの。
@@ -2614,8 +2615,8 @@ export function tsunamiObservationUpdateToSegments(
    */
   const clauseOf = (o: TsunamiObservation, stem: string): string => {
     // **折り込むのは初出の第1波だけ。** 訂正（前に別の内容を声にした地点）はここへ入れない ——
-    // この句の言い回しは「〜に◯◯波が到達し」で、**初出の形**（助詞が「に」）。訂正は
-    // 「〜の◯◯波に更新されました」という別の文型で読む決まりなので（助詞は述語で決まる）、
+    // この句の言い回しは「〜に◯◯波が到達し」で、**初出の形**（動詞が続くので助詞は「に」）。訂正は
+    // 「〜の◯◯波へ更新されました」という別の文型で読む決まりなので（→ {@link tsunamiFirstWaveToSegments}）、
     // 折り込むと訂正であることが聞き分けられない。訂正を拾うのは `firstWaveChanged` の側。
     const fw = spokenFirstWaves?.get(o.name) === undefined ? firstWaveParts(o) : null
     // **最大波の観測時刻は、前に声にしたものと変わったときだけ添える。** 波高だけが上がった
@@ -2638,7 +2639,13 @@ export function tsunamiObservationUpdateToSegments(
       plain(isRaised ? '次の地点で最大波が更新されました。' : '新たに、次の地点で津波を観測しました。'),
       ...observationListSegments(
         items,
-        o => clauseOf(o, isRaised ? 'に更新' : 'を観測'),
+        // **更新の着点は「へ」。** この句には最大波の観測時刻（「16時41分に」）も入るので、
+        // 「に」で受けると「16時41分に3.0メートルに更新されました」と同じ助詞が 2 度続く。
+        // しかも `MaxHeight/DateTime` は**波を観測した時刻**であって更新（発表）の時刻ではないため、
+        // 着点が「に」のままだと「16時41分に更新した」とも読める。着点を「へ」にすれば
+        // 「に」＝いつ観測したか・「へ」＝何に変わったか、と役割で分かれる
+        // （→ {@link tsunamiMaxHeightTimeToSegments} / {@link tsunamiFirstWaveToSegments} と同じ規律）。
+        o => clauseOf(o, isRaised ? 'へ更新' : 'を観測'),
         isRaised ? 'されました。' : 'しました。',
       ),
     ]
@@ -2727,7 +2734,7 @@ export function tsunamiArrivalToSegments(
   const observing = shown.filter(o => !o.condition?.weak)
   /**
    * 織り込める第1波（**初出だけ**）。訂正は専用の文へ回す —— この句の言い回し
-   * 「〜に◯◯波を観測」は初出の形で、訂正は「〜の◯◯波に更新されました」と読む決まり。
+   * 「〜に◯◯波を観測」は初出の形で、訂正は「〜の◯◯波へ更新されました」と読む決まり。
    *
    * **波高の文（`tsunamiObservationUpdateToSegments`）と切り分けを揃えること。** 揃えないと、
    * 欠測から復帰した観測点（到達確認の既読は落ちるが第1波の既読は残る）で、同じ第1波が
@@ -2803,9 +2810,11 @@ export function selectMaxHeightTimeUpdatesToSpeak(
  * 新しい観測時刻だけ。波高を言い直すと、値が上がったのか時刻だけが動いたのかを聞き分け
  * られなくなる —— 群を分けている意味がそこにある。
  *
- * **助詞は「へ」。** 「23時26分**に**更新」だと「23時26分に更新した」とも読め、更新の時刻
- * なのか更新後の観測時刻なのか紛れる（値が「メートル」の群では起きない取り違え）。「へ」なら
- * 変化の行き先だとはっきりする。
+ * **更新の着点は「へ」。** 「23時26分**に**更新」だと「23時26分に更新した」とも読め、更新の時刻
+ * なのか更新後の観測時刻なのか紛れる。「へ」なら変化の行き先だとはっきりする。
+ * **これは観測情報の 3 つの群に共通する規律**で、波高の更新（{@link tsunamiObservationUpdateToSegments}）も
+ * 第1波の訂正（{@link tsunamiFirstWaveToSegments}）も「〜へ更新されました」で閉じる。
+ * 着点でない観測時刻だけが「に」（波高の群）か「の」（第1波の群。時刻が着点の中身なので名詞句へ畳む）を取る。
  *
  * **読む順は渡された並びのまま**（波高更新・到達確認と同じ。呼び出し側がカードの並びで渡す）。
  */
@@ -2835,6 +2844,10 @@ export function tsunamiMaxHeightTimeToSegments(
       ]
       : [
         ...observationDetailSegments(shown, () => ''),
+        // **読点は述語の形で決まる。** ここは「で」のあとに別の主語（「最大波の観測時刻が」）が
+        // 続くので、読点を挟まないと最後の地点名と主語が繋がって聞こえる。到達確認の受け皿
+        // （{@link tsunamiArrivalToSegments}）が「で到達を確認しました」と読点なしなのは、
+        // あちらは「で」の直後が動詞句だから。**形を揃えるために片方を機械的に合わせない。**
         plain('で、最大波の観測時刻が更新されました。'),
       ]),
     ...omittedPointsSentence(obs.length, shown.length, '更新されています'),
@@ -2872,8 +2885,12 @@ export function selectFirstWaveUpdatesToSpeak(
  * 第1波は一度も声にならず、記録も空のままなので以後の本物の訂正まで永久に拾えなくなる。**
  *
  * **助詞は述語で決まる。** 訂正は時刻と押し引きを 1 つの名詞句（「16時32分の押し波」）にして
- * 「に更新」で受けるので「の」。初出は動詞が続くので「16時13分**に**押し波を観測」
+ * 「へ更新」で受けるので「の」。初出は動詞が続くので「16時13分**に**押し波を観測」
  * （{@link tsunamiArrivalToSegments} と同じ形）。
+ *
+ * **時刻を「に」で切り離さないこと。** 「16時32分に押し波へ更新」にすると、訂正されたのが
+ * 到達時刻そのもの（16時10分 → 16時32分）だという事実が文から消えるうえ、「16時32分に更新した」
+ * とも読める。着点を「へ」で受ける規律は 3 群に共通（→ {@link tsunamiMaxHeightTimeToSegments}）。
  *
  * **初出でも「最大波高は観測中です」は付けない。** ここへ来る地点は波高を持っているので、
  * 到達確認の文の末尾をそのまま借りると嘘になる。
@@ -2892,8 +2909,13 @@ export function tsunamiFirstWaveToSegments(
       shown,
       o => {
         const fw = firstWaveParts(o)
+        // **この分岐へは現状到達しない。** 呼び出し元（`useLiveEventHandler` の `firstWaveChanged`）が
+        // `firstWaveSpokenKey` の成立を要求し、あれは到達時刻が日時として読めることを条件にしている。
+        // 姉妹の 2 群（到達確認・最大波の観測時刻）が持つ「1 件も読めなければ見出しを外す」ガードを
+        // ここに置いていないのはそのため —— 発火しないガードを足しても確かめる手段が無い。
+        // **呼び出し元の絞り込みを緩めるなら、このガードも併せて用意すること。**
         if (!fw) return isUpdate ? 'で更新' : 'で到達を確認'
-        return isUpdate ? `で${fw.time}の${fw.initial}に更新` : `で${fw.time}に${fw.initial}を観測`
+        return isUpdate ? `で${fw.time}の${fw.initial}へ更新` : `で${fw.time}に${fw.initial}を観測`
       },
       isUpdate ? 'されました。' : 'しました。',
     ),
@@ -3052,6 +3074,11 @@ export function selectWarningLevelToSpeak(
  * 伝えるのは気象庁が言ったことだけ ―― 警報に相当する津波を観測している、という事実。
  *
  * **読む順は渡された並びのまま**（呼び出し側がカードの並びで渡す。欠測・到達確認と同じ）。
+ *
+ * **省略件数の助詞は既定（「ほか○地点でも」）。** 主文が「〇〇**では**、〜を観測しています」と
+ * 場所を示しているので、続く一文も場所の「で」を保つ。**欠測の群が「も」へ落とすのは
+ * 観測点そのものの状態を述べるから**で（→ {@link omittedPointsSentence}）、その場所で観測が
+ * 起きているこちらには当てはまらない。
  */
 export function tsunamiWarningLevelToSegments(
   obs: TsunamiObservation[],
@@ -3062,7 +3089,7 @@ export function tsunamiWarningLevelToSegments(
   return [
     ...observationDetailSegments(shown, () => ''),
     plain('では、津波警報に相当する津波を観測しています。'),
-    ...omittedPointsSentence(obs.length, shown.length, '津波警報に相当する津波を観測しています', 'も'),
+    ...omittedPointsSentence(obs.length, shown.length, '津波警報に相当する津波を観測しています'),
   ]
 }
 
@@ -3717,7 +3744,13 @@ function joinTelegramTexts(
  * 同じ文が位置によって別物になるので鍵は前後を削り、読み上げには空白ごと使って元の間を保つ。
  */
 export interface TelegramTextUnit {
-  /** 既読の照合に使う形（前後の空白を落とした 1 文）。 */
+  /**
+   * 既読の照合に使う形（主題 ＋ 前後の空白を落とした 1 文）。
+   *
+   * **主題は {@link telegramTextSpokenSubject} が組み、この値へ織り込んである。**
+   * 使う側が自分で繋ぐ形にすると、読み上げる側（`speakTelegramText`）と録画モードの復元
+   * （`rememberTelegramTextAsSpoken`）で書き写しになり、片方を直し忘れれば既読が噛み合わない。
+   */
   readonly key: string
   /** 読み上げに使う形（後ろに続く空白まで含む。すべて繋ぐと元の本文に戻る）。 */
   readonly text: string
@@ -3774,12 +3807,68 @@ export interface TelegramTextSpeech {
    * 800 字超の同じ文が 3 回読まれていた（3 通目は 1 文も新しくない）。
    */
   readonly units: readonly TelegramTextUnit[]
+  /**
+   * 既読の鍵へ織り込んだ主題（→ {@link telegramTextSpokenSubject}）。
+   *
+   * **持たせるのは記録のため。** 鍵は {@link units} が完成形を持っているので、読み書きする側が
+   * これを使って組み直すことはない（組み直す形にすると書き写しになる）。全文が既読で黙ったとき、
+   * どの事象について黙ったのかを記録へ出すのに使う —— 種別と件数だけでは、群発のさなかに
+   * どの地震で黙ったのかを後から特定できない。
+   */
+  readonly subject: string
 }
 
-/** 前置きと本文から {@link TelegramTextSpeech} を組む。本文が空なら読み上げない。 */
-function telegramSpeech(prefix: string, body: string): TelegramTextSpeech | null {
+/**
+ * 既読の鍵へ織り込む主題（「どの事象について書かれた文か」）を組む。
+ *
+ * **`ttsFollow.ts` の `telegramTextSubject` とは別物。** 名前も引数の形も似ているが、
+ * あちらは読み上げているあいだ画面のどこを開くかを指す。取り違えても型検査は通るので、混ぜないこと。
+ *
+ * **数えた範囲と件数は、この注記が挙げる事実も含めて
+ * docs/spec/audio-tts-spec.md §6「気象庁が書いた文は最下位の層で読む」が単一情報源。**
+ *
+ * **文字列だけを鍵にすると、別の地震・別の津波でも同じ文なら二度と読まない。**
+ * 気象庁の付加文は同じ文面が続くことが多く、実電文では自由付加文「この地震の付近で地震が
+ * 連続して発生したため…」が別々の地震に同じ文面で入っていた。その但し書きは電文ごとの注記
+ * なので、地震が変われば改めて意味を持つ。
+ *
+ * **同じ事象の続報では同じ値になること。** 電文の識別子（`id`）を混ぜると報ごとに別の鍵になり、
+ * 「＊印は…」のような定型文を報のたびに読む（それを避けるために既読を入れた経緯がある）。
+ *
+ * **地震情報の `eventId` は、同じ地震でも震源決定の前と後で採り直されることがある**
+ * （実例は `utils/quakeMerge.ts` の `isHypocenterPending`。`JMAQuake.eventId` の型定義も
+ * 「同一性判定には使わない」と断っている）。**それでもここで使えるのは、採り直しの境目にいる
+ * 震源決定前の電文（震度速報）が付加文を 1 つも運ばないから** —— 運ばなければ本文が空になり、
+ * この既読へは何も記録されない。**この前提が崩れたら**（震度速報が付加文を運ぶようになったら）、
+ * 同じ地震の注記が境目で二度読まれる。
+ *
+ * **種別も含める。** 同じ `eventId` を持つ地震情報と長周期地震動観測情報が同じ文を載せたとき、
+ * 種別ごとに前置き（「地震情報について、〜」「長周期地震動観測情報について、〜」）が違うため、
+ * 片方だけ読んだ状態で他方を黙らせると前置きだけ聞いた文が残る。
+ *
+ * **事象の識別子を持たない電文では種別だけになる**（＝従来どおり文字列だけで既読）。
+ * 付加文を運ぶのは DMDATA の XML 経路だけで、そこでは全種別が `EventID` を持つため、
+ * 実運用では起きない。**起きたときは黙って旧来の挙動へ戻る**ので、`speakTelegramText` の
+ * 記録に主題を出して気づけるようにしてある。
+ */
+function telegramTextSpokenSubject(kind: LiveEvent['kind'], eventId: string | undefined): string {
+  return `${kind}:${eventId ?? ''}`
+}
+
+/**
+ * 前置きと本文から {@link TelegramTextSpeech} を組む。本文が空なら読み上げない。
+ *
+ * `subject` は既読の鍵へ織り込む（→ {@link telegramTextSpokenSubject}）。読み上げる文そのものは
+ * 変わらない。
+ */
+function telegramSpeech(prefix: string, body: string, subject: string): TelegramTextSpeech | null {
   if (!body) return null
-  return { text: `${prefix}${body}`, body, prefix, units: splitTelegramTextUnits(body) }
+  // 区切りに改行を使えるのは、本文が `normalizeTelegramTextForSpeech` を通って
+  // 改行を空白へ置き換えた後だから（1 文の中に改行は残らない）。**この関数へ正規化前の文字列を
+  // 渡さないこと** —— 渡すと主題と本文の境目が曖昧になり、既読の鍵が衝突するか分裂する
+  // （どちらも例外もログも出ない）。
+  const units = splitTelegramTextUnits(body).map(u => ({ ...u, key: `${subject}\n${u.key}` }))
+  return { text: `${prefix}${body}`, body, prefix, units, subject }
 }
 
 /**
@@ -3802,6 +3891,19 @@ function telegramSpeech(prefix: string, body: string): TelegramTextSpeech | null
  * **どのブロックを読むかは設定で選べる**（`opts.telegramTextBlocks`。一覧は
  * {@link TELEGRAM_TEXT_BLOCK_KEYS}）。全部切れば本文が空になり、この関数は `null` を返す ——
  * 前置きだけが鳴る形にはならない。
+ *
+ * **前置きで名乗る語は「気象庁の発表文」。設定タブのトグルのラベルと同じ語にする** ——
+ * 音声だけを聞いている利用者が、いま流れているものがどの設定で切れるのかを辿れるようにするため。
+ * 片方だけ変えないこと。
+ *
+ * **「付加文」とは言わない。** 読む中身は種別で違い、南海トラフ地震臨時情報・同関連解説情報・
+ * 北海道・三陸沖後発地震注意情報の 3 種別は見出し文（要約）・本文・次回発表予定だけで、付加文を
+ * 1 件も読まない（津波も `Body/Text` の本文を含む）。しかも南海トラフの 2 種別は本文が 1000 字を
+ * 超えていちばん長く鳴る（臨時情報 1055 字・関連解説情報 1600 字超。後発地震注意情報の字数は
+ * 確かめていない）。「本文」も同じ理由で使えない（地震情報・長周期・地震回数は付加文しか読まない）。
+ *
+ * **コード内の「発表文」とは別物** —— あちらは津波の等級を全区域ぶん読む文（`tsunamiToSegments`）を
+ * 指す内部用語で、この前置きの語は利用者向け。`grep` で両方が引っかかる。
  */
 export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): TelegramTextSpeech | null {
   // **緊急地震速報の固定付加文は読まない。** 秒を争うため、定型文を挟むと肝心の震度・地域が
@@ -3833,7 +3935,7 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
         pick('quakeVarComment', event.varCommentText),
         pick('quakeFreeText', event.freeText),
       ], reads)
-      return telegramSpeech(`地震情報について、気象庁の文をお伝えします。`, body)
+      return telegramSpeech(`地震情報について、気象庁の発表文をお伝えします。`, body, telegramTextSpokenSubject(event.kind, event.eventId))
     }
     case 'tsunami': {
       // 解除・失効・取消とも `cancelled` が立つ（理由は上の EEW 分岐のコメント）。
@@ -3851,7 +3953,7 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
         ...(on('tsunamiVarComment') ? (event.warningComments ?? []).map(c => c.text) : []),
         pick('tsunamiFreeText', event.freeText),
       ], reads)
-      return telegramSpeech(`津波情報について、気象庁の文をお伝えします。`, body)
+      return telegramSpeech(`津波情報について、気象庁の発表文をお伝えします。`, body, telegramTextSpokenSubject(event.kind, event.eventId))
     }
     case 'lpgm': {
       // **他の種別と同じく明示して弾く。** いまは取消のパースが付加文を 1 つも持たないので
@@ -3870,7 +3972,7 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
         pick('lpgmVarComment', event.data.varCommentText),
         pick('lpgmFreeText', event.data.freeFormText),
       ], reads)
-      return telegramSpeech(`長周期地震動観測情報について、気象庁の文をお伝えします。`, body)
+      return telegramSpeech(`長周期地震動観測情報について、気象庁の発表文をお伝えします。`, body, telegramTextSpokenSubject(event.kind, event.data.eventId))
     }
     case 'nankai':
     case 'nankaiCommentary': {
@@ -3884,7 +3986,7 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
         pick(isAdvisory ? 'nankaiNextAdvisory' : 'nankaiCommentaryNextAdvisory', event.data.nextAdvisory),
       ], reads)
       const label = isAdvisory ? '南海トラフ地震臨時情報' : '南海トラフ地震関連解説情報'
-      return telegramSpeech(`${label}について、気象庁の文をお伝えします。`, body)
+      return telegramSpeech(`${label}について、気象庁の発表文をお伝えします。`, body, telegramTextSpokenSubject(event.kind, event.data.eventId))
     }
     case 'kohatsu': {
       if (event.data.cancelled) return null
@@ -3895,12 +3997,12 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
         pick('kohatsuSummary', event.data.summary),
         pick('kohatsuBody', event.data.body),
       ], reads)
-      return telegramSpeech(`北海道・三陸沖後発地震注意情報について、気象庁の文をお伝えします。`, body)
+      return telegramSpeech(`北海道・三陸沖後発地震注意情報について、気象庁の発表文をお伝えします。`, body, telegramTextSpokenSubject(event.kind, event.data.eventId))
     }
     case 'earthquakeCount': {
       if (event.data.cancelled) return null
       const body = joinTelegramTexts([pick('earthquakeCountFreeText', event.data.freeText)], reads)
-      return telegramSpeech(`地震回数に関する情報について、気象庁の文をお伝えします。`, body)
+      return telegramSpeech(`地震回数に関する情報について、気象庁の発表文をお伝えします。`, body, telegramTextSpokenSubject(event.kind, event.data.eventId))
     }
     // 推計震度分布図は二進電文で、気象庁が書いた文を運ばない。
     case 'estimatedIntensity':

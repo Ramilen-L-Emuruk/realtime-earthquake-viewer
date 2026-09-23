@@ -46,6 +46,14 @@ describe('decideTsunamiFit', () => {
       .toBe('coast')
   })
 
+  it('区域・等級が変わったのに海岸線を引けないときは日本全体へ帰る', () => {
+    // 寄り先の候補が他に無い（持ち越しは呼び出し側が捨てている）。'none' で止めるとカメラが
+    // 動かず、区域が入れ替わったことが画面のどこにも現れない。
+    expect(decideTsunamiFit({
+      ...settled, signature: '岩手県:MajorWarning,青森県太平洋沿岸:Warning', hasCoastPositions: false,
+    })).toBe('japan')
+  })
+
   it('アイドル復帰の期限が来たら対象海域へ帰る', () => {
     expect(decideTsunamiFit({ ...settled, isIdleReturnDue: true })).toBe('coast')
   })

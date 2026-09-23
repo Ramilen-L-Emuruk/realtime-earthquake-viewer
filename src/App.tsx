@@ -3,7 +3,7 @@ import type { MapHandle } from './components/Map/mapTypes'
 import { IconNav, TAB_LABELS, type TabId } from './components/IconNav'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import {
-  TAB_PRIORITY, TAB_HOLD_MS, shouldAcceptAutoTab, shouldFollowNow, idleRevertPriority,
+  TAB_PRIORITY, TAB_HOLD_MS, shouldAcceptAutoTab, decideFollowNow, idleRevertPriority,
   shouldRetakeAfterPreSpeech,
   resolveNonRealtimeTabSource, shouldResetTsunamiScroll, shouldDeferRevertWhileSpeaking,
   type TabHold, type TabPriority, type TabHoldSource, type TabFollowMark,
@@ -19,6 +19,7 @@ import { ShareCardButton } from './components/ShareCardButton'
 import { useShareCard } from './hooks/useShareCard'
 import { EarthquakeTab } from './components/EarthquakeTab'
 import { RealtimeTab } from './components/RealtimeTab'
+import { useEewSpeakingCard } from './hooks/useEewSpeakingCard'
 import { TsunamiTab } from './components/TsunamiTab'
 import { SettingsTab } from './components/SettingsTab'
 import { prefetchTestData } from './utils/testDataLoader'
@@ -81,7 +82,7 @@ import { playCountdownBeep, unlockAudio, setSoundVolume, setKeepAliveEnabled } f
 import { loadTtsPhraseBreakDict } from './utils/ttsPhraseBreakDict'
 import { loadTtsStationReadings } from './utils/ttsStationReadings'
 import { loadTtsEpicenterAccents } from './utils/ttsEpicenterAccents'
-import { warmFixedPhrases, isValidVoicevoxUrl, VOICEVOX_URL_DEBOUNCE_MS, isSpeaking, onSpeechIdle, setSpeechSynthBudgetRelaxed } from './utils/voicevox'
+import { warmFixedPhrases, isValidVoicevoxUrl, VOICEVOX_URL_DEBOUNCE_MS, isSpeaking, msSinceAudible, onSpeechIdle, setSpeechSynthBudgetRelaxed } from './utils/voicevox'
 import { EEW_LEAD_PHRASES } from './utils/ttsText'
 import type { EEWAlert, JMAQuake, JMATsunami } from './types/earthquake'
 import { useReplayController, WINDOW_MS as REPLAY_WINDOW_MS, PRE_WINDOW_MS as REPLAY_PRE_WINDOW_MS } from './hooks/useReplayController'
@@ -367,8 +368,17 @@ export function App() {
   ): boolean => {
     const hold = tabHoldRef.current
     const now = Date.now()
-    if (follow && !shouldFollowNow(lastFollowRef.current, priority, now)) {
-      log.debug(`[tab] → ${tab} 追従を間引き (直前の追従から${now - (lastFollowRef.current?.at ?? 0)}ms・駆動${source})`)
+    // **床を免除するかは「床と同じ長さの窓に音があったか」で決める**（理由は `shouldFollowNow`）。
+    // **`follow` の内側で読むこと** —— 受信時要求・先出しはこの値を使わない。
+    const sinceAudible = follow ? msSinceAudible() : null
+    const followDecision = follow
+      ? decideFollowNow(lastFollowRef.current, priority, now, sinceAudible)
+      : 'pass'
+    if (followDecision === 'throttle') {
+      // **「無音」と言い切らない。** 床が効いたのは「窓の中に音が無い」ことで、その前に鳴って
+      // いた可能性はある。実際の経過を出す。
+      const audibleNote = sinceAudible === null ? '音の記録なし' : `最後の音から${Math.round(sinceAudible)}ms`
+      log.debug(`[tab] → ${tab} 追従を間引き (直前の追従から${now - (lastFollowRef.current?.at ?? 0)}ms・${audibleNote}・駆動${source})`)
       setPanelCollapsed(false)
       return false
     }
@@ -400,7 +410,10 @@ export function App() {
     const heldNote = hold.until - now > 0
       ? `・保持中${hold.priority}/${hold.source}を突破`
       : '・保持切れ'
-    log.debug(`[tab] → ${tab} 移動 (優先度${priority}・駆動${source}${followNote}${heldNote})`)
+    // **床を音で免除して通ったことも残す。** 「床に掛からなかった」のと意味が違い、この印が
+    // 無いと免除が将来効かなくなったときにログから切り分けられない（判定は `decideFollowNow`）。
+    const floorNote = followDecision === 'audible' ? '・床を音で免除' : ''
+    log.debug(`[tab] → ${tab} 移動 (優先度${priority}・駆動${source}${followNote}${floorNote}${heldNote})`)
     // 特別情報のためにパネルを開いていた場合、**ここでは畳まないが追跡も捨てない。**
     // 畳まないのは、タブ移動が「その内容を見せる」ための展開であり、打ち消すと移動の意味が
     // 無くなるため。追跡を捨てないのは、捨てると畳んだ状態へ戻す機会が二度と来ないため
@@ -695,13 +708,18 @@ export function App() {
   const [borrowedHypocenterFollowSession, setBorrowedHypocenterFollowSession] = useState<SpeechFollowSession | null>(null)
   const borrowedHypocenterFollow = useMemo(() => createSpeechFollowController(setBorrowedHypocenterFollowSession), [])
 
+  // 「いま声が語っている緊急地震速報」の印。**上の 4 本とは別の仕組み** —— あちらは読み上げ文の
+  // 断片が持つ参照から範囲を判定するもので、緊急地震速報の読み上げは断片列を通らない
+  // （理由は `useEewSpeakingCard`）。
+  const { speakingKey: speakingEewKey, follow: eewSpeakingCard } = useEewSpeakingCard()
+
   // ライブイベント受信処理（通知音・タイトル・タブ切替・読み上げ・ブラウザ通知）
   const { handleLiveEvent, resetTracking, restorePreWindowTracking, obsUpdateStatus, areaGradeChangedKeys, focusedDistrict } = useLiveEventHandler({
     settings, title, earthquakesRef, tsunamisRef, kyoshinDetectedRef, defaultTabRef,
     setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate, setActiveTabRealtimeUrgent,
     setActiveTabRealtimeForKyoshin: () => requestTabForKyoshin('realtime'),
     followSpeechTab, preSpeechTab, speechFollow, unreceivedFollow, telegramTextFollow,
-    borrowedHypocenterFollow,
+    borrowedHypocenterFollow, eewSpeakingCard,
     expandPanelForSpecialInfo,
     revertToDefaultTab, selectQuake, openLpgmFromQuake, openEstimatedIntensity,
     closeDistributionOnQuakeReport,
@@ -2195,6 +2213,7 @@ export function App() {
                 kyoshinDetectedPoints={kyoshinDetectedPoints}
                 swaveArrival={swaveArrival}
                 visible={activeTab === 'realtime' && !panelCollapsed}
+                speakingEewKey={speakingEewKey}
                 activeLpgmEventId={activeLpgmEventId}
                 onToggleLpgm={toggleLpgmFromEew}
                 onDeactivateLpgm={deactivateLpgm}

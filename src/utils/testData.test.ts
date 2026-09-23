@@ -89,15 +89,22 @@ describe('テスト津波の観測点名', () => {
   })
 
   it('観測点の名前がすべて実在する（座標を持たせていない既知の例外を除く）', () => {
-    // 絞り込みは実装のゲート条件に合わせる。`useTsunamiLayerData` の observationBars は
-    // 「`height` があり、名前から座標が引ける」観測点にだけ棒を作り、予報区への紐づけ
-    // （`districtCode`）は見ない。ここで `districtCode` の有無で絞ると、予報区に紐づかない
-    // 観測点の名前の誤りを取りこぼす。
-    // **欠測の観測点も同じ表を引く**（`missingMarkers`）ので対象に含める。含めないと、
-    // 欠測のテストデータだけ名前を間違えても気づけない。
+    // **観測点は 1 件も除外しない。** 座標表を引くのは全観測点で、`useTsunamiLayerData` の
+    // `missingCoordNames` も `observations` 全件を対象に「地図に出せなかった」と記録する。
+    // 描画の 3 つの一覧は**重複ありで全件を覆う**——観測棒（`height` あり）・到達確認
+    // （`height` なしで欠測でない。波高がまだ出ていない「観測中」もここ）・欠測
+    // （`isObservationMissing`）。棒と欠測は排他ではなく、これまでの最大波を観測した後に
+    // 観測が途切れた観測点は両方に出る。予報区への紐づけ（`districtCode`）はどの一覧も
+    // 見ないので、それで絞ると予報区に紐づかない観測点の誤りを取りこぼす。
+    //
+    // **一覧ごとの条件を写して書き分けないこと。** かつて観測棒と欠測だけを対象にしていた
+    // ため、到達確認マーカーしか出ない「観測中」の観測点がすり抜け、実在しない名前
+    // （`沖合80km`）が座標表を引けず地図から黙って消えていた。一覧が 4 つ目に増えれば
+    // 同じことが起きる。
+    //
     // 観測点はバリアントに依存しない（差は eventId・validDateTime のみ）ので DMDSS 版で見る。
     const targets = (createTestTsunami(true).observations ?? []).filter(
-      (o) => (o.height || isObservationMissing(o)) && !KNOWN_COORDLESS_OBSERVATIONS.has(o.name),
+      (o) => !KNOWN_COORDLESS_OBSERVATIONS.has(o.name),
     )
     const names = targets.map((o) => o.name)
     expect(names.length).toBeGreaterThan(0)

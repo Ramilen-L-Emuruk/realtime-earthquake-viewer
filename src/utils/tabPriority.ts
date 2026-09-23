@@ -261,6 +261,17 @@ export function shouldRetakeAfterPreSpeech(hold: TabHold, now: number): boolean 
  * VOICEVOX が起動していない端末では、合成が 1 チャンクも通らないまま発話がほぼ即座に終わる。
  * すると読み上げの行列が一瞬で捌け、**声は一切出ないのにタブだけが激しく入れ替わる**。
  * 床を置いて間引く。
+ *
+ * **掛けるのは声が出ていないときだけ**（`shouldFollowNow` の `msSinceAudible`）。経過時間だけで
+ * 間引くと、**正常に鳴っている短い発話の直後**まで巻き込む —— 実測では EEW 第 2 フェーズの
+ * 「予想最大震度4。」が 1364ms で鳴り終わり、その直後に順番が来た震度速報の追従が
+ * 136ms 足りずに弾かれて、声だけ鳴って画面が realtime に留まっていた
+ * （2024/1/1 18:06:33 のリプレイ）。EEW の予想値の文は軒並み 1〜1.5 秒なので、
+ * 「EEW の予想値 → 地震情報・津波」という並びでは構造的に起こる。
+ *
+ * **この値は免除の窓も兼ねる。** 床と同じ長さで「最後に音が出てから」を測るので、
+ * 床が効くのは「画面は動いたのに声が 1 度も出ていない 1.5 秒」に限られる —— まさに
+ * 床が止めたい形と一致する。**別の尺度を持ち込まないこと**（理由は `shouldFollowNow`）。
  */
 export const TAB_FOLLOW_MIN_DWELL_MS = 1500
 
@@ -279,15 +290,71 @@ export interface TabFollowMark {
  * **床を読む要求と、床（`TabFollowMark`）を進める要求は同じ集合に保つこと。** 進める側だけを
  * 広く取ると、床を読まない要求（通知音と同時の先出し・EEW の受信時要求）が床を押し上げ、
  * 後から実際に声が出る側の追従を弾く。呼び出し側の条件は `App.tsx` の `requestAutoTab` にある。
+ *
+ * @param msSinceAudible **最後に音が出てからの経過**（ms。鳴っている最中は 0、このセッションで
+ *   一度も鳴っていなければ `null`）。実体は `utils/voicevox.ts` の `msSinceAudible`。
+ *   **床と同じ長さの窓の中に音があれば免除する。**
+ *
+ *   床が防ぎたいのは「声は一切出ないのにタブだけが激しく入れ替わる」ことなので、**判定の
+ *   対象は経過時間そのものではなく「そのあいだ声が出たか」**。同じ長さで測るので、床が効くのは
+ *   **画面は動いたのに声が 1 度も出ていない 1.5 秒**に限られる —— 止めたい形とちょうど一致する。
+ *
+ *   **真偽へ畳んだ値を借りないこと。** `isAudioPlaying()` は「鳴っている読み上げを切らない」
+ *   用途に合わせた 1 秒の猶予で畳んだもので、**猶予 1000ms と床 1500ms の差が隙間になる**。
+ *   その帯（前の発話が終わってから次の追従まで 1.0〜1.5 秒）は、合成待ち・待ち行列の解決・
+ *   先出しから取り返す経路（`shouldRetakeAfterPreSpeech`）で普通に生じる。一度この形で書いて
+ *   レビューに 2 方向から指摘された。**用途ごとに尺度を揃える。**
+ *
+ *   **声と一緒に画面が細かく動くのは正常。** 床は画面の落ち着きを目的にしたものではない
+ *   （目的がそれなら、声が切り替わっているのに画面だけ留める形になり、この仕組みが
+ *   直したかった「声と画面の食い違い」そのものになる）。
+ *
+ *   **既知の限界**: 音源は読み上げ全体で 1 つなので、設定タブの試聴（`speakSequentially`）が
+ *   鳴っている間も免除される。倒れる向きは「声が出ている側へ画面を合わせる」なので害は小さい。
+ *
+ *   **既定値は置かない**（`shouldAcceptAutoTab` の `source` と同じ理由）。渡し忘れると
+ *   床が常に効く（＝直す前の症状）か常に死ぬかのどちらかで、例外もログも出ない。
+ *
+ * > **本番はこれを呼ばない。** 移動の記録に「床を音で免除した」印を出すため、`App.tsx` は
+ * > 理由まで返す {@link decideFollowNow} を直接呼ぶ。こちらは真偽だけを確かめたいテストの
+ * > ための薄い包み。
  */
 export function shouldFollowNow(
   last: TabFollowMark | null,
   priority: TabPriority,
   now: number,
+  msSinceAudible: number | null,
 ): boolean {
-  if (last === null) return true
-  if (priority > last.priority) return true
-  return now - last.at >= TAB_FOLLOW_MIN_DWELL_MS
+  return decideFollowNow(last, priority, now, msSinceAudible) !== 'throttle'
+}
+
+/**
+ * {@link shouldFollowNow} の判定と、**通した理由**。
+ *
+ * - `pass`: 床の判定そのものに掛からなかった（初回・直前より重い・床を過ぎている）
+ * - `audible`: 床の内側だが、同じ窓に音があったので通した
+ * - `throttle`: 床で間引いた
+ *
+ * **理由を返すのは記録のため。** 「床を音で免除して通った」のと「そもそも床に掛からなかった」のは
+ * 記録の上では見分けが付かず、この仕組みが将来壊れたときに**ログだけでは切り分けられない**
+ * （実際、実機で確かめる際にこれが無くて床を一時的に広げる必要があった）。
+ *
+ * **判定を 2 つ持たないこと。** 印のためにもう 1 つ述語を書くと、両者が静かに食い違う。
+ * {@link shouldFollowNow} はこれを真偽へ畳むだけにしてある。
+ */
+export type FollowDecision = 'pass' | 'audible' | 'throttle'
+
+export function decideFollowNow(
+  last: TabFollowMark | null,
+  priority: TabPriority,
+  now: number,
+  msSinceAudible: number | null,
+): FollowDecision {
+  if (last === null) return 'pass'
+  if (priority > last.priority) return 'pass'
+  if (now - last.at >= TAB_FOLLOW_MIN_DWELL_MS) return 'pass'
+  if (msSinceAudible !== null && msSinceAudible < TAB_FOLLOW_MIN_DWELL_MS) return 'audible'
+  return 'throttle'
 }
 
 /**
