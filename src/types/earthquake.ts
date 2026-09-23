@@ -264,9 +264,15 @@ export interface JMAQuake {
    *
    * **同一性判定には使わない。** 統合・選択・通知は `eventKey`、または `id` 文字列から抜く
    * `extractQuakeEventId`（`utils/quakeMerge.ts`）で行う。このフィールドを直接読むのは
-   * `TsunamiTab` の原因地震リンクと `testScenarioReplay` の ID 再採番の 2 箇所だけ。
+   * `TsunamiTab` の原因地震リンク・`testScenarioReplay` の ID 再採番・**気象庁が書いた文の
+   * 既読の主題**（`telegramTextSpokenSubject`）の 3 箇所だけ。
    *
-   * **全経路・全種別（取消電文を含む）で埋めること。** 欠けると上の 2 箇所がその報だけ
+   * **3 つ目だけは「同じ地震なら同じ値」を必要とする。** 同じ地震でも震源決定の前と後で
+   * 採り直されることがあるが（`isHypocenterPending` の実例）、採り直しの境目にいる
+   * 震源決定前の電文（震度速報）は付加文を運ばないため、既読には影響しない
+   * （前提と数えた範囲は `telegramTextSpokenSubject` の注記とその参照先）。
+   *
+   * **全経路・全種別（取消電文を含む）で埋めること。** 欠けると上の 3 箇所がその報だけ
    * 取りこぼす（XML 経路と取消電文で落ちていたのを 2026-09-04 に揃えた）。
    */
   eventId?: string
