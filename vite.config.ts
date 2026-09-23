@@ -4,7 +4,7 @@ import { VitePWA } from 'vite-plugin-pwa'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { perfReportPlugin } from './scripts/perf/vite-plugin-perf-report'
-import { shouldInjectDevApiKey } from './scripts/dev-api-key-gate'
+import { shouldInjectDevApiKey, shouldInjectDevArrivalToken } from './scripts/dev-api-key-gate'
 import { isInsideClaudeDir } from './scripts/dev-watch-ignore'
 
 const variant = process.env.VITE_VARIANT ?? 'standard'
@@ -72,6 +72,18 @@ function devApiKeyDefine(configEnv: ConfigEnv): Record<string, string> {
   return key ? { 'import.meta.env.DMDATA_API_KEY': JSON.stringify(key) } : {}
 }
 
+/**
+ * dev サーバーへ到達予想トークンを流し込む（→ `shouldInjectDevArrivalToken`）。
+ *
+ * **`ARRIVAL_` プレフィクスでしか読まない。** 署名用の秘密鍵は `TOKEN_SIGNING_PRIVATE_KEY` という
+ * 別の頭文字にしてあり、ここには入ってこない（同じ頭文字にすると秘密鍵までバンドルへ載る）。
+ */
+function devArrivalTokenDefine(configEnv: ConfigEnv): Record<string, string> {
+  if (!shouldInjectDevArrivalToken(configEnv, process.argv)) return {}
+  const token = loadEnv(configEnv.mode, process.cwd(), 'ARRIVAL_').ARRIVAL_TOKEN
+  return token ? { 'import.meta.env.ARRIVAL_TOKEN': JSON.stringify(token) } : {}
+}
+
 export default defineConfig(configEnv => ({
   base,
   server: {
@@ -82,6 +94,25 @@ export default defineConfig(configEnv => ({
   },
   build: {
     outDir: isDmdss ? 'dist-dmdss' : 'dist',
+    rollupOptions: {
+      output: {
+        // **JMA2001 走時表だけを専用チャンクへ出す。**
+        //
+        // 表は base64 で 130KB あり、main チャンクへ足すと precache 上限（下記 workbox の
+        // `maximumFileSizeToCacheInBytes` = 2 MiB）を超えてビルドが落ちる（追加前で 1.87 MiB）。
+        //
+        // **静的 import のまま分ける。** 動的 import にすると「まだ読み込めていない」状態が
+        // 生まれ、電文を受け取った瞬間に同期で走時を引く設計が成り立たなくなる。静的な
+        // import なら ES モジュールの決まりでエントリの実行前に読み込まれるので、アプリから
+        // 見れば同期のまま（→ `src/utils/travelTime.ts` の冒頭）。
+        //
+        // 返り値が `undefined` のものは vite の既定の分け方に任せる。
+        manualChunks(id: string) {
+          if (id.replace(/\\/g, '/').includes('/src/data/jma2001TravelTime')) return 'travel-time'
+          return undefined
+        },
+      },
+    },
   },
   // maplibre-gl を依存最適化(pre-bundle)の対象外にする。pre-bundle されると GeoJSON タイル化を
   // 担う web worker のロードが壊れ、line/circle が描画されない（背景 raster は worker 不要なので
@@ -91,6 +122,7 @@ export default defineConfig(configEnv => ({
     'import.meta.env.VITE_VARIANT': JSON.stringify(variant),
     __APP_VERSION__: JSON.stringify(pkg.version),
     ...devApiKeyDefine(configEnv),
+    ...devArrivalTokenDefine(configEnv),
   },
   plugins: [
     react(),

@@ -17,7 +17,7 @@
 // 差し替えるのは外部 I/O（WebSocket・REST・観測点座標）だけ。時計や純粋関数は本物を使う。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, cleanup, act } from '@testing-library/react'
-import type { AppEvent, LiveEvent, EEWAlert, JMAQuake, JMATsunami, JMANankaiCommentary, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity } from '../types/earthquake'
+import type { AppEvent, LiveEvent, LiveEventMeta, EEWAlert, JMAQuake, JMATsunami, JMANankaiCommentary, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity, IntensityScale } from '../types/earthquake'
 import type { ReplayEntry, ReplayPayload } from '../types/replay'
 import type { JMAKohatsu } from '../types/earthquake'
 import { serverDate, setReplayOffset } from '../utils/clock'
@@ -3339,5 +3339,350 @@ describe('近く発火する電文を覗く', () => {
       ])
     })
     expect(h.current.peekUpcomingPayloads(Number.NaN)).toEqual([])
+  })
+})
+
+// 2024-11-26 22:47 の大阪府北部（M2.5・最大震度1）の完全版の 55 秒後、1 分後に起きた石川県
+// 西方沖（M6.6）の揺れが紛れ込んだ震度速報（福井県嶺南・滋賀県北部の震度3）が、**同じ
+// EventID で**届いた。カードは据え置いていたのに、音・読み上げ・ウィンドウタイトルを起こす側は
+// その判定を見ておらず、声だけが「新たに最大震度3を…観測しました」と言い、タイトルも
+// 「最大震度3」へ変わっていた。気象庁自身は完全版で最大震度1 と確定させている
+// （→ docs/spec/quake-spec.md §6.3）。
+//
+// **画面を見ても気づけない**（カードのほうは正しく据え置かれている）ので、ここで固定する。
+// 止めるのは音・読み上げ・タイトルだけで `onLiveEvent` 自体は呼ぶため、見るのは呼び出しの
+// 有無ではなく**印**（`LiveEventMeta.quakeHeldBack`）。
+describe('カードが採らない電文には「据え置き」の印を付けて渡す', () => {
+  const 地震の時刻 = '2024-11-26T22:45:00+09:00'
+
+  const 完全版 = (連番: number, time: string, scale: IntensityScale = 10): JMAQuake => ({
+    kind: 'quake',
+    id: `dmdata-quake-20241126224512-${連番}`,
+    time,
+    issue: { source: '気象庁', time, type: '震源・震度情報', correct: 'なし' },
+    earthquake: {
+      time: 地震の時刻,
+      hypocenter: { name: '大阪府北部', latitude: 34.8, longitude: 135.6, depth: 10, magnitude: 2.5 },
+      maxScale: scale,
+      domesticTsunami: 'なし',
+    },
+    points: [
+      { pref: '大阪府', addr: '大阪府', isArea: true, scale },
+      { pref: '', addr: '大阪府北部', isArea: true, scale },
+      { pref: '大阪府', addr: '枚方市大垣内', isArea: false, scale },
+    ],
+  })
+
+  // 実電文どおり震源を持たない（震度速報に `Earthquake` 要素は出現しない）。
+  const 震度速報 = (連番: number, time: string): JMAQuake => ({
+    kind: 'quake',
+    id: `dmdata-quake-20241126224512-${連番}`,
+    time,
+    issue: { source: '気象庁', time, type: '震度速報', correct: 'なし' },
+    earthquake: {
+      time: 地震の時刻,
+      hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: NaN },
+      maxScale: 30,
+      domesticTsunami: '調査中',
+    },
+    points: [
+      { pref: '福井県', addr: '福井県', isArea: true, scale: 30 },
+      { pref: '', addr: '福井県嶺南', isArea: true, scale: 30 },
+      { pref: '滋賀県', addr: '滋賀県', isArea: true, scale: 30 },
+      { pref: '', addr: '滋賀県北部', isArea: true, scale: 30 },
+    ],
+  })
+
+  /** 震度を持たない電文（震源情報）。種別優先度では完全版に負ける。 */
+  const 震源情報 = (連番: number, time: string): JMAQuake => ({
+    ...完全版(連番, time),
+    issue: { source: '気象庁', time, type: '震源情報', correct: 'なし' },
+    earthquake: { ...完全版(連番, time).earthquake, maxScale: -1 },
+    points: [],
+  })
+
+  /** 顕著な地震の震源要素更新（VXSE61）。震度は持たず、震源だけを訂正する。 */
+  const 震源要素更新 = (連番: number, time: string, magnitude: number): JMAQuake => ({
+    ...完全版(連番, time),
+    issue: { source: '気象庁', time, type: '顕著な地震の震源要素更新のお知らせ', correct: 'なし' },
+    earthquake: {
+      time: 地震の時刻,
+      hypocenter: { name: '大阪府北部', latitude: 34.8, longitude: 135.6, depth: 12, magnitude },
+      maxScale: -1,
+      domesticTsunami: 'なし',
+    },
+    points: [],
+    freeText: '震源要素を訂正します。',
+  })
+
+  const 取消 = (連番: number, time: string): JMAQuake => ({
+    ...完全版(連番, time),
+    cancelled: true,
+    issue: { source: '気象庁', time, type: '震源・震度情報', correct: 'なし' },
+    earthquake: {
+      time: '',
+      hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: 0 },
+      maxScale: -1,
+      domesticTsunami: '不明',
+    },
+    points: [],
+  })
+
+  /** 通知された地震情報の「最大震度と据え置きの印」。 */
+  const 通知 = (fn: ReturnType<typeof vi.fn>): [number, boolean][] =>
+    fn.mock.calls
+      .filter(([e]) => (e as LiveEvent).kind === 'quake')
+      .map(([e, meta]) => [
+        (e as JMAQuake).earthquake.maxScale,
+        (meta as LiveEventMeta | undefined)?.quakeHeldBack === true,
+      ])
+
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => {
+    vi.useRealTimers()
+    setReplayOffset(null)
+  })
+
+  it('完全版の後に届いた震度速報には印が立つ（正）', async () => {
+    const onLiveEvent = vi.fn()
+    const h = setup({ onLiveEvent })
+    await h.flush()
+
+    act(() => { h.current.injectEvent(完全版(1, '2024-11-26T22:47:00+09:00')) })
+    act(() => { h.current.injectEvent(震度速報(1, '2024-11-26T22:48:00+09:00')) })
+
+    // 震度速報も `onLiveEvent` へは渡る（カードの選択・分布モードを閉じる・既読の記録は要る）が、
+    // 印が立つので音・読み上げ・タイトルは起きない
+    expect(通知(onLiveEvent)).toEqual([[10, false], [30, true]])
+    // 表示も従来どおり据え置かれている（この 2 つが揃って初めて食い違いが消える）
+    expect(h.current.earthquakes[0]?.earthquake.maxScale).toBe(10)
+    expect(h.current.earthquakes[0]?.earthquake.hypocenter.name).toBe('大阪府北部')
+  })
+
+  it('完全版より前の震度速報には立たない（対照）', async () => {
+    const onLiveEvent = vi.fn()
+    const h = setup({ onLiveEvent })
+    await h.flush()
+
+    act(() => { h.current.injectEvent(震度速報(1, '2024-11-26T22:46:00+09:00')) })
+    act(() => { h.current.injectEvent(完全版(1, '2024-11-26T22:47:00+09:00')) })
+
+    expect(通知(onLiveEvent)).toEqual([[30, false], [10, false]])
+  })
+
+  // 安全弁: 印が立つ範囲が「据え置かれた電文」より広がっていないこと。同じ地震の続報でも、
+  // カードが内容を採るものは従来どおり音・読み上げ・タイトル・タブ移動を起こす。
+  it('カードが内容を採る続報には立たない（安全弁）', async () => {
+    const onLiveEvent = vi.fn()
+    const h = setup({ onLiveEvent })
+    await h.flush()
+
+    act(() => { h.current.injectEvent(完全版(1, '2024-11-26T22:47:00+09:00')) })
+    act(() => {
+      h.current.injectEvent({
+        ...完全版(2, '2024-11-26T22:51:00+09:00', 20),
+        issue: { source: '気象庁', time: '2024-11-26T22:51:00+09:00', type: '各地の震度情報', correct: 'なし' },
+      })
+    })
+
+    expect(通知(onLiveEvent)).toEqual([[10, false], [20, false]])
+    expect(h.current.earthquakes[0]?.earthquake.maxScale).toBe(20)
+  })
+
+  // 安全弁: 印を立てる側へ倒しすぎないこと。**判定に使う `stateRef` はレンダー時にしか
+  // 進まない**ので、同じティックで取消を処理した直後は取消済みのカードが `cancelledAt` を
+  // 持たないまま見える。統合側は取消済みカードを候補から外して**別カードとして立てる**ため、
+  // ここで印を立てると「画面には新しいカードが出ているのに声だけ止まる」逆向きの食い違いに
+  // なる。取消を見た事実は入口で同期に台帳へ積まれるので、そちらと照合して避ける。
+  it('取消を見た地震では立てない（同じティックで取消を処理した直後）', async () => {
+    const onLiveEvent = vi.fn()
+    const h = setup({ onLiveEvent })
+    await h.flush()
+
+    act(() => { h.current.injectEvent(完全版(1, '2024-11-26T22:47:00+09:00')) })
+    // 取消と、そのあとに発表された報を**同じ `act` で**流す（＝あいだにレンダーを挟まない）。
+    // 震源情報は震度を持たないので、取消を見ていなければ種別優先度で据え置き扱いになる。
+    act(() => {
+      h.current.injectEvent(取消(2, '2024-11-26T22:50:00+09:00'))
+      h.current.injectEvent(震源情報(3, '2024-11-26T22:52:00+09:00'))
+    })
+
+    expect(通知(onLiveEvent).map(([, 印]) => 印)).toEqual([false, false, false])
+  })
+
+  // 正: 上の見送りは**取消対象のカードを掴んでいるあいだだけ**でなければならない。「取消を見た
+  // 地震か」だけで見送ると、`sameQuakeEntry` が照合するのは地震そのものの同一性（`eventId`・
+  // 地震の時刻）で**その地震が生きているあいだ不変**なので、一度取消を経験した地震では以後
+  // すべての報で判定がバイパスされ、**この仕組みが塞いだはずの食い違いがそのまま戻る**。
+  // 取消のあとに再発表があれば、そこから先は通常どおり判定する。
+  it('取消のあと再発表された地震では、また印が立つ', async () => {
+    const onLiveEvent = vi.fn()
+    const h = setup({ onLiveEvent })
+    await h.flush()
+
+    act(() => { h.current.injectEvent(完全版(1, '2024-11-26T22:47:00+09:00')) })
+    act(() => { h.current.injectEvent(取消(2, '2024-11-26T22:50:00+09:00')) })
+    // 再発表（取消より後に発表された報なので、統合側は別カードとして立てる＝§6.2）
+    act(() => { h.current.injectEvent(完全版(3, '2024-11-26T22:51:00+09:00')) })
+    // その新しいカードに対して、紛れ込んだ震度速報が届く
+    act(() => { h.current.injectEvent(震度速報(4, '2024-11-26T22:52:00+09:00')) })
+
+    expect(通知(onLiveEvent).map(([, 印]) => 印)).toEqual([false, false, false, true])
+    // 表示も据え置かれている（再発表の完全版のまま）
+    expect(h.current.earthquakes[0]?.earthquake.maxScale).toBe(10)
+  })
+
+  // 正: **同じティックで捌かれた直前の報も既存として見える。** 判定に使う既存カードを
+  // `stateRef`（レンダー時にしか進まない）だけから引くと、キューが 1 ティックでまとめて
+  // 捌いたときに直前の報を見られず、据え置きに気づけない。同じティックの写しを持つのは
+  // このため（→ `pendingQuakeCardsRef`）。
+  it('同じティックで完全版と震度速報が続いても印が立つ', async () => {
+    const onLiveEvent = vi.fn()
+    const h = setup({ onLiveEvent })
+    await h.flush()
+
+    // 2 件を**同じ act で**流す（＝あいだにレンダーを挟まないので `stateRef` は空のまま）
+    act(() => {
+      h.current.injectEvent(完全版(1, '2024-11-26T22:47:00+09:00'))
+      h.current.injectEvent(震度速報(2, '2024-11-26T22:48:00+09:00'))
+    })
+
+    expect(通知(onLiveEvent).map(([, 印]) => 印)).toEqual([false, true])
+  })
+
+  // 正: **同じティックで 3 件以上が捌けても判定が続く。** キューのディスパッチャは 1 ティックで
+  // 発火済みのエントリをすべて処理するので（バックグラウンドタブでタイマーが間引かれると
+  // まとめて落ちる）、「取消 → 再発表 → 紛れ込んだ震度速報」が 1 つのティックに並びうる。
+  // 判定に使う既存カードを**同じティックの写し**から引いているので、レンダーを挟まなくても
+  // 3 件目で正しく印が立つ。
+  it('同じティックで取消・再発表・紛れ込み報が続いても印が立つ', async () => {
+    const onLiveEvent = vi.fn()
+    const h = setup({ onLiveEvent })
+    await h.flush()
+
+    act(() => { h.current.injectEvent(完全版(1, '2024-11-26T22:47:00+09:00')) })
+    // 3 件を**同じ act で**流す（＝あいだにレンダーを挟まない）
+    act(() => {
+      h.current.injectEvent(取消(2, '2024-11-26T22:50:00+09:00'))
+      h.current.injectEvent(完全版(3, '2024-11-26T22:51:00+09:00'))
+      h.current.injectEvent(震度速報(4, '2024-11-26T22:52:00+09:00'))
+    })
+
+    expect(通知(onLiveEvent).map(([, 印]) => 印)).toEqual([false, false, false, true])
+  })
+
+  // 正: **カードが採らない門は据え置きだけではない。** 取消より前に発表された報は「取り下げ済みの
+  // 内容」として丸ごと捨てられる（§6.2）。このとき対象カードは取消済みなので既存カードの
+  // 候補から外れ、**据え置き判定からは「既存カードなし」に見える** —— そこで通してしまうと
+  // 画面には何も出ないのに声だけが鳴る。統合側と同じ述語（`isRetractedQuakeReport`）を見る。
+  it('取消より前に発表された報にも印が立つ', async () => {
+    const onLiveEvent = vi.fn()
+    const h = setup({ onLiveEvent })
+    await h.flush()
+
+    act(() => { h.current.injectEvent(完全版(1, '2024-11-26T22:47:00+09:00')) })
+    act(() => { h.current.injectEvent(取消(2, '2024-11-26T22:50:00+09:00')) })
+    // 取消より**前**に発表された報が遅れて届く（到着順の入れ替わり。当日の REST 経路・
+    // リプレイで普通に起きる）。種別は取消と同じ＝`isRetractedQuakeReport` の条件を満たす。
+    act(() => { h.current.injectEvent(完全版(3, '2024-11-26T22:48:00+09:00')) })
+
+    expect(通知(onLiveEvent).map(([, 印]) => 印)).toEqual([false, false, true])
+    // 統合側もその報を捨てている（カードは取消表示のまま増えない）
+    expect(h.current.earthquakes.filter(q => !q.cancelledAt)).toHaveLength(0)
+  })
+
+  // 正: **震源要素更新（VXSE61）はどんな既存カードでも採る。** 統合側は専用の分岐で必ず受理して
+  // 抜けるので、切り出した述語もその前提を持たなければならない。持たないと、1 通目でカードの
+  // 種別が VXSE61 へ変わったあと、2 通目以降が「既存が VXSE61」の理由で据え置き扱いになり、
+  // **カードは震源も規模も更新されているのに音・声・タイトルだけ止まる**（逆向きの食い違い）。
+  it('震源要素更新の 2 通目にも印は立たない（カードは更新される）', async () => {
+    const onLiveEvent = vi.fn()
+    const h = setup({ onLiveEvent })
+    await h.flush()
+
+    act(() => { h.current.injectEvent(完全版(1, '2024-11-26T22:47:00+09:00')) })
+    act(() => { h.current.injectEvent(震源要素更新(2, '2024-11-26T22:55:00+09:00', 2.6)) })
+    // 精査後のモーメントマグニチュードが添えられる 2 通目（実運用で起きる）
+    act(() => { h.current.injectEvent(震源要素更新(3, '2024-11-26T23:10:00+09:00', 2.7)) })
+
+    expect(通知(onLiveEvent).map(([, 印]) => 印)).toEqual([false, false, false])
+    // カードは 2 通目の値を採っている（据え置いていない）
+    expect(h.current.earthquakes[0]?.earthquake.hypocenter.magnitude).toBe(2.7)
+    // 震度は完全版のものが残る（VXSE61 は震度を運ばない）
+    expect(h.current.earthquakes[0]?.earthquake.maxScale).toBe(10)
+  })
+
+  // 正: **状態が受理しない報は、同じティックの写しへも載せない。** 取消より前に発表された報は
+  // 状態更新が丸ごと捨てる（§6.2）のに、写しの更新だけがその門を通っていなかった —— 取消済み
+  // カードを未取消カードで上書きし、**そのあとに届いた正規の再発表が汚染された写しを既存として
+  // 見て据え置き扱いになる**（画面には新しいカードが出るのに声だけ止まる）。
+  it('同じティックで取消・取消以前の報・再発表が続いても、再発表には印が立たない', async () => {
+    const onLiveEvent = vi.fn()
+    const h = setup({ onLiveEvent })
+    await h.flush()
+
+    act(() => { h.current.injectEvent(完全版(1, '2024-11-26T22:47:00+09:00')) })
+    // 4 件を**同じ act で**流す（＝あいだにレンダーを挟まないので写しが生きたまま繋がる）
+    act(() => {
+      h.current.injectEvent(取消(2, '2024-11-26T22:50:00+09:00'))
+      // 取消より**前**に発表された報（到着順の入れ替わり。状態更新はこれを捨てる）
+      h.current.injectEvent(完全版(3, '2024-11-26T22:48:00+09:00'))
+      // 正規の再発表（取消より後に発表されたので別カードとして立つ）
+      h.current.injectEvent(震度速報(4, '2024-11-26T22:52:00+09:00'))
+    })
+
+    expect(通知(onLiveEvent).map(([, 印]) => 印)).toEqual([false, false, true, false])
+  })
+
+  // 安全弁: **記録に残さない理由でも印は立つ。** `notable` は「記録するか」だけを決める値で、
+  // 「止めるか」とは別の軸。`return held.notable` のように混ぜると、**いちばん頻度の高い
+  // 据え置き（発表時刻が古いだけ。実測で 96 件中 94 件）で音と声だけが元の症状へ戻る**。
+  it('記録に残さない理由（発表時刻が古いだけ）でも印は立つ', async () => {
+    const onLiveEvent = vi.fn()
+    const h = setup({ onLiveEvent })
+    await h.flush()
+
+    act(() => { h.current.injectEvent(完全版(1, '2024-11-26T22:47:00+09:00')) })
+    // 発表時刻が古い続報（並び替えや遅延で日常的に届く＝`olderReport`・記録は出ない）
+    act(() => { h.current.injectEvent(完全版(2, '2024-11-26T22:46:00+09:00', 20)) })
+
+    expect(通知(onLiveEvent).map(([, 印]) => 印)).toEqual([false, true])
+    // 表示も据え置かれている（古い報の震度を採っていない）
+    expect(h.current.earthquakes[0]?.earthquake.maxScale).toBe(10)
+  })
+
+  // 正: **取消の判定は受信の入口で 1 回だけ行い、状態更新の中で再計算しない。** 再計算して
+  // いた頃は、同じティックで「報 → 取消」の順に届いたとき**取消より前に発表された正当な報まで
+  // 捨てていた** —— 状態更新はレンダー時に走るので、そのとき台帳には後から積まれた取消が既に
+  // 載っている。§6.2 が捨てると定めているのは「取消の**後に届いた**報」なので、入口で決める
+  // ほうが規則どおり。
+  it('同じティックで「報 → 取消」の順なら、報は受理されてから取消される', async () => {
+    const onLiveEvent = vi.fn()
+    const h = setup({ onLiveEvent })
+    await h.flush()
+
+    // 2 件を**同じ act で**流す（＝報の状態更新がレンダーで走る時点では、台帳に取消が載る）
+    act(() => {
+      h.current.injectEvent(完全版(1, '2024-11-26T22:48:00+09:00'))
+      h.current.injectEvent(取消(2, '2024-11-26T22:50:00+09:00'))
+    })
+
+    // 報は捨てられず、カードが立ってから取消表示になる
+    expect(h.current.earthquakes).toHaveLength(1)
+    expect(h.current.earthquakes[0]?.cancelledAt).toBeTruthy()
+  })
+
+  // 対照: 取消より**後**に発表された報は別カードとして立つ（§6.2）ので、印は立たない
+  it('取消より後に発表された報には印が立たない', async () => {
+    const onLiveEvent = vi.fn()
+    const h = setup({ onLiveEvent })
+    await h.flush()
+
+    act(() => { h.current.injectEvent(完全版(1, '2024-11-26T22:47:00+09:00')) })
+    act(() => { h.current.injectEvent(取消(2, '2024-11-26T22:50:00+09:00')) })
+    act(() => { h.current.injectEvent(完全版(3, '2024-11-26T22:51:00+09:00')) })
+
+    expect(通知(onLiveEvent).map(([, 印]) => 印)).toEqual([false, false, false])
+    expect(h.current.earthquakes.filter(q => !q.cancelledAt)).toHaveLength(1)
   })
 })

@@ -68,6 +68,81 @@ function isSupersededByExistingCard(existing: JMAQuake, incoming: JMAQuake): boo
     && SUPERSEDED_BY_FULL_TYPES.includes(incoming.issue.type)
 }
 
+/** 既存カードのほうが詳しい種別か（`incoming` を採ると種別ラベルが後退する）。 */
+function isPriorityRegression(existing: JMAQuake, incoming: JMAQuake): boolean {
+  return (QUAKE_ISSUE_PRIORITY[existing.issue.type] ?? 0) > (QUAKE_ISSUE_PRIORITY[incoming.issue.type] ?? 0)
+}
+
+/**
+ * カードが `incoming` の**内容を採らない**理由。
+ *
+ * - `amendment`: 既存が VXSE61 とマージ済みの完成カード
+ * - `noTime`: 発表時刻が空で新旧を決められない
+ * - `superseded`: 完全版を受けた後の速報段階（→ {@link isSupersededByExistingCard}）
+ * - `olderReport`: 実震度を持つが発表時刻が古い
+ * - `lowerPriority`: 震度を持たず、種別としては既存のほうが詳しい
+ */
+export type QuakeHoldBackReason = 'amendment' | 'noTime' | 'superseded' | 'olderReport' | 'lowerPriority'
+
+/** {@link quakeHoldBack} の答え。 */
+export interface QuakeHoldBack {
+  reason: QuakeHoldBackReason
+  /**
+   * その据え置きを記録に残すか。
+   *
+   * **頻度の高い据え置きは黙る。** 発表時刻が古いだけの報は並び替えや遅延で日常的に届く
+   * （実測: 起動 1 回で 96 件のうち 94 件が時刻の古い電文）。そこまで記録すると、本当に珍しい
+   * 据え置き（完全版の後の速報段階）の行が埋もれる。
+   *
+   * **判定と同じ場所で決めるのは、絞り込みを呼び出し側ごとに書き写さないため。** 統合側と
+   * 副作用側が別々に条件を書くと片方だけ古くなり、**一方の記録だけが溢れて他の警告を埋める**
+   * （実際に、副作用側が `olderReport` だけを除いて `superseded` の時刻の古い分を素通しして
+   * いた —— あの述語は種別しか見ないので、時刻が古い据え置きも同じ理由で返る）。
+   */
+  notable: boolean
+}
+
+/**
+ * カードが `incoming` の**内容を採らない**か。採るなら null。
+ *
+ * **`mergeQuakeInto` の内側に閉じず、外から呼べる述語にしてある。** カードが採らない電文を
+ * 音・読み上げ・ウィンドウタイトル・自動タブ切替が扱ってしまう食い違いを、**両側が同じ判定を
+ * 見る**ことで防ぐため（使う側は `useEarthquakes` の `handleEvent`。→ docs/spec/quake-spec.md
+ * §6.3「据え置いた電文は、音・読み上げ・タイトル・タブ移動も起こさない」）。
+ *
+ * **判定を書き写して 2 か所に持たないこと。** 片方だけ直されると、画面は据え置いたのに声だけが
+ * 捨てたはずの震度を読む状態に戻る —— 例外もログも出ないので、実配信で起きるまで気づけない
+ * （2024-11-26 22:48 の大阪府北部で実際にそうなっていた）。
+ *
+ * **外から呼ぶ用の前提を、この関数自身に持たせること。** `mergeQuakeInto` は `incoming` の
+ * 種別によって手前で分岐して抜けるので、そこへ到達しない組み合わせが存在する。切り出した
+ * 述語が同じ前提を書き落とすと、**外から呼んだときだけ誤った理由を返す**（下の VXSE61）。
+ */
+export function quakeHoldBack(existing: JMAQuake, incoming: JMAQuake): QuakeHoldBack | null {
+  // **`incoming` が VXSE61 なら、どんな既存カードでも採る。** あれは震源の訂正を伝える報で、
+  // `mergeQuakeInto` は専用の分岐（下の「--- A ---」）で必ず受理して抜ける。**この行が無いと、
+  // 1 通目の VXSE61 で既存カードの種別が VXSE61 へ変わったあと、2 通目以降に `amendment` を
+  // 返す** —— 統合はカードを更新するのに副作用だけが止まり、「画面の震源・規模は変わったのに
+  // 音も声もタイトルも動かない」逆向きの食い違いになる（`mergeQuakeInto` の中から呼ぶぶんには
+  // 到達しないので、外から呼ぶ用途を足したこの変更で初めて表に出た）。
+  if (incoming.issue.type === AMENDMENT_TYPE) return null
+  // 既存が実震度を持たない（VXSE61 単独カード・震度欠落）か取消表示中なら、どの電文も受け入れる。
+  if (existing.cancelledAt || !hasIntensity(existing)) return null
+  if (existing.issue.type === AMENDMENT_TYPE) return { reason: 'amendment', notable: false }
+  if (!incoming.time) return { reason: 'noTime', notable: true }
+  if (isSupersededByExistingCard(existing, incoming)) {
+    // 訂正報は実配信で観測していない形なので必ず残す。時刻が新しいのに据え置いたものも残す
+    // （どちらの理由も記録する側のコメントにある）。時刻が古いだけの分は黙る（→ `notable`）。
+    return { reason: 'superseded', notable: incoming.issue.correct !== 'なし' || incoming.time >= existing.time }
+  }
+  // 実震度を持つ電文どうしは発表時刻で、持たない電文は種別優先度で判定する（理由は
+  // `mergeQuakeInto` の据え置き判定のコメント）。
+  if (hasIntensity(incoming)) {
+    return incoming.time < existing.time ? { reason: 'olderReport', notable: false } : null
+  }
+  return isPriorityRegression(existing, incoming) ? { reason: 'lowerPriority', notable: false } : null
+}
+
 /**
  * 単独で出す種別。これが届いたら他の記録は見出しから落とす。
  *
@@ -400,7 +475,22 @@ function pickVarComment(
   return { varCommentText: from.varCommentText, varCommentCodes: from.varCommentCodes }
 }
 
-export function mergeQuakeInto(existing: JMAQuake | undefined, incoming: JMAQuake): JMAQuake {
+export function mergeQuakeInto(
+  existing: JMAQuake | undefined,
+  incoming: JMAQuake,
+  opts?: {
+    /**
+     * 据え置きの記録を出さない。
+     *
+     * **統合を「結果だけ知るために」もう 1 回通す側から渡す**（→ `useEarthquakes` の
+     * `trackPendingQuakeCard`）。あちらは同じティックの写しを作るために同じ電文を通すので、
+     * 記録まで二重に出ると**ログの件数が実際の電文数の 2 倍に見える** —— この節の据え置きは
+     * 「アーカイブ 5 日分で 8 件」のように件数を根拠に設計してきたので、そこを汚す。
+     */
+    quiet?: boolean
+  },
+): JMAQuake {
+  const quiet = opts?.quiet === true
   const eventKey = existing?.eventKey ?? quakeEventKey(incoming)
   // 受け取った電文種別の記録。**据え置く経路でも更新する** ——「震源情報も受け取った」ことは、
   // カードの中身が変わらなくても見出しに出したい事実だから。同じ電文が二度流れて記録も
@@ -522,64 +612,60 @@ export function mergeQuakeInto(existing: JMAQuake | undefined, incoming: JMAQuak
   // 異なる。今のところ実害が無いのは、standard 版は P2PQuake のみ・DMDSS 版は DMDATA のみと
   // ビルドバリアントごとにデータソースが単一だから（`CLAUDE.md`）。両方を1つの mergeQuakeInto
   // 呼び出し系列に混ぜる変更をするなら、先に time を `Date` ベースの比較に置き換えること。
-  if (!existing.cancelledAt && hasIntensity(existing)) {
-    if (existing.issue.type === AMENDMENT_TYPE) return holdBack(existing)
-    if (!incoming.time) {
-      log.warn('[quake] 発表時刻が空の電文を受信（据え置く）', { incomingId: incoming.id, incomingType: incoming.issue.type })
-      return holdBack(existing)
+  // **判定そのものは {@link quakeHoldBack} が持つ。** ここに書き下すと、同じ判定を
+  // 必要とする副作用側（音・読み上げ・ウィンドウタイトル・自動タブ切替）が写しを持つことになる。
+  //
+  // **記録に値するかも述語が決める**（`notable`）。ここで条件を書き下すと、副作用側が同じ
+  // 絞り込みを書き写すことになり、片方だけ古くなったときに一方の記録だけが溢れる。
+  const held = quakeHoldBack(existing, incoming)
+  if (quiet || !held?.notable) {
+    // 記録だけを飛ばす。**判定と戻り値はまったく同じ**（この下の分岐は記録専用）。
+  } else if (held.reason === 'noTime') {
+    log.warn('[quake] 発表時刻が空の電文を受信（据え置く）', { incomingId: incoming.id, incomingType: incoming.issue.type })
+  } else if (held.reason === 'superseded') {
+    // **電文を指す値まで残す。** この据え置きは「完全版の後に来た速報段階は、実データでは
+    // 完全版が知らない事実を持っていなかった」という観測に基づくので、**誤って捨てる側へ
+    // 倒れうる**。どの電文を捨てたか辿れないと、次に疑ったときアーカイブの全件走査から
+    // やり直すことになる（すぐ上の「発表時刻が空」の記録も `incomingId` を残している）。
+    const dropped = {
+      eventKey, incomingId: incoming.id, incomingTelegramKey: incoming.telegramKey,
+      existingType: existing.issue.type, incomingType: incoming.issue.type,
+      existingTime: existing.time, incomingTime: incoming.time,
+      droppedMaxScale: incoming.earthquake.maxScale, droppedPoints: incoming.points.length,
     }
-    // 完全版を受けた後の速報段階（上のコメント参照）。震度の有無を問わずここで降ろす
-    // ——震度を持たない側（震源情報）は下の優先度判定でも据え置かれるが、**同じ規則が
-    // 2 か所に分かれていると片方だけ直されて食い違う**ので、判定は 1 つにまとめる。
-    if (isSupersededByExistingCard(existing, incoming)) {
-      // **電文を指す値まで残す。** この据え置きは「完全版の後に来た速報段階は、実データでは
-      // 完全版が知らない事実を持っていなかった」という観測に基づくので、**誤って捨てる側へ
-      // 倒れうる**。どの電文を捨てたか辿れないと、次に疑ったときアーカイブの全件走査から
-      // やり直すことになる（すぐ上の「発表時刻が空」の記録も `incomingId` を残している）。
-      const dropped = {
-        eventKey, incomingId: incoming.id, incomingTelegramKey: incoming.telegramKey,
-        existingType: existing.issue.type, incomingType: incoming.issue.type,
-        existingTime: existing.time, incomingTime: incoming.time,
-        droppedMaxScale: incoming.earthquake.maxScale, droppedPoints: incoming.points.length,
-      }
-      if (incoming.issue.correct !== 'なし') {
-        // **訂正報も据え置くが、こちらは警告で残す。** 訂正は「その報の内容が誤りだった」という
-        // 報なので本来は内容を採りたいが、速報段階の粒度で完全版を上書きすると、この据え置きが
-        // 塞いだ不整合をそのまま再現する（理由は `isSupersededByExistingCard`）。**実配信では
-        // 観測していない形**なので、観測されたらここで気づけるようにしておく —— 見つかったら、
-        // 見出し・色・粒度をまとめて整合させる設計を検討すること。
-        //
-        // **時刻の古い・新しいでは絞らない。** 下の `log.info` を絞っているのは「この規則が
-        // 無くても据え置かれるぶんまで理由を偽らない」ためだが、こちらは件数が問題にならず、
-        // かつ「実在しないはずの形が来た」という事実そのものを残したい。
-        log.warn('[quake] 完全版を受けた後に速報段階の訂正報が届いた（据え置いた）', {
-          ...dropped, correct: incoming.issue.correct,
-        })
-      } else if (incoming.time >= existing.time) {
-        // **記録するのは「発表時刻が新しいのに据え置いた」ときだけ。** 時刻が古い電文は
-        // この条件が無くても据え置かれるので、そこまで記録すると理由を偽ることになるうえ、
-        // 履歴の取り込みで大量に並んで他の警告を埋める（実測: 起動 1 回で 96 件のうち 94 件が
-        // 時刻の古い電文だった）。
-        log.info('[quake] 完全版を受けた後の速報段階を据え置いた', dropped)
-      }
-      return holdBack(existing)
+    if (incoming.issue.correct !== 'なし') {
+      // **訂正報も据え置くが、こちらは警告で残す。** 訂正は「その報の内容が誤りだった」という
+      // 報なので本来は内容を採りたいが、速報段階の粒度で完全版を上書きすると、この据え置きが
+      // 塞いだ不整合をそのまま再現する（理由は `isSupersededByExistingCard`）。**実配信では
+      // 観測していない形**なので、観測されたらここで気づけるようにしておく —— 見つかったら、
+      // 見出し・色・粒度をまとめて整合させる設計を検討すること。
+      //
+      // **時刻の古い・新しいでは絞らない。** 下の `log.info` を絞っているのは「この規則が
+      // 無くても据え置かれるぶんまで理由を偽らない」ためだが、こちらは件数が問題にならず、
+      // かつ「実在しないはずの形が来た」という事実そのものを残したい。
+      log.warn('[quake] 完全版を受けた後に速報段階の訂正報が届いた（据え置いた）', {
+        ...dropped, correct: incoming.issue.correct,
+      })
+    } else {
+      // ここへ来るのは「発表時刻が新しいのに据え置いた」ぶんだけ（絞り込みは `notable`）。
+      log.info('[quake] 完全版を受けた後の速報段階を据え置いた', dropped)
     }
-    if (hasIntensity(incoming)) {
-      if (incoming.time < existing.time) return holdBack(existing)
-      // **時刻では受け入れるが、種別優先度としては据え置き相当（既存の方が詳しい）だった場合は
-      // 記録を残す。** sameQuakeEntry は eventId が無い経路（P2PQuake）や暫定 ID の再採番で
-      // 別の地震を同一と誤認識しうる（同関数の限界の節を参照）。誤認識が起きると、無関係な
-      // 電文がここを通って正しいカードを無警告で上書きする。ログが無いと「地震カードの内容が
-      // 急に後退した」ときに原因を辿れない。
-      if ((QUAKE_ISSUE_PRIORITY[existing.issue.type] ?? 0) > (QUAKE_ISSUE_PRIORITY[incoming.issue.type] ?? 0)) {
-        log.info('[quake] 種別優先度は据え置き相当だが、発表時刻が新しいため受け入れた', {
-          eventKey, existingType: existing.issue.type, incomingType: incoming.issue.type,
-          existingTime: existing.time, incomingTime: incoming.time,
-        })
-      }
-    } else if ((QUAKE_ISSUE_PRIORITY[existing.issue.type] ?? 0) > (QUAKE_ISSUE_PRIORITY[incoming.issue.type] ?? 0)) {
-      return holdBack(existing)
-    }
+  }
+  if (held) return holdBack(existing)
+  // **時刻では受け入れるが、種別優先度としては据え置き相当（既存の方が詳しい）だった場合は
+  // 記録を残す。** sameQuakeEntry は eventId が無い経路（P2PQuake）や暫定 ID の再採番で
+  // 別の地震を同一と誤認識しうる（同関数の限界の節を参照）。誤認識が起きると、無関係な
+  // 電文がここを通って正しいカードを無警告で上書きする。ログが無いと「地震カードの内容が
+  // 急に後退した」ときに原因を辿れない。
+  //
+  // 条件が `quakeHoldBack` と重なって見えるが、ここへ来るのは**据え置かなかった**場合
+  // だけ。震度を持たない電文で優先度が逆転していれば `lowerPriority` で既に降りているので、
+  // 残るのは「実震度を持ち・発表時刻が新しく・種別だけ粗い」電文になる。
+  if (!quiet && !existing.cancelledAt && hasIntensity(existing) && isPriorityRegression(existing, incoming)) {
+    log.info('[quake] 種別優先度は据え置き相当だが、発表時刻が新しいため受け入れた', {
+      eventKey, existingType: existing.issue.type, incomingType: incoming.issue.type,
+      existingTime: existing.time, incomingTime: incoming.time,
+    })
   }
 
   let result: JMAQuake = { ...incoming, eventKey, reports }
@@ -800,7 +886,18 @@ export function addQuakeRetraction(
   )
   if (already) return
   list.push(retraction)
-  if (list.length > max) list.splice(0, list.length - max)
+  if (list.length > max) {
+    const dropped = list.length - max
+    list.splice(0, dropped)
+    // **溢れたことを残す。** 溢れた取消は `isRetractedQuakeReport` の照合から落ちるので、
+    // **その取消より前に発表された報が遅れて届いたときに弾けなくなる**（取り消したはずの
+    // 地震が画面へ戻る）。黙って捨てると、そのとき原因に辿り着く手掛かりが無い。
+    //
+    // **`debug` では足りない。** このファイルの他の異常（発表時刻が空・取消以前の報を捨てた）は
+    // どれも `warn` で、`debug` はカメラ追従やタブ遷移のような毎操作級の定型トレースに使って
+    // いる。そこへ混ぜると、表示の内容が誤る類の異常が埋もれる。
+    log.warn(`[quake] 取消の台帳が上限を超えたので古い ${dropped} 件を捨てた (上限=${max})`)
+  }
 }
 
 export function isRetractedQuakeReport(

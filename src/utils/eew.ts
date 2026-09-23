@@ -1,11 +1,11 @@
 import type { EEWAlert, EEWRegion } from '../types/earthquake'
 import { hasKnownEpicenter, haversineKm, hypocentralDistanceKm } from './geo'
 import type { AlertSoundType } from './alertSound'
-import { computeSWaveTravelTimeSec } from '../hooks/usePsWaveCalc'
+import { travelTimeSec } from './travelTime'
 import { isValidIntensityScale } from './intensity'
 import { isValidLpgmClass } from './lpgm'
 import { hypoInfoItemToEEW, type YahooHypoInfoItem } from '../services/kyoshin'
-import { isEewArrivedKindCode } from './eewKind'
+import { isEewArrivedKindCode, isEewPlumKindCode } from './eewKind'
 import { EEW_WARNING_REGION_ORDER } from './eewWarningRegions'
 import { log } from './logger'
 
@@ -65,7 +65,7 @@ export function calcFeltRadiusKm(mjma: number, depth: number, targetIntensity = 
  */
 export function calcEEWAutoCancelSec(mjma: number, depth: number): number {
   const feltRadius = calcFeltRadiusKm(mjma, depth)
-  const sWaveSec = computeSWaveTravelTimeSec(feltRadius, Math.max(depth, 1))
+  const sWaveSec = travelTimeSec('S', feltRadius, Math.max(depth, 1))
   return Math.round(sWaveSec) + FIXED_BUFFER_SEC
 }
 
@@ -181,6 +181,109 @@ export function eewAreas(eew: EEWAlert): EEWRegion[] {
  */
 export function isEewAreaArrived(area: EEWRegion): boolean {
   return area.arrived === true || isEewArrivedKindCode(area.kindCode)
+}
+
+/**
+ * 区域の到達予測時刻をどう扱えるか。
+ *
+ * - `arrived` … 既に主要動が到達したと推測されている（時刻は出ない）
+ * - `plum` … PLUM 法の区域。**時刻を「到達予想」として出せない** —— 走時を解かない手法なので、
+ *   値は到達の予測ではなく「その震度を初めて予測した時刻」＝過去の時刻（電文解説資料 Ⅱ.21 2-1-5-3-6）
+ * - `forecast` … 到達予測時刻として読める
+ *
+ * **判定を書き分けない。** 区域の到達を出す先が 3 つある（リアルタイムタブの「主要動の到達（予測）」欄・
+ * 地図の区域ポップアップ・登録地点のカウントダウン。後ろの 2 つは `mergeEewAreaArrival` 経由）ので、
+ * 1 つだけ PLUM の除外を忘れると、そこだけ過ぎた時刻を「まもなく」として見せる。
+ * **下の `mergeEewAreaArrival` と同じ数を書く** —— 数が食い違っていると、どちらが列挙漏れなのか
+ * 読む側には決められない。
+ */
+export function eewAreaArrivalKind(area: EEWRegion): 'arrived' | 'plum' | 'forecast' {
+  if (isEewAreaArrived(area)) return 'arrived'
+  if (isEewPlumKindCode(area.kindCode)) return 'plum'
+  return 'forecast'
+}
+
+/**
+ * 到達予測時刻までの残り秒数。日時として読めなければ null。
+ *
+ * **素朴に引き算しない。** `EEWRegion.arrivalTime` は XML 経路では読めることを確かめてあるが、
+ * そこを通らない経路がある（テストデータ・履歴アーカイブ）。読めない値を引き算すると `NaN` になり、
+ * **`NaN > 0` が偽なので「まもなく」へ落ちる** —— 壊れた値が「もうすぐ来る」という確度の高い
+ * 表示に化ける。**読めないものは読めないと出す。**
+ *
+ * **記録はここでしない。** 毎秒の再描画で区域の数だけ呼ばれるので、ここへログを置くと壊れた
+ * 区域 1 つで 1 秒ごとに記録が出続ける。記録は呼び出し側が報ごとに 1 行へまとめる
+ * （→ docs/spec/data-sources-spec.md §2）。
+ */
+export function eewArrivalEtaSec(arrivalTime: string, nowMs: number): number | null {
+  return eewArrivalEtaSecFromMs(new Date(arrivalTime).getTime(), nowMs)
+}
+
+/**
+ * 到達予測時刻（epoch ms）までの残り秒数。有限でなければ null。
+ *
+ * **丸め方と `NaN` の歯止めをここだけに置く。** 出す先が 3 つあるので（リアルタイムタブの
+ * 一覧・地図の区域ポップアップ・登録地点のカウントダウン）、秒の丸めや 0 秒の扱いを
+ * 変えたいときに書き分けてあると 1 箇所だけ直し忘れる。
+ */
+export function eewArrivalEtaSecFromMs(arrivalMs: number, nowMs: number): number | null {
+  return Number.isFinite(arrivalMs) ? Math.round((arrivalMs - nowMs) / 1000) : null
+}
+
+/** ある区域について、出せる到達の情報。 */
+export interface EewAreaArrival {
+  /**
+   * - `forecast` … これから来る到達予測時刻がある（`arrivalMs` に入る）
+   * - `arrived` … 到達済みと伝えている報だけがある（時刻は出ない）
+   * - `none` … 出せるものが無い（PLUM 法だけ・時刻が読めない・区域を名乗る報が無い）
+   */
+  kind: 'forecast' | 'arrived' | 'none'
+  /** 到達予測時刻（epoch ms）。`kind === 'forecast'` のときだけ入る。 */
+  arrivalMs: number | null
+}
+
+/** 出せるものが無い状態。 */
+export const NO_EEW_AREA_ARRIVAL: EewAreaArrival = { kind: 'none', arrivalMs: null }
+
+/**
+ * 区域を名乗る報を 1 件ずつ畳んで、その区域について出す到達の情報を決める。
+ *
+ * **優先順位は「いちばん早い未到達の予測 ＞ 到達済み ＞ 出せるものが無い」。**
+ *
+ * **到達済みを最優先にしない。** 同じ区域を名乗る報は複数ありうる（別の地震が同時に発報中）。
+ * 到達済みを先に採ると、**収まりつつある地震が「到達済み」を伝えているせいで、いまから
+ * 揺れが来る別の地震の予測時刻が画面から消える** —— カウントダウンを見せるか見せないかの
+ * 二値なので、消えれば利用者には何も伝わらない。知りたいのは「これから来るか」なので、
+ * 予測を持つ報があるならそちらを出す。
+ *
+ * **同じ地震の中では競合しない。** 呼び出し側が渡すのは地震ごとに最新の 1 報だけで
+ * （`App.tsx` の `activeEEWsNoCancelled`）、1 つの区域が同じ報で到達済みと未到達の両方を
+ * 名乗ることはない。優先順位が効くのは地震をまたぐときだけ。
+ *
+ * **PLUM 法の区域は何も足さない。** あの時刻は到達の予測ではなく過去の時刻
+ * （→ `eewAreaArrivalKind`）。時刻を持っているので、素朴に「時刻がある方を採る」と書くと
+ * 先に処理された PLUM の区域が、後から来た正当な予測を弾く。
+ *
+ * **判定を書き分けない。** 同じ問いに答える先が 3 つある（リアルタイムタブの
+ * 「主要動の到達（予測）」欄・地図の区域ポップアップ・登録地点のカウントダウン）ので、
+ * 別々に畳むと優先順位が静かに食い違う。
+ */
+export function mergeEewAreaArrival(
+  cur: EewAreaArrival | undefined,
+  area: EEWRegion,
+): EewAreaArrival {
+  const base = cur ?? NO_EEW_AREA_ARRIVAL
+  const kind = eewAreaArrivalKind(area)
+  if (kind === 'plum') return base
+  if (kind === 'arrived') {
+    return base.kind === 'forecast' ? base : { kind: 'arrived', arrivalMs: null }
+  }
+  // 読めない時刻は捨てる。**引き算して `NaN` を通すと `NaN > 0` が偽なので「まもなく」側へ
+  // 落ちる** —— 壊れた値が確度の高い表示に化ける（`eewArrivalEtaSec` と同じ理由）。
+  const ms = area.arrivalTime === null ? NaN : new Date(area.arrivalTime).getTime()
+  if (!Number.isFinite(ms)) return base
+  if (base.kind !== 'forecast') return { kind: 'forecast', arrivalMs: ms }
+  return ms < (base.arrivalMs as number) ? { kind: 'forecast', arrivalMs: ms } : base
 }
 
 /** 最大予想震度と、その上限が定まっていないか（「〜以上」）の対。 */
