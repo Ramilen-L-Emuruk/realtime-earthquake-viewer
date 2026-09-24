@@ -254,6 +254,32 @@ describe('録画モードの既読復元', () => {
     await drain()
     expect(mainSpeeches().join(''), '2 通目で現れた地域が読み直されている').not.toContain('新潟県上越')
   })
+
+  // 正: 窓の手前で据え置かれた電文の内容は既読へ積まない。
+  //
+  // `createPreWindowQuakeTopics` が内部で組むバケットは `mergeQuakeInto` を通しており
+  // 据え置き（`quakeHoldBack`）を反映済みだが、既読を積む側（`restoreOne`）が生の入電を
+  // そのまま渡すと、画面にも声にも出ていない内容（据え置かれて捨てられた地域）が
+  // 「もう声にした」として記録されてしまう。すると後で本当にその内容が届く（正規の続報）
+  // ときに、既読扱いのまま黙って省かれる。
+  it('窓の手前で据え置かれた電文の地域は既読にせず、あとで届いたときに読む', async () => {
+    const { handleLiveEvent, restorePreWindowTracking } = setup({ recordingMode: true })
+    // 完全版（既存カードを確定させる）
+    const full = makeQuake({ id: 'pre-full' })
+    // 完全版のあとに届く震度速報。`isSupersededByExistingCard` で据え置かれる
+    // （既存が完全版・入電が速報段階）。新しい地域「福井県嶺南」を持つ。
+    const flash = makeQuake({ id: 'pre-flash' })
+    flash.issue = { ...flash.issue, type: '震度速報' }
+    flash.points = [{ pref: '福井県', addr: '福井県嶺南', isArea: true, scale: 30 }]
+    restorePreWindowTracking(preWindow(full as unknown as LiveEvent, flash as unknown as LiveEvent))
+
+    // 窓内の本編で、福井県嶺南を含む続報が届く
+    const next = makeQuake({ id: 'quake-1' })
+    next.points = [...next.points, { pref: '福井県', addr: '福井県嶺南', isArea: true, scale: 30 }]
+    handleLiveEvent(next as unknown as LiveEvent)
+    await drain()
+    expect(mainSpeeches().join(''), '据え置かれた地域が既読のまま省かれている').toContain('福井県嶺南')
+  })
 })
 
 /**
@@ -285,7 +311,7 @@ describe('窓の手前の地震に割り当てる主題', () => {
     const topicFor = createPreWindowQuakeTopics()
     const first = quakeFor({ id: 'r1' })
     const second = quakeFor({ id: 'r2' })
-    expect(topicFor(second)).toBe(topicFor(first))
+    expect(topicFor(second).topic).toBe(topicFor(first).topic)
   })
 
   // 安全弁: 震源名が空の報（震度速報）が先に来ても、同じ分の別の地震を吸い込まない。
@@ -298,9 +324,9 @@ describe('窓の手前の地震に割り当てる主題', () => {
     const full = quakeFor({ id: 'a2' })
     // 同じ分の別の地震。**区域を持たない**ので、区域では分離できない
     const other = quakeFor({ id: 'b1', type: '震源情報', name: '茨城県沖', points: [] })
-    const topicA = topicFor(flash)
-    expect(topicFor(full), '同じ地震の続報が別の主題になっている').toBe(topicA)
-    expect(topicFor(other), '別の地震を吸い込んでいる').not.toBe(topicA)
+    const topicA = topicFor(flash).topic
+    expect(topicFor(full).topic, '同じ地震の続報が別の主題になっている').toBe(topicA)
+    expect(topicFor(other).topic, '別の地震を吸い込んでいる').not.toBe(topicA)
   })
 
   // 対照: 地震の時刻が違えば、束ねる先が別になる（同一性の判定は時刻の一致を必ず要求する）。
@@ -309,7 +335,7 @@ describe('窓の手前の地震に割り当てる主題', () => {
     const first = quakeFor({ id: 'r1' })
     const later = quakeFor({ id: 'r2' })
     later.earthquake = { ...later.earthquake, time: '2026-01-01T13:00:00Z' }
-    expect(topicFor(later)).not.toBe(topicFor(first))
+    expect(topicFor(later).topic).not.toBe(topicFor(first).topic)
   })
   // 安全弁: 訂正報で震源名が変わっても、以後の続報が同じ主題に留まる。
   //
@@ -321,9 +347,9 @@ describe('窓の手前の地震に割り当てる主題', () => {
     const first = quakeFor({ id: 'r1', name: '石川県能登地方' })
     const amended = quakeFor({ id: 'r2', name: '能登半島沖', correct: '震源を訂正' })
     const next = quakeFor({ id: 'r3', name: '能登半島沖' })
-    const topic = topicFor(first)
-    expect(topicFor(amended), '訂正報が別の主題になっている').toBe(topic)
-    expect(topicFor(next), '訂正後の続報が別の主題になっている').toBe(topic)
+    const topic = topicFor(first).topic
+    expect(topicFor(amended).topic, '訂正報が別の主題になっている').toBe(topic)
+    expect(topicFor(next).topic, '訂正後の続報が別の主題になっている').toBe(topic)
   })
 })
 
