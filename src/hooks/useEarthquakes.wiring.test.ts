@@ -3686,3 +3686,140 @@ describe('カードが採らない電文には「据え置き」の印を付け�
     expect(h.current.earthquakes.filter(q => !q.cancelledAt)).toHaveLength(1)
   })
 })
+
+// 据え置かれた電文の震度・地域が、震度キャッシュ（`quakeIntensityCacheRef`）を経由して
+// 裏口からカードへ入り込まないこと（→ docs/spec/quake-spec.md §6.3）。
+//
+// キャッシュは VXSE51（震度速報）の値を控え、後続の震度を持たない電文（震源情報等）を
+// `fillIntensityFromCache` で補うためのもの。据え置かれた震度速報の値を書いてしまうと、
+// 後続の震源情報がその値で補完され、`hasIntensity(incoming)` が真になって
+// `mergeQuakeInto` の「既存の震度で補完する」分岐を通らなくなる —— カードは正しく
+// 据え置いたはずの震度・地域ではなく、据え置かれた電文の震度・地域をそのまま採用してしまう。
+describe('据え置かれた震度速報は震度キャッシュを汚さない', () => {
+  const eventId = '20260101120000'
+
+  const 震度速報 = (連番: number, time: string, maxScale: number, addr: string): JMAQuake => ({
+    kind: 'quake',
+    id: `dmdata-quake-${eventId}-${連番}`,
+    time,
+    issue: { source: '気象庁', time, type: '震度速報', correct: 'なし' },
+    earthquake: {
+      time: '2026-01-01T12:00:00+09:00',
+      hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: NaN },
+      maxScale,
+      domesticTsunami: '調査中',
+    },
+    points: [{ pref: '', addr, isArea: true, scale: maxScale }],
+  }) as JMAQuake
+
+  const 震源情報 = (連番: number, time: string): JMAQuake => ({
+    kind: 'quake',
+    id: `dmdata-quake-${eventId}-${連番}`,
+    time,
+    issue: { source: '気象庁', time, type: '震源情報', correct: 'なし' },
+    earthquake: {
+      time: '2026-01-01T12:00:00+09:00',
+      hypocenter: { name: '石川県能登地方', latitude: 37.5, longitude: 137.2, depth: 10, magnitude: 5.2 },
+      maxScale: -1,
+      domesticTsunami: 'なし',
+    },
+    points: [],
+  }) as JMAQuake
+
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => {
+    vi.useRealTimers()
+    setReplayOffset(null)
+  })
+
+  // 正: 発表時刻が古く据え置かれた震度速報の値は、後続の震源情報の補完に使われない。
+  it('据え置かれた震度速報の値で震源情報が補完されない', async () => {
+    const h = setup({})
+    await h.flush()
+
+    // 1 通目（カードを確定させる）
+    act(() => { h.current.injectEvent(震度速報(1, '2026-01-01T12:02:00+09:00', 10, '石川県能登')) })
+    // 発表時刻が 1 通目より古い震度速報（`olderReport` で据え置かれる）
+    act(() => { h.current.injectEvent(震度速報(2, '2026-01-01T12:01:00+09:00', 30, '福井県嶺南')) })
+    // 震度を持たない震源情報（発表時刻は 1 通目より新しい）
+    act(() => { h.current.injectEvent(震源情報(3, '2026-01-01T12:03:00+09:00')) })
+
+    // 据え置いた 1 通目の値のまま（2 通目の値がキャッシュ経由で紛れ込んでいない）
+    expect(h.current.earthquakes[0]?.earthquake.maxScale).toBe(10)
+    expect(h.current.earthquakes[0]?.points.some(p => p.addr === '福井県嶺南')).toBe(false)
+  })
+
+  // 対照: 据え置かれない震度速報は従来どおりキャッシュを更新し、震源情報が正しく補完される
+  // （ガードが書き込みの機構そのものを壊していないこと）。
+  it('据え置かれない震度速報は震源情報を正しく補完する', async () => {
+    const h = setup({})
+    await h.flush()
+
+    act(() => { h.current.injectEvent(震度速報(1, '2026-01-01T12:02:00+09:00', 10, '石川県能登')) })
+    act(() => { h.current.injectEvent(震源情報(3, '2026-01-01T12:03:00+09:00')) })
+
+    expect(h.current.earthquakes[0]?.earthquake.maxScale).toBe(10)
+    expect(h.current.earthquakes[0]?.points.some(p => p.addr === '石川県能登')).toBe(true)
+  })
+
+  // 安全弁: ガードは「据え置いた回だけ」書き込みを止める。据え置きの直後に届く、据え置かれない
+  // 震度速報（発表時刻が最も新しい）は通常どおりキャッシュを更新し、震源情報を正しく補完する。
+  it('据え置きの直後でも、据え置かれない震度速報は震源情報を正しく補完する', async () => {
+    const h = setup({})
+    await h.flush()
+
+    act(() => { h.current.injectEvent(震度速報(1, '2026-01-01T12:02:00+09:00', 10, '石川県能登')) })
+    // 発表時刻が古く据え置かれる
+    act(() => { h.current.injectEvent(震度速報(2, '2026-01-01T12:01:00+09:00', 30, '福井県嶺南')) })
+    // 発表時刻が最も新しく、据え置かれない
+    act(() => { h.current.injectEvent(震度速報(4, '2026-01-01T12:04:00+09:00', 50, '新潟県上越')) })
+    act(() => { h.current.injectEvent(震源情報(3, '2026-01-01T12:05:00+09:00')) })
+
+    // 震源情報は最新の（据え置かれなかった）値で補完される
+    expect(h.current.earthquakes[0]?.earthquake.maxScale).toBe(50)
+    expect(h.current.earthquakes[0]?.points.some(p => p.addr === '新潟県上越')).toBe(true)
+  })
+
+  // 安全弁: 「取消より前に発表された報」（`quakeRetracted`）経由でもキャッシュへ書かない。
+  //
+  // ガードは `!quakeHeldBack && !quakeRetracted` の 2 項。`quakeHeldBack` はサイレント注入
+  // （`isSilentRef.current` が真の間）は判定自体をスキップして常に偽のまま固定される
+  // （`useEarthquakes.ts` の `!isSilentRef.current && !event.cancelled` のガード）。
+  // 一方 `quakeRetracted` はサイレント注入かどうかを見ずに計算されるため、この経路では
+  // `!quakeRetracted` だけがキャッシュ書き込みを止める役に立つ。「`quakeHeldBack` に
+  // 統合したので `quakeRetracted` は不要」という誤った簡略化が起きても、上の3テストは
+  // どれも通り続けてしまうため、この経路だけを別に固定する。
+  it('取消より前に発表された震度速報（サイレント注入）は震度キャッシュを汚さない', async () => {
+    const h = setup({})
+    await h.flush()
+
+    act(() => { h.current.injectEvent(震度速報(1, '2026-01-01T12:02:00+09:00', 10, '石川県能登')) })
+    const cancelTime = '2026-01-01T12:03:00+09:00'
+    act(() => {
+      h.current.injectEvent({
+        kind: 'quake', id: `dmdata-quake-${eventId}-2`, time: cancelTime,
+        cancelled: true,
+        issue: { source: '気象庁', time: cancelTime, type: '震度速報', correct: 'なし' },
+        earthquake: {
+          time: '', hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: 0 },
+          maxScale: -1, domesticTsunami: '不明',
+        },
+        points: [],
+      } as unknown as JMAQuake)
+    })
+
+    // 取消より前に発表された震度速報を、サイレント経路（`isSilentRef.current` が真になる）で流す。
+    const retracted = 震度速報(3, '2026-01-01T12:01:00+09:00', 30, '福井県嶺南')
+    act(() => {
+      h.current.loadReplayEvents([
+        { payload: { kind: 'event', event: retracted }, replayTime: new Date(serverDate().getTime() - 1000), silent: true },
+      ])
+    })
+    act(() => { vi.advanceTimersByTime(50) })
+
+    // 既存カードは取消済みなので、震源情報は新規カードとして処理される。
+    // キャッシュが汚染されていれば、ここで福井県嶺南の値が紛れ込む。
+    act(() => { h.current.injectEvent(震源情報(4, '2026-01-01T12:04:00+09:00')) })
+    expect(h.current.earthquakes.some(q => q.points.some(p => p.addr === '福井県嶺南'))).toBe(false)
+  })
+})
