@@ -53,6 +53,13 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
 
+/**
+ * `Date` が表せる範囲（元期の前後 8.64e15 ミリ秒）。
+ *
+ * この外の値は有限でも `new Date(v).toISOString()` が投げる。時刻を名乗る欄はここで縛る。
+ */
+export const MAX_TIME_MS = 8.64e15
+
 /** 有限の数値であることまで見る。`NaN` は比較がすべて偽になるので素通りする。 */
 function finiteNumber(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null
@@ -111,7 +118,17 @@ function readCommonFields(h: Record<string, unknown>):
   const hz = nonNegativeInt(h.hz)
   if (hz === null || hz <= 0) return { ok: false, field: 'hz' }
   const t = finiteNumber(h.t)
-  if (t === null) return { ok: false, field: 't' }
+  // **有限なだけでは足りない。** `Date` が扱えるのは元期の前後 8.64e15 ミリ秒までで、
+  // `Number.isFinite` は `1e20` を通すが `toISOString()` はその値で例外を投げる。
+  //
+  // **弾くのは原因を残すため。** 出す側（`../../main.ts` の `formatAt`）も範囲を見て
+  // 投げない形にしてあるので、ここを通しても落ちはしない —— ただし下流に残るのは
+  // 「時刻不正」という印だけで、**どの欄が壊れていたのかも、何件届いたのかも辿れない**。
+  // ここで落とせば理由（`header-field-invalid` の `t`）が付いて 1 件として数えられる。
+  //
+  // **「いまに近いか」では弾かない。** 昔の記録を流し直す使い方があるので、
+  // 縛るのは「時刻として表せること」だけにとどめる。
+  if (t === null || Math.abs(t) > MAX_TIME_MS) return { ok: false, field: 't' }
   const q = nonNegativeInt(h.q)
   if (q === null) return { ok: false, field: 'q' }
   const c = nonNegativeInt(h.c)

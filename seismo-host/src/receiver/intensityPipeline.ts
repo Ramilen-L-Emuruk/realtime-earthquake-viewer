@@ -90,6 +90,15 @@ export interface IntensityReading {
 export interface CloseFailure {
   readonly streamKey: string
   readonly segmentId: number
+  /**
+   * どの基板のものか。
+   *
+   * **流れの鍵（`streamKey`）では代用できない。** あれには起動 ID まで入るので、
+   * 基板ごとに数える側（`packetTally.ts`）から見ると同じ基板が再起動のたびに
+   * 別の行に分かれる。記録の行も、どの基板が最後の窓ぶんを失ったのか読めなくなる。
+   */
+  readonly boardKey: BoardKey
+  readonly sensorId: string
   readonly detail: string
 }
 
@@ -223,7 +232,27 @@ export class IntensityPipeline {
     }
 
     const entry = this.entries.get(meta.streamKey)
-    if (entry === undefined || entry.stream === null || gal === null) {
+    if (entry === undefined) {
+      // **起きないはずの食い違い。** 組み立ては「区間が続いている」と言っているのに、
+      // 震度側の入れ物が無い。黙って通すと、その流れの震度は以後どこにも現れないのに
+      // **理由がどこにも残らない**（`dropped` も `intensitySkipped` も null で返るので、
+      // 上の層から見ると「何も起きなかった」パケットと見分けが付かない）。
+      //
+      // 位置が噛み合わなくなったのと同じ事態なので、手当ても同じ ——
+      // 両方を揃えて閉じ、次のパケットから作り直させる。
+      const forced = this.closeBoth(meta.streamKey, readings, closeFailures)
+      if (forced !== null) closed.push(forced)
+      return {
+        readings,
+        closed,
+        closeFailures,
+        startedBecause: result.startedBecause,
+        dropped: 'stream-desync',
+        detail: `流し込みの入れ物が見つからない（${meta.streamKey}）`,
+        intensitySkipped: skipped,
+      }
+    }
+    if (entry.stream === null || gal === null) {
       return {
         readings,
         closed,
@@ -360,6 +389,8 @@ export class IntensityPipeline {
       failures.push({
         streamKey: state.meta.streamKey,
         segmentId: state.meta.segmentId,
+        boardKey: state.meta.boardKey,
+        sensorId: state.meta.sensorId,
         detail: messageOf(error),
       })
     }
