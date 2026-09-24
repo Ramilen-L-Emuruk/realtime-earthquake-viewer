@@ -73,10 +73,11 @@ import { canOpenLpgmNotes } from './utils/lpgm'
 import { estimatedIntensityFor, matchEstimatedIntensityArrival } from './utils/estimatedIntensity'
 import {
   type QuakeOverlay, toggleLpgmOverlay, toggleDistributionOverlay, toggleUnreceivedOverlay,
-  openDistributionOverlay,
+  openDistributionOverlay, openLpgmOverlay,
   closeLpgmOverlay, closeEewLpgmOverlay, closeUnreceivedOverlay, closeUnreceivedOverlayFor,
   closeDistributionOverlayOnQuakeReport,
   decideUnreceivedSpeechOpen, shouldCloseOverlayOnSelection, type UnreceivedOpenResult,
+  quakeOverlayChangeLog,
 } from './utils/quakeOverlay'
 import { tsunamiOverallGrade } from './utils/tsunami'
 import { playCountdownBeep, unlockAudio, setSoundVolume, setKeepAliveEnabled } from './utils/alertSound'
@@ -93,6 +94,7 @@ import { findCoveringArchiveSync, findArchiveJustEndedSync, fetchLocalArchiveEve
 import { useHistoricalArchiveIndex } from './hooks/useHistoricalArchiveIndex'
 import { log } from './utils/logger'
 import { setReplayOffset as setClockReplayOffset, serverDate, serverNow } from './utils/clock'
+import { recordReplayEvent, drainReplayEvents, peekReplayEvents } from './utils/replayEventLog'
 import { isDmdss } from './utils/env'
 
 /** 凡例を切っているときに渡す空の組。**同一参照を使い回す**（毎回作ると共有カードの ref 更新が空回りする）。 */
@@ -153,8 +155,27 @@ export function App() {
   // （`tabHoldRef`）を通らず、張るべき保持を張らないまま動いてしまう。実際に配り忘れを 3 箇所
   // 作り、いずれも「画面が別の情報に奪われる」「アイドル復帰が二度と効かない」という
   // 再現しにくい不具合になった。外部フックへ渡すときも必ず優先度を付けた関数を渡すこと。
+  /**
+   * 最後に「記録した」タブ。**録画ツール向けの記録だけが読む。**
+   *
+   * `activeTabRef`（最後に描いたタブ）とは別に持つ —— あちらは同じティックで 2 回要求
+   * されても値が進まないので、2 回目の記録が「変わっていない」と誤判定する。逆に
+   * あちらを要求のたび進めると、それを読んでいる 3 箇所の意味が変わる。
+   */
+  const recordedTabRef = useRef<TabId>(activeTab)
   const setActiveTab = useCallback((tab: TabId) => {
     setPanelCollapsed(false)
+    // 録画ツール向けの記録（→ `docs/spec/recording-interface-spec.md`）。**実際に変わった
+    // ときだけ残す** —— 同じタブへの要求も届くので（保持を張り直す・畳んだパネルを開き直す
+    // ために呼ばれる）、そのまま記録すると変化していないものが変化として並ぶ。
+    // **記録用の写しは `activeTabRef` と分けて持つ。** あちらは「最後に描いたタブ」で、
+    // 津波カードの先頭復帰・畳みトグル・アイドル復帰の 3 箇所が**その意味で**読んでいる。
+    // 録画の都合で意味を「最後に要求したタブ」へ変えると、同じティックで 2 回要求された
+    // とき、一度も描かれていない中間の値を基準に 3 箇所が判断してしまう。
+    if (recordedTabRef.current !== tab) {
+      recordReplayEvent({ type: 'tab', tab, prevTab: recordedTabRef.current })
+      recordedTabRef.current = tab
+    }
     setActiveTabState(tab)
   }, [])
   const [selectedQuakeId, setSelectedQuakeId] = useState<string | null>(null)
@@ -195,7 +216,46 @@ export function App() {
    * 条件付きで閉じる）は必ずそこの関数を通すこと** —— 同じ判定を呼び出し側へ散らすと、
    * 一方だけ直したときに排他が崩れる。開くだけ・全部閉じるだけの経路はここで組み立てる。
    */
-  const [quakeOverlay, setQuakeOverlay] = useState<QuakeOverlay | null>(null)
+  const [quakeOverlay, setQuakeOverlayState] = useState<QuakeOverlay | null>(null)
+  /**
+   * 最後に要求した追加表示。**「最後に描いた値」ではない。**
+   *
+   * 録画ツール向けの記録は「実際に開いた／閉じたときだけ残す」ので、直前の値が要る。
+   * レンダー本体で同期する形にすると**その写しは嘘をつく** —— 受信キューは 1 ティックで
+   * 溜まった電文をすべて捌くのに、状態はレンダーまで進まない。同じティックで 2 通目を
+   * 捌くときに 1 通目より前の値を見て、画面は 1 度しか動いていないのに記録は 2 行出る。
+   * 同じ関数の中で `selectQuake` が先に閉じている場合も同様にずれる。
+   */
+  const quakeOverlayRef = useRef<QuakeOverlay | null>(null)
+  /**
+   * 追加表示を書き換える唯一の口。**`setQuakeOverlayState` を直接呼ばないこと**（不変条件）。
+   *
+   * 写しをここで進めるので、素の setter を使うと写しだけ取り残されて上記の嘘が戻る。
+   * 更新関数もここで適用する（React に渡して二度呼ばれると、記録まで二重になる）。
+   *
+   * **録画ツール向けの記録もここが出す**（→ `docs/spec/recording-interface-spec.md`）。
+   * 呼び出し側ごとに「変わったか」を判定して記録する形にしていたが、書き手が 13 あるので
+   * **足すたびに抜けた** —— 自動で開く経路だけが記録され、カードのボタンを押した回と
+   * 長周期の開閉が丸ごと落ちていた。判定を書き込み口へ寄せれば、経路を足しても漏れない。
+   * 呼び出し側に残るのは `reason` を書くことだけで、それは引数が必須なので忘れられない。
+   *
+   * @param reason 何がきっかけで動いたか（記録に載る短い語）
+   * @returns 書き換えの前後（呼び出し側が「実際に動いたか」で分岐したいときに使う）
+   */
+  const applyQuakeOverlay = useCallback((
+    next: QuakeOverlay | null | ((prev: QuakeOverlay | null) => QuakeOverlay | null),
+    reason: string,
+  ): { before: QuakeOverlay | null, after: QuakeOverlay | null } => {
+    const before = quakeOverlayRef.current
+    const after = typeof next === 'function' ? next(before) : next
+    quakeOverlayRef.current = after
+    setQuakeOverlayState(after)
+    // 差し替え（別の追加表示へ移る）は「閉じた」「開いた」の 2 件になる（→ `quakeOverlayChangeLog`）。
+    for (const e of quakeOverlayChangeLog(before, after)) {
+      recordReplayEvent({ type: 'overlay', overlay: e.overlay, open: e.open, reason })
+    }
+    return { before, after }
+  }, [])
   // 参照側（子コンポーネントの props・地図へ渡す値）は従来の 3 つの形で読む。排他は型が担保する。
   const activeLpgmEventId = quakeOverlay?.kind === 'lpgm' ? quakeOverlay.eventId : null
   const activeLpgmSource = quakeOverlay?.kind === 'lpgm' ? quakeOverlay.source : null
@@ -219,14 +279,14 @@ export function App() {
     const closeOverlay = shouldCloseOverlayOnSelection(selectedQuakeIdRef.current, eventKey)
     selectedQuakeIdRef.current = eventKey
     setSelectedQuakeId(eventKey)
-    if (closeOverlay) setQuakeOverlay(null)
+    if (closeOverlay) applyQuakeOverlay(null, '別の地震を選んだ')
     if (opts?.explicit) setQuakeSelectionTick(t => t + 1)
   }, [])
   // 地震情報タブ / EEW（リアルタイム）タブそれぞれで長周期の表示をトグルするハンドラー。
   // 同じ eventId を再度渡すと非表示化、それ以外の eventId なら表示中の source を切り替える。
   // 震度分布モードを開いていれば、それは閉じる（同時に 1 つだけ）。
   const toggleLpgm = useCallback((eventId: string, source: 'earthquake' | 'eew') => {
-    setQuakeOverlay(prev => toggleLpgmOverlay(prev, eventId, source))
+    applyQuakeOverlay(prev => toggleLpgmOverlay(prev, eventId, source), '長周期地震動のボタン')
   }, [])
   /**
    * 地震カードの長周期バッジ。**押したカードを選択の実体へ合わせてからトグルする。**
@@ -256,23 +316,23 @@ export function App() {
    * 自動解除の条件が違う（EEW 由来は EEW が消えたら閉じる）。
    */
   const openLpgmFromQuake = useCallback((eventId: string) => {
-    setQuakeOverlay({ kind: 'lpgm', eventId, source: 'earthquake' })
+    applyQuakeOverlay(prev => openLpgmOverlay(prev, eventId, 'earthquake'), '長周期地震動を自動で開いた')
   }, [])
   // 震度分布ボタン。こちらは鍵が `eventKey` なのでそのまま渡せる
   // （選択の実体を合わせる理由は `toggleLpgmFromEarthquake`）。
   const toggleDistribution = useCallback((eventKey: string) => {
     selectQuake(eventKey)
-    setQuakeOverlay(prev => toggleDistributionOverlay(prev, eventKey))
+    applyQuakeOverlay(prev => toggleDistributionOverlay(prev, eventKey), '震度分布のボタン')
   }, [selectQuake])
   // 未入電ボタン。鍵は分布と同じ `eventKey`。
   const toggleUnreceived = useCallback((eventKey: string) => {
     selectQuake(eventKey)
-    setQuakeOverlay(prev => toggleUnreceivedOverlay(prev, eventKey))
+    applyQuakeOverlay(prev => toggleUnreceivedOverlay(prev, eventKey), '未入電のボタン')
   }, [selectQuake])
   // EEW カードから長周期の表示を閉じる。**分布は触らない** —— 排他なので開いていないが、
   // この操作の意味は「長周期を閉じる」であって追加表示すべてではない。
   const deactivateLpgm = useCallback(() => {
-    setQuakeOverlay(closeLpgmOverlay)
+    applyQuakeOverlay(closeLpgmOverlay, '長周期地震動を閉じた')
   }, [])
   // 津波タブで観測点名をクリックしたときにフォーカス対象として通知する。
   const focusTsunamiObs = useCallback((name: string) => {
@@ -452,14 +512,23 @@ export function App() {
     // 追跡中に続報が来ても最初の状態を上書きしない（`??` は false を保つ）。
     setSpecialInfoPanelHold(prev => prev ?? wasCollapsed)
     setPanelCollapsed(false)
+    // 録画ツール向けの記録。**畳んでいたときだけ画面が動く**（開いていたならそのまま）。
+    if (wasCollapsed) {
+      recordReplayEvent({ type: 'overlay', overlay: 'specialInfoPanel', open: true, reason: '特別情報の受信' })
+    }
   }, [])
 
   /** 特別情報のために開いたパネルを元の状態へ戻す（追跡していなければ何もしない）。 */
   const restoreSpecialInfoPanel = useCallback(() => {
     if (specialInfoPanelHoldRef.current === null) return
     log.debug(`[panel] 特別情報の展開を解除 (${specialInfoPanelHoldRef.current ? '畳む' : 'そのまま'})`)
-    if (specialInfoPanelHoldRef.current) setPanelCollapsed(true)
+    const collapsing = specialInfoPanelHoldRef.current
+    if (collapsing) setPanelCollapsed(true)
     setSpecialInfoPanelHold(null)
+    // 録画ツール向けの記録。**畳み直したときだけ**（元から開いていたなら画面は動かない）。
+    if (collapsing) {
+      recordReplayEvent({ type: 'overlay', overlay: 'specialInfoPanel', open: false, reason: '特別情報の展開を解除' })
+    }
   }, [])
 
   /**
@@ -552,7 +621,10 @@ export function App() {
     // 出ないので、手掛かりが何も残らない。長周期の自動表示も同じ 2 つを対にしている。
     const eventKey = quakeEventKey(target)
     selectQuake(eventKey)
-    setQuakeOverlay(prev => openDistributionOverlay(prev, eventKey))
+    // **記録は `applyQuakeOverlay` が出す。** この関数は 1 つの分布図につき 2 回呼ばれる
+    // 決まりで（受信の瞬間と、読み上げの順番が来た瞬間）、2 回目は既に開いているので
+    // 画面は動かず記録も出ない。
+    applyQuakeOverlay(prev => openDistributionOverlay(prev, eventKey), '推計震度分布図の受信')
     return true
   }, [selectQuake])
 
@@ -564,7 +636,9 @@ export function App() {
    * 「同じ地震の続報でも閉じる」ぶんを受け持つ。
    */
   const closeDistributionOnQuakeReport = useCallback((eventKey: string) => {
-    setQuakeOverlay(prev => closeDistributionOverlayOnQuakeReport(prev, eventKey))
+    // 閉じる要求は開いていなくても届くが、**記録は `applyQuakeOverlay` が実際に動いた
+    // ときだけ出す**ので、画面が動いていない回は並ばない。
+    applyQuakeOverlay(prev => closeDistributionOverlayOnQuakeReport(prev, eventKey), 'その地震の電文を受信')
   }, [])
 
   // EEW の受信による realtime タブ移動。
@@ -1090,7 +1164,7 @@ export function App() {
     if (!unreceivedQuakeKey) return
     const target = filteredEarthquakes.find(q => quakeEventKey(q) === unreceivedQuakeKey)
     if (target?.points.some(p => p.unreceived && p.addr)) return
-    setQuakeOverlay(closeUnreceivedOverlay)
+    applyQuakeOverlay(closeUnreceivedOverlay, '未入電の地点が無くなった')
   }, [filteredEarthquakes, unreceivedQuakeKey])
 
   // cancelledAt（10秒表示中）の EEW は地図・挙動系から除外する
@@ -1129,7 +1203,7 @@ export function App() {
     if (!eew || eewMaxLpgmClass(eew) < 1) {
       // 落とすのは EEW 由来の長周期だけ（この effect が走るあいだに別の追加表示へ
       // 切り替わっていたら、そちらは触らない）。
-      setQuakeOverlay(closeEewLpgmOverlay)
+      applyQuakeOverlay(closeEewLpgmOverlay, '緊急地震速報が消えた')
     }
   }, [activeEEWs, activeLpgmEventId, activeLpgmSource])
 
@@ -1645,7 +1719,7 @@ export function App() {
     // だったときだけで、EEW カードから開いた長周期は選択を通らない（実体が null のまま開いて
     // いることがある）。そちらは EEW が消えた副作用で別の effect が閉じるが、1 テンポ遅れる
     // うえ「ここを見ればリセットが完結している」と読めなくなる。
-    setQuakeOverlay(null)
+    applyQuakeOverlay(null, 'リセット')
     // 特別情報でパネルを開いたときの「元の状態」。持ち越すと、次にバナーが消えたときに
     // 切り替え前の状態へ戻す。
     setSpecialInfoPanelHold(null)
@@ -1707,6 +1781,23 @@ export function App() {
       error: () => replayAccessRef.current.error,
       /** 読み上げの最中か。 */
       speaking: () => isSpeaking(),
+      /**
+       * 溜まったイベントを汲み出す（返した分はバッファから消える）。
+       *
+       * **`speaking()` だけでは、連続して読み上げたものが 1 本に融ける。** あちらが答えるのは
+       * 「いま読み上げているか」だけで、どの発話かを持たないため。イベントログは 1 本ごとに
+       * 開始と終了を出し、それぞれがどの電文のものかを指す
+       * （→ `docs/spec/recording-interface-spec.md`）。
+       *
+       * **定期的に汲むこと。** 溜めておける件数には上限があり、超えると古い方から捨てる。
+       * 捨てた件数は戻り値の `dropped` に出る（`seq` の飛びからも読める）。
+       *
+       * **コールバックではなくポーリングの形にしてある。** 外の録画ツールは CDP 越しに
+       * `window.__replay.*()` を呼ぶだけで、ページからの通知は受け取れない。
+       */
+      drainEvents: () => drainReplayEvents(),
+      /** 消さずに覗く（デバッグ用）。汲み出しの妨げにならないよう `dropped` も持ち越す。 */
+      peekEvents: () => peekReplayEvents(),
       /** 指定した日時から再生を始める。 */
       start: (iso: string) => {
         const at = new Date(iso)
@@ -1964,14 +2055,16 @@ export function App() {
       // 条件と同じ述語に揃えてある。
       hasUnreceivedPoints: !!selectedQuake?.points.some(p => p.unreceived && p.addr),
     })
-    if (decision === 'opened') setQuakeOverlay({ kind: 'unreceived', eventKey: subject! })
+    if (decision === 'opened') applyQuakeOverlay({ kind: 'unreceived', eventKey: subject! }, '未入電の読み上げ')
     return decision
   }, [selectedQuake, activeTab, quakeOverlay])
   // **開いたときと同じ地震のものだけ閉じる。** 開けてから閉じるまでの間に選択が移っていれば、
   // そこにあるのは利用者が開き直した別の表示（`closeUnreceivedOverlayFor`）。
-  const closeUnreceivedForSpeech = useCallback((subject: string | undefined) => {
+  const closeUnreceivedForSpeech = useCallback((subject: string | undefined, reason: string) => {
     if (!subject) return
-    setQuakeOverlay(prev => closeUnreceivedOverlayFor(prev, subject))
+    // 記録は `applyQuakeOverlay` が出す。ここが渡すのは理由だけ（別の経路が先に閉じていれば
+    // 何も動かないので、記録も出ない）。
+    applyQuakeOverlay(prev => closeUnreceivedOverlayFor(prev, subject), reason)
   }, [])
   useUnreceivedSpeechFollow({
     session: unreceivedFollowSession,
