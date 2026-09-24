@@ -90,7 +90,9 @@ npm run preview
 完了済み PoC・移行記録は [`docs/archive/`](docs/archive/) にまとめています。
 これから追加する機能の計画と採否の判断は [`docs/implementation-plan.md`](docs/implementation-plan.md) にまとめています。
 
-自作の加速度センサーを LAN 内で動かすための手順は [`firmware/README.md`](firmware/README.md) にまとめています（このアプリのビルドには含まれません）。
+自作の加速度センサーを LAN 内で動かすための手順は [`firmware/README.md`](firmware/README.md)、
+その波形を受け取る側は [`seismo-host/README.md`](seismo-host/README.md) にまとめています
+（どちらもこのアプリのビルドには含まれません）。
 
 ## 注意事項
 
