@@ -17,5 +17,7 @@
     "noUncheckedSideEffectImports": true,
     "types": ["node"]
   },
-  "include": ["seismo-host/**/*.ts"]
+  // `src/utils/knet/seismicIntensity.ts` を通して fft-js を読むので、その型宣言も
+  // この構成へ入れる（fft-js は型を同梱していない）。
+  "include": ["seismo-host/**/*.ts", "src/types/fft-js.d.ts"]
 }
