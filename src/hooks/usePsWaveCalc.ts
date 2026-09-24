@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { EEWAlert } from '../types/earthquake'
 import type { PsWaveCircle } from '../services/kyoshin'
 import { serverNow } from '../utils/clock'
+import { hasDepth } from '../utils/formatters'
 import { hasKnownEpicenter } from '../utils/geo'
 import { reachRadiusKm } from '../utils/travelTime'
 
@@ -9,7 +10,7 @@ const UPDATE_INTERVAL_MS = 100
 
 /**
  * 単一 EEW の震源・発生時刻（now 時点）から P波・S波の地表到達円を計算する。円が作れない場合
- * （取消済み・座標無効・震源未確定・仮定震源要素・未発生）は null。
+ * （取消済み・座標無効・震源未確定・仮定震源要素・**深さ不明**・未発生）は null。
  *
  * **走時は JMA2001 走時表から引く**（`utils/travelTime.ts`）。震央距離と深さの組で表を引くので、
  * 地表の曲がりも地殻・マントルの構造も表が持っている —— こちら側で速度モデルを組まない。
@@ -33,12 +34,27 @@ export function computeEewCircle(eew: EEWAlert, now: number): PsWaveCircle | nul
   // 算出できず、受信端末向けのガイドラインも「まもなく到達」等の表現を推奨している）。予報円は
   // 猶予時間の図示なので、描けば根拠のない秒数を見せることになる。震源名が空の報も同じ扱い。
   if (!hypocenter.name || eew.earthquake.condition === '仮定震源要素') return null
+  // 震源の深さが判らない報でも円を描かない。**`0` は「ごく浅い」という有効値**で、
+  // 判らないことは `-1` で表す（`Hypocenter.depth`）。丸めて 0 として扱うと最も浅い地震の
+  // 速さで円が広がり、**深い地震ほど「まだ地表へ届いていない」時間帯に円を見せる**
+  // （深さ 100km・発生 20 秒後で、真の半径 0 に対し 65km 先まで到達済みに描く）。深さは
+  // 事前に判らないので代表値を当てても外れうる ——仮定震源要素と同じで、描けば根拠のない
+  // 秒数を見せることになる。
+  //
+  // **判定は `reachRadiusKm` を呼ぶ手前に置く。** あちらは NaN を返さない契約のため内部で
+  // `Math.max(0, depthKm)` と丸めており、呼び出し側でクランプを外すだけでは何も変わらない。
+  //
+  // 電文の側も「位置は決まっているが深さは不明」を想定している——気象庁
+  // 「[緊急地震速報に関する情報のコード電文解説資料](https://www.data.jma.go.jp/suishin/shiyou/pdf/no40202)」
+  // が震源の深さ `hhh` の値域に「///：不明・未設定時、キャンセル時」を置く一方、緯度経度には
+  // 「キャンセル時」しか無い。
+  if (!hasDepth(hypocenter.depth)) return null
 
   const originMs = new Date(eew.earthquake.originTime).getTime()
   const t = (now - originMs) / 1000
   if (t < 0) return null
 
-  const depth = Math.max(0, hypocenter.depth ?? 0)
+  const depth = hypocenter.depth
 
   return {
     eventId: eew.issue?.eventId ?? eew.id,
