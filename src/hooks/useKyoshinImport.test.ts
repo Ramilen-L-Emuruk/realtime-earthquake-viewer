@@ -8,8 +8,6 @@ vi.mock('../services/localArchiveReplay', () => ({ findCoveringArchiveSync: vi.f
 vi.mock('../utils/knet/buildEventResultFromZip', () => ({
   buildEventResultFromZip: vi.fn(),
   parseJstTimestamp: vi.fn(),
-  WINDOW_SEC_DEFAULT: 20,
-  STEP_SEC_DEFAULT: 1,
 }))
 vi.mock('../utils/kyoshinImportDb', () => ({
   countImportedEvents: vi.fn(),
