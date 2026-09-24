@@ -25,6 +25,7 @@ import { type EewSpeakingCardFollow } from './useEewSpeakingCard'
 import { joinSegments, plain, hasFollowTarget, hasUnreceivedFollowTarget, hasTelegramTextFollowTarget, hasBorrowedHypocenterFollowTarget, TELEGRAM_TEXT_OPEN_TARGET_KINDS, telegramTextSubject, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
 import { log, createLogThrottle } from '../utils/logger'
 import { TAB_PRIORITY, type TabPriority } from '../utils/tabPriority'
+import { hasPendingEewSpeech } from '../utils/eewPendingSpeech'
 import { extractQuakeEventIdFromId, mergeQuakeInto, quakeEventKey, quakeKeyForLpgmEventId, sameQuakeEntry } from '../utils/quakeMerge'
 
 import { getAreaPrefIndexCache } from '../utils/stationCoords'
@@ -1212,6 +1213,16 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   // 言葉を重ねないことだけをこちらで担い、読み直しの契機はあちらに残す。
   const spokenEEWUpgradePhraseRef = useRef<Set<string>>(new Set())
   const eewTtsMaxTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  /**
+   * 誤報取消の読み上げを予約した eventId（まだ発話へ至っていないもの）。
+   *
+   * **他のフェーズと違って専用の集合が要る。** あちらは予約トークンが Map に載るので
+   * 「まだ語る予定がある」ことがそこから読めるが、取消は `scheduleSpeech` で間を置いてから
+   * チェーンへ積む一回性の呼び出しで、どの Map にも現れない。しかも取消を受けた時点で
+   * 他の 6 つはすべて空にされるため、これが無いと「いま声が語っているカード」の印が
+   * 取消の読み上げを待たずに落ちる（→ `utils/eewPendingSpeech.ts`）。
+   */
+  const eewCancelSpeechRef = useRef<Set<string>>(new Set())
   // 第 2 フェーズ（予想値）を一度でも発話した eventId。まだ読んでいない間は、値が上がって
   // いなくても読む（初報・震源更新の読み直しがこれに当たる）。
   const eewPhase2DoneRef = useRef<Set<string>>(new Set())
@@ -1369,6 +1380,36 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     }
   }
 
+  /**
+   * その緊急地震速報について、**まだ声にする予定が残っているか**（`eewEventKey` 単位）。
+   *
+   * 「いま声が語っているカード」の印を、段と段のあいだも保つための判定
+   * （{@link EewSpeakingCardFollow.end}）。読み上げは名乗り・警報対象地方・予想値の 3 段に
+   * 分かれ、段のあいだには安定待ち（最大 `EEW_PHASE2_STABILITY_MAX_WAIT_MS`）が挟まる ——
+   * **その待ちを時間の猶予で代用しない**。待ちが猶予を超えれば読み上げの途中で印が消え、
+   * 語り終われば猶予のぶん余計に残る。事実がここにあるのだから直接見る。
+   *
+   * **自分自身の発話は数に入らない。** 各フェーズの予約トークンは `speak()` の中、つまり
+   * 印を立てる（`begin`）より手前で自分を `delete` する。ここで真になるのは
+   * 「**次に**語る予定」だけ。
+   *
+   * **`speechBlocker` の同名の判定とは別物。** あちらは「いま非 EEW を始めてよいか」を
+   * 全 EEW 横断（`.size > 0`）で見る。こちらは「この地震について語り残しがあるか」なので
+   * key 単位でなければならない。
+   *
+   * **緊急地震速報の予約を新しく足したら、ここにも足すこと。** 抜けても症状は
+   * 「印が語り終わる前に消える」だけで、例外もログも出ない。
+   */
+  const hasPendingEewSpeechFor = (key: string) => hasPendingEewSpeech(key, {
+    phase1: eewPhase1TokensRef.current,
+    warningRegions: eewRegionTokensRef.current,
+    phase2: eewPhase2TokensRef.current,
+    scaleStability: eewScaleStabilityRef.current,
+    lpgmStability: eewLpgmStabilityRef.current,
+    forecastMaxWait: eewTtsMaxTimersRef.current,
+    cancelSpeech: eewCancelSpeechRef.current,
+  })
+
   const chainEEWSpeech = (
     /**
      * 語る対象の eventId（{@link eewEventKey}）。**画面側で「いま声が語っているカード」を
@@ -1455,10 +1496,34 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       .catch(err => log.warn('[eew] 読み上げに失敗', err))
       .finally(() => {
         eewSpeechPendingRef.current--
-        settled?.(spoke)
+        // **後始末はそれぞれ独立した try で囲う。** `.finally` のコールバックが投げると
+        // チェーン（`eewSpeechChainRef.current`）はその例外で reject し、**次に積まれた 1 本**は
+        // `capSpeechWait(prev).then(...)` を飛ばして `.catch` へ落ちる —— `speak()` を一度も
+        // 呼ばれないまま黙って消える。記録に残るのは「[eew] 読み上げに失敗」の一行だけで、
+        // 原因がここだとは判らない。
+        //
+        // **消えるのは 1 本だけ**（`.catch` が reject を吸収するので、そのさらに次からは
+        // 回復する）。それでも、消えたのが名乗りの次に来る予想値なら「区分は名乗ったのに
+        // 震度を言わない」形になる —— テストで再現してある。
+        //
+        // **1 つの try にまとめないこと。** `.then` 側（印とタブ追従）と同じ理由で、先に
+        // 置いた方が投げると後ろが一度も呼ばれない。
+        //
+        // **`settled`（`onSettled`）の中は投げない前提で書くこと。** 実装はどれも Map の
+        // 出し入れ（`rollbackSpokenEntry`）だけだが、投げれば途中で止まり、既読が部分的に
+        // 巻き戻った状態が残る。ここで捕まえてもその中途半端さは直せない ——
+        // チェーンを守るだけで、記録から追えるようにしてある。
+        try { settled?.(spoke) } catch (err) { log.warn('[eew] 読み上げ後の記録に失敗', key, err) }
         // 印を立てた発話だけが後始末する。**立てていない発話（黙る予約・`begin` が投げた回）から
         // 呼ばないこと** —— 受け口は世代で照合するので害は無いが、渡すトークンが無い。
-        if (speakingCardToken !== null) eewSpeakingCard?.end(speakingCardToken)
+        //
+        // 印をいつ落とすかは受け口が `hasPendingEewSpeech` を見て決める（段と段のあいだは
+        // 保ち、語ることが尽きたら落とす）。**その場で一度呼んで真偽を渡す形にしないこと**
+        // —— 語り終わった瞬間に残っていた予約が、その後で捨てられることがある
+        // （誤報取消・リセット）。受け口は残っているあいだ見直し続ける。
+        try {
+          if (speakingCardToken !== null) eewSpeakingCard?.end(speakingCardToken, () => hasPendingEewSpeechFor(key))
+        } catch (err) { log.warn('[eew] 語っているカードの印を落とせず', key, err) }
       })
   }
 
@@ -2773,9 +2838,18 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             if (settings.voicevoxEnabled) {
               // 誤報取消は「手動選択より強い」側の通知なので、追従も eewUrgent で出す
               // （eewUpdate だと、取消を読み上げる直前に手動で別タブへ移られた場合に弾かれる）。
+              // **予約したことを覚えておく**（→ `eewCancelSpeechRef` の JSDoc）。取消を受けた
+              // 時点で他の予約はすべて空になるので、これが無いと直前まで語っていた発話の
+              // 後始末で「もう語ることは無い」と判定され、取消の読み上げを待たずに
+              // 「いま声が語っているカード」の印が落ちる。
+              eewCancelSpeechRef.current.add(key)
               scheduleSpeech(ttsDelayFor('eewCancel'), () => chainEEWSpeech(
                 key,
-                () => eewCancelToText(event),
+                () => {
+                  // 発話するものが決まった（または黙ると決めた）時点で予約は消化された。
+                  eewCancelSpeechRef.current.delete(key)
+                  return eewCancelToText(event)
+                },
                 () => followSpeechTab('realtime', TAB_PRIORITY.eewUrgent),
               ))
             }
@@ -4645,6 +4719,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       window.clearTimeout(areaGradeClearTimerRef.current)
       // 間を置いている最中の読み上げも捨てる（`resetTracking` と対称）
       cancelPendingSpeech()
+      eewCancelSpeechRef.current.clear()
     }
   }, [cancelPendingSpeech])
 
@@ -4665,6 +4740,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     eewTtsEventsRef.current.clear()
     eewPhase1TokensRef.current.clear()
     eewPhase2TokensRef.current.clear()
+    // 誤報取消の読み上げの予約も捨てる。**予約自体は `cancelPendingSpeech` が取り消すので、
+    // 覚えだけが残る** —— 残すと、その eventId について「まだ語ることがある」と答え続け、
+    // 新しい時間軸で同じ地震の印が落ちなくなる。
+    eewCancelSpeechRef.current.clear()
     for (const cycle of eewScaleStabilityRef.current.values()) clearTimeout(cycle.timer)
     eewScaleStabilityRef.current.clear()
     for (const cycle of eewLpgmStabilityRef.current.values()) clearTimeout(cycle.timer)
@@ -4736,8 +4815,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     telegramTextFollow?.reset()
     borrowedHypocenterFollow?.reset()
     // 「いま声が語っている緊急地震速報」の印も落とす。切り替え前の eventId が残ると、
-    // 新しい時間軸で同じ eventId の地震が来るまで消えない（猶予のタイマーは鳴り終わりで
-    // 張るので、割り込みで消えた発話の分は張られない）。
+    // 新しい時間軸で同じ eventId の地震が来るまで消えない（印を落とすための見直しは
+    // 鳴り終わりに始まるので、割り込みで消えた発話の分は始まらない）。
     eewSpeakingCard?.reset()
   }, [cancelPendingSpeech, speechFollow, unreceivedFollow, telegramTextFollow, borrowedHypocenterFollow, eewSpeakingCard])
 
