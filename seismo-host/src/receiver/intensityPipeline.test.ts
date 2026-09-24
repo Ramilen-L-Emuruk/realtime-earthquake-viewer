@@ -353,10 +353,37 @@ describe('IntensityPipeline', () => {
       expect(rest.failures).toHaveLength(1)
       expect(rest.failures[0].detail).toContain('試験用')
       expect(rest.failures[0].streamKey).toBe(KEY)
+      // **どの基板のものかまで載せる。** 数える側は基板ごとに積むので、ここが
+      // 流れの鍵（起動 ID まで入る）しか持っていないと、再起動のたびに別の行へ散る。
+      const meta = pkt({})
+      expect(rest.failures[0].boardKey).toBe(meta.boardKey)
+      expect(rest.failures[0].sensorId).toBe(meta.sensorId)
       // 壊していないほうの締めくくりは出ている。
       expect(rest.readings.length).toBeGreaterThan(0)
       expect(rest.readings.every((r) => r.boardKey === other.boardKey)).toBe(true)
       expect(p.openSegments()).toEqual([])
+    })
+
+    it('流し込みの入れ物が消えていたら、黙って通さず閉じ直す', () => {
+      // **起きないはずの食い違い。** 組み立ては「区間が続いている」と言っているのに
+      // 震度側の入れ物が無い、という状態を外から作る手立てが無いので直接消す。
+      // 黙って通す作りだと、その流れの震度は以後どこにも現れないのに
+      // `dropped` も `intensitySkipped` も null で返るため、上の層からは
+      // 「何も起きなかったパケット」と見分けが付かない。
+      const p = new IntensityPipeline(OPTS)
+      feed(p, 3)
+      innards(p).entries.delete(KEY)
+
+      const outcome = p.handlePacket(pkt({ firstSeq: 3 * PER_PACKET }))
+      expect(outcome.dropped).toBe('stream-desync')
+      expect(outcome.detail).toContain('入れ物が見つからない')
+      // 組み立ての側も閉じてある。次のパケットは 0 から数え直す新しい区間になる。
+      expect(p.openSegments()).toEqual([])
+      expect(trackedCount(p)).toBe(0)
+
+      const next = p.handlePacket(pkt({ firstSeq: 4 * PER_PACKET }))
+      expect(next.startedBecause).toBe('stream-start')
+      expect(next.dropped).toBeNull()
     })
 
     it('閉じた流れの覚えを残さない', () => {

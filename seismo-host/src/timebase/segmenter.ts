@@ -189,6 +189,17 @@ export function streamKeyOf(p: SensorPacket): string {
   return JSON.stringify([p.boardKey, p.sensorId, p.bootId])
 }
 
+/**
+ * 同時に覚えていられる流れの数。
+ *
+ * **受信層の上限もここから読む。** 数える表（`../receiver/packetTally.ts`）・送信元ごとの
+ * 速度の上限（`../receiver/sourceRateLimit.ts`）・記録の間引き（`../receiver/logThrottle.ts`）は
+ * どれも「1 台につき 1 つの枠」を前提に大きさを決めており、**流れの上限と揃っていることが
+ * その前提の根拠**。それぞれが手書きの数字を持つと、ここを動かしたとき残りが古い値のまま
+ * 取り残され、揃えたつもりの関係が黙って外れる。
+ */
+export const MAX_STREAMS_DEFAULT = 64
+
 export class Segmenter {
   private readonly streams = new Map<string, StreamState>()
   private readonly maxStreams: number
@@ -196,7 +207,7 @@ export class Segmenter {
   private clock = 0
 
   constructor(options: SegmenterOptions = {}) {
-    this.maxStreams = options.maxStreams ?? 64
+    this.maxStreams = options.maxStreams ?? MAX_STREAMS_DEFAULT
   }
 
   accept(packet: SensorPacket): SegmentAcceptResult {

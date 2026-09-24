@@ -142,6 +142,24 @@ describe('parseSensorPacket', () => {
       expect(r).toMatchObject({ ok: false, reason: 'header-field-invalid', detail: 't' })
     })
 
+    it('時刻として表せない大きさの値を通さない', () => {
+      // **有限なだけでは足りない。** `Number.isFinite(1e20)` は真だが
+      // `new Date(1e20).toISOString()` は投げる。ここで通すと、時刻として出せない値が
+      // 波形に乗ったまま下流へ流れ、**出す側で初めて例外になる** ——
+      // そのとき巻き添えで消えるのは、同じパケットに同梱された他の基板の震度のほう。
+      for (const t of [1e20, -1e20, 8.64e15 + 1]) {
+        const head = `{"n":"a","s":"b","ug":61,"hz":100,"r":2,"t":${t},"q":0,"c":1,"o":0}`
+        expect(parseSensorPacket(packet(head, rows(1)))).toMatchObject({
+          ok: false,
+          reason: 'header-field-invalid',
+          detail: 't',
+        })
+      }
+      // 境界そのものは通す（`Date` が表せる端）。
+      const edge = `{"n":"a","s":"b","ug":61,"hz":100,"r":2,"t":${8.64e15},"q":0,"c":1,"o":0}`
+      expect(parseSensorPacket(packet(edge, rows(1))).ok).toBe(true)
+    })
+
     it('空の中身を落とす', () => {
       expect(parseSensorPacket('')).toMatchObject({ ok: false, reason: 'empty' })
       expect(parseSensorPacket('\n')).toMatchObject({ ok: false, reason: 'empty' })
