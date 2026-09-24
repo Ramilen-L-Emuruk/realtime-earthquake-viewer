@@ -6,6 +6,7 @@ import type { AlertTitleApi } from './useAlertTitle'
 import { playAlertSound, playKyoshinUpdateSound, kyoshinLevel } from '../utils/alertSound'
 import { kyoshinIndexToLabel } from '../utils/kyoshinIntensity'
 import { showBrowserNotification } from '../utils/notifications'
+import { hasDepth } from '../utils/formatters'
 import { hasKnownEpicenter, haversineKm } from '../utils/geo'
 import { log } from '../utils/logger'
 import { reachRadiusKm } from '../utils/travelTime'
@@ -173,7 +174,10 @@ function extractEewInfo(eew: EEWAlert): NearestEewInfo | null {
     lat: hypocenter.latitude,
     lng: hypocenter.longitude,
     originTimeMs: new Date(eew.earthquake.originTime).getTime(),
-    depth: Math.max(0, hypocenter.depth ?? DEFAULT_VIRTUAL_DEPTH_KM),
+    // **既定値は `??` では当たらない。** 深さが判らないことはセンチネル `-1` で表すので
+    // （`Hypocenter.depth`。`0` は「ごく浅い」という有効値）、素通りした -1 を `Math.max` が
+    // 0 へ丸め、用意した仮の深さが使われないまま最も浅い地震として閾値が広がる。
+    depth: hasDepth(hypocenter.depth) ? hypocenter.depth : DEFAULT_VIRTUAL_DEPTH_KM,
   }
 }
 

@@ -1,4 +1,5 @@
 import type { EEWAlert, EEWRegion } from '../types/earthquake'
+import { hasDepth } from './formatters'
 import { hasKnownEpicenter, haversineKm, hypocentralDistanceKm } from './geo'
 import type { AlertSoundType } from './alertSound'
 import { travelTimeSec } from './travelTime'
@@ -84,7 +85,10 @@ export function calcEEWAutoCancelSec(mjma: number, depth: number): number {
  */
 export function calcEEWCancelTime(eew: EEWAlert, reportTime: Date): Date {
   const mjma = eew.earthquake.hypocenter.magnitude ?? 6.0
-  const depth = eew.earthquake.hypocenter.depth ?? 30
+  // **既定値は `??` では当たらない。** 深さが判らないことはセンチネル `-1` で表すので
+  // （`Hypocenter.depth`。`0` は「ごく浅い」という有効値）、`?? 30` は素通りして -1 が
+  // そのまま有感半径の計算（`calcPGV600` の深さ項）へ流れ、解除が実際より早まる。
+  const depth = hasDepth(eew.earthquake.hypocenter.depth) ? eew.earthquake.hypocenter.depth : 30
   const originTime = new Date(eew.earthquake.originTime)
   const autoCancelSec = calcEEWAutoCancelSec(mjma, depth)
   const fromOrigin = new Date(originTime.getTime() + autoCancelSec * 1000)
@@ -516,6 +520,8 @@ export const DEEP_QUAKE_DEPTH_KM = 150
  */
 export function eewNoForecastReason(eew: EEWAlert): 'assumed' | 'deep' | 'unknown' {
   if (eew.earthquake.condition === '仮定震源要素') return 'assumed'
+  // **深さが判らない報（センチネル `-1`）は比較が偽になり `unknown` へ落ちる。これは意図どおり。**
+  // 深さを読めていない以上「深発地震のため」とは断定できず、値が遅れて付く可能性も残る。
   if (eew.earthquake.hypocenter.depth > DEEP_QUAKE_DEPTH_KM) return 'deep'
   return 'unknown'
 }

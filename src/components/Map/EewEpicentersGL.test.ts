@@ -123,6 +123,24 @@ describe('buildEpicenterPoints', () => {
     expect(points[1].depthKm).toBe(0)
   })
 
+  // 正: **深さが判らない報のセンチネルは `-1`**（`0` は「ごく浅い」という有効値）。
+  // `?? 0` は null/undefined にしか効かないので素通りし、`elevationMetersFromDepthKm(-1)` が
+  // 標高 **+1000m** を返して×印が地表より 1km 上へ浮いていた。
+  //
+  // **上の `depth: null` のテストでは守れない** —— あちらは旧実装（`ep.depth ?? 0`）でも
+  // 通るので、実運用で届く値（`-1`）を別に固定する。
+  it('深さが判らない報（-1）も地表に置く', () => {
+    const { points } = buildEpicenterPoints([epicenter({ depth: -1 })], 1, true)
+    expect(points[1].depthKm).toBe(0)
+  })
+
+  // 対照: 深さ 0 は「ごく浅い」という有効値で、判らない場合と同じ扱いでよい（どちらも地表）。
+  // **深さが読める報は従来どおりその値へ置く**（安全弁）。
+  it('深さが読める報は従来どおりその深さへ置く（安全弁）', () => {
+    const { points } = buildEpicenterPoints([epicenter({ depth: 80 })], 1, true)
+    expect(points[1].depthKm).toBe(80)
+  })
+
   it('複数の震源をすべて出す', () => {
     const eps = [epicenter({ id: 'a' }), epicenter({ id: 'b' })]
     const { points, owners } = buildEpicenterPoints(eps, 1, true)

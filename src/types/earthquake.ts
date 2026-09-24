@@ -7,6 +7,19 @@ export interface Hypocenter {
   name: string
   latitude: number
   longitude: number
+  /**
+   * 震源の深さ（km）。**判らないことは `-1` で表す。`0` は「ごく浅い」という有効値**なので、
+   * 数値として使う前に `formatters.ts` の `hasDepth` を通すこと。
+   *
+   * 電文も「位置は決まっているが深さは不明」を想定している ——気象庁の緊急地震速報のコード電文は
+   * 深さの値域に「不明」を持ち（緯度経度には無い）、XML では高さフィールドを省いて
+   * `description="…深さ不明"` を添える形で届く（実例は遠地地震）。取得元 3 つとも -1 を作る
+   * （DMDATA は `parseJmaCoord`・P2PQuake は `DEPTH_UNKNOWN`・Yahoo hypoInfo は `parseDepth`）。
+   *
+   * **`?? 既定値` では既定値が当たらない。** センチネルは null でも undefined でもないので
+   * 素通りし、`Math.max(0, …)` を重ねると最も浅い地震として扱われる。予報円・自動解除・
+   * 距離閾値・地図の深さ配置が、かつてそろってこの形で誤っていた。
+   */
   depth: number
   magnitude: number
   /**
