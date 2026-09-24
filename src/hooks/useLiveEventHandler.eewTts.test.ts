@@ -180,16 +180,27 @@ let capturedResult: ReturnType<typeof useLiveEventHandler> | null = null
  *
  * **世代トークンを返すところまで模す** —— `chainEEWSpeech` は `begin` の戻り値を保持して
  * `end` へ渡すので、返さないと後始末の経路を一度も通らない。
+ *
+ * **後始末で渡される判定（`hasPendingEewSpeech`）もその場で呼んで記録する**（`pendingAtEnd`）。
+ * 受け口はこれが偽になるまで印を保つので、**判定が key 単位で答えているか**はここでしか
+ * 固定できない（受け口を単体で叩くテストは述語を差し替えてしまう）。
  */
 function makeSpeakingCardStub() {
   const calls: string[] = []
+  /** 後始末の時点で「まだ語ることが残っていたか」（`<eventId>:pending` / `<eventId>:done`）。 */
+  const pendingAtEnd: string[] = []
   let seq = 0
   const keyOf = new Map<number, string>()
   return {
     calls,
+    pendingAtEnd,
     follow: {
       begin: (key: string) => { const t = ++seq; keyOf.set(t, key); calls.push(`begin:${key}`); return t },
-      end: (token: number) => { calls.push(`end:${keyOf.get(token) ?? `?${token}`}`) },
+      end: (token: number, hasPendingSpeech: () => boolean) => {
+        const key = keyOf.get(token) ?? `?${token}`
+        calls.push(`end:${key}`)
+        pendingAtEnd.push(`${key}:${hasPendingSpeech() ? 'pending' : 'done'}`)
+      },
       reset: () => { calls.push('reset') },
     },
   }
@@ -2384,6 +2395,81 @@ describe('いま声が語っているカードの配線', () => {
     expect(spokenTexts().length).toBeGreaterThan(0)
     // 印を立てられていないので後始末も呼ばない（渡すトークンが無い。黙る判断で降りた回も同じ）
     expect(broken.end).not.toHaveBeenCalled()
+  })
+
+  // 正: **段と段のあいだは「まだ語ることがある」と答え、最後の後始末で尽きる。**
+  // ここが一律の猶予をやめた要点 —— 名乗りと予想値のあいだには安定待ち（最大 5 秒）が
+  // 挟まるので、時間で切ると読み上げの途中で印が消える。
+  it('語り残しがあるあいだは真を返し、最後の後始末で偽になる', async () => {
+    const stub = makeSpeakingCardStub()
+    const handle = setup({}, stub.follow)
+    handle(makeEEW({ eventId: 'evt-A', scaleTo: 50 }))
+    // 予想値の安定待ち（最大 5 秒）とチェーンの待ち上限（8 秒）が積み上がるので長く進める
+    // （偽の時計なのでコストは無い）。
+    await vi.advanceTimersByTimeAsync(60000)
+    await flushMicrotasks()
+
+    expect(stub.pendingAtEnd.length).toBeGreaterThan(1)
+    expect(stub.pendingAtEnd[stub.pendingAtEnd.length - 1]).toBe('evt-A:done')
+    // 途中の後始末はすべて「まだ残っている」。1 つでも done が混じれば、その時点で印が消える。
+    expect(stub.pendingAtEnd.slice(0, -1)).toEqual(
+      stub.pendingAtEnd.slice(0, -1).map(() => 'evt-A:pending'),
+    )
+  })
+
+  // 安全弁: **後始末が投げても、次の発話が消えない。**
+  //
+  // `.finally()` のコールバックが投げると、そのチェーン（`eewSpeechChainRef.current`）は
+  // 例外で reject する。**次に積まれた 1 本**は `capSpeechWait(prev).then(...)` を飛ばして
+  // `.catch` へ落ちるので、`speak()` を一度も呼ばれないまま黙って消える —— 記録に残るのは
+  // 「読み上げに失敗」の一行だけで、原因はそこからは判らない。
+  //
+  // **消えるのは 1 本だけ。** `.catch` が reject を吸収して以降は resolved になるので、
+  // そのさらに次からは回復する。とはいえ消えた 1 本が警報の予想値なら、それだけで
+  // 「区分は名乗ったのに震度を言わない」形になる。
+  it('印の後始末が投げても、続く発話は消えない', async () => {
+    let ends = 0
+    const broken = {
+      begin: () => 1,
+      // 1 つ目（名乗り）の後始末だけ投げる。直った実装なら 2 つ目（予想値）は鳴る。
+      end: () => { ends++; if (ends === 1) throw new Error('後始末で失敗') },
+      reset: vi.fn(),
+    }
+    const handle = setup({}, broken as never)
+    handle(makeEEW({ eventId: 'evt-A', scaleTo: 50 }))
+    await vi.advanceTimersByTimeAsync(60000)
+    await flushMicrotasks()
+    expect(spokenTexts()[0]).toBe('緊急地震速報、日向灘で地震。')
+    expect(spokenTexts()).toContain('予想最大震度5強。')
+  })
+
+  // 正: **誤報取消の読み上げを待つあいだも、印は「まだ語ることがある」と答える。**
+  //
+  // 取消は間（`ttsDelayFor('eewCancel')`）を置いてからチェーンへ積む一回性の予約で、
+  // **どの Map にも現れない**。しかも取消を受けた時点で他の 6 つの予約はすべて空にされるので、
+  // 専用の集合（`eewCancelSpeechRef`）で覚えないと、直前まで語っていた発話の後始末が
+  // 「もう語ることは無い」と答え、取消を読み上げる前に印が落ちる。
+  //
+  // 名乗りが鳴り始めてから取消を届かせるのが要点 —— 取消が先に済むと、その発話の後始末は
+  // 取消より前に走ってしまい、この経路を通らない。
+  it('誤報取消の読み上げを待つあいだも、印は「まだ語ることがある」と答える', async () => {
+    const stub = makeSpeakingCardStub()
+    const handle = setup({}, stub.follow)
+    // 名乗りの合成を保留させ、**鳴っている最中に**取消を届かせる。取消はその時点で
+    // 他の 6 つの予約をすべて空にするので、名乗りの後始末が真を返す理由は取消の予約だけになる。
+    const release = holdNextSpeech()
+    handle(makeEEW({ eventId: 'evt-A', scaleTo: 50 }))
+    await flushMicrotasks()
+    handle(makeEEW({ eventId: 'evt-A', scaleTo: 50, cancelled: true }))
+    release()
+    await vi.advanceTimersByTimeAsync(60000)
+    await flushMicrotasks()
+
+    expect(spokenTexts()).toContain('21時0分に発表された緊急地震速報は取り消されました。')
+    // 1 つ目（名乗り）の後始末。この時点で真を返す理由は取消の予約だけ。
+    expect(stub.pendingAtEnd[0]).toBe('evt-A:pending')
+    // 取消を読み終えれば尽きる。
+    expect(stub.pendingAtEnd[stub.pendingAtEnd.length - 1]).toBe('evt-A:done')
   })
 
   // 安全弁: 時間軸が変わったら印ごと落とす。**これを呼び忘れても画面が光り続けるだけで
