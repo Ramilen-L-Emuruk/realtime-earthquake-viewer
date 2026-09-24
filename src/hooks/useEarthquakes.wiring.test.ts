@@ -21,6 +21,9 @@ import type { AppEvent, LiveEvent, LiveEventMeta, EEWAlert, JMAQuake, JMATsunami
 import type { ReplayEntry, ReplayPayload } from '../types/replay'
 import type { JMAKohatsu } from '../types/earthquake'
 import { serverDate, setReplayOffset } from '../utils/clock'
+import {
+  drainReplayEvents, __resetReplayEventLogForTest, type ReplayTelegramEvent,
+} from '../utils/replayEventLog'
 import { DMDATA_API_KEY_INVALID_MESSAGE } from '../utils/dmdataApiKey'
 import { log } from '../utils/logger'
 import { CELL_LAT_DEG, CELL_LON_DEG } from '../utils/bufrEstimatedIntensity'
@@ -3684,5 +3687,84 @@ describe('カードが採らない電文には「据え置き」の印を付け�
 
     expect(通知(onLiveEvent).map(([, 印]) => 印)).toEqual([false, false, false])
     expect(h.current.earthquakes.filter(q => !q.cancelledAt)).toHaveLength(1)
+  })
+})
+
+// 録画ツール向けのイベントログ（→ `docs/spec/recording-interface-spec.md`）。
+//
+// **`onLiveEvent` まで届く電文は `useLiveEventHandler` が記録する。** ここで固定するのは、
+// その手前で落としている電文にも記録が残ること —— 残らないと、編集する側からは「配信が
+// 無かった」のと区別が付かない。
+describe('録画ツール向けの記録: onLiveEvent へ届かない電文', () => {
+  const AT = '2024-01-01T16:10:20+09:00'
+
+  function eewReport(serial: string): EEWAlert {
+    return {
+      kind: 'eew',
+      id: `dmdata-eew-replaylog-${serial}`,
+      time: AT,
+      test: false,
+      earthquake: {
+        originTime: AT, arrivalTime: AT, condition: '',
+        hypocenter: { name: '石川県能登地方', latitude: 37.5, longitude: 137.2, depth: 10, magnitude: 7.6 },
+      },
+      severity: 'Warning',
+      cancelled: false,
+      isFinal: false,
+      issue: { eventId: 'replaylog-event', serial, time: AT },
+      areas: [{ pref: '', name: '石川県能登', scaleFrom: 40, scaleTo: 50, kindCode: '11', arrivalTime: null }],
+    }
+  }
+
+  const loggedTelegrams = () =>
+    drainReplayEvents().events.filter((e): e is ReplayTelegramEvent => e.type === 'telegram')
+
+  beforeEach(() => { __resetReplayEventLogForTest() })
+  afterEach(() => { __resetReplayEventLogForTest(); vi.useRealTimers() })
+
+  it('緊急地震速報の古い報にも記録が残る', () => {
+    const h = setup()
+    act(() => { h.current.injectEvent(eewReport('2')) })
+    act(() => { h.current.injectEvent(eewReport('1')) })
+
+    const skipped = loggedTelegrams().filter(t => t.skipped === 'staleSerial')
+    expect(skipped).toHaveLength(1)
+    expect(skipped[0].kind).toBe('eew')
+    expect(skipped[0].serial).toBe('1')
+  })
+
+  it('対照: 受理した報には見送りの印が付かない', () => {
+    const h = setup()
+    act(() => { h.current.injectEvent(eewReport('1')) })
+    // 受理した分の記録は `useLiveEventHandler` の担当なので、ここには落とした分だけが出る
+    expect(loggedTelegrams().filter(t => t.skipped === 'staleSerial')).toHaveLength(0)
+  })
+
+  it('地震・津波に関するお知らせにも記録が残る（音も読み上げも起こさない種別）', () => {
+    // キューの捌きを進めるため（この経路は `injectEvent` と違って即時ではない）
+    vi.useFakeTimers()
+    const h = setup()
+    const now = serverDate()
+    act(() => {
+      h.current.loadReplayEvents([{
+        payload: {
+          kind: 'quakeNotice',
+          data: {
+            id: 'notice-replaylog', time: now.toISOString(), eventId: 'notice-replaylog-event',
+            headline: '沖縄県の震度データ入電停止のお知らせ', body: '本文', cancelled: false,
+            reportDateTime: now.toISOString(),
+            expireAt: new Date(now.getTime() + 60_000).toISOString(),
+          },
+        },
+        replayTime: now,
+      }])
+    })
+    // キューは 10ms 間隔で捌く（`injectEvent` と違い即時ではない）
+    act(() => { vi.advanceTimersByTime(50) })
+
+    const notDispatched = loggedTelegrams().filter(t => t.skipped === 'notDispatched')
+    expect(notDispatched).toHaveLength(1)
+    expect(notDispatched[0].kind).toBe('quakeNotice')
+    expect(notDispatched[0].eventId).toBe('notice-replaylog-event')
   })
 })

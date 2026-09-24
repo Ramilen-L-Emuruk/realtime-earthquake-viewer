@@ -22,6 +22,8 @@ import { withBorrowedFromTsunami, borrowFromTsunamiIntoCards } from '../utils/bo
 import { loadStationCoords, onStationCoordsLoaded, buildAreaPrefIndex, getAreaPrefIndexCache } from '../utils/stationCoords'
 import type { AreaPrefIndex } from '../utils/quakePoints'
 import { calcEEWCancelTime, eewSerial, eewEventKey } from '../utils/eew'
+import { recordReplayEvent, type ReplayTelegramSkip } from '../utils/replayEventLog'
+import { replayTelegramFacts, type ReplayTelegramSource } from '../utils/replayTelegramRef'
 import { decideEstimatedIntensityUpdate, isNewEstimatedIntensity, rememberShownEstimatedIntensity } from '../utils/estimatedIntensity'
 import { mergeTsunamiReports, isCancelForCurrentTsunami, isTsunamiContinuation, withInheritedTsunamiFacts } from '../utils/tsunami'
 import { log } from '../utils/logger'
@@ -32,6 +34,27 @@ import { isValidDmdataApiKey, DMDATA_API_KEY_INVALID_MESSAGE } from '../utils/dm
 // テストデータは押されてから読む（静的に取り込まない理由・失敗したときの扱い・先読みの
 // 段取りは `utils/testDataLoader.ts` にまとめてある）。
 import { loadTestData } from '../utils/testDataLoader'
+
+/**
+ * 画面・音へ回らずに落とした電文を、録画ツール向けに記録する
+ * （→ `docs/spec/recording-interface-spec.md`）。
+ *
+ * **`onLiveEvent` まで届く電文は `useLiveEventHandler` が記録する。** ここで残すのは、
+ * その手前で落としている 3 つだけ —— 緊急地震速報の古い報・試験報・音も読み上げも起こさないと
+ * 決めた種別（地震・津波に関するお知らせ）。**落としたことが残らないと、編集する側からは
+ * 「配信が無かった」のと区別が付かない。**
+ *
+ * **投げないこと**（記録層の境界の不変条件）。呼び出し元はどれも受信処理の途中にいて、
+ * 例外を受け止めない —— 抜けるとその電文の処理が丸ごと止まり、同じティックで捌く予定
+ * だった後続の電文まで巻き添えになる。
+ */
+function recordSkippedTelegram(source: ReplayTelegramSource, skipped: ReplayTelegramSkip): void {
+  try {
+    recordReplayEvent({ type: 'telegram', ...replayTelegramFacts(source), skipped })
+  } catch (err) {
+    log.warn('[replay] 落とした電文を記録できなかった（本体は続行）', err)
+  }
+}
 
 // 初回取得件数（設定の最大選択値に合わせる）。リプレイ開始時の履歴復元（useReplayController の
 // QUAKE_HISTORY_EVENTS）もこの値をそのまま目標にするため export している。片方だけ動かすと、
@@ -1022,6 +1045,9 @@ export function useEarthquakes(
    * 分岐したくなったときに、この関数だけ内部を書き換える必要が出る。
    */
   const applyQuakeNotice = useCallback((notice: JMAQuakeNotice): boolean => {
+    // この種別は音も読み上げも起こさないと決めており、`onLiveEvent` へ流していない。
+    // 届いたことだけは録画の側から見えるようにする。
+    recordSkippedTelegram({ kind: 'quakeNotice', data: notice }, 'notDispatched')
     if (notice.cancelled) {
       if (quakeNoticeExpireTimerRef.current !== undefined) {
         window.clearTimeout(quakeNoticeExpireTimerRef.current)
@@ -1331,6 +1357,7 @@ export function useEarthquakes(
           // 順序の入れ替わり自体は想定内だが、判定が誤り続けるとその EEW は以降更新されない。
           // 捨てた事実が残らないと原因に辿り着けないため記録する（頻度は 1 地震あたり数件）。
           log.debug(`[eew] 古い報を破棄: key=${key} 受理済み=#${acceptedSerial} 受信=#${incomingSerial}`)
+          recordSkippedTelegram(incoming, 'staleSerial')
           return
         }
         if (incomingSerial !== null) acceptedEewSerialRef.current.set(key, incomingSerial)
@@ -2357,7 +2384,7 @@ export function useEarthquakes(
     // Yahoo hypoInfo で検出済みの eventId であれば areas を注入、未知なら全処理（フォールバック）。
     ws.onEvent = (event: AppEvent) => {
       if (event.kind === 'eew') {
-        if (event.test) return
+        if (event.test) { recordSkippedTelegram(event, 'testReport'); return }
         const eew = event as EEWAlert
         // この key はそのまま台帳（`acceptedEewSerialRef`）のキーになる。式を書き写すと
         // 導出が変わったときに片方だけ追従し、台帳と状態のキーが割れる。

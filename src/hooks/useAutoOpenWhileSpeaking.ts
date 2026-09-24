@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { recordReplayEvent } from '../utils/replayEventLog'
 
 /**
  * 読み上げているあいだだけ開く折りたたみ。**開閉の状態を呼び出し側が持つ版。**
@@ -42,13 +43,23 @@ export function useAutoOpenWhileSpeakingIn(
       if (latest.current.isOpen) return
       openedBySpeech.current = true
       latest.current.setOpen(true)
+      // 録画ツール向けの記録（→ `docs/spec/recording-interface-spec.md`）。**自分が開いた分だけ**
+      // —— 手で開いていたものは上で降りているので、ここへは来ない。
+      recordReplayEvent({ type: 'overlay', overlay: 'telegramText', open: true, reason: '気象庁の文の読み上げ' })
       return
     }
     // 読み上げが終わった。**自分が開いた分だけ戻す。**
     dismissed.current = false
     if (!openedBySpeech.current) return
     openedBySpeech.current = false
+    // **記録は実際に閉じたときだけ。** 開けてから読み終えるまでの間に別の経路が閉じている
+    // ことがあり（津波は等級が動いた報が先に閉じる）、覚えだけで記録すると画面が動いて
+    // いない回が並ぶ。持ち物から外すのは、閉じられていても行う。
+    const wasOpen = latest.current.isOpen
     latest.current.setOpen(false)
+    if (wasOpen) {
+      recordReplayEvent({ type: 'overlay', overlay: 'telegramText', open: false, reason: '読み終えた' })
+    }
   }, [speaking])
 
   return (next: boolean) => {
