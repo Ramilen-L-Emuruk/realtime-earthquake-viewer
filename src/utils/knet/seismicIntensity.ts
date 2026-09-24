@@ -130,6 +130,23 @@ export interface IntensityTimeSeriesOptions {
   stepSec: number
 }
 
+/**
+ * 計測震度を時系列で出すときのウィンドウ既定値（秒）。
+ *
+ * **計算と同じ場所に置く。** K-NET取り込み（`buildEventResultFromZip.ts`）と自作センサーの
+ * 受け手（`seismo-host/src/receiver/`）が共有する——どちらの値も最後は同じ画面へ並ぶので、
+ * 物差しが違えば「揺れ方の違い」と「測り方の違い」を見分けられない。取得経路のどちらかに
+ * 置くともう片方がそこへ引きに行くことになり、Nodeで動く受け手の型検査へブラウザ専用の
+ * コードが入り込む。
+ *
+ * `STEP_SEC_DEFAULT`は`kyoshinLocalArchiveSource.ts`の`getMergedKyoshinArchive`呼び出しにも
+ * 使われる——インポート時に刻んだ秒間隔とマージ時に読み出す秒間隔がずれると、`buildEventFrames`
+ * （厳密なepoch秒の完全一致ルックアップ、補間なし）が該当秒を「データ無し」とみなし、
+ * 震度データが無警告で欠測（-1）扱いに化けるため、必ず同じ定数を使うこと。
+ */
+export const WINDOW_SEC_DEFAULT = 20
+export const STEP_SEC_DEFAULT = 1
+
 export interface IntensityTimeSeriesPoint {
   /** 波形先頭からの経過秒（ウィンドウ終端の時刻）。 */
   tSec: number

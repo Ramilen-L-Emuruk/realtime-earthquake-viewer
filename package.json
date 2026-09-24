@@ -26,7 +26,8 @@
     "build-travel-time-table": "tsx scripts/build-travel-time-table.ts",
     "sign-arrival-token": "tsx scripts/sign-arrival-token.ts",
     "verify-particle-phrases": "tsx scripts/verify-particle-phrases.ts",
-    "audit-accent-unidic": "tsx scripts/audit-accent-unidic.ts"
+    "audit-accent-unidic": "tsx scripts/audit-accent-unidic.ts",
+    "seismo-host": "tsx seismo-host/main.ts"
   },
   "dependencies": {
     "fflate": "^0.8.3",
