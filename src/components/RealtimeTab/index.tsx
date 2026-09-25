@@ -214,7 +214,9 @@ function EEWCard({ eew, visible, speaking, activeLpgmEventId, onToggleLpgm, onDe
   /**
    * 読み上げがいまこの地震を語っているか。縁を強調し、視野に無ければ寄せる。
    *
-   * **語り終わってすぐには偽へ戻らない**（`EEW_SPEAKING_CARD_LINGER_MS` の猶予がある）。
+   * **語り終わってすぐには偽へ戻らない。** その地震について語ることが残っているあいだ
+   * （名乗りと予想値のあいだの安定待ちを含む）は真のままで、尽きてから短い残像を置いて
+   * 落ちる（`useEewSpeakingCard`）。
    * 予想値の発話は短いので、鳴り終わりで落とすと声で気づいて目を移した人に何も残らない。
    */
   speaking?: boolean
