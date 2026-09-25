@@ -201,6 +201,12 @@ z」を超えない。それより深いタイルが要るのは手で地図を�
 
 ## 5. ラベル描画（`LabelsGL`）
 
+> **CJK フォントのスタック名は 2 箇所で一致させる。** `text-font`（`gl/fontStack.ts` の
+> `JP_FONT_STACK`。`LabelsGL.tsx` が使う）と `public/fonts/<stack>/` のディレクトリ名（`scripts/build-glyphs.mjs` の
+> `STACK`）が食い違うと、MapLibre は該当テキストを**無音で消す**（例外もログも出ない）。
+> ビルド時に `build-glyphs.mjs --check` が両者を突き合わせて不一致なら失敗させるので、
+> 気づく機会はビルドの成否だけ——実行時のフォールバックは無い。
+
 - 地方名・県名・区域名を symbol + icon-image で描画
 - **地方名は気象庁の「地方予報区」に合わせてある**（14 種。`src/utils/regions.ts`）。緊急地震速報の
   警報は、気象庁自身がこの単位で対象を述べる —— 警報報の見出し文が「石川県で地震　北陸　甲信　東海　
@@ -1334,6 +1340,10 @@ MapLibre 側が「直すところは無い」を返す条件と同じもので�
 > 回帰は `TsunamiArrivalMarkersGL` / `TsunamiMissingMarkersGL` の要素を作って
 > `style.position` が空であることで固定してある（`tsunamiMarkerElement.test.ts`）。
 
+**`cssText` への代入はスタイルを丸ごと置き換える。** `position: absolute` はクラス由来なので
+影響を受けないが、それ以外に MapLibre が動的に書き込む宣言（座標更新の `transform` 等）は
+消える。既定を残したいものは代入ではなく個別のプロパティへ書くこと。
+
 `maplibregl.Marker` の不透明度は **`element.style.opacity` ではなく Marker のオプション**
 （`opacity` / `opacityWhenCovered`）で渡す。Marker は「地形に隠れたとき薄くする」機能があり、
 これが element の style.opacity を自前で上書きするため、cssText 経由の設定は無視される。
@@ -2098,6 +2108,13 @@ HTML に二つまみの入力は無いので、`<input type="range">` を 2 本�
 幅は残す**——両端をそれぞれ時刻で丸めると、期間が丸ごと外にあるときに同じ 1 点へ潰れ、1 件も残らないのに
 見出しは「1 日ぶん」ともっともらしく出る。日付ピッカーが範囲外の日を受け取ったときも同じ理由で日ごと
 寄せる（`clampDayToRange`）。
+
+**期間を変える経路は `periodFromYearChange` / `periodFromDateChange` / `clampPeriodToRange`
+のどれかを必ず経由する。** 不変条件（開始が終了を越えない・両端が日境界）を守っているのはこの
+3 つだけで、他から直接 `fromMs`/`toMs` を書き換えると不変条件が崩れうる。
+
+**ポップアップの深さに `formatDepth` を使わない。** あちらは整数の深さ向けで丸めを持たず、
+長期震源カタログが持つ単精度の誤差がそのまま露出する。
 
 **日付ピッカーの値は読めないことがある。** 打鍵の途中・空欄・存在しない日（2 月 30 日）が来る。
 `Date.UTC` はそれを翌月へ繰り上げて別の日を黙って返すので、組み立てた結果を読み直して一致を
