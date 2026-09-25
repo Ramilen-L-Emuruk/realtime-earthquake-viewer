@@ -56,6 +56,30 @@ static const uint32_t FAIL_STREAK_TO_DEMOTE = 20;
 // `ok` が下りているセンサーの初期化をやり直す間隔。
 static const uint32_t RETRY_MS = 10000;
 
+// 端数（FIFO の件数が 6 の倍数でない）がこの回数だけ続いたら FIFO を作り直す。
+//
+// **この数字が「書き込み途中の端数」と「本当に境界が崩れた」を分ける。**
+// - 書き込み途中の端数は 1 周期で消える。吸い出しの周期（ESP32）とサンプリングの
+//   周期（MPU の内部クロック）は別の発振器なので位相が毎周期ミリ秒単位でずれ、
+//   数十マイクロ秒の窓を 2 度続けて引き当てることは実質起きない
+// - 本当に 1 バイト失われているなら、端数は作り直すまで**永久に残る**
+//
+// **2 にしてあるのは、答えが出るまでに待つ時間を 1 周期に留めるため。** 大きくすると、
+// 境界が本当に崩れている場合に、作り直すまでのあいだ FIFO へサンプルが溜まり続ける。
+static const uint32_t PARTIAL_STREAK_TO_DROP = 2;
+
+// FIFO を作り直してもまだ端数が出る、が続いたら `ok` を下ろして初期化からやり直す。
+//
+// **あふれが続いても降格しないのと、ここは意図して非対称にしてある。** あふれは
+// 吸い出しが間に合っていない（Wi-Fi が詰まる等）ということなので、**センサーを
+// 初期化し直しても直らない**。いっぽう「FIFO を空にしても端数が残る」なら、次に
+// 疑うのは FIFO ではなく設定のほうで、初期化をやり直す意味がある。
+//
+// 1 回の作り直しに 2 周期かかるので、5 回で約 3 秒。**偽陽性は考えなくてよい** ——
+// 書き込み途中を続けて引き当てて作り直しに至ること自体が十数時間に 1 度の頻度で、
+// それが端数なしの読み出しを 1 度も挟まずに 5 回続く確率は無視できる。
+static const uint32_t REALIGN_STREAK_TO_DEMOTE = 5;
+
 // 1 枚にぶら下がるセンサー 1 個ぶんの状態。
 //
 // **勘定をセンサーごとに持つ。** 通し番号もあふれの回数も、まとめて数えると
@@ -76,7 +100,19 @@ struct Sensor {
   int16_t     last[3];
   uint32_t    i2cFail;      // I2C の取引が失敗した回数（読み・書きとも）
   uint32_t    failStreak;   // 連続で失敗している回数。成功したら 0 へ戻す
-  uint32_t    misaligned;   // FIFO の件数が 6 の倍数でなかった回数
+  // **FIFO の件数が 6 の倍数にならないことがある。それ自体は異常ではない。**
+  //
+  // データシート（RM-MPU-6000A-00）が定めているのは「FIFO_COUNT は溜まっている
+  // **バイト数**」（Register 114/115）と「データは**レジスタ番号の順に** FIFO へ
+  // 書かれる」（Register 116）の 2 つだけで、**件数が 1 サンプル分の倍数になるとは
+  // 書いていない。** 6 バイトを内部で書いている最中に件数をラッチすれば端数が出る。
+  uint32_t    partial;        // 端数を見た回数
+  uint32_t    partialStreak;  // 端数が続いている周期の数。倍数で読めたら 0 へ戻す
+  uint32_t    realign;        // 端数が続いたので FIFO を作り直した回数（こちらが異常）
+  uint32_t    realignStreak;  // 連続で作り直した回数。1 度でも端数なしで読めたら 0 へ戻す
+  // 端数の内訳。**添字 0 が端数 1 バイト。** 書き込み途中なら 1〜5 に散り、本当に
+  // 1 バイト失われているなら 5 に偏る——2 つの原因を実機で分けるための値。
+  uint32_t    remHist[BPS - 1];
   uint32_t    unsent;       // 読めたのに送れなかったサンプル数
   uint32_t    initTries;    // 初期化を試みた回数（1 回目の起動時を含む）
   // 直近の初期化で失敗した I2C 取引の数。**設定の書き込みと WHO_AM_I の読み取りの
@@ -87,10 +123,15 @@ struct Sensor {
 
 // **`sid` はバスとアドレスから機械的に決まる名前**にしてある。設置の都合（どの向きか、
 // どの棚か）を混ぜると、センサーを挿し替えた日を境に同じ名前が別の個体を指す。
+//
+// **残りの欄は書かない。** 集成体の初期化では、書かなかった欄は 0（`bool` は false・
+// 配列は全要素 0）で埋まる。3 行に 0 を並べる形だと欄を 1 つ足すたびに 3 行とも
+// 数え直すことになり、**数え違えても型検査は通る**——どれも同じ型の 0 なので、
+// ずれたまま隣の欄へ入るだけ。数える作業そのものを無くしてある。
 static Sensor g_sensors[] = {
-  { &Wire,  0x68, "i2c0-68", false, 0, 0, 0, 0, {0,0,0}, 0, 0, 0, 0, 0, 0 },
-  { &Wire,  0x69, "i2c0-69", false, 0, 0, 0, 0, {0,0,0}, 0, 0, 0, 0, 0, 0 },
-  { &Wire1, 0x68, "i2c1-68", false, 0, 0, 0, 0, {0,0,0}, 0, 0, 0, 0, 0, 0 },
+  { &Wire,  0x68, "i2c0-68" },
+  { &Wire,  0x69, "i2c0-69" },
+  { &Wire1, 0x68, "i2c1-68" },
 };
 static const size_t SENSOR_N = sizeof(g_sensors) / sizeof(g_sensors[0]);
 
@@ -230,7 +271,19 @@ static bool readFifoCount(Sensor &s, uint16_t &cnt){
   return note(s, true);
 }
 
-static void fifoReset(Sensor &s){ w8(s, R_USER_CTRL, 0x04); delay(2); w8(s, R_USER_CTRL, 0x40); }
+// **作り直したら端数の連続も切れる。** FIFO を空にした時点で 6 バイト境界は引き直される
+// ので、前に数えていた連続を持ち越すと、次に 1 回端数を見ただけで「続いている」と
+// 誤判定してまた作り直す。呼び出し側（初期化・再武装・`dropFifo`）に書かせない。
+//
+// **あふれで作り直したときも同じく消える。** 端数を 1 回見た直後にあふれが割り込むと、
+// その回の進捗は失われる —— 承知のうえ。あふれも FIFO を作り直して `o` を進めるので、
+// **必要な後始末は既に済んでいる**（失われるのは検出の進捗だけで、手当てではない）。
+// ここで連続を持ち越すほうが誤りで、境界が引き直された後の端数は別の観測。
+// なお `realignStreak` はここで消さないので、**降格までの積み上げは取り消されない**。
+static void fifoReset(Sensor &s){
+  s.partialStreak = 0;
+  w8(s, R_USER_CTRL, 0x04); delay(2); w8(s, R_USER_CTRL, 0x40);
+}
 
 // **吸い出しの途中で FIFO を捨てるときは必ずこちらを通す。**
 //
@@ -247,6 +300,17 @@ static void fifoReset(Sensor &s){ w8(s, R_USER_CTRL, 0x04); delay(2); w8(s, R_US
 // 初期化（`sensorInit`）と再武装（`armSensor`）は素の `fifoReset` を使う。前者は
 // まだ何も溜まっていない時点で、後者は伝えるかどうかを呼び出し側が決めるため。
 static void dropFifo(Sensor &s){ s.overflow++; fifoReset(s); }
+
+// 端数を数える。**合計と内訳を別々に書かない**——片方だけ書き足すと、状態ページの
+// 2 つの数字が食い違って、どちらが正しいのか読む側には決められなくなる。
+//
+// **`rem` は 1〜`BPS-1` であること**（`cnt % BPS` が 0 でないと確かめた後に呼ぶ）。
+// 範囲の判定は現状どの呼び出しでも真になる保険で、弾くためではなく、**添字を作る式の
+// すぐ隣に値域を書いておくため**に置いてある。
+static void notePartial(Sensor &s, uint8_t rem){
+  s.partial++;
+  if (rem >= 1 && rem < BPS) s.remHist[rem - 1]++;
+}
 
 // **`ok` は「WHO_AM_I が読めたか」ではなく「設定を書き込めたか」で決める。**
 // WHO_AM_I は静的なレジスタなので、スリープ解除や FIFO_EN の書き込みが落ちていても
@@ -344,13 +408,20 @@ static void handleStatus(){
     appendf(buf, sizeof(buf), u,
       "%s{\"sid\":\"%s\",\"ok\":%s,\"who_am_i\":\"0x%02X\",\"seq\":%lu,"
       "\"packets\":%lu,\"overflow\":%lu,\"i2c_fail\":%lu,\"fail_streak\":%lu,"
-      "\"misaligned\":%lu,\"unsent\":%lu,\"init_tries\":%lu,\"init_fails\":%u,"
-      "\"last\":[%d,%d,%d]}",
+      "\"partial\":%lu,\"partial_streak\":%lu,\"realign\":%lu,\"realign_streak\":%lu,\"unsent\":%lu,"
+      "\"init_tries\":%lu,\"init_fails\":%u,\"rem_hist\":[",
       i == 0 ? "" : ",", s.sid, s.ok ? "true":"false", s.who,
       (unsigned long)s.seq, (unsigned long)s.sent, (unsigned long)s.overflow,
       (unsigned long)s.i2cFail, (unsigned long)s.failStreak,
-      (unsigned long)s.misaligned, (unsigned long)s.unsent,
-      (unsigned long)s.initTries, (unsigned)s.initFails,
+      (unsigned long)s.partial, (unsigned long)s.partialStreak,
+      (unsigned long)s.realign, (unsigned long)s.realignStreak,
+      (unsigned long)s.unsent,
+      (unsigned long)s.initTries, (unsigned)s.initFails);
+    // 端数の内訳。**先頭が端数 1 バイト**で、末尾が 5 バイト。
+    for (size_t r = 0; r < BPS - 1; r++) {
+      appendf(buf, sizeof(buf), u, "%s%lu", r == 0 ? "" : ",", (unsigned long)s.remHist[r]);
+    }
+    appendf(buf, sizeof(buf), u, "],\"last\":[%d,%d,%d]}",
       s.last[0], s.last[1], s.last[2]);
   }
   appendf(buf, sizeof(buf), u, "]}");
@@ -511,11 +582,48 @@ static void drainSensor(Sensor &s){
   }
   uint16_t cnt = 0;
   if (!readFifoCount(s, cnt)) return;
+  // **まだ 1 サンプルも溜まっていない状態は、端数とは別の事象。** 下の判定より前に
+  // 抜けること——ここを通すと、作り直した直後の空の FIFO が「端数を見た」として
+  // 数えられ、2 つの原因を分けるための内訳（`remHist`）が汚れる。
   if (cnt < BPS) return;
-  if (cnt % BPS != 0) {
-    // あふれとは別の事象なので内訳は分けて数えるが、**捨てることに変わりはない。**
-    s.misaligned++; dropFifo(s); return;
+
+  // **端数を見たら、その周期は読まない。1 周期置いて数え直す。**
+  //
+  // 件数が 6 の倍数でないのは、たいてい 1 サンプル分の 6 バイトが**いま書かれている
+  // 最中**だから（`struct Sensor` の `partial` の項を参照）。FIFO ごと捨てる必要は
+  // 無い——捨てればそのたびに受け手の区間が切れて、計測震度のフィルタが振り出しに戻る。
+  //
+  // **ただし「書き込み途中」と「本当に 1 バイト失われた」は、その場では見分けられない。**
+  // 見分けるのは続き方のほうで、前者は 1 周期で消え、後者は作り直すまで残る。
+  //
+  // **だから端数を切り捨てて読み進めない。** 読めば、取り違えていた場合に軸がずれた
+  // 30 サンプルが**何の印も付かずに**流れる——受け手が切れ目を知る手段は `o` の変化
+  // だけで、ここでは `o` を進めないのだから、あとから遡って無効にすることもできない。
+  // 1 周期待てば答えが出る。**待つ間サンプルは FIFO に残るので、失われもしない**
+  // （溜まるのは 60 サンプルで、FIFO の 170 サンプル分にはまだ遠い）。
+  const uint8_t rem = (uint8_t)(cnt % BPS);
+  if (rem != 0) {
+    notePartial(s, rem);
+    if (++s.partialStreak >= PARTIAL_STREAK_TO_DROP) {
+      // 続いた＝書き込み途中では説明が付かない。境界が崩れているほうを疑う。
+      //
+      // **あふれと同じくシリアルへも出す。** これは「軸がずれているかもしれない」と
+      // いう、あふれより重い報せなのに、状態ページを能動的に見に行かないと気づけない
+      // 形にはできない。頻度は 2 周期に 1 回が上限なので、記録は埋まらない。
+      s.realign++; s.realignStreak++;
+      dropFifo(s);
+      Serial.printf("# REALIGN %s n=%lu streak=%lu\n",
+                    s.sid, (unsigned long)s.realign, (unsigned long)s.realignStreak);
+      return;
+    }
+    // **端数の「値」が前回と同じかは見ない。** 同じ値が続くことを条件にすると、値が
+    // 入れ替わりながら端数が出続ける形で連続が永久に成立せず、**読むことも作り直す
+    // こともないまま黙って止まる**。偽の作り直しを減らすより、必ず決着することを採る。
+    return;
   }
+  // **端数が無かった＝いま境界は無事。** 2 つの連続をここで切る。
+  s.partialStreak = 0;
+  s.realignStreak = 0;
 
   // 抜き出した時点を基準に、先頭サンプルの時刻を逆算する。サンプル「間隔」は
   // FIFO が保証しているので、不確かなのは絶対位置だけ。
@@ -525,6 +633,9 @@ static void drainSensor(Sensor &s){
   // 半サンプル分だけ前。引かないと、名乗る時刻が系統的に半サンプル分だけ遅れる。
   struct timeval tv; gettimeofday(&tv, nullptr);
   const int64_t nowMs = (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+  //
+  // **ここへ来るのは端数が無かった周期だけ**なので、補正は常に半サンプル。端数がある
+  // 周期は上で抜けており、「いま書かれている最中のサンプル」を抱えたまま読むことは無い。
   const uint16_t total = cnt / BPS;
   const int64_t tFirstMs = nowMs - (int64_t)((total - 1) * 1000 / SAMPLE_HZ) - (500 / SAMPLE_HZ);
 
@@ -555,9 +666,17 @@ static void drainSensor(Sensor &s){
 static void demoteStuck(){
   for (size_t i = 0; i < SENSOR_N; i++) {
     Sensor &s = g_sensors[i];
-    if (!s.ok || s.failStreak < FAIL_STREAK_TO_DEMOTE) continue;
-    s.ok = false;
-    Serial.printf("# sensor %s を降格（連続 %lu 回失敗）\n", s.sid, (unsigned long)s.failStreak);
+    if (!s.ok) continue;
+    if (s.failStreak >= FAIL_STREAK_TO_DEMOTE) {
+      s.ok = false;
+      Serial.printf("# sensor %s を降格（連続 %lu 回失敗）\n", s.sid, (unsigned long)s.failStreak);
+    } else if (s.realignStreak >= REALIGN_STREAK_TO_DEMOTE) {
+      // **I2C は成功しているので `failStreak` には 1 つも積まれない。** この経路を
+      // 足さないと、境界が崩れ続けるセンサーだけが降格も再初期化も受けられない。
+      s.ok = false;
+      Serial.printf("# sensor %s を降格（FIFO を連続 %lu 回作り直しても端数が残る）\n",
+                    s.sid, (unsigned long)s.realignStreak);
+    }
   }
 }
 
@@ -585,6 +704,7 @@ static void retryStuck(){
       // あふれビットを一度も観測できないので、実際にあふれていても記録に残らない。
       s.overflow++;
       s.failStreak = 0;
+      s.realignStreak = 0;
       Serial.printf("# sensor %s 復帰（%lu 回目の初期化・o=%lu）\n",
                     s.sid, (unsigned long)s.initTries, (unsigned long)s.overflow);
     }
