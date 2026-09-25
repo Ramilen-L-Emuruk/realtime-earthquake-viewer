@@ -60,7 +60,7 @@ import { useTelegramTextSpeechFollow } from './hooks/useTelegramTextSpeechFollow
 import { deriveKyoshinView } from './utils/kyoshinDetectionView'
 import { filterSubThresholdIndices } from './utils/kyoshinSubThresholdFilter'
 import { useSWaveCountdown } from './hooks/useSWaveCountdown'
-import { useArrivalTokenValid } from './hooks/useArrivalToken'
+import { useArrivalTokenCheck } from './hooks/useArrivalToken'
 import { usePsWaveCalc } from './hooks/usePsWaveCalc'
 import { useQuakeHeatmap } from './hooks/useQuakeHeatmap'
 import { useDebouncedValue } from './hooks/useDebouncedValue'
@@ -1848,7 +1848,10 @@ export function App() {
   // 地点ごとの到達予想を自前の走時計算で出してよいか。**トークンが有効なときだけ true。**
   // 自前で出すのは気象業務法第 17 条の許可を要する地震動の予報業務に当たりうるため、既定では
   // 気象庁が区域ごとに出した到達予測時刻を伝えるだけにする（→ `utils/arrivalToken.ts`）。
-  const allowOwnArrivalCalc = useArrivalTokenValid(settings.arrivalToken)
+  // **門と設定タブの表示は同じ 1 つの検証結果から出す。** 別々に検証すると、期限の境目で
+  // 「画面は有効と言っているのに自前計算は動かない」が起きる（→ `hooks/useArrivalToken.ts`）。
+  const arrivalTokenStatus = useArrivalTokenCheck(settings.arrivalToken)
+  const allowOwnArrivalCalc = arrivalTokenStatus.valid
   const swaveArrival = useSWaveCountdown(psWave, eewsForMap, home, hasActiveEEW, allowOwnArrivalCalc)
 
   // 地震後の行動チェックリスト。EEW・強震モニタ・地震情報の 3 経路で発火する（詳細は
@@ -2279,6 +2282,7 @@ export function App() {
               <SettingsTab
                 settings={settings}
                 onUpdate={updateSetting}
+                arrivalTokenStatus={arrivalTokenStatus}
                 onReplaceSettings={replaceSettings}
                 dmdataConnectionStatus={connectionStatus}
                 onTest={testHandlers}

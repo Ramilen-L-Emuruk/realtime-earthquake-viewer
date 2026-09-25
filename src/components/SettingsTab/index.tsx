@@ -26,6 +26,9 @@ import {
   archiveBodyDbStats, hasArchiveCacheError, archiveCachePurgeStats, onArchiveCacheChanged,
 } from '../../utils/archiveBodyDb'
 import { formatFileStamp } from '../../utils/formatters'
+import {
+  arrivalTokenStatusLine, type ArrivalTokenStatus, type ArrivalTokenStatusTone,
+} from '../../utils/arrivalToken'
 import { useKyoshinImport } from '../../hooks/useKyoshinImport'
 import { buildSettingsFile, parseSettingsFile, settingsFileName, type SettingsVariant } from '../../utils/settingsIo'
 
@@ -69,6 +72,11 @@ export interface TestFunctions {
 interface Props {
   settings: AppSettings
   onUpdate: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void
+  /**
+   * 到達予想キーの検証結果。**自前計算を開く門と同じ 1 つの結果を受け取る**
+   * （ここで検証し直すと、期限の境目で画面と門が食い違う。→ `hooks/useArrivalToken.ts`）。
+   */
+  arrivalTokenStatus: ArrivalTokenStatus
   /**
    * 設定の読み込みで全項目をまとめて差し替える。渡す値は `sanitize()` 済みであること。
    * 戻り値は「この端末へ保存できたか」。
@@ -1050,7 +1058,61 @@ function HomeLocationSection({
 }
 
 // React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
-export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onReplaceSettings, onTest, kyoshinTimeOffset, kyoshinInputDateTime, onSetKyoshinInputDateTime, dmdataConnectionStatus, replayIsFetching, replayError, onStartReplay, onStopReplay, historicalArchives, historicalArchivesLoading, scenarioTest }: Props) {
+/**
+ * 到達予想キーの認証結果。
+ *
+ * **入力欄は伏せ字なので、貼った文字列を目で確かめられない。** 結果を添えていなかった頃は、
+ * 成功も 5 通りの失敗も画面の見た目が同じ（何も出ない）で、確かめる手段が開発者コンソールか
+ * 実際の緊急地震速報しか無かった。とくに「鍵の組を作り直したのに公開鍵を貼り忘れた」事故は、
+ * 症状が「署名が合わない」だけなので気づく契機がここにしか無い。
+ *
+ * **未入力では何も出さない** —— 触っていない利用者に「使えません」と読める表示を置かない
+ * （入力欄の `未設定` が既にそれを伝えている）。
+ *
+ * **理由ごとに文を分ける**（→ `utils/arrivalToken.ts` の `arrivalTokenProblemMessage`）。
+ * 期限切れと鍵違いで次の行動が変わるので、1 つの「無効です」へ畳まない。
+ *
+ * **何を出すかは `arrivalTokenStatusLine` が決める。** ここは調子（`tone`）を色へ写すだけ
+ * —— 分岐を JSX の中に置くとテストで押さえられない。
+ *
+ * **入力欄と行を 1 つのコンポーネントに収めて、答えを 1 回だけ出す。** 枠を赤くするかも
+ * 同じ `tone` から決めるので、条件を別々に書けば食い違う（文は出ているのに枠は普通、等）。
+ */
+const ARRIVAL_TOKEN_TONE_CLASS: Record<ArrivalTokenStatusTone, string> = {
+  checking: 'text-gray-400',
+  valid: 'text-green-400 font-medium',
+  problem: 'text-red-400',
+}
+
+function ArrivalTokenField(
+  { value, status, onChange }: { value: string, status: ArrivalTokenStatus, onChange: (v: string) => void },
+) {
+  const line = arrivalTokenStatusLine(status)
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <input
+        type="password"
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        placeholder="未設定"
+        autoComplete="off"
+        spellCheck={false}
+        className={`bg-panel border text-white text-xs rounded px-2 py-1.5 w-56 font-mono focus:outline-none ${
+          line?.tone === 'problem'
+            ? 'border-red-500 focus:border-red-500'
+            : 'border-border focus:border-blue-500'
+        }`}
+      />
+      {line && (
+        <p className={`text-xs w-56 text-left leading-snug ${ARRIVAL_TOKEN_TONE_CLASS[line.tone]}`}>
+          {line.text}
+        </p>
+      )}
+    </div>
+  )
+}
+
+export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arrivalTokenStatus, onReplaceSettings, onTest, kyoshinTimeOffset, kyoshinInputDateTime, onSetKyoshinInputDateTime, dmdataConnectionStatus, replayIsFetching, replayError, onStartReplay, onStopReplay, historicalArchives, historicalArchivesLoading, scenarioTest }: Props) {
   const [voicevoxStatus, setVoicevoxStatus] = useState<'idle' | 'checking' | 'available' | 'unavailable' | 'invalid'>('idle')
   const [voicevoxSpeakers, setVoicevoxSpeakers] = useState<VoicevoxSpeaker[]>([])
 
@@ -1290,14 +1352,10 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onRep
           label="到達予想キー"
           description="お持ちの方のみ（配布は限定的です）。入力すると、地域ごとの発表値ではなくホーム地点そのものへの到達予想を表示します"
         >
-          <input
-            type="password"
+          <ArrivalTokenField
             value={settings.arrivalToken}
-            onChange={e => onUpdate('arrivalToken', e.target.value)}
-            placeholder="未設定"
-            autoComplete="off"
-            spellCheck={false}
-            className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 w-56 font-mono focus:outline-none focus:border-blue-500"
+            status={arrivalTokenStatus}
+            onChange={v => onUpdate('arrivalToken', v)}
           />
         </Row>
       </Section>
