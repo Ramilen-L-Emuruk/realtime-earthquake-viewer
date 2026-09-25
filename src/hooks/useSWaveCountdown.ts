@@ -3,7 +3,7 @@ import type { EEWAlert } from '../types/earthquake'
 import type { PsWaveCircle } from '../services/kyoshin'
 import { travelTimeSec } from '../utils/travelTime'
 import { calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, S_WAVE_FALLBACK_KM_PER_SEC } from '../utils/eew'
-import { haversineKm } from '../utils/geo'
+import { hasKnownEpicenter, haversineKm } from '../utils/geo'
 import { serverNow } from '../utils/clock'
 import { log } from '../utils/logger'
 import { useHomeAreaArrival } from './useHomeAreaArrival'
@@ -42,6 +42,32 @@ const MIN_VALID_SPEED = 0.5     // この速度(km/s)未満はフォールバッ
  * 発表値を出す経路は自分で計時する。
  */
 const TELEGRAM_TICK_MS = 1000
+
+/**
+ * 発表中の EEW のうち**震源が本物のもの**から、登録地点までの最短距離 [km] を返す。1 つも無ければ null。
+ *
+ * 予報円が 1 つも作れないときの受け皿。**外すものが 3 つある。**
+ *
+ * - **取消済み** —— 画面から消えたものの距離を出さない
+ * - **位置不明**（センチネル `-200`）—— 判定は `hasKnownEpicenter` を通す。有限なので
+ *   `Number.isFinite` ではすり抜ける（→ `docs/spec/quake-spec.md` §5）
+ * - **仮定震源要素** —— 地名も座標も「最初に揺れを捉えた観測点の所在地」であって震源ではない
+ *   （→ `docs/spec/eew-spec.md` §5）。ここまでの距離を「震源から N km」と出したら嘘になる。
+ *   **元から距離は出ていなかった** —— 予報円を出さないので円から拾えず null だった。
+ *   この受け皿を足したときに巻き込まないよう、同じ条件で外す
+ */
+function nearestEpicenterDistanceKm(eews: EEWAlert[], home: { lat: number; lng: number }): number | null {
+  let nearest: number | null = null
+  for (const eew of eews) {
+    if (eew.cancelled || eew.cancelledAt) continue
+    if (eew.earthquake.condition === '仮定震源要素') continue
+    const { latitude, longitude } = eew.earthquake.hypocenter
+    if (!hasKnownEpicenter(latitude, longitude)) continue
+    const d = haversineKm(latitude, longitude, home.lat, home.lng)
+    if (nearest === null || d < nearest) nearest = d
+  }
+  return nearest
+}
 
 export function useSWaveCountdown(
   psWave: PsWaveCircle[],
@@ -82,7 +108,14 @@ export function useSWaveCountdown(
     const circle = psWave.length > 0
       ? psWave.reduce((best, c) => (c.sRadius > best.sRadius ? c : best), psWave[0])
       : null
-    const distanceKm = circle ? haversineKm(circle.lat, circle.lng, home.lat, home.lng) : null
+    // **距離は円の有無に依存させない。** これは震源の緯度経度だけで決まる観測事実で、
+    // 深さとは関係が無い。**深さが判らない報では予報円を出さない**（`computeEewCircle`。
+    // → `docs/spec/eew-spec.md` §6）ので、円から震源を拾う形のままだと**位置は判っているのに
+    // 距離の行だけが消える** —— 止めたかったのは根拠の無い秒数で、距離ではない。
+    // 円が 1 つも無いときは、発表中の EEW のうち位置が判るものからいちばん近い震源で測る。
+    const distanceKm = circle
+      ? haversineKm(circle.lat, circle.lng, home.lat, home.lng)
+      : nearestEpicenterDistanceKm(eews, home)
 
     if (!allowOwnCalculation) {
       // **気象庁の発表値を伝えるだけ。** 区域の値なので区域名を添える。
@@ -170,7 +203,10 @@ export function useSWaveCountdown(
 
     prevSRadiusRef.current = sRadiusKm
     setArrival({ source: 'own', areaName: null, distanceKm, etaSec, arrived })
-  }, [psWave, home, hasActiveEEW, allowOwnCalculation, homeAreaArrival, tick])
+    // `eews` は円が 1 つも無いときの距離（`nearestEpicenterDistanceKm`）に要る。
+    // **`homeAreaArrival` 経由で拾えるとは限らない** —— あちらは区域の発表値を見るので、
+    // 震源だけが動いた続報では同じ参照を返しうる。
+  }, [psWave, eews, home, hasActiveEEW, allowOwnCalculation, homeAreaArrival, tick])
 
   return arrival
 }

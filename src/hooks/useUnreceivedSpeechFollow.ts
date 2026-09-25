@@ -38,7 +38,11 @@ export interface UnreceivedSpeechFollowOptions {
    */
   open: (subject: string | undefined) => UnreceivedOpenResult
   /** 自分が開いた未入電モードを閉じる。引数は開いたときと同じ主題。 */
-  close: (subject: string | undefined) => void
+  /**
+   * 開いた追加表示を閉じる。**録画ツール向けの記録は呼び出し先が出す**ので、ここは
+   * 理由を渡すだけでよい（別の経路が先に閉じていれば何も動かず、記録も出ない）。
+   */
+  close: (subject: string | undefined, reason: string) => void
 }
 
 export function useUnreceivedSpeechFollow({ session, isOpen, open, close }: UnreceivedSpeechFollowOptions): void {
@@ -60,7 +64,7 @@ export function useUnreceivedSpeechFollow({ session, isOpen, open, close }: Unre
       if (openedRef.current) {
         const { subject } = openedRef.current
         openedRef.current = null
-        callGuarded(() => latest.current.close(subject))
+        callGuarded(() => latest.current.close(subject, '読み上げが終わった'))
       }
       // 症状は「読み上げているのに画面が動かない」だけで、表示の不具合と区別できない
       // （津波の追従が引き当ての失敗を記録するのと同じ理由）。
@@ -114,7 +118,10 @@ export function useUnreceivedSpeechFollow({ session, isOpen, open, close }: Unre
         if (latest.current.isOpen) return
         // **開けたときだけ覚える。** 読んでいる地震が画面に無いなど、開けないことがある。
         const result = callGuarded(() => latest.current.open(session.subject)) ?? 'declined'
-        if (result === 'opened') openedRef.current = { token: session.token, subject: session.subject }
+        if (result === 'opened') {
+          // 録画ツール向けの記録は `open` の呼び出し先が出す（開けた回だけ画面が動く）。
+          openedRef.current = { token: session.token, subject: session.subject }
+        }
         else if (result === 'mismatch') troubleRef.current ??= 'mismatch'
         return
       }
@@ -124,7 +131,7 @@ export function useUnreceivedSpeechFollow({ session, isOpen, open, close }: Unre
       if (!inRange && currentIndex > range.last && openedRef.current) {
         const { subject } = openedRef.current
         openedRef.current = null
-        callGuarded(() => latest.current.close(subject))
+        callGuarded(() => latest.current.close(subject, '未入電の並びを読み終えた'))
       }
     }
     raf = requestAnimationFrame(tick)
@@ -137,7 +144,7 @@ export function useUnreceivedSpeechFollow({ session, isOpen, open, close }: Unre
     if (openedRef.current) {
       const { subject } = openedRef.current
       openedRef.current = null
-      callGuarded(() => latest.current.close(subject))
+      callGuarded(() => latest.current.close(subject, 'アンマウント'))
     }
   }, [])
 }

@@ -135,6 +135,54 @@ describe('computeEewCircle', () => {
     expect(computeEewCircle(eew, NOW)).toBeNull()
   })
 
+  // 正: 震源の深さが判らない報（センチネル -1）では円を作らない。
+  //
+  // **`reachRadiusKm` の内部クランプに頼ると直せない。** あちらは NaN を返さない契約のため
+  // `Math.max(0, depthKm)` で丸めており、呼び出し側が -1 を渡すと最も浅い地震として円が広がる。
+  // 深い地震ほど外れ、深さ 100km・発生 20 秒後なら真の半径 0 に対し 65km 先まで到達済みに描く。
+  it('深さが判らない報（-1）では円を作らない', () => {
+    const eew = makeEEW({
+      earthquake: {
+        originTime: '2026-01-01T12:00:00Z',
+        arrivalTime: '2026-01-01T12:00:20Z',
+        condition: '',
+        hypocenter: { name: 'ベネズエラ沿岸', latitude: 10.4, longitude: -68.4, depth: -1, magnitude: 6.5 },
+      },
+    })
+    expect(computeEewCircle(eew, NOW)).toBeNull()
+  })
+
+  // 対照: 深さ 0 は「ごく浅い」という有効値なので、判らない場合と同じに扱わない。
+  it('深さ 0（ごく浅い）では従来どおり円を作る', () => {
+    const eew = makeEEW({
+      earthquake: {
+        originTime: '2026-01-01T12:00:00Z',
+        arrivalTime: '2026-01-01T12:00:20Z',
+        condition: '',
+        hypocenter: { name: 'テスト震源', latitude: 35.0, longitude: 135.0, depth: 0, magnitude: 6.0 },
+      },
+    })
+    const circle = computeEewCircle(eew, NOW)
+    expect(circle).not.toBeNull()
+    expect(circle!.depth).toBe(0)
+    expect(circle!.sRadius).toBeGreaterThan(0)
+  })
+
+  // 安全弁: 上の null は深さだけが理由で、他の門（座標・震源名・仮定震源要素）を
+  // 巻き込んでいない。同じ報の深さを有効値へ差し替えれば円は出る。
+  it('深さ以外が同じなら、深さを有効値にすると円が出る', () => {
+    const base = {
+      originTime: '2026-01-01T12:00:00Z',
+      arrivalTime: '2026-01-01T12:00:20Z',
+      condition: '',
+      hypocenter: { name: 'ベネズエラ沿岸', latitude: 10.4, longitude: -68.4, magnitude: 6.5 },
+    }
+    const unknown = makeEEW({ earthquake: { ...base, hypocenter: { ...base.hypocenter, depth: -1 } } })
+    const known = makeEEW({ earthquake: { ...base, hypocenter: { ...base.hypocenter, depth: 30 } } })
+    expect(computeEewCircle(unknown, NOW)).toBeNull()
+    expect(computeEewCircle(known, NOW)).not.toBeNull()
+  })
+
   // 対照: 座標が読めない（NaN）場合も従来どおり作らない。
   it('座標が NaN でも円を作らない', () => {
     const eew = makeEEW({

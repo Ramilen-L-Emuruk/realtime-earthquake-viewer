@@ -13,6 +13,7 @@
 // React を動かすため、このファイルだけ jsdom 環境で実行する（既定の node は変えない）。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act, cleanup } from '@testing-library/react'
+import { drainReplayEvents } from '../utils/replayEventLog'
 import {
   useReplayController, WINDOW_MS, PRE_WINDOW_MS, PREFETCH_MARGIN_MS,
   QUAKE_HISTORY_EVENTS, QUAKE_HISTORY_MAX_DAYS,
@@ -421,6 +422,40 @@ describe('useReplayController の停止・再開', () => {
     expect(h.current.error).toBeNull()
     // 巻き戻しも走らない（start の 1 回と stop の 1 回だけ）
     expect(h.deps.setTimeOffset).toHaveBeenCalledTimes(2)
+  })
+
+  // 録画ツールは `fetching()` と `fetch` イベントの両方を見る。**片方だけ世代を照合すると
+  // 2 つが食い違う** —— 停止して別の日時で開き直した直後に古い取得が解決したとき、まだ
+  // 取得中なのに「終わった」だけが並び、外からは待ちを閉じてよいと読める。
+  it('停止したあとに古い取得が完了しても、取得の終わりを記録しない', async () => {
+    const h = setup()
+    const started = h.start(quietTarget())
+    h.stop()
+    drainReplayEvents()   // 開始までの記録は捨てて、以降に出たものだけを見る
+
+    h.fetches[0].resolve(fetched([entry('stale-normal')]))
+    h.fetches[1].resolve(fetched([entry('stale-pre')]))
+    await h.flush(started)
+
+    const done = drainReplayEvents().events
+      .filter(e => e.type === 'fetch' && e.phase === 'done')
+    expect(done).toEqual([])
+  })
+
+  // 対照: 世代が生きている取得では、従来どおり終わりの印が出る（上の照合を
+  // 「常に記録しない」へ倒すと、この 1 件が落ちる）。
+  it('停止していなければ、取得の終わりを記録する', async () => {
+    const h = setup()
+    const started = h.start(quietTarget())
+    drainReplayEvents()
+
+    h.fetches[0].resolve(fetched([entry('normal')]))
+    h.fetches[1].resolve(fetched([entry('pre')]))
+    await h.flush(started)
+
+    const done = drainReplayEvents().events
+      .filter(e => e.type === 'fetch' && e.phase === 'done' && e.target === 'main')
+    expect(done).toHaveLength(1)
   })
 
   it('別の時刻で再開したあとに古い取得が完了しても、新しい側を壊さない', async () => {

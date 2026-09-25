@@ -114,3 +114,64 @@ describe('useSWaveCountdown: 出どころの出し分け', () => {
     expect(got).toBeNull()
   })
 })
+
+// 「震源から N km」は**震源の緯度経度だけで決まる観測事実**で、深さとは関係が無い。
+// 深さが判らない報では予報円を出さない（`computeEewCircle`。→ `docs/spec/eew-spec.md` §6）ので、
+// 距離を円から拾う形のままだと**位置は判っているのに距離の行だけが消える**。
+// 止めたかったのは根拠の無い秒数であって、距離ではない。
+describe('useSWaveCountdown: 距離は予報円の有無に依存しない', () => {
+  const ARRIVAL = '2024-01-01T16:19:20+09:00'
+
+  // 正: 円が 1 つも無くても、発表値の経路は距離を出す。
+  it('予報円が無くても発表値の経路は距離を出す', () => {
+    const got = run([eew([area({ arrivalTime: ARRIVAL })])], false, [])
+    expect(got?.source).toBe('telegram')
+    expect(got?.distanceKm).not.toBeNull()
+    // 震源（37.5, 137.2）から HOME（37.0, 136.9）まで。円がある場合と同じ値になる。
+    const withCircle = run([eew([area({ arrivalTime: ARRIVAL })])], false)
+    expect(got?.distanceKm).toBeCloseTo(withCircle!.distanceKm!, 6)
+  })
+
+  // 対照: 位置も判らない報（センチネル `-200`）では距離を出さない。
+  // **「円が無い」を一律で救う形にしていない**ことを見る。
+  it('位置が判らない報では距離を出さない', () => {
+    const e = eew([area({ arrivalTime: ARRIVAL })])
+    const hidden: EEWAlert = {
+      ...e,
+      earthquake: { ...e.earthquake, hypocenter: { ...e.earthquake.hypocenter, latitude: -200, longitude: -200 } },
+    }
+    const got = run([hidden], false, [])
+    expect(got?.distanceKm).toBeNull()
+  })
+
+  // 安全弁: 取消済みの報は距離の候補に数えない（画面から消えたものの距離を出さない）。
+  it('取消済みの報は距離の候補にしない', () => {
+    const e = eew([area({ arrivalTime: ARRIVAL })])
+    const got = run([{ ...e, cancelled: true }], false, [])
+    expect(got?.distanceKm ?? null).toBeNull()
+  })
+})
+
+// 仮定震源要素（震源未確定）は、地名も座標も「最初に揺れを捉えた観測点の所在地」であって
+// 震源ではない（→ `docs/spec/eew-spec.md` §5）。**元から距離は出ていなかった** ——
+// 予報円を出さないので円から拾えず null だった。上の受け皿を足したときに巻き込まないよう固定する。
+describe('useSWaveCountdown: 仮定震源要素は距離の候補にしない', () => {
+  const ARRIVAL = '2024-01-01T16:19:20+09:00'
+
+  it('仮定震源要素しか無ければ距離を出さない', () => {
+    const e = eew([area({ arrivalTime: ARRIVAL })])
+    const assumed: EEWAlert = {
+      ...e,
+      earthquake: { ...e.earthquake, condition: '仮定震源要素' },
+    }
+    const got = run([assumed], false, [])
+    expect(got?.distanceKm ?? null).toBeNull()
+  })
+
+  // 対照: 同じ報でも `condition` が空（確定震源）なら距離を出す。
+  // **「円が無いと出さない」へ戻っていない**ことを見る。
+  it('確定震源なら円が無くても距離を出す（対照）', () => {
+    const got = run([eew([area({ arrivalTime: ARRIVAL })])], false, [])
+    expect(got?.distanceKm).not.toBeNull()
+  })
+})
