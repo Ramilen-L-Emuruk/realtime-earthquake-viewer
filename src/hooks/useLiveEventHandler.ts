@@ -495,7 +495,7 @@ function rememberTelegramTextAsSpoken(payload: ReplayPayload, spoken: Set<string
 }
 
 /**
- * 窓の手前の地震に、読み上げの主題を割り当てる関数を作る（録画モードの復元専用）。
+ * 窓の手前の地震に、読み上げの主題とマージ後のカードを割り当てる関数を作る（録画モードの復元専用）。
  *
  * **ライブ経路と同じカードを組み立てて、その鍵を使う。** 主題は地震カードの `eventKey` から作られ、
  * その値は最初に処理された報で固定される（`mergeQuakeInto`）。生の電文へ `quakeEventKey` を直に
@@ -517,23 +517,34 @@ function rememberTelegramTextAsSpoken(payload: ReplayPayload, spoken: Set<string
  * 同じ分に起きた別の地震を分離しきれない限界は残るが、それはライブ経路と同じもの
  * （→ docs/spec/quake-spec.md §6.1）。
  *
- * **ここで組むカードは主題を決めるための使い捨てで、画面の状態には入らない。** 同じ電文は
- * このあと `loadReplayEvents` からも流れてカードになる（そちらが画面に出るもの）。そのため
- * `mergeQuakeInto` が出す診断ログが同じ報について 2 度出ることがあるが、実害は無い。
+ * **ここで組むカードは画面の状態には入らない。** 同じ電文はこのあと `loadReplayEvents` からも
+ * 流れてカードになる（そちらが画面に出るもの）。そのため `mergeQuakeInto` が出す診断ログが
+ * 同じ報について 2 度出ることがあるが、実害は無い。
+ *
+ * **返すのはトピック文字列だけでなくマージ後のカードも。** 呼び出し側が既読を積むとき、
+ * 生の入電をそのまま使うと据え置き（`quakeHoldBack`）で退けられた報の内容まで「もう声にした」
+ * として記録してしまう（このバケットは `mergeQuakeInto` を通しているので据え置き判定を内包して
+ * いるが、外へ渡すのがトピック文字列だけだと呼び出し側から見えない）。マージ後のカードを渡せば、
+ * 据え置かれた報では変わらない前の内容がそのまま既読になり、退けられた内容は記録されない。
+ *
+ * **反映しているのは `quakeHoldBack` だけで、取消より前に発表された報（`isRetractedQuakeReport`。
+ * ライブ経路の `quakeHeldBack` はこちらも含めた2階建て）は見ていない。** このバケットは
+ * 取消の台帳（`quakeRetractionsRef`）を持たないため。窓の手前で「取消 → その取消より前の
+ * 時刻の報が遅れて到着」という順序が起きると、この限界の範囲でだけ据え置き判定が甘くなる。
  */
-export function createPreWindowQuakeTopics(): (quake: JMAQuake) => string {
+export function createPreWindowQuakeTopics(): (quake: JMAQuake) => { topic: string; card: JMAQuake } {
   const buckets = new Map<string, JMAQuake[]>()
-  return (quake: JMAQuake): string => {
+  return (quake: JMAQuake): { topic: string; card: JMAQuake } => {
     const bucket = buckets.get(quake.earthquake.time) ?? []
     const index = bucket.findIndex(card => sameQuakeEntry(card, quake, getAreaPrefIndexCache()))
     if (index >= 0) {
       bucket[index] = mergeQuakeInto(bucket[index], quake)
-      return `quake:${quakeEventKey(bucket[index])}`
+      return { topic: `quake:${quakeEventKey(bucket[index])}`, card: bucket[index] }
     }
     const card = mergeQuakeInto(undefined, quake)
     bucket.push(card)
     buckets.set(quake.earthquake.time, bucket)
-    return `quake:${quakeEventKey(card)}`
+    return { topic: `quake:${quakeEventKey(card)}`, card }
   }
 }
 
@@ -2600,11 +2611,21 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         )
       }
     } else if (event.kind === 'quake') {
-      // **止めるのは音・読み上げ・ウィンドウタイトル・自動タブ切替の 4 つだけ**（印は入口で
-      // 導出済み＝`quakeHeldBack`）。すぐ下の `selectQuake` と `closeDistributionOnQuakeReport`、
-      // それに「この報は見た」の記録（`markQuakeReportSeen`）は通す —— どれもカードが内容を
-      // 採ったかどうかと無関係に要る（分布モードは「その地震の電文を受けたら閉じる」「種別で
-      // 絞らない。手で開いた分も閉じる」＝ docs/spec/quake-spec.md §9）。
+      // **止めるのは音・読み上げ・ウィンドウタイトル・自動タブ切替・カードの選択・
+      // 分布モードのクローズの 6 つ**（印は入口で導出済み＝`quakeHeldBack`）。「この報は見た」
+      // の記録（`markQuakeReportSeen`）だけは通す —— これはカードが内容を採ったかどうかと
+      // 無関係に要る（続報判定の台帳で、据え置いた報も「見た」ことに変わりはない）。
+      //
+      // **選択・分布クローズは元々「通す」側だったが、覆した。** 分布モードのクローズ理由
+      // （「その地震の電文を受けたら閉じる」docs/spec/quake-spec.md §9）は「発表値が更新された
+      // のに分布モードが隠している」ことを根拠にしており、**据え置きは発表値を更新しないので
+      // この根拠が成立しない**。選択も同様で、独立した根拠が無いまま「カードの選択・分布・
+      // 見た記録はカードが内容を採ったかどうかと無関係」という一文に相乗りしていた。
+      // 2024-11-26 22:47 の大阪府北部で、完全版のあとに届いた震度速報が据え置かれたにも
+      // かかわらず、別のカードを選択していた場合はそちらの選択が奪われ、開いていた追加表示
+      // （長周期・未入電・分布）も閉じていた。取消より前に発表された報（§6.2）ではさらに悪く、
+      // 対象カードが取消済み・消滅しているため `App.tsx` の `selectedQuake` 導出が
+      // `latestNonCancelled` へ落ち、**無関係な最新の地震が選択される**。
       // 読み上げがあるならタブ移動は読み上げに任せる（共通の TTS ブロックが follow を渡す）。
       // 重い電文（EEW・津波）の読み上げ中に届いた地震情報は、その読み上げが終わって
       // 自分の番が来たときに画面を取る。地震情報の読み上げ文は常に非空。
@@ -2622,7 +2643,6 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       if (isNewQuake) {
         markQuakeReportSeen(seenQuakeReportKeysRef.current, incomingKey)
       }
-      // 新規・続報いずれも、受信した地震カードを選択状態にする。
       // 選択 ID はカードと照合するため eventKey で渡す。P2PQuake は続報ごとにレコード id が
       // 変わるので、既存カードがあればそのキーを引き継ぐ（このハンドラは useEarthquakes の
       // 統合より前に呼ばれるため、earthquakesRef はこの電文を取り込む前の状態）。
@@ -2630,14 +2650,23 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // 選択は「取消でない最新カード」へフォールバックする（App.tsx の selectedQuake 導出）。
       const existingCard = earthquakesRef.current.find(q => sameQuakeEntry(q, incomingQuake, getAreaPrefIndexCache()))
       // 選択と読み上げの主題は同じキーで揃える（どちらも「どの地震か」を指すもの）。
+      // **quakeHeldBack でも決める。** quakeSpeechTopic・quakeSubjectKey の消費は読み上げ
+      // ブロックの中（`!quakeHeldBack` を通った後）に限られるため、ここで決めるだけなら無害。
       const incomingEventKey = quakeEventKey(existingCard ?? incomingQuake)
       quakeSpeechTopic = `quake:${incomingEventKey}`
       quakeSubjectKey = incomingEventKey
-      selectQuake(incomingEventKey)
-      // 震度分布モードを開いていたら閉じて、発表値の地図へ戻す。**同じ地震の続報でも閉じる**
-      // ——分布モードは区域塗りも観測点ドットも出さないので、開いたままだとこの電文が伝えて
-      // きた震度が地図に一切現れない（→ `closeDistributionOverlayOnQuakeReport`）。
-      closeDistributionOnQuakeReport(incomingEventKey)
+      if (quakeHeldBack) {
+        // **止めたことを残す。** カードが採らない電文で選択を動かすと、見ていた別のカードの
+        // 選択が奪われ、開いていた追加表示（長周期・未入電・分布）も閉じてしまう。
+        log.debug('[quake] カードが採らない電文なので選択も分布モードのクローズも起こさない')
+      } else {
+        // 新規・続報いずれも、受信した地震カードを選択状態にする。
+        selectQuake(incomingEventKey)
+        // 震度分布モードを開いていたら閉じて、発表値の地図へ戻す。**同じ地震の続報でも閉じる**
+        // ——分布モードは区域塗りも観測点ドットも出さないので、開いたままだとこの電文が伝えて
+        // きた震度が地図に一切現れない（→ `closeDistributionOverlayOnQuakeReport`）。
+        closeDistributionOnQuakeReport(incomingEventKey)
+      }
       const { hypocenter, maxScale } = event.earthquake
       const isForeignQuake = event.issue.type === '遠地地震'
       // 震度を伝えない電文（VXSE52 等）では、同一イベントのカードが既に出している震度を消さない
@@ -4878,9 +4907,16 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             // こちらも渡さない —— この関数は `earthquakeToSegments` を通して既読を作るため、
             // 渡すと既読にする区域の集合まで震源距離順で切られる（ライブ側と同じ副作用）。
             // 地震電文の側は震源を語らないので、借りても震源の既読は増えない。
+            //
+            // **既読にするのは生の入電ではなく、マージ後のカード。** `quakeTopicFor` の内部の
+            // バケットは `mergeQuakeInto` を通しており据え置き（`quakeHoldBack`）を反映済み
+            // ——据え置かれた報では `card` が変わらないので、退けられた内容（区域・震度等）は
+            // 既読に積まれない。生の入電のまま渡すと、画面にも声にも出ていない内容を
+            // 「もう声にした」として記録してしまい、後続の正規の報がその内容を黙って省く。
             const quake = ev as JMAQuake
+            const { topic, card } = quakeTopicFor(quake)
             rememberQuakeSpeechAsSpoken(
-              quake, quakeTopicFor(quake), spokenQuakeStatesRef.current, authoritativeReadQuakesRef.current, opts,
+              card, topic, spokenQuakeStatesRef.current, authoritativeReadQuakesRef.current, opts,
             )
           }
         } else if (ev.kind === 'eew') {

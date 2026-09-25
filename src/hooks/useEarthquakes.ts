@@ -1276,7 +1276,8 @@ export function useEarthquakes(
    * 紛れ込んだ震度速報（福井県嶺南・滋賀県北部の震度3）が同じ EventID で届く。カードは
    * 据え置いていたのに、読み上げだけが「新たに最大震度3を…観測しました」と言い、ウィンドウ
    * タイトルも「最大震度3」へ変わっていた。
-   * → docs/spec/quake-spec.md §6.3「据え置いた電文は、音・読み上げ・タイトル・タブ移動も起こさない」
+   * → docs/spec/quake-spec.md §6.3「据え置いた電文は、音・読み上げ・タイトル・タブ移動・選択・
+   * 分布モードのクローズも起こさない」
    *
    * **既存カードは同じティックの写しから引く**（`findQuakeCardForHoldBack`）。`stateRef` だけを
    * 見ると鮮度が足りず、取消を処理した直後に**取消前のカードを既存として拾って**「画面には
@@ -1451,8 +1452,17 @@ export function useEarthquakes(
       // 既に消えている場合（取消の 10 秒後 purge など）はどちらも効かず震度は欠落する。
       // ここを earthquake.time に戻すと、同じ分に起きた別の地震の震度を引いてしまう。
       const cacheKey = quakeEventKey(quake)
-      // VXSE51 の震度データをキャッシュ（後続 VXSE52 への補完用）
-      if (quake.issue.type === '震度速報' && quake.earthquake.maxScale >= 0) {
+      // VXSE51 の震度データをキャッシュ（後続 VXSE52 への補完用）。
+      // **据え置き（`quakeHeldBack`）・取消より前に発表された報（`quakeRetracted`）は書かない。**
+      // どちらもカードが内容を採らない・採れない電文で、書くと裏口からカードへ入り込む——
+      // 据え置かれた震度速報 B の points がキャッシュへ残ったまま、後続の震源情報（震度を
+      // 持たない）が `fillIntensityFromCache` で B を取り込むと `hasIntensity(incoming)` が
+      // 真になり、`mergeQuakeInto` の「既存の震度で補完する」分岐を通らず、カード側は正しく
+      // 据え置いた A の points ではなく B の points をそのまま採用してしまう
+      // （既存カードが完全版なら `isSupersededByExistingCard` が先に守るが、震度速報の段階
+      // では守りが無い）。
+      if (!quakeHeldBack && !quakeRetracted
+        && quake.issue.type === '震度速報' && quake.earthquake.maxScale >= 0) {
         quakeIntensityCacheRef.current.set(cacheKey, {
           maxScale: quake.earthquake.maxScale,
           points: quake.points,
