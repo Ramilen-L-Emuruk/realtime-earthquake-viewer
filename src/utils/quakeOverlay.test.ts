@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   type QuakeOverlay, toggleLpgmOverlay, toggleDistributionOverlay, toggleUnreceivedOverlay,
-  openDistributionOverlay,
+  openDistributionOverlay, openLpgmOverlay,
+  quakeOverlayChangeLog,
   closeLpgmOverlay, closeEewLpgmOverlay, closeUnreceivedOverlay, closeUnreceivedOverlayFor,
   closeDistributionOverlayOnQuakeReport,
   decideUnreceivedSpeechOpen, shouldCloseOverlayOnSelection,
@@ -277,5 +278,98 @@ describe('読み上げに合わせて未入電モードを開いてよいか', (
 
   it('既に未入電が開いているときも奪わない（手で開かれた可能性がある）', () => {
     expect(decideUnreceivedSpeechOpen({ ...base, overlay: unreceived('A') })).toBe('declined')
+  })
+})
+
+describe('quakeOverlayChangeLog', () => {
+  // 記録の判断を書き込み口 1 つへ寄せた本体（→ `App.tsx` の `applyQuakeOverlay`）。
+  // 呼び出し側ごとに判定していた頃は、書き手を足すたびに記録が抜けていた。
+  it('正: 開いたら open が 1 件出る', () => {
+    expect(quakeOverlayChangeLog(null, distribution('k1'))).toEqual([
+      { overlay: 'distribution', open: true, subject: 'k1' },
+    ])
+  })
+
+  it('正: 閉じたら close が 1 件出る', () => {
+    expect(quakeOverlayChangeLog(distribution('k1'), null)).toEqual([
+      { overlay: 'distribution', open: false, subject: 'k1' },
+    ])
+  })
+
+  it('正: 別の追加表示へ差し替えたら「閉じる → 開く」の 2 件になる', () => {
+    const before: QuakeOverlay = { kind: 'lpgm', eventId: 'e1', source: 'earthquake' }
+    expect(quakeOverlayChangeLog(before, distribution('k1'))).toEqual([
+      { overlay: 'lpgm', open: false, subject: 'e1' },
+      { overlay: 'distribution', open: true, subject: 'k1' },
+    ])
+  })
+
+  // 対照: 変わらなければ何も出さない。ここが崩れると、同じ追加表示を 2 回開こうとする
+  // 経路（推計震度分布図は受信と読み上げの番で 2 回呼ばれる）で記録が二重に出る。
+  it('対照: 同じ参照なら何も出さない', () => {
+    const prev = distribution('k1')
+    expect(quakeOverlayChangeLog(prev, prev)).toEqual([])
+    expect(quakeOverlayChangeLog(null, null)).toEqual([])
+  })
+
+  // 安全弁: **参照ではなく見た目で比べる。** ヘルパーを通さずオブジェクトを作る呼び出し側が
+  // 現れても、画面が動いていなければ記録は出さない（長周期の自動表示で実際に起きた踏み外し）。
+  it('安全弁: 中身が同じなら、別参照でも何も出さない', () => {
+    expect(quakeOverlayChangeLog(distribution('k1'), distribution('k1'))).toEqual([])
+  })
+
+  // 安全弁: 長周期をどちらのカードから開いたか（`source`）は見た目に出ないので、そこだけ
+  // 変わっても記録しない。自動で閉じる条件には効くが、一覧は出たままになる。
+  it('安全弁: 長周期の出どころだけが変わっても出さない', () => {
+    const fromEew: QuakeOverlay = { kind: 'lpgm', eventId: 'e1', source: 'eew' }
+    const fromQuake: QuakeOverlay = { kind: 'lpgm', eventId: 'e1', source: 'earthquake' }
+    expect(quakeOverlayChangeLog(fromEew, fromQuake)).toEqual([])
+  })
+
+  // 安全弁: 種別が同じでも別の地震へ移ったなら、閉じて開いた 2 件として出す。
+  // 1 件へ畳むと、編集する側は何が引っ込んだのか読めない。
+  it('安全弁: 同じ種別でも別の地震へ移ったら 2 件出す', () => {
+    expect(quakeOverlayChangeLog(distribution('k1'), distribution('k2'))).toEqual([
+      { overlay: 'distribution', open: false, subject: 'k1' },
+      { overlay: 'distribution', open: true, subject: 'k2' },
+    ])
+  })
+
+  // 正: `lpgm` の subject は eventId、`unreceived` の subject は eventKey——
+  // 群発地震で複数の地震について続けて開閉したとき、`overlay` 種別だけでは
+  // 「同じ地震の開閉」か「別の地震への切り替え」かを区別できない（2 巡目レビューで指摘）。
+  it('正: lpgm の subject は eventId、unreceived の subject は eventKey', () => {
+    expect(quakeOverlayChangeLog(null, lpgm('e9'))).toEqual([
+      { overlay: 'lpgm', open: true, subject: 'e9' },
+    ])
+    expect(quakeOverlayChangeLog(null, unreceived('k9'))).toEqual([
+      { overlay: 'unreceived', open: true, subject: 'k9' },
+    ])
+  })
+})
+
+describe('openLpgmOverlay', () => {
+  const lpgm = (eventId: string, source: 'earthquake' | 'eew' = 'earthquake'): QuakeOverlay =>
+    ({ kind: 'lpgm', eventId, source })
+
+  it('正: 開いていなければ開く', () => {
+    expect(openLpgmOverlay(null, 'e1', 'earthquake')).toEqual(lpgm('e1'))
+  })
+
+  // 対照: 長周期は続報が続き、電文が届くたびにこの関数が呼ばれる。同じ参照を返さないと
+  // 画面が描き直され、録画ツール向けの記録にも偽の「閉じた・開いた」が湧く。
+  it('対照: 同じものを開いていれば前の値をそのまま返す', () => {
+    const prev = lpgm('e1')
+    expect(openLpgmOverlay(prev, 'e1', 'earthquake')).toBe(prev)
+  })
+
+  it('安全弁: 地震が違う・出どころが違うなら開き直す', () => {
+    const prev = lpgm('e1')
+    expect(openLpgmOverlay(prev, 'e2', 'earthquake')).toEqual(lpgm('e2'))
+    expect(openLpgmOverlay(prev, 'e1', 'eew')).toEqual(lpgm('e1', 'eew'))
+  })
+
+  it('安全弁: 別の追加表示を開いていれば、そちらは閉じて長周期へ移る', () => {
+    expect(openLpgmOverlay(distribution('k1'), 'e1', 'earthquake')).toEqual(lpgm('e1'))
   })
 })

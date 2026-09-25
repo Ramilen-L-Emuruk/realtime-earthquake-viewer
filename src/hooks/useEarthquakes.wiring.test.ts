@@ -21,6 +21,9 @@ import type { AppEvent, LiveEvent, LiveEventMeta, EEWAlert, JMAQuake, JMATsunami
 import type { ReplayEntry, ReplayPayload } from '../types/replay'
 import type { JMAKohatsu } from '../types/earthquake'
 import { serverDate, setReplayOffset } from '../utils/clock'
+import {
+  drainReplayEvents, __resetReplayEventLogForTest, type ReplayTelegramEvent,
+} from '../utils/replayEventLog'
 import { DMDATA_API_KEY_INVALID_MESSAGE } from '../utils/dmdataApiKey'
 import { log } from '../utils/logger'
 import { CELL_LAT_DEG, CELL_LON_DEG } from '../utils/bufrEstimatedIntensity'
@@ -3033,6 +3036,23 @@ describe('DMDSS 版: 起動時に 7 日間の帯を復元する', () => {
     expect(h.current.quakeNotice?.id).toBe('n1')
   })
 
+  // 安全弁: この経路（起動・API キー変更・リプレイ往復の再接続のたびに走る）は `silent: true`
+  // を渡し忘れると、最大 7 日前のお知らせが `notDispatched` として「いま届いた」電文の
+  // ように録画ログへ混入する（2 巡目レビューで検出。1 巡目で直した経路の 1 つが漏れていた）。
+  it('安全弁: 起動時の復元で拾ったお知らせは録画ログへ記録しない（silent）', async () => {
+    __resetReplayEventLogForTest()
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({
+      extras: [extra({ kind: 'quakeNotice', data: notice() })],
+    }))
+    const h = setup()
+    await h.flush()
+
+    expect(h.current.quakeNotice?.id).toBe('n1')
+    const notDispatched = drainReplayEvents().events
+      .filter((e): e is ReplayTelegramEvent => e.type === 'telegram' && e.skipped === 'notDispatched')
+    expect(notDispatched).toHaveLength(0)
+  })
+
   it('対照: 発表が無ければ帯は出ない', async () => {
     const h = setup()
     await h.flush()
@@ -3821,5 +3841,267 @@ describe('据え置かれた震度速報は震度キャッシュを汚さない'
     // キャッシュが汚染されていれば、ここで福井県嶺南の値が紛れ込む。
     act(() => { h.current.injectEvent(震源情報(4, '2026-01-01T12:04:00+09:00')) })
     expect(h.current.earthquakes.some(q => q.points.some(p => p.addr === '福井県嶺南'))).toBe(false)
+  })
+})
+
+// 録画ツール向けのイベントログ（→ `docs/spec/recording-interface-spec.md`）。
+//
+// **`onLiveEvent` まで届く電文は `useLiveEventHandler` が記録する。** ここで固定するのは、
+// その手前で落としている電文にも記録が残ること —— 残らないと、編集する側からは「配信が
+// 無かった」のと区別が付かない。
+describe('録画ツール向けの記録: onLiveEvent へ届かない電文', () => {
+  const AT = '2024-01-01T16:10:20+09:00'
+
+  function eewReport(serial: string): EEWAlert {
+    return {
+      kind: 'eew',
+      id: `dmdata-eew-replaylog-${serial}`,
+      time: AT,
+      test: false,
+      earthquake: {
+        originTime: AT, arrivalTime: AT, condition: '',
+        hypocenter: { name: '石川県能登地方', latitude: 37.5, longitude: 137.2, depth: 10, magnitude: 7.6 },
+      },
+      severity: 'Warning',
+      cancelled: false,
+      isFinal: false,
+      issue: { eventId: 'replaylog-event', serial, time: AT },
+      areas: [{ pref: '', name: '石川県能登', scaleFrom: 40, scaleTo: 50, kindCode: '11', arrivalTime: null }],
+    }
+  }
+
+  const loggedTelegrams = () =>
+    drainReplayEvents().events.filter((e): e is ReplayTelegramEvent => e.type === 'telegram')
+
+  beforeEach(() => { __resetReplayEventLogForTest() })
+  afterEach(() => { __resetReplayEventLogForTest(); vi.useRealTimers() })
+
+  it('緊急地震速報の古い報にも記録が残る', () => {
+    const h = setup()
+    act(() => { h.current.injectEvent(eewReport('2')) })
+    act(() => { h.current.injectEvent(eewReport('1')) })
+
+    const skipped = loggedTelegrams().filter(t => t.skipped === 'staleSerial')
+    expect(skipped).toHaveLength(1)
+    expect(skipped[0].kind).toBe('eew')
+    expect(skipped[0].serial).toBe('1')
+  })
+
+  it('対照: 受理した報には見送りの印が付かない', () => {
+    const h = setup()
+    act(() => { h.current.injectEvent(eewReport('1')) })
+    // 受理した分の記録は `useLiveEventHandler` の担当なので、ここには落とした分だけが出る
+    expect(loggedTelegrams().filter(t => t.skipped === 'staleSerial')).toHaveLength(0)
+  })
+
+  it('地震・津波に関するお知らせにも記録が残る（音も読み上げも起こさない種別）', () => {
+    // キューの捌きを進めるため（この経路は `injectEvent` と違って即時ではない）
+    vi.useFakeTimers()
+    const h = setup()
+    const now = serverDate()
+    act(() => {
+      h.current.loadReplayEvents([{
+        payload: {
+          kind: 'quakeNotice',
+          data: {
+            id: 'notice-replaylog', time: now.toISOString(), eventId: 'notice-replaylog-event',
+            headline: '沖縄県の震度データ入電停止のお知らせ', body: '本文', cancelled: false,
+            reportDateTime: now.toISOString(),
+            expireAt: new Date(now.getTime() + 60_000).toISOString(),
+          },
+        },
+        replayTime: now,
+      }])
+    })
+    // キューは 10ms 間隔で捌く（`injectEvent` と違い即時ではない）
+    act(() => { vi.advanceTimersByTime(50) })
+
+    const notDispatched = loggedTelegrams().filter(t => t.skipped === 'notDispatched')
+    expect(notDispatched).toHaveLength(1)
+    expect(notDispatched[0].kind).toBe('quakeNotice')
+    expect(notDispatched[0].eventId).toBe('notice-replaylog-event')
+  })
+
+  // 正: リプレイ開始時の「窓の手前」を作るサイレント注入（silent: true）は onLiveEvent を
+  // 呼ばないため、この経路で記録しないと録画ツールから再生開始直後の状態を電文一覧から
+  // 追えなくなる（→ docs/spec/recording-interface-spec.md「電文の受信」）。
+  it('サイレント注入（silent: true）の南海トラフ臨時情報にも記録が残る', () => {
+    vi.useFakeTimers()
+    const h = setup()
+    const now = serverDate()
+    act(() => {
+      h.current.loadReplayEvents([{
+        payload: {
+          kind: 'nankai',
+          data: {
+            id: 'n-replaylog-silent', time: now.toISOString(), eventId: 'nankai-replaylog-silent',
+            kindCode: '0202', kindName: '巨大地震注意',
+            headline: '南海トラフ地震臨時情報（巨大地震注意）', body: '',
+            cancelled: false, reportDateTime: now.toISOString(),
+          },
+        },
+        replayTime: now,
+        silent: true,
+      }])
+    })
+    act(() => { vi.advanceTimersByTime(50) })
+
+    const silentInit = loggedTelegrams().filter(t => t.skipped === 'silentReplayInit')
+    expect(silentInit).toHaveLength(1)
+    expect(silentInit[0].kind).toBe('nankai')
+    expect(silentInit[0].eventId).toBe('nankai-replaylog-silent')
+  })
+
+  // 対照: サイレントでなければ従来どおり `onLiveEvent` を呼ぶので記録は残らない
+  it('対照: サイレントでない南海トラフ臨時情報には silentReplayInit が付かない', () => {
+    vi.useFakeTimers()
+    const h = setup()
+    const now = serverDate()
+    act(() => {
+      h.current.loadReplayEvents([{
+        payload: {
+          kind: 'nankai',
+          data: {
+            id: 'n-replaylog-live', time: now.toISOString(), eventId: 'nankai-replaylog-live',
+            kindCode: '0202', kindName: '巨大地震注意',
+            headline: '南海トラフ地震臨時情報（巨大地震注意）', body: '',
+            cancelled: false, reportDateTime: now.toISOString(),
+          },
+        },
+        replayTime: now,
+      }])
+    })
+    act(() => { vi.advanceTimersByTime(50) })
+
+    expect(loggedTelegrams().filter(t => t.skipped === 'silentReplayInit')).toHaveLength(0)
+  })
+
+  // 安全弁: 反映されなかった電文（棄却）は `notApplied` として記録する——サイレントかどうかとは
+  // 独立の理由。「表示していない情報単位への取消」で `applyNankai` が偽を返すケースを使う。
+  it('反映されなかった南海トラフ臨時情報の取消には notApplied が付く', () => {
+    vi.useFakeTimers()
+    const h = setup()
+    const now = serverDate()
+    act(() => {
+      // 表示中の情報が無い状態で、取消（retracted）だけを流す → `applyNankai` は偽を返す
+      h.current.loadReplayEvents([{
+        payload: {
+          kind: 'nankai',
+          data: {
+            id: 'n-replaylog-notapplied', time: now.toISOString(), eventId: 'nankai-replaylog-notapplied',
+            kindCode: '', kindName: '',
+            headline: '', body: '', cancelled: true, retracted: true, reportDateTime: now.toISOString(),
+          },
+        },
+        replayTime: now,
+      }])
+    })
+    act(() => { vi.advanceTimersByTime(50) })
+
+    const notApplied = loggedTelegrams().filter(t => t.skipped === 'notApplied')
+    expect(notApplied).toHaveLength(1)
+    expect(notApplied[0].kind).toBe('nankai')
+  })
+
+  // 安全弁: `lpgm` だけ `cancelled`（取消）・`maxClass < 1`（階級 0）のとき、
+  // `silent` の真偽を問わずどちらの記録も残らなかった（2 巡目レビューで検出）。
+  // 「onLiveEvent を呼ぶかどうかに関わらず全件」出す規約が lpgm では成立していなかった。
+  function lpgmData(over: { cancelled?: boolean, maxClass?: number } = {}) {
+    const now = serverDate()
+    return {
+      id: 'lpgm-replaylog', time: now.toISOString(), eventId: 'lpgm-replaylog-event',
+      originTime: now.toISOString(),
+      maxClass: over.maxClass ?? 1, cancelled: over.cancelled ?? false,
+    }
+  }
+
+  // **理由は `notApplied` ではなく `notDispatched`。** `lpgmByEventId` は取消・階級 0 でも
+  // 必ず書き換わる（＝反映される）ので、「反映されなかった」を意味する `notApplied` は
+  // 使えない（3 巡目レビューで検出）。
+  it('取消された長周期地震動にも notDispatched の記録が残る', () => {
+    vi.useFakeTimers()
+    const h = setup()
+    act(() => {
+      h.current.loadReplayEvents([{
+        payload: { kind: 'lpgm', data: lpgmData({ cancelled: true }) },
+        replayTime: serverDate(),
+      }])
+    })
+    act(() => { vi.advanceTimersByTime(50) })
+
+    const notDispatched = loggedTelegrams().filter(t => t.skipped === 'notDispatched')
+    expect(notDispatched).toHaveLength(1)
+    expect(notDispatched[0].kind).toBe('lpgm')
+  })
+
+  it('階級 0 の長周期地震動にも notDispatched の記録が残る', () => {
+    vi.useFakeTimers()
+    const h = setup()
+    act(() => {
+      h.current.loadReplayEvents([{
+        payload: { kind: 'lpgm', data: lpgmData({ maxClass: 0 }) },
+        replayTime: serverDate(),
+      }])
+    })
+    act(() => { vi.advanceTimersByTime(50) })
+
+    const notDispatched = loggedTelegrams().filter(t => t.skipped === 'notDispatched')
+    expect(notDispatched).toHaveLength(1)
+    expect(notDispatched[0].kind).toBe('lpgm')
+  })
+
+  // 対照: 取消でも階級 0 でもない長周期地震動は、サイレントなら silentReplayInit として記録する
+  // （他の 5 種別と同じ if/else に揃えたことの確認）。
+  it('対照: 取消でも階級 0 でもない長周期地震動はサイレント注入として記録する', () => {
+    vi.useFakeTimers()
+    const h = setup()
+    act(() => {
+      h.current.loadReplayEvents([{
+        payload: { kind: 'lpgm', data: lpgmData() },
+        replayTime: serverDate(),
+        silent: true,
+      }])
+    })
+    act(() => { vi.advanceTimersByTime(50) })
+
+    const silentInit = loggedTelegrams().filter(t => t.skipped === 'silentReplayInit')
+    expect(silentInit).toHaveLength(1)
+    expect(silentInit[0].kind).toBe('lpgm')
+  })
+
+  // 安全弁: ライブ WebSocket（`ws.onEvent`）経由の lpgm にも同じ穴があった——else 節が
+  // 無く、取消・階級 0 のときは記録もされずに黙って処理が終わっていた（3 巡目レビューで
+  // 検出。キュー経路とは別のコードパスなので、キュー経路を直しても波及しない）。
+  it('ライブ WebSocket 経由で取消された長周期地震動にも notDispatched の記録が残る', async () => {
+    vi.useFakeTimers()
+    const h = setup()
+    await h.flush()
+    act(() => { sockets[0].onEvent?.({ kind: 'lpgm', data: lpgmData({ cancelled: true }) }) })
+
+    const notDispatched = loggedTelegrams().filter(t => t.skipped === 'notDispatched')
+    expect(notDispatched).toHaveLength(1)
+    expect(notDispatched[0].kind).toBe('lpgm')
+  })
+
+  it('ライブ WebSocket 経由で階級 0 の長周期地震動にも notDispatched の記録が残る', async () => {
+    vi.useFakeTimers()
+    const h = setup()
+    await h.flush()
+    act(() => { sockets[0].onEvent?.({ kind: 'lpgm', data: lpgmData({ maxClass: 0 }) }) })
+
+    const notDispatched = loggedTelegrams().filter(t => t.skipped === 'notDispatched')
+    expect(notDispatched).toHaveLength(1)
+    expect(notDispatched[0].kind).toBe('lpgm')
+  })
+
+  // 対照: ライブ WebSocket 経路は silent の概念を持たないので、取消でも階級 0 でもない
+  // lpgm は素直に onLiveEvent を呼び、telegram 記録は残らない。
+  it('対照: ライブ WebSocket 経由で取消でも階級 0 でもない長周期地震動には記録が残らない', async () => {
+    vi.useFakeTimers()
+    const h = setup()
+    await h.flush()
+    act(() => { sockets[0].onEvent?.({ kind: 'lpgm', data: lpgmData() }) })
+
+    expect(loggedTelegrams().filter(t => t.kind === 'lpgm')).toHaveLength(0)
   })
 })
