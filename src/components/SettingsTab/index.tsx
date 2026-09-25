@@ -2080,6 +2080,33 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
 
       <Section title="このアプリについて">
         <Row label="バージョン"><span className="text-xs text-secondary">{__APP_VERSION__}</span></Row>
+        {/* 利用規約・プライバシーポリシーへの導線。
+            **同意を求める画面は出さない。** 無償・アカウント不要・利用者の情報を集めない
+            アプリなので、起動を 1 手止めてまで読ませる筋合いが無い（通例もこの形）。
+            読みたい人がここから辿れることを担保する。
+
+            **規約の本体はリポジトリの Markdown へ置き、ここからは GitHub を開く。**
+            同じサイト内で配信する形（HTML を用意する）も採れるが、更新のたびに
+            Markdown と HTML の 2 つを保たねばならず、片方だけ古くなる。
+            第三者ライセンスだけは配信物に含まれる（`public/`）ので同一サイト内で開く。 */}
+        <CreditRow label="規約">
+          <span className="text-xs text-secondary">
+            <a href="https://github.com/Ramilen-L-Emuruk/realtime-earthquake-viewer/blob/main/docs/terms-of-service.md"
+              target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300">
+              利用規約
+            </a>
+            <span className="mx-1">/</span>
+            <a href="https://github.com/Ramilen-L-Emuruk/realtime-earthquake-viewer/blob/main/docs/privacy-policy.md"
+              target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300">
+              プライバシーポリシー
+            </a>
+            <span className="mx-1">/</span>
+            <a href={`${import.meta.env.BASE_URL}third-party-licenses.txt`}
+              target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300">
+              使用ソフトウェアのライセンス
+            </a>
+          </span>
+        </CreditRow>
         <CreditRow label="地震・津波データ">
           {isDmdss ? (
             <a href="https://dmdata.jp/" target="_blank" rel="noopener noreferrer"

@@ -92,21 +92,26 @@ npm run preview
 
 ## 注意事項
 
+[利用規約](docs/terms-of-service.md)・[プライバシーポリシー](docs/privacy-policy.md)もあわせてご覧ください。
+
 - 本アプリが表示する情報は参考情報です。避難等の判断は気象庁や自治体の公式情報を確認してください。
 - 強震モニタの震度は推定値であり、気象庁発表の震度と異なる場合があります。
 - 緊急地震速報は予測情報のため、実際の揺れと異なる場合があります。
 - 主要動の到達予測は、気象庁が**地域ごと**（都道府県を 3〜4 つに分けた広さ）に発表した値です。同じ地域の中でも場所によって到達時刻は異なります。
 - P2PQuake API は非公式サービスのため、サービス継続性は保証されません。
-- DM-D.S.S 版で使用する DMDATA.JP API キーはブラウザの `localStorage` に平文保存されます。共有端末での利用には注意してください。
+- DM-D.S.S 版で入力する DMDATA.JP API キーは端末内に平文で保存されます。共有端末での利用には注意してください（詳細は[プライバシーポリシー](docs/privacy-policy.md)）。
 
 ## ライセンス
 
-MIT License
+MIT License（[LICENSE](LICENSE)）。
+同梱している第三者ソフトウェアのライセンス全文は
+[public/third-party-licenses.txt](public/third-party-licenses.txt) にあります
+（`npm run build-third-party-licenses` で `package.json` の `dependencies` とその依存先から生成）。
 
 **データ・地図・フォントの出典**:
 - 地震情報・緊急地震速報・津波情報: 気象庁 — 配信は通常版が [P2PQuake API v2](https://www.p2pquake.net/)、DM-D.S.S 版が [DMDATA.JP](https://dmdata.jp/)
 - リアルタイム震度: [防災科学技術研究所 強震モニタ](https://www.kmoni.bosai.go.jp/) — 配信は [Yahoo!天気・災害](https://typhoon.yahoo.co.jp/weather/jp/earthquake/kyoshin/) 経由
-- 地図データ: 「気象庁 予報区等 GIS データ（都道府県・地震情報／細分区域・津波予報区）」
+- 地図データ: 「気象庁 予報区等 GIS データ（都道府県・地震情報／細分区域・津波予報区）」 — GeoJSON 化: [Ichihai1415/JMA-GIS-GeoJSON](https://github.com/Ichihai1415/JMA-GIS-GeoJSON)（CC BY 4.0）
 - 震央地名: 気象庁「地震情報で用いる震央地名」「多言語辞書データ」 — データ整備: [0Quake/JMA_Region](https://github.com/0Quake/JMA_Region)（CC0 1.0）
 - 震度観測点の座標・読み: 気象庁「震度観測点一覧表」 — データ整備: [iku55 氏による JSON 化](https://gist.github.com/iku55/79005d1896631ad6117bbe327b8162c1)
 - 津波観測点の座標: 気象庁「防災情報XMLフォーマット 個別コード表（潮位観測点）」「津波観測点（全国）」（いずれも公共データ利用規約 第1.0版）・地震調査研究推進本部「検潮・津波観測施設」（文部科学省ウェブサイト利用規約）を突き合わせて作成。検証に 防災科学技術研究所「海底地震津波観測網 観測点情報」
@@ -116,3 +121,5 @@ MIT License
 - 活断層データ: 「産総研 活断層データベース」（政府標準利用規約 2.0）
 - プレート境界データ: PB2002 (Bird, 2003) — データ整備: Hugo Ahlenius・Nordpil [fraxen/tectonicplates](https://github.com/fraxen/tectonicplates)（Open Data Commons Attribution License 1.0）
 - 地名ラベルのフォント: M PLUS Rounded 1c（SIL Open Font License 1.1）— Copyright 2016 The Rounded M+ Project Authors.
+- 過去の地震の再生データ（2016年熊本地震・2016年鳥取県中部地震・2018年北海道胆振東部地震・2018年大阪府北部地震）: 地震情報・津波は「気象庁防災情報XMLデータベース」（国立情報学研究所 CPS-IIP, Asanobu KITAMOTO・CC BY 4.0）、緊急地震速報は気象庁「緊急地震速報（警報）発表状況」（政府標準利用規約 第1.0版）
+- テスト表示に使う地震のデータ: 気象庁の電文（[DMDATA.JP](https://dmdata.jp/) 経由のアーカイブ）を加工して作成（公共データ利用規約 第1.0版）
