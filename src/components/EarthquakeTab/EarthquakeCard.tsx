@@ -619,8 +619,18 @@ export function EarthquakeCard({
     && speakingTelegramTextSubject === telegramTextSubject('lpgm', lpgm.eventId)
   // 読み上げているあいだだけ開く（自分が開いた分だけ閉じる）。**状態は `expanded` が持つ**
   // ので、判定を書き写さず状態の持ち主を渡せる版を使う。
+  //
+  // **録画ツール向けの `subject` は `telegramTextSubject` を再利用しない。** あのヘルパーは
+  // 読み上げ追従（`speakingLpgmNotes` の判定）専用の別の契約（`telegramText:lpgm:<id>`）を
+  // 持っており、`docs/spec/recording-interface-spec.md` が定める `subject` の形式
+  // （`lpgm:<id>`）とは違う。ここは仕様書の形式に直接合わせる。
+  //
+  // **`lpgm` が無いときの `'lpgm'` は実際には記録されない。** `speakingLpgmNotes` が
+  // `!!lpgm` を含むため、`subject` が使われる（読み上げ開始の記録が走る）のは常に
+  // `lpgm` が真のとき。型を満たすためだけの安全側の既定値。
   const setLpgmNotesOpenByUser = useAutoOpenWhileSpeakingIn(
     speakingLpgmNotes, lpgmNotesOpen, setLpgmNotesOpen,
+    lpgm ? `lpgm:${lpgm.eventId}` : 'lpgm',
   )
 
   /**
