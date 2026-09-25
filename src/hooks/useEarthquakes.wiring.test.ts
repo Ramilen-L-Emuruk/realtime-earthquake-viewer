@@ -3841,6 +3841,9 @@ describe('据え置かれた震度速報は震度キャッシュを汚さない'
     // キャッシュが汚染されていれば、ここで福井県嶺南の値が紛れ込む。
     act(() => { h.current.injectEvent(震源情報(4, '2026-01-01T12:04:00+09:00')) })
     expect(h.current.earthquakes.some(q => q.points.some(p => p.addr === '福井県嶺南'))).toBe(false)
+  })
+})
+
 // 録画ツール向けのイベントログ（→ `docs/spec/recording-interface-spec.md`）。
 //
 // **`onLiveEvent` まで届く電文は `useLiveEventHandler` が記録する。** ここで固定するのは、
