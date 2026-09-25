@@ -79,6 +79,30 @@ export function openDistributionOverlay(
 }
 
 /**
+ * 長周期の表示を開いた結果を返す（トグルではない）。
+ *
+ * **電文が届くたびに呼ばれる**ので、`toggleLpgmOverlay` は使えない（続報のたびに開閉が
+ * 裏返る）。
+ *
+ * **既に同じものを開いていれば前の値をそのまま返す。** 新しいオブジェクトを返すと、内容が
+ * 同じでも React は状態が変わったとみなして描き直す（`applyQuakeOverlay` が `setState` を
+ * 呼び直す）。長周期は続報が続くので、ここを踏み外すと報の数だけ無駄な描き直しが並ぶ。
+ *
+ * **録画ツール向けの記録は別の安全弁で守られている**（→ `quakeOverlayChangeLog`。あちらは
+ * 参照ではなく「画面に出ているもの」の見た目で比較するので、このメモ化を忘れて毎回新しい
+ * オブジェクトを返しても偽の開閉は記録されない）。ここでの参照維持は再描画を減らすための
+ * 最適化であって、記録の正しさが依存しているわけではない。
+ */
+export function openLpgmOverlay(
+  prev: QuakeOverlay | null,
+  eventId: string,
+  source: 'earthquake' | 'eew',
+): QuakeOverlay | null {
+  if (prev?.kind === 'lpgm' && prev.eventId === eventId && prev.source === source) return prev
+  return { kind: 'lpgm', eventId, source }
+}
+
+/**
  * 未入電の表示をトグルした結果を返す。
  *
  * 同じ地震の未入電を開いていれば閉じ、それ以外なら開く（他の追加表示を開いていれば、それは閉じる）。
@@ -240,4 +264,59 @@ export function decideUnreceivedSpeechOpen(args: {
   // 未入電を読み上げているのに地点が無い＝読み上げ文と画面のカードが食い違っている。
   if (!args.hasUnreceivedPoints) return 'mismatch'
   return 'opened'
+}
+
+/**
+ * 画面に出ている追加表示を指す鍵。**見た目が同じかを比べるためのもの。**
+ *
+ * **`source` は含めない。** 長周期をどちらのカードから開いたかは自動で閉じる条件に効くだけで、
+ * 出ている一覧は変わらない。含めると、同じ一覧が出たままなのに「閉じた・開いた」が並ぶ。
+ */
+function visibleOverlayKey(o: QuakeOverlay | null): string | null {
+  if (!o) return null
+  return o.kind === 'lpgm' ? `lpgm:${o.eventId}` : `${o.kind}:${o.eventKey}`
+}
+
+/**
+ * 追加表示が指す地震の主題（→ `docs/spec/recording-interface-spec.md` の `subject`）。
+ *
+ * `lpgm` は電文の `eventId`、`distribution`／`unreceived` は地震カードの `eventKey`。
+ * `visibleOverlayKey` と鍵の形は同じだが、あちらは種別を含めた「見た目の一致判定」用で
+ * こちらは「どの地震か」だけを表す——同じ材料でも用途が違うので使い分ける。
+ */
+function overlaySubject(o: QuakeOverlay): string {
+  return o.kind === 'lpgm' ? o.eventId : o.eventKey
+}
+
+/**
+ * 追加表示の変化を、録画ツール向けの記録 1 件ずつへ開く。
+ *
+ * **記録の判断をここ 1 つへ集めるために切り出してある。** 追加表示は `distribution` /
+ * `unreceived` / `lpgm` の排他な 1 つの状態機械なのに、書き手は 13 ある。呼び出し側ごとに
+ * 「変わったか」を判定して記録する形にすると、**書き手を足すたびに抜ける** —— 実際に
+ * 自動で開く経路だけが記録され、カードのボタンを押した回と長周期の開閉が丸ごと落ちていた。
+ *
+ * **差し替え（別の追加表示へ移る）は 2 件になる。** 閉じた分と開いた分は別の出来事で、
+ * 1 件に畳むと編集する側は何が引っ込んだのか読めない。並びは「閉じる → 開く」。
+ *
+ * **`subject` を持たせる。** 群発地震で複数の地震について続けて lpgm/distribution/unreceived
+ * が開閉したとき、`overlay` 種別だけでは「同じ地震の開閉」か「別の地震への切り替え」かを
+ * 録画ログから区別できない。
+ *
+ * @param before 書き換える前（同じ参照なら変化なしとみなす）
+ * @param after 書き換えた後
+ */
+export function quakeOverlayChangeLog(
+  before: QuakeOverlay | null,
+  after: QuakeOverlay | null,
+): { overlay: QuakeOverlay['kind'], open: boolean, subject: string }[] {
+  // 変化が無ければ何も出さない。**参照ではなく「画面に出ているもの」で比べる** ——
+  // ヘルパーは「変わらなければ同じ参照を返す」規約だが、参照だけに頼ると**呼び出し側が
+  // ヘルパーを通さずオブジェクトを作った瞬間に偽の開閉が湧く**（長周期の自動表示で実際に
+  // 起きた）。見た目で比べておけば、その踏み外しがここまで漏れてこない。
+  if (visibleOverlayKey(before) === visibleOverlayKey(after)) return []
+  const entries: { overlay: QuakeOverlay['kind'], open: boolean, subject: string }[] = []
+  if (before) entries.push({ overlay: before.kind, open: false, subject: overlaySubject(before) })
+  if (after) entries.push({ overlay: after.kind, open: true, subject: overlaySubject(after) })
+  return entries
 }

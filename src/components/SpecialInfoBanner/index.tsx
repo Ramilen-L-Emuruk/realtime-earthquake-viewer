@@ -250,7 +250,7 @@ function OperationStatusBadge({ status }: { status?: TelegramOperationStatus }) 
 
 function NankaiBanner({ nankai, speaking }: { nankai: JMANankai; speaking: boolean }) {
   // 読み上げているあいだだけ開く（自分が開いた分だけ閉じる）
-  const [open, setOpen] = useAutoOpenWhileSpeaking(speaking)
+  const [open, setOpen] = useAutoOpenWhileSpeaking(speaking, 'nankai')
   const { bg, border, badge } = nankaiColors(nankai.kindName)
 
   return (
@@ -281,7 +281,7 @@ function NankaiBanner({ nankai, speaking }: { nankai: JMANankai; speaking: boole
 }
 
 function KohatsuBanner({ kohatsu, speaking }: { kohatsu: JMAKohatsu; speaking: boolean }) {
-  const [open, setOpen] = useAutoOpenWhileSpeaking(speaking)
+  const [open, setOpen] = useAutoOpenWhileSpeaking(speaking, 'kohatsu')
 
   return (
     <div className={`bg-blue-900/95 border-t-2 border-blue-400 ${SAFE_BOTTOM}`}>
@@ -319,7 +319,7 @@ function KohatsuBanner({ kohatsu, speaking }: { kohatsu: JMAKohatsu; speaking: b
 // 有効期限は出さない。内部では発表から 7 日で畳んでいるが、それは帯を常駐させないための
 // 表示上の都合であって、気象庁が期限を定めているわけではない（後発地震注意情報の 7 日とは違う）。
 function CommentaryBanner({ commentary, speaking }: { commentary: JMANankaiCommentary; speaking: boolean }) {
-  const [open, setOpen] = useAutoOpenWhileSpeaking(speaking)
+  const [open, setOpen] = useAutoOpenWhileSpeaking(speaking, 'nankaiCommentary')
   // 閉じた電文 id。マウント時に一度だけ読む。別の解説情報に入れ替わっても id が違うので
   // 下の判定を通り、新しい電文はきちんと表示される。
   const [dismissedId, setDismissedId] = useState<string | null>(() => {
@@ -473,7 +473,7 @@ function NoticeBanner({ notice }: { notice: JMAQuakeNotice }) {
 // 色は青緑（cyan）。南海トラフの解説（teal）とは隣り合わないので紛れにくく、
 // 段階の重さを表す黄／橙／赤とも、運用連絡の無彩色とも別に見える。
 function EarthquakeCountBanner({ count, speaking }: { count: JMAEarthquakeCount; speaking: boolean }) {
-  const [open, setOpen] = useAutoOpenWhileSpeaking(speaking)
+  const [open, setOpen] = useAutoOpenWhileSpeaking(speaking, 'earthquakeCount')
   const [dismissedId, setDismissedId] = useState<string | null>(() => {
     try {
       return localStorage.getItem(COUNT_DISMISSED_KEY)
