@@ -669,6 +669,39 @@ describe('calcEEWCancelTime: 発震時刻起点の自動解除時刻（MIN_CANCE
     expect(cancel.getTime()).toBe(minTime.getTime())
   })
 
+  // ---- 深さが読めなかったとき ----
+  //
+  // **既定値 30km は `??` では当たらない。** 深さが判らないことはセンチネル `-1` で表すので
+  // （`Hypocenter.depth`）、`?? 30` を素通りした -1 が有感半径の計算（`calcPGV600` の深さ項）へ
+  // そのまま流れ、解除が実際より早まる。
+
+  // 正: 深さが判らない報は、既定値 30km を当てたときと同じ解除時刻になる。
+  it('深さが判らない報（-1）は既定値 30km として扱う', () => {
+    const originTime = '2026-01-01T12:00:00Z'
+    const reportTime = new Date('2026-01-01T12:00:10Z')
+    const unknown = calcEEWCancelTime(makeEEWFor(7.0, -1, originTime), reportTime)
+    const fallback = calcEEWCancelTime(makeEEWFor(7.0, 30, originTime), reportTime)
+    expect(unknown.getTime()).toBe(fallback.getTime())
+  })
+
+  // 対照: 深さ 0 は「ごく浅い」という有効値なので、既定値へ倒さない。
+  it('深さ 0（ごく浅い）は既定値へ倒さない', () => {
+    const originTime = '2026-01-01T12:00:00Z'
+    const reportTime = new Date('2026-01-01T12:00:10Z')
+    const shallow = calcEEWCancelTime(makeEEWFor(7.0, 0, originTime), reportTime)
+    const fallback = calcEEWCancelTime(makeEEWFor(7.0, 30, originTime), reportTime)
+    expect(shallow.getTime()).not.toBe(fallback.getTime())
+  })
+
+  // 安全弁: 深さが読める報は従来どおりその値で解く（既定値へ吸い寄せない）。
+  it('深さが読める報は既定値ではなくその値で解く', () => {
+    const originTime = '2026-01-01T12:00:00Z'
+    const reportTime = new Date('2026-01-01T12:00:10Z')
+    const deep = calcEEWCancelTime(makeEEWFor(7.0, 150, originTime), reportTime)
+    const originBase = new Date(new Date(originTime).getTime() + calcEEWAutoCancelSec(7.0, 150) * 1000)
+    expect(deep.getTime()).toBe(originBase.getTime())
+  })
+
   // ---- 時刻が読めなかったとき ----
   //
   // 読めない時刻から作った `Date` は Invalid で、**それを含む大小比較はどちらの向きでも偽**。

@@ -6,7 +6,7 @@ import { createDepthPointLayer, type DepthPointLayer } from './gl/depthPointLaye
 import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
 import { getIntensityColor, getIntensityLabelWithOrAbove } from '../../utils/intensity'
 import { readableTextColor } from '../../utils/contrast'
-import { formatMagnitudeWithCondition, formatDepth } from '../../utils/formatters'
+import { formatMagnitudeWithCondition, formatDepth, hasDepth } from '../../utils/formatters'
 import { log } from '../../utils/logger'
 import { reportRenderFailure, clearRenderFailure, clearRenderFailuresFor } from '../../utils/renderHealth'
 import type { JMAQuake } from '../../types/earthquake'
@@ -166,7 +166,11 @@ export function HypocenterDepthGL({ quake, epicenter, prefIntensities, iconScale
   }, [map])
 
   useEffect(() => {
-    const depthKm = quake.earthquake.hypocenter.depth ?? 0
+    // **深さが判らない報も地表へ置く。** `??` はセンチネル `-1` に効かないので、素通りした値を
+    // `elevationMetersFromDepthKm` が標高 +1000m へ写し、×印が地表より 1km 上へ浮く
+    // （`gl/depthPointLayer.ts`）。実例は遠地地震で、電文が高さフィールドを省いて
+    // `description="…深さ不明"` を添えてくる。確定していない深さを立体で断定しない。
+    const depthKm = hasDepth(quake.earthquake.hypocenter.depth) ? quake.earthquake.hypocenter.depth : 0
     layerRef.current?.setPoints([
       // 震央（地表）。深さがあることを示す控えめな印で、震源と線で結ぶ。
       // 深さ 0（ごく浅い・不明）のときは震源と重なるので、見た目は 1 つの × 印になる。
