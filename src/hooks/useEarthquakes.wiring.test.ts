@@ -17,7 +17,7 @@
 // 差し替えるのは外部 I/O（WebSocket・REST・観測点座標）だけ。時計や純粋関数は本物を使う。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, cleanup, act } from '@testing-library/react'
-import type { AppEvent, LiveEvent, LiveEventMeta, EEWAlert, JMAQuake, JMATsunami, JMANankaiCommentary, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity, IntensityScale } from '../types/earthquake'
+import type { AppEvent, LiveEvent, LiveEventMeta, EEWAlert, JMAQuake, JMATsunami, JMANankai, JMANankaiCommentary, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity, IntensityScale } from '../types/earthquake'
 import type { ReplayEntry, ReplayPayload } from '../types/replay'
 import type { JMAKohatsu } from '../types/earthquake'
 import { serverDate, setReplayOffset } from '../utils/clock'
@@ -4103,5 +4103,204 @@ describe('録画ツール向けの記録: onLiveEvent へ届かない電文', ()
     act(() => { sockets[0].onEvent?.({ kind: 'lpgm', data: lpgmData() }) })
 
     expect(loggedTelegrams().filter(t => t.kind === 'lpgm')).toHaveLength(0)
+  })
+
+  // 履歴バッチ復元（起動時・「もっと見る」）は onLiveEvent を呼ばずに直接 state を書き換える
+  // 独立した経路で、上のキュー・ライブ WebSocket 経路の穴を直しても波及しない
+  // （→ `docs/spec/recording-interface-spec.md` §4）。
+  describe('履歴バッチ復元（起動時・「もっと見る」）', () => {
+    function nankaiData(id: string, over: { cancelled?: boolean, retracted?: boolean } = {}) {
+      const now = serverDate()
+      return {
+        id, time: now.toISOString(), eventId: `${id}-event`,
+        kindCode: '0202', kindName: '巨大地震注意',
+        headline: '南海トラフ地震臨時情報（巨大地震注意）', body: '',
+        cancelled: over.cancelled ?? false, retracted: over.retracted, reportDateTime: now.toISOString(),
+      }
+    }
+
+    describe('起動時の履歴復元', () => {
+      // 正: 反映された（表示された）南海トラフ臨時情報には silentReplayInit が付く。
+      // この経路は `applied` の戻り値を無視していたため記録が一切残っていなかった。
+      it('正: 反映された南海トラフ臨時情報に silentReplayInit の記録が残る', async () => {
+        vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(
+          history({ extras: [extra({ kind: 'nankai', data: nankaiData('n-startup-applied') })] }),
+        )
+        const h = setup()
+        await h.flush()
+
+        expect(h.current.nankai?.id).toBe('n-startup-applied')
+        const silentInit = loggedTelegrams().filter(t => t.kind === 'nankai' && t.skipped === 'silentReplayInit')
+        expect(silentInit).toHaveLength(1)
+        expect(silentInit[0].eventId).toBe('n-startup-applied-event')
+      })
+
+      // 対照: 表示していない情報単位への取消は `applyNankai` が偽を返す（棄却）ので notApplied。
+      it('対照: 反映されなかった南海トラフ臨時情報の取消に notApplied の記録が残る', async () => {
+        vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(
+          history({ extras: [extra({ kind: 'nankai', data: nankaiData('n-startup-notapplied', { cancelled: true, retracted: true }) })] }),
+        )
+        const h = setup()
+        await h.flush()
+
+        expect(h.current.nankai).toBeNull()
+        const notApplied = loggedTelegrams().filter(t => t.kind === 'nankai' && t.skipped === 'notApplied')
+        expect(notApplied).toHaveLength(1)
+        expect(notApplied[0].eventId).toBe('n-startup-notapplied-event')
+      })
+
+      // 安全弁: lpgm は `lpgmEvents` の構築ループ側で記録する。取消は `lpgmByEventId` に
+      // 反映されない（＝画面にも出ない）が、キュー経路と同じ理由で notDispatched を使う。
+      it('安全弁: 取消された長周期地震動にも notDispatched の記録が残る', async () => {
+        vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(
+          history({ extras: [extra({ kind: 'lpgm', data: lpgmData({ cancelled: true }) })] }),
+        )
+        const h = setup()
+        await h.flush()
+
+        expect(h.current.lpgmByEventId.has('lpgm-replaylog-event')).toBe(false)
+        const notDispatched = loggedTelegrams().filter(t => t.kind === 'lpgm' && t.skipped === 'notDispatched')
+        expect(notDispatched).toHaveLength(1)
+      })
+
+      // 安全弁: `applyNankai` が例外を投げても、`history.extras` の後続要素（ここでは
+      // kohatsu）の処理・記録は続行され、例外を投げた電文自体の記録も残る
+      // （2 巡目の敵対的レビューで検出した記録漏れの回帰テスト。1 巡目で直した
+      // 「ループ全体・津波失効予約への巻き添え」自体は別観点で、こちらは対象外）。
+      // `retracted` を getter にして意図的に例外を発生させる——`applyNankai` は
+      // `cancelled: true` の分岐でのみこれを読むが、記録側の `replayTelegramFacts`
+      // （`eventId`/`cancelled`/`kindName` のみ読む）は読まないため、
+      // 「apply だけが失敗し、記録自体は成功する」状況を再現できる。
+      // `JMANankai` 自体は型どおりのオブジェクトなので、通常の入力ではこの経路は起きない。
+      it('安全弁: 例外を投げる南海トラフ臨時情報があっても、後続の extras は続行され、両方に記録が残る', async () => {
+        const now = serverDate()
+        const throwingNankai = {
+          get retracted(): boolean { throw new Error('boom') },
+          cancelled: true,
+          eventId: 'n-startup-throws-event',
+          id: 'n-startup-throws', time: now.toISOString(),
+          kindCode: '0202', kindName: '巨大地震注意',
+          headline: '南海トラフ地震臨時情報（巨大地震注意）', body: '',
+          reportDateTime: now.toISOString(),
+        }
+        const kohatsu = {
+          id: 'dmdata-kohatsu-k-after-throw-1', time: now.toISOString(), eventId: 'k-after-throw',
+          headline: '北海道・三陸沖後発地震注意情報',
+          body: '巨大地震が発生する可能性が平常時と比べて相対的に高まっています。',
+          cancelled: false, reportDateTime: now.toISOString(),
+          expireAt: new Date(now.getTime() + 60_000).toISOString(),
+        }
+        vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({
+          extras: [
+            extra({ kind: 'nankai', data: throwingNankai as unknown as JMANankai }),
+            extra({ kind: 'kohatsu', data: kohatsu }),
+          ],
+        }))
+        const h = setup()
+        await h.flush()
+
+        // **`loggedTelegrams()` は呼ぶたびにバッファを drain する。** 1 回だけ呼んで
+        // 結果を保持する（2 回呼ぶと 2 回目は空になり、後続の記録漏れと見分けが付かない）。
+        const telegrams = loggedTelegrams()
+
+        // 例外を投げた電文自体も、反映されなかったものとして記録される（握り潰さない）
+        const nankaiRecords = telegrams.filter(t => t.kind === 'nankai')
+        expect(nankaiRecords).toHaveLength(1)
+        expect(nankaiRecords[0].skipped).toBe('notApplied')
+
+        // 後続の kohatsu は例外に巻き込まれず、通常どおり反映・記録される
+        expect(h.current.kohatsu?.eventId).toBe('k-after-throw')
+        const kohatsuRecords = telegrams.filter(t => t.kind === 'kohatsu')
+        expect(kohatsuRecords).toHaveLength(1)
+        expect(kohatsuRecords[0].skipped).toBe('silentReplayInit')
+      })
+
+      // 対照: quakeNotice はサイレント復元では記録自体が 1 件も出ない唯一の例外
+      // （`applyQuakeNotice` に `silent: true` を渡しているため）。
+      it('対照: 起動時のお知らせには記録が残らない（唯一の例外）', async () => {
+        const now = serverDate()
+        vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({
+          extras: [extra({
+            kind: 'quakeNotice',
+            data: {
+              id: 'notice-startup', time: now.toISOString(), eventId: 'notice-startup-event',
+              headline: '沖縄県の震度データ入電停止のお知らせ', body: '本文', cancelled: false,
+              reportDateTime: now.toISOString(),
+              expireAt: new Date(now.getTime() + 60_000).toISOString(),
+            },
+          })],
+        }))
+        const h = setup()
+        await h.flush()
+
+        expect(loggedTelegrams().filter(t => t.kind === 'quakeNotice')).toHaveLength(0)
+      })
+    })
+
+    describe('「もっと見る」', () => {
+      // 正: 「もっと見る」は南海トラフ臨時情報を画面へ反映しない（現在表示中の帯を
+      // 遡った古い日の内容で上書きしてしまう副作用を避けるため）が、電文が届いた事実は
+      // notDispatched として記録する。
+      it('正: 「もっと見る」の南海トラフ臨時情報は反映せず notDispatched として記録する', async () => {
+        // **`hasMore` は起動時の取得結果として確定する**——「もっと見る」を呼ぶ前に
+        // 立てておかないと `loadMoreEarthquakes` が早期リターンし、後で差し替える
+        // extras 付きのモックが一度も呼ばれない。
+        vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({ hasMore: true }))
+        const h = setup({ offset: null })
+        await h.flush()
+        vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(
+          history({ hasMore: true, extras: [extra({ kind: 'nankai', data: nankaiData('n-loadmore') })] }),
+        )
+
+        await act(async () => { await h.current.loadMoreEarthquakes() })
+
+        // 画面へは反映しない（起動時と違い、上書きの副作用があるため）
+        expect(h.current.nankai).toBeNull()
+        const notDispatched = loggedTelegrams().filter(t => t.kind === 'nankai' && t.skipped === 'notDispatched')
+        expect(notDispatched).toHaveLength(1)
+        expect(notDispatched[0].eventId).toBe('n-loadmore-event')
+      })
+
+      // 対照: lpgm は地震カードに紐づく情報なので、「もっと見る」でも従来どおり画面へ反映する。
+      // 記録はキュー経路と同じ判定（`lpgmNotifiable`）で silentReplayInit になる。
+      it('対照: 「もっと見る」の長周期地震動は画面へ反映しつつ silentReplayInit として記録する', async () => {
+        vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({ hasMore: true }))
+        const h = setup({ offset: null })
+        await h.flush()
+        vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(
+          history({ hasMore: true, extras: [extra({ kind: 'lpgm', data: lpgmData() })] }),
+        )
+
+        await act(async () => { await h.current.loadMoreEarthquakes() })
+
+        expect(h.current.lpgmByEventId.has('lpgm-replaylog-event')).toBe(true)
+        const silentInit = loggedTelegrams().filter(t => t.kind === 'lpgm' && t.skipped === 'silentReplayInit')
+        expect(silentInit).toHaveLength(1)
+      })
+
+      // 安全弁: quakeNotice は「もっと見る」でも記録が残らない（起動時と同じ唯一の例外）。
+      it('安全弁: 「もっと見る」のお知らせには記録が残らない', async () => {
+        vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({ hasMore: true }))
+        const h = setup({ offset: null })
+        await h.flush()
+        const now = serverDate()
+        vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history({
+          hasMore: true,
+          extras: [extra({
+            kind: 'quakeNotice',
+            data: {
+              id: 'notice-loadmore', time: now.toISOString(), eventId: 'notice-loadmore-event',
+              headline: '沖縄県の震度データ入電停止のお知らせ', body: '本文', cancelled: false,
+              reportDateTime: now.toISOString(),
+              expireAt: new Date(now.getTime() + 60_000).toISOString(),
+            },
+          })],
+        }))
+
+        await act(async () => { await h.current.loadMoreEarthquakes() })
+
+        expect(loggedTelegrams().filter(t => t.kind === 'quakeNotice')).toHaveLength(0)
+      })
+    })
   })
 })
