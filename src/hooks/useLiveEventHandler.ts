@@ -50,9 +50,19 @@ import { getAreaPrefIndexCache } from '../utils/stationCoords'
 /** 緊急地震速報の持ち主を覚えておく鍵。他の種別の主題と混ざらないよう名前空間を分ける。 */
 const replayEewKey = (key: string) => `eew:${key}`
 
-/** 読み上げ 1 本の終わりを記録する。`startedAt` は実時刻（`Date.now()`）。 */
+/**
+ * 読み上げ 1 本の終わりを記録する。`startedAt` は実時刻（`Date.now()`）。
+ *
+ * **この節の他の関数と同じく投げない。** `chainEEWSpeech` は `void playing.then(outcome => ...,
+ * () => ...)` の中でこれを呼んでおり、その `then` チェーンには `.catch` が付いていない
+ * （メインの読み上げチェーンとは別のプロミス）。ここで投げると unhandled rejection になる。
+ */
 function recordReplaySpeechEnd(speechId: number, spoke: boolean, startedAt: number): void {
-  recordReplayEvent({ type: 'speechEnd', speechId, spoke, durationMs: Date.now() - startedAt })
+  try {
+    recordReplayEvent({ type: 'speechEnd', speechId, spoke, durationMs: Date.now() - startedAt })
+  } catch (err) {
+    log.warn('[replay] 読み上げの終わりを記録できなかった（読み上げは続行）', err)
+  }
 }
 
 /**
@@ -2955,10 +2965,22 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         log.info(`[eew] キャンセル受信 key=${key} expired=${event.expired ?? false} hadKey=${hadKey} 種別=${event.expired ? '自動解除(タイマー満了)' : '誤報取消'}`)
         // 録画ツール向けの記録。**誤報取消と自動解除（最終報の満了）を言い分ける** ——
         // 前者は訂正で、後者は時間切れ。編集側から見ると意味がまるで違う。
-        recordReplayEvent({
-          type: 'alert', category: 'eew', change: event.expired ? 'expired' : 'retracted',
-          grade: null, telegram: currentReplayTelegram(),
-        })
+        //
+        // **自動解除は `hadKey` のときだけ記録する。** P2PQuake WS と Yahoo hypoInfo の両方から
+        // 最終報の消滅を検出すると同じ EEW の expired キャンセルが複数キューに積まれ（コメント
+        // 「AUD-2」参照）、2 発目以降は `hadKey=false` で音・タブ移動も起こさない。記録だけ
+        // 無条件に出すとここだけ二重・三重になり、「1 つの EEW が複数回失効した」と誤読される。
+        //
+        // **誤報取消は `hadKey` を問わず記録する。** ブラウザ通知と同じ基準
+        // （`if (!event.expired) { ...showBrowserNotification... }`）に揃えてある——
+        // `hadKey=false` でも「自動解除済みの後に遅れて届いた本物の誤報取消」がありうるため、
+        // 訂正情報を握り潰さない側へ倒す。
+        if (hadKey || !event.expired) {
+          recordReplayEvent({
+            type: 'alert', category: 'eew', change: event.expired ? 'expired' : 'retracted',
+            grade: null, telegram: currentReplayTelegram(),
+          })
+        }
         activeEEWLevelsRef.current.delete(key)
         spokenEEWScalesRef.current.delete(key)
         spokenEEWLpgmClassesRef.current.delete(key)
