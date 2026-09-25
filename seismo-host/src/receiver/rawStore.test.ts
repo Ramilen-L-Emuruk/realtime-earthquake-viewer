@@ -24,6 +24,25 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
 })
 
+/**
+ * `want()` が真になるまで待つ。**固定時間で待たない。**
+ *
+ * ここで待っているのはファイル書き込みの非同期のコールバックで、**届くまでの時間は
+ * 負荷で変わる**（`libuv` のスレッドプールを他のワーカーと分け合う）。
+ * `setTimeout(20)` で済ませていた頃は、`npm test` の全件並列のときだけ落ちた ——
+ * 単独では通るので、実装の欠陥と見分けが付かない。
+ *
+ * **上限を置くこと。** 置かないと、永久に来ない条件を待ってテストの実行ごと止まる。
+ * 落ちるべきときに落ちないテストは、無いより悪い。
+ */
+async function until(want: () => boolean, label: string, limitMs = 5_000): Promise<void> {
+  const deadline = Date.now() + limitMs
+  while (!want()) {
+    if (Date.now() > deadline) throw new Error(`${limitMs}ms 待っても ${label} にならなかった`)
+    await new Promise((r) => setTimeout(r, 1))
+  }
+}
+
 function lines(path: string): unknown[] {
   return readFileSync(path, 'utf8')
     .split('\n')
@@ -538,8 +557,7 @@ describe('RawStore', () => {
       const store = new RawStore({ dir, now: () => now, reopenIntervalMs: 5_000 })
 
       store.write('a:1', 'one')
-      await new Promise((r) => setTimeout(r, 20))
-      expect(store.writeErrors).toBe(1)
+      await until(() => store.writeErrors === 1, 'writeErrors が 1')
       expect(store.lastWriteError).not.toBeNull()
       // **掃き取りの失敗と混ぜない。** 混ぜると、無関係な系統の理由が「その事象の理由」になる。
       expect(store.lastSweepError).toBeNull()
@@ -551,8 +569,7 @@ describe('RawStore', () => {
       // 間隔が過ぎたら試みる（この試験では行き先が塞がったままなので、また壊れる）。
       now += 5_000
       store.write('a:1', 'three')
-      await new Promise((r) => setTimeout(r, 20))
-      expect(store.writeErrors).toBe(2)
+      await until(() => store.writeErrors === 2, 'writeErrors が 2')
 
       await store.close()
     })
@@ -562,14 +579,16 @@ describe('RawStore', () => {
       let now: number = AT_2026_09_25_2300_JST
       const store = new RawStore({ dir, now: () => now, reopenIntervalMs: 5_000 })
       store.write('a:1', 'one')
-      await new Promise((r) => setTimeout(r, 20))
-      expect(store.writeErrors).toBe(1)
+      await until(() => store.writeErrors === 1, 'writeErrors が 1')
 
       // **非有限を素通りさせると `NaN < reopenAtMs` が偽になり、間隔が黙って効かなくなる。**
       now = Number.NaN
       for (let i = 0; i < 5; i += 1) {
         expect(store.write('a:1', 'more')).toEqual({ saved: false, reason: 'no-stream' })
       }
+      // **ここは固定の待ちでよい。** 見ているのは「増えていないこと」で、
+      // 条件が真になるのを待つ形にはできない（最初から真なので即座に返る）。
+      // 負荷で遅れても偽陽性にはならない ―― 遅れた結果はやはり「増えていない」。
       await new Promise((r) => setTimeout(r, 20))
       expect(store.writeErrors).toBe(1)
 
@@ -586,10 +605,8 @@ describe('RawStore', () => {
       expect(store.write('a:1', 'one')).toEqual({ saved: true })
       expect(store.write('a:1', 'two')).toEqual({ saved: true })
       expect(store.write('a:1', 'three')).toEqual({ saved: true })
-      await new Promise((r) => setTimeout(r, 30))
-
-      expect(store.lostRecords).toBe(3)
-      expect(store.writeErrors).toBe(1)
+      await until(() => store.lostRecords === 3 && store.writeErrors === 1,
+                  'lostRecords が 3・writeErrors が 1')
 
       await store.close()
     })
@@ -632,7 +649,8 @@ describe('RawStore', () => {
         openStream: breakingSink,
       })
       for (let i = 0; i < 3; i += 1) expect(store.write('a:1', `x${i}`)).toEqual({ saved: true })
-      await new Promise((r) => setTimeout(r, 30))
+      // 締めくくりへ入る前に、流し口が壊れたことを見届ける（何を待っているかを明示する）。
+      await until(() => store.writeErrors === 1, 'writeErrors が 1')
       await store.close()
 
       expect(store.writeErrors).toBe(1)

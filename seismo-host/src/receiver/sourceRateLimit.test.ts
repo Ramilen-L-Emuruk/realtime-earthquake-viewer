@@ -64,15 +64,17 @@ describe('SourceRateLimit', () => {
     expect(limit.allow(B)).toBe(true)
   })
 
-  it('既定の上限は 1 台ぶん（毎秒 2.5 件）を桁で上回る', () => {
+  it('既定の上限は 1 台ぶん（毎秒 10 件）を桁で上回る', () => {
     const t = clock()
     const limit = new SourceRateLimit({ now: t.now })
 
-    // 100 Hz・40 サンプルで 2.5 件/秒。10 秒ぶん流しても 1 件も落ちない。
+    // 1 台ぶんは 100 Hz・3 センサー・300 ms ごとの吸い出しで 10 件/秒（2026-09-25 の実測）。
+    // **その 10 倍を 10 秒ぶん流しても 1 件も落ちない**ことを見る——実測値そのものを
+    // 流すだけだと、上限が 1 桁小さくても通ってしまい、何も守らないテストになる。
     let dropped = 0
-    for (let i = 0; i < 25; i += 1) {
+    for (let i = 0; i < 1000; i += 1) {
       if (!limit.allow(A)) dropped += 1
-      t.advance(400)
+      t.advance(10)
     }
     expect(dropped).toBe(0)
   })
