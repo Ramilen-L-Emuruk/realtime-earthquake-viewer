@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest'
 import { log } from './logger'
+import {
+  drainReplayEvents, withReplayTelegramContext, __resetReplayEventLogForTest,
+  type ReplaySoundEvent, type ReplayTelegramRef,
+} from './replayEventLog'
 
 // 通知音の合成（Web Audio API）の回帰テスト。
 //
@@ -787,5 +791,35 @@ describe('通知音のあとに声を出すまでの間', () => {
     for (const type of ALL_TYPES) {
       expect(sound.SOUND_AUDIBLE_END_MS[type], type).toBeGreaterThan(0)
     }
+  })
+})
+
+// 録画の編集は「音の上で切っているのは声か通知音か」を判定する。通知音が記録に出ていないと、
+// 声の記録だけを見て「無音の区間」と誤って読む。
+describe('録画ツール向けの記録', () => {
+  const soundEvents = (): ReplaySoundEvent[] =>
+    drainReplayEvents().events.filter((e): e is ReplaySoundEvent => e.type === 'sound')
+
+  beforeEach(() => { __resetReplayEventLogForTest() })
+
+  it('鳴らした音の種別が残る', () => {
+    sound.playAlertSound('eew')
+    const events = soundEvents()
+    expect(events).toHaveLength(1)
+    expect(events[0].sound).toBe('eew')
+  })
+
+  it('電文を処理している最中なら、その電文を指す', () => {
+    const ref: ReplayTelegramRef = {
+      seq: 5, kind: 'eew', infoType: null, eventId: 'eew-evt', serial: '1',
+    }
+    withReplayTelegramContext(ref, () => { sound.playAlertSound('eew') })
+    expect(soundEvents()[0].telegram?.eventId).toBe('eew-evt')
+  })
+
+  it('対照: 電文と無関係な音（揺れ検知）では持ち主が空になる', () => {
+    // 強震モニタの検知はローカルの判定で、電文には紐づかない
+    sound.playAlertSound('kyoshin')
+    expect(soundEvents()[0].telegram).toBeNull()
   })
 })
