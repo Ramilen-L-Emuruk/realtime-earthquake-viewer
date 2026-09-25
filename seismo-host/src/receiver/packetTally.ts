@@ -19,6 +19,7 @@ import type { PacketParseFailure } from '../protocol/types'
 import { MAX_STREAMS_DEFAULT } from '../timebase/segmenter'
 import type { SegmentBreakReason } from '../timebase/segmenter'
 import type { IntensitySkipReason, PacketDropReason } from './intensityPipeline'
+import type { RawUnsavedReason } from './rawStore'
 
 /**
  * 覚えていられる鍵の数。
@@ -71,6 +72,13 @@ const BREAK_ORDER = orderOf<SegmentBreakReason>({
   'config-changed': true,
 })
 
+const RAW_UNSAVED_ORDER = orderOf<RawUnsavedReason>({
+  'no-stream': true,
+  backpressure: true,
+  'write-failed': true,
+  closed: true,
+})
+
 const SKIP_ORDER = orderOf<IntensitySkipReason>({
   'axis-count': true,
   'stream-rejected': true,
@@ -84,6 +92,12 @@ export interface SourceCounts {
   readonly rateLimited: number
   /** 読めなかった件数（理由別）。 */
   readonly parseFailed: ReadonlyMap<PacketParseFailure, number>
+  /**
+   * 生データを残せなかった件数（理由別）。
+   *
+   * **基板ではなく送信元で数える。** 保存は読み取りより前なので、誰の基板かはまだ判らない。
+   */
+  readonly rawUnsaved: ReadonlyMap<RawUnsavedReason, number>
 }
 
 /** 基板 1 つぶん。**読み取りに通ったあとの話。** */
@@ -118,6 +132,8 @@ export type TallyEvent =
   | { readonly kind: 'rate-limited'; readonly source: string }
   /** 読み取りに失敗した。 */
   | { readonly kind: 'parse-failed'; readonly source: string; readonly reason: PacketParseFailure }
+  /** 生データを残せなかった。**読み取りより前なので送信元で数える。** */
+  | { readonly kind: 'raw-unsaved'; readonly source: string; readonly reason: RawUnsavedReason }
   /** 読み取りに通った。 */
   | { readonly kind: 'accepted'; readonly board: string }
   /** 組み立てから先で落とした。 */
@@ -141,6 +157,7 @@ interface MutableSource {
   received: number
   rateLimited: number
   readonly parseFailed: Map<PacketParseFailure, number>
+  readonly rawUnsaved: Map<RawUnsavedReason, number>
 }
 
 interface MutableBoard {
@@ -175,7 +192,7 @@ function entryOf<T>(table: Map<string, T>, key: string, maxKeys: number, make: (
 }
 
 function newSource(): MutableSource {
-  return { received: 0, rateLimited: 0, parseFailed: new Map() }
+  return { received: 0, rateLimited: 0, parseFailed: new Map(), rawUnsaved: new Map() }
 }
 
 function newBoard(): MutableBoard {
@@ -207,6 +224,9 @@ class Buckets {
         return
       case 'parse-failed':
         bump(this.source(event.source).parseFailed, event.reason)
+        return
+      case 'raw-unsaved':
+        bump(this.source(event.source).rawUnsaved, event.reason)
         return
       case 'accepted':
         this.board(event.board).accepted += 1
@@ -254,6 +274,7 @@ function freezeSource(m: MutableSource): SourceCounts {
     received: m.received,
     rateLimited: m.rateLimited,
     parseFailed: new Map(m.parseFailed),
+    rawUnsaved: new Map(m.rawUnsaved),
   }
 }
 
@@ -360,7 +381,8 @@ export function formatTally(snapshot: TallySnapshot): string[] {
     const rate = s.rateLimited > 0 ? ` 上限で落とした=${s.rateLimited}` : ''
     lines.push(
       `送信元 ${key} 届いた=${s.received}${rate}` +
-        group('読めず', parts(s.parseFailed, PARSE_FAILURE_ORDER)),
+        group('読めず', parts(s.parseFailed, PARSE_FAILURE_ORDER)) +
+        group('残せず', parts(s.rawUnsaved, RAW_UNSAVED_ORDER)),
     )
   }
   for (const key of sortedKeys(snapshot.boards.keys())) {
