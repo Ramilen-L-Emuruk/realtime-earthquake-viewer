@@ -18,6 +18,7 @@ import type { ReplayEntry, ReplayFetchResult, QuakeHistoryResult } from '../type
 import type { JMAQuake } from '../types/earthquake'
 import { serverNow, serverDate } from '../utils/clock'
 import { log } from '../utils/logger'
+import { recordReplayEvent } from '../utils/replayEventLog'
 import {
   type TelegramLoss, createEmptyTelegramLoss, addTelegramLoss, describeTelegramLossParts,
   formatRateLimitedNotice,
@@ -266,6 +267,9 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
     if (problem !== null) {
       log.error(`[replay] 再生を始められません: ${problem} (targetDate=${String(targetDate)})`)
       setFetchError(problem)
+      // 録画ツール向けの記録。**始められなかったことも残す** —— 残さないと、外からは
+      // 「開始したのに何も起きない」としか見えない（→ `docs/spec/recording-interface-spec.md`）。
+      recordReplayEvent({ type: 'fetch', phase: 'error', target: 'main', message: problem })
       return
     }
     log.info(`[replay] リプレイ開始 targetDate=${targetDate.toISOString()}`)
@@ -286,6 +290,10 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
     setHistoryError(null)
     // 新しいセッションなので損失も数え直す
     setLoss(createEmptyLoss())
+    // 録画ツール向けの記録。**シナリオ時刻のジャンプはここで起きる**（`setTimeOffset` を
+    // 呼ぶのは開始と停止の 2 か所だけ）。
+    recordReplayEvent({ type: 'control', action: 'start', target: targetDate.toISOString(), offset })
+    recordReplayEvent({ type: 'fetch', phase: 'start', target: 'main', message: null })
 
     // 地震カードの履歴。本編・初期状態とは切り離して走らせる。
     // - 失敗しても再生は成立する（一覧が薄くなるだけ）ので、Promise.all に混ぜて
@@ -425,9 +433,21 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
       // 先読み位置だけは畳む（アーカイブが読めない以上、続きを取りに行っても同じ失敗を繰り返す）。
       setFetchError(`${msgOf(e)}（地震・津波の電文は再生されません。強震モニタの再生は継続します）`)
       prefetchEndRef.current = null
+      // 録画ツール向けの記録。**世代の照合を通った後に置く** —— 前に置くと、停止済みの
+      // セッションの失敗まで「いまの再生が失敗した」として並ぶ。
+      recordReplayEvent({ type: 'fetch', phase: 'error', target: 'main', message: msgOf(e) })
     } finally {
       // 新しいセッションが進行中なら、その「取得中...」表示を古い側が消してはいけない。
-      if (guard.isCurrent(session)) setIsFetching(false)
+      // **記録も同じ世代の照合を通す。** `fetching()` は古いセッションでは下ろさないので、
+      // ここだけ無条件に出すと 2 つの口が食い違う —— 停止して別の日時で開き直した直後に
+      // 古い取得が解決すると、まだ取得中なのに「終わった」が並び、外から見ると待ちを
+      // 閉じてよいと読める。失敗の記録（上）が世代を見ているのと同じ理由。
+      if (guard.isCurrent(session)) {
+        setIsFetching(false)
+        // **成否によらず「取得が終わった」ことは残す。** 失敗は上で別に記録してあるので、
+        // ここは終わりの印（外から待ちを閉じる合図に使える）。
+        recordReplayEvent({ type: 'fetch', phase: 'done', target: 'main', message: null })
+      }
     }
   }, [])
 
@@ -448,6 +468,8 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
     // 取得中に停止された場合、上で世代を進めたことで取得側の finally は false にしない。
     // ここで戻さないと「取得中...」のまま確定ボタンが押せなくなる。
     setIsFetching(false)
+    // 録画ツール向けの記録。ライブへ戻るのでオフセットは無い。
+    recordReplayEvent({ type: 'control', action: 'stop', target: null, offset: null })
   }, [])
 
   // 再生時刻が prefetchEnd - 10 分に近づいたら次の 1 時間を先読みする。
@@ -461,6 +483,7 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
     const nextTo = new Date(nextFrom.getTime() + WINDOW_MS)
     prefetchEndRef.current = nextTo
     setIsFetching(true)
+    recordReplayEvent({ type: 'fetch', phase: 'start', target: 'prefetch', message: null })
     // 先読みも本編と同じく中断できないため、完了時に世代を照合する。
     const session = guard.current()
     fetchEvents(nextFrom, nextTo)
@@ -486,9 +509,15 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
         // 情報なので fetchError 側に出す（次の成功で消えてよい）。
         setLoss(addFailedPrefetch)
         setFetchError(`先読みに失敗しました。${fmt(nextFrom)} からの 1 時間ぶんは再生されません: ${msgOf(e)}`)
+        // 世代の照合を通った後に置く（本編の失敗と同じ理由）
+        recordReplayEvent({ type: 'fetch', phase: 'error', target: 'prefetch', message: msgOf(e) })
       })
       .finally(() => {
-        if (guard.isCurrent(session)) setIsFetching(false)
+        // 記録も世代を見る（本編側の `finally` と同じ理由）
+        if (guard.isCurrent(session)) {
+          setIsFetching(false)
+          recordReplayEvent({ type: 'fetch', phase: 'done', target: 'prefetch', message: null })
+        }
       })
   }, [replayCurrentTime, timeOffset, isFetching, fetchEvents])
 

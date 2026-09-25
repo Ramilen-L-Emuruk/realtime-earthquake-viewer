@@ -3,7 +3,7 @@ import type { MapGeoJSONFeature } from 'maplibre-gl'
 import { useMapGL } from './mapGLContext'
 import type { EewEpicenter } from '../../hooks/useEewLayerData'
 import { getIntensityColor, getIntensityLabelWithApproxAbove } from '../../utils/intensity'
-import { formatMagnitude, formatDepth } from '../../utils/formatters'
+import { formatMagnitude, formatDepth, hasDepth } from '../../utils/formatters'
 import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
 import { addOrderedLayer } from './gl/layerOrder'
 import { createDepthPointLayer, type DepthPoint, type DepthPointLayer } from './gl/depthPointLayer'
@@ -80,10 +80,26 @@ export function crossOpacity(isAssumed: boolean, fullOpacity: boolean): number {
 }
 
 /**
+ * ×印を地下ではなく**地表**へ置くか。**理由は 2 つあるが、画面での見え方は同じ**（柄が消え、
+ * 震央の印もレイヤー側の判定で消える）。
+ *
+ * - **仮定震源要素**（震源未確定）—— 震源・M・深さが固定の仮定値。確定していない数値を
+ *   立体で断定して見せない（→ `docs/spec/eew-spec.md` §5）
+ * - **深さが判らない報** —— センチネル `-1` をそのまま渡すと `elevationMetersFromDepthKm` が
+ *   標高 +1000m を返し、**×印が地表より 1km 上へ浮く**（`gl/depthPointLayer.ts`）。
+ *   `??` は `-1` に効かないので `hasDepth` で判定する。**仮定震源要素のようには薄くしない** ——
+ *   あちらは震源の位置そのものが仮だが、こちらは緯度経度が確かで判らないのは深さだけ
+ */
+function shouldPlaceAtSurface(ep: EewEpicenter): boolean {
+  return ep.isAssumed || !hasDepth(ep.depth)
+}
+
+/**
  * 震源をレイヤーへ渡す点の並びと、点の添字から震源を引く表を作る。
  *
  * 1 つの震源につき「震央（地表の丸・補助）」と「震源（地下の×）」の 2 点を出す。深さが 0 のとき
- * （ごく浅い・仮定震源要素）は柄の長さが 0 になり、震央の印はレイヤー側の判定で自動的に消える。
+ * （ごく浅い・仮定震源要素・**深さ不明**）は柄の長さが 0 になり、震央の印はレイヤー側の判定で
+ * 自動的に消える。
  *
  * **クリックの引き当てに使うので、点の並びと表の並びは必ず一致させること。**
  */
@@ -97,8 +113,10 @@ export function buildEpicenterPoints(
   for (const ep of epicenters) {
     const alpha = crossOpacity(ep.isAssumed, fullOpacity)
     const blink = ep.isAssumed ? EEW_BLINK.assumed : EEW_BLINK.confirmed
-    // 仮定震源要素は深さを採らない（M・深さを画面から隠すのと同じ扱い）。
-    const depthKm = ep.isAssumed ? 0 : (ep.depth ?? 0)
+    // 地表へ置く条件は `shouldPlaceAtSurface`（仮定震源要素・深さ不明）。
+    // **深さ不明は見た目で「ごく浅い」と区別が付かない** —— 吹き出しだけが `formatDepth` で
+    // 「不明」と出す。既知の限界として受け入れている（→ `docs/spec/map-rendering-spec.md` §16）。
+    const depthKm = shouldPlaceAtSurface(ep) ? 0 : ep.depth
     const [lat, lng] = ep.position
     points.push({
       lng,

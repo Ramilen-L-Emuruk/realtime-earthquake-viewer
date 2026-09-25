@@ -19,6 +19,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { EEWAlert, JMAQuake } from '../types/earthquake'
 import type { StationCoordsData } from '../utils/stationCoords'
+import { recordReplayEvent } from '../utils/replayEventLog'
 import {
   NO_SCOPE,
   eewScaleForScope,
@@ -223,6 +224,14 @@ export function useActionChecklist(params: {
 
     setState(next)
     setCollapsed(keepCollapsed)
+    // 録画ツール向けの記録（→ `docs/spec/recording-interface-spec.md`）。**中身が変わらない
+    // 回は上で抜けている**ので、ここへ来るのは画面が実際に動いたときだけ。畳んだまま出す
+    // 場合（`keepCollapsed`）も「帯は出ている」ので開いた側として残す。
+    recordReplayEvent({
+      type: 'overlay', overlay: 'actionChecklist', open: true,
+      reason: keepCollapsed ? '揺れを検知（畳んだまま）' : '揺れを検知',
+      subject: null,
+    })
     // 畳んでいたものを開き直したなら、記録は役目を終えた。開いたまま受けた揺れでは消さない
     // （`restore` で開いた人の「もう一度閉じたときの基準」として残す）。
     if (wasCollapsed && !keepCollapsed && record) applySuppress(null)
@@ -304,8 +313,15 @@ export function useActionChecklist(params: {
   // 畳んだ記録は残す —— 再び有効にしたとき、閉じた状態から始めるのが自然。
   useEffect(() => {
     if (minScale >= 0) return
+    // 録画ツール向けの記録。**実際に出ていたときだけ**（→ `docs/spec/recording-interface-spec.md`）。
+    // 設定を切った回はいつでも通るので、出ていなかった回まで記録すると
+    // 「開いていないものを閉じた」が並ぶ。
+    const wasShown = stateRef.current !== null
     setState(null)
     setCollapsed(false)
+    if (wasShown) {
+      recordReplayEvent({ type: 'overlay', overlay: 'actionChecklist', open: false, reason: '設定で「出さない」へ変えた', subject: null })
+    }
   }, [minScale])
 
   // 畳んだままのボタンは期限が来たら消す。**開いている間は消さない** —— 読んでいる最中に
@@ -320,6 +336,10 @@ export function useActionChecklist(params: {
       setState(null)
       setCollapsed(false)
       applySuppress(null)
+      // 録画ツール向けの記録。**出ていたときだけ**（`key` が無ければ元から出ていない）。
+      if (key) {
+        recordReplayEvent({ type: 'overlay', overlay: 'actionChecklist', open: false, reason: '寿命が尽きた', subject: null })
+      }
     }
     const remain = suppress.until - Date.now()
     if (remain <= 0) {
