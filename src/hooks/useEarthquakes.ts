@@ -58,6 +58,29 @@ function recordSkippedTelegram(source: ReplayTelegramSource, skipped: ReplayTele
 }
 
 /**
+ * 履歴の補助情報（nankai 等）を反映しつつ、例外を握り潰して呼び出し元へ伝える。
+ *
+ * **起動時の履歴復元で `applyXxx` の呼び出しを 1 箇所に集約する。** かつては 4 箇所
+ * （nankai/nankaiCommentary/kohatsu/earthquakeCount）にほぼ同じ
+ * `let applied = false; try { applied = applyXxx(...) } catch { ... }` を書き並べており、
+ * 2 巡目の敵対的レビューでこの重複自体が「`recordSkippedTelegram` を誤って `try` の
+ * 内側へ書き戻してしまう」ヒューマンエラーを実際に誘発した（レビュー中に一時的にその
+ * 状態が発生したことを検出）。**`recordSkippedTelegram` の呼び出しはここに含めない**
+ * ——呼び出し側で `kind` ごとにリテラル型を持たせたまま呼ぶことで、`ReplayTelegramSource`
+ * の型安全性を保つ（`{ kind, data }` をジェネリックに組み立てると型検査をすり抜ける）。
+ *
+ * @returns 反映できたか。例外時は `false`（反映できたかどうかは確かめようがないため）
+ */
+function tryApplyExtra<T>(label: string, data: T, applyFn: (data: T) => boolean): boolean {
+  try {
+    return applyFn(data)
+  } catch (err) {
+    log.error(`[data] 履歴の${label}を反映できませんでした（この件だけ飛ばして続行）`, err)
+    return false
+  }
+}
+
+/**
  * lpgm が `onLiveEvent`（音・読み上げ・タブ移動）の対象になるか。
  *
  * **他の 5 種別（nankai 等）と違い、これは「反映されたか」と一致しない。** あちらは
@@ -2184,6 +2207,10 @@ export function useEarthquakes(
             .map(p => p.data)
           const lpgmByEventId = new Map<string, JMALpgm>()
           for (const lpgm of lpgmEvents) {
+            // **キュー経路（`lpgmNotifiable`）と同じ判定で記録する。** ここも `onLiveEvent` を
+            // 呼ばないサイレント経路なので、通知しうる中身（取消でなく階級1以上）でも
+            // `silentReplayInit`、それ以外は `notDispatched`（→ `lpgmNotifiable` のコメント）。
+            recordSkippedTelegram({ kind: 'lpgm', data: lpgm }, lpgmNotifiable(lpgm) ? 'silentReplayInit' : 'notDispatched')
             if (lpgm.cancelled) continue
             const existing = lpgmByEventId.get(lpgm.eventId)
             if (!existing || lpgm.time > existing.time) {
@@ -2236,21 +2263,55 @@ export function useEarthquakes(
           // 期限切れ・取消の判定は apply 側が持つ（取得側へ写すと片方だけ直したときに食い違う）。
           for (const e of history.extras) {
             const p = e.payload
+            // **1 件ずつ独立させる。** この `for` は一回性（キュー経路のように `setInterval`
+            // で汲み直す仕組みが無い）なので、途中の 1 件が例外を投げるとループ全体・ループ
+            // 直後の津波失効イベント予約（下記）まで巻き添えになる（敵対的レビューで検出）。
+            // **例外時も `recordSkippedTelegram` を呼ぶ**（2 巡目レビューで検出）——`catch` で
+            // ログに残すだけだと、`applyXxx` が例外を投げた電文だけ録画イベントログから
+            // 完全に消え、「onLiveEvent を呼ぶかどうかに関わらず全件記録する」という
+            // このログの不変条件（ファイル冒頭のコメント）が例外時にだけ破られる。
+            // 反映できたかは確かめようがないので `notApplied`（反映されなかった）で記録する。
             switch (p.kind) {
-              case 'lpgm': break            // 上で `lpgmByEventId` へ入れた
-              case 'nankai': applyNankai(p.data); break
-              case 'nankaiCommentary': applyNankaiCommentary(p.data); break
-              case 'kohatsu': applyKohatsu(p.data); break
-              case 'earthquakeCount': applyEarthquakeCount(p.data); break
+              case 'lpgm': break            // 上で記録・`lpgmByEventId` へ入れた
+              // **`applied` を見て記録する。** キュー経路の silent 分岐（`applyNankai` 等の
+              // 呼び出し）と同じパターン——反映できたら `silentReplayInit`、棄却されたら
+              // `notApplied`。ここも `onLiveEvent` を呼ばないので、他 3 種別と同じ記録が漏れていた。
+              case 'nankai': {
+                const applied = tryApplyExtra('南海トラフ臨時情報', p.data, applyNankai)
+                recordSkippedTelegram({ kind: 'nankai', data: p.data }, applied ? 'silentReplayInit' : 'notApplied')
+                break
+              }
+              case 'nankaiCommentary': {
+                const applied = tryApplyExtra('南海トラフ関連解説情報', p.data, applyNankaiCommentary)
+                recordSkippedTelegram({ kind: 'nankaiCommentary', data: p.data }, applied ? 'silentReplayInit' : 'notApplied')
+                break
+              }
+              case 'kohatsu': {
+                const applied = tryApplyExtra('後発地震注意情報', p.data, applyKohatsu)
+                recordSkippedTelegram({ kind: 'kohatsu', data: p.data }, applied ? 'silentReplayInit' : 'notApplied')
+                break
+              }
+              case 'earthquakeCount': {
+                const applied = tryApplyExtra('地震回数に関する情報', p.data, applyEarthquakeCount)
+                recordSkippedTelegram({ kind: 'earthquakeCount', data: p.data }, applied ? 'silentReplayInit' : 'notApplied')
+                break
+              }
               // **`silent: true` を渡す。** ここは起動時・API キー変更・リプレイ往復の
               // 再接続のたびに最大 7 日前の履歴を流し込む経路で、渡し忘れると
               // `applyQuakeNotice` が無条件に `recordSkippedTelegram(..., 'notDispatched')`
               // を呼び、過去のお知らせが「いま届いた」電文としてログへ混入する。
-              case 'quakeNotice': applyQuakeNotice(p.data, true); break
+              // **この種別だけ記録を追加しない**（→ `applyQuakeNotice` のコメント・
+              // `docs/spec/recording-interface-spec.md` §4「唯一の例外」）。
+              // 例外時も記録しない方針を保つ（この種別は元から音・読み上げ・記録の
+              // 対象外と決めているため、失敗時だけ例外的に記録を足す理由が無い）。
+              case 'quakeNotice':
+                tryApplyExtra('お知らせ', p.data, data => applyQuakeNotice(data, true))
+                break
               case 'event':
               case 'estimatedIntensity':
                 // `HISTORY_EXTRA_TYPES` に入らないので届かない。**種別を足したときに
                 // ここで止まるよう、既定へ落とさず名指しで書く。**
+                // （「もっと見る」側の同一分岐にも同じ注記がある。片方だけ直さないこと）
                 break
               default: {
                 const exhaustive: never = p
@@ -2584,6 +2645,59 @@ export function useEarthquakes(
           .map(e => e.payload)
           .filter((p): p is { kind: 'lpgm'; data: JMALpgm } => p.kind === 'lpgm')
           .map(p => p.data)
+        // **記録は setState の外で行う**（台帳と同じ理由——更新関数は再実行されうるため
+        // 副作用を持たせない）。
+        //
+        // **「もっと見る」は nankai 等を画面へ反映しない。** 起動時の履歴復元と違い、ここは
+        // 既存カードの厚みを増やすためにさらに古い日を遡る経路——古い日にあった南海トラフ等の
+        // 電文を `applyNankai` 等へ通すと、無条件に上書きする実装のため、**現在表示中の
+        // 最新の帯情報を古い内容で置き換えてしまう**（ユーザー確認済み）。lpgm だけは
+        // 地震カードに紐づく情報で「もっと見る」が増やすカードの一部なので、従来どおり反映する。
+        //
+        // 反映しない種別でも、録画ログの原則（onLiveEvent を呼ぶかどうかに関わらず全件記録する）
+        // に従い、届いた事実は記録する。quakeNotice だけは起動時と同じ理由で記録しない
+        // （→ `applyQuakeNotice` のコメント・`docs/spec/recording-interface-spec.md` §4）。
+        for (const lpgm of lpgmEvents) {
+          recordSkippedTelegram({ kind: 'lpgm', data: lpgm }, lpgmNotifiable(lpgm) ? 'silentReplayInit' : 'notDispatched')
+        }
+        for (const e of history.extras) {
+          const p = e.payload
+          // **起動時側と違い try/catch は置いていない。** この 2 行の switch は
+          // `recordSkippedTelegram`（自己保護済み）と `break`/`log.warn` しか呼ばず、
+          // 起動時側のような `applyXxx` の呼び出しを持たないため、例外源が無い。
+          switch (p.kind) {
+            case 'lpgm': break // 上で記録・下の setState で `lpgmByEventId` へ入れる
+            // **常に `notDispatched`。** 電文の中身（取消・階級等）を見て決めているのではなく、
+            // 「もっと見る」という**この取得経路自体**が nankai 等を反映しないと決めている
+            // ——`notDispatched` の型定義（`replayEventLog.ts`）が想定する「電文の内容で
+            // 除外する」ケースとは理由が異なるが、他に当てはまる値が無いため転用する
+            // （型定義側の docstring にもこの経路単位の用法を追記済み。敵対的レビューで指摘）。
+            case 'nankai':
+              recordSkippedTelegram({ kind: 'nankai', data: p.data }, 'notDispatched')
+              break
+            case 'nankaiCommentary':
+              recordSkippedTelegram({ kind: 'nankaiCommentary', data: p.data }, 'notDispatched')
+              break
+            case 'kohatsu':
+              recordSkippedTelegram({ kind: 'kohatsu', data: p.data }, 'notDispatched')
+              break
+            case 'earthquakeCount':
+              recordSkippedTelegram({ kind: 'earthquakeCount', data: p.data }, 'notDispatched')
+              break
+            // **記録しない**（起動時と同じ唯一の例外。→ `applyQuakeNotice` のコメント・
+            // `docs/spec/recording-interface-spec.md` §4「唯一の例外」）。
+            case 'quakeNotice': break
+            case 'event':
+            case 'estimatedIntensity':
+              // `HISTORY_EXTRA_TYPES` に入らないので届かない（起動時側の同一分岐と同じ注記。
+              // 片方だけ直さないこと）。
+              break
+            default: {
+              const exhaustive: never = p
+              log.warn('[data] 履歴の補助情報に未知の種別（もっと見る）', exhaustive)
+            }
+          }
+        }
         setState(prev => {
           const lpgmByEventId = new Map(prev.lpgmByEventId)
           for (const lpgm of lpgmEvents) {
