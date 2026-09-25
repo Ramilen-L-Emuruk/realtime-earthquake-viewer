@@ -9,7 +9,7 @@ import type { DetectionEvent, Confidence } from '../../utils/kyoshinDetector'
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
 import type { SWaveArrival } from '../../hooks/useSWaveCountdown'
 import { usePageVisible } from '../../hooks/usePageVisible'
-import { formatDateTime } from '../../utils/formatters'
+import { formatDateTime, formatDepth, hasDepth } from '../../utils/formatters'
 import { getIntensityColor, getIntensityLabel, getIntensityLabelWithApproxAbove, getIntensityBgColor, getMagnitudeColor, getDepthColor } from '../../utils/intensity'
 import { getLpgmClassLabelWithApproxAbove, getLpgmClassColor, getLpgmClassBgColor } from '../../utils/lpgm'
 import { eewAreas, eewEventKey, eewMaxScaleInfo, eewMaxLpgmClassInfo, eewSerial, computeSingleEEWLevel, eewNoForecastReason, canPresentLpgmClass, eewEpicenterRankLabel, eewMagnitudeRankLabel, eewMagnitudePointsLabel, eewForecastChangeText, isEewHypocenterSettled, isEewAreaArrived, sortEewWarningRegions, eewAreaArrivalKind, eewArrivalEtaSec } from '../../utils/eew'
@@ -214,7 +214,9 @@ function EEWCard({ eew, visible, speaking, activeLpgmEventId, onToggleLpgm, onDe
   /**
    * 読み上げがいまこの地震を語っているか。縁を強調し、視野に無ければ寄せる。
    *
-   * **語り終わってすぐには偽へ戻らない**（`EEW_SPEAKING_CARD_LINGER_MS` の猶予がある）。
+   * **語り終わってすぐには偽へ戻らない。** その地震について語ることが残っているあいだ
+   * （名乗りと予想値のあいだの安定待ちを含む）は真のままで、尽きてから短い残像を置いて
+   * 落ちる（`useEewSpeakingCard`）。
    * 予想値の発話は短いので、鳴り終わりで落とすと声で気づいて目を移した人に何も残らない。
    */
   speaking?: boolean
@@ -253,7 +255,16 @@ function EEWCard({ eew, visible, speaking, activeLpgmEventId, onToggleLpgm, onDe
     hypocenterName: hypocenter.name ? { key: hypocenter.name } : undefined,
     magnitude: isAssumed ? undefined : { key: hypocenter.magnitude.toFixed(1), rank: hypocenter.magnitude },
     // **浅いほど危険なので順序は符号を反転させる**（地震カードと揃える）。
-    depth: isAssumed ? undefined : { key: String(hypocenter.depth), rank: -hypocenter.depth },
+    //
+    // **深さが判らない報（センチネル `-1`）には順序を付けない。** 符号を反転させると
+    // `rank` が `+1` ＝「最も浅い」になり、30km から不明へ変わった続報で
+    // **「浅くなった（危険側）」の赤が付く** ——値が判らなくなっただけなのに。
+    // 地震カード側（`utils/quakeUpdateMark.ts`）が既に採っている形へ揃える。
+    depth: isAssumed
+      ? undefined
+      : hasDepth(hypocenter.depth)
+        ? { key: String(hypocenter.depth), rank: -hypocenter.depth }
+        : { key: '' },  // 値が無い欄の番兵（地震カード側の `UNKNOWN` と同じ）
     maxScale: maxScale >= 0
       // 上限が定まらない報（「震度4程度以上」）は同じ階級でも別の値。**順序は階級で見る**
       // —— 「程度以上」が付いたかどうかは大小ではない。
@@ -656,7 +667,10 @@ function EEWCard({ eew, visible, speaking, activeLpgmEventId, onToggleLpgm, onDe
                 className={`font-black leading-none text-[1.25rem] roomy:text-[1.5rem] rounded${fade(flash.depth).className}`}
                 style={{ color: '#ffffff', ...fade(flash.depth).style }}
               >
-                {hypocenter.depth}km
+                {/* **`formatDepth` を通す。** 素で埋めると、深さが判らない報（`-1`）で
+                    「-1km」と出る。地震カードと同じ述語にしておけば、`0`（ごく浅い）と
+                    `-1`（不明）の言い分けも経路で食い違わない。 */}
+                {formatDepth(hypocenter.depth)}
               </span>
             </div>
           </div>

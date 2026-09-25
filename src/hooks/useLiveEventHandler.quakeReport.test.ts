@@ -91,7 +91,10 @@ const titles: string[] = []
  * @param existingCards `earthquakesRef` の中身（統合済みカード。既存カードの震度判定に使う）
  * @param spies 呼び出しを検証したい依存だけ差し替える（省略したものは無害な `vi.fn()`）
  */
-function setup(existingCards: JMAQuake[] = [], spies: { closeDistributionOnQuakeReport?: (eventKey: string) => void } = {}) {
+function setup(existingCards: JMAQuake[] = [], spies: {
+  closeDistributionOnQuakeReport?: (eventKey: string) => void
+  selectQuake?: (id: string | null) => void
+} = {}) {
   const settings = { ...DEFAULTS,
     voicevoxEnabled: true, voicevoxUrl: 'http://x', voicevoxSpeakerId: 1,
     soundEnabled: false, soundVolume: 1, notifyMinScale: -1,
@@ -113,7 +116,7 @@ function setup(existingCards: JMAQuake[] = [], spies: { closeDistributionOnQuake
     setActiveTabRealtimeOnUpdate: vi.fn(),
     setActiveTabRealtimeUrgent: vi.fn(), followSpeechTab: vi.fn(), preSpeechTab: vi.fn(() => true),
     expandPanelForSpecialInfo: vi.fn(), revertToDefaultTab: vi.fn(),
-    selectQuake: vi.fn(), openLpgmFromQuake: vi.fn(), openEstimatedIntensity: vi.fn(),
+    selectQuake: spies.selectQuake ?? vi.fn(), openLpgmFromQuake: vi.fn(), openEstimatedIntensity: vi.fn(),
     closeDistributionOnQuakeReport: spies.closeDistributionOnQuakeReport ?? vi.fn(),
   }))
   return result.current.handleLiveEvent
@@ -258,34 +261,38 @@ describe('地震情報を受けたら震度分布モードを閉じる', () => {
   })
 })
 
-// 据え置き（カードが内容を採らない電文）の印は**止める範囲を持っている**。音・読み上げ・
-// ウィンドウタイトルは起こさないが、震度分布モードを閉じることは通す —— あちらは「その地震の
-// 電文を受けたら閉じる。種別も、自動で開いたか手で開いたかも問わない」（docs/spec/quake-spec.md
-// §9「震度分布モード」）ので、カードが内容を採ったかどうかとは無関係。
+// 据え置き（カードが内容を採らない電文）の印は、音・読み上げ・ウィンドウタイトル・自動タブ移動に
+// **加えて、カードの選択と震度分布モードのクローズも止める**（docs/spec/quake-spec.md §6.3）。
 //
-// 当初は `onLiveEvent` の呼び出しごと止める形で書いていて、**分布モードが閉じなくなっていた**
-// （開いたままだと、その地震の続報が伝えてきた震度が地図に一度も現れない）。カードの選択と
-// 「この報は見た」の記録も同じ理由で通す。
+// 当初は分布モードのクローズとカードの選択を「カードが内容を採ったかどうかと無関係」として通して
+// いたが、①分布モードのクローズは「発表値が更新されたのに分布モードが隠している」という独立の
+// 根拠に立っており、据え置きではこの根拠が成り立たない ②選択にも根拠が無かった ③大阪府北部の
+// 実例で「選択が奪われる」実害が確認された ④取消前報ではさらに悪い挙動（無関係のカードを選ばせる）
+// になりうる、の 4 点から見直し、両方も止める側へ倒した。
 //
 // **通知音はこのハーネスでは見られない**（`setup` の設定が `soundEnabled: false` 固定）。
 // 読み上げと同じ印（`quakeHeldBack`）で止めているので、片方だけ外れることはない。
 describe('据え置きの印が立った地震情報', () => {
-  it('音・読み上げ・タイトルは起こさないが、分布モードは閉じる', async () => {
+  // 正: 音・読み上げ・タイトルに加え、カードの選択と分布モードのクローズも起こさない。
+  it('音・読み上げ・タイトル・カードの選択・分布モードのクローズを起こさない', async () => {
     const closeDistributionOnQuakeReport = vi.fn()
-    const handle = setup([], { closeDistributionOnQuakeReport })
+    const selectQuake = vi.fn()
+    const handle = setup([], { closeDistributionOnQuakeReport, selectQuake })
 
     handle(makeQuake({ type: '震度速報' }), { quakeHeldBack: true })
     await settle()
 
     expect(spokenTexts()).toEqual([])
     expect(titles).toEqual([])
-    expect(closeDistributionOnQuakeReport).toHaveBeenCalledTimes(1)
+    expect(closeDistributionOnQuakeReport).not.toHaveBeenCalled()
+    expect(selectQuake).not.toHaveBeenCalled()
   })
 
-  // 対照: 印が無ければ従来どおり読み上げもタイトルも起きる（止める範囲が広がっていない）
-  it('印が無ければ読み上げもタイトルも従来どおり', async () => {
+  // 対照: 印が無ければ従来どおりすべて起きる（止める範囲が広がっていない）
+  it('印が無ければ読み上げ・タイトル・選択・分布モードのクローズも従来どおり', async () => {
     const closeDistributionOnQuakeReport = vi.fn()
-    const handle = setup([], { closeDistributionOnQuakeReport })
+    const selectQuake = vi.fn()
+    const handle = setup([], { closeDistributionOnQuakeReport, selectQuake })
 
     handle(makeQuake({ type: '震度速報' }))
     await settle()
@@ -293,5 +300,22 @@ describe('据え置きの印が立った地震情報', () => {
     expect(spokenTexts()).toHaveLength(1)
     expect(titles).toHaveLength(1)
     expect(closeDistributionOnQuakeReport).toHaveBeenCalledTimes(1)
+    expect(selectQuake).toHaveBeenCalledTimes(1)
+  })
+
+  // 安全弁: 据え置きの印は呼び出しごとに渡される値で、内部状態に焼き付いて以後ずっと
+  // 止まり続けることはない（印の無い次の報は通常どおり処理される）。
+  it('据え置きの直後でも、印の無い次の報は通常どおり処理する', async () => {
+    const closeDistributionOnQuakeReport = vi.fn()
+    const selectQuake = vi.fn()
+    const handle = setup([], { closeDistributionOnQuakeReport, selectQuake })
+
+    handle(makeQuake({ type: '震度速報' }), { quakeHeldBack: true })
+    await settle()
+    handle(makeQuake({ type: '震源情報' }))
+    await settle()
+
+    expect(closeDistributionOnQuakeReport).toHaveBeenCalledTimes(1)
+    expect(selectQuake).toHaveBeenCalledTimes(1)
   })
 })

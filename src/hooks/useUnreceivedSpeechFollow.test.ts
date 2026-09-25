@@ -170,7 +170,7 @@ describe('useUnreceivedSpeechFollow', () => {
     expect(openFn).toHaveBeenCalledWith(SUBJECT)
     rerender({ session: makeSession(), isOpen: true })
     playChunk(RANGE.last + 1)
-    expect(closeFn).toHaveBeenCalledWith(SUBJECT)
+    expect(closeFn).toHaveBeenCalledWith(SUBJECT, expect.any(String))
   })
 
   it('安全弁: 開いたあと主題が変わっても、閉じるのは開いたときの主題', () => {
@@ -181,7 +181,7 @@ describe('useUnreceivedSpeechFollow', () => {
     expect(openFn).toHaveBeenCalledWith(SUBJECT)
     rerender({ session: makeSession('quake-B'), isOpen: true })
     playChunk(RANGE.last + 1)
-    expect(closeFn).toHaveBeenCalledWith(SUBJECT)
+    expect(closeFn).toHaveBeenCalledWith(SUBJECT, expect.any(String))
   })
 
   it('正: 開くべきなのに開けなかったら、読み上げの終わりに 1 回だけ記録する', () => {

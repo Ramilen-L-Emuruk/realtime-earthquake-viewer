@@ -43,13 +43,52 @@ const DEFAULT_DAYS = 365
 
 const b64url = (buf: Buffer) => buf.toString('base64url')
 
+/**
+ * `.env.local` の中身から 1 変数を読む。**値が空の行は無かったものとして読み飛ばす。**
+ *
+ * 空の `TOKEN_SIGNING_PRIVATE_KEY=` があると、読み飛ばさない作りでは空文字が返り、
+ * `--init` が「鍵が無い」と判断して**鍵を作り直す** —— 発行済みのトークンが全部無効になる。
+ * 空の行が生まれる形は 2 つ。手で `KEY=` だけ書いた場合と、**値の行を持つ雛形からコピーして
+ * 作った `.env.local`**（いまの `.env.example` はこの 2 変数について値の行を置かない。理由は
+ * あちらのコメント）。**この 2 つ目が無くなっても読み飛ばしは外さない** —— 既に手元にある
+ * `.env.local` はそのまま残るし、守っている損失（発行済みのトークンが全部無効）が重い。
+ *
+ * **行末が CRLF でも読む。** 正規表現の `.` は行終端子を含まないので、CR を残したまま
+ * 当てると行末の照合に失敗して**一致しない**。`.env.local` は Windows で編集すれば CRLF に
+ * なるし、Git 管理下の雛形からコピーした場合もチェックアウトの時点で CRLF になっている。
+ *
+ * **非空の行が 2 つ以上あったら落とす。** 黙って 1 つ選ぶと、署名鍵を取り違えても
+ * 気づけない —— 手で鍵を追記して古い行を消し忘れた `.env.local` では、このスクリプトが
+ * 選んだ鍵とアプリに貼ってある公開鍵が対応せず、**「トークンは出力されるのに検証に通らない」**
+ * という形で表に出る（例外もログも出ない）。
+ *
+ * **dev サーバー側（`vite.config.ts` の `loadEnv`）とは選び方が違う。** 実測すると
+ * dotenv は同じ変数を**最後の一致**で上書きし、CRLF も自ら正規化する（あちらは `ARRIVAL_` で
+ * 始まる変数しか読まないので、秘密鍵はこの述語しか読まない）。**片方に寄せるのではなく、
+ * 曖昧な状態そのものを残さない**ことで食い違いを消している。
+ */
+export function readEnvVarFromText(text: string, name: string): string | null {
+  const values: string[] = []
+  for (const line of text.split(/\r?\n/)) {
+    const m = new RegExp(`^\\s*${name}\\s*=\\s*(.*)$`).exec(line)
+    if (!m) continue
+    const value = m[1].trim()
+    if (value) values.push(value)
+  }
+  if (values.length === 0) return null
+  if (values.length > 1) {
+    throw new Error(
+      `${name} が ${ENV_PATH} に ${values.length} 行あります。どれを使うか決められないので、` +
+        '1 行だけ残してから実行してください（値は表示しません）。',
+    )
+  }
+  return values[0]
+}
+
+/** `.env.local` があれば読んで上の述語へ渡す。無ければ null（初回の `--init` がこの形）。 */
 function readEnvVar(name: string): string | null {
   if (!existsSync(ENV_PATH)) return null
-  for (const line of readFileSync(ENV_PATH, 'utf8').split('\n')) {
-    const m = new RegExp(`^\\s*${name}\\s*=\\s*(.*)$`).exec(line)
-    if (m) return m[1].trim()
-  }
-  return null
+  return readEnvVarFromText(readFileSync(ENV_PATH, 'utf8'), name)
 }
 
 function init(): void {
@@ -67,6 +106,33 @@ function init(): void {
   console.log(`秘密鍵を ${ENV_PATH} へ書きました（${PRIVATE_KEY_VAR}）。`)
   console.log('\n公開鍵（src/utils/arrivalToken.ts の PUBLIC_KEY_SPKI_BASE64 へ貼る。公開してよい値）:')
   console.log(pub.toString('base64'))
+}
+
+/**
+ * `--days` の上限。**100 年。**
+ *
+ * 上限が要るのは打ち間違いを弾くため —— `--days=100000000000` のような値を渡すと、失効日が
+ * **日時として扱える範囲（西暦 275760 年あたり）を超えた**トークンができる。受け取る側も
+ * そういう期限は通さないが（→ `src/utils/arrivalToken.ts` の `isDateRepresentableMs`）、
+ * **配り終えたトークンには効かない**ので発行の入口でも見る。
+ *
+ * 100 年という値そのものに根拠はない。失効を仕組みの中核に据えているので「実質失効しない」
+ * 期限は弾きたい、という判断の表れ。もっと長くしたければ動かしてよい。
+ */
+const MAX_DAYS = 36_500
+
+/**
+ * `--days=` の値を読む。**読めない値と長すぎる値は、理由を分けて落とす。**
+ *
+ * 指定が無ければ既定（`DEFAULT_DAYS`）。**`--days=` と書いて値を空にした場合は既定へ倒さず
+ * 落とす** —— 明示して空にしたのは打ち間違いなので、黙って既定を使うと気づく機会が無い。
+ */
+export function parseDaysArg(daysArg: string | undefined): number {
+  if (daysArg === undefined) return DEFAULT_DAYS
+  const days = Number(daysArg)
+  if (!Number.isFinite(days) || days <= 0) throw new Error(`--days が読めません: ${daysArg}`)
+  if (days > MAX_DAYS) throw new Error(`--days が長すぎます（上限 ${MAX_DAYS} 日）: ${daysArg}`)
+  return days
 }
 
 function sign(subject: string, days: number): string {
@@ -98,10 +164,7 @@ export function main(): void {
     throw new Error('--subject=<渡す相手の名前> は必須です（--init で鍵を作ってから実行します）')
   }
   const daysArg = args.find((a) => a.startsWith('--days='))?.slice('--days='.length)
-  const days = daysArg ? Number(daysArg) : DEFAULT_DAYS
-  if (!Number.isFinite(days) || days <= 0) throw new Error(`--days が読めません: ${daysArg}`)
-
-  const token = sign(subject, days)
+  const token = sign(subject, parseDaysArg(daysArg))
   console.log(token)
   if (!readEnvVar(TOKEN_VAR)) {
     appendFileSync(ENV_PATH, `\n# dev サーバーで自動投入する自分用トークン\n${TOKEN_VAR}=${token}\n`, 'utf8')

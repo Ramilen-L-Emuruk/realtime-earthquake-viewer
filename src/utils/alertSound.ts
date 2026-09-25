@@ -1,4 +1,5 @@
 import { log } from './logger'
+import { recordReplayEvent, currentReplayTelegram } from './replayEventLog'
 
 // 地震情報・緊急地震速報・津波情報の受信時に鳴らす通知音。
 // 音声ファイルを持たず Web Audio API で音を生成する（種別ごとに音が異なる）。
@@ -1030,6 +1031,15 @@ export function playAlertSound(type: AlertSoundType): void {
   // 実際に音が鳴る経路を通るたびにキープアライブの生死を確かめる。専用の監視タイマーを
   // 持たない代わりに、ここを立て直しの機会にする（詳細は syncKeepAlive() のコメント）
   syncKeepAlive()
+  // 録画ツール向けの記録（→ `docs/spec/recording-interface-spec.md`）。編集側は「音の上で
+  // 切っているのは声か通知音か」を判定するので、声だけでは足りない。
+  //
+  // **鳴る経路に入ってから記録する。** AudioContext が無い（ユーザー操作前）ときは上で
+  // 降りており、そこまで記録すると「鳴っていない音」が記録に混ざる。
+  //
+  // **持ち主はここで引く。** 電文の処理中に呼ばれれば付き、強震モニタの検知音のように
+  // 電文と無関係な経路では空になる（それが正しい）。
+  recordReplayEvent({ type: 'sound', sound: type, telegram: currentReplayTelegram() })
   playGuarded(`playAlertSound(${type})`, () => PLAYERS[type](ctx, ctx.currentTime + 0.02))
 }
 

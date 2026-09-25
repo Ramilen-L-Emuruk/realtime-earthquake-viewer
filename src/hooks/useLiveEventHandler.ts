@@ -18,16 +18,140 @@ import { hasKnownEpicenter } from '../utils/geo'
 import { showBrowserNotification } from '../utils/notifications'
 import { GRADE_PRIORITY, TSUNAMI_GRADE_LIFTED, isWarningLevelWhileObserving, tsunamiMaxGrade, tsunamiAreaGradeChanges, selectUnspokenAreaGradeChanges, rememberAreaGrades, tsunamiAreaKey, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, isTsunamiContinuation, matchesArea, sortAreasAcrossGradesForCardDisplay, sortObservationsForCardDisplay, mergeTsunamiObservations, isObservationMissing, hasMaxHeightTimeAdvanced, hasObservedHeightRisen, firstWaveSpokenKey, changedObservationFields, type ObsUpdateMark, isTideReport, tideReportChange, rememberTideEntries, type SpokenTideEntry } from '../utils/tsunami'
 import { playAlertSound, ttsDelayFor, maxTtsDelay, type AlertSoundType } from '../utils/alertSound'
-import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, stopSpeech, isAudioPlaying, type PrewarmedSpeech, type ShouldStillPlay, type SpeechOutcome } from '../utils/voicevox'
+import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, stopSpeech, isAudioPlaying, type PrewarmedSpeech, type ShouldStillPlay, type SpeechOutcome, type ChunkScheduledListener } from '../utils/voicevox'
+import {
+  recordReplayEvent, nextSpeechId, truncateReplayText, withReplayTelegramContext,
+  currentReplayTelegram, captureReplayTelegramContext, rememberReplayTelegram, latestReplayTelegram,
+  type ReplayTelegramRef, type ReplayTelegramSkip,
+} from '../utils/replayEventLog'
+import { replayTelegramFacts } from '../utils/replayTelegramRef'
 import { rollbackSpokenEntry } from '../utils/rollbackSpoken'
 import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewWarningRegionsText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiAreaGradeChangeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, tsunamiMissingToSegments, selectMissingToSpeak, tsunamiWarningLevelToSegments, selectWarningLevelToSpeak, joinWithAlso, nankaiToText, nankaiCommentaryToText, kohatsuToText, earthquakeCountToText, estimatedIntensityToText, lpgmToText, telegramTextToSpeak, createQuakeSpokenState, applySpokenRefs, tsunamiTideToSegments, tsunamiMaxHeightTimeToSegments, selectMaxHeightTimeUpdatesToSpeak, tsunamiFirstWaveToSegments, selectFirstWaveUpdatesToSpeak, tsunamiObservationNoChangeSegments, type TtsSpeechOptions, type QuakeSpokenState } from '../utils/ttsText'
 import { type EewSpeakingCardFollow } from './useEewSpeakingCard'
 import { joinSegments, plain, hasFollowTarget, hasUnreceivedFollowTarget, hasTelegramTextFollowTarget, hasBorrowedHypocenterFollowTarget, TELEGRAM_TEXT_OPEN_TARGET_KINDS, telegramTextSubject, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
 import { log, createLogThrottle } from '../utils/logger'
 import { TAB_PRIORITY, type TabPriority } from '../utils/tabPriority'
+import { hasPendingEewSpeech } from '../utils/eewPendingSpeech'
 import { extractQuakeEventIdFromId, mergeQuakeInto, quakeEventKey, quakeKeyForLpgmEventId, sameQuakeEntry } from '../utils/quakeMerge'
 
 import { getAreaPrefIndexCache } from '../utils/stationCoords'
+
+// ─── 録画ツール向けイベントログの記録（→ `docs/spec/recording-interface-spec.md`）────────
+//
+// **ここにあるのは記録だけで、読み上げの判断には一切関わらない。**
+//
+// **この節の関数はどれも投げない**（不変条件）。収録のための仕掛けが警報の音や電文の処理を
+// 巻き込んではならないので、呼び出し側は戻り値だけ見ればよい形にしてある。
+//
+// **握りを `recordReplayEvent` に任せきりにしないこと。** あちらが守るのは自分の中だけで、
+// 呼ぶ手前で走る計算（テキストの切り詰め・電文からの読み取り・鍵の組み立て）は守りの外に
+// ある。呼び出し側へ try を配る形にすると経路を足すたびに書き忘れるので、**境界であるこの
+// 節の側で閉じる**。
+
+/** 緊急地震速報の持ち主を覚えておく鍵。他の種別の主題と混ざらないよう名前空間を分ける。 */
+const replayEewKey = (key: string) => `eew:${key}`
+
+/**
+ * 読み上げ 1 本の終わりを記録する。`startedAt` は実時刻（`Date.now()`）。
+ *
+ * **この節の他の関数と同じく投げない。** `chainEEWSpeech` は `void playing.then(outcome => ...,
+ * () => ...)` の中でこれを呼んでおり、その `then` チェーンには `.catch` が付いていない
+ * （メインの読み上げチェーンとは別のプロミス）。ここで投げると unhandled rejection になる。
+ */
+function recordReplaySpeechEnd(speechId: number, spoke: boolean, startedAt: number): void {
+  try {
+    recordReplayEvent({ type: 'speechEnd', speechId, spoke, durationMs: Date.now() - startedAt })
+  } catch (err) {
+    log.warn('[replay] 読み上げの終わりを記録できなかった（読み上げは続行）', err)
+  }
+}
+
+/**
+ * チャンクの予約を記録する {@link ChunkScheduledListener} を作る。
+ *
+ * **`index` は連番になるとは限らない**（合成に失敗したチャンクは飛ぶ）ので、そのまま渡す。
+ */
+function replayChunkRecorder(speechId: number): ChunkScheduledListener {
+  return (index, startAt, chunks) => {
+    try {
+      const [text] = truncateReplayText(chunks[index] ?? '')
+      recordReplayEvent({ type: 'speechChunk', speechId, index, chunkCount: chunks.length, text, startAt })
+    } catch (err) {
+      log.warn('[replay] チャンクの予約を記録できなかった（読み上げは続行）', err)
+    }
+  }
+}
+
+/**
+ * 読み上げ 1 本の始まりを記録し、識別子を返す。
+ *
+ * **1 回の `speakWithVoicevox` につき 1 回だけ呼ぶこと。** ここが 1 本の単位で、外から見た
+ * 「読み上げが融ける」問題はこの粒度で記録することだけが解く。
+ */
+function recordReplaySpeechStart(args: {
+  channel: 'eew' | 'other'
+  topic: string | null
+  eewKey: string | null
+  subject: string | null
+  telegram: ReplayTelegramRef | null
+  text: string
+}): number {
+  // **番号は握る前に採る。** そうすれば記録できなかった回も `speechEnd` と対で辿れ、
+  // 汲んだ側からは「始まりだけ欠けた読み上げ」として見える（`recordReplayEvent` の `seq` と同じ規律）。
+  const speechId = nextSpeechId()
+  try {
+    const [text, textLength, textTruncated] = truncateReplayText(args.text)
+    recordReplayEvent({
+      type: 'speechStart', speechId,
+      channel: args.channel, topic: args.topic, eewKey: args.eewKey, subject: args.subject,
+      telegram: args.telegram, text, textLength, textTruncated,
+    })
+  } catch (err) {
+    log.warn('[replay] 読み上げの始まりを記録できなかった（読み上げは続行）', err)
+  }
+  return speechId
+}
+
+/**
+ * 受信した電文を記録し、以後この電文の読み上げが指す参照を返す。
+ *
+ * **画面・音へ回らなかった電文も残す。** 編集側が「届いたのに読まれなかった」を推測で埋めずに
+ * 済むようにするため（→ `ReplayTelegramSkip`）。
+ *
+ * @returns 以後この電文の読み上げが指す参照。記録できなかったときは `null`（呼び出し側は
+ *   文脈を立てずに本体だけ進める）
+ */
+function recordReplayTelegram(event: LiveEvent, meta?: LiveEventMeta): ReplayTelegramRef | null {
+  try {
+    const facts = replayTelegramFacts(event)
+    const skipped: ReplayTelegramSkip | null =
+      event.kind === 'quake' && meta?.quakeHeldBack === true ? 'heldBack'
+        : event.kind === 'eew' && event.test ? 'testReport'
+          : null
+    const seq = recordReplayEvent({ type: 'telegram', ...facts, skipped })
+    const ref: ReplayTelegramRef = {
+      seq, kind: facts.kind, infoType: facts.infoType, eventId: facts.eventId, serial: facts.serial,
+    }
+    // **緊急地震速報だけは鍵でも引けるようにする。** 第 2 フェーズ（予想値）は安定待ちの
+    // タイマーから発火するため、受信処理の文脈が残っていない。
+    //
+    // **ここは別に囲う。** 上で `telegram` イベントは既に記録され `seq` を消費しているので、
+    // 鍵の登録に失敗したくらいで `null` を返すと、**記録済みの電文と以後の読み上げを結ぶ
+    // 手立てだけが失われる**（同じ try にまとめていて、実際にそうなっていた）。失うのは
+    // 第 2 フェーズが鍵から引き直す便益だけに留める。
+    if (event.kind === 'eew') {
+      try {
+        rememberReplayTelegram(replayEewKey(eewEventKey(event)), ref)
+      } catch (err) {
+        log.warn('[replay] 緊急地震速報の持ち主を鍵で覚えられなかった（記録は続行）', err)
+      }
+    }
+    return ref
+  } catch (err) {
+    log.warn('[replay] 電文を記録できなかった（本体は続行）', err)
+    return null
+  }
+}
 
 // EEW 読み上げ第 2 フェーズ（予想値）のタイミング。
 // 初報で予想震度が付いておらず、かつ**付かない理由がはっきりしない**場合に待つ上限。
@@ -494,7 +618,7 @@ function rememberTelegramTextAsSpoken(payload: ReplayPayload, spoken: Set<string
 }
 
 /**
- * 窓の手前の地震に、読み上げの主題を割り当てる関数を作る（録画モードの復元専用）。
+ * 窓の手前の地震に、読み上げの主題とマージ後のカードを割り当てる関数を作る（録画モードの復元専用）。
  *
  * **ライブ経路と同じカードを組み立てて、その鍵を使う。** 主題は地震カードの `eventKey` から作られ、
  * その値は最初に処理された報で固定される（`mergeQuakeInto`）。生の電文へ `quakeEventKey` を直に
@@ -516,23 +640,34 @@ function rememberTelegramTextAsSpoken(payload: ReplayPayload, spoken: Set<string
  * 同じ分に起きた別の地震を分離しきれない限界は残るが、それはライブ経路と同じもの
  * （→ docs/spec/quake-spec.md §6.1）。
  *
- * **ここで組むカードは主題を決めるための使い捨てで、画面の状態には入らない。** 同じ電文は
- * このあと `loadReplayEvents` からも流れてカードになる（そちらが画面に出るもの）。そのため
- * `mergeQuakeInto` が出す診断ログが同じ報について 2 度出ることがあるが、実害は無い。
+ * **ここで組むカードは画面の状態には入らない。** 同じ電文はこのあと `loadReplayEvents` からも
+ * 流れてカードになる（そちらが画面に出るもの）。そのため `mergeQuakeInto` が出す診断ログが
+ * 同じ報について 2 度出ることがあるが、実害は無い。
+ *
+ * **返すのはトピック文字列だけでなくマージ後のカードも。** 呼び出し側が既読を積むとき、
+ * 生の入電をそのまま使うと据え置き（`quakeHoldBack`）で退けられた報の内容まで「もう声にした」
+ * として記録してしまう（このバケットは `mergeQuakeInto` を通しているので据え置き判定を内包して
+ * いるが、外へ渡すのがトピック文字列だけだと呼び出し側から見えない）。マージ後のカードを渡せば、
+ * 据え置かれた報では変わらない前の内容がそのまま既読になり、退けられた内容は記録されない。
+ *
+ * **反映しているのは `quakeHoldBack` だけで、取消より前に発表された報（`isRetractedQuakeReport`。
+ * ライブ経路の `quakeHeldBack` はこちらも含めた2階建て）は見ていない。** このバケットは
+ * 取消の台帳（`quakeRetractionsRef`）を持たないため。窓の手前で「取消 → その取消より前の
+ * 時刻の報が遅れて到着」という順序が起きると、この限界の範囲でだけ据え置き判定が甘くなる。
  */
-export function createPreWindowQuakeTopics(): (quake: JMAQuake) => string {
+export function createPreWindowQuakeTopics(): (quake: JMAQuake) => { topic: string; card: JMAQuake } {
   const buckets = new Map<string, JMAQuake[]>()
-  return (quake: JMAQuake): string => {
+  return (quake: JMAQuake): { topic: string; card: JMAQuake } => {
     const bucket = buckets.get(quake.earthquake.time) ?? []
     const index = bucket.findIndex(card => sameQuakeEntry(card, quake, getAreaPrefIndexCache()))
     if (index >= 0) {
       bucket[index] = mergeQuakeInto(bucket[index], quake)
-      return `quake:${quakeEventKey(bucket[index])}`
+      return { topic: `quake:${quakeEventKey(bucket[index])}`, card: bucket[index] }
     }
     const card = mergeQuakeInto(undefined, quake)
     bucket.push(card)
     buckets.set(quake.earthquake.time, bucket)
-    return `quake:${quakeEventKey(card)}`
+    return { topic: `quake:${quakeEventKey(card)}`, card }
   }
 }
 
@@ -1212,6 +1347,16 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   // 言葉を重ねないことだけをこちらで担い、読み直しの契機はあちらに残す。
   const spokenEEWUpgradePhraseRef = useRef<Set<string>>(new Set())
   const eewTtsMaxTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  /**
+   * 誤報取消の読み上げを予約した eventId（まだ発話へ至っていないもの）。
+   *
+   * **他のフェーズと違って専用の集合が要る。** あちらは予約トークンが Map に載るので
+   * 「まだ語る予定がある」ことがそこから読めるが、取消は `scheduleSpeech` で間を置いてから
+   * チェーンへ積む一回性の呼び出しで、どの Map にも現れない。しかも取消を受けた時点で
+   * 他の 6 つはすべて空にされるため、これが無いと「いま声が語っているカード」の印が
+   * 取消の読み上げを待たずに落ちる（→ `utils/eewPendingSpeech.ts`）。
+   */
+  const eewCancelSpeechRef = useRef<Set<string>>(new Set())
   // 第 2 フェーズ（予想値）を一度でも発話した eventId。まだ読んでいない間は、値が上がって
   // いなくても読む（初報・震源更新の読み直しがこれに当たる）。
   const eewPhase2DoneRef = useRef<Set<string>>(new Set())
@@ -1369,6 +1514,36 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     }
   }
 
+  /**
+   * その緊急地震速報について、**まだ声にする予定が残っているか**（`eewEventKey` 単位）。
+   *
+   * 「いま声が語っているカード」の印を、段と段のあいだも保つための判定
+   * （{@link EewSpeakingCardFollow.end}）。読み上げは名乗り・警報対象地方・予想値の 3 段に
+   * 分かれ、段のあいだには安定待ち（最大 `EEW_PHASE2_STABILITY_MAX_WAIT_MS`）が挟まる ——
+   * **その待ちを時間の猶予で代用しない**。待ちが猶予を超えれば読み上げの途中で印が消え、
+   * 語り終われば猶予のぶん余計に残る。事実がここにあるのだから直接見る。
+   *
+   * **自分自身の発話は数に入らない。** 各フェーズの予約トークンは `speak()` の中、つまり
+   * 印を立てる（`begin`）より手前で自分を `delete` する。ここで真になるのは
+   * 「**次に**語る予定」だけ。
+   *
+   * **`speechBlocker` の同名の判定とは別物。** あちらは「いま非 EEW を始めてよいか」を
+   * 全 EEW 横断（`.size > 0`）で見る。こちらは「この地震について語り残しがあるか」なので
+   * key 単位でなければならない。
+   *
+   * **緊急地震速報の予約を新しく足したら、ここにも足すこと。** 抜けても症状は
+   * 「印が語り終わる前に消える」だけで、例外もログも出ない。
+   */
+  const hasPendingEewSpeechFor = (key: string) => hasPendingEewSpeech(key, {
+    phase1: eewPhase1TokensRef.current,
+    warningRegions: eewRegionTokensRef.current,
+    phase2: eewPhase2TokensRef.current,
+    scaleStability: eewScaleStabilityRef.current,
+    lpgmStability: eewLpgmStabilityRef.current,
+    forecastMaxWait: eewTtsMaxTimersRef.current,
+    cancelSpeech: eewCancelSpeechRef.current,
+  })
+
   const chainEEWSpeech = (
     /**
      * 語る対象の eventId（{@link eewEventKey}）。**画面側で「いま声が語っているカード」を
@@ -1398,6 +1573,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     cutCurrent = false,
   ) => {
     eewSpeechPendingRef.current++
+    // 録画ツール向けの記録。**持ち主はここ（同期の入口）で掴む** —— 下のチェーンは `then` の
+    // 中で走るので、そこで読むと別の電文の処理に入れ替わっている。
+    // 文脈が無いのは第 2 フェーズ（予想値）で、あれは安定待ちのタイマーから呼ばれる。
+    // そのときは鍵から引く。
+    const replayOwner = currentReplayTelegram() ?? latestReplayTelegram(replayEewKey(key))
     const prev = eewSpeechChainRef.current
     if (cutCurrent) stopSpeech()
     let settled: ((spoke: boolean) => void) | undefined
@@ -1432,9 +1612,22 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         speakingCardToken = eewSpeakingCard?.begin(key) ?? null
       } catch (err) { log.warn('[eew] 語っているカードの印を立てられず（読み上げは続行）', err) }
       try { follow?.() } catch (err) { log.warn('[eew] 読み上げ追従に失敗（読み上げは続行）', err) }
-      return capSpeechWait(
-        speakWithVoicevox(settings.voicevoxUrl, text, settings.voicevoxSpeakerId, settings.soundVolume, shouldStillPlay),
-      ).then(outcome => {
+      // 録画ツール向けの記録（読み上げ 1 本ぶん）。
+      const replaySpeechId = recordReplaySpeechStart({
+        channel: 'eew', topic: null, eewKey: key, subject: null, telegram: replayOwner, text,
+      })
+      const replayStartedAt = Date.now()
+      const playing = speakWithVoicevox(
+        settings.voicevoxUrl, text, settings.voicevoxSpeakerId, settings.soundVolume, shouldStillPlay,
+        undefined, replayChunkRecorder(replaySpeechId),
+      )
+      // **終わりは包む前の約束から出す。** 下の `capSpeechWait` は待ちの上限で先に解決するが、
+      // 読み上げ自体はまだ続いている。包んだ側から出すと、鳴り終わる前に終了として記録される。
+      void playing.then(
+        outcome => recordReplaySpeechEnd(replaySpeechId, outcome.spoke, replayStartedAt),
+        () => recordReplaySpeechEnd(replaySpeechId, false, replayStartedAt),
+      )
+      return capSpeechWait(playing).then(outcome => {
         // **上限（`capSpeechWait`）で待ち切ったときは「鳴った」へ倒す。**
         //
         // ここへ来る（`outcome` が undefined になる）のは 2 通りしかない。`capSpeechWait` は
@@ -1455,10 +1648,34 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       .catch(err => log.warn('[eew] 読み上げに失敗', err))
       .finally(() => {
         eewSpeechPendingRef.current--
-        settled?.(spoke)
+        // **後始末はそれぞれ独立した try で囲う。** `.finally` のコールバックが投げると
+        // チェーン（`eewSpeechChainRef.current`）はその例外で reject し、**次に積まれた 1 本**は
+        // `capSpeechWait(prev).then(...)` を飛ばして `.catch` へ落ちる —— `speak()` を一度も
+        // 呼ばれないまま黙って消える。記録に残るのは「[eew] 読み上げに失敗」の一行だけで、
+        // 原因がここだとは判らない。
+        //
+        // **消えるのは 1 本だけ**（`.catch` が reject を吸収するので、そのさらに次からは
+        // 回復する）。それでも、消えたのが名乗りの次に来る予想値なら「区分は名乗ったのに
+        // 震度を言わない」形になる —— テストで再現してある。
+        //
+        // **1 つの try にまとめないこと。** `.then` 側（印とタブ追従）と同じ理由で、先に
+        // 置いた方が投げると後ろが一度も呼ばれない。
+        //
+        // **`settled`（`onSettled`）の中は投げない前提で書くこと。** 実装はどれも Map の
+        // 出し入れ（`rollbackSpokenEntry`）だけだが、投げれば途中で止まり、既読が部分的に
+        // 巻き戻った状態が残る。ここで捕まえてもその中途半端さは直せない ——
+        // チェーンを守るだけで、記録から追えるようにしてある。
+        try { settled?.(spoke) } catch (err) { log.warn('[eew] 読み上げ後の記録に失敗', key, err) }
         // 印を立てた発話だけが後始末する。**立てていない発話（黙る予約・`begin` が投げた回）から
         // 呼ばないこと** —— 受け口は世代で照合するので害は無いが、渡すトークンが無い。
-        if (speakingCardToken !== null) eewSpeakingCard?.end(speakingCardToken)
+        //
+        // 印をいつ落とすかは受け口が `hasPendingEewSpeech` を見て決める（段と段のあいだは
+        // 保ち、語ることが尽きたら落とす）。**その場で一度呼んで真偽を渡す形にしないこと**
+        // —— 語り終わった瞬間に残っていた予約が、その後で捨てられることがある
+        // （誤報取消・リセット）。受け口は残っているあいだ見直し続ける。
+        try {
+          if (speakingCardToken !== null) eewSpeakingCard?.end(speakingCardToken, () => hasPendingEewSpeechFor(key))
+        } catch (err) { log.warn('[eew] 語っているカードの印を落とせず', key, err) }
       })
   }
 
@@ -1731,6 +1948,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
      */
     shouldWithdraw?: () => boolean,
   ) => {
+    // 録画ツール向けの記録。**持ち主はここ（同期の入口）で掴む** —— 下の `async` は `await` を
+    // 跨ぐので、その先で読むと別の電文の処理に入れ替わっている。
+    const replayOwner = currentReplayTelegram()
     void (async () => {
       /**
        * 割り込まずに見送る。「何も切らない」ことを層で宣言している優先度だけがここへ来る
@@ -1866,15 +2086,31 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       }
       // 第 5 引数（鳴らす直前の見直し）は非 EEW では使わない。予想震度のように数秒で
       // 書き換わる値を持たないため、読み始めた文面を最後まで読んでよい。
+      // 録画ツール向けの記録（読み上げ 1 本ぶん）。
+      const replaySpeechId = recordReplaySpeechStart({
+        channel: 'other', topic, eewKey: null, subject: subject ?? null, telegram: replayOwner, text,
+      })
+      const replayStartedAt = Date.now()
+      const replayChunk = replayChunkRecorder(replaySpeechId)
+      // **追従へ通知する条件は変えない。** 記録は常に行うが、`notifyChunk` を呼ぶかどうかは
+      // 従来どおり「追従の相手がいるか」で決める（呼ぶ相手がいないのに呼ぶと、画面を合わせる
+      // 処理が空振りで走る）。
+      const notifyFollow = followToken !== undefined || unreceivedToken !== undefined
+        || telegramTextToken !== undefined || !!onSpokenRefs
       const done = speakWithVoicevox(
         settings.voicevoxUrl, text, settings.voicevoxSpeakerId, settings.soundVolume, undefined, prewarmed,
-        followToken === undefined && unreceivedToken === undefined
-          && telegramTextToken === undefined && !onSpokenRefs
-          ? undefined : notifyChunk,
+        // **記録を先に置けるのは `replayChunk` が投げないから**（記録層の境界の不変条件）。
+        // 投げうる形に戻すなら、追従（`notifyChunk`）が一度も呼ばれなくなるので別々に囲うこと
+        // —— `chainEEWSpeech` が `begin` と `follow` を分けて囲っているのと同じ理由。
+        (index, startAt, chunks) => {
+          replayChunk(index, startAt, chunks)
+          if (notifyFollow) notifyChunk(index, startAt, chunks)
+        },
       )
       activeNonEewSpeechRef.current = { priority, topic, done, flushSpoken: () => flushSpokenRefs(false) }
+      let replayOutcome: SpeechOutcome | undefined
       try {
-        await done
+        replayOutcome = await done
       } finally {
         if (followToken !== undefined) speechFollow?.end(followToken)
         // 読み上げが終わった（割り込まれて途中で終わった場合も含む）。未入電モードを開いて
@@ -1889,6 +2125,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         // 自分より後に始まった読み上げに置き換わっている場合は触らない（消すと待ち側が
         // 「誰も読んでいない」と誤認し、進行中の読み上げに割り込む）
         if (activeNonEewSpeechRef.current?.done === done) activeNonEewSpeechRef.current = null
+        // 録画ツール向けの記録。**`await` が投げた場合も「鳴らなかった」として残す** ——
+        // 開始だけが残ると、汲んだ側からは終わらない読み上げに見える。
+        recordReplaySpeechEnd(replaySpeechId, replayOutcome?.spoke ?? false, replayStartedAt)
       }
     })()
       // ここに届くのは同期的な異常だけ。VOICEVOX 未起動・ネットワーク断のような日常的な失敗は
@@ -1908,9 +2147,14 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
    */
   const scheduleSpeech = (delay: number, run: () => void, onCancel?: () => void) => {
     const entry: { id: number; onCancel?: () => void } = { id: 0, onCancel }
+    // 録画ツール向けの記録。**予約した時点の電文を捕まえて、発火するときに戻す** —— 間を
+    // 置いてから読む経路（通知音との間・誤報取消・気象庁が書いた文）は、発火する頃には受信
+    // 処理を抜けていて、そのままでは読み上げの持ち主が引けない。**予約はすべてここを通る**
+    // 決まりなので、ここで包めば経路ごとに書く必要がない。
+    const restoreReplayTelegram = captureReplayTelegramContext()
     entry.id = window.setTimeout(() => {
       pendingSpeechRef.current.delete(entry)
-      run()
+      restoreReplayTelegram(run)
     }, delay)
     pendingSpeechRef.current.add(entry)
   }
@@ -2535,11 +2779,21 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         )
       }
     } else if (event.kind === 'quake') {
-      // **止めるのは音・読み上げ・ウィンドウタイトル・自動タブ切替の 4 つだけ**（印は入口で
-      // 導出済み＝`quakeHeldBack`）。すぐ下の `selectQuake` と `closeDistributionOnQuakeReport`、
-      // それに「この報は見た」の記録（`markQuakeReportSeen`）は通す —— どれもカードが内容を
-      // 採ったかどうかと無関係に要る（分布モードは「その地震の電文を受けたら閉じる」「種別で
-      // 絞らない。手で開いた分も閉じる」＝ docs/spec/quake-spec.md §9）。
+      // **止めるのは音・読み上げ・ウィンドウタイトル・自動タブ切替・カードの選択・
+      // 分布モードのクローズの 6 つ**（印は入口で導出済み＝`quakeHeldBack`）。「この報は見た」
+      // の記録（`markQuakeReportSeen`）だけは通す —— これはカードが内容を採ったかどうかと
+      // 無関係に要る（続報判定の台帳で、据え置いた報も「見た」ことに変わりはない）。
+      //
+      // **選択・分布クローズは元々「通す」側だったが、覆した。** 分布モードのクローズ理由
+      // （「その地震の電文を受けたら閉じる」docs/spec/quake-spec.md §9）は「発表値が更新された
+      // のに分布モードが隠している」ことを根拠にしており、**据え置きは発表値を更新しないので
+      // この根拠が成立しない**。選択も同様で、独立した根拠が無いまま「カードの選択・分布・
+      // 見た記録はカードが内容を採ったかどうかと無関係」という一文に相乗りしていた。
+      // 2024-11-26 22:47 の大阪府北部で、完全版のあとに届いた震度速報が据え置かれたにも
+      // かかわらず、別のカードを選択していた場合はそちらの選択が奪われ、開いていた追加表示
+      // （長周期・未入電・分布）も閉じていた。取消より前に発表された報（§6.2）ではさらに悪く、
+      // 対象カードが取消済み・消滅しているため `App.tsx` の `selectedQuake` 導出が
+      // `latestNonCancelled` へ落ち、**無関係な最新の地震が選択される**。
       // 読み上げがあるならタブ移動は読み上げに任せる（共通の TTS ブロックが follow を渡す）。
       // 重い電文（EEW・津波）の読み上げ中に届いた地震情報は、その読み上げが終わって
       // 自分の番が来たときに画面を取る。地震情報の読み上げ文は常に非空。
@@ -2557,7 +2811,6 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       if (isNewQuake) {
         markQuakeReportSeen(seenQuakeReportKeysRef.current, incomingKey)
       }
-      // 新規・続報いずれも、受信した地震カードを選択状態にする。
       // 選択 ID はカードと照合するため eventKey で渡す。P2PQuake は続報ごとにレコード id が
       // 変わるので、既存カードがあればそのキーを引き継ぐ（このハンドラは useEarthquakes の
       // 統合より前に呼ばれるため、earthquakesRef はこの電文を取り込む前の状態）。
@@ -2565,14 +2818,23 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // 選択は「取消でない最新カード」へフォールバックする（App.tsx の selectedQuake 導出）。
       const existingCard = earthquakesRef.current.find(q => sameQuakeEntry(q, incomingQuake, getAreaPrefIndexCache()))
       // 選択と読み上げの主題は同じキーで揃える（どちらも「どの地震か」を指すもの）。
+      // **quakeHeldBack でも決める。** quakeSpeechTopic・quakeSubjectKey の消費は読み上げ
+      // ブロックの中（`!quakeHeldBack` を通った後）に限られるため、ここで決めるだけなら無害。
       const incomingEventKey = quakeEventKey(existingCard ?? incomingQuake)
       quakeSpeechTopic = `quake:${incomingEventKey}`
       quakeSubjectKey = incomingEventKey
-      selectQuake(incomingEventKey)
-      // 震度分布モードを開いていたら閉じて、発表値の地図へ戻す。**同じ地震の続報でも閉じる**
-      // ——分布モードは区域塗りも観測点ドットも出さないので、開いたままだとこの電文が伝えて
-      // きた震度が地図に一切現れない（→ `closeDistributionOverlayOnQuakeReport`）。
-      closeDistributionOnQuakeReport(incomingEventKey)
+      if (quakeHeldBack) {
+        // **止めたことを残す。** カードが採らない電文で選択を動かすと、見ていた別のカードの
+        // 選択が奪われ、開いていた追加表示（長周期・未入電・分布）も閉じてしまう。
+        log.debug('[quake] カードが採らない電文なので選択も分布モードのクローズも起こさない')
+      } else {
+        // 新規・続報いずれも、受信した地震カードを選択状態にする。
+        selectQuake(incomingEventKey)
+        // 震度分布モードを開いていたら閉じて、発表値の地図へ戻す。**同じ地震の続報でも閉じる**
+        // ——分布モードは区域塗りも観測点ドットも出さないので、開いたままだとこの電文が伝えて
+        // きた震度が地図に一切現れない（→ `closeDistributionOverlayOnQuakeReport`）。
+        closeDistributionOnQuakeReport(incomingEventKey)
+      }
       const { hypocenter, maxScale } = event.earthquake
       const isForeignQuake = event.issue.type === '遠地地震'
       // 震度を伝えない電文（VXSE52 等）では、同一イベントのカードが既に出している震度を消さない
@@ -2634,6 +2896,37 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // 同一 tick に取り残された値を見る。タブが余分に動くだけなら実害は小さいが、印を消す判定に
       // 使うと消えてはいけない印が消える。
       tsunamiIsNewFire = isTsunamiNewFire(event, previousTsunami)
+      // 録画ツール向けの記録。**等級が動いた報だけ** —— 観測情報の続報は数分おきに届くので、
+      // すべて残すと「警報の状態が動いた」という問いに答えられなくなる。
+      //
+      // **下がった報も出す。** 大津波警報 → 津波警報のような引き下げは編集する側にとって
+      // 上がった報と同じ重さの出来事で、落とすと「上がったきり戻らない」ように見える。
+      //
+      // **基準は音・読み上げと同じ `lastTsunamiGradeRef`。写しを新しく作らない。**
+      //
+      // ここは 2 つの罠が重なる。①タブ切替が見ている `tsunamisRef` はレンダー時にしか
+      // 進まないので、同じティックで複数の電文を捌くと 2 通目以降が 1 通目より前の状態と
+      // 比べる（アーカイブ再生の追いつきで実際に起きる）。②等級を語らない電文（区域が空の
+      // 観測情報）を「前の等級」として数えると `Unknown`（最下位）になり、**変化のない
+      // 継続報が格上げに化ける**（満潮時刻の報は等級の発表の 0〜60 秒後に必ず届く）。
+      //
+      // **どちらも「前の等級をどこから読むか」の問題**なので、覚え方を持つ側を増やさずに
+      // 既存の記憶をそのまま読む。あれは電文ごとに進み、`Unknown` では更新しないので
+      // ②も満たす。**ここは更新より手前**なので、読めば「前の報の等級」になる。
+      //
+      // 今回の報が等級を語っていないときは比較しない（降格として扱うと全解除に見える）。
+      const prevGradeForLog = lastTsunamiGradeRef.current
+      const gradeForLog = tsunamiMaxGrade(event)
+      const comparableForLog = !tsunamiIsNewFire && !isTsunamiObservationOnly(event) && prevGradeForLog !== null
+      const loggedUpgrade = comparableForLog && GRADE_PRIORITY[gradeForLog] > GRADE_PRIORITY[prevGradeForLog!]
+      const loggedDowngrade = comparableForLog && GRADE_PRIORITY[gradeForLog] < GRADE_PRIORITY[prevGradeForLog!]
+      if (tsunamiIsNewFire || loggedUpgrade || loggedDowngrade) {
+        recordReplayEvent({
+          type: 'alert', category: 'tsunami',
+          change: tsunamiIsNewFire ? 'issued' : loggedUpgrade ? 'upgraded' : 'downgraded',
+          grade: gradeForLog, telegram: currentReplayTelegram(),
+        })
+      }
       if (!settings.voicevoxEnabled) {
         if (tsunamiIsNewOrUpgraded) {
           log.info(`[tab] tsunami を要求 (${isNew ? '新規発報' : 'グレード格上げ'}・読み上げ無効)`)
@@ -2653,6 +2946,14 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       }
       title.showTsunamiTitle()
     } else if (event.kind === 'tsunami' && event.cancelled) {
+      // 録画ツール向けの記録。**解除・取消・失効は電文が言い分けている**（`cancelReason`）ので、
+      // そのまま残す。読めない値のときは「解除」へ倒す（画面の扱いと揃える）。
+      recordReplayEvent({
+        type: 'alert', category: 'tsunami',
+        change: event.cancelReason === 'retracted' ? 'retracted'
+          : event.cancelReason === 'expired' ? 'expired' : 'lifted',
+        grade: null, telegram: currentReplayTelegram(),
+      })
       // 「津波解除検出」effect はレンダー後の非同期発火のため、受信直後の即時反映用にここでもタイマーをリセットする。
       // EEW の発表状況はここでは見ない（新規発報側と対称）。
       // 音・TTS・タブ切替は eventId 単位で 1 回だけ発火する（TSU-1/3/4 経路で同一 eventId の
@@ -2756,6 +3057,24 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         // hadKey: P2PQuake WS と Yahoo の両方から cancel が来た場合の二重鳴り防止（AUD-2）
         const hadKey = activeEEWLevelsRef.current.has(key)
         log.info(`[eew] キャンセル受信 key=${key} expired=${event.expired ?? false} hadKey=${hadKey} 種別=${event.expired ? '自動解除(タイマー満了)' : '誤報取消'}`)
+        // 録画ツール向けの記録。**誤報取消と自動解除（最終報の満了）を言い分ける** ——
+        // 前者は訂正で、後者は時間切れ。編集側から見ると意味がまるで違う。
+        //
+        // **自動解除は `hadKey` のときだけ記録する。** P2PQuake WS と Yahoo hypoInfo の両方から
+        // 最終報の消滅を検出すると同じ EEW の expired キャンセルが複数キューに積まれ（コメント
+        // 「AUD-2」参照）、2 発目以降は `hadKey=false` で音・タブ移動も起こさない。記録だけ
+        // 無条件に出すとここだけ二重・三重になり、「1 つの EEW が複数回失効した」と誤読される。
+        //
+        // **誤報取消は `hadKey` を問わず記録する。** ブラウザ通知と同じ基準
+        // （`if (!event.expired) { ...showBrowserNotification... }`）に揃えてある——
+        // `hadKey=false` でも「自動解除済みの後に遅れて届いた本物の誤報取消」がありうるため、
+        // 訂正情報を握り潰さない側へ倒す。
+        if (hadKey || !event.expired) {
+          recordReplayEvent({
+            type: 'alert', category: 'eew', change: event.expired ? 'expired' : 'retracted',
+            grade: null, telegram: currentReplayTelegram(),
+          })
+        }
         activeEEWLevelsRef.current.delete(key)
         spokenEEWScalesRef.current.delete(key)
         spokenEEWLpgmClassesRef.current.delete(key)
@@ -2773,9 +3092,18 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             if (settings.voicevoxEnabled) {
               // 誤報取消は「手動選択より強い」側の通知なので、追従も eewUrgent で出す
               // （eewUpdate だと、取消を読み上げる直前に手動で別タブへ移られた場合に弾かれる）。
+              // **予約したことを覚えておく**（→ `eewCancelSpeechRef` の JSDoc）。取消を受けた
+              // 時点で他の予約はすべて空になるので、これが無いと直前まで語っていた発話の
+              // 後始末で「もう語ることは無い」と判定され、取消の読み上げを待たずに
+              // 「いま声が語っているカード」の印が落ちる。
+              eewCancelSpeechRef.current.add(key)
               scheduleSpeech(ttsDelayFor('eewCancel'), () => chainEEWSpeech(
                 key,
-                () => eewCancelToText(event),
+                () => {
+                  // 発話するものが決まった（または黙ると決めた）時点で予約は消化された。
+                  eewCancelSpeechRef.current.delete(key)
+                  return eewCancelToText(event)
+                },
                 () => followSpeechTab('realtime', TAB_PRIORITY.eewUrgent),
               ))
             }
@@ -2853,6 +3181,14 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       if (isNew) latestEewSpeechSeqRef.current = ++speechArrivalSeqRef.current
       const prevLevel = activeEEWLevelsRef.current.get(key) ?? 0
       const levelUpgraded = !isNew && currentLevel > prevLevel
+      // 録画ツール向けの記録。**続報そのものは残さない** —— 秒ごとに届くので、残すと
+      // 「警報の状態が動いた」という問いに答えられなくなる（続報の到来は `telegram` の側に出る）。
+      if (isNew || levelUpgraded) {
+        recordReplayEvent({
+          type: 'alert', category: 'eew', change: isNew ? 'issued' : 'upgraded',
+          grade: eewKindLabel(currentLevel), telegram: currentReplayTelegram(),
+        })
+      }
       // 区分（予報→警報）の格上げだけを見る特別扱い。`levelUpgraded` は警報→特別警報の
       // 格上げも含んでしまうが、特別警報は「緊急地震速報」という同じ区分の中の話で、
       // 音声では「警報」に統一する方針（docs/spec/eew-spec.md §4）。震度の安定待ちを
@@ -4645,6 +4981,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       window.clearTimeout(areaGradeClearTimerRef.current)
       // 間を置いている最中の読み上げも捨てる（`resetTracking` と対称）
       cancelPendingSpeech()
+      eewCancelSpeechRef.current.clear()
     }
   }, [cancelPendingSpeech])
 
@@ -4665,6 +5002,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     eewTtsEventsRef.current.clear()
     eewPhase1TokensRef.current.clear()
     eewPhase2TokensRef.current.clear()
+    // 誤報取消の読み上げの予約も捨てる。**予約自体は `cancelPendingSpeech` が取り消すので、
+    // 覚えだけが残る** —— 残すと、その eventId について「まだ語ることがある」と答え続け、
+    // 新しい時間軸で同じ地震の印が落ちなくなる。
+    eewCancelSpeechRef.current.clear()
     for (const cycle of eewScaleStabilityRef.current.values()) clearTimeout(cycle.timer)
     eewScaleStabilityRef.current.clear()
     for (const cycle of eewLpgmStabilityRef.current.values()) clearTimeout(cycle.timer)
@@ -4736,8 +5077,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     telegramTextFollow?.reset()
     borrowedHypocenterFollow?.reset()
     // 「いま声が語っている緊急地震速報」の印も落とす。切り替え前の eventId が残ると、
-    // 新しい時間軸で同じ eventId の地震が来るまで消えない（猶予のタイマーは鳴り終わりで
-    // 張るので、割り込みで消えた発話の分は張られない）。
+    // 新しい時間軸で同じ eventId の地震が来るまで消えない（印を落とすための見直しは
+    // 鳴り終わりに始まるので、割り込みで消えた発話の分は始まらない）。
     eewSpeakingCard?.reset()
   }, [cancelPendingSpeech, speechFollow, unreceivedFollow, telegramTextFollow, borrowedHypocenterFollow, eewSpeakingCard])
 
@@ -4799,9 +5140,16 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             // こちらも渡さない —— この関数は `earthquakeToSegments` を通して既読を作るため、
             // 渡すと既読にする区域の集合まで震源距離順で切られる（ライブ側と同じ副作用）。
             // 地震電文の側は震源を語らないので、借りても震源の既読は増えない。
+            //
+            // **既読にするのは生の入電ではなく、マージ後のカード。** `quakeTopicFor` の内部の
+            // バケットは `mergeQuakeInto` を通しており据え置き（`quakeHoldBack`）を反映済み
+            // ——据え置かれた報では `card` が変わらないので、退けられた内容（区域・震度等）は
+            // 既読に積まれない。生の入電のまま渡すと、画面にも声にも出ていない内容を
+            // 「もう声にした」として記録してしまい、後続の正規の報がその内容を黙って省く。
             const quake = ev as JMAQuake
+            const { topic, card } = quakeTopicFor(quake)
             rememberQuakeSpeechAsSpoken(
-              quake, quakeTopicFor(quake), spokenQuakeStatesRef.current, authoritativeReadQuakesRef.current, opts,
+              card, topic, spokenQuakeStatesRef.current, authoritativeReadQuakesRef.current, opts,
             )
           }
         } else if (ev.kind === 'eew') {
@@ -5036,6 +5384,22 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
    * 通らない経路ができる。
    */
   const handleLiveEvent = (event: LiveEvent, meta?: LiveEventMeta) => {
+    // 録画ツール向けの記録。**受信した電文をここで 1 件残し、以降の処理を「この電文の文脈」で
+    // 包む** —— 読み上げはこの中で予約されるので、予約した瞬間の文脈がその読み上げの持ち主に
+    // なる（→ `withReplayTelegramContext`）。呼び出し側へ引数を配る形にすると、経路を足した
+    // ときの渡し忘れが「持ち主が空」という静かな形でしか出ない。
+    // **記録できなくても本体は必ず走らせる。** ここは全ての電文が通る入口で、呼び出し元
+    // （受信キュー・WebSocket）は例外を受け止めない。止めるとその電文が画面からも音からも
+    // 丸ごと消える —— 収録の仕掛けが本物の警報を握り潰すことになる。
+    const replayTelegram = recordReplayTelegram(event, meta)
+    if (replayTelegram === null) {
+      handleLiveEventBody(event, meta)
+      return
+    }
+    withReplayTelegramContext(replayTelegram, () => handleLiveEventBody(event, meta))
+  }
+
+  const handleLiveEventBody = (event: LiveEvent, meta?: LiveEventMeta) => {
     skipTelegramTextRef.current = false
     handleLiveEventInner(event, meta)
     if (skipTelegramTextRef.current) return
