@@ -22,6 +22,8 @@ import { withBorrowedFromTsunami, borrowFromTsunamiIntoCards } from '../utils/bo
 import { loadStationCoords, onStationCoordsLoaded, buildAreaPrefIndex, getAreaPrefIndexCache } from '../utils/stationCoords'
 import type { AreaPrefIndex } from '../utils/quakePoints'
 import { calcEEWCancelTime, eewSerial, eewEventKey } from '../utils/eew'
+import { recordReplayEvent, type ReplayTelegramSkip } from '../utils/replayEventLog'
+import { replayTelegramFacts, type ReplayTelegramSource } from '../utils/replayTelegramRef'
 import { decideEstimatedIntensityUpdate, isNewEstimatedIntensity, rememberShownEstimatedIntensity } from '../utils/estimatedIntensity'
 import { mergeTsunamiReports, isCancelForCurrentTsunami, isTsunamiContinuation, withInheritedTsunamiFacts } from '../utils/tsunami'
 import { log } from '../utils/logger'
@@ -32,6 +34,42 @@ import { isValidDmdataApiKey, DMDATA_API_KEY_INVALID_MESSAGE } from '../utils/dm
 // テストデータは押されてから読む（静的に取り込まない理由・失敗したときの扱い・先読みの
 // 段取りは `utils/testDataLoader.ts` にまとめてある）。
 import { loadTestData } from '../utils/testDataLoader'
+
+/**
+ * 画面・音へ回らずに落とした電文を、録画ツール向けに記録する
+ * （→ `docs/spec/recording-interface-spec.md`）。
+ *
+ * **`onLiveEvent` まで届く電文は `useLiveEventHandler` が記録する。** ここで残すのは、
+ * その手前で落としている分すべて —— 緊急地震速報の古い報・試験報・音も読み上げも起こさないと
+ * 決めた種別（地震・津波に関するお知らせ）に加え、リプレイ初期状態のサイレント注入
+ * （`silentReplayInit`）・反映されなかった電文（`notApplied`）も含む。**落としたことが
+ * 残らないと、編集する側からは「配信が無かった」のと区別が付かない。**
+ *
+ * **投げないこと**（記録層の境界の不変条件）。呼び出し元はどれも受信処理の途中にいて、
+ * 例外を受け止めない —— 抜けるとその電文の処理が丸ごと止まり、同じティックで捌く予定
+ * だった後続の電文まで巻き添えになる。
+ */
+function recordSkippedTelegram(source: ReplayTelegramSource, skipped: ReplayTelegramSkip): void {
+  try {
+    recordReplayEvent({ type: 'telegram', ...replayTelegramFacts(source), skipped })
+  } catch (err) {
+    log.warn('[replay] 落とした電文を記録できなかった（本体は続行）', err)
+  }
+}
+
+/**
+ * lpgm が `onLiveEvent`（音・読み上げ・タブ移動）の対象になるか。
+ *
+ * **他の 5 種別（nankai 等）と違い、これは「反映されたか」と一致しない。** あちらは
+ * `applyXxx` が期限切れ等で棄却すると `lpgmByEventId` 相当の state 自体を書き換えないが、
+ * lpgm は取消なら削除・それ以外なら必ず追加する形で **`lpgmByEventId` を常に書き換える**
+ * （呼び出し側の `setState` を参照）。ここが偽でも画面（長周期一覧・バッジ）は更新されうる
+ * ので、記録の理由はどちらも `notApplied`（＝反映されなかった）ではなく
+ * `notDispatched`（＝音読み上げの対象外と決めている）にする（3 巡目レビューで指摘）。
+ */
+function lpgmNotifiable(lpgm: JMALpgm): boolean {
+  return !lpgm.cancelled && lpgm.maxClass >= 1
+}
 
 // 初回取得件数（設定の最大選択値に合わせる）。リプレイ開始時の履歴復元（useReplayController の
 // QUAKE_HISTORY_EVENTS）もこの値をそのまま目標にするため export している。片方だけ動かすと、
@@ -1021,7 +1059,18 @@ export function useEarthquakes(
    * ・`applyKohatsu` と形を揃えておくため —— 揃えておかないと、後から「反映できたか」で
    * 分岐したくなったときに、この関数だけ内部を書き換える必要が出る。
    */
-  const applyQuakeNotice = useCallback((notice: JMAQuakeNotice): boolean => {
+  const applyQuakeNotice = useCallback((notice: JMAQuakeNotice, silent?: boolean): boolean => {
+    // この種別は音も読み上げも起こさないと決めており、`onLiveEvent` へ流していない。
+    // 届いたことだけは録画の側から見えるようにする。
+    //
+    // **`silent` のときは記録しない。** この関数はサイレント復元（起動時・履歴からの補完）
+    // からも呼ばれる唯一の経路のため、無条件に記録すると最大 7 日前の履歴上のお知らせが、
+    // 起動時や API キー変更・リプレイの往復による再接続のたびに「いま届いた」電文として
+    // イベントログへ混入する。他の種別（nankai・kohatsu 等）は `silent` の場合
+    // `silentReplayInit` として区別して記録するが、この種別は元から音・読み上げに一切
+    // 回さない（`notDispatched`）ため、サイレント復元でも同じ「回らない」が二重に成り立つ
+    // だけで新しい情報を持たない。素直に記録を止める。
+    if (!silent) recordSkippedTelegram({ kind: 'quakeNotice', data: notice }, 'notDispatched')
     if (notice.cancelled) {
       if (quakeNoticeExpireTimerRef.current !== undefined) {
         window.clearTimeout(quakeNoticeExpireTimerRef.current)
@@ -1332,6 +1381,7 @@ export function useEarthquakes(
           // 順序の入れ替わり自体は想定内だが、判定が誤り続けるとその EEW は以降更新されない。
           // 捨てた事実が残らないと原因に辿り着けないため記録する（頻度は 1 地震あたり数件）。
           log.debug(`[eew] 古い報を破棄: key=${key} 受理済み=#${acceptedSerial} 受信=#${incomingSerial}`)
+          recordSkippedTelegram(incoming, 'staleSerial')
           return
         }
         if (incomingSerial !== null) acceptedEewSerialRef.current.set(key, incomingSerial)
@@ -1412,7 +1462,14 @@ export function useEarthquakes(
       }
     }
     // ライブ受信／テスト送信のイベントを通知（サイレントモード中は抑制）
-    if (!isSilentRef.current) onLiveEventRef.current?.(event, { quakeHeldBack })
+    if (!isSilentRef.current) {
+      onLiveEventRef.current?.(event, { quakeHeldBack })
+    } else {
+      // 録画ツール向けの記録。**`onLiveEvent` を呼ばない以上、`recordReplayTelegram`
+      // （`handleLiveEvent` 側）へは届かない**——ここで拾わないと、リプレイ開始時の
+      // サイレント注入（窓の手前の初期状態）が電文一覧から丸ごと抜け落ちる。
+      recordSkippedTelegram(event, 'silentReplayInit')
+    }
 
     // 556（EEW）: 最終報受信時、解除時刻にキャンセルイベントをキューへ挿入する。
     // standard版の Yahoo hypoInfo 経由 EEW は useKyoshinRealtime 側の消滅検出（diffHypoInfoEvents）
@@ -1847,19 +1904,42 @@ export function useEarthquakes(
               quakeMarkMemory: markState.memory,
             }
           })
-          if (!silent && !lpgm.cancelled && lpgm.maxClass >= 1) {
+          // **他の 6 種別（nankai/nankaiCommentary/kohatsu/earthquakeCount/estimatedIntensity/
+          // quakeNotice）と同じく、`onLiveEvent` を呼ばない場合はすべて記録する。** かつては
+          // `lpgm.cancelled`（取消）・`maxClass < 1`（階級 0）を「既存の正常な振り分け」として
+          // 除外していたが、この 2 ケースは `silent` の真偽を問わずどちらの記録も残さないまま
+          // 画面の長周期一覧・バッジには反映されうる（`setState` は上で必ず走る）。「全件出す」
+          // という仕様の主張と食い違うため、他の種別と同じ if/else へ揃える。
+          //
+          // **理由は `notApplied` ではなく `notDispatched`。** `lpgmNotifiable` が偽でも
+          // `lpgmByEventId` は必ず書き換わるので、「反映されなかった」を意味する `notApplied`
+          // を使うと嘘になる（他の 5 種別は棄却＝ state 不変が一致するが lpgm だけ一致しない）。
+          const lpgmCanNotify = lpgmNotifiable(lpgm)
+          if (!silent && lpgmCanNotify) {
             onLiveEventRef.current?.({ kind: 'lpgm', data: lpgm })
+          } else {
+            recordSkippedTelegram(
+              { kind: 'lpgm', data: lpgm },
+              lpgmCanNotify ? 'silentReplayInit' : 'notDispatched',
+            )
           }
         } else if (payload.kind === 'nankai') {
           const nankai = payload.data
           // 反映しなかった取消では音も読み上げも起こさない（判定は `applyNankai`）。
           const applied = applyNankai(nankai)
-          if (applied && !silent) onLiveEventRef.current?.({ kind: 'nankai', data: nankai })
+          if (applied && !silent) {
+            onLiveEventRef.current?.({ kind: 'nankai', data: nankai })
+          } else {
+            recordSkippedTelegram({ kind: 'nankai', data: nankai }, applied ? 'silentReplayInit' : 'notApplied')
+          }
         } else if (payload.kind === 'nankaiCommentary') {
           const commentary = payload.data
           // 期限切れなら反映も通知もしない（画面に出ないものを読み上げても意味がない）
-          if (applyNankaiCommentary(commentary) && !silent) {
+          const applied = applyNankaiCommentary(commentary)
+          if (applied && !silent) {
             onLiveEventRef.current?.({ kind: 'nankaiCommentary', data: commentary })
+          } else {
+            recordSkippedTelegram({ kind: 'nankaiCommentary', data: commentary }, applied ? 'silentReplayInit' : 'notApplied')
           }
         } else if (payload.kind === 'purge-cancelled-quake') {
           const { id } = payload
@@ -1897,15 +1977,25 @@ export function useEarthquakes(
         } else if (payload.kind === 'kohatsu') {
           const kohatsu = payload.data
           const applied = applyKohatsu(kohatsu)
-          if (applied && !silent) onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu })
+          if (applied && !silent) {
+            onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu })
+          } else {
+            recordSkippedTelegram({ kind: 'kohatsu', data: kohatsu }, applied ? 'silentReplayInit' : 'notApplied')
+          }
         } else if (payload.kind === 'quakeNotice') {
           // **通知は出さない。** 運用連絡なので音も読み上げも起こさない（→ docs/spec/data-sources-spec.md
           // §2「扱う電文種別」）。帯に出すだけなので `onLiveEvent` へは流さない。
-          applyQuakeNotice(payload.data)
+          // **記録は `silent` を見て行う** —— サイレント復元（起動時・履歴からの補完）では
+          // 記録を残さない。ここだけ無条件に記録していた頃は、最大7日前の履歴上のお知らせが
+          // 起動時や再接続のたびに「いま届いた」電文としてログへ混入していた。
+          applyQuakeNotice(payload.data, silent)
         } else if (payload.kind === 'earthquakeCount') {
           const count = payload.data
-          if (applyEarthquakeCount(count) && !silent) {
+          const applied = applyEarthquakeCount(count)
+          if (applied && !silent) {
             onLiveEventRef.current?.({ kind: 'earthquakeCount', data: count })
+          } else {
+            recordSkippedTelegram({ kind: 'earthquakeCount', data: count }, applied ? 'silentReplayInit' : 'notApplied')
           }
         } else if (payload.kind === 'estimatedIntensity') {
           const ei = payload.data
@@ -1915,6 +2005,8 @@ export function useEarthquakes(
           const applied = applyEstimatedIntensity(ei, !silent)
           if (applied && !silent) {
             onLiveEventRef.current?.({ kind: 'estimatedIntensity', data: ei, isNew: applied.isNew })
+          } else {
+            recordSkippedTelegram({ kind: 'estimatedIntensity', data: ei }, applied ? 'silentReplayInit' : 'notApplied')
           }
         }
         isSilentRef.current = false
@@ -2150,7 +2242,11 @@ export function useEarthquakes(
               case 'nankaiCommentary': applyNankaiCommentary(p.data); break
               case 'kohatsu': applyKohatsu(p.data); break
               case 'earthquakeCount': applyEarthquakeCount(p.data); break
-              case 'quakeNotice': applyQuakeNotice(p.data); break
+              // **`silent: true` を渡す。** ここは起動時・API キー変更・リプレイ往復の
+              // 再接続のたびに最大 7 日前の履歴を流し込む経路で、渡し忘れると
+              // `applyQuakeNotice` が無条件に `recordSkippedTelegram(..., 'notDispatched')`
+              // を呼び、過去のお知らせが「いま届いた」電文としてログへ混入する。
+              case 'quakeNotice': applyQuakeNotice(p.data, true); break
               case 'event':
               case 'estimatedIntensity':
                 // `HISTORY_EXTRA_TYPES` に入らないので届かない。**種別を足したときに
@@ -2237,38 +2333,57 @@ export function useEarthquakes(
             else next.set(lpgm.eventId, lpgm)
             return { ...prev, lpgmByEventId: next }
           })
-          if (!lpgm.cancelled && lpgm.maxClass >= 1) {
+          if (lpgmNotifiable(lpgm)) {
             onLiveEventRef.current?.({ kind: 'lpgm', data: lpgm })
+          } else {
+            // 録画ツール向けの記録。この経路は常にライブ（silent の概念を持たない）なので
+            // `notDispatched` 一択——音読み上げの対象外と決めている（取消・階級 0）。
+            // キュー経路（`handleEvent`）の同じ判定と揃える（3巡目レビューで検出。ここだけ
+            // else が無く記録が丸ごと抜けていた）。
+            recordSkippedTelegram({ kind: 'lpgm', data: lpgm }, 'notDispatched')
           }
         } else if (ev.kind === 'nankai') {
           const nankai = ev.data
           // キュー経路と同じ関数を通す（規則を 2 箇所に書かない。理由は `applyNankai`）。
           if (applyNankai(nankai)) {
             onLiveEventRef.current?.({ kind: 'nankai', data: nankai })
+          } else {
+            // 録画ツール向けの記録。この経路は常にライブ（silent の概念を持たない）なので
+            // `notApplied` 一択——反映されなかった（期限切れの取消 等）。
+            recordSkippedTelegram({ kind: 'nankai', data: nankai }, 'notApplied')
           }
         } else if (ev.kind === 'nankaiCommentary') {
           const commentary = ev.data
           if (applyNankaiCommentary(commentary)) {
             onLiveEventRef.current?.({ kind: 'nankaiCommentary', data: commentary })
+          } else {
+            recordSkippedTelegram({ kind: 'nankaiCommentary', data: commentary }, 'notApplied')
           }
         } else if (ev.kind === 'kohatsu') {
           const kohatsu = ev.data
           if (applyKohatsu(kohatsu)) {
             onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu })
+          } else {
+            recordSkippedTelegram({ kind: 'kohatsu', data: kohatsu }, 'notApplied')
           }
         } else if (ev.kind === 'quakeNotice') {
-          // 運用連絡なので音も読み上げも起こさない（帯に出すだけ）。
+          // 運用連絡なので音も読み上げも起こさない（帯に出すだけ）。ここは常にライブなので
+          // `silent` は渡さない（従来どおり `notDispatched` で記録する）。
           applyQuakeNotice(ev.data)
         } else if (ev.kind === 'earthquakeCount') {
           const count = ev.data
           if (applyEarthquakeCount(count)) {
             onLiveEventRef.current?.({ kind: 'earthquakeCount', data: count })
+          } else {
+            recordSkippedTelegram({ kind: 'earthquakeCount', data: count }, 'notApplied')
           }
         } else if (ev.kind === 'estimatedIntensity') {
           const ei = ev.data
           const applied = applyEstimatedIntensity(ei, true)
           if (applied) {
             onLiveEventRef.current?.({ kind: 'estimatedIntensity', data: ei, isNew: applied.isNew })
+          } else {
+            recordSkippedTelegram({ kind: 'estimatedIntensity', data: ei }, 'notApplied')
           }
         } else {
           const data = ev.data
@@ -2367,7 +2482,7 @@ export function useEarthquakes(
     // Yahoo hypoInfo で検出済みの eventId であれば areas を注入、未知なら全処理（フォールバック）。
     ws.onEvent = (event: AppEvent) => {
       if (event.kind === 'eew') {
-        if (event.test) return
+        if (event.test) { recordSkippedTelegram(event, 'testReport'); return }
         const eew = event as EEWAlert
         // この key はそのまま台帳（`acceptedEewSerialRef`）のキーになる。式を書き写すと
         // 導出が変わったときに片方だけ追従し、台帳と状態のキーが割れる。
