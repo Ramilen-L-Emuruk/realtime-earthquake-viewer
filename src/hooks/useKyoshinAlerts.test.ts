@@ -170,6 +170,49 @@ describe('isRegionWithinAnyEew', () => {
     const nowMs = new Date(originTime).getTime() + 90_000
     expect(isRegionWithinAnyEew(region, nowMs, new Map([[eew.id, eew]]))).toBe(true)
   })
+
+  // 深さが判らない EEW（位置は判っている）。**上の「位置不明のセンチネル」とは別の形**で、
+  // あちらは緯度経度が `-200`、こちらは緯度経度が有効で深さだけ `-1`。
+  //
+  // 正: **仮の深さ `DEFAULT_VIRTUAL_DEPTH_KM`（15km）で解く。** `?? DEFAULT_VIRTUAL_DEPTH_KM` は
+  // null/undefined にしか効かないので、センチネルを素通りさせた `Math.max(0, -1)` が 0 ＝
+  // 最も浅い地震として閾値を広げていた（S 波は浅いほど速く地表へ届く）。
+  //
+  // **点は 0km と 15km の閾値の「あいだ」へ置く。** 外側に余裕を取って置くと、旧実装
+  // （0km で解く）でも新実装（15km）でも「外側」で答えが一致してしまい、テストが何も守らない
+  // （実際にそう書いて、修正を戻しても通ることを確かめた）。あいだに置けば、どちらで解いたかで
+  // 答えが分かれる。
+  const ORIGIN = '2024-01-01T00:00:00.000Z'
+  const AT_90S = new Date(ORIGIN).getTime() + 90_000
+  const eewAtDepth = (depth: number) => fakeEEW('eew-d', ORIGIN,
+    { name: '石川県能登地方', latitude: 37.5, longitude: 137.0, depth, magnitude: 7.6 })
+  /** 0km で解いた閾値と 15km で解いた閾値の中間に置いた地域。緯度 1 度 ≒ 111km。 */
+  const regionBetweenThresholds = () => {
+    const r0 = reachRadiusKm('S', 90, 0) * DYNAMIC_THRESHOLD_SAFETY_FACTOR
+    const r15 = reachRadiusKm('S', 90, DEFAULT_VIRTUAL_DEPTH_KM) * DYNAMIC_THRESHOLD_SAFETY_FACTOR
+    // **2 つが十分離れていること自体を先に固定する。** 近いと判定が両方同じへ倒れ、
+    // 下の 2 件がそろって無意味になる（走時表を差し替えたときに気づけるようにする）。
+    expect(Math.abs(r0 - r15)).toBeGreaterThan(1)
+    return fakeRegion({ lat: 37.5 + (Math.min(r0, r15) + Math.abs(r0 - r15) / 2) / 111, lng: 137.0 })
+  }
+
+  it('深さが判らない EEW は仮の深さ（15km）で閾値を解く', () => {
+    const between = regionBetweenThresholds()
+    const unknown = eewAtDepth(-1)
+    const fallback = eewAtDepth(DEFAULT_VIRTUAL_DEPTH_KM)
+    expect(isRegionWithinAnyEew(between, AT_90S, new Map([[unknown.id, unknown]])))
+      .toBe(isRegionWithinAnyEew(between, AT_90S, new Map([[fallback.id, fallback]])))
+  })
+
+  // 対照: 深さ 0 は「ごく浅い」という有効値なので、仮の深さへ倒さない。
+  // **同じ点で 0km と 15km の答えが分かれる**ことを見て、上の一致が偶然でないことを示す。
+  it('深さ 0（ごく浅い）は仮の深さへ倒さない', () => {
+    const between = regionBetweenThresholds()
+    const shallow = eewAtDepth(0)
+    const fallback = eewAtDepth(DEFAULT_VIRTUAL_DEPTH_KM)
+    expect(isRegionWithinAnyEew(between, AT_90S, new Map([[shallow.id, shallow]])))
+      .not.toBe(isRegionWithinAnyEew(between, AT_90S, new Map([[fallback.id, fallback]])))
+  })
 })
 
 // 能登(37.5,137.0) から福岡(33.6,130.4) までは約 738km。EEW が無いときの下限 300km を超えるため、
