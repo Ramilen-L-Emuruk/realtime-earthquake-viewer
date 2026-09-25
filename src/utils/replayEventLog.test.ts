@@ -107,6 +107,31 @@ describe('溢れたことが呼ぶ側から分かる', () => {
   })
 })
 
+describe('記録の失敗で本体を止めない', () => {
+  // 正: `{ ...input, seq, at, wallAt }` の組み立てが投げても、呼び出し元へは伝播しない。
+  // `ownKeys` トラップはスプレッド演算子（`[[OwnPropertyKeys]]`）で発火する。
+  it('組み立てに失敗しても投げない', () => {
+    const poison = new Proxy({}, { ownKeys() { throw new Error('boom') } }) as never
+    expect(() => recordReplayEvent(poison)).not.toThrow()
+  })
+
+  // 正: 番号は握る前に採るので、記録できなかった回も seq を消費する——
+  // 汲んだ側は `seq` の飛びとして取りこぼしに気づける（`recordReplayEvent` の設計どおり）。
+  it('記録できなかった回も seq は消費する（飛びとして外から分かる）', () => {
+    const poison = new Proxy({}, { ownKeys() { throw new Error('boom') } }) as never
+    recordReplayEvent(poison)
+    const seq = recordTab('after-failure')
+    // poison で 1 つ、この呼び出しで 2 つ目のはずなので 2 になる
+    expect(seq).toBe(2)
+  })
+
+  // 対照: 失敗を挟まなければ連番はそのまま進む（比較の基準）
+  it('対照: 失敗を挟まなければ 1 から順に振られる', () => {
+    expect(recordTab('a')).toBe(1)
+    expect(recordTab('b')).toBe(2)
+  })
+})
+
 describe('時刻', () => {
   it('at はシナリオ時刻・wallAt は実時刻', () => {
     const offset = 86_400_000 // 1 日ぶん過去へ飛ばす
@@ -146,6 +171,18 @@ describe('テキストの切り詰め', () => {
     expect(length).toBe(REPLAY_EVENT_TEXT_LIMIT)
     // 対照: 切っていないなら印を付けない
     expect(truncated).toBe(false)
+  })
+
+  // 安全弁: 上限がちょうどサロゲートペア（絵文字等）の中間に当たる場合、孤立サロゲートを
+  // 残さない（1 文字手前で切る）。
+  it('サロゲートペアの中間では切らない', () => {
+    const emoji = '😀' // U+1F600（上位・下位サロゲートの2コード単位）
+    const long = 'あ'.repeat(REPLAY_EVENT_TEXT_LIMIT - 1) + emoji + 'い'.repeat(10)
+    const [text] = truncateReplayText(long)
+    // 上限ちょうど（2000）で切ると絵文字の上位サロゲートだけが残るはず。安全弁が
+    // 1 文字手前（1999）で切るので、絵文字ごと落ちて孤立サロゲートは残らない。
+    expect(text).toHaveLength(REPLAY_EVENT_TEXT_LIMIT - 1)
+    expect(text.charCodeAt(text.length - 1)).toBeLessThan(0xd800)
   })
 })
 

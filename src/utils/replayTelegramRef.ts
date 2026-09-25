@@ -8,7 +8,7 @@
  *
  * 純粋関数。副作用は持たない（記録は {@link import('./replayEventLog')} の担当）。
  */
-import type { JMAQuakeNotice, LiveEvent } from '../types/earthquake'
+import type { JMAEstimatedIntensity, JMAQuakeNotice, LiveEvent } from '../types/earthquake'
 import type { ReplayTelegramKind } from './replayEventLog'
 
 /**
@@ -17,8 +17,20 @@ import type { ReplayTelegramKind } from './replayEventLog'
  * **`LiveEvent` だけでは足りない。** 地震・津波に関するお知らせ（`quakeNotice`）は音も読み上げも
  * 起こさないと決めた種別で、`onLiveEvent` へ流していない。それでも「届いた」ことは録画の側から
  * 見えるべきなので、ここでは受け取れるようにしておく。
+ *
+ * **`estimatedIntensity` は `isNew` を省略できる形で受け取る。** `LiveEvent` 側の同ケースは
+ * 「初報か続報か」を必須にしているが（読み上げの言い分けに使うため）、この記録層は
+ * `replayTelegramFacts` を見れば分かるとおり `isNew` を一切読まない。**主な理由はそれだけで
+ * 足りる**——省略可能にしても、この型が読まない値を呼び出し側にでっち上げさせずに済む。
+ * 加えて、反映されなかった電文（`recordSkippedTelegram` の `notApplied` 分岐）は
+ * `isNewEstimatedIntensity` の判定自体を経ておらず値を持ち合わせていないが、これは
+ * `notApplied` 限定の事情であって、反映された電文（`silentReplayInit` 分岐）には
+ * 当てはまらない——あちらは `applied.isNew` が既に計算済みで手元にある。
  */
-export type ReplayTelegramSource = LiveEvent | { kind: 'quakeNotice'; data: JMAQuakeNotice }
+export type ReplayTelegramSource =
+  | Exclude<LiveEvent, { kind: 'estimatedIntensity' }>
+  | { kind: 'quakeNotice'; data: JMAQuakeNotice }
+  | { kind: 'estimatedIntensity'; data: JMAEstimatedIntensity }
 
 /** 電文が名乗っている事実（`ReplayTelegramRef` から `seq` を除いたもの＋取消）。 */
 export interface ReplayTelegramFacts {

@@ -230,6 +230,7 @@ export function useActionChecklist(params: {
     recordReplayEvent({
       type: 'overlay', overlay: 'actionChecklist', open: true,
       reason: keepCollapsed ? '揺れを検知（畳んだまま）' : '揺れを検知',
+      subject: null,
     })
     // 畳んでいたものを開き直したなら、記録は役目を終えた。開いたまま受けた揺れでは消さない
     // （`restore` で開いた人の「もう一度閉じたときの基準」として残す）。
@@ -319,7 +320,7 @@ export function useActionChecklist(params: {
     setState(null)
     setCollapsed(false)
     if (wasShown) {
-      recordReplayEvent({ type: 'overlay', overlay: 'actionChecklist', open: false, reason: '設定で「出さない」へ変えた' })
+      recordReplayEvent({ type: 'overlay', overlay: 'actionChecklist', open: false, reason: '設定で「出さない」へ変えた', subject: null })
     }
   }, [minScale])
 
@@ -337,7 +338,7 @@ export function useActionChecklist(params: {
       applySuppress(null)
       // 録画ツール向けの記録。**出ていたときだけ**（`key` が無ければ元から出ていない）。
       if (key) {
-        recordReplayEvent({ type: 'overlay', overlay: 'actionChecklist', open: false, reason: '寿命が尽きた' })
+        recordReplayEvent({ type: 'overlay', overlay: 'actionChecklist', open: false, reason: '寿命が尽きた', subject: null })
       }
     }
     const remain = suppress.until - Date.now()

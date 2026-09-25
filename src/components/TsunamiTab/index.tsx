@@ -814,7 +814,7 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
   // 読み上げているあいだだけ開く（→ `useAutoOpenWhileSpeaking`）。**バナー 4 種と同じフックを使う。**
   // 自前で組んでいた頃は「手で開き直したら読み終わりで閉じない」という安全弁が抜けており、
   // 利用者が開いた面を読み終わりで閉じていた。
-  const [commentsOpen, setCommentsOpen] = useAutoOpenWhileSpeaking(!!speakingTelegramText)
+  const [commentsOpen, setCommentsOpen] = useAutoOpenWhileSpeaking(!!speakingTelegramText, 'tsunamiComment')
   // **開いたまま等級が動いたら閉じる。** 付加文の面は下の区域一覧を覆うので、開けっ放しだと
   // 発表・引き上げ・一部解除が届いても利用者の目に入らない。
   //

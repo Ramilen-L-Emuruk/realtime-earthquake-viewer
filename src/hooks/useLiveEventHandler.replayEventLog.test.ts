@@ -109,7 +109,7 @@ function makeTsunamiGraded(grade: 'MajorWarning' | 'Warning' | 'Watch', id: stri
   } as unknown as JMATsunami
 }
 
-function makeEEW(over: { serial?: number } = {}): EEWAlert {
+function makeEEW(over: { serial?: number, cancelled?: boolean, expired?: boolean } = {}): EEWAlert {
   const serial = over.serial ?? 1
   return {
     kind: 'eew',
@@ -123,7 +123,8 @@ function makeEEW(over: { serial?: number } = {}): EEWAlert {
       hypocenter: { name: '能登半島沖', latitude: 37.5, longitude: 137.2, depth: 10, magnitude: 7.6 },
     },
     severity: 'Warning',
-    cancelled: false,
+    cancelled: over.cancelled ?? false,
+    expired: over.expired,
     issue: { eventId: 'eew-evt', serial: String(serial), time: '2026-01-01T12:00:00Z' },
     areas: [{ pref: '石川県', name: '石川県能登', scaleFrom: 45, scaleTo: 55, kindCode: '10', arrivalTime: null }],
   } as unknown as EEWAlert
@@ -368,5 +369,39 @@ describe('津波の等級が動いた報を記録する', () => {
     handle(makeTsunamiGraded('Watch', 't3'))
     await settle()
     expect(changes()).toEqual(['issued', 'downgraded'])
+  })
+})
+
+// EEW のキャンセル記録（hadKey による重複配信の抑制）。P2PQuake WS と Yahoo hypoInfo の
+// 両方から同じ EEW の消滅を検出すると、同じ状態遷移で expired キャンセルが複数キューへ
+// 積まれる（音・読み上げの二重鳴り防止と同じ現象）。記録もこの重複を無視してよいかどうかを
+// `retracted`（誤報取消）と `expired`（自動解除）で分ける。
+describe('EEW のキャンセルは重複配信の扱いが違う', () => {
+  const eewAlerts = () => drainReplayEvents().events
+    .flatMap(e => e.type === 'alert' && e.category === 'eew' ? [e.change] : [])
+
+  // 正: 自動解除（expired）の 2 発目（hadKey=false）は記録しない
+  it('正: 自動解除の重複キャンセル（2 発目）は記録しない', async () => {
+    const { handle } = setup()
+    handle(makeEEW({ serial: 1 })) // 新規発報
+    await settle()
+    handle(makeEEW({ serial: 2, cancelled: true, expired: true })) // 1 発目（hadKey=true）
+    await settle()
+    handle(makeEEW({ serial: 3, cancelled: true, expired: true })) // 2 発目（hadKey=false）
+    await settle()
+    expect(eewAlerts()).toEqual(['issued', 'expired'])
+  })
+
+  // 対照: 誤報取消（retracted）は hadKey を問わず両方とも記録する——
+  // 遅れて届いた本物の訂正を握り潰さないため
+  it('対照: 誤報取消は hadKey=false でも記録する', async () => {
+    const { handle } = setup()
+    handle(makeEEW({ serial: 1 }))
+    await settle()
+    handle(makeEEW({ serial: 2, cancelled: true, expired: false })) // 1 発目（hadKey=true）
+    await settle()
+    handle(makeEEW({ serial: 3, cancelled: true, expired: false })) // 2 発目（hadKey=false）
+    await settle()
+    expect(eewAlerts()).toEqual(['issued', 'retracted', 'retracted'])
   })
 })

@@ -286,21 +286,21 @@ describe('quakeOverlayChangeLog', () => {
   // 呼び出し側ごとに判定していた頃は、書き手を足すたびに記録が抜けていた。
   it('正: 開いたら open が 1 件出る', () => {
     expect(quakeOverlayChangeLog(null, distribution('k1'))).toEqual([
-      { overlay: 'distribution', open: true },
+      { overlay: 'distribution', open: true, subject: 'k1' },
     ])
   })
 
   it('正: 閉じたら close が 1 件出る', () => {
     expect(quakeOverlayChangeLog(distribution('k1'), null)).toEqual([
-      { overlay: 'distribution', open: false },
+      { overlay: 'distribution', open: false, subject: 'k1' },
     ])
   })
 
   it('正: 別の追加表示へ差し替えたら「閉じる → 開く」の 2 件になる', () => {
     const before: QuakeOverlay = { kind: 'lpgm', eventId: 'e1', source: 'earthquake' }
     expect(quakeOverlayChangeLog(before, distribution('k1'))).toEqual([
-      { overlay: 'lpgm', open: false },
-      { overlay: 'distribution', open: true },
+      { overlay: 'lpgm', open: false, subject: 'e1' },
+      { overlay: 'distribution', open: true, subject: 'k1' },
     ])
   })
 
@@ -330,8 +330,20 @@ describe('quakeOverlayChangeLog', () => {
   // 1 件へ畳むと、編集する側は何が引っ込んだのか読めない。
   it('安全弁: 同じ種別でも別の地震へ移ったら 2 件出す', () => {
     expect(quakeOverlayChangeLog(distribution('k1'), distribution('k2'))).toEqual([
-      { overlay: 'distribution', open: false },
-      { overlay: 'distribution', open: true },
+      { overlay: 'distribution', open: false, subject: 'k1' },
+      { overlay: 'distribution', open: true, subject: 'k2' },
+    ])
+  })
+
+  // 正: `lpgm` の subject は eventId、`unreceived` の subject は eventKey——
+  // 群発地震で複数の地震について続けて開閉したとき、`overlay` 種別だけでは
+  // 「同じ地震の開閉」か「別の地震への切り替え」かを区別できない（2 巡目レビューで指摘）。
+  it('正: lpgm の subject は eventId、unreceived の subject は eventKey', () => {
+    expect(quakeOverlayChangeLog(null, lpgm('e9'))).toEqual([
+      { overlay: 'lpgm', open: true, subject: 'e9' },
+    ])
+    expect(quakeOverlayChangeLog(null, unreceived('k9'))).toEqual([
+      { overlay: 'unreceived', open: true, subject: 'k9' },
     ])
   })
 })

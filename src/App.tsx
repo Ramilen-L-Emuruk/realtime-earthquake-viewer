@@ -251,8 +251,9 @@ export function App() {
     quakeOverlayRef.current = after
     setQuakeOverlayState(after)
     // 差し替え（別の追加表示へ移る）は「閉じた」「開いた」の 2 件になる（→ `quakeOverlayChangeLog`）。
+    // `subject`（どの地震の開閉か）は `quakeOverlayChangeLog` が eventId/eventKey から組む。
     for (const e of quakeOverlayChangeLog(before, after)) {
-      recordReplayEvent({ type: 'overlay', overlay: e.overlay, open: e.open, reason })
+      recordReplayEvent({ type: 'overlay', overlay: e.overlay, open: e.open, reason, subject: e.subject })
     }
     return { before, after }
   }, [])
@@ -514,7 +515,7 @@ export function App() {
     setPanelCollapsed(false)
     // 録画ツール向けの記録。**畳んでいたときだけ画面が動く**（開いていたならそのまま）。
     if (wasCollapsed) {
-      recordReplayEvent({ type: 'overlay', overlay: 'specialInfoPanel', open: true, reason: '特別情報の受信' })
+      recordReplayEvent({ type: 'overlay', overlay: 'specialInfoPanel', open: true, reason: '特別情報の受信', subject: null })
     }
   }, [])
 
@@ -527,7 +528,7 @@ export function App() {
     setSpecialInfoPanelHold(null)
     // 録画ツール向けの記録。**畳み直したときだけ**（元から開いていたなら画面は動かない）。
     if (collapsing) {
-      recordReplayEvent({ type: 'overlay', overlay: 'specialInfoPanel', open: false, reason: '特別情報の展開を解除' })
+      recordReplayEvent({ type: 'overlay', overlay: 'specialInfoPanel', open: false, reason: '特別情報の展開を解除', subject: null })
     }
   }, [])
 

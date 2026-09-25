@@ -161,8 +161,28 @@ export type ReplayTelegramSkip =
   | 'staleSerial'
   /** 試験報・訓練報。 */
   | 'testReport'
-  /** そもそも音・読み上げの経路へ流さないと決めている種別（地震・津波に関するお知らせ）。 */
+  /**
+   * そもそも音・読み上げの経路へ流さないと決めている——**種別まるごと**（地震・津波に関する
+   * お知らせ）と、**種別内の特定の値**（長周期地震動観測情報の取消・階級 0。この 2 つは
+   * 音読み上げの対象外と決めているだけで、`lpgmByEventId` への反映自体は必ず起こる）の
+   * どちらも指す。**`notApplied` との違いは「状態が動いたか」ではなく「意図した除外か」**——
+   * `notApplied` は古い報・重複配信・期限切れという**受信側の事情**で棄却されるのに対し、
+   * こちらは電文の内容（取消・階級）を見て**アプリが最初から音読み上げの対象に含めないと
+   * 決めている**。
+   */
   | 'notDispatched'
+  /**
+   * リプレイ開始時の「窓の手前」を作るサイレント注入（→ `docs/spec/settings-pwa-spec.md` §6
+   * 「初期状態（24 時間）では足りないものを、履歴の遡り（7 日）から補う」）。**画面には反映
+   * されるが、音・読み上げ・タブ移動は起こさない**設計そのもの。届いた電文を全件記録すると
+   * 掲げている以上、ここを漏らすと録画ツールは再生開始直後の状態を電文一覧から追えない。
+   */
+  | 'silentReplayInit'
+  /**
+   * 反映されなかった（古い報・重複配信・期限切れで棄却された）。`silentReplayInit` とは
+   * 別の理由——サイレントかどうかに関わらず、電文自体が状態を動かさなかった場合。
+   */
+  | 'notApplied'
 
 /** 電文の受信。 */
 export interface ReplayTelegramEvent extends ReplayEventCommon {
@@ -179,7 +199,12 @@ export interface ReplayTelegramEvent extends ReplayEventCommon {
 export interface ReplayTabEvent extends ReplayEventCommon {
   type: 'tab'
   tab: string
-  /** 直前のタブ。起動直後は null。 */
+  /**
+   * 直前のタブ。**既定タブで初期化されるため、実際には null にならない**——記録する側
+   * （`App.tsx` の `recordedTabRef`）は「まだ何も描いていない」状態を持たず、起動時の
+   * タブで最初から埋まっている。型が `string | null` なのは将来の初期化順の変更に備えた
+   * 余裕であって、いまの実装がその値を返す保証ではない。
+   */
   prevTab: string | null
 }
 
@@ -224,6 +249,15 @@ export interface ReplayOverlayEvent extends ReplayEventCommon {
   open: boolean
   /** 何がそれを開いた・閉じたか（呼び出し側が渡す短い語）。 */
   reason: string
+  /**
+   * どの主題の表示か（渡されていなければ null）。
+   *
+   * **`telegramText` は 1 つの `overlay` 種別を 6 箇所（地震カードの補足・南海トラフ臨時情報・
+   * 後発地震注意情報・関連解説情報・地震回数・津波のコメント欄）が共有しているため、これが
+   * 無いと「どの表示が開いたか」が区別できない。他の `overlay` 種別は 1 対 1 で対応する
+   * 呼び出し元しか持たないため、いまのところ渡していない。**
+   */
+  subject: string | null
 }
 
 /** 再生の開始・停止（シナリオ時刻のジャンプはこれで起きる）。 */
@@ -327,7 +361,14 @@ export function nextSpeechId(): number {
 /** テキストを上限で切る。戻り値は `[切ったテキスト, 元の長さ, 切ったか]`。 */
 export function truncateReplayText(text: string): [string, number, boolean] {
   if (text.length <= REPLAY_EVENT_TEXT_LIMIT) return [text, text.length, false]
-  return [text.slice(0, REPLAY_EVENT_TEXT_LIMIT), text.length, true]
+  let cut = REPLAY_EVENT_TEXT_LIMIT
+  // **サロゲートペアの中間で切らない。** `slice` は UTF-16 コード単位で切るため、
+  // 上限がちょうど補助水面文字（絵文字等）の上位サロゲートに当たると、末尾に孤立
+  // サロゲートが残る（不正な UTF-16 列）。読み上げ文は漢字・かなが中心で滅多に
+  // 起きないが、境界が一致すれば起こりうる。
+  const code = text.charCodeAt(cut - 1)
+  if (code >= 0xd800 && code <= 0xdbff) cut -= 1
+  return [text.slice(0, cut), text.length, true]
 }
 
 // ─── 汲み出し ─────────────────────────────────────────
