@@ -1,7 +1,7 @@
 {
   "name": "realtime-earthquake-viewer",
   "private": true,
-  "version": "5.26.1",
+  "version": "5.26.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -26,7 +26,8 @@
     "build-travel-time-table": "tsx scripts/build-travel-time-table.ts",
     "sign-arrival-token": "tsx scripts/sign-arrival-token.ts",
     "verify-particle-phrases": "tsx scripts/verify-particle-phrases.ts",
-    "audit-accent-unidic": "tsx scripts/audit-accent-unidic.ts"
+    "audit-accent-unidic": "tsx scripts/audit-accent-unidic.ts",
+    "build-third-party-licenses": "node scripts/build-third-party-licenses.mjs"
   },
   "dependencies": {
     "fflate": "^0.8.3",

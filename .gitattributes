@@ -2,3 +2,8 @@
 # 実際に存在する）が誤ってテキスト扱いされ、改行変換で壊れる余地が残る。明示的にバイナリと宣言する。
 *.pbf -text -diff
 *.ttf -text -diff
+
+# ライセンス全文は生成物で、中身を改行込みで厳密に照合するテスト（scripts/thirdPartyLicenses.test.ts
+# の版の照合）を持つ。core.autocrlf=true の環境ではチェックアウトで CRLF へ変換され、そのテストが
+# 全件落ちる。経緯と見分け方は CLAUDE.md の「検証」節。
+public/third-party-licenses.txt text eol=lf
