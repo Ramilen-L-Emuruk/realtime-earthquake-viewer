@@ -1,5 +1,25 @@
 {
   "stations": [
-    { "boardKey": "mac:3c8a1f5d54d8", "stationId": "study", "displayName": "書斎" }
+    { "stationId": "study", "displayName": "書斎", "lat": 35.6, "lon": 139.7 }
+  ],
+  "boards": [
+    {
+      "boardKey": "mac:3c8a1f5d54d8",
+      "stationId": "study",
+      "sensors": [
+        {
+          "sensorId": "i2c0-68",
+          "enabled": true,
+          "rotation": [
+            [1, 0, 0],
+            [0, 1, 0],
+            [0, 0, 1]
+          ],
+          "offset": [0, 0, 0],
+          "sensitivity": [1, 1, 1],
+          "noiseDensity": 400
+        }
+      ]
+    }
   ]
 }
