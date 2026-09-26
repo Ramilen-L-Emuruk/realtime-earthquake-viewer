@@ -5,12 +5,16 @@ import { describe, expect, it } from 'vitest'
 // （門が無ければ、このテストを走らせるたびに UDP の口が開く）。
 import {
   buildClosingLines,
+  buildGravityWarnings,
+  deliverReading,
   buildRawWarnings,
   buildWindowSummary,
   formatAt,
   readPort,
   windowSeconds,
 } from './main'
+import type { GravityVerdict } from './src/receiver/gravityCheck'
+import type { IntensityReading } from './src/receiver/intensityPipeline'
 import { PacketTally } from './src/receiver/packetTally'
 
 describe('formatAt', () => {
@@ -280,6 +284,7 @@ describe('buildClosingLines', () => {
     evictions: 0,
     unusableIntensities: 0,
     sensorEvictions: 0,
+    gravity: { mismatches: 0, unjudged: 0, restlessWindows: 0, restarts: 0, evictions: 0 },
     writeErrors: 0,
     lostRecords: 0,
     slowCloses: 0,
@@ -310,6 +315,46 @@ describe('buildClosingLines', () => {
     expect(buildClosingLines({ ...quiet, evictions: 1, sensorEvictions: 3 })).toEqual([
       { level: 'log', line: '  送信元の枠を捨てた=1' },
       { level: 'log', line: '  センサーの生存の枠を捨てた=3' },
+    ])
+  })
+
+  it('診断できなかった窓は、異常とは別の行で出す', () => {
+    // **混ぜると地震のたびに「換算が狂っている」数が跳ねる。** 揺れている間は判定を
+    // 見送る作りなので、見送った件数は正常な運用でも増える。
+    expect(
+      buildClosingLines({
+        ...quiet,
+        gravity: { ...quiet.gravity, mismatches: 2, restlessWindows: 1, unjudged: 9 },
+      }),
+    ).toEqual([
+      { level: 'log', line: '  換算の倍率が合わない窓=2' },
+      { level: 'log', line: '  静止しているのに震度が高い窓=1' },
+      { level: 'log', line: '  静止しておらず倍率を診られなかった窓=9' },
+    ])
+  })
+
+  it('自己診断の数え上げは、見出しの表の並びで全部出る', () => {
+    // **欄を手で並べない形にした。** 表（`GRAVITY_LABELS`）が見出しも並びも持つので、
+    // ここが崩れたら表の側が壊れている。**数を足して表へ書かなければ型検査が止める。**
+    expect(
+      buildClosingLines({
+        ...quiet,
+        gravity: { mismatches: 1, unjudged: 2, restlessWindows: 3, restarts: 4, evictions: 5 },
+      }),
+    ).toEqual([
+      { level: 'log', line: '  換算の倍率が合わない窓=1' },
+      { level: 'log', line: '  静止しているのに震度が高い窓=3' },
+      { level: 'log', line: '  静止しておらず倍率を診られなかった窓=2' },
+      { level: 'log', line: '  基板の起動が変わり、診断の窓を捨てた=4' },
+      { level: 'log', line: '  自己診断の枠を捨てた=5' },
+    ])
+  })
+
+  it('診断の窓を再起動で捨てた分は、判定できなかった窓とは別の行で出す', () => {
+    // **窓を閉じていないので `unjudgedWindows` には入らない。** 混ぜると、
+    // 「揺れていて見送った」と「そもそも診断が働いていない」が同じ数に紛れる。
+    expect(buildClosingLines({ ...quiet, gravity: { ...quiet.gravity, restarts: 4 } })).toEqual([
+      { level: 'log', line: '  基板の起動が変わり、診断の窓を捨てた=4' },
     ])
   })
 
@@ -386,5 +431,146 @@ describe('buildClosingLines', () => {
 
     expect(out[0]?.line.length).toBeLessThan(300)
     expect(out[0]?.line).toContain('…')
+  })
+})
+
+describe('buildGravityWarnings', () => {
+  const base: GravityVerdict = {
+    boardKey: 'mac:aa',
+    sensorId: 'i2c0-68',
+    streamKey: 'mac:aa|i2c0-68|boot1',
+    atMs: 1_700_000_000_000,
+    sampleCount: 2_984,
+    meanGal: 980.7,
+    sdGal: 1.5,
+    maxIntensity: 1.1,
+    scale: 'ok',
+    restless: false,
+  }
+
+  it('正常な窓では 1 行も出さない', () => {
+    expect(buildGravityWarnings(base)).toEqual([])
+  })
+
+  it('判定できなかった窓でも出さない', () => {
+    // **地震のたびに記録が流れることになる。** 見送ったこと自体は異常ではないので、
+    // 件数は要約に任せる。
+    expect(buildGravityWarnings({ ...base, scale: 'not-at-rest', sdGal: 42 })).toEqual([])
+    expect(buildGravityWarnings({ ...base, scale: 'too-few-samples', sampleCount: 12 })).toEqual([])
+  })
+
+  it('倍率が小さすぎるときは、名乗る分解能の桁を疑えと言う', () => {
+    const out = buildGravityWarnings({ ...base, scale: 'too-small', meanGal: 0.98 })
+
+    expect(out).toHaveLength(1)
+    expect(out[0].kind).toBe('gravity-scale')
+    expect(out[0].line).toContain('換算が小さすぎる')
+    expect(out[0].line).toContain('0.98')
+    expect(out[0].line).toContain('名乗る分解能の桁')
+  })
+
+  it('倍率が大きすぎるときは、フルスケールの申告も疑えと言う', () => {
+    // **ここへ来た時点でフルスケールの検査は通っている**（`galFromCounts` の上限）。
+    // つまり分解能とフルスケールがそろって大きく名乗られている。
+    const out = buildGravityWarnings({ ...base, scale: 'too-large', meanGal: 3922.7 })
+
+    expect(out[0].line).toContain('換算が大きすぎる')
+    expect(out[0].line).toContain('フルスケール')
+  })
+
+  it('読めない値が混ざったことも伝える', () => {
+    const out = buildGravityWarnings({
+      ...base,
+      scale: 'unreadable',
+      meanGal: null,
+      sdGal: null,
+    })
+
+    expect(out).toHaveLength(1)
+    // **区分は 3 つに分ける。** 枠は区分ごとに 64 個で、1 つに相乗りさせると
+    // センサーが増えたとき、あとから現れた異常が 1 行も出ないまま抑えられる。
+    expect(out[0].kind).toBe('gravity-unreadable')
+    expect(out[0].line).toContain('数値として読めない値')
+  })
+
+  it('静止しているのに震度が高いときは、平均引きを疑えと言う', () => {
+    const out = buildGravityWarnings({ ...base, restless: true, maxIntensity: 5.1 })
+
+    expect(out).toHaveLength(1)
+    expect(out[0].kind).toBe('gravity-restless')
+    expect(out[0].line).toContain('静止している')
+    expect(out[0].line).toContain('5.1')
+    expect(out[0].line).toContain('平均引き')
+  })
+
+  it('倍率と平均引きが同じ窓で立ったら、2 行を別の鍵で出す', () => {
+    // **1 行へ混ぜない。** 疑う先が違う（ヘッダの名乗りと、震度を出す側の配線）ので、
+    // まとめるとどちらを見に行けばよいか読み取れない。鍵を分けるのは、間引きが
+    // 片方を飲み込まないようにするため。
+    const out = buildGravityWarnings({
+      ...base,
+      scale: 'too-small',
+      meanGal: 0.98,
+      restless: true,
+      maxIntensity: 5.1,
+    })
+
+    expect(out).toHaveLength(2)
+    // **区分も鍵も分ける。** 区分ごとに 64 個の枠しかないので、1 つに相乗りさせると
+    // センサーが増えたとき、あとから現れた異常が 1 行も出ないまま抑えられる。
+    expect(new Set(out.map((w) => w.kind)).size).toBe(2)
+    expect(new Set(out.map((w) => w.detail)).size).toBe(2)
+  })
+})
+
+describe('deliverReading', () => {
+  const READING: IntensityReading = {
+    streamKey: 'mac:aa|i2c0-68|boot1',
+    segmentId: 1,
+    boardKey: 'mac:aa',
+    sensorId: 'i2c0-68',
+    atMs: 1_700_000_000_000,
+    intensity: 2.5,
+    timebaseNominalReason: null,
+    timebaseResidualRmsMs: 3.1,
+  }
+
+  it('数える → 覚える → 押し出す → 出す → 診る の順で配る', () => {
+    // **自己診断がいちばん最後。** 本筋（押し出しと標準出力）より手前に置くと、
+    // そこで投げたときにこの読みが画面にも購読者にも出ない。
+    // **この並びは `main()` の中に書くと誰も見ていないことになる** —— あそこは
+    // 「直接実行のときだけ走らせる」門の内側でテストが届かず、実際に 2 巡続けて
+    // 同じ形の指摘を受けた。
+    const order: string[] = []
+    const mark = (name: string) => () => {
+      order.push(name)
+    }
+
+    deliverReading(
+      {
+        count: mark('count'),
+        remember: mark('remember'),
+        publish: mark('publish'),
+        print: mark('print'),
+        diagnose: mark('diagnose'),
+      },
+      READING,
+    )
+
+    expect(order).toEqual(['count', 'remember', 'publish', 'print', 'diagnose'])
+  })
+
+  it('配る先へは同じ読みをそのまま渡す', () => {
+    const got: IntensityReading[] = []
+    const take = (r: IntensityReading) => {
+      got.push(r)
+    }
+
+    deliverReading(
+      { count: take, remember: take, publish: take, print: take, diagnose: take },
+      READING,
+    )
+
+    expect(got).toEqual([READING, READING, READING, READING, READING])
   })
 })
