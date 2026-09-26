@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { SegmentState } from '../timebase/segmenter'
+import type { GravityVerdict } from './gravityCheck'
 import { PacketTally } from './packetTally'
 import { ReadingHub } from './readingHub'
 import type { SensorHealth } from './sensorHealth'
@@ -9,6 +10,30 @@ import type { RawStoreStatus, StatusReportInput } from './statusReport'
 
 const NOW = 1_700_000_100_000
 const STARTED = 1_700_000_000_000
+
+/** 何も起きていない自己診断。 */
+const EMPTY_GRAVITY = {
+  verdicts: [],
+  mismatches: 0,
+  unjudged: 0,
+  restlessWindows: 0,
+  restarts: 0,
+  evictions: 0,
+} as const
+
+/** 倍率が 1000 分の 1 に狂った窓。**この帳面がいちばん捕まえたい形。** */
+const VERDICT: GravityVerdict = {
+  boardKey: 'mac:aa',
+  sensorId: 'i2c0-68',
+  streamKey: 'mac:aa|i2c0-68|boot1',
+  atMs: NOW,
+  sampleCount: 2_984,
+  meanGal: 0.980665,
+  sdGal: 0.0015,
+  maxIntensity: null,
+  scale: 'too-small',
+  restless: false,
+}
 
 const RAW_OK: RawStoreStatus = {
   writeErrors: 0,
@@ -85,6 +110,7 @@ function input(overrides: Partial<StatusReportInput> = {}): StatusReportInput {
     tally: tally.snapshotTotal(),
     sensors: [sensor()],
     sensorEvictions: 0,
+    gravity: EMPTY_GRAVITY,
     segments: [segment()],
     unusableIntensities: 0,
     raw: RAW_OK,
@@ -202,5 +228,38 @@ describe('buildStatusReport', () => {
     const report = buildStatusReport(input())
     expect(report.udp).toEqual({ address: '0.0.0.0', port: 50505 })
     expect(report.http).toEqual({ address: '0.0.0.0', port: 50506 })
+  })
+
+  it('換算の自己診断を、判定も累計もそのまま出す', () => {
+    // **数は全部出す。** `verdicts` はセンサーごとの直近 1 窓しか持たないので、
+    // 単発で起きて自分で直った異常（読めない値の混入など）は次の窓で消える ——
+    // **累計が無いと、起きたこと自体が状態の口から丸ごと落ちる**（記録の側には
+    // 残るが、それは見に来ない運用では届かない）。
+    const full = {
+      verdicts: [VERDICT],
+      mismatches: 3,
+      unjudged: 9,
+      restlessWindows: 1,
+      restarts: 4,
+      evictions: 2,
+    }
+
+    const report = buildStatusReport(input({ gravity: full }))
+
+    expect(report.gravity).toEqual(full)
+  })
+
+  it('診断した時刻が数値にならなければ null にして数える', () => {
+    // **時刻だけはここで確かめ直す。** 平均・ばらつき・震度は `gravityCheck.ts` の
+    // `settle` が有限を確かめてから渡すが、判定の時刻は素の時計の値をそのまま入れている。
+    const report = buildStatusReport(
+      input({ gravity: { ...EMPTY_GRAVITY, verdicts: [{ ...VERDICT, atMs: Number.NaN }] } }),
+    )
+
+    expect(report.gravity.verdicts[0].atMs).toBeNull()
+    expect(report.unreadableTimes).toBe(1)
+    // **時刻の欄が壊れても、残りは落とさない。** 判定そのものは読めている。
+    expect(report.gravity.verdicts[0].scale).toBe('too-small')
+    expect(report.gravity.verdicts[0].meanGal).toBe(VERDICT.meanGal)
   })
 })

@@ -8,11 +8,12 @@
 // あってテストが届かないので、出す条件をそこへ書くと**誰も見ていないことになる**
 // （4-2 の `buildWindowSummary` / `buildRawWarnings` と同じ分担）。
 //
-// **配る中身は 3 系統ある。** 数え上げ（`packetTally.ts`）だけを配ると
+// **配る中身は 4 系統ある。** 数え上げ（`packetTally.ts`）だけを配ると
 // **「生データが残っていない」ことがこの口から丸ごと落ちる** —— 保存の健全性は
-// 表の外にあり、区間の時間軸とセンサーの生存も別の場所が持っている。
+// 表の外にあり、区間の時間軸・センサーの生存・換算の自己診断も別の場所が持っている。
 
 import type { SegmentState } from '../timebase/segmenter'
+import type { GravityCheckSnapshot, GravityVerdict } from './gravityCheck'
 import type { TallySnapshot } from './packetTally'
 import type { HubSnapshot } from './readingHub'
 import type { SensorHealth } from './sensorHealth'
@@ -59,8 +60,29 @@ export interface StatusReportInput {
   readonly segments: readonly SegmentState[]
   /** 数として出せなかった計測震度を見た回数。**0 が正常。** */
   readonly unusableIntensities: number
+  /**
+   * 換算の自己診断。
+   *
+   * **帳面が返すものをそのまま受け取る。** 欄を 1 つずつ並べる形にすると、
+   * あちらへ数を足したときにここで渡し忘れる（`gravityCheck.ts` の `snapshot`）。
+   */
+  readonly gravity: GravityCheckSnapshot
   readonly raw: RawStoreStatus
   readonly hub: HubSnapshot
+}
+
+/**
+ * 診断 1 つぶん。**`GravityVerdict` と時刻の型だけが違う。**
+ *
+ * `SensorStatus` と同じ理由で、出せない時刻を `0` で埋めない。
+ */
+export interface GravityStatus extends Omit<GravityVerdict, 'atMs'> {
+  readonly atMs: number | null
+}
+
+/** 状態の口へ出す自己診断。**`GravityCheckSnapshot` と時刻の型だけが違う。** */
+export interface GravityCheckStatus extends Omit<GravityCheckSnapshot, 'verdicts'> {
+  readonly verdicts: readonly GravityStatus[]
 }
 
 /** 区間 1 つぶん。**時刻の根拠が崩れていないかを読む場所。** */
@@ -108,6 +130,18 @@ export interface StatusReport {
    * どちらの層で壊れたのかが読めなくなる。
    */
   readonly unusableIntensities: number
+  /**
+   * 換算の自己診断。**`verdicts` が「いまの姿」で、残りは起動してからの累計。**
+   *
+   * **`sensors` へ混ぜない。** あちらは「声が届いているか」、こちらは「届いている値の
+   * 換算が正しいか」で、問いが違う。混ぜると、黙ったセンサーを探す一覧に
+   * 「揺れていたので判定を見送った」という平常の状態が並ぶ。
+   *
+   * **`verdicts[].atMs` の古さを見ること。** 窓は波形が届いたときにしか閉じないので、
+   * 黙ったセンサーの診断はそのまま残る（黙ったこと自体は `sensors` が持つ）。
+   * 窓より短い間隔で再起動を繰り返すセンサーは**一覧に現れないまま** `restarts` だけが増える。
+   */
+  readonly gravity: GravityCheckStatus
   readonly tally: {
     readonly sources: Record<string, unknown>
     readonly boards: Record<string, unknown>
@@ -202,6 +236,14 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     lastIntensity: finiteValue(s.lastIntensity),
   }))
 
+  // **有限であることは `gravityCheck.ts` の `settle` が保証する** —— 平均・ばらつき・震度は
+  // あそこで確かめたうえで、読めなければ `null` と `'unreadable'` に倒れている。
+  // 確かめ直していないのは判定した時刻だけなので、そこだけ通す。
+  const gravity: GravityCheckStatus = {
+    ...input.gravity,
+    verdicts: input.gravity.verdicts.map((g) => ({ ...g, atMs: finite(g.atMs) })),
+  }
+
   const sources: Record<string, unknown> = {}
   for (const [k, v] of input.tally.sources) {
     sources[k] = countsToJson(v)
@@ -225,6 +267,7 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     sensorEvictions: input.sensorEvictions,
     segments,
     unusableIntensities: input.unusableIntensities,
+    gravity,
     tally: { sources, boards },
     raw: input.raw,
     stream: input.hub,

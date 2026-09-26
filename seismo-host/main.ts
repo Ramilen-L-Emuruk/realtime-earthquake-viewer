@@ -5,10 +5,11 @@
 // 押し出しの口（`GET /stream`）。後ろ 2 つは HTTP で、宛先が違う ——
 // 状態は**運用者**、押し出しは **PWA**（観測結果はビューアー、機材の管理はビューアーの外）。
 //
-// **状態の口へ配る中身は 3 系統ある** —— 数え上げ（`src/receiver/packetTally.ts`）・
+// **状態の口へ配る中身は 4 系統ある** —— 数え上げ（`src/receiver/packetTally.ts`）・
 // **保存の健全性**（`RawStore` の読み取り専用の値）・**センサーごとの生存**
-// （`src/receiver/sensorHealth.ts`）。数え上げだけを配ると「生データが残っていない」
-// ことも「9 個のうち 1 個が黙った」ことも、この口から丸ごと落ちる。
+// （`src/receiver/sensorHealth.ts`）・**換算の自己診断**（`src/receiver/gravityCheck.ts`）。
+// 数え上げだけを配ると「生データが残っていない」ことも「9 個のうち 1 個が黙った」ことも
+// 「届いている値の桁が狂っている」ことも、この口から丸ごと落ちる。
 //
 // **画面を持たない常駐プロセスなので、黙ったら誰も気づかない。** 受け取った結果
 // （`PacketOutcome`）のどの欄も読み捨てないこと —— 読み捨てた欄は、そこで起きた異常が
@@ -23,7 +24,10 @@
 //   SEISMO_UDP_PORT=50505 SEISMO_UDP_ADDRESS=0.0.0.0 npm run seismo-host
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
+import { GAL_PER_G } from './src/intensity/units'
 import { MAX_TIME_MS, parseSensorPacket } from './src/protocol/parsePacket'
+import { GravityCheckBook } from './src/receiver/gravityCheck'
+import type { GravityCount, GravityCounts, GravityVerdict } from './src/receiver/gravityCheck'
 import { IntensityPipeline } from './src/receiver/intensityPipeline'
 import type { CloseFailure, IntensityReading } from './src/receiver/intensityPipeline'
 import { LogThrottle, suppressedSuffix } from './src/receiver/logThrottle'
@@ -256,6 +260,162 @@ export function buildRawWarnings(input: RawWarningInput): readonly RawWarning[] 
   return out
 }
 
+/**
+ * gal を読みやすい桁へ。**有効数字をそろえる。**
+ *
+ * **小数点以下の桁数を固定しない。** この行がいちばん効くのは倍率が 1000 分の 1 に
+ * 狂った場面で、そこでの値は 0.98 gal —— 小数第 1 位で丸めると `1.0` になり、
+ * **桁を診るための行が桁を潰す**。
+ */
+function gal(v: number | null): string {
+  if (v === null) return '?'
+  const abs = Math.abs(v)
+  if (abs >= 100) return v.toFixed(0)
+  if (abs >= 10) return v.toFixed(1)
+  if (abs >= 1) return v.toFixed(2)
+  // 1 gal 未満。**`toPrecision` は指数が -7 に届くまで固定小数で返す**ので、
+  // ここへ来る値（1000 分の 1 で 0.98、100 万分の 1 でも 0.00098）は指数表記にならない。
+  return v.toPrecision(3)
+}
+
+/**
+ * 換算の自己診断から出す行を組み立てる。**正常なら 1 行も出さない。**
+ *
+ * **判定できなかった窓（揺れていた・サンプルが足りない）では黙る。** 地震のたびに
+ * 記録が流れることになるうえ、それ自体は異常ではない —— 件数は要約が持つ。
+ *
+ * **倍率と平均引きは別の行にする。** 同じ窓で両方立ちうるが、疑う先が違う
+ * （前者はヘッダの名乗り、後者は震度を出す側の配線）ので、1 行へ混ぜると
+ * どちらを見に行けばよいか読み取れない。
+ *
+ * **間引きの区分（`kind`）も 3 つに分ける。** 枠は区分ごとに 64 個で、ここは
+ * **1 つのセンサーが最大 3 つの鍵を使う**（他の区分は基板 1 つにつき 1 つ）。
+ * 1 つの区分を共有すると、センサーが 22 台を超えたあたりで枠を使い切り、
+ * **そのあとに現れた別のセンサーの初回の異常が 1 行も出ないまま抑えられる**
+ * （`src/receiver/logThrottle.ts` 自身がこの形を戒めている）。上の
+ * `buildRawWarnings` も種類ごとに区分を分けている。
+ */
+export function buildGravityWarnings(v: GravityVerdict): readonly RawWarning[] {
+  const out: RawWarning[] = []
+  const who = `${v.boardKey} ${v.sensorId}`
+  if (v.scale === 'too-small' || v.scale === 'too-large') {
+    const direction = v.scale === 'too-small' ? '小さすぎる' : '大きすぎる'
+    out.push({
+      level: 'warn',
+      kind: 'gravity-scale',
+      // **判定を鍵へ入れる。** 小さすぎるが大きすぎるへ転じたら出し直してほしい。
+      detail: `${who}|${v.scale}`,
+      line:
+        `[gravity] ${who} の換算が${direction}: 静止時の 3 軸合成が ${gal(v.meanGal)} gal`
+        + `（1 g = ${gal(GAL_PER_G)} gal のはず）。`
+        + `名乗る分解能${v.scale === 'too-large' ? 'とフルスケールの組' : ''}の桁を疑う`,
+    })
+  }
+  if (v.scale === 'unreadable') {
+    out.push({
+      level: 'warn',
+      kind: 'gravity-unreadable',
+      detail: who,
+      line: `[gravity] ${who} の波形に数値として読めない値が混ざっている（${v.sampleCount} 件の窓）`,
+    })
+  }
+  if (v.restless) {
+    out.push({
+      level: 'warn',
+      kind: 'gravity-restless',
+      detail: who,
+      line:
+        `[gravity] ${who} は静止している（ばらつき ${gal(v.sdGal)} gal）のに`
+        + ` 計測震度 ${v.maxIntensity ?? '?'} が出ている。窓ごとの平均引きを疑う`,
+    })
+  }
+  return out
+}
+
+/**
+ * 震度 1 つを配る先。**呼ぶ順番に意味があるので、束ねて 1 つの型にする。**
+ *
+ * `main()` の中に並べただけだと、**この順番を守るものが何も無い**（あそこは
+ * 「直接実行のときだけ走らせる」門の内側でテストが届かない）。実際この並びは
+ * レビューで 2 巡続けて指摘された論点そのもので、直しても**戻されたことに
+ * 気づく手立てが無かった**。
+ */
+export interface ReadingSinks {
+  /** 数える。 */
+  readonly count: (r: IntensityReading) => void
+  /** センサーの生存として覚える。 */
+  readonly remember: (r: IntensityReading) => void
+  /** 押し出しの口へ流す。 */
+  readonly publish: (r: IntensityReading) => void
+  /** 標準出力へ出す。 */
+  readonly print: (r: IntensityReading) => void
+  /** 換算の自己診断へ渡す。 */
+  readonly diagnose: (r: IntensityReading) => void
+}
+
+/**
+ * 震度を 1 つ配る。**数える・覚える・押し出す・出す・診る をこの順で。**
+ *
+ * **診断はいちばん最後。** あれは補助の仕組みで、本筋（押し出しと標準出力）より
+ * 手前に置くと、そこで投げたときに**この読み自身が画面にも購読者にも出ない**。
+ * 受け手（`udpReceiver.ts`）はデータグラムの処理を丸ごと囲うだけなので、途中で
+ * 投げれば以降は実行されない。
+ *
+ * **同じ配列の後続の読みまでは守れていない** —— この関数を繰り返し呼ぶのは
+ * 呼び出し側で、そこで投げれば残りは止まる。守れているのは「この読み自身は
+ * 必ず出る」まで。
+ *
+ * **いまこの穴が開くことはない** —— `gravityCheck.ts` の `noteIntensity` は
+ * `Map` の参照と数の比較だけで投げる経路を持たない。この並びは**あとから検証や
+ * 読み取りを足したときに備えたもの**で、現に起きている不具合の手当てではない。
+ */
+export function deliverReading(to: ReadingSinks, r: IntensityReading): void {
+  to.count(r)
+  to.remember(r)
+  to.publish(r)
+  to.print(r)
+  to.diagnose(r)
+}
+
+/**
+ * 自己診断の数え上げに付ける見出し。**毎分の要約も終了時の締めくくりもここから引く。**
+ *
+ * **`Record<GravityCount, string>` にしてあるので、数え上げを足して**
+ * **ここへ書かなければ型検査が止める。** この機能は「数を足したのに出す先の 1 つへ
+ * 書き忘れる」を 4 巡続けた —— 同じ名前を要約と締めくくりで別々に書き写していたのが根で、
+ * 表を 1 つにすれば書き写す場所そのものが無くなる。
+ *
+ * **並び順もここが決める。** 異常（0 が正常なもの）を先に、平常でも増えるものを後ろへ。
+ */
+const GRAVITY_LABELS: Record<GravityCount, string> = {
+  mismatches: '換算の倍率が合わない窓',
+  restlessWindows: '静止しているのに震度が高い窓',
+  unjudged: '静止しておらず倍率を診られなかった窓',
+  restarts: '基板の起動が変わり、診断の窓を捨てた',
+  evictions: '自己診断の枠を捨てた',
+}
+
+/** 自己診断の数え上げ 1 つぶん。 */
+export interface GravityCountEntry {
+  readonly key: GravityCount
+  readonly label: string
+  readonly value: number
+}
+
+/**
+ * 自己診断の数え上げを、見出しを添えて並べる。
+ *
+ * **要約と締めくくりが同じものを通る。** 片方だけに欄を足す形をやめるための口で、
+ * 並びも件数も `GRAVITY_LABELS` が決める。
+ */
+export function gravityCountEntries(counts: GravityCounts): readonly GravityCountEntry[] {
+  return (Object.keys(GRAVITY_LABELS) as GravityCount[]).map((key) => ({
+    key,
+    label: GRAVITY_LABELS[key],
+    value: counts[key],
+  }))
+}
+
 /** 締めくくりで出す 1 行。 */
 export interface ClosingLine {
   readonly level: 'log' | 'error'
@@ -283,6 +443,14 @@ export interface ClosingLinesInput {
    * 監視の劣化が監視対象の異常と同じ数に紛れる。
    */
   readonly sensorEvictions: number
+  /**
+   * 換算の自己診断の数え上げ。**帳面が返すものをそのまま受け取る。**
+   *
+   * 欄を 1 つずつ並べる形にすると、あちらへ数を足したときにここで渡し忘れる
+   * （`src/receiver/gravityCheck.ts` の `GravityCount`）。見出しと並びは
+   * `GRAVITY_LABELS` が持つ。
+   */
+  readonly gravity: GravityCounts
   readonly writeErrors: number
   readonly lostRecords: number
   readonly slowCloses: number
@@ -328,6 +496,7 @@ export function buildClosingLines(input: ClosingLinesInput): readonly ClosingLin
     { label: '送信元の枠を捨てた', value: input.evictions },
     { label: '数として出せなかった計測震度', value: input.unusableIntensities },
     { label: 'センサーの生存の枠を捨てた', value: input.sensorEvictions },
+    ...gravityCountEntries(input.gravity),
     { label: '生データを残せず流し口が壊れた', value: input.writeErrors },
     { label: '生データを書き損ねた', value: input.lostRecords },
     { label: '生データの締めくくりが遅い', value: input.slowCloses },
@@ -424,6 +593,7 @@ async function main(): Promise<void> {
   const throttle = new LogThrottle()
   const hub = new ReadingHub()
   const health = new SensorHealthBook()
+  const gravity = new GravityCheckBook()
   // **作れなければここで落ちる。** 黙って保存せずに走るのがいちばん悪い ——
   // 基板は送っていて震度も出ていて、生だけが残っていない状態に外から気づけない。
   const rawStore = new RawStore({ dir: process.env.SEISMO_RAW_DIR ?? defaultRawDir() })
@@ -449,25 +619,37 @@ async function main(): Promise<void> {
   }
 
   /**
-   * 震度を 1 つ出す。**数える・覚える・押し出す・書く をここにまとめる。**
+   * 震度 1 つの配り先。**ここは繋ぎ先を並べるだけで、順番は `deliverReading` が持つ。**
    *
    * 呼ぶのは 2 箇所（受信の最中と、終了の締めくくり）。**別々に書くと片方だけ抜ける** ——
    * 抜けたほうは「最後の窓ぶんが押し出されない」という、記録にも残らない形で出る。
    */
-  const emitReading = (r: IntensityReading): void => {
-    tally.record({ kind: 'reading', board: r.boardKey })
-    health.noteReading({
-      boardKey: r.boardKey,
-      sensorId: r.sensorId,
-      streamKey: r.streamKey,
-      segmentId: r.segmentId,
-      atMs: r.atMs,
-      intensity: r.intensity,
-      timebaseNominalReason: r.timebaseNominalReason,
-    })
-    hub.publish({ kind: 'reading', reading: r })
-    printReading(r)
+  const sinks: ReadingSinks = {
+    count: (r) => tally.record({ kind: 'reading', board: r.boardKey }),
+    remember: (r) =>
+      health.noteReading({
+        boardKey: r.boardKey,
+        sensorId: r.sensorId,
+        streamKey: r.streamKey,
+        segmentId: r.segmentId,
+        atMs: r.atMs,
+        intensity: r.intensity,
+        timebaseNominalReason: r.timebaseNominalReason,
+      }),
+    publish: (r) => hub.publish({ kind: 'reading', reading: r }),
+    print: printReading,
+    // 揺れていないのに高い震度が出続けるなら、疑うのは換算ではなく震度を出す側の
+    // 配線（窓ごとの平均引き）。
+    diagnose: (r) =>
+      gravity.noteIntensity({
+        boardKey: r.boardKey,
+        sensorId: r.sensorId,
+        streamKey: r.streamKey,
+        intensity: r.intensity,
+      }),
   }
+
+  const emitReading = (r: IntensityReading): void => deliverReading(sinks, r)
 
   const reportCloseFailures = (failures: readonly CloseFailure[]): void => {
     for (const f of failures) {
@@ -613,6 +795,25 @@ async function main(): Promise<void> {
       }
       reportCloseFailures(outcome.closeFailures)
       for (const r of outcome.readings) emitReading(r)
+
+      // **自己診断は本筋を出し切ってから。** このデータグラムの受け手は例外を囲わない
+      // 方針（段 4-1）なので、ここで投げると**そのパケットが運んできた計測震度ごと**
+      // 落ちる —— しかも残るのは `[udp] …` という汎用の 1 行だけで、震度が消えたことも
+      // 診断が原因だということもどこにも出ない。**補助の仕組みを本筋の手前に置かない。**
+      //
+      // 渡すのは押し出すのと同じ配列。生のカウントからここで換算し直すと経路が 2 本になり、
+      // **診断したい当の換算を迂回する**ことになる。
+      if (outcome.wave !== null) {
+        const verdict = gravity.noteWave({
+          boardKey: outcome.wave.boardKey,
+          sensorId: outcome.wave.sensorId,
+          streamKey: outcome.wave.streamKey,
+          gal: outcome.wave.gal,
+        })
+        if (verdict !== null) {
+          for (const w of buildGravityWarnings(verdict)) emit(w.level, w.kind, w.detail, w.line)
+        }
+      }
     },
   })
 
@@ -635,6 +836,7 @@ async function main(): Promise<void> {
         tally: tally.snapshotTotal(),
         sensors: health.snapshot(),
         sensorEvictions: health.evictions,
+        gravity: gravity.snapshot(),
         segments: pipeline.openSegments(),
         unusableIntensities: pipeline.unusableIntensities,
         // **`RawStore` の欄をここで書き写す。** 表の外にある値なので、
@@ -692,6 +894,13 @@ async function main(): Promise<void> {
   const summarize = (): void => {
     // **名前ではなく鍵で引く。** 文面と照合していると、表記を片方だけ直したとき
     // 理由の行が静かに出なくなる（型検査もテストも通ったまま）。
+    // **診断の結果も要約へ出す。** 1 件ずつの行は間引きを通るので、撃たれている間に
+    // 抑えられうる。**欄は手で並べない** —— 見出しも並びも `GRAVITY_LABELS` が持ち、
+    // 数を足せば黙って付いてくる（この機能は書き写す形で 4 巡続けて書き忘れた）。
+    const diag = gravity.snapshot()
+    const gravityCounters = gravityCountEntries(diag).map((e) =>
+      delta(`gravity:${e.key}`, e.label, e.value),
+    )
     const counters = {
       evicted: delta('evicted', '送信元の枠を捨てた', rateLimit.evictions),
       // **状態の口へ出すだけでは足りない。** ここは画面を持たない常駐プロセスで、
@@ -724,7 +933,7 @@ async function main(): Promise<void> {
     const summary = buildWindowSummary({
       windowSec: elapsedSec,
       window: tally.takeWindow(),
-      counters: Object.values(counters),
+      counters: [...Object.values(counters), ...gravityCounters],
       quietReported,
     })
     quietReported = summary.quietReported
@@ -795,10 +1004,12 @@ async function main(): Promise<void> {
     for (const line of formatTally(tally.snapshotTotal())) console.log(`  ${line}`)
     // **中身は純関数が持つ。** ここは終了の合図でしか走らないので、条件を直に書くと
     // 誰も見ていないことになる（この環境では実機でも確かめられない）。
+    const lastDiag = gravity.snapshot()
     for (const c of buildClosingLines({
       evictions: rateLimit.evictions,
       unusableIntensities: pipeline.unusableIntensities,
       sensorEvictions: health.evictions,
+      gravity: lastDiag,
       writeErrors: rawStore.writeErrors,
       lostRecords: rawStore.lostRecords,
       slowCloses: rawStore.slowCloses,
