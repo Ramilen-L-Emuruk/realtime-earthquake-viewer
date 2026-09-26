@@ -5,6 +5,7 @@ import type { GravityVerdict } from './gravityCheck'
 import { PacketTally } from './packetTally'
 import { ReadingHub } from './readingHub'
 import type { SensorHealth } from './sensorHealth'
+import { StationDirectory } from './stationConfig'
 import { buildStatusReport } from './statusReport'
 import type { RawStoreStatus, StatusReportInput } from './statusReport'
 
@@ -115,6 +116,8 @@ function input(overrides: Partial<StatusReportInput> = {}): StatusReportInput {
     unusableIntensities: 0,
     raw: RAW_OK,
     hub: new ReadingHub().snapshot(),
+    stations: StationDirectory.empty(),
+    stationConfigWarning: null,
     ...overrides,
   }
 }
@@ -204,6 +207,35 @@ describe('buildStatusReport', () => {
     )
 
     expect(report.sensors[0].lastSkipReason).toBe('axis-count')
+  })
+
+  it('正: 設定にある基板は、観測点を出す', () => {
+    const stations = new StationDirectory({
+      stations: [{ boardKey: 'mac:aa', stationId: 'study', displayName: '書斎' }],
+    })
+    const report = buildStatusReport(input({ stations }))
+
+    expect(report.sensors[0].station).toEqual({ stationId: 'study', displayName: '書斎' })
+  })
+
+  it('対照: 設定に無い基板は未割当（null）のまま出す', () => {
+    const report = buildStatusReport(input({ stations: StationDirectory.empty() }))
+
+    expect(report.sensors[0].station).toBeNull()
+  })
+
+  it('正: 観測点設定の読み込み警告を、標準出力だけでなく状態の口にも出す', () => {
+    const report = buildStatusReport(
+      input({ stationConfigWarning: 'stations[0].boardKey が不正: "study"' }),
+    )
+
+    expect(report.stationConfigWarning).toBe('stations[0].boardKey が不正: "study"')
+  })
+
+  it('対照: 読み込みが正常なら警告は null のまま', () => {
+    const report = buildStatusReport(input())
+
+    expect(report.stationConfigWarning).toBeNull()
   })
 
   it('稼働の長さを秒で出し、時計が跳ねても負にしない', () => {

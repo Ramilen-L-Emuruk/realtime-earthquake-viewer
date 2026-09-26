@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { IntensityReading, WaveChunk } from './intensityPipeline'
 import { PacketTally } from './packetTally'
 import { ReadingHub } from './readingHub'
+import { StationDirectory } from './stationConfig'
 import { buildStatusReport } from './statusReport'
 import type { RawStoreStatus, StatusReport } from './statusReport'
 import { startStatusServer } from './statusServer'
@@ -47,6 +48,8 @@ function report(hub: ReadingHub): StatusReport {
     unusableIntensities: 0,
     raw: RAW,
     hub: hub.snapshot(),
+    stations: StationDirectory.empty(),
+    stationConfigWarning: null,
   })
 }
 

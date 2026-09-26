@@ -1,0 +1,5 @@
+{
+  "stations": [
+    { "boardKey": "mac:020000000003", "stationId": "study", "displayName": "書斎" }
+  ]
+}
