@@ -1,11 +1,14 @@
 // 自作センサーの受け手。UDP で待ち受け、届いたパケットを段 1〜3 へ通して
 // 計測震度相当を出す常駐プロセス。
 //
-// **いまの出口は標準出力と生データのファイル。** 状態の口（JSON と SSE）は 4-4 が受け持つ。
-// **配る中身は 2 つある** —— 数え上げ（`src/receiver/packetTally.ts` の `snapshotTotal()`）と、
-// **保存の健全性**（`RawStore` の `writeErrors` / `lostRecords` / `compressed` /
-// `compressFailures` / `leftovers` / `openFiles`）。後者は表の外にあるので、
-// 前者だけを配ると「生データが残っていない」ことが状態の口から丸ごと落ちる。
+// **出口は 4 つ。** 標準出力・生データのファイル・状態の口（`GET /status`）・
+// 押し出しの口（`GET /stream`）。後ろ 2 つは HTTP で、宛先が違う ——
+// 状態は**運用者**、押し出しは **PWA**（観測結果はビューアー、機材の管理はビューアーの外）。
+//
+// **状態の口へ配る中身は 3 系統ある** —— 数え上げ（`src/receiver/packetTally.ts`）・
+// **保存の健全性**（`RawStore` の読み取り専用の値）・**センサーごとの生存**
+// （`src/receiver/sensorHealth.ts`）。数え上げだけを配ると「生データが残っていない」
+// ことも「9 個のうち 1 個が黙った」ことも、この口から丸ごと落ちる。
 //
 // **画面を持たない常駐プロセスなので、黙ったら誰も気づかない。** 受け取った結果
 // （`PacketOutcome`）のどの欄も読み捨てないこと —— 読み捨てた欄は、そこで起きた異常が
@@ -27,6 +30,10 @@ import { LogThrottle, suppressedSuffix } from './src/receiver/logThrottle'
 import { PacketTally, formatTally } from './src/receiver/packetTally'
 import type { TallySnapshot } from './src/receiver/packetTally'
 import { RawStore } from './src/receiver/rawStore'
+import { ReadingHub } from './src/receiver/readingHub'
+import { SensorHealthBook } from './src/receiver/sensorHealth'
+import { buildStatusReport } from './src/receiver/statusReport'
+import { startStatusServer } from './src/receiver/statusServer'
 import { SourceRateLimit } from './src/receiver/sourceRateLimit'
 import { startUdpReceiver } from './src/receiver/udpReceiver'
 import type { DatagramSource } from './src/receiver/udpReceiver'
@@ -34,6 +41,9 @@ import { streamKeyOf } from './src/timebase/segmenter'
 
 /** 記録係の原型（`capture.mjs`）と同じ口。基板の送り先もこの値。 */
 const DEFAULT_PORT = 50505
+
+/** 状態と押し出しの口。**受信口の隣。** */
+const DEFAULT_HTTP_PORT = 50506
 
 /** 読めなかった中身を記録へ出す長さ。**全部は出さない** —— 1 行が読めなくなる。 */
 const DETAIL_CHARS = 120
@@ -59,15 +69,19 @@ function defaultRawDir(): string {
  */
 const DECIMAL_PORT_RE = /^\d{1,5}$/
 
-export function readPort(raw: string | undefined): number {
-  if (raw === undefined || raw === '') return DEFAULT_PORT
+export function readPort(
+  raw: string | undefined,
+  fallback: number = DEFAULT_PORT,
+  name = 'SEISMO_UDP_PORT',
+): number {
+  if (raw === undefined || raw === '') return fallback
   // **黙って既定へ倒さない。** 打ち間違えたまま「別のポートで動いている」状態は、
   // 基板からの送信が届かない理由として画面にも記録にも現れない。
   if (!DECIMAL_PORT_RE.test(raw)) {
-    throw new Error(`SEISMO_UDP_PORT が port 番号として読めない: ${raw}`)
+    throw new Error(`${name} が port 番号として読めない: ${raw}`)
   }
   const port = Number(raw)
-  if (port > 65535) throw new Error(`SEISMO_UDP_PORT が port 番号の範囲を超えている: ${raw}`)
+  if (port > 65535) throw new Error(`${name} が port 番号の範囲を超えている: ${raw}`)
   return port
 }
 
@@ -251,6 +265,24 @@ export interface ClosingLine {
 export interface ClosingLinesInput {
   /** 送信元の枠を捨てた回数。 */
   readonly evictions: number
+  /**
+   * 数として出せず落とした計測震度の数。
+   *
+   * **0 のままなのが正常。** 上流が非有限を先に弾いているので、ここが増えるのは
+   * その境界が緩んだ合図（`src/receiver/intensityPipeline.ts` の `normalizeIntensity`）。
+   * **状態の口にも出るが、そちらは見に来た人にしか届かない** —— HTTP の口を開いて
+   * いない運用では、締めくくりのこの 1 行だけが気づく機会になる。
+   */
+  readonly unusableIntensities: number
+  /**
+   * センサーの生存の記録を、枠の上限で押し出した数。
+   *
+   * **送信元の枠（`evictions`）とは別に出す。** あちらは「速すぎる送り手を捨てた」で、
+   * こちらは「見ているセンサーが多すぎて古いものを忘れた」—— 忘れた先が
+   * **黙ったセンサーを見つけるための仕組みそのもの**なので、混ぜると
+   * 監視の劣化が監視対象の異常と同じ数に紛れる。
+   */
+  readonly sensorEvictions: number
   readonly writeErrors: number
   readonly lostRecords: number
   readonly slowCloses: number
@@ -294,6 +326,8 @@ export function buildClosingLines(input: ClosingLinesInput): readonly ClosingLin
   const out: ClosingLine[] = []
   for (const c of [
     { label: '送信元の枠を捨てた', value: input.evictions },
+    { label: '数として出せなかった計測震度', value: input.unusableIntensities },
+    { label: 'センサーの生存の枠を捨てた', value: input.sensorEvictions },
     { label: '生データを残せず流し口が壊れた', value: input.writeErrors },
     { label: '生データを書き損ねた', value: input.lostRecords },
     { label: '生データの締めくくりが遅い', value: input.slowCloses },
@@ -379,12 +413,17 @@ export function buildWindowSummary(input: WindowSummaryInput): WindowSummary {
 }
 
 async function main(): Promise<void> {
+  const startedAtMs = Date.now()
   const port = readPort(process.env.SEISMO_UDP_PORT)
   const address = process.env.SEISMO_UDP_ADDRESS
+  const httpPort = readPort(process.env.SEISMO_HTTP_PORT, DEFAULT_HTTP_PORT, 'SEISMO_HTTP_PORT')
+  const httpAddress = process.env.SEISMO_HTTP_ADDRESS
   const pipeline = new IntensityPipeline()
   const tally = new PacketTally()
   const rateLimit = new SourceRateLimit()
   const throttle = new LogThrottle()
+  const hub = new ReadingHub()
+  const health = new SensorHealthBook()
   // **作れなければここで落ちる。** 黙って保存せずに走るのがいちばん悪い ——
   // 基板は送っていて震度も出ていて、生だけが残っていない状態に外から気づけない。
   const rawStore = new RawStore({ dir: process.env.SEISMO_RAW_DIR ?? defaultRawDir() })
@@ -407,6 +446,27 @@ async function main(): Promise<void> {
     if (level === 'error') console.error(text)
     else if (level === 'warn') console.warn(text)
     else console.log(text)
+  }
+
+  /**
+   * 震度を 1 つ出す。**数える・覚える・押し出す・書く をここにまとめる。**
+   *
+   * 呼ぶのは 2 箇所（受信の最中と、終了の締めくくり）。**別々に書くと片方だけ抜ける** ——
+   * 抜けたほうは「最後の窓ぶんが押し出されない」という、記録にも残らない形で出る。
+   */
+  const emitReading = (r: IntensityReading): void => {
+    tally.record({ kind: 'reading', board: r.boardKey })
+    health.noteReading({
+      boardKey: r.boardKey,
+      sensorId: r.sensorId,
+      streamKey: r.streamKey,
+      segmentId: r.segmentId,
+      atMs: r.atMs,
+      intensity: r.intensity,
+      timebaseNominalReason: r.timebaseNominalReason,
+    })
+    hub.publish({ kind: 'reading', reading: r })
+    printReading(r)
   }
 
   const reportCloseFailures = (failures: readonly CloseFailure[]): void => {
@@ -485,7 +545,14 @@ async function main(): Promise<void> {
 
       const board = read.packet.boardKey
       tally.record({ kind: 'accepted', board })
+      // **誰の声かが判るのはここから。** 読み取りに失敗した回は基板が判らないので覚えない。
+      const current = streamKeyOf(read.packet)
+      health.notePacket({ boardKey: board, sensorId: read.packet.sensorId, streamKey: current })
       const outcome = pipeline.handlePacket(read.packet)
+
+      // **波形は震度より先に押し出す。** 計測震度は窓の都合で 2 秒遅れて出るので、
+      // 順を入れ替えると受け手の画面で波形だけが遅れて見える。
+      if (outcome.wave !== null) hub.publish({ kind: 'wave', wave: outcome.wave })
 
       if (outcome.dropped !== null) {
         tally.record({ kind: 'dropped', board, reason: outcome.dropped })
@@ -500,12 +567,26 @@ async function main(): Promise<void> {
       if (outcome.startedBecause !== null) {
         tally.record({ kind: 'segment-started', board, reason: outcome.startedBecause })
         if (outcome.intensitySkipped !== null) {
-          tally.record({ kind: 'intensity-skipped', board, reason: outcome.intensitySkipped })
+          const skipped = outcome.intensitySkipped
+          tally.record({ kind: 'intensity-skipped', board, reason: skipped.reason })
+          // **理由をセンサーごとに覚える。** この値が返るのは区間が始まった回だけで、
+          // 記録の行を見逃すと「パケットは届くのに震度が出ない」理由が二度と分からない。
+          //
+          // **どの区間で立った理由かも渡す。** 下の `outcome.readings` には
+          // 畳み直した旧区間の締めくくりが入ることがあり、渡さないとそちらが
+          // 「震度が出た」として理由を消してしまう（`sensorHealth.ts` の `noteReading`）。
+          health.noteSkip({
+            boardKey: board,
+            sensorId: read.packet.sensorId,
+            reason: skipped.reason,
+            streamKey: skipped.streamKey,
+            segmentId: skipped.segmentId,
+          })
         }
         const skip =
           outcome.intensitySkipped === null
             ? ''
-            : `（震度なし: ${outcome.intensitySkipped}${
+            : `（震度なし: ${outcome.intensitySkipped.reason}${
               outcome.detail === null ? '' : ` — ${shorten(outcome.detail)}`
             }）`
         emit(
@@ -520,7 +601,6 @@ async function main(): Promise<void> {
       // 上限があり、達すると**いちばん長く音沙汰の無い流れ**が閉じられる。版 2 のファームは
       // 再起動のたびに別の流れとして現れるので、枠は黙って埋まっていく。報せないと
       // 「あの基板の震度が急に出なくなった」理由がどこにも残らない。
-      const current = streamKeyOf(read.packet)
       for (const c of outcome.closed) {
         if (c.meta.streamKey === current) continue
         tally.record({ kind: 'evicted', board: c.meta.boardKey })
@@ -532,14 +612,58 @@ async function main(): Promise<void> {
         )
       }
       reportCloseFailures(outcome.closeFailures)
-      for (const r of outcome.readings) {
-        tally.record({ kind: 'reading', board: r.boardKey })
-        printReading(r)
-      }
+      for (const r of outcome.readings) emitReading(r)
     },
   })
 
   console.log(`[udp] ${address ?? '0.0.0.0'}:${receiver.port} で待ち受け中`)
+
+  // **開けなければ落ちる。** 受信だけ生きていて状態も押し出しも届かない状態は、
+  // 外から見ると「基板が黙っている」のと見分けが付かない。
+  const statusServer = await startStatusServer({
+    port: httpPort,
+    address: httpAddress,
+    hub,
+    // **呼ばれた時点で組み立てる。** 溜め込んだものを返すと、見に来た人が
+    // 「いつの様子か」を自分で確かめられない。
+    status: () =>
+      buildStatusReport({
+        nowMs: Date.now(),
+        startedAtMs,
+        udp: { address: address ?? '0.0.0.0', port: receiver.port },
+        http: { address: httpAddress ?? '0.0.0.0', port: statusServer.port },
+        tally: tally.snapshotTotal(),
+        sensors: health.snapshot(),
+        sensorEvictions: health.evictions,
+        segments: pipeline.openSegments(),
+        unusableIntensities: pipeline.unusableIntensities,
+        // **`RawStore` の欄をここで書き写す。** 表の外にある値なので、
+        // 足したときにここへ反映し忘れると状態の口からだけ静かに落ちる。
+        raw: {
+          writeErrors: rawStore.writeErrors,
+          lostRecords: rawStore.lostRecords,
+          slowCloses: rawStore.slowCloses,
+          compressed: rawStore.compressed,
+          compressFailures: rawStore.compressFailures,
+          leftovers: rawStore.leftovers,
+          listFailures: rawStore.listFailures,
+          escaped: rawStore.escaped,
+          openFiles: rawStore.openFiles,
+          stuckBooks: rawStore.stuckBooks,
+          recordsAtRisk: rawStore.recordsAtRisk,
+          cutShort: rawStore.cutShort,
+          currentDay: rawStore.currentDay,
+          lastWriteError: rawStore.lastWriteError,
+          lastSweepError: rawStore.lastSweepError,
+        },
+        hub: hub.snapshot(),
+      }),
+    log: emit,
+  })
+  console.log(
+    `[http] ${httpAddress ?? '0.0.0.0'}:${statusServer.port} で待ち受け中`
+    + '（/status は状態・/stream は震度の押し出し。?wave=1 で波形も）',
+  )
 
   // **起動時にも掃き取る。** 回転は日が変わったときにしか走らないので、
   // これが無いと止まっていた間に古くなった分が素のまま残り続ける。
@@ -570,6 +694,21 @@ async function main(): Promise<void> {
     // 理由の行が静かに出なくなる（型検査もテストも通ったまま）。
     const counters = {
       evicted: delta('evicted', '送信元の枠を捨てた', rateLimit.evictions),
+      // **状態の口へ出すだけでは足りない。** ここは画面を持たない常駐プロセスで、
+      // `/status` は見に来た人にしか届かない。この 3 つは**それ以外に声を持たない** ——
+      // 押し出しの切断（詰まり・壊れた）は `onDetach` が 1 行ずつ出し、生データ系は
+      // 下の行が拾っているが、こちらは要約から漏れると再起動まで誰も気づけない。
+      unusableIntensity: delta(
+        'unusableIntensity',
+        '数として出せなかった計測震度',
+        pipeline.unusableIntensities,
+      ),
+      sensorEvicted: delta('sensorEvicted', 'センサーの生存の枠を捨てた', health.evictions),
+      sseNotifyFailed: delta(
+        'sseNotifyFailed',
+        '押し出しを切ったことを報せられず',
+        hub.snapshot().notifyFailed,
+      ),
       sinkBroken: delta('sinkBroken', '生データを残せず流し口が壊れた', rawStore.writeErrors),
       lost: delta('lost', '生データを書き損ねた', rawStore.lostRecords),
       slowClose: delta('slowClose', '生データの締めくくりが遅い', rawStore.slowCloses),
@@ -636,12 +775,18 @@ async function main(): Promise<void> {
     try {
       const rest = pipeline.closeAll()
       reportCloseFailures(rest.failures)
-      for (const r of rest.readings) {
-        tally.record({ kind: 'reading', board: r.boardKey })
-        printReading(r)
-      }
+      for (const r of rest.readings) emitReading(r)
     } catch (error) {
       console.error(`[close] 締めくくりに失敗: ${messageOf(error)}`)
+    }
+
+    // **状態の口は震度を出し切ってから閉じる。** 先に閉じると、最後の窓ぶんの答えが
+    // 購読者へ届かない（押し出しを先に切らないと `server.close()` が返らないので、
+    // 閉じる中で順序は守られる）。**ここで投げさせない** —— 終了に到達しなくなる。
+    try {
+      await statusServer.close()
+    } catch (error) {
+      console.error(`[http] 状態の口の締めに失敗: ${messageOf(error)}`)
     }
 
     // **累計は最後に必ず出す。** ここを囲いの中へ入れると、締めくくりが投げたときに
@@ -652,6 +797,8 @@ async function main(): Promise<void> {
     // 誰も見ていないことになる（この環境では実機でも確かめられない）。
     for (const c of buildClosingLines({
       evictions: rateLimit.evictions,
+      unusableIntensities: pipeline.unusableIntensities,
+      sensorEvictions: health.evictions,
       writeErrors: rawStore.writeErrors,
       lostRecords: rawStore.lostRecords,
       slowCloses: rawStore.slowCloses,

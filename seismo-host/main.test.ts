@@ -278,6 +278,8 @@ describe('buildRawWarnings', () => {
 describe('buildClosingLines', () => {
   const quiet = {
     evictions: 0,
+    unusableIntensities: 0,
+    sensorEvictions: 0,
     writeErrors: 0,
     lostRecords: 0,
     slowCloses: 0,
@@ -293,6 +295,23 @@ describe('buildClosingLines', () => {
     lastWriteError: null,
     lastSweepError: null,
   } as const
+
+  it('数として出せなかった計測震度があれば件数を出す', () => {
+    // **0 のままなのが正常な数。** 行そのものを固定しておかないと、並びやラベルを
+    // 書き換えたときに「上流の境界が緩んだ合図」が静かに出なくなる。
+    expect(buildClosingLines({ ...quiet, unusableIntensities: 2 })).toEqual([
+      { level: 'log', line: '  数として出せなかった計測震度=2' },
+    ])
+  })
+
+  it('センサーの生存の枠を捨てた分は、送信元の枠とは別の行で出す', () => {
+    // 混ぜると、**黙ったセンサーを見つける仕組み自身の劣化**が
+    // 「速すぎる送り手を捨てた」と同じ数に紛れる。
+    expect(buildClosingLines({ ...quiet, evictions: 1, sensorEvictions: 3 })).toEqual([
+      { level: 'log', line: '  送信元の枠を捨てた=1' },
+      { level: 'log', line: '  センサーの生存の枠を捨てた=3' },
+    ])
+  })
 
   it('何も起きていない締めくくりでは 1 行も足さない', () => {
     // 起きなかったことを毎回並べると、起きたことが埋もれる。
