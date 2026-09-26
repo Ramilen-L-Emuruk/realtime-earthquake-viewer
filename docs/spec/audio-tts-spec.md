@@ -23,7 +23,8 @@
 ## 2. 通知音（`alertSound`）
 
 `src/utils/alertSound.ts`。Web Audio API の `OscillatorNode` + `GainNode` +
-`BiquadFilterNode`（マリンバのみ）で種別ごとの音を合成する。事前録音ファイルは持たない。
+`BiquadFilterNode`（マリンバ・震度更新音の `warningBeep` のみ）で種別ごとの音を合成する。
+事前録音ファイルは持たない。
 
 減衰する音は `decayTone()` を通す。**指数減衰は 0 に到達できないため 0.001 まで落として
 から 0 へ落とし切って停止する。** 0.001 のまま停止すると段差が残り、無音区間にティックが
