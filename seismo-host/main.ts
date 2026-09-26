@@ -36,6 +36,7 @@ import type { TallySnapshot } from './src/receiver/packetTally'
 import { RawStore } from './src/receiver/rawStore'
 import { ReadingHub } from './src/receiver/readingHub'
 import { SensorHealthBook } from './src/receiver/sensorHealth'
+import { StationDirectory, loadStationConfig } from './src/receiver/stationConfig'
 import { buildStatusReport } from './src/receiver/statusReport'
 import { startStatusServer } from './src/receiver/statusServer'
 import { SourceRateLimit } from './src/receiver/sourceRateLimit'
@@ -65,6 +66,16 @@ const SUMMARY_INTERVAL_MS = 60_000
  */
 function defaultRawDir(): string {
   return fileURLToPath(new URL('./data/raw/', import.meta.url))
+}
+
+/**
+ * 観測点の設定ファイルの既定の置き場所。
+ *
+ * **このファイルからの相対で解決する**（`defaultRawDir` と同じ理由）。`.gitignore` 済み
+ * —— 設置場所（＝自宅の間取り）を書くので、生データと同じく公開リポジトリへは入れない。
+ */
+function defaultStationConfigPath(): string {
+  return fileURLToPath(new URL('./config/stations.json', import.meta.url))
 }
 
 /**
@@ -598,6 +609,17 @@ async function main(): Promise<void> {
   // 基板は送っていて震度も出ていて、生だけが残っていない状態に外から気づけない。
   const rawStore = new RawStore({ dir: process.env.SEISMO_RAW_DIR ?? defaultRawDir() })
 
+  // **割り当ては任意。** ファイルが無い・壊れているときも起動は止めない——
+  // 観測点を知らないだけで、震度を出す仕事とは無関係（`stationConfig.ts` の設計原則）。
+  // ただし黙って空にはしない。
+  const stationConfigLoad = loadStationConfig(
+    process.env.SEISMO_STATION_CONFIG ?? defaultStationConfigPath(),
+  )
+  if (stationConfigLoad.warning !== null) {
+    console.warn(`[station] 観測点の設定を読めなかった: ${stationConfigLoad.warning}`)
+  }
+  const stations = new StationDirectory(stationConfigLoad.config)
+
   /**
    * 間引きを通して 1 行出す。
    *
@@ -859,6 +881,8 @@ async function main(): Promise<void> {
           lastSweepError: rawStore.lastSweepError,
         },
         hub: hub.snapshot(),
+        stations,
+        stationConfigWarning: stationConfigLoad.warning,
       }),
     log: emit,
   })

@@ -17,6 +17,7 @@ import type { GravityCheckSnapshot, GravityVerdict } from './gravityCheck'
 import type { TallySnapshot } from './packetTally'
 import type { HubSnapshot } from './readingHub'
 import type { SensorHealth } from './sensorHealth'
+import type { StationAssignment, StationDirectory } from './stationConfig'
 
 /**
  * 生データの保存の様子。**`RawStore` の読み取り専用の値をそのまま並べる。**
@@ -69,6 +70,21 @@ export interface StatusReportInput {
   readonly gravity: GravityCheckSnapshot
   readonly raw: RawStoreStatus
   readonly hub: HubSnapshot
+  /**
+   * 基板がどこに置かれているか（観測点）を引く帳面。
+   *
+   * **割り当ては任意。** 設定に無い基板は `station: null` のまま出す ——
+   * 観測点を知らないことと、震度が出せないことは無関係な事実なので混ぜない。
+   */
+  readonly stations: StationDirectory
+  /**
+   * 観測点の設定ファイルを読めなかった・パースできなかった理由。読めていれば `null`。
+   *
+   * **標準出力への `console.warn` だけでは足りない。** `RawStoreStatus` の
+   * `lastWriteError` / `lastSweepError` と同じ理由——この口は運用者が見に来る
+   * ものなので、起動時にしか出ない警告は「見に来た時点でもう流れている」。
+   */
+  readonly stationConfigWarning: string | null
 }
 
 /**
@@ -110,6 +126,8 @@ export interface SegmentStatus {
  */
 export interface SensorStatus extends Omit<SensorHealth, 'lastPacketMs'> {
   readonly lastPacketMs: number | null
+  /** どこへ置いたか。設定に無ければ `null`（未割当）。 */
+  readonly station: StationAssignment | null
 }
 
 export interface StatusReport {
@@ -171,6 +189,8 @@ export interface StatusReport {
    * 0 のままで、増えたらその境界が緩んだ合図になる。
    */
   readonly unreadableIntensityValues: number
+  /** 観測点の設定ファイルを読めなかった・パースできなかった理由。読めていれば `null`。 */
+  readonly stationConfigWarning: string | null
 }
 
 /** `Map` を JSON になる形へ。**出す側と読む側で流儀が分かれないよう 1 箇所に置く。** */
@@ -234,6 +254,7 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     lastPacketMs: finite(s.lastPacketMs),
     lastReadingAtMs: finite(s.lastReadingAtMs),
     lastIntensity: finiteValue(s.lastIntensity),
+    station: input.stations.resolve(s.boardKey),
   }))
 
   // **有限であることは `gravityCheck.ts` の `settle` が保証する** —— 平均・ばらつき・震度は
@@ -273,5 +294,6 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     stream: input.hub,
     unreadableTimes: unreadable,
     unreadableIntensityValues: unreadableValues,
+    stationConfigWarning: input.stationConfigWarning,
   }
 }
