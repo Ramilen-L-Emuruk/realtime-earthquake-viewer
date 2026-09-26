@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SensorPacket } from '../protocol/types'
 import { streamKeyOf } from '../timebase/segmenter'
-import { IntensityPipeline } from './intensityPipeline'
+import { IntensityPipeline, normalizeIntensity } from './intensityPipeline'
 import type { IntensityReading, PacketOutcome } from './intensityPipeline'
 
 /** 実際の記録と同じ起点。時刻が大きい状態で当てはめが効くことも併せて見る。 */
@@ -272,7 +272,9 @@ describe('IntensityPipeline', () => {
       const six = { channels: ['HN1', 'HN2', 'HN3', 'HG1', 'HG2', 'HG3'] }
       const first = p.handlePacket(pkt({ ...six, firstSeq: 0 }))
       expect(first.dropped).toBeNull()
-      expect(first.intensitySkipped).toBe('axis-count')
+      // **理由と区間を組で返す。** 同じパケットで旧区間の締めくくりが届くことがあり、
+      // どちらが新しいかは区間の名指しでしか決まらない。
+      expect(first.intensitySkipped).toMatchObject({ reason: 'axis-count', segmentId: 1 })
       // **捨てずに組み立てへは通す。** 時間軸のばらつきや落ちた件数は軸の数によらず数える。
       expect(p.openSegments()).toHaveLength(1)
 
@@ -286,6 +288,65 @@ describe('IntensityPipeline', () => {
       expect(back.outcomes[0].intensitySkipped).toBeNull()
       expect(back.readings).toHaveLength(1)
       expect(back.readings[0].intensity).not.toBeNull()
+    })
+  })
+
+  describe('波形', () => {
+    it('計測震度が食べた値を、換算済みでそのまま載せる', () => {
+      const p = new IntensityPipeline(OPTS)
+
+      const out = p.handlePacket(pkt())
+
+      const w = out.wave
+      if (w === null) throw new Error('波形が載っていない')
+      expect(w.boardKey).toBe('mac:3c8a1f5d54d8')
+      expect(w.sensorId).toBe('i2c0-68')
+      expect(w.segmentId).toBe(1)
+      expect(w.channels).toEqual(['HN1', 'HN2', 'HN3'])
+      expect(w.firstSampleIndex).toBe(0)
+      expect(w.firstSampleMs).toBe(BASE_MS)
+      expect(w.msPerSample).toBeCloseTo(1000 / HZ, 9)
+      expect(w.gal.map((axis) => axis.length)).toEqual([PER_PACKET, PER_PACKET, PER_PACKET])
+      // **生のカウント値は配らない。** 受け手側で換算し直す形にすると経路が 2 本になり、
+      // 片方だけずれても出てくる数字はそれらしい形をしている。
+      // 先頭の標本は x=0・y=+300・z=16880 カウントなので、gal なら 0・約 18・約 1010。
+      expect(w.gal[0][0]).toBe(0)
+      expect(w.gal[1][0]).toBeGreaterThan(17)
+      expect(w.gal[1][0]).toBeLessThan(19)
+      expect(w.gal[2][0]).toBeGreaterThan(1000)
+      expect(w.gal[2][0]).toBeLessThan(1020)
+    })
+
+    it('3 成分でなければ波形も載せない', () => {
+      const p = new IntensityPipeline(OPTS)
+
+      const out = p.handlePacket(pkt({ channels: ['HN1', 'HN2', 'HN3', 'HG1', 'HG2', 'HG3'] }))
+
+      // 合成できない以上、計測震度が食べた値は存在しない。
+      expect(out.wave).toBeNull()
+    })
+
+    it('落としたパケットの波形は載せない', () => {
+      const p = new IntensityPipeline(OPTS)
+
+      const out = p.handlePacket(pkt({}, OVER_SCALE_COUNTS))
+
+      expect(out.dropped).toBe('scale-out-of-range')
+      // 落としたパケットの波形を配ると、計測震度が見ていないサンプルが画面に出る。
+      expect(out.wave).toBeNull()
+    })
+
+    it('区間を畳み直した回でも波形は載せる', () => {
+      const p = new IntensityPipeline(OPTS)
+      feed(p, PACKETS_FOR_FIRST + 1)
+      breakPush(p, KEY)
+
+      const out = p.handlePacket(pkt({ firstSeq: (PACKETS_FOR_FIRST + 1) * PER_PACKET }))
+
+      expect(out.dropped).toBe('stream-desync')
+      // **サンプルそのものは本物。** どの区間のどの位置かは波形自身が名乗るので、
+      // 受け手は切れ目を見分けられる。いちばん様子を見たい状態で波形だけ黙るほうが困る。
+      expect(out.wave).not.toBeNull()
     })
   })
 
@@ -413,5 +474,27 @@ describe('IntensityPipeline', () => {
       expect(other.readings.length).toBeGreaterThan(0)
       expect(other.readings.every((r) => r.streamKey === KEY)).toBe(true)
     })
+  })
+})
+
+describe('normalizeIntensity', () => {
+  it('数として出せる値はそのまま通す', () => {
+    expect(normalizeIntensity(2.5)).toEqual({ value: 2.5, unusable: false })
+    expect(normalizeIntensity(0)).toEqual({ value: 0, unusable: false })
+    expect(normalizeIntensity(-1.5)).toEqual({ value: -1.5, unusable: false })
+  })
+
+  it('窓が足りない null は「出せなかった」と数えない', () => {
+    // `null` は約束どおりの値。ここを数えると、正常な起動直後に件数が伸びる
+    expect(normalizeIntensity(null)).toEqual({ value: null, unusable: false })
+  })
+
+  it('非有限は null へ倒して数える', () => {
+    // `I = 2*log10(a) + 0.94` は a=0 で -Infinity を返す
+    // （センサーが 0 を返し続ける壊れ方）。JSON では null に化けるので、
+    // 倒さないと「窓が足りない」と見分けが付かない
+    expect(normalizeIntensity(Number.NEGATIVE_INFINITY)).toEqual({ value: null, unusable: true })
+    expect(normalizeIntensity(Number.POSITIVE_INFINITY)).toEqual({ value: null, unusable: true })
+    expect(normalizeIntensity(Number.NaN)).toEqual({ value: null, unusable: true })
   })
 })
