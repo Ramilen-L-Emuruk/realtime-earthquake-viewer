@@ -209,19 +209,68 @@ describe('buildStatusReport', () => {
     expect(report.sensors[0].lastSkipReason).toBe('axis-count')
   })
 
-  it('正: 設定にある基板は、観測点を出す', () => {
+  it('正: 設定にある基板は、観測点（座標込み）を出す', () => {
     const stations = new StationDirectory({
-      stations: [{ boardKey: 'mac:aa', stationId: 'study', displayName: '書斎' }],
+      stations: [{ stationId: 'study', displayName: '書斎', lat: 35.6, lon: 139.7 }],
+      boards: [{ boardKey: 'mac:aa', stationId: 'study', sensors: [] }],
     })
     const report = buildStatusReport(input({ stations }))
 
-    expect(report.sensors[0].station).toEqual({ stationId: 'study', displayName: '書斎' })
+    expect(report.sensors[0].station).toEqual({
+      stationId: 'study',
+      displayName: '書斎',
+      lat: 35.6,
+      lon: 139.7,
+    })
   })
 
   it('対照: 設定に無い基板は未割当（null）のまま出す', () => {
     const report = buildStatusReport(input({ stations: StationDirectory.empty() }))
 
     expect(report.sensors[0].station).toBeNull()
+  })
+
+  it('正: センサーの校正値が設定にあれば calibrationConfigured は true', () => {
+    const stations = new StationDirectory({
+      stations: [{ stationId: 'study', displayName: '書斎', lat: 35.6, lon: 139.7 }],
+      boards: [
+        {
+          boardKey: 'mac:aa',
+          stationId: 'study',
+          sensors: [
+            {
+              sensorId: 's0',
+              enabled: true,
+              rotation: [
+                [1, 0, 0],
+                [0, 1, 0],
+                [0, 0, 1],
+              ],
+              offset: [0, 0, 0],
+              sensitivity: [1, 1, 1],
+              noiseDensity: null,
+            },
+          ],
+        },
+      ],
+    })
+    const report = buildStatusReport(input({ stations }))
+
+    expect(report.sensors[0].calibrationConfigured).toBe(true)
+  })
+
+  it('対照: 校正値が設定に無いセンサーは calibrationConfigured が false のまま（`station` が付いていても別の事実）', () => {
+    const stations = new StationDirectory({
+      stations: [{ stationId: 'study', displayName: '書斎', lat: 35.6, lon: 139.7 }],
+      // **基板は観測点に割り当てているが、センサーの校正値は 1 件も書いていない。**
+      // `station` は付くが `calibrationConfigured` は別の問い —— 「どこに置いたか」を
+      // 知っていることと「校正値を書いたか」は無関係な事実なので混ぜない。
+      boards: [{ boardKey: 'mac:aa', stationId: 'study', sensors: [] }],
+    })
+    const report = buildStatusReport(input({ stations }))
+
+    expect(report.sensors[0].station).not.toBeNull()
+    expect(report.sensors[0].calibrationConfigured).toBe(false)
   })
 
   it('正: 観測点設定の読み込み警告を、標準出力だけでなく状態の口にも出す', () => {

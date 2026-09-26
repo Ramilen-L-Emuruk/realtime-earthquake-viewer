@@ -17,7 +17,7 @@ import type { GravityCheckSnapshot, GravityVerdict } from './gravityCheck'
 import type { TallySnapshot } from './packetTally'
 import type { HubSnapshot } from './readingHub'
 import type { SensorHealth } from './sensorHealth'
-import type { StationAssignment, StationDirectory } from './stationConfig'
+import type { StationDirectory, StationInfo } from './stationConfig'
 
 /**
  * 生データの保存の様子。**`RawStore` の読み取り専用の値をそのまま並べる。**
@@ -127,7 +127,16 @@ export interface SegmentStatus {
 export interface SensorStatus extends Omit<SensorHealth, 'lastPacketMs'> {
   readonly lastPacketMs: number | null
   /** どこへ置いたか。設定に無ければ `null`（未割当）。 */
-  readonly station: StationAssignment | null
+  readonly station: StationInfo | null
+  /**
+   * このセンサーに校正値の設定（`stationConfig.ts` の `sensors[]`）があるか。
+   *
+   * **`false` は「校正値なし」ではなく「設定に一致しなかった」ことの印。** 校正の適用側
+   * （§16・#307）は設定が無くても既定値（単位行列・補正なし）で動き続けるため、この
+   * フィールドが無いと「校正を書いたつもりの `sensorId` が実は 1 文字も一致していない」
+   * 状態が、警告もエラーも出ないまま運用者の目に一生触れない。
+   */
+  readonly calibrationConfigured: boolean
 }
 
 export interface StatusReport {
@@ -255,6 +264,7 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     lastReadingAtMs: finite(s.lastReadingAtMs),
     lastIntensity: finiteValue(s.lastIntensity),
     station: input.stations.resolve(s.boardKey),
+    calibrationConfigured: input.stations.hasSensorCalibration(s.boardKey, s.sensorId),
   }))
 
   // **有限であることは `gravityCheck.ts` の `settle` が保証する** —— 平均・ばらつき・震度は
