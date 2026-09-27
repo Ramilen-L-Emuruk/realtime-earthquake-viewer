@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { IntensityReading, WaveChunk } from './intensityPipeline'
 import { PacketTally } from './packetTally'
 import { ReadingHub } from './readingHub'
+import type { StationIntensityReading } from './sensorFusion'
 import { StationDirectory } from './stationConfig'
 import { buildStatusReport } from './statusReport'
 import type { RawStoreStatus, StatusReport } from './statusReport'
@@ -36,6 +37,8 @@ function report(hub: ReadingHub): StatusReport {
     tally: new PacketTally().snapshotTotal(),
     sensors: [],
     sensorEvictions: 0,
+    stationEvictions: 0,
+    stationIntensities: [],
     gravity: {
       verdicts: [],
       mismatches: 0,
@@ -62,6 +65,12 @@ const READING: IntensityReading = {
   intensity: 2.5,
   timebaseNominalReason: null,
   timebaseResidualRmsMs: 3.1,
+}
+
+const STATION_READING: StationIntensityReading = {
+  stationId: 'garage',
+  atMs: 1_700_000_000_000,
+  intensity: 1.8,
 }
 
 const WAVE: WaveChunk = {
@@ -207,6 +216,19 @@ describe('startStatusServer', () => {
     expect(got).toHaveLength(1)
     expect(got[0].name).toBe('reading')
     expect((got[0].data as IntensityReading).intensity).toBe(2.5)
+  })
+
+  it('/stream は観測点ぶんの計測震度（複数センサーの合成）も、SSE イベントとして正しく符号化して押し出す', async () => {
+    const hub = new ReadingHub()
+    const base = await start(hub)
+
+    const got = await readEvents(base, '/stream', 1, () => {
+      hub.publish({ kind: 'station-reading', reading: STATION_READING })
+    })
+
+    expect(got).toHaveLength(1)
+    expect(got[0].name).toBe('station-reading')
+    expect(got[0].data).toEqual(STATION_READING)
   })
 
   it('?wave=1 を付けると波形も付く', async () => {

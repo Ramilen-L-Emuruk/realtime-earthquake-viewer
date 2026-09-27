@@ -4,6 +4,7 @@ import { IntensityStream } from '../intensity/intensityStream'
 import type { BoardKey } from '../protocol/types'
 import type { WaveChunk } from './intensityPipeline'
 import { SensorFusion } from './sensorFusion'
+import type { FusionOutcome } from './sensorFusion'
 import type { StationConfig } from './stationConfig'
 
 const IDENTITY = [
@@ -229,6 +230,9 @@ describe('SensorFusion.ingest — 観測点ぶんの計測震度相当', () => {
     )
     expect(first.readings).toEqual([])
     expect(first.intensitySkipReason).toBeNull()
+    // **区間が変わった回は `intensityStateChanged` が立つ**——呼び出し側（main.ts）が
+    // ここを見て「状態が変わったときにだけログを出す」判定を再現できるかの根拠。
+    expect(first.intensityStateChanged).toBe(true)
     // 区間が切れて作り直された想定（segmentId だけ変わり、位置は 0 から再スタート）。
     const second = fusion.ingest(
       wave({
@@ -242,6 +246,19 @@ describe('SensorFusion.ingest — 観測点ぶんの計測震度相当', () => {
     )
     expect(second.readings).toEqual([])
     expect(second.intensitySkipReason).toBeNull()
+    expect(second.intensityStateChanged).toBe(true)
+  })
+
+  it('対照: 同じ区間が続く回では intensityStateChanged が立たない', () => {
+    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), OPTS)
+    fusion.ingest(
+      wave({ boardKey: BOARD_A, sensorId: 'sensorA', segmentId: 1, firstSampleIndex: 0, gal: galRows(0, 50, 40) }),
+    )
+    // 同じ segmentId のまま続き、push も成功する（位置が連続している）。
+    const out = fusion.ingest(
+      wave({ boardKey: BOARD_A, sensorId: 'sensorA', segmentId: 1, firstSampleIndex: 50, gal: galRows(50, 50, 40) }),
+    )
+    expect(out.intensityStateChanged).toBe(false)
   })
 
   it('安全弁: 同じ区間内で位置が続きにならなければ、投げずに理由を残す（合成波形・差分は道連れにしない）', () => {
@@ -250,9 +267,11 @@ describe('SensorFusion.ingest — 観測点ぶんの計測震度相当', () => {
       wave({ boardKey: BOARD_A, sensorId: 'sensorA', segmentId: 1, firstSampleIndex: 0, gal: galRows(0, 50, 40) }),
     )
     expect(first.intensitySkipReason).toBeNull()
-    // 同じ segmentId のまま位置が飛ぶ（本来ありえない不整合の防御）。
-    expect(() =>
-      fusion.ingest(
+    // 同じ segmentId のまま位置が飛ぶ（本来ありえない不整合の防御）。push() が
+    // 投げ、この呼び出しで新しく理由が立つ。
+    let desynced: FusionOutcome | undefined
+    expect(() => {
+      desynced = fusion.ingest(
         wave({
           boardKey: BOARD_A,
           sensorId: 'sensorA',
@@ -260,8 +279,12 @@ describe('SensorFusion.ingest — 観測点ぶんの計測震度相当', () => {
           firstSampleIndex: 200,
           gal: galRows(200, 50, 40),
         }),
-      ),
-    ).not.toThrow()
+      )
+    }).not.toThrow()
+    // **push() の失敗で新しく理由が立った回は `intensityStateChanged`——区間の
+    // 作り直しだけが変化点ではない。** ここが立たないと、呼び出し側は
+    // push 失敗という「いま起きた異常」に気づく機会を逃す。
+    expect(desynced?.intensityStateChanged).toBe(true)
     const second = fusion.ingest(
       wave({
         boardKey: BOARD_A,
@@ -274,6 +297,9 @@ describe('SensorFusion.ingest — 観測点ぶんの計測震度相当', () => {
     // 波形の合成・差分は投げていないので出続ける。
     expect(second.fusedWave).not.toBeNull()
     expect(second.intensitySkipReason).not.toBeNull()
+    // **理由自体は前回の呼び出しから引き継がれたままで、この回では何も変わっていない**
+    // （`group.stream` が既に null なので push は試みられない）。
+    expect(second.intensityStateChanged).toBe(false)
   })
 
   it('正: 終了時に closeAll() を呼ぶと、窓に満たない末尾ぶんの震度が出る（失敗は無い）', () => {

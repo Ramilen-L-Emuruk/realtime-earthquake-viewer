@@ -5,11 +5,13 @@
 // 押し出しの口（`GET /stream`）。後ろ 2 つは HTTP で、宛先が違う ——
 // 状態は**運用者**、押し出しは **PWA**（観測結果はビューアー、機材の管理はビューアーの外）。
 //
-// **状態の口へ配る中身は 4 系統ある** —— 数え上げ（`src/receiver/packetTally.ts`）・
+// **状態の口へ配る中身は 5 系統ある** —— 数え上げ（`src/receiver/packetTally.ts`）・
 // **保存の健全性**（`RawStore` の読み取り専用の値）・**センサーごとの生存**
-// （`src/receiver/sensorHealth.ts`）・**換算の自己診断**（`src/receiver/gravityCheck.ts`）。
-// 数え上げだけを配ると「生データが残っていない」ことも「9 個のうち 1 個が黙った」ことも
-// 「届いている値の桁が狂っている」ことも、この口から丸ごと落ちる。
+// （`src/receiver/sensorHealth.ts`）・**換算の自己診断**（`src/receiver/gravityCheck.ts`）・
+// **観測点ぶんの合成の生存**（`src/receiver/stationHealth.ts`。複数センサーの波形合成
+// ・REQUIREMENTS.md §7）。数え上げだけを配ると「生データが残っていない」ことも
+// 「9 個のうち 1 個が黙った」ことも「届いている値の桁が狂っている」ことも、
+// この口から丸ごと落ちる。
 //
 // **画面を持たない常駐プロセスなので、黙ったら誰も気づかない。** 受け取った結果
 // （`PacketOutcome`）のどの欄も読み捨てないこと —— 読み捨てた欄は、そこで起きた異常が
@@ -35,8 +37,11 @@ import { PacketTally, formatTally } from './src/receiver/packetTally'
 import type { TallySnapshot } from './src/receiver/packetTally'
 import { RawStore } from './src/receiver/rawStore'
 import { ReadingHub } from './src/receiver/readingHub'
+import { SensorFusion } from './src/receiver/sensorFusion'
+import type { FusionOutcome, StationCloseFailure, StationIntensityReading } from './src/receiver/sensorFusion'
 import { SensorHealthBook } from './src/receiver/sensorHealth'
 import { StationDirectory, loadStationConfig } from './src/receiver/stationConfig'
+import { StationHealthBook } from './src/receiver/stationHealth'
 import { buildStatusReport } from './src/receiver/statusReport'
 import { startStatusServer } from './src/receiver/statusServer'
 import { SourceRateLimit } from './src/receiver/sourceRateLimit'
@@ -389,6 +394,67 @@ export function deliverReading(to: ReadingSinks, r: IntensityReading): void {
 }
 
 /**
+ * 観測点ぶんの合成結果（`FusionOutcome`）の配り先。**順序はここが決める。**
+ */
+export interface StationFusionSinks {
+  readonly noteReading: (r: StationIntensityReading) => void
+  readonly publish: (r: StationIntensityReading) => void
+  readonly reportCloseFailure: (f: StationCloseFailure) => void
+  readonly noteSkip: (stationId: string, reason: string | null) => void
+  /**
+   * 合成の流し込みの状態が変わりうる処理が走った回にだけ呼ぶ。**1 件ずつの行**
+   * （単一センサーの `[segment] ...` と対称）。数え上げ・状態の口は `noteSkip` が持つので、
+   * ここは「画面を持たない常駐プロセスで黙って気づけない」ことへの手当て専用。
+   */
+  readonly logSegment: (stationId: string, reason: string | null) => void
+}
+
+/**
+ * `SensorFusion.ingest()` が返す 1 回ぶんの結果を配る。
+ *
+ * **読みを先に配り、いまの合成状態（`noteSkip`）は最後に確定させる。**
+ * `fusion.readings` には区間の作り直しで前区間の残り（`carried`。
+ * `../src/receiver/sensorFusion.ts` の `ingest()` を見ること）が混ざりうる——
+ * それは「たった今出た、新しい区間より古い震度」なので、`noteReading` が無条件に
+ * クリアする `lastSkipReason` を、直前にセットしたばかりの「いまの異常」の上へ
+ * 被せてしまう（`sensorHealth.ts` が同じ形の競合を `skipStreamKey`/`skipSegmentId`
+ * で明示的にガードしているのと同じ症状——壊れた合成が一瞬だけ健全に見える）。
+ * 順序を「過去の読み → いまの状態」にすれば、いまの状態が必ず最後に残る。
+ *
+ * **`closeFailure`・`intensitySkipReason` は駆動役の到着でだけ意味を持つ**
+ * （`fusedWave` が非 null の回に限る。`sensorFusion.ts` の `FusionOutcome` を見ること）。
+ */
+export function deliverStationFusion(to: StationFusionSinks, fusion: FusionOutcome): void {
+  if (fusion.fusedWave !== null && fusion.closeFailure !== null) {
+    to.reportCloseFailure(fusion.closeFailure)
+  }
+  for (const r of fusion.readings) {
+    to.noteReading(r)
+    to.publish(r)
+  }
+  if (fusion.fusedWave !== null) {
+    to.noteSkip(fusion.fusedWave.stationId, fusion.intensitySkipReason)
+    // **異常が続いている間は毎回呼ぶ。正常なら状態が変わった回にだけ呼ぶ。**
+    //
+    // `intensitySkipReason` が非 null（＝合成の震度が出せない）の間は、`ingest()`
+    // が `intensityStateChanged` を再び立てない場合がある——`push()` の失敗は
+    // 区間の作り直しを伴わず、`SensorFusion` 側に自己回復の仕組みが無いため
+    // （`sensorFusion.ts` の `ingest()` を見ること）、壊れた状態が同じ区間の間
+    // ずっと続きうる。`intensityStateChanged` だけで絞ると、**最初の 1 回しか
+    // ログが出ず、以後「合成が壊れたままだ」という事実そのものが沈黙する**。
+    // 間引き（`logThrottle.shouldLog`）が「初回は必ず出し、以後も間隔ごとに
+    // 出し直す」設計を持つので、毎回呼んでも実際の出力頻度はあちらに任せられる。
+    //
+    // 正常（`null`）に戻った回は、区間が変わった・push が成功した等の
+    // `intensityStateChanged` が立つ回にだけ知らせれば十分——正常が続く間、
+    // 毎パケット「合成の状態が変わった」と言い続ける理由は無い。
+    if (fusion.intensitySkipReason !== null || fusion.intensityStateChanged) {
+      to.logSegment(fusion.fusedWave.stationId, fusion.intensitySkipReason)
+    }
+  }
+}
+
+/**
  * 自己診断の数え上げに付ける見出し。**毎分の要約も終了時の締めくくりもここから引く。**
  *
  * **`Record<GravityCount, string>` にしてあるので、数え上げを足して**
@@ -454,6 +520,8 @@ export interface ClosingLinesInput {
    * 監視の劣化が監視対象の異常と同じ数に紛れる。
    */
   readonly sensorEvictions: number
+  /** 観測点ぶんの合成の覚え（`StationHealthBook`）を上限で押し出した数。 */
+  readonly stationEvictions: number
   /**
    * 換算の自己診断の数え上げ。**帳面が返すものをそのまま受け取る。**
    *
@@ -507,6 +575,7 @@ export function buildClosingLines(input: ClosingLinesInput): readonly ClosingLin
     { label: '送信元の枠を捨てた', value: input.evictions },
     { label: '数として出せなかった計測震度', value: input.unusableIntensities },
     { label: 'センサーの生存の枠を捨てた', value: input.sensorEvictions },
+    { label: '観測点ぶんの合成の生存の枠を捨てた', value: input.stationEvictions },
     ...gravityCountEntries(input.gravity),
     { label: '生データを残せず流し口が壊れた', value: input.writeErrors },
     { label: '生データを書き損ねた', value: input.lostRecords },
@@ -614,11 +683,16 @@ async function main(): Promise<void> {
   const stations = new StationDirectory(stationConfigLoad.config)
 
   const pipeline = new IntensityPipeline({ stations })
+  // **複数センサーの波形合成（REQUIREMENTS.md §7）。** 割り当てが 2 台に満たない
+  // 観測点はグループを組まない（`sensorFusion.ts` の `buildGroups`）ので、単一センサーの
+  // 構成では常に何もしない——観測点を割り当てていない構成と同じく安全に無視できる。
+  const sensorFusion = new SensorFusion(stationConfigLoad.config)
   const tally = new PacketTally()
   const rateLimit = new SourceRateLimit()
   const throttle = new LogThrottle()
   const hub = new ReadingHub()
   const health = new SensorHealthBook()
+  const stationHealth = new StationHealthBook()
   const gravity = new GravityCheckBook()
   // **作れなければここで落ちる。** 黙って保存せずに走るのがいちばん悪い ——
   // 基板は送っていて震度も出ていて、生だけが残っていない状態に外から気づけない。
@@ -688,6 +762,48 @@ async function main(): Promise<void> {
         `[close] ${f.boardKey} ${f.sensorId} seg=${f.segmentId} の締めくくりに失敗: ${shorten(f.detail)}`,
       )
     }
+  }
+
+  /**
+   * 観測点ぶんの計測震度（複数センサーの合成）の配り先。**呼ぶのは 2 箇所**
+   * （受信の最中と、終了の締めくくり）で、上の `emitReading` と同じ理由。
+   *
+   * **`packetTally.ts` の `boards` 表へは乗せない。** あちらの鍵は基板（`BoardKey`）を
+   * 前提にしており、観測点の識別子（`stationId`）を混ぜると「基板」の意味が崩れる
+   * （別の表を新設するかは #315 の範囲）。
+   */
+  const emitStationReading = (r: StationIntensityReading): void => {
+    stationHealth.noteReading(r)
+    hub.publish({ kind: 'station-reading', reading: r })
+  }
+
+  const reportStationCloseFailures = (failures: readonly StationCloseFailure[]): void => {
+    for (const f of failures) {
+      stationHealth.noteCloseFailure(f.stationId, f.detail)
+      emit(
+        'error',
+        'station-close',
+        f.stationId,
+        `[station] ${f.stationId} の合成の締めくくりに失敗: ${shorten(f.detail)}`,
+      )
+    }
+  }
+
+  /** `deliverStationFusion` へ渡す配り先。順序はあちらが決める。 */
+  const stationFusionSinks: StationFusionSinks = {
+    noteReading: (r) => stationHealth.noteReading(r),
+    publish: (r) => hub.publish({ kind: 'station-reading', reading: r }),
+    reportCloseFailure: (f) => reportStationCloseFailures([f]),
+    noteSkip: (stationId, reason) => stationHealth.noteSkip(stationId, reason),
+    logSegment: (stationId, reason) => {
+      const skip = reason === null ? '' : `（震度なし: ${reason}）`
+      emit(
+        'log',
+        'station-segment',
+        `${stationId}|${reason ?? 'ok'}`,
+        `[station] ${stationId} 合成の状態が変わった${skip}`,
+      )
+    },
   }
 
   const receiver = await startUdpReceiver({
@@ -762,6 +878,13 @@ async function main(): Promise<void> {
       // 順を入れ替えると受け手の画面で波形だけが遅れて見える。
       if (outcome.wave !== null) hub.publish({ kind: 'wave', wave: outcome.wave })
 
+      // **観測点の合成（REQUIREMENTS.md §7）は、`ingest()` をここで呼ぶ。**
+      // 波形の押し出し直後——属さない・相方が居ないセンサーは `SensorFusion.ingest()`
+      // が素通りするので、単一センサー構成では何もしない。`ingest()` 自体は投げない
+      // 契約（`sensorFusion.ts` を見ること）だが、**結果を配る（`deliverStationFusion`）
+      // のはここでは行わない** —— 下で単一センサー側の報告を出し切ってから。
+      const fusion = outcome.wave !== null ? sensorFusion.ingest(outcome.wave) : null
+
       if (outcome.dropped !== null) {
         tally.record({ kind: 'dropped', board, reason: outcome.dropped })
         const detail = outcome.detail === null ? '' : `: ${shorten(outcome.detail)}`
@@ -822,6 +945,13 @@ async function main(): Promise<void> {
       reportCloseFailures(outcome.closeFailures)
       for (const r of outcome.readings) emitReading(r)
 
+      // **観測点の合成の結果を配るのは、単一センサー側の報告をすべて出し切ってから。**
+      // `deliverStationFusion` は外から注入された関数（`stationHealth.noteReading` 等）を
+      // 呼ぶので、投げない契約が将来崩れる余地がある——手前に置いて投げると、この
+      // データグラムが運んできた単一センサー側の報告（上の dropped・startedBecause・
+      // closed・closeFailures・readings）がまとめて消える（下の自己診断と同じ理由）。
+      if (fusion !== null) deliverStationFusion(stationFusionSinks, fusion)
+
       // **自己診断は本筋を出し切ってから。** このデータグラムの受け手は例外を囲わない
       // 方針（段 4-1）なので、ここで投げると**そのパケットが運んできた計測震度ごと**
       // 落ちる —— しかも残るのは `[udp] …` という汎用の 1 行だけで、震度が消えたことも
@@ -862,6 +992,8 @@ async function main(): Promise<void> {
         tally: tally.snapshotTotal(),
         sensors: health.snapshot(),
         sensorEvictions: health.evictions,
+        stationEvictions: stationHealth.evictions,
+        stationIntensities: stationHealth.snapshot(),
         gravity: gravity.snapshot(),
         segments: pipeline.openSegments(),
         unusableIntensities: pipeline.unusableIntensities,
@@ -941,6 +1073,11 @@ async function main(): Promise<void> {
         pipeline.unusableIntensities,
       ),
       sensorEvicted: delta('sensorEvicted', 'センサーの生存の枠を捨てた', health.evictions),
+      stationEvicted: delta(
+        'stationEvicted',
+        '観測点ぶんの合成の生存の枠を捨てた',
+        stationHealth.evictions,
+      ),
       sseNotifyFailed: delta(
         'sseNotifyFailed',
         '押し出しを切ったことを報せられず',
@@ -1017,6 +1154,18 @@ async function main(): Promise<void> {
       console.error(`[close] 締めくくりに失敗: ${messageOf(error)}`)
     }
 
+    // **観測点の合成（§7）も同じ理由で締める。** `sensorFusion.closeAll()` 自体は
+    // 投げない契約（`sensorFusion.ts` の `endGroupStream` を見ること）だが、
+    // 呼び出し元に個別の try/catch を要求する契約でもないので、他の締めくくりと
+    // 同じ形で囲っておく。
+    try {
+      const stationRest = sensorFusion.closeAll()
+      reportStationCloseFailures(stationRest.failures)
+      for (const r of stationRest.readings) emitStationReading(r)
+    } catch (error) {
+      console.error(`[station-close] 観測点の合成の締めくくりに失敗: ${messageOf(error)}`)
+    }
+
     // **状態の口は震度を出し切ってから閉じる。** 先に閉じると、最後の窓ぶんの答えが
     // 購読者へ届かない（押し出しを先に切らないと `server.close()` が返らないので、
     // 閉じる中で順序は守られる）。**ここで投げさせない** —— 終了に到達しなくなる。
@@ -1037,6 +1186,7 @@ async function main(): Promise<void> {
       evictions: rateLimit.evictions,
       unusableIntensities: pipeline.unusableIntensities,
       sensorEvictions: health.evictions,
+      stationEvictions: stationHealth.evictions,
       gravity: lastDiag,
       writeErrors: rawStore.writeErrors,
       lostRecords: rawStore.lostRecords,

@@ -14,6 +14,7 @@
 // すると、上限いっぱいのとき双方が延々と切り合う。
 
 import type { IntensityReading, WaveChunk } from './intensityPipeline'
+import type { StationIntensityReading } from './sensorFusion'
 
 /**
  * 同時に繋いでいられる数。
@@ -31,11 +32,13 @@ const MAX_SUBSCRIBERS_DEFAULT = 8
 /**
  * 受け取らない状態がこれだけ続いたら、その購読を切る。
  *
- * **回数ではなく経過時間で測る。** 震度は購読の種類によらず毎秒 9 件が流れ、
+ * **回数ではなく経過時間で測る。** センサーの震度は購読の種類によらず毎秒 9 件が流れ、
  * 波形を取る購読にはそこへ毎秒 30 件が積まれる（`publish` は波形だけを選り分け、
  * 震度は全員へ配る）。回数で切ると**同じ「30 秒詰まっている」が購読の種類で
  * 4 倍以上ずれる**（このリポジトリが「異常の判定は経過時間で行う」と決めているのと
- * 同じ理由）。
+ * 同じ理由）。**観測点の合成（`station-reading`）が構成されていれば、そのぶん件数は
+ * さらに増える**——こちらも震度と同じく全員へ配る種別なので、上の比率をずらす方向には
+ * 働かない。
  */
 const STALL_MS_DEFAULT = 30_000
 
@@ -43,6 +46,8 @@ const STALL_MS_DEFAULT = 30_000
 export type HubMessage =
   | { readonly kind: 'reading'; readonly reading: IntensityReading }
   | { readonly kind: 'wave'; readonly wave: WaveChunk }
+  /** 観測点ぶんの計測震度（複数センサーの合成。REQUIREMENTS.md §7）。 */
+  | { readonly kind: 'station-reading'; readonly reading: StationIntensityReading }
 
 /** ハブが自分から購読を切った理由。 */
 export type DetachReason =
