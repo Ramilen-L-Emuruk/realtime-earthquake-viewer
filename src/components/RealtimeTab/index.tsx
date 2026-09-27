@@ -12,7 +12,7 @@ import { usePageVisible } from '../../hooks/usePageVisible'
 import { formatDateTime, formatDepth, hasDepth } from '../../utils/formatters'
 import { getIntensityColor, getIntensityLabel, getIntensityLabelWithApproxAbove, getIntensityBgColor, getMagnitudeColor, getDepthColor } from '../../utils/intensity'
 import { getLpgmClassLabelWithApproxAbove, getLpgmClassColor, getLpgmClassBgColor } from '../../utils/lpgm'
-import { eewAreas, eewEventKey, eewMaxScaleInfo, eewMaxLpgmClassInfo, eewSerial, computeSingleEEWLevel, eewNoForecastReason, canPresentLpgmClass, eewEpicenterRankLabel, eewMagnitudeRankLabel, eewMagnitudePointsLabel, eewForecastChangeText, isEewHypocenterSettled, isEewAreaArrived, sortEewWarningRegions, eewAreaArrivalKind, eewArrivalEtaSec } from '../../utils/eew'
+import { eewAreas, eewEventKey, eewMaxScaleInfo, eewMaxLpgmClassInfo, eewSerial, computeDisplayEEWLevel, eewNoForecastReason, canPresentLpgmClass, eewEpicenterRankLabel, eewMagnitudeRankLabel, eewMagnitudePointsLabel, eewForecastChangeText, isEewHypocenterSettled, isEewAreaArrived, sortEewWarningRegions, eewAreaArrivalKind, eewArrivalEtaSec } from '../../utils/eew'
 import { kyoshinIndexToJma, kyoshinIndexToLabel, kyoshinIntensityColor, SHINDO0_COLOR } from '../../utils/kyoshinIntensity'
 import { readableTextColor } from '../../utils/contrast'
 import { gateNotes, gateRows, gateShortfall } from '../../utils/detectionGates'
@@ -226,9 +226,15 @@ function EEWCard({ eew, visible, speaking, activeLpgmEventId, onToggleLpgm, onDe
 }) {
   const { scale: maxScale, orAbove: maxScaleOrAbove } = eewMaxScaleInfo(eew)
   const { cls: lpgmClass, over: lpgmClassOver } = eewMaxLpgmClassInfo(eew)
-  const level = computeSingleEEWLevel(eew)
+  const level = computeDisplayEEWLevel(eew)
   const isWarning = level >= 1
   const isSpecial = level === 2
+  // ヘッダーは下げ止まり（`everSpecialWarning`）を反映するが、最大震度バナーは実際の
+  // 現在値をそのまま出す（値を誤魔化さない）。両者だけ並べると「見出しは特別警報なのに
+  // 数値は5弱」という矛盾に見えるため、下げ止まりが効いている間は理由を添える。
+  // `maxScale > 0` も見るのは、予想震度が取れず `NoForecastBanner` に切り替わる場合は
+  // 対比する数値バナー自体が無く、注記の前提（バナーとの食い違いを補う）が成り立たないため。
+  const isDowngradedFromSpecial = !!eew.everSpecialWarning && maxScale > 0 && maxScale < 55 && lpgmClass < 4
   const areas = eewAreas(eew)
   const serial = eewSerial(eew)
   const { hypocenter } = eew.earthquake
@@ -310,8 +316,18 @@ function EEWCard({ eew, visible, speaking, activeLpgmEventId, onToggleLpgm, onDe
     : '地震動予報'
   const headerBg = isSpecial ? '#4c0519' : isWarning ? '#450a0a' : '#451a03'
   const headerColor = isSpecial ? '#fca5a5' : isWarning ? '#f87171' : '#fcd34d'
-  const headerBorder = isSpecial ? '#dc2626' : isWarning ? '#ef4444' : '#d97706'
-  const cardBorder = isSpecial ? '#fca5a5' : isWarning ? '#ef4444' : '#eab308'
+  // カード全体の枠（cardBorder）はヘッダーの枠（headerBorder）と同じ値に揃える。
+  // 予報／警報／特別警報の区分を表す色で、区分が上がるほど暗くする（震度6弱・6強の
+  // 色と並べても見劣りしない重さにする）。以前は cardBorder だけ headerColor（文字色）を
+  // 流用しており、特別警報だけ最も薄いピンクになって重大度と逆転していた。
+  const headerBorder = isSpecial ? '#7f1d1d' : isWarning ? '#b91c1c' : '#d97706'
+  const cardBorder = headerBorder
+  // 読み上げ中の外側の縁（下記 boxShadow）に使う、区分ごとの明るいバリアント（値は
+  // 区分ごとに個別に決めており、cardBorder からの飛び幅は揃っていない）。
+  // 白ではなく同系色にする —— 白フチは cardBorder の濃さによらず常に強いコントラストを
+  // 持つため、実際には鳴っていないカードでも目立って見えやすい。区分色に寄せることで、
+  // 隣接カードとの識別性は保ちつつその誤解を減らす。
+  const speakingRingColor = isSpecial ? '#fca5a5' : isWarning ? '#f87171' : '#fbbf24'
 
   const magColor = getMagnitudeColor(hypocenter.magnitude)
   const depthColor = getDepthColor(hypocenter.depth)
@@ -414,14 +430,18 @@ function EEWCard({ eew, visible, speaking, activeLpgmEventId, onToggleLpgm, onDe
       className="bg-card rounded-lg overflow-hidden relative"
       style={{
         border: `2px solid ${cardBorder}`,
-        // 語っているあいだは区分の色のリングを太く・不透明にし、外側へ白を添える。
+        // 語っているあいだは区分の色のリングを太く・不透明にし、外側へ同系色の明るいトーン
+        // （speakingRingColor）を添える。
         //
-        // **区分の色（`border`）は触らない** —— あれは予報／警報／特別警報を表しており、
-        // 強調のために塗り替えると区分が読めなくなる。**白を足すのは太さだけでは足りないため**
+        // **区分の色（`border`）が持つ意味（予報／警報／特別警報の軽重）は触らない** ——
+        // 強調のために塗り替えると区分が読めなくなる。**外側の縁を足すのは太さだけでは足りないため**
         // ＝同時に発表される 2 件は同じ区分になりやすく（同じ震源域で連続して起きるので）、
-        // 区分の色だけを太らせても隣のカードと見分けにくい。
+        // 区分の色だけを太らせても隣のカードと見分けにくい。**白ではなく同系色にする**のは、
+        // 白フチは cardBorder の濃さによらず常に強いコントラストを持ち、実際には鳴っていない
+        // カードでも白っぽく目立って見えやすいため。区分色に寄せることで、隣接カードとの
+        // 識別性は保ちつつその誤解を減らす。
         boxShadow: speaking
-          ? `0 0 0 3px ${cardBorder}, 0 0 0 5px rgba(255,255,255,0.5)`
+          ? `0 0 0 3px ${cardBorder}, 0 0 0 7px ${speakingRingColor}80`
           : `0 0 0 1px ${cardBorder}40`,
       }}
       onClick={onDeactivateLpgm}
@@ -500,6 +520,13 @@ function EEWCard({ eew, visible, speaking, activeLpgmEventId, onToggleLpgm, onDe
           </div>
         ) : (
           <NoForecastBanner eew={eew} />
+        )}
+        {/* 下げ止まり（見出しの「特別警報」表示）の理由。バナーの数値は現在値のままなので、
+            見出しと数値だけ並べると食い違って見える——一度特別警報相当に達した事実を添える。 */}
+        {isDowngradedFromSpecial && (
+          <p className="text-xs text-red-300 text-center -mt-1">
+            現在の予想はこれを下回っていますが、この地震は震度6弱以上または長周期地震動階級4以上を一度予想したため、特別警報の表示を継続しています。
+          </p>
         )}
 
         {/* 推定最大長周期地震動階級（クリックで地図表示トグル）。地域別 lgIntTo 優先のため

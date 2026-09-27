@@ -625,11 +625,49 @@ export function computeSingleEEWLevel(eew: EEWAlert): 0 | 1 | 2 {
   return (isSpecialByIntensity || isSpecialByLpgm) ? 2 : 1
 }
 
+/**
+ * 表示用のレベル。**特別警報（レベル2）にだけ下げ止まりを掛ける。**
+ *
+ * 気象庁は「震度予想が下がっても警報は取り消さない」と明言しているが（下記リンク先）、
+ * それは警報という発表行為自体の話であって、震度6弱以上/長周期階級4以上という
+ * アプリ独自の特別警報の線引きが「下がっても戻さない」かどうかは公式運用に無い
+ * （[緊急地震速報（警報）及び（予報）について](https://www.jma.go.jp/jma/kishou/know/jishin/eew/shikumi/shousai.html)）。
+ * ここは**アプリ独自の判断**として、`eew.everSpecialWarning` が立っていれば
+ * 震度が下がった続報でも 2 を返し続ける。予報 → 警報（レベル 0 → 1）は対象外
+ * ——気象庁の運用上そもそも起きないため、生値のままでよい。
+ *
+ * **表示専用。** `computeSingleEEWLevel`（受信した電文そのものの判定）と使い分ける。
+ * 読み上げは元から特別警報の呼称を使わない（`eew-spec.md` §4）ため、このヒステリシスの
+ * 影響を受けない。
+ */
+export function computeDisplayEEWLevel(eew: EEWAlert): 0 | 1 | 2 {
+  return eew.everSpecialWarning ? 2 : computeSingleEEWLevel(eew)
+}
+
+/**
+ * 同じ地震（`eewEventKey`）の全報を畳み込み、いずれかがレベル2（特別警報相当）だった
+ * eventId の集合を返す。`computeDisplayEEWLevel` の下げ止まりを成り立たせるための
+ * 唯一の計算場所——複数の呼び出し元（ライブ受信・起動時復元・リプレイの初期状態復元）が
+ * それぞれ独自に判定を書くと、経路によって下げ止まりの有無が食い違う。
+ *
+ * **起動時復元は完全ではない。** DMDATA の `/v2/gd/eew` は地震ごとに最新報 1 通しか返さない
+ * （`fetchDmdataActiveEews`）ため、渡せるのがその 1 通だけの経路では、過去のどこかの報で
+ * 特別警報だった事実そのものを取得できない。全報が揃うのはライブ受信の継続中と、
+ * 窓内の全電文を持つリプレイの初期状態復元だけ。
+ */
+export function computeEverSpecialWarningEventIds(eews: readonly EEWAlert[]): ReadonlySet<string> {
+  const ids = new Set<string>()
+  for (const eew of eews) {
+    if (eew.everSpecialWarning || computeSingleEEWLevel(eew) === 2) ids.add(eewEventKey(eew))
+  }
+  return ids
+}
+
 export function computeEEWLevel(eews: ReadonlyMap<string, EEWAlert>): 0 | 1 | 2 | null {
   if (eews.size === 0) return null
   let max: 0 | 1 | 2 = 0
   for (const eew of eews.values()) {
-    const level = computeSingleEEWLevel(eew)
+    const level = computeDisplayEEWLevel(eew)
     if (level > max) max = level
   }
   return max

@@ -1849,7 +1849,9 @@ describe('EEW の続報は古い報で退行しない', () => {
   const AT = '2024-01-01T16:10:20+09:00'
 
   /** 同一秒・同一 eventId の報。報番号と対象区域だけを変える。 */
-  function report(serial: string, areaNames: string[], over: { serial?: string } = {}): EEWAlert {
+  function report(
+    serial: string, areaNames: string[], over: { serial?: string; scaleTo?: IntensityScale } = {},
+  ): EEWAlert {
     return {
       kind: 'eew',
       id: `dmdata-eew-stale-${serial}`,
@@ -1865,7 +1867,7 @@ describe('EEW の続報は古い報で退行しない', () => {
       cancelled: false,
       isFinal: false,
       issue: { eventId: 'stale-event', serial: over.serial ?? serial, time: AT },
-      areas: areaNames.map(name => ({ pref: '', name, scaleFrom: 40, scaleTo: 50, kindCode: '11', arrivalTime: null })),
+      areas: areaNames.map(name => ({ pref: '', name, scaleFrom: 40, scaleTo: over.scaleTo ?? 50, kindCode: '11', arrivalTime: null })),
     }
   }
 
@@ -2006,6 +2008,44 @@ describe('EEW の続報は古い報で退行しない', () => {
     expect(eew?.cancelledAt).toBeInstanceOf(Date)
     expect(eew?.cancelText).toBeUndefined()
   })
+
+  // 特別警報の下げ止まり（`everSpecialWarning`）。震度が下がる続報が来ても、一度特別警報
+  // （震度6弱以上）に達した事実は残す（アプリ独自の判断。eew-spec.md §4）。
+  describe('特別警報の下げ止まり', () => {
+    // 正: 初報が特別警報相当（scaleTo:60）→続報で警報未満（scaleTo:40）に下がっても印は残る。
+    it('特別警報になった後の続報で震度が下がっても印は立ったまま', () => {
+      const h = setup()
+      act(() => { h.current.injectEvent(report('1', ['石川県能登'], { scaleTo: 60 })) })
+      act(() => { h.current.injectEvent(report('2', ['石川県能登'], { scaleTo: 40 })) })
+      const eew = [...h.current.activeEEWs.values()][0]
+      expect(eew?.everSpecialWarning).toBe(true)
+    })
+
+    // 対照: 一度も特別警報相当に達していなければ印は立たない。
+    it('特別警報に達していない地震では印が立たない', () => {
+      const h = setup()
+      act(() => { h.current.injectEvent(report('1', ['石川県能登'], { scaleTo: 40 })) })
+      act(() => { h.current.injectEvent(report('2', ['石川県能登'], { scaleTo: 40 })) })
+      const eew = [...h.current.activeEEWs.values()][0]
+      expect(eew?.everSpecialWarning).toBeFalsy()
+    })
+
+    // 安全弁: 解除後に別の eventId で始まった地震は、前の地震の印を引き継がない。
+    it('別の地震（別 eventId）には印を引き継がない', () => {
+      const h = setup()
+      act(() => { h.current.injectEvent(report('1', ['石川県能登'], { scaleTo: 60 })) })
+      act(() => {
+        h.current.injectEvent({
+          ...report('1', ['富山県西部'], { scaleTo: 40 }),
+          id: 'dmdata-eew-other-event',
+          issue: { eventId: 'other-event', serial: '1', time: AT },
+        })
+      })
+      const eews = [...h.current.activeEEWs.values()]
+      const other = eews.find(e => e.issue?.eventId === 'other-event')
+      expect(other?.everSpecialWarning).toBeFalsy()
+    })
+  })
 })
 
 // P2PQuake の補完経路（`enrichEEW`）。standard 版で Yahoo hypoInfo が先に検出した EEW へ
@@ -2063,6 +2103,18 @@ describe('P2PQuake 補完経路も古い報で退行しない', () => {
     act(() => { sockets[0].onEvent?.(p2pReport('5', ['新潟県上越'])) })
     act(() => { h.current.injectEvent(p2pReport('4', ['富山県西部'])) })
     expect(areasOfEnrich(h)).toEqual(['新潟県上越'])
+  })
+
+  // 特別警報の下げ止まり（`everSpecialWarning`）。この経路は `stateRef.current` から読んだ
+  // 既存値を土台に組み立てるため、補完後の区域が弱くても、既に立っていた印を消してはならない
+  // （eew-spec.md §4）。
+  it('補完後に区域の震度が弱くなっても、既に立っていた特別警報の印は消えない', () => {
+    const h = setup()
+    act(() => { h.current.injectEvent({ ...p2pReport('3', ['石川県能登']), areas: [{ pref: '', name: '石川県能登', scaleFrom: 55 as IntensityScale, scaleTo: 60 as IntensityScale, kindCode: '11', arrivalTime: null }] }) })
+    expect([...h.current.activeEEWs.values()][0]?.everSpecialWarning).toBe(true)
+    act(() => { sockets[0].onEvent?.(p2pReport('4', ['新潟県上越'])) }) // scaleTo:50（警報未満）で補完
+    const eew = [...h.current.activeEEWs.values()][0]
+    expect(eew?.everSpecialWarning, '弱い区域の補完で印が消えている').toBe(true)
   })
 })
 

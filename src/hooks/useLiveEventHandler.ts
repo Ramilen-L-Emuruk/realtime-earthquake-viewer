@@ -8,7 +8,7 @@ import { getIntensityLabelWithOrAbove, getIntensityLabelWithApproxAbove } from '
 import { isMaxScaleUnreceived } from '../utils/quakePoints'
 import { formatMagnitudeWithCondition } from '../utils/formatters'
 import {
-  eewMaxScaleInfo, isForecastScaleHigher, isForecastLpgmHigher, eewNoForecastReason, computeSingleEEWLevel, canPresentLpgmClass,
+  eewMaxScaleInfo, isForecastScaleHigher, isForecastLpgmHigher, eewNoForecastReason, computeSingleEEWLevel, computeDisplayEEWLevel, canPresentLpgmClass,
   selectEEWSoundType, eewKindLabel, eewPhase2ScaleStabilityMs, sortEewWarningRegions,
   EEW_PHASE2_STABILITY_MAX_WAIT_MS, EEW_PHASE2_LPGM_STABILITY_MS, eewMaxLpgmClassInfo,
   isUnannouncedHypocenter, eewEventKey,
@@ -5168,6 +5168,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
            * なる。値を束ねたぶん `eewMaxScaleInfo` / `eewMaxLpgmClassInfo` の二度手間も消える。
            */
           const restoredLevel = computeSingleEEWLevel(eew)
+          // `activeEEWLevelsRef` だけは表示用レベルで復元する。**この ref だけ**ウィンドウ
+          // タイトル（`title.setTitle` の無条件経路）の駆動源を兼ねており、生値のままだと
+          // 特別警報の下げ止まり（`computeDisplayEEWLevel`。eew-spec.md §4）が窓をまたいだ
+          // 途中再生で効かず、カードは特別警報のままなのにタイトルだけ警報へ戻る食い違いになる。
+          // 読み上げ側（`spokenEEWLevelsRef` 等）は特別警報の呼称を使わない設計なので、
+          // そちらは `restoredLevel`（生値）のまま据え置く。
+          const restoredDisplayLevel = computeDisplayEEWLevel(eew)
           const restoredScale = eewMaxScaleInfo(eew)
           const restoredLpgm = eewMaxLpgmClassInfo(eew)
           const restoredRegions = eew.warningRegions?.length
@@ -5187,7 +5194,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
                 ? { name: announcedHypo.name, lat: announcedHypo.latitude, lng: announcedHypo.longitude }
                 : 'keep'
 
-          activeEEWLevelsRef.current.set(key, restoredLevel)
+          activeEEWLevelsRef.current.set(key, restoredDisplayLevel)
           spokenEEWScalesRef.current.set(key, restoredScale)
           spokenEEWLpgmClassesRef.current.set(key, restoredLpgm)
           // 区分も復元する。落とすと注入後の最初の続報で「警報。」が付き直し、
