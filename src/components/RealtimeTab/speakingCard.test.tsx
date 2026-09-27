@@ -49,8 +49,15 @@ function cardOf(container: HTMLElement, name: string): HTMLElement {
   return cards[0]
 }
 
-/** 語っている印が付いているか（外側へ添える白のリングで判定する）。 */
-const isLit = (el: HTMLElement) => el.style.boxShadow.includes('255,255,255') || el.style.boxShadow.includes('255, 255, 255')
+/**
+ * 語っている印が付いているか（外側へ添える 7px のリングの有無で判定する）。
+ *
+ * **色そのものでは判定しない。** 語っている印の外側リング（`speakingRingColor`）は
+ * 区分（予報／警報／特別警報）ごとに違う色を持つため、特定の色を探すと区分によって
+ * 判定が食い違う。非speaking時の枠（1px）とspeaking時の外側リング（7px）は太さで
+ * 区別できるので、そちらを見る。
+ */
+const isLit = (el: HTMLElement) => el.style.boxShadow.includes('7px')
 
 const renderTab = (eews: EEWAlert[], speakingEewKey?: string | null) =>
   render(
