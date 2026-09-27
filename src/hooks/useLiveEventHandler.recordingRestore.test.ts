@@ -14,6 +14,7 @@ import { renderHook } from '@testing-library/react'
 import { useLiveEventHandler, createPreWindowQuakeTopics } from './useLiveEventHandler'
 import { DEFAULTS, type AppSettings } from './useSettings'
 import { quakeEventKey } from '../utils/quakeMerge'
+import { playAlertSound } from '../utils/alertSound'
 import type { JMAQuake, JMATsunami, LiveEvent } from '../types/earthquake'
 
 const speeches: { text: string; finish: () => void; done: boolean }[] = []
@@ -474,5 +475,65 @@ describe('窓の手前の復元は電文 1 通ずつ隔離する', () => {
     } finally {
       warn.mockRestore()
     }
+  })
+})
+
+// 特別警報の下げ止まり（`everSpecialWarning`）が、リプレイの窓の手前で復元されたあとも
+// `activeEEWLevelsRef`（音・タブ切替・第 1 フェーズの新規判定を駆動する ref）に引き継がれること。
+// この ref だけ `computeSingleEEWLevel`（生値）ではなく `computeDisplayEEWLevel`（表示用）で
+// 復元しないと、窓の手前で特別警報だった地震が続報で再び特別警報相当へ戻ったとき、
+// 「新規に特別警報になった」と誤認して格上げ音を鳴らし直す（eew-spec.md §4）。
+describe('特別警報の下げ止まりは activeEEWLevelsRef の復元にも及ぶ', () => {
+  /** 特別警報相当だったが、窓の手前の時点では震度が下がっていた報（everSpecialWarning: true）。 */
+  function makeDowngradedEew(sticky: boolean): LiveEvent {
+    return {
+      kind: 'eew', id: 'eew-sticky-1', time: '2026-01-01T12:00:00Z', test: false,
+      earthquake: {
+        originTime: '2026-01-01T12:00:00Z', arrivalTime: '2026-01-01T12:00:20Z', condition: '',
+        hypocenter: { name: '日向灘', latitude: 32.0, longitude: 132.0, depth: 30, magnitude: 6.5 },
+      },
+      severity: 'Warning', cancelled: false,
+      everSpecialWarning: sticky,
+      issue: { eventId: 'evt-sticky', serial: '3', time: '2026-01-01T12:00:00Z' },
+      areas: [{ pref: '宮崎県', name: '宮崎県北部平野部', scaleFrom: 30, scaleTo: 45, kindCode: '10', arrivalTime: null }],
+    } as unknown as LiveEvent
+  }
+
+  /** 同じ地震の続報。震度が再び特別警報相当（震度6強）へ上がる。 */
+  function makeReescalatedEew(): LiveEvent {
+    return {
+      kind: 'eew', id: 'eew-sticky-2', time: '2026-01-01T12:00:05Z', test: false,
+      earthquake: {
+        originTime: '2026-01-01T12:00:00Z', arrivalTime: '2026-01-01T12:00:20Z', condition: '',
+        hypocenter: { name: '日向灘', latitude: 32.0, longitude: 132.0, depth: 30, magnitude: 6.5 },
+      },
+      severity: 'Warning', cancelled: false,
+      issue: { eventId: 'evt-sticky', serial: '4', time: '2026-01-01T12:00:05Z' },
+      areas: [{ pref: '宮崎県', name: '宮崎県北部平野部', scaleFrom: 55, scaleTo: 60, kindCode: '10', arrivalTime: null }],
+    } as unknown as LiveEvent
+  }
+
+  // 正: 復元時点で既に印が立っていれば、続報で生の震度が再び上がっても「新規の格上げ」として
+  // 音を鳴らし直さない（既にその重さは伝え済みという扱い）。
+  it('下げ止まりで復元した地震は、続報で震度が再び上がっても格上げ音を鳴らし直さない', async () => {
+    const sound = vi.mocked(playAlertSound)
+    sound.mockClear()
+    const { handleLiveEvent, restorePreWindowTracking } = setup({ recordingMode: true, soundEnabled: true })
+    restorePreWindowTracking(preWindow(makeDowngradedEew(true)))
+    handleLiveEvent(makeReescalatedEew())
+    await drain()
+    expect(sound.mock.calls.map(c => c[0]), '格上げ音（eewSpecial）が鳴っている').not.toContain('eewSpecial')
+  })
+
+  // 対照: 印が立っていない（一度も特別警報に達していない）地震では、震度が上がれば
+  // 従来どおり格上げ音を鳴らす——正のテストが「そもそも音が鳴らない実装」で通ってしまわないための対。
+  it('印が立っていない地震は、震度が上がれば通常どおり格上げ音を鳴らす', async () => {
+    const sound = vi.mocked(playAlertSound)
+    sound.mockClear()
+    const { handleLiveEvent, restorePreWindowTracking } = setup({ recordingMode: true, soundEnabled: true })
+    restorePreWindowTracking(preWindow(makeDowngradedEew(false)))
+    handleLiveEvent(makeReescalatedEew())
+    await drain()
+    expect(sound.mock.calls.map(c => c[0]), '格上げ音（eewSpecial）が鳴っていない').toContain('eewSpecial')
   })
 })

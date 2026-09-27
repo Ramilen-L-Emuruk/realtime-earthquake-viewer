@@ -1086,6 +1086,11 @@ export interface EEWAlert {
   expired?: boolean
   isFinal?: boolean
   cancelledAt?: Date
+  /**
+   * この地震で、過去のいずれかの報が特別警報相当（震度6弱以上/長周期階級4以上）だったか。
+   * 一度真になったら、以後の報で震度が下がっても真のまま（アプリ独自の判断。→ `computeDisplayEEWLevel`）。
+   */
+  everSpecialWarning?: boolean
   // issue.serial = 情報番号（第N報）
   issue?: {
     eventId?: string

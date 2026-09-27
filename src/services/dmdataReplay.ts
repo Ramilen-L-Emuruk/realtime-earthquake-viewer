@@ -1,7 +1,7 @@
 import { parseEarthquakeFromXml, parseTsunamiFromXml } from './dmdataParser'
 import { parseTar } from '../utils/tarParser'
 import type { JMAQuake, EEWAlert, JMATsunami } from '../types/earthquake'
-import { selectActiveEews } from '../utils/eew'
+import { selectActiveEews, computeEverSpecialWarningEventIds, eewEventKey } from '../utils/eew'
 import { gunzip } from '../utils/gzip'
 import { createArchiveBodyCache } from '../utils/archiveBodyCache'
 import { readArchiveBody, writeArchiveBody } from '../utils/archiveBodyDb'
@@ -1299,7 +1299,21 @@ export function filterPreWindowEvents(
 
   for (const entry of quakeByEventId.values()) result.push(entry)
 
-  result.push(...selectActiveEews(eewReports, targetTime, 'replay'))
+  // 特別警報の下げ止まり（`computeDisplayEEWLevel`）。窓内の全報が揃っているので、
+  // ライブ受信中と同じ精度で判定できる（起動時復元 `fetchDmdataActiveEews` と違い、
+  // 最新報 1 通に制約されない）。
+  const everSpecialByEvent = computeEverSpecialWarningEventIds(eewReports.map(r => r.eew))
+  for (const entry of selectActiveEews(eewReports, targetTime, 'replay')) {
+    const ev = entry.payload.kind === 'event' ? entry.payload.event : undefined
+    if (ev?.kind === 'eew' && everSpecialByEvent.has(eewEventKey(ev as EEWAlert))) {
+      result.push({
+        ...entry,
+        payload: { kind: 'event', event: { ...ev, everSpecialWarning: true } },
+      })
+    } else {
+      result.push(entry)
+    }
+  }
 
   return result
 }
