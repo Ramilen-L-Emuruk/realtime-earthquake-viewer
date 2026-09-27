@@ -1,0 +1,24 @@
+{
+  // 管理コンソール（`seismo-host/src/admin/`）はブラウザで動く。DOM 型が要るのに
+  // Node 型は不要という点で `tsconfig.seismo-host.json`（ホスト本体・Node 専用）とは
+  // 前提が逆になるため、別プロジェクトへ分ける。
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.seismo-host-admin.tsbuildinfo",
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedSideEffectImports": true,
+    "types": []
+  },
+  "include": ["seismo-host/src/admin/**/*.ts"]
+}

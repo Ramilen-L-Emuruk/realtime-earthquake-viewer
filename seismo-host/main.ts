@@ -49,6 +49,8 @@ import {
 import type { StationConfig } from './src/receiver/stationConfig'
 import { StationHealthBook } from './src/receiver/stationHealth'
 import { buildStatusReport } from './src/receiver/statusReport'
+import { buildAdminConsoleAssets } from './src/receiver/adminConsoleAssets'
+import type { AdminConsoleAssets } from './src/receiver/adminConsoleAssets'
 import { startStatusServer } from './src/receiver/statusServer'
 import { SourceRateLimit } from './src/receiver/sourceRateLimit'
 import { startUdpReceiver } from './src/receiver/udpReceiver'
@@ -1239,6 +1241,25 @@ async function main(): Promise<void> {
 
   console.log(`[udp] ${address ?? '0.0.0.0'}:${receiver.port} で待ち受け中`)
 
+  // **起動時に 1 回だけビルドする。** esbuild は高速（数十ミリ秒程度）で、
+  // リクエストのたびに作り直す理由が無い（`adminConsoleAssets.ts` 参照）。
+  //
+  // **失敗しても地震計本体は止めない。** 管理コンソールは補助機能（見られても
+  // 書き込みはできない）で、esbuild のビルド失敗（構文エラー・ARM 環境での
+  // ネイティブバイナリ解決失敗等）は既に開いた UDP 受信・`/status`・`/stream`・
+  // `/api/*` の可用性と無関係——道連れにすると「地震計が落ちている」という
+  // 重大障害の原因が実は補助 UI のビルド失敗だった、という調査の遠回りが起きる
+  // （#313 段 C 敵対的レビューで検出）。失敗時は `/admin` だけ 503 で応じる
+  // （`statusServer.ts` の `adminConsole === null` 分岐）。
+  let adminConsole: AdminConsoleAssets | null
+  try {
+    adminConsole = buildAdminConsoleAssets()
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    console.error(`[admin] 管理コンソールのビルドに失敗、/admin を無効化する: ${detail}`)
+    adminConsole = null
+  }
+
   // **開けなければ落ちる。** 受信だけ生きていて状態も押し出しも届かない状態は、
   // 外から見ると「基板が黙っている」のと見分けが付かない。
   const statusServer = await startStatusServer({
@@ -1250,6 +1271,7 @@ async function main(): Promise<void> {
       get: () => currentStationConfig,
       apply: applyStationConfig,
     },
+    adminConsole,
     // **呼ばれた時点で組み立てる。** 溜め込んだものを返すと、見に来た人が
     // 「いつの様子か」を自分で確かめられない。
     status: () =>

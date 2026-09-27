@@ -48,6 +48,7 @@
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
     "cross-env": "^7.0.3",
+    "esbuild": "^0.28.2",
     "fake-indexeddb": "^6.2.5",
     "jsdom": "^30.0.1",
     "mapshaper": "^0.7.49",

@@ -471,10 +471,10 @@ IP アドレスへ向け直し、ブラウザに社内・宅内の機器を叩�
 
 | 口 | 中身 |
 |---|---|
-| `GET /api/stations` | 観測点の一覧 |
+| `GET /api/stations` | 観測点の一覧。`{ stations: StationInfo[] }` |
 | `PUT /api/stations/:stationId` | 観測点を作成・更新する（upsert）。ボディは `{ displayName, lat, lon }` |
 | `DELETE /api/stations/:stationId` | 観測点を削除する。基板が割り当て済みなら `409 station-in-use` で拒む |
-| `GET /api/boards` | 基板（観測点への割当・センサー校正値）の一覧 |
+| `GET /api/boards` | 基板（観測点への割当・センサー校正値）の一覧。`{ boards: BoardEntry[] }` |
 | `PUT /api/boards/:boardKey` | 基板を作成・更新する（upsert）。ボディは `{ stationId, sensors }`（下記「観測点・基板・センサー校正の設定」節の `sensors[]` 形式）。`stationId` が存在しなければ `400` |
 | `DELETE /api/boards/:boardKey` | 基板の割当と校正値（`sensors[]`）を丸ごと削除する（観測点自体は消さない） |
 
@@ -489,6 +489,51 @@ IP アドレスへ向け直し、ブラウザに社内・宅内の機器を叩�
 **書き込みはすべて `parseStationConfig`（下記「観測点・基板・センサー校正の設定」節の
 検証ロジック）を通してから保存する。** 検証に失敗したら `400 invalid-config` を返し、
 ディスクにも実行中の状態にも触れない。
+
+### 管理コンソール本体（`GET /admin`）
+
+`/api/stations`・`/api/boards`・`/status` を叩くブラウザ向けの画面（#313 段 C）。
+バニラ TypeScript（`src/admin/`）を esbuild でバンドルし、ホストの起動時に一度だけ
+メモリ上でビルドする（`src/receiver/adminConsoleAssets.ts`）——ディスクへは書き出さない。
+起動のたびにソースの最新を配ることになり、成果物を git 管理するか `.gitignore` するかの
+判断を丸ごと避けられる。
+
+| 口 | 中身 |
+|---|---|
+| `GET /admin`・`GET /admin/` | 画面本体（HTML） |
+| `GET /admin/app.js` | 画面のロジック（バンドル済み JS） |
+
+**この経路自体は認証を持たない。** 見られても書き込みはできない——観測点・基板の編集は
+画面内で管理トークンを入力させ（`localStorage` に保存）、以後の `/api/*` 呼び出しへ
+`Authorization: Bearer` として付ける。同一オリジンで配信しているため、
+`SEISMO_ADMIN_ALLOWED_ORIGINS` にこの画面のオリジンを別途足す必要は無い。
+
+**同一オリジンの GET は `Origin` ヘッダを省略することがある。** 実機（Chrome）で確認した
+——画面内から `fetch('/api/stations')` を呼ぶと、`mode: 'cors'` を指定しても `Origin` が
+付かない（CORS 仕様上、同一オリジンのリクエストに `Origin` を要求しないため。偽装では
+ない）。`checkAdminAuth`（上記「`/api/*` の認証」・`adminAuth.ts`）は `Origin` が
+省略されているとき `Sec-Fetch-Site: same-origin` を代わりに見る——このヘッダはブラウザが
+自動で付け、ページの JS からは書き換えられないため、`Origin` を省略した正当な同一オリジン
+リクエストであることの証拠になる。**`Origin` が提示されているときは、`Sec-Fetch-Site` の
+値によらず従来どおり許可リストと照合する**——迂回の抜け道にはしていない。
+
+**`Sec-Fetch-Site` が Tailscale Serve 経由でも透過されるかは未確認。** 上記の確認は
+dev サーバーへの直接アクセスでの実測（`SEISMO_ADMIN_ALLOWED_HOSTS` の既定値の
+「未確認」と同種の限界）。リバースプロキシの類は `Sec-` 接頭辞のヘッダを保持しない
+ことがあり、Fetch Metadata Request Headers 自体も対応が遅いブラウザ・組み込み
+WebView では送信されない。透過されない環境では、管理コンソール自身が `/api/*` を
+叩くたびに `origin-not-allowed` で失敗し続ける——実機（Tailscale Serve 経由）で
+確認でき次第、この節を更新する。
+
+**画面に含む機能**: 観測点・基板の作成・更新・削除（`/api/stations`・`/api/boards` の
+薄いフロントエンド）と、稼働状況（`GET /status` を 5 秒ごとに読んで表示。センサーの
+受信状況・観測点合成の震度・生データ保存状況等）。
+
+**`sensors[]`（校正値）は JSON で直接編集する。** 行列・オフセット・感度・ノイズ密度を
+フィールドごとの入力欄に分けていない——運用者（開発者自身）が直接扱う値であり、
+センサー数だけ動的に増減するフォームを作るコストに見合わないと判断した。
+`GET /api/boards` が返す形をそのまま textarea に出し、コピペで直せるようにしている
+（`PUT` が全置換であることの手当てにもなる。上記「`/api/stations`・`/api/boards`」参照）。
 
 ### 観測点・基板・センサー校正の設定（何をどこへ置いたか）
 

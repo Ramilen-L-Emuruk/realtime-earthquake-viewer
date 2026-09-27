@@ -3,6 +3,7 @@
   "references": [
     { "path": "./tsconfig.app.json" },
     { "path": "./tsconfig.node.json" },
-    { "path": "./tsconfig.seismo-host.json" }
+    { "path": "./tsconfig.seismo-host.json" },
+    { "path": "./tsconfig.seismo-host-admin.json" }
   ]
 }

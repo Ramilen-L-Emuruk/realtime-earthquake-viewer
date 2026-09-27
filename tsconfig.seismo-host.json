@@ -19,5 +19,8 @@
   },
   // `src/utils/knet/seismicIntensity.ts` を通して fft-js を読むので、その型宣言も
   // この構成へ入れる（fft-js は型を同梱していない）。
-  "include": ["seismo-host/**/*.ts", "src/types/fft-js.d.ts"]
+  "include": ["seismo-host/**/*.ts", "src/types/fft-js.d.ts"],
+  // 管理コンソール（`src/admin/`）はブラウザ向けで Node 型と衝突するため、
+  // 別プロジェクト（`tsconfig.seismo-host-admin.json`）へ分けている。
+  "exclude": ["seismo-host/src/admin/**/*.ts"]
 }
