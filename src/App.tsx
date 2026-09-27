@@ -998,10 +998,14 @@ export function App() {
 
   // 通知音・読み上げのどちらかが有効なときだけキープアライブを鳴らす（両方無効なら
   // 実際に鳴らすものが無く、常時再生する意味も無い）。setSoundVolume() 側の
-  // 「音量0=無音」という既存の契約と同じ理由で、鳴らす予定が無いのに鳴らし続けない
+  // 「音量0=無音」という既存の契約と同じ理由で、鳴らす予定が無いのに鳴らし続けない。
+  // **録画モード中は止める。** 20Hz の常時ループ音は動画のエンコード・シークで可聴の
+  // アーティファクトに化けうるため、それを消すことを優先する。**このトレードオフとして、
+  // 通知音の間隔が長く空く録画中はキープアライブが守っていたハードウェア起床遅延が
+  // 再発しうる**ことを受け入れている（→ audio-tts-spec.md §2「キープアライブ」）。
   useEffect(() => {
-    setKeepAliveEnabled(settings.soundEnabled || settings.voicevoxEnabled)
-  }, [settings.soundEnabled, settings.voicevoxEnabled])
+    setKeepAliveEnabled((settings.soundEnabled || settings.voicevoxEnabled) && !settings.recordingMode)
+  }, [settings.soundEnabled, settings.voicevoxEnabled, settings.recordingMode])
 
   // TTS の読み辞書をアプリ起動時に事前ロードする（VOICEVOX 有効・無効に関わらず）。
   // 手で書いた句区切り辞書と、生成物 2 つ（震度観測点名の読み・震央地名の句割り）。
