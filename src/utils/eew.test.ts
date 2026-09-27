@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { eewEpicenterRankLabel, eewMagnitudeRankLabel, eewMagnitudePointsLabel, isEewHypocenterSettled, eewForecastChangeText, calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, calcEEWCancelTime, calcFeltRadiusKm, diffHypoInfoEvents, computeSingleEEWLevel, eewMaxLpgmClass, eewMaxScale, eewMaxScaleInfo, isForecastScaleHigher, eewNoForecastReason, canPresentLpgmClass, eewSerial, selectEEWSoundType, eewPhase2ScaleStabilityMs, EEW_PHASE2_STABILITY_SMALL_MS, EEW_PHASE2_STABILITY_LARGE_MS, isEewAreaArrived, selectActiveEews, isUnannouncedHypocenter, EEW_HYPOCENTER_RESTATE_KM, mergeEewAreaArrival, NO_EEW_AREA_ARRIVAL, eewArrivalEtaSecFromMs, type HypoInfoPendingMissing, type AnnouncedHypocenter } from './eew'
+import { eewEpicenterRankLabel, eewMagnitudeRankLabel, eewMagnitudePointsLabel, isEewHypocenterSettled, eewForecastChangeText, calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, calcEEWCancelTime, calcFeltRadiusKm, diffHypoInfoEvents, computeSingleEEWLevel, computeDisplayEEWLevel, computeEverSpecialWarningEventIds, eewMaxLpgmClass, eewMaxScale, eewMaxScaleInfo, isForecastScaleHigher, eewNoForecastReason, canPresentLpgmClass, eewSerial, selectEEWSoundType, eewPhase2ScaleStabilityMs, EEW_PHASE2_STABILITY_SMALL_MS, EEW_PHASE2_STABILITY_LARGE_MS, isEewAreaArrived, selectActiveEews, isUnannouncedHypocenter, EEW_HYPOCENTER_RESTATE_KM, mergeEewAreaArrival, NO_EEW_AREA_ARRIVAL, eewArrivalEtaSecFromMs, type HypoInfoPendingMissing, type AnnouncedHypocenter } from './eew'
 import type { YahooHypoInfoItem } from '../services/kyoshin'
 import type { EEWAlert, EEWRegion, IntensityScale, LpgmClass } from '../types/earthquake'
 
@@ -276,6 +276,56 @@ describe('computeSingleEEWLevel', () => {
   it('震度6弱以上と長周期地震動階級4以上を同時に満たしてもレベル2のまま', () => {
     const eew = makeEEW({ forecastMaxScale: 60, forecastMaxLpgmClass: 4 })
     expect(computeSingleEEWLevel(eew)).toBe(2)
+  })
+})
+
+describe('computeDisplayEEWLevel（特別警報の下げ止まり）', () => {
+  // 正: 震度が下がっても everSpecialWarning が立っていればレベル2のまま。
+  it('everSpecialWarning が立っていれば、震度が下がってもレベル2を返す', () => {
+    const eew = makeEEW({ forecastMaxScale: 45, everSpecialWarning: true })
+    expect(computeSingleEEWLevel(eew)).toBe(1)
+    expect(computeDisplayEEWLevel(eew)).toBe(2)
+  })
+
+  // 対照: 印が立っていなければ生値のまま（下げ止まりは効かない）。
+  it('everSpecialWarning が無ければ生値のレベルをそのまま返す', () => {
+    const eew = makeEEW({ forecastMaxScale: 45 })
+    expect(computeDisplayEEWLevel(eew)).toBe(1)
+  })
+
+  // 安全弁: 下げ止まりは特別警報（レベル2）だけの特別扱い。予報→警報（レベル0→1）の
+  // 格上げには適用しない設計なので、severity が Forecast なら everSpecialWarning が
+  // 立っていてもレベル2のまま出す（気象庁の運用上そもそも起きない組み合わせだが、
+  // 「下げ止まりは severity を上書きしない」という不変条件を固定する）。
+  it('severity が Forecast でも everSpecialWarning が立っていればレベル2を返す', () => {
+    const eew = makeEEW({ severity: 'Forecast', everSpecialWarning: true })
+    expect(computeSingleEEWLevel(eew)).toBe(0)
+    expect(computeDisplayEEWLevel(eew)).toBe(2)
+  })
+})
+
+describe('computeEverSpecialWarningEventIds', () => {
+  // 正: 同じ地震の複数報のうち1つでもレベル2ならその eventId を含む。
+  it('同じ id の報のいずれかがレベル2なら、その id を含む', () => {
+    const first = makeEEW({ id: 'evt-1', forecastMaxScale: 40 })
+    const second = makeEEW({ id: 'evt-1', forecastMaxScale: 60 })
+    const ids = computeEverSpecialWarningEventIds([first, second])
+    expect(ids.has('evt-1')).toBe(true)
+  })
+
+  // 対照: 一度もレベル2に達していない地震は含まない。
+  it('一度もレベル2に達していない id は含まない', () => {
+    const eew = makeEEW({ id: 'evt-2', forecastMaxScale: 40 })
+    const ids = computeEverSpecialWarningEventIds([eew])
+    expect(ids.has('evt-2')).toBe(false)
+  })
+
+  // 安全弁: 生レベルは1でも、既に everSpecialWarning が立っている報からも拾う
+  // （起動時復元のように 1 通しか手に入らない経路で、過去の印を引き継ぐ動線）。
+  it('生レベルが1でも everSpecialWarning が立っていれば含む', () => {
+    const eew = makeEEW({ id: 'evt-3', forecastMaxScale: 40, everSpecialWarning: true })
+    const ids = computeEverSpecialWarningEventIds([eew])
+    expect(ids.has('evt-3')).toBe(true)
   })
 })
 

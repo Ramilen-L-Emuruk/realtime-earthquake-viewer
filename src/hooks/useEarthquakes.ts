@@ -21,7 +21,7 @@ import type { QuakeRetraction } from '../utils/quakeMerge'
 import { withBorrowedFromTsunami, borrowFromTsunamiIntoCards } from '../utils/borrowFromTsunami'
 import { loadStationCoords, onStationCoordsLoaded, buildAreaPrefIndex, getAreaPrefIndexCache } from '../utils/stationCoords'
 import type { AreaPrefIndex } from '../utils/quakePoints'
-import { calcEEWCancelTime, eewSerial, eewEventKey } from '../utils/eew'
+import { calcEEWCancelTime, eewSerial, eewEventKey, computeSingleEEWLevel } from '../utils/eew'
 import { recordReplayEvent, type ReplayTelegramSkip } from '../utils/replayEventLog'
 import { replayTelegramFacts, type ReplayTelegramSource } from '../utils/replayTelegramRef'
 import { decideEstimatedIntensityUpdate, isNewEstimatedIntensity, rememberShownEstimatedIntensity } from '../utils/estimatedIntensity'
@@ -868,7 +868,7 @@ export function useEarthquakes(
     // 現状 enrichEEW の呼び出し元は P2PQuake code=556 のみで source.severity は常に
     // Warning。`source.severity ?? existing.severity` は将来別ソースから呼ばれる場合の
     // 防御分岐（severity は必須プロパティなので現状 undefined にはならない）。
-    const enriched: EEWAlert = {
+    const enrichedBase: EEWAlert = {
       ...existing,
       severity: existing.severity === 'Warning' ? 'Warning' : (source.severity ?? existing.severity),
       // 報番号も進める。中身だけ新しくして番号を据え置くと、格納した EEW の報番号が内容の
@@ -882,8 +882,27 @@ export function useEarthquakes(
         hypocenter: source.earthquake.hypocenter,
       },
     }
+    // 特別警報の下げ止まり（`computeDisplayEEWLevel`）。areas の注入で震度が動くため、
+    // ここでも既存の印を引き継いだうえで判定し直す（マージ処理と同じ規約）。
+    const enriched: EEWAlert = {
+      ...enrichedBase,
+      everSpecialWarning: existing.everSpecialWarning || computeSingleEEWLevel(enrichedBase) === 2,
+    }
     if (sourceSerial !== null) acceptedEewSerialRef.current.set(eventId, sourceSerial)
-    setState(prev => ({ ...prev, activeEEWs: new Map(prev.activeEEWs).set(eventId, enriched) }))
+    setState(prev => {
+      // `enriched` は呼び出し時点の `stateRef.current`（レンダー待ちで古いことがある）から
+      // 組み立てている。この setState が適用されるまでの間にキュー側の続報が
+      // `everSpecialWarning: true` を先に書き込んでいた場合、ここで prev を見ずに丸ごと
+      // 上書きすると、一度立てた印を消すことになり「一度立ったら消えない」という不変条件
+      // （eew-spec.md §4）が破れる。**この 1 フィールドだけ** prev の最新値と OR で守る
+      // （severity・areas 等の巻き戻りは既存の別の問題で、このコミットの範囲外）。
+      const latest = prev.activeEEWs.get(eventId)
+      const merged: EEWAlert = {
+        ...enriched,
+        everSpecialWarning: enriched.everSpecialWarning || (latest?.everSpecialWarning ?? false),
+      }
+      return { ...prev, activeEEWs: new Map(prev.activeEEWs).set(eventId, merged) }
+    })
     // severity が Warning に格上げされた場合、useLiveEventHandler 側の
     // activeEEWLevelsRef（音・通知・タブ切替を駆動する独立トラッカー）が
     // Yahoo の弱い初回推定のままにならないよう、通知層へ再評価を明示的に発火する。
@@ -1855,9 +1874,16 @@ export function useEarthquakes(
             log.debug(`[eew] 取消済みのため非取消の報を無視: key=${key} 受信=#${eew.issue?.serial ?? '(なし)'}`)
             return prev
           }
-          const merged: EEWAlert = existing
+          const base: EEWAlert = existing
             ? { ...eew, severity: existing.severity === 'Warning' ? 'Warning' : eew.severity }
             : eew
+          // 特別警報の下げ止まり（`computeDisplayEEWLevel`）は既存の印を引き継いだうえで、
+          // この報自体がレベル2ならさらに立てる。一度立てたら以後は消えない（アプリ独自の判断。
+          // eew-spec.md §4）。
+          const merged: EEWAlert = {
+            ...base,
+            everSpecialWarning: existing?.everSpecialWarning || computeSingleEEWLevel(base) === 2,
+          }
           return {
             ...prev,
             activeEEWs: new Map(prev.activeEEWs).set(key, merged),
