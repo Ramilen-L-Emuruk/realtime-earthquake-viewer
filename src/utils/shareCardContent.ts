@@ -1,6 +1,6 @@
 import type { EEWAlert, JMAQuake, JMATsunami } from '../types/earthquake'
 import type { MapMode } from '../components/Map/mapTypes'
-import { computeSingleEEWLevel, eewKindLabel, eewMaxScale, eewMaxScaleInfo } from './eew'
+import { computeDisplayEEWLevel, eewKindLabel, eewMaxScale, eewMaxScaleInfo } from './eew'
 import { formatDateTime, formatDepth, formatMagnitude, formatMagnitudeCondition, formatMagnitudeWithCondition, formatTsunamiGrade, hasDepth, hasMagnitude } from './formatters'
 import { getIntensityColor, getIntensityLabelWithOrAbove, getIntensityLabelWithApproxAbove, isValidIntensityScale } from './intensity'
 import { isMaxScaleUnreceived } from './quakePoints'
@@ -182,7 +182,7 @@ function kyoshinContent(liveEews: EEWAlert[]): ContentWithoutNotices {
   const metaParts = [serial ? `第${serial}報` : '', originText ? `${originText} 発生` : ''].filter(Boolean)
   return {
     header: {
-      title: eewKindLabel(computeSingleEEWLevel(eew)),
+      title: eewKindLabel(computeDisplayEEWLevel(eew)),
       titleColor: knownScale ? getIntensityColor(info.scale) : undefined,
       subtitle: parts.join(SUBTITLE_SEPARATOR),
       meta: metaParts.length > 0 ? metaParts.join('　') : undefined,
@@ -201,7 +201,7 @@ function kyoshinContent(liveEews: EEWAlert[]): ContentWithoutNotices {
 function pickMostSevereEew(eews: EEWAlert[]): EEWAlert | null {
   let best: { eew: EEWAlert; level: number; scale: number } | null = null
   for (const eew of eews) {
-    const level = computeSingleEEWLevel(eew)
+    const level = computeDisplayEEWLevel(eew)
     const scale = eewMaxScale(eew)
     if (!best || level > best.level || (level === best.level && scale > best.scale)) best = { eew, level, scale }
   }

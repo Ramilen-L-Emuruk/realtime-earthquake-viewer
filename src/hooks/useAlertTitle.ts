@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { EEWAlert } from '../types/earthquake'
-import { eewMaxScale, eewMaxScaleInfo, eewKindLabel, computeSingleEEWLevel } from '../utils/eew'
+import { eewMaxScale, eewMaxScaleInfo, eewKindLabel, computeDisplayEEWLevel } from '../utils/eew'
 import { getIntensityLabelWithApproxAbove } from '../utils/intensity'
 
 // ウィンドウタイトル（情報タイトル）管理フック。
@@ -26,7 +26,7 @@ export function computeEEWTitle(eews: ReadonlyMap<string, EEWAlert>): string {
   // （0 になる条件は `condition` ではなく「電文に値があるか」。気象庁が最大予測震度を発表しないのは
   // 「観測点 1 点による震度予測」と「深さ 150km 超」で、該当すれば電文に値が入らない）
   const maxLevel = Array.from(eews.values())
-    .reduce<0 | 1 | 2>((m, e) => Math.max(m, computeSingleEEWLevel(e)) as 0 | 1 | 2, 0)
+    .reduce<0 | 1 | 2>((m, e) => Math.max(m, computeDisplayEEWLevel(e)) as 0 | 1 | 2, 0)
   return `${eewKindLabel(maxLevel)} ${primary.earthquake.hypocenter.name}` +
     (scale > 0 ? ` 最大震度${getIntensityLabelWithApproxAbove(scale, orAbove)}予想` : '') +
     (eews.size > 1 ? ` 他${eews.size - 1}件` : '')
