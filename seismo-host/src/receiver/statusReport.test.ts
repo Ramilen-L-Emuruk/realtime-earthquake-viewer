@@ -273,6 +273,75 @@ describe('buildStatusReport', () => {
     expect(report.sensors[0].calibrationConfigured).toBe(false)
   })
 
+  it('正: enabled: false のセンサーは、震度が凍結していても /status で無効と分かる', () => {
+    const stations = new StationDirectory({
+      stations: [{ stationId: 'study', displayName: '書斎', lat: 35.6, lon: 139.7 }],
+      boards: [
+        {
+          boardKey: 'mac:aa',
+          stationId: 'study',
+          sensors: [
+            {
+              sensorId: 's0',
+              enabled: false,
+              rotation: [
+                [1, 0, 0],
+                [0, 1, 0],
+                [0, 0, 1],
+              ],
+              offset: [0, 0, 0],
+              sensitivity: [1, 1, 1],
+              noiseDensity: null,
+            },
+          ],
+        },
+      ],
+    })
+    const report = buildStatusReport(input({ stations }))
+
+    expect(report.sensors[0].enabled).toBe(false)
+  })
+
+  it('安全弁: 校正値は設定してあるが無効化していないセンサーは calibrationConfigured・enabled ともに true', () => {
+    // **`enabled` を `calibrationConfigured` の否定で代用していないことを固定する。**
+    // 上の「正」（calibrationConfigured=true×enabled=false）と下の「対照」
+    // （calibrationConfigured=false×enabled=true）だけでは、`enabled` を
+    // `!calibrationConfigured` に壊しても両方たまたま通ってしまう。
+    const stations = new StationDirectory({
+      stations: [{ stationId: 'study', displayName: '書斎', lat: 35.6, lon: 139.7 }],
+      boards: [
+        {
+          boardKey: 'mac:aa',
+          stationId: 'study',
+          sensors: [
+            {
+              sensorId: 's0',
+              enabled: true,
+              rotation: [
+                [1, 0, 0],
+                [0, 1, 0],
+                [0, 0, 1],
+              ],
+              offset: [0, 0, 0],
+              sensitivity: [1, 1, 1],
+              noiseDensity: null,
+            },
+          ],
+        },
+      ],
+    })
+    const report = buildStatusReport(input({ stations }))
+
+    expect(report.sensors[0].calibrationConfigured).toBe(true)
+    expect(report.sensors[0].enabled).toBe(true)
+  })
+
+  it('対照: 割り当てが無ければ enabled は既定値どおり true', () => {
+    const report = buildStatusReport(input({ stations: StationDirectory.empty() }))
+
+    expect(report.sensors[0].enabled).toBe(true)
+  })
+
   it('正: 観測点設定の読み込み警告を、標準出力だけでなく状態の口にも出す', () => {
     const report = buildStatusReport(
       input({ stationConfigWarning: 'stations[0].boardKey が不正: "study"' }),

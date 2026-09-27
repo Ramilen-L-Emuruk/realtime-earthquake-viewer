@@ -598,7 +598,22 @@ async function main(): Promise<void> {
   const address = process.env.SEISMO_UDP_ADDRESS
   const httpPort = readPort(process.env.SEISMO_HTTP_PORT, DEFAULT_HTTP_PORT, 'SEISMO_HTTP_PORT')
   const httpAddress = process.env.SEISMO_HTTP_ADDRESS
-  const pipeline = new IntensityPipeline()
+
+  // **割り当ては任意。** ファイルが無い・壊れているときも起動は止めない——
+  // 観測点を知らないだけで、震度を出す仕事とは無関係（`stationConfig.ts` の設計原則）。
+  // ただし黙って空にはしない。
+  //
+  // **`pipeline` より先に作る。** 校正（REQUIREMENTS.md §16）の適用にはセンサーの
+  // 割り当てが要るので、`IntensityPipeline` のコンストラクタへ渡す。
+  const stationConfigLoad = loadStationConfig(
+    process.env.SEISMO_STATION_CONFIG ?? defaultStationConfigPath(),
+  )
+  if (stationConfigLoad.warning !== null) {
+    console.warn(`[station] 観測点の設定を読めなかった: ${stationConfigLoad.warning}`)
+  }
+  const stations = new StationDirectory(stationConfigLoad.config)
+
+  const pipeline = new IntensityPipeline({ stations })
   const tally = new PacketTally()
   const rateLimit = new SourceRateLimit()
   const throttle = new LogThrottle()
@@ -608,17 +623,6 @@ async function main(): Promise<void> {
   // **作れなければここで落ちる。** 黙って保存せずに走るのがいちばん悪い ——
   // 基板は送っていて震度も出ていて、生だけが残っていない状態に外から気づけない。
   const rawStore = new RawStore({ dir: process.env.SEISMO_RAW_DIR ?? defaultRawDir() })
-
-  // **割り当ては任意。** ファイルが無い・壊れているときも起動は止めない——
-  // 観測点を知らないだけで、震度を出す仕事とは無関係（`stationConfig.ts` の設計原則）。
-  // ただし黙って空にはしない。
-  const stationConfigLoad = loadStationConfig(
-    process.env.SEISMO_STATION_CONFIG ?? defaultStationConfigPath(),
-  )
-  if (stationConfigLoad.warning !== null) {
-    console.warn(`[station] 観測点の設定を読めなかった: ${stationConfigLoad.warning}`)
-  }
-  const stations = new StationDirectory(stationConfigLoad.config)
 
   /**
    * 間引きを通して 1 行出す。
