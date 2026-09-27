@@ -106,6 +106,49 @@ export function readPort(
   return port
 }
 
+/**
+ * `/api/*` の共有トークン。**空文字列は「無い」と同じに扱う**——`SEISMO_ADMIN_TOKEN=`
+ * のように値を書き忘れた環境変数を、そのまま比較対象のトークンとして使ってしまうと、
+ * 空文字列どうしの一致で誰でも通ってしまいうる（実際には `Bearer ` の後ろが空なら
+ * `adminAuth.ts` の `missing-authorization` で弾かれるが、意図を明確にするため
+ * ここでも弾く）。
+ */
+export function readAdminToken(raw: string | undefined): string | null {
+  if (raw === undefined) return null
+  const trimmed = raw.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+/** カンマ区切りの一覧を読む。空要素は無視する。 */
+export function readAllowList(raw: string | undefined): readonly string[] {
+  if (raw === undefined) return []
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+}
+
+/**
+ * `SEISMO_ADMIN_ALLOWED_HOSTS` の既定値。**Tailscale Serve がバックエンドへ
+ * プロキシする際の `Host` ヘッダを想定した推測**（REQUIREMENTS.md §13 の decision の
+ * 実測はまだ無い）。環境変数で上書きできるのはこのため。
+ */
+function defaultAdminAllowedHosts(httpPort: number): readonly string[] {
+  return [`127.0.0.1:${httpPort}`, `localhost:${httpPort}`]
+}
+
+/**
+ * `raw` が空文字列・空白だけの場合も既定値へ倒す。**`readAllowList` をそのまま使うと
+ * 空文字列が「明示的な空配列」（＝誰も通さない）になり、`readAdminToken` の「空文字列は
+ * 未設定と同じ」という判断と食い違う**——`.env` の空値コピペのような打ち間違いで
+ * `/api/*` が理由の分からないまま `host-not-allowed` に固定される事故につながる
+ * （敵対的レビューで指摘された）。
+ */
+export function readAdminAllowedHosts(raw: string | undefined, httpPort: number): readonly string[] {
+  if (raw === undefined || raw.trim().length === 0) return defaultAdminAllowedHosts(httpPort)
+  return readAllowList(raw)
+}
+
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
@@ -743,6 +786,29 @@ async function main(): Promise<void> {
   const httpPort = readPort(process.env.SEISMO_HTTP_PORT, DEFAULT_HTTP_PORT, 'SEISMO_HTTP_PORT')
   const httpAddress = process.env.SEISMO_HTTP_ADDRESS
 
+  // **`/api/*`（設定の読み書き・管理操作）の認証。** トークンが無ければその口自体を
+  // 無効化する（`statusServer.ts` の `checkAdminAuth` が `not-configured` を返す）。
+  // 未設定は運用者にまだ管理コンソールを使う気が無いだけかもしれないので、ここで
+  // 起動を止めはしない——止めると、その口を使わない構成（現状の全端末がそう）まで
+  // 起動できなくなる。
+  const adminToken = readAdminToken(process.env.SEISMO_ADMIN_TOKEN)
+  if (adminToken === null) {
+    console.warn('[admin] SEISMO_ADMIN_TOKEN が未設定のため /api/* は無効です')
+  }
+  const adminAllowedOrigins = readAllowList(process.env.SEISMO_ADMIN_ALLOWED_ORIGINS)
+  // **トークンは設定したのに Origin を 1 つも許可していない構成を、黙って見過ごさない。**
+  // `allowedOrigins` の既定は意図的に空（README「運用者が明示するまで誰も通さない」）だが、
+  // トークンまで設定した運用者がこれを見落とすと、「なぜ 403（origin-not-allowed）が
+  // 続くのか」を突き止める手掛かりが起動時のログに無いまま管理コンソールを使い始める。
+  if (adminToken !== null && adminAllowedOrigins.length === 0) {
+    console.warn('[admin] SEISMO_ADMIN_ALLOWED_ORIGINS が未設定のため /api/* はどの Origin からも拒否されます')
+  }
+  const adminAuth = {
+    token: adminToken,
+    allowedHosts: readAdminAllowedHosts(process.env.SEISMO_ADMIN_ALLOWED_HOSTS, httpPort),
+    allowedOrigins: adminAllowedOrigins,
+  }
+
   // **割り当ては任意。** ファイルが無い・壊れているときも起動は止めない——
   // 観測点を知らないだけで、震度を出す仕事とは無関係（`stationConfig.ts` の設計原則）。
   // ただし黙って空にはしない。
@@ -1062,6 +1128,7 @@ async function main(): Promise<void> {
     port: httpPort,
     address: httpAddress,
     hub,
+    adminAuth,
     // **呼ばれた時点で組み立てる。** 溜め込んだものを返すと、見に来た人が
     // 「いつの様子か」を自分で確かめられない。
     status: () =>

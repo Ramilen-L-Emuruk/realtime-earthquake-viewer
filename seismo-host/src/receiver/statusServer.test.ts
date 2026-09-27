@@ -1,5 +1,8 @@
+import { request as httpRequest } from 'node:http'
+
 import { afterEach, describe, expect, it } from 'vitest'
 
+import type { AdminAuthConfig } from './adminAuth'
 import type { IntensityReading, WaveChunk } from './intensityPipeline'
 import { PacketTally } from './packetTally'
 import { ReadingHub } from './readingHub'
@@ -97,11 +100,15 @@ afterEach(async () => {
   running.server = null
 })
 
+/** 既定は `/api/*` を丸ごと無効化する設定（トークン未設定）。 */
+const NO_ADMIN_AUTH: AdminAuthConfig = { token: null, allowedHosts: [], allowedOrigins: [] }
+
 async function start(
   hub: ReadingHub,
   status?: () => StatusReport,
   log?: StatusServerOptions['log'],
   heartbeatMs?: number,
+  adminAuth?: AdminAuthConfig,
 ): Promise<string> {
   // **port 0 で開く。** 固定の番号だと、並んで走る別のテストと取り合う。
   const server = await startStatusServer({
@@ -111,9 +118,47 @@ async function start(
     status: status ?? (() => report(hub)),
     log,
     heartbeatMs,
+    adminAuth: adminAuth ?? NO_ADMIN_AUTH,
   })
   running.server = server
   return `http://127.0.0.1:${server.port}`
+}
+
+/**
+ * `Host` ヘッダを偽装したいテストのためだけに `node:http` の生のクライアントを使う。
+ *
+ * **`fetch`（undici）では出来ない**——実測したところ、`headers: { Host: ... }` を
+ * 渡しても実際に送られる `Host` ヘッダは接続先の URL から作り直される（ブラウザの
+ * fetch 仕様どおり `Host` は forbidden request-header）。DNS rebinding 対策の
+ * 判定そのものをテストするには、この経路でしか偽装できない。
+ */
+function requestWithHost(
+  base: string,
+  path: string,
+  hostHeader: string,
+  extraHeaders: Record<string, string> = {},
+): Promise<{ status: number; body: string }> {
+  const url = new URL(path, base)
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      {
+        hostname: url.hostname,
+        port: url.port,
+        path: url.pathname + url.search,
+        method: 'GET',
+        headers: { Host: hostHeader, ...extraHeaders },
+      },
+      (res) => {
+        let body = ''
+        res.on('data', (chunk: Buffer) => {
+          body += chunk.toString('utf8')
+        })
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body }))
+      },
+    )
+    req.on('error', reject)
+    req.end()
+  })
 }
 
 /**
@@ -377,5 +422,149 @@ describe('startStatusServer', () => {
     while (hub.openCount > 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10))
 
     expect(hub.openCount).toBe(0)
+  })
+})
+
+describe('/api/*', () => {
+  const TOKEN = 'super-secret-token'
+  const ORIGIN = 'https://console.example.ts.net'
+
+  /**
+   * `Host` の許可リストにはリッスンするポートが要るが、`port: 0` は開いてみるまで
+   * 実ポートが分からない。**先に空きポートを 1 つ確保し、そのポートで確実に開く**
+   * ことで、起動前に `allowedHosts` を組み立てられるようにする（ポートの奪い合いは
+   * 理論上あり得るが、テスト用途としては許容する）。
+   */
+  async function getFreePort(): Promise<number> {
+    const { createServer: createNetServer } = await import('node:net')
+    return new Promise((resolve, reject) => {
+      const probe = createNetServer()
+      probe.once('error', reject)
+      probe.listen(0, '127.0.0.1', () => {
+        const addr = probe.address()
+        const port = typeof addr === 'object' && addr !== null ? addr.port : 0
+        probe.close(() => resolve(port))
+      })
+    })
+  }
+
+  /** 認証あり・許可済み Host/Origin で待ち受けを開く。 */
+  async function startAuthed(
+    hub: ReadingHub,
+    overrides: Partial<AdminAuthConfig> = {},
+    log?: StatusServerOptions['log'],
+  ): Promise<string> {
+    const port = await getFreePort()
+    const adminAuth: AdminAuthConfig = {
+      token: TOKEN,
+      allowedHosts: [`127.0.0.1:${port}`],
+      allowedOrigins: [ORIGIN],
+      ...overrides,
+    }
+    const server = await startStatusServer({
+      port,
+      address: '127.0.0.1',
+      hub,
+      status: () => report(hub),
+      adminAuth,
+      log,
+    })
+    running.server = server
+    return `http://127.0.0.1:${server.port}`
+  }
+
+  it('トークンが未設定なら 503（既定の NO_ADMIN_AUTH）', async () => {
+    const base = await start(new ReadingHub())
+    const res = await fetch(`${base}/api/config`)
+    expect(res.status).toBe(503)
+    expect(await res.json()).toEqual({ error: 'not-configured' })
+  })
+
+  it('トークン無しなら 401', async () => {
+    const base = await startAuthed(new ReadingHub())
+    const res = await fetch(`${base}/api/config`, { headers: { Origin: ORIGIN } })
+    expect(res.status).toBe(401)
+    expect(await res.json()).toEqual({ error: 'missing-authorization' })
+  })
+
+  it('トークンが違えば 401', async () => {
+    const base = await startAuthed(new ReadingHub())
+    const res = await fetch(`${base}/api/config`, {
+      headers: { Authorization: 'Bearer wrong', Origin: ORIGIN },
+    })
+    expect(res.status).toBe(401)
+    expect(await res.json()).toEqual({ error: 'invalid-token' })
+  })
+
+  it('トークン・Host・Origin が全て正しければ通り、まだ口が無いので 404', async () => {
+    const base = await startAuthed(new ReadingHub())
+    const res = await fetch(`${base}/api/config`, {
+      headers: { Authorization: `Bearer ${TOKEN}`, Origin: ORIGIN },
+    })
+    expect(res.status).toBe(404)
+  })
+
+  it('Origin が許可リストに無ければ 403', async () => {
+    const base = await startAuthed(new ReadingHub())
+    const res = await fetch(`${base}/api/config`, {
+      headers: { Authorization: `Bearer ${TOKEN}`, Origin: 'https://evil.example.com' },
+    })
+    expect(res.status).toBe(403)
+    expect(await res.json()).toEqual({ error: 'origin-not-allowed' })
+  })
+
+  it('Host が許可リストに無ければ 403（DNS rebinding 対策）', async () => {
+    const base = await startAuthed(new ReadingHub())
+    const res = await requestWithHost(base, '/api/config', 'evil.example.com', {
+      Authorization: `Bearer ${TOKEN}`,
+      Origin: ORIGIN,
+    })
+    expect(res.status).toBe(403)
+    expect(JSON.parse(res.body).error).toBe('host-not-allowed')
+  })
+
+  it('preflight（OPTIONS）は認証を見ず、許可された Origin なら 204 を返す', async () => {
+    const base = await startAuthed(new ReadingHub())
+    const res = await fetch(`${base}/api/config`, { method: 'OPTIONS', headers: { Origin: ORIGIN } })
+    expect(res.status).toBe(204)
+    expect(res.headers.get('access-control-allow-origin')).toBe(ORIGIN)
+    expect(res.headers.get('access-control-allow-methods')).toContain('POST')
+  })
+
+  it('preflight でも許可されていない Origin には Access-Control-Allow-Origin を返さない', async () => {
+    const base = await startAuthed(new ReadingHub())
+    const res = await fetch(`${base}/api/config`, {
+      method: 'OPTIONS',
+      headers: { Origin: 'https://evil.example.com' },
+    })
+    expect(res.status).toBe(204)
+    expect(res.headers.get('access-control-allow-origin')).toBeNull()
+  })
+
+  // **Vary は一致・不一致どちらでも付ける**（間に挟まる代理が Origin ごとの
+  // 応答差を無視してキャッシュするのを防ぐ）。
+  it('Origin が許可リストに無くても Vary: Origin は付く', async () => {
+    const base = await startAuthed(new ReadingHub())
+    const res = await fetch(`${base}/api/config`, {
+      headers: { Authorization: `Bearer ${TOKEN}`, Origin: 'https://evil.example.com' },
+    })
+    expect(res.headers.get('vary')).toBe('Origin')
+  })
+
+  it('認証に失敗すると 1 行ログへ出す', async () => {
+    const lines: string[] = []
+    const base = await startAuthed(new ReadingHub(), {}, (level, kind, detail) => {
+      lines.push(`${level}/${kind}/${detail}`)
+    })
+    await fetch(`${base}/api/config`, {
+      headers: { Authorization: 'Bearer wrong', Origin: ORIGIN },
+    })
+    expect(lines).toContain('warn/admin/invalid-token')
+  })
+
+  it('/status・/stream は認証を持たず、これまでどおり応答する（安全弁）', async () => {
+    const base = await startAuthed(new ReadingHub())
+    const res = await fetch(`${base}/status`)
+    expect(res.status).toBe(200)
   })
 })
