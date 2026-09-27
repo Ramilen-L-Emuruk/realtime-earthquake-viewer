@@ -105,6 +105,13 @@ afterEach(async () => {
 const NO_ADMIN_AUTH: AdminAuthConfig = { token: null, allowedHosts: [], allowedOrigins: [] }
 
 /**
+ * テスト用の管理コンソールアセット。**`buildAdminConsoleAssets()` を呼ばない**——
+ * esbuild を毎テストで走らせる理由が無く、ここで確かめたいのは配信の配線であって
+ * ビルドの中身ではない（ビルドそのものは `adminConsoleAssets.test.ts` が持つ）。
+ */
+const TEST_ADMIN_CONSOLE: StatusServerOptions['adminConsole'] = { html: '<html>admin</html>', js: 'console.log(1)' }
+
+/**
  * テスト用の観測点設定の読み書き。**インメモリで完結する**——`apply` が書いた内容を
  * 次の `get` が返す（`main.ts` の実装と同じ「保存してから返す」契約を、テストでは
  * ディスクを経由せず再現する）。
@@ -126,6 +133,7 @@ async function start(
   heartbeatMs?: number,
   adminAuth?: AdminAuthConfig,
   stationConfig?: StatusServerOptions['stationConfig'],
+  adminConsole?: StatusServerOptions['adminConsole'],
 ): Promise<string> {
   // **port 0 で開く。** 固定の番号だと、並んで走る別のテストと取り合う。
   const server = await startStatusServer({
@@ -137,6 +145,9 @@ async function start(
     heartbeatMs,
     adminAuth: adminAuth ?? NO_ADMIN_AUTH,
     stationConfig: stationConfig ?? makeStationConfigOps(),
+    // **`null` を明示的に渡したいテストがあるので `??` は使わない。** `??` だと
+    // `null` も「未指定」と同じ扱いになり、ビルド失敗を再現できない。
+    adminConsole: adminConsole !== undefined ? adminConsole : TEST_ADMIN_CONSOLE,
   })
   running.server = server
   return `http://127.0.0.1:${server.port}`
@@ -443,6 +454,46 @@ describe('startStatusServer', () => {
   })
 })
 
+describe('/admin（管理コンソール本体・#313 段 C）', () => {
+  it('正: GET /admin が HTML を返す', async () => {
+    const base = await start(new ReadingHub())
+    const res = await fetch(`${base}/admin`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toContain('text/html')
+    expect(await res.text()).toBe(TEST_ADMIN_CONSOLE.html)
+  })
+
+  it('正: GET /admin/app.js が JS を返す', async () => {
+    const base = await start(new ReadingHub())
+    const res = await fetch(`${base}/admin/app.js`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toContain('text/javascript')
+    expect(await res.text()).toBe(TEST_ADMIN_CONSOLE.js)
+  })
+
+  // **対照**: ビルド失敗（`adminConsole: null`）のとき、`/admin` は 503 を返す
+  // ——`/status`・`/stream`・`/api/*` を巻き込まないことは別に確認する。
+  it('対照: adminConsole が null（ビルド失敗）なら /admin は 503', async () => {
+    const base = await start(new ReadingHub(), undefined, undefined, undefined, undefined, undefined, null)
+    const res = await fetch(`${base}/admin`)
+    expect(res.status).toBe(503)
+    expect(await res.json()).toEqual({ error: 'admin-console-unavailable' })
+  })
+
+  it('安全弁: adminConsole が null でも /admin/app.js は 503 で応じる（404 ではない）', async () => {
+    const base = await start(new ReadingHub(), undefined, undefined, undefined, undefined, undefined, null)
+    const res = await fetch(`${base}/admin/app.js`)
+    expect(res.status).toBe(503)
+  })
+
+  it('安全弁: adminConsole が null でも /status は普段どおり応じる', async () => {
+    const hub = new ReadingHub()
+    const base = await start(hub, undefined, undefined, undefined, undefined, undefined, null)
+    const res = await fetch(`${base}/status`)
+    expect(res.status).toBe(200)
+  })
+})
+
 describe('/api/*', () => {
   const TOKEN = 'super-secret-token'
   const ORIGIN = 'https://console.example.ts.net'
@@ -488,6 +539,7 @@ describe('/api/*', () => {
       adminAuth,
       log,
       stationConfig: stationConfig ?? makeStationConfigOps(),
+      adminConsole: TEST_ADMIN_CONSOLE,
     })
     running.server = server
     return `http://127.0.0.1:${server.port}`

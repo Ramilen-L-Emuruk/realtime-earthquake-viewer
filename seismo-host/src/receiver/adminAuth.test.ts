@@ -21,6 +21,7 @@ function headers(overrides: Partial<AdminAuthHeaders> = {}): AdminAuthHeaders {
     authorization: `Bearer ${TOKEN}`,
     host: HOST,
     origin: ORIGIN,
+    secFetchSite: undefined,
     ...overrides,
   }
 }
@@ -75,6 +76,34 @@ describe('checkAdminAuth', () => {
     expect(checkAdminAuth(headers({ origin: undefined }), config())).toEqual({
       reason: 'origin-not-allowed',
     })
+  })
+
+  // **正**: 管理コンソール本体（`/admin`）を同一オリジンで配信すると、そこから
+  // `fetch('/api/stations')` した実際のリクエストは `Origin` を省略する（#313 段 C
+  // で実機確認）。`Sec-Fetch-Site: same-origin` があれば代わりに通す。
+  it('Origin が無くても Sec-Fetch-Site が same-origin なら通す', () => {
+    expect(
+      checkAdminAuth(headers({ origin: undefined, secFetchSite: 'same-origin' }), config()),
+    ).toBeNull()
+  })
+
+  // **対照**: Origin が無く Sec-Fetch-Site も same-origin でなければ、従来どおり拒否する。
+  it('Origin が無く Sec-Fetch-Site が same-origin 以外なら origin-not-allowed', () => {
+    expect(
+      checkAdminAuth(headers({ origin: undefined, secFetchSite: 'cross-site' }), config()),
+    ).toEqual({ reason: 'origin-not-allowed' })
+  })
+
+  // **安全弁**: Origin が提示されているときは、たとえ Sec-Fetch-Site が same-origin でも
+  // 許可リストとの一致を必ず見る——Sec-Fetch-Site は Origin 省略時の代替手段であって、
+  // 提示された Origin の検証を迂回する抜け道にはならない。
+  it('Origin が不一致なら Sec-Fetch-Site が same-origin でも拒否する', () => {
+    expect(
+      checkAdminAuth(
+        headers({ origin: 'https://evil.example.com', secFetchSite: 'same-origin' }),
+        config(),
+      ),
+    ).toEqual({ reason: 'origin-not-allowed' })
   })
 
   it('Host が許可リストに無ければ host-not-allowed', () => {

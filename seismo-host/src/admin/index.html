@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>自作地震計 管理コンソール</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 1.5rem;
+        max-width: 960px;
+        margin-inline: auto;
+        line-height: 1.5;
+      }
+      h1 {
+        font-size: 1.25rem;
+      }
+      h2 {
+        font-size: 1.05rem;
+        margin-top: 2rem;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        margin-block: 0.75rem;
+      }
+      th,
+      td {
+        border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+        padding: 0.35rem 0.6rem;
+        text-align: left;
+        vertical-align: top;
+        font-size: 0.9rem;
+      }
+      th {
+        background: color-mix(in srgb, currentColor 8%, transparent);
+      }
+      form {
+        display: grid;
+        gap: 0.5rem;
+        max-width: 480px;
+        margin-block: 0.75rem;
+      }
+      label {
+        display: grid;
+        gap: 0.2rem;
+        font-size: 0.85rem;
+      }
+      fieldset {
+        border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+        border-radius: 4px;
+      }
+      .row {
+        display: flex;
+        gap: 0.5rem;
+      }
+      .row > label {
+        flex: 1;
+      }
+      button {
+        cursor: pointer;
+        padding: 0.35rem 0.9rem;
+      }
+      .danger {
+        color: #b3261e;
+      }
+      .muted {
+        opacity: 0.7;
+        font-size: 0.85rem;
+      }
+      .error {
+        color: #b3261e;
+        white-space: pre-wrap;
+      }
+      .tabs {
+        display: flex;
+        gap: 0.4rem;
+        border-bottom: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+        margin-block: 1rem;
+      }
+      .tabs button {
+        border: none;
+        background: none;
+        border-bottom: 2px solid transparent;
+        border-radius: 0;
+        font-size: 0.95rem;
+      }
+      .tabs button[aria-selected='true'] {
+        border-bottom-color: currentColor;
+        font-weight: 600;
+      }
+      textarea {
+        font-family: ui-monospace, monospace;
+        font-size: 0.85rem;
+      }
+      .badge {
+        display: inline-block;
+        padding: 0.05rem 0.5rem;
+        border-radius: 999px;
+        font-size: 0.8rem;
+      }
+      .badge.ok {
+        background: color-mix(in srgb, #1e8e3e 20%, transparent);
+      }
+      .badge.stale {
+        background: color-mix(in srgb, #b3261e 20%, transparent);
+      }
+    </style>
+  </head>
+  <body>
+    <h1>自作地震計 管理コンソール</h1>
+    <p class="muted">
+      観測点・基板の設定と、機材の稼働状況を確認する。宛先は運用者のみ
+      （観測結果・地震情報は地震ビューアーへ）。
+    </p>
+    <div id="app"></div>
+    <script type="module" src="/admin/app.js"></script>
+  </body>
+</html>

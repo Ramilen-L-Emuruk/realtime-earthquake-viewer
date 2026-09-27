@@ -30,6 +30,19 @@ export interface AdminAuthHeaders {
   readonly authorization: string | undefined
   readonly host: string | undefined
   readonly origin: string | undefined
+  /**
+   * `Sec-Fetch-Site`（Fetch Metadata Request Headers）。**同一オリジンの単純 GET で
+   * `Origin` ヘッダが省略されたときの代替判定に使う**（#313 段 C）。
+   *
+   * 管理コンソール本体（`GET /admin`）を同一オリジンで配信すると、そこから
+   * `fetch('/api/stations')` した実際のリクエストに `Origin` が付かないことを
+   * 実機で確認した（Chrome・`mode: 'cors'` を指定しても付かない）——CORS 仕様は
+   * 同一オリジンのリクエストに `Origin` を要求しないため。**このヘッダはモダン
+   * ブラウザが自動で付与し、JS から上書きできない**（`fetch` の forbidden header
+   * ではないが、ブラウザが送信経路を丸ごと管理し、ページの JS には触れさせない）。
+   * `same-origin` はまさに「別サイトからの CSRF ではない」ことの証拠になる。
+   */
+  readonly secFetchSite: string | undefined
 }
 
 export type AdminAuthFailure =
@@ -89,7 +102,16 @@ function isAllowed(value: string | undefined, allowList: readonly string[]): boo
 export function checkAdminAuth(headers: AdminAuthHeaders, config: AdminAuthConfig): AdminAuthFailure | null {
   if (config.token === null) return { reason: 'not-configured' }
 
-  if (!isAllowed(headers.origin, config.allowedOrigins)) return { reason: 'origin-not-allowed' }
+  // **`Origin` が省略されていても、`Sec-Fetch-Site: same-origin` があれば通す。**
+  // 同一オリジンの単純 GET はブラウザが `Origin` を送らないことがある（上記
+  // `AdminAuthHeaders.secFetchSite` のコメント参照）。それ以外（両方省略・
+  // 別オリジンからの偽装試行）は従来どおり拒む——許可の条件を 1 つ足すだけで、
+  // 既存の拒否範囲は狭めない。
+  if (headers.origin === undefined) {
+    if (headers.secFetchSite !== 'same-origin') return { reason: 'origin-not-allowed' }
+  } else if (!isAllowed(headers.origin, config.allowedOrigins)) {
+    return { reason: 'origin-not-allowed' }
+  }
   if (!isAllowed(headers.host, config.allowedHosts)) return { reason: 'host-not-allowed' }
 
   const presented = extractBearerToken(headers.authorization)

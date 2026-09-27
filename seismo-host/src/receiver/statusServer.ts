@@ -3,7 +3,9 @@
 // - `GET /status` — いまの様子を JSON で返す（宛先は**運用者**）
 // - `GET /stream` — 計測震度を押し出す。`?wave=1` を付けたときだけ波形も付く（宛先は **PWA**）
 // - `/api/*` — 設定・履歴・管理操作（宛先は**管理コンソール**）。**認証必須**（`adminAuth.ts`）。
-//   #313 時点では認証の門があるだけで、その先のエンドポイントはまだ無い（通っても 404）。
+//   応じるのは観測点・基板の設定（`/api/stations`・`/api/boards`）だけ（#313 段 B）。
+// - `GET /admin`・`GET /admin/app.js` — 管理コンソール本体（静的アセット）。**認証なし**——
+//   見られても書き込みはできない（書き込みには `/api/*` のトークンが要る）（#313 段 C）。
 //
 // **過ぎた波形を読み返す口も無い。** 生データはディスクに残っているので後から作れるが、
 // 時刻の範囲を受けて圧縮済みのファイルを展開し間引いて返す、という別の仕事になる。
@@ -24,6 +26,7 @@
 import { createServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 
+import type { AdminConsoleAssets } from './adminConsoleAssets'
 import { checkAdminAuth } from './adminAuth'
 import type { AdminAuthConfig, AdminAuthFailure } from './adminAuth'
 import type { HubMessage, ReadingHub } from './readingHub'
@@ -100,6 +103,21 @@ export interface StatusServerOptions {
   readonly adminAuth: AdminAuthConfig
   /** `/api/stations`・`/api/boards` の読み書き（#313 段 B）。 */
   readonly stationConfig: StationConfigOps
+  /**
+   * 管理コンソール本体（#313 段 C）。`GET /admin`・`GET /admin/app.js` で配る。
+   *
+   * **`/api/*` とは別の経路。** ここは静的ファイルを返すだけで認証を持たない
+   * ——見られても書き込みはできない（書き込みには別途トークンが要る。
+   * README.md「`/api/*` の認証」参照）。
+   *
+   * **`null` はビルド失敗を表す。** `main.ts` が `buildAdminConsoleAssets()` を
+   * `try/catch` した結果——esbuild のビルド失敗（構文エラー・ARM 環境での
+   * ネイティブバイナリ解決失敗等）は管理コンソールという補助機能だけの問題で
+   * あり、UDP 受信・`/status`・`/stream`・`/api/*` という地震計本体の可用性を
+   * 道連れにしてはならない（#313 段 C 敵対的レビューで検出）。`null` のときは
+   * `/admin`・`/admin/app.js` だけ 503 を返す。
+   */
+  readonly adminConsole: AdminConsoleAssets | null
 }
 
 export interface StatusServer {
@@ -156,6 +174,25 @@ function sendJson(res: ServerResponse, code: number, body: unknown): void {
   res.setHeader('Cache-Control', 'no-store')
   res.writeHead(code)
   res.end(JSON.stringify(body))
+}
+
+/**
+ * 管理コンソールの静的アセットを返す。**`no-store` を付ける。** ビルド成果物は
+ * ディスクに書かず起動のたびに作り直す（`adminConsoleAssets.ts`）ため、
+ * ブラウザ側にキャッシュを持たせると再起動後の変更が反映されない事故になる。
+ */
+function sendHtml(res: ServerResponse, code: number, body: string): void {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8')
+  res.setHeader('Cache-Control', 'no-store')
+  res.writeHead(code)
+  res.end(body)
+}
+
+function sendJs(res: ServerResponse, code: number, body: string): void {
+  res.setHeader('Content-Type', 'text/javascript; charset=utf-8')
+  res.setHeader('Cache-Control', 'no-store')
+  res.writeHead(code)
+  res.end(body)
 }
 
 /**
@@ -505,11 +542,17 @@ async function handleAdmin(
 ): Promise<void> {
   applyAdminCors(req, res, adminAuth.allowedOrigins)
 
+  // **同名ヘッダが複数回届くと配列になる。** `Sec-Fetch-Site` は単一値の想定だが、
+  // 型上は他のヘッダと同じ扱いなので、`origin`・`host` と同じ流儀（先頭を採る）に揃える。
+  const secFetchSiteHeader = req.headers['sec-fetch-site']
+  const secFetchSite = Array.isArray(secFetchSiteHeader) ? secFetchSiteHeader[0] : secFetchSiteHeader
+
   const failure = checkAdminAuth(
     {
       authorization: req.headers.authorization,
       host: req.headers.host,
       origin: req.headers.origin,
+      secFetchSite,
     },
     adminAuth,
   )
@@ -752,6 +795,22 @@ export async function startStatusServer(options: StatusServerOptions): Promise<S
       }
       if (url.pathname === '/stream') {
         handleStream(req, res, url.searchParams.get('wave') === '1')
+        return
+      }
+      if (url.pathname === '/admin' || url.pathname === '/admin/') {
+        if (options.adminConsole === null) {
+          sendJson(res, 503, { error: 'admin-console-unavailable' })
+          return
+        }
+        sendHtml(res, 200, options.adminConsole.html)
+        return
+      }
+      if (url.pathname === '/admin/app.js') {
+        if (options.adminConsole === null) {
+          sendJson(res, 503, { error: 'admin-console-unavailable' })
+          return
+        }
+        sendJs(res, 200, options.adminConsole.js)
         return
       }
       sendJson(res, 404, { error: 'not-found' })
