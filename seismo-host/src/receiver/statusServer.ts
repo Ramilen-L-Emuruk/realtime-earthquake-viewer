@@ -1,13 +1,16 @@
-// 状態の口。**読み取りだけ。**
+// 状態の口。
 //
 // - `GET /status` — いまの様子を JSON で返す（宛先は**運用者**）
 // - `GET /stream` — 計測震度を押し出す。`?wave=1` を付けたときだけ波形も付く（宛先は **PWA**）
-//
-// **書き込みの口は作らない。** 機材の管理（センサー一覧・版数・OTA・校正・保存設定）は
-// ビューアーの外という線引きなので、ここが受けるのは読み取りだけ。
+// - `/api/*` — 設定・履歴・管理操作（宛先は**管理コンソール**）。**認証必須**（`adminAuth.ts`）。
+//   #313 時点では認証の門があるだけで、その先のエンドポイントはまだ無い（通っても 404）。
 //
 // **過ぎた波形を読み返す口も無い。** 生データはディスクに残っているので後から作れるが、
 // 時刻の範囲を受けて圧縮済みのファイルを展開し間引いて返す、という別の仕事になる。
+//
+// **`/status`・`/stream` は認証を持たない。** 出るのは家の揺れの計測震度と機材の健全性
+// だけで、読み取り専用のため公開してよい前提のまま変えていない。書き込みを伴う `/api/*`
+// とは守り方が違う——CORS も別に持つ（`applyCors` は `*`、`/api/*` は Origin を列挙する）。
 //
 // **SSE を選んだ理由**（WebSocket ではなく）。速さはどちらも同じで、差が出るのは別のところ。
 // 再接続をブラウザが自分でやること、そしてこちらから送るものが無いので双方向の利点が
@@ -21,6 +24,8 @@
 import { createServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 
+import { checkAdminAuth } from './adminAuth'
+import type { AdminAuthConfig, AdminAuthFailure } from './adminAuth'
 import type { HubMessage, ReadingHub } from './readingHub'
 import type { StatusReport } from './statusReport'
 
@@ -69,6 +74,11 @@ export interface StatusServerOptions {
    * `readingHub.test.ts` が押さえているが、**ここからの配線は覆われていない。**
    */
   readonly heartbeatMs?: number
+  /**
+   * `/api/*` を守る認証設定。**`token: null` なら `/api/*` 自体を無効化する**
+   * （`adminAuth.ts` の `checkAdminAuth` が `not-configured` を返し、ここで 503 に変える）。
+   */
+  readonly adminAuth: AdminAuthConfig
 }
 
 export interface StatusServer {
@@ -125,6 +135,106 @@ function sendJson(res: ServerResponse, code: number, body: unknown): void {
   res.setHeader('Cache-Control', 'no-store')
   res.writeHead(code)
   res.end(JSON.stringify(body))
+}
+
+/**
+ * `/api/*` 向けの横断の許し。**`*` ではなく Origin を列挙して返す。**
+ *
+ * 書き込みを伴うので、`/status`・`/stream` の `applyCors`（`*`）とは事情が違う——
+ * 見せる相手を絞る必要がある。許可リストに無い Origin へは `Access-Control-Allow-Origin`
+ * を返さない（ブラウザ側が読み取りを拒む）。`Vary: Origin` を添えるのは、同じ URL でも
+ * リクエスト元によって応答ヘッダが変わることを、間に挟まる代理へ伝えるため。
+ */
+function applyAdminCors(req: IncomingMessage, res: ServerResponse, allowedOrigins: readonly string[]): void {
+  const origin = req.headers.origin
+  // **`Vary: Origin` は一致・不一致に関わらず常に付ける。** 一致した場合だけ付けると、
+  // 間に挟まる代理が「Origin で応答が変わる」こと自体を知らないまま拒否応答（不一致）を
+  // キャッシュしうる——別の Origin から来た正当なリクエストへ、他人の拒否応答を返しかねない。
+  res.setHeader('Vary', 'Origin')
+  if (origin !== undefined && allowedOrigins.some((o) => o.toLowerCase() === origin.toLowerCase())) {
+    res.setHeader('Access-Control-Allow-Origin', origin)
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type')
+}
+
+/**
+ * `/api/*` の先回りの問い合わせ（preflight）へ答える。
+ *
+ * **認証は見ない。** ブラウザの preflight リクエストは `Authorization` を含まないので
+ * （それを訊きに行くのが preflight の役目）、ここで `checkAdminAuth` を通しても
+ * 必ず `missing-authorization` になり、本来は認証を持つ正規のリクエストまで
+ * preflight の段階で弾かれる。Origin の許可だけを見て応じる。
+ */
+function handleAdminPreflight(req: IncomingMessage, res: ServerResponse, allowedOrigins: readonly string[]): void {
+  applyAdminCors(req, res, allowedOrigins)
+  res.setHeader('Access-Control-Max-Age', '600')
+  res.writeHead(204)
+  res.end()
+}
+
+function sendAdminJson(res: ServerResponse, code: number, body: unknown): void {
+  res.setHeader('Content-Type', 'application/json; charset=utf-8')
+  res.setHeader('Cache-Control', 'no-store')
+  res.writeHead(code)
+  res.end(JSON.stringify(body))
+}
+
+/**
+ * 認証の失敗理由を HTTP ステータスへ変える。
+ *
+ * **`default` を置かず全件を switch で網羅する**（`stationConfig.ts` の `describeFailure` と
+ * 同じ判断）。理由を足したのにここへ書き足し忘れると、`never` に合わせられず型検査が落ちる——
+ * 書き忘れたまま実行時に「理由不明の 500」へ化けることはない。
+ */
+function adminAuthStatusCode(reason: AdminAuthFailure['reason']): number {
+  switch (reason) {
+    case 'not-configured':
+      return 503
+    case 'missing-authorization':
+    case 'invalid-token':
+      return 401
+    case 'host-not-allowed':
+    case 'origin-not-allowed':
+      return 403
+  }
+}
+
+/**
+ * `/api/*` の入口。**#313 時点では認証の門があるだけ**——通っても該当する口はまだ無く 404。
+ *
+ * CORS ヘッダは**認証の成否によらず先に付ける**。拒否した応答もブラウザに読ませる必要が
+ * あるため（読ませなければ「拒否された」ことがブラウザの `fetch` からは `TypeError` としか
+ * 見えず、理由（`error` の値）が失われる）。
+ *
+ * **拒否した理由は必ず 1 行記録する。** `handleStream` が購読の上限で断ったときと同じ理由——
+ * 断りは運用者の記録にしか出ないので、ここで黙ると総当たり・スキャンが記録から一切見えない
+ * まま進む（見に来ない運用ではなおさら気づけない）。
+ */
+function handleAdmin(
+  req: IncomingMessage,
+  res: ServerResponse,
+  adminAuth: AdminAuthConfig,
+  log: (level: LogLevel, kind: string, detail: string, line: string) => void,
+): void {
+  applyAdminCors(req, res, adminAuth.allowedOrigins)
+
+  const failure = checkAdminAuth(
+    {
+      authorization: req.headers.authorization,
+      host: req.headers.host,
+      origin: req.headers.origin,
+    },
+    adminAuth,
+  )
+  if (failure !== null) {
+    log('warn', 'admin', failure.reason, `[admin] /api/* を拒否した（${failure.reason}）`)
+    sendAdminJson(res, adminAuthStatusCode(failure.reason), { error: failure.reason })
+    return
+  }
+
+  // 段 B でここへ設定・履歴・管理操作のエンドポイントを実装する。
+  sendAdminJson(res, 404, { error: 'not-found' })
 }
 
 export async function startStatusServer(options: StatusServerOptions): Promise<StatusServer> {
@@ -267,6 +377,20 @@ export async function startStatusServer(options: StatusServerOptions): Promise<S
     // **投げさせない。** ここで投げると Node が既定でプロセスごと落とす ——
     // 状態を見に来ただけの相手の打ち間違いで、受信そのものが止まる。
     try {
+      // `req.url` は経路と問い合わせ文字列だけ。**基点は読まれないので何でもよい。**
+      const url = new URL(req.url ?? '/', 'http://localhost')
+
+      // **`/api/*` は GET 以外も受けるので、メソッド制限より前で分岐する。**
+      // 下の `/status`・`/stream` はどちらも GET 専用のまま変えていない。
+      if (url.pathname.startsWith('/api/')) {
+        if (req.method === 'OPTIONS') {
+          handleAdminPreflight(req, res, options.adminAuth.allowedOrigins)
+          return
+        }
+        handleAdmin(req, res, options.adminAuth, log)
+        return
+      }
+
       if (req.method === 'OPTIONS') {
         handlePreflight(req, res)
         return
@@ -275,8 +399,6 @@ export async function startStatusServer(options: StatusServerOptions): Promise<S
         sendJson(res, 405, { error: 'method-not-allowed' })
         return
       }
-      // `req.url` は経路と問い合わせ文字列だけ。**基点は読まれないので何でもよい。**
-      const url = new URL(req.url ?? '/', 'http://localhost')
       if (url.pathname === '/status') {
         sendJson(res, 200, options.status())
         return

@@ -14,6 +14,9 @@ import {
   buildWindowSummary,
   findUngroupedMultiBoardStations,
   formatAt,
+  readAdminAllowedHosts,
+  readAdminToken,
+  readAllowList,
   readPort,
   stationSegmentLogLevel,
   windowSeconds,
@@ -67,6 +70,54 @@ describe('readPort', () => {
   it('範囲の外は別の文言で弾く', () => {
     // 書式は正しいので、打ち間違えの種類が違う。
     expect(() => readPort('70000')).toThrow(/範囲を超えている/)
+  })
+})
+
+describe('readAdminToken', () => {
+  it('未設定は null', () => {
+    expect(readAdminToken(undefined)).toBeNull()
+  })
+
+  // **安全弁**: 空文字列を「設定済みの空トークン」として扱わない。
+  it('空文字列・空白だけの値も null 扱いにする', () => {
+    expect(readAdminToken('')).toBeNull()
+    expect(readAdminToken('   ')).toBeNull()
+  })
+
+  it('前後の空白を落として使う', () => {
+    expect(readAdminToken('  abc123  ')).toBe('abc123')
+  })
+})
+
+describe('readAllowList', () => {
+  it('未設定は空配列', () => {
+    expect(readAllowList(undefined)).toEqual([])
+  })
+
+  it('カンマ区切りを配列にし、各要素の前後の空白を落とす', () => {
+    expect(readAllowList('a, b ,c')).toEqual(['a', 'b', 'c'])
+  })
+
+  it('空要素は無視する', () => {
+    expect(readAllowList('a,,b,')).toEqual(['a', 'b'])
+  })
+})
+
+describe('readAdminAllowedHosts', () => {
+  it('未設定なら既定値（127.0.0.1・localhost とポート）を使う', () => {
+    expect(readAdminAllowedHosts(undefined, 50506)).toEqual(['127.0.0.1:50506', 'localhost:50506'])
+  })
+
+  // **安全弁**: `readAdminToken` と同じく、空文字列は「未設定」と同じに扱う——
+  // ここだけ `readAllowList` をそのまま使うと空配列（＝誰も通さない）になってしまい、
+  // 空値をそのままコピペする打ち間違いで `/api/*` が理由の分からないまま塞がる。
+  it('空文字列・空白だけの値も既定値へ倒す', () => {
+    expect(readAdminAllowedHosts('', 50506)).toEqual(['127.0.0.1:50506', 'localhost:50506'])
+    expect(readAdminAllowedHosts('   ', 50506)).toEqual(['127.0.0.1:50506', 'localhost:50506'])
+  })
+
+  it('値があればそれを使う（既定値は使わない）', () => {
+    expect(readAdminAllowedHosts('example.ts.net', 50506)).toEqual(['example.ts.net'])
   })
 })
 
