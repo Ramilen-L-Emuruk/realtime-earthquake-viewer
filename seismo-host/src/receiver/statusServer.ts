@@ -10,9 +10,13 @@
 // 時刻の範囲を受けて圧縮済みのファイルを展開し間引いて返す、という別の仕事になる。
 //
 // **SSE を選んだ理由**（WebSocket ではなく）。速さはどちらも同じで、差が出るのは別のところ。
-// 再接続をブラウザが自分でやること、普通の HTTP なので HTTPS のページから
-// プライベート IP を叩けるという実測がそのまま当てはまること（`ws://` には既に
-// 「非推奨」の警告が出ている）、そしてこちらから送るものが無いので双方向の利点が効かないこと。
+// 再接続をブラウザが自分でやること、そしてこちらから送るものが無いので双方向の利点が
+// 効かないこと。
+//
+// **「普通の HTTP なので HTTPS のページからプライベート IP を素の `http://` で叩ける」という
+// 前提は、iOS 実機の実測で崩れた**（REQUIREMENTS.md §13）。HTTPS 化の方式は Tailscale Serve に
+// 決まっており、SSE と WebSocket のどちらを選ぶかはこの決定に左右されない——どちらも TLS 終端の
+// 背後で動く。上記の理由（再接続・双方向不要）だけで SSE を選ぶ判断は変わらない。
 
 import { createServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
@@ -99,10 +103,10 @@ function applyCors(res: ServerResponse): void {
 /**
  * 先回りの問い合わせ（preflight）へ答える。
  *
- * **プライベート網への許しも返す。** HTTPS のページからプライベート IP を叩く構成なので、
- * ブラウザが `Access-Control-Request-Private-Network` を付けてくることがある。
- * **2026-09-22 の実測（プライベート IP への `http://` は通った）は単一ブラウザ・
- * 単一版・各条件 1 回**なので、通ることを当てにせず、訊かれたら答える形にしてある。
+ * **プライベート網への許しも返す。** ブラウザが `Access-Control-Request-Private-Network` を
+ * 付けてくることがあるので、訊かれたら答える形にしてある。**iOS 実機実測の経緯はこのファイル
+ * 冒頭のコメント・REQUIREMENTS.md §13 を参照** —— ここは訊かれたら答えるだけの受け身の実装で、
+ * 決定した経路（Tailscale Serve）が実際に叩く先とは無関係に残してよい。
  */
 function handlePreflight(req: IncomingMessage, res: ServerResponse): void {
   applyCors(res)
