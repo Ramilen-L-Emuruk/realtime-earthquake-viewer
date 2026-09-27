@@ -453,6 +453,74 @@ describe('IntensityPipeline', () => {
     })
   })
 
+  describe('updateStations（#313 段 B: /api/* からの実行時差し替え）', () => {
+    /** `pkt()` の boardKey・sensorId に紐づく校正だけを持つ `StationDirectory` を作る。 */
+    function stationsWith(sensor: Partial<SensorCalibration>): StationDirectory {
+      const config: StationConfig = {
+        stations: [{ stationId: 'study', displayName: '書斎', lat: 35.6, lon: 139.7 }],
+        boards: [
+          {
+            boardKey: 'mac:3c8a1f5d54d8',
+            stationId: 'study',
+            sensors: [
+              {
+                sensorId: 'i2c0-68',
+                enabled: true,
+                rotation: [
+                  [1, 0, 0],
+                  [0, 1, 0],
+                  [0, 0, 1],
+                ],
+                offset: [0, 0, 0],
+                sensitivity: [1, 1, 1],
+                noiseDensity: null,
+                ...sensor,
+              },
+            ],
+          },
+        ],
+      }
+      return new StationDirectory(config)
+    }
+
+    it('対照: updateStations を呼ぶ前は既定の校正値のまま（換算値は変わらない）', () => {
+      const p = new IntensityPipeline(OPTS)
+      const out = p.handlePacket(pkt())
+      const baseline = new IntensityPipeline(OPTS).handlePacket(pkt())
+      expect(out.wave?.gal[2][0]).toBeCloseTo(baseline.wave?.gal[2][0] ?? NaN, 9)
+    })
+
+    it('正: updateStations を呼んだ後、以後のパケットへ新しい校正値が反映される', () => {
+      // **コンストラクタで直接渡す（既存の「正」テストと同じ校正）とではなく、
+      // 空の状態から `updateStations` で追いつかせて同じ結果になることを確かめる**——
+      // これで初めて「実行時の差し替え」自体が効いていることの証明になる。
+      const baseline = new IntensityPipeline(OPTS)
+      const viaUpdate = new IntensityPipeline({ ...OPTS, stations: StationDirectory.empty() })
+      viaUpdate.updateStations(stationsWith({ sensitivity: [2, 2, 2] }))
+
+      const outBaseline = baseline.handlePacket(pkt())
+      const outUpdated = viaUpdate.handlePacket(pkt())
+
+      const base = outBaseline.wave?.gal[2][0]
+      const applied = outUpdated.wave?.gal[2][0]
+      if (base === undefined || applied === undefined) throw new Error('波形が載っていない')
+      expect(applied).toBeCloseTo(base * 2, 9)
+    })
+
+    it('安全弁: 区間組み立ての途中で差し替えても、進行中の区間は打ち切られない', () => {
+      const p = new IntensityPipeline(OPTS)
+      feed(p, PACKETS_FOR_FIRST)
+
+      // 区間が閉じる前に校正を差し替える。
+      p.updateStations(stationsWith({ sensitivity: [2, 2, 2] }))
+      const out = p.handlePacket(pkt({ firstSeq: PACKETS_FOR_FIRST * PER_PACKET }))
+
+      // **`stream-desync` にならない。** 差し替えは校正値だけを変え、組み立て
+      // （`Segmenter`）が持つ通し番号の連続性には触れないので、区間は続く。
+      expect(out.dropped).not.toBe('stream-desync')
+    })
+  })
+
   describe('組み立てと震度を 1 つの操作で閉じる', () => {
     it('closeStream は両方を閉じ、締めくくりの答えを返す', () => {
       const p = new IntensityPipeline(OPTS)

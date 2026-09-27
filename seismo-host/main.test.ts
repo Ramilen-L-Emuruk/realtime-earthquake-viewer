@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 // `main()` は「直接実行のときだけ走らせる」門の中にあるので、ここでは走らない
 // （門が無ければ、このテストを走らせるたびに UDP の口が開く）。
 import {
+  applyStationConfigCore,
   buildClosingLines,
   buildGravityWarnings,
   deliverReading,
@@ -21,11 +22,18 @@ import {
   stationSegmentLogLevel,
   windowSeconds,
 } from './main'
+import type { ApplyStationConfigDeps } from './main'
 import type { GravityVerdict } from './src/receiver/gravityCheck'
 import type { IntensityReading } from './src/receiver/intensityPipeline'
+import { EMPTY_STATION_CONFIG } from './src/receiver/stationConfig'
 import type { StationConfig } from './src/receiver/stationConfig'
 import { PacketTally } from './src/receiver/packetTally'
-import type { FusedWaveChunk, FusionOutcome, StationIntensityReading } from './src/receiver/sensorFusion'
+import type {
+  FusedWaveChunk,
+  FusionOutcome,
+  StationCloseFailure,
+  StationIntensityReading,
+} from './src/receiver/sensorFusion'
 
 describe('formatAt', () => {
   it('普通の時刻はそのまま出す', () => {
@@ -857,5 +865,152 @@ describe('deliverStationFusion', () => {
     )
 
     expect(calls).toEqual(['noteSkip', 'logSegment'])
+  })
+})
+
+describe('applyStationConfigCore', () => {
+  const NEW_CONFIG: StationConfig = {
+    stations: [{ stationId: 'study', displayName: '書斎', lat: 35.6, lon: 139.7 }],
+    boards: [],
+  }
+
+  const STATION_READING: StationIntensityReading = { stationId: 'study', atMs: 1_000, intensity: 1.5 }
+  const CLOSE_FAILURE: StationCloseFailure = { stationId: 'study', detail: 'x' }
+
+  /** 呼び出し順を記録しつつ、既定では何もしない `ApplyStationConfigDeps`。 */
+  function deps(
+    calls: string[],
+    overrides: Partial<ApplyStationConfigDeps> = {},
+  ): ApplyStationConfigDeps {
+    return {
+      save: () => calls.push('save'),
+      setCurrentConfig: () => calls.push('setCurrentConfig'),
+      rebuildStations: () => calls.push('rebuildStations'),
+      closeSensorFusion: () => {
+        calls.push('closeSensorFusion')
+        return { failures: [], readings: [] }
+      },
+      reportCloseFailures: () => calls.push('reportCloseFailures'),
+      emitReading: () => calls.push('emitReading'),
+      onCloseFailure: () => calls.push('onCloseFailure'),
+      rebuildSensorFusion: () => {
+        calls.push('rebuildSensorFusion')
+        return []
+      },
+      setUngroupedMultiBoardStations: () => calls.push('setUngroupedMultiBoardStations'),
+      setWarning: () => calls.push('setWarning'),
+      ...overrides,
+    }
+  }
+
+  it('正: 想定どおりの順序で呼ぶ（保存 → 反映 → 合成の作り直し → 警告のクリア）', () => {
+    const calls: string[] = []
+    applyStationConfigCore(deps(calls), NEW_CONFIG)
+
+    // **`reportCloseFailures` は failures が空でも無条件に呼ぶ**（実装のとおり）——
+    // 呼び出し先（`reportStationCloseFailures`）は空配列なら for ループが
+    // 0 回回るだけで無害。ここを「failures があるときだけ」に書き換えるのは
+    // テスト側の勝手な仮定で、2 巡目の敵対的レビューでこの食い違いが発覚した。
+    expect(calls).toEqual([
+      'save',
+      'setCurrentConfig',
+      'rebuildStations',
+      'closeSensorFusion',
+      'reportCloseFailures',
+      'rebuildSensorFusion',
+      'setUngroupedMultiBoardStations',
+      'setWarning',
+    ])
+  })
+
+  it('対照: save が投げたら、以降のどの deps も呼ばない（例外はそのまま伝播する）', () => {
+    const calls: string[] = []
+    const d = deps(calls, {
+      save: () => {
+        throw new Error('disk full')
+      },
+    })
+
+    expect(() => applyStationConfigCore(d, NEW_CONFIG)).toThrow('disk full')
+    expect(calls).toEqual([])
+  })
+
+  it('正: closeSensorFusion が投げても、後続（rebuildSensorFusion 以降）は実行される', () => {
+    const calls: string[] = []
+    const d = deps(calls, {
+      closeSensorFusion: () => {
+        calls.push('closeSensorFusion')
+        throw new Error('end が投げた')
+      },
+    })
+    applyStationConfigCore(d, NEW_CONFIG)
+
+    expect(calls).toEqual([
+      'save',
+      'setCurrentConfig',
+      'rebuildStations',
+      'closeSensorFusion',
+      'onCloseFailure',
+      'rebuildSensorFusion',
+      'setUngroupedMultiBoardStations',
+      'setWarning',
+    ])
+  })
+
+  it('正: 古い合成の残り読みは reportCloseFailures の後・emitReading で 1 件ずつ配る', () => {
+    const calls: string[] = []
+    const d = deps(calls, {
+      closeSensorFusion: () => {
+        calls.push('closeSensorFusion')
+        return { failures: [CLOSE_FAILURE], readings: [STATION_READING, STATION_READING] }
+      },
+    })
+    applyStationConfigCore(d, NEW_CONFIG)
+
+    expect(calls).toEqual([
+      'save',
+      'setCurrentConfig',
+      'rebuildStations',
+      'closeSensorFusion',
+      'reportCloseFailures',
+      'emitReading',
+      'emitReading',
+      'rebuildSensorFusion',
+      'setUngroupedMultiBoardStations',
+      'setWarning',
+    ])
+  })
+
+  it('正: setUngroupedMultiBoardStations には findUngroupedMultiBoardStations の結果を渡す', () => {
+    // 2 台の基板を割り当てているが、`rebuildSensorFusion` は合成グループが
+    // 組めなかった（`groupedStationIds` が空）ことにする——`stationsWithMultipleBoards`
+    // との乖離が起きる形。
+    const config: StationConfig = {
+      stations: [{ stationId: 'study', displayName: '書斎', lat: 35.6, lon: 139.7 }],
+      boards: [
+        { boardKey: 'mac:aaaaaaaaaaaa', stationId: 'study', sensors: [] },
+        { boardKey: 'mac:bbbbbbbbbbbb', stationId: 'study', sensors: [] },
+      ],
+    }
+    let received: readonly string[] | null = null
+    const calls: string[] = []
+    const d = deps(calls, {
+      rebuildSensorFusion: () => [],
+      setUngroupedMultiBoardStations: (ids) => {
+        received = ids
+      },
+    })
+    applyStationConfigCore(d, config)
+
+    expect(received).toEqual(['study'])
+  })
+
+  it('対照: 空の設定では setWarning(null) 以外に副作用が波及しない', () => {
+    const calls: string[] = []
+    let warning: string | null = 'stale'
+    const d = deps(calls, { setWarning: (w) => (warning = w) })
+    applyStationConfigCore(d, EMPTY_STATION_CONFIG)
+
+    expect(warning).toBeNull()
   })
 })

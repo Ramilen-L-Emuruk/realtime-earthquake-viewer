@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -10,6 +10,7 @@ import {
   StationDirectory,
   loadStationConfig,
   parseStationConfig,
+  saveStationConfig,
   stationsWithMultipleBoards,
 } from './stationConfig'
 import type { StationConfig } from './stationConfig'
@@ -525,6 +526,66 @@ describe('loadStationConfig', () => {
     const result = loadStationConfig(path)
     expect(result.config).toEqual(EMPTY_STATION_CONFIG)
     expect(result.warning).toContain('displayName')
+  })
+})
+
+describe('saveStationConfig', () => {
+  let dir: string
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'seismo-station-config-save-'))
+  })
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('正: 書いた内容を loadStationConfig で読み直せる（往復）', () => {
+    const path = join(dir, 'stations.json')
+    const parsed = parseStationConfig(validRaw())
+    if (!parsed.ok) throw new Error('テストの前提データが不正')
+
+    saveStationConfig(path, parsed.config)
+
+    const result = loadStationConfig(path)
+    expect(result.warning).toBeNull()
+    expect(result.config).toEqual(parsed.config)
+  })
+
+  it('正: 親ディレクトリが無ければ作る', () => {
+    const path = join(dir, 'nested', 'deeper', 'stations.json')
+    saveStationConfig(path, EMPTY_STATION_CONFIG)
+    expect(existsSync(path)).toBe(true)
+  })
+
+  it('正: 書き込み後に一時ファイルが残らない', () => {
+    const path = join(dir, 'stations.json')
+    saveStationConfig(path, EMPTY_STATION_CONFIG)
+    expect(existsSync(`${path}.tmp`)).toBe(false)
+  })
+
+  // **対照**: 空の設定でも「stations: []・boards: []」の形で書ける（EMPTY_STATION_CONFIG が
+  // parseStationConfig を素通りすることの裏付け）。
+  it('対照: 空の設定を書いても不正な JSON にはならない', () => {
+    const path = join(dir, 'stations.json')
+    saveStationConfig(path, EMPTY_STATION_CONFIG)
+    const text = readFileSync(path, 'utf8')
+    expect(JSON.parse(text)).toEqual({ stations: [], boards: [] })
+  })
+
+  // **安全弁**: 既存ファイルを上書きしても、書き込みが完了するまでは古い内容が読める
+  // （tmp + rename の途中経過を模倣。rename 自体は同期なので瞬間的だが、実装が
+  // 「先に消してから書く」形に変わっていないことをここで縛る）。
+  it('安全弁: 上書き保存後は新しい内容だけが残り、古い内容は残らない', () => {
+    const path = join(dir, 'stations.json')
+    saveStationConfig(path, EMPTY_STATION_CONFIG)
+
+    const parsed = parseStationConfig(validRaw())
+    if (!parsed.ok) throw new Error('テストの前提データが不正')
+    saveStationConfig(path, parsed.config)
+
+    const result = loadStationConfig(path)
+    expect(result.config).toEqual(parsed.config)
   })
 })
 

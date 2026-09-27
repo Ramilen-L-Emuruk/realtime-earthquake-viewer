@@ -27,6 +27,8 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import { checkAdminAuth } from './adminAuth'
 import type { AdminAuthConfig, AdminAuthFailure } from './adminAuth'
 import type { HubMessage, ReadingHub } from './readingHub'
+import { describeFailure, parseStationConfig } from './stationConfig'
+import type { StationConfig } from './stationConfig'
 import type { StatusReport } from './statusReport'
 
 /** 繋ぎ直すまでブラウザに待たせる時間。**SSE の `retry:` で伝える。** */
@@ -42,6 +44,23 @@ const RETRY_MS = 3_000
 const HEARTBEAT_MS = 15_000
 
 export type LogLevel = 'log' | 'warn' | 'error'
+
+/**
+ * 観測点設定の読み書き（#313 段 B）。**この層は保存・反映の中身を知らない** ——
+ * `get`・`apply` の実体は `main.ts` が持つ（`StationDirectory`・`IntensityPipeline`・
+ * `SensorFusion` の差し替えは、この HTTP の層の関心事ではない）。
+ */
+export interface StationConfigOps {
+  /** いまの設定。**呼ばれた時点のもの**（`status` と同じ理由で、溜め込まない）。 */
+  readonly get: () => StationConfig
+  /**
+   * 新しい設定を保存し、ランタイムへ反映する。
+   *
+   * **例外を投げうる**（ディスクへの書き込み失敗）。呼び出し元（このファイルの
+   * 書き込みハンドラ）が捕まえて 500 へ変える。
+   */
+  readonly apply: (config: StationConfig) => void
+}
 
 export interface StatusServerOptions {
   readonly port: number
@@ -79,6 +98,8 @@ export interface StatusServerOptions {
    * （`adminAuth.ts` の `checkAdminAuth` が `not-configured` を返し、ここで 503 に変える）。
    */
   readonly adminAuth: AdminAuthConfig
+  /** `/api/stations`・`/api/boards` の読み書き（#313 段 B）。 */
+  readonly stationConfig: StationConfigOps
 }
 
 export interface StatusServer {
@@ -200,8 +221,267 @@ function adminAuthStatusCode(reason: AdminAuthFailure['reason']): number {
   }
 }
 
+/** `/api/*` の経路。**`stationId`・`boardKey` は URL デコード済み。** */
+type AdminRoute =
+  | { readonly kind: 'stations' }
+  | { readonly kind: 'station'; readonly stationId: string }
+  | { readonly kind: 'boards' }
+  | { readonly kind: 'board'; readonly boardKey: string }
+
 /**
- * `/api/*` の入口。**#313 時点では認証の門があるだけ**——通っても該当する口はまだ無く 404。
+ * `/api/*` の経路を解く。**マッチしなければ `null`**（呼び出し側が 404 にする）。
+ *
+ * `boardKey` は `mac:3c8a1f5d54d8` のようにコロンを含むが、URL パスのセグメント内では
+ * コロンは合法な文字なので `decodeURIComponent` だけで足りる（`encodeURIComponent` された
+ * `%3A` 表記でも通す）。
+ */
+function parseAdminRoute(pathname: string): AdminRoute | null {
+  if (pathname === '/api/stations') return { kind: 'stations' }
+  if (pathname.startsWith('/api/stations/')) {
+    const stationId = decodeURIComponent(pathname.slice('/api/stations/'.length))
+    return stationId.length > 0 ? { kind: 'station', stationId } : null
+  }
+  if (pathname === '/api/boards') return { kind: 'boards' }
+  if (pathname.startsWith('/api/boards/')) {
+    const boardKey = decodeURIComponent(pathname.slice('/api/boards/'.length))
+    return boardKey.length > 0 ? { kind: 'board', boardKey } : null
+  }
+  return null
+}
+
+/** 書き込みボディの上限。**観測点設定は小さいデータ**なので十分すぎるほど余裕を持つ。 */
+const MAX_ADMIN_BODY_BYTES = 64 * 1024
+
+type AdminBodyResult = { readonly ok: true; readonly body: unknown } | { readonly ok: false; readonly reason: string }
+
+/**
+ * `/api/*` の書き込みボディを読む。**投げない**（`handleAdmin` と同じ契約）。
+ *
+ * **上限を超えたら溜めるのをやめ、以後は読み捨てる。** 上限までしか溜めないだけだと、
+ * 送り手が延々と流し続ける限りこの購読がメモリを食い続ける。
+ *
+ * **`req.destroy()` は呼ばない。** `req` と `res` は下層のソケットを共有しており、
+ * `destroy()` はそのソケットごと閉じる——実測（Node.js v24）で確認したところ、
+ * 直後に呼び手が `res.writeHead`/`res.end` を呼んでも例外は投げずに黙って捨てられ、
+ * クライアントには 400 の理由ではなく `socket hang up`（接続断）しか届かない。
+ * **理由を伝える応答を返すには、ソケットを生かしたまま以後のデータを読み捨てる**
+ * （`removeAllListeners('data')` の後 `resume()`）——相手の送信を詰まらせず、
+ * `res` 側から通常どおり 400 を返せるようにする。
+ */
+function readAdminBody(req: IncomingMessage): Promise<AdminBodyResult> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = []
+    let total = 0
+    let settled = false
+    const finish = (result: AdminBodyResult): void => {
+      if (settled) return
+      settled = true
+      resolve(result)
+    }
+    const onData = (chunk: Buffer): void => {
+      total += chunk.length
+      if (total > MAX_ADMIN_BODY_BYTES) {
+        finish({ ok: false, reason: 'body-too-large' })
+        req.removeListener('data', onData)
+        req.resume()
+        return
+      }
+      chunks.push(chunk)
+    }
+    req.on('data', onData)
+    req.on('end', () => {
+      const text = Buffer.concat(chunks).toString('utf8')
+      if (text.trim().length === 0) {
+        finish({ ok: false, reason: 'empty-body' })
+        return
+      }
+      try {
+        finish({ ok: true, body: JSON.parse(text) })
+      } catch {
+        finish({ ok: false, reason: 'invalid-json' })
+      }
+    })
+    // **`req` 自身が壊れた場合、または相手が送信途中で切った場合。** `'end'` が来ないまま
+    // 待ち続けないよう、ここでも決着させる。
+    req.on('error', () => finish({ ok: false, reason: 'read-error' }))
+    req.on('close', () => finish({ ok: false, reason: 'read-error' }))
+  })
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+/**
+ * `/api/stations/:stationId` の PUT。**upsert**（無ければ作る・あれば置き換える）。
+ *
+ * **`stationId` はボディでなく URL パスを正とする。** ボディに別の `stationId` が
+ * 入っていても無視する——URL が指す資源を書き換えるという REST の前提に合わせる。
+ */
+async function handlePutStation(
+  req: IncomingMessage,
+  res: ServerResponse,
+  stationConfig: StationConfigOps,
+  stationId: string,
+): Promise<void> {
+  const bodyResult = await readAdminBody(req)
+  if (!bodyResult.ok) {
+    sendAdminJson(res, 400, { error: bodyResult.reason })
+    return
+  }
+  if (!isPlainObject(bodyResult.body)) {
+    sendAdminJson(res, 400, { error: 'body-not-an-object' })
+    return
+  }
+
+  const current = stationConfig.get()
+  const others = current.stations.filter((s) => s.stationId !== stationId)
+  // **`unknown` のまま `parseStationConfig` へ渡す。** `bodyResult.body` はまだ検証前の
+  // 入力なので、ここへ `StationConfig` の型注釈を付けると「検証済みのふり」をした値を
+  // 作ることになる——実際の検証は次の `parseStationConfig` が担う。
+  //
+  // **`stationId` は必ずスプレッドの後に置く。** オブジェクトリテラルは後勝ちなので、
+  // 先に置くとボディに紛れ込んだ `stationId` で上書きされる——URL パスを正とする
+  // という上のコメントの約束が、まさにこの並び順ひとつで壊れる（敵対的レビューで発見）。
+  const candidate: unknown = {
+    stations: [...others, { ...bodyResult.body, stationId }],
+    boards: current.boards,
+  }
+
+  const parsed = parseStationConfig(candidate)
+  if (!parsed.ok) {
+    sendAdminJson(res, 400, { error: 'invalid-config', detail: describeFailure(parsed.failure) })
+    return
+  }
+
+  try {
+    stationConfig.apply(parsed.config)
+  } catch (error) {
+    sendAdminJson(res, 500, { error: 'save-failed', detail: messageOfError(error) })
+    return
+  }
+  const saved = parsed.config.stations.find((s) => s.stationId === stationId)
+  sendAdminJson(res, 200, { station: saved })
+}
+
+/**
+ * `/api/stations/:stationId` の DELETE。
+ *
+ * **基板が割り当て済みの観測点は拒む（409）。** 黙って削ると、その基板は
+ * `unknown-station-id` を指す壊れた設定になる——`parseStationConfig` が参照整合性を
+ * 検査する設計に沿って、こちらも壊れた状態を作らない側に倒す。
+ */
+function handleDeleteStation(res: ServerResponse, stationConfig: StationConfigOps, stationId: string): void {
+  const current = stationConfig.get()
+  if (!current.stations.some((s) => s.stationId === stationId)) {
+    sendAdminJson(res, 404, { error: 'not-found' })
+    return
+  }
+  const boardsUsingStation = current.boards.filter((b) => b.stationId === stationId).map((b) => b.boardKey)
+  if (boardsUsingStation.length > 0) {
+    sendAdminJson(res, 409, { error: 'station-in-use', boards: boardsUsingStation })
+    return
+  }
+
+  // **PUT 系と同じく `parseStationConfig` を通す。** 要素を減らすだけなので通常は
+  // 落ちないはずだが、これを通さないと「書き込みハンドラが渡す設定は常にパース済み」
+  // という `main.ts` 側の前提（`applyStationConfig` のコメント）が DELETE 系だけ
+  // 実態と食い違う——検証の単一情報源を `parseStationConfig` に保つ。
+  const parsed = parseStationConfig({
+    stations: current.stations.filter((s) => s.stationId !== stationId),
+    boards: current.boards,
+  })
+  if (!parsed.ok) {
+    sendAdminJson(res, 400, { error: 'invalid-config', detail: describeFailure(parsed.failure) })
+    return
+  }
+  try {
+    stationConfig.apply(parsed.config)
+  } catch (error) {
+    sendAdminJson(res, 500, { error: 'save-failed', detail: messageOfError(error) })
+    return
+  }
+  sendAdminJson(res, 200, { deleted: stationId })
+}
+
+/**
+ * `/api/boards/:boardKey` の PUT。**upsert。** `stationId` が `stations[]` に無ければ
+ * `parseStationConfig` の `unknown-station-id` で 400 になる——観測点を先に作る必要がある。
+ */
+async function handlePutBoard(
+  req: IncomingMessage,
+  res: ServerResponse,
+  stationConfig: StationConfigOps,
+  boardKey: string,
+): Promise<void> {
+  const bodyResult = await readAdminBody(req)
+  if (!bodyResult.ok) {
+    sendAdminJson(res, 400, { error: bodyResult.reason })
+    return
+  }
+  if (!isPlainObject(bodyResult.body)) {
+    sendAdminJson(res, 400, { error: 'body-not-an-object' })
+    return
+  }
+
+  const current = stationConfig.get()
+  const others = current.boards.filter((b) => b.boardKey !== boardKey)
+  // **`unknown` のまま渡す理由・`boardKey` をスプレッドの後に置く理由は
+  // `handlePutStation` と同じ。** `sensors` の既定値（`[]`）はボディより**先**に置く——
+  // ボディが `sensors` を持っていればそちらを優先し、無ければ空配列へ倒す。
+  const candidate: unknown = {
+    stations: current.stations,
+    boards: [...others, { sensors: [], ...bodyResult.body, boardKey }],
+  }
+
+  const parsed = parseStationConfig(candidate)
+  if (!parsed.ok) {
+    sendAdminJson(res, 400, { error: 'invalid-config', detail: describeFailure(parsed.failure) })
+    return
+  }
+
+  try {
+    stationConfig.apply(parsed.config)
+  } catch (error) {
+    sendAdminJson(res, 500, { error: 'save-failed', detail: messageOfError(error) })
+    return
+  }
+  const saved = parsed.config.boards.find((b) => b.boardKey === boardKey)
+  sendAdminJson(res, 200, { board: saved })
+}
+
+/** `/api/boards/:boardKey` の DELETE。**割当と校正値（`sensors[]`）を丸ごと削除する**（観測点自体は消さない）。 */
+function handleDeleteBoard(res: ServerResponse, stationConfig: StationConfigOps, boardKey: string): void {
+  const current = stationConfig.get()
+  if (!current.boards.some((b) => b.boardKey === boardKey)) {
+    sendAdminJson(res, 404, { error: 'not-found' })
+    return
+  }
+  // **理由は `handleDeleteStation` と同じ。**
+  const parsed = parseStationConfig({
+    stations: current.stations,
+    boards: current.boards.filter((b) => b.boardKey !== boardKey),
+  })
+  if (!parsed.ok) {
+    sendAdminJson(res, 400, { error: 'invalid-config', detail: describeFailure(parsed.failure) })
+    return
+  }
+  try {
+    stationConfig.apply(parsed.config)
+  } catch (error) {
+    sendAdminJson(res, 500, { error: 'save-failed', detail: messageOfError(error) })
+    return
+  }
+  sendAdminJson(res, 200, { deleted: boardKey })
+}
+
+/** `readingHub.ts` などと同じ形。`Error` でない値が投げられても `.message` で墜落しない。 */
+function messageOfError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * `/api/*` の入口。
  *
  * CORS ヘッダは**認証の成否によらず先に付ける**。拒否した応答もブラウザに読ませる必要が
  * あるため（読ませなければ「拒否された」ことがブラウザの `fetch` からは `TypeError` としか
@@ -210,13 +490,19 @@ function adminAuthStatusCode(reason: AdminAuthFailure['reason']): number {
  * **拒否した理由は必ず 1 行記録する。** `handleStream` が購読の上限で断ったときと同じ理由——
  * 断りは運用者の記録にしか出ないので、ここで黙ると総当たり・スキャンが記録から一切見えない
  * まま進む（見に来ない運用ではなおさら気づけない）。
+ *
+ * **投げない。** 書き込みハンドラは非同期だが、内部で全て捕まえる——`createServer` の
+ * コールバックは同期関数なので、ここが reject すると `unhandledRejection` として
+ * プロセスの外へ漏れる。
  */
-function handleAdmin(
+async function handleAdmin(
   req: IncomingMessage,
   res: ServerResponse,
+  url: URL,
   adminAuth: AdminAuthConfig,
   log: (level: LogLevel, kind: string, detail: string, line: string) => void,
-): void {
+  stationConfig: StationConfigOps,
+): Promise<void> {
   applyAdminCors(req, res, adminAuth.allowedOrigins)
 
   const failure = checkAdminAuth(
@@ -233,8 +519,50 @@ function handleAdmin(
     return
   }
 
-  // 段 B でここへ設定・履歴・管理操作のエンドポイントを実装する。
-  sendAdminJson(res, 404, { error: 'not-found' })
+  const route = parseAdminRoute(url.pathname)
+  if (route === null) {
+    sendAdminJson(res, 404, { error: 'not-found' })
+    return
+  }
+
+  if (route.kind === 'stations') {
+    if (req.method !== 'GET') {
+      sendAdminJson(res, 405, { error: 'method-not-allowed' })
+      return
+    }
+    sendAdminJson(res, 200, { stations: stationConfig.get().stations })
+    return
+  }
+  if (route.kind === 'station') {
+    if (req.method === 'PUT') {
+      await handlePutStation(req, res, stationConfig, route.stationId)
+      return
+    }
+    if (req.method === 'DELETE') {
+      handleDeleteStation(res, stationConfig, route.stationId)
+      return
+    }
+    sendAdminJson(res, 405, { error: 'method-not-allowed' })
+    return
+  }
+  if (route.kind === 'boards') {
+    if (req.method !== 'GET') {
+      sendAdminJson(res, 405, { error: 'method-not-allowed' })
+      return
+    }
+    sendAdminJson(res, 200, { boards: stationConfig.get().boards })
+    return
+  }
+  // route.kind === 'board'
+  if (req.method === 'PUT') {
+    await handlePutBoard(req, res, stationConfig, route.boardKey)
+    return
+  }
+  if (req.method === 'DELETE') {
+    handleDeleteBoard(res, stationConfig, route.boardKey)
+    return
+  }
+  sendAdminJson(res, 405, { error: 'method-not-allowed' })
 }
 
 export async function startStatusServer(options: StatusServerOptions): Promise<StatusServer> {
@@ -387,7 +715,26 @@ export async function startStatusServer(options: StatusServerOptions): Promise<S
           handleAdminPreflight(req, res, options.adminAuth.allowedOrigins)
           return
         }
-        handleAdmin(req, res, options.adminAuth, log)
+        // **`handleAdmin` は内部で全て捕まえる契約だが、ここでも受け止める。**
+        // `createServer` のコールバックは同期関数なので、万一 reject すると
+        // `unhandledRejection` としてプロセスの外へ漏れる——`/status` の
+        // 応答作成失敗と同じ扱いで押さえる。
+        handleAdmin(req, res, url, options.adminAuth, log, options.stationConfig).catch((error: unknown) => {
+          const detail = error instanceof Error ? error.message : String(error)
+          log('error', 'admin', 'handler', `[admin] /api/* の処理に失敗: ${detail}`)
+          if (!res.headersSent) {
+            try {
+              sendAdminJson(res, 500, { error: 'internal' })
+              return
+            } catch (inner) {
+              // **二重目の失敗も記録する。** 黙ると、下の非 admin 経路と同じ理由——
+              // 応答を送ることすらできずに切ったことが痕跡として残らない。
+              const why = inner instanceof Error ? inner.message : String(inner)
+              log('error', 'admin', 'fatal', `[admin] 500 も返せず繋ぎを切った: ${why}`)
+            }
+          }
+          res.destroy()
+        })
         return
       }
 

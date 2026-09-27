@@ -40,7 +40,12 @@ import { ReadingHub } from './src/receiver/readingHub'
 import { SensorFusion } from './src/receiver/sensorFusion'
 import type { FusionOutcome, StationCloseFailure, StationIntensityReading } from './src/receiver/sensorFusion'
 import { SensorHealthBook } from './src/receiver/sensorHealth'
-import { StationDirectory, loadStationConfig, stationsWithMultipleBoards } from './src/receiver/stationConfig'
+import {
+  StationDirectory,
+  loadStationConfig,
+  saveStationConfig,
+  stationsWithMultipleBoards,
+} from './src/receiver/stationConfig'
 import type { StationConfig } from './src/receiver/stationConfig'
 import { StationHealthBook } from './src/receiver/stationHealth'
 import { buildStatusReport } from './src/receiver/statusReport'
@@ -573,6 +578,76 @@ export function deliverStationFusion(to: StationFusionSinks, fusion: FusionOutco
 }
 
 /**
+ * `applyStationConfigCore` が触る先。**`main()` の中に並べただけだと、この順番を
+ * 守るものが何も無い**（あそこは「直接実行のときだけ走らせる」門の内側でテストが
+ * 届かない）——`deliverReading`/`deliverStationFusion` と同じ理由で抽出する。
+ */
+export interface ApplyStationConfigDeps {
+  /** ディスクへ保存する。**投げうる**——投げたら以降は一切呼ばない。 */
+  readonly save: (config: StationConfig) => void
+  /** `/api/stations`・`/api/boards` の GET が返す値を差し替える。 */
+  readonly setCurrentConfig: (config: StationConfig) => void
+  /** `StationDirectory` を作り直し、`IntensityPipeline` へ差し替える。 */
+  readonly rebuildStations: (config: StationConfig) => void
+  /** 古い `SensorFusion` を締める。**投げうる**（呼び出し側が捕まえる）。 */
+  readonly closeSensorFusion: () => { failures: readonly StationCloseFailure[]; readings: readonly StationIntensityReading[] }
+  readonly reportCloseFailures: (failures: readonly StationCloseFailure[]) => void
+  readonly emitReading: (r: StationIntensityReading) => void
+  /** 古い `closeSensorFusion` が投げたときに呼ぶ。設定の差し替え自体は止めない。 */
+  readonly onCloseFailure: (error: unknown) => void
+  /** 新しい `SensorFusion` を作り、合成グループが組めた観測点の一覧を返す。 */
+  readonly rebuildSensorFusion: (config: StationConfig) => readonly string[]
+  readonly setUngroupedMultiBoardStations: (ids: readonly string[]) => void
+  readonly setWarning: (warning: string | null) => void
+}
+
+/**
+ * `/api/*` の書き込みが観測点設定を確定したときに呼ぶ（#313 段 B）。
+ *
+ * **保存を先に、反映は後で。** `save` が投げたら、以降のどの `deps` も呼ばない——
+ * 保存に失敗したのに実行中の設定だけ変わる、という食い違いを避ける。
+ *
+ * 反映は 2 つ:
+ * 1. `rebuildStations` は差し替えるだけ。進行中の区間組み立ては打ち切らない——
+ *    校正値を都度引くだけで、区間の連続性には関わらない
+ *    （`intensityPipeline.ts` の `updateStations` コメント参照）
+ * 2. `sensorFusion` は作り直す。合成グループの組み方自体（基板→観測点の割当）が
+ *    変わりうるので、差し替えでは済まない——`closeSensorFusion` で進行中の合成を
+ *    締めてから `rebuildSensorFusion` で新しいインスタンスへ切り替える（進行中の
+ *    合成区間はここで打ち切られる。設定変更自体が頻繁でないので許容する）
+ *
+ * **`setCurrentConfig`・`rebuildStations`・`rebuildSensorFusion` の間にロールバックは
+ * 無い。** 現状は安全——`StationDirectory`・`SensorFusion` のコンストラクタは
+ * 例外を投げない設計（壊れた入力は `console.warn` して無視する側に倒す）。もし将来
+ * どちらかが検証強化等で投げるようになったら、`currentStationConfig`（GET が返す値）
+ * だけが新設定に進み、実際にパケット処理へ使う校正値は古いままという食い違いが
+ * 起きる——そのときは `setCurrentConfig` を最後（全て構築し終えてから）へ動かすこと。
+ */
+export function applyStationConfigCore(deps: ApplyStationConfigDeps, newConfig: StationConfig): void {
+  deps.save(newConfig)
+
+  deps.setCurrentConfig(newConfig)
+  deps.rebuildStations(newConfig)
+
+  // **締めの失敗で反映を止めない。** `shutdown` の同じ処理と同じ理由——
+  // 締めくくりが投げても、設定の差し替え自体は進める。
+  try {
+    const stationRest = deps.closeSensorFusion()
+    deps.reportCloseFailures(stationRest.failures)
+    for (const r of stationRest.readings) deps.emitReading(r)
+  } catch (error) {
+    deps.onCloseFailure(error)
+  }
+
+  const groupedStationIds = deps.rebuildSensorFusion(newConfig)
+  deps.setUngroupedMultiBoardStations(findUngroupedMultiBoardStations(newConfig, groupedStationIds))
+  // **保存できた時点で `parseStationConfig` を通過済み。** 書き込みハンドラが渡す
+  // `newConfig` は常にパース済みの正しい形なので、読み直して警告の有無を
+  // 確かめ直す必要は無い。
+  deps.setWarning(null)
+}
+
+/**
  * 自己診断の数え上げに付ける見出し。**毎分の要約も終了時の締めくくりもここから引く。**
  *
  * **`Record<GravityCount, string>` にしてあるので、数え上げを足して**
@@ -815,20 +890,25 @@ async function main(): Promise<void> {
   //
   // **`pipeline` より先に作る。** 校正（REQUIREMENTS.md §16）の適用にはセンサーの
   // 割り当てが要るので、`IntensityPipeline` のコンストラクタへ渡す。
-  const stationConfigLoad = loadStationConfig(
-    process.env.SEISMO_STATION_CONFIG ?? defaultStationConfigPath(),
-  )
+  const stationConfigPath = process.env.SEISMO_STATION_CONFIG ?? defaultStationConfigPath()
+  const stationConfigLoad = loadStationConfig(stationConfigPath)
   // **文面はここで直書きしない。** `buildStationConfigWarning`（定期要約でも使う）と
   // 別の文字列を持つと、起動直後のログと 60 秒後以降の再掲ログの表現がずれる。
   for (const w of buildStationConfigWarning(stationConfigLoad.warning)) console.warn(w.line)
-  const stations = new StationDirectory(stationConfigLoad.config)
-
+  // **以下 5 つは `/api/*`（#313 段 B）が書き換える。** 設定を保存・反映するたびに
+  // `applyStationConfig`（このスコープの下のほうで定義）がまとめて差し替える——
+  // 個別に更新すると、一部だけ新しい設定を見て残りが古いままになる（例えば
+  // `stations` だけ差し替えて `ungroupedMultiBoardStations` を更新し忘れると、
+  // 解消したはずの警告が再掲され続ける）。
+  let currentStationConfig = stationConfigLoad.config
+  let stationConfigWarning = stationConfigLoad.warning
+  let stations = new StationDirectory(stationConfigLoad.config)
   const pipeline = new IntensityPipeline({ stations })
   // **複数センサーの波形合成（REQUIREMENTS.md §7）。** 割り当てが 2 台に満たない
   // 観測点はグループを組まない（`sensorFusion.ts` の `buildGroups`）ので、単一センサーの
   // 構成では常に何もしない——観測点を割り当てていない構成と同じく安全に無視できる。
-  const sensorFusion = new SensorFusion(stationConfigLoad.config)
-  const ungroupedMultiBoardStations = findUngroupedMultiBoardStations(
+  let sensorFusion = new SensorFusion(stationConfigLoad.config)
+  let ungroupedMultiBoardStations = findUngroupedMultiBoardStations(
     stationConfigLoad.config,
     sensorFusion.groupedStationIds,
   )
@@ -951,6 +1031,43 @@ async function main(): Promise<void> {
         `[station] ${stationId} 合成の状態が変わった${skip}`,
       )
     },
+  }
+
+  /**
+   * `/api/*` の書き込みが観測点設定を確定したときに呼ぶ（#313 段 B）。
+   *
+   * **順序に意味のあるロジックは `applyStationConfigCore` へ抽出済み。** ここは
+   * `main()` のローカル変数を `deps` へ束ねる配線だけを持つ。
+   */
+  const applyStationConfig = (newConfig: StationConfig): void => {
+    applyStationConfigCore(
+      {
+        save: (config) => saveStationConfig(stationConfigPath, config),
+        setCurrentConfig: (config) => {
+          currentStationConfig = config
+        },
+        rebuildStations: (config) => {
+          stations = new StationDirectory(config)
+          pipeline.updateStations(stations)
+        },
+        closeSensorFusion: () => sensorFusion.closeAll(),
+        reportCloseFailures: reportStationCloseFailures,
+        emitReading: emitStationReading,
+        onCloseFailure: (error) =>
+          console.error(`[station-close] 設定変更に伴う観測点合成の締めくくりに失敗: ${messageOf(error)}`),
+        rebuildSensorFusion: (config) => {
+          sensorFusion = new SensorFusion(config)
+          return sensorFusion.groupedStationIds
+        },
+        setUngroupedMultiBoardStations: (ids) => {
+          ungroupedMultiBoardStations = ids
+        },
+        setWarning: (warning) => {
+          stationConfigWarning = warning
+        },
+      },
+      newConfig,
+    )
   }
 
   const receiver = await startUdpReceiver({
@@ -1129,6 +1246,10 @@ async function main(): Promise<void> {
     address: httpAddress,
     hub,
     adminAuth,
+    stationConfig: {
+      get: () => currentStationConfig,
+      apply: applyStationConfig,
+    },
     // **呼ばれた時点で組み立てる。** 溜め込んだものを返すと、見に来た人が
     // 「いつの様子か」を自分で確かめられない。
     status: () =>
@@ -1166,7 +1287,7 @@ async function main(): Promise<void> {
         },
         hub: hub.snapshot(),
         stations,
-        stationConfigWarning: stationConfigLoad.warning,
+        stationConfigWarning,
         ungroupedMultiBoardStations,
       }),
     log: emit,
@@ -1271,7 +1392,7 @@ async function main(): Promise<void> {
     // **設定ファイルの破損・合成グループの乖離も、間引きつつ再掲する。** 起動時の
     // `console.warn` は 1 回きりで、ログだけを監視している運用者には見逃すと二度と
     // 伝わらない（`buildStationConfigWarning`・`buildStationGroupingWarning` のコメント参照）。
-    for (const w of buildStationConfigWarning(stationConfigLoad.warning)) emit(w.level, w.kind, w.detail, w.line)
+    for (const w of buildStationConfigWarning(stationConfigWarning)) emit(w.level, w.kind, w.detail, w.line)
     for (const w of buildStationGroupingWarning(ungroupedMultiBoardStations)) {
       emit(w.level, w.kind, w.detail, w.line)
     }

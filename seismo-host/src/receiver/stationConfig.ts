@@ -12,7 +12,8 @@
 // あっても、受信・震度算出は止めない —— 設置場所や校正を知らないだけで、揺れを
 // 測る仕事とは無関係。
 
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { dirname } from 'node:path'
 
 import type { BoardKey } from '../protocol/types'
 
@@ -69,11 +70,11 @@ export const DEFAULT_SENSOR_CALIBRATION: SensorCalibration = {
   noiseDensity: null,
 }
 
-interface SensorEntry extends SensorCalibration {
+export interface SensorEntry extends SensorCalibration {
   readonly sensorId: string
 }
 
-interface BoardEntry {
+export interface BoardEntry {
   readonly boardKey: BoardKey
   readonly stationId: string
   readonly sensors: readonly SensorEntry[]
@@ -414,7 +415,12 @@ export function parseStationConfig(raw: unknown): StationConfigParseResult {
   return { ok: true, config: { stations: parsedStations.stations, boards } }
 }
 
-function describeFailure(f: StationConfigParseFailure): string {
+/**
+ * 検証に失敗した理由を人が読める1行へ変える。**`/api/*` の書き込みハンドラ
+ * （#313 段 B）も使う** —— 起動時のログと同じ文言で、書き込みを拒んだ理由を
+ * リクエスト元へ返す。
+ */
+export function describeFailure(f: StationConfigParseFailure): string {
   switch (f.reason) {
     case 'not-an-object':
       return '設定の中身がオブジェクトではない'
@@ -490,6 +496,28 @@ export function loadStationConfig(path: string): { config: StationConfig; warnin
   const result = parseStationConfig(raw)
   if (!result.ok) return { config: EMPTY_STATION_CONFIG, warning: describeFailure(result.failure) }
   return { config: result.config, warning: null }
+}
+
+/**
+ * 設定ファイルを書く。**管理コンソール（`/api/*`）からの書き込みが呼ぶ**
+ * （#313 段 B）。呼び出し側は事前に `parseStationConfig` を通した `StationConfig` を
+ * 渡すこと ——ここでは検証をやり直さない（検証の単一情報源を `parseStationConfig` に
+ * 保つため）。
+ *
+ * **一時ファイルへ書いてから改名する。** 書き込みの途中でプロセスが落ちても、
+ * 改名（同期・原子的）が終わるまでは元のファイルが残る ——`rawStore.ts` の
+ * 圧縮ファイル書き出しと同じ理由。
+ *
+ * **例外を投げる。** `loadStationConfig` と違い、こちらの失敗は運用者の書き間違いではなく
+ * ディスクの都合（権限・空き容量）なので、黙って諦めると「保存したはずなのに次の起動で
+ * 消えている」という一番気づきにくい壊れ方をする。呼び出し側（`/api/*` のハンドラ）が
+ * 捕まえて 500 へ変える。
+ */
+export function saveStationConfig(path: string, config: StationConfig): void {
+  mkdirSync(dirname(path), { recursive: true })
+  const temp = `${path}.tmp`
+  writeFileSync(temp, JSON.stringify(config, null, 2))
+  renameSync(temp, path)
 }
 
 /** `boardKey`・`(boardKey, sensorId)` から観測点・校正値を引く。 */
