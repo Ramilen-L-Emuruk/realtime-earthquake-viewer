@@ -134,6 +134,7 @@ function input(overrides: Partial<StatusReportInput> = {}): StatusReportInput {
     hub: new ReadingHub().snapshot(),
     stations: StationDirectory.empty(),
     stationConfigWarning: null,
+    ungroupedMultiBoardStations: [],
     ...overrides,
   }
 }

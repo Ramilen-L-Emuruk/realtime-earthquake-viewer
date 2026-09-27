@@ -53,6 +53,7 @@ function report(hub: ReadingHub): StatusReport {
     hub: hub.snapshot(),
     stations: StationDirectory.empty(),
     stationConfigWarning: null,
+    ungroupedMultiBoardStations: [],
   })
 }
 
