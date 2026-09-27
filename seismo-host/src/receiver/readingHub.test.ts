@@ -47,6 +47,10 @@ function wave(overrides: Partial<WaveChunk> = {}): WaveChunk {
 
 const READING: HubMessage = { kind: 'reading', reading: reading() }
 const WAVE: HubMessage = { kind: 'wave', wave: wave() }
+const STATION_READING: HubMessage = {
+  kind: 'station-reading',
+  reading: { stationId: 'garage', atMs: 1_700_000_000_000, intensity: 2.1 },
+}
 
 /** 受け取る相手。`take` を偽にすると詰まったふりをする。 */
 function sink(options: { wave?: boolean; take?: boolean } = {}) {
@@ -88,6 +92,16 @@ describe('ReadingHub', () => {
 
     expect(plain.got).toEqual([READING])
     expect(full.got).toEqual([READING, WAVE])
+  })
+
+  it('観測点ぶんの計測震度（合成）も、センサー単独の震度と同じく全員へ配る', () => {
+    const hub = new ReadingHub()
+    const plain = sink({ wave: false })
+    plain.attach(hub)
+
+    hub.publish(STATION_READING)
+
+    expect(plain.got).toEqual([STATION_READING])
   })
 
   it('上限に達したら新しいほうを断り、断った数を覚える', () => {

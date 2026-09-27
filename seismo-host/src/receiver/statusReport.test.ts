@@ -6,6 +6,7 @@ import { PacketTally } from './packetTally'
 import { ReadingHub } from './readingHub'
 import type { SensorHealth } from './sensorHealth'
 import { StationDirectory } from './stationConfig'
+import type { StationHealth } from './stationHealth'
 import { buildStatusReport } from './statusReport'
 import type { RawStoreStatus, StatusReportInput } from './statusReport'
 
@@ -97,6 +98,19 @@ function sensor(overrides: Partial<SensorHealth> = {}): SensorHealth {
   }
 }
 
+function station(overrides: Partial<StationHealth> = {}): StationHealth {
+  return {
+    stationId: 'garage',
+    lastPacketMs: NOW - 300,
+    lastIntensity: 2.1,
+    lastReadingAtMs: NOW - 2_000,
+    lastSkipReason: null,
+    closeFailures: 0,
+    lastCloseFailure: null,
+    ...overrides,
+  }
+}
+
 function input(overrides: Partial<StatusReportInput> = {}): StatusReportInput {
   const tally = new PacketTally()
   tally.record({ kind: 'received', source: '192.168.0.51' })
@@ -111,6 +125,8 @@ function input(overrides: Partial<StatusReportInput> = {}): StatusReportInput {
     tally: tally.snapshotTotal(),
     sensors: [sensor()],
     sensorEvictions: 0,
+    stationEvictions: 0,
+    stationIntensities: [],
     gravity: EMPTY_GRAVITY,
     segments: [segment()],
     unusableIntensities: 0,
@@ -191,6 +207,29 @@ describe('buildStatusReport', () => {
     expect(report.sensors[0].lastIntensity).toBeNull()
     expect(report.unreadableIntensityValues).toBe(1)
     expect(report.unreadableTimes).toBe(1)
+  })
+
+  it('観測点ぶんの合成（複数センサー・§7）の生存を、センサーとは別の一覧で出す', () => {
+    const report = buildStatusReport(input({ stationIntensities: [station()] }))
+
+    expect(report.stationIntensities).toEqual([station()])
+    // **`sensors` へは混ざらない。** あちらはセンサー 1 個の話で、件数も別。
+    expect(report.sensors).toHaveLength(1)
+  })
+
+  it('観測点の値も、センサーと同じ番人（時刻・震度を別の数へ入れる）を通る', () => {
+    const report = buildStatusReport(
+      input({
+        stationIntensities: [
+          station({ lastReadingAtMs: Number.NaN, lastIntensity: Number.POSITIVE_INFINITY }),
+        ],
+      }),
+    )
+
+    expect(report.stationIntensities[0].lastReadingAtMs).toBeNull()
+    expect(report.stationIntensities[0].lastIntensity).toBeNull()
+    expect(report.unreadableTimes).toBe(1)
+    expect(report.unreadableIntensityValues).toBe(1)
   })
 
   it('数として出せなかった震度の件数を、時刻とは別の数として出す', () => {

@@ -79,9 +79,9 @@ function sseEvent(name: string, data: unknown): string {
 }
 
 function encode(message: HubMessage): string {
-  return message.kind === 'reading'
-    ? sseEvent('reading', message.reading)
-    : sseEvent('wave', message.wave)
+  if (message.kind === 'reading') return sseEvent('reading', message.reading)
+  if (message.kind === 'wave') return sseEvent('wave', message.wave)
+  return sseEvent('station-reading', message.reading)
 }
 
 /**

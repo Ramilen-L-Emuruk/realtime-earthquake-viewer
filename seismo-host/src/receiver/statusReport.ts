@@ -18,6 +18,7 @@ import type { TallySnapshot } from './packetTally'
 import type { HubSnapshot } from './readingHub'
 import type { SensorHealth } from './sensorHealth'
 import type { StationDirectory, StationInfo } from './stationConfig'
+import type { StationHealth } from './stationHealth'
 
 /**
  * 生データの保存の様子。**`RawStore` の読み取り専用の値をそのまま並べる。**
@@ -58,6 +59,14 @@ export interface StatusReportInput {
   readonly sensors: readonly SensorHealth[]
   /** センサーの覚えを上限で押し出した数。 */
   readonly sensorEvictions: number
+  /**
+   * 観測点ぶんの合成の覚え（`StationHealthBook`）を上限で押し出した数。
+   *
+   * **`sensorEvictions` とは別に持つ。** あちらはセンサー単位の枠（64）で、こちらは
+   * 観測点単位の枠（同じく既定 64）——混ぜると、どちらの帳面が上限に達したのか
+   * `/status` から読み取れなくなる。
+   */
+  readonly stationEvictions: number
   readonly segments: readonly SegmentState[]
   /** 数として出せなかった計測震度を見た回数。**0 が正常。** */
   readonly unusableIntensities: number
@@ -70,6 +79,15 @@ export interface StatusReportInput {
   readonly gravity: GravityCheckSnapshot
   readonly raw: RawStoreStatus
   readonly hub: HubSnapshot
+  /**
+   * 観測点ぶんの合成（複数センサー・REQUIREMENTS.md §7）の生存。
+   *
+   * **`sensors` とは別の一覧。** あちらはセンサー 1 個の生存で、こちらは合成できた
+   * 観測点の生存——2 台以上を割り当てた観測点にしか現れない（`stationHealth.ts` の
+   * `StationHealthBook` は `SensorFusion.ingest()` が実際に震度・skip 理由・締めくくり
+   * 失敗のいずれかを返した観測点だけを覚える）。
+   */
+  readonly stationIntensities: readonly StationHealth[]
   /**
    * 基板がどこに置かれているか（観測点）を引く帳面。
    *
@@ -151,6 +169,18 @@ export interface SensorStatus extends Omit<SensorHealth, 'lastPacketMs'> {
   readonly enabled: boolean
 }
 
+/**
+ * 観測点 1 つぶん。**`StationHealth` と時刻の型だけが違う。**
+ *
+ * `SensorStatus` と同じ理由で、出せない時刻・震度を `0` で埋めない。
+ */
+export interface StationIntensityStatus
+  extends Omit<StationHealth, 'lastPacketMs' | 'lastReadingAtMs' | 'lastIntensity'> {
+  readonly lastPacketMs: number | null
+  readonly lastReadingAtMs: number | null
+  readonly lastIntensity: number | null
+}
+
 export interface StatusReport {
   /** この答えを作った時刻。 */
   readonly generatedAtMs: number
@@ -160,6 +190,14 @@ export interface StatusReport {
   readonly http: Endpoint
   readonly sensors: readonly SensorStatus[]
   readonly sensorEvictions: number
+  /** 観測点ぶんの合成の覚え（`StationHealthBook`）を上限で押し出した数。 */
+  readonly stationEvictions: number
+  /**
+   * 観測点ぶんの合成（REQUIREMENTS.md §7）の生存。**`sensors` へ混ぜない**——
+   * あちらはセンサー 1 個の話で、こちらは合成できた観測点の話（2 台以上を割り当てた
+   * 観測点にしか現れない）。
+   */
+  readonly stationIntensities: readonly StationIntensityStatus[]
   readonly segments: readonly SegmentStatus[]
   /**
    * 数として出せなかった計測震度を見た回数。
@@ -280,6 +318,13 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     enabled: input.stations.resolveSensor(s.boardKey, s.sensorId).enabled,
   }))
 
+  const stationIntensities: StationIntensityStatus[] = input.stationIntensities.map((s) => ({
+    ...s,
+    lastPacketMs: finite(s.lastPacketMs),
+    lastReadingAtMs: finite(s.lastReadingAtMs),
+    lastIntensity: finiteValue(s.lastIntensity),
+  }))
+
   // **有限であることは `gravityCheck.ts` の `settle` が保証する** —— 平均・ばらつき・震度は
   // あそこで確かめたうえで、読めなければ `null` と `'unreadable'` に倒れている。
   // 確かめ直していないのは判定した時刻だけなので、そこだけ通す。
@@ -309,6 +354,8 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     http: input.http,
     sensors,
     sensorEvictions: input.sensorEvictions,
+    stationEvictions: input.stationEvictions,
+    stationIntensities,
     segments,
     unusableIntensities: input.unusableIntensities,
     gravity,

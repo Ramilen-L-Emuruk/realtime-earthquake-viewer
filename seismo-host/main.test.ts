@@ -7,6 +7,7 @@ import {
   buildClosingLines,
   buildGravityWarnings,
   deliverReading,
+  deliverStationFusion,
   buildRawWarnings,
   buildWindowSummary,
   formatAt,
@@ -16,6 +17,7 @@ import {
 import type { GravityVerdict } from './src/receiver/gravityCheck'
 import type { IntensityReading } from './src/receiver/intensityPipeline'
 import { PacketTally } from './src/receiver/packetTally'
+import type { FusedWaveChunk, FusionOutcome, StationIntensityReading } from './src/receiver/sensorFusion'
 
 describe('formatAt', () => {
   it('普通の時刻はそのまま出す', () => {
@@ -284,6 +286,7 @@ describe('buildClosingLines', () => {
     evictions: 0,
     unusableIntensities: 0,
     sensorEvictions: 0,
+    stationEvictions: 0,
     gravity: { mismatches: 0, unjudged: 0, restlessWindows: 0, restarts: 0, evictions: 0 },
     writeErrors: 0,
     lostRecords: 0,
@@ -315,6 +318,13 @@ describe('buildClosingLines', () => {
     expect(buildClosingLines({ ...quiet, evictions: 1, sensorEvictions: 3 })).toEqual([
       { level: 'log', line: '  送信元の枠を捨てた=1' },
       { level: 'log', line: '  センサーの生存の枠を捨てた=3' },
+    ])
+  })
+
+  it('観測点ぶんの合成の生存の枠を捨てた分も、センサーの枠とは別の行で出す', () => {
+    expect(buildClosingLines({ ...quiet, sensorEvictions: 1, stationEvictions: 2 })).toEqual([
+      { level: 'log', line: '  センサーの生存の枠を捨てた=1' },
+      { level: 'log', line: '  観測点ぶんの合成の生存の枠を捨てた=2' },
     ])
   })
 
@@ -572,5 +582,150 @@ describe('deliverReading', () => {
     )
 
     expect(got).toEqual([READING, READING, READING, READING, READING])
+  })
+})
+
+describe('deliverStationFusion', () => {
+  const STATION_READING: StationIntensityReading = {
+    stationId: 'garage',
+    atMs: 1_000,
+    intensity: 1.5,
+  }
+
+  const FUSED_WAVE: FusedWaveChunk = {
+    stationId: 'garage',
+    driver: { boardKey: 'mac:aa', sensorId: 'i2c0-68' },
+    firstSampleIndex: 0,
+    firstSampleMs: 1_000,
+    msPerSample: 10,
+    gal: [[1], [2], [3]],
+    memberCount: [2],
+  }
+
+  function fusion(overrides: Partial<FusionOutcome> = {}): FusionOutcome {
+    return {
+      fusedWave: null,
+      pairDiffs: [],
+      readings: [],
+      intensitySkipReason: null,
+      closeFailure: null,
+      intensityStateChanged: false,
+      ...overrides,
+    }
+  }
+
+  it('読みを先に配り、いまの合成状態（noteSkip）は最後に確定させる', () => {
+    // **区間の作り直しで、古い区間の残り読みと新しい異常が同じ呼び出しに同居する回。**
+    // `noteReading` を先に呼んでも、最後の `noteSkip` が「いまの状態」として残るなら
+    // 消されない（`stationHealth.ts` の `noteSkip` は「いまの状態」を最後に上書きする側）。
+    const order: string[] = []
+    deliverStationFusion(
+      {
+        noteReading: () => order.push('noteReading'),
+        publish: () => order.push('publish'),
+        reportCloseFailure: () => order.push('reportCloseFailure'),
+        noteSkip: () => order.push('noteSkip'),
+        logSegment: () => order.push('logSegment'),
+      },
+      fusion({
+        fusedWave: FUSED_WAVE,
+        readings: [STATION_READING],
+        intensitySkipReason: 'stream-rejected',
+        intensityStateChanged: true,
+      }),
+    )
+
+    expect(order).toEqual(['noteReading', 'publish', 'noteSkip', 'logSegment'])
+  })
+
+  it('駆動役以外の到着（fusedWave が null）では noteSkip・reportCloseFailure・logSegment を呼ばない', () => {
+    // `closeFailure`・`intensitySkipReason` は `fusedWave` が非 null の回にしか
+    // 意味を持たない契約（`sensorFusion.ts` の `FusionOutcome`）。契約に反する
+    // 入力（fusedWave が null なのに両方が非 null）を渡しても無視されることを確かめる。
+    const calls: string[] = []
+    deliverStationFusion(
+      {
+        noteReading: () => calls.push('noteReading'),
+        publish: () => calls.push('publish'),
+        reportCloseFailure: () => calls.push('reportCloseFailure'),
+        noteSkip: () => calls.push('noteSkip'),
+        logSegment: () => calls.push('logSegment'),
+      },
+      fusion({
+        fusedWave: null,
+        closeFailure: { stationId: 'garage', detail: 'x' },
+        intensitySkipReason: 'stream-rejected',
+        intensityStateChanged: true,
+      }),
+    )
+
+    expect(calls).toEqual([])
+  })
+
+  it('締めくくり失敗（closeFailure）は読み・skip理由より前に配る', () => {
+    const order: string[] = []
+    deliverStationFusion(
+      {
+        noteReading: () => order.push('noteReading'),
+        publish: () => order.push('publish'),
+        reportCloseFailure: () => order.push('reportCloseFailure'),
+        noteSkip: () => order.push('noteSkip'),
+        logSegment: () => order.push('logSegment'),
+      },
+      fusion({
+        fusedWave: FUSED_WAVE,
+        closeFailure: { stationId: 'garage', detail: 'end が投げた' },
+      }),
+    )
+
+    // readings が空でも、`fusedWave` が非 null の回は必ず `noteSkip` でいまの
+    // 状態（この場合は intensitySkipReason: null ＝ 正常）を確定させる。
+    // `intensityStateChanged` を渡していない（既定 false）ので `logSegment` は呼ばない。
+    expect(order).toEqual(['reportCloseFailure', 'noteSkip'])
+  })
+
+  it('状態が変わっていない回（intensityStateChanged が false）では logSegment を呼ばない', () => {
+    // **安全弁。** 正常な区間が続く間、`intensitySkipReason` は毎回 null を返し続けるが、
+    // 変化していないので `logSegment` を毎パケット出し続けてはいけない
+    // （単一センサーの `startedBecause` と同じ絞り込み）。
+    const calls: string[] = []
+    deliverStationFusion(
+      {
+        noteReading: () => calls.push('noteReading'),
+        publish: () => calls.push('publish'),
+        reportCloseFailure: () => calls.push('reportCloseFailure'),
+        noteSkip: () => calls.push('noteSkip'),
+        logSegment: () => calls.push('logSegment'),
+      },
+      fusion({ fusedWave: FUSED_WAVE, readings: [STATION_READING] }),
+    )
+
+    expect(calls).toEqual(['noteReading', 'publish', 'noteSkip'])
+  })
+
+  it('異常が続く間（intensityStateChanged が false でも）は毎回 logSegment を呼ぶ', () => {
+    // **push() の失敗は区間の作り直しを伴わず、`SensorFusion` に自己回復の仕組みが
+    // 無いので、`intensityStateChanged` が二度と立たないまま同じ理由が続きうる**
+    // （`sensorFusion.ts` の `ingest()` を見ること）。`intensityStateChanged` だけで
+    // 絞ると、最初の 1 回しかログが出ず「合成が壊れたままだ」という事実が沈黙する。
+    // 間引き（`logThrottle.shouldLog`）に再掲の判断を委ねるため、ここでは
+    // 理由が非 null の間は毎回呼ぶ。
+    const calls: string[] = []
+    deliverStationFusion(
+      {
+        noteReading: () => calls.push('noteReading'),
+        publish: () => calls.push('publish'),
+        reportCloseFailure: () => calls.push('reportCloseFailure'),
+        noteSkip: () => calls.push('noteSkip'),
+        logSegment: () => calls.push('logSegment'),
+      },
+      fusion({
+        fusedWave: FUSED_WAVE,
+        intensitySkipReason: 'stream-rejected',
+        intensityStateChanged: false,
+      }),
+    )
+
+    expect(calls).toEqual(['noteSkip', 'logSegment'])
   })
 })

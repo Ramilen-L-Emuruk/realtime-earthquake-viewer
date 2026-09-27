@@ -171,10 +171,28 @@ export interface FusionOutcome {
    * 事実が、誰からも見えなくなる）。
    */
   readonly closeFailure: StationCloseFailure | null
+  /**
+   * この呼び出しで合成の流し込みの状態が変わりうる処理が走ったか（区間の作り直し・
+   * `push()` の失敗のいずれか）。**駆動役の到着でだけ意味を持つ。**
+   *
+   * 単一センサーの計測震度（`intensityPipeline.ts` の `PacketOutcome.startedBecause`）が
+   * 「区間が始まった回にだけ理由を返す」のと対称にするための印——`intensitySkipReason`は
+   * 毎回「いまの状態」を返すので、これが無いと「状態が変わった回にだけログを出す」
+   * （運用者が読みたいのは変化点であって、正常な区間が続く間の毎回の現在値ではない）
+   * 判定を呼び出し側が再現できない。
+   */
+  readonly intensityStateChanged: boolean
 }
 
 function nothingOutcome(): FusionOutcome {
-  return { fusedWave: null, pairDiffs: [], readings: [], intensitySkipReason: null, closeFailure: null }
+  return {
+    fusedWave: null,
+    pairDiffs: [],
+    readings: [],
+    intensitySkipReason: null,
+    closeFailure: null,
+    intensityStateChanged: false,
+  }
 }
 
 interface Member {
@@ -490,7 +508,9 @@ export class SensorFusion {
     // `readings` に混ぜるのと同じ形。
     let carried: readonly StationIntensityReading[] = []
     let closeFailure: StationCloseFailure | null = null
+    let intensityStateChanged = false
     if (group.driverSegmentId !== wave.segmentId) {
+      intensityStateChanged = true
       const closed = endGroupStream(group)
       carried = closed.readings
       closeFailure = closed.failure
@@ -547,6 +567,7 @@ export class SensorFusion {
         }
         group.stream = null
         group.streamError = messageOf(error)
+        intensityStateChanged = true
       }
     }
 
@@ -564,6 +585,7 @@ export class SensorFusion {
       readings,
       intensitySkipReason: group.streamError,
       closeFailure,
+      intensityStateChanged,
     }
   }
 
