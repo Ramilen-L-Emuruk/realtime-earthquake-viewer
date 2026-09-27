@@ -7,7 +7,8 @@ import type { IntensityReading, WaveChunk } from './intensityPipeline'
 import { PacketTally } from './packetTally'
 import { ReadingHub } from './readingHub'
 import type { StationIntensityReading } from './sensorFusion'
-import { StationDirectory } from './stationConfig'
+import { EMPTY_STATION_CONFIG, StationDirectory } from './stationConfig'
+import type { StationConfig } from './stationConfig'
 import { buildStatusReport } from './statusReport'
 import type { RawStoreStatus, StatusReport } from './statusReport'
 import { startStatusServer } from './statusServer'
@@ -103,12 +104,28 @@ afterEach(async () => {
 /** 既定は `/api/*` を丸ごと無効化する設定（トークン未設定）。 */
 const NO_ADMIN_AUTH: AdminAuthConfig = { token: null, allowedHosts: [], allowedOrigins: [] }
 
+/**
+ * テスト用の観測点設定の読み書き。**インメモリで完結する**——`apply` が書いた内容を
+ * 次の `get` が返す（`main.ts` の実装と同じ「保存してから返す」契約を、テストでは
+ * ディスクを経由せず再現する）。
+ */
+function makeStationConfigOps(initial: StationConfig = EMPTY_STATION_CONFIG): StatusServerOptions['stationConfig'] {
+  let current = initial
+  return {
+    get: () => current,
+    apply: (config) => {
+      current = config
+    },
+  }
+}
+
 async function start(
   hub: ReadingHub,
   status?: () => StatusReport,
   log?: StatusServerOptions['log'],
   heartbeatMs?: number,
   adminAuth?: AdminAuthConfig,
+  stationConfig?: StatusServerOptions['stationConfig'],
 ): Promise<string> {
   // **port 0 で開く。** 固定の番号だと、並んで走る別のテストと取り合う。
   const server = await startStatusServer({
@@ -119,6 +136,7 @@ async function start(
     log,
     heartbeatMs,
     adminAuth: adminAuth ?? NO_ADMIN_AUTH,
+    stationConfig: stationConfig ?? makeStationConfigOps(),
   })
   running.server = server
   return `http://127.0.0.1:${server.port}`
@@ -453,6 +471,7 @@ describe('/api/*', () => {
     hub: ReadingHub,
     overrides: Partial<AdminAuthConfig> = {},
     log?: StatusServerOptions['log'],
+    stationConfig?: StatusServerOptions['stationConfig'],
   ): Promise<string> {
     const port = await getFreePort()
     const adminAuth: AdminAuthConfig = {
@@ -468,6 +487,7 @@ describe('/api/*', () => {
       status: () => report(hub),
       adminAuth,
       log,
+      stationConfig: stationConfig ?? makeStationConfigOps(),
     })
     running.server = server
     return `http://127.0.0.1:${server.port}`
@@ -566,5 +586,272 @@ describe('/api/*', () => {
     const base = await startAuthed(new ReadingHub())
     const res = await fetch(`${base}/status`)
     expect(res.status).toBe(200)
+  })
+
+  describe('/api/stations・/api/boards（#313 段 B）', () => {
+    const STATION_BODY = { displayName: '書斎', lat: 35.6, lon: 139.7 }
+    const BOARD_KEY = 'mac:020000000003'
+
+    it('正: GET /api/stations は空の一覧から始まる', async () => {
+      const base = await startAuthed(new ReadingHub())
+      const res = await fetch(`${base}/api/stations`, {
+        headers: { Authorization: `Bearer ${TOKEN}`, Origin: ORIGIN },
+      })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ stations: [] })
+    })
+
+    it('正: PUT /api/stations/:stationId で新規作成でき、GET でも見える', async () => {
+      const base = await startAuthed(new ReadingHub())
+      const put = await fetch(`${base}/api/stations/study`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${TOKEN}`,
+          Origin: ORIGIN,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(STATION_BODY),
+      })
+      expect(put.status).toBe(200)
+      expect(await put.json()).toEqual({ station: { stationId: 'study', ...STATION_BODY } })
+
+      const get = await fetch(`${base}/api/stations`, {
+        headers: { Authorization: `Bearer ${TOKEN}`, Origin: ORIGIN },
+      })
+      expect(await get.json()).toEqual({ stations: [{ stationId: 'study', ...STATION_BODY }] })
+    })
+
+    it('正: 同じ stationId への PUT は置き換える（upsert）', async () => {
+      const base = await startAuthed(new ReadingHub())
+      const put = (body: unknown): Promise<Response> =>
+        fetch(`${base}/api/stations/study`, {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${TOKEN}`,
+            Origin: ORIGIN,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(body),
+        })
+      await put(STATION_BODY)
+      const second = await put({ displayName: '車庫', lat: 35.7, lon: 139.8 })
+      expect(second.status).toBe(200)
+
+      const get = await fetch(`${base}/api/stations`, {
+        headers: { Authorization: `Bearer ${TOKEN}`, Origin: ORIGIN },
+      })
+      const body = (await get.json()) as { stations: unknown[] }
+      // **置き換わる。** 2 件に増えない——upsert であって追加ではない。
+      expect(body.stations).toHaveLength(1)
+      expect(body.stations[0]).toEqual({ stationId: 'study', displayName: '車庫', lat: 35.7, lon: 139.8 })
+    })
+
+    // **敵対的レビューで発見**（HIGH/CRITICAL）: オブジェクトリテラルのスプレッド順序を
+    // 誤ると、ボディに紛れ込んだ stationId が URL パスの値を上書きしてしまい、
+    // 「URL パスを正とする」という docstring の約束が壊れる。
+    it('安全弁: ボディに別の stationId が入っていても無視し、URL パスの値だけが使われる', async () => {
+      const base = await startAuthed(new ReadingHub())
+      const put = await fetch(`${base}/api/stations/study`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${TOKEN}`,
+          Origin: ORIGIN,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ stationId: 'evil', ...STATION_BODY }),
+      })
+      expect(put.status).toBe(200)
+      expect(await put.json()).toEqual({ station: { stationId: 'study', ...STATION_BODY } })
+
+      const get = await fetch(`${base}/api/stations`, {
+        headers: { Authorization: `Bearer ${TOKEN}`, Origin: ORIGIN },
+      })
+      const body = (await get.json()) as { stations: unknown[] }
+      // **`evil` という別 ID の観測点が作られていない。** URL の `study` だけが残る。
+      expect(body.stations).toEqual([{ stationId: 'study', ...STATION_BODY }])
+    })
+
+    it('対照: 範囲外の緯度は 400・invalid-config で拒む', async () => {
+      const base = await startAuthed(new ReadingHub())
+      const res = await fetch(`${base}/api/stations/study`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${TOKEN}`,
+          Origin: ORIGIN,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ displayName: '書斎', lat: 999, lon: 139.7 }),
+      })
+      expect(res.status).toBe(400)
+      expect(((await res.json()) as { error: string }).error).toBe('invalid-config')
+    })
+
+    it('対照: 壊れた JSON は 400・invalid-json', async () => {
+      const base = await startAuthed(new ReadingHub())
+      const res = await fetch(`${base}/api/stations/study`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${TOKEN}`, Origin: ORIGIN, 'Content-Type': 'application/json' },
+        body: '{not valid json',
+      })
+      expect(res.status).toBe(400)
+      expect(((await res.json()) as { error: string }).error).toBe('invalid-json')
+    })
+
+    // **敵対的レビューで発見**（HIGH）: 以前は上限超過時に `req.destroy()` で下層ソケットを
+    // 破棄していたため、直後に返そうとした 400 応答がクライアントへ届かず
+    // `socket hang up` になっていた（実測で確認）。ソケットを生かしたまま応答できることを
+    // ここで固定する。
+    it('安全弁: 上限を超えたボディでも 400・body-too-large が正常に返る（接続は切れない）', async () => {
+      const base = await startAuthed(new ReadingHub())
+      const oversized = JSON.stringify({ displayName: 'x'.repeat(100_000), lat: 35.6, lon: 139.7 })
+      const res = await fetch(`${base}/api/stations/study`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${TOKEN}`, Origin: ORIGIN, 'Content-Type': 'application/json' },
+        body: oversized,
+      })
+      expect(res.status).toBe(400)
+      expect(((await res.json()) as { error: string }).error).toBe('body-too-large')
+    })
+
+    it('正: DELETE /api/stations/:stationId で削除できる', async () => {
+      const ops = makeStationConfigOps({
+        stations: [{ stationId: 'study', ...STATION_BODY }],
+        boards: [],
+      })
+      const base = await startAuthed(new ReadingHub(), {}, undefined, ops)
+      const res = await fetch(`${base}/api/stations/study`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${TOKEN}`, Origin: ORIGIN },
+      })
+      expect(res.status).toBe(200)
+      expect(ops.get().stations).toEqual([])
+    })
+
+    it('安全弁: 基板が割り当て済みの観測点は 409 で拒む', async () => {
+      const ops = makeStationConfigOps({
+        stations: [{ stationId: 'study', ...STATION_BODY }],
+        boards: [{ boardKey: BOARD_KEY, stationId: 'study', sensors: [] }],
+      })
+      const base = await startAuthed(new ReadingHub(), {}, undefined, ops)
+      const res = await fetch(`${base}/api/stations/study`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${TOKEN}`, Origin: ORIGIN },
+      })
+      expect(res.status).toBe(409)
+      expect(((await res.json()) as { error: string }).error).toBe('station-in-use')
+      // 拒んだのだから、消えていない。
+      expect(ops.get().stations).toHaveLength(1)
+    })
+
+    it('存在しない stationId の DELETE は 404', async () => {
+      const base = await startAuthed(new ReadingHub())
+      const res = await fetch(`${base}/api/stations/ghost`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${TOKEN}`, Origin: ORIGIN },
+      })
+      expect(res.status).toBe(404)
+    })
+
+    it('/api/stations への POST は 405', async () => {
+      const base = await startAuthed(new ReadingHub())
+      const res = await fetch(`${base}/api/stations`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${TOKEN}`, Origin: ORIGIN },
+      })
+      expect(res.status).toBe(405)
+    })
+
+    it('正: GET /api/boards は空の一覧から始まる', async () => {
+      const base = await startAuthed(new ReadingHub())
+      const res = await fetch(`${base}/api/boards`, {
+        headers: { Authorization: `Bearer ${TOKEN}`, Origin: ORIGIN },
+      })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ boards: [] })
+    })
+
+    it('正: PUT /api/boards/:boardKey で新規作成でき、boardKey のコロンを正しく扱う', async () => {
+      const ops = makeStationConfigOps({ stations: [{ stationId: 'study', ...STATION_BODY }], boards: [] })
+      const base = await startAuthed(new ReadingHub(), {}, undefined, ops)
+      const res = await fetch(`${base}/api/boards/${encodeURIComponent(BOARD_KEY)}`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${TOKEN}`,
+          Origin: ORIGIN,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ stationId: 'study', sensors: [] }),
+      })
+      expect(res.status).toBe(200)
+      expect(ops.get().boards).toEqual([{ boardKey: BOARD_KEY, stationId: 'study', sensors: [] }])
+    })
+
+    it('安全弁: ボディに別の boardKey が入っていても無視し、URL パスの値だけが使われる', async () => {
+      const ops = makeStationConfigOps({ stations: [{ stationId: 'study', ...STATION_BODY }], boards: [] })
+      const base = await startAuthed(new ReadingHub(), {}, undefined, ops)
+      const res = await fetch(`${base}/api/boards/${encodeURIComponent(BOARD_KEY)}`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${TOKEN}`,
+          Origin: ORIGIN,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ boardKey: 'mac:eeeeeeeeeeee', stationId: 'study', sensors: [] }),
+      })
+      expect(res.status).toBe(200)
+      // **`mac:eeeeeeeeeeee` という別の基板が作られていない。** URL の値だけが残る。
+      expect(ops.get().boards).toEqual([{ boardKey: BOARD_KEY, stationId: 'study', sensors: [] }])
+    })
+
+    it('対照: 存在しない stationId を指す基板は 400（参照整合性）', async () => {
+      const base = await startAuthed(new ReadingHub())
+      const res = await fetch(`${base}/api/boards/${encodeURIComponent(BOARD_KEY)}`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${TOKEN}`,
+          Origin: ORIGIN,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ stationId: 'ghost', sensors: [] }),
+      })
+      expect(res.status).toBe(400)
+      expect(((await res.json()) as { error: string }).error).toBe('invalid-config')
+    })
+
+    it('正: DELETE /api/boards/:boardKey で割当を外す（観測点自体は残る）', async () => {
+      const ops = makeStationConfigOps({
+        stations: [{ stationId: 'study', ...STATION_BODY }],
+        boards: [{ boardKey: BOARD_KEY, stationId: 'study', sensors: [] }],
+      })
+      const base = await startAuthed(new ReadingHub(), {}, undefined, ops)
+      const res = await fetch(`${base}/api/boards/${encodeURIComponent(BOARD_KEY)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${TOKEN}`, Origin: ORIGIN },
+      })
+      expect(res.status).toBe(200)
+      expect(ops.get().boards).toEqual([])
+      expect(ops.get().stations).toHaveLength(1)
+    })
+
+    it('安全弁: apply が例外を投げたら 500・save-failed を返す（ランタイムは書き換わらない）', async () => {
+      const ops: StatusServerOptions['stationConfig'] = {
+        get: () => EMPTY_STATION_CONFIG,
+        apply: () => {
+          throw new Error('disk full')
+        },
+      }
+      const base = await startAuthed(new ReadingHub(), {}, undefined, ops)
+      const res = await fetch(`${base}/api/stations/study`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${TOKEN}`,
+          Origin: ORIGIN,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(STATION_BODY),
+      })
+      expect(res.status).toBe(500)
+      expect(((await res.json()) as { error: string }).error).toBe('save-failed')
+    })
   })
 })

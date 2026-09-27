@@ -283,7 +283,14 @@ export class IntensityPipeline {
   private readonly segmenter: Segmenter
   private readonly windowSec: number
   private readonly stepSec: number
-  private readonly stations: StationDirectory
+  /**
+   * **`readonly` を持たせない。** `/api/*`（#313 段 B）が観測点設定を書き換えたとき、
+   * 実行中のこのインスタンスへ `updateStations()` で差し替える —— ここは
+   * `resolveSensor()` を都度呼ぶだけで内部にストリーム状態を紐付けていないので、
+   * 差し替えても進行中の区間組み立てには影響しない（次に届くパケットから新しい
+   * 校正値・観測点割当が効く）。
+   */
+  private stations: StationDirectory
   private readonly entries = new Map<string, Entry>()
   private unusableCount = 0
   /** `toReading` から呼ぶ。**束縛済みにしておく** —— 渡すたびに包むと同じ関数が増える。 */
@@ -296,6 +303,16 @@ export class IntensityPipeline {
     this.windowSec = options.windowSec ?? WINDOW_SEC_DEFAULT
     this.stepSec = options.stepSec ?? STEP_SEC_DEFAULT
     this.stations = options.stations ?? StationDirectory.empty()
+  }
+
+  /**
+   * 観測点設定を実行時に差し替える（`/api/*` の書き込みが呼ぶ。#313 段 B）。
+   *
+   * **進行中の区間組み立ては打ち切らない。** `Segmenter` はセンサー校正の値を知らないので
+   * 影響を受けず、次に届くパケットから `handlePacket` が新しい `stations` を見る。
+   */
+  updateStations(stations: StationDirectory): void {
+    this.stations = stations
   }
 
   /** パケット 1 つを通す。**投げない** —— 起きたことは戻り値で返す。 */
