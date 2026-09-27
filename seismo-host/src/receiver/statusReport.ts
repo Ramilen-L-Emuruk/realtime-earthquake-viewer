@@ -103,6 +103,15 @@ export interface StatusReportInput {
    * ものなので、起動時にしか出ない警告は「見に来た時点でもう流れている」。
    */
   readonly stationConfigWarning: string | null
+  /**
+   * 複数の基板を割り当てたのに、複数センサー合成（§7）のグループが組めていない観測点。
+   *
+   * **`stationConfigWarning` と同じ理由でここに置く。** ログ（`main.ts` の
+   * `buildStationGroupingWarning`）は起動時・定期要約でしか出ないので、ログを
+   * テールしない運用者には `/status` がこの状態へ気づく唯一の手掛かりになる。
+   * 空配列が正常（乖離が無い、または観測点を割り当てていない）。
+   */
+  readonly ungroupedMultiBoardStations: readonly string[]
 }
 
 /**
@@ -250,6 +259,11 @@ export interface StatusReport {
   readonly unreadableIntensityValues: number
   /** 観測点の設定ファイルを読めなかった・パースできなかった理由。読めていれば `null`。 */
   readonly stationConfigWarning: string | null
+  /**
+   * 複数の基板を割り当てたのに、複数センサー合成（§7）のグループが組めていない観測点。
+   * 空配列が正常。
+   */
+  readonly ungroupedMultiBoardStations: readonly string[]
 }
 
 /** `Map` を JSON になる形へ。**出す側と読む側で流儀が分かれないよう 1 箇所に置く。** */
@@ -365,5 +379,6 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     unreadableTimes: unreadable,
     unreadableIntensityValues: unreadableValues,
     stationConfigWarning: input.stationConfigWarning,
+    ungroupedMultiBoardStations: input.ungroupedMultiBoardStations,
   }
 }

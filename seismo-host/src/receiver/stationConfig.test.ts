@@ -10,7 +10,9 @@ import {
   StationDirectory,
   loadStationConfig,
   parseStationConfig,
+  stationsWithMultipleBoards,
 } from './stationConfig'
+import type { StationConfig } from './stationConfig'
 
 /** 有効な最小構成。**書斎に基板 1 枚・センサー 1 個。** */
 function validRaw(): Record<string, unknown> {
@@ -523,5 +525,43 @@ describe('loadStationConfig', () => {
     const result = loadStationConfig(path)
     expect(result.config).toEqual(EMPTY_STATION_CONFIG)
     expect(result.warning).toContain('displayName')
+  })
+})
+
+describe('stationsWithMultipleBoards', () => {
+  const CAL = DEFAULT_SENSOR_CALIBRATION
+
+  it('正: 同一観測点へ 2 台以上の基板を割り当てていれば拾う（sensors[] が空でも）', () => {
+    const config: StationConfig = {
+      stations: [{ stationId: 'study', displayName: '書斎', lat: 35.6, lon: 139.7 }],
+      boards: [
+        { boardKey: 'mac:aaaaaaaaaaaa', stationId: 'study', sensors: [] },
+        { boardKey: 'mac:bbbbbbbbbbbb', stationId: 'study', sensors: [{ sensorId: 's', ...CAL }] },
+      ],
+    }
+    expect(stationsWithMultipleBoards(config)).toEqual(['study'])
+  })
+
+  it('対照: 1 台しか割り当てていない観測点は拾わない', () => {
+    const config: StationConfig = {
+      stations: [{ stationId: 'study', displayName: '書斎', lat: 35.6, lon: 139.7 }],
+      boards: [{ boardKey: 'mac:aaaaaaaaaaaa', stationId: 'study', sensors: [{ sensorId: 's', ...CAL }] }],
+    }
+    expect(stationsWithMultipleBoards(config)).toEqual([])
+  })
+
+  it('安全弁: 観測点が複数あっても、それぞれ独立に判定する', () => {
+    const config: StationConfig = {
+      stations: [
+        { stationId: 'study', displayName: '書斎', lat: 35.6, lon: 139.7 },
+        { stationId: 'garage', displayName: '車庫', lat: 35.7, lon: 139.8 },
+      ],
+      boards: [
+        { boardKey: 'mac:aaaaaaaaaaaa', stationId: 'study', sensors: [] },
+        { boardKey: 'mac:bbbbbbbbbbbb', stationId: 'study', sensors: [] },
+        { boardKey: 'mac:cccccccccccc', stationId: 'garage', sensors: [] },
+      ],
+    }
+    expect(stationsWithMultipleBoards(config)).toEqual(['study'])
   })
 })

@@ -9,13 +9,18 @@ import {
   deliverReading,
   deliverStationFusion,
   buildRawWarnings,
+  buildStationConfigWarning,
+  buildStationGroupingWarning,
   buildWindowSummary,
+  findUngroupedMultiBoardStations,
   formatAt,
   readPort,
+  stationSegmentLogLevel,
   windowSeconds,
 } from './main'
 import type { GravityVerdict } from './src/receiver/gravityCheck'
 import type { IntensityReading } from './src/receiver/intensityPipeline'
+import type { StationConfig } from './src/receiver/stationConfig'
 import { PacketTally } from './src/receiver/packetTally'
 import type { FusedWaveChunk, FusionOutcome, StationIntensityReading } from './src/receiver/sensorFusion'
 
@@ -277,6 +282,80 @@ describe('buildRawWarnings', () => {
 
     expect(out[0]?.line.length).toBeLessThan(300)
     expect(out[0]?.line).toContain('…')
+  })
+})
+
+describe('buildStationConfigWarning', () => {
+  it('対照: warning が null なら何も出さない', () => {
+    expect(buildStationConfigWarning(null)).toEqual([])
+  })
+
+  it('正: warning があれば warn レベルで 1 件出す', () => {
+    const out = buildStationConfigWarning('JSON として読めない: Unexpected token')
+    expect(out).toHaveLength(1)
+    expect(out[0]?.level).toBe('warn')
+    expect(out[0]?.kind).toBe('station-config')
+    expect(out[0]?.line).toContain('JSON として読めない')
+  })
+
+  it('安全弁: 理由が変われば鍵（detail）も変わる——間引きで新しい理由が埋もれない', () => {
+    const a = buildStationConfigWarning('読めない: ENOENT')
+    const b = buildStationConfigWarning('JSON として読めない: 構文エラー')
+    expect(a[0]?.detail).not.toBe(b[0]?.detail)
+  })
+})
+
+describe('buildStationGroupingWarning', () => {
+  it('対照: 乖離が無ければ何も出さない', () => {
+    expect(buildStationGroupingWarning([])).toEqual([])
+  })
+
+  it('正: 乖離した観測点があれば warn レベルで 1 件出す', () => {
+    const out = buildStationGroupingWarning(['study'])
+    expect(out).toHaveLength(1)
+    expect(out[0]?.level).toBe('warn')
+    expect(out[0]?.kind).toBe('station-grouping')
+    expect(out[0]?.line).toContain('study')
+    expect(out[0]?.line).toContain('sensors[]')
+  })
+
+  it('安全弁: 観測点の集合が変われば鍵（detail）も変わる', () => {
+    const a = buildStationGroupingWarning(['study'])
+    const b = buildStationGroupingWarning(['study', 'garage'])
+    expect(a[0]?.detail).not.toBe(b[0]?.detail)
+  })
+})
+
+describe('findUngroupedMultiBoardStations', () => {
+  const twoBoardConfig: StationConfig = {
+    stations: [
+      { stationId: 'study', displayName: '書斎', lat: 35.6, lon: 139.7 },
+      { stationId: 'garage', displayName: '車庫', lat: 35.7, lon: 139.8 },
+    ],
+    boards: [
+      { boardKey: 'mac:aaaaaaaaaaaa', stationId: 'study', sensors: [] },
+      { boardKey: 'mac:bbbbbbbbbbbb', stationId: 'study', sensors: [] },
+      { boardKey: 'mac:cccccccccccc', stationId: 'garage', sensors: [] },
+    ],
+  }
+
+  it('正: 複数基板を割り当てたのに合成グループが組めていない観測点だけを拾う', () => {
+    // garage は 1 台しか割り当てていないので stationsWithMultipleBoards にも現れない。
+    expect(findUngroupedMultiBoardStations(twoBoardConfig, [])).toEqual(['study'])
+  })
+
+  it('対照: 合成グループが組めていれば拾わない', () => {
+    expect(findUngroupedMultiBoardStations(twoBoardConfig, ['study'])).toEqual([])
+  })
+})
+
+describe('stationSegmentLogLevel', () => {
+  it('対照: 正常な区間切り替え（reason が null）は log のまま', () => {
+    expect(stationSegmentLogLevel(null)).toBe('log')
+  })
+
+  it('正: 震度が出せない間（reason が非 null）は warn へ上げる', () => {
+    expect(stationSegmentLogLevel('stream-error')).toBe('warn')
   })
 })
 

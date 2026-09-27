@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { IntensityStream } from '../intensity/intensityStream'
-import type { BoardKey } from '../protocol/types'
+import type { BoardKey, SensorPacket } from '../protocol/types'
+import { IntensityPipeline } from './intensityPipeline'
 import type { WaveChunk } from './intensityPipeline'
 import { SensorFusion } from './sensorFusion'
 import type { FusionOutcome } from './sensorFusion'
+import { StationDirectory } from './stationConfig'
 import type { StationConfig } from './stationConfig'
 
 const IDENTITY = [
@@ -76,6 +78,23 @@ function wave(over: Partial<WaveChunk> & { boardKey: BoardKey; sensorId: string 
     ...over,
   }
 }
+
+describe('SensorFusion.groupedStationIds', () => {
+  it('正: 2 台とも有効なら、その観測点が含まれる', () => {
+    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }))
+    expect(fusion.groupedStationIds).toEqual(['home'])
+  })
+
+  it('対照: 2 台のうち 1 台が無効なら、有効なセンサーが 1 台だけになり含まれない', () => {
+    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20, enabled: false }))
+    expect(fusion.groupedStationIds).toEqual([])
+  })
+
+  it('安全弁: 割り当てが無い（空の設定）なら空配列', () => {
+    const fusion = new SensorFusion({ stations: [], boards: [] })
+    expect(fusion.groupedStationIds).toEqual([])
+  })
+})
 
 describe('SensorFusion.ingest — グループ化と対象外の扱い', () => {
   it('対照: 観測点に割り当てが無いセンサーは合成の対象にならない', () => {
@@ -470,5 +489,90 @@ describe('SensorFusion.ingest — 観測点ぶんの計測震度相当', () => {
     expect(out.fusedWave?.driver).toEqual({ boardKey: BOARD_B, sensorId: 'sensorB' })
     expect(out.fusedWave?.memberCount).toEqual([3])
     expect(out.pairDiffs).toHaveLength(3)
+  })
+})
+
+/**
+ * `IntensityPipeline` が実際に組み立てた `WaveChunk`（校正適用後）を
+ * `SensorFusion.ingest()` へ流す。**手組みの `WaveChunk` だけでは、フェーズをまたぐ
+ * 接続点（校正済みの gal が実際に合成へ渡っているか）を検証できない**——敵対的
+ * レビューで指摘された穴（main.ts:875-886 相当の配線をテストが一度も通していない）
+ * を塞ぐ。
+ */
+describe('SensorFusion.ingest — 実際の IntensityPipeline から出た WaveChunk で合成する', () => {
+  const HZ_INT = 100
+
+  function packetFor(boardKey: BoardKey, sensorId: string, firstSeq: number): SensorPacket {
+    return {
+      version: 2,
+      boardKey,
+      bootId: 'boot1',
+      sensorId,
+      sensorType: 'MPU6050',
+      channels: ['HN1', 'HN2', 'HN3'],
+      ugPerLsb: 61.0352,
+      fullScaleG: 2,
+      sampleRateHz: HZ_INT,
+      firstSampleMs: BASE_MS + (firstSeq * 1000) / HZ_INT,
+      firstSeq,
+      overflowCount: 0,
+      // 静止（全軸カウント 0）。校正の効きだけを見たいので揺れは混ぜない。
+      samples: Array.from({ length: 10 }, () => [0, 0, 0]),
+    }
+  }
+
+  it('正: 校正（offset）を適用した後の gal が合成される（校正前の生値ではない）', () => {
+    const config: StationConfig = {
+      stations: [{ stationId: 'home', displayName: '自宅', lat: 35.6, lon: 139.7 }],
+      boards: [
+        {
+          boardKey: BOARD_A,
+          stationId: 'home',
+          sensors: [
+            {
+              sensorId: 'sensorA',
+              enabled: true,
+              rotation: IDENTITY,
+              // 第 1 軸に +10 gal のオフセット。校正後は 0 - 10 = -10 になるはず。
+              offset: [10, 0, 0],
+              sensitivity: [1, 1, 1],
+              noiseDensity: 10,
+            },
+          ],
+        },
+        {
+          boardKey: BOARD_B,
+          stationId: 'home',
+          sensors: [
+            {
+              sensorId: 'sensorB',
+              enabled: true,
+              rotation: IDENTITY,
+              offset: [0, 0, 0],
+              sensitivity: [1, 1, 1],
+              // 重みを sensorA と揃える（単純平均になる）。
+              noiseDensity: 10,
+            },
+          ],
+        },
+      ],
+    }
+    const pipeline = new IntensityPipeline({ stations: new StationDirectory(config) })
+    const fusion = new SensorFusion(config)
+
+    const outcomeA = pipeline.handlePacket(packetFor(BOARD_A, 'sensorA', 0))
+    const outcomeB = pipeline.handlePacket(packetFor(BOARD_B, 'sensorB', 0))
+    expect(outcomeA.wave).not.toBeNull()
+    expect(outcomeB.wave).not.toBeNull()
+
+    // **駆動役（sensorA。設定の先頭・同じ noiseDensity）を後に流す**——合成は
+    // 駆動役の到着でしか起きない（`sensorFusion.ts` 冒頭コメント）。裏付け側
+    // （sensorB）を先に流し、直近の 1 まとまりとして覚えさせる。
+    fusion.ingest(outcomeB.wave as WaveChunk)
+    const out = fusion.ingest(outcomeA.wave as WaveChunk)
+
+    // sensorA は校正で -10、sensorB は 0 のまま。重みが同じなので単純平均 -5。
+    // **校正前の生値（0 と 0）を混ぜていれば 0 になる**——それとの違いで確かめる。
+    expect(out.fusedWave?.gal[0][0]).toBeCloseTo(-5)
   })
 })

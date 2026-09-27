@@ -40,7 +40,8 @@ import { ReadingHub } from './src/receiver/readingHub'
 import { SensorFusion } from './src/receiver/sensorFusion'
 import type { FusionOutcome, StationCloseFailure, StationIntensityReading } from './src/receiver/sensorFusion'
 import { SensorHealthBook } from './src/receiver/sensorHealth'
-import { StationDirectory, loadStationConfig } from './src/receiver/stationConfig'
+import { StationDirectory, loadStationConfig, stationsWithMultipleBoards } from './src/receiver/stationConfig'
+import type { StationConfig } from './src/receiver/stationConfig'
 import { StationHealthBook } from './src/receiver/stationHealth'
 import { buildStatusReport } from './src/receiver/statusReport'
 import { startStatusServer } from './src/receiver/statusServer'
@@ -274,6 +275,80 @@ export function buildRawWarnings(input: RawWarningInput): readonly RawWarning[] 
     })
   }
   return out
+}
+
+/**
+ * 観測点設定が読めなかった理由を、定期要約でも再掲する。
+ *
+ * **起動時の `console.warn`（`main()` 冒頭）は 1 回しか出ない。** ログだけをテールで
+ * 監視している運用者には、起動直後を見逃すと二度と伝わらない —— `GET /status` の
+ * `stationConfigWarning` には恒久的に載るが、能動的にポーリングしない限り気づけない。
+ * `buildRawWarnings` と同じ「間引きつつ再掲する」扱いに寄せる。
+ */
+export function buildStationConfigWarning(warning: string | null): readonly RawWarning[] {
+  if (warning === null) return []
+  return [
+    {
+      level: 'warn',
+      kind: 'station-config',
+      detail: warning,
+      line: `[station] 観測点の設定を読めなかった: ${warning}`,
+    },
+  ]
+}
+
+/**
+ * 判定基準の食い違いを突き合わせる。
+ *
+ * **`stationsWithMultipleBoards` は基板の割り当てだけを見るが、`groupedStationIds` は
+ * 各基板の `sensors[]` に `sensorId` が明示列挙されている観測点しか含まない**——
+ * `sensors[]` を空のまま基板だけ割り当てると、単一センサー側の震度算出は既定値で
+ * 動き続ける一方、合成だけが沈黙して起動しない。
+ */
+export function findUngroupedMultiBoardStations(
+  config: StationConfig,
+  groupedStationIds: readonly string[],
+): readonly string[] {
+  return stationsWithMultipleBoards(config).filter((id) => !groupedStationIds.includes(id))
+}
+
+/**
+ * 「複数の基板を割り当てたのに合成グループが組めていない」観測点を、定期要約でも再掲する。
+ *
+ * **`sensors[]` を空のまま基板だけ割り当てると、単一センサー側の震度算出は既定値で
+ * 動き続けるが、複数センサー合成（§7）だけが沈黙して起動しない**（README.md「複数
+ * センサーの波形合成（§7）」参照）——校正値の各項目は省略できても、`sensors[]` への
+ * `sensorId` の列挙自体は省略できない。運用者が校正未実測を理由に `sensors[]` を
+ * 書かなかった場合に典型的に踏む。
+ */
+export function buildStationGroupingWarning(ungroupedStationIds: readonly string[]): readonly RawWarning[] {
+  if (ungroupedStationIds.length === 0) return []
+  return [
+    {
+      level: 'warn',
+      kind: 'station-grouping',
+      // 観測点の集合が変わったら出し直す —— 定数だと最初の 1 回で以後は間引かれる。
+      // **`JSON.stringify` を使う。** カンマ区切りだと `["a,b"]`（1 件）と `["a","b"]`
+      // （2 件）が同じ鍵へ潰れ、集合が変わっても出し直されない窓ができる
+      // （`stationId` は非空以外の文字種制限が無い）。
+      detail: JSON.stringify([...ungroupedStationIds].sort()),
+      line:
+        `[station] 観測点 ${ungroupedStationIds.join('・')} は複数の基板を割り当てているが、` +
+        '合成グループを組めていない（各基板の sensors[] に sensorId を最低 1 件書くこと）',
+    },
+  ]
+}
+
+/**
+ * 観測点ぶんの合成の状態が変わったログのレベル。
+ *
+ * **震度が出せない間（`reason !== null`）は `'warn'`。** 正常な区間切り替え
+ * （`reason === null`）と同じ `'log'` のままだと、`push()` 失敗後に自己回復しない
+ * 恒久障害（`sensorFusion.ts` のコメント参照）が通常運用と見分けの付かない重要度で
+ * 出続け、`journalctl -p warning` 等のレベルでフィルタする運用では拾えない。
+ */
+export function stationSegmentLogLevel(reason: string | null): 'log' | 'warn' {
+  return reason === null ? 'log' : 'warn'
 }
 
 /**
@@ -677,9 +752,9 @@ async function main(): Promise<void> {
   const stationConfigLoad = loadStationConfig(
     process.env.SEISMO_STATION_CONFIG ?? defaultStationConfigPath(),
   )
-  if (stationConfigLoad.warning !== null) {
-    console.warn(`[station] 観測点の設定を読めなかった: ${stationConfigLoad.warning}`)
-  }
+  // **文面はここで直書きしない。** `buildStationConfigWarning`（定期要約でも使う）と
+  // 別の文字列を持つと、起動直後のログと 60 秒後以降の再掲ログの表現がずれる。
+  for (const w of buildStationConfigWarning(stationConfigLoad.warning)) console.warn(w.line)
   const stations = new StationDirectory(stationConfigLoad.config)
 
   const pipeline = new IntensityPipeline({ stations })
@@ -687,6 +762,12 @@ async function main(): Promise<void> {
   // 観測点はグループを組まない（`sensorFusion.ts` の `buildGroups`）ので、単一センサーの
   // 構成では常に何もしない——観測点を割り当てていない構成と同じく安全に無視できる。
   const sensorFusion = new SensorFusion(stationConfigLoad.config)
+  const ungroupedMultiBoardStations = findUngroupedMultiBoardStations(
+    stationConfigLoad.config,
+    sensorFusion.groupedStationIds,
+  )
+  // 文面はここでも直書きしない（理由は上のコメントと同じ）。
+  for (const w of buildStationGroupingWarning(ungroupedMultiBoardStations)) console.warn(w.line)
   const tally = new PacketTally()
   const rateLimit = new SourceRateLimit()
   const throttle = new LogThrottle()
@@ -798,7 +879,7 @@ async function main(): Promise<void> {
     logSegment: (stationId, reason) => {
       const skip = reason === null ? '' : `（震度なし: ${reason}）`
       emit(
-        'log',
+        stationSegmentLogLevel(reason),
         'station-segment',
         `${stationId}|${reason ?? 'ok'}`,
         `[station] ${stationId} 合成の状態が変わった${skip}`,
@@ -1019,6 +1100,7 @@ async function main(): Promise<void> {
         hub: hub.snapshot(),
         stations,
         stationConfigWarning: stationConfigLoad.warning,
+        ungroupedMultiBoardStations,
       }),
     log: emit,
   })
@@ -1119,6 +1201,13 @@ async function main(): Promise<void> {
       stuckBooks: rawStore.stuckBooks,
     })
     for (const w of warnings) emit(w.level, w.kind, w.detail, w.line)
+    // **設定ファイルの破損・合成グループの乖離も、間引きつつ再掲する。** 起動時の
+    // `console.warn` は 1 回きりで、ログだけを監視している運用者には見逃すと二度と
+    // 伝わらない（`buildStationConfigWarning`・`buildStationGroupingWarning` のコメント参照）。
+    for (const w of buildStationConfigWarning(stationConfigLoad.warning)) emit(w.level, w.kind, w.detail, w.line)
+    for (const w of buildStationGroupingWarning(ungroupedMultiBoardStations)) {
+      emit(w.level, w.kind, w.detail, w.line)
+    }
   }
   const timer = setInterval(summarize, SUMMARY_INTERVAL_MS)
 

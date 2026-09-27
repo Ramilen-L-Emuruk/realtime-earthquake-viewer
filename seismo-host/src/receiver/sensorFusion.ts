@@ -475,6 +475,15 @@ export class SensorFusion {
   }
 
   /**
+   * 合成グループが組めた観測点の一覧。**`stationConfig.ts` の
+   * `stationsWithMultipleBoards` とは判定基準が違う**——こちらは各基板の `sensors[]` に
+   * `sensorId` が明示列挙されている必要がある。突き合わせは `main.ts` の起動時が持つ。
+   */
+  get groupedStationIds(): readonly string[] {
+    return this.groups.map((g) => g.stationId)
+  }
+
+  /**
    * 波形が 1 まとまり届いた。**投げない**（`closeAll()` のあとを除く）。
    *
    * 観測点に属さない、または相方が居ない（グループを作れなかった）センサーは

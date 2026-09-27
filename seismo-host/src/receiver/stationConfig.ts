@@ -568,3 +568,19 @@ export class StationDirectory {
 function sensorKeyOf(boardKey: BoardKey, sensorId: string): string {
   return `${boardKey}|${sensorId}`
 }
+
+/**
+ * 同一観測点に 2 台以上の基板を割り当てているか（`sensors[]` の中身は問わない）。
+ *
+ * **`sensorFusion.ts` の合成グループとは判定基準が違う。** あちらは各基板の `sensors[]` に
+ * `sensorId` が明示列挙されたセンサーだけを数える——`sensors[]` を空のまま基板を割り当てても、
+ * ここでは「複数台を割り当てた観測点」として数える。両者の食い違いは `main.ts` が起動時に
+ * 突き合わせて警告する（README.md「複数センサーの波形合成（§7）」参照）。
+ */
+export function stationsWithMultipleBoards(config: StationConfig): readonly string[] {
+  const counts = new Map<string, number>()
+  for (const board of config.boards) {
+    counts.set(board.stationId, (counts.get(board.stationId) ?? 0) + 1)
+  }
+  return [...counts.entries()].filter(([, n]) => n >= 2).map(([stationId]) => stationId)
+}
