@@ -4,6 +4,8 @@ import type { SensorPacket } from '../protocol/types'
 import { streamKeyOf } from '../timebase/segmenter'
 import { IntensityPipeline, normalizeIntensity } from './intensityPipeline'
 import type { IntensityReading, PacketOutcome } from './intensityPipeline'
+import { StationDirectory } from './stationConfig'
+import type { SensorCalibration, StationConfig } from './stationConfig'
 
 /** 実際の記録と同じ起点。時刻が大きい状態で当てはめが効くことも併せて見る。 */
 const BASE_MS = 1790181865671
@@ -347,6 +349,107 @@ describe('IntensityPipeline', () => {
       // **サンプルそのものは本物。** どの区間のどの位置かは波形自身が名乗るので、
       // 受け手は切れ目を見分けられる。いちばん様子を見たい状態で波形だけ黙るほうが困る。
       expect(out.wave).not.toBeNull()
+    })
+  })
+
+  describe('観測点校正の適用（REQUIREMENTS.md §16）', () => {
+    /** `pkt()` の boardKey・sensorId に紐づく校正だけを持つ `StationDirectory` を作る。 */
+    function stationsWith(sensor: Partial<SensorCalibration>): StationDirectory {
+      const config: StationConfig = {
+        stations: [{ stationId: 'study', displayName: '書斎', lat: 35.6, lon: 139.7 }],
+        boards: [
+          {
+            boardKey: 'mac:020000000003',
+            stationId: 'study',
+            sensors: [
+              {
+                sensorId: 'i2c0-68',
+                enabled: true,
+                rotation: [
+                  [1, 0, 0],
+                  [0, 1, 0],
+                  [0, 0, 1],
+                ],
+                offset: [0, 0, 0],
+                sensitivity: [1, 1, 1],
+                noiseDensity: null,
+                ...sensor,
+              },
+            ],
+          },
+        ],
+      }
+      return new StationDirectory(config)
+    }
+
+    it('対照: 割り当てが無ければ（既定の StationDirectory）波形は換算値のまま変わらない', () => {
+      const withDefault = new IntensityPipeline(OPTS)
+      const withEmpty = new IntensityPipeline({ ...OPTS, stations: StationDirectory.empty() })
+
+      const outA = withDefault.handlePacket(pkt())
+      const outB = withEmpty.handlePacket(pkt())
+
+      // **両方 null では通した意味が無い。** `?.` だけの比較だと `undefined === undefined`
+      // で素通りしてしまい、組み立て側の回帰で波形が両方とも消えても検知できない。
+      if (outA.wave === null || outB.wave === null) throw new Error('波形が載っていない')
+      expect(outA.wave.gal[0][0]).toBe(outB.wave.gal[0][0])
+      expect(outA.wave.gal[1][0]).toBe(outB.wave.gal[1][0])
+      expect(outA.wave.gal[2][0]).toBe(outB.wave.gal[2][0])
+    })
+
+    it('正: sensitivity が波形へ反映される（震度が食べる値と同じもの）', () => {
+      const baseline = new IntensityPipeline(OPTS)
+      const scaled = new IntensityPipeline({
+        ...OPTS,
+        stations: stationsWith({ sensitivity: [2, 2, 2] }),
+      })
+
+      const outBaseline = baseline.handlePacket(pkt())
+      const outScaled = scaled.handlePacket(pkt())
+
+      const base = outBaseline.wave?.gal[2][0]
+      const applied = outScaled.wave?.gal[2][0]
+      if (base === undefined || applied === undefined) throw new Error('波形が載っていない')
+      expect(applied).toBeCloseTo(base * 2, 9)
+    })
+
+    it('正: offset を引いてから sensitivity・rotation を適用する（適用順序の固定）', () => {
+      // 軸0を (v - 10) * 2 したうえで、回転で軸2へ足し込む（軸2' = 軸0' + 軸2）。
+      const combo = new IntensityPipeline({
+        ...OPTS,
+        stations: stationsWith({
+          offset: [10, 0, 0],
+          sensitivity: [2, 1, 1],
+          rotation: [
+            [1, 0, 0],
+            [0, 1, 0],
+            [1, 0, 1],
+          ],
+        }),
+      })
+      const baseline = new IntensityPipeline(OPTS)
+
+      const outCombo = combo.handlePacket(pkt())
+      const outBaseline = baseline.handlePacket(pkt())
+
+      const rawAxis0 = outBaseline.wave?.gal[0][0]
+      const rawAxis2 = outBaseline.wave?.gal[2][0]
+      if (rawAxis0 === undefined || rawAxis2 === undefined) throw new Error('波形が載っていない')
+      const expectedAxis0 = (rawAxis0 - 10) * 2
+      expect(outCombo.wave?.gal[0][0]).toBeCloseTo(expectedAxis0, 9)
+      expect(outCombo.wave?.gal[2][0]).toBeCloseTo(expectedAxis0 + rawAxis2, 9)
+    })
+
+    it('安全弁: enabled: false のセンサーは震度も波形も出さず、組み立てにも渡らない', () => {
+      const p = new IntensityPipeline({ ...OPTS, stations: stationsWith({ enabled: false }) })
+
+      const out = p.handlePacket(pkt())
+
+      expect(out.dropped).toBe('sensor-disabled')
+      expect(out.wave).toBeNull()
+      expect(out.readings).toEqual([])
+      // 組み立て（Segmenter）にも渡していないので、区間が始まった扱いにもならない。
+      expect(out.startedBecause).toBeNull()
     })
   })
 

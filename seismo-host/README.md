@@ -443,8 +443,22 @@ SEISMO_HTTP_PORT=50506 SEISMO_HTTP_ADDRESS=0.0.0.0 npm run seismo-host
 センサーごとの校正値（`sensors[]`）は §15・§16 が求めるもの。`enabled`・`rotation`（回転行列。
 物理的な向きの補正・§16）・`offset`・`sensitivity`（各軸の倍率。**必ず正** —— 0 や負は補正ではなく
 その軸を壊す）・`noiseDensity`（公称ノイズ密度・µg/√Hz。複数センサーの合成で重みに使う）は、
-いずれも省略できる（既定値は単位行列・補正なし・有効・`noiseDensity` は null）。**まだ実際に
-読み取りへ適用する処理は無い**（設定を読んで持つところまで）。
+いずれも省略できる（既定値は単位行列・補正なし・有効・`noiseDensity` は null）。
+
+**読み取りへの適用は `offset → sensitivity → rotation` の順で固定する**（カウント値を gal へ
+換算した直後・区間の組み立てより前）。式・順序の根拠は
+[`src/receiver/calibration.ts`](src/receiver/calibration.ts) 冒頭のコメントを見ること。
+
+**`rotation` に直交性は要求しない**（設計判断の詳細は
+[`src/receiver/stationConfig.ts`](src/receiver/stationConfig.ts) の `SensorCalibration` 型コメントを参照）。
+REQUIREMENTS.md §16 が「補正の対象は取り付けの向きだけか、軸どうしの直角のずれまで含めるか、
+まだ決まっていない」としているため、後者まで直す前提を設定ファイルの形自体で塞がないように
+してある。**この判断が未決のままなので、`rotation` に軸間の直角のずれを補正する値を入れると
+計測震度そのものが変わりうる**（純粋な回転なら `sqrt(ns²+ew²+ud²)` の長さは変わらないが、
+直角を崩す変換では変わる）。編集前に §16 を読むこと。
+
+`enabled: false` のセンサーはこの適用より前で弾く —— 換算にも組み立てにも渡さず、震度・波形の
+どちらも出さない（§15 の「有効/無効」を読み取りへ反映しないと、設定した意味が無い）。
 
 置き場所は `seismo-host/config/stations.json`（`SEISMO_STATION_CONFIG` で変えられる）。**Git には
 入らない** —— 設置場所（＝自宅の間取り）を書くので、生データと同じ理由。雛形は
@@ -474,6 +488,11 @@ SEISMO_HTTP_PORT=50506 SEISMO_HTTP_ADDRESS=0.0.0.0 npm run seismo-host
 したか」を見分けられない。** `sensorId` を打ち間違えても警告一つ出ずに既定値で動き続ける、
 という穴をここで塞ぐ。観測点は割り当てたのに校正値を 1 件も書いていないセンサーは、
 `station` が付いて `calibrationConfigured: false` のまま出る。
+
+**`enabled` はさらに別の問い。** `sensors[]` には `resolveSensor(...).enabled` の値も付く ——
+「意図して無効化したセンサー」と「軸数不一致等で本当に壊れているセンサー」は、`lastIntensity`
+等が同じように凍結されるので**この欄が無いと見分けが付かない**。設定に無いセンサーは既定値
+（`enabled: true`）のまま出る。
 
 ### 換算が正しいかを自分で診る
 

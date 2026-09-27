@@ -132,11 +132,23 @@ export interface SensorStatus extends Omit<SensorHealth, 'lastPacketMs'> {
    * このセンサーに校正値の設定（`stationConfig.ts` の `sensors[]`）があるか。
    *
    * **`false` は「校正値なし」ではなく「設定に一致しなかった」ことの印。** 校正の適用側
-   * （§16・#307）は設定が無くても既定値（単位行列・補正なし）で動き続けるため、この
+   * （§16）は設定が無くても既定値（単位行列・補正なし）で動き続けるため、この
    * フィールドが無いと「校正を書いたつもりの `sensorId` が実は 1 文字も一致していない」
    * 状態が、警告もエラーも出ないまま運用者の目に一生触れない。
    */
   readonly calibrationConfigured: boolean
+  /**
+   * このセンサーが有効か（`stations.resolveSensor(...).enabled`）。
+   *
+   * **`calibrationConfigured` とは別の問い。** あちらは「設定に書いたか」、こちらは
+   * 「読み取りへ反映されるか」——設定が無くても既定値（`enabled: true`）で動き続けるので、
+   * 両方を見ないと「意図して無効化した」のか「まだ稼働している」のかが `/status` から
+   * 読み取れない。**これが無いと、意図した無効化と本物の故障（軸数不一致等で震度を
+   * 出せていない状態）を確実には見分けられない** —— どちらも `lastIntensity` 等は
+   * 凍結されたまま動かないので、同じ見え方をする。（`lastSkipReason` が残っていれば
+   * 故障の手掛かりにはなるが、無効化する前に一度も故障していなければ残らない。）
+   */
+  readonly enabled: boolean
 }
 
 export interface StatusReport {
@@ -265,6 +277,7 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     lastIntensity: finiteValue(s.lastIntensity),
     station: input.stations.resolve(s.boardKey),
     calibrationConfigured: input.stations.hasSensorCalibration(s.boardKey, s.sensorId),
+    enabled: input.stations.resolveSensor(s.boardKey, s.sensorId).enabled,
   }))
 
   // **有限であることは `gravityCheck.ts` の `settle` が保証する** —— 平均・ばらつき・震度は

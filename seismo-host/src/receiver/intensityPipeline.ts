@@ -23,6 +23,8 @@ import type {
   SegmentState,
   Timebase,
 } from '../timebase/segmenter'
+import { applyCalibration } from './calibration'
+import { StationDirectory } from './stationConfig'
 // **窓と刻みは K-NET の取り込みと同じ値を使う。** 自作センサーの観測結果は最終的に
 // 同じ画面へ並ぶので、物差しが違えば「揺れ方の違い」と「測り方の違い」を見分けられない。
 // 写し取らずに読むのは、片方だけ動いたときに黙って離れるのを防ぐため。
@@ -50,6 +52,8 @@ export type PacketDropReason =
   | 'duplicate'
   /** 流し込みが位置の食い違いで止まった。組み立てと震度を揃えて閉じ直した。 */
   | 'stream-desync'
+  /** 観測点設定でそのセンサーが無効（`enabled: false`）にされている。 */
+  | 'sensor-disabled'
 
 /** その区間では震度を出さない理由。**パケットは受け取っている**（時間軸の統計には乗る）。 */
 export type IntensitySkipReason =
@@ -209,6 +213,12 @@ export interface IntensityPipelineOptions {
   readonly stepSec?: number
   /** 同時に覚えておく流れの数の上限。`Segmenter` へそのまま渡す。 */
   readonly maxStreams?: number
+  /**
+   * センサー校正の引き当て先（REQUIREMENTS.md §16）。**省略時は空**
+   * （`StationDirectory.empty()`）—— 割り当てが無くても震度算出は止めない
+   * （`stationConfig.ts` の設計原則）。
+   */
+  readonly stations?: StationDirectory
 }
 
 interface Entry {
@@ -273,6 +283,7 @@ export class IntensityPipeline {
   private readonly segmenter: Segmenter
   private readonly windowSec: number
   private readonly stepSec: number
+  private readonly stations: StationDirectory
   private readonly entries = new Map<string, Entry>()
   private unusableCount = 0
   /** `toReading` から呼ぶ。**束縛済みにしておく** —— 渡すたびに包むと同じ関数が増える。 */
@@ -284,10 +295,19 @@ export class IntensityPipeline {
     this.segmenter = new Segmenter({ maxStreams: options.maxStreams })
     this.windowSec = options.windowSec ?? WINDOW_SEC_DEFAULT
     this.stepSec = options.stepSec ?? STEP_SEC_DEFAULT
+    this.stations = options.stations ?? StationDirectory.empty()
   }
 
   /** パケット 1 つを通す。**投げない** —— 起きたことは戻り値で返す。 */
   handlePacket(packet: SensorPacket): PacketOutcome {
+    // **無効センサーは換算より前で弾く。** §15 の「有効/無効」を読み取りへ反映しないと、
+    // 設定した意味が無い。組み立て（`Segmenter`）にも渡さない —— 使わないと決めた
+    // センサーのパケットを時間軸の統計に混ぜる理由が無い。
+    const calibration = this.stations.resolveSensor(packet.boardKey, packet.sensorId)
+    if (!calibration.enabled) {
+      return { ...nothing(), dropped: 'sensor-disabled', detail: null }
+    }
+
     // **換算を組み立てより先に済ませる。** 順序を逆にすると、範囲の外で捨てるパケットを
     // 組み立てが受理してしまい、**あちらの位置だけが進む**。以後どのパケットも
     // 震度側の待っている位置と噛み合わず、その基板の震度が本物の切れ目まで出なくなる。
@@ -296,7 +316,10 @@ export class IntensityPipeline {
     if (converted !== null && !converted.ok) {
       return { ...nothing(), dropped: 'scale-out-of-range', detail: converted.detail }
     }
-    const gal = converted === null ? null : converted.gal
+    // **校正（REQUIREMENTS.md §16）は換算のすぐ後、組み立てより前に適用する。**
+    // `toGal` のフルスケール判定はセンサー自身の生の妥当性チェックで、校正（観測点固有の
+    // 後処理）とは別の関心事 —— 順序を分けておく。
+    const gal = converted === null ? null : applyCalibration(converted.gal, calibration)
 
     const result = this.segmenter.accept(packet)
     if (!result.ok) return { ...nothing(), dropped: result.reason, detail: null }
@@ -314,10 +337,10 @@ export class IntensityPipeline {
     // **組み立てが受理して換算も通った回にだけ作る。** 落としたパケットの波形を配ると、
     // 計測震度が見ていないサンプルが画面に出る（受け手はそれを区別できない）。
     //
-    // **配るのは震度へ流し込むのと同じ配列そのもので、写しを取らない。** 写すと
-    // 毎秒 2,700 個ぶんの複製が常時走るうえ、**「計測震度が食べた値そのもの」という
-    // 保証が写した瞬間に 1 段弱くなる**（写し損ねても値の形は変わらないので気づけない）。
-    // 型は読み取り専用にしてあり、この先で `gal` を書き換える処理は無い。
+    // **配るのは震度へ流し込むのと同じ配列そのもの（校正適用後）で、以後は写しを取らない。**
+    // 二重にコピーすると毎秒 2,700 個ぶんの複製が常時走るうえ、**「計測震度が食べた値
+    // そのもの」という保証が写した瞬間に 1 段弱くなる**（写し損ねても値の形は変わらない
+    // ので気づけない）。型は読み取り専用にしてあり、この先で `gal` を書き換える処理は無い。
     const timebase = result.segment.timebase
     const wave: WaveChunk | null =
       gal === null
