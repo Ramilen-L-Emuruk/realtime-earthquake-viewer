@@ -1170,6 +1170,10 @@ export function createTestEEW(withDmdssFields: boolean, eventId?: string, serial
   // 区域の到達予測時刻。震源時刻に追従させる（理由は `createTestEEWWarning` の同じ箇所）
   const at = (offsetMs: number) => new Date(origin.getTime() + offsetMs).toISOString()
   const isFirstReport = serial <= 1
+  // 3 回目のボタン押下で、震度が下がる続報を再現する（→ `computeDisplayEEWLevel` の
+  // 下げ止まり。docs/spec/eew-spec.md §4）。特別警報になった事実は消さず、続報でも
+  // カード・タイトル・通知が特別警報の表示を保つことを実機で確かめられるのはここだけ。
+  const isDowngradeReport = serial >= 3
   return {
     kind: 'eew',
     id: `test-eew-${eid}-${serial}`,
@@ -1195,7 +1199,7 @@ export function createTestEEW(withDmdssFields: boolean, eventId?: string, serial
     // **区域が無い報ではこれだけが予想震度になる** —— standard 版の初報がまさにその形で、
     // 「震度6強程度以上」を区域なしで伝える経路はここでしか通らない（`utils/eew.ts` の
     // `eewMaxScale` は区域があればそちらを優先するため）。
-    forecastMaxScale: 60,
+    forecastMaxScale: isDowngradeReport ? 45 : 60,
     // **上限が定まらないことを伝えられるのは DMDATA だけ。** P2PQuake は電文全体の最大予測震度を
     // 配信せず（区域ごとの `scaleTo: 99` は運ぶ）、Yahoo hypoInfo の `calcintensity` にも
     // 「程度以上」に当たる表現が無い。standard 版で立てると、実運用では出ない「6強程度以上」が
@@ -1205,7 +1209,7 @@ export function createTestEEW(withDmdssFields: boolean, eventId?: string, serial
     ...(withDmdssFields
       ? (isFirstReport
         ? { forecastMaxLpgmClass: 3 as const, forecastMaxLpgmClassOver: true }
-        : { forecastMaxLpgmClass: 4 as const })
+        : { forecastMaxLpgmClass: (isDowngradeReport ? 2 : 4) as 1 | 2 | 3 | 4 })
       : {}),
     // 気象庁の固定付加文。**警報級の報には必ず入る**（実電文の警報級 380 通すべて。→ eew-spec.md §3
     // 「固定付加文」）ので、報番号によらず持たせる。この報は特別警報まで上がるため、
@@ -1284,7 +1288,21 @@ export function createTestEEW(withDmdssFields: boolean, eventId?: string, serial
       { pref: '群馬県', name: '群馬県北部', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(88_000) },
       { pref: '群馬県', name: '群馬県南部', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(88_000) },
       { pref: '東京都', name: '東京都２３区', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(88_000) },
-    ] as const).map(a => withDmdssFields ? { ...a } : toP2pArea({ ...a })),
+    ] as const)
+      // 3 回目のボタン押下（`isDowngradeReport`）では、震度6弱以上/長周期4以上だった区域を
+      // 震度5弱・長周期2まで下げる。特別警報の主要因（宮城県中部・宮城県北部）だけでなく、
+      // 電文全体の値が区域の最大を優先する（`eewMaxScaleInfo`）ため、これで初めて
+      // 電文全体としても警報級（レベル1）まで下がる。
+      .map(a => isDowngradeReport
+        ? {
+            ...a,
+            scaleFrom: Math.min(a.scaleFrom, 40) as IntensityScale,
+            scaleTo: Math.min(a.scaleTo, 45) as IntensityScale,
+            scaleToOrAbove: undefined,
+            ...('lgIntTo' in a ? { lgIntTo: Math.min(a.lgIntTo, 2) as 1 | 2, lgIntToOver: undefined } : {}),
+          }
+        : a)
+      .map(a => withDmdssFields ? { ...a } : toP2pArea({ ...a })),
   }
 }
 
