@@ -30,9 +30,19 @@
 // あふれ（`overflow`）・設定変更（`config-changed`）、さらに版 1 プロトコルでは
 // 基板の再起動（`seq-reset`）ですら**変わらない**（`../timebase/segmenter.ts` の
 // `streamKeyOf` と `breakReason` を見ること）。これらはどれも「区間が切れて
-// 作り直された」ことを意味し、`segmentId` は必ず変わる——ここを見誤ると、
-// 駆動役の `firstSampleIndex` がリセットされたのに合成用 `IntensityStream` だけが
-// 古い区間の続きを期待し続け、`push()` が「位置が続きになっていない」で例外を投げる。
+// 作り直された」ことを意味し、`segmentId` は必ず変わる。
+//
+// **流し込みへ渡す位置は、合成側の起点から数え直す（`Group.streamOrigin`）。**
+// `IntensityStream.push()` は「区間の先頭から数えた位置」の連続を要求するけれど、
+// **合成の流し込みは駆動役の区間の途中で作られうる** —— 設定を変えて `SensorFusion`
+// ごと作り直したとき、駆動役の区間は切れていないので `firstSampleIndex` は途中の値
+// （実機で 92949）のまま来る。そのまま渡すと位置 0 を待っている新しい流し込みが
+// 「位置が続きになっていない」で投げ、**ホストを入れ直すまでその観測点の合成が
+// 動かない**（2026-09-28 に実機で観測。#362）。
+// 合成に要るのは**連続していること**だけで起点はどこでもよいので、作り直した時点の
+// `firstSampleIndex` を起点として覚え、その差を渡す。**`segmentId` を見ているだけでは
+// 防げない** —— あれは「区間が切れたか」の判定で、「流し込みが区間の途中で作られたか」
+// は別の事実。
 //
 // **区間が変わったら、作り直す前に古い流し込みを締める（`end()`）。** 締めないと、
 // その区間の末尾（最大 `windowSec` 秒ぶん）の震度が出ないまま消える
@@ -59,9 +69,175 @@ import type { WaveChunk } from './intensityPipeline'
 import { normalizeIntensity } from './intensityPipeline'
 // **窓と刻みは単独センサーの計測震度と揃える**（`intensityPipeline.ts` と同じ理由 ——
 // 物差しが違えば「揺れ方の違い」と「測り方の違い」を見分けられない）。
-import { STEP_SEC_DEFAULT, WINDOW_SEC_DEFAULT } from '../../../src/utils/knet/seismicIntensity'
+import { STEP_SEC_DEFAULT, WINDOW_SEC_DEFAULT, samplesForSeconds } from '../../../src/utils/knet/seismicIntensity'
 
 const REQUIRED_AXES = 3
+
+/**
+ * 裏付けの到着を待つ時間（ミリ秒）。**この分だけ合成が遅れる。**
+ *
+ * **なぜ待つのか。** 裏付け側の値は駆動役の刻みへ時刻で突き合わせるので、まだ届いて
+ * いない範囲は引けない。待たずに合成すると**その瞬間に届いていたセンサーだけ**が
+ * 混ざり、顔ぶれがサンプルごとに変わる —— **混ざった本数は状態の口に出ない**ので、
+ * 実機（2026-09-28）の到着の形を写した台の上で測った。9 本のうち 1〜7 本を揺れ動き、
+ * **9 本が揃った瞬間は 8000 サンプル中 1 度も無かった**。
+ * 「複数センサーで精度を上げる」という狙い（REQUIREMENTS.md §7）がそもそも
+ * 成り立っていなかったことになる。
+ *
+ * **値の根拠は実測。** 実機の基板間でパケットの到着差が最大 173ms、区間の起点差が
+ * 160ms あったので、それを覆う 300ms にした。**足りないと、遅れて届く基板が
+ * 合成から外れて顔ぶれが揺れ続ける**（待つ仕組みを入れた意味が無くなる）。
+ *
+ * **遅れは体感に出ない。** 計測震度はもともと 2 秒遅れて出る
+ * （`../intensity/intensityStream.ts` の `EDGE_MARGIN_SEC`）。
+ */
+export const FUSION_WAIT_MS_DEFAULT = 300
+
+/**
+ * 処理を待たせる駆動役のまとまりの上限。**超えたら待ちを切り上げて処理する**
+ * （捨てない）。
+ *
+ * 待ちの計時は「届いたまとまりの時刻」で行うので、**時刻が進まない状況**
+ * （裏付けが全滅した・生データの読み返しが途中で止まった）では待ちが永久に
+ * 満たされない。そのとき溜め続けるとメモリが伸び、捨てると波形が消える ——
+ * どちらも避けて、その時点の顔ぶれで合成する。
+ *
+ * **この安全弁は「駆動役は動いているのに裏付けが来ない」場合のもの。**
+ * グループの**全員**が同時に沈黙すると、溜まりはそれ以上増えないので閾値へ届かず、
+ * かつ取り出しを試す機会（`ingest()`）そのものが来なくなる —— 待たせていた分
+ * （通常は待ち時間ぶんの数まとまり）は `closeAll()` まで出ないままになる。
+ * **これは単独センサーの計測震度と同じ性質**で（あちらも次のパケットが来なければ
+ * 窓が埋まらず答えが出ない）、合成に固有の穴ではない。**壁時計で追い出す仕掛けは
+ * 置かない** —— 置くと生データの読み返しが実際の経過時間に振られ、同じ入力から
+ * 違う合成が出る（`Group.latestSeenMs` の説明を見ること）。観測点が沈黙したこと
+ * 自体は基板ごとの生存（`sensorHealth.ts`・`stationHealth.ts`）が見ている。
+ */
+const MAX_HELD_CHUNKS = 32
+
+/**
+ * 裏付け 1 本ぶんに覚えておくまとまりの数。**待ちを覆う長さが要る。**
+ *
+ * 既定の待ち（300ms）と実機のまとまり（100ms・10 サンプル）なら 3〜4 個で足りるが、
+ * まとまりの長さは基板の設定次第なので余裕を持たせる。**古いものは
+ * `trimCache` が保留の進みに合わせて捨てる**ので、この上限に当たるのは
+ * 「駆動役が止まっているのに裏付けだけ届き続ける」場合だけ。
+ */
+const MAX_CACHED_CHUNKS = 64
+
+/**
+ * センサー 1 本ぶんの直流（重力）を追い、引いた値を返す。**窓は震度と同じ長さ。**
+ *
+ * **なぜ引くのか。** 合成は「値が引けたセンサーだけ」で平均するので、顔ぶれは
+ * サンプルごとに変わる（裏付け側が待ちを覆うぶんしか持たないため。実機の到着の形を
+ * 写した台の実測で 1〜7 本を揺れ動いた）。**各センサーの直流が揃っていないと、顔ぶれが
+ * 1 本入れ替わるたびに平均の直流が跳ぶ** —— 実機では静止時の Z 軸が 662〜1200 gal に
+ * 散っていて（感度が未校正）、静止ノイズ 1.5 gal に対して数十 gal のステップが 100ms
+ * ごとに立ち、周期補正フィルタがそれを**実機で震度 4.36**（単体は 1.12〜1.24）として
+ * 出していた（2026-09-28・#362。実測値は `../../REQUIREMENTS.md` §7 の表）。
+ *
+ * **`IntensityStream` の `demeanWindow` では消えない。** あちらは窓の平均を引くだけで、
+ * **窓の中の段差はそのまま残る**。段差を作らせないには、混ぜる前に各センサーから
+ * 直流を落としておくしかない。
+ *
+ * **窓を震度と同じ長さにする理由**は `windowSec` の引き渡しと同じ ——
+ * 物差しが違えば「揺れ方の違い」と「測り方の違い」を見分けられない。
+ */
+export class DcTracker {
+  private readonly bufs: readonly [Float64Array, Float64Array, Float64Array]
+  private readonly sums: [number, number, number] = [0, 0, 0]
+  private next = 0
+  private filled = 0
+  /** 足し引きを重ねた回数。**1 周ごとに数え直して誤差の溜まりを断つ**（下記 `step`）。 */
+  private sinceRebuild = 0
+
+  /**
+   * **容量が 1 だと引いた値が常に 0 になる**（そのサンプル自身が直流の推定になるため）。
+   * 呼び出し側（`SensorFusion.trackerFor`）は計測震度の窓（既定 20 秒 = 2000 サンプル）
+   * から引くので通常は起きないが、`windowSec` に極端に小さい値を渡すとそうなる ——
+   * そのときは同じ `windowSec` を受ける `IntensityStream` が「0.3 秒を覆えない」で
+   * 構築に失敗するので**震度は出ない**（`intensitySkipReason` に理由が立つ）。
+   * ただし**合成波形だけは全ゼロで出続ける**ので、#315 で波形を配るときは
+   * ここを見直すこと。
+   */
+  constructor(capacity: number) {
+    if (!(capacity >= 1)) throw new Error('capacity は 1 以上で指定すること')
+    const n = Math.floor(capacity)
+    this.bufs = [new Float64Array(n), new Float64Array(n), new Float64Array(n)]
+  }
+
+  /** いま引いている直流。**1 つも食わせていなければ 0**（引くものが無い）。 */
+  get dc(): readonly [number, number, number] {
+    if (this.filled === 0) return [0, 0, 0]
+    return [this.sums[0] / this.filled, this.sums[1] / this.filled, this.sums[2] / this.filled]
+  }
+
+  /** 溜まっているサンプルの数。窓に満たないうちは、溜まった分だけの平均を引く。 */
+  get sampleCount(): number {
+    return this.filled
+  }
+
+  /**
+   * 3 軸を 1 サンプル食わせ、**そのサンプルを含めた直流を引いた値**を返す。
+   *
+   * **窓が埋まるのを待たない。** 待つと、待っている間の値が直流ごと合成へ流れて
+   * 同じ症状になる（しかも「まだ溜まっていない」ことは下流から見えない）。
+   * 溜まった分の平均でも、跳びを作らないという目的は果たせる。
+   */
+  step(v0: number, v1: number, v2: number): [number, number, number] {
+    const cap = this.bufs[0].length
+    const values: readonly [number, number, number] = [v0, v1, v2]
+    for (let axis = 0; axis < REQUIRED_AXES; axis++) {
+      const buf = this.bufs[axis]
+      if (this.filled === cap) this.sums[axis] -= buf[this.next]
+      buf[this.next] = values[axis]
+      this.sums[axis] += values[axis]
+    }
+    this.next = this.next + 1 === cap ? 0 : this.next + 1
+    if (this.filled < cap) this.filled++
+
+    // **和を足し引きし続けると誤差が溜まる。** 重力は 1000 gal のオーダーで、
+    // 拾いたい揺れは 1 gal 未満 —— 溜まった誤差は「引き残した直流」として
+    // そのまま合成へ出るが、**値が少しずつずれるだけなので誰も気づけない**。
+    // 1 周ごとに溜めてある値から数え直す（1 サンプルあたりの手間は 1 回ぶん）。
+    this.sinceRebuild++
+    if (this.sinceRebuild >= cap) {
+      this.sinceRebuild = 0
+      for (let axis = 0; axis < REQUIRED_AXES; axis++) {
+        const buf = this.bufs[axis]
+        let s = 0
+        for (let i = 0; i < this.filled; i++) s += buf[i]
+        this.sums[axis] = s
+      }
+    }
+
+    const dc = this.dc
+    return [v0 - dc[0], v1 - dc[1], v2 - dc[2]]
+  }
+}
+
+/** 1 まとまりぶん、直流を引いた波形とその直流。**並びは元の `gal` と 1 対 1。** */
+interface Stripped {
+  readonly gal: readonly [readonly number[], readonly number[], readonly number[]]
+  readonly dcGal: readonly [readonly number[], readonly number[], readonly number[]]
+}
+
+/** まとまりを頭から食わせ、直流を引いた波形と引いた直流を作る。 */
+function stripDc(tracker: DcTracker, gal: WaveChunk['gal']): Stripped {
+  const n = gal[0].length
+  const out: [number[], number[], number[]] = [new Array(n), new Array(n), new Array(n)]
+  const dcOut: [number[], number[], number[]] = [new Array(n), new Array(n), new Array(n)]
+  for (let i = 0; i < n; i++) {
+    const before: readonly [number, number, number] = [gal[0][i], gal[1][i], gal[2][i]]
+    const after = tracker.step(before[0], before[1], before[2])
+    for (let axis = 0; axis < REQUIRED_AXES; axis++) {
+      out[axis][i] = after[axis]
+      // 引いた直流は差で持つ——`tracker.dc` を別に読むと、次のサンプルで動いた後の
+      // 値を拾う（`step` はサンプルごとに推定を進める）。
+      dcOut[axis][i] = before[axis] - after[axis]
+    }
+  }
+  return { gal: out, dcGal: dcOut }
+}
 
 function memberKeyOf(boardKey: BoardKey, sensorId: string): string {
   return `${boardKey}|${sensorId}`
@@ -92,8 +268,22 @@ export interface FusedWaveChunk {
   readonly firstSampleIndex: number
   readonly firstSampleMs: number
   readonly msPerSample: number
-  /** 重み付き平均の gal。`gal[axis][i]` が i 番目のサンプル。 */
+  /**
+   * 重み付き平均の gal。`gal[axis][i]` が i 番目のサンプル。
+   *
+   * **直流（重力）を引いた変動分。** 混ぜる前に各センサーから落としてある
+   * （`DcTracker` の説明を見ること）。落とさないと、顔ぶれが入れ替わるたびに
+   * センサー間の直流差がステップとして乗る。
+   */
   readonly gal: readonly [readonly number[], readonly number[], readonly number[]]
+  /**
+   * 上の `gal` から落とした直流。**同じ重みで平均してある**ので、
+   * `gal[axis][i] + dcGal[axis][i]` が「校正済み gal の重み付き平均」（落とす前の値）。
+   *
+   * **落とした値を捨てない。** 重力の向きと大きさは取り付けの診断に使える事実で、
+   * 変動分だけにすると下流からは二度と引けない。
+   */
+  readonly dcGal: readonly [readonly number[], readonly number[], readonly number[]]
   /**
    * 各サンプルへ実際に効いたセンサーの数。**駆動役だけの回は 1。**
    *
@@ -142,14 +332,23 @@ export interface StationCloseFailure {
   readonly detail: string
 }
 
-/** `ingest()` 1 回ぶんの結果。**投げない**（`intensityPipeline.ts` と同じ分担）。 */
+/**
+ * `ingest()` 1 回ぶんの結果。**投げない**（`intensityPipeline.ts` と同じ分担）。
+ *
+ * **下の 4 つ（`fusedWave`・`intensitySkipReason`・`closeFailure`・`intensityStateChanged`）は
+ * 「待たせていたまとまりを取り出して合成した回」にだけ意味を持つ。** 取り出しは
+ * **駆動役の到着に限らない** —— 裏付けが届いても時刻は進むので、そこで待ちが満たされる
+ * ことがある（`FUSION_WAIT_MS_DEFAULT` と `ingest()` の説明を見ること）。
+ * 取り出しが起きなかった回は `fusedWave` が null で、残りも初期値を返す。
+ */
 export interface FusionOutcome {
-  /** 駆動役の到着でだけ入る。裏付け側の到着（覚えるだけ）では null。 */
+  /** 取り出して合成した回にだけ入る（駆動役・裏付けどちらの到着でも起こりうる）。 */
   readonly fusedWave: FusedWaveChunk | null
   readonly pairDiffs: readonly SensorPairDiff[]
   readonly readings: readonly StationIntensityReading[]
   /**
-   * 合成の計測震度が作れない理由。作れていれば null。**駆動役の到着でだけ意味を持つ。**
+   * 合成の計測震度が作れない理由。作れていれば null。**取り出して合成した回にだけ
+   * 意味を持つ**（上の `FusionOutcome` 自身の説明を見ること）。
    *
    * `IntensityStream` の構築に失敗した場合（`windowSec` が駆動役のサンプリング周波数を
    * 覆えない等）。**単独センサーの計測震度が既に動いている以上、通常は起きない**
@@ -173,7 +372,8 @@ export interface FusionOutcome {
   readonly closeFailure: StationCloseFailure | null
   /**
    * この呼び出しで合成の流し込みの状態が変わりうる処理が走ったか（区間の作り直し・
-   * `push()` の失敗のいずれか）。**駆動役の到着でだけ意味を持つ。**
+   * `push()` の失敗のいずれか）。**取り出して合成した回にだけ意味を持つ**
+   * （上の `FusionOutcome` 自身の説明を見ること）。
    *
    * 単一センサーの計測震度（`intensityPipeline.ts` の `PacketOutcome.startedBecause`）が
    * 「区間が始まった回にだけ理由を返す」のと対称にするための印——`intensitySkipReason`は
@@ -206,18 +406,31 @@ function memberRefOf(m: Member): SensorMemberRef {
   return { boardKey: m.boardKey, sensorId: m.sensorId }
 }
 
-/** 裏付け側から届いた直近の 1 まとまり。**積み上げない**——古いものは持たない。 */
+/**
+ * 裏付け側から届いたまとまり 1 つ。
+ *
+ * **直近の 1 つでは足りない**（そこが #362 の原因のひとつだった）。駆動役の処理を
+ * 待たせる（`FUSION_WAIT_MS_DEFAULT`）あいだ、その時刻範囲を覆えるだけ覚えておく
+ * —— 古いものは `trimCache` が保留の進みに合わせて落とす。
+ */
 interface CachedChunk {
   readonly firstSampleMs: number
   readonly msPerSample: number
+  /** **直流を引いた後**の gal（`DcTracker` を通した値）。 */
   readonly gal: readonly [readonly number[], readonly number[], readonly number[]]
+  /** 引いた直流。合成が「足し戻せる値」を出すために持つ（`FusedWaveChunk.dcGal`）。 */
+  readonly dcGal: readonly [readonly number[], readonly number[], readonly number[]]
   readonly length: number
 }
 
 /**
  * 直近に受けた駆動役の 1 まとまりの時刻の起点。**震度の `atMs` をあとから計算するために持つ。**
  *
- * `IntensityStream` は「区間の先頭から数えた位置」しか知らないので、絶対時刻へ戻すには
+ * **`firstSampleIndex` は `Group.streamOrigin` から数えた位置**（駆動役の区間の通し番号
+ * ではない）。`IntensityStream` が返す `endSampleIndex` と同じ数え方に揃えてある ——
+ * 揃えないと、区間の途中で作られた流し込みの答えが起点のずれた時刻を名乗る。
+ *
+ * `IntensityStream` は「流し込みの先頭から数えた位置」しか知らないので、絶対時刻へ戻すには
  * 起点（`firstSampleIndex`・`firstSampleMs`・`msPerSample`）が要る。**駆動役の到着のたびに
  * 最新の値へ更新する**（区間が続いていても）——当てはめ（`IncrementalLineFit`）は区間の中でも
  * 精度が上がっていくので、`msPerSample` はわずかに動きうる。式 `firstSampleMs + (i -
@@ -239,7 +452,29 @@ interface Group {
   readonly members: readonly Member[]
   /** 駆動役を除いたメンバー。合成のたびに引き直さなくて済むよう先に作っておく。 */
   readonly backups: readonly Member[]
-  readonly cache: Map<string, CachedChunk>
+  /** センサーごとに覚えている裏付けのまとまり。**古い順。** */
+  readonly cache: Map<string, CachedChunk[]>
+  /**
+   * 裏付けの到着を待っている駆動役のまとまり。**古い順。**
+   *
+   * 合成はここから取り出したときに起きる（届いた瞬間ではない）。取り出す条件は
+   * `FUSION_WAIT_MS_DEFAULT` を見ること。
+   */
+  readonly held: HeldChunk[]
+  /**
+   * このグループで観測した最新の時刻（駆動役・裏付けを問わない、まとまりの終端）。
+   *
+   * **待ちの計時はこれで行う。壁時計を見ない** —— 見ると、生データの読み返しや
+   * テストで実際の経過時間に振られ、同じ入力から違う合成が出る。
+   */
+  latestSeenMs: number
+  /**
+   * センサーごとの直流の追い方。**区間が切れても捨てない** ——
+   * 追っているのは物理量（重力）そのもので、区間の連続性が要るのはフィルタの状態
+   * （計測震度の流し込み）のほうだけ。捨てると、そのセンサーだけ直流の推定が
+   * 0 から立ち上がり直して**切れ目のたびに跳びを作る**（直そうとした症状そのもの）。
+   */
+  readonly dc: Map<string, DcTracker>
   /** いま合成に使っている計測震度の流し込み。駆動役の区間が変われば作り直す。 */
   stream: IntensityStream | null
   /**
@@ -251,6 +486,14 @@ interface Group {
    * （`../timebase/segmenter.ts` の `streamKeyOf`・`breakReason` を見ること）。
    */
   driverSegmentId: number | null
+  /**
+   * いまの `stream` を作った時点の、駆動役の区間での位置。**流し込みへ渡す位置の原点。**
+   *
+   * `stream` が null のときは null。**区間の途中で作られた流し込みは、駆動役の通し番号を
+   * そのまま受け取れない**（`IntensityStream.push()` は位置 0 から数えるため。冒頭の
+   * 「流し込みへ渡す位置は、合成側の起点から数え直す」を見ること）。
+   */
+  streamOrigin: number | null
   /** 直近に受けた駆動役の 1 まとまりの起点。`stream` が null でも（構築失敗時も）更新する。 */
   driverAnchor: DriverAnchor | null
   streamError: string | null
@@ -302,8 +545,12 @@ function buildGroups(config: StationConfig): Group[] {
       members,
       backups: members.filter((m) => m !== driver),
       cache: new Map(),
+      held: [],
+      latestSeenMs: Number.NEGATIVE_INFINITY,
+      dc: new Map(),
       stream: null,
       driverSegmentId: null,
+      streamOrigin: null,
       driverAnchor: null,
       streamError: null,
       unusableCount: 0,
@@ -312,62 +559,137 @@ function buildGroups(config: StationConfig): Group[] {
   return groups
 }
 
-/** 裏付け側の直近のまとまりから、指定時刻の値を引く。無ければ null（外挿しない）。 */
-function lookupCached(cache: CachedChunk, tMs: number): readonly [number, number, number] | null {
+/** 待たせている駆動役のまとまり 1 つ。直流を落とした波形も一緒に持つ（二度引かない）。 */
+interface HeldChunk {
+  readonly wave: WaveChunk
+  readonly stripped: Stripped
+  /** このまとまりの終端時刻（最後のサンプルの次）。待ちの判定に使う。 */
+  readonly endMs: number
+}
+
+/** まとまりの終端時刻（最後のサンプルの次）。 */
+function endMsOf(chunk: CachedChunk): number {
+  return chunk.firstSampleMs + chunk.length * chunk.msPerSample
+}
+
+/** 裏付け側の 1 サンプルぶん。値と、そのサンプルで引いた直流。 */
+interface CachedSample {
+  readonly value: readonly [number, number, number]
+  readonly dc: readonly [number, number, number]
+}
+
+/** 1 まとまりから指定時刻の値を引く。無ければ null（外挿しない）。 */
+function lookupChunk(cache: CachedChunk, tMs: number): CachedSample | null {
   const idx = Math.round((tMs - cache.firstSampleMs) / cache.msPerSample)
   if (idx < 0 || idx >= cache.length) return null
-  return [cache.gal[0][idx], cache.gal[1][idx], cache.gal[2][idx]]
+  return {
+    value: [cache.gal[0][idx], cache.gal[1][idx], cache.gal[2][idx]],
+    dc: [cache.dcGal[0][idx], cache.dcGal[1][idx], cache.dcGal[2][idx]],
+  }
+}
+
+/**
+ * 覚えている裏付けのまとまりから、指定時刻の値を引く。無ければ null（外挿しない）。
+ *
+ * **新しいほうから探す。** まとまりが時刻で重なることはパケットの再送などで
+ * 起こりうるが、そのときは新しく届いた値を採る（`IntensityPipeline` が区間の
+ * 当てはめを進めた結果なので、後のほうが確からしい）。
+ */
+function lookupCached(chunks: readonly CachedChunk[], tMs: number): CachedSample | null {
+  for (let i = chunks.length - 1; i >= 0; i--) {
+    const found = lookupChunk(chunks[i], tMs)
+    if (found !== null) return found
+  }
+  return null
+}
+
+/**
+ * もう引かれない裏付けのまとまりを落とす。
+ *
+ * **最新の 1 つは必ず残す。** 保留が空のときに全部捨てると、次に届いた駆動役が
+ * 裏付けを 1 本も引けず、待つ仕組みを入れる前と同じ「駆動役だけの合成」に戻る。
+ *
+ * **並びが時刻順であることを前提にしている**（`list[0]` を最古とみなす。`lookupCached`
+ * は逆に末尾から探す）。`firstSampleMs` は区間の当てはめが出す絶対時刻で、基板が
+ * 再起動しても区間が切り直されるため通常は前進しかしない —— **もし時刻が巻き戻る
+ * 形で届けば、落とす順と探す順の両方が崩れる**（その場合に起きるのは「古い値を
+ * 引く」「捨てるべきものが残る」で、例外は出ない）。
+ */
+function trimCache(group: Group): void {
+  // 待たせている中で最も古いまとまりの先頭より前で終わるものは、以後どの
+  // 合成からも引かれない（合成は保留を古い順に処理する）。
+  const oldestNeededMs = group.held.length > 0 ? group.held[0].wave.firstSampleMs : Infinity
+  for (const list of group.cache.values()) {
+    while (list.length > 1 && endMsOf(list[0]) <= oldestNeededMs) list.shift()
+  }
 }
 
 interface Combined {
   readonly gal: readonly [number[], number[], number[]]
+  readonly dcGal: readonly [number[], number[], number[]]
   readonly memberCount: readonly number[]
 }
 
-/** 駆動役の 1 まとまりへ、裏付け側の直近値を重み付きで混ぜる。 */
-function combine(group: Group, driverWave: WaveChunk): Combined {
-  const n = driverWave.gal[0].length
+/**
+ * 駆動役の 1 まとまりへ、裏付け側の直近値を重み付きで混ぜる。
+ *
+ * **渡すのは直流を引いた後の波形**（`stripDc` を通した値）。引いた直流も同じ重みで
+ * 平均して返す —— 足し戻せば従来の「校正済み gal の重み付き平均」になる。
+ */
+function combine(group: Group, driverWave: WaveChunk, driver: Stripped): Combined {
+  const n = driver.gal[0].length
   const out: [number[], number[], number[]] = [new Array(n), new Array(n), new Array(n)]
+  const dcOut: [number[], number[], number[]] = [new Array(n), new Array(n), new Array(n)]
   const memberCount = new Array<number>(n)
 
   for (let i = 0; i < n; i++) {
     const tMs = driverWave.firstSampleMs + i * driverWave.msPerSample
     // **軸ごとに顔ぶれを変えない。** 裏付け側の可否はセンサー単位（3 軸まとめて
     // 届く・届かない）で決まるので、ここで一度だけ引く。
-    const active: { weight: number; value: readonly [number, number, number] }[] = []
+    const active: { weight: number; sample: CachedSample }[] = []
     for (const m of group.backups) {
-      const cache = group.cache.get(memberKeyOf(m.boardKey, m.sensorId))
-      if (cache === undefined) continue
-      const value = lookupCached(cache, tMs)
-      if (value === null) continue
-      active.push({ weight: m.weight, value })
+      const chunks = group.cache.get(memberKeyOf(m.boardKey, m.sensorId))
+      if (chunks === undefined) continue
+      const sample = lookupCached(chunks, tMs)
+      if (sample === null) continue
+      active.push({ weight: m.weight, sample })
     }
     memberCount[i] = 1 + active.length
 
     for (let axis = 0; axis < REQUIRED_AXES; axis++) {
       let wSum = group.driver.weight
-      let vSum = group.driver.weight * driverWave.gal[axis][i]
+      let vSum = group.driver.weight * driver.gal[axis][i]
+      let dSum = group.driver.weight * driver.dcGal[axis][i]
       for (const a of active) {
         wSum += a.weight
-        vSum += a.weight * a.value[axis]
+        vSum += a.weight * a.sample.value[axis]
+        dSum += a.weight * a.sample.dc[axis]
       }
       out[axis][i] = vSum / wSum
+      dcOut[axis][i] = dSum / wSum
     }
   }
-  return { gal: out, memberCount }
+  return { gal: out, dcGal: dcOut, memberCount }
 }
 
-/** 駆動役の 1 まとまりについて、全ペアの差分 `d=(a1-a2)/2` を作る。 */
-function buildPairDiffs(group: Group, driverWave: WaveChunk): SensorPairDiff[] {
-  const n = driverWave.gal[0].length
+/**
+ * 駆動役の 1 まとまりについて、全ペアの差分 `d=(a1-a2)/2` を作る。
+ *
+ * **差も直流を引いた後の値から作る。** 用途はセンサー自己ノイズの推定と異常センサーの
+ * 検出なので、取り付けの向きや感度のずれ（実機では Z 軸で最大 538 gal）が差を
+ * 支配したままでは何も見分けられない —— 引いておけば、差に残るのは
+ * 見たかったもの（各センサーの自己ノイズと、本当の食い違い）だけになる。
+ */
+function buildPairDiffs(group: Group, driverWave: WaveChunk, driver: Stripped): SensorPairDiff[] {
+  const n = driver.gal[0].length
 
   function valueAt(m: Member, i: number): readonly [number, number, number] | null {
     if (m === group.driver) {
-      return [driverWave.gal[0][i], driverWave.gal[1][i], driverWave.gal[2][i]]
+      return [driver.gal[0][i], driver.gal[1][i], driver.gal[2][i]]
     }
-    const cache = group.cache.get(memberKeyOf(m.boardKey, m.sensorId))
-    if (cache === undefined) return null
-    return lookupCached(cache, driverWave.firstSampleMs + i * driverWave.msPerSample)
+    const chunks = group.cache.get(memberKeyOf(m.boardKey, m.sensorId))
+    if (chunks === undefined) return null
+    return lookupCached(chunks, driverWave.firstSampleMs + i * driverWave.msPerSample)?.value ?? null
   }
 
   const out: SensorPairDiff[] = []
@@ -448,17 +770,23 @@ function endGroupStream(group: Group): EndGroupStreamResult {
     failure = { stationId: group.stationId, detail: messageOf(error) }
   }
   group.stream = null
+  // **原点も一緒に落とす。** 残すと、次に作った流し込み（位置 0 から数え直す）へ
+  // 古い原点を当てることになり、答えの時刻が原点の差だけずれる。
+  group.streamOrigin = null
   return { readings, failure }
 }
 
 export interface SensorFusionOptions {
   readonly windowSec?: number
   readonly stepSec?: number
+  /** 裏付けの到着を待つ時間（ミリ秒）。既定は `FUSION_WAIT_MS_DEFAULT`。 */
+  readonly waitMs?: number
 }
 
 export class SensorFusion {
   private readonly windowSec: number
   private readonly stepSec: number
+  private readonly waitMs: number
   private readonly groupByMemberKey = new Map<string, Group>()
   /** 重複の無いグループの一覧。`groupByMemberKey` は複数キーが同じグループを指す。 */
   private readonly groups: Group[]
@@ -468,6 +796,7 @@ export class SensorFusion {
   constructor(config: StationConfig, options: SensorFusionOptions = {}) {
     this.windowSec = options.windowSec ?? WINDOW_SEC_DEFAULT
     this.stepSec = options.stepSec ?? STEP_SEC_DEFAULT
+    this.waitMs = options.waitMs ?? FUSION_WAIT_MS_DEFAULT
     this.groups = buildGroups(config)
     for (const group of this.groups) {
       for (const m of group.members) this.groupByMemberKey.set(memberKeyOf(m.boardKey, m.sensorId), group)
@@ -484,10 +813,37 @@ export class SensorFusion {
   }
 
   /**
+   * そのセンサーの直流の追い方を引く（無ければ作る）。
+   *
+   * **窓の長さは震度と同じ**（`windowSec`）。サンプリング周波数は届いた刻みから引く
+   * ——丸め方は震度と共有する（`samplesForSeconds`）ので、窓の端が 1 サンプルずれない。
+   *
+   * **一度作ったら容量は変えない。** 区間の当てはめが進むと `msPerSample` はわずかに
+   * 動くけれど（実測で公称値の 0.06% 程度）、直流を追う窓の長さがその分ずれても
+   * 意味は変わらない——作り直せば**溜めた直流を捨てることになり、そのほうが害が大きい**。
+   */
+  private trackerFor(group: Group, memberKey: string, msPerSample: number): DcTracker {
+    const found = group.dc.get(memberKey)
+    if (found !== undefined) return found
+    const capacity = Math.max(1, samplesForSeconds(this.windowSec, 1000 / msPerSample))
+    const created = new DcTracker(capacity)
+    group.dc.set(memberKey, created)
+    return created
+  }
+
+  /**
    * 波形が 1 まとまり届いた。**投げない**（`closeAll()` のあとを除く）。
    *
    * 観測点に属さない、または相方が居ない（グループを作れなかった）センサーは
    * 素通りする——単独のセンサーは合成の対象にならない。
+   *
+   * **合成は届いた瞬間には起きない。** 駆動役のまとまりは裏付けの到着を待つために
+   * いったん溜め、待ちが満たされた回に 1 つだけ取り出して合成する
+   * （`FUSION_WAIT_MS_DEFAULT` を見ること）。**待ちを進めるのは駆動役の到着だけでは
+   * ない** —— 裏付けが届いても時刻は進むので、そこでも取り出しを試す。
+   *
+   * **1 回の呼び出しで取り出すのは最大 1 つ。** 駆動役のまとまりは定期的に届くので、
+   * 入りと出が釣り合って溜まりは一定の長さ（待ち時間ぶん）に落ち着く。
    *
    * **`closeAll()` のあとに呼んではいけない。** そこで全グループの流し込みを締めて
    * いるので、以後 `ingest()` を呼び続けると `group.stream` が `null` のまま
@@ -500,16 +856,63 @@ export class SensorFusion {
     const group = this.groupByMemberKey.get(key)
     if (group === undefined) return nothingOutcome()
 
-    if (key !== group.driverMemberKey) {
-      // **裏付け側の到着。直近の 1 まとまりを覚えるだけ**——合成は駆動役の刻みでしか起きない。
-      group.cache.set(key, {
+    // **直流はここで落とす。** 以降の合成・差分・震度はすべて変動分で解く
+    // （`DcTracker` の説明を見ること）。**駆動役も裏付けも同じ扱い**——片方だけ
+    // 落とすと、その差がそのまま平均へ乗る。
+    const stripped = stripDc(this.trackerFor(group, key, wave.msPerSample), wave.gal)
+    const length = wave.gal[0].length
+    const endMs = wave.firstSampleMs + length * wave.msPerSample
+    // 待ちの計時は届いたまとまりの時刻で行う（`Group.latestSeenMs` を見ること）。
+    if (endMs > group.latestSeenMs) group.latestSeenMs = endMs
+
+    if (key === group.driverMemberKey) {
+      group.held.push({ wave, stripped, endMs })
+    } else {
+      const list = group.cache.get(key)
+      const entry: CachedChunk = {
         firstSampleMs: wave.firstSampleMs,
         msPerSample: wave.msPerSample,
-        gal: wave.gal,
-        length: wave.gal[0].length,
-      })
-      return nothingOutcome()
+        gal: stripped.gal,
+        dcGal: stripped.dcGal,
+        length,
+      }
+      if (list === undefined) group.cache.set(key, [entry])
+      else {
+        list.push(entry)
+        // **駆動役が止まっているのに裏付けだけ届き続ける場合の歯止め**
+        // （`trimCache` は保留の進みでしか捨てないので、進まなければ伸び続ける）。
+        while (list.length > MAX_CACHED_CHUNKS) list.shift()
+      }
     }
+
+    return this.fuseOneHeld(group)
+  }
+
+  /**
+   * 待ちが満たされた駆動役のまとまりを 1 つだけ取り出して合成する。
+   *
+   * 取り出すのは次のどちらか。
+   *
+   * - 先頭のまとまりの終端から待ち時間が経っている（`latestSeenMs` で測る）
+   * - 溜まりが上限（`MAX_HELD_CHUNKS`）を超えた —— **待ちを切り上げる安全弁。**
+   *   時刻が進まない状況（裏付けが全滅した・読み返しが止まった）で永久に待たない
+   */
+  private fuseOneHeld(group: Group): FusionOutcome {
+    const head = group.held[0]
+    if (head === undefined) return nothingOutcome()
+    const waited = head.endMs + this.waitMs <= group.latestSeenMs
+    if (!waited && group.held.length <= MAX_HELD_CHUNKS) return nothingOutcome()
+    group.held.shift()
+    const outcome = this.fuse(group, head)
+    // 保留が進んだぶん、もう引かれない裏付けを落とす。
+    trimCache(group)
+    return outcome
+  }
+
+  /** 取り出した 1 まとまりを合成する。**`held` からの取り出しはここでは行わない。** */
+  private fuse(group: Group, held: HeldChunk): FusionOutcome {
+    const wave = held.wave
+    const stripped = held.stripped
 
     // **駆動役の到着。区間（`segmentId`）が変わっていれば、古い流し込みを締めてから
     // 作り直す。** 締めて出た震度（前の区間の末尾ぶん）は、この呼び出しの `readings` へ
@@ -529,31 +932,44 @@ export class SensorFusion {
           sampleRateHz: 1000 / wave.msPerSample,
           windowSec: this.windowSec,
           stepSec: this.stepSec,
-          // 合成波形にも重力の直流が乗る（駆動役自身がそう）ので、単独センサーと
-          // 同じ扱いにする（`intensityPipeline.ts` の `DEMEAN_WINDOW` と同じ理由）。
+          // **直流は `DcTracker` が既に落としているが、それでも引く。** あちらが
+          // 消すのは「センサーごとの直流差が作る段差」で、こちらが消すのは
+          // 「窓の平均が 0 でないこと」——単独センサーと同じ物差しに揃えておく
+          // （`intensityPipeline.ts` の `DEMEAN_WINDOW` と同じ理由）。
           demeanWindow: true,
         })
+        // **この位置を原点にする。** 駆動役の区間は切れていないこともある
+        // （設定変更で `SensorFusion` だけ作り直した場合）ので、通し番号をそのまま
+        // 渡すと位置 0 を待っている流し込みが投げる（冒頭の説明を見ること）。
+        group.streamOrigin = wave.firstSampleIndex
         group.streamError = null
       } catch (error) {
         group.stream = null
+        group.streamOrigin = null
         group.streamError = messageOf(error)
       }
     }
     // **`stream` の作り直しより後に更新する。** `endGroupStream` は「締める前」の
     // 起点（前の区間のもの）を必要とするため。
+    //
+    // **位置は原点から数え直す**（`DriverAnchor.firstSampleIndex` の説明を見ること）。
+    // 原点が無い＝流し込みも無いので、そのときの値は使われない——通し番号をそのまま
+    // 置いておけば、次に流し込みが作られた回に原点ごと書き換わる。
     group.driverAnchor = {
-      firstSampleIndex: wave.firstSampleIndex,
+      firstSampleIndex: wave.firstSampleIndex - (group.streamOrigin ?? 0),
       firstSampleMs: wave.firstSampleMs,
       msPerSample: wave.msPerSample,
     }
 
-    const combined = combine(group, wave)
-    const pairDiffs = buildPairDiffs(group, wave)
+    const combined = combine(group, wave, stripped)
+    const pairDiffs = buildPairDiffs(group, wave, stripped)
 
     const readings: StationIntensityReading[] = [...carried]
     if (group.stream !== null) {
+      // 原点から数えた位置を渡す。流し込みがあるなら原点も必ずある（同じ一手で置く）。
+      const at = wave.firstSampleIndex - (group.streamOrigin ?? 0)
       try {
-        for (const p of group.stream.push(wave.firstSampleIndex, combined.gal[0], combined.gal[1], combined.gal[2])) {
+        for (const p of group.stream.push(at, combined.gal[0], combined.gal[1], combined.gal[2])) {
           readings.push(toStationReading(group, group.driverAnchor, p))
         }
       } catch (error) {
@@ -575,6 +991,7 @@ export class SensorFusion {
           // ここまで来て投げるなら push() の失敗そのものが本題なので、二重に報せない。
         }
         group.stream = null
+        group.streamOrigin = null
         group.streamError = messageOf(error)
         intensityStateChanged = true
       }
@@ -588,6 +1005,7 @@ export class SensorFusion {
         firstSampleMs: wave.firstSampleMs,
         msPerSample: wave.msPerSample,
         gal: combined.gal,
+        dcGal: combined.dcGal,
         memberCount: combined.memberCount,
       },
       pairDiffs,
@@ -603,6 +1021,12 @@ export class SensorFusion {
    * ——呼ばないと、各観測点の最後の窓ぶんの答えが出ないまま消える
    * （`IntensityPipeline.closeAll()` と同じ理由）。
    *
+   * **待たせていたまとまりは先に流し切る。** 捨てると、待ちの時間ぶん（既定 0.3 秒）の
+   * 震度が出ないまま消える——締めくくり（`end()`）を呼ぶ理由と同じ。
+   * **合成波形はここでは返せない**（この戻り値は震度と締めくくりの失敗だけを運ぶ）ので、
+   * 最後の数まとまりぶんの合成波形は出ずに終わる。震度は拾えるので実害は無いが、
+   * 波形を配る先を足すとき（#315）はここを見直すこと。
+   *
    * **この呼び出しのあとに `ingest()` を呼んではいけない。** 呼ぶと投げる
    * （`ingest()` 自身のコメントを見ること）。
    */
@@ -611,6 +1035,12 @@ export class SensorFusion {
     const readings: StationIntensityReading[] = []
     const failures: StationCloseFailure[] = []
     for (const group of this.groups) {
+      while (group.held.length > 0) {
+        const head = group.held.shift() as HeldChunk
+        const out = this.fuse(group, head)
+        readings.push(...out.readings)
+        if (out.closeFailure !== null) failures.push(out.closeFailure)
+      }
       const closed = endGroupStream(group)
       readings.push(...closed.readings)
       if (closed.failure !== null) failures.push(closed.failure)
