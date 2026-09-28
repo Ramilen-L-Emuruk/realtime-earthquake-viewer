@@ -24,7 +24,7 @@ const tokenClearedListeners: TokenClearedListener[] = []
 
 /**
  * `apiFetch` が `invalid-token` を理由にトークンを消したときに呼ばれる。
- * `app.ts` がこれを購読して、画面上の「トークン設定済み」表示を追随させる
+ * `app.ts` がこれを購読して、画面上のトークンの状態表示を追随させる
  * ——購読しないと、消えたのに画面はそのままで運用者が気づけない
  * （#313 段 C 敵対的レビューで検出）。
  */
@@ -104,15 +104,17 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
 export function describeAdminAuthFailure(reason: string): string | null {
   switch (reason) {
     case 'not-configured':
-      return 'サーバー側でトークンが未設定（SEISMO_ADMIN_TOKEN）のため /api/* 自体が無効'
+      // **「入力では直らない」を省かない。** 他の理由は上部の欄で解決するが、
+      // これだけはサーバー側の設定を直さないと `/api/*` が丸ごと無効なまま。
+      return 'サーバー側のトークンが未設定（SEISMO_ADMIN_TOKEN）。/api/* 全体が無効'
     case 'missing-authorization':
-      return 'トークンが未設定（上部の管理トークン欄に入力すること）'
+      return 'トークン未設定（上部の欄に入力すること）'
     case 'invalid-token':
-      return 'トークンが違う（上部の管理トークン欄を確認すること）'
+      return 'トークンが違う'
     case 'host-not-allowed':
-      return 'このアドレスからのアクセスがサーバー側で許可されていない（SEISMO_ADMIN_ALLOWED_HOSTS）'
+      return 'このアドレスは未許可（SEISMO_ADMIN_ALLOWED_HOSTS）'
     case 'origin-not-allowed':
-      return 'このオリジンからのアクセスがサーバー側で許可されていない（SEISMO_ADMIN_ALLOWED_ORIGINS）'
+      return 'このオリジンは未許可（SEISMO_ADMIN_ALLOWED_ORIGINS）'
     default:
       return null
   }

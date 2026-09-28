@@ -20,14 +20,16 @@ const TABS: readonly { readonly key: TabKey; readonly label: string }[] = [
 
 function renderShell(root: HTMLElement): void {
   root.innerHTML = `
-    <section class="token-box">
+    <section class="token-box panel">
       <label>
-        管理トークン（<code>Authorization: Bearer</code>）
+        <span>管理トークン</span>
         <input type="password" class="token-input" autocomplete="off" placeholder="未設定" />
       </label>
-      <button type="button" class="token-save">保存</button>
-      <button type="button" class="token-clear">消去</button>
-      <span class="token-status muted"></span>
+      <div class="row">
+        <button type="button" class="token-save" style="flex: 0 0 auto">保存</button>
+        <button type="button" class="token-clear" style="flex: 0 0 auto">消去</button>
+        <span class="token-status muted" style="align-self: center"></span>
+      </div>
     </section>
     <div class="tabs" role="tablist"></div>
     <div class="tab-content"></div>
@@ -37,7 +39,7 @@ function renderShell(root: HTMLElement): void {
 function updateTokenStatus(root: HTMLElement): void {
   const statusEl = qs(root, '.token-status')
   const token = getStoredToken()
-  statusEl.textContent = token !== null ? 'トークン設定済み' : 'トークン未設定（観測点・基板の編集は 401 になる）'
+  statusEl.textContent = token !== null ? '設定済み' : '未設定（観測点・基板は編集できない）'
 }
 
 /**

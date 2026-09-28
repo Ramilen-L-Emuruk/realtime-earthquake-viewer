@@ -54,7 +54,7 @@ interface StatusReportView {
 const STALE_AFTER_MS = 60_000
 
 function ago(nowMs: number, atMs: number | null): string {
-  if (atMs === null) return '（未受信）'
+  if (atMs === null) return '未受信'
   const sec = Math.max(0, Math.round((nowMs - atMs) / 1000))
   return `${sec} 秒前`
 }
@@ -85,12 +85,12 @@ export async function initStatusView(container: HTMLElement, signal: AbortSignal
       .map(
         (s) => `
           <tr>
-            <td>${escapeHtml(s.station?.displayName ?? '（未割当）')}</td>
+            <td>${escapeHtml(s.station?.displayName ?? '未割当')}</td>
             <td>${escapeHtml(s.boardKey)} / ${escapeHtml(s.sensorId)}</td>
             <td>${badge(now, s.lastPacketMs)} ${ago(now, s.lastPacketMs)}</td>
             <td>${s.lastIntensity !== null ? s.lastIntensity.toFixed(2) : '—'}</td>
             <td>${s.enabled ? '有効' : '無効'}</td>
-            <td>${s.calibrationConfigured ? '設定あり' : '既定値'}</td>
+            <td>${s.calibrationConfigured ? '設定あり' : '既定値のまま'}</td>
           </tr>`,
       )
       .join('')
@@ -116,7 +116,7 @@ export async function initStatusView(container: HTMLElement, signal: AbortSignal
     }
     if (status.ungroupedMultiBoardStations.length > 0) {
       warnings.push(
-        `複数基板を割り当てたが合成グループが組めていない観測点: ${escapeHtml(status.ungroupedMultiBoardStations.join('、'))}`,
+        `複数基板だが合成グループが組めていない観測点: ${escapeHtml(status.ungroupedMultiBoardStations.join('、'))}`,
       )
     }
     if (status.raw.cutShort) warnings.push('生データの保存が途中で打ち切られた')
@@ -124,26 +124,53 @@ export async function initStatusView(container: HTMLElement, signal: AbortSignal
       warnings.push(`生データの書き込みエラー: ${escapeHtml(status.raw.lastWriteError)}`)
     }
 
+    const liveSensorCount = status.sensors.filter((s) => !isStale(now, s.lastPacketMs)).length
+    const hours = Math.floor(status.uptimeSec / 3600)
+    const minutes = Math.floor((status.uptimeSec % 3600) / 60)
+
     bodyEl.innerHTML = `
-      <p>稼働時間: ${Math.floor(status.uptimeSec / 3600)} 時間 ${Math.floor((status.uptimeSec % 3600) / 60)} 分</p>
+      <div class="stat-cards">
+        <div class="stat-card">
+          <div class="stat-label">稼働時間</div>
+          <div class="stat-value">${hours} 時間 ${minutes} 分</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">受信中のセンサー</div>
+          <div class="stat-value">${liveSensorCount} / ${status.sensors.length}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">複数センサー合成の観測点</div>
+          <div class="stat-value">${status.stationIntensities.length}</div>
+        </div>
+      </div>
       ${
         warnings.length > 0
           ? `<p class="error">${warnings.map((w) => `⚠ ${w}`).join('<br>')}</p>`
           : '<p class="muted">警告なし</p>'
       }
-      <h3>センサー</h3>
-      <table>
-        <thead><tr><th>観測点</th><th>基板 / センサー</th><th>受信</th><th>計測震度相当</th><th>有効</th><th>校正</th></tr></thead>
-        <tbody>${sensorRows.length > 0 ? sensorRows : '<tr><td colspan="6" class="muted">センサーなし</td></tr>'}</tbody>
-      </table>
-      <h3>観測点（複数センサー合成）</h3>
-      <table>
-        <thead><tr><th>観測点</th><th>受信</th><th>計測震度相当</th></tr></thead>
-        <tbody>${stationRows.length > 0 ? stationRows : '<tr><td colspan="3" class="muted">2 台以上を割り当てた観測点なし</td></tr>'}</tbody>
-      </table>
-      <h3>生データ保存</h3>
-      <p>書き込みエラー: ${status.raw.writeErrors} / 失った記録: ${status.raw.lostRecords} /
-      現在の日: ${escapeHtml(status.raw.currentDay ?? '（不明）')}</p>
+      <section class="panel">
+        <h2>センサー</h2>
+        <table>
+          <thead><tr><th>観測点</th><th>基板 / センサー</th><th>受信</th><th>計測震度相当</th><th>有効</th><th>校正</th></tr></thead>
+          <tbody>${sensorRows.length > 0 ? sensorRows : '<tr><td colspan="6" class="muted">未受信</td></tr>'}</tbody>
+        </table>
+      </section>
+      <section class="panel">
+        <!-- **「複数センサー合成」を見出しから外さない。** \`stationIntensities\` は
+             2 台以上を割り当てた観測点にしか現れない（\`statusReport.ts\`）。見出しを
+             「観測点ごとの震度」と一般化すると、センサー 1 台の構成では正常に動いて
+             いても永久に空のままで、運用者が登録の失敗を疑う。 -->
+        <h2>複数センサー合成の震度</h2>
+        <table>
+          <thead><tr><th>観測点</th><th>受信</th><th>計測震度相当</th></tr></thead>
+          <tbody>${stationRows.length > 0 ? stationRows : '<tr><td colspan="3" class="muted">該当なし（2 台以上を割り当てた観測点のみ）</td></tr>'}</tbody>
+        </table>
+      </section>
+      <section class="panel">
+        <h2>生データの保存</h2>
+        <p>書き込みエラー: ${status.raw.writeErrors} 件 / 失った記録: ${status.raw.lostRecords} 件 /
+        現在の日: ${escapeHtml(status.raw.currentDay ?? '不明')}</p>
+      </section>
     `
   }
 
@@ -170,7 +197,7 @@ export async function initStatusView(container: HTMLElement, signal: AbortSignal
       // 始まった瞬間の見た目のまま残り続ける——運用者がエラー文言（小さく
       // 添えているだけ）を見落とすと「センサーは生きている」と誤認しうる
       // （#313 段 C 敵対的レビューで検出）。表示ごと「不明」へ倒す。
-      bodyEl.innerHTML = '<p class="muted">最新の状態を取得できていない（上のエラーを参照）。</p>'
+      bodyEl.innerHTML = '<p class="muted">状態を取得できていない</p>'
     }
   }
 

@@ -13,7 +13,7 @@ function renderError(container: HTMLElement, message: string): void {
 function renderTable(container: HTMLElement, stations: readonly StationInfo[]): void {
   const tbody = qs(container, '.stations-table tbody')
   if (stations.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" class="muted">観測点はまだ無い</td></tr>'
+    tbody.innerHTML = '<tr><td colspan="5" class="muted">未登録</td></tr>'
     return
   }
   tbody.innerHTML = stations
@@ -43,6 +43,9 @@ function fillForm(container: HTMLElement, station: StationInfo | null): void {
   // （README.md「`/api/stations`・`/api/boards`」）、ここを書き換えても別の
   // stationId として upsert されるだけで、元の行は残ったまま増える。
   idInput.readOnly = station !== null
+  // **「変更不可」はそれが本当のときだけ出す。** 新規登録では入力必須なので、
+  // 固定の文言にすると初めて登録する運用者へ嘘をつくことになる。
+  qs(container, '.stationId-label').textContent = station !== null ? '観測点 ID（変更不可）' : '観測点 ID'
   nameInput.value = station?.displayName ?? ''
   latInput.value = station !== null ? String(station.lat) : ''
   lonInput.value = station !== null ? String(station.lon) : ''
@@ -51,23 +54,30 @@ function fillForm(container: HTMLElement, station: StationInfo | null): void {
 export async function initStationsView(container: HTMLElement, signal: AbortSignal): Promise<void> {
   container.innerHTML = `
     <div class="stations-error"></div>
-    <table class="stations-table">
-      <thead><tr><th>ID</th><th>表示名</th><th>緯度</th><th>経度</th><th></th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <h3>観測点を作成・更新する</h3>
-    <form class="station-form">
-      <label>観測点 ID<input name="stationId" required /></label>
-      <label>表示名<input name="displayName" required /></label>
-      <div class="row">
-        <label>緯度<input name="lat" type="number" step="any" required /></label>
-        <label>経度<input name="lon" type="number" step="any" required /></label>
-      </div>
-      <div class="row">
-        <button type="submit">保存</button>
-        <button type="button" class="reset-form">フォームをクリア</button>
-      </div>
-    </form>
+    <section class="panel">
+      <h2>登録済みの観測点</h2>
+      <table class="stations-table">
+        <thead><tr><th>ID</th><th>表示名</th><th>緯度</th><th>経度</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+    <section class="panel">
+      <h2>観測点を登録・編集する</h2>
+      <form class="station-form">
+        <!-- **ラベルの初期値はここに置く。** 初回マウントでは fillForm を通らない
+             （reload しか呼ばない）ので、空にすると新規登録の画面でラベルごと消える。 -->
+        <label><span class="stationId-label">観測点 ID</span><input name="stationId" required /></label>
+        <label>表示名<input name="displayName" required /></label>
+        <div class="row">
+          <label>緯度<input name="lat" type="number" step="any" required /></label>
+          <label>経度<input name="lon" type="number" step="any" required /></label>
+        </div>
+        <div class="row">
+          <button type="submit">保存</button>
+          <button type="button" class="reset-form">新規登録へ</button>
+        </div>
+      </form>
+    </section>
   `
 
   let current: readonly StationInfo[] = []
@@ -119,7 +129,7 @@ export async function initStationsView(container: HTMLElement, signal: AbortSign
         fillForm(container, null)
         const reloaded = await reload()
         if (reloaded.ok) renderError(container, '')
-        else renderError(container, `保存は完了したが、一覧の再取得に失敗した（${reloaded.reason}）。再読込すること`)
+        else renderError(container, `保存済み。一覧の再取得に失敗（${reloaded.reason}）。再読込すること`)
       } catch (error) {
         if (signal.aborted) return
         renderError(container, describeSaveFailure(error))
@@ -148,7 +158,7 @@ export async function initStationsView(container: HTMLElement, signal: AbortSign
           if (signal.aborted) return
           const reloaded = await reload()
           if (reloaded.ok) renderError(container, '')
-          else renderError(container, `削除は完了したが、一覧の再取得に失敗した（${reloaded.reason}）。再読込すること`)
+          else renderError(container, `削除済み。一覧の再取得に失敗（${reloaded.reason}）。再読込すること`)
         } catch (error) {
           if (signal.aborted) return
           renderError(container, describeSaveFailure(error))
@@ -172,7 +182,7 @@ function describeFetchFailure(error: unknown): string {
 
 function describeSaveFailure(error: unknown): string {
   if (error instanceof ApiError && error.status === 409) {
-    return '基板が割り当て済みのため削除できない（先に基板側の割当を外すこと）'
+    return '基板が割り当て済み（先に基板側の割当を外すこと）'
   }
   if (error instanceof ApiError && error.status === 400) {
     return `入力が不正: ${error.message}`
