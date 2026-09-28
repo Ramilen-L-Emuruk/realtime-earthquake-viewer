@@ -8,6 +8,11 @@
 // **`/status` は認証を持たない読み取り専用の口。** トークンを入れる前でも候補は
 // 出せるので、`viewStatus.ts` と同じく素の `fetch` を使う（`api.ts` の `apiFetch`
 // を通すと `Authorization` が乗り、401 でトークンを消す経路にも掛かる）。
+//
+// **静止窓の診断（`gravity.verdicts`）も同じ口から取る。** 取り付けの傾きを直す材料で、
+// 基板の候補と同じタイミングで更新したい（`calibrationSuggest.ts`）。
+
+import type { Vec3 } from '../receiver/stationConfigTypes'
 
 /**
  * `/status` の `sensors[]` のうち、ここで使う欄だけ。
@@ -67,6 +72,92 @@ export function groupDetectedBoards(
   }))
 }
 
+/**
+ * 換算の自己診断が出した判定の種類（`/status` の `gravity.verdicts[].scale`）。
+ *
+ * **`gravityCheck.ts` の `ScaleVerdict` を `import type` しない。** あちらは Node 専用の
+ * 型を経由するので、ブラウザ向けの admin へ持ち込むと解決できない（上の
+ * `DetectedSensorView` と同じ理由）。**値が増減したら手で追随させること** ——
+ * 知らない値が来ても `'unknown'` として扱い、提案は出さない形にしてある。
+ */
+export type RestScaleView =
+  | 'ok'
+  | 'too-small'
+  | 'too-large'
+  | 'not-at-rest'
+  | 'too-few-samples'
+  | 'unreadable'
+  | 'unknown'
+
+const KNOWN_SCALES: readonly string[] = [
+  'ok',
+  'too-small',
+  'too-large',
+  'not-at-rest',
+  'too-few-samples',
+  'unreadable',
+]
+
+/**
+ * センサー 1 個の、最後に閉じた静止窓。
+ *
+ * **取り付けの向きを直す材料。** 静止している窓の軸ごとの平均は重力ベクトルそのもので、
+ * そこから鉛直に対する傾きが出る（`gravityCheck.ts`・REQUIREMENTS.md §16）。
+ */
+export interface SensorRestWindow {
+  readonly boardKey: string
+  readonly sensorId: string
+  /** 判定を確定した時刻。読めなければ null。 */
+  readonly atMs: number | null
+  readonly sampleCount: number
+  /** 3 軸合成の平均（gal）。 */
+  readonly meanGal: number | null
+  /** 3 軸合成のばらつき（gal）。**静止していたかはこれで読む。** */
+  readonly sdGal: number | null
+  /** 軸ごとの平均（gal）。**静止していれば重力ベクトル。** */
+  readonly axisMeanGal: Vec3 | null
+  readonly scale: RestScaleView
+  /** 静止しているのに計測震度が高い。**換算の倍率とは別の異常。** */
+  readonly restless: boolean
+}
+
+/** 3 つ組として読めるものだけ通す。**`/status` の応答は形が変わりうる。** */
+function readVec3(value: unknown): Vec3 | null {
+  if (!Array.isArray(value) || value.length !== 3) return null
+  if (!value.every((n) => typeof n === 'number' && Number.isFinite(n))) return null
+  return [value[0] as number, value[1] as number, value[2] as number]
+}
+
+function readFinite(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+/** `/status` の `gravity.verdicts[]` を読む。**読めない欄は `null` へ倒す。** */
+export function readRestWindows(value: unknown): readonly SensorRestWindow[] {
+  if (!Array.isArray(value)) return []
+  const out: SensorRestWindow[] = []
+  for (const raw of value) {
+    if (typeof raw !== 'object' || raw === null) continue
+    const v = raw as Record<string, unknown>
+    const boardKey = typeof v.boardKey === 'string' ? v.boardKey : ''
+    const sensorId = typeof v.sensorId === 'string' ? v.sensorId : ''
+    if (boardKey.length === 0 || sensorId.length === 0) continue
+    const scale = typeof v.scale === 'string' && KNOWN_SCALES.includes(v.scale) ? v.scale : 'unknown'
+    out.push({
+      boardKey,
+      sensorId,
+      atMs: readFinite(v.atMs),
+      sampleCount: readFinite(v.sampleCount) ?? 0,
+      meanGal: readFinite(v.meanGal),
+      sdGal: readFinite(v.sdGal),
+      axisMeanGal: readVec3(v.axisMeanGal),
+      scale: scale as RestScaleView,
+      restless: v.restless === true,
+    })
+  }
+  return out
+}
+
 export interface DetectedBoardsSnapshot {
   /**
    * 経過を測る基準の時刻。**受け手の時計ではなくサーバーが答えを作った時刻**
@@ -80,6 +171,14 @@ export interface DetectedBoardsSnapshot {
    */
   readonly generatedAtMs: number | null
   readonly boards: readonly DetectedBoard[]
+  /**
+   * センサーごとの、最後に閉じた静止窓。
+   *
+   * **まだ窓を 1 つも閉じていないセンサーは出ない**（`gravityCheck.ts` の `snapshot`）。
+   * 窓は波形が届いたときにしか閉じないので、黙った基板の判定はそのまま残る ——
+   * 古さは `atMs` で読むこと。
+   */
+  readonly restWindows: readonly SensorRestWindow[]
 }
 
 /** `/status` を読んで基板単位へ畳む。**取れなければ投げる**——候補が出ないだけで編集は続けられる。 */
@@ -89,6 +188,7 @@ export async function fetchDetectedBoards(): Promise<DetectedBoardsSnapshot> {
   const body = (await res.json()) as {
     readonly generatedAtMs?: number
     readonly sensors?: readonly DetectedSensorView[]
+    readonly gravity?: { readonly verdicts?: unknown }
   }
   const generatedAtMs =
     typeof body.generatedAtMs === 'number' && Number.isFinite(body.generatedAtMs)
@@ -99,5 +199,9 @@ export async function fetchDetectedBoards(): Promise<DetectedBoardsSnapshot> {
     // 変わったことを追える手掛かりをここにしか残せない。
     console.warn('[admin] /status の generatedAtMs が読めない。受信からの経過は出せない')
   }
-  return { generatedAtMs, boards: groupDetectedBoards(body.sensors ?? []) }
+  return {
+    generatedAtMs,
+    boards: groupDetectedBoards(body.sensors ?? []),
+    restWindows: readRestWindows(body.gravity?.verdicts),
+  }
 }

@@ -5,7 +5,12 @@
 // 動き続ける（`detectedBoards.ts` 冒頭）ので、画面からは気づけない。
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fetchDetectedBoards, groupDetectedBoards, type DetectedSensorView } from './detectedBoards'
+import {
+  fetchDetectedBoards,
+  groupDetectedBoards,
+  readRestWindows,
+  type DetectedSensorView,
+} from './detectedBoards'
 
 function sensor(
   boardKey: string,
@@ -137,5 +142,68 @@ describe('fetchDetectedBoards', () => {
       vi.fn(async () => ({ ok: false, status: 503, json: async () => ({}) })),
     )
     await expect(fetchDetectedBoards()).rejects.toThrow('HTTP 503')
+  })
+})
+
+describe('readRestWindows', () => {
+  const window = {
+    boardKey: 'mac:aa',
+    sensorId: 'accel-0',
+    atMs: 9_500,
+    sampleCount: 2_984,
+    meanGal: 980.7,
+    sdGal: 1.4,
+    axisMeanGal: [0.4, -1.2, 980.7],
+    scale: 'ok',
+    restless: false,
+  }
+
+  it('そのまま読める判定は全部の欄が残る', () => {
+    expect(readRestWindows([window])).toEqual([window])
+  })
+
+  it('配列でなければ空（応答の形が変わっても投げない）', () => {
+    expect(readRestWindows(undefined)).toEqual([])
+    expect(readRestWindows({ verdicts: [] })).toEqual([])
+  })
+
+  // **どのセンサーの話か決まらない判定は捨てる。** 残すと、引き当ての鍵が空の
+  // まま一覧に並び、センサー ID が空のカードに誤って結び付く。
+  it('基板 Key かセンサー ID が空の判定は捨てる', () => {
+    expect(readRestWindows([{ ...window, boardKey: '' }])).toEqual([])
+    expect(readRestWindows([{ ...window, sensorId: '' }])).toEqual([])
+  })
+
+  // **知らない値を `ok` へ倒さない。** ホスト側が判定を増やした日に、解釈できない
+  // 窓から提案を出してしまう。
+  it('知らない判定は unknown にする', () => {
+    expect(readRestWindows([{ ...window, scale: 'brand-new' }])[0].scale).toBe('unknown')
+  })
+
+  it('軸ごとの重力は 3 つそろって数として読めるときだけ通す', () => {
+    expect(readRestWindows([{ ...window, axisMeanGal: [1, 2] }])[0].axisMeanGal).toBeNull()
+    expect(readRestWindows([{ ...window, axisMeanGal: 'x' }])[0].axisMeanGal).toBeNull()
+    expect(
+      readRestWindows([{ ...window, axisMeanGal: [1, Number.NaN, 3] }])[0].axisMeanGal,
+    ).toBeNull()
+  })
+
+  it('読めない時刻・数値は null へ倒す（0 で埋めない）', () => {
+    const got = readRestWindows([{ ...window, atMs: null, meanGal: 'x', sdGal: undefined }])[0]
+    expect(got.atMs).toBeNull()
+    expect(got.meanGal).toBeNull()
+    expect(got.sdGal).toBeNull()
+  })
+
+  it('`/status` に gravity が無くても空で返る', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ generatedAtMs: 1, sensors: [] }),
+      })),
+    )
+    expect((await fetchDetectedBoards()).restWindows).toEqual([])
   })
 })

@@ -9,11 +9,14 @@ import {
   DEFAULT_SENSOR_CALIBRATION,
   type SensorEntry,
 } from '../receiver/stationConfigTypes'
+import type { SensorRestWindow } from './detectedBoards'
 import {
   emptySensorFormValues,
+  parseHeadingText,
   parseSensorFormValues,
   readSensorCardValues,
   renderSensorCardHtml,
+  restWindowNote,
   sensorToFormValues,
   type SensorFormValues,
 } from './sensorForm'
@@ -159,5 +162,72 @@ describe('renderSensorCardHtml / readSensorCardValues', () => {
     const container = mountCard({ ...VALID_VALUES, enabled: false })
     const checkbox = container.querySelector<HTMLInputElement>('.s-enabled')
     expect(checkbox?.checked).toBe(false)
+  })
+})
+
+describe('parseHeadingText', () => {
+  // **空欄は誤りではない。** 重力から方角は決まらないので、分からないまま
+  // 既定値（0）へ倒すと、合っていた方角を黙って崩す。
+  it('空欄は null（方角に触らない）', () => {
+    expect(parseHeadingText('')).toBeNull()
+    expect(parseHeadingText('   ')).toBeNull()
+  })
+
+  it('数として読めれば、そのまま返す（負も 360 超も通す）', () => {
+    expect(parseHeadingText('90')).toBe(90)
+    expect(parseHeadingText(' -12.5 ')).toBe(-12.5)
+    expect(parseHeadingText('400')).toBe(400)
+  })
+
+  it('数として読めなければ理由を返す', () => {
+    const got = parseHeadingText('きた')
+    expect(typeof got === 'object' && got !== null && 'error' in got).toBe(true)
+  })
+})
+
+describe('restWindowNote', () => {
+  const window: SensorRestWindow = {
+    boardKey: 'mac:aa',
+    sensorId: 'accel-0',
+    atMs: 9_500,
+    sampleCount: 2_984,
+    meanGal: 980.665,
+    sdGal: 1.4,
+    // 15 度傾けて据えた基板。
+    axisMeanGal: [0, 980.665 * Math.sin(Math.PI / 12), 980.665 * Math.cos(Math.PI / 12)],
+    scale: 'ok',
+    restless: false,
+  }
+
+  // **「まだ出ていない」と「出たが使えない」を書き分ける。** 混ぜると、待てば
+  // 出るのか何か直さないと出ないのかが読めない。
+  it('判定がまだ無いときは、待てば出ることが分かる', () => {
+    expect(restWindowNote(null, 10_000)).toContain('まだ無い')
+  })
+
+  it('静止した窓では傾きと重力を出す', () => {
+    const note = restWindowNote(window, 10_000)
+    expect(note).toContain('取り付けの傾き 15°')
+    expect(note).toContain('980.7 gal')
+  })
+
+  it('提案できない窓では、その理由を出す', () => {
+    expect(restWindowNote({ ...window, scale: 'not-at-rest' }, 10_000)).toContain(
+      '揺れている間は合わせられない',
+    )
+    expect(restWindowNote({ ...window, scale: 'too-small' }, 10_000)).toContain('換算の倍率')
+  })
+
+  // **経過の基準が無ければ黙って受け手の時計へ倒さない**（端末の時計がずれて
+  // いるだけで「10 分前」と出る）。時刻だけを省く。
+  it('基準の時刻が無ければ経過を書かない', () => {
+    const note = restWindowNote(window, null)
+    expect(note).toContain('取り付けの傾き 15°')
+    expect(note).not.toContain('前')
+  })
+
+  // **倍率の話とは別の異常。** どちらも起きうるので、片方で上書きしない。
+  it('静止しているのに震度が高い窓では、その旨も添える', () => {
+    expect(restWindowNote({ ...window, restless: true }, 10_000)).toContain('計測震度が高い')
   })
 })

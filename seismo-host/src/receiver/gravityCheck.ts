@@ -21,9 +21,16 @@
 //
 // **震度は止めない。** ここが異常を指しても値は出し続け、数えて報せるだけ ——
 // 桁の狂った値より「震度が黙る」ほうが重い。
+//
+// **同じ窓から、取り付けの傾きも出す。** 上の 2 つは 3 軸**合成**しか見ないので向きを
+// 問わないが、**軸ごとに分けた平均は静止していれば重力ベクトルそのもの**で、そこから
+// 鉛直に対する傾きが読める（REQUIREMENTS.md §16）。診断と同じ走和で済み、静止の判定
+// （合成のばらつき）もここにしか無いので、集めるのはこの 1 箇所にまとめる。
+// **決まるのは傾きの 2 軸だけ** —— 鉛直まわりの回転＝方角は重力から原理的に分からない。
 
 import { GAL_PER_G } from '../intensity/units'
 import type { BoardKey } from '../protocol/types'
+import type { Vec3 } from './stationConfigTypes'
 
 /**
  * 窓の長さ。**受け手の時計で測る。**
@@ -142,6 +149,33 @@ export interface GravityVerdict {
   readonly meanGal: number | null
   /** 3 軸合成のばらつき（gal）。読めなければ null。 */
   readonly sdGal: number | null
+  /**
+   * 軸ごとの平均（gal）。読めなければ null。
+   *
+   * **静止している窓では、これが重力ベクトルそのもの。** 合成の大きさ（`meanGal`）は
+   * 向きを問わないので換算の倍率しか診られないが、軸ごとに分けると**取り付けの傾き**が
+   * 出る（REQUIREMENTS.md §16）——管理コンソールが `rotation` を提案するのに使う。
+   *
+   * **ここへ届くのは校正を適用した後の値。** だから「いまの設定でどれだけ鉛直から
+   * ずれているか」であって、センサーが生で何を出しているかではない。提案する側は
+   * いまの `rotation` へ追加の回転を掛ける形になる。
+   *
+   * **決まるのは傾きの 2 軸だけで、方角は分からない。** 重力は鉛直まわりの回転に
+   * ついて何も語らないため（§16 の注記）。
+   *
+   * **揺れていた窓（`scale` が `'not-at-rest'`）でも出す。** 判定を見送るのは倍率の
+   * 話で、値そのものは読めている——静止していないぶん重力ベクトルとしては信用
+   * できないが、それは `scale` と `sdGal` を見れば分かる。
+   */
+  readonly axisMeanGal: Vec3 | null
+  /**
+   * 軸ごとのばらつき（gal）。読めなければ null。
+   *
+   * **静止の判定には使わない**（それは合成の `sdGal` の仕事）。軸ごとに分けるのは、
+   * 傾きの推定がどれだけ確かかを読むため——1 軸だけ大きく振れている窓の平均は、
+   * 合成のばらつきが小さくても重力の向きとしては当てにならない。
+   */
+  readonly axisSdGal: Vec3 | null
   /** 窓の中で見た計測震度の最大。1 つも出ていなければ null。 */
   readonly maxIntensity: number | null
   readonly scale: ScaleVerdict
@@ -201,6 +235,14 @@ interface Entry {
   count: number
   sum: number
   sumSq: number
+  /**
+   * 軸ごとの走和。**件数は `count` を共用する。**
+   *
+   * 同じサンプルを同じ回数だけ足しているので、別に数えても必ず同じ値になる。
+   * 2 つ持つと、片方だけ足し忘れたときに平均が静かにずれる。
+   */
+  sumAxis: [number, number, number]
+  sumSqAxis: [number, number, number]
   maxIntensity: number | null
   last: GravityVerdict | null
 }
@@ -208,6 +250,18 @@ interface Entry {
 /** 覚えの鍵。**起動 ID を含めない**（`sensorHealth.ts` と同じ理由）。 */
 function keyOf(boardKey: BoardKey, sensorId: string): string {
   return `${boardKey}|${sensorId}`
+}
+
+/**
+ * 走和から平均とばらつきを出す。**合成と軸ごとで同じ手を使う。**
+ *
+ * **分散は丸めで負になりうる。** 静止した窓ではほとんど 0 なので、引き算の桁落ちで
+ * わずかに負へ振れる。そのまま平方根へ渡すと NaN になり、正常な窓が `unreadable` に
+ * 化ける。ここを 1 箇所にしておかないと、軸を足したときに片方だけ手当てを忘れる。
+ */
+function meanAndSd(sum: number, sumSq: number, count: number): { mean: number; sd: number } {
+  const mean = sum / count
+  return { mean, sd: Math.sqrt(Math.max(0, sumSq / count - mean * mean)) }
 }
 
 export class GravityCheckBook {
@@ -283,10 +337,21 @@ export class GravityCheckBook {
     // 短いほうを超えて読むと `undefined` が走和へ入り、以後この窓は黙って NaN になる。
     const n = Math.min(x.length, y.length, z.length)
     for (let i = 0; i < n; i++) {
-      const m = Math.sqrt(x[i] * x[i] + y[i] * y[i] + z[i] * z[i])
+      // **一度だけ読んで使い回す。** 100 Hz × 3 軸ぶんがここを通るので、
+      // 添字の読み直しも配列の作り直しもしない。
+      const vx = x[i]
+      const vy = y[i]
+      const vz = z[i]
+      const m = Math.sqrt(vx * vx + vy * vy + vz * vz)
       entry.count += 1
       entry.sum += m
       entry.sumSq += m * m
+      entry.sumAxis[0] += vx
+      entry.sumAxis[1] += vy
+      entry.sumAxis[2] += vz
+      entry.sumSqAxis[0] += vx * vx
+      entry.sumSqAxis[1] += vy * vy
+      entry.sumSqAxis[2] += vz * vz
     }
     return verdict
   }
@@ -361,16 +426,40 @@ export class GravityCheckBook {
       maxIntensity: entry.maxIntensity,
     }
 
-    const mean = entry.sum / entry.count
-    // **丸めで負になりうる。** 静止した窓では分散がほとんど 0 なので、引き算の桁落ちで
-    // わずかに負へ振れる。そのまま平方根へ渡すと NaN になり、正常な窓が `unreadable` に化ける。
-    const sd = Math.sqrt(Math.max(0, entry.sumSq / entry.count - mean * mean))
+    const { mean, sd } = meanAndSd(entry.sum, entry.sumSq, entry.count)
+    const axis = [0, 1, 2].map((i) => meanAndSd(entry.sumAxis[i], entry.sumSqAxis[i], entry.count))
+    const axisMeanGal: Vec3 = [axis[0].mean, axis[1].mean, axis[2].mean]
+    const axisSdGal: Vec3 = [axis[0].sd, axis[1].sd, axis[2].sd]
+    // **軸も確かめる。** 合成（`sqrt(x²+y²+z²)`）のほうが各軸より必ず大きいので、
+    // 理屈では合成が有限なら軸も有限になる。**その理屈に預けない** —— 合成の出し方が
+    // 変わった日に、軸だけ NaN のまま `/status` へ出ていく形になる。
+    const unreadable =
+      !Number.isFinite(mean) ||
+      !Number.isFinite(sd) ||
+      !axisMeanGal.every(Number.isFinite) ||
+      !axisSdGal.every(Number.isFinite)
 
     let verdict: GravityVerdict
     if (entry.count < this.minSamples) {
-      verdict = { ...base, meanGal: null, sdGal: null, scale: 'too-few-samples', restless: false }
-    } else if (!Number.isFinite(mean) || !Number.isFinite(sd)) {
-      verdict = { ...base, meanGal: null, sdGal: null, scale: 'unreadable', restless: false }
+      verdict = {
+        ...base,
+        meanGal: null,
+        sdGal: null,
+        axisMeanGal: null,
+        axisSdGal: null,
+        scale: 'too-few-samples',
+        restless: false,
+      }
+    } else if (unreadable) {
+      verdict = {
+        ...base,
+        meanGal: null,
+        sdGal: null,
+        axisMeanGal: null,
+        axisSdGal: null,
+        scale: 'unreadable',
+        restless: false,
+      }
     } else {
       const atRest = sd < REST_SD_GAL
       const scale: ScaleVerdict = !atRest
@@ -382,7 +471,7 @@ export class GravityCheckBook {
             : 'ok'
       const restless =
         atRest && entry.maxIntensity !== null && entry.maxIntensity > REST_MAX_INTENSITY
-      verdict = { ...base, meanGal: mean, sdGal: sd, scale, restless }
+      verdict = { ...base, meanGal: mean, sdGal: sd, axisMeanGal, axisSdGal, scale, restless }
     }
 
     if (verdict.scale === 'too-small' || verdict.scale === 'too-large' || verdict.scale === 'unreadable') {
@@ -401,6 +490,14 @@ export class GravityCheckBook {
     entry.count = 0
     entry.sum = 0
     entry.sumSq = 0
+    // **作り直さず 0 を書き戻す。** 窓ごとに新しい配列を作ると、判定へ渡した後の
+    // 入れ物を掴んだままにする経路ができたときに黙って共有される。
+    entry.sumAxis[0] = 0
+    entry.sumAxis[1] = 0
+    entry.sumAxis[2] = 0
+    entry.sumSqAxis[0] = 0
+    entry.sumSqAxis[1] = 0
+    entry.sumSqAxis[2] = 0
     entry.maxIntensity = null
   }
 
@@ -430,6 +527,8 @@ export class GravityCheckBook {
       count: 0,
       sum: 0,
       sumSq: 0,
+      sumAxis: [0, 0, 0],
+      sumSqAxis: [0, 0, 0],
       maxIntensity: null,
       last: null,
     }
