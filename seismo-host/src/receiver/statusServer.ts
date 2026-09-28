@@ -131,10 +131,26 @@ function sseEvent(name: string, data: unknown): string {
   return `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`
 }
 
+/**
+ * 押し出す 1 件を SSE の文面へ直す。
+ *
+ * **`switch` で全種別を書き、`default` を置かない。** そうしておくと `HubMessage` へ
+ * 種別を足したとき「`string` を返さない経路がある」として型検査が止める ——
+ * 以前は「最後は `station-reading`」と決め打つ形で、`station-wave` を足した時点で
+ * **合成波形が `station-reading` という名前で流れる**ところだった（受け手は名前で
+ * 振り分けるので、震度として読もうとして壊れる）。
+ */
 function encode(message: HubMessage): string {
-  if (message.kind === 'reading') return sseEvent('reading', message.reading)
-  if (message.kind === 'wave') return sseEvent('wave', message.wave)
-  return sseEvent('station-reading', message.reading)
+  switch (message.kind) {
+    case 'reading':
+      return sseEvent('reading', message.reading)
+    case 'wave':
+      return sseEvent('wave', message.wave)
+    case 'station-reading':
+      return sseEvent('station-reading', message.reading)
+    case 'station-wave':
+      return sseEvent('station-wave', message.wave)
+  }
 }
 
 /**

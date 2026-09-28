@@ -6,7 +6,7 @@ import type { AdminAuthConfig } from './adminAuth'
 import type { IntensityReading, WaveChunk } from './intensityPipeline'
 import { PacketTally } from './packetTally'
 import { ReadingHub } from './readingHub'
-import type { StationIntensityReading } from './sensorFusion'
+import type { FusedWaveChunk, StationIntensityReading } from './sensorFusion'
 import { EMPTY_STATION_CONFIG, StationDirectory } from './stationConfig'
 import type { StationConfig } from './stationConfig'
 import { buildStatusReport } from './statusReport'
@@ -89,6 +89,18 @@ const WAVE: WaveChunk = {
   msPerSample: 10,
   timebaseNominalReason: null,
   gal: [[1.5], [2.5], [980]],
+}
+
+const STATION_WAVE: FusedWaveChunk = {
+  stationId: 'garage',
+  driver: { boardKey: 'mac:aa', sensorId: 's0' },
+  firstSampleIndex: 0,
+  firstSampleMs: 1_700_000_000_000,
+  msPerSample: 10,
+  gal: [[1.5], [2.5], [0.5]],
+  // 落とした直流（`gal` と足せば校正済み gal の重み付き平均になる値）。
+  dcGal: [[0], [0], [980]],
+  memberCount: [9],
 }
 
 /** 立てたものを必ず畳む。 */
@@ -317,6 +329,35 @@ describe('startStatusServer', () => {
 
     expect(got.map((e) => e.name)).toEqual(['wave', 'reading'])
     expect((got[0].data as WaveChunk).gal[2]).toEqual([980])
+  })
+
+  it('正: 観測点ぶんの合成波形も、?wave=1 で専用の名前で押し出す（#315）', async () => {
+    const hub = new ReadingHub()
+    const base = await start(hub)
+
+    const got = await readEvents(base, '/stream?wave=1', 1, () => {
+      hub.publish({ kind: 'station-wave', wave: STATION_WAVE })
+    })
+
+    expect(got).toHaveLength(1)
+    // **名前を `station-reading` と混ぜない。** 受け手は名前で振り分けるので、
+    // 混ざると震度として読もうとして壊れる（`encode` の説明を見ること）。
+    expect(got[0].name).toBe('station-wave')
+    // 落とした直流・混ざった本数まで欠けずに届くこと。
+    expect(got[0].data).toEqual(STATION_WAVE)
+  })
+
+  it('対照: 合成波形は、?wave=1 を付けていない相手へは出ない', async () => {
+    const hub = new ReadingHub()
+    const base = await start(hub)
+
+    const got = await readEvents(base, '/stream', 1, () => {
+      hub.publish({ kind: 'station-wave', wave: STATION_WAVE })
+      hub.publish({ kind: 'station-reading', reading: STATION_READING })
+    })
+
+    expect(got).toHaveLength(1)
+    expect(got[0].name).toBe('station-reading')
   })
 
   it('上限に達したら 503 で断り、上限の値を伝える。こちら側にも 1 行残す', async () => {

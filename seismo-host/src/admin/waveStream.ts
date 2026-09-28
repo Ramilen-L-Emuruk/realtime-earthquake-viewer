@@ -65,6 +65,13 @@ export interface WaveStreamOptions {
   /** これが落ちたら閉じる。**タブを離れたら必ず閉じること**（同時購読は 8 本まで）。 */
   readonly signal: AbortSignal
   readonly onWave?: (chunk: WaveChunkView) => void
+  /**
+   * 観測点の合成波形（#315）。**`wave` が真のときだけ流れてくる。**
+   *
+   * 中身は `readStationWaveChunk` が直流を足し戻したもので、センサー単独の
+   * `onWave` と同じ単位（校正済み gal）になっている。
+   */
+  readonly onStationWave?: (chunk: WaveChunkView) => void
   readonly onReading?: (reading: SensorReadingView) => void
   /** 繋がり具合が変わったら呼ぶ。**同じ状態では呼ばない。** */
   readonly onState: (state: WaveStreamState) => void
@@ -112,14 +119,78 @@ export function readWaveChunk(value: unknown): WaveChunkView | null {
   if (x === null || y === null || z === null) return null
 
   return {
-    boardKey,
-    sensorId,
+    source: { kind: 'sensor', boardKey, sensorId },
     streamKey,
     segmentId,
     firstSampleMs,
     msPerSample,
     timebaseNominalReason: readNonEmptyString(v.timebaseNominalReason),
     gal: [x, y, z],
+    memberCount: null,
+  }
+}
+
+/**
+ * 観測点の合成波形 1 チャンクとして読めるか（`FusedWaveChunk`・#315）。
+ *
+ * **直流を足し戻して返す。** 押し出しで来る `gal` は変動分（各センサーから重力を
+ * 落としてから混ぜた値。#362）で、センサー単独の `gal` は校正済み gal（重力込み）——
+ * **そのまま同じ画面へ重ねると、縦の目盛りが 2 つの意味を持つ。** `dcGal` は
+ * そのために捨てずに添えてあるので、ここで足して単位を揃える。
+ *
+ * **形が合わなければ通さない。** 足し算の相手（`dcGal`）が欠けていれば、
+ * 変動分だけを「校正済み gal」として出すことになる。
+ */
+export function readStationWaveChunk(value: unknown): WaveChunkView | null {
+  if (typeof value !== 'object' || value === null) return null
+  const v = value as Record<string, unknown>
+
+  const stationId = readNonEmptyString(v.stationId)
+  if (stationId === null) return null
+
+  const firstSampleMs = readFinite(v.firstSampleMs)
+  const msPerSample = readFinite(v.msPerSample)
+  if (firstSampleMs === null || msPerSample === null) return null
+  // **刻みが 0 以下だと時刻が進まない**（`readWaveChunk` と同じ理由）。
+  if (msPerSample <= 0) return null
+
+  if (!Array.isArray(v.gal) || v.gal.length !== 3) return null
+  if (!Array.isArray(v.dcGal) || v.dcGal.length !== 3) return null
+  const restored: number[][] = []
+  for (let axis = 0; axis < 3; axis++) {
+    const wave = readFiniteArray(v.gal[axis])
+    const dc = readFiniteArray(v.dcGal[axis])
+    if (wave === null || dc === null) return null
+    // **長さが揃っていなければ通さない。** 短いほうに合わせると、足し戻せた分と
+    // 足し戻せなかった分が同じ 1 本の中に混ざる。
+    if (wave.length !== dc.length) return null
+    const sum = new Array<number>(wave.length)
+    for (let i = 0; i < wave.length; i++) sum[i] = wave[i] + dc[i]
+    restored.push(sum)
+  }
+
+  const memberCount = readFiniteArray(v.memberCount)
+  if (memberCount === null) return null
+  // **サンプル数と揃っていなければ通さない。** いまは同じ `n` から同時に作られる
+  // （`sensorFusion.ts` の `combine`）ので起きないが、片方の生成だけが変わったとき
+  // **「混ざった本数」の要約が、描いているサンプル範囲と別の範囲を数えた値になる**
+  // ——エラーもログも出ない。ここは「形が違っても落ちない形で読む」のが仕事なので、
+  // 長さの検査を `gal`/`dcGal` と非対称にしない。
+  if (memberCount.length !== restored[0].length) return null
+
+  return {
+    source: { kind: 'station', stationId },
+    // **合成には区間の識別子が無い。** 連続性は時刻の隔たりで見る
+    // （`waveBuffer.ts` の `WaveChunkView.streamKey` を見ること）。
+    streamKey: null,
+    segmentId: null,
+    firstSampleMs,
+    msPerSample,
+    // **合成波形は時刻の当てはめの状態を持たない。** 駆動役の区間から引いた値で
+    // 組んであるが、`FusedWaveChunk` はそれを外へ出さない。
+    timebaseNominalReason: null,
+    gal: [restored[0], restored[1], restored[2]],
+    memberCount,
   }
 }
 
@@ -216,5 +287,6 @@ export function openWaveStream(options: WaveStreamOptions): void {
     setState(source.readyState === READY_STATE_CLOSED ? 'closed' : 'reconnecting')
   })
   listen('wave', readWaveChunk, options.onWave)
+  listen('station-wave', readStationWaveChunk, options.onStationWave)
   listen('reading', readSensorReading, options.onReading)
 }

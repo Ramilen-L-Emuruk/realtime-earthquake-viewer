@@ -14,7 +14,7 @@
 // すると、上限いっぱいのとき双方が延々と切り合う。
 
 import type { IntensityReading, WaveChunk } from './intensityPipeline'
-import type { StationIntensityReading } from './sensorFusion'
+import type { FusedWaveChunk, StationIntensityReading } from './sensorFusion'
 
 /**
  * 同時に繋いでいられる数。
@@ -33,12 +33,13 @@ const MAX_SUBSCRIBERS_DEFAULT = 8
  * 受け取らない状態がこれだけ続いたら、その購読を切る。
  *
  * **回数ではなく経過時間で測る。** センサーの震度は購読の種類によらず毎秒 9 件が流れ、
- * 波形を取る購読にはそこへ毎秒 30 件が積まれる（`publish` は波形だけを選り分け、
+ * 波形を取る購読にはそこへ毎秒 33 件が積まれる（実測。`publish` は波形だけを選り分け、
  * 震度は全員へ配る）。回数で切ると**同じ「30 秒詰まっている」が購読の種類で
  * 4 倍以上ずれる**（このリポジトリが「異常の判定は経過時間で行う」と決めているのと
  * 同じ理由）。**観測点の合成（`station-reading`）が構成されていれば、そのぶん件数は
  * さらに増える**——こちらも震度と同じく全員へ配る種別なので、上の比率をずらす方向には
- * 働かない。
+ * 働かない。**合成波形（`station-wave`）は波形を取る購読だけへ行く**ので、
+ * こちらは比率を広げる側（1 観測点なら毎秒 3 件ほど）。
  */
 const STALL_MS_DEFAULT = 30_000
 
@@ -48,6 +49,25 @@ export type HubMessage =
   | { readonly kind: 'wave'; readonly wave: WaveChunk }
   /** 観測点ぶんの計測震度（複数センサーの合成。REQUIREMENTS.md §7）。 */
   | { readonly kind: 'station-reading'; readonly reading: StationIntensityReading }
+  /** 観測点ぶんの合成波形（同 §7）。**`station-reading` の出どころにあたる波形。** */
+  | { readonly kind: 'station-wave'; readonly wave: FusedWaveChunk }
+
+/**
+ * その種別を「波形を欲しがっている購読者」だけへ配るか。
+ *
+ * **`Record` にしてあるので、`HubMessage` へ種別を足してここへ書かなければ型検査が
+ * 止める。** 選り分けを `if (message.kind === 'wave')` と直に書く形だと、後から足した
+ * 種別が既定で全員へ流れる —— 毎秒およそ 15 KB の合成波形が、震度だけを見に来た
+ * 相手へ黙って届くことになる（`SubscribeOptions.wave` の説明を見ること）。
+ * このリポジトリが「表を 1 つにすれば書き写す場所そのものが無くなる」と決めているのと
+ * 同じ手当て（`main.ts` の `Record<GravityCount, string>`）。
+ */
+const WAVE_ONLY: Record<HubMessage['kind'], boolean> = {
+  reading: false,
+  wave: true,
+  'station-reading': false,
+  'station-wave': true,
+}
 
 /** ハブが自分から購読を切った理由。 */
 export type DetachReason =
@@ -67,10 +87,17 @@ export type DetachReason =
 
 export interface SubscribeOptions {
   /**
-   * 波形も要るか。
+   * 波形も要るか。**センサー単独（`wave`）と観測点の合成（`station-wave`）の
+   * 両方をこの 1 つの旗で決める**（どちらを配るかは `WAVE_ONLY` が持つ）。
    *
-   * **要らない相手へは押さない。** 9 本ぶんの波形は毎秒およそ 24 KB あり、
-   * 波形を見ていない端末へ流し続ける意味が無い。
+   * **要らない相手へは押さない。** 実測（実機・センサー 9 本・2026-09-28 に 6 秒受けた）で
+   * **毎秒およそ 65 KB**（1 件 1990 B・30 サンプル・毎秒 33 件）あり、波形を見ていない
+   * 端末へ流し続ける意味が無い。**合成波形はそこへさらに毎秒およそ 15 KB 積む**
+   * （1 観測点ぶん・`dcGal` と `memberCount` が付くので 1 件は約 2.3 倍）。
+   *
+   * 比較のため同じ実測での他の種別 —— `reading` が毎秒およそ 2.5 KB、
+   * `station-reading` が毎秒およそ 0.1 KB。**桁が 2 つ違う**ので、
+   * 波形だけを選り分ける意味がある。
    */
   readonly wave: boolean
   /**
@@ -251,7 +278,7 @@ export class ReadingHub {
     // 元の配列を直に回すと詰め直しで次の購読者を飛ばす。
     for (const entry of [...this.entries]) {
       if (entry.closed) continue
-      if (message.kind === 'wave' && !entry.wave) continue
+      if (WAVE_ONLY[message.kind] && !entry.wave) continue
 
       let took: boolean
       try {

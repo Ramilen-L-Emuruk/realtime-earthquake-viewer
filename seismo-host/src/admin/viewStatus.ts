@@ -13,6 +13,7 @@
 // （#313 段 C 敵対的レビューで検出）。
 
 import { ago, escapeHtml, isStale, qs, receptionBadgeHtml } from './dom'
+import { readFinite } from './readJson'
 
 /**
  * `GET /status` の形。**`statusReport.ts` の `StatusReport` を丸ごと再定義しない。**
@@ -39,6 +40,16 @@ interface StatusReportView {
     readonly stationId: string
     readonly lastPacketMs: number | null
     readonly lastIntensity: number | null
+    /** 最後に合成したまとまりで実際に混ざった本数（#315）。 */
+    readonly lastMemberCountMin: number | null
+    readonly lastMemberCountMax: number | null
+    /** センサー対ごとの差分の強さ（#315）。 */
+    readonly pairDiffs: readonly {
+      readonly a: { readonly boardKey: string; readonly sensorId: string }
+      readonly b: { readonly boardKey: string; readonly sensorId: string }
+      readonly rmsGal: readonly (number | null)[]
+      readonly sampleCount: readonly number[]
+    }[]
   }[]
   readonly raw: {
     readonly writeErrors: number
@@ -49,6 +60,65 @@ interface StatusReportView {
   }
   readonly stationConfigWarning: string | null
   readonly ungroupedMultiBoardStations: readonly string[]
+}
+
+type PairDiffView = StatusReportView['stationIntensities'][number]['pairDiffs'][number]
+
+/**
+ * いちばん離れているセンサー対（#315）。1 組も無ければ null。
+ *
+ * **36 組を並べない。** 9 台なら全ペアで 36 行になり、観測点の表が読めなくなる。
+ * 運用者が知りたいのは「おかしい対があるか」で、**あれば必ず最大に現れる**
+ * ——細かく見たいときは `/status` の生の値を読む。
+ *
+ * **軸ごとの最大を採る。** 感度のずれは軸ごとに現れる（#367）ので、
+ * 3 軸を平均すると 1 軸だけおかしい対が薄まる。
+ */
+export function worstPairDiff(
+  pairs: readonly PairDiffView[],
+): { readonly pair: PairDiffView; readonly rmsGal: number } | null {
+  let best: { pair: PairDiffView; rmsGal: number } | null = null
+  for (const pair of pairs) {
+    for (const rms of pair.rmsGal) {
+      // **測れなかった軸（null）は候補にしない。** 0 で埋めると
+      // 「差が無かった」対として最大の争いに混ざる。
+      if (rms === null) continue
+      if (best === null || rms > best.rmsGal) best = { pair, rmsGal: rms }
+    }
+  }
+  return best
+}
+
+/**
+ * 混ざった本数の欄。**揃っていなければ幅で出す。**
+ *
+ * **幅が出ていても警めの色にしない。** 実機では正常運転でも幅が出る
+ * （まとまりの末尾で 1〜3 本欠ける。REQUIREMENTS.md §7）ので、色を付けると
+ * **常に警告が出ている状態**になり、#362 の本物の乱れと区別が付かない。
+ * **どこからが異常かの物差しは未設計**（#374）。
+ *
+ * **`readFinite` を通す。** `/status` は無検証のキャストで読んでいるので、
+ * 欄が無ければ `undefined` が来る（版がずれたとき）——`undefined === null` は偽だが
+ * `undefined === undefined` は真なので、`null` だけを見る形だと
+ * **「undefined 本」というそれらしい文字列が画面へ出る**。同じ行の隣の欄
+ * （`lastIntensity.toFixed`）は同じ状況で例外を投げ「状態を取得できていない」へ
+ * 倒れるので、ここだけ弱いままにしない（2026-09-28 のレビューが指摘）。
+ */
+export function memberCell(min: unknown, max: unknown): string {
+  const lo = readFinite(min)
+  const hi = readFinite(max)
+  if (lo === null || hi === null) return '—'
+  if (lo === hi) return `${lo} 本`
+  return `${lo}〜${hi} 本`
+}
+
+/** 差分の欄。**いちばん離れている対だけ**を出す。 */
+function pairDiffCell(pairs: readonly PairDiffView[]): string {
+  const worst = worstPairDiff(pairs)
+  if (worst === null) return '—'
+  const a = `${escapeHtml(worst.pair.a.boardKey)}/${escapeHtml(worst.pair.a.sensorId)}`
+  const b = `${escapeHtml(worst.pair.b.boardKey)}/${escapeHtml(worst.pair.b.sensorId)}`
+  return `${worst.rmsGal.toFixed(2)} gal <span class="muted">${a} ↔ ${b}</span>`
 }
 
 export async function initStatusView(container: HTMLElement, signal: AbortSignal): Promise<void> {
@@ -84,6 +154,8 @@ export async function initStatusView(container: HTMLElement, signal: AbortSignal
             <td>${escapeHtml(s.stationId)}</td>
             <td>${receptionBadgeHtml(now, s.lastPacketMs)} ${ago(now, s.lastPacketMs)}</td>
             <td>${s.lastIntensity !== null ? s.lastIntensity.toFixed(2) : '—'}</td>
+            <td>${memberCell(s.lastMemberCountMin, s.lastMemberCountMax)}</td>
+            <td>${pairDiffCell(s.pairDiffs)}</td>
           </tr>`,
       )
       .join('')
@@ -144,8 +216,12 @@ export async function initStatusView(container: HTMLElement, signal: AbortSignal
              いても永久に空のままで、運用者が登録の失敗を疑う。 -->
         <h2>複数センサー合成の震度</h2>
         <table>
-          <thead><tr><th>観測点</th><th>受信</th><th>計測震度相当</th></tr></thead>
-          <tbody>${stationRows.length > 0 ? stationRows : '<tr><td colspan="3" class="muted">該当なし（2 台以上を割り当てた観測点のみ）</td></tr>'}</tbody>
+          <!-- **「混ざった本数」と「差分の最大」を並べて出す。** 前者が揃っていない
+               ことと、特定の対だけ差分が大きいことは、どちらも据え付けを疑う手掛かり
+               （#362・#315）。震度だけでは、値が高いときに「本当に揺れた」のか
+               「顔ぶれの入れ替わりで段差が乗った」のかを見分けられない。 -->
+          <thead><tr><th>観測点</th><th>受信</th><th>計測震度相当</th><th>混ざった本数</th><th>差分の最大（対）</th></tr></thead>
+          <tbody>${stationRows.length > 0 ? stationRows : '<tr><td colspan="5" class="muted">該当なし（2 台以上を割り当てた観測点のみ）</td></tr>'}</tbody>
         </table>
       </section>
       <section class="panel">

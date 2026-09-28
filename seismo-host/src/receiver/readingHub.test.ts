@@ -51,6 +51,20 @@ const STATION_READING: HubMessage = {
   kind: 'station-reading',
   reading: { stationId: 'garage', atMs: 1_700_000_000_000, intensity: 2.1 },
 }
+const STATION_WAVE: HubMessage = {
+  kind: 'station-wave',
+  wave: {
+    stationId: 'garage',
+    driver: { boardKey: 'mac:aa', sensorId: 's0' },
+    firstSampleIndex: 0,
+    firstSampleMs: 1_700_000_000_000,
+    msPerSample: 10,
+    gal: [[1], [2], [3]],
+    // 落とした直流（`gal` と足せば校正済み gal の重み付き平均になる値）。
+    dcGal: [[0], [0], [980]],
+    memberCount: [2],
+  },
+}
 
 /** 受け取る相手。`take` を偽にすると詰まったふりをする。 */
 function sink(options: { wave?: boolean; take?: boolean } = {}) {
@@ -102,6 +116,45 @@ describe('ReadingHub', () => {
     hub.publish(STATION_READING)
 
     expect(plain.got).toEqual([STATION_READING])
+  })
+
+  it('正: 観測点ぶんの合成波形は、波形を欲しいと言った相手へ配る', () => {
+    const hub = new ReadingHub()
+    const full = sink({ wave: true })
+    full.attach(hub)
+
+    hub.publish(STATION_WAVE)
+
+    expect(full.got).toEqual([STATION_WAVE])
+  })
+
+  it('対照: 波形を欲しがっていない相手へは、センサー単独も合成も 1 件も配らない', () => {
+    const hub = new ReadingHub()
+    const plain = sink({ wave: false })
+    plain.attach(hub)
+
+    hub.publish(WAVE)
+    hub.publish(STATION_WAVE)
+    hub.publish(READING)
+    hub.publish(STATION_READING)
+
+    // **震度の 2 種だけが届く。** 合成波形は 1 観測点ぶんでも毎秒およそ 15 KB あり、
+    // 震度だけを見に来た相手（PWA の一覧・状態監視）へ流す理由が無い。
+    expect(plain.got).toEqual([READING, STATION_READING])
+  })
+
+  it('安全弁: 合成波形を受け取れなかった相手は、捨てた件数に数えられる', () => {
+    const hub = new ReadingHub()
+    // 波形は欲しいが、いま受け取れない相手。
+    const stuck = sink({ wave: true, take: false })
+    stuck.attach(hub)
+
+    hub.publish(STATION_WAVE)
+
+    // **種別を足しても、詰まりの数え上げは同じ道を通る。** ここが 0 のままだと、
+    // 合成波形だけが「配れなかったのに捨てた覚えが無い」状態になる。
+    expect(hub.snapshot().dropped).toBe(1)
+    expect(hub.snapshot().subscribers[0].dropped).toBe(1)
   })
 
   it('上限に達したら新しいほうを断り、断った数を覚える', () => {

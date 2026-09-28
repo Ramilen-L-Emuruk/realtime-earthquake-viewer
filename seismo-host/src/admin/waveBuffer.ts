@@ -28,11 +28,17 @@
  * 受け口（`waveStream.ts`）の仕事で、二重には置かない。
  */
 export interface WaveChunkView {
-  readonly boardKey: string
-  readonly sensorId: string
-  /** 基板の起動ごとに変わる。**これが変われば、前のチャンクとは繋がない。** */
-  readonly streamKey: string
-  readonly segmentId: number
+  readonly source: WaveSourceKey
+  /**
+   * 基板の起動ごとに変わる。**これが変われば、前のチャンクとは繋がない。**
+   *
+   * **観測点の合成（`kind: 'station'`）では null。** 合成の区間の連続性は駆動役の
+   * 流れが決めるが、`FusedWaveChunk` はそれを外へ出さない（あちらの型の説明を
+   * 見ること）。**無いものを埋めない** —— 連続性は時刻の隔たりで見る
+   * （`CONTINUITY_TOLERANCE`）ので、この 2 つが無くても切れ目は検出できる。
+   */
+  readonly streamKey: string | null
+  readonly segmentId: number | null
   /**
    * 先頭サンプルの時刻。
    *
@@ -45,13 +51,27 @@ export interface WaveChunkView {
   /** 時刻の当てはめを公称値へ倒したなら理由。当てはめた値を使っていれば null。 */
   readonly timebaseNominalReason: string | null
   readonly gal: readonly [readonly number[], readonly number[], readonly number[]]
+  /**
+   * そのサンプルへ実際に効いたセンサーの本数（観測点の合成だけ）。
+   * センサー単独では null。
+   *
+   * **`gal` と同じ長さで来る。** 画面に出すのは最小と最大で、揺れ動いていることが
+   * #362 の症状（顔ぶれの入れ替わりが段差になる）の印になる。
+   */
+  readonly memberCount: readonly number[] | null
 }
 
-/** センサー 1 本を指す。**表示にそのまま使うので、分解した形で持つ。** */
-export interface SensorWaveKey {
-  readonly boardKey: string
-  readonly sensorId: string
-}
+/**
+ * 波形 1 本の出どころ。
+ *
+ * **センサー単独と観測点の合成を同じ入れ物へ混ぜない。** 合成には基板も
+ * センサー番号も無いので、埋めれば嘘になる —— この鍵は**表示にそのまま使う**ため、
+ * 観測点の識別子が基板の欄に出る形になる。
+ */
+export type WaveSourceKey =
+  | { readonly kind: 'sensor'; readonly boardKey: string; readonly sensorId: string }
+  /** 観測点ぶんの合成（REQUIREMENTS.md §7）。 */
+  | { readonly kind: 'station'; readonly stationId: string }
 
 /**
  * 画面の 1 列ぶん。**平均ではなく上下の両端を持つ。**
@@ -116,13 +136,13 @@ const RETAIN_MS_DEFAULT = 5 * 60 * 1000
 const MAX_CHUNKS_DEFAULT = 4000
 
 /**
- * 受け付けるセンサーの本数。
+ * 受け付ける波形の本数（センサー単独と観測点の合成をまとめて数える）。
  *
- * **実機の見込み（基板 3 枚 × センサー 3 個）に対して十分な余裕がある。** 区切るのは
- * 見込みを守るためではなく、名前を変えながら投げ続けられたときに溜め場所が
- * 際限なく増えないため。達したことは `rejectedSensors` に出る。
+ * **実機の見込み（基板 3 枚 × センサー 3 個 ＋ 観測点の合成）に対して十分な余裕が
+ * ある。** 区切るのは見込みを守るためではなく、名前を変えながら投げ続けられたときに
+ * 溜め場所が際限なく増えないため。達したことは `rejectedSources` に出る。
  */
-const MAX_SENSORS_DEFAULT = 32
+const MAX_SOURCES_DEFAULT = 32
 
 /**
  * 前のチャンクの終わりとの隔たりが、サンプル間隔のこの倍を超えたら切れ目とみなす。
@@ -140,18 +160,17 @@ interface StoredChunk {
   /** 前のチャンクと繋がっていない。 */
   readonly gapBefore: boolean
   readonly timebaseNominal: boolean
-  readonly streamKey: string
-  readonly segmentId: number
+  readonly streamKey: string | null
+  readonly segmentId: number | null
 }
 
 function endMsOf(chunk: StoredChunk): number {
   return chunk.startMs + chunk.count * chunk.msPerSample
 }
 
-/** センサー 1 本ぶんの溜め場所。 */
-export class SensorWaveBuffer {
-  readonly boardKey: string
-  readonly sensorId: string
+/** 波形 1 本ぶんの溜め場所（センサー単独でも観測点の合成でも）。 */
+export class WaveBuffer {
+  readonly source: WaveSourceKey
 
   private readonly retainMs: number
   private readonly capacity: number
@@ -160,10 +179,11 @@ export class SensorWaveBuffer {
   private count = 0
   private rewinds = 0
   private droppedByCount = 0
+  private lastMemberMin: number | null = null
+  private lastMemberMax: number | null = null
 
-  constructor(key: SensorWaveKey, options: { retainMs?: number; maxChunks?: number } = {}) {
-    this.boardKey = key.boardKey
-    this.sensorId = key.sensorId
+  constructor(source: WaveSourceKey, options: { retainMs?: number; maxChunks?: number } = {}) {
+    this.source = source
     this.retainMs = options.retainMs ?? RETAIN_MS_DEFAULT
     this.capacity = options.maxChunks ?? MAX_CHUNKS_DEFAULT
     this.chunks = new Array<StoredChunk | null>(this.capacity).fill(null)
@@ -191,6 +211,23 @@ export class SensorWaveBuffer {
    */
   get droppedByCountLimit(): number {
     return this.droppedByCount
+  }
+
+  /**
+   * 最後に届いたまとまりで、実際に混ざったセンサーの本数（最小・最大）。
+   * 観測点の合成でなければどちらも null。
+   *
+   * **大きく揺れ動いていれば異常を疑う手掛かりになる。** 顔ぶれが入れ替わると
+   * センサー間の直流差が段差として乗る（#362。手当て前は 1〜7 本を揺れ動いていた）。
+   *
+   * **ただし小さな幅は実機では常態。** まとまりの末尾は裏付けの同じ時刻のサンプルが
+   * まだ届いておらず、実測では 30 サンプル中 28 個が 9 本・末尾 2 個が 8・7 本だった
+   * （REQUIREMENTS.md §7）。**どこからが異常かの物差しは未設計**（#374）なので、
+   * ここは数を返すだけで判定はしない。
+   */
+  get memberRange(): { readonly min: number; readonly max: number } | null {
+    if (this.lastMemberMin === null || this.lastMemberMax === null) return null
+    return { min: this.lastMemberMin, max: this.lastMemberMax }
   }
 
   push(chunk: WaveChunkView): void {
@@ -237,6 +274,20 @@ export class SensorWaveBuffer {
     this.chunks[(this.head + this.count) % this.capacity] = stored
     this.count++
     this.evictExpired(endMsOf(stored))
+
+    // **混ざった本数は最新のまとまりだけ覚える。** 溜めた 5 分ぶんを遡って
+    // 数え直せる形にはしない —— 見たいのは「いま顔ぶれが揃っているか」で、
+    // 溜まりのどこかに揺れがあったかを知りたいわけではない。
+    if (chunk.memberCount !== null && chunk.memberCount.length > 0) {
+      let min = chunk.memberCount[0]
+      let max = chunk.memberCount[0]
+      for (const n of chunk.memberCount) {
+        if (n < min) min = n
+        if (n > max) max = n
+      }
+      this.lastMemberMin = min
+      this.lastMemberMax = max
+    }
   }
 
   /** いま持っている時間の範囲。空なら null。 */
@@ -333,6 +384,8 @@ export class SensorWaveBuffer {
     // **最初の 1 つは切れ目にしない。** 手前に繋ぐ相手が無いだけで、
     // 途切れたわけではない。
     if (previous === null) return false
+    // **観測点の合成ではこの 2 つがどちらも null。** 等しいので素通りし、
+    // 下の時刻の隔たりだけで判定する（`WaveChunkView.streamKey` の説明を見ること）。
     if (previous.streamKey !== chunk.streamKey) return true
     if (previous.segmentId !== chunk.segmentId) return true
     const expected = endMsOf(previous)
@@ -369,28 +422,32 @@ export class SensorWaveBuffer {
 export interface WaveStoreOptions {
   readonly retainMs?: number
   readonly maxChunks?: number
-  readonly maxSensors?: number
+  /** 受け付ける波形の本数（センサー単独と観測点の合成をまとめて数える）。 */
+  readonly maxSources?: number
 }
 
 /**
- * センサーごとの溜め場所をまとめて持つ。
+ * 波形ごとの溜め場所をまとめて持つ。
  *
  * **初めて届いた順に並べる。** 名前で並べ替えると、基板を足したときに既存の行が
  * 入れ替わって見比べにくい。
+ *
+ * **センサー単独と観測点の合成を同じ入れ物で持つ。** 鍵（`WaveSourceKey`）が
+ * 種別を持つので混ざらず、上限・並び・時間の範囲をひととおり書くだけで済む。
  */
 export class WaveStore {
-  private readonly buffers = new Map<string, SensorWaveBuffer>()
+  private readonly buffers = new Map<string, WaveBuffer>()
   private readonly options: WaveStoreOptions
-  private readonly maxSensors: number
+  private readonly maxSources: number
   private rejected = 0
 
   constructor(options: WaveStoreOptions = {}) {
     this.options = options
-    this.maxSensors = options.maxSensors ?? MAX_SENSORS_DEFAULT
+    this.maxSources = options.maxSources ?? MAX_SOURCES_DEFAULT
   }
 
   /** 上限に達していて受け付けなかった件数（累計）。**0 でないことは画面に出す。** */
-  get rejectedSensors(): number {
+  get rejectedSources(): number {
     return this.rejected
   }
 
@@ -409,32 +466,29 @@ export class WaveStore {
   }
 
   push(chunk: WaveChunkView): void {
-    const key = keyOf(chunk)
+    const key = keyOf(chunk.source)
     let buffer = this.buffers.get(key)
     if (buffer === undefined) {
-      if (this.buffers.size >= this.maxSensors) {
+      if (this.buffers.size >= this.maxSources) {
         this.rejected++
         return
       }
-      buffer = new SensorWaveBuffer(
-        { boardKey: chunk.boardKey, sensorId: chunk.sensorId },
-        this.options,
-      )
+      buffer = new WaveBuffer(chunk.source, this.options)
       this.buffers.set(key, buffer)
     }
     buffer.push(chunk)
   }
 
   /** 届いた順に並んだ溜め場所。 */
-  buffersInOrder(): readonly SensorWaveBuffer[] {
+  buffersInOrder(): readonly WaveBuffer[] {
     return [...this.buffers.values()]
   }
 
-  get(key: SensorWaveKey): SensorWaveBuffer | null {
+  get(key: WaveSourceKey): WaveBuffer | null {
     return this.buffers.get(keyOf(key)) ?? null
   }
 
-  /** 全センサーを通した時間の範囲。1 本も無ければ null。 */
+  /** 全部を通した時間の範囲。1 本も無ければ null。 */
   range(): WaveRange | null {
     let fromMs: number | null = null
     let toMs: number | null = null
@@ -450,7 +504,7 @@ export class WaveStore {
 }
 
 /**
- * センサー 1 本を指す鍵。
+ * 波形 1 本を指す鍵。
  *
  * **`streamKey` では分けない。** あれには基板の起動 ID が入るので、再起動のたびに
  * 同じセンサーが別の行に割れる。区間が変わったことは切れ目の印で伝わる。
@@ -461,9 +515,13 @@ export class WaveStore {
  * 別々のセンサーが同じ鍵に化けうる —— 症状は「2 本の波形が 1 本へ混ざる」で、
  * 画面では**片方が黙っただけ**にしか見えない。
  *
+ * **種別の印（`s:` / `t:`）を先頭へ置く。** 観測点の識別子とセンサーの鍵が同じ
+ * 文字列に化けると、合成の波形とセンサー単独の波形が同じ行へ混ざる。
+ *
  * **画面側（`viewWaves.ts`）も同じものを使う。** 同じ規則を 2 箇所に書くと、片方だけ
- * 直したときに「表示の選択が別のセンサーへ当たる」形で静かに食い違う。
+ * 直したときに「表示の選択が別の波形へ当たる」形で静かに食い違う。
  */
-export function keyOf(key: SensorWaveKey): string {
-  return `${key.boardKey.length}:${key.boardKey}${key.sensorId}`
+export function keyOf(key: WaveSourceKey): string {
+  if (key.kind === 'station') return `t:${key.stationId}`
+  return `s:${key.boardKey.length}:${key.boardKey}${key.sensorId}`
 }
