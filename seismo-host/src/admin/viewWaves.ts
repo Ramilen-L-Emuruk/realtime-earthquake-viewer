@@ -20,8 +20,8 @@
 
 import { ago, escapeHtml, qs, receptionBadgeHtml } from './dom'
 import { readFinite, readNonEmptyString } from './readJson'
-import { SensorWaveBuffer, WaveStore, keyOf } from './waveBuffer'
-import type { WaveWindow } from './waveBuffer'
+import { WaveStore, keyOf } from './waveBuffer'
+import type { WaveChunkView, WaveSourceKey, WaveWindow } from './waveBuffer'
 import { colorForIndex, formatClock, formatGal, needsTenths, niceHalfSpanGal, timeTicks } from './wavePlot'
 import { openWaveStream } from './waveStream'
 import type { WaveStreamState } from './waveStream'
@@ -76,6 +76,8 @@ const TIME_LABEL_MARGIN = 28
 interface SensorLabel {
   readonly boardKey: string
   readonly sensorId: string
+  /** 割り当てた観測点の識別子。未割当なら null。**合成の行の名前をここから引く。** */
+  readonly stationId: string | null
   readonly stationName: string | null
   readonly lastPacketMs: number | null
   readonly calibrationConfigured: boolean
@@ -104,6 +106,7 @@ export function readStatus(value: unknown): StatusView {
       sensors.push({
         boardKey,
         sensorId,
+        stationId: station === null ? null : readNonEmptyString(station.stationId),
         stationName: station === null ? null : readNonEmptyString(station.displayName),
         lastPacketMs: readFinite(s.lastPacketMs),
         calibrationConfigured: s.calibrationConfigured === true,
@@ -119,12 +122,49 @@ export function readStatus(value: unknown): StatusView {
   }
 }
 
-/** 画面に出す名前。**観測点を割り当てていなければ基板とセンサーの名前で出す。** */
-function displayNameOf(buffer: SensorWaveBuffer, labels: readonly SensorLabel[]): string {
-  const found = labels.find((l) => l.boardKey === buffer.boardKey && l.sensorId === buffer.sensorId)
+/**
+ * 画面に出す名前。**観測点を割り当てていなければ基板とセンサーの名前で出す。**
+ *
+ * 観測点の合成（#315）は「観測点の名前＋合成」。**センサー単独の行と一目で
+ * 見分けられること**が要る —— 同じ縦軸に重ねて描くので、どれが平均した 1 本かが
+ * 分からないと据え付けの判断に使えない。
+ */
+function displayNameOf(source: WaveSourceKey, labels: readonly SensorLabel[]): string {
+  if (source.kind === 'station') {
+    const named = labels.find((l) => l.stationId === source.stationId)?.stationName
+    // **引けなければ識別子をそのまま出す。** `/status` の初回取得が済むまで
+     // 名前は分からないが、行そのものは先に届く。
+    return named === null || named === undefined
+      ? `${source.stationId}（合成）`
+      : `${named}（合成）`
+  }
+  const found = labels.find((l) => l.boardKey === source.boardKey && l.sensorId === source.sensorId)
   const station = found?.stationName
-  const raw = `${buffer.boardKey} / ${buffer.sensorId}`
+  const raw = `${source.boardKey} / ${source.sensorId}`
   return station === null || station === undefined ? raw : `${station}（${raw}）`
+}
+
+/**
+ * 混ざった本数（観測点の合成の行だけ）。
+ *
+ * **幅が出ていても警めの色にしない。** 実機では**正常運転でも幅が出る** ——
+ * まとまり（30 サンプル）の末尾は裏付けの同じ時刻のサンプルがまだ届いておらず、
+ * 実測では 28 個が 9 本・末尾 2 個が 8・7 本だった（REQUIREMENTS.md §7）。
+ * ここを警め色にすると**常に警告が出ている状態**になり、#362 の本物の乱れ
+ * （1〜7 本を揺れ動く）と区別が付かないまま、印そのものが信用されなくなる。
+ *
+ * **どこからが異常かの物差しは未設計**（#374）。だから数だけ出して、判断は
+ * 見る人に委ねる —— 閾値を持たないのに色で「異常」と主張するのは、
+ * 実装が持っていない判断を装うことになる。
+ *
+ * **数は `WaveBuffer` が数えたものをそのまま出す。** 文字列へ埋める値は
+ * 数値だけなので、ここは `escapeHtml` を通さなくてよい（`stationId` のような
+ * パケット由来の文字列は入らない）。
+ */
+function memberBadgeHtml(range: { readonly min: number; readonly max: number } | null): string {
+  if (range === null) return ''
+  if (range.min === range.max) return `<span class="muted">${range.min} 本</span>`
+  return `<span class="muted">${range.min}〜${range.max} 本</span>`
 }
 
 const STATE_TEXT: Record<WaveStreamState, string> = {
@@ -332,8 +372,8 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
       )
       console.warn('[admin] 読めない押し出し:', lastUnreadableDetail)
     }
-    if (store.rejectedSensors > 0) {
-      warnings.push(`受け付ける本数の上限に達し、${store.rejectedSensors} 本ぶんの波形を捨てた`)
+    if (store.rejectedSources > 0) {
+      warnings.push(`受け付ける本数の上限に達し、${store.rejectedSources} 本ぶんの波形を捨てた`)
     }
     if (store.rewindCount > 0) {
       // **溜めた分が消えたことは必ず出す。** 黙っていると「開いた直後で溜まりが
@@ -359,7 +399,9 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
     const buffers = store.buffersInOrder()
     // **並びと名前が変わったときだけ作り直す。** 毎フレーム作り直すと、
     // チェックボックスを押した指の下で要素が入れ替わる。
-    const signature = buffers.map((b) => `${keyOf(b)}|${displayNameOf(b, labels)}`).join('\u0000')
+    const signature = buffers
+      .map((b) => `${keyOf(b.source)}|${displayNameOf(b.source, labels)}`)
+      .join('\u0000')
     if (signature === sensorListSignature) return
     sensorListSignature = signature
 
@@ -370,8 +412,19 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
 
     sensorsEl.innerHTML = buffers
       .map((buffer, index) => {
-        const key = keyOf(buffer)
-        const label = labels.find((l) => l.boardKey === buffer.boardKey && l.sensorId === buffer.sensorId)
+        const key = keyOf(buffer.source)
+        // **受信バッジと校正の印はセンサー単独だけ。** 合成の行はセンサーではないので、
+        // どの基板から届いたか・向きを直したかという問いが当てはまらない
+        // （混ざった本数のほうを下で添える）。
+        const label =
+          buffer.source.kind === 'sensor'
+            ? labels.find(
+                (l) =>
+                  buffer.source.kind === 'sensor' &&
+                  l.boardKey === buffer.source.boardKey &&
+                  l.sensorId === buffer.source.sensorId,
+              )
+            : undefined
         // **「引けなかった」を「未設定」と言い切らない。** `/status` の初回取得が
         // 済むまで、あるいは応答から落ちたセンサーでは `label` が無い —— そこで
         // 「向き未設定」と出すと、**校正済みのセンサーを未設定だと誤って伝える**。
@@ -382,13 +435,17 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
           statusGeneratedAtMs === null || label === undefined
             ? ''
             : `${receptionBadgeHtml(statusGeneratedAtMs, label.lastPacketMs)} ${ago(statusGeneratedAtMs, label.lastPacketMs)}`
+        // **混ざった本数は合成の行にだけ添える。** 揃っていなければ幅で出すが、
+        // **色は付けない**（実機は正常でも幅が出る。`memberBadgeHtml` を見ること）。
+        const members = memberBadgeHtml(buffer.memberRange)
         return `
           <label class="wave-sensor">
             <input type="checkbox" class="wave-sensor-check" data-key="${escapeHtml(key)}" ${
               shown.has(key) ? 'checked' : ''
             } />
             <span class="wave-swatch" style="background: ${colorForIndex(index)}"></span>
-            <span>${escapeHtml(displayNameOf(buffer, labels))}</span>
+            <span>${escapeHtml(displayNameOf(buffer.source, labels))}</span>
+            ${members}
             ${reception}
             ${calibration}
           </label>`
@@ -508,7 +565,7 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
     const window = windowRange()
 
     const shownBuffers = buffers
-      .map((buffer, index) => ({ buffer, color: colorForIndex(index), key: keyOf(buffer) }))
+      .map((buffer, index) => ({ buffer, color: colorForIndex(index), key: keyOf(buffer.source) }))
       .filter((s) => shown.has(s.key))
 
     const dpr = globalThis.devicePixelRatio > 0 ? globalThis.devicePixelRatio : 1
@@ -648,6 +705,32 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
 
   // ---- 繋ぐ ----
 
+  /**
+   * 届いた 1 まとまりを溜めて、初めての出どころなら表示へ入れる。
+   *
+   * **センサー単独と観測点の合成で共通。** 同じことを 2 箇所へ書くと、
+   * 片方だけ直したときに「合成だけ溜まらない」形で静かに食い違う。
+   */
+  const takeChunk = (chunk: WaveChunkView): void => {
+    const key = keyOf(chunk.source)
+    const known = store.get(chunk.source) !== null
+    store.push(chunk)
+    if (!known && store.get(chunk.source) !== null) {
+      // **観測点の合成は先着枠を使わず必ず出す。** この画面で合成を見る目的は
+      // 「平均した 1 本が単体より静かか」の確認（#362 の効果）なので、
+      // センサー 9 本の枠に埋もれて既定で非表示だと開いた意味が無い。
+      if (chunk.source.kind === 'station') {
+        shown.add(key)
+      } else {
+        // **初めて出会ったセンサーを、先着で上限まで表示する。** 開いた直後に何も
+        // 描かれない画面では確認にならないが、全部重ねると読めない（上の定数）。
+        if (seenSensors < DEFAULT_SHOWN_SENSORS) shown.add(key)
+        seenSensors++
+      }
+    }
+    markDirty()
+  }
+
   openWaveStream({
     wave: true,
     signal,
@@ -655,18 +738,9 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
       state = next
       markDirty()
     },
-    onWave: (chunk) => {
-      const key = keyOf(chunk)
-      const known = store.get(chunk) !== null
-      store.push(chunk)
-      // **初めて出会ったセンサーを、先着で上限まで表示する。** 開いた直後に何も
-      // 描かれない画面では確認にならないが、全部重ねると読めない（上の定数）。
-      if (!known && store.get(chunk) !== null) {
-        if (seenSensors < DEFAULT_SHOWN_SENSORS) shown.add(key)
-        seenSensors++
-      }
-      markDirty()
-    },
+    onWave: (chunk) => takeChunk(chunk),
+    // **観測点の合成も同じ溜め場所へ入れる**（鍵が種別を持つので混ざらない）。
+    onStationWave: (chunk) => takeChunk(chunk),
     onUnreadable: (count, detail) => {
       unreadable = count
       lastUnreadableDetail = detail

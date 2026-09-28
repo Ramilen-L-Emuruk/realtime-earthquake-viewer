@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { openWaveStream, readSensorReading, readWaveChunk } from './waveStream'
+import { openWaveStream, readSensorReading, readStationWaveChunk, readWaveChunk } from './waveStream'
 import type { WaveStreamLike, WaveStreamState } from './waveStream'
 import type { WaveChunkView } from './waveBuffer'
 
@@ -21,6 +21,31 @@ function waveJson(overrides: Record<string, unknown> = {}): Record<string, unkno
       [4, 5, 6],
       [7, 8, 9],
     ],
+    ...overrides,
+  }
+}
+
+/** 観測点の合成波形（`FusedWaveChunk`・#315）。 */
+function stationWaveJson(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    stationId: 'garage',
+    driver: { boardKey: 'board-1', sensorId: 'accel-0' },
+    firstSampleIndex: 0,
+    firstSampleMs: 1_700_000_000_000,
+    msPerSample: 10,
+    // 変動分（直流を落とした値）。
+    gal: [
+      [1, 2],
+      [3, 4],
+      [5, 6],
+    ],
+    // 落とした直流。足し戻すと校正済み gal の重み付き平均になる。
+    dcGal: [
+      [0, 0],
+      [0, 0],
+      [980, 980],
+    ],
+    memberCount: [9, 9],
     ...overrides,
   }
 }
@@ -56,6 +81,7 @@ interface Harness {
   readonly source: FakeSource
   readonly states: WaveStreamState[]
   readonly waves: WaveChunkView[]
+  readonly stationWaves: WaveChunkView[]
   readonly unreadable: { count: number; detail: string }[]
   readonly controller: AbortController
 }
@@ -64,6 +90,7 @@ function open(options: { wave?: boolean; withWaveHandler?: boolean } = {}): Harn
   const controller = new AbortController()
   const states: WaveStreamState[] = []
   const waves: WaveChunkView[] = []
+  const stationWaves: WaveChunkView[] = []
   const unreadable: { count: number; detail: string }[] = []
   let source: FakeSource | null = null
 
@@ -72,6 +99,7 @@ function open(options: { wave?: boolean; withWaveHandler?: boolean } = {}): Harn
     signal: controller.signal,
     onState: (state) => states.push(state),
     onWave: options.withWaveHandler === false ? undefined : (chunk) => waves.push(chunk),
+    onStationWave: (chunk) => stationWaves.push(chunk),
     onUnreadable: (count, detail) => unreadable.push({ count, detail }),
     create: (url) => {
       source = new FakeSource(url)
@@ -80,7 +108,7 @@ function open(options: { wave?: boolean; withWaveHandler?: boolean } = {}): Harn
   })
 
   if (source === null) throw new Error('押し出しが作られなかった')
-  return { source, states, waves, unreadable, controller }
+  return { source, states, waves, stationWaves, unreadable, controller }
 }
 
 describe('readWaveChunk', () => {
@@ -88,7 +116,7 @@ describe('readWaveChunk', () => {
     const chunk = readWaveChunk(waveJson())
 
     expect(chunk).not.toBeNull()
-    expect(chunk?.boardKey).toBe('board-1')
+    expect(chunk?.source.kind === 'sensor' && chunk.source.boardKey).toBe('board-1')
     expect(chunk?.msPerSample).toBe(10)
     expect(chunk?.gal[1]).toEqual([4, 5, 6])
   })
@@ -140,6 +168,62 @@ describe('readWaveChunk', () => {
     expect(readWaveChunk(null)).toBeNull()
     expect(readWaveChunk('wave')).toBeNull()
     expect(readWaveChunk(7)).toBeNull()
+  })
+})
+
+describe('readStationWaveChunk', () => {
+  it('正: 直流を足し戻して、センサー単独と同じ単位（校正済み gal）で返す（#315）', () => {
+    const chunk = readStationWaveChunk(stationWaveJson())
+
+    expect(chunk).not.toBeNull()
+    expect(chunk?.source).toEqual({ kind: 'station', stationId: 'garage' })
+    // **上向き軸は 980 gal 付近が定常値。** 足し戻さないと、センサー単独と
+    // 同じ画面に重ねたとき縦の目盛りが 2 つの意味を持つ。
+    expect(chunk?.gal[2]).toEqual([985, 986])
+    expect(chunk?.gal[0]).toEqual([1, 2])
+    expect(chunk?.memberCount).toEqual([9, 9])
+  })
+
+  it('正: 区間の識別子は持たない（連続性は時刻の隔たりで見る）', () => {
+    const chunk = readStationWaveChunk(stationWaveJson())
+
+    expect(chunk?.streamKey).toBeNull()
+    expect(chunk?.segmentId).toBeNull()
+  })
+
+  it('対照: 足し戻す相手（dcGal）が無ければ通さない', () => {
+    // **変動分だけを「校正済み gal」として出すことになる。** 画面では
+    // 「合成だけ 0 gal 付近にいる」としか見えない。
+    const { dcGal: _dcGal, ...withoutDc } = stationWaveJson()
+    expect(readStationWaveChunk(withoutDc)).toBeNull()
+  })
+
+  it('安全弁: gal と dcGal の長さが違えば通さない', () => {
+    // 短いほうに合わせると、足し戻せた分と足し戻せなかった分が 1 本の中に混ざる。
+    expect(
+      readStationWaveChunk(
+        stationWaveJson({
+          dcGal: [
+            [0],
+            [0, 0],
+            [980, 980],
+          ],
+        }),
+      ),
+    ).toBeNull()
+  })
+
+  it('安全弁: 観測点の識別子・刻み・混ざった本数のどれかが欠けたら通さない', () => {
+    expect(readStationWaveChunk(stationWaveJson({ stationId: '' }))).toBeNull()
+    expect(readStationWaveChunk(stationWaveJson({ msPerSample: 0 }))).toBeNull()
+    expect(readStationWaveChunk(stationWaveJson({ memberCount: null }))).toBeNull()
+  })
+
+  it('安全弁: 混ざった本数の長さがサンプル数と揃っていなければ通さない', () => {
+    // **通すと、要約が「描いているサンプル範囲と別の範囲」を数えた値になる**
+    // ——エラーもログも出ない（2026-09-28 のレビューが指摘）。
+    expect(readStationWaveChunk(stationWaveJson({ memberCount: [9] }))).toBeNull()
+    expect(readStationWaveChunk(stationWaveJson({ memberCount: [9, 9, 9] }))).toBeNull()
   })
 })
 
@@ -228,7 +312,19 @@ describe('openWaveStream', () => {
     h.source.emit('wave', JSON.stringify(waveJson()))
 
     expect(h.waves).toHaveLength(1)
-    expect(h.waves[0].sensorId).toBe('accel-0')
+    expect(h.waves[0].source.kind === 'sensor' && h.waves[0].source.sensorId).toBe('accel-0')
+    expect(h.unreadable).toEqual([])
+  })
+
+  it('正: station-wave は合成の受け口へ届き、センサー単独の受け口へは混ざらない（#315）', () => {
+    const h = open()
+    h.source.emit('station-wave', JSON.stringify(stationWaveJson()))
+
+    expect(h.stationWaves).toHaveLength(1)
+    expect(h.stationWaves[0].source).toEqual({ kind: 'station', stationId: 'garage' })
+    // **名前で振り分ける。** 混ざると、合成の 1 本がセンサーの 1 本として
+    // 数えられて画面の行が食い違う。
+    expect(h.waves).toEqual([])
     expect(h.unreadable).toEqual([])
   })
 

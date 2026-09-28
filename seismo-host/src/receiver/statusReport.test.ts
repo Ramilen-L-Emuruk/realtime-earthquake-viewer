@@ -109,6 +109,10 @@ function station(overrides: Partial<StationHealth> = {}): StationHealth {
     lastSkipReason: null,
     closeFailures: 0,
     lastCloseFailure: null,
+    // 混ざった本数（#315）。9 本を割り当てた観測点で待ちが効いている状態。
+    lastMemberCountMin: 9,
+    lastMemberCountMax: 9,
+    pairDiffs: [],
     ...overrides,
   }
 }

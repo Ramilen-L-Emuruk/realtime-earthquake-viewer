@@ -5,10 +5,67 @@
 //
 // **覚える単位は観測点。** `SensorFusion` が観測点ごとに 1 つの合成グループを持つのと揃える。
 
-import type { StationIntensityReading } from './sensorFusion'
+import type {
+  FusedWaveChunk,
+  SensorMemberRef,
+  SensorPairDiff,
+  StationIntensityReading,
+} from './sensorFusion'
 
 /** 覚えていられる観測点の数。**`SensorFusion` のグループ数を超えることはない。** */
 const MAX_STATIONS_DEFAULT = 64
+
+/** 3 成分。 */
+const AXES = 3
+
+/**
+ * センサー対 1 組ぶんの差分の強さ（REQUIREMENTS.md §7・#315）。
+ *
+ * **時系列そのものは持たない。** 9 台なら全ペアで 36 組・毎秒およそ 180 KB になり、
+ * 状態の口（見に来たときの姿を返すもの）が抱える量ではない。§7 が挙げる用途のうち
+ * **自己ノイズの推定・異常センサーの検出・一致度の確認はこの数値 1 つで足りる**
+ * ——時系列が要るのは coherence 解析とロバスト平均で、そこは別の口の仕事。
+ */
+export interface StationPairDiff {
+  readonly a: SensorMemberRef
+  readonly b: SensorMemberRef
+  /**
+   * 軸ごとの差分の強さ（RMS・gal）。**測れなかった軸は null。**
+   *
+   * **0 で埋めない。** 0 は「2 台がぴったり一致した」を意味してしまうが、
+   * ここで起きるのは「両方の値が揃うサンプルが 1 つも無かった」——別の事実。
+   *
+   * **軸ごとに出す。** 感度のずれは軸ごとに現れる（実機の Z 軸が 662〜1200 gal に
+   * 散っている。#367）ので、1 つに丸めるとどの軸がおかしいのかが消える。
+   */
+  readonly rmsGal: readonly [number | null, number | null, number | null]
+  /** RMS に使えたサンプル数（軸ごと）。 */
+  readonly sampleCount: readonly [number, number, number]
+}
+
+/**
+ * 差分 1 組ぶんの強さを出す。**両方の値が揃うサンプルだけで計算する。**
+ *
+ * `diffGal` は片方でも欠ければ null（`sensorFusion.ts` が外挿しない）。
+ * **欠けを 0 として混ぜてはいけない** —— 揃っていないサンプルほど
+ * 「差が無かった」方向へ引っ張り、離れている対を見落とす。
+ */
+export function pairDiffStrength(diff: SensorPairDiff): StationPairDiff {
+  const rmsGal: [number | null, number | null, number | null] = [null, null, null]
+  const sampleCount: [number, number, number] = [0, 0, 0]
+  for (let axis = 0; axis < AXES; axis++) {
+    let sum = 0
+    let n = 0
+    for (const v of diff.diffGal[axis]) {
+      if (v === null) continue
+      sum += v * v
+      n++
+    }
+    sampleCount[axis] = n
+    if (n > 0) rmsGal[axis] = Math.sqrt(sum / n)
+  }
+  return { a: diff.memberA, b: diff.memberB, rmsGal, sampleCount }
+}
 
 /** 観測点 1 つの様子。 */
 export interface StationHealth {
@@ -41,6 +98,35 @@ export interface StationHealth {
   readonly closeFailures: number
   /** 最後に締めくくりが失敗した理由。失敗していなければ null。 */
   readonly lastCloseFailure: string | null
+  /**
+   * 最後に合成したまとまりで、実際に混ざったセンサーの本数（最小・最大）。
+   * まだ 1 つも合成していなければどちらも null。
+   *
+   * **大きく揺れ動いていれば異常を疑う手掛かりになる。** 混ざる顔ぶれがサンプルごとに
+   * 入れ替わると、センサー間の直流差が段差として乗って震度が跳ねる
+   * （2026-09-28 に実機で起きた #362。手当て前は 1〜7 本を揺れ動いていた）。
+   *
+   * **ただし小さな幅は実機では常態で、異常ではない。** まとまりの末尾は裏付けの
+   * 同じ時刻のサンプルがまだ届いておらず、実測では 30 サンプル中 28 個が 9 本・
+   * 末尾 2 個が 8・7 本だった（REQUIREMENTS.md §7）。**どこからが異常かの物差しは
+   * 未設計**（#374）——この欄は数を出すだけで、判定はしない。
+   *
+   * **最新の 1 まとまりだけを見る。** 累計のヒストグラムは持たない ——
+   * 症状は 30 サンプルぶんの 1 まとまりの中でも「最小 1・最大 7」として現れるので、
+   * いまの姿が読めれば足りる（`gravity` の `verdicts` と同じ「いまの姿」の扱い）。
+   */
+  readonly lastMemberCountMin: number | null
+  readonly lastMemberCountMax: number | null
+  /**
+   * センサー対ごとの差分の強さ（§7・#315）。**最新のまとまりだけ。**
+   *
+   * **離れている対が異常なセンサーの印。** 2 台が同じ地面の揺れを測っているなら
+   * 引き算で揺れは打ち消え、残るのは各センサーの自己ノイズ —— そこへ
+   * 向きの違い・感度のずれ・故障が乗ると、その対だけ値が突出する。
+   *
+   * **どの値を「おかしい」とするかの判定は持たない**（閾値が未設計。#370 の範囲外）。
+   */
+  readonly pairDiffs: readonly StationPairDiff[]
 }
 
 export interface StationHealthBookOptions {
@@ -57,6 +143,9 @@ interface Entry {
   lastSkipReason: string | null
   closeFailures: number
   lastCloseFailure: string | null
+  lastMemberCountMin: number | null
+  lastMemberCountMax: number | null
+  pairDiffs: readonly StationPairDiff[]
 }
 
 export class StationHealthBook {
@@ -96,6 +185,54 @@ export class StationHealthBook {
     entry.lastSkipReason = reason
   }
 
+  /**
+   * 合成波形が 1 まとまり出た（#315）。**混ざった本数だけを覚える。**
+   *
+   * 波形そのものは持たない —— 状態の口は「見に来たときの姿」を返すもので、
+   * 毎秒 15 KB の時系列を抱える場所ではない（波形を見たい相手は
+   * `/stream?wave=1` へ繋ぐ）。
+   */
+  noteWave(wave: FusedWaveChunk): void {
+    // **空のまとまりでは触らない。** `SensorFusion` は空を返さないが、
+    // 触ると「最後に合成した」印（`lastPacketMs`）だけが動いて、
+    // 本数は null のまま残る形になる。
+    if (wave.memberCount.length === 0) return
+    const entry = this.touch(wave.stationId)
+    let min = wave.memberCount[0]
+    let max = wave.memberCount[0]
+    for (const n of wave.memberCount) {
+      if (n < min) min = n
+      if (n > max) max = n
+    }
+    entry.lastMemberCountMin = min
+    entry.lastMemberCountMax = max
+  }
+
+  /**
+   * センサー対ごとの差分が出た（#315）。**強さへ要約して覚える。**
+   *
+   * **空でも書き換える。** 空は日常的に起きる正当な状態 —— センサーを無効化して
+   * 観測点が 2 台から 1 台へ縮小すると、`sensorFusion.ts` の差分の組み立ては
+   * 二重ループが 1 度も回らず空を返す。**何もしない形にすると、混ざった本数は
+   * 1 本へ更新されるのに、差分の最大がもう存在しない対を指したまま固まる**
+   * ——画面では「無効化したのにこの対の差分が残っている（＝直っていない）」と
+   * 読める。しかもこの帳面は起動時に 1 度作るだけで、設定を変えて `SensorFusion` を
+   * 作り直しても作り直さないので、**プロセスを入れ直すまで解消しない**
+   * （2026-09-28 の敵対的レビューが指摘）。
+   *
+   * **観測点は引数で受ける。** 空配列からは観測点が引けないので、
+   * 「空で消す」ことと「何も渡されていない」ことを区別できる形にする。
+   *
+   * **渡された観測点のぶんだけ採る。** `SensorFusion.ingest()` は 1 観測点ぶんしか
+   * 返さないので混ざらないが、型はそれを保証しない —— 混ざった一覧を渡されても
+   * 別の観測点の対が紛れ込まない形にしておく。
+   */
+  notePairDiffs(stationId: string, diffs: readonly SensorPairDiff[]): void {
+    this.touch(stationId).pairDiffs = diffs
+      .filter((d) => d.stationId === stationId)
+      .map(pairDiffStrength)
+  }
+
   /** 合成の流し込みの締めくくりに失敗した。 */
   noteCloseFailure(stationId: string, detail: string): void {
     const entry = this.touch(stationId)
@@ -125,6 +262,9 @@ export class StationHealthBook {
         lastSkipReason: e.lastSkipReason,
         closeFailures: e.closeFailures,
         lastCloseFailure: e.lastCloseFailure,
+        lastMemberCountMin: e.lastMemberCountMin,
+        lastMemberCountMax: e.lastMemberCountMax,
+        pairDiffs: e.pairDiffs,
       }))
   }
 
@@ -158,6 +298,9 @@ export class StationHealthBook {
       lastSkipReason: null,
       closeFailures: 0,
       lastCloseFailure: null,
+      lastMemberCountMin: null,
+      lastMemberCountMax: null,
+      pairDiffs: [],
     }
     this.entries.set(stationId, created)
     return created

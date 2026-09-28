@@ -38,7 +38,13 @@ import type { TallySnapshot } from './src/receiver/packetTally'
 import { RawStore } from './src/receiver/rawStore'
 import { ReadingHub } from './src/receiver/readingHub'
 import { SensorFusion } from './src/receiver/sensorFusion'
-import type { FusionOutcome, StationCloseFailure, StationIntensityReading } from './src/receiver/sensorFusion'
+import type {
+  FusedWaveChunk,
+  FusionOutcome,
+  SensorPairDiff,
+  StationCloseFailure,
+  StationIntensityReading,
+} from './src/receiver/sensorFusion'
 import { SensorHealthBook } from './src/receiver/sensorHealth'
 import {
   StationDirectory,
@@ -524,6 +530,37 @@ export function deliverReading(to: ReadingSinks, r: IntensityReading): void {
 export interface StationFusionSinks {
   readonly noteReading: (r: StationIntensityReading) => void
   readonly publish: (r: StationIntensityReading) => void
+  /**
+   * 合成した波形から「混ざった本数」を覚える（#315）。
+   *
+   * **`publishWave` の中でついでにやらない。** この関数は「配り先と順序をここが
+   * 決める」と宣言しているので、覚える先を配達の中へ隠すと一覧性が壊れる
+   * （`noteReading` と `publish` を分けているのと同じ理由）。
+   */
+  readonly noteWave: (w: FusedWaveChunk) => void
+  /**
+   * センサー対ごとの差分を覚える（#315）。**要約するのは受け手の仕事。**
+   *
+   * **`fusedWave` が非 null の回にしか非空にならない**（取り出しが起きなかった回は
+   * `nothingOutcome()` が空配列を返す）ので、あちらと同じ分岐の中で呼ぶ。
+   *
+   * **観測点を一緒に渡す。** 空配列からは観測点が引けないが、**空も伝えなければ
+   * ならない** —— センサーを無効化して観測点が 1 台へ縮小すると差分は空になり、
+   * そこで黙ると受け手が縮小前の対を指したまま固まる（`stationHealth.ts` の
+   * `notePairDiffs` を見ること）。
+   */
+  readonly notePairDiffs: (stationId: string, diffs: readonly SensorPairDiff[]) => void
+  /**
+   * 合成した波形そのものを配る（#315）。**省略できない。**
+   *
+   * 渡し忘れても震度は流れ続けるので、症状は「波形だけが画面に出ない」——
+   * 例外もログも出ない。`readingHub.ts` の `onDetach` と同じ理由で型で要求する。
+   *
+   * **震度（`publish`）との前後に意味は持たせない。** 受け手は時刻で突き合わせる
+   * （`readings` には区間の作り直しで前区間の残りが混ざるので、「この波形から
+   * この震度が出た」という対応はどちらの順序でも成り立たない）。
+   */
+  readonly publishWave: (w: FusedWaveChunk) => void
   readonly reportCloseFailure: (f: StationCloseFailure) => void
   readonly noteSkip: (stationId: string, reason: string | null) => void
   /**
@@ -561,6 +598,11 @@ export function deliverStationFusion(to: StationFusionSinks, fusion: FusionOutco
     to.publish(r)
   }
   if (fusion.fusedWave !== null) {
+    // **取り出して合成した回だけ波形が出る。** この分岐がその回を表す唯一の場所なので、
+    // 覚えるのと配るのもここに置く（判定を 2 箇所へ分けない）。
+    to.noteWave(fusion.fusedWave)
+    to.notePairDiffs(fusion.fusedWave.stationId, fusion.pairDiffs)
+    to.publishWave(fusion.fusedWave)
     to.noteSkip(fusion.fusedWave.stationId, fusion.intensitySkipReason)
     // **異常が続いている間は毎回呼ぶ。正常なら状態が変わった回にだけ呼ぶ。**
     //
@@ -1021,10 +1063,28 @@ async function main(): Promise<void> {
     }
   }
 
-  /** `deliverStationFusion` へ渡す配り先。順序はあちらが決める。 */
+  /**
+   * `deliverStationFusion` へ渡す配り先。順序はあちらが決める。
+   *
+   * **ここを触ったら実機で確かめること。** `main()` は「直接実行のときだけ走らせる」門の
+   * 内側なので自動テストが届かず、各欄はただの関数型 —— 空関数にしても、別の種別へ
+   * 配ってしまっても**型検査は通り、実行時にも例外が出ない**。症状は「混ざった本数と
+   * 差分の列が永久に空のまま」か「`station-wave` が 1 件も流れない」で、**どちらも
+   * 「まだ受信していない」と見分けが付かない**（2026-09-28 のレビューが指摘）。
+   *
+   * **`deliverStationFusion` のテストでは足りない。** あちらは偽の配り先へ渡して
+   * 順序と条件を固定するもので、ここが本物の `stationHealth`・`hub` へ繋がっている
+   * ことは検査していない。2026-09-28 の実機確認では `/status` に本数（8〜9 本）と
+   * 対ごとの差分（36 組）が出て、`/stream?wave=1` に `station-wave` が毎秒 3.6 件
+   * 流れることを確かめた。
+   */
   const stationFusionSinks: StationFusionSinks = {
     noteReading: (r) => stationHealth.noteReading(r),
     publish: (r) => hub.publish({ kind: 'station-reading', reading: r }),
+    noteWave: (w) => stationHealth.noteWave(w),
+    notePairDiffs: (stationId, diffs) => stationHealth.notePairDiffs(stationId, diffs),
+    // **波形を欲しがっている相手だけへ行く**（選り分けは `readingHub.ts` の `WAVE_ONLY`）。
+    publishWave: (w) => hub.publish({ kind: 'station-wave', wave: w }),
     reportCloseFailure: (f) => reportStationCloseFailures([f]),
     noteSkip: (stationId, reason) => stationHealth.noteSkip(stationId, reason),
     logSegment: (stationId, reason) => {

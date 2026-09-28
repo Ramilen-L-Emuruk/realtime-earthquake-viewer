@@ -35,7 +35,7 @@ function statusJson(overrides: Record<string, unknown> = {}): Record<string, unk
         lastIntensity: 0.5,
         enabled: true,
         calibrationConfigured: true,
-        station: { displayName: '自宅' },
+        station: { stationId: 'station-1', displayName: '自宅' },
       },
     ],
     stream: { subscribers: [{ id: 1 }], limit: 8 },
@@ -43,18 +43,44 @@ function statusJson(overrides: Record<string, unknown> = {}): Record<string, unk
   }
 }
 
-function chunk(overrides: Partial<WaveChunkView> = {}): WaveChunkView {
+/**
+ * チャンクの上書き。**`boardKey`・`sensorId` を平らに書ける形を残す**
+ * （出どころは判別共用体になったので、ここで組み立てる）。
+ */
+type ChunkOverrides = Partial<WaveChunkView> & {
+  readonly boardKey?: string
+  readonly sensorId?: string
+}
+
+/** 観測点の合成波形（#315）。**直流を足し戻した後の形**で来る。 */
+function stationChunk(overrides: Partial<WaveChunkView> = {}): WaveChunkView {
+  const axis = Array.from({ length: 30 }, (_, i) => 980 + Math.sin(i) * 0.5)
+  return {
+    source: { kind: 'station', stationId: 'station-1' },
+    streamKey: null,
+    segmentId: null,
+    firstSampleMs: 1_700_000_000_000,
+    msPerSample: 10,
+    timebaseNominalReason: null,
+    gal: [axis, axis, axis],
+    memberCount: Array.from({ length: 30 }, () => 9),
+    ...overrides,
+  }
+}
+
+function chunk(overrides: ChunkOverrides = {}): WaveChunkView {
+  const { boardKey, sensorId, ...rest } = overrides
   const axis = Array.from({ length: 30 }, (_, i) => 980 + Math.sin(i) * 2)
   return {
-    boardKey: 'board-1',
-    sensorId: 'accel-0',
+    source: { kind: 'sensor', boardKey: boardKey ?? 'board-1', sensorId: sensorId ?? 'accel-0' },
     streamKey: 'board-1/accel-0/boot-1',
     segmentId: 1,
     firstSampleMs: 1_700_000_000_000,
     msPerSample: 10,
     timebaseNominalReason: null,
     gal: [axis, axis, axis],
-    ...overrides,
+    memberCount: null,
+    ...rest,
   }
 }
 
@@ -316,6 +342,41 @@ describe('initWavesView', () => {
     expect(checks.filter((c) => c.checked)).toHaveLength(3)
   })
 
+  it('正: 観測点の合成は「観測点名（合成）」で並び、混ざった本数を添える（#315）', async () => {
+    const container = await mount()
+    captured?.onStationWave?.(stationChunk())
+    await letItDraw()
+
+    const text = container.querySelector('.wave-sensor')?.textContent ?? ''
+    expect(text).toContain('自宅（合成）')
+    expect(text).toContain('9 本')
+  })
+
+  it('正: 合成は先着枠を使わず、センサーが埋まっていても既定で表示に入る', async () => {
+    // **この画面で合成を見る目的は「平均した 1 本が単体より静かか」の確認**（#362）。
+    // センサー 9 本の先着枠に埋もれて既定で非表示だと、開いた意味が無い。
+    const container = await mount()
+    for (let i = 0; i < 6; i++) {
+      captured?.onWave?.(chunk({ sensorId: `accel-${i}`, streamKey: `board-1/accel-${i}/boot-1` }))
+    }
+    captured?.onStationWave?.(stationChunk())
+    await letItDraw()
+
+    const checks = [...container.querySelectorAll<HTMLInputElement>('.wave-sensor-check')]
+    expect(checks).toHaveLength(7)
+    // センサーは上限の 3 本まで、合成はそれと別に 1 本。
+    expect(checks.filter((c) => c.checked)).toHaveLength(4)
+    expect(checks.find((c) => c.dataset.key === 't:station-1')?.checked).toBe(true)
+  })
+
+  it('安全弁: 混ざった本数が揺れていたら、幅で出す（#362 の症状）', async () => {
+    const container = await mount()
+    captured?.onStationWave?.(stationChunk({ memberCount: [1, 4, 7] }))
+    await letItDraw()
+
+    expect(container.querySelector('.wave-sensor')?.textContent).toContain('1〜7 本')
+  })
+
   it('canvas の 2D 文脈が取れない環境でも落ちない（安全弁）', async () => {
     // **文脈の数が上限に達した端末では null が返りうる。** そこで投げると画面ごと止まる。
     context = null
@@ -485,7 +546,7 @@ describe('initWavesView', () => {
             sensorId: 'accel-0',
             lastPacketMs: 1_700_000_000_000,
             calibrationConfigured: false,
-            station: { displayName: '自宅' },
+            station: { stationId: 'station-1', displayName: '自宅' },
           },
         ],
       }),

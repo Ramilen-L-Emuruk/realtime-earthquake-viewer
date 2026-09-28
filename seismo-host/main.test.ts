@@ -766,6 +766,9 @@ describe('deliverStationFusion', () => {
       {
         noteReading: () => order.push('noteReading'),
         publish: () => order.push('publish'),
+        noteWave: () => order.push('noteWave'),
+        notePairDiffs: () => order.push('notePairDiffs'),
+        publishWave: () => order.push('publishWave'),
         reportCloseFailure: () => order.push('reportCloseFailure'),
         noteSkip: () => order.push('noteSkip'),
         logSegment: () => order.push('logSegment'),
@@ -778,10 +781,18 @@ describe('deliverStationFusion', () => {
       }),
     )
 
-    expect(order).toEqual(['noteReading', 'publish', 'noteSkip', 'logSegment'])
+    expect(order).toEqual([
+      'noteReading',
+      'publish',
+      'noteWave',
+      'notePairDiffs',
+      'publishWave',
+      'noteSkip',
+      'logSegment',
+    ])
   })
 
-  it('駆動役以外の到着（fusedWave が null）では noteSkip・reportCloseFailure・logSegment を呼ばない', () => {
+  it('駆動役以外の到着（fusedWave が null）では publishWave・noteSkip・reportCloseFailure・logSegment を呼ばない', () => {
     // `closeFailure`・`intensitySkipReason` は `fusedWave` が非 null の回にしか
     // 意味を持たない契約（`sensorFusion.ts` の `FusionOutcome`）。契約に反する
     // 入力（fusedWave が null なのに両方が非 null）を渡しても無視されることを確かめる。
@@ -790,6 +801,9 @@ describe('deliverStationFusion', () => {
       {
         noteReading: () => calls.push('noteReading'),
         publish: () => calls.push('publish'),
+        noteWave: () => calls.push('noteWave'),
+        notePairDiffs: () => calls.push('notePairDiffs'),
+        publishWave: () => calls.push('publishWave'),
         reportCloseFailure: () => calls.push('reportCloseFailure'),
         noteSkip: () => calls.push('noteSkip'),
         logSegment: () => calls.push('logSegment'),
@@ -811,6 +825,9 @@ describe('deliverStationFusion', () => {
       {
         noteReading: () => order.push('noteReading'),
         publish: () => order.push('publish'),
+        noteWave: () => order.push('noteWave'),
+        notePairDiffs: () => order.push('notePairDiffs'),
+        publishWave: () => order.push('publishWave'),
         reportCloseFailure: () => order.push('reportCloseFailure'),
         noteSkip: () => order.push('noteSkip'),
         logSegment: () => order.push('logSegment'),
@@ -824,7 +841,7 @@ describe('deliverStationFusion', () => {
     // readings が空でも、`fusedWave` が非 null の回は必ず `noteSkip` でいまの
     // 状態（この場合は intensitySkipReason: null ＝ 正常）を確定させる。
     // `intensityStateChanged` を渡していない（既定 false）ので `logSegment` は呼ばない。
-    expect(order).toEqual(['reportCloseFailure', 'noteSkip'])
+    expect(order).toEqual(['reportCloseFailure', 'noteWave', 'notePairDiffs', 'publishWave', 'noteSkip'])
   })
 
   it('状態が変わっていない回（intensityStateChanged が false）では logSegment を呼ばない', () => {
@@ -836,6 +853,9 @@ describe('deliverStationFusion', () => {
       {
         noteReading: () => calls.push('noteReading'),
         publish: () => calls.push('publish'),
+        noteWave: () => calls.push('noteWave'),
+        notePairDiffs: () => calls.push('notePairDiffs'),
+        publishWave: () => calls.push('publishWave'),
         reportCloseFailure: () => calls.push('reportCloseFailure'),
         noteSkip: () => calls.push('noteSkip'),
         logSegment: () => calls.push('logSegment'),
@@ -843,7 +863,7 @@ describe('deliverStationFusion', () => {
       fusion({ fusedWave: FUSED_WAVE, readings: [STATION_READING] }),
     )
 
-    expect(calls).toEqual(['noteReading', 'publish', 'noteSkip'])
+    expect(calls).toEqual(['noteReading', 'publish', 'noteWave', 'notePairDiffs', 'publishWave', 'noteSkip'])
   })
 
   it('異常が続く間（intensityStateChanged が false でも）は毎回 logSegment を呼ぶ', () => {
@@ -858,6 +878,9 @@ describe('deliverStationFusion', () => {
       {
         noteReading: () => calls.push('noteReading'),
         publish: () => calls.push('publish'),
+        noteWave: () => calls.push('noteWave'),
+        notePairDiffs: () => calls.push('notePairDiffs'),
+        publishWave: () => calls.push('publishWave'),
         reportCloseFailure: () => calls.push('reportCloseFailure'),
         noteSkip: () => calls.push('noteSkip'),
         logSegment: () => calls.push('logSegment'),
@@ -869,7 +892,51 @@ describe('deliverStationFusion', () => {
       }),
     )
 
-    expect(calls).toEqual(['noteSkip', 'logSegment'])
+    expect(calls).toEqual(['noteWave', 'notePairDiffs', 'publishWave', 'noteSkip', 'logSegment'])
+  })
+
+  it('正: 合成した波形をそのまま配る（#315）', () => {
+    const got: FusedWaveChunk[] = []
+    deliverStationFusion(
+      {
+        noteReading: () => {},
+        publish: () => {},
+        noteWave: () => {},
+        notePairDiffs: () => {},
+        publishWave: (w) => got.push(w),
+        reportCloseFailure: () => {},
+        noteSkip: () => {},
+        logSegment: () => {},
+      },
+      fusion({ fusedWave: FUSED_WAVE, readings: [STATION_READING] }),
+    )
+
+    // **写しを作らない。** 間引き・単位の変換はいずれも受け手（管理コンソール・PWA）の
+    // 仕事で、ここで加工すると `dcGal` を足し戻して元の値へ戻せなくなる。
+    expect(got).toEqual([FUSED_WAVE])
+    expect(got[0]).toBe(FUSED_WAVE)
+  })
+
+  it('安全弁: 震度が 1 件も出ていない回でも、合成した波形は配る', () => {
+    // **窓が埋まるまで震度は出ない**（`IntensityStream` は 20 秒窓）。波形を
+    // 震度と同じ条件で絞ると、**起動してから最初の 20 秒は波形が 1 件も出ない**
+    // ——画面からは「繋がっているのに何も来ない」としか見えない。
+    const got: string[] = []
+    deliverStationFusion(
+      {
+        noteReading: () => got.push('noteReading'),
+        publish: () => got.push('publish'),
+        noteWave: () => got.push('noteWave'),
+        notePairDiffs: () => got.push('notePairDiffs'),
+        publishWave: () => got.push('publishWave'),
+        reportCloseFailure: () => got.push('reportCloseFailure'),
+        noteSkip: () => got.push('noteSkip'),
+        logSegment: () => got.push('logSegment'),
+      },
+      fusion({ fusedWave: FUSED_WAVE, readings: [] }),
+    )
+
+    expect(got).toContain('publishWave')
   })
 })
 
