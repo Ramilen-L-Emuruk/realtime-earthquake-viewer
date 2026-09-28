@@ -165,13 +165,26 @@ function mat3GridHtml(values: SensorFormValues['rotation']): string {
   return `<div class="mat3-grid">${cells.join('')}</div>`
 }
 
+/**
+ * センサー ID の入力候補（`<datalist>`）の id。
+ *
+ * **中身を用意するのは `viewBoards.ts`。** いまフォームに入っている基板が
+ * `/status` で名乗っているセンサー ID を入れる——カード側は id を指すだけで、
+ * どの基板のものかを知らない（カードは基板をまたいで同じ形で使う）。
+ *
+ * **候補が無くても入力できる形にする（`<select>` にしない）。** 基板は電源が
+ * 入って送り始めるまで `/status` に現れないので、現地へ行く前に設定を用意して
+ * おく運用が潰れる。
+ */
+export const SENSOR_ID_DATALIST_ID = 'detected-sensor-ids'
+
 /** センサー 1 個ぶんのカード HTML。**値は必ず `escapeHtml` を通す**——`sensorId` は運用者の自由入力。 */
 export function renderSensorCardHtml(values: SensorFormValues): string {
   return `
     <div class="sensor-card">
       <div class="row">
         <label style="flex: 2">センサー ID
-          <input class="s-sensorId" value="${escapeHtml(values.sensorId)}" required />
+          <input class="s-sensorId" list="${SENSOR_ID_DATALIST_ID}" value="${escapeHtml(values.sensorId)}" required />
         </label>
         <label style="flex: 0 0 auto; white-space: nowrap;">有効
           <span style="display: flex; align-items: center; height: 2.1rem;">
