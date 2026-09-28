@@ -9,13 +9,15 @@ import { qs } from './dom'
 import { initBoardsView } from './viewBoards'
 import { initStationsView } from './viewStations'
 import { initStatusView } from './viewStatus'
+import { initWavesView } from './viewWaves'
 
-type TabKey = 'stations' | 'boards' | 'status'
+type TabKey = 'stations' | 'boards' | 'status' | 'waves'
 
 const TABS: readonly { readonly key: TabKey; readonly label: string }[] = [
   { key: 'stations', label: '観測点' },
   { key: 'boards', label: '基板' },
   { key: 'status', label: '稼働状況' },
+  { key: 'waves', label: '波形' },
 ]
 
 function renderShell(root: HTMLElement): void {
@@ -67,6 +69,7 @@ async function mountTab(root: HTMLElement, key: TabKey): Promise<void> {
 
   if (key === 'stations') await initStationsView(content, controller.signal)
   else if (key === 'boards') await initBoardsView(content, controller.signal)
+  else if (key === 'waves') await initWavesView(content, controller.signal)
   else await initStatusView(content, controller.signal)
 }
 

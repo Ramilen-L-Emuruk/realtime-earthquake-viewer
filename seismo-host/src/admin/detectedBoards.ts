@@ -13,6 +13,7 @@
 // 基板の候補と同じタイミングで更新したい（`calibrationSuggest.ts`）。
 
 import type { Vec3 } from '../receiver/stationConfigTypes'
+import { readFinite, readVec3 } from './readJson'
 
 /**
  * `/status` の `sensors[]` のうち、ここで使う欄だけ。
@@ -119,17 +120,6 @@ export interface SensorRestWindow {
   readonly scale: RestScaleView
   /** 静止しているのに計測震度が高い。**換算の倍率とは別の異常。** */
   readonly restless: boolean
-}
-
-/** 3 つ組として読めるものだけ通す。**`/status` の応答は形が変わりうる。** */
-function readVec3(value: unknown): Vec3 | null {
-  if (!Array.isArray(value) || value.length !== 3) return null
-  if (!value.every((n) => typeof n === 'number' && Number.isFinite(n))) return null
-  return [value[0] as number, value[1] as number, value[2] as number]
-}
-
-function readFinite(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
 /** `/status` の `gravity.verdicts[]` を読む。**読めない欄は `null` へ倒す。** */
