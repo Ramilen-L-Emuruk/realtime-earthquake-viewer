@@ -197,6 +197,11 @@
         opacity: 0.7;
         font-size: 0.85rem;
       }
+      /* **空なら場所を取らない。** 添え書き（`.boards-note` 等）は出す理由が
+         あるときだけ埋めるので、空のまま 1 行ぶん空くと見出しと表が離れる。 */
+      .muted:empty {
+        display: none;
+      }
       .error {
         color: var(--danger);
         background: var(--danger-soft);

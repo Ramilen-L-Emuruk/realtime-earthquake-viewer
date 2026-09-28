@@ -12,7 +12,7 @@
 // 攻撃者が UDP パケット 1 個で管理コンソールのトークンを盗めるストアド XSS になる
 // （#313 段 C 敵対的レビューで検出）。
 
-import { escapeHtml, qs } from './dom'
+import { ago, escapeHtml, isStale, qs, receptionBadgeHtml } from './dom'
 
 /**
  * `GET /status` の形。**`statusReport.ts` の `StatusReport` を丸ごと再定義しない。**
@@ -51,24 +51,6 @@ interface StatusReportView {
   readonly ungroupedMultiBoardStations: readonly string[]
 }
 
-const STALE_AFTER_MS = 60_000
-
-function ago(nowMs: number, atMs: number | null): string {
-  if (atMs === null) return '未受信'
-  const sec = Math.max(0, Math.round((nowMs - atMs) / 1000))
-  return `${sec} 秒前`
-}
-
-function isStale(nowMs: number, atMs: number | null): boolean {
-  return atMs === null || nowMs - atMs > STALE_AFTER_MS
-}
-
-function badge(nowMs: number, atMs: number | null): string {
-  const cls = isStale(nowMs, atMs) ? 'stale' : 'ok'
-  const label = isStale(nowMs, atMs) ? '途絶' : '受信中'
-  return `<span class="badge ${cls}">${label}</span>`
-}
-
 export async function initStatusView(container: HTMLElement, signal: AbortSignal): Promise<void> {
   container.innerHTML = `
     <div class="status-error"></div>
@@ -87,7 +69,7 @@ export async function initStatusView(container: HTMLElement, signal: AbortSignal
           <tr>
             <td>${escapeHtml(s.station?.displayName ?? '未割当')}</td>
             <td>${escapeHtml(s.boardKey)} / ${escapeHtml(s.sensorId)}</td>
-            <td>${badge(now, s.lastPacketMs)} ${ago(now, s.lastPacketMs)}</td>
+            <td>${receptionBadgeHtml(now, s.lastPacketMs)} ${ago(now, s.lastPacketMs)}</td>
             <td>${s.lastIntensity !== null ? s.lastIntensity.toFixed(2) : '—'}</td>
             <td>${s.enabled ? '有効' : '無効'}</td>
             <td>${s.calibrationConfigured ? '設定あり' : '既定値のまま'}</td>
@@ -100,7 +82,7 @@ export async function initStatusView(container: HTMLElement, signal: AbortSignal
         (s) => `
           <tr>
             <td>${escapeHtml(s.stationId)}</td>
-            <td>${badge(now, s.lastPacketMs)} ${ago(now, s.lastPacketMs)}</td>
+            <td>${receptionBadgeHtml(now, s.lastPacketMs)} ${ago(now, s.lastPacketMs)}</td>
             <td>${s.lastIntensity !== null ? s.lastIntensity.toFixed(2) : '—'}</td>
           </tr>`,
       )
