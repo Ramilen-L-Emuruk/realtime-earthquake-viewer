@@ -34,6 +34,30 @@ function restGal(
   return [x, y, z]
 }
 
+/**
+ * 傾けて据えた基板の 1 パケットぶん。**合成の大きさは 1 g のまま。**
+ *
+ * 重力が 3 軸へどう分かれるかだけを変える —— 倍率の判定（合成の大きさ）は動かさずに、
+ * 軸ごとの平均だけを動かしたいので。上下軸を 2 本目（Y）の向きへ `tiltDeg` 度倒す。
+ */
+function tiltedGal(
+  n: number,
+  tiltDeg: number,
+  swingGal = 0,
+): readonly [readonly number[], readonly number[], readonly number[]] {
+  const rad = (tiltDeg * Math.PI) / 180
+  const x: number[] = []
+  const y: number[] = []
+  const z: number[] = []
+  for (let i = 0; i < n; i++) {
+    const swing = i % 2 === 0 ? swingGal : -swingGal
+    x.push(0)
+    y.push(GAL_PER_G * Math.sin(rad))
+    z.push(GAL_PER_G * Math.cos(rad) + swing)
+  }
+  return [x, y, z]
+}
+
 /** 時計を差し替えた帳面と、時計を進める手。 */
 function book(options: { maxSensors?: number } = {}): {
   b: GravityCheckBook
@@ -423,5 +447,96 @@ describe('数え上げの受け渡し', () => {
       restarts: 5,
       evictions: 4,
     })
+  })
+})
+
+describe('軸ごとの静止統計（取り付けの傾き）', () => {
+  it('水平に据えた窓では、重力が上下軸にだけ乗る', () => {
+    const { b, advance } = book()
+
+    const got = settleOne(b, advance, restGal(300, { swingGal: 1.5 }))
+
+    expect(got.axisMeanGal?.[0]).toBeCloseTo(0, 6)
+    expect(got.axisMeanGal?.[1]).toBeCloseTo(0, 6)
+    expect(got.axisMeanGal?.[2]).toBeCloseTo(GAL_PER_G, 6)
+  })
+
+  it('傾けた窓では、合成の大きさを変えずに軸ごとの平均だけが動く', () => {
+    // **これが本題。** 合成（`meanGal`）は向きを問わないので傾けても 1 g のままで、
+    // 倍率の判定も `ok` のまま——**傾きはここでしか読めない**。
+    const { b, advance } = book()
+
+    const got = settleOne(b, advance, tiltedGal(300, 15))
+
+    expect(got.scale).toBe('ok')
+    expect(got.meanGal).toBeCloseTo(GAL_PER_G, 6)
+    expect(got.axisMeanGal?.[0]).toBeCloseTo(0, 6)
+    expect(got.axisMeanGal?.[1]).toBeCloseTo(GAL_PER_G * Math.sin(Math.PI / 12), 6)
+    expect(got.axisMeanGal?.[2]).toBeCloseTo(GAL_PER_G * Math.cos(Math.PI / 12), 6)
+  })
+
+  it('軸ごとのばらつきは、振れている軸だけに出る', () => {
+    // **静止の判定（合成の `sdGal`）とは別の値。** 合成のばらつきが小さくても、
+    // 1 軸だけ振れている窓の平均は重力の向きとして当てにならない——それを読む材料。
+    const { b, advance } = book()
+
+    const got = settleOne(b, advance, tiltedGal(300, 15, 1.5))
+
+    expect(got.axisSdGal?.[0]).toBeCloseTo(0, 6)
+    // **Y だけ桁が緩い。** 走和（`E[x²] - E[x]²`）は、平均が大きく分散が小さい軸で
+    // 桁落ちする —— Y は 253.8 gal で微動しないので、2 乗した 64,416 の引き算に
+    // 倍精度の丸めが残る（実測 2e-5 gal）。**これが `Math.max(0, …)` を挟んでいる
+    // 理由そのもの** で、実機のばらつき 1.4 gal に対しては無視してよい大きさ。
+    expect(got.axisSdGal?.[1]).toBeCloseTo(0, 4)
+    expect(got.axisSdGal?.[2]).toBeCloseTo(1.5, 6)
+  })
+
+  it('揺れていた窓でも軸ごとの値は出す（判定を見送るのと値が無いのは別）', () => {
+    // 見送るのは**倍率の判定**で、値そのものは読めている。当てにならないことは
+    // `scale` と `sdGal` から読める——ここで null にすると、受け取る側は
+    // 「まだ窓が閉じていない」と区別できなくなる。
+    const { b, advance } = book()
+
+    const got = settleOne(b, advance, restGal(300, { swingGal: 10 }))
+
+    expect(got.scale).toBe('not-at-rest')
+    expect(got.axisMeanGal).not.toBeNull()
+    expect(got.axisMeanGal?.[2]).toBeCloseTo(GAL_PER_G, 6)
+  })
+
+  it('サンプルが足りない窓・読めない窓では null（合成と同時に落ちる）', () => {
+    const { b, advance } = book()
+
+    const few = settleOne(b, advance, restGal(10))
+    expect(few.scale).toBe('too-few-samples')
+    expect(few.axisMeanGal).toBeNull()
+    expect(few.axisSdGal).toBeNull()
+
+    const broken = settleOne(b, advance, [
+      new Array<number>(300).fill(Number.NaN),
+      new Array<number>(300).fill(0),
+      new Array<number>(300).fill(GAL_PER_G),
+    ])
+    expect(broken.scale).toBe('unreadable')
+    expect(broken.axisMeanGal).toBeNull()
+    expect(broken.axisSdGal).toBeNull()
+  })
+
+  it('窓をまたいで走和が持ち越されない', () => {
+    // **合成の走和だけ戻して軸を戻し忘れる**と、2 つ目の窓の平均が 2 倍近くへ寄る。
+    // 症状は「傾きが実際の半分に見える」だけで、どの判定にも掛からない。
+    const { b, advance } = book()
+    const rest = { sensorId: 'reuse', streamKey: 'reuse|boot1' }
+
+    wave(b, tiltedGal(300, 30), rest)
+    advance(30_000)
+    wave(b, restGal(300), rest) // 1 つ目の窓が閉じ、2 つ目へ水平の 300 件が入る
+    advance(30_000)
+    const second = wave(b, restGal(300), rest)
+
+    if (second === null) throw new Error('2 つ目の窓が閉じなかった')
+    expect(second.sampleCount).toBe(300)
+    expect(second.axisMeanGal?.[1]).toBeCloseTo(0, 6)
+    expect(second.axisMeanGal?.[2]).toBeCloseTo(GAL_PER_G, 6)
   })
 })

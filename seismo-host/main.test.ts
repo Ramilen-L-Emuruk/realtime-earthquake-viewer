@@ -591,6 +591,9 @@ describe('buildGravityWarnings', () => {
     sampleCount: 2_984,
     meanGal: 980.7,
     sdGal: 1.5,
+    // **ほぼ水平に据えた基板。** 重力は上下軸にだけ乗る。
+    axisMeanGal: [0.4, -1.2, 980.7],
+    axisSdGal: [1.1, 1.2, 0.9],
     maxIntensity: 1.1,
     scale: 'ok',
     restless: false,

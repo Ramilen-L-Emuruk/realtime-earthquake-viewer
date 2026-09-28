@@ -32,6 +32,8 @@ const VERDICT: GravityVerdict = {
   sampleCount: 2_984,
   meanGal: 0.980665,
   sdGal: 0.0015,
+  axisMeanGal: [0.0004, -0.0012, 0.980665],
+  axisSdGal: [0.0011, 0.0012, 0.0009],
   maxIntensity: null,
   scale: 'too-small',
   restless: false,

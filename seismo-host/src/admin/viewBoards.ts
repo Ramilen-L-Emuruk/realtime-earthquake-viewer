@@ -9,14 +9,18 @@
 // 保存時は表示中の全カードを読み直して丸ごと送る。
 
 import { apiFetch, ApiError, describeAdminAuthFailure } from './api'
-import { fetchDetectedBoards, type DetectedBoard } from './detectedBoards'
+import { restWindowProblem, suggestRotation } from './calibrationSuggest'
+import { fetchDetectedBoards, type DetectedBoard, type SensorRestWindow } from './detectedBoards'
 import { ago, escapeHtml, qs, receptionBadgeHtml } from './dom'
 import {
   emptySensorFormValues,
+  parseHeadingText,
   parseSensorFormValues,
   readSensorCardValues,
   renderSensorCardHtml,
+  restWindowNote,
   sensorToFormValues,
+  writeSensorCardRotation,
   SENSOR_ID_DATALIST_ID,
 } from './sensorForm'
 import type { BoardEntry, SensorEntry, StationInfo } from '../receiver/stationConfigTypes'
@@ -231,6 +235,9 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
   let currentBoards: readonly BoardEntry[] = []
   let currentStations: readonly StationInfo[] = []
   let currentDetected: readonly DetectedBoard[] = []
+  let currentRestWindows: readonly SensorRestWindow[] = []
+  /** 経過を測る基準（`/status` の `generatedAtMs`）。取れていなければ `null`。 */
+  let currentGeneratedAtMs: number | null = null
 
   // **編集中の未保存内容を、確認なしで破棄しない。** センサーカードの追加・削除・
   // 数値変更中に別の基板の「編集」を押すと、`fillForm` が `.sensor-cards` を
@@ -256,9 +263,57 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
     qs(container, `#${SENSOR_ID_DATALIST_ID}`).innerHTML = optionsHtml(found?.sensorIds ?? [])
   }
 
+  /** いまフォームに入っている基板の、そのセンサーの静止窓。無ければ `null`。 */
+  const findRestWindow = (sensorId: string): SensorRestWindow | null => {
+    const boardKey = qs<HTMLInputElement>(container, '[name=boardKey]').value.trim()
+    if (boardKey.length === 0 || sensorId.length === 0) return null
+    return (
+      currentRestWindows.find((w) => w.boardKey === boardKey && w.sensorId === sensorId) ?? null
+    )
+  }
+
+  /**
+   * 各カードの静止窓の様子と、「鉛直を合わせる」の押せる・押せないを描き直す。
+   *
+   * **カードを作った直後・`/status` を取り直した後・センサー ID を打ち換えたときに呼ぶ。**
+   * どれか 1 つでも抜けると、**そのカードだけ古い診断が残る** —— 判定は 30 秒ごとに
+   * 変わるうえ、どのセンサーの話かはカードの中の ID でしか決まらない。
+   */
+  const refreshTiltPanels = (): void => {
+    let broken = 0
+    for (const card of container.querySelectorAll<HTMLElement>('.sensor-cards .sensor-card')) {
+      // **1 枚ずつ囲う。** `qs()` は見つからなければ投げる（`dom.ts`）ので、
+      // 囲わないと**先頭のカードで投げた時点で残り全部の診断が古いまま固まる**
+      // ——カードは何枚でも並ぶうえ、ここは 5 箇所から呼ばれる（カードの生成・
+      // センサー ID や基板 Key の打ち換え・`/status` の再取得）。呼ぶ側を
+      // 1 つずつ囲う形にすると、次に呼び出しを足した人が忘れる。
+      try {
+        const sensorId = qs<HTMLInputElement>(card, '.s-sensorId').value.trim()
+        const window = findRestWindow(sensorId)
+        qs(card, '.s-rest-note').textContent = restWindowNote(window, currentGeneratedAtMs)
+        const button = qs<HTMLButtonElement>(card, '.suggest-tilt')
+        const problem = restWindowProblem(window)
+        // **押しても何も起きない形にしない。** 押せないなら理由が読めること
+        // （#345 で位置情報のボタンに同じ手当てをしている）。
+        button.disabled = problem !== null
+        button.title =
+          problem ?? '静止時の重力から、取り付けの傾きを打ち消す回転行列を入れる（保存するまで効かない）'
+      } catch (error) {
+        broken += 1
+        console.warn('[admin] センサーカードの取り付け診断を描き直せない', error)
+      }
+    }
+    // **失敗したときだけ書く。** 成功で空にすると、保存の失敗など別の理由で
+    // 出ている文言をここが消してしまう。
+    if (broken > 0) {
+      renderError(container, `${broken} 枚のセンサーカードで取り付けの診断を出せない。画面を再読込すること`)
+    }
+  }
+
   const switchForm = (board: BoardEntry | null): void => {
     fillForm(container, board)
     refreshSensorIdOptions()
+    refreshTiltPanels()
     formDirty = false
   }
 
@@ -290,12 +345,14 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
       currentBoards = boardsBody.boards
       currentStations = stationsBody.stations
       currentDetected = detected.snapshot?.boards ?? []
+      currentRestWindows = detected.snapshot?.restWindows ?? []
+      currentGeneratedAtMs = detected.snapshot?.generatedAtMs ?? null
       fillStationOptions(container, currentStations)
       renderBoardsTable(
         container,
         mergeBoardRows(currentDetected, currentBoards),
         currentStations,
-        detected.snapshot?.generatedAtMs ?? null,
+        currentGeneratedAtMs,
       )
       // **`/status` を取れなくても編集は続けられる。** 候補と受信の様子が出ないだけ。
       qs(container, '.boards-note').textContent =
@@ -306,6 +363,9 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
         currentDetected.map((d) => d.boardKey),
       )
       refreshSensorIdOptions()
+      // **編集中のカードにも新しい診断を映す。** 静止窓は 30 秒ごとに閉じるので、
+      // 開いたままのフォームが古い判定を指し続けるのを避ける。
+      refreshTiltPanels()
       return { ok: true }
     } catch (error) {
       if (signal.aborted) return { ok: true }
@@ -316,14 +376,23 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
   qs(container, '.add-sensor').addEventListener('click', () => {
     addEmptySensorCard(container)
     formDirty = true
+    refreshTiltPanels()
   })
 
   const form = qs<HTMLFormElement>(container, '.board-form')
   form.addEventListener('input', (e) => {
     formDirty = true
+    const target = e.target as HTMLElement
     // **基板 Key を打ち換えたらセンサー ID の候補も入れ替える。** 残したままだと、
     // 前に見ていた基板のセンサー ID が候補に出る。
-    if ((e.target as HTMLElement).getAttribute('name') === 'boardKey') refreshSensorIdOptions()
+    if (target.getAttribute('name') === 'boardKey') {
+      refreshSensorIdOptions()
+      // 基板が変われば、どのカードの診断も別のセンサーのものになる。
+      refreshTiltPanels()
+    }
+    // **センサー ID を打ち換えたら、そのカードの診断も引き直す。** 引き直さないと、
+    // 前に入っていた ID の判定が別のセンサーのカードに残る。
+    if (target.classList.contains('s-sensorId')) refreshTiltPanels()
   })
   form.addEventListener('submit', (e) => {
     e.preventDefault()
@@ -373,9 +442,73 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
 
   qs(container, '.sensor-cards').addEventListener('click', (e) => {
     const target = e.target as HTMLElement
-    if (!target.classList.contains('remove-sensor')) return
-    target.closest('.sensor-card')?.remove()
-    formDirty = true
+    if (target.classList.contains('remove-sensor')) {
+      target.closest('.sensor-card')?.remove()
+      formDirty = true
+      return
+    }
+    if (target.classList.contains('suggest-tilt')) {
+      const card = target.closest<HTMLElement>('.sensor-card')
+      if (card === null) return
+      // **結果はそのカードの中へ出す。** 画面上部の共通のエラー欄だと、
+      // どのセンサーの話か分からない（カードは何枚でも並ぶ）。
+      //
+      // **ここだけ `qs()` を使わない。** あれは見つからなければ投げるが、`note` は
+      // 下の `catch` の中からも呼ぶ ——「伝える先が無い」という理由で投げると、
+      // 伝えようとしていた内容（多くは別の失敗の理由）ごと外へ飛んで消える。
+      const note = (text: string): void => {
+        const el = card.querySelector('.s-tilt-result')
+        if (el === null) {
+          console.warn('[admin] 提案の結果を出す場所が無い:', text)
+          return
+        }
+        el.textContent = text
+      }
+      try {
+        const sensorId = qs<HTMLInputElement>(card, '.s-sensorId').value.trim()
+        const window = findRestWindow(sensorId)
+        const problem = restWindowProblem(window)
+        // **押せない状態でも、押されたら理由を出す。** ボタンは `disabled` に
+        // してあるが、判定が変わる前の描き直しを取りこぼした場合に無言で止まる。
+        if (problem !== null || window === null || window.axisMeanGal === null) {
+          note(problem ?? '静止窓の判定がまだ無い')
+          return
+        }
+        // **カードの現在値を通して読む。** 感度が負といった不備も同じ口で捕まる
+        // ——保存のときに初めて言われるより、ここで言うほうが早い。
+        const parsed = parseSensorFormValues(readSensorCardValues(card))
+        if (!parsed.ok) {
+          note(parsed.error)
+          return
+        }
+        const heading = parseHeadingText(qs<HTMLInputElement>(card, '.s-heading').value)
+        if (heading !== null && typeof heading !== 'number') {
+          note(heading.error)
+          return
+        }
+        const got = suggestRotation({
+          gravity: window.axisMeanGal,
+          rotation: parsed.sensor.rotation,
+          headingDeg: heading,
+        })
+        if (!got.ok) {
+          note(got.reason)
+          return
+        }
+        // **書き込む前に未保存の印を立てる。** 途中で投げても「一部だけ書き換わった
+        // のに印が立っていない」を作らない（`register-board` と同じ手当て）。
+        formDirty = true
+        writeSensorCardRotation(card, got.rotation)
+        // **「ぶんも回した」と書かない。** 実際に回すのはいまの向きとの差だけで、
+        // 入れた値そのものではない（同じ値をもう一度入れれば何も回らない）。
+        const heads = heading === null ? '方角は変えていない' : `X 軸を方角 ${heading}° へ向けた`
+        const flip = got.upsideDown ? '／上下逆さまに付いている（方角も見直すこと）' : ''
+        note(`傾き ${got.tiltDeg}° を打ち消す回転を入れた（${heads}）。保存するまで効かない${flip}`)
+      } catch (error) {
+        // `qs()` は見つからなければ投げる（`dom.ts`）。無言で止めない。
+        note(describeSaveFailure(error))
+      }
+    }
   })
 
   qs(container, '.boards-table tbody').addEventListener('click', (e) => {
@@ -404,6 +537,7 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
         qs<HTMLInputElement>(container, '[name=boardKey]').value = detected.boardKey
         renderSensorCardsForIds(container, detected.sensorIds)
         refreshSensorIdOptions()
+        refreshTiltPanels()
         // **jsdom には `scrollIntoView` が無い**ので、あれば呼ぶ形にする。
         qs(container, '.board-form').scrollIntoView?.({ behavior: 'smooth', block: 'start' })
         renderError(container, '')

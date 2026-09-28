@@ -121,6 +121,40 @@ const STATUS_SENSORS = [
   { boardKey: BOARD_A.boardKey, sensorId: 'accel-0', lastPacketMs: 9_000 },
 ]
 
+/** 15 度傾いて据えた基板が、静止した窓で測る重力（gal）。 */
+const TILTED_15DEG = [0, 980.665 * Math.sin(Math.PI / 12), 980.665 * Math.cos(Math.PI / 12)]
+
+/**
+ * `/status` の `gravity.verdicts[]`。
+ *
+ * **`accel-0` は静止・`accel-1` は揺れていた**——「提案できる／できない」を
+ * 同じ画面に並べるための組み合わせ。
+ */
+const REST_WINDOWS = [
+  {
+    boardKey: 'mac:cccccccccccc',
+    sensorId: 'accel-0',
+    atMs: 9_500,
+    sampleCount: 2_984,
+    meanGal: 980.665,
+    sdGal: 1.4,
+    axisMeanGal: TILTED_15DEG,
+    scale: 'ok',
+    restless: false,
+  },
+  {
+    boardKey: 'mac:cccccccccccc',
+    sensorId: 'accel-1',
+    atMs: 9_500,
+    sampleCount: 2_984,
+    meanGal: 1_100,
+    sdGal: 42,
+    axisMeanGal: [10, 20, 1_099],
+    scale: 'not-at-rest',
+    restless: false,
+  },
+]
+
 /** `/api/boards`・`/api/stations`・`/status` の応答を固定値で返す最小限のモック。 */
 function stubApiFetch(options: { readonly statusFails?: boolean } = {}): void {
   vi.stubGlobal(
@@ -137,7 +171,11 @@ function stubApiFetch(options: { readonly statusFails?: boolean } = {}): void {
         return {
           ok: true,
           status: 200,
-          json: async () => ({ generatedAtMs: 10_000, sensors: STATUS_SENSORS }),
+          json: async () => ({
+            generatedAtMs: 10_000,
+            sensors: STATUS_SENSORS,
+            gravity: { verdicts: REST_WINDOWS },
+          }),
         }
       }
       throw new Error(`unexpected fetch path: ${String(path)}`)
@@ -361,6 +399,175 @@ describe('認識済みの基板からの登録', () => {
     expect(container.querySelector('.boards-error')?.textContent).toBe('')
     expect(container.querySelector('.boards-note')?.textContent).toContain('手で入力すること')
     expect(container.querySelectorAll('#detected-board-keys option')).toHaveLength(0)
+  })
+})
+
+/**
+ * 静止窓の診断と「鉛直を合わせる」（#347）。
+ *
+ * **押せる・押せないと、押した結果の両方を見る。** 押せない理由を出さないと
+ * 「押しても何も起きない」になり、書き込む先を間違えると提案が黙って捨てられる。
+ */
+describe('取り付けの傾きを合わせる', () => {
+  beforeEach(() => {
+    stubApiFetch()
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  /** 未登録の基板（`mac:cccccccccccc`）を登録フォームへ移し、カードを 2 枚出す。 */
+  async function mountRegistering(): Promise<HTMLElement> {
+    const container = document.createElement('div')
+    await initBoardsView(container, new AbortController().signal)
+    container.querySelector<HTMLButtonElement>('.register-board')?.click()
+    return container
+  }
+
+  function cardAt(container: HTMLElement, index: number): HTMLElement {
+    const card = container.querySelectorAll<HTMLElement>('.sensor-card')[index]
+    if (card === undefined) throw new Error(`${index} 番目のセンサーカードが無い`)
+    return card
+  }
+
+  function rotationOf(card: HTMLElement): number[][] {
+    const at = (row: number, col: number): number =>
+      Number(
+        card.querySelector<HTMLInputElement>(`.s-rotation[data-row="${row}"][data-col="${col}"]`)
+          ?.value,
+      )
+    return [
+      [at(0, 0), at(0, 1), at(0, 2)],
+      [at(1, 0), at(1, 1), at(1, 2)],
+      [at(2, 0), at(2, 1), at(2, 2)],
+    ]
+  }
+
+  /** 行列を重力ベクトルへ適用する。**提案が本当に鉛直を向かせるかの確認。** */
+  function applyTo(m: number[][], v: readonly number[]): number[] {
+    return [0, 1, 2].map((i) => m[i][0] * v[0] + m[i][1] * v[1] + m[i][2] * v[2])
+  }
+
+  it('静止しているセンサーには傾きが出て、ボタンが押せる', async () => {
+    const container = await mountRegistering()
+    const card = cardAt(container, 0)
+
+    expect(card.querySelector('.s-rest-note')?.textContent).toContain('取り付けの傾き 15°')
+    expect(card.querySelector<HTMLButtonElement>('.suggest-tilt')?.disabled).toBe(false)
+  })
+
+  // **押しても何も起きない形にしない。** 理由が読めること。
+  it('揺れていたセンサーではボタンを押せず、理由が出る', async () => {
+    const container = await mountRegistering()
+    const card = cardAt(container, 1)
+
+    const button = card.querySelector<HTMLButtonElement>('.suggest-tilt')
+    expect(button?.disabled).toBe(true)
+    expect(button?.title).toContain('揺れている間は合わせられない')
+    expect(card.querySelector('.s-rest-note')?.textContent).toContain('揺れている間は合わせられない')
+  })
+
+  it('押すと回転行列が書き換わり、その行列で重力が真上を向く', async () => {
+    const container = await mountRegistering()
+    const card = cardAt(container, 0)
+
+    card.querySelector<HTMLButtonElement>('.suggest-tilt')?.click()
+
+    const fixed = applyTo(rotationOf(card), TILTED_15DEG)
+    expect(fixed[0]).toBeCloseTo(0, 2)
+    expect(fixed[1]).toBeCloseTo(0, 2)
+    expect(fixed[2]).toBeCloseTo(980.665, 2)
+    expect(card.querySelector('.s-tilt-result')?.textContent).toContain('保存するまで効かない')
+  })
+
+  // **重力は方角について何も語らない**（REQUIREMENTS.md §16）。空欄なら触らない。
+  it('方角が空欄のままなら、水平面は回さない', async () => {
+    const container = await mountRegistering()
+    const card = cardAt(container, 0)
+
+    card.querySelector<HTMLButtonElement>('.suggest-tilt')?.click()
+
+    // 傾きは Y-Z 面の中だけなので、X 軸は動かないはず。
+    expect(rotationOf(card)[0]).toEqual([1, 0, 0])
+    expect(card.querySelector('.s-tilt-result')?.textContent).toContain('方角は変えていない')
+  })
+
+  it('方角を入れると、その分だけ水平面も回る', async () => {
+    const container = await mountRegistering()
+    const card = cardAt(container, 0)
+    const heading = card.querySelector<HTMLInputElement>('.s-heading')
+    if (heading === null) throw new Error('方角の入力欄が無い')
+    heading.value = '0'
+
+    card.querySelector<HTMLButtonElement>('.suggest-tilt')?.click()
+
+    expect(rotationOf(card)[0]).not.toEqual([1, 0, 0])
+    // 方角をどう回しても鉛直は保たれる（上向き軸まわりの回転だから）。
+    expect(applyTo(rotationOf(card), TILTED_15DEG)[2]).toBeCloseTo(980.665, 2)
+    expect(card.querySelector('.s-tilt-result')?.textContent).toContain('方角 0°')
+  })
+
+  it('方角が数値として読めないときは書き換えず、理由を出す', async () => {
+    const container = await mountRegistering()
+    const card = cardAt(container, 0)
+    const heading = card.querySelector<HTMLInputElement>('.s-heading')
+    if (heading === null) throw new Error('方角の入力欄が無い')
+    // `type=number` の欄は不正な文字を空文字として返すので、属性ごと外して模す。
+    heading.removeAttribute('type')
+    heading.value = 'きた'
+
+    card.querySelector<HTMLButtonElement>('.suggest-tilt')?.click()
+
+    expect(rotationOf(card)[0]).toEqual([1, 0, 0])
+    expect(card.querySelector('.s-tilt-result')?.textContent).toContain('方角が数値として読めない')
+  })
+
+  // **引き直さないと、前に入っていた ID の判定が別のセンサーのカードに残る。**
+  it('センサー ID を打ち換えると、その診断も引き直す', async () => {
+    const container = await mountRegistering()
+    const card = cardAt(container, 0)
+    const sensorId = card.querySelector<HTMLInputElement>('.s-sensorId')
+    if (sensorId === null) throw new Error('センサー ID の入力欄が無い')
+
+    sensorId.value = 'accel-1'
+    sensorId.dispatchEvent(new Event('input', { bubbles: true }))
+
+    expect(card.querySelector('.s-rest-note')?.textContent).toContain('揺れている間は合わせられない')
+    expect(card.querySelector<HTMLButtonElement>('.suggest-tilt')?.disabled).toBe(true)
+  })
+
+  // **1 枚の失敗が残り全部を巻き込まないこと。** 描き直しは 5 箇所から呼ばれるので、
+  // 先頭のカードで投げると以降の診断が古いまま固まる（サイレント障害レビューで検出）。
+  it('1 枚のカードの構造が壊れても、残りのカードは更新され、壊れたことが画面に出る', async () => {
+    const container = await mountRegistering()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    // 1 枚目の診断の出し先を外す（テンプレートとセレクタがずれた状態を模す）。
+    cardAt(container, 0).querySelector('.s-rest-note')?.remove()
+
+    // 2 枚目を静止しているセンサーへ打ち換え、描き直しを起こす。
+    const sensorId = cardAt(container, 1).querySelector<HTMLInputElement>('.s-sensorId')
+    if (sensorId === null) throw new Error('センサー ID の入力欄が無い')
+    sensorId.value = 'accel-0'
+    sensorId.dispatchEvent(new Event('input', { bubbles: true }))
+
+    expect(cardAt(container, 1).querySelector('.s-rest-note')?.textContent).toContain(
+      '取り付けの傾き 15°',
+    )
+    expect(container.querySelector('.boards-error')?.textContent).toContain('1 枚')
+    expect(warn).toHaveBeenCalled()
+  })
+
+  it('静止窓の無いセンサーでは、待てば出ることが分かる文言になる', async () => {
+    const container = document.createElement('div')
+    await initBoardsView(container, new AbortController().signal)
+    // BOARD_A（登録済み・センサー未登録）を編集し、空のカードを 1 枚足す。
+    container.querySelectorAll<HTMLButtonElement>('.edit-board')[0].click()
+    container.querySelector<HTMLButtonElement>('.add-sensor')?.click()
+
+    const card = cardAt(container, 0)
+    expect(card.querySelector('.s-rest-note')?.textContent).toContain('まだ無い')
+    expect(card.querySelector<HTMLButtonElement>('.suggest-tilt')?.disabled).toBe(true)
   })
 })
 

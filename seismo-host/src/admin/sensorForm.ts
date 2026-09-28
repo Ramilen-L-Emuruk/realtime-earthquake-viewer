@@ -2,7 +2,9 @@
 // カードの HTML 生成・DOM 読み取りをここへ集約する。`viewBoards.ts` からは
 // 分離し、変換ロジック（DOM 非依存）だけを取り出してユニットテストしやすくする。
 
-import { escapeHtml, qs } from './dom'
+import { restWindowProblem, tiltDegFromUp } from './calibrationSuggest'
+import type { SensorRestWindow } from './detectedBoards'
+import { ago, escapeHtml, qs } from './dom'
 import {
   DEFAULT_SENSOR_CALIBRATION,
   type Mat3,
@@ -200,15 +202,102 @@ export function renderSensorCardHtml(values: SensorFormValues): string {
       ${vec3RowHtml('s-offset', values.offset)}
       <div class="muted" style="font-size: 0.8rem; margin-top: 0.5rem;">感度（倍率・正）</div>
       ${vec3RowHtml('s-sensitivity', values.sensitivity)}
+      <!-- **静止窓の診断は畳まない。** 傾いて付いているという事実は、詳細設定を
+           開いた人にしか見えないと気づかれない。中身は viewBoards が埋める。 -->
+      <div class="muted s-rest-note" style="font-size: 0.8rem; margin-top: 0.5rem;"></div>
       <details>
         <summary>詳細設定</summary>
         <div class="muted" style="font-size: 0.8rem; margin-bottom: 0.3rem;">回転行列（取り付け向きの補正）</div>
         ${mat3GridHtml(values.rotation)}
+        <!-- **方角は手で入れる。** 重力は鉛直まわりの回転について何も語らないので、
+             自動では決まらない（REQUIREMENTS.md §16）。空のままなら水平面は回さない。
+             **「向いている」ではなく「向ける」。** 入れるのは向かせたい方角で、実際に
+             回るのはいまの向きとの差だけ —— 同じ値を入れ直しても動かない。
+             **「X 軸」と呼ぶ。** センサーの 1 本目の軸のことで、このカードの
+             オフセット・感度の X 欄と同じもの —— 画面の中で辿れる名前にする
+             （回転行列のグリッドには行や列の見出しが無い）。 -->
+        <div class="row" style="margin-top: 0.6rem;">
+          <label style="flex: 1">X 軸を向ける方角（度・任意）
+            <input class="s-heading" type="number" step="any" placeholder="北=0・東=90・南=180・西=270" />
+          </label>
+          <button type="button" class="suggest-tilt" style="align-self: end; height: 2.1rem;" disabled>鉛直を合わせる</button>
+        </div>
+        <div class="muted s-tilt-result" style="font-size: 0.8rem;"></div>
         <label style="margin-top: 0.6rem;">ノイズ密度（µg/√Hz・任意）
           <input class="s-noiseDensity" type="number" step="any" min="0" value="${escapeHtml(values.noiseDensity)}" />
         </label>
       </details>
     </div>`
+}
+
+/**
+ * 方角の欄を読む。**空欄は `null`（方角に触らない）で、これは誤りではない。**
+ *
+ * 重力から方角は決まらないので、分からないまま既定値で回すと、合っていた方角を
+ * 黙って崩す（`calibrationSuggest.ts` 冒頭）。**空欄を 0 へ倒さないこと。**
+ */
+export function parseHeadingText(text: string): number | null | { readonly error: string } {
+  const trimmed = text.trim()
+  if (trimmed.length === 0) return null
+  const value = Number(trimmed)
+  if (!Number.isFinite(value)) return { error: `方角が数値として読めない: "${text}"` }
+  return value
+}
+
+/** gal を小数 1 桁で出す。**実機のばらつきが 1.4 gal 前後**なので、これ以上細かくしない。 */
+function gal(value: number | null): string {
+  return value === null ? '不明' : `${value.toFixed(1)} gal`
+}
+
+/**
+ * センサーカードへ出す、静止窓の一行。**判定が無くても必ず何か出す。**
+ *
+ * **「まだ出ていない」と「出たが使えない」を書き分ける。** 混ぜると、待てば出るのか
+ * 何か直さないと出ないのかが読めない。
+ */
+export function restWindowNote(window: SensorRestWindow | null, nowMs: number | null): string {
+  // **文言はボタンの理由と同じものを使う。** 同じ状態を指しているのに、常時表示の
+  // 一行とボタンの説明で言い回しが違うと、別の状態だと読まれる。
+  if (window === null) return restWindowProblem(null) ?? ''
+  // **経過の基準が無ければ黙って受け手の時計へ倒さない**（`detectedBoards.ts` の
+  // `generatedAtMs`）。時刻だけを省く。
+  const when = nowMs === null ? '' : `・${ago(nowMs, window.atMs)}`
+  const restless = window.restless
+    ? '／静止しているのに計測震度が高い（震度を出す側の配線を確かめること）'
+    : ''
+
+  const problem = restWindowProblem(window)
+  if (problem !== null) {
+    // **読めなかった窓に「重力 不明・ばらつき 不明」を足さない。** サンプル不足と
+    // 読み取り不能では必ず両方 `null` になる（`gravityCheck.ts` の `settle`）ので、
+    // 機械的に並べると理由の後ろへ「不明」だけが毎回付く。
+    const measured =
+      window.meanGal === null && window.sdGal === null
+        ? when.replace(/^・/, '')
+        : `重力 ${gal(window.meanGal)}・ばらつき ${gal(window.sdGal)}${when}`
+    return `${problem}${measured.length > 0 ? `（${measured}）` : ''}${restless}`
+  }
+  const tilt = tiltDegFromUp(window.axisMeanGal)
+  // **`restWindowProblem` を通った窓は傾きが出るはず**だが、判定の元は `scale` で
+  // 傾きの計算は別の式なので、出なかった場合に黙らない。
+  const tiltText = tilt === null ? '傾きを出せない' : `取り付けの傾き ${tilt}°`
+  return `${tiltText}（重力 ${gal(window.meanGal)}・ばらつき ${gal(window.sdGal)}${when}）${restless}`
+}
+
+/**
+ * カードの回転行列の 9 マスへ値を書き込む。
+ *
+ * **`readSensorCardValues` と対になる。** 読むほうと同じセレクタをここでも使う ——
+ * 片方だけ変えると、提案した値が黙ってどこにも入らない。
+ */
+export function writeSensorCardRotation(card: ParentNode, rotation: Mat3): void {
+  for (let row = 0; row < 3; row++) {
+    for (let col = 0; col < 3; col++) {
+      qs<HTMLInputElement>(card, `.s-rotation[data-row="${row}"][data-col="${col}"]`).value = String(
+        rotation[row][col],
+      )
+    }
+  }
 }
 
 /**
