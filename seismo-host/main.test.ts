@@ -740,6 +740,8 @@ describe('deliverStationFusion', () => {
     firstSampleMs: 1_000,
     msPerSample: 10,
     gal: [[1], [2], [3]],
+    // 落とした直流（`gal` と足せば校正済み gal の重み付き平均になる値）。
+    dcGal: [[0], [0], [980]],
     memberCount: [2],
   }
 

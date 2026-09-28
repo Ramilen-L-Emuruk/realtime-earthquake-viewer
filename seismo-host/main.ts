@@ -546,8 +546,11 @@ export interface StationFusionSinks {
  * で明示的にガードしているのと同じ症状——壊れた合成が一瞬だけ健全に見える）。
  * 順序を「過去の読み → いまの状態」にすれば、いまの状態が必ず最後に残る。
  *
- * **`closeFailure`・`intensitySkipReason` は駆動役の到着でだけ意味を持つ**
- * （`fusedWave` が非 null の回に限る。`sensorFusion.ts` の `FusionOutcome` を見ること）。
+ * **`closeFailure`・`intensitySkipReason` は「待たせていたまとまりを取り出して合成した回」
+ * にだけ意味を持つ**（`fusedWave` が非 null の回に限る）。**取り出しは駆動役の到着に
+ * 限らない** —— 裏付けが届いても待ちが満たされることがある（`sensorFusion.ts` の
+ * `FusionOutcome`・`FUSION_WAIT_MS_DEFAULT` を見ること）。ここが `fusedWave` の非 null で
+ * 分岐しているのはそのためで、**到着したセンサーが駆動役かどうかで分けてはいけない**。
  */
 export function deliverStationFusion(to: StationFusionSinks, fusion: FusionOutcome): void {
   if (fusion.fusedWave !== null && fusion.closeFailure !== null) {
