@@ -1379,7 +1379,7 @@ async function main(): Promise<void> {
   })
   console.log(
     `[http] ${httpAddress ?? '0.0.0.0'}:${statusServer.port} で待ち受け中`
-    + '（/status は状態・/stream は震度の押し出し。?wave=1 で波形も）',
+    + '（/status は状態・/stream は震度の押し出し。?wave=station で観測点の合成波形・?wave=1 でセンサー単独も）',
   )
 
   // **起動時にも掃き取る。** 回転は日が変わったときにしか走らないので、

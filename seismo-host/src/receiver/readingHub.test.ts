@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { IntensityReading, WaveChunk } from './intensityPipeline'
 import { ReadingHub } from './readingHub'
-import type { DetachReason, HubMessage, Subscription } from './readingHub'
+import type { DetachReason, HubMessage, Subscription, WaveWant } from './readingHub'
 
 /** 差し替えられる時計。 */
 function clock(start = 0): { now: () => number; advance: (ms: number) => void } {
@@ -67,14 +67,14 @@ const STATION_WAVE: HubMessage = {
 }
 
 /** 受け取る相手。`take` を偽にすると詰まったふりをする。 */
-function sink(options: { wave?: boolean; take?: boolean } = {}) {
+function sink(options: { wave?: WaveWant; take?: boolean } = {}) {
   const got: HubMessage[] = []
   const detached: DetachReason[] = []
   const self = {
     got,
     detached,
     take: options.take ?? true,
-    wave: options.wave ?? false,
+    wave: options.wave ?? 'none',
     subscription: null as Subscription | null,
     attach(hub: ReadingHub): Subscription | null {
       const s = hub.subscribe({
@@ -96,8 +96,8 @@ function sink(options: { wave?: boolean; take?: boolean } = {}) {
 describe('ReadingHub', () => {
   it('震度は全員へ、波形は欲しいと言った相手だけへ配る', () => {
     const hub = new ReadingHub()
-    const plain = sink({ wave: false })
-    const full = sink({ wave: true })
+    const plain = sink({ wave: 'none' })
+    const full = sink({ wave: 'all' })
     plain.attach(hub)
     full.attach(hub)
 
@@ -110,7 +110,7 @@ describe('ReadingHub', () => {
 
   it('観測点ぶんの計測震度（合成）も、センサー単独の震度と同じく全員へ配る', () => {
     const hub = new ReadingHub()
-    const plain = sink({ wave: false })
+    const plain = sink({ wave: 'none' })
     plain.attach(hub)
 
     hub.publish(STATION_READING)
@@ -120,7 +120,7 @@ describe('ReadingHub', () => {
 
   it('正: 観測点ぶんの合成波形は、波形を欲しいと言った相手へ配る', () => {
     const hub = new ReadingHub()
-    const full = sink({ wave: true })
+    const full = sink({ wave: 'all' })
     full.attach(hub)
 
     hub.publish(STATION_WAVE)
@@ -130,7 +130,7 @@ describe('ReadingHub', () => {
 
   it('対照: 波形を欲しがっていない相手へは、センサー単独も合成も 1 件も配らない', () => {
     const hub = new ReadingHub()
-    const plain = sink({ wave: false })
+    const plain = sink({ wave: 'none' })
     plain.attach(hub)
 
     hub.publish(WAVE)
@@ -146,7 +146,7 @@ describe('ReadingHub', () => {
   it('安全弁: 合成波形を受け取れなかった相手は、捨てた件数に数えられる', () => {
     const hub = new ReadingHub()
     // 波形は欲しいが、いま受け取れない相手。
-    const stuck = sink({ wave: true, take: false })
+    const stuck = sink({ wave: 'all', take: false })
     stuck.attach(hub)
 
     hub.publish(STATION_WAVE)
@@ -155,6 +155,45 @@ describe('ReadingHub', () => {
     // 合成波形だけが「配れなかったのに捨てた覚えが無い」状態になる。
     expect(hub.snapshot().dropped).toBe(1)
     expect(hub.snapshot().subscribers[0].dropped).toBe(1)
+  })
+
+  // 波形の粒度（#261 段 0）。地震ビューアーの PWA は観測点の合成 1 本だけを見るので、
+  // センサー単独の波形（実測で毎秒およそ 65 KB）を押し付けない口が要る。
+  it("正: 'station' を望んだ相手へは、観測点の合成波形を配る", () => {
+    const hub = new ReadingHub()
+    const onlyStation = sink({ wave: 'station' })
+    onlyStation.attach(hub)
+
+    hub.publish(STATION_WAVE)
+
+    expect(onlyStation.got).toEqual([STATION_WAVE])
+  })
+
+  it("対照: 'station' を望んだ相手へは、センサー単独の波形を 1 件も配らない", () => {
+    const hub = new ReadingHub()
+    const onlyStation = sink({ wave: 'station' })
+    onlyStation.attach(hub)
+
+    hub.publish(WAVE)
+    hub.publish(STATION_WAVE)
+    hub.publish(READING)
+    hub.publish(STATION_READING)
+
+    // **`WAVE` が混ざっていないこと**がこの粒度を足した目的。混ざると、
+    // 合成 1 本を見るだけの端末へ毎秒 65 KB が流れ続ける。
+    expect(onlyStation.got).toEqual([STATION_WAVE, READING, STATION_READING])
+  })
+
+  it("安全弁: 'station' を足しても 'all' の相手はセンサー単独も受け取り続ける", () => {
+    const hub = new ReadingHub()
+    const full = sink({ wave: 'all' })
+    full.attach(hub)
+
+    hub.publish(WAVE)
+    hub.publish(STATION_WAVE)
+
+    // 管理コンソールの波形タブ（`?wave=1`）がここに乗っている。**狭めない。**
+    expect(full.got).toEqual([WAVE, STATION_WAVE])
   })
 
   it('上限に達したら新しいほうを断り、断った数を覚える', () => {
@@ -248,7 +287,7 @@ describe('ReadingHub', () => {
   it('渡す途中で投げた相手だけを切り、ほかへは配り続ける', () => {
     const hub = new ReadingHub()
     const broken = hub.subscribe({
-      wave: false,
+      wave: 'none',
       deliver: () => {
         throw new Error('壊れた受け手')
       },
@@ -274,7 +313,7 @@ describe('ReadingHub', () => {
     const b = sink()
     const c = sink()
     const subA: Subscription | null = hub.subscribe({
-      wave: false,
+      wave: 'none',
       deliver: (m) => {
         a.got.push(m)
         subA?.close()
@@ -296,7 +335,7 @@ describe('ReadingHub', () => {
   it('報せ方が壊れていても外すことは済ませ、数えて次へ進む', () => {
     const hub = new ReadingHub({ stallMs: 0 })
     const rude = hub.subscribe({
-      wave: false,
+      wave: 'none',
       deliver: () => false,
       onDetach: () => {
         throw new Error('報せが壊れた')

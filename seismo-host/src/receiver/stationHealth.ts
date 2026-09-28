@@ -189,8 +189,9 @@ export class StationHealthBook {
    * 合成波形が 1 まとまり出た（#315）。**混ざった本数だけを覚える。**
    *
    * 波形そのものは持たない —— 状態の口は「見に来たときの姿」を返すもので、
-   * 毎秒 15 KB の時系列を抱える場所ではない（波形を見たい相手は
-   * `/stream?wave=1` へ繋ぐ）。
+   * 毎秒 15 KB の時系列を抱える場所ではない。波形を見たい相手は
+   * **合成だけで足りるなら `/stream?wave=station`**、センサー単独も要るなら
+   * `?wave=1` へ繋ぐ（後者はそこへ毎秒 65 KB 積む。`readingHub.ts` の `WaveWant`）。
    */
   noteWave(wave: FusedWaveChunk): void {
     // **空のまとまりでは触らない。** `SensorFusion` は空を返さないが、
