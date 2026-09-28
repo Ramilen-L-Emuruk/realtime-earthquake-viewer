@@ -327,6 +327,53 @@
         font-weight: 600;
         margin-top: 0.15rem;
       }
+      /* 波形タブ。 */
+      .wave-controls {
+        display: flex;
+        gap: 1rem;
+        flex-wrap: wrap;
+        margin-block: 0.75rem;
+      }
+      .wave-controls > label {
+        flex: 0 0 auto;
+      }
+      /* **チェックボックスは横並びにする。** `label` の既定は縦積み（`display: grid`）で、
+         四角と文字が上下に離れると押す場所が分かりにくい。 */
+      .wave-follow-label,
+      .wave-sensor {
+        display: flex !important;
+        align-items: center;
+        gap: 0.4rem;
+      }
+      .wave-sensors {
+        display: grid;
+        gap: 0.35rem;
+        margin-block: 0.5rem;
+      }
+      .wave-sensor {
+        font-weight: 400;
+        cursor: pointer;
+      }
+      .wave-swatch {
+        width: 0.9rem;
+        height: 0.9rem;
+        border-radius: 3px;
+        flex: 0 0 auto;
+      }
+      .wave-seek {
+        width: 100%;
+        padding: 0;
+      }
+      /* **`display: block` を明示する。** `canvas` の既定は inline で、行の下に
+         数ピクセルの余白が付く（枠の中で下だけ空く）。 */
+      .wave-canvas {
+        display: block;
+        width: 100%;
+        height: 160px;
+        /* 指で引いて時間をずらすので、ブラウザ側のスクロールへ渡さない。 */
+        touch-action: none;
+        cursor: ew-resize;
+      }
     </style>
   </head>
   <body>
