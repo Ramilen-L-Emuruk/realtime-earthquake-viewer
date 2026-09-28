@@ -33,13 +33,14 @@ const MAX_SUBSCRIBERS_DEFAULT = 8
  * 受け取らない状態がこれだけ続いたら、その購読を切る。
  *
  * **回数ではなく経過時間で測る。** センサーの震度は購読の種類によらず毎秒 9 件が流れ、
- * 波形を取る購読にはそこへ毎秒 33 件が積まれる（実測。`publish` は波形だけを選り分け、
- * 震度は全員へ配る）。回数で切ると**同じ「30 秒詰まっている」が購読の種類で
- * 4 倍以上ずれる**（このリポジトリが「異常の判定は経過時間で行う」と決めているのと
- * 同じ理由）。**観測点の合成（`station-reading`）が構成されていれば、そのぶん件数は
+ * センサー単独の波形（`wave`）を取る購読にはそこへ毎秒 33 件が積まれる（実測。
+ * `publish` は波形だけを選り分け、震度は全員へ配る）。回数で切ると**同じ
+ * 「30 秒詰まっている」が購読の種類で 4 倍以上ずれる**（このリポジトリが
+ * 「異常の判定は経過時間で行う」と決めているのと同じ理由）。
+ * **観測点の合成（`station-reading`）が構成されていれば、そのぶん件数は
  * さらに増える**——こちらも震度と同じく全員へ配る種別なので、上の比率をずらす方向には
- * 働かない。**合成波形（`station-wave`）は波形を取る購読だけへ行く**ので、
- * こちらは比率を広げる側（1 観測点なら毎秒 3 件ほど）。
+ * 働かない。**合成波形（`station-wave`）は `'station'` 以上を望んだ購読だけへ行く**
+ * ので、こちらは比率を広げる側（1 観測点なら毎秒 3 件ほど）。
  */
 const STALL_MS_DEFAULT = 30_000
 
@@ -53,20 +54,63 @@ export type HubMessage =
   | { readonly kind: 'station-wave'; readonly wave: FusedWaveChunk }
 
 /**
- * その種別を「波形を欲しがっている購読者」だけへ配るか。
+ * 購読者が波形をどこまで欲しがっているか。
+ *
+ * **`'station'` を用意してあるのが要。** 観測点の合成波形（`station-wave`）だけを
+ * 見たい相手——地震ビューアーの PWA がそれ——に、センサー単独の波形（`wave`）まで
+ * 押し付けないため。実測（実機・センサー 9 本）で `wave` は毎秒およそ 65 KB あり、
+ * 合成の毎秒およそ 15 KB に対して 4 倍を超える。**受け手が捨てる形では通信量は
+ * 減らない**ので、ここで選り分ける。
+ */
+export type WaveWant =
+  /** 波形は要らない（震度だけ）。 */
+  | 'none'
+  /** 観測点の合成波形だけ要る。 */
+  | 'station'
+  /** センサー単独の波形も要る（管理コンソールの波形タブ）。 */
+  | 'all'
+
+/**
+ * その種別が波形のどの層に属するか。
  *
  * **`Record` にしてあるので、`HubMessage` へ種別を足してここへ書かなければ型検査が
  * 止める。** 選り分けを `if (message.kind === 'wave')` と直に書く形だと、後から足した
  * 種別が既定で全員へ流れる —— 毎秒およそ 15 KB の合成波形が、震度だけを見に来た
- * 相手へ黙って届くことになる（`SubscribeOptions.wave` の説明を見ること）。
+ * 相手へ黙って届くことになる（{@link WaveWant} の説明を見ること）。
  * このリポジトリが「表を 1 つにすれば書き写す場所そのものが無くなる」と決めているのと
  * 同じ手当て（`main.ts` の `Record<GravityCount, string>`）。
  */
-const WAVE_ONLY: Record<HubMessage['kind'], boolean> = {
-  reading: false,
-  wave: true,
-  'station-reading': false,
-  'station-wave': true,
+type WaveTier =
+  /** 波形ではない（震度）。購読者の希望に関わらず配る。 */
+  | 'always'
+  /** 観測点の合成波形。 */
+  | 'station'
+  /** センサー単独の波形。 */
+  | 'sensor'
+
+const WAVE_TIER: Record<HubMessage['kind'], WaveTier> = {
+  reading: 'always',
+  wave: 'sensor',
+  'station-reading': 'always',
+  'station-wave': 'station',
+}
+
+/**
+ * その購読者へこの種別を配るか。
+ *
+ * **`switch`（`default` なし）で書く。** 層を足したら型検査が止める——比較の式
+ * （`want !== 'none'` の並び）で書くと、新しい層は既定でどちらかへ黙って倒れる。
+ */
+function shouldDeliver(want: WaveWant, kind: HubMessage['kind']): boolean {
+  switch (WAVE_TIER[kind]) {
+    case 'always':
+      return true
+    case 'station':
+      // 合成だけを見に来た相手にも、全部要る相手にも配る。
+      return want === 'station' || want === 'all'
+    case 'sensor':
+      return want === 'all'
+  }
 }
 
 /** ハブが自分から購読を切った理由。 */
@@ -87,19 +131,18 @@ export type DetachReason =
 
 export interface SubscribeOptions {
   /**
-   * 波形も要るか。**センサー単独（`wave`）と観測点の合成（`station-wave`）の
-   * 両方をこの 1 つの旗で決める**（どちらを配るかは `WAVE_ONLY` が持つ）。
+   * 波形をどこまで欲しがっているか（どの種別がどの層かは `WAVE_TIER` が持つ）。
    *
    * **要らない相手へは押さない。** 実測（実機・センサー 9 本・2026-09-28 に 6 秒受けた）で
-   * **毎秒およそ 65 KB**（1 件 1990 B・30 サンプル・毎秒 33 件）あり、波形を見ていない
-   * 端末へ流し続ける意味が無い。**合成波形はそこへさらに毎秒およそ 15 KB 積む**
+   * センサー単独の波形（`wave`）が**毎秒およそ 65 KB**（1 件 1990 B・30 サンプル・
+   * 毎秒 33 件）、観測点の合成波形（`station-wave`）が**毎秒およそ 15 KB**
    * （1 観測点ぶん・`dcGal` と `memberCount` が付くので 1 件は約 2.3 倍）。
    *
    * 比較のため同じ実測での他の種別 —— `reading` が毎秒およそ 2.5 KB、
    * `station-reading` が毎秒およそ 0.1 KB。**桁が 2 つ違う**ので、
    * 波形だけを選り分ける意味がある。
    */
-  readonly wave: boolean
+  readonly wave: WaveWant
   /**
    * 1 件渡す。**受け取ったら `true`、いま受け取れないなら `false`。**
    *
@@ -148,7 +191,8 @@ export interface Subscription {
 /** 購読 1 つの様子。 */
 export interface SubscriberStats {
   readonly id: number
-  readonly wave: boolean
+  /** 波形をどこまで受けているか。**状態の口へそのまま出す**（通信量の見当が付く）。 */
+  readonly wave: WaveWant
   /** 繋がった時刻（unix ミリ秒）。 */
   readonly sinceMs: number
   readonly delivered: number
@@ -199,7 +243,7 @@ export interface ReadingHubOptions {
 
 interface Entry {
   readonly id: number
-  readonly wave: boolean
+  readonly wave: WaveWant
   readonly sinceMs: number
   readonly deliver: (message: HubMessage) => boolean
   readonly onDetach: (reason: DetachReason) => void
@@ -278,7 +322,7 @@ export class ReadingHub {
     // 元の配列を直に回すと詰め直しで次の購読者を飛ばす。
     for (const entry of [...this.entries]) {
       if (entry.closed) continue
-      if (WAVE_ONLY[message.kind] && !entry.wave) continue
+      if (!shouldDeliver(entry.wave, message.kind)) continue
 
       let took: boolean
       try {

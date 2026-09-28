@@ -1,7 +1,8 @@
 // 状態の口。
 //
 // - `GET /status` — いまの様子を JSON で返す（宛先は**運用者**）
-// - `GET /stream` — 計測震度を押し出す。`?wave=1` を付けたときだけ波形も付く（宛先は **PWA**）
+// - `GET /stream` — 計測震度を押し出す。波形は `?wave=` で頼んだぶんだけ付く
+//   （`station` = 観測点の合成だけ／`1`・`all` = センサー単独も。宛先は **PWA** と**管理コンソール**）
 // - `/api/*` — 設定・履歴・管理操作（宛先は**管理コンソール**）。**認証必須**（`adminAuth.ts`）。
 //   応じるのは観測点・基板の設定（`/api/stations`・`/api/boards`）だけ（#313 段 B）。
 // - `GET /admin`・`GET /admin/app.js` — 管理コンソール本体（静的アセット）。**認証なし**——
@@ -29,13 +30,69 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import type { AdminConsoleAssets } from './adminConsoleAssets'
 import { checkAdminAuth } from './adminAuth'
 import type { AdminAuthConfig, AdminAuthFailure } from './adminAuth'
-import type { HubMessage, ReadingHub } from './readingHub'
+import type { HubMessage, ReadingHub, WaveWant } from './readingHub'
 import { describeFailure, parseStationConfig } from './stationConfig'
 import type { StationConfig } from './stationConfig'
 import type { StatusReport } from './statusReport'
 
 /** 繋ぎ直すまでブラウザに待たせる時間。**SSE の `retry:` で伝える。** */
 const RETRY_MS = 3_000
+
+/**
+ * `?wave=` に書ける値。
+ *
+ * **`1` の意味を変えない。** 管理コンソールの波形タブ（`src/admin/waveStream.ts`）が
+ * この値で繋いでいて、あちらはセンサー単独の波形を描くのが仕事。
+ *
+ * **`Record` ではなく `Map` で持つ。** 素の物体は原型の鎖を引くので、
+ * `?wave=constructor` のような問い合わせが `Object.prototype.constructor` を拾い、
+ * **`?? 'none'` の受けを素通りして関数が `WaveWant` として通る**（型検査は
+ * `Record<string, WaveWant>` を信じるので止めない）。`Map` なら入れた鍵しか返らない。
+ */
+const WAVE_PARAM = new Map<string, WaveWant>([
+  ['1', 'all'],
+  ['all', 'all'],
+  ['station', 'station'],
+])
+
+/**
+ * `?wave=` の値から、波形をどこまで配るかを決める。
+ *
+ * **知らない値・未指定は `'none'` へ倒す。** 波形が欲しい相手は必ず名乗るので、
+ * 打ち間違いで毎秒 65 KB が流れ出すより、何も出ないほうが安全。
+ *
+ * **ただし倒したことは黙らない。** 「書いていない」と「書いたが読めなかった」を
+ * 分けて返し、後者は呼び出し側が 1 行残す（{@link isUnknownWaveParam}）——
+ * 倒したことが `/status` にしか出ないと、`?wave=Station` のような打ち間違いで
+ * 波形が一度も届かない状態が「繋がっているのに来ない」としか見えなくなる
+ * （購読の上限で断った回を 1 行残しているのと同じ理由）。
+ */
+export function parseWaveParam(raw: string | null): WaveWant {
+  if (raw === null) return 'none'
+  return WAVE_PARAM.get(raw) ?? 'none'
+}
+
+/**
+ * `?wave=` に何か書いてあるのに読めなかったか。**書いていない場合は偽。**
+ *
+ * 戻りを `raw is string` にしてあるので、真のとき呼び出し側は値を記録へ出せる
+ * （`raw !== null` を重ねて書かなくて済む）。
+ */
+export function isUnknownWaveParam(raw: string | null): raw is string {
+  return raw !== null && !WAVE_PARAM.has(raw)
+}
+
+/**
+ * 外から来た値を記録へ出せる形へ削る。
+ *
+ * **そのまま書かない。** 問い合わせ文字列は誰でも自由に書けるので、改行を混ぜれば
+ * 記録へ偽の 1 行を差し込めるし、長さにも上限が無い。記録に要るのは
+ * 「何を渡されたか」が分かる程度で、原文の忠実な再現ではない。
+ */
+function forLog(raw: string): string {
+  const tame = raw.replace(/[\u0000-\u001F\u007F]/g, '?')
+  return tame.length > 32 ? `${tame.slice(0, 32)}…` : tame
+}
 
 /**
  * 生存確認を送る間隔。
@@ -659,7 +716,7 @@ export async function startStatusServer(options: StatusServerOptions): Promise<S
     }
   }
 
-  const handleStream = (req: IncomingMessage, res: ServerResponse, wantsWave: boolean): void => {
+  const handleStream = (req: IncomingMessage, res: ServerResponse, wantsWave: WaveWant): void => {
     applyCors(res)
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
     res.setHeader('Cache-Control', 'no-cache')
@@ -810,7 +867,14 @@ export async function startStatusServer(options: StatusServerOptions): Promise<S
         return
       }
       if (url.pathname === '/stream') {
-        handleStream(req, res, url.searchParams.get('wave') === '1')
+        const waveParam = url.searchParams.get('wave')
+        if (isUnknownWaveParam(waveParam)) {
+          // **`detail` は固定の合言葉にする。** 渡された値を鍵にすると、
+          // でたらめな値を投げ続けるだけで間引きの枠（`logThrottle` の
+          // `maxKeysPerKind`）を埋められる。値のほうは 1 行の本文へ入れる。
+          log('warn', 'sse', 'bad-wave-param', `[sse] ?wave= を読めないので波形なしで繋ぐ: ${forLog(waveParam)}`)
+        }
+        handleStream(req, res, parseWaveParam(waveParam))
         return
       }
       if (url.pathname === '/admin' || url.pathname === '/admin/') {

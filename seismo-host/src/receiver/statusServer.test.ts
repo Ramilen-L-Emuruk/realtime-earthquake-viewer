@@ -11,7 +11,7 @@ import { EMPTY_STATION_CONFIG, StationDirectory } from './stationConfig'
 import type { StationConfig } from './stationConfig'
 import { buildStatusReport } from './statusReport'
 import type { RawStoreStatus, StatusReport } from './statusReport'
-import { startStatusServer } from './statusServer'
+import { parseWaveParam, startStatusServer } from './statusServer'
 import type { StatusServer, StatusServerOptions } from './statusServer'
 
 const RAW: RawStoreStatus = {
@@ -276,6 +276,32 @@ async function readEvents(
   return out
 }
 
+describe('parseWaveParam', () => {
+  it("正: station を頼めば観測点の合成だけ、1・all を頼めばセンサー単独も", () => {
+    expect(parseWaveParam('station')).toBe('station')
+    // **`1` の意味を変えていない。** 管理コンソールの波形タブがこの値で繋いでいる。
+    expect(parseWaveParam('1')).toBe('all')
+    expect(parseWaveParam('all')).toBe('all')
+  })
+
+  it('対照: 頼まなければ波形は付かない', () => {
+    expect(parseWaveParam(null)).toBe('none')
+  })
+
+  it('安全弁: 知らない値は none へ倒す（打ち間違いで毎秒 65 KB を流さない）', () => {
+    // `?wave=true` や `?wave=sensor` のような、それらしく見えて実装に無い値。
+    // ここが `'all'` へ倒れると、頼んでいない端末へセンサー単独の波形が流れる。
+    expect(parseWaveParam('true')).toBe('none')
+    expect(parseWaveParam('sensor')).toBe('none')
+    expect(parseWaveParam('')).toBe('none')
+    expect(parseWaveParam('0')).toBe('none')
+    // **`Record` の素性が漏れないこと。** 原型の鎖にある名前を渡しても
+    // 表の値として拾われない（`?wave=constructor` で `'all'` になったら事故）。
+    expect(parseWaveParam('constructor')).toBe('none')
+    expect(parseWaveParam('toString')).toBe('none')
+  })
+})
+
 describe('startStatusServer', () => {
   it('/status は組み立てた中身をそのまま返し、横断の許しを付ける', async () => {
     const hub = new ReadingHub()
@@ -358,6 +384,125 @@ describe('startStatusServer', () => {
 
     expect(got).toHaveLength(1)
     expect(got[0].name).toBe('station-reading')
+  })
+
+  // 波形の粒度（#261 段 0）。地震ビューアーの PWA は合成 1 本だけを見るので、
+  // センサー単独の波形（実測で毎秒およそ 65 KB）が付いてこない口が要る。
+  it('正: ?wave=station は観測点の合成波形を押し出す（#261 段 0）', async () => {
+    const hub = new ReadingHub()
+    const base = await start(hub)
+
+    const got = await readEvents(base, '/stream?wave=station', 1, () => {
+      hub.publish({ kind: 'station-wave', wave: STATION_WAVE })
+    })
+
+    expect(got).toHaveLength(1)
+    expect(got[0].name).toBe('station-wave')
+    expect(got[0].data).toEqual(STATION_WAVE)
+  })
+
+  it('対照: ?wave=station へはセンサー単独の波形が付いてこない', async () => {
+    const hub = new ReadingHub()
+    const base = await start(hub)
+
+    const got = await readEvents(base, '/stream?wave=station', 2, () => {
+      hub.publish({ kind: 'wave', wave: WAVE })
+      hub.publish({ kind: 'station-wave', wave: STATION_WAVE })
+      hub.publish({ kind: 'station-reading', reading: STATION_READING })
+    })
+
+    // **`wave` が 1 件も混ざらないこと**がこの口を足した目的。混ざると、
+    // 合成 1 本を見るだけの端末へ毎秒 65 KB が流れ続ける。
+    expect(got.map((e) => e.name)).toEqual(['station-wave', 'station-reading'])
+  })
+
+  it('安全弁: 知らない値（?wave=sensor 等）では波形が 1 件も出ない', async () => {
+    const hub = new ReadingHub()
+    const base = await start(hub)
+
+    const got = await readEvents(base, '/stream?wave=sensor', 1, () => {
+      hub.publish({ kind: 'wave', wave: WAVE })
+      hub.publish({ kind: 'station-wave', wave: STATION_WAVE })
+      hub.publish({ kind: 'reading', reading: READING })
+    })
+
+    // 打ち間違いが `all` へ倒れると、頼んでいない端末へ波形が流れ出す。
+    expect(got.map((e) => e.name)).toEqual(['reading'])
+  })
+
+  it('正: 読めない ?wave= の値を受けたら 1 行残す', async () => {
+    const hub = new ReadingHub()
+    const lines: string[] = []
+    const details: string[] = []
+    const base = await start(hub, undefined, (level, kind, detail, line) => {
+      if (kind === 'sse') {
+        details.push(detail)
+        lines.push(`${level}:${line}`)
+      }
+    })
+
+    const ctrl = new AbortController()
+    await fetch(`${base}/stream?wave=Station`, { signal: ctrl.signal })
+    ctrl.abort()
+
+    // **倒したことが `/status` にしか出ないと、繋がっているのに波形が来ない状態が
+    // 表示不具合と見分けられない。** 購読の上限で断った回と同じく 1 行残す。
+    expect(details).toContain('bad-wave-param')
+    expect(lines.some((l) => l.startsWith('warn:') && l.includes('Station'))).toBe(true)
+  })
+
+  it('対照: 正しい値・未指定では読めない旨を残さない', async () => {
+    const hub = new ReadingHub()
+    const details: string[] = []
+    const base = await start(hub, undefined, (_level, kind, detail) => {
+      if (kind === 'sse') details.push(detail)
+    })
+
+    for (const path of ['/stream', '/stream?wave=1', '/stream?wave=all', '/stream?wave=station']) {
+      const ctrl = new AbortController()
+      await fetch(`${base}${path}`, { signal: ctrl.signal })
+      ctrl.abort()
+    }
+
+    // ここが残ると、普段の接続で警告が出続けて本物の打ち間違いが埋もれる。
+    expect(details).not.toContain('bad-wave-param')
+  })
+
+  it('安全弁: 記録へ出す値は制御文字を潰し、長さを切る', async () => {
+    const hub = new ReadingHub()
+    const lines: string[] = []
+    const base = await start(hub, undefined, (_level, kind, _detail, line) => {
+      if (kind === 'sse') lines.push(line)
+    })
+
+    // 改行を混ぜて記録へ偽の 1 行を差し込もうとする値と、上限より長い値。
+    const ctrl = new AbortController()
+    await fetch(`${base}/stream?wave=${encodeURIComponent('x\n[sse] 偽の行')}`, { signal: ctrl.signal })
+    ctrl.abort()
+    const ctrl2 = new AbortController()
+    await fetch(`${base}/stream?wave=${'z'.repeat(100)}`, { signal: ctrl2.signal })
+    ctrl2.abort()
+
+    const bad = lines.filter((l) => l.includes('?wave= を読めない'))
+    expect(bad).toHaveLength(2)
+    // **1 行に収まっていること。** 改行が通ると、記録を読む側には別の出来事に見える。
+    expect(bad.every((l) => !l.includes('\n'))).toBe(true)
+    // 長すぎる値は削って印を付ける（記録に要るのは「何を渡されたか」が分かる程度）。
+    expect(bad.some((l) => l.includes('…'))).toBe(true)
+    expect(bad.every((l) => l.length < 200)).toBe(true)
+  })
+
+  it('安全弁: ?wave=1 はこれまでどおりセンサー単独も合成も出す（管理コンソール）', async () => {
+    const hub = new ReadingHub()
+    const base = await start(hub)
+
+    const got = await readEvents(base, '/stream?wave=1', 2, () => {
+      hub.publish({ kind: 'wave', wave: WAVE })
+      hub.publish({ kind: 'station-wave', wave: STATION_WAVE })
+    })
+
+    // 管理コンソールの波形タブ（`src/admin/waveStream.ts`）がこの値で繋いでいる。**狭めない。**
+    expect(got.map((e) => e.name)).toEqual(['wave', 'station-wave'])
   })
 
   it('上限に達したら 503 で断り、上限の値を伝える。こちら側にも 1 行残す', async () => {

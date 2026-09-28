@@ -409,13 +409,16 @@ describe('buildStatusReport', () => {
 
   it('押し出しの具合を出す', () => {
     const hub = new ReadingHub({ maxSubscribers: 1 })
-    hub.subscribe({ wave: true, deliver: () => true, onDetach: () => {} })
-    hub.subscribe({ wave: false, deliver: () => true, onDetach: () => {} })
+    hub.subscribe({ wave: 'all', deliver: () => true, onDetach: () => {} })
+    hub.subscribe({ wave: 'none', deliver: () => true, onDetach: () => {} })
 
     const report = buildStatusReport(input({ hub: hub.snapshot() }))
 
     expect(report.stream.subscribers).toHaveLength(1)
-    expect(report.stream.subscribers[0].wave).toBe(true)
+    // **どこまで受けているかがそのまま出る。** 真偽値だと「合成だけ」を
+    // 受けている購読と「センサー単独も」の購読が同じ `true` に潰れ、
+    // 毎秒 65 KB の差が状態の口から読めなくなる。
+    expect(report.stream.subscribers[0].wave).toBe('all')
     expect(report.stream.rejected).toBe(1)
     expect(report.stream.limit).toBe(1)
   })
