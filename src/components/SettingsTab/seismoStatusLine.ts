@@ -12,7 +12,14 @@
 
 import type { SeismoHostCheck } from '../../services/seismoStream'
 
-/** 画面に出す前の状態。**`SeismoHostCheck` に、通信する手前で決まる 4 つを足したもの。** */
+/**
+ * 画面に出す前の状態。**`SeismoHostCheck` に、通信する手前で決まる 4 つを足したもの。**
+ *
+ * **`ok` の枝は、画面が読む 3 つだけを `Pick` で取る。** `SeismoHostCheck` の `ok` を
+ * そのまま並べると、あちらへ項目が増えるたびにこのファイルの試験まで直すことに
+ * なる（作る側が全部の項目を埋めさせられる）—— 画面が読むのは観測点の一覧と
+ * センサーの数だけで、押し出しを寄せるための割り当ては使わない。
+ */
 export type SeismoUiStatus =
   /** トグルが切れている。 */
   | { readonly kind: 'disabled' }
@@ -22,7 +29,8 @@ export type SeismoUiStatus =
   | { readonly kind: 'invalid' }
   /** 問い合わせている途中。 */
   | { readonly kind: 'checking' }
-  | SeismoHostCheck
+  | Pick<Extract<SeismoHostCheck, { kind: 'ok' }>, 'kind' | 'stations' | 'sensorCount'>
+  | Exclude<SeismoHostCheck, { kind: 'ok' }>
 
 export type SeismoStatusTone = 'ok' | 'problem' | 'muted'
 

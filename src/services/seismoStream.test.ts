@@ -13,7 +13,7 @@ import {
   createSseParser,
   fetchSeismoStatus,
   isValidSeismoHostUrl,
-  SeismoStationNames,
+  SeismoHostDirectory,
   type SeismoMessage,
 } from './seismoStream'
 
@@ -219,7 +219,50 @@ describe('fetchSeismoStatus', () => {
   it('対照: sensors が空配列なら「繋がったが観測点 0 件」', async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({ sensors: [] })) as unknown as typeof fetch
     const result = await fetchSeismoStatus('http://host:50506', fetchImpl)
-    expect(result).toEqual({ kind: 'ok', stations: [], sensorCount: 0 })
+    expect(result).toEqual({ kind: 'ok', stations: [], sensorCount: 0, sensors: [] })
+  })
+
+  it('正: センサーごとの割り当てを読む（`reading` を観測点へ寄せる材料）', async () => {
+    // **これが無いと、センサー単独の震度を観測点へ寄せられない。** 押し出しが
+    // 名乗るのは `boardKey`・`sensorId` だけ（`useSeismoStation.ts`）。
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({
+        sensors: [
+          { boardKey: 'mac:aa', sensorId: 'i2c0-68', station: { stationId: 'home' }, enabled: true },
+          { boardKey: 'mac:aa', sensorId: 'i2c0-69', station: { stationId: 'home' }, enabled: false },
+          // 設定に無い基板は `station: null` で届く。
+          { boardKey: 'mac:bb', sensorId: 'i2c0-68', station: null },
+        ],
+      }),
+    ) as unknown as typeof fetch
+    const result = await fetchSeismoStatus('http://host:50506', fetchImpl)
+    expect(result.kind).toBe('ok')
+    if (result.kind !== 'ok') return
+    // **`enabled` は読まない**（理由は `SeismoSensorInfo` の下のコメント。無効な
+    // センサーからは震度そのものが届かないので、選り分ける相手がいない）。
+    expect(result.sensors).toEqual([
+      { boardKey: 'mac:aa', sensorId: 'i2c0-68', stationId: 'home' },
+      { boardKey: 'mac:aa', sensorId: 'i2c0-69', stationId: 'home' },
+      // **観測点が無いセンサーも並べる。** 捨てると「まだ `/status` を読めていない」
+      // 基板と区別が付かず、震度が届くたびに取り直しを繰り返す。
+      { boardKey: 'mac:bb', sensorId: 'i2c0-68', stationId: null },
+    ])
+  })
+
+  it('対照: 合成の最新震度（stationIntensities）は読まない', async () => {
+    // **繋いだ直後の空白を埋められそうに見えるが、読まないと決めた**（理由は
+    // `SeismoHostCheck` の説明。時刻がホストの時計なので古さを測れない）。
+    // ここを見ているのは、後から「読めば埋まる」と足し戻されるのを防ぐため。
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({
+        sensors: [{ boardKey: 'mac:aa', sensorId: 'i2c0-68', station: null }],
+        stationIntensities: [{ stationId: 'home', lastIntensity: 0.25, lastReadingAtMs: 1 }],
+      }),
+    ) as unknown as typeof fetch
+    const result = await fetchSeismoStatus('http://host:50506', fetchImpl)
+    expect(result.kind).toBe('ok')
+    if (result.kind !== 'ok') return
+    expect(Object.keys(result).sort()).toEqual(['kind', 'sensorCount', 'sensors', 'stations'])
   })
 
   it('安全弁: HTTP エラー・到達不能・URL 不正を言い分ける', async () => {
@@ -266,7 +309,7 @@ describe('fetchSeismoStatus', () => {
       await fetchSeismoStatus('http://host:50506', notSeismo)
       expect(String(warn.mock.calls[0][0])).toContain('sensors')
 
-      // **通信する前に弾く経路も残す。** ここを飛ばすと、`SeismoStationNames` を
+      // **通信する前に弾く経路も残す。** ここを飛ばすと、`SeismoHostDirectory` を
       // 不正な URL で作られたときに「名前が引けないのに理由がどこにも無い」状態に
       // なる（あちらは `baseUrl` を検めずに受け取る）。
       warn.mockClear()
@@ -646,7 +689,7 @@ describe('connectSeismoStream', () => {
   })
 })
 
-describe('SeismoStationNames', () => {
+describe('SeismoHostDirectory', () => {
   beforeEach(() => {
     vi.useFakeTimers()
   })
@@ -656,20 +699,50 @@ describe('SeismoStationNames', () => {
 
   const statusOnce = (displayName: string): typeof fetch =>
     vi.fn(async () =>
-      jsonResponse({ sensors: [{ station: { stationId: 'home', displayName } }] }),
+      jsonResponse({
+        sensors: [
+          {
+            boardKey: 'mac:aa',
+            sensorId: 'i2c0-68',
+            station: { stationId: 'home', displayName },
+          },
+        ],
+      }),
     ) as unknown as typeof fetch
 
   it('正: 取り直すと表示名を引ける', async () => {
-    const names = new SeismoStationNames('http://host:50506', statusOnce('自宅'), () => 0)
-    await names.refresh()
-    expect(names.displayName('home')).toBe('自宅')
+    const directory = new SeismoHostDirectory('http://host:50506', statusOnce('自宅'), () => 0)
+    await directory.refresh()
+    expect(directory.displayName('home')).toBe('自宅')
   })
 
   it('対照: 知らない観測点は識別子をそのまま返す', async () => {
-    const names = new SeismoStationNames('http://host:50506', statusOnce('自宅'), () => 0)
-    await names.refresh()
+    const directory = new SeismoHostDirectory('http://host:50506', statusOnce('自宅'), () => 0)
+    await directory.refresh()
     // **空文字を返さない。** 画面が名無しになる。
-    expect(names.displayName('office')).toBe('office')
+    expect(directory.displayName('office')).toBe('office')
+  })
+
+  it('正: 基板から観測点を引ける（`reading` を寄せる先）', async () => {
+    const directory = new SeismoHostDirectory('http://host:50506', statusOnce('自宅'), () => 0)
+    await directory.refresh()
+    expect(directory.stationIdForBoard('mac:aa')).toBe('home')
+    expect(directory.stationIdForBoard('mac:bb')).toBeNull()
+  })
+
+  it('正: 同じ基板が複数のセンサーで現れたら、割り当てが引けた側を採る', async () => {
+    // **先に `null` を書くと「割り当て済みなのに null」の台帳ができる。**
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({
+        sensors: [
+          { boardKey: 'mac:aa', sensorId: 'i2c0-68', station: null },
+          { boardKey: 'mac:aa', sensorId: 'i2c0-69', station: { stationId: 'home' } },
+        ],
+      }),
+    ) as unknown as typeof fetch
+    const directory = new SeismoHostDirectory('http://host:50506', fetchImpl, () => 0)
+    await directory.refresh()
+    expect(directory.stationIdForBoard('mac:aa')).toBe('home')
   })
 
   it('安全弁: 知らない観測点が毎秒来ても、下限の間隔より頻繁には叩かない', async () => {
@@ -677,9 +750,9 @@ describe('SeismoStationNames', () => {
     // 毎秒 `/status` を叩く形になる。
     const fetchImpl = statusOnce('自宅')
     let nowMs = 0
-    const names = new SeismoStationNames('http://host:50506', fetchImpl, () => nowMs)
+    const directory = new SeismoHostDirectory('http://host:50506', fetchImpl, () => nowMs)
     for (let i = 0; i < 10; i += 1) {
-      names.require('office')
+      directory.require('office')
       await vi.advanceTimersByTimeAsync(0)
       nowMs += 1000
     }
@@ -687,17 +760,80 @@ describe('SeismoStationNames', () => {
 
     // 下限（60 秒）を越えれば取り直す。
     nowMs += 60_000
-    names.require('office')
+    directory.require('office')
     await vi.advanceTimersByTimeAsync(0)
     expect(vi.mocked(fetchImpl).mock.calls.length).toBe(2)
   })
 
   it('安全弁: 既に知っている観測点では問い合わせない', async () => {
     const fetchImpl = statusOnce('自宅')
-    const names = new SeismoStationNames('http://host:50506', fetchImpl, () => 0)
-    await names.refresh()
-    names.require('home')
+    const directory = new SeismoHostDirectory('http://host:50506', fetchImpl, () => 0)
+    await directory.refresh()
+    directory.require('home')
     await vi.advanceTimersByTimeAsync(0)
     expect(vi.mocked(fetchImpl).mock.calls.length).toBe(1)
+  })
+
+  it('正: 割り当ての無い基板も取り直しの対象に残す（「一度 null なら二度と叩かない」を覆した）', async () => {
+    // **`has()` で打ち切る形を一度書き、敵対的レビューが覆した。** ホスト側の
+    // 割り当ては後から変わる（管理コンソールの `PUT /api/boards/:boardKey` は
+    // upsert）—— 打ち切ると、利用者が割り当てを直してもそのブラウザが生きている
+    // 間は震度が出ず、記録にも何も残らない。
+    //
+    // **毎秒叩くことにはならない。** 頻度は `refresh` の下限が担う。
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ sensors: [{ boardKey: 'mac:bb', sensorId: 'i2c0-68', station: null }] }),
+    ) as unknown as typeof fetch
+    let nowMs = 0
+    const directory = new SeismoHostDirectory('http://host:50506', fetchImpl, () => nowMs)
+    await directory.refresh()
+    expect(vi.mocked(fetchImpl).mock.calls.length).toBe(1)
+
+    // 下限（引けたので 60 秒）の内側では叩かない。
+    nowMs += 30_000
+    for (let i = 0; i < 5; i += 1) {
+      directory.requireBoard('mac:bb')
+      await vi.advanceTimersByTimeAsync(0)
+    }
+    expect(vi.mocked(fetchImpl).mock.calls.length).toBe(1)
+
+    // **越えれば叩く** —— ここが覆した点。
+    nowMs += 60_000
+    directory.requireBoard('mac:bb')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(vi.mocked(fetchImpl).mock.calls.length).toBe(2)
+  })
+
+  it('正: 引けなかったときは短い下限で試し直す（引けたときと分ける）', async () => {
+    // **台帳が引けないと、センサー単独の震度をどの観測点にも寄せられない。**
+    // 合成が出ない観測点ではそれが唯一の経路なので、機能そのものが止まっている
+    // —— そこを「引けている場合」と同じ 1 分待たせる理由が無い。
+    let ok = false
+    const fetchImpl = vi.fn(async () =>
+      ok
+        ? jsonResponse({ sensors: [{ boardKey: 'mac:aa', sensorId: 'i2c0-68', station: { stationId: 'home' } }] })
+        : new Response('', { status: 503 }),
+    ) as unknown as typeof fetch
+    let nowMs = 0
+    const directory = new SeismoHostDirectory('http://host:50506', fetchImpl, () => nowMs)
+    await directory.refresh()
+    expect(vi.mocked(fetchImpl).mock.calls.length).toBe(1)
+
+    // 5 秒の手前では試し直さない。
+    nowMs += 4000
+    await directory.refresh()
+    expect(vi.mocked(fetchImpl).mock.calls.length).toBe(1)
+
+    // 5 秒を越えたら試し直す（引けていれば 1 分待つところ）。
+    nowMs += 2000
+    ok = true
+    await directory.refresh()
+    expect(vi.mocked(fetchImpl).mock.calls.length).toBe(2)
+    expect(directory.stationIdForBoard('mac:aa')).toBe('home')
+
+    // **引けた後は 1 分の下限へ戻る。**
+    nowMs += 10_000
+    await directory.refresh()
+    expect(vi.mocked(fetchImpl).mock.calls.length).toBe(2)
   })
 })
