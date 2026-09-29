@@ -73,6 +73,7 @@ const renderTab = (quake: JMAQuake) => render(
     onToggleUnreceived={() => {}}
     onFocusMap={() => {}}
     speakingTelegramTextSubject={null}
+    seismoWaves={new Map()}
   />,
 )
 

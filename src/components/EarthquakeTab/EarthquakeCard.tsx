@@ -37,6 +37,8 @@ import { useSubRegions } from '../../hooks/useSubRegions'
 import { usePrefectures } from '../../hooks/usePrefectures'
 import { ringsBoundsIndex, EMPTY_BOUNDS_INDEX, type RingsBounds } from '../../utils/subregions'
 import { groupUnreceivedPointNames, type UnreceivedPointGroup } from './unreceivedPointNames'
+import { QuakeSeismoWave } from './QuakeSeismoWave'
+import type { SeismoQuakeWave } from '../../hooks/useSeismoQuakeWaves'
 
 /**
  * 区域の行より下にある行の鍵をすべて集める。**親の行へ印を上げるために要る**
@@ -428,6 +430,13 @@ interface Props {
    * **任意にしない**（理由は `EarthquakeTab` の同名 props）。
    */
   speakingTelegramTextSubject: string | null
+  /**
+   * この地震の区間について、自作地震計から読み返した合成波形（→ `useSeismoQuakeWaves`）。
+   *
+   * **空なら何も出さない。** 「記録が無い」「揺れを捉えていない」を画面へ出さないと
+   * 決めてあるので（2026-09-29 のユーザー判断）、載せるものが無い＝枠ごと出ない。
+   */
+  seismoWaves?: readonly SeismoQuakeWave[]
 }
 
 /**
@@ -508,7 +517,7 @@ export function EarthquakeCard({
   quake, isLatest, isSelected, onSelect, lpgm, activeLpgmEventId, onToggleLpgm,
   estimatedIntensity = null, distributionActive = false, onToggleDistribution,
   unreceivedActive = false, onToggleUnreceived, onFocusMap, speakingTelegramTextSubject,
-  marks, lpgmMarks,
+  marks, lpgmMarks, seismoWaves,
 }: Props) {
   /**
    * 印は**値の肩に置く点**で出す（→ `components/UpdateDot.tsx`）。文字色も器の色も触らない。
@@ -1516,6 +1525,10 @@ export function EarthquakeCard({
               </div>
             )
           })()}
+
+          {/* 自作地震計が捉えたこの地震の区間（→ `useSeismoQuakeWaves`）。
+              **記録が無ければ枠ごと出ない** —— 渡ってくるのは載せるものがあるときだけ。 */}
+          <QuakeSeismoWave waves={seismoWaves ?? []} />
         </div>
       </button>
     )

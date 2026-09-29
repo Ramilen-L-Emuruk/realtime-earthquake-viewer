@@ -85,6 +85,7 @@ const renderQuake = (quake: JMAQuake, selected = true) =>
       onToggleUnreceived={() => {}}
       onFocusMap={() => {}}
       speakingTelegramTextSubject={null}
+      seismoWaves={new Map()}
     />,
   ).container
 
