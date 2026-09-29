@@ -44,6 +44,26 @@ export interface RawStoreStatus {
   readonly lastSweepError: string | null
 }
 
+/**
+ * 合成波形の保存の様子。**`WaveArchive` の読み取り専用の値をそのまま並べる**（`RawStoreStatus` と同じ形）。
+ *
+ * **生データの欄（`RawStoreStatus`）では代われない。** 残しているものが違う ——
+ * あちらはセンサー単独の生値、こちらは観測点の合成波形。片方だけ止まる形（合成の
+ * 相手が落ちて `station-wave` が流れなくなる）が現に起きうるので、別々に数える。
+ */
+export interface WaveArchiveStatus {
+  readonly writeErrors: number
+  readonly lostRecords: number
+  /** 形にできずに捨てたまとまりの数。**ディスクとは無関係**（手当ては合成の側）。 */
+  readonly badChunks: number
+  /** 流し口へ渡せたまとまりの数。**「保存が動いている」ことを確かめる唯一の欄。** */
+  readonly written: number
+  readonly rotated: number
+  readonly openBooks: number
+  readonly slowClose: boolean
+  readonly lastWriteError: string | null
+}
+
 export interface Endpoint {
   readonly address: string
   readonly port: number
@@ -78,6 +98,8 @@ export interface StatusReportInput {
    */
   readonly gravity: GravityCheckSnapshot
   readonly raw: RawStoreStatus
+  /** 合成波形の保存（`waveArchive.ts`）。**生データの欄とは別に持つ**（片方だけ止まりうる）。 */
+  readonly waveArchive: WaveArchiveStatus
   readonly hub: HubSnapshot
   /**
    * 観測点ぶんの合成（複数センサー・REQUIREMENTS.md §7）の生存。
@@ -233,6 +255,8 @@ export interface StatusReport {
     readonly boards: Record<string, unknown>
   }
   readonly raw: RawStoreStatus
+  /** 合成波形の保存（読み返しの口が返せる範囲は、ここが動いている間のぶんだけ）。 */
+  readonly waveArchive: WaveArchiveStatus
   readonly stream: HubSnapshot
   /**
    * 数値として出せなかった時刻の数。
@@ -375,6 +399,7 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     gravity,
     tally: { sources, boards },
     raw: input.raw,
+    waveArchive: input.waveArchive,
     stream: input.hub,
     unreadableTimes: unreadable,
     unreadableIntensityValues: unreadableValues,

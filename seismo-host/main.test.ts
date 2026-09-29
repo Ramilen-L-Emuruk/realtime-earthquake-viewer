@@ -440,7 +440,33 @@ describe('buildClosingLines', () => {
     recordsAtRisk: 0,
     lastWriteError: null,
     lastSweepError: null,
+    waveWriteErrors: 0,
+    waveLostRecords: 0,
+    waveBadChunks: 0,
+    waveSlowClose: false,
+    waveLastWriteError: null,
   } as const
+
+  it('合成波形を書き損ねたら、生データとは別の行で出す', () => {
+    // **混ぜない。** 残しているものが違う（センサー単独の生値 / 観測点の合成波形）ので、
+    // 1 つの行にまとめると「読み返しの口が空を返すようになった」ことが読めない。
+    expect(buildClosingLines({ ...quiet, waveLostRecords: 4 })).toEqual([
+      { level: 'log', line: '  合成波形を書き損ねた=4' },
+    ])
+  })
+
+  it('合成波形の締めくくりを待ちきれなければ 1 行出す（件数ではない）', () => {
+    // 真偽なので 0 抑制には乗らない。**失ってはいない**ので `log`。
+    expect(buildClosingLines({ ...quiet, waveSlowClose: true })).toEqual([
+      { level: 'log', line: '  合成波形の締めくくりを待ちきれず' },
+    ])
+  })
+
+  it('合成波形の書き込みの理由は、生データの理由とは別の行で出す', () => {
+    expect(buildClosingLines({ ...quiet, waveLastWriteError: 'ディスクが一杯' })).toEqual([
+      { level: 'error', line: '  合成波形を書き出せなかった理由: ディスクが一杯' },
+    ])
+  })
 
   it('数として出せなかった計測震度があれば件数を出す', () => {
     // **0 のままなのが正常な数。** 行そのものを固定しておかないと、並びやラベルを

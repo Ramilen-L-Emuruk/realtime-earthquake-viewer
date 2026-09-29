@@ -10,9 +10,10 @@ import type { FusedWaveChunk, StationIntensityReading } from './sensorFusion'
 import { EMPTY_STATION_CONFIG, StationDirectory } from './stationConfig'
 import type { StationConfig } from './stationConfig'
 import { buildStatusReport } from './statusReport'
-import type { RawStoreStatus, StatusReport } from './statusReport'
-import { parseWaveParam, startStatusServer } from './statusServer'
+import type { RawStoreStatus, StatusReport, WaveArchiveStatus } from './statusReport'
+import { buildWaveResponse, parseWaveParam, parseWaveQuery, startStatusServer } from './statusServer'
 import type { StatusServer, StatusServerOptions } from './statusServer'
+import type { ArchivedWaveChunk, WaveRangeResult } from './waveArchive'
 
 const RAW: RawStoreStatus = {
   writeErrors: 0,
@@ -30,6 +31,17 @@ const RAW: RawStoreStatus = {
   currentDay: '2026-09-26',
   lastWriteError: null,
   lastSweepError: null,
+}
+
+const WAVE_ARCHIVE: WaveArchiveStatus = {
+  writeErrors: 0,
+  lostRecords: 0,
+  badChunks: 0,
+  written: 0,
+  rotated: 0,
+  openBooks: 0,
+  slowClose: false,
+  lastWriteError: null,
 }
 
 function report(hub: ReadingHub): StatusReport {
@@ -54,6 +66,7 @@ function report(hub: ReadingHub): StatusReport {
     segments: [],
     unusableIntensities: 0,
     raw: RAW,
+    waveArchive: WAVE_ARCHIVE,
     hub: hub.snapshot(),
     stations: StationDirectory.empty(),
     stationConfigWarning: null,
@@ -146,6 +159,7 @@ async function start(
   adminAuth?: AdminAuthConfig,
   stationConfig?: StatusServerOptions['stationConfig'],
   adminConsole?: StatusServerOptions['adminConsole'],
+  readWaves?: StatusServerOptions['readWaves'],
 ): Promise<string> {
   // **port 0 で開く。** 固定の番号だと、並んで走る別のテストと取り合う。
   const server = await startStatusServer({
@@ -160,6 +174,8 @@ async function start(
     // **`null` を明示的に渡したいテストがあるので `??` は使わない。** `??` だと
     // `null` も「未指定」と同じ扱いになり、ビルド失敗を再現できない。
     adminConsole: adminConsole !== undefined ? adminConsole : TEST_ADMIN_CONSOLE,
+    // **既定は `null`（保存を持たない構成）。** 読み返しを試すテストだけが渡す。
+    readWaves: readWaves ?? null,
   })
   running.server = server
   return `http://127.0.0.1:${server.port}`
@@ -726,6 +742,7 @@ describe('/api/*', () => {
       log,
       stationConfig: stationConfig ?? makeStationConfigOps(),
       adminConsole: TEST_ADMIN_CONSOLE,
+      readWaves: null,
     })
     running.server = server
     return `http://127.0.0.1:${server.port}`
@@ -1091,5 +1108,217 @@ describe('/api/*', () => {
       expect(res.status).toBe(500)
       expect(((await res.json()) as { error: string }).error).toBe('save-failed')
     })
+  })
+})
+
+describe('GET /waves（#357）', () => {
+  const T0 = Date.parse('2026-09-25T14:00:00.000Z')
+
+  function archived(): ArchivedWaveChunk {
+    return {
+      firstSampleMs: T0,
+      msPerSample: 10,
+      gal: [
+        Float32Array.from([1, 2, 3]),
+        Float32Array.from([4, 5, 6]),
+        Float32Array.from([7, 8, 9]),
+      ],
+      dcGal: [0, 0, 980],
+      memberCount: Uint8Array.from([3, 3, 2]),
+    }
+  }
+
+  function result(chunks: ArchivedWaveChunk[]): WaveRangeResult {
+    return { chunks, filesRead: 1, filesMissing: 0, filesFailed: 0, skippedBytes: 0, truncated: false }
+  }
+
+  /** 読み返しを差し替えてサーバーを開く。**位置引数が長いのでここで畳む。** */
+  function startWithWaves(readWaves: StatusServerOptions['readWaves'], log?: StatusServerOptions['log']): Promise<string> {
+    return start(new ReadingHub(), undefined, log, undefined, undefined, undefined, undefined, readWaves)
+  }
+
+  describe('parseWaveQuery', () => {
+    function q(search: string): ReturnType<typeof parseWaveQuery> {
+      return parseWaveQuery(new URLSearchParams(search))
+    }
+
+    it('観測点・範囲・列を読む', () => {
+      expect(q(`station=s1&from=${T0}&to=${T0 + 1000}&columns=300`)).toEqual({
+        ok: true,
+        stationId: 's1',
+        fromMs: T0,
+        toMs: T0 + 1000,
+        columns: 300,
+      })
+    })
+
+    it('観測点が無ければ弾く', () => {
+      expect(q(`from=${T0}&to=${T0 + 1000}`)).toEqual({ ok: false, error: 'station-required' })
+    })
+
+    it('10 進の整数でない範囲は弾く', () => {
+      // **`Number()` に任せると `0x10` も空文字も通る。**
+      expect(q(`station=s1&from=0x10&to=${T0}`)).toEqual({ ok: false, error: 'bad-range' })
+      expect(q(`station=s1&from=&to=${T0}`)).toEqual({ ok: false, error: 'bad-range' })
+      expect(q(`station=s1&from=1.5&to=${T0}`)).toEqual({ ok: false, error: 'bad-range' })
+    })
+
+    it('幅の無い範囲・逆順の範囲は弾く', () => {
+      expect(q(`station=s1&from=${T0}&to=${T0}`)).toEqual({ ok: false, error: 'bad-range' })
+      expect(q(`station=s1&from=${T0}&to=${T0 - 1}`)).toEqual({ ok: false, error: 'bad-range' })
+    })
+
+    it('列を頼めば 10 分まで通す', () => {
+      expect(q(`station=s1&from=${T0}&to=${T0 + 600_000}&columns=300`).ok).toBe(true)
+      expect(q(`station=s1&from=${T0}&to=${T0 + 600_001}&columns=300`)).toEqual({
+        ok: false,
+        error: 'range-too-wide',
+      })
+    })
+
+    it('サンプルのままなら 2 分まで（列で返すときよりずっと狭い）', () => {
+      expect(q(`station=s1&from=${T0}&to=${T0 + 120_000}`).ok).toBe(true)
+      expect(q(`station=s1&from=${T0}&to=${T0 + 120_001}`)).toEqual({
+        ok: false,
+        error: 'range-too-wide',
+      })
+    })
+
+    it('列の数が範囲外なら弾く', () => {
+      expect(q(`station=s1&from=${T0}&to=${T0 + 1000}&columns=0`)).toEqual({
+        ok: false,
+        error: 'bad-columns',
+      })
+      expect(q(`station=s1&from=${T0}&to=${T0 + 1000}&columns=4097`)).toEqual({
+        ok: false,
+        error: 'bad-columns',
+      })
+    })
+  })
+
+  describe('buildWaveResponse', () => {
+    const query = { ok: true, stationId: 's1', fromMs: T0, toMs: T0 + 100, columns: null } as const
+
+    it('読めなかった量と記録の無い時の数を必ず添える', () => {
+      // **これが無いと「揺れていなかった」と「残っていない」が同じ空の配列に見える。**
+      const body = buildWaveResponse(
+        query,
+        {
+          chunks: [],
+          filesRead: 0,
+          filesMissing: 2,
+          filesFailed: 1,
+          skippedBytes: 7,
+          truncated: true,
+        },
+        true,
+      )
+      expect(body.filesMissing).toBe(2)
+      expect(body.filesFailed).toBe(1)
+      expect(body.skippedBytes).toBe(7)
+      expect(body.truncated).toBe(true)
+    })
+
+    it('いまの設定に無い観測点は、その旨を添えて返す（断りはしない）', () => {
+      // **断ると、設定から外した観測点の記録が読めなくなる。** かといって黙ると、
+      // 綴り間違いが「その観測点は静かだった」と寸分違わない応答になる。
+      const known = buildWaveResponse(query, result([]), true)
+      const unknown = buildWaveResponse(query, result([]), false)
+      expect(known.stationKnown).toBe(true)
+      expect(unknown.stationKnown).toBe(false)
+    })
+
+    it('列を頼まれたら列で返す', () => {
+      const body = buildWaveResponse({ ...query, columns: 2 }, result([archived()]), true)
+      expect(body.columnSpanMs).toBe(50)
+      expect((body.columns as unknown[]).length).toBe(2)
+      expect(body.chunks).toBeUndefined()
+    })
+
+    it('列を頼まれなければサンプルのまま返す', () => {
+      const body = buildWaveResponse(query, result([archived()]), true)
+      const chunks = body.chunks as { gal: number[][] }[]
+      expect(chunks).toHaveLength(1)
+      expect(chunks[0].gal[0]).toEqual([1, 2, 3])
+      expect(body.columns).toBeUndefined()
+    })
+
+    it('欠測は数でない値のまま返す（JSON では null になる）', () => {
+      const chunk = archived()
+      const holed: ArchivedWaveChunk = {
+        ...chunk,
+        gal: [Float32Array.from([Number.NaN, 2, 3]), chunk.gal[1], chunk.gal[2]],
+      }
+      const round = JSON.parse(JSON.stringify(buildWaveResponse(query, result([holed]), true))) as {
+        chunks: { gal: (number | null)[][] }[]
+      }
+      // **埋めない。** 埋めると、そこだけ時間の縮んだ絵になる。
+      expect(round.chunks[0].gal[0][0]).toBeNull()
+      expect(round.chunks[0].gal[0][1]).toBe(2)
+    })
+  })
+
+  it('保存を持たない構成では 503（「0 件」とは返さない）', async () => {
+    const base = await start(new ReadingHub())
+    const res = await fetch(`${base}/waves?station=s1&from=${T0}&to=${T0 + 1000}`)
+    expect(res.status).toBe(503)
+    expect(((await res.json()) as { error: string }).error).toBe('wave-archive-unavailable')
+  })
+
+  it('範囲が広すぎれば読みにいかずに 400', async () => {
+    let called = 0
+    const base = await startWithWaves(async () => {
+      called += 1
+      return result([])
+    })
+    const res = await fetch(`${base}/waves?station=s1&from=${T0}&to=${T0 + 3_600_000}&columns=300`)
+    expect(res.status).toBe(400)
+    // **入口で弾く。** 下流へ流すと、その範囲に触れるファイルの数だけ読み込みが出る。
+    expect(called).toBe(0)
+  })
+
+  it('読み返した中身を返し、横断の許しを付ける（認証は要らない）', async () => {
+    const base = await startWithWaves(async (params) => {
+      expect(params.stationId).toBe('s1')
+      return result([archived()])
+    })
+    const res = await fetch(`${base}/waves?station=s1&from=${T0 - 1000}&to=${T0 + 1000}&columns=4`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('access-control-allow-origin')).toBe('*')
+    const body = (await res.json()) as { columns: unknown[]; hasAnyValue: boolean }
+    expect(body.columns).toHaveLength(4)
+    expect(body.hasAnyValue).toBe(true)
+  })
+
+  it('記録の口が投げても応答を返し、受信そのものは止まらない', async () => {
+    // **`.catch()` の中で投げると、同期の `try` には捕まらない** ——
+    // `unhandledRejection` としてホストプロセスごと落ちる。記録の口を包むラッパー
+    // （`log`）を通していれば、ここは握られて 500 が返る。
+    const base = await startWithWaves(
+      async () => {
+        throw new Error('ディスクが読めない')
+      },
+      () => {
+        throw new Error('記録の口が壊れている')
+      },
+    )
+    const res = await fetch(`${base}/waves?station=s1&from=${T0}&to=${T0 + 1000}`)
+    expect(res.status).toBe(500)
+    // 落ちていなければ、次の問い合わせにも応じられる。
+    expect((await fetch(`${base}/status`)).status).toBe(200)
+  })
+
+  it('読み返しが投げたら 500 を返し、1 行残す', async () => {
+    const lines: string[] = []
+    const base = await startWithWaves(
+      async () => {
+        throw new Error('ディスクが読めない')
+      },
+      (_level, _kind, _detail, line) => lines.push(line),
+    )
+    const res = await fetch(`${base}/waves?station=s1&from=${T0}&to=${T0 + 1000}`)
+    expect(res.status).toBe(500)
+    expect(((await res.json()) as { error: string }).error).toBe('wave-read-failed')
+    expect(lines.some((l) => l.includes('ディスクが読めない'))).toBe(true)
   })
 })

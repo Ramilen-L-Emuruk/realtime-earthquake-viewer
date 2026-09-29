@@ -34,20 +34,13 @@ import type { Writable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { createGunzip, createGzip } from 'node:zlib'
 
-import { MAX_TIME_MS } from '../protocol/parsePacket'
+// **日の切り方は `jstTime.ts` が持つ。** 合成波形の保存（`waveArchive.ts`）が同じ下駄を
+// 使うので、片方だけ時間帯の扱いを変えたときに同じ瞬間が別の日付へ属さないよう 1 箇所へ寄せた。
+// **ここから再び出している**のは、この名前で読んでいる呼び出し側（テストを含む）を
+// 変えずに済ませるため。
+import { jstDay } from './jstTime'
 
-/**
- * 日の境目を日本時間で取るための下駄。
- *
- * **プロセスの時間帯設定（`TZ`）は読まない。** `getDate()` の類はホストの設定で答えが変わるので、
- * 別の機械へ移した日や CI（UTC で回る）を境に、同じ名前のファイルが別の 24 時間を指すようになる。
- * ずれても例外は出ず、**ファイル名だけが黙って 9 時間ずれる**。
- *
- * 日本時間を選んだのは、このリポジトリが既に「1 日＝日本時間の日」と決めているため
- * （長期震源カタログの `fromMs`/`toMs`。あちらも `Date.UTC` で組んでから引く形で `TZ` を避けている）。
- * 突き合わせる相手（気象庁の電文）も日本時間で、揺れているのは日本の家。
- */
-const JST_OFFSET_MS = 9 * 60 * 60 * 1000
+export { jstDay }
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
@@ -155,18 +148,6 @@ export interface RawStoreOptions {
 export function stuckSince(retiredAtMs: number | null, progressAtMs: number | null): number | null {
   if (retiredAtMs === null) return null
   return Math.max(retiredAtMs, progressAtMs ?? retiredAtMs)
-}
-
-/**
- * 日本時間でのその日（`YYYY-MM-DD`）。
- *
- * **時刻として表せない値では `null` を返す。** 名前を作れない以上、呼び出し側は
- * 「回さない」を選ぶしかない（当て推量の名前でファイルを分けるより、同じ本へ書き続けるほうがまし）。
- */
-export function jstDay(ms: number): string | null {
-  // **有限なだけでは足りない。** 下駄を足した結果が `Date` の範囲を出ると `toISOString()` が投げる。
-  if (!Number.isFinite(ms) || Math.abs(ms) > MAX_TIME_MS - JST_OFFSET_MS) return null
-  return new Date(ms + JST_OFFSET_MS).toISOString().slice(0, 10)
 }
 
 function messageOf(error: unknown): string {
