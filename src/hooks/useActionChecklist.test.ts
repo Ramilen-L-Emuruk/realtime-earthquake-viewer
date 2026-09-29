@@ -11,6 +11,7 @@ import { renderHook, act } from '@testing-library/react'
 import { useActionChecklist, SUPPRESS_MS } from './useActionChecklist'
 import type { EEWAlert, JMAQuake } from '../types/earthquake'
 import type { DetectedPoint } from '../utils/kyoshinDetectionView'
+import { NO_SCOPE } from '../utils/actionChecklistTrigger'
 
 const MIN = 45 // 震度5弱
 
@@ -65,9 +66,9 @@ function setup(initial: JMAQuake | undefined, eews: readonly EEWAlert[] = NO_EEW
     ({ q, e, k, stalled, min }: Props) =>
       useActionChecklist({
         minScale: min ?? MIN,
-        home: null,
-        stationCoords: null,
-        kyoshinSites: [],
+        // ホーム地点を持たない端末（全国基準）。`scope` は呼び出し側が作る
+        // （`useNearbyScope`）ので、ここでは絞らない形を直に渡す。
+        scope: NO_SCOPE,
         detectedPoints: k ?? NO_POINTS,
         kyoshinStalled: stalled ?? false,
         eews: e ?? NO_EEWS,

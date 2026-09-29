@@ -17,6 +17,7 @@ function station(
     atMs: 1_700_000_000_000,
     source,
     waveSampleCount: 0,
+    waveStale: false,
     waveTally: { gapSamples: 0, restarts: 0, droppedSamples: 0 },
   }
 }

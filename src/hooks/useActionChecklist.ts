@@ -18,26 +18,15 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { EEWAlert, JMAQuake } from '../types/earthquake'
-import type { StationCoordsData } from '../utils/stationCoords'
 import { recordReplayEvent } from '../utils/replayEventLog'
 import {
-  NO_SCOPE,
   eewScaleForScope,
   hasNearby,
   kyoshinScaleForScope,
   quakeScaleForScope,
   type NearbyScope,
 } from '../utils/actionChecklistTrigger'
-import {
-  allRegionNames,
-  allStationNames,
-  nearbyKyoshinKeys,
-  nearbyRegionNames,
-  nearbyStationNames,
-  type HomePoint,
-} from '../utils/nearbyStations'
 import type { DetectedPoint } from '../utils/kyoshinDetectionView'
-import type { SiteCoords } from '../services/kyoshin'
 import { quakeEventKey } from '../utils/quakeMerge'
 import { eewEventKey } from '../utils/eew'
 import { isValidIntensityScale } from '../utils/intensity'
@@ -129,10 +118,14 @@ function saveSuppress(record: SuppressRecord | null): void {
 
 export function useActionChecklist(params: {
   minScale: number
-  home: HomePoint | null
-  stationCoords: StationCoordsData | null
-  /** 強震モニタの観測点座標（半径内の観測点キーを引くのに使う）。 */
-  kyoshinSites: SiteCoords
+  /**
+   * ホーム地点の周り（`useNearbyScope`）。
+   *
+   * **作るのは呼び出し側。** 自作地震計の波形も同じ範囲で「近所が揺れているか」を
+   * 見るので、両方が 1 つの `scope` を共有する（別々に作ると半径や索引の扱いが
+   * 片方だけ動いたときに黙ってずれる）。
+   */
+  scope: NearbyScope
   /**
    * 検知エンジンが確定した揺れのメンバー観測点（`deriveKyoshinView` の `detectedPoints`）。
    *
@@ -154,26 +147,13 @@ export function useActionChecklist(params: {
   state: ChecklistState | null; collapsed: boolean; dismiss: () => void; restore: () => void
   resetForReplay: () => void
 } {
-  const { minScale, home, stationCoords, kyoshinSites, detectedPoints, kyoshinStalled, eews, latestQuake } = params
+  const { minScale, scope, detectedPoints, kyoshinStalled, eews, latestQuake } = params
 
   const [state, setState] = useState<ChecklistState | null>(null)
   const [suppress, setSuppress] = useState<SuppressRecord | null>(loadSuppress)
   // **記録が残っていれば畳んだ状態から始める。** false から始めると、閉じたあとにリロードした
   // 端末で次の余震が帯として開き直し、閉じた意味が無くなる（記録の永続化だけでは足りない）。
   const [collapsed, setCollapsed] = useState(() => suppress !== null)
-
-  // 半径内の観測点。ホーム地点か観測点データが変わったときだけ引き直す（全点の距離計算になるため）。
-  const scope = useMemo<NearbyScope>(() => {
-    if (!home || !stationCoords) return NO_SCOPE
-    return {
-      kyoshinKeys: nearbyKyoshinKeys(kyoshinSites, home),
-      stationNames: nearbyStationNames(stationCoords, home),
-      regionNames: nearbyRegionNames(stationCoords, home),
-      // 全件版は地域を絞れるときにしか使わないので、ここで一緒に作る。
-      knownStationNames: allStationNames(stationCoords),
-      knownRegionNames: allRegionNames(stationCoords),
-    }
-  }, [home, stationCoords, kyoshinSites])
 
   // ホーム地点の周りで判定できているか。**判定側と同じ述語を使う** —— 別に書くと、区域だけが
   // 引けている端末で「自宅の区域で判定したのに全国基準の言い回しを出す」ずれが生まれる。

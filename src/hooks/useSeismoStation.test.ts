@@ -137,6 +137,9 @@ describe('useSeismoStation', () => {
         atMs: 2000,
         source: { kind: 'station' },
         waveSampleCount: 0,
+        // **一度も届いていないうちは「止まっている」と言わない**（購読を始めた直後と
+        // 区別が付かない）。
+        waveStale: false,
         // 波形が届いていなければすべて 0。
         waveTally: { gapSamples: 0, restarts: 0, droppedSamples: 0 },
       },
@@ -339,6 +342,54 @@ describe('useSeismoStation', () => {
     expect([...window.gal[0]]).toEqual([1, 2, 3])
     // **効いたセンサーの本数が保たれる**（段 4 が 1 本の区間を示すため）。
     expect([...window.memberCount]).toEqual([9, 9, 1])
+  })
+
+  // 波形だけが止まる形は実際に起きる —— **観測点の有効なセンサーが 2 台を切ると
+  // 合成だけが止まり、震度は単独へ落ちて生き続ける**（`sensorFusion.ts` の `buildGroups`）。
+  // 接続層の停滞検出（45 秒）も震度が届いていれば発火しない。抱えた中身は時間で
+  // 薄れないので、これを見ないと**止まった絵を「いま静かに揺れている」として描き続ける**。
+  describe('波形が届かなくなったら', () => {
+    it('正: 止まっていることを立てる', async () => {
+      const h = renderHook(() => useSeismoStation({ ...options, wave: 'station' }))
+      await settleDirectory()
+      deliver(stationWave('home', 1000))
+      deliver(stationReading('home', 0.25))
+      await tick()
+      expect(h.result.current.stations[0].waveStale).toBe(false)
+
+      // 震度だけを届け続ける（波形は止まる）
+      for (let i = 0; i < 12; i += 1) {
+        deliver(stationReading('home', 0.25))
+        await tick()
+      }
+      expect(h.result.current.stations[0].waveStale).toBe(true)
+      // **震度の側は生きたまま** —— だから画面から見分けが付かない。
+      expect(h.result.current.stations[0].intensity).toBe(0.25)
+    })
+
+    // 対照: 一度も届いていないうちは立てない（購読を始めた直後と区別が付かない）。
+    it('対照: 一度も届いていなければ立てない', async () => {
+      const h = renderHook(() => useSeismoStation({ ...options, wave: 'station' }))
+      await settleDirectory()
+      for (let i = 0; i < 12; i += 1) {
+        deliver(stationReading('home', 0.25))
+        await tick()
+      }
+      expect(h.result.current.stations[0].waveStale).toBe(false)
+      expect(h.result.current.stations[0].waveSampleCount).toBe(0)
+    })
+
+    // 安全弁: 届き続けている間は立てない。
+    it('安全弁: 届き続けていれば立てない', async () => {
+      const h = renderHook(() => useSeismoStation({ ...options, wave: 'station' }))
+      await settleDirectory()
+      for (let i = 0; i < 12; i += 1) {
+        deliver(stationWave('home', 1000 + i * 100))
+        deliver(stationReading('home', 0.25))
+        await tick()
+      }
+      expect(h.result.current.stations[0].waveStale).toBe(false)
+    })
   })
 
   it('安全弁: 複数の観測点が同時に作り直されても、どちらの記録も残る', async () => {

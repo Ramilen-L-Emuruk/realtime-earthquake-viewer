@@ -49,12 +49,36 @@ import { createLogThrottle, log } from '../utils/logger'
 const READING_STALE_MS = 5000
 
 /**
+ * 波形が届かなくなってから「止まっている」と見なすまで（ms）。
+ *
+ * **震度の鮮度（{@link READING_STALE_MS}）では代われない。** 押し出しは種別ごとに
+ * 独立していて、**観測点の有効なセンサーが 2 台を切ると合成だけが止まり、震度は
+ * 単独（`reading`）へ落ちて生き続ける**（`seismo-host/src/receiver/sensorFusion.ts` の
+ * `buildGroups` が `list.length < 2` で組まない）。接続層の停滞検出（`seismoStream.ts` の
+ * `STALL_MS` = 45 秒）も、震度が届いている限り発火しない。
+ *
+ * **これが無いと、絵が凍ったまま「いま静かに揺れている」ように見え続ける。**
+ * 入れ物（`utils/seismoWaveBuffer.ts`）は押し出しで駆動するだけで、時間が経っても
+ * 薄れない —— 読み出すたび最後のスナップショットを返すので、**止まったことが
+ * 画面のどこにも現れない**。この機能でいちばん避けたい「揺れていない」と
+ * 「届いていない」の混同そのもの。
+ *
+ * まとまりは 0.3 秒ごとに届く（実機の実測で 12 秒に 40 件）ので、5 秒あれば
+ * 正常な揺らぎを跨げる。
+ */
+const WAVE_STALE_MS = 5000
+
+/**
  * 抱える波形の長さ（秒）。
  *
  * 実機の刻みは約 10 ms（100 Hz）なので、3 成分＋本数で 4 × 6000 サンプル ＝
  * `Float32Array` で 96 KB ほど。**観測点ごとに 1 本**持つ。
+ *
+ * **絵の横軸もこの長さで引く**（`components/SeismoWaveChart/`）。別々に持つと、
+ * 片方だけ動かしたときに絵の左端が「抱えていない区間」なのか「届かなかった区間」
+ * なのか分からなくなる。
  */
-const WAVE_RETAIN_SEC = 60
+export const WAVE_RETAIN_SEC = 60
 
 /**
  * 観測点ごとの姿を作り直す間隔（ms）。
@@ -101,6 +125,17 @@ export interface SeismoStationState {
   readonly source: SeismoIntensitySource
   /** 抱えている波形のサンプル数。**0 なら波形は届いていない。** */
   readonly waveSampleCount: number
+  /**
+   * 波形が届かなくなっているか（{@link WAVE_STALE_MS}）。
+   *
+   * **一度も届いていないうちは `false`** —— そちらは {@link waveSampleCount} が 0 で
+   * 分かるし、購読を始めた直後と区別が付かない。ここが立つのは「届いていたのに
+   * 途絶えた」場合だけ。
+   *
+   * **絵の側で必ず使うこと。** 抱えている中身は時間で薄れないので、これを見ないと
+   * 止まった波形を「いま静かに揺れている」として描き続ける。
+   */
+  readonly waveStale: boolean
   /**
    * 波形を抱えている間に起きたことの数え上げ。**波形が届いていなければすべて 0。**
    *
@@ -151,6 +186,8 @@ interface StationEntry {
   /** センサー単独（`reading`）の最新。**鍵は `boardKey/sensorId`。** */
   sensors: Map<string, { intensity: number | null; atMs: number | null; receivedAt: number }>
   wave: SeismoWaveBuffer | null
+  /** 波形のまとまりを最後に受け取った時刻。**一度も受け取っていなければ `null`。** */
+  waveReceivedAt: number | null
 }
 
 /** 空のときの参照を固定する。**毎回新しい配列を作ると再描画が 1 回増える。** */
@@ -184,6 +221,7 @@ function sameStates(
       x.atMs !== y.atMs ||
       x.source.kind !== y.source.kind ||
       x.waveSampleCount !== y.waveSampleCount ||
+      x.waveStale !== y.waveStale ||
       !sameTally(x.waveTally, y.waveTally)
     ) {
       return false
@@ -272,7 +310,12 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
     const entryFor = (stationId: string): StationEntry => {
       const found = book.get(stationId)
       if (found !== undefined) return found
-      const created: StationEntry = { station: null, sensors: new Map(), wave: null }
+      const created: StationEntry = {
+        station: null,
+        sensors: new Map(),
+        wave: null,
+        waveReceivedAt: null,
+      }
       book.set(stationId, created)
       return created
     }
@@ -319,6 +362,10 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
           directory.require(w.stationId)
           const entry = entryFor(w.stationId)
           entry.wave ??= new SeismoWaveBuffer(WAVE_RETAIN_SEC)
+          // **届いたことを生存の印にする。中身が使えたかは問わない**（接続層の
+          // 停滞検出と同じ扱い）。重なりで捨てた場合も押し出しは生きているので、
+          // ここで更新しないと正常な取り直しが「途絶えた」に見える。
+          entry.waveReceivedAt = receivedAt
           const result = entry.wave.push(w)
           // **作り直したことは記録へ出す。** 起点が引き直されたのは時刻が飛んだ
           // 印で、絵の上では「急に短くなった」としか見えない。
@@ -348,6 +395,9 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
       for (const [stationId, entry] of book) {
         const waveSampleCount = entry.wave?.sampleCount ?? 0
         const waveTally = entry.wave?.tally ?? EMPTY_TALLY
+        // **一度も届いていないうちは立てない。** 購読を始めた直後と区別が付かない。
+        const waveStale =
+          entry.waveReceivedAt !== null && now - entry.waveReceivedAt >= WAVE_STALE_MS
 
         // **合成が古くなければそれを採る。** 単独へ落ちるのは、合成が
         // 一度も届いていないか、届かなくなったとき。
@@ -360,6 +410,7 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
             atMs: entry.station.atMs,
             source: { kind: 'station' },
             waveSampleCount,
+            waveStale,
             waveTally,
           })
           continue
@@ -401,6 +452,7 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
           atMs: bestAtMs,
           source: { kind: 'sensor', sensorCount: count },
           waveSampleCount,
+          waveStale,
           waveTally,
         })
       }
