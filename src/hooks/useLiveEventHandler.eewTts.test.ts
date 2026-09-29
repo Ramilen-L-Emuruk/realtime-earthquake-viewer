@@ -61,13 +61,16 @@ function releaseCurrentSpeech() {
 // すぐ解決する。モックを単純な即時解決にするとこの相互作用が消え、「割り込みが後ろに並んで
 // いた別 EEW の予約を巻き込む」形の回帰を見逃す（実際に一度その穴を作り、レビューで
 // 見つかった）。`stopSpeech` も同じ役を持たせないと、言い直しの待ちが明けない。
-const speakMock = vi.fn((..._args: unknown[]) => {
+const speakMock = vi.fn((...args: unknown[]) => {
   releaseCurrentSpeech()
-  if (!holdNextCall) return Promise.resolve({ spoke: true })
+  // 文全体が声になった扱い（このモックはチャンクへ割らない）。チャンク単位の途中降りを
+  // 見るテストは `installChunkedSpeak` を使うこと。
+  const spokenWhole = { spoke: true, spokenChunks: [args[1] as string] }
+  if (!holdNextCall) return Promise.resolve(spokenWhole)
   holdNextCall = false
   const endSpeech = beginMockSpeech()
   return new Promise<SpeechOutcome>(resolve => {
-    releaseHeld = () => { endSpeech(); resolve({ spoke: true }) }
+    releaseHeld = () => { endSpeech(); resolve(spokenWhole) }
   })
 })
 vi.mock('../utils/voicevox', async (importOriginal) => ({
@@ -283,17 +286,19 @@ function installChunkedSpeak(heard: string[], opts?: { synthMs?: number; chunkMs
       // 合成待ちのあいだは「鳴っていない」。声が出るのは最初のチャンクからで、
       // 待ちの上限が「声が出ている間は計時しない」形なのでここを混ぜてはいけない。
       await new Promise<void>(r => { setTimeout(r, synthMs) })
-      let spoke = false
+      // 鳴ったチャンクだけを積む（実物の `SpeechOutcome.spokenChunks` と同じ）
+      const spokenChunks: string[] = []
+      const outcome = () => ({ spoke: spokenChunks.length > 0, spokenChunks })
       const endSpeech = beginMockSpeech()
       try {
         for (const chunk of chunks) {
           // 1 チャンクも鳴らずに降りたら `spoke: false`（実物の `speakWithVoicevox` と同じ）
-          if (shouldStillPlay && !shouldStillPlay()) return { spoke }
+          if (shouldStillPlay && !shouldStillPlay()) return outcome()
           heard.push(chunk)
-          spoke = true
+          spokenChunks.push(chunk)
           await new Promise<void>(r => { setTimeout(r, chunkMs) })
         }
-        return { spoke }
+        return outcome()
       } finally {
         endSpeech()
       }
@@ -501,6 +506,10 @@ describe('EEW 読み上げの文言と発話順序', () => {
   // では、300ms後にタイマーが先に発火して訂正前の震度7を確定・読み上げてしまっていた
   // （EEW_PHASE2_SCALE_JUMP_STEP_THRESHOLD を 2→1 に下げる前）。閾値変更後は1段階の変化も
   // large（2000ms）を待つため、608ms後の訂正を待てるようになる。
+  //
+  // **見ているのは安定待ちの長さだけ。** 既定のモックはチャンクへ割らないので、鳴っている
+  // 途中で降りる経路（`shouldStillPlay`）は通らない。同じ並びでの二重読みは
+  // 「より高い予想が安定待ちに入ったとき」の describe が `installChunkedSpeak` で見る。
   it('直前の確定値から1段階だけ跳んだ瞬間的な震度7（能登本震13報）は誤読しない', async () => {
     const handle = setup()
     // 6強で確定・読み上げまで進める
@@ -1675,10 +1684,13 @@ describe('EEW 読み上げの文言と発話順序', () => {
         expect(heard).toContain('予想最大階級1。')
       })
 
-      // 既読の巻き戻し: 降りた発話は 1 音鳴っているので `spoke` は真だが、**文の残りは
-      // 声になっていない**。戻さないと、待っていた高い震度が確定せず元へ戻った続報で
-      // 震度も階級も据え置き判定になり、その EEW で階級が一度も声にならない。
-      it('待っていた予想が確定せず元へ戻ったら、読めなかった分を読み直す', async () => {
+      // 既読の巻き戻し: **句ごとに「声になったか」で決める。** 降りた発話では震度の句は
+      // 鳴り終えていて、階級の句だけが声になっていない。
+      //   - 戻しすぎると（＝発話ごとまとめて戻すと）、同じ震度をもう一度読む
+      //   - 戻さなすぎると（＝鳴った扱いで進めると）、震度も階級も据え置き判定になり、
+      //     その EEW で階級が一度も声にならない
+      // 下の `expect` は**両方**を同時に見ている（震度は 1 回・階級は 1 回）。
+      it('降りた発話は、声にならなかった句だけを読み直す', async () => {
         const heard: string[] = []
         installChunkedSpeak(heard)
         const handle = await startPhase2WithScale4(heard)
@@ -1694,10 +1706,9 @@ describe('EEW 読み上げの文言と発話順序', () => {
         await advance(EEW_PHASE2_STABILITY_SMALL_MS + SYNTH_MS + CHUNK_MS * 2)
 
         // **全文で突き合わせる。** 末尾 2 件だけを見ると、降りずに階級を鳴らし切って以後黙る
-        // 挙動（この修正の前）でも同じ並びになり、テストが何も守らない
+        // 挙動でも同じ並びになり、テストが何も守らない
         expect(heard).toEqual([
           '緊急地震速報、', '日向灘で地震。',
-          '予想最大震度4。',
           '予想最大震度4。', '予想最大階級1。',
         ])
       })
@@ -1757,6 +1768,30 @@ describe('EEW 読み上げの文言と発話順序', () => {
           '緊急地震速報、', '日向灘で地震。',
           '予想最大震度4。',
           '予想最大震度3。', '予想最大階級1。',
+        ])
+      })
+
+      // 実配信での回帰（2024/01/01 能登半島地震の本震）。第 12 報の 6強 を読んでいる途中に
+      // 第 13 報の 7 が届いて降り、608ms 後の第 14 報で 6強 へ戻る並び。上の 4→5弱→4 と
+      // 同じ形だが、**間合いが実測値**なので、猶予の取り方を変えたときにここが先に落ちる。
+      it('実配信の並び（6強 → 7 → 6強）でも、同じ震度を読み直さない', async () => {
+        const heard: string[] = []
+        installChunkedSpeak(heard)
+        const handle = setup()
+        handle(makeEEW({ scaleTo: 60, lgIntTo: 1 }))
+        await flushMicrotasks()
+        await advance(SYNTH_MS + CHUNK_MS * 2)
+        await advance(SYNTH_MS)
+        await advance(CHUNK_MS - 100)                              // 震度句の再生終盤
+        handle(makeEEW({ serial: 2, scaleTo: 70, lgIntTo: 1 }))    // 第13報（7）
+        await advance(100)                                         // ここで降りる
+        await advance(508)
+        handle(makeEEW({ serial: 3, scaleTo: 60, lgIntTo: 1 }))    // 第14報（6強へ訂正）
+        await advance(EEW_PHASE2_STABILITY_SMALL_MS + SYNTH_MS + CHUNK_MS * 3)
+
+        expect(heard).toEqual([
+          '緊急地震速報、', '日向灘で地震。',
+          '予想最大震度6強。', '予想最大階級1。',
         ])
       })
     })
@@ -1973,7 +2008,7 @@ describe('警報の対象地方（第 1.5 フェーズ）', () => {
 describe('合成が 1 音も鳴らなかったとき', () => {
   /** 合成が全滅する状態。実物と同じく例外は投げず、`spoke: false` で正常終了する。 */
   function installSilentSpeak() {
-    speakMock.mockImplementation((() => Promise.resolve({ spoke: false })) as never)
+    speakMock.mockImplementation((() => Promise.resolve({ spoke: false, spokenChunks: [] })) as never)
   }
 
   // 正: 地方も区分も既読にならない。合成が回復した続報で、**初出の形のまま・前置き付きで**
@@ -1986,7 +2021,8 @@ describe('合成が 1 音も鳴らなかったとき', () => {
     await flushMicrotasks()
 
     // ここから先は鳴る
-    speakMock.mockImplementation((() => Promise.resolve({ spoke: true })) as never)
+    speakMock.mockImplementation(((...args: unknown[]) =>
+      Promise.resolve({ spoke: true, spokenChunks: [args[1] as string] })) as never)
     speakMock.mockClear()
     handle(makeEEW({ serial: 2, scaleTo: 50, warningRegions: ['北陸'] }))
     await vi.advanceTimersByTimeAsync(20000)
@@ -2010,7 +2046,8 @@ describe('合成が 1 音も鳴らなかったとき', () => {
     await vi.advanceTimersByTimeAsync(30000)
     await flushMicrotasks()
 
-    speakMock.mockImplementation((() => Promise.resolve({ spoke: true })) as never)
+    speakMock.mockImplementation(((...args: unknown[]) =>
+      Promise.resolve({ spoke: true, spokenChunks: [args[1] as string] })) as never)
     speakMock.mockClear()
     handle(makeEEW({ serial: 2, scaleTo: 50, warningRegions: ['北陸', '甲信'] }))
     await vi.advanceTimersByTimeAsync(30000)
@@ -2046,7 +2083,8 @@ describe('合成が 1 音も鳴らなかったとき', () => {
     await flushMicrotasks()
 
     // ここから先は鳴る。震度は据え置きで、階級だけが上がる
-    speakMock.mockImplementation((() => Promise.resolve({ spoke: true })) as never)
+    speakMock.mockImplementation(((...args: unknown[]) =>
+      Promise.resolve({ spoke: true, spokenChunks: [args[1] as string] })) as never)
     speakMock.mockClear()
     handle(makeEEW({ serial: 2, scaleTo: 50, lgIntTo: 3 }))
     await vi.advanceTimersByTimeAsync(300)
@@ -2230,14 +2268,15 @@ describe('上限より長い発話（第 1.5 フェーズ）', () => {
 
   // 安全弁: 1 音も鳴らなければ記録しない。合成が回復した続報で前置きから読み直す。
   it('1 音も鳴らなければ既読にせず、鳴るようになった続報で読み直す', async () => {
-    speakMock.mockImplementation((() => Promise.resolve({ spoke: false })) as never)
+    speakMock.mockImplementation((() => Promise.resolve({ spoke: false, spokenChunks: [] })) as never)
     const handle = setup()
     handle(makeEEW({ severity: 'Forecast', condition: '仮定震源要素', noAreas: true }))
     await advance(20000)
     handle(makeEEW({ serial: 4, severity: 'Warning', scaleTo: 55, lgIntTo: 2, warningRegions: ['北陸'] }))
     await advance(20000)
 
-    speakMock.mockImplementation((() => Promise.resolve({ spoke: true })) as never)
+    speakMock.mockImplementation(((...args: unknown[]) =>
+      Promise.resolve({ spoke: true, spokenChunks: [args[1] as string] })) as never)
     speakMock.mockClear()
     handle(makeEEW({ serial: 5, severity: 'Warning', scaleTo: 55, lgIntTo: 2, warningRegions: ['北陸'] }))
     await advance(20000)
