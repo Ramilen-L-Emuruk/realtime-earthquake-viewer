@@ -37,7 +37,8 @@ const speakMock = vi.fn((_url: string, text: string) => {
     if (!s.done) { s.done = true; s.finish() }   // 割り込みで打ち切られた側は完了扱いになる
   }
   let finish!: () => void
-  const p = new Promise<SpeechOutcome>(r => { finish = () => r({ spoke: true }) })
+  // 文全体が声になった扱い（このモックはチャンクへ割らない）
+  const p = new Promise<SpeechOutcome>(r => { finish = () => r({ spoke: true, spokenChunks: [text] }) })
   speeches.push({ text, finish, done: false })
   return p
 })

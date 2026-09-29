@@ -1206,6 +1206,19 @@ const EEW_LEAD_PHRASE = {
 export const EEW_LEAD_PHRASES: readonly string[] = Object.values(EEW_LEAD_PHRASE)
 
 /**
+ * 予報として発報された緊急地震速報が警報へ上がったことを告げる前置き。
+ *
+ * **第 1.5 フェーズ（対象地方）と第 2 フェーズ（予想値）のどちらが先に鳴っても同じ文言にする**
+ * ため 1 箇所に置く。呼び出し側は「この句が声になったか」で区分の既読を戻すかを決めるので
+ * （`useLiveEventHandler` の `onSettled`）、**文字列を書き写さずにこれを参照すること。**
+ *
+ * **短くするなら {@link splitIntoChunks} の `MIN_CHUNK`（5 文字）との関係を見直すこと。**
+ * それ未満になると後続の句と 1 チャンクへ結合され、「前置きだけが鳴った／鳴らなかった」を
+ * 区別できなくなる。
+ */
+export const EEW_UPGRADE_PHRASE = '緊急地震速報に切り替わりました。'
+
+/**
  * EEW 第 1.5 フェーズ（警報の対象地方）の読み上げ文。
  *
  * 第 1 フェーズ（名乗りと震源）と第 2 フェーズ（予想値）のあいだに挟む。**予想値の読み上げを
@@ -1237,7 +1250,7 @@ export function eewWarningRegionsText(
 ): string {
   if (regions.length === 0) return ''
   const names = regions.join('、')
-  const prefix = announceUpgrade ? '緊急地震速報に切り替わりました。' : ''
+  const prefix = announceUpgrade ? EEW_UPGRADE_PHRASE : ''
   return prefix + (isAdditional
     ? `新たに、${names}でも強い揺れに警戒してください。`
     : `${names}では強い揺れに警戒してください。`)
@@ -1329,11 +1342,7 @@ export function eewIntensityText(
    */
   opts?: TtsSpeechOptions,
 ): string {
-  // **この前置きを短くするなら、`splitIntoChunks` の `MIN_CHUNK` との関係を見直すこと。**
-  // 呼び出し側（`useLiveEventHandler` の第 2 フェーズ）は「前置きは独立した先頭チャンクなので、
-  // 1 音でも鳴っていれば声になっている」という前提で既読の巻き戻し先を決めている。`MIN_CHUNK`
-  // 未満の長さになると震度の句と 1 チャンクへ結合され、その前提が静かに崩れる。
-  const prefix = announceUpgrade ? '緊急地震速報に切り替わりました。' : ''
+  const prefix = announceUpgrade ? EEW_UPGRADE_PHRASE : ''
   // 上限が定まらない報（仮定震源要素の初報など）は「震度4以上」と読む。値だけ読むと
   // 下限を断定した放送になる（判定は eewMaxScaleInfo・語の付け方は表示と共通）。
   //
