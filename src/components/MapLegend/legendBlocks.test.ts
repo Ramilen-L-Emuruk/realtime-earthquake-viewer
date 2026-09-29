@@ -7,7 +7,7 @@ import {
 } from './legendBlocks'
 import { INTENSITY_COLORS } from '../../utils/intensity'
 import { TSUNAMI_OBS_HEIGHT_STEPS, tsunamiObsBarColor } from '../Map/gl/tsunamiObsBarStyle'
-import { SHINDO0_COLOR } from '../../utils/kyoshinIntensity'
+import { SHINDO0_COLOR } from '../../utils/measuredIntensity'
 import { TSUNAMI_STYLE } from '../../utils/tsunamiStyle'
 import { depthRampT, jstYearStartMs } from '../../utils/hypocenterCatalogView'
 

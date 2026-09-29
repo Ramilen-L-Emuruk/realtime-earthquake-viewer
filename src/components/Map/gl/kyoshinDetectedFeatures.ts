@@ -1,7 +1,8 @@
 import type { FeatureCollection, Point } from 'geojson'
 import { mercatorProps } from './screenDepth'
 import type { DetectedPoint } from '../../../utils/kyoshinDetectionView'
-import { kyoshinIndexToJma, type KyoshinJma } from '../../../utils/kyoshinIntensity'
+import { kyoshinIndexToJma } from '../../../utils/kyoshinIntensity'
+import type { IntensityGrade } from '../../../utils/measuredIntensity'
 import { getScaleRadius } from '../../../utils/intensity'
 import { kyoshinDetectedIconId, KYOSHIN_DETECTED_ICON_BASE_RADIUS } from './kyoshinDetectedIcons'
 
@@ -17,7 +18,7 @@ const UNCONFIRMED_RADIUS_BONUS = 2
 // 検知点1点の描画半径（Leaflet 版と同一ロジックを confidence 別ボーナスへ一般化）。
 // 震度0は固定小半径、震度1以上は計測震度連動。
 // 固定式 (bonus + 3) / 2 は bonus=2（likelyの旧confirmed相当）で旧固定値 2.5 と一致する。
-function detectedRadius(jma: KyoshinJma, iconScale: number, bonus: number): number {
+function detectedRadius(jma: IntensityGrade, iconScale: number, bonus: number): number {
   return jma.label !== '0' ? (getScaleRadius(jma.scale) + bonus) * iconScale : ((bonus + 3) / 2) * iconScale
 }
 

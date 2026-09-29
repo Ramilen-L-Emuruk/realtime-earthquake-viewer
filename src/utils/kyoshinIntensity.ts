@@ -1,41 +1,21 @@
 // 強震モニタのリアルタイム震度インデックス（0〜20, 計測震度 = index * 0.5 - 3.0）を
-// JMA 震度階級へ変換する。計測震度 0.0 未満（震度0未満）は null。
+// JMA 震度階級へ変換する。
+//
+// **階級の境目はここに持たない。** 表は `measuredIntensity.ts` が単一情報源で、
+// ここはインデックスを計測震度へ直してから渡すだけ（同じ表を自作地震計の震度も通る）。
 //
 // 地図のラベルバッジ（KyoshinPoints）と右パネルの検知カード（RealtimeTab）で
 // 共通利用し、変換ロジックの二重管理を避ける。
 
-import { getIntensityColor } from './intensity'
+import { intensityGradeColor, measuredIntensityToGrade, type IntensityGrade } from './measuredIntensity'
 
-// 震度0（計測震度 0.0 以上 0.5 未満）の表示色。気象庁配色に震度0の色は無いため灰色とする。
-export const SHINDO0_COLOR = '#9ca3af'
-
-export interface KyoshinJma {
-  /** 震度階級ラベル（0〜7・5弱/5強 等） */
-  label: string
-  /** JMA 震度スケール値（マーカー半径算出 getScaleRadius 用: 10〜70） */
-  scale: number
-  /**
-   * 震度階級の順序（0=震度0 … 9=震度7）。scale は震度0/1がともに10で同値になるため、
-   * 「表示階級が実際に1段階上がったか」を判定する用途（例: 波紋エフェクトの発生トリガー）には
-   * scale ではなくこちらを使う。
-   */
-  rank: number
-}
-
-export function kyoshinIndexToJma(index: number | undefined): KyoshinJma | null {
-  if (index == null || Number.isNaN(index)) return null
+export function kyoshinIndexToJma(index: number | undefined): IntensityGrade | null {
+  if (index == null) return null
   const value = -3.0 + index * 0.5
-  if (value < 0.0) return null
-  if (value < 0.5) return { label: '0', scale: 10, rank: 0 }
-  if (value < 1.5) return { label: '1', scale: 10, rank: 1 }
-  if (value < 2.5) return { label: '2', scale: 20, rank: 2 }
-  if (value < 3.5) return { label: '3', scale: 30, rank: 3 }
-  if (value < 4.5) return { label: '4', scale: 40, rank: 4 }
-  if (value < 5.0) return { label: '5弱', scale: 45, rank: 5 }
-  if (value < 5.5) return { label: '5強', scale: 50, rank: 6 }
-  if (value < 6.0) return { label: '6弱', scale: 55, rank: 7 }
-  if (value < 6.5) return { label: '6強', scale: 60, rank: 8 }
-  return { label: '7', scale: 70, rank: 9 }
+  // **震度0 未満は描かない。** これは強震モニタ側の決め事（地図に点を出す下限）で、
+  // 気象庁の階級表の話ではない —— あちらの震度0 に下限は無い。
+  if (!(value >= 0.0)) return null
+  return measuredIntensityToGrade(value)
 }
 
 /** 震度階級ラベルのみが必要なときの簡易版。 */
@@ -48,6 +28,10 @@ export function kyoshinIndexToLabel(index: number | undefined): string | null {
  * ローカル生成の強震モニタ風アーカイブ（scripts/capture-kyoshin-waveform.ts）が、実波形から
  * 算出した計測震度をこのインデックス形式へ変換する際に使う。範囲外は0/20へクランプする
  * （観測点集合の型はYahoo由来・NIED由来を問わず同じ0〜20の規約に統一しているため）。
+ *
+ * **画面へ出す階級を引くのにこれを噛ませないこと。** 0.5 刻みへ丸めるので、
+ * 計測震度 4.4 が「5弱」になる（`round(7.4/0.5)=15` → 4.5）。計測震度を持っているなら
+ * `measuredIntensityToGrade` を直に呼ぶ。
  */
 export function kyoshinValueToIndex(value: number): number {
   const index = Math.round((value + 3.0) / 0.5)
@@ -63,6 +47,5 @@ export function kyoshinValueToIndex(value: number): number {
 export function kyoshinIntensityColor(index: number | undefined): string | null {
   const jma = kyoshinIndexToJma(index)
   if (!jma) return null
-  if (jma.label === '0') return SHINDO0_COLOR
-  return getIntensityColor(jma.scale)
+  return intensityGradeColor(jma)
 }

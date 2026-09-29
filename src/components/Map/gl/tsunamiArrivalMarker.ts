@@ -48,7 +48,7 @@ export const MIN_CORE_RATIO = 2 / 3
  *
  * 気象庁の観測階級色（紫・赤・オレンジ・シアン）を借りない——値が出ていないのに波高の大小を
  * 伝えることになる。この地図が「意味のある量が無い」に使っている無彩色に合わせてある
- * （`utils/kyoshinIntensity.ts` の `SHINDO0_COLOR` と同値）。**共有はしない**——あちらは震度0 の色で、
+ * （`utils/measuredIntensity.ts` の `SHINDO0_COLOR` と同値）。**共有はしない**——あちらは震度0 の色で、
  * 意味が違うものを 1 つの定数に束ねると、片方の都合で色を変えたときにもう片方が黙って変わる。
  */
 export const ARRIVAL_COLOR = '#9ca3af'
