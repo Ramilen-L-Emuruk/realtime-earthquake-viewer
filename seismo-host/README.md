@@ -548,6 +548,43 @@ WebView では送信されない。透過されない環境では、管理コン
 叩くたびに `origin-not-allowed` で失敗し続ける——実機（Tailscale Serve 経由）で
 確認でき次第、この節を更新する。
 
+**`/api/*` を試すときは、ページを開いた中から叩くこと。** 上の判定（`Origin` が
+省略されたら `Sec-Fetch-Site` を見る）はブラウザがヘッダを付けることに乗っているので、
+**ページに紐付かない HTTP クライアントからは 403 `origin-not-allowed` になる**。
+
+| 叩き方 | 結果 |
+|---|---|
+| ブラウザでページを開いて、その中の `fetch` | 200 |
+| ページを介さない HTTP クライアント（`curl`・Playwright の `request` 等） | 403 `origin-not-allowed` |
+
+**自動化したブラウザでも通る**（上記のとおり自動化の有無は無関係）。Playwright の
+Chromium で `/admin` を開き `page.evaluate(() => fetch('/api/stations', ...))` を
+実行して 200 を確認した。人が開く Chrome でも同じ（実機で観測点タブの一覧が出た）。
+
+> **403 の意味は狭い。** `Origin`・`Host` が噛み合っていないことだけを言っていて、
+> **許可リストの設定ミスとも、トークンの正誤とも無関係。**
+>
+> - `Origin` が省略されたときの分岐は**許可リストを一切参照していない** ——
+>   `Sec-Fetch-Site` が無いことだけで断っている。それでも画面には「このオリジンは
+>   未許可（`SEISMO_ADMIN_ALLOWED_ORIGINS`）」が出て一覧が空になるので、**設定を
+>   間違えたように見える**
+> - **トークンは最後に見る**ので、403 の時点では一度も触っていない
+
+`checkAdminAuth` の順序は `Origin`（または `Sec-Fetch-Site`）→ `Host` → トークン
+（`adminAuth.ts`）。**この順序は意図的** —— トークンを先に判定すると、`Origin`・`Host` の
+正誤に関係なくトークンだけを総当たりできるオラクルになる。
+
+だから**切り分けも同じ順序で**。先に叩き方とヘッダを直し、そのうえで 401 が返るなら
+初めてトークンを疑う（`missing-authorization` は未設定か `Bearer <token>` の形式でない・
+`invalid-token` は値が違う）。ページを介さないクライアントから試すなら、
+`Sec-Fetch-Site` を手で付ければ通る。
+
+```bash
+curl -H "Authorization: Bearer $SEISMO_ADMIN_TOKEN" \
+     -H "Sec-Fetch-Site: same-origin" \
+     http://127.0.0.1:50506/api/stations
+```
+
 **画面に含む機能**: 観測点・基板の作成・更新・削除（`/api/stations`・`/api/boards` の
 薄いフロントエンド）と、稼働状況（`GET /status` を 5 秒ごとに読んで表示。センサーの
 受信状況・観測点合成の震度・生データ保存状況等）。
