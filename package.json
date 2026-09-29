@@ -6,8 +6,8 @@
   "scripts": {
     "dev": "vite",
     "dev:dmdss": "cross-env VITE_VARIANT=dmdss vite",
-    "build": "node scripts/build-glyphs.mjs --check && tsc -b && vite build",
-    "build:dmdss": "node scripts/build-glyphs.mjs --check && tsc -b && cross-env VITE_VARIANT=dmdss vite build",
+    "build": "node scripts/build-glyphs.mjs --check && tsc -b && vite build && tsx scripts/check-precache-budget.ts",
+    "build:dmdss": "node scripts/build-glyphs.mjs --check && tsc -b && cross-env VITE_VARIANT=dmdss vite build && cross-env VITE_VARIANT=dmdss tsx scripts/check-precache-budget.ts",
     "preview": "vite preview",
     "preview:dmdss": "cross-env VITE_VARIANT=dmdss vite preview",
     "test": "vitest run",
