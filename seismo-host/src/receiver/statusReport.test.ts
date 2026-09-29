@@ -8,7 +8,7 @@ import type { SensorHealth } from './sensorHealth'
 import { StationDirectory } from './stationConfig'
 import type { StationHealth } from './stationHealth'
 import { buildStatusReport } from './statusReport'
-import type { RawStoreStatus, StatusReportInput } from './statusReport'
+import type { RawStoreStatus, StatusReportInput, WaveArchiveStatus } from './statusReport'
 
 const NOW = 1_700_000_100_000
 const STARTED = 1_700_000_000_000
@@ -55,6 +55,17 @@ const RAW_OK: RawStoreStatus = {
   currentDay: '2026-09-26',
   lastWriteError: null,
   lastSweepError: null,
+}
+
+const WAVE_OK: WaveArchiveStatus = {
+  writeErrors: 0,
+  lostRecords: 0,
+  badChunks: 0,
+  written: 12,
+  rotated: 0,
+  openBooks: 1,
+  slowClose: false,
+  lastWriteError: null,
 }
 
 function segment(overrides: Partial<SegmentState['timebase']> = {}): SegmentState {
@@ -137,6 +148,7 @@ function input(overrides: Partial<StatusReportInput> = {}): StatusReportInput {
     segments: [segment()],
     unusableIntensities: 0,
     raw: RAW_OK,
+    waveArchive: WAVE_OK,
     hub: new ReadingHub().snapshot(),
     stations: StationDirectory.empty(),
     stationConfigWarning: null,

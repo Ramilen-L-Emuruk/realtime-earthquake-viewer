@@ -37,6 +37,7 @@ import { PacketTally, formatTally } from './src/receiver/packetTally'
 import type { TallySnapshot } from './src/receiver/packetTally'
 import { RawStore } from './src/receiver/rawStore'
 import { ReadingHub } from './src/receiver/readingHub'
+import { WaveArchive, readWaveRange } from './src/receiver/waveArchive'
 import { SensorFusion } from './src/receiver/sensorFusion'
 import type {
   FusedWaveChunk,
@@ -85,6 +86,20 @@ const SUMMARY_INTERVAL_MS = 60_000
  */
 function defaultRawDir(): string {
   return fileURLToPath(new URL('./data/raw/', import.meta.url))
+}
+
+/**
+ * 合成波形の既定の置き場所（`defaultRawDir` と同じ理由でこのファイルからの相対）。
+ *
+ * **生データとは別の場所へ置く。** 切り方（あちらは日ごと・こちらは時ごと）も
+ * 後始末（あちらは古い日を gzip・こちらは圧縮しない）も違うので、混ぜると
+ * どちらの掃き取りも相手のファイルを跨いで走ることになる。
+ *
+ * `data/` は `.gitignore` 済み。**1 観測点あたり 1 日 120 MB 前後**増える
+ * （3 軸 × 100 Hz × 4 バイト ＋ 効いた本数）。
+ */
+function defaultWaveDir(): string {
+  return fileURLToPath(new URL('./data/wave/', import.meta.url))
 }
 
 /**
@@ -800,6 +815,19 @@ export interface ClosingLinesInput {
   readonly escaped: number
   readonly lastWriteError: string | null
   readonly lastSweepError: string | null
+  /**
+   * 合成波形の保存（`waveArchive.ts`）の累計。**生データの欄とは別に持つ。**
+   *
+   * 残しているものが違い（あちらはセンサー単独の生値、こちらは観測点の合成波形）、
+   * 片方だけ止まる形が現に起きうる。**混ぜると、読み返しの口が空を返すように
+   * なっていたことが最後の記録からも読めない。**
+   */
+  readonly waveWriteErrors: number
+  readonly waveLostRecords: number
+  readonly waveBadChunks: number
+  /** 締めくくりを待ちきれなかったか。**1 件も失っていない**（`slowCloses` と同じ位置づけ）。 */
+  readonly waveSlowClose: boolean
+  readonly waveLastWriteError: string | null
 }
 
 /**
@@ -829,6 +857,9 @@ export function buildClosingLines(input: ClosingLinesInput): readonly ClosingLin
     // 0 とは限らない。0 なら行ごと出ないので、平時の締めくくりは何も変わらない。
     { label: '閉じ切れなかった生データの本', value: input.openFiles },
     { label: 'うち締めくくりから戻ってこない本', value: input.stuckBooks },
+    { label: '合成波形を残せず流し口が壊れた', value: input.waveWriteErrors },
+    { label: '合成波形を書き損ねた', value: input.waveLostRecords },
+    { label: '合成波形を形にできず捨てた', value: input.waveBadChunks },
   ]) {
     // **0 は出さない。** 起きなかったことを毎回並べると、起きたことが埋もれる。
     if (c.value > 0) out.push({ level: 'log', line: `  ${c.label}=${c.value}` })
@@ -854,6 +885,17 @@ export function buildClosingLines(input: ClosingLinesInput): readonly ClosingLin
   }
   if (input.lastSweepError !== null) {
     out.push({ level: 'error', line: `  古い記録を掃き取れなかった理由: ${shorten(input.lastSweepError)}` })
+  }
+  if (input.waveLastWriteError !== null) {
+    out.push({
+      level: 'error',
+      line: `  合成波形を書き出せなかった理由: ${shorten(input.waveLastWriteError)}`,
+    })
+  }
+  // **待ちきれなかったことは件数では出ない。** 真偽なので上の 0 抑制に乗らず、
+  // ここで 1 行にする（失ったわけではないので `log`）。
+  if (input.waveSlowClose) {
+    out.push({ level: 'log', line: '  合成波形の締めくくりを待ちきれず' })
   }
   return out
 }
@@ -971,6 +1013,13 @@ async function main(): Promise<void> {
   // **作れなければここで落ちる。** 黙って保存せずに走るのがいちばん悪い ——
   // 基板は送っていて震度も出ていて、生だけが残っていない状態に外から気づけない。
   const rawStore = new RawStore({ dir: process.env.SEISMO_RAW_DIR ?? defaultRawDir() })
+  // **こちらも作れなければ落ちる**（`RawStore` と同じ理由）。読み返しの口
+  // （`GET /waves`）が返せるのはここへ残った分だけなので、黙って保存せずに走ると
+  // 「揺れたときに遡れない」ことへ外から気づく手立てが無い。
+  // **読み返しの口も同じ変数を見る。** 2 度解くと、環境変数で移した先を片方だけが
+  // 見る形（書いた本を読みにいかない）になりうる。
+  const waveDir = process.env.SEISMO_WAVE_DIR ?? defaultWaveDir()
+  const waveArchive = new WaveArchive({ dir: waveDir })
 
   /**
    * 間引きを通して 1 行出す。
@@ -1084,7 +1133,30 @@ async function main(): Promise<void> {
     noteWave: (w) => stationHealth.noteWave(w),
     notePairDiffs: (stationId, diffs) => stationHealth.notePairDiffs(stationId, diffs),
     // **波形を欲しがっている相手だけへ行く**（選り分けは `readingHub.ts` の `WAVE_ONLY`）。
-    publishWave: (w) => hub.publish({ kind: 'station-wave', wave: w }),
+    //
+    // **残すのも同じ 1 本の流れから。** 別の場所で拾う形にすると、押し出しには
+    // 出ているのに残っていない（あるいはその逆）が起こりうる —— どちらも症状は
+    // 「後から遡れない」だけで、原因の切り分けようが無い。
+    publishWave: (w) => {
+      hub.publish({ kind: 'station-wave', wave: w })
+      const stored = waveArchive.write(w)
+      if (!stored.saved) {
+        // **理由の文面は、その理由が書き込み系のときだけ添える**（`rawStore` と同じ判断）。
+        // 形にできなかった（`bad-chunk`）のはディスクと無関係なので、直前の書き込み障害の
+        // 文面を付けると原因を取り違えさせる。
+        const why =
+          (stored.reason === 'no-stream' || stored.reason === 'write-failed') &&
+          waveArchive.lastWriteError !== null
+            ? `: ${shorten(waveArchive.lastWriteError)}`
+            : ''
+        emit(
+          'warn',
+          'wave-store',
+          `${w.stationId}|${stored.reason}`,
+          `[wave] ${w.stationId} の合成波形を残せず（${stored.reason}）${why}`,
+        )
+      }
+    },
     reportCloseFailure: (f) => reportStationCloseFailures([f]),
     noteSkip: (stationId, reason) => stationHealth.noteSkip(stationId, reason),
     logSegment: (stationId, reason) => {
@@ -1335,6 +1407,8 @@ async function main(): Promise<void> {
       apply: applyStationConfig,
     },
     adminConsole,
+    // 過ぎた合成波形の読み返し（#357）。置き場所は保存と同じ `waveDir`。
+    readWaves: (params) => readWaveRange({ dir: waveDir, ...params }),
     // **呼ばれた時点で組み立てる。** 溜め込んだものを返すと、見に来た人が
     // 「いつの様子か」を自分で確かめられない。
     status: () =>
@@ -1369,6 +1443,17 @@ async function main(): Promise<void> {
           currentDay: rawStore.currentDay,
           lastWriteError: rawStore.lastWriteError,
           lastSweepError: rawStore.lastSweepError,
+        },
+        // **`WaveArchive` の欄もここで書き写す**（`raw` と同じ理由・同じ落とし穴）。
+        waveArchive: {
+          writeErrors: waveArchive.writeErrors,
+          lostRecords: waveArchive.lostRecords,
+          badChunks: waveArchive.badChunks,
+          written: waveArchive.written,
+          rotated: waveArchive.rotated,
+          openBooks: waveArchive.openBooks,
+          slowClose: waveArchive.slowClose,
+          lastWriteError: waveArchive.lastWriteError,
         },
         hub: hub.snapshot(),
         stations,
@@ -1446,6 +1531,11 @@ async function main(): Promise<void> {
       leftover: delta('leftover', '圧縮したが元を消せず', rawStore.leftovers),
       listFailed: delta('listFailed', '置き場所を読めず掃き取れず', rawStore.listFailures),
       escaped: delta('escaped', '同じ日の記録が別の中身で残った', rawStore.escaped),
+      // **合成波形の保存も要約へ出す。** `/status` は見に来た人にしか届かない ——
+      // ここから漏れると、読み返しの口が空を返すようになったことに再起動まで誰も気づけない。
+      waveSinkBroken: delta('waveSinkBroken', '合成波形を残せず流し口が壊れた', waveArchive.writeErrors),
+      waveLost: delta('waveLost', '合成波形を書き損ねた', waveArchive.lostRecords),
+      waveBadChunk: delta('waveBadChunk', '合成波形を形にできず捨てた', waveArchive.badChunks),
     }
     const now = Date.now()
     const elapsedSec = windowSeconds(now - lastSummaryMs, SUMMARY_INTERVAL_MS / 1000)
@@ -1528,6 +1618,21 @@ async function main(): Promise<void> {
       console.error(`[station-close] 観測点の合成の締めくくりに失敗: ${messageOf(error)}`)
     }
 
+    // **合成波形の保存は、合成の締めくくりより後で閉じる。** 生データ（`rawStore`）の
+    // すぐ後ろへ置きたくなるが、それだと**閉じた後に合成の締めくくりが来る**形になる。
+    //
+    // いまは `sensorFusion.closeAll()` が波形を返さない（震度と締めくくりの失敗だけ）ので
+    // 実害は無い。ただしあちらのコメントが「波形を配る先を足すときはここを見直すこと」と
+    // 予告しており、**返すようになった日にこの順序が逆だと、その波形は
+    // `closed` で断られて黙って消える** —— 先に順序だけ直しておく。
+    // **`closeAll()` に波形を持たせる件そのものは #402。**
+    try {
+      await waveArchive.close()
+      if (waveArchive.slowClose) console.warn('[wave] 合成波形の締めくくりを待ちきれず')
+    } catch (error) {
+      console.error(`[wave] 合成波形の締めに失敗: ${messageOf(error)}`)
+    }
+
     // **状態の口は震度を出し切ってから閉じる。** 先に閉じると、最後の窓ぶんの答えが
     // 購読者へ届かない（押し出しを先に切らないと `server.close()` が返らないので、
     // 閉じる中で順序は守られる）。**ここで投げさせない** —— 終了に到達しなくなる。
@@ -1564,6 +1669,11 @@ async function main(): Promise<void> {
       recordsAtRisk: rawStore.recordsAtRisk,
       lastWriteError: rawStore.lastWriteError,
       lastSweepError: rawStore.lastSweepError,
+      waveWriteErrors: waveArchive.writeErrors,
+      waveLostRecords: waveArchive.lostRecords,
+      waveBadChunks: waveArchive.badChunks,
+      waveSlowClose: waveArchive.slowClose,
+      waveLastWriteError: waveArchive.lastWriteError,
     })) {
       if (c.level === 'error') console.error(c.line)
       else console.log(c.line)

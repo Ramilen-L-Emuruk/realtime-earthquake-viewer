@@ -3,15 +3,17 @@
 // - `GET /status` — いまの様子を JSON で返す（宛先は**運用者**）
 // - `GET /stream` — 計測震度を押し出す。波形は `?wave=` で頼んだぶんだけ付く
 //   （`station` = 観測点の合成だけ／`1`・`all` = センサー単独も。宛先は **PWA** と**管理コンソール**）
+// - `GET /waves` — **過ぎた合成波形**を時刻の範囲で返す（宛先は **PWA**。#357）。
+//   保存は `waveArchive.ts`、間引きは `waveEnvelope.ts`。
 // - `/api/*` — 設定・履歴・管理操作（宛先は**管理コンソール**）。**認証必須**（`adminAuth.ts`）。
 //   応じるのは観測点・基板の設定（`/api/stations`・`/api/boards`）だけ（#313 段 B）。
 // - `GET /admin`・`GET /admin/app.js` — 管理コンソール本体（静的アセット）。**認証なし**——
 //   見られても書き込みはできない（書き込みには `/api/*` のトークンが要る）（#313 段 C）。
 //
-// **過ぎた波形を読み返す口も無い。** 生データはディスクに残っているので後から作れるが、
-// 時刻の範囲を受けて圧縮済みのファイルを展開し間引いて返す、という別の仕事になる。
+// **読み返せるのは観測点の合成波形だけ。** 生データ（センサー単独の RAW 値）は日ごとの
+// 追記型のままで、その日の中で頭出しする索引を持たない。
 //
-// **`/status`・`/stream` は認証を持たない。** 出るのは家の揺れの計測震度と機材の健全性
+// **`/status`・`/stream`・`/waves` は認証を持たない。** 出るのは家の揺れの計測震度と機材の健全性
 // だけで、読み取り専用のため公開してよい前提のまま変えていない。書き込みを伴う `/api/*`
 // とは守り方が違う——CORS も別に持つ（`applyCors` は `*`、`/api/*` は Origin を列挙する）。
 //
@@ -34,6 +36,8 @@ import type { HubMessage, ReadingHub, WaveWant } from './readingHub'
 import { describeFailure, parseStationConfig } from './stationConfig'
 import type { StationConfig } from './stationConfig'
 import type { StatusReport } from './statusReport'
+import type { ArchivedWaveChunk, WaveRangeResult } from './waveArchive'
+import { buildWaveEnvelope } from './waveEnvelope'
 
 /** 繋ぎ直すまでブラウザに待たせる時間。**SSE の `retry:` で伝える。** */
 const RETRY_MS = 3_000
@@ -80,6 +84,143 @@ export function parseWaveParam(raw: string | null): WaveWant {
  */
 export function isUnknownWaveParam(raw: string | null): raw is string {
   return raw !== null && !WAVE_PARAM.has(raw)
+}
+
+/**
+ * 読み返し（`GET /waves`）で一度に頼める範囲の上限。
+ *
+ * **この口は認証を持たない**（`/status`・`/stream` と同じ層）ので、**ここが唯一の
+ * 歯止め。** 上限が無いと、1 回の問い合わせでディスクを何時間ぶんも舐めさせられる。
+ *
+ * 10 分にしたのは、この口を待っている 2 つの用途がどちらもそれで足りるため ——
+ * 地震カードへ出す区間の波形（#385）と、押し出しが途絶えた区間の穴埋め。
+ */
+const WAVE_RANGE_MAX_MS = 10 * 60 * 1000
+
+/**
+ * 間引かずに（サンプルのまま）返す場合の上限。**列で返す場合よりずっと狭い。**
+ *
+ * 2 分ぶんは 3 軸 × 100 Hz で 3.6 万点あり、JSON にすると 500 KB 前後。
+ * 10 分を素のまま返すと数 MB になり、**認証の無い口が作る応答としては大きすぎる。**
+ */
+const WAVE_RAW_RANGE_MAX_MS = 2 * 60 * 1000
+
+/** 落とせる列の数の上限。画面の横幅より多く要る用途は無い。 */
+const WAVE_COLUMNS_MAX = 4096
+
+/**
+ * 10 進の整数だけを通す。**`Number()` に任せない** —— あれは `0x10` も空文字も受ける
+ * （`main.ts` の `DECIMAL_PORT_RE` と同じ判断）。時刻は 13 桁なので 16 桁まで許す。
+ */
+const DECIMAL_INT_RE = /^-?\d{1,16}$/
+
+function decimalInt(raw: string | null): number | null {
+  if (raw === null || !DECIMAL_INT_RE.test(raw)) return null
+  const n = Number(raw)
+  return Number.isSafeInteger(n) ? n : null
+}
+
+/** 読み返しの問い合わせ。**`columns` が `null` ならサンプルのまま返す。** */
+export type WaveQuery =
+  | {
+      readonly ok: true
+      readonly stationId: string
+      readonly fromMs: number
+      readonly toMs: number
+      readonly columns: number | null
+    }
+  | { readonly ok: false; readonly error: string }
+
+/**
+ * `GET /waves` の問い合わせを読む。**範囲外は入口で弾く。**
+ *
+ * 下流へ流すと、その範囲に触れるファイルの数だけ無駄な読み込みが出る
+ * （このリポジトリが「範囲外の指定は入口で弾く」と決めているのと同じ理由）。
+ */
+export function parseWaveQuery(params: URLSearchParams): WaveQuery {
+  const stationId = params.get('station')
+  if (stationId === null || stationId.length === 0) return { ok: false, error: 'station-required' }
+
+  const fromMs = decimalInt(params.get('from'))
+  const toMs = decimalInt(params.get('to'))
+  if (fromMs === null || toMs === null) return { ok: false, error: 'bad-range' }
+  // **等しい範囲も弾く。** 幅が無ければ列も作れず、サンプルも 1 点しか入らない。
+  if (toMs <= fromMs) return { ok: false, error: 'bad-range' }
+
+  const rawColumns = params.get('columns')
+  let columns: number | null = null
+  if (rawColumns !== null) {
+    const n = decimalInt(rawColumns)
+    if (n === null || n < 1 || n > WAVE_COLUMNS_MAX) return { ok: false, error: 'bad-columns' }
+    columns = n
+  }
+
+  const limit = columns === null ? WAVE_RAW_RANGE_MAX_MS : WAVE_RANGE_MAX_MS
+  if (toMs - fromMs > limit) return { ok: false, error: 'range-too-wide' }
+
+  return { ok: true, stationId, fromMs, toMs, columns }
+}
+
+/**
+ * 読み返した結果を応答の形へ。
+ *
+ * **読めなかった量（`skippedBytes`）と、記録の無い時の数（`filesMissing`）を必ず添える。**
+ * これが無いと、受け手からは「揺れていなかった」と「残っていない」が同じ空の配列に見える。
+ *
+ * **サンプルのまま返すときは `null` が欠測を表す。** `JSON.stringify` は `NaN` を
+ * `null` にするので、受け手は「数でない要素は届かなかった区間」として読むこと
+ * （埋めると、そこだけ時間の縮んだ絵になる）。
+ */
+export function buildWaveResponse(
+  query: Extract<WaveQuery, { ok: true }>,
+  result: WaveRangeResult,
+  stationKnown: boolean,
+): Record<string, unknown> {
+  const common = {
+    stationId: query.stationId,
+    /**
+     * その観測点がいまの設定にあるか。
+     *
+     * **無くても読みにいく。** 設定から外した観測点の記録は残っているので、
+     * 「いまの設定に無い」を理由に断ると過去を読み返せなくなる。ただし**黙らない**
+     * —— 綴り間違いは「その観測点は静かだった」と寸分違わない応答になるので、
+     * ここで見分けが付くようにする。
+     */
+    stationKnown,
+    fromMs: query.fromMs,
+    toMs: query.toMs,
+    filesRead: result.filesRead,
+    filesMissing: result.filesMissing,
+    filesFailed: result.filesFailed,
+    skippedBytes: result.skippedBytes,
+    truncated: result.truncated,
+  }
+  if (query.columns !== null) {
+    const envelope = buildWaveEnvelope({
+      chunks: result.chunks,
+      fromMs: query.fromMs,
+      toMs: query.toMs,
+      columnCount: query.columns,
+    })
+    return {
+      ...common,
+      columnSpanMs: envelope.columnSpanMs,
+      columns: envelope.columns,
+      hasAnyValue: envelope.hasAnyValue,
+      peakGal: envelope.peakGal,
+    }
+  }
+  return { ...common, chunks: result.chunks.map(toWireChunk) }
+}
+
+function toWireChunk(chunk: ArchivedWaveChunk): Record<string, unknown> {
+  return {
+    firstSampleMs: chunk.firstSampleMs,
+    msPerSample: chunk.msPerSample,
+    dcGal: chunk.dcGal,
+    gal: [Array.from(chunk.gal[0]), Array.from(chunk.gal[1]), Array.from(chunk.gal[2])],
+    memberCount: Array.from(chunk.memberCount),
+  }
 }
 
 /**
@@ -175,6 +316,23 @@ export interface StatusServerOptions {
    * `/admin`・`/admin/app.js` だけ 503 を返す。
    */
   readonly adminConsole: AdminConsoleAssets | null
+  /**
+   * 過ぎた合成波形を時刻の範囲で読み返す（`GET /waves`・#357）。
+   *
+   * **`null` なら口ごと 503。** 保存を持たない構成（テスト・保存先を開けなかった
+   * 起動）で「0 件」を返すと、**揺れていなかったのか記録していないのかが
+   * 呼び出し側から見分けられない。**
+   *
+   * **関数で受け取る。** ディスクを直に触る形にすると、範囲の検証を試すのに
+   * ファイルを並べる必要が出る（`stationConfig` を関数で受けているのと同じ分担）。
+   */
+  readonly readWaves:
+    | ((params: {
+        readonly stationId: string
+        readonly fromMs: number
+        readonly toMs: number
+      }) => Promise<WaveRangeResult>)
+    | null
 }
 
 export interface StatusServer {
@@ -875,6 +1033,48 @@ export async function startStatusServer(options: StatusServerOptions): Promise<S
           log('warn', 'sse', 'bad-wave-param', `[sse] ?wave= を読めないので波形なしで繋ぐ: ${forLog(waveParam)}`)
         }
         handleStream(req, res, parseWaveParam(waveParam))
+        return
+      }
+      if (url.pathname === '/waves') {
+        // **`/api/*` の下に置いていない。** 宛先は PWA で、あちらは管理トークンを
+        // 持たない（持たせるべきでもない）。出るのは `/stream` が既に押し出して
+        // いるのと同じ合成波形なので、公開の程度は変わらない —— 違うのは「過去を
+        // まとめて取れる」ことだけで、そこは範囲の上限（`WAVE_RANGE_MAX_MS`）で縛る。
+        if (options.readWaves === null) {
+          // **「0 件」で返さない。** 揺れていなかったのか記録していないのかを、
+          // 呼び出し側が見分けられなくなる。
+          sendJson(res, 503, { error: 'wave-archive-unavailable' })
+          return
+        }
+        const query = parseWaveQuery(url.searchParams)
+        if (!query.ok) {
+          sendJson(res, 400, { error: query.error })
+          return
+        }
+        // **いまの設定にあるかを添える**（断りはしない。{@link buildWaveResponse} の説明）。
+        const stationKnown = options.stationConfig
+          .get()
+          .stations.some((s) => s.stationId === query.stationId)
+        // **投げさせない。** 読み込みは非同期なので、この `try` の外で失敗する。
+        void options
+          .readWaves({ stationId: query.stationId, fromMs: query.fromMs, toMs: query.toMs })
+          .then((result) => {
+            sendJson(res, 200, buildWaveResponse(query, result, stationKnown))
+          })
+          .catch((error: unknown) => {
+            // **`options.log` を直に呼ばない。** このファイルは記録の口を `log()` で
+            // 包んであり（「記録する手段そのものが壊れている」場合に握るため）、
+            // **ここは `.catch()` の中なので、投げても上の同期の `try` には捕まらない**
+            // —— `unhandledRejection` としてプロセスごと落ちる。
+            log(
+              'error',
+              'waves',
+              forLog(query.stationId),
+              `[waves] 読み返しに失敗: ${error instanceof Error ? error.message : String(error)}`,
+            )
+            // **既に書き始めていたら何もしない**（二重に書くと壊れる）。
+            if (!res.headersSent) sendJson(res, 500, { error: 'wave-read-failed' })
+          })
         return
       }
       if (url.pathname === '/admin' || url.pathname === '/admin/') {
