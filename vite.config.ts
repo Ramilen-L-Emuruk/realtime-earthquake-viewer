@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url'
 import { perfReportPlugin } from './scripts/perf/vite-plugin-perf-report'
 import { shouldInjectDevApiKey, shouldInjectDevArrivalToken } from './scripts/dev-api-key-gate'
 import { isInsideClaudeDir } from './scripts/dev-watch-ignore'
+import { outDirForVariant } from './scripts/buildOutDir'
+import { PRECACHE_GLOB_PATTERNS, PRECACHE_MAX_FILE_BYTES } from './scripts/precacheBudget'
 
 const variant = process.env.VITE_VARIANT ?? 'standard'
 const isDmdss = variant === 'dmdss'
@@ -93,22 +95,33 @@ export default defineConfig(configEnv => ({
     watch: { ignored: [(p: string) => isInsideClaudeDir(CLAUDE_DIR, p)] },
   },
   build: {
-    outDir: isDmdss ? 'dist-dmdss' : 'dist',
+    outDir: outDirForVariant(variant),
     rollupOptions: {
       output: {
-        // **JMA2001 走時表だけを専用チャンクへ出す。**
+        // **precache 上限（1 ファイル 2 MiB）に収めるためのチャンク分割。**
         //
-        // 表は base64 で 130KB あり、main チャンクへ足すと precache 上限（下記 workbox の
-        // `maximumFileSizeToCacheInBytes` = 2 MiB）を超えてビルドが落ちる（追加前で 1.87 MiB）。
+        // 超えると vite-plugin-pwa がビルドを exit 1 で止める。ただし本当に困るのは超えた
+        // 瞬間ではなく、**上限すれすれで走り続けること** —— main チャンクは 2026-09-25 から
+        // 4 日間、上限の 99.9%（余裕 2 kB）で通っていて、次に足した変更でいきなりビルドが
+        // 通らなくなった。手前で止める仕組みは `scripts/check-precache-budget.ts`。
         //
-        // **静的 import のまま分ける。** 動的 import にすると「まだ読み込めていない」状態が
-        // 生まれ、電文を受け取った瞬間に同期で走時を引く設計が成り立たなくなる。静的な
-        // import なら ES モジュールの決まりでエントリの実行前に読み込まれるので、アプリから
-        // 見れば同期のまま（→ `src/utils/travelTime.ts` の冒頭）。
+        // **`maplibre-gl` と React を切り離す。** main チャンク 2,095 kB のうち `maplibre-gl`
+        // だけで 1,039 kB を占めていた（分けると main は 905 kB）。precache の総量は増えず
+        // （4,445 → 4,437 KiB）、アプリ側を直しただけのときに地図ライブラリの 1 MB を
+        // 配り直さずに済む。
+        //
+        // **JMA2001 走時表は静的 import のまま分ける。** 動的 import にすると「まだ読み込めて
+        // いない」状態が生まれ、電文を受け取った瞬間に同期で走時を引く設計が成り立たなくなる。
+        // 静的な import なら ES モジュールの決まりでエントリの実行前に読み込まれるので、
+        // アプリから見れば同期のまま（→ `src/utils/travelTime.ts` の冒頭）。
         //
         // 返り値が `undefined` のものは vite の既定の分け方に任せる。
         manualChunks(id: string) {
-          if (id.replace(/\\/g, '/').includes('/src/data/jma2001TravelTime')) return 'travel-time'
+          const path = id.replace(/\\/g, '/')
+          if (path.includes('/src/data/jma2001TravelTime')) return 'travel-time'
+          if (path.includes('/node_modules/maplibre-gl/')) return 'maplibre'
+          // react と react-dom は同じチャンクへ入れる（分けると初期化の順序に依存する）。
+          if (/\/node_modules\/(?:react|react-dom|scheduler)\//.test(path)) return 'react'
           return undefined
         },
       },
@@ -178,14 +191,10 @@ export default defineConfig(configEnv => ({
         screenshots: [],
       },
       workbox: {
-        // pbf は地名ラベルの SDF グリフ（public/fonts/<stack>/）。これを含めないとオフライン時に
-        // グリフだけ取得できず、MapLibre が実行時のフォント生成にフォールバックする（字形がシステム
-        // フォントに変わり、事前生成で消したはずのメインスレッド停止も復活する）。
-        globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2,pbf}'],
-        // precache に載せる 1 ファイルの上限。ライブラリ既定と同値だが、暗黙の既定に依存すると
-        // 「いつの間にか除外されていた」に気づけないため明示する。超過時は vite-plugin-pwa が
-        // ビルドを失敗させる（黙って除外はしない）。
-        maximumFileSizeToCacheInBytes: 2 * 1024 * 1024,
+        // 拾う拡張子と 1 ファイルの上限は `scripts/precacheBudget.ts` が持つ（ビルド後の
+        // 検査スクリプトと同じ値を見るため。片方だけ書き換えると検査がすり抜ける）。
+        globPatterns: [...PRECACHE_GLOB_PATTERNS],
+        maximumFileSizeToCacheInBytes: PRECACHE_MAX_FILE_BYTES,
         // SEC-3: standard 版の scope が /realtime-earthquake-viewer/ で DMDSS 版の /dmdss/
         // サブパスも包含するため、両バリアントを同一オリジンで訪れると standard の SW が
         // DMDSS 版のナビゲーションリクエストを横取りしうる。standard 版のみ /dmdss/ を
