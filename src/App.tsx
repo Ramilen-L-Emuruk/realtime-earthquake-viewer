@@ -19,6 +19,8 @@ import { ShareCardButton } from './components/ShareCardButton'
 import { useShareCard } from './hooks/useShareCard'
 import { SeismoOverlay } from './components/SeismoOverlay'
 import { useSeismoStation } from './hooks/useSeismoStation'
+import { SeismoWaveChart } from './components/SeismoWaveChart'
+import { useSeismoWaveVisibility } from './hooks/useSeismoWaveVisibility'
 import { EarthquakeTab } from './components/EarthquakeTab'
 import { RealtimeTab } from './components/RealtimeTab'
 import { useEewSpeakingCard } from './hooks/useEewSpeakingCard'
@@ -42,6 +44,7 @@ import { buildLegendBlocks, EMPTY_LEGEND_SOURCES, type MapLegendSources, type Le
 
 import { ActionChecklist } from './components/ActionChecklist'
 import { useActionChecklist } from './hooks/useActionChecklist'
+import { useNearbyScope } from './hooks/useNearbyScope'
 import { useStationCoords } from './hooks/useStationCoords'
 import { useEarthquakes } from './hooks/useEarthquakes'
 import { useFetchThrottled } from './hooks/useFetchThrottled'
@@ -1957,11 +1960,16 @@ export function App() {
   // 呼んでも追加の取得は起きない。
   const stationCoordsForChecklist = useStationCoords()
   const eewListForChecklist = useMemo(() => [...activeEEWsNoCancelled.values()], [activeEEWsNoCancelled])
-  const actionChecklist = useActionChecklist({
-    minScale: settings.actionChecklistMinScale,
+  // ホーム地点の周り（半径 30km）。**行動チェックリストと自作地震計の波形が同じものを見る**
+  // ので、ここで 1 つだけ作って両方へ渡す（→ hooks/useNearbyScope.ts）。
+  const nearbyScope = useNearbyScope({
     home,
     stationCoords: stationCoordsForChecklist,
     kyoshinSites: kyoshinSitesGated,
+  })
+  const actionChecklist = useActionChecklist({
+    minScale: settings.actionChecklistMinScale,
+    scope: nearbyScope,
     // 検知エンジンが確定した揺れのメンバー観測点を渡す（音・地図の検知点と同じ集合）。
     // 生の観測値を渡すと 1 点の跳ね上がりがそのまま表示される震度になる（理由は
     // kyoshinScaleForScope）。値は保持値なので、強く揺れている最中の単発の欠測でも落ちない。
@@ -2139,12 +2147,26 @@ export function App() {
   // **画面の他が過去なのにここだけ現在**という食い違いが起き、しかも見分ける手掛かりが
   // 画面に出ない。ライブ接続を止めるのと同じ扱いへ揃える（`ConnectionStatus` の `replay`）。
   //
-  // 波形は要求しない（`wave: 'none'`）—— 合成波形は毎秒 15 KB あるので、絵にする
-  // 段が要るときだけ粒度を上げる。
+  // 波形は「表示しない」以外で要求する。**「揺れたときだけ」でも受け取り続ける** ——
+  // 切り替えると SSE を繋ぎ直すので、揺れを検知してから上げたのでは間に合わない
+  // （繋ぎ直しに数百 ms〜数秒かかり、しかもその時点から 0 秒ぶんしか波形が無い）。
+  // 60 秒のリングバッファを持つ意味も、揺れる前から溜めておいてこそ。
   const seismo = useSeismoStation({
     enabled: settings.seismoEnabled && replayTimeOffset === null,
     baseUrl: settings.seismoHostUrl,
-    wave: 'none',
+    wave: settings.seismoWave === 'off' ? 'none' : 'station',
+  })
+  // 絵を出すかどうかは受け取るかどうかと別に決める（→ hooks/useSeismoWaveVisibility.ts）。
+  //
+  // **再生中は明示的に落とす。** 繋いでいないので観測点が 1 つも無く、結果として絵は
+  // 出ない —— が、それは「`stations` が空だから」という偶然に頼った形で、判定の中では
+  // EEW と強震モニタ（再生中も動いている）に反応して内部の状態が立ってしまう。
+  const showSeismoWave = useSeismoWaveVisibility({
+    mode: replayTimeOffset === null ? settings.seismoWave : 'off',
+    scope: nearbyScope,
+    eews: eewListForChecklist,
+    detectedPoints: kyoshinView.detectedPoints,
+    stations: seismo.stations,
   })
 
   // 地図左上の更新時刻: リアルタイム表示はリアルタイム震度(kyoshin)の更新時刻、
@@ -2281,10 +2303,17 @@ export function App() {
               onRestore={actionChecklist.restore}
             />
           )}
-          {/* 地図の下端に積む枠。上から凡例・特別情報バナーの順で、**バナーが出れば凡例が
-              押し上がる**（凡例を別に絶対配置すると、下端全幅のバナーに隠れる）。
+          {/* 地図の下端に積む枠。上から自作地震計の波形・凡例・特別情報バナーの順で、
+              **下のものが増えれば上のものが押し上がる**（別に絶対配置すると、下端全幅の
+              バナーに隠れる）。波形をいちばん上に置くのは、**常設で高さが一定**だから ——
+              下に何が増えても波形が上へ逃げるだけで、下の 2 つの位置は変わらない。
+              逆順にすると、**警報のバナーが常時動いている絵に押し上げられて画面の内側へ
+              寄る**（重なりはしない。ここは flex の通常フロー）。
               z は左上の情報ブロックと同じ理由で高く取る。 */}
           <div className="absolute bottom-0 left-0 right-0 z-[99999] pointer-events-none flex flex-col items-start">
+            {showSeismoWave && (
+              <SeismoWaveChart stations={seismo.stations} readWave={seismo.readWave} />
+            )}
             {settings.showMapLegend && (
               <MapLegend blocks={legendBlocks} collapsed={legendCollapsed} onToggle={toggleLegend} compact={mapAreaShort} />
             )}

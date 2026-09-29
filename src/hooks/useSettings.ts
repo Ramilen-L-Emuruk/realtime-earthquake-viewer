@@ -6,6 +6,8 @@ import { isValidIntensityScale } from '../utils/intensity'
 // ここ（設定）から生やすと utils → hooks の向きで参照が要り、依存が逆流する。
 import type { TtsUnreceivedDetail, TelegramTextBlockKey, TelegramTextBlocks, TelegramBoilerplateKey, TelegramBoilerplateReads } from '../utils/ttsText'
 import { TELEGRAM_TEXT_BLOCK_KEYS, TELEGRAM_BOILERPLATE_KEYS, TELEGRAM_BOILERPLATE_DEFAULT_READS } from '../utils/ttsText'
+// 同じ理由（依存の向き）で、波形グラフの出し方の定義も utils 側に置いてある。
+import type { SeismoWaveMode } from '../utils/seismoWaveTrigger'
 
 export type { TtsUnreceivedDetail, TelegramTextBlockKey, TelegramTextBlocks }
 export { TELEGRAM_TEXT_BLOCK_KEYS, TELEGRAM_BOILERPLATE_KEYS }
@@ -124,9 +126,8 @@ export interface AppSettings {
   /**
    * 自作地震計ホスト（`seismo-host/`）へ繋ぐ。
    *
-   * **いまできるのは接続の確認と観測点の一覧まで。** 受け取った計測震度を画面へ
-   * 出す部分はまだ無い（`components/SettingsTab/index.tsx` の説明文もそこへ
-   * 合わせてある）。
+   * 繋ぐと観測点ごとの計測震度が地図の左上へ出る（`components/SeismoOverlay/`）。
+   * 波形の絵は別の設定（{@link seismoWave}）。
    *
    * **URL とは別にトグルを持つ。** 入れた URL を覚えたまま一時的に切れるようにするため
    * （モバイル回線に切り替えたとき・ホストを再起動している間）。**そのぶん繋がらない
@@ -146,7 +147,15 @@ export interface AppSettings {
    * `seismo-host/REQUIREMENTS.md` §13）。通常の Safari タブでは HTTPS でも失敗する。
    */
   seismoHostUrl: string
-  panelRatio: number               // 縦積みレイアウト（スマホ縦など）でのパネル高さ比率（0.2〜0.8）
+  /**
+   * 自作地震計の波形グラフ（地図の下端）の出し方。
+   *
+   * **`'off'` 以外では波形を購読する**（`'auto'` でも）。揺れてから購読を上げたのでは
+   * 間に合わないため —— 詳しくは `utils/seismoWaveTrigger.ts` の
+   * {@link SeismoWaveMode}。合成波形は毎秒 15 KB あるので既定は `'off'`。
+   */
+  seismoWave: SeismoWaveMode
+  panelRatio: number             // 縦積みレイアウト（スマホ縦など）でのパネル高さ比率（0.2〜0.8）
 }
 
 // パネル高さ比率の可動範囲。境界のつまみをドラッグしたときのクランプ幅と、
@@ -244,6 +253,8 @@ export const DEFAULTS: AppSettings = {
   // 自作地震計は既定で無効。**URL の既定値も置かない** —— 繋ぎ先は端末ごとに違う。
   seismoEnabled: false,
   seismoHostUrl: '',
+  // 波形は既定で受け取らない（合成波形は毎秒 15 KB ある）。
+  seismoWave: 'off',
   panelRatio: 0.45,
 }
 
@@ -266,6 +277,10 @@ function ensureDefaultTab(value: unknown, fallback: DefaultTabSetting): DefaultT
 
 function ensureMapLegendCollapse(value: unknown, fallback: MapLegendCollapseSetting): MapLegendCollapseSetting {
   return value === 'auto' || value === 'open' || value === 'collapsed' ? value : fallback
+}
+
+function ensureSeismoWave(value: unknown, fallback: SeismoWaveMode): SeismoWaveMode {
+  return value === 'off' || value === 'auto' || value === 'always' ? value : fallback
 }
 
 function ensureUnreceivedDetail(value: unknown, fallback: TtsUnreceivedDetail): TtsUnreceivedDetail {
@@ -388,6 +403,7 @@ export function sanitize(partial: Partial<AppSettings>): AppSettings {
     // ——入力途中の値も保存されるので、ここで弾くと打っている最中に消える。
     // 形の判定は使う側（`isValidSeismoHostUrl`）の仕事。
     seismoHostUrl: ensureString(partial.seismoHostUrl, DEFAULTS.seismoHostUrl),
+    seismoWave: ensureSeismoWave(partial.seismoWave, DEFAULTS.seismoWave),
     panelRatio: clampNumber(partial.panelRatio, PANEL_RATIO_MIN, PANEL_RATIO_MAX, DEFAULTS.panelRatio),
   }
 }

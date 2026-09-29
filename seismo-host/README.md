@@ -178,6 +178,50 @@ SEISMO_UDP_PORT=50505 SEISMO_UDP_ADDRESS=0.0.0.0 npm run seismo-host
 （落とした件数の要約は 1 分ごとと終了時）。**生のパケットはファイルへ残る**（下記）。
 残る 2 つは HTTP（下記「状態と押し出しの口」）。
 
+### 常時動かす機へ配る
+
+**配り先は git リポジトリとは限らない。** 開発機とは別の常時起動の機で動かす場合、
+リポジトリから**ファイルをコピーしただけ**の置き場所になっていることがある
+（`.git` を持たない）。そこでは `git pull` が効かないので、送り直す。
+
+**送るのは実装だけ。**
+
+| 送る | 送らない（配り先にしかない） |
+|---|---|
+| `seismo-host/main.ts` | `seismo-host/config/stations.json` — 観測点の設定 |
+| `seismo-host/src/` | `seismo-host/data/raw/` — 生のパケット |
+
+**ディレクトリごと送らないこと。** 手元にも同名の `config/stations.json`（開発用）が
+あるので、`seismo-host/` を丸ごと上書きすると**配り先の観測点設定が開発用で潰れる**。
+
+```bash
+scp seismo-host/main.ts <配り先>:<置き場所>/seismo-host/main.ts
+scp -r seismo-host/src <配り先>:<置き場所>/seismo-host/
+```
+
+**共有しているものも見る。** 震度の計算はリポジトリ本体側の
+`src/utils/knet/seismicIntensity` を読んでいるので、そちらを変えたときは一緒に送る。
+`package.json` の依存が変わったときは配り先で `npm install` も要る。
+
+**Windows の配り先へ ssh で起動するときは `cmd.exe /c '…'` と包む** ——
+向こうのシェルが PowerShell だと `&&` を「有効なステートメント区切りではありません」と
+言って落ちる。**値の直後（`&&` の前）に空白を入れない** —— `cmd.exe` の `set` は行末までを
+値として採るので、`set VAR=値 && …` と書くと**値の末尾に空白が混ざる**。
+
+```bash
+ssh <配り先> "cmd.exe /c 'cd /d <置き場所> && set SEISMO_ADMIN_TOKEN=<値>&& set SEISMO_ADMIN_ALLOWED_HOSTS=<host:port>&& set SEISMO_ADMIN_ALLOWED_ORIGINS=<origin>&& npm run seismo-host > seismo-host.log 2>&1'"
+```
+
+**止めるときは木ごと。** `npm run seismo-host` → `tsx` の CLI → 実体の node → `esbuild` と
+4 段になるので、いちばん上だけ止めても残る。
+
+**入れ替わったかは `/status` で確かめる。** プロセスは読み込み済みのコードで走り続けるので、
+ファイルを置いただけでは変わらない。再起動してから購読の粒度を見る ——
+`stream.subscribers[].wave` が `'station'` のような**文字列**なら新しい版、
+`true` / `false` の**真偽値**なら `?wave=` に粒度を足す前の版。
+
+> 止めている間は UDP を受けない。**基板は送り続けるので、その秒数ぶんの生データが欠ける。**
+
 ### 重力を引くのはここで決める
 
 計算の側は既定値を置いていない（通す側に選ばせる作り）。**その選ぶ側がここ** ——

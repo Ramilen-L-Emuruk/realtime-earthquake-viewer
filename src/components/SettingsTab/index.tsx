@@ -1447,6 +1447,24 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
                 </span>
               </Row>
             )}
+            {/* **「揺れたときだけ」でも波形は受け取り続ける。** 揺れてから受け取り始めたのでは
+                立ち上がりが絵に入らないので、切り替えるのは表示だけ（→
+                `utils/seismoWaveTrigger.ts`）。通信量が増えることは hint で伝える。 */}
+            <Row
+              label="波形グラフ"
+              description="地図の下端に直近60秒の揺れを表示します"
+              hint="「表示しない」以外は波形を受信し続けます"
+            >
+              <select
+                value={settings.seismoWave}
+                onChange={e => onUpdate('seismoWave', e.target.value as AppSettings['seismoWave'])}
+                className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
+              >
+                <option value="off">表示しない</option>
+                <option value="auto">揺れたときだけ</option>
+                <option value="always">常に表示</option>
+              </select>
+            </Row>
           </>
         )}
       </Section>
