@@ -29,6 +29,10 @@ import { formatFileStamp } from '../../utils/formatters'
 import {
   arrivalTokenStatusLine, type ArrivalTokenStatus, type ArrivalTokenStatusTone,
 } from '../../utils/arrivalToken'
+import { fetchSeismoStatus, isValidSeismoHostUrl } from '../../services/seismoStream'
+import {
+  seismoStatusLine, SEISMO_STATUS_TONE_CLASS, type SeismoUiStatus,
+} from './seismoStatusLine'
 import { useKyoshinImport } from '../../hooks/useKyoshinImport'
 import { buildSettingsFile, parseSettingsFile, settingsFileName, type SettingsVariant } from '../../utils/settingsIo'
 
@@ -1152,6 +1156,40 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
     return () => { cancelled = true }
   }, [settings.voicevoxEnabled, debouncedVoicevoxUrl])
 
+  // 自作地震計ホストの確認。**VOICEVOX と同じ流儀**（通信する側だけデバウンス後の値を使う）。
+  const debouncedSeismoUrl = useDebouncedValue(settings.seismoHostUrl, VOICEVOX_URL_DEBOUNCE_MS)
+  const isSeismoCheckPending = settings.seismoHostUrl !== debouncedSeismoUrl
+  const [seismoStatus, setSeismoStatus] = useState<SeismoUiStatus>({ kind: 'disabled' })
+  const seismoStatusText = seismoStatusLine(seismoStatus)
+
+  useEffect(() => {
+    if (!settings.seismoEnabled) {
+      setSeismoStatus({ kind: 'disabled' })
+      return
+    }
+    // **空欄と「形が違う」を分ける。** 空欄は「まだ入れていない」ので促す側の文に、
+    // 形が違うのは直せる誤りなので赤で出す。どちらも通信しない。
+    if (debouncedSeismoUrl.trim() === '') {
+      setSeismoStatus({ kind: 'no-url' })
+      return
+    }
+    if (!isValidSeismoHostUrl(debouncedSeismoUrl)) {
+      setSeismoStatus({ kind: 'invalid' })
+      return
+    }
+    let cancelled = false
+    setSeismoStatus({ kind: 'checking' })
+    fetchSeismoStatus(debouncedSeismoUrl)
+      .then(result => { if (!cancelled) setSeismoStatus(result) })
+      // **投げさせない。** `fetchSeismoStatus` は理由を戻り値で返す契約だが、
+      // ここで漏れると設定タブが「確認中...」のまま固まる。
+      .catch((error: unknown) => {
+        log.warn('[seismo] 接続確認が失敗した', error)
+        if (!cancelled) setSeismoStatus({ kind: 'unreachable', detail: 'check-threw' })
+      })
+    return () => { cancelled = true }
+  }, [settings.seismoEnabled, debouncedSeismoUrl])
+
   const handleTimeConfirm = () => {
     if (!kyoshinInputDateTime) return
     const specified = new Date(kyoshinInputDateTime)
@@ -1358,6 +1396,59 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
             onChange={v => onUpdate('arrivalToken', v)}
           />
         </Row>
+      </Section>
+
+      {/* 前提条件は hint に置いて常時見せる。VOICEVOX の「要：VOICEVOXアプリ起動」と
+          同じ判断で、吹き出しに隠すと有効にしたとき「応答がありません」だけが見えて、
+          何を直せばよいか分からなくなる（iOS 実機では通常の Safari タブから繋がらない。
+          seismo-host/REQUIREMENTS.md §13）。
+          **「PWA」と書かない。** 利用者向けの文言でこの語を使っているのはここだけで、
+          設定タブを開く人が意味を知っている前提は置けない。VOICEVOX 側が
+          「アプリを起動する」と行動で書いているのと揃える。 */}
+      <Section title="自作地震計">
+        <Row
+          label="自作地震計と接続"
+          description="ご自宅に設置した地震計ホストへ接続します"
+          hint="要：ホーム画面に追加してから開く"
+        >
+          <Toggle checked={settings.seismoEnabled} onChange={v => onUpdate('seismoEnabled', v)} />
+        </Row>
+        {settings.seismoEnabled && (
+          <>
+            <Row label="ホストのURL" description="地震計ホストのURL（例: https://seismo.example.ts.net）">
+              {/* 赤枠と理由は入力が落ち着いてから出す（判定に使うのはデバウンス後の値）。
+                  打鍵ごとに判定すると、書き直している最中ずっと赤いままになる。 */}
+              <input
+                type="text"
+                value={settings.seismoHostUrl}
+                onChange={e => onUpdate('seismoHostUrl', e.target.value)}
+                className={`bg-input border rounded px-2 py-1 text-xs text-white w-44 ${
+                  seismoStatus.kind === 'invalid' ? 'border-red-500' : 'border-border'
+                }`}
+                spellCheck={false}
+                inputMode="url"
+              />
+            </Row>
+            <Row label="接続状態" description="">
+              <span
+                className={`text-xs w-56 text-right leading-snug ${
+                  isSeismoCheckPending
+                    ? SEISMO_STATUS_TONE_CLASS.muted
+                    : SEISMO_STATUS_TONE_CLASS[seismoStatusText.tone]
+                }`}
+              >
+                {isSeismoCheckPending ? '確認中...' : seismoStatusText.text}
+              </span>
+            </Row>
+            {seismoStatus.kind === 'ok' && seismoStatus.stations.length > 0 && (
+              <Row label="観測点" description="ホストに設定されている観測点">
+                <span className="text-xs text-secondary w-56 text-right leading-snug">
+                  {seismoStatus.stations.map(s => s.displayName).join('・')}
+                </span>
+              </Row>
+            )}
+          </>
+        )}
       </Section>
 
       <Section title="タブ自動切替設定">

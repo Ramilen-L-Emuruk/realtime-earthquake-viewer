@@ -121,6 +121,31 @@ export interface AppSettings {
    * 「警報の対象地方を、予想値の前に伝える」）。
    */
   ttsReadEewWarningRegions: boolean
+  /**
+   * 自作地震計ホスト（`seismo-host/`）へ繋ぐ。
+   *
+   * **いまできるのは接続の確認と観測点の一覧まで。** 受け取った計測震度を画面へ
+   * 出す部分はまだ無い（`components/SettingsTab/index.tsx` の説明文もそこへ
+   * 合わせてある）。
+   *
+   * **URL とは別にトグルを持つ。** 入れた URL を覚えたまま一時的に切れるようにするため
+   * （モバイル回線に切り替えたとき・ホストを再起動している間）。**そのぶん繋がらない
+   * 理由が「切っている」「URL が空」「URL の形が違う」「ホストが応えない」の 4 通りに
+   * なる**ので、設定タブの接続状態はこの 4 つを言い分けて出す（1 つの
+   * 「繋がりません」へ潰さない。→ `components/SettingsTab/seismoStatusLine.ts`）。
+   */
+  seismoEnabled: boolean
+  /**
+   * 自作地震計ホストの基点 URL（空文字 = 未設定）。
+   *
+   * **既定は空文字で、`.env.local` からの自動投入もしない。** VOICEVOX と違い、
+   * 繋ぎ先は端末ごとに違う（LAN の IP か Tailscale の名前か）ので、既定値を
+   * 置いても当たらない。
+   *
+   * **iOS 実機ではホーム画面に追加した PWA からしか繋がらない**（実測の経緯は
+   * `seismo-host/REQUIREMENTS.md` §13）。通常の Safari タブでは HTTPS でも失敗する。
+   */
+  seismoHostUrl: string
   panelRatio: number               // 縦積みレイアウト（スマホ縦など）でのパネル高さ比率（0.2〜0.8）
 }
 
@@ -216,6 +241,9 @@ export const DEFAULTS: AppSettings = {
   // 選ぶ項目なので既定を変えないが、これは新しく足す発話で、しかも「予想値の読み上げを
   // 遅らせる」ことが目的。既定で切っておくと、目的そのものが誰にも届かない。
   ttsReadEewWarningRegions: true,
+  // 自作地震計は既定で無効。**URL の既定値も置かない** —— 繋ぎ先は端末ごとに違う。
+  seismoEnabled: false,
+  seismoHostUrl: '',
   panelRatio: 0.45,
 }
 
@@ -355,6 +383,11 @@ export function sanitize(partial: Partial<AppSettings>): AppSettings {
     ttsReadHypocenterDetail: ensureBool(partial.ttsReadHypocenterDetail, DEFAULTS.ttsReadHypocenterDetail),
     ttsReadEewLpgmClass: ensureBool(partial.ttsReadEewLpgmClass, DEFAULTS.ttsReadEewLpgmClass),
     ttsReadEewWarningRegions: ensureBool(partial.ttsReadEewWarningRegions, DEFAULTS.ttsReadEewWarningRegions),
+    seismoEnabled: ensureBool(partial.seismoEnabled, DEFAULTS.seismoEnabled),
+    // **URL の形をここで検めない。** `voicevoxUrl` と同じ扱いで、文字列として通す
+    // ——入力途中の値も保存されるので、ここで弾くと打っている最中に消える。
+    // 形の判定は使う側（`isValidSeismoHostUrl`）の仕事。
+    seismoHostUrl: ensureString(partial.seismoHostUrl, DEFAULTS.seismoHostUrl),
     panelRatio: clampNumber(partial.panelRatio, PANEL_RATIO_MIN, PANEL_RATIO_MAX, DEFAULTS.panelRatio),
   }
 }

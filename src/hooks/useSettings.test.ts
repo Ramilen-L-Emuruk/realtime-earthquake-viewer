@@ -191,6 +191,28 @@ describe('sanitize', () => {
     expect(sanitize({ dmdataApiKey: '' }).dmdataApiKey).toBe('')
     expect(sanitize({ dmdataApiKey: 123 as unknown as string }).dmdataApiKey).toBe('')
   })
+
+  it('正: 自作地震計の 2 項目を保持する', () => {
+    const result = sanitize({ seismoEnabled: true, seismoHostUrl: 'https://seismo.example.ts.net' })
+    expect(result.seismoEnabled).toBe(true)
+    expect(result.seismoHostUrl).toBe('https://seismo.example.ts.net')
+  })
+
+  it('対照: 既定では無効で、URL も空', () => {
+    // **既定値を置かない。** 繋ぎ先は端末ごとに違う（LAN の IP か Tailscale の名前か）ので、
+    // 既定値を置いても当たらない。
+    expect(sanitize({}).seismoEnabled).toBe(false)
+    expect(sanitize({}).seismoHostUrl).toBe('')
+  })
+
+  it('安全弁: seismoHostUrl の形はここで検めない（入力途中の値を消さない）', () => {
+    // 形の判定は使う側（`isValidSeismoHostUrl`）の仕事。ここで弾くと、
+    // URL を打っている最中に入力欄から消える。
+    expect(sanitize({ seismoHostUrl: 'htt' }).seismoHostUrl).toBe('htt')
+    expect(sanitize({ seismoHostUrl: '192.168.0.64:50506' }).seismoHostUrl).toBe('192.168.0.64:50506')
+    // 文字列でない値だけは既定へ落とす。
+    expect(sanitize({ seismoHostUrl: 123 as unknown as string }).seismoHostUrl).toBe('')
+  })
 })
 
 describe('load', () => {
