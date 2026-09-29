@@ -2982,9 +2982,10 @@ ZIP の配布単位は年ごとではない。1919〜1982 年は 4 つのまと�
 | 大きさ | 生成物 130KB（base64）。**専用チャンクへ出して転送 gzip 28.7KB** |
 
 **専用チャンクに出すのは precache 上限のため。** main チャンクへ足すと Service Worker の
-`maximumFileSizeToCacheInBytes`（2 MiB）を超えてビルドが落ちる（追加前で 1.87 MiB）。
-分け方は `vite.config.ts` の `manualChunks`。**静的 import のまま分ける** ので、ES モジュールの
-決まりでエントリの実行前に読み込まれ、アプリから見れば同期のまま。
+1 ファイル上限（2 MiB）を超えてビルドが落ちる。分け方は `vite.config.ts` の `manualChunks` で、
+走時表のほかに `maplibre-gl` と React も切り出している（上限との付き合い方は
+[`settings-pwa-spec.md`](settings-pwa-spec.md) §5「キャッシュポリシー」）。**静的 import のまま
+分ける** ので、ES モジュールの決まりでエントリの実行前に読み込まれ、アプリから見れば同期のまま。
 
 **上流のファイルは 2005-04-14 付けで固定されており、定期実行は要らない。** 生成時に次を検査し、
 合わなければ exit 1 で止まる。
