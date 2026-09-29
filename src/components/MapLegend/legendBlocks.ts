@@ -15,7 +15,7 @@
 // `getIntensityColor` を通る）。別ブロックにすると同じ色列が画面に 2 度並ぶ。
 
 import { INTENSITY_COLORS, INTENSITY_LABELS } from '../../utils/intensity'
-import { SHINDO0_COLOR } from '../../utils/kyoshinIntensity'
+import { SHINDO0_COLOR } from '../../utils/measuredIntensity'
 import { getLpgmClassColor, getLpgmClassLabel } from '../../utils/lpgm'
 import { TSUNAMI_STYLE, TSUNAMI_MISSING_COLOR } from '../../utils/tsunamiStyle'
 import { TSUNAMI_OBS_HEIGHT_STEPS } from '../Map/gl/tsunamiObsBarStyle'

@@ -404,6 +404,28 @@ describe('useSeismoStation', () => {
     expect(bad.result.current.stream).toBeNull()
   })
 
+  // **App は再生（テスト時刻設定）のあいだ `enabled` を落とす。** ホストが押し出すのは
+  // 「いまの震度」だけなので、繋いだままにすると画面の他が過去なのにここだけ現在になる
+  // （→ `docs/spec/data-sources-spec.md` §4.5「地図の左上へ重ねる」）。
+  // **繋いだ後で落ちる経路**は上の「切れているなら繋がない」（最初から false）では通らない。
+  it('正: 繋いだ後で enabled が落ちたら、購読を閉じて震度も落とす', async () => {
+    const h = renderHook(
+      ({ enabled }: { enabled: boolean }) => useSeismoStation({ ...options, enabled }),
+      { initialProps: { enabled: true } },
+    )
+    await settleDirectory()
+    deliver(stationReading('home', 1.2))
+    await tick()
+    expect(h.result.current.stations).toHaveLength(1)
+    const closedBefore = closeCalls
+
+    h.rerender({ enabled: false })
+    await tick()
+    expect(h.result.current.stations).toEqual([])
+    expect(h.result.current.stream).toBeNull()
+    expect(closeCalls).toBe(closedBefore + 1)
+  })
+
   it('安全弁: 画面を離れたら購読を落とす（枠は 8 本しかない）', async () => {
     const h = renderHook(() => useSeismoStation(options))
     await settleDirectory()

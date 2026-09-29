@@ -17,6 +17,8 @@ import { MapDataStatus } from './components/MapDataStatus'
 import { MapRenderStatus } from './components/MapRenderStatus'
 import { ShareCardButton } from './components/ShareCardButton'
 import { useShareCard } from './hooks/useShareCard'
+import { SeismoOverlay } from './components/SeismoOverlay'
+import { useSeismoStation } from './hooks/useSeismoStation'
 import { EarthquakeTab } from './components/EarthquakeTab'
 import { RealtimeTab } from './components/RealtimeTab'
 import { useEewSpeakingCard } from './hooks/useEewSpeakingCard'
@@ -2130,6 +2132,21 @@ export function App() {
     showPlateBoundaries: settings.showPlateBoundaries,
   }, settings.showMapLegend ? legendBlocks : EMPTY_LEGEND_BLOCKS)
 
+  // 自作地震計（`seismo-host/`）の観測点の震度。**設定が切れていれば繋がない。**
+  //
+  // **再生中も繋がない。** ホストが押し出すのは「いまの震度」だけで、再生している
+  // 過去の時刻ぶんを返す口がまだ無い（`seismo-host` 側の課題）。繋いだままにすると
+  // **画面の他が過去なのにここだけ現在**という食い違いが起き、しかも見分ける手掛かりが
+  // 画面に出ない。ライブ接続を止めるのと同じ扱いへ揃える（`ConnectionStatus` の `replay`）。
+  //
+  // 波形は要求しない（`wave: 'none'`）—— 合成波形は毎秒 15 KB あるので、絵にする
+  // 段が要るときだけ粒度を上げる。
+  const seismo = useSeismoStation({
+    enabled: settings.seismoEnabled && replayTimeOffset === null,
+    baseUrl: settings.seismoHostUrl,
+    wave: 'none',
+  })
+
   // 地図左上の更新時刻: リアルタイム表示はリアルタイム震度(kyoshin)の更新時刻、
   // DMDSS版かつWS接続中は現在時刻を毎秒更新、それ以外は最終受信時刻を表示する。
   const overlayUpdateTime =
@@ -2213,7 +2230,9 @@ export function App() {
               onMapReady={setMapHandle}
             />
           </ErrorBoundary>
-          {/* 地図左上に重ねる情報の置き場。上から更新時刻・生成データの取得状況・地図描画の不調。
+          {/* 地図左上。観測している値（自作地震計の観測点ごとの震度）を置く。
+              **アプリの状態（更新時刻・取得状況・描画の不調）とは左右で分ける** ——
+              混ぜると、異常表示が伸びたときに観測値がそのぶん押し下がる。
               z-[99999]: 区域集約震度バッジ（QuakeRegionFillGL）は el.style.zIndex = scale*1000 で、
               scale は JMA 震度階級の数値コード（震度7 = 70）まであるため最大 70000 まで積む。
               それより確実に高い値にして常に最前面に出す。 */}
@@ -2222,6 +2241,18 @@ export function App() {
             style={{
               top: 'max(0.5rem, env(safe-area-inset-top, 0px))',
               left: 'max(0.5rem, env(safe-area-inset-left, 0px))',
+            }}
+          >
+            <SeismoOverlay stations={seismo.stations} />
+          </div>
+          {/* 地図右上。アプリの状態を上から更新時刻・生成データの取得状況・地図描画の不調の順で。
+              **下端の帯（凡例・特別情報バナー）とは重ならない** —— あちらは全幅の絶対配置で、
+              下側へ置いたものは押し上げてもらえずに重なる。z は左上と同じ理由で高く取る。 */}
+          <div
+            className="absolute z-[99999] pointer-events-none flex flex-col items-end gap-1"
+            style={{
+              top: 'max(0.5rem, env(safe-area-inset-top, 0px))',
+              right: 'max(0.5rem, env(safe-area-inset-right, 0px))',
             }}
           >
             <MapUpdateTime lastUpdate={overlayUpdateTime} error={overlayError} />
