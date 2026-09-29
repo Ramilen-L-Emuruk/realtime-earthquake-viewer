@@ -229,12 +229,6 @@ function EEWCard({ eew, visible, speaking, activeLpgmEventId, onToggleLpgm, onDe
   const level = computeDisplayEEWLevel(eew)
   const isWarning = level >= 1
   const isSpecial = level === 2
-  // ヘッダーは下げ止まり（`everSpecialWarning`）を反映するが、最大震度バナーは実際の
-  // 現在値をそのまま出す（値を誤魔化さない）。両者だけ並べると「見出しは特別警報なのに
-  // 数値は5弱」という矛盾に見えるため、下げ止まりが効いている間は理由を添える。
-  // `maxScale > 0` も見るのは、予想震度が取れず `NoForecastBanner` に切り替わる場合は
-  // 対比する数値バナー自体が無く、注記の前提（バナーとの食い違いを補う）が成り立たないため。
-  const isDowngradedFromSpecial = !!eew.everSpecialWarning && maxScale > 0 && maxScale < 55 && lpgmClass < 4
   const areas = eewAreas(eew)
   const serial = eewSerial(eew)
   const { hypocenter } = eew.earthquake
@@ -520,13 +514,6 @@ function EEWCard({ eew, visible, speaking, activeLpgmEventId, onToggleLpgm, onDe
           </div>
         ) : (
           <NoForecastBanner eew={eew} />
-        )}
-        {/* 下げ止まり（見出しの「特別警報」表示）の理由。バナーの数値は現在値のままなので、
-            見出しと数値だけ並べると食い違って見える——一度特別警報相当に達した事実を添える。 */}
-        {isDowngradedFromSpecial && (
-          <p className="text-xs text-red-300 text-center -mt-1">
-            現在の予想はこれを下回っていますが、この地震は震度6弱以上または長周期地震動階級4以上を一度予想したため、特別警報の表示を継続しています。
-          </p>
         )}
 
         {/* 推定最大長周期地震動階級（クリックで地図表示トグル）。地域別 lgIntTo 優先のため
