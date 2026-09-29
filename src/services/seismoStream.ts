@@ -74,13 +74,26 @@ const FAILURE_LOG_INTERVAL_MS = 300_000
 const MAX_SSE_BUFFER_CHARS = 1_000_000
 
 /**
- * 観測点の一覧を取り直す最小間隔（ms）。
+ * 観測点の台帳を取り直す最小間隔（ms）。**引けたときの値。**
  *
- * 知らない観測点の震度が届いたら表示名を引きに行くが、**引けなかった場合に
- * 毎秒叩かないための下限**（震度は毎秒届く）。観測点が増えるのは人が設定を
+ * 知らない識別子の震度が届いたら引きに行くが、**引けなかった場合に毎秒叩かない
+ * ための下限**（震度は毎秒届く）。観測点やセンサーが増えるのは人が設定を
  * 書き換えたときだけなので、1 分の遅れは実害にならない。
  */
 const STATIONS_REFETCH_MIN_MS = 60_000
+
+/**
+ * 台帳を引けなかったときに、次を試すまでの最小間隔（ms）。
+ *
+ * **引けた場合（1 分）と分ける。** 台帳が引けないと、センサー単独の震度
+ * （`event: reading`）を**どの観測点にも寄せられない** —— 合成が出ない観測点
+ * （有効なセンサーが 2 台未満）ではそれが唯一の経路なので、震度が 1 件も出ない。
+ *
+ * **1 分の遅れが「実害にならない」のは引けている場合だけ。** 引けていない間は
+ * 機能そのものが止まっているので、そこを同じ間隔で待たせる理由が無い
+ * （敵対的レビューがこの共有を指摘した）。
+ */
+const STATIONS_RETRY_MIN_MS = 5000
 
 /** センサー 1 本の計測震度（`event: reading`）。 */
 export interface SeismoSensorReading {
@@ -206,7 +219,44 @@ export interface SeismoStationInfo {
   readonly lon: number | null
 }
 
-/** `/status` を取った結果。 */
+/**
+ * センサー 1 個がどの観測点に属するか（`/status` の `sensors[]` から引く）。
+ *
+ * **これが無いと、センサー単独の震度（`event: reading`）を観測点へ寄せられない。**
+ * 押し出しが名乗るのは `boardKey`・`sensorId` だけで、観測点との対応はホストの設定に
+ * しかない —— 引けなければ画面に出るのは「自宅」ではなく `mac:020000000003` になる。
+ */
+export interface SeismoSensorInfo {
+  readonly boardKey: string
+  readonly sensorId: string
+  /**
+   * 割り当てられた観測点。**設定に無い基板は `null`。**
+   *
+   * 観測点を知らないことと震度が出せないことは別の事実なので、ホスト側も混ぜていない
+   * （`statusReport.ts` の `station` の説明）。
+   */
+  readonly stationId: string | null
+}
+
+// **`/status` の `enabled`（センサーが有効か）は読まない。** 「合成が出るかどうかは
+// これで決まる」ので拾いたくなるが、読んでも使い道が無い ——
+//
+//   - **無効なセンサーからは震度そのものが届かない。** ホストは換算より前で弾く
+//     （`seismo-host/src/receiver/intensityPipeline.ts` の `sensor-disabled`）ので、
+//     こちらで選り分ける相手がいない
+//   - **合成が出るかどうかは「届いたか」で判断する**（`useSeismoStation.ts`）。
+//     設定を根拠にすると、設定と実際が食い違ったときに判断ごと狂う
+
+/**
+ * `/status` を取った結果。
+ *
+ * **`stationIntensities[]`（合成が出している最新の震度）は読まない。** 繋いだ直後の
+ * 空白を埋められそうに見えるが、埋まるのは**最大 1 秒**（震度は毎秒 1 件）で、
+ * 代償のほうが大きい —— あの値の時刻はホストの時計なので、こちらから見て
+ * 古いかどうかを測る術が無い。止まった観測点の値を「たった今届いた」として
+ * 数秒出すことになる（`useSeismoStation.ts` が古さを端末側の経過時間で測るのは
+ * まさにそのため）。
+ */
 export type SeismoHostCheck =
   /** 繋がって、形も読めた。 */
   | {
@@ -214,6 +264,8 @@ export type SeismoHostCheck =
       readonly stations: readonly SeismoStationInfo[]
       /** ホストが把握しているセンサーの本数（観測点へ割り当てていないものも含む）。 */
       readonly sensorCount: number
+      /** センサーごとの割り当て。**素性を読めなかったものは並ばない。** */
+      readonly sensors: readonly SeismoSensorInfo[]
     }
   /** 応答が返らなかった（落ちている・経路が無い・混在コンテンツで止められた）。 */
   | { readonly kind: 'unreachable'; readonly detail: string }
@@ -702,15 +754,21 @@ export async function fetchSeismoStatus(
   // 繋がらないので載せない。**そのぶん記録が唯一の手掛かりになる** ——
   // ここが無いと、DNS か TLS か CORS か JSON の破損かを誰も切り分けられない。
   //
-  // **間引かない。** 呼ばれるのは設定タブの確認（デバウンス後に 1 回）と
-  // 観測点名の取り直し（60 秒に 1 回まで）だけで、埋まる量にならない。
+  // **間引かない。** 呼ばれるのは設定タブの確認（デバウンス後に 1 回）と台帳の
+  // 取り直し（引けていれば 60 秒・**引けない間は 5 秒**に 1 回。
+  // {@link STATIONS_RETRY_MIN_MS}）だけ。
+  //
+  // **5 秒に 1 回の側でも間引かない。** その頻度で出るのは台帳が引けない間だけで、
+  // そのとき機能は止まっている（設定タブには「応答がありません」が出る）——
+  // **止まっていることと、止まり続けていることを区別できる記録が要る。**
+  // 間引くと「回復したのか、間引かれているのか」が読めなくなる。
   const fail = <T extends SeismoHostCheck>(result: T, why: string): T => {
     log.warn(`[seismo] /status を読めず（${result.kind}）: ${why}`)
     return result
   }
 
   // **ここも記録へ出す。** 通信の前に弾く唯一の経路なので `fail()` を飛ばしたく
-  // なるが、飛ばすと**この経路だけ何も残らない** —— `SeismoStationNames` は
+  // なるが、飛ばすと**この経路だけ何も残らない** —— `SeismoHostDirectory` は
   // `baseUrl` を検めずに受け取るので、不正な値で作られたら「名前が引けないのに
   // 理由がどこにも無い」状態になる（あちらのコメントが「理由はここが出す」と
   // 書いている前提が、その 1 経路で崩れる）。
@@ -748,9 +806,22 @@ export async function fetchSeismoStatus(
   }
 
   const stations = new Map<string, SeismoStationInfo>()
+  const sensors: SeismoSensorInfo[] = []
   for (const raw of arr(root.sensors)) {
-    const station = obj(obj(raw).station)
+    const sensor = obj(raw)
+    const station = obj(sensor.station)
     const stationId = str(station.stationId)
+
+    // **割り当ては観測点が無くても並べる。** `stationId` が空なのは「設定に無い基板」
+    // （ホスト側は `station: null` で出す）で、そのセンサーが存在しないことではない。
+    // ここで捨てると、`reading` が届いたのに帳面に無い基板が「まだ `/status` を
+    // 読めていない」ものと区別が付かず、**取り直しを毎分繰り返す**ことになる。
+    const boardKey = str(sensor.boardKey)
+    const sensorId = str(sensor.sensorId)
+    if (boardKey !== '' && sensorId !== '') {
+      sensors.push({ boardKey, sensorId, stationId: stationId === '' ? null : stationId })
+    }
+
     if (stationId === '') continue
     if (stations.has(stationId)) continue
     const displayName = str(station.displayName)
@@ -762,28 +833,51 @@ export async function fetchSeismoStatus(
       lon: readFinite(station.lon),
     })
   }
-  return { kind: 'ok', stations: [...stations.values()], sensorCount: root.sensors.length }
+
+  return { kind: 'ok', stations: [...stations.values()], sensorCount: root.sensors.length, sensors }
 }
 
 /**
- * 観測点の表示名を引くための覚え。
+ * 観測点の素性とセンサーの割り当てを引くための台帳。
  *
- * **繋がったときに 1 回＋知らない観測点が来たら取り直す。** `/status` を定期的に
- * 叩く形にしない —— 観測点が増えるのは人が設定を書き換えたときだけで、
+ * **押し出しが名乗るのは識別子だけ。** 観測点の名前も、センサーがどの観測点に
+ * 属するかも `/status` にしかないので、押し出しと並べてこれを引く。
+ *
+ * **繋がったときに 1 回＋知らない識別子が来たら取り直す。** `/status` を定期的に
+ * 叩く形にしない —— 観測点やセンサーが増えるのは人が設定を書き換えたときだけで、
  * 押し出しが届いている間ずっと問い合わせる理由が無い。
  *
- * **取り直しに下限を置く。** 震度は毎秒届くので、引けなかった観測点があると
+ * **取り直しに下限を置く。** 震度は毎秒届くので、引けなかった識別子があると
  * 毎秒叩く形になる（{@link STATIONS_REFETCH_MIN_MS}）。
  */
-export class SeismoStationNames {
+export class SeismoHostDirectory {
   private names = new Map<string, SeismoStationInfo>()
+  /**
+   * 基板がどの観測点に属するか。**値が `null` なら「設定に無い基板」。**
+   *
+   * **`null` でも取り直しの対象から外さない**（{@link requireBoard}）。
+   * 「取り直す理由が無い」と書いて外した形を一度作り、敵対的レビューが覆した ——
+   * **ホスト側の割り当ては後から変わる**（管理コンソールの
+   * `PUT /api/boards/:boardKey` は upsert）。外すと、利用者が割り当てを直しても
+   * そのブラウザが生きている間は震度が出ず、記録にも何も残らない。
+   */
+  private boards = new Map<string, string | null>()
   private lastFetchAtMs = -Infinity
+  /** 直前の取り直しが成功したか。**次までの間隔を決める。** */
+  private lastFetchOk = false
   private inFlight = false
 
   constructor(
     private readonly baseUrl: string,
     private readonly fetchImpl: typeof fetch = globalThis.fetch,
-    private readonly now: () => number = Date.now,
+    /**
+     * 経過時間を測る時計。**既定は単調時計。**
+     *
+     * 壁時計（`Date.now`）を使うと、時刻の補正で後ろへ跳んだとき差が負になり、
+     * 跳んだ分だけ取り直しが止まる（`useSeismoStation.ts` が古さの判定で
+     * 同じ理由から壁時計を避けているのと揃えた）。
+     */
+    private readonly now: () => number = () => performance.now(),
   ) {}
 
   /** 引けた名前。**引けていなければ識別子をそのまま返す。** */
@@ -796,6 +890,16 @@ export class SeismoStationNames {
   }
 
   /**
+   * この基板が属する観測点。**引けていない・割り当てが無いなら `null`。**
+   *
+   * 2 つを同じ `null` で返すのは、呼び手にできることが同じだから（その震度を
+   * どの観測点にも寄せられない）。取り直しの要否は {@link requireBoard} が見る。
+   */
+  stationIdForBoard(boardKey: string): string | null {
+    return this.boards.get(boardKey) ?? null
+  }
+
+  /**
    * この観測点の名前が要る。**知らなければ取りに行く。**
    *
    * 待たない（戻りは `void`）—— 名前が付くのは次の描画からでよく、
@@ -803,34 +907,74 @@ export class SeismoStationNames {
    */
   require(stationId: string): void {
     if (this.names.has(stationId)) return
+    this.refreshSoon()
+  }
+
+  /**
+   * この基板の割り当てが要る。**引けていない・割り当てが無いなら取りに行く。**
+   *
+   * **`has()` で見ないこと。** 値が `null`（設定に無い基板）でも `has()` は真を
+   * 返すので、そこで打ち切ると**その基板は二度と取り直しの契機を得ない** ——
+   * ホスト側で割り当てを直しても、このブラウザが生きている間は震度が出ない
+   * （管理コンソールの `PUT /api/boards/:boardKey` は upsert なので、割り当ては
+   * 実際に後から変わる）。**叩く頻度は `refresh` の下限が担う**ので、ここを
+   * 緩めても毎秒叩くことにはならない。
+   */
+  requireBoard(boardKey: string): void {
+    if (this.boards.get(boardKey) != null) return
+    this.refreshSoon()
+  }
+
+  private refreshSoon(): void {
     // **`catch` を置く。** `refresh` は投げない作りだが、ここは待たない呼び出しなので
     // 将来その前提が崩れたときに `unhandledRejection` として外へ漏れる
     // （他の 2 箇所の待たない呼び出しはどちらも受けを持っている）。
     void this.refresh().catch((error: unknown) => {
-      log.warn('[seismo] 観測点名の取り直しが投げた', error)
+      log.warn('[seismo] 観測点の台帳の取り直しが投げた', error)
     })
   }
 
-  /** 取り直す。**間隔の下限と、重なりを見る。** */
+  /**
+   * 取り直す。**間隔の下限と、重なりを見る。**
+   *
+   * **下限は直前の結果で変わる** —— 引けていれば 1 分（設定が変わるのを待つだけ）、
+   * 引けていなければ 5 秒（機能が止まっているので待たせる理由が無い）。
+   *
+   * **見送ったことは記録へ出さない。** 見送りは正常な間引きで、しかも
+   * **症状が出ている状況では記録から区別できる** —— `fetchSeismoStatus` は失敗を
+   * 全経路で 1 行残すので、「名前が識別子のまま」なのに記録が無ければ叩いていない
+   * （＝次の下限で叩く）と読める。行数を増やしても分かることが増えない。
+   */
   async refresh(): Promise<void> {
     if (this.inFlight) return
     const now = this.now()
-    if (now - this.lastFetchAtMs < STATIONS_REFETCH_MIN_MS) return
+    const floor = this.lastFetchOk ? STATIONS_REFETCH_MIN_MS : STATIONS_RETRY_MIN_MS
+    if (now - this.lastFetchAtMs < floor) return
     this.inFlight = true
     this.lastFetchAtMs = now
     try {
       const result = await fetchSeismoStatus(this.baseUrl, this.fetchImpl)
-      // **失敗しても前の名前を消さない。** 名前が引けないだけなら識別子で出せるが、
+      this.lastFetchOk = result.kind === 'ok'
+      // **失敗しても前の台帳を消さない。** 名前が引けないだけなら識別子で出せるが、
       // 引けていた名前を落とすと画面の表示が後退する。
       //
       // **理由は `fetchSeismoStatus` が記録へ出す**（URL の形が違う場合も含めて
       // 全経路で 1 行残す）。ここで重ねて出さないのは、症状（観測点名が識別子の
       // まま）に対して行数を増やしても分かることが増えないため。
       if (result.kind !== 'ok') return
-      // **丸ごと置き換える。** 設定から外した観測点の名前を残さない。
-      const next = new Map<string, SeismoStationInfo>()
-      for (const s of result.stations) next.set(s.stationId, s)
-      this.names = next
+      // **丸ごと置き換える。** 設定から外した観測点・基板を残さない。
+      const nextNames = new Map<string, SeismoStationInfo>()
+      for (const s of result.stations) nextNames.set(s.stationId, s)
+      const nextBoards = new Map<string, string | null>()
+      for (const s of result.sensors) {
+        // **同じ基板の 2 個目以降は、割り当てが引けた側を採る。** ホストは観測点を
+        // 基板ごとに解くので（`stations.resolve(boardKey)`）同じ値が並ぶはずだが、
+        // 先に `null` を書いてしまうと**この基板は割り当て済みなのに `null`**
+        // という台帳ができる。
+        if (nextBoards.get(s.boardKey) == null) nextBoards.set(s.boardKey, s.stationId)
+      }
+      this.names = nextNames
+      this.boards = nextBoards
     } finally {
       this.inFlight = false
     }
