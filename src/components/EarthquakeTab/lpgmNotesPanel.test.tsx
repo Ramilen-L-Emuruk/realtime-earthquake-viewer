@@ -96,6 +96,7 @@ const renderTab = (lpgm: JMALpgm) => render(
     onToggleUnreceived={() => {}}
     onFocusMap={() => {}}
     speakingTelegramTextSubject={null}
+    seismoWaves={new Map()}
   />
 )
 
@@ -124,6 +125,7 @@ const tabWith = (subject: string | null, lpgm: JMALpgm = makeLpgm()) => (
     onToggleUnreceived={() => {}}
     onFocusMap={() => {}}
     speakingTelegramTextSubject={subject}
+    seismoWaves={new Map()}
   />
 )
 const renderSpeaking = (subject: string | null, lpgm: JMALpgm = makeLpgm()) =>

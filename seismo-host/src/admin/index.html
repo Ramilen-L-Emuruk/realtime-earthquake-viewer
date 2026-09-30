@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>自作地震計 管理コンソール</title>
+    <style>
+      /* **幅の指定に padding と border を含める。** grid（回転行列の 3×3・
+         オフセットや感度の 3 列）が割り当てた幅へ、input の padding 0.6rem と
+         border 1px が上乗せされ、枠からはみ出していた。 */
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+        --accent: #2563a8;
+        --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+        --accent-text: color-mix(in srgb, var(--accent) 85%, black 15%);
+        --ok: #1e8e3e;
+        --ok-soft: color-mix(in srgb, var(--ok) 18%, transparent);
+        --danger: #b3261e;
+        --danger-soft: color-mix(in srgb, var(--danger) 16%, transparent);
+        --border: color-mix(in srgb, currentColor 16%, transparent);
+        --border-strong: color-mix(in srgb, currentColor 32%, transparent);
+        --surface: color-mix(in srgb, currentColor 3.5%, transparent);
+        --surface-raised: color-mix(in srgb, currentColor 6%, transparent);
+      }
+      body {
+        margin: 0;
+        padding: 2rem;
+        max-width: 1000px;
+        margin-inline: auto;
+        line-height: 1.6;
+      }
+      header.app-header {
+        margin-bottom: 1.75rem;
+      }
+      h1 {
+        font-size: 1.4rem;
+        margin: 0 0 0.35rem;
+        letter-spacing: 0.01em;
+      }
+      header.app-header p {
+        margin: 0;
+      }
+      h2 {
+        font-size: 1.1rem;
+        margin: 0 0 0.75rem;
+      }
+      h3 {
+        font-size: 0.95rem;
+        margin: 1.5rem 0 0.5rem;
+        color: var(--accent-text);
+      }
+      .panel {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--surface);
+        padding: 1.1rem 1.25rem 1.35rem;
+        margin-block: 1rem;
+      }
+      .panel:first-child {
+        margin-top: 0;
+      }
+      .panel > h2:first-child,
+      .panel > h3:first-child {
+        margin-top: 0;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        margin-block: 0.6rem;
+        font-size: 0.9rem;
+      }
+      th,
+      td {
+        border-bottom: 1px solid var(--border);
+        padding: 0.5rem 0.7rem;
+        text-align: left;
+        vertical-align: top;
+      }
+      th {
+        background: var(--surface-raised);
+        font-weight: 600;
+        font-size: 0.82rem;
+        color: color-mix(in srgb, currentColor 70%, transparent);
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+      }
+      tbody tr:hover {
+        background: var(--surface-raised);
+      }
+      /* **幅を絞らない。** 同じパネルの中で一覧の表は幅いっぱいなのに、
+         フォームだけ狭いと右側が大きく空いてちぐはぐになる（実測でパネル
+         936px に対しフォーム 520px）。センサーカードの 3 列・9 マスも
+         広いほうが読める。 */
+      form {
+        display: grid;
+        gap: 0.85rem;
+        margin-block: 0.75rem;
+      }
+      label {
+        display: grid;
+        gap: 0.3rem;
+        font-size: 0.85rem;
+        font-weight: 500;
+      }
+      label code {
+        font-weight: 400;
+      }
+      input,
+      select,
+      textarea {
+        font: inherit;
+        padding: 0.45rem 0.6rem;
+        border: 1px solid var(--border-strong);
+        border-radius: 6px;
+        background: color-mix(in srgb, canvas 100%, transparent);
+        color: inherit;
+      }
+      input:focus-visible,
+      select:focus-visible,
+      textarea:focus-visible,
+      button:focus-visible,
+      summary:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 1px;
+      }
+      fieldset {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 0.75rem 0.9rem 0.9rem;
+      }
+      legend {
+        padding-inline: 0.3rem;
+        font-size: 0.85rem;
+        font-weight: 600;
+      }
+      .row {
+        display: flex;
+        gap: 0.6rem;
+      }
+      .row > label {
+        flex: 1;
+        min-width: 0;
+      }
+      button {
+        cursor: pointer;
+        padding: 0.45rem 1.1rem;
+        border-radius: 6px;
+        border: 1px solid var(--border-strong);
+        background: var(--surface-raised);
+        font: inherit;
+        font-weight: 500;
+        white-space: nowrap;
+      }
+      button:hover {
+        background: var(--surface-raised);
+        border-color: var(--accent);
+      }
+      button[type='submit'] {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: white;
+      }
+      button[type='submit']:hover {
+        background: color-mix(in srgb, var(--accent) 85%, black 10%);
+      }
+      button.danger {
+        color: var(--danger);
+        border-color: color-mix(in srgb, var(--danger) 50%, var(--border-strong));
+        background: transparent;
+      }
+      button.danger:hover {
+        background: var(--danger-soft);
+        border-color: var(--danger);
+      }
+      button.link {
+        border: none;
+        background: none;
+        padding: 0.2rem 0.3rem;
+        font-weight: 400;
+        text-decoration: underline;
+      }
+      button.link:hover {
+        background: none;
+        color: var(--accent);
+      }
+      .danger {
+        color: var(--danger);
+      }
+      /* **古くなった値。** 受信欄の「途絶」の札と同じ色にする（`--danger`）——
+         別の色にすると、同じ 1 つの事実（この数字はもう信じられない）が行の中で 2 色に割れる。
+         **`.danger` を使い回さないのは、付く先が `<td>` の値だけだと名前で示すため**
+         （識別子や受信欄には付けない）。付ける条件は `viewStatus.ts` の `staleAttr`。 */
+      .stale-value {
+        color: var(--danger);
+      }
+      .muted {
+        opacity: 0.7;
+        font-size: 0.85rem;
+      }
+      /* **空なら場所を取らない。** 添え書き（`.boards-note` 等）は出す理由が
+         あるときだけ埋めるので、空のまま 1 行ぶん空くと見出しと表が離れる。 */
+      .muted:empty {
+        display: none;
+      }
+      .error {
+        color: var(--danger);
+        background: var(--danger-soft);
+        border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+        border-radius: 8px;
+        padding: 0.6rem 0.8rem;
+        white-space: pre-wrap;
+        font-size: 0.88rem;
+      }
+      .error:empty {
+        display: none;
+      }
+      .tabs {
+        display: flex;
+        gap: 0.3rem;
+        border-bottom: 1px solid var(--border);
+        margin-block: 1.25rem;
+      }
+      .tabs button {
+        border: none;
+        background: none;
+        border-radius: 6px 6px 0 0;
+        border-bottom: 2px solid transparent;
+        padding: 0.55rem 1rem;
+        font-size: 0.95rem;
+        color: color-mix(in srgb, currentColor 65%, transparent);
+      }
+      .tabs button:hover {
+        background: var(--surface-raised);
+        border-color: transparent;
+      }
+      .tabs button[aria-selected='true'] {
+        border-bottom-color: var(--accent);
+        color: var(--accent-text);
+        font-weight: 600;
+        background: none;
+      }
+      textarea {
+        font-family: ui-monospace, monospace;
+        font-size: 0.85rem;
+      }
+      details {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 0.5rem 0.75rem;
+        margin-top: 0.4rem;
+      }
+      details summary {
+        cursor: pointer;
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: color-mix(in srgb, currentColor 70%, transparent);
+      }
+      details[open] summary {
+        margin-bottom: 0.6rem;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        padding: 0.15rem 0.6rem;
+        border-radius: 999px;
+        font-size: 0.78rem;
+        font-weight: 600;
+      }
+      .badge.ok {
+        background: var(--ok-soft);
+        color: var(--ok);
+      }
+      .badge.stale {
+        background: var(--danger-soft);
+        color: var(--danger);
+      }
+      .sensor-card {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 0.75rem 0.9rem;
+        margin-block: 0.6rem;
+        background: var(--surface-raised);
+      }
+      .sensor-card .row {
+        margin-block: 0.4rem;
+      }
+      /* **`1fr` ではなく `minmax(0, 1fr)`。** `1fr` の最小幅はコンテンツ基準で、
+         `input` の既定の size（20 文字ぶん）より縮まない —— 3 列が枠を突き抜ける
+         （実測で 320px の grid にセル 196px × 3）。 */
+      .vec3-row {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.5rem;
+      }
+      .vec3-row label {
+        font-size: 0.75rem;
+      }
+      /* **幅を絞らない。** 同じ 3 列のオフセット・感度が幅いっぱいなので、
+         ここだけ狭いと揃わない。 */
+      .mat3-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.4rem;
+      }
+      .mat3-grid input {
+        text-align: right;
+      }
+      .stat-cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 0.75rem;
+        margin-block: 0.75rem;
+      }
+      .stat-card {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 0.6rem 0.85rem;
+        background: var(--surface-raised);
+      }
+      .stat-card .stat-label {
+        font-size: 0.78rem;
+        opacity: 0.7;
+      }
+      .stat-card .stat-value {
+        font-size: 1.35rem;
+        font-weight: 600;
+        margin-top: 0.15rem;
+      }
+      /* 波形タブ。 */
+      .wave-controls {
+        display: flex;
+        gap: 1rem;
+        flex-wrap: wrap;
+        margin-block: 0.75rem;
+      }
+      .wave-controls > label {
+        flex: 0 0 auto;
+      }
+      /* **チェックボックスは横並びにする。** `label` の既定は縦積み（`display: grid`）で、
+         四角と文字が上下に離れると押す場所が分かりにくい。 */
+      .wave-follow-label,
+      .wave-sensor {
+        display: flex !important;
+        align-items: center;
+        gap: 0.4rem;
+      }
+      .wave-sensors {
+        display: grid;
+        gap: 0.35rem;
+        margin-block: 0.5rem;
+      }
+      .wave-sensor {
+        font-weight: 400;
+        cursor: pointer;
+      }
+      .wave-swatch {
+        width: 0.9rem;
+        height: 0.9rem;
+        border-radius: 3px;
+        flex: 0 0 auto;
+      }
+      .wave-seek {
+        width: 100%;
+        padding: 0;
+      }
+      /* **`display: block` を明示する。** `canvas` の既定は inline で、行の下に
+         数ピクセルの余白が付く（枠の中で下だけ空く）。 */
+      .wave-canvas {
+        display: block;
+        width: 100%;
+        height: 160px;
+        /* 指で引いて時間をずらすので、ブラウザ側のスクロールへ渡さない。 */
+        touch-action: none;
+        cursor: ew-resize;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="app-header">
+      <h1>自作地震計 管理コンソール</h1>
+    </header>
+    <div id="app"></div>
+    <script type="module" src="/admin/app.js"></script>
+  </body>
+</html>

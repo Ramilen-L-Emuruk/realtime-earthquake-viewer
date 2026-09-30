@@ -17,7 +17,7 @@ import type { KyoshinFrame, KyoshinSource } from './kyoshinSource'
 import type { LocalKyoshinArchive } from '../types/localKyoshinArchive'
 import { serverDate } from '../utils/clock'
 import { getMergedKyoshinArchive, onImportsChanged } from '../utils/kyoshinImportDb'
-import { STEP_SEC_DEFAULT } from '../utils/knet/buildEventResultFromZip'
+import { STEP_SEC_DEFAULT } from '../utils/knet/seismicIntensity'
 import {
   WARMUP_BLOCK_SEC,
   WARMUP_MAX_BLOCKS,

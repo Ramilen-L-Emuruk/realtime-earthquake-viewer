@@ -80,6 +80,7 @@ const renderTab = (updateMarks: ReadonlyMap<string, QuakeCardMarks>, selectedId:
     onToggleUnreceived={() => {}}
     onFocusMap={() => {}}
     speakingTelegramTextSubject={null}
+    seismoWaves={new Map()}
   />,
 )
 
@@ -135,6 +136,7 @@ describe('印の付いた行の自動展開（カードとの配線）', () => {
         onToggleUnreceived={() => {}}
         onFocusMap={() => {}}
         speakingTelegramTextSubject={null}
+        seismoWaves={new Map()}
       />,
     )
     expect(findIntensityRow(STATION)).toBeDefined()

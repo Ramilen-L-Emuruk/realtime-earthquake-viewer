@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { contrastRatio, readableTextColor, TEXT_ON_FILL_LIGHT, TEXT_ON_FILL_DARK } from './contrast'
 import { INTENSITY_COLORS } from './intensity'
-import { SHINDO0_COLOR } from './kyoshinIntensity'
+import { SHINDO0_COLOR } from './measuredIntensity'
 import { getLpgmClassColor } from './lpgm'
 
 /** WCAG AA・通常サイズの文字（14pt 太字／18pt 未満）に要求されるコントラスト比。 */
