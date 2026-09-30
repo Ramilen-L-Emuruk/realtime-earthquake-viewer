@@ -17,6 +17,7 @@ import { MapDataStatus } from './components/MapDataStatus'
 import { MapRenderStatus } from './components/MapRenderStatus'
 import { ShareCardButton } from './components/ShareCardButton'
 import { useShareCard } from './hooks/useShareCard'
+import { SeismoLinkStatus } from './components/SeismoLinkStatus'
 import { SeismoOverlay } from './components/SeismoOverlay'
 import { useSeismoStation } from './hooks/useSeismoStation'
 import { useSeismoQuakeWaves } from './hooks/useSeismoQuakeWaves'
@@ -2294,7 +2295,10 @@ export function App() {
             >
               <SeismoOverlay stations={seismo.stations} />
             </div>
-            {/* 地図右上。アプリの状態を上から更新時刻・生成データの取得状況・地図描画の不調の順で。
+            {/* 地図右上。アプリの状態を上から更新時刻・生成データの取得状況・地図描画の不調・
+                自作地震計との繋がり具合の順で。**自作地震計の観測値（左上）とは左右で分ける** ——
+                観測している値と、それが届いているかどうかは別のものなので、混ぜると
+                繋がらない間ずっと観測値の居場所が押し下がる。
                 **下端の帯（凡例・特別情報バナー）とは重ならない** —— あちらは全幅の絶対配置で、
                 下側へ置いたものは押し上げてもらえずに重なる。z は左上と同じ理由で高く取る。 */}
             <div
@@ -2307,6 +2311,7 @@ export function App() {
               <MapUpdateTime lastUpdate={overlayUpdateTime} error={overlayError} />
               <MapDataStatus />
               <MapRenderStatus />
+              <SeismoLinkStatus stream={seismo.stream} />
             </div>
             {/* 地図右下。表示中の地図を画像にするボタン。左上の情報ブロックと同じ理由で z を高く取る。 */}
             {shareCard.ready && (
