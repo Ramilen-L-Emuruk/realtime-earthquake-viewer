@@ -32,7 +32,7 @@ import { joinSegments, plain, hasFollowTarget, hasUnreceivedFollowTarget, hasTel
 import { log, createLogThrottle } from '../utils/logger'
 import { TAB_PRIORITY, type TabPriority } from '../utils/tabPriority'
 import { hasPendingEewSpeech } from '../utils/eewPendingSpeech'
-import { extractQuakeEventIdFromId, mergeQuakeInto, quakeEventKey, quakeKeyForLpgmEventId, sameQuakeEntry } from '../utils/quakeMerge'
+import { createQuakeFoldKeys, extractQuakeEventIdFromId, quakeEventKey, quakeKeyForLpgmEventId, sameQuakeEntry } from '../utils/quakeMerge'
 
 import { getAreaPrefIndexCache } from '../utils/stationCoords'
 
@@ -625,22 +625,11 @@ function rememberTelegramTextAsSpoken(payload: ReplayPayload, spoken: Set<string
 /**
  * 窓の手前の地震に、読み上げの主題とマージ後のカードを割り当てる関数を作る（録画モードの復元専用）。
  *
- * **ライブ経路と同じカードを組み立てて、その鍵を使う。** 主題は地震カードの `eventKey` から作られ、
- * その値は最初に処理された報で固定される（`mergeQuakeInto`）。生の電文へ `quakeEventKey` を直に
- * 当てると、識別子を持たない経路（P2PQuake）では `p2p:<地震の時刻>#<その報の id>` になり、
- * **続報のたびに別の鍵**になる。窓の手前に同じ地震の報が 2 通以上あると、2 通目以降の記憶が
- * ライブ経路から参照されない鍵の下へ入り、その報で初めて現れた地域が区間の最初の続報で
- * 読み直される —— この復元が消したかった症状そのものが、standard 版でだけ残る。
- *
- * **突き合わせる相手を自前で最新化しないこと。** 初出の報を握り続けると、`sameQuakeEntry` の
- * 震源名の照合が「片方が空なら矛盾なし」へ倒れて**同じ分の別の地震を吸い込み**、かといって
- * 「空 → 判明」のときだけ差し替える形では訂正報・震源要素更新による**名前の再変更に追随できない**。
- * どちらも「カードがどう育つか」を部分的に真似たことが原因なので、真似ずに `mergeQuakeInto` を
- * そのまま通す。育て方の規律はあちらが単一情報源で、ライブ経路と食い違いようがなくなる。
- *
- * **地震の時刻で束ねる。** `sameQuakeEntry` は時刻の一致を必ず要求するので、束ねても判定は
- * 変わらず、突き合わせる相手が同じ時刻のものだけになる。群発の 24 時間を遡る復元では窓の手前の
- * 地震が数百件になりうるため、総当たりだと二乗で効く。
+ * **束ね方は `createQuakeFoldKeys` が持つ**（`utils/quakeMerge.ts`）。リプレイの初期状態
+ * （`services/dmdataReplay.ts` の `filterPreWindowEvents`）も同じ関数を通す —— どちらも
+ * 「窓の手前の報を 1 地震へ畳む」という同じ問いに答えるので、別々に持つと片方だけ直したときに
+ * 静かにずれる。鍵をライブ経路と揃える必要がある理由・カードを育てる理由・取消の扱いは
+ * あちらの注記が単一情報源。
  *
  * 同じ分に起きた別の地震を分離しきれない限界は残るが、それはライブ経路と同じもの
  * （→ docs/spec/quake-spec.md §6.1）。
@@ -661,18 +650,12 @@ function rememberTelegramTextAsSpoken(payload: ReplayPayload, spoken: Set<string
  * 時刻の報が遅れて到着」という順序が起きると、この限界の範囲でだけ据え置き判定が甘くなる。
  */
 export function createPreWindowQuakeTopics(): (quake: JMAQuake) => { topic: string; card: JMAQuake } {
-  const buckets = new Map<string, JMAQuake[]>()
+  // **索引はここで 1 度だけ引く。** 復元は窓の手前の報を同期のループで舐めきるので、
+  // その途中で座標テーブルの読み込みが完了して索引が差し替わることはない。
+  const foldKeyOf = createQuakeFoldKeys(getAreaPrefIndexCache())
   return (quake: JMAQuake): { topic: string; card: JMAQuake } => {
-    const bucket = buckets.get(quake.earthquake.time) ?? []
-    const index = bucket.findIndex(card => sameQuakeEntry(card, quake, getAreaPrefIndexCache()))
-    if (index >= 0) {
-      bucket[index] = mergeQuakeInto(bucket[index], quake)
-      return { topic: `quake:${quakeEventKey(bucket[index])}`, card: bucket[index] }
-    }
-    const card = mergeQuakeInto(undefined, quake)
-    bucket.push(card)
-    buckets.set(quake.earthquake.time, bucket)
-    return { topic: `quake:${quakeEventKey(card)}`, card }
+    const { key, card } = foldKeyOf(quake)
+    return { topic: `quake:${key}`, card }
   }
 }
 
@@ -5135,14 +5118,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     /**
      * 窓の手前で見た地震と、そこへ与えた読み上げの主題。
      *
-     * **報ごとに鍵を作らないこと。** ライブ経路が使う主題はカードの `eventKey` から作られ、
-     * その値は**最初に処理された報**で固定される（`mergeQuakeInto`）。一方 `quakeEventKey` を
-     * 生の電文へ直に当てると、識別子を持たない経路（P2PQuake）では `p2p:<地震の時刻>#<その報の id>`
-     * になり、**続報のたびに別の鍵**になる。窓の手前に同じ地震の報が 2 通以上あると、2 通目以降の
-     * 記憶がライブ経路から参照されない鍵の下へ入り、その報で初めて現れた地域が区間の最初の続報で
-     * 読み直される —— この復元が消したかった症状そのものが、standard 版でだけ残る。
-     *
-     * 同一性の判定はライブ経路と同じ `sameQuakeEntry`。
+     * **報ごとに鍵を作らないこと。** 生の電文へ `quakeEventKey` を直に当てると、識別子を
+     * 持たない経路（P2PQuake）では続報のたびに別の鍵になる —— この復元が消したかった症状
+     * そのものが、standard 版でだけ残る。理由と束ね方は `createPreWindowQuakeTopics`（と
+     * その先の `createQuakeFoldKeys`）が持つ。
      */
     const quakeTopicFor = createPreWindowQuakeTopics()
     /**
