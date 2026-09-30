@@ -2251,9 +2251,13 @@ describe('取消の述語は種別をまたいでそろえる', () => {
 
   // 対照: 津波の**解除・失効**は取消とは別の事象なので、述語も別のまま。
   // この describe だけを見て `tsunamiCancelToText` を一括で書き換えると、ここが落ちる。
+  // **ここは読み上げの文だけを見ている。** 画面（`TsunamiTab` の `CANCEL_REASON_LABEL`）と
+  // 語が揃っているかは `components/TsunamiTab/cancelWording.test.ts` が両方を突き合わせて
+  // 見る —— このファイルへ「失効時刻を含む」等を足しても、完全一致の `toBe` が既に含意して
+  // いるぶん独立した保護にはならない（同じ関数の同じ出力を 2 度見るだけ）。
   it('津波の解除・失効は取消と別の述語のまま', () => {
     expect(tsunamiCancelToText('lifted')).toBe('津波警報等は全て解除されました。')
-    expect(tsunamiCancelToText('expired')).toContain('終了しました')
+    expect(tsunamiCancelToText('expired')).toBe('津波予報は失効時刻を過ぎました。')
   })
 })
 
