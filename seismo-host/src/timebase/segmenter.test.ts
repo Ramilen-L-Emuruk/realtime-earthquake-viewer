@@ -95,15 +95,118 @@ describe('Segmenter', () => {
     })
 
     it('当てはめた間隔が公称から大きく離れたら採らない', () => {
-      // 30 サンプルで 1000 ms 進む形（100 Hz なら 300 ms のはず）。
-      // 当てはめは通るが値が壊れているので、公称値へ倒して理由を出す。
+      // **少しずつ速い時計。** 1 パケット（30 サンプル＝公称 300 ms）につき 340 ms
+      // 進む形なので、当てはめた間隔は 11.33 ms＝公称から 13% 離れる。
+      //
+      // **1 歩ぶんのずれは 40 ms に収めてある。** 一気にずらすと
+      // `'timebase-jump'` で区間が切れてしまい、当てはめが壊れるところまで
+      // 育たない（2026-10-01 に時刻の飛びを切るようにしたので書き直した）。
       const seg = new Segmenter()
-      seg.accept(pkt({ firstSeq: 0, firstSampleMs: BASE_MS }))
-      const r = seg.accept(pkt({ firstSeq: 30, firstSampleMs: BASE_MS + 1000 }))
+      let r = seg.accept(pkt({ firstSeq: 0, firstSampleMs: BASE_MS }))
+      for (let i = 1; i < 5; i++) {
+        r = seg.accept(pkt({ firstSeq: i * PER_PACKET, firstSampleMs: BASE_MS + i * 340 }))
+      }
       expect(r.ok).toBe(true)
       if (!r.ok) return
       expect(r.segment.timebase.nominalReason).toBe('slope-out-of-range')
       expect(r.segment.timebase.msPerSample).toBe(10)
+      // 足場は最初のアンカー。**エポックとしては成り立っている**（→ 下の describe）。
+      expect(r.segment.timebase.epochPlausible).toBe(true)
+    })
+  })
+
+  // 2026-10-01 に足した。**番号が続きながら時刻だけが飛ぶ形を切っていなかった。**
+  // 基板は SNTP の応答を待たずに送り始めるので、時計が合う瞬間に必ずこれが起きる。
+  describe('名乗る時刻が飛んだら切る', () => {
+    it('正: 番号が続いていても、時刻が飛べば別の区間にする', () => {
+      const seg = new Segmenter()
+      const a = seg.accept(pkt({ firstSeq: 0, firstSampleMs: 8433 }))
+      // 時計が合った瞬間。番号は続き、設定も変わらず、あふれも無い。
+      const b = seg.accept(pkt({ firstSeq: PER_PACKET, firstSampleMs: BASE_MS }))
+      expect(a.ok && b.ok).toBe(true)
+      if (!a.ok || !b.ok) return
+      expect(b.startedBecause).toBe('timebase-jump')
+      expect(b.segment.meta.segmentId).not.toBe(a.segment.meta.segmentId)
+      // **新しい区間は、飛んだ後の時刻から始まる。** ここを繋ぐと両方のエポックの
+      // アンカーが 1 本の直線に乗り、その区間は二度と絶対時刻を持たなくなる。
+      expect(b.segment.timebase.firstSampleMs).toBe(BASE_MS)
+      expect(b.firstSampleIndex).toBe(0)
+    })
+
+    it('対照: 揺らぎの範囲では切らない', () => {
+      // 抜き出しの揺れは実測で数ミリ秒（残差。値は `TIMEBASE_CONSISTENCY_MS` の
+      // コメントが単一情報源）。物差しの 100 ms には遠く届かない。
+      const seg = new Segmenter()
+      const a = seg.accept(pkt({ firstSeq: 0 }))
+      const b = seg.accept(pkt({ firstSeq: PER_PACKET, firstSampleMs: BASE_MS + 300 + 40 }))
+      expect(a.ok && b.ok).toBe(true)
+      if (!a.ok || !b.ok) return
+      expect(b.startedBecause).toBeNull()
+      expect(b.segment.meta.segmentId).toBe(a.segment.meta.segmentId)
+    })
+
+    it('安全弁: 番号が飛んでいるときは「落ちた」と名乗る（時計の話にしない）', () => {
+      // **予測に使う間隔は公称値なので、落ちた幅が長いほどずれが積み上がる。**
+      // ここを時刻の飛びとして扱うと、長い欠落が「時計が飛んだ」に化けて
+      // 切れ目の理由が診断の手掛かりにならなくなる。
+      const seg = new Segmenter()
+      seg.accept(pkt({ firstSeq: 0 }))
+      // 5 分ぶん落ちた形。公称 10 ms と実測 10.007 ms の差が 210 ms 積み上がる。
+      const gapSeq = 30_000
+      const r = seg.accept(
+        pkt({ firstSeq: gapSeq, firstSampleMs: BASE_MS + gapSeq * 10.007 }),
+      )
+      expect(r.ok).toBe(true)
+      if (!r.ok) return
+      expect(r.startedBecause).toBe('seq-gap')
+    })
+  })
+
+  // 2026-10-01 に足した。**足場がエポックとして成り立つかを検算していなかった。**
+  describe('足場がエポックとして成り立つか', () => {
+    it('正: 時計が合う前の足場は「成り立たない」と名乗る', () => {
+      const seg = new Segmenter()
+      // 起動から 8.4 秒。基板の `gettimeofday()` は同期前にこの値を返す。
+      const r = seg.accept(pkt({ firstSeq: 0, firstSampleMs: 8433 }))
+      expect(r.ok).toBe(true)
+      if (!r.ok) return
+      expect(r.segment.timebase.epochPlausible).toBe(false)
+      // **値そのものは渡す。** 捨てると「届いていない」と見分けが付かなくなる。
+      expect(r.segment.timebase.firstSampleMs).toBe(8433)
+    })
+
+    it('対照: 当てはめが効いた区間は成り立っている', () => {
+      const seg = new Segmenter()
+      const r = feed(seg, 5)
+      expect(r.ok).toBe(true)
+      if (!r.ok) return
+      expect(r.segment.timebase.nominalReason).toBeNull()
+      expect(r.segment.timebase.epochPlausible).toBe(true)
+    })
+
+    it('安全弁: 非有限の足場は「成り立たない」側へ倒す', () => {
+      // **`>=` の比較だけでは `Infinity` が下限を通る。** `statusReport.ts` は
+      // 非有限の時刻を `null` へ倒すので、通すと **`firstSampleMs: null` なのに
+      // `epochPlausible: true`** という読めない組み合わせが出る。
+      const seg = new Segmenter()
+      const r = seg.accept(pkt({ firstSeq: 0, firstSampleMs: Number.POSITIVE_INFINITY }))
+      expect(r.ok).toBe(true)
+      if (!r.ok) return
+      expect(r.segment.timebase.epochPlausible).toBe(false)
+    })
+
+    it('安全弁: 当てはめが効いた側も検算する', () => {
+      // **倒した経路だけを見ていると、アンカーが全部同期前に揃った区間を見落とす**
+      // ——傾きは公称どおりなので当てはめが通り、切片だけが 1970 年になる。
+      const seg = new Segmenter()
+      let r = seg.accept(pkt({ firstSeq: 0, firstSampleMs: 8433 }))
+      for (let i = 1; i < 5; i++) {
+        r = seg.accept(pkt({ firstSeq: i * PER_PACKET, firstSampleMs: 8433 + i * 300 }))
+      }
+      expect(r.ok).toBe(true)
+      if (!r.ok) return
+      expect(r.segment.timebase.nominalReason).toBeNull()
+      expect(r.segment.timebase.epochPlausible).toBe(false)
     })
   })
 

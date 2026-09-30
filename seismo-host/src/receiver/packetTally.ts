@@ -73,6 +73,9 @@ const BREAK_ORDER = orderOf<SegmentBreakReason>({
   'seq-reset': true,
   overflow: true,
   'config-changed': true,
+  // **数えることに意味がある。** 起動のたびに 1 本ずつ立つのが正常な姿（基板は
+  // 時計が合う前から送り始める）で、**それ以上増えていれば時刻が飛び続けている**。
+  'timebase-jump': true,
 })
 
 const RAW_UNSAVED_ORDER = orderOf<RawUnsavedReason>({
