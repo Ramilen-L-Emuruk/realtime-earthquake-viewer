@@ -34,6 +34,11 @@ coverage/
 .probe-cache/
 verify-*.png
 verify-*.jpg
+# dev サーバーの起動記録（scripts/dev-server-lock.ts が書き、npm run dev:list が読む）。
+# 走っているプロセスの PID とポートなので、その端末のその瞬間にしか意味を持たない。
+# **末尾の * を外さないこと** —— 書き込みは一時ファイル（`.dev-server.json.<PID>.tmp`）を
+# 経由するので、置き換えに失敗した回はそれが残る。完全一致だと拾えず、git status に現れる。
+.dev-server.json*
 
 # Editor directories
 .vscode/*

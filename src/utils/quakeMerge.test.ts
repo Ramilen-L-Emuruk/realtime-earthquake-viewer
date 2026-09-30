@@ -18,7 +18,7 @@ import {
 import type { JMAQuake, IssueType, IntensityScale, EarthquakePoint, DomesticTsunami, CorrectType } from '../types/earthquake'
 import { reportsText } from '../test-utils/quakeReports'
 import {
-  advanceQuakeMarks, quakeFactSnapshot, quakeRowSnapshot, trimQuakeMarkMemory, type QuakeMarkMemory,
+  advanceQuakeMarks, markIssuedAt, quakeFactSnapshot, quakeRowSnapshot, trimQuakeMarkMemory, type QuakeMarkMemory,
 } from './quakeUpdateMark'
 
 // 区域名の索引を渡す引数は、本番の呼び出し側が渡し忘れないよう必須にしてある
@@ -2139,6 +2139,7 @@ describe('mergeQuakeHistory が作る印の記憶', () => {
       snapshot: {
         facts: quakeFactSnapshot(settled),
         rows: quakeRowSnapshot(settled.points, settled.cities ?? []),
+        issuedAt: markIssuedAt(settled.issue.time),
         reportType: settled.issue.type,
       },
       liveKeys: new Set([key]),
@@ -2234,7 +2235,12 @@ describe('mergeQuakeHistory が作る印の記憶', () => {
   // 書き直しは「吸収が起きた鍵だけ」なので、識別情報がすべて違うこの入力では 1 件も走らない。
   // 書き直しの走査順（`touched` 順）を守るのは実装側のコメントで、テストは持っていない ——
   // 走る件数が吸収の起きた数に限られ、刈り込みの並びを動かす余地が小さいため。
-  it('安全弁: 上限を超えたら発表時刻の古い側から落ちる', () => {
+  // 対照: 小さい地震が 30 件並んでも、**枚数では**落とさない。
+  //
+  // v5.27.3 までは枚数（24 件）で切っていたので、ここで 6 件が落ちていた。群発では
+  // 「小さい余震が枠を埋めて本震の記憶が落ちる」形になるため、重さ（行の総数）で切る
+  // 形へ覆した（→ `MARK_MEMORY_MAX_ROWS`）。落ちる順の確認は `quakeUpdateMark.test.ts`。
+  it('対照: 小さい地震が 30 件並んでも、枚数では落とさない', () => {
     // 30 件の別々の地震（識別情報・震央地名・時刻をすべて違える）。
     const many = Array.from({ length: 30 }, (_, i) => {
       const mm = String(i).padStart(2, '0')
@@ -2251,10 +2257,9 @@ describe('mergeQuakeHistory が作る印の記憶', () => {
 
     // 呼び出し側と同じ刈り込みを通す（`hooks/useEarthquakes.ts` の `marksFromHistory`）。
     const trimmed = trimQuakeMarkMemory(markMemory, new Set(cards.map(c => quakeEventKey(c))))
-    expect(trimmed.size).toBe(24)
-    // **記憶を積む順が発表時刻の昇順なので、末尾に近い（新しい）ものが残る。** 積む順が
-    // 逆さだと、続報が来やすい新しい地震のぶんから落ちる。
-    expect(trimmed.has('20260824192900')).toBe(true)   // いちばん新しい
-    expect(trimmed.has('20260824190000')).toBe(false)  // いちばん古い（落ちる）
+    expect(trimmed.size).toBe(30)
+    // いちばん古い地震の記憶も残る（1 件あたり数行しか持たないので上限に届かない）。
+    expect(trimmed.has('20260824192900')).toBe(true)
+    expect(trimmed.has('20260824190000')).toBe(true)
   })
 })

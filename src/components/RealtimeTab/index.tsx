@@ -443,7 +443,7 @@ function EEWCard({ eew, visible, speaking, activeLpgmEventId, onToggleLpgm, onDe
     >
       {eew.cancelledAt && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 z-10 rounded-lg px-4">
-          <span className="font-black text-white" style={{ fontSize: '3rem', lineHeight: 1.1 }}>キャンセル</span>
+          <span className="font-black text-white" style={{ fontSize: '3rem', lineHeight: 1.1 }}>取消</span>
           <span className="text-sm font-bold text-white/90 mt-1">この緊急地震速報は取り消されました</span>
           {/* 気象庁が書いた取消しの概要（電文の `Body/Text`）。アプリが組み立てた文言ではないので
               そのまま出す。地震情報のカードと同じ扱い（quake-spec.md §8）。 */}
@@ -538,7 +538,7 @@ function EEWCard({ eew, visible, speaking, activeLpgmEventId, onToggleLpgm, onDe
             }}
           >
             <span className="text-xs font-medium roomy:text-sm" style={{ color: getLpgmClassColor(lpgmClass) }}>
-              推定長周期地震動
+              予想長周期地震動
             </span>
             <span className="text-xl font-black roomy:text-2xl" style={{ color: '#ffffff' }}>
               {getLpgmClassLabelWithApproxAbove(lpgmClass, lpgmClassOver)}

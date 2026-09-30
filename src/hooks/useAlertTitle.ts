@@ -40,9 +40,9 @@ function applyPriorityTitle(
   setState: (v: string | null) => void,
 ) {
   if (eews.size === 0 && !tsunami) { setState(kyoshinDetected ? '揺れ検知' : null) }
-  else if (eews.size > 0 && tsunami) { setState(priority ? '津波情報 発表中' : computeEEWTitle(eews)) }
+  else if (eews.size > 0 && tsunami) { setState(priority ? '津波警報・注意報 発表中' : computeEEWTitle(eews)) }
   else if (eews.size > 0) { setState(computeEEWTitle(eews)) }
-  else { setState('津波情報 発表中') }
+  else { setState('津波警報・注意報 発表中') }
 }
 
 // 情報タイトルが平常タイトルへ戻るまでの表示時間 [ms]。
@@ -156,7 +156,7 @@ export function useAlertTitle(opts: {
   }
 
   const showTsunamiTitle = () => {
-    setAlertTitle('津波情報 発表中')
+    setAlertTitle('津波警報・注意報 発表中')
     tsunamiTitleWindowActiveRef.current = true
     window.clearTimeout(timersRef.current.tsunami)
     timersRef.current.tsunami = window.setTimeout(() => {

@@ -68,7 +68,8 @@ describe('バナーから開く付加文の面', () => {
   // 対照: 1 行目が節の見出しの報では、行はアプリの文へ戻る。それでも入口ではある。
   it('1 行目が見出しならアプリの文を出し、それでも開ける', () => {
     const { container } = renderTab([makeTsunami({ warningComments: [{ key: 'VTSE41', text: WARN_HEADING }] })])
-    expect(screen.getByText('海岸・河川から直ちに離れてください')).toBeTruthy()
+    // アプリの文は等級ごとに違う（`fallbackEvacuationAction`）。この報の最高等級は津波警報。
+    expect(screen.getByText('ただちに高台や避難ビルなど安全な場所へ避難してください。')).toBeTruthy()
     expect(container.textContent).not.toContain(BODY_ONLY)
 
     fireEvent.click(screen.getByRole('button'))

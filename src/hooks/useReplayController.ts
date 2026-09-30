@@ -19,6 +19,7 @@ import type { JMAQuake } from '../types/earthquake'
 import { serverNow, serverDate } from '../utils/clock'
 import { log } from '../utils/logger'
 import { recordReplayEvent } from '../utils/replayEventLog'
+import { getAreaPrefIndexCache } from '../utils/stationCoords'
 import {
   type TelegramLoss, createEmptyTelegramLoss, addTelegramLoss, describeTelegramLossParts,
   formatRateLimitedNotice,
@@ -344,7 +345,12 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
       }
 
       // pre-window: T 時点で有効な電文を即時発火（replayTime = T-1ms）させて初期状態を再現する
-      const preFiltered = filterPreWindowEvents(pre.entries, targetDate)
+      //
+      // **区域名の索引はここで渡す。** `filterPreWindowEvents` は地震を 1 地震へ畳むときに
+      // ライブ経路と同じ同一性判定を通すが、あちらのモジュールは座標テーブルを import できない
+      // （node 側スクリプトの型検査対象に入るため。→ `utils/quakeMerge.ts` の `areaNames`）。
+      // 渡さないと区域名が県名と同じ奈良県を取りこぼし、**同じ分の別の地震を 1 件へ畳みうる**。
+      const preFiltered = filterPreWindowEvents(pre.entries, targetDate, getAreaPrefIndexCache())
         .map(e => ({ ...e, replayTime: new Date(targetDate.getTime() - 1), silent: true }))
       // フェッチ中に WS 切断タイミングで ref が再セットされる競合を排除するため直前に再リセット
       d.resetTracking()
