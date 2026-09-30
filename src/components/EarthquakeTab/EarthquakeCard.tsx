@@ -1,5 +1,6 @@
-import { Fragment, useMemo, useRef, useEffect, useState } from 'react'
+import { Fragment, memo, useMemo, useRef, useEffect, useState } from 'react'
 import type { JMAQuake, JMALpgm, IssueType, EarthquakePoint, IntensityScale, JMAEstimatedIntensity, QuakeReportRecord, BorrowedFromTsunami } from '../../types/earthquake'
+import { quakeEventKey } from '../../utils/quakeMerge'
 import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor, lpgmCategoryNote, buildLpgmRows, canOpenLpgmNotes } from '../../utils/lpgm'
 import { estimatedIntensityFor, estimatedIntensityAvailability } from '../../utils/estimatedIntensity'
 import { telegramTextSubject } from '../../utils/ttsFollow'
@@ -409,7 +410,15 @@ interface Props {
   lpgmMarks: QuakeCardMarks | undefined
   isLatest?: boolean
   isSelected?: boolean
-  onSelect?: () => void
+  /**
+   * 押されたことを親へ伝える。**地震の鍵はこちらで作って渡す。**
+   *
+   * **親側で `() => onSelect(key)` と包まない**（`onToggleDistribution`・
+   * `onToggleUnreceived` も同じ）——毎レンダー新しい関数になり、このカードの
+   * {@link memo} が素通りする。波形を繋いでいる間は 0.3 秒ごとに親が描き直されるので、
+   * そのたびにカードが 7 日ぶん全部描き直されることになる。
+   */
+  onSelect?: (eventKey: string) => void
   lpgm?: JMALpgm
   activeLpgmEventId?: string | null
   onToggleLpgm?: (eventId: string) => void
@@ -417,10 +426,10 @@ interface Props {
   estimatedIntensity?: JMAEstimatedIntensity | null
   /** この地震の震度分布モードを開いているか。 */
   distributionActive?: boolean
-  onToggleDistribution?: () => void
+  onToggleDistribution?: (eventKey: string) => void
   /** この地震の未入電の一覧を開いているか。 */
   unreceivedActive?: boolean
-  onToggleUnreceived?: () => void
+  onToggleUnreceived?: (eventKey: string) => void
   /** 一覧の行をクリックしたときに、その場所へ地図を寄せる（1 点でも範囲でも）。 */
   onFocusMap?: (positions: LatLng[]) => void
   /**
@@ -513,12 +522,22 @@ function QuakeReportHeading({ reports, fallback }: { reports?: QuakeReportRecord
   )
 }
 
-export function EarthquakeCard({
+/**
+ * 1 枚の地震カード。
+ *
+ * **`memo` で包む。** 自作地震計の波形を繋いでいる間、親（`EarthquakeTab`）は
+ * 0.3 秒ごとに描き直される ——包まないと、そのたびに**関わりのないカードまで
+ * 7 日ぶん全部**描き直される。効かせるために、押されたことを伝える 3 つの関数は
+ * 親で包まず、**地震の鍵をこちら側で作って渡す**（→ {@link Props.onSelect}）。
+ */
+export const EarthquakeCard = memo(function EarthquakeCard({
   quake, isLatest, isSelected, onSelect, lpgm, activeLpgmEventId, onToggleLpgm,
   estimatedIntensity = null, distributionActive = false, onToggleDistribution,
   unreceivedActive = false, onToggleUnreceived, onFocusMap, speakingTelegramTextSubject,
   marks, lpgmMarks, seismoWaves,
 }: Props) {
+  /** このカードの地震を指す鍵。**親へ返すときに使う。** */
+  const eventKey = quakeEventKey(quake)
   /**
    * 印は**値の肩に置く点**で出す（→ `components/UpdateDot.tsx`）。文字色も器の色も触らない。
    *
@@ -907,7 +926,7 @@ export function EarthquakeCard({
       <button
         ref={cardRef}
         type="button"
-        onClick={quake.cancelledAt ? undefined : onSelect}
+        onClick={quake.cancelledAt ? undefined : () => onSelect?.(eventKey)}
         aria-pressed={true}
         className={`w-full text-left bg-card rounded-lg border transition-colors overflow-hidden relative ${quake.cancelledAt ? 'cursor-default' : 'cursor-pointer hover:opacity-90'}`}
         style={{
@@ -1228,8 +1247,8 @@ export function EarthquakeCard({
               role="button"
               tabIndex={0}
               aria-pressed={distributionActive}
-              onClick={(e) => { e.stopPropagation(); onToggleDistribution?.() }}
-              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); onToggleDistribution?.() } }}
+              onClick={(e) => { e.stopPropagation(); onToggleDistribution?.(eventKey) }}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); onToggleDistribution?.(eventKey) } }}
               title={distributionState === 'official'
                 ? '気象庁が地盤の揺れやすさまで考慮して推計した震度の分布'
                 : '観測点の震度をこのアプリが補間した目安。気象庁の推計とは精度が違う'}
@@ -1259,8 +1278,8 @@ export function EarthquakeCard({
               role="button"
               tabIndex={0}
               aria-pressed={unreceivedActive}
-              onClick={(e) => { e.stopPropagation(); onToggleUnreceived?.() }}
-              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); onToggleUnreceived?.() } }}
+              onClick={(e) => { e.stopPropagation(); onToggleUnreceived?.(eventKey) }}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); onToggleUnreceived?.(eventKey) } }}
               title="気象庁が震度5弱以上と推定しているのに、震度が届いていない地点。押すと一覧と地図に出る"
               className={`w-full rounded-lg py-1 px-3 flex items-center justify-between gap-2 border transition-colors cursor-pointer hover:opacity-80 roomy:py-2 roomy:px-4 ${
                 unreceivedActive
@@ -1541,7 +1560,7 @@ export function EarthquakeCard({
     <button
       ref={cardRef}
       type="button"
-      onClick={quake.cancelledAt ? undefined : onSelect}
+      onClick={quake.cancelledAt ? undefined : () => onSelect?.(eventKey)}
       aria-pressed={false}
       className={`
         w-full text-left bg-card rounded-lg p-3 border transition-colors relative
@@ -1657,4 +1676,4 @@ export function EarthquakeCard({
       </div>
     </button>
   )
-}
+})

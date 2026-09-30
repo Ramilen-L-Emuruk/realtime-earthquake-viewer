@@ -163,7 +163,9 @@ export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selected
           quake={quake}
           isLatest={i === 0}
           isSelected={quakeEventKey(quake) === selectedId}
-          onSelect={() => onSelect(quakeEventKey(quake))}
+          // **包まずにそのまま渡す。** ここで包むと毎レンダー新しい関数になり、
+          // `EarthquakeCard` の memo が素通りする（地震の鍵はカード側で作る）。
+          onSelect={onSelect}
           lpgm={lpgmByEventId.get(extractQuakeEventId(quake) ?? '')}
           marks={updateMarks.get(quakeEventKey(quake))}
           lpgmMarks={updateMarks.get(lpgmMarkKey(extractQuakeEventId(quake) ?? ''))}
@@ -171,9 +173,9 @@ export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selected
           onToggleLpgm={onToggleLpgm}
           estimatedIntensity={estimatedIntensity}
           distributionActive={quakeEventKey(quake) === distributionQuakeKey}
-          onToggleDistribution={() => onToggleDistribution(quakeEventKey(quake))}
+          onToggleDistribution={onToggleDistribution}
           unreceivedActive={quakeEventKey(quake) === unreceivedQuakeKey}
-          onToggleUnreceived={() => onToggleUnreceived(quakeEventKey(quake))}
+          onToggleUnreceived={onToggleUnreceived}
           onFocusMap={onFocusMap}
           speakingTelegramTextSubject={speakingTelegramTextSubject}
           seismoWaves={seismoWaves.get(quakeEventKey(quake))}

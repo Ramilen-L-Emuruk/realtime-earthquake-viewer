@@ -69,8 +69,15 @@ export function buildWaveColumns(params: {
   columnCount: number
   spanMs: number
   minScaleGal: number
+  /**
+   * 振れ幅に数える向き（南北・東西・上下の順）。**省略すれば 3 成分すべて。**
+   *
+   * **消した向きを分母から外す**（読み返し側の `foldHistoryColumns` と揃える）——
+   * 外さないと、いちばん大きい成分を消しても残りが潰れたままになる。
+   */
+  visibleAxes?: readonly boolean[]
 }): WaveColumns {
-  const { window: win, columnCount, spanMs, minScaleGal } = params
+  const { window: win, columnCount, spanMs, minScaleGal, visibleAxes } = params
   const count = win.gal[0].length
   // **列が無い・幅が無いなら何も作らない。** 幅ゼロの canvas（畳まれている・
   // まだ測れていない）でここへ来ると、下の除算が `Infinity` になる。
@@ -131,8 +138,10 @@ export function buildWaveColumns(params: {
       columns.push(NO_VALUE)
       continue
     }
+    // **`hasAnyValue` は向きの取捨に左右させない**（「その区間に届いているか」の話）。
     hasAnyValue = true
     for (let a = 0; a < 3; a += 1) {
+      if (visibleAxes !== undefined && visibleAxes[a] === false) continue
       const lo = Math.abs(mins[a][c])
       const hi = Math.abs(maxs[a][c])
       if (lo > peak) peak = lo

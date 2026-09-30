@@ -18,7 +18,9 @@ import { WAVE_RETAIN_SEC, type SeismoStationState, type SeismoStations } from '.
 import type { SeismoWaveWindow } from '../../utils/seismoWaveBuffer'
 import { buildWaveColumns } from './waveColumns'
 import { formatWaveTally } from './waveLabels'
-import { AXIS_COLORS, AXIS_LABELS, paintWaveColumns } from './paintWave'
+import { readWaveAxes } from '../../hooks/useSeismoWaveAxes'
+import { paintWaveColumns } from './paintWave'
+import { WaveAxisToggles } from './WaveAxisToggles'
 
 /**
  * 波形が届かなくなっているときに出す語。
@@ -127,9 +129,7 @@ function StationWave({ station, readWave }: { station: SeismoStationState; readW
     <div className="w-full bg-black/70 px-2 py-1">
       <div className="flex items-center gap-2 text-[10px] roomy:text-xs leading-none mb-1">
         <span className="text-white truncate max-w-[8rem] roomy:max-w-[14rem]">{station.displayName}</span>
-        {AXIS_LABELS.map((label, i) => (
-          <span key={label} style={{ color: AXIS_COLORS[i] }}>{label}</span>
-        ))}
+        <WaveAxisToggles />
         {/* **途絶はいちばん右へ寄せず、数え上げと同じ列に並べる。** 起きていることの
             種類が違うだけで、どちらも「この絵をそのまま信じてよいか」の手掛かり。 */}
         {station.waveStale && <span className="ml-auto text-secondary">{STALE_LABEL}</span>}
@@ -161,12 +161,22 @@ function drawWave(
   win: SeismoWaveWindow | null,
   stale: boolean,
 ): string | null {
+  // **描くたびに読み直す。** 押した向きは次のフレームで効く（この関数は毎秒 10 回
+  // 呼ばれるので、購読して描き直しを促す必要が無い）。
+  const visibleAxes = readWaveAxes()
   return paintWaveColumns(
     canvas,
     (columnCount) =>
       win === null
         ? null
-        : buildWaveColumns({ window: win, columnCount, spanMs: SPAN_MS, minScaleGal: MIN_SCALE_GAL }),
+        : buildWaveColumns({
+            window: win,
+            columnCount,
+            spanMs: SPAN_MS,
+            minScaleGal: MIN_SCALE_GAL,
+            visibleAxes,
+          }),
     stale,
+    { visibleAxes },
   )
 }
