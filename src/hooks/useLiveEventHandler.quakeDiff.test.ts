@@ -47,7 +47,8 @@ vi.mock('../utils/voicevox', async () => {
         if (!s.done) { s.done = true; s.finish() }
       }
       let finish!: () => void
-      const p = new Promise<SpeechOutcome>(r => { finish = () => r({ spoke: true }) })
+      // 文全体が声になった扱い（このモックはチャンクへ割らない）
+      const p = new Promise<SpeechOutcome>(r => { finish = () => r({ spoke: true, spokenChunks: [text] }) })
       speeches.push({ text, chunks: actual.splitIntoChunks(text), onChunk, finish, done: false })
       return p
     },

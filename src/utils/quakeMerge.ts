@@ -1,6 +1,9 @@
 import type { JMAQuake, IssueType, QuakeReportRecord } from '../types/earthquake'
 import { isAreaPoint, type AreaPrefIndex } from './quakePoints'
 import { log } from './logger'
+import {
+  quakeFactSnapshot, quakeRowSnapshot, rememberQuakeCard, type QuakeMarkMemory,
+} from './quakeUpdateMark'
 
 // 地震情報の種別優先度（高いほど詳しい）。
 //
@@ -1004,13 +1007,28 @@ export function coalesceByEventId(cards: JMAQuake[]): JMAQuake[] {
 // 場合はこの前提を崩さないこと。
 // 索引の意味は `quakePoints.ts` の `isAreaPoint`。**省略可能にしない**——渡し忘れた呼び出し側が
 // 黙って縮退する（区域名が県名と同じ奈良県だけ区域で引き当てられなくなる）ため、型検査に見張らせる。
+//
+// **印の記憶も一緒に返す**（`markMemory`）。1 通ずつ当てるこのループの各段階が「その報の
+// 時点でカードが見せていた姿」なので、次に届く報が比べる相手をここで作れる。返り値に
+// 含めるのは、呼び出し側が受け取り忘れることを型検査に見張らせるため —— 記憶を捨てるだけの
+// 形だった頃は、捨て忘れても捨てすぎても静かに通り、**リプレイ開始の直後に届いた報の印が
+// 出なかった**（→ `utils/quakeUpdateMark.ts` の `rememberQuakeCard`）。
+//
+// **`markMemory` の刈り込みは呼び出し側で行う**（`trimQuakeMarkMemory`）。ここは長周期の
+// 記憶が同じ入れ物に同居していることを知らないので、カードの鍵だけで絞ると長周期の分を
+// 巻き込んで落とす。
 export function mergeQuakeHistory(
   newQuakes: JMAQuake[],
   base: JMAQuake[],
   knownRetractions: readonly QuakeRetraction[],
   areaPrefIndex: AreaPrefIndex,
-): JMAQuake[] {
+  /** 土台にする記憶。「もっと見る」は `base` に既存カードを渡すので、その分を引き継ぐ。 */
+  baseMarkMemory?: ReadonlyMap<string, QuakeMarkMemory>,
+): { cards: JMAQuake[]; markMemory: Map<string, QuakeMarkMemory> } {
   const merged: JMAQuake[] = [...base]
+  const markMemory = new Map<string, QuakeMarkMemory>(baseMarkMemory ?? [])
+  /** このバッチで報が当たったカードの鍵（畳み込みの後に写し直す対象。→ ループの後）。 */
+  const touched = new Set<string>()
 
   // 電文の発表時刻昇順で適用する（＝到着順の再現）。同時刻の相対順序は呼び出し側の
   // 入力順序に委ねる（上の「既知の限界」参照）。
@@ -1060,9 +1078,74 @@ export function mergeQuakeHistory(
     // **取消表示中のカードは置換しない**（理由は `findExistingQuakeCard`）。`base` 経由で
     // 混ざりうるため、ライブ経路と同じ守りをここにも置く。
     const index = merged.findIndex(e => !e.cancelledAt && sameQuakeEntry(e, q, areaPrefIndex))
-    if (index >= 0) merged[index] = mergeQuakeInto(merged[index], q)
-    else merged.push(mergeQuakeInto(undefined, q))
+    const before = index >= 0 ? merged[index] : undefined
+    const card = mergeQuakeInto(before, q)
+    if (index >= 0) merged[index] = card
+    else merged.push(card)
+    // **据え置かれた報では記憶を進めない**（`mergeQuakeInto` が同じ参照を返す）。カードの
+    // 中身が変わっていないので、その種別の「前に見た姿」として記録する筋も無い。
+    // ライブ側（`advanceQuakeMarks` の呼び出し）が据え置きで抜けるのと揃える。
+    if (card !== before) {
+      const key = quakeEventKey(card)
+      touched.add(key)
+      rememberQuakeCard(markMemory, key, {
+        facts: quakeFactSnapshot(card),
+        rows: quakeRowSnapshot(card.points, card.cities ?? []),
+        // **カードの種別を渡す**（`q.issue.type` ではない）。ライブ側も統合後のカードから
+        // 採っており、片方だけ電文の種別にすると行の初出の判定基準がずれる。
+        reportType: card.issue.type,
+      })
+    }
   }
 
-  return sortQuakes(coalesceByEventId(merged))
+  // 畳み込みの前後を突き合わせるため、畳む前の姿を鍵で引けるようにしておく。
+  //
+  // **取消表示中のカードは入れない。** 合流も畳み込みもあれを対象から外す（`!e.cancelledAt`）
+  // ので、同じ鍵の取消済みカードと新しいカードが同時に居ることがありうる。入れてしまうと
+  // どちらが残るかが配列の並び任せになり、**取消済みの姿で新しいカードの記憶を上書きしうる**。
+  //
+  // 取消済みを除けば**鍵は一意**。同じ鍵のカードが 2 枚あれば `sameQuakeEntry` が上のループで
+  // 合流させている（あれは両方が鍵を持つとき鍵だけで判定する）。ここに残る 2 枚は
+  // 「識別情報は同じだが鍵が違う」組で、畳み込みがそれを 1 枚にする。
+  const liveOnly = (list: readonly JMAQuake[]) =>
+    new Map(list.filter(c => !c.cancelledAt).map(c => [quakeEventKey(c), c]))
+  const beforeCoalesce = liveOnly(merged)
+  const cards = sortQuakes(coalesceByEventId(merged))
+  const byKey = liveOnly(cards)
+
+  // **畳み込みの吸収を写し直す。** `coalesceByEventId` は同じ識別情報のカードを 1 枚へ畳むとき、
+  // もう一方の中身を吸収する。とくに**区域を持たない電文（VXSE52・VXSE61・訂正報）は
+  // `sameQuakeEntry` でループ内に合流できず、この事後の畳み込みに委ねる**（→ §6.1）。上の
+  // ループが写したのは吸収前の姿なので、そのままだと**次の報が比べる相手が画面と食い違い、
+  // 吸収された値が「いま動いた」として光る**。ライブ側が `settled`（畳み込み後）を写している
+  // のと同じ理由（→ `hooks/useEarthquakes.ts`）。
+  //
+  // **種別ごとの行（`rowsByType`）はループで積んだものを保つ。** ここで上書きされるのは
+  // 畳み込み後のカードの種別だけで、それ以外の種別の写しは残る —— あれは「その種別で前に
+  // 見た姿」なので、畳み終わった 1 枚では埋まらない。
+  //
+  // **回るのは `touched` の順**（＝上のループが報を当てた順＝発表時刻の昇順）。`cards` の順
+  // （地震の時刻の降順）で回すと、最後に書き直すのがいちばん古い地震になり、上限の刈り込み
+  // （`trimQuakeMarkMemory`）が見る挿入順が**逆さになる** —— 群発の履歴取り込みで 24 件を
+  // 超えると、続報が来やすい新しい地震の記憶から先に捨てられる。
+  //
+  // **吸収が実際に起きた鍵だけ書き直す。** 参照が変わっていなければ写す値も同じで、
+  // 挿入順を動かすだけ無駄になる。**standard 版（P2PQuake）ではここは 1 件も通らない** ——
+  // `extractQuakeEventId` は DMDATA の `id` の形だけを読むので、あちらでは畳み込みそのものが
+  // 起きない。
+  //
+  // **限界**: 畳み込みで残った側の鍵が `touched` に無い組み合わせ（片方にしか報が当たらず、
+  // もう 1 枚は `base` 由来だったとき）では写し直しが起きない。そのカードの次の報で吸収分が
+  // 光るが、暫定 ID と確定 ID の 2 枚が同時に居るのは震源が確定する前後の短い窓だけ。
+  for (const key of touched) {
+    const card = byKey.get(key)
+    if (!card || card === beforeCoalesce.get(key)) continue
+    rememberQuakeCard(markMemory, key, {
+      facts: quakeFactSnapshot(card),
+      rows: quakeRowSnapshot(card.points, card.cities ?? []),
+      reportType: card.issue.type,
+    })
+  }
+
+  return { cards, markMemory }
 }

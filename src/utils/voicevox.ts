@@ -1640,8 +1640,34 @@ export type SpeechOutcome = {
    * 偽になるのは 2 通り —— 合成が 1 つも成功しなかった場合と、鳴り始める前にすべて
    * 取り下げた場合（`shouldStillPlay` が偽を返した）。**どちらも「声になっていない」**ので、
    * 既読を進める側から見れば同じ扱いでよい。
+   *
+   * `spokenChunks.length > 0` と同値。両方を持つのは呼び出し側の読みやすさのためで、
+   * 作るのは {@link SpeechOutcome} を組み立てる 1 箇所だけ（食い違う余地は無い）。
    */
   spoke: boolean
+  /**
+   * **実際に鳴ったチャンクの本文**（予約され、取り下げられなかったもの）。文の順に並ぶ。
+   *
+   * 「どこまで声になったか」を呼び出し側が事実で判定するために要る。{@link spoke} だけでは
+   * 「1 音でも鳴ったか」しか分からず、**途中で降りた発話**（`shouldStillPlay` が偽を返し、
+   * 鳴り始めていない残りを落とした場合）で「前半は声になった／後半はなっていない」を
+   * 区別できない。区別できないと、既読を戻す側は全部戻すか全部残すかしか選べず、
+   * どちらかが必ず誤る（同じ値を二度読む／言っていない値を既読にする）。
+   *
+   * **判定は `join('')` した上での部分一致で足りる。** チャンクは句読点の後ろで割るので
+   * （{@link splitIntoChunks}）、1 つの句が 2 チャンクに跨ることがある（「単独点処理のため、
+   * 予想震度なし。」）。繋いでから探せばそれも拾える。途中のチャンクだけ合成に失敗すると
+   * 繋ぎ目が不連続になるが、そのときは見つからない側（＝声になっていない扱い）へ倒れる。
+   *
+   * **割り込みで止められた分は区別しない。** `dropped` が立つのは {@link ShouldStillPlay} が
+   * 偽を返して取り下げた経路だけで、新しい発話が始まって `stop()` された予約には立たない。
+   * {@link spoke} が持っていた割り切りをそのまま引き継いでいる。
+   *
+   * **呼び出し側が待ちの上限で見切った場合は、この値を受け取れない。** そのとき
+   * `useLiveEventHandler` は「全部鳴った」へ倒した代替値を自分で作る（＝ここが返した事実では
+   * ない）。理由はあちらの `capSpeechWait` の注記。
+   */
+  spokenChunks: string[]
 }
 
 /**
@@ -1734,12 +1760,12 @@ async function speakOnce(
   await loadSpeechDicts((err) => {
     log.debug('[VoiceVox] 句区切り辞書の取得に失敗（区切りなしで読み上げ）', err)
   })
-  if (currentSessionId !== sessionId) return { spoke: false }  // 辞書待ちの間に割り込まれた
+  if (currentSessionId !== sessionId) return { spoke: false, spokenChunks: [] }  // 辞書待ちの間に割り込まれた
 
   const ctx = getAudioContext()
   if (!ctx) {
     log.debug('[VoiceVox] スキップ (AudioContext なし)')
-    return { spoke: false }
+    return { spoke: false, spokenChunks: [] }
   }
   if (ctx.state === 'suspended') await ctx.resume()
   // soundEnabled が無効でも voicevoxEnabled だけで読み上げは鳴る（AUD-7）。この経路が
@@ -1794,14 +1820,21 @@ async function speakOnce(
 
   // 予約したチャンクと、その開始時刻（AudioContext の時間軸）。`dropped` は鳴らすのを
   // 取り下げた印、`ended` は再生が終わった印。完了を待つ対象を選ぶためにも使う。
-  const scheduled: { source: AudioBufferSourceNode; startAt: number; dropped: boolean; ended: boolean }[] = []
+  const scheduled: {
+    source: AudioBufferSourceNode; startAt: number; dropped: boolean; ended: boolean
+    /** このチャンクの本文（{@link SpeechOutcome.spokenChunks} へ出す）。 */
+    text: string
+  }[] = []
 
   /**
-   * ここまでに 1 チャンクでも鳴ったか（{@link SpeechOutcome}）。**取り下げられていない予約が
-   * 1 つでもあれば鳴った**と見なす —— 予約は再生の開始時刻付きで積まれ、落とすときは
-   * `dropped` が立つため。
+   * ここまでに鳴ったチャンク（{@link SpeechOutcome}）。**取り下げられていない予約が
+   * 鳴った分**と見なす —— 予約は再生の開始時刻付きで積まれ、落とすときは `dropped` が
+   * 立つため。合成に失敗したチャンクはそもそも予約されないので、自然に外れる。
    */
-  const outcome = (): SpeechOutcome => ({ spoke: scheduled.some(s => !s.dropped) })
+  const outcome = (): SpeechOutcome => {
+    const played = scheduled.filter(s => !s.dropped)
+    return { spoke: played.length > 0, spokenChunks: played.map(s => s.text) }
+  }
   // 妥当性を失ったと判断したか。以降は合成も予約もしない
   let abandoned = false
 
@@ -1938,7 +1971,7 @@ async function speakOnce(
     if (scheduleAt < ctx.currentTime) scheduleAt = ctx.currentTime
 
     const startAt = scheduleAt
-    const entry = { source, startAt, dropped: false, ended: false }
+    const entry = { source, startAt, dropped: false, ended: false, text: chunks[i] }
     scheduled.push(entry)
     source.onended = () => {
       entry.ended = true
