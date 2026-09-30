@@ -2555,8 +2555,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         }
         // タイトル更新
         const specialTitle = event.kind === 'nankai'
-          ? `南海トラフ臨時情報（${event.data.kindName}）`
-          : '後発地震注意情報 発表中'
+          ? `南海トラフ地震臨時情報（${event.data.kindName}）`
+          : '北海道・三陸沖後発地震注意情報 発表中'
         title.setTitle(specialTitle)
         title.scheduleTitleRevert('specialInfo')
       } else {
@@ -3127,8 +3127,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           }
           if (settings.notifyMinScale >= 0 && settings.notifyEEW) {
             showBrowserNotification(
-              '緊急地震速報 誤報取消',
-              `${event.earthquake.hypocenter.name} の緊急地震速報は誤報でした`,
+              '緊急地震速報 取消',
+              `${event.earthquake.hypocenter.name} の緊急地震速報は取り消されました`,
               `eew-cancel-${key}`,
             )
           }
@@ -4520,11 +4520,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           const rest = [timeSegments, warningLevelSegments, arrivalSegments, firstWaveSegments, missingSegments]
             .reduce((acc, seg) => joinWithAlso(acc, seg), [] as typeof timeSegments)
           if (updateSegments.length > 0) {
-            // 名乗り（「津波観測情報。」）は波高の文が自前で持つ（`tsunamiObservationUpdateToSegments`）。
+            // 名乗り（「津波観測に関する情報。」）は波高の文が自前で持つ（`tsunamiObservationUpdateToSegments`）。
             ttsSegments = joinWithAlso(updateSegments, rest)
           } else if (rest.length > 0) {
             // 波高の文が無い電文では名乗りが誰も付けないので、ここで足す。
-            ttsSegments = [plain('津波観測情報。'), ...rest]
+            ttsSegments = [plain('津波観測に関する情報。'), ...rest]
           }
           // **最大波の時刻だけが動いた報も、他の観測情報と同じ層で読む。** かつて最下位に
           // 置いていたのは「伝える変化が無い報」だったからで、いまは新しい観測時刻という
@@ -4631,7 +4631,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // **等級を語れない電文では到達確認を継がない。** 区域はあるのに等級が 1 つも取れない
           // （全区域が `Unknown`）電文もここへ来るが、引き下げ側は「津波警報等は全て解除されました」を
           // 返すため、継ぐと解除の直後に新たな到達を伝える矛盾した並びになる。**読まない分は既読にも
-          // しない**ので、続く観測情報の続報で「津波観測情報。」の名乗り付きで読まれる。
+          // しない**ので、続く観測情報の続報で「津波観測に関する情報。」の名乗り付きで読まれる。
           //
           // **この式が新規発表・格上げの側を巻き込むことはない。** そちらでは `Unknown` がここまで
           // 来ないため ―― 音の種別が決まらず上の `if (!type) return` で抜けるし、
