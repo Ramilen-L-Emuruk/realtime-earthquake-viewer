@@ -33,7 +33,7 @@ async function clearAllCaches(): Promise<void> {
   await clearArchiveBodyDb()
 }
 import { enumerateJstDates, MAX_ENUMERATED_DAYS } from './dmdataReplayLive'
-import type { JMATsunami, EEWAlert } from '../types/earthquake'
+import type { JMAQuake, JMATsunami, EEWAlert } from '../types/earthquake'
 import type { ReplayEntry } from '../types/replay'
 import { DmdataApiKeyError } from '../utils/dmdataApiKey'
 import { log } from '../utils/logger'
@@ -2902,5 +2902,277 @@ describe('本体は目録の filename で引く', () => {
     // 理由まで出す（目録の形が変わった側と取り違えさせない）
     expect(warns.join('\n')).toMatch(/本体が見つからずスキップ.*アーカイブに入っていない/)
     expect(warns.join('\n')).not.toMatch(/filename を持たない/)
+  })
+})
+
+/**
+ * 初期状態（窓の手前）の畳み込み。
+ *
+ * **鍵の作り方がバリアントで分かれてはいけない。** 地震は「最新 1 報だけを流す」のが
+ * 初期状態の設計で、畳めなかった報は 1 通ずつ流れてカードを更新する —— **更新の印は
+ * `silent` を見ずに付く**ので、利用者が見ていない窓の手前の更新が再生開始直後の画面に残る。
+ *
+ * 電文 ID から `eventId` を取り出す方法は DMDATA の書式にしか当たらず、P2PQuake の id
+ * （API が電文ごとに振る値）では畳めなかった。同一性の判定はライブ経路と同じ
+ * `sameQuakeEntry`（→ `utils/quakeMerge.ts` の `createQuakeFoldKeys`）へ寄せてある。
+ */
+describe('filterPreWindowEvents の畳み込み（地震）', () => {
+  const AREA = { pref: '茨城県', addr: '茨城県南部', isArea: true, scale: 40 }
+  const TARGET = '2026-09-29T12:00:00+09:00'
+
+  /** P2PQuake の id は API が電文ごとに振る値で、DMDATA の書式（`dmdata-quake-…`）に当たらない。 */
+  function quakeEntry(o: {
+    id: string
+    type?: string
+    quakeTime?: string
+    hypoName?: string
+    at: string
+    cancelled?: boolean
+    points?: unknown[]
+    /** 最大震度。**震源に関する情報は震度を持たない**ので -1 を渡す。 */
+    maxScale?: number
+    /**
+     * 電文の発表時刻（`ReportDateTime`）。既定は配信時刻と同じ。
+     * **配信が遅れた報を作るときだけ明示する** —— アーカイブの `replayTime` は
+     * 配信時刻で、発表の前後とは一致しないことがある。
+     */
+    issueTime?: string
+    /** 規模。**震度速報は震源要素を持たない**ので NaN を渡す。 */
+    magnitude?: number
+  }): ReplayEntry {
+    const issueTime = o.issueTime ?? o.at
+    const quake = {
+      kind: 'quake',
+      id: o.id,
+      time: issueTime,
+      cancelled: !!o.cancelled,
+      issue: { source: '気象庁', time: issueTime, type: o.type ?? '各地の震度情報', correct: 'なし' },
+      earthquake: {
+        // 取消電文は震源要素を持たない（パーサーが空で埋める）。
+        time: o.cancelled ? '' : (o.quakeTime ?? '2026/09/29 04:45:00'),
+        hypocenter: {
+          name: o.hypoName ?? '茨城県南部',
+          latitude: 36.1, longitude: 139.9, depth: 50, magnitude: o.magnitude ?? 4.9,
+        },
+        maxScale: o.maxScale ?? 40,
+        domesticTsunami: 'None',
+      },
+      points: o.points ?? [AREA],
+    }
+    return { replayTime: new Date(o.at), payload: { kind: 'event', event: quake as unknown as JMAQuake } }
+  }
+
+  function keptQuakeIds(entries: ReplayEntry[]): string[] {
+    return filterPreWindowEvents(entries, new Date(TARGET))
+      .map(e => (e.payload.kind === 'event' ? e.payload.event : null))
+      .filter((ev): ev is JMAQuake => ev?.kind === 'quake')
+      .map(q => q.id)
+  }
+
+  // 正: 識別子を持たない経路でも、同じ地震の続報は最新 1 報へ畳まれる
+  it('P2PQuake の id でも、同じ地震の 3 報が最新 1 報へ畳まれる', () => {
+    const entries = [
+      quakeEntry({ id: 'p2p-1', type: '震度速報', hypoName: '', magnitude: NaN, at: '2026-09-29T04:48:00+09:00' }),
+      quakeEntry({ id: 'p2p-2', type: '震源に関する情報', at: '2026-09-29T04:50:00+09:00' }),
+      quakeEntry({ id: 'p2p-3', type: '各地の震度情報', at: '2026-09-29T04:54:00+09:00' }),
+    ]
+    expect(keptQuakeIds(entries)).toEqual(['p2p-3'])
+  })
+
+  // 対照: 同じ分に起きた別の地震（震源名が食い違う）は畳まない
+  it('同じ分の別の地震（震源名が食い違う）は畳まない', () => {
+    const entries = [
+      quakeEntry({ id: 'p2p-a', at: '2026-09-29T04:48:00+09:00', hypoName: '茨城県南部' }),
+      quakeEntry({ id: 'p2p-b', at: '2026-09-29T04:49:00+09:00', hypoName: '日向灘' }),
+    ]
+    expect(keptQuakeIds(entries).sort()).toEqual(['p2p-a', 'p2p-b'])
+  })
+
+  // 安全弁: DMDATA 側の畳み込み（eventId 一致）を壊していない
+  it('安全弁: DMDATA の id は従来どおり eventId で畳まれる', () => {
+    const entries = [
+      quakeEntry({ id: 'dmdata-quake-20260929044500-1-aaa', at: '2026-09-29T04:48:00+09:00' }),
+      quakeEntry({ id: 'dmdata-quake-20260929044500-2-bbb', at: '2026-09-29T04:54:00+09:00' }),
+    ]
+    expect(keptQuakeIds(entries)).toEqual(['dmdata-quake-20260929044500-2-bbb'])
+  })
+
+  // 正: 流すのは「最新の 1 報」ではなく「統合後のカード」。
+  // 実電文では種別ごとに持つものが違う（震度速報は震源を持たず、震源に関する情報は震度を
+  // 持たない）ので、最新の報をそのまま流すとその報に無い欄が初期状態から欠ける。
+  it('最新の報が震度を持たなくても、先行報の震度が残る', () => {
+    const entries = [
+      // 震度速報（震源を持たない）
+      quakeEntry({ id: 'p2p-1', type: '震度速報', hypoName: '', magnitude: NaN, at: '2026-09-29T04:48:00+09:00' }),
+      // 震源情報（震度を持たない）
+      quakeEntry({ id: 'p2p-2', type: '震源情報', at: '2026-09-29T04:54:00+09:00', points: [], maxScale: -1 }),
+    ]
+    const kept = filterPreWindowEvents(entries, new Date(TARGET))
+      .map(e => (e.payload.kind === 'event' ? e.payload.event : null))
+      .filter((ev): ev is JMAQuake => ev?.kind === 'quake')
+    expect(kept).toHaveLength(1)
+    // 震源は最新報から、震度は先行報から
+    expect(kept[0].earthquake.hypocenter.name).toBe('茨城県南部')
+    expect(kept[0].points).toHaveLength(1)
+  })
+
+  // 安全弁: 取消が先に畳まれても、その後の正規の報からカードが育ち直す。
+  // 取消を土台にすると `mergeQuakeInto` の前提を外れ、以後その群のカードが伸びない。
+  it('安全弁: 取消が先に来た群でも、後続の正規報でカードが育つ', () => {
+    const entries = [
+      quakeEntry({
+        id: 'dmdata-quake-20260929044500-9-zzz',
+        at: '2026-09-29T04:46:00+09:00', cancelled: true, points: [],
+      }),
+      quakeEntry({ id: 'dmdata-quake-20260929044500-1-aaa', at: '2026-09-29T04:48:00+09:00' }),
+      quakeEntry({ id: 'dmdata-quake-20260929044500-2-bbb', at: '2026-09-29T04:54:00+09:00' }),
+    ]
+    const kept = filterPreWindowEvents(entries, new Date(TARGET))
+      .map(e => (e.payload.kind === 'event' ? e.payload.event : null))
+      .filter((ev): ev is JMAQuake => ev?.kind === 'quake')
+    expect(kept).toHaveLength(1)
+    expect(kept[0].cancelled).toBe(false)
+    expect(kept[0].points).toHaveLength(1)
+  })
+
+  /**
+   * 取消と、その取消より前に発表された報の勝ち負け。
+   *
+   * `replayTime` はアーカイブのファイル名が持つ**配信時刻**で、気象庁の発表時刻ではない。
+   * 配信が遅れた報は取消より新しい `replayTime` を持つので、新しさだけで勝者を決めると
+   * 取消が畳み落とされ、取り消された地震が有効なものとして初期状態に残る。
+   */
+  describe('取消と、配信が遅れた報', () => {
+    const EVENT = 'dmdata-quake-20260929044500'
+
+    // 正: 取消より前に発表された報は、配信が遅れて届いても取消に負ける
+    it('取消より前に発表された報が遅れて届いても、残るのは取消', () => {
+      const entries = [
+        quakeEntry({
+          id: `${EVENT}-9-zzz`, at: '2026-09-29T04:50:00+09:00',
+          cancelled: true, points: [],
+        }),
+        // 発表は取消より前（04:48）だが、配信は取消より後（04:55）
+        quakeEntry({
+          id: `${EVENT}-1-aaa`, at: '2026-09-29T04:55:00+09:00',
+          issueTime: '2026-09-29T04:48:00+09:00',
+        }),
+      ]
+      const kept = filterPreWindowEvents(entries, new Date(TARGET))
+        .map(e => (e.payload.kind === 'event' ? e.payload.event : null))
+        .filter((ev): ev is JMAQuake => ev?.kind === 'quake')
+      expect(kept).toHaveLength(1)
+      expect(kept[0].cancelled).toBe(true)
+    })
+
+    // 対照: 取消より後に発表された報は落とさない（別の地震を誤って同一視した場合の救済）
+    it('取消より後に発表された報は落とさない', () => {
+      const entries = [
+        quakeEntry({
+          id: `${EVENT}-9-zzz`, at: '2026-09-29T04:50:00+09:00',
+          cancelled: true, points: [],
+        }),
+        quakeEntry({ id: `${EVENT}-1-aaa`, at: '2026-09-29T04:55:00+09:00' }),
+      ]
+      const kept = filterPreWindowEvents(entries, new Date(TARGET))
+        .map(e => (e.payload.kind === 'event' ? e.payload.event : null))
+        .filter((ev): ev is JMAQuake => ev?.kind === 'quake')
+      expect(kept).toHaveLength(1)
+      expect(kept[0].cancelled).toBe(false)
+    })
+  })
+
+  /** この describe で出た警告。畳めなかったことが記録に残るかを見る。 */
+  let seen: string[] = []
+  beforeEach(() => {
+    seen = []
+    vi.spyOn(console, 'warn').mockImplementation((...a: unknown[]) => { seen.push(a.join(' ')) })
+  })
+  afterEach(() => { vi.restoreAllMocks() })
+
+  // 安全弁: 1 報が壊れていても、畳み込み全体を巻き込まない。
+  // ループごと落とすと取得は成功しているのに「リプレイデータ取得失敗」になり、
+  // 地震も津波も EEW も 1 件も再生されない（呼び出し側の catch がそこまで巻き取る）。
+  it('安全弁: 判定が投げる報があっても、残りは畳まれ、その報もそのまま流れる', () => {
+    // `earthquake` を欠いた壊れた電文（同一性の判定が読みにいって投げる）
+    const broken = {
+      replayTime: new Date('2026-09-29T04:49:00+09:00'),
+      payload: { kind: 'event', event: { kind: 'quake', id: 'broken-1', issue: {} } as unknown as JMAQuake },
+    } as ReplayEntry
+    const entries = [
+      quakeEntry({ id: 'p2p-1', type: '震度速報', hypoName: '', magnitude: NaN, at: '2026-09-29T04:48:00+09:00' }),
+      broken,
+      quakeEntry({ id: 'p2p-2', at: '2026-09-29T04:54:00+09:00' }),
+    ]
+    const kept = keptQuakeIds(entries)
+    // 壊れた報は畳まずそのまま、正常な 2 報は 1 件へ畳まれる
+    expect(kept.sort()).toEqual(['broken-1', 'p2p-2'])
+    // 畳めなかったことは記録に残す（黙って通すと、畳み込みが効いていないことに気づけない）
+    expect(seen.some(w => /初期状態の地震を畳めなかった/.test(w))).toBe(true)
+  })
+
+  // 安全弁: 取消電文はカードを育てる対象にしない（`mergeQuakeInto` は取消を扱わない）。
+  // 識別子を持たない経路では地震の時刻も空なので、どの報とも束ねられず単独で残る。
+  it('安全弁: 識別子を持たない取消は、他の報を巻き込まず単独で残る', () => {
+    const entries = [
+      quakeEntry({ id: 'p2p-1', type: '震度速報', hypoName: '', magnitude: NaN, at: '2026-09-29T04:48:00+09:00' }),
+      quakeEntry({ id: 'p2p-2', at: '2026-09-29T04:54:00+09:00' }),
+      quakeEntry({ id: 'p2p-x', at: '2026-09-29T05:00:00+09:00', cancelled: true, points: [] }),
+    ]
+    expect(keptQuakeIds(entries).sort()).toEqual(['p2p-2', 'p2p-x'])
+  })
+})
+
+/**
+ * 長周期地震動も地震ごとに最新 1 報へ畳む。
+ *
+ * **畳んで結果は変わらない。** 受け手は報ごとに `lpgmByEventId` を丸ごと差し替えるので、
+ * 最新 1 報だけを流した最終状態は全報を順に流した最終状態と一致する。一方で一覧には
+ * 震度一覧と同じ更新の印が付き、こちらも `silent` を見ない。
+ */
+describe('filterPreWindowEvents の畳み込み（長周期地震動・帯）', () => {
+  const TARGET = '2026-09-29T12:00:00+09:00'
+
+  function lpgmEntry(eventId: string, at: string, maxClass: number): ReplayEntry {
+    return {
+      replayTime: new Date(at),
+      payload: { kind: 'lpgm', data: { eventId, maxClass, regions: [], points: [], prefs: [] } as never },
+    }
+  }
+
+  function kept(entries: ReplayEntry[]): { eventId: string; maxClass: number }[] {
+    return filterPreWindowEvents(entries, new Date(TARGET))
+      .filter(e => e.payload.kind === 'lpgm')
+      .map(e => e.payload as { kind: 'lpgm'; data: { eventId: string; maxClass: number } })
+      .map(p => ({ eventId: p.data.eventId, maxClass: p.data.maxClass }))
+  }
+
+  // 正
+  it('同じ eventId の 2 報は最新 1 報へ畳まれる', () => {
+    const entries = [
+      lpgmEntry('20260929044500', '2026-09-29T04:50:00+09:00', 1),
+      lpgmEntry('20260929044500', '2026-09-29T04:55:00+09:00', 2),
+    ]
+    expect(kept(entries)).toEqual([{ eventId: '20260929044500', maxClass: 2 }])
+  })
+
+  // 対照
+  it('eventId が違えば畳まない', () => {
+    const entries = [
+      lpgmEntry('20260929044500', '2026-09-29T04:50:00+09:00', 1),
+      lpgmEntry('20260929103100', '2026-09-29T10:35:00+09:00', 1),
+    ]
+    expect(kept(entries)).toHaveLength(2)
+  })
+
+  // 安全弁: 帯（南海トラフ等）は畳まない。印を持たないので症状が無く、
+  // 畳むと種別ごとに 1 通へ落ちて報の並びが変わる。
+  it('安全弁: 帯（南海トラフ解説情報）は畳まない', () => {
+    const band = (at: string): ReplayEntry => ({
+      replayTime: new Date(at),
+      payload: { kind: 'nankaiCommentary', data: { id: at } as never },
+    })
+    const entries = [band('2026-09-29T04:50:00+09:00'), band('2026-09-29T05:50:00+09:00')]
+    expect(filterPreWindowEvents(entries, new Date(TARGET))).toHaveLength(2)
   })
 })

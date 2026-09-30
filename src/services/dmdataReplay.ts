@@ -7,7 +7,11 @@ import { createArchiveBodyCache } from '../utils/archiveBodyCache'
 import { readArchiveBody, writeArchiveBody } from '../utils/archiveBodyDb'
 import { log, createLogThrottle } from '../utils/logger'
 import { authHeader } from '../utils/dmdataApiKey'
-import { extractQuakeEventIdFromId, QUAKE_ISSUE_PRIORITY } from '../utils/quakeMerge'
+import {
+  addQuakeRetraction, createQuakeFoldKeys, extractQuakeEventIdFromId, isRetractedQuakeReport,
+  quakeRetractionOf, QUAKE_ISSUE_PRIORITY, type QuakeRetraction,
+} from '../utils/quakeMerge'
+import type { AreaPrefIndex } from '../utils/quakePoints'
 import { latestValidDateTime } from '../utils/tsunami'
 import type { ReplayEntry, ReplayPayload, ReplayFetchResult, QuakeHistoryResult } from '../types/replay'
 import {
@@ -1236,16 +1240,155 @@ function resolveTsunamiPreWindowStates(
   return states
 }
 
+/**
+ * 地震を「地震ごとに最新 1 報」へ畳む（初期状態用）。
+ *
+ * **鍵はライブ経路と同じ同一性判定から作る**（`createQuakeFoldKeys`）。電文 ID から
+ * `eventId` を取り出す方法は DMDATA の書式にしか当たらず、識別子を持たない経路
+ * （P2PQuake）では 1 通も畳めなかった。**畳めなかった報は 1 通ずつ流れてカードを更新し、
+ * 更新の印は `silent` を見ずに付く**ので、利用者が見ていない窓の手前の更新が
+ * 再生開始直後の画面に残る。
+ *
+ * **流すのは「最新の 1 報」ではなく「統合後のカード」。** 種別によって持つものが違う
+ * （震度速報は震源を持たず、震源に関する情報は震度を持たない）ので、最新の報をそのまま
+ * 流すとその報に無い欄が初期状態から欠ける。畳まずに全報を流していた頃は受け取る側の
+ * 逐次統合が補っていたぶんで、**畳む以上はここで統合してから渡す**。
+ *
+ * **取消の報だけは生のまま流す。** 取消はカードを育てる対象ではなく、受け取る側が
+ * 取消として捌く電文（→ `createQuakeFoldKeys`）。
+ *
+ * **発表順に見る。** カードを育てながら照合するため、順序が崩れると同じ地震を割りうる。
+ * 取得元（アーカイブ・P2PQuake・ローカル履歴）はいずれも `replayTime` の昇順で返すが、
+ * **ここではそれに依存せず並べ直す** —— 依存を残すと、取得元を 1 つ足したときに
+ * 静かに壊れる。
+ *
+ * **1 報ずつ受け止める。** 同一性の判定と統合は分岐が多く、電文の壊れ方次第で投げうる。
+ * ループごと落とすと**取得は成功しているのに「リプレイデータ取得失敗」になり、地震も
+ * 津波も EEW も 1 件も再生されない**（呼び出し側の `catch` がそこまで巻き取る）。
+ * 投げた報は畳まずそのまま流す —— 畳み込みが効かないだけで、内容は失われない。
+ */
+function foldPreWindowQuakes(
+  entries: ReplayEntry[],
+  areaPrefIndex: AreaPrefIndex,
+): ReplayEntry[] {
+  const foldKeyOf = createQuakeFoldKeys(areaPrefIndex)
+  /** 群ごとの「いちばん新しい報」と、そこまでの統合後のカード。 */
+  const latest = new Map<string, { entry: ReplayEntry; card: JMAQuake; cancelled: boolean }>()
+  /** 畳めなかった報（判定が投げた）。畳まずそのまま流す。 */
+  const unfolded: ReplayEntry[] = []
+  const quakes = entries
+    .filter(e => e.payload.kind === 'event' && e.payload.event.kind === 'quake')
+    .sort((a, b) => a.replayTime.getTime() - b.replayTime.getTime())
+  const quakeOf = (e: ReplayEntry): JMAQuake => (e.payload as { kind: 'event'; event: JMAQuake }).event
+
+  /**
+   * 取り下げ済みの報を先に落とす。
+   *
+   * **勝者を配信の新しさだけで決めると、取消が負けうる。** `replayTime` はアーカイブの
+   * ファイル名が持つ配信時刻で、気象庁の発表時刻ではない。取消より前に発表された報が遅れて
+   * 届けば（→ [`quake-spec.md`](../../docs/spec/quake-spec.md) §6.2「取消の後に届いた報」）、
+   * その報が取消より新しい配信時刻を持ち、**取消のほうが畳み落とされる**。取消が消えると
+   * 取消の台帳にも積まれず、取り消された地震が有効なものとして初期状態に残る。
+   *
+   * **判定はライブ経路と同じ述語**（`isRetractedQuakeReport`）。発表時刻の前後と種別で見るので
+   * 配信の順序に左右されない。**台帳の上限は入力の件数**にする —— 窓は 24 時間で有界なので
+   * 溢れようがなく、固定値にすると「溢れたぶんだけ取り下げ済みの報が復活する」穴が残る。
+   *
+   * **照合の効きは `eventId` を持つ経路に限られる。** ライブ経路は取消が当たったカードを
+   * `quakeRetractionOf` の第 2 引数へ渡すが、ここは畳み込みの前なのでまだカードが無い。
+   * 取消電文は `earthquake.time` が空で、`sameQuakeEntry` は識別子が揃わない組を時刻で
+   * 落とすため、**識別子の無い経路ではこの保護が働かない**。いま実害は無い ——
+   * P2PQuake の地震情報は `cancelled` を読んでおらず（`services/p2pquake.ts` の
+   * `parseQuake`。読むのは津波と緊急地震速報だけ）、取消になりうるのは DMDATA 経路だけで、
+   * あちらは取消電文にも `eventId` を含む id が必ず付く。**識別子の無い経路に取消の概念が
+   * 入ったら、ここも当たるように直すこと。**
+   */
+  const retractions: QuakeRetraction[] = []
+  for (const entry of quakes) {
+    const quake = quakeOf(entry)
+    if (quake.cancelled) addQuakeRetraction(retractions, quakeRetractionOf(quake), quakes.length)
+  }
+  let retracted = 0
+
+  for (const entry of quakes) {
+    const quake = quakeOf(entry)
+    let folded: { key: string; card: JMAQuake }
+    try {
+      if (!quake.cancelled && isRetractedQuakeReport(retractions, quake, areaPrefIndex)) {
+        retracted++
+        continue
+      }
+      folded = foldKeyOf(quake)
+    } catch (e) {
+      log.warn(`[replay] 初期状態の地震を畳めなかったため、そのまま流します: id=${quake.id}`, e)
+      unfolded.push(entry)
+      continue
+    }
+    const existing = latest.get(folded.key)
+    // カードは常に最新の統合結果へ。勝者の入れ替えは `replayTime` の新しさで決める。
+    const cancelled = !!quake.cancelled
+    if (!existing || entry.replayTime > existing.entry.replayTime) {
+      latest.set(folded.key, { entry, card: folded.card, cancelled })
+    } else {
+      existing.card = folded.card
+    }
+  }
+  const result = [...unfolded]
+  for (const { entry, card, cancelled } of latest.values()) {
+    result.push(cancelled ? entry : { ...entry, payload: { kind: 'event', event: card } })
+  }
+  // **効いているかを残す。** 鍵の作り方が壊れて「毎回別の群」へ落ちても、画面には
+  // 「窓の手前の更新が出る」としか現れない（この関数が直した症状そのもの）。
+  if (quakes.length > 0) {
+    log.debug(`[replay] 初期状態の地震を畳んだ: ${quakes.length} 通 → ${result.length} 件`
+      + (retracted > 0 ? `（取り下げ済み ${retracted} 通を除く）` : '')
+      + (unfolded.length > 0 ? `（うち畳めなかった報 ${unfolded.length} 通）` : ''))
+  }
+  return result
+}
+
+/**
+ * 長周期地震動を「地震ごとに最新 1 報」へ畳む（初期状態用）。
+ *
+ * **畳んでも最終状態は変わらない。** 受け手は報ごとに `lpgmByEventId` を丸ごと差し替える
+ * （取消なら消す）ので、最新 1 報だけを流した結果は全報を順に流した結果と一致する。
+ * 一方で一覧には震度一覧と同じ更新の印が付き、**こちらも `silent` を見ない**。
+ *
+ * **帯（南海トラフ・地震回数・お知らせ等）は畳まない。** あちらは印を持たないので
+ * 同じ症状が無く、畳むと種別ごとに 1 通へ落ちて報の並びまで変わる。
+ */
+function foldPreWindowLpgm(entries: ReplayEntry[]): Map<ReplayEntry, boolean> {
+  const latest = new Map<string, ReplayEntry>()
+  for (const entry of entries) {
+    if (entry.payload.kind !== 'lpgm') continue
+    // 鍵の作り方は履歴からの補完と共有する（別々に持つと片方だけ直したときにずれる）。
+    const key = historyExtraKey(entry.payload)
+    if (key === null) continue
+    const existing = latest.get(key)
+    if (!existing || entry.replayTime > existing.replayTime) latest.set(key, entry)
+  }
+  const winners = new Map<ReplayEntry, boolean>()
+  for (const entry of latest.values()) winners.set(entry, true)
+  return winners
+}
+
 // T 時点でまだ有効な電文のみを残すフィルタ（pre-window 初期状態用）
 export function filterPreWindowEvents(
   entries: ReplayEntry[],
   targetTime: Date,
+  /**
+   * 区域名の索引。**呼び出し側から受け取る** —— このモジュールは座標テーブルを import
+   * できない（node 側スクリプトの型検査対象に入るため。→ `utils/quakeMerge.ts` の `areaNames`）。
+   */
+  areaPrefIndex: AreaPrefIndex = null,
 ): ReplayEntry[] {
   // EEW は T 時点で有効なものだけを 1 地震につき 1 件へ畳む。グルーピングと失効の判定は
   // ライブ起動時の復元と共有する（`selectActiveEews`）——どちらも「その時刻の画面を作り直す」
   // という同じ目的なので、二重に持つと片方だけ直したときに再生と実機で挙動が食い違う。
   const eewReports: Array<{ eew: EEWAlert; value: ReplayEntry }> = []
-  const quakeByEventId = new Map<string, ReplayEntry>()
+  // 地震と長周期は先に畳んでおく（理由と畳み方はそれぞれの関数の注記）。
+  const quakeWinners = foldPreWindowQuakes(entries, areaPrefIndex)
+  const lpgmWinners = foldPreWindowLpgm(entries)
   // 津波は報を跨いで状態が積み上がる（観測のみの続報が前報の区域を引き継ぐ）ため、EEW のように
   // 最新 1 報へ畳まずに全報を順に流す。一方で「T 時点でその津波が終わっているか」は報 1 通では
   // 判定できないので、先にイベント単位で決めてからループへ入る。
@@ -1253,19 +1396,16 @@ export function filterPreWindowEvents(
   const result: ReplayEntry[] = []
 
   for (const entry of entries) {
+    if (entry.payload.kind === 'lpgm') {
+      // 畳んで残った 1 報だけを、**元の位置のまま**流す（並びを崩さない）。
+      if (lpgmWinners.has(entry)) result.push(entry)
+      continue
+    }
     if (entry.payload.kind !== 'event') { result.push(entry); continue }
     const ev = entry.payload.event
 
-    if (ev.kind === 'quake') {
-      const quake = ev as JMAQuake
-      const eid = extractQuakeEventIdFromId(quake.id)
-      if (!eid) { result.push(entry); continue }
-      const existing = quakeByEventId.get(eid)
-      if (!existing || entry.replayTime > existing.replayTime) {
-        quakeByEventId.set(eid, entry)
-      }
-      continue
-    }
+    // 地震は上で畳んである（残った報は末尾でまとめて積む）。
+    if (ev.kind === 'quake') continue
 
     if (ev.kind === 'eew') {
       eewReports.push({ eew: ev as EEWAlert, value: entry })
@@ -1297,7 +1437,7 @@ export function filterPreWindowEvents(
     result.push(entry)
   }
 
-  for (const entry of quakeByEventId.values()) result.push(entry)
+  for (const entry of quakeWinners) result.push(entry)
 
   // 特別警報の下げ止まり（`computeDisplayEEWLevel`）。窓内の全報が揃っているので、
   // ライブ受信中と同じ精度で判定できる（起動時復元 `fetchDmdataActiveEews` と違い、

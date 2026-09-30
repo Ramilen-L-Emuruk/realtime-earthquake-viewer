@@ -422,7 +422,7 @@ describe('lpgmToText: 階級ごとの地域列挙', () => {
   })
 
   it('取消でも空にはならない', () => {
-    expect(lpgmToText({ ...makeLpgm(), cancelled: true }, TTS_OPTS, false)).toBe('長周期地震動情報は取り消されました。')
+    expect(lpgmToText({ ...makeLpgm(), cancelled: true }, TTS_OPTS, false)).toBe('長周期地震動に関する観測情報は取り消されました。')
   })
 
   // 安全弁: 時刻が日時として読めない電文でも、主題（どこで階級いくつか）は残る
@@ -457,7 +457,7 @@ describe('lpgmToText: 階級ごとの地域列挙', () => {
       { ...makeLpgm(), regions: undefined, arrivalTime: '2026-08-17T23:10:00+09:00' },
       TTS_OPTS, true,
     )
-    expect(text).toBe('長周期地震動情報。23時10分頃発生した地震で、長周期地震動階級3を観測しました。')
+    expect(text).toBe('長周期地震動に関する観測情報。23時10分頃発生した地震で、長周期地震動階級3を観測しました。')
   })
 })
 
@@ -1009,10 +1009,10 @@ describe('津波観測情報の読み上げ: 新規と更新の言い分け', ()
   // 正: 両方が混ざったら 2 文に分け、後ろを「また、」で継ぐ。深刻な波高を含む群が先に来る
   it('深刻な波高を含む群を先に読み、後ろを「また、」で継ぐ', () => {
     const raisedIsWorse = tsunamiObservationUpdateToText([MIYAKO, OFUNATO], undefined, undefined, new Set(['大船渡']))
-    expect(raisedIsWorse).toContain('津波観測情報。次の地点で最大波が更新されました。岩手県、大船渡で3.0メートルへ更新されました。また、新たに、次の地点で津波を観測しました。岩手県、宮古で1.2メートルを観測しました。')
+    expect(raisedIsWorse).toContain('津波観測に関する情報。次の地点で最大波が更新されました。岩手県、大船渡で3.0メートルへ更新されました。また、新たに、次の地点で津波を観測しました。岩手県、宮古で1.2メートルを観測しました。')
 
     const firstTimeIsWorse = tsunamiObservationUpdateToText([MIYAKO, OFUNATO], undefined, undefined, new Set(['宮古']))
-    expect(firstTimeIsWorse).toContain('津波観測情報。新たに、次の地点で津波を観測しました。岩手県、大船渡で3.0メートルを観測しました。また、次の地点で最大波が更新されました。岩手県、宮古で1.2メートルへ更新されました。')
+    expect(firstTimeIsWorse).toContain('津波観測に関する情報。新たに、次の地点で津波を観測しました。岩手県、大船渡で3.0メートルを観測しました。また、次の地点で最大波が更新されました。岩手県、宮古で1.2メートルへ更新されました。')
   })
 
   // 対照: 群が 1 つしかできない電文では「また、」を出さない
