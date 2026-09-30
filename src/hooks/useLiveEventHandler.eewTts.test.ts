@@ -172,6 +172,14 @@ function makeEEW(over: {
 
 /** 直近の `setup` が作ったフックの戻り値。`setupFull` が復元の入口を取り出すために控える。 */
 let capturedResult: ReturnType<typeof useLiveEventHandler> | null = null
+/**
+ * 直近の `setup` が渡したウィンドウタイトルの受け口（スタブ）。
+ *
+ * **「発表中の緊急地震速報が 1 つも無くなったか」を外から見る唯一の窓。** その判定
+ * （`activeEEWLevelsRef.current.size === 0`）は ref を直接見ないと確かめられないが、
+ * 成立したときだけ `clearTitleTimer('eew')` が呼ばれるので、そこを覗く。
+ */
+let capturedTitle: { clearTitleTimer: ReturnType<typeof vi.fn> } | null = null
 
 /**
  * @param over 設定の上書き。読み上げの詳しさの設定を切り替えるテストで使う。
@@ -233,6 +241,7 @@ function setup(
     scheduleTitleRevert: vi.fn(),
     clearTitleTimer: vi.fn(),
   }
+  capturedTitle = title
 
   const { result } = renderHook(() => useLiveEventHandler({
     settings,
@@ -2154,6 +2163,120 @@ describe('警報の対象地方: リプレイを途中から始めたとき', ()
     expect(spokenTexts().filter(t => t.includes('警戒してください'))).toEqual([
       '新たに、甲信でも強い揺れに警戒してください。',
     ])
+  })
+})
+
+/**
+ * リプレイを途中から始めた地震が、窓の中で予報から警報へ上がったとき。
+ *
+ * **復元は「読み終えた」側に当たる**（→ audio-tts-spec.md §6「予報から警報へ上がったとき」の
+ * 3 通りの表）。窓の手前では 1 音も鳴っていないので、第 1 フェーズの進み具合
+ * （`eewPhase1ProgressRef`）は空が正しく、言い直し（鳴っている音を止めて頭から読み直す）は
+ * 発火しない。区分は第 2 フェーズの前置き、または第 1.5 フェーズ（警報の対象地方）が伝える。
+ *
+ * **ここを網羅で固定するのは、「復元の形が変われば黙るのでは」という疑いが繰り返し立つから。**
+ * 窓の手前の報数・続報の中身・設定の組み合わせを機械的に振って、**どの入り方でも
+ * 「緊急地震速報」の語がちょうど 1 度だけ声になる**ことを見る（仕様書が「どの経路でも
+ * 必ず声になる」と定め、かつ重ねてはいけないと定めているのはこの 2 つ）。
+ */
+describe('復元後に予報から警報へ上がったとき、区分は必ず 1 度だけ声になる', () => {
+  const entry = (event: EEWAlert) => ({
+    payload: { kind: 'event' as const, event },
+    replayTime: new Date('2026-01-01T12:00:00Z'),
+  })
+  const MOVED = { name: '種子島近海', latitude: 30.5, longitude: 131.0 }
+  const f = (serial: number) => makeEEW({ serial, scaleTo: 50 as IntensityScale, severity: 'Forecast' })
+
+  const pres = [
+    { name: '予報1通', evs: [f(1)] },
+    { name: '予報3通', evs: [f(1), f(2), f(3)] },
+    { name: '予報3通(震源が往復)', evs: [f(1), makeEEW({ serial: 2, scaleTo: 50, severity: 'Forecast', hypocenter: MOVED }), f(3)] },
+  ]
+  const lives = [
+    { name: '地方あり', over: { warningRegions: ['北陸'] } },
+    { name: '地方なし', over: {} },
+    { name: '区域なし・仮定震源要素', over: { noAreas: true, condition: '仮定震源要素' } },
+    { name: '区域なし・深発', over: { noAreas: true, depth: 200 } },
+    { name: '区域なし・理由不明', over: { noAreas: true } },
+    { name: '震源が大きく動く', over: { hypocenter: MOVED } },
+    { name: '震度が下がる', over: { scaleTo: 30 as IntensityScale } },
+  ]
+  const confs = [
+    { name: '既定', over: {} as Partial<AppSettings> },
+    { name: '地方読み上げoff', over: { ttsReadEewWarningRegions: false } as Partial<AppSettings> },
+    { name: '録画モード', over: { recordingMode: true } as Partial<AppSettings> },
+  ]
+
+  const cases = pres.flatMap(p => lives.flatMap(l => confs.map(c => ({
+    label: `${p.name} / ${l.name} / ${c.name}`, pre: p.evs, live: l.over, conf: c.over,
+  }))))
+
+  it.each(cases)('$label', async ({ pre, live, conf }) => {
+    const d = setupFull(conf)
+    d.restore(pre.map(entry) as never)
+    d.handleLiveEvent(makeEEW({ serial: 4, scaleTo: 50, severity: 'Warning', ...live }))
+    await vi.advanceTimersByTimeAsync(30000)
+    await flushMicrotasks()
+    // **数えるのは発話の本数ではなく「区分を名乗った発話」の本数。** 前置き
+    // （「緊急地震速報に切り替わりました。」）と第 1 フェーズの名乗り（「緊急地震速報、〇〇で
+    // 地震。」）はどちらもこの語を含むので、2 になれば二重告知として落ちる。
+    const said = spokenTexts().join(' | ')
+    const lead = spokenTexts().filter(t => t.includes('緊急地震速報')).length
+    expect(lead, said || '(無音)').toBe(1)
+  })
+})
+
+/**
+ * 窓の手前に「誤報取消された緊急地震速報」があったとき、復元はその追跡ごと捨てること。
+ *
+ * **捨てないと「発表中のもの」の帳面に幽霊が居座る。** 解除処理はその帳面が空になった時点で
+ * ウィンドウタイトルを戻し既定タブへ帰るので、取り消された分が 1 件残るだけで条件が永久に
+ * 成立せず、**本物の緊急地震速報が全部解除されても画面が戻らない**（再生のあいだずっと）。
+ *
+ * **観測は `clearTitleTimer('eew')` で行う** —— 帳面そのものは外から見えないが、あの呼び出しは
+ * 空になったときだけ走る 1 箇所なので、成立したかどうかがそこに出る。
+ */
+describe('復元は取消の報の追跡を残さない', () => {
+  const entry = (event: EEWAlert) => ({
+    payload: { kind: 'event' as const, event },
+    replayTime: new Date('2026-01-01T12:00:00Z'),
+  })
+
+  /**
+   * 窓の中で本物の緊急地震速報を 1 つ出してから解除し、**それで帳面が空になったか**を返す。
+   * 窓の手前に幽霊が残っていれば空にならない。
+   */
+  async function emptiedAfterLiveCancel(d: ReturnType<typeof setupFull>) {
+    d.handleLiveEvent(makeEEW({ eventId: 'evt-live', scaleTo: 50 }))
+    await vi.advanceTimersByTimeAsync(20000)
+    await flushMicrotasks()
+    capturedTitle!.clearTitleTimer.mockClear()
+    d.handleLiveEvent(makeEEW({ eventId: 'evt-live', serial: 2, scaleTo: 50, cancelled: true }))
+    await vi.advanceTimersByTimeAsync(20000)
+    await flushMicrotasks()
+    return capturedTitle!.clearTitleTimer.mock.calls.some(c => c[0] === 'eew')
+  }
+
+  // 正: 窓の手前の取消は追跡ごと消えるので、本物を解除すれば帳面が空になる。
+  it('窓の手前で取り消された緊急地震速報は、発表中として残らない', async () => {
+    const d = setupFull()
+    d.restore([
+      entry(makeEEW({ scaleTo: 50 })),
+      entry(makeEEW({ serial: 2, scaleTo: 50, cancelled: true })),
+    ] as never)
+    expect(await emptiedAfterLiveCancel(d)).toBe(true)
+  })
+
+  // 対照: 窓の手前が空なら当然空になる（上の「正」が取消の扱いを見ていることの裏取り）。
+  it('窓の手前に何も無ければ空になる', async () => {
+    expect(await emptiedAfterLiveCancel(setupFull())).toBe(true)
+  })
+
+  // 安全弁: 取り消されていない緊急地震速報は発表中のまま残る（消しすぎていないこと）。
+  it('取り消されていない緊急地震速報は発表中のまま残る', async () => {
+    const d = setupFull()
+    d.restore([entry(makeEEW({ scaleTo: 50 }))] as never)
+    expect(await emptiedAfterLiveCancel(d)).toBe(false)
   })
 })
 

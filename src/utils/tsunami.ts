@@ -1125,6 +1125,32 @@ export function evacuationActionLine(comments?: TsunamiWarningComment[]): string
   return first && first.endsWith('。') ? first : undefined
 }
 
+/**
+ * 気象庁の行動指示が採れなかったときに出す文。**画面（バナー）と読み上げで共有する。**
+ *
+ * **文面は気象庁の付加文の等級ごとの節から採る**（実電文の原文は
+ * `src/utils/testData.ts` の `warningComments`。2024-01-01 能登半島地震 16:22 の VTSE41）。
+ * 節の本文をそのまま置くと「沿岸部や川沿いにいる人は」が付くが、ここは**区域を言い終えた直後に
+ * 続く位置**なので、誰に向けた呼びかけかは文脈が持っている。呼びかけの中身だけを採る。
+ *
+ * **大津波警報と津波警報は同じ文。** 気象庁の付加文も＜大津波警報＞＜津波警報＞の両方の節で
+ * 同じ呼びかけを書いており、等級の重さは見出し（`gradeLabel`）の側が伝える。
+ *
+ * > 2026-09-30 まで、津波警報には**注意報の節の呼びかけ**（「海岸から離れてください。」）が
+ * > 当たっており、注意報には何も出していなかった。気象庁が警報で求めているのは「避難」で、
+ * > 「離れる」ではない。
+ */
+export function fallbackEvacuationAction(grade: TsunamiGrade): string {
+  switch (grade) {
+    case 'MajorWarning':
+    case 'Warning':  return 'ただちに高台や避難ビルなど安全な場所へ避難してください。'
+    case 'Watch':    return '海の中にいる人はただちに海から上がって、海岸から離れてください。'
+    case 'Forecast': return '若干の海面変動が予想されますが、被害の心配はありません。'
+    // **`default` で受けないこと。** 等級が増えたとき、網羅の検査が効かずに空文字へ落ちる。
+    case 'Unknown':  return ''
+  }
+}
+
 function sortWarningComments(comments: TsunamiWarningComment[]): TsunamiWarningComment[] {
   const rank = (c: TsunamiWarningComment) => {
     const i = WARNING_COMMENT_ORDER.indexOf(c.key)
