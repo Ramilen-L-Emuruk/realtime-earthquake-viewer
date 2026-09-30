@@ -1502,6 +1502,46 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
    *   （止める行為そのものが解放のスイッチになる）。詳細は `stopSpeech` の JSDoc。
    */
   /**
+   * その緊急地震速報についての追跡を**まとめて捨てる**（`eewEventKey` 単位）。
+   *
+   * **呼ぶのは 2 箇所** —— 解除（誤報取消・自動解除）を受けたときと、リプレイの復元が
+   * 取消の報を舐めたとき。**顔ぶれをここへ 1 本化してあるのは、数え上げ方式が必ず漏れるから。**
+   * ref を 1 つ足すたびに両方へ書き足す形にすると、片方にだけ残った記憶が
+   * 「取り消された緊急地震速報が発表中として居座る」幽霊になる —— 実際に復元側で開いていて、
+   * **本物の緊急地震速報が全部解除されても `activeEEWLevelsRef` が空にならず、ウィンドウ
+   * タイトルが戻らない・既定タブへ戻らない**という形で出ていた（`size === 0` を見る箇所）。
+   *
+   * **`eewRetractedKeysRef` はここで触らない。** あれは消す側ではなく立てる側で、しかも
+   * 誤報取消と自動解除で扱いが分かれる（判断は呼び出し側が持つ）。
+   *
+   * タイマーを持つ 3 つ（上限待ち・安定待ちの 2 つ）は止めてから消す。**復元経路では
+   * そもそも張られていない**ので、取得が空振りするだけで害は無い。
+   */
+  const forgetEewTracking = (key: string) => {
+    activeEEWLevelsRef.current.delete(key)
+    spokenEEWScalesRef.current.delete(key)
+    spokenEEWLpgmClassesRef.current.delete(key)
+    activeEEWAnnouncedHypocentersRef.current.delete(key)
+    const pendingMaxTimer = eewTtsMaxTimersRef.current.get(key)
+    if (pendingMaxTimer) { clearTimeout(pendingMaxTimer); eewTtsMaxTimersRef.current.delete(key) }
+    eewTtsEventsRef.current.delete(key)
+    eewPhase1TokensRef.current.delete(key)
+    eewPhase2TokensRef.current.delete(key)
+    eewPhase2DoneRef.current.delete(key)
+    eewRegionTokensRef.current.delete(key)
+    spokenEEWRegionsRef.current.delete(key)
+    spokenEEWUpgradePhraseRef.current.delete(key)
+    spokenEEWLevelsRef.current.delete(key)
+    const pendingScaleStability = eewScaleStabilityRef.current.get(key)
+    if (pendingScaleStability) { clearTimeout(pendingScaleStability.timer); eewScaleStabilityRef.current.delete(key) }
+    const pendingLpgmStability = eewLpgmStabilityRef.current.get(key)
+    if (pendingLpgmStability) { clearTimeout(pendingLpgmStability.timer); eewLpgmStabilityRef.current.delete(key) }
+    eewConfirmedScaleRef.current.delete(key)
+    eewConfirmedLpgmRef.current.delete(key)
+    eewPhase1ProgressRef.current.delete(key)
+  }
+
+  /**
    * 第 1 フェーズの進み具合を部分更新する（{@link EEWPhase1Progress}）。
    *
    * **書き換えはすべてここを通すこと。** 直接 `set` すると、指定しなかった欄を既定値で
@@ -3092,10 +3132,6 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             grade: null, telegram: currentReplayTelegram(),
           })
         }
-        activeEEWLevelsRef.current.delete(key)
-        spokenEEWScalesRef.current.delete(key)
-        spokenEEWLpgmClassesRef.current.delete(key)
-        activeEEWAnnouncedHypocentersRef.current.delete(key)
         // 音・読み上げは hadKey=true（このセッションで表示中の EEW を取り消す場合）のみ発火する。
         // hadKey=false のケースは 2 種類ある:
         //   1. 既に自動解除済みの後に遅れて届いた本物の誤報取消電文（訂正情報として重要）
@@ -3137,29 +3173,15 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         // 自動解除（expired）は「発表が終わった」だけで内容が誤りだったわけではなく、
         // 途中で切っても代わりに読むものが無い（取消の読み上げは誤報取消のみ）。
         if (!event.expired) eewRetractedKeysRef.current.add(key)
-        // EEW 解除時は当該 eventId の読み上げ待ちを取り下げる。
-        // eewTtsEventsRef を消すことで、既にチェーンに繋がっている予約も解決時に自ら黙る
-        // （取り消された地震の予想震度を読み上げないための最終ガード）。
-        const pendingMaxTimer = eewTtsMaxTimersRef.current.get(key)
-        if (pendingMaxTimer) { clearTimeout(pendingMaxTimer); eewTtsMaxTimersRef.current.delete(key) }
-        eewTtsEventsRef.current.delete(key)
-        eewPhase1TokensRef.current.delete(key)
-        eewPhase2TokensRef.current.delete(key)
-        eewPhase2DoneRef.current.delete(key)
-        eewRegionTokensRef.current.delete(key)
-        spokenEEWRegionsRef.current.delete(key)
-        spokenEEWUpgradePhraseRef.current.delete(key)
-        spokenEEWLevelsRef.current.delete(key)
-        // 安定待ちの進行中サイクル・確定値も落とす（取り消された地震の値を残さない）
-        const pendingScaleStability = eewScaleStabilityRef.current.get(key)
-        if (pendingScaleStability) { clearTimeout(pendingScaleStability.timer); eewScaleStabilityRef.current.delete(key) }
-        const pendingLpgmStability = eewLpgmStabilityRef.current.get(key)
-        if (pendingLpgmStability) { clearTimeout(pendingLpgmStability.timer); eewLpgmStabilityRef.current.delete(key) }
-        eewConfirmedScaleRef.current.delete(key)
-        eewConfirmedLpgmRef.current.delete(key)
-        // 発表が終わった EEW を「鳴っている最中」と見なさないため（言い直しの判定に使う）。
-        // 予約が黙って降りるときにも消えるが、そちらは発話の順番が来てからになる。
-        eewPhase1ProgressRef.current.delete(key)
+        // 解除された EEW についての追跡をすべて取り下げる（顔ぶれは `forgetEewTracking`）。
+        // **とくに `eewTtsEventsRef` が消えることが要**で、既にチェーンへ繋がっている予約も
+        // 解決時に自ら黙る（取り消された地震の予想震度を読み上げないための最終ガード）。
+        // 進み具合（`eewPhase1ProgressRef`）も落ちるので、発表が終わった EEW を
+        // 「鳴っている最中」と見なして言い直すこともなくなる。
+        //
+        // **消す位置をここまで下げてよいのは、上の音・読み上げ・通知の処理がどれも
+        // この顔ぶれを読まないから**（読むのは `eewCancelSpeechRef` と電文そのもの）。
+        forgetEewTracking(key)
         if (!event.expired && hadKey) {
           // 誤報取消（10秒キャンセル表示中）: 他に発表中のEEWがあってもリアルタイムタブでオーバーレイを見せる
           log.info('[tab] realtime を要求 (EEW誤報取消・キャンセル表示)')
@@ -3264,12 +3286,19 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // 続報で予想が上がったときも同じ形で言い直す（引き上げ専用の短句は持たない。
       // 理由は eewIntensityText の JSDoc）。
       // 読み上げは soundEnabled と独立に voicevoxEnabled のみで判定する（AUD-7）。
-      if (settings.voicevoxEnabled) {
-        eewTtsEventsRef.current.set(key, event)
-        // 同じ eventId で発表が再開することはないが、取消の記録を持ち越すと以後の読み上げが
-        // 鳴らせなくなるため、報を受けた時点で必ず落とす
-        eewRetractedKeysRef.current.delete(key)
+      //
+      // **ただし「その緊急地震速報が生きているか」の印だけは、読み上げ設定の外で持つ。**
+      // この 2 つは消す側（取消・自動解除）が設定の外にあり（`eewTtsEventsRef` は上の解除処理、
+      // `eewRetractedKeysRef` は同じ場所の `add`）、書く側だけを中へ置くと**読み上げを切った
+      // 端末で片方向にしか動かない**。溜まり続けるうえ、後から読み上げを有効にしたとき
+      // 「発表中なのに電文が無い」「取り消されていないのに取消の印が残っている」という、
+      // どちらも発話を黙らせる向きの食い違いになる。**症状は音の不在なので、例外もログも出ない。**
+      eewTtsEventsRef.current.set(key, event)
+      // 同じ eventId で発表が再開することはないが、取消の記録を持ち越すと以後の読み上げが
+      // 鳴らせなくなるため、報を受けた時点で必ず落とす
+      eewRetractedKeysRef.current.delete(key)
 
+      if (settings.voicevoxEnabled) {
         const clearPhase2MaxTimer = () => {
           const maxTimer = eewTtsMaxTimersRef.current.get(key)
           if (maxTimer) { clearTimeout(maxTimer); eewTtsMaxTimersRef.current.delete(key) }
@@ -5195,6 +5224,24 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           const eew = ev as EEWAlert
           const key = eewEventKey(eew)
           /**
+           * **取消の報は積まずに、その緊急地震速報についての追跡ごと捨てる。**
+           *
+           * ライブ経路の解除処理と同じ `forgetEewTracking` を通す —— 顔ぶれを数え上げで
+           * 並べると必ず片方が漏れ、**取り消された緊急地震速報が「発表中」として居座る**。
+           * `activeEEWLevelsRef` が空にならないので、本物の緊急地震速報が全部解除されても
+           * ウィンドウタイトルが戻らず、既定タブへも戻らない（`size === 0` を見る箇所）。
+           *
+           * **飛ばすのではなく消すこと。** 窓の手前は「初報 → 続報 → 取消」と並ぶので、
+           * 取消の報を無視するだけでは前の報が積んだ記憶がそのまま残る。
+           */
+          if (eew.cancelled) {
+            forgetEewTracking(key)
+            // 録画モードでは取消の読み上げも済ませた扱いにする。自動解除（`expired`）とは
+            // 区別する —— ライブ経路（`handleLiveEventInner`）と同じ条件。
+            if (recording && !eew.expired) eewRetractedKeysRef.current.add(key)
+            return
+          }
+          /**
            * **投げうる計算を先に済ませてから ref へ書く。**
            *
            * ここは複数の ref を順に埋めるが、そのうち `activeEEWLevelsRef` だけは意味が違う
@@ -5219,21 +5266,25 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           const restoredRegions = eew.warningRegions?.length
             ? [...(spokenEEWRegionsRef.current.get(key) ?? []), ...eew.warningRegions]
             : null
-          // 最後に告知した震源。**3 通りある。**
-          // - 取消の報は**消す**（ライブ経路が取消で `delete` する側なので、文字どおり同じ操作に
-          //   する。`set` を飛ばすだけだと取消より前の報の震源が残る）。取消電文の震源は
-          //   センチネルなので `hasKnownEpicenter` でも弾かれるが、弾かれることに頼ると
-          //   電文の埋め方が変わったときに静かに通る
+          // 最後に告知した震源。**2 通りある**（取消の報は上で追跡ごと捨てているので来ない）。
           // - 震源が読めない報は**触らない**（前の報で入れた震源を消さない）
           // - それ以外は入れ替える
-          const announcedHypo = eew.cancelled ? null : eew.earthquake?.hypocenter
-          const restoredHypo: AnnouncedHypocenter | 'delete' | 'keep' =
-            eew.cancelled ? 'delete'
-              : announcedHypo && hasKnownEpicenter(announcedHypo.latitude, announcedHypo.longitude)
-                ? { name: announcedHypo.name, lat: announcedHypo.latitude, lng: announcedHypo.longitude }
-                : 'keep'
+          const announcedHypo = eew.earthquake?.hypocenter
+          const restoredHypo: AnnouncedHypocenter | 'keep' =
+            announcedHypo && hasKnownEpicenter(announcedHypo.latitude, announcedHypo.longitude)
+              ? { name: announcedHypo.name, lat: announcedHypo.latitude, lng: announcedHypo.longitude }
+              : 'keep'
 
           activeEEWLevelsRef.current.set(key, restoredDisplayLevel)
+          // 「その緊急地震速報が生きているか」の印も、他の記憶と同じ地点へ揃える
+          // （取消の報は上で追跡ごと捨てているのでここへ来ない）。
+          //
+          // **いま読む経路は無い**（この復元は読み上げを 1 つも予約せず、予約が作られる続報の
+          // 受信時には手前で必ず入れ替わる）。それでも空のまま残さないのは、他の記憶が
+          // 「既知」と言うのにこれだけが「もう存在しない」と答える状態になるから ——
+          // 復元済みの緊急地震速報に対して予約を組む経路が後から 1 つ増えれば、そこだけが
+          // 無言で黙る。**症状は音の不在で、例外もログも出ない。**
+          eewTtsEventsRef.current.set(key, eew)
           spokenEEWScalesRef.current.set(key, restoredScale)
           spokenEEWLpgmClassesRef.current.set(key, restoredLpgm)
           // 区分も復元する。落とすと注入後の最初の続報で「警報。」が付き直し、
@@ -5259,17 +5310,27 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // いまは前置きの判定が「区分が上がったか」を併せて見るので相乗りで防げているが、
           // その依存はどこにも書かれていない。対で復元して切っておく。
           if (restoredLevel >= 1) spokenEEWUpgradePhraseRef.current.add(key)
+          /**
+           * **第 1 フェーズの進み具合（`eewPhase1ProgressRef`）は復元しない。意図的。**
+           *
+           * あれは「何を伝えたか」ではなく「**いま鳴っているか**」を持つ ref で、窓の手前では
+           * 1 音も鳴っていない以上、空が正しい姿。復元すると `restateAsWarning` が真になり、
+           * **鳴っていない音を止めて頭から言い直す**予約が積まれる —— 窓の手前で名乗った震源を
+           * もう一度名乗ることになり、録画では区間の境目で名乗りが重なる。
+           *
+           * 復元後に予報から警報へ上がった場合、区分は第 2 フェーズの前置き（「緊急地震速報に
+           * 切り替わりました。」）か、警報の対象地方を読む第 1.5 フェーズが伝える —— 仕様書の
+           * 3 通りの表（audio-tts-spec.md §6「予報から警報へ上がったとき」）の「読み終えた」側に
+           * 当たる。**窓の手前の報数・続報の中身・設定を振っても必ず 1 度は声になる**ことは
+           * `useLiveEventHandler.eewTts.test.ts` が網羅で固定している。
+           */
           if (recording) {
-            // 誤報取消（訂正）を受けた事実。自動解除（`expired`）とは区別する
-            // ——ライブ経路（`handleLiveEventInner`）と同じ条件。
-            if (eew.cancelled && !eew.expired) eewRetractedKeysRef.current.add(key)
             // 最後に第 1 フェーズを読んだときの震源。落とすと、窓に入った最初の続報で
-            // 震源の大幅更新の判定に使う比較対象が無くなる（取消での扱いは上の `restoredHypo`）。
+            // 震源の大幅更新の判定に使う比較対象が無くなる（取消の報は上で追跡ごと捨てている）。
             // **窓の手前の分は入れ替える（積まない）。** ここで復元したいのは「窓に入った最初の
             // 続報が比べる相手」で、手前で実際に何を声にしたかは分からない。報ごとに積むと、
             // 声にしていない場所まで「名乗り済み」になり、窓の中の言い直しを黙らせる。
-            if (restoredHypo === 'delete') activeEEWAnnouncedHypocentersRef.current.delete(key)
-            else if (restoredHypo !== 'keep') activeEEWAnnouncedHypocentersRef.current.set(key, [restoredHypo])
+            if (restoredHypo !== 'keep') activeEEWAnnouncedHypocentersRef.current.set(key, [restoredHypo])
           }
         } else if (ev.kind === 'tsunami') {
           const tsunami = ev as JMATsunami
