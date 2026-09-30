@@ -316,6 +316,59 @@ describe('useSeismoQuakeWaves', () => {
     }
   })
 
+  it('正: 観測点が 0 件でも、新しい地震があれば取り直す', async () => {
+    // **2026-09-30 のレビューで見つかった穴。** 通信は成功しているので `kind` は `'ok'`
+    // だが、**ホストの起動直後は必ずこの形を通る**（`sensorHealth.ts` は実際にパケットを
+    // 受けたセンサーしか載せない）。ここで諦めると、次に新しい地震が来て `targetKey` が
+    // 変わるまでその地震の波形を取りに行かない ——**停電はホストの再起動と地震の両方の
+    // 原因になりうる**ので、いちばん見たい地震でこれを踏む。
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026/09/29 22:00:05'))
+    try {
+      fetchSeismoStatus.mockResolvedValue({ ...okStatus(), stations: [], sensorCount: 0 })
+      setup()
+      await vi.advanceTimersByTimeAsync(10)
+      expect(fetchSeismoStatus).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(fetchSeismoStatus).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('対照: 古い地震しか無ければ、観測点が 0 件でも叩き直さない', async () => {
+    // 落ちている `/status` に置いたのと同じ歯止め（発生から 30 分）。**取り直しを足した
+    // ぶん、こちらの線も引き直せているかを見る。**
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026/09/29 23:00:00'))
+    try {
+      fetchSeismoStatus.mockResolvedValue({ ...okStatus(), stations: [], sensorCount: 0 })
+      setup()
+      await vi.advanceTimersByTimeAsync(10)
+      expect(fetchSeismoStatus).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(fetchSeismoStatus).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('安全弁: 観測点が 0 件なら、波形は取りに行かない', async () => {
+    // **取り直すことと、空の一覧で取りに行くことは別。** 観測点が分からないまま
+    // `GET /waves` を叩いても、鍵になる観測点 ID が無い。
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026/09/29 22:00:05'))
+    try {
+      fetchSeismoStatus.mockResolvedValue({ ...okStatus(), stations: [], sensorCount: 0 })
+      fetchSeismoWaveHistory.mockResolvedValue(history())
+      setup()
+      await vi.advanceTimersByTimeAsync(10)
+      expect(fetchSeismoWaveHistory).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('こちらの組み立てた窓が通らなかったときは取り直さない', async () => {
     // **対照。** 同じ窓で投げ直しても結果は変わらない。
     vi.useFakeTimers()

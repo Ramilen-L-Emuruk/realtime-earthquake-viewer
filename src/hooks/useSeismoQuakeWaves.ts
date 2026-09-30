@@ -339,7 +339,22 @@ export function useSeismoQuakeWaves(params: {
         lat: s.lat,
         lon: s.lon,
       }))
-      if (stationList.length === 0) return false
+      // **観測点が 0 件でも取り直す。** 通信は成功しているので `kind` は `'ok'` だが、
+      // **ホストの起動直後は必ずこの形を通る** ——`seismo-host` の `sensorHealth.ts` は
+      // 実際にパケットを受けたセンサーしか載せないので、まだ 1 枚も基板が繋ぎ直して
+      // いない間は空で返る。
+      //
+      // **ここで諦めると、次に `targetKey` が変わるまでその地震の波形を取りに行かない**
+      // （この効果の依存は `[canFetch, baseUrl, targetKey]` だけ）。その地震が最後の
+      // 1 件だったら二度と来ない —— **停電はホストの再起動と地震の両方の原因になりうる**
+      // ので、いちばん見たい地震でこれを踏む。
+      //
+      // **記録も残す。** 同じファイルの他の失敗分岐はすべて理由を記録に残しているのに、
+      // ここだけ沈黙していた（2026-09-30 のレビューで見つかった）。
+      if (stationList.length === 0) {
+        log.warn('[seismo] /status は応答したが観測点が 0 件（まだ繋がっていない可能性）')
+        return hasFreshTarget()
+      }
 
       // **取り直す値打ちのある失敗**（＝古すぎない地震で、一時的な理由で取れなかったもの）。
       let retryable = false

@@ -104,6 +104,15 @@ export type WaveHistoryResult =
   | { readonly kind: 'http-error'; readonly status: number }
   /** 応答は返ったが、こちらが期待する形ではない。 */
   | { readonly kind: 'unreadable'; readonly detail: string }
+  /**
+   * 呼び出し側が取り消した。**失敗ではないので記録へ残さない。**
+   *
+   * 相手が悪いわけでもこちらの組み立てが悪いわけでもない —— 対象が入れ替わった
+   * （新しい有感地震が来た）・カードが画面から消えた、というだけ。`unreachable` と
+   * 同じ枠に入れると、**群発のときほど「繋がらなかった」の行が埋まり、本物の
+   * ホスト障害と見分けが付かなくなる。**
+   */
+  | { readonly kind: 'aborted' }
 
 /** 読み返す範囲。 */
 export interface WaveHistoryRange {
@@ -266,6 +275,13 @@ export async function fetchSeismoWaveHistory(params: {
       signal?.removeEventListener('abort', onAbort)
     }
   } catch (error) {
+    // **呼び出し側の取り消しは失敗として記録しない**（`kind` の説明を見ること）。
+    //
+    // **時間切れ（`FETCH_TIMEOUT_MS`）とは区別する。** どちらも `AbortError` になるが、
+    // あちらは本物の失敗なので記録が要る。**見分けるのは投げた `error` ではなく、
+    // 呼び出し側の `signal` が上がっているかどうか** —— 例外の側からは、どちらの
+    // `AbortController` が中断したのか分からない。
+    if (signal?.aborted === true) return { kind: 'aborted' as const }
     const detail = describeError(error)
     return fail({ kind: 'unreachable' as const, detail }, detail)
   }

@@ -6,6 +6,7 @@
 
 import { describe, expect, it, vi } from 'vitest'
 
+import { log } from '../utils/logger'
 import {
   buildWaveHistoryRange,
   fetchSeismoWaveHistory,
@@ -13,6 +14,13 @@ import {
   WAVE_HISTORY_LEAD_MS,
   WAVE_HISTORY_TAIL_MS,
 } from './seismoWaveHistory'
+
+// 記録に残るかどうかを検証したいので `log` だけ差し替える。本物のままだと
+// テスト実行時に警告が素通しで混ざる。
+vi.mock('../utils/logger', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../utils/logger')>()
+  return { ...actual, log: { ...actual.log, warn: vi.fn() } }
+})
 
 /** 実機の応答（2026-09-29 実測）を 3 列へ縮めたもの。 */
 const RESPONSE = {
@@ -281,23 +289,68 @@ describe('fetchSeismoWaveHistory', () => {
     expect(result.kind).toBe('unreadable')
   })
 
-  it('既に落ちている signal を渡されたら取りに行かない', async () => {
-    const ctrl = new AbortController()
-    ctrl.abort()
-    const fetchImpl = vi.fn(async (_url: unknown, init?: { signal?: AbortSignal }) => {
-      // 実装は内側の AbortController を落としてから fetch を呼ぶので、
-      // ここで落ちていることを確かめる（本物の fetch はこの signal を見て投げる）。
-      if (init?.signal?.aborted === true) throw new DOMException('Aborted', 'AbortError')
-      return jsonResponse(RESPONSE)
+  // #385 のレビュー（2026-09-30）で見つかった。**中断を失敗として記録すると、群発の
+  // ときほど「繋がらなかった」の行が埋まり、本物のホスト障害と見分けが付かなくなる。**
+  describe('呼び出し側の取り消し（2026-09-30 に扱いを覆した）', () => {
+    it('正: 既に落ちている signal を渡されたら aborted を返し、記録へ残さない', async () => {
+      vi.mocked(log.warn).mockClear()
+      const ctrl = new AbortController()
+      ctrl.abort()
+      const fetchImpl = vi.fn(async (_url: unknown, init?: { signal?: AbortSignal }) => {
+        // 実装は内側の AbortController を落としてから fetch を呼ぶので、
+        // ここで落ちていることを確かめる（本物の fetch はこの signal を見て投げる）。
+        if (init?.signal?.aborted === true) throw new DOMException('Aborted', 'AbortError')
+        return jsonResponse(RESPONSE)
+      })
+      const result = await fetchSeismoWaveHistory({
+        baseUrl: 'http://host:50506',
+        stationId: 'station-1',
+        range: RANGE,
+        columns: 600,
+        signal: ctrl.signal,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      })
+      // **以前は `unreachable` を返していた**（相手には届いていないので、字面としては
+      // 正しかった）。それだと記録が「繋がらなかった」と主張してしまう。
+      expect(result).toEqual({ kind: 'aborted' })
+      expect(log.warn).not.toHaveBeenCalled()
     })
-    const result = await fetchSeismoWaveHistory({
-      baseUrl: 'http://host:50506',
-      stationId: 'station-1',
-      range: RANGE,
-      columns: 600,
-      signal: ctrl.signal,
-      fetchImpl: fetchImpl as unknown as typeof fetch,
+
+    it('対照: 呼び出し側が取り消していない AbortError（＝時間切れ）は記録へ残す', async () => {
+      vi.mocked(log.warn).mockClear()
+      // 時間切れは実装の内側の `AbortController` が落とすので、**呼び出し側の `signal`
+      // は上がらない**。ここが見分けの拠りどころ —— 例外の側からはどちらが中断したのか
+      // 分からない（どちらも `AbortError`）。
+      const fetchImpl = vi.fn(async () => {
+        throw new DOMException('The operation was aborted.', 'AbortError')
+      })
+      const result = await fetchSeismoWaveHistory({
+        baseUrl: 'http://host:50506',
+        stationId: 'station-1',
+        range: RANGE,
+        columns: 600,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      })
+      expect(result.kind).toBe('unreachable')
+      expect(log.warn).toHaveBeenCalledTimes(1)
     })
-    expect(result.kind).toBe('unreachable')
+
+    it('安全弁: signal を渡していても、落ちていなければ本物の到達不能が取り消しに化けない', async () => {
+      vi.mocked(log.warn).mockClear()
+      const ctrl = new AbortController()
+      const fetchImpl = vi.fn(async () => {
+        throw new TypeError('Failed to fetch')
+      })
+      const result = await fetchSeismoWaveHistory({
+        baseUrl: 'http://host:50506',
+        stationId: 'station-1',
+        range: RANGE,
+        columns: 600,
+        signal: ctrl.signal,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      })
+      expect(result.kind).toBe('unreachable')
+      expect(log.warn).toHaveBeenCalledTimes(1)
+    })
   })
 })
