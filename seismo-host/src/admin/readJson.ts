@@ -42,3 +42,32 @@ export function readFiniteArray(value: unknown): readonly number[] | null {
   }
   return value as readonly number[]
 }
+
+/**
+ * 数の並びとして読む。ただし **`null` は「そのサンプルの値が無い」として `NaN` へ移す。**
+ *
+ * 出どころはセンサー対の差分（`diffGal`・#372）だけ —— 両方の値が揃わないサンプルを
+ * ホストが `null` で返す（外挿しない）。
+ *
+ * **`0` へ倒さない。** 差分の 0 は「2 台がぴったり一致した」を意味してしまう。
+ * **詰めて短くもしない**（上の `readFiniteArray` と同じ理由）——位置が前へずれ、
+ * そこだけ時間が縮んだ絵になる。
+ *
+ * **`null` 以外の読めない値は通さない。** 文字列や `NaN` が来たら並び全体を捨てる
+ * ——「欠けている」と「形が違う」は別の事実で、混ぜると形の食い違いが
+ * 欠測として静かに描かれる。
+ */
+export function readFiniteArrayWithGaps(value: unknown): readonly number[] | null {
+  if (!Array.isArray(value)) return null
+  const out = new Array<number>(value.length)
+  for (let i = 0; i < value.length; i++) {
+    const n = value[i]
+    if (n === null) {
+      out[i] = Number.NaN
+      continue
+    }
+    if (typeof n !== 'number' || !Number.isFinite(n)) return null
+    out[i] = n
+  }
+  return out
+}

@@ -14,7 +14,7 @@
 // すると、上限いっぱいのとき双方が延々と切り合う。
 
 import type { IntensityReading, WaveChunk } from './intensityPipeline'
-import type { FusedWaveChunk, StationIntensityReading } from './sensorFusion'
+import type { FusedWaveChunk, SensorMemberRef, SensorPairDiff, StationIntensityReading } from './sensorFusion'
 
 /**
  * 同時に繋いでいられる数。
@@ -41,6 +41,10 @@ const MAX_SUBSCRIBERS_DEFAULT = 8
  * さらに増える**——こちらも震度と同じく全員へ配る種別なので、上の比率をずらす方向には
  * 働かない。**合成波形（`station-wave`）は `'station'` 以上を望んだ購読だけへ行く**
  * ので、こちらは比率を広げる側（1 観測点なら毎秒 3 件ほど）。
+ * **差分波形（`station-diff`）は頼んだ 1 組だけへ行く**ので、こちらも広げる側
+ * （合成と同じ刻みで届くので毎秒 3 件ほど）。**梯子ではなく顔ぶれで配る種別を
+ * 足しても、この「回数で測らない」判断は変わらない** —— 購読の種類による件数の
+ * 開きがさらに広がるだけで、経過時間で測っていれば影響を受けない。
  */
 const STALL_MS_DEFAULT = 30_000
 
@@ -52,6 +56,15 @@ export type HubMessage =
   | { readonly kind: 'station-reading'; readonly reading: StationIntensityReading }
   /** 観測点ぶんの合成波形（同 §7）。**`station-reading` の出どころにあたる波形。** */
   | { readonly kind: 'station-wave'; readonly wave: FusedWaveChunk }
+  /**
+   * センサー対 1 組ぶんの差分波形（同 §7・#372）。**頼んだ 1 組だけへ配る。**
+   *
+   * **`station-wave` と同じ層に置けない。** 合成のたびに全ペアぶん作られるので
+   * （実機のセンサー 9 本なら 36 組・毎秒 240 KB（実測））、波形の梯子
+   * （{@link WaveWant}）へ載せた時点で波形タブが黙ってその量を受けることになる。
+   * 配る相手は**顔ぶれで選ぶ**（`WAVE_TIER` の `'pair'` と {@link PairWant}）。
+   */
+  | { readonly kind: 'station-diff'; readonly diff: SensorPairDiff }
 
 /**
  * 購読者が波形をどこまで欲しがっているか。
@@ -71,6 +84,38 @@ export type WaveWant =
   | 'all'
 
 /**
+ * 差分波形を見たいセンサー対 1 組（#372）。
+ *
+ * **梯子（{@link WaveWant}）とは直交している。** 差分は全ペアぶん作られるので、
+ * `'all'` に含める形にすると波形タブが 36 組を受けてしまう ——「欲しいと言った 1 組」を
+ * 顔ぶれで指すのがこの型の役目。
+ *
+ * **向きはどちらでもよい**（`a` と `b` が入れ替わっていても同じ組として配る）。
+ * 差分の式は `d = (a − b) / 2` なので**入れ替えると符号が反転する**が、押し出す
+ * 1 件は `memberA`・`memberB` を自分で名乗るので、受け手はどちらの向きで来たのかを
+ * 見分けられる。向きを厳しく見ると、設定でセンサーの並びが変わっただけで
+ * **何も届かなくなる**（繋がっているのに来ない、という最も気づきにくい形）。
+ */
+export interface PairWant {
+  readonly stationId: string
+  readonly a: SensorMemberRef
+  readonly b: SensorMemberRef
+}
+
+function sameMember(x: SensorMemberRef, y: SensorMemberRef): boolean {
+  return x.boardKey === y.boardKey && x.sensorId === y.sensorId
+}
+
+/**
+ * 頼んだ組と、いま流れてきた差分が同じ組か。**向きは問わない**（{@link PairWant}）。
+ */
+export function pairMatches(want: PairWant, diff: SensorPairDiff): boolean {
+  if (want.stationId !== diff.stationId) return false
+  if (sameMember(want.a, diff.memberA) && sameMember(want.b, diff.memberB)) return true
+  return sameMember(want.a, diff.memberB) && sameMember(want.b, diff.memberA)
+}
+
+/**
  * その種別が波形のどの層に属するか。
  *
  * **`Record` にしてあるので、`HubMessage` へ種別を足してここへ書かなければ型検査が
@@ -87,29 +132,58 @@ type WaveTier =
   | 'station'
   /** センサー単独の波形。 */
   | 'sensor'
+  /**
+   * センサー対の差分波形。**梯子では決まらない** —— 頼んだ顔ぶれと突き合わせる
+   * （{@link PairWant}）。
+   */
+  | 'pair'
 
 const WAVE_TIER: Record<HubMessage['kind'], WaveTier> = {
   reading: 'always',
   wave: 'sensor',
   'station-reading': 'always',
   'station-wave': 'station',
+  'station-diff': 'pair',
+}
+
+/** 差分の種別なら中身を、そうでなければ null。**`'pair'` の場で型を絞るため。** */
+function diffOf(message: HubMessage): SensorPairDiff | null {
+  return message.kind === 'station-diff' ? message.diff : null
+}
+
+/** 配るかを決めるのに要る、購読者側の希望。 */
+interface DeliveryWants {
+  readonly wave: WaveWant
+  readonly diff: PairWant | null
 }
 
 /**
- * その購読者へこの種別を配るか。
+ * その購読者へこの 1 件を配るか。
  *
  * **`switch`（`default` なし）で書く。** 層を足したら型検査が止める——比較の式
  * （`want !== 'none'` の並び）で書くと、新しい層は既定でどちらかへ黙って倒れる。
+ *
+ * **種別ではなく 1 件そのものを受け取る。** `'pair'` の層は顔ぶれを突き合わせるので
+ * 中身が要る —— 種別だけを渡す形のままだと、差分を「梯子のどこか」へ押し込むしか
+ * なくなり、`'all'` の相手（波形タブ）へ 36 組が流れ出す。
  */
-function shouldDeliver(want: WaveWant, kind: HubMessage['kind']): boolean {
-  switch (WAVE_TIER[kind]) {
+function shouldDeliver(wants: DeliveryWants, message: HubMessage): boolean {
+  switch (WAVE_TIER[message.kind]) {
     case 'always':
       return true
     case 'station':
       // 合成だけを見に来た相手にも、全部要る相手にも配る。
-      return want === 'station' || want === 'all'
+      return wants.wave === 'station' || wants.wave === 'all'
     case 'sensor':
-      return want === 'all'
+      return wants.wave === 'all'
+    case 'pair': {
+      if (wants.diff === null) return false
+      const diff = diffOf(message)
+      // `WAVE_TIER` が `'pair'` を割り当てるのは差分の種別だけなので、ここが
+      // null になることは無い。**それでも書く** —— 型を絞る手立てがこれしかなく、
+      // 省くと「差分かどうか」の判定が層の表と二重になる。
+      return diff !== null && pairMatches(wants.diff, diff)
+    }
   }
 }
 
@@ -143,6 +217,14 @@ export interface SubscribeOptions {
    * 波形だけを選り分ける意味がある。
    */
   readonly wave: WaveWant
+  /**
+   * 差分波形を見たい 1 組（要らなければ null）。**省略できない。**
+   *
+   * **任意（`?`）にしない。** 渡し忘れても「差分が届かない」だけで例外もログも
+   * 出ないので、配線の落ちに気づく機会が無い（このリポジトリが引数を必須にする
+   * と決めているのと同じ理由）。要らない購読は `null` と書く。
+   */
+  readonly diff: PairWant | null
   /**
    * 1 件渡す。**受け取ったら `true`、いま受け取れないなら `false`。**
    *
@@ -193,6 +275,14 @@ export interface SubscriberStats {
   readonly id: number
   /** 波形をどこまで受けているか。**状態の口へそのまま出す**（通信量の見当が付く）。 */
   readonly wave: WaveWant
+  /**
+   * 差分波形を頼んでいる 1 組（頼んでいなければ null）。**状態の口へそのまま出す。**
+   *
+   * **頼んだ顔ぶれが見えないと、届かない理由を外から切り分けられない。** 設定が
+   * 変わって組が無くなった場合、症状は「1 件も来ない」だけ ——`/status` に頼んだ組が
+   * 出ていれば、いまの `pairDiffs` の一覧と見比べて「その組はもう無い」と分かる。
+   */
+  readonly diff: PairWant | null
   /** 繋がった時刻（unix ミリ秒）。 */
   readonly sinceMs: number
   readonly delivered: number
@@ -244,6 +334,7 @@ export interface ReadingHubOptions {
 interface Entry {
   readonly id: number
   readonly wave: WaveWant
+  readonly diff: PairWant | null
   readonly sinceMs: number
   readonly deliver: (message: HubMessage) => boolean
   readonly onDetach: (reason: DetachReason) => void
@@ -287,6 +378,7 @@ export class ReadingHub {
     const entry: Entry = {
       id: this.nextId++,
       wave: options.wave,
+      diff: options.diff,
       sinceMs: this.now(),
       deliver: options.deliver,
       onDetach: options.onDetach,
@@ -322,7 +414,7 @@ export class ReadingHub {
     // 元の配列を直に回すと詰め直しで次の購読者を飛ばす。
     for (const entry of [...this.entries]) {
       if (entry.closed) continue
-      if (!shouldDeliver(entry.wave, message.kind)) continue
+      if (!shouldDeliver(entry, message)) continue
 
       let took: boolean
       try {
@@ -367,6 +459,7 @@ export class ReadingHub {
       subscribers: this.entries.map((e) => ({
         id: e.id,
         wave: e.wave,
+        diff: e.diff,
         sinceMs: e.sinceMs,
         delivered: e.delivered,
         dropped: e.dropped,

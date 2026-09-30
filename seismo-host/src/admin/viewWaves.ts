@@ -24,7 +24,7 @@ import { WaveStore, keyOf } from './waveBuffer'
 import type { WaveChunkView, WaveSourceKey, WaveWindow } from './waveBuffer'
 import { colorForIndex, formatClock, formatGal, needsTenths, niceHalfSpanGal, timeTicks } from './wavePlot'
 import { openWaveStream } from './waveStream'
-import type { WaveStreamState } from './waveStream'
+import type { PairSelection, WaveStreamState } from './waveStream'
 
 /** 見る時間の幅。**上限は溜め場所の長さ（`waveBuffer.ts` の既定 5 分）に合わせる。** */
 const SPAN_CHOICES: readonly { readonly ms: number; readonly label: string }[] = [
@@ -88,11 +88,20 @@ interface StatusView {
   readonly sensors: readonly SensorLabel[]
   /** 押し出しの枠（`readingHub.ts` の `HubSnapshot`）。**繋げない理由の引き当てに使う。** */
   readonly stream: { readonly open: number; readonly limit: number | null } | null
+  /**
+   * 差分を見られるセンサー対の一覧（#372）。
+   *
+   * **手で組み立てず、ここから選ばせる。** `/status` の `pairDiffs` は合成が実際に
+   * 作っている組（`sensorFusion.ts` の `buildPairDiffs`）なので、**打ち間違いで
+   * 「頼んだのに何も来ない」経路が消える。**
+   */
+  readonly pairs: readonly PairSelection[]
 }
 
 /** `/status` から、この画面で使う欄だけを読む。 */
 export function readStatus(value: unknown): StatusView {
-  if (typeof value !== 'object' || value === null) return { generatedAtMs: null, sensors: [], stream: null }
+  if (typeof value !== 'object' || value === null)
+    return { generatedAtMs: null, sensors: [], stream: null, pairs: [] }
   const v = value as Record<string, unknown>
   const sensors: SensorLabel[] = []
   if (Array.isArray(v.sensors)) {
@@ -119,7 +128,53 @@ export function readStatus(value: unknown): StatusView {
     generatedAtMs: readFinite(v.generatedAtMs),
     sensors,
     stream: subscribers === null ? null : { open: subscribers, limit: readFinite(streamRaw?.limit) },
+    pairs: readPairs(v.stationIntensities),
   }
+}
+
+/**
+ * `/status` の `stationIntensities[].pairDiffs` から、差分を見られる組を並べる（#372）。
+ *
+ * **ここが唯一の出どころ。** 画面が組を手で組み立てないので、打ち間違いで
+ * 「頼んだのに何も来ない」経路が無い（`statusServer.ts` の `parseDiffParams` は
+ * 半端なクエリを差分なしへ倒すが、**そこへ到達する経路をそもそも作らない**）。
+ *
+ * **読めない要素は飛ばす。** 1 つ欠けたせいで一覧が丸ごと空になると、
+ * 差分が「まだ作られていない」のと見分けが付かない。
+ */
+function readPairs(value: unknown): readonly PairSelection[] {
+  if (!Array.isArray(value)) return []
+  const out: PairSelection[] = []
+  for (const rawStation of value) {
+    if (typeof rawStation !== 'object' || rawStation === null) continue
+    const station = rawStation as Record<string, unknown>
+    const stationId = readNonEmptyString(station.stationId)
+    if (stationId === null || !Array.isArray(station.pairDiffs)) continue
+    for (const rawPair of station.pairDiffs) {
+      if (typeof rawPair !== 'object' || rawPair === null) continue
+      const pair = rawPair as Record<string, unknown>
+      const a = readMember(pair.a)
+      const b = readMember(pair.b)
+      if (a === null || b === null) continue
+      out.push({
+        stationId,
+        boardKeyA: a.boardKey,
+        sensorIdA: a.sensorId,
+        boardKeyB: b.boardKey,
+        sensorIdB: b.sensorId,
+      })
+    }
+  }
+  return out
+}
+
+function readMember(value: unknown): { boardKey: string; sensorId: string } | null {
+  if (typeof value !== 'object' || value === null) return null
+  const v = value as Record<string, unknown>
+  const boardKey = readNonEmptyString(v.boardKey)
+  const sensorId = readNonEmptyString(v.sensorId)
+  if (boardKey === null || sensorId === null) return null
+  return { boardKey, sensorId }
 }
 
 /**
@@ -130,6 +185,12 @@ export function readStatus(value: unknown): StatusView {
  * 分からないと据え付けの判断に使えない。
  */
 function displayNameOf(source: WaveSourceKey, labels: readonly SensorLabel[]): string {
+  if (source.kind === 'pair') {
+    // **差分は基板とセンサーの名前で出す。** 観測点の名前で出すと合成の行と
+    // 見分けが付かないが、**この行だけ別の量**（`d = (a − b) / 2`）なので、
+    // どの 2 台の差かが読めることが要る。
+    return `${source.boardKeyA} / ${source.sensorIdA} − ${source.boardKeyB} / ${source.sensorIdB}（差分）`
+  }
   if (source.kind === 'station') {
     const named = labels.find((l) => l.stationId === source.stationId)?.stationName
     // **引けなければ識別子をそのまま出す。** `/status` の初回取得が済むまで
@@ -220,6 +281,19 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
         取り付けの向きを設定していないセンサーでは、軸はセンサーの取り付けのままで方角の意味を持たない。
       </p>
     </section>
+    <section class="panel">
+      <h2>センサー対の差分</h2>
+      <label>
+        <span>見る組</span>
+        <select class="wave-diff"></select>
+      </label>
+      <p class="wave-diff-note muted"></p>
+      <p class="muted">
+        差分は 2 台の値の差（両方の半分）で、センサー単独や合成とは別の量。
+        縦の幅は軸ごとに共通なので、揺れている間は絶対値の波形に重ねるとほぼ平らに見える。
+        差分だけを選べば、縦の幅が差分に合う。
+      </p>
+    </section>
     <div class="wave-plots">
       ${AXIS_LABELS.map(
         (label, axis) => `
@@ -243,6 +317,8 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
   const scaleEl = qs<HTMLSelectElement>(container, '.wave-scale')
   const followEl = qs<HTMLInputElement>(container, '.wave-follow')
   const seekEl = qs<HTMLInputElement>(container, '.wave-seek')
+  const diffEl = qs<HTMLSelectElement>(container, '.wave-diff')
+  const diffNoteEl = qs(container, '.wave-diff-note')
 
   const store = new WaveStore()
   /** 表示するセンサー。 */
@@ -265,6 +341,14 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
   /** 追従を外しているときの右端。追従中は `null`。 */
   let viewEndMs: number | null = null
   let sensorListSignature = ''
+  /** 差分を見たい 1 組（#372）。選んでいなければ null。 */
+  let diffSelection: PairSelection | null = null
+  /** 選んでから届いた差分の件数。**0 のまま続くのが「来ていない」の印。** */
+  let diffChunks = 0
+  /** 組の選択肢の署名。**変わったときだけ作り直す**（選んでいる指の下で入れ替えない）。 */
+  let diffListSignature = ''
+  /** 差分を見られる組の一覧（`/status` から引く）。 */
+  let pairs: readonly PairSelection[] = []
   /**
    * いま見ている窓に、時刻の当てはめが倒れた区間が入っているか。
    *
@@ -311,10 +395,12 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
       labels = status.sensors
       statusGeneratedAtMs = status.generatedAtMs
       stream = status.stream
+      pairs = status.pairs
       errorEl.textContent = ''
       markDirty()
       renderHeader()
       renderSensorList()
+      renderDiffList()
     } catch (error) {
       if (signal.aborted) return
       // **波形そのものは別の口から来る。** 名前が引けないだけなら、波形の表示は続ける。
@@ -452,6 +538,105 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
       })
       .join('')
   }
+
+  // ---- 差分の組の選び方（#372）----
+
+  /** 選択欄の値。**`keyOf` と同じ形**なので、組を指す文字列が 2 通りにならない。 */
+  const pairKeyOf = (p: PairSelection): string =>
+    keyOf({
+      kind: 'pair',
+      stationId: p.stationId,
+      boardKeyA: p.boardKeyA,
+      sensorIdA: p.sensorIdA,
+      boardKeyB: p.boardKeyB,
+      sensorIdB: p.sensorIdB,
+    })
+
+  const pairLabelOf = (p: PairSelection): string =>
+    `${p.stationId}: ${p.boardKeyA} / ${p.sensorIdA} − ${p.boardKeyB} / ${p.sensorIdB}`
+
+  /**
+   * 組の選択肢を並べる。
+   *
+   * **既定は「選ばない」。** 選ぶと購読の中身が変わる（繋ぎ直す）ので、
+   * 勝手に 1 組を流し始めない —— 実機は全ペアで 36 組・毎秒 240 KB（実測） ある。
+   */
+  const renderDiffList = (): void => {
+    const signature = pairs.map(pairKeyOf).join('\u0000')
+    if (signature === diffListSignature) return
+    diffListSignature = signature
+
+    const options = [`<option value="">選ばない</option>`]
+    for (const p of pairs) {
+      // **`escapeHtml` を通す。** `boardKey`・`sensorId` は無認証の UDP パケット由来、
+      // 観測点の識別子は運用者の自由入力（このファイル冒頭の規約）。
+      options.push(
+        `<option value="${escapeHtml(pairKeyOf(p))}">${escapeHtml(pairLabelOf(p))}</option>`,
+      )
+    }
+    diffEl.innerHTML = options.join('')
+    // **選んでいた組が一覧から消えていたら「選ばない」へ戻す。** 設定が変わって
+    // その組が無くなった場合で、黙って選択が残ると「選んでいるのに来ない」になる。
+    const current = diffSelection === null ? '' : pairKeyOf(diffSelection)
+    if (current !== '' && !pairs.some((p) => pairKeyOf(p) === current)) {
+      selectPair(null)
+      return
+    }
+    diffEl.value = current
+  }
+
+  /** 差分の様子を 1 行で出す。**届いていないことを黙らない。** */
+  const renderDiffNote = (): void => {
+    if (diffSelection === null) {
+      diffNoteEl.textContent = ''
+      return
+    }
+    if (diffChunks === 0) {
+      // **「まだ来ていない」を出す。** 設定が変わってその組が無くなった場合の症状は
+      // 1 件も届かないことだけなので、黙ると繋がっていないのと見分けが付かない。
+      diffNoteEl.textContent = 'この組の差分はまだ 1 件も届いていない（合成が作っていないか、設定が変わった可能性）'
+      return
+    }
+    diffNoteEl.textContent = `この組の差分を ${diffChunks} まとまり受け取っている`
+  }
+
+  /**
+   * 見る組を切り替える。**押し出しを繋ぎ直す。**
+   *
+   * **前の組の溜め場所を落とす。** 溜め場所は 32 本までで、実機は全ペア 36 組 ——
+   * 落とさずに切り替え続けると、**ある時点から新しい組が上限で断られる**
+   * （`WaveStore.remove` の説明を見ること）。
+   */
+  const selectPair = (next: PairSelection | null): void => {
+    const before = diffSelection
+    if (before !== null) {
+      const key = pairKeyOf(before)
+      store.remove({
+        kind: 'pair',
+        stationId: before.stationId,
+        boardKeyA: before.boardKeyA,
+        sensorIdA: before.sensorIdA,
+        boardKeyB: before.boardKeyB,
+        sensorIdB: before.sensorIdB,
+      })
+      shown.delete(key)
+      // **一覧の署名を崩して作り直させる。** 溜め場所から消えたので、
+      // センサーの一覧に残った行を掃除する必要がある。
+      sensorListSignature = ''
+    }
+    diffSelection = next
+    diffChunks = 0
+    diffEl.value = next === null ? '' : pairKeyOf(next)
+    renderDiffNote()
+    renderSensorList()
+    markDirty()
+    connect()
+  }
+
+  diffEl.addEventListener('change', () => {
+    const value = diffEl.value
+    selectPair(value === '' ? null : (pairs.find((p) => pairKeyOf(p) === value) ?? null))
+  })
 
   sensorsEl.addEventListener('change', (event) => {
     const target = event.target
@@ -711,7 +896,14 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
    * **センサー単独と観測点の合成で共通。** 同じことを 2 箇所へ書くと、
    * 片方だけ直したときに「合成だけ溜まらない」形で静かに食い違う。
    */
-  const takeChunk = (chunk: WaveChunkView): void => {
+  /**
+   * 1 まとまりを溜め場所へ入れ、**入ったかどうかを返す。**
+   *
+   * **返した値を見る側がある。** 上限（`waveBuffer.ts` の `MAX_SOURCES_DEFAULT`）に
+   * 達していると `WaveStore.push` は断った件数を数えるだけで戻るので、**届いた件数を
+   * そのまま画面へ出すと「受け取っている」が成功を装う** —— 行は 1 つも出ないのに。
+   */
+  const takeChunk = (chunk: WaveChunkView): boolean => {
     const key = keyOf(chunk.source)
     const known = store.get(chunk.source) !== null
     store.push(chunk)
@@ -719,7 +911,9 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
       // **観測点の合成は先着枠を使わず必ず出す。** この画面で合成を見る目的は
       // 「平均した 1 本が単体より静かか」の確認（#362 の効果）なので、
       // センサー 9 本の枠に埋もれて既定で非表示だと開いた意味が無い。
-      if (chunk.source.kind === 'station') {
+      if (chunk.source.kind === 'station' || chunk.source.kind === 'pair') {
+        // **差分も先着枠を使わず必ず出す。** 届いたのは運用者が選んだからで
+        // （頼まない限り 1 件も来ない）、枠に埋もれて見えないと選んだ意味が無い。
         shown.add(key)
       } else {
         // **初めて出会ったセンサーを、先着で上限まで表示する。** 開いた直後に何も
@@ -729,24 +923,58 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
       }
     }
     markDirty()
+    return store.get(chunk.source) !== null
   }
 
-  openWaveStream({
-    wave: true,
-    signal,
-    onState: (next) => {
-      state = next
-      markDirty()
-    },
-    onWave: (chunk) => takeChunk(chunk),
-    // **観測点の合成も同じ溜め場所へ入れる**（鍵が種別を持つので混ざらない）。
-    onStationWave: (chunk) => takeChunk(chunk),
-    onUnreadable: (count, detail) => {
-      unreadable = count
-      lastUnreadableDetail = detail
-      markDirty()
-    },
-  })
+  /**
+   * いま開いている購読を畳むための札。**組を切り替えるたび張り替える。**
+   *
+   * **タブの `signal` を直に渡さない。** 差分の組を変えるには繋ぎ直しが要る
+   * （クエリが変わる）ので、購読 1 本ごとに畳める札が要る。タブを離れたときは
+   * 外側の `signal` から下へ伝える。
+   */
+  let connectionAbort: AbortController | null = null
+
+  /**
+   * 押し出しへ繋ぐ（繋ぎ直しも同じ道）。
+   *
+   * **前の購読を先に畳む。** 畳まずに開くと同時購読が 2 本になり、上限（8 本）へ
+   * 近づくうえ、**古い組の差分が新しい組と混ざって溜まる**。
+   */
+  const connect = (): void => {
+    if (signal.aborted) return
+    connectionAbort?.abort()
+    const ac = new AbortController()
+    connectionAbort = ac
+    openWaveStream({
+      wave: true,
+      diff: diffSelection,
+      signal: ac.signal,
+      onState: (next) => {
+        state = next
+        markDirty()
+      },
+      onWave: (chunk) => takeChunk(chunk),
+      // **観測点の合成も同じ溜め場所へ入れる**（鍵が種別を持つので混ざらない）。
+      onStationWave: (chunk) => takeChunk(chunk),
+      // **差分も同じ溜め場所へ。** 鍵が `'pair'` を名乗るので他と混ざらない。
+      onPairDiff: (chunk) => {
+        // **溜め場所へ入ったものだけ数える。** 断られた分まで数えると、添え書きが
+        // 「受け取っている」と言いながら行が 1 つも出ない形になる —— 上限に達したことは
+        // 別の警告に出るが、**離れた場所にあって文言も結び付かない。**
+        if (takeChunk(chunk)) diffChunks++
+        renderDiffNote()
+      },
+      onUnreadable: (count, detail) => {
+        unreadable = count
+        lastUnreadableDetail = detail
+        markDirty()
+      },
+    })
+  }
+
+  signal.addEventListener('abort', () => connectionAbort?.abort(), { once: true })
+  connect()
 
   await reloadLabels()
   if (signal.aborted) return

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { openWaveStream, readSensorReading, readStationWaveChunk, readWaveChunk } from './waveStream'
-import type { WaveStreamLike, WaveStreamState } from './waveStream'
+import { openWaveStream, readPairDiffChunk, readSensorReading, readStationWaveChunk, readWaveChunk, streamUrl } from './waveStream'
+import type { PairSelection, WaveStreamLike, WaveStreamState } from './waveStream'
 import type { WaveChunkView } from './waveBuffer'
 
 /** ホストが押し出す波形 1 件（`statusServer.ts` の `sseEvent('wave', ...)` の中身）。 */
@@ -86,7 +86,7 @@ interface Harness {
   readonly controller: AbortController
 }
 
-function open(options: { wave?: boolean; withWaveHandler?: boolean } = {}): Harness {
+function open(options: { wave?: boolean; diff?: PairSelection | null; withWaveHandler?: boolean } = {}): Harness {
   const controller = new AbortController()
   const states: WaveStreamState[] = []
   const waves: WaveChunkView[] = []
@@ -96,6 +96,7 @@ function open(options: { wave?: boolean; withWaveHandler?: boolean } = {}): Harn
 
   openWaveStream({
     wave: options.wave ?? true,
+    diff: options.diff ?? null,
     signal: controller.signal,
     onState: (state) => states.push(state),
     onWave: options.withWaveHandler === false ? undefined : (chunk) => waves.push(chunk),
@@ -376,11 +377,101 @@ describe('openWaveStream', () => {
 
     openWaveStream({
       wave: true,
+      diff: null,
       signal: controller.signal,
       onState: () => undefined,
       create,
     })
 
     expect(create).not.toHaveBeenCalled()
+  })
+})
+
+describe('streamUrl（#372）', () => {
+  const PAIR = {
+    stationId: 'garage',
+    boardKeyA: 'mac:aabbccddeeff',
+    sensorIdA: 's0',
+    boardKeyB: 'mac:112233445566',
+    sensorIdB: 's1',
+  } as const
+
+  it('正: 頼んだ組を 5 欄で載せる', () => {
+    const url = streamUrl(true, PAIR)
+    const params = new URL(url, 'http://h').searchParams
+    expect(params.get('wave')).toBe('1')
+    expect(params.get('diffStation')).toBe('garage')
+    expect(params.get('diffBoardA')).toBe('mac:aabbccddeeff')
+    expect(params.get('diffSensorA')).toBe('s0')
+    expect(params.get('diffBoardB')).toBe('mac:112233445566')
+    expect(params.get('diffSensorB')).toBe('s1')
+  })
+
+  it('対照: 頼まなければ差分の欄は付かない', () => {
+    expect(streamUrl(true, null)).toBe('/stream?wave=1')
+    expect(streamUrl(false, null)).toBe('/stream')
+  })
+
+  it('安全弁: 区切り文字が値に入っていても、欄をまたいで混ざらない', () => {
+    // **連結しないので化けようが無い**のがこの形を選んだ理由（`waveBuffer.ts` の
+    // `keyOf` が長さを前に置いて避けている問題）。
+    const url = streamUrl(true, { ...PAIR, sensorIdA: 's0&diffSensorB=x' })
+    const params = new URL(url, 'http://h').searchParams
+    expect(params.get('diffSensorA')).toBe('s0&diffSensorB=x')
+    expect(params.get('diffSensorB')).toBe('s1')
+  })
+})
+
+describe('readPairDiffChunk（#372）', () => {
+  function diffJson(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      stationId: 'garage',
+      memberA: { boardKey: 'mac:aa', sensorId: 's0' },
+      memberB: { boardKey: 'mac:bb', sensorId: 's1' },
+      firstSampleIndex: 0,
+      firstSampleMs: 1_700_000_000_000,
+      msPerSample: 10,
+      diffGal: [
+        [0.1, null],
+        [0.2, null],
+        [0.3, null],
+      ],
+      ...overrides,
+    }
+  }
+
+  it('正: 顔ぶれと値を読み、欠けたサンプルは NaN にする', () => {
+    const chunk = readPairDiffChunk(diffJson())
+    expect(chunk?.source).toEqual({
+      kind: 'pair',
+      stationId: 'garage',
+      boardKeyA: 'mac:aa',
+      sensorIdA: 's0',
+      boardKeyB: 'mac:bb',
+      sensorIdB: 's1',
+    })
+    expect(chunk?.gal[0][0]).toBeCloseTo(0.1)
+    // **0 で埋めない。** 差分の 0 は「2 台がぴったり一致した」を意味してしまう。
+    expect(Number.isNaN(chunk?.gal[0][1] ?? 0)).toBe(true)
+    // **区間の識別子は持たない**（合成と同じ。連続性は時刻の隔たりで見る）。
+    expect(chunk?.streamKey).toBeNull()
+    expect(chunk?.segmentId).toBeNull()
+    // **直流は足し戻さない**（差分には足し戻す相手が無い）。
+    expect(chunk?.memberCount).toBeNull()
+  })
+
+  it('対照: 欄が欠けている・刻みが 0 以下・軸の長さが揃わなければ通さない', () => {
+    expect(readPairDiffChunk(diffJson({ stationId: '' }))).toBeNull()
+    expect(readPairDiffChunk(diffJson({ memberA: { boardKey: 'mac:aa' } }))).toBeNull()
+    expect(readPairDiffChunk(diffJson({ msPerSample: 0 }))).toBeNull()
+    expect(readPairDiffChunk(diffJson({ diffGal: [[1], [1]] }))).toBeNull()
+    expect(readPairDiffChunk(diffJson({ diffGal: [[1, 2], [1], [1]] }))).toBeNull()
+  })
+
+  it('安全弁: null 以外の読めない値は並び全体を捨てる', () => {
+    // **「欠けている」と「形が違う」は別の事実。** 混ぜると、形の食い違いが
+    // 欠測として静かに描かれる。
+    expect(readPairDiffChunk(diffJson({ diffGal: [['x'], [1], [1]] }))).toBeNull()
+    expect(readPairDiffChunk(diffJson({ diffGal: [[Number.NaN], [1], [1]] }))).toBeNull()
   })
 })

@@ -423,8 +423,8 @@ describe('buildStatusReport', () => {
 
   it('押し出しの具合を出す', () => {
     const hub = new ReadingHub({ maxSubscribers: 1 })
-    hub.subscribe({ wave: 'all', deliver: () => true, onDetach: () => {} })
-    hub.subscribe({ wave: 'none', deliver: () => true, onDetach: () => {} })
+    hub.subscribe({ wave: 'all', diff: null, deliver: () => true, onDetach: () => {} })
+    hub.subscribe({ wave: 'none', diff: null, deliver: () => true, onDetach: () => {} })
 
     const report = buildStatusReport(input({ hub: hub.snapshot() }))
 

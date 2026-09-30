@@ -32,8 +32,8 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import type { AdminConsoleAssets } from './adminConsoleAssets'
 import { checkAdminAuth } from './adminAuth'
 import type { AdminAuthConfig, AdminAuthFailure } from './adminAuth'
-import type { HubMessage, ReadingHub, WaveWant } from './readingHub'
-import { describeFailure, parseStationConfig } from './stationConfig'
+import type { HubMessage, PairWant, ReadingHub, WaveWant } from './readingHub'
+import { describeFailure, normalizeBoardKey, parseStationConfig } from './stationConfig'
 import type { StationConfig } from './stationConfig'
 import type { StatusReport } from './statusReport'
 import type { ArchivedWaveChunk, WaveRangeResult } from './waveArchive'
@@ -84,6 +84,114 @@ export function parseWaveParam(raw: string | null): WaveWant {
  */
 export function isUnknownWaveParam(raw: string | null): raw is string {
   return raw !== null && !WAVE_PARAM.has(raw)
+}
+
+/**
+ * 差分波形を頼むときに書く欄（#372）。**5 つそろって初めて 1 組を指す。**
+ *
+ * **区切り文字で連結しない。** `boardKey`・`sensorId` は無認証の UDP パケット由来で
+ * 文字種の検証を持たないため、`a|b` のように繋ぐ形は**別の組と同じ鍵になりうる**
+ * （`src/admin/waveBuffer.ts` の `keyOf` が長さを前に置いて避けているのと同じ問題）。
+ * 欄を分ければ `URLSearchParams` が値ごとに独立に符号化するので、**そもそも
+ * 連結が起きない。**
+ */
+const DIFF_PARAMS = ['diffStation', 'diffBoardA', 'diffSensorA', 'diffBoardB', 'diffSensorB'] as const
+
+/**
+ * 1 欄に許す長さ。
+ *
+ * **この口は認証を持たない**ので、頼んだ組をそのまま `/status` へ出す以上
+ * （`SubscriberStats.diff`）、長さの歯止めがここに要る。実物は `mac:aabbccddeeff`
+ * 程度・観測点 ID は運用者が付けるので、64 は十分な余裕がある。
+ */
+const DIFF_VALUE_MAX_LEN = 64
+
+/** `?diff*=` を読んだ結果。 */
+export interface DiffRequest {
+  /** 読めた 1 組。何も書いていない・読めなかったときは null。 */
+  readonly want: PairWant | null
+  /**
+   * 読めなかった理由。**何も書いていなければ null**（読めた場合も null）。
+   *
+   * **「書いていない」と「書いたが読めなかった」を分ける。** 後者を黙って
+   * 差分なしへ倒すと、症状が「繋がっているのに差分が来ない」だけになる
+   * （`isUnknownWaveParam` を分けているのと同じ理由）。
+   */
+  readonly problem: string | null
+  /**
+   * 上記の理由の種別。`problem` と同時に立つ。**記録を間引く鍵に使う。**
+   *
+   * **文面（`problem`）をそのまま鍵にしない。** あちらは欄の名前を含むので
+   * 「欄が足りない」だけで 31 通りに分かれ、`logThrottle` の枠（種別ごと 32 個）を
+   * 食い尽くす。**種別は 5 つで有界**なので、こちらを鍵にすれば
+   * **60 秒の間引きが理由をまたいで潰し合わない** —— 違う理由の 2 件目が
+   * 「同じものをほか 1 件」に丸められると、直近の失敗理由を見失う。
+   */
+  readonly problemKind: DiffProblemKind | null
+}
+
+/** 差分の指定を読めなかった理由の種別。**5 つで有界**（上記の `problemKind`）。 */
+export type DiffProblemKind =
+  | 'missing-fields'
+  | 'empty-field'
+  | 'too-long'
+  | 'bad-board-key'
+  | 'same-sensor'
+
+/**
+ * `?diff*=` の 5 欄から、差分波形を頼んでいる 1 組を読む。
+ *
+ * **半端でも接続は断らない。** 差分なしで繋いで 1 行残す —— 波形も震度も見に来て
+ * いる相手を、差分の書き方を間違えただけで追い返す理由が無い。
+ *
+ * **前後の空白は落とす。** 設定側（`stationConfig.ts` の `nonEmptyString`）が
+ * 落としてから持つので、ここで落とさないと**空白 1 つで永久に噛み合わない**。
+ */
+export function parseDiffParams(params: URLSearchParams): DiffRequest {
+  const present = DIFF_PARAMS.filter((name) => params.get(name) !== null)
+  if (present.length === 0) return { want: null, problem: null, problemKind: null }
+  if (present.length < DIFF_PARAMS.length) {
+    const missing = DIFF_PARAMS.filter((name) => params.get(name) === null)
+    return { want: null, problem: `欄が足りない（${missing.join(' ')}）`, problemKind: 'missing-fields' }
+  }
+
+  const values = DIFF_PARAMS.map((name) => (params.get(name) ?? '').trim())
+  const emptyAt = values.findIndex((v) => v.length === 0)
+  if (emptyAt >= 0) {
+    return { want: null, problem: `空の欄がある（${DIFF_PARAMS[emptyAt]}）`, problemKind: 'empty-field' }
+  }
+  const longAt = values.findIndex((v) => v.length > DIFF_VALUE_MAX_LEN)
+  if (longAt >= 0) {
+    return {
+      want: null,
+      problem: `欄が長すぎる（${DIFF_PARAMS[longAt]}・上限 ${DIFF_VALUE_MAX_LEN}）`,
+      problemKind: 'too-long',
+    }
+  }
+
+  const [stationId, rawBoardA, sensorA, rawBoardB, sensorB] = values
+  // **設定と同じ関数を通す。** 別に書くと、大文字の MAC を揃え忘れた側だけが
+  // 「構文は正しいのに設定の値と永久に一致しない」形になる（`normalizeBoardKey`）。
+  const boardA = normalizeBoardKey(rawBoardA)
+  const boardB = normalizeBoardKey(rawBoardB)
+  if (boardA === null || boardB === null) {
+    const which = boardA === null ? 'diffBoardA' : 'diffBoardB'
+    return {
+      want: null,
+      problem: `基板の書き方が違う（${which}・mac: か name: で始める）`,
+      problemKind: 'bad-board-key',
+    }
+  }
+  if (boardA === boardB && sensorA === sensorB) {
+    // **同じセンサーを 2 つ指している。** 差分は定義上ずっと 0 になるので、
+    // 「届いているのに平らなまま」という読み違いを招く。
+    return { want: null, problem: '同じセンサーを 2 つ指している', problemKind: 'same-sensor' }
+  }
+  return {
+    want: { stationId, a: { boardKey: boardA, sensorId: sensorA }, b: { boardKey: boardB, sensorId: sensorB } },
+    problem: null,
+    problemKind: null,
+  }
 }
 
 /**
@@ -365,6 +473,8 @@ function encode(message: HubMessage): string {
       return sseEvent('station-reading', message.reading)
     case 'station-wave':
       return sseEvent('station-wave', message.wave)
+    case 'station-diff':
+      return sseEvent('station-diff', message.diff)
   }
 }
 
@@ -874,7 +984,12 @@ export async function startStatusServer(options: StatusServerOptions): Promise<S
     }
   }
 
-  const handleStream = (req: IncomingMessage, res: ServerResponse, wantsWave: WaveWant): void => {
+  const handleStream = (
+    req: IncomingMessage,
+    res: ServerResponse,
+    wantsWave: WaveWant,
+    wantsDiff: PairWant | null,
+  ): void => {
     applyCors(res)
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
     res.setHeader('Cache-Control', 'no-cache')
@@ -886,6 +1001,7 @@ export async function startStatusServer(options: StatusServerOptions): Promise<S
     let heartbeat: NodeJS.Timeout | null = null
     const subscription = hub.subscribe({
       wave: wantsWave,
+      diff: wantsDiff,
       deliver: (message) => {
         // **書く前に詰まりを見る。** 書いてから「詰まっている」と申告すると、
         // こちらは捨てたつもりでいるのに向こうの待ち行列だけが伸び続ける
@@ -1032,7 +1148,25 @@ export async function startStatusServer(options: StatusServerOptions): Promise<S
           // `maxKeysPerKind`）を埋められる。値のほうは 1 行の本文へ入れる。
           log('warn', 'sse', 'bad-wave-param', `[sse] ?wave= を読めないので波形なしで繋ぐ: ${forLog(waveParam)}`)
         }
-        handleStream(req, res, parseWaveParam(waveParam))
+        const diff = parseDiffParams(url.searchParams)
+        if (diff.problem !== null) {
+          // **合言葉へ理由の種別を含める。** `logThrottle` は（種別・合言葉）の組で
+          // 鍵を分けて 60 秒間引くので、**固定にすると違う理由の 2 件目が記録に残らない**
+          // ——実機で 3 通り（欄が足りない・同じセンサー・書式違い）を続けて叩いたとき、
+          // 出たのは 1 件目だけだった。しかも次に出る行は「同じものをほか N 件」と
+          // 名乗るので、**理由が違うことまで覆い隠す。**
+          //
+          // **渡された値は入れない。** `problemKind` は 5 つで有界なので、
+          // 相手の決める値で鍵の枠（種別ごと 32 個）を食い潰す形にはならない
+          // ——文面（`problem`）は欄の名前を含み 31 通りに分かれるので、鍵にはしない。
+          log(
+            'warn',
+            'sse',
+            `bad-diff-param/${diff.problemKind}`,
+            `[sse] ?diff= を読めないので差分なしで繋ぐ: ${diff.problem}`,
+          )
+        }
+        handleStream(req, res, parseWaveParam(waveParam), diff.want)
         return
       }
       if (url.pathname === '/waves') {

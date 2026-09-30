@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 
 import type { IntensityReading, WaveChunk } from './intensityPipeline'
 import { ReadingHub } from './readingHub'
-import type { DetachReason, HubMessage, Subscription, WaveWant } from './readingHub'
+import type { DetachReason, HubMessage, PairWant, Subscription, WaveWant } from './readingHub'
+import type { SensorMemberRef, SensorPairDiff } from './sensorFusion'
 
 /** 差し替えられる時計。 */
 function clock(start = 0): { now: () => number; advance: (ms: number) => void } {
@@ -66,8 +67,35 @@ const STATION_WAVE: HubMessage = {
   },
 }
 
+// センサー対の差分（#372）。**顔ぶれで配る種別**なので、梯子とは別に突き合わせる。
+const MEMBER_A = { boardKey: 'mac:aa', sensorId: 's0' } as const
+const MEMBER_B = { boardKey: 'mac:bb', sensorId: 's1' } as const
+const MEMBER_C = { boardKey: 'mac:cc', sensorId: 's2' } as const
+
+function pairDiff(a: SensorMemberRef, b: SensorMemberRef, stationId = 'garage'): SensorPairDiff {
+  return {
+    stationId,
+    memberA: a,
+    memberB: b,
+    firstSampleIndex: 0,
+    firstSampleMs: 1_700_000_000_000,
+    msPerSample: 10,
+    // 3 列目が null なのは、片方の値が揃わなかったサンプル（外挿しない）。
+    diffGal: [[0.1], [0.2], [null]],
+  }
+}
+
+const DIFF_AB: HubMessage = { kind: 'station-diff', diff: pairDiff(MEMBER_A, MEMBER_B) }
+const DIFF_BA: HubMessage = { kind: 'station-diff', diff: pairDiff(MEMBER_B, MEMBER_A) }
+const DIFF_AC: HubMessage = { kind: 'station-diff', diff: pairDiff(MEMBER_A, MEMBER_C) }
+const DIFF_OTHER_STATION: HubMessage = {
+  kind: 'station-diff',
+  diff: pairDiff(MEMBER_A, MEMBER_B, 'attic'),
+}
+const WANT_AB: PairWant = { stationId: 'garage', a: MEMBER_A, b: MEMBER_B }
+
 /** 受け取る相手。`take` を偽にすると詰まったふりをする。 */
-function sink(options: { wave?: WaveWant; take?: boolean } = {}) {
+function sink(options: { wave?: WaveWant; diff?: PairWant | null; take?: boolean } = {}) {
   const got: HubMessage[] = []
   const detached: DetachReason[] = []
   const self = {
@@ -75,10 +103,12 @@ function sink(options: { wave?: WaveWant; take?: boolean } = {}) {
     detached,
     take: options.take ?? true,
     wave: options.wave ?? 'none',
+    diff: options.diff ?? null,
     subscription: null as Subscription | null,
     attach(hub: ReadingHub): Subscription | null {
       const s = hub.subscribe({
         wave: self.wave,
+        diff: self.diff,
         deliver: (m) => {
           if (!self.take) return false
           got.push(m)
@@ -196,6 +226,113 @@ describe('ReadingHub', () => {
     expect(full.got).toEqual([WAVE, STATION_WAVE])
   })
 
+  // センサー対の差分（#372）。**梯子ではなく顔ぶれで配る。** 全ペアぶん作られるので
+  // （実機のセンサー 9 本なら 36 組・毎秒 240 KB（実測））、梯子へ載せると波形タブが
+  // 黙ってその量を受けることになる。
+  it('正: 頼んだ組の差分を配る', () => {
+    const hub = new ReadingHub()
+    const watcher = sink({ wave: 'all', diff: WANT_AB })
+    watcher.attach(hub)
+
+    hub.publish(DIFF_AB)
+
+    expect(watcher.got).toEqual([DIFF_AB])
+  })
+
+  it('正: 頼んだ向きと逆でも同じ組として配る', () => {
+    const hub = new ReadingHub()
+    const watcher = sink({ wave: 'all', diff: WANT_AB })
+    watcher.attach(hub)
+
+    hub.publish(DIFF_BA)
+
+    // **向きを厳しく見ない。** 設定でセンサーの並びが変わると `buildPairDiffs` が
+    // 組み立てる向きも変わるので、厳しく見ると**何も届かなくなる**（繋がっているのに
+    // 来ない、という最も気づきにくい形）。符号の反転は `memberA`/`memberB` から分かる。
+    expect(watcher.got).toEqual([DIFF_BA])
+  })
+
+  it('正: 波形を頼んでいなくても、差分だけは届く', () => {
+    const hub = new ReadingHub()
+    const watcher = sink({ wave: 'none', diff: WANT_AB })
+    watcher.attach(hub)
+
+    hub.publish(DIFF_AB)
+    hub.publish(WAVE)
+    hub.publish(STATION_WAVE)
+
+    // **差分は波形の梯子と直交している。** `'none'` が言うのは「波形は要らない」だけで、
+    // 差分を頼んだかどうかは別に持つ。実機でもこの形で確かめた —— `?diff*` の 5 欄だけで
+    // 繋ぐと差分が毎秒 3.35 件届き、波形は 1 件も来ない。
+    expect(watcher.got).toEqual([DIFF_AB])
+  })
+
+  it('対照: 頼んでいない組の差分は 1 件も配らない', () => {
+    const hub = new ReadingHub()
+    const watcher = sink({ wave: 'all', diff: WANT_AB })
+    watcher.attach(hub)
+
+    hub.publish(DIFF_AC)
+    hub.publish(DIFF_OTHER_STATION)
+
+    // **観測点が違うだけの同じ顔ぶれも別物。** 観測点を見ないと、同じセンサーを
+    // 2 つの観測点へ割り当てた設定で取り違える。
+    expect(watcher.got).toEqual([])
+  })
+
+  it("対照: 差分を頼んでいない相手へは、'all' でも 1 件も配らない", () => {
+    const hub = new ReadingHub()
+    const full = sink({ wave: 'all' })
+    full.attach(hub)
+
+    hub.publish(DIFF_AB)
+    hub.publish(WAVE)
+    hub.publish(STATION_WAVE)
+
+    // **ここが `WaveWant` の梯子へ載せなかった目的。** `'all'` に含めた瞬間、
+    // 波形タブへ 36 組・毎秒 240 KB（実測） が黙って乗る。
+    expect(full.got).toEqual([WAVE, STATION_WAVE])
+  })
+
+  it('安全弁: 差分を足しても、震度と波形の配り分けは変わらない', () => {
+    const hub = new ReadingHub()
+    const plain = sink({ wave: 'none' })
+    const onlyStation = sink({ wave: 'station' })
+    plain.attach(hub)
+    onlyStation.attach(hub)
+
+    hub.publish(DIFF_AB)
+    hub.publish(READING)
+    hub.publish(STATION_READING)
+    hub.publish(WAVE)
+    hub.publish(STATION_WAVE)
+
+    expect(plain.got).toEqual([READING, STATION_READING])
+    expect(onlyStation.got).toEqual([READING, STATION_READING, STATION_WAVE])
+  })
+
+  it('安全弁: 差分を受け取れなかった相手は、捨てた件数に数えられる', () => {
+    const hub = new ReadingHub()
+    const stuck = sink({ wave: 'all', diff: WANT_AB, take: false })
+    stuck.attach(hub)
+
+    hub.publish(DIFF_AB)
+
+    // **種別を足しても、詰まりの数え上げは同じ道を通る**（`station-wave` と同じ理由）。
+    expect(hub.snapshot().dropped).toBe(1)
+    expect(hub.snapshot().subscribers[0].dropped).toBe(1)
+  })
+
+  it('頼んだ組を状態の口へ出す', () => {
+    const hub = new ReadingHub()
+    sink({ wave: 'all', diff: WANT_AB }).attach(hub)
+
+    // **頼んだ顔ぶれが見えないと、届かない理由を外から切り分けられない。**
+    // 設定が変わって組が無くなったときの症状は「1 件も来ない」だけなので、
+    // `/status` の `pairDiffs` と見比べられるようにしておく。
+    expect(hub.snapshot().subscribers[0].diff).toEqual(WANT_AB)
+  })
+
   it('上限に達したら新しいほうを断り、断った数を覚える', () => {
     const hub = new ReadingHub({ maxSubscribers: 2 })
     expect(sink().attach(hub)).not.toBeNull()
@@ -288,6 +425,7 @@ describe('ReadingHub', () => {
     const hub = new ReadingHub()
     const broken = hub.subscribe({
       wave: 'none',
+      diff: null,
       deliver: () => {
         throw new Error('壊れた受け手')
       },
@@ -314,6 +452,7 @@ describe('ReadingHub', () => {
     const c = sink()
     const subA: Subscription | null = hub.subscribe({
       wave: 'none',
+      diff: null,
       deliver: (m) => {
         a.got.push(m)
         subA?.close()
@@ -336,6 +475,7 @@ describe('ReadingHub', () => {
     const hub = new ReadingHub({ stallMs: 0 })
     const rude = hub.subscribe({
       wave: 'none',
+      diff: null,
       deliver: () => false,
       onDetach: () => {
         throw new Error('報せが壊れた')

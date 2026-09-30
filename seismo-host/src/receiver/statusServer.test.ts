@@ -6,12 +6,12 @@ import type { AdminAuthConfig } from './adminAuth'
 import type { IntensityReading, WaveChunk } from './intensityPipeline'
 import { PacketTally } from './packetTally'
 import { ReadingHub } from './readingHub'
-import type { FusedWaveChunk, StationIntensityReading } from './sensorFusion'
+import type { FusedWaveChunk, SensorPairDiff, StationIntensityReading } from './sensorFusion'
 import { EMPTY_STATION_CONFIG, StationDirectory } from './stationConfig'
 import type { StationConfig } from './stationConfig'
 import { buildStatusReport } from './statusReport'
 import type { RawStoreStatus, StatusReport, WaveArchiveStatus } from './statusReport'
-import { buildWaveResponse, parseWaveParam, parseWaveQuery, startStatusServer } from './statusServer'
+import { buildWaveResponse, parseDiffParams, parseWaveParam, parseWaveQuery, startStatusServer } from './statusServer'
 import type { StatusServer, StatusServerOptions } from './statusServer'
 import type { ArchivedWaveChunk, WaveRangeResult } from './waveArchive'
 
@@ -318,6 +318,102 @@ describe('parseWaveParam', () => {
   })
 })
 
+describe('parseDiffParams（#372）', () => {
+  /** クエリを組む。**区切り文字で連結しないので、値に何が入っても壊れない。** */
+  function query(pairs: Record<string, string>): URLSearchParams {
+    return new URLSearchParams(pairs)
+  }
+
+  const FULL = {
+    diffStation: 'garage',
+    diffBoardA: 'mac:aabbccddeeff',
+    diffSensorA: 's0',
+    diffBoardB: 'mac:112233445566',
+    diffSensorB: 's1',
+  }
+
+  it('正: 5 欄そろえば 1 組として読む', () => {
+    expect(parseDiffParams(query(FULL))).toEqual({
+      want: {
+        stationId: 'garage',
+        a: { boardKey: 'mac:aabbccddeeff', sensorId: 's0' },
+        b: { boardKey: 'mac:112233445566', sensorId: 's1' },
+      },
+      problem: null,
+      problemKind: null,
+    })
+  })
+
+  it('正: 大文字の MAC は設定と同じ形へ揃える', () => {
+    // **設定側（`normalizeBoardKey`）と同じ関数を通すことがここで効く。** 別に
+    // 書くと、構文としては正しいのに設定の値と永久に一致しない組が通ってしまい、
+    // 症状は「繋がっているのに何も届かない」だけになる。
+    const got = parseDiffParams(query({ ...FULL, diffBoardA: 'mac:AABBCCDDEEFF' }))
+    expect(got.want?.a.boardKey).toBe('mac:aabbccddeeff')
+  })
+
+  it('正: 前後の空白は落とす', () => {
+    // 設定側も落としてから持つ（`nonEmptyString`）。落とさないと空白 1 つで噛み合わない。
+    const got = parseDiffParams(query({ ...FULL, diffStation: '  garage  ', diffSensorA: ' s0 ' }))
+    expect(got.want?.stationId).toBe('garage')
+    expect(got.want?.a.sensorId).toBe('s0')
+  })
+
+  it('対照: 何も書いていなければ差分なし（理由も無し）', () => {
+    // **「書いていない」と「書いたが読めなかった」を分ける。** 前者で 1 行残すと、
+    // 差分を見に来ていない購読すべてが記録を汚す。
+    expect(parseDiffParams(query({}))).toEqual({ want: null, problem: null, problemKind: null })
+    expect(parseDiffParams(query({ wave: '1' }))).toEqual({
+      want: null,
+      problem: null,
+      problemKind: null,
+    })
+  })
+
+  it('安全弁: 半端・空・長すぎ・同じセンサー・書式違いは理由を付けて差分なしへ倒す', () => {
+    const half = parseDiffParams(query({ diffStation: 'garage', diffBoardA: 'mac:aa' }))
+    expect(half.want).toBeNull()
+    expect(half.problem).toContain('欄が足りない')
+
+    const empty = parseDiffParams(query({ ...FULL, diffSensorA: '   ' }))
+    expect(empty.want).toBeNull()
+    expect(empty.problem).toContain('空の欄')
+
+    const long = parseDiffParams(query({ ...FULL, diffStation: 'x'.repeat(65) }))
+    expect(long.want).toBeNull()
+    expect(long.problem).toContain('長すぎる')
+
+    // 同じセンサーを 2 つ指すと差分は定義上ずっと 0 になり、「届いているのに
+    // 平らなまま」という読み違いを招く。
+    const same = parseDiffParams(
+      query({ ...FULL, diffBoardB: 'mac:aabbccddeeff', diffSensorB: 's0' }),
+    )
+    expect(same.want).toBeNull()
+    expect(same.problem).toContain('同じセンサー')
+
+    const badKey = parseDiffParams(query({ ...FULL, diffBoardA: 'aabbccddeeff' }))
+    expect(badKey.want).toBeNull()
+    expect(badKey.problem).toContain('基板の書き方')
+
+    // **理由ごとに別の種別が立つこと。** これが記録を間引く鍵になる ——
+    // 同じ合言葉にすると、60 秒のうちに違う理由で失敗した 2 件目が残らない。
+    expect(
+      new Set([half, empty, long, same, badKey].map((r) => r.problemKind)).size,
+    ).toBe(5)
+  })
+
+  it('安全弁: 区切り文字や制御文字が入っていても、別の組と同じにはならない', () => {
+    // **連結しないので化けようが無い**のがこの形を選んだ理由（`waveBuffer.ts` の
+    // `keyOf` が長さを前に置いて避けている問題）。`URLSearchParams` は値ごとに
+    // 独立に符号化する。
+    const a = parseDiffParams(query({ ...FULL, diffSensorA: 's0|mac:112233445566' }))
+    const b = parseDiffParams(query({ ...FULL, diffSensorA: 's0' }))
+    expect(a.want?.a.sensorId).toBe('s0|mac:112233445566')
+    expect(b.want?.a.sensorId).toBe('s0')
+    expect(a.want).not.toEqual(b.want)
+  })
+})
+
 describe('startStatusServer', () => {
   it('/status は組み立てた中身をそのまま返し、横断の許しを付ける', async () => {
     const hub = new ReadingHub()
@@ -358,6 +454,52 @@ describe('startStatusServer', () => {
     expect(got).toHaveLength(1)
     expect(got[0].name).toBe('station-reading')
     expect(got[0].data).toEqual(STATION_READING)
+  })
+
+  // センサー対の差分（#372）。**波形の梯子と直交している**ので、`?wave=` を付けずに
+  // 5 欄だけで繋げる。実機ではこのクエリで**毎秒 3.35 件**を実測した
+  // （バイト数は README の「状態と押し出しの口」の節が単一情報源）。
+  const PAIR_DIFF: SensorPairDiff = {
+    stationId: 'garage',
+    memberA: { boardKey: 'mac:aabbccddeeff', sensorId: 's0' },
+    memberB: { boardKey: 'mac:112233445566', sensorId: 's1' },
+    firstSampleIndex: 0,
+    firstSampleMs: 1_700_000_000_000,
+    msPerSample: 10,
+    // 3 列目が null なのは、片方の値が揃わなかったサンプル（外挿しない）。
+    diffGal: [[0.1], [0.2], [null]],
+  }
+  const DIFF_QUERY =
+    '/stream?diffStation=garage&diffBoardA=mac:aabbccddeeff&diffSensorA=s0' +
+    '&diffBoardB=mac:112233445566&diffSensorB=s1'
+
+  it('正: 波形を頼まなくても、5 欄で頼んだ組の差分は届く（#372）', async () => {
+    const hub = new ReadingHub()
+    const base = await start(hub)
+
+    const got = await readEvents(base, DIFF_QUERY, 1, () => {
+      hub.publish({ kind: 'station-diff', diff: PAIR_DIFF })
+    })
+
+    expect(got).toHaveLength(1)
+    expect(got[0].name).toBe('station-diff')
+    // **顔ぶれまで欠けずに届くこと。** 受け手が向きを見分ける唯一の手がかりで、
+    // `null`（値が無いサンプル）も潰れずに渡ること。
+    expect(got[0].data).toEqual(PAIR_DIFF)
+  })
+
+  it('対照: 差分は ?wave=1 だけの相手へは出ない（#372）', async () => {
+    const hub = new ReadingHub()
+    const base = await start(hub)
+
+    const got = await readEvents(base, '/stream?wave=1', 1, () => {
+      hub.publish({ kind: 'station-diff', diff: PAIR_DIFF })
+      hub.publish({ kind: 'wave', wave: WAVE })
+    })
+
+    // **梯子に載せていない。** 載せると 36 組ぶんが波形タブへ黙って乗り、**桁が変わる**
+    // （量は README の「状態と押し出しの口」の節が単一情報源）。
+    expect(got.map((e) => e.name)).toEqual(['wave'])
   })
 
   it('?wave=1 を付けると波形も付く', async () => {
