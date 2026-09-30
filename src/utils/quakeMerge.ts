@@ -425,6 +425,103 @@ export function sameQuakeEntry(a: JMAQuake, b: JMAQuake, areaPrefIndex: AreaPref
   return requiresSharedArea ? hasSharedArea(a, b, areaPrefIndex) : !hasDisjointAreas(a, b, areaPrefIndex)
 }
 
+/** 窓の手前の報を束ねた 1 地震ぶん。`card` はライブ経路と同じ育て方をした統合後のカード。 */
+export interface QuakeFoldGroup {
+  /** その地震の鍵（カードの `eventKey` と同じ値）。**最初に見た報で固定する。** */
+  key: string
+  /**
+   * その時点までの統合後のカード。**取消の報では育てない**（下の注記）。
+   * 取消しか見ていない群では、その取消電文そのもの。
+   */
+  card: JMAQuake
+}
+
+/**
+ * 群の内部状態。**`card` と `match` を分ける。**
+ *
+ * `card` は取消でない報だけを統合したもので、取消を土台にすると `mergeQuakeInto` の
+ * 前提（取消は呼び出し側で先に捌かれている）を外れる。一方 `match` は次の報と突き合わせる
+ * 相手なので、取消しか見ていない群でも何か置かないと照合できない。
+ */
+interface State {
+  key: string
+  match: JMAQuake
+  card: JMAQuake | undefined
+}
+
+/**
+ * まとめて届いた報を「地震ごと」に束ねる関数を作る。
+ *
+ * **用途は 2 つあり、どちらも「窓の手前の報を 1 地震へ畳む」という同じ問いに答える。**
+ * リプレイの初期状態（`services/dmdataReplay.ts` の `filterPreWindowEvents`）と、
+ * 録画モードの既読の復元（`hooks/useLiveEventHandler.ts` の `createPreWindowQuakeTopics`）。
+ *
+ * **鍵を報ごとに作らないこと。** ライブ経路が使う鍵はカードの `eventKey` で、その値は
+ * **最初に処理された報**で固定される（`mergeQuakeInto`）。一方 `quakeEventKey` を生の電文へ
+ * 直に当てると、識別子を持たない経路（P2PQuake）では `p2p:<地震の時刻>#<その報の id>` になり、
+ * **続報のたびに別の鍵**になる。畳む側がこれを踏むと、同じ地震の報が 1 通も畳まれない。
+ *
+ * **突き合わせる相手を自前で最新化しないこと。** 初出の報を握り続けると、`sameQuakeEntry` の
+ * 震源名の照合が「片方が空なら矛盾なし」へ倒れて**同じ分の別の地震を吸い込み**、かといって
+ * 「空 → 判明」のときだけ差し替える形では訂正報・震源要素更新による**名前の再変更に追随できない**。
+ * どちらも「カードがどう育つか」を部分的に真似たことが原因なので、真似ずに `mergeQuakeInto` を
+ * そのまま通す。育て方の規律はあちらが単一情報源で、ライブ経路と食い違いようがなくなる。
+ *
+ * **取消の報ではカードを育てない。** `mergeQuakeInto` は取消を通常の電文として扱わない
+ * （呼び出し側で先に捌かれる前提。宣言箇所の注記）。取消の照合は `eventId` が担うので、
+ * 育てなくても同じ地震の発表報と同じ鍵へ入る。識別子を持たない経路では取消の地震の時刻が
+ * 空で、`sameQuakeEntry` がどの報とも一致しないため単独の 1 件として残る。
+ *
+ * **索引は 2 本持つ。** `eventId` が一致する報は地震の時刻も震源名も見ずに同一と決まる
+ * （`sameQuakeEntry` の第 1 段）ので、時刻だけで束ねると**地震の時刻を持たない取消**が
+ * 自分の発表報から離れる。時刻の索引は `eventId` を持たない経路と、暫定 ID の採り直し
+ * （震度速報の EventID は震源決定の前後で採り直されうる）の受け皿。
+ *
+ * **総当たりにしない。** 群発の 24 時間を遡ると窓の手前の報が数百件になりうるため、
+ * 照合する相手は「地震の時刻が同じもの」だけに絞る。`sameQuakeEntry` は `eventId` で
+ * 決まらない組に対して時刻の一致を必ず要求するので、絞っても判定は変わらない。
+ *
+ * @param areaPrefIndex 区域名の索引（`sameQuakeEntry` がそのまま使う）。
+ *   `null` なら名前だけの判定へ落ち、区域名が県名と同じ奈良県を取りこぼす
+ *   ——「引き離せない」側へ倒れるので、**同じ分の別の地震を 1 件へ畳みうる**。
+ */
+export function createQuakeFoldKeys(
+  areaPrefIndex: AreaPrefIndex,
+): (quake: JMAQuake) => QuakeFoldGroup {
+  const byEventId = new Map<string, State>()
+  const byQuakeTime = new Map<string, State[]>()
+
+  // 同じ時刻の索引へ二重に入れない（同じ地震の報を何通も受けるため）。
+  const indexByTime = (time: string, group: State): void => {
+    const bucket = byQuakeTime.get(time)
+    if (!bucket) byQuakeTime.set(time, [group])
+    else if (!bucket.includes(group)) bucket.push(group)
+  }
+
+  return (quake: JMAQuake): QuakeFoldGroup => {
+    const eventId = extractQuakeEventId(quake)
+    const found = (eventId ? byEventId.get(eventId) : undefined)
+      ?? byQuakeTime.get(quake.earthquake.time)?.find(g => sameQuakeEntry(g.match, quake, areaPrefIndex))
+    const group: State = found ?? { key: quakeEventKey(quake), match: quake, card: undefined }
+    if (!quake.cancelled) {
+      // **取消を挟んでも育て直せる。** `card` は取消でない報だけを積むので、取消が先に
+      // 畳まれた群へ正規の報が入っても、そこから改めて育つ（取消を土台にすると
+      // `mergeQuakeInto` の前提を外れ、以後その群のカードが伸びなくなる）。
+      group.card = mergeQuakeInto(group.card, quake)
+      group.match = group.card
+    }
+    if (eventId) byEventId.set(eventId, group)
+    // **育った後の時刻でも引けるようにする。** 種別によって `earthquake.time` の出どころが
+    // 変わる電文があり（震度速報は targetDateTime・以降は arrivalTime）、最初に見た報の
+    // 時刻だけを索引にすると、後続の報が同じ地震だと分からなくなる。
+    indexByTime(quake.earthquake.time, group)
+    indexByTime(group.match.earthquake.time, group)
+    // **取消しか見ていない群では、その取消をそのまま返す。** 呼び出し側が `card` を
+    // 「その群を代表する電文」として扱えるようにする（取消は育てないので統合後の姿が無い）。
+    return { key: group.key, card: group.card ?? quake }
+  }
+}
+
 // カードが実際の震度データ（最大震度 or 各地の震度）を持つか。
 // VXSE61 単独カードや震度欠落の速報段階では false になる。
 export function hasIntensity(q: JMAQuake): boolean {
