@@ -26,7 +26,7 @@ import {
 } from '../utils/replayEventLog'
 import { replayTelegramFacts } from '../utils/replayTelegramRef'
 import { rollbackSpokenEntry } from '../utils/rollbackSpoken'
-import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewWarningRegionsText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiAreaGradeChangeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, tsunamiMissingToSegments, selectMissingToSpeak, tsunamiWarningLevelToSegments, selectWarningLevelToSpeak, joinWithAlso, nankaiToText, nankaiCommentaryToText, kohatsuToText, earthquakeCountToText, estimatedIntensityToText, lpgmToText, telegramTextToSpeak, createQuakeSpokenState, applySpokenRefs, tsunamiTideToSegments, tsunamiMaxHeightTimeToSegments, selectMaxHeightTimeUpdatesToSpeak, tsunamiFirstWaveToSegments, selectFirstWaveUpdatesToSpeak, tsunamiObservationNoChangeSegments, type TtsSpeechOptions, type QuakeSpokenState } from '../utils/ttsText'
+import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewScaleOnlyText, EEW_UPGRADE_PHRASE, eewWarningRegionsText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiAreaGradeChangeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, tsunamiMissingToSegments, selectMissingToSpeak, tsunamiWarningLevelToSegments, selectWarningLevelToSpeak, joinWithAlso, nankaiToText, nankaiCommentaryToText, kohatsuToText, earthquakeCountToText, estimatedIntensityToText, lpgmToText, telegramTextToSpeak, createQuakeSpokenState, applySpokenRefs, tsunamiTideToSegments, tsunamiMaxHeightTimeToSegments, selectMaxHeightTimeUpdatesToSpeak, tsunamiFirstWaveToSegments, selectFirstWaveUpdatesToSpeak, tsunamiObservationNoChangeSegments, type TtsSpeechOptions, type QuakeSpokenState } from '../utils/ttsText'
 import { type EewSpeakingCardFollow } from './useEewSpeakingCard'
 import { joinSegments, plain, hasFollowTarget, hasUnreceivedFollowTarget, hasTelegramTextFollowTarget, hasBorrowedHypocenterFollowTarget, TELEGRAM_TEXT_OPEN_TARGET_KINDS, telegramTextSubject, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
 import { log, createLogThrottle } from '../utils/logger'
@@ -470,6 +470,11 @@ export const SPEECH_WAIT_HARD_CAP_MS = 240000
 // 鳴っているのに延長の上限で打ち切った記録。**正常系では出ない** —— 実在する最長の読み上げより
 // 長く音が続いたということなので、出ていたら読み上げの組み立てか合成の側を疑う。
 const warnSpeechWaitHardCap = createLogThrottle(30000)
+
+// 第 2 フェーズで、既読を戻す単位として切り出した句が読み上げ文に含まれていなかった記録。
+// **正常系では出ない** —— 句と文を同じ材料から組み立てているので、出ていたらどちらかの
+// 組み立てがずれている。ずれは直るまで報のたびに繰り返すので間引く。
+const warnPhraseMissing = createLogThrottle(30000)
 
 /**
  * 発話の完了を待つ（上限付き）。EEW の読み上げは 1 本のチェーンで直列化するため、
@@ -1561,13 +1566,17 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       /**
        * 発話が終わった（または黙る判断で降りた）ときに必ず呼ぶ。
        *
-       * @param spoke **1 チャンクでも実際に鳴ったか**（{@link SpeechOutcome}）。合成が
-       *   1 つも成功しなければ偽になる —— `speakWithVoicevox` は VOICEVOX 未起動・
-       *   ネットワーク断でも例外を投げずに正常終了するため、これを見ないと
-       *   **1 音も出ていないのに既読が進む**。上限（`capSpeechWait`）で待ち切ったときも
-       *   偽へ倒す（応答が返っていない以上、鳴った証拠が無い）
+       * @param outcome **どこまで声になったか**（{@link SpeechOutcome}）。`spoke` が
+       *   「1 チャンクでも鳴ったか」で、合成が 1 つも成功しなければ偽になる ——
+       *   `speakWithVoicevox` は VOICEVOX 未起動・ネットワーク断でも例外を投げずに
+       *   正常終了するため、これを見ないと**1 音も出ていないのに既読が進む**。
+       *   句ごとに既読を進めている場合は `spokenChunks` を見ること（途中で降りた発話では
+       *   前半だけが声になっている）。
+       *
+       *   **上限（`capSpeechWait`）で待ち切ったときは「全部鳴った」へ倒す**（応答は
+       *   返っていないが、巻き戻しを常時効かせる方が害が大きい。理由は下の `.then` の注記）。
        */
-      onSettled?: (spoke: boolean) => void
+      onSettled?: (outcome: SpeechOutcome) => void
     } | null,
     follow?: () => void,
     cutCurrent = false,
@@ -1580,8 +1589,12 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     const replayOwner = currentReplayTelegram() ?? latestReplayTelegram(replayEewKey(key))
     const prev = eewSpeechChainRef.current
     if (cutCurrent) stopSpeech()
-    let settled: ((spoke: boolean) => void) | undefined
-    let spoke = false
+    let settled: ((outcome: SpeechOutcome) => void) | undefined
+    /**
+     * 発話の結末（{@link SpeechOutcome}）。`speak()` が黙る予約を返した・テキストの生成で
+     * 例外が出た場合はこの初期値のまま `settled` も呼ばれない。
+     */
+    let outcomeForSettled: SpeechOutcome = { spoke: false, spokenChunks: [] }
     /**
      * 「語っているカード」の印を持つ世代（{@link EewSpeakingCardFollow}）。黙る予約では null のまま。
      *
@@ -1642,7 +1655,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         //
         // なお、1 音も鳴らなかったことが**戻り値で分かる**場合（`outcome.spoke === false`）は
         // 別で、そちらは呼び出し側が既読を巻き戻す（`rollbackSpokenEntry`）。
-        spoke = outcome?.spoke ?? true
+        //
+        // **鳴ったチャンクも「全部鳴った」へ倒す。** 句ごとに既読を進めている側
+        // （第 2 フェーズ）は `spokenChunks` に句が含まれるかで判定するので、文全体を
+        // 1 チャンクとして渡せば「どの句も鳴った」になり、上の倒し方と揃う。
+        outcomeForSettled = outcome ?? { spoke: true, spokenChunks: [text] }
       })
     })
       .catch(err => log.warn('[eew] 読み上げに失敗', err))
@@ -1665,7 +1682,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         // 出し入れ（`rollbackSpokenEntry`）だけだが、投げれば途中で止まり、既読が部分的に
         // 巻き戻った状態が残る。ここで捕まえてもその中途半端さは直せない ——
         // チェーンを守るだけで、記録から追えるようにしてある。
-        try { settled?.(spoke) } catch (err) { log.warn('[eew] 読み上げ後の記録に失敗', key, err) }
+        try { settled?.(outcomeForSettled) } catch (err) { log.warn('[eew] 読み上げ後の記録に失敗', key, err) }
         // 印を立てた発話だけが後始末する。**立てていない発話（黙る予約・`begin` が投げた回）から
         // 呼ばないこと** —— 受け口は世代で照合するので害は無いが、渡すトークンが無い。
         //
@@ -3436,14 +3453,35 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
               && canPresentLpgmClass(confirmedScale.scale, confirmedLpgm)
               ? { cls: confirmedLpgm, over: confirmedLpgmInfo?.over === true }
               : { cls: 0, over: false }
-            // 1 音も鳴らなかったときに戻せるよう、書き換える前の値を控える（下の `onSettled`）。
+            // **この発話のどの句がどの値を運ぶか**（下の `onSettled` が既読を戻す単位）。
+            // **`text` と同じ材料から作ること** —— 別に組み立てると、文面を変えたときに
+            // 判定だけが古い形のまま残る。`eewIntensityText` は内部でこの 2 つを繋いでいる。
+            const scalePhrase = scaleUnchanged ? '' : eewScaleOnlyText(confirmedScale, latest)
+            const lpgmPhrase = eewLpgmOnlyText(spokenLpgm.cls, spokenLpgm.over)
+            const upgradePhrase = announceUpgrade ? EEW_UPGRADE_PHRASE : ''
+            // 組み立てとずれていないかの検算。ずれても「声になっていない」側へ倒れて同じ値を
+            // 読み直すだけだが、黙ってずれると気づけないので記録に残す。
+            // **間引く。** ずれは組み立ての誤りなので、一度起きれば報のたびに繰り返す。
+            for (const [what, phrase] of [
+              ['震度', scalePhrase], ['階級', lpgmPhrase], ['区分', upgradePhrase],
+            ] as const) {
+              if (phrase && !text.includes(phrase)) {
+                warnPhraseMissing(() => log.warn(
+                  '[eew] 想定外: 読み上げ文に句が含まれていない', key, what, phrase,
+                ))
+              }
+            }
+            // 声にならなかったときに戻せるよう、書き換える前の値を控える（下の `onSettled`）。
             const prevSpokenScale = spokenEEWScalesRef.current.get(key)
             const prevSpokenLpgm = spokenEEWLpgmClassesRef.current.get(key)
             const prevSpokenLevel = spokenEEWLevelsRef.current.get(key)
             const wasPhase2Done = eewPhase2DoneRef.current.has(key)
             /**
-             * より高い震度の確定を待つため、**鳴っている途中で**残りのチャンクを降りたか
-             * （下の `shouldStillPlay`）。既読を戻すかの判断に使う（下の `onSettled`）。
+             * より高い震度の確定を待って降りたことを、既に記録したか（下の `shouldStillPlay`）。
+             * 判定は 1 発話で何度も呼ばれるので、記録を 1 回に絞るためだけに持つ。
+             *
+             * **既読を戻すかの判断には使わない。** そちらは「どの句が鳴ったか」という事実で
+             * 決める（下の `onSettled`）。
              */
             let yieldedToPendingScale = false
             spokenEEWScalesRef.current.set(key, confirmedScale)
@@ -3453,7 +3491,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             return {
               text,
               /**
-               * 1 音も鳴らなかったなら、上で進めた既読をすべて戻す。
+               * 声にならなかった分の既読を戻す。**判定は句ごとに、事実で行う。**
                *
                * 合成が 1 つも成功しない場合（VOICEVOX 未起動・瞬断）でも発話は正常終了するため、
                * 戻さないと**声になっていない予想値が基準になり**、次の続報で同じ値が「据え置き」と
@@ -3461,51 +3499,48 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
                * 上がった分しか読まなくなる。
                *
                * **発話の差になるのは、震度が据え置きのまま階級だけ確定する続報。** 戻さないと
-               * 声になっていない予想震度が「伝え済み」になって下の `scaleUnchanged` が真になり、
+               * 声になっていない予想震度が「伝え済み」になって上の `scaleUnchanged` が真になり、
                * 続報が「予想最大階級3。」という短句へ落ちる —— その EEW では予想震度が一度も
                * 声にならない。震度そのものが動いた続報では、戻っていてもいなくても全文を読み直す
                * ので差が出ない。回帰テストは `useLiveEventHandler.eewTts.test.ts` の「合成が
-               * 1 音も鳴らなかったとき」の describe（巻き戻しの不変条件そのものは
+               * 1 音も鳴らなかったとき」の describe、句ごとの戻し方は同じファイルの
+               * 「より高い予想が安定待ちに入ったとき」の describe（巻き戻しの不変条件そのものは
                * `rollbackSpoken.test.ts`）。
+               *
+               * **まとめて戻してはいけない。** より高い震度の確定を待って**鳴っている途中で
+               * 降りた**とき（`shouldStillPlay` の 3）、前半の句は既に声になっている。まとめて
+               * 戻すと、譲った先の値が確定せず元の値へ戻る続報で**同じ震度をもう一度読む**
+               * （2024/01/01 能登本震の第 13 報で 7 へ跳ね、第 14 報で 6強 へ戻る並び。
+               * 「予想最大震度6強。」が 2 回鳴った）。逆にまとめて残すと、降りたせいで
+               * 鳴らなかった階級の句が既読になり、その EEW では階級が一度も声にならない。
                *
                * `eewPhase2DoneRef` だけは Set なので「自分が立てたか」を値で照合できず、
                * 直前の状態（`wasPhase2Done`）で判断している。予約はトークンで 1 件に限られ、
                * チェーンは直列なので、同じ鍵へ別の第 2 フェーズが割り込む余地は無い。
-               *
-               * **より高い震度の確定を待って途中で降りた場合も戻す**（`yieldedToPendingScale`）。
-               * 1 音は鳴っているが**文の残りは声になっていない**ので、そのまま既読にすると
-               * 言っていない値を基準にしてしまう。多くの場合は待っていた高い震度が確定して
-               * 全文を読み直すが、**その値が確定せず別の値へ変わる続報**（2024/01/01 能登本震の
-               * 第 13 報のような 6強 → 7 → 6強。安定待ちのサイクルは値が変わるたび張り替わるので、
-               * 譲った先の値が確定するとは限らない）では震度も階級も据え置き・引き下げの判定に
-               * なって黙るため、戻さないとその EEW で階級が一度も声にならない。
-               *
-               * **どのチャンクまで鳴ったかは発話側から分からない**ので、値（震度・階級）は進めた分を
-               * まとめて戻し、読む側へ倒している（同じ値を読み直すことはあっても、声にならないより軽い）。
-               *
-               * **ただし区分（`spokenEEWLevelsRef`）は、途中で降りた場合は戻さない。** 値の再読みと
-               * 違い、前置き「緊急地震速報に切り替わりました。」は**その EEW で一度だけ**の遷移の
-               * 告知で、文の**先頭**チャンクにある —— 1 音でも鳴っていれば声になっている。戻すと
-               * `levelUpgraded` が再び真になり、続く読み直しで前置きをもう一度言う（予報から警報へ
-               * 上がった報の発話中に、さらに高い震度が安定待ちへ入ると起きる。第 1.5 フェーズが
-               * 前置きを引き受けている場合は `spokenEEWUpgradePhraseRef` が抑えるが、警報の対象地方を
-               * 読まない設定ではその歯止めが無い）。**1 音も鳴らなかった場合は従来どおり戻す** ——
-               * そのときは前置きも声になっていない。
-               *
-               * **`spoke` は「1 チャンクでも鳴ったか」で、「前置きのチャンクが鳴ったか」ではない。**
-               * 前置きは先頭チャンクなので通常は一致するが、そのチャンクだけ合成に失敗すると
-               * （`utils/voicevox.ts` は失敗したチャンクを飛ばして次へ進む）声になっていないのに
-               * 伝えた扱いになる。**第 1.5 フェーズの前置きの記録も同じ粒度**（あちらも `spoke` で
-               * 判定する）なので、ここだけ細かくしても全体は揃わない。厳密にするならチャンク単位の
-               * 通知（`ChunkScheduledListener`）を EEW の発話へ配線することになる。**見たうえで
-               * 既存の粒度に合わせている。**
                */
-              onSettled: (spoke) => {
-                if (spoke && !yieldedToPendingScale) return
-                rollbackSpokenEntry(spokenEEWScalesRef.current, key, confirmedScale, prevSpokenScale)
-                rollbackSpokenEntry(spokenEEWLpgmClassesRef.current, key, spokenLpgm, prevSpokenLpgm)
-                if (!spoke) rollbackSpokenEntry(spokenEEWLevelsRef.current, key, level, prevSpokenLevel)
-                if (!wasPhase2Done) eewPhase2DoneRef.current.delete(key)
+              onSettled: (outcome) => {
+                // **チャンクを繋いでから探す。** 句読点の後ろで割るので 1 つの句が 2 チャンクへ
+                // 跨ることがある（「単独点処理のため、予想震度なし。」）。途中のチャンクだけ
+                // 合成に失敗して繋ぎ目が飛んだ場合は見つからない側＝読み直す側へ倒れる。
+                const heard = outcome.spokenChunks.join('')
+                /**
+                 * その句が声になったか。**句が空＝この報では言わない**ので、その値の記録を
+                 * 戻すかは発話全体が鳴ったかで決める（1 音も鳴らなければ発話ごと無かったことに
+                 * する。鳴っていれば、記録した「言わなかった」という事実の方が正しい）。
+                 */
+                const spokenPhrase = (phrase: string) => phrase === '' ? outcome.spoke : heard.includes(phrase)
+                if (!spokenPhrase(scalePhrase)) {
+                  rollbackSpokenEntry(spokenEEWScalesRef.current, key, confirmedScale, prevSpokenScale)
+                }
+                if (!spokenPhrase(lpgmPhrase)) {
+                  rollbackSpokenEntry(spokenEEWLpgmClassesRef.current, key, spokenLpgm, prevSpokenLpgm)
+                }
+                if (!spokenPhrase(upgradePhrase)) {
+                  rollbackSpokenEntry(spokenEEWLevelsRef.current, key, level, prevSpokenLevel)
+                }
+                // 「一度は予想値を読んだ」は 1 音も鳴らなかったときだけ取り消す。前置きだけでも
+                // 声になっていれば、この EEW の第 2 フェーズは実際に走っている。
+                if (!outcome.spoke && !wasPhase2Done) eewPhase2DoneRef.current.delete(key)
               },
               /**
                * チャンクを鳴らす直前に、この文面がまだ最新かを確かめる。降りる理由は 3 つ。
@@ -3868,11 +3903,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
               return {
                 text,
                 shouldStillPlay: () => !eewRetractedKeysRef.current.has(key),
-                onSettled: (spoke) => {
+                onSettled: (outcome) => {
                   forgetSpeaking()
                   // 1 音も鳴らなかったなら「伝えた」ことにしない。残すと、その EEW では以後の
                   // 格上げが一度も声にならず、震源の言い直しも黙る（`rollbackSpokenEntry`）。
-                  if (!spoke) {
+                  if (!outcome.spoke) {
                     if (recordsLevel) {
                       rollbackSpokenEntry(spokenEEWLevelsRef.current, key, level, prevSpokenLevel)
                     }
@@ -3978,7 +4013,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
                 if (grown) { abandoned = true; return false }
                 return true
               },
-              onSettled: (spoke) => {
+              onSettled: (outcome) => {
                 // **誤報取消を受けていたら何も記録しない**（前置きも地方名も）。取消は
                 // その発話ごと無かったことにする側で、受信した時点で**同期に**既読を消して
                 // いる（`eewRetractedKeysRef` の宣言箇所の少し下）。ここで書き戻すと消した
@@ -4001,19 +4036,23 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
                 // 新しい発話が書いた記録まで巻き込む**（チェーンが追い越されると、古い発話の
                 // `onSettled` が新しい発話の記録より後に走りうる）。
                 //
-                // **地方が増えて降りた回も戻さない。** 前置きは文の先頭チャンクなので、降りた
-                // 時点では既に声になっている（第 2 フェーズが「区分の告知は戻さない」と
-                // 判断しているのと同じ理由。`enqueuePhase2` の `onSettled` のコメント）。
+                // **地方が増えて降りた回でも、前置きが鳴っていれば戻さない。** 前置きは文の
+                // 先頭チャンクなので、降りた時点では既に声になっていることが多い。
                 //
-                // **`spoke` は「1 チャンクでも鳴ったか」で、「前置きのチャンクが鳴ったか」
-                // ではない。** 前置きは先頭チャンクなので通常は一致するが、そのチャンクだけ
-                // 合成に失敗すると（`utils/voicevox.ts` は失敗したチャンクを飛ばして次へ
-                // 進む）声になっていないのに伝えた扱いになる。**第 2 フェーズの前置きの記録も
-                // 同じ粒度**なので、ここだけ細かくしても全体は揃わない。厳密にするならチャンク
-                // 単位の通知（`ChunkScheduledListener`）を EEW の発話へ配線することになる。
-                // **見たうえで既存の粒度に合わせている。**
-                if (recordsUpgrade && !spoke) spokenEEWUpgradePhraseRef.current.delete(key)
+                // **判定は「前置きのチャンクが鳴ったか」という事実で行う**（`spokenChunks`）。
+                // `spoke`（1 チャンクでも鳴ったか）で代理すると、前置きだけ合成に失敗した回
+                // （`utils/voicevox.ts` は失敗したチャンクを飛ばして次へ進む）に、声になって
+                // いないのに伝えた扱いになる。第 2 フェーズの巻き戻しと同じ粒度。
+                //
+                // **取消の判定を先に出しておく。** 前置きの巻き戻しも取消では行わない ——
+                // すぐ上に書いたとおり記録は取消の時点で既に消えていて（3146 行付近）、
+                // 重ねて消すと再発報した新しい発話の記録まで巻き込む。**地方名の側だけを
+                // 守る形にしないこと** —— 前置きだけが取り残され、同じ順序で二度読みが戻る。
                 const cancelled = retracted || eewRetractedKeysRef.current.has(key)
+                const upgradeSpoken = outcome.spokenChunks.join('').includes(EEW_UPGRADE_PHRASE)
+                if (!cancelled && recordsUpgrade && !upgradeSpoken) {
+                  spokenEEWUpgradePhraseRef.current.delete(key)
+                }
                 // **誤報取消を受けていたら地方名も記録しない。** 取消はその発話ごと無かった
                 // ことにする側で、書き戻すと再発報で地方名が声にならない（`enqueueWarningRegions`
                 // の起動条件が「未読の地方があるか」なので、既読が残ると発話ごと立たない）。
@@ -4024,7 +4063,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
                 // 地方の既読は、降りた回も 1 音も鳴らなかった回も進めない。前者は増えた分を
                 // 含めて読み直すため、後者は声になっていないため。**前置きと条件が違うのは、
                 // 地方名が文の後半にあって降りた時点では声になっていないから。**
-                if (abandoned || !spoke) return
+                if (abandoned || !outcome.spoke) return
                 const set = spokenEEWRegionsRef.current.get(key) ?? new Set<string>()
                 speaking.forEach(r => set.add(r))
                 spokenEEWRegionsRef.current.set(key, set)
