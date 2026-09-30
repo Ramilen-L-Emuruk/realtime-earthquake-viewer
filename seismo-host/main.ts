@@ -411,6 +411,50 @@ export function buildStationGroupingWarning(ungroupedStationIds: readonly string
 }
 
 /**
+ * 足場がエポックとして成り立っていない区間を、定期要約で再掲する。
+ *
+ * **基板は時計が合う前から送り始める。** ファームの `configTime()` は SNTP の応答を
+ * 待たないので、最初の数秒は `gettimeofday()` が起動からの経過＝**1970 年**を返す。
+ * 同期が済めば `'timebase-jump'` で区間が切れて自己回復するが、**SNTP へ一度も
+ * 届かない基板ではそれが起きない** —— 時刻は終始「辻褄が合う」ので区間は切れず、
+ * その区間は 1970 年のまま延々と続く。
+ *
+ * **そうなると合成が 1 つも組めない。** 他の区間と時間で重ならなくなるためで、
+ * 2026-10-01 に実機で 9 本のうち 8 本がこの状態に陥った（別の引き金＝同期の遅れ）。
+ * **震度そのものは相対的な計算なので出続ける**ので、運用者からは「動いている」
+ * ように見える —— 気づく手掛かりがここにしか無い。
+ *
+ * **`'timebase-jump'` の数え上げでは代われない。** あちらは**遷移**の回数で、
+ * 「一度も遷移せずに成り立たないまま居座っている」状態は数の対象にならない。
+ */
+export function buildTimebaseEpochWarning(
+  // **読むものだけを書く。** 使っていない欄を型へ並べると、読み手に「これも見ている」
+  // という誤った期待を持たせる（`SegmentState` を丸ごと要求しないのは、テストが
+  // 組み立てるものを小さく保つため）。
+  segments: readonly {
+    readonly meta: { readonly streamKey: string }
+    readonly timebase: { readonly epochPlausible: boolean }
+  }[],
+): readonly RawWarning[] {
+  const bad = segments.filter((s) => !s.timebase.epochPlausible)
+  if (bad.length === 0) return []
+  const keys = bad.map((s) => s.meta.streamKey).sort()
+  return [
+    {
+      level: 'warn',
+      kind: 'timebase-epoch',
+      // 顔ぶれが変わったら出し直す（`buildStationGroupingWarning` と同じ理由で
+      // `JSON.stringify` を使う —— `streamKey` は JSON 配列そのものなので、
+      // カンマで繋ぐと別の集合が同じ鍵へ潰れる）。
+      detail: JSON.stringify(keys),
+      line:
+        `[timebase] ${bad.length} 本の区間の足場がエポックとして成り立っていない` +
+        `（基板の時計が合っていない可能性。合成が組めなくなる）: ${keys.join(' ')}`,
+    },
+  ]
+}
+
+/**
  * 観測点ぶんの合成の状態が変わったログのレベル。
  *
  * **震度が出せない間（`reason !== null`）は `'warn'`。** 正常な区間切り替え
@@ -1589,6 +1633,12 @@ async function main(): Promise<void> {
     // 伝わらない（`buildStationConfigWarning`・`buildStationGroupingWarning` のコメント参照）。
     for (const w of buildStationConfigWarning(stationConfigWarning)) emit(w.level, w.kind, w.detail, w.line)
     for (const w of buildStationGroupingWarning(ungroupedMultiBoardStations)) {
+      emit(w.level, w.kind, w.detail, w.line)
+    }
+    // **時計が合わないまま居座っている区間も、ここでしか気づけない**
+    // （`buildTimebaseEpochWarning` のコメント参照）。`/status` には出ているが、
+    // **生の JSON を読み比べる人にしか見えない。**
+    for (const w of buildTimebaseEpochWarning(pipeline.openSegments())) {
       emit(w.level, w.kind, w.detail, w.line)
     }
   }

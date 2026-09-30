@@ -12,6 +12,7 @@ import {
   buildRawWarnings,
   buildStationConfigWarning,
   buildStationGroupingWarning,
+  buildTimebaseEpochWarning,
   buildWindowSummary,
   findUngroupedMultiBoardStations,
   formatAt,
@@ -381,6 +382,43 @@ describe('buildStationGroupingWarning', () => {
   it('安全弁: 観測点の集合が変われば鍵（detail）も変わる', () => {
     const a = buildStationGroupingWarning(['study'])
     const b = buildStationGroupingWarning(['study', 'garage'])
+    expect(a[0]?.detail).not.toBe(b[0]?.detail)
+  })
+})
+
+// 2026-10-01 に足した。**一度も時計が合わない基板は `'timebase-jump'` を起こさない**
+// ので、遷移を数える側では捉えられない（→ `buildTimebaseEpochWarning` のコメント）。
+describe('buildTimebaseEpochWarning', () => {
+  const seg = (streamKey: string, epochPlausible: boolean, firstSampleMs: number) => ({
+    meta: { streamKey },
+    timebase: { epochPlausible, firstSampleMs },
+  })
+
+  it('対照: 全部の足場が成り立っていれば何も出さない', () => {
+    expect(buildTimebaseEpochWarning([seg('["a","i2c0-68","b1"]', true, 1790000000000)])).toEqual([])
+  })
+
+  it('正: 成り立たない区間があれば warn レベルで 1 件出す', () => {
+    const out = buildTimebaseEpochWarning([
+      seg('["a","i2c0-68","b1"]', false, 8433),
+      seg('["a","i2c0-69","b1"]', true, 1790000000000),
+    ])
+    expect(out).toHaveLength(1)
+    expect(out[0]?.level).toBe('warn')
+    expect(out[0]?.kind).toBe('timebase-epoch')
+    // **本数と顔ぶれを出す。** どの流れが壊れているか分からないと手が打てない。
+    expect(out[0]?.line).toContain('1 本')
+    expect(out[0]?.line).toContain('i2c0-68')
+    // 正常な側を巻き込まない。
+    expect(out[0]?.line).not.toContain('i2c0-69')
+  })
+
+  it('安全弁: 顔ぶれが変われば鍵（detail）も変わる', () => {
+    const a = buildTimebaseEpochWarning([seg('["a","i2c0-68","b1"]', false, 8433)])
+    const b = buildTimebaseEpochWarning([
+      seg('["a","i2c0-68","b1"]', false, 8433),
+      seg('["a","i2c0-69","b1"]', false, 8434),
+    ])
     expect(a[0]?.detail).not.toBe(b[0]?.detail)
   })
 })

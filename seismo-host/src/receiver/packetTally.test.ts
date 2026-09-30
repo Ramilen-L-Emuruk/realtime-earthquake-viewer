@@ -88,6 +88,23 @@ describe('PacketTally', () => {
     expect(b?.evicted).toBe(1)
   })
 
+  // 2026-10-01 に足した切れ目（→ `timebase/segmenter.ts` の `'timebase-jump'`）。
+  // **数えることに意味がある切れ目でしてよ** —— 起動のたびに 1 本ずつ立つのが正常な姿で
+  // （基板は時計が合う前から送り始める）、それ以上増えていれば時刻が飛び続けている。
+  it('時刻が飛んだ切れ目も数え、要約の行に出す', () => {
+    const tally = new PacketTally()
+    feed(tally, [
+      { kind: 'segment-started', board: BOARD, reason: 'timebase-jump' },
+      { kind: 'segment-started', board: BOARD, reason: 'timebase-jump' },
+      { kind: 'segment-started', board: BOARD, reason: 'seq-gap' },
+    ])
+
+    const b = tally.snapshotTotal().boards.get(BOARD)
+    expect(b?.segmentsStarted.get('timebase-jump')).toBe(2)
+    // **要約の行にも出ること。** 数えていても出ていなければ気づけない。
+    expect(formatTally(tally.snapshotTotal()).join('\n')).toContain('timebase-jump=2')
+  })
+
   it('鍵の上限に達したら「その他」へ合算し、合計は保たれる', () => {
     const tally = new PacketTally({ maxKeys: 2 })
     feed(tally, [

@@ -91,6 +91,7 @@ function segment(overrides: Partial<SegmentState['timebase']> = {}): SegmentStat
       anchorCount: 42,
       residualRmsMs: 3.4,
       nominalReason: null,
+      epochPlausible: true,
       ...overrides,
     },
   }
