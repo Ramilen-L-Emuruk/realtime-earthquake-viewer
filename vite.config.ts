@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { perfReportPlugin } from './scripts/perf/vite-plugin-perf-report'
 import { shouldInjectDevApiKey, shouldInjectDevArrivalToken } from './scripts/dev-api-key-gate'
 import { isInsideClaudeDir } from './scripts/dev-watch-ignore'
+import { devServerLockPlugin } from './scripts/dev-server-lock'
 import { outDirForVariant } from './scripts/buildOutDir'
 import { PRECACHE_GLOB_PATTERNS, PRECACHE_MAX_FILE_BYTES } from './scripts/precacheBudget'
 
@@ -53,6 +54,13 @@ const strings = isDmdss ? APP_STRINGS.dmdss : APP_STRINGS.standard
 // 判定の中身（glob で書けない理由・パス区切りの吸収・ディレクトリ自身を含める理由）は
 // `isInsideClaudeDir` 側のコメントにある。
 const CLAUDE_DIR = fileURLToPath(new URL('./.claude/', import.meta.url))
+
+/**
+ * この設定ファイルが置かれているディレクトリ。dev サーバーの記録（`.dev-server.json`）の置き場所。
+ * **`process.cwd()` ではなくここから取る** —— 呼び出し元のディレクトリに左右されず、
+ * ワークツリーごとに 1 つの記録になるようにするため。
+ */
+const PROJECT_ROOT = fileURLToPath(new URL('.', import.meta.url))
 
 /**
  * dev サーバー限定で `.env.local` の DMDATA_API_KEY を import.meta.env へ注入する。
@@ -138,6 +146,9 @@ export default defineConfig(configEnv => ({
     ...devArrivalTokenDefine(configEnv),
   },
   plugins: [
+    // 同じ場所・同じバリアントで二本目が立つのを止める門。**他より先に効かせる**ため先頭に置く。
+    // Vite は使用中のポートを避けて勝手にずれるので、二重起動は失敗として現れない（→ そのファイル）
+    devServerLockPlugin({ variant, base, root: PROJECT_ROOT }),
     react(),
     // dev サーバー専用: 実機計測の証跡収集（/__perf-script・/__perf-report）。build には含まれない
     perfReportPlugin(),
