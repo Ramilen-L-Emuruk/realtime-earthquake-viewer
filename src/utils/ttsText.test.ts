@@ -3,9 +3,10 @@
 // 「日から読む／時分だけ読む」という書式の違いを正規表現で検証する。
 import { describe, it, expect, vi } from 'vitest'
 import { earthquakeCancelToText, tsunamiCancelToText, eewCancelToText, CANCEL_REASON_SPEAK_MAX_CHARS, nankaiToText, earthquakeCountToText,
-  estimatedIntensityToText, earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewAlertToText, eewIntensityText, voicevoxPreviewTexts, lpgmToText, tsunamiToText, tsunamiDowngradeToText, tsunamiArrivalToText, tsunamiMissingToText, tsunamiObservationUpdateToText, tsunamiAreaGradeChangeToText, tsunamiWarningLevelToText, selectWarningLevelToSpeak, selectObservationUpdatesToSpeak, selectMissingToSpeak, selectArrivalsToSpeak, WARNING_LEVEL_SPEAK_MAX_POINTS, joinWithAlso, telegramTextToSpeak, type TtsSpeechOptions, type QuakeSpokenState } from './ttsText'
+  estimatedIntensityToText, earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewAlertToText, eewIntensityText, voicevoxPreviewTexts, lpgmToText, tsunamiToText, tsunamiToSegments, tsunamiDowngradeToText, tsunamiDowngradeToSegments, tsunamiArrivalToText, tsunamiMissingToText, tsunamiObservationUpdateToText, tsunamiAreaGradeChangeToText, tsunamiWarningLevelToText, selectWarningLevelToSpeak, selectObservationUpdatesToSpeak, selectMissingToSpeak, selectArrivalsToSpeak, WARNING_LEVEL_SPEAK_MAX_POINTS, joinWithAlso, telegramTextToSpeak, type TtsSpeechOptions, type QuakeSpokenState } from './ttsText'
 import { INTENSITY_SCALE_COUNT } from './intensity'
-import { joinSegments, plain, type SpeechSegment } from './ttsFollow'
+import { joinSegments, mapChunksToRefs, plain, type SpeechSegment } from './ttsFollow'
+import { splitIntoChunks } from './voicevox'
 import { log } from './logger'
 import { tsunamiAreaGradeChanges } from './tsunami'
 import { getStationCoordsCache } from './stationCoords'
@@ -2251,9 +2252,13 @@ describe('取消の述語は種別をまたいでそろえる', () => {
 
   // 対照: 津波の**解除・失効**は取消とは別の事象なので、述語も別のまま。
   // この describe だけを見て `tsunamiCancelToText` を一括で書き換えると、ここが落ちる。
+  // **ここは読み上げの文だけを見ている。** 画面（`TsunamiTab` の `CANCEL_REASON_LABEL`）と
+  // 語が揃っているかは `components/TsunamiTab/cancelWording.test.ts` が両方を突き合わせて
+  // 見る —— このファイルへ「失効時刻を含む」等を足しても、完全一致の `toBe` が既に含意して
+  // いるぶん独立した保護にはならない（同じ関数の同じ出力を 2 度見るだけ）。
   it('津波の解除・失効は取消と別の述語のまま', () => {
     expect(tsunamiCancelToText('lifted')).toBe('津波警報等は全て解除されました。')
-    expect(tsunamiCancelToText('expired')).toContain('終了しました')
+    expect(tsunamiCancelToText('expired')).toBe('津波予報は失効時刻を過ぎました。')
   })
 })
 
@@ -3211,5 +3216,133 @@ describe('気象庁が書いた文のうち読み上げから落とす定型文'
     const speech = telegramTextToSpeak(
       quakeWith('前の文です。＊印は気象庁以外の震度観測点についての情報です。後の文です。'), ON)
     expect(speech?.body).toBe('前の文です。後の文です。')
+  })
+})
+
+// 津波の失効時刻（電文の `ValidDateTime`）の読み上げ。
+//
+// **文の最後に置く。** 等級・行動・区域・波高・震源を言い終えた後で、いちばん緊急度の低い
+// 事実を足す（→ `tsunamiExpirySegments`）。
+describe('津波の失効時刻の読み上げ', () => {
+  const ISSUED = '2024-01-02T10:00:00+09:00'
+  function expiryTsunami(over: Partial<JMATsunami> = {}): JMATsunami {
+    return {
+      kind: 'tsunami',
+      id: 'test-expiry',
+      time: ISSUED,
+      cancelled: false,
+      issue: { source: 'テスト', time: ISSUED, type: 'Focus' },
+      areas: [{ grade: 'Forecast', immediate: false, name: '北海道太平洋沿岸東部' }],
+      ...over,
+    }
+  }
+  /** 断片を連結して 1 本の文にする（`tsunamiToText` は既読を渡せないので自前で繋ぐ）。 */
+  function joined(t: JMATsunami, spoken?: QuakeSpokenState): string {
+    return tsunamiToSegments(t, undefined, spoken).map(s => s.text).join('')
+  }
+  /** 断片を「声になった」ものとして既読へ反映する。 */
+  function markSpoken(t: JMATsunami, spoken: QuakeSpokenState): void {
+    for (const s of tsunamiToSegments(t, undefined, spoken)) applySpokenRefs(spoken, s.refs ?? [])
+  }
+
+  // 正: 同じ日の期限は時刻だけで読む。2024 年能登半島地震の実電文の形。
+  it('失効時刻を伝える', () => {
+    expect(joined(expiryTsunami({ validDateTime: '2024-01-02T17:00:00+09:00' })))
+      .toContain('この津波予報の失効時刻は、17時0分です。')
+  })
+
+  // 正: 日をまたぐ期限は日付から読む。2024 年日向灘地震の実電文の形。
+  it('日をまたぐ期限は日付から読む', () => {
+    const t = expiryTsunami({ time: '2024-08-08T13:00:00+09:00', validDateTime: '2024-08-09T10:00:00+09:00' })
+    expect(joined(t)).toContain('この津波予報の失効時刻は、9日10時0分です。')
+  })
+
+  // 対照: 期限を持たない報では何も言わない。**実電文では期限を伝えるのは 1 通だけ**で、
+  // 残りの報はこの形になる（引き継ぎが効く前の生の入電も同じ）。
+  it('期限が無ければ言わない', () => {
+    expect(joined(expiryTsunami())).not.toContain('失効時刻')
+  })
+
+  // 対照: 一度声にしたら次の報では黙る。**引き継ぎ（`latestValidDateTime`）が同じ値を毎報へ
+  // 載せ続ける**ので、既読を見ないと続報のたびに失効時刻を繰り返すことになる。
+  it('一度声にしたら次の報では黙る', () => {
+    const spoken = createQuakeSpokenState()
+    const t = expiryTsunami({ validDateTime: '2024-01-02T17:00:00+09:00' })
+    markSpoken(t, spoken)
+    expect(joined(t, spoken)).not.toContain('失効時刻')
+  })
+
+  // 対照: **本番と同じチャンク分割を通しても**黙る。上の 2 件は断片の参照を直に既読へ移して
+  // いるが、実運用では文を句読点で割ってから参照を引き当てる（`splitIntoChunks` →
+  // `mapChunksToRefs`）。**あの引き当ては、区域や観測点の参照が同じチャンクに混ざっていると
+  // そちらだけを返す** —— 失効時刻が区域名と同じチャンクへ入る形に文が変わると、既読が
+  // 進まないまま毎報読み直すことになる（症状は「繰り返し喋る」だけで、例外もログも出ない）。
+  it('本番と同じチャンク分割を通しても、一度声にしたら黙る', () => {
+    const spoken = createQuakeSpokenState()
+    const t = expiryTsunami({ validDateTime: '2024-01-02T17:00:00+09:00' })
+    const segments = tsunamiToSegments(t, undefined, spoken)
+    const refsByChunk = mapChunksToRefs(segments, splitIntoChunks(joinSegments(segments)))
+    // どこかのチャンクに失効時刻の参照が残っていること（混在で捨てられていない）
+    expect(refsByChunk.flat().some(r => r.kind === 'quakeFact' && r.fact === 'tsunamiExpiry')).toBe(true)
+
+    for (const refs of refsByChunk) applySpokenRefs(spoken, refs)
+    expect(joined(t, spoken)).not.toContain('失効時刻')
+  })
+
+  // 安全弁 1: 値が動いたら言い直す。気象庁が期限を延ばした・縮めた場合に追随する
+  // （`latestValidDateTime` は発表時刻が新しい報の期限を採る）。
+  it('失効時刻が動いたら言い直す', () => {
+    const spoken = createQuakeSpokenState()
+    markSpoken(expiryTsunami({ validDateTime: '2024-01-02T17:00:00+09:00' }), spoken)
+    const later = expiryTsunami({ validDateTime: '2024-01-02T18:00:00+09:00' })
+    expect(joined(later, spoken)).toContain('18時0分')
+  })
+
+  // 安全弁 2: 等級の語を電文から採る。実電文で期限が付くのは予報だけだが、**警報に付いた報が
+  // 来たときに「津波予報」と名乗ると見出しと食い違う**ので固定しない。
+  it('等級の語は電文から採る', () => {
+    const t = expiryTsunami({
+      areas: [{ grade: 'Warning', immediate: true, name: '岩手県', maxHeight: { description: '３ｍ', value: 3 } }],
+      validDateTime: '2024-01-02T17:00:00+09:00',
+    })
+    expect(joined(t)).toContain('この津波警報の失効時刻は、')
+  })
+
+  // 安全弁 3: 日時として読めない期限は言わない（`formatTime` / `formatDayTime` が `null` を返す）。
+  // 素通しにすると「ナンじナンぷん」と声に出る。
+  it('読めない期限は言わない', () => {
+    expect(joined(expiryTsunami({ validDateTime: '壊れた値' }))).not.toContain('失効時刻')
+  })
+
+  /** 降格文の断片を連結する（発表文の `joined` と同じ役目）。 */
+  function joinedDowngrade(t: JMATsunami, spoken?: QuakeSpokenState): string {
+    return tsunamiDowngradeToSegments(t, undefined, spoken).map(s => s.text).join('')
+  }
+
+  // 正: **降格文も失効時刻を語る。** 実電文で期限が付くのは「警報・注意報が解除されて予報だけが
+  // 残った」報で、それは降格として届く（→ docs/spec/tsunami-spec.md §3 の実電文の表）。つまり
+  // 発表文だけに足しても実運用では一度も声にならない。
+  it('降格文も失効時刻を語る', () => {
+    expect(joinedDowngrade(expiryTsunami({ validDateTime: '2024-01-02T17:00:00+09:00' })))
+      .toContain('この津波予報の失効時刻は、17時0分です。')
+  })
+
+  // 対照: 降格文でも既読なら黙る（既読の鍵は発表文と共有する）。
+  it('降格文でも一度声にしたら黙る', () => {
+    const spoken = createQuakeSpokenState()
+    const t = expiryTsunami({ validDateTime: '2024-01-02T17:00:00+09:00' })
+    for (const s of tsunamiDowngradeToSegments(t, undefined, spoken)) applySpokenRefs(spoken, s.refs ?? [])
+    expect(joinedDowngrade(t, spoken)).not.toContain('失効時刻')
+  })
+
+  // 安全弁 4: 失効時刻は震源より後。**この並びが仕様**（緊急度の低い順に足す）。
+  it('失効時刻は震源より後に来る', () => {
+    const t = expiryTsunami({
+      validDateTime: '2024-01-02T17:00:00+09:00',
+      sourceEarthquakes: [{ hypocenterName: '能登半島沖', magnitude: 7.6, depth: 10, originTime: ISSUED }],
+    })
+    const text = joined(t)
+    expect(text).toContain('この地震の震源は')
+    expect(text.indexOf('この地震の震源は')).toBeLessThan(text.indexOf('失効時刻'))
   })
 })

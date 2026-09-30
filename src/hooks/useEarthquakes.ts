@@ -729,6 +729,8 @@ export function useEarthquakes(
   const testNankaiRetractionTimerRef = useRef<number | undefined>(undefined)
   const testEarthquakeCountRetractionTimerRef = useRef<number | undefined>(undefined)
   const testTsunamiGradeChangeTimerRef = useRef<number | undefined>(undefined)
+  // 「警報 → 予報（失効時刻つき）」テストが発表から降格報までを待つ待ち（`simulateTsunamiExpiry`）。
+  const testTsunamiExpiryTimerRef = useRef<number | undefined>(undefined)
   // 「変化の小さい続報」テストが 6 通を順に流すあいだの待ち（`simulateTsunamiQuietReports`）。
   const testTsunamiQuietTimerRef = useRef<number | undefined>(undefined)
 
@@ -778,6 +780,10 @@ export function useEarthquakes(
     if (testTsunamiQuietTimerRef.current !== undefined) {
       window.clearTimeout(testTsunamiQuietTimerRef.current)
       testTsunamiQuietTimerRef.current = undefined
+    }
+    if (testTsunamiExpiryTimerRef.current !== undefined) {
+      window.clearTimeout(testTsunamiExpiryTimerRef.current)
+      testTsunamiExpiryTimerRef.current = undefined
     }
   }, [])
   // 帯に出している南海トラフ臨時情報・後発地震注意情報の識別情報（無ければ null）。取消の照合に使う。
@@ -3219,6 +3225,52 @@ export function useEarthquakes(
     handleEvent(createTestTsunamiForecast(true))
   }, [handleEvent])
 
+  /**
+   * 「津波警報 → 津波予報（失効時刻つき）」テスト（DMDSS 版のみ）。
+   *
+   * **等級の引き下げとして失効時刻が届く形を実機へ出せる入口はここだけ。** 気象庁が期限を載せる
+   * 2 通りのうち、予報のみの発表は「津波予報」ボタンが通す（あちらの電文も `validDateTime` を
+   * 持つので、押した直後から画面と読み上げに失効時刻が出る）。こちらが通すのは「警報・注意報が
+   * 解除されて予報だけが残る」報 —— 実電文で観測されているのはこの形で、アプリはこれを降格の
+   * 読み上げへ流す（→ `createTestTsunamiExpiry`）。**1 通だけ流しても降格にならない** ——
+   * 判定は前報の最上位等級との比較なので、警報の発表報を先に通す必要がある。
+   *
+   * | 段 | 報 | 確かめるもの |
+   * |---|---|---|
+   * | 1 | 津波警報・津波注意報 | 発表の表示と読み上げ（既存）。**次の段の前提** —— この等級から下がることで降格の経路へ入る |
+   * | 2 | 津波予報（失効時刻つき） | バナー右上の「失効」の行と、読み上げの末尾の「この津波予報の失効時刻は、◯時◯分です。」 |
+   *
+   * **解除電文は流さない。** 予報だけになった津波に気象庁は解除を出さないので、消えるのは
+   * 失効時刻が来たときだけ（`cancelReason: 'expired'`）。2 段目を受け取った時点で失効の予約が
+   * 積まれるため、こちらで待ちを張る必要はない。
+   */
+  const simulateTsunamiExpiry = useCallback(async () => {
+    const { createTestTsunamiWarning, createTestTsunamiExpiry, TEST_AUTO_DISMISS_MS } = await loadTestData()
+    const base = createTestTsunamiWarning(true)
+    if (testTsunamiExpiryTimerRef.current !== undefined) {
+      window.clearTimeout(testTsunamiExpiryTimerRef.current)
+    }
+    // 1 段目は他の津波テストと同じ入口を通す。**解除の待ちもいったん張る** —— 2 段目が
+    // 届かなかったとき（押し直し・リセット）に警報が画面へ居座らないようにするため。
+    // 2 段目を流すところで落とす（下）。
+    runSimulateTsunami(() => base, TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent)
+    // **待ちは ref で追う。** アンマウントとリセット（リプレイの開始・停止）で落とせるように
+    // する —— 追えないと、画面を消した後や再生へ切り替えた後に 45 秒前の続報だけが単独で
+    // 届き、消えたはずの津波カードが復活する。この経路は `handleEvent` を直接呼ぶので、
+    // キューを空にしても止まらない（→ `clearTestSimulationTimers`）。
+    testTsunamiExpiryTimerRef.current = window.setTimeout(() => {
+      testTsunamiExpiryTimerRef.current = undefined
+      // 解除が先に走った後は流さない（ボタンを押し直したときに古い続報が紛れ込む）
+      if (testTsunamiRef.current?.tsunami.id !== base.id) return
+      // **ここから先は解除電文を流さない。** 予報だけになった津波に気象庁は解除を出さず、
+      // 消えるのは失効時刻が来たときだけ。2 段目を受け取った時点でアプリが失効の予約を
+      // 積むので（`cancelReason: 'expired'`）、張っておいた解除の待ちは落とす。
+      window.clearTimeout(testTsunamiRef.current.cancelTimer)
+      testTsunamiRef.current = null
+      handleEvent(createTestTsunamiExpiry(base))
+    }, TEST_AUTO_DISMISS_MS / 2)
+  }, [handleEvent])
+
   const simulateTsunamiRetraction = useCallback(async () => {
     const { createTestTsunamiRetraction, TEST_AUTO_DISMISS_MS } = await loadTestData()
     runSimulateTsunami(() => createTestTsunamiRetraction(isDmdss), TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent, 'retracted')
@@ -3478,7 +3530,7 @@ export function useEarthquakes(
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
     simulateQuakeNotice, simulateEarthquakeCount, simulateEarthquakeCountRetraction, simulateEstimatedIntensity,
-    simulateTrainingQuake, simulateUnreceivedQuake, simulateMaxScaleOrAboveQuake, simulateTsunamiGradeChange, simulateTsunamiQuietReports, simulateQuakeAmendment,
+    simulateTrainingQuake, simulateUnreceivedQuake, simulateMaxScaleOrAboveQuake, simulateTsunamiGradeChange, simulateTsunamiQuietReports, simulateTsunamiExpiry, simulateQuakeAmendment,
     simulateQuakeReportSequence,
     simulateHypocenterFromTsunami,
     resetState,

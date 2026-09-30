@@ -159,12 +159,16 @@ const GRADE_LABEL: Record<TsunamiGrade, string> = {
 const GRADE_ORDER = GRADES_IN_CARD_ORDER
 
 // 解除表示（cancelledAt セット中）の見出し・説明文・オーバーレイ短文を cancelReason ごとに出し分ける。
-// 気象庁の運用上、警報・注意報は「解除」、誤発表は「取消」、予報は解除電文を伴わず「有効期間終了」で
+// 気象庁の運用上、警報・注意報は「解除」、誤発表は「取消」、予報は解除電文を伴わず失効時刻の到来で
 // 静かに消えるため、それぞれ表現が異なる（Issue #2）。
-const CANCEL_REASON_LABEL: Record<NonNullable<JMATsunami['cancelReason']>, { title: string; desc: string; badge: string }> = {
-  lifted:    { title: '津波情報 解除',       badge: '解除', desc: 'この津波情報は解除されました' },
-  retracted: { title: '津波情報 取消',       badge: '取消', desc: 'この津波情報は誤って発表されたため取り消されました' },
-  expired:   { title: '津波予報 有効期間終了', badge: '終了', desc: 'この津波予報は有効期間が終了しました' },
+//
+// **失効の語は電文の要素名（`ValidDateTime`＝失効時刻）へ揃えてある。** 読み上げ側
+// （`tsunamiCancelToText`）も同じ述語を使う —— 画面と声で語が割れると、同じ出来事を指していることが
+// 伝わらない。
+export const CANCEL_REASON_LABEL: Record<NonNullable<JMATsunami['cancelReason']>, { title: string; desc: string; badge: string }> = {
+  lifted:    { title: '津波情報 解除', badge: '解除', desc: 'この津波情報は解除されました' },
+  retracted: { title: '津波情報 取消', badge: '取消', desc: 'この津波情報は誤って発表されたため取り消されました' },
+  expired:   { title: '津波予報 失効', badge: '失効', desc: 'この津波予報は失効時刻を過ぎました' },
 }
 
 // FocusedDistrict の区域識別子（code/name）を発表区域に紐づける。照合ルールは matchesArea と同じ。
@@ -1313,6 +1317,23 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
   const latestHm = latestTime ? formatTimeMin(latestTime) : undefined
   const observationAsOf = observationAsOfHm && observationAsOfHm !== latestHm ? observationAsOfHm : undefined
   const latestUpdatedText = latestTime ? formatDateTimeMin(latestTime) : null
+  // 失効時刻（電文の `ValidDateTime`）。**気象庁はこれを「失効時刻」と呼ぶ**（→
+  // `docs/spec/tsunami-spec.md` §3 の cancelReason 表）。実電文で付くのは警報・注意報が
+  // 解除されて予報だけが残った段階なので、ふだん出るのは津波予報のカード。
+  //
+  // **解除表示中は出さない。** 終わったことは帯が伝えており、そこへ「いつ終わる予定だったか」を
+  // 並べても読み手の行動を変えない。
+  //
+  // **standard 版（P2PQuake）では出ない** —— あちらの API はこの値を持たない。アプリが積む
+  // 24 時間のフェイルセーフ（`useEarthquakes.ts`）は気象庁が言っていない時刻なので、
+  // **画面へ出してはいけない**（発表値の顔で推測が並ぶ）。ここが `validDateTime` だけを見て
+  // いるので自然にそうなる。
+  //
+  // **日付は常に添える。** 上の「更新」と同じ `formatDateTimeMin` を通すので、縦に並んだ
+  // 2 行の書式が揃う。**読み上げ側は日をまたぐときだけ日付を言う**（`expiryNeedsDate`）——
+  // 分ける理由は `docs/spec/tsunami-spec.md` §9「失効時刻はバナーの右上に出す」が持つ。
+  const expiryRaw = isCancelledDisplay ? undefined : active[0]?.validDateTime
+  const expiryText = expiryRaw ? formatDateTimeMin(expiryRaw) : null
   // 1 件目を主に扱い、残りは下に併記する（電文は複数の地震を持ちうる）。
   const sourceEarthquakes = active[0]?.sourceEarthquakes ?? []
   const sourceEarthquake = sourceEarthquakes[0]
@@ -1353,11 +1374,14 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
                   </span>
                 )}
               </div>
-              {(latestUpdatedText || observationAsOf) && (
+              {(latestUpdatedText || observationAsOf || expiryText) && (
                 <div className="text-right flex-shrink-0" style={{ fontSize: '0.6875rem', color: isCancelledDisplay ? '#6b7280' : topStyle.arrivalColor, opacity: 0.8 }}>
                   {/* 発表時刻が日時として読めなければこの行だけ落とす。観測時点の行は残す —— 2 つは
                       別の事実で、片方が読めないことをもう片方を隠す理由にしない。 */}
-                  {latestUpdatedText && <div>{latestUpdatedText} 更新</div>}
+                  {/* **語を先に置く。** 下の失効時刻と対で読ませるため、日時を持つ行は
+                      「語 → 値」で揃える（観測の行は「観測 ◯◯ 時点」と語で挟んで文に
+                      なっているので、そのまま触らない）。 */}
+                  {latestUpdatedText && <div>更新 {latestUpdatedText}</div>}
                   {/* 観測状況を確定した時刻（電文の `Head/TargetDateTime`）。観測情報でのみ入り、
                       実電文では最大 6 分さかのぼる。**下の波高がいつ時点のものか**を示す。
 
@@ -1365,6 +1389,21 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
                       「観測値が発表より前の時点のもの」という肝心の意味が薄れる。 */}
                   {observationAsOf && (
                     <div style={{ opacity: 0.85 }}>観測 {observationAsOf} 時点</div>
+                  )}
+                  {/* 失効時刻（電文の `ValidDateTime`）。上の 2 つは過去の時刻、これだけが未来。
+
+                      **語は「失効」の 2 文字に留める。** 上の「更新」と字数が揃うので右側の
+                      ブロックが更新の行より広がらない。「失効時刻」と 4 文字にすると、広いパネルで
+                      この行が右側を広げたぶん左の見出しが折り返し、「発表中」が行をまたいで割れた
+                      （実測）。**読み上げは「失効時刻」と言う**（→ `utils/ttsText.ts`）—— 耳には
+                      2 文字だと何の時刻か伝わらない。気象庁の要素名も「失効時刻」。
+
+                      **この行を足したときのバナーの伸びは実測 0〜12px。** 狭い画面では見出しが
+                      先に 2 行へ折り返しているため右側の 2 行が収まって 0px（モバイル上下分割
+                      390×740）。広いパネルでは見出しが 1 行なので右側の 2 行ぶんで +12px
+                      （幅 1700px）。バナーの高さの制約は `docs/spec/tsunami-spec.md` §9 が持つ。 */}
+                  {expiryText && (
+                    <div style={{ opacity: 0.85 }}>失効 {expiryText}</div>
                   )}
                 </div>
               )}
