@@ -18,8 +18,14 @@ import { join } from 'node:path'
 //
 // 対象から外す制御文字は 3 つだけ —— タブ・改行・復帰。それ以外の C0 制御文字（NUL を含む）と
 // DEL は、ソースにもドキュメントにも現れる理由がない。
+//
+// **`seismo-host/` も対象に含める。** 2026-09-30 に `seismo-host/src/admin/viewWaves.ts` で
+// 同じ欠陥を作った（一覧の署名の区切りを `'\u0000'` と書いたつもりが生の NUL 1 バイト）。
+// 当時ここは `src` / `scripts` / `docs` だけを見ていたので**この検査を素通りし**、
+// 気づいたのは敵対的レビューがそのファイルの `grep` に失敗したとき。
+// **アプリ本体と別のディレクトリにあっても、踏む罠は同じ。**
 
-const ROOTS = ['src', 'scripts', 'docs']
+const ROOTS = ['src', 'scripts', 'docs', 'seismo-host']
 const EXTENSIONS = ['.ts', '.tsx', '.md', '.mjs', '.js', '.css']
 
 /**

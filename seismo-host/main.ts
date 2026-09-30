@@ -566,6 +566,19 @@ export interface StationFusionSinks {
    */
   readonly notePairDiffs: (stationId: string, diffs: readonly SensorPairDiff[]) => void
   /**
+   * センサー対ごとの差分を**配る**（#372）。**省略できない。**
+   *
+   * **`notePairDiffs` と分ける。** あちらは覚える側（要約して状態の口へ出す）、
+   * こちらは押し出す側 —— `noteWave` と `publishWave` を分けているのと同じ理由で、
+   * 配り先と順序をこの関数が決めると宣言している以上、配達を覚える処理の中へ
+   * 隠さない。
+   *
+   * **全ペアぶんを渡す。** 誰へ配るかを決めるのは押し出しのハブの仕事で
+   * （`readingHub.ts` の `PairWant`）、ここで間引くと**頼んだ組がたまたま
+   * 落ちている**という切り分けようのない形になる。
+   */
+  readonly publishPairDiffs: (diffs: readonly SensorPairDiff[]) => void
+  /**
    * 合成した波形そのものを配る（#315）。**省略できない。**
    *
    * 渡し忘れても震度は流れ続けるので、症状は「波形だけが画面に出ない」——
@@ -617,6 +630,7 @@ export function deliverStationFusion(to: StationFusionSinks, fusion: FusionOutco
     // 覚えるのと配るのもここに置く（判定を 2 箇所へ分けない）。
     to.noteWave(fusion.fusedWave, fusion.backupsCovered)
     to.notePairDiffs(fusion.fusedWave.stationId, fusion.pairDiffs)
+    to.publishPairDiffs(fusion.pairDiffs)
     to.publishWave(fusion.fusedWave)
     to.noteSkip(fusion.fusedWave.stationId, fusion.intensitySkipReason)
     // **異常が続いている間は毎回呼ぶ。正常なら状態が変わった回にだけ呼ぶ。**
@@ -1132,7 +1146,13 @@ async function main(): Promise<void> {
     publish: (r) => hub.publish({ kind: 'station-reading', reading: r }),
     noteWave: (w, covered) => stationHealth.noteWave(w, covered),
     notePairDiffs: (stationId, diffs) => stationHealth.notePairDiffs(stationId, diffs),
-    // **波形を欲しがっている相手だけへ行く**（選り分けは `readingHub.ts` の `WAVE_ONLY`）。
+    // **頼んだ組だけへ行く**（選り分けは `readingHub.ts` の `WAVE_TIER` の `'pair'` と
+    // `PairWant`）。ここで間引かないのは、頼んだ組が落ちているのか押し出しが
+    // 壊れているのかを切り分けられなくなるため（#372）。
+    publishPairDiffs: (diffs) => {
+      for (const d of diffs) hub.publish({ kind: 'station-diff', diff: d })
+    },
+    // **波形を欲しがっている相手だけへ行く**（選り分けは `readingHub.ts` の `WAVE_TIER`）。
     //
     // **残すのも同じ 1 本の流れから。** 別の場所で拾う形にすると、押し出しには
     // 出ているのに残っていない（あるいはその逆）が起こりうる —— どちらも症状は

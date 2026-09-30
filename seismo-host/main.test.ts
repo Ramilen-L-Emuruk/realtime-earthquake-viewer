@@ -797,6 +797,7 @@ describe('deliverStationFusion', () => {
         publish: () => order.push('publish'),
         noteWave: () => order.push('noteWave'),
         notePairDiffs: () => order.push('notePairDiffs'),
+        publishPairDiffs: () => order.push('publishPairDiffs'),
         publishWave: () => order.push('publishWave'),
         reportCloseFailure: () => order.push('reportCloseFailure'),
         noteSkip: () => order.push('noteSkip'),
@@ -815,6 +816,7 @@ describe('deliverStationFusion', () => {
       'publish',
       'noteWave',
       'notePairDiffs',
+      'publishPairDiffs',
       'publishWave',
       'noteSkip',
       'logSegment',
@@ -832,6 +834,7 @@ describe('deliverStationFusion', () => {
         publish: () => calls.push('publish'),
         noteWave: () => calls.push('noteWave'),
         notePairDiffs: () => calls.push('notePairDiffs'),
+        publishPairDiffs: () => calls.push('publishPairDiffs'),
         publishWave: () => calls.push('publishWave'),
         reportCloseFailure: () => calls.push('reportCloseFailure'),
         noteSkip: () => calls.push('noteSkip'),
@@ -856,6 +859,7 @@ describe('deliverStationFusion', () => {
         publish: () => order.push('publish'),
         noteWave: () => order.push('noteWave'),
         notePairDiffs: () => order.push('notePairDiffs'),
+        publishPairDiffs: () => order.push('publishPairDiffs'),
         publishWave: () => order.push('publishWave'),
         reportCloseFailure: () => order.push('reportCloseFailure'),
         noteSkip: () => order.push('noteSkip'),
@@ -870,7 +874,7 @@ describe('deliverStationFusion', () => {
     // readings が空でも、`fusedWave` が非 null の回は必ず `noteSkip` でいまの
     // 状態（この場合は intensitySkipReason: null ＝ 正常）を確定させる。
     // `intensityStateChanged` を渡していない（既定 false）ので `logSegment` は呼ばない。
-    expect(order).toEqual(['reportCloseFailure', 'noteWave', 'notePairDiffs', 'publishWave', 'noteSkip'])
+    expect(order).toEqual(['reportCloseFailure', 'noteWave', 'notePairDiffs', 'publishPairDiffs', 'publishWave', 'noteSkip'])
   })
 
   it('正: 顔ぶれが揃ったかを帳面へそのまま渡す（#374）', () => {
@@ -883,6 +887,7 @@ describe('deliverStationFusion', () => {
       publish: () => {},
       noteWave: (_w: FusedWaveChunk, c: boolean) => covered.push(c),
       notePairDiffs: () => {},
+      publishPairDiffs: () => {},
       publishWave: () => {},
       reportCloseFailure: () => {},
       noteSkip: () => {},
@@ -905,6 +910,7 @@ describe('deliverStationFusion', () => {
         publish: () => calls.push('publish'),
         noteWave: () => calls.push('noteWave'),
         notePairDiffs: () => calls.push('notePairDiffs'),
+        publishPairDiffs: () => calls.push('publishPairDiffs'),
         publishWave: () => calls.push('publishWave'),
         reportCloseFailure: () => calls.push('reportCloseFailure'),
         noteSkip: () => calls.push('noteSkip'),
@@ -913,7 +919,7 @@ describe('deliverStationFusion', () => {
       fusion({ fusedWave: FUSED_WAVE, readings: [STATION_READING] }),
     )
 
-    expect(calls).toEqual(['noteReading', 'publish', 'noteWave', 'notePairDiffs', 'publishWave', 'noteSkip'])
+    expect(calls).toEqual(['noteReading', 'publish', 'noteWave', 'notePairDiffs', 'publishPairDiffs', 'publishWave', 'noteSkip'])
   })
 
   it('異常が続く間（intensityStateChanged が false でも）は毎回 logSegment を呼ぶ', () => {
@@ -930,6 +936,7 @@ describe('deliverStationFusion', () => {
         publish: () => calls.push('publish'),
         noteWave: () => calls.push('noteWave'),
         notePairDiffs: () => calls.push('notePairDiffs'),
+        publishPairDiffs: () => calls.push('publishPairDiffs'),
         publishWave: () => calls.push('publishWave'),
         reportCloseFailure: () => calls.push('reportCloseFailure'),
         noteSkip: () => calls.push('noteSkip'),
@@ -942,7 +949,7 @@ describe('deliverStationFusion', () => {
       }),
     )
 
-    expect(calls).toEqual(['noteWave', 'notePairDiffs', 'publishWave', 'noteSkip', 'logSegment'])
+    expect(calls).toEqual(['noteWave', 'notePairDiffs', 'publishPairDiffs', 'publishWave', 'noteSkip', 'logSegment'])
   })
 
   it('正: 合成した波形をそのまま配る（#315）', () => {
@@ -953,6 +960,7 @@ describe('deliverStationFusion', () => {
         publish: () => {},
         noteWave: () => {},
         notePairDiffs: () => {},
+        publishPairDiffs: () => {},
         publishWave: (w) => got.push(w),
         reportCloseFailure: () => {},
         noteSkip: () => {},
@@ -978,6 +986,7 @@ describe('deliverStationFusion', () => {
         publish: () => got.push('publish'),
         noteWave: () => got.push('noteWave'),
         notePairDiffs: () => got.push('notePairDiffs'),
+        publishPairDiffs: () => got.push('publishPairDiffs'),
         publishWave: () => got.push('publishWave'),
         reportCloseFailure: () => got.push('reportCloseFailure'),
         noteSkip: () => got.push('noteSkip'),

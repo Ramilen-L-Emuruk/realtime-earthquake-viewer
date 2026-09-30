@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { WaveBuffer, WaveStore } from './waveBuffer'
+import { WaveBuffer, WaveStore, keyOf } from './waveBuffer'
 import type { WaveChunkView } from './waveBuffer'
 
 const MS_PER_SAMPLE = 10
@@ -48,6 +48,35 @@ function stationChunk(overrides: Partial<WaveChunkView> = {}): WaveChunkView {
     timebaseNominalReason: null,
     gal: [axis, axis, axis],
     memberCount: Array.from({ length: SAMPLES }, () => 9),
+    ...overrides,
+  }
+}
+
+/**
+ * センサー対 1 組ぶんの差分 1 まとまり（#372）。
+ *
+ * **値が無いサンプルは `NaN` で置く。** 差分だけが持つ形 —— 相手の値がまだ届いていない
+ * 範囲は引けないので、0 で埋めると「2 台がぴったり一致した」に見える。
+ */
+function pairChunk(overrides: Partial<WaveChunkView> = {}): WaveChunkView {
+  const axis = Array.from({ length: SAMPLES }, (_, i) => i)
+  return {
+    source: {
+      kind: 'pair',
+      stationId: 'garage',
+      boardKeyA: 'board-1',
+      sensorIdA: 'accel-0',
+      boardKeyB: 'board-2',
+      sensorIdB: 'accel-1',
+    },
+    // **差分にも区間の識別子が無い**（合成と同じ）。連続性は時刻の隔たりで見る。
+    streamKey: null,
+    segmentId: null,
+    firstSampleMs: 0,
+    msPerSample: MS_PER_SAMPLE,
+    timebaseNominalReason: null,
+    gal: [axis, axis, axis],
+    memberCount: null,
     ...overrides,
   }
 }
@@ -432,5 +461,120 @@ describe('WaveStore', () => {
 
   it('知らないセンサーを引いたら null', () => {
     expect(new WaveStore().get({ kind: 'sensor', boardKey: 'b1', sensorId: 's1' })).toBeNull()
+  })
+})
+
+describe('センサー対の差分（#372）', () => {
+  const AB = {
+    kind: 'pair',
+    stationId: 'garage',
+    boardKeyA: 'board-1',
+    sensorIdA: 'accel-0',
+    boardKeyB: 'board-2',
+    sensorIdB: 'accel-1',
+  } as const
+
+  /** 同じ 2 台で、A と B を入れ替えたもの。 */
+  const BA = {
+    kind: 'pair',
+    stationId: 'garage',
+    boardKeyA: 'board-2',
+    sensorIdA: 'accel-1',
+    boardKeyB: 'board-1',
+    sensorIdB: 'accel-0',
+  } as const
+
+  /** 値の並びから 1 まとまりを作る（3 軸とも同じ値。軸ごとに分けたいときは直に渡す）。 */
+  function withValues(values: readonly number[], overrides: Partial<WaveChunkView> = {}): WaveChunkView {
+    return pairChunk({ source: AB, gal: [[...values], [...values], [...values]], ...overrides })
+  }
+
+  it('正: 向きを入れ替えても同じ鍵になる', () => {
+    // **押し出す側は向きを問わない**（`readingHub.ts` の `pairMatches`）ので、
+    // 同じ 2 台の組が A-B と B-A の両方で届きうる。鍵が分かれてはいけない。
+    expect(keyOf(BA)).toBe(keyOf(AB))
+  })
+
+  it('正: 向きの違う 2 まとまりが 1 本の行へまとまる', () => {
+    const store = new WaveStore()
+    store.push(pairChunk({ source: AB }))
+    store.push(pairChunk({ source: BA, firstSampleMs: SAMPLES * MS_PER_SAMPLE }))
+
+    // 割れると、画面には同じ 2 台の行が 2 つ並ぶ（片方は凍結したまま消えない）。
+    expect(store.buffersInOrder()).toHaveLength(1)
+    expect(store.get(AB)?.chunkCount).toBe(2)
+  })
+
+  it('対照: 相手が違えば別の鍵になる', () => {
+    expect(keyOf({ ...AB, sensorIdB: 'accel-2' })).not.toBe(keyOf(AB))
+  })
+
+  it('安全弁: 観測点が違えば別の鍵になる', () => {
+    expect(keyOf({ ...AB, stationId: 'garage-2' })).not.toBe(keyOf(AB))
+  })
+
+  it('安全弁: 境目の違う名前が同じ鍵に化けない', () => {
+    // 区切り文字で繋ぐと同じ文字列になりうる組み合わせ。長さを前に置くので分かれる。
+    const left = keyOf({ ...AB, boardKeyA: 'b', sensorIdA: '1:accel' })
+    const right = keyOf({ ...AB, boardKeyA: 'b1', sensorIdA: 'accel' })
+    expect(left).not.toBe(right)
+  })
+
+  it('安全弁: 組を落とせば、上限に達していた枠が空く', () => {
+    const other = { ...AB, sensorIdB: 'accel-2' } as const
+    const store = new WaveStore({ maxSources: 1 })
+    store.push(pairChunk({ source: AB }))
+    store.push(pairChunk({ source: other }))
+    expect(store.rejectedSources).toBe(1)
+
+    store.remove(AB)
+    store.push(pairChunk({ source: other }))
+
+    // **落とさないと、組を切り替えるたびに枠が減り続ける** ——
+    // 実機はセンサー 9 本＋合成 1 本＋全ペア 36 組なので、上限 32 本では 22 組めから断られる。
+    expect(store.get(other)).not.toBeNull()
+  })
+
+  it('正: 値の無いサンプルの次の点へ切れ目が立つ', () => {
+    const b = new WaveBuffer(AB)
+    b.push(withValues([0, 1, NaN, 3, 4]))
+
+    const window = b.readWindow(0, 5 * MS_PER_SAMPLE, 5)
+    // 3 列目には値が無く（`null`）、4 列目に切れ目が立つ。
+    expect(window.axes[0][2]).toBeNull()
+    expect(window.axes[0][3]?.gapBefore).toBe(true)
+  })
+
+  it('対照: 続いている範囲には切れ目が立たない', () => {
+    const b = new WaveBuffer(AB)
+    b.push(withValues([0, 1, 2, 3, 4]))
+
+    const window = b.readWindow(0, 5 * MS_PER_SAMPLE, 5)
+    expect(window.axes[0].slice(1).every((c) => c !== null && !c.gapBefore)).toBe(true)
+  })
+
+  it('安全弁: 片方の軸だけ欠けても、他の軸に切れ目は立たない', () => {
+    const broken = [0, 1, NaN, 3, 4]
+    const whole = [0, 1, 2, 3, 4]
+    const b = new WaveBuffer(AB)
+    b.push(pairChunk({ source: AB, gal: [broken, whole, [...whole]] }))
+
+    const window = b.readWindow(0, 5 * MS_PER_SAMPLE, 5)
+    expect(window.axes[0][3]?.gapBefore).toBe(true)
+    // **軸ごとに独立して追う。** 1 つの軸の欠けを全軸へ広げると、
+    // 健全な成分まで切れて「3 軸とも壊れた」ように見える。
+    expect(window.axes[1][3]?.gapBefore).toBe(false)
+    expect(window.axes[2][3]?.gapBefore).toBe(false)
+  })
+
+  it('安全弁: まとまりを跨いだ欠けでも、次に届いた点へ切れ目が立つ', () => {
+    const b = new WaveBuffer(AB)
+    b.push(withValues([0, 1, NaN]))
+    b.push(withValues([3, 4, 5], { firstSampleMs: 3 * MS_PER_SAMPLE }))
+
+    const window = b.readWindow(0, 6 * MS_PER_SAMPLE, 6)
+    // **「値が無い」の記憶はまとまりを越えて持ち越す。** まとまりの末尾が欠けていたら、
+    // 切れ目は次のまとまりの先頭へ立つ。
+    expect(window.axes[0][3]?.gapBefore).toBe(true)
   })
 })

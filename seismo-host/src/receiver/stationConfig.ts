@@ -105,8 +105,13 @@ const MAC_HEX_RE = /^[0-9a-fA-F]{12}$/
  * 正しいのに実機の値とは永久に一致しない `boardKey` が、警告なしで設定ファイルに残る**。
  *
  * `name:` は版 1 の識別子で、中身の書式を持たない。空でなければ受ける。
+ *
+ * **設定の読み込み以外からも使う。** 外から `boardKey` を受け取る口（`/stream` の
+ * `?diffBoardA=` 等。#372）は**必ずここを通すこと** —— 別に書くと、大文字の MAC を
+ * 揃え忘れた側だけが「構文は正しいのに設定の値と永久に一致しない」形になり、
+ * 症状は「繋がっているのに何も届かない」だけになる。
  */
-function normalizeBoardKey(v: unknown): BoardKey | null {
+export function normalizeBoardKey(v: unknown): BoardKey | null {
   if (typeof v !== 'string') return null
   const trimmed = v.trim()
   if (trimmed.startsWith('mac:')) {

@@ -50,6 +50,18 @@ export interface WaveChunkView {
   readonly msPerSample: number
   /** 時刻の当てはめを公称値へ倒したなら理由。当てはめた値を使っていれば null。 */
   readonly timebaseNominalReason: string | null
+  /**
+   * 値の並び。
+   *
+   * **`NaN` は「そのサンプルの値が無い」。** 出どころはセンサー対の差分だけで
+   * （`sensorFusion.ts` が両方の値が揃わないサンプルを `null` にする。外挿しない）、
+   * センサー単独と観測点の合成では現れない —— あちらは受け口（`waveStream.ts` の
+   * `readFiniteArray`）が非有限を通さない。
+   *
+   * **`0` で埋めない。** 差分の 0 は「2 台がぴったり一致した」を意味してしまう。
+   * 畳み込み（`readWindow`）は `NaN` を飛ばし、**その先の列へ切れ目の印を立てる**
+   * ——飛ばして詰めると、そこだけ時間が縮んだ絵になる。
+   */
   readonly gal: readonly [readonly number[], readonly number[], readonly number[]]
   /**
    * そのサンプルへ実際に効いたセンサーの本数（観測点の合成だけ）。
@@ -72,6 +84,20 @@ export type WaveSourceKey =
   | { readonly kind: 'sensor'; readonly boardKey: string; readonly sensorId: string }
   /** 観測点ぶんの合成（REQUIREMENTS.md §7）。 */
   | { readonly kind: 'station'; readonly stationId: string }
+  /**
+   * センサー対の差分（同 §7・#372）。**`d = (a − b) / 2`。**
+   *
+   * **観測点も持つ。** 同じセンサーを 2 つの観測点へ割り当てた設定では、顔ぶれが
+   * 同じでも別の合成に属する差分になる。
+   */
+  | {
+      readonly kind: 'pair'
+      readonly stationId: string
+      readonly boardKeyA: string
+      readonly sensorIdA: string
+      readonly boardKeyB: string
+      readonly sensorIdB: string
+    }
 
 /**
  * 画面の 1 列ぶん。**平均ではなく上下の両端を持つ。**
@@ -320,6 +346,10 @@ export class WaveBuffer {
       new Array<WaveColumn | null>(columnCount).fill(null),
     ]
     let nominal = false
+    // **軸ごとに「直前のサンプルが欠けていたか」を覚える。** 欠けを飛ばすだけだと
+    // 前後が線で繋がり、**欠測を分けて持った意味が描画で消える**（`gal` の説明を
+    // 見ること）。次に値があったサンプルの列へ切れ目の印を立てる。
+    const missing = [false, false, false]
     // 軸ごとの合計・件数・上下。**平均からの最大の隔たりは、全体の上下と平均から
     // 正確に出せる**（どちらか遠いほうを採る）ので、走査は 1 度で済む。
     const sum = [0, 0, 0]
@@ -349,14 +379,22 @@ export class WaveBuffer {
 
         for (let axis = 0; axis < 3; axis++) {
           const value = chunk.gal[axis][i]
+          // **値が無いサンプルは、切れ目の借りを作って飛ばす。** `Math.min`/`Math.max`
+          // へ `NaN` を渡すと列ごと `NaN` に化け、平均も隔たりも壊れる。
+          if (Number.isNaN(value)) {
+            missing[axis] = true
+            continue
+          }
+          const brokeHere = gapBefore || missing[axis]
+          missing[axis] = false
           const previous = axes[axis][column]
           axes[axis][column] =
             previous === null
-              ? { minGal: value, maxGal: value, gapBefore }
+              ? { minGal: value, maxGal: value, gapBefore: brokeHere }
               : {
                   minGal: Math.min(previous.minGal, value),
                   maxGal: Math.max(previous.maxGal, value),
-                  gapBefore: previous.gapBefore || gapBefore,
+                  gapBefore: previous.gapBefore || brokeHere,
                 }
           sum[axis] += value
           counts[axis]++
@@ -488,6 +526,18 @@ export class WaveStore {
     return this.buffers.get(keyOf(key)) ?? null
   }
 
+  /**
+   * 1 本を捨てる。**居なければ何もしない。**
+   *
+   * **見るのをやめた差分の組を落とすために要る**（#372）。上限は 32 本で、
+   * 実機はセンサー 9 本＋合成 1 本＋全ペア 36 組 —— 落とさずに切り替え続けると
+   * **22 組めから新しい組が上限で断られ、「選んだのに何も出ない」形になる**
+   * （`rejected` は数えるが、画面には上限に達した事実しか出ない）。
+   */
+  remove(key: WaveSourceKey): void {
+    this.buffers.delete(keyOf(key))
+  }
+
   /** 全部を通した時間の範囲。1 本も無ければ null。 */
   range(): WaveRange | null {
     let fromMs: number | null = null
@@ -523,5 +573,24 @@ export class WaveStore {
  */
 export function keyOf(key: WaveSourceKey): string {
   if (key.kind === 'station') return `t:${key.stationId}`
+  if (key.kind === 'pair') {
+    // **4 つとも長さを前に置く。** 上と同じ理由で、区切り文字は使えない
+    // ——`boardKey`・`sensorId` に「現れない」と言い切れる文字が無い。
+    //
+    // **A と B は決まった順へ並べ替える。** 押し出す側（`readingHub.ts` の `pairMatches`）は
+    // **向きを問わない** ので、同じ 2 台の組が A-B と B-A の両方の向きで届きうる ——
+    // 届く向きは設定に並んだセンサーの順で決まり（`sensorFusion.ts` の `buildPairDiffs` が
+    // `group.members` の配列順で回す。その並びは `config.boards` → 各 `sensors` の
+    // 並び順そのままで、正規化していない）、**設定を編集すると入れ替わる。**
+    //
+    // **鍵が向きで変わると、その瞬間に同じ組が 2 行へ割れる。** 片方は凍結したまま残り、
+    // 消す番も来ない —— 選択が指すのは片方の鍵だけなので、組を切り替えたときの
+    // `WaveStore.remove` はもう一方に届かない。画面には同じ 2 台の行が 2 つ並び、
+    // 読み込み直すまで消えない。
+    const a = `${key.boardKeyA.length}:${key.boardKeyA}${key.sensorIdA.length}:${key.sensorIdA}`
+    const b = `${key.boardKeyB.length}:${key.boardKeyB}${key.sensorIdB.length}:${key.sensorIdB}`
+    const [first, second] = a <= b ? [a, b] : [b, a]
+    return `d:${key.stationId.length}:${key.stationId}${first}${second}`
+  }
   return `s:${key.boardKey.length}:${key.boardKey}${key.sensorId}`
 }

@@ -39,6 +39,43 @@ function statusJson(overrides: Record<string, unknown> = {}): Record<string, unk
       },
     ],
     stream: { subscribers: [{ id: 1 }], limit: 8 },
+    // 差分を見られる組（#372）。**選ぶ元はここだけ**で、画面は手で組み立てない。
+    stationIntensities: [
+      {
+        stationId: 'station-1',
+        pairDiffs: [
+          {
+            a: { boardKey: 'board-1', sensorId: 'accel-0' },
+            b: { boardKey: 'board-2', sensorId: 'accel-1' },
+            rmsGal: [0.1, 0.1, 0.2],
+            sampleCount: [30, 30, 30],
+          },
+        ],
+      },
+    ],
+    ...overrides,
+  }
+}
+
+/** センサー対の差分波形（#372）。**欠けたサンプルは `NaN`。** */
+function pairChunk(overrides: Partial<WaveChunkView> = {}): WaveChunkView {
+  const axis = Array.from({ length: 30 }, (_, i) => (i === 29 ? Number.NaN : Math.sin(i) * 0.05))
+  return {
+    source: {
+      kind: 'pair',
+      stationId: 'station-1',
+      boardKeyA: 'board-1',
+      sensorIdA: 'accel-0',
+      boardKeyB: 'board-2',
+      sensorIdB: 'accel-1',
+    },
+    streamKey: null,
+    segmentId: null,
+    firstSampleMs: 1_700_000_000_000,
+    msPerSample: 10,
+    timebaseNominalReason: null,
+    gal: [axis, axis, axis],
+    memberCount: null,
     ...overrides,
   }
 }
@@ -202,11 +239,88 @@ describe('initWavesView', () => {
     expect(container.querySelectorAll('.wave-canvas')).toHaveLength(3)
   })
 
-  it('押し出しへ繋ぎ、波形を欲しがる', async () => {
+  it('押し出しへ繋ぎ、波形を欲しがる（差分は頼まない）', async () => {
     await mount()
 
     expect(captured?.wave).toBe(true)
-    expect(captured?.signal).toBe(controller.signal)
+    // **差分は既定で頼まない。** 選ぶと購読の中身が変わる（繋ぎ直す）ので、
+    // 勝手に流し始めない —— 実機は全ペアで 36 組・毎秒 240 KB（実測） ある（#372）。
+    expect(captured?.diff).toBeNull()
+  })
+
+  it('タブを離れたら、購読の札も畳む（#372 で札を 1 段挟んだ）', async () => {
+    await mount()
+    const inner = captured?.signal
+    expect(inner).toBeDefined()
+    // **タブの札そのものは渡していない。** 差分の組を変えるには繋ぎ直しが要るので、
+    // 購読 1 本ごとに畳める札を挟んである。
+    expect(inner).not.toBe(controller.signal)
+    expect(inner?.aborted).toBe(false)
+
+    controller.abort()
+
+    // **伝わらないと、タブを離れた後も購読が開いたまま残る**（同時購読は 8 本まで）。
+    expect(inner?.aborted).toBe(true)
+  })
+
+  // センサー対の差分（#372）。**選ぶ元は `/status` の `pairDiffs` だけ。**
+  it('正: 組を選ぶと、その組を頼んで繋ぎ直す', async () => {
+    const container = await mount()
+    const select = container.querySelector<HTMLSelectElement>('.wave-diff')
+    expect(select).not.toBeNull()
+    // 既定は「選ばない」＋ 組が 1 つ。
+    expect(select?.options).toHaveLength(2)
+    const before = captured?.signal
+
+    select!.value = select!.options[1].value
+    select!.dispatchEvent(new Event('change'))
+
+    expect(captured?.diff).toEqual({
+      stationId: 'station-1',
+      boardKeyA: 'board-1',
+      sensorIdA: 'accel-0',
+      boardKeyB: 'board-2',
+      sensorIdB: 'accel-1',
+    })
+    // **前の購読を畳んでから開く。** 畳まずに開くと同時購読が 2 本になる。
+    expect(before?.aborted).toBe(true)
+    expect(captured?.signal.aborted).toBe(false)
+  })
+
+  it('正: 選んだ直後は「まだ届いていない」と伝え、届いたら件数へ変わる', async () => {
+    const container = await mount()
+    const select = container.querySelector<HTMLSelectElement>('.wave-diff')!
+    select.value = select.options[1].value
+    select.dispatchEvent(new Event('change'))
+
+    // **黙らない。** 設定が変わって組が無くなった場合の症状は 1 件も届かないことだけ。
+    expect(container.querySelector('.wave-diff-note')?.textContent).toContain('まだ 1 件も届いていない')
+
+    captured?.onPairDiff?.(pairChunk())
+
+    expect(container.querySelector('.wave-diff-note')?.textContent).toContain('1 まとまり')
+  })
+
+  it('対照: 選ばなければ添え書きは出さず、差分も頼まない', async () => {
+    const container = await mount()
+
+    expect(container.querySelector('.wave-diff-note')?.textContent).toBe('')
+    expect(captured?.diff).toBeNull()
+  })
+
+  it('安全弁: 届いた差分は先着枠を使わず必ず描く', async () => {
+    const container = await mount()
+    const select = container.querySelector<HTMLSelectElement>('.wave-diff')!
+    select.value = select.options[1].value
+    select.dispatchEvent(new Event('change'))
+    captured?.onPairDiff?.(pairChunk())
+    await letItDraw()
+
+    // **選んだのは運用者。** 枠に埋もれて見えないと選んだ意味が無い。
+    const names = [...container.querySelectorAll('.wave-sensor')].map((el) => el.textContent ?? '')
+    const row = names.find((n) => n.includes('差分'))
+    expect(row).toBeDefined()
+    expect(container.querySelector<HTMLInputElement>('.wave-sensor-check[data-key^="d:"]')?.checked).toBe(true)
   })
 
   it('波形が届いていないうちは、そう伝える', async () => {
