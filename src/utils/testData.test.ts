@@ -415,7 +415,8 @@ describe('地震情報テストの points 形状', () => {
     // 持たない**ので、震源名が空の震度速報を同じ地震と見なせるかはそちらの経路でしか分からない。
     // 合流しなければ実機でカードが 4 枚並ぶ。
     it.each(QUAKE_VARIANTS)('受信経路を通すと 5 通が 1 枚のカードへ合流する（$label 版）', ({ useDmdataShape }) => {
-      const merged = mergeQuakeHistory(createTestQuakeReportSequence(useDmdataShape), [], [], null)
+      // 見るのはカードだけ（印の記憶は `quakeMerge.test.ts` が確かめる）。
+      const { cards: merged } = mergeQuakeHistory(createTestQuakeReportSequence(useDmdataShape), [], [], null)
       expect(merged).toHaveLength(1)
       // 同じ種別を 2 通受け取るので通数が付く（→ docs/spec/quake-spec.md §8）。
       expect(reportsText(merged[0].reports, merged[0].issue.type))

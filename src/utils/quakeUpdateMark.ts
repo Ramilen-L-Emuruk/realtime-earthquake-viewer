@@ -290,11 +290,17 @@ export function lpgmRowSnapshot(
 export const lpgmMarkKey = (eventId: string) => `lpgm:${eventId}`
 
 /**
- * 写しを持ち回るカードの数の上限（→ {@link advanceQuakeMarks}）。
+ * 写しを持ち回るカードの数の上限（→ {@link advanceQuakeMarks}・{@link trimQuakeMarkMemory}）。
  *
  * 印の寿命は 1 分なので、**それより長く遡って写しを持つ意味はほとんど無い**。
- * 群発でも 1 分のあいだに続報が届くカードがこの数を超えることは考えにくく、
- * 超えたとしても落ちるのはいちばん長く触っていないものになる。
+ * 受信のたびに進める経路（`advanceQuakeMarks`）では 1 通が 1 枚しか触らないので、
+ * 1 分のあいだに続報が届くカードがこの数を超えることは考えにくい。
+ *
+ * **履歴の取り込みはこの数を超える**（`mergeQuakeHistory` は 1 回で数百件を積みうる。
+ * 群発の当日ぶんは容易に超える）。そのぶんは刈り込みで落ちるが、**落ちるのは
+ * 「いちばん長く触っていないもの」＝発表時刻のいちばん古い地震**になる —— 記憶を積む順が
+ * 発表時刻の昇順なので、続報が来やすい新しい地震のぶんが残る。この並びは
+ * `mergeQuakeHistory` 側（書き戻しの走査順）が守っている。
  */
 const MARK_MEMORY_MAX_ENTRIES = 24
 
@@ -426,6 +432,60 @@ export function advanceQuakeMarks(args: {
   // 寿命（`UPDATE_MARK_TTL_MS`）が決めるのは**次の報が来ないまま置かれたとき**の上限だけ。
   if (facts.size > 0 || rows.size > 0) marks.set(key, { facts, rows, markedAt: now })
   return { memory, marks }
+}
+
+/**
+ * 履歴の畳み込みの 1 段から、記憶を進める。**印は出さない。**
+ *
+ * **1 通ずつ当てるループの中から呼ぶこと**（→ `utils/quakeMerge.ts` の `mergeQuakeHistory`）。
+ * あれは電文を発表時刻順に並べて 1 通ずつカードへ当てるので、その各段階が
+ * 「その報の時点でカードが見せていた姿」になる。**畳み終わった最終形だけを写すと、
+ * 種別ごとの行（`rowsByType`）が最後に当てた種別の分しか埋まらない。**
+ *
+ * **印を出さないのは、履歴が「もう起きたこと」をまとめて再現するものだから。** 開始時点の
+ * カードに印が付くと「いま動いた」と読める。作るのは**次に届く報が比べる相手**だけ。
+ *
+ * これが無いと、リプレイ開始の直後に届いた報は比べる相手を持たず印が出ない
+ * （能登本震の震源要素更新がそれ。21:30 の報の直前にある同じ地震の報は 16:24 で、
+ * 再生開始の前に畳み込まれてしまう）。
+ */
+export function rememberQuakeCard(
+  memory: Map<string, QuakeMarkMemory>,
+  key: string,
+  snapshot: QuakeMarkSnapshot,
+): void {
+  const prev = memory.get(key)
+  const rowsByType = new Map<MarkReportType, RowSnapshot>(prev?.rowsByType ?? [])
+  rowsByType.set(snapshot.reportType, snapshot.rows)
+  // **同じ鍵を置き直す前に消す。** `Map` は挿入順を保つので、上書きだけでは順序が
+  // 更新されない。下の上限（{@link trimQuakeMarkMemory}）が「いちばん長く触っていない
+  // ものから落とす」ために、触った鍵を末尾へ動かす。
+  memory.delete(key)
+  memory.set(key, { facts: snapshot.facts, rows: snapshot.rows, rowsByType })
+}
+
+/**
+ * 記憶を、いま残っているカードのぶんだけに絞る（→ {@link MARK_MEMORY_MAX_ENTRIES}）。
+ *
+ * **履歴の取り込みは一度に何十枚ものカードを作る**ので、積んだままにすると観測点の写し
+ * （大きい地震で数千件）が積み上がる。`advanceQuakeMarks` が受信のたびに行う刈り込みと
+ * 同じことを、バッチの最後に一度だけ行う。
+ *
+ * **`liveKeys` に無い鍵は捨てる。** 畳み込み（`coalesceByEventId`）で暫定 ID と確定 ID の
+ * カードが 1 枚になると、消えた側の鍵に紐づく記憶は宛先を失う。残っていても次の受信で
+ * 捨てられるだけだが、ここで落とせば上限の枠を無駄に使わない。
+ */
+export function trimQuakeMarkMemory(
+  memory: Map<string, QuakeMarkMemory>,
+  liveKeys: ReadonlySet<string>,
+): Map<string, QuakeMarkMemory> {
+  for (const k of [...memory.keys()]) if (!liveKeys.has(k)) memory.delete(k)
+  while (memory.size > MARK_MEMORY_MAX_ENTRIES) {
+    const oldest = memory.keys().next()
+    if (oldest.done) break
+    memory.delete(oldest.value)
+  }
+  return memory
 }
 
 /** 寿命の切れた印を落とす。残す必要が無ければ同じ参照を返す（無駄な再描画を避ける）。 */
