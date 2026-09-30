@@ -46,7 +46,7 @@ import { createLogThrottle, log } from '../utils/logger'
  * あちらが見るのは押し出しが生きているかで、**繋がっているのにその観測点だけが
  * 沈黙している**場合（センサーが落ちた・合成が組めなくなった）は掛からない。
  */
-const READING_STALE_MS = 5000
+export const READING_STALE_MS = 5000
 
 /**
  * 波形が届かなくなってから「止まっている」と見なすまで（ms）。
@@ -153,8 +153,11 @@ export interface SeismoStations {
   readonly stations: readonly SeismoStationState[]
   /** 繋がり具合。**無効・URL 不正のときは `null`。** */
   readonly stream: SeismoStreamState | null
-  /** 読めない押し出しが届いた累計と、最後の理由。 */
-  readonly unreadable: { readonly count: number; readonly detail: string } | null
+  // **読めない押し出しはここへ載せない。** 画面へ出さないと決めたので
+  // （→ `docs/spec/data-sources-spec.md` §4.5「繋がらなくなったことを地図の右上へ出す」）、
+  // 受け取ると**誰も読まない値のために再描画だけが起きる** —— しかもホストと PWA の版が
+  // 食い違っている間は押し出しが毎秒 10 件とも読めないので、**障害が起きているときほど
+  // 重くなる**。累計と理由は接続層が記録へ出す（`seismoStream.ts` の `noteUnreadable`）。
   /**
    * その観測点の波形を読む。**参照は安定**（毎レンダー変わらない）。
    *
@@ -248,7 +251,6 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
   const { enabled, baseUrl, wave } = options
   const [stations, setStations] = useState<readonly SeismoStationState[]>(EMPTY_STATIONS)
   const [stream, setStream] = useState<SeismoStreamState | null>(null)
-  const [unreadable, setUnreadable] = useState<{ count: number; detail: string } | null>(null)
 
   // **帳面は ref に持つ。** 押し出しは毎秒 10 件届くので、1 件ごとに state を
   // 差し替えると再描画がそのぶん増える（{@link REBUILD_INTERVAL_MS}）。
@@ -267,7 +269,6 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
     // 前のホストの観測点が混ざる。
     bookRef.current = new Map()
     setStations(EMPTY_STATIONS)
-    setUnreadable(null)
     if (!canConnect) {
       setStream(null)
       return
@@ -385,7 +386,6 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
       signal: ctrl.signal,
       onMessage,
       onState: setStream,
-      onUnreadable: (count, detail) => setUnreadable({ count, detail }),
     })
 
     /** 帳面から姿を作り、変わっていれば差し替える。 */
@@ -485,7 +485,7 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
   }, [canConnect, baseUrl, wave])
 
   return useMemo(
-    () => ({ stations, stream, unreadable, readWave }),
-    [stations, stream, unreadable, readWave],
+    () => ({ stations, stream, readWave }),
+    [stations, stream, readWave],
   )
 }

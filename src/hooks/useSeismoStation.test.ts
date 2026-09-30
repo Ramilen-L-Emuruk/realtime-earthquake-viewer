@@ -533,7 +533,7 @@ describe('useSeismoStation', () => {
     }
   })
 
-  it('正: 繋がり具合と、読めない押し出しの累計を伝える', async () => {
+  it('正: 繋がり具合を伝える', async () => {
     const h = renderHook(() => useSeismoStation(options))
     await settleDirectory()
 
@@ -541,14 +541,18 @@ describe('useSeismoStation', () => {
       lastOptions?.onState({ kind: 'open' })
     })
     expect(h.result.current.stream).toEqual({ kind: 'open' })
+  })
 
-    act(() => {
-      lastOptions?.onUnreadable?.(3, 'station-reading に stationId が無い')
-    })
-    expect(h.result.current.unreadable).toEqual({
-      count: 3,
-      detail: 'station-reading に stationId が無い',
-    })
+  // **読めない押し出しは画面へ出さないと決めた**（累計と理由は接続層が記録へ出す。
+  // → `docs/spec/data-sources-spec.md` §4.5「繋がらなくなったことを地図の右上へ出す」）。
+  // **受け取らないことを固定する** —— 受け取って state に載せると、ホストと PWA の版が
+  // 食い違っている間は押し出しが毎秒 10 件とも読めないので、**誰も読まない値のために
+  // 毎秒 10 回の再描画が起きる**（障害が起きているときほど重くなる）。
+  it('安全弁: 読めない押し出しは受け取らない', async () => {
+    renderHook(() => useSeismoStation(options))
+    await settleDirectory()
+
+    expect(lastOptions?.onUnreadable).toBeUndefined()
   })
 
   it('安全弁: 台帳が引けなくても、識別子のまま震度を出す', async () => {

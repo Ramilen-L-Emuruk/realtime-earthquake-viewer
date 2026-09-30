@@ -31,7 +31,9 @@ export function SeismoOverlay({ stations }: Props) {
   // ここで別に接続を見ると、同じ事実に判定が 2 つできる。
   //
   // 空の帯を常駐させないのも同じ理由。「揺れていない」と「繋がっていない」が
-  // 見分けられなくなる（繋がらない理由は設定タブの 1 行が受け持つ）。
+  // 見分けられなくなる —— **繋がっていないことは地図の右上が受け持つ**
+  // （`components/SeismoLinkStatus.tsx`）。あちらの待ちもこの帯と同じ 5 秒だが、
+  // **黙って切れた繋ぎでは最大 45 秒遅れる**（理由はあちらの `GRACE_MS`）。
   if (rows.length === 0) return null
 
   return (
