@@ -779,6 +779,9 @@ describe('deliverStationFusion', () => {
       intensitySkipReason: null,
       closeFailure: null,
       intensityStateChanged: false,
+      // 既定は「揃っていた」。**揃わなかった回だけを数える**側なので、こちらを
+      // 既定にしておけば、数えるテストだけが明示的に偽を渡す（#374）。
+      backupsCovered: true,
       ...overrides,
     }
   }
@@ -868,6 +871,27 @@ describe('deliverStationFusion', () => {
     // 状態（この場合は intensitySkipReason: null ＝ 正常）を確定させる。
     // `intensityStateChanged` を渡していない（既定 false）ので `logSegment` は呼ばない。
     expect(order).toEqual(['reportCloseFailure', 'noteWave', 'notePairDiffs', 'publishWave', 'noteSkip'])
+  })
+
+  it('正: 顔ぶれが揃ったかを帳面へそのまま渡す（#374）', () => {
+    // **型では守れない配線。** `noteWave` の第 2 引数は真偽値なので、`true` を
+    // 決め打ちで渡しても型検査は通る —— そうなると「揃わないまま切り上げた」
+    // 回が永久に 0 のままになり、#374 と同じ穴（気づく手段が無い）が開く。
+    const covered: boolean[] = []
+    const sinks = {
+      noteReading: () => {},
+      publish: () => {},
+      noteWave: (_w: FusedWaveChunk, c: boolean) => covered.push(c),
+      notePairDiffs: () => {},
+      publishWave: () => {},
+      reportCloseFailure: () => {},
+      noteSkip: () => {},
+      logSegment: () => {},
+    }
+    deliverStationFusion(sinks, fusion({ fusedWave: FUSED_WAVE, backupsCovered: false }))
+    deliverStationFusion(sinks, fusion({ fusedWave: FUSED_WAVE, backupsCovered: true }))
+
+    expect(covered).toEqual([false, true])
   })
 
   it('状態が変わっていない回（intensityStateChanged が false）では logSegment を呼ばない', () => {
