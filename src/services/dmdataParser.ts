@@ -1993,7 +1993,7 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
   // 沖合の潮位観測点かどうか。「重要」の基準が沿岸と違うためここで分ける。
   const offshore = headType === 'VTSE52'
 
-  // Observation のみ（VTSE51②: 津波観測情報 / VTSE52: 沖合の津波観測に関する情報）
+  // Observation のみ（VTSE51②: 津波観測に関する情報 / VTSE52: 沖合の津波観測に関する情報）
   if (!forecastEl && observationEl) {
     const observations = parseTsunamiObservationsFromXml(observationEl, offshore)
     if (observations.length === 0) {

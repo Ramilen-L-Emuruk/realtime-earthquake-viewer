@@ -886,7 +886,7 @@ export interface JMATsunami {
   cancelledAreas?: TsunamiArea[]
   observations?: TsunamiObservation[]
   /**
-   * **観測状況を確定した時刻**（`Head/TargetDateTime`）。津波観測情報（VTSE51）と
+   * **観測状況を確定した時刻**（`Head/TargetDateTime`）。津波観測に関する情報（VTSE51）と
    * 沖合の津波観測に関する情報（VTSE52）でのみ入る。
    *
    * この要素は種別で意味が変わり（電文解説資料 Ⅰ.（ⅱ）3）、観測情報では「いつ時点の

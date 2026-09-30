@@ -1,7 +1,7 @@
 import type { LiveEvent, EEWAlert, JMAQuake, JMATsunami, JMANankai, JMANankaiCommentary, JMAKohatsu, JMAEarthquakeCount, JMALpgm, IntensityScale, TsunamiGrade, TsunamiArea, EarthquakePoint, DomesticTsunami, TsunamiObservation, Hypocenter } from '../types/earthquake'
 import { eewNoForecastReason, canPresentLpgmClass, type EewMaxScaleInfo } from './eew'
 import { getIntensityLabel, getIntensityLabelWithApproxAbove } from './intensity'
-import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, hasForecastHeight, compareObservedHeightDesc, overSuffixedHeight, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, TSUNAMI_GRADE_LIFTED, type TsunamiAreaGradeChange, type TideReportChange } from './tsunami'
+import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, hasForecastHeight, compareObservedHeightDesc, overSuffixedHeight, evacuationActionLine, fallbackEvacuationAction, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, TSUNAMI_GRADE_LIFTED, type TsunamiAreaGradeChange, type TideReportChange } from './tsunami'
 import { SENTENCE_END, SENTENCE_END_RE } from './ttsPunctuation'
 import { joinSegments, plain, type SpeechSegment, type SpeechRef, type QuakeFact, type SpokenObservation } from './ttsFollow'
 import { getSubRegionsCache } from './subregions'
@@ -1409,7 +1409,7 @@ export function voicevoxPreviewTexts(): readonly string[] {
 function domesticTsunamiText(t: DomesticTsunami): string {
   switch (t) {
     case 'なし':           return 'この地震による津波の心配はありません。'
-    case '若干の海面変動':  return 'この地震による若干の海面変動が予想されますが、被害の心配はありません。'
+    case '若干の海面変動':  return 'この地震により、日本の沿岸では若干の海面変動があるかもしれませんが、被害の心配はありません。'
     case '調査中':         return 'この地震による津波の有無を調査中です。'
     case '海面変動の可能性': return '震源が海底のため、津波が発生するおそれがあります。'
     case '注意報':         return '現在津波注意報を発表中です。'
@@ -2232,9 +2232,7 @@ export function tsunamiToSegments(
   // 波高の文はグループの境界が電文順で決まるため、並べ替える前のものを渡す
   const rawTopAreas = event.areas.filter(a => a.grade === topGrade)
   const gradeLabel = tsunamiGradeLabel(topGrade)
-  const action = topGrade === 'MajorWarning' ? 'ただちに高台へ避難してください。'
-    : topGrade === 'Warning' ? '海岸から離れてください。'
-    : topGrade === 'Forecast' ? '若干の海面変動が予想されますが、被害の心配はありません。' : ''
+  const action = evacuationActionLine(event.warningComments) ?? fallbackEvacuationAction(topGrade)
   const heights = areaHeightSentence(rawTopAreas, observations)
   // **震源は最後に置く。** 等級・行動・区域を言い終えてから足す（→ `sourceHypocenterSegments`）。
   const source = sourceHypocenterSegments(event, quakeSpoken, opts)
@@ -2664,7 +2662,7 @@ export function tsunamiObservationUpdateToSegments(
   const lead = sentenceOf(raisedLeads ? raised : firstTime, raisedLeads)
   const follow = sentenceOf(raisedLeads ? firstTime : raised, !raisedLeads)
   return [
-    plain(`津波観測情報。${headlinePart}`),
+    plain(`津波観測に関する情報。${headlinePart}`),
     ...joinWithAlso(lead, follow),
     ...omittedPointsSentence(obs.length, selected.length, '観測しています'),
   ]
@@ -2936,7 +2934,7 @@ export function tsunamiFirstWaveToSegments(
  * 観測情報の続報で、読み上げるべき変化が 1 つも無かったときの一文。
  *
  * **名乗りだけで終わらせないための断片**（地震情報の `noRegionChangeSegments` と同じ考え方）。
- * 「津波観測情報。」で切ると聞き手には「何が？」しか残らない。
+ * 「津波観測に関する情報。」で切ると聞き手には「何が？」しか残らない。
  *
  * **言い切ってよい範囲を波高に限る。** 読み上げが伝えてきた単位は観測点の波高なので、
  * そこが据え置きであることは正しい。最大波の時刻・到達状況まで含めて「変わりはありません」
@@ -2947,7 +2945,7 @@ export function tsunamiFirstWaveToSegments(
  * 構造としては起こりうるので用意してあるが、実際に声になるところは確かめていない。
  */
 export function tsunamiObservationNoChangeSegments(): SpeechSegment[] {
-  return [plain('津波観測情報。観測された波高に変わりはありません。')]
+  return [plain('津波観測に関する情報。観測された波高に変わりはありません。')]
 }
 
 /** 満潮時刻の報の名乗り（電文が見出し文を持たないときに使う）。 */
@@ -3122,7 +3120,7 @@ export function nankaiToText(event: JMANankai): string {
     return '南海トラフ地震臨時情報、調査終了。南海トラフ地震の発生可能性は通常の範囲内でした。'
   }
   if (event.kindName === '調査中') {
-    return '南海トラフ地震臨時情報、調査中。南海トラフ地震の発生可能性について調査しています。最新情報に注意してください。'
+    return '南海トラフ地震臨時情報、調査中。南海トラフ地震の発生可能性について調査しています。今後の情報に注意してください。'
   }
   if (event.kindName === '巨大地震警戒') {
     return '南海トラフ地震臨時情報、巨大地震警戒。南海トラフ地震の想定震源域内で大規模な地震が発生しました。直ちに防災対応をとってください。'
@@ -3130,7 +3128,7 @@ export function nankaiToText(event: JMANankai): string {
   if (event.kindName === '巨大地震注意') {
     return '南海トラフ地震臨時情報、巨大地震注意。南海トラフ地震の想定震源域内で地震が発生しました。防災対応の確認をしてください。'
   }
-  return '南海トラフ地震臨時情報。南海トラフ地震に関する臨時情報が発表されました。最新情報に注意してください。'
+  return '南海トラフ地震臨時情報。南海トラフ地震に関する臨時情報が発表されました。今後の情報に注意してください。'
 }
 
 /**
@@ -3308,7 +3306,7 @@ function buildLpgmRegionText(lpgm: JMALpgm, opts: TtsSpeechOptions): string {
 export function lpgmToText(lpgm: JMALpgm, opts: TtsSpeechOptions, isNew: boolean): string {
   if (lpgm.cancelled) {
     // 述語は「取り消されました」で全種別そろえる（→ `eewCancelToText`）。
-    return '長周期地震動情報は取り消されました。'
+    return '長周期地震動に関する観測情報は取り消されました。'
   }
   // 地震の時刻は**発現時刻を先に採る**（地震情報・津波カードと同じ規則）。揃えないと、
   // 同じ地震について地震情報が「◯時◯分ころ」と読んだ直後に、長周期が 1 分違う時刻を読む。
@@ -3316,7 +3314,7 @@ export function lpgmToText(lpgm: JMALpgm, opts: TtsSpeechOptions, isNew: boolean
   // 確認。→ `docs/spec/tsunami-spec.md` §4）。**`originTime` は空になりえないが**
   // （パーサーが無ければ電文ごと捨てる）、`arrivalTime` は任意なので `||` で落とす。
   const time = formatTime(lpgm.arrivalTime || lpgm.originTime)
-  const prefix = isNew ? '長周期地震動情報。' : '長周期地震動情報が更新されました。'
+  const prefix = isNew ? '長周期地震動に関する観測情報。' : '長周期地震動に関する観測情報が更新されました。'
   // 時刻が日時として読めなければ句ごと落とす。「頃発生した地震で、」だけが残ると文が壊れ、
   // かといって時刻を読ませると「ナンじナンぷん頃」になる。落としても、この情報の主題
   // （どこで階級いくつを観測したか）は後半がすべて伝える。
@@ -3981,7 +3979,7 @@ export function telegramTextToSpeak(event: LiveEvent, opts: TtsSpeechOptions): T
         pick('lpgmVarComment', event.data.varCommentText),
         pick('lpgmFreeText', event.data.freeFormText),
       ], reads)
-      return telegramSpeech(`長周期地震動観測情報について、気象庁の発表文をお伝えします。`, body, telegramTextSpokenSubject(event.kind, event.data.eventId))
+      return telegramSpeech(`長周期地震動に関する観測情報について、気象庁の発表文をお伝えします。`, body, telegramTextSpokenSubject(event.kind, event.data.eventId))
     }
     case 'nankai':
     case 'nankaiCommentary': {

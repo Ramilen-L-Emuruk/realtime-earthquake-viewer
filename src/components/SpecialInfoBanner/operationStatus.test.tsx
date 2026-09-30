@@ -75,7 +75,9 @@ describe('特別情報の帯の運用種別', () => {
     expect(screen.queryByText('試験報')).toBeNull()
     // 帯そのものは出ている（印だけが出ない）
     expect(screen.getByText('巨大地震警戒')).toBeTruthy()
-    expect(screen.getByText('後発地震注意')).toBeTruthy()
+    // **後発地震の帯は情報名の札を持たない**（南海トラフのキーワードに当たる語が無く、置くと
+    // 隣の見出しと同じ文字列が 2 つ並ぶ）。帯が出ていることは電文の見出しで確かめる。
+    expect(screen.getByText('北海道・三陸沖後発地震注意情報を発表しました。')).toBeTruthy()
     expect(screen.getByText('お知らせ')).toBeTruthy()
     expect(screen.getByText('地震回数')).toBeTruthy()
   })
