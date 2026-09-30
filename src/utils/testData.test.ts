@@ -20,6 +20,7 @@ import {
   createTestQuakeAmendment,
   createTestQuakeReportSequence,
   createTestTsunami,
+  createTestTsunamiExpiry,
   createTestTsunamiForecast,
   createTestTsunamiGradeChange,
   createTestTsunamiWarning,
@@ -1400,6 +1401,78 @@ describe('津波の続報で区域ごとに等級が動く報', () => {
     expect(base.areas.some(a => (a.stations?.length ?? 0) > 0)).toBe(true)
     expect(base.observations?.length).toBeGreaterThan(0)
     expect(base.warningComments!.length).toBe(4)
+  })
+})
+
+describe('津波警報の続報で予報だけが残る報（失効時刻つき）', () => {
+  // 失効時刻が日をまたぐかどうかを見るので、時計を固定する（日付の境目で結果が変わる）。
+  beforeEach(() => { vi.useFakeTimers({ now: new Date('2026-09-12T12:34:56Z').getTime() }) })
+  afterEach(() => { vi.useRealTimers() })
+
+  // 正: 失効時刻が載っていること。**これが無いと、この経路を実機で一度も確かめられない。**
+  it('続報に失効時刻が載り、発表報には載っていない', () => {
+    const base = createTestTsunamiWarning(true)
+    const next = createTestTsunamiExpiry(base)
+    expect(base.validDateTime).toBeUndefined()
+    expect(next.validDateTime).toBeTruthy()
+    // 発表より後（過去の期限だと受け取った瞬間に消える）
+    expect(new Date(next.validDateTime!).getTime()).toBeGreaterThan(new Date(next.time).getTime())
+  })
+
+  // 正: 全体の最上位等級が津波警報から津波予報へ下がること。**ここが下がらないと降格の読み上げへ
+  // 流れず、失効時刻を語る文が組み立てられない**（→ `useLiveEventHandler.tsunamiExpiry.test.ts`）。
+  it('最上位等級が津波警報から津波予報へ下がる', () => {
+    const base = createTestTsunamiWarning(true)
+    const next = createTestTsunamiExpiry(base)
+    expect(base.areas.some(a => a.grade === 'Warning')).toBe(true)
+    expect(next.areas.every(a => a.grade === 'Forecast')).toBe(true)
+  })
+
+  // 正: 残る区域は前回の等級を持ち、解除された区域は `cancelledAreas` へ移る（実電文の形）。
+  //
+  // **区域名を名指しで固定するのはわざと。** 工場は解除する区域を名前の一致で選ぶので、
+  // 発表報の区域名を変えると「解除された区域が 0 件」の続報を静かに作り、設定タブの説明文
+  // （「茨城県は解除」）と実際の挙動が食い違う。ここが落ちることがその唯一の歯止め。
+  it('残る区域は前回の等級を持ち、解除された区域は cancelledAreas へ移る', () => {
+    const next = createTestTsunamiExpiry(createTestTsunamiWarning(true))
+    const by = (name: string) => next.areas.find(a => a.name === name)!
+    expect(by('青森県太平洋沿岸')).toMatchObject({ grade: 'Forecast', lastGrade: 'Warning' })
+    expect(by('北海道太平洋沿岸東部')).toMatchObject({ grade: 'Forecast', lastGrade: 'Watch' })
+    expect(next.areas.map(a => a.name)).not.toContain('茨城県')
+    expect(next.cancelledAreas).toHaveLength(1)
+    expect(next.cancelledAreas![0]).toMatchObject({
+      name: '茨城県', grade: 'Unknown', lastGrade: 'Warning',
+    })
+  })
+
+  // 対照: 予報の区域は予想波高も「ただちに来襲」も持たない（実電文でも付かない）。
+  it('予報へ落ちた区域から予想波高と「ただちに来襲」が外れる', () => {
+    const base = createTestTsunamiWarning(true)
+    const next = createTestTsunamiExpiry(base)
+    expect(base.areas.some(a => a.maxHeight !== undefined)).toBe(true)
+    expect(base.areas.some(a => a.immediate)).toBe(true)
+    expect(next.areas.every(a => a.maxHeight === undefined)).toBe(true)
+    expect(next.areas.every(a => !a.immediate)).toBe(true)
+  })
+
+  // 安全弁: 失効時刻が発表と同じ日に収まっていること。**日をまたぐと読み上げが日付から読む形へ
+  // 切り替わる**（`expiryNeedsDate`）ので、時刻だけを読む形を実機で確かめられなくなる。
+  it('失効時刻は発表と同じ日に収まる', () => {
+    const next = createTestTsunamiExpiry(createTestTsunamiWarning(true))
+    const issued = new Date(next.time)
+    const expiry = new Date(next.validDateTime!)
+    expect(expiry.getFullYear()).toBe(issued.getFullYear())
+    expect(expiry.getMonth()).toBe(issued.getMonth())
+    expect(expiry.getDate()).toBe(issued.getDate())
+  })
+
+  // 続報なので同じ地震を指す（`eventId` が変わると別の津波として立つ）。
+  it('続報は元の報と同じ eventId で、発表時刻だけが進む', () => {
+    const base = createTestTsunamiWarning(true)
+    const next = createTestTsunamiExpiry(base)
+    expect(next.eventId).toBe(base.eventId)
+    expect(next.id).not.toBe(base.id)
+    expect(new Date(next.time).getTime()).toBeGreaterThanOrEqual(new Date(base.time).getTime())
   })
 })
 

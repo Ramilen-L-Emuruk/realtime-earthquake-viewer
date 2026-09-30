@@ -160,6 +160,48 @@ export function latestValidDateTime(reports: JMATsunami[]): string | undefined {
 }
 
 /**
+ * 失効時刻を**読み上げる**とき、時刻だけでは足りず**日付も添えるべきか**を判定する。
+ *
+ * 発表と同じ日なら時刻だけで足りる。実電文では両方の形が出る —— 2024 年能登半島地震は
+ * 01/02 10:00 発表で期限が同日 17:00、2024 年日向灘地震は 08/08 13:00 発表で期限が翌日 10:00。
+ *
+ * **使うのは読み上げだけ。画面は日付を常に出す**（分ける理由は
+ * `docs/spec/tsunami-spec.md` §9「失効時刻はバナーの右上に出す」が持つ。画面側の実装は
+ * `components/TsunamiTab/index.tsx`）。
+ *
+ * **発表時刻が読めないときは日付を添える側へ倒す。** 同じ日かを判定できないため。余分な日付は
+ * 誤解を招かないが、落とした日付は誤解を招く。
+ *
+ * @param issuedIso 発表時刻（`JMATsunami.time`）
+ * @param expiryIso 失効時刻（`JMATsunami.validDateTime`）
+ * @returns 日付を添えるべきなら true。**失効時刻そのものが読めない場合も false**
+ *   （呼び出し側が整形の段で落とすため、ここで区別する意味がない）
+ */
+export function expiryNeedsDate(issuedIso: string, expiryIso: string): boolean {
+  const expiry = readDateTime('tsunami.expiryNeedsDate.expiry', expiryIso)
+  if (!expiry) return false
+  const issued = readDateTime('tsunami.expiryNeedsDate.issued', issuedIso)
+  if (!issued) return true
+  return jstDateKey(issued) !== jstDateKey(expiry)
+}
+
+/** 日本標準時の進み（UTC からの時差）。 */
+const JST_OFFSET_MS = 9 * 60 * 60 * 1000
+
+/**
+ * その時刻が日本標準時のどの日に属するか（`YYYY-MM-DD`）。
+ *
+ * **端末のタイムゾーンで読まないこと。** `getFullYear()` の類は端末の設定で解釈が変わるので、
+ * 日本時間の深夜をまたぐ組み合わせだと、日本時間では日が変わっているのに「同じ日」と読んだり
+ * その逆をしたりする —— 電文が扱うのは日本時間の暦日で、端末がどこにあっても答えは 1 つ。
+ * ずれても例外もログも出ず、読み上げに余分な日付が付くか、必要な日付が落ちるだけ。
+ * 同じ形の判定は震源カタログの年の絞り込み（`utils/hypocenterCatalogView.ts`）が先に持っている。
+ */
+function jstDateKey(at: Date): string {
+  return new Date(at.getTime() + JST_OFFSET_MS).toISOString().slice(0, 10)
+}
+
+/**
  * 履歴からの復元（初回ロード・リロード）で、同一イベントの過去報を取り込み直す。
  *
  * 復元は最新の 1 報だけを画面へ載せるため、その報が持たない値は画面から落ちる。ここでは

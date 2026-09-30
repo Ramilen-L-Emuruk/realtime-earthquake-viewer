@@ -121,8 +121,15 @@ export interface SpokenObservation {
  * 下がるときも。** 区域側（`isUnspokenRegion`）は上がったときだけ読み直すので非対称だが、
  * 地域名を引けない状況ではこれが震度を伝える唯一の経路なので、下方修正も黙って捨てられない。
  * 他の 4 つと違い `tellableFacts` には載せない（理由は `ttsText.ts` の同関数のコメント）。
+ *
+ * `tsunamiExpiry` は**津波の失効時刻**（電文の `ValidDateTime`）。地震の事実ではないが、
+ * 同じ既読の仕組みに載せてある —— 津波の読み上げは `QuakeSpokenState` を受け取るので、
+ * ここへ足せば「一度言ったら黙る／値が変わったら言い直す」がそのまま効く。
+ * **値は読み上げる文字列そのもの**で、`maxScaleOnly` と同じく**値が変われば読み直す**
+ * （気象庁は期限を伝えた報にだけ `ValidDateTime` を載せるが、後の報が別の期限を載せれば
+ * `latestValidDateTime` がそちらを採るため、値は動きうる）。`tellableFacts` には載せない。
  */
-export type QuakeFact = 'hypocenterName' | 'magnitude' | 'depth' | 'domesticTsunami' | 'maxScaleOnly'
+export type QuakeFact = 'hypocenterName' | 'magnitude' | 'depth' | 'domesticTsunami' | 'maxScaleOnly' | 'tsunamiExpiry'
 
 /**
  * 読み上げ文の断片と、その断片が指す対象。

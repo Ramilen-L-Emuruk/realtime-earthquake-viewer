@@ -1,7 +1,7 @@
 import type { LiveEvent, EEWAlert, JMAQuake, JMATsunami, JMANankai, JMANankaiCommentary, JMAKohatsu, JMAEarthquakeCount, JMALpgm, IntensityScale, TsunamiGrade, TsunamiArea, EarthquakePoint, DomesticTsunami, TsunamiObservation, Hypocenter } from '../types/earthquake'
 import { eewNoForecastReason, canPresentLpgmClass, type EewMaxScaleInfo } from './eew'
 import { getIntensityLabel, getIntensityLabelWithApproxAbove } from './intensity'
-import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, hasForecastHeight, compareObservedHeightDesc, overSuffixedHeight, evacuationActionLine, fallbackEvacuationAction, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, TSUNAMI_GRADE_LIFTED, type TsunamiAreaGradeChange, type TideReportChange } from './tsunami'
+import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, hasForecastHeight, compareObservedHeightDesc, overSuffixedHeight, evacuationActionLine, fallbackEvacuationAction, expiryNeedsDate, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, TSUNAMI_GRADE_LIFTED, type TsunamiAreaGradeChange, type TideReportChange } from './tsunami'
 import { SENTENCE_END, SENTENCE_END_RE } from './ttsPunctuation'
 import { joinSegments, plain, type SpeechSegment, type SpeechRef, type QuakeFact, type SpokenObservation } from './ttsFollow'
 import { getSubRegionsCache } from './subregions'
@@ -2219,6 +2219,66 @@ function sourceHypocenterSegments(
   return []
 }
 
+/**
+ * 津波の失効時刻（電文の `ValidDateTime`）を伝える句。
+ *
+ * **読み上げの末尾に置く** —— 震源よりさらに後。等級・行動・区域・波高・震源を言い終えた後で
+ * いちばん緊急度の低い事実を足す形にしてある（`tsunamiToSegments` の並び）。
+ *
+ * **一度言ったら黙る。値が変わったら言い直す。** 判定は `QuakeSpokenState.facts` の
+ * `tsunamiExpiry` で、記録は読み上げの完了時に `applySpokenRefs` が進める。気象庁は期限を
+ * 伝えた報にだけ `ValidDateTime` を載せ以後の続報には載せないが、**引き継ぎ
+ * （`latestValidDateTime`）が同じ値を毎報に載せ続ける**ので、既読を見ないと続報のたびに
+ * 失効時刻を繰り返すことになる。
+ *
+ * **等級の語は電文から採る**（`gradeLabel`）。実電文では期限が付くのは「警報・注意報が解除されて
+ * 予報だけが残った段階」だけ（→ `docs/spec/tsunami-spec.md` §3「有効期限は報ではなく津波に付く」）
+ * なので、ふだんは「この津波予報の失効時刻は」になる。**それでも等級で固定しない** ——
+ * 警報に期限が付いた報が来たときに「津波予報」と名乗ると、見出しと食い違う。
+ *
+ * **日をまたぐときだけ日付から読む。** 発表と同じ日なら時刻だけで足りる（実電文では能登が
+ * 同日・日向灘が翌日で、どちらの形も出る）。
+ *
+ * **呼ぶのは等級を名乗る 2 つの文 —— 発表文（{@link tsunamiToSegments}）と降格文
+ * （{@link tsunamiDowngradeToSegments}）。どちらにも必ず足すこと。** 気象庁が期限を載せるのは
+ * 「予報のみの発表」と「警報・注意報が解除されて予報のみが残る」の 2 通りで、前者は発表文・
+ * 後者は降格文へ流れる（条件と実電文の並びは `docs/spec/tsunami-spec.md` §3「有効期限は報では
+ * なく津波に付く」）。**片方へ足し忘れると、その経路の電文では一度も声にならない** ——
+ * 実際に降格文で落とし、どの検証にも掛からなかった。穴の形と守り方は
+ * `useLiveEventHandler.tsunamiExpiry.test.ts` の冒頭が持つ。
+ *
+ * **観測点更新・区域単位の等級変化・変化を伝えない続報の 3 経路には足していない。** あちらへ渡る
+ * のは「等級は動いていない」報で、生の電文が `ValidDateTime` を持たない（引き継ぎが載せるのは
+ * カードの状態のほうで、読み上げが見る `event` には乗らない）。**期限を載せた電文がその 3 経路へ
+ * 流れうると分かったら、ここも足すこと。**
+ *
+ * **`spoken` が無いときは毎回読む。** 呼び出し側の既読は地震ごと（`quake:<eventId>`）に持つので、
+ * `eventId` を持たない電文では `undefined` が渡る（→ `useLiveEventHandler.ts` の
+ * `quakeSpokenState`）。そのまま毎報で失効時刻を言うことになるが、**そうなる電文があるかは
+ * 数えていない** —— 国内の津波電文は原因地震の `EventID` を持つのがふつうで、識別子を欠く報と
+ * 期限を載せる報が重なる形は確かめていない。同じ弱点は震源の言い直し
+ * （{@link sourceHypocenterSegments}）が先に持っていて、こちらはそれを継いでいるだけ。
+ */
+function tsunamiExpirySegments(
+  event: JMATsunami,
+  gradeLabel: string,
+  spoken?: QuakeSpokenState,
+): SpeechSegment[] {
+  if (event.cancelled || !event.validDateTime) return []
+  // 日付を添えるかの判定は画面と共有する（`expiryNeedsDate`）。書式だけがここと画面で違う。
+  const value = expiryNeedsDate(event.time, event.validDateTime)
+    ? formatDayTime(event.validDateTime)
+    : formatTime(event.validDateTime)
+  // 日時として読めない失効時刻はここで落ちる（整形の 2 関数が `null` を返す）。
+  if (!value) return []
+  if (spoken?.facts.get('tsunamiExpiry') === value) return []
+  return [
+    plain(`この${gradeLabel}の失効時刻は、`),
+    { text: value, refs: [{ kind: 'quakeFact', fact: 'tsunamiExpiry', value }] },
+    plain('です。'),
+  ]
+}
+
 export function tsunamiToSegments(
   event: JMATsunami,
   observationsForOrder?: readonly TsunamiObservation[],
@@ -2234,8 +2294,11 @@ export function tsunamiToSegments(
   const gradeLabel = tsunamiGradeLabel(topGrade)
   const action = evacuationActionLine(event.warningComments) ?? fallbackEvacuationAction(topGrade)
   const heights = areaHeightSentence(rawTopAreas, observations)
-  // **震源は最後に置く。** 等級・行動・区域を言い終えてから足す（→ `sourceHypocenterSegments`）。
+  // **震源は後ろに置く。** 等級・行動・区域を言い終えてから足す（→ `sourceHypocenterSegments`）。
   const source = sourceHypocenterSegments(event, quakeSpoken, opts)
+  // **失効時刻はその震源よりさらに後 —— 文の最後。** 緊急度のいちばん低い事実なので、
+  // 等級・行動・区域・波高・震源のすべてを言い終えてから足す（→ `tsunamiExpirySegments`）。
+  const expiry = tsunamiExpirySegments(event, gradeLabel, quakeSpoken)
 
   // **等級と行動を先に言い切る。** 区域を全部読んでから避難を促すと、予報区が多いほど行動指示が
   // 遅れる。区域名は次の文で波高と一緒に挙げるので、聞き手が待たされるのは高さの情報だけ。
@@ -2246,6 +2309,7 @@ export function tsunamiToSegments(
       ...areasWithoutHeightSentence(rawTopAreas, observations, gradeLabel),
       ...lowerGradeSentence(event.areas, topGrade, observations),
       ...source,
+      ...expiry,
     ]
   }
   // 波高がまだ付いていない（続報で後から付く）場合は、区域名を直接挙げる。
@@ -2260,6 +2324,7 @@ export function tsunamiToSegments(
     plain(`に${gradeLabel}が発表されました。${action}`),
     ...lowerGradeSentence(event.areas, topGrade, observations),
     ...source,
+    ...expiry,
   ]
 }
 
@@ -2276,10 +2341,16 @@ export function tsunamiToText(
  * `observationsForOrder` の役割は `tsunamiToSegments` と同じ。**引き下げこそ渡すこと** ――
  * 警報から注意報へ切り替える報が届くころには観測が出揃っており、カードは実測波高の順に
  * 並び替わっている。
+ *
+ * **`quakeSpoken` は任意にしない。** 渡し忘れても型チェックは通り、失効時刻（下記）が黙るだけで
+ * 例外もログも出ない。**実電文で期限を載せるのはこの降格報**なので、それは「実運用では一度も
+ * 声にならない」と同じこと（→ {@link tsunamiExpirySegments}）。読まないと決めた呼び出し元は
+ * `undefined` を明示する。
  */
 export function tsunamiDowngradeToSegments(
   event: JMATsunami,
-  observationsForOrder?: readonly TsunamiObservation[],
+  observationsForOrder: readonly TsunamiObservation[] | undefined,
+  quakeSpoken: QuakeSpokenState | undefined,
 ): SpeechSegment[] {
   const topGrade = GRADE_ORDER.find(g => event.areas.some(a => a.grade === g))
   if (!topGrade) return [plain(tsunamiCancelToText(event.cancelReason))]
@@ -2288,6 +2359,9 @@ export function tsunamiDowngradeToSegments(
   const rawTopAreas = event.areas.filter(a => a.grade === topGrade)
   const gradeLabel = tsunamiGradeLabel(topGrade)
   const heights = areaHeightSentence(rawTopAreas, observations)
+  // **失効時刻は文の最後。** 発表文と同じ置き場所（→ `tsunamiExpirySegments`）。
+  // **降格文は震源を語らない**ので、発表文の並びにある震源の句はここには無い。
+  const expiry = tsunamiExpirySegments(event, gradeLabel, quakeSpoken)
 
   if (heights.length > 0) {
     return [
@@ -2295,6 +2369,7 @@ export function tsunamiDowngradeToSegments(
       ...heights,
       ...areasWithoutHeightSentence(rawTopAreas, observations, gradeLabel),
       ...lowerGradeSentence(event.areas, topGrade, observations),
+      ...expiry,
     ]
   }
   return [
@@ -2302,15 +2377,24 @@ export function tsunamiDowngradeToSegments(
     ...areaNameSegments(orderAreasForSpeech(rawTopAreas, observations)),
     plain(`に${gradeLabel}が発表されています。`),
     ...lowerGradeSentence(event.areas, topGrade, observations),
+    ...expiry,
   ]
 }
 
-/** VTSE41/51/52 津波情報 引き下げ時の読み上げテキストを生成する。 */
+/**
+ * VTSE41/51/52 津波情報 引き下げ時の読み上げテキストを生成する。
+ *
+ * **既読を持たない**（`quakeSpoken` に `undefined` を渡す）。既読の照合が効かないので、
+ * 期限を持つ電文を渡せば失効時刻は毎回載る —— 文の形を見るテストと抑揚の計測台
+ * （`ttsSentenceSweep.probe.test.ts`）からしか呼ばれず、そちらは「一度言ったら黙る」を
+ * 見る場ではないため、これでよい。本番の読み上げは断片列のほう
+ * （{@link tsunamiDowngradeToSegments}）を既読付きで直接使う。
+ */
 export function tsunamiDowngradeToText(
   event: JMATsunami,
   observationsForOrder?: readonly TsunamiObservation[],
 ): string {
-  return joinSegments(tsunamiDowngradeToSegments(event, observationsForOrder))
+  return joinSegments(tsunamiDowngradeToSegments(event, observationsForOrder, undefined))
 }
 
 /**
