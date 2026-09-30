@@ -291,9 +291,11 @@ function KohatsuBanner({ kohatsu, speaking }: { kohatsu: JMAKohatsu; speaking: b
       >
         <KohatsuIcon />
         <div className="min-w-0 flex-1 flex items-center gap-2 flex-wrap">
-          <span className="text-xs font-bold text-white px-1.5 py-0.5 rounded bg-blue-500 flex-shrink-0">
-            後発地震注意
-          </span>
+          {/* **情報名の札は置かない。** 南海トラフの帯は気象庁のキーワード（「巨大地震注意」等）を
+              札に出すが、後発地震注意情報にはそれに当たる語が無い。情報名を入れると、すぐ隣の
+              見出し（電文の `Head/Headline/Text`。実電文は「北海道・三陸沖後発地震注意情報」）と
+              同じ文字列が 2 つ並ぶ。**幅は足りる**（390px 幅でも札 186px・行 314px で収まり、
+              見出しが次行へ回るだけ）が、同じ言葉を二度読ませる意味が無い。 */}
           <OperationStatusBadge status={kohatsu.operationStatus} />
           <span className="text-white text-sm font-bold leading-tight truncate">{kohatsu.headline}</span>
         </div>

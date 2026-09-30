@@ -3,7 +3,7 @@ import { useAutoOpenWhileSpeaking } from '../../hooks/useAutoOpenWhileSpeaking'
 import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation, TsunamiWarningComment } from '../../types/earthquake'
 import { formatDateTimeMin, formatDepth, formatMagnitudeCondition, formatTimeMin, hasDepth } from '../../utils/formatters'
 import { quakeEventKey } from '../../utils/quakeMerge'
-import { groupAreasForCardDisplay, tsunamiAreaGradeChanges, TSUNAMI_GRADE_LIFTED, matchesArea, observationBadges, observationHeightText, observationArrivalFallbackText, observationMaxHeightTimeText, estimationBadges, estimationHeightText, forecastHeightImportantBadge, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, isTsunamiGradeRaised, sourceEarthquakeTime, tsunamiAreaKey, evacuationActionLine, type ObsUpdateMark, type ObsUpdateField } from '../../utils/tsunami'
+import { groupAreasForCardDisplay, tsunamiAreaGradeChanges, TSUNAMI_GRADE_LIFTED, matchesArea, observationBadges, observationHeightText, observationArrivalFallbackText, observationMaxHeightTimeText, estimationBadges, estimationHeightText, forecastHeightImportantBadge, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, isTsunamiGradeRaised, sourceEarthquakeTime, tsunamiAreaKey, evacuationActionLine, fallbackEvacuationAction, type ObsUpdateMark, type ObsUpdateField } from '../../utils/tsunami'
 import { TSUNAMI_MISSING_COLOR as MISSING_COLOR } from '../../utils/tsunamiStyle'
 import { UPDATE_MARK_COLOR } from '../../utils/updateMark'
 import { mapChunksToRefs, planFollowScroll, hasFollowContext, type FollowRect, type SpeechFollowSession, type SpeechRef } from '../../utils/ttsFollow'
@@ -1341,7 +1341,7 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
             style={{ background: isCancelledDisplay ? 'rgba(75,85,99,0.18)' : `${topStyle.cardBorder}18` }}>
             <div className="flex items-center justify-between gap-2">
               <div className="font-bold flex items-center gap-2" style={{ fontSize: '0.875rem', color: isCancelledDisplay ? '#9ca3af' : topStyle.headerColor }}>
-                {isCancelledDisplay ? cancelInfo.title : `${GRADE_LABEL[topGrade]} 発令中`}
+                {isCancelledDisplay ? cancelInfo.title : `${GRADE_LABEL[topGrade]} 発表中`}
                 {/* 電文が自分で名乗っている運用種別（`Control/Status`）。訓練・試験のときだけ出す。
                     印が無いと、訓練の大津波警報が本物と同じ顔で出る。 */}
                 {active[0]?.operationStatus && (
@@ -1394,8 +1394,10 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
               } : undefined}
               style={{ fontSize: '0.6875rem', color: isCancelledDisplay ? '#6b7280' : topStyle.headerColor, opacity: 0.8 }}>
               <span className="flex-1">
-                {isCancelledDisplay ? cancelInfo.desc
-                  : bannerActionLine ?? (topGrade === 'Forecast' ? '若干の海面変動があるかもしれません' : '海岸・河川から直ちに離れてください')}
+                {/* 気象庁の文が採れなければアプリの文へ落ちる。**文面は読み上げと共有する**
+                    （`fallbackEvacuationAction`）—— 別々に持つと、片方だけ直したときに画面と声が
+                    違う行動を指示することになる。 */}
+                {isCancelledDisplay ? cancelInfo.desc : bannerActionLine ?? fallbackEvacuationAction(topGrade)}
               </span>
               {canOpenComments && <span className="flex-shrink-0" style={{ fontSize: '0.625rem', opacity: 0.8 }}>{commentsOpen ? '▼' : '▶'}</span>}
             </div>

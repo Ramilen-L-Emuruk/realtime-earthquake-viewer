@@ -562,15 +562,15 @@ const TELEGRAM_TEXT_BLOCK_GROUPS: readonly {
 }[] = [
   { title: '地震情報', keys: ['quakeVarComment', 'quakeFreeText'] },
   { title: '津波情報', keys: ['tsunamiBody', 'tsunamiVarComment', 'tsunamiFreeText'] },
-  { title: '長周期地震動観測情報', keys: ['lpgmForecast', 'lpgmVarComment', 'lpgmFreeText'] },
-  { title: '南海トラフ臨時情報', keys: ['nankaiSummary', 'nankaiBody', 'nankaiNextAdvisory'] },
+  { title: '長周期地震動に関する観測情報', keys: ['lpgmForecast', 'lpgmVarComment', 'lpgmFreeText'] },
+  { title: '南海トラフ地震臨時情報', keys: ['nankaiSummary', 'nankaiBody', 'nankaiNextAdvisory'] },
   {
-    title: '南海トラフ関連解説情報',
+    title: '南海トラフ地震関連解説情報',
     keys: ['nankaiCommentarySummary', 'nankaiCommentaryBody', 'nankaiCommentaryNextAdvisory'],
   },
   {
     // **次回発表予定は無い。** 理由は `TELEGRAM_TEXT_BLOCK_KEYS`（`utils/ttsText.ts`）
-    title: '後発地震注意情報',
+    title: '北海道・三陸沖後発地震注意情報',
     keys: ['kohatsuSummary', 'kohatsuBody'],
   },
   { title: '地震回数に関する情報', keys: ['earthquakeCountFreeText'] },
@@ -1512,7 +1512,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
       </Section>
 
       <Section title="動作設定">
-        <Row label="定期自動リロード" description="毎日午前5時に画面を再起動してメモリを解放します（地震・津波・EEW 発報中は延期）">
+        <Row label="定期自動リロード" description="毎日午前5時に画面を再起動してメモリを解放します（地震・津波・緊急地震速報の発表中は延期）">
           <Toggle
             checked={settings.periodicReloadHours > 0}
             onChange={v => onUpdate('periodicReloadHours', v ? 1 : 0)}
@@ -1552,7 +1552,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
             ON にしたとき「接続状態: 起動していません」だけが見えて原因に辿り着けない。 */}
         <Row
           label="VOICEVOX 読み上げ"
-          description="地震・EEW・津波情報をVOICEVOXで読み上げます"
+          description="地震・緊急地震速報・津波情報をVOICEVOXで読み上げます"
           hint="要：VOICEVOXアプリ起動"
         >
           <Toggle checked={settings.voicevoxEnabled} onChange={v => onUpdate('voicevoxEnabled', v)} />
@@ -1630,7 +1630,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
         {isDmdss && (
           <Row
             label="解説情報の音・読み上げ"
-            description="南海トラフ関連解説情報（平常時も毎月届く）の通知音と読み上げを行います"
+            description="南海トラフ地震関連解説情報（平常時も毎月届く）の通知音と読み上げを行います"
           >
             <Toggle
               checked={settings.nankaiCommentaryAlerts}
@@ -1678,7 +1678,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
             <Row label="揺れ検知通知" description="強震モニタで揺れを検知したときに通知（推定値・頻度高め）">
               <Toggle checked={settings.notifyDetection} onChange={v => onUpdate('notifyDetection', v)} />
             </Row>
-            <Row label="EEW 通知" description="緊急地震速報の発報・昇格時に通知（重複送信しない）">
+            <Row label="緊急地震速報の通知" description="緊急地震速報の発報・昇格時に通知（重複送信しない）">
               <Toggle checked={settings.notifyEEW} onChange={v => onUpdate('notifyEEW', v)} />
             </Row>
             <Row label="津波通知" description="津波注意報以上が発表されたときに通知">
@@ -1831,22 +1831,22 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
           </div>
         </Row>
         {/* ── 緊急地震速報（EEW） ── */}
-        <Row label="EEW 予報（低震度）" description="ダークピアノ F4→A4（緩やか）">
+        <Row label="緊急地震速報 予報（低震度）" description="ダークピアノ F4→A4（緩やか）">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('eewForecast') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="EEW 初報（警報）" description="警報音 Bb3 の2連">
+        <Row label="緊急地震速報 初報（警報）" description="警報音 Bb3 の2連">
           <TestButton color="orange" onClick={() => { unlockAudio(); playAlertSound('eew') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="EEW 特別警報" description="警報音 Bb4/F4 の交互9連打 + 低音（震度6弱以上）">
+        <Row label="緊急地震速報 特別警報" description="警報音 Bb4/F4 の交互9連打 + 低音（震度6弱以上）">
           <TestButton color="red" onClick={() => { unlockAudio(); playAlertSound('eewSpecial') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="EEW 続報" description="ダークピアノ F4 単音">
+        <Row label="緊急地震速報 続報" description="ダークピアノ F4 単音">
           <TestButton color="orange" onClick={() => { unlockAudio(); playAlertSound('eewUpdate') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="EEW 最終報" description="ダークピアノ F4→C4 の降下2音">
+        <Row label="緊急地震速報 最終報" description="ダークピアノ F4→C4 の降下2音">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('eewFinal') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="EEW キャンセル" description="ダークピアノ A4→F4→C4 降下3音">
+        <Row label="緊急地震速報 取消" description="ダークピアノ A4→F4→C4 降下3音">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('eewCancel') }}>▶ 試聴</TestButton>
         </Row>
         {/* S 波到達カウントダウンは重大度の系列とは別軸の補助音のため EEW の末尾に置く */}
@@ -1890,12 +1890,12 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
         </Row>
         {/* ── 臨時情報・関連解説情報・後発地震 ── */}
         {isDmdss && (
-          <Row label="南海トラフ臨時情報・後発地震注意情報" description="純音 A4×2連打 → D5">
+          <Row label="南海トラフ地震臨時情報・北海道・三陸沖後発地震注意情報" description="純音 A4×2連打 → D5">
             <TestButton color="orange" onClick={() => { unlockAudio(); playAlertSound('specialInfo') }}>▶ 試聴</TestButton>
           </Row>
         )}
         {isDmdss && (
-          <Row label="南海トラフ関連解説情報" description="純音の下降2音 D5→A4（臨時情報の上昇と向きで区別）">
+          <Row label="南海トラフ地震関連解説情報" description="純音の下降2音 D5→A4（臨時情報の上昇と向きで区別）">
             <TestButton color="teal" onClick={() => { unlockAudio(); playAlertSound('specialInfoCommentary') }}>▶ 試聴</TestButton>
           </Row>
         )}
@@ -1969,56 +1969,56 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
         <Row label="津波予報（若干の海面変動）" description={`北海道沿岸 – tsunamiForecast 音 / 90秒後に${isDmdss ? '有効期間終了' : '解除（standard 版は有効期限を持たないため解除電文で消える）'}`}>
           <TestButton color="blue" onClick={onTest.tsunamiForecast}>予報テスト</TestButton>
         </Row>
-        <Row label="津波警報（注意報）" description="北海道沿岸 – tsunamiWatch 音 / 90秒後に解除">
+        <Row label="津波注意報" description="北海道沿岸 – tsunamiWatch 音 / 90秒後に解除">
           <TestButton color="blue" onClick={onTest.tsunamiWatch}>注意報テスト</TestButton>
         </Row>
-        <Row label="津波警報（津波警報）" description="青森・茨城等 – tsunami 音 / 90秒後に解除">
+        <Row label="津波警報" description="青森・茨城等 – tsunami 音 / 90秒後に解除">
           <TestButton color="orange" onClick={onTest.tsunamiWarning}>警報テスト</TestButton>
         </Row>
-        <Row label="津波警報（大津波警報）" description="岩手・宮城・福島等 – tsunamiMajor 音 / 90秒後に解除">
-          <TestButton color="purple" onClick={onTest.tsunami}>大警報テスト</TestButton>
+        <Row label="大津波警報" description="岩手・宮城・福島等 – tsunamiMajor 音 / 90秒後に解除">
+          <TestButton color="purple" onClick={onTest.tsunami}>大津波警報テスト</TestButton>
         </Row>
         {isDmdss && onTest.tsunamiGradeChange && (
-          <Row label="津波警報（区域ごとに等級が動く続報）" description="大津波警報 → 45秒後に続報（岩手・福島は津波警報へ降格／青森県太平洋沿岸は注意報へ／茨城は大津波警報へ引き上げ／北海道は津波予報へ／青森県日本海沿岸は解除）→ 60秒後に各地の満潮時刻の報 → 90秒後に全解除。全体の最上位等級は動かないので、区域ごとの「〇〇から切り替え」「〇〇から引き上げ」と、いちばん下の「解除」の枠でしか変化が分からない。満潮時刻の報は等級について何も言わないので、そこで印が消えないことも確かめられる">
+          <Row label="津波警報・注意報（区域ごとに等級が動く続報）" description="大津波警報 → 45秒後に続報（岩手・福島は津波警報へ降格／青森県太平洋沿岸は注意報へ／茨城は大津波警報へ引き上げ／北海道は津波予報へ／青森県日本海沿岸は解除）→ 60秒後に各地の満潮時刻の報 → 90秒後に全解除。全体の最上位等級は動かないので、区域ごとの「〇〇から切り替え」「〇〇から引き上げ」と、いちばん下の「解除」の枠でしか変化が分からない。満潮時刻の報は等級について何も言わないので、そこで印が消えないことも確かめられる">
             <TestButton color="orange" onClick={onTest.tsunamiGradeChange}>区域の等級変化テスト</TestButton>
           </Row>
         )}
         {isDmdss && onTest.tsunamiQuietReports && (
-          <Row label="津波警報（変化の小さい続報）" description="大津波警報 → 10秒おきに続報を10通（観測値 → 八戸港の波高に「以上」が付く → 最大波の観測時刻だけ更新 → 室蘭港の第1波の到達時刻が訂正される → 沖合の観測点の最大波の観測時刻が更新される → 変化なし → 各地の満潮時刻 → 満潮時刻の更新 → 到達状況の更新 → 変化なし）→ 最後の報の20秒後に全解除。気象庁が続報を出しているのに、等級も観測波高の数値も動かない報がどう伝わるかを確かめる。2通目は潮位計が振り切れて真の波高が読めなくなった報で、数値は 1.8m のまま変わらない。最後の5通（変化なしと満潮時刻）は緊急地震速報や津波警報の読み上げを切らないので、そうした上位の読み上げが続いている間は鳴らずに見送られる。5通目は沖合の観測点だけを載せた報で、カードの沖合の行に更新の印が出るのはここだけ">
+          <Row label="津波警報・注意報（変化の小さい続報）" description="大津波警報 → 10秒おきに続報を10通（観測値 → 八戸港の波高に「以上」が付く → 最大波の観測時刻だけ更新 → 室蘭港の第1波の到達時刻が訂正される → 沖合の観測点の最大波の観測時刻が更新される → 変化なし → 各地の満潮時刻 → 満潮時刻の更新 → 到達状況の更新 → 変化なし）→ 最後の報の20秒後に全解除。気象庁が続報を出しているのに、等級も観測波高の数値も動かない報がどう伝わるかを確かめる。2通目は潮位計が振り切れて真の波高が読めなくなった報で、数値は 1.8m のまま変わらない。最後の5通（変化なしと満潮時刻）は緊急地震速報や津波警報の読み上げを切らないので、そうした上位の読み上げが続いている間は鳴らずに見送られる。5通目は沖合の観測点だけを載せた報で、カードの沖合の行に更新の印が出るのはここだけ">
             <TestButton color="blue" onClick={onTest.tsunamiQuietReports}>変化の小さい続報テスト</TestButton>
           </Row>
         )}
-        <Row label="津波警報（誤報取消）" description={`青森・北海道等 – tsunami 音 / 90秒後に${isDmdss ? '誤報として取消' : '解除（standard 版は取消と解除を区別できないため「解除」表示）'}`}>
+        <Row label="津波警報・注意報（取消）" description={`青森・北海道等 – tsunami 音 / 90秒後に${isDmdss ? '誤報として取消' : '解除（standard 版は取消と解除を区別できないため「解除」表示）'}`}>
           <TestButton color="red" onClick={onTest.tsunamiRetraction}>誤報取消テスト</TestButton>
         </Row>
         {/* ── 臨時情報・関連解説情報・後発地震 ── */}
         {isDmdss && onTest.nankaiChecking && (
-          <Row label="南海トラフ臨時情報（調査中）" description="バナー表示 + specialInfo 音（バナー消去ボタンなし・再テストで上書き）">
+          <Row label="南海トラフ地震臨時情報（調査中）" description="バナー表示 + specialInfo 音（バナー消去ボタンなし・再テストで上書き）">
             <TestButton color="yellow" onClick={onTest.nankaiChecking}>調査中テスト</TestButton>
           </Row>
         )}
         {isDmdss && onTest.nankaiWatch && (
-          <Row label="南海トラフ臨時情報（巨大地震注意）" description="バナー表示 + specialInfo 音">
+          <Row label="南海トラフ地震臨時情報（巨大地震注意）" description="バナー表示 + specialInfo 音">
             <TestButton color="orange" onClick={onTest.nankaiWatch}>注意テスト</TestButton>
           </Row>
         )}
         {isDmdss && onTest.nankaiWarning && (
-          <Row label="南海トラフ臨時情報（巨大地震警戒）" description="バナー表示 + specialInfo 音">
+          <Row label="南海トラフ地震臨時情報（巨大地震警戒）" description="バナー表示 + specialInfo 音">
             <TestButton color="red" onClick={onTest.nankaiWarning}>警戒テスト</TestButton>
           </Row>
         )}
         {isDmdss && onTest.nankaiRetraction && (
-          <Row label="南海トラフ臨時情報（取消）" description="巨大地震注意を発表し、90秒後に同じ識別情報の取消を流す。バナーが消え、読み上げは取り消された事実だけを伝える（発生可能性については何も述べない）">
+          <Row label="南海トラフ地震臨時情報（取消）" description="巨大地震注意を発表し、90秒後に同じ識別情報の取消を流す。バナーが消え、読み上げは取り消された事実だけを伝える（発生可能性については何も述べない）">
             <TestButton color="blue" onClick={onTest.nankaiRetraction}>取消テスト</TestButton>
           </Row>
         )}
         {isDmdss && onTest.nankaiCommentaryAdHoc && (
-          <Row label="南海トラフ関連解説情報（臨時解説）" description="バナー表示 + specialInfoCommentary 音（閉じるボタンあり・7日で自動消去）">
+          <Row label="南海トラフ地震関連解説情報（臨時解説）" description="バナー表示 + specialInfoCommentary 音（閉じるボタンあり・7日で自動消去）">
             <TestButton color="teal" onClick={onTest.nankaiCommentaryAdHoc}>臨時解説テスト</TestButton>
           </Row>
         )}
         {isDmdss && onTest.nankaiCommentaryRoutine && (
-          <Row label="南海トラフ関連解説情報（定例解説）" description="平常時に毎月届く電文。バナー表示 + specialInfoCommentary 音（閉じるボタンあり・7日で自動消去）">
+          <Row label="南海トラフ地震関連解説情報（定例解説）" description="平常時に毎月届く電文。バナー表示 + specialInfoCommentary 音（閉じるボタンあり・7日で自動消去）">
             <TestButton color="teal" onClick={onTest.nankaiCommentaryRoutine}>定例解説テスト</TestButton>
           </Row>
         )}

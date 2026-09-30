@@ -433,12 +433,12 @@ describe('EEW カードの仮定震源要素の見せ方', () => {
   it('予想震度が無い報では長周期階級バッジを出さない', () => {
     renderEEW(assumedEEW({ forecastMaxLpgmClass: 3 }))
     expect(screen.getByText('予想震度なし')).toBeTruthy()
-    expect(screen.queryByText('推定長周期地震動')).toBeNull()
+    expect(screen.queryByText('予想長周期地震動')).toBeNull()
   })
 
   // 安全弁: 震度が出る報では従来どおり階級バッジを出す（ガードが広すぎないことの確認）。
   it('予想震度がある報では長周期階級バッジを出す', () => {
     renderEEW(fakeEEW({ forecastMaxScale: 40, forecastMaxLpgmClass: 3 }))
-    expect(screen.getByText('推定長周期地震動')).toBeTruthy()
+    expect(screen.getByText('予想長周期地震動')).toBeTruthy()
   })
 })

@@ -38,6 +38,7 @@ import {
   observationMaxHeightTimeText,
   mergeTsunamiAreas,
   evacuationActionLine,
+  fallbackEvacuationAction,
   mergeTsunamiWarningComments,
   mergeTsunamiReports,
   WARNING_COMMENT_ORDER,
@@ -1717,5 +1718,39 @@ describe('evacuationActionLine', () => {
   it('付加文が無ければ採らない', () => {
     expect(evacuationActionLine(undefined)).toBeUndefined()
     expect(evacuationActionLine([])).toBeUndefined()
+  })
+})
+
+// 気象庁の文が採れなかったときに出すアプリの文（画面と読み上げで共有する）。
+//
+// 2026-09-30 まで、**津波警報には注意報の節の呼びかけ**（「海岸から離れてください。」）が
+// 当たっており、**注意報には何も出していなかった**。気象庁が警報で求めているのは「避難」で
+// 「離れる」ではない（実電文の原文は `utils/testData.ts` の `warningComments`）。
+describe('fallbackEvacuationAction', () => {
+  // 正: 注意報でも呼びかけが出る（以前は空文字だった）。
+  it('津波注意報は「海から上がって、海岸から離れる」', () => {
+    expect(fallbackEvacuationAction('Watch')).toBe('海の中にいる人はただちに海から上がって、海岸から離れてください。')
+  })
+
+  // 対照: 警報は「離れる」ではなく「避難」。注意報の文と取り違えていないこと。
+  it('津波警報は避難を促す（注意報の文を使わない）', () => {
+    const warning = fallbackEvacuationAction('Warning')
+    expect(warning).toBe('ただちに高台や避難ビルなど安全な場所へ避難してください。')
+    expect(warning).not.toContain('海岸から離れて')
+  })
+
+  // 安全弁 1: 大津波警報と津波警報は同じ文。気象庁の付加文も両方の節で同じ呼びかけを書いている。
+  it('大津波警報と津波警報は同じ呼びかけ', () => {
+    expect(fallbackEvacuationAction('MajorWarning')).toBe(fallbackEvacuationAction('Warning'))
+  })
+
+  // 安全弁 2: 予報は公式の定型文のまま。避難を促す側へ巻き込まれていないこと。
+  it('津波予報は被害の心配が無いことまで伝える', () => {
+    expect(fallbackEvacuationAction('Forecast')).toBe('若干の海面変動が予想されますが、被害の心配はありません。')
+  })
+
+  // 安全弁 3: 等級が無い状態で呼びかけを作らない。
+  it('等級が決まっていなければ何も出さない', () => {
+    expect(fallbackEvacuationAction('Unknown')).toBe('')
   })
 })

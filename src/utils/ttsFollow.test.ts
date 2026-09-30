@@ -85,7 +85,7 @@ describe('mapChunksToRefs', () => {
 
   it('区域と観測点が同じチャンクに入ったら観測点だけを返す', () => {
     const segments = [
-      plain('津波観測情報。'),
+      plain('津波観測に関する情報。'),
       seg('岩手県', area('岩手県', '210')),
       plain('、'),
       seg('宮古', station('宮古')),

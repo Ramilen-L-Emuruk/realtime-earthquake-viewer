@@ -1,11 +1,12 @@
 {
   "name": "realtime-earthquake-viewer",
   "private": true,
-  "version": "5.27.3",
+  "version": "5.28.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "dev:dmdss": "cross-env VITE_VARIANT=dmdss vite",
+    "dev:list": "tsx scripts/list-dev-servers.ts",
     "build": "node scripts/build-glyphs.mjs --check && tsc -b && vite build && tsx scripts/check-precache-budget.ts",
     "build:dmdss": "node scripts/build-glyphs.mjs --check && tsc -b && cross-env VITE_VARIANT=dmdss vite build && cross-env VITE_VARIANT=dmdss tsx scripts/check-precache-budget.ts",
     "preview": "vite preview",

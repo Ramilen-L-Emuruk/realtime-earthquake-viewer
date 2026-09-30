@@ -936,7 +936,7 @@ export const EarthquakeCard = memo(function EarthquakeCard({
       >
         {quake.cancelledAt && (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 z-10 rounded-lg px-4">
-            <span className="font-black text-white" style={{ fontSize: '3rem', lineHeight: 1.1 }}>キャンセル</span>
+            <span className="font-black text-white" style={{ fontSize: '3rem', lineHeight: 1.1 }}>取消</span>
             <span className="text-sm font-bold text-white/90 mt-1">この地震情報は取り消されました</span>
             {/* 気象庁が書いた取消しの概要（電文の `Body/Text`）。アプリが組み立てた文言ではないので
                 そのまま出す。オーバーレイは 10 秒で消えるが、理由を捨てる理由にはならない。 */}
@@ -1570,7 +1570,7 @@ export const EarthquakeCard = memo(function EarthquakeCard({
     >
       {quake.cancelledAt && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 z-10 rounded-lg">
-          <span className="font-black text-white" style={{ fontSize: '1.75rem', lineHeight: 1.1 }}>キャンセル</span>
+          <span className="font-black text-white" style={{ fontSize: '1.75rem', lineHeight: 1.1 }}>取消</span>
           <span className="text-xs font-bold text-white/90 mt-1">この地震情報は取り消されました</span>
         </div>
       )}
