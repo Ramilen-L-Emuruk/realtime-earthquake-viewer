@@ -32,6 +32,8 @@ interface StatusReportView {
     readonly sensorId: string
     readonly lastPacketMs: number | null
     readonly lastIntensity: number | null
+    /** 震度そのものを出せない理由。出せているなら null（#373 で読むようになった）。 */
+    readonly lastSkipReason: string | null
     readonly enabled: boolean
     readonly calibrationConfigured: boolean
     readonly station: { readonly displayName: string } | null
@@ -40,6 +42,8 @@ interface StatusReportView {
     readonly stationId: string
     readonly lastPacketMs: number | null
     readonly lastIntensity: number | null
+    /** 合成の計測震度を出せない理由。出せているなら null（同上）。 */
+    readonly lastSkipReason: string | null
     /** 最後に合成したまとまりで実際に混ざった本数（#315）。 */
     readonly lastMemberCountMin: number | null
     readonly lastMemberCountMax: number | null
@@ -121,6 +125,95 @@ function pairDiffCell(pairs: readonly PairDiffView[]): string {
   return `${worst.rmsGal.toFixed(2)} gal <span class="muted">${a} ↔ ${b}</span>`
 }
 
+type SensorView = StatusReportView['sensors'][number]
+type StationView = StatusReportView['stationIntensities'][number]
+
+/**
+ * 古い値へ付ける印（#373）。**真なら赤くする。**
+ *
+ * **付けるのは値の欄だけ。** 識別子（観測点 ID・基板／センサー）と受信欄には付けない
+ * ——行を丸ごと赤くすると「どれの話か」が読み取りにくくなるうえ、受信欄には既に
+ * 同じ色の「途絶」の札が出ている。
+ *
+ * **赤い理由は 1 つに絞らない。** 届かなくなった行も、届いてはいるが値を出せていない
+ * 行も同じ赤にする——運用者が知りたいのは「この数字をいま信じてよいか」で、
+ * そこから先の切り分けは受信欄の札と `/status` の生の値が受け持つ。
+ */
+const STALE_ATTR = ' class="stale-value"'
+
+function staleAttr(stale: boolean): string {
+  return stale ? STALE_ATTR : ''
+}
+
+/**
+ * 震度の欄が古いか。**届いていないか、届いていても震度を出せていないか。**
+ *
+ * **`lastSkipReason` も見る。** あれが立っている間、震度は 1 つも出ていない
+ * （`receiver/stationHealth.ts`・`receiver/sensorHealth.ts` とも、値が出た回
+ * ——`noteReading`——にだけ消す）。**それでも受信の時刻は動き続ける**ので、
+ * 到着だけを見ていると「基板は生きているが合成だけ壊れている」状態で
+ * 最後に出た震度が平常の色のまま居座る（2026-09-30 の敵対的レビューが指摘）。
+ *
+ * **時刻では判定しない。** 震度が出た時刻（`lastReadingAtMs`）は**基板が名乗る
+ * 時間軸**で、受信の時刻（`lastPacketMs`）は受け手の時計——引き比べると、
+ * 基板の時計のずれがそのまま「古い」の誤判定になる。
+ *
+ * **`/status` は無検証で読んでいる**ので、欄が無ければ `undefined` が来る
+ * （版がずれたとき）。文字列であることまで確かめる。
+ */
+function isIntensityStale(nowMs: number, atMs: number | null, skipReason: unknown): boolean {
+  return isStale(nowMs, atMs) || typeof skipReason === 'string'
+}
+
+/**
+ * センサー 1 個ぶんの行。
+ *
+ * **運用者が入力した値（基板の鍵・センサーの名前・観測点の表示名）を埋め込む**ので
+ * `escapeHtml` を通す。**「有効」「校正」は設定そのもの**なので古くならない——
+ * 途絶しても赤くしない（`receiver/statusReport.ts` が毎回いまの設定から引き直す）。
+ */
+export function sensorRowHtml(nowMs: number, s: SensorView): string {
+  return `
+          <tr>
+            <td>${escapeHtml(s.station?.displayName ?? '未割当')}</td>
+            <td>${escapeHtml(s.boardKey)} / ${escapeHtml(s.sensorId)}</td>
+            <td>${receptionBadgeHtml(nowMs, s.lastPacketMs)} ${ago(nowMs, s.lastPacketMs)}</td>
+            <td${staleAttr(isIntensityStale(nowMs, s.lastPacketMs, s.lastSkipReason))}>${s.lastIntensity !== null ? s.lastIntensity.toFixed(2) : '—'}</td>
+            <td>${s.enabled ? '有効' : '無効'}</td>
+            <td>${s.calibrationConfigured ? '設定あり' : '既定値のまま'}</td>
+          </tr>`
+}
+
+/**
+ * 観測点 1 つぶんの行（複数センサーの合成）。
+ *
+ * **3 つの値は同じ回に更新されるとは限らない。** 混ざった本数と差分は合成波形が
+ * 出た回に、震度は震度が出た回に書き換わる（`main.ts` の `deliverStationFusion`）
+ * ——**波形は出ているが震度だけ出せない**状態がありうるので、震度の欄だけは
+ * `lastSkipReason` も見る（`isIntensityStale`）。届かなくなったときは 3 つとも古い。
+ */
+export function stationRowHtml(nowMs: number, s: StationView): string {
+  const stale = staleAttr(isStale(nowMs, s.lastPacketMs))
+  return `
+          <tr>
+            <td>${escapeHtml(s.stationId)}</td>
+            <td>${receptionBadgeHtml(nowMs, s.lastPacketMs)} ${ago(nowMs, s.lastPacketMs)}</td>
+            <td${staleAttr(isIntensityStale(nowMs, s.lastPacketMs, s.lastSkipReason))}>${s.lastIntensity !== null ? s.lastIntensity.toFixed(2) : '—'}</td>
+            <td${stale}>${memberCell(s.lastMemberCountMin, s.lastMemberCountMax)}</td>
+            <td${stale}>${pairDiffCell(s.pairDiffs)}</td>
+          </tr>`
+}
+
+/**
+ * まだ声が届いている行の数。**要約カードの「N / 全体」の左側。**
+ *
+ * **センサーと観測点の両方が通る。** 同じ物差し（`isStale`）で数えないと、片方の
+ * カードだけが途絶を数え落とす。
+ */
+export function countLive(nowMs: number, rows: readonly { readonly lastPacketMs: number | null }[]): number {
+  return rows.filter((r) => !isStale(nowMs, r.lastPacketMs)).length
+}
+
 export async function initStatusView(container: HTMLElement, signal: AbortSignal): Promise<void> {
   container.innerHTML = `
     <div class="status-error"></div>
@@ -133,32 +226,9 @@ export async function initStatusView(container: HTMLElement, signal: AbortSignal
   const render = (status: StatusReportView): void => {
     const now = status.generatedAtMs
 
-    const sensorRows = status.sensors
-      .map(
-        (s) => `
-          <tr>
-            <td>${escapeHtml(s.station?.displayName ?? '未割当')}</td>
-            <td>${escapeHtml(s.boardKey)} / ${escapeHtml(s.sensorId)}</td>
-            <td>${receptionBadgeHtml(now, s.lastPacketMs)} ${ago(now, s.lastPacketMs)}</td>
-            <td>${s.lastIntensity !== null ? s.lastIntensity.toFixed(2) : '—'}</td>
-            <td>${s.enabled ? '有効' : '無効'}</td>
-            <td>${s.calibrationConfigured ? '設定あり' : '既定値のまま'}</td>
-          </tr>`,
-      )
-      .join('')
+    const sensorRows = status.sensors.map((s) => sensorRowHtml(now, s)).join('')
 
-    const stationRows = status.stationIntensities
-      .map(
-        (s) => `
-          <tr>
-            <td>${escapeHtml(s.stationId)}</td>
-            <td>${receptionBadgeHtml(now, s.lastPacketMs)} ${ago(now, s.lastPacketMs)}</td>
-            <td>${s.lastIntensity !== null ? s.lastIntensity.toFixed(2) : '—'}</td>
-            <td>${memberCell(s.lastMemberCountMin, s.lastMemberCountMax)}</td>
-            <td>${pairDiffCell(s.pairDiffs)}</td>
-          </tr>`,
-      )
-      .join('')
+    const stationRows = status.stationIntensities.map((s) => stationRowHtml(now, s)).join('')
 
     // **警告文は `describeFailure`（サーバー側）が組み立てる際、運用者が入力した
     // 生の値（`JSON.stringify(f.value)`）を埋め込むことがある。** `stationId`
@@ -178,7 +248,8 @@ export async function initStatusView(container: HTMLElement, signal: AbortSignal
       warnings.push(`生データの書き込みエラー: ${escapeHtml(status.raw.lastWriteError)}`)
     }
 
-    const liveSensorCount = status.sensors.filter((s) => !isStale(now, s.lastPacketMs)).length
+    const liveSensorCount = countLive(now, status.sensors)
+    const liveStationCount = countLive(now, status.stationIntensities)
     const hours = Math.floor(status.uptimeSec / 3600)
     const minutes = Math.floor((status.uptimeSec % 3600) / 60)
 
@@ -192,9 +263,13 @@ export async function initStatusView(container: HTMLElement, signal: AbortSignal
           <div class="stat-label">受信中のセンサー</div>
           <div class="stat-value">${liveSensorCount} / ${status.sensors.length}</div>
         </div>
+        <!-- **隣のセンサーと同じ「生きている数 / 全体」の形にする。** この帳面は
+             設定を変えても作り直さない（\`receiver/stationHealth.ts\`）ので、管理コンソールで
+             消した観測点の行が残り続ける——全体だけを出すと、1 つへ減らした後も
+             減らす前の数を数え続ける（#373）。 -->
         <div class="stat-card">
           <div class="stat-label">複数センサー合成の観測点</div>
-          <div class="stat-value">${status.stationIntensities.length}</div>
+          <div class="stat-value">${liveStationCount} / ${status.stationIntensities.length}</div>
         </div>
       </div>
       ${

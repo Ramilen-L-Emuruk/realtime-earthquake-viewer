@@ -193,6 +193,13 @@
       .danger {
         color: var(--danger);
       }
+      /* **古くなった値。** 受信欄の「途絶」の札と同じ色にする（`--danger`）——
+         別の色にすると、同じ 1 つの事実（この数字はもう信じられない）が行の中で 2 色に割れる。
+         **`.danger` を使い回さないのは、付く先が `<td>` の値だけだと名前で示すため**
+         （識別子や受信欄には付けない）。付ける条件は `viewStatus.ts` の `staleAttr`。 */
+      .stale-value {
+        color: var(--danger);
+      }
       .muted {
         opacity: 0.7;
         font-size: 0.85rem;
