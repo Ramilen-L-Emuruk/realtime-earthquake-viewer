@@ -552,7 +552,7 @@ export interface StationFusionSinks {
    * 決める」と宣言しているので、覚える先を配達の中へ隠すと一覧性が壊れる
    * （`noteReading` と `publish` を分けているのと同じ理由）。
    */
-  readonly noteWave: (w: FusedWaveChunk) => void
+  readonly noteWave: (w: FusedWaveChunk, backupsCovered: boolean) => void
   /**
    * センサー対ごとの差分を覚える（#315）。**要約するのは受け手の仕事。**
    *
@@ -615,7 +615,7 @@ export function deliverStationFusion(to: StationFusionSinks, fusion: FusionOutco
   if (fusion.fusedWave !== null) {
     // **取り出して合成した回だけ波形が出る。** この分岐がその回を表す唯一の場所なので、
     // 覚えるのと配るのもここに置く（判定を 2 箇所へ分けない）。
-    to.noteWave(fusion.fusedWave)
+    to.noteWave(fusion.fusedWave, fusion.backupsCovered)
     to.notePairDiffs(fusion.fusedWave.stationId, fusion.pairDiffs)
     to.publishWave(fusion.fusedWave)
     to.noteSkip(fusion.fusedWave.stationId, fusion.intensitySkipReason)
@@ -1130,7 +1130,7 @@ async function main(): Promise<void> {
   const stationFusionSinks: StationFusionSinks = {
     noteReading: (r) => stationHealth.noteReading(r),
     publish: (r) => hub.publish({ kind: 'station-reading', reading: r }),
-    noteWave: (w) => stationHealth.noteWave(w),
+    noteWave: (w, covered) => stationHealth.noteWave(w, covered),
     notePairDiffs: (stationId, diffs) => stationHealth.notePairDiffs(stationId, diffs),
     // **波形を欲しがっている相手だけへ行く**（選り分けは `readingHub.ts` の `WAVE_ONLY`）。
     //

@@ -4,7 +4,7 @@ import { IntensityStream } from '../intensity/intensityStream'
 import type { BoardKey, SensorPacket } from '../protocol/types'
 import { IntensityPipeline } from './intensityPipeline'
 import type { WaveChunk } from './intensityPipeline'
-import { SensorFusion } from './sensorFusion'
+import { FUSION_WAIT_MS_DEFAULT, SensorFusion } from './sensorFusion'
 import type { FusedWaveChunk, FusionOutcome, StationIntensityReading } from './sensorFusion'
 import { StationDirectory } from './stationConfig'
 import type { StationConfig } from './stationConfig'
@@ -22,8 +22,9 @@ const MS_PER_SAMPLE = 1000 / HZ
 /**
  * 裏付けの到着を待たせない指定。**「1 まとまり流したら即合成」を見るテスト用。**
  *
- * 既定（`FUSION_WAIT_MS_DEFAULT` = 300ms）のままだと、まとまりを 1 つ流しただけでは
- * 待ちが満たされず合成が起きない。**待ちそのものの検証は別のテストが持つ**
+ * 既定（`FUSION_WAIT_MS_DEFAULT`）のままだと、まとまりを 1 つ流しただけでは
+ * 裏付けが 1 本も揃わず、待ちの上限にも達しないので合成が起きない
+ * （**値はあちらを見ること。ここへ書き写さない**）。**待ちそのものの検証は別のテストが持つ**
  * （「裏付けを待って顔ぶれを揃える」）——こちらを 0 にしておけば、待ちと
  * 重み付き平均・差分・流し込みの検証を独立に読める。
  */
@@ -229,7 +230,7 @@ describe('SensorFusion.ingest — 重み付き平均と差分', () => {
   })
 })
 
-describe('SensorFusion.ingest — 裏付けを待って顔ぶれを揃える（#362）', () => {
+describe('SensorFusion.ingest — 裏付けを待って顔ぶれを揃える（#362・#374）', () => {
   /** 実機と同じ 1 まとまり 10 サンプル（100ms）。 */
   const CHUNK = 10
   /** 実機の基板間の起点差（実測 160ms まで）。 */
@@ -266,9 +267,9 @@ describe('SensorFusion.ingest — 裏付けを待って顔ぶれを揃える（#
    *
    * `backupRounds` を絞ると「裏付けが途中で落ちた」形になる。
    */
-  function run(waitMs: number, rounds: number, backupRounds = rounds): number[] {
+  function runChunks(waitMs: number, rounds: number, backupRounds = rounds): number[][] {
     const fusion = new SensorFusion(threeSensorConfig(), { windowSec: 1, stepSec: 1, waitMs })
-    const counts: number[] = []
+    const counts: number[][] = []
     for (let c = 0; c < rounds; c++) {
       const at = c * CHUNK
       const outs = [
@@ -301,10 +302,15 @@ describe('SensorFusion.ingest — 裏付けを待って顔ぶれを揃える（#
         }
       }
       for (const out of outs) {
-        if (out.fusedWave !== null) counts.push(...out.fusedWave.memberCount)
+        if (out.fusedWave !== null) counts.push([...out.fusedWave.memberCount])
       }
     }
     return counts
+  }
+
+  /** `runChunks` をまとまりの区切りを捨てて平坦にしたもの。 */
+  function run(waitMs: number, rounds: number, backupRounds = rounds): number[] {
+    return runChunks(waitMs, rounds, backupRounds).flat()
   }
 
   it('正: 待てば 3 本とも混ざる（立ち上がりを過ぎれば顔ぶれが揺れない）', () => {
@@ -413,8 +419,183 @@ describe('SensorFusion.ingest — 裏付けを待って顔ぶれを揃える（#
     expect(recent.fusedWave?.memberCount.some((m) => m > 1)).toBe(true)
   })
 
+  /** 実機と同じ 1 まとまり 30 サンプル（約 300ms）。**`CHUNK`（10）では症状が出ない。** */
+  const WIDE_CHUNK = 30
+
+  /**
+   * 実機（2026-09-30・3 基板 × 3 センサー）の到着の形を写した 9 本。
+   *
+   * 数値は `/stream?wave=all` の実測（中央値）。**3 つとも要る。**
+   *
+   * - `phase` —— まとまりの境目（`firstSampleMs` を名目のまとまり長で割った余り）。
+   *   **これがばらけていることが症状の条件。** 位相が揃っていると、到着さえすれば
+   *   駆動役のまとまりを丸ごと覆えるので欠けない
+   * - `lag` —— 駆動役に対する到着の遅れ。実測では `020000000001` の 2 本だけが
+   *   遅く（+144 / +142ms）、残りは駆動役と同じか早い
+   * - `mps` —— サンプルの刻み。基板ごとにわずかに違う（駆動役だけ 9.9792 で他より短い）
+   *
+   * **基板の識別子は架空のもの**（`BOARD_A`〜`C`）へ置き換えてある。位相・遅れ・刻みが
+   * 症状を決めるので、実機の MAC アドレスそのものは要らない。**並び順の先頭が
+   * 駆動役**になる（`noiseDensity` を全部 null にしてあるため）。
+   */
+  const REAL_SENSORS = [
+    { boardKey: BOARD_A, sensorId: 'a1', phase: 229, lag: 0, mps: 9.9792 },
+    { boardKey: BOARD_A, sensorId: 'a2', phase: 276, lag: -56, mps: 10.0073 },
+    { boardKey: BOARD_A, sensorId: 'a3', phase: 98, lag: -42, mps: 9.9989 },
+    { boardKey: BOARD_B, sensorId: 'b1', phase: 184, lag: -41, mps: 10.0087 },
+    { boardKey: BOARD_B, sensorId: 'b2', phase: 24, lag: -33, mps: 9.9982 },
+    { boardKey: BOARD_B, sensorId: 'b3', phase: 272, lag: -35, mps: 10.0006 },
+    { boardKey: BOARD_C, sensorId: 'c1', phase: 21, lag: 144, mps: 10.0052 },
+    { boardKey: BOARD_C, sensorId: 'c2', phase: 149, lag: 5, mps: 10.0178 },
+    { boardKey: BOARD_C, sensorId: 'c3', phase: 195, lag: 142, mps: 10.0018 },
+  ] as const
+
+  function nineSensorConfig(): StationConfig {
+    type SensorEntry = StationConfig['boards'][number]['sensors'][number]
+    const byBoard = new Map<BoardKey, SensorEntry[]>()
+    // **並び順が駆動役を決める**ので、`REAL_SENSORS` に現れた順で基板を並べる。
+    const order: BoardKey[] = []
+    for (const s of REAL_SENSORS) {
+      if (!order.includes(s.boardKey)) order.push(s.boardKey)
+      const list = byBoard.get(s.boardKey) ?? []
+      list.push({
+        sensorId: s.sensorId,
+        enabled: true,
+        rotation: IDENTITY,
+        offset: [0, 0, 0],
+        sensitivity: [1, 1, 1],
+        noiseDensity: null,
+      })
+      byBoard.set(s.boardKey, list)
+    }
+    return {
+      stations: [{ stationId: 'home', displayName: '自宅', lat: 35.6, lon: 139.7 }],
+      boards: order.map((boardKey) => ({ boardKey, stationId: 'home', sensors: byBoard.get(boardKey) ?? [] })),
+    }
+  }
+
+  /**
+   * 到着順（lockstep ではない）で流し、まとまりごとの本数を返す。
+   *
+   * **`run()` と分けてあるのが要。** あちらは「駆動役 → 裏付け」を 1 ラウンドずつ
+   * 揃えて流すので、裏付けが駆動役より遅れる形を作れない（#374 の症状が出ない）。
+   */
+  function runSkewed(waitMs: number, rounds: number): number[][] {
+    const fusion = new SensorFusion(nineSensorConfig(), { windowSec: 1, stepSec: 1, waitMs })
+    const events: { at: number; wave: WaveChunk }[] = []
+    for (const s of REAL_SENSORS) {
+      for (let k = 0; k < rounds; k++) {
+        const firstSampleMs = BASE_MS + s.phase + k * WIDE_CHUNK * s.mps
+        events.push({
+          at: firstSampleMs + WIDE_CHUNK * s.mps + s.lag,
+          wave: wave({
+            boardKey: s.boardKey,
+            sensorId: s.sensorId,
+            firstSampleIndex: k * WIDE_CHUNK,
+            firstSampleMs,
+            msPerSample: s.mps,
+            gal: rows(WIDE_CHUNK, 1),
+          }),
+        })
+      }
+    }
+    // 同時刻はセンサー名で割って並びを決める（入力を決定的にする）。
+    events.sort((a, b) => a.at - b.at || a.wave.sensorId.localeCompare(b.wave.sensorId))
+    const out: number[][] = []
+    for (const e of events) {
+      const r = fusion.ingest(e.wave)
+      if (r.fusedWave !== null) out.push([...r.fusedWave.memberCount])
+    }
+    return out
+  }
+
+  /** 立ち上がり（裏付けがまだ揃わない最初の数まとまり）を除いて数える。 */
+  function settledChunks(chunks: number[][]): number[][] {
+    return chunks.slice(4)
+  }
+
+  it('正: 既定の待ちなら、まとまりの末尾まで顔ぶれが揃う（#374）', () => {
+    // **実機（2026-09-30・9 センサー）では末尾の 3 サンプルが 100 まとまりすべてで
+    // 2 本欠けていた。** 到着差は 200ms で待ちの 300ms より小さかったのに欠けたのは、
+    // 裏付けの「次のまとまり」が届くまで末尾を覆えないため。
+    const chunks = settledChunks(runSkewed(FUSION_WAIT_MS_DEFAULT, 20))
+    expect(chunks.length).toBeGreaterThan(0)
+    const counts = new Set(chunks.flat())
+    expect(counts).toEqual(new Set([9]))
+  })
+
+  it('対照: 待ちの上限を絞ると末尾が欠ける（症状の条件が作れていることの裏取り）', () => {
+    // **これが {3} になってしまうなら、上のテストは症状を作れていない**（上限に
+    // 関わらず揃っていた）ことになる。300ms は #374 より前の既定値。
+    const chunks = settledChunks(runSkewed(300, 20))
+    const tails = chunks.map((c) => c[c.length - 1])
+    expect(tails.some((m) => m < 9)).toBe(true)
+  })
+
+  it('正: 保留が空になってもまとまりの先頭で顔ぶれが欠けない（#374）', () => {
+    // **顔ぶれが揃って保留が空になると、`trimCache` は捨てる根拠を持たない**
+    // （次に届く駆動役のまとまりがどの範囲を求めるかは、届くまで分からない）。
+    // 以前は「最新の 1 つだけ残す」形で捨てていて、**起点が駆動役より後ろの裏付けが
+    // 先頭側を覆えなくなっていた** —— 実機では先頭の 4 サンプルが 100 まとまり
+    // すべてで 1 本欠けていた。
+    //
+    // **ここは `run()`（lockstep）で見る。`runSkewed` では症状が出ない** ——
+    // あちらは待ちの上限が長いぶん保留が数まとまり残り続けるので、`trimCache` は
+    // 常に捨てる根拠を持ち、捨てすぎの形にならない。**保留が空になる形を作れる
+    // のが lockstep のほう。**
+    //
+    // **末尾とは別に見る。** 末尾は待ちの上限が担い、先頭は捨て方が担う ——
+    // 混ぜると、どちらが直っていないのか分からない。
+    // 立ち上がりの 3 まとまりを除く（`run()` の「正」が `CHUNK * 3` サンプル＝
+    // 3 まとまりを除いているのと同じ範囲。こちらはまとまり単位で数える）。
+    const chunks = runChunks(300, 16).slice(3)
+    expect(chunks.length).toBeGreaterThan(0)
+    const heads = chunks.map((c) => c[0])
+    expect(heads.every((m) => m === 3)).toBe(true)
+  })
+
+  it('対照: 顔ぶれが揃っていれば、待ちの上限を延ばしても出る件数は変わらない', () => {
+    // **上限は「揃わないときの頭打ち」で、揃っていれば待たない。** ここが
+    // 「常に上限まで待つ」形になっていると、上限を延ばしたぶん出足が遅れて
+    // 件数が減る。
+    const base = runSkewed(FUSION_WAIT_MS_DEFAULT, 20).length
+    const longer = runSkewed(FUSION_WAIT_MS_DEFAULT * 4, 20).length
+    expect(longer).toBe(base)
+  })
+
+  it('安全弁: 一度も届かない裏付けがあっても、上限で切り上げて出す', () => {
+    // 設定にあるのに 1 本も来ない（基板が落ちている・電源が入っていない）形。
+    // **`backupsCoverTail` は永久に偽**なので、上限が引き取らなければその観測点の
+    // 合成は一度も出ない。
+    const fusion = new SensorFusion(nineSensorConfig(), {
+      windowSec: 1,
+      stepSec: 1,
+      waitMs: FUSION_WAIT_MS_DEFAULT,
+    })
+    let fused = 0
+    // 9 本のうち駆動役と 1 本だけを流す。残り 7 本は設定にあるのに来ない。
+    for (let k = 0; k < 20; k++) {
+      for (const s of [REAL_SENSORS[0], REAL_SENSORS[1]]) {
+        const out = fusion.ingest(
+          wave({
+            boardKey: s.boardKey,
+            sensorId: s.sensorId,
+            firstSampleIndex: k * WIDE_CHUNK,
+            firstSampleMs: BASE_MS + s.phase + k * WIDE_CHUNK * s.mps,
+            msPerSample: s.mps,
+            gal: rows(WIDE_CHUNK, 1),
+          }),
+        )
+        if (out.fusedWave !== null) fused++
+      }
+    }
+    expect(fused).toBeGreaterThan(0)
+    // **全部は出ない。** 上限まで待つぶん保留に残るので、送った回数より少ない。
+    expect(fused).toBeLessThan(20)
+  })
+
   it('安全弁: closeAll() は待たせていたまとまりも流し切る', () => {
-    // 待ちのぶん（既定 0.3 秒）を捨てると、終了時にその分の震度が出ないまま消える。
+    // 待たせていたぶんを捨てると、終了時にその分の震度が出ないまま消える。
     const fusion = new SensorFusion(threeSensorConfig(), { windowSec: 1, stepSec: 1, waitMs: 300 })
     // 窓（1 秒）＋先読み（2 秒）＝300 サンプルを超える量を流す。待ちのせいで
     // 末尾の数まとまりは保留に残る。

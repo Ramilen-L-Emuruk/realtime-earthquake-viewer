@@ -118,6 +118,22 @@ export interface StationHealth {
   readonly lastMemberCountMin: number | null
   readonly lastMemberCountMax: number | null
   /**
+   * 顔ぶれが揃わないまま待ちの上限で切り上げて合成した回数。**0 が正常。**
+   *
+   * **`lastMemberCountMin`/`Max` では足りない**（#374）。あれは本数を出すだけなので、
+   * **「裏付けが恒常的に揃っていない」と「そもそも割り当てが 2 台で本数が少ない」を
+   * 見分けられない** —— #374 の症状（顔ぶれが 62.7% しか揃っていなかった）は、
+   * 誰かが押し出しの生データを手で数えに行くまで分からなかった。
+   *
+   * **累計で持つ**（`closeFailures` と同じ扱い）。最新の 1 回だけでは、たまたま
+   * 切り上げた回と常に切り上げている状態が区別できない —— 見たいのは後者で、
+   * それは「時間あたり何回か」でしか現れない。
+   *
+   * **どこからが異常かの物差しは持たない。** 起動直後と設定を変えた直後は必ず増える
+   * （裏付けが 1 本も届いていないので覆えない）ので、**0 でないこと自体は異常ではない**。
+   */
+  readonly uncoveredFusions: number
+  /**
    * センサー対ごとの差分の強さ（§7・#315）。**最新のまとまりだけ。**
    *
    * **離れている対が異常なセンサーの印。** 2 台が同じ地面の揺れを測っているなら
@@ -145,6 +161,7 @@ interface Entry {
   lastCloseFailure: string | null
   lastMemberCountMin: number | null
   lastMemberCountMax: number | null
+  uncoveredFusions: number
   pairDiffs: readonly StationPairDiff[]
 }
 
@@ -199,14 +216,16 @@ export class StationHealthBook {
   }
 
   /**
-   * 合成波形が 1 まとまり出た（#315）。**混ざった本数だけを覚える。**
+   * 合成波形が 1 まとまり出た（#315）。**混ざった本数と、揃ったかどうかを覚える。**
    *
    * 波形そのものは持たない —— 状態の口は「見に来たときの姿」を返すもので、
    * 毎秒 15 KB の時系列を抱える場所ではない。波形を見たい相手は
    * **合成だけで足りるなら `/stream?wave=station`**、センサー単独も要るなら
    * `?wave=1` へ繋ぐ（後者はそこへ毎秒 65 KB 積む。`readingHub.ts` の `WaveWant`）。
+   *
+   * **`backupsCovered` は本数と別に要る**（`uncoveredFusions` の説明。#374）。
    */
-  noteWave(wave: FusedWaveChunk): void {
+  noteWave(wave: FusedWaveChunk, backupsCovered: boolean): void {
     // **空のまとまりでは触らない。** `SensorFusion` は空を返さないが、
     // 触ると「最後に合成した」印（`lastPacketMs`）だけが動いて、
     // 本数は null のまま残る形になる。
@@ -220,6 +239,7 @@ export class StationHealthBook {
     }
     entry.lastMemberCountMin = min
     entry.lastMemberCountMax = max
+    if (!backupsCovered) entry.uncoveredFusions += 1
   }
 
   /**
@@ -281,6 +301,7 @@ export class StationHealthBook {
         lastCloseFailure: e.lastCloseFailure,
         lastMemberCountMin: e.lastMemberCountMin,
         lastMemberCountMax: e.lastMemberCountMax,
+        uncoveredFusions: e.uncoveredFusions,
         pairDiffs: e.pairDiffs,
       }))
   }
@@ -317,6 +338,7 @@ export class StationHealthBook {
       lastCloseFailure: null,
       lastMemberCountMin: null,
       lastMemberCountMax: null,
+      uncoveredFusions: 0,
       pairDiffs: [],
     }
     this.entries.set(stationId, created)

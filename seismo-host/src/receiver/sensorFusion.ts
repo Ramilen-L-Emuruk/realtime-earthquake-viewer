@@ -74,7 +74,7 @@ import { STEP_SEC_DEFAULT, WINDOW_SEC_DEFAULT, samplesForSeconds } from '../../.
 const REQUIRED_AXES = 3
 
 /**
- * 裏付けの到着を待つ時間（ミリ秒）。**この分だけ合成が遅れる。**
+ * 裏付けの到着を待つ時間（ミリ秒）。**これは上限で、通常はここまで待たない。**
  *
  * **なぜ待つのか。** 裏付け側の値は駆動役の刻みへ時刻で突き合わせるので、まだ届いて
  * いない範囲は引けない。待たずに合成すると**その瞬間に届いていたセンサーだけ**が
@@ -84,14 +84,23 @@ const REQUIRED_AXES = 3
  * 「複数センサーで精度を上げる」という狙い（REQUIREMENTS.md §7）がそもそも
  * 成り立っていなかったことになる。
  *
- * **値の根拠は実測。** 実機の基板間でパケットの到着差が最大 173ms、区間の起点差が
- * 160ms あったので、それを覆う 300ms にした。**足りないと、遅れて届く基板が
- * 合成から外れて顔ぶれが揺れ続ける**（待つ仕組みを入れた意味が無くなる）。
+ * **待ちの長さでは決めない**（`SensorFusion.fuseOneHeld` を見ること）。揃ったかどうかは
+ * 「裏付けが全員そのまとまりの末尾を引けるか」で見て、引けた回に出す ——
+ * **時間で決め打つと必ず足りなくなる**。要る長さは「センサー間の到着差 ＋ まとまり長」
+ * で、まとまり長は基板の設定次第だから、定数へ焼いた時点で設定が変わると静かに
+ * 足りなくなる（2026-09-30 に #374 で実測。到着差 200ms に対し待ちは 300ms あったのに、
+ * 9 本が揃ったのは 62.7% だけで、**末尾の 3 サンプルは 100 まとまりすべてで 2 本欠けて
+ * いた** —— 裏付けの「次のまとまり」が届くまで末尾は覆えないため）。
+ *
+ * **この値は「揃わないまま待ち続けない」ための頭打ち。** センサーが落ちた・設定から
+ * 外れた等で永久に揃わない相手を待たないために要る。600ms にしたのは実測の
+ * 到着差 200ms ＋ まとまり長 300ms に余裕を 100ms 足した値で、**ここまで待つのは
+ * 揃わないときだけ**（揃っていれば従来の 300ms より早く出る）。
  *
  * **遅れは体感に出ない。** 計測震度はもともと 2 秒遅れて出る
  * （`../intensity/intensityStream.ts` の `EDGE_MARGIN_SEC`）。
  */
-export const FUSION_WAIT_MS_DEFAULT = 300
+export const FUSION_WAIT_MS_DEFAULT = 600
 
 /**
  * 処理を待たせる駆動役のまとまりの上限。**超えたら待ちを切り上げて処理する**
@@ -117,10 +126,15 @@ const MAX_HELD_CHUNKS = 32
 /**
  * 裏付け 1 本ぶんに覚えておくまとまりの数。**待ちを覆う長さが要る。**
  *
- * 既定の待ち（300ms）と実機のまとまり（100ms・10 サンプル）なら 3〜4 個で足りるが、
- * まとまりの長さは基板の設定次第なので余裕を持たせる。**古いものは
- * `trimCache` が保留の進みに合わせて捨てる**ので、この上限に当たるのは
- * 「駆動役が止まっているのに裏付けだけ届き続ける」場合だけ。
+ * 待ちの上限（`FUSION_WAIT_MS_DEFAULT` = 600ms）と実機のまとまり（300ms・30 サンプル）
+ * なら 3〜4 個で足りるが、まとまりの長さは基板の設定次第なので余裕を持たせる。
+ * **古いものは `trimCache` が保留の進みに合わせて捨てる。**
+ *
+ * **ここが唯一の頭打ちになる場面が 2 つある。** どちらも `trimCache` が捨てる根拠を
+ * 持たない状態（保留が空）——「駆動役が止まっているのに裏付けだけ届き続ける」ときと、
+ * 「顔ぶれが揃って保留が空になり、次の駆動役を待っている」とき。後者は通常の動作で、
+ * そのとき抱える量は 1 センサーあたり 64 まとまり（実機の値で約 19 秒ぶん・約 90KB）
+ * で頭打ちになる。
  */
 const MAX_CACHED_CHUNKS = 64
 
@@ -382,6 +396,17 @@ export interface FusionOutcome {
    * 判定を呼び出し側が再現できない。
    */
   readonly intensityStateChanged: boolean
+  /**
+   * 裏付けが全員このまとまりの末尾を引けたか（`backupsCoverTail`）。**取り出して
+   * 合成した回にだけ意味を持つ**（`fusedWave` が非 null の回に限る）。
+   *
+   * **偽なら「揃わないまま待ちの上限で切り上げた」。** 下流はこの回を数える
+   * （`stationHealth.ts` の `uncoveredFusions`）—— **`memberCount` だけでは
+   * 「裏付けが恒常的に揃っていない」と「そもそも割り当てが 2 台で本数が少ない」を
+   * 見分けられない**。#374 の症状（顔ぶれが 62.7% しか揃っていなかった）は、
+   * 誰かが手で生データを見に行くまで分からなかった —— 同じ穴を残さないための印。
+   */
+  readonly backupsCovered: boolean
 }
 
 function nothingOutcome(): FusionOutcome {
@@ -392,6 +417,8 @@ function nothingOutcome(): FusionOutcome {
     intensitySkipReason: null,
     closeFailure: null,
     intensityStateChanged: false,
+    // `fusedWave` が null なので意味を持たない（`FusionOutcome` の説明を見ること）。
+    backupsCovered: false,
   }
 }
 
@@ -458,14 +485,19 @@ interface Group {
    * 裏付けの到着を待っている駆動役のまとまり。**古い順。**
    *
    * 合成はここから取り出したときに起きる（届いた瞬間ではない）。取り出す条件は
-   * `FUSION_WAIT_MS_DEFAULT` を見ること。
+   * `SensorFusion.fuseOneHeld` を見ること。
    */
   readonly held: HeldChunk[]
   /**
    * このグループで観測した最新の時刻（駆動役・裏付けを問わない、まとまりの終端）。
    *
-   * **待ちの計時はこれで行う。壁時計を見ない** —— 見ると、生データの読み返しや
+   * **待ちの上限の計時はこれで行う。壁時計を見ない** —— 見ると、生データの読み返しや
    * テストで実際の経過時間に振られ、同じ入力から違う合成が出る。
+   *
+   * **これは「揃ったか」の判定には使えない。** 駆動役・裏付けを問わない最大なので、
+   * 最速の 1 本が独りで進めば上がってしまう（実機では最速が駆動役より 56ms 先を行き、
+   * 待ちの上限が実効で目減りしていた。#374）。揃ったかどうかは値が引けるかで見る
+   * —— `backupsCoverTail`。
    */
   latestSeenMs: number
   /**
@@ -606,8 +638,14 @@ function lookupCached(chunks: readonly CachedChunk[], tMs: number): CachedSample
 /**
  * もう引かれない裏付けのまとまりを落とす。
  *
- * **最新の 1 つは必ず残す。** 保留が空のときに全部捨てると、次に届いた駆動役が
- * 裏付けを 1 本も引けず、待つ仕組みを入れる前と同じ「駆動役だけの合成」に戻る。
+ * **保留が空なら何も捨てない。** 次に届く駆動役のまとまりがどの範囲を求めるかは、
+ * 届くまで分からない —— **捨てる根拠が無い**。以前は「最新の 1 つだけ残す」形で
+ * 捨てていたが、**1 つでは足りない**（#374）。裏付けの起点は駆動役とずれているので、
+ * 駆動役のまとまりの**先頭側**を覆うのは裏付けの「1 つ前のまとまり」になることがある
+ * —— それを捨てると、その観測点はまとまりの先頭で顔ぶれを 1 本落とす
+ * （実機の実測で、先頭の 4 サンプルが 100 まとまりすべてで 1 本欠けていた）。
+ *
+ * **捨てなくても伸びない。** 上限は `MAX_CACHED_CHUNKS` が持つ。
  *
  * **並びが時刻順であることを前提にしている**（`list[0]` を最古とみなす。`lookupCached`
  * は逆に末尾から探す）。`firstSampleMs` は区間の当てはめが出す絶対時刻で、基板が
@@ -616,12 +654,40 @@ function lookupCached(chunks: readonly CachedChunk[], tMs: number): CachedSample
  * 引く」「捨てるべきものが残る」で、例外は出ない）。
  */
 function trimCache(group: Group): void {
+  const head = group.held[0]
+  if (head === undefined) return
   // 待たせている中で最も古いまとまりの先頭より前で終わるものは、以後どの
   // 合成からも引かれない（合成は保留を古い順に処理する）。
-  const oldestNeededMs = group.held.length > 0 ? group.held[0].wave.firstSampleMs : Infinity
+  const oldestNeededMs = head.wave.firstSampleMs
   for (const list of group.cache.values()) {
     while (list.length > 1 && endMsOf(list[0]) <= oldestNeededMs) list.shift()
   }
+}
+
+/**
+ * 裏付けが全員、このまとまりの**末尾のサンプル**を引けるか。**合成を出す合図。**
+ *
+ * **末尾だけ見る。** 待って届くのは未来側のサンプルだけなので、先頭が引けない形
+ * （`trimCache` が落とした後・裏付けの起点が駆動役より後）は待っても戻らない ——
+ * そこまで条件に入れると、戻らないものを待って毎回上限まで粘ることになる。
+ * **末尾が引ければ、その手前も引けているのが通常**（まとまりは時刻順に並ぶ）。
+ *
+ * **一度も届いていないセンサーは「覆えていない」。** 起動直後・設定を変えた直後が
+ * それで、待ちの上限（`FUSION_WAIT_MS_DEFAULT`）が引き取る。
+ *
+ * **駆動役は数えない。** 駆動役のまとまりそのものが引数なので、常に引ける。
+ */
+function backupsCoverTail(group: Group, held: HeldChunk): boolean {
+  const n = held.wave.gal[0].length
+  // 空のまとまりは覆う対象が無い。待つ理由も無い。
+  if (n === 0) return true
+  const tailMs = held.wave.firstSampleMs + (n - 1) * held.wave.msPerSample
+  for (const m of group.backups) {
+    const chunks = group.cache.get(memberKeyOf(m.boardKey, m.sensorId))
+    if (chunks === undefined) return false
+    if (lookupCached(chunks, tailMs) === null) return false
+  }
+  return true
 }
 
 interface Combined {
@@ -779,7 +845,15 @@ function endGroupStream(group: Group): EndGroupStreamResult {
 export interface SensorFusionOptions {
   readonly windowSec?: number
   readonly stepSec?: number
-  /** 裏付けの到着を待つ時間（ミリ秒）。既定は `FUSION_WAIT_MS_DEFAULT`。 */
+  /**
+   * 裏付けの到着を待つ上限（ミリ秒）。既定は `FUSION_WAIT_MS_DEFAULT`。
+   *
+   * **大きく変えるなら `MAX_CACHED_CHUNKS` も見直すこと。** あちらは既定の上限
+   * （600ms）を覆う前提で 64 に置いてある。上限だけ伸ばすと、**待っている間に
+   * 裏付けの古いまとまりが件数の上限で先に捨てられ**、届いていたのに引けない形になる
+   * —— そうなると顔ぶれは永久に揃わず、毎回上限まで待って低い `memberCount` を
+   * 出し続ける（例外もログも出ない）。いまは `main.ts` が既定値のままなので起きない。
+   */
   readonly waitMs?: number
 }
 
@@ -838,12 +912,12 @@ export class SensorFusion {
    * 素通りする——単独のセンサーは合成の対象にならない。
    *
    * **合成は届いた瞬間には起きない。** 駆動役のまとまりは裏付けの到着を待つために
-   * いったん溜め、待ちが満たされた回に 1 つだけ取り出して合成する
-   * （`FUSION_WAIT_MS_DEFAULT` を見ること）。**待ちを進めるのは駆動役の到着だけでは
-   * ない** —— 裏付けが届いても時刻は進むので、そこでも取り出しを試す。
+   * いったん溜め、**顔ぶれが揃った回**に 1 つだけ取り出して合成する
+   * （取り出す条件は `fuseOneHeld`）。**進めるのは駆動役の到着だけではない** ——
+   * 裏付けが届けば揃う側が動くので、そこでも取り出しを試す。
    *
    * **1 回の呼び出しで取り出すのは最大 1 つ。** 駆動役のまとまりは定期的に届くので、
-   * 入りと出が釣り合って溜まりは一定の長さ（待ち時間ぶん）に落ち着く。
+   * 入りと出が釣り合って溜まりは一定の長さ（揃うまでにかかるぶん）に落ち着く。
    *
    * **`closeAll()` のあとに呼んではいけない。** そこで全グループの流し込みを締めて
    * いるので、以後 `ingest()` を呼び続けると `group.stream` が `null` のまま
@@ -889,28 +963,36 @@ export class SensorFusion {
   }
 
   /**
-   * 待ちが満たされた駆動役のまとまりを 1 つだけ取り出して合成する。
+   * 顔ぶれが揃った駆動役のまとまりを 1 つだけ取り出して合成する。
    *
-   * 取り出すのは次のどちらか。
+   * 取り出すのは次のいずれか。**先に見るのは 1 つめ**で、2 つめ・3 つめは
+   * 「揃わないまま待ち続けない」ための頭打ち。
    *
-   * - 先頭のまとまりの終端から待ち時間が経っている（`latestSeenMs` で測る）
+   * - **裏付けが全員、そのまとまりの末尾を引ける**（`backupsCoverTail`）——
+   *   揃ったので待つ理由が無い。**揃っている間は待ちの上限に関わらず即出す**
+   * - 先頭のまとまりの終端から待ちの上限が経っている（`latestSeenMs` で測る）——
+   *   揃わない相手（落ちたセンサー・設定から外れたセンサー）を永久に待たない
    * - 溜まりが上限（`MAX_HELD_CHUNKS`）を超えた —— **待ちを切り上げる安全弁。**
    *   時刻が進まない状況（裏付けが全滅した・読み返しが止まった）で永久に待たない
+   *
+   * **時間だけで判定しない理由**は `FUSION_WAIT_MS_DEFAULT` を見ること（#374）。
+   * 要る長さは「センサー間の到着差 ＋ まとまり長」で、後者は基板の設定次第。
    */
   private fuseOneHeld(group: Group): FusionOutcome {
     const head = group.held[0]
     if (head === undefined) return nothingOutcome()
+    const covered = backupsCoverTail(group, head)
     const waited = head.endMs + this.waitMs <= group.latestSeenMs
-    if (!waited && group.held.length <= MAX_HELD_CHUNKS) return nothingOutcome()
+    if (!covered && !waited && group.held.length <= MAX_HELD_CHUNKS) return nothingOutcome()
     group.held.shift()
-    const outcome = this.fuse(group, head)
+    const outcome = this.fuse(group, head, covered)
     // 保留が進んだぶん、もう引かれない裏付けを落とす。
     trimCache(group)
     return outcome
   }
 
   /** 取り出した 1 まとまりを合成する。**`held` からの取り出しはここでは行わない。** */
-  private fuse(group: Group, held: HeldChunk): FusionOutcome {
+  private fuse(group: Group, held: HeldChunk, backupsCovered: boolean): FusionOutcome {
     const wave = held.wave
     const stripped = held.stripped
 
@@ -1013,6 +1095,7 @@ export class SensorFusion {
       intensitySkipReason: group.streamError,
       closeFailure,
       intensityStateChanged,
+      backupsCovered,
     }
   }
 
@@ -1021,8 +1104,9 @@ export class SensorFusion {
    * ——呼ばないと、各観測点の最後の窓ぶんの答えが出ないまま消える
    * （`IntensityPipeline.closeAll()` と同じ理由）。
    *
-   * **待たせていたまとまりは先に流し切る。** 捨てると、待ちの時間ぶん（既定 0.3 秒）の
-   * 震度が出ないまま消える——締めくくり（`end()`）を呼ぶ理由と同じ。
+   * **待たせていたまとまりは先に流し切る。** 捨てると、待っていたぶん
+   * （揃うまでにかかった時間。最大で `FUSION_WAIT_MS_DEFAULT`）の震度が出ないまま
+   * 消える——締めくくり（`end()`）を呼ぶ理由と同じ。
    * **合成波形はここでは返せない**（この戻り値は震度と締めくくりの失敗だけを運ぶ）ので、
    * 最後の数まとまりぶんの合成波形は出ずに終わる。震度は拾えるので実害は無いが、
    * 波形を配る先を足すとき（#315）はここを見直すこと。
@@ -1037,7 +1121,9 @@ export class SensorFusion {
     for (const group of this.groups) {
       while (group.held.length > 0) {
         const head = group.held.shift() as HeldChunk
-        const out = this.fuse(group, head)
+        // **締めくくりでは覆えたかを見ない。** この戻り値は震度と締めくくりの失敗だけを
+        // 運ぶので `backupsCovered` は誰も読まない（そもそも `fusedWave` を返さない）。
+        const out = this.fuse(group, head, backupsCoverTail(group, head))
         readings.push(...out.readings)
         if (out.closeFailure !== null) failures.push(out.closeFailure)
       }

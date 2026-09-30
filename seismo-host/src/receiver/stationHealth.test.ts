@@ -163,7 +163,7 @@ describe('StationHealthBook', () => {
 
   it('正: 合成波形が出たら、混ざった本数の最小と最大を覚える（#315）', () => {
     const book = new StationHealthBook()
-    book.noteWave(fused([9, 9, 9, 9]))
+    book.noteWave(fused([9, 9, 9, 9]), true)
 
     const s = book.snapshot()[0]
     // **待ちが効いていれば、割り当てた台数と同じ値で最小＝最大になる。**
@@ -186,7 +186,7 @@ describe('StationHealthBook', () => {
     const book = new StationHealthBook()
     // 手当て前の実機で起きていた形——1 まとまり（30 サンプル）の中で顔ぶれが
     // 入れ替わり、センサー間の直流差が段差として乗って震度が跳ねていた。
-    book.noteWave(fused([1, 4, 7, 2, 5]))
+    book.noteWave(fused([1, 4, 7, 2, 5]), false)
 
     const s = book.snapshot()[0]
     expect(s.lastMemberCountMin).toBe(1)
@@ -196,11 +196,45 @@ describe('StationHealthBook', () => {
   it('安全弁: 空のまとまりでは何も覚えない（音沙汰の印も動かさない）', () => {
     const c = clock()
     const book = new StationHealthBook({ now: c.now })
-    book.noteWave(fused([]))
+    book.noteWave(fused([]), false)
 
     // **触ると `lastPacketMs` だけが動いて本数は null のまま**という、
     // 読み手に「合成したのに本数が分からない」と見える形になる。
+    // **揃わなかった回としても数えない**（そもそも覆う対象が無い）。
     expect(book.snapshot()).toEqual([])
+  })
+
+  it('正: 顔ぶれが揃わないまま切り上げた回を数える（#374）', () => {
+    const book = new StationHealthBook()
+    book.noteWave(fused([9, 9, 9]), false)
+    book.noteWave(fused([9, 9, 9]), false)
+
+    const s = book.snapshot()[0]
+    // **本数だけでは見分けられない事実。** この 2 回はどちらも 9 本揃って見えるが、
+    // 裏付けが末尾を覆えないまま待ちの上限で切り上げている（#374 の症状が
+    // 残っていれば、こうして回数として現れる）。
+    expect(s.uncoveredFusions).toBe(2)
+  })
+
+  it('対照: 揃っていれば数えない（0 が正常）', () => {
+    const book = new StationHealthBook()
+    book.noteWave(fused([9, 9, 9]), true)
+    book.noteWave(fused([9, 9, 9]), true)
+
+    const s = book.snapshot()[0]
+    // **ここが 0 でなくなるなら、正常な回まで数えている。**
+    expect(s.uncoveredFusions).toBe(0)
+  })
+
+  it('安全弁: 合成が一度も出ていない観測点では 0（null にしない）', () => {
+    const book = new StationHealthBook()
+    book.noteReading({ stationId: 'garage', atMs: 1_000, intensity: 2.5 })
+
+    const s = book.snapshot()[0]
+    // **本数（`lastMemberCountMin`）とは扱いが違う。** あちらは「まだ分からない」を
+    // null で表すが、こちらは回数なので **0 回と「まだ数えていない」は同じ意味**
+    // ——null にすると読み手が別の事実だと誤解する。
+    expect(s.uncoveredFusions).toBe(0)
   })
 
   it('理由が null（正常）のときは何も書き換えない', () => {

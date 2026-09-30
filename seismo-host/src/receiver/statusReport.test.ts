@@ -123,6 +123,8 @@ function station(overrides: Partial<StationHealth> = {}): StationHealth {
     // 混ざった本数（#315）。9 本を割り当てた観測点で待ちが効いている状態。
     lastMemberCountMin: 9,
     lastMemberCountMax: 9,
+    // 顔ぶれが揃わないまま切り上げた回数（#374）。0 が正常。
+    uncoveredFusions: 0,
     pairDiffs: [],
     ...overrides,
   }
