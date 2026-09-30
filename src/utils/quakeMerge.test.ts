@@ -17,6 +17,9 @@ import {
 } from './quakeMerge'
 import type { JMAQuake, IssueType, IntensityScale, EarthquakePoint, DomesticTsunami, CorrectType } from '../types/earthquake'
 import { reportsText } from '../test-utils/quakeReports'
+import {
+  advanceQuakeMarks, quakeFactSnapshot, quakeRowSnapshot, trimQuakeMarkMemory, type QuakeMarkMemory,
+} from './quakeUpdateMark'
 
 // 区域名の索引を渡す引数は、本番の呼び出し側が渡し忘れないよう必須にしてある
 // （→ quakeMerge.ts の mergeQuakeHistory のコメント）。このファイルの既存のテストは
@@ -29,12 +32,14 @@ import { isMaxScaleUnreceived } from './quakePoints'
 
 const sameQuakeEntry = (a: JMAQuake, b: JMAQuake, idx: AreaPrefIndex = null) =>
   sameQuakeEntryWithIndex(a, b, idx)
+// **カードだけを返す。** 既存のテストは畳み込みの結果を見るもので、印の記憶
+// （`markMemory`）は下の専用の describe で確かめる。
 const mergeQuakeHistory = (
   newQuakes: JMAQuake[],
   base: JMAQuake[] = [],
   knownRetractions: Parameters<typeof mergeQuakeHistoryWithIndex>[2] = [],
   idx: AreaPrefIndex = null,
-) => mergeQuakeHistoryWithIndex(newQuakes, base, knownRetractions, idx)
+) => mergeQuakeHistoryWithIndex(newQuakes, base, knownRetractions, idx).cards
 const findExistingQuakeCard = (cards: JMAQuake[], incoming: JMAQuake, idx: AreaPrefIndex = null) =>
   findExistingQuakeCardWithIndex(cards, incoming, idx)
 const isRetractedQuakeReport = (
@@ -2098,5 +2103,158 @@ describe('addQuakeRetraction', () => {
 
     expect(list).toHaveLength(3)
     expect(list[0].entry.id).toBe('q2')   // 古い 2 件が落ちる
+  })
+})
+
+// 履歴の畳み込みは「もう起きたこと」をまとめて再現するので印は出さないが、**次に届く報が
+// 比べる相手（記憶）はここで作る**。作らずに捨てていた頃は、リプレイを 21:30 直前から
+// 始めて能登本震の震源要素更新（21:30 発表）を受けても、その報が比べる相手を持たず
+// **座標・深さの印が出なかった**（直前の同じ地震の報は 16:24 で、再生が始まる前に畳み込まれる）。
+describe('mergeQuakeHistory が作る印の記憶', () => {
+  const eventId = '20240101161010'
+  /** 再生開始前に畳み込まれる報（能登本震の報番号 2 にあたる）。 */
+  const beforeReplay = makeQuake({
+    eventId, type: '各地の震度情報', maxScale: 70, mag: 7.6, time: '2024-01-01T07:24:00Z',
+  })
+  /** 再生が始まってから届く震源要素更新（座標と深さを訂正する）。 */
+  const amendment: JMAQuake = {
+    ...makeNoIntensity({
+      eventId, type: '顕著な地震の震源要素更新のお知らせ', mag: 7.6, time: '2024-01-01T12:30:00Z',
+    }),
+    earthquake: {
+      time: '2024-01-01T07:10:00Z',
+      hypocenter: { name: '熊本県熊本地方', latitude: 37.4967, longitude: 137.27, depth: 16, magnitude: 7.6 },
+      maxScale: -1,
+      domesticTsunami: 'なし',
+    },
+  }
+
+  /** 畳み込みの結果へ次の報を当て、そのとき出る印を取る。 */
+  const marksAfter = (memory: ReadonlyMap<string, QuakeMarkMemory>, card: JMAQuake, incoming: JMAQuake) => {
+    const settled = mergeQuakeInto(card, incoming)
+    const key = quakeEventKey(settled)
+    return advanceQuakeMarks({
+      prev: { memory, marks: new Map() },
+      key,
+      snapshot: {
+        facts: quakeFactSnapshot(settled),
+        rows: quakeRowSnapshot(settled.points, settled.cities ?? []),
+        reportType: settled.issue.type,
+      },
+      liveKeys: new Set([key]),
+      now: Date.now(),
+    }).marks.get(key)
+  }
+
+  it('正: 畳み込みが作った記憶を相手に、次の報の印が出る', () => {
+    const { cards, markMemory } = mergeQuakeHistoryWithIndex([beforeReplay], [], [], null)
+    expect(markMemory.get(quakeEventKey(cards[0]))).toBeDefined()
+
+    const marks = marksAfter(markMemory, cards[0], amendment)
+    // 座標は大小が無いので「向きの無い変化」、深さは浅い方を上とするので 0km → 16km は下がった扱い。
+    expect(marks?.facts.get('coordinate')).toBe('changed')
+    expect(marks?.facts.get('depth')).toBe('lowered')
+  })
+
+  it('対照: 記憶が空だと印は出ない（捨てていた頃の症状）', () => {
+    const { cards } = mergeQuakeHistoryWithIndex([beforeReplay], [], [], null)
+    expect(marksAfter(new Map(), cards[0], amendment)).toBeUndefined()
+  })
+
+  it('安全弁: 行の写しは種別ごとに分かれる（報の粒度の違いを初出にしない）', () => {
+    const prompt = makeQuake({
+      eventId, type: '震度速報', maxScale: 50, time: '2024-01-01T07:12:00Z',
+      points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
+    })
+    const { cards, markMemory } = mergeQuakeHistoryWithIndex([prompt, beforeReplay], [], [], null)
+    const memory = markMemory.get(quakeEventKey(cards[0]))!
+    expect([...memory.rowsByType.keys()].sort()).toEqual(['各地の震度情報', '震度速報'])
+  })
+
+  it('安全弁: 据え置かれた報では記憶を進めない', () => {
+    // 完全版のあとに届いた震度速報は据え置かれる（`isSupersededByExistingCard`）。
+    const late = makeQuake({
+      eventId, type: '震度速報', maxScale: 50, time: '2024-01-01T07:30:00Z',
+      points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
+    })
+    const { cards, markMemory } = mergeQuakeHistoryWithIndex([beforeReplay, late], [], [], null)
+    const memory = markMemory.get(quakeEventKey(cards[0]))!
+    // 据え置いたので「震度速報として前に見た姿」は記録されない。
+    expect([...memory.rowsByType.keys()]).toEqual(['各地の震度情報'])
+  })
+
+  // **畳み込みの吸収が記憶へ写ること。**
+  //
+  // **踏ませるには識別情報を食い違わせる。** 震度速報は震源が決まる前に採番されるので、
+  // 震源が確定した後の報とは `EventID` が違うことがある（→ §6.1「暫定 ID の採り直し」。
+  // 実例は 2026-08-24 04:05 の熊本県天草・芦北地方）。`sameQuakeEntry` は救済の条件として
+  // 区域の共有を要求するので、**区域を持たない震源要素更新はループ内で合流できず**、
+  // `coalesceByEventId` の事後の畳み込みに委ねられる。
+  //
+  // **順序も要る。** 震源要素更新が確定報より**後**に来ると、そのときには確定報が
+  // 採り直し後の識別情報で 1 枚に合流し終わっているため、識別情報の一致でループ内に
+  // 合流してしまい吸収の経路を踏まない（同じ値を確かめるテストを書いても素通りする）。
+  it('安全弁: 畳み込みで吸収された震央地名も記憶へ写る', () => {
+    const 地震の時刻 = '2026-08-23T19:05:00Z'
+    // 震源が決まる前に採番された識別情報（`…0519`）。震源名を持たない。
+    const 震度速報 = makeQuake({
+      id: 'dmdata-quake-20260824040519-1', type: '震度速報', hypoName: '',
+      time: '2026-08-23T19:06:00Z', quakeTime: 地震の時刻, maxScale: 30,
+      points: [{ pref: '', addr: '熊本県天草・芦北地方', isArea: true, scale: 30 }],
+    })
+    // 採り直し後の識別情報（`…0526`）で、**確定報より先に**届く。区域を持たない。
+    const 震源要素更新 = makeNoIntensity({
+      id: 'dmdata-quake-20260824040526-9', type: '顕著な地震の震源要素更新のお知らせ',
+      hypoName: '天草灘', time: '2026-08-23T19:07:00Z', quakeTime: 地震の時刻,
+    })
+    const 震源震度情報 = makeQuake({
+      id: 'dmdata-quake-20260824040526-2', type: '震源・震度情報', hypoName: '熊本県天草・芦北地方',
+      time: '2026-08-23T19:09:00Z', quakeTime: 地震の時刻, maxScale: 30,
+      points: [{ pref: '', addr: '熊本県天草・芦北地方', isArea: true, scale: 30 }],
+    })
+
+    const { cards, markMemory } = mergeQuakeHistoryWithIndex(
+      [震度速報, 震源要素更新, 震源震度情報], [], [], null,
+    )
+    expect(cards).toHaveLength(1)
+    // 畳み込みは震源要素更新の震央地名を採る（あれは震源の訂正を伝える報なので、
+    // どんな既存カードでも採られる。→ `mergeQuakeInto` の分岐 A）。
+    expect(cards[0].earthquake.hypocenter.name).toBe('天草灘')
+    // **記憶も同じ値を指す。** 吸収前のまま（`熊本県天草・芦北地方`）だと、次の報で
+    // 震央地名が「いま動いた」として光る。
+    expect(markMemory.get(quakeEventKey(cards[0]))!.facts.get('hypocenterName'))
+      .toEqual({ key: '天草灘' })
+  })
+
+  // **上限を超えたときに落ちる順。** 履歴の取り込みは 1 回で数百件を積みうるので
+  // （群発の当日ぶん）、刈り込みが必ず働く。落ちるのが**古い側**でなければ、続報が来やすい
+  // 新しい地震の記憶から捨てられて、この変更が直した症状が群発でだけ戻る。
+  //
+  // **ここが固定するのは 1 通ずつ当てるループの積み順**（発表時刻の昇順）。畳み込みの後の
+  // 書き直しは「吸収が起きた鍵だけ」なので、識別情報がすべて違うこの入力では 1 件も走らない。
+  // 書き直しの走査順（`touched` 順）を守るのは実装側のコメントで、テストは持っていない ——
+  // 走る件数が吸収の起きた数に限られ、刈り込みの並びを動かす余地が小さいため。
+  it('安全弁: 上限を超えたら発表時刻の古い側から落ちる', () => {
+    // 30 件の別々の地震（識別情報・震央地名・時刻をすべて違える）。
+    const many = Array.from({ length: 30 }, (_, i) => {
+      const mm = String(i).padStart(2, '0')
+      return makeQuake({
+        id: `dmdata-quake-2026082419${mm}00-1`,
+        type: '各地の震度情報', hypoName: `地震${i}`, maxScale: 30,
+        time: `2026-08-24T19:${mm}:30Z`, quakeTime: `2026-08-24T19:${mm}:00Z`,
+        points: [{ pref: `県${i}`, addr: `区域${i}`, isArea: true, scale: 30 }],
+      })
+    })
+    const { cards, markMemory } = mergeQuakeHistoryWithIndex(many, [], [], null)
+    // 畳み込みの側は刈り込まない（上限を掛けるのは呼び出し側。→ `trimQuakeMarkMemory`）。
+    expect(markMemory.size).toBe(30)
+
+    // 呼び出し側と同じ刈り込みを通す（`hooks/useEarthquakes.ts` の `marksFromHistory`）。
+    const trimmed = trimQuakeMarkMemory(markMemory, new Set(cards.map(c => quakeEventKey(c))))
+    expect(trimmed.size).toBe(24)
+    // **記憶を積む順が発表時刻の昇順なので、末尾に近い（新しい）ものが残る。** 積む順が
+    // 逆さだと、続報が来やすい新しい地震のぶんから落ちる。
+    expect(trimmed.has('20260824192900')).toBe(true)   // いちばん新しい
+    expect(trimmed.has('20260824190000')).toBe(false)  // いちばん古い（落ちる）
   })
 })
