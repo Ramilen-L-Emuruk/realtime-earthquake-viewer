@@ -65,6 +65,7 @@ export interface TestFunctions {
   maxScaleOrAboveQuake?: () => void
   tsunamiGradeChange?: () => void
   tsunamiQuietReports?: () => void
+  tsunamiExpiry?: () => void
   estimatedIntensity?: () => void
   notification: () => void
 }
@@ -1869,6 +1870,11 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
         <Row label="大津波警報" description="岩手・宮城・福島等 – tsunamiMajor 音 / 90秒後に解除">
           <TestButton color="purple" onClick={onTest.tsunami}>大津波警報テスト</TestButton>
         </Row>
+        {isDmdss && onTest.tsunamiExpiry && (
+          <Row label="津波警報 → 津波予報（失効時刻つき）" description="津波警報・注意報 → 45秒後に続報（青森県太平洋沿岸は津波警報から、北海道太平洋沿岸東部は津波注意報から、それぞれ津波予報へ／茨城県は解除）→ さらに45秒後、失効時刻が来てカードが消える。失効時刻が載るのは続報だけなので、バナー右上の「失効」の行と、読み上げの最後の「この津波予報の失効時刻は、◯時◯分です。」をここで確かめられる。津波予報だけになった津波に解除電文は出ないため、消えるのは失効時刻が来たときだけ">
+            <TestButton color="blue" onClick={onTest.tsunamiExpiry}>失効時刻テスト</TestButton>
+          </Row>
+        )}
         {isDmdss && onTest.tsunamiGradeChange && (
           <Row label="津波警報・注意報（区域ごとに等級が動く続報）" description="大津波警報 → 45秒後に続報（岩手・福島は津波警報へ降格／青森県太平洋沿岸は注意報へ／茨城は大津波警報へ引き上げ／北海道は津波予報へ／青森県日本海沿岸は解除）→ 60秒後に各地の満潮時刻の報 → 90秒後に全解除。全体の最上位等級は動かないので、区域ごとの「〇〇から切り替え」「〇〇から引き上げ」と、いちばん下の「解除」の枠でしか変化が分からない。満潮時刻の報は等級について何も言わないので、そこで印が消えないことも確かめられる">
             <TestButton color="orange" onClick={onTest.tsunamiGradeChange}>区域の等級変化テスト</TestButton>

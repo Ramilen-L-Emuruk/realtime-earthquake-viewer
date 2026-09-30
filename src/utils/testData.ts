@@ -2110,6 +2110,76 @@ export function createTestTsunamiWarning(withDmdssFields: boolean): JMATsunami {
   }
 }
 
+/**
+ * 津波警報の続報で、**警報・注意報が解除されて津波予報だけが残る**報（失効時刻つき）。
+ *
+ * **失効時刻（`ValidDateTime`）をこの経路で実機へ出せる唯一の入口。** 気象庁が期限を載せるのは
+ * 「予報のみの発表」と「警報・注意報が解除されて予報のみが残る」の 2 通りで、実電文で
+ * 観測されているのは後者（2024 年能登半島地震の 01-02 10:00 の VTSE41 は同日 17:00、
+ * 2024 年日向灘の 08-08 13:00 は翌日 10:00）。**予報のみの発表に期限が載った電文は、
+ * 手元で見た範囲では見つかっていない**（系統的に走査したわけではない）。**前者は「津波予報」
+ * ボタンが通すが、後者はここでしか通らない** —— アプリはこの報を降格の読み上げへ流すため、同じ失効時刻でも
+ * 組み立てる文が別になる（→ `docs/spec/tsunami-spec.md` §3「有効期限は報ではなく津波に付く」・
+ * `docs/spec/audio-tts-spec.md` §4「津波の失効時刻を語るとき」）。
+ *
+ * **予報だけになった津波に解除電文は出ない。** 消えるのは失効時刻が来たときだけなので、
+ * このテストも明示的な解除を流さず期限切れ（`cancelReason: 'expired'`）に任せる
+ * （→ `simulateTsunamiExpiry`）。
+ *
+ * 3 区域とも動かす。
+ *   青森県太平洋沿岸 … 津波警報 → 津波予報（若干の海面変動）
+ *   北海道太平洋沿岸東部 … 津波注意報 → 津波予報（若干の海面変動）
+ *   茨城県 … 津波警報 → **解除**（`cancelledAreas` へ移る）
+ *
+ * **解除を 1 区域混ぜるのは実電文の形に合わせるため。** 能登の 10:00 の報も、予報が残る区域と
+ * 何も残らない区域の両方を載せていた。予報の区域は予想波高を持たない（実電文でも `MaxHeight`
+ * が付かない）ので、降格した区域からは高さを落とす。
+ *
+ * **DMDATA 経路のみ。** `ValidDateTime` は P2PQuake が配信しない（standard 版は 24 時間の
+ * フェイルセーフで消す）。ボタン自体を DMDSS 版に限っている。
+ *
+ * @param base 続報の元になる発表報（`eventId` を引き継ぐ）
+ */
+export function createTestTsunamiExpiry(base: JMATsunami): JMATsunami {
+  const nowDate = serverDate()
+  const now = nowDate.toISOString()
+  const LIFTED_AREA_NAME = '茨城県'
+  // 解除された区域の `Item` は `Area` と `Category` しか持たない（→ `createTestTsunamiGradeChange`）
+  const lifted = base.areas
+    .filter(a => a.name === LIFTED_AREA_NAME)
+    .map(a => ({
+      grade: 'Unknown' as const, lastGrade: a.grade, immediate: false, name: a.name, code: a.code,
+    }))
+  return {
+    ...base,
+    id: `${base.id}-expiry`,
+    time: now,
+    issue: { ...base.issue, time: now },
+    // 情報名は**その報が出している等級を並べる**（→ `createTestTsunamiWatch`）。この報が出して
+    // いるのは津波予報だけなので 1 つ。
+    infoName: '津波予報',
+    // **失効時刻。** 発表と同じ日の時刻に置く —— 読み上げは日をまたぐときだけ日付から読むので
+    // （`expiryNeedsDate`）、ここでは「◯時◯分です」の形が鳴る。画面のほうは上の「更新」と
+    // 書式を揃えるため常に日付を添えるので、2 つの書式を同時に見比べられる。
+    validDateTime: new Date(nowDate.getTime() + TEST_AUTO_DISMISS_MS / 2).toISOString(),
+    // **津波予報では、いつまで続くかがこの本文にしか書かれていない**（区域に波高も到達時刻も
+    // 付かないため。→ `createTestTsunamiForecast`）。実電文の原文から採る。
+    bodyText: 'これらの沿岸では今後２、３時間程度は若干の海面変動が継続する可能性が高いと考えられます。',
+    cancelledAreas: lifted.length > 0 ? lifted : undefined,
+    areas: base.areas
+      .filter(a => a.name !== LIFTED_AREA_NAME)
+      .map(a => ({
+        ...a,
+        grade: 'Forecast' as const,
+        lastGrade: a.grade,
+        // 「ただちに来襲」は大津波警報・津波警報の区域に付く印。予報へ落ちたら外す
+        immediate: false,
+        // 予報の区域は予想波高を持たない
+        maxHeight: undefined,
+      })),
+  }
+}
+
 export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
   const now = serverDate()
   const nowIso = now.toISOString()
