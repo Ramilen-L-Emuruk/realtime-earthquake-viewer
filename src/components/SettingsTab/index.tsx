@@ -65,6 +65,7 @@ export interface TestFunctions {
   maxScaleOrAboveQuake?: () => void
   tsunamiGradeChange?: () => void
   tsunamiQuietReports?: () => void
+  tsunamiExpiry?: () => void
   estimatedIntensity?: () => void
   notification: () => void
 }
@@ -1857,7 +1858,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
           </Row>
         )}
         {/* ── 津波情報: 軽 → 重、取消は末尾 ── */}
-        <Row label="津波予報（若干の海面変動）" description={`北海道沿岸 – tsunamiForecast 音 / 90秒後に${isDmdss ? '有効期間終了' : '解除（standard 版は有効期限を持たないため解除電文で消える）'}`}>
+        <Row label="津波予報（若干の海面変動）" description={`北海道沿岸 – tsunamiForecast 音 / 90秒後に${isDmdss ? '失効' : '解除（standard 版は失効時刻を持たないため解除電文で消える）'}`}>
           <TestButton color="blue" onClick={onTest.tsunamiForecast}>予報テスト</TestButton>
         </Row>
         <Row label="津波注意報" description="北海道沿岸 – tsunamiWatch 音 / 90秒後に解除">
@@ -1869,6 +1870,11 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
         <Row label="大津波警報" description="岩手・宮城・福島等 – tsunamiMajor 音 / 90秒後に解除">
           <TestButton color="purple" onClick={onTest.tsunami}>大津波警報テスト</TestButton>
         </Row>
+        {isDmdss && onTest.tsunamiExpiry && (
+          <Row label="津波警報 → 津波予報（失効時刻つき）" description="津波警報・注意報 → 45秒後に続報（青森県太平洋沿岸は津波警報から、北海道太平洋沿岸東部は津波注意報から、それぞれ津波予報へ／茨城県は解除）→ さらに45秒後、失効時刻が来てカードが消える。失効時刻が載るのは続報だけなので、バナー右上の「失効」の行と、読み上げの最後の「この津波予報の失効時刻は、◯時◯分です。」をここで確かめられる。津波予報だけになった津波に解除電文は出ないため、消えるのは失効時刻が来たときだけ">
+            <TestButton color="blue" onClick={onTest.tsunamiExpiry}>失効時刻テスト</TestButton>
+          </Row>
+        )}
         {isDmdss && onTest.tsunamiGradeChange && (
           <Row label="津波警報・注意報（区域ごとに等級が動く続報）" description="大津波警報 → 45秒後に続報（岩手・福島は津波警報へ降格／青森県太平洋沿岸は注意報へ／茨城は大津波警報へ引き上げ／北海道は津波予報へ／青森県日本海沿岸は解除）→ 60秒後に各地の満潮時刻の報 → 90秒後に全解除。全体の最上位等級は動かないので、区域ごとの「〇〇から切り替え」「〇〇から引き上げ」と、いちばん下の「解除」の枠でしか変化が分からない。満潮時刻の報は等級について何も言わないので、そこで印が消えないことも確かめられる">
             <TestButton color="orange" onClick={onTest.tsunamiGradeChange}>区域の等級変化テスト</TestButton>

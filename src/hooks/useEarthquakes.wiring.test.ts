@@ -2664,6 +2664,74 @@ describe('テストボタンの待ちの後始末', () => {
     expect(h.current.tsunamis[0]?.areas.some(a => a.lastGrade)).toBe(true)
   })
 
+  // ── 失効時刻テスト（津波警報 → 津波予報）──
+  //
+  // **2 本のタイマーを 1 つのコールバックの中で入れ替える**ので、他のテストボタンより配線が
+  // 込み合っている —— 段 2 を流す直前に `runSimulateTsunami` が張った解除の待ちを落とし、
+  // 以後は失効時刻の予約（`cancelReason: 'expired'`）に任せる。**落とし忘れれば解除電文で
+  // 消え、落としすぎれば警報が画面に居座る。** どちらも型検査には掛からない。
+
+  // 正: 押しっぱなしにすれば 45 秒後に予報へ下がり、失効時刻が付く。
+  it('失効時刻テストは 45 秒後に予報へ降格した続報を届ける', async () => {
+    const h = setup()
+    await h.flush()
+    await act(async () => { await h.current.simulateTsunamiExpiry() })
+    // 1 段目は津波警報。失効時刻はまだ無い
+    expect(h.current.tsunamis[0]?.areas.some(a => a.grade === 'Warning')).toBe(true)
+    expect(h.current.tsunamis[0]?.validDateTime).toBeUndefined()
+
+    act(() => { vi.advanceTimersByTime(46_000) })
+    expect(h.current.tsunamis[0]?.areas.some(a => a.grade === 'Warning')).toBe(false)
+    expect(h.current.tsunamis[0]?.validDateTime).toBeTruthy()
+  })
+
+  // 正: そのまま待てば、解除電文ではなく**失効**で消える（予報だけになった津波に解除は出ない）。
+  it('失効時刻テストは解除電文ではなく失効でカードを閉じる', async () => {
+    const h = setup()
+    await h.flush()
+    await act(async () => { await h.current.simulateTsunamiExpiry() })
+    act(() => { vi.advanceTimersByTime(46_000) })
+    expect(h.current.tsunamis[0]?.cancelledAt).toBeUndefined()
+
+    // 降格報から 45 秒で失効時刻に達する
+    act(() => { vi.advanceTimersByTime(46_000) })
+    expect(h.current.tsunamis[0]?.cancelledAt).toBeInstanceOf(Date)
+    expect(h.current.tsunamis[0]?.cancelReason).toBe('expired')
+  })
+
+  // 対照: リセットを挟めば、その後に待ちが明けても何も起きない。
+  // **ここが落ちると、消したはずの画面へ 45 秒後に津波予報が単独で生える。**
+  it('リセット後は失効時刻テストの続報が届かない', async () => {
+    const h = setup()
+    await h.flush()
+    await act(async () => { await h.current.simulateTsunamiExpiry() })
+    expect(h.current.tsunamis.length).toBeGreaterThan(0)
+
+    act(() => { h.current.resetState() })
+    expect(h.current.tsunamis).toEqual([])
+
+    act(() => { vi.advanceTimersByTime(120_000) })
+    expect(h.current.tsunamis).toEqual([])
+  })
+
+  // 安全弁: 押し直したときに前の待ちを引きずらない。
+  it('失効時刻テストを押し直すと前の待ちは落ちる', async () => {
+    const h = setup()
+    await h.flush()
+    await act(async () => { await h.current.simulateTsunamiExpiry() })
+    act(() => { vi.advanceTimersByTime(30_000) })
+    // 30 秒目で押し直す（1 回目の続報はまだ来ていない）
+    await act(async () => { await h.current.simulateTsunamiExpiry() })
+
+    // 1 回目の待ちが生きていれば、ここで降格報が入ってしまう（押し直しから 16 秒しか経っていない）
+    act(() => { vi.advanceTimersByTime(16_000) })
+    expect(h.current.tsunamis[0]?.validDateTime).toBeUndefined()
+
+    // 2 回目の待ちは正しく明ける
+    act(() => { vi.advanceTimersByTime(30_000) })
+    expect(h.current.tsunamis[0]?.validDateTime).toBeTruthy()
+  })
+
   /** 生の電文から種別で絞る（state に出ない解除・取消はこちらでしか見えない）。 */
   function kindsOf(events: LiveEvent[], kind: LiveEvent['kind']): LiveEvent[] {
     return events.filter(e => e.kind === kind)

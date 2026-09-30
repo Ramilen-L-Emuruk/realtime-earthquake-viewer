@@ -4365,6 +4365,14 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // 届いた順序ではまだ画面にカードが無く、見せる相手がいない（そのときは震源を語る前に
           // 地震電文が届き、次の報から追従できる）。
           if (card) quakeSubjectKey = quakeEventKey(card)
+        } else if (!event.cancelled && event.validDateTime) {
+          // **識別子を欠く電文では既読を持てない。** 鍵は地震ごと（`quake:<eventId>`）なので、
+          // `eventId` が無ければ `quakeSpokenState` は null のまま —— 失効時刻や震源の
+          // 言い直しを「一度言ったら黙る」で抑えられず、続報のたびに繰り返す。
+          // **症状は「同じことを何度も喋る」だけで、例外も警告も出ない。** そういう電文が
+          // 実際に来るのかは数えていない（国内の津波電文は原因地震の EventID を持つのが
+          // ふつう）ので、来たと分かるように記録だけ残す。
+          log.debug('[tts] 識別子を持たない津波電文（失効時刻の既読を持てない）', { id: event.id })
         }
         /**
          * 今回の電文が運んできた観測点を、**カードの並び**で返す。
@@ -4629,8 +4637,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // **区域の並べ替えにはカードと同じ材料を渡す**（`tsunamiCardBasis`）。等級を切り替える報は
           // 観測点をほとんど載せないため、電文の分だけで並べると読み上げが電文順（気象庁の地理順）に
           // 戻り、実測波高の順に並んでいるカードの上を追従スクロールが往復する。
+          // **既読はどちらの枝へも渡す。** 降格文も末尾で失効時刻を語り、その既読は
+          // 発表文と同じ鍵（`tsunamiExpiry`）へ積む。実電文で期限を載せるのは
+          // 「警報・注意報が解除されて予報だけが残った」報＝この降格報なので、
+          // ここを渡し忘れると失効時刻が実運用で一度も声にならない
+          // （→ `ttsText.ts` の `tsunamiExpirySegments`）。
           ttsSegments = isDowngrade
-            ? tsunamiDowngradeToSegments(event, tsunamiCardBasis.observations)
+            ? tsunamiDowngradeToSegments(event, tsunamiCardBasis.observations, quakeSpokenState ?? undefined)
             : tsunamiToSegments(event, tsunamiCardBasis.observations, quakeSpokenState ?? undefined, ttsRegionOptions(settings))
           // グレード変化と同時に観測中（波高未確定）で新規到達した観測点も読み上げに含める
           // （こちらもカードの並びに揃える。理由は観測点更新側と同じ）

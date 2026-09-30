@@ -1037,6 +1037,8 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 警報／特別警報の 2 段階を音声区別にも適用すると、気象庁が使わない「特別警報」の呼称を読み上げてしまう | [`eew-spec.md`](docs/spec/eew-spec.md) §4「レベル判定」 |
 | 分布図の初報／続報判定を「直前の 1 通との比較」に差し替えると、地震が連続した際に同じ地震の続報を別地震と誤判定する | [`audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「推計震度分布図は地震情報の音を借りる」 |
 | 震度が取れない報で長周期階級を読む、または単独点処理の理由づけを他の条件に流用すると、矛盾した発話や誤った理由説明になる | [`audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4「特殊な扱い」 |
+| 津波の失効時刻を等級を名乗る 2 つの文（発表文・降格文）の片方にしか足さないと、気象庁が期限を載せる 2 通りがそれぞれ別の文へ流れるため、その経路の電文では一度も声にならない（型検査・ユニットテスト・テストボタンのいずれも捕まえない） | [`audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4「津波の失効時刻を語るとき」 |
+| 失効時刻の「同じ日か」を端末のタイムゾーンで判定すると、日本時間の深夜をまたぐ組み合わせで日本国外の端末だけ答えが反転する（読み上げに余分な日付が付くか、必要な日付が落ちる）。**テストはタイムゾーンを日本時間に固定して走るのでこの経路は再現できない** | [`audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4「津波の失効時刻を語るとき」 |
 | 気象庁の文を差し込む 5 箇所で句点補完・文末記号集合を個別に持つと、間が消える、または既読単位が誤って融合する | [`tts-sentence-inventory.md`](docs/spec/tts-sentence-inventory.md) §4-8「電文の文を読む箇所で、末尾の句点の扱いが揃っていない」 |
 
 ### 読み上げ: 音声合成（読み仮名・チャンク・接続先）
@@ -1235,6 +1237,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 津波の等級は `Kind/Code` で読む | [`tsunami-spec.md`](docs/spec/tsunami-spec.md) §4「DMDATA XML」 |
 | 津波の解除経路（`cancelReason` 3 種・バリアント差） | [`tsunami-spec.md`](docs/spec/tsunami-spec.md) §3「3 経路の解除フロー」 |
 | 有効期限は報ではなく津波に付く事実として扱う（引き継ぎを 1 つ漏らすと失効しない津波ができる） | [`tsunami-spec.md`](docs/spec/tsunami-spec.md) §3「有効期限は報ではなく津波に付く」 |
+| 失効時刻を画面へ出すときの語（「失効」の 2 文字）・日付を常に添えること・語順を「更新」と揃えることを崩すと、右上のブロックが広がって見出しが折り返す、または行ごとに桁数が変わる | [`tsunami-spec.md`](docs/spec/tsunami-spec.md) §9「失効時刻はバナーの右上に出す」 |
 | 区域単位で等級が動いた報は、動いた区域だけを伝える | [`tsunami-spec.md`](docs/spec/tsunami-spec.md) §10「区域単位で等級が動いた報」・[`audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4「区域単位で等級が動いた報は、動いた区域だけを読む」 |
 | 解除された区域（`Kind/Code` が 00/50/60）を捨てずに分けて持つ | [`tsunami-spec.md`](docs/spec/tsunami-spec.md) §10「解除された区域」・[`audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4「区域単位で等級が動いた報は、動いた区域だけを読む」 |
 | 等級を伝えていない電文（区域が空の続報）は観測点更新として扱う | [`tsunami-spec.md`](docs/spec/tsunami-spec.md) §10「等級を伝えていない電文」 |
