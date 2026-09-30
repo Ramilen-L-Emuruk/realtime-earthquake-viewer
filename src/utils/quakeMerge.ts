@@ -2,7 +2,7 @@ import type { JMAQuake, IssueType, QuakeReportRecord } from '../types/earthquake
 import { isAreaPoint, type AreaPrefIndex } from './quakePoints'
 import { log } from './logger'
 import {
-  quakeFactSnapshot, quakeRowSnapshot, rememberQuakeCard, type QuakeMarkMemory,
+  markIssuedAt, quakeFactSnapshot, quakeRowSnapshot, rememberQuakeCard, type QuakeMarkMemory,
 } from './quakeUpdateMark'
 
 // 地震情報の種別優先度（高いほど詳しい）。
@@ -1091,6 +1091,7 @@ export function mergeQuakeHistory(
       rememberQuakeCard(markMemory, key, {
         facts: quakeFactSnapshot(card),
         rows: quakeRowSnapshot(card.points, card.cities ?? []),
+        issuedAt: markIssuedAt(card.issue.time),
         // **カードの種別を渡す**（`q.issue.type` ではない）。ライブ側も統合後のカードから
         // 採っており、片方だけ電文の種別にすると行の初出の判定基準がずれる。
         reportType: card.issue.type,
@@ -1124,13 +1125,14 @@ export function mergeQuakeHistory(
   // 畳み込み後のカードの種別だけで、それ以外の種別の写しは残る —— あれは「その種別で前に
   // 見た姿」なので、畳み終わった 1 枚では埋まらない。
   //
-  // **回るのは `touched` の順**（＝上のループが報を当てた順＝発表時刻の昇順）。`cards` の順
-  // （地震の時刻の降順）で回すと、最後に書き直すのがいちばん古い地震になり、上限の刈り込み
-  // （`trimQuakeMarkMemory`）が見る挿入順が**逆さになる** —— 群発の履歴取り込みで 24 件を
-  // 超えると、続報が来やすい新しい地震の記憶から先に捨てられる。
+  // **回るのは `touched` の順**（＝上のループが報を当てた順＝発表時刻の昇順）。**刈り込みは
+  // この順を見ない** —— 落とす順は最大震度と発表時刻で決まる（→ `MARK_MEMORY_MAX_ROWS`）。
+  // それでも `cards` の順（地震の時刻の降順）へ変えないのは、**写し直す値がその鍵に最後に
+  // 当たった報の姿であってほしい**から。畳み込みで 2 枚が 1 枚になった組み合わせでは、
+  // どちらの鍵も `touched` に入りうる。
   //
   // **吸収が実際に起きた鍵だけ書き直す。** 参照が変わっていなければ写す値も同じで、
-  // 挿入順を動かすだけ無駄になる。**standard 版（P2PQuake）ではここは 1 件も通らない** ——
+  // 書き直すだけ無駄になる。**standard 版（P2PQuake）ではここは 1 件も通らない** ——
   // `extractQuakeEventId` は DMDATA の `id` の形だけを読むので、あちらでは畳み込みそのものが
   // 起きない。
   //
@@ -1143,6 +1145,7 @@ export function mergeQuakeHistory(
     rememberQuakeCard(markMemory, key, {
       facts: quakeFactSnapshot(card),
       rows: quakeRowSnapshot(card.points, card.cities ?? []),
+      issuedAt: markIssuedAt(card.issue.time),
       reportType: card.issue.type,
     })
   }
