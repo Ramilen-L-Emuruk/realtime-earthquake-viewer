@@ -2,8 +2,11 @@ import { describe, it, expect } from 'vitest'
 import {
   advanceQuakeMarks, changedQuakeFacts, diffQuakeRows, lpgmMarkKey, lpgmRowSnapshot,
   pruneQuakeMarks, quakeFactSnapshot, quakeRowSnapshot, rowMarkKey, rowMarkOf,
+  markIssuedAt, trimQuakeMarkMemory, MARK_MEMORY_MAX_ROWS,
+  type QuakeMarkMemory,
   type QuakeMarkSnapshot,
   type MarkReportType,
+  type RowSnapshot,
 } from './quakeUpdateMark'
 import { UPDATE_MARK_TTL_MS } from './updateMark'
 import type { EarthquakePoint, IntensityScale, JMAQuake, JMAQuakeCity } from '../types/earthquake'
@@ -335,7 +338,10 @@ describe('地震カードの更新の印', () => {
       q: JMAQuake,
       points: EarthquakePoint[],
       reportType: MarkReportType = '震源・震度情報',
-    ): QuakeMarkSnapshot => ({ facts: quakeFactSnapshot(q), rows: snapRows(points), reportType })
+    ): QuakeMarkSnapshot => ({
+      facts: quakeFactSnapshot(q), rows: snapRows(points), reportType,
+      issuedAt: markIssuedAt(q.issue.time),
+    })
 
     // 正: 続報で動いた分が印になり、記憶は進む。
     it('続報で動いた分を印にして記憶を進める', () => {
@@ -565,7 +571,10 @@ describe('地震カードの更新の印', () => {
       const withLpgm = advanceQuakeMarks({
         prev: { memory: withQuake.memory, marks: withQuake.marks },
         key: lpgmMarkKey('20240101161000'),
-        snapshot: { facts: new Map(), rows: lpgmRowSnapshot([{ name: '能登', maxLgInt: 4 }], [], []), reportType: 'lpgm' as const },
+        snapshot: {
+          facts: new Map(), rows: lpgmRowSnapshot([{ name: '能登', maxLgInt: 4 }], [], []),
+          reportType: 'lpgm' as const, issuedAt: 0,
+        },
         liveKeys: new Set(['q1', lpgmMarkKey('20240101161000')]),
         now: 2000,
       })
@@ -602,6 +611,218 @@ describe('地震カードの更新の印', () => {
       const before = lpgmRowSnapshot([{ name: '能登', maxLgInt: 4, maxInt: 10 }], [], [])
       const after = lpgmRowSnapshot([{ name: '能登', maxLgInt: 3, maxInt: 70 }], [], [])
       expect(diffSameType(after, before).get(rowMarkKey.area('能登'))).toBe('lowered')
+    })
+  })
+
+  describe('記憶の刈り込み', () => {
+    /** 行 n 件ぶんの写し。刈り込みは行の中身を見ないので、鍵と値は素朴に作る。 */
+    const rowsOfSize = (n: number, prefix: string): RowSnapshot =>
+      new Map(Array.from({ length: n }, (_, i) => [`${prefix}:${i}`, { key: String(i) }]))
+
+    /**
+     * 鍵・行数・発表時刻・最大震度の組から記憶を作る。**渡した順に挿入する**
+     * （挿入順に頼っていないことを見るため）。発表時刻を省いたら 0、最大震度を省いたら
+     * 「震度の分からない記憶」（落とす順では最後）になる。
+     *
+     * **`rows` と `rowsByType` へ同じ写しを入れる。** 実装（`advanceQuakeMarks`・
+     * `rememberQuakeCard`）がそうしているので、片方だけにすると重さの数え方
+     * （`rowCountOf` は `rowsByType` だけを数える）が実物と食い違う。
+     */
+    const memoryOf = (
+      entries: ReadonlyArray<readonly [string, number, number?, number?]>,
+    ): Map<string, QuakeMarkMemory> =>
+      new Map(entries.map(([key, rows, issuedAt, maxScale]) => {
+        const snap = rowsOfSize(rows, key)
+        return [key, {
+          facts: maxScale === undefined
+            ? new Map()
+            : new Map([['maxScale', { key: String(maxScale), rank: maxScale }]] as const),
+          rows: snap, rowsByType: new Map([['震源・震度情報', snap]]),
+          issuedAt: issuedAt ?? 0,
+        }]
+      }))
+
+    /**
+     * 刈り込みだけを `advanceQuakeMarks` 経由で走らせる（刈り込み本体は非公開で、
+     * `trimQuakeMarkMemory` は「いま届いた報」を持たないため守りの検証には使えない）。
+     *
+     * **`key` の記憶は渡したものと同じ行数で入れ直す** —— あちらは写しで上書きするので、
+     * 元の記憶の `rows` をそのまま写しとして渡す。
+     */
+    const capViaAdvance = (memory: Map<string, QuakeMarkMemory>, key: string): void => {
+      const target = memory.get(key)
+      if (!target) throw new Error(`テストの前提が壊れています: ${key} の記憶がありません`)
+      const next = advanceQuakeMarks({
+        prev: { memory, marks: new Map() },
+        key,
+        snapshot: {
+          facts: target.facts, rows: target.rows,
+          reportType: '震源・震度情報', issuedAt: target.issuedAt,
+        },
+        liveKeys: new Set(memory.keys()),
+        now: 0,
+      })
+      memory.clear()
+      for (const [k, v] of next.memory) memory.set(k, v)
+    }
+
+    // 正: 群発でも、一覧に出ているカードの記憶は残る。
+    //
+    // **2024-01-01 能登を模した件数。** 本震の最後の通常報（16:24:31）から顕著な地震の
+    // 震源要素更新（21:30:20）までの 5 時間に、本震以外の地震が 67 件発表されていた
+    // （控えの実電文 262 通から数えた値）。本震の記憶が落ちると、その震源要素更新で
+    // 比べる相手が無くなり印が出ない —— これがこのテストが守る症状。
+    //
+    // 行数も実測値。本震は観測点 2993・市町村 1343 で、写しは約 4336 行になる。
+    it('群発でも、一覧に出ているカードの記憶を落とさない', () => {
+      const memory = memoryOf([
+        ['main', 4336],
+        ...Array.from({ length: 67 }, (_, i) => [`after-${i}`, 12] as const),
+      ])
+      trimQuakeMarkMemory(memory, new Set(memory.keys()))
+      expect(memory.has('main')).toBe(true)
+    })
+
+    // 正: 「もっと見る」で古い地震を積んでも、いま画面で見ている地震の記憶は残る。
+    //
+    // あちらは `prev.quakeMarkMemory` を土台に**古い地震を後から積む**。挿入順を
+    // 「最後に触った順」の代理にしていると、取り込んだ古い分が新しい側へ回り、
+    // 画面に出ているカードのぶんが先に落ちる。
+    it('もっと見るで古い地震を積んでも、新しい地震の記憶を落とさない', () => {
+      const memory = memoryOf([
+        ['live-new', 12],
+        ...Array.from({ length: 40 }, (_, i) => [`older-${i}`, 12] as const),
+      ])
+      trimQuakeMarkMemory(memory, new Set(memory.keys()))
+      expect(memory.has('live-new')).toBe(true)
+    })
+
+    // 対照: 行の総数が上限を超えたら落とす。**落ちるのは発表時刻の古い側。**
+    //
+    // 上限の半分より大きい記憶を 2 件置けば超える。**枚数ではなく重さで切っている**ので、
+    // わずか 2 件でも落ちる（前の項は 68 件でも落ちない）。
+    it('行の総数が上限を超えたら、発表時刻の古い側から落ちる', () => {
+      const half = Math.floor(MARK_MEMORY_MAX_ROWS / 2) + 1
+      const memory = memoryOf([
+        ['older', half, 1_000],
+        ['newer', half, 2_000],
+      ])
+      trimQuakeMarkMemory(memory, new Set(memory.keys()))
+      expect(memory.has('newer')).toBe(true)
+      expect(memory.has('older')).toBe(false)
+    })
+
+    // 安全弁: 落とす順は**挿入順に依らない**。古い側を後から挿しても、落ちるのは古い側。
+    //
+    // 「もっと見る」がこの形（既存の記憶へ古い地震を後から積む）。挿入順を代理にしていた
+    // 頃は、ここで新しい側が落ちていた。
+    it('古い地震を後から挿しても、落ちるのは古い側', () => {
+      const half = Math.floor(MARK_MEMORY_MAX_ROWS / 2) + 1
+      const memory = memoryOf([
+        ['newer', half, 2_000],
+        ['older', half, 1_000],
+      ])
+      trimQuakeMarkMemory(memory, new Set(memory.keys()))
+      expect(memory.has('newer')).toBe(true)
+      expect(memory.has('older')).toBe(false)
+    })
+
+    // 正: 上限を超えていても、**いま届いた報の記憶**は落とさない。
+    //
+    // 落とすと、次の続報が比べる相手を失って印が出なくなる —— 記憶を作った意味がその場で
+    // 消える。**発表時刻が読めない報でとくに要る**（`markIssuedAt` が 0 へ倒すので、
+    // 並びのいちばん前＝最初に落とす側に来る）。
+    it('いま届いた報の記憶は、上限を超えても落とさない', () => {
+      const half = Math.floor(MARK_MEMORY_MAX_ROWS / 2) + 1
+      const memory = memoryOf([
+        ['old-big', half, 9_000],
+        // 発表時刻が読めなかった報（`markIssuedAt` の 0 フォールバック）。
+        ['just-arrived', half, 0],
+      ])
+      capViaAdvance(memory, 'just-arrived')
+      expect(memory.has('just-arrived')).toBe(true)
+      expect(memory.has('old-big')).toBe(false)
+    })
+
+    // 安全弁: 守った 1 件だけで上限を超えても、その記憶は残る（落とせる相手が無くなっても
+    // 守りを解かない）。本震級 1 件が上限を単独で超える規模に育った場合がこれ。
+    it('守った 1 件だけで上限を超えても、その記憶は残る', () => {
+      const memory = memoryOf([['huge', MARK_MEMORY_MAX_ROWS + 1, 0]])
+      capViaAdvance(memory, 'huge')
+      expect(memory.has('huge')).toBe(true)
+    })
+
+    // 正: 群発の静穏期でも、**本震の記憶は余震に押されて落ちない**。
+    //
+    // 能登本震は最後の通常報（16:24）から**5 時間沈黙したあと**に震源要素更新（21:30）が
+    // 届いた。その 5 時間に余震が 67 件発表されるので、**発表時刻で落とす順を決めると本震が
+    // いちばん古くなり真っ先に落ちる** —— この機能が直そうとした症状そのものが、別の経路で
+    // 戻ることになる。最大震度で並べれば本震は最後まで残る。
+    it('静穏期の本震の記憶は、あとから来た余震に押されても落ちない', () => {
+      const half = Math.floor(MARK_MEMORY_MAX_ROWS / 2) + 1
+      const memory = memoryOf([
+        // 本震（震度7）。発表時刻はいちばん古い。
+        ['main', half, 1_000, 70],
+        // あとから届いた余震（震度2）。発表時刻は新しい。
+        ['after', half, 9_000, 20],
+      ])
+      // 刈り込みを起こすのは別の地震の受信（本震は `keep` で守られない）。
+      memory.set('trigger', { facts: new Map(), rows: new Map(), rowsByType: new Map(), issuedAt: 9_500 })
+      capViaAdvance(memory, 'trigger')
+      expect(memory.has('main')).toBe(true)
+      expect(memory.has('after')).toBe(false)
+    })
+
+    // 対照: 最大震度が同じなら、発表時刻の古い側から落ちる（第 2 キーが効いている）。
+    it('最大震度が同じなら、発表時刻の古い側から落ちる', () => {
+      const half = Math.floor(MARK_MEMORY_MAX_ROWS / 2) + 1
+      const memory = memoryOf([
+        ['older', half, 1_000, 40],
+        ['newer', half, 2_000, 40],
+      ])
+      trimQuakeMarkMemory(memory, new Set(memory.keys()))
+      expect(memory.has('newer')).toBe(true)
+      expect(memory.has('older')).toBe(false)
+    })
+
+    // 安全弁: **震度の分からない記憶は最後に落とす。** 長周期地震動の記憶がこれ（別の鍵で
+    // 持つので地震側の震度を引けない）。先に落とす側へ倒すと、行が少なくて空く余地も小さい
+    // ものから落ちることになり、刈り込みが何度も走るだけになる。
+    it('震度の分からない記憶は、震度を持つ記憶より後に落ちる', () => {
+      const half = Math.floor(MARK_MEMORY_MAX_ROWS / 2) + 1
+      const memory = memoryOf([
+        // 長周期の記憶を模したもの（`facts` が空）。
+        ['lpgm:X', half, 1_000],
+        // 震度2 の余震。発表時刻はこちらが新しい。
+        ['weak', half, 9_000, 20],
+      ])
+      trimQuakeMarkMemory(memory, new Set(memory.keys()))
+      expect(memory.has('lpgm:X')).toBe(true)
+      expect(memory.has('weak')).toBe(false)
+    })
+
+    // 安全弁: **震度の分からない記憶が 2 件以上並んでも、並べ方が壊れない。**
+    //
+    // 震度が分からない記憶は落とす順を `Infinity` へ倒すので、引き算で比べると
+    // `Infinity - Infinity` が `NaN` になり、**並べ方そのものが未定義へ落ちる**
+    // （第 2 キーの発表時刻へも進まない）。長周期の記憶が 2 件あれば起きる。
+    it('震度の分からない記憶が並んでも、発表時刻の古い側から落ちる', () => {
+      const half = Math.floor(MARK_MEMORY_MAX_ROWS / 2) + 1
+      const memory = memoryOf([
+        ['lpgm:newer', half, 2_000],
+        ['lpgm:older', half, 1_000],
+      ])
+      trimQuakeMarkMemory(memory, new Set(memory.keys()))
+      expect(memory.has('lpgm:newer')).toBe(true)
+      expect(memory.has('lpgm:older')).toBe(false)
+    })
+
+    // 安全弁: 一覧から消えたカードの記憶は、上限に余裕があっても落とす。
+    it('一覧に無いカードの記憶は落とす', () => {
+      const memory = memoryOf([['gone', 12], ['alive', 12]])
+      trimQuakeMarkMemory(memory, new Set(['alive']))
+      expect(memory.has('gone')).toBe(false)
+      expect(memory.has('alive')).toBe(true)
     })
   })
 })

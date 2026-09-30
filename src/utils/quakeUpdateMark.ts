@@ -1,5 +1,6 @@
 import type { JMAQuake, JMAQuakeCity, EarthquakePoint, IssueType } from '../types/earthquake'
 import { cityKey } from './quakePoints'
+import { log } from './logger'
 import { UPDATE_MARK_TTL_MS, statusOf, type SnapshotValue, type UpdateStatus } from './updateMark'
 
 /**
@@ -290,19 +291,31 @@ export function lpgmRowSnapshot(
 export const lpgmMarkKey = (eventId: string) => `lpgm:${eventId}`
 
 /**
- * 写しを持ち回るカードの数の上限（→ {@link advanceQuakeMarks}・{@link trimQuakeMarkMemory}）。
+ * 写しを持ち回る**行の総数**の上限（→ {@link advanceQuakeMarks}・{@link trimQuakeMarkMemory}）。
  *
- * 印の寿命は 1 分なので、**それより長く遡って写しを持つ意味はほとんど無い**。
- * 受信のたびに進める経路（`advanceQuakeMarks`）では 1 通が 1 枚しか触らないので、
- * 1 分のあいだに続報が届くカードがこの数を超えることは考えにくい。
+ * **カードの枚数ではなく行の数で切る。** 1 枚あたりの重さが地震の規模で 2 桁変わるため
+ * （実測: 2024-01-01 能登の本震は観測点 2993・市町村 1343 で写しが約 4336 行＝約 120 KiB。
+ * 種別ごとの写し（{@link QuakeMarkMemory.rowsByType}）を最大 4 種別持つので 1 枚で約 480 KiB。
+ * 一方、小さい余震は 1 枚あたり十数行）。枚数で切ると、群発では小さい余震が数十枚並ぶだけで
+ * 枠が埋まって本震が落ち、巨大地震が続けば逆に数十 MB を抱える。
  *
- * **履歴の取り込みはこの数を超える**（`mergeQuakeHistory` は 1 回で数百件を積みうる。
- * 群発の当日ぶんは容易に超える）。そのぶんは刈り込みで落ちるが、**落ちるのは
- * 「いちばん長く触っていないもの」＝発表時刻のいちばん古い地震**になる —— 記憶を積む順が
- * 発表時刻の昇順なので、続報が来やすい新しい地震のぶんが残る。この並びは
- * `mergeQuakeHistory` 側（書き戻しの走査順）が守っている。
+ * **この値は「画面に出ているカードの分を持てる」ことを優先して決める。** 刈り込みは
+ * まず一覧に無いものを落とすので（{@link trimQuakeMarkMemory}）、ここへ来るのは
+ * 一覧に残っているカードだけ。能登の 24 時間（地震 71 件・うち本震級 1 件）で約 2 万行
+ * なので、10 万行あれば本震級が 5 件あっても持ちきれる。行 1 つを 28 B として約 2.8 MB。
+ *
+ * **落ちるのは最大震度のいちばん低い地震**（同じ震度なら発表時刻の古い側。並べ方の理由は
+ * {@link capQuakeMarkMemory}）。**発表時刻だけで並べないこと** —— 能登本震は最後の通常報から
+ * 5 時間沈黙したあとに震源要素更新が届いたので、時刻で並べるとその 5 時間に届く余震に押されて
+ * いちばん残したい記憶から落ちる。**挿入順も代理にしないこと** —— 「もっと見る」は古い地震を
+ * 後から積むので、挿入順では取り込んだ古い分が新しい側へ回る。
+ *
+ * **上限に達したら、一覧に残っているカードの記憶でも落ちる。** 落ちたカードへ続報が来ても
+ * 印は出ない（そのカードで最初に見た報と同じ扱いになる）。一覧の枚数に上限が無いので、
+ * これを完全に無くすには記憶の上限を捨てることになる —— 落とす順を震度にしているのは、
+ * その確率をいちばん下げる並べ方だから。
  */
-const MARK_MEMORY_MAX_ENTRIES = 24
+export const MARK_MEMORY_MAX_ROWS = 100_000
 
 /** カードに出す印。欄ごとと行ごとの 2 系統を持つ。 */
 export interface QuakeCardMarks {
@@ -324,6 +337,28 @@ export interface QuakeMarkSnapshot {
    * `'震源・震度情報'` へ落とす点は、ここでは「未知の種別どうしを同じ範囲とみなす」に留まる。
    */
   reportType: MarkReportType
+  /**
+   * その報の発表時刻（epoch ms）。刈り込みの順序に使う（→ {@link QuakeMarkMemory.issuedAt}）。
+   *
+   * **呼び出し側が渡す。** ここで電文から読み直すと、渡すカードと時刻の出どころが分かれて
+   * 食い違いうる（据え置かれた報ではカードが進まないので、時刻だけが進む形になる）。
+   */
+  issuedAt: number
+}
+
+/**
+ * 発表時刻の文字列を、刈り込みが使う数値へ直す（→ {@link QuakeMarkSnapshot.issuedAt}）。
+ *
+ * **読めない値は `0` へ倒す**（いちばん先に落ちる側）。ここで `Date.now()` へ倒すと、
+ * 時刻が壊れた 1 通が「いちばん新しい」ことになって、本物の新しい地震の記憶を追い出す。
+ *
+ * **「いま届いた報がいちばん先に落ちる」形にはならない** —— 刈り込みはその報の記憶を
+ * 守るため（{@link capQuakeMarkMemory} の `keep`）。守りが無ければ、時刻が読めない報は
+ * 記憶を作った直後に自分で落とすことになる。
+ */
+export function markIssuedAt(time: string | undefined | null): number {
+  const ms = time ? new Date(time).getTime() : Number.NaN
+  return Number.isFinite(ms) ? ms : 0
 }
 
 /** 次の報と突き合わせるための、いまカードが見せている値の写し。 */
@@ -356,11 +391,25 @@ export interface QuakeMarkMemory {
    * 積んだ点をそのまま引き継いだ状態が写る（→ §6.4 の持ち越し規則）。空になるのは、その種別が
    * そのカードで最初の報だったときだけ。
    *
-   * それでも溜まらないのは、**種別の数が型で有限**（高々 8）で、**カードの数にも上限がある**から
-   * （{@link MARK_MEMORY_MAX_ENTRIES}）。能登本震の各地の震度情報で 2,829 行という大きさは、
-   * この 2 つの上限の内側に収まる。
+   * それでも溜まらないのは、**種別の数が型で有限**（高々 8）で、**持ち回る行の総数にも
+   * 上限がある**から（{@link MARK_MEMORY_MAX_ROWS}）。能登本震の各地の震度情報で約 4,336 行
+   * （観測点 2,993・市町村 1,343）という大きさは、その上限の内側に収まる。
    */
   rowsByType: ReadonlyMap<MarkReportType, RowSnapshot>
+  /**
+   * この記憶を作った報の発表時刻（epoch ms）。**刈り込みで落とす順の第 2 キーに使う**
+   * （第 1 キーは最大震度。→ {@link MARK_MEMORY_MAX_ROWS}・{@link capQuakeMarkMemory}）。
+   *
+   * **挿入順を代理にしない。** `Map` の挿入順は「入った順」であって発表時刻の順ではない。
+   * 「もっと見る」は既存の記憶を土台に**古い地震を後から積む**ので、挿入順で古い側から
+   * 落とすと、取り込んだ古い分が新しい側へ回り、**いま画面で見ているカードのぶんが
+   * 先に落ちる**（押した直後のライブの続報で印が出なくなる）。
+   *
+   * 読めない発表時刻は `0` へ倒す（同じ震度のなかでいちばん先に落ちる側）。**印は
+   * 「いま動いた」を指すもので、時刻が読めない報のために新しい地震の記憶を犠牲にする理由が
+   * 無い。** いま届いた報だけは刈り込みが守る（{@link capQuakeMarkMemory} の `keep`）。
+   */
+  issuedAt: number
 }
 
 /**
@@ -410,16 +459,12 @@ export function advanceQuakeMarks(args: {
 
   const memory = new Map<string, QuakeMarkMemory>()
   for (const [k, v] of prev.memory) if (liveKeys.has(k) && k !== key) memory.set(k, v)
-  memory.set(key, { facts: snapshot.facts, rows: snapshot.rows, rowsByType })
-  // **持ち回る数に上限を置く。** `liveKeys` はカード一覧の件数までしか絞らず、その一覧に
-  // 件数の上限が無い。観測点の写しは大きい地震で数千件になるので、群発で長く動かしていると
-  // 積み上がる。`Map` は挿入順を保ち、上でいま触った鍵を末尾へ置き直しているので、
-  // **前から捨てれば「いちばん長く触っていないもの」から落ちる。**
-  while (memory.size > MARK_MEMORY_MAX_ENTRIES) {
-    const oldest = memory.keys().next()
-    if (oldest.done) break
-    memory.delete(oldest.value)
-  }
+  memory.set(key, {
+    facts: snapshot.facts, rows: snapshot.rows, rowsByType, issuedAt: snapshot.issuedAt,
+  })
+  // **持ち回る重さに上限を置く。** `liveKeys` はカード一覧の件数までしか絞らず、その一覧に
+  // 件数の上限が無い（→ `MARK_MEMORY_MAX_ROWS`）。
+  capQuakeMarkMemory(memory, key)
 
   const marks = new Map<string, QuakeCardMarks>()
   for (const [k, v] of prev.marks) {
@@ -457,18 +502,103 @@ export function rememberQuakeCard(
   const prev = memory.get(key)
   const rowsByType = new Map<MarkReportType, RowSnapshot>(prev?.rowsByType ?? [])
   rowsByType.set(snapshot.reportType, snapshot.rows)
-  // **同じ鍵を置き直す前に消す。** `Map` は挿入順を保つので、上書きだけでは順序が
-  // 更新されない。下の上限（{@link trimQuakeMarkMemory}）が「いちばん長く触っていない
-  // ものから落とす」ために、触った鍵を末尾へ動かす。
-  memory.delete(key)
-  memory.set(key, { facts: snapshot.facts, rows: snapshot.rows, rowsByType })
+  // **挿入順は触らない。** 落とす順は発表時刻（`issuedAt`）で決めるので、`Map` の並びに
+  // 意味を持たせない（「もっと見る」が古い地震を後から積むため。→ `MARK_MEMORY_MAX_ROWS`）。
+  memory.set(key, {
+    facts: snapshot.facts, rows: snapshot.rows, rowsByType, issuedAt: snapshot.issuedAt,
+  })
 }
 
 /**
- * 記憶を、いま残っているカードのぶんだけに絞る（→ {@link MARK_MEMORY_MAX_ENTRIES}）。
+ * 記憶 1 件が持つ行の数。重さの代理（→ {@link MARK_MEMORY_MAX_ROWS}）。
+ *
+ * **数えるのは種別ごとの写し（`rowsByType`）だけ。** `rows` はそこへ入れたのと**同じ Map の
+ * 参照**なので（`advanceQuakeMarks`・`rememberQuakeCard` がどちらも `rowsByType.set` した値を
+ * そのまま `rows` へ置く）、足すと 1 種別ぶん二重に数える。
+ */
+function rowCountOf(memory: QuakeMarkMemory): number {
+  let rows = 0
+  for (const byType of memory.rowsByType.values()) rows += byType.size
+  return rows
+}
+
+/**
+ * 落とす順を決めるための、その記憶が指す地震の最大震度（階級値）。
+ *
+ * **震度が分からない記憶は最後に落とす**（`Infinity` へ倒す）。長周期地震動の記憶が
+ * それにあたる —— 別の鍵で持つので地震側の震度を引けない（→ {@link lpgmMarkKey}）。
+ * **先に落とす側へ倒さないこと** —— あちらは観測点が少なく行も少ないので、落としても
+ * 空く余地が小さい。効きの薄いものを先に落とすと、刈り込みが何度も走るだけになる。
+ */
+function dropRankOf(memory: QuakeMarkMemory): number {
+  return memory.facts.get('maxScale')?.rank ?? Number.POSITIVE_INFINITY
+}
+
+/**
+ * 行の総数が上限を超えていたら、**最大震度の低い地震から**落とす（同じ震度なら発表時刻の
+ * 古い側から）。
+ *
+ * **発表時刻だけで並べないこと。** 「古い地震」は「もう続報が来ない地震」ではない ——
+ * 能登本震は最後の通常報（2024-01-01 16:24）から**5 時間沈黙したあと**に震源要素更新
+ * （21:30）が届いた。その 5 時間に余震が 67 件発表されるので、発表時刻で並べると
+ * **いちばん残したい本震の記憶が真っ先に落ちる**。震度で並べれば本震は最後まで残り、
+ * 落ちるのは続報が来ても印の要らない小さな余震のほうになる。
+ *
+ * **行数の大きい順にしないこと。** いちばん重いのは本震なので、効率で選ぶと残したいものから
+ * 落ちる（発表時刻で並べたときと同じ失敗になる）。
+ *
+ * **いま届いた報の記憶（`keep`）は落とさない。** それを落とすと、次の続報が比べる相手を
+ * 失って印が出なくなる —— 記憶を作った意味がその場で消える。**発表時刻が読めない報では
+ * とくに要る** —— {@link markIssuedAt} が `0` へ倒すので、震度が同じ地震が並んだときに
+ * いま届いた報が先に落ちる並びになる。
+ *
+ * **落としたことを記録に出す。** 落ちた地震の続報が来ても印が出なくなるが、画面には
+ * 「印が無い」としか現れない（それが正常なのか上限で落ちたのかを区別できない）。
+ * **1 件も落とせなかったことも出す** —— 守った 1 件だけで上限を超える地震では、以後の報で
+ * 毎回ここへ来る。記録が無いと「上限に張り付いたまま」が外から見えない。
+ *
+ * > **残る限界**: 上限に達したら、**一覧に残っているカードの記憶でも落ちる**。落ちたカードへ
+ * > 続報が来ても印は出ない（そのカードで最初に見た報と同じ扱いになる）。震度の順で落とすのは
+ * > その確率を下げるだけで、無くすわけではない —— 本震級だけが上限を埋めるほど並んだ状況では
+ * > 震度の低い本震級から落ちる。一覧の枚数に上限が無いので、ここを完全に無くすには記憶の
+ * > 上限を捨てることになる（→ {@link MARK_MEMORY_MAX_ROWS}）。
+ */
+function capQuakeMarkMemory(memory: Map<string, QuakeMarkMemory>, keep?: string): void {
+  let rows = 0
+  for (const v of memory.values()) rows += rowCountOf(v)
+  if (rows <= MARK_MEMORY_MAX_ROWS) return
+
+  // **震度の比較は引き算で書かないこと。** 震度が分からない記憶は `Infinity` なので、
+  // それが 2 つ並ぶと `Infinity - Infinity` が `NaN` になり、**並べ方そのものが未定義へ落ちる**
+  // （長周期の記憶が 2 件以上あれば起きる。第 2 キーの発表時刻へも進まない）。
+  const dropOrder = [...memory].sort((a, b) => {
+    const ra = dropRankOf(a[1])
+    const rb = dropRankOf(b[1])
+    if (ra !== rb) return ra < rb ? -1 : 1
+    return a[1].issuedAt - b[1].issuedAt
+  })
+  let dropped = 0
+  for (const [key, v] of dropOrder) {
+    if (rows <= MARK_MEMORY_MAX_ROWS) break
+    if (key === keep) continue
+    rows -= rowCountOf(v)
+    memory.delete(key)
+    dropped++
+  }
+  log.info(
+    dropped === 0
+      ? `[quake] 印の記憶が上限 ${MARK_MEMORY_MAX_ROWS} 行を超えていますが、落とせる記憶が`
+        + `ありませんでした（いま届いた報のぶんだけで超えています。${memory.size} 件・${rows} 行）`
+      : `[quake] 印の記憶を ${dropped} 件落としました（行の総数が上限 ${MARK_MEMORY_MAX_ROWS} を`
+        + `超えたため。最大震度の低い側から落とします。残り ${memory.size} 件・${rows} 行）`,
+  )
+}
+
+/**
+ * 記憶を、いま残っているカードのぶんだけに絞る（→ {@link MARK_MEMORY_MAX_ROWS}）。
  *
  * **履歴の取り込みは一度に何十枚ものカードを作る**ので、積んだままにすると観測点の写し
- * （大きい地震で数千件）が積み上がる。`advanceQuakeMarks` が受信のたびに行う刈り込みと
+ * （大きい地震で数千行）が積み上がる。`advanceQuakeMarks` が受信のたびに行う刈り込みと
  * 同じことを、バッチの最後に一度だけ行う。
  *
  * **`liveKeys` に無い鍵は捨てる。** 畳み込み（`coalesceByEventId`）で暫定 ID と確定 ID の
@@ -480,11 +610,7 @@ export function trimQuakeMarkMemory(
   liveKeys: ReadonlySet<string>,
 ): Map<string, QuakeMarkMemory> {
   for (const k of [...memory.keys()]) if (!liveKeys.has(k)) memory.delete(k)
-  while (memory.size > MARK_MEMORY_MAX_ENTRIES) {
-    const oldest = memory.keys().next()
-    if (oldest.done) break
-    memory.delete(oldest.value)
-  }
+  capQuakeMarkMemory(memory)
   return memory
 }
 

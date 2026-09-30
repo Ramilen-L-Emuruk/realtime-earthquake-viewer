@@ -15,7 +15,7 @@ import {
   mergeHistoryLoss,
 } from '../utils/telegramLoss'
 import { mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes, extractQuakeEventId, quakeEventKey, coalesceByEventId, findExistingQuakeCard, isRetractedQuakeReport, quakeRetractionOf, addQuakeRetraction, quakeHoldBack } from '../utils/quakeMerge'
-import { advanceQuakeMarks, pruneQuakeMarks, trimQuakeMarkMemory, quakeFactSnapshot, quakeRowSnapshot, lpgmRowSnapshot, lpgmMarkKey, type QuakeCardMarks, type QuakeMarkMemory } from '../utils/quakeUpdateMark'
+import { advanceQuakeMarks, markIssuedAt, pruneQuakeMarks, trimQuakeMarkMemory, quakeFactSnapshot, quakeRowSnapshot, lpgmRowSnapshot, lpgmMarkKey, type QuakeCardMarks, type QuakeMarkMemory } from '../utils/quakeUpdateMark'
 import { UPDATE_MARK_TTL_MS } from '../utils/updateMark'
 import type { QuakeRetraction } from '../utils/quakeMerge'
 import { withBorrowedFromTsunami, borrowFromTsunamiIntoCards } from '../utils/borrowFromTsunami'
@@ -530,8 +530,14 @@ function runSimulateEEWRetraction(
 /**
  * 履歴を取り込んだときの印と記憶。
  *
- * **印は出さない。** 履歴は「もう起きたこと」をまとめて再現するもので、取り込んだ直後の
- * カードに印が付くと「いま動いた」と読める。
+ * **新しい印は出さない。** 履歴は「もう起きたこと」をまとめて再現するもので、取り込んだ
+ * 直後のカードに印が付くと「いま動いた」と読める。
+ *
+ * **ただし、いま出ている印は消さない。** 履歴の取り込みはライブと非同期に走る
+ * （`restoreQuakeHistory` はリプレイ開始の数秒後に完了し、「もっと見る」は利用者が
+ * 押した瞬間に走る）。捨てていた頃は、**直前の続報で付いた印が履歴の到着で消えていた**
+ * ——「もっと見る」を押すと表示中の印が全部落ちるのがそれ。一覧から消えたカードの分と
+ * 寿命切れだけを落とす（ライブ経路の `advanceQuakeMarks` と同じ絞り方）。
  *
  * **記憶は畳み込みが作ったものを受け取る**（`mergeQuakeHistory` の `markMemory`）。あれは
  * 電文を 1 通ずつ当てるので、各段階が「その報の時点でカードが見せていた姿」になる。
@@ -546,10 +552,21 @@ function marksFromHistory(
   markMemory: Map<string, QuakeMarkMemory>,
   cards: readonly JMAQuake[],
   lpgmByEventId: ReadonlyMap<string, JMALpgm>,
+  prevMarks: ReadonlyMap<string, QuakeCardMarks>,
 ): Pick<EarthquakeState, 'quakeUpdateMarks' | 'quakeMarkMemory'> {
+  const liveKeys = liveMarkKeys(cards, lpgmByEventId)
+  // 寿命の判定は `pruneQuakeMarks` へ任せる。**同じ式をここへ書き写さない** —— 境界の
+  // 不等号や `UPDATE_MARK_TTL_MS` の意味を変えたとき、片方だけ直す経路ができる。
+  // **実時計で測る**（ライブ経路と同じ理由 —— 印は「画面に出してから何秒経ったか」の話で、
+  // 電文の時刻軸には乗せない）。
+  const alive = pruneQuakeMarks(prevMarks, Date.now())
+  const marks = new Map<string, QuakeCardMarks>()
+  for (const [key, mark] of alive) if (liveKeys.has(key)) marks.set(key, mark)
   return {
-    quakeUpdateMarks: new Map(),
-    quakeMarkMemory: trimQuakeMarkMemory(markMemory, liveMarkKeys(cards, lpgmByEventId)),
+    // **変わっていなければ同じ参照を返す**（`pruneQuakeMarks` と同じ約束）。印の寿命の
+    // 掃除タイマーがこの参照を依存に持つので、中身が同じまま作り直すと張り直しが空振りする。
+    quakeUpdateMarks: marks.size === alive.size ? alive : marks,
+    quakeMarkMemory: trimQuakeMarkMemory(markMemory, liveKeys),
   }
 }
 
@@ -1753,6 +1770,8 @@ export function useEarthquakes(
             snapshot: {
               facts: quakeFactSnapshot(settled),
               rows: quakeRowSnapshot(settled.points, settled.cities ?? []),
+              // 刈り込みで落とす順に使う（→ `MARK_MEMORY_MAX_ROWS`）。
+              issuedAt: markIssuedAt(settled.issue.time),
               // 種別が変わった報では行の初出に印を付けない（→ `diffQuakeRows`）。
               reportType: settled.issue.type,
             },
@@ -1961,6 +1980,7 @@ export function useEarthquakes(
                 // 長周期は震源要素の欄を持たない（震源はカードの地震情報側が出す）。
                 facts: new Map(),
                 rows: lpgmRowSnapshot(lpgm.regions ?? [], lpgm.points ?? [], lpgm.prefs ?? []),
+                issuedAt: markIssuedAt(lpgm.time),
                 // 長周期地震動観測情報は 1 種類しか無いので、種別が変わることがない。
                 reportType: 'lpgm',
               },
@@ -2196,7 +2216,7 @@ export function useEarthquakes(
           )
           return {
             ...prev,
-            ...marksFromHistory(markMemory, cards, prev.lpgmByEventId),
+            ...marksFromHistory(markMemory, cards, prev.lpgmByEventId, prev.quakeUpdateMarks),
             earthquakes: borrowFromTsunamiIntoCards(cards, prev.tsunamis),
             lastUpdate: serverDate(),
           }
@@ -2282,7 +2302,7 @@ export function useEarthquakes(
               // 畳み込みが作った記憶を受け取る（印は出さない。→ `marksFromHistory`）。
               // **長周期の鍵はこの更新で復元する `lpgmByEventId` から数える。`prev` ではない** ——
               // 起動時は前の状態が空なので、そちらを見ると復元した長周期の記憶ごと落とす。
-              ...marksFromHistory(markMemory, cards, lpgmByEventId),
+              ...marksFromHistory(markMemory, cards, lpgmByEventId, prev.quakeUpdateMarks),
               // **貸し手は同じ更新で復元する `tsunamis`。`prev.tsunamis` ではない** ——
               // 起動時の復元では前の状態が空なので、そちらを見ると 1 枚も借りられない。
               earthquakes: borrowFromTsunamiIntoCards(cards, tsunamis),
@@ -2551,7 +2571,7 @@ export function useEarthquakes(
         setState(prev => ({
           ...prev,
           // 畳み込みが作った記憶を受け取る（印は出さない。→ `marksFromHistory`）。
-          ...marksFromHistory(markMemory, earthquakes, prev.lpgmByEventId),
+          ...marksFromHistory(markMemory, earthquakes, prev.lpgmByEventId, prev.quakeUpdateMarks),
           // ライブ経路・DMDSS の復元と同じ扱いを通す。**standard 版では貸し手が居ない**
           // （P2PQuake は津波電文の原因地震を配信しない）ので実際には何も変わらないが、
           // 経路ごとに扱いを違えない —— 片方だけ直すと、次に触る人がどちらが正なのか判らない。
@@ -2659,7 +2679,7 @@ export function useEarthquakes(
             )
             return {
               ...prev,
-              ...marksFromHistory(markMemory, cards, prev.lpgmByEventId),
+              ...marksFromHistory(markMemory, cards, prev.lpgmByEventId, prev.quakeUpdateMarks),
               earthquakes: borrowFromTsunamiIntoCards(cards, prev.tsunamis),
             }
           })
@@ -2775,7 +2795,7 @@ export function useEarthquakes(
             ...prev,
             // **長周期の鍵はこの更新で積み増した `lpgmByEventId` から数える** ——
             // このバッチで増えた長周期もこの更新で入るので、`prev` を見るとその記憶を落とす。
-            ...marksFromHistory(markMemory, cards, lpgmByEventId),
+            ...marksFromHistory(markMemory, cards, lpgmByEventId, prev.quakeUpdateMarks),
             earthquakes: merged,
             lpgmByEventId,
             // **残し方の判断は `mergeHistoryLoss` が持つ**（中身によって違う。理由はそちら）。
@@ -2810,7 +2830,7 @@ export function useEarthquakes(
           )
           return {
             ...prev,
-            ...marksFromHistory(markMemory, cards, prev.lpgmByEventId),
+            ...marksFromHistory(markMemory, cards, prev.lpgmByEventId, prev.quakeUpdateMarks),
             earthquakes: borrowFromTsunamiIntoCards(cards, prev.tsunamis),
             hasMore: events.length === LOAD_MORE_BATCH,
             // 成功したので、押し直せば回復しうる側の表示は消す（DMDSS 版と揃える）
@@ -3390,7 +3410,7 @@ export function useEarthquakes(
       )
       return {
         ...prev,
-        ...marksFromHistory(markMemory, cards, prev.lpgmByEventId),
+        ...marksFromHistory(markMemory, cards, prev.lpgmByEventId, prev.quakeUpdateMarks),
         earthquakes: borrowFromTsunamiIntoCards(cards, prev.tsunamis),
       }
     })
