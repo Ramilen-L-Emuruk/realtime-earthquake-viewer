@@ -21,7 +21,7 @@ const { fft, ifft } = fftJs
 const SINDO_LOG_COEFFICIENT = 2
 const SINDO_OFFSET = 0.94
 /** 継続時間0.3秒基準（気象庁告示式で固定値）。 */
-const DURATION_THRESHOLD_SEC = 0.3
+export const DURATION_THRESHOLD_SEC = 0.3
 
 /** 次の2の冪を返す（n<=1なら1）。 */
 function nextPowerOfTwo(n: number): number {
@@ -81,6 +81,18 @@ export function synthesize3Components(ns: number[], ew: number[], ud: number[]):
 }
 
 /**
+ * 0.3秒の継続時間を測るために見る位置（降順に並べたときの添字）。
+ *
+ * **ストリーミング処理（`seismo-host/`）が窓の下限を決めるのにも使う単一情報源。**
+ * 同じ境界を2つの式で書くと、サンプリング周波数を変えたときに片方だけ古くなる
+ * （`0.3 * hz` と書き換えたくなるが、丸めの経路が変わるため式はこのまま保つ）。
+ */
+export function durationThresholdIndex(sampleRateHz: number): number {
+  const dt = 1 / sampleRateHz
+  return Math.floor(DURATION_THRESHOLD_SEC / dt) - 1
+}
+
+/**
  * フィルター済み・合成済みの加速度波形（gal, 非負）から計測震度を算出する。
  * 「絶対値がある値a以上となる時間の合計が0.3秒になるa」を、降順ソートして
  * `floor(0.3/dt)-1` 番目の値を取ることで求める（合成加速度は sqrt(...) により非負のため
@@ -89,8 +101,7 @@ export function synthesize3Components(ns: number[], ew: number[], ud: number[]):
  * データ長が0.3秒に満たない場合はnull（震度を確定できない）。
  */
 export function calcSeismicIntensityFromSynthesized(synthesized: number[], sampleRateHz: number): number | null {
-  const dt = 1 / sampleRateHz
-  const idx = Math.floor(DURATION_THRESHOLD_SEC / dt) - 1
+  const idx = durationThresholdIndex(sampleRateHz)
   if (idx < 0 || idx >= synthesized.length) return null
   const sorted = [...synthesized].sort((a, b) => b - a)
   const a = sorted[idx]
@@ -119,10 +130,31 @@ export interface IntensityTimeSeriesOptions {
   stepSec: number
 }
 
+/**
+ * 計測震度を時系列で出すときのウィンドウ既定値（秒）。
+ *
+ * **計算と同じ場所に置く。** K-NET取り込み（`buildEventResultFromZip.ts`）と自作センサーの
+ * 受け手（`seismo-host/src/receiver/`）が共有する——どちらの値も最後は同じ画面へ並ぶので、
+ * 物差しが違えば「揺れ方の違い」と「測り方の違い」を見分けられない。取得経路のどちらかに
+ * 置くともう片方がそこへ引きに行くことになり、Nodeで動く受け手の型検査へブラウザ専用の
+ * コードが入り込む。
+ *
+ * `STEP_SEC_DEFAULT`は`kyoshinLocalArchiveSource.ts`の`getMergedKyoshinArchive`呼び出しにも
+ * 使われる——インポート時に刻んだ秒間隔とマージ時に読み出す秒間隔がずれると、`buildEventFrames`
+ * （厳密なepoch秒の完全一致ルックアップ、補間なし）が該当秒を「データ無し」とみなし、
+ * 震度データが無警告で欠測（-1）扱いに化けるため、必ず同じ定数を使うこと。
+ */
+export const WINDOW_SEC_DEFAULT = 20
+export const STEP_SEC_DEFAULT = 1
+
 export interface IntensityTimeSeriesPoint {
   /** 波形先頭からの経過秒（ウィンドウ終端の時刻）。 */
   tSec: number
-  /** 計測震度。ウィンドウ内のデータが0.3秒に満たない場合はnull。 */
+  /**
+   * 計測震度。ウィンドウ内のデータが0.3秒に満たない場合と、代表値が0以下（完全な静止・
+   * 非有限値の混入）の場合はnull。**「揺れていない」を意味する値ではない**ので、
+   * 0として扱わないこと。
+   */
   intensity: number | null
 }
 
@@ -135,7 +167,23 @@ export interface IntensityTimeSeriesPoint {
  * 波形全体を先に持っているため、未来のデータを少し混ぜて報告点を境界から遠ざける
  * （記録の末尾数秒だけは先読み分の未来データが無く、この緩和が効かない）。
  */
-const EDGE_MARGIN_SEC = 2
+export const EDGE_MARGIN_SEC = 2
+
+/**
+ * 秒をサンプル数へ直す。
+ *
+ * **バッチ処理と、届いたそばから計算するストリーミング処理（`seismo-host/`）で同じ値を
+ * 返すための単一情報源。** 両者が厳密に一致することは後者の要件で、その一致は丸め方が
+ * 揃っていることに依存している。式を書き写すと、片方だけ変えた日から静かに離れる。
+ */
+export function samplesForSeconds(sec: number, sampleRateHz: number): number {
+  return Math.round(sec * sampleRateHz)
+}
+
+/** ウィンドウを進める幅。0サンプルでは前に進まないので最低1とする。 */
+export function stepSamplesForSeconds(sec: number, sampleRateHz: number): number {
+  return Math.max(1, samplesForSeconds(sec, sampleRateHz))
+}
 
 /**
  * 3成分の加速度波形からスライディングウィンドウで計測震度の時系列を算出する。
@@ -154,9 +202,9 @@ export function computeIntensityTimeSeries(
   opts: IntensityTimeSeriesOptions,
 ): IntensityTimeSeriesPoint[] {
   const len = Math.min(ns.length, ew.length, ud.length)
-  const windowSamples = Math.round(opts.windowSec * sampleRateHz)
-  const stepSamples = Math.max(1, Math.round(opts.stepSec * sampleRateHz))
-  const marginSamples = Math.round(EDGE_MARGIN_SEC * sampleRateHz)
+  const windowSamples = samplesForSeconds(opts.windowSec, sampleRateHz)
+  const stepSamples = stepSamplesForSeconds(opts.stepSec, sampleRateHz)
+  const marginSamples = samplesForSeconds(EDGE_MARGIN_SEC, sampleRateHz)
   const points: IntensityTimeSeriesPoint[] = []
 
   for (let end = stepSamples; end <= len; end += stepSamples) {

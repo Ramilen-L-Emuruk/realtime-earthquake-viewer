@@ -80,6 +80,7 @@ function renderTab(opts: {
       onToggleUnreceived={() => {}}
       onFocusMap={() => {}}
       speakingTelegramTextSubject={null}
+      seismoWaves={new Map()}
     />,
   )
 }

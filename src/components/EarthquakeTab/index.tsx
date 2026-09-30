@@ -2,6 +2,7 @@ import { memo } from 'react'
 import type { JMAQuake, JMALpgm, JMAEstimatedIntensity } from '../../types/earthquake'
 import { EarthquakeCard } from './EarthquakeCard'
 import { extractQuakeEventId, quakeEventKey } from '../../utils/quakeMerge'
+import type { SeismoQuakeWave } from '../../hooks/useSeismoQuakeWaves'
 import { lpgmMarkKey, type QuakeCardMarks } from '../../utils/quakeUpdateMark'
 import type { LatLng } from '../../utils/stationCoords'
 import {
@@ -57,6 +58,13 @@ interface Props {
    * 型検査で止める唯一の機会がここ（→ audio-tts-spec.md §6）。
    */
   speakingTelegramTextSubject: string | null
+  /**
+   * 地震の鍵ごとの、自作地震計から読み返した合成波形（→ `hooks/useSeismoQuakeWaves`）。
+   *
+   * **鍵は `quakeEventKey`。** 選択・印と同じものを使う ——別の鍵で持つと、
+   * 同じ分に起きた別の地震で片方のカードへ他方の波形が出る。
+   */
+  seismoWaves: ReadonlyMap<string, readonly SeismoQuakeWave[]>
 }
 
 /**
@@ -88,7 +96,7 @@ function HistoryNotice({ tone, children }: { tone: 'loss' | 'info'; children: Re
 // 地震情報タブの右パネル。地震カードの一覧を表示し、クリックで地図表示対象を選択する。
 // 地図そのものは App が常時表示する。
 // React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
-export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, error, historyLoss, loadMoreFailed, fetchThrottled, lpgmByEventId, updateMarks, activeLpgmEventId, onToggleLpgm, estimatedIntensity, distributionQuakeKey, onToggleDistribution, unreceivedQuakeKey, onToggleUnreceived, onFocusMap, speakingTelegramTextSubject }: Props) {
+export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, error, historyLoss, loadMoreFailed, fetchThrottled, lpgmByEventId, updateMarks, activeLpgmEventId, onToggleLpgm, estimatedIntensity, distributionQuakeKey, onToggleDistribution, unreceivedQuakeKey, onToggleUnreceived, onFocusMap, speakingTelegramTextSubject, seismoWaves }: Props) {
   // 履歴について知らせる帯。**4 つを別に持つ**（確定した損失／429 で見送った分／押し直せば
   // 回復しうる失敗／いま待っているだけ）。混ぜると、戻せない損失と戻せるものが同じ重さに見える。
   //
@@ -155,7 +163,9 @@ export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selected
           quake={quake}
           isLatest={i === 0}
           isSelected={quakeEventKey(quake) === selectedId}
-          onSelect={() => onSelect(quakeEventKey(quake))}
+          // **包まずにそのまま渡す。** ここで包むと毎レンダー新しい関数になり、
+          // `EarthquakeCard` の memo が素通りする（地震の鍵はカード側で作る）。
+          onSelect={onSelect}
           lpgm={lpgmByEventId.get(extractQuakeEventId(quake) ?? '')}
           marks={updateMarks.get(quakeEventKey(quake))}
           lpgmMarks={updateMarks.get(lpgmMarkKey(extractQuakeEventId(quake) ?? ''))}
@@ -163,11 +173,12 @@ export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selected
           onToggleLpgm={onToggleLpgm}
           estimatedIntensity={estimatedIntensity}
           distributionActive={quakeEventKey(quake) === distributionQuakeKey}
-          onToggleDistribution={() => onToggleDistribution(quakeEventKey(quake))}
+          onToggleDistribution={onToggleDistribution}
           unreceivedActive={quakeEventKey(quake) === unreceivedQuakeKey}
-          onToggleUnreceived={() => onToggleUnreceived(quakeEventKey(quake))}
+          onToggleUnreceived={onToggleUnreceived}
           onFocusMap={onFocusMap}
           speakingTelegramTextSubject={speakingTelegramTextSubject}
+          seismoWaves={seismoWaves.get(quakeEventKey(quake))}
         />
       ))}
       {hasMore && (

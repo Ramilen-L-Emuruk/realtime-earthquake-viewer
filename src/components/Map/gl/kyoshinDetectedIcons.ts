@@ -1,6 +1,6 @@
 import type { Map as MapLibreMap } from 'maplibre-gl'
 import { getIntensityColor } from '../../../utils/intensity'
-import { SHINDO0_COLOR } from '../../../utils/kyoshinIntensity'
+import { SHINDO0_COLOR } from '../../../utils/measuredIntensity'
 import { readableTextColor } from '../../../utils/contrast'
 
 // 揺れ検知点（KyoshinDetectedPointsGL の confirmed=確定／likely=候補）の丸バッジ（震度ラベル込み）を

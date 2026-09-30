@@ -1,0 +1,73 @@
+// 外から来た JSON を、形が違っても落ちない形で読む道具。
+//
+// **`/status` も `/stream` も、形が変わりうる相手。** どちらもホスト側の型を
+// そのまま持ってこられない（Node 専用の型を経由しているため。`viewStatus.ts` の
+// `StatusReportView` が言う事情）ので、admin 側は**手で書いた形に合うかを自分で見る**
+// ほかない。
+//
+// **同じ判断を 2 箇所に置かない。** 数として読めるかの見方が別々にあると、
+// 片方だけ直った状態が生まれる —— 症状は「ある画面でだけ値が出ない」で、
+// どちらが正しいのか読む手掛かりが無い。
+
+import type { Vec3 } from '../receiver/stationConfigTypes'
+
+/** 数として読めるものだけ通す。**`null`・文字列・`NaN`・無限は通さない。** */
+export function readFinite(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+/** 中身のある文字列だけ通す。 */
+export function readNonEmptyString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null
+}
+
+/** 3 つ組として読めるものだけ通す。 */
+export function readVec3(value: unknown): Vec3 | null {
+  if (!Array.isArray(value) || value.length !== 3) return null
+  if (!value.every((n) => typeof n === 'number' && Number.isFinite(n))) return null
+  return [value[0] as number, value[1] as number, value[2] as number]
+}
+
+/**
+ * 数の並びとして読めるものだけ通す。**1 つでも読めなければ `null`。**
+ *
+ * **読めない点だけを飛ばして繋がない。** 波形の途中の 1 点を抜いて前後を詰めると、
+ * **そこだけ時間が縮んだ波形**になる —— 絵としては普通に見えるので、
+ * 見ている人には確かめる手立てが無い。
+ */
+export function readFiniteArray(value: unknown): readonly number[] | null {
+  if (!Array.isArray(value)) return null
+  for (const n of value) {
+    if (typeof n !== 'number' || !Number.isFinite(n)) return null
+  }
+  return value as readonly number[]
+}
+
+/**
+ * 数の並びとして読む。ただし **`null` は「そのサンプルの値が無い」として `NaN` へ移す。**
+ *
+ * 出どころはセンサー対の差分（`diffGal`・#372）だけ —— 両方の値が揃わないサンプルを
+ * ホストが `null` で返す（外挿しない）。
+ *
+ * **`0` へ倒さない。** 差分の 0 は「2 台がぴったり一致した」を意味してしまう。
+ * **詰めて短くもしない**（上の `readFiniteArray` と同じ理由）——位置が前へずれ、
+ * そこだけ時間が縮んだ絵になる。
+ *
+ * **`null` 以外の読めない値は通さない。** 文字列や `NaN` が来たら並び全体を捨てる
+ * ——「欠けている」と「形が違う」は別の事実で、混ぜると形の食い違いが
+ * 欠測として静かに描かれる。
+ */
+export function readFiniteArrayWithGaps(value: unknown): readonly number[] | null {
+  if (!Array.isArray(value)) return null
+  const out = new Array<number>(value.length)
+  for (let i = 0; i < value.length; i++) {
+    const n = value[i]
+    if (n === null) {
+      out[i] = Number.NaN
+      continue
+    }
+    if (typeof n !== 'number' || !Number.isFinite(n)) return null
+    out[i] = n
+  }
+  return out
+}

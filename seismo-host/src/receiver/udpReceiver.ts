@@ -1,0 +1,102 @@
+// UDP を待ち受けて、届いた 1 つずつを文字列で渡す。
+//
+// **ここでは中身を見ない。** 読み取りも数え上げも上の層の仕事で、この層が持つのは
+// ソケットの開け閉めと、届いた順に渡すことだけ。混ぜると、読み取りを直すたびに
+// 受信の検証をやり直すことになる（記録係の原型 `capture.mjs` が置いていた分担）。
+//
+// **1 つのパケットは 1 つのデータグラム。** TCP と違って境界が保たれるので、
+// 継ぎ足しの組み立ては要らない。途中で切れたものは長さが合わなくなるだけで、
+// 読み取り側が `sample-count-mismatch` として落とす。
+import { createSocket } from 'node:dgram'
+import type { Socket } from 'node:dgram'
+
+/** 送り手。**速度の上限を掛ける鍵になる**（担当は上の層）。 */
+export interface DatagramSource {
+  readonly address: string
+  readonly port: number
+}
+
+export interface UdpReceiverOptions {
+  /** 待ち受けるポート。**0 を渡すと空いているものが選ばれる**（テスト用）。 */
+  readonly port: number
+  /** 待ち受けるアドレス。省略すると全インターフェース。 */
+  readonly address?: string
+  /** 1 つ届くたびに呼ばれる。 */
+  readonly onDatagram: (payload: string, from: DatagramSource) => void
+  /**
+   * ソケットの異常と、`onDatagram` が投げた例外。
+   *
+   * **握り潰さない。** 受信口が黙っても画面は静かなままなので、
+   * 気づく手立てを呼び出し側が必ず受け取る形にする。
+   */
+  readonly onError: (error: Error) => void
+}
+
+export interface UdpReceiver {
+  /** 実際に待ち受けているポート。`port: 0` で開けたときはここで確かめる。 */
+  readonly port: number
+  close(): Promise<void>
+}
+
+function toError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value))
+}
+
+/**
+ * 待ち受けを始める。開けなかったら**返る約束のほうが失敗する**。
+ *
+ * 開けなかったこと（ポートの取り合い・権限）と、開いたあとの異常は別の事象なので
+ * 渡し先を分ける。混ぜると、起動に失敗したプロセスが「動いているつもり」で走り続ける。
+ */
+export function startUdpReceiver(options: UdpReceiverOptions): Promise<UdpReceiver> {
+  return new Promise<UdpReceiver>((resolve, reject) => {
+    const socket = createSocket({ type: 'udp4' })
+
+    const onBindError = (error: Error): void => {
+      socket.removeListener('listening', onListening)
+      try {
+        socket.close()
+      } catch {
+        // 束ねられなかったソケットは既に閉じていることがある。閉じられないこと自体は
+        // 異常ではないので、開けなかった理由のほうを返す。
+      }
+      reject(error)
+    }
+
+    const onListening = (): void => {
+      socket.removeListener('error', onBindError)
+      socket.on('error', (error) => options.onError(error))
+      socket.on('message', (buffer, rinfo) => {
+        try {
+          // **読めないバイト列でも投げない。** utf8 の復号は不正な並びを置換文字へ倒すので、
+          // 形が違うものは読み取り側が `header-unreadable` として数える。
+          options.onDatagram(buffer.toString('utf8'), {
+            address: rinfo.address,
+            port: rinfo.port,
+          })
+        } catch (error) {
+          // **受け手の例外でソケットごと落とさない。** 1 台の壊れた送り手が、
+          // 他の基板の受信まで止めることになる。黙らせはせず同じ口へ流す。
+          options.onError(toError(error))
+        }
+      })
+      resolve({ port: socket.address().port, close: () => closeSocket(socket) })
+    }
+
+    socket.once('error', onBindError)
+    socket.once('listening', onListening)
+    socket.bind(options.port, options.address)
+  })
+}
+
+function closeSocket(socket: Socket): Promise<void> {
+  return new Promise<void>((resolve) => {
+    try {
+      socket.close(() => resolve())
+    } catch {
+      // 既に閉じていれば投げる。**二度目の後片付けを異常として扱わない** ——
+      // 終了の経路は複数あり（合図・入口の失敗）、どれから来ても締まればよい。
+      resolve()
+    }
+  })
+}

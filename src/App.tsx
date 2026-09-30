@@ -17,6 +17,12 @@ import { MapDataStatus } from './components/MapDataStatus'
 import { MapRenderStatus } from './components/MapRenderStatus'
 import { ShareCardButton } from './components/ShareCardButton'
 import { useShareCard } from './hooks/useShareCard'
+import { SeismoLinkStatus } from './components/SeismoLinkStatus'
+import { SeismoOverlay } from './components/SeismoOverlay'
+import { useSeismoStation } from './hooks/useSeismoStation'
+import { useSeismoQuakeWaves } from './hooks/useSeismoQuakeWaves'
+import { SeismoWaveChart } from './components/SeismoWaveChart'
+import { useSeismoWaveVisibility } from './hooks/useSeismoWaveVisibility'
 import { EarthquakeTab } from './components/EarthquakeTab'
 import { RealtimeTab } from './components/RealtimeTab'
 import { useEewSpeakingCard } from './hooks/useEewSpeakingCard'
@@ -40,6 +46,7 @@ import { buildLegendBlocks, EMPTY_LEGEND_SOURCES, type MapLegendSources, type Le
 
 import { ActionChecklist } from './components/ActionChecklist'
 import { useActionChecklist } from './hooks/useActionChecklist'
+import { useNearbyScope } from './hooks/useNearbyScope'
 import { useStationCoords } from './hooks/useStationCoords'
 import { useEarthquakes } from './hooks/useEarthquakes'
 import { useFetchThrottled } from './hooks/useFetchThrottled'
@@ -1956,11 +1963,16 @@ export function App() {
   // 呼んでも追加の取得は起きない。
   const stationCoordsForChecklist = useStationCoords()
   const eewListForChecklist = useMemo(() => [...activeEEWsNoCancelled.values()], [activeEEWsNoCancelled])
-  const actionChecklist = useActionChecklist({
-    minScale: settings.actionChecklistMinScale,
+  // ホーム地点の周り（半径 30km）。**行動チェックリストと自作地震計の波形が同じものを見る**
+  // ので、ここで 1 つだけ作って両方へ渡す（→ hooks/useNearbyScope.ts）。
+  const nearbyScope = useNearbyScope({
     home,
     stationCoords: stationCoordsForChecklist,
     kyoshinSites: kyoshinSitesGated,
+  })
+  const actionChecklist = useActionChecklist({
+    minScale: settings.actionChecklistMinScale,
+    scope: nearbyScope,
     // 検知エンジンが確定した揺れのメンバー観測点を渡す（音・地図の検知点と同じ集合）。
     // 生の観測値を渡すと 1 点の跳ね上がりがそのまま表示される震度になる（理由は
     // kyoshinScaleForScope）。値は保持値なので、強く揺れている最中の単発の欠測でも落ちない。
@@ -2131,6 +2143,50 @@ export function App() {
     showPlateBoundaries: settings.showPlateBoundaries,
   }, settings.showMapLegend ? legendBlocks : EMPTY_LEGEND_BLOCKS)
 
+  // 自作地震計（`seismo-host/`）の観測点の震度。**設定が切れていれば繋がない。**
+  //
+  // **再生中も繋がない。** ホストが押し出すのは「いまの震度」だけで、再生している
+  // 過去の時刻ぶんを返す口がまだ無い（`seismo-host` 側の課題）。繋いだままにすると
+  // **画面の他が過去なのにここだけ現在**という食い違いが起き、しかも見分ける手掛かりが
+  // 画面に出ない。ライブ接続を止めるのと同じ扱いへ揃える（`ConnectionStatus` の `replay`）。
+  //
+  // 波形は「表示しない」以外で要求する。**「揺れたときだけ」でも受け取り続ける** ——
+  // 切り替えると SSE を繋ぎ直すので、揺れを検知してから上げたのでは間に合わない
+  // （繋ぎ直しに数百 ms〜数秒かかり、しかもその時点から 0 秒ぶんしか波形が無い）。
+  // 60 秒のリングバッファを持つ意味も、揺れる前から溜めておいてこそ。
+  const seismo = useSeismoStation({
+    enabled: settings.seismoEnabled && replayTimeOffset === null,
+    baseUrl: settings.seismoHostUrl,
+    wave: settings.seismoWave === 'off' ? 'none' : 'station',
+  })
+  // 有感の地震カードへ出す、その区間の波形（→ hooks/useSeismoQuakeWaves.ts）。
+  //
+  // **押し出しと違って再生中も動かす。** 時刻の範囲を指定して取るので、
+  // 「いまの値が過去の画面へ混ざる」ことが起きない（2026-09-29 のユーザー判断）。
+  //
+  // **波形を出さない設定なら取りに行かない。** `seismoWave` は「いまの波形」を
+  // 出すかどうかの設定だが、絵そのものを見たくないという意思表示でもある。
+  const seismoQuakeWaves = useSeismoQuakeWaves({
+    enabled: settings.seismoEnabled && settings.seismoWave !== 'off',
+    baseUrl: settings.seismoHostUrl,
+    quakes: filteredEarthquakes,
+    scope: nearbyScope,
+    readWave: seismo.readWave,
+    replayOffsetMs: replayTimeOffset,
+  })
+  // 絵を出すかどうかは受け取るかどうかと別に決める（→ hooks/useSeismoWaveVisibility.ts）。
+  //
+  // **再生中は明示的に落とす。** 繋いでいないので観測点が 1 つも無く、結果として絵は
+  // 出ない —— が、それは「`stations` が空だから」という偶然に頼った形で、判定の中では
+  // EEW と強震モニタ（再生中も動いている）に反応して内部の状態が立ってしまう。
+  const showSeismoWave = useSeismoWaveVisibility({
+    mode: replayTimeOffset === null ? settings.seismoWave : 'off',
+    scope: nearbyScope,
+    eews: eewListForChecklist,
+    detectedPoints: kyoshinView.detectedPoints,
+    stations: seismo.stations,
+  })
+
   // 地図左上の更新時刻: リアルタイム表示はリアルタイム震度(kyoshin)の更新時刻、
   // DMDSS版かつWS接続中は現在時刻を毎秒更新、それ以外は最終受信時刻を表示する。
   const overlayUpdateTime =
@@ -2165,101 +2221,140 @@ export function App() {
         style={{ '--panel-ratio': panelCollapsed ? 0 : panelRatio } as CSSProperties}
       >
         {/* 常時表示の地図エリア（タブに応じて内容を切替） */}
-        <div ref={mapAreaRef} className="relative flex-1 min-h-0">
-          {/* **包むのは地図だけ。** ここで受け止めれば App の state は生きたままなので、地図が
-              落ちてもカード・ブラウザ通知・読み上げは動き続ける。同じ親にいる左上の情報ブロック・
-              行動チェックリスト・特別情報バナーは境界の外に残す——中へ入れると地図と一緒に消える。
-              **MapLibre のカスタムレイヤーが描画ループ（rAF）で投げた例外はここへ届かない**。
-              そちらは各レイヤーの render() を包んで utils/renderHealth.ts へ報告する側の担当。 */}
-          <ErrorBoundary variant="region" label="地図">
-            <MapView
-              mode={mapMode}
-              catalogCloud={catalogCloud}
-              catalogColorBy={settledView.colorBy}
-              onLegendSourcesChange={setLegendSources}
-              quake={mapQuake}
-              tsunamis={tsunamis}
-              observations={latestTsunamiObservations}
-              lpgm={activeLpgm ?? undefined}
-              distributionMode={mapDistributionMode}
-              unreceivedMode={mapUnreceivedMode}
-              estimatedIntensity={mapEstimatedIntensity}
-              iconScale={settings.mapIconScale}
-              recording={settings.recordingMode}
-              hypocenterDepthScale={settings.hypocenterDepthScale}
-              showBathymetry={settings.showBathymetry}
-              showActiveFaults={settings.showActiveFaults}
-              activeFaultOpacity={settings.activeFaultOpacity}
-              heatPoints={quakeHeatPoints}
-              showPlateBoundaries={settings.showPlateBoundaries}
-              showDayNight={settings.showDayNight}
-              dayNightOpacity={settings.dayNightOpacity}
-              kyoshinSites={kyoshinSitesGated}
-              kyoshinIndices={kyoshinHeld.indices}
-              kyoshinStale={kyoshinHeld.stale}
-              kyoshinSubIndices={kyoshinSubIndices}
-              kyoshinPsWave={psWave}
-              eews={eewsForMap}
-              detectedPoints={kyoshinView.detectedPoints}
-              detectedMarkerPoints={kyoshinView.detectedMarkerPoints}
-              candidatePoints={kyoshinView.candidatePoints}
-              unconfirmedPoints={kyoshinView.unconfirmedPoints}
-              candidateId={kyoshinView.candidateId}
-              shakeFocus={shakeFocus}
-              eewLpgmEventId={activeLpgmSource === 'eew' ? activeLpgmEventId : null}
-              focusObsName={focusedObsName}
-              focusTarget={focusedMapTarget}
-              obsUpdateStatus={obsUpdateStatus}
-              quakeSelectionTick={quakeSelectionTick}
-              onMapReady={setMapHandle}
-            />
-          </ErrorBoundary>
-          {/* 地図左上に重ねる情報の置き場。上から更新時刻・生成データの取得状況・地図描画の不調。
-              z-[99999]: 区域集約震度バッジ（QuakeRegionFillGL）は el.style.zIndex = scale*1000 で、
-              scale は JMA 震度階級の数値コード（震度7 = 70）まであるため最大 70000 まで積む。
-              それより確実に高い値にして常に最前面に出す。 */}
-          <div
-            className="absolute z-[99999] pointer-events-none flex flex-col items-start gap-1"
-            style={{
-              top: 'max(0.5rem, env(safe-area-inset-top, 0px))',
-              left: 'max(0.5rem, env(safe-area-inset-left, 0px))',
-            }}
-          >
-            <MapUpdateTime lastUpdate={overlayUpdateTime} error={overlayError} />
-            <MapDataStatus />
-            <MapRenderStatus />
-          </div>
-          {/* 地図右下。表示中の地図を画像にするボタン。左上の情報ブロックと同じ理由で z を高く取る。 */}
-          {shareCard.ready && (
+        {/* 地図と自作地震計の波形を縦に積む器。
+
+            **波形は地図に重ねない。** 自動フィット（`utils/camera.ts`）は地図の全高で
+            目標範囲を計算するので、重ねると画に入れたはずのものが波形の下へ隠れる
+            （2026-09-29 のユーザー指摘）。**地図の高さを実際に削れば、フィットの計算は
+            そのまま正しくなる** —— 余白を差し引く形にすると、フィットを呼ぶ側すべてが
+            その事情を知っていなければならない。
+
+            **凡例と特別情報バナーは地図に重ねたまま。** あちらは地図の上に出すもので、
+            地の絵が透けて見えることに意味がある（波形は観測値そのものなので透かさない）。 */}
+        <div className="flex-1 min-h-0 flex flex-col">
+          <div ref={mapAreaRef} className="relative flex-1 min-h-0">
+            {/* **包むのは地図だけ。** ここで受け止めれば App の state は生きたままなので、地図が
+                落ちてもカード・ブラウザ通知・読み上げは動き続ける。同じ親にいる左上の情報ブロック・
+                行動チェックリスト・特別情報バナーは境界の外に残す——中へ入れると地図と一緒に消える。
+                **MapLibre のカスタムレイヤーが描画ループ（rAF）で投げた例外はここへ届かない**。
+                そちらは各レイヤーの render() を包んで utils/renderHealth.ts へ報告する側の担当。 */}
+            <ErrorBoundary variant="region" label="地図">
+              <MapView
+                mode={mapMode}
+                catalogCloud={catalogCloud}
+                catalogColorBy={settledView.colorBy}
+                onLegendSourcesChange={setLegendSources}
+                quake={mapQuake}
+                tsunamis={tsunamis}
+                observations={latestTsunamiObservations}
+                lpgm={activeLpgm ?? undefined}
+                distributionMode={mapDistributionMode}
+                unreceivedMode={mapUnreceivedMode}
+                estimatedIntensity={mapEstimatedIntensity}
+                iconScale={settings.mapIconScale}
+                recording={settings.recordingMode}
+                hypocenterDepthScale={settings.hypocenterDepthScale}
+                showBathymetry={settings.showBathymetry}
+                showActiveFaults={settings.showActiveFaults}
+                activeFaultOpacity={settings.activeFaultOpacity}
+                heatPoints={quakeHeatPoints}
+                showPlateBoundaries={settings.showPlateBoundaries}
+                showDayNight={settings.showDayNight}
+                dayNightOpacity={settings.dayNightOpacity}
+                kyoshinSites={kyoshinSitesGated}
+                kyoshinIndices={kyoshinHeld.indices}
+                kyoshinStale={kyoshinHeld.stale}
+                kyoshinSubIndices={kyoshinSubIndices}
+                kyoshinPsWave={psWave}
+                eews={eewsForMap}
+                detectedPoints={kyoshinView.detectedPoints}
+                detectedMarkerPoints={kyoshinView.detectedMarkerPoints}
+                candidatePoints={kyoshinView.candidatePoints}
+                unconfirmedPoints={kyoshinView.unconfirmedPoints}
+                candidateId={kyoshinView.candidateId}
+                shakeFocus={shakeFocus}
+                eewLpgmEventId={activeLpgmSource === 'eew' ? activeLpgmEventId : null}
+                focusObsName={focusedObsName}
+                focusTarget={focusedMapTarget}
+                obsUpdateStatus={obsUpdateStatus}
+                quakeSelectionTick={quakeSelectionTick}
+                onMapReady={setMapHandle}
+              />
+            </ErrorBoundary>
+            {/* 地図左上。観測している値（自作地震計の観測点ごとの震度）を置く。
+                **アプリの状態（更新時刻・取得状況・描画の不調）とは左右で分ける** ——
+                混ぜると、異常表示が伸びたときに観測値がそのぶん押し下がる。
+                z-[99999]: 区域集約震度バッジ（QuakeRegionFillGL）は el.style.zIndex = scale*1000 で、
+                scale は JMA 震度階級の数値コード（震度7 = 70）まであるため最大 70000 まで積む。
+                それより確実に高い値にして常に最前面に出す。 */}
             <div
-              className="absolute z-[99999] flex flex-col items-end gap-1"
+              className="absolute z-[99999] pointer-events-none flex flex-col items-start gap-1"
               style={{
-                bottom: 'max(0.5rem, env(safe-area-inset-bottom, 0px))',
+                top: 'max(0.5rem, env(safe-area-inset-top, 0px))',
+                left: 'max(0.5rem, env(safe-area-inset-left, 0px))',
+              }}
+            >
+              <SeismoOverlay stations={seismo.stations} />
+            </div>
+            {/* 地図右上。アプリの状態を上から更新時刻・生成データの取得状況・地図描画の不調・
+                自作地震計との繋がり具合の順で。**自作地震計の観測値（左上）とは左右で分ける** ——
+                観測している値と、それが届いているかどうかは別のものなので、混ぜると
+                繋がらない間ずっと観測値の居場所が押し下がる。
+                **下端の帯（凡例・特別情報バナー）とは重ならない** —— あちらは全幅の絶対配置で、
+                下側へ置いたものは押し上げてもらえずに重なる。z は左上と同じ理由で高く取る。 */}
+            <div
+              className="absolute z-[99999] pointer-events-none flex flex-col items-end gap-1"
+              style={{
+                top: 'max(0.5rem, env(safe-area-inset-top, 0px))',
                 right: 'max(0.5rem, env(safe-area-inset-right, 0px))',
               }}
             >
-              <ShareCardButton state={shareCard.state} onClick={() => shareCard.share()} />
+              <MapUpdateTime lastUpdate={overlayUpdateTime} error={overlayError} />
+              <MapDataStatus />
+              <MapRenderStatus />
+              <SeismoLinkStatus stream={seismo.stream} />
             </div>
-          )}
-          {actionChecklist.state && (
-            <ActionChecklist
-              reason={actionChecklist.state.reason}
-              scale={actionChecklist.state.scale}
-              scoped={actionChecklist.state.scoped}
-              collapsed={actionChecklist.collapsed}
-              onDismiss={actionChecklist.dismiss}
-              onRestore={actionChecklist.restore}
-            />
-          )}
-          {/* 地図の下端に積む枠。上から凡例・特別情報バナーの順で、**バナーが出れば凡例が
-              押し上がる**（凡例を別に絶対配置すると、下端全幅のバナーに隠れる）。
-              z は左上の情報ブロックと同じ理由で高く取る。 */}
-          <div className="absolute bottom-0 left-0 right-0 z-[99999] pointer-events-none flex flex-col items-start">
-            {settings.showMapLegend && (
-              <MapLegend blocks={legendBlocks} collapsed={legendCollapsed} onToggle={toggleLegend} compact={mapAreaShort} />
+            {/* 地図右下。表示中の地図を画像にするボタン。左上の情報ブロックと同じ理由で z を高く取る。 */}
+            {shareCard.ready && (
+              <div
+                className="absolute z-[99999] flex flex-col items-end gap-1"
+                style={{
+                  bottom: 'max(0.5rem, env(safe-area-inset-bottom, 0px))',
+                  right: 'max(0.5rem, env(safe-area-inset-right, 0px))',
+                }}
+              >
+                <ShareCardButton state={shareCard.state} onClick={() => shareCard.share()} />
+              </div>
             )}
-            <SpecialInfoBanner nankai={nankai} nankaiCommentary={nankaiCommentary} kohatsu={kohatsu} quakeNotice={quakeNotice} earthquakeCount={earthquakeCount} speakingTelegramTextSubject={speakingTelegramTextSubject} />
+            {actionChecklist.state && (
+              <ActionChecklist
+                reason={actionChecklist.state.reason}
+                scale={actionChecklist.state.scale}
+                scoped={actionChecklist.state.scoped}
+                collapsed={actionChecklist.collapsed}
+                onDismiss={actionChecklist.dismiss}
+                onRestore={actionChecklist.restore}
+              />
+            )}
+            {/* 地図の下端へ重ねる枠。上から凡例・特別情報バナーの順で、
+                **下のものが増えれば上のものが押し上がる**（別に絶対配置すると、下端全幅の
+                バナーに隠れる）。
+                z は左上の情報ブロックと同じ理由で高く取る。
+
+                **自作地震計の波形はここに入れない。** 地図の外（この器の下）へ置く ——
+                重ねると自動フィットで画に入れたものが隠れるため（2026-09-29 のユーザー指摘。
+                理由はこの div を含む器のコメント）。 */}
+            <div className="absolute bottom-0 left-0 right-0 z-[99999] pointer-events-none flex flex-col items-start">
+              {settings.showMapLegend && (
+                <MapLegend blocks={legendBlocks} collapsed={legendCollapsed} onToggle={toggleLegend} compact={mapAreaShort} />
+              )}
+              <SpecialInfoBanner nankai={nankai} nankaiCommentary={nankaiCommentary} kohatsu={kohatsu} quakeNotice={quakeNotice} earthquakeCount={earthquakeCount} speakingTelegramTextSubject={speakingTelegramTextSubject} />
+            </div>
           </div>
+          {/* 自作地震計の合成波形。**地図の外**（→ すぐ上の器のコメント）。 */}
+          {showSeismoWave && (
+            <SeismoWaveChart stations={seismo.stations} readWave={seismo.readWave} />
+          )}
         </div>
 
         {/* 地図とパネルの境界（縦積み時のみ）。ドラッグで高さ比率を変え、タップで折りたたむ。 */}
@@ -2309,6 +2404,7 @@ export function App() {
                 onToggleUnreceived={toggleUnreceived}
                 onFocusMap={focusMapTarget}
                 speakingTelegramTextSubject={speakingTelegramTextSubject}
+                seismoWaves={seismoQuakeWaves}
               />
             </ErrorBoundary>
           </div>

@@ -75,6 +75,7 @@ const renderTab = (quake: JMAQuake, opts: { unreceivedOpen?: boolean } = {}) => 
     onToggleUnreceived={() => {}}
     onFocusMap={() => {}}
     speakingTelegramTextSubject={null}
+    seismoWaves={new Map()}
   />
 )
 
@@ -134,6 +135,7 @@ describe('未入電トグル', () => {
         onToggleUnreceived={() => {}}
         onFocusMap={() => {}}
         speakingTelegramTextSubject={null}
+        seismoWaves={new Map()}
       />,
     )
     expect(screen.queryByText('震度4')).toBeNull()

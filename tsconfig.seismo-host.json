@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.seismo-host.tsbuildinfo",
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedSideEffectImports": true,
+    "types": ["node"]
+  },
+  // `src/utils/knet/seismicIntensity.ts` を通して fft-js を読むので、その型宣言も
+  // この構成へ入れる（fft-js は型を同梱していない）。
+  "include": ["seismo-host/**/*.ts", "src/types/fft-js.d.ts"],
+  // 管理コンソール（`src/admin/`）はブラウザ向けで Node 型と衝突するため、
+  // 別プロジェクト（`tsconfig.seismo-host-admin.json`）へ分けている。
+  "exclude": ["seismo-host/src/admin/**/*.ts"]
+}

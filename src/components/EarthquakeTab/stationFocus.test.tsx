@@ -133,6 +133,7 @@ function renderCard(
       onToggleUnreceived={() => {}}
       onFocusMap={onFocusMap}
       speakingTelegramTextSubject={null}
+      seismoWaves={new Map()}
     />,
   )
 }

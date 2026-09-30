@@ -7,17 +7,6 @@ import { parseAllStationFiles } from './parseAllStationFiles'
 import { computeIntensityTimeSeries } from './seismicIntensity'
 import type { EventResult, StationSeries } from './kyoshinEventMerge'
 
-/**
- * 計測震度のスライディングウィンドウ既定値（秒）。CLI（`capture-kyoshin-waveform.ts`）と
- * ブラウザ内インポート（`useKyoshinImport.ts`）の両方がここから参照する単一情報源。
- * `STEP_SEC_DEFAULT`は`kyoshinLocalArchiveSource.ts`の`getMergedKyoshinArchive`呼び出しにも
- * 使われる——インポート時に刻んだ秒間隔とマージ時に読み出す秒間隔がずれると、`buildEventFrames`
- * （厳密なepoch秒の完全一致ルックアップ、補間なし）が該当秒を「データ無し」とみなし、
- * 震度データが無警告で欠測（-1）扱いに化けるため、必ず同じ定数を使うこと。
- */
-export const WINDOW_SEC_DEFAULT = 20
-export const STEP_SEC_DEFAULT = 1
-
 /** 3成分が揃わない観測点の割合がこれを超えたら失敗として止める。 */
 const INCOMPLETE_STATION_RATIO_LIMIT = 0.5
 

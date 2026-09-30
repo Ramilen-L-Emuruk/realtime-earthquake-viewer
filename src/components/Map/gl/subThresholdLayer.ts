@@ -1,7 +1,7 @@
 import * as maplibregl from 'maplibre-gl'
 import type { OrderedCustomLayer } from './layerOrder'
 import { applyProjectionUniforms, createProjectionProgramCache } from './projectionProgram'
-import { SHINDO0_COLOR } from '../../../utils/kyoshinIntensity'
+import { SHINDO0_COLOR } from '../../../utils/measuredIntensity'
 import { guardRender } from './guardRender'
 import { clearRenderFailure, clearRenderFailuresFor, reportRenderFailure } from '../../../utils/renderHealth'
 import { log } from '../../../utils/logger'
