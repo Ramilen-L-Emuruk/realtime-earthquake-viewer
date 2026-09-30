@@ -180,7 +180,7 @@ describe('tsunamiMaxHeightTimeToSegments', () => {
 describe('tsunamiObservationNoChangeSegments', () => {
   // 正: 名乗りだけで終わらせない
   it('観測波高が据え置きであることを伝える', () => {
-    expect(text(tsunamiObservationNoChangeSegments())).toBe('津波観測情報。観測された波高に変わりはありません。')
+    expect(text(tsunamiObservationNoChangeSegments())).toBe('津波観測に関する情報。観測された波高に変わりはありません。')
   })
 
   // 安全弁: 言い切る範囲を波高に限る（最大波の時刻・到達状況は動いていることがある）

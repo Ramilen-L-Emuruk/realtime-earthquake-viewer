@@ -920,7 +920,7 @@ describe('内容が重ならない同格どうしは互いに待つ', () => {
     finishSpeech(0)
     await flush()
     expect(spokenTexts()).toHaveLength(2)
-    expect(spokenTexts()[1]).toContain('津波観測情報')
+    expect(spokenTexts()[1]).toContain('津波観測に関する情報')
   })
 
   // 推計震度分布図も同じ層に置いている。**地震から数分後に届く**ので「各地の震度」の続報と
@@ -1099,7 +1099,7 @@ describe('内容が重ならない同格どうしは互いに待つ', () => {
     handle(makeTsunamiObs())
     await settle()
     expect(spokenTexts()).toHaveLength(1)
-    expect(spokenTexts()[0]).toContain('津波観測情報')
+    expect(spokenTexts()[0]).toContain('津波観測に関する情報')
 
     handle(makeQuake())
     await settle()
@@ -1214,7 +1214,7 @@ describe('内容が重ならない同格どうしは互いに待つ', () => {
     await settle()
     expect(spokenTexts().some(t => t.includes('緊急地震速報'))).toBe(true)
     // 観測情報は EEW を切らない（EEW は終わっていないので鳴らない）
-    expect(spokenTexts().some(t => t.includes('津波観測情報'))).toBe(false)
+    expect(spokenTexts().some(t => t.includes('津波観測に関する情報'))).toBe(false)
   })
 
   // 対照。相互譲りを持たない同格どうし（地震情報と長周期）は従来どおり割り込む。
@@ -1389,7 +1389,7 @@ describe('読み上げた観測点の既読', () => {
     // かつてはここで読み上げ文が空になり、通知音だけが鳴っていた。
     expect(spokenTexts()).toHaveLength(2)
     expect(spokenTexts()[1]).not.toContain('到達を確認しました')
-    expect(spokenTexts()[1]).toBe('津波観測情報。観測された波高に変わりはありません。')
+    expect(spokenTexts()[1]).toBe('津波観測に関する情報。観測された波高に変わりはありません。')
   })
 
   // 正: 波高が据え置きのまま `MaxHeight/Revise` が「更新」になったら、その事実を読む
@@ -1404,7 +1404,7 @@ describe('読み上げた観測点の既読', () => {
 
     handle(makeTsunamiObs({ id: 'tsunami-obs-2', maxHeightDateTime: '2026-01-01T12:05:00Z', maxHeightRevise: '更新' }))
     await settle()
-    expect(spokenTexts()[1]).toBe('津波観測情報。次の地点で最大波の観測時刻が更新されました。石川県能登、輪島港で21時5分へ更新されました。')
+    expect(spokenTexts()[1]).toBe('津波観測に関する情報。次の地点で最大波の観測時刻が更新されました。石川県能登、輪島港で21時5分へ更新されました。')
   })
 
   // 正: 同じ報で波高が上がった観測点がいても、時刻だけが動いた観測点を譲らない。
@@ -1521,7 +1521,7 @@ describe('読み上げた観測点の既読', () => {
     handle(makeTsunamiObs({ id: 'tsunami-obs-2', maxHeightDateTime: '2026-01-01T11:50:00Z', maxHeightRevise: '更新' }))
     await settle()
     expect(spokenTexts()[1]).not.toContain('最大波の観測時刻')
-    expect(spokenTexts()[1]).toBe('津波観測情報。観測された波高に変わりはありません。')
+    expect(spokenTexts()[1]).toBe('津波観測に関する情報。観測された波高に変わりはありません。')
   })
 
   // 安全弁。波高が上がった観測点は、一度読んでいても読み直す（既読は「読んだ値」を持つ）。
