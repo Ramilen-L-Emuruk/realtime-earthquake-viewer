@@ -245,21 +245,25 @@ describe('speakWithVoicevox の鳴らす直前の見直し', () => {
   })
 })
 
-// 「1 音でも鳴ったか」（`SpeechOutcome.spoke`）。
+// 「1 音でも鳴ったか」（`SpeechOutcome.spoke`）と「どのチャンクが鳴ったか」（`spokenChunks`）。
 //
 // **呼び出し側の既読がこれに依存している。** この関数は例外を投げない設計で、VOICEVOX 未起動・
 // ネットワーク断でも正常終了するため、戻り値を見ないと「読み上げが完了した」と区別が付かず、
 // 1 音も出ていないのに既読が進む（→ `useLiveEventHandler` の EEW 各フェーズ）。
 //
 // **ここでしか実装経路を通らない。** `useLiveEventHandler` 側のテストは `./voicevox` を丸ごと
-// モックするので、`spoke` の値は手で書いたものが返るだけで、この判定は 1 行も走らない。
+// モックするので、`spoke` も `spokenChunks` も手で書いたものが返るだけで、この判定は 1 行も
+// 走らない。**`spokenChunks` の中身は句ごとの既読の巻き戻しが依存している**ので、
+// 「鳴った／鳴らなかった」の各分岐で中身まで確かめる。
 describe('1 音でも鳴ったかを返す', () => {
-  // 正: 最後まで鳴れば真
+  // 正: 最後まで鳴れば真。**鳴ったチャンクの本文も全部返る**
   it('全チャンクが鳴れば真', async () => {
     synthDelaysMs = [100, 100]
     const p = speakWithVoicevox('http://vv', TWO_CHUNKS, 1, 1)
     await advance(2400)
-    expect((await p).spoke).toBe(true)
+    const outcome = await p
+    expect(outcome.spoke).toBe(true)
+    expect(outcome.spokenChunks).toEqual(['予想最大震度5弱。', '予想最大階級1。'])
   })
 
   // 対照: 合成が 1 つも成功しなければ偽（VOICEVOX 未起動・ネットワーク断がこの形）
@@ -269,7 +273,9 @@ describe('1 音でも鳴ったかを返す', () => {
       : Promise.resolve({ ok: true, json: () => Promise.resolve({ accent_phrases: [] }) })))
     const p = speakWithVoicevox('http://vv', TWO_CHUNKS, 1, 1)
     await advance(500)
-    expect((await p).spoke).toBe(false)
+    const outcome = await p
+    expect(outcome.spoke).toBe(false)
+    expect(outcome.spokenChunks).toEqual([])
     expect(sources).toHaveLength(0)
   })
 
@@ -332,7 +338,11 @@ describe('1 音でも鳴ったかを返す', () => {
     await advance(6000)          // 1 チャンク目の上限（5 秒）を越える
     await advance(2000)          // 2 チャンク目が鳴り終わる
     expect(sources).toHaveLength(1)   // 2 チャンク目だけが鳴る
-    expect((await p).spoke).toBe(true)
+    const outcome = await p
+    expect(outcome.spoke).toBe(true)
+    // **合成に失敗したチャンクは入らない。** 呼び出し側はこれで「震度の句は声にならず、
+    // 階級の句だけが鳴った」と判る（→ `useLiveEventHandler` の第 2 フェーズ）
+    expect(outcome.spokenChunks).toEqual(['予想最大階級1。'])
   })
 
   // 安全弁: **複数チャンクが連続して無応答でも、合成待ちの合計は予算内に収まる。**
@@ -372,7 +382,11 @@ describe('1 音でも鳴ったかを返す', () => {
     valid = false
     await advance(900)
     expect(sources[1].droppedBeforeSound).toBe(true)   // 続きは鳴っていない
-    expect((await p).spoke).toBe(true)                 // 1 チャンク目は鳴った
+    const outcome = await p
+    expect(outcome.spoke).toBe(true)                   // 1 チャンク目は鳴った
+    // **取り下げたチャンクは入らない。** ここが「途中で降りた発話で、前半だけを既読に残す」
+    // 判断の土台になる
+    expect(outcome.spokenChunks).toEqual(['予想最大震度5弱。'])
   })
 })
 
