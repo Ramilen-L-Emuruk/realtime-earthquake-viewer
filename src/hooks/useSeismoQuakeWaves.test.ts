@@ -6,9 +6,10 @@
 // （記録が無い・観測点を知らない）、**二度取らないこと**。
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { renderHook, waitFor } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 
 import { NO_SCOPE, type NearbyScope } from '../utils/actionChecklistTrigger'
+import { quakeEventKey } from '../utils/quakeMerge'
 import type { JMAQuake } from '../types/earthquake'
 
 const fetchSeismoStatus = vi.hoisted(() => vi.fn())
@@ -170,6 +171,30 @@ describe('useSeismoQuakeWaves', () => {
     expect(entries?.[0]?.displayName).toBe('自宅')
   })
 
+  it('観測点の座標が判れば P/S の到達時刻を添える', async () => {
+    fetchSeismoStatus.mockResolvedValue(okStatus())
+    fetchSeismoWaveHistory.mockResolvedValue(history())
+    const { result } = setup()
+    await waitFor(() => expect(result.current.size).toBe(1))
+    const arrival = [...result.current.values()][0]?.[0]?.arrival
+    expect(arrival).not.toBeNull()
+    const originMs = new Date('2026/09/29 22:00:00').getTime()
+    expect(arrival!.pMs).toBeGreaterThan(originMs)
+    expect(arrival!.sMs).toBeGreaterThan(arrival!.pMs)
+  })
+
+  it('観測点の座標をホストが持っていなければ到達時刻は付かない', async () => {
+    // **対照。** 波形そのものは出る（線だけ引かない）。
+    fetchSeismoStatus.mockResolvedValue({
+      ...okStatus(),
+      stations: [{ stationId: 'station-1', displayName: '自宅', lat: null, lon: null }],
+    })
+    fetchSeismoWaveHistory.mockResolvedValue(history())
+    const { result } = setup()
+    await waitFor(() => expect(result.current.size).toBe(1))
+    expect([...result.current.values()][0]?.[0]?.arrival).toBeNull()
+  })
+
   it('記録が 1 件も無ければ載せない', async () => {
     // 2026-09-29 のユーザー判断：「記録が無い」ことを画面へ出さない。
     fetchSeismoStatus.mockResolvedValue(okStatus())
@@ -206,6 +231,119 @@ describe('useSeismoQuakeWaves', () => {
     rerender()
     await new Promise((r) => setTimeout(r, 10))
     expect(fetchSeismoWaveHistory).toHaveBeenCalledTimes(1)
+  })
+
+  it('一時的な失敗は「取った」に数えず、時間を置いて取り直す', async () => {
+    // **1 巡目のレビューで CRITICAL だった穴。** ホストが重くなるのは地震の直後で、
+    // そこで 1 度外すとそのカードは永久に波形を持たない（画面上は「記録が無かった」と
+    // 見分けが付かない）。**この動きを固定しておかないと、`doneRef` へ入れる位置を
+    // 戻しただけで静かに再発する。**
+    vi.useFakeTimers()
+    // **地震の直後に立つ。** 取り直すのは発生から 30 分以内のものだけなので、
+    // 時計を合わせないと「古いカード」として 1 回で諦める（次のテストがその側）。
+    vi.setSystemTime(new Date('2026/09/29 22:00:05'))
+    try {
+      fetchSeismoStatus.mockResolvedValue(okStatus())
+      fetchSeismoWaveHistory
+        .mockResolvedValueOnce({ kind: 'unreachable', detail: 'Failed to fetch' })
+        .mockResolvedValue(history())
+      const { result } = setup()
+      await vi.advanceTimersByTimeAsync(10)
+      expect(fetchSeismoWaveHistory).toHaveBeenCalledTimes(1)
+      expect(result.current.size).toBe(0)
+
+      // 30 秒後に取り直して、今度は取れる。
+      // **`act` で包む。** 偽の時計では state の反映が自動では流れない。
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000)
+      })
+      expect(fetchSeismoWaveHistory).toHaveBeenCalledTimes(2)
+      expect(result.current.size).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('古い地震は 1 度失敗したら取り直さない', async () => {
+    // **安全弁。** ホストが落ちている間、7 日ぶんのカードを延々と叩き続けないため。
+    // 前のテストと同じ失敗を、発生から 30 分を過ぎた時計で起こす。
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026/09/29 23:00:00'))
+    try {
+      fetchSeismoStatus.mockResolvedValue(okStatus())
+      fetchSeismoWaveHistory.mockResolvedValue({ kind: 'unreachable', detail: 'Failed to fetch' })
+      setup()
+      await vi.advanceTimersByTimeAsync(10)
+      expect(fetchSeismoWaveHistory).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(fetchSeismoWaveHistory).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('古い地震しか無ければ、状態の口が落ちていても叩き直さない', async () => {
+    // **同じ歯止めを `/status` 側にも置く**（2 巡目のレビューの HIGH）。
+    // ここを無条件に「取り直す」にすると、ホストが落ちている間ずっと 30 秒ごとに
+    // 問い合わせ続ける。
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026/09/29 23:00:00'))
+    try {
+      fetchSeismoStatus.mockResolvedValue({ kind: 'unreachable', detail: 'Failed to fetch' })
+      setup()
+      await vi.advanceTimersByTimeAsync(10)
+      expect(fetchSeismoStatus).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(fetchSeismoStatus).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('新しい地震があれば、状態の口が落ちていても取り直す', async () => {
+    // **対照。** 一時的に返らないだけなら諦める理由が無い。
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026/09/29 22:00:05'))
+    try {
+      fetchSeismoStatus.mockResolvedValue({ kind: 'unreachable', detail: 'Failed to fetch' })
+      setup()
+      await vi.advanceTimersByTimeAsync(10)
+      expect(fetchSeismoStatus).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(fetchSeismoStatus).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('こちらの組み立てた窓が通らなかったときは取り直さない', async () => {
+    // **対照。** 同じ窓で投げ直しても結果は変わらない。
+    vi.useFakeTimers()
+    try {
+      fetchSeismoStatus.mockResolvedValue(okStatus())
+      fetchSeismoWaveHistory.mockResolvedValue({ kind: 'bad-request', detail: '範囲が広すぎる' })
+      setup()
+      await vi.advanceTimersByTimeAsync(10)
+      expect(fetchSeismoWaveHistory).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(fetchSeismoWaveHistory).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('中身が変わっていなければ、同じ配列の参照を返し続ける', async () => {
+    // **`EarthquakeCard` の `memo` が効くための前提。** ここが壊れると、波形を繋いで
+    // いる間 0.3 秒ごとに**関わりのないカードまで**描き直される（型検査にも他の
+    // テストにも掛からない）。
+    fetchSeismoStatus.mockResolvedValue(okStatus())
+    fetchSeismoWaveHistory.mockResolvedValue(history())
+    const { result, rerender } = setup()
+    await waitFor(() => expect(result.current.size).toBe(1))
+    const first = result.current.get(quakeEventKey(QUAKES[0]))
+    rerender()
+    rerender()
+    expect(result.current.get(quakeEventKey(QUAKES[0]))).toBe(first)
   })
 
   it('状態の口を読めなければ波形も取りに行かない', async () => {

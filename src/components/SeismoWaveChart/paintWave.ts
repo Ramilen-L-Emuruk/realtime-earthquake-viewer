@@ -13,10 +13,18 @@ import type { WaveColumn } from './waveColumns'
 import { formatScaleGal } from './waveLabels'
 
 /**
- * 3 成分の色。**震度階級の色（黄〜橙〜赤）と混ざらない色相から採る** ——
- * 地図の上に重ねるので、階級色に見える線を引くと別のものと読まれる。
+ * 3 成分の色。**3 本を互いに見分けられることを最優先に、色相を 120 度ずつ離す**
+ * （緑・赤紫・黄）。
+ *
+ * **淡いパステルで揃えない。** 以前は空・藤・桃（`#7dd3fc` / `#a5b4fc` / `#f0abfc`）
+ * だったが、3 本重ねると**どれがどれか分からない**（2026-09-30 のユーザー指摘）。
+ *
+ * **震度階級の色は避けきれないので、避ける相手を絞る。** 階級色は緑・青・黄・橙・赤・紫を
+ * 一通り使っている（`utils/intensity.ts`）ので完全な回避はできない。**同じ枠の中で
+ * 隣り合うのは到達の線だけ**なので、そちら（P の水色 `#38bdf8`・S の朱 `#ff3c00`。
+ * → `gl/psWaveStyle.ts`）から離れていれば足りる。
  */
-export const AXIS_COLORS = ['#7dd3fc', '#a5b4fc', '#f0abfc'] as const
+export const AXIS_COLORS = ['#4ade80', '#e879f9', '#facc15'] as const
 export const AXIS_LABELS = ['南北', '東西', '上下'] as const
 
 /**
@@ -35,18 +43,56 @@ export interface PaintableColumns {
 }
 
 /**
+ * 絵へ重ねる縦の目盛り（P 波・S 波の到達）。
+ *
+ * **横位置は時刻ではなく比で渡す。** ここは列しか知らない ——時刻を持ち込むと、
+ * 押し出し（直近 60 秒の窓）と読み返し（過去の区間）で別々の時間軸の話が混ざる。
+ * 比へ落とすのは呼び出し側の仕事。
+ */
+export interface WaveMark {
+  /** 絵の左端を 0・右端を 1 とした横位置。**範囲の外は描かない。** */
+  readonly ratio: number
+  readonly label: string
+  readonly color: string
+  /** 破線にするか（P と S を線の形でも見分けられるように）。 */
+  readonly dashed: boolean
+}
+
+/** 目盛りの文字の大きさ（CSS ピクセル）。 */
+const MARK_FONT_PX = 9
+
+/** 1 枚を描くときの任意の指定。 */
+export interface PaintOptions {
+  /**
+   * 重ねる縦の目盛り。**渡さなければ何も重ねない**（地図の下端の絵は渡さない ——
+   * あちらは特定の地震の区間ではなく「いまの 60 秒」なので、引く相手がいない）。
+   */
+  readonly marks?: readonly WaveMark[]
+  /**
+   * 描く向き（南北・東西・上下の順）。**渡さなければ 3 本とも描く。**
+   *
+   * **縦の目盛りは呼び出し側が同じ指定で決める** —— ここで線を間引くだけだと、
+   * 大きい成分を消しても振れ幅の分母がそのままで、残りが潰れたままになる。
+   */
+  readonly visibleAxes?: readonly boolean[]
+}
+
+/**
  * 1 枚ぶんを描き、縦の振れ幅の表示を返す。**描けなければ `null`。**
  *
  * @param build 列数（実ピクセル）を受け取って列を返す。**canvas の寸法を合わせた後で呼ぶ**
  *   ので、呼び出し側は幅を気にしなくてよい。
  * @param stale 届かなくなっているか。**濃さを落とす** —— 抱えた中身は時間で薄れないので、
  *   このままの濃さで描くと止まった絵が「いま静かに揺れている」ように見え続ける。
+ * @param options 重ねる目盛りと、描く向き。省略時は「目盛り無し・3 成分すべて」。
  */
 export function paintWaveColumns(
   canvas: HTMLCanvasElement,
   build: (columnCount: number) => PaintableColumns | null,
   stale: boolean,
+  options: PaintOptions = {},
 ): string | null {
+  const { marks = [], visibleAxes } = options
   const ctx = canvas.getContext('2d')
   // **取れなかったことは記録へ残す。** 黙って戻ると、画面からは「まだ何も届いて
   // いない」のと区別が付かない —— 描けなかったのか届いていないのかを切り分ける
@@ -100,6 +146,8 @@ export function paintWaveColumns(
   ctx.globalAlpha = stale ? 0.25 : 0.7
   ctx.lineWidth = dpr
   for (let a = 0; a < 3; a += 1) {
+    // **消された向きは線も引かない。** 振れ幅の分母は呼び出し側が同じ指定で外している。
+    if (visibleAxes !== undefined && visibleAxes[a] === false) continue
     ctx.strokeStyle = AXIS_COLORS[a]
     ctx.beginPath()
     let started = false
@@ -127,5 +175,47 @@ export function paintWaveColumns(
   }
   ctx.globalAlpha = 1
 
+  paintMarks(ctx, marks, w, h, dpr)
+
   return formatScaleGal(scaleGal)
+}
+
+/**
+ * 縦の目盛りを波形の上へ重ねる。
+ *
+ * **波形より後に描く。** 先に描くと 3 本の線に埋もれて、いちばん見たい初動のところで
+ * 見えなくなる。
+ */
+function paintMarks(
+  ctx: CanvasRenderingContext2D,
+  marks: readonly WaveMark[],
+  w: number,
+  h: number,
+  dpr: number,
+): void {
+  if (marks.length === 0) return
+  const fontPx = Math.round(MARK_FONT_PX * dpr)
+  ctx.font = `${fontPx}px ui-monospace, monospace`
+  ctx.textBaseline = 'top'
+  for (const mark of marks) {
+    // **範囲の外は描かない。** 端へ張り付けると、まだ届いていない時刻の線が右端に
+    // 出て「そこで何かが起きた」ように見える。
+    if (!(mark.ratio >= 0 && mark.ratio <= 1)) continue
+    const x = Math.round(mark.ratio * w) + 0.5
+    ctx.strokeStyle = mark.color
+    ctx.lineWidth = dpr
+    ctx.setLineDash(mark.dashed ? [3 * dpr, 3 * dpr] : [])
+    ctx.beginPath()
+    ctx.moveTo(x, 0)
+    ctx.lineTo(x, h)
+    ctx.stroke()
+    // **破線の指定を残さない。** 次に描く相手（同じ文脈で呼ばれる別の目盛り・別の枠）が
+    // 意図せず破線になる。
+    ctx.setLineDash([])
+    // **ラベルは線の左右どちらかへ寄せる。** 右端に近い線で外へはみ出すと読めない。
+    const textW = ctx.measureText(mark.label).width
+    const left = x + 2 * dpr + textW > w ? x - 2 * dpr - textW : x + 2 * dpr
+    ctx.fillStyle = mark.color
+    ctx.fillText(mark.label, left, dpr)
+  }
 }

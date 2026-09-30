@@ -47,6 +47,29 @@ export function trimTrailingGap(base: TimedColumns): TimedColumns {
 }
 
 /**
+ * `limitMs` より後の列を落とす。
+ *
+ * **後から現れた地震に合わせて、既に繋いだ分を切り戻すために要る。** 繋いでいる最中は
+ * その地震がいちばん新しいので右端の打ち切りが無く、**次の有感地震の電文が届くまでの間
+ * （実測でおよそ 90 秒）に「次の地震の揺れ」を取り込んでしまう**。足すときの上限
+ * （{@link appendWaveWindow} の `limitMs`）だけでは、既に入った分は残ったまま。
+ *
+ * **境界は `appendWaveWindow` と揃える** ——`limitMs` を含む列までは残す。揃えないと、
+ * 切り戻した直後の繋ぎ足しが同じ列を足し直して行ったり来たりする。
+ *
+ * **変わらなければ同じ参照を返す**（描き直しの判定に参照を使う）。
+ */
+export function trimAfter(base: TimedColumns, limitMs: number): TimedColumns {
+  // 打ち切りが無い（いちばん新しい地震）ときは `Infinity` が来る。
+  if (!Number.isFinite(limitMs)) return base
+  const span = base.columnSpanMs
+  if (!(span > 0)) return base
+  const keep = Math.floor((limitMs - base.fromMs) / span) + 1
+  if (keep >= base.columns.length) return base
+  return { ...base, columns: keep <= 0 ? [] : base.columns.slice(0, keep) }
+}
+
+/**
  * 末尾の一定時間ぶんが静穏か（＝揺れが収まったか）。
  *
  * **時間で打ち切るのではなく、収まったかで決めるための判定**（2026-09-30 のユーザー判断）。

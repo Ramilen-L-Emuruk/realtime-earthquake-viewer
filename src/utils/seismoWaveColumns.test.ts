@@ -11,6 +11,7 @@ import {
   appendWaveWindow,
   isSettled,
   lastFilledIndex,
+  trimAfter,
   trimTrailingGap,
   type TimedColumns,
 } from './seismoWaveColumns'
@@ -57,6 +58,41 @@ describe('trimTrailingGap', () => {
   it('切るものが無ければ同じ参照を返す', () => {
     const full: TimedColumns = { ...BASE, columns: [col(1), col(2)] }
     expect(trimTrailingGap(full)).toBe(full)
+  })
+})
+
+describe('trimAfter', () => {
+  // 起点 1000・1 列 100 ms なので、列 i は [1000 + 100i, 1000 + 100(i+1))。
+  const FULL: TimedColumns = { ...BASE, columns: [col(1), col(2), col(3), col(4), col(5)] }
+
+  it('打ち切りより後の列を落とす', () => {
+    // 1250 は列 2（1200〜1300）の中。**その列までは残す。**
+    expect(trimAfter(FULL, 1250).columns).toHaveLength(3)
+  })
+
+  it('境界は appendWaveWindow と揃える（その列の始まりが打ち切り以下なら残す）', () => {
+    // **揃えないと、切り戻した直後の繋ぎ足しが同じ列を足し直して往復する。**
+    expect(trimAfter(FULL, 1300).columns).toHaveLength(4)
+    expect(trimAfter(FULL, 1299).columns).toHaveLength(3)
+  })
+
+  it('打ち切りが無ければ（Infinity）そのまま返す', () => {
+    // **対照。** いちばん新しい地震には打ち切りが無い。
+    expect(trimAfter(FULL, Infinity)).toBe(FULL)
+  })
+
+  it('打ち切りが右端より後なら同じ参照を返す', () => {
+    expect(trimAfter(FULL, 99_999)).toBe(FULL)
+  })
+
+  it('打ち切りが起点より前なら空にする', () => {
+    // **安全弁。** 負の長さで `slice` すると末尾から数えてしまう。
+    expect(trimAfter(FULL, 0).columns).toEqual([])
+  })
+
+  it('列の幅が無ければそのまま返す（0 除算を作らない）', () => {
+    const broken: TimedColumns = { ...FULL, columnSpanMs: 0 }
+    expect(trimAfter(broken, 1250)).toBe(broken)
   })
 
   it('途中の空は残す（そこだけ時間が縮むのを避ける）', () => {

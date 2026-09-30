@@ -82,4 +82,44 @@ describe('foldHistoryColumns', () => {
     const { scaleGal } = foldHistoryColumns({ source, columnCount: 1, minScaleGal: 10 })
     expect(scaleGal).toBe(50)
   })
+
+  describe('向きを消したとき', () => {
+    /** 上下（3 本目）だけが大きい列。 */
+    const BIG_UD: WaveHistoryColumn = {
+      min: [-5, -5, -80],
+      max: [5, 5, 80],
+      minMembers: 9,
+    }
+
+    it('消した向きは振れ幅の分母から外す', () => {
+      // **正。** 外さないと、いちばん大きい成分を消しても残りが潰れたままで、
+      // 消した意味がなくなる。
+      const { scaleGal } = foldHistoryColumns({
+        source: [BIG_UD],
+        columnCount: 1,
+        minScaleGal: 1,
+        visibleAxes: [true, true, false],
+      })
+      expect(scaleGal).toBe(5)
+    })
+
+    it('渡さなければ 3 成分すべてで測る', () => {
+      // **対照。**
+      const { scaleGal } = foldHistoryColumns({ source: [BIG_UD], columnCount: 1, minScaleGal: 1 })
+      expect(scaleGal).toBe(80)
+    })
+
+    it('全部消しても「届いていない」ことにはしない', () => {
+      // **安全弁。** `hasAnyValue` は「その区間にデータが届いているか」の話なので、
+      // 向きの取捨に左右させない（偽にすると絵ごと描かれなくなる）。
+      const got = foldHistoryColumns({
+        source: [BIG_UD],
+        columnCount: 1,
+        minScaleGal: 10,
+        visibleAxes: [false, false, false],
+      })
+      expect(got.hasAnyValue).toBe(true)
+      expect(got.scaleGal).toBe(10)
+    })
+  })
 })

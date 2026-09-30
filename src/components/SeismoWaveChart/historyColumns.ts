@@ -30,8 +30,15 @@ export function foldHistoryColumns(params: {
   source: readonly (WaveHistoryColumn | null)[]
   columnCount: number
   minScaleGal: number
+  /**
+   * 振れ幅に数える向き（南北・東西・上下の順）。**省略すれば 3 成分すべて。**
+   *
+   * **消した向きを分母から外す。** 外さないと、いちばん大きい成分を消しても
+   * 残りが潰れたままで、消した意味がなくなる。
+   */
+  visibleAxes?: readonly boolean[]
 }): PaintableColumns {
-  const { source, columnCount, minScaleGal } = params
+  const { source, columnCount, minScaleGal, visibleAxes } = params
   if (columnCount <= 0 || source.length === 0) {
     return { columns: [], scaleGal: minScaleGal, hasAnyValue: false }
   }
@@ -74,8 +81,11 @@ export function foldHistoryColumns(params: {
       columns.push(NO_VALUE)
       continue
     }
+    // **`hasAnyValue` は向きの取捨に左右させない。** これは「その区間にデータが
+    // 届いているか」で、3 成分すべてを消しても「届いていない」ことにはならない。
     hasAnyValue = true
     for (let a = 0; a < 3; a += 1) {
+      if (visibleAxes !== undefined && visibleAxes[a] === false) continue
       const lowAbs = Math.abs(min[a])
       const highAbs = Math.abs(max[a])
       if (lowAbs > peak) peak = lowAbs
