@@ -99,6 +99,31 @@ describe('seismoOverlayRows', () => {
     })
   })
 
+  describe('値が途絶えたとき', () => {
+    it('正: 出どころを名乗らず、赤くする印を立てる', () => {
+      const row = seismoOverlayRows([station(null, { kind: 'silent' })])[0]
+      expect(row.silent).toBe(true)
+      // **文言は 1 つも足さない。** 止まっていることは行の色で示す（`index.tsx`。
+      // 更新時刻の帯が止まったときと同じ作法）。ここで語を増やすと、隣の帯と
+      // 同じ事実が 2 通りの見え方になる。
+      expect(row.sourceText).toBe('')
+      expect(row.valueText).toBeNull()
+      expect(row.gradeLabel).toBeNull()
+    })
+
+    it('対照: 震度を出せていないだけの行は赤くしない', () => {
+      // **`intensity === null` では代われない。** センサーは届いているのに震度が
+      // まだ出せない起動直後がこれで、止まっているわけではない。
+      const row = seismoOverlayRows([station(null, { kind: 'sensor', sensorCount: 3 })])[0]
+      expect(row.silent).toBe(false)
+      expect(row.sourceText).toBe('単独 3本')
+    })
+
+    it('安全弁: 震度が出ている行は赤くしない', () => {
+      expect(seismoOverlayRows([station(0.4)])[0].silent).toBe(false)
+    })
+  })
+
   it('渡された順を変えない（並べ替えは状態層の仕事）', () => {
     const rows = seismoOverlayRows([
       { ...station(0.1), stationId: 'b', displayName: '物置' },

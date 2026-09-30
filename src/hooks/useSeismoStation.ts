@@ -4,12 +4,15 @@
 // `KyoshinSource` も、入力（全国 700 点の 1 秒ごとの色）も時間軸（リプレイで
 // 巻き戻る）も別物で、共通化できるところが無い。
 //
-// **震度の出どころが 2 つある。** これがこの層の主題 ——
+// **震度の出どころが 3 つある。** これがこの層の主題 ——
 //
 //   - `station-reading`（観測点の合成）。複数センサーで裏付けた値
 //   - `reading`（センサー単独）。**観測点に有効なセンサーが 2 台未満だと、
 //     ホストは合成を作らない**（`seismo-host/src/receiver/sensorFusion.ts` の
 //     `buildGroups` が `list.length < 2` で組まない）。そのときはこちらしか無い
+//   - **途絶**（`'silent'`）。どちらも来なくなった状態。**行は残して値だけ落とす**
+//     —— 消すと「揺れていない」と見分けが付かなくなる（→ `utils/seismoSilence.ts`）。
+//     **一度も届いていない観測点はここへ来ない**（そちらは行を作らない）
 //
 // **どちらを採るかは「合成が実際に届いたか」で決める。設定は見ない。** ホストの
 // 設定を根拠にすると、設定と実際が食い違ったとき（センサーが落ちた・帳面に
@@ -30,6 +33,7 @@ import {
   type SeismoWaveWindow,
 } from '../utils/seismoWaveBuffer'
 import { createLogThrottle, log } from '../utils/logger'
+import { judgeSilence } from '../utils/seismoSilence'
 
 /**
  * 震度が届かなくなってから落とすまで（ms）。
@@ -65,8 +69,12 @@ export const READING_STALE_MS = 5000
  *
  * まとまりは 0.3 秒ごとに届く（実機の実測で 12 秒に 40 件）ので、5 秒あれば
  * 正常な揺らぎを跨げる。
+ *
+ * **有感の地震カードの波形も同じ値で判定する**（`hooks/useSeismoQuakeWaves.ts`）。
+ * どちらも止まる原因は同じ押し出し（`station-wave`）なので、別々の数字を持つと
+ * **同じ 1 つの途絶で、地図の下の絵とカードの絵が別のタイミングで薄くなる。**
  */
-const WAVE_STALE_MS = 5000
+export const WAVE_STALE_MS = 5000
 
 /**
  * 抱える波形の長さ（秒）。
@@ -107,6 +115,19 @@ export type SeismoIntensitySource =
    *   **1 なら裏付けが 1 本も無い。**
    */
   | { readonly kind: 'sensor'; readonly sensorCount: number }
+  /**
+   * **何も届かなくなった。** 一度は震度が届いていた観測点が、{@link READING_STALE_MS} を
+   * 超えて合成も単独も途絶えた状態（→ `utils/seismoSilence.ts`）。
+   *
+   * **このとき行を消さない。** 消すと「揺れていない」と見分けが付かなくなる ——
+   * この機能でいちばん避けたい混同そのもの（`docs/spec/data-sources-spec.md` §4.5）。
+   * **接続の状態では代われない** —— 黙って切れた繋ぎは停滞の検出（45 秒）を待つし、
+   * **繋がっているのにその観測点だけ沈黙する形はいつまでも `'open'` のまま**。
+   *
+   * **一度も届いていない観測点はここへ来ない**（そちらは行を作らない）。購読を始めた
+   * 直後に全部の行が「値が来ていない」と名乗ると、警告が常態になって意味を失う。
+   */
+  | { readonly kind: 'silent' }
 
 /** 観測点 1 つの、いまの姿。 */
 export interface SeismoStationState {
@@ -191,6 +212,15 @@ interface StationEntry {
   wave: SeismoWaveBuffer | null
   /** 波形のまとまりを最後に受け取った時刻。**一度も受け取っていなければ `null`。** */
   waveReceivedAt: number | null
+  /**
+   * 震度（合成・単独のどちらでも）を最後に受け取った時刻。
+   * **一度も受け取っていなければ `null`。**
+   *
+   * **`station` と `sensors` の中身では代われない。** あちらは古くなった項目を落とすので
+   * （{@link READING_STALE_MS}）、途絶えたあとは「一度も届いていない」と同じ姿になる。
+   * **その 2 つを分けるためだけに持つ** —— 前者は行を残して赤く出し、後者は行を作らない。
+   */
+  readingReceivedAt: number | null
 }
 
 /** 空のときの参照を固定する。**毎回新しい配列を作ると再描画が 1 回増える。** */
@@ -307,6 +337,18 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
       gate(emit)
     }
 
+    // **震度の途絶も観測点ごとの枠にする。** 理由は波形の作り直しと同じ ——
+    // ホストが落ちれば全観測点が同時に途絶えるので、1 つの枠では最初の 1 件しか残らない。
+    const silentReadingLogs = new Map<string, ReturnType<typeof createLogThrottle>>()
+    const throttledSilentReading = (stationId: string, emit: () => void): void => {
+      let gate = silentReadingLogs.get(stationId)
+      if (gate === undefined) {
+        gate = createLogThrottle(LOG_THROTTLE_MS)
+        silentReadingLogs.set(stationId, gate)
+      }
+      gate(emit)
+    }
+
     /** その観測点の項目。**無ければ作る。** */
     const entryFor = (stationId: string): StationEntry => {
       const found = book.get(stationId)
@@ -316,6 +358,7 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
         sensors: new Map(),
         wave: null,
         waveReceivedAt: null,
+        readingReceivedAt: null,
       }
       book.set(stationId, created)
       return created
@@ -331,7 +374,12 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
         case 'station-reading': {
           const { stationId, intensity, atMs } = message.reading
           directory.require(stationId)
-          entryFor(stationId).station = { intensity, atMs, receivedAt }
+          const entry = entryFor(stationId)
+          entry.station = { intensity, atMs, receivedAt }
+          // **届いたことを別に覚える**（`readingReceivedAt` の説明を見ること）。
+          // `station` は古くなれば落とすので、これが無いと「途絶えた」と
+          // 「一度も届いていない」が同じ姿になる。
+          entry.readingReceivedAt = receivedAt
           return
         }
         case 'reading': {
@@ -355,7 +403,11 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
             )
             return
           }
-          entryFor(stationId).sensors.set(`${boardKey}/${sensorId}`, { intensity, atMs, receivedAt })
+          const entry = entryFor(stationId)
+          entry.sensors.set(`${boardKey}/${sensorId}`, { intensity, atMs, receivedAt })
+          // 合成と同じ扱い —— **どちらで届いても「震度が来た」に数える**。
+          // 合成が組めない観測点（有効なセンサーが 2 台未満）ではこちらしか来ない。
+          entry.readingReceivedAt = receivedAt
           return
         }
         case 'station-wave': {
@@ -396,12 +448,24 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
         const waveSampleCount = entry.wave?.sampleCount ?? 0
         const waveTally = entry.wave?.tally ?? EMPTY_TALLY
         // **一度も届いていないうちは立てない。** 購読を始めた直後と区別が付かない。
+        // **判定は `utils/seismoSilence.ts` の 1 箇所へ寄せてある** —— 震度・波形・
+        // 有感カードの波形で同じ述語を使う（別々に書くと後から食い違う）。
         const waveStale =
-          entry.waveReceivedAt !== null && now - entry.waveReceivedAt >= WAVE_STALE_MS
+          judgeSilence({ lastReceivedAt: entry.waveReceivedAt, now, staleMs: WAVE_STALE_MS })
+            .kind === 'silent'
 
         // **合成が古くなければそれを採る。** 単独へ落ちるのは、合成が
         // 一度も届いていないか、届かなくなったとき。
-        const fresh = entry.station !== null && now - entry.station.receivedAt < READING_STALE_MS
+        //
+        // **判定は同じ述語へ通す**（→ `utils/seismoSilence.ts`）。境目を直に書くと、
+        // 同じ「届かなくなった」に判定が 2 つできて、片方だけ動かしたときに
+        // 静かに食い違う（`flowing` は「一度は届いていて、まだ新しい」だけ）。
+        const fresh =
+          judgeSilence({
+            lastReceivedAt: entry.station?.receivedAt ?? null,
+            now,
+            staleMs: READING_STALE_MS,
+          }).kind === 'flowing'
         if (fresh && entry.station !== null) {
           next.push({
             stationId,
@@ -437,12 +501,41 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
           }
         }
         if (count === 0) {
-          // **震度が 1 つも無い観測点は並べない。** 波形だけが届いている状態は
-          // 通常起きない（合成波形が出ているなら合成震度も出ている）が、
-          // 起きたときに「震度不明の行」を作らない。
+          // **ここは 2 つの意味を持つので、必ず分ける。**
           //
-          // **帳面からは消さない** —— 波形の入れ物を捨てると、震度が戻った
-          // ときに絵が 60 秒ぶん巻き戻る。
+          //   - **一度も震度が届いていない** → 並べない。波形だけが届いている状態は
+          //     通常起きない（合成波形が出ているなら合成震度も出ている）が、起きたときに
+          //     「震度不明の行」を作らない。**購読を始めた直後も必ずここを通る**
+          //   - **届いていたのに途絶えた** → **残す。** 消すと「揺れていない」と
+          //     見分けが付かなくなる（→ `SeismoIntensitySource` の `'silent'`）
+          //
+          // **帳面からは消さない** —— 波形の入れ物を捨てると、震度が戻ったときに
+          // 絵が 60 秒ぶん巻き戻る。
+          const silence = judgeSilence({
+            lastReceivedAt: entry.readingReceivedAt,
+            now,
+            staleMs: READING_STALE_MS,
+          })
+          if (silence.kind !== 'silent') continue
+          // **どれだけ途絶えているかは記録にしか出ない**（画面は色だけで長さを語らない）。
+          // 瞬断と本物の途絶を事後に分ける手掛かりがここにしか無いので、観測点ごとに
+          // 間引いて残す。
+          throttledSilentReading(stationId, () =>
+            log.warn(
+              `[seismo] 観測点の震度が途絶えた（${stationId}）: ` +
+                `${Math.round(silence.forMs / 1000)} 秒前から届いていない`,
+            ),
+          )
+          next.push({
+            stationId,
+            displayName: directory.displayName(stationId),
+            intensity: null,
+            atMs: null,
+            source: { kind: 'silent' },
+            waveSampleCount,
+            waveStale,
+            waveTally,
+          })
           continue
         }
         next.push({

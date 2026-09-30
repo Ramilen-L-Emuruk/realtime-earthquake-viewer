@@ -94,7 +94,12 @@ function HistoryWave({ wave }: { wave: SeismoQuakeWave }) {
               minScaleGal: MIN_SCALE_GAL,
               visibleAxes,
             }),
-          false,
+          // **途切れたら濃さを落とす。** 列は時間で薄れないので、渡さないと
+          // 止まった絵が「いま静かに揺れている」ように見え続ける
+          // （→ `useSeismoQuakeWaves` の `interrupted`）。**`waveStale` を素通しで
+          // 代わりにはできない** —— あちらはライブ接続の生死なので、過去に完結した
+          // 7 日ぶんのカードまで薄くなる。
+          wave.interrupted,
           { marks: buildArrivalMarks(trimmed, wave.arrival), visibleAxes },
         ),
       )
@@ -108,7 +113,10 @@ function HistoryWave({ wave }: { wave: SeismoQuakeWave }) {
     // 列が伸びたら描き直す（繋ぎ足しは `useSeismoQuakeWaves` が新しい参照で渡す）。
     // **到達も向きも依存に入れる** —— 続報で震源が動くと線の位置が変わり、
     // 向きを押すと描く本数と振れ幅の分母が変わる。
-  }, [wave.columns, wave.arrival, visibleAxes])
+    //
+    // **途切れも入れる。** 途切れているときは列が 1 つも変わらないので、
+    // これが無いと濃さを落とす契機がどこにも無い。
+  }, [wave.columns, wave.arrival, wave.interrupted, visibleAxes])
 
   return (
     <div className="rounded bg-black/30 px-2 py-1">

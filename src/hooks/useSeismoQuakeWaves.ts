@@ -29,7 +29,9 @@ import {
   trimAfter,
   type TimedColumns,
 } from '../utils/seismoWaveColumns'
+import { judgeSilence } from '../utils/seismoSilence'
 import { WAVE_TRIGGER_MIN_SCALE } from '../utils/seismoWaveTrigger'
+import { WAVE_STALE_MS } from './useSeismoStation'
 import type { SeismoWaveWindow } from '../utils/seismoWaveBuffer'
 import type { Hypocenter, JMAQuake } from '../types/earthquake'
 
@@ -127,6 +129,44 @@ export interface SeismoQuakeWave {
    * （→ `docs/spec/settings-pwa-spec.md` §7）ので、初報の値で固定すると線だけがずれる。
    */
   readonly arrival: WaveArrival | null
+  /**
+   * **繋ぎ足しが途切れている。** まだ伸ばす番なのに、{@link WAVE_STALE_MS} を超えて
+   * 1 列も伸びていない状態（→ `utils/seismoSilence.ts`）。
+   *
+   * **描く側は濃さを落とすのに使う**（`paintWaveColumns` の `stale`）。列は時間で
+   * 薄れないので、これを見ないと**止まった絵が「いま静かに揺れている」ように
+   * 見え続ける。**
+   *
+   * **`useSeismoStation` の `waveStale` を素通しで代わりにはできない。** あちらは
+   * 「いまのライブ接続の生死」なので、**過去に正常に完結した 7 日ぶんのカードまで
+   * 薄くなる**（#406 のメタレビューが副作用として確認した）。ここが立つのは
+   * 「伸ばす番のカード」だけ。
+   */
+  readonly interrupted: boolean
+}
+
+/**
+ * その観測点の列が**途切れている**か（#423 の形 3）。
+ *
+ * **判定は 1 つの述語に通す**（`utils/seismoSilence.ts`）—— 地図の左上の帯・右上の行と
+ * 同じ「まだ来るはずなのに、期待した間隔を超えて何も来ていない」を見ている。
+ *
+ * @param growing **いま伸ばす番か。** 押し出しを繋いでいて（＝再生中ではない）・
+ *   先頭の対象であり・安全弁の内であり・まだ収まっていない、の 4 つが揃うときだけ真。
+ *   **ここを落とすと、正常に完結したカードが全部薄くなる** —— 伸びないのが当たり前の
+ *   区間と、伸びるはずなのに伸びない区間は、列の見た目では区別が付かない。
+ * @param lastGrewAt 最後に列が伸びた時刻。**`serverNow()` 基準**（`now` と揃える）。
+ */
+export function judgeWaveInterrupted(params: {
+  readonly growing: boolean
+  readonly lastGrewAt: number
+  readonly now: number
+}): boolean {
+  const { growing, lastGrewAt, now } = params
+  if (!growing) return false
+  return (
+    judgeSilence({ lastReceivedAt: lastGrewAt, now, staleMs: WAVE_STALE_MS }).kind === 'silent'
+  )
 }
 
 /** 読み返す対象。**テストから直に確かめられるよう外へ出してある。** */
@@ -199,16 +239,30 @@ function sameWaves(
   for (let i = 0; i < next.length; i += 1) {
     const a = prev[i]
     const b = next[i]
-    if (a.stationId !== b.stationId) return false
-    if (a.displayName !== b.displayName) return false
-    if (a.columns !== b.columns) return false
-    if (a.arrival === null || b.arrival === null) {
-      if (a.arrival !== b.arrival) return false
-      continue
-    }
-    if (a.arrival.pMs !== b.arrival.pMs || a.arrival.sMs !== b.arrival.sMs) return false
+    if (!sameWave(a, b)) return false
   }
   return true
+}
+
+/**
+ * 観測点 1 つぶんの姿が同じか。
+ *
+ * **観測点ごとに比べられる形にしてある。** 1 つの地震に観測点が複数あるとき、
+ * 片方だけが変わっても**もう片方の参照まで作り直すと、変わっていない絵が
+ * 描き直される** —— `arrival` は出し直すたびに新しいオブジェクトになるので、
+ * 描く側の依存（`QuakeSeismoWave` の `useEffect`）がそれだけで発火する。
+ */
+function sameWave(a: SeismoQuakeWave | undefined, b: SeismoQuakeWave): a is SeismoQuakeWave {
+  if (a === undefined) return false
+  if (a.stationId !== b.stationId) return false
+  if (a.displayName !== b.displayName) return false
+  if (a.columns !== b.columns) return false
+  // **途切れも比べる。** 列が 1 つも伸びていないのがまさにこの状態なので、
+  // ここを見落とすと**濃さを落とす指示が画面へ届かない**（列だけを比べていると
+  // 「変わっていない」として前の姿を使い回す）。
+  if (a.interrupted !== b.interrupted) return false
+  if (a.arrival === null || b.arrival === null) return a.arrival === b.arrival
+  return a.arrival.pMs === b.arrival.pMs && a.arrival.sMs === b.arrival.sMs
 }
 
 interface Entry {
@@ -218,6 +272,20 @@ interface Entry {
   readonly lat: number | null
   readonly lon: number | null
   columns: TimedColumns
+  /**
+   * 最後に列が伸びた時刻（**`serverNow()` 基準**）。
+   *
+   * **列の右端では代われない。** あちらが進むのは「値が届いた」ときだけで、
+   * 届かない間は何も変わらない —— 止まってから何秒経ったかを測れるのは、
+   * 伸びた時刻を外から書き留めてあるときだけ。
+   *
+   * 読み返しで作った時点を起点にする。**押し出しが 1 度も繋がらなければ、そこから
+   * {@link WAVE_STALE_MS} で途切れと見なす**（それが正しい ——「伸ばす番なのに
+   * 伸びていない」に当てはまる）。
+   */
+  lastGrewAt: number
+  /** 直前に画面へ出した「途切れているか」。**裏返った巡回を捉えるために持つ。** */
+  interrupted: boolean
 }
 
 /**
@@ -276,24 +344,32 @@ export function useSeismoQuakeWaves(params: {
     const out = new Map<string, readonly SeismoQuakeWave[]>()
     for (const [key, list] of bookRef.current) {
       const target = byKey.get(key)
-      const next = list.map((e) => ({
-        stationId: e.stationId,
-        displayName: e.displayName,
-        columns: e.columns,
-        arrival:
-          target === undefined
-            ? null
-            : computeWaveArrival({
-                originMs: target.originMs,
-                hypocenter: target.hypocenter,
-                stationLat: e.lat,
-                stationLon: e.lon,
-              }),
-      }))
-      // **中身が同じなら前の配列を使い回す。** 伸びているのは 1 件だけでも、毎回
+      const prev = publishedRef.current.get(key)
+      const next = list.map((e, i) => {
+        const built: SeismoQuakeWave = {
+          stationId: e.stationId,
+          displayName: e.displayName,
+          columns: e.columns,
+          interrupted: e.interrupted,
+          arrival:
+            target === undefined
+              ? null
+              : computeWaveArrival({
+                  originMs: target.originMs,
+                  hypocenter: target.hypocenter,
+                  stationLat: e.lat,
+                  stationLon: e.lon,
+                }),
+        }
+        // **観測点ごとに前の姿を使い回す。** 伸びている観測点が 1 つでも、
+        // **同じ地震の他の観測点まで作り直すと、変わっていない絵が描き直される**
+        // （→ {@link sameWave}）。
+        const before = prev?.[i]
+        return sameWave(before, built) ? before : built
+      })
+      // **中身が同じなら前の配列も使い回す。** 伸びているのは 1 件だけでも、毎回
       // 全部を作り直すと**関わりのない地震のカードまで描き直される**（この出し直しは
       // 0.3 秒ごとに走り、カードは 7 日ぶん残る）。
-      const prev = publishedRef.current.get(key)
       out.set(key, sameWaves(prev, next) ? prev : next)
     }
     publishedRef.current = out
@@ -306,6 +382,10 @@ export function useSeismoQuakeWaves(params: {
   // （または前の時間軸）のものが出たままになる。
   const resetKey = `${baseUrl}|${replayOffsetMs ?? 'live'}`
   const resetKeyRef = useRef(resetKey)
+  // **繋ぎ足しの巡回から読む。** あの効果の依存は `[canFetch]` だけなので、
+  // 再生の切り替えでは張り直されない（→ `growing` の判定）。
+  const replayOffsetRef = useRef(replayOffsetMs)
+  replayOffsetRef.current = replayOffsetMs
   useEffect(() => {
     if (resetKeyRef.current === resetKey) return
     resetKeyRef.current = resetKey
@@ -433,6 +513,8 @@ export function useSeismoQuakeWaves(params: {
                 columnSpanMs: result.history.columnSpanMs,
                 columns: result.history.columns,
               },
+              lastGrewAt: serverNow(),
+              interrupted: false,
             },
           ])
           // **1 件ごとに画面へ出す。** まとめて出すと、観測点が増えたとき最後の 1 本を
@@ -476,24 +558,76 @@ export function useSeismoQuakeWaves(params: {
       //   2. 次の有感地震が来た —— そのときこの対象は先頭でなくなるので、ここが触らなく
       //      なる（窓も `cutoffMs` で切れている）
       //   3. 安全弁（1・2 が揃って壊れたときだけ効く）
-      if (atMs > target.originMs + GROW_SAFETY_MS) return
+      if (atMs > target.originMs + GROW_SAFETY_MS) {
+        // **過ぎた拍子に「途切れている」が立っていたら戻す。** 伸ばさないのが
+        // 当たり前になった区間を薄いままにすると、完結した絵が壊れているように見える
+        // （→ {@link SeismoQuakeWave.interrupted}）。
+        //
+        // **判定は同じ述語へ通す。** ここで `false` を直に代入すると、
+        // 「伸ばす番でなければ立てない」という規則が 2 箇所に分かれて、
+        // 片方だけ変えたときに静かに食い違う。
+        let cleared = false
+        for (const entry of entries) {
+          const interrupted = judgeWaveInterrupted({
+            growing: false,
+            lastGrewAt: entry.lastGrewAt,
+            now: atMs,
+          })
+          if (interrupted === entry.interrupted) continue
+          entry.interrupted = interrupted
+          cleared = true
+        }
+        if (cleared) publishRef.current()
+        return
+      }
+
+      // **再生中は伸ばす番ではない。** `App.tsx` は再生中に押し出しの購読を切るので
+      // （`useSeismoStation` の `enabled` が `replayTimeOffset === null`）、
+      // **`readWave()` は必ず `null` を返す** —— 列が伸びないのは当たり前で、
+      // ホストの障害ではない。
+      //
+      // **これが無いと、再生を始めて 5 秒で絵が全部薄くなる。** しかも
+      // 「読み取りの変更はリプレイで確かめる」という検証手順のただ中で起きるので、
+      // 直したはずの「途絶」が誤報として最初に目に入ることになる。
+      //
+      // **読み返し（`GET /waves`）は再生中も動かす。** あちらは時刻の範囲を指定して
+      // 取るので「いまの値が過去の画面へ混ざる」ことが起きない（→ `App.tsx`）。
+      const pushLive = replayOffsetRef.current === null
 
       let changed = false
       for (const entry of entries) {
-        if (
-          atMs > target.originMs + MIN_GROW_MS &&
-          isSettled(entry.columns, SETTLE_WINDOW_MS, QUIET_GAL)
-        ) {
-          continue
+        // **伸ばす番かどうかを先に決める。** ここで `continue` して次の観測点へ
+        // 移ると、**伸ばさなくなった後も「途切れている」が立ったまま残る**
+        // （収まった絵が薄いまま居座る）。
+        const growing =
+          pushLive &&
+          !(
+            atMs > target.originMs + MIN_GROW_MS &&
+            isSettled(entry.columns, SETTLE_WINDOW_MS, QUIET_GAL)
+          )
+        if (growing) {
+          const next = appendWaveWindow({
+            base: entry.columns,
+            window: readWaveRef.current(entry.stationId),
+            // **次の地震の手前まで。** 外すと、前の地震のカードへ次の地震の頭が入る。
+            limitMs: Math.min(target.originMs + GROW_SAFETY_MS, target.cutoffMs),
+          })
+          if (next !== entry.columns) {
+            entry.columns = next
+            entry.lastGrewAt = atMs
+            changed = true
+          }
         }
-        const next = appendWaveWindow({
-          base: entry.columns,
-          window: readWaveRef.current(entry.stationId),
-          // **次の地震の手前まで。** 外すと、前の地震のカードへ次の地震の頭が入る。
-          limitMs: Math.min(target.originMs + GROW_SAFETY_MS, target.cutoffMs),
+        // **巡回のたびに引き直す。** 途切れている間は列が 1 つも変わらないので、
+        // **列の変化だけを契機に出し直す形では画面に出ない** —— #423 の 3 形が
+        // どれも「何も起きないことが伝わらない」だった根はここと同じ。
+        const interrupted = judgeWaveInterrupted({
+          growing,
+          lastGrewAt: entry.lastGrewAt,
+          now: atMs,
         })
-        if (next !== entry.columns) {
-          entry.columns = next
+        if (interrupted !== entry.interrupted) {
+          entry.interrupted = interrupted
           changed = true
         }
       }
@@ -522,6 +656,8 @@ export function useSeismoQuakeWaves(params: {
   // 対象から外れた地震の分を捨て、**打ち切りが縮んだ分を切り戻す。**
   useEffect(() => {
     const alive = new Map(targetsRef.current.map((t) => [t.eventKey, t]))
+    // **先頭以外は「伸ばす番」ではない**（継ぎ足しの巡回が触るのは先頭だけ）。
+    const headKey = targetsRef.current[0]?.eventKey
     let changed = false
     for (const [key, entries] of [...bookRef.current]) {
       const target = alive.get(key)
@@ -530,6 +666,16 @@ export function useSeismoQuakeWaves(params: {
         bookRef.current.delete(key)
         changed = true
         continue
+      }
+      // **先頭から降りた地震の「途切れている」は戻す。** 継ぎ足しの巡回はもう
+      // この地震を触らないので、立てたまま残すと**その絵は薄いまま固定される**
+      // （新しい地震が来た拍子に、完結した前の地震のカードが壊れて見える）。
+      if (key !== headKey) {
+        for (const entry of entries) {
+          if (!entry.interrupted) continue
+          entry.interrupted = false
+          changed = true
+        }
       }
       // **次の有感地震が現れたら、その手前まで切り戻す。** 繋いでいる最中はその地震が
       // いちばん新しいので右端の打ち切りが無く、**次の地震の電文が届くまでの間に
