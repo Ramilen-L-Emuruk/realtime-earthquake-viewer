@@ -18,6 +18,13 @@
 // そこで ①失敗を種類ごとに数え ②続けて失敗するセンサーは `ok` を下ろし
 // ③下ろしたものは定期的に初期化をやり直す、という一巡を持たせてある。
 // **③が無いまま①②だけ入れると、一過性の失敗でそのセンサーが永久に死ぬ。**
+//
+// **ネットワークの側も「黙ったと判る形」にする。** 基板は送る側なので、繋がりが
+// 壊れても自分では気づけない——`endPacket()` は成功を返し、HTTP（TCP）は別の経路で
+// 応え続けるので、**外からは健全にしか見えない**（2026-09-30 に 1 枚が 5 日間
+// その状態だった）。そこで ①時計が合う前は送らない ②Wi-Fi が繋がり直すたび
+// 立て直す ③遠隔で再起動できる、の 3 つを置いてある。
+// それぞれ `MIN_SYNCED_UNIX`・`onWifiUp`・`handleRestart` に理由を書いた。
 
 #include <Wire.h>
 #include <WiFi.h>
@@ -30,6 +37,14 @@
 #include <esp_mac.h>
 #include <esp_random.h>
 #include "wifi_config.h"
+
+// **この定義を持たない `wifi_config.h` でも焼けるようにする。** 設定ファイルは
+// `.gitignore` で除外してあるので、各基板の手元には足す前の版が残っている。そちらを
+// 先に直さないとコンパイルが通らない形にすると、**直したいファームを焼く手前で止まる**。
+// 定義が無ければ口は閉じたまま（`adminTokenOk` が空のトークンを常に拒む）。
+#ifndef ADMIN_TOKEN
+#define ADMIN_TOKEN ""
+#endif
 
 static const uint8_t R_SMPLRT_DIV=0x19, R_CONFIG=0x1A, R_ACCEL_CFG=0x1C, R_FIFO_EN=0x23;
 static const uint8_t R_INT_STATUS=0x3A, R_USER_CTRL=0x6A, R_PWR_MGMT_1=0x6B;
@@ -55,6 +70,29 @@ static const int I2C1_SDA = 16, I2C1_SCL = 17;
 static const uint32_t FAIL_STREAK_TO_DEMOTE = 20;
 // `ok` が下りているセンサーの初期化をやり直す間隔。
 static const uint32_t RETRY_MS = 10000;
+
+// 時計が合ったと見なす下限（2023-11-15）。**これより前の時刻を名乗るパケットは送らない。**
+//
+// 基板は SNTP の応答を待たずに波形を読み始める（`configTime` は投げるだけで、
+// 返ってくるのは数秒後）。`gettimeofday` はその間 1970 年を返すので、そのまま送ると
+// 受け手には**「通し番号は続いているのに、時刻だけが 50 年以上飛んだ」**パケットとして
+// 届く。受け手（`seismo-host`）はそれを区間の切れ目として扱うようにしたが、
+// **そもそも送らないのが筋**——番号が続いたまま時刻が飛ぶ形は、受け手の側では
+// 「基板が壊れた」と「時計がいま合った」を見分けられない。
+//
+// **状態ページの `time_synced` と同じ値を使う。** 別々に持つと、ページが「合っている」と
+// 名乗りながら送信は止まっている（またはその逆の）状態が作れてしまい、
+// **外から見て説明の付かない基板**になる。
+static const time_t MIN_SYNCED_UNIX = 1700000000;
+
+// 起動してからこの時間 Wi-Fi に一度も繋がらなければ、シリアルへ 1 度だけ警告を出す。
+//
+// **繋がり具合の変わり目でしか記録しない作りには、この穴が開く。** 起動時から
+// 繋がらない基板は「繋がっていない」が続くだけなので**遷移が起きず、1 行も出ない**。
+// かつては `setup()` が 30 秒待ってから「# wifi FAILED」を出していたので、
+// **待つのをやめた時点でこの記録が失われていた**（そしてこの場面では HTTP も OTA も
+// 立っていないので、シリアルだけが唯一の診断の手段）。値は当時の 30 秒に合わせてある。
+static const uint32_t NO_WIFI_WARN_MS = 30000;
 
 // 端数（FIFO の件数が 6 の倍数でない）がこの回数だけ続いたら FIFO を作り直す。
 //
@@ -114,6 +152,11 @@ struct Sensor {
   // 1 バイト失われているなら 5 に偏る——2 つの原因を実機で分けるための値。
   uint32_t    remHist[BPS - 1];
   uint32_t    unsent;       // 読めたのに送れなかったサンプル数
+  // **時計が合う前に読めたサンプル数。** `unsent` と分けてあるのは、原因も手当ても
+  // 違うため——あちらは Wi-Fi が繋がっていない、こちらは繋がっているが SNTP の応答が
+  // まだ来ていない。**起動直後に少し増えて止まるのが正常。** 増え続けているなら
+  // 時刻が取れておらず、その基板は一度も波形を送らない（`MIN_SYNCED_UNIX` の項）。
+  uint32_t    pretime;
   uint32_t    initTries;    // 初期化を試みた回数（1 回目の起動時を含む）
   // 直近の初期化で失敗した I2C 取引の数。**設定の書き込みと WHO_AM_I の読み取りの
   // 両方が入る。** 「書き込み」と名乗ると、読み取りだけが落ちたときに設定が飛んだと
@@ -172,6 +215,56 @@ static bool       g_scanCut[2] = {false, false};   // 並びが収まらず途�
 static bool       g_busOk[2] = {false, false};     // Wire.begin() が成功したか
 // ヘッダの JSON が収まらなかった回数。**起こらないはずのことなので、起きたら数える。**
 static uint32_t   g_headTrunc = 0;
+// Wi-Fi がいま繋がっているか。**変わり目を見るために持つ**——`WiFi.status()` を
+// その場で読むだけでは「たったいま繋がった」が判らず、立て直す契機を作れない。
+static bool       g_wifiUp = false;
+// アドレスを取り直したことをイベントで知らせる旗。
+//
+// **`loop()` の見張りだけでは取りこぼす。** 切れてから繋がるまでが `loop()` の
+// 1 周より短いと、状態はずっと `WL_CONNECTED` のままに見えて変わり目が立たない
+// ——そのとき**ソケットは切れる前の無効なまま残る**。つまり今回直そうとしている
+// 症状（送れたつもりで出ていない）が、別の入口からそのまま再現する。
+//
+// `volatile` なのは、立てるのが Arduino のイベントタスクで読むのが `loop()` と、
+// **別の実行の流れをまたぐ**ため。
+static volatile bool g_wifiGotIp = false;
+// 一度だけ立てるもの（mDNS・OTA・状態ページ）を立て終えたか。繋ぎ直すたびに
+// 立て直してはいけない理由は `onWifiUp` の項。
+static bool       g_servicesUp = false;
+// UDP のソケットを開けた回数。**普段は `g_wifiGotIpCount` と一致する**
+// （2026-10-01 に繋ぎ直しを繰り返して差 0 を確認）。
+//
+// **一致を当てにはしない。** 差はどちら向きにも出うる：
+// - `g_wifiGotIpCount` が大きい：`STA_GOT_IP` が `loop()` の 1 周のうちに 2 度来ると、
+//   旗が 1 つなので 1 回の開き直しにまとまる
+// - こちらが大きい：1 度の接続を、繋がり具合の見張りとイベントの両方が拾って 2 回開く
+//   （勘定を分ける前の版で、起動直後に 2 になったのを 1 度見た。どちらの理由かは
+//   切り分けていない）
+// どちらも無害。**開きすぎは害が無いが、開き漏らすと「送れたつもりで出ていない」が
+// そのまま戻る**ので、漏らさない側へ倒してある。開き損ねは `g_udpArmFail` に出る。
+static uint32_t   g_udpArmed = 0;
+// `STA_GOT_IP` を受けた回数。**`g_udpArmed` と並べて出すためだけに持つ。**
+//
+// 片方だけだと「繋ぎ直しが 2 回起きた」と「1 回の繋ぎ直しで 2 回開いた」が
+// 同じ数字に化ける——**原因の違う 2 つを見分けられない**。
+//
+// **`volatile` が要る。** 書くのはイベントタスク・読むのは `loop()`（状態ページ）で、
+// 隣の `g_wifiGotIp` と同じく実行の流れをまたぐ。**食い違いを見つけるために置いた値が、
+// 古い値のまま読まれては役目を果たさない。**
+static volatile uint32_t g_wifiGotIpCount = 0;
+// UDP のソケットを開こうとして失敗した回数。
+//
+// **`udp_armed` を無条件に進めてはいけない。** 進めると、あの数字は「開けた回数」では
+// なく「開こうとした回数」になる——**`endPacket()` が真を返しながら 1 バイトも
+// 出ていなかった**のと同じ、名前と実態の乖離をこちらで作ることになる。
+static uint32_t   g_udpArmFail = 0;
+// 時計が合ったことを一度でも見たか。**起動ログへ 1 行出すためだけに持つ。**
+//
+// 時計が合うまで 1 件も送らない作りなので（→ `MIN_SYNCED_UNIX`）、**SNTP が
+// 返ってこない環境ではその基板が永久に沈黙する**。状態ページには `time_synced` と
+// `pretime` が出るが、**シリアルを見ている最中に「待っている」のか「始まった」のかが
+// 判る印が要る**——起動ログだけ追っている場面で、沈黙の理由が時刻だと分からない。
+static bool       g_timeReady = false;
 
 // 追記して `used` を進める。**溢れたら書かない。**
 //
@@ -339,9 +432,11 @@ static void sensorInit(Sensor &s){
 
 // 吸い出しを始められる状態にする。初期化のあとと、再試行で復帰したときに通す。
 //
-// Wi-Fi の接続待ちは最大 30 秒あり、そのあいだ FIFO を吸い出せない。FIFO は
-// 1.7 秒ぶんしか無いので必ずあふれている。ここで作り直さないと、起動直後の
-// 1 回は必ず OVERFLOW として数えられる。
+// **かつてここは「必ずあふれている」ことへの手当てだった。** `setup()` が Wi-Fi を
+// 最大 30 秒待っており、そのあいだ FIFO（1.7 秒ぶん）は確実に溢れていた。
+// **いまは待たない**ので（→ `onWifiUp`）、初期化から `loop()` の最初の吸い出しまでは
+// 数百ミリ秒しかなく、**起動直後のあふれは稀**になった（電源を入れ直した実機で
+// `overflow=0`）。それでも作り直すのは、次の段落の理由のほう。
 //
 // **INT_STATUS のあふれビットはラッチで、読むまで消えない。** FIFO を作り直しても
 // 旗は立ったままなので、ここで読み捨てないと最初の吸い出しが古い旗を見て 1 回
@@ -383,18 +478,41 @@ static uint8_t scanBus(TwoWire &w, char *out, size_t outSize, bool &cut){
   return found;
 }
 
+// 状態ページ。
+//
+// **バッファの余裕を測ってある。** すべての勘定を 32bit の上限（4294967295）へ置き、
+// ノード名と走査結果も最長にした最悪形で **約 2000 バイト**（2026-10-01 に実測。
+// 実際の応答は約 1300 バイト）。**2048 では 50 バイトしか残らなかった** ——
+// `seq` と `unsent` と `pretime` は 100Hz で進むので **約 497 日の連続稼働で 10 桁へ届く**。
+// 数百日動かす基板なので、桁が伸びた日に状態ページだけが 500 を返し始める。
+//
+// **3072 へ広げ、`static` にしてある。** 置き場所をスタックから移したのは、
+// `loop()` のタスクのスタックは 8 KB しかないため。**再入は無い**（`handleClient()` を
+// 呼ぶのは `loop()` だけ）。
+//
+// **センサーを 4 個目にするときは、ここも一緒に上げること。** 1 個ぶんが最悪形で
+// 430 バイトある。
 static void handleStatus(){
   time_t now = time(nullptr);
-  char buf[2048];
+  static char buf[3072];
   size_t u = 0;
   appendf(buf, sizeof(buf), u,
     "{\"node\":\"%s\",\"mac\":\"%s\",\"boot_id\":\"%s\",\"sensor\":\"MPU6050\","
     "\"uptime_s\":%lu,\"rssi\":%d,\"ip\":\"%s\",\"time_synced\":%s,\"unix\":%ld,"
-    "\"sample_hz\":%d,\"ug_per_lsb\":%.4f,\"head_truncated\":%lu,",
+    "\"sample_hz\":%d,\"ug_per_lsb\":%.4f,\"head_truncated\":%lu,"
+    // **空きメモリを出す。** Wi-Fi が繋がり直すたびにソケットを開き直す作りなので
+    // （→ `onWifiUp`）、**放し忘れがあれば繋ぎ直しの回数だけ減っていく**。
+    // `udp_armed` と並べて読めば、増える側と減る側を突き合わせられる。
+    "\"wifi_up\":%s,\"udp_armed\":%lu,\"udp_arm_fail\":%lu,\"wifi_got_ip\":%lu,"
+    "\"free_heap\":%lu,",
     g_node, g_mac, g_bootId,
     (unsigned long)((millis()-g_bootMs)/1000), WiFi.RSSI(), WiFi.localIP().toString().c_str(),
-    now > 1700000000 ? "true":"false", (long)now,
-    SAMPLE_HZ, UG_PER_LSB, (unsigned long)g_headTrunc);
+    // **送るか送らないかを決めている式と同じものを出す。** 別の閾値で書くと、
+    // ページが「合っている」と名乗りながら 1 件も送っていない状態が作れる。
+    now >= MIN_SYNCED_UNIX ? "true":"false", (long)now,
+    SAMPLE_HZ, UG_PER_LSB, (unsigned long)g_headTrunc,
+    g_wifiUp ? "true":"false", (unsigned long)g_udpArmed, (unsigned long)g_udpArmFail,
+    (unsigned long)g_wifiGotIpCount, (unsigned long)ESP.getFreeHeap());
   appendf(buf, sizeof(buf), u, "\"i2c\":[");
   for (int b = 0; b < 2; b++) {
     appendf(buf, sizeof(buf), u,
@@ -409,13 +527,13 @@ static void handleStatus(){
       "%s{\"sid\":\"%s\",\"ok\":%s,\"who_am_i\":\"0x%02X\",\"seq\":%lu,"
       "\"packets\":%lu,\"overflow\":%lu,\"i2c_fail\":%lu,\"fail_streak\":%lu,"
       "\"partial\":%lu,\"partial_streak\":%lu,\"realign\":%lu,\"realign_streak\":%lu,\"unsent\":%lu,"
-      "\"init_tries\":%lu,\"init_fails\":%u,\"rem_hist\":[",
+      "\"pretime\":%lu,\"init_tries\":%lu,\"init_fails\":%u,\"rem_hist\":[",
       i == 0 ? "" : ",", s.sid, s.ok ? "true":"false", s.who,
       (unsigned long)s.seq, (unsigned long)s.sent, (unsigned long)s.overflow,
       (unsigned long)s.i2cFail, (unsigned long)s.failStreak,
       (unsigned long)s.partial, (unsigned long)s.partialStreak,
       (unsigned long)s.realign, (unsigned long)s.realignStreak,
-      (unsigned long)s.unsent,
+      (unsigned long)s.unsent, (unsigned long)s.pretime,
       (unsigned long)s.initTries, (unsigned)s.initFails);
     // 端数の内訳。**先頭が端数 1 バイト**で、末尾が 5 バイト。
     for (size_t r = 0; r < BPS - 1; r++) {
@@ -432,6 +550,192 @@ static void handleStatus(){
     return;
   }
   http.send(200, "application/json", buf);
+}
+
+// 管理の口のヘッダ名。**`WebServer` は指定したヘッダしか拾わない**ので、
+// `http.begin()` より前に `collectHeaders` へ渡すこと（→ `onWifiUp`）。
+static const char* const ADMIN_TOKEN_HEADER = "X-Seismo-Token";
+
+// 管理の口のトークンを照合する。
+//
+// **トークンが空なら必ず拒む。** 設定ファイルに `ADMIN_TOKEN` が無い基板
+// （定義を足す前の `wifi_config.h` が手元に残っている）では、口が開くのではなく
+// 閉じるほうへ倒れる。**開くほうへ倒れる作りだと、焼いた瞬間に
+// 「同じ LAN の誰でも落とせる基板」が増える。**
+//
+// **長さの違いも含めて一定の時間で比べる。** 早期に抜ける比較は、合っている文字数が
+// 応答時間に出る。LAN 内の開発用の基板なので現実の脅威は小さいけれど、
+// **正しく書くほうが安い**。
+static bool adminTokenOk(){
+  const char* want = ADMIN_TOKEN;
+  const size_t wn = strlen(want);
+  // **空のときに真を返させない。** 空なら下のループが 1 度も回らず、ヘッダも空なら
+  // `diff` が 0 のまま真になる——**合言葉を設定していない基板で誰でも通る。**
+  // 呼び出し前に `adminAllowed` が弾いているが、ここだけを使う人が現れても落ちないように残す。
+  if (wn == 0) return false;
+  const String got = http.header(ADMIN_TOKEN_HEADER);
+  uint8_t diff = (got.length() == wn) ? 0 : 1;
+  for (size_t i = 0; i < wn; i++) {
+    diff |= (uint8_t)(want[i] ^ (i < got.length() ? got[i] : 0));
+  }
+  return diff == 0;
+}
+
+// 管理の口を通してよいか。**通らない理由ごとに別の応答を返し、返したうえで偽を返す。**
+//
+// **「この基板に口が無い」と「合言葉が違う」を同じ 403 にしない。** `ADMIN_TOKEN` を
+// 足す前の `wifi_config.h` は各基板の手元に残っている（`.gitignore` なのでリポジトリから
+// 配れない）ため、焼き直していない基板では口が閉じている。そこへ 403 を返すと、
+// 呼んだ側はそれを「打ち間違えた」と読んで正しい合言葉を何度も試す ——
+// **いちばん助けが要る基板（古いファームのまま黙ったもの）で、復旧の手が迷走する。**
+//
+// **口の有無が漏れることは問わない。** 合言葉そのものを守れていればよく、
+// LAN 内の開発用の基板で「再起動の口があるか」を隠す意味はない（`adminTokenOk` の
+// 脅威の見立てと同じ）。
+static bool adminAllowed(){
+  if (ADMIN_TOKEN[0] == '\0') {
+    http.send(501, "text/plain", "admin disabled: no ADMIN_TOKEN on this board\n");
+    return false;
+  }
+  if (!adminTokenOk()) {
+    http.send(403, "text/plain", "bad token\n");
+    return false;
+  }
+  return true;
+}
+
+// 遠隔で再起動する口。
+//
+// **これが無いと、送信経路が壊れた基板を電源の抜き差し以外で戻せない。**
+// 2026-09-30 に 1 枚がその状態に陥り、HTTP も ping も応えるのに UDP だけが
+// 5 日間 1 バイトも出ていなかった——状態ページは読めるのに、戻す手が無かった。
+//
+// **POST 限定にする。** GET だと、ブラウザの先読み・履歴の復元・クローラが
+// 踏むだけで基板が落ちる。誰も頼んでいない再起動は、起きた理由が追えない。
+//
+// **応答を返してから間を置いて落とす。** 即座に `ESP.restart()` すると応答が返らず、
+// 呼んだ側には「繋がらなかった」としか見えない——**再起動できたのか届かなかったのかが
+// 区別できない口は、再起動を頼む口として使えない。**
+static void handleRestart(){
+  if (!adminAllowed()) return;
+  Serial.println("# /restart を受けたので再起動する");
+  http.send(200, "text/plain", "restarting\n");
+  // **応答が出ていく猶予は `delay` が作っている。`flush()` ではない。**
+  // Arduino の `Client::flush()` は**受け取ったまま読んでいないものを捨てる**操作で、
+  // 送信が線に出たことの保証ではない。**`flush()` があるから `delay` は要らない、と
+  // 読まないこと**——削ると応答が返らなくなり、「再起動できたのか届かなかったのか」を
+  // 区別できない口に戻る。
+  http.client().flush();
+  delay(200);
+  ESP.restart();
+}
+
+// Wi-Fi のイベントを受ける。**旗を立てるだけ。**
+//
+// **ここで立て直しそのものをやらない。** 呼ばれるのは Arduino のイベントタスクで、
+// `loop()` とは別の流れ・別のスタック。そこから `http.begin()` や `udp.begin()` を
+// 叩くのは、同じ持ち物を 2 つの流れから触ることになる。
+static void onWifiEvent(WiFiEvent_t event){
+  if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+    g_wifiGotIp = true;
+    g_wifiGotIpCount++;
+  }
+}
+
+// Wi-Fi をわざと切る口。**繋ぎ直しで本当に立て直せるかを、現地で試すため。**
+//
+// **これが無いと「繋がり直したら立て直す」は推測のまま残る。** 今回のいちばんの
+// 直しどころなのに、基板の側に切断を起こす手が無いと、焼いたあとで効いているかを
+// 確かめられない——AP を落とせば試せるが、同じ LAN のすべてを巻き込む。
+// **運用でも使える**：送れなくなった基板が自力で戻れるかを、電源を抜く前に試せる。
+//
+// **繋ぎ直しは必ず自分で呼ぶ。`setAutoReconnect(true)` は当てにできない。**
+//
+// あちらが効くのは**予期しない**切断（電波が届かない・AP が落ちた）に対してだけで、
+// **こちらから呼んだ `disconnect()` は「意図した切断」として扱われ、繋ぎ直されない**。
+// 2026-10-01 に自動で戻ると思って `disconnect()` だけを呼び、**基板を 1 枚
+// ネットワークから落とした**（ping も通らず、電源を入れ直すまで戻らなかった）。
+//
+// **`begin()` を自分で呼んでも、確かめたいものは確かめられる。** 見たいのは
+// 「繋がったときに `onWifiUp` が立て直すか」で、そこへ至る道（`loop()` の
+// 変わり目の検出）は実際の切断と共通。誰が `begin()` を呼んだかは問わない。
+//
+// **引数を足さないこと。** `WiFi.disconnect(wifioff, eraseap)` の `eraseap` を真に
+// すると保存してある接続先ごと消える。**遠隔で戻す口を作るはずのものが、
+// 遠隔で殺す口になる。**
+static void handleWifiReconnect(){
+  if (!adminAllowed()) return;
+  Serial.println("# /wifi-reconnect を受けたので Wi-Fi を切って繋ぎ直す");
+  http.send(200, "text/plain", "reconnecting\n");
+  // 猶予を作っているのは `delay` のほう（理由は `handleRestart` の同じ箇所）。
+  //
+  // **`handleRestart` と同じ 200 ms にしてある。** 短くする理由が無いうえ、
+  // `WiFi.disconnect()` は AP との結び付きを先に切るので、**再起動より早く線が消える**
+  // ——応答が出る前に切れると「再起動できたのか届かなかったのか」が区別できなくなる。
+  http.client().flush();
+  delay(200);
+  WiFi.disconnect();
+  delay(200);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+}
+
+// Wi-Fi が繋がったときに立てるもの。**起動時と、切れて繋がり直したときの両方で通る。**
+//
+// **以前はこれを `setup()` の中へ直に書いていて、起動時に 30 秒待って繋がらなければ
+// SNTP も mDNS も OTA も状態ページも UDP も丸ごと飛ばしていた。**
+// `setAutoReconnect(true)` が後で繋ぎ直すので Wi-Fi だけは復活するが、そのとき
+// **開いていないソケットへ UDP を投げ続け、状態ページも出ず、OTA も立っていないので
+// 遠隔で焼き直すこともできない**——電源を抜くしか戻せない基板になる。
+// **停電からの復帰で普通に踏む**：ルーターが立ち上がるのに 1 分以上かかるのに、
+// 基板は 1 秒で起きて 30 秒で諦めるため。
+//
+// **二度立ててよいものと、そうでないものを分ける。** `WebServer::begin()`・
+// `ArduinoOTA.begin()`・`MDNS.begin()` には対になる「放す」口が無く、繋ぎ直すたびに
+// 呼ぶと listen のソケットが積み上がりうる。**毎回やり直すのは SNTP と UDP だけ**で、
+// UDP は `stop()` で古いものを閉じてから開く（閉じずに開くと、切れる前の記述子が残る）。
+static void onWifiUp(){
+  Serial.printf("# wifi up ip=%s rssi=%d\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+
+  // **合うまでは繋ぎ直しのたびに呼び、合ったあとは呼ばない。** UTC で持つ（表示側で直す）。
+  //
+  // lwIP の SNTP は**自分で再試行する**（間隔を倍々に伸ばしながら）ので、
+  // 一度合ったあとに作り直す意味は無い。**むしろ呼び直しを続けると、回線が激しく
+  // 明滅する環境で往復が終わる前に初期化され直し、初回の同期がいつまでも
+  // 終わらない余地が残る**（頻度は未測定）。合う前だけ呼べば、その余地だけが消える。
+  if (time(nullptr) < MIN_SYNCED_UNIX) {
+    configTime(0, 0, "ntp.nict.jp", "pool.ntp.org");
+  }
+
+  // **繋ぎ直したら必ず開き直す。** ESP32 の `WiFiUDP` は Wi-Fi が切れるとソケットが
+  // 無効になり、**それでも `beginPacket()`／`endPacket()` は成功を返す**。
+  // 2026-09-30 に実機で 144 万パケットぶん「送れたつもり」を数えていた。
+  udp.stop();
+  if (udp.begin(0)) {
+    g_udpArmed++;
+  } else {
+    g_udpArmFail++;
+    Serial.println("# udp.begin(0) が失敗した（このままでは 1 件も送れない）");
+  }
+
+  if (g_servicesUp) return;
+  if (MDNS.begin(g_node)) Serial.printf("# mdns %s.local\n", g_node);
+  ArduinoOTA.setHostname(g_node);
+  ArduinoOTA.begin();
+  http.on("/", handleStatus);
+  http.on("/restart", HTTP_POST, handleRestart);
+  http.on("/wifi-reconnect", HTTP_POST, handleWifiReconnect);
+  // **`begin()` より前に渡す。** `WebServer` は列挙したヘッダだけを保存し、
+  // それ以外は捨てる。渡し忘れると `http.header()` が常に空を返し、
+  // **トークンが正しくても 403 になる**（しかも「トークンが違う」としか見えない）。
+  //
+  // **可変長引数版は使えない。** esp32 コア 3.3.12 の `WebServer` が持つのは
+  // `collectHeaders(const char* keys[], size_t n)` の 1 つだけ（実際に落ちた）。
+  // 配列の要素は `const char*`——`const char* const` にすると `const char**` へ
+  // 渡らない。
+  const char* adminHeaders[] = { ADMIN_TOKEN_HEADER };
+  http.collectHeaders(adminHeaders, 1);
+  http.begin();
+  g_servicesUp = true;
 }
 
 void setup(){
@@ -454,7 +758,12 @@ void setup(){
 
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);          // 省電力で受信が遅れると取りこぼしの原因になる
+  // **予期しない切断（電波が届かない・AP が落ちた）だけを拾う。** こちらから呼んだ
+  // `disconnect()` は「意図した切断」として扱われ、これでは戻らない（→ `handleWifiReconnect`）。
   WiFi.setAutoReconnect(true);
+  // **`begin()` より前に登録する。** 後だと、繋がるのが速かった回の
+  // `STA_GOT_IP` を取りこぼす（→ `g_wifiGotIp`）。
+  WiFi.onEvent(onWifiEvent);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 
   // **起動 ID は Wi-Fi を起こしてから採る。** `esp_random()` が真の乱数を返すのは
@@ -473,20 +782,10 @@ void setup(){
                   s.sid, s.ok, s.who, (unsigned)s.initFails);
   }
 
-  for (int i = 0; i < 60 && WiFi.status() != WL_CONNECTED; i++) { delay(500); Serial.print('.'); }
-  Serial.println();
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.printf("# wifi ok ip=%s rssi=%d\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
-    configTime(0, 0, "ntp.nict.jp", "pool.ntp.org");   // UTC で持つ。表示側で直す
-    if (MDNS.begin(g_node)) Serial.printf("# mdns %s.local\n", g_node);
-    ArduinoOTA.setHostname(g_node);
-    ArduinoOTA.begin();
-    http.on("/", handleStatus);
-    http.begin();
-    udp.begin(0);
-  } else {
-    Serial.println("# wifi FAILED (シリアルでは動き続ける)");
-  }
+  // **Wi-Fi が繋がるのを待たない。** 待って諦める形だと、諦めた回の起動では
+  // SNTP も OTA も状態ページも UDP も立たないまま走り続ける（理由は `onWifiUp`）。
+  // 繋がったことは `loop()` が変わり目として拾い、何度でも立て直す。
+  Serial.println("# wifi は loop() が繋がり次第立てる");
   for (size_t i = 0; i < SENSOR_N; i++) armSensor(g_sensors[i]);
 }
 
@@ -498,8 +797,19 @@ void setup(){
 // **送れなかったぶんは `unsent` に数える。** `s.seq` は吸い出した時点で進むので、
 // 送らずに戻ると受け手からは「通し番号が飛んだ」としか見えない。基板の側に理由を
 // 残しておかないと、センサーが死んだのか Wi-Fi が切れていたのかを分けられない。
+//
+// **時計が合う前は送らない**（`pretime` に数える）。1970 年を名乗るパケットは、
+// 受け手では「番号は続いているのに時刻だけが飛んだ」形になる（→ `MIN_SYNCED_UNIX`）。
+// 判定をここへ置くのは、**送る口がここ 1 つだけ**だから——`drainSensor` の側で
+// 弾くと、時刻を組み立てる場所と送る場所に判定が 2 つできる。
 static void sendChunk(Sensor &s, const int16_t *v, size_t n, uint32_t seq0, int64_t tFirstMs){
   if (WiFi.status() != WL_CONNECTED) { s.unsent += n; return; }
+  const time_t nowSec = time(nullptr);
+  if (nowSec < MIN_SYNCED_UNIX) { s.pretime += n; return; }
+  if (!g_timeReady) {
+    g_timeReady = true;
+    Serial.printf("# 時計が合った（unix=%ld）。ここから送り始める\n", (long)nowSec);
+  }
   char head[320];
   const int hl = snprintf(head, sizeof(head),
     "{\"v\":2,\"mac\":\"%s\",\"bid\":\"%s\",\"sid\":\"%s\",\"st\":\"MPU6050\","
@@ -713,10 +1023,40 @@ static void retryStuck(){
 }
 
 void loop(){
-  ArduinoOTA.handle();
-  http.handleClient();
+  // **繋がり具合の変わり目を先に見る。** 繋がった瞬間に SNTP と UDP を立て直す
+  // （理由は `onWifiUp`）。**ここを `WiFi.status()` の直読みで済ませられない** ——
+  // 「いま繋がっている」は読めても「たったいま繋がった」は読めないので、
+  // 立て直す契機が作れない。
+  // **イベントは「いま持っている見立てを捨てる」ことにだけ使う。** 旗が立っていれば
+  // 繋がっていないことにして、下の判定へ立て直しを任せる——立て直す場所を
+  // 1 つに保てる（イベント側にも書くと、2 箇所が同じ持ち物を別の流れから触る）。
+  if (g_wifiGotIp) {
+    g_wifiGotIp = false;
+    g_wifiUp = false;
+  }
+  const bool up = WiFi.status() == WL_CONNECTED;
+  if (up != g_wifiUp) {
+    g_wifiUp = up;
+    if (up) onWifiUp();
+    else Serial.println("# wifi down");
+  }
+
+  // **立てる前に回さない。** `begin()` を通っていない口を叩くのは、たとえ無害でも
+  // 「立っているかどうか」を 2 箇所で仮定することになる。
+  if (g_servicesUp) {
+    ArduinoOTA.handle();
+    http.handleClient();
+  }
 
   const uint32_t nowMs = millis();
+
+  // 一度も繋がらないままの基板を黙らせない（理由は `NO_WIFI_WARN_MS`）。
+  static bool warnedNoWifi = false;
+  if (!warnedNoWifi && !g_servicesUp && (nowMs - g_bootMs) > NO_WIFI_WARN_MS) {
+    warnedNoWifi = true;
+    Serial.println("# wifi に一度も繋がれていない。SSID とパスワード、AP の生死を疑う");
+    Serial.println("#   （シリアルでは動き続ける。状態ページも OTA も立っていない）");
+  }
 
   static uint32_t lastRetry = 0;
   if (nowMs - lastRetry >= RETRY_MS) { lastRetry = nowMs; retryStuck(); }

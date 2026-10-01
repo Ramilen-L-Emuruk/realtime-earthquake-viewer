@@ -14,6 +14,20 @@
 #define UDP_HOST    "192.0.2.7"
 #define UDP_PORT    50505
 
+// 遠隔で再起動する口（`POST /restart`）を開ける合言葉。
+//
+// **空のままなら口は閉じたまま。** 状態ページ（`/`）は読むだけなので素のままだが、
+// 再起動は基板の状態を変えるので、同じ LAN にいる誰でも落とせる形にはしない。
+//
+// **この行を消しても焼ける**（ファーム側で空として扱う）。口を使うときだけ値を入れる。
+// 長さ・文字種の制限は無いが、推測できない値にすること（32 文字ほどの乱数で足りる）。
+//
+// 呼び方（`<token>` にここの値を入れる）:
+//
+//   curl -X POST -H "X-Seismo-Token: <token>" http://seismo-1.local/restart
+//   curl -X POST -H "X-Seismo-Token: <token>" http://seismo-1.local/wifi-reconnect
+#define ADMIN_TOKEN ""
+
 // どの基板をどう呼ぶか。**MAC と名前を交互に並べる**（必ず 2 つで 1 組）。
 // 行を足すだけでよく、件数を別に書く必要はない。最低 1 組は残すこと。
 //
