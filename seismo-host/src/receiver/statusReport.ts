@@ -14,6 +14,7 @@
 
 import type { SegmentState } from '../timebase/segmenter'
 import type { AckSnapshot } from './ackReplier'
+import type { AssignedBoardReception } from './assignedReception'
 import type { GravityCheckSnapshot, GravityVerdict } from './gravityCheck'
 import type { TallySnapshot } from './packetTally'
 import type { HubSnapshot } from './readingHub'
@@ -137,6 +138,13 @@ export interface StatusReportInput {
    * 空配列が正常（乖離が無い、または観測点を割り当てていない）。
    */
   readonly ungroupedMultiBoardStations: readonly string[]
+  /**
+   * 観測点に割り当てた基板が、いま届いているか（`assignedReception.ts`）。
+   *
+   * **`sensors` では代われない。** あちらは一度でも声を聞いたセンサーしか持たないので、
+   * ホストを起動してから一度も届かない基板はどこにも現れない。
+   */
+  readonly assignedBoards: readonly AssignedBoardReception[]
 }
 
 /**
@@ -306,6 +314,14 @@ export interface StatusReport {
    * 空配列が正常。
    */
   readonly ungroupedMultiBoardStations: readonly string[]
+  /**
+   * 観測点に割り当てた基板ごとの様子。**設定の並びのまま**、未受信の基板も含む。
+   *
+   * **`state` が `silent` の行が「来るはずなのに来ていない」基板。** `waiting` は
+   * ホストを起動して（または割り当てて）まだ間が無いだけで、判断を保留している。`sensors` は設定の
+   * `sensors[]` に名前を書いた有効なセンサーだけ（基板が生きていても 1 個だけ黙りうる）。
+   */
+  readonly assignedBoards: readonly AssignedBoardReception[]
 }
 
 /** `Map` を JSON になる形へ。**出す側と読む側で流儀が分かれないよう 1 箇所に置く。** */
@@ -399,6 +415,14 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     boards[k] = countsToJson(v)
   }
 
+  // **様子（`state`）は判定の側が決めたものをそのまま出す。** ここで時刻を `null` へ
+  // 倒しても判定は動かない —— 読めない時刻は判定の側で既に「届いていない」へ倒れている。
+  const assignedBoards: AssignedBoardReception[] = input.assignedBoards.map((b) => ({
+    ...b,
+    lastPacketMs: finite(b.lastPacketMs),
+    sensors: b.sensors.map((s) => ({ ...s, lastPacketMs: finite(s.lastPacketMs) })),
+  }))
+
   // **経過は秒で丸めて出す。** ミリ秒のままだと読む人が毎回割ることになる。
   // 起動より前の時刻を渡されても負にしない（時計が跳ねたとき「稼働 -3 秒」は読めない）。
   const uptimeSec = Math.max(0, Math.floor((input.nowMs - input.startedAtMs) / 1000))
@@ -425,5 +449,6 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     unreadableIntensityValues: unreadableValues,
     stationConfigWarning: input.stationConfigWarning,
     ungroupedMultiBoardStations: input.ungroupedMultiBoardStations,
+    assignedBoards,
   }
 }
