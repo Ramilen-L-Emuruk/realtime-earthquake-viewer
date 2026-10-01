@@ -39,8 +39,14 @@ import { IncrementalLineFit } from './lineFit'
  * 10.000〜10.010 ms（公称 10 ms からのずれは最大 0.06%）だった。並び替えが起きうる
  * 幅（数パケット＝数秒）では、このずれは数ミリ秒にしかならない。
  *
- * 100 ms は、名乗る時刻そのもののばらつき（当てはめ残差で 2.5〜4.7 ms）の 20 倍以上。
- * 正常なばらつきでは届かず、再起動はこれより確実に長くかかる。
+ * 100 ms は、名乗る時刻そのもののばらつき（当てはめ残差）の十数倍。実測は
+ * **2.5〜7.6 ms**（前者は 8 時間・3 台の記録、後者は 2026-10-01 に実機の `/status` で
+ * 見た `residualRmsMs`）。正常なばらつきでは届かず、再起動はこれより確実に長くかかる。
+ *
+ * **番号が続いているときの「時刻が飛んだ」判定にも同じ幅を使う**
+ * （→ {@link SegmentBreakReason} の `'timebase-jump'`）。あちらで乗るずれは
+ * 1 パケットぶん（30 サンプル）＝ 0.2 ms しかないので、余裕はさらに大きい。
+ * **この値を動かすときは両方の用途への影響を見ること。**
  *
  * **この幅より短い中断は見分けられない。** 版 2 の起動 ID が焼かれれば鍵そのものが
  * 変わるので、その弱点は版 1 に限られる。
@@ -56,6 +62,32 @@ const TIMEBASE_CONSISTENCY_MS = 100
  */
 const MAX_SLOPE_DEVIATION = 0.1
 
+/**
+ * 足場がエポックとして成り立つ下限（unix ミリ秒）。**2020-01-01 UTC。**
+ *
+ * **これより前を名乗る足場は、時計が合う前の値だと決めてよい。** 基板は
+ * `gettimeofday()` の値をそのまま送り、SNTP が応えるまでそれは**起動からの経過**
+ * （＝1970 年）を返す。この装置が 2020 年より前の揺れを記録することはない。
+ *
+ * **見るのは下限だけで、「未来すぎる」は見ていない。** 測るには現在時刻が要り、
+ * 当てはめを純粋な関数のままにできなくなる。**そして受け取る側にもその判定は無い**
+ * ——つまり未来方向の同型の壊れ方（破損したパケットが巨大な時刻を名乗る）は、
+ * いまはどこでも検知していない。**「受け取る側がやる」と書かないこと** ——
+ * 誰もやっていない担当を文面が作ると、穴が塞がったように読める。
+ *
+ * **成り立たないことは下流へ渡すだけで、捨てない**（→ {@link Timebase.epochPlausible}）。
+ */
+const MIN_PLAUSIBLE_EPOCH_MS = Date.UTC(2020, 0, 1)
+
+/** 足場がエポックとして成り立っているか。**非有限は成り立たない側へ倒す。** */
+function epochPlausible(firstSampleMs: number): boolean {
+  // **`>=` の比較だけでは足りない。** `Infinity` は下限を通ってしまうし、`NaN` は
+  // 通らないが「比較が偽」という理由で偶然そうなっているだけ。`statusReport.ts` は
+  // 非有限の時刻を `null` へ倒すので、ここを通すと **`firstSampleMs: null` なのに
+  // `epochPlausible: true`** という読めない組み合わせが出る。
+  return Number.isFinite(firstSampleMs) && firstSampleMs >= MIN_PLAUSIBLE_EPOCH_MS
+}
+
 /** 区間が始まった理由。**続きではないことを下流へ伝えるのが目的。** */
 export type SegmentBreakReason =
   /** その鍵で初めて受け取った。 */
@@ -68,6 +100,23 @@ export type SegmentBreakReason =
   | 'overflow'
   /** 軸・周波数・換算のいずれかが変わった。前の区間とは別物。 */
   | 'config-changed'
+  /**
+   * **名乗る時刻が飛んだ。** 通し番号は続いているのに、その番号にふさわしい位置から
+   * {@link TIMEBASE_CONSISTENCY_MS} 以上離れた時刻を名乗った。
+   *
+   * **いちばん起きるのは基板の時計が合った瞬間。** ファームは SNTP の応答を待たずに
+   * 送り始めるので（`firmware/seismo-node/seismo-node.ino` の `configTime` は投げる
+   * だけ）、最初の数秒は `gettimeofday()` が起動からの経過＝**1970 年**を返す。
+   * 同期が済むと時刻だけが 1.79 兆ミリ秒ぶん飛ぶ —— 番号は続き、設定も変わらず、
+   * あふれも無い。
+   *
+   * **ここで割らないと、両方のエポックのアンカーが 1 本の直線に乗る。** 傾きが桁ごと
+   * 外れて {@link NominalReason} の `slope-out-of-range` へ倒れ、足場には最初の
+   * アンカー（＝1970 年の側）が残る。**区間は当てはめをやり直さないので、その区間は
+   * 二度と戻らない** —— 2026-10-01 に実機で 9 本のうち 8 本がこの状態に陥り、
+   * どの対も時間で重ならなくなって合成が 1 つも組めなくなっていた。
+   */
+  | 'timebase-jump'
 
 /** その区間のあいだ変わらない事実。 */
 export interface SegmentMeta {
@@ -103,6 +152,20 @@ export interface Timebase {
   readonly residualRmsMs: number | null
   /** 公称値へ倒した理由。当てはめた値を使っていれば null。 */
   readonly nominalReason: NominalReason | null
+  /**
+   * 足場（{@link firstSampleMs}）がエポックとして成り立っているか
+   * （→ {@link MIN_PLAUSIBLE_EPOCH_MS}）。
+   *
+   * **偽なら、その区間のサンプルはどれも正しい絶対時刻を持たない。** 他の区間と
+   * 時間で重ならないので合成が組めず、波形も 1970 年の棚へ積まれる。
+   *
+   * **値そのものを見るだけでは気づけないので、名前を付けて渡す。** `/status` には
+   * 足場の数値が出ているが、**2026 年のエポックと「8433」を並べても、読む側が
+   * 引き算をするまで異常に見えない**（2026-10-01 に実機で 8 本がこの状態のまま
+   * 何日も気づかれなかった）。`statusReport.ts` が「出せない時刻を `0` で埋めない」
+   * と定めているのと同じ筋で、**1970 年を平然と流さない。**
+   */
+  readonly epochPlausible: boolean
 }
 
 /** 区間のいまの状態。 */
@@ -166,6 +229,18 @@ interface StreamState {
 /** 区間の中の位置から時刻を出す。 */
 export function sampleTimeMs(timebase: Timebase, index: number): number {
   return timebase.firstSampleMs + timebase.msPerSample * index
+}
+
+/**
+ * 名乗る時刻が、その通し番号にふさわしい位置からどれだけ離れているか（ミリ秒）。
+ *
+ * **足場は「最後に受理したパケット」で、間隔は公称値を使う**（理由は
+ * {@link TIMEBASE_CONSISTENCY_MS}）。番号の差を掛けるので、**向きにも飛びにも使える**。
+ */
+function timebaseOffMs(s: StreamState, p: SensorPacket): number {
+  const nominalMsPerSample = 1000 / s.meta.sampleRateHz
+  const predicted = s.lastAcceptedSampleMs + (p.firstSeq - s.lastAcceptedSeq) * nominalMsPerSample
+  return Math.abs(p.firstSampleMs - predicted)
 }
 
 function sameConfig(meta: SegmentMeta, p: SensorPacket): boolean {
@@ -272,17 +347,25 @@ export class Segmenter {
       // 辻褄は合う。再起動なら合わない。版 1 は起動ごとの識別子を持たず鍵が変わらない
       // ので、ここで見分けないと再起動をまたいだサンプルが同じ区間へ繋がり、
       // 止まっていた時間が詰められて段差になる。
-      const nominalMsPerSample = 1000 / s.meta.sampleRateHz
-      const predicted =
-        s.lastAcceptedSampleMs + (p.firstSeq - s.lastAcceptedSeq) * nominalMsPerSample
-      const off = Math.abs(p.firstSampleMs - predicted)
-      return off > TIMEBASE_CONSISTENCY_MS ? 'seq-reset' : 'duplicate'
+      return timebaseOffMs(s, p) > TIMEBASE_CONSISTENCY_MS ? 'seq-reset' : 'duplicate'
     }
     // **設定とあふれの順序は、どちらが先でも区間は正しく切れる。** 同じパケットで
     // 両方が成立したときに名乗る理由が設定側になるだけで、繋ぐか切るかは変わらない。
     if (!sameConfig(s.meta, p)) return 'config-changed'
     if (p.overflowCount !== s.lastOverflow) return 'overflow'
-    return p.firstSeq > s.expectedSeq ? 'seq-gap' : null
+    if (p.firstSeq > s.expectedSeq) return 'seq-gap'
+    // **番号がぴったり続いているときだけ時刻の辻褄を見る**（→ `'timebase-jump'`）。
+    //
+    // **番号が飛んでいる側でこれを見ない**のは 2 つの理由から。①落ちたパケットは
+    // それだけで区間を割るので、重ねて見ても繋ぐか切るかは変わらない。②予測に使う
+    // 間隔は公称値（10 ms）で、実測は 10.007 ms ——**飛びが長いほどこのずれが
+    // 積み上がる**ので、長い欠落を「時刻が飛んだ」と名乗ってしまう（5 分ぶん落ちれば
+    // 210 ms になり、100 ms の物差しを越える）。切れ目の理由は診断の手掛かりなので、
+    // 落ちたことを時計の話にしない。
+    //
+    // 番号が続いている場合、予測に乗るずれは 1 パケットぶん（30 サンプル）＝
+    // **0.2 ms** しかない。物差しの 100 ms までは 500 倍の余裕がある。
+    return timebaseOffMs(s, p) > TIMEBASE_CONSISTENCY_MS ? 'timebase-jump' : null
   }
 
   private start(key: string, p: SensorPacket, reason: SegmentBreakReason): StreamState {
@@ -360,6 +443,7 @@ function timebaseOf(s: StreamState): Timebase {
     anchorCount: fit.count,
     residualRmsMs: null,
     nominalReason: reason,
+    epochPlausible: epochPlausible(s.firstAnchorMs),
   })
   if (!fit.usable) return fallback('too-few-anchors')
   const deviation = Math.abs(fit.slope - nominalMsPerSample) / nominalMsPerSample
@@ -370,5 +454,8 @@ function timebaseOf(s: StreamState): Timebase {
     anchorCount: fit.count,
     residualRmsMs: fit.residualRms,
     nominalReason: null,
+    // **当てはめた側も検算する。** 倒した経路だけを見ていると、アンカーが全部
+    // 同期前に揃った区間（傾きは公称値どおりで当てはめが通る）を見落とす。
+    epochPlausible: epochPlausible(fit.intercept),
   }
 }

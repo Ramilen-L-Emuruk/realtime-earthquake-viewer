@@ -274,13 +274,81 @@ describe('useSeismoStation', () => {
     expect(h.result.current.stations[0].intensity).toBe(0.4)
   })
 
-  it('安全弁: 震度が 1 件も届かなくなったら、その観測点を並べない', async () => {
-    // **残すと「最後に届いた震度」が画面に居座り、揺れていないのと区別が付かない。**
+  it('正: 震度が途絶えたら、行は残して値だけ落とす（2026-10-01 に扱いを覆した）', async () => {
+    // **以前は行ごと消していた。** 消すと画面からその観測点が居なくなるだけなので、
+    // 「揺れていない」と「届いていない」が見分けられなかった（→ #423・
+    // `docs/spec/data-sources-spec.md` §4.5）。行は残して出どころを `'silent'` へ落とす。
+    //
+    // **「最後に届いた震度を残さない」は変えていない** —— あれが居座ると、止まった値を
+    // 「いまの震度」として読んでしまう。だから `intensity` は `null`。
     const h = renderHook(() => useSeismoStation(options))
     await settleDirectory()
     deliver(stationReading('home', 0.25))
     await tick()
     expect(h.result.current.stations.length).toBe(1)
+
+    await tick(6000)
+    expect(h.result.current.stations.length).toBe(1)
+    expect(h.result.current.stations[0].source).toEqual({ kind: 'silent' })
+    expect(h.result.current.stations[0].intensity).toBeNull()
+  })
+
+  it('対照: 閾値の手前では「途絶」へ落とさない', async () => {
+    // 5 秒（`READING_STALE_MS`）の手前で倒れると、**正常な揺らぎのたびに行が赤くなる**
+    // （震度は毎秒 1 件で、合成には裏付けの待ちが乗る）。
+    const h = renderHook(() => useSeismoStation(options))
+    await settleDirectory()
+    deliver(stationReading('home', 0.25))
+    await tick()
+
+    await tick(4000)
+    expect(h.result.current.stations[0].source).toEqual({ kind: 'station' })
+    expect(h.result.current.stations[0].intensity).toBe(0.25)
+  })
+
+  it('正: 途絶えた後に震度が戻れば、出どころも値も復帰する', async () => {
+    // **戻る側を固定しておく。** 落とす判定（`readingReceivedAt` の更新）を入れた
+    // ぶん、**更新の経路を 1 つ書き忘れても「落ちる」側のテストは通る** ——
+    // 行が永久に赤いまま残ることに気づけない。
+    const h = renderHook(() => useSeismoStation(options))
+    await settleDirectory()
+    deliver(stationReading('home', 0.25))
+    await tick()
+    await tick(6000)
+    expect(h.result.current.stations[0].source).toEqual({ kind: 'silent' })
+
+    deliver(stationReading('home', 0.4))
+    await tick()
+    expect(h.result.current.stations[0].source).toEqual({ kind: 'station' })
+    expect(h.result.current.stations[0].intensity).toBe(0.4)
+  })
+
+  it('正: 単独の震度でも途絶から復帰する（合成と別の経路）', async () => {
+    // **`station-reading` と `reading` の両方で `readingReceivedAt` を更新している。**
+    // 片方だけ直すと、**有効なセンサーが 2 台を切った観測点**（合成が組めないので
+    // 単独しか来ない）が永久に赤いまま残る。
+    const h = renderHook(() => useSeismoStation(options))
+    await settleDirectory()
+    deliver(reading('mac:aa', 'i2c0-68', 0.4))
+    await tick()
+    await tick(6000)
+    expect(h.result.current.stations[0].source).toEqual({ kind: 'silent' })
+
+    deliver(reading('mac:aa', 'i2c0-68', 0.5))
+    await tick()
+    expect(h.result.current.stations[0].source).toEqual({ kind: 'sensor', sensorCount: 1 })
+    expect(h.result.current.stations[0].intensity).toBe(0.5)
+  })
+
+  it('安全弁: 震度が一度も届いていない観測点は、行を作らない', async () => {
+    // **購読を始めた直後は必ずこの形を通る。** ここで行を作ると、繋いだ瞬間に
+    // 全部の観測点が「値が来ていない」と名乗り、警告が常態になって意味を失う。
+    // 波形だけが届く状態は通常起きないが、起きたときに「震度不明の行」を作らない。
+    const h = renderHook(() => useSeismoStation({ ...options, wave: 'station' }))
+    await settleDirectory()
+    deliver(stationWave('home', 1000))
+    await tick()
+    expect(h.result.current.stations).toEqual([])
 
     await tick(6000)
     expect(h.result.current.stations).toEqual([])
@@ -436,7 +504,8 @@ describe('useSeismoStation', () => {
     await tick()
 
     await tick(6000)
-    expect(h.result.current.stations).toEqual([])
+    // 行そのものは残る（途絶として出す）。**ここで見たいのは入れ物が生きていること。**
+    expect(h.result.current.stations[0].source).toEqual({ kind: 'silent' })
     expect(h.result.current.readWave('home')).not.toBeNull()
   })
 

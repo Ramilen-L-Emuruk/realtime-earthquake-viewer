@@ -38,28 +38,40 @@ export function SeismoOverlay({ stations }: Props) {
 
   return (
     <>
-      {rows.map((row) => (
-        <div key={row.stationId} className={ROW_CLASS}>
-          {row.gradeLabel !== null && row.gradeColor !== null ? (
-            <span
-              className={BADGE_CLASS}
-              style={{ background: row.gradeColor, color: readableTextColor(row.gradeColor) }}
-            >
-              {row.gradeLabel}
+      {rows.map((row) => {
+        // **値が途絶えたことは色だけで示す。文言は 1 つも足さない。**
+        // 隣に並ぶ更新時刻の帯（`components/MapUpdateTime.tsx`）が、更新が止まったときに
+        // 文面を変えず `text-red-400` へ替えるのと同じ作法 —— 枠の見た目（`bg-black/80` の
+        // 丸角）もあちらと揃えてあるので、表現を分けると同じ「止まっている」が 2 通りの
+        // 見え方になる。
+        const tone = row.silent ? 'text-red-400' : 'text-white'
+        return (
+          <div key={row.stationId} className={ROW_CLASS}>
+            {row.gradeLabel !== null && row.gradeColor !== null ? (
+              <span
+                className={BADGE_CLASS}
+                style={{ background: row.gradeColor, color: readableTextColor(row.gradeColor) }}
+              >
+                {row.gradeLabel}
+              </span>
+            ) : (
+              <span
+                className={`${BADGE_CLASS} bg-neutral-700 ${row.silent ? 'text-red-400' : 'text-secondary'}`}
+              >
+                —
+              </span>
+            )}
+            {/* **観測点名だけ幅を切る。** 名前は利用者が管理コンソールで自由に付けるので、
+                長いものを入れると右上（更新時刻）と横で当たる —— どちらも絶対配置で
+                押し合わないため、重なると両方読めなくなる。 */}
+            <span className={`${tone} truncate max-w-[8rem] roomy:max-w-[14rem]`}>
+              {row.displayName}
             </span>
-          ) : (
-            <span className={`${BADGE_CLASS} bg-neutral-700 text-secondary`}>—</span>
-          )}
-          {/* **観測点名だけ幅を切る。** 名前は利用者が管理コンソールで自由に付けるので、
-              長いものを入れると右上（更新時刻）と横で当たる —— どちらも絶対配置で
-              押し合わないため、重なると両方読めなくなる。 */}
-          <span className="text-white truncate max-w-[8rem] roomy:max-w-[14rem]">
-            {row.displayName}
-          </span>
-          <span className="font-mono text-white tabular-nums">{row.valueText ?? '—'}</span>
-          <span className="text-xs text-secondary roomy:text-base">{row.sourceText}</span>
-        </div>
-      ))}
+            <span className={`font-mono ${tone} tabular-nums`}>{row.valueText ?? '—'}</span>
+            <span className="text-xs text-secondary roomy:text-base">{row.sourceText}</span>
+          </div>
+        )
+      })}
     </>
   )
 }
