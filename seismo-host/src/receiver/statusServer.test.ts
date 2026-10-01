@@ -68,9 +68,11 @@ function report(hub: ReadingHub): StatusReport {
     raw: RAW,
     waveArchive: WAVE_ARCHIVE,
     hub: hub.snapshot(),
+    acks: { enabled: true, sent: 0, failures: 0, throttled: 0, lastError: null },
     stations: StationDirectory.empty(),
     stationConfigWarning: null,
     ungroupedMultiBoardStations: [],
+    assignedBoards: [],
   })
 }
 

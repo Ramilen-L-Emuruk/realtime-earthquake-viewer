@@ -69,5 +69,19 @@ export type PacketParseFailure =
   | 'sample-not-integer'
 
 export type PacketParseResult =
-  | { ok: true; packet: SensorPacket }
+  | {
+    ok: true
+    packet: SensorPacket
+    /**
+     * 送り手が「届いたら返事をくれ」と言っているか（ヘッダの `"ack":1`）。
+     *
+     * **`packet` に入れない。** これは届け方の取り決めで、観測値ではない ——
+     * `SensorPacket` は区間の時間軸・震度・生データの保存へそのまま流れるので、
+     * 混ぜるとそれらが通信の都合を知ることになる。
+     *
+     * **求めていない送り手には返さない**（`../receiver/ackReplier.ts`）。
+     * 返事を読まない古いファームへ投げても、向こうの受信バッファに溜まるだけ。
+     */
+    ackRequested: boolean
+  }
   | { ok: false; reason: PacketParseFailure; detail: string }

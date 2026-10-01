@@ -1,5 +1,13 @@
 // 各タブが共通で使う小さなヘルパー（DOM の取得と、画面へ出す値の整形）。
 
+import { STALE_AFTER_MS } from '../receiver/assignedReception'
+
+/**
+ * 最後に声を聞いてから「途絶」と見なすまで。**値はホストの警告と共有する**
+ * （`receiver/assignedReception.ts`）—— 画面とログで物差しがずれないように。
+ */
+export { STALE_AFTER_MS }
+
 /** `container` の下から 1 要素だけ探す。**無ければ投げる**——見つからないのは
  * 呼び出し側のセレクタの書き間違いで、握りつぶすと画面が無言で真っ白になる。 */
 export function qs<T extends Element = HTMLElement>(container: ParentNode, selector: string): T {
@@ -22,14 +30,6 @@ export function escapeHtml(value: string): string {
 export function formatNumber(value: number | null): string {
   return value === null ? '' : String(value)
 }
-
-/**
- * 最後に声を聞いてから「途絶」と見なすまで。
- *
- * **基板の送出間隔より十分長く取る。** 短くすると、たまたま 1 秒欠けただけの
- * センサーが途絶として並び、本当に黙ったものが埋もれる。
- */
-export const STALE_AFTER_MS = 60_000
 
 /** 最後に声を聞いてからの経過。**`null`（まだ一度も無い）を `0 秒前` にしない。** */
 export function ago(nowMs: number, atMs: number | null): string {
