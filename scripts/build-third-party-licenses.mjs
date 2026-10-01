@@ -24,8 +24,8 @@
 // 【devDependencies は入れない】ビルド時にしか動かず配布物へ入らない。ただし
 // **バンドルへ実際に入るかは import されているかで決まる**ので、devDependencies にある
 // ものを `src/` から import するようになったら、その依存は dependencies へ移すこと。
-import { readFileSync, writeFileSync, readdirSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { existsSync, readFileSync, writeFileSync, readdirSync } from 'node:fs'
+import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -175,16 +175,61 @@ const EXTRA_BUNDLED = [
   },
 ]
 
-/** 配布物へ入る全件（本番依存の推移的閉包 ＋ 上記の追加分）。 */
-export function bundledPackages(root = ROOT) {
-  const deps = resolveProdDependencies(root)
-  const extra = EXTRA_BUNDLED.map((e) => e.name).filter((n) => !deps.includes(n))
-  return [...deps, ...extra].sort()
+/**
+ * パッケージの置き場所を、Node と同じ順で探す。見つからなければ null。
+ *
+ * `fromDir` から親へ 1 段ずつ遡り、`<段>/node_modules/<名前>/package.json` があれば
+ * そこを返す。**`<root>/node_modules/<名前>` と決め打ちしない** —— git のワークツリー
+ * （`.claude/worktrees/<名前>/`）の `node_modules` は空か無く、実体はメインの checkout に
+ * ある。決め打ちした版はワークツリーで必ず落ちていた（Vite も Vitest も親を遡るので、
+ * このスクリプトだけが見つけられなかった）。
+ *
+ * **`require.resolve('<名前>/package.json')` では代われない。** `exports` を宣言して
+ * `package.json` を公開していないパッケージは `ERR_PACKAGE_PATH_NOT_EXPORTED` で断る
+ * （2026-10-01 の実測で閉包 36 件中 11 件）。欲しいのは入口ではなく置き場所なので、
+ * ファイルを直接探す。
+ */
+export function findPackageDir(name, fromDir) {
+  let dir = resolve(fromDir)
+  for (;;) {
+    const candidate = join(dir, 'node_modules', name)
+    if (existsSync(join(candidate, 'package.json'))) return candidate
+    const parent = dirname(dir)
+    if (parent === dir) return null
+    dir = parent
+  }
 }
 
-/** 1 依存ぶんの情報を集める。全文を得られなければ例外。 */
-export function collect(name, root = ROOT) {
-  const dir = join(root, 'node_modules', name)
+/**
+ * 生成物の「出どころ」欄に書くパス。**最初の `node_modules` から先だけ**を `/` 区切りで返す。
+ *
+ * 絶対パスを書くと、走らせた checkout（メインかワークツリーか、どの PC か）で中身が変わり、
+ * 依存が変わっていないのに生成物に差分が出る。入れ子で解決されたもの
+ * （`node_modules/a/node_modules/b`）は入れ子のまま書く —— どの版を載せたかが読み取れる。
+ */
+export function sourcePathOf(dir, file) {
+  const parts = resolve(dir).split(sep)
+  const at = parts.indexOf('node_modules')
+  if (at < 0) throw new Error(`${dir}: node_modules の下にありません`)
+  return [...parts.slice(at), file].join('/')
+}
+
+/** 配布物へ入る全件（本番依存の推移的閉包 ＋ 上記の追加分）。名前 → 置き場所。 */
+export function bundledPackages(root = ROOT) {
+  const deps = resolveProdPackages(root)
+  for (const { name } of EXTRA_BUNDLED) {
+    if (deps.has(name)) continue
+    const dir = findPackageDir(name, root)
+    if (dir === null) {
+      throw new Error(`${name}: node_modules に見当たりません（${root} から親へ遡って探した）`)
+    }
+    deps.set(name, dir)
+  }
+  return new Map([...deps].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+}
+
+/** 1 依存ぶんの情報を集める。`dir` はそのパッケージの置き場所。全文を得られなければ例外。 */
+export function collect(name, dir) {
   const meta = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
 
   const file = readdirSync(dir).find((f) => LICENSE_FILE_RE.test(f))
@@ -192,9 +237,13 @@ export function collect(name, root = ROOT) {
   const entry = file
     ? {
         text: readFileSync(join(dir, file), 'utf8').trim(),
-        source: extraNote ? `${file}（${extraNote}）` : file,
+        source: extraNote ? `${sourcePathOf(dir, file)}（${extraNote}）` : sourcePathOf(dir, file),
       }
-    : { text: fallbackText(meta), source: '（上流に LICENSE ファイル無し）' }
+    : {
+        text: fallbackText(meta),
+        source: `${sourcePathOf(dir, '')}（上流に LICENSE ファイル無し）`,
+        fallback: true,
+      }
 
   // **生成の時点で完全性を見る。** テスト側にも同じ検査があるが、
   // `npm run build-...` を単独で走らせた人が「正常終了」を信じられる必要がある
@@ -213,38 +262,46 @@ export function collect(name, root = ROOT) {
 }
 
 /**
- * `package.json` の `dependencies` から辿れる依存をすべて集める（推移的閉包）。
+ * `package.json` の `dependencies` から辿れる依存をすべて集める（推移的閉包）。名前 → 置き場所。
  *
- * **node_modules がフラットに置かれる前提**（npm 7 以降の既定）。入れ子で解決されている
- * パッケージは見つからず例外になるので、そのときはここを直すこと。
+ * **依存の依存は、それを必要としている側の置き場所から探す**（`findPackageDir`）。
+ * Node の解決と同じで、入れ子（`node_modules/a/node_modules/b`）があればそちらが先に当たる。
+ *
+ * **同じ名前が 2 か所に解決されたら例外にする。** 版の違う複製が両方バンドルへ入りうるが、
+ * 生成物は名前ごとに 1 件しか持たず、テストも名前で版を突き合わせる。黙ってどちらかを
+ * 採ると、載せなかった方のライセンス文が配布物から落ちる。2026-10-01 時点で入れ子は 0 件。
  */
-export function resolveProdDependencies(root = ROOT) {
-  const seen = new Set()
-  const walk = (name) => {
-    if (seen.has(name)) return
-    const metaPath = join(root, 'node_modules', name, 'package.json')
-    let meta
-    try {
-      meta = JSON.parse(readFileSync(metaPath, 'utf8'))
-    } catch {
+export function resolveProdPackages(root = ROOT) {
+  const found = new Map()
+  const walk = (name, fromDir, requiredBy) => {
+    const dir = findPackageDir(name, fromDir)
+    if (dir === null) {
       throw new Error(
-        `${name}: node_modules に見当たりません（${metaPath}）。` +
-          `npm install を実行したか、入れ子で解決されていないかを確認してください`,
+        `${name}: node_modules に見当たりません（${requiredBy} から ${fromDir} を起点に親へ遡って探した）。` +
+          `npm install を実行したかを確認してください`,
       )
     }
-    seen.add(name)
-    for (const dep of Object.keys(meta.dependencies ?? {})) walk(dep)
+    const known = found.get(name)
+    if (known !== undefined) {
+      if (known === dir) return
+      throw new Error(
+        `${name}: 2 か所に解決されました（${known} と ${dir}）。版の違う複製が入っています。` +
+          `生成物は名前ごとに 1 件しか持てないので、両方を載せる形へ直してください`,
+      )
+    }
+    found.set(name, dir)
+    const meta = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
+    for (const dep of Object.keys(meta.dependencies ?? {})) walk(dep, dir, name)
   }
   const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
   const direct = Object.keys(pkg.dependencies ?? {})
   if (direct.length === 0) throw new Error('package.json の dependencies が 1 件も見つかりません')
-  for (const name of direct) walk(name)
-  return [...seen].sort()
+  for (const name of direct) walk(name, root, 'package.json')
+  return found
 }
 
 function main() {
-  const names = bundledPackages()
-  const entries = names.map((n) => collect(n))
+  const entries = [...bundledPackages()].map(([name, dir]) => collect(name, dir))
 
   const body = [
     'このファイルは、リアルタイム地震ビューアーが同梱している第三者ソフトウェアの',
@@ -261,7 +318,7 @@ function main() {
           RULE,
           `${e.name} ${e.version}`,
           `SPDX: ${e.license}`,
-          `出どころ: node_modules/${e.name}/${e.source}`,
+          `出どころ: ${e.source}`,
           RULE,
           '',
           e.text,
@@ -272,7 +329,7 @@ function main() {
 
   writeFileSync(OUT_PATH, body, 'utf8')
   console.log(`third-party-licenses.txt を書き出しました（${entries.length} 件・${(body.length / 1024).toFixed(1)}KB）`)
-  const fallbacks = entries.filter((e) => e.source.startsWith('（'))
+  const fallbacks = entries.filter((e) => e.fallback === true)
   if (fallbacks.length > 0) {
     console.log(`  うち ${fallbacks.length} 件は上流に LICENSE ファイルが無く、標準の文面で補った:`)
     for (const e of fallbacks) console.log(`    ${e.name} ${e.version}（${e.license}）`)

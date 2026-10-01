@@ -10,8 +10,9 @@
 // 空欄のまま「緑」で通っていた。
 //
 // 落ちたら `npm run build-third-party-licenses` を走らせて生成物を更新すること。
-import { describe, expect, it } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 // 生成スクリプトから「対象の集合」と「区切り線」を借りる。**書き写さない**——
@@ -20,18 +21,25 @@ import {
   NO_COPYRIGHT_HOLDER,
   RULE,
   copyrightHolder,
-  resolveProdDependencies,
+  findPackageDir,
+  resolveProdPackages,
+  sourcePathOf,
 } from './build-third-party-licenses.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const licenses = readFileSync(join(ROOT, 'public', 'third-party-licenses.txt'), 'utf8')
-const names = resolveProdDependencies(ROOT)
+const packages = resolveProdPackages(ROOT)
+const names = [...packages.keys()].sort()
 
-/** `node_modules` が宣言する版。生成物に焼かれた版と突き合わせる。 */
+/**
+ * `node_modules` が宣言する版。生成物に焼かれた版と突き合わせる。
+ *
+ * **置き場所は生成側が解決したものを使う。** `<ROOT>/node_modules/<名前>` と組み立てると、
+ * git のワークツリー（`node_modules` の実体がメインの checkout にある）で読めずに落ちる。
+ */
 function installedVersion(name: string): string {
-  const meta = JSON.parse(readFileSync(join(ROOT, 'node_modules', name, 'package.json'), 'utf8')) as {
-    version: string
-  }
+  const dir = packages.get(name)!
+  const meta = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as { version: string }
   return meta.version
 }
 
@@ -179,5 +187,78 @@ describe('copyrightHolder（述語そのもの）', () => {
     ['年なし', 'Copyright (c) Example Author', 'Example Author'],
   ])('正: 著作権表示の書き方の揺れ（%s）を吸収する', (_label, line, expected) => {
     expect(copyrightHolder(`${line}\n\nPermission is hereby granted, ...`)).toBe(expected)
+  })
+})
+
+// 上の検査は、走らせた端末の `node_modules` がたまたまフラットに置かれていることに頼っている。
+// **ワークツリーで落ちていたのは、その置き場所を `<root>/node_modules/<名前>` と決め打ちしていたため**
+// （ワークツリーの `node_modules` は空で、実体はメインの checkout にある）。
+// 実物の配置では再現できない形（入れ子・版の衝突）があるので、一時ディレクトリに組んで確かめる。
+describe('依存の置き場所の解決', () => {
+  let tmp: string
+
+  /** `<dir>/node_modules/<名前>/package.json` を置く。 */
+  function pkg(dir: string, name: string, version: string, dependencies: Record<string, string> = {}) {
+    const at = join(dir, 'node_modules', name)
+    mkdirSync(at, { recursive: true })
+    writeFileSync(join(at, 'package.json'), JSON.stringify({ name, version, dependencies }))
+    return at
+  }
+
+  function project(dir: string, dependencies: Record<string, string>) {
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'app', dependencies }))
+    return dir
+  }
+
+  beforeAll(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'third-party-licenses-'))
+  })
+  afterAll(() => {
+    rmSync(tmp, { recursive: true, force: true })
+  })
+
+  it('正: 起点に node_modules が無くても、親の node_modules まで遡って見つける（ワークツリーの形）', () => {
+    const repo = join(tmp, 'ascend')
+    const a = pkg(repo, 'a', '1.0.0')
+    const worktree = project(join(repo, '.claude', 'worktrees', 'w'), { a: '*' })
+    expect(resolveProdPackages(worktree).get('a')).toBe(a)
+  })
+
+  it('正: 依存の依存は、それを必要としている側の入れ子を先に見る', () => {
+    const repo = join(tmp, 'nested')
+    pkg(repo, 'a', '1.0.0', { b: '*' })
+    const nestedB = pkg(join(repo, 'node_modules', 'a'), 'b', '2.0.0')
+    const root = project(repo, { a: '*' })
+    expect(resolveProdPackages(root).get('b')).toBe(nestedB)
+  })
+
+  it('対照: 入れ子にしか無いものは、外からは見えない', () => {
+    // 上の配置で b を持つのは a の中だけ。プロジェクトの起点から探して当たるなら、
+    // 解決が入れ子の中まで潜り込んでいる（Node の解決と違う）。
+    expect(findPackageDir('b', join(tmp, 'nested'))).toBeNull()
+  })
+
+  it('安全弁: 同じ名前が 2 か所に解決されたら、どちらかを黙って採らずに止める', () => {
+    const repo = join(tmp, 'conflict')
+    pkg(repo, 'a', '1.0.0', { b: '*' })
+    pkg(join(repo, 'node_modules', 'a'), 'b', '2.0.0')
+    pkg(repo, 'b', '1.0.0')
+    pkg(repo, 'c', '1.0.0', { b: '*' })
+    const root = project(repo, { a: '*', c: '*' })
+    expect(() => resolveProdPackages(root)).toThrow(/2 か所に解決/)
+  })
+
+  it('安全弁: どこまで遡っても無ければ止める（黙って閉包から落とさない）', () => {
+    const root = project(join(tmp, 'missing'), { 'no-such-package-xyz': '*' })
+    expect(() => resolveProdPackages(root)).toThrow(/no-such-package-xyz: node_modules に見当たりません/)
+  })
+
+  it('正: 出どころは最初の node_modules から先だけを書く（走らせた checkout で変わらない）', () => {
+    const repo = join(tmp, 'source')
+    const a = pkg(repo, 'a', '1.0.0')
+    const nested = pkg(a, 'b', '1.0.0')
+    expect(sourcePathOf(a, 'LICENSE')).toBe('node_modules/a/LICENSE')
+    expect(sourcePathOf(nested, 'LICENSE')).toBe('node_modules/a/node_modules/b/LICENSE')
   })
 })
