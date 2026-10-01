@@ -28,6 +28,14 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { GAL_PER_G } from './src/intensity/units'
 import { MAX_TIME_MS, parseSensorPacket } from './src/protocol/parsePacket'
+import { AckReplier, readAckEnabled } from './src/receiver/ackReplier'
+import {
+  AssignmentClock,
+  assignedReception,
+  assignmentKey,
+  describeSilence,
+} from './src/receiver/assignedReception'
+import type { AssignedBoardReception } from './src/receiver/assignedReception'
 import { GravityCheckBook } from './src/receiver/gravityCheck'
 import type { GravityCount, GravityCounts, GravityVerdict } from './src/receiver/gravityCheck'
 import { IntensityPipeline } from './src/receiver/intensityPipeline'
@@ -410,6 +418,88 @@ export function buildStationGroupingWarning(ungroupedStationIds: readonly string
   ]
 }
 
+/** 割り当てた基板・センサーの「黙っている」を窓から窓へ持ち越した結果。 */
+export interface AssignedSilenceReport {
+  readonly warnings: readonly RawWarning[]
+  /**
+   * 黙っていたものが届くようになったことを伝える行。**間引かない** ——
+   * 変わり目にしか出ないので、溢れる心配が無い。
+   */
+  readonly recoveredLines: readonly string[]
+  /** いま黙っているものの鍵。**次の窓へ `previouslySilent` として渡す。** */
+  readonly silentKeys: ReadonlySet<string>
+}
+
+/**
+ * 観測点に割り当てた基板・センサーが届いていないことを、定期要約で警告する。
+ *
+ * **ここは画面を持たない常駐プロセスで、`/status` は見に来た人にしか届かない。**
+ * 基板が黙ったことはそれ以外に声を持たない —— 届かないパケットは数え上げにも
+ * 間引きの行にも現れない（来ないものは数えようがない）。
+ *
+ * **戻ったことも 1 行出す。** 警告は間引きつつ再掲するので、止んだことは
+ * 「行が出なくなった」でしか分からない。黙って止むと、読み手は間引かれただけなのか
+ * 直ったのかを見分けられない。
+ *
+ * **1 枚（1 個）ずつ別の行・別の間引きの鍵で出す。** 「いま黙っている顔ぶれ全体」を
+ * 1 つの鍵にすると、顔ぶれが揺れるたびに新しい鍵ができて間引きの枠（種別ごとに 64）を
+ * 食い潰し、溢れた先では**新しく黙った基板の初めての 1 行**まで遅らされる。1 枚ずつなら
+ * 鍵の数は割り当ての数で頭打ちになり、新しく黙ったものは必ずすぐ出る。
+ *
+ * **鍵に経過秒を入れない** —— 入れると毎回変わって、間引きが効かなくなる。
+ */
+export function buildAssignedSilenceReport(
+  boards: readonly AssignedBoardReception[],
+  nowMs: number,
+  previouslySilent: ReadonlySet<string>,
+): AssignedSilenceReport {
+  const since = (lastPacketMs: number | null): string => describeSilence(nowMs, lastPacketMs)
+
+  const silentKeys = new Set<string>()
+  const warnings: RawWarning[] = []
+  const recovered: string[] = []
+  for (const board of boards) {
+    const key = assignmentKey(board.boardKey)
+    if (board.state === 'silent') {
+      silentKeys.add(key)
+      warnings.push({
+        level: 'warn',
+        kind: 'assigned-board-silent',
+        detail: key,
+        line:
+          `[station] 観測点に割り当てた基板が届いていない: ` +
+          `${board.boardKey}（観測点 ${board.stationId}・${since(board.lastPacketMs)}）`,
+      })
+    } else if (board.state === 'live' && previouslySilent.has(key)) {
+      recovered.push(board.boardKey)
+    }
+    // **センサーを個別に言うのは基板が届いているときだけ。** 基板ごと黙っているなら、
+    // 名前を書いたセンサーも当然届いておらず、同じ事実を 2 行で言うことになる。
+    if (board.state !== 'live') continue
+    for (const sensor of board.sensors) {
+      const sKey = assignmentKey(board.boardKey, sensor.sensorId)
+      const name = `${board.boardKey} / ${sensor.sensorId}`
+      if (sensor.state === 'silent') {
+        silentKeys.add(sKey)
+        warnings.push({
+          level: 'warn',
+          kind: 'assigned-sensor-silent',
+          detail: sKey,
+          line:
+            `[station] 基板は届いているが、sensors[] に書いたセンサーが届いていない: ` +
+            `${name}（${since(sensor.lastPacketMs)}。sensorId の書き間違いでもこう見える）`,
+        })
+      } else if (sensor.state === 'live' && previouslySilent.has(sKey)) {
+        recovered.push(name)
+      }
+    }
+  }
+
+  const recoveredLines =
+    recovered.length > 0 ? [`[station] 届くようになった: ${recovered.join('、')}`] : []
+  return { warnings, recoveredLines, silentKeys }
+}
+
 /**
  * 足場がエポックとして成り立っていない区間を、定期要約で再掲する。
  *
@@ -707,6 +797,15 @@ export interface ApplyStationConfigDeps {
   readonly save: (config: StationConfig) => void
   /** `/api/stations`・`/api/boards` の GET が返す値を差し替える。 */
   readonly setCurrentConfig: (config: StationConfig) => void
+  /**
+   * 割り当てが設定に現れた時刻を更新する（`AssignmentClock.update`）。
+   *
+   * **`setCurrentConfig` の中へ書かず、別の部品にしてある。** あちらは `main()` の中の
+   * クロージャで、テストが届かない —— 呼び忘れると、稼働中に足した基板が足した瞬間に
+   * 「届いていない」と警告される（猶予が付かない）のに、型検査もテストも通ってしまう。
+   * 部品にしておけば、渡し忘れは型検査が、呼び忘れはこのファイルのテストが落とす。
+   */
+  readonly trackAssignments: (config: StationConfig) => void
   /** `StationDirectory` を作り直し、`IntensityPipeline` へ差し替える。 */
   readonly rebuildStations: (config: StationConfig) => void
   /** 古い `SensorFusion` を締める。**投げうる**（呼び出し側が捕まえる）。 */
@@ -747,6 +846,9 @@ export function applyStationConfigCore(deps: ApplyStationConfigDeps, newConfig: 
   deps.save(newConfig)
 
   deps.setCurrentConfig(newConfig)
+  // **割り当てと「いつ割り当てたか」を続けて動かす。** 間に何か挟むと、その間に
+  // 状態の口が読まれたとき、足した基板が猶予なしで判定される。
+  deps.trackAssignments(newConfig)
   deps.rebuildStations(newConfig)
 
   // **締めの失敗で反映を止めない。** `shutdown` の同じ処理と同じ理由——
@@ -1048,6 +1150,9 @@ async function main(): Promise<void> {
   // `stations` だけ差し替えて `ungroupedMultiBoardStations` を更新し忘れると、
   // 解消したはずの警告が再掲され続ける）。
   let currentStationConfig = stationConfigLoad.config
+  // **起動時の割り当ては、待ち受けを開けた時刻を起点にする**（`AssignmentClock`）。
+  // 以後は設定を差し替えるたびに `trackAssignments`（`applyStationConfigCore`）が更新する。
+  const assignmentClock = new AssignmentClock(currentStationConfig.boards, startedAtMs)
   let stationConfigWarning = stationConfigLoad.warning
   let stations = new StationDirectory(stationConfigLoad.config)
   const pipeline = new IntensityPipeline({ stations })
@@ -1063,6 +1168,12 @@ async function main(): Promise<void> {
   for (const w of buildStationGroupingWarning(ungroupedMultiBoardStations)) console.warn(w.line)
   const tally = new PacketTally()
   const rateLimit = new SourceRateLimit()
+  // **基板へ「届いた」と返す**（`src/receiver/ackReplier.ts`）。止めるのは診断のときだけ ——
+  // 止めると、返事を待っている基板は 15 秒ごとに段を上げ、立て直しを繰り返す。
+  const acks = new AckReplier({ enabled: readAckEnabled(process.env.SEISMO_ACK) })
+  if (!acks.enabled) {
+    console.warn('[ack] SEISMO_ACK=off のため基板へ返事を返しません（返事を待つ基板は立て直しを始めます）')
+  }
   const throttle = new LogThrottle()
   const hub = new ReadingHub()
   const health = new SensorHealthBook()
@@ -1247,6 +1358,7 @@ async function main(): Promise<void> {
         setCurrentConfig: (config) => {
           currentStationConfig = config
         },
+        trackAssignments: (config) => assignmentClock.update(config.boards, Date.now()),
         rebuildStations: (config) => {
           stations = new StationDirectory(config)
           pipeline.updateStations(stations)
@@ -1283,7 +1395,7 @@ async function main(): Promise<void> {
     // 細目に例外の種類を使うのは、種類ごとに初回を必ず出すため —— 文面を鍵にすると
     // 中身（アドレス等）が混ざって枠が際限なく増える。
     onError: (error) => emit('error', 'udp', error.name, `[udp] ${error.message}`),
-    onDatagram: (payload, from) => {
+    onDatagram: (payload, from, reply) => {
       // **届いた件数は上限を掛ける前に数える。** あとだと分母が上限そのものになり、
       // 「どれだけ撃たれているか」が表から読めなくなる。
       tally.record({ kind: 'received', source: from.address })
@@ -1334,6 +1446,15 @@ async function main(): Promise<void> {
 
       const board = read.packet.boardKey
       tally.record({ kind: 'accepted', board })
+      // **返事は読み取れた直後に返す。** 基板が知りたいのは「届いて読めたか」で、
+      // 震度が出たか・区間がどう切れたかではない（それは基板が直せることではない）。
+      // **後ろへ置かない** —— この先の処理が投げると返事が出ず、ホストの不具合を
+      // 基板が「送れていない」と取り違えて、繋ぎ直しと再起動を始める。
+      // `offer` は投げない約束（`ackReplier.ts`）。手前の `tally.record` も数を足すだけで投げない。
+      // 版 1 は `ackRequested` が立たない（`mac:` の確かめは、その約束が崩れたときの安全弁）。
+      if (read.ackRequested && board.startsWith('mac:')) {
+        acks.offer(board.slice('mac:'.length), reply, Date.now())
+      }
       // **誰の声かが判るのはここから。** 読み取りに失敗した回は基板が判らないので覚えない。
       const current = streamKeyOf(read.packet)
       health.notePacket({ boardKey: board, sensorId: read.packet.sensorId, streamKey: current })
@@ -1459,6 +1580,18 @@ async function main(): Promise<void> {
     adminConsole = null
   }
 
+  /**
+   * 割り当てた基板がいま届いているか。**状態の口と定期要約の両方がここを通る** ——
+   * 別々に組み立てると、片方だけ古い設定を見る形になりうる（`/api/*` が設定を差し替える）。
+   */
+  const readAssignedReception = (nowMs: number): readonly AssignedBoardReception[] =>
+    assignedReception({
+      nowMs,
+      assignedSinceMs: assignmentClock.snapshot(),
+      boards: currentStationConfig.boards,
+      heard: health.snapshot(),
+    })
+
   // **開けなければ落ちる。** 受信だけ生きていて状態も押し出しも届かない状態は、
   // 外から見ると「基板が黙っている」のと見分けが付かない。
   const statusServer = await startStatusServer({
@@ -1475,9 +1608,12 @@ async function main(): Promise<void> {
     readWaves: (params) => readWaveRange({ dir: waveDir, ...params }),
     // **呼ばれた時点で組み立てる。** 溜め込んだものを返すと、見に来た人が
     // 「いつの様子か」を自分で確かめられない。
-    status: () =>
-      buildStatusReport({
-        nowMs: Date.now(),
+    status: () => {
+      // **判定と答えに同じ「いま」を使う。** 別々に時計を読むと、境目で
+      // `generatedAtMs` から引いた経過と `state` が食い違いうる。
+      const nowMs = Date.now()
+      return buildStatusReport({
+        nowMs,
         startedAtMs,
         udp: { address: address ?? '0.0.0.0', port: receiver.port },
         http: { address: httpAddress ?? '0.0.0.0', port: statusServer.port },
@@ -1520,10 +1656,13 @@ async function main(): Promise<void> {
           lastWriteError: waveArchive.lastWriteError,
         },
         hub: hub.snapshot(),
+        acks: acks.snapshot(),
         stations,
         stationConfigWarning,
         ungroupedMultiBoardStations,
-      }),
+        assignedBoards: readAssignedReception(nowMs),
+      })
+    },
     log: emit,
   })
   console.log(
@@ -1537,6 +1676,8 @@ async function main(): Promise<void> {
   void rawStore.sweep()
 
   let quietReported = false
+  /** 前の窓で黙っていた割り当て（`buildAssignedSilenceReport`）。戻ったことを言うために持ち越す。 */
+  let silentAssigned: ReadonlySet<string> = new Set()
   let lastSummaryMs = Date.now()
   /**
    * 累計しか持たない数え上げから、この窓ぶんの増分を取る。
@@ -1567,6 +1708,9 @@ async function main(): Promise<void> {
     )
     const counters = {
       evicted: delta('evicted', '送信元の枠を捨てた', rateLimit.evictions),
+      // **返事を返せなかったことも要約へ出す。** 基板の側からは「返事が来ない」としか
+      // 見えず、ホストが返せていないのか届いていないのかを分ける手掛かりはここにしかない。
+      ackFailed: delta('ackFailed', '基板へ返事を返せず', acks.failures),
       // **状態の口へ出すだけでは足りない。** ここは画面を持たない常駐プロセスで、
       // `/status` は見に来た人にしか届かない。この 3 つは**それ以外に声を持たない** ——
       // 押し出しの切断（詰まり・壊れた）は `onDetach` が 1 行ずつ出し、生データ系は
@@ -1641,6 +1785,12 @@ async function main(): Promise<void> {
     for (const w of buildTimebaseEpochWarning(pipeline.openSegments())) {
       emit(w.level, w.kind, w.detail, w.line)
     }
+    // **割り当てた基板が黙ったことも、ここでしか声にならない**
+    // （`buildAssignedSilenceReport` のコメント参照）。
+    const silence = buildAssignedSilenceReport(readAssignedReception(now), now, silentAssigned)
+    silentAssigned = silence.silentKeys
+    for (const w of silence.warnings) emit(w.level, w.kind, w.detail, w.line)
+    for (const line of silence.recoveredLines) console.log(line)
   }
   const timer = setInterval(summarize, SUMMARY_INTERVAL_MS)
 

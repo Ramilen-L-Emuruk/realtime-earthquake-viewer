@@ -16,13 +16,28 @@ export interface DatagramSource {
   readonly port: number
 }
 
+/**
+ * 届いたものの送り手へ 1 つ返す口。**投げない。** 結果は `onDone` で受け取る
+ * （送れたら `null`）。
+ *
+ * **受けたのと同じソケットから返す。** 基板は送るのに使ったソケットでしか返事を
+ * 待っていない（送り元のポートは基板が開くたびに変わる）ので、別のソケットから
+ * 投げると宛先のポートが合っていても届かない。
+ */
+export type DatagramReply = (payload: string, onDone: (error: Error | null) => void) => void
+
 export interface UdpReceiverOptions {
   /** 待ち受けるポート。**0 を渡すと空いているものが選ばれる**（テスト用）。 */
   readonly port: number
   /** 待ち受けるアドレス。省略すると全インターフェース。 */
   readonly address?: string
-  /** 1 つ届くたびに呼ばれる。 */
-  readonly onDatagram: (payload: string, from: DatagramSource) => void
+  /**
+   * 1 つ届くたびに呼ばれる。
+   *
+   * **返す口は届いたものと一緒に渡す。** 受信口そのものを受け手へ持たせる形にすると、
+   * 受け手が「受信口を作り終える前に届いた 1 件」で未初期化の参照を踏みうる。
+   */
+  readonly onDatagram: (payload: string, from: DatagramSource, reply: DatagramReply) => void
   /**
    * ソケットの異常と、`onDatagram` が投げた例外。
    *
@@ -70,10 +85,11 @@ export function startUdpReceiver(options: UdpReceiverOptions): Promise<UdpReceiv
         try {
           // **読めないバイト列でも投げない。** utf8 の復号は不正な並びを置換文字へ倒すので、
           // 形が違うものは読み取り側が `header-unreadable` として数える。
-          options.onDatagram(buffer.toString('utf8'), {
-            address: rinfo.address,
-            port: rinfo.port,
-          })
+          options.onDatagram(
+            buffer.toString('utf8'),
+            { address: rinfo.address, port: rinfo.port },
+            (payload, onDone) => replyTo(socket, rinfo.address, rinfo.port, payload, onDone),
+          )
         } catch (error) {
           // **受け手の例外でソケットごと落とさない。** 1 台の壊れた送り手が、
           // 他の基板の受信まで止めることになる。黙らせはせず同じ口へ流す。
@@ -87,6 +103,27 @@ export function startUdpReceiver(options: UdpReceiverOptions): Promise<UdpReceiv
     socket.once('listening', onListening)
     socket.bind(options.port, options.address)
   })
+}
+
+/**
+ * 1 つ返す。**どの失敗も `onDone` へ寄せる。**
+ *
+ * `send` は 2 通りに失敗する —— 閉じたソケットへ投げると**その場で例外**、宛先へ
+ * 出せなかった（経路が無い等）ときは**あとで callback へ**。片方だけ拾うと、もう片方が
+ * 受け手（`onDatagram`）の例外として受信の異常の口へ流れ、返事の失敗が数に載らない。
+ */
+function replyTo(
+  socket: Socket,
+  address: string,
+  port: number,
+  payload: string,
+  onDone: (error: Error | null) => void,
+): void {
+  try {
+    socket.send(payload, port, address, (error) => onDone(error ?? null))
+  } catch (error) {
+    onDone(toError(error))
+  }
 }
 
 function closeSocket(socket: Socket): Promise<void> {

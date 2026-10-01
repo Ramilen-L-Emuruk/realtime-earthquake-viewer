@@ -13,6 +13,7 @@
 // （#313 段 C 敵対的レビューで検出）。
 
 import { ago, escapeHtml, isStale, qs, receptionBadgeHtml } from './dom'
+import { describeSilence } from '../receiver/assignedReception'
 import { readFinite } from './readJson'
 
 /**
@@ -64,6 +65,75 @@ interface StatusReportView {
   }
   readonly stationConfigWarning: string | null
   readonly ungroupedMultiBoardStations: readonly string[]
+  /**
+   * 観測点に割り当てた基板ごとの様子（`receiver/assignedReception.ts`）。
+   * **古いホストは返さない**ので、読む側で配列であることを確かめる（`assignedBoardsOf`）。
+   */
+  readonly assignedBoards?: readonly AssignedBoardView[]
+}
+
+interface AssignedBoardView {
+  readonly boardKey: string
+  readonly stationId: string
+  readonly lastPacketMs: number | null
+  readonly state: string
+  readonly sensors: readonly {
+    readonly sensorId: string
+    readonly lastPacketMs: number | null
+    readonly state: string
+  }[]
+}
+
+/**
+ * 割り当てた基板の一覧。**配列でなければ空として扱う。**
+ *
+ * `/status` は無検証で読んでいるので、この欄を持たない版のホストからは `undefined` が来る
+ * —— そのまま `.filter` すると画面ごと「状態を取得できていない」へ倒れる。
+ */
+export function assignedBoardsOf(status: Pick<StatusReportView, 'assignedBoards'>): readonly AssignedBoardView[] {
+  return Array.isArray(status.assignedBoards) ? status.assignedBoards : []
+}
+
+/**
+ * 割り当てた基板・センサーが届いていないことを伝える警告。**HTML として組み立て済み。**
+ *
+ * **`waiting`（ホストを起動して、または割り当てて間が無い）は出さない。** その間は
+ * まだ届いていなくて当たり前で、出すと再起動や登録のたびに並ぶ。
+ *
+ * **センサーを個別に言うのは基板が届いているときだけ**（ホストのログと同じ扱い。
+ * `main.ts` の `buildAssignedSilenceReport`）。
+ *
+ * **「いつから」はホストのログと同じ文面**（`describeSilence`）。経過は `nowMs`
+ * （`/status` の `generatedAtMs`）から測る —— 端末の時計で測ると、ずれた分だけ嘘になる。
+ * 時刻は `readFinite` を通す（欄の無い版から `undefined` が来ても「一度も」に倒れる）。
+ */
+export function assignedSilenceWarnings(nowMs: number, boards: readonly AssignedBoardView[]): readonly string[] {
+  const out: string[] = []
+  const silentBoards = boards.filter((b) => b.state === 'silent')
+  if (silentBoards.length > 0) {
+    const names = silentBoards.map(
+      (b) =>
+        `${escapeHtml(b.boardKey)}（観測点 ${escapeHtml(b.stationId)}・${describeSilence(nowMs, readFinite(b.lastPacketMs))}）`,
+    )
+    out.push(`観測点に割り当てた基板が届いていない: ${names.join('、')}`)
+  }
+  const silentSensors = boards
+    .filter((b) => b.state === 'live')
+    .flatMap((b) =>
+      (Array.isArray(b.sensors) ? b.sensors : [])
+        .filter((s) => s.state === 'silent')
+        .map(
+          (s) =>
+            `${escapeHtml(b.boardKey)} / ${escapeHtml(s.sensorId)}（${describeSilence(nowMs, readFinite(s.lastPacketMs))}）`,
+        ),
+    )
+  if (silentSensors.length > 0) {
+    out.push(
+      `基板は届いているが、sensors[] に書いたセンサーが届いていない: ${silentSensors.join('、')}` +
+        '（sensorId の書き間違いでもこう見える）',
+    )
+  }
+  return out
 }
 
 type PairDiffView = StatusReportView['stationIntensities'][number]['pairDiffs'][number]
@@ -247,8 +317,12 @@ export async function initStatusView(container: HTMLElement, signal: AbortSignal
     if (status.raw.lastWriteError !== null) {
       warnings.push(`生データの書き込みエラー: ${escapeHtml(status.raw.lastWriteError)}`)
     }
+    // **組み立て済みの HTML**（中で `escapeHtml` を通している）なので、ここで重ねて通さない。
+    const assignedBoards = assignedBoardsOf(status)
+    warnings.push(...assignedSilenceWarnings(now, assignedBoards))
 
     const liveSensorCount = countLive(now, status.sensors)
+    const liveAssignedCount = assignedBoards.filter((b) => b.state === 'live').length
     const liveStationCount = countLive(now, status.stationIntensities)
     const hours = Math.floor(status.uptimeSec / 3600)
     const minutes = Math.floor((status.uptimeSec % 3600) / 60)
@@ -262,6 +336,13 @@ export async function initStatusView(container: HTMLElement, signal: AbortSignal
         <div class="stat-card">
           <div class="stat-label">受信中のセンサー</div>
           <div class="stat-value">${liveSensorCount} / ${status.sensors.length}</div>
+        </div>
+        <!-- **隣のセンサーの数では代われない。** あちらの分母は一度でも届いたセンサー
+             だけで、起動してから一度も届かない基板は分母にも入らない（全部が受信中に見える）。
+             こちらの分母は観測点の設定に割り当てた基板の数。 -->
+        <div class="stat-card">
+          <div class="stat-label">割り当てた基板</div>
+          <div class="stat-value">${liveAssignedCount} / ${assignedBoards.length}</div>
         </div>
         <!-- **隣のセンサーと同じ「生きている数 / 全体」の形にする。** この帳面は
              設定を変えても作り直さない（\`receiver/stationHealth.ts\`）ので、管理コンソールで
