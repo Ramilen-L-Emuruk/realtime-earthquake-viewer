@@ -23,8 +23,9 @@
 // 壊れても自分では気づけない——`endPacket()` は成功を返し、HTTP（TCP）は別の経路で
 // 応え続けるので、**外からは健全にしか見えない**（2026-09-30 に 1 枚が 5 日間
 // その状態だった）。そこで ①時計が合う前は送らない ②Wi-Fi が繋がり直すたび
-// 立て直す ③遠隔で再起動できる、の 3 つを置いてある。
-// それぞれ `MIN_SYNCED_UNIX`・`onWifiUp`・`handleRestart` に理由を書いた。
+// 立て直す ③遠隔で再起動できる ④ホストの返事が途絶えたら自分で立て直す、の 4 つを
+// 置いてある。それぞれ `MIN_SYNCED_UNIX`・`onWifiUp`・`handleRestart`・`checkAck` に
+// 理由を書いた。
 
 #include <Wire.h>
 #include <WiFi.h>
@@ -36,6 +37,7 @@
 #include <stdarg.h>
 #include <esp_mac.h>
 #include <esp_random.h>
+#include <esp_system.h>
 #include "wifi_config.h"
 
 // **この定義を持たない `wifi_config.h` でも焼けるようにする。** 設定ファイルは
@@ -44,6 +46,13 @@
 // 定義が無ければ口は閉じたまま（`adminTokenOk` が空のトークンを常に拒む）。
 #ifndef ADMIN_TOKEN
 #define ADMIN_TOKEN ""
+#endif
+
+// ホストの HTTP の口（`seismo-host` の `SEISMO_HTTP_PORT`）。返事が途絶えたとき、
+// **ホストそのものが止まっているのか**を確かめるために叩く（→ `checkAck`）。
+// 定義が無ければホストの既定値。理由は `ADMIN_TOKEN` と同じ（焼く手前で止めない）。
+#ifndef HOST_HTTP_PORT
+#define HOST_HTTP_PORT 50506
 #endif
 
 static const uint8_t R_SMPLRT_DIV=0x19, R_CONFIG=0x1A, R_ACCEL_CFG=0x1C, R_FIFO_EN=0x23;
@@ -93,6 +102,31 @@ static const time_t MIN_SYNCED_UNIX = 1700000000;
 // **待つのをやめた時点でこの記録が失われていた**（そしてこの場面では HTTP も OTA も
 // 立っていないので、シリアルだけが唯一の診断の手段）。値は当時の 30 秒に合わせてある。
 static const uint32_t NO_WIFI_WARN_MS = 30000;
+
+// ホストの返事（`seismo-ack <MAC>`）がこの時間来なければ、段を 1 つ上げる（→ `checkAck`）。
+//
+// **計り始めるのは、返事のあとで最初に送れたとき。** Wi-Fi が切れている間や時計が
+// 合う前は送っていないので、返事が来ないのは当たり前——そこを数えると、送っていない
+// 基板が「届いていない」と思い込んで立て直しを始める。
+//
+// ホストは基板ごとに 1 秒に 1 回返すので、15 秒は 15 回ぶんの取りこぼしにあたる。
+// UDP の返事が数回落ちる程度では上がらず、本当に途絶えたときだけ上がる。
+static const uint32_t ACK_SILENCE_MS = 15000;
+
+// 段を上げる前にホストへ TCP を張って待つ上限。
+//
+// **この間は吸い出しも止まる**（`loop()` が 1 本なので）。FIFO は 1024 バイト＝
+// 170 サンプル＝1.7 秒ぶんを抱えられ、吸い出しの周期が 0.3 秒なので、待てるのは
+// 1.4 秒まで。LAN 内の相手なら往復は数ミリ秒で、0.5 秒は十分に長く、あふれからも遠い。
+static const int32_t HOST_PROBE_TIMEOUT_MS = 500;
+
+// 自分で再起動してよい回数と、その数え直しの間隔（→ `restartAllowed`）。
+//
+// **上限が無いと、再起動しても直らない故障で再起動を繰り返し続ける**——起動のたびに
+// 時計合わせからやり直すので、そのあいだ波形が 1 件も出ない。上限に達したら再起動だけを
+// 飛ばし、UDP の作り直しと Wi-Fi の繋ぎ直しは続ける（どちらも波形を止める時間が短い）。
+static const uint32_t SELF_RESTART_MAX = 3;
+static const int64_t  SELF_RESTART_WINDOW_S = 6 * 3600;
 
 // 端数（FIFO の件数が 6 の倍数でない）がこの回数だけ続いたら FIFO を作り直す。
 //
@@ -265,6 +299,53 @@ static uint32_t   g_udpArmFail = 0;
 // `pretime` が出るが、**シリアルを見ている最中に「待っている」のか「始まった」のかが
 // 判る印が要る**——起動ログだけ追っている場面で、沈黙の理由が時刻だと分からない。
 static bool       g_timeReady = false;
+// UDP のソケットがいま開いているか。**返事を読みに行ってよいかの門。**
+//
+// 開いていないソケットで `parsePacket()` を呼ぶと、コアが `ioctl` の失敗を
+// `loop()` の 1 周ごとにログへ出す（`NetworkUdp.cpp` の `parsePacket`）。
+static bool       g_udpOpen = false;
+// 最後に UDP を開こうとした時刻（→ `armUdp`・`retryUdpOpen`）。
+static uint32_t   g_lastArmMs = 0;
+
+// --- ホストの返事（→ `checkAck`） ---
+static uint32_t   g_acks = 0;            // 自分宛ての返事を受けた数
+static uint32_t   g_lastAckMs = 0;       // 最後に受けた時刻（`g_acks` が 0 なら無意味）
+static uint32_t   g_ackForeign = 0;      // 同じソケットへ届いた、自分宛ての返事ではないもの
+// 返事を待っているか、と待ち始めた時刻。**返事のあとで最初に送れた時点から計る**
+// （→ `ACK_SILENCE_MS`）。
+static bool       g_ackWaiting = false;
+static uint32_t   g_ackWaitStartMs = 0;
+// 次に打つ手。0: UDP を作り直す／1: Wi-Fi を繋ぎ直す／2: 再起動。**返事が 1 つ届けば 0 へ戻る。**
+// Wi-Fi が繋がり直しても戻さない——戻すと繋ぎ直しのたびに 0 からやり直し、再起動の段へ届かない。
+static uint8_t    g_ackLevel = 0;
+static uint32_t   g_ackRearms = 0;       // 返事の途絶で UDP を作り直した回数
+static uint32_t   g_ackReconnects = 0;   // 返事の途絶で Wi-Fi を繋ぎ直した回数
+static uint32_t   g_hostProbeFail = 0;   // 返事が途絶えてホストへ TCP を張ったが繋がらなかった回数
+static uint32_t   g_restartSkipped = 0;  // 再起動の段に来たが上限で飛ばした回数
+static bool       g_warnedNoAck = false; // 「返事を一度も受けていない」を 1 度だけ出したか
+
+// 自分で再起動した回数の帳面。**再起動をまたいで残す**ので RTC の初期化しない領域に置く。
+//
+// **`RTC_DATA_ATTR` では足りない。** あちらが残るのは深いスリープからの復帰だけで、
+// `ESP.restart()` ではブートローダが初期値を載せ直す。`RTC_NOINIT_ATTR` は
+// ソフトウェアの再起動では触られず、**電源を入れたときは中身が不定**になる——
+// そこで `magic` で「読める帳面か」を見分け、電源投入なら必ず白紙にする（→ `setup`）。
+//
+// **時刻は unix 秒で持つ。** `millis()` は再起動で 0 へ戻るが、RTC の時計は
+// ソフトウェアの再起動を越えて進み続ける（段 A で `pretime` が電源の入れ直しでしか
+// 増えないことを実機で確かめた）。
+struct RestartLedger {
+  uint32_t magic;
+  uint32_t count;        // `firstUnix` から数えた自分での再起動の回数
+  int64_t  firstUnix;    // 数え始めた時刻
+  uint32_t pending;      // 1 なら「直前の再起動は自分で起こした」
+};
+static const uint32_t RESTART_LEDGER_MAGIC = 0x5e15ac01;
+RTC_NOINIT_ATTR static RestartLedger g_restartLedger;
+// この起動が、返事の途絶による自分での再起動から始まったか。**状態ページで確かめるため。**
+// `/restart` でも OTA でも理由は同じ `ESP_RST_SW` になるので、理由だけでは分けられない。
+static bool       g_bootedBySelfRestart = false;
+static esp_reset_reason_t g_resetReason = ESP_RST_UNKNOWN;
 
 // 追記して `used` を進める。**溢れたら書かない。**
 //
@@ -478,11 +559,30 @@ static uint8_t scanBus(TwoWire &w, char *out, size_t outSize, bool &cut){
   return found;
 }
 
+// 起動の理由を状態ページ用の短い名前へ。**数字のまま出さない**——列挙の値は
+// ESP-IDF の版で並びが変わりうるので、読む人が版ごとの表を引くことになる。
+static const char* resetReasonName(esp_reset_reason_t r){
+  switch (r) {
+    case ESP_RST_POWERON:   return "poweron";
+    case ESP_RST_EXT:       return "ext";
+    case ESP_RST_SW:        return "sw";
+    case ESP_RST_PANIC:     return "panic";
+    case ESP_RST_INT_WDT:   return "int_wdt";
+    case ESP_RST_TASK_WDT:  return "task_wdt";
+    case ESP_RST_WDT:       return "wdt";
+    case ESP_RST_DEEPSLEEP: return "deepsleep";
+    case ESP_RST_BROWNOUT:  return "brownout";
+    case ESP_RST_SDIO:      return "sdio";
+    default:                return "other";
+  }
+}
+
 // 状態ページ。
 //
 // **バッファの余裕を測ってある。** すべての勘定を 32bit の上限（4294967295）へ置き、
 // ノード名と走査結果も最長にした最悪形で **約 2000 バイト**（2026-10-01 に実測。
-// 実際の応答は約 1300 バイト）。**2048 では 50 バイトしか残らなかった** ——
+// 実際の応答は約 1300 バイト）。返事と立て直しの欄（段 B）で最悪形が **約 300 バイト**
+// 増えて約 2300 バイト。**2048 では 50 バイトしか残らなかった** ——
 // `seq` と `unsent` と `pretime` は 100Hz で進むので **約 497 日の連続稼働で 10 桁へ届く**。
 // 数百日動かす基板なので、桁が伸びた日に状態ページだけが 500 を返し始める。
 //
@@ -513,6 +613,22 @@ static void handleStatus(){
     SAMPLE_HZ, UG_PER_LSB, (unsigned long)g_headTrunc,
     g_wifiUp ? "true":"false", (unsigned long)g_udpArmed, (unsigned long)g_udpArmFail,
     (unsigned long)g_wifiGotIpCount, (unsigned long)ESP.getFreeHeap());
+  // ホストの返事と、途絶えたときの立て直し（→ `checkAck`）。
+  //
+  // **`ack_age_s` は一度も受けていなければ -1。** 0 と書くと「たったいま受けた」と読める。
+  // **`self_restarts` は数え直しの窓の中の回数**で、上限（`SELF_RESTART_MAX`）に
+  // 達していれば `restart_skipped` が増え始める。
+  const long ackAge = g_acks == 0 ? -1L : (long)((millis() - g_lastAckMs) / 1000);
+  appendf(buf, sizeof(buf), u,
+    "\"udp_open\":%s,\"acks\":%lu,\"ack_age_s\":%ld,\"ack_foreign\":%lu,\"ack_level\":%u,"
+    "\"ack_rearms\":%lu,\"ack_reconnects\":%lu,\"host_probe_fail\":%lu,"
+    "\"self_restarts\":%lu,\"restart_skipped\":%lu,\"reset_reason\":\"%s\","
+    "\"booted_by_self_restart\":%s,",
+    g_udpOpen ? "true":"false",
+    (unsigned long)g_acks, ackAge, (unsigned long)g_ackForeign, (unsigned)g_ackLevel,
+    (unsigned long)g_ackRearms, (unsigned long)g_ackReconnects, (unsigned long)g_hostProbeFail,
+    (unsigned long)selfRestartsInWindow(now), (unsigned long)g_restartSkipped,
+    resetReasonName(g_resetReason), g_bootedBySelfRestart ? "true":"false");
   appendf(buf, sizeof(buf), u, "\"i2c\":[");
   for (int b = 0; b < 2; b++) {
     appendf(buf, sizeof(buf), u,
@@ -638,7 +754,44 @@ static void handleRestart(){
 static void onWifiEvent(WiFiEvent_t event){
   if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
     g_wifiGotIp = true;
-    g_wifiGotIpCount++;
+    // `++` で書かない。`volatile` への複合代入は C++20 で非推奨（コンパイラが警告する）。
+    // 書き手はこのイベントタスクだけなので、読んで足して書く形でも数え落としは起きない。
+    g_wifiGotIpCount = g_wifiGotIpCount + 1;
+  }
+}
+
+// Wi-Fi を切って繋ぎ直す。**遠隔の口（`handleWifiReconnect`）と返事の途絶（`checkAck`）の
+// 両方がここを通る**——別々に書くと、片方だけ `begin()` を呼び忘れる形が作れてしまう
+// （その形で基板を 1 枚落とした。理由は `handleWifiReconnect` の項）。
+//
+// **引数を足さないこと。** `WiFi.disconnect(wifioff, eraseap)` の `eraseap` を真に
+// すると保存してある接続先ごと消える。**遠隔で戻す口を作るはずのものが、
+// 遠隔で殺す口になる。**
+static void reconnectWifi(){
+  WiFi.disconnect();
+  delay(200);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+}
+
+// UDP のソケットを閉じて開き直す。**繋がり直したとき（`onWifiUp`）と、返事が途絶えたとき
+// （`checkAck`）の 2 箇所から呼ぶ。**
+//
+// **閉じてから開く。** 閉じずに開くと、切れる前の記述子が残る。
+// **開けたかを数える。** 無条件に `g_udpArmed` を進めると「開こうとした回数」になる
+// （→ `g_udpArmFail`）。
+static void armUdp(){
+  // 最後に開こうとした時刻。**呼び出し元を問わずここで記録する**——開き直しの再試行
+  // （`retryUdpOpen`）は ここから数えるので、繋がり直し（`onWifiUp`）や段 0（`checkAck`）で
+  // 開いた直後に、もう一度開き直すことが無い。
+  g_lastArmMs = millis();
+  udp.stop();
+  g_udpOpen = false;
+  if (udp.begin(0)) {
+    g_udpArmed++;
+    g_udpOpen = true;
+  } else {
+    g_udpArmFail++;
+    Serial.println("# udp.begin(0) が失敗した（このままでは 1 件も送れない）");
   }
 }
 
@@ -659,10 +812,7 @@ static void onWifiEvent(WiFiEvent_t event){
 // **`begin()` を自分で呼んでも、確かめたいものは確かめられる。** 見たいのは
 // 「繋がったときに `onWifiUp` が立て直すか」で、そこへ至る道（`loop()` の
 // 変わり目の検出）は実際の切断と共通。誰が `begin()` を呼んだかは問わない。
-//
-// **引数を足さないこと。** `WiFi.disconnect(wifioff, eraseap)` の `eraseap` を真に
-// すると保存してある接続先ごと消える。**遠隔で戻す口を作るはずのものが、
-// 遠隔で殺す口になる。**
+// 切り方と繋ぎ方は `reconnectWifi` が持つ（返事の途絶でも同じ道を通る）。
 static void handleWifiReconnect(){
   if (!adminAllowed()) return;
   Serial.println("# /wifi-reconnect を受けたので Wi-Fi を切って繋ぎ直す");
@@ -674,9 +824,7 @@ static void handleWifiReconnect(){
   // ——応答が出る前に切れると「再起動できたのか届かなかったのか」が区別できなくなる。
   http.client().flush();
   delay(200);
-  WiFi.disconnect();
-  delay(200);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  reconnectWifi();
 }
 
 // Wi-Fi が繋がったときに立てるもの。**起動時と、切れて繋がり直したときの両方で通る。**
@@ -709,13 +857,10 @@ static void onWifiUp(){
   // **繋ぎ直したら必ず開き直す。** ESP32 の `WiFiUDP` は Wi-Fi が切れるとソケットが
   // 無効になり、**それでも `beginPacket()`／`endPacket()` は成功を返す**。
   // 2026-09-30 に実機で 144 万パケットぶん「送れたつもり」を数えていた。
-  udp.stop();
-  if (udp.begin(0)) {
-    g_udpArmed++;
-  } else {
-    g_udpArmFail++;
-    Serial.println("# udp.begin(0) が失敗した（このままでは 1 件も送れない）");
-  }
+  armUdp();
+  // **返事の計時は計り直す**（新しいソケットで送れた時点から）。段は戻さない
+  // （→ `g_ackLevel`）。
+  g_ackWaiting = false;
 
   if (g_servicesUp) return;
   if (MDNS.begin(g_node)) Serial.printf("# mdns %s.local\n", g_node);
@@ -744,6 +889,21 @@ void setup(){
   g_bootMs = millis();
   resolveNodeName();
 
+  // 自分で再起動した回数の帳面を読む（→ `RestartLedger`）。**電源投入なら必ず白紙にする**
+  // ——中身が不定なので、`magic` がたまたま合っても信じない。
+  g_resetReason = esp_reset_reason();
+  if (g_resetReason == ESP_RST_POWERON || g_restartLedger.magic != RESTART_LEDGER_MAGIC) {
+    g_restartLedger.magic = RESTART_LEDGER_MAGIC;
+    g_restartLedger.count = 0;
+    g_restartLedger.firstUnix = 0;
+    g_restartLedger.pending = 0;
+  }
+  // **ソフトウェアの再起動で始まったときだけ「自分で起こした」と読む。** 印を立てて
+  // 再起動へ向かう途中で番犬に落とされた（理由が `ESP_RST_SW` ではない）なら、
+  // 自分の再起動として数えるのは誤り。
+  g_bootedBySelfRestart = g_restartLedger.pending == 1 && g_resetReason == ESP_RST_SW;
+  g_restartLedger.pending = 0;
+
   g_busOk[0] = Wire.begin();
   Wire.setClock(400000);
   g_busOk[1] = Wire1.begin(I2C1_SDA, I2C1_SCL);
@@ -771,7 +931,10 @@ void setup(){
   // 再起動をパケットの並び替えと読み、通し番号の戻りを繋いでしまう。
   snprintf(g_bootId, sizeof(g_bootId), "%08x", (unsigned)esp_random());
 
-  Serial.printf("\n# %s (%s) booting bid=%s\n", g_node, g_mac, g_bootId);
+  Serial.printf("\n# %s (%s) booting bid=%s reset=%s%s self_restarts=%lu\n",
+                g_node, g_mac, g_bootId, resetReasonName(g_resetReason),
+                g_bootedBySelfRestart ? "（返事の途絶で自分から）" : "",
+                (unsigned long)g_restartLedger.count);
   for (int b = 0; b < 2; b++) {
     Serial.printf("# i2c%d begun=%d scan: %u found (%s)%s\n",
                   b, g_busOk[b], (unsigned)g_scanN[b], g_scan[b], g_scanCut[b] ? " …切れ" : "");
@@ -814,7 +977,8 @@ static void sendChunk(Sensor &s, const int16_t *v, size_t n, uint32_t seq0, int6
   const int hl = snprintf(head, sizeof(head),
     "{\"v\":2,\"mac\":\"%s\",\"bid\":\"%s\",\"sid\":\"%s\",\"st\":\"MPU6050\","
     "\"ch\":[\"HN1\",\"HN2\",\"HN3\"],\"ug\":%.4f,\"fs\":%d,\"hz\":%d,"
-    "\"t\":%lld,\"q\":%lu,\"c\":%u,\"o\":%lu}\n",
+    // `"ack":1` は「届いたら返事をくれ」。ホストは求めた基板にだけ返す（→ `checkAck`）。
+    "\"t\":%lld,\"q\":%lu,\"c\":%u,\"o\":%lu,\"ack\":1}\n",
     g_macFlat, g_bootId, s.sid, UG_PER_LSB, 2 << AFS_SEL, SAMPLE_HZ,
     (long long)tFirstMs, (unsigned long)seq0, (unsigned)n, (unsigned long)s.overflow);
   // 切り詰められた JSON を送らない。受け手には「先頭行が読めない」としか見えず、
@@ -827,7 +991,185 @@ static void sendChunk(Sensor &s, const int16_t *v, size_t n, uint32_t seq0, int6
     const int ll = snprintf(line, sizeof(line), "%d,%d,%d\n", v[i*3], v[i*3+1], v[i*3+2]);
     udp.write((const uint8_t*)line, ll);
   }
-  if (udp.endPacket()) s.sent++; else s.unsent += n;
+  if (udp.endPacket()) {
+    s.sent++;
+    // 返事の計時は、返事のあとで最初に送れた時点から（→ `ACK_SILENCE_MS`）。
+    if (!g_ackWaiting) {
+      g_ackWaiting = true;
+      g_ackWaitStartMs = millis();
+    }
+  } else {
+    s.unsent += n;
+  }
+}
+
+// 開き損ねた UDP を開き直す。**返事の門（`checkAck`）とは独立に回す。**
+//
+// **これが無いと、開き損ねた基板は立て直しの仕組みごと止まる。** コアの `beginPacket()` は
+// ソケットが無ければその場で作るので（`NetworkUdp.cpp` の `beginPacket`）、送信は通って
+// しまうことが多い——ところが `g_udpOpen` は偽のままなので `readAcks` が返事を読まず、
+// 返事を一度も受けていない起動では門が閉じたまま段が上がらない。その場の作成まで
+// 失敗すれば `endPacket()` が偽を返し、計時も始まらない。**どちらも外からは黙るだけ。**
+//
+// 段を上げる話ではない（開き損ねたものを開くだけ）ので、門も TCP の到達確認も通さない。
+// 間隔は `ACK_SILENCE_MS` に揃え、**最後に開こうとした時刻（どこから開いたかを問わない）**
+// から数える——開けない原因（記述子の枯渇など）がすぐには消えない場面で、`loop()` の
+// 1 周ごとに試してシリアルを埋めないため。繋がり直しで開き損ねた直後に、同じ周で
+// もう一度試すことも無い。
+static void retryUdpOpen(uint32_t nowMs){
+  if (!g_wifiUp || g_udpOpen) return;
+  if (nowMs - g_lastArmMs < ACK_SILENCE_MS) return;
+  Serial.println("# UDP のソケットが開いていない。開き直す");
+  armUdp();
+}
+
+// 届いている返事を読む。**自分宛てなら段を 0 へ戻す。**
+//
+// **読んだら必ず捨てる（`clear()`。旧名の `flush()` は非推奨）。** `parsePacket()` は
+// 前のパケットを読み残していると
+// **次から 0 を返し続ける**（`NetworkUdp.cpp` の `parsePacket` が冒頭で抜ける）。
+// 想定より長いものが 1 つ届いただけで、以後の返事が 1 つも読めなくなり、
+// 基板は「返事が途絶えた」と取り違えて立て直しを始める。
+//
+// **送り元のアドレスは見ない。** `UDP_HOST` は名前でも書けるので突き合わせには
+// 名前解決が要り、LAN の中で返事を偽る相手は想定していない。宛名の MAC だけを照合する。
+//
+// 1 周に読むのは 4 つまで。返事は 1 秒に 1 つなので、溜まっていても次の周で読める。
+static void readAcks(){
+  // Wi-Fi が切れている間は読まない（`retryUdpOpen`・`checkAck` と同じ門）。切れても記述子は
+  // 有効なままなので読んで害は無いが、届くはずの無いものを読みに行く理由も無い。
+  if (!g_wifiUp || !g_udpOpen) return;
+  char want[32];
+  const int wl = snprintf(want, sizeof(want), "seismo-ack %s\n", g_macFlat);
+  for (int i = 0; i < 4; i++) {
+    if (udp.parsePacket() <= 0) return;
+    char got[40];
+    const int n = udp.read(got, sizeof(got) - 1);
+    udp.clear();
+    got[n > 0 ? n : 0] = '\0';
+    if (wl > 0 && n == wl && memcmp(got, want, (size_t)wl) == 0) {
+      g_acks++;
+      g_lastAckMs = millis();
+      g_ackWaiting = false;
+      if (g_ackLevel != 0) {
+        Serial.printf("# ホストの返事が戻った（段 %u まで上がっていた）\n", (unsigned)g_ackLevel);
+        g_ackLevel = 0;
+      }
+    } else {
+      g_ackForeign++;
+    }
+  }
+}
+
+// ホストへ TCP を張れるか。**返事が途絶えたとき、ホストが止まっているだけかを確かめる。**
+//
+// **張れなければ段を上げない。** 開発でホストを止めるたびに基板が繋ぎ直しと再起動を
+// 始めると、ホストを戻したときには基板のほうが時計合わせの最中で、しばらく波形が来ない。
+// ホストのプロセスが落ちていて PC だけ生きている場合も、口が閉じているので繋がらない側に入る。
+//
+// **TCP が通るのに UDP の返事が来ない**、が直したい形そのもの——UDP のソケットだけが
+// 壊れていても、TCP は別のソケットなので通る（2026-09-30 の基板は HTTP に応え続けていた）。
+static bool hostReachable(){
+  WiFiClient c;
+  const bool ok = c.connect(UDP_HOST, HOST_HTTP_PORT, HOST_PROBE_TIMEOUT_MS);
+  c.stop();
+  return ok;
+}
+
+// 自分で再起動してよいか。**数え直しの窓（`SELF_RESTART_WINDOW_S`）を過ぎていたら白紙に戻す。**
+// 時計が戻っていたとき（`now < firstUnix`）も白紙へ倒す——そのままだと窓が永久に閉じない。
+static bool restartWindowExpired(time_t now){
+  const RestartLedger &l = g_restartLedger;
+  return l.count > 0
+    && ((int64_t)now - l.firstUnix > SELF_RESTART_WINDOW_S || (int64_t)now < l.firstUnix);
+}
+
+static bool restartAllowed(time_t now){
+  if (restartWindowExpired(now)) g_restartLedger.count = 0;
+  return g_restartLedger.count < SELF_RESTART_MAX;
+}
+
+// 状態ページへ出す回数。**`restartAllowed` が見るのと同じ数を出す**（窓を過ぎていれば 0）。
+// 帳面そのものは書き換えない。**時計が合う前は帳面の数をそのまま出す**——1970 年の
+// 時刻で窓を測ると「時計が戻った」と読んで 0 を出してしまう。
+static uint32_t selfRestartsInWindow(time_t now){
+  if (now < MIN_SYNCED_UNIX) return g_restartLedger.count;
+  return restartWindowExpired(now) ? 0 : g_restartLedger.count;
+}
+
+// 返事が途絶えたら、段を 1 つ上げて立て直す。
+//
+// **これが段 A で残した穴を塞ぐ。** 段 A は「Wi-Fi が繋がり直したら UDP を開き直す」で、
+// 繋がり直したことに気づけた場合しか効かない。気づけない形（ソケットだけが壊れる・
+// 変わり目を取りこぼす）では、基板は自分の送信が届いていないことを知る手段を持たない。
+// ホストの返事が、その唯一の手掛かり。
+//
+// 段は軽いものから：
+//   0. UDP を作り直す（波形はほとんど止まらない）
+//   1. Wi-Fi を繋ぎ直す（数秒止まる）
+//   2. 再起動する（時計合わせからやり直すので十数秒止まる。回数に上限がある）
+// 再起動を上限で飛ばしたら 0 へ戻って繰り返す。**返事が 1 つ届けば 0 へ戻る**（`readAcks`）。
+//
+// **この起動で返事を一度も受けていなければ段を上げない。** 返事を返さないホスト
+// （返事の仕組みより古い版・`SEISMO_ACK=off` で起動したもの）へ繋いだ基板が、
+// 立て直しを延々と繰り返さないため。**再起動の繰り返しもここで止まる**——再起動した先で
+// 返事が戻らなければ、その起動では段を上げない。引き換えに、**起動した直後から送れて
+// いない基板は自分では戻らない**（起動したばかりならソケットも新しいので、起きにくい形）。
+static void checkAck(uint32_t nowMs){
+  // Wi-Fi が切れている間は計らない。繋がり直せば `onWifiUp` が UDP を開き直す。
+  if (!g_wifiUp) { g_ackWaiting = false; return; }
+  if (!g_ackWaiting || nowMs - g_ackWaitStartMs < ACK_SILENCE_MS) return;
+  // 次の計時は、次に送れた時点から。
+  g_ackWaiting = false;
+
+  if (g_acks == 0) {
+    if (!g_warnedNoAck) {
+      g_warnedNoAck = true;
+      Serial.println("# ホストから返事が一度も来ていない。この起動では立て直しを行わない");
+      Serial.println("#   （ホストが返事の仕組みより古いか、SEISMO_ACK=off で動いている）");
+    }
+    return;
+  }
+
+  if (!hostReachable()) {
+    g_hostProbeFail++;
+    Serial.printf("# 返事が %lu 秒途絶えたが、ホスト %s:%d に TCP も繋がらない。止まっていると見て待つ\n",
+                  (unsigned long)(ACK_SILENCE_MS / 1000), UDP_HOST, HOST_HTTP_PORT);
+    return;
+  }
+
+  switch (g_ackLevel) {
+    case 0:
+      Serial.println("# 返事が途絶えた（ホストは生きている）。UDP を作り直す");
+      g_ackRearms++;
+      g_ackLevel = 1;
+      armUdp();
+      break;
+    case 1:
+      Serial.println("# 作り直しても返事が戻らない。Wi-Fi を繋ぎ直す");
+      g_ackReconnects++;
+      g_ackLevel = 2;
+      // **変わり目は `loop()` が拾う**（切れて繋がれば `onWifiUp` が UDP を開き直す）。
+      reconnectWifi();
+      break;
+    default: {
+      const time_t now = time(nullptr);
+      if (!restartAllowed(now)) {
+        g_restartSkipped++;
+        g_ackLevel = 0;
+        Serial.printf("# 繋ぎ直しても返事が戻らない。再起動は上限（%lu 時間に %lu 回）に達したので飛ばす\n",
+                      (unsigned long)(SELF_RESTART_WINDOW_S / 3600), (unsigned long)SELF_RESTART_MAX);
+        break;
+      }
+      RestartLedger &l = g_restartLedger;
+      if (l.count == 0) l.firstUnix = (int64_t)now;
+      l.count++;
+      l.pending = 1;
+      Serial.printf("# 繋ぎ直しても返事が戻らない。再起動する（%lu 回目）\n", (unsigned long)l.count);
+      delay(100);   // シリアルへ出し切る
+      ESP.restart();
+    }
+  }
 }
 
 static void packetBegin(Packet &p, Sensor &s, int64_t tFirstMs){
@@ -1057,6 +1399,12 @@ void loop(){
     Serial.println("# wifi に一度も繋がれていない。SSID とパスワード、AP の生死を疑う");
     Serial.println("#   （シリアルでは動き続ける。状態ページも OTA も立っていない）");
   }
+
+  // **返事は毎周読む。** 吸い出しの周期（0.3 秒）に合わせると、読むまでの間に
+  // 返事が溜まるだけで得が無い。
+  retryUdpOpen(nowMs);
+  readAcks();
+  checkAck(nowMs);
 
   static uint32_t lastRetry = 0;
   if (nowMs - lastRetry >= RETRY_MS) { lastRetry = nowMs; retryStuck(); }

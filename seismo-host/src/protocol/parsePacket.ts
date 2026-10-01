@@ -297,5 +297,11 @@ export function parseSensorPacket(payload: string): PacketParseResult {
     overflowCount: head.overflowCount,
     samples,
   }
-  return { ok: true, packet }
+  // **`1` だけを「求めている」と読む。** 真偽値や文字列の `"1"` は今の送り手が出さない形で、
+  // 寛容に受けると、何を送れば返事が来るのかが送り手の側から読めなくなる。
+  // 読めない値でパケットごと落とさないのは、返事の有無が観測値の正しさと無関係なため ——
+  // ここで落とすと、返事の取り決めを書き損じた基板の波形が丸ごと消える。
+  // **版 1 は返事を求められない**（MAC を名乗らないので、宛名を書けない）。
+  const ackRequested = head.version === 2 && header.ack === 1
+  return { ok: true, packet, ackRequested }
 }
