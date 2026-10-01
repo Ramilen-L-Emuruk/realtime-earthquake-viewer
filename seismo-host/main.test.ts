@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 // （門が無ければ、このテストを走らせるたびに UDP の口が開く）。
 import {
   applyStationConfigCore,
+  buildAssignedSilenceReport,
   buildClosingLines,
   buildGravityWarnings,
   deliverReading,
@@ -24,6 +25,7 @@ import {
   windowSeconds,
 } from './main'
 import type { ApplyStationConfigDeps } from './main'
+import type { AssignedBoardReception } from './src/receiver/assignedReception'
 import type { GravityVerdict } from './src/receiver/gravityCheck'
 import type { IntensityReading } from './src/receiver/intensityPipeline'
 import { EMPTY_STATION_CONFIG } from './src/receiver/stationConfig'
@@ -383,6 +385,110 @@ describe('buildStationGroupingWarning', () => {
     const a = buildStationGroupingWarning(['study'])
     const b = buildStationGroupingWarning(['study', 'garage'])
     expect(a[0]?.detail).not.toBe(b[0]?.detail)
+  })
+})
+
+describe('buildAssignedSilenceReport', () => {
+  const NOW = 1_700_000_600_000
+  const board = (overrides: Partial<AssignedBoardReception> = {}): AssignedBoardReception => ({
+    boardKey: 'mac:aa',
+    stationId: 'garage',
+    lastPacketMs: NOW - 1_000,
+    state: 'live',
+    sensors: [],
+    ...overrides,
+  })
+
+  it('対照: 全部届いていれば何も出さない', () => {
+    const out = buildAssignedSilenceReport([board()], NOW, new Set())
+    expect(out.warnings).toEqual([])
+    expect(out.recoveredLines).toEqual([])
+    expect(out.silentKeys.size).toBe(0)
+  })
+
+  it('対照: 起動直後の保留（waiting）は警告しない', () => {
+    const out = buildAssignedSilenceReport([board({ state: 'waiting', lastPacketMs: null })], NOW, new Set())
+    expect(out.warnings).toEqual([])
+  })
+
+  it('正: 黙った基板を warn で出す（一度も届かないものと、途絶えたものを言い分ける）', () => {
+    const out = buildAssignedSilenceReport(
+      [
+        board({ boardKey: 'mac:aa', state: 'silent', lastPacketMs: null }),
+        board({ boardKey: 'mac:bb', state: 'silent', lastPacketMs: NOW - 95_000 }),
+      ],
+      NOW,
+      new Set(),
+    )
+    // 1 枚ずつ別の行（別の間引きの鍵）で出る。
+    expect(out.warnings).toHaveLength(2)
+    expect(out.warnings.map((w) => w.level)).toEqual(['warn', 'warn'])
+    expect(out.warnings.map((w) => w.kind)).toEqual(['assigned-board-silent', 'assigned-board-silent'])
+    expect(out.warnings[0]?.line).toContain('mac:aa（観測点 garage・一度も届いていない）')
+    expect(out.warnings[1]?.line).toContain('mac:bb（観測点 garage・最後に届いてから 95 秒）')
+  })
+
+  it('正: 基板が届いているのに、名前を書いたセンサーが黙っていれば別の行で出す', () => {
+    const out = buildAssignedSilenceReport(
+      [board({ sensors: [{ sensorId: 's1', lastPacketMs: null, state: 'silent' }] })],
+      NOW,
+      new Set(),
+    )
+    expect(out.warnings).toHaveLength(1)
+    expect(out.warnings[0]?.kind).toBe('assigned-sensor-silent')
+    expect(out.warnings[0]?.line).toContain('mac:aa / s1（一度も届いていない。')
+  })
+
+  it('安全弁: 基板ごと黙っているなら、センサーを重ねて言わない', () => {
+    const out = buildAssignedSilenceReport(
+      [board({ state: 'silent', sensors: [{ sensorId: 's1', lastPacketMs: null, state: 'silent' }] })],
+      NOW,
+      new Set(),
+    )
+    expect(out.warnings.map((w) => w.kind)).toEqual(['assigned-board-silent'])
+  })
+
+  it('間引きの鍵は 1 枚ごとに決まり、経過秒にも、ほかに誰が黙っているかにも左右されない', () => {
+    // 顔ぶれ全体を鍵にすると、揺れるたびに新しい鍵ができて間引きの枠を食い潰し、
+    // 新しく黙った基板の初めての 1 行まで遅らされる（敵対的レビューの指摘）。
+    const a = buildAssignedSilenceReport([board({ state: 'silent', lastPacketMs: NOW - 70_000 })], NOW, new Set())
+    const b = buildAssignedSilenceReport([board({ state: 'silent', lastPacketMs: NOW - 130_000 })], NOW, new Set())
+    const c = buildAssignedSilenceReport(
+      [board({ state: 'silent' }), board({ boardKey: 'mac:bb', state: 'silent' })],
+      NOW,
+      new Set(),
+    )
+    expect(a.warnings[0]?.detail).toBe(b.warnings[0]?.detail)
+    expect(c.warnings[0]?.detail).toBe(a.warnings[0]?.detail)
+    expect(c.warnings[1]?.detail).not.toBe(a.warnings[0]?.detail)
+  })
+
+  it('黙っていたものが届くようになったら 1 行出す（基板もセンサーも）', () => {
+    const before = buildAssignedSilenceReport(
+      [
+        board({ boardKey: 'mac:aa', state: 'silent' }),
+        board({ boardKey: 'mac:bb', sensors: [{ sensorId: 's1', lastPacketMs: null, state: 'silent' }] }),
+      ],
+      NOW,
+      new Set(),
+    )
+    const after = buildAssignedSilenceReport(
+      [
+        board({ boardKey: 'mac:aa' }),
+        board({ boardKey: 'mac:bb', sensors: [{ sensorId: 's1', lastPacketMs: NOW, state: 'live' }] }),
+      ],
+      NOW,
+      before.silentKeys,
+    )
+    expect(after.warnings).toEqual([])
+    expect(after.recoveredLines).toEqual(['[station] 届くようになった: mac:aa、mac:bb / s1'])
+    expect(after.silentKeys.size).toBe(0)
+  })
+
+  it('安全弁: 設定から外した基板を「届くようになった」とは言わない', () => {
+    const before = buildAssignedSilenceReport([board({ state: 'silent' })], NOW, new Set())
+    const after = buildAssignedSilenceReport([], NOW, before.silentKeys)
+    expect(after.recoveredLines).toEqual([])
   })
 })
 
@@ -1054,6 +1160,7 @@ describe('applyStationConfigCore', () => {
     return {
       save: () => calls.push('save'),
       setCurrentConfig: () => calls.push('setCurrentConfig'),
+      trackAssignments: () => calls.push('trackAssignments'),
       rebuildStations: () => calls.push('rebuildStations'),
       closeSensorFusion: () => {
         calls.push('closeSensorFusion')
@@ -1083,6 +1190,7 @@ describe('applyStationConfigCore', () => {
     expect(calls).toEqual([
       'save',
       'setCurrentConfig',
+      'trackAssignments',
       'rebuildStations',
       'closeSensorFusion',
       'reportCloseFailures',
@@ -1090,6 +1198,14 @@ describe('applyStationConfigCore', () => {
       'setUngroupedMultiBoardStations',
       'setWarning',
     ])
+  })
+
+  it('正: 割り当てた時刻の帳面へ、差し替えた設定そのものを渡す（稼働中に足した基板に猶予を付ける）', () => {
+    // 呼び忘れると、足した基板が足した瞬間に「届いていない」と警告される
+    // （`main()` の中のクロージャはテストが届かないので、ここで固定する）。
+    const seen: StationConfig[] = []
+    applyStationConfigCore(deps([], { trackAssignments: (c) => seen.push(c) }), NEW_CONFIG)
+    expect(seen).toEqual([NEW_CONFIG])
   })
 
   it('対照: save が投げたら、以降のどの deps も呼ばない（例外はそのまま伝播する）', () => {
@@ -1117,6 +1233,7 @@ describe('applyStationConfigCore', () => {
     expect(calls).toEqual([
       'save',
       'setCurrentConfig',
+      'trackAssignments',
       'rebuildStations',
       'closeSensorFusion',
       'onCloseFailure',
@@ -1139,6 +1256,7 @@ describe('applyStationConfigCore', () => {
     expect(calls).toEqual([
       'save',
       'setCurrentConfig',
+      'trackAssignments',
       'rebuildStations',
       'closeSensorFusion',
       'reportCloseFailures',

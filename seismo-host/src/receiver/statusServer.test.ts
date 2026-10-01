@@ -72,6 +72,7 @@ function report(hub: ReadingHub): StatusReport {
     stations: StationDirectory.empty(),
     stationConfigWarning: null,
     ungroupedMultiBoardStations: [],
+    assignedBoards: [],
   })
 }
 

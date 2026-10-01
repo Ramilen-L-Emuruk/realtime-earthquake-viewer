@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest'
 
 import { STALE_AFTER_MS } from './dom'
-import { countLive, memberCell, sensorRowHtml, stationRowHtml, worstPairDiff } from './viewStatus'
+import {
+  assignedBoardsOf,
+  assignedSilenceWarnings,
+  countLive,
+  memberCell,
+  sensorRowHtml,
+  stationRowHtml,
+  worstPairDiff,
+} from './viewStatus'
 
 /** センサー対 1 組ぶんの差分の強さ（`/status` から読む形）。 */
 function pair(rmsGal: readonly (number | null)[], id = 'a') {
@@ -192,5 +200,59 @@ describe('countLive', () => {
 
   it('安全弁: まだ一度も届いていない（null）行は数えない', () => {
     expect(countLive(NOW, [{ lastPacketMs: null }])).toBe(0)
+  })
+})
+
+describe('assignedBoardsOf', () => {
+  it('安全弁: この欄を持たない古いホストからは空として読む（画面ごと倒さない）', () => {
+    expect(assignedBoardsOf({})).toEqual([])
+  })
+})
+
+describe('assignedSilenceWarnings', () => {
+  type SensorRow = { sensorId: string; lastPacketMs: number | null; state: string }
+  const board = (state: string, lastPacketMs: number | null = null, sensors: SensorRow[] = []) => ({
+    boardKey: 'mac:aa',
+    stationId: 'garage',
+    lastPacketMs,
+    state,
+    sensors,
+  })
+
+  it('正: 黙った基板を「いつから」付きで出す（ホストのログと同じ文面）', () => {
+    expect(assignedSilenceWarnings(NOW, [board('silent')])).toEqual([
+      '観測点に割り当てた基板が届いていない: mac:aa（観測点 garage・一度も届いていない）',
+    ])
+    expect(assignedSilenceWarnings(NOW, [board('silent', NOW - 95_000)])[0]).toContain(
+      '（観測点 garage・最後に届いてから 95 秒）',
+    )
+  })
+
+  it('安全弁: 時刻の欄が無い版（undefined）でも「一度も」に倒れ、NaN 秒を出さない', () => {
+    const legacy = { boardKey: 'mac:aa', stationId: 'garage', state: 'silent', sensors: [] }
+    const [line] = assignedSilenceWarnings(NOW, [legacy as unknown as ReturnType<typeof board>])
+    expect(line).toContain('一度も届いていない')
+    expect(line).not.toContain('NaN')
+  })
+
+  it('対照: 受信中と保留（起動直後）は出さない', () => {
+    expect(assignedSilenceWarnings(NOW, [board('live', NOW), board('waiting')])).toEqual([])
+  })
+
+  it('正: 基板が届いているときだけ、名前を書いたセンサーの沈黙を出す', () => {
+    const silentSensor = [{ sensorId: 's1', lastPacketMs: NOW - 168_000, state: 'silent' }]
+    expect(assignedSilenceWarnings(NOW, [board('live', NOW, silentSensor)])[0]).toContain(
+      'mac:aa / s1（最後に届いてから 168 秒）',
+    )
+    expect(assignedSilenceWarnings(NOW, [board('silent', null, silentSensor)])).toHaveLength(1)
+  })
+
+  it('安全弁: 基板 Key・観測点はエスケープする（無認証の UDP 由来・運用者の入力）', () => {
+    const [line] = assignedSilenceWarnings(NOW, [
+      { boardKey: 'name:<img>', stationId: '"x"', lastPacketMs: null, state: 'silent', sensors: [] },
+    ])
+    expect(line).not.toContain('<img>')
+    expect(line).toContain('&lt;img&gt;')
+    expect(line).toContain('&quot;x&quot;')
   })
 })

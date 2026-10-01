@@ -158,6 +158,7 @@ function input(overrides: Partial<StatusReportInput> = {}): StatusReportInput {
     stations: StationDirectory.empty(),
     stationConfigWarning: null,
     ungroupedMultiBoardStations: [],
+    assignedBoards: [],
     ...overrides,
   }
 }
@@ -196,6 +197,37 @@ describe('buildStatusReport', () => {
       throttled: 40,
       lastError: 'EHOSTUNREACH',
     })
+  })
+
+  it('割り当てた基板の様子を通し、読めない時刻は null へ倒して数える', () => {
+    const report = buildStatusReport(
+      input({
+        assignedBoards: [
+          {
+            boardKey: 'mac:aa',
+            stationId: 'garage',
+            lastPacketMs: Number.NaN,
+            state: 'silent',
+            sensors: [{ sensorId: 's0', lastPacketMs: Number.POSITIVE_INFINITY, state: 'silent' }],
+          },
+          { boardKey: 'mac:bb', stationId: 'garage', lastPacketMs: null, state: 'waiting', sensors: [] },
+        ],
+      }),
+    )
+    const round = JSON.parse(JSON.stringify(report))
+
+    expect(round.assignedBoards).toEqual([
+      {
+        boardKey: 'mac:aa',
+        stationId: 'garage',
+        lastPacketMs: null,
+        state: 'silent',
+        sensors: [{ sensorId: 's0', lastPacketMs: null, state: 'silent' }],
+      },
+      { boardKey: 'mac:bb', stationId: 'garage', lastPacketMs: null, state: 'waiting', sensors: [] },
+    ])
+    // 基板とセンサーで 1 つずつ。ほかの欄が持つぶんは差し引く。
+    expect(report.unreadableTimes - buildStatusReport(input()).unreadableTimes).toBe(2)
   })
 
   it('区間の時間軸を出す', () => {
