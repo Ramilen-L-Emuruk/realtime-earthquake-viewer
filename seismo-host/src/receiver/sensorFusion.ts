@@ -409,6 +409,27 @@ export interface FusionOutcome {
   readonly backupsCovered: boolean
 }
 
+/**
+ * `closeAll()` の結果。**2 種類の事実を分けて運ぶ。**
+ *
+ * - `drained` —— 待たせていたまとまりを流し切って合成した回。**1 つずつが `ingest()` の
+ *   結果と同じ意味を持つ**（`fusedWave` は必ず非 null）ので、呼び出し側は受信の最中と
+ *   同じ配り口へ通す。中の `readings` には区間の作り直しで締めた分も混ざりうる
+ *   （`ingest()` と同じ）
+ * - `readings`・`failures` —— そのあと流し込み（`IntensityStream`）を締めて出た震度と、
+ *   締めくくりの失敗。**`drained` の中身はここへ重ねて入れない** —— 入れると、
+ *   `drained` を配る呼び出し側で同じ震度が 2 度出る
+ *
+ * **`drained` を配り忘れると、合成波形と差分に加えて震度もその分だけ欠ける。**
+ * 型で省けないよう、受け取る側（`main.ts` の `ApplyStationConfigDeps`・`CloseHostDeps`）は
+ * この型をそのまま受ける。
+ */
+export interface SensorFusionClosing {
+  readonly drained: readonly FusionOutcome[]
+  readonly readings: readonly StationIntensityReading[]
+  readonly failures: readonly StationCloseFailure[]
+}
+
 function nothingOutcome(): FusionOutcome {
   return {
     fusedWave: null,
@@ -1105,33 +1126,35 @@ export class SensorFusion {
    * （`IntensityPipeline.closeAll()` と同じ理由）。
    *
    * **待たせていたまとまりは先に流し切る。** 捨てると、待っていたぶん
-   * （揃うまでにかかった時間。最大で `FUSION_WAIT_MS_DEFAULT`）の震度が出ないまま
-   * 消える——締めくくり（`end()`）を呼ぶ理由と同じ。
-   * **合成波形はここでは返せない**（この戻り値は震度と締めくくりの失敗だけを運ぶ）ので、
-   * 最後の数まとまりぶんの合成波形は出ずに終わる。震度は拾えるので実害は無いが、
-   * 波形を配る先を足すとき（#315）はここを見直すこと。
+   * （揃うまでにかかった時間。最大で `FUSION_WAIT_MS_DEFAULT`）の波形と震度が
+   * 出ないまま消える——締めくくり（`end()`）を呼ぶ理由と同じ。
+   *
+   * **流し切った回は `ingest()` と同じ `FusionOutcome` のまま返す**（`SensorFusionClosing`
+   * の `drained`）。呼び出し側はそれを普段と同じ配り口（`main.ts` の
+   * `deliverStationFusion`）へ通す —— 合成波形・対ごとの差分・震度・締めくくりの
+   * 失敗が、受信の最中と同じ経路で押し出され、残される。
    *
    * **この呼び出しのあとに `ingest()` を呼んではいけない。** 呼ぶと投げる
    * （`ingest()` 自身のコメントを見ること）。
    */
-  closeAll(): { readonly readings: readonly StationIntensityReading[]; readonly failures: readonly StationCloseFailure[] } {
+  closeAll(): SensorFusionClosing {
     this.closed = true
+    const drained: FusionOutcome[] = []
     const readings: StationIntensityReading[] = []
     const failures: StationCloseFailure[] = []
     for (const group of this.groups) {
       while (group.held.length > 0) {
         const head = group.held.shift() as HeldChunk
-        // **締めくくりでは覆えたかを見ない。** この戻り値は震度と締めくくりの失敗だけを
-        // 運ぶので `backupsCovered` は誰も読まない（そもそも `fusedWave` を返さない）。
-        const out = this.fuse(group, head, backupsCoverTail(group, head))
-        readings.push(...out.readings)
-        if (out.closeFailure !== null) failures.push(out.closeFailure)
+        // **覆えたかは正直に渡す。** 締めくくりの回は裏付けを待ちきれずに出すので
+        // 偽が多いが、それは事実（`stationHealth.ts` の `uncoveredFusions` は
+        // 設定を変えた直後に増えることを前提にしている）。
+        drained.push(this.fuse(group, head, backupsCoverTail(group, head)))
       }
       const closed = endGroupStream(group)
       readings.push(...closed.readings)
       if (closed.failure !== null) failures.push(closed.failure)
     }
-    return { readings, failures }
+    return { drained, readings, failures }
   }
 
   /**

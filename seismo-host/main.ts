@@ -50,6 +50,7 @@ import { SensorFusion } from './src/receiver/sensorFusion'
 import type {
   FusedWaveChunk,
   FusionOutcome,
+  SensorFusionClosing,
   SensorPairDiff,
   StationCloseFailure,
   StationIntensityReading,
@@ -788,11 +789,71 @@ export function deliverStationFusion(to: StationFusionSinks, fusion: FusionOutco
 }
 
 /**
+ * `SensorFusion.closeAll()` の結果の配り先。**呼ぶのは 2 箇所**（設定の差し替えと終了）で、
+ * どちらも同じこの形を通す。
+ */
+export interface FusionClosingSinks {
+  /**
+   * 待たせていたまとまりを流し切った回を 1 つ配る（#402）。**省略できない。**
+   *
+   * **受信の最中と同じ `deliverStationFusion` へ通すこと。** 合成波形・対ごとの差分を
+   * 別の口で拾うと、押し出しと保存のどちらかへ書き忘れても気づけない
+   * （`StationFusionSinks.publishWave` の説明を見ること）。渡し忘れると震度まで欠ける
+   * （`SensorFusionClosing` の説明）。
+   */
+  readonly deliverFusion: (fusion: FusionOutcome) => void
+  readonly reportCloseFailures: (failures: readonly StationCloseFailure[]) => void
+  readonly emitReading: (r: StationIntensityReading) => void
+  /**
+   * 上の 3 つのどれかが投げたことを、**配り終えてから 1 回だけ**報せる。**省略できない。**
+   *
+   * `labels` は配れなかったものの一覧（何の・どの観測点か）、`firstError` は最初に投げた値。
+   * 渡し忘れると、配れなかったものが記録にも残らず消える。
+   */
+  readonly reportDeliveryFailure: (labels: readonly string[], firstError: unknown) => void
+}
+
+/**
+ * `SensorFusion.closeAll()` の結果を配る。**流し切った回 → 締めくくりの失敗 → 締めて出た震度** の順。
+ * 配り先の失敗では**投げない**（`reportDeliveryFailure` へ回す）。**ただし `reportDeliveryFailure`
+ * そのものが投げればそのまま外へ出る**ので、呼び出し側で囲うこと（`applyStationConfigCore`・
+ * `closeHostCore` はそうしている）。
+ *
+ * **流し切った回を先に配る。** あちらの震度は、流し込みを締めて出る震度より前の時刻のもの ——
+ * 逆にすると、観測点の帳面（`stationHealth.ts` の `noteReading`）に最後に残る震度が
+ * 新しいものから古いものへ巻き戻る。
+ *
+ * **1 件ずつ受け止める。** 締めくくりは取り直しの利かない最後の 1 回で、`drained` には
+ * 全観測点ぶんが 1 本の配列で並ぶ —— 1 件目で投げて残りを飛ばすと、無関係な観測点の
+ * 末尾の波形・震度と締めくくりの失敗の報告まで、どれだけ失ったかも分からないまま消える。
+ */
+export function deliverFusionClosing(to: FusionClosingSinks, closing: SensorFusionClosing): void {
+  const failed: string[] = []
+  const errors: unknown[] = []
+  const attempt = (label: string, deliver: () => void): void => {
+    try {
+      deliver()
+    } catch (error) {
+      failed.push(label)
+      errors.push(error)
+    }
+  }
+  for (const fusion of closing.drained) {
+    attempt(`波形 ${fusion.fusedWave?.stationId ?? '(観測点不明)'}`, () => to.deliverFusion(fusion))
+  }
+  attempt('締めくくりの失敗の報告', () => to.reportCloseFailures(closing.failures))
+  for (const r of closing.readings) attempt(`震度 ${r.stationId}`, () => to.emitReading(r))
+  if (failed.length > 0) to.reportDeliveryFailure(failed, errors[0])
+}
+
+/**
  * `applyStationConfigCore` が触る先。**`main()` の中に並べただけだと、この順番を
  * 守るものが何も無い**（あそこは「直接実行のときだけ走らせる」門の内側でテストが
  * 届かない）——`deliverReading`/`deliverStationFusion` と同じ理由で抽出する。
+ *
+ * 古い合成を締めて出たものの配り先は `FusionClosingSinks` から受ける（終了時と同じ）。
  */
-export interface ApplyStationConfigDeps {
+export interface ApplyStationConfigDeps extends FusionClosingSinks {
   /** ディスクへ保存する。**投げうる**——投げたら以降は一切呼ばない。 */
   readonly save: (config: StationConfig) => void
   /** `/api/stations`・`/api/boards` の GET が返す値を差し替える。 */
@@ -809,10 +870,13 @@ export interface ApplyStationConfigDeps {
   /** `StationDirectory` を作り直し、`IntensityPipeline` へ差し替える。 */
   readonly rebuildStations: (config: StationConfig) => void
   /** 古い `SensorFusion` を締める。**投げうる**（呼び出し側が捕まえる）。 */
-  readonly closeSensorFusion: () => { failures: readonly StationCloseFailure[]; readings: readonly StationIntensityReading[] }
-  readonly reportCloseFailures: (failures: readonly StationCloseFailure[]) => void
-  readonly emitReading: (r: StationIntensityReading) => void
-  /** 古い `closeSensorFusion` が投げたときに呼ぶ。設定の差し替え自体は止めない。 */
+  readonly closeSensorFusion: () => SensorFusionClosing
+  /**
+   * 古い `closeSensorFusion` が投げたとき、**または締めくくりで出たものを配れなかったことを
+   * 報せる口（`reportDeliveryFailure`）そのものが投げたとき**に呼ぶ。設定の差し替え自体は止めない。
+   *
+   * 配り先の失敗だけならここへは来ない（`reportDeliveryFailure` が受ける）。
+   */
   readonly onCloseFailure: (error: unknown) => void
   /** 新しい `SensorFusion` を作り、合成グループが組めた観測点の一覧を返す。 */
   readonly rebuildSensorFusion: (config: StationConfig) => readonly string[]
@@ -851,14 +915,32 @@ export function applyStationConfigCore(deps: ApplyStationConfigDeps, newConfig: 
   deps.trackAssignments(newConfig)
   deps.rebuildStations(newConfig)
 
-  // **締めの失敗で反映を止めない。** `shutdown` の同じ処理と同じ理由——
+  // **締めの失敗で反映を止めない。** `closeHostCore` の同じ処理と同じ理由——
   // 締めくくりが投げても、設定の差し替え自体は進める。
+  //
+  // **待たせていたまとまりの波形もここで配る**（#402）。設定を保存するたびに、
+  // 観測点ごとの末尾の波形が押し出しにも `data/wave/` にも出ずに消えていた。
+  //
+  // **囲うのは締めくくりそのものだけ。** 配り先の失敗は `deliverFusionClosing` が
+  // `reportDeliveryFailure` へ回すので、ここへは来ない —— 一緒に囲うと 2 つの失敗が
+  // 同じ文面に化けて見分けられない。
+  //
+  // **配る側も囲う。** `deliverFusionClosing` 自体は投げないが、報せる口
+  // （`reportDeliveryFailure`）が投げれば抜けてくる —— ここで止まると下の
+  // `rebuildSensorFusion` に届かず、締めた古いインスタンスが残って以後の受信が
+  // すべて `ingest()` で投げる。
+  let closing: SensorFusionClosing | null = null
   try {
-    const stationRest = deps.closeSensorFusion()
-    deps.reportCloseFailures(stationRest.failures)
-    for (const r of stationRest.readings) deps.emitReading(r)
+    closing = deps.closeSensorFusion()
   } catch (error) {
     deps.onCloseFailure(error)
+  }
+  if (closing !== null) {
+    try {
+      deliverFusionClosing(deps, closing)
+    } catch (error) {
+      deps.onCloseFailure(error)
+    }
   }
 
   const groupedStationIds = deps.rebuildSensorFusion(newConfig)
@@ -867,6 +949,113 @@ export function applyStationConfigCore(deps: ApplyStationConfigDeps, newConfig: 
   // `newConfig` は常にパース済みの正しい形なので、読み直して警告の有無を
   // 確かめ直す必要は無い。
   deps.setWarning(null)
+}
+
+/**
+ * `closeHostCore` が触る先。**順序を守るものを `main()` の外へ出すために置く**
+ * （`ApplyStationConfigDeps` と同じ理由。終了の合図でしか走らない処理は、
+ * 中に並べただけだと誰も確かめていないことになる）。
+ */
+export interface CloseHostDeps {
+  /** UDP の受信口を閉じる。 */
+  readonly closeReceiver: () => Promise<void>
+  /** 生データの保存を流し切って閉じる。 */
+  readonly closeRawStore: () => Promise<void>
+  /** 単独センサーの計測震度を締める（`IntensityPipeline.closeAll()`）。 */
+  readonly closePipeline: () => { readonly readings: readonly IntensityReading[]; readonly failures: readonly CloseFailure[] }
+  readonly reportPipelineCloseFailures: (failures: readonly CloseFailure[]) => void
+  readonly emitPipelineReading: (r: IntensityReading) => void
+  /** 観測点の合成を締める（`SensorFusion.closeAll()`）。 */
+  readonly closeSensorFusion: () => SensorFusionClosing
+  /** 合成を締めて出たものの配り先。設定の差し替えと同じもの。 */
+  readonly stationClosing: FusionClosingSinks
+  /** 合成波形の保存を閉じる。 */
+  readonly closeWaveArchive: () => Promise<void>
+  /** 状態の口（押し出しを含む）を閉じる。 */
+  readonly closeStatusServer: () => Promise<void>
+  /** 起動してからの累計を出す。**必ず最後に呼ばれる。** */
+  readonly printTotals: () => void
+  readonly logError: (line: string) => void
+}
+
+/**
+ * 終了の合図を受けたときの締めくくり。**順序はここが持つ。**
+ *
+ * 1. **受信口を先に閉じる。** 締めくくりを先にすると、空にしたそばから届いた分が
+ *    新しい区間を開き、二度と締められないまま終わる（その基板の最後の窓ぶんが、
+ *    警告も記録も無いまま消える）
+ * 2. **生データを流し切る。** 圧縮の途中で抜けると `.gz.tmp` が残り、次の起動が
+ *    書きかけのファイルを見る
+ * 3. **単独センサーの震度を締めくくる。** 出さずに終えると、最後の窓ぶんの答えが消える
+ * 4. **観測点の合成を締めくくる。** 待たせていたまとまりの波形と差分もここで配る（#402）
+ * 5. **合成波形の保存は 4 より後で閉じる。** 生データのすぐ後ろへ置きたくなるが、
+ *    それだと 4 で配る波形が `closed` で断られて黙って消える
+ * 6. **状態の口は震度を出し切ってから閉じる。** 先に閉じると、最後の窓ぶんの答えが
+ *    購読者へ届かない（押し出しを先に切らないと `server.close()` が返らないので、
+ *    閉じる中で順序は守られる）
+ * 7. **累計は最後に必ず出す**
+ *
+ * **1〜6 はどれも投げさせない。** 1 つが投げても後ろの段へ進み、7 へ必ず届く ——
+ * 届かないと、起動してからの数え上げが丸ごと消える。
+ *
+ * **2 度目の合図を弾くのと `process.exit` は呼び出し側（`main()`）の仕事。**
+ */
+export async function closeHostCore(deps: CloseHostDeps): Promise<void> {
+  try {
+    await deps.closeReceiver()
+  } catch (error) {
+    // **閉じられなくても締めくくりは進める。** 止めると、その時点で抱えている
+    // 生データ・震度・波形がまとめて消える。届き続ける分が新しい区間を開く危険は
+    // 残るが、何も締めずに終えるよりは失うものが少ない。
+    deps.logError(`[udp] 受信口の締めに失敗: ${messageOf(error)}`)
+  }
+
+  try {
+    await deps.closeRawStore()
+  } catch (error) {
+    deps.logError(`[raw] 生データの締めに失敗: ${messageOf(error)}`)
+  }
+
+  try {
+    const rest = deps.closePipeline()
+    deps.reportPipelineCloseFailures(rest.failures)
+    for (const r of rest.readings) deps.emitPipelineReading(r)
+  } catch (error) {
+    deps.logError(`[close] 締めくくりに失敗: ${messageOf(error)}`)
+  }
+
+  // `SensorFusion.closeAll()` 自体は投げない契約（`sensorFusion.ts` の `endGroupStream` を
+  // 見ること）だが、呼び出し元に個別の try/catch を要求する契約でもないので、他の段と同じ形で囲う。
+  // **囲うのは締めくくりそのものだけ**（配り先の失敗は `reportDeliveryFailure` へ別の文面で出る。
+  // `applyStationConfigCore` と同じ理由）。
+  let closing: SensorFusionClosing | null = null
+  try {
+    closing = deps.closeSensorFusion()
+  } catch (error) {
+    deps.logError(`[station-close] 観測点の合成の締めくくりに失敗: ${messageOf(error)}`)
+  }
+  if (closing !== null) {
+    // 報せる口が投げたときだけここへ来る（配り先の失敗は `deliverFusionClosing` の中で受け止める）。
+    try {
+      deliverFusionClosing(deps.stationClosing, closing)
+    } catch (error) {
+      deps.logError(`[station-close] 配れなかったことを報せられず: ${messageOf(error)}`)
+    }
+  }
+
+  try {
+    await deps.closeWaveArchive()
+  } catch (error) {
+    deps.logError(`[wave] 合成波形の締めに失敗: ${messageOf(error)}`)
+  }
+
+  try {
+    await deps.closeStatusServer()
+  } catch (error) {
+    deps.logError(`[http] 状態の口の締めに失敗: ${messageOf(error)}`)
+  }
+
+  deps.printTotals()
 }
 
 /**
@@ -1346,6 +1535,25 @@ async function main(): Promise<void> {
   }
 
   /**
+   * 観測点の合成を締めて出たものの配り先。**設定の差し替えと終了の 2 箇所が使う**
+   * （順序は `deliverFusionClosing` が持つ）。
+   *
+   * **流し切った回は `stationFusionSinks` へ通す**（#402）。受信の最中と同じ口なので、
+   * 押し出しと `data/wave/` の両方へ届く。
+   */
+  const stationClosing: FusionClosingSinks = {
+    deliverFusion: (fusion) => deliverStationFusion(stationFusionSinks, fusion),
+    reportCloseFailures: reportStationCloseFailures,
+    emitReading: emitStationReading,
+    // **間引かない**（`emit` を通さない）。締めくくりは 1 回きりで、間引きの枠に
+    // 先の行が残っていると、この 1 行が出ないまま終わりうる。
+    reportDeliveryFailure: (labels, firstError) =>
+      console.error(
+        `[station-close] 締めくくりで出た合成の結果を配れず（${labels.length} 件: ${labels.join('・')}）: ${shorten(messageOf(firstError))}`,
+      ),
+  }
+
+  /**
    * `/api/*` の書き込みが観測点設定を確定したときに呼ぶ（#313 段 B）。
    *
    * **順序に意味のあるロジックは `applyStationConfigCore` へ抽出済み。** ここは
@@ -1364,10 +1572,11 @@ async function main(): Promise<void> {
           pipeline.updateStations(stations)
         },
         closeSensorFusion: () => sensorFusion.closeAll(),
-        reportCloseFailures: reportStationCloseFailures,
-        emitReading: emitStationReading,
+        ...stationClosing,
         onCloseFailure: (error) =>
-          console.error(`[station-close] 設定変更に伴う観測点合成の締めくくりに失敗: ${messageOf(error)}`),
+          console.error(
+            `[station-close] 設定変更に伴う観測点合成の締めくくり（または配れなかったことの報告）に失敗: ${messageOf(error)}`,
+          ),
         rebuildSensorFusion: (config) => {
           sensorFusion = new SensorFusion(config)
           return sensorFusion.groupedStationIds
@@ -1802,68 +2011,34 @@ async function main(): Promise<void> {
     clearInterval(timer)
     console.log(`[udp] ${signal} を受けたので締めます`)
 
-    // **受信口を先に閉じる。** 締めくくりを先にすると、空にしたそばから届いた分が
-    // 新しい区間を開き、二度と締められないまま終わる（その基板の最後の窓ぶんが、
-    // 警告も記録も無いまま消える）。
-    await receiver.close()
-
-    // **受信口を閉じたらすぐ流し切る。** 圧縮の途中で抜けると `.gz.tmp` が残り、
-    // 次の起動が書きかけのファイルを見る。**ここで投げさせない** —— 震度の
-    // 締めくくりへ進めなくなる。
-    try {
-      await rawStore.close()
-    } catch (error) {
-      console.error(`[raw] 生データの締めに失敗: ${messageOf(error)}`)
-    }
-
-    // **締めくくりを出してから終える。** 出さずに終えると、最後の窓ぶんの答えが消える。
-    // **ここで投げさせない** —— 終了に到達しなくなる。
-    try {
-      const rest = pipeline.closeAll()
-      reportCloseFailures(rest.failures)
-      for (const r of rest.readings) emitReading(r)
-    } catch (error) {
-      console.error(`[close] 締めくくりに失敗: ${messageOf(error)}`)
-    }
-
-    // **観測点の合成（§7）も同じ理由で締める。** `sensorFusion.closeAll()` 自体は
-    // 投げない契約（`sensorFusion.ts` の `endGroupStream` を見ること）だが、
-    // 呼び出し元に個別の try/catch を要求する契約でもないので、他の締めくくりと
-    // 同じ形で囲っておく。
-    try {
-      const stationRest = sensorFusion.closeAll()
-      reportStationCloseFailures(stationRest.failures)
-      for (const r of stationRest.readings) emitStationReading(r)
-    } catch (error) {
-      console.error(`[station-close] 観測点の合成の締めくくりに失敗: ${messageOf(error)}`)
-    }
-
-    // **合成波形の保存は、合成の締めくくりより後で閉じる。** 生データ（`rawStore`）の
-    // すぐ後ろへ置きたくなるが、それだと**閉じた後に合成の締めくくりが来る**形になる。
+    // **順序は `closeHostCore` が持つ**（理由もあちらに書いてある）。ここは
+    // `main()` のローカル変数を `deps` へ束ねる配線だけ。
     //
-    // いまは `sensorFusion.closeAll()` が波形を返さない（震度と締めくくりの失敗だけ）ので
-    // 実害は無い。ただしあちらのコメントが「波形を配る先を足すときはここを見直すこと」と
-    // 予告しており、**返すようになった日にこの順序が逆だと、その波形は
-    // `closed` で断られて黙って消える** —— 先に順序だけ直しておく。
-    // **`closeAll()` に波形を持たせる件そのものは #402。**
-    try {
-      await waveArchive.close()
-      if (waveArchive.slowClose) console.warn('[wave] 合成波形の締めくくりを待ちきれず')
-    } catch (error) {
-      console.error(`[wave] 合成波形の締めに失敗: ${messageOf(error)}`)
-    }
+    // **ここを触ったら実機で確かめること**（`stationFusionSinks` と同じ理由）。
+    // `closeHostCore` のテストは偽の `deps` で順序を固定するもので、ここが本物の
+    // 受信口・保存・状態の口へ繋がっていることは検査していない —— 各欄はただの関数型なので、
+    // 空関数にしても別の段を渡しても型検査は通り、終了の合図を受けるまで何も起きない。
+    await closeHostCore({
+      closeReceiver: () => receiver.close(),
+      closeRawStore: () => rawStore.close(),
+      closePipeline: () => pipeline.closeAll(),
+      reportPipelineCloseFailures: reportCloseFailures,
+      emitPipelineReading: emitReading,
+      closeSensorFusion: () => sensorFusion.closeAll(),
+      stationClosing,
+      closeWaveArchive: async () => {
+        await waveArchive.close()
+        if (waveArchive.slowClose) console.warn('[wave] 合成波形の締めくくりを待ちきれず')
+      },
+      closeStatusServer: () => statusServer.close(),
+      printTotals,
+      logError: (line) => console.error(line),
+    })
+    process.exit(0)
+  }
 
-    // **状態の口は震度を出し切ってから閉じる。** 先に閉じると、最後の窓ぶんの答えが
-    // 購読者へ届かない（押し出しを先に切らないと `server.close()` が返らないので、
-    // 閉じる中で順序は守られる）。**ここで投げさせない** —— 終了に到達しなくなる。
-    try {
-      await statusServer.close()
-    } catch (error) {
-      console.error(`[http] 状態の口の締めに失敗: ${messageOf(error)}`)
-    }
-
-    // **累計は最後に必ず出す。** ここを囲いの中へ入れると、締めくくりが投げたときに
-    // 起動してからの数え上げが丸ごと消える。
+  /** 起動してからの累計を出す。終了の締めくくり（`closeHostCore`）が最後に呼ぶ。 */
+  function printTotals(): void {
     console.log('[集計] 起動してからの累計')
     for (const line of formatTally(tally.snapshotTotal())) console.log(`  ${line}`)
     // **中身は純関数が持つ。** ここは終了の合図でしか走らないので、条件を直に書くと
@@ -1898,7 +2073,6 @@ async function main(): Promise<void> {
       if (c.level === 'error') console.error(c.line)
       else console.log(c.line)
     }
-    process.exit(0)
   }
   process.on('SIGINT', () => void shutdown('SIGINT'))
   process.on('SIGTERM', () => void shutdown('SIGTERM'))

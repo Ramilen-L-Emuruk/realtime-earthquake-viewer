@@ -594,26 +594,73 @@ describe('SensorFusion.ingest — 裏付けを待って顔ぶれを揃える（#
     expect(fused).toBeLessThan(20)
   })
 
-  it('安全弁: closeAll() は待たせていたまとまりも流し切る', () => {
-    // 待たせていたぶんを捨てると、終了時にその分の震度が出ないまま消える。
-    const fusion = new SensorFusion(threeSensorConfig(), { windowSec: 1, stepSec: 1, waitMs: 300 })
-    // 窓（1 秒）＋先読み（2 秒）＝300 サンプルを超える量を流す。待ちのせいで
-    // 末尾の数まとまりは保留に残る。
-    for (let c = 0; c < 40; c++) {
-      const at = c * CHUNK
-      fusion.ingest(
-        wave({
-          boardKey: BOARD_A,
-          sensorId: 'sensorA',
-          firstSampleIndex: at,
-          firstSampleMs: BASE_MS + at * MS_PER_SAMPLE,
-          gal: rows(CHUNK, 1),
-        }),
-      )
+  /**
+   * 9 本のうち駆動役と 1 本だけを `rounds` 回流す（上の「一度も届かない裏付け」と同じ形）。
+   * **揃わない相手を待つので、末尾の数まとまりは保留に残ったまま終わる** ——
+   * `closeAll()` が流し切るものを確実に作れる形。
+   */
+  function feedPartial(waitMs: number, rounds: number) {
+    const fusion = new SensorFusion(nineSensorConfig(), { windowSec: 1, stepSec: 1, waitMs })
+    const waves: FusedWaveChunk[] = []
+    let readings = 0
+    for (let k = 0; k < rounds; k++) {
+      for (const s of [REAL_SENSORS[0], REAL_SENSORS[1]]) {
+        const out = fusion.ingest(
+          wave({
+            boardKey: s.boardKey,
+            sensorId: s.sensorId,
+            firstSampleIndex: k * WIDE_CHUNK,
+            firstSampleMs: BASE_MS + s.phase + k * WIDE_CHUNK * s.mps,
+            msPerSample: s.mps,
+            gal: rows(WIDE_CHUNK, 1),
+          }),
+        )
+        if (out.fusedWave !== null) waves.push(out.fusedWave)
+        readings += out.readings.length
+      }
     }
+    return { fusion, waves, readings }
+  }
+
+  it('正: closeAll() は待たせていたまとまりを、合成波形ごと drained へ返す（#402）', () => {
+    // **捨てると、終了・設定変更のたびに観測点ごとの末尾の波形が押し出しにも
+    // `data/wave/` にも出ずに消える。** 震度は出続けるので外からは気づけない。
+    const rounds = 20
+    const { fusion, waves } = feedPartial(FUSION_WAIT_MS_DEFAULT, rounds)
+    // 症状の条件が作れていることの裏取り —— 保留に残っていなければこのテストは何も見ていない。
+    expect(waves.length).toBeLessThan(rounds)
     const closed = fusion.closeAll()
+    const drained = closed.drained.map((o) => o.fusedWave)
+    expect(drained.every((w) => w !== null)).toBe(true)
+    // **送った駆動役のまとまりが、普段出た分と流し切った分で過不足なく揃う。**
+    const all = [...waves, ...(drained as FusedWaveChunk[])]
+    expect(all.map((w) => w.firstSampleIndex)).toEqual(
+      Array.from({ length: rounds }, (_, k) => k * WIDE_CHUNK),
+    )
+    for (const w of all) expect(w.stationId).toBe('home')
+    // 流し切った回は `ingest()` と同じ形なので、差分も運ぶ（捨てていた 2 つめの事実）。
+    for (const o of closed.drained) expect(o.pairDiffs.length).toBeGreaterThan(0)
     expect(closed.failures).toEqual([])
-    expect(closed.readings.length).toBeGreaterThan(0)
+  })
+
+  it('対照: 待たせていたまとまりが無ければ drained は空', () => {
+    // 待ち 0 なら届いた瞬間に合成されるので、締めくくりで流し切るものは無い。
+    const { fusion, waves } = feedPartial(0, 20)
+    expect(waves).toHaveLength(20)
+    expect(fusion.closeAll().drained).toEqual([])
+  })
+
+  it('安全弁: 流し切った回の震度を drained へ移しても、出る震度の件数は待ちの有無で変わらない', () => {
+    // **`readings` から流し切った回のぶんを抜いたので、呼び出し側が `drained` を
+    // 配り忘れると震度がその分だけ減る。** ここでは「両方を合わせれば従来と同じ件数」を固定する。
+    const count = (waitMs: number): number => {
+      const { fusion, readings } = feedPartial(waitMs, 20)
+      const closed = fusion.closeAll()
+      return readings + closed.readings.length + closed.drained.reduce((n, o) => n + o.readings.length, 0)
+    }
+    const immediate = count(0)
+    expect(immediate).toBeGreaterThan(0)
+    expect(count(FUSION_WAIT_MS_DEFAULT)).toBe(immediate)
   })
 })
 
