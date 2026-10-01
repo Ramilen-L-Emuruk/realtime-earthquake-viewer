@@ -28,6 +28,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { GAL_PER_G } from './src/intensity/units'
 import { MAX_TIME_MS, parseSensorPacket } from './src/protocol/parsePacket'
+import { AckReplier, readAckEnabled } from './src/receiver/ackReplier'
 import { GravityCheckBook } from './src/receiver/gravityCheck'
 import type { GravityCount, GravityCounts, GravityVerdict } from './src/receiver/gravityCheck'
 import { IntensityPipeline } from './src/receiver/intensityPipeline'
@@ -1063,6 +1064,12 @@ async function main(): Promise<void> {
   for (const w of buildStationGroupingWarning(ungroupedMultiBoardStations)) console.warn(w.line)
   const tally = new PacketTally()
   const rateLimit = new SourceRateLimit()
+  // **基板へ「届いた」と返す**（`src/receiver/ackReplier.ts`）。止めるのは診断のときだけ ——
+  // 止めると、返事を待っている基板は 15 秒ごとに段を上げ、立て直しを繰り返す。
+  const acks = new AckReplier({ enabled: readAckEnabled(process.env.SEISMO_ACK) })
+  if (!acks.enabled) {
+    console.warn('[ack] SEISMO_ACK=off のため基板へ返事を返しません（返事を待つ基板は立て直しを始めます）')
+  }
   const throttle = new LogThrottle()
   const hub = new ReadingHub()
   const health = new SensorHealthBook()
@@ -1283,7 +1290,7 @@ async function main(): Promise<void> {
     // 細目に例外の種類を使うのは、種類ごとに初回を必ず出すため —— 文面を鍵にすると
     // 中身（アドレス等）が混ざって枠が際限なく増える。
     onError: (error) => emit('error', 'udp', error.name, `[udp] ${error.message}`),
-    onDatagram: (payload, from) => {
+    onDatagram: (payload, from, reply) => {
       // **届いた件数は上限を掛ける前に数える。** あとだと分母が上限そのものになり、
       // 「どれだけ撃たれているか」が表から読めなくなる。
       tally.record({ kind: 'received', source: from.address })
@@ -1334,6 +1341,15 @@ async function main(): Promise<void> {
 
       const board = read.packet.boardKey
       tally.record({ kind: 'accepted', board })
+      // **返事は読み取れた直後に返す。** 基板が知りたいのは「届いて読めたか」で、
+      // 震度が出たか・区間がどう切れたかではない（それは基板が直せることではない）。
+      // **後ろへ置かない** —— この先の処理が投げると返事が出ず、ホストの不具合を
+      // 基板が「送れていない」と取り違えて、繋ぎ直しと再起動を始める。
+      // `offer` は投げない約束（`ackReplier.ts`）。手前の `tally.record` も数を足すだけで投げない。
+      // 版 1 は `ackRequested` が立たない（`mac:` の確かめは、その約束が崩れたときの安全弁）。
+      if (read.ackRequested && board.startsWith('mac:')) {
+        acks.offer(board.slice('mac:'.length), reply, Date.now())
+      }
       // **誰の声かが判るのはここから。** 読み取りに失敗した回は基板が判らないので覚えない。
       const current = streamKeyOf(read.packet)
       health.notePacket({ boardKey: board, sensorId: read.packet.sensorId, streamKey: current })
@@ -1520,6 +1536,7 @@ async function main(): Promise<void> {
           lastWriteError: waveArchive.lastWriteError,
         },
         hub: hub.snapshot(),
+        acks: acks.snapshot(),
         stations,
         stationConfigWarning,
         ungroupedMultiBoardStations,
@@ -1567,6 +1584,9 @@ async function main(): Promise<void> {
     )
     const counters = {
       evicted: delta('evicted', '送信元の枠を捨てた', rateLimit.evictions),
+      // **返事を返せなかったことも要約へ出す。** 基板の側からは「返事が来ない」としか
+      // 見えず、ホストが返せていないのか届いていないのかを分ける手掛かりはここにしかない。
+      ackFailed: delta('ackFailed', '基板へ返事を返せず', acks.failures),
       // **状態の口へ出すだけでは足りない。** ここは画面を持たない常駐プロセスで、
       // `/status` は見に来た人にしか届かない。この 3 つは**それ以外に声を持たない** ——
       // 押し出しの切断（詰まり・壊れた）は `onDetach` が 1 行ずつ出し、生データ系は

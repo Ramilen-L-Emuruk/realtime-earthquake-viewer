@@ -2,7 +2,7 @@ import { createSocket } from 'node:dgram'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { startUdpReceiver } from './udpReceiver'
-import type { DatagramSource, UdpReceiver } from './udpReceiver'
+import type { DatagramReply, DatagramSource, UdpReceiver } from './udpReceiver'
 
 const LOOPBACK = '127.0.0.1'
 
@@ -13,7 +13,7 @@ afterEach(async () => {
 })
 
 async function open(
-  onDatagram: (payload: string, from: DatagramSource) => void,
+  onDatagram: (payload: string, from: DatagramSource, reply: DatagramReply) => void,
   onError: (error: Error) => void = () => {},
 ): Promise<UdpReceiver> {
   // **ポート 0 で開ける。** 固定の番号だと、他のテストや実機の受信口と取り合う。
@@ -59,6 +59,42 @@ describe('startUdpReceiver', () => {
     await waitFor(() => from.length === 1, '送り手')
     expect(from[0].address).toBe(LOOPBACK)
     expect(from[0].port).toBeGreaterThan(0)
+  })
+
+  it('返す口は、送ってきたソケットへ届く', async () => {
+    // **送り手のソケットで受ける。** 基板は送るのに使ったソケットでしか返事を待たないので、
+    // ここが別のポートへ返していたら、基板には 1 つも届かない。
+    const r = await open((payload, _from, reply) => {
+      if (payload === 'ping') reply('seismo-ack aa\n', () => {})
+    })
+    const sender = createSocket({ type: 'udp4' })
+    const got: string[] = []
+    sender.on('message', (buffer) => got.push(buffer.toString('utf8')))
+    try {
+      await new Promise<void>((resolve) => sender.bind(0, LOOPBACK, () => resolve()))
+      sender.send('ping', r.port, LOOPBACK)
+      await waitFor(() => got.length === 1, '返事')
+      expect(got[0]).toBe('seismo-ack aa\n')
+    } finally {
+      sender.close()
+    }
+  })
+
+  it('閉じたあとに返そうとしても投げず、失敗を onDone へ渡す', async () => {
+    // 箱に入れて持つ。素の `let` だと、コールバックの中での代入を型が追えず `null` のままと読む。
+    const held: { reply: DatagramReply | null } = { reply: null }
+    const r = await open((_payload, _from, reply) => {
+      held.reply = reply
+    })
+    await send(r.port, 'x')
+    await waitFor(() => held.reply !== null, '返す口')
+    await r.close()
+    opened.length = 0
+
+    const results: (Error | null)[] = []
+    expect(() => held.reply?.('late', (e) => results.push(e))).not.toThrow()
+    await waitFor(() => results.length === 1, '失敗の知らせ')
+    expect(results[0]).toBeInstanceOf(Error)
   })
 
   it('受け手が投げても待ち受けを続け、異常として渡す', async () => {

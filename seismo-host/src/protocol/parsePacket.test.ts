@@ -71,6 +71,38 @@ describe('parseSensorPacket', () => {
     })
   })
 
+  describe('返事を求めているか（`ack`）', () => {
+    const withAck = (ack: unknown): string =>
+      JSON.stringify({ ...JSON.parse(V2_HEADER), ack })
+
+    it('`"ack":1` なら求めている', () => {
+      const r = parseSensorPacket(packet(withAck(1), rows(3)))
+      expect(r.ok && r.ackRequested).toBe(true)
+    })
+
+    it('欄が無ければ求めていない（返事を読まない古いファーム）', () => {
+      const r = parseSensorPacket(packet(V2_HEADER, rows(3)))
+      expect(r.ok).toBe(true)
+      expect(r.ok && r.ackRequested).toBe(false)
+    })
+
+    // 安全弁: 読めない値でもパケットは落とさない（返事の取り決めは観測値と無関係）
+    it('1 以外の値は求めていないと読み、パケットは落とさない', () => {
+      for (const ack of [true, '1', 2, 0, null]) {
+        const r = parseSensorPacket(packet(withAck(ack), rows(3)))
+        expect(r.ok, `ack=${JSON.stringify(ack)}`).toBe(true)
+        expect(r.ok && r.ackRequested, `ack=${JSON.stringify(ack)}`).toBe(false)
+      }
+    })
+
+    it('版 1 は求められない（宛名にする MAC を名乗らない）', () => {
+      const head = JSON.stringify({ ...JSON.parse(REAL_V1_HEADER), ack: 1 })
+      const r = parseSensorPacket(packet(head, rows(30)))
+      expect(r.ok).toBe(true)
+      expect(r.ok && r.ackRequested).toBe(false)
+    })
+  })
+
   describe('版 1 の時刻の補正', () => {
     // 版 1 のファームは「最新サンプルはたった今 採られた」と仮定していたため、
     // 名乗る時刻が平均して半サンプル分だけ遅い。読み取りの時点で引く。

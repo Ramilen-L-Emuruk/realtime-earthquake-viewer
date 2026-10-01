@@ -13,6 +13,7 @@
 // 表の外にあり、区間の時間軸・センサーの生存・換算の自己診断も別の場所が持っている。
 
 import type { SegmentState } from '../timebase/segmenter'
+import type { AckSnapshot } from './ackReplier'
 import type { GravityCheckSnapshot, GravityVerdict } from './gravityCheck'
 import type { TallySnapshot } from './packetTally'
 import type { HubSnapshot } from './readingHub'
@@ -101,6 +102,8 @@ export interface StatusReportInput {
   /** 合成波形の保存（`waveArchive.ts`）。**生データの欄とは別に持つ**（片方だけ止まりうる）。 */
   readonly waveArchive: WaveArchiveStatus
   readonly hub: HubSnapshot
+  /** 基板への返事（`ackReplier.ts`）。**帳面が返すものをそのまま受け取る**（`gravity` と同じ理由）。 */
+  readonly acks: AckSnapshot
   /**
    * 観測点ぶんの合成（複数センサー・REQUIREMENTS.md §7）の生存。
    *
@@ -266,6 +269,14 @@ export interface StatusReport {
   readonly waveArchive: WaveArchiveStatus
   readonly stream: HubSnapshot
   /**
+   * 基板への「届いた」の返事。
+   *
+   * **`failures` が増えていたら、基板のほうでは立て直しが始まっている。** 基板は
+   * 返事が来ないことしか知れず、ホストが返せていないのか届いていないのかを分けられない。
+   * `enabled: false` は `SEISMO_ACK=off`（診断用）で、そのあいだ基板は段を上げ続ける。
+   */
+  readonly acks: AckSnapshot
+  /**
    * 数値として出せなかった時刻の数。
    *
    * **これが無いと黙って消える。** `JSON.stringify` は `NaN` も `Infinity` も
@@ -409,6 +420,7 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     raw: input.raw,
     waveArchive: input.waveArchive,
     stream: input.hub,
+    acks: input.acks,
     unreadableTimes: unreadable,
     unreadableIntensityValues: unreadableValues,
     stationConfigWarning: input.stationConfigWarning,

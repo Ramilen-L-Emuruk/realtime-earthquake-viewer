@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { SegmentState } from '../timebase/segmenter'
+import { AckReplier } from './ackReplier'
 import type { GravityVerdict } from './gravityCheck'
 import { PacketTally } from './packetTally'
 import { ReadingHub } from './readingHub'
@@ -153,6 +154,7 @@ function input(overrides: Partial<StatusReportInput> = {}): StatusReportInput {
     raw: RAW_OK,
     waveArchive: WAVE_OK,
     hub: new ReadingHub().snapshot(),
+    acks: new AckReplier({ enabled: true }).snapshot(),
     stations: StationDirectory.empty(),
     stationConfigWarning: null,
     ungroupedMultiBoardStations: [],
@@ -179,6 +181,21 @@ describe('buildStatusReport', () => {
     expect(report.raw.lostRecords).toBe(3)
     expect(report.raw.lastWriteError).toBe('ディスクが一杯')
     expect(report.raw.currentDay).toBe('2026-09-26')
+  })
+
+  it('基板への返事の数をそのまま通す（返せていないことが基板の側からは見えないため）', () => {
+    const report = buildStatusReport(
+      input({ acks: { enabled: false, sent: 7, failures: 2, throttled: 40, lastError: 'EHOSTUNREACH' } }),
+    )
+    const round = JSON.parse(JSON.stringify(report))
+
+    expect(round.acks).toEqual({
+      enabled: false,
+      sent: 7,
+      failures: 2,
+      throttled: 40,
+      lastError: 'EHOSTUNREACH',
+    })
   })
 
   it('区間の時間軸を出す', () => {
