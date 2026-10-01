@@ -47,6 +47,11 @@ verify-*.jpg
 
 # Claude directories
 .claude/*
+# どの checkout でも揃えたい Claude Code の設定（いまは共有のタスクリストを選ぶ指定だけ。
+# → CLAUDE.md「進める作業はタスク機能で管理する」）。コミットしておかないとワークツリーへ出ず、
+# そこで始めたセッションが別のリストを見る。
+# 端末ごとの設定（許可リスト等）は settings.local.json に置き、こちらは追跡しない。
+!.claude/settings.json
 # .claude/agents/ 配下はホワイトリスト方式:
 # ディレクトリ自体は再包含して走査可能にし、中身は原則無視、
 # 本プロジェクトで共通利用する定義だけを明示的に許可する。
