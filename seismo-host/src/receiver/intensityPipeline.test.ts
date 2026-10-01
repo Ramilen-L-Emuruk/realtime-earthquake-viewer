@@ -169,8 +169,13 @@ describe('IntensityPipeline', () => {
       const readings: IntensityReading[] = []
       for (let i = 0; i < PACKETS_FOR_FIRST; i++) {
         const firstSeq = i * PER_PACKET
-        // 毎秒 100 回と名乗りながら、時刻は 2 倍の速さで進む。
-        const skewed = pkt({ firstSeq, firstSampleMs: BASE_MS + (firstSeq * 2000) / HZ })
+        // **毎秒 100 回と名乗りながら、時刻は 13% 速く進む。**
+        //
+        // **2 倍の速さにしない。** 1 パケット（公称 300 ms）で 300 ms ぶん余計に
+        // ずれるので、時刻の飛びとして区間が毎回切れ、当てはめが壊れるところまで
+        // 育たない（2026-10-01 に飛びを切るようにしたので書き直した）。13% なら
+        // 1 歩ぶんのずれは 40 ms で、物差しの 100 ms に届かない。
+        const skewed = pkt({ firstSeq, firstSampleMs: BASE_MS + (firstSeq * 1000 * 1.133) / HZ })
         readings.push(...p.handlePacket(skewed).readings)
       }
       expect(readings).toHaveLength(1)

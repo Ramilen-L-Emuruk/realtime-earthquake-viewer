@@ -26,7 +26,9 @@ vi.mock('../services/seismoWaveHistory', async (importOriginal) => ({
 
 // **トップレベルで一度読む。** テスト本体で初めて解決すると、その待ちが 1 件目の
 // 所要時間に乗って並列実行のときだけ時間切れになる（CLAUDE.md「検証」）。
-const { pickTargets, useSeismoQuakeWaves } = await import('./useSeismoQuakeWaves')
+const { pickTargets, useSeismoQuakeWaves, judgeWaveInterrupted } = await import(
+  './useSeismoQuakeWaves'
+)
 
 function quake(id: string, time: string, maxScale: number, points: JMAQuake['points']): JMAQuake {
   return {
@@ -406,5 +408,168 @@ describe('useSeismoQuakeWaves', () => {
     await waitFor(() => expect(fetchSeismoStatus).toHaveBeenCalled())
     expect(fetchSeismoWaveHistory).not.toHaveBeenCalled()
     expect(result.current.size).toBe(0)
+  })
+
+  // #423 の形 3。**列が 1 つも伸びないことを伝える**ので、
+  // 「変わったら出し直す」だけの作りでは画面に出ない。
+  describe('繋ぎ足しが途切れたとき', () => {
+    /** 地震の直後に立ち、押し出しは 1 件も届かない状況を作る。 */
+    async function freshWithNoPush() {
+      vi.setSystemTime(new Date('2026/09/29 22:00:05'))
+      fetchSeismoStatus.mockResolvedValue(okStatus())
+      fetchSeismoWaveHistory.mockResolvedValue(history())
+      // **`readWave` は `null`** ＝押し出しが 1 件も来ない（`appendWaveWindow` が
+      // 同じ参照を返すので列は伸びない）。
+      const h = setup()
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+      return h
+    }
+
+    const interruptedOf = (waves: ReadonlyMap<string, readonly { interrupted: boolean }[]>) =>
+      [...waves.values()][0]?.[0]?.interrupted
+
+    it('正: 列が 1 つも伸びなくても、巡回が印を立てて出し直す', async () => {
+      vi.useFakeTimers()
+      try {
+        const { result } = await freshWithNoPush()
+        expect(interruptedOf(result.current)).toBe(false)
+        // 5 秒（`WAVE_STALE_MS`）を跨ぐ。
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(6000)
+        })
+        expect(interruptedOf(result.current)).toBe(true)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('対照: 閾値の手前では立てない', async () => {
+      vi.useFakeTimers()
+      try {
+        const { result } = await freshWithNoPush()
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(4000)
+        })
+        expect(interruptedOf(result.current)).toBe(false)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('安全弁: 再生中は印を立てない（押し出しを繋いでいないので伸びないのが当たり前）', async () => {
+      // **`App.tsx` は再生中に押し出しの購読を切る**ので `readWave()` は必ず `null`。
+      // ここを見ないと、**再生を始めて 5 秒で絵が全部薄くなる** —— しかも
+      // 「読み取りの変更はリプレイで確かめる」という検証手順のただ中で起きる。
+      vi.useFakeTimers()
+      try {
+        vi.setSystemTime(new Date('2026/09/29 22:00:05'))
+        fetchSeismoStatus.mockResolvedValue(okStatus())
+        fetchSeismoWaveHistory.mockResolvedValue(history())
+        const { result } = renderHook(() =>
+          useSeismoQuakeWaves({
+            enabled: true,
+            baseUrl: 'http://host:50506',
+            quakes: QUAKES,
+            scope: NO_SCOPE,
+            readWave: () => null,
+            // ここだけが上の「正」と違う。
+            replayOffsetMs: -3600_000,
+          }),
+        )
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(10)
+        })
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(20_000)
+        })
+        expect(interruptedOf(result.current)).toBe(false)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('安全弁: 先頭から降りたら印を戻す（完結した前の地震のカードを薄いまま残さない）', async () => {
+      // **継ぎ足しの巡回が触るのは先頭の対象だけ。** 降りた後も印が立っていると、
+      // **新しい地震が来た拍子に、完結した前の地震のカードが壊れて見える。**
+      vi.useFakeTimers()
+      try {
+        vi.setSystemTime(new Date('2026/09/29 22:00:05'))
+        fetchSeismoStatus.mockResolvedValue(okStatus())
+        fetchSeismoWaveHistory.mockResolvedValue(history())
+        const older = QUAKES
+        const { result, rerender } = renderHook(
+          ({ quakes }: { quakes: readonly JMAQuake[] }) =>
+            useSeismoQuakeWaves({
+              enabled: true,
+              baseUrl: 'http://host:50506',
+              quakes,
+              scope: NO_SCOPE,
+              readWave: () => null,
+              replayOffsetMs: null,
+            }),
+          { initialProps: { quakes: older } },
+        )
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(10)
+        })
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(6000)
+        })
+        const key = quakeEventKey(older[0])
+        expect(result.current.get(key)?.[0]?.interrupted).toBe(true)
+
+        // **より新しい地震が来て、先頭が入れ替わる。**
+        const newer = quake('b', '2026/09/29 22:05:00', 30, [] as JMAQuake['points'])
+        await act(async () => {
+          rerender({ quakes: [newer, ...older] })
+          await vi.advanceTimersByTimeAsync(500)
+        })
+        expect(result.current.get(key)?.[0]?.interrupted).toBe(false)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('安全弁: 伸ばす番を過ぎたら印を戻す（完結した絵を薄いまま残さない）', async () => {
+      vi.useFakeTimers()
+      try {
+        const { result } = await freshWithNoPush()
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(6000)
+        })
+        expect(interruptedOf(result.current)).toBe(true)
+        // 発生から 30 分（`GROW_SAFETY_MS`）を跨ぐと、もう伸ばす番ではない。
+        vi.setSystemTime(new Date('2026/09/29 22:31:00'))
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(400)
+        })
+        expect(interruptedOf(result.current)).toBe(false)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+  })
+})
+
+describe('judgeWaveInterrupted', () => {
+  it('正: 伸ばす番なのに閾値を超えて伸びていない', () => {
+    expect(judgeWaveInterrupted({ growing: true, lastGrewAt: 0, now: 5000 })).toBe(true)
+  })
+
+  it('対照: 閾値の手前では立てない', () => {
+    expect(judgeWaveInterrupted({ growing: true, lastGrewAt: 0, now: 4999 })).toBe(false)
+  })
+
+  // **ここを落とすと、正常に完結した 7 日ぶんのカードが全部薄くなる**
+  // （伸びないのが当たり前の区間と、伸びるはずなのに伸びない区間は列では区別が付かない）。
+  it('安全弁: 伸ばす番でなければ、どれだけ経っても立てない', () => {
+    expect(judgeWaveInterrupted({ growing: false, lastGrewAt: 0, now: 60 * 60 * 1000 })).toBe(false)
+  })
+
+  // 時刻の較正で `serverNow()` が巻き戻ることがある（→ `utils/seismoSilence.ts`）。
+  it('安全弁: 時刻が巻き戻っても立てない', () => {
+    expect(judgeWaveInterrupted({ growing: true, lastGrewAt: 10_000, now: 0 })).toBe(false)
   })
 })

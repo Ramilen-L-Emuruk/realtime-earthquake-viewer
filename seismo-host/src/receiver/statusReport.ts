@@ -165,6 +165,13 @@ export interface SegmentStatus {
   readonly residualRmsMs: number | null
   /** 公称値へ倒したなら理由。当てはめた値を使っていれば null。 */
   readonly nominalReason: string | null
+  /**
+   * 足場がエポックとして成り立っているか。**偽ならこの区間は絶対時刻を持たない。**
+   *
+   * **`firstSampleMs` を読むだけでは気づけないので出す。** 2026 年のエポックと
+   * 「8433」が並んでいても、引き算をするまで異常に見えない。
+   */
+  readonly epochPlausible: boolean
 }
 
 /**
@@ -344,6 +351,7 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     anchorCount: s.timebase.anchorCount,
     residualRmsMs: finite(s.timebase.residualRmsMs),
     nominalReason: s.timebase.nominalReason,
+    epochPlausible: s.timebase.epochPlausible,
   }))
 
   const sensors: SensorStatus[] = input.sensors.map((s) => ({
