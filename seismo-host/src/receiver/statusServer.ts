@@ -1140,6 +1140,14 @@ export async function startStatusServer(options: StatusServerOptions): Promise<S
         sendJson(res, 200, options.status())
         return
       }
+      // **基板がホストの生存を確かめる口**（ファームの `hostReachable`）。**中身は何も組み立てない**
+      // —— 答えられたこと自体が「処理が回っている」の証で、`/status` のように重い答えを作ると
+      // 基板が待てる時間（1 秒弱）を食う。TCP が繋がるだけでは、処理の止まったホストと
+      // 区別できない（OS が代わりに接続を受け付ける）。
+      if (url.pathname === '/healthz') {
+        sendJson(res, 200, { ok: true })
+        return
+      }
       if (url.pathname === '/stream') {
         const waveParam = url.searchParams.get('wave')
         if (isUnknownWaveParam(waveParam)) {

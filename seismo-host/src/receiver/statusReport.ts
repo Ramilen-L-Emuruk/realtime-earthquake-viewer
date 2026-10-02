@@ -17,6 +17,8 @@ import type { AckSnapshot } from './ackReplier'
 import type { AssignedBoardReception } from './assignedReception'
 import type { BoardClockSnapshot } from './boardClock'
 import type { GravityCheckSnapshot, GravityVerdict } from './gravityCheck'
+import type { LoopStallSnapshot } from './loopStall'
+import type { RecvBufferOutcome } from './udpReceiver'
 import type { TallySnapshot } from './packetTally'
 import type { HubSnapshot } from './readingHub'
 import type { SensorHealth } from './sensorHealth'
@@ -77,6 +79,10 @@ export interface StatusReportInput {
   /** 待ち受けを開けた時刻。 */
   readonly startedAtMs: number
   readonly udp: Endpoint
+  /** 受信バッファを広げた結果（`udpReceiver.ts`）。起動時に 1 回決まる。 */
+  readonly udpRecvBuffer: RecvBufferOutcome
+  /** ホストの処理が止まった区間（`loopStall.ts`）。 */
+  readonly loopStalls: LoopStallSnapshot
   readonly http: Endpoint
   readonly tally: TallySnapshot
   readonly sensors: readonly SensorHealth[]
@@ -239,6 +245,17 @@ export interface StatusReport {
   readonly startedAtMs: number
   readonly uptimeSec: number
   readonly udp: Endpoint
+  /**
+   * 受信バッファ。**`actualBytes` が `requestedBytes` を下回っていたら、ホストが止まったとき
+   * 早く落ちる**（既定の 64 KB は基板 3 枚の約 3 秒ぶん）。
+   */
+  readonly udpRecvBuffer: RecvBufferOutcome
+  /**
+   * ホストの処理（イベントループ）が 1 秒以上止まった区間。**止まっている間に届いた UDP は
+   * 受信バッファが抱え、あふれた分は落ちる。** 基板の返事も止まるので、長く止まると基板が
+   * 立て直しの段を上げる。
+   */
+  readonly loopStalls: LoopStallSnapshot
   readonly http: Endpoint
   readonly sensors: readonly SensorStatus[]
   readonly sensorEvictions: number
@@ -455,6 +472,8 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     startedAtMs: input.startedAtMs,
     uptimeSec,
     udp: input.udp,
+    udpRecvBuffer: input.udpRecvBuffer,
+    loopStalls: input.loopStalls,
     http: input.http,
     sensors,
     sensorEvictions: input.sensorEvictions,

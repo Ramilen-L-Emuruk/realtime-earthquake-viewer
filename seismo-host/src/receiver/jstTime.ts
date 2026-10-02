@@ -49,6 +49,15 @@ export function jstHour(ms: number): string | null {
 }
 
 /**
+ * 日本時間の日時（`YYYY-MM-DD HH:MM:SS`）。**ログへ書く人向け。** ファイル名には使わない
+ * （コロンを含む）。
+ */
+export function jstDateTime(ms: number): string | null {
+  if (!representable(ms)) return null
+  return new Date(ms + JST_OFFSET_MS).toISOString().slice(0, 19).replace('T', ' ')
+}
+
+/**
  * その時の始まり（unix ミリ秒）。**`jstHour` の逆。**
  *
  * 読み返しが「範囲の端が属する時」から「どのファイルを開くか」を数えるのに使う。
