@@ -15,6 +15,7 @@
 import type { SegmentState } from '../timebase/segmenter'
 import type { AckSnapshot } from './ackReplier'
 import type { AssignedBoardReception } from './assignedReception'
+import type { BacklogFetcherSnapshot } from './backlogFetcher'
 import type { BoardClockSnapshot } from './boardClock'
 import type { GravityCheckSnapshot, GravityVerdict } from './gravityCheck'
 import type { LoopStallSnapshot } from './loopStall'
@@ -83,6 +84,8 @@ export interface StatusReportInput {
   readonly udpRecvBuffer: RecvBufferOutcome
   /** ホストの処理が止まった区間（`loopStall.ts`）。 */
   readonly loopStalls: LoopStallSnapshot
+  /** 届かなかった分を基板へ取りに行った結果（`backlogFetcher.ts`）。 */
+  readonly backlog: BacklogFetcherSnapshot
   readonly http: Endpoint
   readonly tally: TallySnapshot
   readonly sensors: readonly SensorHealth[]
@@ -256,6 +259,12 @@ export interface StatusReport {
    * 立て直しの段を上げる。
    */
   readonly loopStalls: LoopStallSnapshot
+  /**
+   * 届かなかった分を基板へ取りに行った結果。**取り戻した分は生データにだけ入る** —— 震度・合成・
+   * 押し出しには混ざらない。`pendingSamples` が減らずに `unrecoverableSamples` が増えるなら、
+   * 基板が抱えている時間より長く途絶えていた（または基板が再起動した）。
+   */
+  readonly backlog: BacklogFetcherSnapshot
   readonly http: Endpoint
   readonly sensors: readonly SensorStatus[]
   readonly sensorEvictions: number
@@ -474,6 +483,7 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     udp: input.udp,
     udpRecvBuffer: input.udpRecvBuffer,
     loopStalls: input.loopStalls,
+    backlog: input.backlog,
     http: input.http,
     sensors,
     sensorEvictions: input.sensorEvictions,

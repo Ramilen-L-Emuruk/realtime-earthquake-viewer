@@ -184,6 +184,27 @@ describe('RawStore', () => {
     expect(got[0]).toEqual({ rx: AT_2026_09_25_2300_JST, src: '192.0.2.58:51234', raw })
   })
 
+  it('取り戻した分は印（via: backlog）を付けて同じ本へ書き、届いた分の封筒は変えない', async () => {
+    const store = new RawStore({ dir, now: () => AT_2026_09_25_2300_JST })
+    const live = payload(3)
+    const recovered = payload(2)
+    expect(store.write('192.0.2.58:51234', live)).toEqual({ saved: true })
+    expect(store.writeRecovered('192.0.2.58', recovered)).toEqual({ saved: true })
+    await store.close()
+
+    const got = lines(join(dir, 'raw-2026-09-25.ndjson'))
+    expect(got).toEqual([
+      { rx: AT_2026_09_25_2300_JST, src: '192.0.2.58:51234', raw: live },
+      { rx: AT_2026_09_25_2300_JST, src: '192.0.2.58', raw: recovered, via: 'backlog' },
+    ])
+  })
+
+  it('締めたあとは取り戻した分も書かない', async () => {
+    const store = new RawStore({ dir, now: () => AT_2026_09_25_2300_JST })
+    await store.close()
+    expect(store.writeRecovered('192.0.2.58', payload(1))).toEqual({ saved: false, reason: 'closed' })
+  })
+
   it('読めない中身でもそのまま残す', async () => {
     const store = new RawStore({ dir, now: () => AT_2026_09_25_2300_JST })
     const junk = 'not json at all\n\u0000�'

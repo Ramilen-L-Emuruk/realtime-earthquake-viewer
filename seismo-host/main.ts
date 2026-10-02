@@ -78,6 +78,11 @@ import { HostLifeMark, buildPreviousRunLines } from './src/receiver/hostLifeMark
 import { jstDateTime } from './src/receiver/jstTime'
 import { LOOP_STALL_THRESHOLD_MS_DEFAULT, LOOP_TICK_MS_DEFAULT, LoopStallBook } from './src/receiver/loopStall'
 import type { LoopStallEvent } from './src/receiver/loopStall'
+import { BacklogBook } from './src/receiver/backlogBook'
+import type { BacklogBookOptions, UnrecoverableReason } from './src/receiver/backlogBook'
+import { BacklogBookWriter, readBacklogBookFile } from './src/receiver/backlogBookFile'
+import { BacklogFetcher, fetchBacklog } from './src/receiver/backlogFetcher'
+import type { BacklogEvent } from './src/receiver/backlogFetcher'
 import { streamKeyOf } from './src/timebase/segmenter'
 
 /** 記録係の原型（`capture.mjs`）と同じ口。基板の送り先もこの値。 */
@@ -108,6 +113,97 @@ const UDP_RECV_BUFFER_BYTES = 8 * 1024 * 1024
  */
 function defaultLifeMarkPath(): string {
   return fileURLToPath(new URL('./data/host-running.json', import.meta.url))
+}
+
+/**
+ * 欠けの帳面（`backlogBook.ts`）の置き場所。稼働の印と同じく `data/` の直下 ——
+ * 保存の記録ではなく、ホストの受信の記録。
+ */
+function defaultBacklogBookPath(): string {
+  return fileURLToPath(new URL('./data/backlog-book.json', import.meta.url))
+}
+
+/**
+ * 欠けの帳面の決めごと（`backlogBook.ts` の `BacklogBookOptions`）。
+ *
+ * - **待ち 2 秒**: UDP の入れ替わりは LAN 内ならミリ秒単位。取りに行くのを急ぐ理由も無い
+ *   （基板はメモリに直近 30 秒を抱えている）
+ * - **諦めるのは 20 分**: 基板はホストの返事が 8 秒途絶えるとフラッシュへ書き出し、
+ *   約 11 分ぶん抱えられる（ファームの `SPILL_AFTER_MS`）。それより長く待っても取り戻せない
+ * - **欠けは 1 万件まで**: 1 件は数十バイト。2026-10-02 20:21〜20:26 に Wi-Fi の区間で
+ *   落ちたときは、5 分間に 3 枚合わせて約 390 件だった
+ */
+const BACKLOG_BOOK_OPTIONS: BacklogBookOptions = {
+  settleMs: 2_000,
+  retryBaseMs: 5_000,
+  retryMaxMs: 60_000,
+  giveUpAfterMs: 20 * 60_000,
+  maxGaps: 10_000,
+}
+
+/** 欠けの帳面を書き出す間隔。**この長さぶんが、ホストの再起動をまたいで二重に取り戻されうる。** */
+const BACKLOG_SAVE_INTERVAL_MS = 5_000
+
+/**
+ * 基板へ取りに行くときの時間切れ・合間。基板は 30 まとまり（約 17 KB）を 0.17 秒で返した
+ * （2026-10-02 に実測）。時間切れはその 10 倍以上に取り、合間はその間ずっと基板の
+ * `loop()` を占めないために置く。
+ */
+const BACKLOG_TIMEOUT_MS = 3_000
+const BACKLOG_SPACING_MS = 250
+const BACKLOG_IDLE_MS = 1_000
+
+const UNRECOVERABLE_TEXT: Record<UnrecoverableReason, string> = {
+  rebooted: '基板が再起動していた',
+  'not-held': '基板がもう抱えていない',
+  unsupported: '基板に取り戻しの口が無い（取り戻しより古いファーム）',
+  'gave-up': '何度訊いても答えが無かった',
+  'too-many': '欠けが多すぎて古いものから捨てた',
+}
+
+/** 取り戻せなかった理由の全部。**`UNRECOVERABLE_TEXT` から引く** —— 型が全部の理由を書かせる。 */
+const UNRECOVERABLE_REASONS = Object.keys(UNRECOVERABLE_TEXT) as UnrecoverableReason[]
+
+/**
+ * 取り戻しの出来事を、間引きに渡す 1 行にする。**取り戻せた分は `log`、それ以外は `warn`。**
+ *
+ * 間引きの鍵（`detail`）は流れと理由まで —— 数（サンプル数）を混ぜると枠が際限なく増える。
+ */
+export function buildBacklogEventLine(event: BacklogEvent): {
+  readonly level: 'log' | 'warn'
+  readonly detail: string
+  readonly line: string
+} {
+  switch (event.kind) {
+    case 'recovered':
+      return {
+        level: 'log',
+        detail: `recovered|${event.key}`,
+        line: `[backlog] ${event.key} 基板から ${event.samples} サンプル（${event.packets} まとまり）を取り戻した`,
+      }
+    case 'unrecoverable':
+      return {
+        level: 'warn',
+        detail: `lost|${event.key}|${event.reason}`,
+        line: `[backlog] ${event.key} ${event.samples} サンプルを取り戻せなかった（${UNRECOVERABLE_TEXT[event.reason]}）`,
+      }
+    case 'suspect':
+      return {
+        level: 'warn',
+        detail: `suspect|${event.key}`,
+        line:
+          `[backlog] ${event.key} 基板 ${event.address} の答えに使えないまとまりが混ざった` +
+          `（読めない ${event.badPackets}・別の流れ ${event.foreignPackets}・生データへ書けず ${event.rawUnsaved}）。あとで訊き直す`,
+      }
+    case 'failed':
+      return {
+        level: 'warn',
+        // **流れまで鍵に入れる。** 送り元と理由だけだと、同じ基板の別のセンサーの失敗が
+        // 最初の 1 本の枠に吸われ、どの流れが取りに行けていないのかが行から読めない。
+        detail: `failed|${event.key}|${event.address}|${event.reason}`,
+        line: `[backlog] ${event.key} 基板 ${event.address} へ取りに行けず（${event.reason}: ${shorten(event.detail)}）。あとで訊き直す`,
+      }
+  }
 }
 
 /**
@@ -398,6 +494,25 @@ export function buildStationConfigWarning(warning: string | null): readonly RawW
       kind: 'station-config',
       detail: warning,
       line: `[station] 観測点の設定を読めなかった: ${warning}`,
+    },
+  ]
+}
+
+/**
+ * 前の起動の欠けの帳面を読めなかったことを、定期要約でも再掲する。
+ *
+ * **起動時の 1 行だけでは届かない**（`buildStationConfigWarning` と同じ理由）。しかも
+ * 帳面は 5 秒後に今回の中身で書き直されるので、ファイルを見に行っても痕跡は残っていない ——
+ * 止まっていた間の欠けを取り戻さなかったことは、この行でしか分からない。
+ */
+export function buildBacklogBookWarning(problem: string | null): readonly RawWarning[] {
+  if (problem === null) return []
+  return [
+    {
+      level: 'warn',
+      kind: 'backlog-book',
+      detail: problem,
+      line: `[backlog] 前回の欠けの帳面を読めなかった（${problem}）。止まっていた間の欠けは取り戻さない`,
     },
   ]
 }
@@ -1499,6 +1614,15 @@ async function main(): Promise<void> {
   const waveDir = process.env.SEISMO_WAVE_DIR ?? defaultWaveDir()
   const waveArchive = new WaveArchive({ dir: waveDir })
 
+  // **届かなかった分を基板へ取りに行く**（`backlogBook.ts`・`backlogFetcher.ts`）。帳面は
+  // 受け始める前に読み戻す —— 受けてからだと、止まっていた間の欠けを最初のパケットで作り損ねる。
+  const backlogBook = new BacklogBook(BACKLOG_BOOK_OPTIONS)
+  const backlogBookPath = defaultBacklogBookPath()
+  const backlogBookLoad = await readBacklogBookFile(backlogBookPath)
+  if (backlogBookLoad.state !== null) backlogBook.restore(backlogBookLoad.state, Date.now())
+  for (const w of buildBacklogBookWarning(backlogBookLoad.problem)) console.warn(w.line)
+  const backlogWriter = new BacklogBookWriter(backlogBookPath)
+
   /**
    * 間引きを通して 1 行出す。
    *
@@ -1518,6 +1642,21 @@ async function main(): Promise<void> {
     else if (level === 'warn') console.warn(text)
     else console.log(text)
   }
+
+  // **取り戻した分は生データにだけ書く**（理由は `backlogFetcher.ts` の冒頭）。
+  const backlogFetcher = new BacklogFetcher({
+    book: backlogBook,
+    get: fetchBacklog,
+    writeRecovered: (source, payload) => rawStore.writeRecovered(source, payload),
+    now: Date.now,
+    timeoutMs: BACKLOG_TIMEOUT_MS,
+    spacingMs: BACKLOG_SPACING_MS,
+    idleMs: BACKLOG_IDLE_MS,
+    onEvent: (event) => {
+      const out = buildBacklogEventLine(event)
+      emit(out.level, 'backlog', out.detail, out.line)
+    },
+  })
 
   /**
    * 震度 1 つの配り先。**ここは繋ぎ先を並べるだけで、順番は `deliverReading` が持つ。**
@@ -1788,6 +1927,18 @@ async function main(): Promise<void> {
       if (read.ackRequested && board.startsWith('mac:')) {
         acks.offer(board.slice('mac:'.length), reply, Date.now())
       }
+      // **欠けの帳面へ、届いた番号を記録する**（`backlogBook.ts`）。取りに行けるのは
+      // 起動 ID と MAC を名乗る基板（版 2）だけ —— 版 1 は番号が起動ごとに一意にならない。
+      // `notePacket` は投げない（数と範囲を覚えるだけ）。
+      if (board.startsWith('mac:') && read.packet.bootId !== '') {
+        backlogBook.notePacket({
+          stream: { boardKey: board, bootId: read.packet.bootId, sensorId: read.packet.sensorId },
+          firstSeq: read.packet.firstSeq,
+          count: read.packet.samples.length,
+          address: from.address,
+          atMs: receivedAtMs,
+        })
+      }
       // **誰の声かが判るのはここから。** 読み取りに失敗した回は基板が判らないので覚えない。
       const current = streamKeyOf(read.packet)
       health.notePacket({ boardKey: board, sensorId: read.packet.sensorId, streamKey: current })
@@ -1913,6 +2064,16 @@ async function main(): Promise<void> {
     emit(w.level, w.kind, w.detail, w.line)
   }, LOOP_TICK_MS_DEFAULT)
 
+  // **取りに行き始めるのは受け始めてから**（受けていない間は欠けを見つけようがない）。
+  // 帳面はこまめに書き出す —— 落とされたホストは終了の処理で書けないので、
+  // 次の起動が読めるのは最後に書き出した分だけ。
+  backlogFetcher.start()
+  const backlogSaveTimer = setInterval(() => {
+    void backlogWriter.save(backlogBook.toJSON()).then((error) => {
+      if (error !== null) emit('warn', 'backlog', 'save', `[backlog] 欠けの帳面を書き出せなかった（${error}）`)
+    })
+  }, BACKLOG_SAVE_INTERVAL_MS)
+
   // **起動時に 1 回だけビルドする。** esbuild は高速（数十ミリ秒程度）で、
   // リクエストのたびに作り直す理由が無い（`adminConsoleAssets.ts` 参照）。
   //
@@ -1970,6 +2131,7 @@ async function main(): Promise<void> {
         udp: { address: address ?? '0.0.0.0', port: receiver.port },
         udpRecvBuffer: receiver.recvBuffer,
         loopStalls: loopStalls.snapshot(),
+        backlog: backlogFetcher.snapshot(),
         http: { address: httpAddress ?? '0.0.0.0', port: statusServer.port },
         tally: tally.snapshotTotal(),
         sensors: health.snapshot(),
@@ -2058,6 +2220,7 @@ async function main(): Promise<void> {
     // 抑えられうる。**欄は手で並べない** —— 見出しも並びも `GRAVITY_LABELS` が持ち、
     // 数を足せば黙って付いてくる（この機能は書き写す形で 4 巡続けて書き忘れた）。
     const diag = gravity.snapshot()
+    const fetched = backlogFetcher.snapshot()
     const gravityCounters = gravityCountEntries(diag).map((e) =>
       delta(`gravity:${e.key}`, e.label, e.value),
     )
@@ -2107,7 +2270,27 @@ async function main(): Promise<void> {
       // **止まった回数も要約へ出す。** 1 件ずつの `[stall]` の行は間引きを通るので、
       // 機械が詰まり続けた間の回数はここでしか数えられない。
       loopStall: delta('loopStall', '処理が 1 秒以上止まった', loopStalls.snapshot().count),
+      // **取り戻しの結末も要約へ出す。** 1 件ずつの `[backlog]` の行は間引きを通るうえ、
+      // 諦めた（`gave-up`）・捨てた（`too-many`）は帳面の中で起きて 1 行も出ない。
+      backlogRecovered: delta('backlogRecovered', '欠けを基板から取り戻した（サンプル）', fetched.recoveredSamples),
+      backlogSuspect: delta(
+        'backlogSuspect',
+        '取りに行った答えに使えないまとまりが混ざった',
+        fetched.badPackets + fetched.foreignPackets + fetched.rawUnsaved,
+      ),
     }
+    // **取り戻せなかった分は理由ごとに出す** —— 再起動・上書き・古いファーム・諦め・捨てたで手当てが違う。
+    // 欄は `UNRECOVERABLE_TEXT` の鍵から引く（理由を足せば黙って付いてくる）。
+    const lostBySamples = fetched.unrecoverableSamples
+    const backlogLostCounters = UNRECOVERABLE_REASONS.map((reason) =>
+      delta(`backlogLost:${reason}`, `欠けを取り戻せなかった（${UNRECOVERABLE_TEXT[reason]}・サンプル）`, lostBySamples[reason] ?? 0),
+    )
+    // **取りに行けなかった回数も理由ごとに。** 繋がらない（`network`）はよくあるが、
+    // `internal` はこちらの不具合の印で、合計に混ぜると埋もれる。理由は `http-<番号>` を含めて
+    // 起きたものだけが載る（一度載った理由は消えないので、鍵が途中で途切れない）。
+    const backlogFailedCounters = Object.entries(fetched.failures).map(([reason, n]) =>
+      delta(`backlogFailed:${reason}`, `欠けを取りに行けず訊き直す（${reason}）`, n ?? 0),
+    )
     const now = Date.now()
     // **まだ動いていることを印へ残す**（`hostLifeMark.ts`）。待たない —— 書き込みが詰まっても
     // 要約を遅らせない。失敗は間引きを通して出す（毎分失敗し続けうる）。
@@ -2119,7 +2302,7 @@ async function main(): Promise<void> {
     const summary = buildWindowSummary({
       windowSec: elapsedSec,
       window: tally.takeWindow(),
-      counters: [...Object.values(counters), ...gravityCounters],
+      counters: [...Object.values(counters), ...gravityCounters, ...backlogLostCounters, ...backlogFailedCounters],
       quietReported,
     })
     quietReported = summary.quietReported
@@ -2144,6 +2327,7 @@ async function main(): Promise<void> {
     // `console.warn` は 1 回きりで、ログだけを監視している運用者には見逃すと二度と
     // 伝わらない（`buildStationConfigWarning`・`buildStationGroupingWarning` のコメント参照）。
     for (const w of buildStationConfigWarning(stationConfigWarning)) emit(w.level, w.kind, w.detail, w.line)
+    for (const w of buildBacklogBookWarning(backlogBookLoad.problem)) emit(w.level, w.kind, w.detail, w.line)
     for (const w of buildStationGroupingWarning(ungroupedMultiBoardStations)) {
       emit(w.level, w.kind, w.detail, w.line)
     }
@@ -2173,7 +2357,11 @@ async function main(): Promise<void> {
     closing = true
     clearInterval(timer)
     clearInterval(loopStallTimer)
+    clearInterval(backlogSaveTimer)
     console.log(`[udp] ${signal} を受けたので締めます`)
+    // **取りに行くのは生データの保存を締める前に止める。** 訊いている最中の 1 件は待つ ——
+    // 締めた後に書こうとすると、取り戻した分が `closed` で黙って落ちる。
+    await backlogFetcher.stop()
 
     // **順序は `closeHostCore` が持つ**（理由もあちらに書いてある）。ここは
     // `main()` のローカル変数を `deps` へ束ねる配線だけ。
@@ -2198,6 +2386,12 @@ async function main(): Promise<void> {
       printTotals,
       logError: (line) => console.error(line),
     })
+    // **欠けの帳面は最後の状態で書き出す**（受信を締めた後なので、もう増えない）。
+    // 書けなければ、次の起動は 5 秒前までの帳面から始める（その間の分は二重に取り戻されうる）。
+    const backlogSaveError = await backlogWriter.save(backlogBook.toJSON())
+    if (backlogSaveError !== null) {
+      console.warn(`[backlog] 欠けの帳面を書き出せなかった（${backlogSaveError}）`)
+    }
     // **印を消すのは締めくくりの後。** 先に消すと、締めくくりの途中で落ちたとき
     // 「正常に終わった」と次の起動が読む。
     const markError = await lifeMark.end()
