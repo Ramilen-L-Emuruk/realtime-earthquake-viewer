@@ -39,6 +39,9 @@
 #include <esp_random.h>
 #include <esp_system.h>
 #include <esp_sntp.h>
+#include <esp_partition.h>
+#include <esp_rom_crc.h>
+#include <functional>
 #include "wifi_config.h"
 
 // **この定義を持たない `wifi_config.h` でも焼けるようにする。** 設定ファイルは
@@ -166,6 +169,68 @@ static const uint32_t PARTIAL_STREAK_TO_DROP = 2;
 // それが端数なしの読み出しを 1 度も挟まずに 5 回続く確率は無視できる。
 static const uint32_t REALIGN_STREAK_TO_DEMOTE = 5;
 
+// 送った分を残しておく輪の区画数（→ `BacklogSlot`・`handleBacklog`）。
+//
+// **送れたかどうかに関わらず、時計が合ってから作ったまとまりは全部残す。** 基板は
+// 自分の送ったものが届いたかを知らない —— `endPacket()` は届いていなくても真を返し
+// （冒頭の 2026-09-30 の件）、ホストの返事は「生きている」を 1 秒に 1 回知らせるだけで
+// どのまとまりが届いたかは言わない。**欠けを知っているのはホストのほう**なので、
+// 基板は直近を丸ごと抱えておき、ホストに訊かれた範囲を返す。
+//
+// 1 区画は 1 まとまり（最大 40 サンプル）。吸い出しは 0.3 秒ごとに 1 センサー 1 まとまりを
+// 作るので 3 センサーで毎秒約 10 区画、**300 区画で直近約 30 秒**。1 区画は 264 バイトで
+// 約 79 KB を使う（起動時に確保する。確保前の空きメモリは約 200 KB だった）。
+//
+// **長い途絶えはフラッシュが受け持つ**（→ `SPILL_AFTER_MS`）。メモリの輪は、書き出しが
+// 追いつくまでの数秒と、繋がり直してからホストが取りに来るまでの間をつなげれば足りる。
+// 360 区画（36 秒）から減らしたのは、フラッシュの書き出しの作業場（約 25 KB）を空けるため。
+static const size_t BACKLOG_SLOTS = 300;
+// `/backlog` が 1 回に返すまとまりの上限。**応答を作っている間は吸い出しも止まる**
+// （`loop()` が 1 本なので）。待てるのは 1.4 秒まで（→ `HOST_PROBE_TIMEOUT_MS`）。
+// 1 まとまりは平均約 580 バイトなので、30 まとまりで約 17 KB（実測 0.17 秒で返った）。
+// 続きはホストが訊き直す。
+static const size_t BACKLOG_MAX_PER_REPLY = 30;
+
+// ホストの返事がこの時間来なければ、送った分をフラッシュへ書き出し始める（→ `spillPump`）。
+//
+// **メモリの輪だけでは 30 秒しか持たない。** PC の再起動・ホストの落ち・Wi-Fi の長い途絶えは
+// 分の単位で続く。フラッシュのデータ領域（既定の分割の `spiffs`、約 1.4 MB）を輪にして使えば
+// 約 11 分ぶん抱えられる。
+//
+// **途絶えている間だけ書く。** 常に書くとフラッシュの書き換え回数（1 区画あたり約 10 万回）を
+// 毎日食い潰すが、途絶えている間だけなら、輪を 1 周しても 1 区画 1 回にしかならない。
+//
+// **8 秒にしてある。3 秒では短すぎた**（2026-10-02 に a0b7 で実測）。電波の弱い基板
+// （RSSI −77）では返事が数秒途切れることが珍しくなく、3 秒だと 100 秒に 5 回書き始め、
+// そのたびに区画を書いていた。メモリの輪は 30 秒ぶんあるので、8 秒待っても取りこぼさない。
+static const uint32_t SPILL_AFTER_MS = 8000;
+// 書き始めるとき、最後に返事を受けた時刻からさかのぼって写す幅（→ `spillPump`）。
+//
+// **輪を丸ごと写さない。** 返事が来ていた間に送った分は届いている（ホストは受けたパケットに
+// 返事を返す）。丸ごと写すと、返事が数秒途切れただけで 30 秒ぶん（約 16 区画）を書き直す ——
+// 実測で 100 秒に 49 区画になり、区画の書き換え回数を数か月で使い切る勢いだった。
+// 2 秒は、返事が 1 秒に 1 回であることと、返事の往復のぶんの余裕。
+static const int64_t SPILL_BACKFILL_MS = 2000;
+// 続けて書き出すのはここまで（→ `spillPump`）。**返事を一度も返さないホスト**（返事の口を
+// 持たない古いホスト・返事を止めた設定）や、繋がらないまま動き続ける基板では、途絶えが
+// 終わらないので書き出しも終わらない。止めないと、フラッシュの輪を 11 分に 1 周ずつ
+// 書き換え続ける（1 区画の書き換えは約 10 万回まで）。
+//
+// **30 分にしてある。** ホストが欠けを諦めるのは見つけてから 20 分（ホストの
+// `BACKLOG_BOOK_OPTIONS`）で、フラッシュが抱えられるのは約 11 分 —— それより長く書いても
+// 取り戻せる分は増えず、上書きが増えるだけ。PC の再起動や Wi-Fi の数分の途絶えは十分覆う。
+// 止めた後は、**返事が一度戻るまで書き始めない**（戻らないまま 8 秒ごとに書き始め直すと、
+// 止めた意味が無くなる）。
+static const uint32_t SPILL_MAX_MS = 30UL * 60UL * 1000UL;
+// フラッシュの消去の単位。**書き出しは 1 区画（4 KB）ずつ**、`loop()` の 1 周に 1 回まで ——
+// 消去の間は処理が止まる（典型で数十ミリ秒）ので、まとめてやると吸い出しを待たせる。
+static const size_t FLASH_SECTOR = 4096;
+// フラッシュの区画の先頭に置く印。消去された区画（0xFF で埋まる）や別の中身と見分ける。
+//
+// **"SBL2" は区画の中身の CRC を持つ形。** 前の形（"SBL1"）の区画は読まない（空きとして扱い、
+// 輪が回ってきたら上書きする）—— 形が違うので、読むと頭の欄を取り違える。
+static const uint32_t FLASH_MAGIC = 0x53424c32;   // "SBL2"
+
 // 1 枚にぶら下がるセンサー 1 個ぶんの状態。
 //
 // **勘定をセンサーごとに持つ。** 通し番号もあふれの回数も、まとめて数えると
@@ -247,6 +312,62 @@ struct Packet {
   int64_t  tFirstMs;
   int16_t  v[MAX_PER_PACKET * 3];
 };
+
+// 送った分の輪の 1 区画（→ `BACKLOG_SLOTS`）。**送ったときのヘッダを作り直せる値だけを持つ。**
+//
+// `o`（あふれの累計）も残す。送った時点の値を返さないと、ホストが取り戻した分の切れ目を
+// 読み違える（取り戻した時点の `s.overflow` は、送った後のあふれまで数えている）。
+// 宣言をここに置く理由は `Packet` と同じ。
+struct BacklogSlot {
+  int64_t  tFirstMs;
+  uint32_t seq0;
+  uint32_t overflow;
+  uint8_t  sensor;   // `g_sensors` の添字
+  uint8_t  n;        // 積んだサンプル数
+  int16_t  v[MAX_PER_PACKET * 3];
+};
+
+// フラッシュの 1 区画が抱える、センサーごとの通し番号の範囲 `[from, to)`。
+struct FlashRange {
+  uint32_t from;
+  uint32_t to;
+  uint32_t has;      // 0 ならこのセンサーの分は無い（`from`・`to` は無意味）
+};
+
+// フラッシュの 1 区画（4 KB）の先頭。**起動 ID を区画ごとに持つ** —— 基板が再起動しても、
+// 前の起動の分をそのまま返せる（ホストはその起動 ID で訊いてくる）。
+//
+// 後ろには 1 まとまりずつ詰めて並べる。1 まとまりは 20 バイトの頭 ＋ サンプル数 × 6 バイトで、
+// **区画の大きさに合わせて切らない**（メモリの輪の区画は最大の 40 サンプルぶんを取っているが、
+// フラッシュでは実際の長さで書く。約 30 サンプルが普通なので、同じ領域に 1.3 倍ほど入る）。
+// センサーが 3 個のときの形。**4 個目にするときはここも広げる**（`static_assert` が止める）。
+struct FlashSectorHead {
+  uint32_t   magic;     // `FLASH_MAGIC`
+  uint32_t   seq;       // 書いた順。大きいほど新しい
+  uint32_t   bid;       // 起動 ID（`g_bootId` の 16 進を数にしたもの）
+  uint16_t   records;   // 入っているまとまりの数
+  uint16_t   used;      // 頭を含めて使ったバイト数
+  // 頭の後ろ（`used` まで）の CRC-32。**読むたびに確かめる** —— 書いている途中で電源が落ちた
+  // 区画や、上書きの途中で読んだ区画は、頭が正しくても中身が壊れている。壊れたまとまりを
+  // 本物として返すと、ホストは欠けを埋めたと信じて二度と取りに来ない。
+  uint32_t   crc;
+  FlashRange range[3];
+};
+
+// フラッシュの区画の目録（メモリに置く）。**起動時に 1 回だけ作る**（`flashInit`）—— `/backlog` の
+// たびに 1.4 MB を読み直すと、応答を作る間ずっと吸い出しが止まる。
+struct FlashSectorIndex {
+  uint32_t   seq;
+  uint32_t   bid;
+  uint32_t   valid;     // 0 なら空き（消去済み・壊れている）
+  FlashRange range[3];
+};
+// **センサーの数とフラッシュの区画の形を揃える。** ずれたまま焼くと、4 個目のセンサーの範囲が
+// 区画の頭からはみ出して隣の欄を壊す（コンパイルは通ってしまう）。
+static_assert(sizeof(FlashSectorHead::range) / sizeof(FlashRange) == SENSOR_N,
+              "FlashSectorHead::range must have one entry per sensor");
+static_assert(sizeof(FlashSectorIndex::range) / sizeof(FlashRange) == SENSOR_N,
+              "FlashSectorIndex::range must have one entry per sensor");
 
 
 static WiFiUDP    udp;
@@ -364,6 +485,9 @@ static uint32_t   g_lastArmMs = 0;
 // --- ホストの返事（→ `checkAck`） ---
 static uint32_t   g_acks = 0;            // 自分宛ての返事を受けた数
 static uint32_t   g_lastAckMs = 0;       // 最後に受けた時刻（`g_acks` が 0 なら無意味）
+// 最後に返事を受けた時刻（unix ミリ秒）。**サンプルの時刻と比べるため**（→ `SPILL_BACKFILL_MS`）。
+// `millis()` の物差しではまとまりの時刻（`tFirstMs`）と比べられない。
+static int64_t    g_lastAckUnixMs = 0;
 static uint32_t   g_ackForeign = 0;      // 同じソケットへ届いた、自分宛ての返事ではないもの
 // 返事を待っているか、と待ち始めた時刻。**返事のあとで最初に送れた時点から計る**
 // （→ `ACK_SILENCE_MS`）。
@@ -402,6 +526,59 @@ RTC_NOINIT_ATTR static RestartLedger g_restartLedger;
 // `/restart` でも OTA でも理由は同じ `ESP_RST_SW` になるので、理由だけでは分けられない。
 static bool       g_bootedBySelfRestart = false;
 static esp_reset_reason_t g_resetReason = ESP_RST_UNKNOWN;
+
+// --- 送った分の輪（→ `BacklogSlot`・`handleBacklog`） ---
+//
+// **起動時にヒープから取る。** 静的な配列にすると、リンク時の DRAM の枠（静的な変数を
+// 置ける領域）を約 95 KB 食う。あの枠は空きメモリ全体より狭く、溢れればビルドが通らない。
+// 取れなければ輪を持たずに動き（`/backlog` は 503）、波形の送信は止めない。
+static BacklogSlot* g_backlog = nullptr;
+static size_t     g_backlogUsed = 0;        // 埋まっている区画の数（最大 `BACKLOG_SLOTS`）
+// 輪へ入れた累計。**次に書く区画はここから引く**（`累計 % BACKLOG_SLOTS`）。フラッシュへの
+// 写しがどこまで進んだか（`g_spillCursor`）を、上書きをまたいで同じ物差しで数えるため。
+// 1 秒に約 10 増えるので、32 bit が一周するのは約 13 年後。
+static uint32_t   g_backlogTotal = 0;
+static uint32_t   g_backlogRequests = 0;    // `/backlog` を受けた回数
+static uint32_t   g_backlogServed = 0;      // 返したまとまりの数
+static uint32_t   g_backlogBad = 0;         // 引数が読めずに断った回数
+static uint32_t   g_backlogOtherBoot = 0;   // 訊かれた起動 ID の分がメモリにもフラッシュにも無かった回数
+static uint32_t   g_bootIdNum = 0;          // `g_bootId` を数にしたもの（フラッシュの区画が名乗る）
+
+// --- フラッシュの輪（→ `FlashSectorHead`・`spillPump`） ---
+//
+// **取れなければフラッシュ無しで動く**（メモリの輪だけ。`/backlog` も返せる範囲だけ返す）。
+static const esp_partition_t* g_flashPart = nullptr;
+static size_t     g_flashSectors = 0;       // 使える区画の数
+static FlashSectorIndex* g_flashIndex = nullptr;
+static size_t     g_flashNext = 0;          // 次に消して書く区画
+static uint32_t   g_flashSeq = 0;           // 最後に書いた区画の `seq`
+// 書きかけの区画（メモリ）。満ちたら 1 区画ぶんを消して書く。
+static uint8_t*   g_flashPage = nullptr;
+// 読み出し用の作業場（`/backlog` がフラッシュの区画を読むとき）。
+static uint8_t*   g_flashRead = nullptr;
+static bool       g_spilling = false;       // いまフラッシュへ書き出しているか
+// メモリの輪のどこまでをフラッシュへ写したか（`g_backlogTotal` と同じ数え方）。
+static uint32_t   g_spillCursor = 0;
+// 返事が戻ったとき、写し終える目標（そこまで写したら書きかけの区画を書いて止める）。
+static uint32_t   g_spillStopAt = 0;
+static bool       g_spillDraining = false;
+static uint32_t   g_spillStarts = 0;        // 書き出しを始めた回数
+static uint32_t   g_spillLost = 0;          // 写す前にメモリの輪が上書きしてしまったまとまりの数
+// `g_spillCursor` が前の書き出しの位置を指しているか。**始め直すときはそこより前へ戻らない**
+// （→ `spillPump`）—— もう写した分を写し直すと、返事が途切れるたびに同じ分で区画を食う。
+static bool       g_spillCursorValid = false;
+static uint32_t   g_spillSinceMs = 0;       // いまの書き出しを始めた時刻（`millis()`）
+// 続けて書き出したのが `SPILL_MAX_MS` に達して止めた。返事が戻るまで書き始めない。
+static bool       g_spillCapped = false;
+static uint32_t   g_spillCaps = 0;          // `SPILL_MAX_MS` で止めた回数
+static uint32_t   g_flashWrites = 0;        // 区画を書いた回数
+static uint32_t   g_flashFails = 0;         // 消去・書き込みに失敗した回数
+// 読み出しの失敗。**書き込みの失敗と分ける** —— 書けないのは区画の寿命や電源の疑い、
+// 読めないのは訊かれた分を返せなかったことで、手当てが違う。
+static uint32_t   g_flashReadFails = 0;     // `/backlog` が区画を読めなかった回数
+static uint32_t   g_flashCrcBad = 0;        // 読んだ区画の CRC が合わなかった数（その区画は以後読まない）
+static uint32_t   g_flashInitMs = 0;        // 起動時に全区画を読んで確かめるのにかかった時間
+static uint32_t   g_flashMaxMs = 0;         // 1 区画の消去と書き込みにかかった最長の時間
 
 // 追記して `used` を進める。**溢れたら書かない。**
 //
@@ -633,13 +810,512 @@ static const char* resetReasonName(esp_reset_reason_t r){
   }
 }
 
+// まとまりの先頭行（ヘッダの JSON）を書く。**送る口（`sendChunk`）と `/backlog` の両方がここを通る。**
+//
+// 別々に書くと、取り戻した分だけ形の違うパケットになる。受け手は同じ読み取りに通すので
+// 1 字違えば取り戻した分だけが読めず、生データでも「同じまとまりが 2 度届いた」ことを
+// 中身の一致で見分けられなくなる。`"ack":1` も同じ理由で残す（取り戻しは HTTP なので
+// ホストは返事をしない）。戻り値は `snprintf` のまま。
+//
+// **起動 ID は引数で受ける。** フラッシュから返すのは前の起動の分のこともあり、そのときは
+// 送ったときの起動 ID を名乗らないと、ホストは別の流れのパケットとして読む。
+static int formatHead(char *head, size_t size, const char *bid, const Sensor &s, size_t n,
+                      uint32_t seq0, int64_t tFirstMs, uint32_t overflow){
+  return snprintf(head, size,
+    "{\"v\":2,\"mac\":\"%s\",\"bid\":\"%s\",\"sid\":\"%s\",\"st\":\"MPU6050\","
+    "\"ch\":[\"HN1\",\"HN2\",\"HN3\"],\"ug\":%.4f,\"fs\":%d,\"hz\":%d,"
+    // `"ack":1` は「届いたら返事をくれ」。ホストは求めた基板にだけ返す（→ `checkAck`）。
+    "\"t\":%lld,\"q\":%lu,\"c\":%u,\"o\":%lu,\"ack\":1}\n",
+    g_macFlat, bid, s.sid, UG_PER_LSB, 2 << AFS_SEL, SAMPLE_HZ,
+    (long long)tFirstMs, (unsigned long)seq0, (unsigned)n, (unsigned long)overflow);
+}
+
+// サンプル 1 行（`x,y,z\n`）を書く。共有する理由は `formatHead` と同じ。
+static int formatLine(char *line, size_t size, const int16_t *xyz){
+  return snprintf(line, size, "%d,%d,%d\n", xyz[0], xyz[1], xyz[2]);
+}
+
+// 送ったまとまりを輪へ残す。**いちばん古い区画から上書きする。**
+//
+// 呼ぶのは `sendChunk` だけ。**送れたかどうかを問わない**理由は `BACKLOG_SLOTS` の項。
+static void backlogPut(const Sensor &s, const int16_t *v, size_t n, uint32_t seq0, int64_t tFirstMs){
+  if (g_backlog == nullptr || n == 0 || n > MAX_PER_PACKET) return;
+  BacklogSlot &b = g_backlog[g_backlogTotal % BACKLOG_SLOTS];
+  b.tFirstMs = tFirstMs;
+  b.seq0 = seq0;
+  b.overflow = s.overflow;
+  b.sensor = (uint8_t)(&s - g_sensors);
+  b.n = (uint8_t)n;
+  memcpy(b.v, v, n * 3 * sizeof(int16_t));
+  g_backlogTotal++;
+  if (g_backlogUsed < BACKLOG_SLOTS) g_backlogUsed++;
+}
+
+// 輪の k 番目に古い区画（0 がいちばん古い）。**添字は累計から引く**（`g_backlogTotal` の項）。
+static const BacklogSlot& backlogAt(size_t k){
+  return g_backlog[(g_backlogTotal - (uint32_t)g_backlogUsed + (uint32_t)k) % BACKLOG_SLOTS];
+}
+
+// まとまりが通し番号の範囲 [from, to) に掛かるか。
+//
+// **差を符号付きで見る。** 通し番号は 100 Hz で進み、約 497 日で 32 bit を一周する。
+// 大小をそのまま比べると、一周した瞬間に範囲の判定が逆さまになる。
+static bool backlogOverlaps(const BacklogSlot &b, uint32_t from, uint32_t to){
+  return (int32_t)(b.seq0 + b.n - from) > 0 && (int32_t)(to - b.seq0) > 0;
+}
+
+// 10 進の符号なし 32 bit を読む。**数字以外が 1 字でも混ざれば偽。**
+// `strtoul` だけだと、先頭の空白・符号・途中の文字を黙って読み流す。
+static bool parseU32(const String &text, uint32_t &out){
+  if (text.length() == 0 || text.length() > 10) return false;
+  uint64_t v = 0;
+  for (size_t i = 0; i < text.length(); i++) {
+    const char c = text[i];
+    if (c < '0' || c > '9') return false;
+    v = v * 10 + (uint64_t)(c - '0');
+  }
+  if (v > 0xFFFFFFFFULL) return false;
+  out = (uint32_t)v;
+  return true;
+}
+
+// 起動 ID（小文字の 16 進 8 桁。`g_bootId` の形）を数にする。**形が違えば偽。**
+static bool parseBid(const String &text, uint32_t &out){
+  if (text.length() != 8) return false;
+  uint32_t v = 0;
+  for (size_t i = 0; i < 8; i++) {
+    const char c = text[i];
+    uint32_t d;
+    if (c >= '0' && c <= '9') d = (uint32_t)(c - '0');
+    else if (c >= 'a' && c <= 'f') d = (uint32_t)(c - 'a' + 10);
+    else return false;
+    v = (v << 4) | d;
+  }
+  out = v;
+  return true;
+}
+
+// --- フラッシュの輪（→ `FlashSectorHead`・`SPILL_AFTER_MS`） ---
+
+// 1 まとまりの頭のバイト数（センサー・件数・予備 2・`q`・`o`・`t`）。後ろにサンプル × 6 バイト。
+static const size_t FLASH_REC_HEAD = 20;
+
+static size_t flashRecordSize(uint8_t n){ return FLASH_REC_HEAD + (size_t)n * 6; }
+
+static void flashEncode(uint8_t *p, const BacklogSlot &b){
+  p[0] = b.sensor; p[1] = b.n; p[2] = 0; p[3] = 0;
+  memcpy(p + 4, &b.seq0, 4);
+  memcpy(p + 8, &b.overflow, 4);
+  memcpy(p + 12, &b.tFirstMs, 8);
+  memcpy(p + FLASH_REC_HEAD, b.v, (size_t)b.n * 6);
+}
+
+// 1 まとまりを読む。**壊れた区画を信じない** —— 件数・センサーの番号が範囲外なら偽。
+static bool flashDecode(const uint8_t *p, size_t avail, BacklogSlot &b){
+  if (avail < FLASH_REC_HEAD) return false;
+  b.sensor = p[0];
+  b.n = p[1];
+  if (b.n == 0 || b.n > MAX_PER_PACKET || b.sensor >= SENSOR_N) return false;
+  if (avail < flashRecordSize(b.n)) return false;
+  memcpy(&b.seq0, p + 4, 4);
+  memcpy(&b.overflow, p + 8, 4);
+  memcpy(&b.tFirstMs, p + 12, 8);
+  memcpy(b.v, p + FLASH_REC_HEAD, (size_t)b.n * 6);
+  return true;
+}
+
+// 区画の頭の後ろ（`used` まで）の CRC-32。書くときと読むときで同じ範囲を取る。
+static uint32_t flashBodyCrc(const uint8_t *sector, uint16_t used){
+  return esp_rom_crc32_le(0, sector + sizeof(FlashSectorHead), (uint32_t)(used - sizeof(FlashSectorHead)));
+}
+
+static FlashSectorHead& pageHead(){ return *reinterpret_cast<FlashSectorHead*>(g_flashPage); }
+
+// 書きかけの区画を空にする。**消去した区画と同じ 0xFF で埋める**（書かなかった後ろが
+// 読み出しで別の中身に化けない）。
+static void pageReset(){
+  memset(g_flashPage, 0xFF, FLASH_SECTOR);
+  FlashSectorHead &h = pageHead();
+  h.magic = FLASH_MAGIC;
+  h.seq = g_flashSeq + 1;
+  h.bid = g_bootIdNum;
+  h.records = 0;
+  h.used = (uint16_t)sizeof(FlashSectorHead);
+  h.crc = 0;
+  for (size_t i = 0; i < SENSOR_N; i++) { h.range[i].from = 0; h.range[i].to = 0; h.range[i].has = 0; }
+}
+
+// 書きかけの区画へ 1 まとまり足す。**入らなければ偽**（呼び出し側が区画を書いてから足し直す）。
+static bool pageAppend(const BacklogSlot &b){
+  FlashSectorHead &h = pageHead();
+  const size_t sz = flashRecordSize(b.n);
+  if ((size_t)h.used + sz > FLASH_SECTOR) return false;
+  flashEncode(g_flashPage + h.used, b);
+  h.used = (uint16_t)(h.used + sz);
+  h.records++;
+  FlashRange &r = h.range[b.sensor];
+  const uint32_t end = b.seq0 + b.n;
+  if (!r.has) {
+    r.from = b.seq0; r.to = end; r.has = 1;
+  } else {
+    if ((int32_t)(b.seq0 - r.from) < 0) r.from = b.seq0;
+    if ((int32_t)(end - r.to) > 0) r.to = end;
+  }
+  return true;
+}
+
+// 書きかけの区画を、輪の次の区画へ書く。**消してから書く**（フラッシュは 1 を 0 にしか書けない）。
+//
+// **目録は先に落とし、書けてから立てる。** 途中で電源が落ちても、目録（起動時に頭から作り直す）と
+// 中身が食い違わない。書けなかった区画の分は失う（`g_flashFails` に数える）—— 同じ区画へ
+// 書き直すと、壊れた区画に当たったとき輪がそこで止まる。
+static void flashFlushPage(){
+  if (g_flashPart == nullptr) return;
+  FlashSectorHead &h = pageHead();
+  if (h.records == 0) return;
+  h.crc = flashBodyCrc(g_flashPage, h.used);
+  const uint32_t t0 = millis();
+  const size_t off = g_flashNext * FLASH_SECTOR;
+  FlashSectorIndex &ix = g_flashIndex[g_flashNext];
+  ix.valid = 0;
+  const bool ok = esp_partition_erase_range(g_flashPart, off, FLASH_SECTOR) == ESP_OK
+               && esp_partition_write(g_flashPart, off, g_flashPage, FLASH_SECTOR) == ESP_OK;
+  const uint32_t took = millis() - t0;
+  if (took > g_flashMaxMs) g_flashMaxMs = took;
+  if (ok) {
+    ix.seq = h.seq;
+    ix.bid = h.bid;
+    for (size_t i = 0; i < SENSOR_N; i++) ix.range[i] = h.range[i];
+    ix.valid = 1;
+    g_flashSeq = h.seq;
+    g_flashWrites++;
+  } else {
+    g_flashFails++;
+  }
+  g_flashNext = (g_flashNext + 1) % g_flashSectors;
+  pageReset();
+}
+
+// フラッシュの輪を開き、**区画を読んで CRC まで確かめてから目録を作る**。起動 ID（`g_bootIdNum`）が
+// 決まってから 1 回だけ呼ぶ。
+//
+// **起動時に中身まで確かめる。** 頭だけで目録を作ると、書いている途中で電源が落ちた区画も
+// 「抱えている」と数え、`/backlog` の `X-Backlog-Have` がその範囲まで名乗る。ホストはそれを信じて
+// 訊き、中身が返らなかった分を「基板の輪が上書きした（`not-held`）」と記録する —— フラッシュの
+// 傷みが、ふつうの上書きと見分けられなくなる。全区画（約 1.4 MB）を読むのは起動時の 1 回だけ
+// （かかった時間は `g_flashInitMs`）。
+//
+// **書く位置は、いちばん新しい有効な区画の次。** 輪を一周したところで古い区画から上書きする。
+// いちばん新しい区画が壊れていれば（書きかけで落ちた）、次に書くのはその区画になる。
+// 取れない・確保できないときは、フラッシュ無しで動く（メモリの輪だけ）。
+static void flashInit(){
+  g_flashPart = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, nullptr);
+  if (g_flashPart == nullptr) {
+    Serial.println("# WARN フラッシュのデータ領域（spiffs）が見つからない。メモリの輪だけで動く");
+    return;
+  }
+  g_flashSectors = g_flashPart->size / FLASH_SECTOR;
+  g_flashIndex = (FlashSectorIndex*)calloc(g_flashSectors, sizeof(FlashSectorIndex));
+  g_flashPage = (uint8_t*)malloc(FLASH_SECTOR);
+  g_flashRead = (uint8_t*)malloc(FLASH_SECTOR);
+  if (g_flashSectors == 0 || g_flashIndex == nullptr || g_flashPage == nullptr || g_flashRead == nullptr) {
+    free(g_flashIndex); free(g_flashPage); free(g_flashRead);
+    g_flashIndex = nullptr; g_flashPage = nullptr; g_flashRead = nullptr;
+    g_flashPart = nullptr;
+    Serial.println("# WARN フラッシュの輪の作業場を確保できなかった。メモリの輪だけで動く");
+    return;
+  }
+  bool any = false;
+  uint32_t maxSeq = 0;
+  size_t maxAt = 0;
+  const uint32_t t0 = millis();
+  for (size_t i = 0; i < g_flashSectors; i++) {
+    if (esp_partition_read(g_flashPart, i * FLASH_SECTOR, g_flashRead, FLASH_SECTOR) != ESP_OK) {
+      g_flashReadFails++;
+      continue;
+    }
+    const FlashSectorHead &h = *reinterpret_cast<const FlashSectorHead*>(g_flashRead);
+    if (h.magic != FLASH_MAGIC || h.records == 0 || h.used < sizeof(h) || h.used > FLASH_SECTOR) continue;
+    if (flashBodyCrc(g_flashRead, h.used) != h.crc) {
+      g_flashCrcBad++;
+      continue;
+    }
+    FlashSectorIndex &ix = g_flashIndex[i];
+    ix.seq = h.seq;
+    ix.bid = h.bid;
+    for (size_t s = 0; s < SENSOR_N; s++) ix.range[s] = h.range[s];
+    ix.valid = 1;
+    if (!any || (int32_t)(h.seq - maxSeq) > 0) { maxSeq = h.seq; maxAt = i; any = true; }
+  }
+  g_flashInitMs = millis() - t0;
+  g_flashSeq = maxSeq;
+  g_flashNext = any ? (maxAt + 1) % g_flashSectors : 0;
+  pageReset();
+}
+
+// 返事の途絶を見て、フラッシュへの書き出しを始め・止め、1 周ぶん進める。**`loop()` から毎周呼ぶ。**
+//
+// **始めるときは、最後に返事を受けた時刻の少し前（`SPILL_BACKFILL_MS`）から写す。** 途絶えた
+// ことに気づくまでに `SPILL_AFTER_MS` かかるので、その間に送った分も届いていないかもしれない。
+// この起動でまだ返事を受けていなければ、輪にある分を全部写す。
+//
+// **止めるときは、返事が戻った時点までを写し切ってから止める。** その時点より後は届いている。
+// 書きかけの区画も書いてから止める（書かずに止めると、その分はメモリの輪にしか無くなる）。
+//
+// **1 周に書く区画は 1 つまで**（`FLASH_SECTOR` の項）。書き出しが追いつかず、写す前に
+// メモリの輪が上書きした分は `g_spillLost` に数える。
+//
+// **続けて書くのは `SPILL_MAX_MS` まで。** 止めたら、返事が一度戻るまで書き始めない。
+static void spillPump(uint32_t nowMs){
+  if (g_flashPart == nullptr || g_backlog == nullptr) return;
+  const uint32_t heardMs = g_acks > 0 ? g_lastAckMs : g_bootMs;
+  // **差は符号付きで取る。** `nowMs` は `loop()` の頭で取った時刻で、同じ周の `readAcks()` が
+  // それより後の `millis()` を `g_lastAckMs` へ書く。符号無しで引くと負の差が約 49 日に化けて
+  // 「途絶えた」と読み、返事が来た直後に書き出しを始めて次の周で止める —— 区画を 1 つ書いて
+  // 終わる空振りが、2026-10-03 の実機で返事が 1 秒も途切れていないのに 1 枚あたり 2 分で 8〜23 回起きていた。
+  // 符号付きで測れるのは約 24.8 日まで（それを超えて返事が無いと「途絶えていない」に戻る）。
+  // その頃には `SPILL_MAX_MS` で書き出しを止めてあり、`silent` が偽に戻っても書き始めないので、挙動は変わらない。
+  const bool silent = (int32_t)(nowMs - heardMs) > (int32_t)SPILL_AFTER_MS;
+  if (!silent) g_spillCapped = false;
+  if (silent && !g_spilling && !g_spillCapped) {
+    g_spilling = true;
+    g_spillDraining = false;
+    g_spillSinceMs = nowMs;
+    uint32_t cursor = g_backlogTotal - (uint32_t)g_backlogUsed;
+    if (g_acks > 0) {
+      const int64_t since = g_lastAckUnixMs - SPILL_BACKFILL_MS;
+      for (size_t k = 0; k < g_backlogUsed; k++) {
+        const BacklogSlot &b = backlogAt(k);
+        if (b.tFirstMs + (int64_t)b.n * 1000 / SAMPLE_HZ >= since) break;
+        cursor++;
+      }
+    }
+    // **前に写した位置より前へは戻らない。** 返事が数秒戻ってまた途絶えると、さかのぼる幅が
+    // 写し終えた分に掛かる。
+    if (g_spillCursorValid && (int32_t)(g_spillCursor - cursor) > 0) cursor = g_spillCursor;
+    g_spillCursor = cursor;
+    g_spillCursorValid = true;
+    g_spillStarts++;
+    Serial.printf("# ホストの返事が %lu ms 途絶えた。送った分をフラッシュへ書き出す\n",
+                  (unsigned long)(nowMs - heardMs));
+  } else if (silent && g_spillDraining) {
+    // 止める途中でまた途絶えた。写した位置はそのまま、止めるのをやめる。
+    g_spillDraining = false;
+  } else if (!silent && g_spilling && !g_spillDraining) {
+    g_spillDraining = true;
+    g_spillStopAt = g_backlogTotal;
+  }
+  if (!g_spilling) return;
+  if (!g_spillDraining && (nowMs - g_spillSinceMs) > SPILL_MAX_MS) {
+    // 写した分を書いて止める（`SPILL_MAX_MS` の項）。
+    flashFlushPage();
+    g_spilling = false;
+    g_spillCapped = true;
+    g_spillCaps++;
+    Serial.printf("# フラッシュへの書き出しが %lu 分続いたので止めた。返事が戻るまで書き始めない\n",
+                  (unsigned long)(SPILL_MAX_MS / 60000UL));
+    return;
+  }
+  const uint32_t target = g_spillDraining ? g_spillStopAt : g_backlogTotal;
+  while ((int32_t)(target - g_spillCursor) > 0) {
+    const uint32_t oldest = g_backlogTotal - (uint32_t)g_backlogUsed;
+    if ((int32_t)(g_spillCursor - oldest) < 0) {
+      g_spillLost += oldest - g_spillCursor;
+      g_spillCursor = oldest;
+      continue;
+    }
+    if (!pageAppend(g_backlog[g_spillCursor % BACKLOG_SLOTS])) {
+      flashFlushPage();
+      return;
+    }
+    g_spillCursor++;
+  }
+  if (g_spillDraining) {
+    flashFlushPage();
+    g_spilling = false;
+    g_spillDraining = false;
+    Serial.println("# ホストの返事が戻った。フラッシュへの書き出しを止めた");
+  }
+}
+
+// `[from, to)` に掛かる、起動 ID とセンサーの合うまとまりを、**通し番号の若い順に** `visit` へ渡す。
+// `visit` が偽を返したら止める。
+//
+// **フラッシュ（古い区画から）→ メモリの輪の順に見る。** 同じ起動の中では、フラッシュには
+// 輪から写した分しか無く、写すのは古い順なので、この順で並ぶ。**重なりは落とす** ——
+// 書き出し中の分は両方にあり、書き出しを始め直すと同じ分をもう一度写すこともある。
+//
+// **テンプレートにしない。** Arduino はファイル中の関数の宣言を自動で前へ挿し込むが、
+// テンプレートの宣言は型の引数を落として作るので通らない（実際に `Visit has not been declared`
+// で落ちた）。`std::function` なら普通の関数として宣言される。
+static void forEachBacklog(uint32_t bid, uint8_t si, uint32_t from, uint32_t to,
+                           const std::function<bool(const BacklogSlot&)> &visit){
+  bool started = false;
+  uint32_t lastEnd = 0;
+  auto offer = [&](const BacklogSlot &b) -> bool {
+    if (!backlogOverlaps(b, from, to)) return true;
+    const uint32_t end = b.seq0 + b.n;
+    if (started && (int32_t)(end - lastEnd) <= 0) return true;
+    started = true;
+    lastEnd = end;
+    return visit(b);
+  };
+  if (g_flashPart != nullptr) {
+    for (size_t k = 0; k < g_flashSectors; k++) {
+      const size_t i = (g_flashNext + k) % g_flashSectors;
+      const FlashSectorIndex &ix = g_flashIndex[i];
+      if (!ix.valid || ix.bid != bid || !ix.range[si].has) continue;
+      if (!((int32_t)(ix.range[si].to - from) > 0 && (int32_t)(to - ix.range[si].from) > 0)) continue;
+      if (esp_partition_read(g_flashPart, i * FLASH_SECTOR, g_flashRead, FLASH_SECTOR) != ESP_OK) {
+        g_flashReadFails++;
+        continue;
+      }
+      const FlashSectorHead &h = *reinterpret_cast<const FlashSectorHead*>(g_flashRead);
+      // **目録と食い違う区画は読まない**（目録を作った後に上書きされた・壊れている）。
+      if (h.magic != FLASH_MAGIC || h.seq != ix.seq || h.used < sizeof(FlashSectorHead) || h.used > FLASH_SECTOR) continue;
+      // **中身の壊れた区画は、目録から外して以後読まない**（訊かれるたびに数え直さないため）。
+      if (flashBodyCrc(g_flashRead, h.used) != h.crc) {
+        g_flashCrcBad++;
+        g_flashIndex[i].valid = 0;
+        continue;
+      }
+      size_t off = sizeof(FlashSectorHead);
+      BacklogSlot b;
+      for (uint16_t r = 0; r < h.records; r++) {
+        if (!flashDecode(g_flashRead + off, h.used - off, b)) break;
+        off += flashRecordSize(b.n);
+        if (b.sensor != si) continue;
+        if (!offer(b)) return;
+      }
+    }
+  }
+  if (bid == g_bootIdNum) {
+    for (size_t k = 0; k < g_backlogUsed; k++) {
+      const BacklogSlot &b = backlogAt(k);
+      if (b.sensor != si) continue;
+      if (!offer(b)) return;
+    }
+  }
+}
+
+// 送ったまとまりを返す口。`GET /backlog?sid=<センサー>&bid=<起動 ID>&from=<q>&to=<q>`。
+//
+// **ホストが取りに来る形にしてある。** 欠けを知っているのはホストのほうで（`BACKLOG_SLOTS`
+// の項）、HTTP なら届いたかどうかを TCP が確かめる。取りに来る速さもホストが決めるので、
+// 基板の吸い出しを詰まらせない。
+//
+// 返すのは `[from, to)` に掛かるまとまり。**中身は送ったときのパケットそのもの**
+// （`formatHead`・`formatLine`）を、ヘッダの行で区切って並べる。応答の見出しに次を載せる。
+// - `X-Backlog-Have`: このセンサーで抱えている範囲 `<先頭>-<末尾の次>`。無ければ `none`。
+//   **訊かれた範囲がこれより古ければ、その分はもう取り戻せない**（輪が上書きした）
+// - `X-Backlog-More`: 上限（`BACKLOG_MAX_PER_REPLY`）で打ち切ったなら 1
+// - `X-Backlog-Next`: 返した最後のまとまりの末尾の次。続きはここから訊き直す
+//
+// **その起動の分がメモリにもフラッシュにも無ければ 410。** メモリの輪は再起動で消えるが、
+// 返事が途絶えていた間の分はフラッシュに残っている（区画が起動 ID を持つ）。どちらにも無いのに
+// 黙って空を返すと、ホストは「その範囲には何も無かった」と読む。
+//
+// **引数を確かめてから輪を読む。** 読めない値で探すと、空振りの 200 が「何も無かった」と
+// 同じ顔で返る。
+static void handleBacklog(){
+  g_backlogRequests++;
+  if (g_backlog == nullptr && g_flashPart == nullptr) {
+    http.send(503, "text/plain", "backlog unavailable\n");
+    return;
+  }
+  const String sid = http.arg("sid");
+  int si = -1;
+  for (size_t i = 0; i < SENSOR_N; i++) {
+    if (sid == g_sensors[i].sid) si = (int)i;
+  }
+  uint32_t from = 0, to = 0, bid = 0;
+  if (si < 0 || !parseU32(http.arg("from"), from) || !parseU32(http.arg("to"), to)
+      || (int32_t)(to - from) <= 0 || !parseBid(http.arg("bid"), bid)) {
+    g_backlogBad++;
+    http.send(400, "text/plain", "need sid, bid, from, to (from < to)\n");
+    return;
+  }
+  const uint8_t sensor = (uint8_t)si;
+  http.sendHeader("X-Backlog-Bid", g_bootId);
+
+  // 抱えている範囲（メモリの輪とフラッシュを合わせて）。**その起動の分が 1 つも無ければ 410。**
+  bool known = bid == g_bootIdNum;
+  bool have = false;
+  uint32_t haveFrom = 0, haveTo = 0;
+  auto widen = [&](uint32_t f, uint32_t t){
+    if (!have) { haveFrom = f; haveTo = t; have = true; return; }
+    if ((int32_t)(f - haveFrom) < 0) haveFrom = f;
+    if ((int32_t)(t - haveTo) > 0) haveTo = t;
+  };
+  if (g_flashPart != nullptr) {
+    for (size_t i = 0; i < g_flashSectors; i++) {
+      const FlashSectorIndex &ix = g_flashIndex[i];
+      if (!ix.valid || ix.bid != bid) continue;
+      known = true;
+      if (ix.range[sensor].has) widen(ix.range[sensor].from, ix.range[sensor].to);
+    }
+  }
+  if (bid == g_bootIdNum) {
+    for (size_t k = 0; k < g_backlogUsed; k++) {
+      const BacklogSlot &b = backlogAt(k);
+      if (b.sensor == sensor) widen(b.seq0, b.seq0 + b.n);
+    }
+  }
+  if (!known) {
+    g_backlogOtherBoot++;
+    http.send(410, "text/plain", "other boot\n");
+    return;
+  }
+
+  // **見出しは本文より先に出す**ので、何を返すかを先に数えてから書き出す。
+  // 応答を作っている間に輪は書き換わらない（書くのも読むのも `loop()` だけ）。
+  size_t picked = 0;
+  bool more = false;
+  uint32_t next = from;
+  forEachBacklog(bid, sensor, from, to, [&](const BacklogSlot &b) -> bool {
+    if (picked == BACKLOG_MAX_PER_REPLY) { more = true; return false; }
+    picked++;
+    next = b.seq0 + b.n;
+    return true;
+  });
+  http.sendHeader("X-Backlog-Have", have ? String(haveFrom) + "-" + String(haveTo) : String("none"));
+  http.sendHeader("X-Backlog-More", more ? "1" : "0");
+  http.sendHeader("X-Backlog-Next", String(next));
+  http.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  http.send(200, "text/plain", "");
+
+  // 1 まとまりは最大で 320 + 40 × 21 バイト（`-32768,-32768,-32768\n` が 21 文字）。
+  static char buf[1280];
+  char bidText[9];
+  snprintf(bidText, sizeof(bidText), "%08lx", (unsigned long)bid);
+  const Sensor &s = g_sensors[sensor];
+  size_t written = 0;
+  forEachBacklog(bid, sensor, from, to, [&](const BacklogSlot &b) -> bool {
+    if (written == picked) return false;
+    written++;
+    const int hl = formatHead(buf, sizeof(buf), bidText, s, b.n, b.seq0, b.tFirstMs, b.overflow);
+    if (hl <= 0 || (size_t)hl >= sizeof(buf)) { g_headTrunc++; return true; }
+    size_t u = (size_t)hl;
+    for (size_t i = 0; i < b.n; i++) {
+      const int ll = formatLine(buf + u, sizeof(buf) - u, &b.v[i * 3]);
+      if (ll <= 0 || (size_t)ll >= sizeof(buf) - u) break;
+      u += (size_t)ll;
+    }
+    http.sendContent(buf, u);
+    g_backlogServed++;
+    return true;
+  });
+  http.sendContent("");
+}
+
 // 状態ページ。
 //
 // **バッファの余裕を測ってある。** すべての勘定を 32bit の上限（4294967295）へ置き、
 // ノード名と走査結果も最長にした最悪形で **約 2000 バイト**（2026-10-01 に実測。
 // 実際の応答は約 1300 バイト）。返事と立て直しの欄（段 B）で最悪形が **約 300 バイト**
 // 増えて約 2300 バイト、SNTP の欄（`sntp_syncs`・`sntp_last_sync_unix`）で **約 60 バイト**
-// 増えて約 2360 バイト（2026-10-02 の実際の応答は約 1600 バイト）。**2048 では 50 バイトしか残らなかった** ——
+// 増えて約 2360 バイト（2026-10-02 の実際の応答は約 1600 バイト）、送った分の輪の欄で **約 210 バイト**、
+// フラッシュの輪の欄で **約 220 バイト**増えて約 2790 バイト。**2048 では 50 バイトしか残らなかった** ——
 // `seq` と `unsent` と `pretime` は 100Hz で進むので **約 497 日の連続稼働で 10 桁へ届く**。
 // 数百日動かす基板なので、桁が伸びた日に状態ページだけが 500 を返し始める。
 //
@@ -692,6 +1368,34 @@ static void handleStatus(){
     (unsigned long)g_ackRearms, (unsigned long)g_ackReconnects, (unsigned long)g_hostProbeFail,
     (unsigned long)selfRestartsInWindow(now), (unsigned long)g_restartSkipped,
     resetReasonName(g_resetReason), g_bootedBySelfRestart ? "true":"false");
+  // 送った分の輪（→ `handleBacklog`）。**`backlog_oldest_age_s` は空なら -1**（`ack_age_s` と同じ理由）。
+  // 抱えている時間の長さは、この値で直接読める（区画数から換算させない）。
+  long backlogAge = -1;
+  if (g_backlog != nullptr && g_backlogUsed > 0) {
+    struct timeval tv; gettimeofday(&tv, nullptr);
+    const int64_t nowMs = (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+    backlogAge = (long)((nowMs - backlogAt(0).tFirstMs) / 1000);
+  }
+  appendf(buf, sizeof(buf), u,
+    "\"backlog_ok\":%s,\"backlog_slots\":%u,\"backlog_used\":%u,\"backlog_oldest_age_s\":%ld,"
+    "\"backlog_requests\":%lu,\"backlog_served\":%lu,\"backlog_bad\":%lu,\"backlog_other_boot\":%lu,",
+    g_backlog != nullptr ? "true":"false", (unsigned)BACKLOG_SLOTS, (unsigned)g_backlogUsed, backlogAge,
+    (unsigned long)g_backlogRequests, (unsigned long)g_backlogServed,
+    (unsigned long)g_backlogBad, (unsigned long)g_backlogOtherBoot);
+  // フラッシュの輪（→ `spillPump`）。**`flash_max_ms` は 1 区画の消去と書き込みの最長** ——
+  // 吸い出しが待てるのは 1.4 秒まで（`HOST_PROBE_TIMEOUT_MS` の項）なので、ここが近づいたら危ない。
+  size_t flashValid = 0;
+  for (size_t i = 0; g_flashPart != nullptr && i < g_flashSectors; i++) if (g_flashIndex[i].valid) flashValid++;
+  appendf(buf, sizeof(buf), u,
+    "\"flash_ok\":%s,\"flash_sectors\":%u,\"flash_valid\":%u,\"spilling\":%s,\"spill_starts\":%lu,"
+    "\"spill_lost\":%lu,\"spill_caps\":%lu,\"spill_capped\":%s,\"flash_writes\":%lu,\"flash_fails\":%lu,"
+    "\"flash_read_fails\":%lu,\"flash_crc_bad\":%lu,\"flash_max_ms\":%lu,\"flash_init_ms\":%lu,",
+    g_flashPart != nullptr ? "true":"false", (unsigned)g_flashSectors, (unsigned)flashValid,
+    g_spilling ? "true":"false", (unsigned long)g_spillStarts, (unsigned long)g_spillLost,
+    (unsigned long)g_spillCaps, g_spillCapped ? "true":"false",
+    (unsigned long)g_flashWrites, (unsigned long)g_flashFails,
+    (unsigned long)g_flashReadFails, (unsigned long)g_flashCrcBad, (unsigned long)g_flashMaxMs,
+    (unsigned long)g_flashInitMs);
   appendf(buf, sizeof(buf), u, "\"i2c\":[");
   for (int b = 0; b < 2; b++) {
     appendf(buf, sizeof(buf), u,
@@ -947,6 +1651,9 @@ static void onWifiUp(){
   http.on("/", handleStatus);
   http.on("/restart", HTTP_POST, handleRestart);
   http.on("/wifi-reconnect", HTTP_POST, handleWifiReconnect);
+  // **合言葉を掛けない。** 返すのは UDP で LAN へ流しているのと同じ波形で、
+  // 状態ページと同じく読むだけの口（基板の状態を変えない）。
+  http.on("/backlog", HTTP_GET, handleBacklog);
   // **`begin()` より前に渡す。** `WebServer` は列挙したヘッダだけを保存し、
   // それ以外は捨てる。渡し忘れると `http.header()` が常に空を返し、
   // **トークンが正しくても 403 になる**（しかも「トークンが違う」としか見えない）。
@@ -966,6 +1673,14 @@ void setup(){
   delay(300);
   g_bootMs = millis();
   resolveNodeName();
+
+  // 送った分の輪（→ `g_backlog`）。**Wi-Fi やソケットより先に取る** —— 大きな塊は、
+  // ヒープが細切れになる前のほうが取りやすい。
+  g_backlog = (BacklogSlot*)malloc(sizeof(BacklogSlot) * BACKLOG_SLOTS);
+  if (g_backlog == nullptr) {
+    Serial.printf("# WARN 送った分の輪（%u バイト）を確保できなかった。取り戻しの口は閉じたまま\n",
+                  (unsigned)(sizeof(BacklogSlot) * BACKLOG_SLOTS));
+  }
 
   // 自分で再起動した回数の帳面を読む（→ `RestartLedger`）。**電源投入なら必ず白紙にする**
   // ——中身が不定なので、`magic` がたまたま合っても信じない。
@@ -1008,6 +1723,15 @@ void setup(){
   // RF が動いているときだけで、それより前だと擬似乱数になる。衝突すると受け手は
   // 再起動をパケットの並び替えと読み、通し番号の戻りを繋いでしまう。
   snprintf(g_bootId, sizeof(g_bootId), "%08x", (unsigned)esp_random());
+  g_bootIdNum = (uint32_t)strtoul(g_bootId, nullptr, 16);
+  // フラッシュの輪は起動 ID が決まってから開く（書きかけの区画が名乗るため）。
+  flashInit();
+  if (g_flashPart != nullptr) {
+    size_t valid = 0;
+    for (size_t i = 0; i < g_flashSectors; i++) if (g_flashIndex[i].valid) valid++;
+    Serial.printf("# フラッシュの輪: %u 区画（うち %u 区画に前の分）・次は %u\n",
+                  (unsigned)g_flashSectors, (unsigned)valid, (unsigned)g_flashNext);
+  }
 
   Serial.printf("\n# %s (%s) booting bid=%s reset=%s%s self_restarts=%lu\n",
                 g_node, g_mac, g_bootId, resetReasonName(g_resetReason),
@@ -1045,22 +1769,22 @@ void setup(){
 // （→ `clockTrusted`）——送れば、最初の同期で時計がずれの分だけ跳び、受け手の区間が切れる。
 // 判定をここへ置くのは、**送る口がここ 1 つだけ**だから——`drainSensor` の側で
 // 弾くと、時刻を組み立てる場所と送る場所に判定が 2 つできる。
+//
+// **時計が合っていれば、送れるかどうかより先に輪へ残す**（→ `backlogPut`）。Wi-Fi が
+// 切れている間の分こそ、あとでホストが取りに来る。時計が合う前の分は残さない ——
+// 名乗る時刻が信用できないので、取り戻しても受け手を惑わせるだけ。
 static void sendChunk(Sensor &s, const int16_t *v, size_t n, uint32_t seq0, int64_t tFirstMs){
-  if (WiFi.status() != WL_CONNECTED) { s.unsent += n; return; }
   const time_t nowSec = time(nullptr);
-  if (!clockTrusted(nowSec)) { s.pretime += n; return; }
+  const bool trusted = clockTrusted(nowSec);
+  if (trusted) backlogPut(s, v, n, seq0, tFirstMs);
+  if (WiFi.status() != WL_CONNECTED) { s.unsent += n; return; }
+  if (!trusted) { s.pretime += n; return; }
   if (!g_timeReady) {
     g_timeReady = true;
     Serial.printf("# 時計が合った（unix=%ld）。ここから送り始める\n", (long)nowSec);
   }
   char head[320];
-  const int hl = snprintf(head, sizeof(head),
-    "{\"v\":2,\"mac\":\"%s\",\"bid\":\"%s\",\"sid\":\"%s\",\"st\":\"MPU6050\","
-    "\"ch\":[\"HN1\",\"HN2\",\"HN3\"],\"ug\":%.4f,\"fs\":%d,\"hz\":%d,"
-    // `"ack":1` は「届いたら返事をくれ」。ホストは求めた基板にだけ返す（→ `checkAck`）。
-    "\"t\":%lld,\"q\":%lu,\"c\":%u,\"o\":%lu,\"ack\":1}\n",
-    g_macFlat, g_bootId, s.sid, UG_PER_LSB, 2 << AFS_SEL, SAMPLE_HZ,
-    (long long)tFirstMs, (unsigned long)seq0, (unsigned)n, (unsigned long)s.overflow);
+  const int hl = formatHead(head, sizeof(head), g_bootId, s, n, seq0, tFirstMs, s.overflow);
   // 切り詰められた JSON を送らない。受け手には「先頭行が読めない」としか見えず、
   // 別のプログラムが同じ口へ投げている疑いの件数に混ざる。
   if (hl <= 0 || (size_t)hl >= sizeof(head)) { g_headTrunc++; s.unsent += n; return; }
@@ -1068,7 +1792,7 @@ static void sendChunk(Sensor &s, const int16_t *v, size_t n, uint32_t seq0, int6
   udp.write((const uint8_t*)head, hl);
   for (size_t i = 0; i < n; i++) {
     char line[32];
-    const int ll = snprintf(line, sizeof(line), "%d,%d,%d\n", v[i*3], v[i*3+1], v[i*3+2]);
+    const int ll = formatLine(line, sizeof(line), &v[i*3]);
     udp.write((const uint8_t*)line, ll);
   }
   if (udp.endPacket()) {
@@ -1098,6 +1822,9 @@ static void sendChunk(Sensor &s, const int16_t *v, size_t n, uint32_t seq0, int6
 // もう一度試すことも無い。
 static void retryUdpOpen(uint32_t nowMs){
   if (!g_wifiUp || g_udpOpen) return;
+  // 符号無しで引いてよいのは、`g_lastArmMs` を書く経路（`onWifiUp`・`checkAck`）がどれも
+  // この呼び出しより後に `nowMs` を取り直すか、同じ周でこれより後に走るから。**`loop()` の
+  // 呼び出し順を入れ替えたら見直すこと**（`spillPump` が同じ形で取り違えた）。
   if (nowMs - g_lastArmMs < ACK_SILENCE_MS) return;
   Serial.println("# UDP のソケットが開いていない。開き直す");
   armUdp();
@@ -1130,6 +1857,10 @@ static void readAcks(){
     if (wl > 0 && n == wl && memcmp(got, want, (size_t)wl) == 0) {
       g_acks++;
       g_lastAckMs = millis();
+      {
+        struct timeval tv; gettimeofday(&tv, nullptr);
+        g_lastAckUnixMs = (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+      }
       g_ackWaiting = false;
       if (g_ackLevel != 0) {
         Serial.printf("# ホストの返事が戻った（段 %u まで上がっていた）\n", (unsigned)g_ackLevel);
@@ -1221,6 +1952,9 @@ static uint32_t selfRestartsInWindow(time_t now){
 static void checkAck(uint32_t nowMs){
   // Wi-Fi が切れている間は計らない。繋がり直せば `onWifiUp` が UDP を開き直す。
   if (!g_wifiUp) { g_ackWaiting = false; return; }
+  // 符号無しで引いてよいのは、`g_ackWaitStartMs` を書く `sendChunk` が `loop()` でこれより
+  // 後に走るから（同じ周の `nowMs` より新しい値と比べることが無い）。**呼び出し順を入れ替えたら
+  // 見直すこと**（`spillPump` が同じ形で取り違えた）。
   if (!g_ackWaiting || nowMs - g_ackWaitStartMs < ACK_SILENCE_MS) return;
   // 次の計時は、次に送れた時点から。
   g_ackWaiting = false;
@@ -1508,6 +2242,9 @@ void loop(){
   retryUdpOpen(nowMs);
   readAcks();
   checkAck(nowMs);
+  // 返事の途絶を見てフラッシュへ書き出す（→ `spillPump`）。**毎周呼ぶ** —— 1 周に書く区画は
+  // 1 つまでなので、吸い出しの周期に合わせると書き出しが追いつかない。
+  spillPump(nowMs);
 
   static uint32_t lastRetry = 0;
   if (nowMs - lastRetry >= RETRY_MS) { lastRetry = nowMs; retryStuck(); }

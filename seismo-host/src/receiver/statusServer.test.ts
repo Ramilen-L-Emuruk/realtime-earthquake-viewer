@@ -51,6 +51,10 @@ function report(hub: ReadingHub): StatusReport {
     udp: { address: '0.0.0.0', port: 50505 },
     udpRecvBuffer: { requestedBytes: 8_388_608, actualBytes: 8_388_608, error: null },
     loopStalls: { thresholdMs: 1000, count: 0, totalMs: 0, longestMs: null, last: null },
+    backlog: {
+      pendingGaps: 0, pendingSamples: 0, recoveredSamples: 0, unrecoverableSamples: {},
+      requests: 0, recoveredPackets: 0, failures: {}, rawUnsaved: 0, badPackets: 0, foreignPackets: 0,
+    },
     http: { address: '0.0.0.0', port: 50506 },
     tally: new PacketTally().snapshotTotal(),
     sensors: [],
