@@ -36,6 +36,9 @@ import {
   describeSilence,
 } from './src/receiver/assignedReception'
 import type { AssignedBoardReception } from './src/receiver/assignedReception'
+import { BoardClockBook } from './src/receiver/boardClock'
+import { CLOCK_OFFSET_WARN_MS, warnableClockOffset } from './src/receiver/boardClockVerdict'
+import type { BoardClockOffset } from './src/receiver/boardClockVerdict'
 import { GravityCheckBook } from './src/receiver/gravityCheck'
 import type { GravityCount, GravityCounts, GravityVerdict } from './src/receiver/gravityCheck'
 import { IntensityPipeline } from './src/receiver/intensityPipeline'
@@ -543,6 +546,44 @@ export function buildTimebaseEpochWarning(
         `（基板の時計が合っていない可能性。合成が組めなくなる）: ${keys.join(' ')}`,
     },
   ]
+}
+
+/**
+ * 時計のずれた基板を、定期要約で知らせる。
+ *
+ * **基板の状態ページは「合っている」と名乗ったまま、時計だけがずれていくことがある。**
+ * 2026-10-01 のファームはソフトウェアの再起動のあと SNTP を始めておらず、3 枚の時計が
+ * 22 時間で 0.5〜1.3 秒遅れた。震度もパケットも出続けたので、**観測点の合成が毎回
+ * いちばん遅れた基板を欠くようになるまで誰も気づかなかった**（`boardClock.ts` の冒頭）。
+ *
+ * **鍵は基板ごと。** 顔ぶれ全体を鍵にすると、1 枚増えるたびに全部が出し直しになり、
+ * 新しくずれた基板の最初の 1 行が既存の枠に埋もれる（`buildAssignedSilenceReport` と同じ判断）。
+ *
+ * **出す・出さないは `warnableClockOffset` が決める**（管理コンソールと同じ判定）。
+ * 黙った基板は出さない —— 黙ったこと自体は割り当ての警告が持ち、ここで最後の値を
+ * 鳴らし続けると、時計の話なのか届いていない話なのかが読めなくなる。
+ */
+export function buildBoardClockWarnings(
+  boards: readonly Pick<BoardClockOffset, 'boardKey' | 'offsetMs' | 'lastPacketMs'>[],
+  nowMs: number,
+): readonly RawWarning[] {
+  const out: RawWarning[] = []
+  for (const b of boards) {
+    const offset = warnableClockOffset(b, nowMs)
+    if (offset === null) continue
+    const ms = Math.round(Math.abs(offset))
+    const way = offset > 0 ? '遅れている' : '進んでいる'
+    out.push({
+      level: 'warn',
+      kind: 'board-clock',
+      detail: b.boardKey,
+      line:
+        `[clock] ${b.boardKey} の時計がホストより ${ms} ms ${way}` +
+        `（許容 ${CLOCK_OFFSET_WARN_MS} ms。基板が SNTP で時計を合わせられていない可能性。` +
+        `観測点の合成がこの基板を欠きはじめる）`,
+    })
+  }
+  return out
 }
 
 /**
@@ -1366,6 +1407,9 @@ async function main(): Promise<void> {
   const throttle = new LogThrottle()
   const hub = new ReadingHub()
   const health = new SensorHealthBook()
+  // 基板ごとの時計のずれ（`src/receiver/boardClock.ts`）。**`health` へ混ぜない** ——
+  // あちらはセンサー単位の「届いているか」で、時計は基板 1 枚に 1 つ。
+  const boardClocks = new BoardClockBook()
   const stationHealth = new StationHealthBook()
   const gravity = new GravityCheckBook()
   // **作れなければここで落ちる。** 黙って保存せずに走るのがいちばん悪い ——
@@ -1605,6 +1649,9 @@ async function main(): Promise<void> {
     // 中身（アドレス等）が混ざって枠が際限なく増える。
     onError: (error) => emit('error', 'udp', error.name, `[udp] ${error.message}`),
     onDatagram: (payload, from, reply) => {
+      // **受け取った時刻は最初に読む**（時計のずれを測る `boardClocks` が使う）。保存や
+      // 読み取りの後で読むと、その処理時間が「届くまでの時間」に乗り、ずれが大きく見える。
+      const receivedAtMs = Date.now()
       // **届いた件数は上限を掛ける前に数える。** あとだと分母が上限そのものになり、
       // 「どれだけ撃たれているか」が表から読めなくなる。
       tally.record({ kind: 'received', source: from.address })
@@ -1667,6 +1714,7 @@ async function main(): Promise<void> {
       // **誰の声かが判るのはここから。** 読み取りに失敗した回は基板が判らないので覚えない。
       const current = streamKeyOf(read.packet)
       health.notePacket({ boardKey: board, sensorId: read.packet.sensorId, streamKey: current })
+      boardClocks.note(board, receivedAtMs, read.packet)
       const outcome = pipeline.handlePacket(read.packet)
 
       // **波形は震度より先に押し出す。** 計測震度は窓の都合で 2 秒遅れて出るので、
@@ -1829,6 +1877,7 @@ async function main(): Promise<void> {
         tally: tally.snapshotTotal(),
         sensors: health.snapshot(),
         sensorEvictions: health.evictions,
+        boardClocks: boardClocks.snapshot(),
         stationEvictions: stationHealth.evictions,
         stationIntensities: stationHealth.snapshot(),
         gravity: gravity.snapshot(),
@@ -1930,6 +1979,11 @@ async function main(): Promise<void> {
         pipeline.unusableIntensities,
       ),
       sensorEvicted: delta('sensorEvicted', 'センサーの生存の枠を捨てた', health.evictions),
+      boardClockEvicted: delta(
+        'boardClockEvicted',
+        '基板の時計のずれの枠を捨てた',
+        boardClocks.snapshot().evictions,
+      ),
       stationEvicted: delta(
         'stationEvicted',
         '観測点ぶんの合成の生存の枠を捨てた',
@@ -1992,6 +2046,10 @@ async function main(): Promise<void> {
     // （`buildTimebaseEpochWarning` のコメント参照）。`/status` には出ているが、
     // **生の JSON を読み比べる人にしか見えない。**
     for (const w of buildTimebaseEpochWarning(pipeline.openSegments())) {
+      emit(w.level, w.kind, w.detail, w.line)
+    }
+    // **時計のずれた基板も、ここでしか声にならない**（`buildBoardClockWarnings` のコメント参照）。
+    for (const w of buildBoardClockWarnings(boardClocks.snapshot().boards, now)) {
       emit(w.level, w.kind, w.detail, w.line)
     }
     // **割り当てた基板が黙ったことも、ここでしか声にならない**

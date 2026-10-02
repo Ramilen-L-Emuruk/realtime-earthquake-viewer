@@ -53,6 +53,7 @@ function report(hub: ReadingHub): StatusReport {
     tally: new PacketTally().snapshotTotal(),
     sensors: [],
     sensorEvictions: 0,
+    boardClocks: { boards: [], evictions: 0 },
     stationEvictions: 0,
     stationIntensities: [],
     gravity: {
