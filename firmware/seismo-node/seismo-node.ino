@@ -124,12 +124,15 @@ static const uint32_t NO_WIFI_WARN_MS = 30000;
 // UDP の返事が数回落ちる程度では上がらず、本当に途絶えたときだけ上がる。
 static const uint32_t ACK_SILENCE_MS = 15000;
 
-// 段を上げる前にホストへ TCP を張って待つ上限。
+// 段を上げる前にホストへ HTTP で訊くときの待ちの上限（→ `hostReachable`）。
 //
 // **この間は吸い出しも止まる**（`loop()` が 1 本なので）。FIFO は 1024 バイト＝
 // 170 サンプル＝1.7 秒ぶんを抱えられ、吸い出しの周期が 0.3 秒なので、待てるのは
-// 1.4 秒まで。LAN 内の相手なら往復は数ミリ秒で、0.5 秒は十分に長く、あふれからも遠い。
-static const int32_t HOST_PROBE_TIMEOUT_MS = 500;
+// 1.4 秒まで。**接続 0.5 秒＋答え 0.5 秒＝1.0 秒**で、0.4 秒を残してその内に収める
+// （`delay(5)` の刻みや `stop()` の後始末の分も、残りが受け持つ）。LAN 内の相手なら
+// 往復は数ミリ秒で、どちらも十分に長い。
+static const int32_t  HOST_PROBE_TIMEOUT_MS = 500;
+static const uint32_t HOST_PROBE_REPLY_MS = 500;
 
 // 自分で再起動してよい回数と、その数え直しの間隔（→ `restartAllowed`）。
 //
@@ -371,7 +374,7 @@ static uint32_t   g_ackWaitStartMs = 0;
 static uint8_t    g_ackLevel = 0;
 static uint32_t   g_ackRearms = 0;       // 返事の途絶で UDP を作り直した回数
 static uint32_t   g_ackReconnects = 0;   // 返事の途絶で Wi-Fi を繋ぎ直した回数
-static uint32_t   g_hostProbeFail = 0;   // 返事が途絶えてホストへ TCP を張ったが繋がらなかった回数
+static uint32_t   g_hostProbeFail = 0;   // 返事が途絶えてホストへ HTTP で訊いたが答えが無かった回数
 static uint32_t   g_restartSkipped = 0;  // 再起動の段に来たが上限で飛ばした回数
 static bool       g_warnedNoAck = false; // 「返事を一度も受けていない」を 1 度だけ出したか
 
@@ -1088,7 +1091,7 @@ static void sendChunk(Sensor &s, const int16_t *v, size_t n, uint32_t seq0, int6
 // 返事を一度も受けていない起動では門が閉じたまま段が上がらない。その場の作成まで
 // 失敗すれば `endPacket()` が偽を返し、計時も始まらない。**どちらも外からは黙るだけ。**
 //
-// 段を上げる話ではない（開き損ねたものを開くだけ）ので、門も TCP の到達確認も通さない。
+// 段を上げる話ではない（開き損ねたものを開くだけ）ので、門も HTTP の到達確認も通さない。
 // 間隔は `ACK_SILENCE_MS` に揃え、**最後に開こうとした時刻（どこから開いたかを問わない）**
 // から数える——開けない原因（記述子の枯渇など）がすぐには消えない場面で、`loop()` の
 // 1 周ごとに試してシリアルを埋めないため。繋がり直しで開き損ねた直後に、同じ周で
@@ -1138,17 +1141,40 @@ static void readAcks(){
   }
 }
 
-// ホストへ TCP を張れるか。**返事が途絶えたとき、ホストが止まっているだけかを確かめる。**
+// ホストが HTTP で答えるか。**返事が途絶えたとき、ホストが止まっているだけかを確かめる。**
 //
-// **張れなければ段を上げない。** 開発でホストを止めるたびに基板が繋ぎ直しと再起動を
+// **答えなければ段を上げない。** 開発でホストを止めるたびに基板が繋ぎ直しと再起動を
 // 始めると、ホストを戻したときには基板のほうが時計合わせの最中で、しばらく波形が来ない。
-// ホストのプロセスが落ちていて PC だけ生きている場合も、口が閉じているので繋がらない側に入る。
 //
-// **TCP が通るのに UDP の返事が来ない**、が直したい形そのもの——UDP のソケットだけが
-// 壊れていても、TCP は別のソケットなので通る（2026-09-30 の基板は HTTP に応え続けていた）。
+// **TCP が繋がるだけでは足りない。** 接続を受け付けるのは OS で、ホストのプロセスが
+// 止まっていても繋がる（処理の止まった node へ 6 ms で繋がり、HTTP は時間切れになった。
+// 2026-10-02 に実測）。2026-10-02 13:41 には同じ機械の重い処理でホストが約 45 秒止まり、
+// 基板 2 枚が「ホストは生きている」と読んで再起動まで段を上げた。**答えが返って初めて、
+// ホストの処理が回っている**と言える。
+//
+// **状態コードは見ない。** `HTTP/` で始まる答えが返れば生きている —— `/healthz` を
+// 持たない古いホストも 404 で答える。
+//
+// **HTTP が答えるのに UDP の返事が来ない**、が直したい形そのもの——UDP のソケットだけが
+// 壊れていても、HTTP は別のソケットなので答える（2026-09-30 の基板は HTTP に応え続けていた）。
 static bool hostReachable(){
   WiFiClient c;
-  const bool ok = c.connect(UDP_HOST, HOST_HTTP_PORT, HOST_PROBE_TIMEOUT_MS);
+  if (!c.connect(UDP_HOST, HOST_HTTP_PORT, HOST_PROBE_TIMEOUT_MS)) {
+    c.stop();
+    return false;
+  }
+  c.printf("GET /healthz HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n", UDP_HOST);
+  const uint32_t start = millis();
+  while (c.available() < 5 && millis() - start < HOST_PROBE_REPLY_MS) {
+    // 閉じられて何も残っていなければ、待っても答えは来ない。
+    if (!c.connected() && c.available() == 0) break;
+    delay(5);
+  }
+  bool ok = false;
+  if (c.available() >= 5) {
+    char head[5];
+    ok = c.read((uint8_t*)head, 5) == 5 && memcmp(head, "HTTP/", 5) == 0;
+  }
   c.stop();
   return ok;
 }
@@ -1210,7 +1236,7 @@ static void checkAck(uint32_t nowMs){
 
   if (!hostReachable()) {
     g_hostProbeFail++;
-    Serial.printf("# 返事が %lu 秒途絶えたが、ホスト %s:%d に TCP も繋がらない。止まっていると見て待つ\n",
+    Serial.printf("# 返事が %lu 秒途絶えたが、ホスト %s:%d も HTTP に答えない。止まっていると見て待つ\n",
                   (unsigned long)(ACK_SILENCE_MS / 1000), UDP_HOST, HOST_HTTP_PORT);
     return;
   }

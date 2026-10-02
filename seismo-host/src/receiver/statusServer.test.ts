@@ -49,6 +49,8 @@ function report(hub: ReadingHub): StatusReport {
     nowMs: 1_700_000_100_000,
     startedAtMs: 1_700_000_000_000,
     udp: { address: '0.0.0.0', port: 50505 },
+    udpRecvBuffer: { requestedBytes: 8_388_608, actualBytes: 8_388_608, error: null },
+    loopStalls: { thresholdMs: 1000, count: 0, totalMs: 0, longestMs: null, last: null },
     http: { address: '0.0.0.0', port: 50506 },
     tally: new PacketTally().snapshotTotal(),
     sensors: [],
@@ -697,6 +699,21 @@ describe('startStatusServer', () => {
 
     const plain = await fetch(`${base}/stream`, { method: 'OPTIONS' })
     expect(plain.headers.get('access-control-allow-private-network')).toBeNull()
+  })
+
+  it('/healthz は状態を組み立てずに答える（基板の生存確認の口）', async () => {
+    const hub = new ReadingHub()
+    // **状態の組み立てが壊れていても答える。** 基板が知りたいのは「処理が回っているか」で、
+    // `/status` の中身ではない。ここで組み立てると、壊れた状態の口に引きずられて
+    // 基板が「止まっている」と読み、返事が途絶えても段を上げなくなる。
+    const base = await start(hub, () => {
+      throw new Error('組み立てに失敗')
+    })
+
+    const res = await fetch(`${base}/healthz`)
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ ok: true })
   })
 
   it('知らない経路は 404、GET 以外は 405', async () => {
