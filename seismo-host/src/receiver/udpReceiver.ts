@@ -32,6 +32,18 @@ export interface UdpReceiverOptions {
   /** 待ち受けるアドレス。省略すると全インターフェース。 */
   readonly address?: string
   /**
+   * OS に頼む受信バッファの大きさ（バイト）。
+   *
+   * **受け手の処理が止まっている間、届いたものを抱えておけるのはここだけ。** あふれた分は
+   * OS が黙って捨て、受け手からは数えられない（基板の番号が飛んだことで後から分かるだけ）。
+   * 既定（Windows で 64 KB）は基板 3 枚の約 3 秒ぶんしか無く、2026-10-02 にホストが
+   * 約 45 秒止まったときはその間の分をまるごと失った。
+   *
+   * **OS が言われた大きさに従うとは限らない**（Linux は `rmem_max` で頭打ちにする）。
+   * 実際の大きさは `UdpReceiver.recvBuffer` で確かめる。
+   */
+  readonly recvBufferBytes: number
+  /**
    * 1 つ届くたびに呼ばれる。
    *
    * **返す口は届いたものと一緒に渡す。** 受信口そのものを受け手へ持たせる形にすると、
@@ -47,9 +59,24 @@ export interface UdpReceiverOptions {
   readonly onError: (error: Error) => void
 }
 
+/**
+ * 受信バッファを広げた結果。
+ *
+ * **広げられなくても待ち受けは続ける。** 止まったときに落としやすくなるだけで、
+ * 受け取れなくなるわけではない —— 起動を止めるほうが失うものが大きい。
+ */
+export interface RecvBufferOutcome {
+  readonly requestedBytes: number
+  /** OS が実際に割り当てた大きさ。読めなかったら null。 */
+  readonly actualBytes: number | null
+  /** 広げる・読むのどちらかで投げた理由。どちらも通れば null。 */
+  readonly error: string | null
+}
+
 export interface UdpReceiver {
   /** 実際に待ち受けているポート。`port: 0` で開けたときはここで確かめる。 */
   readonly port: number
+  readonly recvBuffer: RecvBufferOutcome
   close(): Promise<void>
 }
 
@@ -96,13 +123,39 @@ export function startUdpReceiver(options: UdpReceiverOptions): Promise<UdpReceiv
           options.onError(toError(error))
         }
       })
-      resolve({ port: socket.address().port, close: () => closeSocket(socket) })
+      resolve({
+        port: socket.address().port,
+        recvBuffer: widenRecvBuffer(socket, options.recvBufferBytes),
+        close: () => closeSocket(socket),
+      })
     }
 
     socket.once('error', onBindError)
     socket.once('listening', onListening)
     socket.bind(options.port, options.address)
   })
+}
+
+/**
+ * 受信バッファを広げる。**束ねた後でしか呼べない**（Node は開いていないソケットで投げる）。
+ *
+ * **頼んだ値ではなく、読み直した値を返す。** OS が黙って小さくすることがあり、頼んだ値を
+ * そのまま出すと「抱えられるつもり」の数字が残る。
+ */
+function widenRecvBuffer(socket: Socket, requestedBytes: number): RecvBufferOutcome {
+  let error: string | null = null
+  try {
+    socket.setRecvBufferSize(requestedBytes)
+  } catch (e) {
+    error = toError(e).message
+  }
+  let actualBytes: number | null = null
+  try {
+    actualBytes = socket.getRecvBufferSize()
+  } catch (e) {
+    error ??= toError(e).message
+  }
+  return { requestedBytes, actualBytes, error }
 }
 
 /**

@@ -11,6 +11,8 @@ import {
   buildBoardClockWarnings,
   buildClosingLines,
   buildGravityWarnings,
+  buildLoopStallWarning,
+  buildRecvBufferLine,
   deliverReading,
   deliverStationFusion,
   buildRawWarnings,
@@ -536,6 +538,52 @@ describe('buildTimebaseEpochWarning', () => {
 
 // 2026-10-02 に足した。ソフトウェアの再起動のあと SNTP を始めないファームで、
 // 3 枚の時計が 22 時間で 0.5〜1.3 秒遅れたのに、どこにも出ていなかった。
+describe('buildLoopStallWarning', () => {
+  it('止まっていた秒数と再開した日本時間を 1 行に入れる', () => {
+    // 2026-10-02 13:41:45 JST。
+    const w = buildLoopStallWarning({ endedAtMs: Date.UTC(2026, 9, 2, 4, 41, 45), stalledMs: 45_250 })
+    expect(w.level).toBe('warn')
+    expect(w.line).toContain('45.3 秒')
+    expect(w.line).toContain('2026-10-02 13:41:45')
+  })
+
+  it('間引きの鍵は区間ごとに変えない（詰まり続けたとき行が溢れない）', () => {
+    const a = buildLoopStallWarning({ endedAtMs: 1, stalledMs: 1_000 })
+    const b = buildLoopStallWarning({ endedAtMs: 2, stalledMs: 9_000 })
+    expect([a.kind, a.detail]).toEqual([b.kind, b.detail])
+  })
+})
+
+describe('buildRecvBufferLine', () => {
+  it('頼んだ大きさに届いていれば記録の行にとどめる', () => {
+    const r = buildRecvBufferLine({ requestedBytes: 8_388_608, actualBytes: 8_388_608, error: null })
+    expect(r.level).toBe('log')
+    expect(r.line).toContain('8388608')
+  })
+
+  it('OS が言われたより大きく割り当てても（Linux は 2 倍）記録の行にとどめる', () => {
+    expect(buildRecvBufferLine({ requestedBytes: 1_000, actualBytes: 2_000, error: null }).level).toBe('log')
+  })
+
+  it('頼んだ大きさに届かなければ警告にする（OS が黙って小さく抑えたとき）', () => {
+    const r = buildRecvBufferLine({ requestedBytes: 8_388_608, actualBytes: 212_992, error: null })
+    expect(r.level).toBe('warn')
+    expect(r.line).toContain('212992')
+  })
+
+  it('広げる段で投げたら、その理由を添えて警告にする', () => {
+    const r = buildRecvBufferLine({ requestedBytes: 8_388_608, actualBytes: 65_536, error: 'EINVAL' })
+    expect(r.level).toBe('warn')
+    expect(r.line).toContain('EINVAL')
+  })
+
+  it('実際の大きさを読めなかったら警告にする（読めないことを「足りている」と取り違えない）', () => {
+    const r = buildRecvBufferLine({ requestedBytes: 8_388_608, actualBytes: null, error: null })
+    expect(r.level).toBe('warn')
+    expect(r.line).toContain('不明')
+  })
+})
+
 describe('buildBoardClockWarnings', () => {
   const NOW = Date.UTC(2026, 9, 2, 3, 0, 0)
   const row = (boardKey: `mac:${string}`, offsetMs: number | null, lastPacketMs: number | null = NOW - 100) => ({
