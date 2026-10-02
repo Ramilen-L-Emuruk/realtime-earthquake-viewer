@@ -8,6 +8,7 @@ import {
   closeHostCore,
   deliverFusionClosing,
   buildAssignedSilenceReport,
+  buildBoardClockWarnings,
   buildClosingLines,
   buildGravityWarnings,
   deliverReading,
@@ -28,6 +29,8 @@ import {
 } from './main'
 import type { ApplyStationConfigDeps, CloseHostDeps, FusionClosingSinks } from './main'
 import type { AssignedBoardReception } from './src/receiver/assignedReception'
+import { STALE_AFTER_MS } from './src/receiver/assignedReception'
+import { CLOCK_OFFSET_WARN_MS } from './src/receiver/boardClockVerdict'
 import type { GravityVerdict } from './src/receiver/gravityCheck'
 import type { IntensityReading } from './src/receiver/intensityPipeline'
 import { EMPTY_STATION_CONFIG } from './src/receiver/stationConfig'
@@ -528,6 +531,58 @@ describe('buildTimebaseEpochWarning', () => {
       seg('["a","i2c0-69","b1"]', false, 8434),
     ])
     expect(a[0]?.detail).not.toBe(b[0]?.detail)
+  })
+})
+
+// 2026-10-02 に足した。ソフトウェアの再起動のあと SNTP を始めないファームで、
+// 3 枚の時計が 22 時間で 0.5〜1.3 秒遅れたのに、どこにも出ていなかった。
+describe('buildBoardClockWarnings', () => {
+  const NOW = Date.UTC(2026, 9, 2, 3, 0, 0)
+  const row = (boardKey: `mac:${string}`, offsetMs: number | null, lastPacketMs: number | null = NOW - 100) => ({
+    boardKey,
+    offsetMs,
+    lastPacketMs,
+  })
+
+  it('正: 許容を超えて遅れている基板を、基板ごとに 1 件ずつ出す', () => {
+    const out = buildBoardClockWarnings([row('mac:a0b7', 1301), row('mac:1c8f', 688)], NOW)
+    expect(out).toHaveLength(2)
+    expect(out[0]?.level).toBe('warn')
+    expect(out[0]?.kind).toBe('board-clock')
+    // **鍵は基板ごと。** 顔ぶれ全体を鍵にすると、1 枚増えるたびに全部が出し直しになり、
+    // 新しくずれた基板の最初の 1 行が既存の枠に埋もれる（`buildAssignedSilenceReport` と同じ判断）。
+    expect(out.map((w) => w.detail)).toEqual(['mac:a0b7', 'mac:1c8f'])
+    expect(out[0]?.line).toContain('mac:a0b7')
+    expect(out[0]?.line).toContain('1301 ms')
+    expect(out[0]?.line).toContain('遅れ')
+  })
+
+  it('正: 進んでいる向きにずれても出す', () => {
+    const out = buildBoardClockWarnings([row('mac:aa', -400)], NOW)
+    expect(out).toHaveLength(1)
+    expect(out[0]?.line).toContain('400 ms')
+    expect(out[0]?.line).toContain('進ん')
+  })
+
+  it('対照: 許容の内なら出さない（届くまでの時間ぶんは常に乗っている）', () => {
+    expect(buildBoardClockWarnings([row('mac:aa', 40), row('mac:bb', -20)], NOW)).toEqual([])
+  })
+
+  it('対照: 許容ちょうどは出さない・1 ms 超えたら出す', () => {
+    expect(buildBoardClockWarnings([row('mac:aa', CLOCK_OFFSET_WARN_MS)], NOW)).toEqual([])
+    expect(buildBoardClockWarnings([row('mac:aa', CLOCK_OFFSET_WARN_MS + 1)], NOW)).toHaveLength(1)
+  })
+
+  it('安全弁: まだ測れていない基板は出さない', () => {
+    expect(buildBoardClockWarnings([row('mac:aa', null, null)], NOW)).toEqual([])
+  })
+
+  it('安全弁: 黙った基板は出さない —— 黙ったことは割り当ての警告が同じ物差しで持つ', () => {
+    // **境目を割り当ての警告（`STALE_AFTER_MS`）と揃える。** 別の長さにすると、その間だけ
+    // 「届いていない」と「時計がずれている」が同時に並ぶ。
+    expect(buildBoardClockWarnings([row('mac:aa', 1301, NOW - STALE_AFTER_MS - 1)], NOW)).toEqual([])
+    expect(buildBoardClockWarnings([row('mac:aa', 1301, NOW - STALE_AFTER_MS)], NOW)).toHaveLength(1)
+    expect(buildBoardClockWarnings([row('mac:aa', 1301, null)], NOW)).toEqual([])
   })
 })
 

@@ -15,6 +15,7 @@
 import type { SegmentState } from '../timebase/segmenter'
 import type { AckSnapshot } from './ackReplier'
 import type { AssignedBoardReception } from './assignedReception'
+import type { BoardClockSnapshot } from './boardClock'
 import type { GravityCheckSnapshot, GravityVerdict } from './gravityCheck'
 import type { TallySnapshot } from './packetTally'
 import type { HubSnapshot } from './readingHub'
@@ -145,6 +146,8 @@ export interface StatusReportInput {
    * ホストを起動してから一度も届かない基板はどこにも現れない。
    */
   readonly assignedBoards: readonly AssignedBoardReception[]
+  /** 基板ごとの時計のずれ（`boardClock.ts`）。 */
+  readonly boardClocks: BoardClockSnapshot
 }
 
 /**
@@ -322,6 +325,15 @@ export interface StatusReport {
    * `sensors[]` に名前を書いた有効なセンサーだけ（基板が生きていても 1 個だけ黙りうる）。
    */
   readonly assignedBoards: readonly AssignedBoardReception[]
+  /**
+   * 基板ごとの時計のずれ。**`offsetMs` が正なら基板の時計がホストより遅れている**
+   * （届くまでの数〜数十 ms を含む）。100 ms を超えると観測点の合成がその基板を
+   * 欠きはじめる（`boardClock.ts` の `CLOCK_OFFSET_WARN_MS`）。
+   *
+   * **`sensors` へ混ぜない。** あちらはセンサー単位の「届いているか」で、時計は基板に 1 つ。
+   * **`windowEndMs` の古さを見ること** —— 基板が黙ると最後に測った値が残る。
+   */
+  readonly boardClocks: BoardClockSnapshot
 }
 
 /** `Map` を JSON になる形へ。**出す側と読む側で流儀が分かれないよう 1 箇所に置く。** */
@@ -423,6 +435,17 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     sensors: b.sensors.map((s) => ({ ...s, lastPacketMs: finite(s.lastPacketMs) })),
   }))
 
+  // ずれも時刻の欄として数える（どちらもミリ秒の時刻から引いて作った値）。
+  const boardClocks: BoardClockSnapshot = {
+    evictions: input.boardClocks.evictions,
+    boards: input.boardClocks.boards.map((b) => ({
+      ...b,
+      offsetMs: finite(b.offsetMs),
+      windowEndMs: finite(b.windowEndMs),
+      lastPacketMs: finite(b.lastPacketMs),
+    })),
+  }
+
   // **経過は秒で丸めて出す。** ミリ秒のままだと読む人が毎回割ることになる。
   // 起動より前の時刻を渡されても負にしない（時計が跳ねたとき「稼働 -3 秒」は読めない）。
   const uptimeSec = Math.max(0, Math.floor((input.nowMs - input.startedAtMs) / 1000))
@@ -450,5 +473,6 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     stationConfigWarning: input.stationConfigWarning,
     ungroupedMultiBoardStations: input.ungroupedMultiBoardStations,
     assignedBoards,
+    boardClocks,
   }
 }

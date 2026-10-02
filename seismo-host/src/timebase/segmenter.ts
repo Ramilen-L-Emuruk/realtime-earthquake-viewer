@@ -80,7 +80,7 @@ const MAX_SLOPE_DEVIATION = 0.1
 const MIN_PLAUSIBLE_EPOCH_MS = Date.UTC(2020, 0, 1)
 
 /** 足場がエポックとして成り立っているか。**非有限は成り立たない側へ倒す。** */
-function epochPlausible(firstSampleMs: number): boolean {
+export function epochPlausible(firstSampleMs: number): boolean {
   // **`>=` の比較だけでは足りない。** `Infinity` は下限を通ってしまうし、`NaN` は
   // 通らないが「比較が偽」という理由で偶然そうなっているだけ。`statusReport.ts` は
   // 非有限の時刻を `null` へ倒すので、ここを通すと **`firstSampleMs: null` なのに
