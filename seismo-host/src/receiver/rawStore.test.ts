@@ -550,6 +550,81 @@ describe('RawStore', () => {
       expect(lines(join(dir, 'raw-2026-09-25.ndjson'))).toHaveLength(1)
     })
 
+    describe('保存できずに返した分も、失った件数に入る', () => {
+      // **流し口が壊れた回数（`writeErrors`）は開き直しの間隔ごとにしか増えない。**
+      // ディスクが開けない間は実機 3 台で毎秒 30 件ほど失われるのに、そちらは 5 秒に 1 つ ——
+      // 失った件数に入れないと、失われた量が桁で分からない。
+
+      it('開き直しの間隔を待っている間に来た分を数える', async () => {
+        mkdirSync(join(dir, 'raw-2026-09-25.ndjson'))
+        const store = new RawStore({ dir, now: () => AT_2026_09_25_2300_JST, reopenIntervalMs: 5_000 })
+
+        // 1 件目は「保存できた」と返ったあとで、壊れた流し口と一緒に失われる。
+        store.write('a:1', 'one')
+        await until(() => store.writeErrors === 1 && store.lostRecords === 1,
+                    'writeErrors が 1・lostRecords が 1')
+
+        expect(store.write('a:1', 'two')).toEqual({ saved: false, reason: 'no-stream' })
+        expect(store.write('a:1', 'three')).toEqual({ saved: false, reason: 'no-stream' })
+        expect(store.lostRecords).toBe(3)
+        // **壊れた回数は動かない** —— 2 つの数字が別の物を数えていることの確かめ。
+        expect(store.writeErrors).toBe(1)
+
+        await store.close()
+      })
+
+      it('抱えた量が上限を超えて捨てた分を数える', async () => {
+        const store = new RawStore({ dir, now: () => AT_2026_09_25_2300_JST, maxPendingBytes: 200 })
+        const line = 'x'.repeat(120)
+        expect(store.write('a:1', line)).toEqual({ saved: true })
+        expect(store.write('a:1', line)).toEqual({ saved: false, reason: 'backpressure' })
+        expect(store.lostRecords).toBe(1)
+
+        await store.close()
+        // 1 件目は書けている。**締めくくりで増えない。**
+        expect(store.lostRecords).toBe(1)
+      })
+
+      it('時計を一度も読めないまま来た分を数える', async () => {
+        // 名前を決められないので本を開けない。**届いたパケットはここで消える。**
+        const store = new RawStore({ dir, now: () => Number.NaN })
+        expect(store.write('a:1', 'one')).toEqual({ saved: false, reason: 'no-stream' })
+        expect(store.lostRecords).toBe(1)
+
+        await store.close()
+      })
+
+      it('流し口を開いたその場で投げた 1 件を、1 回だけ数える', async () => {
+        // **手放す本が無い経路。** 開けなかったので本は集合に入らず、手放す側の勘定
+        // （溜まっていた分）にも書き込みのコールバックにも現れない —— ここで数えなければ
+        // どこにも残らず、数えすぎれば二重になる。
+        const store = new RawStore({
+          dir,
+          now: () => AT_2026_09_25_2300_JST,
+          openStream: () => {
+            throw new Error('開けない')
+          },
+        })
+        expect(store.write('a:1', 'one')).toEqual({ saved: false, reason: 'no-stream' })
+        await store.close()
+
+        expect(store.lostRecords).toBe(1)
+        expect(store.writeErrors).toBe(1)
+      })
+
+      it('締めたあとに渡された分と、保存できた分は数えない', async () => {
+        // **締めたあとは受け手が既に居ない。** ディスクの異常ではないので、
+        // ここを数えると「書き出す先が弱っている」と読み違える。
+        const store = new RawStore({ dir, now: () => AT_2026_09_25_2300_JST })
+        expect(store.write('a:1', 'one')).toEqual({ saved: true })
+        expect(store.write('a:1', 'two')).toEqual({ saved: true })
+        await store.close()
+        expect(store.write('a:1', 'three')).toEqual({ saved: false, reason: 'closed' })
+
+        expect(store.lostRecords).toBe(0)
+      })
+    })
+
     it('流し口が壊れたら数え、間隔を置いてから開き直す', async () => {
       // 同じ名前のディレクトリがあると `createWriteStream` は EISDIR で落ちる。
       mkdirSync(join(dir, 'raw-2026-09-25.ndjson'))
