@@ -142,6 +142,8 @@ function input(overrides: Partial<StatusReportInput> = {}): StatusReportInput {
     nowMs: NOW,
     startedAtMs: STARTED,
     udp: { address: '0.0.0.0', port: 50505 },
+    udpRecvBuffer: { requestedBytes: 8_388_608, actualBytes: 8_388_608, error: null },
+    loopStalls: { thresholdMs: 1000, count: 0, totalMs: 0, longestMs: null, last: null },
     http: { address: '0.0.0.0', port: 50506 },
     tally: tally.snapshotTotal(),
     sensors: [sensor()],

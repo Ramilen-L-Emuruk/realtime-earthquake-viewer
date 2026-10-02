@@ -6,6 +6,9 @@ import type { DatagramReply, DatagramSource, UdpReceiver } from './udpReceiver'
 
 const LOOPBACK = '127.0.0.1'
 
+/** テストで頼む受信バッファ。**OS の既定（64 KB 前後）より大きく、どの OS でも通る大きさ。** */
+const TEST_RECV_BUFFER = 256 * 1024
+
 const opened: UdpReceiver[] = []
 
 afterEach(async () => {
@@ -17,7 +20,13 @@ async function open(
   onError: (error: Error) => void = () => {},
 ): Promise<UdpReceiver> {
   // **ポート 0 で開ける。** 固定の番号だと、他のテストや実機の受信口と取り合う。
-  const receiver = await startUdpReceiver({ port: 0, address: LOOPBACK, onDatagram, onError })
+  const receiver = await startUdpReceiver({
+    port: 0,
+    address: LOOPBACK,
+    recvBufferBytes: TEST_RECV_BUFFER,
+    onDatagram,
+    onError,
+  })
   opened.push(receiver)
   return receiver
 }
@@ -123,10 +132,39 @@ describe('startUdpReceiver', () => {
       startUdpReceiver({
         port: first.port,
         address: LOOPBACK,
+        recvBufferBytes: TEST_RECV_BUFFER,
         onDatagram: () => {},
         onError: () => {},
       }),
     ).rejects.toThrow()
+  })
+
+  it('受信バッファを頼んだ大きさへ広げ、実際の大きさを読み直して返す', async () => {
+    const r = await open(() => {})
+    expect(r.recvBuffer.requestedBytes).toBe(TEST_RECV_BUFFER)
+    expect(r.recvBuffer.error).toBeNull()
+    // **等しさは見ない。** Linux は頼んだ値の 2 倍を割り当て、`rmem_max` で頭打ちにする。
+    // 見たいのは「既定のまま置き去りにされていない」こと。
+    expect(r.recvBuffer.actualBytes).not.toBeNull()
+    expect(r.recvBuffer.actualBytes ?? 0).toBeGreaterThanOrEqual(TEST_RECV_BUFFER)
+  })
+
+  it('受信バッファを広げられなくても待ち受けは続け、理由を返す', async () => {
+    const got: string[] = []
+    const receiver = await startUdpReceiver({
+      port: 0,
+      address: LOOPBACK,
+      // **Node が受け付けない値**（負の大きさ）で、広げる段を確実に失敗させる。
+      recvBufferBytes: -1,
+      onDatagram: (payload) => got.push(payload),
+      onError: () => {},
+    })
+    opened.push(receiver)
+    expect(receiver.recvBuffer.error).not.toBeNull()
+    // 既定の大きさは読めている。**失敗したから 0 や null を名乗るのではない。**
+    expect(receiver.recvBuffer.actualBytes ?? 0).toBeGreaterThan(0)
+    await send(receiver.port, 'still-listening')
+    await waitFor(() => got.length === 1, '広げ損ねたあとの 1 つ')
   })
 
   it('閉じたあとは受け取らない', async () => {

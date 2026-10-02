@@ -73,7 +73,11 @@ import type { AdminConsoleAssets } from './src/receiver/adminConsoleAssets'
 import { startStatusServer } from './src/receiver/statusServer'
 import { SourceRateLimit } from './src/receiver/sourceRateLimit'
 import { startUdpReceiver } from './src/receiver/udpReceiver'
-import type { DatagramSource } from './src/receiver/udpReceiver'
+import type { DatagramSource, RecvBufferOutcome } from './src/receiver/udpReceiver'
+import { HostLifeMark, buildPreviousRunLines } from './src/receiver/hostLifeMark'
+import { jstDateTime } from './src/receiver/jstTime'
+import { LOOP_STALL_THRESHOLD_MS_DEFAULT, LOOP_TICK_MS_DEFAULT, LoopStallBook } from './src/receiver/loopStall'
+import type { LoopStallEvent } from './src/receiver/loopStall'
 import { streamKeyOf } from './src/timebase/segmenter'
 
 /** 記録係の原型（`capture.mjs`）と同じ口。基板の送り先もこの値。 */
@@ -87,6 +91,24 @@ const DETAIL_CHARS = 120
 
 /** 要約を出す間隔。 */
 const SUMMARY_INTERVAL_MS = 60_000
+
+/**
+ * UDP の受信バッファ（`udpReceiver.ts` の `recvBufferBytes`）。
+ *
+ * **ホストが止まっている間に届いた分を、動き出してから処理できる長さを買う。** 基板 3 枚は
+ * 合わせて毎秒約 22 KB を送るので、既定の 64 KB は約 3 秒ぶんにしかならない。8 MB なら
+ * 約 6 分ぶん（2026-10-02 13:41 の約 45 秒の停止なら、その間の分を失わずに済んだ）。
+ */
+const UDP_RECV_BUFFER_BYTES = 8 * 1024 * 1024
+
+/**
+ * 稼働の印（`hostLifeMark.ts`）の置き場所。**`data/` の直下**（`defaultRawDir` と同じ理由で
+ * このファイルからの相対）。生データや波形の置き場所を環境変数で移しても、印はここに残る ——
+ * 印はホストの稼働の記録で、保存の記録ではない。
+ */
+function defaultLifeMarkPath(): string {
+  return fileURLToPath(new URL('./data/host-running.json', import.meta.url))
+}
 
 /**
  * 生データの既定の置き場所。
@@ -584,6 +606,48 @@ export function buildBoardClockWarnings(
     })
   }
   return out
+}
+
+/**
+ * ホストの処理が止まった区間の警告（`loopStall.ts`）。
+ *
+ * **止まり明けにしか出せない。** 止まっている間はこの行も書けない —— だから「いつ再開したか」と
+ * 「どれだけ止まっていたか」を 1 行に入れ、読む人がその前の静けさの理由をここで知れるようにする。
+ *
+ * **間引きの鍵は定数。** 止まるたびに鍵を変えると、機械が詰まり続けたとき行が溢れる。
+ * 回数と最長は `/status` の `loopStalls` と毎分の集計が持つ。
+ */
+export function buildLoopStallWarning(event: LoopStallEvent): RawWarning {
+  const sec = (event.stalledMs / 1000).toFixed(1)
+  const resumed = jstDateTime(event.endedAtMs) ?? '時刻不明'
+  return {
+    level: 'warn',
+    kind: 'loop-stall',
+    detail: 'stall',
+    line:
+      `[stall] ホストの処理が ${sec} 秒止まっていた（${resumed} に再開）。` +
+      'その間に届いた UDP は受信バッファが抱え、あふれた分は落ちる。同じ機械で重い処理が走っていないか確かめる',
+  }
+}
+
+/**
+ * 受信バッファを広げた結果の 1 行（`udpReceiver.ts` の `RecvBufferOutcome`）。
+ *
+ * **頼んだ大きさに届かなかったら警告にする。** 起動は止めない（受け取れないわけではない）が、
+ * 黙って小さいまま走ると、次にホストが止まったとき落とす理由が誰にも見えない。
+ */
+export function buildRecvBufferLine(outcome: RecvBufferOutcome): { level: 'log' | 'warn'; line: string } {
+  const actual = outcome.actualBytes
+  if (outcome.error === null && actual !== null && actual >= outcome.requestedBytes) {
+    return { level: 'log', line: `[udp] 受信バッファ ${actual} バイト（頼んだのは ${outcome.requestedBytes}）` }
+  }
+  const why = outcome.error ?? 'OS が小さく抑えた'
+  return {
+    level: 'warn',
+    line:
+      `[udp] 受信バッファを ${outcome.requestedBytes} バイトへ広げられなかった` +
+      `（実際は ${actual ?? '不明'} バイト・${why}）。ホストが数秒止まるだけで UDP を落とす`,
+  }
 }
 
 /**
@@ -1335,6 +1399,18 @@ export function buildWindowSummary(input: WindowSummaryInput): WindowSummary {
 
 async function main(): Promise<void> {
   const startedAtMs = Date.now()
+
+  // **最初に、前回が正常に終わったかを確かめる。** 落とされたホストは自分では何も書けない
+  // ので、ここが「前回はいつまで動いていたか」を知る唯一の場所になる（`hostLifeMark.ts`）。
+  // **起動の行も時刻つきで出す** —— ログを追記にしたので、どこから今回の分かが読めるように。
+  console.log(`[host] 起動した（pid ${process.pid}・${jstDateTime(startedAtMs) ?? '時刻不明'}）`)
+  const lifeMark = new HostLifeMark(defaultLifeMarkPath())
+  {
+    const begun = await lifeMark.begin(process.pid, startedAtMs)
+    for (const line of buildPreviousRunLines(begun.previous)) console.warn(line)
+    if (begun.error !== null) console.warn(`[host] 稼働の印を書けなかった（${begun.error}）。次の起動で、今回が正常に終わったかを確かめられない`)
+  }
+
   const port = readPort(process.env.SEISMO_UDP_PORT)
   const address = process.env.SEISMO_UDP_ADDRESS
   const httpPort = readPort(process.env.SEISMO_HTTP_PORT, DEFAULT_HTTP_PORT, 'SEISMO_HTTP_PORT')
@@ -1639,6 +1715,7 @@ async function main(): Promise<void> {
   const receiver = await startUdpReceiver({
     port,
     address,
+    recvBufferBytes: UDP_RECV_BUFFER_BYTES,
     // **ここも間引きを通す。** データグラムの受け手が投げた例外はこの口へ流れてくるので、
     // 壊れた送り手が撃ち続けているあいだ、速度の上限に掛かる手前の 1 件ごとに 1 行出る。
     // 間引きを入れた意味がそこで消えるうえ、他の警告が埋もれる。
@@ -1817,6 +1894,24 @@ async function main(): Promise<void> {
   })
 
   console.log(`[udp] ${address ?? '0.0.0.0'}:${receiver.port} で待ち受け中`)
+  {
+    const b = buildRecvBufferLine(receiver.recvBuffer)
+    if (b.level === 'warn') console.warn(b.line)
+    else console.log(b.line)
+  }
+
+  // **処理が止まった区間を測る**（`loopStall.ts`）。止まっている間は誰も書けないので、
+  // 止まり明けに刻みが自分で気づいて書く。
+  const loopStalls = new LoopStallBook({
+    tickMs: LOOP_TICK_MS_DEFAULT,
+    thresholdMs: LOOP_STALL_THRESHOLD_MS_DEFAULT,
+  })
+  const loopStallTimer = setInterval(() => {
+    const event = loopStalls.tick(performance.now(), Date.now())
+    if (event === null) return
+    const w = buildLoopStallWarning(event)
+    emit(w.level, w.kind, w.detail, w.line)
+  }, LOOP_TICK_MS_DEFAULT)
 
   // **起動時に 1 回だけビルドする。** esbuild は高速（数十ミリ秒程度）で、
   // リクエストのたびに作り直す理由が無い（`adminConsoleAssets.ts` 参照）。
@@ -1873,6 +1968,8 @@ async function main(): Promise<void> {
         nowMs,
         startedAtMs,
         udp: { address: address ?? '0.0.0.0', port: receiver.port },
+        udpRecvBuffer: receiver.recvBuffer,
+        loopStalls: loopStalls.snapshot(),
         http: { address: httpAddress ?? '0.0.0.0', port: statusServer.port },
         tally: tally.snapshotTotal(),
         sensors: health.snapshot(),
@@ -2007,8 +2104,16 @@ async function main(): Promise<void> {
       waveSinkBroken: delta('waveSinkBroken', '合成波形を残せず流し口が壊れた', waveArchive.writeErrors),
       waveLost: delta('waveLost', '合成波形を書き損ねた', waveArchive.lostRecords),
       waveBadChunk: delta('waveBadChunk', '合成波形を形にできず捨てた', waveArchive.badChunks),
+      // **止まった回数も要約へ出す。** 1 件ずつの `[stall]` の行は間引きを通るので、
+      // 機械が詰まり続けた間の回数はここでしか数えられない。
+      loopStall: delta('loopStall', '処理が 1 秒以上止まった', loopStalls.snapshot().count),
     }
     const now = Date.now()
+    // **まだ動いていることを印へ残す**（`hostLifeMark.ts`）。待たない —— 書き込みが詰まっても
+    // 要約を遅らせない。失敗は間引きを通して出す（毎分失敗し続けうる）。
+    void lifeMark.heartbeat(now).then((error) => {
+      if (error !== null) emit('warn', 'life-mark', 'heartbeat', `[host] 稼働の印を更新できなかった（${error}）`)
+    })
     const elapsedSec = windowSeconds(now - lastSummaryMs, SUMMARY_INTERVAL_MS / 1000)
     lastSummaryMs = now
     const summary = buildWindowSummary({
@@ -2067,6 +2172,7 @@ async function main(): Promise<void> {
     if (closing) return
     closing = true
     clearInterval(timer)
+    clearInterval(loopStallTimer)
     console.log(`[udp] ${signal} を受けたので締めます`)
 
     // **順序は `closeHostCore` が持つ**（理由もあちらに書いてある）。ここは
@@ -2092,6 +2198,13 @@ async function main(): Promise<void> {
       printTotals,
       logError: (line) => console.error(line),
     })
+    // **印を消すのは締めくくりの後。** 先に消すと、締めくくりの途中で落ちたとき
+    // 「正常に終わった」と次の起動が読む。
+    const markError = await lifeMark.end()
+    if (markError !== null) {
+      console.warn(`[host] 稼働の印を消せなかった（${markError}）。次の起動は、今回を正常に終わらなかったと読む`)
+    }
+    console.log(`[host] 正常に終了した（${jstDateTime(Date.now()) ?? '時刻不明'}）`)
     process.exit(0)
   }
 
