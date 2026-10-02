@@ -8,6 +8,8 @@ import {
   closeHostCore,
   deliverFusionClosing,
   buildAssignedSilenceReport,
+  buildBacklogBookWarning,
+  buildBacklogEventLine,
   buildBoardClockWarnings,
   buildClosingLines,
   buildGravityWarnings,
@@ -533,6 +535,74 @@ describe('buildTimebaseEpochWarning', () => {
       seg('["a","i2c0-69","b1"]', false, 8434),
     ])
     expect(a[0]?.detail).not.toBe(b[0]?.detail)
+  })
+})
+
+describe('buildBacklogBookWarning', () => {
+  it('対照: 読めていれば何も出さない', () => {
+    expect(buildBacklogBookWarning(null)).toEqual([])
+  })
+
+  it('読めなかった理由を添えて warn で出す（定期要約でも同じ文面で再掲する）', () => {
+    const out = buildBacklogBookWarning('中身が帳面の形をしていない')
+    expect(out).toHaveLength(1)
+    expect(out[0]?.level).toBe('warn')
+    expect(out[0]?.line).toBe(
+      '[backlog] 前回の欠けの帳面を読めなかった（中身が帳面の形をしていない）。止まっていた間の欠けは取り戻さない',
+    )
+  })
+})
+
+describe('buildBacklogEventLine', () => {
+  const KEY = 'mac:a0b76525ead0|34b6e78f|i2c0-68'
+
+  it('取り戻せた分は log で、サンプル数とまとまりの数を添える', () => {
+    const out = buildBacklogEventLine({ kind: 'recovered', key: KEY, address: '192.168.0.25', packets: 2, samples: 60 })
+    expect(out.level).toBe('log')
+    expect(out.line).toBe(`[backlog] ${KEY} 基板から 60 サンプル（2 まとまり）を取り戻した`)
+  })
+
+  it('取り戻せなかった分は warn で、理由を言葉で出す', () => {
+    const out = buildBacklogEventLine({ kind: 'unrecoverable', key: KEY, address: '192.168.0.25', reason: 'rebooted', samples: 30 })
+    expect(out.level).toBe('warn')
+    expect(out.line).toBe(`[backlog] ${KEY} 30 サンプルを取り戻せなかった（基板が再起動していた）`)
+  })
+
+  it('取りに行けなかったときは warn で、あとで訊き直すと添える', () => {
+    const out = buildBacklogEventLine({
+      kind: 'failed', key: KEY, address: '192.168.0.25', reason: 'network', detail: 'connect ETIMEDOUT',
+    })
+    expect(out.level).toBe('warn')
+    expect(out.line).toContain('基板 192.168.0.25 へ取りに行けず（network: connect ETIMEDOUT）')
+  })
+
+  it('間引きの鍵に数を混ぜない（数が変わるたびに枠が増えないように）', () => {
+    const a = buildBacklogEventLine({ kind: 'recovered', key: KEY, address: '192.168.0.25', packets: 1, samples: 30 })
+    const b = buildBacklogEventLine({ kind: 'recovered', key: KEY, address: '192.168.0.25', packets: 9, samples: 270 })
+    expect(a.detail).toBe(b.detail)
+    const c = buildBacklogEventLine({ kind: 'unrecoverable', key: KEY, address: '192.168.0.25', reason: 'not-held', samples: 30 })
+    const d = buildBacklogEventLine({ kind: 'unrecoverable', key: KEY, address: '192.168.0.25', reason: 'not-held', samples: 900 })
+    expect(c.detail).toBe(d.detail)
+  })
+
+  it('取りに行けなかったときの鍵には流れまで入れる（同じ基板の別のセンサーを吸わない）', () => {
+    const a = buildBacklogEventLine({ kind: 'failed', key: KEY, address: '192.168.0.25', reason: 'network', detail: 'x' })
+    const b = buildBacklogEventLine({
+      kind: 'failed', key: 'mac:a0b76525ead0|34b6e78f|i2c0-69', address: '192.168.0.25', reason: 'network', detail: 'x',
+    })
+    expect(a.detail).not.toBe(b.detail)
+  })
+
+  it('答えに使えないまとまりが混ざったら warn で、内訳を添える', () => {
+    const out = buildBacklogEventLine({
+      kind: 'suspect', key: KEY, address: '192.168.0.25', badPackets: 1, foreignPackets: 0, rawUnsaved: 2,
+    })
+    expect(out.level).toBe('warn')
+    expect(out.line).toContain('読めない 1・別の流れ 0・生データへ書けず 2')
+    const again = buildBacklogEventLine({
+      kind: 'suspect', key: KEY, address: '192.168.0.25', badPackets: 5, foreignPackets: 3, rawUnsaved: 0,
+    })
+    expect(again.detail).toBe(out.detail)
   })
 })
 
