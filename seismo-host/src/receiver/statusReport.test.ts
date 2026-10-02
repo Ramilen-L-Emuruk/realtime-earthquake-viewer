@@ -144,6 +144,10 @@ function input(overrides: Partial<StatusReportInput> = {}): StatusReportInput {
     udp: { address: '0.0.0.0', port: 50505 },
     udpRecvBuffer: { requestedBytes: 8_388_608, actualBytes: 8_388_608, error: null },
     loopStalls: { thresholdMs: 1000, count: 0, totalMs: 0, longestMs: null, last: null },
+    backlog: {
+      pendingGaps: 1, pendingSamples: 30, recoveredSamples: 60, unrecoverableSamples: { 'not-held': 30 },
+      requests: 3, recoveredPackets: 2, failures: { network: 1 }, rawUnsaved: 0, badPackets: 0, foreignPackets: 0,
+    },
     http: { address: '0.0.0.0', port: 50506 },
     tally: tally.snapshotTotal(),
     sensors: [sensor()],
@@ -175,6 +179,14 @@ describe('buildStatusReport', () => {
     // 入れ子（理由別）まで開けていないと、ここが {} になる
     expect(round.tally.sources['192.168.0.51'].parseFailed.empty).toBe(1)
     expect(round.tally.boards['mac:aa'].dropped['stream-desync']).toBe(1)
+  })
+
+  it('取り戻しの結果をそのまま通す（取り戻せなかった理由と件数も含めて）', () => {
+    const given = input()
+    const report = buildStatusReport(given)
+    expect(report.backlog).toEqual(given.backlog)
+    // JSON にしても理由ごとの数が消えない（Map で持っていない）。
+    expect(JSON.parse(JSON.stringify(report)).backlog.unrecoverableSamples).toEqual({ 'not-held': 30 })
   })
 
   it('保存の健全性をそのまま通す（数え上げだけを配らない）', () => {

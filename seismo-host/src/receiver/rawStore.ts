@@ -563,7 +563,25 @@ export class RawStore {
     return this.day
   }
 
+  /** 届いたデータグラムを書く。 */
   write(source: string, payload: string): RawWriteResult {
+    return this.writeEnvelope(source, payload, null)
+  }
+
+  /**
+   * 基板から取り戻したパケット（`backlogFetcher.ts`）を書く。**封筒に `via: "backlog"` を付ける。**
+   *
+   * **同じ本へ、届いた順に混ぜて書く。** 取り戻した分を別の本へ分けると、ある時刻の記録を
+   * 探す人が 2 か所を見ることになる。印があれば、後から読むときに分けられる ——
+   * `rx` は取り戻した時刻で、サンプルの時刻はパケット自身の `t` にある。
+   * **同じまとまりが 2 度入ることがある**（ホストの再起動をまたいだとき）。中身が同じなので、
+   * 読む側は `bid`・`sid`・`q` の組で重複を落とせる。
+   */
+  writeRecovered(source: string, payload: string): RawWriteResult {
+    return this.writeEnvelope(source, payload, 'backlog')
+  }
+
+  private writeEnvelope(source: string, payload: string, via: 'backlog' | null): RawWriteResult {
     if (this.closed) return { saved: false, reason: 'closed' }
 
     const raw = this.now()
@@ -597,7 +615,12 @@ export class RawStore {
     // **封筒へ入れるのは生の値。** 帳簿（回転・開き直しの間隔）は最後に読めた時刻で代用するが、
     // 記録へそれを書くと**古い時刻が本物の受信時刻の顔をして残る**。判らなかったことは
     // `null` としてそのまま残す。
-    const line = `${JSON.stringify({ rx: Number.isFinite(raw) ? raw : null, src: source, raw: payload })}\n`
+    // **届いた分の封筒の形は変えない**（`via` を足すのは取り戻した分だけ）。
+    const envelope =
+      via === null
+        ? { rx: Number.isFinite(raw) ? raw : null, src: source, raw: payload }
+        : { rx: Number.isFinite(raw) ? raw : null, src: source, raw: payload, via }
+    const line = `${JSON.stringify(envelope)}\n`
     const bytes = Buffer.byteLength(line)
     if (file.pending + bytes > this.maxPendingBytes) {
       this.lostCount += 1
