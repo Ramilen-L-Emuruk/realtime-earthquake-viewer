@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest'
 // （門が無ければ、このテストを走らせるたびに UDP の口が開く）。
 import {
   applyStationConfigCore,
+  closeHostCore,
+  deliverFusionClosing,
   buildAssignedSilenceReport,
   buildClosingLines,
   buildGravityWarnings,
@@ -24,7 +26,7 @@ import {
   stationSegmentLogLevel,
   windowSeconds,
 } from './main'
-import type { ApplyStationConfigDeps } from './main'
+import type { ApplyStationConfigDeps, CloseHostDeps, FusionClosingSinks } from './main'
 import type { AssignedBoardReception } from './src/receiver/assignedReception'
 import type { GravityVerdict } from './src/receiver/gravityCheck'
 import type { IntensityReading } from './src/receiver/intensityPipeline'
@@ -1143,6 +1145,29 @@ describe('deliverStationFusion', () => {
   })
 })
 
+/**
+ * 合成の締めくくりで流し切った 1 回（`SensorFusionClosing.drained` の 1 件）。
+ * 中身は配り先へそのまま渡ることだけを見る。
+ */
+const DRAINED: FusionOutcome = {
+  fusedWave: {
+    stationId: 'study',
+    driver: { boardKey: 'mac:aa', sensorId: 'i2c0-68' },
+    firstSampleIndex: 0,
+    firstSampleMs: 1_000,
+    msPerSample: 10,
+    gal: [[1], [2], [3]],
+    dcGal: [[0], [0], [980]],
+    memberCount: [1],
+  },
+  pairDiffs: [],
+  readings: [],
+  intensitySkipReason: null,
+  closeFailure: null,
+  intensityStateChanged: false,
+  backupsCovered: false,
+}
+
 describe('applyStationConfigCore', () => {
   const NEW_CONFIG: StationConfig = {
     stations: [{ stationId: 'study', displayName: '書斎', lat: 35.6, lon: 139.7 }],
@@ -1164,10 +1189,12 @@ describe('applyStationConfigCore', () => {
       rebuildStations: () => calls.push('rebuildStations'),
       closeSensorFusion: () => {
         calls.push('closeSensorFusion')
-        return { failures: [], readings: [] }
+        return { drained: [], failures: [], readings: [] }
       },
+      deliverFusion: () => calls.push('deliverFusion'),
       reportCloseFailures: () => calls.push('reportCloseFailures'),
       emitReading: () => calls.push('emitReading'),
+      reportDeliveryFailure: () => calls.push('reportDeliveryFailure'),
       onCloseFailure: () => calls.push('onCloseFailure'),
       rebuildSensorFusion: () => {
         calls.push('rebuildSensorFusion')
@@ -1243,22 +1270,36 @@ describe('applyStationConfigCore', () => {
     ])
   })
 
-  it('正: 古い合成の残り読みは reportCloseFailures の後・emitReading で 1 件ずつ配る', () => {
+  it('正: 古い合成の流し切った回を先に配り、残り読みは reportCloseFailures の後・emitReading で 1 件ずつ配る（#402）', () => {
+    // **流し切った回を配らないと、設定を保存するたびに観測点ごとの末尾の合成波形が
+    // 押し出しにも `data/wave/` にも出ずに消える**（震度は出続けるので気づけない）。
     const calls: string[] = []
+    const delivered: FusionOutcome[] = []
     const d = deps(calls, {
       closeSensorFusion: () => {
         calls.push('closeSensorFusion')
-        return { failures: [CLOSE_FAILURE], readings: [STATION_READING, STATION_READING] }
+        return {
+          drained: [DRAINED, DRAINED],
+          failures: [CLOSE_FAILURE],
+          readings: [STATION_READING, STATION_READING],
+        }
+      },
+      deliverFusion: (o) => {
+        calls.push('deliverFusion')
+        delivered.push(o)
       },
     })
     applyStationConfigCore(d, NEW_CONFIG)
 
+    expect(delivered).toEqual([DRAINED, DRAINED])
     expect(calls).toEqual([
       'save',
       'setCurrentConfig',
       'trackAssignments',
       'rebuildStations',
       'closeSensorFusion',
+      'deliverFusion',
+      'deliverFusion',
       'reportCloseFailures',
       'emitReading',
       'emitReading',
@@ -1266,6 +1307,48 @@ describe('applyStationConfigCore', () => {
       'setUngroupedMultiBoardStations',
       'setWarning',
     ])
+  })
+
+  it('安全弁: 配り先が投げても新しい合成は作られ、失敗は締めくくりの失敗とは別の口へ出る', () => {
+    // **ここで止まると、締めた古い `SensorFusion` が残って以後の受信がすべて投げる。**
+    // また 2 つの失敗を同じ口へ混ぜると、記録から見分けられない。
+    const calls: string[] = []
+    const d = deps(calls, {
+      closeSensorFusion: () => {
+        calls.push('closeSensorFusion')
+        return { drained: [DRAINED], failures: [], readings: [] }
+      },
+      deliverFusion: () => {
+        throw new Error('配れなかった')
+      },
+    })
+    applyStationConfigCore(d, NEW_CONFIG)
+
+    expect(calls).toContain('reportDeliveryFailure')
+    expect(calls).not.toContain('onCloseFailure')
+    expect(calls.slice(-3)).toEqual(['rebuildSensorFusion', 'setUngroupedMultiBoardStations', 'setWarning'])
+  })
+
+  it('安全弁: 報せる口そのものが投げても新しい合成は作られ、その失敗は onCloseFailure へ出る', () => {
+    // `closeHostCore` の「報せる口そのものが投げても」と対になる形。外側の囲いを外すと
+    // ここで例外が抜けて `rebuildSensorFusion` に届かず、締めた古いインスタンスが残る。
+    const calls: string[] = []
+    const d = deps(calls, {
+      closeSensorFusion: () => {
+        calls.push('closeSensorFusion')
+        return { drained: [DRAINED], failures: [], readings: [] }
+      },
+      deliverFusion: () => {
+        throw new Error('配れなかった')
+      },
+      reportDeliveryFailure: () => {
+        throw new Error('報せられなかった')
+      },
+    })
+    applyStationConfigCore(d, NEW_CONFIG)
+
+    expect(calls).toContain('onCloseFailure')
+    expect(calls.slice(-3)).toEqual(['rebuildSensorFusion', 'setUngroupedMultiBoardStations', 'setWarning'])
   })
 
   it('正: setUngroupedMultiBoardStations には findUngroupedMultiBoardStations の結果を渡す', () => {
@@ -1299,5 +1382,247 @@ describe('applyStationConfigCore', () => {
     applyStationConfigCore(d, EMPTY_STATION_CONFIG)
 
     expect(warning).toBeNull()
+  })
+})
+
+describe('closeHostCore', () => {
+  const PIPELINE_READING: IntensityReading = {
+    streamKey: 'mac:aa|i2c0-68|boot1',
+    segmentId: 1,
+    boardKey: 'mac:aa',
+    sensorId: 'i2c0-68',
+    atMs: 1_000,
+    intensity: 0.5,
+    timebaseNominalReason: null,
+    timebaseResidualRmsMs: null,
+  }
+  const STATION_READING: StationIntensityReading = { stationId: 'study', atMs: 2_000, intensity: 1.5 }
+
+  /** 呼び出し順を記録しつつ、既定では何もしない `CloseHostDeps`。 */
+  function deps(calls: string[], overrides: Partial<CloseHostDeps> = {}): CloseHostDeps {
+    return {
+      closeReceiver: async () => {
+        calls.push('closeReceiver')
+      },
+      closeRawStore: async () => {
+        calls.push('closeRawStore')
+      },
+      closePipeline: () => {
+        calls.push('closePipeline')
+        return { readings: [PIPELINE_READING], failures: [] }
+      },
+      reportPipelineCloseFailures: () => calls.push('reportPipelineCloseFailures'),
+      emitPipelineReading: () => calls.push('emitPipelineReading'),
+      closeSensorFusion: () => {
+        calls.push('closeSensorFusion')
+        return { drained: [DRAINED], readings: [STATION_READING], failures: [] }
+      },
+      stationClosing: {
+        deliverFusion: () => calls.push('deliverFusion'),
+        reportCloseFailures: () => calls.push('reportStationCloseFailures'),
+        emitReading: () => calls.push('emitStationReading'),
+        reportDeliveryFailure: () => calls.push('reportDeliveryFailure'),
+      },
+      closeWaveArchive: async () => {
+        calls.push('closeWaveArchive')
+      },
+      closeStatusServer: async () => {
+        calls.push('closeStatusServer')
+      },
+      printTotals: () => calls.push('printTotals'),
+      logError: () => calls.push('logError'),
+      ...overrides,
+    }
+  }
+
+  it('正: 受信口 → 生データ → 単独の震度 → 合成 → 合成波形の保存 → 状態の口 → 累計 の順で締める', async () => {
+    const calls: string[] = []
+    await closeHostCore(deps(calls))
+    expect(calls).toEqual([
+      'closeReceiver',
+      'closeRawStore',
+      'closePipeline',
+      'reportPipelineCloseFailures',
+      'emitPipelineReading',
+      'closeSensorFusion',
+      'deliverFusion',
+      'reportStationCloseFailures',
+      'emitStationReading',
+      'closeWaveArchive',
+      'closeStatusServer',
+      'printTotals',
+    ])
+  })
+
+  it('正: 流し切った合成波形は、合成波形の保存を閉じる前に配る（#402）', async () => {
+    // **逆だと、配った波形は保存側で `closed` として断られ、黙って消える。**
+    // 上の順序のテストと同じことを見ているが、崩したときに理由が読めるよう分けて置く。
+    const calls: string[] = []
+    const delivered: FusionOutcome[] = []
+    await closeHostCore(
+      deps(calls, {
+        stationClosing: {
+          deliverFusion: (o) => {
+            calls.push('deliverFusion')
+            delivered.push(o)
+          },
+          reportCloseFailures: () => {},
+          emitReading: () => {},
+          reportDeliveryFailure: () => {},
+        },
+      }),
+    )
+    expect(delivered).toEqual([DRAINED])
+    expect(calls.indexOf('deliverFusion')).toBeLessThan(calls.indexOf('closeWaveArchive'))
+  })
+
+  it('対照: 流し切ったものが無ければ、合成の配り口は呼ばない', async () => {
+    const calls: string[] = []
+    await closeHostCore(
+      deps(calls, {
+        closeSensorFusion: () => {
+          calls.push('closeSensorFusion')
+          return { drained: [], readings: [], failures: [] }
+        },
+      }),
+    )
+    expect(calls).not.toContain('deliverFusion')
+    expect(calls).not.toContain('emitStationReading')
+    // 失敗の報告は空でも呼ぶ（`deliverFusionClosing` の実装のとおり。空なら何も出ない）。
+    expect(calls).toContain('reportStationCloseFailures')
+  })
+
+  const STEPS = [
+    'closeReceiver',
+    'closeRawStore',
+    'closePipeline',
+    'closeSensorFusion',
+    'closeWaveArchive',
+    'closeStatusServer',
+  ] as const
+
+  it.each(STEPS)('安全弁: %s が投げても、後ろの段と累計は走る', async (step) => {
+    const calls: string[] = []
+    const logged: string[] = []
+    const fail = (): never => {
+      calls.push(step)
+      throw new Error(`${step} が投げた`)
+    }
+    const d = deps(calls, {
+      [step]: step === 'closePipeline' || step === 'closeSensorFusion' ? fail : async () => fail(),
+      logError: (line: string) => logged.push(line),
+    })
+    await closeHostCore(d)
+
+    // 投げた段より後ろの段が全部呼ばれている。
+    const after = STEPS.slice(STEPS.indexOf(step) + 1)
+    for (const s of after) expect(calls).toContain(s)
+    expect(calls[calls.length - 1]).toBe('printTotals')
+    // 理由は 1 行だけ残る（黙って飲み込まない）。
+    expect(logged).toHaveLength(1)
+    expect(logged[0]).toContain(`${step} が投げた`)
+  })
+
+  it('安全弁: 合成の配り口が投げても、合成波形の保存・状態の口・累計は走り、失敗は配り先の口へ出る', async () => {
+    // 配り口は外から注入された関数（`stationHealth`・`hub`・`waveArchive`）なので、
+    // `closeAll()` 自体が投げない契約でもここは投げうる。**締めくくりそのものの失敗
+    // （`logError`）とは別の口へ出る** —— 混ぜると記録から見分けられない。
+    const calls: string[] = []
+    const logged: string[] = []
+    const reported: string[][] = []
+    await closeHostCore(
+      deps(calls, {
+        stationClosing: {
+          deliverFusion: () => {
+            throw new Error('配れなかった')
+          },
+          reportCloseFailures: () => {},
+          emitReading: () => {},
+          reportDeliveryFailure: (labels) => reported.push([...labels]),
+        },
+        logError: (line: string) => logged.push(line),
+      }),
+    )
+    expect(calls.slice(-3)).toEqual(['closeWaveArchive', 'closeStatusServer', 'printTotals'])
+    expect(reported).toEqual([['波形 study']])
+    expect(logged).toEqual([])
+  })
+
+  it('安全弁: 報せる口そのものが投げても、後ろの段と累計は走る', async () => {
+    const calls: string[] = []
+    const logged: string[] = []
+    await closeHostCore(
+      deps(calls, {
+        stationClosing: {
+          deliverFusion: () => {
+            throw new Error('配れなかった')
+          },
+          reportCloseFailures: () => {},
+          emitReading: () => {},
+          reportDeliveryFailure: () => {
+            throw new Error('報せられなかった')
+          },
+        },
+        logError: (line: string) => logged.push(line),
+      }),
+    )
+    expect(calls.slice(-3)).toEqual(['closeWaveArchive', 'closeStatusServer', 'printTotals'])
+    expect(logged).toEqual([expect.stringContaining('報せられなかった')])
+  })
+})
+
+describe('deliverFusionClosing', () => {
+  const READING_A: StationIntensityReading = { stationId: 'study', atMs: 3_000, intensity: 1.0 }
+  const DRAINED_B: FusionOutcome = {
+    ...DRAINED,
+    fusedWave: DRAINED.fusedWave === null ? null : { ...DRAINED.fusedWave, stationId: 'garage' },
+  }
+
+  function sinks(calls: string[], overrides: Partial<FusionClosingSinks> = {}): FusionClosingSinks {
+    return {
+      deliverFusion: (o) => calls.push(`deliverFusion:${o.fusedWave?.stationId}`),
+      reportCloseFailures: () => calls.push('reportCloseFailures'),
+      emitReading: (r) => calls.push(`emitReading:${r.stationId}`),
+      reportDeliveryFailure: (labels) => calls.push(`reportDeliveryFailure:${labels.join(',')}`),
+      ...overrides,
+    }
+  }
+
+  it('正: 流し切った回 → 締めくくりの失敗 → 締めて出た震度 の順で配る（失敗が無ければ報せない）', () => {
+    const calls: string[] = []
+    deliverFusionClosing(sinks(calls), { drained: [DRAINED, DRAINED_B], failures: [], readings: [READING_A] })
+    expect(calls).toEqual([
+      'deliverFusion:study',
+      'deliverFusion:garage',
+      'reportCloseFailures',
+      'emitReading:study',
+    ])
+  })
+
+  it('安全弁: 1 件目の観測点で配り先が投げても、他の観測点の波形・失敗の報告・震度は配る', () => {
+    // **締めくくりは 1 回きり。** `drained` には全観測点ぶんが 1 本で並ぶので、
+    // 1 件目で止まると無関係な観測点の末尾まで、失った量も分からないまま消える。
+    const calls: string[] = []
+    deliverFusionClosing(
+      sinks(calls, {
+        deliverFusion: (o) => {
+          if (o.fusedWave?.stationId === 'study') throw new Error('study だけ配れない')
+          calls.push(`deliverFusion:${o.fusedWave?.stationId}`)
+        },
+      }),
+      { drained: [DRAINED, DRAINED_B], failures: [], readings: [READING_A] },
+    )
+    expect(calls).toEqual([
+      'deliverFusion:garage',
+      'reportCloseFailures',
+      'emitReading:study',
+      'reportDeliveryFailure:波形 study',
+    ])
+  })
+
+  it('対照: 何も無ければ配り先も報せる口も呼ばない（失敗の報告だけは空でも呼ぶ）', () => {
+    const calls: string[] = []
+    deliverFusionClosing(sinks(calls), { drained: [], failures: [], readings: [] })
+    expect(calls).toEqual(['reportCloseFailures'])
   })
 })
