@@ -423,6 +423,10 @@ export class RawStore {
   /**
    * 書き出せずに失ったパケットの件数。
    *
+   * **保存できずに返した分も含む。** `no-stream`・`backpressure` は返したその場で数える。
+   * `write-failed` も含むが、数えるのは壊れた本を手放し終えてから（溜まっていた分と一緒に
+   * 手放す側で数える）。締めたあとに渡された `closed` は含めない —— ディスクの異常ではないので。
+   *
    * **流し口が壊れた回数では代わりにならない。** 壊れた瞬間に溜まっていた分はまとめて失われ、
    * しかもそれらは既に「保存できた」として返したあと（実測: 3 件を積んだところで開けなくなると、
    * 3 件とも書き込みのコールバックがエラーを受け、流し口の異常は 1 回しか立たない）。
@@ -576,7 +580,15 @@ export class RawStore {
     if (day !== null && day !== this.day) this.rotate(day)
 
     const file = this.openFile(day)
-    if (file === null) return { saved: false, reason: 'no-stream' }
+    if (file === null) {
+      // **開けなかった間に来たパケットも「失った」に数える。** 流し口が壊れた回数
+      // （`writeErrors`）は開き直しの間隔ごとにしか増えないので、あれだけでは
+      // **失われた量が桁で分からない**（実機 3 台で毎秒 30 件ほど来るのに、数字は 5 秒に 1 つ）。
+      // 開いたその場で投げた 1 件もここへ来る —— 本が集合に入らないので、
+      // 手放す側の勘定には現れない。
+      this.lostCount += 1
+      return { saved: false, reason: 'no-stream' }
+    }
 
     // **生の中身は JSON 文字列として丸ごと入れる。** パケットは複数行なので、そのまま繋ぐと
     // 区切りが判らなくなる。ヘッダの `c` から数えれば追えるが、**いちばん残したい壊れたパケットでは
@@ -588,6 +600,7 @@ export class RawStore {
     const line = `${JSON.stringify({ rx: Number.isFinite(raw) ? raw : null, src: source, raw: payload })}\n`
     const bytes = Buffer.byteLength(line)
     if (file.pending + bytes > this.maxPendingBytes) {
+      this.lostCount += 1
       return { saved: false, reason: 'backpressure' }
     }
 
