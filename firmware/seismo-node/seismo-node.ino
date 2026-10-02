@@ -24,7 +24,7 @@
 // 応え続けるので、**外からは健全にしか見えない**（2026-09-30 に 1 枚が 5 日間
 // その状態だった）。そこで ①時計が合う前は送らない ②Wi-Fi が繋がり直すたび
 // 立て直す ③遠隔で再起動できる ④ホストの返事が途絶えたら自分で立て直す、の 4 つを
-// 置いてある。それぞれ `MIN_SYNCED_UNIX`・`onWifiUp`・`handleRestart`・`checkAck` に
+// 置いてある。それぞれ `clockTrusted`・`onWifiUp`・`handleRestart`・`checkAck` に
 // 理由を書いた。
 
 #include <Wire.h>
@@ -38,6 +38,7 @@
 #include <esp_mac.h>
 #include <esp_random.h>
 #include <esp_system.h>
+#include <esp_sntp.h>
 #include "wifi_config.h"
 
 // **この定義を持たない `wifi_config.h` でも焼けるようにする。** 設定ファイルは
@@ -89,10 +90,20 @@ static const uint32_t RETRY_MS = 10000;
 // **そもそも送らないのが筋**——番号が続いたまま時刻が飛ぶ形は、受け手の側では
 // 「基板が壊れた」と「時計がいま合った」を見分けられない。
 //
-// **状態ページの `time_synced` と同じ値を使う。** 別々に持つと、ページが「合っている」と
-// 名乗りながら送信は止まっている（またはその逆の）状態が作れてしまい、
-// **外から見て説明の付かない基板**になる。
+// **この下限だけでは「合った」と言えない**（→ `clockTrusted`）。
 static const time_t MIN_SYNCED_UNIX = 1700000000;
+
+// SNTP で時計を取り直す間隔。**コアの既定（3 時間）では長すぎる。**
+//
+// 水晶のずれは基板ごとに違い、実機の 3 枚で約 5〜14 ppm あった（2026-09-27〜10-02 の
+// 生データで、取り直しの跳びと、取り直さなかった間のずれの伸びから測った）。3 時間置くと、
+// いちばんずれる基板は 1 回の取り直しで時計が **約 136 ms 跳ぶ**（同じ生データで実測）。
+// 受け手はパケットの時刻が 100 ms を超えて跳ぶと区間を切る
+// （`seismo-host` の `TIMEBASE_CONSISTENCY_MS`）ので、3 時間ごとに計測震度のフィルタが
+// 振り出しへ戻る。しかも取り直しの直前には基板どうしの時計が 100 ms 以上離れ、
+// 観測点の合成が待ちきれずに顔ぶれを欠く。15 分なら跳びは 14 ppm でも約 13 ms に収まる。
+// 問い合わせは基板 1 枚あたり 1 時間に 4 回。
+static const uint32_t SNTP_SYNC_INTERVAL_MS = 15UL * 60UL * 1000UL;
 
 // 起動してからこの時間 Wi-Fi に一度も繋がらなければ、シリアルへ 1 度だけ警告を出す。
 //
@@ -189,7 +200,7 @@ struct Sensor {
   // **時計が合う前に読めたサンプル数。** `unsent` と分けてあるのは、原因も手当ても
   // 違うため——あちらは Wi-Fi が繋がっていない、こちらは繋がっているが SNTP の応答が
   // まだ来ていない。**起動直後に少し増えて止まるのが正常。** 増え続けているなら
-  // 時刻が取れておらず、その基板は一度も波形を送らない（`MIN_SYNCED_UNIX` の項）。
+  // 時刻が取れておらず、その基板は一度も波形を送らない（`clockTrusted` の項）。
   uint32_t    pretime;
   uint32_t    initTries;    // 初期化を試みた回数（1 回目の起動時を含む）
   // 直近の初期化で失敗した I2C 取引の数。**設定の書き込みと WHO_AM_I の読み取りの
@@ -294,11 +305,51 @@ static volatile uint32_t g_wifiGotIpCount = 0;
 static uint32_t   g_udpArmFail = 0;
 // 時計が合ったことを一度でも見たか。**起動ログへ 1 行出すためだけに持つ。**
 //
-// 時計が合うまで 1 件も送らない作りなので（→ `MIN_SYNCED_UNIX`）、**SNTP が
+// 時計が合うまで 1 件も送らない作りなので（→ `clockTrusted`）、**SNTP が
 // 返ってこない環境ではその基板が永久に沈黙する**。状態ページには `time_synced` と
 // `pretime` が出るが、**シリアルを見ている最中に「待っている」のか「始まった」のかが
 // 判る印が要る**——起動ログだけ追っている場面で、沈黙の理由が時刻だと分からない。
 static bool       g_timeReady = false;
+// **この起動で** SNTP が時計を合わせた回数と、最後に合わせた時刻（unix 秒）。
+//
+// **書き手は SNTP のコールバック（lwIP のタスク）だけ。** `loop()` は読むだけなので、
+// `volatile` の 32 bit 値なら読み書きが割れない（`g_wifiGotIpCount` と同じ形）。
+// 時刻を 32 bit に収めるのは割れないため——unix 秒なら 2106 年まで足りる。
+static volatile uint32_t g_sntpSyncs = 0;
+static volatile uint32_t g_sntpLastSyncUnix = 0;
+// この起動で SNTP を始めたか（→ `onWifiUp`）。
+static bool       g_sntpStarted = false;
+
+static void onSntpSync(struct timeval *tv){
+  g_sntpLastSyncUnix = (uint32_t)tv->tv_sec;
+  // `++` で書かない理由は `g_wifiGotIpCount` と同じ。
+  g_sntpSyncs = g_sntpSyncs + 1;
+}
+
+// 名乗ってよい時計か。**送信の門（`sendChunk`）と状態ページの `time_synced` の両方が
+// これを通る。** 別々に持つと、ページが「合っている」と名乗りながら送信は止まっている
+// （またはその逆の）状態が作れてしまい、**外から見て説明の付かない基板**になる。
+//
+// **「時刻が 2023 年以降か」だけでは判らない。** ESP32 はソフトウェアの再起動
+// （OTA の書き込み後・`/restart`・返事の途絶による自分での再起動）では、時計を
+// RTC に残したまま起き上がる（`CONFIG_LIBC_TIME_SYSCALL_USE_RTC_HRT`）。下限は
+// 起動した瞬間から満たされるのに、中身は最後に合わせたときから水晶のずれを
+// 積んだままの値で、**どれだけ古いかは基板自身にも分からない**。2026-10-01 に
+// この下限だけで判定していたため SNTP を一度も始めず、3 枚の時計が 22 時間で
+// 0.5〜1.3 秒遅れた（受け手の観測点の合成が、毎回いちばん遅れた基板を欠いた）。
+// **この起動で一度でも合わせたことを条件にする。** 電源投入（1970 年から始まる）でも
+// ソフトウェアの再起動でも、同じ 1 つの条件で判定できる。
+//
+// **SNTP が届かない間は送らないまま待つ。持ち越した時計で送る逃げ道は置かない**（2026-10-02 に
+// 決めた）。置けば、ここで直した「ずれた時刻のデータが黙って流れる」状態をわざわざ作り直す。
+// 代わりに失うものが 1 つある —— 送らないので返事の途絶も起きず、**返事による立て直し
+// （`checkAck`）が動かない**。一時的な不通なら lwIP の SNTP が自分で再試行して合ったところで
+// 送り始めるので、黙り続けるのは SNTP が恒常的に届かないときだけ。そのときは状態ページ
+// （`time_synced:false`・`sntp_syncs:0`・増え続ける `pretime`）と、ホストの「割り当てた基板が
+// 届いていない」で気づける（電源投入のときはもとからこの振る舞い）。
+static bool clockTrusted(time_t now){
+  return g_sntpSyncs > 0 && now >= MIN_SYNCED_UNIX;
+}
 // UDP のソケットがいま開いているか。**返事を読みに行ってよいかの門。**
 //
 // 開いていないソケットで `parsePacket()` を呼ぶと、コアが `ioctl` の失敗を
@@ -333,7 +384,9 @@ static bool       g_warnedNoAck = false; // 「返事を一度も受けていな
 //
 // **時刻は unix 秒で持つ。** `millis()` は再起動で 0 へ戻るが、RTC の時計は
 // ソフトウェアの再起動を越えて進み続ける（段 A で `pretime` が電源の入れ直しでしか
-// 増えないことを実機で確かめた）。
+// 増えないことを実機で確かめた。**いまは送信の門が `clockTrusted` なので、ソフトウェアの
+// 再起動のあとも SNTP が最初に合わせるまでの数秒は `pretime` が増える**）。窓を測るだけなら
+// 持ち越した時計で足りるので、ここは `clockTrusted` ではなく下限だけを見る。
 struct RestartLedger {
   uint32_t magic;
   uint32_t count;        // `firstUnix` から数えた自分での再起動の回数
@@ -582,7 +635,8 @@ static const char* resetReasonName(esp_reset_reason_t r){
 // **バッファの余裕を測ってある。** すべての勘定を 32bit の上限（4294967295）へ置き、
 // ノード名と走査結果も最長にした最悪形で **約 2000 バイト**（2026-10-01 に実測。
 // 実際の応答は約 1300 バイト）。返事と立て直しの欄（段 B）で最悪形が **約 300 バイト**
-// 増えて約 2300 バイト。**2048 では 50 バイトしか残らなかった** ——
+// 増えて約 2300 バイト、SNTP の欄（`sntp_syncs`・`sntp_last_sync_unix`）で **約 60 バイト**
+// 増えて約 2360 バイト（2026-10-02 の実際の応答は約 1600 バイト）。**2048 では 50 バイトしか残らなかった** ——
 // `seq` と `unsent` と `pretime` は 100Hz で進むので **約 497 日の連続稼働で 10 桁へ届く**。
 // 数百日動かす基板なので、桁が伸びた日に状態ページだけが 500 を返し始める。
 //
@@ -604,15 +658,21 @@ static void handleStatus(){
     // （→ `onWifiUp`）、**放し忘れがあれば繋ぎ直しの回数だけ減っていく**。
     // `udp_armed` と並べて読めば、増える側と減る側を突き合わせられる。
     "\"wifi_up\":%s,\"udp_armed\":%lu,\"udp_arm_fail\":%lu,\"wifi_got_ip\":%lu,"
-    "\"free_heap\":%lu,",
+    "\"free_heap\":%lu,"
+    // **時計を最後にいつ合わせたかを出す。** `time_synced` だけでは、合わせてから
+    // どれだけ経ったかが判らない——2026-10-01 にはこれが無く、22 時間一度も
+    // 合わせていない基板が外からは「合っている」としか見えなかった（→ `clockTrusted`）。
+    // `sntp_last_sync_unix` は一度も合わせていなければ 0。
+    "\"sntp_syncs\":%lu,\"sntp_last_sync_unix\":%lu,",
     g_node, g_mac, g_bootId,
     (unsigned long)((millis()-g_bootMs)/1000), WiFi.RSSI(), WiFi.localIP().toString().c_str(),
     // **送るか送らないかを決めている式と同じものを出す。** 別の閾値で書くと、
     // ページが「合っている」と名乗りながら 1 件も送っていない状態が作れる。
-    now >= MIN_SYNCED_UNIX ? "true":"false", (long)now,
+    clockTrusted(now) ? "true":"false", (long)now,
     SAMPLE_HZ, UG_PER_LSB, (unsigned long)g_headTrunc,
     g_wifiUp ? "true":"false", (unsigned long)g_udpArmed, (unsigned long)g_udpArmFail,
-    (unsigned long)g_wifiGotIpCount, (unsigned long)ESP.getFreeHeap());
+    (unsigned long)g_wifiGotIpCount, (unsigned long)ESP.getFreeHeap(),
+    (unsigned long)g_sntpSyncs, (unsigned long)g_sntpLastSyncUnix);
   // ホストの返事と、途絶えたときの立て直し（→ `checkAck`）。
   //
   // **`ack_age_s` は一度も受けていなければ -1。** 0 と書くと「たったいま受けた」と読める。
@@ -844,14 +904,29 @@ static void handleWifiReconnect(){
 static void onWifiUp(){
   Serial.printf("# wifi up ip=%s rssi=%d\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
 
-  // **合うまでは繋ぎ直しのたびに呼び、合ったあとは呼ばない。** UTC で持つ（表示側で直す）。
+  // **この起動で合うまでは繋ぎ直しのたびに呼び、合ったあとは呼ばない。** UTC で持つ
+  // （表示側で直す）。
   //
   // lwIP の SNTP は**自分で再試行する**（間隔を倍々に伸ばしながら）ので、
   // 一度合ったあとに作り直す意味は無い。**むしろ呼び直しを続けると、回線が激しく
   // 明滅する環境で往復が終わる前に初期化され直し、初回の同期がいつまでも
   // 終わらない余地が残る**（頻度は未測定）。合う前だけ呼べば、その余地だけが消える。
-  if (time(nullptr) < MIN_SYNCED_UNIX) {
+  //
+  // **「合ったか」を時計の値で見てはいけない。** ソフトウェアの再起動では時計が
+  // 残るので、値だけ見ると起動した瞬間に「合っている」と判定し、**SNTP を一度も
+  // 始めないまま走り続ける**（理由と実例は `clockTrusted`）。見るのは、この起動で
+  // SNTP のコールバックが来たかどうか。
+  //
+  // 通知と間隔は `configTime`（中で `sntp_init` を呼ぶ）より前に渡す。間隔は
+  // 走り出してから変えると、次の取り直しまで古い値のまま待つ。
+  if (g_sntpSyncs == 0) {
+    esp_sntp_set_time_sync_notification_cb(onSntpSync);
+    esp_sntp_set_sync_interval(SNTP_SYNC_INTERVAL_MS);
     configTime(0, 0, "ntp.nict.jp", "pool.ntp.org");
+    if (!g_sntpStarted) {
+      g_sntpStarted = true;
+      Serial.printf("# sntp を始めた（起動時の時計 unix=%ld）\n", (long)time(nullptr));
+    }
   }
 
   // **繋ぎ直したら必ず開き直す。** ESP32 の `WiFiUDP` は Wi-Fi が切れるとソケットが
@@ -963,12 +1038,14 @@ void setup(){
 //
 // **時計が合う前は送らない**（`pretime` に数える）。1970 年を名乗るパケットは、
 // 受け手では「番号は続いているのに時刻だけが飛んだ」形になる（→ `MIN_SYNCED_UNIX`）。
+// ソフトウェアの再起動で持ち越した時計も、この起動で SNTP が合わせるまでは送らない
+// （→ `clockTrusted`）——送れば、最初の同期で時計がずれの分だけ跳び、受け手の区間が切れる。
 // 判定をここへ置くのは、**送る口がここ 1 つだけ**だから——`drainSensor` の側で
 // 弾くと、時刻を組み立てる場所と送る場所に判定が 2 つできる。
 static void sendChunk(Sensor &s, const int16_t *v, size_t n, uint32_t seq0, int64_t tFirstMs){
   if (WiFi.status() != WL_CONNECTED) { s.unsent += n; return; }
   const time_t nowSec = time(nullptr);
-  if (nowSec < MIN_SYNCED_UNIX) { s.pretime += n; return; }
+  if (!clockTrusted(nowSec)) { s.pretime += n; return; }
   if (!g_timeReady) {
     g_timeReady = true;
     Serial.printf("# 時計が合った（unix=%ld）。ここから送り始める\n", (long)nowSec);
