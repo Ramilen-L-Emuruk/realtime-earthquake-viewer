@@ -146,6 +146,7 @@ function input(overrides: Partial<StatusReportInput> = {}): StatusReportInput {
     tally: tally.snapshotTotal(),
     sensors: [sensor()],
     sensorEvictions: 0,
+    boardClocks: { boards: [], evictions: 0 },
     stationEvictions: 0,
     stationIntensities: [],
     gravity: EMPTY_GRAVITY,
@@ -182,6 +183,41 @@ describe('buildStatusReport', () => {
     expect(report.raw.lostRecords).toBe(3)
     expect(report.raw.lastWriteError).toBe('ディスクが一杯')
     expect(report.raw.currentDay).toBe('2026-09-26')
+  })
+
+  it('基板ごとの時計のずれを通し、壊れた値は null にして時刻の欄として数える', () => {
+    const report = buildStatusReport(
+      input({
+        boardClocks: {
+          boards: [
+            { boardKey: 'mac:a0b7', offsetMs: 1301, windowEndMs: NOW - 5_000, packets: 600, lastPacketMs: NOW - 100 },
+            {
+              boardKey: 'mac:bad',
+              offsetMs: Number.NaN,
+              windowEndMs: Number.POSITIVE_INFINITY,
+              packets: 1,
+              lastPacketMs: Number.NaN,
+            },
+            { boardKey: 'mac:new', offsetMs: null, windowEndMs: null, packets: 0, lastPacketMs: NOW - 200 },
+          ],
+          evictions: 2,
+        },
+      }),
+    )
+    expect(report.boardClocks.evictions).toBe(2)
+    expect(report.boardClocks.boards[0]).toEqual({
+      boardKey: 'mac:a0b7',
+      offsetMs: 1301,
+      windowEndMs: NOW - 5_000,
+      packets: 600,
+      lastPacketMs: NOW - 100,
+    })
+    expect(report.boardClocks.boards[1]?.offsetMs).toBeNull()
+    expect(report.boardClocks.boards[1]?.windowEndMs).toBeNull()
+    expect(report.boardClocks.boards[1]?.lastPacketMs).toBeNull()
+    // **まだ測れていない（null）は壊れた値ではない。** 数えるのは非有限の 3 つだけ。
+    expect(report.boardClocks.boards[2]?.offsetMs).toBeNull()
+    expect(report.unreadableTimes).toBe(3)
   })
 
   it('基板への返事の数をそのまま通す（返せていないことが基板の側からは見えないため）', () => {

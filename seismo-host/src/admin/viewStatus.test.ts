@@ -4,6 +4,8 @@ import { STALE_AFTER_MS } from './dom'
 import {
   assignedBoardsOf,
   assignedSilenceWarnings,
+  boardClockWarnings,
+  boardClocksOf,
   countLive,
   memberCell,
   sensorRowHtml,
@@ -206,6 +208,46 @@ describe('countLive', () => {
 describe('assignedBoardsOf', () => {
   it('安全弁: この欄を持たない古いホストからは空として読む（画面ごと倒さない）', () => {
     expect(assignedBoardsOf({})).toEqual([])
+  })
+})
+
+describe('boardClocksOf', () => {
+  it('安全弁: この欄を持たない古いホストからは空として読む（画面ごと倒さない）', () => {
+    expect(boardClocksOf({})).toEqual([])
+    expect(boardClocksOf({ boardClocks: { boards: 'x' } as unknown as never })).toEqual([])
+  })
+})
+
+describe('boardClockWarnings', () => {
+  const clock = (boardKey: string, offsetMs: number | null, lastPacketMs: number | null = NOW - 100) => ({
+    boardKey,
+    offsetMs,
+    windowEndMs: NOW - 1_000,
+    packets: 600,
+    lastPacketMs,
+  })
+
+  it('正: 許容を超えた基板をまとめて 1 行で出す（ホストのログと同じ判定）', () => {
+    expect(boardClockWarnings(NOW, [clock('mac:a0b7', 1301), clock('mac:1c8f', -400), clock('mac:3c8a', 40)])).toEqual([
+      '時計がホストとずれている基板: mac:a0b7（1301 ms 遅れ）、mac:1c8f（400 ms 進み）' +
+        '（100 ms を超えると、観測点の合成がその基板を欠きはじめる）',
+    ])
+  })
+
+  it('対照: 許容の内・まだ測れていない・黙った基板は出さない', () => {
+    expect(
+      boardClockWarnings(NOW, [
+        clock('mac:aa', 40),
+        clock('mac:bb', null),
+        clock('mac:cc', 1301, NOW - STALE_AFTER_MS - 1),
+      ]),
+    ).toEqual([])
+  })
+
+  it('安全弁: 基板 Key はエスケープする（無認証の UDP 由来）', () => {
+    const [line] = boardClockWarnings(NOW, [clock('name:<img>', 1301)])
+    expect(line).not.toContain('<img>')
+    expect(line).toContain('&lt;img&gt;')
   })
 })
 

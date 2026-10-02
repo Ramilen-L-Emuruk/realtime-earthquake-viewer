@@ -14,6 +14,8 @@
 
 import { ago, escapeHtml, isStale, qs, receptionBadgeHtml } from './dom'
 import { describeSilence } from '../receiver/assignedReception'
+import { CLOCK_OFFSET_WARN_MS, warnableClockOffset } from '../receiver/boardClockVerdict'
+import type { BoardClockOffset } from '../receiver/boardClockVerdict'
 import { readFinite } from './readJson'
 
 /**
@@ -70,6 +72,44 @@ interface StatusReportView {
    * **古いホストは返さない**ので、読む側で配列であることを確かめる（`assignedBoardsOf`）。
    */
   readonly assignedBoards?: readonly AssignedBoardView[]
+  /**
+   * 基板ごとの時計のずれ（`receiver/boardClock.ts`）。
+   * **古いホストは返さない**ので、読む側で配列であることを確かめる（`boardClocksOf`）。
+   */
+  readonly boardClocks?: { readonly boards: readonly BoardClockOffset[] }
+}
+
+/**
+ * 基板ごとの時計のずれ。**配列でなければ空として扱う**（`assignedBoardsOf` と同じ理由）。
+ */
+export function boardClocksOf(status: Pick<StatusReportView, 'boardClocks'>): readonly BoardClockOffset[] {
+  const boards = status.boardClocks?.boards
+  return Array.isArray(boards) ? boards : []
+}
+
+/**
+ * 時計のずれた基板を伝える警告。**HTML として組み立て済み。**
+ *
+ * **出す・出さないはホストのログと同じ判定**（`warnableClockOffset`）。黙った基板は出さない
+ * —— そちらは「届いていない」の警告が持つ。時刻は `readFinite` を通す（`/status` は無検証で
+ * 読んでいるので、欄の無い版から `undefined` が来うる）。
+ */
+export function boardClockWarnings(nowMs: number, boards: readonly BoardClockOffset[]): readonly string[] {
+  const names: string[] = []
+  for (const b of boards) {
+    const offset = warnableClockOffset(
+      { offsetMs: readFinite(b.offsetMs), lastPacketMs: readFinite(b.lastPacketMs) },
+      nowMs,
+    )
+    if (offset === null) continue
+    const way = offset > 0 ? '遅れ' : '進み'
+    names.push(`${escapeHtml(b.boardKey)}（${Math.round(Math.abs(offset))} ms ${way}）`)
+  }
+  if (names.length === 0) return []
+  return [
+    `時計がホストとずれている基板: ${names.join('、')}` +
+      `（${CLOCK_OFFSET_WARN_MS} ms を超えると、観測点の合成がその基板を欠きはじめる）`,
+  ]
 }
 
 interface AssignedBoardView {
@@ -320,6 +360,7 @@ export async function initStatusView(container: HTMLElement, signal: AbortSignal
     // **組み立て済みの HTML**（中で `escapeHtml` を通している）なので、ここで重ねて通さない。
     const assignedBoards = assignedBoardsOf(status)
     warnings.push(...assignedSilenceWarnings(now, assignedBoards))
+    warnings.push(...boardClockWarnings(now, boardClocksOf(status)))
 
     const liveSensorCount = countLive(now, status.sensors)
     const liveAssignedCount = assignedBoards.filter((b) => b.state === 'live').length
