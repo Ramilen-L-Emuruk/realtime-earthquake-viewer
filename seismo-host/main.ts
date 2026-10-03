@@ -1666,14 +1666,17 @@ async function main(): Promise<void> {
     else console.log(text)
   }
 
-  // **取り戻した分は生データにだけ書く**（理由は `backlogFetcher.ts` の冒頭）。
+  // **取り戻した分は記録（生データと miniSEED）にだけ書く** —— 震度・合成・押し出し・
+  // 時計の推定には混ぜない（理由は `backlogFetcher.ts` の冒頭）。
   const backlogFetcher = new BacklogFetcher({
     book: backlogBook,
     get: fetchBacklog,
     writeRecovered: (source, payload) => {
-      const stored = rawStore.writeRecovered(source, payload)
+      // 受け取った時刻は 1 回だけ読んで両方へ渡す（届いた分と同じ理由）。
+      const receivedAtMs = Date.now()
+      const stored = rawStore.writeRecovered(source, payload, receivedAtMs)
       // **取り戻した分は波形の時刻の時の本へ入れる**（`mseedStore.ts`）。投げない。
-      mseedRecorder.handle(source, payload, Date.now(), 'backlog')
+      mseedRecorder.handle(source, payload, receivedAtMs, 'backlog')
       return stored
     },
     now: Date.now,
@@ -1900,6 +1903,8 @@ async function main(): Promise<void> {
     onDatagram: (payload, from, reply) => {
       // **受け取った時刻は最初に読む**（時計のずれを測る `boardClocks` が使う）。保存や
       // 読み取りの後で読むと、その処理時間が「届くまでの時間」に乗り、ずれが大きく見える。
+      // **読むのはここの 1 回だけ。** 生データと miniSEED の見出しへも同じ値を渡す ——
+      // それぞれが読み直すと、ミリ秒の繰り上がりで同じパケットの受け取った時刻が食い違う。
       const receivedAtMs = Date.now()
       // **届いた件数は上限を掛ける前に数える。** あとだと分母が上限そのものになり、
       // 「どれだけ撃たれているか」が表から読めなくなる。
@@ -1916,7 +1921,7 @@ async function main(): Promise<void> {
       // **保存は上限の後・読み取りの前。** 前に置くと壊れた送り手 1 台にディスクを
       // 埋められる（削除しない約束なので、埋まったら人が来るまで戻らない）。
       // 後ろに置くと**いちばん残したい読めなかったパケット**が消える。
-      const stored = rawStore.write(formatSource(from), payload)
+      const stored = rawStore.write(formatSource(from), payload, receivedAtMs)
       if (!stored.saved) {
         tally.record({ kind: 'raw-unsaved', source: from.address, reason: stored.reason })
         // **理由の文面は、その理由が書き込み系のときだけ添える。** 抱えきれずに捨てた
