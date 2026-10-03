@@ -174,7 +174,7 @@ describe('RawStore', () => {
   it('1 データグラムを 1 行として、受信時刻・送信元・生の中身とともに残す', async () => {
     const store = new RawStore({ dir, now: () => AT_2026_09_25_2300_JST })
     const raw = payload(3)
-    expect(store.write('192.168.0.31:51234', raw)).toEqual({ saved: true })
+    expect(store.write('192.168.0.31:51234', raw, AT_2026_09_25_2300_JST)).toEqual({ saved: true })
     await store.close()
 
     const path = join(dir, 'raw-2026-09-25.ndjson')
@@ -188,8 +188,8 @@ describe('RawStore', () => {
     const store = new RawStore({ dir, now: () => AT_2026_09_25_2300_JST })
     const live = payload(3)
     const recovered = payload(2)
-    expect(store.write('192.168.0.31:51234', live)).toEqual({ saved: true })
-    expect(store.writeRecovered('192.168.0.31', recovered)).toEqual({ saved: true })
+    expect(store.write('192.168.0.31:51234', live, AT_2026_09_25_2300_JST)).toEqual({ saved: true })
+    expect(store.writeRecovered('192.168.0.31', recovered, AT_2026_09_25_2300_JST)).toEqual({ saved: true })
     await store.close()
 
     const got = lines(join(dir, 'raw-2026-09-25.ndjson'))
@@ -199,16 +199,28 @@ describe('RawStore', () => {
     ])
   })
 
+  it('受け取った時刻は渡された値を書き、自分の時計を読み直さない（miniSEED の見出しと揃える）', async () => {
+    // 時計は 23:00 を返すが、渡すのは 1 ms 後。読み直すと実機で 0.6% のパケットが
+    // miniSEED の見出しと 1 ms 食い違った。
+    const store = new RawStore({ dir, now: () => AT_2026_09_25_2300_JST })
+    expect(store.write('192.168.0.31:51234', payload(3), AT_2026_09_25_2300_JST + 1)).toEqual({ saved: true })
+    expect(store.writeRecovered('192.168.0.31', payload(2), AT_2026_09_25_2300_JST + 2)).toEqual({ saved: true })
+    await store.close()
+
+    const got = lines(join(dir, 'raw-2026-09-25.ndjson')) as { rx: number }[]
+    expect(got.map((l) => l.rx)).toEqual([AT_2026_09_25_2300_JST + 1, AT_2026_09_25_2300_JST + 2])
+  })
+
   it('締めたあとは取り戻した分も書かない', async () => {
     const store = new RawStore({ dir, now: () => AT_2026_09_25_2300_JST })
     await store.close()
-    expect(store.writeRecovered('192.168.0.31', payload(1))).toEqual({ saved: false, reason: 'closed' })
+    expect(store.writeRecovered('192.168.0.31', payload(1), AT_2026_09_25_2300_JST)).toEqual({ saved: false, reason: 'closed' })
   })
 
   it('読めない中身でもそのまま残す', async () => {
     const store = new RawStore({ dir, now: () => AT_2026_09_25_2300_JST })
     const junk = 'not json at all\n\u0000�'
-    expect(store.write('10.0.0.9:1', junk)).toEqual({ saved: true })
+    expect(store.write('10.0.0.9:1', junk, AT_2026_09_25_2300_JST)).toEqual({ saved: true })
     await store.close()
 
     const got = lines(join(dir, 'raw-2026-09-25.ndjson')) as { raw: string }[]
@@ -219,9 +231,9 @@ describe('RawStore', () => {
     it('日本時間の日境界で本が変わる', async () => {
       let now = Date.parse('2026-09-25T14:59:59.999Z')
       const store = new RawStore({ dir, now: () => now })
-      store.write('a:1', 'before')
+      store.write('a:1', 'before', now)
       now = Date.parse('2026-09-25T15:00:00.000Z')
-      store.write('a:1', 'after')
+      store.write('a:1', 'after', now)
       await store.close()
 
       // **UTC で切っていれば 1 本にまとまってしまう値。**
@@ -232,9 +244,9 @@ describe('RawStore', () => {
     it('同じ日のあいだは 1 本へ書き足す', async () => {
       let now = AT_2026_09_25_2300_JST
       const store = new RawStore({ dir, now: () => now })
-      store.write('a:1', 'one')
+      store.write('a:1', 'one', now)
       now += 1000
-      store.write('a:1', 'two')
+      store.write('a:1', 'two', now)
       await store.close()
 
       expect(lines(join(dir, 'raw-2026-09-25.ndjson'))).toHaveLength(2)
@@ -244,10 +256,10 @@ describe('RawStore', () => {
     it('時計が壊れても回さない', async () => {
       let now: number = AT_2026_09_25_2300_JST
       const store = new RawStore({ dir, now: () => now })
-      store.write('a:1', 'one')
+      store.write('a:1', 'one', now)
       now = Number.NaN
       // **名前を決められない値で本を切らない。** 切ると行き先が決まらないまま失われる。
-      expect(store.write('a:1', 'two')).toEqual({ saved: true })
+      expect(store.write('a:1', 'two', now)).toEqual({ saved: true })
       expect(store.currentDay).toBe('2026-09-25')
       await store.close()
 
@@ -259,7 +271,7 @@ describe('RawStore', () => {
 
     it('1 件目から時計が壊れていれば書けないことを返す', async () => {
       const store = new RawStore({ dir, now: () => Number.NaN })
-      expect(store.write('a:1', 'one')).toEqual({ saved: false, reason: 'no-stream' })
+      expect(store.write('a:1', 'one', Number.NaN)).toEqual({ saved: false, reason: 'no-stream' })
       await store.close()
       expect(readdirSync(dir)).toEqual([])
     })
@@ -469,9 +481,9 @@ describe('RawStore', () => {
       seed('2026-09-23', 'old\n')
       let now = AT_2026_09_25_2300_JST
       const store = new RawStore({ dir, now: () => now })
-      store.write('a:1', 'one')
+      store.write('a:1', 'one', now)
       now += DAY_MS
-      store.write('a:1', 'two')
+      store.write('a:1', 'two', now)
       // 回転は待たずに掃き取りを始める。締めくくりで合流する。
       await store.close()
 
@@ -485,9 +497,9 @@ describe('RawStore', () => {
       let now = AT_2026_09_25_2300_JST
       const store = new RawStore({ dir, now: () => now, maxPendingBytes: 64 * 1024 * 1024 })
       const big = 'x'.repeat(200_000)
-      for (let i = 0; i < 10; i += 1) store.write('a:1', big)
+      for (let i = 0; i < 10; i += 1) store.write('a:1', big, now)
       now += DAY_MS
-      store.write('a:1', 'next day')
+      store.write('a:1', 'next day', now)
       await store.close()
 
       expect(lines(join(dir, 'raw-2026-09-25.ndjson'))).toHaveLength(10)
@@ -499,9 +511,9 @@ describe('RawStore', () => {
       // 日をまたぐたびに 1 つ漏れる形は、開いたファイルの数でしか捕まえられない。
       let now = AT_2026_09_25_2300_JST
       const store = new RawStore({ dir, now: () => now })
-      store.write('a:1', 'one')
+      store.write('a:1', 'one', now)
       now += DAY_MS
-      store.write('a:1', 'two')
+      store.write('a:1', 'two', now)
       await store.close()
 
       expect(store.openFiles).toBe(0)
@@ -563,9 +575,9 @@ describe('RawStore', () => {
     it('抱えた量が上限を超えたら捨てて、そのことを返す', async () => {
       const store = new RawStore({ dir, now: () => AT_2026_09_25_2300_JST, maxPendingBytes: 200 })
       const line = 'x'.repeat(120)
-      expect(store.write('a:1', line)).toEqual({ saved: true })
+      expect(store.write('a:1', line, AT_2026_09_25_2300_JST)).toEqual({ saved: true })
       // 2 本目で上限を超える。**捨てたことを黙らない。**
-      expect(store.write('a:1', line)).toEqual({ saved: false, reason: 'backpressure' })
+      expect(store.write('a:1', line, AT_2026_09_25_2300_JST)).toEqual({ saved: false, reason: 'backpressure' })
       await store.close()
 
       expect(lines(join(dir, 'raw-2026-09-25.ndjson'))).toHaveLength(1)
@@ -581,12 +593,12 @@ describe('RawStore', () => {
         const store = new RawStore({ dir, now: () => AT_2026_09_25_2300_JST, reopenIntervalMs: 5_000 })
 
         // 1 件目は「保存できた」と返ったあとで、壊れた流し口と一緒に失われる。
-        store.write('a:1', 'one')
+        store.write('a:1', 'one', AT_2026_09_25_2300_JST)
         await until(() => store.writeErrors === 1 && store.lostRecords === 1,
                     'writeErrors が 1・lostRecords が 1')
 
-        expect(store.write('a:1', 'two')).toEqual({ saved: false, reason: 'no-stream' })
-        expect(store.write('a:1', 'three')).toEqual({ saved: false, reason: 'no-stream' })
+        expect(store.write('a:1', 'two', AT_2026_09_25_2300_JST)).toEqual({ saved: false, reason: 'no-stream' })
+        expect(store.write('a:1', 'three', AT_2026_09_25_2300_JST)).toEqual({ saved: false, reason: 'no-stream' })
         expect(store.lostRecords).toBe(3)
         // **壊れた回数は動かない** —— 2 つの数字が別の物を数えていることの確かめ。
         expect(store.writeErrors).toBe(1)
@@ -597,8 +609,8 @@ describe('RawStore', () => {
       it('抱えた量が上限を超えて捨てた分を数える', async () => {
         const store = new RawStore({ dir, now: () => AT_2026_09_25_2300_JST, maxPendingBytes: 200 })
         const line = 'x'.repeat(120)
-        expect(store.write('a:1', line)).toEqual({ saved: true })
-        expect(store.write('a:1', line)).toEqual({ saved: false, reason: 'backpressure' })
+        expect(store.write('a:1', line, AT_2026_09_25_2300_JST)).toEqual({ saved: true })
+        expect(store.write('a:1', line, AT_2026_09_25_2300_JST)).toEqual({ saved: false, reason: 'backpressure' })
         expect(store.lostRecords).toBe(1)
 
         await store.close()
@@ -609,7 +621,7 @@ describe('RawStore', () => {
       it('時計を一度も読めないまま来た分を数える', async () => {
         // 名前を決められないので本を開けない。**届いたパケットはここで消える。**
         const store = new RawStore({ dir, now: () => Number.NaN })
-        expect(store.write('a:1', 'one')).toEqual({ saved: false, reason: 'no-stream' })
+        expect(store.write('a:1', 'one', Number.NaN)).toEqual({ saved: false, reason: 'no-stream' })
         expect(store.lostRecords).toBe(1)
 
         await store.close()
@@ -626,7 +638,7 @@ describe('RawStore', () => {
             throw new Error('開けない')
           },
         })
-        expect(store.write('a:1', 'one')).toEqual({ saved: false, reason: 'no-stream' })
+        expect(store.write('a:1', 'one', AT_2026_09_25_2300_JST)).toEqual({ saved: false, reason: 'no-stream' })
         await store.close()
 
         expect(store.lostRecords).toBe(1)
@@ -637,10 +649,10 @@ describe('RawStore', () => {
         // **締めたあとは受け手が既に居ない。** ディスクの異常ではないので、
         // ここを数えると「書き出す先が弱っている」と読み違える。
         const store = new RawStore({ dir, now: () => AT_2026_09_25_2300_JST })
-        expect(store.write('a:1', 'one')).toEqual({ saved: true })
-        expect(store.write('a:1', 'two')).toEqual({ saved: true })
+        expect(store.write('a:1', 'one', AT_2026_09_25_2300_JST)).toEqual({ saved: true })
+        expect(store.write('a:1', 'two', AT_2026_09_25_2300_JST)).toEqual({ saved: true })
         await store.close()
-        expect(store.write('a:1', 'three')).toEqual({ saved: false, reason: 'closed' })
+        expect(store.write('a:1', 'three', AT_2026_09_25_2300_JST)).toEqual({ saved: false, reason: 'closed' })
 
         expect(store.lostRecords).toBe(0)
       })
@@ -652,19 +664,19 @@ describe('RawStore', () => {
       let now = AT_2026_09_25_2300_JST
       const store = new RawStore({ dir, now: () => now, reopenIntervalMs: 5_000 })
 
-      store.write('a:1', 'one')
+      store.write('a:1', 'one', now)
       await until(() => store.writeErrors === 1, 'writeErrors が 1')
       expect(store.lastWriteError).not.toBeNull()
       // **掃き取りの失敗と混ぜない。** 混ぜると、無関係な系統の理由が「その事象の理由」になる。
       expect(store.lastSweepError).toBeNull()
 
       // 間隔の中では開き直さない。**詰まったディスクを毎パケット叩かない。**
-      expect(store.write('a:1', 'two')).toEqual({ saved: false, reason: 'no-stream' })
+      expect(store.write('a:1', 'two', now)).toEqual({ saved: false, reason: 'no-stream' })
       expect(store.writeErrors).toBe(1)
 
       // 間隔が過ぎたら試みる（この試験では行き先が塞がったままなので、また壊れる）。
       now += 5_000
-      store.write('a:1', 'three')
+      store.write('a:1', 'three', now)
       await until(() => store.writeErrors === 2, 'writeErrors が 2')
 
       await store.close()
@@ -674,13 +686,13 @@ describe('RawStore', () => {
       mkdirSync(join(dir, 'raw-2026-09-25.ndjson'))
       let now: number = AT_2026_09_25_2300_JST
       const store = new RawStore({ dir, now: () => now, reopenIntervalMs: 5_000 })
-      store.write('a:1', 'one')
+      store.write('a:1', 'one', now)
       await until(() => store.writeErrors === 1, 'writeErrors が 1')
 
       // **非有限を素通りさせると `NaN < reopenAtMs` が偽になり、間隔が黙って効かなくなる。**
       now = Number.NaN
       for (let i = 0; i < 5; i += 1) {
-        expect(store.write('a:1', 'more')).toEqual({ saved: false, reason: 'no-stream' })
+        expect(store.write('a:1', 'more', now)).toEqual({ saved: false, reason: 'no-stream' })
       }
       // **ここは固定の待ちでよい。** 見ているのは「増えていないこと」で、
       // 条件が真になるのを待つ形にはできない（最初から真なので即座に返る）。
@@ -698,9 +710,9 @@ describe('RawStore', () => {
       const store = new RawStore({ dir, now: () => AT_2026_09_25_2300_JST })
 
       // **どれも同期には成功として返る。** 失ったと判るのは後から。
-      expect(store.write('a:1', 'one')).toEqual({ saved: true })
-      expect(store.write('a:1', 'two')).toEqual({ saved: true })
-      expect(store.write('a:1', 'three')).toEqual({ saved: true })
+      expect(store.write('a:1', 'one', AT_2026_09_25_2300_JST)).toEqual({ saved: true })
+      expect(store.write('a:1', 'two', AT_2026_09_25_2300_JST)).toEqual({ saved: true })
+      expect(store.write('a:1', 'three', AT_2026_09_25_2300_JST)).toEqual({ saved: true })
       await until(() => store.lostRecords === 3 && store.writeErrors === 1,
                   'lostRecords が 3・writeErrors が 1')
 
@@ -709,9 +721,9 @@ describe('RawStore', () => {
 
     it('締めたあとは書かない', async () => {
       const store = new RawStore({ dir, now: () => AT_2026_09_25_2300_JST })
-      store.write('a:1', 'one')
+      store.write('a:1', 'one', AT_2026_09_25_2300_JST)
       await store.close()
-      expect(store.write('a:1', 'two')).toEqual({ saved: false, reason: 'closed' })
+      expect(store.write('a:1', 'two', AT_2026_09_25_2300_JST)).toEqual({ saved: false, reason: 'closed' })
       expect(lines(join(dir, 'raw-2026-09-25.ndjson'))).toHaveLength(1)
     })
   })
@@ -727,7 +739,7 @@ describe('RawStore', () => {
         closeStallMs: 50,
         openStream: () => sink(5),
       })
-      for (let i = 0; i < 20; i += 1) expect(store.write('a:1', `x${i}`)).toEqual({ saved: true })
+      for (let i = 0; i < 20; i += 1) expect(store.write('a:1', `x${i}`, AT_2026_09_25_2300_JST)).toEqual({ saved: true })
       await store.close()
 
       expect(store.writeErrors).toBe(0)
@@ -744,7 +756,7 @@ describe('RawStore', () => {
         closeStallMs: 10,
         openStream: breakingSink,
       })
-      for (let i = 0; i < 3; i += 1) expect(store.write('a:1', `x${i}`)).toEqual({ saved: true })
+      for (let i = 0; i < 3; i += 1) expect(store.write('a:1', `x${i}`, AT_2026_09_25_2300_JST)).toEqual({ saved: true })
       // 締めくくりへ入る前に、流し口が壊れたことを見届ける（何を待っているかを明示する）。
       await until(() => store.writeErrors === 1, 'writeErrors が 1')
       await store.close()
@@ -763,7 +775,7 @@ describe('RawStore', () => {
         closeStallMs: 20,
         openStream: slowClosingSink,
       })
-      for (let i = 0; i < 3; i += 1) expect(store.write('a:1', `x${i}`)).toEqual({ saved: true })
+      for (let i = 0; i < 3; i += 1) expect(store.write('a:1', `x${i}`, AT_2026_09_25_2300_JST)).toEqual({ saved: true })
       await store.close()
 
       expect(store.lostRecords).toBe(0)
@@ -781,7 +793,7 @@ describe('RawStore', () => {
         closeStallMs: 1_000,
         openStream: breakingSink,
       })
-      for (let i = 0; i < 3; i += 1) expect(store.write('a:1', `x${i}`)).toEqual({ saved: true })
+      for (let i = 0; i < 3; i += 1) expect(store.write('a:1', `x${i}`, AT_2026_09_25_2300_JST)).toEqual({ saved: true })
       await store.close()
 
       expect(store.lostRecords).toBe(3)
@@ -797,7 +809,7 @@ describe('RawStore', () => {
         closeStallMs: 10,
         openStream: () => sink(null),
       })
-      for (let i = 0; i < 3; i += 1) expect(store.write('a:1', `x${i}`)).toEqual({ saved: true })
+      for (let i = 0; i < 3; i += 1) expect(store.write('a:1', `x${i}`, AT_2026_09_25_2300_JST)).toEqual({ saved: true })
       await store.close()
 
       expect(store.writeErrors).toBe(1)
@@ -815,7 +827,7 @@ describe('RawStore', () => {
       closeStallMs: 10,
       openStream: stalledSinkThatFailsPending,
     })
-    for (let i = 0; i < 3; i += 1) store.write('a:1', `x${i}`)
+    for (let i = 0; i < 3; i += 1) store.write('a:1', `x${i}`, AT_2026_09_25_2300_JST)
     await store.close()
 
     // 締めくくりの側で 3 件、書き込みのコールバックでも 3 件 —— 印が無いと 6 件になる。
@@ -833,7 +845,7 @@ describe('RawStore', () => {
       openStream: sinkThatThrowsOnWrite,
     })
 
-    expect(store.write('a:1', 'x')).toEqual({ saved: false, reason: 'write-failed' })
+    expect(store.write('a:1', 'x', AT_2026_09_25_2300_JST)).toEqual({ saved: false, reason: 'write-failed' })
     await store.close()
 
     expect(store.lostRecords).toBe(1)
@@ -842,7 +854,7 @@ describe('RawStore', () => {
 
   it('締めるまでに書いた分を取りこぼさない', async () => {
     const store = new RawStore({ dir, now: () => AT_2026_09_25_2300_JST })
-    for (let i = 0; i < 500; i += 1) store.write('a:1', payload(30))
+    for (let i = 0; i < 500; i += 1) store.write('a:1', payload(30), AT_2026_09_25_2300_JST)
     await store.close()
 
     expect(lines(join(dir, 'raw-2026-09-25.ndjson'))).toHaveLength(500)
@@ -860,7 +872,7 @@ describe('RawStore', () => {
         closeBudgetMs: 20,
         openStream: () => sink(null),
       })
-      expect(store.write('a:1', 'x')).toEqual({ saved: true })
+      expect(store.write('a:1', 'x', AT_2026_09_25_2300_JST)).toEqual({ saved: true })
 
       const startedAt = Date.now()
       await store.close()
@@ -889,7 +901,7 @@ describe('RawStore', () => {
         closeBudgetMs: 20,
         openStream: () => sink(null),
       })
-      expect(store.write('a:1', 'x')).toEqual({ saved: true })
+      expect(store.write('a:1', 'x', t)).toEqual({ saved: true })
       await store.close()
 
       // 打ち切った直後はまだ「居座っている」とは言わない。
@@ -907,7 +919,7 @@ describe('RawStore', () => {
         now: () => AT_2026_09_25_2300_JST,
         closeBudgetMs: 50,
       })
-      expect(store.write('a:1', 'x')).toEqual({ saved: true })
+      expect(store.write('a:1', 'x', AT_2026_09_25_2300_JST)).toEqual({ saved: true })
       await store.close()
 
       expect(store.cutShort).toBe(false)
