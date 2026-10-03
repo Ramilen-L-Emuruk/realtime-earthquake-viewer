@@ -24,6 +24,7 @@
 // 起動:
 //   npm run seismo-host
 //   SEISMO_UDP_PORT=50505 SEISMO_UDP_ADDRESS=0.0.0.0 npm run seismo-host
+import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { GAL_PER_G } from './src/intensity/units'
@@ -46,7 +47,9 @@ import type { CloseFailure, IntensityReading } from './src/receiver/intensityPip
 import { LogThrottle, suppressedSuffix } from './src/receiver/logThrottle'
 import { PacketTally, formatTally } from './src/receiver/packetTally'
 import type { TallySnapshot } from './src/receiver/packetTally'
+import { MseedRecorder } from './src/receiver/mseedRecorder'
 import { RawStore } from './src/receiver/rawStore'
+import { StationConfigHistory } from './src/receiver/stationConfigHistory'
 import { ReadingHub } from './src/receiver/readingHub'
 import { WaveArchive, readWaveRange } from './src/receiver/waveArchive'
 import { SensorFusion } from './src/receiver/sensorFusion'
@@ -1076,6 +1079,13 @@ export function deliverFusionClosing(to: FusionClosingSinks, closing: SensorFusi
 export interface ApplyStationConfigDeps extends FusionClosingSinks {
   /** ディスクへ保存する。**投げうる**——投げたら以降は一切呼ばない。 */
   readonly save: (config: StationConfig) => void
+  /**
+   * 保存できた設定を履歴へ足す（`StationConfigHistory.record`）。**投げない**前提。
+   *
+   * **保存の直後に呼ぶ。** 設定ファイルは上書きされるので、ここで残さないと、
+   * 変える前の割り当てと校正値は二度と分からない（生データは補正前の値で、読み直すのにそれが要る）。
+   */
+  readonly recordHistory: (config: StationConfig) => void
   /** `/api/stations`・`/api/boards` の GET が返す値を差し替える。 */
   readonly setCurrentConfig: (config: StationConfig) => void
   /**
@@ -1128,6 +1138,7 @@ export interface ApplyStationConfigDeps extends FusionClosingSinks {
  */
 export function applyStationConfigCore(deps: ApplyStationConfigDeps, newConfig: StationConfig): void {
   deps.save(newConfig)
+  deps.recordHistory(newConfig)
 
   deps.setCurrentConfig(newConfig)
   // **割り当てと「いつ割り当てたか」を続けて動かす。** 間に何か挟むと、その間に
@@ -1565,6 +1576,15 @@ async function main(): Promise<void> {
   // **文面はここで直書きしない。** `buildStationConfigWarning`（定期要約でも使う）と
   // 別の文字列を持つと、起動直後のログと 60 秒後以降の再掲ログの表現がずれる。
   for (const w of buildStationConfigWarning(stationConfigLoad.warning)) console.warn(w.line)
+  // **生データの置き場所はここで決める**（設定の履歴も同じ場所へ置くため、`RawStore` より先に要る）。
+  const rawDir = process.env.SEISMO_RAW_DIR ?? defaultRawDir()
+  // **起動のたびに、そのとき使う設定を履歴へ 1 行足す**（`stationConfigHistory.ts`）。
+  // 読めなかったときも、空の設定と警告をそのまま書く —— その間の生データは、
+  // どの観測点にも割り当てずに受けていたことが後から分かる。
+  const stationHistory = new StationConfigHistory({ dir: rawDir })
+  if (!stationHistory.record(stationConfigLoad.config, 'startup', stationConfigLoad.warning)) {
+    console.error(`[station-history] 観測点の設定の履歴を書けず: ${shorten(stationHistory.lastError ?? '')}`)
+  }
   // **以下 5 つは `/api/*`（#313 段 B）が書き換える。** 設定を保存・反映するたびに
   // `applyStationConfig`（このスコープの下のほうで定義）がまとめて差し替える——
   // 個別に更新すると、一部だけ新しい設定を見て残りが古いままになる（例えば
@@ -1605,7 +1625,10 @@ async function main(): Promise<void> {
   const gravity = new GravityCheckBook()
   // **作れなければここで落ちる。** 黙って保存せずに走るのがいちばん悪い ——
   // 基板は送っていて震度も出ていて、生だけが残っていない状態に外から気づけない。
-  const rawStore = new RawStore({ dir: process.env.SEISMO_RAW_DIR ?? defaultRawDir() })
+  const rawStore = new RawStore({ dir: rawDir })
+  // **miniSEED 3 でも残す**（REQUIREMENTS.md §9）。突き合わせが済むまでは NDJSON（`rawStore`）と
+  // 並行して書く。置き場所は生データの下の `mseed/`。**こちらも作れなければ落ちる**（同じ理由）。
+  const mseedRecorder = new MseedRecorder({ dir: join(rawDir, 'mseed') })
   // **こちらも作れなければ落ちる**（`RawStore` と同じ理由）。読み返しの口
   // （`GET /waves`）が返せるのはここへ残った分だけなので、黙って保存せずに走ると
   // 「揺れたときに遡れない」ことへ外から気づく手立てが無い。
@@ -1647,7 +1670,12 @@ async function main(): Promise<void> {
   const backlogFetcher = new BacklogFetcher({
     book: backlogBook,
     get: fetchBacklog,
-    writeRecovered: (source, payload) => rawStore.writeRecovered(source, payload),
+    writeRecovered: (source, payload) => {
+      const stored = rawStore.writeRecovered(source, payload)
+      // **取り戻した分は波形の時刻の時の本へ入れる**（`mseedStore.ts`）。投げない。
+      mseedRecorder.handle(source, payload, Date.now(), 'backlog')
+      return stored
+    },
     now: Date.now,
     timeoutMs: BACKLOG_TIMEOUT_MS,
     spacingMs: BACKLOG_SPACING_MS,
@@ -1822,6 +1850,11 @@ async function main(): Promise<void> {
     applyStationConfigCore(
       {
         save: (config) => saveStationConfig(stationConfigPath, config),
+        recordHistory: (config) => {
+          if (!stationHistory.record(config, 'changed', null)) {
+            console.error(`[station-history] 観測点の設定の履歴を書けず: ${shorten(stationHistory.lastError ?? '')}`)
+          }
+        },
         setCurrentConfig: (config) => {
           currentStationConfig = config
         },
@@ -1903,6 +1936,9 @@ async function main(): Promise<void> {
       }
 
       const read = parseSensorPacket(payload)
+      // **miniSEED 3 へも残す。読めなかったパケットも理由を付けて丸ごと残す**ので、下の
+      // 「読めなければ戻る」より前に置く。読んだ結果を渡して二度読まない。投げない。
+      mseedRecorder.handle(formatSource(from), payload, receivedAtMs, 'live', read)
       if (!read.ok) {
         // **ここは基板で数えられない。** ヘッダが読めていないので誰が送ったか判らず、
         // 判るのは送信元アドレスだけ（`packetTally.ts` が表を 2 つに分けている理由）。
@@ -2068,6 +2104,9 @@ async function main(): Promise<void> {
   // 帳面はこまめに書き出す —— 落とされたホストは終了の処理で書けないので、
   // 次の起動が読めるのは最後に書き出した分だけ。
   backlogFetcher.start()
+  // **miniSEED の溜め置きを毎秒見る。** 基板が黙ると、溜まった分は次のパケットが来るまで
+  // 出ていかない（5 秒の上限は、届いたときにしか測れない）。投げない。
+  const mseedTimer = setInterval(() => mseedRecorder.tick(Date.now()), 1_000)
   const backlogSaveTimer = setInterval(() => {
     void backlogWriter.save(backlogBook.toJSON()).then((error) => {
       if (error !== null) emit('warn', 'backlog', 'save', `[backlog] 欠けの帳面を書き出せなかった（${error}）`)
@@ -2161,6 +2200,13 @@ async function main(): Promise<void> {
           lastWriteError: rawStore.lastWriteError,
           lastSweepError: rawStore.lastSweepError,
         },
+        // **miniSEED の欄は部品が返すものをそのまま渡す**（欄を足したときに渡し忘れないように）。
+        mseed: mseedRecorder.health(),
+        stationHistory: {
+          recorded: stationHistory.recorded,
+          writeFailures: stationHistory.writeFailures,
+          lastError: stationHistory.lastError,
+        },
         // **`WaveArchive` の欄もここで書き写す**（`raw` と同じ理由・同じ落とし穴）。
         waveArchive: {
           writeErrors: waveArchive.writeErrors,
@@ -2221,6 +2267,7 @@ async function main(): Promise<void> {
     // 数を足せば黙って付いてくる（この機能は書き写す形で 4 巡続けて書き忘れた）。
     const diag = gravity.snapshot()
     const fetched = backlogFetcher.snapshot()
+    const mseedHealth = mseedRecorder.health()
     const gravityCounters = gravityCountEntries(diag).map((e) =>
       delta(`gravity:${e.key}`, e.label, e.value),
     )
@@ -2267,6 +2314,13 @@ async function main(): Promise<void> {
       waveSinkBroken: delta('waveSinkBroken', '合成波形を残せず流し口が壊れた', waveArchive.writeErrors),
       waveLost: delta('waveLost', '合成波形を書き損ねた', waveArchive.lostRecords),
       waveBadChunk: delta('waveBadChunk', '合成波形を形にできず捨てた', waveArchive.badChunks),
+      // **miniSEED での生データも要約へ出す**（NDJSON と並行して書いている間、片方だけ止まる形を見分ける）。
+      mseedSinkBroken: delta('mseedSinkBroken', 'miniSEED を残せず流し口が壊れた', mseedHealth.writeErrors),
+      mseedLost: delta('mseedLost', 'miniSEED を書き損ねた', mseedHealth.lostRecords),
+      mseedBadTime: delta('mseedBadTime', 'miniSEED の振り分け先を時刻から決められず', mseedHealth.badTimes),
+      mseedUnreadable: delta('mseedUnreadable', '読めないパケットを miniSEED の外へ残した', mseedHealth.unreadableWritten),
+      mseedInternal: delta('mseedInternal', 'miniSEED の組み立てで想定外の例外を受け止めた', mseedHealth.internalErrors),
+      stationHistoryFailed: delta('stationHistoryFailed', '観測点の設定の履歴を書けず', stationHistory.writeFailures),
       // **止まった回数も要約へ出す。** 1 件ずつの `[stall]` の行は間引きを通るので、
       // 機械が詰まり続けた間の回数はここでしか数えられない。
       loopStall: delta('loopStall', '処理が 1 秒以上止まった', loopStalls.snapshot().count),
@@ -2358,6 +2412,7 @@ async function main(): Promise<void> {
     clearInterval(timer)
     clearInterval(loopStallTimer)
     clearInterval(backlogSaveTimer)
+    clearInterval(mseedTimer)
     console.log(`[udp] ${signal} を受けたので締めます`)
     // **取りに行くのは生データの保存を締める前に止める。** 訊いている最中の 1 件は待つ ——
     // 締めた後に書こうとすると、取り戻した分が `closed` で黙って落ちる。
@@ -2372,7 +2427,15 @@ async function main(): Promise<void> {
     // 空関数にしても別の段を渡しても型検査は通り、終了の合図を受けるまで何も起きない。
     await closeHostCore({
       closeReceiver: () => receiver.close(),
-      closeRawStore: () => rawStore.close(),
+      // **NDJSON と miniSEED の両方を流し切る。** 片方が投げても、もう片方は必ず締める ——
+      // 締めないと、溜めていた最後の 5 秒ぶんと見出しが書かれずに消える。
+      closeRawStore: async () => {
+        try {
+          await rawStore.close()
+        } finally {
+          await mseedRecorder.close()
+        }
+      },
       closePipeline: () => pipeline.closeAll(),
       reportPipelineCloseFailures: reportCloseFailures,
       emitPipelineReading: emitReading,

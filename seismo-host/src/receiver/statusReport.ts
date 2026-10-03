@@ -22,6 +22,7 @@ import type { LoopStallSnapshot } from './loopStall'
 import type { RecvBufferOutcome } from './udpReceiver'
 import type { TallySnapshot } from './packetTally'
 import type { HubSnapshot } from './readingHub'
+import type { MseedHealth } from './mseedRecorder'
 import type { SensorHealth } from './sensorHealth'
 import type { StationDirectory, StationInfo } from './stationConfig'
 import type { StationHealth } from './stationHealth'
@@ -48,6 +49,18 @@ export interface RawStoreStatus {
   readonly currentDay: string | null
   readonly lastWriteError: string | null
   readonly lastSweepError: string | null
+}
+
+/**
+ * 観測点の設定の履歴（`stationConfigHistory.ts`）の様子。
+ *
+ * **`writeFailures` が増えていたら、その間に変えた割り当て・校正値が残っていない。**
+ * 生データは補正前の値なので、後から読み直すときにその区間だけ当時の設定が分からなくなる。
+ */
+export interface StationHistoryStatus {
+  readonly recorded: number
+  readonly writeFailures: number
+  readonly lastError: string | null
 }
 
 /**
@@ -110,6 +123,13 @@ export interface StatusReportInput {
    */
   readonly gravity: GravityCheckSnapshot
   readonly raw: RawStoreStatus
+  /**
+   * miniSEED 3 での生データの保存（`mseedRecorder.ts`）。**`raw`（NDJSON）とは別に持つ** ——
+   * 並行して書いている間、片方だけ止まる形を見分けるため。
+   */
+  readonly mseed: MseedHealth
+  /** 観測点の設定の履歴。 */
+  readonly stationHistory: StationHistoryStatus
   /** 合成波形の保存（`waveArchive.ts`）。**生データの欄とは別に持つ**（片方だけ止まりうる）。 */
   readonly waveArchive: WaveArchiveStatus
   readonly hub: HubSnapshot
@@ -302,6 +322,13 @@ export interface StatusReport {
     readonly boards: Record<string, unknown>
   }
   readonly raw: RawStoreStatus
+  /**
+   * miniSEED 3 での生データの保存。**`lostRecords` と `writeErrors` が 0、`recordsWritten` が
+   * 増え続けていれば正常。** `cuts` は切った理由ごとの本数で、ふだんはほぼすべて `full`。
+   */
+  readonly mseed: MseedHealth
+  /** 観測点の設定の履歴。**`writeFailures` が 0 なら、変えた設定はすべて残っている。** */
+  readonly stationHistory: StationHistoryStatus
   /** 合成波形の保存（読み返しの口が返せる範囲は、ここが動いている間のぶんだけ）。 */
   readonly waveArchive: WaveArchiveStatus
   readonly stream: HubSnapshot
@@ -494,6 +521,8 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     gravity,
     tally: { sources, boards },
     raw: input.raw,
+    mseed: input.mseed,
+    stationHistory: input.stationHistory,
     waveArchive: input.waveArchive,
     stream: input.hub,
     acks: input.acks,
