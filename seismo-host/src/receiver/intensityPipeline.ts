@@ -24,6 +24,7 @@ import type {
   Timebase,
 } from '../timebase/segmenter'
 import { applyCalibration } from './calibration'
+import type { GalTriple } from './calibration'
 import { StationDirectory } from './stationConfig'
 // **窓と刻みは K-NET の取り込みと同じ値を使う。** 自作センサーの観測結果は最終的に
 // 同じ画面へ並ぶので、物差しが違えば「揺れ方の違い」と「測り方の違い」を見分けられない。
@@ -204,6 +205,17 @@ export interface PacketOutcome {
    * 受け手は切れ目を見分けられる。いちばん様子を見たい状態で波形だけ黙るほうが困る。
    */
   readonly wave: WaveChunk | null
+  /**
+   * `wave` と同じサンプルの、**校正（`calibration.ts`）を掛ける前の値**（gal）。`wave` が
+   * null の回は null。
+   *
+   * **校正値そのものを測る**ためにある（6 面法・`gravityCheck.ts` の静止窓）。校正後の
+   * 値から逆算すると、窓の途中で設定が替わったときに古い校正と新しい校正が混ざる。
+   *
+   * **`WaveChunk` へは入れない。** 押し出しの口は波形のまとまりを丸ごと配るので、
+   * 入れると誰も使わない値で通信量が倍になる。写しは取らない（`toGal` の出力そのもの）。
+   */
+  readonly uncalibratedGal: GalTriple | null
 }
 
 export interface IntensityPipelineOptions {
@@ -242,6 +254,7 @@ function nothing(): Omit<PacketOutcome, 'dropped' | 'detail'> {
     startedBecause: null,
     intensitySkipped: null,
     wave: null,
+    uncalibratedGal: null,
   }
 }
 
@@ -374,6 +387,9 @@ export class IntensityPipeline {
             timebaseNominalReason: timebase.nominalReason,
             gal,
           }
+    // **`wave` と同じ回にだけ出す。** 校正前の値だけが残ると、組み立てに落とされた
+    // パケットのサンプルが静止窓へ入る（`wave` を作らない理由と同じ）。
+    const uncalibratedGal: GalTriple | null = wave === null || converted === null ? null : converted.gal
 
     let skipped: IntensitySkip | null = null
     let skipDetail: string | null = null
@@ -407,6 +423,7 @@ export class IntensityPipeline {
         detail: `流し込みの入れ物が見つからない（${meta.streamKey}）`,
         intensitySkipped: skipped,
         wave,
+        uncalibratedGal,
       }
     }
     if (entry.stream === null || gal === null) {
@@ -419,6 +436,7 @@ export class IntensityPipeline {
         detail: skipDetail,
         intensitySkipped: skipped,
         wave,
+        uncalibratedGal,
       }
     }
 
@@ -442,6 +460,7 @@ export class IntensityPipeline {
         detail: messageOf(error),
         intensitySkipped: skipped,
         wave,
+        uncalibratedGal,
       }
     }
 
@@ -454,6 +473,7 @@ export class IntensityPipeline {
       detail: skipDetail,
       intensitySkipped: skipped,
       wave,
+      uncalibratedGal,
     }
   }
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { IDENTITY_ROTATION } from '../receiver/stationConfigTypes'
 import type { Mat3, Vec3 } from '../receiver/stationConfigTypes'
-import { multiplyMat3, suggestRotation } from './calibrationSuggest'
+import { gravityForTilt, multiplyMat3, NO_STILL_WINDOW, stillMeanGal, suggestRotation } from './calibrationSuggest'
 
 const G = 980.665
 
@@ -275,5 +275,82 @@ describe('multiplyMat3', () => {
     ]
 
     expect(multiplyMat3(east90, up90)).not.toEqual(multiplyMat3(up90, east90))
+  })
+})
+
+describe('「鉛直を合わせる」の材料（校正前の静止窓 → カードの校正を通した重力）', () => {
+  const NONE = { offset: [0, 0, 0] as Vec3, sensitivity: [1, 1, 1] as Vec3, rotation: IDENTITY_ROTATION }
+
+  it('正: いまの静止が始まった後の窓を、サンプル数で重み付けして平均する', () => {
+    const got = stillMeanGal({
+      stillSinceMs: 100,
+      windows: [
+        { atMs: 130, meanGal: [0, 0, 970], sampleCount: 1000 },
+        { atMs: 160, meanGal: [0, 0, 990], sampleCount: 3000 },
+      ],
+    })
+    expect(got.ok && got.meanGal[2]).toBeCloseTo(985, 9)
+  })
+
+  it('対照: 静止の始まり以前に閉じた窓（前の置き方）は混ぜない', () => {
+    const got = stillMeanGal({
+      stillSinceMs: 100,
+      windows: [
+        { atMs: 100, meanGal: [G, 0, 0], sampleCount: 3000 },
+        { atMs: 130, meanGal: [0, 0, G], sampleCount: 3000 },
+      ],
+    })
+    expect(got.ok && got.meanGal).toEqual([0, 0, G])
+  })
+
+  it('安全弁: いま静止していない・窓が無い・いまの置き方の窓がまだ閉じていないなら理由を返す', () => {
+    const w = { atMs: 50, meanGal: [0, 0, G] as Vec3, sampleCount: 3000 }
+    expect(stillMeanGal(null)).toEqual({ ok: false, reason: NO_STILL_WINDOW })
+    expect(stillMeanGal({ stillSinceMs: null, windows: [w] })).toEqual({ ok: false, reason: NO_STILL_WINDOW })
+    expect(stillMeanGal({ stillSinceMs: 100, windows: [w] })).toEqual({ ok: false, reason: NO_STILL_WINDOW })
+  })
+
+  it('正: カードの校正（バイアス除去 → 感度 → 回転）を通した重力を返す', () => {
+    const swapXZ: Mat3 = [
+      [0, 0, 1],
+      [0, 1, 0],
+      [1, 0, 0],
+    ]
+    const got = gravityForTilt(
+      { stillSinceMs: 0, windows: [{ atMs: 1, meanGal: [500 + 100, 0, 0], sampleCount: 3000 }] },
+      { offset: [100, 0, 0], sensitivity: [G / 500, 1, 1], rotation: swapXZ },
+    )
+    expect(got.ok && got.gravity[2]).toBeCloseTo(G, 9)
+    expect(got.ok && got.gravity[0]).toBeCloseTo(0, 9)
+  })
+
+  // **回帰（2026-10-04 実機）:** 出した回転をカードへ入れて同じ材料でもう一度出すと、
+  // 傾きは 0 になり回転は変わらない。前は回転を二重に掛けて約 140 度ずれた。
+  it('正: 出した回転をカードへ入れてもう一度押すと、傾き 0° で同じ回転のまま', () => {
+    const tilted: Vec3 = [0, G * Math.sin(Math.PI / 12), G * Math.cos(Math.PI / 12)]
+    const source = { stillSinceMs: 0, windows: [{ atMs: 1, meanGal: tilted, sampleCount: 3000 }] }
+    const first = gravityForTilt(source, NONE)
+    if (!first.ok) throw new Error(first.reason)
+    const r1 = suggestRotation({ gravity: first.gravity, rotation: NONE.rotation, headingDeg: null })
+    if (!r1.ok) throw new Error(r1.reason)
+
+    const second = gravityForTilt(source, { ...NONE, rotation: r1.rotation })
+    if (!second.ok) throw new Error(second.reason)
+    const r2 = suggestRotation({ gravity: second.gravity, rotation: r1.rotation, headingDeg: null })
+    if (!r2.ok) throw new Error(r2.reason)
+    expect(r2.tiltDeg).toBe(0)
+    for (let i = 0; i < 3; i++) {
+      for (let j = 0; j < 3; j++) expect(r2.rotation[i][j]).toBeCloseTo(r1.rotation[i][j], 5)
+    }
+  })
+
+  it('安全弁: カードの感度が狂っていて重力の大きさが 1 g から 3 倍以上離れたら、向きを出さない', () => {
+    const source = { stillSinceMs: 0, windows: [{ atMs: 1, meanGal: [0, 0, G] as Vec3, sampleCount: 3000 }] }
+    expect(gravityForTilt(source, { ...NONE, sensitivity: [1, 1, 0.3] })).toEqual({
+      ok: false,
+      reason: '換算の倍率が合っていない。先にそちらを確かめること',
+    })
+    // 対照: 3 分の 1 の手前なら出す。
+    expect(gravityForTilt(source, { ...NONE, sensitivity: [1, 1, 0.34] }).ok).toBe(true)
   })
 })
