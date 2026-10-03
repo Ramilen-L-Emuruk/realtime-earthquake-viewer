@@ -71,13 +71,19 @@ function book(options: { maxSensors?: number } = {}): {
 function wave(
   b: GravityCheckBook,
   gal: readonly [readonly number[], readonly number[], readonly number[]],
-  over: { sensorId?: string; streamKey?: string } = {},
+  over: {
+    sensorId?: string
+    streamKey?: string
+    /** 校正前の値。省略時は `gal` と同じ（校正が既定値のまま＝両者が一致する実機の形）。 */
+    uncalibratedGal?: readonly [readonly number[], readonly number[], readonly number[]]
+  } = {},
 ): GravityVerdict | null {
   return b.noteWave({
     boardKey: BOARD,
     sensorId: over.sensorId ?? 'i2c0-68',
     streamKey: over.streamKey ?? STREAM,
     gal,
+    uncalibratedGal: over.uncalibratedGal ?? gal,
   })
 }
 
@@ -538,5 +544,129 @@ describe('軸ごとの静止統計（取り付けの傾き）', () => {
     expect(second.sampleCount).toBe(300)
     expect(second.axisMeanGal?.[1]).toBeCloseTo(0, 6)
     expect(second.axisMeanGal?.[2]).toBeCloseTo(GAL_PER_G, 6)
+  })
+})
+
+/** 3 軸それぞれ一定の値を `n` 件。`swingGal` を指定した軸だけ ± に振る。 */
+function constGal(
+  n: number,
+  v: readonly [number, number, number],
+  swing: { axis: 0 | 1 | 2; gal: number } | null = null,
+): readonly [readonly number[], readonly number[], readonly number[]] {
+  const out: [number[], number[], number[]] = [[], [], []]
+  for (let i = 0; i < n; i++) {
+    for (const a of [0, 1, 2] as const) {
+      const s = swing !== null && swing.axis === a ? (i % 2 === 0 ? swing.gal : -swing.gal) : 0
+      out[a].push(v[a] + s)
+    }
+  }
+  return out
+}
+
+describe('静止窓の覚え（6 面法の材料）', () => {
+  const ID = { sensorId: 'six', streamKey: 'six|boot1' }
+
+  /** 同じセンサーへ、1 窓ぶん流してから時計を進める。 */
+  function feed(
+    b: GravityCheckBook,
+    advance: (ms: number) => void,
+    gal: readonly [readonly number[], readonly number[], readonly number[]],
+    uncalibratedGal = gal,
+    over: { streamKey?: string } = {},
+  ): void {
+    wave(b, gal, { ...ID, ...over, uncalibratedGal })
+    advance(30_000)
+  }
+
+  function windowsOf(b: GravityCheckBook) {
+    return b.restWindows().find((s) => s.sensorId === ID.sensorId)?.windows ?? []
+  }
+
+  it('正: 静止して閉じた窓は、校正前の軸ごとの平均とばらつきで覚える', () => {
+    const { b, advance } = book()
+    // 校正後は真上 1 g、校正前は Z が 665 gal（ゼロ点が −315 gal ずれたセンサー）。
+    feed(b, advance, constGal(300, [0, 0, GAL_PER_G]), constGal(300, [7, -1, 665], { axis: 2, gal: 1.5 }))
+    wave(b, restGal(300), ID) // 窓を閉じる引き金
+
+    const ws = windowsOf(b)
+    expect(ws).toHaveLength(1)
+    expect(ws[0]!.meanGal[0]).toBeCloseTo(7, 9)
+    expect(ws[0]!.meanGal[1]).toBeCloseTo(-1, 9)
+    expect(ws[0]!.meanGal[2]).toBeCloseTo(665, 9)
+    expect(ws[0]!.sdGal[2]).toBeCloseTo(1.5, 9)
+    expect(ws[0]!.sampleCount).toBe(300)
+    expect(ws[0]!.streamKey).toBe(ID.streamKey)
+  })
+
+  it('安全弁: 合成の長さは静かでも、1 軸が振れている窓は覚えない（回している最中の窓）', () => {
+    // 合成の長さは向きを変えても変わらないので、ゆっくり回している窓は合成では静止に見える。
+    // 2 つの向きが混ざった平均を 6 面法へ渡さないため、軸ごとのばらつきで落とす。
+    const { b, advance } = book()
+    const turning: [number[], number[], number[]] = [[], [], []]
+    for (let i = 0; i < 300; i++) {
+      const rad = ((i / 300) * 90 * Math.PI) / 180
+      turning[0].push(0)
+      turning[1].push(GAL_PER_G * Math.sin(rad))
+      turning[2].push(GAL_PER_G * Math.cos(rad))
+    }
+    feed(b, advance, turning)
+    const verdict = wave(b, restGal(300), ID)
+
+    // 対照: 合成のほうはこの窓を「静止」と見ている（倍率の判定は ok）。
+    expect(verdict?.scale).toBe('ok')
+    expect(windowsOf(b)).toHaveLength(0)
+  })
+
+  it('対照: 軸のばらつきが閾値の手前なら覚え、超えたら覚えない', () => {
+    const { b, advance } = book()
+    feed(b, advance, constGal(300, [0, 0, GAL_PER_G], { axis: 0, gal: 4.9 }))
+    feed(b, advance, constGal(300, [0, 0, GAL_PER_G], { axis: 0, gal: 5.1 }))
+    wave(b, restGal(300), ID)
+    expect(windowsOf(b)).toHaveLength(1)
+    expect(windowsOf(b)[0]!.sdGal[0]).toBeCloseTo(4.9, 9)
+  })
+
+  it('安全弁: サンプルが足りない窓・読めない値の混ざった窓は覚えない', () => {
+    const { b, advance } = book()
+    feed(b, advance, constGal(10, [0, 0, GAL_PER_G]))
+    const broken = constGal(300, [0, 0, GAL_PER_G]).map((a) => [...a]) as [number[], number[], number[]]
+    broken[1][5] = Number.NaN
+    feed(b, advance, constGal(300, [0, 0, GAL_PER_G]), broken)
+    wave(b, restGal(300), ID)
+    expect(windowsOf(b)).toHaveLength(0)
+  })
+
+  it('正: 基板が起動し直しても、それまでの窓は消さない（校正前の値は起動に依らない）', () => {
+    const { b, advance } = book()
+    feed(b, advance, constGal(300, [0, 0, GAL_PER_G]))
+    wave(b, restGal(300), ID) // 1 つ目を閉じる
+    wave(b, restGal(300), { ...ID, streamKey: 'six|boot2' }) // 起動し直し（溜めかけは捨てる）
+    advance(30_000)
+    wave(b, restGal(300), { ...ID, streamKey: 'six|boot2' })
+    const ws = windowsOf(b)
+    expect(ws.map((w) => w.streamKey)).toEqual(['six|boot1', 'six|boot2'])
+  })
+
+  it('正: 30 分より古い窓は落とす（読むときも、足すときも）', () => {
+    const { b, advance } = book()
+    feed(b, advance, constGal(300, [0, 0, GAL_PER_G]))
+    wave(b, restGal(300), ID) // 1 つ目を閉じる（ここが時刻 T）
+    advance(30 * 60_000 - 1)
+    expect(windowsOf(b)).toHaveLength(1)
+    advance(1)
+    expect(windowsOf(b)).toHaveLength(0)
+  })
+
+  it('安全弁: 30 分のうちに窓を閉じすぎても、覚えは上限で頭打ちになる（古いほうから落とす）', () => {
+    let nowMs = 1_700_000_000_000
+    const b = new GravityCheckBook({ now: () => nowMs, windowMs: 1_000, minSamples: 1 })
+    for (let i = 0; i < 200; i++) {
+      wave(b, constGal(5, [i, 0, GAL_PER_G]), ID)
+      nowMs += 1_000
+    }
+    const ws = windowsOf(b)
+    expect(ws.length).toBeLessThanOrEqual(64)
+    // 新しい順に残っている（最後に閉じたのは i = 198 の窓）。
+    expect(ws[ws.length - 1]!.meanGal[0]).toBeCloseTo(198, 9)
   })
 })

@@ -186,6 +186,7 @@ async function start(
   stationConfig?: StatusServerOptions['stationConfig'],
   adminConsole?: StatusServerOptions['adminConsole'],
   readWaves?: StatusServerOptions['readWaves'],
+  readRestWindows?: StatusServerOptions['readRestWindows'],
 ): Promise<string> {
   // **port 0 で開く。** 固定の番号だと、並んで走る別のテストと取り合う。
   const server = await startStatusServer({
@@ -197,6 +198,7 @@ async function start(
     heartbeatMs,
     adminAuth: adminAuth ?? NO_ADMIN_AUTH,
     stationConfig: stationConfig ?? makeStationConfigOps(),
+    readRestWindows: readRestWindows ?? (() => []),
     // **`null` を明示的に渡したいテストがあるので `??` は使わない。** `??` だと
     // `null` も「未指定」と同じ扱いになり、ビルド失敗を再現できない。
     adminConsole: adminConsole !== undefined ? adminConsole : TEST_ADMIN_CONSOLE,
@@ -908,6 +910,7 @@ describe('/api/*', () => {
     overrides: Partial<AdminAuthConfig> = {},
     log?: StatusServerOptions['log'],
     stationConfig?: StatusServerOptions['stationConfig'],
+    readRestWindows: StatusServerOptions['readRestWindows'] = () => [],
   ): Promise<string> {
     const port = await getFreePort()
     const adminAuth: AdminAuthConfig = {
@@ -924,6 +927,7 @@ describe('/api/*', () => {
       adminAuth,
       log,
       stationConfig: stationConfig ?? makeStationConfigOps(),
+      readRestWindows,
       adminConsole: TEST_ADMIN_CONSOLE,
       readWaves: null,
     })
@@ -952,6 +956,40 @@ describe('/api/*', () => {
     })
     expect(res.status).toBe(401)
     expect(await res.json()).toEqual({ error: 'invalid-token' })
+  })
+
+  it('正: GET /api/rest-windows はセンサーごとの静止窓を返す', async () => {
+    const sensors = [
+      {
+        boardKey: 'mac:aa' as const,
+        sensorId: 'i2c0-68',
+        windows: [{ atMs: 1, streamKey: 'k', sampleCount: 3000, meanGal: [1, 2, 980] as const, sdGal: [1, 1, 1.5] as const }],
+      },
+    ]
+    const base = await startAuthed(new ReadingHub(), {}, undefined, undefined, () => sensors)
+    const res = await fetch(`${base}/api/rest-windows`, {
+      headers: { Authorization: `Bearer ${TOKEN}`, Origin: ORIGIN },
+    })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ sensors })
+  })
+
+  it('安全弁: /api/rest-windows も認証を通す（トークン無しは 401）', async () => {
+    const base = await startAuthed(new ReadingHub(), {}, undefined, undefined, () => {
+      throw new Error('認証の前に読んではいけない')
+    })
+    const res = await fetch(`${base}/api/rest-windows`, { headers: { Origin: ORIGIN } })
+    expect(res.status).toBe(401)
+  })
+
+  it('対照: /api/rest-windows へ GET 以外は 405', async () => {
+    const base = await startAuthed(new ReadingHub())
+    const res = await fetch(`${base}/api/rest-windows`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${TOKEN}`, Origin: ORIGIN },
+      body: '{}',
+    })
+    expect(res.status).toBe(405)
   })
 
   it('トークン・Host・Origin が全て正しければ通り、まだ口が無いので 404', async () => {

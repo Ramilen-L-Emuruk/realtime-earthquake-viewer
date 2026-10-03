@@ -8,7 +8,7 @@
 // **`PUT` は全置換**（README.md「`/api/stations`・`/api/boards`」）なので、
 // 保存時は表示中の全カードを読み直して丸ごと送る。
 
-import { apiFetch, ApiError, describeAdminAuthFailure } from './api'
+import { apiFetch, ApiError, describeAdminAuthFailure, getStoredToken } from './api'
 import { restWindowProblem, suggestRotation } from './calibrationSuggest'
 import { fetchDetectedBoards, type DetectedBoard, type SensorRestWindow } from './detectedBoards'
 import { ago, escapeHtml, qs, receptionBadgeHtml } from './dom'
@@ -20,9 +20,20 @@ import {
   renderSensorCardHtml,
   restWindowNote,
   sensorToFormValues,
+  writeSensorCardOffsetSensitivity,
   writeSensorCardRotation,
   SENSOR_ID_DATALIST_ID,
 } from './sensorForm'
+import { fitSixFace } from './sixFaceFit'
+import {
+  cardPanelFailureMessage,
+  describeFaces,
+  parseRestWindowsBody,
+  restWindowsFetchProblem,
+  sixFaceApplied,
+  sixFaceProblem,
+  type SensorFitWindows,
+} from './sixFacePanel'
 import type { BoardEntry, SensorEntry, StationInfo } from '../receiver/stationConfigTypes'
 
 /** 基板 Key の入力候補（`<datalist>`）の id。中身は `/status` が声を聞いている基板。 */
@@ -238,6 +249,9 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
   let currentRestWindows: readonly SensorRestWindow[] = []
   /** 経過を測る基準（`/status` の `generatedAtMs`）。取れていなければ `null`。 */
   let currentGeneratedAtMs: number | null = null
+  /** 6 面法の材料（`GET /api/rest-windows`）。取れていなければ `null` で、理由は下。 */
+  let currentFitWindows: readonly SensorFitWindows[] | null = null
+  let fitWindowsProblem: string | null = null
 
   // **編集中の未保存内容を、確認なしで破棄しない。** センサーカードの追加・削除・
   // 数値変更中に別の基板の「編集」を押すと、`fillForm` が `.sensor-cards` を
@@ -272,6 +286,71 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
     )
   }
 
+  /** いまフォームに入っている基板の、そのセンサーの 6 面法の材料。無ければ空。 */
+  const findFitWindows = (sensorId: string): SensorFitWindows['windows'] => {
+    const boardKey = qs<HTMLInputElement>(container, '[name=boardKey]').value.trim()
+    return currentFitWindows?.find((s) => s.boardKey === boardKey && s.sensorId === sensorId)?.windows ?? []
+  }
+
+  /**
+   * 各カードの「6 面で測る」欄（揃った面・押せる押せない・押せない理由）を描き直す。
+   *
+   * **カードごとに囲う**（`refreshTiltPanels` と同じ理由 —— 先頭で投げると残りが古いまま固まる）。
+   * 押した後の結果（`.s-sixface-result`）には触らない。取り直しのたびに消えると、入れた
+   * 直後の案内が 10 秒で読めなくなる。
+   *
+   * **描き直せなかった枚数を返し、自分では画面へ出さない。** 画面上部の欄は 1 つしか無く、
+   * 「鉛直を合わせる」の欄と別々に書くと後の書き手が先の知らせを消す。出すのは
+   * `refreshTiltPanels` がまとめて 1 回だけ。
+   */
+  const refreshSixFacePanels = (): number => {
+    let broken = 0
+    for (const card of container.querySelectorAll<HTMLElement>('.sensor-cards .sensor-card')) {
+      try {
+        const sensorId = qs<HTMLInputElement>(card, '.s-sensorId').value.trim()
+        const result = fitSixFace(findFitWindows(sensorId))
+        qs(card, '.s-sixface-faces').textContent = describeFaces(result.faces)
+        const problem = fitWindowsProblem ?? sixFaceProblem(result)
+        qs<HTMLButtonElement>(card, '.apply-sixface').disabled = problem !== null
+        qs(card, '.s-sixface-why').textContent = problem ?? ''
+      } catch (error) {
+        broken += 1
+        console.warn('[admin] センサーカードの 6 面法の欄を描き直せない', error)
+      }
+    }
+    return broken
+  }
+
+  /**
+   * 6 面法の材料を取り直す。**投げない。** 取れなければ理由を残して欄へ出す。
+   *
+   * **トークンが無ければ取りに行かない。** 10 秒ごとに 401 を投げ続けると、ホストの記録が
+   * 拒否の行で埋まる（入れ直せば次の回から取れる）。
+   */
+  let fitWindowsInFlight = false
+  const loadFitWindows = async (): Promise<void> => {
+    if (getStoredToken() === null) return
+    // **前の取得が終わるまで次を投げない。** 10 秒を超えて遅れた応答が後から着くと、
+    // 新しい揃い具合を古いもので上書きする。
+    if (fitWindowsInFlight) return
+    fitWindowsInFlight = true
+    try {
+      const body = await apiFetch<unknown>('/api/rest-windows')
+      if (signal.aborted) return
+      const parsed = parseRestWindowsBody(body)
+      currentFitWindows = parsed
+      fitWindowsProblem = parsed === null ? restWindowsFetchProblem('応答の形が違う') : null
+    } catch (error) {
+      if (signal.aborted) return
+      currentFitWindows = null
+      fitWindowsProblem = restWindowsFetchProblem(describeFetchFailure(error))
+    } finally {
+      fitWindowsInFlight = false
+    }
+    // **取り付けの欄ごと描き直す。** 失敗の知らせを 1 か所でまとめて出すため（`refreshTiltPanels`）。
+    refreshTiltPanels()
+  }
+
   /**
    * 各カードの静止窓の様子と、「鉛直を合わせる」の押せる・押せないを描き直す。
    *
@@ -303,11 +382,14 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
         console.warn('[admin] センサーカードの取り付け診断を描き直せない', error)
       }
     }
+    // **6 面法の欄も同じ契機で描き直す。** どちらも「どのセンサーの話か」をカードの ID と
+    // 基板 Key で決めるので、打ち換えやカードの追加で片方だけ古いまま残らないように。
+    const sixFaceBroken = refreshSixFacePanels()
     // **失敗したときだけ書く。** 成功で空にすると、保存の失敗など別の理由で
-    // 出ている文言をここが消してしまう。
-    if (broken > 0) {
-      renderError(container, `${broken} 枚のセンサーカードで取り付けの診断を出せない。画面を再読込すること`)
-    }
+    // 出ている文言をここが消してしまう。**2 つの欄の失敗は 1 回でまとめて書く** ——
+    // 別々に書くと、後の書き手が先の知らせを消す。
+    const failure = cardPanelFailureMessage(broken, sixFaceBroken)
+    if (failure !== null) renderError(container, failure)
   }
 
   const switchForm = (board: BoardEntry | null): void => {
@@ -447,6 +529,37 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
       formDirty = true
       return
     }
+    if (target.classList.contains('apply-sixface')) {
+      const card = target.closest<HTMLElement>('.sensor-card')
+      if (card === null) return
+      // **結果はそのカードの中へ出す**（「鉛直を合わせる」と同じ理由）。
+      const note = (text: string): void => {
+        const el = card.querySelector('.s-sixface-result')
+        if (el === null) {
+          console.warn('[admin] 6 面法の結果を出す場所が無い:', text)
+          return
+        }
+        el.textContent = text
+      }
+      try {
+        const sensorId = qs<HTMLInputElement>(card, '.s-sensorId').value.trim()
+        // **押された時点の材料で計算し直す。** 描き直しから押すまでの間に窓が増減している。
+        const result = fitSixFace(findFitWindows(sensorId))
+        const problem = fitWindowsProblem ?? sixFaceProblem(result)
+        if (problem !== null || !result.ok) {
+          note(problem ?? '計算できなかった')
+          return
+        }
+        const applied = sixFaceApplied(result)
+        // **書き込む前に未保存の印を立てる**（「鉛直を合わせる」と同じ手当て）。
+        formDirty = true
+        writeSensorCardOffsetSensitivity(card, applied.offset, applied.sensitivity)
+        note(applied.note)
+      } catch (error) {
+        note(describeSaveFailure(error))
+      }
+      return
+    }
     if (target.classList.contains('suggest-tilt')) {
       const card = target.closest<HTMLElement>('.sensor-card')
       if (card === null) return
@@ -575,6 +688,17 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
 
   const initial = await reload()
   if (!initial.ok) renderError(container, initial.reason)
+
+  // **6 面法の材料だけは開いている間ずっと取り直す。** 基板を置き換えるたびに ✓ が
+  // 増えていくのを見ながら進める作業で、画面を読み込み直させると編集中のフォームが消える。
+  // 窓は 30 秒ごとに閉じるので、その 3 分の 1 で取れば置いてから 40 秒以内に ✓ が付く。
+  // **フォームの入力欄には触らない**（揃い具合と押せる押せないだけを描き直す）。
+  await loadFitWindows()
+  // **待っている間にタブを移っていたら張らない。** 張ってから abort を待つ形では、
+  // 既に鳴り終わった abort を拾えず、見えない画面で取り直しが続く。
+  if (signal.aborted) return
+  const poll = setInterval(() => void loadFitWindows(), 10_000)
+  signal.addEventListener('abort', () => clearInterval(poll), { once: true })
 }
 
 /** `GET /api/boards`・`GET /api/stations` の失敗理由を日本語化する（`describeSaveFailure` の GET 専用版）。 */

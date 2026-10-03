@@ -99,6 +99,23 @@ const SCALE_RATIO_MAX = 3
 const REST_SD_GAL = 5
 
 /**
+ * 静止窓をどれだけの間覚えておくか（受け手の時計）。
+ *
+ * **6 面法の 1 回ぶんが収まる長さ。** 基板を 6 方向へ置き、それぞれ 1 分以上静止させる
+ * ので、置き換えの手間を入れて 10〜15 分。その倍を取る。長くすると温度の変化（実機で
+ * 数日に 10〜17 gal）がゼロ点に乗った窓まで混ざる。
+ */
+const REST_WINDOW_KEEP_MS = 30 * 60_000
+
+/**
+ * 1 センサーあたりに覚える静止窓の上限。
+ *
+ * 30 秒の窓なら 30 分で 60 個。**時間だけで切ると、窓を短く設定したときに際限なく
+ * 溜まる**ので、数でも頭を押さえる（古いほうから落とす）。
+ */
+const REST_WINDOW_MAX = 64
+
+/**
  * 静止しているときに許す計測震度の上限。
  *
  * 静止した基板の実測が 0.79〜1.26、`demeanWindow` を誤って切ったときの実測が
@@ -189,6 +206,33 @@ export interface GravityVerdict {
 }
 
 /**
+ * 静止していた窓 1 つぶん。**校正を掛ける前の値**で持つ（6 面法の材料）。
+ *
+ * **「静止」の判定は軸ごとに見る。** 倍率の診断（`GravityVerdict.scale`）は 3 軸合成の
+ * ばらつきで静止を判じるが、合成の長さは向きを変えても変わらないので、**基板をゆっくり
+ * 回している最中の窓も静止に見える**。そういう窓の平均は 2 つの向きの混ぜ物で、6 面法へ
+ * 渡すと当てはめが黙って歪む。だからここは、3 軸それぞれのばらつきが小さい窓だけを採る。
+ */
+export interface RestWindow {
+  /** 窓を閉じた時刻（受け手の時計）。 */
+  readonly atMs: number
+  /** 窓を運んできた流れ。**起動し直しても前の窓は消さない**（校正前の値は起動に依らない）。 */
+  readonly streamKey: string
+  readonly sampleCount: number
+  /** 校正前の軸ごとの平均（gal）。静止していれば重力ベクトルそのもの。 */
+  readonly meanGal: Vec3
+  /** 校正前の軸ごとのばらつき（gal）。 */
+  readonly sdGal: Vec3
+}
+
+/** 1 センサーぶんの静止窓。**古い順。** */
+export interface SensorRestWindows {
+  readonly boardKey: BoardKey
+  readonly sensorId: string
+  readonly windows: readonly RestWindow[]
+}
+
+/**
  * 数え上げる出来事。**足すならここへ 1 行。**
  *
  * **この帳面は「数を 1 つ足したのに、出す先の 1 つへ書き忘れる」を 4 巡続けた。**
@@ -243,8 +287,13 @@ interface Entry {
    */
   sumAxis: [number, number, number]
   sumSqAxis: [number, number, number]
+  /** 校正前の軸ごとの走和（`RestWindow` の材料）。件数は同じく `count` を共用する。 */
+  sumRawAxis: [number, number, number]
+  sumSqRawAxis: [number, number, number]
   maxIntensity: number | null
   last: GravityVerdict | null
+  /** 静止していた窓（古い順）。**流れが替わっても捨てない。** */
+  readonly restWindows: RestWindow[]
 }
 
 /** 覚えの鍵。**起動 ID を含めない**（`sensorHealth.ts` と同じ理由）。 */
@@ -262,6 +311,17 @@ function keyOf(boardKey: BoardKey, sensorId: string): string {
 function meanAndSd(sum: number, sumSq: number, count: number): { mean: number; sd: number } {
   const mean = sum / count
   return { mean, sd: Math.sqrt(Math.max(0, sumSq / count - mean * mean)) }
+}
+
+/**
+ * 静止窓の覚えから、古すぎるもの・数の上限を超えたものを落とす（古い順に並んでいる前提）。
+ * **その場で書き換える。**
+ */
+function pruneRestWindows(windows: RestWindow[], now: number): void {
+  let drop = 0
+  while (drop < windows.length && now - windows[drop]!.atMs >= REST_WINDOW_KEEP_MS) drop += 1
+  drop = Math.max(drop, windows.length - REST_WINDOW_MAX)
+  if (drop > 0) windows.splice(0, drop)
 }
 
 export class GravityCheckBook {
@@ -310,6 +370,11 @@ export class GravityCheckBook {
     readonly sensorId: string
     readonly streamKey: string
     readonly gal: readonly [readonly number[], readonly number[], readonly number[]]
+    /**
+     * 同じサンプルの、校正を掛ける前の値（`IntensityPipeline` の `uncalibratedGal`）。
+     * **静止窓の覚え（6 面法の材料）にだけ使う。** 倍率の診断は `gal` で行う。
+     */
+    readonly uncalibratedGal: readonly [readonly number[], readonly number[], readonly number[]]
   }): GravityVerdict | null {
     const entry = this.touch(input.boardKey, input.sensorId)
 
@@ -333,9 +398,11 @@ export class GravityCheckBook {
     }
 
     const [x, y, z] = input.gal
+    const [rx, ry, rz] = input.uncalibratedGal
     // **3 本そろっている分だけ見る。** 呼ぶ側は長さの揃った 3 成分を渡す約束だが、
     // 短いほうを超えて読むと `undefined` が走和へ入り、以後この窓は黙って NaN になる。
-    const n = Math.min(x.length, y.length, z.length)
+    // 校正前の 3 本も同じ件数で足す（件数を `count` で共用するため）。
+    const n = Math.min(x.length, y.length, z.length, rx.length, ry.length, rz.length)
     for (let i = 0; i < n; i++) {
       // **一度だけ読んで使い回す。** 100 Hz × 3 軸ぶんがここを通るので、
       // 添字の読み直しも配列の作り直しもしない。
@@ -352,8 +419,33 @@ export class GravityCheckBook {
       entry.sumSqAxis[0] += vx * vx
       entry.sumSqAxis[1] += vy * vy
       entry.sumSqAxis[2] += vz * vz
+      const ux = rx[i]
+      const uy = ry[i]
+      const uz = rz[i]
+      entry.sumRawAxis[0] += ux
+      entry.sumRawAxis[1] += uy
+      entry.sumRawAxis[2] += uz
+      entry.sumSqRawAxis[0] += ux * ux
+      entry.sumSqRawAxis[1] += uy * uy
+      entry.sumSqRawAxis[2] += uz * uz
     }
     return verdict
+  }
+
+  /**
+   * センサーごとの静止窓（6 面法の材料）。**30 分より古いものは落としてから返す。**
+   *
+   * 窓が 1 つも無いセンサーは出さない。並びは覚えの順（いちばん長く音沙汰の無いものから）。
+   */
+  restWindows(): readonly SensorRestWindows[] {
+    const now = this.now()
+    const out: SensorRestWindows[] = []
+    for (const e of this.entries.values()) {
+      pruneRestWindows(e.restWindows, now)
+      if (e.restWindows.length === 0) continue
+      out.push({ boardKey: e.boardKey, sensorId: e.sensorId, windows: [...e.restWindows] })
+    }
+    return out
   }
 
   /**
@@ -481,7 +573,26 @@ export class GravityCheckBook {
     }
     if (verdict.restless) this.counts.restlessWindows += 1
     entry.last = verdict
+    this.noteRestWindow(entry, base.atMs)
     return verdict
+  }
+
+  /**
+   * 閉じた窓が静止していたなら、校正前の値で覚える。
+   *
+   * **倍率の診断とは独立に判じる。** あちらの静止は合成のばらつき（向きを変えても長さが
+   * 変わらないので回転を見逃す）、こちらは 3 軸それぞれのばらつき。倍率が `too-small` /
+   * `too-large` の窓も、校正前の値としては本物なので覚える（6 面法はまさにその狂いを測る）。
+   */
+  private noteRestWindow(entry: Entry, atMs: number): void {
+    if (entry.count < this.minSamples) return
+    const axis = [0, 1, 2].map((i) => meanAndSd(entry.sumRawAxis[i], entry.sumSqRawAxis[i], entry.count))
+    const meanGal: Vec3 = [axis[0].mean, axis[1].mean, axis[2].mean]
+    const sdGal: Vec3 = [axis[0].sd, axis[1].sd, axis[2].sd]
+    if (!meanGal.every(Number.isFinite) || !sdGal.every(Number.isFinite)) return
+    if (!sdGal.every((sd) => sd < REST_SD_GAL)) return
+    entry.restWindows.push({ atMs, streamKey: entry.streamKey, sampleCount: entry.count, meanGal, sdGal })
+    pruneRestWindows(entry.restWindows, atMs)
   }
 
   private reset(entry: Entry, streamKey: string): void {
@@ -498,6 +609,13 @@ export class GravityCheckBook {
     entry.sumSqAxis[0] = 0
     entry.sumSqAxis[1] = 0
     entry.sumSqAxis[2] = 0
+    entry.sumRawAxis[0] = 0
+    entry.sumRawAxis[1] = 0
+    entry.sumRawAxis[2] = 0
+    entry.sumSqRawAxis[0] = 0
+    entry.sumSqRawAxis[1] = 0
+    entry.sumSqRawAxis[2] = 0
+    // `restWindows` は戻さない —— 窓をまたいで覚えておくためのもの。
     entry.maxIntensity = null
   }
 
@@ -529,8 +647,11 @@ export class GravityCheckBook {
       sumSq: 0,
       sumAxis: [0, 0, 0],
       sumSqAxis: [0, 0, 0],
+      sumRawAxis: [0, 0, 0],
+      sumSqRawAxis: [0, 0, 0],
       maxIntensity: null,
       last: null,
+      restWindows: [],
     }
     this.entries.set(key, created)
     return created
