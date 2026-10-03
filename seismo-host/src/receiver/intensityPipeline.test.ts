@@ -445,6 +445,33 @@ describe('IntensityPipeline', () => {
       expect(outCombo.wave?.gal[2][0]).toBeCloseTo(expectedAxis0 + rawAxis2, 9)
     })
 
+    it('正: 校正前の値（uncalibratedGal）は校正を掛ける前の換算値のまま出る（6 面法の材料）', () => {
+      const combo = new IntensityPipeline({
+        ...OPTS,
+        stations: stationsWith({ offset: [10, 20, 30], sensitivity: [2, 3, 4] }),
+      })
+      const baseline = new IntensityPipeline(OPTS)
+
+      const outCombo = combo.handlePacket(pkt())
+      const outBaseline = baseline.handlePacket(pkt())
+
+      if (outCombo.uncalibratedGal === null || outBaseline.wave === null) throw new Error('値が載っていない')
+      // 基準は単位の校正を通った値で、行列の積が 0 を -0 にすることがある。中身の差ではないので揃える。
+      const plain = (a: readonly number[]) => a.map((v) => v + 0)
+      for (const axis of [0, 1, 2] as const) {
+        expect(plain(outCombo.uncalibratedGal[axis])).toEqual(plain(outBaseline.wave.gal[axis]))
+      }
+      // 対照: 波形のほうは校正を掛けた値になっている。
+      expect(outCombo.wave?.gal[0][0]).not.toBe(outCombo.uncalibratedGal[0][0])
+    })
+
+    it('安全弁: 波形を出さない回は校正前の値も出さない', () => {
+      const p = new IntensityPipeline({ ...OPTS, stations: stationsWith({ enabled: false }) })
+      const out = p.handlePacket(pkt())
+      expect(out.wave).toBeNull()
+      expect(out.uncalibratedGal).toBeNull()
+    })
+
     it('安全弁: enabled: false のセンサーは震度も波形も出さず、組み立てにも渡らない', () => {
       const p = new IntensityPipeline({ ...OPTS, stations: stationsWith({ enabled: false }) })
 

@@ -2071,12 +2071,13 @@ async function main(): Promise<void> {
       //
       // 渡すのは押し出すのと同じ配列。生のカウントからここで換算し直すと経路が 2 本になり、
       // **診断したい当の換算を迂回する**ことになる。
-      if (outcome.wave !== null) {
+      if (outcome.wave !== null && outcome.uncalibratedGal !== null) {
         const verdict = gravity.noteWave({
           boardKey: outcome.wave.boardKey,
           sensorId: outcome.wave.sensorId,
           streamKey: outcome.wave.streamKey,
           gal: outcome.wave.gal,
+          uncalibratedGal: outcome.uncalibratedGal,
         })
         if (verdict !== null) {
           for (const w of buildGravityWarnings(verdict)) emit(w.level, w.kind, w.detail, w.line)
@@ -2160,6 +2161,8 @@ async function main(): Promise<void> {
       get: () => currentStationConfig,
       apply: applyStationConfig,
     },
+    // 6 面法の材料（センサーごとの静止窓・校正前の値）。
+    readRestWindows: () => gravity.restWindows(),
     adminConsole,
     // 過ぎた合成波形の読み返し（#357）。置き場所は保存と同じ `waveDir`。
     readWaves: (params) => readWaveRange({ dir: waveDir, ...params }),
