@@ -21,6 +21,8 @@
 // 何度押しても収束する（2 回目は傾きが 0 に近いので、ほぼ何も足さない）。
 
 import type { RestScaleView, SensorRestWindow } from './detectedBoards'
+import { GAL_PER_G } from '../intensity/units'
+import { SCALE_RATIO_MAX } from '../receiver/gravityCheck'
 import type { Mat3, Vec3 } from '../receiver/stationConfigTypes'
 
 /**
@@ -175,12 +177,15 @@ function roundMat3(m: Mat3): Mat3 {
   ]
 }
 
+/** 倍率が狂っていて向きを出せないときの理由。 */
+const SCALE_MISMATCH = '換算の倍率が合っていない。先にそちらを確かめること'
+
 /** `scale` ごとに、向きを提案できない理由。**提案してよければ `null`。** */
 const SCALE_PROBLEM: Record<RestScaleView, string | null> = {
   ok: null,
   'not-at-rest': '揺れている間は合わせられない（静止してから 30 秒待つこと）',
-  'too-small': '換算の倍率が合っていない。先にそちらを確かめること',
-  'too-large': '換算の倍率が合っていない。先にそちらを確かめること',
+  'too-small': SCALE_MISMATCH,
+  'too-large': SCALE_MISMATCH,
   unreadable: '静止窓の値が読めていない（次の窓でも直らなければ基板を入れ直すこと）',
   'too-few-samples': '波形が足りない（30 秒ぶん届くと判定が出る）',
   unknown: '判定の種類を解釈できない（ホストと管理コンソールの版が食い違う疑い）',
@@ -206,6 +211,83 @@ export function restWindowProblem(
   // 古ければ、この欄だけ応答に載らない。
   if (window.axisMeanGal === null) return '軸ごとの重力が出ていない（ホストの版が古い疑い）'
   return null
+}
+
+/** いまの置き方で静止した窓が無いときの理由（「鉛直を合わせる」を押せない）。 */
+export const NO_STILL_WINDOW = 'いまの置き方で静止した窓がまだ無い（置いてから 1 分ほど動かさずに待つこと）'
+
+/** `gravityForTilt` へ渡す、そのセンサーの静止窓（`GET /api/rest-windows` の 1 要素）。 */
+export interface TiltSource {
+  /** いまの置き方で静止し始めた時刻（ホストの時計）。いま静止していなければ `null`。 */
+  readonly stillSinceMs: number | null
+  readonly windows: readonly { readonly atMs: number; readonly meanGal: Vec3; readonly sampleCount: number }[]
+}
+
+/** 「鉛直を合わせる」が掛ける校正。**カードにいま入っている値**（保存済みとは限らない）。 */
+export interface TiltCalibration {
+  readonly offset: Vec3
+  readonly sensitivity: Vec3
+  readonly rotation: Mat3
+}
+
+/**
+ * いまの置き方で静止している間の、校正前の平均（gal）。**無ければ理由を返す。**
+ *
+ * **使うのは「いまの静止」が始まった後に閉じた窓だけ。** 置き直した直後は前の置き方の
+ * 窓が最後に残っている。どの窓がいまの置き方かを決められるのは、波形を見ているホストだけ。
+ * 窓ごとのサンプル数で重み付けする（6 面法の向きのまとめと同じ）。
+ */
+export function stillMeanGal(
+  source: TiltSource | null,
+): { readonly ok: true; readonly meanGal: Vec3 } | TiltRefusal {
+  if (source === null || source.stillSinceMs === null) return { ok: false, reason: NO_STILL_WINDOW }
+  const since = source.stillSinceMs
+  let weight = 0
+  const sum: [number, number, number] = [0, 0, 0]
+  for (const w of source.windows) {
+    if (w.atMs <= since) continue
+    weight += w.sampleCount
+    for (let i = 0; i < 3; i++) sum[i] += w.meanGal[i] * w.sampleCount
+  }
+  if (weight === 0) return { ok: false, reason: NO_STILL_WINDOW }
+  return { ok: true, meanGal: [sum[0] / weight, sum[1] / weight, sum[2] / weight] }
+}
+
+/**
+ * いまの置き方の重力を、カードの校正を通した後の座標で出す。**投げない。**
+ *
+ * **材料は校正前の静止窓。** ホストが校正を通した後の値（`/status` の判定）を使うと、
+ * その窓を閉じた時点の設定で測った値をいまのカードの回転へ重ねることになり、
+ * 保存の前後や続けて押したときに回転が二重に掛かる。校正前の値にカードの値を
+ * その場で掛ければ、何回押しても・いつ保存しても同じ答えになる。
+ */
+export function gravityForTilt(
+  source: TiltSource | null,
+  calibration: TiltCalibration,
+): { readonly ok: true; readonly gravity: Vec3 } | TiltRefusal {
+  const still = stillMeanGal(source)
+  if (!still.ok) return still
+  const raw = still.meanGal
+  const { offset, sensitivity, rotation } = calibration
+  // `calibration.ts` の `applyCalibration` と同じ順（バイアス除去 → 感度 → 座標変換）。
+  const s: Vec3 = [
+    (raw[0] - offset[0]) * sensitivity[0],
+    (raw[1] - offset[1]) * sensitivity[1],
+    (raw[2] - offset[2]) * sensitivity[2],
+  ]
+  const gravity: Vec3 = [
+    rotation[0][0] * s[0] + rotation[0][1] * s[1] + rotation[0][2] * s[2],
+    rotation[1][0] * s[0] + rotation[1][1] * s[1] + rotation[1][2] * s[2],
+    rotation[2][0] * s[0] + rotation[2][1] * s[1] + rotation[2][2] * s[2],
+  ]
+  if (!readable(gravity)) return { ok: false, reason: '重力の値が数として読めない' }
+  // **倍率が狂ったままの値で向きを出さない**（`restWindowProblem` と同じ判断・同じ幅）。
+  // 狂いを回転行列へ塗り込むことになる。直すべきはカードの感度か、その手前の換算。
+  const mag = magnitude(gravity)
+  if (mag < GAL_PER_G / SCALE_RATIO_MAX || mag > GAL_PER_G * SCALE_RATIO_MAX) {
+    return { ok: false, reason: SCALE_MISMATCH }
+  }
+  return { ok: true, gravity }
 }
 
 /** 度を小数 2 桁で丸める。**画面へ出すためだけの値。** */

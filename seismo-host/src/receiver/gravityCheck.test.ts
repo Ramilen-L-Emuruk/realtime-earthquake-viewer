@@ -598,6 +598,67 @@ describe('静止窓の覚え（6 面法の材料）', () => {
     expect(ws[0]!.streamKey).toBe(ID.streamKey)
   })
 
+  describe('いまの静止の始まり（stillSinceMs・「鉛直を合わせる」の材料）', () => {
+    const T0 = 1_700_000_000_000
+    const still = constGal(300, [0, 0, GAL_PER_G])
+    const moving = constGal(300, [0, 0, GAL_PER_G], { axis: 0, gal: 20 })
+
+    function stillOf(b: GravityCheckBook): number | null | undefined {
+      return b.restWindows().find((s) => s.sensorId === ID.sensorId)?.stillSinceMs
+    }
+
+    it('正: 静止した窓が続く間は、最初の窓の始まりを返す', () => {
+      const { b, advance } = book()
+      feed(b, advance, still)
+      feed(b, advance, still)
+      wave(b, still, ID)
+      expect(stillOf(b)).toBe(T0)
+    })
+
+    it('対照: 静止していない窓が挟まれば、その後の静止から数え直す（置き直した）', () => {
+      const { b, advance } = book()
+      feed(b, advance, still)
+      feed(b, advance, moving)
+      feed(b, advance, still)
+      wave(b, still, ID)
+      expect(stillOf(b)).toBe(T0 + 60_000)
+    })
+
+    it('安全弁: 溜めかけの窓で 1 軸でも揺れていれば null（最後の窓を閉じた後に動かした）', () => {
+      const { b, advance } = book()
+      feed(b, advance, still)
+      wave(b, still, ID)
+      expect(stillOf(b)).toBe(T0)
+      wave(b, moving, ID)
+      expect(stillOf(b)).toBeNull()
+    })
+
+    it('対照: 溜めかけの窓が判定に足りなければ、閉じた窓の連なりで答える', () => {
+      const { b, advance } = book()
+      feed(b, advance, still)
+      wave(b, constGal(10, [0, 0, GAL_PER_G], { axis: 0, gal: 20 }), ID)
+      expect(stillOf(b)).toBe(T0)
+    })
+
+    it('安全弁: 基板が起動し直したら null（届かない間に動かされたかは分からない）', () => {
+      const { b, advance } = book()
+      feed(b, advance, still)
+      wave(b, still, ID)
+      wave(b, still, { ...ID, streamKey: 'six|boot2' })
+      expect(stillOf(b)).toBeNull()
+    })
+
+    it('安全弁: 波形が窓 2 つぶん途絶えたら null（窓が閉じず、最後の静止が残って見える）', () => {
+      const { b, advance } = book()
+      feed(b, advance, still)
+      wave(b, still, ID) // 窓を閉じ、次の窓が T0 + 30 秒から始まる
+      advance(60_000)
+      expect(stillOf(b)).toBe(T0)
+      advance(1)
+      expect(stillOf(b)).toBeNull()
+    })
+  })
+
   it('安全弁: 合成の長さは静かでも、1 軸が振れている窓は覚えない（回している最中の窓）', () => {
     // 合成の長さは向きを変えても変わらないので、ゆっくり回している窓は合成では静止に見える。
     // 2 つの向きが混ざった平均を 6 面法へ渡さないため、軸ごとのばらつきで落とす。

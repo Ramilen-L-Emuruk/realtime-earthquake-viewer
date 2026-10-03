@@ -9,7 +9,7 @@
 // 保存時は表示中の全カードを読み直して丸ごと送る。
 
 import { apiFetch, ApiError, describeAdminAuthFailure, getStoredToken } from './api'
-import { restWindowProblem, suggestRotation } from './calibrationSuggest'
+import { gravityForTilt, stillMeanGal, suggestRotation } from './calibrationSuggest'
 import { fetchDetectedBoards, type DetectedBoard, type SensorRestWindow } from './detectedBoards'
 import { ago, escapeHtml, qs, receptionBadgeHtml } from './dom'
 import {
@@ -38,6 +38,12 @@ import type { BoardEntry, SensorEntry, StationInfo } from '../receiver/stationCo
 
 /** 基板 Key の入力候補（`<datalist>`）の id。中身は `/status` が声を聞いている基板。 */
 const BOARD_KEY_DATALIST_ID = 'detected-board-keys'
+
+/**
+ * `GET /api/rest-windows` の時間切れ。10 秒ごとの取り直しより長く取る（短いと、遅いだけの
+ * 返事を毎回切って、揃い具合が一度も出なくなる）。
+ */
+const REST_WINDOWS_TIMEOUT_MS = 15_000
 
 function optionsHtml(values: readonly string[]): string {
   return values.map((v) => `<option value="${escapeHtml(v)}"></option>`).join('')
@@ -252,6 +258,8 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
   /** 6 面法の材料（`GET /api/rest-windows`）。取れていなければ `null` で、理由は下。 */
   let currentFitWindows: readonly SensorFitWindows[] | null = null
   let fitWindowsProblem: string | null = null
+  /** 「鉛直を合わせる」を押して、ホストの返事を待っているカード。 */
+  const tiltInFlight = new WeakSet<HTMLElement>()
 
   // **編集中の未保存内容を、確認なしで破棄しない。** センサーカードの追加・削除・
   // 数値変更中に別の基板の「編集」を押すと、`fillForm` が `.sensor-cards` を
@@ -286,11 +294,18 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
     )
   }
 
-  /** いまフォームに入っている基板の、そのセンサーの 6 面法の材料。無ければ空。 */
-  const findFitWindows = (sensorId: string): SensorFitWindows['windows'] => {
+  /** いまフォームに入っている基板の、そのセンサーの静止窓。無ければ `null`。 */
+  const findFitSource = (
+    sensors: readonly SensorFitWindows[] | null,
+    sensorId: string,
+  ): SensorFitWindows | null => {
     const boardKey = qs<HTMLInputElement>(container, '[name=boardKey]').value.trim()
-    return currentFitWindows?.find((s) => s.boardKey === boardKey && s.sensorId === sensorId)?.windows ?? []
+    return sensors?.find((s) => s.boardKey === boardKey && s.sensorId === sensorId) ?? null
   }
+
+  /** いまフォームに入っている基板の、そのセンサーの 6 面法の材料。無ければ空。 */
+  const findFitWindows = (sensorId: string): SensorFitWindows['windows'] =>
+    findFitSource(currentFitWindows, sensorId)?.windows ?? []
 
   /**
    * 各カードの「6 面で測る」欄（揃った面・押せる押せない・押せない理由）を描き直す。
@@ -328,22 +343,53 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
    * 拒否の行で埋まる（入れ直せば次の回から取れる）。
    */
   let fitWindowsInFlight = false
+  /**
+   * `GET /api/rest-windows` へ渡す中断の合図。**画面を閉じたときと、時間切れのときに止める。**
+   *
+   * 時間切れが無いと、返事の来ない問い合わせが「取得中」の印を握ったまま残る ——
+   * 10 秒ごとの取り直しは次を投げず、押したボタンは押せないまま、どちらも理由を出さない。
+   */
+  const restWindowsSignal = (): AbortSignal => AbortSignal.any([signal, AbortSignal.timeout(REST_WINDOWS_TIMEOUT_MS)])
+  /** 投げた問い合わせの通し番号と、控え（`currentFitWindows`）の値を取ってきた問い合わせの番号。 */
+  let fitWindowsRequested = 0
+  let fitWindowsApplied = 0
+
+  /**
+   * `GET /api/rest-windows` を 1 回投げ、控えを更新して結果を返す。**投げない。** 画面を閉じたら `null`。
+   *
+   * **控えへ書くのはここだけ。** 10 秒ごとの取り直しと「鉛直を合わせる」の取り直しは同時に
+   * 飛びうるので、着いた順に書くと、先に投げた（古い）返事が後から着いて新しい値を上書きする。
+   * **投げた順で新しいものだけを控えに入れる**（返事を待っていた側には、自分の結果をそのまま返す）。
+   */
+  const requestRestWindows = async (): Promise<{
+    readonly sensors: readonly SensorFitWindows[] | null
+    readonly problem: string | null
+  } | null> => {
+    const seq = ++fitWindowsRequested
+    let sensors: readonly SensorFitWindows[] | null = null
+    let problem: string | null = null
+    try {
+      sensors = parseRestWindowsBody(await apiFetch<unknown>('/api/rest-windows', { signal: restWindowsSignal() }))
+      if (sensors === null) problem = restWindowsFetchProblem('応答の形が違う')
+    } catch (error) {
+      problem = restWindowsFetchProblem(describeFetchFailure(error))
+    }
+    if (signal.aborted) return null
+    if (seq > fitWindowsApplied) {
+      fitWindowsApplied = seq
+      currentFitWindows = sensors
+      fitWindowsProblem = problem
+    }
+    return { sensors, problem }
+  }
+
   const loadFitWindows = async (): Promise<void> => {
     if (getStoredToken() === null) return
-    // **前の取得が終わるまで次を投げない。** 10 秒を超えて遅れた応答が後から着くと、
-    // 新しい揃い具合を古いもので上書きする。
+    // **前の取得が終わるまで次を投げない。** 返事の遅いホストへ 10 秒ごとに重ねて投げない。
     if (fitWindowsInFlight) return
     fitWindowsInFlight = true
     try {
-      const body = await apiFetch<unknown>('/api/rest-windows')
-      if (signal.aborted) return
-      const parsed = parseRestWindowsBody(body)
-      currentFitWindows = parsed
-      fitWindowsProblem = parsed === null ? restWindowsFetchProblem('応答の形が違う') : null
-    } catch (error) {
-      if (signal.aborted) return
-      currentFitWindows = null
-      fitWindowsProblem = restWindowsFetchProblem(describeFetchFailure(error))
+      if ((await requestRestWindows()) === null) return
     } finally {
       fitWindowsInFlight = false
     }
@@ -371,10 +417,16 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
         const window = findRestWindow(sensorId)
         qs(card, '.s-rest-note').textContent = restWindowNote(window, currentGeneratedAtMs)
         const button = qs<HTMLButtonElement>(card, '.suggest-tilt')
-        const problem = restWindowProblem(window)
+        // **押せるかどうかは 6 面法と同じ材料で決める**（押したときに使う材料と揃える）。
+        // 上の注記（`/status` の判定）は保存済みの設定で見たホストの診断で、別の話。
+        const still = stillMeanGal(findFitSource(currentFitWindows, sensorId))
+        const problem = fitWindowsProblem ?? (still.ok ? null : still.reason)
         // **押しても何も起きない形にしない。** 押せないなら理由が読めること
         // （#345 で位置情報のボタンに同じ手当てをしている）。
-        button.disabled = problem !== null
+        //
+        // **押した後の問い合わせ中は押せないままにする。** ここは 10 秒ごとの取り直しからも
+        // 呼ばれるので、印を見ないと待っている間に押せる状態へ戻り、2 回ぶん書き込む。
+        button.disabled = problem !== null || tiltInFlight.has(card)
         button.title =
           problem ?? '静止時の重力から、取り付けの傾きを打ち消す回転行列を入れる（保存するまで効かない）'
       } catch (error) {
@@ -577,50 +629,78 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
         }
         el.textContent = text
       }
-      try {
-        const sensorId = qs<HTMLInputElement>(card, '.s-sensorId').value.trim()
-        const window = findRestWindow(sensorId)
-        const problem = restWindowProblem(window)
-        // **押せない状態でも、押されたら理由を出す。** ボタンは `disabled` に
-        // してあるが、判定が変わる前の描き直しを取りこぼした場合に無言で止まる。
-        if (problem !== null || window === null || window.axisMeanGal === null) {
-          note(problem ?? '静止窓の判定がまだ無い')
-          return
+      // **押した瞬間にホストへ取り直す。** 10 秒ごとの取り直しの結果を使うと、その間に
+      // 置き直した基板では前の置き方で計算してしまう。待っている間は押せなくして、
+      // 続けて押されても 1 回ぶんしか書かない。
+      //
+      // **印はカードに付ける**（`refreshTiltPanels` が見る）。ボタンを `disabled` にする
+      // だけだと、10 秒ごとの取り直しの描き直しが待っている間に押せる状態へ戻す。
+      if (tiltInFlight.has(card)) return
+      tiltInFlight.add(card)
+      const button = target as HTMLButtonElement
+      button.disabled = true
+      void (async () => {
+        try {
+          const sensorId = qs<HTMLInputElement>(card, '.s-sensorId').value.trim()
+          // 控えもここで更新される（`requestRestWindows`）。下の描き直し（`finally`）が
+          // 古い控えで判じて、いま断った直後にボタンを押せる状態へ戻すことはない。
+          const fetched = await requestRestWindows()
+          // **待っている間にフォームを切り替えられたら何もしない。** 外れたカードへ書いても
+          // 画面には出ず、未保存の印だけが新しいフォームへ立って、触っていないフォームで
+          // 破棄の確認が出る。
+          if (fetched === null || !container.contains(card)) return
+          const sensors = fetched.sensors
+          if (sensors === null) {
+            note(fetched.problem ?? restWindowsFetchProblem('応答の形が違う'))
+            return
+          }
+          // **カードの現在値を通して読む。** 感度が負といった不備も同じ口で捕まる
+          // ——保存のときに初めて言われるより、ここで言うほうが早い。
+          const parsed = parseSensorFormValues(readSensorCardValues(card))
+          if (!parsed.ok) {
+            note(parsed.error)
+            return
+          }
+          const heading = parseHeadingText(qs<HTMLInputElement>(card, '.s-heading').value)
+          if (heading !== null && typeof heading !== 'number') {
+            note(heading.error)
+            return
+          }
+          // **重力はカードの値で出し直す**（`gravityForTilt` の説明）。保存済みかどうか・
+          // 前に押したかどうかで答えが変わらない。
+          const gravity = gravityForTilt(findFitSource(sensors, sensorId), parsed.sensor)
+          if (!gravity.ok) {
+            note(gravity.reason)
+            return
+          }
+          const got = suggestRotation({
+            gravity: gravity.gravity,
+            rotation: parsed.sensor.rotation,
+            headingDeg: heading,
+          })
+          if (!got.ok) {
+            note(got.reason)
+            return
+          }
+          // **書き込む前に未保存の印を立てる。** 途中で投げても「一部だけ書き換わった
+          // のに印が立っていない」を作らない（`register-board` と同じ手当て）。
+          formDirty = true
+          writeSensorCardRotation(card, got.rotation)
+          // **「ぶんも回した」と書かない。** 実際に回すのはいまの向きとの差だけで、
+          // 入れた値そのものではない（同じ値をもう一度入れれば何も回らない）。
+          const heads = heading === null ? '方角は変えていない' : `X 軸を方角 ${heading}° へ向けた`
+          const flip = got.upsideDown ? '／上下逆さまに付いている（方角も見直すこと）' : ''
+          note(`傾き ${got.tiltDeg}° を打ち消す回転を入れた（${heads}）。保存するまで効かない${flip}`)
+        } catch (error) {
+          // `qs()` は見つからなければ投げる（`dom.ts`）。無言で止めない。
+          note(describeSaveFailure(error))
+        } finally {
+          tiltInFlight.delete(card)
+          // **押せる・押せないは描き直しに任せる**（材料の様子で決まるので、ここで
+          // `false` へ戻すと押せないはずのボタンが押せるまま残る）。
+          if (!signal.aborted) refreshTiltPanels()
         }
-        // **カードの現在値を通して読む。** 感度が負といった不備も同じ口で捕まる
-        // ——保存のときに初めて言われるより、ここで言うほうが早い。
-        const parsed = parseSensorFormValues(readSensorCardValues(card))
-        if (!parsed.ok) {
-          note(parsed.error)
-          return
-        }
-        const heading = parseHeadingText(qs<HTMLInputElement>(card, '.s-heading').value)
-        if (heading !== null && typeof heading !== 'number') {
-          note(heading.error)
-          return
-        }
-        const got = suggestRotation({
-          gravity: window.axisMeanGal,
-          rotation: parsed.sensor.rotation,
-          headingDeg: heading,
-        })
-        if (!got.ok) {
-          note(got.reason)
-          return
-        }
-        // **書き込む前に未保存の印を立てる。** 途中で投げても「一部だけ書き換わった
-        // のに印が立っていない」を作らない（`register-board` と同じ手当て）。
-        formDirty = true
-        writeSensorCardRotation(card, got.rotation)
-        // **「ぶんも回した」と書かない。** 実際に回すのはいまの向きとの差だけで、
-        // 入れた値そのものではない（同じ値をもう一度入れれば何も回らない）。
-        const heads = heading === null ? '方角は変えていない' : `X 軸を方角 ${heading}° へ向けた`
-        const flip = got.upsideDown ? '／上下逆さまに付いている（方角も見直すこと）' : ''
-        note(`傾き ${got.tiltDeg}° を打ち消す回転を入れた（${heads}）。保存するまで効かない${flip}`)
-      } catch (error) {
-        // `qs()` は見つからなければ投げる（`dom.ts`）。無言で止めない。
-        note(describeSaveFailure(error))
-      }
+      })()
     }
   })
 

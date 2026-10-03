@@ -7,11 +7,18 @@ import { FACE_ORDER, SIX_FACE_LIMITS } from './sixFaceFit'
 import type { Face, FaceCoverage, FitWindow, SixFaceFit, SixFaceRefusal } from './sixFaceFit'
 import { readFinite, readNonEmptyString, readVec3 } from './readJson'
 
+/** 静止窓 1 つ。6 面法の材料に、閉じた時刻（ホストの時計）を足したもの。 */
+export interface TimedFitWindow extends FitWindow {
+  readonly atMs: number
+}
+
 /** 1 センサーぶんの静止窓（`GET /api/rest-windows` の 1 要素）。 */
 export interface SensorFitWindows {
   readonly boardKey: string
   readonly sensorId: string
-  readonly windows: readonly FitWindow[]
+  /** いまの置き方で静止し始めた時刻（ホストの時計）。いま静止していなければ `null`。 */
+  readonly stillSinceMs: number | null
+  readonly windows: readonly TimedFitWindow[]
 }
 
 /**
@@ -31,16 +38,24 @@ export function parseRestWindowsBody(body: unknown): readonly SensorFitWindows[]
     const boardKey = readNonEmptyString((s as { boardKey?: unknown }).boardKey)
     const sensorId = readNonEmptyString((s as { sensorId?: unknown }).sensorId)
     const rawWindows = (s as { windows?: unknown }).windows
+    // **欄が無ければ「いま静止していない」と読む。** この欄を使うのは「鉛直を合わせる」だけで、
+    // 押せない側へ倒れるので誤った回転は入らない。欄が無いだけで応答ごと捨てると、この欄を
+    // 使わない 6 面法まで止まる（ホストだけ前の版へ戻した日に起きる）。**数として読めない
+    // 値は崩れた応答**として扱う。
+    const rawStill = (s as { stillSinceMs?: unknown }).stillSinceMs
+    const stillSinceMs = rawStill === null || rawStill === undefined ? null : readFinite(rawStill)
     if (boardKey === null || sensorId === null || !Array.isArray(rawWindows)) return null
-    const windows: FitWindow[] = []
+    if (rawStill !== null && rawStill !== undefined && stillSinceMs === null) return null
+    const windows: TimedFitWindow[] = []
     for (const w of rawWindows) {
       if (typeof w !== 'object' || w === null) return null
       const meanGal = readVec3((w as { meanGal?: unknown }).meanGal)
       const sampleCount = readFinite((w as { sampleCount?: unknown }).sampleCount)
-      if (meanGal === null || sampleCount === null || sampleCount <= 0) return null
-      windows.push({ meanGal, sampleCount })
+      const atMs = readFinite((w as { atMs?: unknown }).atMs)
+      if (meanGal === null || sampleCount === null || sampleCount <= 0 || atMs === null) return null
+      windows.push({ meanGal, sampleCount, atMs })
     }
-    out.push({ boardKey, sensorId, windows })
+    out.push({ boardKey, sensorId, stillSinceMs, windows })
   }
   return out
 }

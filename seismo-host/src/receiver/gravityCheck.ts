@@ -88,7 +88,7 @@ const MAX_SENSORS_DEFAULT = 64
  * この自己診断の対象外**（`sensitivity` は `stationConfig.ts` で正数であることしか
  * 検証していない）。
  */
-const SCALE_RATIO_MAX = 3
+export const SCALE_RATIO_MAX = 3
 
 /**
  * 静止とみなす、合成のばらつきの上限（gal）。
@@ -229,6 +229,15 @@ export interface RestWindow {
 export interface SensorRestWindows {
   readonly boardKey: BoardKey
   readonly sensorId: string
+  /**
+   * いまの置き方で静止し始めた時刻（受け手の時計）。**いま動いている・波形が途絶えている・
+   * まだ静止した窓が 1 つも閉じていないなら `null`。**
+   *
+   * 「鉛直を合わせる」が使う。`windows` の最後の 1 つは「最後に静止していた置き方」で
+   * あって「いまの置き方」とは限らない（置き直した直後は前の置き方の窓が最後に残る）。
+   * この時刻より後に閉じた窓だけが、いまの置き方の値。
+   */
+  readonly stillSinceMs: number | null
   readonly windows: readonly RestWindow[]
 }
 
@@ -294,6 +303,14 @@ interface Entry {
   last: GravityVerdict | null
   /** 静止していた窓（古い順）。**流れが替わっても捨てない。** */
   readonly restWindows: RestWindow[]
+  /**
+   * 静止した窓が途切れずに続いている、その最初の窓の始まり。**最後に閉じた窓が静止して
+   * いなければ `null`。**
+   *
+   * **流れが替わったら `null` へ戻す。** 基板が起動し直す間は波形が届かず、その間に
+   * 動かされたかどうかを確かめようがない。
+   */
+  stillSinceMs: number | null
 }
 
 /** 覚えの鍵。**起動 ID を含めない**（`sensorHealth.ts` と同じ理由）。 */
@@ -391,6 +408,7 @@ export class GravityCheckBook {
       //
       // 初めて見たセンサー（`streamKey` が空）は数えない —— 捨てた窓が無い。
       if (entry.streamKey !== '') this.counts.restarts += 1
+      entry.stillSinceMs = null
       this.reset(entry, input.streamKey)
     } else if (entry.windowStartMs + this.windowMs <= this.now()) {
       verdict = this.settle(entry)
@@ -433,7 +451,7 @@ export class GravityCheckBook {
   }
 
   /**
-   * センサーごとの静止窓（6 面法の材料）。**30 分より古いものは落としてから返す。**
+   * センサーごとの静止窓（6 面法と「鉛直を合わせる」の材料）。**30 分より古いものは落としてから返す。**
    *
    * 窓が 1 つも無いセンサーは出さない。並びは覚えの順（いちばん長く音沙汰の無いものから）。
    */
@@ -443,9 +461,37 @@ export class GravityCheckBook {
     for (const e of this.entries.values()) {
       pruneRestWindows(e.restWindows, now)
       if (e.restWindows.length === 0) continue
-      out.push({ boardKey: e.boardKey, sensorId: e.sensorId, windows: [...e.restWindows] })
+      out.push({
+        boardKey: e.boardKey,
+        sensorId: e.sensorId,
+        stillSinceMs: this.stillSince(e, now),
+        windows: [...e.restWindows],
+      })
     }
     return out
+  }
+
+  /**
+   * いまも続いている「静止」の始まり。**いま動いている・様子が分からないなら `null`。**
+   *
+   * 閉じた窓の連なり（`Entry.stillSinceMs`）だけでは足りない —— 最後の窓を閉じた後に
+   * 基板を動かしても、次の窓が閉じるまで最大 30 秒は連なりが途切れない。だから
+   * **溜めかけの窓も軸ごとに見る。** 判定に足るだけ溜まっていて 1 軸でも揺れていれば、
+   * もう前の置き方ではない。
+   *
+   * **波形が途絶えていても `null`。** 窓は次のパケットが来たときにしか閉じないので、
+   * 届かない間は溜めかけの窓が古いまま残り、最後の静止が「いまも続いている」ように見える。
+   */
+  private stillSince(e: Entry, now: number): number | null {
+    if (e.stillSinceMs === null) return null
+    if (now - e.windowStartMs > this.windowMs * 2) return null
+    if (e.count >= this.minSamples) {
+      for (let i = 0; i < 3; i++) {
+        const { sd } = meanAndSd(e.sumRawAxis[i], e.sumSqRawAxis[i], e.count)
+        if (!Number.isFinite(sd) || sd >= REST_SD_GAL) return null
+      }
+    }
+    return e.stillSinceMs
   }
 
   /**
@@ -585,12 +631,21 @@ export class GravityCheckBook {
    * `too-large` の窓も、校正前の値としては本物なので覚える（6 面法はまさにその狂いを測る）。
    */
   private noteRestWindow(entry: Entry, atMs: number): void {
-    if (entry.count < this.minSamples) return
     const axis = [0, 1, 2].map((i) => meanAndSd(entry.sumRawAxis[i], entry.sumSqRawAxis[i], entry.count))
     const meanGal: Vec3 = [axis[0].mean, axis[1].mean, axis[2].mean]
     const sdGal: Vec3 = [axis[0].sd, axis[1].sd, axis[2].sd]
-    if (!meanGal.every(Number.isFinite) || !sdGal.every(Number.isFinite)) return
-    if (!sdGal.every((sd) => sd < REST_SD_GAL)) return
+    const still =
+      entry.count >= this.minSamples &&
+      meanGal.every(Number.isFinite) &&
+      sdGal.every(Number.isFinite) &&
+      sdGal.every((sd) => sd < REST_SD_GAL)
+    // **静止の連なりは、静止と言えない窓が 1 つでも挟まれば切る**（数が足りない窓も含む ——
+    // 見えていない間に動かされたかどうかは確かめようがない）。
+    if (!still) {
+      entry.stillSinceMs = null
+      return
+    }
+    entry.stillSinceMs ??= entry.windowStartMs
     entry.restWindows.push({ atMs, streamKey: entry.streamKey, sampleCount: entry.count, meanGal, sdGal })
     pruneRestWindows(entry.restWindows, atMs)
   }
@@ -652,6 +707,7 @@ export class GravityCheckBook {
       maxIntensity: null,
       last: null,
       restWindows: [],
+      stillSinceMs: null,
     }
     this.entries.set(key, created)
     return created
