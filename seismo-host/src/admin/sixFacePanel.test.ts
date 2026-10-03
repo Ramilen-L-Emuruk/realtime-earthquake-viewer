@@ -14,32 +14,56 @@ const ALL: FaceCoverage = { '+x': true, '-x': true, '+y': true, '-y': true, '+z'
 const SOME: FaceCoverage = { '+x': true, '-x': true, '+y': false, '-y': false, '+z': true, '-z': false }
 
 describe('parseRestWindowsBody', () => {
-  it('正: センサーごとの窓を読む', () => {
+  it('正: センサーごとの窓と、いまの静止の始まりを読む', () => {
     const got = parseRestWindowsBody({
-      sensors: [{ boardKey: 'mac:aa', sensorId: 'i2c0-68', windows: [{ meanGal: [1, 2, 980], sampleCount: 3000, atMs: 1 }] }],
+      sensors: [
+        {
+          boardKey: 'mac:aa',
+          sensorId: 'i2c0-68',
+          stillSinceMs: 0,
+          windows: [{ meanGal: [1, 2, 980], sampleCount: 3000, atMs: 1, streamKey: 'k', sdGal: [1, 1, 1] }],
+        },
+      ],
     })
-    expect(got).toEqual([{ boardKey: 'mac:aa', sensorId: 'i2c0-68', windows: [{ meanGal: [1, 2, 980], sampleCount: 3000 }] }])
+    expect(got).toEqual([
+      { boardKey: 'mac:aa', sensorId: 'i2c0-68', stillSinceMs: 0, windows: [{ meanGal: [1, 2, 980], sampleCount: 3000, atMs: 1 }] },
+    ])
   })
 
   it('安全弁: 窓が 1 つでも崩れていれば応答ごと null（黙って落とすと「まだ揃っていない」に化ける）', () => {
-    const good = { meanGal: [1, 2, 3], sampleCount: 10 }
+    const good = { meanGal: [1, 2, 3], sampleCount: 10, atMs: 1 }
     const withBad = (bad: unknown) =>
-      parseRestWindowsBody({ sensors: [{ boardKey: 'mac:aa', sensorId: 's', windows: [good, bad] }] })
-    expect(withBad({ meanGal: [1, 2], sampleCount: 3000 })).toBeNull()
-    expect(withBad({ meanGal: [1, 2, 3], sampleCount: 0 })).toBeNull()
+      parseRestWindowsBody({ sensors: [{ boardKey: 'mac:aa', sensorId: 's', stillSinceMs: null, windows: [good, bad] }] })
+    expect(withBad({ meanGal: [1, 2], sampleCount: 3000, atMs: 1 })).toBeNull()
+    expect(withBad({ meanGal: [1, 2, 3], sampleCount: 0, atMs: 1 })).toBeNull()
+    expect(withBad({ meanGal: [1, 2, 3], sampleCount: 10 })).toBeNull()
     expect(withBad(null)).toBeNull()
   })
 
   it('安全弁: センサー 1 件の形が崩れていても応答ごと null', () => {
-    const ok = { boardKey: 'mac:aa', sensorId: 's', windows: [] }
-    expect(parseRestWindowsBody({ sensors: [ok, { boardKey: 'mac:aa', windows: [] }] })).toBeNull()
+    const ok = { boardKey: 'mac:aa', sensorId: 's', stillSinceMs: null, windows: [] }
+    expect(parseRestWindowsBody({ sensors: [ok, { boardKey: 'mac:aa', stillSinceMs: null, windows: [] }] })).toBeNull()
     expect(parseRestWindowsBody({ sensors: [ok, null] })).toBeNull()
   })
 
-  it('対照: 窓の無いセンサーはそのまま読む（形は正しい）', () => {
-    expect(parseRestWindowsBody({ sensors: [{ boardKey: 'mac:aa', sensorId: 's', windows: [] }] })).toEqual([
-      { boardKey: 'mac:aa', sensorId: 's', windows: [] },
-    ])
+  // **欄が無いだけで応答ごと捨てない。** この欄を使わない 6 面法まで止まる。押せない側
+  // （いま静止していない）へ倒れるので、誤った回転は入らない。
+  it('対照: いまの静止の始まりの欄が無ければ、そのセンサーを「いま静止していない」と読む', () => {
+    expect(
+      parseRestWindowsBody({ sensors: [{ boardKey: 'mac:aa', sensorId: 's', windows: [{ meanGal: [1, 2, 3], sampleCount: 10, atMs: 1 }] }] }),
+    ).toEqual([{ boardKey: 'mac:aa', sensorId: 's', stillSinceMs: null, windows: [{ meanGal: [1, 2, 3], sampleCount: 10, atMs: 1 }] }])
+  })
+
+  it('安全弁: いまの静止の始まりが数として読めなければ応答ごと null', () => {
+    expect(
+      parseRestWindowsBody({ sensors: [{ boardKey: 'mac:aa', sensorId: 's', stillSinceMs: 'x', windows: [] }] }),
+    ).toBeNull()
+  })
+
+  it('対照: 窓の無いセンサー・いま静止していないセンサーはそのまま読む（形は正しい）', () => {
+    expect(
+      parseRestWindowsBody({ sensors: [{ boardKey: 'mac:aa', sensorId: 's', stillSinceMs: null, windows: [] }] }),
+    ).toEqual([{ boardKey: 'mac:aa', sensorId: 's', stillSinceMs: null, windows: [] }])
   })
 
   it('対照: 応答の外側が違えば null', () => {

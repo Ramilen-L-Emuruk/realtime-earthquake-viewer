@@ -415,11 +415,52 @@ describe('認識済みの基板からの登録', () => {
  * **押せる・押せないと、押した結果の両方を見る。** 押せない理由を出さないと
  * 「押しても何も起きない」になり、書き込む先を間違えると提案が黙って捨てられる。
  */
+/**
+ * 「鉛直を合わせる」の材料（`GET /api/rest-windows`）。accel-0 は 15 度傾いたまま静止、
+ * accel-1 はいま静止していない（`stillSinceMs: null`）。**校正前の値**なので、カードの
+ * 校正が既定値（オフセット 0・感度 1・回転なし）なら `/status` の判定と同じ重力になる。
+ */
+function tiltRestWindows(): { ok: boolean; body: { sensors: unknown[] } } {
+  return {
+    ok: true,
+    body: {
+      sensors: [
+        {
+          boardKey: 'mac:cccccccccccc',
+          sensorId: 'accel-0',
+          stillSinceMs: 1_000,
+          windows: [{ atMs: 31_000, meanGal: TILTED_15DEG, sampleCount: 3000 }],
+        },
+        {
+          boardKey: 'mac:cccccccccccc',
+          sensorId: 'accel-1',
+          stillSinceMs: null,
+          windows: [{ atMs: 31_000, meanGal: [0, 0, 980.665], sampleCount: 3000 }],
+        },
+      ],
+    },
+  }
+}
+
 describe('取り付けの傾きを合わせる', () => {
+  /** 開いた画面。**後片付けで閉じる**（10 秒ごとの取り直しを次のテストへ持ち越さない）。 */
+  let mounted: AbortController | null = null
+  /** 静止窓の応答。**テストの途中で差し替えられる**（押した瞬間に取り直すことの確認）。 */
+  let restWindows = tiltRestWindows()
+
   beforeEach(() => {
-    stubApiFetch()
+    restWindows = tiltRestWindows()
+    setStoredToken('test-token')
+    stubApiFetch({
+      get restWindows() {
+        return restWindows
+      },
+    })
   })
   afterEach(() => {
+    mounted?.abort()
+    mounted = null
+    clearStoredToken()
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
   })
@@ -427,9 +468,19 @@ describe('取り付けの傾きを合わせる', () => {
   /** 未登録の基板（`mac:cccccccccccc`）を登録フォームへ移し、カードを 2 枚出す。 */
   async function mountRegistering(): Promise<HTMLElement> {
     const container = document.createElement('div')
-    await initBoardsView(container, new AbortController().signal)
+    mounted = new AbortController()
+    await initBoardsView(container, mounted.signal)
     container.querySelector<HTMLButtonElement>('.register-board')?.click()
     return container
+  }
+
+  /** 押して、結果が出るまで待つ（押すとホストへ取り直しに行くので非同期）。 */
+  async function pressTilt(card: HTMLElement): Promise<string> {
+    const result = card.querySelector('.s-tilt-result')
+    if (result !== null) result.textContent = ''
+    card.querySelector<HTMLButtonElement>('.suggest-tilt')?.click()
+    await vi.waitFor(() => expect(card.querySelector('.s-tilt-result')?.textContent).not.toBe(''))
+    return card.querySelector('.s-tilt-result')?.textContent ?? ''
   }
 
   function cardAt(container: HTMLElement, index: number): HTMLElement {
@@ -465,13 +516,14 @@ describe('取り付けの傾きを合わせる', () => {
   })
 
   // **押しても何も起きない形にしない。** 理由が読めること。
-  it('揺れていたセンサーではボタンを押せず、理由が出る', async () => {
+  it('いま静止していないセンサーではボタンを押せず、理由が出る', async () => {
     const container = await mountRegistering()
     const card = cardAt(container, 1)
 
     const button = card.querySelector<HTMLButtonElement>('.suggest-tilt')
     expect(button?.disabled).toBe(true)
-    expect(button?.title).toContain('揺れている間は合わせられない')
+    expect(button?.title).toContain('いまの置き方で静止した窓がまだ無い')
+    // 上の一行はホストの診断（保存済みの設定で見た `/status` の判定）で、別の材料。
     expect(card.querySelector('.s-rest-note')?.textContent).toContain('揺れている間は合わせられない')
   })
 
@@ -479,13 +531,196 @@ describe('取り付けの傾きを合わせる', () => {
     const container = await mountRegistering()
     const card = cardAt(container, 0)
 
-    card.querySelector<HTMLButtonElement>('.suggest-tilt')?.click()
+    expect(await pressTilt(card)).toContain('保存するまで効かない')
 
     const fixed = applyTo(rotationOf(card), TILTED_15DEG)
     expect(fixed[0]).toBeCloseTo(0, 2)
     expect(fixed[1]).toBeCloseTo(0, 2)
     expect(fixed[2]).toBeCloseTo(980.665, 2)
-    expect(card.querySelector('.s-tilt-result')?.textContent).toContain('保存するまで効かない')
+  })
+
+  // **回帰（2026-10-04 実機）:** 前は `/status` の判定（その窓を閉じた時点の回転で測った重力）を
+  // カードのいまの回転へ重ねていたので、保存せずに続けて押すと同じ傾きを 2 回足していた。
+  it('正: 続けて押しても同じ回転のまま（2 回目は傾き 0°）', async () => {
+    const container = await mountRegistering()
+    const card = cardAt(container, 0)
+
+    await pressTilt(card)
+    const first = rotationOf(card)
+    expect(await pressTilt(card)).toContain('傾き 0°')
+    const second = rotationOf(card)
+    for (let i = 0; i < 3; i++) {
+      for (let j = 0; j < 3; j++) expect(second[i][j]).toBeCloseTo(first[i][j], 5)
+    }
+  })
+
+  // **重力はカードの値で出し直す**（保存前のオフセットも効く）。
+  it('対照: カードのオフセットを先に引いてから向きを出す', async () => {
+    restWindows.body.sensors[0] = {
+      boardKey: 'mac:cccccccccccc',
+      sensorId: 'accel-0',
+      stillSinceMs: 1_000,
+      windows: [{ atMs: 31_000, meanGal: [TILTED_15DEG[0] + 50, TILTED_15DEG[1], TILTED_15DEG[2]], sampleCount: 3000 }],
+    }
+    const container = await mountRegistering()
+    const card = cardAt(container, 0)
+    const offsetX = card.querySelector<HTMLInputElement>('.s-offset[data-axis="0"]')
+    if (offsetX === null) throw new Error('オフセットの入力欄が無い')
+    offsetX.value = '50'
+
+    await pressTilt(card)
+
+    const fixed = applyTo(rotationOf(card), TILTED_15DEG)
+    expect(fixed[0]).toBeCloseTo(0, 2)
+    expect(fixed[2]).toBeCloseTo(980.665, 2)
+  })
+
+  // **押した瞬間に取り直す。** 画面を開いた後で置き直した基板を、前の置き方で合わせない。
+  it('安全弁: 押した瞬間のホストの答えで判じる（開いた後に動かした基板は合わせない）', async () => {
+    const container = await mountRegistering()
+    const card = cardAt(container, 0)
+    expect(card.querySelector<HTMLButtonElement>('.suggest-tilt')?.disabled).toBe(false)
+    const before = rotationOf(card)
+
+    // 開いた後で動かした（ホストの静止の始まりが消えた）。
+    restWindows.body.sensors[0] = { ...(restWindows.body.sensors[0] as object), stillSinceMs: null }
+
+    expect(await pressTilt(card)).toContain('いまの置き方で静止した窓がまだ無い')
+    expect(rotationOf(card)).toEqual(before)
+    // 断った直後に、古い控えで押せる状態へ戻さない。
+    expect(card.querySelector<HTMLButtonElement>('.suggest-tilt')?.disabled).toBe(true)
+  })
+
+  // **控えには投げた順で新しいものだけを入れる。** 10 秒ごとの取り直しが先に投げられて
+  // 後から着くと、押した瞬間の答え（いま静止していない）を古い答えで上書きしていた。
+  it('安全弁: 先に投げた取り直しの返事が後から着いても、押した瞬間の答えを上書きしない', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval'] })
+    try {
+      const container = await mountRegistering()
+      const card = cardAt(container, 0)
+      const button = card.querySelector<HTMLButtonElement>('.suggest-tilt')
+      expect(button?.disabled).toBe(false)
+
+      // 10 秒ごとの取り直しを投げさせ、その返事（まだ静止している）を止めておく。
+      const releaseOld = holdNextRestWindows()
+      vi.advanceTimersByTime(10_000)
+
+      // その後に基板を動かして押す（押した瞬間の答えは「いま静止していない」）。
+      restWindows = tiltRestWindows()
+      restWindows.body.sensors[0] = { ...(restWindows.body.sensors[0] as object), stillSinceMs: null }
+      expect(await pressTilt(card)).toContain('いまの置き方で静止した窓がまだ無い')
+      expect(button?.disabled).toBe(true)
+
+      // 先に投げた返事が後から着く。
+      releaseOld()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(button?.disabled).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('安全弁: 問い合わせ中にそのカードを削除したら、返事が来ても何も書かない', async () => {
+    const container = await mountRegistering()
+    const card = cardAt(container, 0)
+    const release = holdNextRestWindows()
+    card.querySelector<HTMLButtonElement>('.suggest-tilt')?.click()
+
+    card.querySelector<HTMLButtonElement>('.remove-sensor')?.click()
+    expect(container.contains(card)).toBe(false)
+    release()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(card.querySelector('.s-tilt-result')?.textContent).toBe('')
+  })
+
+  it('安全弁: 静止の始まりより前に閉じた窓（前の置き方）は使わない', async () => {
+    restWindows.body.sensors[0] = {
+      boardKey: 'mac:cccccccccccc',
+      sensorId: 'accel-0',
+      stillSinceMs: 40_000,
+      windows: [{ atMs: 31_000, meanGal: TILTED_15DEG, sampleCount: 3000 }],
+    }
+    const container = await mountRegistering()
+    const button = cardAt(container, 0).querySelector<HTMLButtonElement>('.suggest-tilt')
+    expect(button?.disabled).toBe(true)
+    expect(button?.title).toContain('いまの置き方で静止した窓がまだ無い')
+  })
+
+  /**
+   * 押したときの問い合わせを止めておき、あとで返事を返す。
+   *
+   * **返事には切り替え先（基板 A）の同じセンサー ID の窓も入れる。** 入れないと、切り替えた後の
+   * フォームでは材料が見つからず手前で止まり、「外れたカードへ書く」経路まで届かない。
+   */
+  function holdNextRestWindows(): () => void {
+    let release: () => void = () => {}
+    const body = new Promise((resolve) => {
+      const b = tiltRestWindows().body
+      release = () =>
+        resolve({
+          sensors: [
+            ...b.sensors,
+            {
+              boardKey: 'mac:aaaaaaaaaaaa',
+              sensorId: 'accel-0',
+              stillSinceMs: 1_000,
+              windows: [{ atMs: 31_000, meanGal: TILTED_15DEG, sampleCount: 3000 }],
+            },
+          ],
+        })
+    })
+    restWindows = { ok: true, body: body as unknown as { sensors: unknown[] } }
+    return release
+  }
+
+  it('安全弁: 問い合わせ中は、描き直しが走っても押せないまま（2 回ぶん書かない）', async () => {
+    const container = await mountRegistering()
+    const card = cardAt(container, 0)
+    const button = card.querySelector<HTMLButtonElement>('.suggest-tilt')
+    const release = holdNextRestWindows()
+
+    button?.click()
+    expect(button?.disabled).toBe(true)
+    // 10 秒ごとの取り直しと同じ描き直し（2 枚目の ID 打ち換えで全カードが描き直される）。
+    cardAt(container, 1).querySelector('.s-sensorId')?.dispatchEvent(new Event('input', { bubbles: true }))
+    expect(button?.disabled).toBe(true)
+
+    release()
+    await vi.waitFor(() => expect(card.querySelector('.s-tilt-result')?.textContent).toContain('保存するまで効かない'))
+    expect(button?.disabled).toBe(false)
+  })
+
+  it('安全弁: 問い合わせ中にフォームを切り替えたら、返事が来ても何も書かない', async () => {
+    const container = await mountRegistering()
+    const card = cardAt(container, 0)
+    const release = holdNextRestWindows()
+    card.querySelector<HTMLButtonElement>('.suggest-tilt')?.click()
+
+    // 登録フォーム（未保存）から基板 A の編集へ切り替える。確認には「破棄する」と答える。
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    container.querySelectorAll<HTMLButtonElement>('.edit-board')[0]?.click()
+    expect(container.contains(card)).toBe(false)
+    confirm.mockClear()
+    release()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    // 返事の後も、新しいフォームに未保存の印は立っていない（切り替えで確認が出ない）。
+    container.querySelector<HTMLButtonElement>('.reset-form')?.click()
+    expect(confirm).not.toHaveBeenCalled()
+  })
+
+  it('安全弁: 押したときに取得できなければ書き換えず、取得できないことを出す', async () => {
+    const container = await mountRegistering()
+    const card = cardAt(container, 0)
+    const before = rotationOf(card)
+    restWindows = { ok: false, body: { sensors: [] } }
+
+    expect(await pressTilt(card)).toContain('静止した窓を取得できない')
+    expect(rotationOf(card)).toEqual(before)
   })
 
   // **重力は方角について何も語らない**（REQUIREMENTS.md §16）。空欄なら触らない。
@@ -493,11 +728,10 @@ describe('取り付けの傾きを合わせる', () => {
     const container = await mountRegistering()
     const card = cardAt(container, 0)
 
-    card.querySelector<HTMLButtonElement>('.suggest-tilt')?.click()
+    expect(await pressTilt(card)).toContain('方角は変えていない')
 
     // 傾きは Y-Z 面の中だけなので、X 軸は動かないはず。
     expect(rotationOf(card)[0]).toEqual([1, 0, 0])
-    expect(card.querySelector('.s-tilt-result')?.textContent).toContain('方角は変えていない')
   })
 
   it('方角を入れると、その分だけ水平面も回る', async () => {
@@ -507,12 +741,11 @@ describe('取り付けの傾きを合わせる', () => {
     if (heading === null) throw new Error('方角の入力欄が無い')
     heading.value = '0'
 
-    card.querySelector<HTMLButtonElement>('.suggest-tilt')?.click()
+    expect(await pressTilt(card)).toContain('方角 0°')
 
     expect(rotationOf(card)[0]).not.toEqual([1, 0, 0])
     // 方角をどう回しても鉛直は保たれる（上向き軸まわりの回転だから）。
     expect(applyTo(rotationOf(card), TILTED_15DEG)[2]).toBeCloseTo(980.665, 2)
-    expect(card.querySelector('.s-tilt-result')?.textContent).toContain('方角 0°')
   })
 
   it('方角が数値として読めないときは書き換えず、理由を出す', async () => {
@@ -524,10 +757,9 @@ describe('取り付けの傾きを合わせる', () => {
     heading.removeAttribute('type')
     heading.value = 'きた'
 
-    card.querySelector<HTMLButtonElement>('.suggest-tilt')?.click()
+    expect(await pressTilt(card)).toContain('方角が数値として読めない')
 
     expect(rotationOf(card)[0]).toEqual([1, 0, 0])
-    expect(card.querySelector('.s-tilt-result')?.textContent).toContain('方角が数値として読めない')
   })
 
   // **引き直さないと、前に入っていた ID の判定が別のセンサーのカードに残る。**
@@ -579,7 +811,7 @@ describe('取り付けの傾きを合わせる', () => {
 })
 
 /** 校正前の値で測った、ゼロ点 −80/5/−315 gal・感度 1.02/0.98/1.01 のセンサーの 6 面。 */
-function sixFaceWindows(): { meanGal: number[]; sampleCount: number }[] {
+function sixFaceWindows(): { meanGal: number[]; sampleCount: number; atMs: number }[] {
   const g = 980.665
   const offset = [-80, 5, -315]
   const sens = [1.02, 0.98, 1.01]
@@ -591,7 +823,7 @@ function sixFaceWindows(): { meanGal: number[]; sampleCount: number }[] {
     [0, 0, 1],
     [0, 0, -1],
   ]
-  return dirs.map((d) => ({ meanGal: d.map((v, i) => (v * g) / sens[i]! + offset[i]!), sampleCount: 3000 }))
+  return dirs.map((d, k) => ({ meanGal: d.map((v, i) => (v * g) / sens[i]! + offset[i]!), sampleCount: 3000, atMs: (k + 1) * 60_000 }))
 }
 
 /**
@@ -628,7 +860,10 @@ describe('6 面で測る', () => {
     return card
   }
 
-  const SIX = { ok: true, body: { sensors: [{ boardKey: 'mac:cccccccccccc', sensorId: 'accel-0', windows: sixFaceWindows() }] } }
+  const SIX = {
+    ok: true,
+    body: { sensors: [{ boardKey: 'mac:cccccccccccc', sensorId: 'accel-0', stillSinceMs: null, windows: sixFaceWindows() }] },
+  }
 
   it('正: 6 面が揃ったセンサーはボタンが押せ、押すとオフセットと感度の欄へ入る', async () => {
     const container = await mountWith(SIX)

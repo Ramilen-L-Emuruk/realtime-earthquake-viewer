@@ -268,8 +268,8 @@ function gal(value: number | null): string {
  * 何か直さないと出ないのかが読めない。
  */
 export function restWindowNote(window: SensorRestWindow | null, nowMs: number | null): string {
-  // **文言はボタンの理由と同じものを使う。** 同じ状態を指しているのに、常時表示の
-  // 一行とボタンの説明で言い回しが違うと、別の状態だと読まれる。
+  // **この一行は、保存済みの設定で見たホストの診断**（`/status` の判定）。「鉛直を合わせる」が
+  // 押せるかどうかは別の材料（校正前の静止窓）で決まる（`viewBoards.ts` の `refreshTiltPanels`）。
   if (window === null) return restWindowProblem(null) ?? ''
   // **経過の基準が無ければ黙って受け手の時計へ倒さない**（`detectedBoards.ts` の
   // `generatedAtMs`）。時刻だけを省く。

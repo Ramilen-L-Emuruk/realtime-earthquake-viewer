@@ -411,7 +411,7 @@ export interface StatusServerOptions {
   /** `/api/stations`・`/api/boards` の読み書き（#313 段 B）。 */
   readonly stationConfig: StationConfigOps
   /**
-   * センサーごとの静止窓（`GET /api/rest-windows`・6 面法の材料）。
+   * センサーごとの静止窓（`GET /api/rest-windows`・6 面法と「鉛直を合わせる」の材料）。
    *
    * **`/api/*` の側に置く。** 校正前の生の値は運用者が校正するためのもので、誰でも読める
    * `/status` に並べる理由が無い（9 センサー × 60 窓で `/status` が数十 KB 膨らむ）。

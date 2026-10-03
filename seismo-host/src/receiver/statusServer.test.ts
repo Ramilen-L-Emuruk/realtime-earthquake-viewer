@@ -958,11 +958,12 @@ describe('/api/*', () => {
     expect(await res.json()).toEqual({ error: 'invalid-token' })
   })
 
-  it('正: GET /api/rest-windows はセンサーごとの静止窓を返す', async () => {
+  it('正: GET /api/rest-windows はセンサーごとの静止窓と、いまの静止の始まりを返す', async () => {
     const sensors = [
       {
         boardKey: 'mac:aa' as const,
         sensorId: 'i2c0-68',
+        stillSinceMs: 0,
         windows: [{ atMs: 1, streamKey: 'k', sampleCount: 3000, meanGal: [1, 2, 980] as const, sdGal: [1, 1, 1.5] as const }],
       },
     ]
