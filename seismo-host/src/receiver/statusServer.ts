@@ -32,6 +32,7 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import type { AdminConsoleAssets } from './adminConsoleAssets'
 import { checkAdminAuth } from './adminAuth'
 import type { AdminAuthConfig, AdminAuthFailure } from './adminAuth'
+import type { SensorRestWindows } from './gravityCheck'
 import type { HubMessage, PairWant, ReadingHub, WaveWant } from './readingHub'
 import { describeFailure, normalizeBoardKey, parseStationConfig } from './stationConfig'
 import type { StationConfig } from './stationConfig'
@@ -410,6 +411,13 @@ export interface StatusServerOptions {
   /** `/api/stations`・`/api/boards` の読み書き（#313 段 B）。 */
   readonly stationConfig: StationConfigOps
   /**
+   * センサーごとの静止窓（`GET /api/rest-windows`・6 面法の材料）。
+   *
+   * **`/api/*` の側に置く。** 校正前の生の値は運用者が校正するためのもので、誰でも読める
+   * `/status` に並べる理由が無い（9 センサー × 60 窓で `/status` が数十 KB 膨らむ）。
+   */
+  readonly readRestWindows: () => readonly SensorRestWindows[]
+  /**
    * 管理コンソール本体（#313 段 C）。`GET /admin`・`GET /admin/app.js` で配る。
    *
    * **`/api/*` とは別の経路。** ここは静的ファイルを返すだけで認証を持たない
@@ -605,6 +613,7 @@ type AdminRoute =
   | { readonly kind: 'station'; readonly stationId: string }
   | { readonly kind: 'boards' }
   | { readonly kind: 'board'; readonly boardKey: string }
+  | { readonly kind: 'rest-windows' }
 
 /**
  * `/api/*` の経路を解く。**マッチしなければ `null`**（呼び出し側が 404 にする）。
@@ -624,6 +633,7 @@ function parseAdminRoute(pathname: string): AdminRoute | null {
     const boardKey = decodeURIComponent(pathname.slice('/api/boards/'.length))
     return boardKey.length > 0 ? { kind: 'board', boardKey } : null
   }
+  if (pathname === '/api/rest-windows') return { kind: 'rest-windows' }
   return null
 }
 
@@ -880,6 +890,7 @@ async function handleAdmin(
   adminAuth: AdminAuthConfig,
   log: (level: LogLevel, kind: string, detail: string, line: string) => void,
   stationConfig: StationConfigOps,
+  readRestWindows: () => readonly SensorRestWindows[],
 ): Promise<void> {
   applyAdminCors(req, res, adminAuth.allowedOrigins)
 
@@ -935,6 +946,14 @@ async function handleAdmin(
       return
     }
     sendAdminJson(res, 200, { boards: stationConfig.get().boards })
+    return
+  }
+  if (route.kind === 'rest-windows') {
+    if (req.method !== 'GET') {
+      sendAdminJson(res, 405, { error: 'method-not-allowed' })
+      return
+    }
+    sendAdminJson(res, 200, { sensors: readRestWindows() })
     return
   }
   // route.kind === 'board'
@@ -1109,7 +1128,7 @@ export async function startStatusServer(options: StatusServerOptions): Promise<S
         // `createServer` のコールバックは同期関数なので、万一 reject すると
         // `unhandledRejection` としてプロセスの外へ漏れる——`/status` の
         // 応答作成失敗と同じ扱いで押さえる。
-        handleAdmin(req, res, url, options.adminAuth, log, options.stationConfig).catch((error: unknown) => {
+        handleAdmin(req, res, url, options.adminAuth, log, options.stationConfig, options.readRestWindows).catch((error: unknown) => {
           const detail = error instanceof Error ? error.message : String(error)
           log('error', 'admin', 'handler', `[admin] /api/* の処理に失敗: ${detail}`)
           if (!res.headersSent) {
