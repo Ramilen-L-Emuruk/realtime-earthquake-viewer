@@ -261,7 +261,8 @@ S 波の到達半径に安全係数 1.2 を掛けて求める。**画面には�
 | 対象 | 全国の区域・面 | **自分が設置した観測点だけ** |
 
 **絵そのものが未来を含まない。** 波形は「値のある最後の列」で切ってある
-（[`seismoWaveColumns.ts`](../src/utils/seismoWaveColumns.ts) の `trimTrailingGap`）ので、
+（[`seismoWaveColumns.ts`](../src/utils/seismoWaveColumns.ts) の `trimTrailingGap`。描く範囲を決める
+[`seismoQuakeWindow.ts`](../src/utils/seismoQuakeWindow.ts) の `selectQuakeWindow` が最初に通す）ので、
 まだ届いていない時刻の区間は描かれず、**線を引ける範囲は必ず過去にある**。範囲の外に落ちた
 到達時刻は描かない（[`paintWave.ts`](../src/components/SeismoWaveChart/paintWave.ts) の
 `paintMarks`。横位置を出すのは

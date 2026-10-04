@@ -7,7 +7,7 @@
 // 棚卸しは [`docs/forecast-computation-audit.md`](../../docs/forecast-computation-audit.md)。
 //
 // **構造的な歯止めもある。** 絵は「値のある最後の列」で切ってあるので
-// （`seismoWaveColumns.ts` の `trimTrailingGap`）、まだ来ていない時刻の区間はそもそも
+// （`seismoQuakeWindow.ts` の `selectQuakeWindow` が最初に `trimTrailingGap` を通す）、まだ来ていない時刻の区間はそもそも
 // 描かれない —— 線を引ける範囲は必ず過去にある。
 //
 // **走時は JMA2001 走時表から引く**（`travelTime.ts`）。予報円・主要動の到達予測と同じ表で、

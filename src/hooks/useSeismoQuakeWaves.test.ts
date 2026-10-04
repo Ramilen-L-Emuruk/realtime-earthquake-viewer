@@ -244,6 +244,83 @@ describe('useSeismoQuakeWaves', () => {
     expect(fetchSeismoWaveHistory.mock.calls.length).toBe(fetched)
   })
 
+  it('時間軸の 0 は、秒が取れれば発生時刻・取れなければ分の頭', async () => {
+    fetchSeismoStatus.mockResolvedValue(okStatus())
+    fetchSeismoWaveHistory.mockResolvedValue(history())
+    const { result: withSeconds } = setup()
+    await waitFor(() => expect(withSeconds.current.size).toBe(1))
+    expect([...withSeconds.current.values()][0]?.[0]?.axisZero).toEqual({
+      kind: 'origin', ms: ORIGIN_SECONDS_MS, source: 'eew',
+    })
+
+    const { result: minuteOnly } = setup(true, new Map())
+    await waitFor(() => expect(minuteOnly.current.size).toBe(1))
+    expect([...minuteOnly.current.values()][0]?.[0]?.axisZero).toEqual({
+      kind: 'minute', ms: new Date('2026/09/29 22:00:00').getTime(),
+    })
+  })
+
+  it('秒が取れなくても、届きうる時間帯は出す（線は引かない）', async () => {
+    // 分の頭から解いた走時に 60 秒の幅を持たせれば、描く範囲を決める材料になる。
+    fetchSeismoStatus.mockResolvedValue(okStatus())
+    fetchSeismoWaveHistory.mockResolvedValue(history())
+    const { result } = setup(true, new Map())
+    await waitFor(() => expect(result.current.size).toBe(1))
+    const wave = [...result.current.values()][0]?.[0]
+    expect(wave?.arrival).toBeNull()
+    const fromMinute = computeWaveArrival({
+      originMs: new Date('2026/09/29 22:00:00').getTime(),
+      hypocenter: SECONDS_QUAKE.earthquake.hypocenter,
+      stationLat: 35.5, stationLon: 139.8,
+    })!
+    expect(wave?.reach).toEqual({ fromMs: fromMinute.pMs, toMs: fromMinute.sMs + 60_000 })
+  })
+
+  it('秒が後から取れたら、時間軸の 0 も発生時刻へ動く', async () => {
+    fetchSeismoStatus.mockResolvedValue(okStatus())
+    fetchSeismoWaveHistory.mockResolvedValue(history())
+    const { result, rerender } = renderHook(
+      ({ originSeconds }: { originSeconds: ReadonlyMap<string, OriginSeconds> }) =>
+        useSeismoQuakeWaves({
+          enabled: true,
+          baseUrl: 'http://host:50506',
+          quakes: QUAKES,
+          scope: NO_SCOPE,
+          readWave: () => null,
+          replayOffsetMs: null,
+          originSeconds,
+        }),
+      { initialProps: { originSeconds: new Map() as ReadonlyMap<string, OriginSeconds> } },
+    )
+    await waitFor(() => expect(result.current.size).toBe(1))
+    expect([...result.current.values()][0]?.[0]?.axisZero.kind).toBe('minute')
+    rerender({ originSeconds: SECONDS })
+    await waitFor(() => expect([...result.current.values()][0]?.[0]?.axisZero.kind).toBe('origin'))
+  })
+
+  it('対象から外れた地震は、途中の巡回で落ちずに消える（取消・表示する震度の設定変更）', async () => {
+    // **同じ描画の中で、出し直し（到達の鍵が変わる）が帳面の掃除より先に走る。** そのとき
+    // 地震の対象が無いので、前に出した姿を使い回す分岐を通る —— そこで落ちず、最後は消えること。
+    fetchSeismoStatus.mockResolvedValue(okStatus())
+    fetchSeismoWaveHistory.mockResolvedValue(history())
+    const { result, rerender } = renderHook(
+      ({ quakes }: { quakes: JMAQuake[] }) =>
+        useSeismoQuakeWaves({
+          enabled: true,
+          baseUrl: 'http://host:50506',
+          quakes,
+          scope: NO_SCOPE,
+          readWave: () => null,
+          replayOffsetMs: null,
+          originSeconds: SECONDS,
+        }),
+      { initialProps: { quakes: QUAKES } },
+    )
+    await waitFor(() => expect(result.current.size).toBe(1))
+    rerender({ quakes: [] })
+    await waitFor(() => expect(result.current.size).toBe(0))
+  })
+
   it('観測点の座標をホストが持っていなければ到達時刻は付かない', async () => {
     // **対照。** 波形そのものは出る（線だけ引かない）。
     fetchSeismoStatus.mockResolvedValue({

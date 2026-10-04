@@ -14,12 +14,16 @@
 import { useEffect, useRef, useState } from 'react'
 
 import type { SeismoQuakeWave } from '../../hooks/useSeismoQuakeWaves'
-import { trimTrailingGap, type TimedColumns } from '../../utils/seismoWaveColumns'
+import { formatTime } from '../../utils/formatters'
+import { log } from '../../utils/logger'
+import { selectQuakeWindow, type WaveAxisZero } from '../../utils/seismoQuakeWindow'
+import type { TimedColumns } from '../../utils/seismoWaveColumns'
 import { useWaveAxes } from '../../hooks/useSeismoWaveAxes'
 import { P_WAVE_COLOR, S_WAVE_COLOR } from '../Map/gl/psWaveStyle'
 import { foldHistoryColumns } from '../SeismoWaveChart/historyColumns'
 import { paintWaveColumns, type WaveMark } from '../SeismoWaveChart/paintWave'
 import { WaveAxisToggles } from '../SeismoWaveChart/WaveAxisToggles'
+import { buildTimeTicks } from '../SeismoWaveChart/timeTicks'
 
 /**
  * 縦の振れ幅の下限（gal）。**地図の下端の絵と同じ値**（`SeismoWaveChart` の
@@ -55,6 +59,18 @@ export function buildArrivalMarks(
   ]
 }
 
+/**
+ * 時間軸の 0 に書く名前。
+ *
+ * - 秒まで取れた: 「発生」
+ * - 分までしか無い: 地震情報の時刻（`13:26:00`）。**発生を名乗らない** —— 発生はこの分の
+ *   0〜59 秒のどこかで、0 に「発生」と書くと最大 59 秒ずれた目盛りになる
+ */
+export function axisZeroLabel(zero: WaveAxisZero): string {
+  if (zero.kind === 'origin') return '発生'
+  return formatTime(new Date(zero.ms).toISOString()) ?? ''
+}
+
 interface Props {
   waves: readonly SeismoQuakeWave[]
 }
@@ -76,14 +92,32 @@ function HistoryWave({ wave }: { wave: SeismoQuakeWave }) {
   // **こちらは購読する。** 地図の下端の絵と違って毎秒描き直していないので、
   // 押した向きを反映する契機がこれしかない。
   const visibleAxes = useWaveAxes()
+  // 「範囲を切れなかった」を記録へ残した組。**同じ理由は 1 回だけ** —— 描き直しは列が伸びるたび
+  // （0.3 秒ごと）に走るので、間引かないと同じ行で埋まる。
+  const loggedUntrimmedRef = useRef<string | null>(null)
 
   useEffect(() => {
     const canvas = canvasRef.current
     if (canvas === null) return
     const paint = (): void => {
-      // **末尾の空を切ってから描く。** 要求した窓の右端はまだ来ていない時刻を含むので、
-      // そのままだと絵の大半が空になる（2026-09-30 のユーザー指摘）。
-      const trimmed = trimTrailingGap(wave.columns)
+      // **揺れに合わせて範囲を切り出してから描く**（→ `utils/seismoQuakeWindow.ts`）。
+      // 取った範囲は発生の 30 秒前から 4 分ぶんあり、そのまま描くと揺れが平らな線に埋もれる。
+      // 末尾の空（まだ来ていない時刻）もここで落ちる。
+      const picked = selectQuakeWindow({ base: wave.columns, zero: wave.axisZero, reach: wave.reach })
+      const trimmed = picked.columns
+      // **切れなかったことは記録へ残す。** 絵は取った範囲のまま出るので、画面からは「切る必要が
+      // 無かった」と見分けが付かない（ノイズの測り方や走時の側が壊れても、黙って広い絵に戻るだけ）。
+      if (picked.untrimmedReason !== null) {
+        const key = `${wave.stationId}@${wave.axisZero.ms}@${picked.untrimmedReason}`
+        if (loggedUntrimmedRef.current !== key) {
+          loggedUntrimmedRef.current = key
+          log.debug(
+            `[seismo] 地震カードの波形を揺れに合わせて切れなかった（${wave.stationId}）: ${picked.untrimmedReason}`,
+          )
+        }
+      }
+      const spanMs = trimmed.columns.length * trimmed.columnSpanMs
+      const zeroLabel = axisZeroLabel(wave.axisZero)
       setScaleText(
         paintWaveColumns(
           canvas,
@@ -100,7 +134,18 @@ function HistoryWave({ wave }: { wave: SeismoQuakeWave }) {
           // 代わりにはできない** —— あちらはライブ接続の生死なので、過去に完結した
           // 7 日ぶんのカードまで薄くなる。
           wave.interrupted,
-          { marks: buildArrivalMarks(trimmed, wave.arrival), visibleAxes },
+          {
+            marks: buildArrivalMarks(trimmed, wave.arrival),
+            visibleAxes,
+            ticks: (widthPx) =>
+              buildTimeTicks({
+                fromMs: trimmed.fromMs,
+                toMs: trimmed.fromMs + spanMs,
+                zeroMs: wave.axisZero.ms,
+                zeroLabel,
+                widthPx,
+              }),
+          },
         ),
       )
     }
@@ -116,7 +161,9 @@ function HistoryWave({ wave }: { wave: SeismoQuakeWave }) {
     //
     // **途切れも入れる。** 途切れているときは列が 1 つも変わらないので、
     // これが無いと濃さを落とす契機がどこにも無い。
-  }, [wave.columns, wave.arrival, wave.interrupted, visibleAxes])
+    //
+    // **時間軸の 0 と時間帯も入れる。** 秒が後から取れると列は変わらないまま 0 だけが動く。
+  }, [wave.columns, wave.arrival, wave.axisZero, wave.reach, wave.interrupted, visibleAxes])
 
   return (
     <div className="rounded bg-black/30 px-2 py-1">
@@ -127,7 +174,8 @@ function HistoryWave({ wave }: { wave: SeismoQuakeWave }) {
         <WaveAxisToggles />
         <span className="ml-auto font-mono tabular-nums text-secondary">{scaleText ?? '—'}</span>
       </div>
-      <canvas ref={canvasRef} className="block w-full h-[48px] roomy:h-[64px]" />
+      {/* 高さは目盛りの帯（`AXIS_BAND_PX` = 10px）を足したもの。 */}
+      <canvas ref={canvasRef} className="block w-full h-[58px] roomy:h-[74px]" />
     </div>
   )
 }

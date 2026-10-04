@@ -22,7 +22,8 @@ import { quakeScaleForScope, type NearbyScope } from '../utils/actionChecklistTr
 import { serverNow } from '../utils/clock'
 import { log } from '../utils/logger'
 import { quakeEventKey } from '../utils/quakeMerge'
-import type { OriginSeconds } from '../utils/quakeOriginSeconds'
+import { parseJstTimeMs, type OriginSeconds } from '../utils/quakeOriginSeconds'
+import { computeReachBand, MINUTE_MS, type ReachBand, type WaveAxisZero } from '../utils/seismoQuakeWindow'
 import { computeWaveArrival, type WaveArrival } from '../utils/seismoWaveArrival'
 import {
   appendWaveWindow,
@@ -131,6 +132,18 @@ export interface SeismoQuakeWave {
    */
   readonly arrival: WaveArrival | null
   /**
+   * 時間軸の 0。**秒まで取れれば発生時刻、取れなければ地震情報の時刻の分の頭**
+   * （→ `utils/seismoQuakeWindow.ts` の `WaveAxisZero`）。目盛りの起点と、描く範囲の左端になる。
+   */
+  readonly axisZero: WaveAxisZero
+  /**
+   * この地震の揺れが届きうる時間帯。**走時が出せなければ `null`**（描く側は範囲を切らない）。
+   *
+   * **秒が取れない地震でも出す。** 線は引かないが、分の頭から解いた走時に 60 秒の幅を
+   * 持たせれば、描く範囲を決める材料にはなる。
+   */
+  readonly reach: ReachBand | null
+  /**
    * **繋ぎ足しが途切れている。** まだ伸ばす番なのに、{@link WAVE_STALE_MS} を超えて
    * 1 列も伸びていない状態（→ `utils/seismoSilence.ts`）。
    *
@@ -191,6 +204,8 @@ export interface SeismoWaveTarget {
    * `utils/quakeOriginSeconds.ts`。
    */
   readonly arrivalOriginMs: number | null
+  /** {@link arrivalOriginMs} の出どころ。**秒が取れなければ `null`。** */
+  readonly arrivalOriginSource: OriginSeconds['source'] | null
 }
 
 /**
@@ -209,21 +224,23 @@ export function pickTargets(
   scope: NearbyScope,
   originSeconds: ReadonlyMap<string, OriginSeconds>,
 ): SeismoWaveTarget[] {
-  const found: { eventKey: string; originMs: number; hypocenter: Hypocenter; arrivalOriginMs: number | null }[] = []
+  const found: Omit<SeismoWaveTarget, 'cutoffMs'>[] = []
   const seen = new Set<string>()
   for (const q of quakes) {
     if (quakeScaleForScope(q, scope, WAVE_TRIGGER_MIN_SCALE) === null) continue
-    // **タイムゾーンを明示しない値はローカル時刻として解釈される**（P2PQuake 経路が
-    // そう。DMDATA は電文の `ArrivalTime` をそのまま持つのでオフセット付き）。自作
-    // 地震計は自宅に置くもので、見る端末も同じ生活圏にあるという前提で許容する。
-    const originMs = new Date(q.earthquake.time).getTime()
+    // **時間帯を持たない値（P2PQuake の `2026/10/03 13:26:00`）は日本時間として読む。**
+    // 端末の時間帯で読むと、日本国外の端末だけ窓と時間軸の 0 がずれる（ホストの記録は
+    // 絶対時刻なので、ずれた分だけ別の区間を取りに行く）。
+    const originMs = parseJstTimeMs(q.earthquake.time)
     if (!Number.isFinite(originMs)) continue
     const eventKey = quakeEventKey(q)
     if (seen.has(eventKey)) continue
     seen.add(eventKey)
+    const seconds = originSeconds.get(eventKey)
     found.push({
       eventKey, originMs, hypocenter: q.earthquake.hypocenter,
-      arrivalOriginMs: originSeconds.get(eventKey)?.originMs ?? null,
+      arrivalOriginMs: seconds?.originMs ?? null,
+      arrivalOriginSource: seconds?.source ?? null,
     })
   }
   found.sort((a, b) => b.originMs - a.originMs)
@@ -277,8 +294,28 @@ function sameWave(a: SeismoQuakeWave | undefined, b: SeismoQuakeWave): a is Seis
   // ここを見落とすと**濃さを落とす指示が画面へ届かない**（列だけを比べていると
   // 「変わっていない」として前の姿を使い回す）。
   if (a.interrupted !== b.interrupted) return false
+  // **時間軸の 0 と時間帯も比べる。** 秒が後から取れたとき（過去分の取得は非同期で返る）は
+  // 列も線も変わらないまま 0 だけが動くので、ここを見ないと目盛りが分の頭のまま残る。
+  if (a.axisZero.kind !== b.axisZero.kind || a.axisZero.ms !== b.axisZero.ms) return false
+  if ((a.reach === null) !== (b.reach === null)) return false
+  if (a.reach !== null && b.reach !== null && (a.reach.fromMs !== b.reach.fromMs || a.reach.toMs !== b.reach.toMs)) {
+    return false
+  }
   if (a.arrival === null || b.arrival === null) return a.arrival === b.arrival
   return a.arrival.pMs === b.arrival.pMs && a.arrival.sMs === b.arrival.sMs
+}
+
+/**
+ * 時間軸の 0 を決める。**秒が取れなければ分の頭。**
+ *
+ * **分の頭へ切り捨てる。** 地震情報の時刻は秒が 00 のはずだが、そう書かれていない経路が
+ * あっても 0 が「分の頭」を名乗れるように揃える。
+ */
+function axisZeroOf(target: SeismoWaveTarget): WaveAxisZero {
+  if (target.arrivalOriginMs !== null && target.arrivalOriginSource !== null) {
+    return { kind: 'origin', ms: target.arrivalOriginMs, source: target.arrivalOriginSource }
+  }
+  return { kind: 'minute', ms: Math.floor(target.originMs / MINUTE_MS) * MINUTE_MS }
 }
 
 interface Entry {
@@ -363,22 +400,32 @@ export function useSeismoQuakeWaves(params: {
     for (const [key, list] of bookRef.current) {
       const target = byKey.get(key)
       const prev = publishedRef.current.get(key)
+      // **対象から外れた直後の 1 巡**（`targetKey` の効果が帳面から消す前）だけ `target` が無い。
+      // 0 を決める材料が無いので、**その地震は前に出した姿を丸ごと使い回す。** 出したことが無ければ
+      // 載せない —— この地震は次の巡回で帳面からも消える（取消・表示する震度の設定変更）。
+      if (target === undefined) {
+        if (prev !== undefined) out.set(key, prev)
+        continue
+      }
       const next = list.map((e, i) => {
+        const axisZero = axisZeroOf(target)
+        // **0 から解いた到達。** 秒が取れていれば線にも使う。分の頭から解いた値は線には使わず、
+        // 時間帯（60 秒の幅を持たせたもの）を出すためだけに使う。
+        const fromZero = computeWaveArrival({
+          originMs: axisZero.ms,
+          hypocenter: target.hypocenter,
+          stationLat: e.lat,
+          stationLon: e.lon,
+        })
         const built: SeismoQuakeWave = {
           stationId: e.stationId,
           displayName: e.displayName,
           columns: e.columns,
           interrupted: e.interrupted,
           // **秒が取れていない地震は線を引かない**（→ `SeismoWaveTarget.arrivalOriginMs`）。
-          arrival:
-            target === undefined || target.arrivalOriginMs === null
-              ? null
-              : computeWaveArrival({
-                  originMs: target.arrivalOriginMs,
-                  hypocenter: target.hypocenter,
-                  stationLat: e.lat,
-                  stationLon: e.lon,
-                }),
+          arrival: axisZero.kind === 'origin' ? fromZero : null,
+          axisZero,
+          reach: computeReachBand(axisZero, fromZero),
         }
         // **観測点ごとに前の姿を使い回す。** 伸びている観測点が 1 つでも、
         // **同じ地震の他の観測点まで作り直すと、変わっていない絵が描き直される**
@@ -664,7 +711,7 @@ export function useSeismoQuakeWaves(params: {
     .map((t) => {
       const h = t.hypocenter
       // **秒が後から取れたときも引き直す**（過去分の取得は開いた直後に非同期で返る）。
-      return `${t.eventKey}@${t.arrivalOriginMs}@${h.latitude},${h.longitude},${h.depth}`
+      return `${t.eventKey}@${t.arrivalOriginMs}@${t.arrivalOriginSource}@${h.latitude},${h.longitude},${h.depth}`
     })
     .join(',')
   useEffect(() => {

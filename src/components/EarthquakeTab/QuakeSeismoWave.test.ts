@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { buildArrivalMarks } from './QuakeSeismoWave'
+import { axisZeroLabel, buildArrivalMarks } from './QuakeSeismoWave'
 import { P_WAVE_COLOR, S_WAVE_COLOR } from '../Map/gl/psWaveStyle'
 import type { TimedColumns } from '../../utils/seismoWaveColumns'
 
@@ -65,5 +65,16 @@ describe('buildArrivalMarks', () => {
     const marks = buildArrivalMarks(columns(100), { pMs: FROM_MS, sMs: FROM_MS + 100 })
     expect(marks[0].color).toBe(P_WAVE_COLOR)
     expect(marks[1].color).toBe(S_WAVE_COLOR)
+  })
+})
+
+describe('axisZeroLabel', () => {
+  it('秒まで取れていれば「発生」', () => {
+    expect(axisZeroLabel({ kind: 'origin', ms: Date.parse('2026-10-03T13:26:02+09:00'), source: 'eew' })).toBe('発生')
+  })
+
+  // 対照: 分までしか無ければ発生を名乗らず、数え始めた時刻を書く。
+  it('分までしか無ければ、その分の頭の時刻', () => {
+    expect(axisZeroLabel({ kind: 'minute', ms: Date.parse('2026-10-03T13:26:00+09:00') })).toBe('13:26:00')
   })
 })
