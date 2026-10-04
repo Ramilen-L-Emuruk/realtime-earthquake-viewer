@@ -563,9 +563,15 @@ export class RawStore {
     return this.day
   }
 
-  /** 届いたデータグラムを書く。 */
-  write(source: string, payload: string): RawWriteResult {
-    return this.writeEnvelope(source, payload, null)
+  /**
+   * 届いたデータグラムを書く。
+   *
+   * **受け取った時刻は呼び出し側が読んだものを使う。** ここで時計を読み直すと、同じ
+   * データグラムを miniSEED の見出しへ書く側（`mseedRecorder.ts`）とミリ秒の繰り上がりで
+   * 食い違う（実機の 1 時間で 0.6%）。受け取った時刻は 1 つの事実なので、読むのは 1 回。
+   */
+  write(source: string, payload: string, receivedAtMs: number): RawWriteResult {
+    return this.writeEnvelope(source, payload, receivedAtMs, null)
   }
 
   /**
@@ -577,14 +583,19 @@ export class RawStore {
    * **同じまとまりが 2 度入ることがある**（ホストの再起動をまたいだとき）。中身が同じなので、
    * 読む側は `bid`・`sid`・`q` の組で重複を落とせる。
    */
-  writeRecovered(source: string, payload: string): RawWriteResult {
-    return this.writeEnvelope(source, payload, 'backlog')
+  writeRecovered(source: string, payload: string, receivedAtMs: number): RawWriteResult {
+    return this.writeEnvelope(source, payload, receivedAtMs, 'backlog')
   }
 
-  private writeEnvelope(source: string, payload: string, via: 'backlog' | null): RawWriteResult {
+  private writeEnvelope(
+    source: string,
+    payload: string,
+    receivedAtMs: number,
+    via: 'backlog' | null,
+  ): RawWriteResult {
     if (this.closed) return { saved: false, reason: 'closed' }
 
-    const raw = this.now()
+    const raw = receivedAtMs
     const nowMs = this.advanceClock(raw)
     const day = jstDay(nowMs)
     // **名前を決められない日では回さない。**
