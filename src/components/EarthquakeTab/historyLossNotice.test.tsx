@@ -60,6 +60,8 @@ function renderTab(opts: {
     <EarthquakeTab
       earthquakes={earthquakes}
       selectedId={earthquakes[0] ? quakeEventKey(earthquakes[0]) : null}
+      speakingKey={null}
+      followSpeech={false}
       onSelect={() => {}}
       isLoading={false}
       isLoadingMore={false}

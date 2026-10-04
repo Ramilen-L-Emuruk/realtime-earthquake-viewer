@@ -1002,6 +1002,19 @@ export interface LiveEventHandlerDeps {
    */
   eewSpeakingCard?: EewSpeakingCardFollow
   /**
+   * 地震情報の読み上げ（取消を含む）が、いまどの地震カードを語っているかを画面へ伝える受け口。
+   * 地震情報タブの一覧は、読み上げが有効なあいだ**語っているカード**へ寄せる
+   * （→ `utils/quakeCardScroll.ts`・docs/spec/quake-spec.md §8「一覧の寄せ方」）。
+   *
+   * **緊急地震速報の受け口と同じ仕組み（`useEewSpeakingCard`）を使う。** 必要なのは
+   * 「語り始め・語り終わり・世代での照合・残像・リセット」で、どれもあちらが持っている。
+   * 地震情報は 1 回の発話で語り終えるので、語り終わりに問う「まだ語る予定があるか」は常に偽。
+   *
+   * **任意にしない。** 渡し忘れると一覧が読み上げに付いて行かないだけで、例外もログも出ない。
+   * 渡さないと決めた箇所（テスト）は `null` を書く。
+   */
+  quakeSpeakingCard: EewSpeakingCardFollow | null
+  /**
    * 特別情報（南海トラフ臨時情報・後発地震注意情報・関連解説情報）の受信でパネルを開く。
    *
    * これらは地図に重ねた帯で伝える情報で、パネル側に居場所がない（切り替えるタブが無い）。
@@ -1046,7 +1059,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     settings, title, earthquakesRef, tsunamisRef, kyoshinDetectedRef, defaultTabRef,
     setActiveTabRealtimeForKyoshin, setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate,
     setActiveTabRealtimeUrgent, followSpeechTab, preSpeechTab, speechFollow, unreceivedFollow, telegramTextFollow,
-    borrowedHypocenterFollow, eewSpeakingCard,
+    borrowedHypocenterFollow, eewSpeakingCard, quakeSpeakingCard,
     expandPanelForSpecialInfo,
     revertToDefaultTab, selectQuake, openLpgmFromQuake, openEstimatedIntensity,
     closeDistributionOnQuakeReport,
@@ -2070,6 +2083,12 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       const borrowedHypocenterToken = hasBorrowedHypocenterFollowTarget(segments)
         ? borrowedHypocenterFollow?.begin(segments!, subject)
         : undefined
+      // 地震カードの一覧を、語っている地震へ寄せる（取消の読み上げも同じ主題で来る）。
+      // **主題が地震情報のときに限る。** 津波の読み上げも `subject` に原因地震の鍵を持つが、
+      // あれは津波タブの話で、地震の一覧を動かす理由にならない。
+      const quakeCardToken = topic.startsWith('quake:') && subject
+        ? quakeSpeakingCard?.begin(subject)
+        : undefined
       // 予約の通知を溜めておき、読み上げが終わってから「実際に鳴った範囲」を割り出す
       // （`spokenChunkIndices`）。合成は再生より先へ進むため、予約が通っただけでは鳴った
       // ことにならない。
@@ -2161,6 +2180,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         // 借りた震源の追従もここで終える。**セッションを畳むだけで、見せたカードは戻さない**
         // —— 震源の句は津波の読み上げの末尾にあり、戻すと画面が一瞬で往復するだけになる。
         if (borrowedHypocenterToken !== undefined) borrowedHypocenterFollow?.end(borrowedHypocenterToken)
+        // 地震情報は 1 回の発話で語り終えるので、語る予定は残っていない（残像のあと印が落ちる）。
+        if (quakeCardToken !== undefined) quakeSpeakingCard?.end(quakeCardToken, () => false)
         flushSpokenRefs(true)
         // 自分より後に始まった読み上げに置き換わっている場合は触らない（消すと待ち側が
         // 「誰も読んでいない」と誤認し、進行中の読み上げに割り込む）
@@ -2810,12 +2831,24 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         const original = cancelEventId
           ? earthquakesRef.current.find(e => extractQuakeEventIdFromId(e.id) === cancelEventId)
           : undefined
+        // **鍵は取り消されるカードから作る**（続報の主題 `quakeEventKey(existingCard ?? incomingQuake)`
+        // と同じ流儀）。生の取消電文から作ると、暫定 EventID が付け替えられた地震ではカードの
+        // `eventKey`（最初の報の値を据え置く）と食い違い、主題が続報と揃わないうえ、一覧も取消カードを
+        // 見つけられずに選択中のカードへ落ちる —— 「カードが片付いた後に語る」正常な空振りと同じ形に
+        // なるので、記録にも残らない。
+        const cancelQuakeKey = quakeEventKey(original ?? (event as import('../types/earthquake').JMAQuake))
         speakNonEEWDelayed(
           earthquakeCancelToText(original?.time ?? null, event.cancelText),
           SPEECH_PRIORITY.normal,
           ttsDelayFor('eewCancel'),
-          `quake:${quakeEventKey(event as import('../types/earthquake').JMAQuake)}`,
+          `quake:${cancelQuakeKey}`,
           { tab: 'earthquake', priority: TAB_PRIORITY.quake },
+          undefined,
+          undefined,
+          undefined,
+          // **どの地震について語っているか。** 取消の読み上げのあいだ、一覧を取消カードへ寄せる
+          // （→ `quakeSpeakingCard`）。鍵は主題と同じものを渡す。
+          cancelQuakeKey,
         )
       }
     } else if (event.kind === 'quake') {
@@ -5144,7 +5177,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // 新しい時間軸で同じ eventId の地震が来るまで消えない（印を落とすための見直しは
     // 鳴り終わりに始まるので、割り込みで消えた発話の分は始まらない）。
     eewSpeakingCard?.reset()
-  }, [cancelPendingSpeech, speechFollow, unreceivedFollow, telegramTextFollow, borrowedHypocenterFollow, eewSpeakingCard])
+    quakeSpeakingCard?.reset()
+  }, [cancelPendingSpeech, speechFollow, unreceivedFollow, telegramTextFollow, borrowedHypocenterFollow, eewSpeakingCard, quakeSpeakingCard])
 
   // pre-window イベントから T 時点の追跡 ref を復元する（サイレント注入後の正確な音判定に必要）
   const restorePreWindowTracking = useCallback((preFiltered: ReplayEntry[]) => {

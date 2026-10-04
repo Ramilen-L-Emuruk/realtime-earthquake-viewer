@@ -76,6 +76,8 @@ const renderTab = (lpgm: JMALpgm) => render(
   <EarthquakeTab
     earthquakes={[QUAKE]}
     selectedId={quakeEventKey(QUAKE)}
+    speakingKey={null}
+    followSpeech={false}
     onSelect={() => {}}
     isLoading={false}
     isLoadingMore={false}
@@ -105,6 +107,8 @@ const tabWith = (subject: string | null, lpgm: JMALpgm = makeLpgm()) => (
   <EarthquakeTab
     earthquakes={[QUAKE]}
     selectedId={quakeEventKey(QUAKE)}
+    speakingKey={null}
+    followSpeech={false}
     onSelect={() => {}}
     isLoading={false}
     isLoadingMore={false}

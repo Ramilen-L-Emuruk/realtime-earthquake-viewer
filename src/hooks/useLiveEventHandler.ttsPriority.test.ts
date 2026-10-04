@@ -252,7 +252,7 @@ function setup() {
     defaultTabRef: { current: 'earthquake' },
     setActiveTabRealtimeForKyoshin: vi.fn(), setActiveTabNonRealtime: vi.fn(),
     setActiveTabRealtimeOnUpdate: vi.fn(),
-    setActiveTabRealtimeUrgent: vi.fn(), followSpeechTab: vi.fn(), preSpeechTab: vi.fn(() => true), expandPanelForSpecialInfo: vi.fn(), revertToDefaultTab: vi.fn(),
+    setActiveTabRealtimeUrgent: vi.fn(), followSpeechTab: vi.fn(), preSpeechTab: vi.fn(() => true), quakeSpeakingCard: null, expandPanelForSpecialInfo: vi.fn(), revertToDefaultTab: vi.fn(),
     selectQuake: vi.fn(), openLpgmFromQuake: vi.fn(), openEstimatedIntensity: openEstimatedIntensitySpy, closeDistributionOnQuakeReport: vi.fn(),
   }))
   return result.current.handleLiveEvent

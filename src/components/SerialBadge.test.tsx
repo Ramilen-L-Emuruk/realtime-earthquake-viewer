@@ -65,6 +65,8 @@ const renderQuake = (quake: JMAQuake, selected = true) =>
     <EarthquakeTab
       earthquakes={[quake]}
       selectedId={selected ? quakeEventKey(quake) : 'other'}
+      speakingKey={null}
+      followSpeech={false}
       onSelect={() => {}}
       isLoading={false}
       isLoadingMore={false}
