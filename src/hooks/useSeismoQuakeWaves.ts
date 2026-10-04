@@ -22,6 +22,7 @@ import { quakeScaleForScope, type NearbyScope } from '../utils/actionChecklistTr
 import { serverNow } from '../utils/clock'
 import { log } from '../utils/logger'
 import { quakeEventKey } from '../utils/quakeMerge'
+import type { OriginSeconds } from '../utils/quakeOriginSeconds'
 import { computeWaveArrival, type WaveArrival } from '../utils/seismoWaveArrival'
 import {
   appendWaveWindow,
@@ -182,6 +183,14 @@ export interface SeismoWaveTarget {
   readonly cutoffMs: number
   /** 到達時刻を解くための震源（判らない値はセンチネルのまま。弾くのは計算側）。 */
   readonly hypocenter: Hypocenter
+  /**
+   * P 波・S 波の線の起点にする発生時刻（**秒まで**）。**秒が取れなければ `null` で、線は引かない。**
+   *
+   * **窓の起点（`originMs`）と分ける。** `originMs` は地震情報の発生時刻で、分までしか無い
+   * （秒は 00）。そのまま線の起点にすると最大 59 秒ずれる。秒の出どころと決め方は
+   * `utils/quakeOriginSeconds.ts`。
+   */
+  readonly arrivalOriginMs: number | null
 }
 
 /**
@@ -195,8 +204,12 @@ export interface SeismoWaveTarget {
  * **並べ直す。** 呼び出し側の並びに依存すると、並びを変えた日に打ち切りの順序が
  * 静かに狂う（`cutoffMs` は「1 つ新しい地震」から取る）。
  */
-export function pickTargets(quakes: readonly JMAQuake[], scope: NearbyScope): SeismoWaveTarget[] {
-  const found: { eventKey: string; originMs: number; hypocenter: Hypocenter }[] = []
+export function pickTargets(
+  quakes: readonly JMAQuake[],
+  scope: NearbyScope,
+  originSeconds: ReadonlyMap<string, OriginSeconds>,
+): SeismoWaveTarget[] {
+  const found: { eventKey: string; originMs: number; hypocenter: Hypocenter; arrivalOriginMs: number | null }[] = []
   const seen = new Set<string>()
   for (const q of quakes) {
     if (quakeScaleForScope(q, scope, WAVE_TRIGGER_MIN_SCALE) === null) continue
@@ -208,7 +221,10 @@ export function pickTargets(quakes: readonly JMAQuake[], scope: NearbyScope): Se
     const eventKey = quakeEventKey(q)
     if (seen.has(eventKey)) continue
     seen.add(eventKey)
-    found.push({ eventKey, originMs, hypocenter: q.earthquake.hypocenter })
+    found.push({
+      eventKey, originMs, hypocenter: q.earthquake.hypocenter,
+      arrivalOriginMs: originSeconds.get(eventKey)?.originMs ?? null,
+    })
   }
   found.sort((a, b) => b.originMs - a.originMs)
   return found.map((t, i) => ({
@@ -311,14 +327,16 @@ export function useSeismoQuakeWaves(params: {
    * 最近だと同じ地震がライブの一覧にもいるので、鍵が一致してしまう）。
    */
   replayOffsetMs: number | null
+  /** 地震カードごとの発生時刻（秒まで。→ `hooks/useQuakeOriginSeconds.ts`）。P/S 線の起点。 */
+  originSeconds: ReadonlyMap<string, OriginSeconds>
 }): ReadonlyMap<string, readonly SeismoQuakeWave[]> {
-  const { enabled, baseUrl, quakes, scope, readWave, replayOffsetMs } = params
+  const { enabled, baseUrl, quakes, scope, readWave, replayOffsetMs, originSeconds } = params
   const [waves, setWaves] = useState<ReadonlyMap<string, readonly SeismoQuakeWave[]>>(new Map())
 
   const canFetch = enabled && isValidSeismoHostUrl(baseUrl)
   const targets = useMemo(
-    () => (canFetch ? pickTargets(quakes, scope) : []),
-    [canFetch, quakes, scope],
+    () => (canFetch ? pickTargets(quakes, scope, originSeconds) : []),
+    [canFetch, quakes, scope, originSeconds],
   )
   // **依存は鍵の並びで持つ。** `targets` は毎レンダー新しい配列になるので、そのまま
   // 依存に置くと電文が 1 通届くたびに取り直しへ入る。
@@ -351,11 +369,12 @@ export function useSeismoQuakeWaves(params: {
           displayName: e.displayName,
           columns: e.columns,
           interrupted: e.interrupted,
+          // **秒が取れていない地震は線を引かない**（→ `SeismoWaveTarget.arrivalOriginMs`）。
           arrival:
-            target === undefined
+            target === undefined || target.arrivalOriginMs === null
               ? null
               : computeWaveArrival({
-                  originMs: target.originMs,
+                  originMs: target.arrivalOriginMs,
                   hypocenter: target.hypocenter,
                   stationLat: e.lat,
                   stationLon: e.lon,
@@ -644,7 +663,8 @@ export function useSeismoQuakeWaves(params: {
   const arrivalKey = targets
     .map((t) => {
       const h = t.hypocenter
-      return `${t.eventKey}@${t.originMs}@${h.latitude},${h.longitude},${h.depth}`
+      // **秒が後から取れたときも引き直す**（過去分の取得は開いた直後に非同期で返る）。
+      return `${t.eventKey}@${t.arrivalOriginMs}@${h.latitude},${h.longitude},${h.depth}`
     })
     .join(',')
   useEffect(() => {
