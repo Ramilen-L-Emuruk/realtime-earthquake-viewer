@@ -237,6 +237,7 @@ function setup(over: { voicevoxEnabled?: boolean; soundEnabled?: boolean } = {})
   const spies = {
     followSpeechTab: vi.fn(),
     preSpeechTab: vi.fn(() => true),
+    quakeSpeakingCard: null,
     expandPanelForSpecialInfo: vi.fn(),
     setActiveTabNonRealtime: vi.fn(),
     setActiveTabRealtimeOnUpdate: vi.fn(),

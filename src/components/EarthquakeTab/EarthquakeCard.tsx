@@ -1,6 +1,7 @@
 import { Fragment, memo, useMemo, useRef, useEffect, useState } from 'react'
 import type { JMAQuake, JMALpgm, IssueType, EarthquakePoint, IntensityScale, JMAEstimatedIntensity, QuakeReportRecord, BorrowedFromTsunami } from '../../types/earthquake'
 import { quakeEventKey } from '../../utils/quakeMerge'
+import { QUAKE_CARD_KEY_ATTR } from '../../utils/quakeCardScroll'
 import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor, lpgmCategoryNote, buildLpgmRows, canOpenLpgmNotes } from '../../utils/lpgm'
 import { estimatedIntensityFor, estimatedIntensityAvailability } from '../../utils/estimatedIntensity'
 import { telegramTextSubject } from '../../utils/ttsFollow'
@@ -599,12 +600,9 @@ export const EarthquakeCard = memo(function EarthquakeCard({
   //（震度速報など区域しか持たないもの）では、押しても空の画面になるだけ。
   const canDrawDistribution = !!matchedEstimated || quake.points.some(p => !p.isArea)
 
-  const cardRef = useRef<HTMLButtonElement>(null)
-  useEffect(() => {
-    if (isSelected) {
-      cardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
-    }
-  }, [isSelected])
+  // **一覧の寄せはカードではなく一覧（`EarthquakeTab`）が行う。** 取消のあいだは選択中ではない
+  // カードへ寄せる必要があり、カード自身は「いま選ばれているか」しか知らない
+  // （→ `utils/quakeCardScroll.ts`）。一覧がカードを見つけるための印は `QUAKE_CARD_KEY_ATTR`。
 
   const stationData = useStationCoords()
   // 県・区域の行から地図へ寄せるための境界。**どちらも地図が既に読んでいるデータ**で、
@@ -924,7 +922,7 @@ export const EarthquakeCard = memo(function EarthquakeCard({
 
     return (
       <button
-        ref={cardRef}
+        {...{ [QUAKE_CARD_KEY_ATTR]: eventKey }}
         type="button"
         onClick={quake.cancelledAt ? undefined : () => onSelect?.(eventKey)}
         aria-pressed={true}
@@ -1558,7 +1556,7 @@ export const EarthquakeCard = memo(function EarthquakeCard({
 
   return (
     <button
-      ref={cardRef}
+      {...{ [QUAKE_CARD_KEY_ATTR]: eventKey }}
       type="button"
       onClick={quake.cancelledAt ? undefined : () => onSelect?.(eventKey)}
       aria-pressed={false}
