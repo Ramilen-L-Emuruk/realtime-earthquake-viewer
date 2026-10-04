@@ -199,6 +199,8 @@ function createFakeMap({ zoom: initialZoom = 4, fitZoom: initialFitZoom = 7 }: {
     // フィット系は現在の回転を保つため bearing を読む（渡さないと MapLibre が 0 を当てて回転が消える）。
     getBearing: () => 0,
     getContainer: () => ({ clientWidth: PANE_WIDTH, clientHeight: PANE_HEIGHT }),
+    // MapLibre が計算に使う寸法（`gl/camera.ts` の `paneSize` が DOM の寸法と小さいほうを取る）
+    getCanvas: () => ({ clientWidth: PANE_WIDTH, clientHeight: PANE_HEIGHT }),
     project: (ll: [number, number] | { lng: number; lat: number }) => {
       const lng = Array.isArray(ll) ? ll[0] : ll.lng
       const lat = Array.isArray(ll) ? ll[1] : ll.lat

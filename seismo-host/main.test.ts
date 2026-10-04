@@ -1357,6 +1357,7 @@ describe('applyStationConfigCore', () => {
   ): ApplyStationConfigDeps {
     return {
       save: () => calls.push('save'),
+      recordHistory: () => calls.push('recordHistory'),
       setCurrentConfig: () => calls.push('setCurrentConfig'),
       trackAssignments: () => calls.push('trackAssignments'),
       rebuildStations: () => calls.push('rebuildStations'),
@@ -1389,6 +1390,7 @@ describe('applyStationConfigCore', () => {
     // テスト側の勝手な仮定で、2 巡目の敵対的レビューでこの食い違いが発覚した。
     expect(calls).toEqual([
       'save',
+      'recordHistory',
       'setCurrentConfig',
       'trackAssignments',
       'rebuildStations',
@@ -1405,6 +1407,12 @@ describe('applyStationConfigCore', () => {
     // （`main()` の中のクロージャはテストが届かないので、ここで固定する）。
     const seen: StationConfig[] = []
     applyStationConfigCore(deps([], { trackAssignments: (c) => seen.push(c) }), NEW_CONFIG)
+    expect(seen).toEqual([NEW_CONFIG])
+  })
+
+  it('正: 履歴へは保存できた設定そのものを渡す（上書きで消える前の割り当て・校正値を残す）', () => {
+    const seen: StationConfig[] = []
+    applyStationConfigCore(deps([], { recordHistory: (c) => seen.push(c) }), NEW_CONFIG)
     expect(seen).toEqual([NEW_CONFIG])
   })
 
@@ -1432,6 +1440,7 @@ describe('applyStationConfigCore', () => {
 
     expect(calls).toEqual([
       'save',
+      'recordHistory',
       'setCurrentConfig',
       'trackAssignments',
       'rebuildStations',
@@ -1467,6 +1476,7 @@ describe('applyStationConfigCore', () => {
     expect(delivered).toEqual([DRAINED, DRAINED])
     expect(calls).toEqual([
       'save',
+      'recordHistory',
       'setCurrentConfig',
       'trackAssignments',
       'rebuildStations',

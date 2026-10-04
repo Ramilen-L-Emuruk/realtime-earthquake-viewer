@@ -202,6 +202,18 @@ export function renderSensorCardHtml(values: SensorFormValues): string {
       ${vec3RowHtml('s-offset', values.offset)}
       <div class="muted" style="font-size: 0.8rem; margin-top: 0.5rem;">感度（倍率・正）</div>
       ${vec3RowHtml('s-sensitivity', values.sensitivity)}
+      <!-- **6 面法はオフセット・感度のすぐ下に置く。** 結果を入れる先がこの 2 欄なので、
+           離すと何が書き換わったのか追えない。詳細設定へ畳むと、面の揃い具合が見えない。
+           中身（揃った面・押せない理由・結果）は viewBoards が埋める。 -->
+      <div class="s-sixface" style="font-size: 0.8rem; margin-top: 0.5rem;">
+        <div class="muted">6 面で測る：基板を各軸の上向き・下向きの 6 方向へ置き、それぞれ 1 分以上動かさない。直近 30 分の静止した時間から計算する</div>
+        <div class="s-sixface-faces" style="margin-top: 0.2rem;"></div>
+        <div class="row" style="align-items: center; margin-top: 0.2rem;">
+          <button type="button" class="apply-sixface" style="flex: 0 0 auto;" disabled>6 面の結果を入れる</button>
+          <span class="muted s-sixface-why"></span>
+        </div>
+        <div class="muted s-sixface-result"></div>
+      </div>
       <!-- **静止窓の診断は畳まない。** 傾いて付いているという事実は、詳細設定を
            開いた人にしか見えないと気づかれない。中身は viewBoards が埋める。 -->
       <div class="muted s-rest-note" style="font-size: 0.8rem; margin-top: 0.5rem;"></div>
@@ -256,8 +268,8 @@ function gal(value: number | null): string {
  * 何か直さないと出ないのかが読めない。
  */
 export function restWindowNote(window: SensorRestWindow | null, nowMs: number | null): string {
-  // **文言はボタンの理由と同じものを使う。** 同じ状態を指しているのに、常時表示の
-  // 一行とボタンの説明で言い回しが違うと、別の状態だと読まれる。
+  // **この一行は、保存済みの設定で見たホストの診断**（`/status` の判定）。「鉛直を合わせる」が
+  // 押せるかどうかは別の材料（校正前の静止窓）で決まる（`viewBoards.ts` の `refreshTiltPanels`）。
   if (window === null) return restWindowProblem(null) ?? ''
   // **経過の基準が無ければ黙って受け手の時計へ倒さない**（`detectedBoards.ts` の
   // `generatedAtMs`）。時刻だけを省く。
@@ -297,6 +309,18 @@ export function writeSensorCardRotation(card: ParentNode, rotation: Mat3): void 
         rotation[row][col],
       )
     }
+  }
+}
+
+/** カードのオフセット・感度の欄を書き換える（6 面法の結果を入れる）。**保存はしない。** */
+export function writeSensorCardOffsetSensitivity(
+  card: ParentNode,
+  offset: readonly [string, string, string],
+  sensitivity: readonly [string, string, string],
+): void {
+  for (let axis = 0; axis < 3; axis++) {
+    qs<HTMLInputElement>(card, `.s-offset[data-axis="${axis}"]`).value = offset[axis]!
+    qs<HTMLInputElement>(card, `.s-sensitivity[data-axis="${axis}"]`).value = sensitivity[axis]!
   }
 }
 

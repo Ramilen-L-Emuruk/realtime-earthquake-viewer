@@ -9,6 +9,8 @@ import {
   fitMaxZoomForPane,
   refitDeltaForBounds,
   mapContainsBounds,
+  clampPaddingToPane,
+  boundsFromPositions,
   EEW_ZOOM_SNAP,
   INTERACTION_HOLD_SEC,
 } from './camera'
@@ -28,7 +30,7 @@ type FakeHandler = (e?: unknown) => void
 // （subscribeUserInteraction / isProgrammaticFlight が実際に使うイベント API はこれで足りる）。
 // fire は eventData を受ける: MapLibre は fly/fit へ渡した eventData をイベントへマージするため、
 // 「アプリ起点のカメラ操作か」の判別がこれに依存している。
-function createFakeMap() {
+function createFakeMap(pane: { width: number; height: number } = { width: 800, height: 600 }) {
   const handlers = new Map<string, Set<FakeHandler>>()
   const onceHandlers = new Map<string, Set<FakeHandler>>()
   const fake = {
@@ -56,8 +58,11 @@ function createFakeMap() {
     // 段階へ切り下げて寄る経路（`flyToBoundsSnapped` / `fitToPositions`）が使う。切り下げの検証が
     // 目的なので、段階に乗っていないズームを返す（6.7 → 6.5 へ落ちることを見る）。
     cameraForBounds: vi.fn(() => ({ center: [138, 38] as [number, number], zoom: 6.7 })),
-    // 算出不可でフォールバックしたときの記録がペインの実寸を添えるため、寸法だけ持たせる。
-    getContainer: () => ({ clientWidth: 800, clientHeight: 600 }),
+    // 余白をペインに収める計算と、算出不可でフォールバックしたときの記録がペインの実寸を使う。
+    getContainer: () => ({ clientWidth: pane.width, clientHeight: pane.height }),
+    // MapLibre が計算に使う寸法（キャンバスの寸法と一致する）。既定では DOM と同じで、ずらすテストは
+    // 個別に上書きする。毎回 `pane` を読むのは、テストが `pane` を書き換えたときに追従させるため。
+    getCanvas: () => ({ clientWidth: pane.width, clientHeight: pane.height }),
     // フィット系は現在の回転を保つため bearing を読む（渡さないと MapLibre が 0 を当てて回転が消える）。
     getBearing: () => 0,
   }
@@ -265,9 +270,10 @@ describe('fitToPositions', () => {
   })
 
   it('着地ズームが算出できないときは fitBounds へフォールバックする（切り下げを経ない）', () => {
-    // MapLibre の cameraForBounds は padding が地図ペインの実寸を超えると undefined を返す
-    // （ブラウザで実測）。この経路では切り下げが効かないため、着地直後に成長フォローが引き直す
-    // 二段の動きが再発する。**修正が無効化される唯一の道**なので、経路の存在を固定しておく。
+    // 戻り値の型は undefined を許すので、その備えの経路を固定しておく。**余白が大きすぎる指定は
+    // ここへ来ない** —— MapLibre 6.10.0 はその場合 undefined を返さず例外を投げるので、余白を
+    // ペインに収めて手前で防いでいる（下の「地図が小さいとき」）。この経路では切り下げが効かない
+    // ため、着地直後に成長フォローが引き直す二段の動きが再発する。
     const map = createFakeMap()
     map.cameraForBounds.mockReturnValueOnce(undefined)
 
@@ -297,6 +303,182 @@ describe('fitToPositions', () => {
 
     expect(map.flyTo).not.toHaveBeenCalled()
     expect(map.fitBounds).not.toHaveBeenCalled()
+  })
+})
+
+// MapLibre 6.10.0 の `cameraForBounds` / `fitBounds` は、上下（左右）の余白の和がペインを超えると
+// 例外を投げる（2026-10-04 実測。縦長でパネルを広げ地図の高さが 103px になったところへ padding 60 の
+// EEW 追従が走り、地図ごと落ちた）。余白は短辺の 2 割までに切り詰めてから渡す。
+describe('clampPaddingToPane', () => {
+  it('正: 小さい地図では短辺の 2 割まで切り詰める', () => {
+    // 実測で落ちた寸法そのもの（430×103 に padding 60）
+    expect(clampPaddingToPane(60, 430, 103)).toBe(20)
+  })
+
+  it('対照: 短辺 300px 以上なら、いま使っている余白（20〜60px）は切り詰めない', () => {
+    expect(clampPaddingToPane(60, 800, 600)).toBe(60)
+    expect(clampPaddingToPane(60, 430, 300)).toBe(60)
+    expect(clampPaddingToPane(20, 430, 103)).toBe(20)
+    // 境界の 1px 手前から効き始める
+    expect(clampPaddingToPane(60, 430, 299)).toBe(59)
+  })
+
+  it('安全弁: どの寸法でも、両側の余白の和は短辺の半分に届かない', () => {
+    for (let side = 1; side <= 1000; side++) {
+      const padding = clampPaddingToPane(1000, side, side * 2)
+      expect(padding).not.toBeNull()
+      expect((padding as number) * 2).toBeLessThan(side / 2 + 1e-9)
+    }
+  })
+
+  it('ペインの寸法が取れないときは null（寄せない側へ倒す）', () => {
+    expect(clampPaddingToPane(60, 0, 600)).toBeNull()
+    expect(clampPaddingToPane(60, 800, 0)).toBeNull()
+    expect(clampPaddingToPane(60, Number.NaN, 600)).toBeNull()
+  })
+
+  it('余白 0 はそのまま 0', () => {
+    expect(clampPaddingToPane(0, 800, 600)).toBe(0)
+  })
+})
+
+describe('地図が小さいときの寄せ方', () => {
+  it('点群フィットは切り詰めた余白を cameraForBounds へ渡す', () => {
+    const map = createFakeMap({ width: 430, height: 103 })
+
+    fitToPositions(map, [[35, 139], [36, 140]], { padding: 60, durationSec: 1.0 })
+
+    expect(map.cameraForBounds.mock.calls[0][1]).toMatchObject({ padding: 20 })
+    expect(map.flyTo).toHaveBeenCalledTimes(1)
+  })
+
+  it('日本全体へのフィットも切り詰める', () => {
+    const map = createFakeMap({ width: 430, height: 60 })
+
+    fitJapan(map)
+
+    expect(map.fitBounds.mock.calls[0][1]).toMatchObject({ padding: 12 })
+  })
+
+  it('寄り直しの段数の見積もりも、寄せるときと同じ余白で計算する', () => {
+    // 食い違うと「得られると計算した段数」と実際の着地がずれ、着地後も寄せ直しが発火し続ける。
+    const map = createFakeMap({ width: 430, height: 103 })
+    const projecting = Object.assign(map, {
+      project: () => ({ x: 0, y: 0 }),
+      getCenter: () => ({ lng: 138, lat: 38 }),
+      getZoom: () => 6,
+    })
+    const bounds = boundsFromPositions([[35, 139], [36, 140]])!
+
+    refitDeltaForBounds(projecting, bounds, { padding: 60 })
+    fitToPositions(projecting, [[35, 139], [36, 140]], { padding: 60, durationSec: 1.0 })
+
+    const [estimate, fly] = map.cameraForBounds.mock.calls.map(c => c[1].padding)
+    expect(estimate).toBe(20)
+    expect(fly).toBe(estimate)
+  })
+
+  // **保留の記録（`log.warn`）の回数を確かめるテストは、経路ごとにこのファイルで 1 つだけにすること。**
+  // 間引きは経路ごとに壁時計で 60 秒・モジュールスコープなので、同じ経路で 2 つ目を足すと後から
+  // 走った側は黙って間引かれてアサーションが落ちる（上のフォールバックのテストと同じ事情）。
+  it('ペインの寸法が取れないときは保留し、寸法が付いたら同じ寄せをやり直す', () => {
+    // 呼び出し側（地震カードの寄せ等）は呼んだ時点で「寄せた」印を立てて二度と呼ばない。黙って
+    // 見送ると、その寄せは永久に失われる（地図の下に自作地震計の波形を並べると、縦長でパネルを
+    // 広げたとき地図の高さは実際に 0 まで削られる）。
+    // このファイルは `log.warn` の呼び出しをテスト間で消していない（上のフォールバックのテストの分が残る）
+    ;(log.warn as Mock).mockClear()
+    const pane = { width: 430, height: 0 }
+    const map = createFakeMap(pane)
+
+    fitToPositions(map, [[35, 139], [36, 140]], { padding: 60, durationSec: 1.0 })
+
+    expect(map.cameraForBounds).not.toHaveBeenCalled()
+    expect(map.flyTo).not.toHaveBeenCalled()
+    expect(log.warn as Mock).toHaveBeenCalledTimes(1)
+    expect((log.warn as Mock).mock.calls[0][1]).toMatchObject({ requestedPadding: 60, paneWidth: 430, paneHeight: 0 })
+
+    // 寸法が 0 のままの resize ではまだ寄せない
+    map.fire('resize')
+    expect(map.flyTo).not.toHaveBeenCalled()
+
+    // 寸法が付いたら、その時点の寸法で余白を決め直して寄せる
+    pane.height = 103
+    map.fire('resize')
+    expect(map.cameraForBounds).toHaveBeenCalledTimes(1)
+    expect(map.cameraForBounds.mock.calls[0][1]).toMatchObject({ padding: 20 })
+    expect(map.flyTo).toHaveBeenCalledTimes(1)
+
+    // やり直しは 1 回きり（購読は外れている）
+    map.fire('resize')
+    expect(map.flyTo).toHaveBeenCalledTimes(1)
+  })
+
+  it('保留中に別のカメラ操作が来たら、保留していた寄せは捨てる', () => {
+    // 寸法が戻ったときに古い目標へ飛ばないため
+    const pane = { width: 430, height: 0 }
+    const map = createFakeMap(pane)
+
+    fitJapan(map)
+    pane.height = 300
+    fitToPositions(map, [[35, 139]], { maxZoom: 7, durationSec: 1.0 }) // 1 点は flyTo で直行する
+    map.fire('resize')
+
+    expect(map.fitBounds).not.toHaveBeenCalled() // fitJapan は捨てられた
+    expect(map.flyTo).toHaveBeenCalledTimes(1)
+  })
+
+  it('保留中に新しい寄せもまた保留になったら、寸法が付いたとき新しいほうだけを 1 回寄せる', () => {
+    const pane = { width: 430, height: 0 }
+    const map = createFakeMap(pane)
+
+    fitJapan(map) // 古いほう（fitBounds）
+    fitToPositions(map, [[35, 139], [36, 140]], { padding: 60, durationSec: 1.0 }) // 新しいほう（flyTo）
+    pane.height = 300
+    map.fire('resize')
+    map.fire('resize')
+
+    expect(map.fitBounds).not.toHaveBeenCalled()
+    expect(map.flyTo).toHaveBeenCalledTimes(1)
+  })
+
+  describe('ユーザー操作との関係', () => {
+    // ユーザー操作の購読は window.setTimeout を使う（理由は上の `subscribeUserInteraction` の用意と同じ）
+    beforeEach(() => {
+      vi.stubGlobal('window', globalThis)
+      vi.useFakeTimers()
+    })
+    afterEach(() => {
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+    })
+
+    it('保留中にユーザーが地図を触っても、保留した寄せは捨てない', () => {
+      // 捨てると、呼び出し側が「寄せた」印を先に立てている寄せ（地震カード等）は二度と走らない。
+      // 保留している寄せは利用者が見たいものなので、地図が見えるようになった時点で寄る
+      const pane = { width: 430, height: 0 }
+      const map = createFakeMap(pane)
+      const sub = subscribeUserInteraction(map, () => {})
+
+      fitJapan(map)
+      map.fire('dragstart') // 印の無いイベント＝ユーザー操作
+      pane.height = 300
+      map.fire('resize')
+
+      expect(map.fitBounds).toHaveBeenCalledTimes(1)
+      sub.unsubscribe()
+    })
+  })
+
+  it('DOM と MapLibre 内部の寸法の小さいほうで余白を決める', () => {
+    // 地図が広がった直後は DOM だけが先に大きくなり、MapLibre の内部の寸法は ResizeObserver で
+    // 遅れて追いつく。DOM の寸法で決めると、MapLibre の側では余白が大きすぎて例外を投げる。
+    const map = createFakeMap({ width: 430, height: 600 })
+    ;(map as unknown as { getCanvas: () => { clientWidth: number; clientHeight: number } }).getCanvas =
+      () => ({ clientWidth: 430, clientHeight: 103 })
+
+    fitToPositions(map, [[35, 139], [36, 140]], { padding: 60, durationSec: 1.0 })
+
+    expect(map.cameraForBounds.mock.calls[0][1]).toMatchObject({ padding: 20 })
   })
 })
 
@@ -337,6 +519,7 @@ describe('refitDeltaForBounds', () => {
         return { x: lng * 100, y: -lat * 100 }
       },
       getContainer: () => ({ clientWidth: 400, clientHeight: 200 }),
+      getCanvas: () => ({ clientWidth: 400, clientHeight: 200 }),
       getBearing: () => 0,
     } as unknown as maplibregl.Map
   }
@@ -443,6 +626,7 @@ describe('mapContainsBounds', () => {
       hidden.some(([hl, ha]) => Math.abs(hl - lng) < 1e-9 && Math.abs(ha - lat) < 1e-9)
     return {
       getContainer: () => ({ clientWidth: width, clientHeight: height }),
+      getCanvas: () => ({ clientWidth: width, clientHeight: height }),
       project: ([lng, lat]: [number, number]) => {
         const x0 = (lng - center.lng) * 100
         const y0 = (center.lat - lat) * 100

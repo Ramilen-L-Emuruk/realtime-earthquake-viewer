@@ -34,7 +34,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { parseArgs } from 'node:util'
 import { buildEventResultFromZip } from '../src/utils/knet/buildEventResultFromZip'
-import { STEP_SEC_DEFAULT } from '../src/utils/knet/seismicIntensity'
+import { STEP_SEC_DEFAULT } from '../src/utils/knet/intensityCommon'
 import { mergeEvents, type EventResult } from '../src/utils/knet/kyoshinEventMerge'
 import type { LocalKyoshinArchive } from '../src/types/localKyoshinArchive'
 

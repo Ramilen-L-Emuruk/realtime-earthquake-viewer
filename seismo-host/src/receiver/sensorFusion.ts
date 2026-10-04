@@ -70,7 +70,7 @@ import type { WaveChunk } from './intensityPipeline'
 import { normalizeIntensity } from './intensityPipeline'
 // **刻みと震度の方式は単独センサーと揃える**（`intensityPipeline.ts` と同じ理由 ——
 // 物差しが違えば「揺れ方の違い」と「測り方の違い」を見分けられない）。
-import { STEP_SEC_DEFAULT, samplesForSeconds } from '../../../src/utils/knet/seismicIntensity'
+import { STEP_SEC_DEFAULT, samplesForSeconds } from '../../../src/utils/knet/intensityCommon'
 
 /**
  * 直流（重力）を追う窓の長さ（秒）。**20 秒。**

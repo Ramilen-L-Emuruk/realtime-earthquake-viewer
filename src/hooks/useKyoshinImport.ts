@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { HistoricalArchiveIndex } from '../types/historicalArchive'
 import { findCoveringArchiveSync } from '../services/localArchiveReplay'
 import { buildEventResultFromZip, parseJstTimestamp } from '../utils/knet/buildEventResultFromZip'
-import { STEP_SEC_DEFAULT } from '../utils/knet/seismicIntensity'
+import { STEP_SEC_DEFAULT } from '../utils/knet/intensityCommon'
 import { countImportedEvents, deleteImportedEvents, hasImportStorageError, onImportsChanged, saveImportedEvent } from '../utils/kyoshinImportDb'
 
 export interface KyoshinImportSummary {

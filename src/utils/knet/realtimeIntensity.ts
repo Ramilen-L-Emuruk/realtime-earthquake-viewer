@@ -15,7 +15,7 @@
 // **60 秒の窓の効き目は画面に出る。** 最大値に達してからおよそ 60 秒は値が下がらない
 // （強震モニタの実データでも 60〜63 秒保たれてから落ちる。2026-10-04 に大地震 4 本で確認）。
 
-import { DURATION_THRESHOLD_SEC, durationThresholdIndex, stepSamplesForSeconds } from './seismicIntensity'
+import { DURATION_THRESHOLD_SEC, durationThresholdIndex, stepSamplesForSeconds } from './intensityCommon'
 
 /** 0.3 秒の判定を行う窓（秒）。**論文の定義なので動かさない**（2008 年版 §2）。 */
 export const REALTIME_JUDGE_WINDOW_SEC = 60

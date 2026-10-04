@@ -2300,7 +2300,7 @@ upsert）—— 外すと、利用者が割り当てを直してもそのブラ�
 
 ### 途絶えたら行を残し、値だけ落とす（5 秒）
 
-震度は毎秒 1 件届く（強震モニタと同じリアルタイム震度・刻み 1 秒。`utils/knet/seismicIntensity` の `STEP_SEC_DEFAULT`）。
+震度は毎秒 1 件届く（強震モニタと同じリアルタイム震度・刻み 1 秒。`utils/knet/intensityCommon` の `STEP_SEC_DEFAULT`）。
 合成はそこへ裏付けの待ちが乗るだけで、**その待ちは顔ぶれが揃った時点で終わり、揃わないときも
 0.6 秒で頭打ち**（`seismo-host/src/receiver/sensorFusion.ts` の `FUSION_WAIT_MS_DEFAULT`）。
 合わせて 1.6 秒に収まるので、5 秒あれば正常な揺らぎを跨げる。

@@ -15,7 +15,7 @@
 // 途切れた前後を同じフィルタへ通すと、失われた時間が段差になって強い揺れとして出る
 // （切れ目の見分け方は `../timebase/segmenter.ts`）。
 import { RealtimeIntensityCalculator } from '../../../src/utils/knet/realtimeIntensity'
-import { stepSamplesForSeconds } from '../../../src/utils/knet/seismicIntensity'
+import { stepSamplesForSeconds } from '../../../src/utils/knet/intensityCommon'
 
 export interface IntensityStreamOptions {
   readonly sampleRateHz: number
