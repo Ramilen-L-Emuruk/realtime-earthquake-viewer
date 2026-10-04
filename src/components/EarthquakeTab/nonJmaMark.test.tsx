@@ -80,6 +80,8 @@ const renderTab = (quake: JMAQuake, lpgm?: JMALpgm, opts: { unreceivedOpen?: boo
   <EarthquakeTab
     earthquakes={[quake]}
     selectedId={quakeEventKey(quake)}
+    speakingKey={null}
+    followSpeech={false}
     onSelect={() => {}}
     isLoading={false}
     isLoadingMore={false}

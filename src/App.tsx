@@ -796,6 +796,10 @@ export function App() {
   // 断片が持つ参照から範囲を判定するもので、緊急地震速報の読み上げは断片列を通らない
   // （理由は `useEewSpeakingCard`）。
   const { speakingKey: speakingEewKey, follow: eewSpeakingCard } = useEewSpeakingCard()
+  // 「いま声が語っている地震情報」の印（取消の読み上げを含む）。地震情報タブの一覧が寄せる相手を
+  // 決めるのに使う（→ `utils/quakeCardScroll.ts`）。**同じ仕組みをもう 1 つ持つ** —— 緊急地震速報の
+  // 印と混ぜると、地震情報を読んでいるあいだ緊急地震速報のカードまで光る（鍵の体系も別）。
+  const { speakingKey: speakingQuakeKey, follow: quakeSpeakingCard } = useEewSpeakingCard()
 
   // ライブイベント受信処理（通知音・タイトル・タブ切替・読み上げ・ブラウザ通知）
   const { handleLiveEvent, resetTracking, restorePreWindowTracking, obsUpdateStatus, areaGradeChangedKeys, focusedDistrict } = useLiveEventHandler({
@@ -803,7 +807,7 @@ export function App() {
     setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate, setActiveTabRealtimeUrgent,
     setActiveTabRealtimeForKyoshin: () => requestTabForKyoshin('realtime'),
     followSpeechTab, preSpeechTab, speechFollow, unreceivedFollow, telegramTextFollow,
-    borrowedHypocenterFollow, eewSpeakingCard,
+    borrowedHypocenterFollow, eewSpeakingCard, quakeSpeakingCard,
     expandPanelForSpecialInfo,
     revertToDefaultTab, selectQuake, openLpgmFromQuake, openEstimatedIntensity,
     closeDistributionOnQuakeReport,
@@ -857,7 +861,7 @@ export function App() {
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
     simulateQuakeNotice, simulateEarthquakeCount, simulateEarthquakeCountRetraction, simulateEstimatedIntensity,
     simulateTrainingQuake, simulateUnreceivedQuake, simulateMaxScaleOrAboveQuake, simulateTsunamiGradeChange, simulateTsunamiQuietReports, simulateTsunamiExpiry, simulateQuakeAmendment,
-    simulateQuakeReportSequence, simulateHypocenterFromTsunami,
+    simulateQuakeReportSequence, simulateQuakeCancel, simulateHypocenterFromTsunami,
     resetState, loadReplayEvents, peekUpcomingPayloads, restoreQuakeHistory,
   } = useEarthquakes(handleLiveEvent, debouncedApiKey, settings.dmdataTestDelivery, replayTimeOffset, handleStartupRestore)
   earthquakesRef.current = earthquakes
@@ -929,6 +933,7 @@ export function App() {
     trainingQuake:     simulateTrainingQuake,
     quakeAmendment:    simulateQuakeAmendment,
     quakeReportSequence: simulateQuakeReportSequence,
+    quakeCancel: isDmdss ? simulateQuakeCancel : undefined,
     borrowFromTsunami: isDmdss ? simulateHypocenterFromTsunami : undefined,
     unreceivedQuake:   simulateUnreceivedQuake,
     maxScaleOrAboveQuake: simulateMaxScaleOrAboveQuake,
@@ -954,7 +959,7 @@ export function App() {
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
     simulateQuakeNotice, simulateEarthquakeCount, simulateEarthquakeCountRetraction, simulateEstimatedIntensity,
     simulateTrainingQuake, simulateUnreceivedQuake, simulateMaxScaleOrAboveQuake, simulateTsunamiGradeChange, simulateTsunamiQuietReports, simulateTsunamiExpiry, simulateQuakeAmendment,
-    simulateQuakeReportSequence, simulateHypocenterFromTsunami,
+    simulateQuakeReportSequence, simulateQuakeCancel, simulateHypocenterFromTsunami,
   ])
   // IconNav の onTabChange。手動選択は必ず即時反映し、以後 TAB_HOLD_MS の間は自動切替に
   // 奪わせない（EEW の新規発報・レベルアップ・誤報取消だけはこれより強い）。
@@ -2396,6 +2401,8 @@ export function App() {
               <EarthquakeTab
                 earthquakes={filteredEarthquakes}
                 selectedId={selectedQuake ? quakeEventKey(selectedQuake) : null}
+                speakingKey={speakingQuakeKey}
+                followSpeech={settings.voicevoxEnabled}
                 onSelect={selectQuakeFromCard}
                 isLoading={isLoading}
                 isLoadingMore={isLoadingMore}

@@ -608,6 +608,43 @@ export function createTestQuakeReportSequence(useDmdataShape: boolean): JMAQuake
   ]
 }
 
+/** 取消テストで、震度速報から取消までを空ける間隔。 */
+export const TEST_QUAKE_CANCEL_DELAY_MS = 10_000
+
+/**
+ * 地震情報の取消のテストデータ（震度速報 → 同じ報の取消）。**DMDSS 版のみ。**
+ *
+ * 形は 2024-01-01 の誤発表に合わせる —— 23:05:50 に震度速報（能登の本震の震度7 が再送された
+ * もの）が届き、23:13:47 に取り消された（リプレイで確かめた）。間は詰めてある。
+ *
+ * - **取消は震度速報と同じ `eventId`・同じ種別で届く。** 取消が効くカードの判定
+ *   （`useEarthquakes.ts` の `isQuakeCancelTarget`）は種別まで見る
+ * - **取消の本文（`Body/Text`）は持たせない。** 実電文がそうだった（画面には定型の
+ *   「この地震情報は取り消されました」だけが出る）
+ * - **取消は震源も震度も持たない。** 形は `dmdataParser.ts` の取消の早期リターンと同じ
+ * - **`id` は震度速報と同じ。** 震度速報（VXSE51）は報番号を持たず（`<Serial>` が空）、
+ *   取消も同じなので、`id` の末尾が揃う（実電文で確かめた）
+ *
+ * **standard 版には無い。** P2PQuake は地震情報の取消を配信しない（取消を読むのは津波と
+ * 緊急地震速報だけ）。
+ */
+export function createTestQuakeCancel(): [JMAQuake, JMAQuake] {
+  const prompt = createTestQuakeReportSequence(true)[0]
+  const cancelTime = new Date(new Date(prompt.time).getTime() + TEST_QUAKE_CANCEL_DELAY_MS).toISOString()
+  const cancel: JMAQuake = {
+    kind: 'quake',
+    id: prompt.id,
+    ...(prompt.eventId && { eventId: prompt.eventId }),
+    telegramKey: cancelTime,
+    time: cancelTime,
+    cancelled: true,
+    issue: { source: prompt.issue.source, time: cancelTime, type: '震度速報', correct: 'なし' },
+    earthquake: { time: '', hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: 0 }, maxScale: -1, domesticTsunami: '不明' },
+    points: [],
+  }
+  return [prompt, cancel]
+}
+
 /**
  * 市町村の未入電を含む地震情報のテストデータ（2022-01-22 01:08 日向灘 M6.4 最大震度5強・第 2 報）。
  *

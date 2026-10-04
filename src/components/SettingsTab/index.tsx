@@ -64,6 +64,8 @@ export interface TestFunctions {
   trainingQuake?: () => void
   quakeAmendment: () => void
   quakeReportSequence: () => void
+  /** 地震情報の取消。DMDSS 版だけ渡す（P2PQuake は地震情報の取消を配信しない）。 */
+  quakeCancel?: () => void
   borrowFromTsunami?: () => void
   unreceivedQuake?: () => void
   maxScaleOrAboveQuake?: () => void
@@ -1956,6 +1958,11 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
         <Row label="種別が前後する報" description="3秒おきに4通を流し、その30秒後に5通目を流す（震度速報 → 震源情報 → 震度速報 → 震源・震度情報 → その続報。2024年能登半島地震の前震と同じ順序）。カードの見出しが「震度速報#2/震源情報」と受け取った種別を並べ、震源・震度情報で速報段階が畳まれる。5通目は観測地点が遅れて入電した形で、地域ごとの最大震度は変わらないため読み上げがその旨を伝える">
           <TestButton color="yellow" onClick={onTest.quakeReportSequence}>種別遷移テスト</TestButton>
         </Row>
+        {isDmdss && onTest.quakeCancel && (
+          <Row label="地震情報（取消）" description="震度速報を出し、10秒後に取り消す。カードに「取消」が重なり、10秒後に一覧から消える">
+            <TestButton color="purple" onClick={onTest.quakeCancel}>取消テスト</TestButton>
+          </Row>
+        )}
         {isDmdss && onTest.borrowFromTsunami && (
           <Row label="津波が先に伝える震源" description="4秒おきに4通を流す（震度速報 → 津波警報 → 震度速報の続報 → 津波の続報。2024年能登半島地震の本震と同じ順序）。震度速報は震源を持たない電文だが、津波警報が載せている震源（石川県能登地方・Ｍ７．４・ごく浅い）を借りてカードと読み上げに出す。震源の行に「津波情報より」と出どころが付き、津波の続報でＭ７．６へ更新される">
             <TestButton color="yellow" onClick={onTest.borrowFromTsunami}>震源の借用テスト</TestButton>

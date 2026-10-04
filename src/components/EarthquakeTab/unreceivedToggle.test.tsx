@@ -55,6 +55,8 @@ const renderTab = (quake: JMAQuake, opts: { unreceivedOpen?: boolean } = {}) => 
   <EarthquakeTab
     earthquakes={[quake]}
     selectedId={quakeEventKey(quake)}
+    speakingKey={null}
+    followSpeech={false}
     onSelect={() => {}}
     isLoading={false}
     isLoadingMore={false}
@@ -115,6 +117,8 @@ describe('未入電トグル', () => {
       <EarthquakeTab
         earthquakes={[makeQuake(MIXED)]}
         selectedId={quakeEventKey(makeQuake(MIXED))}
+        speakingKey={null}
+        followSpeech={false}
         onSelect={() => {}}
         isLoading={false}
         isLoadingMore={false}
