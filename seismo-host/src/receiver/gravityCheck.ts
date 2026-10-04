@@ -5,8 +5,10 @@
 // 強い揺れとして出る）は捕まるが、**小さすぎる向きは素通りする** —— 本物の強い揺れが
 // 弱く出るほうで、しかも出てくる値はすべて有限で範囲内なので、どの検査にも掛からない。
 //
-// 同じ形の穴が `../intensity/intensityStream.ts` の `demeanWindow` にもある。自作センサーへ
-// `false` を誤って渡すと、静止していても計測震度 4.48〜6.23 が出続ける（実測）。
+// 同じ形の穴が震度の計算側にもある。重力の直流を差し引かずに近似フィルタへ通すと、
+// 立ち上がりの段差が強い揺れとして出て、静止していても高い震度が 60 秒の窓に居座る
+// （`src/utils/knet/realtimeIntensity.ts` の `RealtimeIntensityCalculator`）。かつての方式
+// （気象庁の手順を 20 秒窓へ当てる）では、平均を引き忘れると 4.48〜6.23 が出続けた（実測）。
 //
 // **どちらも「1 パケットの中」を見ても判らない。** 判るのは、**静止している数十秒**を
 // まとめて見たときだけ。だからここは受信層に置く。
@@ -31,6 +33,7 @@
 import { GAL_PER_G } from '../intensity/units'
 import type { BoardKey } from '../protocol/types'
 import type { Vec3 } from './stationConfigTypes'
+import { REALTIME_JUDGE_WINDOW_SEC } from '../../../src/utils/knet/realtimeIntensity'
 
 /**
  * 窓の長さ。**受け手の時計で測る。**
@@ -101,10 +104,40 @@ const REST_SD_GAL = 5
 /**
  * 静止しているときに許す計測震度の上限。
  *
- * 静止した基板の実測が 0.79〜1.26、`demeanWindow` を誤って切ったときの実測が
- * 4.48〜6.23。**その間に置く。**
+ * かつての方式（気象庁の手順を 20 秒窓へ当てる）での実測が、静止した基板で 0.79〜1.26、
+ * 直流の扱いを誤ったときに 4.48〜6.23。**その間に置いた。** いまの方式（リアルタイム震度）でも
+ * 静止は 1 未満に収まる（合成した静止の材料で確かめた。`intensityStream.test.ts`）ので、
+ * この上限はそのまま効く。
  */
 const REST_MAX_INTENSITY = 3
+
+/**
+ * 震度の振り返りに足す余裕（ms）。**10 秒。** 近似フィルタの尾（実測で 2〜3 秒）と、震度が
+ * 帳面へ届くまでの遅れ（合成の待ち 最大 0.6 秒・パケットの間隔 0.3 秒）を覆う。
+ */
+const REST_TAIL_MARGIN_MS = 10_000
+
+/**
+ * 「静止しているのに震度が高い」と言い切るのに要る、続けて静止した窓の数。
+ *
+ * **震度は直近 {@link REALTIME_JUDGE_WINDOW_SEC} 秒を振り返って出す値**（リアルタイム震度は最大値を
+ * 約 60 秒保つ）。窓の中で受けた震度は、窓の始まりより最大 60 秒前の揺れを含みうるので、
+ * **窓そのものとその手前 60 秒が静止していたときだけ**突き合わせる。そうしないと、地震の揺れが
+ * 止んだ直後の窓で「静止しているのに高い」が地震のたびに立つ（2026-10-04 の敵対的レビューが
+ * 再現した。揺れ 10 秒の後、sd 0 の窓で震度 6.53 が残っていた）。
+ *
+ * **60 秒ちょうどで区切らない。** 揺れが止んでも近似フィルタの出力はすぐには 0 にならず
+ * （尾を引く）、震度が届くまでの遅れ（合成の待ち・パケットの到着）も乗るので、震度が下がるのは
+ * 揺れが止んでから 62〜63 秒後になる（強震モニタの実データでも 60〜63 秒）。余裕を 0 にすると、
+ * 揺れの終わりが窓の境目に重なったときだけ誤った印が立つ（2026-10-04 の 2 巡目のレビューが、
+ * 本物の計算器で揺れの終わりを境目ちょうどに置いて再現した。3 つ目の窓の最大が 3.46）。
+ * {@link REST_TAIL_MARGIN_MS} を足して丸める。
+ *
+ * 30 秒窓なら 4 つ（120 秒）。窓の長さから計算するので、窓や方式の定数を変えれば追随する。
+ */
+function restWindowsNeeded(windowMs: number): number {
+  return Math.ceil((windowMs + REALTIME_JUDGE_WINDOW_SEC * 1000 + REST_TAIL_MARGIN_MS) / windowMs)
+}
 
 /**
  * 倍率の診断の結果。
@@ -244,6 +277,11 @@ interface Entry {
   sumAxis: [number, number, number]
   sumSqAxis: [number, number, number]
   maxIntensity: number | null
+  /**
+   * 同じ流れの中で、続けて静止していた窓の数（いま閉じる窓は含まない）。
+   * **流れが変わったら 0 へ戻す** —— 起動し直した基板の手前の窓は、今の震度の振り返りに含まれない。
+   */
+  restStreak: number
   last: GravityVerdict | null
 }
 
@@ -326,6 +364,7 @@ export class GravityCheckBook {
       //
       // 初めて見たセンサー（`streamKey` が空）は数えない —— 捨てた窓が無い。
       if (entry.streamKey !== '') this.counts.restarts += 1
+      entry.restStreak = 0
       this.reset(entry, input.streamKey)
     } else if (entry.windowStartMs + this.windowMs <= this.now()) {
       verdict = this.settle(entry)
@@ -469,10 +508,17 @@ export class GravityCheckBook {
           : mean > this.maxGal
             ? 'too-large'
             : 'ok'
+      // **窓の手前も静止していたときだけ突き合わせる**（`restWindowsNeeded` を見ること）。
+      const restCovered = atRest && entry.restStreak + 1 >= restWindowsNeeded(this.windowMs)
       const restless =
-        atRest && entry.maxIntensity !== null && entry.maxIntensity > REST_MAX_INTENSITY
+        restCovered && entry.maxIntensity !== null && entry.maxIntensity > REST_MAX_INTENSITY
       verdict = { ...base, meanGal: mean, sdGal: sd, axisMeanGal, axisSdGal, scale, restless }
     }
+    // **静止が途切れたら数え直す。** 判定できなかった窓（件数不足・読めない）も、静止して
+    // いたとは言えないので途切れとして扱う。
+    entry.restStreak = verdict.scale === 'ok' || verdict.scale === 'too-small' || verdict.scale === 'too-large'
+      ? entry.restStreak + 1
+      : 0
 
     if (verdict.scale === 'too-small' || verdict.scale === 'too-large' || verdict.scale === 'unreadable') {
       this.counts.mismatches += 1
@@ -530,6 +576,7 @@ export class GravityCheckBook {
       sumAxis: [0, 0, 0],
       sumSqAxis: [0, 0, 0],
       maxIntensity: null,
+      restStreak: 0,
       last: null,
     }
     this.entries.set(key, created)

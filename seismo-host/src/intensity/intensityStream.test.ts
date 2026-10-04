@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import {
-  EDGE_MARGIN_SEC,
-  calcSeismicIntensity,
-  computeIntensityTimeSeries,
-} from '../../../src/utils/knet/seismicIntensity'
+import { computeRealtimeIntensityTimeSeries } from '../../../src/utils/knet/realtimeIntensity'
 import { IntensityStream, type IntensityPoint } from './intensityStream'
 
 const RATE = 100
@@ -58,155 +54,56 @@ function comparable(points: readonly IntensityPoint[]) {
   return points.map((p) => ({ tSec: p.tSec, intensity: p.intensity }))
 }
 
-function mean(values: readonly number[]): number {
-  let sum = 0
-  for (const v of values) sum += v
-  return sum / values.length
-}
-
-/**
- * 「窓ごとに平均を引く」側の答え合わせ。**バッチ実装の走り方をここへ書き写して**、
- * 平均を引く一手だけを足したもの。実装とは別に組むから答え合わせになる。
- */
-function batchWithDemean(
-  a: number[],
-  b: number[],
-  c: number[],
-  rate: number,
-  opts: { windowSec: number; stepSec: number },
-) {
-  const len = Math.min(a.length, b.length, c.length)
-  const windowSamples = Math.round(opts.windowSec * rate)
-  const stepSamples = Math.max(1, Math.round(opts.stepSec * rate))
-  const marginSamples = Math.round(EDGE_MARGIN_SEC * rate)
-  const out: { tSec: number; intensity: number | null }[] = []
-  for (let end = stepSamples; end <= len; end += stepSamples) {
-    const analysisEnd = Math.min(len, end + marginSamples)
-    const start = Math.max(0, analysisEnd - windowSamples)
-    const cut = (arr: number[]) => {
-      const seg = arr.slice(start, analysisEnd)
-      const m = mean(seg)
-      return seg.map((v) => v - m)
-    }
-    out.push({
-      tSec: end / rate,
-      intensity: calcSeismicIntensity(cut(a), cut(b), cut(c), rate),
-    })
-  }
-  return out
-}
-
 describe('IntensityStream', () => {
   const ch: [number[], number[], number[]] = [
     makeWaveform(25 * RATE, 1),
     makeWaveform(25 * RATE, 2),
     makeWaveform(25 * RATE, 3),
   ]
-  const opts = { sampleRateHz: RATE, windowSec: 5, stepSec: 1 }
+  const opts = { sampleRateHz: RATE, stepSec: 1 }
 
   it('バッチ実装と厳密に一致する', () => {
-    const streamed = runStream(
-      new IntensityStream({ ...opts, demeanWindow: false }),
-      ch,
-      [137],
-    )
-    const batch = computeIntensityTimeSeries(ch[0], ch[1], ch[2], RATE, opts)
+    const streamed = runStream(new IntensityStream(opts), ch, [137])
+    const batch = computeRealtimeIntensityTimeSeries(ch[0], ch[1], ch[2], RATE, opts.stepSec)
     expect(comparable(streamed)).toEqual(batch)
     // 山を置いてあるので、答えが全部 null では一致していても意味が無い。
     expect(batch.filter((p) => p.intensity != null).length).toBeGreaterThan(10)
   })
 
   it('刻み方を変えても同じ答えになる', () => {
-    const base = runStream(new IntensityStream({ ...opts, demeanWindow: false }), ch, [137])
+    const base = runStream(new IntensityStream(opts), ch, [137])
     for (const sizes of [[1], [100], [7, 313, 2], [2500]]) {
-      const other = runStream(
-        new IntensityStream({ ...opts, demeanWindow: false }),
-        ch,
-        sizes,
-      )
-      expect(comparable(other)).toEqual(comparable(base))
+      expect(comparable(runStream(new IntensityStream(opts), ch, sizes))).toEqual(comparable(base))
     }
-  })
-
-  it('実運用の窓（20 秒）でもバッチ実装と一致する', () => {
-    const long: [number[], number[], number[]] = [
-      makeWaveform(40 * RATE, 11),
-      makeWaveform(40 * RATE, 12),
-      makeWaveform(40 * RATE, 13),
-    ]
-    const real = { sampleRateHz: RATE, windowSec: 20, stepSec: 1 }
-    const streamed = runStream(
-      new IntensityStream({ ...real, demeanWindow: false }),
-      long,
-      [256],
-    )
-    expect(comparable(streamed)).toEqual(
-      computeIntensityTimeSeries(long[0], long[1], long[2], RATE, real),
-    )
-  })
-
-  it('窓ごとに平均を引く側も、同じ窓の切り方で答えを出す', () => {
-    const expected = batchWithDemean(ch[0], ch[1], ch[2], RATE, opts)
-    for (const sizes of [[91], [1], [7, 313, 2], [2500]]) {
-      const streamed = runStream(new IntensityStream({ ...opts, demeanWindow: true }), ch, sizes)
-      expect(comparable(streamed)).toEqual(expected)
-    }
-  })
-
-  it('窓より短い区間でもバッチ実装と一致する', () => {
-    // 区間は切れ目で終わるので、窓（5 秒）に満たないまま締めることがある。
-    // このとき解析の範囲は「溜まっている分」で、先読みの位置まで伸ばしてはならない。
-    const n = Math.round(2.5 * RATE)
-    const short: [number[], number[], number[]] = [
-      ch[0].slice(0, n),
-      ch[1].slice(0, n),
-      ch[2].slice(0, n),
-    ]
-    const streamed = runStream(
-      new IntensityStream({ ...opts, demeanWindow: false }),
-      short,
-      [n],
-    )
-    expect(streamed).not.toHaveLength(0)
-    expect(comparable(streamed)).toEqual(
-      computeIntensityTimeSeries(short[0], short[1], short[2], RATE, opts),
-    )
   })
 
   it('位置は経過秒と対応する', () => {
-    const points = runStream(new IntensityStream({ ...opts, demeanWindow: false }), ch, [500])
+    const points = runStream(new IntensityStream(opts), ch, [500])
     expect(points.length).toBeGreaterThan(0)
     for (const p of points) expect(p.endSampleIndex).toBe(Math.round(p.tSec * RATE))
     expect(points[0].endSampleIndex).toBe(RATE)
   })
 
-  it('先読みの分が届くまで答えを出さない', () => {
-    const stream = new IntensityStream({ ...opts, demeanWindow: false })
-    const needed = RATE + EDGE_MARGIN_SEC * RATE
-    const zero = new Array<number>(needed - 1).fill(0)
+  // 正: 近似フィルタは未来のサンプルを見ないので、刻みの位置まで届いたその場で出る。
+  it('刻みの位置まで届いたら、その場で答えを出す', () => {
+    const stream = new IntensityStream(opts)
+    const zero = new Array<number>(RATE - 1).fill(0)
     expect(stream.push(0, zero, zero, zero)).toHaveLength(0)
-    expect(stream.push(needed - 1, [0], [0], [0])).toHaveLength(1)
+    expect(stream.push(RATE - 1, [0], [0], [0])).toHaveLength(1)
   })
 
-  it('締めると、先読みが足りない分も出し切る', () => {
-    const stream = new IntensityStream({ ...opts, demeanWindow: false })
-    const n = 10 * RATE
-    const cut: [number[], number[], number[]] = [
-      ch[0].slice(0, n),
-      ch[1].slice(0, n),
-      ch[2].slice(0, n),
-    ]
-    stream.push(0, cut[0], cut[1], cut[2])
-    const tail = stream.end()
-    // 先読み 2 秒ぶんが届かなかった末尾の 2 点。
-    expect(tail.map((p) => p.tSec)).toEqual([9, 10])
+  it('締めても出し残しは無く、二度目も空', () => {
+    const stream = new IntensityStream(opts)
+    const n = 10 * RATE + 37
+    stream.push(0, ch[0].slice(0, n), ch[1].slice(0, n), ch[2].slice(0, n))
+    expect(stream.end()).toEqual([])
     expect(stream.end()).toEqual([])
   })
 
   it('位置が続きになっていなければ止まる', () => {
     // **弾いたパケットを組み立て側は「連続」として受理する**（あちらはサンプルの中身を
     // 見ていない）。詰めて繋ぐと、失われた時間が段差になって強い揺れとして出る。
-    const stream = new IntensityStream({ ...opts, demeanWindow: false })
+    const stream = new IntensityStream(opts)
     stream.push(0, [1, 2], [1, 2], [1, 2])
     expect(() => stream.push(5, [3], [3], [3])).toThrow(/続きになっていない/)
     expect(() => stream.push(1, [3], [3], [3])).toThrow(/続きになっていない/)
@@ -215,64 +112,61 @@ describe('IntensityStream', () => {
   })
 
   it('締めたあとに流し込むと止まる', () => {
-    const stream = new IntensityStream({ ...opts, demeanWindow: false })
+    const stream = new IntensityStream(opts)
     stream.end()
     expect(() => stream.push(0, [0], [0], [0])).toThrow(/end\(\)/)
   })
 
   it('3 成分の長さが揃っていなければ止まる', () => {
-    const stream = new IntensityStream({ ...opts, demeanWindow: false })
+    const stream = new IntensityStream(opts)
     expect(() => stream.push(0, [0, 0], [0], [0])).toThrow(/長さ/)
   })
 
-  it('窓が 0.3 秒を覆えなければ作れない', () => {
-    // 覆えないと答えが恒久的に null になり、先読み待ちと見分けが付かない。
-    expect(
-      () => new IntensityStream({ sampleRateHz: 100, windowSec: 0.29, stepSec: 1, demeanWindow: false }),
-    ).toThrow(/windowSec/)
-    expect(
-      () => new IntensityStream({ sampleRateHz: 100, windowSec: 0.3, stepSec: 1, demeanWindow: false }),
-    ).not.toThrow()
-    // **下限は計算核と同じ境界から引く。** 毎秒 101 回では 30 サンプルで足りるので、
-    // 独自に切り上げていた頃はここを過剰に拒んでいた。
-    expect(
-      () => new IntensityStream({ sampleRateHz: 101, windowSec: 30 / 101, stepSec: 1, demeanWindow: false }),
-    ).not.toThrow()
+  // 安全弁: 近似フィルタが発散するほど低いサンプリング周波数では作らない。発散した出力は
+  // 有限のまま大きくなるので、作ってしまうと「揺れの大きな地震」と区別が付かない。
+  it('サンプリング周波数が低すぎれば作れない', () => {
+    expect(() => new IntensityStream({ sampleRateHz: 50, stepSec: 1 })).toThrow(/発散/)
+    expect(() => new IntensityStream({ sampleRateHz: 100, stepSec: 1 })).not.toThrow()
+  })
+
+  it('刻みが正でなければ作れない', () => {
+    expect(() => new IntensityStream({ sampleRateHz: 100, stepSec: 0 })).toThrow(/stepSec/)
   })
 
   it('有限でないサンプルが混じっていれば止まる', () => {
-    // 通すと窓 1 つぶんの答えがまとめて null へ落ち、その間の揺れが黙って消える。
     for (const bad of [NaN, Infinity, -Infinity]) {
-      const stream = new IntensityStream({ ...opts, demeanWindow: false })
+      const stream = new IntensityStream(opts)
       expect(() => stream.push(0, [1, bad], [1, 1], [1, 1])).toThrow(/有限/)
     }
   })
 
-  it('投げたときは何も溜め込んでいない', () => {
-    // **途中まで入れてから投げると、成分ごとに溜まった数がずれる。** 窓が埋まれば件数は
-    // 上限で揃うので、以後どの検査にも掛からないまま別の時刻の値どうしを合成し続ける。
+  it('投げたときは何も通していない', () => {
+    // **途中まで通してから投げると、フィルタの状態がその途中で止まったまま残る。**
+    // 以後の答えは、捨てたはずのサンプルを含んだ値になる。
     const n = 5 * RATE
-    const head: [number[], number[], number[]] = [
-      ch[0].slice(0, n),
-      ch[1].slice(0, n),
-      ch[2].slice(0, n),
-    ]
-    // 軸 1 の 3 つ目を壊す（軸 0 の 3 つ分は「確かめる前に触る」実装なら入ってしまう）。
+    const head: [number[], number[], number[]] = [ch[0].slice(0, n), ch[1].slice(0, n), ch[2].slice(0, n)]
     const bad: [number[], number[], number[]] = [
       [1, 2, 3, 4],
       [1, 2, NaN, 4],
       [1, 2, 3, 4],
     ]
+    const rest: [number[], number[], number[]] = [
+      ch[0].slice(n, 2 * n),
+      ch[1].slice(n, 2 * n),
+      ch[2].slice(n, 2 * n),
+    ]
 
-    const broken = new IntensityStream({ ...opts, demeanWindow: false })
+    const broken = new IntensityStream(opts)
     broken.push(0, head[0], head[1], head[2])
     expect(() => broken.push(n, bad[0], bad[1], bad[2])).toThrow(/有限/)
+    const fromBroken = broken.push(n, rest[0], rest[1], rest[2])
 
-    const clean = new IntensityStream({ ...opts, demeanWindow: false })
+    const clean = new IntensityStream(opts)
     clean.push(0, head[0], head[1], head[2])
+    const fromClean = clean.push(n, rest[0], rest[1], rest[2])
 
     expect(broken.sampleCount).toBe(clean.sampleCount)
-    expect(comparable(broken.end())).toEqual(comparable(clean.end()))
+    expect(comparable(fromBroken)).toEqual(comparable(fromClean))
   })
 })
 
@@ -284,21 +178,13 @@ describe('重力の直流成分', () => {
     makeWaveform(25 * RATE, 22).map((v) => v * 0.02 + OFFSETS[1]),
     makeWaveform(25 * RATE, 23).map((v) => v * 0.02 + OFFSETS[2]),
   ]
-  const opts = { sampleRateHz: RATE, windowSec: 20, stepSec: 1 }
 
-  function maxIntensity(demeanWindow: boolean): number {
-    const points = runStream(new IntensityStream({ ...opts, demeanWindow }), quiet, [500])
+  it('静止した基板の値（重力が乗ったまま）を渡しても、静止は静止のまま出る', () => {
+    // 直流を引かずにフィルタへ通すと、立ち上がりの段差が強い揺れとして出て、60 秒の窓に
+    // 入ったまま 1 分間居座る。
+    const points = runStream(new IntensityStream({ sampleRateHz: RATE, stepSec: 1 }), quiet, [500])
     const values = points.map((p) => p.intensity).filter((v): v is number => v != null)
     expect(values.length).toBeGreaterThan(0)
-    return Math.max(...values)
-  }
-
-  it('引かなければ、静止していても強い揺れとして出る', () => {
-    // FFT のためのゼロ詰めで直流の段差が低い周波数へ漏れる。実データでは 4.48〜6.23 だった。
-    expect(maxIntensity(false)).toBeGreaterThan(4)
-  })
-
-  it('窓ごとに平均を引けば、静止は静止のまま出る', () => {
-    expect(maxIntensity(true)).toBeLessThan(2)
+    expect(Math.max(...values)).toBeLessThan(1)
   })
 })

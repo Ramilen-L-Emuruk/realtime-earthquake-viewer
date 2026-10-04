@@ -989,17 +989,17 @@ describe('buildGravityWarnings', () => {
     expect(out[0].line).toContain('数値として読めない値')
   })
 
-  it('静止しているのに震度が高いときは、平均引きを疑えと言う', () => {
+  it('静止しているのに震度が高いときは、震度を出す側の直流の扱いを疑えと言う', () => {
     const out = buildGravityWarnings({ ...base, restless: true, maxIntensity: 5.1 })
 
     expect(out).toHaveLength(1)
     expect(out[0].kind).toBe('gravity-restless')
     expect(out[0].line).toContain('静止している')
     expect(out[0].line).toContain('5.1')
-    expect(out[0].line).toContain('平均引き')
+    expect(out[0].line).toContain('直流の扱い')
   })
 
-  it('倍率と平均引きが同じ窓で立ったら、2 行を別の鍵で出す', () => {
+  it('倍率と直流の扱いの疑いが同じ窓で立ったら、2 行を別の鍵で出す', () => {
     // **1 行へ混ぜない。** 疑う先が違う（ヘッダの名乗りと、震度を出す側の配線）ので、
     // まとめるとどちらを見に行けばよいか読み取れない。鍵を分けるのは、間引きが
     // 片方を飲み込まないようにするため。

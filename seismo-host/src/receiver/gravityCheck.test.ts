@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { GAL_PER_G, galFromCounts } from '../intensity/units'
+import { RealtimeIntensityCalculator } from '../../../src/utils/knet/realtimeIntensity'
 import { GravityCheckBook } from './gravityCheck'
 import type { GravityVerdict } from './gravityCheck'
 
@@ -195,13 +196,18 @@ describe('GravityCheckBook', () => {
     expect(got?.sampleCount).toBe(10)
   })
 
-  it('静止しているのに震度が高ければ印を立てる', () => {
-    // 平均引き（`demeanWindow`）を切ったまま自作センサーへ繋ぐと、静止していても
-    // 計測震度 4.48〜6.23 が出続ける（実測）。値はすべて有限で範囲内なので、
+  it('静止しているのに震度が高ければ印を立てる（窓とその手前の振り返りが静止していたとき）', () => {
+    // 震度の計算側が重力の直流を扱い損ねると、静止していても高い震度が出続ける
+    // （かつての方式での実測で 4.48〜6.23）。値はすべて有限で範囲内なので、
     // **この突き合わせ以外のどの検査にも掛からない。**
     const { b, advance } = book()
 
+    // 静止した窓を 3 つ閉じてから、4 つ目の窓で高い震度を受ける（30 秒窓なら 4 つ要る）。
     wave(b, restGal(300, { swingGal: 1.5 }))
+    for (let i = 0; i < 3; i++) {
+      advance(30_000)
+      expect(wave(b, restGal(300, { swingGal: 1.5 }))?.restless).toBe(false)
+    }
     b.noteIntensity({ boardKey: BOARD, sensorId: 'i2c0-68', streamKey: STREAM, intensity: 5.1 })
     advance(30_000)
     const got = wave(b, restGal(300))
@@ -209,6 +215,74 @@ describe('GravityCheckBook', () => {
     expect(got?.restless).toBe(true)
     expect(got?.maxIntensity).toBe(5.1)
     expect(b.snapshot().restlessWindows).toBe(1)
+  })
+
+  // 正: リアルタイム震度は最大値を約 60 秒保つので、揺れが止んだ直後の静止した窓にも
+  // 高い震度が届く。そこで印を立てると、地震のたびに「配線を疑え」が出る。
+  it('揺れが止んだ直後の静止した窓では、震度が高くても印は立たない', () => {
+    const { b, advance } = book()
+
+    wave(b, restGal(300, { swingGal: 10 })) // 揺れている窓
+    advance(30_000)
+    expect(wave(b, restGal(300))?.scale).toBe('not-at-rest')
+    // 揺れは止んだが、震度は保たれて届く。
+    b.noteIntensity({ boardKey: BOARD, sensorId: 'i2c0-68', streamKey: STREAM, intensity: 6.5 })
+    advance(30_000)
+    const just = wave(b, restGal(300))
+    expect(just?.scale).toBe('ok')
+    expect(just?.restless).toBe(false)
+    b.noteIntensity({ boardKey: BOARD, sensorId: 'i2c0-68', streamKey: STREAM, intensity: 6.5 })
+    advance(30_000)
+    expect(wave(b, restGal(300))?.restless).toBe(false)
+  })
+
+  // 正（境目）: 本物の計算器で、揺れの終わりを窓の境目に重ねる最悪の形。揺れが止んでも
+  // 近似フィルタの尾と 60 秒の判定で震度は 62〜63 秒残るので、振り返りに余裕が無いと
+  // 突き合わせが始まる最初の窓で印が立つ（余裕 0 のときに 3.46 が届くと 2 巡目のレビューが再現した）。
+  it('本物の震度の減り方では、揺れの終わりが窓の境目に重なっても印は立たない', () => {
+    const { b, advance } = book()
+    const calc = new RealtimeIntensityCalculator(100)
+    const restless: number[] = []
+    // 揺れは 0〜30 秒（窓の境目ちょうどで止む）。以後 210 秒静止。1 秒ごとに波形と震度を渡す。
+    for (let sec = 0; sec < 240; sec++) {
+      const shaking = sec < 30
+      const xs: number[] = []
+      const ys: number[] = []
+      const zs: number[] = []
+      for (let k = 0; k < 100; k++) {
+        const t = sec + k / 100
+        const amp = shaking ? 3000 : 0
+        const x = amp * Math.sin(2 * Math.PI * 1.5 * t) + 0.5 * Math.sin(97 * t)
+        const y = amp * 0.6 * Math.cos(2 * Math.PI * 1.5 * t) + 0.5 * Math.cos(89 * t)
+        const z = 980 + 0.5 * Math.sin(83 * t)
+        calc.push(x, y, z)
+        xs.push(x)
+        ys.push(y)
+        zs.push(z)
+      }
+      const v = wave(b, [xs, ys, zs])
+      if (v?.restless) restless.push(sec)
+      b.noteIntensity({ boardKey: BOARD, sensorId: 'i2c0-68', streamKey: STREAM, intensity: calc.intensity() })
+      advance(1000)
+    }
+    expect(restless).toEqual([])
+  })
+
+  // 安全弁: 起動し直した基板の手前の窓は、今の震度の振り返りに含まれない。
+  it('流れが変わったら静止の連続を数え直す', () => {
+    const { b, advance } = book()
+    const next = { streamKey: 'mac:aa|i2c0-68|boot2' }
+
+    wave(b, restGal(300, { swingGal: 1.5 }))
+    advance(30_000)
+    wave(b, restGal(300, { swingGal: 1.5 }))
+    advance(30_000)
+    wave(b, restGal(300, { swingGal: 1.5 }))
+    // ここで起動し直す（溜めかけの窓は捨てる）。
+    wave(b, restGal(300, { swingGal: 1.5 }), next)
+    b.noteIntensity({ boardKey: BOARD, sensorId: 'i2c0-68', streamKey: next.streamKey, intensity: 5.1 })
+    advance(30_000)
+    expect(wave(b, restGal(300), next)?.restless).toBe(false)
   })
 
   it('静止していて震度も低ければ印は立たない', () => {
@@ -420,9 +494,15 @@ describe('数え上げの受け渡し', () => {
 
     // 静止しているのに震度が高い窓を 3 つ作る。**覚えの上限（3）に達しているので、
     // 新しいセンサーを 1 つ作るたびに 1 つ押し出す**（evictions も一緒に進む）。
+    // 印が立つのは静止した窓が 4 つ続いたとき（`restWindowsNeeded`）なので、3 つ閉じてから
+    // 4 つ目で高い震度を受ける。
     for (const sensorId of ['r1', 'r2', 'r3']) {
       const rest = { sensorId, streamKey: `${sensorId}|1` }
       wave(b, restGal(300, { swingGal: 1.5 }), rest)
+      for (let i = 0; i < 3; i++) {
+        advance(30_000)
+        wave(b, restGal(300, { swingGal: 1.5 }), rest)
+      }
       b.noteIntensity({ boardKey: BOARD, sensorId, streamKey: `${sensorId}|1`, intensity: 5.1 })
       advance(30_000)
       wave(b, restGal(300), rest)

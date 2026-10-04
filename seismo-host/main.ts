@@ -843,7 +843,7 @@ export function buildGravityWarnings(v: GravityVerdict): readonly RawWarning[] {
       detail: who,
       line:
         `[gravity] ${who} は静止している（ばらつき ${gal(v.sdGal)} gal）のに`
-        + ` 計測震度 ${v.maxIntensity ?? '?'} が出ている。窓ごとの平均引きを疑う`,
+        + ` 計測震度 ${v.maxIntensity ?? '?'} が出ている。震度を出す側の直流の扱いを疑う`,
     })
   }
   return out
@@ -1679,7 +1679,7 @@ async function main(): Promise<void> {
     publish: (r) => hub.publish({ kind: 'reading', reading: r }),
     print: printReading,
     // 揺れていないのに高い震度が出続けるなら、疑うのは換算ではなく震度を出す側の
-    // 配線（窓ごとの平均引き）。
+    // 配線（重力の直流の扱い。`src/utils/knet/realtimeIntensity.ts`）。
     diagnose: (r) =>
       gravity.noteIntensity({
         boardKey: r.boardKey,
@@ -1945,8 +1945,8 @@ async function main(): Promise<void> {
       boardClocks.note(board, receivedAtMs, read.packet)
       const outcome = pipeline.handlePacket(read.packet)
 
-      // **波形は震度より先に押し出す。** 計測震度は窓の都合で 2 秒遅れて出るので、
-      // 順を入れ替えると受け手の画面で波形だけが遅れて見える。
+      // **波形は震度より先に押し出す。** 震度は刻み（1 秒）の位置まで届いた回にしか出ない
+      // ので、順を入れ替えると受け手の画面で波形だけが遅れて見える。
       if (outcome.wave !== null) hub.publish({ kind: 'wave', wave: outcome.wave })
 
       // **観測点の合成（REQUIREMENTS.md §7）は、`ingest()` をここで呼ぶ。**

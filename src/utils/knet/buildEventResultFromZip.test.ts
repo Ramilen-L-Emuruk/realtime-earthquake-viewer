@@ -66,17 +66,12 @@ function buildStationEntries(stationCode: string, opts: { originTime?: string; a
 describe('buildEventResultFromZip', () => {
   test('安全弁: stepSecが非整数だとエラーになる（epochSecの丸め衝突を防ぐ）', () => {
     const zip = zipSync(buildStationEntries('AAA001'))
-    expect(() => buildEventResultFromZip(zip, 20, 0.5)).toThrow(/stepSec は正の整数/)
+    expect(() => buildEventResultFromZip(zip, 0.5)).toThrow(/stepSec は正の整数/)
   })
 
   test('安全弁: stepSecが0以下だとエラーになる', () => {
     const zip = zipSync(buildStationEntries('AAA001'))
-    expect(() => buildEventResultFromZip(zip, 20, 0)).toThrow(/stepSec は正の整数/)
-  })
-
-  test('安全弁: windowSecが0以下だとエラーになる', () => {
-    const zip = zipSync(buildStationEntries('AAA001'))
-    expect(() => buildEventResultFromZip(zip, 0, 5)).toThrow(/windowSec は正の数/)
+    expect(() => buildEventResultFromZip(zip, 0)).toThrow(/stepSec は正の整数/)
   })
 
   test('正: ZIPを解析して観測点ごとの震度時系列とピーク震度を算出する', () => {
@@ -84,7 +79,7 @@ describe('buildEventResultFromZip', () => {
       ...buildStationEntries('AAA001'),
       ...buildStationEntries('BBB002'),
     })
-    const result = buildEventResultFromZip(zip, 20, 5)
+    const result = buildEventResultFromZip(zip, 5)
     expect(result.originTimeJst).toBe('20180906030759')
     expect(result.stationSeries).toHaveLength(2)
     expect(result.stationSeries.map((s) => s.stationCode).sort()).toEqual(['AAA001', 'BBB002'])
@@ -93,13 +88,13 @@ describe('buildEventResultFromZip', () => {
 
   test('対照: 観測点1件でも欠損なく算出できる', () => {
     const zip = zipSync(buildStationEntries('AAA001'))
-    const result = buildEventResultFromZip(zip, 20, 5)
+    const result = buildEventResultFromZip(zip, 5)
     expect(result.stationSeries).toHaveLength(1)
   })
 
   test('安全弁: ZIP内にNS/EW/UDファイルが1件も無いとエラーになる', () => {
     const zip = zipSync({ 'readme.txt': strToU8('not a waveform file') })
-    expect(() => buildEventResultFromZip(zip, 20, 5)).toThrow(/波形ファイルが1件も見つかりません/)
+    expect(() => buildEventResultFromZip(zip, 5)).toThrow(/波形ファイルが1件も見つかりません/)
   })
 
   test('安全弁: 3成分が揃わない観測点が過半数を占めるとエラーになる', () => {
@@ -112,7 +107,7 @@ describe('buildEventResultFromZip', () => {
       )
     }
     const zip = zipSync({ ...complete, ...incomplete })
-    expect(() => buildEventResultFromZip(zip, 20, 5)).toThrow(/3成分が揃わない観測点が/)
+    expect(() => buildEventResultFromZip(zip, 5)).toThrow(/3成分が揃わない観測点が/)
   })
 
   test('安全弁: ZIP内に異なる地震のOrigin Timeが混在しているとエラーになる', () => {
@@ -120,11 +115,11 @@ describe('buildEventResultFromZip', () => {
       ...buildStationEntries('AAA001', { originTime: '2018/09/06 03:07:59' }),
       ...buildStationEntries('BBB002', { originTime: '2018/10/05 08:58:53' }),
     })
-    expect(() => buildEventResultFromZip(zip, 20, 5)).toThrow(/異なる地震のOrigin Timeが混在/)
+    expect(() => buildEventResultFromZip(zip, 5)).toThrow(/異なる地震のOrigin Timeが混在/)
   })
 
   test('安全弁: 有効な計測震度を1件も算出できない場合はエラーになる（データ長不足）', () => {
-    // データが極端に短い（stepSamples > データ長）と、computeIntensityTimeSeriesのループが
+    // データが極端に短い（stepSamples > データ長）と、computeRealtimeIntensityTimeSeriesのループが
     // 一度も回らずウィンドウが0件になる（nullウィンドウが並ぶのではない）。結果としてpeakIntensityが
     // 更新されず-Infinityのままになり、安全弁が発火する。
     const sampleRateHz = 100
@@ -134,6 +129,6 @@ describe('buildEventResultFromZip', () => {
       'AAA001.EW': strToU8(buildStationFileText({ stationCode: 'AAA001', samplingHz: sampleRateHz, data: shortData })),
       'AAA001.UD': strToU8(buildStationFileText({ stationCode: 'AAA001', samplingHz: sampleRateHz, data: shortData })),
     })
-    expect(() => buildEventResultFromZip(zip, 20, 5)).toThrow(/有効な計測震度を1件も算出できませんでした/)
+    expect(() => buildEventResultFromZip(zip, 5)).toThrow(/有効な計測震度を1件も算出できませんでした/)
   })
 })

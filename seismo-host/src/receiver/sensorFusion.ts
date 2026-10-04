@@ -44,9 +44,10 @@
 // 防げない** —— あれは「区間が切れたか」の判定で、「流し込みが区間の途中で作られたか」
 // は別の事実。
 //
-// **区間が変わったら、作り直す前に古い流し込みを締める（`end()`）。** 締めないと、
-// その区間の末尾（最大 `windowSec` 秒ぶん）の震度が出ないまま消える
-// （`IntensityPipeline.closeAll()` と同じ理由）。締めて出た震度は次の `ingest()` の
+// **区間が変わったら、作り直す前に古い流し込みを締める（`end()`）。** いまの方式
+// （リアルタイム震度）は刻みの位置で必ず答えを出すので締めて出る震度は無いが、
+// 締めた流し込みへ続きを渡さないための区切りとして呼ぶ（`IntensityPipeline.closeAll()` と
+// 同じ形）。締めて出た震度は次の `ingest()` の
 // `readings` へ載せて返す——`IntensityPipeline` が「畳み直した旧区間の締めくくり」を
 // 同じパケットの `readings` に混ぜて返すのと同じ形。
 //
@@ -67,9 +68,19 @@ import type { BoardKey } from '../protocol/types'
 import type { StationConfig } from './stationConfig'
 import type { WaveChunk } from './intensityPipeline'
 import { normalizeIntensity } from './intensityPipeline'
-// **窓と刻みは単独センサーの計測震度と揃える**（`intensityPipeline.ts` と同じ理由 ——
+// **刻みと震度の方式は単独センサーと揃える**（`intensityPipeline.ts` と同じ理由 ——
 // 物差しが違えば「揺れ方の違い」と「測り方の違い」を見分けられない）。
-import { STEP_SEC_DEFAULT, WINDOW_SEC_DEFAULT, samplesForSeconds } from '../../../src/utils/knet/seismicIntensity'
+import { STEP_SEC_DEFAULT, samplesForSeconds } from '../../../src/utils/knet/seismicIntensity'
+
+/**
+ * 直流（重力）を追う窓の長さ（秒）。**20 秒。**
+ *
+ * かつては計測震度の窓（20 秒）と同じ長さを共有していた。震度をリアルタイム震度
+ * （直近 60 秒で判定する近似フィルタ方式）へ替えたあとも、**直流の追い方は変えないために
+ * 値をここへ残した** —— 窓を伸ばすと設置直後や感度の設定変更の後に直流が落ち着くまでの
+ * 時間が延び、短くすると長い周期の揺れまで直流として引いてしまう。
+ */
+export const FUSION_DC_WINDOW_SEC = 20
 
 const REQUIRED_AXES = 3
 
@@ -97,8 +108,8 @@ const REQUIRED_AXES = 3
  * 到着差 200ms ＋ まとまり長 300ms に余裕を 100ms 足した値で、**ここまで待つのは
  * 揃わないときだけ**（揃っていれば従来の 300ms より早く出る）。
  *
- * **遅れは体感に出ない。** 計測震度はもともと 2 秒遅れて出る
- * （`../intensity/intensityStream.ts` の `EDGE_MARGIN_SEC`）。
+ * **遅れは 0.6 秒に収まる。** 合成の震度はこの待ちのぶんだけ単独センサーより遅れて出るが、
+ * 震度の値そのものは直近 60 秒で判定するので、待ちの間に最大値を取り逃すことは無い。
  */
 export const FUSION_WAIT_MS_DEFAULT = 600
 
@@ -139,7 +150,7 @@ const MAX_HELD_CHUNKS = 32
 const MAX_CACHED_CHUNKS = 64
 
 /**
- * センサー 1 本ぶんの直流（重力）を追い、引いた値を返す。**窓は震度と同じ長さ。**
+ * センサー 1 本ぶんの直流（重力）を追い、引いた値を返す。**窓は {@link FUSION_DC_WINDOW_SEC}。**
  *
  * **なぜ引くのか。** 合成は「値が引けたセンサーだけ」で平均するので、顔ぶれは
  * サンプルごとに変わる（裏付け側が待ちを覆うぶんしか持たないため。実機の到着の形を
@@ -149,12 +160,9 @@ const MAX_CACHED_CHUNKS = 64
  * ごとに立ち、周期補正フィルタがそれを**実機で震度 4.36**（単体は 1.12〜1.24）として
  * 出していた（2026-09-28・#362。実測値は `../../REQUIREMENTS.md` §7 の表）。
  *
- * **`IntensityStream` の `demeanWindow` では消えない。** あちらは窓の平均を引くだけで、
- * **窓の中の段差はそのまま残る**。段差を作らせないには、混ぜる前に各センサーから
- * 直流を落としておくしかない。
- *
- * **窓を震度と同じ長さにする理由**は `windowSec` の引き渡しと同じ ——
- * 物差しが違えば「揺れ方の違い」と「測り方の違い」を見分けられない。
+ * **震度の計算側が引く直流では消えない。** あちらは流し込みの最初のサンプルを
+ * 差し引くだけで、**途中で立つ段差はそのまま揺れとして通る**。段差を作らせないには、
+ * 混ぜる前に各センサーから直流を落としておくしかない。
  */
 export class DcTracker {
   private readonly bufs: readonly [Float64Array, Float64Array, Float64Array]
@@ -166,12 +174,9 @@ export class DcTracker {
 
   /**
    * **容量が 1 だと引いた値が常に 0 になる**（そのサンプル自身が直流の推定になるため）。
-   * 呼び出し側（`SensorFusion.trackerFor`）は計測震度の窓（既定 20 秒 = 2000 サンプル）
-   * から引くので通常は起きないが、`windowSec` に極端に小さい値を渡すとそうなる ——
-   * そのときは同じ `windowSec` を受ける `IntensityStream` が「0.3 秒を覆えない」で
-   * 構築に失敗するので**震度は出ない**（`intensitySkipReason` に理由が立つ）。
-   * ただし**合成波形だけは全ゼロで出続ける**ので、#315 で波形を配るときは
-   * ここを見直すこと。
+   * 呼び出し側（`SensorFusion.trackerFor`）は {@link FUSION_DC_WINDOW_SEC}（既定 20 秒 =
+   * 2000 サンプル）から引くので通常は起きないが、`dcWindowSec` に極端に小さい値を渡すと
+   * そうなる —— **合成波形も合成の震度も、全ゼロのまま出続ける**（例外にはならない）。
    */
   constructor(capacity: number) {
     if (!(capacity >= 1)) throw new Error('capacity は 1 以上で指定すること')
@@ -364,9 +369,9 @@ export interface FusionOutcome {
    * 合成の計測震度が作れない理由。作れていれば null。**取り出して合成した回にだけ
    * 意味を持つ**（上の `FusionOutcome` 自身の説明を見ること）。
    *
-   * `IntensityStream` の構築に失敗した場合（`windowSec` が駆動役のサンプリング周波数を
-   * 覆えない等）。**単独センサーの計測震度が既に動いている以上、通常は起きない**
-   * ——同じ `windowSec`/`stepSec` を同じサンプリング周波数へ適用するだけなので。
+   * `IntensityStream` の構築に失敗した場合（駆動役のサンプリング周波数が低すぎて
+   * 近似フィルタが発散する等）。**単独センサーの震度が既に動いている以上、通常は起きない**
+   * ——同じ方式・同じ `stepSec` を同じサンプリング周波数へ適用するだけなので。
    *
    * **`closeFailure` とは別の事実。** あちらは「直前に閉じた区間」の締めくくりの成否、
    * こちらは「いま」の流し込みの健全性——新しい区間の構築が成功すれば、直前区間の
@@ -829,9 +834,10 @@ interface EndGroupStreamResult {
 /**
  * グループの合成の流し込みを締める。**残っていた震度と、締めくくりの成否を返す。**
  *
- * `IntensityStream.end()` を呼ばずに捨てると、窓・刻みに満たない末尾のサンプルが
- * 出さずじまいで消える（`IntensityPipeline.closeAll()` と同じ理由）。呼び出し元は
- * 区間の作り直し（`ingest()`）と全終了（`closeAll()`）の 2 つ。
+ * いまの方式（リアルタイム震度）は刻みの位置で必ず答えを出すので、`IntensityStream.end()`
+ * が返す震度は無い。それでも呼ぶのは、**締めた流し込みへ続きを渡さないための区切り**として
+ * （`end()` のあとの `push()` は誤用として止まる）。呼び出し元は区間の作り直し（`ingest()`）と
+ * 全終了（`closeAll()`）の 2 つ。
  *
  * **失敗を `group.streamError` へ直接書かない。** 呼び出し元（`ingest()`）はこの直後に
  * 新しい区間の `IntensityStream` を構築し、その成否で `group.streamError` を無条件に
@@ -864,7 +870,8 @@ function endGroupStream(group: Group): EndGroupStreamResult {
 }
 
 export interface SensorFusionOptions {
-  readonly windowSec?: number
+  /** 直流を追う窓の長さ（秒）。既定は {@link FUSION_DC_WINDOW_SEC}。 */
+  readonly dcWindowSec?: number
   readonly stepSec?: number
   /**
    * 裏付けの到着を待つ上限（ミリ秒）。既定は `FUSION_WAIT_MS_DEFAULT`。
@@ -879,7 +886,7 @@ export interface SensorFusionOptions {
 }
 
 export class SensorFusion {
-  private readonly windowSec: number
+  private readonly dcWindowSec: number
   private readonly stepSec: number
   private readonly waitMs: number
   private readonly groupByMemberKey = new Map<string, Group>()
@@ -889,7 +896,7 @@ export class SensorFusion {
   private closed = false
 
   constructor(config: StationConfig, options: SensorFusionOptions = {}) {
-    this.windowSec = options.windowSec ?? WINDOW_SEC_DEFAULT
+    this.dcWindowSec = options.dcWindowSec ?? FUSION_DC_WINDOW_SEC
     this.stepSec = options.stepSec ?? STEP_SEC_DEFAULT
     this.waitMs = options.waitMs ?? FUSION_WAIT_MS_DEFAULT
     this.groups = buildGroups(config)
@@ -910,8 +917,8 @@ export class SensorFusion {
   /**
    * そのセンサーの直流の追い方を引く（無ければ作る）。
    *
-   * **窓の長さは震度と同じ**（`windowSec`）。サンプリング周波数は届いた刻みから引く
-   * ——丸め方は震度と共有する（`samplesForSeconds`）ので、窓の端が 1 サンプルずれない。
+   * **窓の長さは `dcWindowSec`**。サンプリング周波数は届いた刻みから引く
+   * ——丸め方は震度と共有する（`samplesForSeconds`）。
    *
    * **一度作ったら容量は変えない。** 区間の当てはめが進むと `msPerSample` はわずかに
    * 動くけれど（実測で公称値の 0.06% 程度）、直流を追う窓の長さがその分ずれても
@@ -920,7 +927,7 @@ export class SensorFusion {
   private trackerFor(group: Group, memberKey: string, msPerSample: number): DcTracker {
     const found = group.dc.get(memberKey)
     if (found !== undefined) return found
-    const capacity = Math.max(1, samplesForSeconds(this.windowSec, 1000 / msPerSample))
+    const capacity = Math.max(1, samplesForSeconds(this.dcWindowSec, 1000 / msPerSample))
     const created = new DcTracker(capacity)
     group.dc.set(memberKey, created)
     return created
@@ -1033,13 +1040,7 @@ export class SensorFusion {
       try {
         group.stream = new IntensityStream({
           sampleRateHz: 1000 / wave.msPerSample,
-          windowSec: this.windowSec,
           stepSec: this.stepSec,
-          // **直流は `DcTracker` が既に落としているが、それでも引く。** あちらが
-          // 消すのは「センサーごとの直流差が作る段差」で、こちらが消すのは
-          // 「窓の平均が 0 でないこと」——単独センサーと同じ物差しに揃えておく
-          // （`intensityPipeline.ts` の `DEMEAN_WINDOW` と同じ理由）。
-          demeanWindow: true,
         })
         // **この位置を原点にする。** 駆動役の区間は切れていないこともある
         // （設定変更で `SensorFusion` だけ作り直した場合）ので、通し番号をそのまま
@@ -1121,9 +1122,8 @@ export class SensorFusion {
   }
 
   /**
-   * すべての観測点の合成の流し込みを締め、残っている震度を出す。**終了時に呼ぶこと**
-   * ——呼ばないと、各観測点の最後の窓ぶんの答えが出ないまま消える
-   * （`IntensityPipeline.closeAll()` と同じ理由）。
+   * すべての観測点の合成の流し込みを締める。**終了時に呼ぶこと**
+   * （`IntensityPipeline.closeAll()` と同じ形）。
    *
    * **待たせていたまとまりは先に流し切る。** 捨てると、待っていたぶん
    * （揃うまでにかかった時間。最大で `FUSION_WAIT_MS_DEFAULT`）の波形と震度が
