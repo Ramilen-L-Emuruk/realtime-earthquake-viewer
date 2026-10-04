@@ -320,3 +320,65 @@ export function selectQuakeWindow(params: {
     untrimmedReason: null,
   }
 }
+
+/**
+ * ノイズの幅の倍率（平常時の 1 秒ごとの振れの最大の中央値に対して）。**1.5 倍。**
+ *
+ * **実波形で決めた値**（2026-10-04・自宅の観測点。{@link ONSET_RATIO} と同じ 21 地震と 18 窓）。
+ * 1.5 倍の内側を潰すと、震度2〜3 の地震は 8 件のうち 7 件で 0.4〜1.3 gal が残り（残る 1 件は
+ * 0.02 gal でほぼ平ら）、地震の無い窓は大半が 0.2 gal 以下に収まった（最大 0.52 gal）。
+ * 1.3 倍では地震の無い窓に 0.8 gal 残るものがあり、1.8 倍では震度2 の 6 件のうち 4 件で
+ * 残りが 0.3 gal 以下になった（地震の無い窓の尖りと同じ桁）。
+ */
+export const NOISE_WIDTH_RATIO = 1.5
+
+/** 平常時のノイズの帯（南北・東西・上下の順）。 */
+export interface NoiseBand {
+  /** 帯の中心（gal）。**合成波形は直流を引いてあるので、ふつうは 0 近く。** */
+  readonly center: readonly [number, number, number]
+  /** 帯の半幅（gal）。**中心からこの幅の内側をノイズとみなす。** */
+  readonly width: readonly [number, number, number]
+}
+
+/**
+ * 0 の手前 30 秒から、平常時のノイズの帯を成分ごとに測る。**測れなければ `null`。**
+ *
+ * - 中心: 列の中点（`(min + max) / 2`）の中央値。**引ききれない直流のずれを拾う**
+ * - 半幅: 1 秒ごとに「中心からの振れの最大」を取り、その中央値の {@link NOISE_WIDTH_RATIO} 倍
+ *   （下限 {@link NOISE_FLOOR_GAL}）
+ *
+ * **成分ごとに測る。** 上下動のノイズは水平動の約 1.45 倍ある（同じ実測）。1 つの幅で潰すと、
+ * 水平動の揺れが半分ほど削られる。
+ *
+ * **中央値で測る**のは揺れ始めの判定と同じ理由 ——直前の地震の揺れの残りで幅を膨らませない。
+ *
+ * @param base 読み返し＋継ぎ足しの列（**切り出す前**。0 の手前を含むもの）
+ */
+export function measureNoiseBand(base: TimedColumns, zeroMs: number): NoiseBand | null {
+  const span = base.columnSpanMs
+  if (!(span > 0) || !Number.isFinite(zeroMs)) return null
+  const fromMs = zeroMs - NOISE_SPAN_MS
+  const picked: { readonly second: number; readonly min: readonly number[]; readonly max: readonly number[] }[] = []
+  const centers: number[][] = [[], [], []]
+  base.columns.forEach((col, i) => {
+    if (col === null) return
+    const mid = base.fromMs + (i + 0.5) * span
+    if (mid < fromMs || mid >= zeroMs) return
+    picked.push({ second: Math.floor((mid - zeroMs) / SECOND_MS), min: col.min, max: col.max })
+    for (let a = 0; a < 3; a += 1) centers[a].push((col.min[a] + col.max[a]) / 2)
+  })
+  if (picked.length === 0) return null
+  const center = [median(centers[0]), median(centers[1]), median(centers[2])] as const
+  const peaks: Map<number, number>[] = [new Map(), new Map(), new Map()]
+  for (const p of picked) {
+    for (let a = 0; a < 3; a += 1) {
+      const v = Math.max(Math.abs(p.max[a] - center[a]), Math.abs(p.min[a] - center[a]))
+      if (!Number.isFinite(v)) continue
+      peaks[a].set(p.second, Math.max(peaks[a].get(p.second) ?? 0, v))
+    }
+  }
+  // **足りなければ測らない**（推測で幅を置かない）。3 成分のどれか 1 つでも欠ければ帯を作らない。
+  if (peaks.some((m) => m.size < NOISE_MIN_SECONDS)) return null
+  const widthOf = (a: number): number => Math.max(median([...peaks[a].values()]) * NOISE_WIDTH_RATIO, NOISE_FLOOR_GAL)
+  return { center, width: [widthOf(0), widthOf(1), widthOf(2)] }
+}

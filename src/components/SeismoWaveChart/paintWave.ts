@@ -41,6 +41,11 @@ export interface PaintableColumns {
   readonly columns: readonly WaveColumn[]
   readonly scaleGal: number
   readonly hasAnyValue: boolean
+  /**
+   * 縦の表示。**渡さなければ `scaleGal` から作る**（`±N gal`）。強調して描いたときは
+   * 縦が 0 からではないので、作った側が文字列まで決める（→ `emphasizeColumns.ts`）。
+   */
+  readonly scaleLabel?: string
 }
 
 /**
@@ -199,7 +204,7 @@ export function paintWaveColumns(
 
   paintMarks(ctx, marks, w, plotH, dpr)
 
-  return formatScaleGal(scaleGal)
+  return built.scaleLabel ?? formatScaleGal(scaleGal)
 }
 
 /**

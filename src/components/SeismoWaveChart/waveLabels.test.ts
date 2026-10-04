@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatScaleGal, formatWaveTally } from './waveLabels'
+import { formatEmphasizedScaleGal, formatScaleGal, formatWaveTally } from './waveLabels'
 
 describe('formatScaleGal', () => {
   it('小さい値は小数 1 桁で出す（静穏時はここで動く）', () => {
@@ -15,6 +15,18 @@ describe('formatScaleGal', () => {
   it('数として読めない値は出さない', () => {
     expect(formatScaleGal(NaN)).toBe('—')
     expect(formatScaleGal(Infinity)).toBe('—')
+  })
+})
+
+describe('formatEmphasizedScaleGal', () => {
+  it('潰した幅と縦の上端を並べる（桁の刻みは formatScaleGal と同じ）', () => {
+    expect(formatEmphasizedScaleGal(1.34, 2.64)).toBe('±1.3〜±2.6 gal')
+    expect(formatEmphasizedScaleGal(2, 15.4)).toBe('±2.0〜±15 gal')
+  })
+
+  it('数として読めない値は出さない', () => {
+    expect(formatEmphasizedScaleGal(NaN, 2)).toBe('—')
+    expect(formatEmphasizedScaleGal(1, Infinity)).toBe('—')
   })
 })
 

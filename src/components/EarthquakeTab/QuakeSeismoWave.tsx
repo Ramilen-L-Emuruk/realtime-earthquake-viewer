@@ -16,18 +16,23 @@ import { useEffect, useRef, useState } from 'react'
 import type { SeismoQuakeWave } from '../../hooks/useSeismoQuakeWaves'
 import { formatTime } from '../../utils/formatters'
 import { log } from '../../utils/logger'
-import { selectQuakeWindow, type WaveAxisZero } from '../../utils/seismoQuakeWindow'
+import { measureNoiseBand, selectQuakeWindow, type WaveAxisZero } from '../../utils/seismoQuakeWindow'
 import type { TimedColumns } from '../../utils/seismoWaveColumns'
 import { useWaveAxes } from '../../hooks/useSeismoWaveAxes'
+import { useWaveEmphasis } from '../../hooks/useSeismoWaveEmphasis'
 import { P_WAVE_COLOR, S_WAVE_COLOR } from '../Map/gl/psWaveStyle'
+import { emphasizeColumns } from '../SeismoWaveChart/emphasizeColumns'
 import { foldHistoryColumns } from '../SeismoWaveChart/historyColumns'
-import { paintWaveColumns, type WaveMark } from '../SeismoWaveChart/paintWave'
-import { WaveAxisToggles } from '../SeismoWaveChart/WaveAxisToggles'
+import { paintWaveColumns, type PaintableColumns, type WaveMark } from '../SeismoWaveChart/paintWave'
+import { WaveAxisToggles, WaveEmphasisToggle } from '../SeismoWaveChart/WaveAxisToggles'
 import { buildTimeTicks } from '../SeismoWaveChart/timeTicks'
 
 /**
  * 縦の振れ幅の下限（gal）。**地図の下端の絵と同じ値**（`SeismoWaveChart` の
  * `MIN_SCALE_GAL`）。**揃えないと、同じ揺れが場所によって違う大きさに見える。**
+ *
+ * **強調して描くときは効かない**（→ `emphasizeColumns.ts`）。潰した後の縦は残った量に合わせ、
+ * 下限は別に持つ（`MIN_EMPHASIZED_SCALE_GAL`）。
  */
 const MIN_SCALE_GAL = 10
 
@@ -71,6 +76,37 @@ export function axisZeroLabel(zero: WaveAxisZero): string {
   return formatTime(new Date(zero.ms).toISOString()) ?? ''
 }
 
+/**
+ * 地震カードの波形を、描く列へ畳む（強調するならノイズを潰す）。
+ *
+ * **強調はノイズを測れたときだけ。** 測れなければ（0 の手前の記録が足りない）潰さずに今までどおり
+ * 畳み、`noiseMissing` を立てて返す —— 推測の幅で潰すと揺れまで消えうるうえ、絵は従来の描き方に
+ * 戻るだけなので、呼び出し側が記録へ残さないと「強調が効いていない」ことに誰も気づけない。
+ *
+ * @param base 読み返し＋継ぎ足しの列。**ノイズはこちらで測る**（切り出した後には 0 の手前が残っていない）
+ * @param trimmed 揺れに合わせて切り出した列（描くのはこちら）
+ */
+export function foldQuakeWaveColumns(params: {
+  readonly base: TimedColumns
+  readonly trimmed: TimedColumns
+  readonly zeroMs: number
+  readonly emphasized: boolean
+  readonly visibleAxes: readonly boolean[]
+  readonly columnCount: number
+}): { readonly columns: PaintableColumns; readonly noiseMissing: boolean } {
+  const { base, trimmed, zeroMs, emphasized, visibleAxes, columnCount } = params
+  const folded = foldHistoryColumns({
+    source: trimmed.columns,
+    columnCount,
+    minScaleGal: MIN_SCALE_GAL,
+    visibleAxes,
+  })
+  if (!emphasized) return { columns: folded, noiseMissing: false }
+  const noise = measureNoiseBand(base, zeroMs)
+  if (noise === null) return { columns: folded, noiseMissing: true }
+  return { columns: emphasizeColumns({ folded, noise, visibleAxes }), noiseMissing: false }
+}
+
 interface Props {
   waves: readonly SeismoQuakeWave[]
 }
@@ -92,9 +128,12 @@ function HistoryWave({ wave }: { wave: SeismoQuakeWave }) {
   // **こちらは購読する。** 地図の下端の絵と違って毎秒描き直していないので、
   // 押した向きを反映する契機がこれしかない。
   const visibleAxes = useWaveAxes()
+  const emphasized = useWaveEmphasis()
   // 「範囲を切れなかった」を記録へ残した組。**同じ理由は 1 回だけ** —— 描き直しは列が伸びるたび
   // （0.3 秒ごと）に走るので、間引かないと同じ行で埋まる。
   const loggedUntrimmedRef = useRef<string | null>(null)
+  // 「強調しようとしたがノイズを測れなかった」を記録へ残した組。間引きは上と同じ理由。
+  const loggedNoNoiseRef = useRef<string | null>(null)
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -121,13 +160,28 @@ function HistoryWave({ wave }: { wave: SeismoQuakeWave }) {
       setScaleText(
         paintWaveColumns(
           canvas,
-          (columnCount) =>
-            foldHistoryColumns({
-              source: trimmed.columns,
-              columnCount,
-              minScaleGal: MIN_SCALE_GAL,
+          (columnCount) => {
+            const { columns, noiseMissing } = foldQuakeWaveColumns({
+              base: wave.columns,
+              trimmed,
+              zeroMs: wave.axisZero.ms,
+              emphasized,
               visibleAxes,
-            }),
+              columnCount,
+            })
+            // **測れなかったことは記録へ残す。** 絵は従来の描き方（±N gal）に戻るだけで、
+            // 画面からは「強調が効いていない」と見分けが付かない。
+            if (noiseMissing) {
+              const key = `${wave.stationId}@${wave.axisZero.ms}`
+              if (loggedNoNoiseRef.current !== key) {
+                loggedNoNoiseRef.current = key
+                log.debug(
+                  `[seismo] 地震カードの波形を強調できなかった（${wave.stationId}）: 0 の手前の記録が足りずノイズを測れない`,
+                )
+              }
+            }
+            return columns
+          },
           // **途切れたら濃さを落とす。** 列は時間で薄れないので、渡さないと
           // 止まった絵が「いま静かに揺れている」ように見え続ける
           // （→ `useSeismoQuakeWaves` の `interrupted`）。**`waveStale` を素通しで
@@ -163,7 +217,8 @@ function HistoryWave({ wave }: { wave: SeismoQuakeWave }) {
     // これが無いと濃さを落とす契機がどこにも無い。
     //
     // **時間軸の 0 と時間帯も入れる。** 秒が後から取れると列は変わらないまま 0 だけが動く。
-  }, [wave.columns, wave.arrival, wave.axisZero, wave.reach, wave.interrupted, visibleAxes])
+    // **強調も入れる**（押したら描き直す。0 が動けばノイズを測る区間も動く）。
+  }, [wave.columns, wave.arrival, wave.axisZero, wave.reach, wave.interrupted, visibleAxes, emphasized])
 
   return (
     <div className="rounded bg-black/30 px-2 py-1">
@@ -172,6 +227,7 @@ function HistoryWave({ wave }: { wave: SeismoQuakeWave }) {
           {wave.displayName}
         </span>
         <WaveAxisToggles />
+        <WaveEmphasisToggle />
         <span className="ml-auto font-mono tabular-nums text-secondary">{scaleText ?? '—'}</span>
       </div>
       {/* 高さは目盛りの帯（`AXIS_BAND_PX` = 10px）を足したもの。 */}

@@ -1,5 +1,13 @@
 import { describe, expect, test } from 'vitest'
-import { computeReachBand, ONSET_RATIO, selectQuakeWindow, type WaveAxisZero } from './seismoQuakeWindow'
+import {
+  computeReachBand,
+  measureNoiseBand,
+  NOISE_FLOOR_GAL,
+  NOISE_WIDTH_RATIO,
+  ONSET_RATIO,
+  selectQuakeWindow,
+  type WaveAxisZero,
+} from './seismoQuakeWindow'
 import type { TimedColumns } from './seismoWaveColumns'
 
 const ZERO_MS = Date.parse('2026-10-03T13:26:02+09:00')
@@ -143,5 +151,71 @@ describe('selectQuakeWindow', () => {
     expect(w.basis).toBe('no-onset')
     expect(w.columns.fromMs).toBe(ZERO_MS)
     expect(w.columns.fromMs + w.columns.columns.length * SPAN).toBe(band.toMs + 30_000)
+  })
+})
+
+describe('measureNoiseBand', () => {
+  /** 成分ごとに振れの大きさを変えた列（南北 v・東西 v・上下 1.5v）。 */
+  function axisColumns(
+    fromSec: number,
+    toSec: number,
+    swingAt: (sec: number) => number | null,
+    offset = 0,
+  ): TimedColumns {
+    const columns = []
+    for (let t = fromSec * 1000; t < toSec * 1000; t += SPAN) {
+      const v = swingAt(Math.floor(t / 1000))
+      columns.push(
+        v === null
+          ? null
+          : {
+              min: [offset - v, offset - v, offset - 1.5 * v] as const,
+              max: [offset + v, offset + v, offset + 1.5 * v] as const,
+              minMembers: 3,
+            },
+      )
+    }
+    return { fromMs: ZERO_MS + fromSec * 1000, columnSpanMs: SPAN, columns }
+  }
+
+  test('成分ごとに、1 秒ごとの振れの最大の中央値 × 倍率', () => {
+    const band = measureNoiseBand(axisColumns(-30, 60, () => 1), ZERO_MS)!
+    expect(band.width[0]).toBeCloseTo(NOISE_WIDTH_RATIO)
+    expect(band.width[1]).toBeCloseTo(NOISE_WIDTH_RATIO)
+    expect(band.width[2]).toBeCloseTo(1.5 * NOISE_WIDTH_RATIO)
+    expect(band.center).toEqual([0, 0, 0])
+  })
+
+  test('0 より後（揺れ）は測らない', () => {
+    const band = measureNoiseBand(axisColumns(-30, 60, (s) => (s >= 0 ? 10 : 1)), ZERO_MS)!
+    expect(band.width[0]).toBeCloseTo(NOISE_WIDTH_RATIO)
+  })
+
+  test('直流のずれは中心として測り、幅はそこから測る', () => {
+    const band = measureNoiseBand(axisColumns(-30, 0, () => 1, 0.4), ZERO_MS)!
+    expect(band.center[0]).toBeCloseTo(0.4)
+    expect(band.width[0]).toBeCloseTo(NOISE_WIDTH_RATIO)
+  })
+
+  // 安全弁: 前の地震の揺れの残りで幅を膨らませない。
+  test('手前 30 秒のうち 10 秒が強くても、中央値なので幅は膨らまない', () => {
+    const band = measureNoiseBand(axisColumns(-30, 0, (s) => (s < -20 ? 6 : 1)), ZERO_MS)!
+    expect(band.width[0]).toBeCloseTo(NOISE_WIDTH_RATIO)
+  })
+
+  test('幅には下限がある', () => {
+    const band = measureNoiseBand(axisColumns(-30, 0, () => 0.01), ZERO_MS)!
+    expect(band.width[0]).toBe(NOISE_FLOOR_GAL)
+  })
+
+  // 安全弁: 推測で幅を置かない。
+  test('手前の記録が 10 秒に満たなければ測らない', () => {
+    expect(measureNoiseBand(axisColumns(-9, 60, () => 1), ZERO_MS)).toBeNull()
+    expect(measureNoiseBand(axisColumns(-30, 60, (s) => (s < -9 ? null : 1)), ZERO_MS)).toBeNull()
+  })
+
+  // 対照: ちょうど 10 秒あれば測る。
+  test('手前の記録が 10 秒あれば測る', () => {
+    expect(measureNoiseBand(axisColumns(-10, 60, () => 1), ZERO_MS)).not.toBeNull()
   })
 })
