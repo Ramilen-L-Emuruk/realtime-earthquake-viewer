@@ -1493,6 +1493,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 照合を transform の観測できる状態だけに絞っているため、transform の値を変えずにカメラや地図の別の状態を書き換える変更は原理的に検知できない（既知の限界） | [`map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §9「カメラ更新の空振りを省く」 |
 | 省略が効いているかどうかは画面に現れないため、診断用の公開（`window.__cameraUpdateSkip()`）を欠く・崩すと、追加した省略が効いているかを切り分けられなくなる | [`map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §9「カメラ更新の空振りを省く」・§11「デバッグ用の公開」 |
 | コンソールの警告が前提崩壊の瞬間に一度しか出ない（かつ省略に入れないまま留まる場合は警告すら出ない）仕様を知らずに使うと、「いま効いていない」という状態を検知する手段を持たないまま地図が重くなった原因を見失う | [`map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §11「デバッグ用の公開」 |
+| MapLibre を余白付きで呼ぶ経路（`cameraForBounds` / `fitBounds`）を `gl/camera.ts` の外に作る、または余白の切り詰め（`clampPaddingToPane`）を寄せる側と判定側のどちらかで外すと、地図が小さいとき（縦長でパネルを広げた状態）に MapLibre 6.10.0 が例外を投げて地図が丸ごと止まる、または寄せ直しが止まらなくなる。寸法 0 のときの保留をやめて見送りにすると、地震カードの寄せなどが二度と走らない | [`map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §6「地図ペインが小さいときの余白」 |
 | EEW 予想の区域塗りとカメラ追従対象の一致（`useEewLayerData` の `eewFitPositions` と `JapanMapGL` の塗り分けが、同じ「予想長周期を優先する」判定を使っていること）を崩すと、表示していない塗りへカメラが寄る | [`map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §6「EEW 追従の目標範囲」 |
 | EEW 追従の引き上限（上限は円の半径にかける。矩形の辺を枠で切り詰めると箱の中心が震源から外れる・検知点と区域塗りには上限をかけない）を崩すと、枠の外に震源がある地震で震源を含まない箱になる、または画に入れるべきものが切り落とされる | [`map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §6「EEW 追従の目標範囲」 |
 
