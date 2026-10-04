@@ -2,7 +2,6 @@ import { describe, expect, test } from 'vitest'
 import {
   applyJmaFilter,
   calcSeismicIntensityFromSynthesized,
-  computeIntensityTimeSeries,
   jmaFilterGain,
   synthesize3Components,
 } from './seismicIntensity'
@@ -85,35 +84,5 @@ describe('calcSeismicIntensityFromSynthesized', () => {
     const sampleRateHz = 100
     const synthesized = new Array(sampleRateHz).fill(0)
     expect(calcSeismicIntensityFromSynthesized(synthesized, sampleRateHz)).toBeNull()
-  })
-})
-
-describe('computeIntensityTimeSeries', () => {
-  test('無振動区間の後に一定振幅の区間が来ると、その区間で震度が算出される', () => {
-    const sampleRateHz = 100
-    const quietSec = 10
-    const shakeSec = 10
-    const quiet = new Array(quietSec * sampleRateHz).fill(0)
-    // 低周波の巨大な単一正弦波ではなく、フィルターを素直に通過する帯域（数Hz）の正弦波にする。
-    const shake = sineWave(2, 200, sampleRateHz, shakeSec * sampleRateHz)
-    const ns = [...quiet, ...shake]
-    const ew = [...quiet, ...shake]
-    const ud = [...quiet, ...shake]
-
-    const points = computeIntensityTimeSeries(ns, ew, ud, sampleRateHz, { windowSec: 5, stepSec: 1 })
-
-    const before = points.find((p) => p.tSec === 5)
-    const after = points.find((p) => p.tSec === 18)
-    expect(before?.intensity ?? -Infinity).toBeLessThan(0)
-    expect(after?.intensity ?? -Infinity).toBeGreaterThan(3)
-  })
-
-  test('ウィンドウ長・ステップに応じた点数になる', () => {
-    const sampleRateHz = 100
-    const n = 10 * sampleRateHz
-    const zeros = new Array(n).fill(0)
-    const points = computeIntensityTimeSeries(zeros, zeros, zeros, sampleRateHz, { windowSec: 5, stepSec: 1 })
-    expect(points.length).toBe(10)
-    expect(points.every((p) => p.intensity === null)).toBe(true)
   })
 })

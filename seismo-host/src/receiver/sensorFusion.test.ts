@@ -268,7 +268,7 @@ describe('SensorFusion.ingest — 裏付けを待って顔ぶれを揃える（#
    * `backupRounds` を絞ると「裏付けが途中で落ちた」形になる。
    */
   function runChunks(waitMs: number, rounds: number, backupRounds = rounds): number[][] {
-    const fusion = new SensorFusion(threeSensorConfig(), { windowSec: 1, stepSec: 1, waitMs })
+    const fusion = new SensorFusion(threeSensorConfig(), { dcWindowSec: 1, stepSec: 1, waitMs })
     const counts: number[][] = []
     for (let c = 0; c < rounds; c++) {
       const at = c * CHUNK
@@ -345,7 +345,7 @@ describe('SensorFusion.ingest — 裏付けを待って顔ぶれを揃える（#
     // （同じ `firstSampleMs` を名乗り続ける＝基板の時計が止まった形）では待ちが
     // 永久に満たされない。**溜め続けるとメモリが伸び、捨てると波形が消える**ので、
     // 上限（`MAX_HELD_CHUNKS`）で切り上げてその時点の顔ぶれで合成する。
-    const fusion = new SensorFusion(threeSensorConfig(), { windowSec: 1, stepSec: 1, waitMs: 300 })
+    const fusion = new SensorFusion(threeSensorConfig(), { dcWindowSec: 1, stepSec: 1, waitMs: 300 })
     let fused = 0
     // 位置だけ進めて時刻は据え置く。上限（32）を超えるまで送る。
     for (let c = 0; c < 40; c++) {
@@ -376,7 +376,7 @@ describe('SensorFusion.ingest — 裏付けを待って顔ぶれを揃える（#
     // **待ちは 0。** ここで見たいのはキャッシュの頭打ちだけで、待ちは上の
     // 3 つのテストが見ている（混ぜると「引けないのは捨てられたからか、まだ
     // 待っているからか」が分からなくなる）。
-    const fusion = new SensorFusion(threeSensorConfig(), { windowSec: 1, stepSec: 1, waitMs: 0 })
+    const fusion = new SensorFusion(threeSensorConfig(), { dcWindowSec: 1, stepSec: 1, waitMs: 0 })
     for (let c = 0; c < 400; c++) {
       const at = c * CHUNK
       fusion.ingest(
@@ -481,7 +481,7 @@ describe('SensorFusion.ingest — 裏付けを待って顔ぶれを揃える（#
    * 揃えて流すので、裏付けが駆動役より遅れる形を作れない（#374 の症状が出ない）。
    */
   function runSkewed(waitMs: number, rounds: number): number[][] {
-    const fusion = new SensorFusion(nineSensorConfig(), { windowSec: 1, stepSec: 1, waitMs })
+    const fusion = new SensorFusion(nineSensorConfig(), { dcWindowSec: 1, stepSec: 1, waitMs })
     const events: { at: number; wave: WaveChunk }[] = []
     for (const s of REAL_SENSORS) {
       for (let k = 0; k < rounds; k++) {
@@ -568,7 +568,7 @@ describe('SensorFusion.ingest — 裏付けを待って顔ぶれを揃える（#
     // **`backupsCoverTail` は永久に偽**なので、上限が引き取らなければその観測点の
     // 合成は一度も出ない。
     const fusion = new SensorFusion(nineSensorConfig(), {
-      windowSec: 1,
+      dcWindowSec: 1,
       stepSec: 1,
       waitMs: FUSION_WAIT_MS_DEFAULT,
     })
@@ -600,7 +600,7 @@ describe('SensorFusion.ingest — 裏付けを待って顔ぶれを揃える（#
    * `closeAll()` が流し切るものを確実に作れる形。
    */
   function feedPartial(waitMs: number, rounds: number) {
-    const fusion = new SensorFusion(nineSensorConfig(), { windowSec: 1, stepSec: 1, waitMs })
+    const fusion = new SensorFusion(nineSensorConfig(), { dcWindowSec: 1, stepSec: 1, waitMs })
     const waves: FusedWaveChunk[] = []
     let readings = 0
     for (let k = 0; k < rounds; k++) {
@@ -667,7 +667,7 @@ describe('SensorFusion.ingest — 裏付けを待って顔ぶれを揃える（#
 describe('SensorFusion.ingest — 観測点ぶんの計測震度相当', () => {
   // **待ちは 0。** この節が見るのは流し込み（区間の作り直し・位置の連続・締めくくり）
   // なので、裏付けの到着待ちは混ぜない（理由は `NO_WAIT` を見ること）。
-  const OPTS = { windowSec: 1, stepSec: 1, waitMs: 0 }
+  const OPTS = { dcWindowSec: 1, stepSec: 1, waitMs: 0 }
 
   /** 決まった形の揺れ。乱数は使わない —— 走るたびに値が変わると再現できない。 */
   function galRows(firstSampleIndex: number, n: number, amp: number): [number[], number[], number[]] {
@@ -676,7 +676,7 @@ describe('SensorFusion.ingest — 観測点ぶんの計測震度相当', () => {
       const t = (firstSampleIndex + i) / HZ
       out[0][i] = amp * Math.sin(2 * Math.PI * 3 * t)
       out[1][i] = amp * Math.cos(2 * Math.PI * 5 * t)
-      // 3 軸目には重力の直流を乗せる（demeanWindow が引く対象）。
+      // 3 軸目には重力の直流を乗せる（`DcTracker` が引く対象）。
       out[2][i] = 1000 + amp * Math.sin(2 * Math.PI * 7 * t)
     }
     return out
@@ -894,10 +894,8 @@ describe('SensorFusion.ingest — 観測点ぶんの計測震度相当', () => {
         ).readings,
       )
     }
-    // 刻み 1 秒なので最初の答えが**名乗る**位置は合成を始めてから 100 サンプル目
-    // （出せるようになるのは先読み 2 秒が届く 300 サンプル目だが、報告時刻は
-    // その手前——`intensityStream.ts` の「答えは 2 秒遅れて出る」）。
-    // 絶対位置は START + 100。
+    // 刻み 1 秒なので最初の答えが名乗る位置は合成を始めてから 100 サンプル目
+    // （リアルタイム震度は先読みしないので、届いたその回に出る）。絶対位置は START + 100。
     expect(readings.length).toBeGreaterThan(0)
     expect(readings[0].atMs).toBeCloseTo(BASE_MS + (START + 100) * MS_PER_SAMPLE, 6)
   })
@@ -955,16 +953,16 @@ describe('SensorFusion.ingest — 観測点ぶんの計測震度相当', () => {
     expect(second.intensityStateChanged).toBe(false)
   })
 
-  it('正: 終了時に closeAll() を呼ぶと、窓に満たない末尾ぶんの震度が出る（失敗は無い）', () => {
+  it('正: 刻みの位置まで届いた震度はその場で出て、closeAll() で出し残しは無い（失敗も無い）', () => {
+    // **リアルタイム震度は先読みしない。** 100 サンプル（刻み 1 秒）に届いた回で答えが出る。
     const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), OPTS)
-    // 300 サンプルに満たない量だけ流し、まだ 1 件も答えが出ていないことを確かめる。
     const out = fusion.ingest(
       wave({ boardKey: BOARD_A, sensorId: 'sensorA', segmentId: 1, firstSampleIndex: 0, gal: galRows(0, 150, 40) }),
     )
-    expect(out.readings).toEqual([])
+    expect(out.readings).toHaveLength(1)
+    expect(out.readings[0].stationId).toBe('home')
     const flushed = fusion.closeAll()
-    expect(flushed.readings.length).toBeGreaterThan(0)
-    for (const r of flushed.readings) expect(r.stationId).toBe('home')
+    expect(flushed.readings).toEqual([])
     expect(flushed.failures).toEqual([])
   })
 
@@ -976,23 +974,21 @@ describe('SensorFusion.ingest — 観測点ぶんの計測震度相当', () => {
     ).toThrow()
   })
 
-  it('正: 区間が変わって締めた震度は、次の ingest() の readings に混ざって返る（値まで検証する）', () => {
+  it('正: 区間が変わっても、旧区間の答えは閉じる前に出し切れていて、新区間は 0 から数え直す', () => {
     const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), OPTS)
-    // 区間1へ 320 サンプル（windowSec=1・stepSec=1・HZ=100 なので 300 サンプルで 1 点出る）。
+    // 区間1へ 320 サンプル（stepSec=1・HZ=100 なので 100・200・300 の 3 点が出る）。
     const first = fusion.ingest(
       wave({ boardKey: BOARD_A, sensorId: 'sensorA', segmentId: 1, firstSampleIndex: 0, gal: galRows(0, 320, 40) }),
     )
-    expect(first.readings).toHaveLength(1)
-    const firstReading = first.readings[0]
-    // 区間が切れて作り直される。締めて出た残り（区間1の末尾ぶん）が今回の readings の先頭に来る。
+    expect(first.readings).toHaveLength(3)
+    // 区間が切れて作り直される。旧区間から持ち越す答えは無く、新区間は 100 サンプル
+    // 届くまで出さない。
     const second = fusion.ingest(
       wave({ boardKey: BOARD_A, sensorId: 'sensorA', segmentId: 2, firstSampleIndex: 0, gal: galRows(0, 50, 40) }),
     )
-    expect(second.readings.length).toBeGreaterThan(0)
-    expect(second.readings[0].stationId).toBe('home')
-    // 締めくくりの震度は区間1のアンカーから計算されるので、直前の続き（同じ時系列）になる。
-    expect(second.readings[0].atMs).toBeGreaterThan(firstReading.atMs)
+    expect(second.readings).toEqual([])
     expect(second.closeFailure).toBeNull()
+    expect(second.intensityStateChanged).toBe(true)
   })
 
   describe('締めくくり（end()）が失敗したとき', () => {
