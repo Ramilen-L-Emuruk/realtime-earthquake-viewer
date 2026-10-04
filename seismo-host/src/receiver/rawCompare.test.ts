@@ -79,6 +79,7 @@ describe('compareRawHour', () => {
     await write(envs)
     const result = compareRawHour(readBack(envs))
     expect(result.examples).toEqual([])
+    expect(result.discrepancyRxRange).toBeNull()
     expect(result.ndjsonPackets).toBe(2400 + 20)
     expect(result.matched).toBe(2400 + 20)
     expect(result.mismatched).toBe(0)
@@ -106,6 +107,53 @@ describe('compareRawHour', () => {
     const result = compareRawHour({ ...input, packets: input.packets.slice(1) })
     expect(result.onlyInNdjson).toBe(1)
     expect(result.matched).toBe(2400 + 20 - 1)
+  })
+
+  it('片方にだけあるものは、受け取った時刻と番号を例に出し、時刻の幅を返す', async () => {
+    // ホストを止めた瞬間の形: 末尾の数パケットぶん、見出しが書かれていない。
+    const envs = scenario()
+    await write(envs)
+    const input = readBack(envs)
+    const dropped = input.packets.slice(-3)
+    const result = compareRawHour({ ...input, packets: input.packets.slice(0, -3) })
+    expect(result.onlyInNdjson).toBe(3)
+    const rxs = dropped.map((l) => l.rx!)
+    expect(result.discrepancyRxRange).toEqual({ firstMs: Math.min(...rxs), lastMs: Math.max(...rxs) })
+    const example = result.examples.find((s) => s.startsWith('NDJSON にだけある'))!
+    expect(example).toMatch(/受け取り 2026-10-01 \d{2}:\d{2}:\d{2}/)
+    expect(example).toMatch(/番号 \d+/)
+  })
+
+  it('対照: レコードの先頭時刻のずれ・番号の衝突だけなら、食い違いとして数えても時刻の幅は出さない（パケットに結び付かない）', async () => {
+    const envs = scenario()
+    await write(envs)
+    const input = readBack(envs)
+    const [first, ...rest] = input.records
+    // 先頭時刻だけを 1 秒ずらす（中身は同じ）。
+    const shifted = compareRawHour({ ...input, records: [{ ...first!, startMs: first!.startMs + 1000 }, ...rest] })
+    expect(shifted.recordTimeMismatches).toBe(1)
+    expect(shifted.mismatched).toBe(0)
+    expect(shifted.discrepancyRxRange).toBeNull()
+    // 同じ番号に違う値を持つレコードを手前に足す（後ろの本物が上書きするので、パケットの照合は合う）。
+    const altered = { ...first!, samples: first!.samples!.map((v) => v + 1) }
+    const conflicted = compareRawHour({ ...input, records: [altered, ...input.records] })
+    expect(conflicted.sampleConflicts).toBeGreaterThan(0)
+    expect(conflicted.mismatched).toBe(0)
+    expect(conflicted.discrepancyRxRange).toBeNull()
+  })
+
+  it('見出しにだけあるものも、受け取った時刻と番号を例に出す', async () => {
+    const envs = scenario()
+    await write(envs)
+    const input = readBack(envs)
+    // NDJSON 側から 1 件抜く（見出しには残る）。
+    const target = envs.findIndex((e) => e.via === undefined && e.raw.includes('"q":100,'))
+    const result = compareRawHour({ ...input, ndjson: envs.filter((_, i) => i !== target) })
+    expect(result.onlyInMseed).toBe(1)
+    expect(result.discrepancyRxRange).toEqual({ firstMs: envs[target]!.rx!, lastMs: envs[target]!.rx! })
+    const example = result.examples.find((s) => s.startsWith('見出しにだけある'))!
+    expect(example).toContain('番号 100')
+    expect(example).toMatch(/受け取り 2026-10-01 /)
   })
 
   it('レコードが欠ければ、そのサンプルを運んだパケットが食い違いになる', async () => {
@@ -150,6 +198,7 @@ describe('rawCompareVerdict', () => {
     mseedUnreadable: 0,
     unplaceable: 0,
     examples: [],
+    discrepancyRxRange: null,
   }
   const base = { result: clean, ndjsonFound: true, crcFailures: 0, decodeFailures: 0 }
 

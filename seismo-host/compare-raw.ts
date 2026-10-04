@@ -18,7 +18,7 @@ import type { Readable } from 'node:stream'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createGunzip, gunzipSync } from 'node:zlib'
 
-import { JST_OFFSET_MS } from './src/receiver/jstTime'
+import { JST_OFFSET_MS, jstDateTime } from './src/receiver/jstTime'
 import { readMseed3Records } from './src/receiver/mseed3Reader'
 import { mseedFilePath } from './src/receiver/mseedStore'
 import { compareRawHour, discrepancyCount, rawCompareVerdict } from './src/receiver/rawCompare'
@@ -112,6 +112,11 @@ async function main(): Promise<void> {
   console.log(`レコードの先頭時刻の不一致 ${result.recordTimeMismatches} / 同じ番号に違う値 ${result.sampleConflicts}`)
   console.log(`読めなかったもの: NDJSON ${result.ndjsonUnreadable} / 退避先 ${result.mseedUnreadable}`)
   if (result.unplaceable > 0) console.log(`受け取った時刻が無く振り分けられない NDJSON の行: ${result.unplaceable}`)
+  // **ホストを止めた時刻と見比べるために出す**（`seismo-host.log` の「起動した」「最後に生きていたのは」）。
+  const range = result.discrepancyRxRange
+  if (range !== null) {
+    console.log(`食い違ったパケットの受け取った時刻: ${jstDateTime(range.firstMs) ?? range.firstMs} 〜 ${jstDateTime(range.lastMs) ?? range.lastMs}（日本時間）`)
+  }
   for (const e of result.examples) console.log(`  - ${e}`)
 
   const verdictInput = {

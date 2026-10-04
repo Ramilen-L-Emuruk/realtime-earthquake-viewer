@@ -216,6 +216,8 @@ async function start(
     adminAuth: adminAuth ?? NO_ADMIN_AUTH,
     stationConfig: stationConfig ?? makeStationConfigOps(),
     readRestWindows: readRestWindows ?? (() => []),
+    // 止める合図を試すテストは `startAuthed` を使う（`/api/*` は認証が要る）。
+    requestShutdown: () => 'not-ready',
     // **`null` を明示的に渡したいテストがあるので `??` は使わない。** `??` だと
     // `null` も「未指定」と同じ扱いになり、ビルド失敗を再現できない。
     adminConsole: adminConsole !== undefined ? adminConsole : TEST_ADMIN_CONSOLE,
@@ -945,6 +947,7 @@ describe('/api/*', () => {
     log?: StatusServerOptions['log'],
     stationConfig?: StatusServerOptions['stationConfig'],
     readRestWindows: StatusServerOptions['readRestWindows'] = () => [],
+    requestShutdown: StatusServerOptions['requestShutdown'] = () => 'not-ready',
   ): Promise<string> {
     const port = await getFreePort()
     const adminAuth: AdminAuthConfig = {
@@ -962,6 +965,7 @@ describe('/api/*', () => {
       log,
       stationConfig: stationConfig ?? makeStationConfigOps(),
       readRestWindows,
+      requestShutdown,
       adminConsole: TEST_ADMIN_CONSOLE,
       readWaves: null,
       readEvents: null,
@@ -982,6 +986,75 @@ describe('/api/*', () => {
     const res = await fetch(`${base}/api/config`, { headers: { Origin: ORIGIN } })
     expect(res.status).toBe(401)
     expect(await res.json()).toEqual({ error: 'missing-authorization' })
+  })
+
+  describe('止める合図（POST /api/shutdown）', () => {
+    const authed = { Authorization: `Bearer ${TOKEN}`, Origin: ORIGIN }
+
+    it('正: 認証つきの POST を受けたら、締めくくりを頼んで 202 を返す', async () => {
+      let calls = 0
+      const lines: string[] = []
+      const base = await startAuthed(new ReadingHub(), {}, (_l, _k, _d, line) => lines.push(line), undefined, undefined, () => {
+        calls += 1
+        return 'accepted'
+      })
+      const res = await fetch(`${base}/api/shutdown`, { method: 'POST', headers: authed })
+      expect(res.status).toBe(202)
+      expect(await res.json()).toEqual({ status: 'closing' })
+      expect(calls).toBe(1)
+      // 落ちた記録と見分けるため、誰が止めたかを 1 行残す。
+      expect(lines.some((l) => l.includes('止める合図を受けた'))).toBe(true)
+    })
+
+    it('締めくくりの途中なら 202 で already-closing と返す（2 度目を走らせるかは実体が決める）', async () => {
+      const base = await startAuthed(new ReadingHub(), {}, undefined, undefined, undefined, () => 'already-closing')
+      const res = await fetch(`${base}/api/shutdown`, { method: 'POST', headers: authed })
+      expect(res.status).toBe(202)
+      expect(await res.json()).toEqual({ status: 'already-closing' })
+    })
+
+    it('起動の途中で段取りが揃っていなければ 503', async () => {
+      const base = await startAuthed(new ReadingHub(), {}, undefined, undefined, undefined, () => 'not-ready')
+      const res = await fetch(`${base}/api/shutdown`, { method: 'POST', headers: authed })
+      expect(res.status).toBe(503)
+      expect(await res.json()).toEqual({ error: 'not-ready' })
+    })
+
+    it('対照: GET では止めない（リンクを開いただけ・先読みで止まらない）', async () => {
+      let calls = 0
+      const base = await startAuthed(new ReadingHub(), {}, undefined, undefined, undefined, () => {
+        calls += 1
+        return 'accepted'
+      })
+      const res = await fetch(`${base}/api/shutdown`, { headers: authed })
+      expect(res.status).toBe(405)
+      expect(calls).toBe(0)
+    })
+
+    it('安全弁: トークンが無ければ 401 で、締めくくりは頼まない', async () => {
+      let calls = 0
+      const base = await startAuthed(new ReadingHub(), {}, undefined, undefined, undefined, () => {
+        calls += 1
+        return 'accepted'
+      })
+      const res = await fetch(`${base}/api/shutdown`, { method: 'POST', headers: { Origin: ORIGIN } })
+      expect(res.status).toBe(401)
+      expect(calls).toBe(0)
+    })
+
+    it('安全弁: 許していない Origin からは 403 で、締めくくりは頼まない', async () => {
+      let calls = 0
+      const base = await startAuthed(new ReadingHub(), {}, undefined, undefined, undefined, () => {
+        calls += 1
+        return 'accepted'
+      })
+      const res = await fetch(`${base}/api/shutdown`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${TOKEN}`, Origin: 'http://evil.example' },
+      })
+      expect(res.status).toBe(403)
+      expect(calls).toBe(0)
+    })
   })
 
   it('トークンが違えば 401', async () => {

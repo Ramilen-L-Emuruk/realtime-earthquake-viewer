@@ -13,7 +13,7 @@
 
 import { parseSensorPacket } from '../protocol/parsePacket'
 import type { SensorPacket } from '../protocol/types'
-import { jstHourStartMs } from './jstTime'
+import { jstDateTime, jstHourStartMs } from './jstTime'
 import type { ParsedMseed3Record } from './mseed3Reader'
 import { mseed3SourceId } from './mseed3Record'
 import { assemblerRejectionOf, fileTimeOf } from './recordAssembler'
@@ -75,6 +75,13 @@ export interface RawCompareResult {
   readonly unplaceable: number
   /** 食い違いの例（10 件まで）。 */
   readonly examples: readonly string[]
+  /**
+   * 食い違ったパケット（値の食い違い・片方にだけある）の、受け取った時刻の幅。無ければ `null`。
+   *
+   * **例は 10 件で切れるので、幅は別に持つ。** 食い違いが 1 か所に固まっているのか（ホストを
+   * 止めた瞬間など）、時の全体に散っているのかは、例だけでは見分けられない。
+   */
+  readonly discrepancyRxRange: { readonly firstMs: number; readonly lastMs: number } | null
 }
 
 /** 突き合わせの判定。`compare-raw.ts` の終了コードにそのまま使う。 */
@@ -139,6 +146,28 @@ function headerOf(raw: string): string {
   return end < 0 ? raw : raw.slice(0, end)
 }
 
+/** 例に添える受け取った時刻（日本時間）。 */
+function rxLabel(rx: number | null): string {
+  return rx === null ? '受け取り時刻なし' : `受け取り ${jstDateTime(rx) ?? String(rx)}`
+}
+
+/**
+ * 見出しの 1 行から「どの基板・センサーの何番か」を取り出す。**読めなければ先頭を切って返す。**
+ *
+ * 見出しの JSON は番号（`q`）が 120 文字より後ろに来るので、先頭を切るだけでは番号が見えない。
+ */
+function describeHeader(h: string): string {
+  try {
+    const o = JSON.parse(h) as { mac?: unknown; sid?: unknown; q?: unknown }
+    if (typeof o.mac === 'string' && typeof o.sid === 'string' && typeof o.q === 'number') {
+      return `mac:${o.mac} ${o.sid} 番号 ${o.q}`
+    }
+  } catch {
+    // 下で先頭を切って返す
+  }
+  return h.slice(0, 120)
+}
+
 interface PendingNd {
   readonly env: NdjsonEnvelope
   readonly packet: SensorPacket
@@ -150,6 +179,15 @@ export function compareRawHour(input: RawCompareInput): RawCompareResult {
   const examples: string[] = []
   const note = (s: string): void => {
     if (examples.length < MAX_EXAMPLES) examples.push(s)
+  }
+  let discrepancyRxRange: { firstMs: number; lastMs: number } | null = null
+  const markRx = (rx: number | null): void => {
+    if (rx === null) return
+    if (discrepancyRxRange === null) discrepancyRxRange = { firstMs: rx, lastMs: rx }
+    else {
+      discrepancyRxRange.firstMs = Math.min(discrepancyRxRange.firstMs, rx)
+      discrepancyRxRange.lastMs = Math.max(discrepancyRxRange.lastMs, rx)
+    }
   }
 
   // 1. NDJSON をその時の分へ絞り、読めたものと読めない（退けられる）ものに分ける。
@@ -245,7 +283,8 @@ export function compareRawHour(input: RawCompareInput): RawCompareResult {
     const counterpart = list?.shift()
     if (counterpart === undefined) {
       onlyInMseed += 1
-      note(`見出しにだけある: ${line.h.slice(0, 120)}`)
+      markRx(line.rx)
+      note(`見出しにだけある（${rxLabel(line.rx)}）: ${describeHeader(line.h)}`)
       continue
     }
     const p = counterpart.packet
@@ -267,14 +306,16 @@ export function compareRawHour(input: RawCompareInput): RawCompareResult {
     if (problems.length === 0) matched += 1
     else {
       mismatched += 1
-      note(`食い違い（${p.boardKey} ${p.sensorId} 番号 ${p.firstSeq}）: ${problems.join(' / ')}`)
+      markRx(counterpart.env.rx)
+      note(`食い違い（${rxLabel(counterpart.env.rx)}・${p.boardKey} ${p.sensorId} 番号 ${p.firstSeq}）: ${problems.join(' / ')}`)
     }
   }
   let onlyInNdjson = 0
   for (const [, list] of nd) {
     for (const rest of list) {
       onlyInNdjson += 1
-      note(`NDJSON にだけある: ${headerOf(rest.env.raw).slice(0, 120)}`)
+      markRx(rest.env.rx)
+      note(`NDJSON にだけある（${rxLabel(rest.env.rx)}）: ${rest.packet.boardKey} ${rest.packet.sensorId} 番号 ${rest.packet.firstSeq}`)
     }
   }
 
@@ -294,5 +335,6 @@ export function compareRawHour(input: RawCompareInput): RawCompareResult {
     mseedUnreadable,
     unplaceable,
     examples,
+    discrepancyRxRange,
   }
 }

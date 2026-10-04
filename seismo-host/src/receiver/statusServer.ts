@@ -6,7 +6,8 @@
 // - `GET /waves` — **過ぎた合成波形**を時刻の範囲で返す（宛先は **PWA**。#357）。
 //   保存は `waveArchive.ts`、間引きは `waveEnvelope.ts`。
 // - `/api/*` — 設定・履歴・管理操作（宛先は**管理コンソール**）。**認証必須**（`adminAuth.ts`）。
-//   応じるのは観測点・基板の設定（`/api/stations`・`/api/boards`）だけ（#313 段 B）。
+//   応じるのは観測点・基板の設定（`/api/stations`・`/api/boards`）・静止窓（`/api/rest-windows`）・
+//   止める合図（`POST /api/shutdown`）。
 // - `GET /admin`・`GET /admin/app.js` — 管理コンソール本体（静的アセット）。**認証なし**——
 //   見られても書き込みはできない（書き込みには `/api/*` のトークンが要る）（#313 段 C）。
 //
@@ -409,6 +410,15 @@ export interface StationConfigOps {
   readonly apply: (config: StationConfig) => void
 }
 
+/**
+ * 止める合図（`POST /api/shutdown`）への答え。
+ *
+ * - `accepted` —— 締めくくりを始める（始まるのは応答を返した後）
+ * - `already-closing` —— もう締めくくりの途中。**2 度目は走らせない**（`main.ts` の `shutdown` と同じ）
+ * - `not-ready` —— 起動の途中で、締めくくりの段取りがまだ揃っていない
+ */
+export type ShutdownRequestResult = 'accepted' | 'already-closing' | 'not-ready'
+
 export interface StatusServerOptions {
   readonly port: number
   readonly address?: string
@@ -454,6 +464,18 @@ export interface StatusServerOptions {
    * `/status` に並べる理由が無い（9 センサー × 60 窓で `/status` が数十 KB 膨らむ）。
    */
   readonly readRestWindows: () => readonly SensorRestWindows[]
+  /**
+   * 止める合図（`POST /api/shutdown`）を受けたときに呼ぶ。
+   *
+   * **Windows では、外からホストに締めくくりを走らせる手段がこれしか無い。** `Stop-Process`
+   * も `process.kill` も SIGINT のハンドラを呼ばずに落とすので、miniSEED が溜めていた最長
+   * 5 秒ぶんと見出しが書かれずに消える（2026-10-04 に配り直した 2 回で実測）。
+   *
+   * **実体（`main.ts`）は、呼ばれた時点で締めくくりを始めないこと。** この層は答えを
+   * 返してから応答を書く —— 締めくくりが先に状態の口を閉じ始めると、合図を送った側に
+   * 答えが届かない。
+   */
+  readonly requestShutdown: () => ShutdownRequestResult
   /**
    * 管理コンソール本体（#313 段 C）。`GET /admin`・`GET /admin/app.js` で配る。
    *
@@ -658,6 +680,7 @@ type AdminRoute =
   | { readonly kind: 'boards' }
   | { readonly kind: 'board'; readonly boardKey: string }
   | { readonly kind: 'rest-windows' }
+  | { readonly kind: 'shutdown' }
 
 /**
  * `/api/*` の経路を解く。**マッチしなければ `null`**（呼び出し側が 404 にする）。
@@ -678,6 +701,7 @@ function parseAdminRoute(pathname: string): AdminRoute | null {
     return boardKey.length > 0 ? { kind: 'board', boardKey } : null
   }
   if (pathname === '/api/rest-windows') return { kind: 'rest-windows' }
+  if (pathname === '/api/shutdown') return { kind: 'shutdown' }
   return null
 }
 
@@ -935,6 +959,7 @@ async function handleAdmin(
   log: (level: LogLevel, kind: string, detail: string, line: string) => void,
   stationConfig: StationConfigOps,
   readRestWindows: () => readonly SensorRestWindows[],
+  requestShutdown: () => ShutdownRequestResult,
 ): Promise<void> {
   applyAdminCors(req, res, adminAuth.allowedOrigins)
 
@@ -998,6 +1023,25 @@ async function handleAdmin(
       return
     }
     sendAdminJson(res, 200, { sensors: readRestWindows() })
+    return
+  }
+  if (route.kind === 'shutdown') {
+    // **POST だけ。** GET で止まると、リンクを開いただけ・先読みされただけで止まる。
+    if (req.method !== 'POST') {
+      sendAdminJson(res, 405, { error: 'method-not-allowed' })
+      return
+    }
+    const result = requestShutdown()
+    if (result === 'not-ready') {
+      sendAdminJson(res, 503, { error: 'not-ready' })
+      return
+    }
+    // **答えを先に書く。** 締めくくりはもう予約されているので、記録の口が投げて 500 に化けると
+    // 「始まったのに失敗と返す」食い違いになる（`log` 自体は投げない作りだが、順で守る）。
+    sendAdminJson(res, 202, { status: result === 'accepted' ? 'closing' : 'already-closing' })
+    // **誰が止めたかを残す。** 落ちた記録（「終了の記録を残さずに止まっていた」）と
+    // 見分けるのはこの行と、締めくくりの最後の「正常に終了した」。
+    if (result === 'accepted') log('warn', 'admin', 'shutdown', '[admin] 止める合図を受けた（POST /api/shutdown）。締めくくりを始める')
     return
   }
   // route.kind === 'board'
@@ -1172,7 +1216,7 @@ export async function startStatusServer(options: StatusServerOptions): Promise<S
         // `createServer` のコールバックは同期関数なので、万一 reject すると
         // `unhandledRejection` としてプロセスの外へ漏れる——`/status` の
         // 応答作成失敗と同じ扱いで押さえる。
-        handleAdmin(req, res, url, options.adminAuth, log, options.stationConfig, options.readRestWindows).catch((error: unknown) => {
+        handleAdmin(req, res, url, options.adminAuth, log, options.stationConfig, options.readRestWindows, options.requestShutdown).catch((error: unknown) => {
           const detail = error instanceof Error ? error.message : String(error)
           log('error', 'admin', 'handler', `[admin] /api/* の処理に失敗: ${detail}`)
           if (!res.headersSent) {

@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 import {
   applyStationConfigCore,
   closeHostCore,
+  makeShutdownRequester,
   deliverFusionClosing,
   buildAssignedSilenceReport,
   buildBacklogBookWarning,
@@ -1899,5 +1900,42 @@ describe('deliverFusionClosing', () => {
     const calls: string[] = []
     deliverFusionClosing(sinks(calls), { drained: [], failures: [], readings: [] })
     expect(calls).toEqual(['reportCloseFailures'])
+  })
+})
+
+describe('makeShutdownRequester（止める合図への答え）', () => {
+  function setup(closing = false) {
+    const deferred: (() => void)[] = []
+    let started = 0
+    const request = makeShutdownRequester({
+      isClosing: () => closing,
+      start: () => {
+        started += 1
+      },
+      defer: (fn) => deferred.push(fn),
+    })
+    return { request, deferred, started: () => started }
+  }
+
+  it('正: 最初の合図は accepted で、締めくくりはその場で始めず後回しにする（答えを書いてから始めるため）', () => {
+    const s = setup()
+    expect(s.request()).toBe('accepted')
+    expect(s.started()).toBe(0)
+    expect(s.deferred).toHaveLength(1)
+    s.deferred[0]!()
+    expect(s.started()).toBe(1)
+  })
+
+  it('安全弁: 2 度目の合図は、締めくくりが実際に始まる前でも already-closing で、予約を積み増さない', () => {
+    const s = setup()
+    s.request()
+    expect(s.request()).toBe('already-closing')
+    expect(s.deferred).toHaveLength(1)
+  })
+
+  it('対照: SIGINT などで締めくくりが既に始まっていれば、最初の合図でも already-closing で何も予約しない', () => {
+    const s = setup(true)
+    expect(s.request()).toBe('already-closing')
+    expect(s.deferred).toHaveLength(0)
   })
 })

@@ -74,6 +74,7 @@ import { buildStatusReport } from './src/receiver/statusReport'
 import { buildAdminConsoleAssets } from './src/receiver/adminConsoleAssets'
 import type { AdminConsoleAssets } from './src/receiver/adminConsoleAssets'
 import { startStatusServer } from './src/receiver/statusServer'
+import type { ShutdownRequestResult } from './src/receiver/statusServer'
 import { SourceRateLimit } from './src/receiver/sourceRateLimit'
 import { startUdpReceiver } from './src/receiver/udpReceiver'
 import type { DatagramSource, RecvBufferOutcome } from './src/receiver/udpReceiver'
@@ -1331,6 +1332,35 @@ export async function closeHostCore(deps: CloseHostDeps): Promise<void> {
   deps.printTotals()
 }
 
+/** `makeShutdownRequester` が使う口。 */
+export interface ShutdownRequesterDeps {
+  /** 締めくくりがもう始まっているか（SIGINT・SIGTERM で始まった場合も含む）。 */
+  readonly isClosing: () => boolean
+  /** 締めくくりを始める。 */
+  readonly start: () => void
+  /**
+   * `start` を後回しにする。**本番は `setImmediate`。** 止める口は答えを返してから応答を書くので、
+   * その場で始めると締めくくりが状態の口を閉じ始めてしまう（`StatusServerOptions.requestShutdown`）。
+   */
+  readonly defer: (fn: () => void) => void
+}
+
+/**
+ * 止める合図（`POST /api/shutdown`）への答えを決め、締めくくりを 1 度だけ予約する。
+ *
+ * **予約したら、締めくくりが実際に始まる前でも `already-closing` を返す。** 2 度目の合図で
+ * 予約を積み増さないため。
+ */
+export function makeShutdownRequester(deps: ShutdownRequesterDeps): () => ShutdownRequestResult {
+  let requested = false
+  return () => {
+    if (deps.isClosing() || requested) return 'already-closing'
+    requested = true
+    deps.defer(deps.start)
+    return 'accepted'
+  }
+}
+
 /**
  * 自己診断の数え上げに付ける見出し。**毎分の要約も終了時の締めくくりもここから引く。**
  *
@@ -2272,6 +2302,10 @@ async function main(): Promise<void> {
   // 照合の期限を見る（揺れが閉じてから 15 分）。30 秒ごとで足りる。
   const detectionTimer = setInterval(() => detection.tick(), 30_000)
 
+  // 止める合図（`POST /api/shutdown`）の受け先。**締めくくり（`shutdown`）は状態の口を
+  // 開けた後で作る**（締めくくりが状態の口を閉じるため）ので、それまでは `not-ready` で断る。
+  let requestShutdownFromApi: (() => ShutdownRequestResult) | null = null
+
   const statusServer = await startStatusServer({
     port: httpPort,
     address: httpAddress,
@@ -2283,6 +2317,7 @@ async function main(): Promise<void> {
     },
     // 6 面法の材料（センサーごとの静止窓・校正前の値）。
     readRestWindows: () => gravity.restWindows(),
+    requestShutdown: () => requestShutdownFromApi?.() ?? 'not-ready',
     adminConsole,
     // 過ぎた合成波形の読み返し（#357）。置き場所は保存と同じ `waveDir`。
     readWaves: (params) => readWaveRange({ dir: waveDir, ...params }),
@@ -2556,11 +2591,22 @@ async function main(): Promise<void> {
     clearInterval(backlogSaveTimer)
     clearInterval(mseedTimer)
     clearInterval(detectionTimer)
-    quakeFeed?.stop()
     console.log(`[udp] ${signal} を受けたので締めます`)
+    // **ここから `closeHostCore` までの段も投げさせない。** 投げると締めくくりの本体
+    // （生データ・miniSEED・波形・揺れの記録の書き出し）へ一度も届かずに終わる ——
+    // 止める口で防ごうとした「溜めていた分が消える」が、別の入口から戻ってくる。
+    try {
+      quakeFeed?.stop()
+    } catch (error) {
+      console.error(`[quake-feed] 締めくくりで止められなかった（${error instanceof Error ? error.message : String(error)}）`)
+    }
     // **取りに行くのは生データの保存を締める前に止める。** 訊いている最中の 1 件は待つ ——
     // 締めた後に書こうとすると、取り戻した分が `closed` で黙って落ちる。
-    await backlogFetcher.stop()
+    try {
+      await backlogFetcher.stop()
+    } catch (error) {
+      console.error(`[backlog] 締めくくりで取り戻しを止められなかった（${error instanceof Error ? error.message : String(error)}）`)
+    }
 
     // **順序は `closeHostCore` が持つ**（理由もあちらに書いてある）。ここは
     // `main()` のローカル変数を `deps` へ束ねる配線だけ。
@@ -2650,8 +2696,30 @@ async function main(): Promise<void> {
       else console.log(c.line)
     }
   }
-  process.on('SIGINT', () => void shutdown('SIGINT'))
-  process.on('SIGTERM', () => void shutdown('SIGTERM'))
+  /**
+   * 締めくくりを走らせる。**投げたら記録して exit 1 で終わる。**
+   *
+   * `shutdown` の各段は投げない作りだが、ここで受け止めないと reject は誰にも拾われず、
+   * 締めくくりの途中で止まったまま（`closing` が立ったまま）プロセスが居残りうる ——
+   * そうなると止める口は `already-closing` を返し続け、外からは「止まりつつある」としか見えない。
+   */
+  const runShutdown = async (signal: string): Promise<void> => {
+    try {
+      await shutdown(signal)
+    } catch (error) {
+      console.error(`[host] 締めくくりの途中で失敗した（${error instanceof Error ? error.message : String(error)}）。正常に終わらずに止める`)
+      process.exit(1)
+    }
+  }
+  process.on('SIGINT', () => void runShutdown('SIGINT'))
+  process.on('SIGTERM', () => void runShutdown('SIGTERM'))
+  // **Windows で外から締めくくりを走らせる口はこれだけ**（`Stop-Process` は SIGINT の
+  // ハンドラを呼ばずに落とす）。配り直しはここを叩いてから起動し直す（README「常時動かす機へ配る」）。
+  requestShutdownFromApi = makeShutdownRequester({
+    isClosing: () => closing,
+    start: () => void runShutdown('POST /api/shutdown'),
+    defer: (fn) => setImmediate(fn),
+  })
 }
 
 // **直接実行のときだけ走らせる。** 門が無いと、この先 `readPort` のような部品を
