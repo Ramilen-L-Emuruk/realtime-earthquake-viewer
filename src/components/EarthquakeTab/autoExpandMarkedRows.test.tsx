@@ -60,6 +60,8 @@ const renderTab = (updateMarks: ReadonlyMap<string, QuakeCardMarks>, selectedId:
   <EarthquakeTab
     earthquakes={[QUAKE]}
     selectedId={selectedId}
+    speakingKey={null}
+    followSpeech={false}
     onSelect={() => {}}
     isLoading={false}
     isLoadingMore={false}
@@ -116,6 +118,8 @@ describe('印の付いた行の自動展開（カードとの配線）', () => {
       <EarthquakeTab
         earthquakes={[QUAKE]}
         selectedId={KEY}
+        speakingKey={null}
+        followSpeech={false}
         onSelect={() => {}}
         isLoading={false}
         isLoadingMore={false}

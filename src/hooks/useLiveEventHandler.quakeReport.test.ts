@@ -116,6 +116,7 @@ function setup(existingCards: JMAQuake[] = [], spies: {
     setActiveTabRealtimeForKyoshin: vi.fn(), setActiveTabNonRealtime: vi.fn(),
     setActiveTabRealtimeOnUpdate: vi.fn(),
     setActiveTabRealtimeUrgent: vi.fn(), followSpeechTab: vi.fn(), preSpeechTab: vi.fn(() => true),
+    quakeSpeakingCard: null,
     expandPanelForSpecialInfo: vi.fn(), revertToDefaultTab: vi.fn(),
     selectQuake: spies.selectQuake ?? vi.fn(), openLpgmFromQuake: vi.fn(), openEstimatedIntensity: vi.fn(),
     closeDistributionOnQuakeReport: spies.closeDistributionOnQuakeReport ?? vi.fn(),

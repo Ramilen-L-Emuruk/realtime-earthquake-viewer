@@ -123,6 +123,7 @@ function setup(voicevoxEnabled = true) {
     setActiveTabRealtimeForKyoshin: vi.fn(), setActiveTabNonRealtime,
     setActiveTabRealtimeOnUpdate: vi.fn(),
     setActiveTabRealtimeUrgent: vi.fn(), followSpeechTab: vi.fn(), preSpeechTab: vi.fn(() => true),
+    quakeSpeakingCard: null,
     expandPanelForSpecialInfo: vi.fn(), revertToDefaultTab: vi.fn(),
     selectQuake: vi.fn(), openLpgmFromQuake: vi.fn(), openEstimatedIntensity: vi.fn(), closeDistributionOnQuakeReport: vi.fn(),
   }))

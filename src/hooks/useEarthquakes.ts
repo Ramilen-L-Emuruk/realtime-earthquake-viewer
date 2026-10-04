@@ -3068,6 +3068,21 @@ export function useEarthquakes(
   }, [])
 
   /**
+   * 地震情報の取消のテスト（→ `createTestQuakeCancel`）。**DMDSS 版のみ**（P2PQuake は地震情報の
+   * 取消を配信しない）。
+   *
+   * **受信と同じ経路（イベントキュー）へ積む。** 取消はカードへ印を付け、10 秒後に一覧から外す
+   * 予約もキューへ積む（`useEarthquakes` の取消の分岐）。キューを通れば、リプレイの開始・停止で
+   * まとめて捨てられる（独自のタイマーを持たない）。
+   */
+  const simulateQuakeCancel = useCallback(async () => {
+    const { createTestQuakeCancel } = await loadTestData()
+    for (const report of createTestQuakeCancel()) {
+      eventQueueRef.current.push({ eventTime: new Date(report.time), payload: { kind: 'event', event: report } })
+    }
+  }, [])
+
+  /**
    * 震源を津波電文から借りる場面のテスト（→ `createTestHypocenterFromTsunami`）。
    *
    * **受信と同じ経路（イベントキュー）へ積む。** 借りる処理は状態更新と読み上げの両方に
@@ -3532,6 +3547,7 @@ export function useEarthquakes(
     simulateQuakeNotice, simulateEarthquakeCount, simulateEarthquakeCountRetraction, simulateEstimatedIntensity,
     simulateTrainingQuake, simulateUnreceivedQuake, simulateMaxScaleOrAboveQuake, simulateTsunamiGradeChange, simulateTsunamiQuietReports, simulateTsunamiExpiry, simulateQuakeAmendment,
     simulateQuakeReportSequence,
+    simulateQuakeCancel,
     simulateHypocenterFromTsunami,
     resetState,
     loadReplayEvents,

@@ -254,7 +254,7 @@ function setup(
     setActiveTabNonRealtime: vi.fn(),
     setActiveTabRealtimeOnUpdate: vi.fn(),
     setActiveTabRealtimeUrgent: vi.fn(),
-    followSpeechTab: (followSpeechTabSpy ?? vi.fn()) as never, preSpeechTab: vi.fn(() => true), expandPanelForSpecialInfo: vi.fn(),
+    followSpeechTab: (followSpeechTabSpy ?? vi.fn()) as never, preSpeechTab: vi.fn(() => true), quakeSpeakingCard: null, expandPanelForSpecialInfo: vi.fn(),
     revertToDefaultTab: vi.fn(),
     selectQuake: vi.fn(),
     openLpgmFromQuake: vi.fn(),
