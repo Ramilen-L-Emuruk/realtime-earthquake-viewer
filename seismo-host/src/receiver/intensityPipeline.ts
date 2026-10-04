@@ -26,21 +26,12 @@ import type {
 import { applyCalibration } from './calibration'
 import type { GalTriple } from './calibration'
 import { StationDirectory } from './stationConfig'
-// **窓と刻みは K-NET の取り込みと同じ値を使う。** 自作センサーの観測結果は最終的に
+// **刻みは K-NET の取り込みと同じ値を使う。** 自作センサーの観測結果は最終的に
 // 同じ画面へ並ぶので、物差しが違えば「揺れ方の違い」と「測り方の違い」を見分けられない。
 // 写し取らずに読むのは、片方だけ動いたときに黙って離れるのを防ぐため。
-import { STEP_SEC_DEFAULT, WINDOW_SEC_DEFAULT } from '../../../src/utils/knet/seismicIntensity'
-
-/**
- * 窓ごとに平均を引く。**自作センサーでは固定。**
- *
- * 生の値には重力がそのまま乗る（机に置いた基板で約 1009 gal）。引かずに通すと、
- * FFT のゼロ埋めが作る段差が低い周波数へ漏れて、静止した基板が震度 4〜6 相当を出す
- * （実測と経緯は `../intensity/intensityStream.ts` の `demeanWindow`）。
- *
- * 段 3 が既定値を置かなかったのは「通す側に選ばせる」ため。**ここがその選ぶ側。**
- */
-const DEMEAN_WINDOW = true
+// **震度の方式（強震モニタと同じリアルタイム震度）も共有している** —— 計算核は
+// `src/utils/knet/realtimeIntensity.ts` で、重力の直流もそちらが差し引く。
+import { STEP_SEC_DEFAULT } from '../../../src/utils/knet/intensityCommon'
 
 /** 合成に要る成分の数。 */
 const REQUIRED_AXES = 3
@@ -219,8 +210,6 @@ export interface PacketOutcome {
 }
 
 export interface IntensityPipelineOptions {
-  /** 1 回の計算で見る長さ（秒）。 */
-  readonly windowSec?: number
   /** 答えを出す間隔（秒）。 */
   readonly stepSec?: number
   /** 同時に覚えておく流れの数の上限。`Segmenter` へそのまま渡す。 */
@@ -294,7 +283,6 @@ function toGal(p: SensorPacket): GalResult {
 
 export class IntensityPipeline {
   private readonly segmenter: Segmenter
-  private readonly windowSec: number
   private readonly stepSec: number
   /**
    * **`readonly` を持たせない。** `/api/*`（#313 段 B）が観測点設定を書き換えたとき、
@@ -313,7 +301,6 @@ export class IntensityPipeline {
 
   constructor(options: IntensityPipelineOptions = {}) {
     this.segmenter = new Segmenter({ maxStreams: options.maxStreams })
-    this.windowSec = options.windowSec ?? WINDOW_SEC_DEFAULT
     this.stepSec = options.stepSec ?? STEP_SEC_DEFAULT
     this.stations = options.stations ?? StationDirectory.empty()
   }
@@ -549,9 +536,7 @@ export class IntensityPipeline {
     try {
       const stream = new IntensityStream({
         sampleRateHz: meta.sampleRateHz,
-        windowSec: this.windowSec,
         stepSec: this.stepSec,
-        demeanWindow: DEMEAN_WINDOW,
       })
       return { stream, skip: null, skipDetail: null }
     } catch (error) {

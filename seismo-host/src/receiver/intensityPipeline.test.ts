@@ -13,14 +13,14 @@ const HZ = 100
 const PER_PACKET = 30
 
 /**
- * 窓と刻み。**既定（20 秒）より短くしてあるのはテストを短くするため。**
- * 刻みと先読み（2 秒）で、最初の答えが出るまでに 3 秒ぶん＝10 パケット要る。
+ * 刻み（1 秒）。**リアルタイム震度は先読みしない**ので、最初の答えは刻みの位置
+ * （100 サンプル）まで届いた時点で出る。
  */
-const OPTS = { windowSec: 1, stepSec: 1 }
+const OPTS = { stepSec: 1 }
 
 /**
  * 机に置いた基板の第 3 軸が名乗る値。**約 1009 gal の直流がそのまま乗る。**
- * 平均を引かずに通すと、これが強い揺れとして出る（下の「重力」のテスト）。
+ * 差し引かずに通すと、これが強い揺れとして出る（下の「重力」のテスト）。
  */
 const GRAVITY_COUNTS = 16880
 
@@ -85,8 +85,8 @@ function feed(
   return { readings, outcomes }
 }
 
-/** 最初の答えが出るまでに要るパケットの数（刻み 1 秒＋先読み 2 秒＝300 サンプル）。 */
-const PACKETS_FOR_FIRST = (HZ * (OPTS.stepSec + 2)) / PER_PACKET
+/** 最初の答えが出るまでに要るパケットの数（刻み 1 秒＝100 サンプルを覆う 4 パケット）。 */
+const PACKETS_FOR_FIRST = Math.ceil((HZ * OPTS.stepSec) / PER_PACKET)
 
 const KEY = streamKeyOf(pkt())
 
@@ -137,7 +137,7 @@ function breakEnd(pipeline: IntensityPipeline, streamKey: string): void {
 
 describe('IntensityPipeline', () => {
   describe('繋がったパケットから震度を出す', () => {
-    it('窓と先読みが埋まったところで最初の答えが出る', () => {
+    it('刻みの位置まで届いたところで最初の答えが出る', () => {
       const p = new IntensityPipeline(OPTS)
       const { readings } = feed(p, PACKETS_FOR_FIRST)
       expect(readings).toHaveLength(1)
@@ -198,15 +198,15 @@ describe('IntensityPipeline', () => {
   })
 
   describe('重力の直流を引く', () => {
-    // **実測で決めた境界。** 同じ材料を流し込みへ直に通すと、平均を引けば 0.68・
-    // 引かなければ 5.83 になる（静止時の第 3 軸に 16880 カウント＝約 1009 gal が乗る）。
-    // 実センサーの 8 時間の記録でも 0.79〜1.26 対 4.48〜6.23 で、同じ開き方をしている。
+    // 静止時の第 3 軸に 16880 カウント＝約 1009 gal が乗る。直流を最初のサンプルで
+    // 差し引かずに近似フィルタへ通すと、立ち上がりの段差が強い揺れとして出て、
+    // 60 秒の窓に入ったまま 1 分間居座る（`realtimeIntensity.ts` の説明）。
     it('静止している基板は震度が跳ねない', () => {
       const p = new IntensityPipeline(OPTS)
       const { readings } = feed(p, PACKETS_FOR_FIRST, QUIET)
       const v = readings[0].intensity
       expect(v).not.toBeNull()
-      // 平均を引くのをやめると 5.83 になるので、この上限がその取り違えを止める。
+      // 直流を差し引くのをやめると段差がそのまま震度になるので、この上限がそれを止める。
       expect(v as number).toBeLessThan(2)
     })
 
@@ -233,15 +233,16 @@ describe('IntensityPipeline', () => {
       expect(after.readings).toHaveLength(1)
     })
 
-    it('閉じた区間は締めくくりの答えを出す', () => {
+    it('閉じた区間の答えは閉じる前に出し切れている（締めくくりで出るものは無い）', () => {
+      // **リアルタイム震度は先読みしない**ので、刻みの位置へ届いた時点で必ず出している。
+      // 切った回に旧区間の答えが混ざるのは、かつての方式（2 秒先読み）の名残りだった。
       const p = new IntensityPipeline(OPTS)
-      // 先読みが届かず保留になっている分を作ってから切る。
-      feed(p, PACKETS_FOR_FIRST + 1)
+      const before = feed(p, PACKETS_FOR_FIRST + 3)
+      expect(before.readings.length).toBeGreaterThan(0)
+      expect(before.readings.every((r) => r.segmentId === 1)).toBe(true)
       const out = p.handlePacket(pkt({ firstSeq: 100 * PER_PACKET }))
       expect(out.startedBecause).toBe('seq-gap')
-      // 締めくくりは先読みを縮めて出すので、切った時点までの答えが残らず出る。
-      expect(out.readings.length).toBeGreaterThan(0)
-      expect(out.readings.every((r) => r.segmentId === 1)).toBe(true)
+      expect(out.readings.every((r) => r.segmentId !== 1)).toBe(true)
     })
   })
 
@@ -554,12 +555,12 @@ describe('IntensityPipeline', () => {
   })
 
   describe('組み立てと震度を 1 つの操作で閉じる', () => {
-    it('closeStream は両方を閉じ、締めくくりの答えを返す', () => {
+    it('closeStream は両方を閉じる（出し残しは無い）', () => {
       const p = new IntensityPipeline(OPTS)
       feed(p, PACKETS_FOR_FIRST + 1)
       const { closed, readings, failures } = p.closeStream(KEY)
       expect(closed?.meta.streamKey).toBe(KEY)
-      expect(readings.length).toBeGreaterThan(0)
+      expect(readings).toEqual([])
       expect(failures).toEqual([])
       expect(p.openSegments()).toEqual([])
       // **組み立ても閉じているので、続きの通し番号でも新しい区間として始まる。**
@@ -591,20 +592,20 @@ describe('IntensityPipeline', () => {
   })
 
   describe('締めくくり', () => {
-    it('closeAll は残っている答えを出す', () => {
+    it('closeAll はすべて閉じる（出し残しは無い）', () => {
       const p = new IntensityPipeline(OPTS)
       feed(p, PACKETS_FOR_FIRST + 1)
       const rest = p.closeAll()
-      expect(rest.readings.length).toBeGreaterThan(0)
+      expect(rest.readings).toEqual([])
       expect(rest.failures).toEqual([])
       expect(p.openSegments()).toEqual([])
       // 二度目は何も残らない。
       expect(p.closeAll()).toEqual({ readings: [], failures: [] })
     })
 
-    it('締めくくりに失敗した 1 本が、他の基板の最後の値を道連れにしない', () => {
-      // **終了は 1 度きり。** ここで例外が抜けると、残りの基板の最後の窓ぶんが出ないまま
-      // 消えるうえ、後片付けにも終了にも到達しない。
+    it('締めくくりに失敗した 1 本が、他の基板の後片付けを道連れにしない', () => {
+      // **終了は 1 度きり。** ここで例外が抜けると、残りの基板が閉じられないまま
+      // 後片付けにも終了にも到達しない。
       const p = new IntensityPipeline(OPTS)
       feed(p, PACKETS_FOR_FIRST + 1)
       const other = { boardKey: 'mac:aaaaaaaaaaaa' } as const
@@ -622,9 +623,8 @@ describe('IntensityPipeline', () => {
       const meta = pkt({})
       expect(rest.failures[0].boardKey).toBe(meta.boardKey)
       expect(rest.failures[0].sensorId).toBe(meta.sensorId)
-      // 壊していないほうの締めくくりは出ている。
-      expect(rest.readings.length).toBeGreaterThan(0)
-      expect(rest.readings.every((r) => r.boardKey === other.boardKey)).toBe(true)
+      // 壊していないほうも閉じている（出し残しは無いので答えは空）。
+      expect(rest.readings).toEqual([])
       expect(p.openSegments()).toEqual([])
     })
 
@@ -668,14 +668,13 @@ describe('IntensityPipeline', () => {
       expect(p.openSegments()).toEqual([])
     })
 
-    it('流れの上限に達したら古いほうを閉じ、その締めくくりも出す', () => {
+    it('流れの上限に達したら古いほうを閉じる（出し残しは無い）', () => {
       const p = new IntensityPipeline({ ...OPTS, maxStreams: 1 })
       feed(p, PACKETS_FOR_FIRST + 1)
       const other = p.handlePacket(pkt({ boardKey: 'mac:aaaaaaaaaaaa', firstSeq: 0 }))
       expect(other.closed).toHaveLength(1)
       expect(other.closed[0].meta.streamKey).toBe(KEY)
-      expect(other.readings.length).toBeGreaterThan(0)
-      expect(other.readings.every((r) => r.streamKey === KEY)).toBe(true)
+      expect(other.readings).toEqual([])
     })
   })
 })

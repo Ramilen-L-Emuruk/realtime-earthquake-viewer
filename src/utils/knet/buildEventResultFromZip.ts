@@ -4,7 +4,7 @@
 
 import { groupIntoStations } from './knetAscii'
 import { parseAllStationFiles } from './parseAllStationFiles'
-import { computeIntensityTimeSeries } from './seismicIntensity'
+import { computeRealtimeIntensityTimeSeries } from './realtimeIntensity'
 import type { EventResult, StationSeries } from './kyoshinEventMerge'
 
 /** 3成分が揃わない観測点の割合がこれを超えたら失敗として止める。 */
@@ -34,17 +34,19 @@ export function parseJstTimestamp(ts: string): Date {
 /**
  * K-NET/KiK-netのZIP（1地震ぶん）を解析し、観測点ごとの震度時系列を算出する。
  *
+ * **震度は強震モニタと同じリアルタイム震度**（`realtimeIntensity.ts`）。自作地震計のホストと
+ * 同じ方式なので、同じ画面に並べても物差しが揃う。
+ *
  * 地震の識別（`EventResult.originTimeJst`）は、呼び出し側から渡された値ではなく、ZIP内の
  * ファイル自身が持つヘッダーの `Origin Time` から求める。ブラウザ内インポートでは呼び出し側が
  * 対応する地震を事前に知らない（ファイルの中身から判定する）ため、これが唯一の情報源になる。
  */
-export function buildEventResultFromZip(zip: Uint8Array, windowSec: number, stepSec: number): EventResult {
+export function buildEventResultFromZip(zip: Uint8Array, stepSec: number): EventResult {
   // stepSecが非整数だと、下のepochSec算出（Math.round(p.tSec)）で異なるtSecが同じ整数秒に
   // 丸められて衝突し、mergeEvents側のMap.set()で後着が先着を無警告で上書き・消失させる
   // （実データが欠落した状態で「成功」してしまう）。CLI（parseCliArgs）は既に検証しているが、
   // ブラウザ内インポートはCLI引数解析を経由しないため、共有関数自身でも検証する。
   if (!Number.isInteger(stepSec) || stepSec <= 0) throw new Error('stepSec は正の整数（秒）で指定してください')
-  if (!(windowSec > 0)) throw new Error('windowSec は正の数（秒）で指定してください')
 
   const { files, failures } = parseAllStationFiles(zip)
   if (failures.length > 0) {
@@ -83,13 +85,22 @@ export function buildEventResultFromZip(zip: Uint8Array, windowSec: number, step
 
   const stationSeries: StationSeries[] = stations.map((station) => {
     const startEpochSec = Math.round(station.recordStartTime.getTime() / 1000)
-    const points = computeIntensityTimeSeries(
-      station.components.NS,
-      station.components.EW,
-      station.components.UD,
-      station.samplingHz,
-      { windowSec, stepSec },
-    ).map((p) => ({
+    let series: ReturnType<typeof computeRealtimeIntensityTimeSeries>
+    try {
+      series = computeRealtimeIntensityTimeSeries(
+        station.components.NS,
+        station.components.EW,
+        station.components.UD,
+        station.samplingHz,
+        stepSec,
+      )
+    } catch (error) {
+      // **どの観測点で止まったかを添える。** 近似フィルタはサンプリング周波数が低いと
+      // 発散するので作る時点で止まる（`RealtimeIntensityCalculator`）。理由だけでは、
+      // ZIP のどのファイルが原因か辿れない。
+      throw new Error(`観測点 ${station.stationCode}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    const points = series.map((p) => ({
       epochSec: startEpochSec + Math.round(p.tSec),
       intensity: p.intensity,
     }))

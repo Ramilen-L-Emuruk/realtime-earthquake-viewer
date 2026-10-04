@@ -20,7 +20,8 @@
 //             自動で探す（EVENT_MATCH_TOLERANCE_MS参照）
 //   --id: 出力ファイル名（<id>.json）。対応する historical-archives/<id>.json と揃えると
 //         リプレイ時に自動で読み込まれる
-//   --window-sec / --step-sec: 計測震度のスライディングウィンドウ設定（既定20秒・1秒刻み）
+//   --step-sec: 震度を出す刻み（既定1秒）。震度は強震モニタと同じリアルタイム震度
+//         （src/utils/knet/realtimeIntensity.ts。直近60秒で判定する方式で、窓の長さは定義上動かさない）
 //   --expected-max-intensity: 既知の最大震度（計測震度換算値、全イベント通して）との差が
 //         1.0を超えたら警告を出す。算出パイプラインの単位取り違え等、明らかな誤りに
 //         早期に気付くための任意の検算
@@ -33,7 +34,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { parseArgs } from 'node:util'
 import { buildEventResultFromZip } from '../src/utils/knet/buildEventResultFromZip'
-import { STEP_SEC_DEFAULT, WINDOW_SEC_DEFAULT } from '../src/utils/knet/seismicIntensity'
+import { STEP_SEC_DEFAULT } from '../src/utils/knet/intensityCommon'
 import { mergeEvents, type EventResult } from '../src/utils/knet/kyoshinEventMerge'
 import type { LocalKyoshinArchive } from '../src/types/localKyoshinArchive'
 
@@ -70,7 +71,6 @@ function hasByteOrderMark(path: string): boolean {
 interface CliArgs {
   originTimesJst: string[]
   id: string
-  windowSec: number
   stepSec: number
   expectedMaxIntensity: number | null
 }
@@ -80,7 +80,6 @@ function parseCliArgs(): CliArgs {
     options: {
       origin: { type: 'string', multiple: true },
       id: { type: 'string' },
-      'window-sec': { type: 'string' },
       'step-sec': { type: 'string' },
       'expected-max-intensity': { type: 'string' },
     },
@@ -110,7 +109,6 @@ function parseCliArgs(): CliArgs {
   return {
     originTimesJst: origins,
     id,
-    windowSec: values['window-sec'] ? Number(values['window-sec']) : WINDOW_SEC_DEFAULT,
     stepSec,
     expectedMaxIntensity: values['expected-max-intensity'] ? Number(values['expected-max-intensity']) : null,
   }
@@ -204,7 +202,6 @@ async function processEvent(
   originTimeJst: string,
   user: string,
   password: string,
-  windowSec: number,
   stepSec: number,
 ): Promise<EventResult> {
   console.log(`\n=== イベント origin=${originTimeJst} ===`)
@@ -214,7 +211,7 @@ async function processEvent(
 
   let result: EventResult
   try {
-    result = buildEventResultFromZip(zip, windowSec, stepSec)
+    result = buildEventResultFromZip(zip, stepSec)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     // buildEventResultFromZipは、地震の識別（originTimeJst）がZIPヘッダーから導出できた
@@ -234,7 +231,7 @@ async function processEvent(
 }
 
 async function main(): Promise<void> {
-  const { originTimesJst, id, windowSec, stepSec, expectedMaxIntensity } = parseCliArgs()
+  const { originTimesJst, id, stepSec, expectedMaxIntensity } = parseCliArgs()
   const user = process.env.NIED_KNET_USER
   const password = process.env.NIED_KNET_PASSWORD
   if (!user || !password) {
@@ -253,7 +250,7 @@ async function main(): Promise<void> {
   const eventFailures: { origin: string; message: string }[] = []
   for (const origin of originTimesJst) {
     try {
-      events.push(await processEvent(origin, user, password, windowSec, stepSec))
+      events.push(await processEvent(origin, user, password, stepSec))
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       console.error(`origin=${origin} をスキップします: ${message}`)

@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { HistoricalArchiveIndex } from '../types/historicalArchive'
 import { findCoveringArchiveSync } from '../services/localArchiveReplay'
 import { buildEventResultFromZip, parseJstTimestamp } from '../utils/knet/buildEventResultFromZip'
-import { STEP_SEC_DEFAULT, WINDOW_SEC_DEFAULT } from '../utils/knet/seismicIntensity'
+import { STEP_SEC_DEFAULT } from '../utils/knet/intensityCommon'
 import { countImportedEvents, deleteImportedEvents, hasImportStorageError, onImportsChanged, saveImportedEvent } from '../utils/kyoshinImportDb'
 
 export interface KyoshinImportSummary {
@@ -79,7 +79,7 @@ export function useKyoshinImport(historicalArchives: HistoricalArchiveIndex): Us
       for (const file of Array.from(files)) {
         try {
           const zip = new Uint8Array(await file.arrayBuffer())
-          const event = buildEventResultFromZip(zip, WINDOW_SEC_DEFAULT, STEP_SEC_DEFAULT)
+          const event = buildEventResultFromZip(zip, STEP_SEC_DEFAULT)
           const originTime = parseJstTimestamp(event.originTimeJst)
           const meta = findCoveringArchiveSync(historicalArchives, originTime, new Date(originTime.getTime() + 1))
           if (!meta) {
