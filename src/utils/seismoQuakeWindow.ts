@@ -322,6 +322,19 @@ export function selectQuakeWindow(params: {
 }
 
 /**
+ * 列が覆う区間（左端〜右端）。**列が 1 つも無ければ `null`。**
+ *
+ * **震度を訊く区間と、描いた区間を突き合わせる物差し。** 訊く側（`useSeismoQuakeWaves`）と
+ * 描く側（`QuakeSeismoWave`）が同じ {@link selectQuakeWindow} の結果をこれへ通すので、
+ * どちらかだけ別の式で区間を書くと、出した震度が描いた絵と別の区間の値になる。
+ */
+export function columnsSpan(columns: TimedColumns): { readonly fromMs: number; readonly toMs: number } | null {
+  const n = columns.columns.length
+  if (n === 0 || !(columns.columnSpanMs > 0) || !Number.isFinite(columns.fromMs)) return null
+  return { fromMs: columns.fromMs, toMs: columns.fromMs + n * columns.columnSpanMs }
+}
+
+/**
  * ノイズの幅の倍率（平常時の 1 秒ごとの振れの最大の中央値に対して）。**1.5 倍。**
  *
  * **実波形で決めた値**（2026-10-04・自宅の観測点。{@link ONSET_RATIO} と同じ 21 地震と 18 窓）。

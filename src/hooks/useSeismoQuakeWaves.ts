@@ -16,6 +16,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { fetchSeismoQuakeIntensity, type QuakeIntensity } from '../services/seismoQuakeIntensity'
 import { fetchSeismoWaveHistory, buildWaveHistoryRange } from '../services/seismoWaveHistory'
 import { fetchSeismoStatus, isValidSeismoHostUrl } from '../services/seismoStream'
 import { quakeScaleForScope, type NearbyScope } from '../utils/actionChecklistTrigger'
@@ -23,7 +24,14 @@ import { serverNow } from '../utils/clock'
 import { log } from '../utils/logger'
 import { quakeEventKey } from '../utils/quakeMerge'
 import { parseJstTimeMs, type OriginSeconds } from '../utils/quakeOriginSeconds'
-import { computeReachBand, MINUTE_MS, type ReachBand, type WaveAxisZero } from '../utils/seismoQuakeWindow'
+import {
+  columnsSpan,
+  computeReachBand,
+  MINUTE_MS,
+  selectQuakeWindow,
+  type ReachBand,
+  type WaveAxisZero,
+} from '../utils/seismoQuakeWindow'
 import { computeWaveArrival, type WaveArrival } from '../utils/seismoWaveArrival'
 import {
   appendWaveWindow,
@@ -157,6 +165,20 @@ export interface SeismoQuakeWave {
    * 「伸ばす番のカード」だけ。
    */
   readonly interrupted: boolean
+  /**
+   * **もう伸ばさない。** 先頭の対象でない・再生中・収まった・安全弁を過ぎた、のいずれか。
+   *
+   * 震度（{@link intensity}）を訊くのはこれが立ってから —— 伸びている途中の区間で
+   * 計測震度を出すと、揺れの後半が入らない値になる（計測震度は揺れ全体に 1 回出す量）。
+   */
+  readonly complete: boolean
+  /**
+   * この区間の震度（最大リアルタイム震度・計測震度）。**訊く前・訊けなかったときは `null`。**
+   *
+   * **持っている値の区間（`fromMs`〜`toMs`）が描く区間と一致するときだけ出すこと。**
+   * 次の地震で末尾が切り戻されると描く区間が変わり、訊き直すまでの間は古い区間の値が残る。
+   */
+  readonly intensity: QuakeIntensity | null
 }
 
 /**
@@ -294,6 +316,9 @@ function sameWave(a: SeismoQuakeWave | undefined, b: SeismoQuakeWave): a is Seis
   // ここを見落とすと**濃さを落とす指示が画面へ届かない**（列だけを比べていると
   // 「変わっていない」として前の姿を使い回す）。
   if (a.interrupted !== b.interrupted) return false
+  // **伸ばし終えたか・震度も比べる。** どちらも列が変わらないまま変わる（収まった後に
+  // 震度が届く）ので、見落とすと震度の行が画面へ出ない。震度は届くたびに新しい参照になる。
+  if (a.complete !== b.complete || a.intensity !== b.intensity) return false
   // **時間軸の 0 と時間帯も比べる。** 秒が後から取れたとき（過去分の取得は非同期で返る）は
   // 列も線も変わらないまま 0 だけが動くので、ここを見ないと目盛りが分の頭のまま残る。
   if (a.axisZero.kind !== b.axisZero.kind || a.axisZero.ms !== b.axisZero.ms) return false
@@ -318,6 +343,15 @@ function axisZeroOf(target: SeismoWaveTarget): WaveAxisZero {
   return { kind: 'minute', ms: Math.floor(target.originMs / MINUTE_MS) * MINUTE_MS }
 }
 
+/** 震度を訊いた記録（地震 × 観測点ごと）。**どの区間について**の結果かを持つ。 */
+interface IntensityAsk {
+  readonly fromMs: number
+  readonly toMs: number
+  /** `done` = 取れた／`failed` = 一時的な失敗で取り直す／`gave-up` = この区間では訊かない。 */
+  readonly kind: 'done' | 'failed' | 'gave-up'
+  readonly atMs: number
+}
+
 interface Entry {
   readonly stationId: string
   readonly displayName: string
@@ -339,6 +373,13 @@ interface Entry {
   lastGrewAt: number
   /** 直前に画面へ出した「途切れているか」。**裏返った巡回を捉えるために持つ。** */
   interrupted: boolean
+  /**
+   * 先頭の対象として**もう伸ばさない**と決まったか（継ぎ足しの巡回が書く）。
+   * **先頭でない対象は、これに関わらず伸ばし終えている**（出すときに合わせて判断する）。
+   */
+  grownOut: boolean
+  /** 訊けた震度（→ {@link SeismoQuakeWave.intensity}）。 */
+  intensity: QuakeIntensity | null
 }
 
 /**
@@ -396,6 +437,8 @@ export function useSeismoQuakeWaves(params: {
     // 動いても線だけが初報のまま残る（実測で 15 地震のうち 11 件・1〜6 秒動いた）。
     // 引くのは表引き 2 回ぶんなので、出すたびに解いてよい。
     const byKey = new Map(targetsRef.current.map((t) => [t.eventKey, t]))
+    // **先頭でない対象はもう伸ばさない**（継ぎ足しの巡回が触るのは先頭だけ）。
+    const headKey = targetsRef.current[0]?.eventKey
     const out = new Map<string, readonly SeismoQuakeWave[]>()
     for (const [key, list] of bookRef.current) {
       const target = byKey.get(key)
@@ -422,6 +465,8 @@ export function useSeismoQuakeWaves(params: {
           displayName: e.displayName,
           columns: e.columns,
           interrupted: e.interrupted,
+          complete: key !== headKey || e.grownOut,
+          intensity: e.intensity,
           // **秒が取れていない地震は線を引かない**（→ `SeismoWaveTarget.arrivalOriginMs`）。
           arrival: axisZero.kind === 'origin' ? fromZero : null,
           axisZero,
@@ -455,6 +500,9 @@ export function useSeismoQuakeWaves(params: {
   useEffect(() => {
     if (resetKeyRef.current === resetKey) return
     resetKeyRef.current = resetKey
+    resetIntensityRef.current()
+    // **前に出した内容も捨てる。** 残すと、震度を訊く巡回が前の接続先・時間軸の区間を読む。
+    publishedRef.current = new Map()
     doneRef.current = new Set()
     inFlightRef.current = new Set()
     bookRef.current = new Map()
@@ -581,6 +629,9 @@ export function useSeismoQuakeWaves(params: {
               },
               lastGrewAt: serverNow(),
               interrupted: false,
+              // 伸ばすかどうかは継ぎ足しの巡回が決める（先頭でなければ出すときに伸ばし終えた扱い）。
+              grownOut: false,
+              intensity: null,
             },
           ])
           // **1 件ごとに画面へ出す。** まとめて出すと、観測点が増えたとき最後の 1 本を
@@ -639,9 +690,15 @@ export function useSeismoQuakeWaves(params: {
             lastGrewAt: entry.lastGrewAt,
             now: atMs,
           })
-          if (interrupted === entry.interrupted) continue
-          entry.interrupted = interrupted
-          cleared = true
+          if (interrupted !== entry.interrupted) {
+            entry.interrupted = interrupted
+            cleared = true
+          }
+          // **安全弁を過ぎたら伸ばし終えた。** 震度を訊く番になる。
+          if (!entry.grownOut) {
+            entry.grownOut = true
+            cleared = true
+          }
         }
         if (cleared) publishRef.current()
         return
@@ -696,6 +753,13 @@ export function useSeismoQuakeWaves(params: {
           entry.interrupted = interrupted
           changed = true
         }
+        // **伸ばす番かどうかと同じ判定で「伸ばし終えた」を決める。** 別の条件で書くと、
+        // 伸ばしているのに震度を訊く（後半の入らない計測震度になる）か、伸ばし終えたのに
+        // 訊かないままになる。
+        if (entry.grownOut === growing) {
+          entry.grownOut = !growing
+          changed = true
+        }
       }
       if (changed) publishRef.current()
     }, APPEND_INTERVAL_MS)
@@ -720,6 +784,154 @@ export function useSeismoQuakeWaves(params: {
     publishRef.current()
   }, [arrivalKey])
 
+  // **伸ばし終えた区間の震度を訊く**（地震 × 観測点 × 描く区間について 1 回。**1 本ずつ**）。
+  //
+  // **1 本ずつにするのは、ホストの受信を止めないため。** 1 件は数十 ms で済むが、7 日ぶんの
+  // カードを一度に投げると、ホストのイベントループが続けて塞がる（`seismo-host` の
+  // `loopStall.ts` が数える「止まった」に近づく）。
+  //
+  // **区間が変わったら訊き直す。** 次の地震で末尾が切り戻されると、描く区間が変わる。
+  const intensityAsksRef = useRef(new Map<string, IntensityAsk>())
+  const intensityUnsupportedRef = useRef(false)
+  const intensityCtrlRef = useRef<AbortController | null>(null)
+  const intensityRetryRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const askIntensityRef = useRef<() => void>(() => {})
+  askIntensityRef.current = () => {
+    if (!canFetch || intensityUnsupportedRef.current || intensityCtrlRef.current !== null) return
+    const now = serverNow()
+    const byKey = new Map(targetsRef.current.map((t) => [t.eventKey, t]))
+    // 取り直しの待ちがいちばん早く明ける時刻。**1 本のタイマーをそこへ張り直す** ——
+    // 失敗のたびに張り直すと、続けて失敗したとき前の予約が上書きされて取り直しが遅れる。
+    let nextDueMs = Infinity
+    for (const [eventKey, list] of publishedRef.current) {
+      const target = byKey.get(eventKey)
+      if (target === undefined) continue
+      for (const wave of list) {
+        if (!wave.complete) continue
+        const span = columnsSpan(selectQuakeWindow({ base: wave.columns, zero: wave.axisZero, reach: wave.reach }).columns)
+        if (span === null) continue
+        if (wave.intensity !== null && wave.intensity.fromMs === span.fromMs && wave.intensity.toMs === span.toMs) continue
+        const askKey = `${eventKey}|${wave.stationId}`
+        const prev = intensityAsksRef.current.get(askKey)
+        if (prev !== undefined && prev.fromMs === span.fromMs && prev.toMs === span.toMs) {
+          // 同じ区間で取れたもの・諦めたもの・取り直しを待っているものは飛ばす
+          // （待ちが明けたらタイマーが呼び直す）。
+          if (prev.kind !== 'failed') continue
+          if (now - prev.atMs < RETRY_INTERVAL_MS) {
+            nextDueMs = Math.min(nextDueMs, prev.atMs + RETRY_INTERVAL_MS)
+            continue
+          }
+        }
+        void askOne({ eventKey, stationId: wave.stationId, span, fresh: now <= target.originMs + GROW_SAFETY_MS })
+        return
+      }
+    }
+    if (intensityRetryRef.current !== undefined) clearTimeout(intensityRetryRef.current)
+    intensityRetryRef.current = Number.isFinite(nextDueMs)
+      ? setTimeout(() => askIntensityRef.current(), Math.max(0, nextDueMs - now))
+      : undefined
+  }
+
+  /** 1 本訊く。**終わったら次を探す**（{@link askIntensityRef}）。 */
+  const askOne = async (job: {
+    eventKey: string
+    stationId: string
+    span: { fromMs: number; toMs: number }
+    fresh: boolean
+  }): Promise<void> => {
+    const ctrl = new AbortController()
+    intensityCtrlRef.current = ctrl
+    const askKey = `${job.eventKey}|${job.stationId}`
+    const result = await fetchSeismoQuakeIntensity({
+      baseUrl,
+      stationId: job.stationId,
+      fromMs: job.span.fromMs,
+      toMs: job.span.toMs,
+      signal: ctrl.signal,
+    })
+    // **取り消されたら何も書かない**（接続先・時間軸が変わった。帳面ごと作り直されている）。
+    if (ctrl.signal.aborted) return
+    intensityCtrlRef.current = null
+    // **待っている間に対象から外れた地震は書かない**（取消・表示する震度の設定変更）。
+    // 書くと、外れたときに掃除した記録が死んだ鍵のまま居座る。
+    if (!targetsRef.current.some((t) => t.eventKey === job.eventKey)) {
+      askIntensityRef.current()
+      return
+    }
+    const mark = (kind: IntensityAsk['kind']): void => {
+      intensityAsksRef.current.set(askKey, { ...job.span, kind, atMs: serverNow() })
+    }
+    switch (result.kind) {
+      case 'ok': {
+        mark('done') // 取れた区間は二度と訊かない（区間が変われば別の問い合わせになる）
+        const entry = bookRef.current.get(job.eventKey)?.find((e) => e.stationId === job.stationId)
+        if (entry !== undefined) {
+          // **区間は訊いた値で持つ。** ホストは整数のミリ秒へ丸めて返すので、そのまま持つと
+          // 描く側の区間（列の境目）と一致しなくなる。
+          entry.intensity = { ...result.intensity, fromMs: job.span.fromMs, toMs: job.span.toMs }
+          // **計測震度が出なかった理由は記録へ残す。** 画面は最大リアルタイム震度だけになるので、
+          // 「途切れていた」のか「記録が届いていなかった」のかはここでしか分からない。
+          // **読み込みの欠けを申告されたら残す**。震度は出ても、ディスクの不調で読めなかった分が
+          // 値から抜けている。
+          //
+          // **「無かったファイル」だけでは書かない**（本文には載せる）。ホストは区間の 1 時間前の
+          // ファイルから読みに行くので、無かったファイルはふつうに数えられる —— 条件に入れると
+          // カードの枚数だけ記録が埋まる。欠けた区間は途切れ（`gap`・`not-covered`）として別に出る。
+          const { filesMissing, filesFailed, skippedBytes, truncated, invalidChunkCount } = result.intensity
+          if (filesFailed > 0 || skippedBytes > 0 || truncated || invalidChunkCount > 0) {
+            log.warn(
+              `[seismo] 地震の区間の震度に読み込みの欠けがある（${job.stationId}）: ` +
+                `無かったファイル ${filesMissing}・読めなかったファイル ${filesFailed}・読み飛ばし ${skippedBytes} バイト・` +
+                `打ち切り ${truncated ? 'あり' : 'なし'}・値の壊れたまとまり ${invalidChunkCount}`,
+            )
+          }
+          if (result.intensity.measured === null) {
+            log.debug(
+              `[seismo] 地震の区間の計測震度を出せなかった（${job.stationId}）: ${result.intensity.measuredUnavailable}` +
+                `・途切れ ${result.intensity.gapCount} か所`,
+            )
+          }
+          publishRef.current()
+        }
+        break
+      }
+      case 'not-supported':
+        // **配る前のホスト。** 接続先が変わるまで訊かない。記録は 1 回だけ。
+        intensityUnsupportedRef.current = true
+        log.warn('[seismo] ホストが地震の区間の震度の口（/quake-intensity）を持っていない（配る前の版）')
+        return
+      case 'bad-request':
+        mark('gave-up') // 同じ区間で投げ直しても通らない
+        break
+      // `aborted` は来ない（取り消しは上の `ctrl.signal.aborted` で先に返している）。
+      default:
+        // **一時的な失敗は、新しい地震だけ取り直す**（読み返しと同じ線。古いカードのために
+        // ホストを叩き続けない）。
+        // 取り直しのタイマーは次の巡回が張る（待ちが明ける時刻のうち最も早いものへ）。
+        mark(job.fresh ? 'failed' : 'gave-up')
+        if (!job.fresh) {
+          log.debug(`[seismo] 地震の区間の震度を訊くのを諦めた（${job.stationId}・${result.kind}）: 発生から 30 分を過ぎた地震は取り直さない`)
+        }
+    }
+    askIntensityRef.current()
+  }
+
+  useEffect(() => {
+    askIntensityRef.current()
+  }, [waves])
+
+  /** 震度を訊く帳面を捨てる（接続先・時間軸が変わった・機能を切った・画面を閉じた）。 */
+  const resetIntensityRef = useRef<() => void>(() => {})
+  resetIntensityRef.current = () => {
+    intensityCtrlRef.current?.abort()
+    intensityCtrlRef.current = null
+    if (intensityRetryRef.current !== undefined) clearTimeout(intensityRetryRef.current)
+    intensityRetryRef.current = undefined
+    intensityAsksRef.current = new Map()
+    intensityUnsupportedRef.current = false
+  }
+  useEffect(() => () => resetIntensityRef.current(), [])
+
   // 対象から外れた地震の分を捨て、**打ち切りが縮んだ分を切り戻す。**
   useEffect(() => {
     const alive = new Map(targetsRef.current.map((t) => [t.eventKey, t]))
@@ -731,6 +943,10 @@ export function useSeismoQuakeWaves(params: {
       // 取消・表示する震度の設定変更で対象から外れたもの。
       if (target === undefined) {
         bookRef.current.delete(key)
+        // 震度を訊いた記録も同じ鍵で捨てる（残すと 7 日ぶん積み上がる）。
+        for (const askKey of [...intensityAsksRef.current.keys()]) {
+          if (askKey.startsWith(`${key}|`)) intensityAsksRef.current.delete(askKey)
+        }
         changed = true
         continue
       }
@@ -754,12 +970,16 @@ export function useSeismoQuakeWaves(params: {
         changed = true
       }
     }
-    if (changed) publishRef.current()
+    // **先頭が入れ替わっただけでも出し直す。** 降りた地震は列も途切れも変わらないまま
+    // 「伸ばし終えた」になる（→ `SeismoQuakeWave.complete`）ので、出し直さないと震度を訊かない。
+    if (changed || bookRef.current.size > 0) publishRef.current()
   }, [targetKey])
 
   // 機能を切ったら画面からも消す。
   useEffect(() => {
     if (canFetch) return
+    resetIntensityRef.current()
+    publishedRef.current = new Map()
     doneRef.current = new Set()
     inFlightRef.current = new Set()
     bookRef.current = new Map()

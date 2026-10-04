@@ -1,10 +1,10 @@
 // 震度の 2 つの計算（`seismicIntensity.ts` の気象庁の手順と、`realtimeIntensity.ts` の
 // リアルタイム震度）が共有する、小さな定数と換算。
 //
-// **FFT を持たないファイルとして分けてある。** `seismicIntensity.ts` は `fft-js` を読み込むので、
+// **FFT を持たないファイルとして分けてある。** `seismicIntensity.ts` は FFT（`fft.ts`）を読み込むので、
 // 刻みや 0.3 秒の定数を借りるだけの側（リアルタイム震度・自作地震計のホスト・管理コンソール・
 // K-NET 取り込みの配線）がそこを import すると、使わない FFT まで一緒に入る。管理コンソールは
-// ブラウザへ配るバンドルなので、実際に `fft-js` 一式が載っていた。
+// ブラウザへ配るバンドルなので、実際に FFT 一式（当時は `fft-js`）が載っていた。
 
 /** 継続時間0.3秒基準（気象庁告示式で固定値）。 */
 export const DURATION_THRESHOLD_SEC = 0.3

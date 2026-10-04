@@ -13,13 +13,23 @@ import { quakeEventKey } from '../utils/quakeMerge'
 import { computeWaveArrival } from '../utils/seismoWaveArrival'
 import type { OriginSeconds } from '../utils/quakeOriginSeconds'
 import type { JMAQuake } from '../types/earthquake'
+import type { QuakeIntensityResult } from '../services/seismoQuakeIntensity'
 
 const fetchSeismoStatus = vi.hoisted(() => vi.fn())
 const fetchSeismoWaveHistory = vi.hoisted(() => vi.fn())
+// **既定は「配る前のホスト」。** 震度を訊くのは伸ばし終えた後なので、既存のテストでも
+// 呼ばれうる —— 素の `fetch` へ流すと、テストが実際に通信を出しにいく。
+const fetchSeismoQuakeIntensity = vi.hoisted(() =>
+  vi.fn(async (): Promise<QuakeIntensityResult> => ({ kind: 'not-supported' })),
+)
 
 vi.mock('../services/seismoStream', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../services/seismoStream')>()),
   fetchSeismoStatus,
+}))
+vi.mock('../services/seismoQuakeIntensity', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/seismoQuakeIntensity')>()),
+  fetchSeismoQuakeIntensity,
 }))
 vi.mock('../services/seismoWaveHistory', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../services/seismoWaveHistory')>()),
@@ -688,6 +698,199 @@ describe('useSeismoQuakeWaves', () => {
         vi.useRealTimers()
       }
     })
+  })
+})
+
+describe('震度を訊く（#494 段3）', () => {
+  function intensityOk() {
+    return {
+      kind: 'ok' as const,
+      intensity: {
+        fromMs: 0,
+        toMs: 0,
+        maxRealtime: 2.3,
+        measured: 1.9,
+        measuredUnavailable: null,
+        gapCount: 0,
+        invalidChunkCount: 0,
+        filesMissing: 0,
+        filesFailed: 0,
+        skippedBytes: 0,
+        truncated: false,
+      },
+    }
+  }
+
+  function render(replayOffsetMs: number | null = null) {
+    return renderHook(
+      ({ originSeconds }: { originSeconds: ReadonlyMap<string, OriginSeconds> }) =>
+        useSeismoQuakeWaves({
+          enabled: true,
+          baseUrl: 'http://host:50506',
+          quakes: [SECONDS_QUAKE],
+          scope: NO_SCOPE,
+          readWave: () => null,
+          replayOffsetMs,
+          originSeconds,
+        }),
+      { initialProps: { originSeconds: SECONDS } },
+    )
+  }
+
+  const intensityOf = (waves: ReadonlyMap<string, readonly { intensity: unknown }[]>) =>
+    [...waves.values()][0]?.[0]?.intensity
+
+  // 正: 伸ばし終えた地震（ここでは安全弁の 30 分を過ぎたもの）は震度を訊き、訊いた区間で持つ。
+  it('伸ばし終えた地震は震度を訊き、訊いた区間の値として載せる', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026/09/29 23:00:00'))
+      fetchSeismoStatus.mockResolvedValue(okStatus())
+      fetchSeismoWaveHistory.mockResolvedValue(history())
+      fetchSeismoQuakeIntensity.mockResolvedValueOnce(intensityOk())
+      const { result } = render()
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000)
+      })
+      expect(fetchSeismoQuakeIntensity).toHaveBeenCalledTimes(1)
+      const asked = fetchSeismoQuakeIntensity.mock.calls[0] as unknown as [{ fromMs: number; toMs: number; stationId: string }]
+      expect(asked[0].stationId).toBe('station-1')
+      // **ホストが丸めて返した区間ではなく、訊いた区間で持つ**（描く側と突き合わせるため）。
+      expect(intensityOf(result.current)).toMatchObject({ fromMs: asked[0].fromMs, toMs: asked[0].toMs, maxRealtime: 2.3 })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // 対照: 伸ばしている最中は訊かない（後半の入らない計測震度になる）。
+  it('揺れの直後で伸ばしている最中は訊かない', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026/09/29 22:00:05'))
+      fetchSeismoStatus.mockResolvedValue(okStatus())
+      fetchSeismoWaveHistory.mockResolvedValue(history())
+      render()
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+      expect(fetchSeismoQuakeIntensity).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('再生中は伸ばさないので、すぐ訊く', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026/09/29 22:00:05'))
+      fetchSeismoStatus.mockResolvedValue(okStatus())
+      fetchSeismoWaveHistory.mockResolvedValue(history())
+      render(-3600_000)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000)
+      })
+      expect(fetchSeismoQuakeIntensity).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // 安全弁: 配る前のホスト（404）へは、出し直しのたびに訊き直さない。
+  it('ホストが口を持っていなければ、出し直しても訊き直さない', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026/09/29 23:00:00'))
+      fetchSeismoStatus.mockResolvedValue(okStatus())
+      fetchSeismoWaveHistory.mockResolvedValue(history())
+      const { rerender } = render()
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000)
+      })
+      expect(fetchSeismoQuakeIntensity).toHaveBeenCalledTimes(1)
+      // 秒が変わる＝線を引き直して出し直す（震度を訊く契機になる）
+      rerender({ originSeconds: new Map() })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000)
+      })
+      expect(fetchSeismoQuakeIntensity).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('震度を訊けなかったときの取り直し（#494 段3）', () => {
+  const unreachable = { kind: 'unreachable' as const, detail: 'TypeError: Failed to fetch' }
+
+  function renderReplay(now: string, replayOffsetMs: number | null) {
+    vi.setSystemTime(new Date(now))
+    fetchSeismoStatus.mockResolvedValue(okStatus())
+    fetchSeismoWaveHistory.mockResolvedValue(history())
+    return renderHook(() =>
+      useSeismoQuakeWaves({
+        enabled: true,
+        baseUrl: 'http://host:50506',
+        quakes: [SECONDS_QUAKE],
+        scope: NO_SCOPE,
+        readWave: () => null,
+        replayOffsetMs,
+        originSeconds: SECONDS,
+      }),
+    )
+  }
+
+  // 正: 新しい地震は 30 秒後に取り直す。
+  it('一時的に失敗したら 30 秒後に取り直す', async () => {
+    vi.useFakeTimers()
+    try {
+      fetchSeismoQuakeIntensity.mockResolvedValueOnce(unreachable)
+      // 再生中＝伸ばさないので、発生の 5 秒後でもすぐ訊く（発生から 30 分以内＝取り直す対象）
+      renderReplay('2026/09/29 22:00:05', -3600_000)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000)
+      })
+      expect(fetchSeismoQuakeIntensity).toHaveBeenCalledTimes(1)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000)
+      })
+      expect(fetchSeismoQuakeIntensity).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // 対照: 30 秒に満たないうちは取り直さない。
+  it('30 秒に満たないうちは取り直さない', async () => {
+    vi.useFakeTimers()
+    try {
+      fetchSeismoQuakeIntensity.mockResolvedValueOnce(unreachable)
+      renderReplay('2026/09/29 22:00:05', -3600_000)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20_000)
+      })
+      expect(fetchSeismoQuakeIntensity).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // 安全弁: 発生から 30 分を過ぎた地震は取り直さない（ホストが落ちている間、古いカードのために叩き続けない）。
+  it('古い地震は失敗しても取り直さない', async () => {
+    vi.useFakeTimers()
+    try {
+      fetchSeismoQuakeIntensity.mockResolvedValue(unreachable)
+      renderReplay('2026/09/29 23:00:00', null)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000)
+      })
+      expect(fetchSeismoQuakeIntensity).toHaveBeenCalledTimes(1)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(120_000)
+      })
+      expect(fetchSeismoQuakeIntensity).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

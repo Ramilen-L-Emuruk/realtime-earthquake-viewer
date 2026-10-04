@@ -11,12 +11,14 @@
 // 出さないと決めてあるので（2026-09-29 のユーザー判断）、載せるものが無ければ
 // 親が丸ごと描かない。
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type { SeismoQuakeWave } from '../../hooks/useSeismoQuakeWaves'
+import type { QuakeIntensity } from '../../services/seismoQuakeIntensity'
 import { formatTime } from '../../utils/formatters'
 import { log } from '../../utils/logger'
-import { measureNoiseBand, selectQuakeWindow, type WaveAxisZero } from '../../utils/seismoQuakeWindow'
+import { formatMeasured, measuredIntensityToGrade } from '../../utils/measuredIntensity'
+import { columnsSpan, measureNoiseBand, selectQuakeWindow, type WaveAxisZero } from '../../utils/seismoQuakeWindow'
 import type { TimedColumns } from '../../utils/seismoWaveColumns'
 import { useWaveAxes } from '../../hooks/useSeismoWaveAxes'
 import { useWaveEmphasis } from '../../hooks/useSeismoWaveEmphasis'
@@ -107,6 +109,34 @@ export function foldQuakeWaveColumns(params: {
   return { columns: emphasizeColumns({ folded, noise, visibleAxes }), noiseMissing: false }
 }
 
+/**
+ * 震度の行の文言。**出す値が 1 つも無ければ `null`**（行ごと出さない）。
+ *
+ * **階級は小数 1 桁へ丸めた値から引く。** 気象庁は計測震度を小数第 2 位で四捨五入してから
+ * 階級を決める。丸める前の値で引くと「2.5（震度2）」のように数と階級が食い違って見える。
+ *
+ * @param intensity ホストが返した区間の震度
+ * @param span 描いた区間。**`intensity` の区間と一致しなければ出さない** —— 次の地震で末尾が
+ *   切り戻されたあと、訊き直すまでの間は古い区間の値が残っている。
+ */
+export function formatQuakeIntensityLine(
+  intensity: QuakeIntensity | null,
+  span: { readonly fromMs: number; readonly toMs: number } | null,
+): string | null {
+  if (intensity === null || span === null) return null
+  if (intensity.fromMs !== span.fromMs || intensity.toMs !== span.toMs) return null
+  const part = (name: string, value: number | null): string | null => {
+    if (value === null) return null
+    const text = formatMeasured(value)
+    const grade = measuredIntensityToGrade(Number(text))
+    return grade === null ? null : `${name} ${text}（震度${grade.label}）`
+  }
+  const parts = [part('最大リアルタイム震度', intensity.maxRealtime), part('計測震度', intensity.measured)].filter(
+    (p): p is string => p !== null,
+  )
+  return parts.length === 0 ? null : parts.join('・')
+}
+
 interface Props {
   waves: readonly SeismoQuakeWave[]
 }
@@ -134,6 +164,12 @@ function HistoryWave({ wave }: { wave: SeismoQuakeWave }) {
   const loggedUntrimmedRef = useRef<string | null>(null)
   // 「強調しようとしたがノイズを測れなかった」を記録へ残した組。間引きは上と同じ理由。
   const loggedNoNoiseRef = useRef<string | null>(null)
+  // **震度の行。** 描く区間はここでも同じ関数で切り出し、震度を訊いた区間と突き合わせる
+  // （訊く側は `useSeismoQuakeWaves`。区間の物差しは `columnsSpan`）。
+  const intensityLine = useMemo(() => {
+    const picked = selectQuakeWindow({ base: wave.columns, zero: wave.axisZero, reach: wave.reach })
+    return formatQuakeIntensityLine(wave.intensity, columnsSpan(picked.columns))
+  }, [wave.columns, wave.axisZero, wave.reach, wave.intensity])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -230,6 +266,9 @@ function HistoryWave({ wave }: { wave: SeismoQuakeWave }) {
         <WaveEmphasisToggle />
         <span className="ml-auto font-mono tabular-nums text-secondary">{scaleText ?? '—'}</span>
       </div>
+      {intensityLine !== null && (
+        <div className="text-[10px] roomy:text-xs leading-none mb-1 text-white/85 tabular-nums">{intensityLine}</div>
+      )}
       {/* 高さは目盛りの帯（`AXIS_BAND_PX` = 10px）を足したもの。 */}
       <canvas ref={canvasRef} className="block w-full h-[58px] roomy:h-[74px]" />
     </div>
