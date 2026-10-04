@@ -39,6 +39,8 @@ import type { StationConfig } from './stationConfig'
 import type { StatusReport } from './statusReport'
 import type { ArchivedWaveChunk, WaveRangeResult } from './waveArchive'
 import { buildWaveEnvelope } from './waveEnvelope'
+import { EVENT_RANGE_MAX_MS } from '../detection/shakeEventStore'
+import type { EventRangeResult } from '../detection/shakeEventStore'
 
 /** 繋ぎ直すまでブラウザに待たせる時間。**SSE の `retry:` で伝える。** */
 const RETRY_MS = 3_000
@@ -270,6 +272,41 @@ export function parseWaveQuery(params: URLSearchParams): WaveQuery {
   return { ok: true, stationId, fromMs, toMs, columns }
 }
 
+export type EventQuery =
+  | { readonly ok: true; readonly fromMs: number; readonly toMs: number; readonly stationId: string | null }
+  | { readonly ok: false; readonly error: 'bad-range' | 'range-too-wide' }
+
+/**
+ * `GET /events` の問い合わせを読む。`from`・`to`（unix ミリ秒）は必須、`station` は任意。
+ *
+ * **範囲は {@link EVENT_RANGE_MAX_MS} まで。** 記録は月ごとのファイルを頭から読むので、
+ * 際限なく広げさせない。
+ */
+export function parseEventQuery(params: URLSearchParams): EventQuery {
+  const fromMs = decimalInt(params.get('from'))
+  const toMs = decimalInt(params.get('to'))
+  if (fromMs === null || toMs === null || toMs <= fromMs) return { ok: false, error: 'bad-range' }
+  if (toMs - fromMs > EVENT_RANGE_MAX_MS) return { ok: false, error: 'range-too-wide' }
+  const station = params.get('station')
+  return { ok: true, fromMs, toMs, stationId: station === null || station.length === 0 ? null : station }
+}
+
+/**
+ * 読み返した揺れを応答の形へ。**読めなかった行・ファイルの数を必ず添える** ——
+ * 無いと、受け手からは「揺れが無かった」と「記録が壊れていた」が同じ空の配列に見える。
+ */
+export function buildEventResponse(query: Extract<EventQuery, { ok: true }>, result: EventRangeResult): Record<string, unknown> {
+  const events = query.stationId === null ? result.events : result.events.filter((e) => e.stationId === query.stationId)
+  return {
+    fromMs: query.fromMs,
+    toMs: query.toMs,
+    stationId: query.stationId,
+    events,
+    unreadableLines: result.unreadableLines,
+    unreadableFiles: result.unreadableFiles,
+  }
+}
+
 /**
  * 読み返した結果を応答の形へ。
  *
@@ -449,6 +486,11 @@ export interface StatusServerOptions {
         readonly toMs: number
       }) => Promise<WaveRangeResult>)
     | null
+  /**
+   * 検出した揺れの記録を時刻の範囲で読み返す（`GET /events`。REQUIREMENTS.md §9）。
+   * **`null` なら記録を持たない構成** —— 503 で答え、「揺れが無かった」と区別させる。
+   */
+  readonly readEvents: ((params: { readonly fromMs: number; readonly toMs: number }) => Promise<EventRangeResult>) | null
 }
 
 export interface StatusServer {
@@ -483,6 +525,8 @@ function encode(message: HubMessage): string {
       return sseEvent('station-wave', message.wave)
     case 'station-diff':
       return sseEvent('station-diff', message.diff)
+    case 'shake-event':
+      return sseEvent('shake-event', message.event)
   }
 }
 
@@ -1235,6 +1279,31 @@ export async function startStatusServer(options: StatusServerOptions): Promise<S
             )
             // **既に書き始めていたら何もしない**（二重に書くと壊れる）。
             if (!res.headersSent) sendJson(res, 500, { error: 'wave-read-failed' })
+          })
+        return
+      }
+      if (url.pathname === '/events') {
+        // **`/waves` と同じく `/api/*` の外に置く**（宛先は PWA。出るのは押し出しの
+        // `shake-event` と同じ記録で、違うのは過去をまとめて取れることだけ）。
+        if (options.readEvents === null) {
+          sendJson(res, 503, { error: 'event-store-unavailable' })
+          return
+        }
+        const query = parseEventQuery(url.searchParams)
+        if (!query.ok) {
+          sendJson(res, 400, { error: query.error })
+          return
+        }
+        // **投げさせない。** 読み込みは非同期なので、上の同期の `try` には捕まらない
+        // （`/waves` と同じ理由で `log()` を通す）。
+        void options
+          .readEvents({ fromMs: query.fromMs, toMs: query.toMs })
+          .then((result) => {
+            sendJson(res, 200, buildEventResponse(query, result))
+          })
+          .catch((error: unknown) => {
+            log('error', 'events', 'read', `[events] 読み返しに失敗: ${error instanceof Error ? error.message : String(error)}`)
+            if (!res.headersSent) sendJson(res, 500, { error: 'event-read-failed' })
           })
         return
       }

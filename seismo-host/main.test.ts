@@ -28,9 +28,19 @@ import {
   readAdminToken,
   readAllowList,
   readPort,
+  readQuakeFeedEnabled,
   stationSegmentLogLevel,
   windowSeconds,
 } from './main'
+
+describe('readQuakeFeedEnabled（#312）', () => {
+  it('既定（未設定）で受け取る。0 のときだけ止める', () => {
+    expect(readQuakeFeedEnabled(undefined)).toBe(true)
+    expect(readQuakeFeedEnabled('1')).toBe(true)
+    expect(readQuakeFeedEnabled('')).toBe(true)
+    expect(readQuakeFeedEnabled('0')).toBe(false)
+  })
+})
 import type { ApplyStationConfigDeps, CloseHostDeps, FusionClosingSinks } from './main'
 import type { AssignedBoardReception } from './src/receiver/assignedReception'
 import { STALE_AFTER_MS } from './src/receiver/assignedReception'
@@ -764,7 +774,55 @@ describe('buildClosingLines', () => {
     waveBadChunks: 0,
     waveSlowClose: false,
     waveLastWriteError: null,
+    detection: {
+      detectorVersion: 1,
+      stations: ['station-1'],
+      shakes: 3,
+      pending: 1,
+      resets: 0,
+      droppedChunks: 0,
+      phaseWindowsBroken: 0,
+      phaseFailures: 0,
+      failures: 0,
+      lastFailure: null,
+      store: { written: 5, writeErrors: 0, lastWriteError: null },
+      feed: null,
+    },
   } as const
+
+  it('地震検出で揺れを記録できなかったら、件数と最後の理由を出す', () => {
+    // **記録できなかった揺れは `/events` にも現れない**ので、最後に読むここで気づけるようにする。
+    const detection = {
+      ...quiet.detection,
+      failures: 2,
+      lastFailure: '[detect] station-1 の揺れを記録できず: boom',
+      store: { written: 5, writeErrors: 1, lastWriteError: 'EACCES' },
+    }
+    expect(buildClosingLines({ ...quiet, detection })).toEqual([
+      { level: 'log', line: '  地震検出・揺れの記録の途中で例外を受け止めた=2' },
+      { level: 'log', line: '  揺れの記録を書けず=1' },
+      { level: 'error', line: '  地震検出で最後に受け止めた例外: [detect] station-1 の揺れを記録できず: boom' },
+      { level: 'error', line: '  揺れの記録を書き出せなかった理由: EACCES' },
+    ])
+  })
+
+  it('地震情報の受信の失敗も累計に出す（受信を止めている構成では出さない）', () => {
+    const feed = {
+      connected: false,
+      connectedSinceMs: null,
+      reconnects: 4,
+      quakesReceived: 0,
+      historyFetches: 3,
+      historyFailures: 3,
+      unreadableMessages: 0,
+      openGaps: [],
+    }
+    expect(buildClosingLines({ ...quiet, detection: { ...quiet.detection, feed } })).toEqual([
+      { level: 'log', line: '  地震情報の受信を繋ぎ直した=4' },
+      { level: 'log', line: '  地震情報の履歴を取れず=3' },
+    ])
+    expect(buildClosingLines(quiet)).toEqual([])
+  })
 
   it('合成波形を書き損ねたら、生データとは別の行で出す', () => {
     // **混ぜない。** 残しているものが違う（センサー単独の生値 / 観測点の合成波形）ので、
@@ -1374,6 +1432,7 @@ describe('applyStationConfigCore', () => {
         calls.push('rebuildSensorFusion')
         return []
       },
+      forgetRemovedDetectors: () => calls.push('forgetRemovedDetectors'),
       setUngroupedMultiBoardStations: () => calls.push('setUngroupedMultiBoardStations'),
       setWarning: () => calls.push('setWarning'),
       ...overrides,
@@ -1397,9 +1456,26 @@ describe('applyStationConfigCore', () => {
       'closeSensorFusion',
       'reportCloseFailures',
       'rebuildSensorFusion',
+      'forgetRemovedDetectors',
       'setUngroupedMultiBoardStations',
       'setWarning',
     ])
+  })
+
+  it('正: 外した観測点の検出器は、合成の最後の波形を配った後で捨てる', () => {
+    // 先に捨てると、締めくくりで配る最後の波形が検出器を作り直し、外した観測点のものが居座る。
+    const calls: string[] = []
+    applyStationConfigCore(
+      deps(calls, {
+        closeSensorFusion: () => {
+          calls.push('closeSensorFusion')
+          return { drained: [DRAINED], failures: [], readings: [] }
+        },
+      }),
+      NEW_CONFIG,
+    )
+    expect(calls.indexOf('deliverFusion')).toBeGreaterThanOrEqual(0)
+    expect(calls.indexOf('deliverFusion')).toBeLessThan(calls.indexOf('forgetRemovedDetectors'))
   })
 
   it('正: 割り当てた時刻の帳面へ、差し替えた設定そのものを渡す（稼働中に足した基板に猶予を付ける）', () => {
@@ -1447,6 +1523,7 @@ describe('applyStationConfigCore', () => {
       'closeSensorFusion',
       'onCloseFailure',
       'rebuildSensorFusion',
+      'forgetRemovedDetectors',
       'setUngroupedMultiBoardStations',
       'setWarning',
     ])
@@ -1487,6 +1564,7 @@ describe('applyStationConfigCore', () => {
       'emitReading',
       'emitReading',
       'rebuildSensorFusion',
+      'forgetRemovedDetectors',
       'setUngroupedMultiBoardStations',
       'setWarning',
     ])
@@ -1509,7 +1587,7 @@ describe('applyStationConfigCore', () => {
 
     expect(calls).toContain('reportDeliveryFailure')
     expect(calls).not.toContain('onCloseFailure')
-    expect(calls.slice(-3)).toEqual(['rebuildSensorFusion', 'setUngroupedMultiBoardStations', 'setWarning'])
+    expect(calls.slice(-4)).toEqual(['rebuildSensorFusion', 'forgetRemovedDetectors', 'setUngroupedMultiBoardStations', 'setWarning'])
   })
 
   it('安全弁: 報せる口そのものが投げても新しい合成は作られ、その失敗は onCloseFailure へ出る', () => {
@@ -1531,7 +1609,7 @@ describe('applyStationConfigCore', () => {
     applyStationConfigCore(d, NEW_CONFIG)
 
     expect(calls).toContain('onCloseFailure')
-    expect(calls.slice(-3)).toEqual(['rebuildSensorFusion', 'setUngroupedMultiBoardStations', 'setWarning'])
+    expect(calls.slice(-4)).toEqual(['rebuildSensorFusion', 'forgetRemovedDetectors', 'setUngroupedMultiBoardStations', 'setWarning'])
   })
 
   it('正: setUngroupedMultiBoardStations には findUngroupedMultiBoardStations の結果を渡す', () => {
@@ -1606,6 +1684,7 @@ describe('closeHostCore', () => {
         emitReading: () => calls.push('emitStationReading'),
         reportDeliveryFailure: () => calls.push('reportDeliveryFailure'),
       },
+      flushDetection: () => calls.push('flushDetection'),
       closeWaveArchive: async () => {
         calls.push('closeWaveArchive')
       },
@@ -1631,10 +1710,23 @@ describe('closeHostCore', () => {
       'deliverFusion',
       'reportStationCloseFailures',
       'emitStationReading',
+      'flushDetection',
       'closeWaveArchive',
       'closeStatusServer',
       'printTotals',
     ])
+  })
+
+  it('安全弁: 開いている揺れを閉じられなくても、後ろの段へ進む', async () => {
+    const calls: string[] = []
+    await closeHostCore(
+      deps(calls, {
+        flushDetection: () => {
+          throw new Error('boom')
+        },
+      }),
+    )
+    expect(calls.slice(-4)).toEqual(['logError', 'closeWaveArchive', 'closeStatusServer', 'printTotals'])
   })
 
   it('正: 流し切った合成波形は、合成波形の保存を閉じる前に配る（#402）', async () => {

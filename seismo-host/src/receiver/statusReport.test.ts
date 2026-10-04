@@ -10,6 +10,22 @@ import { StationDirectory } from './stationConfig'
 import type { StationHealth } from './stationHealth'
 import { buildStatusReport } from './statusReport'
 import type { RawStoreStatus, StatusReportInput, WaveArchiveStatus } from './statusReport'
+import type { DetectionStatus } from '../detection/stationDetection'
+
+const DETECTION_OK: DetectionStatus = {
+  detectorVersion: 1,
+  stations: ['station-1'],
+  shakes: 0,
+  pending: 0,
+  resets: 0,
+  droppedChunks: 0,
+  phaseWindowsBroken: 0,
+  phaseFailures: 0,
+  failures: 0,
+  lastFailure: null,
+  store: { written: 0, writeErrors: 0, lastWriteError: null },
+  feed: null,
+}
 
 const NOW = 1_700_000_100_000
 const STARTED = 1_700_000_000_000
@@ -179,6 +195,7 @@ function input(overrides: Partial<StatusReportInput> = {}): StatusReportInput {
     waveArchive: WAVE_OK,
     hub: new ReadingHub().snapshot(),
     acks: new AckReplier({ enabled: true }).snapshot(),
+    detection: DETECTION_OK,
     stations: StationDirectory.empty(),
     stationConfigWarning: null,
     ungroupedMultiBoardStations: [],
