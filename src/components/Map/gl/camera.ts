@@ -298,6 +298,7 @@ function ensureUserInteractionState(map: maplibregl.Map): UserInteractionState {
   // 印はイベント自身が運ぶためフラグの状態に依存せず、自動フィット中のユーザー割り込みも取りこぼさない。
   const onInteraction = (e: unknown) => {
     if (isAutoCameraEvent(e)) return
+    // **寸法が付くのを待っている寄せ（`deferUntilPaneHasSize`）はここで捨てない**（理由は `pendingFits`）。
     notifyInteraction(state, true)
     window.clearTimeout(state.timer)
     state.timer = window.setTimeout(() => notifyInteraction(state, false), INTERACTION_HOLD_SEC * 1000)
@@ -333,14 +334,144 @@ export function subscribeUserInteraction(
   }
 }
 
+/**
+ * 余白の上限（地図ペインの短辺に対する比）。**寄せる側（fit 系）と収まりの判定（`mapContainsBounds`）が
+ * 同じ値を通る**ので、ここ 1 箇所で決める。
+ *
+ * **上限が要るのは、MapLibre が余白の大きすぎる指定で例外を投げるため。** `cameraForBounds` と
+ * `fitBounds` は、上下（または左右）の余白の和がペインの寸法を超えると算出を諦める。6.10.0 では
+ * `undefined` を返さず `TypeError: Cannot read properties of undefined (reading 'center')` を
+ * 投げる（2026-10-04 実測。縦長でパネルを広げ、地図の高さが 103px になったところへ padding 60 の
+ * EEW 追従が走り、地図ごと落ちた）。2 割なら両側を足しても 4 割で、半分に届かない。
+ *
+ * **判定側と揃えるのは、食い違うと寄せ直しが止まらなくなるため。** 判定だけが切り詰めた余白で
+ * 「はみ出している」を見て、寄せる側が切り詰めない余白で着地すると、着地点が判定の内側に来ない。
+ *
+ * 短辺 300px 以上のペインでは 60px 以上が許されるので、いま使っている余白（20〜60px）は切り詰め
+ * られない。効くのは地図が小さいとき（縦長でパネルを広げた状態など）だけ。
+ */
+const MAX_PADDING_SHARE = 0.2
+
+/**
+ * ペインの寸法に収まるよう切り詰めた余白（px）。ペインの実寸が取れない（レイアウト前・非表示）
+ * ときは null。
+ *
+ * 寸法だけを受ける純関数にしてあるのは、境界の値をテストで固定するため。
+ */
+export function clampPaddingToPane(paddingPx: number, width: number, height: number): number | null {
+  const minSide = Math.min(width, height)
+  if (!(minSide > 0)) return null
+  if (!(paddingPx > 0)) return 0
+  return Math.min(paddingPx, Math.floor(minSide * MAX_PADDING_SHARE))
+}
+
+/**
+ * 地図ペインの寸法。**DOM の寸法と MapLibre が計算に使う寸法の小さいほう**を取る。
+ *
+ * MapLibre はコンテナの寸法の変化を自前の ResizeObserver で拾い、内部の寸法（`transform`）を
+ * 遅れて更新する。地図が広がった直後は DOM 側だけが大きい瞬間があり、DOM の寸法で余白を決めると
+ * MapLibre の側では大きすぎて、切り詰めたのに例外を投げる。小さいほうで決めれば、どちらの側から
+ * 見ても上限に収まる。収まりの判定（`map.project` は `transform` の座標で答える）も同じ寸法で見る。
+ *
+ * **内部の寸法はキャンバスの寸法から読む。** 6.10.0 の `Map` は `transform` を公開しておらず
+ * （内部用の `_camera` にしか無い）、`resize()` がキャンバスの CSS 寸法と `transform` を同じ呼び出しの
+ * 中で更新するので、キャンバスの寸法がそのまま内部の寸法になる。
+ */
+function paneSize(map: maplibregl.Map): { width: number; height: number } {
+  const container = map.getContainer()
+  const canvas = map.getCanvas()
+  return {
+    width: Math.min(container.clientWidth, canvas.clientWidth),
+    height: Math.min(container.clientHeight, canvas.clientHeight),
+  }
+}
+
+/** 地図ペインの寸法で `clampPaddingToPane` を引く。 */
+function panePadding(map: maplibregl.Map, paddingPx: number): number | null {
+  const { width, height } = paneSize(map)
+  return clampPaddingToPane(paddingPx, width, height)
+}
+
+// 寸法が取れずに寄せるのを保留したことの記録も間引く（理由は下の `throttledSnapFallbackWarn` と同じ）。
+// **経路ごとに分ける** —— 1 つにすると、同じ 60 秒の中で別の経路が保留されても黙って捨てられ、
+// どの経路が止まっているのかを見誤る。
+const noPaneWarnByCaller = new Map<string, ReturnType<typeof createLogThrottle>>()
+
+/**
+ * 寸法が取れずに保留している寄せ（地図ごとに 1 つ）。取り消す関数を持つ。
+ *
+ * **保留するのは、呼び出し側が「寄せた」印を先に立てるため。** 地震カードの寄せ（`QuakeFitGL`）・
+ * EEW の第一報への寄せ・タブ入室時の日本全体などは、呼んだ時点で済んだ扱いにして二度と呼ばない。
+ * 寸法 0 で黙って見送ると、その寄せは永久に失われる（地図の下に自作地震計の波形を並べ、縦長で
+ * パネルを広げると、地図の高さは実際に 0 まで削られる）。
+ *
+ * **新しいカメラ操作が来たら保留は捨てる**（`cancelPendingFit`）。寸法が戻ったときに古い目標へ
+ * 飛ばないため。
+ *
+ * **ユーザーが地図を触っても捨てない。** 捨てると、呼び出し側が「寄せた」印を先に立てている寄せ
+ * （地震カード・EEW の第一報・入室時など）は二度と走らず、この保留で防いだ症状が戻る。保留が起きる
+ * のは地図の面積が 0 のときで、その間はポインタで地図を触れない。保留している寄せは利用者が見たい
+ * もの（押した地震カード・届いた速報）なので、地図が見えるようになった時点で寄るのが望ましい。
+ *
+ * **やり直すのは保留した時点の目標。** 保留中に目標が育っても（揺れ検知の点が増える等）作り直さない。
+ * 揺れ検知・EEW の**成長フォロー**（`CameraFollowsGL` の毎秒の判定）は「はみ出したら引く」ので、
+ * 寸法が付いた直後の 1 回で古い範囲へ寄っても次の判定で引き直す。地震カード・入室時の寄せは保留中に
+ * 目標が変わらない。EEW の第一報への寄せは、保留中に続報が届けば古い予報円へ一度寄るが、これも
+ * 成長フォローが続報の範囲へ引き直す。
+ */
+const pendingFits = new WeakMap<maplibregl.Map, () => void>()
+
+/** 保留している寄せを捨てる。カメラを動かす関数はすべて最初にこれを呼ぶ。 */
+function cancelPendingFit(map: maplibregl.Map): void {
+  const cancel = pendingFits.get(map)
+  if (!cancel) return
+  pendingFits.delete(map)
+  cancel()
+}
+
+/**
+ * 寸法が取れないので寄せを保留し、寸法が付いた時点（`resize`）で `retry` を呼び直す。
+ * `retry` は同じ関数を同じ引数で呼び直すもので、余白はその時点の寸法で決め直される。
+ */
+function deferUntilPaneHasSize(map: maplibregl.Map, caller: string, requestedPadding: number, retry: () => void): void {
+  cancelPendingFit(map)
+  let throttle = noPaneWarnByCaller.get(caller)
+  if (!throttle) {
+    throttle = createLogThrottle(60_000)
+    noPaneWarnByCaller.set(caller, throttle)
+  }
+  throttle(() => {
+    const container = map.getContainer()
+    log.warn(`[camera] 地図ペインの寸法が取れないので、寸法が付くまで寄せるのを保留した（${caller}）`, {
+      requestedPadding,
+      paneWidth: container.clientWidth,
+      paneHeight: container.clientHeight,
+      canvasWidth: map.getCanvas().clientWidth,
+      canvasHeight: map.getCanvas().clientHeight,
+    })
+  })
+  const onResize = () => {
+    const { width, height } = paneSize(map)
+    if (!(Math.min(width, height) > 0)) return
+    // `retry` が呼ぶ関数は冒頭で `cancelPendingFit` を呼ぶので、そこで購読も外れる
+    retry()
+  }
+  map.on('resize', onResize)
+  pendingFits.set(map, () => map.off('resize', onResize))
+}
+
 /** 日本全体にフィットする（本アプリの既定フレーミング・padding 20）。 */
 export function fitJapan(map: maplibregl.Map, durationSec = 1.0): void {
+  cancelPendingFit(map)
+  const padding = panePadding(map, 20)
+  if (padding === null) { deferUntilPaneHasSize(map, 'fitJapan', 20, () => fitJapan(map, durationSec)); return }
   const duration = durationSec * 1000
-  map.fitBounds(JAPAN_BOUNDS, { padding: 20, duration, bearing: map.getBearing() }, beginProgrammaticFlight(map, duration))
+  map.fitBounds(JAPAN_BOUNDS, { padding, duration, bearing: map.getBearing() }, beginProgrammaticFlight(map, duration))
 }
 
 /** 1 点へ flyTo する（[lat,lng] で受ける）。 */
 export function flyToPoint(map: maplibregl.Map, [lat, lng]: LatLng, zoom = fitMaxZoom(map), durationSec = 1.0): void {
+  cancelPendingFit(map)
   const duration = durationSec * 1000
   map.flyTo({ center: [lng, lat], zoom, duration }, beginProgrammaticFlight(map, duration))
 }
@@ -383,7 +514,13 @@ export function flyToBounds(
   bounds: maplibregl.LngLatBounds,
   opts: { padding?: number; maxZoom?: number; durationSec?: number } = {},
 ): void {
-  const { padding = 48, maxZoom = fitMaxZoom(map), durationSec = 1.0 } = opts
+  cancelPendingFit(map)
+  const { padding: requestedPadding = 48, maxZoom = fitMaxZoom(map), durationSec = 1.0 } = opts
+  const padding = panePadding(map, requestedPadding)
+  if (padding === null) {
+    deferUntilPaneHasSize(map, 'flyToBounds', requestedPadding, () => flyToBounds(map, bounds, opts))
+    return
+  }
   const duration = durationSec * 1000
   map.fitBounds(bounds, { padding, maxZoom, duration, bearing: map.getBearing() }, beginProgrammaticFlight(map, duration))
 }
@@ -425,17 +562,27 @@ export function flyToBoundsSnapped(
   bounds: maplibregl.LngLatBounds,
   opts: { padding?: number; maxZoom?: number; durationSec?: number; zoomStep?: number } = {},
 ): void {
-  const { padding = 48, maxZoom = fitMaxZoom(map), durationSec = 1.0, zoomStep = EEW_ZOOM_SNAP } = opts
+  cancelPendingFit(map)
+  const { padding: requestedPadding = 48, durationSec = 1.0, zoomStep = EEW_ZOOM_SNAP } = opts
+  // **余白はペインの寸法に収めてから渡す**（→ `MAX_PADDING_SHARE`。収めないと MapLibre が例外を投げる）。
+  const padding = panePadding(map, requestedPadding)
+  if (padding === null) {
+    // 寄り上限は寸法から決まるので、保留中に決めず呼び直したときに決める（`opts` をそのまま渡す）
+    deferUntilPaneHasSize(map, 'flyToBoundsSnapped', requestedPadding, () => flyToBoundsSnapped(map, bounds, opts))
+    return
+  }
+  const maxZoom = opts.maxZoom ?? fitMaxZoom(map)
   const duration = durationSec * 1000
   const cam = map.cameraForBounds(bounds, { padding, maxZoom, bearing: map.getBearing() })
   if (!cam || cam.zoom == null) {
     // cameraForBounds が算出不可なときは通常 fitBounds にフォールバック（分数ズーム）。
-    // 実測: 算出を諦めるのは padding が地図ペインの実寸を超えたときだけ（MapLibre は判定用の
-    // 縮尺が負になった場合のみ undefined を返す）。この経路では切り下げが効かないため、着地直後に
+    // **実測で確かめた既知の原因（余白の大きすぎる指定）は、上で余白をペインに収めて塞いである**
+    // （MapLibre 6.10.0 はその場合 undefined を返さず例外を投げる）。戻り値の型は undefined を
+    // 許すので、ほかの理由で算出を諦めた場合への備えとしてこの分岐は残す。**消さないこと** ——
+    // 消すとその場合にカメラが黙って止まる。この経路では切り下げが効かないため、着地直後に
     // 成長フォローが「はみ出している」と読んで 1 段引き直す二段の動きが再発する。
-    // 黙って落ちると原因を追えないので記録する。**ペインの実寸も添える**——発火条件はペインの
-    // 実寸と padding の関係で決まり、padding だけでは「レイアウト前で 0×0 だった」のか
-    // 「ユーザーがパネルを広げて地図が細くなった」のかを事後に区別できない。
+    // 黙って落ちると原因を追えないので記録する。**ペインの実寸も添える**——発火条件を事後に
+    // 切り分ける材料になる。
     throttledSnapFallbackWarn(() => {
       const container = map.getContainer()
       log.warn(
@@ -481,14 +628,17 @@ export function refitDeltaForBounds(
   bounds: maplibregl.LngLatBounds,
   opts: { padding?: number; maxZoom?: number; zoomStep?: number } = {},
 ): RefitDelta | null {
-  const { padding = 48, maxZoom = fitMaxZoom(map), zoomStep = EEW_ZOOM_SNAP } = opts
-  const cam = map.cameraForBounds(bounds, { padding, maxZoom, bearing: map.getBearing() })
-  if (!cam || !Number.isFinite(cam.zoom) || !cam.center) return null
+  const { padding: requestedPadding = 48, maxZoom = fitMaxZoom(map), zoomStep = EEW_ZOOM_SNAP } = opts
   // ペインの実寸が取れない（レイアウト前・非表示）間は判定材料が揃わないので測らない。
   // ズームの利得も cameraForBounds がコンテナ寸法から逆算した値なので、片方だけ信じる根拠が無い。
-  const container = map.getContainer()
-  const minSide = Math.min(container.clientWidth, container.clientHeight)
-  if (!(minSide > 0)) return null
+  // **余白は `flyToBoundsSnapped` と同じく切り詰める**（食い違うと「得られると計算した段数」と
+  // 実際の着地がずれる。収めないと MapLibre が例外を投げる → `MAX_PADDING_SHARE`）。
+  const padding = panePadding(map, requestedPadding)
+  if (padding === null) return null
+  const cam = map.cameraForBounds(bounds, { padding, maxZoom, bearing: map.getBearing() })
+  if (!cam || !Number.isFinite(cam.zoom) || !cam.center) return null
+  const pane = paneSize(map)
+  const minSide = Math.min(pane.width, pane.height)
   const from = map.project(map.getCenter())
   const to = map.project(cam.center)
   // 上流の座標が壊れていると（欠測値の混入等）ここまで NaN が伝わる。NaN は比較が常に false に
@@ -572,13 +722,12 @@ export function mapContainsBounds(
   target: maplibregl.LngLatBounds,
   marginPx = 0,
 ): boolean {
-  const container = map.getContainer()
-  const width = container.clientWidth
-  const height = container.clientHeight
+  // 寸法も余白の切り詰めも寄せる側と同じものを通す（→ `paneSize` / `MAX_PADDING_SHARE`）。
+  const { width, height } = paneSize(map)
   // ペインの実寸が取れない（レイアウト前・非表示）間は「収まっている」に倒す。判定材料が揃わない
   // ときは動かさない側へ倒す方針（`refitDeltaForBounds` が同じ条件で見送るのと揃えている）。
-  if (!(Math.min(width, height) > 0)) return true
-  const margin = marginPx > 0 ? Math.min(marginPx, Math.floor(Math.min(width, height) * 0.2)) : 0
+  const margin = clampPaddingToPane(marginPx, width, height)
+  if (margin === null) return true
   const west = target.getWest()
   const south = target.getSouth()
   const east = target.getEast()
