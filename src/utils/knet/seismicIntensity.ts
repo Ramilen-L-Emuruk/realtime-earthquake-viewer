@@ -9,13 +9,7 @@
 // 記録全体へ 1 回当てて、その地震の計測震度を出すための実装（気象庁の公式実装そのものではない）。
 // **時々刻々の震度（強震モニタと同じリアルタイム震度）はここではなく `realtimeIntensity.ts` が出す。**
 // 周波数領域のフィルタは記録全体を要するので、届いた順に値を出す用途には向かない。
-// fft-jsはCommonJSパッケージ。named importだとNode本体のESMローダー（cjs-module-lexerの
-// 静的解析）が named export を認識できず実行時に落ちる（vitestのVite変換では問題なく通るため
-// テストでは気付けず、`npx tsx`で直接実行して初めて発覚した）。default importしてから
-// 分割代入することで実行時解決に切り替え、この問題を避ける。
-import fftJs from 'fft-js'
-import type { Complex } from 'fft-js'
-const { fft, ifft } = fftJs
+import { fftInPlace } from './fft'
 import { durationThresholdIndex } from './intensityCommon'
 
 /** 0.3秒基準で震度に変換する際の定数（気象庁告示式）。 */
@@ -53,20 +47,21 @@ export function applyJmaFilter(samples: number[], sampleRateHz: number): number[
   const n = samples.length
   if (n === 0) return []
   const padded = nextPowerOfTwo(n)
-  const input = new Array<number>(padded).fill(0)
-  for (let i = 0; i < n; i++) input[i] = samples[i]
+  const re = new Float64Array(padded)
+  const im = new Float64Array(padded)
+  for (let i = 0; i < n; i++) re[i] = samples[i]
 
-  const spectrum = fft(input)
-  const filtered: Complex[] = spectrum.map(([re, im], k) => {
+  fftInPlace(re, im, false)
+  for (let k = 0; k < padded; k++) {
     // 実信号のFFTは N-k 側に共役対称の周波数成分が現れる（負周波数相当）。
     // フィルターは周波数の絶対値に対して定義されているため、|f| を使う。
     const kMirror = k <= padded / 2 ? k : padded - k
-    const f = (kMirror * sampleRateHz) / padded
-    const gain = jmaFilterGain(f)
-    return [re * gain, im * gain]
-  })
-  const restored = ifft(filtered)
-  return restored.slice(0, n).map(([re]) => re)
+    const gain = jmaFilterGain((kMirror * sampleRateHz) / padded)
+    re[k] *= gain
+    im[k] *= gain
+  }
+  fftInPlace(re, im, true)
+  return Array.from(re.subarray(0, n))
 }
 
 /** 3成分の加速度波形をベクトル合成する。長さが揃っていない場合は最短に合わせる。 */

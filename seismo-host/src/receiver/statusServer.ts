@@ -5,6 +5,8 @@
 //   （`station` = 観測点の合成だけ／`1`・`all` = センサー単独も。宛先は **PWA** と**管理コンソール**）
 // - `GET /waves` — **過ぎた合成波形**を時刻の範囲で返す（宛先は **PWA**。#357）。
 //   保存は `waveArchive.ts`、間引きは `waveEnvelope.ts`。
+// - `GET /quake-intensity` — 地震 1 件ぶんの区間の**最大リアルタイム震度と計測震度**を、同じ
+//   合成波形の控えから出して返す（宛先は **PWA**。計算は `quakeIntensity.ts`）。
 // - `/api/*` — 設定・履歴・管理操作（宛先は**管理コンソール**）。**認証必須**（`adminAuth.ts`）。
 //   応じるのは観測点・基板の設定（`/api/stations`・`/api/boards`）・静止窓（`/api/rest-windows`）・
 //   止める合図（`POST /api/shutdown`）。
@@ -34,6 +36,8 @@ import type { AdminConsoleAssets } from './adminConsoleAssets'
 import { checkAdminAuth } from './adminAuth'
 import type { AdminAuthConfig, AdminAuthFailure } from './adminAuth'
 import type { SensorRestWindows } from './gravityCheck'
+import { computeQuakeIntensity, QUAKE_INTENSITY_LEAD_MS } from './quakeIntensity'
+import type { QuakeIntensityResult } from './quakeIntensity'
 import type { HubMessage, PairWant, ReadingHub, WaveWant } from './readingHub'
 import { describeFailure, normalizeBoardKey, parseStationConfig } from './stationConfig'
 import type { StationConfig } from './stationConfig'
@@ -358,6 +362,58 @@ export function buildWaveResponse(
     }
   }
   return { ...common, chunks: result.chunks.map(toWireChunk) }
+}
+
+/** `GET /quake-intensity` の問い合わせ。 */
+export type QuakeIntensityQuery =
+  | { readonly ok: true; readonly stationId: string; readonly fromMs: number; readonly toMs: number }
+  | { readonly ok: false; readonly error: string }
+
+/**
+ * `GET /quake-intensity` の問い合わせを読む。**範囲は `/waves` の列で返す場合と同じ 10 分まで。**
+ *
+ * 読み込むのは区間の手前 `QUAKE_INTENSITY_LEAD_MS`（60 秒）を足した範囲なので、ディスクに触れる
+ * 量は最大 11 分ぶん。計算（気象庁のフィルタ）は 10 分ぶんで 0.1 秒ほど（2026-10-04 の実測。
+ * `src/utils/knet/fft.ts`）—— 受信のイベントループを止める長さではない。
+ */
+export function parseQuakeIntensityQuery(params: URLSearchParams): QuakeIntensityQuery {
+  const stationId = params.get('station')
+  if (stationId === null || stationId.length === 0) return { ok: false, error: 'station-required' }
+  const fromMs = decimalInt(params.get('from'))
+  const toMs = decimalInt(params.get('to'))
+  if (fromMs === null || toMs === null || toMs <= fromMs) return { ok: false, error: 'bad-range' }
+  if (toMs - fromMs > WAVE_RANGE_MAX_MS) return { ok: false, error: 'range-too-wide' }
+  return { ok: true, stationId, fromMs, toMs }
+}
+
+/**
+ * 震度の結果を応答の形へ。**読めなかった量を必ず添える**（`buildWaveResponse` と同じ理由 ——
+ * 「値が出なかった」と「記録が残っていない」を受け手が見分けられるように）。
+ */
+export function buildQuakeIntensityResponse(
+  query: Extract<QuakeIntensityQuery, { ok: true }>,
+  read: WaveRangeResult,
+  result: QuakeIntensityResult,
+  stationKnown: boolean,
+): Record<string, unknown> {
+  return {
+    stationId: query.stationId,
+    stationKnown,
+    fromMs: query.fromMs,
+    toMs: query.toMs,
+    maxRealtime: result.maxRealtime,
+    maxRealtimeAtMs: result.maxRealtimeAtMs,
+    realtimeSeries: result.realtimeSeries,
+    measured: result.measured,
+    measuredUnavailable: result.measuredUnavailable,
+    gapCount: result.gapCount,
+    invalidChunkCount: result.invalidChunkCount,
+    filesRead: read.filesRead,
+    filesMissing: read.filesMissing,
+    filesFailed: read.filesFailed,
+    skippedBytes: read.skippedBytes,
+    truncated: read.truncated,
+  }
 }
 
 function toWireChunk(chunk: ArchivedWaveChunk): Record<string, unknown> {
@@ -1348,6 +1404,45 @@ export async function startStatusServer(options: StatusServerOptions): Promise<S
           .catch((error: unknown) => {
             log('error', 'events', 'read', `[events] 読み返しに失敗: ${error instanceof Error ? error.message : String(error)}`)
             if (!res.headersSent) sendJson(res, 500, { error: 'event-read-failed' })
+          })
+        return
+      }
+      if (url.pathname === '/quake-intensity') {
+        // **`/waves` と同じ層・同じ守り。** 出るのは控えにある合成波形から出した数 2 つで、
+        // 波形そのものより公開の程度は低い。範囲の上限も同じ値で縛る。
+        if (options.readWaves === null) {
+          sendJson(res, 503, { error: 'wave-archive-unavailable' })
+          return
+        }
+        const query = parseQuakeIntensityQuery(url.searchParams)
+        if (!query.ok) {
+          sendJson(res, 400, { error: query.error })
+          return
+        }
+        const stationKnown = options.stationConfig
+          .get()
+          .stations.some((s) => s.stationId === query.stationId)
+        void options
+          // **判定の窓の分だけ手前から読む**（`QUAKE_INTENSITY_LEAD_MS` の説明）。
+          .readWaves({
+            stationId: query.stationId,
+            fromMs: query.fromMs - QUAKE_INTENSITY_LEAD_MS,
+            toMs: query.toMs,
+          })
+          .then((read) => {
+            const result = computeQuakeIntensity({ chunks: read.chunks, fromMs: query.fromMs, toMs: query.toMs })
+            sendJson(res, 200, buildQuakeIntensityResponse(query, read, result, stationKnown))
+          })
+          .catch((error: unknown) => {
+            // `/waves` と同じく、記録の口は `log()` で包んだものを使う（`.catch()` の中で投げると
+            // プロセスごと落ちる）。計算が投げた場合もここへ来る。
+            log(
+              'error',
+              'quake-intensity',
+              forLog(query.stationId),
+              `[quake-intensity] 震度を出せなかった: ${error instanceof Error ? error.message : String(error)}`,
+            )
+            if (!res.headersSent) sendJson(res, 500, { error: 'quake-intensity-failed' })
           })
         return
       }

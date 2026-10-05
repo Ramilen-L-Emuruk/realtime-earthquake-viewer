@@ -50,6 +50,19 @@ export function measuredIntensityToGrade(value: number): IntensityGrade | null {
 }
 
 /**
+ * 計測震度を小数 1 桁の文字列にする。**マイナスゼロを出さない。**
+ *
+ * 静穏時のホストは `-0.04` のようなわずかな負の値をよく返すが、`toFixed` は符号を
+ * 保つので `"-0.0"` になる。**あの見た目は表示が壊れたようにしか見えない** ——
+ * 地図の左上の帯は「地震計が生きている」ことを示すのが主な役目なので、いちばん
+ * 起こしたくない誤解になる。地震カードの震度の行も同じ見え方に揃える。
+ */
+export function formatMeasured(value: number): string {
+  const rounded = Number(value.toFixed(1))
+  return (rounded === 0 ? 0 : rounded).toFixed(1)
+}
+
+/**
  * 震度階級の表示色（気象庁の震度配色に統一）。
  *   震度0     → 灰色（{@link SHINDO0_COLOR}）
  *   震度1以上 → 気象庁の震度配色（`getIntensityColor`）

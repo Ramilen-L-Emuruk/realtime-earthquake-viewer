@@ -7,7 +7,7 @@
 // 棚卸しは [`docs/forecast-computation-audit.md`](../../docs/forecast-computation-audit.md)。
 //
 // **構造的な歯止めもある。** 絵は「値のある最後の列」で切ってあるので
-// （`seismoWaveColumns.ts` の `trimTrailingGap`）、まだ来ていない時刻の区間はそもそも
+// （`seismoQuakeWindow.ts` の `selectQuakeWindow` が最初に `trimTrailingGap` を通す）、まだ来ていない時刻の区間はそもそも
 // 描かれない —— 線を引ける範囲は必ず過去にある。
 //
 // **走時は JMA2001 走時表から引く**（`travelTime.ts`）。予報円・主要動の到達予測と同じ表で、
@@ -15,7 +15,7 @@
 // 別の時刻を名乗ることになる。
 
 import { hasDepth } from './formatters'
-import { hasKnownEpicenter, haversineKm } from './geo'
+import { hasKnownEpicenter, haversineKm, hypocentralDistanceKm } from './geo'
 import { travelTimeSec } from './travelTime'
 import type { Hypocenter } from '../types/earthquake'
 
@@ -62,4 +62,25 @@ export function computeWaveArrival(params: {
     pMs: originMs + travelTimeSec('P', distKm, hypocenter.depth) * 1000,
     sMs: originMs + travelTimeSec('S', distKm, hypocenter.depth) * 1000,
   }
+}
+
+/**
+ * 震源から観測点までの距離（震源距離・km）。**求まらなければ `null`。**
+ *
+ * **求まらない条件は {@link computeWaveArrival} と揃える**（発生時刻は要らない）——震源の位置か
+ * 深さが判らない・観測点の座標が無い。深さ不明（`-1`）を 0 と読むと、深い地震ほど近く出る。
+ */
+export function computeHypocentralDistanceKm(params: {
+  hypocenter: Hypocenter
+  stationLat: number | null
+  stationLon: number | null
+}): number | null {
+  const { hypocenter, stationLat, stationLon } = params
+  if (!hasKnownEpicenter(hypocenter.latitude, hypocenter.longitude)) return null
+  if (!hasDepth(hypocenter.depth)) return null
+  if (stationLat === null || stationLon === null) return null
+  if (!hasKnownEpicenter(stationLat, stationLon)) return null
+  const surfaceKm = haversineKm(hypocenter.latitude, hypocenter.longitude, stationLat, stationLon)
+  const km = hypocentralDistanceKm(surfaceKm, hypocenter.depth)
+  return Number.isFinite(km) ? km : null
 }

@@ -1079,6 +1079,11 @@ interface GdEewListItem {
   /** 最終報の発表時刻。 */
   dateTime: string
   earthquake?: { originTime?: string }
+  /**
+   * 取り消された地震か。**実物の応答に欄があることを確かめた**（2026-10-04 の取得。欄は
+   * `id,eventId,serial,dateTime,isLastInfo,isCanceled,isWarning,earthquake,intensity`）。
+   */
+  isCanceled?: boolean
 }
 
 /** `/v2/gd/eew/{eventId}` が返す 1 報。 */
@@ -1278,4 +1283,83 @@ export async function fetchDmdataActiveEews(apiKey: string): Promise<EEWAlert[]>
     log.error('[DMDSS] 発表中の緊急地震速報の取得に失敗', err)
     return []
   }
+}
+
+/**
+ * 発生時刻を集めるときに一覧を辿るページ数の上限。1 ページ 100 件なので 5 ページで 500 地震 ——
+ * 地震カードの 7 日ぶん（＋前後 1 日）に出る緊急地震速報は多い日でも数十件で、通常は 1 ページで終わる。
+ */
+const EEW_ORIGIN_MAX_PAGES = 5
+
+/**
+ * 期間内の緊急地震速報について、**地震 ID → 発生時刻（最終報・エポックミリ秒）** を集める。
+ * 自作地震計の波形へ P 波・S 波の線を引くため（→ `utils/quakeOriginSeconds.ts`）。
+ *
+ * **一覧だけで足りる。** 一覧の 1 件が地震ごとの最終報の `earthquake.originTime` を持つので、
+ * 詳細（`/v2/gd/eew/{eventId}`）は引かない —— 地震 1 件ごとにリクエストが増えるのを避ける。
+ * **取り消された地震は除く**（`isCanceled`）。
+ *
+ * **失敗しても投げない。** 集めた分だけ返す —— 秒が取れない地震は地震 ID へ落ちるだけで、
+ * 画面が止まるほどの欠落ではない。失敗は記録に残す。
+ *
+ * @param fromMs 期間の始まり（エポックミリ秒）
+ * @param toMs 期間の終わり（エポックミリ秒）
+ */
+export async function fetchDmdataEewOriginTimes(
+  apiKey: string, fromMs: number, toMs: number,
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>()
+  if (!isApiKeyUsable(apiKey, '緊急地震速報の発生時刻')) return out
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || fromMs >= toMs) {
+    log.warn('[DMDSS] 緊急地震速報の発生時刻: 期間が不正なため取得しません', { fromMs, toMs })
+    return out
+  }
+  const headers = { Authorization: authHeader(apiKey) }
+  // 一覧の `datetime` は **UTC の半開区間 [A, B)** で日付単位（`fetchDmdataActiveEews` と同じ）。
+  // 終わりの日を含めるよう、終わりの翌日までを指定する。
+  const dayOf = (ms: number) => new Date(ms).toISOString().slice(0, 10)
+  const from = dayOf(fromMs)
+  const to = dayOf(toMs + 24 * 60 * 60 * 1000)
+  let cursorToken: string | undefined
+  let pages = 0
+  // **捨てた理由を分けて数える。** 「その期間に緊急地震速報が無かった」と「読めなかった」は
+  // どちらも件数が少ないだけに見えるので、読めなかった分は記録に残す。
+  let canceled = 0
+  let unreadable = 0
+  try {
+    for (; pages < EEW_ORIGIN_MAX_PAGES; pages++) {
+      const params = new URLSearchParams({ datetime: `${from}~${to}`, limit: '100' })
+      if (cursorToken) params.set('cursorToken', cursorToken)
+      // **ページを辿るループの中なので枠を待つ**（→ `services/dmdataRequestGates.ts`）。
+      await waitForApiSlot()
+      const res = await fetch(`${API_BASE}/gd/eew?${params.toString()}`, { headers })
+      if (!res.ok) {
+        logRestFailure(`緊急地震速報の発生時刻（${pages + 1} ページ目・ここまで ${out.size} 件）`, res.status)
+        cursorToken = undefined
+        break
+      }
+      const json = await res.json() as { items?: GdEewListItem[]; nextToken?: string }
+      for (const item of json.items ?? []) {
+        if (item.isCanceled === true) { canceled += 1; continue }
+        const originMs = Date.parse(item.earthquake?.originTime ?? '')
+        if (typeof item.eventId === 'string' && Number.isFinite(originMs)) out.set(item.eventId, originMs)
+        else unreadable += 1
+      }
+      cursorToken = json.nextToken
+      if (!cursorToken) break
+    }
+  } catch (err) {
+    log.warn(`[DMDSS] 緊急地震速報の発生時刻の取得に失敗（ここまで ${out.size} 件）`, err)
+    return out
+  }
+  if (unreadable > 0) {
+    log.warn(`[DMDSS] 緊急地震速報の発生時刻: 地震 ID か発生時刻を読めない行を ${unreadable} 件捨てました`
+      + `（${out.size} 件は読めた・取消 ${canceled} 件）`)
+  }
+  // 打ち切りを黙って起こさない。取りこぼした地震は地震 ID の秒へ落ちるだけで、画面からは見分けられない。
+  if (cursorToken) {
+    log.warn(`[DMDSS] 緊急地震速報の発生時刻の一覧が ${EEW_ORIGIN_MAX_PAGES} ページに達したため打ち切りました`
+      + `（ここまで ${out.size} 件。続きが残っています）`)
+  }
+  return out
 }

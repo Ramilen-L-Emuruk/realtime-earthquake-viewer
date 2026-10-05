@@ -264,7 +264,8 @@ S 波の到達半径に安全係数 1.2 を掛けて求める。**画面には�
 | 対象 | 全国の区域・面 | **自分が設置した観測点だけ** |
 
 **絵そのものが未来を含まない。** 波形は「値のある最後の列」で切ってある
-（[`seismoWaveColumns.ts`](../src/utils/seismoWaveColumns.ts) の `trimTrailingGap`）ので、
+（[`seismoWaveColumns.ts`](../src/utils/seismoWaveColumns.ts) の `trimTrailingGap`。描く範囲を決める
+[`seismoQuakeWindow.ts`](../src/utils/seismoQuakeWindow.ts) の `selectQuakeWindow` が最初に通す）ので、
 まだ届いていない時刻の区間は描かれず、**線を引ける範囲は必ず過去にある**。範囲の外に落ちた
 到達時刻は描かない（[`paintWave.ts`](../src/components/SeismoWaveChart/paintWave.ts) の
 `paintMarks`。横位置を出すのは
@@ -280,6 +281,11 @@ S 波の到達半径に安全係数 1.2 を掛けて求める。**画面には�
 **震源が判らない電文では線を引かない。** 位置不明（センチネル `-200`）・深さ不明
 （センチネル `-1`）・観測点の座標をホストが持っていない、のいずれでも引かない。
 続報で震源が動けば引き直す。
+
+**起点の発生時刻は、発表済みの値を秒まで拾ったもの**（[`quakeOriginSeconds.ts`](../src/utils/quakeOriginSeconds.ts)）。
+地震情報の発生時刻は分まで（秒は 00）なので、同じ地震の緊急地震速報の発生時刻（最終報）か、
+地震 ID（観測点が検知した時刻）を使う。**どちらも既に発表された値で、ここで推定しているものは無い。**
+どちらも無ければ線を引かない。
 
 ### 8. 自作地震計のホストが揺れを地震情報と照らし合わせる時刻の幅
 

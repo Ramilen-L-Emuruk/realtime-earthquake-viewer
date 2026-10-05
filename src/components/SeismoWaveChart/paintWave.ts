@@ -11,6 +11,7 @@
 import { createLogThrottle, log } from '../../utils/logger'
 import type { WaveColumn } from './waveColumns'
 import { formatScaleGal } from './waveLabels'
+import type { TimeTick } from './timeTicks'
 
 /**
  * 3 成分の色。**3 本を互いに見分けられることを最優先に、色相を 120 度ずつ離す**
@@ -40,6 +41,11 @@ export interface PaintableColumns {
   readonly columns: readonly WaveColumn[]
   readonly scaleGal: number
   readonly hasAnyValue: boolean
+  /**
+   * 縦の表示。**渡さなければ `scaleGal` から作る**（`±N gal`）。強調して描いたときは
+   * 縦が 0 からではないので、作った側が文字列まで決める（→ `emphasizeColumns.ts`）。
+   */
+  readonly scaleLabel?: string
 }
 
 /**
@@ -75,7 +81,33 @@ export interface PaintOptions {
    * 大きい成分を消しても振れ幅の分母がそのままで、残りが潰れたままになる。
    */
   readonly visibleAxes?: readonly boolean[]
+  /**
+   * 時間軸の目盛り（→ `timeTicks.ts`）。**渡せば絵の下に {@link AXIS_BAND_PX} の帯を取って描く**
+   * —— 波形に重ねると、いちばん振れる箇所で数字が読めなくなる。
+   *
+   * **絵の幅（CSS ピクセル）を受け取って目盛りを返す関数で渡す。** 刻みは幅で決まり、
+   * 幅を知っているのはここだけ（列数と同じ理由）。
+   */
+  readonly ticks?: (widthCssPx: number) => readonly TimeTick[]
 }
+
+/**
+ * 目盛りの帯の高さ（CSS ピクセル）。**描く側は canvas をこの分だけ高くしておく。**
+ *
+ * 内訳は目盛りの線 {@link TICK_LINE_PX} ＋ 隙間 1px ＋ 文字 {@link TICK_FONT_PX}。**線と文字を縦に離す**
+ * —— 文字の高さまで線が伸びていると、左寄せ・右寄せの端の目盛りで線が文字の隣に並び、「′」（分）に
+ * 見える（2026-10-05 のユーザー指摘）。
+ */
+export const AXIS_BAND_PX = 15
+
+/** 目盛りの文字の大きさ（CSS ピクセル）。P/S などの線のラベル（9px）より大きく、読める大きさにする。 */
+const TICK_FONT_PX = 11
+
+/** 目盛りの線の長さ（CSS ピクセル）。 */
+const TICK_LINE_PX = 3
+
+/** 目盛りの文字の色。**波形の 3 色と P/S の色から離した控えめな白。** */
+const TICK_COLOR = 'rgba(255,255,255,0.55)'
 
 /**
  * 1 枚ぶんを描き、縦の振れ幅の表示を返す。**描けなければ `null`。**
@@ -92,7 +124,7 @@ export function paintWaveColumns(
   stale: boolean,
   options: PaintOptions = {},
 ): string | null {
-  const { marks = [], visibleAxes } = options
+  const { marks = [], visibleAxes, ticks: buildTicks } = options
   const ctx = canvas.getContext('2d')
   // **取れなかったことは記録へ残す。** 黙って戻ると、画面からは「まだ何も届いて
   // いない」のと区別が付かない —— 描けなかったのか届いていないのかを切り分ける
@@ -112,7 +144,14 @@ export function paintWaveColumns(
   }
 
   ctx.clearRect(0, 0, w, h)
-  const mid = h / 2
+  const ticks = buildTicks?.(canvas.clientWidth) ?? []
+  // **波形を描く高さ。** 目盛りがあれば下の帯を除く。
+  // **目盛りを頼まれたら、本数に関わらず帯を取る。** 幅が一瞬 0 と測られた描画で目盛りが
+  // 0 本になったとき帯を消すと、そのフレームだけ波形の縦位置が動く（canvas の高さは帯込みで固定）。
+  const axisH = buildTicks !== undefined ? Math.round(AXIS_BAND_PX * dpr) : 0
+  const plotH = Math.max(1, h - axisH)
+  paintTicks(ctx, ticks, w, plotH, h, dpr)
+  const mid = plotH / 2
   ctx.strokeStyle = 'rgba(255,255,255,0.18)'
   ctx.lineWidth = 1
   ctx.beginPath()
@@ -135,7 +174,7 @@ export function paintWaveColumns(
   ctx.fillStyle = 'rgba(255,255,255,0.08)'
   for (let c = 0; c < columns.length; c += 1) {
     const col = columns[c]
-    if (col.hasValue && col.minMembers <= 1) ctx.fillRect(c, 0, 1, h)
+    if (col.hasValue && col.minMembers <= 1) ctx.fillRect(c, 0, 1, plotH)
   }
 
   // 上下に線の太さぶんの余白を残す（振り切れた線が枠の外へ出ないように）。
@@ -175,9 +214,46 @@ export function paintWaveColumns(
   }
   ctx.globalAlpha = 1
 
-  paintMarks(ctx, marks, w, h, dpr)
+  paintMarks(ctx, marks, w, plotH, dpr)
 
-  return formatScaleGal(scaleGal)
+  return built.scaleLabel ?? formatScaleGal(scaleGal)
+}
+
+/**
+ * 時間軸の目盛りを下の帯へ描く。
+ *
+ * **波形より先に描いてよい**（帯は波形と重ならない）。**値が無くても描く** —— 絵が空でも
+ * 時間の長さは読めるほうがよい（呼び出し元は値が無ければ早々に戻るので、その前に置く）。
+ */
+export function paintTicks(
+  ctx: CanvasRenderingContext2D,
+  ticks: readonly TimeTick[],
+  w: number,
+  plotH: number,
+  h: number,
+  dpr: number,
+): void {
+  if (ticks.length === 0) return
+  const fontPx = Math.round(TICK_FONT_PX * dpr)
+  ctx.font = `${fontPx}px ui-monospace, monospace`
+  ctx.textBaseline = 'bottom'
+  ctx.strokeStyle = TICK_COLOR
+  ctx.fillStyle = TICK_COLOR
+  ctx.lineWidth = dpr
+  for (const tick of ticks) {
+    if (!(tick.ratio >= 0 && tick.ratio <= 1)) continue
+    // **端の線は内側へ寄せる。** 0 や w ちょうどに引くと半分が切れて見えない。
+    const x = Math.min(w - dpr / 2, Math.max(dpr / 2, Math.round(tick.ratio * w) + 0.5))
+    ctx.beginPath()
+    ctx.moveTo(x, plotH)
+    ctx.lineTo(x, plotH + TICK_LINE_PX * dpr)
+    ctx.stroke()
+    ctx.textAlign = tick.align
+    const tx = tick.align === 'left' ? x + dpr : tick.align === 'right' ? x - dpr : x
+    ctx.fillText(tick.label, tx, h)
+  }
+  // **寄せ方を残さない。** 後で描く P/S のラベルは左寄せの前提で位置を計算している。
+  ctx.textAlign = 'left'
 }
 
 /**
@@ -186,7 +262,7 @@ export function paintWaveColumns(
  * **波形より後に描く。** 先に描くと 3 本の線に埋もれて、いちばん見たい初動のところで
  * 見えなくなる。
  */
-function paintMarks(
+export function paintMarks(
   ctx: CanvasRenderingContext2D,
   marks: readonly WaveMark[],
   w: number,

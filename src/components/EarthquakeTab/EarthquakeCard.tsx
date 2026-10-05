@@ -1545,7 +1545,10 @@ export const EarthquakeCard = memo(function EarthquakeCard({
 
           {/* 自作地震計が捉えたこの地震の区間（→ `useSeismoQuakeWaves`）。
               **記録が無ければ枠ごと出ない** —— 渡ってくるのは載せるものがあるときだけ。 */}
-          <QuakeSeismoWave waves={seismoWaves ?? []} />
+          <QuakeSeismoWave
+            waves={seismoWaves ?? []}
+            quakeLabel={`${formatQuakeTime(earthquake.time) ?? '発生時刻不明'} ${hasLocation ? hypocenter.name : '震源調査中'}`}
+          />
         </div>
       </button>
     )
