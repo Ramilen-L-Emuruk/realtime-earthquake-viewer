@@ -6,7 +6,7 @@ import { SENTENCE_END, SENTENCE_END_RE } from './ttsPunctuation'
 import { joinSegments, plain, type SpeechSegment, type SpeechRef, type QuakeFact, type SpokenObservation } from './ttsFollow'
 import { getSubRegionsCache } from './subregions'
 import { getPrefecturesCache } from './prefectures'
-import { getStationCoordsCache, getAreaPrefIndexCache, buildStationPrefIndex, buildPrefAreaNamesIndex, buildRegionOrderIndex, regionOrderRank, sortByRegionOrder, lookupStationRegion, type StationCoordsData, type RegionOrderIndex } from './stationCoords'
+import { getStationCoordsCache, getAreaPrefIndexCache, stationPrefIndexOf, prefAreaNamesIndexOf, regionOrderIndexOf, regionOrderRank, sortByRegionOrder, lookupStationRegion, type StationCoordsData, type RegionOrderIndex } from './stationCoords'
 import { isAreaPoint, isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel } from './quakePoints'
 import { hasMagnitude, hasDepth, readDateTime } from './formatters'
 import { tsunamiSourceHypocenter } from './borrowFromTsunami'
@@ -48,8 +48,8 @@ const warnNoRegionNames = createLogThrottle(NO_REGION_LOG_THROTTLE_MS)
 // 出した後、4 で嶺北・嶺南が揃って「福井県」とまとめると、福井県は 5強 なのに 4 に聞こえる。
 function aggregateAreaNamesByPref(
   areaNames: { pref: string; addr: string }[],
-  prefAreaNames: Map<string, Set<string>> | null,
-  areaPrefIndex: Map<string, string> | null,
+  prefAreaNames: ReadonlyMap<string, ReadonlySet<string>> | null,
+  areaPrefIndex: ReadonlyMap<string, string> | null,
   prefsWithAreaShown: ReadonlySet<string>,
 ): string[] {
   const byPref = new Map<string, Set<string>>()
@@ -77,11 +77,11 @@ function aggregateAreaNamesByPref(
  */
 interface RegionNameIndexes {
   /** 都道府県名 -> その県に属する一次細分区域名の集合 */
-  prefAreaNames: Map<string, Set<string>> | null
+  prefAreaNames: ReadonlyMap<string, ReadonlySet<string>> | null
   /** 一次細分区域名 -> 都道府県名 */
-  areaPrefIndex: Map<string, string> | null
+  areaPrefIndex: ReadonlyMap<string, string> | null
   /** 観測点名 -> 都道府県名 */
-  stationPrefIndex: Map<string, string> | null
+  stationPrefIndex: ReadonlyMap<string, string> | null
   /** 座標テーブル本体。観測点 -> 一次細分区域は地図と同じ `lookupStationRegion` で引く */
   stationData: StationCoordsData | null
 }
@@ -525,12 +525,12 @@ function unreceivedRegionSegments(
 ): SpeechSegment[] {
   const stationData = getStationCoordsCache()
   const idx: RegionNameIndexes = {
-    prefAreaNames: stationData ? buildPrefAreaNamesIndex(stationData) : null,
+    prefAreaNames: stationData ? prefAreaNamesIndexOf(stationData) : null,
     areaPrefIndex: getAreaPrefIndexCache(),
-    stationPrefIndex: stationData ? buildStationPrefIndex(stationData) : null,
+    stationPrefIndex: stationData ? stationPrefIndexOf(stationData) : null,
     stationData,
   }
-  const regionOrder = stationData ? buildRegionOrderIndex(stationData) : null
+  const regionOrder = stationData ? regionOrderIndexOf(stationData) : null
   const unreceived = points.filter(p => p.unreceived)
   if (unreceived.length === 0) return []
   const regionOfStation = (p: EarthquakePoint): string | null => {
@@ -646,15 +646,15 @@ function buildRegionSegments(
 
   const stationData = getStationCoordsCache()
   const idx: RegionNameIndexes = {
-    prefAreaNames: stationData ? buildPrefAreaNamesIndex(stationData) : null,
+    prefAreaNames: stationData ? prefAreaNamesIndexOf(stationData) : null,
     // 区域名 → 県名だけはキャッシュから受け取る。地震の統合経路と同じ索引で、読み取りしかしない
     // （→ docs/spec/quake-spec.md §4「ロールアップ点の見分け方」）。読み上げ文を作るたびに
     // 組み直すと、点の役割の判定（isAreaPoint）へ渡す索引が経路ごとに別物になる。
     areaPrefIndex: getAreaPrefIndexCache(),
-    stationPrefIndex: stationData ? buildStationPrefIndex(stationData) : null,
+    stationPrefIndex: stationData ? stationPrefIndexOf(stationData) : null,
     stationData,
   }
-  const regionOrder = stationData ? buildRegionOrderIndex(stationData) : null
+  const regionOrder = stationData ? regionOrderIndexOf(stationData) : null
 
   // 最大震度以下で実際に観測がある階級だけを降順に集める。震度スケール上の位置ではなく
   // この配列の添字を「最大から何階級目か」として数えるため、観測 0 地域の階級が読み上げ枠を
@@ -3304,8 +3304,8 @@ export function kohatsuToText(event: JMAKohatsu): string {
 // `aggregateAreaNamesByPref` と同じ理由（上下の階級で粒度が食い違うと県の階級を過小に伝える）。
 function aggregateLpgmNamesByPref(
   names: string[],
-  areaPrefIndex: Map<string, string> | null,
-  prefAreaNames: Map<string, Set<string>> | null,
+  areaPrefIndex: ReadonlyMap<string, string> | null,
+  prefAreaNames: ReadonlyMap<string, ReadonlySet<string>> | null,
   prefsWithAreaShown: ReadonlySet<string>,
 ): string[] {
   if (!areaPrefIndex) return names
@@ -3347,8 +3347,8 @@ function buildLpgmRegionText(lpgm: JMALpgm, opts: TtsSpeechOptions): string {
 
   const stationData = getStationCoordsCache()
   const areaPrefIndex = getAreaPrefIndexCache()
-  const prefAreaNames = stationData ? buildPrefAreaNamesIndex(stationData) : null
-  const regionOrder = stationData ? buildRegionOrderIndex(stationData) : null
+  const prefAreaNames = stationData ? prefAreaNamesIndexOf(stationData) : null
+  const regionOrder = stationData ? regionOrderIndexOf(stationData) : null
 
   const parts: string[] = []
   const mentioned = new Set<string>()

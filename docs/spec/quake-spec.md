@@ -280,7 +280,7 @@ VXSE61 の XML は `Hypocenter/Area` に **`Coordinate` を 2 つ**持つ。
 **P2PQuake は区域の点にも `pref` を積む**（上記）。区域名が県名と同じ奈良県——県内の一次細分区域が
 1 つだけで、その名前が県名と同じ唯一の県（[`stationCoords.test.ts`](../../src/utils/stationCoords.test.ts)
 「多区域の県に、県名と同じ表記の区域は無い」が固定）——が巻き添えで落ち、標準版の震度速報から
-奈良県だけが静かに消える。名前が衝突したときは、座標テーブルの索引（`buildAreaPrefIndex`）で
+奈良県だけが静かに消える。名前が衝突したときは、座標テーブルの索引（`areaPrefIndexOf`）で
 **その名前が一次細分区域として実在するか**を見て決める。
 
 **索引は呼び出し側から渡す。** `quakePoints.ts` は座標テーブルを import しない
@@ -527,8 +527,8 @@ VXSE61 の XML は `Hypocenter/Area` に **`Coordinate` を 2 つ**持つ。
 - **種別のラベルは両経路で同じ語を使う。** 経路ごとに言い換えると、ログだけを見て突き合わせられない
   （経路の区別は接頭辞 `[dmdata]` / `[dmdata XML]` が担う）
 
-**pref 逆引きが必要な派生データ**: `pref` が空でも `station-coords.json` の逆引き（`buildAreaPrefIndex` /
-`buildStationPrefIndex`）で都道府県は復元可能。以下の派生データは pref が空でも都道府県を再構築する:
+**pref 逆引きが必要な派生データ**: `pref` が空でも `station-coords.json` の逆引き（`areaPrefIndexOf` /
+`stationPrefIndexOf`）で都道府県は復元可能。以下の派生データは pref が空でも都道府県を再構築する:
 - `useQuakeLayerData.intensityMarkers` — 地図に置く観測点マーカーの色・位置
 - `useQuakeLayerData.prefIntensities` — 震源ポップアップの都道府県別最大震度
 - `ttsText.regionNamesForScale` — 読み上げの地域名。区域の点が無い電文では観測点から
@@ -1725,7 +1725,7 @@ existing/incoming が同じ書式・同じタイムゾーンオフセットで�
 入れ子を許さない。長周期のトグルと同じ作法）。開けない段には `role` も `tabIndex` も与えない。
 
 **行の並び**: 震度（長周期は階級）の降順。**同じ震度どうしは気象庁の標準順**（北から南）で並べる。
-順序の実体は読み上げと同じ `station-coords.json` の区域キー順（`buildRegionOrderIndex` /
+順序の実体は読み上げと同じ `station-coords.json` の区域キー順（`regionOrderIndexOf` /
 `regionOrderRank`）。
 
 震度だけで並べると、`sort` が安定なぶん**電文が点を並べた順**が残る。電文の並びは種別で違う
@@ -2461,7 +2461,7 @@ IXAC40 を扱い始めた最初の実機確認がこれで落ちた（ユニッ�
 |---|---|
 | 座標を引く | `lookupPointCoords` |
 | 観測点が属する一次細分区域 | `lookupStationRegion` |
-| 観測点名から都道府県 | `buildStationPrefIndex` |
+| 観測点名から都道府県 | `stationPrefIndexOf` |
 | 読み上げの地域名の粒度 | 同じく `lookupStationRegion`（呼び出し元が違う） |
 | 読み上げの読み仮名辞書 | `tts-station-readings.json` |
 | 行動チェックリストの観測点名の照合 | `actionChecklistTrigger.ts` |
