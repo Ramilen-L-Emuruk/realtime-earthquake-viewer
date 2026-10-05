@@ -100,10 +100,10 @@ const SMOOTH_SECONDS = 3
 export const NOISE_FLOOR_GAL = 0.2
 
 /** ノイズを測る区間の長さ（ms）。**読み返しが発生の 30 秒前から取るのに合わせる。** */
-const NOISE_SPAN_MS = 30 * SECOND_MS
+export const NOISE_SPAN_MS = 30 * SECOND_MS
 
 /** ノイズを測るのに要る 1 秒ぶんの値の数。**足りなければ判定しない**（推測でノイズを置かない）。 */
-const NOISE_MIN_SECONDS = 10
+export const NOISE_MIN_SECONDS = 10
 
 /** 「ノイズの水準へ戻った」とみなす静かさの長さ（ms）。 */
 const QUIET_HOLD_MS = 10 * SECOND_MS

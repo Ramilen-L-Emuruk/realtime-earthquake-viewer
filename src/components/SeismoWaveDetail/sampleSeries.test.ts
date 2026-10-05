@@ -1,14 +1,17 @@
 import { describe, expect, it } from 'vitest'
 
 import type { WaveSampleChunk } from '../../services/seismoWaveSamples'
+import type { SampleSeries } from './sampleSeries'
 import {
   buildSampleSeries,
   emphasizeValue,
   laneGeometry,
   maxAbsInRange,
+  measureMagnitudeFloor,
   movingAverage,
   peakInRange,
   seriesRange,
+  signedMovingAverages,
   valueTransform,
   vectorMagnitude,
   visibleIndexRange,
@@ -179,5 +182,70 @@ describe('peakInRange', () => {
   it('値が無ければ null', () => {
     const s = buildSampleSeries([chunk(T0, [Number.NaN, Number.NaN])])
     expect(peakInRange(s, s.v[0], { fromMs: T0, toMs: T0 + 10 })).toBeNull()
+  })
+})
+
+describe('signedMovingAverages', () => {
+  // 正: 正側・負側を別々に平均する（そのまま平均すると 0 に潰れる）。
+  it('正側と負側を分けて平均する', () => {
+    // 10 ms 刻み、幅 40 ms（前後 20 ms）。中央の点の窓は 5 点 [2, -2, 4, -4, 6]
+    const s = buildSampleSeries([chunk(T0, [2, -2, 4, -4, 6])])
+    const { pos, neg } = signedMovingAverages(s, s.v[0], 40)
+    expect(pos[2]).toBe(4)
+    expect(neg[2]).toBe(-3)
+  })
+
+  // 対照: 片側に偏った動きでは 2 本の高さが食い違う。
+  it('片側だけに振れれば反対側は 0', () => {
+    const s = buildSampleSeries([chunk(T0, [1, 2, 3])])
+    const { pos, neg } = signedMovingAverages(s, s.v[0], 40)
+    expect(pos[1]).toBe(2)
+    expect(neg[1]).toBe(0)
+  })
+
+  // 安全弁: 途切れは平均の線でも切る。
+  it('元が NaN の点は NaN のまま', () => {
+    const c = chunk(T0, [1, 2, 3])
+    c.gal[0][1] = Number.NaN
+    const s = buildSampleSeries([c])
+    const { pos, neg } = signedMovingAverages(s, s.v[0], 40)
+    expect(Number.isNaN(pos[1])).toBe(true)
+    expect(Number.isNaN(neg[1])).toBe(true)
+    expect(pos[0]).toBe(2)
+  })
+})
+
+describe('measureMagnitudeFloor', () => {
+  const ZERO = T0 + 30_000
+  /** 0 の手前 30 秒、100 Hz。各秒の最大が `peak(秒)` になる。 */
+  function quiet(seconds: number, peak: (sec: number) => number): SampleSeries {
+    const values: number[] = []
+    for (let i = 0; i < seconds * 100; i += 1) values.push(i % 100 === 50 ? peak(Math.floor(i / 100)) : 0.1)
+    const start = ZERO - seconds * 1000
+    const a = Float32Array.from(values)
+    return buildSampleSeries([{ firstSampleMs: start, msPerSample: 10, gal: [a, new Float32Array(a.length), new Float32Array(a.length)] }])
+  }
+
+  it('1 秒ごとの最大の中央値の 1.5 倍', () => {
+    const s = quiet(30, (sec) => (sec % 2 === 0 ? 1 : 3))
+    // 中央値は (1 + 3) / 2 = 2 → 3
+    expect(measureMagnitudeFloor(s, vectorMagnitude(s, [true, true, true]), ZERO)).toBeCloseTo(3, 5)
+  })
+
+  it('下限は 0.2 gal', () => {
+    const s = quiet(30, () => 0.05)
+    expect(measureMagnitudeFloor(s, vectorMagnitude(s, [true, true, true]), ZERO)).toBeCloseTo(0.2, 5)
+  })
+
+  // 対照: ちょうど 10 秒あれば測る。
+  it('値のある 1 秒がちょうど 10 なら測る', () => {
+    const s = quiet(10, () => 1)
+    expect(measureMagnitudeFloor(s, vectorMagnitude(s, [true, true, true]), ZERO)).toBeCloseTo(1.5, 5)
+  })
+
+  // 安全弁: 足りなければ測らない（推測で底を置かない）。
+  it('値のある 1 秒が 10 に満たなければ null', () => {
+    const s = quiet(9, () => 1)
+    expect(measureMagnitudeFloor(s, vectorMagnitude(s, [true, true, true]), ZERO)).toBeNull()
   })
 })

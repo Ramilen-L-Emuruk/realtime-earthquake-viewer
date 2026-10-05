@@ -50,8 +50,10 @@ import {
   buildSampleSeries,
   laneGeometry,
   maxAbsInRange,
+  measureMagnitudeFloor,
   movingAverage,
   peakInRange,
+  signedMovingAverages,
   seriesRange,
   valueTransform,
   vectorMagnitude,
@@ -80,6 +82,12 @@ const COMPOSITE_SMOOTH_COLOR = '#f1f5f9'
  * 小さな地震の S 波の山（数秒）は形が残り、ノイズのギザギザは消える。
  */
 const COMPOSITE_SMOOTH_MS = 1_000
+
+/**
+ * 成分の段に重ねる「正側・負側の平均の線」の色。**成分の色の明るい版**（緑・赤紫・黄の 200 番台）。
+ * 元の線（成分の色）の上に太く描くので、同じ色だと見分けられない。
+ */
+const AXIS_AVERAGE_COLORS = ['#bbf7d0', '#f5d0fe', '#fef08a'] as const
 
 /** 震度の推移で、線を切る刻みの飛び（ms）。刻みは 1 秒なので 1.5 秒。 */
 const SERIES_GAP_MS = 1_500
@@ -165,6 +173,29 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
     const magnitude = vectorMagnitude(samples.series, axes)
     return { magnitude, smooth: movingAverage(samples.series, magnitude, COMPOSITE_SMOOTH_MS) }
   }, [samples, axes])
+  // **成分の正側・負側の平均の線**（前後 1 秒。合成の均した線と同じ幅）。**強調している間は出さない**
+  // （2026-10-05 のユーザー判断）—— 平均は振れの頂点よりずっと内側を通り、強調で潰す幅（1 秒ごとの最大から決める）を
+  // 弱い揺れでは超えない。有感地震の 1 件の実測で、南北の正側平均の最大 1.00 gal に対し潰す幅は 1.32 gal
+  // （東西 0.78 / 1.35、上下 0.60 / 2.04、合成 1.39 / 2.21）。潰すと線が一度も現れない。
+  //
+  // **消すのは実際に潰したときだけ**（強調を押しても幅を測れず潰さない絵に戻ったときは出す）。判定は描くときに
+  // `noise`・`compositeFloor` で行い、ここでは届いたサンプルから常に作っておく（届いたときに 1 回だけ）。
+  const axisAverages = useMemo(() => {
+    if (samples === null) return null
+    return [0, 1, 2].map((a) => signedMovingAverages(samples.series, samples.series.v[a], COMPOSITE_SMOOTH_MS))
+  }, [samples])
+  // **合成の強調は窓の「強調」に連動**（2026-10-05 のユーザー判断）。発生前 30 秒の合成から平常時の底を測り、
+  // それより上に出た分だけを描く。測れなければ潰さない（成分と同じ）。
+  const loggedNoFloorRef = useRef(false)
+  const compositeFloor = useMemo(() => {
+    if (!emphasized || samples === null || composite === null) return null
+    const f = measureMagnitudeFloor(samples.series, composite.magnitude, wave.axisZero.ms)
+    if (f === null && !loggedNoFloorRef.current) {
+      loggedNoFloorRef.current = true
+      log.debug(`[seismo] 詳細の窓で合成を強調できなかった（${wave.stationId}）: 0 の手前のサンプルが足りず底を測れない`)
+    }
+    return f
+  }, [emphasized, samples, composite, wave.axisZero.ms, wave.stationId])
   const compositePeak = useMemo(
     () => (samples === null || composite === null || quakeSpan === null ? null : peakInRange(samples.series, composite.magnitude, quakeSpan)),
     [samples, composite, quakeSpan],
@@ -322,7 +353,14 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
             baseline: 'center',
             geometry: (widthPx) =>
               laneGeometry({ series: samples.series, values: samples.series.v[a], range: view, widthPx, map: (v) => transform(a, v) }),
-            overlay: null,
+            overlays:
+              axisAverages === null || noise !== null
+                ? []
+                : (['pos', 'neg'] as const).map((side) => ({
+                    color: AXIS_AVERAGE_COLORS[a],
+                    geometry: (widthPx: number) =>
+                      laneGeometry({ series: samples.series, values: axisAverages[a][side], range: view, widthPx, map: (v) => v }),
+                  })),
             scaleGal,
             stale: wave.interrupted,
             marks: laneMarks(a, a === visibleIdx[0] && !showComposite),
@@ -332,28 +370,42 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
         }
         // ---- 合成の段（一番上） ----
         // **縦は合成の段だけで持つ**（合成は成分より大きいので、3 段と共有すると成分の段が縮む）。
-        // **強調は掛けない** —— 大きさの素の値を見せる段にする（2026-10-05 のユーザー判断）。
-        // 前後 1 秒で均した線を太く重ね、揺れの強さの増え方・収まり方を読めるようにする。
+        // **強調は窓の「強調」に連動する**（2026-10-05 のユーザー判断）。強調なら平常時の底より上に出た分だけを描く。
+        // 強調していなければ、前後 1 秒で均した線を太く重ね、揺れの強さの増え方・収まり方を読めるようにする。
         const cc = compositeRef.current
         if (cc !== null && composite !== null) {
           const peakInView = peakInRange(samples.series, composite.magnitude, view)
-          const compositeScale = Math.max(DETAIL_MIN_SCALE_GAL, peakInView?.value ?? 0)
+          // 強調なら底を引いた残り（0 未満は 0）を描く。縦も残りの最大で決める（下限は成分の強調と同じ 0.5 gal）。
+          const cf = compositeFloor
+          const mapComposite = cf === null ? (v: number) => v : (v: number) => Math.max(0, v - cf)
+          const compositeScale =
+            cf === null
+              ? Math.max(DETAIL_MIN_SCALE_GAL, peakInView?.value ?? 0)
+              : Math.max(MIN_EMPHASIZED_SCALE_GAL, (peakInView?.value ?? 0) - cf)
           const ok = paintSampleLane(cc, {
             color: COMPOSITE_COLOR,
             baseline: 'bottom',
             geometry: (widthPx) =>
-              laneGeometry({ series: samples.series, values: composite.magnitude, range: view, widthPx, map: (v) => v }),
-            overlay: {
-              color: COMPOSITE_SMOOTH_COLOR,
-              geometry: (widthPx) =>
-                laneGeometry({ series: samples.series, values: composite.smooth, range: view, widthPx, map: (v) => v }),
-            },
+              laneGeometry({ series: samples.series, values: composite.magnitude, range: view, widthPx, map: mapComposite }),
+            // 均した線は強調している間は出さない（成分の平均の線と同じ理由）。
+            overlays: cf !== null
+              ? []
+              : [
+                  {
+                    color: COMPOSITE_SMOOTH_COLOR,
+                    geometry: (widthPx: number) =>
+                      laneGeometry({ series: samples.series, values: composite.smooth, range: view, widthPx, map: (v) => v }),
+                  },
+                ],
             scaleGal: compositeScale,
             stale: wave.interrupted,
             marks: [...arrivalMarks, ...peakMarkAt(compositePeak?.atMs)],
           })
           if (!ok) throttledNoContext(() => log.error('[seismo] 詳細の窓の波形を描く 2D コンテキストを取れなかった'))
-          setCompositeScaleText(`0〜${compositeScale.toFixed(1)} gal`)
+          // 縦の表示: 強調なら「底〜上端」（成分の「±幅〜±上端」と同じ読み方）、そうでなければ「0〜上端」。
+          setCompositeScaleText(
+            cf === null ? `0〜${compositeScale.toFixed(1)} gal` : `${cf.toFixed(1)}〜${(cf + compositeScale).toFixed(1)} gal`,
+          )
         }
         // 縦の表示はカードと同じ書式（強調なら「±幅〜±上端」、いちばん振れた成分の幅）。
         setScaleText(
@@ -414,7 +466,7 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
     // `visibleIdx` は `axes` から作るので `axes` で足りる。`view` は `useSamples` のときだけ使い、
     // そのとき `displayFromMs`/`displayToMs` が `view` と一致する。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [useSamples, samples, columnsShown, displayFromMs, displayToMs, axes, noise, peaks, composite, compositePeak, intensity, wave.arrival, wave.axisZero, wave.interrupted])
+  }, [useSamples, samples, columnsShown, displayFromMs, displayToMs, axes, noise, peaks, composite, compositePeak, compositeFloor, axisAverages, intensity, wave.arrival, wave.axisZero, wave.interrupted])
 
   // ---- 操作 ----
   const zoomBy = useCallback(

@@ -6,7 +6,7 @@
 // - 強調（平常時のノイズの内側を潰す）を値へ当てる
 
 import type { WaveSampleChunk } from '../../services/seismoWaveSamples'
-import type { NoiseBand } from '../../utils/seismoQuakeWindow'
+import { NOISE_FLOOR_GAL, NOISE_MIN_SECONDS, NOISE_SPAN_MS, NOISE_WIDTH_RATIO, type NoiseBand } from '../../utils/seismoQuakeWindow'
 import type { ViewRange } from './detailView'
 
 /** 時刻順に繋いだサンプル。**欠測と途切れは `NaN`**（そこで線を切る）。 */
@@ -240,6 +240,84 @@ export function movingAverage(series: SampleSeries, values: Float32Array, window
     out[i] = !Number.isFinite(values[i]) || c === 0 ? Number.NaN : (sum[hi] - sum[lo]) / c
   }
   return out
+}
+
+/**
+ * 前後 `windowMs` の幅で、**正側に振れた値の平均と負側に振れた値の平均を別々に**出す（2026-10-05 のユーザー判断）。
+ *
+ * 成分は ＋ と − に行き来するので、値をそのまま平均すると 0 付近に潰れて揺れの大きさが消える。正側・負側に
+ * 分けて平均すれば、ふつうの揺れでは 2 本がほぼ対称に並び、**片側に偏った動き（一方向のパルスや傾き）だけ
+ * 2 本の高さが食い違う**。線は振れの頂点ではなく平均なので、山の頂点よりかなり内側を通る。
+ *
+ * - 0 ちょうどの値はどちらにも数えない。窓の中にその側の値が 1 つも無ければ 0
+ * - **元が `NaN` の点は `NaN` のまま**（途切れで線を切る）
+ *
+ * @returns `pos` は 0 以上、`neg` は 0 以下
+ */
+export function signedMovingAverages(
+  series: SampleSeries,
+  values: Float32Array,
+  windowMs: number,
+): { readonly pos: Float32Array; readonly neg: Float32Array } {
+  const n = series.length
+  const posSum = new Float64Array(n + 1)
+  const posCnt = new Uint32Array(n + 1)
+  const negSum = new Float64Array(n + 1)
+  const negCnt = new Uint32Array(n + 1)
+  for (let i = 0; i < n; i += 1) {
+    const v = values[i]
+    const p = Number.isFinite(v) && v > 0
+    const q = Number.isFinite(v) && v < 0
+    posSum[i + 1] = posSum[i] + (p ? v : 0)
+    posCnt[i + 1] = posCnt[i] + (p ? 1 : 0)
+    negSum[i + 1] = negSum[i] + (q ? v : 0)
+    negCnt[i + 1] = negCnt[i] + (q ? 1 : 0)
+  }
+  const half = windowMs / 2
+  const pos = new Float32Array(n)
+  const neg = new Float32Array(n)
+  let lo = 0
+  let hi = 0
+  for (let i = 0; i < n; i += 1) {
+    const t = series.t[i]
+    while (lo < n && series.t[lo] < t - half) lo += 1
+    while (hi < n && series.t[hi] <= t + half) hi += 1
+    if (!Number.isFinite(values[i])) {
+      pos[i] = Number.NaN
+      neg[i] = Number.NaN
+      continue
+    }
+    const pc = posCnt[hi] - posCnt[lo]
+    const nc = negCnt[hi] - negCnt[lo]
+    pos[i] = pc === 0 ? 0 : (posSum[hi] - posSum[lo]) / pc
+    neg[i] = nc === 0 ? 0 : (negSum[hi] - negSum[lo]) / nc
+  }
+  return { pos, neg }
+}
+
+/**
+ * 合成の大きさの平常時の底（gal）。**成分の強調と同じ測り方**（`measureNoiseBand`）—— 0 の手前 30 秒で 1 秒ごとの
+ * 最大を取り、その中央値の 1.5 倍（下限 0.2 gal）。合成は大きさなので中心は取らず、0 から測る。
+ *
+ * **値のある 1 秒が 10 に満たなければ `null`**（推測で底を置かない。成分と同じ）。
+ */
+export function measureMagnitudeFloor(series: SampleSeries, magnitude: Float32Array, zeroMs: number): number | null {
+  if (!Number.isFinite(zeroMs)) return null
+  const fromMs = zeroMs - NOISE_SPAN_MS
+  const peaks = new Map<number, number>()
+  const lo = lowerBound(series.t, series.length, fromMs)
+  const hi = lowerBound(series.t, series.length, zeroMs)
+  for (let i = lo; i < hi; i += 1) {
+    const v = magnitude[i]
+    if (!Number.isFinite(v)) continue
+    const sec = Math.floor((series.t[i] - zeroMs) / 1000)
+    peaks.set(sec, Math.max(peaks.get(sec) ?? 0, v))
+  }
+  if (peaks.size < NOISE_MIN_SECONDS) return null
+  const sorted = [...peaks.values()].sort((a, b) => a - b)
+  const mid = sorted.length >> 1
+  const median = sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
+  return Math.max(median * NOISE_WIDTH_RATIO, NOISE_FLOOR_GAL)
 }
 
 /** 範囲の中の値の最大と、その時刻（最初に達した点）。**値が 1 つも無ければ `null`。** */

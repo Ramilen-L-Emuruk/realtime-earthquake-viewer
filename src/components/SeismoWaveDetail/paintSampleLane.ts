@@ -21,10 +21,10 @@ export function paintSampleLane(
     /** 描き方。**幅（デバイスピクセル）を受け取って作る**（幅を知っているのはここだけ）。 */
     readonly geometry: (widthPx: number) => LaneGeometry
     /**
-     * 上に重ねる線（合成の段の「前後を均した線」）。**重ねるものが無ければ `null`。**
+     * 上に重ねる線（合成の段の「前後を均した線」、成分の段の「正側・負側の平均の線」）。**重ねるものが無ければ空。**
      * 元の線より太く・明るく描く。
      */
-    readonly overlay: { readonly geometry: (widthPx: number) => LaneGeometry; readonly color: string } | null
+    readonly overlays: readonly { readonly geometry: (widthPx: number) => LaneGeometry; readonly color: string }[]
     readonly scaleGal: number
     readonly stale: boolean
     readonly marks: readonly WaveMark[]
@@ -63,8 +63,8 @@ export function paintSampleLane(
     // 透かす必要は無い。
     strokeGeometry(ctx, params.geometry(w), yOf, params.color, dpr, params.stale ? 0.25 : 0.85)
     // 重ねる線は太く・はっきり。元の線の上に描く。
-    if (params.overlay !== null) {
-      strokeGeometry(ctx, params.overlay.geometry(w), yOf, params.overlay.color, dpr * 2, params.stale ? 0.3 : 1)
+    for (const overlay of params.overlays) {
+      strokeGeometry(ctx, overlay.geometry(w), yOf, overlay.color, dpr * 2, params.stale ? 0.3 : 1)
     }
   }
 
