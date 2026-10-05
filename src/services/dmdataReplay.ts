@@ -61,20 +61,15 @@ import { createSkipCounter, sumSkippedByDay, UNKNOWN_SKIP_DAY } from '../utils/t
  *
  * 日常的には数回押すだけなので、1 回が軽いほうを採る。7 日ぶんの有感地震は実測で 44 件
  * （長期震源カタログの確定値 1997〜2023 年で 1 日平均 7.3 件）。
+ *
+ * ## 件数の上限は置かない（2026-10-05 ユーザー承認）
+ *
+ * かつては 1 回で取り込む地震を 500 件で打ち切っていたが、**窓の日数そのものが上限**になって
+ * いるので外した。500 は測って決めた値ではなく、能登半島地震の 7 日間（2024-01-01〜07・
+ * 656 件）を日の境で切っていた。その 7 日ぶんを取り込んでも、カード 651 枚で最も長い処理が
+ * 0.7 秒・ヒープ 371 MB で、一覧のスクロールは 60 fps を保つ（実測）。
  */
 export const HISTORY_WINDOW_DAYS = 7
-
-/**
- * 1 回の取得で取り込む地震イベント数の**安全弁**。
- *
- * **目標ではない。** 通常は窓（`HISTORY_WINDOW_DAYS`）を丸ごと読み切るので、ここへ達しない。
- * 効くのは群発の最中だけ —— 能登半島地震の本震当日のように 1 日で数百件になると、日数だけで
- * 切った場合にカードが一度に千枚単位で増える。
- *
- * 達した日で地震の取り込みをやめ、カーソル（`oldestLoadedDay`）もそこで止まるので、続きは
- * 次に押したときに読める。
- */
-export const HISTORY_EVENT_SAFETY_CAP = 500
 
 /**
  * アーカイブの保存開始日（JST。地震津波関連の分類）。
@@ -1234,10 +1229,42 @@ function resolveTsunamiPreWindowStates(
       continue
     }
     const validDateTime = latestValidDateTime(reports)
-    const expired = !!validDateTime && new Date(validDateTime).getTime() <= targetTime.getTime()
+    const expired = validDateTime
+      ? new Date(validDateTime).getTime() <= targetTime.getTime()
+      : isStaleWithoutValidity(reports, targetTime)
     states.set(key, { alive: !expired, validDateTime })
   }
   return states
+}
+
+/**
+ * 期限を一度も伝えていない津波を、どこまで遡って生かすか。
+ *
+ * 初期状態の材料は 7 日ぶんある（→ `useReplayController` の `assemblePreWindowMaterial`）が、
+ * **期限を持たない津波は、最後の報から 24 時間を過ぎたら終わったものとして扱う** ——
+ * 材料が 24 時間だけだった頃と同じ範囲に留める。7 日ぶん遡ると、期限を伝えないまま終わった
+ * 津波が 6 日後の再生でも「発表中」として甦る。
+ *
+ * 気象庁は予報のみになった津波に期限を付ける（→ `tsunami-spec.md` §3）ので、通常は期限か
+ * 解除のどちらかで決着し、ここへは来ない。来るのは期限を載せていない電文が混ざった場合で、
+ * 黙って落とすと理由が残らないので記録する。
+ */
+const TSUNAMI_WITHOUT_VALIDITY_MAX_AGE_MS = 24 * 3600_000
+
+function isStaleWithoutValidity(reports: JMATsunami[], targetTime: Date): boolean {
+  const latestMs = Math.max(...reports.map(r => Date.parse(r.time)).filter(Number.isFinite))
+  if (!Number.isFinite(latestMs)) {
+    // 古さを測れないので終わったとは決めない（材料が 24 時間だった頃と同じ扱い）。黙って
+    // 生かすと、その津波が居座る理由がどこにも残らないので記録する。
+    log.warn(`[replay] 有効期限も発表時刻も読めない津波を、失効の判定をせずに初期状態へ載せます: id=${reports[reports.length - 1]?.id}`)
+    return false
+  }
+  if (targetTime.getTime() - latestMs <= TSUNAMI_WITHOUT_VALIDITY_MAX_AGE_MS) return false
+  log.warn(
+    `[replay] 有効期限を伝えていない津波を、最後の報から 24 時間を過ぎたため初期状態に載せません: `
+    + `id=${reports[reports.length - 1].id}`,
+  )
+  return true
 }
 
 /**
@@ -1482,7 +1509,7 @@ function prefetchArchiveBody(item: ArchiveItem, apiKey: string): Promise<Prefetc
  * 履歴の取得（`fetchDmdataQuakeHistory`）向けの計画。**本体を落とさずに決まることだけ**を
  * 1 パスで求める（設計の意図は `ManifestPlan`）。
  *
- * 絞り込みは消費のループと同じ順序で当てる —— 種別 → 打ち切り（`takeQuakes`）→ 重複排除 →
+ * 絞り込みは消費のループと同じ順序で当てる —— 種別 → 重複排除 →
  * 時刻。**パース結果が控えにある電文は本体を要らない**ので、その日の全件が控えに揃っていれば
  * ダウンロードごと省ける。
  *
@@ -1513,7 +1540,7 @@ function isHistoryTarget(time: Date, before: Date): boolean {
 
 function planHistoryEntries(
   manifest: ManifestEntry[],
-  opts: { includeTest: boolean; takeQuakes: boolean; before: Date },
+  opts: { includeTest: boolean; before: Date },
 ): HistoryPlan[] {
   const plans: HistoryPlan[] = []
   for (const entry of manifest) {
@@ -1526,7 +1553,6 @@ function planHistoryEntries(
     const isExtra = HISTORY_EXTRA_TYPES.has(entry.head.type)
     const isTsunami = TSUNAMI_TYPES.has(entry.head.type)
     if (!isQuake && !isExtra && !isTsunami) continue
-    if (isQuake && !opts.takeQuakes) continue
     // XML 版と JSON 版の 2 エントリで載るうち、XML 版（originalId 無し）だけを拾う
     if (entry.originalId) continue
     // **3 つのセットは互いに素**なので、種別からどの型として読むかが一意に決まる。
@@ -1607,8 +1633,7 @@ function parseHistoryTelegram(
  * 遡り幅も違う。カードを厚くするために 24 時間を延ばすと、EEW アーカイブの解析まで
  * 巻き添えで増える。ここでは `telegram.earthquake` だけを読む。
  *
- * 打ち切りは**日単位**で行う。イベント数が目標に届いた時点で、それより古い日は解析しない。
- * 日の途中で切ると同一イベントの続報が分断され、震度速報だけのカードが残りうる。
+ * 区切りは**日数だけ**（`maxDays`）。地震の件数では打ち切らない（→ `HISTORY_WINDOW_DAYS`）。
  *
  * ダウンロード自体は `maxDays` ぶんを並列で走らせる。日次アーカイブは 1 日 10〜70KB と小さく、
  * 逐次に落として都度判定すると往復のぶんだけ再生開始が遅れるため（ライブの履歴取得が
@@ -1625,14 +1650,11 @@ function parseHistoryTelegram(
  * カーソル方式では初回ロードとリプレイ復元が重なる場面にしか効かない。
  *
  * @param before この時刻より後に発表された電文は採らない（＝窓の上端。カーソル）
- * @param targetEvents 取り込む地震イベント数の**上限**（続報は 1 件と数える）。
- *   **目標ではない** —— 通常は窓を丸ごと読み切るので達しない（→ `HISTORY_EVENT_SAFETY_CAP`）
  * @param maxDays この窓で読む日数（→ `HISTORY_WINDOW_DAYS`）。**遡れる範囲の上限ではない**
  */
 export async function fetchDmdataQuakeHistory(
   apiKey: string,
   before: Date,
-  targetEvents: number,
   maxDays: number,
   includeTest: boolean,
   /**
@@ -1832,9 +1854,9 @@ export async function fetchDmdataQuakeHistory(
   /**
    * 地震を最後まで読み切れた日（`sources` の日付そのもの）。
    *
-   * **「読んだ日」ではなく「読み切った日」を集めること。** 件数の安全弁に達したあとの日も
-   * 帯と長周期のために走査は続くので、`usedDays` で代用すると読んでいない日までカーソルが
-   * 進み、その範囲の地震が二度と読まれない。
+   * **「読んだ日」ではなく「読み切った日」を集めること。** 取得に失敗した日も `usedDays` には
+   * 数えるので、それで代用すると読めていない日までカーソルが進み、その範囲の地震が二度と
+   * 読まれない。
    *
    * **カーソルにするのは、ここから「新しい側から連続している範囲」だけ**（下の
    * `oldestLoadedDay` の組み立て）。1 日でも失敗を挟んだら、その手前で止める。
@@ -1842,15 +1864,9 @@ export async function fetchDmdataQuakeHistory(
   const loadedDays = new Set<string>()
 
   for (const source of sources) {
-    // **地震は上限に達した日で打ち切る**（群発の最中だけ効く安全弁。通常は窓を丸ごと読み切る）。
-    // 日の途中で切ると同一イベントの続報が分断され、震度速報だけのカードが残りうる。
-    //
-    // **帯と長周期は打ち切らない**（`HISTORY_EXTRA_TYPES`）。7 日ぶん画面に出続けるもの・
-    // 地震ごとに紐づくもので、**地震活動が多い期間ほど早く打ち切られる**と、いちばん復元
-    // したい状況（群発の最中）で復元できない。アーカイブは上で並列にダウンロードしてあるので、
-    // 増えるのは目録の走査と、その日を初めて読むときの 1 日数通のパースだけ。
+    // **地震も帯も長周期も、窓の日を全部読む。** 件数では打ち切らない（理由は
+    // `HISTORY_WINDOW_DAYS` の「件数の上限は置かない」）。
     if (shouldStop?.()) { stoppedEarly = true; break }
-    const takeQuakes = eventIds.size < targetEvents
     usedDays++
 
     /**
@@ -1864,7 +1880,7 @@ export async function fetchDmdataQuakeHistory(
      *
      * 失敗した日で止めておけば、次に押したときその日から読み直せる。
      */
-    const markDayLoaded = () => { if (takeQuakes) loadedDays.add(source.date) }
+    const markDayLoaded = () => { loadedDays.add(source.date) }
 
     if (!source.item) {
       // 当日経路。読めなくてもアーカイブ側の成果は活かす（アーカイブ 1 日ぶんが読めなかったときと
@@ -1973,7 +1989,7 @@ export async function fetchDmdataQuakeHistory(
 
     // 絞り込み（試験報・打ち切り・重複排除・時刻）は計画へ集約してある。
     // **判定と消費で同じ配列を回すこと**が肝（→ `ManifestPlan`）。
-    const plans = planHistoryEntries(manifest, { includeTest, takeQuakes, before })
+    const plans = planHistoryEntries(manifest, { includeTest, before })
     // **控えで読み切れる日は本体を落とさない。** 目録もパース結果も上限と期限を持たないので、
     // 本体だけが先に落ちる組み合わせが普通に起きる（→ `ManifestPlan`）。
     if (files === undefined && planNeedsBody(plans)) {
@@ -2114,9 +2130,8 @@ export async function fetchDmdataQuakeHistory(
   // さらに古い日が成功していると、その穴を跨いでカーソルが進み、窓が重ならない設計と
   // 噛み合って**失敗した日が二度と要求されなくなる**。
   //
-  // 止まる理由は 4 つとも同じ扱いでよい（どれも「その日から先はまだ読んでいない」）。
+  // 止まる理由は 3 つとも同じ扱いでよい（どれも「その日から先はまだ読んでいない」）。
   //   - その日の取得に失敗した（`markDayLoaded` を呼ばずに `continue` した）
-  //   - 件数の安全弁に達して地震を取り込まなかった（`takeQuakes` が偽）
   //   - `shouldStop` で打ち切った（そもそもループに入っていない）
   //   - **どの担当にもならなかった**（`uncovered`。下記）
   //
@@ -2204,19 +2219,16 @@ export async function fetchDmdataQuakeHistory(
     skipCounter.add(UNKNOWN_SKIP_DAY)
   }
 
-  // 帯と長周期は古い順に流す（`useReplayController` が初期状態の後に注入する）。
+  // 帯と長周期は古い順に流す（`useReplayController` が初期状態の材料へ混ぜる）。
   const extras: ReplayEntry[] = [...extraLatest.values()]
     .sort((a, b) => a.timeMs - b.timeMs)
     .map((x) => ({ payload: x.payload, replayTime: new Date(x.timeMs), silent: true }))
-  // 走査日数は**常に取得元の全日数**（＝`sources.length`。帯と長周期のために打ち切らない）。
-  // 地震が何日で目標に達したかとは別の数字なので、混ぜて読まないこと。
-  //
   // **打ち切ったときは出さない。** 上で打ち切りを記録済みで、こちらは「復元した」と名乗るため
   // 0 件の行が並ぶと復元できなかったのか静かだったのか読めない。
   if (!stoppedEarly) {
     log.info(
       `[replay] 地震カードの履歴を復元 電文=${quakes.length} イベント=${eventIds.size}`
-      + ` 走査日数=${usedDays}（うち当日経路=${liveDays.length}）帯と長周期=${extras.length}`,
+      + ` 走査日数=${usedDays}（うち当日経路=${liveDays.length}）津波=${tsunamis.length} 帯と長周期=${extras.length}`,
     )
   }
   // **「さらに古い方に在庫がありそうか」。**
@@ -2229,11 +2241,6 @@ export async function fetchDmdataQuakeHistory(
   // ほうが安全側 —— 在庫が本当に尽きていれば、窓が保存開始を越えた時点で止まる。
   //
   // **`sources` で数えないこと**（当日経路の日を含むので、在庫の端でも真を返し続ける）。
-  //
-  // **目標件数に達したかどうかは見ない。** 達していても在庫は残っているので、呼び出し側は
-  // カーソル（`oldestLoadedDay`）を進めて次の窓を読める。かつては呼び出し側が遡り幅の上限に
-  // 達したかどうかで判定していて、**件数で打ち切った回も上限に達したと見なして押せなく
-  // なっていた**（読み残した日を抱えたままボタンが死ぬ）。
   //
   // 打ち切った場合は「もう要らない」ので真にしない（`stoppedEarly`）。
   const windowReachesInventory = [...wantedDays].some(d => d >= ARCHIVE_START_DAY)

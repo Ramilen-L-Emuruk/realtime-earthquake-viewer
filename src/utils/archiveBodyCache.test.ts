@@ -10,7 +10,7 @@ import { createArchiveBodyCache, MAX_ENTRIES, MAX_TOTAL_BYTES } from './archiveB
 // 引き込むが、ここで欲しいのは「窓の定義と上限がずれたら落ちる」ことそのもの。
 // トップレベルで読んでいるので、待ちは 1 件目の所要時間には乗らない
 // （→ `rules/common/testing.md`「テスト本体の中で対象モジュールを初めて読まないこと」）。
-import { QUAKE_HISTORY_MAX_DAYS, PRE_WINDOW_MS, WINDOW_MS } from '../hooks/useReplayController'
+import { PRE_WINDOW_MS, WINDOW_MS } from '../hooks/useReplayController'
 import { HISTORY_WINDOW_DAYS } from '../services/dmdataReplay'
 
 /** 展開済みアーカイブの代わり。`bytes` は展開後の tar の長さに相当する。 */
@@ -183,13 +183,13 @@ describe('createArchiveBodyCache', () => {
   // **上限は「1 回のまとまった取得が同時に落とす本数」を下回ってはいけない。**
   // 割ると同じ取得の中で追い出しが起き、次の取得で落とし直す（控えの意味が消える）。
   //
-  // **数字を写さずに窓の定数から導く。** 写すと、窓を広げたとき（`QUAKE_HISTORY_MAX_DAYS` を
+  // **数字を写さずに窓の定数から導く。** 写すと、窓を広げたとき（`HISTORY_WINDOW_DAYS` を
   // 7 → 14 日にする等）にこの境界テストが無反応で通り続ける。**片方の取得だけを見て上限を
   // 決めると足りない** —— 再生の開始（16 本）に合わせた値では「もっと見る」（8 本）を割る。
   it('上限は、まとまった取得が同時に落とす本数を上回る', () => {
     const DAY_MS = 24 * 60 * 60 * 1000
     // リプレイの開始: 履歴の窓 ∪ 初期状態 ∪ 本編。分類は 2 つ（eew.forecast / telegram.earthquake）
-    const replayDays = QUAKE_HISTORY_MAX_DAYS
+    const replayDays = HISTORY_WINDOW_DAYS
       + Math.ceil(PRE_WINDOW_MS / DAY_MS) + Math.ceil(WINDOW_MS / DAY_MS)
     const replayNeed = (replayDays + 1) * 2
     // 「もっと見る」1 回ぶん。分類は telegram.earthquake だけ。

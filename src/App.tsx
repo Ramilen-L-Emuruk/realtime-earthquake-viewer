@@ -49,7 +49,7 @@ import { ActionChecklist } from './components/ActionChecklist'
 import { useActionChecklist } from './hooks/useActionChecklist'
 import { useNearbyScope } from './hooks/useNearbyScope'
 import { useStationCoords } from './hooks/useStationCoords'
-import { useEarthquakes } from './hooks/useEarthquakes'
+import { useEarthquakes, MAX_HISTORY_RETAINED } from './hooks/useEarthquakes'
 import { useFetchThrottled } from './hooks/useFetchThrottled'
 import { useTestScenarios } from './hooks/useTestScenarios'
 import { useSettings } from './hooks/useSettings'
@@ -96,7 +96,7 @@ import { warmFixedPhrases, isValidVoicevoxUrl, VOICEVOX_URL_DEBOUNCE_MS, isSpeak
 import { EEW_LEAD_PHRASES } from './utils/ttsText'
 import type { EEWAlert, JMAQuake, JMATsunami } from './types/earthquake'
 import { useReplayController, WINDOW_MS as REPLAY_WINDOW_MS, PRE_WINDOW_MS as REPLAY_PRE_WINDOW_MS } from './hooks/useReplayController'
-import { fetchDmdataReplayEvents, fetchDmdataQuakeHistory, clearReplayCache } from './services/dmdataReplay'
+import { fetchDmdataReplayEvents, fetchDmdataQuakeHistory, clearReplayCache, HISTORY_WINDOW_DAYS } from './services/dmdataReplay'
 import { fetchP2PReplayEvents, fetchP2PQuakeHistory, clearP2PReplayCache } from './services/p2pquakeReplay'
 import { findCoveringArchiveSync, findArchiveJustEndedSync, fetchLocalArchiveEvents, fetchLocalArchiveQuakeHistory } from './services/localArchiveReplay'
 import { useHistoricalArchiveIndex } from './hooks/useHistoricalArchiveIndex'
@@ -1651,24 +1651,25 @@ export function App() {
     () => { if (isDmdss) clearReplayCache(); else clearP2PReplayCache() },
     [],
   )
-  // 地震カードの履歴（再生開始時刻より前の地震）。取得元は再生用と同じくバリアントで変わるが、
-  // 引き方が違う。DMDSS 版は日次アーカイブを必要な日数だけ遡り、standard 版は P2PQuake の
-  // クエリを 1 回引いて件数で切る（`maxDays` はアーカイブ経路にしか意味が無いため渡さない）。
+  // 再生開始時刻より前の履歴（地震カードの一覧と、初期状態に足す 24 時間より前の電文）。
+  // 取得元は再生用と同じくバリアントで変わるが、引き方が違う。**どちらもライブ接続時の
+  // 初回履歴と同じ範囲を読む** —— DMDSS 版は日次アーカイブを 7 日ぶん（件数では打ち切らない。
+  // → `HISTORY_WINDOW_DAYS`）、standard 版は P2PQuake のクエリを 1 回引いて件数で切る。
   // こちらも fetchReplayEvents と同じく、対象期間がローカル履歴アーカイブに重なればそちらを使う
   // （重ならなければ DMDATA/P2PQuake 側は「そもそもデータの無い時代」で必ず失敗するため）。
-  // 重なり判定には `maxDays`（既定7日）ではなく fetchReplayEvents の「初期状態」と同じ
+  // 重なり判定には履歴の遡り幅（7 日）ではなく fetchReplayEvents の「初期状態」と同じ
   // REPLAY_PRE_WINDOW_MS（24時間）を使う。ここを独自の幅にすると、本編・初期状態はアーカイブに
   // 重ならないのに履歴だけ数日先の無関係なアーカイブに重なってしまい、再生は実データ側で
   // 止まっているのに地震カードだけローカルアーカイブ由来の古い1件を表示する、という不整合が起きる。
   const fetchReplayQuakeHistory = useCallback(
-    (before: Date, targetEvents: number, maxDays: number) => {
+    (before: Date) => {
       const covering = findCoveringArchiveSync(historicalArchives, new Date(before.getTime() - REPLAY_PRE_WINDOW_MS), before)
-      if (covering) return fetchLocalArchiveQuakeHistory(covering, before, targetEvents)
+      if (covering) return fetchLocalArchiveQuakeHistory(covering, before, MAX_HISTORY_RETAINED)
       return isDmdss
         // 履歴（再生開始より前の地震カード）も本編と同じ扱いにする。片方だけ通すと
         // 「再生には訓練報が出るのにカードの一覧には無い」形でずれる。
-        ? fetchDmdataQuakeHistory(settings.dmdataApiKey, before, targetEvents, maxDays, settings.dmdataTestDelivery)
-        : fetchP2PQuakeHistory(before, targetEvents)
+        ? fetchDmdataQuakeHistory(settings.dmdataApiKey, before, HISTORY_WINDOW_DAYS, settings.dmdataTestDelivery)
+        : fetchP2PQuakeHistory(before, MAX_HISTORY_RETAINED)
     },
     [settings.dmdataApiKey, settings.dmdataTestDelivery, historicalArchives],
   )

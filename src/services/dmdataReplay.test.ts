@@ -370,8 +370,8 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
         { name: '7654321def_20260810120600000_0.xml', content: quakeBody('日本海中部') },
       ])
       globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
-      const withTest = await fetchDmdataQuakeHistory('key', TO, 10, 7, true)
-      const without = await fetchDmdataQuakeHistory('key', TO, 10, 7, false)
+      const withTest = await fetchDmdataQuakeHistory('key', TO, 7, true)
+      const without = await fetchDmdataQuakeHistory('key', TO, 7, false)
       expect(withTest.quakes.length).toBe(without.quakes.length + 1)
     })
 
@@ -1369,7 +1369,7 @@ describe('fetchDmdataQuakeHistory', () => {
     ])
     globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
 
-    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 7, false)
 
     expect(result.quakes).toHaveLength(1)
     expect(result.quakes[0].id).toContain('20260810090000')
@@ -1395,7 +1395,7 @@ describe('fetchDmdataQuakeHistory', () => {
     ])
     globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
 
-    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 7, false)
 
     // 壊れた 1 件を数えつつ、残りは取り込む
     expect(result.quakes).toHaveLength(1)
@@ -1420,30 +1420,9 @@ describe('fetchDmdataQuakeHistory', () => {
       { date: '2026-08-10', url: 'https://x/d10', gz: gz10 },
     ]) as unknown as typeof fetch
 
-    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 7, false)
 
     expect(result.oldestLoadedDay).toBe('2026-08-08')
-    expect(result.hasMore).toBe(true)
-  })
-
-  // **安全弁に達した日は読んでいない**（打ち切りの判定は日の頭で見る）。その日をカーソルに
-  // 含めると、次の窓がそこより古い範囲から始まり、読み残した日の地震が二度と出ない。
-  //
-  // 実運用では窓（7 日）を丸ごと読み切るのでここへは達しない。効くのは群発の最中だけ
-  // （→ `HISTORY_EVENT_SAFETY_CAP`）。ここでは上限 1 件にして同じ経路を通す。
-  it('対照: 件数の安全弁で読まなかった日はカーソルに含めない', async () => {
-    const gz9 = await dayArchive([{ id: 'aaaaaaa1', eventId: '20260809010000', time: '2026-08-09T01:05:00+09:00' }])
-    const gz10 = await dayArchive([{ id: 'bbbbbbb2', eventId: '20260810010000', time: '2026-08-10T01:05:00+09:00' }])
-    globalThis.fetch = mockHistoryArchives([
-      { date: '2026-08-09', url: 'https://x/d09', gz: gz9 },
-      { date: '2026-08-10', url: 'https://x/d10', gz: gz10 },
-    ]) as unknown as typeof fetch
-
-    // 上限 1 件 → 新しい日（08-10）で達し、08-09 は地震を取り込まない
-    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 1, 7, false)
-
-    expect(result.oldestLoadedDay).toBe('2026-08-10')
-    // 読み残した日があるので、まだ押せる
     expect(result.hasMore).toBe(true)
   })
 
@@ -1460,7 +1439,7 @@ describe('fetchDmdataQuakeHistory', () => {
       { date: '2026-08-10', url: 'https://x/d10', gz: gz10 },
     ]) as unknown as typeof fetch
 
-    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 7, false)
 
     // 08-09 で止まる。**08-08 まで進めてはいけない**（読めてはいるが、その手前に穴がある）
     expect(result.oldestLoadedDay).toBe('2026-08-10')
@@ -1486,7 +1465,7 @@ describe('fetchDmdataQuakeHistory', () => {
       { date: '2026-08-06', url: 'https://x/d06', gz: gz6 },
     ]) as unknown as typeof fetch
 
-    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 7, false)
 
     // 当日経路が埋める 08-09・08-08 までで止まる。**08-06 まで進めてはいけない**
     expect(result.oldestLoadedDay).toBe('2026-08-08')
@@ -1507,7 +1486,7 @@ describe('fetchDmdataQuakeHistory', () => {
     ]) as unknown as typeof fetch
     const before = new Date('2026-08-10T12:00:00+09:00')
 
-    const first = await fetchDmdataQuakeHistory('key', before, 50, 7, false)
+    const first = await fetchDmdataQuakeHistory('key', before, 7, false)
     expect(first.failedArchiveUrls).toContain('uncovered:2026-08-07')
 
     // カーソルは欠落日の手前（08-08）で止まる
@@ -1518,7 +1497,7 @@ describe('fetchDmdataQuakeHistory', () => {
     // **前の窓で担当外だった日が次の窓では担当内に入る**。欠落が何日続いても
     // 1 回につき 2 日ずつは前へ進む
     const second = await fetchDmdataQuakeHistory(
-      'key', new Date(new Date('2026-08-08T00:00:00+09:00').getTime() - 1), 50, 7, false,
+      'key', new Date(new Date('2026-08-08T00:00:00+09:00').getTime() - 1), 7, false,
     )
     expect(second.oldestLoadedDay).not.toBe(null)
     expect(second.oldestLoadedDay! < '2026-08-08').toBe(true)
@@ -1537,7 +1516,7 @@ describe('fetchDmdataQuakeHistory', () => {
     const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
     globalThis.fetch = mockHistoryArchives([]) as unknown as typeof fetch
 
-    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 7, false)
 
     expect(result.hasMore).toBe(true)
     // 読めなかった日は黙って消さない（三層の記録のどれにも載らない日なので、ここが唯一の痕跡）
@@ -1550,7 +1529,7 @@ describe('fetchDmdataQuakeHistory', () => {
     globalThis.fetch = mockHistoryArchives([]) as unknown as typeof fetch
 
     // 窓 7 日 → 2020-11-04〜11-10。どの日も保存開始（2020-11-18）より古い
-    const result = await fetchDmdataQuakeHistory('key', new Date('2020-11-10T12:00:00+09:00'), 50, 7, false)
+    const result = await fetchDmdataQuakeHistory('key', new Date('2020-11-10T12:00:00+09:00'), 7, false)
 
     expect(result.hasMore).toBe(false)
     // 在庫の外なので、読めなかったことを鳴らさない（遡り切るたびに警告が出ても困る）
@@ -1572,7 +1551,7 @@ describe('fetchDmdataQuakeHistory', () => {
     ])
     globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
 
-    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 7, false)
 
     expect(result.quakes.map(q => q.issue.type)).toEqual(['震度速報', '震源・震度情報'])
   })
@@ -1586,7 +1565,7 @@ describe('fetchDmdataQuakeHistory', () => {
     ])
     globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
 
-    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 7, false)
 
     expect(result.quakes.map(q => q.issue.type)).toEqual(['震源・震度情報', '震度速報'])
   })
@@ -1605,7 +1584,7 @@ describe('fetchDmdataQuakeHistory', () => {
     ])
     globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
 
-    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 7, false)
 
     // 読めない 1 件も捨てない（同一性の判定に使う時刻を落とさない方針）
     expect(result.quakes).toHaveLength(3)
@@ -1630,7 +1609,7 @@ describe('fetchDmdataQuakeHistory', () => {
       { date: '2026-08-10', url: 'https://x/d10', gz: newer },
     ]) as unknown as typeof fetch
 
-    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 7, false)
 
     expect(result.quakes.map(q => q.id.includes('20260809010000'))).toEqual([true, false])
   })
@@ -1656,7 +1635,7 @@ describe('fetchDmdataQuakeHistory', () => {
       ]) as unknown as typeof fetch
 
       await fetchDmdataQuakeHistory(
-        'key', new Date('2026-08-10T23:00:00+09:00'), 50, 7, false,
+        'key', new Date('2026-08-10T23:00:00+09:00'), 7, false,
         (quakes) => { partialCounts.push(quakes.length) },
       )
 
@@ -1694,13 +1673,13 @@ describe('fetchDmdataQuakeHistory', () => {
       globalThis.fetch = mock429(url) as unknown as typeof fetch
 
       // 1 回目: 配信元から 429 を受ける（ここは取得の失敗として数える）
-      const first = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T23:00:00+09:00'), 50, 7, false)
+      const first = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T23:00:00+09:00'), 7, false)
       expect(first.failedArchiveUrls).toContain(url)
       expect(first.rateLimitedSources).toEqual([])
 
       // 2 回目: 窓が明けていないので投げずに見送る
       clearReplayCache()
-      const second = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T23:00:00+09:00'), 50, 7, false)
+      const second = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T23:00:00+09:00'), 7, false)
       expect(second.rateLimitedSources).toContain(url)
       expect(second.failedArchiveUrls).not.toContain(url)
     })
@@ -1712,12 +1691,12 @@ describe('fetchDmdataQuakeHistory', () => {
       const url = 'https://data.api.dmdata.jp/v1/archive/rl2'
       globalThis.fetch = mock429(url) as unknown as typeof fetch
 
-      await fetchDmdataQuakeHistory('key', new Date('2026-08-10T23:00:00+09:00'), 50, 7, false)
+      await fetchDmdataQuakeHistory('key', new Date('2026-08-10T23:00:00+09:00'), 7, false)
       clearReplayCache()
 
       // 窓が立った状態で呼び直す。この日以外の取得元は当日経路（電文なし）だけ
       await expect(
-        fetchDmdataQuakeHistory('key', new Date('2026-08-10T23:00:00+09:00'), 50, 7, false),
+        fetchDmdataQuakeHistory('key', new Date('2026-08-10T23:00:00+09:00'), 7, false),
       ).resolves.toMatchObject({ rateLimitedSources: [url] })
     })
 
@@ -1752,7 +1731,7 @@ describe('fetchDmdataQuakeHistory', () => {
       // 1 回目: 429 と 500 をそれぞれ受ける（どちらも取得の失敗なので全滅）
       globalThis.fetch = mock(429) as unknown as typeof fetch
       await expect(
-        fetchDmdataQuakeHistory('key', new Date('2026-08-10T23:00:00+09:00'), 50, 7, false),
+        fetchDmdataQuakeHistory('key', new Date('2026-08-10T23:00:00+09:00'), 7, false),
       ).rejects.toThrow(/すべてを読み取れませんでした/)
 
       // 2 回目: 429 側は窓で見送り、残りは取りに行って失敗する。
@@ -1760,7 +1739,7 @@ describe('fetchDmdataQuakeHistory', () => {
       // 分母から見送りを引いていないと、等号が成立せず素通りする。
       clearReplayCache()
       await expect(
-        fetchDmdataQuakeHistory('key', new Date('2026-08-10T23:00:00+09:00'), 50, 7, false),
+        fetchDmdataQuakeHistory('key', new Date('2026-08-10T23:00:00+09:00'), 7, false),
       ).rejects.toThrow(/すべてを読み取れませんでした/)
     })
 
@@ -1780,9 +1759,9 @@ describe('fetchDmdataQuakeHistory', () => {
         return { ok: false, status: 500 } as unknown as Response
       }) as unknown as typeof fetch
 
-      await fetchDmdataQuakeHistory('key', new Date('2026-08-10T23:00:00+09:00'), 50, 7, false)
+      await fetchDmdataQuakeHistory('key', new Date('2026-08-10T23:00:00+09:00'), 7, false)
       clearReplayCache()
-      const second = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T23:00:00+09:00'), 50, 7, false)
+      const second = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T23:00:00+09:00'), 7, false)
 
       // 窓が立っていないので、2 回目も取りに行って失敗する
       expect(second.failedArchiveUrls).toContain(url)
@@ -1816,7 +1795,7 @@ describe('fetchDmdataQuakeHistory', () => {
       globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
 
       const result = await fetchDmdataQuakeHistory(
-        'key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false, undefined, () => true,
+        'key', new Date('2026-08-10T12:00:00+09:00'), 7, false, undefined, () => true,
       )
 
       expect(result.quakes).toHaveLength(0)
@@ -1838,34 +1817,12 @@ describe('fetchDmdataQuakeHistory', () => {
       const gz = await dayArchive([])
       globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10-empty', gz }]) as unknown as typeof fetch
 
-      const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
+      const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 7, false)
 
       expect(result.quakes).toHaveLength(0)
       expect(warnings().filter(m => m.includes('地震電文は 0 件'))).toHaveLength(1)
       expect(infos().filter(m => m.includes('打ち切った'))).toHaveLength(0)
     })
-  })
-
-  // 打ち切りが無いと、地震の少ない期間で上限日数ぶんを常に読みに行くことになる。
-  it('目標件数に達したら、それより古い日は読み込まない', async () => {
-    const newer = await dayArchive([
-      { id: 'aaaaaaa1', eventId: '20260810010000', time: '2026-08-10T01:05:00+09:00' },
-      { id: 'bbbbbbb2', eventId: '20260810020000', time: '2026-08-10T02:05:00+09:00' },
-    ])
-    const older = await dayArchive([
-      { id: 'ccccccc3', eventId: '20260809010000', time: '2026-08-09T01:05:00+09:00' },
-    ])
-    globalThis.fetch = mockHistoryArchives([
-      // リストの並びは新しい順とは限らないので、古い側を先に置いて並べ替えを確かめる
-      { date: '2026-08-09', url: 'https://x/d09', gz: older },
-      { date: '2026-08-10', url: 'https://x/d10', gz: newer },
-    ]) as unknown as typeof fetch
-
-    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 2, 7, false)
-
-    // 新しい日だけで 2 件に達するので、古い日の電文は入らない
-    expect(result.quakes).toHaveLength(2)
-    expect(result.quakes.every(q => q.id.includes('202608100'))).toBe(true)
   })
 
   /**
@@ -1912,10 +1869,9 @@ describe('fetchDmdataQuakeHistory', () => {
     ])
   }
 
-  // 7 日間表示され続ける帯（と地震ごとに紐づく長周期）は、初期状態の 24 時間では足りない。
-  // **地震の打ち切りに巻き込まれると、群発の最中ほど復元できなくなる**（地震が多い日ほど
-  // 早く目標件数に達するため）。
-  it('地震が目標件数に達した後の古い日からも、帯は拾う', async () => {
+  // **件数では打ち切らない**（2026-10-05 ユーザー承認。→ `HISTORY_WINDOW_DAYS`）。かつては
+  // 地震が上限に達した日より古い日の地震を取り込まず、群発の最中ほど一覧が短くなっていた。
+  it('窓の中の地震は、日をまたいでも件数によらず全部取り込む', async () => {
     const newer = await dayArchiveWithCount(
       [
         { id: 'aaaaaaa1', eventId: '20260810010000', time: '2026-08-10T01:05:00+09:00' },
@@ -1932,10 +1888,11 @@ describe('fetchDmdataQuakeHistory', () => {
       { date: '2026-08-09', url: 'https://x/d09', gz: older },
     ]) as unknown as typeof fetch
 
-    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 2, 7, false)
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 7, false)
 
-    // 地震は新しい日の 2 件で打ち切られるが、帯は古い日からも拾う
-    expect(result.quakes).toHaveLength(2)
+    expect(result.quakes).toHaveLength(3)
+    expect(result.quakes.some(q => q.id.includes('20260809010000'))).toBe(true)
+    // 帯も古い日から拾う
     expect(result.extras).toHaveLength(1)
     expect(result.extras[0].payload.kind).toBe('earthquakeCount')
     expect(result.extras[0].silent).toBe(true)
@@ -1952,30 +1909,10 @@ describe('fetchDmdataQuakeHistory', () => {
     )
     globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz: day }]) as unknown as typeof fetch
 
-    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 7, false)
 
     expect(result.extras).toHaveLength(1)
     expect(result.extras[0].replayTime.toISOString()).toBe(new Date('2026-08-10T03:05:00+09:00').toISOString())
-  })
-
-  // 続報を別イベントとして数えると、同じ地震が続いた日で打ち切りが早まりカードが増えない。
-  it('同じ地震の続報は 1 件として数える', async () => {
-    const day = await dayArchive([
-      { id: 'aaaaaaa1', eventId: '20260810010000', time: '2026-08-10T01:05:00+09:00', serial: '1' },
-      { id: 'bbbbbbb2', eventId: '20260810010000', time: '2026-08-10T01:07:00+09:00', serial: '2' },
-    ])
-    const older = await dayArchive([
-      { id: 'ccccccc3', eventId: '20260809010000', time: '2026-08-09T01:05:00+09:00' },
-    ])
-    globalThis.fetch = mockHistoryArchives([
-      { date: '2026-08-10', url: 'https://x/d10', gz: day },
-      { date: '2026-08-09', url: 'https://x/d09', gz: older },
-    ]) as unknown as typeof fetch
-
-    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 2, 7, false)
-
-    // 当日は続報 2 通＝イベント 1 件。目標 2 件に届かないので前日も読む
-    expect(result.quakes).toHaveLength(3)
   })
 
   it('一部のアーカイブが読めなくても、残りから履歴を作る', async () => {
@@ -1987,7 +1924,7 @@ describe('fetchDmdataQuakeHistory', () => {
       { date: '2026-08-09', url: 'https://x/d09', gz: good },
     ]) as unknown as typeof fetch
 
-    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 7, false)
 
     expect(result.quakes).toHaveLength(1)
     expect(result.failedArchiveUrls).toContain('https://x/d10')
@@ -2004,7 +1941,7 @@ describe('fetchDmdataQuakeHistory', () => {
       { date: '2026-08-09', url: 'https://x/d09', gz: 'error' },
     ], 'error') as unknown as typeof fetch
 
-    await expect(fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false))
+    await expect(fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 7, false))
       .rejects.toThrow(/すべてを読み取れませんでした/)
   })
 
@@ -2018,7 +1955,7 @@ describe('fetchDmdataQuakeHistory', () => {
       { date: '2026-08-09', url: 'https://x/d09', gz: good },
     ], 'error') as unknown as typeof fetch
 
-    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 7, false)
 
     expect(result.quakes).toHaveLength(1)
     // 読めなかった日は取得元の識別子として数える（無言で消すと「静かな期間」と区別が付かない）
@@ -2031,7 +1968,7 @@ describe('fetchDmdataQuakeHistory', () => {
     const fetchSpy = vi.fn(async () => { throw new Error('通信してはいけない') })
     globalThis.fetch = fetchSpy as unknown as typeof fetch
 
-    await expect(fetchDmdataQuakeHistory('abc123あ', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false))
+    await expect(fetchDmdataQuakeHistory('abc123あ', new Date('2026-08-10T12:00:00+09:00'), 7, false))
       .rejects.toThrow(DmdataApiKeyError)
     expect(fetchSpy).not.toHaveBeenCalled()
   })
@@ -2050,8 +1987,8 @@ describe('fetchDmdataQuakeHistory', () => {
       ])
       globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
 
-      const first = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
-      const second = await fetchDmdataQuakeHistory('key', BEFORE, 100, 14, false)
+      const first = await fetchDmdataQuakeHistory('key', BEFORE, 7, false)
+      const second = await fetchDmdataQuakeHistory('key', BEFORE, 14, false)
 
       expect(first.quakes).toHaveLength(1)
       expect(second.quakes).toHaveLength(1)
@@ -2066,9 +2003,9 @@ describe('fetchDmdataQuakeHistory', () => {
       ])
       globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
 
-      const first = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+      const first = await fetchDmdataQuakeHistory('key', BEFORE, 7, false)
       await clearAllCaches()
-      const second = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+      const second = await fetchDmdataQuakeHistory('key', BEFORE, 7, false)
 
       expect(second.quakes[0]).not.toBe(first.quakes[0])
       expect(second.quakes[0].id).toBe(first.quakes[0].id)
@@ -2083,34 +2020,11 @@ describe('fetchDmdataQuakeHistory', () => {
       ])
       globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
 
-      const first = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+      const first = await fetchDmdataQuakeHistory('key', BEFORE, 7, false)
       clearReplayCache()
-      const second = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+      const second = await fetchDmdataQuakeHistory('key', BEFORE, 7, false)
 
       expect(second.quakes[0]).toBe(first.quakes[0])
-    })
-
-    // 控えるのは**実際に解析した分だけ**。打ち切りで読まなかった日の地震は控えに乗らないので、
-    // 目標件数を増やした 2 度目にはちゃんと読まれる（控えが打ち切りの意味を変えないこと）。
-    it('安全弁: 打ち切りで読まなかった日は、目標を増やせば読める', async () => {
-      const newer = await dayArchive([
-        { id: 'ddddddd1', eventId: '20260810030000', time: '2026-08-10T12:05:00+09:00' },
-      ])
-      const older = await dayArchive([
-        { id: 'eeeeeee1', eventId: '20260809030000', time: '2026-08-09T12:05:00+09:00' },
-      ])
-      globalThis.fetch = mockHistoryArchives([
-        { date: '2026-08-10', url: 'https://x/d10', gz: newer },
-        { date: '2026-08-09', url: 'https://x/d09', gz: older },
-      ]) as unknown as typeof fetch
-
-      const first = await fetchDmdataQuakeHistory('key', BEFORE, 1, 7, false)
-      expect(first.quakes).toHaveLength(1)
-
-      const second = await fetchDmdataQuakeHistory('key', BEFORE, 2, 7, false)
-      expect(second.quakes).toHaveLength(2)
-      // 1 度目に読んだ側は控えから返る
-      expect(second.quakes.some(q => q === first.quakes[0])).toBe(true)
     })
 
     // 失敗を控えると、警告も取りこぼしの件数も 1 度目しか出なくなる。実運用では 0 件なので、
@@ -2125,8 +2039,8 @@ describe('fetchDmdataQuakeHistory', () => {
       ])
       globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
 
-      const first = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
-      const second = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+      const first = await fetchDmdataQuakeHistory('key', BEFORE, 7, false)
+      const second = await fetchDmdataQuakeHistory('key', BEFORE, 7, false)
 
       expect(skippedTotal(first.skippedByDay)).toBe(1)
       expect(skippedTotal(second.skippedByDay)).toBe(1)
@@ -2165,13 +2079,13 @@ describe('fetchDmdataQuakeHistory', () => {
       ])
       const counter = countingFetch([{ date: '2026-08-10', url: 'https://x/d10', gz }])
 
-      const first = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+      const first = await fetchDmdataQuakeHistory('key', BEFORE, 7, false)
       expect(first.quakes).toHaveLength(1)
       expect(counter.bodies).toBe(1)
 
       // 期限切れ・追い出しで本体だけが消えた状態（目録とパース結果は残る）
       clearArchiveCacheForTest()
-      const second = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+      const second = await fetchDmdataQuakeHistory('key', BEFORE, 7, false)
 
       expect(counter.bodies).toBe(1)
       // 控えから返っているので同一参照（解析し直せば別のオブジェクトになる）
@@ -2190,12 +2104,12 @@ describe('fetchDmdataQuakeHistory', () => {
       ])
       const counter = countingFetch([{ date: '2026-08-10', url: 'https://x/d10', gz }])
 
-      const first = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+      const first = await fetchDmdataQuakeHistory('key', BEFORE, 7, false)
       expect(skippedTotal(first.skippedByDay)).toBe(1)
       expect(counter.bodies).toBe(1)
 
       clearArchiveCacheForTest()
-      const second = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+      const second = await fetchDmdataQuakeHistory('key', BEFORE, 7, false)
 
       expect(counter.bodies).toBe(2)
       expect(skippedTotal(second.skippedByDay)).toBe(1)
@@ -2208,40 +2122,13 @@ describe('fetchDmdataQuakeHistory', () => {
       ])
       const counter = countingFetch([{ date: '2026-08-10', url: 'https://x/d10', gz }])
 
-      await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+      await fetchDmdataQuakeHistory('key', BEFORE, 7, false)
       expect(counter.bodies).toBe(1)
 
       await clearAllCaches()
-      await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+      await fetchDmdataQuakeHistory('key', BEFORE, 7, false)
 
       expect(counter.bodies).toBe(2)
-    })
-
-    // 打ち切り（`takeQuakes`）は計画にも効く。目標に達した時点より古い日は読まないので
-    // 本体も要らないが、**目標を増やせば落としに行く**（控えに乗っていないため）。
-    it('安全弁: 打ち切りで読まなかった日は、目標を増やせば落としに行く', async () => {
-      const newer = await dayArchive([
-        { id: 'hhhhhhh4', eventId: '20260810030000', time: '2026-08-10T12:05:00+09:00' },
-      ])
-      const older = await dayArchive([
-        { id: 'hhhhhhh5', eventId: '20260809030000', time: '2026-08-09T12:05:00+09:00' },
-      ])
-      const counter = countingFetch([
-        { date: '2026-08-10', url: 'https://x/d10', gz: newer },
-        { date: '2026-08-09', url: 'https://x/d09', gz: older },
-      ])
-
-      // 目標 1 件。新しい日で足りるので古い日の地震は読まない（目録のために落ちる）
-      const first = await fetchDmdataQuakeHistory('key', BEFORE, 1, 7, false)
-      expect(first.quakes).toHaveLength(1)
-      const afterFirst = counter.bodies
-
-      clearArchiveCacheForTest()
-      const second = await fetchDmdataQuakeHistory('key', BEFORE, 2, 7, false)
-
-      expect(second.quakes).toHaveLength(2)
-      // 新しい日は控えで済み、古い日だけを落としに行く
-      expect(counter.bodies).toBe(afterFirst + 1)
     })
 
     // 同じ日に「控え済み」と「未控え」が混じる形。**1 件でも要れば落とす**（`planNeedsBody`）。
@@ -2256,13 +2143,13 @@ describe('fetchDmdataQuakeHistory', () => {
       const counter = countingFetch([{ date: '2026-08-10', url: 'https://x/d10', gz }])
 
       // 13:00 時点では 18:05 の電文はまだ存在しないので読まない（控えにも乗らない）
-      const first = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+      const first = await fetchDmdataQuakeHistory('key', BEFORE, 7, false)
       expect(first.quakes).toHaveLength(1)
       expect(counter.bodies).toBe(1)
 
       clearArchiveCacheForTest()
       // 19:00 時点では 2 件とも対象。1 件は控えにあるが、もう 1 件のために本体が要る
-      const second = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T19:00:00+09:00'), 50, 7, false)
+      const second = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T19:00:00+09:00'), 7, false)
 
       expect(counter.bodies).toBe(2)
       expect(second.quakes).toHaveLength(2)
@@ -2277,14 +2164,14 @@ describe('fetchDmdataQuakeHistory', () => {
         { id: 'hhhhhhh6', eventId: '20260810030000', time: '2026-08-10T12:05:00+09:00' },
       ])
       countingFetch([{ date: '2026-08-10', url: 'https://x/d10', gz }])
-      const first = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+      const first = await fetchDmdataQuakeHistory('key', BEFORE, 7, false)
       expect(first.quakes).toHaveLength(1)
 
       // 本体の控えだけを捨て、以後その URL は落とせない状態にする
       clearArchiveCacheForTest()
       countingFetch([{ date: '2026-08-10', url: 'https://x/d10', gz: 'error' }])
 
-      const second = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+      const second = await fetchDmdataQuakeHistory('key', BEFORE, 7, false)
 
       // 見るのは取得の失敗だけ。`uncovered:<日>`（目録にも当日経路にも当たらない日）は
       // この mock が 1 日ぶんしか目録を返さないことの現れで、落とさなかった日の話ではない
@@ -2325,7 +2212,7 @@ describe('fetchDmdataQuakeHistory', () => {
       const gz = await brokenTimeArchive('not-a-date', '20260810030500000')
       globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
 
-      const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T13:00:00+09:00'), 50, 7, false)
+      const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T13:00:00+09:00'), 7, false)
 
       expect(result.quakes).toHaveLength(1)
       expect(skippedTotal(result.skippedByDay)).toBe(0)
@@ -2337,7 +2224,7 @@ describe('fetchDmdataQuakeHistory', () => {
       const gz = await brokenTimeArchive('not-a-date', '20260810120500000')
       globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
 
-      const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T13:00:00+09:00'), 50, 7, false)
+      const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T13:00:00+09:00'), 7, false)
 
       expect(result.quakes).toHaveLength(0)
       // 窓の外なのは正常。取りこぼしには数えない
@@ -2353,8 +2240,8 @@ describe('fetchDmdataQuakeHistory', () => {
       globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
       const before = new Date('2026-08-10T13:00:00+09:00')
 
-      await fetchDmdataQuakeHistory('key', before, 50, 7, false)
-      await fetchDmdataQuakeHistory('key', before, 100, 14, false)
+      await fetchDmdataQuakeHistory('key', before, 7, false)
+      await fetchDmdataQuakeHistory('key', before, 14, false)
 
       const filled = warns.filter(w => w.includes('ファイル名から補った'))
       expect(filled).toHaveLength(1)
@@ -2387,7 +2274,7 @@ describe('fetchDmdataQuakeHistory', () => {
       const warns: string[] = []
       vi.spyOn(console, 'warn').mockImplementation((...a: unknown[]) => { warns.push(a.join(' ')) })
 
-      const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T13:00:00+09:00'), 50, 7, false)
+      const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T13:00:00+09:00'), 7, false)
 
       expect(result.quakes).toHaveLength(0)
       expect(skippedTotal(result.skippedByDay)).toBe(1)
@@ -2409,7 +2296,7 @@ describe('fetchDmdataQuakeHistory', () => {
       const warns: string[] = []
       vi.spyOn(console, 'warn').mockImplementation((...a: unknown[]) => { warns.push(a.join(' ')) })
 
-      const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T13:00:00+09:00'), 50, 7, false)
+      const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T13:00:00+09:00'), 7, false)
 
       expect(result.quakes).toHaveLength(0)
       expect(skippedTotal(result.skippedByDay)).toBe(1)
@@ -2446,7 +2333,7 @@ describe('fetchDmdataQuakeHistory', () => {
     it('分割された推計震度分布図を結合して補完へ渡す', async () => {
       globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz: await splitArchive() }]) as unknown as typeof fetch
 
-      const result = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+      const result = await fetchDmdataQuakeHistory('key', BEFORE, 7, false)
 
       expect(skippedTotal(result.skippedByDay)).toBe(0)
       expect(result.extras.map(e => e.payload.kind)).toEqual(['estimatedIntensity'])
@@ -2458,13 +2345,13 @@ describe('fetchDmdataQuakeHistory', () => {
     it('解析の控えがあれば、本体を落とさずに分布を返す', async () => {
       const fetchMock = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz: await splitArchive() }])
       globalThis.fetch = fetchMock as unknown as typeof fetch
-      await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+      await fetchDmdataQuakeHistory('key', BEFORE, 7, false)
       // 本体の控えだけ落とす（目録と解析の控えは残す）
       clearArchiveCacheForTest()
       await clearArchiveBodyDb()
       fetchMock.mockClear()
 
-      const result = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+      const result = await fetchDmdataQuakeHistory('key', BEFORE, 7, false)
 
       expect(fetchMock.mock.calls.some(c => c[0] === 'https://x/d10')).toBe(false)
       expect(result.extras.map(e => e.payload.kind)).toEqual(['estimatedIntensity'])
@@ -2479,7 +2366,7 @@ describe('fetchDmdataQuakeHistory', () => {
       ])
       globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
 
-      const result = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+      const result = await fetchDmdataQuakeHistory('key', BEFORE, 7, false)
 
       expect(result.extras).toHaveLength(0)
       expect(skippedTotal(result.skippedByDay)).toBe(0)
@@ -2491,7 +2378,7 @@ describe('fetchDmdataQuakeHistory', () => {
       globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz: await splitArchive({ second: null }) }]) as unknown as typeof fetch
       vi.spyOn(console, 'warn').mockImplementation(() => {})
 
-      const result = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+      const result = await fetchDmdataQuakeHistory('key', BEFORE, 7, false)
 
       expect(result.extras).toHaveLength(0)
       expect(skippedTotal(result.skippedByDay)).toBe(1)

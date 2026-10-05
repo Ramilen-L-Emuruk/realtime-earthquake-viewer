@@ -128,7 +128,7 @@ describe('アーカイブ本体の控えの結線（実 gzip × 実 IndexedDB）
     const calls = mockArchive(gz)
     const before = new Date('2026-08-10T23:00:00+09:00')
 
-    const first = await fetchDmdataQuakeHistory('key', before, 50, 1, false)
+    const first = await fetchDmdataQuakeHistory('key', before, 1, false)
     expect(first.quakes).toHaveLength(1)
     expect(calls.body).toBe(1)
 
@@ -141,7 +141,7 @@ describe('アーカイブ本体の控えの結線（実 gzip × 実 IndexedDB）
     clearArchiveCacheForTest()
     clearParseCachesForTest()
 
-    const second = await fetchDmdataQuakeHistory('key', before, 50, 1, false)
+    const second = await fetchDmdataQuakeHistory('key', before, 1, false)
 
     // 本体は取りに行かない（端末の控えから読み、gunzip と tar 展開を通っている）
     expect(calls.body).toBe(1)
@@ -161,14 +161,14 @@ describe('アーカイブ本体の控えの結線（実 gzip × 実 IndexedDB）
     const calls = mockArchive(gz)
     const before = new Date('2026-08-10T23:00:00+09:00')
 
-    await fetchDmdataQuakeHistory('key', before, 50, 1, false)
+    await fetchDmdataQuakeHistory('key', before, 1, false)
     expect(calls.body).toBe(1)
 
     clearArchiveCacheForTest()
     clearParseCachesForTest()
     await clearArchiveBodyDb()
 
-    await fetchDmdataQuakeHistory('key', before, 50, 1, false)
+    await fetchDmdataQuakeHistory('key', before, 1, false)
 
     expect(calls.body).toBe(2)
   })
@@ -183,7 +183,7 @@ describe('アーカイブ本体の控えの結線（実 gzip × 実 IndexedDB）
     const calls = mockArchive(gz)
     const before = new Date('2026-08-10T23:00:00+09:00')
 
-    await fetchDmdataQuakeHistory('key', before, 50, 1, false)
+    await fetchDmdataQuakeHistory('key', before, 1, false)
     clearArchiveCacheForTest()
     clearParseCachesForTest()
 
@@ -191,7 +191,7 @@ describe('アーカイブ本体の控えの結線（実 gzip × 実 IndexedDB）
     const { writeArchiveBody } = await import('../utils/archiveBodyDb')
     await writeArchiveBody('https://x/body1', new Uint8Array([1, 2, 3, 4]))
 
-    const result = await fetchDmdataQuakeHistory('key', before, 50, 1, false)
+    const result = await fetchDmdataQuakeHistory('key', before, 1, false)
 
     // 展開に失敗したので落とし直し、カードは作れている
     expect(calls.body).toBe(2)

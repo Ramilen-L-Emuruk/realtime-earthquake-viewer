@@ -1683,9 +1683,9 @@ describe('DMDSS 版: 「もっと見る」で遡れる範囲', () => {
     }
   }
 
-  /** 呼ばれたときの `maxDays`（第 4 引数）を順に返す。 */
+  /** 呼ばれたときの `maxDays`（第 3 引数）を順に返す。 */
   function requestedDays(): number[] {
-    return vi.mocked(fetchDmdataQuakeHistory).mock.calls.map(c => c[3])
+    return vi.mocked(fetchDmdataQuakeHistory).mock.calls.map(c => c[2])
   }
 
   /** 呼ばれたときの窓の上端（第 2 引数＝カーソル）を ISO で順に返す。 */

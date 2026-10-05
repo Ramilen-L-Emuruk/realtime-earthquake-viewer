@@ -16,7 +16,7 @@ import { renderHook, act, cleanup } from '@testing-library/react'
 import { drainReplayEvents } from '../utils/replayEventLog'
 import {
   useReplayController, WINDOW_MS, PRE_WINDOW_MS, PREFETCH_MARGIN_MS,
-  QUAKE_HISTORY_EVENTS, QUAKE_HISTORY_MAX_DAYS,
+  assemblePreWindowMaterial,
   REPLAY_EARLIEST_MS, REPLAY_FUTURE_MARGIN_MS, replayTargetProblem,
 } from './useReplayController'
 import type { ReplayEntry, ReplayFetchResult, QuakeHistoryResult } from '../types/replay'
@@ -108,16 +108,28 @@ function prefetchTarget(): Date {
   return new Date(Date.now() - WINDOW_MS + PREFETCH_MARGIN_MS / 2)
 }
 
-function setup() {
+/** 空の履歴。履歴の中身を見ないテストは、取得をすぐ返すこれで済ませる。 */
+function emptyHistory(): QuakeHistoryResult {
+  return {
+    quakes: [], tsunamis: [], extras: [], skippedByDay: skips(0),
+    failedArchiveUrls: [], rateLimitedSources: [], rateLimitedTelegrams: 0, hasMore: false, oldestLoadedDay: null,
+  }
+}
+
+/**
+ * @param holdHistory 履歴の完了をテスト側で握るか。**既定では即座に空で返す** —— 再生の開始は
+ *   履歴を待つので、握ったまま本編・初期状態だけ解決しても `start` は終わらない。
+ */
+function setup({ holdHistory = false }: { holdHistory?: boolean } = {}) {
   // 呼び出し順序の記録。どの state 操作が世代照合の後ろにあるかをここで見る。
   const order: string[] = []
   const fetches: Deferred<ReplayFetchResult>[] = []
   // 取得に渡された引数。どちらの呼び出しが本編でどちらが初期状態かを日付範囲で確かめる。
   const ranges: { from: Date; to: Date }[] = []
-  // 地震カードの履歴取得。本編・初期状態とは別に完了させられるよう独立に持つ
-  // （履歴が失敗しても再生が続くことを確かめるため）。
+  // 履歴の取得。本編・初期状態とは別に完了させられるよう独立に持つ
+  // （履歴が失敗しても再生が続くこと・揃うまで再生を待つことを確かめるため）。
   const histories: Deferred<QuakeHistoryResult>[] = []
-  const historyArgs: { before: Date; targetEvents: number; maxDays: number }[] = []
+  const historyArgs: { before: Date }[] = []
   // App が持つ state の代役。Hook は setTimeOffset で書き、次のレンダーで読む。
   let timeOffset: number | null = null
 
@@ -129,11 +141,12 @@ function setup() {
       fetches.push(d)
       return d.promise
     }),
-    fetchQuakeHistory: vi.fn((before: Date, targetEvents: number, maxDays: number) => {
+    fetchQuakeHistory: vi.fn((before: Date) => {
       order.push('fetchQuakeHistory')
-      historyArgs.push({ before, targetEvents, maxDays })
+      historyArgs.push({ before })
       const d = createDeferred<QuakeHistoryResult>()
       histories.push(d)
+      if (!holdHistory) d.resolve(emptyHistory())
       return d.promise
     }),
     restoreQuakeHistory: vi.fn((_quakes: JMAQuake[]) => { order.push('restoreQuakeHistory') }),
@@ -317,10 +330,11 @@ describe('useReplayController の start', () => {
 
     expect(h.order).toEqual([
       'resetState', 'resetTracking', 'resetLocalState', 'clearReplayCache', 'setTimeOffset',
-      // 履歴は本編・初期状態と並行に走らせる（待たせないため先に投げるだけで、
-      // 反映＝restoreQuakeHistory は取得が返ってから）
+      // 履歴は本編・初期状態と並行に取り、3 つとも揃ってから反映する
+      // （履歴は初期状態の材料にも混ぜるので、待たないと 1 本にできない）
       'fetchQuakeHistory',
       'fetch', 'fetch',
+      'restoreQuakeHistory',
       'resetTracking', 'restorePreWindowTracking', 'loadReplayEvents',
     ])
     // 時計を進めるのが取得より前であること。後ろへ動かすと、pre-window の取得中に
@@ -610,17 +624,17 @@ describe('useReplayController の先読み', () => {
   })
 })
 
-// 地震カードの履歴は「初期状態の再現」とは別の取得。初期状態は指定時刻に発表中だった
-// 津波・EEW を戻すためのもので、遡り幅も目的も違う。ここで見るのは、履歴が
-// **再生の成否と独立している**こと（失敗しても再生は続き、成功しても再生を待たせない）。
-describe('useReplayController の地震カード履歴', () => {
+// 再生開始時刻より前の履歴。使い道は 2 つ —— 地震カードの一覧と、初期状態の材料に足す
+// 24 時間より前の電文（→ `assemblePreWindowMaterial`）。ここで見るのは、履歴が
+// **失敗しても再生を止めず、成功したら揃うまで待つ**こと。
+describe('useReplayController の履歴', () => {
   /** 履歴の結果。中身の統合は mergeQuakeHistory の担当なので、ここでは件数だけ数える。 */
   function history(count: number, skipped = 0, failedArchiveUrls: string[] = []): QuakeHistoryResult {
     const quakes = Array.from({ length: count }, (_, i) => ({ id: `q${i}` } as unknown as JMAQuake))
-    return { quakes, tsunamis: [], extras: [], skippedByDay: skips(skipped), failedArchiveUrls, rateLimitedSources: [], rateLimitedTelegrams: 0, hasMore: false, oldestLoadedDay: null }
+    return { ...emptyHistory(), quakes, skippedByDay: skips(skipped), failedArchiveUrls }
   }
 
-  it('再生開始時刻を境に、ライブと同じ件数を目標として履歴を取りに行く', async () => {
+  it('再生開始時刻を境に、履歴を 1 回だけ取りに行く', async () => {
     const target = quietTarget()
     const h = setup()
     const started = h.start(target)
@@ -628,15 +642,13 @@ describe('useReplayController の地震カード履歴', () => {
     h.fetches[1].resolve(fetched([]))
     await h.flush(started)
 
-    // 1 回だけ。件数・上限は定数から取る（テスト側に値を写すと、定数を変えても緑のままになる）。
+    // 遡る範囲はバリアントが決める（App の `fetchReplayQuakeHistory`）ので、渡すのは上端だけ
     expect(h.deps.fetchQuakeHistory).toHaveBeenCalledTimes(1)
     expect(h.historyArgs[0].before.getTime()).toBe(target.getTime())
-    expect(h.historyArgs[0].targetEvents).toBe(QUAKE_HISTORY_EVENTS)
-    expect(h.historyArgs[0].maxDays).toBe(QUAKE_HISTORY_MAX_DAYS)
   })
 
   it('取得できた履歴をカード一覧へ流し込む', async () => {
-    const h = setup()
+    const h = setup({ holdHistory: true })
     const started = h.start(quietTarget())
     h.fetches[0].resolve(fetched([]))
     h.fetches[1].resolve(fetched([]))
@@ -648,17 +660,38 @@ describe('useReplayController の地震カード履歴', () => {
     expect(h.current.error).toBeNull()
   })
 
-  // 履歴は再生の前提ではない。ここを Promise.all に混ぜると、カードが薄くなるだけの失敗で
-  // リプレイ全体（強震モニタを含む）が始まらなくなる。
-  it('履歴の取得に失敗しても、電文の再生は始まる', async () => {
-    const h = setup()
+  // 正: 履歴が揃うまで電文を積まない。初期状態の材料に混ぜるので、先に積むと 1 本にできない
+  // （2026-10-05 ユーザー承認）。
+  it('正: 本編と初期状態が揃っても、履歴が返るまでは電文を積まない', async () => {
+    const h = setup({ holdHistory: true })
     const started = h.start(quietTarget())
-    h.histories[0].reject(new Error('boom'))
     h.fetches[0].resolve(fetched([entry('normal-1')]))
-    h.fetches[1].resolve(fetched([]))
+    h.fetches[1].resolve(fetched([entry('pre-1')]))
+    await h.flush()
+
+    expect(h.deps.loadReplayEvents).not.toHaveBeenCalled()
+    expect(h.current.isFetching).toBe(true)
+
+    h.histories[0].resolve(history(0))
     await h.flush(started)
 
     expect(h.deps.loadReplayEvents).toHaveBeenCalledTimes(1)
+    expect(h.current.isFetching).toBe(false)
+  })
+
+  // 履歴は再生の前提ではない。失敗を Promise.all の中止に繋ぐと、カードが薄くなるだけの
+  // 失敗でリプレイ全体（強震モニタを含む）が始まらなくなる。
+  it('対照: 履歴の取得に失敗しても、電文の再生は始まる', async () => {
+    const h = setup({ holdHistory: true })
+    const started = h.start(quietTarget())
+    h.histories[0].reject(new Error('boom'))
+    h.fetches[0].resolve(fetched([entry('normal-1')]))
+    h.fetches[1].resolve(fetched([entry('pre-1')]))
+    await h.flush(started)
+
+    expect(h.deps.loadReplayEvents).toHaveBeenCalledTimes(1)
+    // 初期状態は 24 時間ぶんだけで作る
+    expect(h.deps.loadReplayEvents.mock.calls[0][0].map(idOf)).toEqual(['pre-1', 'normal-1'])
     expect(h.deps.restoreQuakeHistory).not.toHaveBeenCalled()
     // 失敗の事実は伝える。ただし「再生は継続中」と分かる文言であること
     expect(h.current.error).toMatch(/履歴/)
@@ -666,24 +699,42 @@ describe('useReplayController の地震カード履歴', () => {
     expect(h.current.error).toMatch(/再生は継続中/)
   })
 
-  // 履歴だけが遅れて完了することがある。取得中に別の日で開始し直したら、
-  // 古い履歴を新しいセッションのカード一覧へ混ぜてはならない。
-  it('取得中に別セッションへ切り替わったら、履歴を反映しない', async () => {
-    const h = setup()
+  // 安全弁: 履歴を待っている間に停止・再開されたら、古い履歴を新しいセッションへ混ぜない。
+  it('安全弁: 履歴を待っている間に停止したら、履歴も電文も反映しない', async () => {
+    const h = setup({ holdHistory: true })
     const started = h.start(quietTarget())
-    h.fetches[0].resolve(fetched([]))
+    h.fetches[0].resolve(fetched([entry('normal-1')]))
     h.fetches[1].resolve(fetched([]))
-    await h.flush(started)
+    await h.flush()
 
     h.stop()
     h.histories[0].resolve(history(3))
-    await h.flush()
+    await h.flush(started)
 
     expect(h.deps.restoreQuakeHistory).not.toHaveBeenCalled()
+    expect(h.deps.loadReplayEvents).not.toHaveBeenCalled()
+  })
+
+  // 安全弁: 材料の組み立てが投げても、24 時間ぶんだけで再生を始める（取得失敗とは出さない）。
+  it('安全弁: 履歴を材料へ足す処理が投げても、24 時間ぶんで再生を始める', async () => {
+    const h = setup({ holdHistory: true })
+    const started = h.start(quietTarget())
+    h.fetches[0].resolve(fetched([entry('normal-1')]))
+    h.fetches[1].resolve(fetched([entry('pre-1')]))
+    const broken = { ...emptyHistory() }
+    Object.defineProperty(broken, 'tsunamis', { get: () => { throw new Error('読めない履歴') } })
+    h.histories[0].resolve(broken)
+    await h.flush(started)
+
+    expect(h.deps.loadReplayEvents).toHaveBeenCalledTimes(1)
+    expect(h.deps.loadReplayEvents.mock.calls[0][0].map(idOf)).toEqual(['pre-1', 'normal-1'])
+    expect(h.current.error).toBeNull()
+    const messages = vi.mocked(log.error).mock.calls.map(c => c.map(v => String(v)).join(' '))
+    expect(messages.some(m => m.includes('初期状態の材料に履歴を足せなかった'))).toBe(true)
   })
 
   it('履歴の取りこぼしも、確定した損失として申告する', async () => {
-    const h = setup()
+    const h = setup({ holdHistory: true })
     const started = h.start(quietTarget())
     h.fetches[0].resolve(fetched([]))
     h.fetches[1].resolve(fetched([]))
@@ -695,146 +746,150 @@ describe('useReplayController の地震カード履歴', () => {
   })
 })
 
-// 初期状態（24 時間）では足りないもの——長周期地震動と、7 日間表示され続ける帯——を
-// 地震カードの履歴（最大 7 日）から補う経路。
-//
-// **順序が要になる。** 初期状態のほうが新しいので、履歴の古い報を後から流すと上書きしてしまう。
-describe('useReplayController: 初期状態に無い帯・長周期を履歴から補う', () => {
-  /** 帯（地震回数）のエントリ。件数は見ないので中身は最小限。 */
-  function countEntry(id: string): ReplayEntry {
-    return {
-      payload: {
-        kind: 'earthquakeCount',
-        data: {
-          id, eventId: id, time: '2026-08-15T12:00:00+09:00',
-          expireAt: '2026-08-22T12:00:00+09:00', items: [], cancelled: false,
-        } as unknown as import('../types/earthquake').JMAEarthquakeCount,
-      },
-      replayTime: new Date('2026-08-15T12:00:00+09:00'),
-    }
+/** 帯（地震回数）のエントリ。件数は見ないので中身は最小限。 */
+function countEntry(id: string, time = '2026-08-15T12:00:00+09:00'): ReplayEntry {
+  return {
+    payload: {
+      kind: 'earthquakeCount',
+      data: {
+        id, eventId: id, time,
+        expireAt: '2026-08-22T12:00:00+09:00', items: [], cancelled: false,
+      } as unknown as import('../types/earthquake').JMAEarthquakeCount,
+    },
+    replayTime: new Date(time),
   }
+}
 
-  function historyWith(extras: ReplayEntry[]): QuakeHistoryResult {
-    return {
-      quakes: [], tsunamis: [], extras, skippedByDay: skips(0),
-      failedArchiveUrls: [], rateLimitedSources: [], rateLimitedTelegrams: 0, hasMore: false, oldestLoadedDay: null,
-    }
-  }
+/** 予報（若干の海面変動）だけの津波の報。`validDateTime` は渡したときだけ載せる。 */
+function forecastTsunami(id: string, time: string, validDateTime?: string): import('../types/earthquake').JMATsunami {
+  return {
+    kind: 'tsunami', id, eventId: 'EV-TSUNAMI', time, cancelled: false,
+    ...(validDateTime && { validDateTime }),
+    issue: { source: '気象庁', time, type: 'Focus' },
+    areas: [{ grade: 'Forecast', immediate: false, name: '岩手県' }],
+  } as unknown as import('../types/earthquake').JMATsunami
+}
 
-  it('正: 初期状態に無い種別は履歴から補い、初期状態と同じ時刻・無音で流す', async () => {
-    const target = quietTarget()
-    const h = setup()
-    const started = h.start(target)
-    await act(async () => {
-      h.fetches[0].resolve(fetched([]))
-      h.fetches[1].resolve(fetched([]))
-      await started
-    })
-    h.deps.loadReplayEvents.mockClear()
+function tsunamiEntry(t: import('../types/earthquake').JMATsunami): ReplayEntry {
+  return { payload: { kind: 'event', event: t }, replayTime: new Date(t.time) }
+}
 
-    await act(async () => { h.histories[0].resolve(historyWith([countEntry('c1')])) })
+function kindOf(e: ReplayEntry): string {
+  return e.payload.kind === 'event' ? e.payload.event.kind : e.payload.kind
+}
 
-    expect(h.deps.loadReplayEvents).toHaveBeenCalledTimes(1)
-    const injected = h.deps.loadReplayEvents.mock.calls[0][0] as ReplayEntry[]
-    expect(injected).toHaveLength(1)
-    expect(injected[0].silent).toBe(true)
-    expect(injected[0].replayTime.getTime()).toBe(target.getTime() - 1)
+// 初期状態の材料を 1 本にまとめる関数（純関数）。足すもの・足さないものの境界を固定する。
+describe('assemblePreWindowMaterial', () => {
+  it('正: 24 時間に無い津波の報と帯を足し、発表時刻の昇順に並べる', () => {
+    const pre = [countEntry('pre-count', '2026-08-15T10:00:00+09:00')]
+    const material = assemblePreWindowMaterial(pre, {
+      tsunamis: [forecastTsunami('t1', '2026-08-13T09:00:00+09:00', '2026-08-16T00:00:00+09:00')],
+      // 長周期（`entry` の既定は 08-15 なので、24 時間より前へずらす）
+      extras: [{ ...entry('l1'), replayTime: new Date('2026-08-12T12:00:00+09:00') }],
+    }, [])
+
+    expect(material.map(kindOf)).toEqual(['lpgm', 'tsunami', 'earthquakeCount'])
   })
 
-  it('対照: 初期状態が同じ種別を流していれば補わない（古い報で上書きしない）', async () => {
-    const target = quietTarget()
-    const h = setup()
-    const started = h.start(target)
-    await act(async () => {
-      // 初期状態（24 時間以内）に新しい報がある
-      h.fetches[0].resolve(fetched([]))
-      h.fetches[1].resolve(fetched([countEntry('new')]))
-      await started
-    })
-    h.deps.loadReplayEvents.mockClear()
-
-    // 履歴には同じ種別の古い報しかない
-    await act(async () => { h.histories[0].resolve(historyWith([countEntry('old')])) })
-
-    expect(h.deps.loadReplayEvents).not.toHaveBeenCalled()
+  it('対照: 24 時間側・本編側に同じ鍵の帯があれば足さない（古い報で上書きしない）', () => {
+    const pre = [countEntry('new', '2026-08-15T10:00:00+09:00')]
+    const normal = [countEntry('at-target', '2026-08-15T12:00:00+09:00')]
+    const material = assemblePreWindowMaterial(pre, { tsunamis: [], extras: [countEntry('old', '2026-08-12T12:00:00+09:00')] }, normal)
+    expect(material).toEqual(pre)
   })
 
-  it('安全弁: 別セッションへ切り替わっていたら補わない', async () => {
-    const target = quietTarget()
-    const h = setup()
-    const started = h.start(target)
-    await act(async () => {
-      h.fetches[0].resolve(fetched([]))
-      h.fetches[1].resolve(fetched([]))
-      await started
-    })
-    act(() => { h.current.stop() })
-    h.deps.loadReplayEvents.mockClear()
+  it('対照: 24 時間側・本編側に同じ id の津波の報があれば足さない（二重に積まない）', () => {
+    const t = forecastTsunami('t1', '2026-08-15T10:00:00+09:00')
+    const u = forecastTsunami('t2', '2026-08-15T12:00:00+09:00')
+    const material = assemblePreWindowMaterial([tsunamiEntry(t)], { tsunamis: [t, u], extras: [] }, [tsunamiEntry(u)])
+    expect(material).toHaveLength(1)
+  })
 
-    await act(async () => { h.histories[0].resolve(historyWith([countEntry('c1')])) })
+  // 正: `id` は `EventID` と報番号から作るが、報番号は種別ごとに別々に数える。種別の違う報が
+  // 同じ `id` になっても、別の報として足す（id だけで見ていたときは、カムチャツカ半島付近の
+  // 地震〈2025-07-30〉の 24 時間より前の報が 1 通も足されなかった）。
+  it('正: 同じ id でも、情報名が違う報は別の報として足す', () => {
+    const warning = { ...forecastTsunami('same-id', '2026-08-13T09:00:00+09:00'), infoName: '津波警報・注意報・予報' }
+    const info = { ...forecastTsunami('same-id', '2026-08-15T10:00:00+09:00'), infoName: '津波情報' }
+    const material = assemblePreWindowMaterial([tsunamiEntry(info)], { tsunamis: [warning, info], extras: [] }, [])
+    expect(material).toHaveLength(2)
+  })
 
-    expect(h.deps.loadReplayEvents).not.toHaveBeenCalled()
+  it('安全弁: 履歴が無ければ 24 時間ぶんをそのまま返す', () => {
+    const pre = [countEntry('pre')]
+    expect(assemblePreWindowMaterial(pre, null, [])).toBe(pre)
   })
 })
 
-// 補完が「効いていない」ことに気づける形になっているか。帯が出ないのは「発表が無かった」のと
-// 画面からは区別が付かないので、記録だけが手がかりになる。
-describe('useReplayController: 補完の結果を記録する', () => {
-  function countEntry2(id: string): ReplayEntry {
-    return {
-      payload: {
-        kind: 'earthquakeCount',
-        data: {
-          id, eventId: id, time: '2026-08-15T12:00:00+09:00',
-          expireAt: '2026-08-22T12:00:00+09:00', items: [], cancelled: false,
-        } as unknown as import('../types/earthquake').JMAEarthquakeCount,
-      },
-      replayTime: new Date('2026-08-15T12:00:00+09:00'),
-    }
+// 24 時間より前に出た津波が、期限内のまま初期状態に載るか（#541 の本題）。
+// **画面へ流すものと記憶の復元へ渡すものが同じ**であることも併せて見る。
+describe('useReplayController: 24 時間より前の津波を初期状態に載せる', () => {
+  /** T の何時間前か。 */
+  function hoursBefore(target: Date, hours: number): string {
+    return new Date(target.getTime() - hours * 3600_000).toISOString()
   }
 
-  it('対照: 本編で流れる分は補わない（開始時刻ちょうどの電文が二重に積まれる）', async () => {
-    const target = quietTarget()
-    const h = setup()
+  async function startWith(target: Date, tsunamis: import('../types/earthquake').JMATsunami[]) {
+    const h = setup({ holdHistory: true })
     const started = h.start(target)
-    await act(async () => {
-      // 本編（開始時刻以降）に同じ種別がある
-      h.fetches[0].resolve(fetched([countEntry2('at-target')]))
-      h.fetches[1].resolve(fetched([]))
-      await started
-    })
-    h.deps.loadReplayEvents.mockClear()
+    h.fetches[0].resolve(fetched([]))
+    h.fetches[1].resolve(fetched([]))
+    h.histories[0].resolve({ ...emptyHistory(), tsunamis })
+    await h.flush(started)
+    const loaded = h.deps.loadReplayEvents.mock.calls[0][0] as ReplayEntry[]
+    const restored = h.deps.restorePreWindowTracking.mock.calls[0][0] as ReplayEntry[]
+    return { loaded, restored }
+  }
 
-    await act(async () => {
-      h.histories[0].resolve({
-        quakes: [], tsunamis: [], extras: [countEntry2('from-history')], skippedByDay: skips(0),
-        failedArchiveUrls: [], rateLimitedSources: [], rateLimitedTelegrams: 0, hasMore: false, oldestLoadedDay: null,
-      })
-    })
-
-    expect(h.deps.loadReplayEvents).not.toHaveBeenCalled()
+  it('正: 30 時間前に出て、期限がまだ先の津波は載る（記憶の復元にも同じものを渡す）', async () => {
+    const target = quietTarget()
+    const { loaded, restored } = await startWith(target, [
+      forecastTsunami('t1', hoursBefore(target, 30), new Date(target.getTime() + 3600_000).toISOString()),
+    ])
+    expect(loaded.filter(e => kindOf(e) === 'tsunami')).toHaveLength(1)
+    // 本編は空なので、積んだものと記憶の復元へ渡したものは一致する
+    expect(restored).toEqual(loaded)
   })
 
-  it('安全弁: 補完の途中で例外が出ても記録を残し、再生は続ける', async () => {
+  it('対照: 期限が再生開始時刻より前に切れていれば載らない', async () => {
     const target = quietTarget()
-    const h = setup()
+    const { loaded } = await startWith(target, [
+      forecastTsunami('t1', hoursBefore(target, 30), hoursBefore(target, 1)),
+    ])
+    expect(loaded.filter(e => kindOf(e) === 'tsunami')).toHaveLength(0)
+  })
+
+  // 安全弁: 期限を一度も伝えていない津波は、最後の報から 24 時間までしか生かさない
+  // （材料が 24 時間だった頃と同じ範囲。→ `dmdataReplay.ts` の `TSUNAMI_WITHOUT_VALIDITY_MAX_AGE_MS`）。
+  it('安全弁: 期限を持たない津波は、最後の報から 24 時間を過ぎていれば載らない', async () => {
+    const target = quietTarget()
+    const stale = await startWith(target, [forecastTsunami('t1', hoursBefore(target, 30))])
+    expect(stale.loaded.filter(e => kindOf(e) === 'tsunami')).toHaveLength(0)
+  })
+
+  it('対照: 期限を持たない津波でも、最後の報が 24 時間以内なら従来どおり載る', async () => {
+    const target = quietTarget()
+    const fresh = await startWith(target, [
+      forecastTsunami('t1', hoursBefore(target, 30)),
+      forecastTsunami('t2', hoursBefore(target, 20)),
+    ])
+    expect(fresh.loaded.filter(e => kindOf(e) === 'tsunami')).toHaveLength(2)
+  })
+
+  it('正: 帯も同じ 1 回の積み込みに入り、初期状態と同じ時刻・無音で流す', async () => {
+    const target = quietTarget()
+    const h = setup({ holdHistory: true })
     const started = h.start(target)
-    await act(async () => {
-      h.fetches[0].resolve(fetched([]))
-      h.fetches[1].resolve(fetched([]))
-      await started
-    })
-    h.deps.loadReplayEvents.mockImplementationOnce(() => { throw new Error('積めなかった') })
+    h.fetches[0].resolve(fetched([]))
+    h.fetches[1].resolve(fetched([]))
+    h.histories[0].resolve({ ...emptyHistory(), extras: [countEntry('c1', hoursBefore(target, 48))] })
+    await h.flush(started)
 
-    await act(async () => {
-      h.histories[0].resolve({
-        quakes: [], tsunamis: [], extras: [countEntry2('c1')], skippedByDay: skips(0),
-        failedArchiveUrls: [], rateLimitedSources: [], rateLimitedTelegrams: 0, hasMore: false, oldestLoadedDay: null,
-      })
-    })
-
-    expect(vi.mocked(log.error)).toHaveBeenCalled()
-    // 再生そのものは止めない（エラー表示は取得の失敗のときだけ）
-    expect(h.current.error).toBeNull()
+    expect(h.deps.loadReplayEvents).toHaveBeenCalledTimes(1)
+    const loaded = h.deps.loadReplayEvents.mock.calls[0][0] as ReplayEntry[]
+    expect(loaded).toHaveLength(1)
+    expect(loaded[0].silent).toBe(true)
+    expect(loaded[0].replayTime.getTime()).toBe(target.getTime() - 1)
+    expect(h.deps.restorePreWindowTracking.mock.calls[0][0]).toEqual(loaded)
   })
 })
