@@ -2292,7 +2292,7 @@ EEW 警報が 14 通届いた報がある。割り込みは例外ではない。
     かもしれない」が伝わらない（→ [quake-spec.md](quake-spec.md) §4「震度5弱以上未入電」）
 - 実装は `ttsText.ts` の `regionNamesForScale`。区域は**都道府県名と観測点名の組**で引くので、
   同名の観測点が別の県にあっても取り違えない。`pref` が空で届く経路（DMDATA）は観測点名から
-  都道府県を先に補ってから引く。この補完（`buildStationPrefIndex`）は初出優先なので、同名の
+  都道府県を先に補ってから引く。この補完（`stationPrefIndexOf`）は初出優先なので、同名の
   観測点が複数の県にあれば誤った県を返しうる（現在の配信データに同名は無く、その前提は
   `stationCoords.test.ts` が検証する）
 
@@ -2381,7 +2381,7 @@ EEW 警報が 14 通届いた報がある。割り込みは例外ではない。
 代表点の緯度では並べない（例: 新潟県は緯度と逆に 上越 → 中越 → 下越）。
 
 - 順序の実体は座標テーブル（`station-coords.json`）の区域キー順で、生成元の気象庁 震度観測点一覧表の
-  並びをそのまま引き継いでいる。索引の構築は `stationCoords.ts` の `buildRegionOrderIndex`、
+  並びをそのまま引き継いでいる。索引の構築は `stationCoords.ts` の `regionOrderIndexOf`、
   並べ替えは `ttsText.ts` の `sortByRegionOrder`
 - 索引に無い地域名（震度観測点を持たない区域）は末尾へ回す。区域の一覧（`subregions.json`）でも
   これらは末尾（沖縄県の後の北方領土・埋立地）に置かれるため、標準順と矛盾しない。座標テーブルが

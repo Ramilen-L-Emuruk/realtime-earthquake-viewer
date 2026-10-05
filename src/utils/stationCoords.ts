@@ -102,7 +102,7 @@ export function loadStationCoords(): Promise<StationCoordsData> {
       // 「取得成功・観測点 0 件」として扱ってしまい、地図に震度が出ない状態が失敗として
       // 検知されないまま進む。取得側の `validate` に渡すのは、ここで投げれば地図の
       // 「データN件を取り込めず」にも計上されるため（`.then()` では計上されない）。
-      // areas も必須。欠けたまま通すと buildAreaPrefIndex・lookupPointCoords が
+      // areas も必須。欠けたまま通すと areaPrefIndexOf・lookupPointCoords が
       // Object.keys(undefined) で TypeError を投げ、レンダー中の例外になる。ErrorBoundary が
       // 受け止めはするが、例外の起きた範囲（地図なりタブなり）が丸ごとフォールバック表示へ
       // 差し替わるだけで中身は見られない。**ここで弾くほうが安い。**
@@ -151,11 +151,36 @@ export function getStationCoordsCache(): StationCoordsData | null {
 }
 
 /**
- * 都道府県名 -> その県が持つ一次細分区域名の全集合、を構築する。
+ * 座標テーブルから作る索引を、**同じテーブルに対しては 1 度だけ**作って返す。
+ *
+ * 索引はテーブル全体（観測点 4000 点超・区域 190 前後）を舐めて作るので、呼ぶたびに作ると
+ * 呼んだ回数ぶんの走査になる。地震カードは 1 枚ごとに索引を引くため、一覧が数百枚になる
+ * 群発の最中は、取り込みのたびにその枚数ぶん作り直していた（能登半島地震の 7 日間・651 枚の
+ * 取り込みで、この作り直しだけに約 2.4 秒。開発版の CPU プロファイル。同じ取り込みの中で
+ * 別に重かった統合の探索は `quakeMerge.ts` の `coalesceByEventId` 側に書いてある）。
+ *
+ * 鍵はテーブルの参照そのもの。テーブルは読み込んだあと書き換えない前提で、取り直せば別の参照に
+ * なるので古い索引は引かれなくなる（`WeakMap` なのでテーブルと一緒に捨てられる）。
+ * **返す索引は呼び出し元どうしで共有する。** この関数自身は読み取り専用を強制しないので、
+ * 包む側で戻り値の型を読み取り専用（`ReadonlyMap` など）に宣言すること —— いまの 4 つは
+ * そう宣言してあり、書き換えは型検査で落ちる。
+ */
+function memoByTable<T>(build: (data: StationCoordsData) => T): (data: StationCoordsData) => T {
+  const memo = new WeakMap<StationCoordsData, T>()
+  return data => {
+    if (memo.has(data)) return memo.get(data) as T
+    const value = build(data)
+    memo.set(data, value)
+    return value
+  }
+}
+
+/**
+ * 都道府県名 -> その県が持つ一次細分区域名の全集合。
  * areas のキー "都道府県|細分区域名" を pref でグルーピングして作る。
  * TTS で「観測区域が県内全区域と一致するので〇〇県と読み上げる」判定に使う。
  */
-export function buildPrefAreaNamesIndex(data: StationCoordsData): Map<string, Set<string>> {
+export const prefAreaNamesIndexOf = memoByTable((data): ReadonlyMap<string, ReadonlySet<string>> => {
   const index = new Map<string, Set<string>>()
   for (const key of Object.keys(data.areas)) {
     const sep = key.indexOf('|')
@@ -168,14 +193,14 @@ export function buildPrefAreaNamesIndex(data: StationCoordsData): Map<string, Se
     index.set(pref, set)
   }
   return index
-}
+})
 
 /** 地域名 -> 気象庁の標準順（北から南）の順位。区域名と県名は別の Map に持つ。 */
 export interface RegionOrderIndex {
   /** 一次細分区域名 -> 順位 */
-  areas: Map<string, number>
+  readonly areas: ReadonlyMap<string, number>
   /** 都道府県名 -> その県の先頭区域の順位 */
-  prefs: Map<string, number>
+  readonly prefs: ReadonlyMap<string, number>
 }
 
 /**
@@ -235,7 +260,8 @@ export function byValueDescThenRegion<T>(
     value(b) - value(a) || regionOrderRank(name(a), order) - regionOrderRank(name(b), order)
 }
 
-export function buildRegionOrderIndex(data: StationCoordsData): RegionOrderIndex {
+/** 地域名 -> 気象庁の標準順の順位（順位の実体と前提は {@link regionOrderRank} の説明）。 */
+export const regionOrderIndexOf = memoByTable((data): RegionOrderIndex => {
   const areas = new Map<string, number>()
   const prefs = new Map<string, number>()
   let order = 0
@@ -250,14 +276,14 @@ export function buildRegionOrderIndex(data: StationCoordsData): RegionOrderIndex
     order++
   }
   return { areas, prefs }
-}
+})
 
 /**
- * 細分区域名 -> 都道府県名 の逆引きインデックスを構築する。
+ * 細分区域名 -> 都道府県名 の逆引き索引。
  * areas のキー "都道府県|細分区域名" を分解して name -> pref の Map を作る（初出優先）。
  * EEW の地域別予想震度（pref を含まない）に都道府県を補完する用途で使う。
  */
-export function buildAreaPrefIndex(data: StationCoordsData): Map<string, string> {
+export const areaPrefIndexOf = memoByTable((data): ReadonlyMap<string, string> => {
   const index = new Map<string, string>()
   for (const key of Object.keys(data.areas)) {
     const sep = key.indexOf('|')
@@ -267,42 +293,30 @@ export function buildAreaPrefIndex(data: StationCoordsData): Map<string, string>
     if (name && !index.has(name)) index.set(name, pref)
   }
   return index
-}
+})
 
 /**
- * 観測点名 -> 都道府県名 の逆引きインデックスを構築する。
- * stations のキー "都道府県|観測点名" を分解して name -> pref の Map を作る（初出優先）。
- * DMDATA JSON 電文の stations[] は都道府県情報を含まないため、この逆引きで pref を補完する。
- */
-// 一次細分区域名 → 都道府県名 の索引を、座標テーブルが差し替わるまで使い回す。
-// 点の役割の判定（`quakePoints.ts` の `isAreaPoint`）へ渡すために、地震の統合経路と
-// 読み上げ文の生成から繰り返し呼ばれる。都度 `buildAreaPrefIndex` を作ると区域数ぶんの
-// ループがそのたびに走るうえ、経路ごとに別インスタンスの索引を渡すことになる。
-// 返す Map は共有物なので、受け取った側で書き換えないこと（現状はすべて読み取りのみ）。
-let areaPrefIndexFor: StationCoordsData | null = null
-let areaPrefIndexCache: Map<string, string> | null = null
-
-/**
- * 一次細分区域名 → 都道府県名 の索引。座標テーブルが未読み込み・取得失敗なら null。
+ * 読み込み済みの座標テーブルから引く、一次細分区域名 → 都道府県名 の索引。
+ * 座標テーブルが未読み込み・取得失敗なら null。
+ *
+ * 点の役割の判定（`quakePoints.ts` の `isAreaPoint`）へ渡すために、地震の統合経路と
+ * 読み上げ文の生成から繰り返し呼ばれる。テーブルを手元に持たない呼び出し元のための入口で、
+ * 索引そのものは {@link areaPrefIndexOf} と同じもの（同じテーブルなら同じ参照）を返す。
  *
  * 渡し先で null が何を意味するかは `quakePoints.ts` の {@link isAreaPoint} を参照
  * （名前だけの判定へ落ち、区域名が県名と同じ奈良県を取りこぼす）。
  */
-export function getAreaPrefIndexCache(): Map<string, string> | null {
+export function getAreaPrefIndexCache(): ReadonlyMap<string, string> | null {
   const data = getStationCoordsCache()
-  if (!data) {
-    areaPrefIndexFor = null
-    areaPrefIndexCache = null
-    return null
-  }
-  if (data !== areaPrefIndexFor) {
-    areaPrefIndexFor = data
-    areaPrefIndexCache = buildAreaPrefIndex(data)
-  }
-  return areaPrefIndexCache
+  return data ? areaPrefIndexOf(data) : null
 }
 
-export function buildStationPrefIndex(data: StationCoordsData): Map<string, string> {
+/**
+ * 観測点名 -> 都道府県名 の逆引き索引。
+ * stations のキー "都道府県|観測点名" を分解して name -> pref の Map を作る（初出優先）。
+ * DMDATA の電文は観測点を都道府県なしで積むため、この逆引きで pref を補完する。
+ */
+export const stationPrefIndexOf = memoByTable((data): ReadonlyMap<string, string> => {
   const index = new Map<string, string>()
   // 初出優先。`stationEntries` が現行を先に返すので、同名が両方にあれば現行が勝つ。
   // 現行の一覧に無い観測点も入れるのは、座標を引くのに都道府県名が要るため
@@ -315,7 +329,7 @@ export function buildStationPrefIndex(data: StationCoordsData): Map<string, stri
     if (name && !index.has(name)) index.set(name, pref)
   }
   return index
-}
+})
 
 /**
  * 地点の都道府県名・住所(観測点名 or 細分区域名)から座標を引く。

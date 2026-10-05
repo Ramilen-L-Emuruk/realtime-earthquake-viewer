@@ -6,11 +6,11 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { isAreaPoint, buildIntensityRows, cityKey, type IntensityRowDeps } from './quakePoints'
-import { buildAreaPrefIndex, type StationCoordsData } from './stationCoords'
+import { areaPrefIndexOf, type StationCoordsData } from './stationCoords'
 import type { EarthquakePoint, IntensityScale } from '../types/earthquake'
 
 // テスト専用の小さな索引では、県名と衝突する区域名が実在することを取り違えても気づけない。
-const AREA_PREF_INDEX = buildAreaPrefIndex(
+const AREA_PREF_INDEX = areaPrefIndexOf(
   JSON.parse(readFileSync('public/data/station-coords.json', 'utf8')) as StationCoordsData,
 )
 

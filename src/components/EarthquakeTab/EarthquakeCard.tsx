@@ -27,7 +27,7 @@ import {
 import { getIntensityLabel, getIntensityLabelWithOrAbove, getIntensityColor, getIntensityBgColor, getDepthColor, getMagnitudeColor } from '../../utils/intensity'
 import { hasKnownEpicenter } from '../../utils/geo'
 
-import { buildAreaPrefIndex, buildRegionOrderIndex, buildStationPrefIndex, lookupPointCoords, lookupStationRegion, regionOrderRank, type LatLng } from '../../utils/stationCoords'
+import { areaPrefIndexOf, regionOrderIndexOf, stationPrefIndexOf, lookupPointCoords, lookupStationRegion, regionOrderRank, type LatLng } from '../../utils/stationCoords'
 import { isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel, buildIntensityRows, makeAreaPrefResolver, cityKey, type IntensityStationRow, type IntensityRegionRow } from '../../utils/quakePoints'
 import { rowMarkKey, rowMarkOf, type QuakeCardMarks, type QuakeUpdateField } from '../../utils/quakeUpdateMark'
 import { intensityRowsToExpand, lpgmRowsToExpand, mergeAutoExpanded } from '../../utils/autoExpandMarkedRows'
@@ -677,8 +677,8 @@ export const EarthquakeCard = memo(function EarthquakeCard({
    * **ブロックには地点名が出る**ので情報自体は失われない（→ docs/spec/quake-spec.md §4）。
    */
   const unreceivedIndexes = useMemo(() => {
-    const stationPrefIndex = stationData ? buildStationPrefIndex(stationData) : null
-    const areaPrefIndex = stationData ? buildAreaPrefIndex(stationData) : null
+    const stationPrefIndex = stationData ? stationPrefIndexOf(stationData) : null
+    const areaPrefIndex = stationData ? areaPrefIndexOf(stationData) : null
     // 区域 → 県は**行の組み立てと同じ引き方を共有する**（`makeAreaPrefResolver`）。手で
     // 優先順位を揃えると、片方だけ直したときに黙ってずれる（実際にそれで、行は出るのに
     // 印だけ付かない状態を作った）。
@@ -802,8 +802,8 @@ export const EarthquakeCard = memo(function EarthquakeCard({
 
     // 組み立ては `buildIntensityRows` に置いてある（電文の点だけを扱う純関数として試せるように）。
     // ここでは座標テーブル由来の索引を渡すだけ。
-    const areaPrefIndex = stationData ? buildAreaPrefIndex(stationData) : null
-    const order = stationData ? buildRegionOrderIndex(stationData) : null
+    const areaPrefIndex = stationData ? areaPrefIndexOf(stationData) : null
+    const order = stationData ? regionOrderIndexOf(stationData) : null
     return buildIntensityRows(quake.points, quake.cities ?? [], {
       prefOfArea: name => areaPrefIndex?.get(name) ?? null,
       prefOfStation: name => stationPrefIndex?.get(name) ?? null,
@@ -830,7 +830,7 @@ export const EarthquakeCard = memo(function EarthquakeCard({
     if (!isSelected) return empty
     const { prefOf, regionOfStation, stations, areas } = unreceivedIndexes
     if (stations.length === 0 && areas.length === 0) return empty
-    const order = stationData ? buildRegionOrderIndex(stationData) : null
+    const order = stationData ? regionOrderIndexOf(stationData) : null
     const rank = (p: EarthquakePoint): number => (p.isArea
       ? regionOrderRank(p.addr, order)
       : regionOrderRank(regionOfStation(p) ?? prefOf(p), order))
@@ -855,8 +855,8 @@ export const EarthquakeCard = memo(function EarthquakeCard({
     // （区域が全滅して県の値だけが残る電文が、ここで弾かれていた）。空なら空配列が返り、
     // 描画側の `lpgmGroups.length > 0` で落ちる。
     if (!isSelected || !lpgm) return []
-    const areaPrefIndex = stationData ? buildAreaPrefIndex(stationData) : null
-    const order = stationData ? buildRegionOrderIndex(stationData) : null
+    const areaPrefIndex = stationData ? areaPrefIndexOf(stationData) : null
+    const order = stationData ? regionOrderIndexOf(stationData) : null
     return buildLpgmRows(lpgm.regions ?? [], lpgm.points ?? [], lpgm.prefs ?? [], {
       prefOfArea: name => areaPrefIndex?.get(name) ?? null,
       rank: name => regionOrderRank(name, order),

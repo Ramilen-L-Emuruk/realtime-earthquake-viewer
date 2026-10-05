@@ -5,8 +5,8 @@ import { useSubRegions } from './useSubRegions'
 import {
   lookupPointCoords,
   lookupStationRegion,
-  buildAreaPrefIndex,
-  buildStationPrefIndex,
+  areaPrefIndexOf,
+  stationPrefIndexOf,
   type LatLng,
 } from '../utils/stationCoords'
 import { pointInRings, normalizeEpicenterLng, hasKnownEpicenter } from '../utils/geo'
@@ -214,11 +214,11 @@ export function useQuakeLayerData(
   const { data: subregions, failed: subregionsFailed } = useSubRegions()
 
   const areaPrefIndex = useMemo(
-    () => (stationCoords ? buildAreaPrefIndex(stationCoords) : new Map<string, string>()),
+    () => (stationCoords ? areaPrefIndexOf(stationCoords) : new Map<string, string>()),
     [stationCoords],
   )
   const stationPrefIndex = useMemo(
-    () => (stationCoords ? buildStationPrefIndex(stationCoords) : new Map<string, string>()),
+    () => (stationCoords ? stationPrefIndexOf(stationCoords) : new Map<string, string>()),
     [stationCoords],
   )
 

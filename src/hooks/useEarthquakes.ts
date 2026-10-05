@@ -19,7 +19,7 @@ import { advanceQuakeMarks, markIssuedAt, pruneQuakeMarks, trimQuakeMarkMemory, 
 import { UPDATE_MARK_TTL_MS } from '../utils/updateMark'
 import type { QuakeRetraction } from '../utils/quakeMerge'
 import { withBorrowedFromTsunami, borrowFromTsunamiIntoCards } from '../utils/borrowFromTsunami'
-import { loadStationCoords, onStationCoordsLoaded, buildAreaPrefIndex, getAreaPrefIndexCache } from '../utils/stationCoords'
+import { loadStationCoords, onStationCoordsLoaded, areaPrefIndexOf, getAreaPrefIndexCache } from '../utils/stationCoords'
 import type { AreaPrefIndex } from '../utils/quakePoints'
 import { calcEEWCancelTime, eewSerial, eewEventKey, computeSingleEEWLevel } from '../utils/eew'
 import { recordReplayEvent, type ReplayTelegramSkip } from '../utils/replayEventLog'
@@ -361,7 +361,7 @@ function isStaleEewReport(existing: EEWAlert, incoming: EEWAlert): boolean {
 
 // DMDSS版 EEW の地域別予想震度には pref が含まれないため、細分区域名→都道府県の
 // 逆引きインデックスで補完する（EEWカードの対象地域表示用。地図の色塗りは name のみで動く）。
-function enrichEEWPref(eew: EEWAlert, index: Map<string, string> | null): EEWAlert {
+function enrichEEWPref(eew: EEWAlert, index: ReadonlyMap<string, string> | null): EEWAlert {
   if (!index || !eew.areas || eew.areas.length === 0) return eew
   const areas = eew.areas.map(a =>
     a.pref ? a : { ...a, pref: index.get(a.name) ?? '' },
@@ -2459,9 +2459,9 @@ export function useEarthquakes(
       // 補完が効かない状態に固定されてしまう。購読しておけば、他の呼び出し元（地図・地震カード）の
       // 再取得が成功した時点で以降の EEW から補完が復帰する。
       // 取得できなくても EEW 自体は流す（都道府県名が付かないだけ）が、無音にはしない。
-      let areaPrefIndex: Map<string, string> | null = null
+      let areaPrefIndex: ReadonlyMap<string, string> | null = null
       const unsubscribeStationCoords = onStationCoordsLoaded(data => {
-        areaPrefIndex = buildAreaPrefIndex(data)
+        areaPrefIndex = areaPrefIndexOf(data)
       })
       loadStationCoords()
         .catch(err => {
