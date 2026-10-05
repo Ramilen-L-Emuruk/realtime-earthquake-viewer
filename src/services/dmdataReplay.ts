@@ -1042,7 +1042,7 @@ export async function fetchDmdataReplayEvents(
   // **揃わなかった二進電文の断片を取りこぼしとして数える。** ここで見ないと誰も見ない ——
   // この入れ物は取得 1 回きりで使い捨てるので、残った断片は黙って消える。
   // 症状は「他の電文は全部読めているのに、その地震だけ分布が出ない」で、手掛かりが何も残らない。
-  for (const key of bufrFragments.pendingKeys) {
+  for (const key of bufrFragments.unresolvedKeys) {
     // 本体が見つからず既に数えた電文は、ここでは数えない（上の注記）。
     if (countedBinaryKeys.has(key)) continue
     // **鍵からは日を復元できない**ので不明扱い（鍵は種別と発表時刻から作った文字列）。
@@ -1489,9 +1489,16 @@ function prefetchArchiveBody(item: ArchiveItem, apiKey: string): Promise<Prefetc
  * **`head` を持たないエントリは取りこぼしとして数える**（本編の `planReplayEntries` と同じ）。
  * 黙って落とすと、目録が壊れている日ほど「静かな日」に見える。
  */
+/**
+ * 履歴の電文をどの型として読むか。`binary` は二進電文（推計震度分布図）で、**分割された断片を
+ * 結合してから読む**ので、1 件ずつ読む `parseHistoryTelegram` は通らない
+ * （→ `fetchDmdataQuakeHistory` のループ）。
+ */
+type HistoryWant = ParsedTelegram['kind'] | 'binary'
+
 type HistoryPlan =
   | { kind: 'malformed'; entry: ManifestEntry | undefined; needsBody: false }
-  | ({ kind: 'entry'; want: ParsedTelegram['kind'] } & ManifestPlan)
+  | ({ kind: 'entry'; want: HistoryWant } & ManifestPlan)
 
 /**
  * 履歴の取得で、その電文を取り込む対象か。**再生開始時刻より後に発表された電文は、その時点で
@@ -1523,7 +1530,9 @@ function planHistoryEntries(
     // XML 版と JSON 版の 2 エントリで載るうち、XML 版（originalId 無し）だけを拾う
     if (entry.originalId) continue
     // **3 つのセットは互いに素**なので、種別からどの型として読むかが一意に決まる。
-    const want: ParsedTelegram['kind'] = isExtra ? 'extra' : isTsunami ? 'tsunami' : 'quake'
+    // 二進電文は補完の種別（`HISTORY_EXTRA_TYPES`）に入っているが、読み方だけが違う。
+    const want: HistoryWant =
+      isBinaryTelegramType(entry.head.type) ? 'binary' : isExtra ? 'extra' : isTsunami ? 'tsunami' : 'quake'
     const time = manifestTimeWithoutBody(entry)
     // 時刻が決まらないなら、補うために本体が要る（`resolveManifestTime`）。
     // **対象かどうかは時刻が決まるまで判らない**ので `include` は未定のまま。
@@ -1784,8 +1793,30 @@ export async function fetchDmdataQuakeHistory(
   const rateLimitedSources: string[] = []
   /** 429 の窓で見送った**電文**の数（取得元とは単位が違う）。 */
   let rateLimitedTelegrams = 0
-  /** 帯と長周期は種別ごとに最新 1 通だけ残す（鍵の作り方は `historyExtraKey`）。 */
+  /**
+   * 帯と長周期は種別ごとに最新 1 通だけ残す（鍵の作り方は `historyExtraKey`）。
+   * 推計震度分布図は電文ごとに別の鍵なので全部残る（どれが同じ地震かは受け手が決める）。
+   */
   const extraLatest = new Map<string, { payload: ReplayPayload; timeMs: number }>()
+  const keepExtra = (key: string, payload: ReplayPayload, timeMs: number) => {
+    const prev = extraLatest.get(key)
+    if (!prev || timeMs > prev.timeMs) extraLatest.set(key, { payload, timeMs })
+  }
+  /**
+   * 分割された二進電文（推計震度分布図）の結合待ち。**この取得 1 回きりの入れ物**で、
+   * 日をまたいでも使い回す（断片は数秒のうちに続けて届くが、日の境目を挟むことはありうる）。
+   *
+   * **既知の制限: 当日経路の日とは共有していない。** 当日経路（`fetchLiveQuakeTelegrams`）は
+   * 自分の入れ物を持つので、1 通の断片が「アーカイブのある日」と「まだ無い日」にまたがると
+   * どちらでも揃わず、両方が 1 件ずつ取りこぼしに数える（1 通が 2 件に見える）。起きるのは
+   * 日本時間の 0 時をまたいで配信され、しかもその境目がアーカイブの在庫の端と重なったとき
+   * だけなので、共有して数え方を組み直すことはしていない。
+   */
+  const bufrFragments = new BufrFragmentStore()
+  /** 結合待ちの断片の目録エントリ id（結合できたら、全部の id に解析結果を控える）。 */
+  const fragmentEntryIds = new Map<string, string[]>()
+  /** 本体が見つからず、既に取りこぼしとして数えた二進電文の識別名（電文ごとに 1 度だけ数える）。 */
+  const countedBinaryKeys = new Set<string>()
   /** 取りこぼしは**日ごとに**数える（理由は `utils/telegramLoss.ts` の `skippedByDay`）。 */
   const skipCounter = createSkipCounter()
   /**
@@ -1982,6 +2013,60 @@ export async function fetchDmdataQuakeHistory(
       if (!include) continue
 
       try {
+        if (plan.want === 'binary') {
+          // **二進電文（推計震度分布図）。** 断片を結合してから読む（本編の再生と同じ処理）。
+          // 結合できたら、**その電文の断片すべての id に**解析結果を控える —— 次に同じ日を
+          // 読むとき、どの断片から見ても本体を要らなくするため（→ `planHistoryEntries`）。
+          const cached = parsedTelegramCache.get(entry.id)
+          if (cached?.kind === 'extra') { keepExtra(cached.key, cached.payload, entryTime.getTime()); continue }
+          if (files === undefined) {
+            warnBodyNotDownloaded(entry, item.date, '二進電文の読み取り')
+            planMismatch++
+            skipCounter.add(item.date)
+            continue
+          }
+          const fkey = fragmentKey(entry.head.type, 'RJTD', entry.head.time)
+          const binName = findBodyFileName(entry, files)
+          const binBytes = binName ? files.get(binName) : undefined
+          if (!binBytes) {
+            log.warn(`[replay] 履歴用の二進電文の本体が見つからずスキップ id=${entry.id} type=${entry.head.type}（${bodyMissReason(entry)}）`)
+            // 電文ごとに 1 度だけ数える（分割は最大 24 断片あり、部分破損では複数が同時に欠ける）
+            if (!countedBinaryKeys.has(fkey)) {
+              countedBinaryKeys.add(fkey)
+              skipCounter.add(item.date)
+            }
+            continue
+          }
+          const ids = fragmentEntryIds.get(fkey) ?? []
+          ids.push(entry.id)
+          fragmentEntryIds.set(fkey, ids)
+          const joined = bufrFragments.add(fkey, entry.head.designation, binBytes, Date.now())
+          // まだ揃っていない断片。**取りこぼしには数えない**（残りは後続のエントリにある）。
+          if (!joined) continue
+          fragmentEntryIds.delete(fkey)
+          const binPayload = buildBinaryPayload(entry.head.type, joined, entry.id, entry.head.time)
+          if (!binPayload) {
+            log.warn(`[replay] 履歴用の二進電文の読み取りに失敗しスキップ id=${entry.id} type=${entry.head.type}`)
+            skipCounter.add(item.date)
+            continue
+          }
+          // **試験報は取りこぼしに数えない**（正常な配信。非 XML 電文は `head.test` で弾けない
+          // ため本文で判定する → `isFilteredBinaryTelegram`）。捨てたことは本編と同じく残す。
+          if (isFilteredBinaryTelegram(binPayload, includeTest)) {
+            log.info(`[replay] 履歴用の二進電文の試験報を取り込みません id=${entry.id} type=${entry.head.type}`)
+            continue
+          }
+          const key = historyExtraKey(binPayload)
+          if (key === null) {
+            // `historyExtraKey` へ種別を書き忘れた形。黙って捨てると分布だけ静かに消える。
+            log.error(`[replay] 履歴用の二進電文に鍵を作れません type=${entry.head.type}（historyExtraKey を確かめること）`)
+            skipCounter.add(item.date)
+            continue
+          }
+          for (const id of ids) parsedTelegramCache.set(id, { kind: 'extra', key, payload: binPayload })
+          keepExtra(key, binPayload, entryTime.getTime())
+          continue
+        }
         // どの型として読むかは計画が種別から決めている（`planHistoryEntries`）。
         // **本体が無いのに要求された場合も `null`** が返る（`warnBodyNotDownloaded` が鳴る）。
         // その 1 件は事前判定のずれとして別に数える。
@@ -1989,15 +2074,11 @@ export async function fetchDmdataQuakeHistory(
         const parsed = parseHistoryTelegram(entry, files, dec, plan.want, item.date)
         if (!parsed) { skipCounter.add(item.date); continue }
         switch (parsed.kind) {
-          case 'extra': {
+          case 'extra':
             // 帯と長周期は「種別ごとに最新 1 通」だけを残す（画面に出るのは 1 つ・長周期は
             // 地震ごと）。古い報まで流すと、初期状態が入れた新しい値を上書きしうる。
-            const prev = extraLatest.get(parsed.key)
-            if (!prev || entryTime.getTime() > prev.timeMs) {
-              extraLatest.set(parsed.key, { payload: parsed.payload, timeMs: entryTime.getTime() })
-            }
+            keepExtra(parsed.key, parsed.payload, entryTime.getTime())
             break
-          }
           case 'tsunami':
             tsunamis.push(parsed.tsunami)
             break
@@ -2114,6 +2195,15 @@ export async function fetchDmdataQuakeHistory(
   } else if (quakes.length === 0) {
     log.warn(`[replay] 履歴用に ${usedDays} 日ぶんを読んだが地震電文は 0 件（${before.toISOString()} 以前）`)
   }
+  // **揃わなかった二進電文の断片を取りこぼしとして数える**（本編の再生と同じ理由。この入れ物は
+  // 取得 1 回きりなので、ここで見ないと残った断片は黙って消え、その地震だけ分布が出ない）。
+  for (const key of bufrFragments.unresolvedKeys) {
+    if (countedBinaryKeys.has(key)) continue
+    // **鍵からは日を復元できない**ので不明扱い（鍵は種別と発表時刻から作った文字列）。
+    log.warn(`[replay] 履歴用の二進電文の断片が揃いませんでした（分布は出ません）key=${key}`)
+    skipCounter.add(UNKNOWN_SKIP_DAY)
+  }
+
   // 帯と長周期は古い順に流す（`useReplayController` が初期状態の後に注入する）。
   const extras: ReplayEntry[] = [...extraLatest.values()]
     .sort((a, b) => a.timeMs - b.timeMs)

@@ -145,8 +145,18 @@ interface Group {
  * ライブ（WebSocket）・アーカイブ・当日経路で**それぞれ別のインスタンスを持つ**。取得元ごとに
  * 電文の到来の仕方が違い、混ぜると再生中にライブの断片が紛れ込む。
  */
+/** 捨てた電文の識別名を覚えておく上限（→ `BufrFragmentStore.discard`）。 */
+const MAX_DISCARDED_KEYS = 64
+
 export class BufrFragmentStore {
   private readonly groups = new Map<string, Group>()
+  /**
+   * 組み立ての途中で**捨てた**電文の識別名（知らない符号・抱えすぎ・1 報目が BUFR でない・
+   * 合計が宣言を超えた・時限切れ）。捨てると `groups` から消えるので、`pendingKeys` だけを見る
+   * 集計からは漏れる —— 警告のログにしか残らず、「分布が出ない」が「発表が無かった」と
+   * 見分けられなくなる。**後から同じ電文が揃ったら外す。**
+   */
+  private readonly discarded = new Set<string>()
   private readonly ttlMs: number
   private readonly maxGroups: number
 
@@ -175,7 +185,7 @@ export class BufrFragmentStore {
       // 符号の形が変わった＝分割の規約が変わった印。**その断片だけ捨てて残りを待つのではなく、
       // 電文ごと諦める**（どこに入る断片か分からないまま結合すると順序が狂う）。
       log.warn(`[bufr] 知らない分割報符号なので電文を捨てます designation=${String(designation)} key=${key}`)
-      this.groups.delete(key)
+      this.discard(key)
       return null
     }
 
@@ -185,7 +195,7 @@ export class BufrFragmentStore {
         // いちばん古いものから落とす。断片が欠けたまま残っている電文が対象になる。
         const oldest = [...this.groups.entries()].sort((a, b) => a[1].updatedAt - b[1].updatedAt)[0]
         log.warn(`[bufr] 抱えている分割電文が上限（${this.maxGroups}）に達したので古いものを捨てます key=${oldest[0]}`)
-        this.groups.delete(oldest[0])
+        this.discard(oldest[0])
       }
       g = { parts: new Map(), total: null, updatedAt: nowMs }
       this.groups.set(key, g)
@@ -197,7 +207,7 @@ export class BufrFragmentStore {
       const total = bufrDeclaredLength(body)
       if (total === null) {
         log.warn(`[bufr] 1 報目が BUFR で始まっていないので電文を捨てます key=${key}`)
-        this.groups.delete(key)
+        this.discard(key)
         return null
       }
       g.total = total
@@ -212,7 +222,7 @@ export class BufrFragmentStore {
       size += part.length
       if (size > g.total) {
         log.warn(`[bufr] 断片の合計が宣言全長を超えました（宣言 ${g.total} / 合計 ${size}）。電文を捨てます key=${key}`)
-        this.groups.delete(key)
+        this.discard(key)
         return null
       }
       if (size === g.total) {
@@ -224,6 +234,7 @@ export class BufrFragmentStore {
           o += p.length
         }
         this.groups.delete(key)
+        this.discarded.delete(key)
         return out
       }
     }
@@ -245,12 +256,27 @@ export class BufrFragmentStore {
         `[bufr] 分割電文が揃わないまま時限を過ぎました（断片 ${g.parts.size} 個・`
         + `最後の受信から ${Math.round(ageMs / 60000)} 分）key=${key}`,
       )
-      this.groups.delete(key)
+      this.discard(key)
+    }
+  }
+
+  private discard(key: string): void {
+    this.groups.delete(key)
+    this.discarded.add(key)
+    // **上限を置く。** ライブ（WebSocket）の入れ物は切断まで使い続けるので、無制限だと
+    // 捨てた鍵が積み上がり続ける（ライブはこの記録を読まない）。リプレイ・履歴は取得 1 回きりで
+    // 数件にしかならないので、古い順に落としても集計は変わらない。Set は挿入順を保つ。
+    if (this.discarded.size > MAX_DISCARDED_KEYS) {
+      const oldest = this.discarded.values().next().value
+      if (oldest !== undefined) this.discarded.delete(oldest)
     }
   }
 
   /** 再生の開始・リセットで呼ぶ。時間軸が変わると持ち越した断片は意味を失う。 */
-  clear(): void { this.groups.clear() }
+  clear(): void {
+    this.groups.clear()
+    this.discarded.clear()
+  }
 
   /** テストと診断用。抱えている電文の数。 */
   get pendingCount(): number { return this.groups.size }
@@ -262,6 +288,13 @@ export class BufrFragmentStore {
    * 消える。呼び出し側がここを見て取りこぼしとして数える。
    */
   get pendingKeys(): string[] { return [...this.groups.keys()] }
+
+  /**
+   * 最後まで読めなかった電文の識別名＝揃わないまま残っているもの（`pendingKeys`）と、
+   * 途中で捨てたもの。**取得が終わったあとの取りこぼしの集計はこちらを見る**
+   * （`pendingKeys` だけだと、捨てた電文が集計から漏れる）。
+   */
+  get unresolvedKeys(): string[] { return [...new Set([...this.groups.keys(), ...this.discarded])] }
 }
 
 /** DMDATA のドキュメントに倣った電文の識別名（GTS 基準）。 */

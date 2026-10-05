@@ -128,7 +128,7 @@ function renderCard(
       updateMarks={new Map()}
       activeLpgmEventId={opts.lpgm ? EVENT_ID : null}
       onToggleLpgm={() => {}}
-      estimatedIntensity={null}
+      estimatedIntensities={[]}
       distributionQuakeKey={null}
       onToggleDistribution={() => {}}
       unreceivedQuakeKey={opts.unreceived ? quakeEventKey(quake) : null}

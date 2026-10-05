@@ -6,6 +6,7 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   matchEstimatedIntensity, matchEstimatedIntensityArrival, estimatedIntensityFor,
   estimatedIntensityAvailability, decideEstimatedIntensityUpdate, isNewEstimatedIntensity,
+  isSameEstimatedIntensityQuake, upsertEstimatedIntensity,
   rememberShownEstimatedIntensity, MAX_SHOWN_ESTIMATED_INTENSITY_ARRIVALS,
 } from './estimatedIntensity'
 import type { JMAQuake, JMAEstimatedIntensity, IntensityScale } from '../types/earthquake'
@@ -113,14 +114,87 @@ describe('matchEstimatedIntensityArrival', () => {
 
 describe('estimatedIntensityFor', () => {
   it('持っていなければ null', () => {
-    expect(estimatedIntensityFor(quake('2026-07-28T16:27:00+09:00'), null)).toBeNull()
+    expect(estimatedIntensityFor(quake('2026-07-28T16:27:00+09:00'), [])).toBeNull()
   })
-  it('別の地震のものなら null', () => {
-    expect(estimatedIntensityFor(quake('2026-07-28T16:27:00+09:00'), ei('2026-07-28T07:20:00.000Z'))).toBeNull()
+  it('別の地震のものしか無ければ null', () => {
+    expect(estimatedIntensityFor(quake('2026-07-28T16:27:00+09:00'), [ei('2026-07-28T07:20:00.000Z')])).toBeNull()
   })
   it('同じ地震のものなら返す', () => {
     const x = ei('2026-07-28T07:27:00.000Z')
-    expect(estimatedIntensityFor(quake('2026-07-28T16:27:00+09:00'), x)).toBe(x)
+    expect(estimatedIntensityFor(quake('2026-07-28T16:27:00+09:00'), [x])).toBe(x)
+  })
+
+  // 正: **地震ごとに持つので、過去の地震のカードにも引き当たる**（最新の 1 通しか持たなかった
+  // 頃は、後から別の地震の分布が届いた時点で前の地震のカードから消えていた）。
+  it('別の地震の分布が後から届いていても、自分の地震のものを返す', () => {
+    const older = ei('2026-07-28T07:27:00.000Z')
+    const newer = { ...ei('2026-07-28T09:05:00.000Z', 35.0, 139.0), time: '2026-07-28T18:20:00+09:00' }
+    expect(estimatedIntensityFor(quake('2026-07-28T16:27:00+09:00'), [older, newer])).toBe(older)
+    expect(estimatedIntensityFor(quake('2026-07-28T18:05:00+09:00', 35.0, 139.0), [older, newer])).toBe(newer)
+  })
+
+  // 安全弁: 同じ地震とみなせるものが複数あっても（一覧の不変条件が崩れた場合）、発表の新しい方を返す。
+  it('同じ地震のものが重なっていたら発表の新しい方を返す', () => {
+    const a = ei('2026-07-28T07:27:00.000Z')
+    const b = { ...a, time: '2026-07-28T16:38:00+09:00' }
+    expect(estimatedIntensityFor(quake('2026-07-28T16:27:00+09:00'), [b, a])).toBe(b)
+    expect(estimatedIntensityFor(quake('2026-07-28T16:27:00+09:00'), [a, b])).toBe(b)
+  })
+})
+
+describe('isSameEstimatedIntensityQuake', () => {
+  // 正: 発現時刻（分）が同じで震源が近ければ同じ地震。カードとの引き当てと同じ物差し。
+  it('同じ分で震源が近ければ同じ地震', () => {
+    expect(isSameEstimatedIntensityQuake(ei('2026-07-28T07:27:10.000Z'), ei('2026-07-28T07:27:40.000Z', 32.7, 130.8))).toBe(true)
+  })
+  // 対照: 分が違えば別の地震。
+  it('分が違えば別の地震', () => {
+    expect(isSameEstimatedIntensityQuake(ei('2026-07-28T07:27:00.000Z'), ei('2026-07-28T07:28:00.000Z'))).toBe(false)
+  })
+  // 安全弁: 同じ分でも離れていれば別の地震（同じ分に離れた地方で起きた地震を 1 つに畳まない）。
+  it('同じ分でも震源が離れていれば別の地震', () => {
+    expect(isSameEstimatedIntensityQuake(ei('2026-07-28T07:27:00.000Z'), ei('2026-07-28T07:27:00.000Z', 43.0, 145.0))).toBe(false)
+  })
+})
+
+describe('upsertEstimatedIntensity', () => {
+  const kumaEi = ei('2026-07-28T07:27:00.000Z')
+  const otherEi = { ...ei('2026-07-28T07:31:00.000Z', 35.0, 139.0), time: '2026-07-28T16:36:00+09:00', count: 812 }
+
+  // 正: 別の地震の分布は**置き換えずに足す**。
+  it('別の地震の分布は足して両方持つ', () => {
+    const r = upsertEstimatedIntensity([kumaEi], otherEi)
+    expect(r.update).toEqual({ apply: true, reason: 'first' })
+    expect(r.list).toEqual([kumaEi, otherEi])
+  })
+
+  // 正: 同じ地震の続報は、その地震の 1 通だけを置き換える（他の地震の分布は残る）。
+  it('同じ地震の続報はその 1 通だけを置き換える', () => {
+    const follow = { ...kumaEi, time: '2026-07-28T16:38:00+09:00', count: 1701 }
+    const r = upsertEstimatedIntensity([kumaEi, otherEi], follow)
+    expect(r.update).toEqual({ apply: true, reason: 'newer' })
+    expect(r.list).toEqual([follow, otherEi])
+  })
+
+  // 安全弁: **遅れて届いた古い地震の分布が、新しい地震の分布を押しのけない。**
+  // 最新の 1 通しか持たなかった頃は「別の地震でも発表が古ければ採らない」で防いでいたが、
+  // その代わりに古い地震の分布を捨てていた。地震ごとに持てば両方残せる。
+  it('発表の古い別の地震の分布も、新しい地震の分布を消さずに足す', () => {
+    const r = upsertEstimatedIntensity([otherEi], kumaEi)
+    expect(r.update).toEqual({ apply: true, reason: 'first' })
+    expect(r.list).toEqual([otherEi, kumaEi])
+  })
+
+  // 対照: 同じ地震の古い報・重複配信では一覧を変えない（参照も変えない＝再描画を起こさない）。
+  it('同じ地震の古い報と重複配信では一覧を変えない', () => {
+    const follow = { ...kumaEi, time: '2026-07-28T16:38:00+09:00' }
+    const list = [follow, otherEi]
+    const stale = upsertEstimatedIntensity(list, kumaEi)
+    expect(stale.update).toEqual({ apply: false, reason: 'stale' })
+    expect(stale.list).toBe(list)
+    const dup = upsertEstimatedIntensity(list, { ...follow })
+    expect(dup.update).toEqual({ apply: false, reason: 'duplicate' })
+    expect(dup.list).toBe(list)
   })
 })
 
@@ -146,12 +220,12 @@ describe('estimatedIntensityAvailability', () => {
   })
 })
 
+// 同じ地震の 1 通（第 1 引数）と、届いた報（第 2 引数）を比べる。**別の地震との比較はしない**
+// —— 地震ごとに持つので、別の地震の分布は `upsertEstimatedIntensity` が足すだけ。
 describe('decideEstimatedIntensityUpdate', () => {
-  // 熊本（先に起きた地震）と、その 4 分後に別の場所で起きた地震。発表もその順。
   const kuma = { arrivalTime: '2026-07-28T07:27:00.000Z', time: '2026-07-28T16:32:00+09:00', count: 1693 }
-  const later = { arrivalTime: '2026-07-28T07:31:00.000Z', time: '2026-07-28T16:36:00+09:00', count: 812 }
 
-  // 正: 最初の 1 通は無条件で反映する。
+  // 正: その地震の分布をまだ持っていなければ反映する。
   it('持っていなければ反映する', () => {
     expect(decideEstimatedIntensityUpdate(null, kuma)).toEqual({ apply: true, reason: 'first' })
   })
@@ -162,10 +236,6 @@ describe('decideEstimatedIntensityUpdate', () => {
       .toEqual({ apply: true, reason: 'newer' })
   })
 
-  // 正: 別の地震の、より新しい分布へは入れ替える。**アプリが持つのは最新の 1 通だけ。**
-  it('別の地震の新しい報へ入れ替える', () => {
-    expect(decideEstimatedIntensityUpdate(kuma, later)).toEqual({ apply: true, reason: 'switched' })
-  })
 
   // 対照: 同じ地震の古い報では退行しない。
   it('同じ地震の古い報では退行しない', () => {
@@ -173,13 +243,6 @@ describe('decideEstimatedIntensityUpdate', () => {
       .toEqual({ apply: false, reason: 'stale' })
   })
 
-  // 安全弁: **別の地震のものでも、発表が古ければ採らない。**
-  // 到着順は発表順と一致しない（分割の結合が遅れる・当日経路とライブが前後する）ので、
-  // 比較を「同じ地震どうし」に限ると、遅れて届いた古い地震の分布が新しいほうを押しのける。
-  // 震度5弱以上が短時間に続く場面でだけ起きる——いちばん起きてほしくないときに起きる。
-  it('別の地震でも発表が古ければ採らない', () => {
-    expect(decideEstimatedIntensityUpdate(later, kuma)).toEqual({ apply: false, reason: 'stale' })
-  })
 
   // 安全弁: 内容が同じ重複配信は反映しない（実電文で観測している）。
   // ここを通すと 3MB の入れ替えと再描画が無駄に走る。
@@ -196,16 +259,17 @@ describe('decideEstimatedIntensityUpdate', () => {
 
 // 読み上げが「受信しました」と「更新されました」を言い分けるための台帳。
 //
-// **判定そのもの（上の describe）とは別の軸。** 反映するかどうかは「いま出している 1 通」との
-// 比較で決まるが、初報として読むかどうかは「その地震の分布を前に伝えたか」で決まる。
+// **判定そのもの（上の describe）とは別の軸。** 反映するかどうかは「同じ地震の 1 通」との
+// 比較で決まるが、初報として読むかどうかは「その地震の分布を前に伝えたか」で決まる ——
+// 履歴から黙って取り込んだ分布は持っているが、まだ伝えていない。
 describe('isNewEstimatedIntensity / rememberShownEstimatedIntensity', () => {
   // 実電文（2024-01-01 の能登半島地震）の並び。JST では 16:10 が本震・16:18 が余震。
   const NOTO = '2024-01-01T07:10:00.000Z'
   const AFTERSHOCK = '2024-01-01T07:18:00.000Z'
 
   // 正: 別の地震の分布を挟んでも、前に伝えた地震の続報は「更新」として読む。
-  // **これは `decideEstimatedIntensityUpdate` の理由では出せない** —— 挟まれた時点で
-  // 「いま出している 1 通」が別の地震のものになり、続報が `switched` になる。
+  // （かつてアプリが最新の 1 通しか持たなかった頃、反映の判定の理由で言い分けていて
+  // この並びで誤った。台帳を分けたのはそのため。）
   it('別の地震の分布を挟んでも、前に伝えた地震の続報は更新として読む', () => {
     const shown: string[] = []
     expect(isNewEstimatedIntensity(shown, NOTO)).toBe(true)          // 16:20 本震の初報
