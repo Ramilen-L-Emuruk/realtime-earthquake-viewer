@@ -10,7 +10,7 @@
 // 止まっていることは**行の色**が示す（`index.tsx`）。
 
 import type { SeismoStationState } from '../../hooks/useSeismoStation'
-import { intensityGradeColor, measuredIntensityToGrade } from '../../utils/measuredIntensity'
+import { formatMeasured, intensityGradeColor, measuredIntensityToGrade } from '../../utils/measuredIntensity'
 
 export interface SeismoOverlayRow {
   readonly stationId: string
@@ -35,19 +35,6 @@ export interface SeismoOverlayRow {
    * 同じ作法で、隣に並ぶ帯なので表現を揃える。
    */
   readonly silent: boolean
-}
-
-/**
- * 計測震度を小数 1 桁の文字列にする。**マイナスゼロを出さない。**
- *
- * 静穏時のホストは `-0.04` のようなわずかな負の値をよく返すが、`toFixed` は符号を
- * 保つので `"-0.0"` になる。**あの見た目は表示が壊れたようにしか見えない** ——
- * この帯は「地震計が生きている」ことを示すのが主な役目なので、いちばん
- * 起こしたくない誤解になる。
- */
-function formatMeasured(value: number): string {
-  const rounded = Number(value.toFixed(1))
-  return (rounded === 0 ? 0 : rounded).toFixed(1)
 }
 
 /**

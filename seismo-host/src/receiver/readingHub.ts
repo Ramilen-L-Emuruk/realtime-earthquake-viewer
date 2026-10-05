@@ -15,6 +15,7 @@
 
 import type { IntensityReading, WaveChunk } from './intensityPipeline'
 import type { FusedWaveChunk, SensorMemberRef, SensorPairDiff, StationIntensityReading } from './sensorFusion'
+import type { ShakeEventRecord } from '../detection/shakeEvent'
 
 /**
  * 同時に繋いでいられる数。
@@ -65,6 +66,12 @@ export type HubMessage =
    * 配る相手は**顔ぶれで選ぶ**（`WAVE_TIER` の `'pair'` と {@link PairWant}）。
    */
   | { readonly kind: 'station-diff'; readonly diff: SensorPairDiff }
+  /**
+   * 検出した揺れの記録 1 版（REQUIREMENTS.md §6・§9。`../detection/shakeEvent.ts`）。
+   * **全員へ配る。** 1 日に十数件・1 件 1 KB ほどで、照合の結果が出るたびに同じ揺れの
+   * 新しい版が届く（受け手は `id` ごとに最後の `rev` を採る）。
+   */
+  | { readonly kind: 'shake-event'; readonly event: ShakeEventRecord }
 
 /**
  * 購読者が波形をどこまで欲しがっているか。
@@ -144,6 +151,7 @@ const WAVE_TIER: Record<HubMessage['kind'], WaveTier> = {
   'station-reading': 'always',
   'station-wave': 'station',
   'station-diff': 'pair',
+  'shake-event': 'always',
 }
 
 /** 差分の種別なら中身を、そうでなければ null。**`'pair'` の場で型を絞るため。** */

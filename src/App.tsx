@@ -21,6 +21,7 @@ import { SeismoLinkStatus } from './components/SeismoLinkStatus'
 import { SeismoOverlay } from './components/SeismoOverlay'
 import { useSeismoStation } from './hooks/useSeismoStation'
 import { useSeismoQuakeWaves } from './hooks/useSeismoQuakeWaves'
+import { useQuakeOriginSeconds } from './hooks/useQuakeOriginSeconds'
 import { SeismoWaveChart } from './components/SeismoWaveChart'
 import { useSeismoWaveVisibility } from './hooks/useSeismoWaveVisibility'
 import { EarthquakeTab } from './components/EarthquakeTab'
@@ -2171,6 +2172,16 @@ export function App() {
   //
   // **波形を出さない設定なら取りに行かない。** `seismoWave` は「いまの波形」を
   // 出すかどうかの設定だが、絵そのものを見たくないという意思表示でもある。
+  // 地震カードの発生時刻を秒まで決める（P/S 線の起点。→ hooks/useQuakeOriginSeconds.ts）。
+  // **波形を出す設定のときだけ動かす** —— 出さないなら取りに行く理由も、端末に残す理由も無い。
+  const quakeOriginSeconds = useQuakeOriginSeconds({
+    enabled: settings.seismoEnabled && settings.seismoWave !== 'off',
+    isDmdss,
+    apiKey: debouncedApiKey,
+    quakes: filteredEarthquakes,
+    activeEEWs,
+    replayOffsetMs: replayTimeOffset,
+  })
   const seismoQuakeWaves = useSeismoQuakeWaves({
     enabled: settings.seismoEnabled && settings.seismoWave !== 'off',
     baseUrl: settings.seismoHostUrl,
@@ -2178,6 +2189,7 @@ export function App() {
     scope: nearbyScope,
     readWave: seismo.readWave,
     replayOffsetMs: replayTimeOffset,
+    originSeconds: quakeOriginSeconds,
   })
   // 絵を出すかどうかは受け取るかどうかと別に決める（→ hooks/useSeismoWaveVisibility.ts）。
   //

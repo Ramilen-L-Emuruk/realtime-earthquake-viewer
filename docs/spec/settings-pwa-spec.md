@@ -1914,7 +1914,8 @@ Playwright / Chrome DevTools でボタン発火後の DOM 状態を確認した�
 - `src/utils/knet/seismicIntensity.ts` — 気象庁の計測震度算出アルゴリズムの実装（FFTベースの
   周期補正フィルター。記録全体へ 1 回当てる）
 - `src/utils/knet/intensityCommon.ts` — 上の 2 つが共有する定数と換算（0.3 秒の基準・時系列の刻み）。
-  FFT を持たないので、刻みを借りるだけの側が `fft-js` まで読み込まずに済む
+  FFT を持たないので、刻みを借りるだけの側が FFT まで読み込まずに済む
+- `src/utils/knet/fft.ts` — 計測震度のフィルタが使う高速フーリエ変換（型付き配列・基数 2）
 - `src/utils/knet/parseAllStationFiles.ts` — ZIP内のNS/EW/UD波形ファイルの一括解析
 - `src/utils/knet/buildEventResultFromZip.ts` — ZIP解析からピーク震度チェックまでの一連の処理
   （CLIとブラウザ内インポートの共通経路）

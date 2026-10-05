@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { computeWaveArrival } from './seismoWaveArrival'
+import { computeHypocentralDistanceKm, computeWaveArrival } from './seismoWaveArrival'
 import type { Hypocenter } from '../types/earthquake'
 
 const ORIGIN_MS = new Date('2026-09-30T12:00:00+09:00').getTime()
@@ -95,5 +95,31 @@ describe('computeWaveArrival', () => {
 
   it('発生時刻が読めなければ線を引かない', () => {
     expect(computeWaveArrival({ originMs: NaN, hypocenter: hypo(), ...HOME })).toBeNull()
+  })
+})
+
+describe('computeHypocentralDistanceKm', () => {
+  it('震源の真上なら深さそのもの', () => {
+    const km = computeHypocentralDistanceKm({ hypocenter: hypo(), stationLat: 37.5, stationLon: 137.2 })
+    expect(km).toBeCloseTo(16, 6)
+  })
+
+  it('離れた観測点では震央距離より長く、深さより長い', () => {
+    const km = computeHypocentralDistanceKm({ hypocenter: hypo(), ...HOME })!
+    // 能登半島沖〜東京はおよそ 300km 前後
+    expect(km).toBeGreaterThan(250)
+    expect(km).toBeLessThan(400)
+  })
+
+  // 対照: 0 は「ごく浅い」という有効値。
+  it('深さ 0 は有効値として通す', () => {
+    expect(computeHypocentralDistanceKm({ hypocenter: hypo({ depth: 0 }), ...HOME })).not.toBeNull()
+  })
+
+  // 安全弁: センチネルを数として使わない。
+  it('深さ不明・位置不明・観測点の座標なしでは出さない', () => {
+    expect(computeHypocentralDistanceKm({ hypocenter: hypo({ depth: -1 }), ...HOME })).toBeNull()
+    expect(computeHypocentralDistanceKm({ hypocenter: hypo({ latitude: -200, longitude: -200 }), ...HOME })).toBeNull()
+    expect(computeHypocentralDistanceKm({ hypocenter: hypo(), stationLat: null, stationLon: null })).toBeNull()
   })
 })
