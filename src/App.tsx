@@ -851,7 +851,7 @@ export function App() {
   }, [requestAutoTab, settings.tsunamiPriorityDefault, settings.voicevoxEnabled])
 
   const {
-    earthquakes, tsunamis, activeEEWs, lpgmByEventId, quakeUpdateMarks, nankai, nankaiCommentary, kohatsu, quakeNotice, earthquakeCount, estimatedIntensity, connectionStatus, lastUpdate, isLoading, isLoadingMore, hasMore, error,
+    earthquakes, tsunamis, activeEEWs, lpgmByEventId, quakeUpdateMarks, nankai, nankaiCommentary, kohatsu, quakeNotice, earthquakeCount, estimatedIntensities, connectionStatus, lastUpdate, isLoading, isLoadingMore, hasMore, error,
     historyLoss, loadMoreFailed,
     telegramLog, clearTelegramLog,
     injectEvent, loadMoreEarthquakes,
@@ -2046,7 +2046,7 @@ export function App() {
   // 地図に出す推計震度分布図。**地図が出している地震のものだけ**を渡す（引き当ては
   // 発現時刻。→ `estimatedIntensityFor`）。別の地震のものを渡すと、まるで違う場所の
   // 分布が「気象庁の推計」として重なる。
-  const mapEstimatedIntensity = estimatedIntensityFor(mapQuake, estimatedIntensity)
+  const mapEstimatedIntensity = estimatedIntensityFor(mapQuake, estimatedIntensities)
   const mapDistributionMode = !!mapQuake && distributionQuakeKey === quakeEventKey(mapQuake)
   // 未入電の印を寄り具合に関わらず出すか。**地図が出している地震のものだけ**を見る
   // （分布モードと同じ理由）。
@@ -2416,7 +2416,7 @@ export function App() {
                 updateMarks={quakeUpdateMarks}
                 activeLpgmEventId={activeLpgmEventId}
                 onToggleLpgm={toggleLpgmFromEarthquake}
-                estimatedIntensity={estimatedIntensity}
+                estimatedIntensities={estimatedIntensities}
                 distributionQuakeKey={distributionQuakeKey}
                 onToggleDistribution={toggleDistribution}
                 unreceivedQuakeKey={unreceivedQuakeKey}

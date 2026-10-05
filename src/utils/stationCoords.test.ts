@@ -215,10 +215,10 @@ describe('onStationCoordsLoaded', () => {
 
 // 読み上げの並べ替え（ttsText.ts）はこの索引に「気象庁の標準順」であることを託しているため、
 // 索引の作り方だけでなく、元データがその前提を満たしているかも実データで確かめる。
-describe('buildRegionOrderIndex', () => {
+describe('regionOrderIndexOf', () => {
   it('区域名は自身の順位を、県名はその県の先頭区域の順位を返す', async () => {
-    const { buildRegionOrderIndex } = await import('./stationCoords')
-    const index = buildRegionOrderIndex({
+    const { regionOrderIndexOf } = await import('./stationCoords')
+    const index = regionOrderIndexOf({
       stations: {},
       areas: {
         '青森県|青森県津軽北部': [40.8, 140.5],
@@ -239,9 +239,9 @@ describe('buildRegionOrderIndex', () => {
   })
 
   it('実データでは同じ県の区域が連続し、県の順序が北海道から沖縄県まで通る', async () => {
-    const { buildRegionOrderIndex } = await import('./stationCoords')
+    const { regionOrderIndexOf } = await import('./stationCoords')
     const data = JSON.parse(readFileSync('public/data/station-coords.json', 'utf8')) as StationCoordsData
-    const index = buildRegionOrderIndex(data)
+    const index = regionOrderIndexOf(data)
 
     // 県ごとの区域が飛び飛びだと「県名の順位＝先頭区域の順位」では県のまとまりを作れない。
     const prefs = Object.keys(data.areas).map(key => key.slice(0, key.indexOf('|')))
@@ -320,7 +320,7 @@ describe('観測点 → 一次細分区域の逆引き（lookupStationRegion）'
     })
     expect(unresolved).toEqual([])
 
-    // 観測点名の重複が無いことは、都道府県を観測点名から逆引きする経路（`buildStationPrefIndex`
+    // 観測点名の重複が無いことは、都道府県を観測点名から逆引きする経路（`stationPrefIndexOf`
     // は初出優先）が正しい県を返す前提。崩れると読み上げも地図も隣県の区域を指しうる。
     const names = keys.map(key => key.slice(key.indexOf('|') + 1))
     expect(new Set(names).size).toBe(names.length)
@@ -471,26 +471,26 @@ describe('現行の一覧に無い観測点（unlisted）', () => {
   // 正: 現行に無い観測点でも、座標・区域・都道府県が引ける。ここが引けないと、
   // 過去の電文を再生したときその観測点が地図から丸ごと消える。
   it('現行に無い観測点でも座標・区域・都道府県を引ける', async () => {
-    const { lookupPointCoords, lookupStationRegion, buildStationPrefIndex } = await freshModule()
+    const { lookupPointCoords, lookupStationRegion, stationPrefIndexOf } = await freshModule()
     expect(lookupPointCoords(DATA, '大阪府', '豊中市役所', false)).toEqual([34.78, 135.47])
     expect(lookupStationRegion(DATA, '大阪府', '豊中市役所')).toBe('大阪府北部')
-    expect(buildStationPrefIndex(DATA).get('豊中市役所')).toBe('大阪府')
+    expect(stationPrefIndexOf(DATA).get('豊中市役所')).toBe('大阪府')
   })
 
   // 対照: どちらにも無い名前は従来どおり引けない。落とし先を足したことで、
   // 存在しない観測点にまで座標が付くようになってはいけない。
   it('どちらにも無い観測点は引けないまま', async () => {
-    const { lookupPointCoords, lookupStationRegion, buildStationPrefIndex } = await freshModule()
+    const { lookupPointCoords, lookupStationRegion, stationPrefIndexOf } = await freshModule()
     expect(lookupPointCoords(DATA, '東京都', '実在しない観測点', false)).toBeNull()
     expect(lookupStationRegion(DATA, '東京都', '実在しない観測点')).toBeNull()
-    expect(buildStationPrefIndex(DATA).get('実在しない観測点')).toBeUndefined()
+    expect(stationPrefIndexOf(DATA).get('実在しない観測点')).toBeUndefined()
   })
 
   // 安全弁: 同じ名前が両方にあれば現行が勝つ。負けると、いま動いている観測点の座標が
   // 過去の値へ置き換わる（しかも画面には有効な座標として出るので気づけない）。
   it('同じ観測点名が両方にあれば現行を採る', async () => {
-    const { lookupPointCoords, buildStationPrefIndex } = await freshModule()
-    expect(buildStationPrefIndex(DATA).get('輪島市鳳至町')).toBe('石川県')
+    const { lookupPointCoords, stationPrefIndexOf } = await freshModule()
+    expect(stationPrefIndexOf(DATA).get('輪島市鳳至町')).toBe('石川県')
     expect(lookupPointCoords(DATA, '石川県', '輪島市鳳至町', false)).toEqual([37.39, 136.9])
   })
 
@@ -527,11 +527,11 @@ describe('現行の一覧に無い観測点（unlisted）', () => {
   // `unlisted` を持たない旧形式（配信更新の直後に PWA が古いデータを掴んでいる間）でも
   // 例外にせず、従来どおりの範囲で引けること。
   it('unlisted を持たない旧形式でも引ける', async () => {
-    const { lookupPointCoords, buildStationPrefIndex } = await freshModule()
+    const { lookupPointCoords, stationPrefIndexOf } = await freshModule()
     const old: StationCoordsData = { stations: DATA.stations, areas: DATA.areas, regionNames: DATA.regionNames }
     expect(lookupPointCoords(old, '石川県', '輪島市鳳至町', false)).toEqual([37.39, 136.9])
     expect(lookupPointCoords(old, '大阪府', '豊中市役所', false)).toBeNull()
-    expect(buildStationPrefIndex(old).get('豊中市役所')).toBeUndefined()
+    expect(stationPrefIndexOf(old).get('豊中市役所')).toBeUndefined()
   })
 
   it('実データでは現行と重ならず、全件が区域を持つ', async () => {
@@ -545,7 +545,7 @@ describe('現行の一覧に無い観測点（unlisted）', () => {
     // 生成を通さずに手で書き足された場合にここで気づけるようにするため。
     expect(keys.filter(key => key in data.stations)).toEqual([])
 
-    // 観測点名の逆引き（`buildStationPrefIndex` は初出優先）が正しい県を返す前提。
+    // 観測点名の逆引き（`stationPrefIndexOf` は初出優先）が正しい県を返す前提。
     // 現行と名前が衝突すると、その名前は現行の県でしか引けなくなる。
     const currentNames = new Set(Object.keys(data.stations).map(key => key.slice(key.indexOf('|') + 1)))
     expect(keys.map(key => key.slice(key.indexOf('|') + 1)).filter(name => currentNames.has(name))).toEqual([])
@@ -558,5 +558,40 @@ describe('現行の一覧に無い観測点（unlisted）', () => {
       return lookupStationRegion(data, key.slice(0, sep), key.slice(sep + 1)) == null
     })
     expect(unresolved).toEqual([])
+  })
+})
+
+// 地震カードは 1 枚ごとに索引を引く。呼ぶたびに作ると一覧の枚数ぶん座標表を舐め直し、
+// 群発の最中は取り込みのたびに画面が止まっていた（能登の 7 日間・651 枚で約 2.4 秒）。
+describe('座標表から作る索引は、同じ座標表なら作り直さない', { timeout: 15_000 }, () => {
+  const OTHER: StationCoordsData = {
+    stations: { '北海道|札幌中央区北２条': [43.06, 141.35, 0] },
+    areas: { '北海道|石狩地方北部': [43.3, 141.4] },
+    regionNames: ['石狩地方北部'],
+  }
+
+  it('正: 同じ座標表には 4 つの索引とも同じ参照を返す', async () => {
+    const m = await freshModule()
+    expect(m.stationPrefIndexOf(SAMPLE)).toBe(m.stationPrefIndexOf(SAMPLE))
+    expect(m.areaPrefIndexOf(SAMPLE)).toBe(m.areaPrefIndexOf(SAMPLE))
+    expect(m.prefAreaNamesIndexOf(SAMPLE)).toBe(m.prefAreaNamesIndexOf(SAMPLE))
+    expect(m.regionOrderIndexOf(SAMPLE)).toBe(m.regionOrderIndexOf(SAMPLE))
+  })
+
+  it('対照: 別の座標表（取り直した表）にはその中身で作った索引を返す', async () => {
+    const m = await freshModule()
+    const first = m.stationPrefIndexOf(SAMPLE)
+    const other = m.stationPrefIndexOf(OTHER)
+    expect(other).not.toBe(first)
+    expect(other.get('札幌中央区北２条')).toBe('北海道')
+    expect(other.has('輪島市鳳至町')).toBe(false)
+    expect(m.areaPrefIndexOf(OTHER).get('石狩地方北部')).toBe('北海道')
+  })
+
+  it('安全弁: 読み込み済みの表から引く入口も同じ索引を返す（経路ごとに別の索引を渡さない）', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => okResponse(SAMPLE)))
+    const m = await freshModule()
+    const data = await m.loadStationCoords()
+    expect(m.getAreaPrefIndexCache()).toBe(m.areaPrefIndexOf(data))
   })
 })

@@ -1180,4 +1180,60 @@ describe('fetchLiveQuakeTelegrams', () => {
     expect(result.quakes).toHaveLength(0)   // 地震としては数えない
     expect(skippedTotal(result.skippedByDay)).toBe(0)
   })
+
+  // ── 二進電文（推計震度分布図）。過去の地震のカードにも分布を付けるために拾う ──
+
+  // 正: 分割された 2 通を bytes で引き、結合して 1 通の分布として補完へ渡す。
+  // **`text()` で取っていればここで落ちる**（モックは二進を `arrayBuffer` でしか返さない）。
+  it('推計震度分布図を bytes で引いて結合し、補完へ渡す', async () => {
+    const bin = buildSampleTelegram()
+    const { fn } = mockLive({
+      list: [
+        { id: 'hx1', type: 'IXAC41', headTime: '2026-08-23T02:05:00Z', receivedTime: '2026-08-23T02:05:02.000Z', url: 'https://b/hx1', designation: null },
+        { id: 'hx2', type: 'IXAC41', headTime: '2026-08-23T02:05:00Z', receivedTime: '2026-08-23T02:05:03.000Z', url: 'https://b/hx2', designation: 'RRA' },
+      ],
+      binaries: { 'https://b/hx1': bin.slice(0, 32), 'https://b/hx2': bin.slice(32) },
+    })
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    const result = await fetchLiveQuakeTelegrams('key', '2026-08-23', new Date('2026-08-23T03:00:00Z'), false)
+
+    expect(skippedTotal(result.skippedByDay)).toBe(0)
+    expect(result.extras.map(e => e.payload.kind)).toEqual(['estimatedIntensity'])
+    expect(result.extras[0].silent).toBe(true)
+  })
+
+  // 対照: 試験報は取り込まない（非 XML 電文は一覧の `test` で弾けないので本文で判定する）。
+  // **取りこぼしにも数えない** —— 正常な配信で、読めなかったわけではない。
+  it('推計震度分布図の試験報は取り込まず、取りこぼしにも数えない', async () => {
+    const { fn } = mockLive({
+      list: [{ id: 'hx3', type: 'IXAC41', headTime: '2026-08-23T02:05:00Z', receivedTime: '2026-08-23T02:05:02.000Z', url: 'https://b/hx3', designation: null }],
+      binaries: { 'https://b/hx3': buildSampleTelegram({ kind: 1 }) },
+    })
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    const result = await fetchLiveQuakeTelegrams('key', '2026-08-23', new Date('2026-08-23T03:00:00Z'), false)
+
+    expect(result.extras).toHaveLength(0)
+    expect(skippedTotal(result.skippedByDay)).toBe(0)
+  })
+
+  // 安全弁: 断片が揃わなければ取りこぼしとして**電文ごとに 1 件**数える。黙って消すと、
+  // 「他の電文は全部読めているのに、その地震だけ分布が出ない」に手掛かりが残らない。
+  it('推計震度分布図の断片が揃わなければ、取りこぼしとして 1 件数える', async () => {
+    const bin = buildSampleTelegram()
+    const { fn } = mockLive({
+      list: [
+        { id: 'hx4', type: 'IXAC41', headTime: '2026-08-23T02:05:00Z', receivedTime: '2026-08-23T02:05:02.000Z', url: 'https://b/hx4', designation: null },
+        { id: 'hx5', type: 'IXAC41', headTime: '2026-08-23T02:05:00Z', receivedTime: '2026-08-23T02:05:03.000Z', url: 'https://b/hx5-missing', designation: 'RRA' },
+      ],
+      binaries: { 'https://b/hx4': bin.slice(0, 32) },
+    })
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    const result = await fetchLiveQuakeTelegrams('key', '2026-08-23', new Date('2026-08-23T03:00:00Z'), false)
+
+    expect(result.extras).toHaveLength(0)
+    expect(result.skippedByDay.get('2026-08-23')).toBe(1)
+  })
 })

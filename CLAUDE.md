@@ -1761,7 +1761,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 種別ごとに最新1通へ畳んでから渡す規則を崩すと、帯（`nankai`/`kohatsu`/`quakeNotice`/`earthquakeCount`）は無条件上書きの実装のため配列の順序次第で古い報の内容が残る。長周期（`lpgmByEventId`）は時刻比較で最新を選ぶため実害は小さい | [`settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「初期状態（24 時間）では足りないものを、履歴の遡り（7 日）から補う」 |
 | 地震カードの打ち切りを帯・長周期には適用しない規則を崩すと、地震活動が多い期間ほど早く打ち切られ、いちばん復元したい状況（群発の最中）で復元できなくなる | [`settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「初期状態（24 時間）では足りないものを、履歴の遡り（7 日）から補う」 |
 | 津波・緊急地震速報を補完対象に含めると、遡り幅も目的も違う履歴側の判定と初期状態の判定が混ざる | [`settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「初期状態（24 時間）では足りないものを、履歴の遡り（7 日）から補う」 |
-| 推計震度分布図を補完対象から除外する規則を崩すと、最新1通しか持たない設計のため過去のカードに紐づかない分布が復元され、ライブ接続時の初回履歴と挙動が食い違う | [`settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「初期状態（24 時間）では足りないものを、履歴の遡り（7 日）から補う」 |
+| 推計震度分布図を履歴の補完で種別ごとに畳む（`historyExtraKey` を電文ごとの鍵から外す）と、同じ地震かの判定が受け手（`upsertEstimatedIntensity`）と 2 か所に分かれ、別の地震の分布が消える。二進電文の解析結果を最後の断片の id にしか控えないと、その日のアーカイブを毎回落とす | [`settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「初期状態（24 時間）では足りないものを、履歴の遡り（7 日）から補う」・[`quake-spec.md`](docs/spec/quake-spec.md) §8「地震ごとに 1 通を持ち、同じ地震の古い報は採らない」 |
 | ライブ接続時の初回履歴で同じ補完（`HISTORY_EXTRA_TYPES`）を行わないと、7日間表示されるはずの帯・長周期がリロードのたびに消える | [`settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「初期状態（24 時間）では足りないものを、履歴の遡り（7 日）から補う」 |
 | 地震カードの一覧を件数基準で別途復元せず初期状態の24時間と同じ扱いにする、または再生中に「もっと見る」を出すと、地震の少ない日は一覧が数枚しか並ばずライブ接続時と見え方が食い違う、または押した際にライブの最新履歴が混ざり再生時刻より未来の地震が一覧に入る | [`settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「地震カードの履歴は件数で遡る」 |
 | 履歴の取得が失敗したときに再生そのものを止めると、一覧が薄くなるだけで済むはずの失敗が電文の再生を止めてしまう | [`settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「地震カードの履歴は件数で遡る」 |

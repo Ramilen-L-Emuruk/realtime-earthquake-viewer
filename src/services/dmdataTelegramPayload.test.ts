@@ -10,7 +10,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   CLASSIFICATIONS, EEW_TYPES, HANDLED_TYPES, buildXmlPayload,
-  buildBinaryPayload, isFilteredBinaryTelegram,
+  buildBinaryPayload, isFilteredBinaryTelegram, historyExtraKey,
 } from './dmdataTelegramPayload'
 import { buildSampleTelegram } from '../test-utils/bufrBuild'
 
@@ -141,5 +141,26 @@ describe('非 XML 電文の試験・訓練配信の抑制', () => {
     // @ts-expect-error 二進電文以外は渡せない（引数は `BinaryReplayPayload`）
     const reject = () => isFilteredBinaryTelegram(xml!, false)
     expect(typeof reject).toBe('function')
+  })
+})
+
+// 履歴の補完で「同じ電文か」を見分ける鍵。推計震度分布図は**中身から作る**。
+// 分割された電文の id は「結合を終えた断片の id」で、当日経路は断片を並列で取るので揺れる。
+describe('推計震度分布図の historyExtraKey', () => {
+  const payloadWithId = (id: string, time = '2026-09-16T00:00:00Z') => {
+    const p = buildBinaryPayload('IXAC41', buildSampleTelegram(), id, time)
+    if (!p) throw new Error('テスト用の BUFR を読めませんでした（テスト側の組み立てを確かめること）')
+    return p
+  }
+
+  // 正: 同じ電文なら、どの断片の id で結合を終えても鍵は同じ。
+  it('同じ電文なら id が違っても鍵は同じ', () => {
+    expect(historyExtraKey(payloadWithId('frag-1'))).toBe(historyExtraKey(payloadWithId('frag-2')))
+  })
+
+  // 対照: 発表時刻が違う（続報）なら別の鍵（畳まない）。
+  it('発表時刻が違えば別の鍵', () => {
+    expect(historyExtraKey(payloadWithId('a', '2026-09-16T00:00:00Z')))
+      .not.toBe(historyExtraKey(payloadWithId('a', '2026-09-16T00:06:00Z')))
   })
 })

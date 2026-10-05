@@ -13,8 +13,11 @@
 import 'fake-indexeddb/auto'
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest'
 import { fetchDmdataQuakeHistory, clearReplayCache, clearArchiveCacheForTest, clearParseCachesForTest } from './dmdataReplay'
-import { clearArchiveBodyDb, archiveBodyDbStats } from '../utils/archiveBodyDb'
+import { clearArchiveBodyDb } from '../utils/archiveBodyDb'
+import { idbMetaStats, ARCHIVE_CACHE_DB } from '../test-utils/idbMetaStats'
 import { setDataApiGateIntervalForTest, resetDataApiGateForTest, setApiGateIntervalForTest, resetApiGateForTest, resetRateLimitsForTest } from './dmdataRequestGates'
+
+const archiveBodyDbStats = () => idbMetaStats(ARCHIVE_CACHE_DB)
 
 // 電文の読み取りに DOMParser が要る（環境は node のまま。理由は `dmdataReplay.test.ts` と同じ）
 import { JSDOM } from 'jsdom'

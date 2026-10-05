@@ -70,7 +70,7 @@ const renderTab = (quake: JMAQuake, opts: { unreceivedOpen?: boolean } = {}) => 
     updateMarks={new Map()}
     activeLpgmEventId={null}
     onToggleLpgm={() => {}}
-    estimatedIntensity={null}
+    estimatedIntensities={[]}
     distributionQuakeKey={null}
     onToggleDistribution={() => {}}
     unreceivedQuakeKey={opts.unreceivedOpen ? quakeEventKey(quake) : null}
@@ -132,7 +132,7 @@ describe('未入電トグル', () => {
         updateMarks={new Map()}
         activeLpgmEventId={null}
         onToggleLpgm={() => {}}
-        estimatedIntensity={null}
+        estimatedIntensities={[]}
         distributionQuakeKey={null}
         onToggleDistribution={() => {}}
         unreceivedQuakeKey={quakeEventKey(makeQuake(MIXED))}

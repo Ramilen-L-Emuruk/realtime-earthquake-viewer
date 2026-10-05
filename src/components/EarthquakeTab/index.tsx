@@ -4,6 +4,7 @@ import { EarthquakeCard } from './EarthquakeCard'
 import { extractQuakeEventId, quakeEventKey } from '../../utils/quakeMerge'
 import type { SeismoQuakeWave } from '../../hooks/useSeismoQuakeWaves'
 import { lpgmMarkKey, type QuakeCardMarks } from '../../utils/quakeUpdateMark'
+import { estimatedIntensityFor } from '../../utils/estimatedIntensity'
 import type { LatLng } from '../../utils/stationCoords'
 import { quakeCardScrollTarget, QUAKE_CARD_KEY_ATTR } from '../../utils/quakeCardScroll'
 import { planFollowScroll } from '../../utils/ttsFollow'
@@ -49,8 +50,11 @@ interface Props {
   updateMarks: ReadonlyMap<string, QuakeCardMarks>
   activeLpgmEventId: string | null
   onToggleLpgm: (eventId: string) => void
-  /** アプリが持っている最新の推計震度分布図（IXAC41）。どのカードのものかはカード側で引き当てる。 */
-  estimatedIntensity: JMAEstimatedIntensity | null
+  /**
+   * アプリが持っている推計震度分布図（IXAC41・地震ごとに 1 通）。どのカードのものかは
+   * ここで引き当て、カードへはその地震の 1 通だけを渡す（→ `EarthquakeCard` の同名の props）。
+   */
+  estimatedIntensities: readonly JMAEstimatedIntensity[]
   /** 震度分布モードを開いている地震の `eventKey`。 */
   distributionQuakeKey: string | null
   onToggleDistribution: (eventKey: string) => void
@@ -179,7 +183,7 @@ function useQuakeCardScroll(
 // 地震情報タブの右パネル。地震カードの一覧を表示し、クリックで地図表示対象を選択する。
 // 地図そのものは App が常時表示する。
 // React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
-export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selectedId, speakingKey, followSpeech, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, error, historyLoss, loadMoreFailed, fetchThrottled, lpgmByEventId, updateMarks, activeLpgmEventId, onToggleLpgm, estimatedIntensity, distributionQuakeKey, onToggleDistribution, unreceivedQuakeKey, onToggleUnreceived, onFocusMap, speakingTelegramTextSubject, seismoWaves }: Props) {
+export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selectedId, speakingKey, followSpeech, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, error, historyLoss, loadMoreFailed, fetchThrottled, lpgmByEventId, updateMarks, activeLpgmEventId, onToggleLpgm, estimatedIntensities, distributionQuakeKey, onToggleDistribution, unreceivedQuakeKey, onToggleUnreceived, onFocusMap, speakingTelegramTextSubject, seismoWaves }: Props) {
   // **早期 return より前に置く**（フックの数を回ごとに変えないため）。一覧が無い回は寄せずに持ち越す。
   const listRef = useRef<HTMLDivElement>(null)
   useQuakeCardScroll(listRef, quakeCardScrollTarget({ earthquakes, selectedKey: selectedId, speakingKey, followSpeech }))
@@ -257,7 +261,7 @@ export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selected
           lpgmMarks={updateMarks.get(lpgmMarkKey(extractQuakeEventId(quake) ?? ''))}
           activeLpgmEventId={activeLpgmEventId}
           onToggleLpgm={onToggleLpgm}
-          estimatedIntensity={estimatedIntensity}
+          estimatedIntensity={estimatedIntensityFor(quake, estimatedIntensities)}
           distributionActive={quakeEventKey(quake) === distributionQuakeKey}
           onToggleDistribution={onToggleDistribution}
           unreceivedActive={quakeEventKey(quake) === unreceivedQuakeKey}

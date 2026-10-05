@@ -3,7 +3,7 @@ import type { JMAQuake, JMALpgm, IssueType, EarthquakePoint, IntensityScale, JMA
 import { quakeEventKey } from '../../utils/quakeMerge'
 import { QUAKE_CARD_KEY_ATTR } from '../../utils/quakeCardScroll'
 import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor, lpgmCategoryNote, buildLpgmRows, canOpenLpgmNotes } from '../../utils/lpgm'
-import { estimatedIntensityFor, estimatedIntensityAvailability } from '../../utils/estimatedIntensity'
+import { estimatedIntensityAvailability } from '../../utils/estimatedIntensity'
 import { telegramTextSubject } from '../../utils/ttsFollow'
 import { useAutoOpenWhileSpeakingIn } from '../../hooks/useAutoOpenWhileSpeaking'
 import { SerialBadge } from '../SerialBadge'
@@ -27,7 +27,7 @@ import {
 import { getIntensityLabel, getIntensityLabelWithOrAbove, getIntensityColor, getIntensityBgColor, getDepthColor, getMagnitudeColor } from '../../utils/intensity'
 import { hasKnownEpicenter } from '../../utils/geo'
 
-import { buildAreaPrefIndex, buildRegionOrderIndex, buildStationPrefIndex, lookupPointCoords, lookupStationRegion, regionOrderRank, type LatLng } from '../../utils/stationCoords'
+import { areaPrefIndexOf, regionOrderIndexOf, stationPrefIndexOf, lookupPointCoords, lookupStationRegion, regionOrderRank, type LatLng } from '../../utils/stationCoords'
 import { isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel, buildIntensityRows, makeAreaPrefResolver, cityKey, type IntensityStationRow, type IntensityRegionRow } from '../../utils/quakePoints'
 import { rowMarkKey, rowMarkOf, type QuakeCardMarks, type QuakeUpdateField } from '../../utils/quakeUpdateMark'
 import { intensityRowsToExpand, lpgmRowsToExpand, mergeAutoExpanded } from '../../utils/autoExpandMarkedRows'
@@ -423,7 +423,11 @@ interface Props {
   lpgm?: JMALpgm
   activeLpgmEventId?: string | null
   onToggleLpgm?: (eventId: string) => void
-  /** アプリが持っている最新の推計震度分布図。この地震のものかはここで引き当てる。 */
+  /**
+   * **この地震の**推計震度分布図（引き当て済み。無ければ null）。引き当ては一覧の側で行う
+   * （→ `estimatedIntensityFor`）—— 一覧ごと渡すと、別の地震の分布が届くたびに全カードの
+   * `memo` が素通りする。
+   */
   estimatedIntensity?: JMAEstimatedIntensity | null
   /** この地震の震度分布モードを開いているか。 */
   distributionActive?: boolean
@@ -592,9 +596,8 @@ export const EarthquakeCard = memo(function EarthquakeCard({
   const categoryNote = lpgmCategoryNote(lpgm?.category)
   /** 補足の見出しを出すか（判定は読み上げ側の診断と共有する → `canOpenLpgmNotes`）。 */
   const hasLpgmNotes = canOpenLpgmNotes(lpgm)
-  // 震度分布ボタン。**引き当てはここで行う** —— この電文は識別子を持たないので、
-  // 発現時刻で突き合わせる（→ `estimatedIntensityFor`）。
-  const matchedEstimated = estimatedIntensityFor(quake, estimatedIntensity)
+  // 震度分布ボタン。引き当ては一覧の側で済んでいる（→ {@link Props.estimatedIntensity}）。
+  const matchedEstimated = estimatedIntensity
   const distributionState = estimatedIntensityAvailability(quake, matchedEstimated)
   // **描けるものが何も無いならボタンを出さない。** 公式が無く、観測点も 1 つも無い電文
   //（震度速報など区域しか持たないもの）では、押しても空の画面になるだけ。
@@ -674,8 +677,8 @@ export const EarthquakeCard = memo(function EarthquakeCard({
    * **ブロックには地点名が出る**ので情報自体は失われない（→ docs/spec/quake-spec.md §4）。
    */
   const unreceivedIndexes = useMemo(() => {
-    const stationPrefIndex = stationData ? buildStationPrefIndex(stationData) : null
-    const areaPrefIndex = stationData ? buildAreaPrefIndex(stationData) : null
+    const stationPrefIndex = stationData ? stationPrefIndexOf(stationData) : null
+    const areaPrefIndex = stationData ? areaPrefIndexOf(stationData) : null
     // 区域 → 県は**行の組み立てと同じ引き方を共有する**（`makeAreaPrefResolver`）。手で
     // 優先順位を揃えると、片方だけ直したときに黙ってずれる（実際にそれで、行は出るのに
     // 印だけ付かない状態を作った）。
@@ -799,8 +802,8 @@ export const EarthquakeCard = memo(function EarthquakeCard({
 
     // 組み立ては `buildIntensityRows` に置いてある（電文の点だけを扱う純関数として試せるように）。
     // ここでは座標テーブル由来の索引を渡すだけ。
-    const areaPrefIndex = stationData ? buildAreaPrefIndex(stationData) : null
-    const order = stationData ? buildRegionOrderIndex(stationData) : null
+    const areaPrefIndex = stationData ? areaPrefIndexOf(stationData) : null
+    const order = stationData ? regionOrderIndexOf(stationData) : null
     return buildIntensityRows(quake.points, quake.cities ?? [], {
       prefOfArea: name => areaPrefIndex?.get(name) ?? null,
       prefOfStation: name => stationPrefIndex?.get(name) ?? null,
@@ -827,7 +830,7 @@ export const EarthquakeCard = memo(function EarthquakeCard({
     if (!isSelected) return empty
     const { prefOf, regionOfStation, stations, areas } = unreceivedIndexes
     if (stations.length === 0 && areas.length === 0) return empty
-    const order = stationData ? buildRegionOrderIndex(stationData) : null
+    const order = stationData ? regionOrderIndexOf(stationData) : null
     const rank = (p: EarthquakePoint): number => (p.isArea
       ? regionOrderRank(p.addr, order)
       : regionOrderRank(regionOfStation(p) ?? prefOf(p), order))
@@ -852,8 +855,8 @@ export const EarthquakeCard = memo(function EarthquakeCard({
     // （区域が全滅して県の値だけが残る電文が、ここで弾かれていた）。空なら空配列が返り、
     // 描画側の `lpgmGroups.length > 0` で落ちる。
     if (!isSelected || !lpgm) return []
-    const areaPrefIndex = stationData ? buildAreaPrefIndex(stationData) : null
-    const order = stationData ? buildRegionOrderIndex(stationData) : null
+    const areaPrefIndex = stationData ? areaPrefIndexOf(stationData) : null
+    const order = stationData ? regionOrderIndexOf(stationData) : null
     return buildLpgmRows(lpgm.regions ?? [], lpgm.points ?? [], lpgm.prefs ?? [], {
       prefOfArea: name => areaPrefIndex?.get(name) ?? null,
       rank: name => regionOrderRank(name, order),

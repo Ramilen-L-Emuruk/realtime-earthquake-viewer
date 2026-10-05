@@ -59,17 +59,43 @@ export function matchEstimatedIntensity(quake: JMAQuake, ei: JMAEstimatedIntensi
 }
 
 /**
- * 一覧の中から、その地震カードに対応する推計震度分布図を返す。
+ * 2 通の推計震度分布図が同じ地震のものか。**カードとの引き当てと同じ物差し**
+ * （発現時刻が同じ分で、震源が {@link MATCH_MAX_KM} 以内）。
  *
- * アプリが持つのは最新の 1 通だけ（→ `EarthquakeState.estimatedIntensity`）なので、
- * 引数も 1 通。**持っていない・別の地震のものなら `null`。**
+ * 一覧（→ `EarthquakeState.estimatedIntensities`）を地震ごとに 1 通へ保つのに使う。
+ * 物差しをカードの引き当てと揃えておかないと、カードからは 1 つの地震に見えるのに
+ * 一覧には 2 通残る（どちらを出すかが到着順で決まる）、という食い違いが起きる。
+ */
+export function isSameEstimatedIntensityQuake(
+  a: Pick<JMAEstimatedIntensity, 'arrivalTime' | 'hypocenter'>,
+  b: Pick<JMAEstimatedIntensity, 'arrivalTime' | 'hypocenter'>,
+): boolean {
+  const ka = toMinuteKey(a.arrivalTime)
+  const kb = toMinuteKey(b.arrivalTime)
+  if (ka === null || kb === null || ka !== kb) return false
+  if (!hasKnownEpicenter(a.hypocenter.lat, a.hypocenter.lon)) return true
+  if (!hasKnownEpicenter(b.hypocenter.lat, b.hypocenter.lon)) return true
+  return haversineKm(a.hypocenter.lat, a.hypocenter.lon, b.hypocenter.lat, b.hypocenter.lon) <= MATCH_MAX_KM
+}
+
+/**
+ * 一覧の中から、その地震カードに対応する推計震度分布図を返す。**持っていなければ `null`。**
+ *
+ * アプリは分布を**地震ごとに 1 通**持つ（→ `EarthquakeState.estimatedIntensities`）。
+ * 一覧は {@link upsertEstimatedIntensity} が地震ごとに 1 通へ保っているが、それが崩れて
+ * 同じ地震のものが重なっていても**発表の新しい方**を返す（到着順で答えが変わらないように）。
  */
 export function estimatedIntensityFor(
   quake: JMAQuake | null | undefined,
-  ei: JMAEstimatedIntensity | null,
+  list: readonly JMAEstimatedIntensity[],
 ): JMAEstimatedIntensity | null {
-  if (!quake || !ei) return null
-  return matchEstimatedIntensity(quake, ei) ? ei : null
+  if (!quake) return null
+  let found: JMAEstimatedIntensity | null = null
+  for (const ei of list) {
+    if (!matchEstimatedIntensity(quake, ei)) continue
+    if (found === null || ei.time > found.time) found = ei
+  }
+  return found
 }
 
 /**
@@ -141,7 +167,7 @@ export function buildSiToScale(grades: readonly JMAEstimatedIntensityGrade[]): U
   return table
 }
 
-/** いま画面に出している分布の見分け。**本体（3MB 規模）は持たない。** */
+/** 比べるのに要る見分け（発現時刻・発表時刻・セル数）。 */
 export interface ShownEstimatedIntensity {
   arrivalTime: string
   /** 発表時刻 */
@@ -151,13 +177,11 @@ export interface ShownEstimatedIntensity {
 
 /** {@link decideEstimatedIntensityUpdate} の答え。 */
 export type EstimatedIntensityUpdate =
-  /** 反映する（初めての分布） */
+  /** 反映する（その地震の分布をまだ持っていない） */
   | { apply: true; reason: 'first' }
   /** 反映する（同じ地震の続報） */
   | { apply: true; reason: 'newer' }
-  /** 反映する（別の地震へ入れ替える。**記録に残すこと**） */
-  | { apply: true; reason: 'switched' }
-  /** 反映しない（発表が古い。**記録に残すこと**） */
+  /** 反映しない（同じ地震の、発表が古い報。**記録に残すこと**） */
   | { apply: false; reason: 'stale' }
   /** 反映しない（内容が同じ重複配信。正常なので記録しない） */
   | { apply: false; reason: 'duplicate' }
@@ -181,14 +205,18 @@ export const MAX_SHOWN_ESTIMATED_INTENSITY_ARRIVALS = 16
 /**
  * その分布を「初めて受信した」ものとして読むか。読み上げの言い分けに使う。
  *
- * **見るのは「その地震の分布を前に伝えたか」だけ。** かつては
- * {@link decideEstimatedIntensityUpdate} の理由で決め、`switched`（別の地震の分布へ入れ替え）を
- * 初報側へ倒していた。だが理由が比べている相手は**いま出している 1 通**しかないので、地震が
- * 立て続けに起きて分布が交互に届くと、同じ地震の続報まで `switched` になる。実電文
- * （2024-01-01）は ①16:20 本震（発現 16:10）②16:23 余震（発現 16:18）③16:26 本震の続報
- * （発現 16:10）と届いており、③が「更新されました」と読まれなかった。
+ * **見るのは「その地震の分布を前に伝えたか」だけ。** 反映の判定
+ * （{@link decideEstimatedIntensityUpdate}）の理由では代われない —— あちらが見るのは
+ * 「その地震の分布を**持っているか**」で、履歴（起動時・「もっと見る」・リプレイの補完）から
+ * 黙って取り込んだ分布も持っている側に入る。聞いていない分布の続報を「更新されました」と
+ * 読むと、聞き手は前の報を聞き逃したと思う。
  *
- * **初めて見る地震なら初報側**という判断自体は変えていない。台帳に無い発現時刻は真を返す。
+ * かつてアプリが最新の 1 通しか持たなかった頃は、反映の判定の理由で言い分けていて、地震が
+ * 立て続けに起きると誤った。実電文（2024-01-01）は ①16:20 本震（発現 16:10）②16:23 余震
+ * （発現 16:18）③16:26 本震の続報（発現 16:10）と届いており、③が「更新されました」と
+ * 読まれなかった。
+ *
+ * **初めて見る地震なら初報側**。台帳に無い発現時刻は真を返す。
  */
 export function isNewEstimatedIntensity(shownArrivals: readonly string[], arrivalTime: string): boolean {
   return !shownArrivals.includes(arrivalTime)
@@ -213,24 +241,43 @@ export function rememberShownEstimatedIntensity(shownArrivals: string[], arrival
 }
 
 /**
- * 届いた分布を反映するかどうか。**フックから切り出してある**（判定だけを固定したいため）。
+ * 届いた分布を、**同じ地震の 1 通**（持っていなければ `null`）と比べて反映するかを決める。
  *
- * **発表時刻が古い報は、別の地震のものでも採らない。** アプリが持つのは最新の 1 通だけで、
- * 到着順は発表順と一致しない（分割の結合が遅れる・当日経路とライブが前後する）。比較を
- * 「同じ地震どうし」に限ると、**遅れて届いた古い地震の分布が、より新しい地震の分布を
- * 押しのける** —— 震度5弱以上が短時間に続く場面でだけ起きるので、いちばん起きてほしくない
- * ときに起きる。
+ * **比べるのは同じ地震どうしだけ。** 地震ごとに持つので、別の地震の分布は置き換えずに足す
+ * （→ {@link upsertEstimatedIntensity}）。到着順は発表順と一致しない（分割の結合が遅れる・
+ * 当日経路とライブが前後する・履歴の補完が後から届く）ので、**同じ地震の古い報で退行させない**
+ * ことだけを見る。
  */
 export function decideEstimatedIntensityUpdate(
-  shown: ShownEstimatedIntensity | null,
-  next: { arrivalTime: string; time: string; count: number },
+  sameQuake: ShownEstimatedIntensity | null,
+  next: ShownEstimatedIntensity,
 ): EstimatedIntensityUpdate {
-  if (!shown) return { apply: true, reason: 'first' }
-  if (shown.time > next.time) return { apply: false, reason: 'stale' }
-  if (shown.arrivalTime === next.arrivalTime) {
-    // 内容が同じ重複配信。実電文で観測している（先頭断片の差が作成時刻の 1 バイトだけ）。
-    if (shown.time === next.time && shown.count === next.count) return { apply: false, reason: 'duplicate' }
-    return { apply: true, reason: 'newer' }
-  }
-  return { apply: true, reason: 'switched' }
+  if (!sameQuake) return { apply: true, reason: 'first' }
+  if (sameQuake.time > next.time) return { apply: false, reason: 'stale' }
+  // 内容が同じ重複配信。実電文で観測している（先頭断片の差が作成時刻の 1 バイトだけ）。
+  if (sameQuake.time === next.time && sameQuake.count === next.count) return { apply: false, reason: 'duplicate' }
+  return { apply: true, reason: 'newer' }
+}
+
+/**
+ * 一覧へ分布を入れる。**地震ごとに 1 通**（その地震の最新）を保つ。
+ *
+ * - その地震の分布をまだ持っていなければ足す
+ * - 同じ地震の新しい報なら、その 1 通だけを置き換える（他の地震の分布は触らない）
+ * - 同じ地震の古い報・重複配信なら**同じ配列をそのまま返す**（参照が変わらないので再描画も起きない）
+ *
+ * **件数に上限は置かない**（2026-10-05 ユーザー承認）。発表は震度5弱以上の地震だけで
+ * （実配信 13 か月で 28 通）、1 通はふつう数千セル・十数 KB。
+ */
+export function upsertEstimatedIntensity(
+  list: readonly JMAEstimatedIntensity[],
+  next: JMAEstimatedIntensity,
+): { list: readonly JMAEstimatedIntensity[]; update: EstimatedIntensityUpdate } {
+  const index = list.findIndex(e => isSameEstimatedIntensityQuake(e, next))
+  const update = decideEstimatedIntensityUpdate(index >= 0 ? list[index] : null, next)
+  if (!update.apply) return { list, update }
+  if (index < 0) return { list: [...list, next], update }
+  const replaced = list.slice()
+  replaced[index] = next
+  return { list: replaced, update }
 }

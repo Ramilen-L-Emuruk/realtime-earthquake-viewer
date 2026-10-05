@@ -81,12 +81,13 @@ export const HANDLED_TYPES = new Set([
  * **津波・緊急地震速報は入れない。** 「その時刻に発表中だったか」の判定は初期状態の担当で、
  * 遡り幅も目的も違う（イベント単位の生存判定が要る）。
  *
- * **推計震度分布図（IXAC41・IXAC40）も入れない。** 最新 1 通しか持たない設計で、遡っても
- * 過去のカードには紐づかない（引き当ては地震発現時刻）。理由は settings-pwa-spec.md §6。
+ * **推計震度分布図（IXAC41・IXAC40）も入れる**（2026-10-05 ユーザー承認）。地震ごとに持つので
+ * （→ `EarthquakeState.estimatedIntensities`）、遡った地震のカードにも分布が付く。
+ * **二進で届くので、本文の取り方だけは他と違う**（→ `isBinaryTelegramType`）。
  */
 export const HISTORY_EXTRA_TYPES = new Set([
   ...LPGM_TYPES, ...NANKAI_TYPES, ...COMMENTARY_TYPES, ...KOHATSU_TYPES,
-  ...NOTICE_TYPES, ...QUAKE_COUNT_TYPES,
+  ...NOTICE_TYPES, ...QUAKE_COUNT_TYPES, ...ESTIMATED_INTENSITY_TYPES,
 ])
 
 /**
@@ -94,6 +95,16 @@ export const HISTORY_EXTRA_TYPES = new Set([
  *
  * 長周期地震動だけ地震ごとに持つ（`lpgmByEventId`）ので鍵に識別子を含める。残りは
  * 画面に 1 つだけ出る帯なので種別だけでよい。
+ *
+ * **推計震度分布図は電文ごとに別の鍵にする（＝畳まない）。** この電文は識別子を持たず、
+ * どれが同じ地震かは発現時刻と震源で決まる（→ `isSameEstimatedIntensityQuake`）。ここで
+ * 別の物差しで畳むと、受け手（`upsertEstimatedIntensity`）と判定が 2 か所に分かれる。
+ * 同じ地震の古い報は受け手が退行させないので、全部渡してよい。
+ *
+ * **鍵は電文の中身（発現時刻・発表時刻・セル数）から作る。** `id` は使わない —— 分割された
+ * 電文では「結合を終えた断片の id」が入り、当日経路は断片を並列で取るので、同じ電文でも
+ * どの断片が最後に揃うかで値が変わる。鍵が揺れると、補完の重複除け（初期状態に既にある電文を
+ * 除く `useReplayController` の `covered`）が効かなくなる。
  *
  * @returns 履歴で復元しない種別なら null
  */
@@ -106,6 +117,8 @@ export function historyExtraKey(payload: ReplayPayload): string | null {
     case 'quakeNotice':
     case 'earthquakeCount':
       return payload.kind
+    case 'estimatedIntensity':
+      return `estimatedIntensity:${payload.data.arrivalTime}|${payload.data.time}|${payload.data.count}`
     default:
       return null
   }
