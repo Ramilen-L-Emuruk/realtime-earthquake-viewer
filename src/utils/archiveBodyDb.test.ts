@@ -6,10 +6,13 @@
 import 'fake-indexeddb/auto'
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import {
-  readArchiveBody, writeArchiveBody, archiveBodyDbStats, clearArchiveBodyDb,
-  hasArchiveCacheError, archiveCachePurgeStats, onArchiveCacheChanged,
+  readArchiveBody, writeArchiveBody, clearArchiveBodyDb,
   MAX_ENTRIES, MAX_TOTAL_BYTES,
 } from './archiveBodyDb'
+import { log } from './logger'
+import { idbMetaStats, ARCHIVE_CACHE_DB } from '../test-utils/idbMetaStats'
+
+const archiveBodyDbStats = () => idbMetaStats(ARCHIVE_CACHE_DB)
 
 /**
  * `fake-indexeddb/auto` はプロセス全体で 1 つの実装を共有するので、テストごとに空にする。
@@ -43,16 +46,16 @@ describe('archiveBodyDb', () => {
     expect(await readArchiveBody('https://x/never')).toBeNull()
   })
 
-  // 正: 件数と容量を数えられる（設定タブが読む値）
-  it('件数と合計バイト数を数える', async () => {
+  // 正: 書いた本数と大きさが目録に載る（追い出しの判定がこれを読む）
+  it('目録に件数と合計バイト数が載る', async () => {
     await writeArchiveBody('https://x/b1', gz(100))
     await writeArchiveBody('https://x/b2', gz(200))
 
     expect(await archiveBodyDbStats()).toEqual({ entries: 2, bytes: 300 })
   })
 
-  // 対照: 本当に空のときは 0 件（`null`＝読めなかった、とは別）
-  it('空のときは 0 件を返す（読めなかったときの null とは別）', async () => {
+  // 対照: 消したあとは 0 件
+  it('消したあとは目録が空になる', async () => {
     expect(await archiveBodyDbStats()).toEqual({ entries: 0, bytes: 0 })
   })
 
@@ -80,29 +83,32 @@ describe('archiveBodyDb', () => {
     // いちばん古いものが落ちる
     expect(await readArchiveBody('https://x/old')).toBeNull()
     expect(await readArchiveBody('https://x/new')).not.toBeNull()
-    expect(archiveCachePurgeStats().purged).toBeGreaterThan(0)
+    expect((await archiveBodyDbStats()).entries).toBe(2)
   })
 
-  // 安全弁: **控えた直後に捨てた本数を数える。** 上限が足りていないと開始のたびに
+  // 安全弁: **控えた直後に捨てたら警告する。** 上限が足りていないと開始のたびに
   // 追い出しと取り直しを繰り返すが、件数を守っているだけでは正常と見分けが付かない。
-  it('控えた直後に捨てた本数を数える', async () => {
+  it('控えた直後に捨てたら警告する', async () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    // 警告は 60 秒に 1 回へ間引くので、前のテストで鳴っていると黙る。
+    // 時計を 1 日先へずらして、間引きの窓の外から書く（控えた時刻も同じだけずれるので
+    // 「控えたばかり」の判定は変わらない）
+    const realNow = Date.now.bind(Date)
+    vi.spyOn(Date, 'now').mockImplementation(() => realNow() + 24 * 60 * 60 * 1000)
     const size = Math.ceil(MAX_TOTAL_BYTES / 2.5)
-    const before = archiveCachePurgeStats().purgedRecent
     await writeArchiveBody('https://x/t1', gz(size))
     await writeArchiveBody('https://x/t2', gz(size))
     await writeArchiveBody('https://x/t3', gz(size))
 
-    expect(archiveCachePurgeStats().purgedRecent).toBeGreaterThan(before)
+    expect(warn.mock.calls.some(c => String(c[0]).includes('控えたばかり'))).toBe(true)
   })
 
   // 対照: 上限の内側では捨てない
   it('上限の内側なら捨てない', async () => {
-    const before = archiveCachePurgeStats().purged
     await writeArchiveBody('https://x/s1', gz(10))
     await writeArchiveBody('https://x/s2', gz(10))
 
-    expect(archiveCachePurgeStats().purged).toBe(before)
-    expect((await archiveBodyDbStats())?.entries).toBe(2)
+    expect((await archiveBodyDbStats()).entries).toBe(2)
   })
 
   // 正: 期限を過ぎた控えは使わない（配信元の設計が変わったときに気づく手立て）
@@ -114,8 +120,8 @@ describe('archiveBodyDb', () => {
 
     expect(await readArchiveBody('https://x/stale')).toBeNull()
     vi.restoreAllMocks()
-    // 読んだ時点で捨てているので、件数からも消えている
-    expect((await archiveBodyDbStats())?.entries).toBe(0)
+    // 読んだ時点で捨てているので、件数からも消えている。捨てる処理は待たずに走るので、終わるのを待つ
+    await vi.waitFor(async () => expect((await archiveBodyDbStats()).entries).toBe(0), { timeout: 2000 })
   })
 
   // 対照: 期限の内側なら使う
@@ -125,39 +131,6 @@ describe('archiveBodyDb', () => {
     vi.spyOn(Date, 'now').mockReturnValue(later)
 
     expect(await readArchiveBody('https://x/fresh')).not.toBeNull()
-  })
-
-  // 正: 増減を購読できる（設定タブが読み直す契機）
-  it('書き込みと消去を購読者へ知らせる', async () => {
-    let calls = 0
-    const off = onArchiveCacheChanged(() => { calls++ })
-    try {
-      await writeArchiveBody('https://x/n1', gz(8))
-      // 通知はまとめて届く（500ms）
-      await vi.waitFor(() => expect(calls).toBeGreaterThan(0), { timeout: 2000 })
-    } finally {
-      off()
-    }
-  })
-
-  // 対照: 解除したら届かない
-  it('購読を解除したら知らせない', async () => {
-    let calls = 0
-    const off = onArchiveCacheChanged(() => { calls++ })
-    off()
-    await writeArchiveBody('https://x/n2', gz(8))
-    await new Promise(r => setTimeout(r, 700))
-
-    expect(calls).toBe(0)
-  })
-
-  // 安全弁: **使えているあいだは「使えません」と言わない。**
-  // 一度立てたままにすると、一時的な不調から回復したあとも警告が残る。
-  it('読み書きが通っているあいだは、使えない扱いにしない', async () => {
-    await writeArchiveBody('https://x/ok', gz(8))
-    await readArchiveBody('https://x/ok')
-
-    expect(hasArchiveCacheError()).toBe(false)
   })
 
   // 上限の値そのものが、まとまった取得で落とす量を下回らないこと

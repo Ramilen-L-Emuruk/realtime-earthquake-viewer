@@ -109,19 +109,8 @@ interface MetaEntry {
   createdAt?: number
 }
 
-let failed = false
-/**
- * いま控えが使えない状態か。
- *
- * **成功したら解除する。** 一度立てたままにすると、一時的な容量不足から回復したあとも
- * 「使えません」のままになる。伝えたいのは履歴ではなく現在の状態。
- */
-export function hasArchiveCacheError(): boolean {
-  return failed
-}
-
-/** パージの実測値。**控えが効かない状態を検知するために数える**。 */
-const purgeStats = { purged: 0, purgedRecent: 0 }
+/** 控えたばかりで捨てた本数の累計。**控えが効かない状態を警告に出すために数える**。 */
+let purgedRecentTotal = 0
 
 /**
  * 上限を確かめる読み取りが失敗した回数。
@@ -129,52 +118,29 @@ const purgeStats = { purged: 0, purgedRecent: 0 }
  * **「読めなかった」と「0 件だった」を潰さないために数える。** IndexedDB の読みは
  * 一時的に失敗しうる（容量の端境・別タブとの競合）。そのとき件数を 0 として扱うと、
  * **上限を超えているのに追い出しが走らない**まま肥大化する経路ができる。
- *
- * **`warnOnce` では足りない。** あちらは一度鳴らすと二度と鳴らないので、
- * 繰り返し起きていることが記録に残らない。
+ * 失敗したら間引いて警告する（`noteLimitCheckFailure`）。**`warnOnce` では足りない** ——
+ * あちらは一度鳴らすと二度と鳴らないので、繰り返し起きていることが記録に残らない。
  */
-const readFailures = { limitCheck: 0 }
-
-/** 控えを捨てた件数と、上限の確認に失敗した回数（設定タブと検証で読む）。 */
-export function archiveCachePurgeStats(): { purged: number; purgedRecent: number; limitCheckFailures: number } {
-  return { ...purgeStats, limitCheckFailures: readFailures.limitCheck }
-}
-
-/**
- * 控えが増減したときに呼ぶ購読者（設定タブの表示）。
- *
- * **通知はまとめる。** リプレイの開始では 16 本が続けて書き込まれるので、
- * 1 件ごとに通知すると設定タブがその回数だけ描き直される（開いていなくてもマウントされている）。
- */
-const listeners = new Set<() => void>()
-let notifyTimer: ReturnType<typeof setTimeout> | null = null
-function notifyChanged(): void {
-  if (notifyTimer !== null) return
-  notifyTimer = setTimeout(() => {
-    notifyTimer = null
-    for (const cb of listeners) cb()
-  }, 500)
-}
-/** 控えの増減を購読する。戻り値を呼ぶと解除。 */
-export function onArchiveCacheChanged(cb: () => void): () => void {
-  listeners.add(cb)
-  return () => listeners.delete(cb)
-}
+let limitCheckFailures = 0
 
 let warned = false
 function warnOnce(message: string, e: unknown): void {
-  failed = true
   if (warned) return
   warned = true
   log.warn(`[replay] ${message}`, e)
 }
-/** 読み書きが通ったら「使えない」を解除する。 */
-function markUsable(): void {
-  failed = false
-}
 
 // 上限に達している間はパージが続くので、毎回鳴らさず間引く
 const warnThrashing = createLogThrottle(60_000)
+const warnLimitCheck = createLogThrottle(60_000)
+
+function noteLimitCheckFailure(): void {
+  limitCheckFailures++
+  warnLimitCheck(() => log.warn(
+    `[replay] アーカイブの控え（端末）の上限を確かめられませんでした（累計 ${limitCheckFailures} 回）。`
+    + '上限を超えていても古いものが捨てられない可能性があります',
+  ))
+}
 
 /**
  * 接続は 1 本だけ持って使い回す。
@@ -327,7 +293,6 @@ export async function readArchiveBody(key: string): Promise<Uint8Array | null> {
   const got = await readBoth(key)
   const body = got?.body
   if (!body || !(body.gz instanceof Uint8Array)) return null
-  markUsable()
 
   const meta = got?.meta
   const now = Date.now()
@@ -361,19 +326,17 @@ export async function writeArchiveBody(key: string, gz: Uint8Array): Promise<voi
     body.put({ id: key, gz: owned })
   })
   if (!ok) return
-  markUsable()
-  notifyChanged()
 
   // **読み取りの失敗を「0 件」に潰さない。** 潰すと「上限を超えているのに読めなかった」が
   // 「上限以内」と同じ扱いになり、**追い出しが黙って走らなくなる**。
   // 読めなかったときは数えたうえで追い出しを試みる側へ倒す（`purgeOldest` が読めれば直る）。
   const n = await tx<number>(STORE_META, 'readonly', (s) => s.count())
   if (n === null) {
-    readFailures.limitCheck++
+    noteLimitCheckFailure()
   } else if (n <= MAX_ENTRIES) {
     // 件数が上限以内でも、大きいアーカイブが並べば合計は超えうる。目録は軽いので数える
     const bytesTotal = await totalBytes()
-    if (bytesTotal === null) readFailures.limitCheck++
+    if (bytesTotal === null) noteLimitCheckFailure()
     else if (bytesTotal <= MAX_TOTAL_BYTES) return
   }
   await purgeOldest()
@@ -382,7 +345,7 @@ export async function writeArchiveBody(key: string, gz: Uint8Array): Promise<voi
 /**
  * 目録から合計バイト数を数える（本体は読まない）。**読めなければ `null`。**
  *
- * 「0 バイトだった」と区別する（→ `readFailures`）。
+ * 「0 バイトだった」と区別する（→ `limitCheckFailures`）。
  */
 async function totalBytes(): Promise<number | null> {
   const all = await tx<MetaEntry[]>(STORE_META, 'readonly', (s) => s.getAll() as IDBRequest<MetaEntry[]>)
@@ -400,9 +363,9 @@ async function purgeOldest(): Promise<void> {
   const all = await tx<MetaEntry[]>(STORE_META, 'readonly', (s) => s.getAll() as IDBRequest<MetaEntry[]>)
   // **ここでも「読めなかった」と「0 件」を潰さない。** 潰すと、上限超えと判定されて
   // 呼ばれたのに**何も消さずに黙って返る** —— しかも数えていないので、
-  // 追い出しが機能していないことがどの記録にも出ない（`readFailures` と同じ枠で数える）。
+  // 追い出しが機能していないことがどの記録にも出ない（`limitCheckFailures` と同じ枠で数える）。
   if (all === null) {
-    readFailures.limitCheck++
+    noteLimitCheckFailure()
     return
   }
   if (all.length === 0) return
@@ -428,41 +391,24 @@ async function purgeOldest(): Promise<void> {
   })
   if (!ok) return
 
-  notifyChanged()
-  purgeStats.purged += doomed.length
   const now = Date.now()
   const doomedSet = new Set(doomed)
   const recent = all
     .filter(e => doomedSet.has(e.id))
     .filter(e => now - (e.createdAt ?? e.lastUsedAt ?? 0) < THRASH_WINDOW_MS).length
   if (recent > 0) {
-    purgeStats.purgedRecent += recent
+    purgedRecentTotal += recent
     warnThrashing(() => log.warn(
       `[replay] アーカイブの控え（端末）が上限に達しています（控えたばかりの ${recent} 本を捨てました`
-      + ` / 累計 ${purgeStats.purgedRecent} 本）。同じアーカイブを取り直している可能性があります`,
+      + ` / 累計 ${purgedRecentTotal} 本）。同じアーカイブを取り直している可能性があります`,
     ))
   }
 }
 
-/**
- * 控えの件数と合計バイト数。**本体は読まない**。読めなければ `null`。
- *
- * **「0 本」と「読めなかった」を分ける。** 潰すと、読みが失敗した瞬間だけ画面が
- * 「0 本 / 0.0 MB」と言い、控えが空になったかのように見える。
- */
-export async function archiveBodyDbStats(): Promise<{ entries: number; bytes: number } | null> {
-  const all = await tx<MetaEntry[]>(STORE_META, 'readonly', (s) => s.getAll() as IDBRequest<MetaEntry[]>)
-  if (all === null) return null
-  return { entries: all.length, bytes: all.reduce((sum, e) => sum + (e.bytes ?? 0), 0) }
-}
-
 /** すべて消す。消せたかどうかを返す。 */
 export async function clearArchiveBodyDb(): Promise<boolean> {
-  const ok = await bothStores((meta, body) => {
+  return bothStores((meta, body) => {
     meta.clear()
     body.clear()
   })
-  // **成功したときだけ知らせる**（`writeArchiveBody` / `purgeOldest` と揃える）。
-  if (ok) notifyChanged()
-  return ok
 }
