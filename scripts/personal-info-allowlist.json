@@ -1,0 +1,33 @@
+{
+  "_読み方": "公開前の個人情報の検査（scripts/check-personal-info.ts）で、一般的な形の検査から外すもの。**このファイルも公開されるので、個人情報を書かない。** 手元の照合ファイルの値には効かない。載せてよいのは、公的なデータ・架空の値・本人が自ら公開している第三者の連絡先（依存パッケージのライセンス文など）だけ。binaryExtensions は付帯情報を持たない種類だけ。足すときは理由を書くこと。",
+  "publicDataPaths": [
+    { "path": "public/data/", "reason": "公的なデータ（国土数値情報・気象庁・産総研など）から作った地図・観測点・断層の生成物" }
+  ],
+  "values": [
+    { "value": "floatdrop@gmail.com", "reason": "依存パッケージの作者が npm とライセンス文に自ら載せている連絡先（第三者ソフトウェアのライセンス全文・package-lock.json）" },
+    { "value": "i@izs.me", "reason": "同上" },
+    { "value": "zertosh@gmail.com", "reason": "同上" },
+    { "value": "tj@vision-media.ca", "reason": "同上" },
+    { "value": "joshua.p.jung@gmail.com", "reason": "同上" },
+    { "value": "bbryan@vailsys.com", "reason": "同上" },
+    { "value": "seismo-1.local", "reason": "自作地震計のファームが既定で名乗る mDNS 名（機器を見分けない一般名）" },
+    { "value": "iis2iclx-probe.local", "reason": "センサー試験用ファームが名乗る mDNS 名（同上）" },
+    { "value": "39.2312, 142.7684", "reason": "気象庁の津波観測点（岩手沖 GPS 波浪計）の公表座標を書式の見本に引いたもの" },
+    { "value": "35.00001, 139.00001", "reason": "テスト用の架空の座標" },
+    { "value": "35.00002, 139.00002", "reason": "テスト用の架空の座標" },
+    { "value": "35.12345, 139.98765", "reason": "テスト用の架空の座標" },
+    { "value": "35.68123, 139.76711", "reason": "東京駅の公表位置の近くに置いたテスト用の座標" },
+    { "value": "35.68119, 139.76713", "reason": "同上" }
+  ],
+  "identityEmails": [
+    { "pattern": "^\\d+\\+Ramilen-L-Emuruk@users\\.noreply\\.github\\.com$", "reason": "GitHub の noreply（このリポジトリの持ち主）" },
+    { "pattern": "^noreply@anthropic\\.com$", "reason": "Claude の共著者表記" },
+    { "pattern": "^noreply@github\\.com$", "reason": "GitHub の Web 画面での操作" },
+    { "pattern": "^\\d+\\+github-actions\\[bot\\]@users\\.noreply\\.github\\.com$", "reason": "GitHub Actions の bot" },
+    { "pattern": "@example\\.(com|org|net|jp)$", "reason": "見本のアドレス（RFC 2606）" }
+  ],
+  "binaryExtensions": [
+    { "ext": "pbf", "reason": "地図のベクトルタイル・グリフ（公的データの生成物）" },
+    { "ext": "ttf", "reason": "フォント" }
+  ]
+}
