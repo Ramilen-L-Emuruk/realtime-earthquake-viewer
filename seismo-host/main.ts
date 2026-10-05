@@ -74,6 +74,7 @@ import { buildStatusReport } from './src/receiver/statusReport'
 import { buildAdminConsoleAssets } from './src/receiver/adminConsoleAssets'
 import type { AdminConsoleAssets } from './src/receiver/adminConsoleAssets'
 import { startStatusServer } from './src/receiver/statusServer'
+import type { ShutdownRequestResult } from './src/receiver/statusServer'
 import { SourceRateLimit } from './src/receiver/sourceRateLimit'
 import { startUdpReceiver } from './src/receiver/udpReceiver'
 import type { DatagramSource, RecvBufferOutcome } from './src/receiver/udpReceiver'
@@ -87,6 +88,10 @@ import { BacklogBookWriter, readBacklogBookFile } from './src/receiver/backlogBo
 import { BacklogFetcher, fetchBacklog } from './src/receiver/backlogFetcher'
 import type { BacklogEvent } from './src/receiver/backlogFetcher'
 import { streamKeyOf } from './src/timebase/segmenter'
+import { QuakeFeed } from './src/detection/quakeFeed'
+import { ShakeEventStore, readEventRange } from './src/detection/shakeEventStore'
+import { StationDetection, detectionCountEntries } from './src/detection/stationDetection'
+import type { DetectionStatus } from './src/detection/stationDetection'
 
 /** 記録係の原型（`capture.mjs`）と同じ口。基板の送り先もこの値。 */
 const DEFAULT_PORT = 50505
@@ -233,6 +238,23 @@ function defaultRawDir(): string {
  */
 function defaultWaveDir(): string {
   return fileURLToPath(new URL('./data/wave/', import.meta.url))
+}
+
+/**
+ * 検出した揺れの記録（`src/detection/shakeEventStore.ts`）の既定の置き場所。
+ * `SEISMO_EVENT_DIR` で変えられる。`data/` は `.gitignore` 済み。月 1〜2 MB。
+ */
+function defaultEventDir(): string {
+  return fileURLToPath(new URL('./data/events/', import.meta.url))
+}
+
+/**
+ * 気象庁の地震情報（P2PQuake）を受け取るか。**既定で受け取る** —— 受け取らないと、検出した
+ * 揺れが地震だったかを確かめる手段が無く、すべて「照合できず」で終わる。
+ * 外へ繋げない環境（試験・回線の無い端末）では `SEISMO_QUAKE_FEED=0` で止める。
+ */
+export function readQuakeFeedEnabled(raw: string | undefined): boolean {
+  return raw !== '0'
 }
 
 /**
@@ -1110,6 +1132,14 @@ export interface ApplyStationConfigDeps extends FusionClosingSinks {
   readonly onCloseFailure: (error: unknown) => void
   /** 新しい `SensorFusion` を作り、合成グループが組めた観測点の一覧を返す。 */
   readonly rebuildSensorFusion: (config: StationConfig) => readonly string[]
+  /**
+   * 設定から外れた観測点の地震検出器を捨てる（開いている揺れは閉じて記録する。
+   * `StationDetection.forgetRemovedStations`）。**投げない**前提。
+   *
+   * **合成を締めくくって配った後に呼ぶ。** 締めくくりで配る最後の波形も検出器へ入るので、
+   * 先に捨てるとその波形が新しい検出器を作り、外した観測点の検出器が居座る。
+   */
+  readonly forgetRemovedDetectors: () => void
   readonly setUngroupedMultiBoardStations: (ids: readonly string[]) => void
   readonly setWarning: (warning: string | null) => void
 }
@@ -1175,6 +1205,7 @@ export function applyStationConfigCore(deps: ApplyStationConfigDeps, newConfig: 
   }
 
   const groupedStationIds = deps.rebuildSensorFusion(newConfig)
+  deps.forgetRemovedDetectors()
   deps.setUngroupedMultiBoardStations(findUngroupedMultiBoardStations(newConfig, groupedStationIds))
   // **保存できた時点で `parseStationConfig` を通過済み。** 書き込みハンドラが渡す
   // `newConfig` は常にパース済みの正しい形なので、読み直して警告の有無を
@@ -1200,6 +1231,11 @@ export interface CloseHostDeps {
   readonly closeSensorFusion: () => SensorFusionClosing
   /** 合成を締めて出たものの配り先。設定の差し替えと同じもの。 */
   readonly stationClosing: FusionClosingSinks
+  /**
+   * 地震検出の開いている揺れを閉じて記録する（`StationDetection.flushAll`）。**投げない**前提。
+   * 合成を締めくくって配った後（最後の波形まで見てから）、状態の口を閉じる前（押し出しが届くうち）に呼ぶ。
+   */
+  readonly flushDetection: () => void
   /** 合成波形の保存を閉じる。 */
   readonly closeWaveArchive: () => Promise<void>
   /** 状態の口（押し出しを含む）を閉じる。 */
@@ -1218,7 +1254,8 @@ export interface CloseHostDeps {
  * 2. **生データを流し切る。** 圧縮の途中で抜けると `.gz.tmp` が残り、次の起動が
  *    書きかけのファイルを見る
  * 3. **単独センサーの震度を締めくくる。** 出さずに終えると、最後の窓ぶんの答えが消える
- * 4. **観測点の合成を締めくくる。** 待たせていたまとまりの波形と差分もここで配る（#402）
+ * 4. **観測点の合成を締めくくる。** 待たせていたまとまりの波形と差分もここで配る（#402）。
+ *    続けて地震検出の開いている揺れを閉じて記録する（配った最後の波形まで見てから）
  * 5. **合成波形の保存は 4 より後で閉じる。** 生データのすぐ後ろへ置きたくなるが、
  *    それだと 4 で配る波形が `closed` で断られて黙って消える
  * 6. **状態の口は震度を出し切ってから閉じる。** 先に閉じると、最後の窓ぶんの答えが
@@ -1275,6 +1312,12 @@ export async function closeHostCore(deps: CloseHostDeps): Promise<void> {
   }
 
   try {
+    deps.flushDetection()
+  } catch (error) {
+    deps.logError(`[detect] 開いている揺れを閉じられず: ${messageOf(error)}`)
+  }
+
+  try {
     await deps.closeWaveArchive()
   } catch (error) {
     deps.logError(`[wave] 合成波形の締めに失敗: ${messageOf(error)}`)
@@ -1287,6 +1330,35 @@ export async function closeHostCore(deps: CloseHostDeps): Promise<void> {
   }
 
   deps.printTotals()
+}
+
+/** `makeShutdownRequester` が使う口。 */
+export interface ShutdownRequesterDeps {
+  /** 締めくくりがもう始まっているか（SIGINT・SIGTERM で始まった場合も含む）。 */
+  readonly isClosing: () => boolean
+  /** 締めくくりを始める。 */
+  readonly start: () => void
+  /**
+   * `start` を後回しにする。**本番は `setImmediate`。** 止める口は答えを返してから応答を書くので、
+   * その場で始めると締めくくりが状態の口を閉じ始めてしまう（`StatusServerOptions.requestShutdown`）。
+   */
+  readonly defer: (fn: () => void) => void
+}
+
+/**
+ * 止める合図（`POST /api/shutdown`）への答えを決め、締めくくりを 1 度だけ予約する。
+ *
+ * **予約したら、締めくくりが実際に始まる前でも `already-closing` を返す。** 2 度目の合図で
+ * 予約を積み増さないため。
+ */
+export function makeShutdownRequester(deps: ShutdownRequesterDeps): () => ShutdownRequestResult {
+  let requested = false
+  return () => {
+    if (deps.isClosing() || requested) return 'already-closing'
+    requested = true
+    deps.defer(deps.start)
+    return 'accepted'
+  }
 }
 
 /**
@@ -1408,6 +1480,11 @@ export interface ClosingLinesInput {
   /** 締めくくりを待ちきれなかったか。**1 件も失っていない**（`slowCloses` と同じ位置づけ）。 */
   readonly waveSlowClose: boolean
   readonly waveLastWriteError: string | null
+  /**
+   * 地震検出と地震情報の受信。**状態の口が返すものをそのまま受け取る**（`gravity` と同じ理由。
+   * 並びと見出しは `detectionCountEntries` が持つ）。
+   */
+  readonly detection: DetectionStatus
 }
 
 /**
@@ -1440,6 +1517,7 @@ export function buildClosingLines(input: ClosingLinesInput): readonly ClosingLin
     { label: '合成波形を残せず流し口が壊れた', value: input.waveWriteErrors },
     { label: '合成波形を書き損ねた', value: input.waveLostRecords },
     { label: '合成波形を形にできず捨てた', value: input.waveBadChunks },
+    ...detectionCountEntries(input.detection),
   ]) {
     // **0 は出さない。** 起きなかったことを毎回並べると、起きたことが埋もれる。
     if (c.value > 0) out.push({ level: 'log', line: `  ${c.label}=${c.value}` })
@@ -1470,6 +1548,15 @@ export function buildClosingLines(input: ClosingLinesInput): readonly ClosingLin
     out.push({
       level: 'error',
       line: `  合成波形を書き出せなかった理由: ${shorten(input.waveLastWriteError)}`,
+    })
+  }
+  if (input.detection.lastFailure !== null) {
+    out.push({ level: 'error', line: `  地震検出で最後に受け止めた例外: ${shorten(input.detection.lastFailure)}` })
+  }
+  if (input.detection.store.lastWriteError !== null) {
+    out.push({
+      level: 'error',
+      line: `  揺れの記録を書き出せなかった理由: ${shorten(input.detection.store.lastWriteError)}`,
     })
   }
   // **待ちきれなかったことは件数では出ない。** 真偽なので上の 0 抑制に乗らず、
@@ -1637,6 +1724,48 @@ async function main(): Promise<void> {
   const waveDir = process.env.SEISMO_WAVE_DIR ?? defaultWaveDir()
   const waveArchive = new WaveArchive({ dir: waveDir })
 
+  // **地震検出（REQUIREMENTS.md §6・§9）。** 揺れの記録は月ごとの NDJSON へ追記し
+  // （`GET /events` も同じ置き場所を読む）、気象庁の地震情報と照らし合わせる。
+  // 配線そのものは `StationDetection` が持つ（自動テストの届く場所に置くため）。
+  const eventDir = process.env.SEISMO_EVENT_DIR ?? defaultEventDir()
+  const eventStore = new ShakeEventStore({ dir: eventDir })
+  const quakeFeedEnabled = readQuakeFeedEnabled(process.env.SEISMO_QUAKE_FEED)
+  // **`detection` より先に作るが、受け取った地震情報は `detection` へ渡す。** 循環するので
+  // 受け取り口は後から差す（`start()` は `detection` を作った後に呼ぶ）。
+  let onQuake: ((q: Parameters<StationDetection['addQuake']>[0]) => void) | null = null
+  const quakeFeed = quakeFeedEnabled
+    ? new QuakeFeed({
+        onQuake: (q) => onQuake?.(q),
+        now: () => Date.now(),
+        // 繋ぎ直しは倍々に間隔が延びるので、間引きの鍵は 1 つで足りる。
+        log: (level, line) => emit(level, 'quake-feed', 'feed', line),
+      })
+    : null
+  const detection = new StationDetection({
+    save: (rec) => {
+      if (!eventStore.append(rec)) {
+        emit('error', 'event-store', 'write', `[detect] 揺れの記録を書けず: ${shorten(eventStore.lastWriteError ?? '')}`)
+      }
+    },
+    publish: (rec) => hub.publish({ kind: 'shake-event', event: rec }),
+    storeStatus: () => ({
+      written: eventStore.written,
+      writeErrors: eventStore.writeErrors,
+      lastWriteError: eventStore.lastWriteError,
+    }),
+    // **受け取らない構成では、照合できたとは一度も言えない**（すべて `unchecked` に倒れる）。
+    feedCovered: (fromMs, toMs) => quakeFeed?.covered(fromMs, toMs) ?? false,
+    feedStatus: () => quakeFeed?.status() ?? null,
+    config: () => currentStationConfig,
+    now: () => Date.now(),
+    // **鍵は揺れごとに分ける**（`key`）。間引きは鍵ごとなので、1 つにすると 2 件目からの
+    // 揺れの行が黙って抑えられる。
+    log: (level, key, line) => emit(level, 'detect', key, line),
+  })
+  onQuake = (q) => detection.addQuake(q)
+  // **受信の開始は `emit` を作った後**（下の `startStatusServer` の手前）。ここで始めると、
+  // 開けなかったときの記録が初期化前の `emit` を触る。
+
   // **届かなかった分を基板へ取りに行く**（`backlogBook.ts`・`backlogFetcher.ts`）。帳面は
   // 受け始める前に読み戻す —— 受けてからだと、止まっていた間の欠けを最初のパケットで作り損ねる。
   const backlogBook = new BacklogBook(BACKLOG_BOOK_OPTIONS)
@@ -1744,8 +1873,19 @@ async function main(): Promise<void> {
    * （別の表を新設するかは #315 の範囲）。
    */
   const emitStationReading = (r: StationIntensityReading): void => {
-    stationHealth.noteReading(r)
+    noteStationReading(r)
     hub.publish({ kind: 'station-reading', reading: r })
+  }
+
+  /**
+   * 観測点ぶんの計測震度を覚える先。**受信の最中（`stationFusionSinks.noteReading`）と締めくくり
+   * （`emitStationReading`）の両方がここを通る** —— 別々に書くと、締めくくりの最後の 1 件が
+   * 地震検出へ届かず、設定変更・終了と重なった揺れの最大計測震度相当だけが黙って欠ける。
+   */
+  function noteStationReading(r: StationIntensityReading): void {
+    stationHealth.noteReading(r)
+    // 揺れの記録へ「最大計測震度相当」を添えるため（`shakeEventBook.ts`）。投げない。
+    detection.noteStationReading(r)
   }
 
   const reportStationCloseFailures = (failures: readonly StationCloseFailure[]): void => {
@@ -1776,7 +1916,7 @@ async function main(): Promise<void> {
    * 流れることを確かめた。
    */
   const stationFusionSinks: StationFusionSinks = {
-    noteReading: (r) => stationHealth.noteReading(r),
+    noteReading: noteStationReading,
     publish: (r) => hub.publish({ kind: 'station-reading', reading: r }),
     noteWave: (w, covered) => stationHealth.noteWave(w, covered),
     notePairDiffs: (stationId, diffs) => stationHealth.notePairDiffs(stationId, diffs),
@@ -1793,6 +1933,8 @@ async function main(): Promise<void> {
     // 「後から遡れない」だけで、原因の切り分けようが無い。
     publishWave: (w) => {
       hub.publish({ kind: 'station-wave', wave: w })
+      // **地震検出も同じ 1 本の流れから受ける**（押し出し・保存と同じ理由）。投げない。
+      detection.pushStationWave(w)
       const stored = waveArchive.write(w)
       if (!stored.saved) {
         // **理由の文面は、その理由が書き込み系のときだけ添える**（`rawStore` と同じ判断）。
@@ -1876,6 +2018,8 @@ async function main(): Promise<void> {
           sensorFusion = new SensorFusion(config)
           return sensorFusion.groupedStationIds
         },
+        // `setCurrentConfig` が先に走っているので、`detection` は新しい設定を見る。
+        forgetRemovedDetectors: () => detection.forgetRemovedStations(),
         setUngroupedMultiBoardStations: (ids) => {
           ungroupedMultiBoardStations = ids
         },
@@ -2152,6 +2296,16 @@ async function main(): Promise<void> {
 
   // **開けなければ落ちる。** 受信だけ生きていて状態も押し出しも届かない状態は、
   // 外から見ると「基板が黙っている」のと見分けが付かない。
+  // **気象庁の地震情報の受信はここで始める**（`emit` を作った後。上の `detection` の注記）。
+  quakeFeed?.start()
+  if (quakeFeed === null) console.warn('[quake-feed] 地震情報を受け取らない設定（SEISMO_QUAKE_FEED=0）。揺れはすべて照合できずに終わる')
+  // 照合の期限を見る（揺れが閉じてから 15 分）。30 秒ごとで足りる。
+  const detectionTimer = setInterval(() => detection.tick(), 30_000)
+
+  // 止める合図（`POST /api/shutdown`）の受け先。**締めくくり（`shutdown`）は状態の口を
+  // 開けた後で作る**（締めくくりが状態の口を閉じるため）ので、それまでは `not-ready` で断る。
+  let requestShutdownFromApi: (() => ShutdownRequestResult) | null = null
+
   const statusServer = await startStatusServer({
     port: httpPort,
     address: httpAddress,
@@ -2163,9 +2317,12 @@ async function main(): Promise<void> {
     },
     // 6 面法の材料（センサーごとの静止窓・校正前の値）。
     readRestWindows: () => gravity.restWindows(),
+    requestShutdown: () => requestShutdownFromApi?.() ?? 'not-ready',
     adminConsole,
     // 過ぎた合成波形の読み返し（#357）。置き場所は保存と同じ `waveDir`。
     readWaves: (params) => readWaveRange({ dir: waveDir, ...params }),
+    // 検出した揺れの読み返し（#312）。置き場所は記録と同じ `eventDir`。
+    readEvents: (params) => readEventRange({ dir: eventDir, ...params }),
     // **呼ばれた時点で組み立てる。** 溜め込んだものを返すと、見に来た人が
     // 「いつの様子か」を自分で確かめられない。
     status: () => {
@@ -2228,6 +2385,8 @@ async function main(): Promise<void> {
         },
         hub: hub.snapshot(),
         acks: acks.snapshot(),
+        // **部品が返すものをそのまま渡す**（`mseed` と同じ理由）。
+        detection: detection.snapshot(),
         stations,
         stationConfigWarning,
         ungroupedMultiBoardStations,
@@ -2276,6 +2435,10 @@ async function main(): Promise<void> {
     const diag = gravity.snapshot()
     const fetched = backlogFetcher.snapshot()
     const mseedHealth = mseedRecorder.health()
+    // **地震検出と地震情報の受信も要約へ出す**（並びと見出しは `detectionCountEntries`）。
+    const detectCounters = detectionCountEntries(detection.snapshot()).map((e) =>
+      delta(`detect:${e.key}`, e.label, e.value),
+    )
     const gravityCounters = gravityCountEntries(diag).map((e) =>
       delta(`gravity:${e.key}`, e.label, e.value),
     )
@@ -2364,7 +2527,13 @@ async function main(): Promise<void> {
     const summary = buildWindowSummary({
       windowSec: elapsedSec,
       window: tally.takeWindow(),
-      counters: [...Object.values(counters), ...gravityCounters, ...backlogLostCounters, ...backlogFailedCounters],
+      counters: [
+        ...Object.values(counters),
+        ...gravityCounters,
+        ...backlogLostCounters,
+        ...backlogFailedCounters,
+        ...detectCounters,
+      ],
       quietReported,
     })
     quietReported = summary.quietReported
@@ -2421,10 +2590,23 @@ async function main(): Promise<void> {
     clearInterval(loopStallTimer)
     clearInterval(backlogSaveTimer)
     clearInterval(mseedTimer)
+    clearInterval(detectionTimer)
     console.log(`[udp] ${signal} を受けたので締めます`)
+    // **ここから `closeHostCore` までの段も投げさせない。** 投げると締めくくりの本体
+    // （生データ・miniSEED・波形・揺れの記録の書き出し）へ一度も届かずに終わる ——
+    // 止める口で防ごうとした「溜めていた分が消える」が、別の入口から戻ってくる。
+    try {
+      quakeFeed?.stop()
+    } catch (error) {
+      console.error(`[quake-feed] 締めくくりで止められなかった（${error instanceof Error ? error.message : String(error)}）`)
+    }
     // **取りに行くのは生データの保存を締める前に止める。** 訊いている最中の 1 件は待つ ——
     // 締めた後に書こうとすると、取り戻した分が `closed` で黙って落ちる。
-    await backlogFetcher.stop()
+    try {
+      await backlogFetcher.stop()
+    } catch (error) {
+      console.error(`[backlog] 締めくくりで取り戻しを止められなかった（${error instanceof Error ? error.message : String(error)}）`)
+    }
 
     // **順序は `closeHostCore` が持つ**（理由もあちらに書いてある）。ここは
     // `main()` のローカル変数を `deps` へ束ねる配線だけ。
@@ -2449,6 +2631,9 @@ async function main(): Promise<void> {
       emitPipelineReading: emitReading,
       closeSensorFusion: () => sensorFusion.closeAll(),
       stationClosing,
+      // 照合は済まないので版 1（照合待ち）のまま残る。次の起動はそれを引き継がない ——
+      // 読み返す側は「照合待ちのまま版が進まなかった揺れ」として見分けられる。
+      flushDetection: () => detection.flushAll(),
       closeWaveArchive: async () => {
         await waveArchive.close()
         if (waveArchive.slowClose) console.warn('[wave] 合成波形の締めくくりを待ちきれず')
@@ -2504,14 +2689,37 @@ async function main(): Promise<void> {
       waveLostRecords: waveArchive.lostRecords,
       waveBadChunks: waveArchive.badChunks,
       waveSlowClose: waveArchive.slowClose,
+      detection: detection.snapshot(),
       waveLastWriteError: waveArchive.lastWriteError,
     })) {
       if (c.level === 'error') console.error(c.line)
       else console.log(c.line)
     }
   }
-  process.on('SIGINT', () => void shutdown('SIGINT'))
-  process.on('SIGTERM', () => void shutdown('SIGTERM'))
+  /**
+   * 締めくくりを走らせる。**投げたら記録して exit 1 で終わる。**
+   *
+   * `shutdown` の各段は投げない作りだが、ここで受け止めないと reject は誰にも拾われず、
+   * 締めくくりの途中で止まったまま（`closing` が立ったまま）プロセスが居残りうる ——
+   * そうなると止める口は `already-closing` を返し続け、外からは「止まりつつある」としか見えない。
+   */
+  const runShutdown = async (signal: string): Promise<void> => {
+    try {
+      await shutdown(signal)
+    } catch (error) {
+      console.error(`[host] 締めくくりの途中で失敗した（${error instanceof Error ? error.message : String(error)}）。正常に終わらずに止める`)
+      process.exit(1)
+    }
+  }
+  process.on('SIGINT', () => void runShutdown('SIGINT'))
+  process.on('SIGTERM', () => void runShutdown('SIGTERM'))
+  // **Windows で外から締めくくりを走らせる口はこれだけ**（`Stop-Process` は SIGINT の
+  // ハンドラを呼ばずに落とす）。配り直しはここを叩いてから起動し直す（README「常時動かす機へ配る」）。
+  requestShutdownFromApi = makeShutdownRequester({
+    isClosing: () => closing,
+    start: () => void runShutdown('POST /api/shutdown'),
+    defer: (fn) => setImmediate(fn),
+  })
 }
 
 // **直接実行のときだけ走らせる。** 門が無いと、この先 `readPort` のような部品を

@@ -11,7 +11,9 @@ import { EMPTY_STATION_CONFIG, StationDirectory } from './stationConfig'
 import type { StationConfig } from './stationConfig'
 import { buildStatusReport } from './statusReport'
 import type { RawStoreStatus, StatusReport, WaveArchiveStatus } from './statusReport'
-import { buildWaveResponse, parseDiffParams, parseWaveParam, parseWaveQuery, startStatusServer } from './statusServer'
+import { buildWaveResponse, parseDiffParams, parseEventQuery, parseWaveParam, parseWaveQuery, startStatusServer } from './statusServer'
+import type { ShakeEventRecord } from '../detection/shakeEvent'
+import type { EventRangeResult } from '../detection/shakeEventStore'
 import type { StatusServer, StatusServerOptions } from './statusServer'
 import type { ArchivedWaveChunk, WaveRangeResult } from './waveArchive'
 
@@ -93,6 +95,20 @@ function report(hub: ReadingHub): StatusReport {
     waveArchive: WAVE_ARCHIVE,
     hub: hub.snapshot(),
     acks: { enabled: true, sent: 0, failures: 0, throttled: 0, lastError: null },
+    detection: {
+      detectorVersion: 1,
+      stations: [],
+      shakes: 0,
+      pending: 0,
+      resets: 0,
+      droppedChunks: 0,
+      phaseWindowsBroken: 0,
+      phaseFailures: 0,
+      failures: 0,
+      lastFailure: null,
+      store: { written: 0, writeErrors: 0, lastWriteError: null },
+      feed: null,
+    },
     stations: StationDirectory.empty(),
     stationConfigWarning: null,
     ungroupedMultiBoardStations: [],
@@ -187,6 +203,7 @@ async function start(
   adminConsole?: StatusServerOptions['adminConsole'],
   readWaves?: StatusServerOptions['readWaves'],
   readRestWindows?: StatusServerOptions['readRestWindows'],
+  readEvents?: StatusServerOptions['readEvents'],
 ): Promise<string> {
   // **port 0 で開く。** 固定の番号だと、並んで走る別のテストと取り合う。
   const server = await startStatusServer({
@@ -199,11 +216,15 @@ async function start(
     adminAuth: adminAuth ?? NO_ADMIN_AUTH,
     stationConfig: stationConfig ?? makeStationConfigOps(),
     readRestWindows: readRestWindows ?? (() => []),
+    // 止める合図を試すテストは `startAuthed` を使う（`/api/*` は認証が要る）。
+    requestShutdown: () => 'not-ready',
     // **`null` を明示的に渡したいテストがあるので `??` は使わない。** `??` だと
     // `null` も「未指定」と同じ扱いになり、ビルド失敗を再現できない。
     adminConsole: adminConsole !== undefined ? adminConsole : TEST_ADMIN_CONSOLE,
     // **既定は `null`（保存を持たない構成）。** 読み返しを試すテストだけが渡す。
     readWaves: readWaves ?? null,
+    // **既定は `null`（記録を持たない構成）。** 揺れの記録を試すテストだけが渡す。
+    readEvents: readEvents ?? null,
   })
   running.server = server
   return `http://127.0.0.1:${server.port}`
@@ -482,6 +503,21 @@ describe('startStatusServer', () => {
     expect(got).toHaveLength(1)
     expect(got[0].name).toBe('station-reading')
     expect(got[0].data).toEqual(STATION_READING)
+  })
+
+  it('正: 検出した揺れの記録（shake-event）は、波形の粒度を問わず /stream へ押し出す', async () => {
+    // 記録は版ごとに 1 件ずつしか出ないので、波形のような粒度の選択に掛けない（`WAVE_TIER` の 'always'）。
+    const hub = new ReadingHub()
+    const base = await start(hub)
+    const event = { id: 'station-1-1700000000000', rev: 2, stationId: 'station-1', verdict: 'quake' } as unknown as ShakeEventRecord
+
+    const got = await readEvents(base, '/stream', 1, () => {
+      hub.publish({ kind: 'shake-event', event })
+    })
+
+    expect(got).toHaveLength(1)
+    expect(got[0].name).toBe('shake-event')
+    expect(got[0].data).toEqual(event)
   })
 
   // センサー対の差分（#372）。**波形の梯子と直交している**ので、`?wave=` を付けずに
@@ -911,6 +947,7 @@ describe('/api/*', () => {
     log?: StatusServerOptions['log'],
     stationConfig?: StatusServerOptions['stationConfig'],
     readRestWindows: StatusServerOptions['readRestWindows'] = () => [],
+    requestShutdown: StatusServerOptions['requestShutdown'] = () => 'not-ready',
   ): Promise<string> {
     const port = await getFreePort()
     const adminAuth: AdminAuthConfig = {
@@ -928,8 +965,10 @@ describe('/api/*', () => {
       log,
       stationConfig: stationConfig ?? makeStationConfigOps(),
       readRestWindows,
+      requestShutdown,
       adminConsole: TEST_ADMIN_CONSOLE,
       readWaves: null,
+      readEvents: null,
     })
     running.server = server
     return `http://127.0.0.1:${server.port}`
@@ -947,6 +986,75 @@ describe('/api/*', () => {
     const res = await fetch(`${base}/api/config`, { headers: { Origin: ORIGIN } })
     expect(res.status).toBe(401)
     expect(await res.json()).toEqual({ error: 'missing-authorization' })
+  })
+
+  describe('止める合図（POST /api/shutdown）', () => {
+    const authed = { Authorization: `Bearer ${TOKEN}`, Origin: ORIGIN }
+
+    it('正: 認証つきの POST を受けたら、締めくくりを頼んで 202 を返す', async () => {
+      let calls = 0
+      const lines: string[] = []
+      const base = await startAuthed(new ReadingHub(), {}, (_l, _k, _d, line) => lines.push(line), undefined, undefined, () => {
+        calls += 1
+        return 'accepted'
+      })
+      const res = await fetch(`${base}/api/shutdown`, { method: 'POST', headers: authed })
+      expect(res.status).toBe(202)
+      expect(await res.json()).toEqual({ status: 'closing' })
+      expect(calls).toBe(1)
+      // 落ちた記録と見分けるため、誰が止めたかを 1 行残す。
+      expect(lines.some((l) => l.includes('止める合図を受けた'))).toBe(true)
+    })
+
+    it('締めくくりの途中なら 202 で already-closing と返す（2 度目を走らせるかは実体が決める）', async () => {
+      const base = await startAuthed(new ReadingHub(), {}, undefined, undefined, undefined, () => 'already-closing')
+      const res = await fetch(`${base}/api/shutdown`, { method: 'POST', headers: authed })
+      expect(res.status).toBe(202)
+      expect(await res.json()).toEqual({ status: 'already-closing' })
+    })
+
+    it('起動の途中で段取りが揃っていなければ 503', async () => {
+      const base = await startAuthed(new ReadingHub(), {}, undefined, undefined, undefined, () => 'not-ready')
+      const res = await fetch(`${base}/api/shutdown`, { method: 'POST', headers: authed })
+      expect(res.status).toBe(503)
+      expect(await res.json()).toEqual({ error: 'not-ready' })
+    })
+
+    it('対照: GET では止めない（リンクを開いただけ・先読みで止まらない）', async () => {
+      let calls = 0
+      const base = await startAuthed(new ReadingHub(), {}, undefined, undefined, undefined, () => {
+        calls += 1
+        return 'accepted'
+      })
+      const res = await fetch(`${base}/api/shutdown`, { headers: authed })
+      expect(res.status).toBe(405)
+      expect(calls).toBe(0)
+    })
+
+    it('安全弁: トークンが無ければ 401 で、締めくくりは頼まない', async () => {
+      let calls = 0
+      const base = await startAuthed(new ReadingHub(), {}, undefined, undefined, undefined, () => {
+        calls += 1
+        return 'accepted'
+      })
+      const res = await fetch(`${base}/api/shutdown`, { method: 'POST', headers: { Origin: ORIGIN } })
+      expect(res.status).toBe(401)
+      expect(calls).toBe(0)
+    })
+
+    it('安全弁: 許していない Origin からは 403 で、締めくくりは頼まない', async () => {
+      let calls = 0
+      const base = await startAuthed(new ReadingHub(), {}, undefined, undefined, undefined, () => {
+        calls += 1
+        return 'accepted'
+      })
+      const res = await fetch(`${base}/api/shutdown`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${TOKEN}`, Origin: 'http://evil.example' },
+      })
+      expect(res.status).toBe(403)
+      expect(calls).toBe(0)
+    })
   })
 
   it('トークンが違えば 401', async () => {
@@ -1542,5 +1650,50 @@ describe('GET /waves（#357）', () => {
     expect(res.status).toBe(500)
     expect(((await res.json()) as { error: string }).error).toBe('wave-read-failed')
     expect(lines.some((l) => l.includes('ディスクが読めない'))).toBe(true)
+  })
+})
+
+describe('GET /events（#312）', () => {
+  const T = Date.UTC(2026, 9, 3, 4, 27, 0)
+  const result = (stationIds: string[]): EventRangeResult => ({
+    events: stationIds.map((stationId, i) => ({ id: `${stationId}-${T + i}`, stationId, startMs: T + i, rev: 1 }) as unknown as ShakeEventRecord),
+    unreadableLines: 2,
+    unreadableFiles: [],
+  })
+
+  it('範囲の揺れを返し、読めなかった行の数を添える。観測点で絞れる', async () => {
+    const asked: { fromMs: number; toMs: number }[] = []
+    const base = await start(new ReadingHub(), undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, async (p) => {
+      asked.push(p)
+      return result(['station-1', 'station-2'])
+    })
+    const res = await fetch(`${base}/events?from=${T - 1000}&to=${T + 1000}&station=station-1`)
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { events: { stationId: string }[]; unreadableLines: number }
+    expect(body.events.map((e) => e.stationId)).toEqual(['station-1'])
+    expect(body.unreadableLines).toBe(2)
+    expect(asked).toEqual([{ fromMs: T - 1000, toMs: T + 1000 }])
+  })
+
+  it('記録を持たない構成なら 503（「揺れが無かった」と区別する）', async () => {
+    const base = await start(new ReadingHub())
+    const res = await fetch(`${base}/events?from=${T}&to=${T + 1000}`)
+    expect(res.status).toBe(503)
+  })
+
+  it('範囲が読めない・広すぎるものは 400 で、読みに行かない', async () => {
+    let called = 0
+    const base = await start(new ReadingHub(), undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, async () => {
+      called++
+      return result([])
+    })
+    expect((await fetch(`${base}/events?from=${T}`)).status).toBe(400)
+    expect((await fetch(`${base}/events?from=${T}&to=${T}`)).status).toBe(400)
+    expect((await fetch(`${base}/events?from=${T}&to=${T + 94 * 86_400_000}`)).status).toBe(400)
+    expect(called).toBe(0)
+  })
+
+  it('parseEventQuery: 観測点を省けば null', () => {
+    expect(parseEventQuery(new URLSearchParams(`from=1&to=2`))).toEqual({ ok: true, fromMs: 1, toMs: 2, stationId: null })
   })
 })

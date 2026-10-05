@@ -6,7 +6,8 @@
 // - `GET /waves` — **過ぎた合成波形**を時刻の範囲で返す（宛先は **PWA**。#357）。
 //   保存は `waveArchive.ts`、間引きは `waveEnvelope.ts`。
 // - `/api/*` — 設定・履歴・管理操作（宛先は**管理コンソール**）。**認証必須**（`adminAuth.ts`）。
-//   応じるのは観測点・基板の設定（`/api/stations`・`/api/boards`）だけ（#313 段 B）。
+//   応じるのは観測点・基板の設定（`/api/stations`・`/api/boards`）・静止窓（`/api/rest-windows`）・
+//   止める合図（`POST /api/shutdown`）。
 // - `GET /admin`・`GET /admin/app.js` — 管理コンソール本体（静的アセット）。**認証なし**——
 //   見られても書き込みはできない（書き込みには `/api/*` のトークンが要る）（#313 段 C）。
 //
@@ -39,6 +40,8 @@ import type { StationConfig } from './stationConfig'
 import type { StatusReport } from './statusReport'
 import type { ArchivedWaveChunk, WaveRangeResult } from './waveArchive'
 import { buildWaveEnvelope } from './waveEnvelope'
+import { EVENT_RANGE_MAX_MS } from '../detection/shakeEventStore'
+import type { EventRangeResult } from '../detection/shakeEventStore'
 
 /** 繋ぎ直すまでブラウザに待たせる時間。**SSE の `retry:` で伝える。** */
 const RETRY_MS = 3_000
@@ -270,6 +273,41 @@ export function parseWaveQuery(params: URLSearchParams): WaveQuery {
   return { ok: true, stationId, fromMs, toMs, columns }
 }
 
+export type EventQuery =
+  | { readonly ok: true; readonly fromMs: number; readonly toMs: number; readonly stationId: string | null }
+  | { readonly ok: false; readonly error: 'bad-range' | 'range-too-wide' }
+
+/**
+ * `GET /events` の問い合わせを読む。`from`・`to`（unix ミリ秒）は必須、`station` は任意。
+ *
+ * **範囲は {@link EVENT_RANGE_MAX_MS} まで。** 記録は月ごとのファイルを頭から読むので、
+ * 際限なく広げさせない。
+ */
+export function parseEventQuery(params: URLSearchParams): EventQuery {
+  const fromMs = decimalInt(params.get('from'))
+  const toMs = decimalInt(params.get('to'))
+  if (fromMs === null || toMs === null || toMs <= fromMs) return { ok: false, error: 'bad-range' }
+  if (toMs - fromMs > EVENT_RANGE_MAX_MS) return { ok: false, error: 'range-too-wide' }
+  const station = params.get('station')
+  return { ok: true, fromMs, toMs, stationId: station === null || station.length === 0 ? null : station }
+}
+
+/**
+ * 読み返した揺れを応答の形へ。**読めなかった行・ファイルの数を必ず添える** ——
+ * 無いと、受け手からは「揺れが無かった」と「記録が壊れていた」が同じ空の配列に見える。
+ */
+export function buildEventResponse(query: Extract<EventQuery, { ok: true }>, result: EventRangeResult): Record<string, unknown> {
+  const events = query.stationId === null ? result.events : result.events.filter((e) => e.stationId === query.stationId)
+  return {
+    fromMs: query.fromMs,
+    toMs: query.toMs,
+    stationId: query.stationId,
+    events,
+    unreadableLines: result.unreadableLines,
+    unreadableFiles: result.unreadableFiles,
+  }
+}
+
 /**
  * 読み返した結果を応答の形へ。
  *
@@ -372,6 +410,15 @@ export interface StationConfigOps {
   readonly apply: (config: StationConfig) => void
 }
 
+/**
+ * 止める合図（`POST /api/shutdown`）への答え。
+ *
+ * - `accepted` —— 締めくくりを始める（始まるのは応答を返した後）
+ * - `already-closing` —— もう締めくくりの途中。**2 度目は走らせない**（`main.ts` の `shutdown` と同じ）
+ * - `not-ready` —— 起動の途中で、締めくくりの段取りがまだ揃っていない
+ */
+export type ShutdownRequestResult = 'accepted' | 'already-closing' | 'not-ready'
+
 export interface StatusServerOptions {
   readonly port: number
   readonly address?: string
@@ -418,6 +465,18 @@ export interface StatusServerOptions {
    */
   readonly readRestWindows: () => readonly SensorRestWindows[]
   /**
+   * 止める合図（`POST /api/shutdown`）を受けたときに呼ぶ。
+   *
+   * **Windows では、外からホストに締めくくりを走らせる手段がこれしか無い。** `Stop-Process`
+   * も `process.kill` も SIGINT のハンドラを呼ばずに落とすので、miniSEED が溜めていた最長
+   * 5 秒ぶんと見出しが書かれずに消える（2026-10-04 に配り直した 2 回で実測）。
+   *
+   * **実体（`main.ts`）は、呼ばれた時点で締めくくりを始めないこと。** この層は答えを
+   * 返してから応答を書く —— 締めくくりが先に状態の口を閉じ始めると、合図を送った側に
+   * 答えが届かない。
+   */
+  readonly requestShutdown: () => ShutdownRequestResult
+  /**
    * 管理コンソール本体（#313 段 C）。`GET /admin`・`GET /admin/app.js` で配る。
    *
    * **`/api/*` とは別の経路。** ここは静的ファイルを返すだけで認証を持たない
@@ -449,6 +508,11 @@ export interface StatusServerOptions {
         readonly toMs: number
       }) => Promise<WaveRangeResult>)
     | null
+  /**
+   * 検出した揺れの記録を時刻の範囲で読み返す（`GET /events`。REQUIREMENTS.md §9）。
+   * **`null` なら記録を持たない構成** —— 503 で答え、「揺れが無かった」と区別させる。
+   */
+  readonly readEvents: ((params: { readonly fromMs: number; readonly toMs: number }) => Promise<EventRangeResult>) | null
 }
 
 export interface StatusServer {
@@ -483,6 +547,8 @@ function encode(message: HubMessage): string {
       return sseEvent('station-wave', message.wave)
     case 'station-diff':
       return sseEvent('station-diff', message.diff)
+    case 'shake-event':
+      return sseEvent('shake-event', message.event)
   }
 }
 
@@ -614,6 +680,7 @@ type AdminRoute =
   | { readonly kind: 'boards' }
   | { readonly kind: 'board'; readonly boardKey: string }
   | { readonly kind: 'rest-windows' }
+  | { readonly kind: 'shutdown' }
 
 /**
  * `/api/*` の経路を解く。**マッチしなければ `null`**（呼び出し側が 404 にする）。
@@ -634,6 +701,7 @@ function parseAdminRoute(pathname: string): AdminRoute | null {
     return boardKey.length > 0 ? { kind: 'board', boardKey } : null
   }
   if (pathname === '/api/rest-windows') return { kind: 'rest-windows' }
+  if (pathname === '/api/shutdown') return { kind: 'shutdown' }
   return null
 }
 
@@ -891,6 +959,7 @@ async function handleAdmin(
   log: (level: LogLevel, kind: string, detail: string, line: string) => void,
   stationConfig: StationConfigOps,
   readRestWindows: () => readonly SensorRestWindows[],
+  requestShutdown: () => ShutdownRequestResult,
 ): Promise<void> {
   applyAdminCors(req, res, adminAuth.allowedOrigins)
 
@@ -954,6 +1023,25 @@ async function handleAdmin(
       return
     }
     sendAdminJson(res, 200, { sensors: readRestWindows() })
+    return
+  }
+  if (route.kind === 'shutdown') {
+    // **POST だけ。** GET で止まると、リンクを開いただけ・先読みされただけで止まる。
+    if (req.method !== 'POST') {
+      sendAdminJson(res, 405, { error: 'method-not-allowed' })
+      return
+    }
+    const result = requestShutdown()
+    if (result === 'not-ready') {
+      sendAdminJson(res, 503, { error: 'not-ready' })
+      return
+    }
+    // **答えを先に書く。** 締めくくりはもう予約されているので、記録の口が投げて 500 に化けると
+    // 「始まったのに失敗と返す」食い違いになる（`log` 自体は投げない作りだが、順で守る）。
+    sendAdminJson(res, 202, { status: result === 'accepted' ? 'closing' : 'already-closing' })
+    // **誰が止めたかを残す。** 落ちた記録（「終了の記録を残さずに止まっていた」）と
+    // 見分けるのはこの行と、締めくくりの最後の「正常に終了した」。
+    if (result === 'accepted') log('warn', 'admin', 'shutdown', '[admin] 止める合図を受けた（POST /api/shutdown）。締めくくりを始める')
     return
   }
   // route.kind === 'board'
@@ -1128,7 +1216,7 @@ export async function startStatusServer(options: StatusServerOptions): Promise<S
         // `createServer` のコールバックは同期関数なので、万一 reject すると
         // `unhandledRejection` としてプロセスの外へ漏れる——`/status` の
         // 応答作成失敗と同じ扱いで押さえる。
-        handleAdmin(req, res, url, options.adminAuth, log, options.stationConfig, options.readRestWindows).catch((error: unknown) => {
+        handleAdmin(req, res, url, options.adminAuth, log, options.stationConfig, options.readRestWindows, options.requestShutdown).catch((error: unknown) => {
           const detail = error instanceof Error ? error.message : String(error)
           log('error', 'admin', 'handler', `[admin] /api/* の処理に失敗: ${detail}`)
           if (!res.headersSent) {
@@ -1235,6 +1323,31 @@ export async function startStatusServer(options: StatusServerOptions): Promise<S
             )
             // **既に書き始めていたら何もしない**（二重に書くと壊れる）。
             if (!res.headersSent) sendJson(res, 500, { error: 'wave-read-failed' })
+          })
+        return
+      }
+      if (url.pathname === '/events') {
+        // **`/waves` と同じく `/api/*` の外に置く**（宛先は PWA。出るのは押し出しの
+        // `shake-event` と同じ記録で、違うのは過去をまとめて取れることだけ）。
+        if (options.readEvents === null) {
+          sendJson(res, 503, { error: 'event-store-unavailable' })
+          return
+        }
+        const query = parseEventQuery(url.searchParams)
+        if (!query.ok) {
+          sendJson(res, 400, { error: query.error })
+          return
+        }
+        // **投げさせない。** 読み込みは非同期なので、上の同期の `try` には捕まらない
+        // （`/waves` と同じ理由で `log()` を通す）。
+        void options
+          .readEvents({ fromMs: query.fromMs, toMs: query.toMs })
+          .then((result) => {
+            sendJson(res, 200, buildEventResponse(query, result))
+          })
+          .catch((error: unknown) => {
+            log('error', 'events', 'read', `[events] 読み返しに失敗: ${error instanceof Error ? error.message : String(error)}`)
+            if (!res.headersSent) sendJson(res, 500, { error: 'event-read-failed' })
           })
         return
       }

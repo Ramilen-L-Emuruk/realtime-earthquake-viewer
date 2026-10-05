@@ -23,6 +23,7 @@ import type { RecvBufferOutcome } from './udpReceiver'
 import type { TallySnapshot } from './packetTally'
 import type { HubSnapshot } from './readingHub'
 import type { MseedHealth } from './mseedRecorder'
+import type { DetectionStatus } from '../detection/stationDetection'
 import type { SensorHealth } from './sensorHealth'
 import type { StationDirectory, StationInfo } from './stationConfig'
 import type { StationHealth } from './stationHealth'
@@ -132,6 +133,8 @@ export interface StatusReportInput {
   readonly stationHistory: StationHistoryStatus
   /** 合成波形の保存（`waveArchive.ts`）。**生データの欄とは別に持つ**（片方だけ止まりうる）。 */
   readonly waveArchive: WaveArchiveStatus
+  /** 地震検出（`../detection/stationDetection.ts`）。**部品が返すものをそのまま受け取る。** */
+  readonly detection: DetectionStatus
   readonly hub: HubSnapshot
   /** 基板への返事（`ackReplier.ts`）。**帳面が返すものをそのまま受け取る**（`gravity` と同じ理由）。 */
   readonly acks: AckSnapshot
@@ -331,6 +334,12 @@ export interface StatusReport {
   readonly stationHistory: StationHistoryStatus
   /** 合成波形の保存（読み返しの口が返せる範囲は、ここが動いている間のぶんだけ）。 */
   readonly waveArchive: WaveArchiveStatus
+  /**
+   * 地震検出。**`failures` と `store.writeErrors` が 0 なら、検出した揺れはすべて残っている。**
+   * `feed` が null なら気象庁の地震情報を受け取らない設定で、揺れはすべて照合できずに終わる。
+   * `feed.openGaps` が空でなければ、その時間帯の揺れは「照合できず」になる。
+   */
+  readonly detection: DetectionStatus
   readonly stream: HubSnapshot
   /**
    * 基板への「届いた」の返事。
@@ -524,6 +533,7 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     mseed: input.mseed,
     stationHistory: input.stationHistory,
     waveArchive: input.waveArchive,
+    detection: input.detection,
     stream: input.hub,
     acks: input.acks,
     unreadableTimes: unreadable,
