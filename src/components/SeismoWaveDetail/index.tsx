@@ -586,7 +586,6 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
             <ZoomButton label="縮小" onClick={() => zoomBy(2)}>−</ZoomButton>
             <ZoomButton label="全体" onClick={() => setRawView(bounds)}>全体</ZoomButton>
           </span>
-          <span className="font-mono tabular-nums text-secondary">{scaleText ?? '—'}</span>
         </div>
 
         <div
@@ -617,6 +616,9 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
                   {peaks[a] !== null && (
                     <span className="tabular-nums text-secondary">最大 {(peaks[a] as AxisPeak).gal.toFixed(1)} gal</span>
                   )}
+                  {/* 縦の範囲は**段ごとの見出しの右端**（合成の段と同じ位置）。3 成分は縦を共通にしているので、
+                      どの段にも同じ値が並ぶ。 */}
+                  <span className="ml-auto font-mono tabular-nums text-secondary">{scaleText ?? '—'}</span>
                 </div>
                 <canvas
                   ref={(el) => {
