@@ -50,6 +50,7 @@ import {
   buildSampleSeries,
   laneGeometry,
   maxAbsInRange,
+  movingAverage,
   peakInRange,
   seriesRange,
   valueTransform,
@@ -67,9 +68,18 @@ import {
 const DETAIL_MIN_SCALE_GAL = 2
 
 /**
- * 3 軸合成の段の線の色。**3 成分（緑・赤紫・黄）とも、P/S（水色・朱）・最大の線（白）とも別の淡い灰青。**
+ * 合成の段の線の色。**3 成分（緑・赤紫・黄）とも、P/S（水色・朱）・最大の線（白）とも別の淡い灰青。**
  */
 const COMPOSITE_COLOR = '#94a3b8'
+
+/** 合成に重ねる「前後を均した線」の色。元の線（灰青）より明るい白に近い色。 */
+const COMPOSITE_SMOOTH_COLOR = '#f1f5f9'
+
+/**
+ * 合成を均す幅（ms）。**各時刻の前後 0.5 秒ずつ・計 1 秒**（2026-10-05 のユーザー判断）。
+ * 小さな地震の S 波の山（数秒）は形が残り、ノイズのギザギザは消える。
+ */
+const COMPOSITE_SMOOTH_MS = 1_000
 
 /** 震度の推移で、線を切る刻みの飛び（ms）。刻みは 1 秒なので 1.5 秒。 */
 const SERIES_GAP_MS = 1_500
@@ -110,9 +120,7 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
   onCloseRef.current = onClose
   const [emphasized, setEmphasized] = useState(false)
   // **生のサンプル。** 届くまで・取れなかったときは `null`（カードの列で描く）。
-  const [samples, setSamples] = useState<{ series: SampleSeries; magnitude: Float32Array; range: ViewRange } | null>(
-    null,
-  )
+  const [samples, setSamples] = useState<{ series: SampleSeries; range: ViewRange } | null>(null)
 
   // 持っている記録の範囲（末尾の空は落とす）。**継ぎ足しで伸びればここも伸びる。**
   const bounds = useMemo(() => columnsRange(trimTrailingGap(wave.columns)), [wave.columns])
@@ -146,13 +154,20 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
     () => (quakeSpan === null ? ([null, null, null] as const) : peakPerAxis(wave.columns, quakeSpan)),
     [wave.columns, quakeSpan],
   )
-  // **3 軸合成の段はサンプルが届いてから出す**（2026-10-05 のユーザー判断）。カードの列は成分ごとの上下の端
+  // **合成の段はサンプルが届いてから出す**（2026-10-05 のユーザー判断）。カードの列は成分ごとの上下の端
   // しか持たず、合成の大きさは出せない（端どうしを足すと実際より大きくなる）。見出しの最大は成分と同じく
   // カードと同じ切り出した区間で数える。
   const showComposite = useSamples
+  // **合成は選んでいる向きだけで出す**（2026-10-05 のユーザー判断）。向きを切り替えたときと届いたときだけ
+  // 作り直す（拡大・送りのたびには作らない）。均した線も同じ。
+  const composite = useMemo(() => {
+    if (samples === null) return null
+    const magnitude = vectorMagnitude(samples.series, axes)
+    return { magnitude, smooth: movingAverage(samples.series, magnitude, COMPOSITE_SMOOTH_MS) }
+  }, [samples, axes])
   const compositePeak = useMemo(
-    () => (samples === null || quakeSpan === null ? null : peakInRange(samples.series, samples.magnitude, quakeSpan)),
-    [samples, quakeSpan],
+    () => (samples === null || composite === null || quakeSpan === null ? null : peakInRange(samples.series, composite.magnitude, quakeSpan)),
+    [samples, composite, quakeSpan],
   )
   const compositeRef = useRef<HTMLCanvasElement | null>(null)
   const [compositeScaleText, setCompositeScaleText] = useState<string | null>(null)
@@ -196,8 +211,7 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
         log.debug(`[seismo] 詳細の窓: 生のサンプルが 1 点も無い（${wave.stationId}）。カードの列で描く`)
         return
       }
-      // 3 軸合成は届いたときに 1 回だけ出す（拡大・送りのたびに出し直さない）。
-      setSamples({ series, magnitude: vectorMagnitude(series), range })
+      setSamples({ series, range })
     })
     return () => ctrl.abort()
   }, [wave.baseUrl, wave.stationId, everComplete])
@@ -308,6 +322,7 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
             baseline: 'center',
             geometry: (widthPx) =>
               laneGeometry({ series: samples.series, values: samples.series.v[a], range: view, widthPx, map: (v) => transform(a, v) }),
+            overlay: null,
             scaleGal,
             stale: wave.interrupted,
             marks: laneMarks(a, a === visibleIdx[0] && !showComposite),
@@ -315,18 +330,24 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
           })
           if (!ok) throttledNoContext(() => log.error('[seismo] 詳細の窓の波形を描く 2D コンテキストを取れなかった'))
         }
-        // ---- 3 軸合成の段（一番上） ----
+        // ---- 合成の段（一番上） ----
         // **縦は合成の段だけで持つ**（合成は成分より大きいので、3 段と共有すると成分の段が縮む）。
         // **強調は掛けない** —— 大きさの素の値を見せる段にする（2026-10-05 のユーザー判断）。
+        // 前後 1 秒で均した線を太く重ね、揺れの強さの増え方・収まり方を読めるようにする。
         const cc = compositeRef.current
-        if (cc !== null) {
-          const peakInView = peakInRange(samples.series, samples.magnitude, view)
+        if (cc !== null && composite !== null) {
+          const peakInView = peakInRange(samples.series, composite.magnitude, view)
           const compositeScale = Math.max(DETAIL_MIN_SCALE_GAL, peakInView?.value ?? 0)
           const ok = paintSampleLane(cc, {
             color: COMPOSITE_COLOR,
             baseline: 'bottom',
             geometry: (widthPx) =>
-              laneGeometry({ series: samples.series, values: samples.magnitude, range: view, widthPx, map: (v) => v }),
+              laneGeometry({ series: samples.series, values: composite.magnitude, range: view, widthPx, map: (v) => v }),
+            overlay: {
+              color: COMPOSITE_SMOOTH_COLOR,
+              geometry: (widthPx) =>
+                laneGeometry({ series: samples.series, values: composite.smooth, range: view, widthPx, map: (v) => v }),
+            },
             scaleGal: compositeScale,
             stale: wave.interrupted,
             marks: [...arrivalMarks, ...peakMarkAt(compositePeak?.atMs)],
@@ -393,7 +414,7 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
     // `visibleIdx` は `axes` から作るので `axes` で足りる。`view` は `useSamples` のときだけ使い、
     // そのとき `displayFromMs`/`displayToMs` が `view` と一致する。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [useSamples, samples, columnsShown, displayFromMs, displayToMs, axes, noise, peaks, compositePeak, intensity, wave.arrival, wave.axisZero, wave.interrupted])
+  }, [useSamples, samples, columnsShown, displayFromMs, displayToMs, axes, noise, peaks, composite, compositePeak, intensity, wave.arrival, wave.axisZero, wave.interrupted])
 
   // ---- 操作 ----
   const zoomBy = useCallback(
@@ -527,7 +548,7 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
           {showComposite && (
             <div>
               <div className="flex gap-2 text-[11px] leading-none" style={{ color: COMPOSITE_COLOR }}>
-                <span>3軸合成</span>
+                <span>合成</span>
                 {compositePeak !== null && (
                   <span className="tabular-nums text-secondary">最大 {compositePeak.value.toFixed(1)} gal</span>
                 )}

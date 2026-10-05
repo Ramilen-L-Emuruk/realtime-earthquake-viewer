@@ -147,7 +147,7 @@ export type LaneGeometry =
   | { readonly kind: 'points'; readonly x: Float32Array; readonly y: Float32Array }
 
 /**
- * 1 本の値の並びの描き方を作る（成分 1 つ、または 3 軸合成）。
+ * 1 本の値の並びの描き方を作る（成分 1 つ、または 合成）。
  *
  * @param values `series.t` と同じ添字で並んだ値（成分なら `series.v[a]`）
  * @param map 描く前に値へ当てる変換（強調など）。素のままなら恒等
@@ -188,16 +188,57 @@ export function laneGeometry(params: {
 }
 
 /**
- * 3 軸合成の大きさ（各時刻の √(南北² ＋ 東西² ＋ 上下²)）。**どれか 1 成分でも欠けていれば `NaN`**
+ * 合成の大きさ（各時刻の、選んだ成分の二乗和の平方根）。**選んだ成分のどれか 1 つでも欠けていれば `NaN`**
  * —— 欠けた成分を 0 と見なすと、その時刻だけ小さく描かれる。
  *
- * **向きの切り替えに関わらず常に 3 成分で出す**（2026-10-05 のユーザー判断。値の意味が操作で変わらない）。
+ * **向きの切り替えで消した成分は含めない**（2026-10-05 のユーザー判断。1 つだけ選べばその成分の振れの絶対値）。
  * ホストが返すサンプルは直流を引いた変動分なので、そのまま足せる。
+ *
+ * @param axes 成分ごとに含めるか（南北・東西・上下）
  */
-export function vectorMagnitude(series: SampleSeries): Float32Array {
+export function vectorMagnitude(series: SampleSeries, axes: readonly boolean[]): Float32Array {
   const out = new Float32Array(series.length)
-  const [a, b, c] = series.v
-  for (let i = 0; i < series.length; i += 1) out[i] = Math.sqrt(a[i] * a[i] + b[i] * b[i] + c[i] * c[i])
+  const use = [0, 1, 2].filter((a) => axes[a] !== false)
+  for (let i = 0; i < series.length; i += 1) {
+    let sum = 0
+    for (const a of use) {
+      const v = series.v[a][i]
+      sum += v * v
+    }
+    out[i] = use.length === 0 ? Number.NaN : Math.sqrt(sum)
+  }
+  return out
+}
+
+/**
+ * 前後 `windowMs` の幅（各時刻を中心に）で値を平均した並び。**揺れの強さの輪郭**を見せるために使う。
+ *
+ * - 窓の中の値の無い点は数えない（平均は値のある点だけで取る）
+ * - **元が `NaN` の点は `NaN` のまま** —— 途切れで線を切る扱いを均した線でも保つ
+ *
+ * 和と個数の累積から引くので、点の数に比例する手間で済む。
+ */
+export function movingAverage(series: SampleSeries, values: Float32Array, windowMs: number): Float32Array {
+  const n = series.length
+  const sum = new Float64Array(n + 1)
+  const cnt = new Uint32Array(n + 1)
+  for (let i = 0; i < n; i += 1) {
+    const v = values[i]
+    const ok = Number.isFinite(v)
+    sum[i + 1] = sum[i] + (ok ? v : 0)
+    cnt[i + 1] = cnt[i] + (ok ? 1 : 0)
+  }
+  const half = windowMs / 2
+  const out = new Float32Array(n)
+  let lo = 0
+  let hi = 0
+  for (let i = 0; i < n; i += 1) {
+    const t = series.t[i]
+    while (lo < n && series.t[lo] < t - half) lo += 1
+    while (hi < n && series.t[hi] <= t + half) hi += 1
+    const c = cnt[hi] - cnt[lo]
+    out[i] = !Number.isFinite(values[i]) || c === 0 ? Number.NaN : (sum[hi] - sum[lo]) / c
+  }
   return out
 }
 
