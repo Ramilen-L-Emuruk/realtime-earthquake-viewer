@@ -24,7 +24,7 @@ import type { AreaPrefIndex } from '../utils/quakePoints'
 import { calcEEWCancelTime, eewSerial, eewEventKey, computeSingleEEWLevel } from '../utils/eew'
 import { recordReplayEvent, type ReplayTelegramSkip } from '../utils/replayEventLog'
 import { replayTelegramFacts, type ReplayTelegramSource } from '../utils/replayTelegramRef'
-import { decideEstimatedIntensityUpdate, isNewEstimatedIntensity, rememberShownEstimatedIntensity } from '../utils/estimatedIntensity'
+import { upsertEstimatedIntensity, isNewEstimatedIntensity, rememberShownEstimatedIntensity } from '../utils/estimatedIntensity'
 import { mergeTsunamiReports, isCancelForCurrentTsunami, isTsunamiContinuation, withInheritedTsunamiFacts } from '../utils/tsunami'
 import { log } from '../utils/logger'
 import { serverNow, serverDate } from '../utils/clock'
@@ -593,13 +593,19 @@ export interface EarthquakeState {
   /** 地震回数に関する情報（VXSE60）。最新の 1 通だけ持つ */
   earthquakeCount: JMAEarthquakeCount | null
   /**
-   * 推計震度分布図（IXAC41）。最新の 1 通だけ持つ。
+   * 推計震度分布図（IXAC41・IXAC40）。**地震ごとに 1 通**（その地震の最新）を持つ。
    *
-   * 1 通で 36 万セル・3MB 規模になる（実電文で観測された最大。形式が定める上限ではない）ので
-   * **複数は持たない**。震度5弱以上の地震にしか発表されないため、
-   * 新しいものが来た＝より新しい大きな地震か、同じ地震の続報のどちらか。
+   * 地震カードとの引き当ては地震発現時刻と震源（→ `estimatedIntensityFor`）。かつては最新の
+   * 1 通だけを持っていたため、次の地震の分布が届いた時点で前の地震のカードから分布が消え、
+   * 履歴（起動時・「もっと見る」・リプレイの補完）から取り込むこともできなかった。
+   *
+   * **件数に上限は置かない**（2026-10-05 ユーザー承認）。発表は震度5弱以上の地震だけで
+   * （実配信 13 か月で 28 通）、1 通はふつう数千セル・十数 KB。実電文で観測した最大は
+   * 能登半島地震の本震の 517,803 セル（型付き配列で約 4.7MB）。
+   *
+   * 入れるのは `upsertEstimatedIntensity` だけ（地震ごとに 1 通を保つ規則はそこにある）。
    */
-  estimatedIntensity: JMAEstimatedIntensity | null
+  estimatedIntensities: readonly JMAEstimatedIntensity[]
   /**
    * 地震カードの更新の印（鍵は `quakeEventKey`）。**ライブで受けた続報にだけ付く。**
    *
@@ -684,7 +690,7 @@ export function useEarthquakes(
     kohatsu: null,
     quakeNotice: null,
     earthquakeCount: null,
-    estimatedIntensity: null,
+    estimatedIntensities: [],
     quakeUpdateMarks: new Map(),
     quakeMarkMemory: new Map(),
     connectionStatus: (isDmdss && !isValidDmdataApiKey(dmdataApiKey)) ? 'disconnected' : 'connecting',
@@ -840,14 +846,13 @@ export function useEarthquakes(
   // 消えては用を成さない。履歴経路（`mergeQuakeHistory`）はカードごと消すので、そちらの取消も
   // ここに集めて両経路で共有する。
   const quakeRetractionsRef = useRef<QuakeRetraction[]>([])
-  // いま出している推計震度分布図の見分け（IXAC41）。**巨大な本体は持たない** ——
-  // 判定に要るのは地震発現時刻・発表時刻・セル数の 3 つだけで、本体は実電文で観測された
-  // 最大の 364,993 セルで 3MB 規模になる（形式が定める上限ではない。確保長は電文が宣言する
-  // 長さから決まるので、これより大きくなりうる）。
-  const shownEstimatedIntensityRef = useRef<{ arrivalTime: string; time: string; count: number } | null>(null)
+  // 持っている推計震度分布図の一覧（`EarthquakeState.estimatedIntensities` と同じもの）。
+  // **反映の判定を同期に行うために ref でも持つ**（理由は `applyEstimatedIntensity`）。
+  // 要素は state と同じ参照なので、本体を二重に抱えることはない。
+  const estimatedIntensitiesRef = useRef<readonly JMAEstimatedIntensity[]>([])
   // 分布を伝えた地震（発現時刻）の台帳。読み上げが「受信しました」と「更新されました」を
-  // 言い分けるのに使う（→ `isNewEstimatedIntensity`）。**いま出している 1 通だけでは足りない**
-  // —— 地震が立て続けに起きると分布が交互に届き、同じ地震の続報のあいだに別の地震の分布が挟まる。
+  // 言い分けるのに使う（→ `isNewEstimatedIntensity`）。**持っている一覧では代われない** ——
+  // 履歴から黙って取り込んだ分布は持っているが、まだ伝えていない。
   const shownEstimatedIntensityArrivalsRef = useRef<string[]>([])
   // 後発地震注意情報（VYSE60）の7日間有効期限タイマー
   const kohatsuExpireTimerRef = useRef<number | undefined>(undefined)
@@ -1257,15 +1262,14 @@ export function useEarthquakes(
   }, [])
 
   /**
-   * 推計震度分布図（IXAC41）を反映する。
+   * 推計震度分布図（IXAC41）を反映する。**地震ごとに 1 通**を持つ（→ `upsertEstimatedIntensity`）。
    *
    * **古い報で退行させない。** 同じ地震について続報が出る（実電文で M7.4 → M7.6 の 6 分後、
    * セル数も変わった）うえ、DMDATA は内容が同一の重複配信もする。到着順が入れ替わったときに
-   * 古い分布へ戻ると、画面が理由もなく前の姿へ巻き戻る。判定は**発表時刻の比較**で行う
-   * ——この電文は `eventId` を持たないので報番号の台帳が作れない。
+   * 古い分布へ戻ると、画面が理由もなく前の姿へ巻き戻る。判定は**同じ地震どうしの発表時刻の比較**
+   * で行う ——この電文は `eventId` を持たないので報番号の台帳が作れない。
    *
-   * **別の地震の分布は無条件に置き換える。** 発表されるのは震度5弱以上の地震だけなので、
-   * 新しい地震の分布が届いたということは、そちらを見せるべき状況になっている。
+   * **別の地震の分布は置き換えずに足す。** 前の地震のカードは自分の分布を出し続ける。
    *
    * **初報か続報かを併せて返す。** 読み上げが「受信しました」と「更新されました」を言い分ける
    * のに要る（→ `isNewEstimatedIntensity`）。判定に使う台帳はここが持っているので、受け取る側で
@@ -1280,24 +1284,18 @@ export function useEarthquakes(
     // **判定は ref で同期に行う。** `setState` の更新関数の中で判定すると、React が
     // 開発時に更新関数を二度呼ぶため副作用が二重になり、しかも呼び出し元へ結果を返せない
     // （更新が後回しになりうる）。地震回数の帯が同じ理由で ref を持っている。
-    // 判定は純関数へ切り出してある（`decideEstimatedIntensityUpdate`）。理由の言い分けと
-    // 「別の地震でも古い発表は採らない」規則をテストで固定したいため。
-    const cur = shownEstimatedIntensityRef.current
-    const verdict = decideEstimatedIntensityUpdate(cur, data)
-    if (verdict.reason === 'stale') {
-      log.info(`[ixac41] 発表が古い報なので反映しません received=${data.time}/${data.arrivalTime} shown=${cur?.time}/${cur?.arrivalTime}`)
+    // 判定は純関数へ切り出してある（`upsertEstimatedIntensity`）。地震ごとに 1 通を保つ規則と
+    // 「同じ地震の古い報では退行しない」規則をテストで固定したいため。
+    const { list, update } = upsertEstimatedIntensity(estimatedIntensitiesRef.current, data)
+    if (update.reason === 'stale') {
+      log.info(`[ixac41] 同じ地震の、発表が古い報なので反映しません received=${data.time}/${data.arrivalTime}`)
       return null
     }
-    if (!verdict.apply) return null
-    if (verdict.reason === 'switched') {
-      // 別の地震の分布へ入れ替えた。**画面だけ見てもどちらの地震のものかは判らない**ので残す。
-      log.info(`[ixac41] 別の地震の分布へ入れ替えます received=${data.arrivalTime} shown=${cur?.arrivalTime}`)
-    }
-    shownEstimatedIntensityRef.current = { arrivalTime: data.arrivalTime, time: data.time, count: data.count }
-    setState(prev => ({ ...prev, estimatedIntensity: data }))
-    // 初報か続報かは**台帳**で決める。`verdict.reason` では決められない —— 理由が比べている
-    // 相手はいま出している 1 通だけなので、別の地震の分布を挟むと同じ地震の続報が `switched`
-    // になる（実電文の例は `isNewEstimatedIntensity`）。
+    if (!update.apply) return null
+    estimatedIntensitiesRef.current = list
+    setState(prev => ({ ...prev, estimatedIntensities: list }))
+    // 初報か続報かは**台帳**で決める。`update.reason` では決められない —— 履歴から黙って
+    // 取り込んだ分布も「持っている」側に入るので、まだ伝えていない地震の分布が `newer` になる。
     const isNew = isNewEstimatedIntensity(shownEstimatedIntensityArrivalsRef.current, data.arrivalTime)
     if (announce) rememberShownEstimatedIntensity(shownEstimatedIntensityArrivalsRef.current, data.arrivalTime)
     return { isNew }
@@ -2388,8 +2386,15 @@ export function useEarthquakes(
               case 'quakeNotice':
                 tryApplyExtra('お知らせ', p.data, data => applyQuakeNotice(data, true))
                 break
+              // **推計震度分布図は地震ごとに持つ**ので、過去の地震の分布も入れてよい
+              // （同じ地震の古い報では退行しない → `upsertEstimatedIntensity`）。音・読み上げは
+              // 起こさない（`announce` 偽）——聞いていない分布を「伝えた」台帳にも積まない。
+              case 'estimatedIntensity': {
+                const applied = tryApplyExtra('推計震度分布図', p.data, data => applyEstimatedIntensity(data, false) !== null)
+                recordSkippedTelegram({ kind: 'estimatedIntensity', data: p.data }, applied ? 'silentReplayInit' : 'notApplied')
+                break
+              }
               case 'event':
-              case 'estimatedIntensity':
                 // `HISTORY_EXTRA_TYPES` に入らないので届かない。**種別を足したときに
                 // ここで止まるよう、既定へ落とさず名指しで書く。**
                 // （「もっと見る」側の同一分岐にも同じ注記がある。片方だけ直さないこと）
@@ -2774,8 +2779,16 @@ export function useEarthquakes(
             // **記録しない**（起動時と同じ唯一の例外。→ `applyQuakeNotice` のコメント・
             // `docs/spec/recording-interface-spec.md` §4「唯一の例外」）。
             case 'quakeNotice': break
+            // **推計震度分布図は反映する**（帯と違い、長周期と同じく「もっと見る」が増やす
+            // カードの一部）。地震ごとに持つので、古い日の分布が今の地震の分布を上書きすることは
+            // ない（同じ地震の古い報でも退行しない → `upsertEstimatedIntensity`）。音・読み上げは
+            // 起こさない。**例外源があるので個別に囲う**（上の注記の例外）。
+            case 'estimatedIntensity': {
+              const applied = tryApplyExtra('推計震度分布図', p.data, data => applyEstimatedIntensity(data, false) !== null)
+              recordSkippedTelegram({ kind: 'estimatedIntensity', data: p.data }, applied ? 'silentReplayInit' : 'notApplied')
+              break
+            }
             case 'event':
-            case 'estimatedIntensity':
               // `HISTORY_EXTRA_TYPES` に入らないので届かない（起動時側の同一分岐と同じ注記。
               // 片方だけ直さないこと）。
               break
@@ -3399,7 +3412,7 @@ export function useEarthquakes(
     shownCommentaryIdRef.current = null
     shownQuakeNoticeIdRef.current = null
     shownEarthquakeCountEventIdRef.current = null
-    shownEstimatedIntensityRef.current = null
+    estimatedIntensitiesRef.current = []
     // 分布を伝えた地震の台帳も空にする。リプレイの開始・リセットで時間軸が変わるため、前の軸で
     // 伝えた分布を「もう伝えた」と数えると、新しい軸の初報が「更新されました」と読まれる。
     shownEstimatedIntensityArrivalsRef.current = []
@@ -3415,7 +3428,7 @@ export function useEarthquakes(
       kohatsu: null,
       quakeNotice: null,
       earthquakeCount: null,
-      estimatedIntensity: null,
+      estimatedIntensities: [],
       // 時間軸が変わるので、印とその記憶も落とす（残すと再生開始直後の報が
       // 旧い軸のカードとの差分で光る）。
       quakeUpdateMarks: new Map(),

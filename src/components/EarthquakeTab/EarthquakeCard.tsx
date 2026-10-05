@@ -3,7 +3,7 @@ import type { JMAQuake, JMALpgm, IssueType, EarthquakePoint, IntensityScale, JMA
 import { quakeEventKey } from '../../utils/quakeMerge'
 import { QUAKE_CARD_KEY_ATTR } from '../../utils/quakeCardScroll'
 import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor, lpgmCategoryNote, buildLpgmRows, canOpenLpgmNotes } from '../../utils/lpgm'
-import { estimatedIntensityFor, estimatedIntensityAvailability } from '../../utils/estimatedIntensity'
+import { estimatedIntensityAvailability } from '../../utils/estimatedIntensity'
 import { telegramTextSubject } from '../../utils/ttsFollow'
 import { useAutoOpenWhileSpeakingIn } from '../../hooks/useAutoOpenWhileSpeaking'
 import { SerialBadge } from '../SerialBadge'
@@ -423,7 +423,11 @@ interface Props {
   lpgm?: JMALpgm
   activeLpgmEventId?: string | null
   onToggleLpgm?: (eventId: string) => void
-  /** アプリが持っている最新の推計震度分布図。この地震のものかはここで引き当てる。 */
+  /**
+   * **この地震の**推計震度分布図（引き当て済み。無ければ null）。引き当ては一覧の側で行う
+   * （→ `estimatedIntensityFor`）—— 一覧ごと渡すと、別の地震の分布が届くたびに全カードの
+   * `memo` が素通りする。
+   */
   estimatedIntensity?: JMAEstimatedIntensity | null
   /** この地震の震度分布モードを開いているか。 */
   distributionActive?: boolean
@@ -592,9 +596,8 @@ export const EarthquakeCard = memo(function EarthquakeCard({
   const categoryNote = lpgmCategoryNote(lpgm?.category)
   /** 補足の見出しを出すか（判定は読み上げ側の診断と共有する → `canOpenLpgmNotes`）。 */
   const hasLpgmNotes = canOpenLpgmNotes(lpgm)
-  // 震度分布ボタン。**引き当てはここで行う** —— この電文は識別子を持たないので、
-  // 発現時刻で突き合わせる（→ `estimatedIntensityFor`）。
-  const matchedEstimated = estimatedIntensityFor(quake, estimatedIntensity)
+  // 震度分布ボタン。引き当ては一覧の側で済んでいる（→ {@link Props.estimatedIntensity}）。
+  const matchedEstimated = estimatedIntensity
   const distributionState = estimatedIntensityAvailability(quake, matchedEstimated)
   // **描けるものが何も無いならボタンを出さない。** 公式が無く、観測点も 1 つも無い電文
   //（震度速報など区域しか持たないもの）では、押しても空の画面になるだけ。

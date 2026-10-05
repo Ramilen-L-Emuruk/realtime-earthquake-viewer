@@ -2416,6 +2416,87 @@ describe('fetchDmdataQuakeHistory', () => {
       expect(warns.join('\n')).toMatch(/履歴用電文の本体が見つからず.*アーカイブに入っていない/)
     })
   })
+
+  // ── 推計震度分布図（二進電文）。過去の地震のカードにも分布を付けるために拾う ──
+  //
+  // 本編の再生と同じく `.bin` の断片を結合して読む。**呼び出し方（計画・控え・断片の id）は
+  // 履歴にしか無い**のでここで固定する。
+  describe('推計震度分布図', () => {
+    const BIN_TIME = '2026-08-10T12:06:00+09:00'
+    const BEFORE = new Date('2026-08-10T13:00:00+09:00')
+
+    async function splitArchive(over: { second?: Uint8Array | null } = {}) {
+      const bin = buildSampleTelegram()
+      const cut = 32
+      const second = over.second === undefined ? bin.slice(cut) : over.second
+      return makeTarGz([
+        {
+          name: 'telegrams.json',
+          content: JSON.stringify([
+            manifestEntry('hbin0001', 'IXAC41', BIN_TIME, null, binFileName('hbin0001')),
+            manifestEntry('hbin0002', 'IXAC41', BIN_TIME, 'RRA', binFileName('hbin0002', '20260810120600100')),
+          ]),
+        },
+        { name: binFileName('hbin0001'), content: bin.slice(0, cut) },
+        ...(second ? [{ name: binFileName('hbin0002', '20260810120600100'), content: second }] : []),
+      ])
+    }
+
+    // 正: 分割された 2 通を結合し、1 通の分布として補完（`extras`）へ渡す。
+    it('分割された推計震度分布図を結合して補完へ渡す', async () => {
+      globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz: await splitArchive() }]) as unknown as typeof fetch
+
+      const result = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+
+      expect(skippedTotal(result.skippedByDay)).toBe(0)
+      expect(result.extras.map(e => e.payload.kind)).toEqual(['estimatedIntensity'])
+    })
+
+    // 安全弁: **アーカイブ本体の控えが外れても、解析の控えから返す**（本体を取りに行かない）。
+    // 結合の解析結果は**断片すべての id**に控える —— 最後の断片の id にしか控えないと、
+    // 1 つ目の断片が「本体が要る」と答え、目録と解析が控えにあっても毎回本体を落とす。
+    it('解析の控えがあれば、本体を落とさずに分布を返す', async () => {
+      const fetchMock = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz: await splitArchive() }])
+      globalThis.fetch = fetchMock as unknown as typeof fetch
+      await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+      // 本体の控えだけ落とす（目録と解析の控えは残す）
+      clearArchiveCacheForTest()
+      await clearArchiveBodyDb()
+      fetchMock.mockClear()
+
+      const result = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+
+      expect(fetchMock.mock.calls.some(c => c[0] === 'https://x/d10')).toBe(false)
+      expect(result.extras.map(e => e.payload.kind)).toEqual(['estimatedIntensity'])
+    })
+
+    // 対照: 試験報は取り込まない（非 XML 電文は目録の `test` で弾けないので本文で判定する）。
+    // **取りこぼしにも数えない** —— 正常な配信で、読めなかったわけではない。
+    it('試験報は取り込まず、取りこぼしにも数えない', async () => {
+      const gz = await makeTarGz([
+        { name: 'telegrams.json', content: JSON.stringify([manifestEntry('hbin0003', 'IXAC41', BIN_TIME, null, binFileName('hbin0003'))]) },
+        { name: binFileName('hbin0003'), content: buildSampleTelegram({ kind: 1 }) },
+      ])
+      globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
+
+      const result = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+
+      expect(result.extras).toHaveLength(0)
+      expect(skippedTotal(result.skippedByDay)).toBe(0)
+    })
+
+    // 安全弁: 断片が欠けていれば取りこぼしとして**電文ごとに 1 件**数える。黙って消すと、
+    // その地震だけ分布が出ないことに手掛かりが残らない。
+    it('断片が欠けていれば取りこぼしとして 1 件数える', async () => {
+      globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz: await splitArchive({ second: null }) }]) as unknown as typeof fetch
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+      const result = await fetchDmdataQuakeHistory('key', BEFORE, 50, 7, false)
+
+      expect(result.extras).toHaveLength(0)
+      expect(skippedTotal(result.skippedByDay)).toBe(1)
+    })
+  })
 })
 
 describe('filterPreWindowEvents の津波', () => {

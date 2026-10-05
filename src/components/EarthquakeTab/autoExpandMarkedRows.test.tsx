@@ -75,7 +75,7 @@ const renderTab = (updateMarks: ReadonlyMap<string, QuakeCardMarks>, selectedId:
     updateMarks={updateMarks}
     activeLpgmEventId={null}
     onToggleLpgm={() => {}}
-    estimatedIntensity={null}
+    estimatedIntensities={[]}
     distributionQuakeKey={null}
     onToggleDistribution={() => {}}
     unreceivedQuakeKey={null}
@@ -133,7 +133,7 @@ describe('印の付いた行の自動展開（カードとの配線）', () => {
         updateMarks={marks}
         activeLpgmEventId={null}
         onToggleLpgm={() => {}}
-        estimatedIntensity={null}
+        estimatedIntensities={[]}
         distributionQuakeKey={null}
         onToggleDistribution={() => {}}
         unreceivedQuakeKey={null}

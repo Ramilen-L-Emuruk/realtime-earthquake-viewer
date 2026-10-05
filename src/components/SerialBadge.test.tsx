@@ -80,7 +80,7 @@ const renderQuake = (quake: JMAQuake, selected = true) =>
       updateMarks={new Map()}
       activeLpgmEventId={null}
       onToggleLpgm={() => {}}
-      estimatedIntensity={null}
+      estimatedIntensities={[]}
       distributionQuakeKey={null}
       onToggleDistribution={() => {}}
       unreceivedQuakeKey={null}
