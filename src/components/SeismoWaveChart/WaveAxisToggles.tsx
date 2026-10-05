@@ -1,11 +1,9 @@
 // 波形の向き（南北・東西・上下）の凡例。**押すとその向きを消せる。**
-// 地震カードでは、その隣に強調（ノイズを潰す）の切り替えも置く。
 //
-// **地図の下端の絵と地震カードの波形で同じものを使う。** 見た目も押したときの効きも
-// 揃えるため ——別々に書くと、片方だけ押せる形が生まれる。
+// **置くのは地図の下端の絵だけ。** 地震カードには置かない（見出しの行が二段に折れる。向きを
+// 消して見るのは詳細の窓でする。2026-10-05 のユーザー判断）。詳細の窓は `ToggleChip` だけを借りる。
 //
-// **状態はここが持たない**（→ `hooks/useSeismoWaveAxes`・`hooks/useSeismoWaveEmphasis`）。
-// 2 つの絵は親子関係を持たないので、props で配ると App から 2 経路のバケツリレーになる。
+// **状態はここが持たない**（→ `hooks/useSeismoWaveAxes`）。
 //
 // **`<button>` ではなく `<span role="button">` で作る。** 地震カードは全体が
 // `<button>`（選択のトグル）で、ボタンの入れ子は HTML が許さない ——カード内の
@@ -15,7 +13,6 @@
 import type { ReactNode } from 'react'
 
 import { toggleWaveAxis, useWaveAxes } from '../../hooks/useSeismoWaveAxes'
-import { toggleWaveEmphasis, useWaveEmphasis } from '../../hooks/useSeismoWaveEmphasis'
 import { AXIS_COLORS, AXIS_LABELS } from './paintWave'
 
 export function WaveAxisToggles() {
@@ -31,20 +28,7 @@ export function WaveAxisToggles() {
   )
 }
 
-/**
- * 強調（平常時のノイズを潰して描く）の切り替え。**地震カードと詳細の窓だけに置く** ——
- * 地図の下端の絵には潰す物差し（発生前の区間）が無い。
- */
-export function WaveEmphasisToggle() {
-  const emphasized = useWaveEmphasis()
-  return (
-    <ToggleChip on={emphasized} color="rgba(255,255,255,0.85)" onToggle={toggleWaveEmphasis}>
-      強調
-    </ToggleChip>
-  )
-}
-
-function ToggleChip({
+export function ToggleChip({
   on,
   color,
   onToggle,

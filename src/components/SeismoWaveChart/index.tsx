@@ -145,8 +145,8 @@ function StationWave({ station, readWave }: { station: SeismoStationState; readW
           {scaleText ?? '—'}
         </span>
       </div>
-      {/* 高さは目盛りの帯（`AXIS_BAND_PX` = 10px）を足したもの。 */}
-      <canvas ref={canvasRef} className="block w-full h-[50px] roomy:h-[66px]" />
+      {/* 高さは目盛りの帯（`AXIS_BAND_PX` = 15px）を足したもの。 */}
+      <canvas ref={canvasRef} className="block w-full h-[55px] roomy:h-[71px]" />
     </div>
   )
 }

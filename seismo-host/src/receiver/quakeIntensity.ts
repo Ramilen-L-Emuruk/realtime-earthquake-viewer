@@ -62,6 +62,13 @@ export interface QuakeIntensityResult {
   readonly maxRealtime: number | null
   /** その値を出したときの最後のサンプルの時刻。 */
   readonly maxRealtimeAtMs: number | null
+  /**
+   * 区間の中の刻み（1 秒ごと）ごとのリアルタイム震度。**最大もここから取っている。**
+   *
+   * 途切れた所は刻みが無い（時刻が飛ぶ）。計算器が値を出せなかった刻みは `value: null`。
+   * 描く側（詳細ポップアップの震度の推移）が途切れを線の切れ目として描けるよう、補わない。
+   */
+  readonly realtimeSeries: readonly RealtimePoint[]
   readonly measured: number | null
   /** `measured` が null のときの理由。出せたときは null。 */
   readonly measuredUnavailable: MeasuredUnavailable | null
@@ -74,6 +81,13 @@ export interface QuakeIntensityResult {
    * 「届いたが壊れていた」の見分けが付かない。
    */
   readonly invalidChunkCount: number
+}
+
+/** リアルタイム震度の 1 刻み。 */
+export interface RealtimePoint {
+  /** その刻みの最後のサンプルの時刻。 */
+  readonly atMs: number
+  readonly value: number | null
 }
 
 /** 途切れずに続いている波形 1 本。 */
@@ -138,6 +152,7 @@ export function computeQuakeIntensity(params: {
   // 最大リアルタイム震度: 途切れごとに計算器を作り直し、区間の中の刻みだけを見る。
   let maxRealtime: number | null = null
   let maxRealtimeAtMs: number | null = null
+  const realtimeSeries: RealtimePoint[] = []
   for (const run of runs) {
     const rateHz = 1000 / run.msPerSample
     const calc = new RealtimeIntensityCalculator(rateHz)
@@ -148,6 +163,7 @@ export function computeQuakeIntensity(params: {
       const at = run.t[i]
       if (at < fromMs || at > toMs) continue
       const value = calc.intensity()
+      realtimeSeries.push({ atMs: at, value })
       if (value !== null && (maxRealtime === null || value > maxRealtime)) {
         maxRealtime = value
         maxRealtimeAtMs = at
@@ -158,7 +174,7 @@ export function computeQuakeIntensity(params: {
   // 区間に重なる波形
   const inside = runs.filter((r) => r.t[r.t.length - 1] >= fromMs && r.t[0] <= toMs)
   const gapCount = Math.max(0, inside.length - 1)
-  const base = { maxRealtime, maxRealtimeAtMs, gapCount, invalidChunkCount }
+  const base = { maxRealtime, maxRealtimeAtMs, realtimeSeries, gapCount, invalidChunkCount }
   if (inside.length === 0) return { ...base, measured: null, measuredUnavailable: 'no-data' }
   if (inside.length > 1) return { ...base, measured: null, measuredUnavailable: 'gap' }
 

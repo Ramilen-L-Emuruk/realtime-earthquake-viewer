@@ -91,8 +91,20 @@ export interface PaintOptions {
   readonly ticks?: (widthCssPx: number) => readonly TimeTick[]
 }
 
-/** 目盛りの帯の高さ（CSS ピクセル）。**描く側は canvas をこの分だけ高くしておく。** */
-export const AXIS_BAND_PX = 10
+/**
+ * 目盛りの帯の高さ（CSS ピクセル）。**描く側は canvas をこの分だけ高くしておく。**
+ *
+ * 内訳は目盛りの線 {@link TICK_LINE_PX} ＋ 隙間 1px ＋ 文字 {@link TICK_FONT_PX}。**線と文字を縦に離す**
+ * —— 文字の高さまで線が伸びていると、左寄せ・右寄せの端の目盛りで線が文字の隣に並び、「′」（分）に
+ * 見える（2026-10-05 のユーザー指摘）。
+ */
+export const AXIS_BAND_PX = 15
+
+/** 目盛りの文字の大きさ（CSS ピクセル）。P/S などの線のラベル（9px）より大きく、読める大きさにする。 */
+const TICK_FONT_PX = 11
+
+/** 目盛りの線の長さ（CSS ピクセル）。 */
+const TICK_LINE_PX = 3
 
 /** 目盛りの文字の色。**波形の 3 色と P/S の色から離した控えめな白。** */
 const TICK_COLOR = 'rgba(255,255,255,0.55)'
@@ -213,7 +225,7 @@ export function paintWaveColumns(
  * **波形より先に描いてよい**（帯は波形と重ならない）。**値が無くても描く** —— 絵が空でも
  * 時間の長さは読めるほうがよい（呼び出し元は値が無ければ早々に戻るので、その前に置く）。
  */
-function paintTicks(
+export function paintTicks(
   ctx: CanvasRenderingContext2D,
   ticks: readonly TimeTick[],
   w: number,
@@ -222,7 +234,7 @@ function paintTicks(
   dpr: number,
 ): void {
   if (ticks.length === 0) return
-  const fontPx = Math.round(MARK_FONT_PX * dpr)
+  const fontPx = Math.round(TICK_FONT_PX * dpr)
   ctx.font = `${fontPx}px ui-monospace, monospace`
   ctx.textBaseline = 'bottom'
   ctx.strokeStyle = TICK_COLOR
@@ -234,7 +246,7 @@ function paintTicks(
     const x = Math.min(w - dpr / 2, Math.max(dpr / 2, Math.round(tick.ratio * w) + 0.5))
     ctx.beginPath()
     ctx.moveTo(x, plotH)
-    ctx.lineTo(x, plotH + 2 * dpr)
+    ctx.lineTo(x, plotH + TICK_LINE_PX * dpr)
     ctx.stroke()
     ctx.textAlign = tick.align
     const tx = tick.align === 'left' ? x + dpr : tick.align === 'right' ? x - dpr : x
@@ -250,7 +262,7 @@ function paintTicks(
  * **波形より後に描く。** 先に描くと 3 本の線に埋もれて、いちばん見たい初動のところで
  * 見えなくなる。
  */
-function paintMarks(
+export function paintMarks(
   ctx: CanvasRenderingContext2D,
   marks: readonly WaveMark[],
   w: number,

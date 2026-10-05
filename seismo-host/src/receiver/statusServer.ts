@@ -365,6 +365,7 @@ export function buildQuakeIntensityResponse(
     toMs: query.toMs,
     maxRealtime: result.maxRealtime,
     maxRealtimeAtMs: result.maxRealtimeAtMs,
+    realtimeSeries: result.realtimeSeries,
     measured: result.measured,
     measuredUnavailable: result.measuredUnavailable,
     gapCount: result.gapCount,

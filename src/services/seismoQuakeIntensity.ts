@@ -28,6 +28,14 @@ export type MeasuredUnavailable = 'no-data' | 'gap' | 'not-covered' | 'no-value'
 
 const KNOWN_REASONS: readonly MeasuredUnavailable[] = ['no-data', 'gap', 'not-covered', 'no-value']
 
+/** リアルタイム震度の 1 刻み（1 秒ごと）。 */
+export interface RealtimeIntensityPoint {
+  /** その刻みの最後のサンプルの時刻。 */
+  readonly atMs: number
+  /** 値が出なかった刻みは `null`。 */
+  readonly value: number | null
+}
+
 /** 区間の震度。 */
 export interface QuakeIntensity {
   /** 問い合わせた区間。**描く側はこれが自分の区間と一致するときだけ出す。** */
@@ -35,6 +43,13 @@ export interface QuakeIntensity {
   readonly toMs: number
   /** 区間の中の最大のリアルタイム震度。出なければ `null`。 */
   readonly maxRealtime: number | null
+  /** 最大を出した刻みの時刻。 */
+  readonly maxRealtimeAtMs: number | null
+  /**
+   * 区間の中の刻みごとのリアルタイム震度（時刻順）。**途切れた所は時刻が飛ぶ**（補っていない）。
+   * 詳細ポップアップの震度の推移に使う。
+   */
+  readonly realtimeSeries: readonly RealtimeIntensityPoint[]
   /** 計測震度。出せなければ `null`（理由は `measuredUnavailable`）。 */
   readonly measured: number | null
   readonly measuredUnavailable: MeasuredUnavailable | null
@@ -76,6 +91,27 @@ function finiteOrNull(value: unknown): number | null | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
+/**
+ * 震度の推移を読む。**欄が無ければ空**（推移を返す前のホスト。最大と計測震度は出せる）。
+ * 欄があって形が崩れていれば `null`（読めない）—— 1 点だけ黙って捨てると、推移の線が
+ * そこで「途切れた」ように描かれ、ホストの記録の欠けと見分けが付かない。
+ */
+function readRealtimeSeries(value: unknown): RealtimeIntensityPoint[] | null {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) return null
+  const out: RealtimeIntensityPoint[] = []
+  let prevMs = -Infinity
+  for (const raw of value) {
+    const p = obj(raw)
+    const atMs = finiteOrNull(p.atMs)
+    const v = finiteOrNull(p.value)
+    if (typeof atMs !== 'number' || v === undefined || atMs <= prevMs) return null
+    out.push({ atMs, value: v })
+    prevMs = atMs
+  }
+  return out
+}
+
 /** 応答を読む。 */
 export function readQuakeIntensity(parsed: unknown): { value: QuakeIntensity } | { detail: string } {
   const root = obj(parsed)
@@ -88,6 +124,9 @@ export function readQuakeIntensity(parsed: unknown): { value: QuakeIntensity } |
   // **欄が欠けている・数でない値は読めないとして弾く。** `null`（値が出なかった）と
   // 取り違えると、壊れた応答が「震度が出なかった地震」として黙って通る。
   if (maxRealtime === undefined || measured === undefined) return { detail: '震度の欄を読めない' }
+  const maxRealtimeAtMs = finiteOrNull(root.maxRealtimeAtMs) ?? null
+  const realtimeSeries = readRealtimeSeries(root.realtimeSeries)
+  if (realtimeSeries === null) return { detail: '震度の推移を読めない' }
   let measuredUnavailable: MeasuredUnavailable | null = null
   if (measured === null) {
     const reason = str(root.measuredUnavailable)
@@ -101,6 +140,8 @@ export function readQuakeIntensity(parsed: unknown): { value: QuakeIntensity } |
       fromMs,
       toMs,
       maxRealtime,
+      maxRealtimeAtMs,
+      realtimeSeries,
       measured,
       measuredUnavailable,
       gapCount: count(root.gapCount),

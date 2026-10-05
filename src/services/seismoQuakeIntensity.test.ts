@@ -22,6 +22,11 @@ const RESPONSE = {
   toMs: T0 + 90_000,
   maxRealtime: 2.34,
   maxRealtimeAtMs: T0 + 31_000,
+  realtimeSeries: [
+    { atMs: T0 + 30_000, value: 1.2 },
+    { atMs: T0 + 31_000, value: 2.34 },
+    { atMs: T0 + 32_000, value: null },
+  ],
   measured: 1.87,
   measuredUnavailable: null,
   gapCount: 0,
@@ -43,6 +48,8 @@ describe('readQuakeIntensity', () => {
         fromMs: T0,
         toMs: T0 + 90_000,
         maxRealtime: 2.34,
+        maxRealtimeAtMs: T0 + 31_000,
+        realtimeSeries: RESPONSE.realtimeSeries,
         measured: 1.87,
         measuredUnavailable: null,
         gapCount: 0,
@@ -77,6 +84,24 @@ describe('readQuakeIntensity', () => {
   it('読み込みの欠けと壊れていたまとまりの数を読む', () => {
     const r = readQuakeIntensity({ ...RESPONSE, filesFailed: 1, skippedBytes: 32, truncated: true, invalidChunkCount: 2 })
     expect('value' in r && r.value).toMatchObject({ filesFailed: 1, skippedBytes: 32, truncated: true, invalidChunkCount: 2 })
+  })
+
+  // 対照: 推移を返す前のホストでも、最大と計測震度は読める。
+  it('推移の欄が無ければ空の推移として読む', () => {
+    const { realtimeSeries: _s, ...rest } = RESPONSE
+    const r = readQuakeIntensity(rest)
+    expect('value' in r && r.value.realtimeSeries).toEqual([])
+    expect('value' in r && r.value.maxRealtime).toBe(2.34)
+  })
+
+  // 安全弁: 崩れた点を黙って捨てない（推移の線が「途切れた」ように見えてしまう）。
+  it('推移の点が崩れていれば読めないとする', () => {
+    const bad = (series: unknown): boolean => 'detail' in readQuakeIntensity({ ...RESPONSE, realtimeSeries: series })
+    expect(bad('x')).toBe(true)
+    expect(bad([{ atMs: 'a', value: 1 }])).toBe(true)
+    expect(bad([{ atMs: T0, value: '1' }])).toBe(true)
+    // 時刻が戻る・重なる
+    expect(bad([{ atMs: T0 + 1000, value: 1 }, { atMs: T0, value: 1 }])).toBe(true)
   })
 
   it('範囲が読めなければ読めないとする', () => {

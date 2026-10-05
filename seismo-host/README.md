@@ -984,6 +984,7 @@ GET /quake-intensity?station=<観測点ID>&from=<unix ミリ秒>&to=<unix ミリ
 | 返す値 | |
 |---|---|
 | `maxRealtime`・`maxRealtimeAtMs` | 区間の中で出た最大のリアルタイム震度（押し出しと同じ方式・1 秒刻み）と、その時刻 |
+| `realtimeSeries` | 区間の中の 1 秒ごとのリアルタイム震度（`{ atMs, value }` の並び・時刻順）。最大はここから取っている。**途切れた所は補わない**（時刻が飛ぶ）。値が出なかった刻みは `value: null`。地震ビューアーの詳細の窓が「震度の推移」に使う |
 | `measured` | 計測震度（気象庁の手順を区間の波形全体へ 1 回当てた値）。出せなければ `null` |
 | `measuredUnavailable` | `measured` が `null` の理由。`no-data`（記録が無い）・`gap`（区間の中で途切れている）・`not-covered`（区間の頭か終わりまで記録が無い）・`no-value`（値にならない） |
 | `gapCount`・`invalidChunkCount` | 区間の中の途切れの数と、値が壊れていて捨てたまとまりの数 |

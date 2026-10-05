@@ -26,10 +26,29 @@ describe('buildTimeTicks', () => {
   // 安全弁: 0 の名前（時刻）は長いので、隣とぶつかるなら隣を落とす。名前は残す。
   test('0 の名前と隣の目盛りが近すぎれば、隣を落とす', () => {
     const ticks = buildTimeTicks({ fromMs: T0, toMs: T0 + 120_000, zeroMs: T0, zeroLabel: '13:26:00', widthPx: 528 })
-    // 10 秒刻み（44px）。+10s は 44px で 52px より近いので落ちる。
+    // 20 秒刻み（88px）。名前の幅（約 53px）＋余白より遠いので +20s は残る。
     expect(ticks[0].label).toBe('13:26:00')
     expect(ticks.map((t) => t.label)).not.toContain('+10s')
     expect(ticks.map((t) => t.label)).toContain('+20s')
+  })
+
+  // 正: 隣を落とす境は 0 の名前の幅で決まる。長い名前なら、短い名前では残る隣も落とす。
+  test('0 の名前が長いほど隣を落としやすい', () => {
+    const args = { fromMs: T0, toMs: T0 + 60_000, zeroMs: T0, widthPx: 400 } // 10 秒刻み・66px 間隔
+    expect(buildTimeTicks({ ...args, zeroLabel: '発生' }).map((t) => t.label)).toContain('+10s')
+    expect(buildTimeTicks({ ...args, zeroLabel: '13:26:00' }).map((t) => t.label)).not.toContain('+10s')
+  })
+
+  // 正: 詳細の窓で 2 秒まで寄せても目盛りが入る（以前は 5 秒刻みからで 1 本も出なかった）。
+  test('短い窓では 1 秒より短い刻みも使う', () => {
+    const ticks = buildTimeTicks({ fromMs: T0 + 27_000, toMs: T0 + 29_000, zeroMs: T0, zeroLabel: '発生', widthPx: 500 })
+    expect(ticks.map((t) => t.label)).toEqual(['+27s', '+27.5s', '+28s', '+28.5s', '+29s'])
+  })
+
+  // 対照: 地震カードの幅と長さでは短い刻みは選ばれない（上の 10 秒刻みのテストと同じ条件）。
+  test('長い窓では短い刻みを選ばない', () => {
+    const ticks = buildTimeTicks({ fromMs: T0, toMs: T0 + 60_000, zeroMs: T0, zeroLabel: '発生', widthPx: 360 })
+    expect(ticks.every((t) => !t.label.includes('.'))).toBe(true)
   })
 
   test('長さ・幅が不正なら目盛りを出さない', () => {

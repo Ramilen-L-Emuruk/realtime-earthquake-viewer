@@ -709,6 +709,8 @@ describe('震度を訊く（#494 段3）', () => {
         fromMs: 0,
         toMs: 0,
         maxRealtime: 2.3,
+        maxRealtimeAtMs: null,
+        realtimeSeries: [],
         measured: 1.9,
         measuredUnavailable: null,
         gapCount: 0,

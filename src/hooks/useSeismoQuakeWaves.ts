@@ -32,7 +32,7 @@ import {
   type ReachBand,
   type WaveAxisZero,
 } from '../utils/seismoQuakeWindow'
-import { computeWaveArrival, type WaveArrival } from '../utils/seismoWaveArrival'
+import { computeHypocentralDistanceKm, computeWaveArrival, type WaveArrival } from '../utils/seismoWaveArrival'
 import {
   appendWaveWindow,
   isSettled,
@@ -179,6 +179,17 @@ export interface SeismoQuakeWave {
    * 次の地震で末尾が切り戻されると描く区間が変わり、訊き直すまでの間は古い区間の値が残る。
    */
   readonly intensity: QuakeIntensity | null
+  /**
+   * 震源から観測点までの距離（km）。**震源の位置・深さか観測点の座標が判らなければ `null`。**
+   * 詳細の窓に出す。観測から読み取った S−P 時間ではない（P 波はノイズに埋もれることが多く、
+   * 自動で読むと誤った秒数をもっともらしく出してしまう。2026-10-05 のユーザー判断）。
+   */
+  readonly distanceKm: number | null
+  /**
+   * 波形を読み返した接続先。**詳細の窓が、拡大した範囲を同じホストへ取り直すのに使う。**
+   * 接続先が変わると帳面ごと捨てるので、ここに載っている値と取った列は必ず対になる。
+   */
+  readonly baseUrl: string
 }
 
 /**
@@ -319,6 +330,7 @@ function sameWave(a: SeismoQuakeWave | undefined, b: SeismoQuakeWave): a is Seis
   // **伸ばし終えたか・震度も比べる。** どちらも列が変わらないまま変わる（収まった後に
   // 震度が届く）ので、見落とすと震度の行が画面へ出ない。震度は届くたびに新しい参照になる。
   if (a.complete !== b.complete || a.intensity !== b.intensity) return false
+  if (a.distanceKm !== b.distanceKm || a.baseUrl !== b.baseUrl) return false
   // **時間軸の 0 と時間帯も比べる。** 秒が後から取れたとき（過去分の取得は非同期で返る）は
   // 列も線も変わらないまま 0 だけが動くので、ここを見ないと目盛りが分の頭のまま残る。
   if (a.axisZero.kind !== b.axisZero.kind || a.axisZero.ms !== b.axisZero.ms) return false
@@ -471,6 +483,12 @@ export function useSeismoQuakeWaves(params: {
           arrival: axisZero.kind === 'origin' ? fromZero : null,
           axisZero,
           reach: computeReachBand(axisZero, fromZero),
+          distanceKm: computeHypocentralDistanceKm({
+            hypocenter: target.hypocenter,
+            stationLat: e.lat,
+            stationLon: e.lon,
+          }),
+          baseUrl,
         }
         // **観測点ごとに前の姿を使い回す。** 伸びている観測点が 1 つでも、
         // **同じ地震の他の観測点まで作り直すと、変わっていない絵が描き直される**

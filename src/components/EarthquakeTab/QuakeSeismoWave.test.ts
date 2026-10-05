@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { axisZeroLabel, buildArrivalMarks, foldQuakeWaveColumns, formatQuakeIntensityLine } from './QuakeSeismoWave'
+import { axisZeroLabel, buildArrivalMarks, foldQuakeWaveColumns, formatQuakeIntensityParts } from './QuakeSeismoWave'
 import { P_WAVE_COLOR, S_WAVE_COLOR } from '../Map/gl/psWaveStyle'
 import type { TimedColumns } from '../../utils/seismoWaveColumns'
 
@@ -158,45 +158,33 @@ describe('foldQuakeWaveColumns', () => {
   })
 })
 
-describe('formatQuakeIntensityLine', () => {
+describe('formatQuakeIntensityParts', () => {
   const span = { fromMs: 1000, toMs: 91_000 }
-  const base = { ...span, maxRealtime: 2.34, measured: 1.87, measuredUnavailable: null, gapCount: 0, invalidChunkCount: 0, filesMissing: 0, filesFailed: 0, skippedBytes: 0, truncated: false }
+  const base = { ...span, maxRealtime: 2.34, maxRealtimeAtMs: null, realtimeSeries: [], measured: 1.87, measuredUnavailable: null, gapCount: 0, invalidChunkCount: 0, filesMissing: 0, filesFailed: 0, skippedBytes: 0, truncated: false }
+  const text = (parts: ReturnType<typeof formatQuakeIntensityParts>) => parts?.map((p) => `${p.label} ${p.value}`).join(' ') ?? null
 
-  it('2 つの値を階級つきで並べる', () => {
-    expect(formatQuakeIntensityLine(base, span)).toBe('最大リアルタイム震度 2.3（震度2）・計測震度 1.9（震度2）')
+  // 正: 短い名前と値だけ。階級は添えない（2026-10-05 のユーザー判断）。正式な名前はホバー用に持つ。
+  it('2 つの値を短い名前で並べ、正式な名前を title に持つ', () => {
+    const parts = formatQuakeIntensityParts(base, span)
+    expect(text(parts)).toBe('最大 2.3 計測 1.9')
+    expect(parts?.map((p) => p.title)).toEqual(['最大リアルタイム震度', '計測震度'])
   })
 
-  // 正: 階級は丸めた後の値から引く（気象庁は小数第 2 位を四捨五入してから階級を決める）。
-  it('丸めて 2.5 になる値は震度3', () => {
-    expect(formatQuakeIntensityLine({ ...base, maxRealtime: 2.46 }, span)).toBe(
-      '最大リアルタイム震度 2.5（震度3）・計測震度 1.9（震度2）',
-    )
-  })
-
-  // 対照: 丸めても 2.4 なら震度2 のまま。
-  it('丸めて 2.4 になる値は震度2', () => {
-    expect(formatQuakeIntensityLine({ ...base, maxRealtime: 2.44 }, span)).toContain('2.4（震度2）')
-  })
-
-  it('計測震度が出なければ最大リアルタイム震度だけ', () => {
-    expect(formatQuakeIntensityLine({ ...base, measured: null, measuredUnavailable: 'gap' }, span)).toBe(
-      '最大リアルタイム震度 2.3（震度2）',
-    )
+  it('計測震度が出なければ最大だけ', () => {
+    expect(text(formatQuakeIntensityParts({ ...base, measured: null, measuredUnavailable: 'gap' }, span))).toBe('最大 2.3')
   })
 
   it('静穏時のわずかな負の値をマイナスゼロにしない', () => {
-    expect(formatQuakeIntensityLine({ ...base, maxRealtime: -0.04, measured: null }, span)).toBe(
-      '最大リアルタイム震度 0.0（震度0）',
-    )
+    expect(text(formatQuakeIntensityParts({ ...base, maxRealtime: -0.04, measured: null }, span))).toBe('最大 0.0')
   })
 
   it('どちらも出なければ行ごと出さない', () => {
-    expect(formatQuakeIntensityLine({ ...base, maxRealtime: null, measured: null }, span)).toBeNull()
+    expect(formatQuakeIntensityParts({ ...base, maxRealtime: null, measured: null }, span)).toBeNull()
   })
 
   // 安全弁: 描いた区間と違う区間の値は出さない（末尾が切り戻された直後）。
   it('区間が描いた絵と違えば出さない', () => {
-    expect(formatQuakeIntensityLine(base, { fromMs: 1000, toMs: 80_000 })).toBeNull()
-    expect(formatQuakeIntensityLine(null, span)).toBeNull()
+    expect(formatQuakeIntensityParts(base, { fromMs: 1000, toMs: 80_000 })).toBeNull()
+    expect(formatQuakeIntensityParts(null, span)).toBeNull()
   })
 })

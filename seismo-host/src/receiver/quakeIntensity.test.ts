@@ -76,6 +76,49 @@ describe('computeQuakeIntensity', () => {
     expect(r.maxRealtimeAtMs).toBeCloseTo(T0 + best.tSec * 1000 - MS, 6)
   })
 
+  it('推移は範囲の中の刻みごとの値で、最大はその中の最大', () => {
+    const w = wave(0, 150, quiet)
+    const r = computeQuakeIntensity({ chunks: chunksOf(T0, w), fromMs: T0 + 60_000, toMs: T0 + 150_000 })
+    const series = computeRealtimeIntensityTimeSeries(
+      w[0].map(Math.fround),
+      w[1].map(Math.fround),
+      w[2].map(Math.fround),
+      100,
+      1,
+    ).filter((p) => p.tSec * 1000 - MS >= 60_000 && p.tSec * 1000 - MS <= 150_000)
+    expect(r.realtimeSeries.length).toBe(series.length)
+    r.realtimeSeries.forEach((p, i) => {
+      expect(p.atMs).toBeCloseTo(T0 + series[i].tSec * 1000 - MS, 6)
+      if (series[i].intensity === null) expect(p.value).toBeNull()
+      else expect(p.value).toBeCloseTo(series[i].intensity!, 9)
+    })
+    const values = r.realtimeSeries.map((p) => p.value).filter((v): v is number => v !== null)
+    expect(r.maxRealtime).toBe(Math.max(...values))
+  })
+
+  // 対照: 範囲の外の刻みは推移に入れない。
+  it('推移に範囲の外の刻みは入らない', () => {
+    const w = wave(0, 150, quiet)
+    const fromMs = T0 + 60_000
+    const toMs = T0 + 120_000
+    const r = computeQuakeIntensity({ chunks: chunksOf(T0, w), fromMs, toMs })
+    expect(r.realtimeSeries.length).toBeGreaterThan(0)
+    for (const p of r.realtimeSeries) {
+      expect(p.atMs).toBeGreaterThanOrEqual(fromMs)
+      expect(p.atMs).toBeLessThanOrEqual(toMs)
+    }
+  })
+
+  // 安全弁: 途切れを補わない（描く側が線を切れるよう、時刻が飛ぶ）。
+  it('途切れた所は推移の時刻が飛ぶ', () => {
+    const w = wave(0, 150, quiet)
+    const chunks = chunksOf(T0, w).filter((c) => c.firstSampleMs < T0 + 100_000 || c.firstSampleMs >= T0 + 105_000)
+    const r = computeQuakeIntensity({ chunks, fromMs: T0 + 60_000, toMs: T0 + 150_000 })
+    const steps = r.realtimeSeries.slice(1).map((p, i) => p.atMs - r.realtimeSeries[i].atMs)
+    expect(Math.max(...steps)).toBeGreaterThan(4_000)
+    expect(r.realtimeSeries.every((p) => p.atMs < T0 + 100_000 || p.atMs >= T0 + 105_000)).toBe(true)
+  })
+
   // 対照: 範囲の手前の揺れは最大に数えない（前の地震を拾わない）。
   it('範囲より前の揺れは最大リアルタイム震度に数えない', () => {
     // 10〜20 秒に強い揺れ、範囲は 90 秒から（判定の窓 60 秒を過ぎて抜けた後）
@@ -139,6 +182,7 @@ describe('computeQuakeIntensity', () => {
     expect(r).toEqual({
       maxRealtime: null,
       maxRealtimeAtMs: null,
+      realtimeSeries: [],
       measured: null,
       measuredUnavailable: 'no-data',
       gapCount: 0,

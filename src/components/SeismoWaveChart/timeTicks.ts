@@ -22,19 +22,37 @@ export interface TimeTick {
 
 /**
  * 目盛りの刻み（秒）の候補。**文字が重ならない最小のものを選ぶ。**
+ *
+ * **1 秒より短い刻みも持つ。** 詳細の窓は 2 秒まで寄せられるので、5 秒からだと目盛りが 1 本も入らない。
+ * カードと地図の下の絵は幅に対して窓が長いので、短い候補は選ばれない（間隔が足りない）。
  */
-const STEP_CANDIDATES_SEC = [5, 10, 20, 30, 60, 120] as const
+const STEP_CANDIDATES_SEC = [0.5, 1, 2, 5, 10, 20, 30, 60, 120] as const
 
 /**
- * 目盛りどうしの最小の間隔（CSS ピクセル）。`+10s` の幅（9px の等幅で約 22px）に余白を足したもの。
+ * 目盛りどうしの最小の間隔（CSS ピクセル）。いちばん長い `+28.5s` の幅（11px の等幅で約 40px）に
+ * 余白を足したもの。
  */
-const MIN_GAP_PX = 44
+const MIN_GAP_PX = 56
 
 /**
- * 端の目盛りと隣の目盛りが近すぎるときに、隣を落とす境（CSS ピクセル）。
- * **端の名前（`13:26:00`）は長い**ので、隣の数字とぶつかる。
+ * 0 の名前と隣の目盛りの間に取る余白（CSS ピクセル）。隣の数字の半幅（`+10s` で約 15px）に隙間を足したもの。
+ *
+ * **落とす境は 0 の名前の幅から決める**（{@link zeroClearancePx}）。`発生` は短く `13:26:00` は長いので、
+ * 1 つの値で決めると、短い名前のときに落とさなくてよい隣まで落とす。
  */
-const EDGE_CLEARANCE_PX = 52
+const EDGE_GAP_PX = 28
+
+/** 目盛りの文字 1 字の幅の見積もり（CSS ピクセル。11px の等幅で半角 0.6em・全角 1em）。 */
+function labelWidthPx(label: string): number {
+  let w = 0
+  for (const ch of label) w += ch.charCodeAt(0) > 0xff ? 11 : 6.6
+  return w
+}
+
+/** 0 の名前の隣を落とす境（CSS ピクセル）。0 は端へ寄せて描くので、名前の幅＋余白。 */
+function zeroClearancePx(zeroLabel: string): number {
+  return labelWidthPx(zeroLabel) + EDGE_GAP_PX
+}
 
 /**
  * 端へ寄せる目盛りの範囲（CSS ピクセル）。**比ではなく距離で判定する。**
@@ -44,7 +62,7 @@ const EDGE_CLEARANCE_PX = 52
  * **0 の名前の左半分が絵の外へ切れる**。中央寄せにして欠けるのは、端からラベルの半分の幅より
  * 近いときなので、それより広く取る。
  */
-const EDGE_ALIGN_PX = 24
+const EDGE_ALIGN_PX = 30
 
 /**
  * 目盛りを組み立てる。
@@ -73,7 +91,8 @@ export function buildTimeTicks(params: {
   const firstK = Math.ceil((fromMs - zeroMs) / (stepSec * 1000))
   const lastK = Math.floor((toMs - zeroMs) / (stepSec * 1000))
   for (let k = firstK; k <= lastK; k += 1) {
-    const sec = k * stepSec
+    // **小数の刻みは丸めてから使う**（0.5 の倍数は誤差なく表せるが、ラベルの桁を揃えるため）。
+    const sec = Math.round(k * stepSec * 10) / 10
     const ratio = (zeroMs + sec * 1000 - fromMs) / spanMs
     const label = sec === 0 ? zeroLabel : sec > 0 ? `+${sec}s` : `${sec}s`
     const px = ratio * widthPx
@@ -86,5 +105,6 @@ export function buildTimeTicks(params: {
   const zeroIndex = ticks.findIndex((t) => t.label === zeroLabel)
   if (zeroIndex < 0) return ticks
   const zeroPx = ticks[zeroIndex].ratio * widthPx
-  return ticks.filter((t, i) => i === zeroIndex || Math.abs(t.ratio * widthPx - zeroPx) >= EDGE_CLEARANCE_PX)
+  const clearance = zeroClearancePx(zeroLabel)
+  return ticks.filter((t, i) => i === zeroIndex || Math.abs(t.ratio * widthPx - zeroPx) >= clearance)
 }
