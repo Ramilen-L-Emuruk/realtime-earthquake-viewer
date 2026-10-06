@@ -8,6 +8,7 @@ import { quakeIdentityKey } from '../utils/quakeHeatmap'
 import { isValidIntensityScale } from '../utils/intensity'
 import { log } from '../utils/logger'
 import { fetchWithTimeout, API_FETCH_TIMEOUT_MS } from '../utils/fetchWithTimeout'
+import { parseJstTimeMs } from '../utils/quakeOriginSeconds'
 // 数値はローカルの readNumber で読む（理由は readNumber の注記）
 import { arr, obj, str } from './parseHelpers'
 
@@ -476,15 +477,100 @@ export async function fetchHistory(
   codes.forEach(c => params.append('codes', String(c)))
   params.set('limit', String(limit))
   if (offset > 0) params.set('offset', String(offset))
-  const raws = await fetchWithTimeout(
+  // 起動時の履歴などは控えを使ってよい（リロードを繰り返したときに配信元へ届かないための控え）
+  const raws = await fetchHistoryRaw(params, signal, false)
+  return raws.flatMap(r => { const e = convertEvent(r); return e ? [e] : [] })
+}
+
+async function fetchHistoryRaw(
+  params: URLSearchParams,
+  signal: AbortSignal | null,
+  /** `true` なら Service Worker の控えを通さない（→ `vite.config.ts` の `runtimeCaching`）。 */
+  bypassCache: boolean,
+): Promise<RawP2PEvent[]> {
+  const json: unknown = await fetchWithTimeout(
     `${API_BASE}/history?${params.toString()}`,
-    { timeoutMs: API_FETCH_TIMEOUT_MS, signal },
+    { timeoutMs: API_FETCH_TIMEOUT_MS, signal, init: bypassCache ? { cache: 'no-store' } : undefined },
     async (res) => {
       if (!res.ok) throw new Error(`P2PQuake API error: ${res.status}`)
-      return await res.json() as RawP2PEvent[]
+      return await res.json()
     },
   )
-  return raws.flatMap(r => { const e = convertEvent(r); return e ? [e] : [] })
+  // 配列以外が返ると呼び出し側の走査が TypeError になり、原因が API 応答だと分からなくなる
+  if (!Array.isArray(json)) throw new Error('P2PQuake history の応答が配列ではありません')
+  return json as RawP2PEvent[]
+}
+
+/** 張り直したときに取り戻す 1 ページの件数（`/history` の上限）。 */
+const RECONNECT_BACKFILL_PAGE_SIZE = 100
+/**
+ * 張り直したときに辿るページの上限（2026-10-06 ユーザー承認）。
+ *
+ * 1 ページ 100 件なので 500 件まで。15 分黙っていた間にこれを超えるのは、大きな地震の直後に
+ * 情報が続けて出る場面くらい。超えたら記録する（→ `fetchHistorySince`）。
+ */
+const RECONNECT_BACKFILL_MAX_PAGES = 5
+/**
+ * ページの間に空ける時間 (ms)。`/history` は 60 リクエスト/分（IP ごと）なので、
+ * 5 ページを 1 秒おきに引いても上限の 1 割に収まる。
+ */
+const RECONNECT_BACKFILL_REQUEST_INTERVAL_MS = 1000
+
+export interface HistorySinceResult {
+  /** `sinceMs` 以降に配信元が受け取った報（内部型へ変換できたもの）。新しい順。 */
+  events: AppEvent[]
+  /**
+   * `sinceMs` 以降の報として配信元が返した件数（変換の前）。`events.length` との差が、
+   * 壊れていて捨てた件数（`codes` で絞って取るので、対応しない種別は混ざらない。個々の理由は変換側が記録する）。
+   */
+  rawCount: number
+  /** ページの上限で打ち切ったか（`sinceMs` まで遡り切れていない恐れがある）。 */
+  truncated: boolean
+}
+
+/**
+ * `sinceMs`（エポックミリ秒）以降の報を `/history` から集める。新しい順に返るので、
+ * ページの最古の報が `sinceMs` より古くなったところで止める。
+ *
+ * **並びの物差しは配信元が受け取った時刻（`time`）。** 地震の発生時刻（`earthquake.time`）ではない ——
+ * `/history` はこの時刻の新しい順に並ぶので、止める判定もこれで行う。読めない時刻の報は
+ * 捨てずに残す（取りこぼすより、重ねて当てても統合が同じ電文を重ねないほうが安全）。
+ */
+export async function fetchHistorySince(
+  codes: number[],
+  sinceMs: number,
+  signal: AbortSignal | null,
+): Promise<HistorySinceResult> {
+  const events: AppEvent[] = []
+  let rawCount = 0
+  let offset = 0
+  for (let page = 0; page < RECONNECT_BACKFILL_MAX_PAGES; page++) {
+    if (page > 0) {
+      await new Promise(resolve => setTimeout(resolve, RECONNECT_BACKFILL_REQUEST_INTERVAL_MS))
+      if (signal?.aborted) throw new DOMException('aborted', 'AbortError')
+    }
+    const params = new URLSearchParams()
+    codes.forEach(c => params.append('codes', String(c)))
+    params.set('limit', String(RECONNECT_BACKFILL_PAGE_SIZE))
+    if (offset > 0) params.set('offset', String(offset))
+    // 控えを通さない —— 通信に失敗したとき古い控えが「取れた」に化けないように
+    const raws = await fetchHistoryRaw(params, signal, true)
+    let reachedSince = false
+    for (const raw of raws) {
+      // 時間帯を持たない日本時間の表記なので、端末の時間帯で読まない（→ `parseJstTimeMs`）
+      const receivedMs = parseJstTimeMs(str(raw?.time))
+      if (Number.isFinite(receivedMs) && receivedMs < sinceMs) {
+        reachedSince = true
+        continue
+      }
+      rawCount++
+      const e = convertEvent(raw)
+      if (e) events.push(e)
+    }
+    if (reachedSince || raws.length < RECONNECT_BACKFILL_PAGE_SIZE) return { events, rawCount, truncated: false }
+    offset += raws.length
+  }
+  return { events, rawCount, truncated: true }
 }
 
 /**
@@ -624,10 +710,24 @@ export class P2PQuakeWebSocket {
    */
   private lastActivityAt = 0
   private silenceTimer: ReturnType<typeof setInterval> | null = null
+  /** 一度でも繋がったか。2 度目以降の `onopen` が「張り直した」。 */
+  private hasOpened = false
+  /**
+   * 最後に何かが届いた時刻、または接続が開いた時刻（`serverNow()` のエポックミリ秒）。張り直したとき、ここから後を
+   * 取り戻す。**`lastActivityAt` と違い、接続を始めた時刻では初期化しない** —— 繋がらないまま
+   * 試行を繰り返した間も、切れていた間に含めるため。
+   */
+  private lastReceivedAtMs = 0
 
   onEvent: ((event: AppEvent) => void) | null = null
   onStatusChange: ((status: 'connecting' | 'connected' | 'disconnected') => void) | null = null
   onRawMessage: ((entry: TelegramLogEntry) => void) | null = null
+  /**
+   * 張り直して繋がったときに呼ぶ（最初の接続では呼ばない）。`lastReceivedAtMs` は切れる前に
+   * 最後に何かが届いた時刻で、その後に配信された情報はこの接続では届かない。
+   * 見張りの張り直しも、普通の切断からの張り直しも同じく呼ぶ（2026-10-06 ユーザー承認）。
+   */
+  onReconnected: ((lastReceivedAtMs: number) => void) | null = null
 
   connect() {
     this.shouldReconnect = true
@@ -643,12 +743,25 @@ export class P2PQuakeWebSocket {
     this.ws.onopen = () => {
       this.lastActivityAt = performance.now()
       this.reconnectDelay = 3000
+      const reconnected = this.hasOpened
+      const since = this.lastReceivedAtMs
+      this.hasOpened = true
+      this.lastReceivedAtMs = serverNow()
       this.onStatusChange?.('connected')
+      if (reconnected) {
+        // 受け手の例外で接続の処理を止めない（受信の口と同じ扱い）
+        try {
+          this.onReconnected?.(since)
+        } catch (e) {
+          log.error('[p2pquake] 張り直しの後処理に失敗', e)
+        }
+      }
     }
 
     this.ws.onmessage = (event) => {
       // 読めないメッセージも「届いた」には数える（回線が生きている証拠なのは同じ）
       this.lastActivityAt = performance.now()
+      this.lastReceivedAtMs = serverNow()
       let raw: RawP2PEvent
       try {
         raw = JSON.parse(event.data as string) as RawP2PEvent

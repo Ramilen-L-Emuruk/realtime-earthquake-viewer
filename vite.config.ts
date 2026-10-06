@@ -231,7 +231,12 @@ export default defineConfig(configEnv => ({
         // `caches.delete('map-tiles')` する形になる。
         runtimeCaching: [
           {
-            urlPattern: /^https:\/\/api\.p2pquake\.net\/v2\/history.*/i,
+            // **`cache: 'no-store'` の要求は控えに通さない。** 標準版の接続を張り直したときの取り戻し
+            // （`fetchHistorySince`）がそれを付ける。NetworkFirst は通信に失敗すると控えを普通の
+            // 応答として返すので、切れていた間の分を取り戻せていないのに「取れた」に化けるため。
+            // この関数は Service Worker の中へ文字列として書き出されるので、外の変数を参照しないこと。
+            urlPattern: ({ url, request }) =>
+              /^https:\/\/api\.p2pquake\.net\/v2\/history/i.test(url.href) && request.cache !== 'no-store',
             handler: 'NetworkFirst',
             options: {
               cacheName: 'p2pquake-history',

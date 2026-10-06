@@ -65,11 +65,17 @@ vi.mock('../utils/stationCoords', () => ({
 // WebSocket の代役。`new` で呼ばれるためクラスで用意する（アロー関数はコンストラクタになれない）。
 // vi.mock のファクトリはファイル先頭へ巻き上げられるので、クラス定義も vi.hoisted で一緒に上げる。
 const { sockets, FakeWebSocket } = vi.hoisted(() => {
-  const sockets: { connected: boolean; onStatusChange: ((s: string) => void) | null; onEvent: ((e: unknown) => void) | null }[] = []
+  const sockets: {
+    connected: boolean
+    onStatusChange: ((s: string) => void) | null
+    onEvent: ((e: unknown) => void) | null
+    onReconnected: ((lastReceivedAtMs: number) => void) | null
+  }[] = []
   class FakeWebSocket {
     onEvent: ((e: unknown) => void) | null = null
     onStatusChange: ((s: string) => void) | null = null
     onRawMessage: ((e: unknown) => void) | null = null
+    onReconnected: ((lastReceivedAtMs: number) => void) | null = null
     connected = false
     constructor() { sockets.push(this) }
     connect() { this.connected = true }
@@ -140,13 +146,14 @@ vi.mock('../services/dmdataReplay', async (importOriginal) => ({
 vi.mock('../services/p2pquake', () => ({
   P2PQuakeWebSocket: FakeWebSocket,
   fetchHistory: vi.fn(),
+  fetchHistorySince: vi.fn(),
   fetchJmaQuake: vi.fn(),
 }))
 
 // 1 回の窓の幅は実装側の定数を正とする（テストへ数値を書き写すと、窓を動かしたときに
 // テストだけが古い値のまま通ってしまう）。モックのファクトリで実物を展開しているので本物が来る。
 const { fetchDmdataQuakeHistory, HISTORY_WINDOW_DAYS } = await import('../services/dmdataReplay')
-const { fetchHistory, fetchJmaQuake } = await import('../services/p2pquake')
+const { fetchHistory, fetchHistorySince, fetchJmaQuake } = await import('../services/p2pquake')
 
 const { useEarthquakes } = await import('./useEarthquakes')
 
@@ -188,6 +195,7 @@ beforeEach(() => {
   // 戻り値の形はここで型付きに与える（実シグネチャと違えば型エラーになる）
   vi.mocked(fetchDmdataQuakeHistory).mockResolvedValue(history())
   vi.mocked(fetchHistory).mockResolvedValue([])
+  vi.mocked(fetchHistorySince).mockResolvedValue({ events: [], rawCount: 0, truncated: false })
   vi.mocked(fetchJmaQuake).mockResolvedValue([])
 })
 
@@ -315,6 +323,118 @@ describe('standard 版も再生中はライブ受信を止める（VAR-1）', ()
     await h.flush()
     expect(h.current.error).toBeNull()
     expect(h.current.isLoading).toBe(false)
+  })
+
+  describe('張り直したら、切れていた間の情報を取り戻す', () => {
+    const at = (offsetMs: number) => new Date(Date.now() + offsetMs).toISOString()
+    const backfilledQuake = (): JMAQuake => ({
+      kind: 'quake',
+      id: 'backfilled-quake',
+      time: at(-60_000),
+      issue: { source: '気象庁', time: at(-60_000), type: '震源・震度情報', correct: 'なし' },
+      earthquake: {
+        time: at(-120_000),
+        hypocenter: { name: 'テスト沖', latitude: 35, longitude: 140, depth: 10, magnitude: 4.0 },
+        maxScale: 10,
+        domesticTsunami: 'なし',
+      },
+      points: [{ pref: '', addr: 'テスト県北部', isArea: true, scale: 10 }],
+    })
+    const tsunami = (id: string, time: string, cancelled: boolean): JMATsunami => ({
+      kind: 'tsunami',
+      id,
+      time,
+      cancelled,
+      issue: { source: '気象庁', time, type: 'Focus' },
+      areas: cancelled ? [] : [{ grade: 'Watch', immediate: false, name: 'テスト沿岸' }],
+    })
+
+    // 正: 張り直しの知らせを受けたら、最後に届いた時刻の少し前から取り、一覧へ黙って積む。
+    it('取り戻した地震情報を一覧へ積み、音・読み上げの経路へは流さない', async () => {
+      const onLiveEvent = vi.fn()
+      const h = setup({ offset: null, onLiveEvent })
+      await h.flush()
+      vi.mocked(fetchHistorySince).mockResolvedValue({ events: [backfilledQuake()], rawCount: 1, truncated: false })
+
+      const lastReceived = Date.now() - 10 * 60_000
+      act(() => { sockets[0].onReconnected?.(lastReceived) })
+      await h.flush()
+
+      const [codes, since] = vi.mocked(fetchHistorySince).mock.calls[0]
+      expect(codes).toEqual([551, 552])
+      expect(since).toBeLessThan(lastReceived)
+      expect(h.current.earthquakes.some(q => q.id === 'backfilled-quake')).toBe(true)
+      expect(onLiveEvent).not.toHaveBeenCalled()
+    })
+
+    // 正: 切れていた間に出た津波は、起動時の履歴と同じく画面へ出す。
+    it('取り戻した津波が手元のより新しければ差し替える', async () => {
+      const h = setup({ offset: null })
+      await h.flush()
+      vi.mocked(fetchHistorySince).mockResolvedValue({
+        events: [tsunami('backfilled-tsunami', at(-60_000), false)], rawCount: 1, truncated: false,
+      })
+      act(() => { sockets[0].onReconnected?.(Date.now() - 10 * 60_000) })
+      await h.flush()
+      expect(h.current.tsunamis.map(t => t.id)).toEqual(['backfilled-tsunami'])
+    })
+
+    // 安全弁: 張り直した直後にライブで届いた取消を、取り戻した古い発表報で甦らせない。
+    it('ライブで先に届いたより新しい津波の報を、古い取り戻しで上書きしない', async () => {
+      const h = setup({ offset: null })
+      await h.flush()
+      act(() => { sockets[0].onEvent?.(tsunami('live-cancel', at(0), true)) })
+      vi.mocked(fetchHistorySince).mockResolvedValue({
+        events: [tsunami('backfilled-old', at(-60_000), false)], rawCount: 1, truncated: false,
+      })
+      act(() => { sockets[0].onReconnected?.(Date.now() - 10 * 60_000) })
+      await h.flush()
+      expect(h.current.tsunamis.some(t => t.id === 'backfilled-old')).toBe(false)
+    })
+
+    // 安全弁: 張り直しが重なっても、取り戻しは前の回が終わってから次を走らせる（並行して枠を使わない）。
+    it('張り直しが重なったら、取り戻しを 1 本ずつ順に走らせる', async () => {
+      const h = setup({ offset: null })
+      await h.flush()
+      // 前のテストの呼び出しが数に残っているので、ここから数え直す
+      vi.mocked(fetchHistorySince).mockClear()
+      let releaseFirst: () => void = () => {}
+      vi.mocked(fetchHistorySince)
+        .mockImplementationOnce(() => new Promise(resolve => {
+          releaseFirst = () => resolve({ events: [], rawCount: 0, truncated: false })
+        }))
+        .mockResolvedValueOnce({ events: [], rawCount: 0, truncated: false })
+      act(() => {
+        sockets[0].onReconnected?.(Date.now() - 20 * 60_000)
+        sockets[0].onReconnected?.(Date.now() - 60_000)
+      })
+      await h.flush()
+      // 1 本目が終わるまで 2 本目は出ない
+      expect(vi.mocked(fetchHistorySince)).toHaveBeenCalledTimes(1)
+      await act(async () => { releaseFirst(); await Promise.resolve() })
+      await h.flush()
+      expect(vi.mocked(fetchHistorySince)).toHaveBeenCalledTimes(2)
+    })
+
+    // 安全弁: 起動時の履歴は一覧を空から組み直すので、取り戻しはその後に走らせる（先に終わると消される）。
+    it('起動時の履歴が片付くまで取り戻しを始めず、取り戻した分が残る', async () => {
+      // 起動時の取得を止めておく（setup が effect を走らせる前に仕込む。既定値は beforeEach が後から入れない）
+      let releaseStartup: () => void = () => {}
+      vi.mocked(fetchJmaQuake).mockImplementationOnce(() => new Promise(resolve => {
+        releaseStartup = () => resolve([])
+      }))
+      vi.mocked(fetchHistorySince).mockClear()
+      vi.mocked(fetchHistorySince).mockResolvedValue({ events: [backfilledQuake()], rawCount: 1, truncated: false })
+      const h = setup({ offset: null })
+      act(() => { sockets[sockets.length - 1].onReconnected?.(Date.now() - 10 * 60_000) })
+      await h.flush()
+      expect(vi.mocked(fetchHistorySince)).not.toHaveBeenCalled()
+
+      await act(async () => { releaseStartup(); await Promise.resolve() })
+      await h.flush()
+      expect(vi.mocked(fetchHistorySince)).toHaveBeenCalledTimes(1)
+      expect(h.current.earthquakes.some(q => q.id === 'backfilled-quake')).toBe(true)
+    })
   })
 
   // 再生開始時に読み込み中・エラー表示を畳むこと。畳まないと、初回履歴の取得中や失敗直後に
