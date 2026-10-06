@@ -10,9 +10,24 @@ import type { SeismoWaveTally } from '../../utils/seismoWaveBuffer'
  */
 export function formatScaleGal(scaleGal: number): string {
   if (!Number.isFinite(scaleGal)) return '—'
-  const abs = Math.abs(scaleGal)
-  if (abs >= 10) return `±${Math.round(abs)} gal`
-  return `±${abs.toFixed(1)} gal`
+  return `±${formatGal(scaleGal)} gal`
+}
+
+/**
+ * 強調して描いたときの縦の表示（`±W〜±T gal`）。**W は潰したノイズの幅、T は縦の上端。**
+ *
+ * 潰した量が数字で見えるようにする（2026-10-03 のユーザー判断）。縦は W から T までしか
+ * 描いていないので、上端だけを出すと「0 から T まで」と読まれる。
+ */
+export function formatEmphasizedScaleGal(widthGal: number, topGal: number): string {
+  if (!Number.isFinite(widthGal) || !Number.isFinite(topGal)) return '—'
+  return `±${formatGal(widthGal)}〜±${formatGal(topGal)} gal`
+}
+
+/** 桁を値の大きさで変える（10 以上は整数・未満は小数 1 桁）。 */
+function formatGal(gal: number): string {
+  const abs = Math.abs(gal)
+  return abs >= 10 ? String(Math.round(abs)) : abs.toFixed(1)
 }
 
 /**

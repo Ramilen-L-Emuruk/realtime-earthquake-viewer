@@ -1053,19 +1053,33 @@ export function findExistingQuakeCard(cards: JMAQuake[], incoming: JMAQuake, are
  * 2 枚は最後まで別のキーを持ち続ける。ここでは eventId だけを見て畳む。
  *
  * eventId を持たない電文（P2PQuake 経路）は対象外 —— そちらの同一性は `sameQuakeEntry` が見る。
+ *
+ * **畳む相手は索引で引く。** 電文が 1 通届くたびにカード全体へ掛かる関数なので、1 枚ごとに
+ * 並べ終えた側を頭から探す（そのたびに eventId を読み直す）形だと、カードの枚数の 2 乗で
+ * 重くなる。群発の 7 日間（能登半島地震・651 枚）を復元したリプレイの開始時に、初期状態の電文が
+ * 流れるあいだ、この探索だけに約 2.2 秒かかっていた（開発版の CPU プロファイル。同じ取り込みの
+ * 中で別に重かった索引の作り直しは `stationCoords.ts` の `memoByTable` 側に書いてある）。索引は「その eventId を持つ、取り消されていないカードの
+ * うち最も前の位置」を指す —— 頭から探していたときに見つかる位置と同じ。
  */
 export function coalesceByEventId(cards: JMAQuake[]): JMAQuake[] {
   const result: JMAQuake[] = []
+  const firstIndexOf = new Map<string, number>()
+  /** 位置 `index` のカードを索引へ載せる（取消表示中・eventId 無しは載せない）。 */
+  const remember = (card: JMAQuake, index: number) => {
+    const id = extractQuakeEventId(card)
+    if (!id || card.cancelledAt) return
+    const known = firstIndexOf.get(id)
+    if (known === undefined || index < known) firstIndexOf.set(id, index)
+  }
   for (const card of cards) {
     const eventId = extractQuakeEventId(card)
     // **取消表示中のカードは畳まない。** `mergeQuakeInto` は置換時に `cancelledAt` を引き継がず
     // `id` も入れ替わるため、畳むと 10 秒後の purge 予約（`id` で対象を引く）が空振りし、
     // 取り消したはずのカードが居座る。
-    const index = eventId && !card.cancelledAt
-      ? result.findIndex(e => extractQuakeEventId(e) === eventId && !e.cancelledAt)
-      : -1
+    const index = eventId && !card.cancelledAt ? firstIndexOf.get(eventId) ?? -1 : -1
     if (index < 0) {
       result.push(card)
+      remember(card, result.length - 1)
       continue
     }
     // 先に居る方を既存として扱う。据え置き判定（震度を持つ・高優先度）が働くため、
@@ -1077,6 +1091,11 @@ export function coalesceByEventId(cards: JMAQuake[]): JMAQuake[] {
       eventId, keptId: kept.id, droppedId: card.id, keptEventKey: kept.eventKey,
     })
     result[index] = kept
+    // 畳んだ結果が別の eventId を名乗る・取消表示に入る形にも追随する。**いまの `mergeQuakeInto` は
+    // id を既存か新着のどちらかから引き継ぐだけなので、この分岐は通らない**。頭から探していた頃は
+    // そのつど読み直していたので、統合の仕方が変わってもその振る舞いを保つための安全弁。
+    if (extractQuakeEventId(kept) !== eventId || kept.cancelledAt) firstIndexOf.delete(eventId!)
+    remember(kept, index)
   }
   return result
 }

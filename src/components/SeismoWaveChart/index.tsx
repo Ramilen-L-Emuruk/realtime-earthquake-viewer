@@ -20,6 +20,7 @@ import { buildWaveColumns } from './waveColumns'
 import { formatWaveTally } from './waveLabels'
 import { readWaveAxes } from '../../hooks/useSeismoWaveAxes'
 import { paintWaveColumns } from './paintWave'
+import { buildTimeTicks } from './timeTicks'
 import { WaveAxisToggles } from './WaveAxisToggles'
 
 /**
@@ -144,7 +145,8 @@ function StationWave({ station, readWave }: { station: SeismoStationState; readW
           {scaleText ?? '—'}
         </span>
       </div>
-      <canvas ref={canvasRef} className="block w-full h-[40px] roomy:h-[56px]" />
+      {/* 高さは目盛りの帯（`AXIS_BAND_PX` = 15px）を足したもの。 */}
+      <canvas ref={canvasRef} className="block w-full h-[55px] roomy:h-[71px]" />
     </div>
   )
 }
@@ -177,6 +179,14 @@ function drawWave(
             visibleAxes,
           }),
     stale,
-    { visibleAxes },
+    { visibleAxes, ticks: liveTicks },
   )
+}
+
+/**
+ * 目盛り（−60s 〜 0s）。**0 は右端の「最後に届いたサンプル」**（`buildWaveColumns` が右端を
+ * そこへ固定している）。時刻の幅は変わらないので、刻みは絵の幅だけで決まる。
+ */
+function liveTicks(widthCssPx: number) {
+  return buildTimeTicks({ fromMs: -SPAN_MS, toMs: 0, zeroMs: 0, zeroLabel: '0s', widthPx: widthCssPx })
 }

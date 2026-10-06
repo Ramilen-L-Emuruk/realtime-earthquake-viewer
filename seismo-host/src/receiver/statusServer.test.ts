@@ -11,7 +11,15 @@ import { EMPTY_STATION_CONFIG, StationDirectory } from './stationConfig'
 import type { StationConfig } from './stationConfig'
 import { buildStatusReport } from './statusReport'
 import type { StatusReport, WaveArchiveStatus } from './statusReport'
-import { buildWaveResponse, parseDiffParams, parseEventQuery, parseWaveParam, parseWaveQuery, startStatusServer } from './statusServer'
+import {
+  buildWaveResponse,
+  parseDiffParams,
+  parseEventQuery,
+  parseQuakeIntensityQuery,
+  parseWaveParam,
+  parseWaveQuery,
+  startStatusServer,
+} from './statusServer'
 import type { ShakeEventRecord } from '../detection/shakeEvent'
 import type { EventRangeResult } from '../detection/shakeEventStore'
 import type { StatusServer, StatusServerOptions } from './statusServer'
@@ -1676,5 +1684,114 @@ describe('GET /events（#312）', () => {
 
   it('parseEventQuery: 観測点を省けば null', () => {
     expect(parseEventQuery(new URLSearchParams(`from=1&to=2`))).toEqual({ ok: true, fromMs: 1, toMs: 2, stationId: null })
+  })
+})
+
+describe('GET /quake-intensity（#494 段3）', () => {
+  const T0 = Date.parse('2026-10-03T04:26:00.000Z')
+
+  /** 0.5 gal の静穏が続く 1 まとまり（`startMs` から `sec` 秒）。 */
+  function quietChunk(startMs: number, sec: number): ArchivedWaveChunk {
+    const n = sec * 100
+    const axis = (k: number): Float32Array => Float32Array.from({ length: n }, (_, i) => 0.5 * Math.sin(i * 0.3 + k))
+    return {
+      firstSampleMs: startMs,
+      msPerSample: 10,
+      gal: [axis(0), axis(1), axis(2)],
+      dcGal: [0, 0, 980],
+      memberCount: new Uint8Array(n).fill(3),
+    }
+  }
+
+  function result(chunks: ArchivedWaveChunk[]): WaveRangeResult {
+    return { chunks, filesRead: 1, filesMissing: 0, filesFailed: 0, skippedBytes: 0, truncated: false }
+  }
+
+  function startWithWaves(readWaves: StatusServerOptions['readWaves'], log?: StatusServerOptions['log']): Promise<string> {
+    return start(new ReadingHub(), undefined, log, undefined, undefined, undefined, undefined, readWaves)
+  }
+
+  describe('parseQuakeIntensityQuery', () => {
+    const q = (s: string): ReturnType<typeof parseQuakeIntensityQuery> => parseQuakeIntensityQuery(new URLSearchParams(s))
+
+    it('観測点と範囲を読む', () => {
+      expect(q(`station=s1&from=${T0}&to=${T0 + 60_000}`)).toEqual({ ok: true, stationId: 's1', fromMs: T0, toMs: T0 + 60_000 })
+    })
+
+    it('観測点が無ければ弾く', () => {
+      expect(q(`from=${T0}&to=${T0 + 1}`)).toEqual({ ok: false, error: 'station-required' })
+    })
+
+    it('幅の無い範囲・逆向きの範囲は弾く', () => {
+      expect(q(`station=s1&from=${T0}&to=${T0}`)).toEqual({ ok: false, error: 'bad-range' })
+      expect(q(`station=s1&from=${T0}&to=${T0 - 1}`)).toEqual({ ok: false, error: 'bad-range' })
+    })
+
+    // 対照: 10 分ちょうどは通し、1 ms でも超えたら弾く。
+    it('10 分までは通し、超えたら弾く', () => {
+      expect(q(`station=s1&from=${T0}&to=${T0 + 600_000}`).ok).toBe(true)
+      expect(q(`station=s1&from=${T0}&to=${T0 + 600_001}`)).toEqual({ ok: false, error: 'range-too-wide' })
+    })
+  })
+
+  it('保存を持たない構成では 503', async () => {
+    const base = await start(new ReadingHub())
+    const res = await fetch(`${base}/quake-intensity?station=s1&from=${T0}&to=${T0 + 1000}`)
+    expect(res.status).toBe(503)
+  })
+
+  it('範囲が広すぎれば読みにいかずに 400', async () => {
+    let called = 0
+    const base = await startWithWaves(async () => {
+      called += 1
+      return result([])
+    })
+    const res = await fetch(`${base}/quake-intensity?station=s1&from=${T0}&to=${T0 + 3_600_000}`)
+    expect(res.status).toBe(400)
+    expect(called).toBe(0)
+  })
+
+  it('判定の窓の分だけ手前から読み、2 つの値と読めた量を返す', async () => {
+    let asked: { fromMs: number; toMs: number } | null = null
+    const base = await startWithWaves(async (params) => {
+      asked = { fromMs: params.fromMs, toMs: params.toMs }
+      return result([quietChunk(T0 - 60_000, 180)])
+    })
+    const res = await fetch(`${base}/quake-intensity?station=s1&from=${T0}&to=${T0 + 100_000}`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('access-control-allow-origin')).toBe('*')
+    expect(asked).toEqual({ fromMs: T0 - 60_000, toMs: T0 + 100_000 })
+    const body = (await res.json()) as Record<string, unknown>
+    expect(typeof body.maxRealtime).toBe('number')
+    expect(typeof body.measured).toBe('number')
+    expect(body.measuredUnavailable).toBeNull()
+    expect(body.gapCount).toBe(0)
+    expect(body.filesRead).toBe(1)
+    expect(body.stationKnown).toBe(false)
+  })
+
+  it('記録が無ければ値を null にして理由を返す（500 にしない）', async () => {
+    const base = await startWithWaves(async () => result([]))
+    const res = await fetch(`${base}/quake-intensity?station=s1&from=${T0}&to=${T0 + 1000}`)
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as Record<string, unknown>
+    expect(body.measured).toBeNull()
+    expect(body.measuredUnavailable).toBe('no-data')
+    expect(body.maxRealtime).toBeNull()
+  })
+
+  it('読み返しが投げたら 500 を返し、1 行残す（受信は止まらない）', async () => {
+    const lines: string[] = []
+    const base = await startWithWaves(
+      async () => {
+        throw new Error('ディスクが読めない')
+      },
+      (_level, _kind, _detail, line) => lines.push(line),
+    )
+    const res = await fetch(`${base}/quake-intensity?station=s1&from=${T0}&to=${T0 + 1000}`)
+    expect(res.status).toBe(500)
+    expect(((await res.json()) as { error: string }).error).toBe('quake-intensity-failed')
+    expect(lines.some((l) => l.includes('ディスクが読めない'))).toBe(true)
+    expect((await fetch(`${base}/status`)).status).toBe(200)
   })
 })

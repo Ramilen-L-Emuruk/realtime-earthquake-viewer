@@ -346,6 +346,17 @@ npm version patch   # または minor / major
 
 直前に `git fetch` で origin との乖離を**もう一度**確認する。手順 4 のビルドとブラウザ確認には時間がかかるため、着手前チェックの時点から状況が変わっている可能性がある。
 
+**push の前に、公開する内容に個人情報が無いことを確かめる**（CLAUDE.md「公開する前に個人情報が無いことを確かめる」）。
+
+1. **機械の検査**: pre-push フックが push のたびに走る。**入っているかを先に確かめる**（入れ直しても害は無い）
+
+   ```bash
+   npm run install-git-hooks
+   ```
+
+   このあとの `git push` でフックが検査を走らせ、見つけたら（検査の終了コード 1）・調べられなかったら（2）push を止める。**`--no-verify` で押し通さない。** 見つかったものと場所をユーザーへ提示して指示を仰ぐ
+2. **目の検査**: 出す差分（`git diff origin/main..main`）とコミットメッセージ（`git log origin/main..main`）を読み、**自宅からの距離・S−P 時間・場所や機器を特定できる説明**が無いかを見る。機械では見分けられない
+
 ```bash
 git push --follow-tags
 ```
@@ -356,6 +367,46 @@ main への push で GitHub Actions が本番デプロイする。ワークフ�
 
 - non-fast-forward なら他セッションが先に push した可能性が高い。力ずくで通すと相手の変更を壊す
 - **失敗するとローカル `main` にマージコミット・バージョンコミット・未 push のタグが残る。** この残骸は次のリリースの着手前チェック #4 で検出されるが、**その場でユーザーに「未 push の状態が残っている」と明示して伝える**。黙って終わると、次に触る人が二重にバージョンを上げかねない
+
+#### push で届かない配り先
+
+**push で本番になるのは PWA だけ。** 自作地震計の**ホスト**（`seismo-host/`。常時起動の別の機で動く）と**ファーム**（`firmware/`。基板へ焼く）は、push しても実機は古いまま変わらない。PWA 側だけが新しい口を前提にすると、**実機ではその機能が一度も表に出ない**（エラーにもならず黙って出ないだけ）。
+
+push が成功したら、今回のリリースで次のいずれかが変わったかを確かめる。**リポジトリのトップレベルで実行する**（パスが相対）。`<作業用>` はスクラッチパッドなどリポジトリの外の一時ディレクトリ。
+
+```bash
+prev=$(git reflog show --format='%H %gs' origin/main | awk -v h=$(git rev-parse HEAD) 'f{print $1; exit} $1==h && /update by push/{f=1}')
+echo "prev=$prev"
+npx esbuild seismo-host/main.ts --bundle --platform=node --format=esm --packages=external --metafile="<作業用>/meta.json" --outfile="<作業用>/out.js" --log-level=error
+shared=$(node -e "const m=require(process.argv[1]);console.log(Object.keys(m.inputs).filter(p=>!p.startsWith('seismo-host/')).join(' '))" "<作業用>/meta.json")
+git diff --stat "$prev" HEAD -- seismo-host/main.ts seismo-host/src firmware ':!firmware/tools' package.json package-lock.json $shared
+```
+
+- **比べる起点（`prev`）は、いま push した直前の `origin/main`。** push 成功後の `origin/main` はもう新しい `main` を指しているので、**`origin/main` を起点にすると差分は常に 0 になる**。push は追跡参照の履歴へ `update by push` を 1 行残すので、その 1 つ前の行が push 前の位置になる（上の 1 行目）。**`prev` が空なら判定できていない** —— 差分なしと読まず、ユーザーに報告する
+- **ホストが読み込むリポジトリ側の共有ファイルも対象。** 手で数えずに esbuild の依存一覧で出す —— 共有ファイルはさらに別のファイルを読み込むので、ホストの `import` 文を `grep` するだけでは推移的に入るものを落とす（2026-10-05、ホストが直接は読まない `src/utils/knet/fft.ts` が実機に無かった）。管理コンソール（`seismo-host/src/admin/`）は実行時に別途ビルドされるので依存一覧には出ないが、`seismo-host/src` を丸ごと比べているので拾える
+- **`package.json`・`package-lock.json` が変わっていたら、ホストが使う npm パッケージが変わったかを中身で確かめる**（どれを使っているかは `grep -rhoE "from '[^.][^']*'" seismo-host/src seismo-host/main.ts | grep -v "node:" | sort -u` で出る。テスト専用のものも混ざる）。変わっていれば配り先で `npm install` も要る（`seismo-host/README.md`「常時動かす機へ配る」）
+- **差分があれば、配るかを AskUserQuestion で確認する。省略しない。** 配り先が並行して他のセッションに触られていることがあるので、聞かずに配らないし、聞かずに見送りもしない。**ホストとファームの両方が変わっていれば、それぞれ別の問いにする**（片方だけ配る選択を残す）。選択肢は「いま配る」「後で配る」の 2 つ
+- **「後で配る」を選んだら、その場で `TaskCreate` に積む**（何を・どのコミットまでを配るか）。報告するだけでは、会話が畳まれた時点で配っていないことごと消える
+- **配る手順は `seismo-host/README.md`「常時動かす機へ配る」と、ファームなら `firmware/README.md`「書き込む」に従う。** 実機の置き場所・起動コマンドは端末ごとの事情なので、この手順には書かない
+- **ホストを配る前に、配り先にしか無い変更を上書きしないかを確かめる。** 配り先は git ではないことがあるので、中身を取り戻して `main` の各コミットと比べる。一致するコミットが見つかれば、それが配り先に入っている版。どれとも一致しなければ、配らずにユーザーへ報告する（`<配り先>:<置き場所>` は README の配る手順と同じもの）:
+  ```bash
+  W="<作業用>"
+  rm -rf "$W/remote" && mkdir -p "$W/remote"
+  if scp -q -r <配り先>:<置き場所>/seismo-host/src <配り先>:<置き場所>/seismo-host/main.ts "$W/remote/"; then
+    for c in $(git log --format=%h -20 main -- seismo-host/src seismo-host/main.ts); do
+      rm -rf "$W/c" && mkdir -p "$W/c" && git archive $c seismo-host/src seismo-host/main.ts | tar -x -C "$W/c"
+      diff -rq --strip-trailing-cr "$W/remote" "$W/c/seismo-host" >/dev/null 2>&1
+      case $? in 0) echo "$c 一致" ;; 1) echo "$c 不一致" ;; *) echo "$c 比較できず" ;; esac
+    done
+  else
+    echo "取り戻せなかった。比べていないので配らない"
+  fi
+  ```
+  **「一致」と出た行だけが配り先の版。** 判定は `diff` の終了コードで行う（0＝同じ・1＝違う・2＝比べられなかった）。出力の行数で数えると、取り戻しに失敗して比べる相手が無いときも 0 行になり、「一致」と取り違える。改行は CRLF のことがあるので `--strip-trailing-cr` を外さない
+- 配ったら、新しい口が応えることと、止めていた間の波形を取り戻せたことを確かめて報告する
+- **配る途中で失敗したら、止めたものが動いているかを確かめてから報告する。** ホストなら `/status` が 200 か（止める口で止めた後に失敗すると、ホストが止まったまま観測が途切れる）。ファームなら基板が応えるか（基板の状態ページ。`firmware/README.md`「書き込む」）
+
+> 2026-10-05: v5.33.0 で地震カードの震度の行（ホストの `GET /quake-intensity` を問い合わせる）を出したが、ホストを配らずにリリースを終えた。「ホストを作り直している別のセッションと順番を合わせる」というこちらの判断で後回しにし、残りの作業として書いただけで聞かなかった。ユーザーが画面で「どこに表示されてる？」と気づくまで、実機では一度も出ていなかった。
 
 ### 7. クリーンアップ
 
@@ -486,7 +537,7 @@ git tag --points-at HEAD                          # 未 push のタグがある�
 
 中身と日時をユーザーに提示し、**どうするか判断を仰ぐ**。勝手にどちらかを選ばない。日時も材料になる（たった今の失敗か、何日も前の放置か）。
 
-- **続きから出す場合**（タグあり）: 手順 6 と同じく `git push --follow-tags` を使う。素の `git push` だとタグが取り残される
+- **続きから出す場合**（タグあり）: 手順 6 の個人情報の確かめ（機械の検査・目の検査）を通してから、手順 6 と同じく `git push --follow-tags` を使う。素の `git push` だとタグが取り残される
 - **タグが無い場合**: push せず、**手順 4（統合後の検証）から再開する**。検証を飛ばして本番へ出さない
 - **破棄する場合**: `git reset --hard origin/main`。origin がローカルの祖先なので **git の履歴は壊れない**。ただし**ローカル専用コミットの内容は失われる**ため、ユーザー確認を省略しないこと。未 push のタグが残っていれば `git tag -d <tag>` も併せて行う
 - **push を成功させて解消した場合は、そこで終わらない。** その残骸に含まれていた `ready/*` ブランチは main へマージ済みになり、**手順 1 の候補列挙（`--no-merged`）には二度と現れない**。`git log origin/main..main` で見たマージコミットから対象ブランチ名を特定し、**手順 7 と同じクリーンアップを行う**（ここで忘れても、次回のリリースの「前回までの取りこぼし」検出で拾われる）
@@ -518,3 +569,4 @@ git tag --points-at HEAD                          # 未 push のタグがある�
 | バージョン更新（`npm version`）が失敗した | `git log -1` と `git tag --points-at HEAD` で、コミットとタグのどちらか片方だけができていないか確認してから報告する |
 | push が失敗した（拒否・通信断・認証エラー） | バージョンコミット・タグを作り直さず報告。**ローカルに未 push の状態が残ることを明示して伝える**（手順 6 参照） |
 | ワークツリーが削除できない | 強制削除しない。報告して指示を仰ぐ（手順 7 参照） |
+| push で届かない配り先へ配る途中で失敗した | 止めたものが動いているか（ホストなら `/status` が 200 か、ファームなら基板が応えるか）を確かめてから報告する。止めたまま終えない（手順 6「push で届かない配り先」参照） |

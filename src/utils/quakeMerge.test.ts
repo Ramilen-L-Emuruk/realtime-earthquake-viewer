@@ -26,7 +26,7 @@ import {
 // **索引なしの経路**を見るので、ここで一度だけ既定値を与えて包む。索引を渡したときの
 // 違い（区域名が県名と同じ奈良県を区域として引き当てられる）は専用の describe で確かめる。
 import { readFileSync } from 'node:fs'
-import { buildAreaPrefIndex, type StationCoordsData } from './stationCoords'
+import { areaPrefIndexOf, type StationCoordsData } from './stationCoords'
 import type { AreaPrefIndex } from './quakePoints'
 import { isMaxScaleUnreceived } from './quakePoints'
 
@@ -1449,6 +1449,25 @@ describe('coalesceByEventId — 暫定 EventID で分かれたカードを畳む
     expect(coalesceByEventId([normal, cancelled])).toHaveLength(2)
   })
 
+  it('ほかの地震と入り混じっていても、同じ eventId は最初に現れた位置へ畳む（並びは保つ）', () => {
+    const a1 = makeQuake({ id: 'dmdata-quake-20260824040526-1' })
+    const b1 = makeQuake({ id: 'dmdata-quake-20260824041000-1' })
+    const a2 = makeQuake({ id: 'dmdata-quake-20260824040526-2' })
+    const c = makeQuake({ id: 'dmdata-quake-20260824042000-1' })
+    const b2 = makeQuake({ id: 'dmdata-quake-20260824041000-2' })
+    const result = coalesceByEventId([a1, b1, a2, c, b2])
+    expect(result.map(extractQuakeEventId)).toEqual(['20260824040526', '20260824041000', '20260824042000'])
+  })
+
+  it('取消表示中のカードは畳む相手にならない（後ろの 2 枚どうしが畳まれる）', () => {
+    const cancelled = { ...makeQuake({ id: 'dmdata-quake-20260824040526-1' }), cancelledAt: new Date() }
+    const second = makeQuake({ id: 'dmdata-quake-20260824040526-2' })
+    const third = makeQuake({ id: 'dmdata-quake-20260824040526-3' })
+    const result = coalesceByEventId([cancelled, second, third])
+    expect(result).toHaveLength(2)
+    expect(result[0]).toBe(cancelled)
+  })
+
   it('eventId が違うカードは畳まない', () => {
     const a = makeQuake({ id: 'dmdata-quake-20260824040519-1' })
     const b = makeQuake({ id: 'dmdata-quake-20260824040526-1' })
@@ -1747,7 +1766,7 @@ describe('取消の後に届いた報', () => {
 // 同じ形なので、名前だけで除くとこの区域が区域の重なり判定から消え、同じ分に起きた別々の地震を
 // 引き離せなくなる。索引を渡せば区域として数えられる（→ docs/spec/quake-spec.md §4）。
 describe('区域の重なり判定: 区域名が県名と同じ奈良県', () => {
-  const AREA_PREF_INDEX = buildAreaPrefIndex(
+  const AREA_PREF_INDEX = areaPrefIndexOf(
     JSON.parse(readFileSync('public/data/station-coords.json', 'utf8')) as StationCoordsData,
   )
 

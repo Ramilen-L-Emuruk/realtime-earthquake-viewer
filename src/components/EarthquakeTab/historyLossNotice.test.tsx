@@ -75,7 +75,7 @@ function renderTab(opts: {
       updateMarks={new Map()}
       activeLpgmEventId={null}
       onToggleLpgm={() => {}}
-      estimatedIntensity={null}
+      estimatedIntensities={[]}
       distributionQuakeKey={null}
       onToggleDistribution={() => {}}
       unreceivedQuakeKey={null}

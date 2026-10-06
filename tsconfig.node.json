@@ -56,6 +56,9 @@
     "scripts/build-epicenter-accents.ts",
     "scripts/epicenterAccents.test.ts",
     "scripts/verify-particle-phrases.ts",
-    "src/types/fft-js.d.ts"
+    "scripts/lib/personalInfo.ts",
+    "scripts/lib/personalInfo.test.ts",
+    "scripts/check-personal-info.ts",
+    "scripts/install-git-hooks.ts"
   ]
 }

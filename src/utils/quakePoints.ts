@@ -1,7 +1,7 @@
 import type { EarthquakePoint, IntensityScale, JMAQuakeCity } from '../types/earthquake'
 
 /**
- * 一次細分区域名 → 都道府県名 の逆引き索引（`buildAreaPrefIndex`）。
+ * 一次細分区域名 → 都道府県名 の逆引き索引（`areaPrefIndexOf`）。
  * `null` は「索引を引けない」——{@link isAreaPoint} は名前だけの判定へ落ちる。
  */
 export type AreaPrefIndex = ReadonlyMap<string, string> | null
@@ -27,7 +27,7 @@ export type AreaPrefIndex = ReadonlyMap<string, string> | null
  * 同じ（単一区域なので県の最大震度は配下区域の最大震度）なので、集合・Map で受ける
  * 呼び出し側では重複しない。
  *
- * @param areaPrefIndex 一次細分区域名 → 都道府県名（`buildAreaPrefIndex`）。
+ * @param areaPrefIndex 一次細分区域名 → 都道府県名（`areaPrefIndexOf`）。
  *   **null を渡すと名前だけで判定し、奈良県を取りこぼす。** 座標テーブルはブラウザで
  *   読み込む資材なので、それを引けない呼び出し側は null を渡すほかない。
  */

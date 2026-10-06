@@ -26,7 +26,7 @@ import type { ReplayEntry } from '../types/replay'
 import {
   HANDLED_TYPES, QUAKE_TYPES, TSUNAMI_TYPES, HISTORY_EXTRA_TYPES, historyExtraKey,
   buildXmlPayload, isBinaryTelegramType, buildBinaryPayload, TELEGRAM_DATA_BASE,
-  isFilteredBinaryTelegram,
+  isFilteredBinaryTelegram, type BinaryReplayPayload,
 } from './dmdataTelegramPayload'
 import { waitForApiSlot } from './dmdataRequestGates'
 import { BufrFragmentStore, fragmentKey } from './bufrTelegramAssembly'
@@ -611,6 +611,81 @@ export interface LiveReplayResult {
 }
 
 /**
+ * 当日経路で二進電文（推計震度分布図）を集める。**断片の結合と、取りこぼし・429 の見送りの
+ * 数え方をここに集める**（使うのは本編の再生 `fetchLiveReplayEntries` と、地震カードの履歴
+ * `fetchLiveQuakeTelegrams` の 2 つ。片方だけ直すと、同じ電文の数え方が経路で食い違う）。
+ *
+ * **取得 1 回きりの入れ物**なので、ライブの断片とは混ざらない。
+ *
+ * 数え方の規則（どれも電文ごとに 1 度だけ）:
+ * - 本体の取得に失敗した → 取りこぼし。**恒久失敗が勝つ** —— 同じ電文の断片が「1 つは通信
+ *   エラー・1 つは 429 の窓」に分かれたら、待っても揃わないので見送りから取り下げる
+ * - 429 の窓で見送った → 見送り（待てば取れるので取りこぼしに数えない）
+ * - 最後まで揃わなかった → 取りこぼし（上のどちらかで既に数えた電文は数えない）
+ */
+class LiveBinaryTelegrams {
+  private readonly fragments = new BufrFragmentStore()
+  /** 恒久的に失ったので取りこぼしへ数えた電文の識別名。 */
+  private readonly counted = new Set<string>()
+  /** 429 の窓で見送った電文の識別名。**`counted` と別に持つ**（掃引でどちらか見分けるため）。 */
+  private readonly rateLimited = new Set<string>()
+
+  private static keyOf(item: TelegramListItem): string {
+    return fragmentKey(item.head.type, 'RJTD', item.head.time)
+  }
+
+  /**
+   * 断片の本体を受け取る。
+   *
+   * @returns 結合して読めたペイロード（試験報でも返す。捨てるかは呼び出し側が
+   *   `isFilteredBinaryTelegram` で決め、捨てたことを記録する）／まだ揃っていなければ
+   *   `'pending'`／読み取りに失敗したら `'unreadable'`
+   */
+  accept(item: TelegramListItem, bytes: Uint8Array): BinaryReplayPayload | 'pending' | 'unreadable' {
+    const joined = this.fragments.add(LiveBinaryTelegrams.keyOf(item), item.head.designation, bytes, Date.now())
+    // まだ揃っていない断片。**取りこぼしには数えない**（残りは同じ一覧の別エントリにある）。
+    if (!joined) return 'pending'
+    return buildBinaryPayload(item.head.type, joined, item.id, item.head.time) ?? 'unreadable'
+  }
+
+  /**
+   * 429 の窓で見送ったことを記録する。
+   *
+   * **覚えておくのは、最後の掃引で取りこぼしへ数えないため。** 一部の断片だけが見送られると、
+   * 残りは入れ物に入ったまま「揃わなかった断片」として掃引に掛かる。
+   *
+   * @returns 見送りとして 1 件数えるべきなら真（電文ごとに 1 度だけ。恒久的に失った側が
+   *   既に数えていれば偽）
+   */
+  noteRateLimited(item: TelegramListItem): boolean {
+    const key = LiveBinaryTelegrams.keyOf(item)
+    if (this.rateLimited.has(key) || this.counted.has(key)) return false
+    this.rateLimited.add(key)
+    return true
+  }
+
+  /**
+   * 本体の取得に失敗したことを記録する。**その場で入れ物から捨てるのでは足りない** —— 本体は
+   * 並行して取るので、この断片が落ちた時点では相方がまだ入れ物に届いていないことがある。
+   *
+   * @returns `countSkip` は取りこぼしとして 1 件数えるべきか、`releaseRateLimited` は既に
+   *   見送りとして数えていた分を 1 件取り下げるべきか（恒久失敗が勝つ）
+   */
+  noteFailed(item: TelegramListItem): { countSkip: boolean; releaseRateLimited: boolean } {
+    const key = LiveBinaryTelegrams.keyOf(item)
+    if (this.counted.has(key)) return { countSkip: false, releaseRateLimited: false }
+    const releaseRateLimited = this.rateLimited.delete(key)
+    this.counted.add(key)
+    return { countSkip: true, releaseRateLimited }
+  }
+
+  /** 最後まで揃わなかった電文の識別名（既に取りこぼし・見送りとして数えたものを除く）。 */
+  unresolvedKeys(): string[] {
+    return this.fragments.unresolvedKeys.filter(k => !this.counted.has(k) && !this.rateLimited.has(k))
+  }
+}
+
+/**
  * アーカイブが無い日の電文を集めて再生用エントリにする。
  *
  * @param apiKey DMDATA の APIキー
@@ -683,31 +758,16 @@ export async function fetchLiveReplayEntries(
   }
 
   const entries: ReplayEntry[] = []
-  // 分割された二進電文の結合待ち。**この取得 1 回きりの入れ物**なので、ライブの断片とは混ざらない。
-  const bufrFragments = new BufrFragmentStore()
-  /** 本体の取得が落ちて、既に取りこぼしとして数えた二進電文の識別名。 */
-  const countedBinaryKeys = new Set<string>()
-  /**
-   * 429 の窓で見送った二進電文の識別名。
-   *
-   * **`countedBinaryKeys` とは別に持つ。** あちらは「恒久的に失ったので `skipped` へ数えた」印で、
-   * こちらは「待てば取れるので数えない」印。同じ集合にすると、下の掃引で見送りと失敗の
-   * どちらだったか分からなくなる。
-   */
-  const rateLimitedBinaryKeys = new Set<string>()
+  // 二進電文（推計震度分布図）の結合と数え方（→ `LiveBinaryTelegrams`）。
+  const binaries = new LiveBinaryTelegrams()
   await mapWithLimit(targets, BODY_CONCURRENCY, async (item) => {
     const headType = item.head.type
     try {
       // 二進電文（IXAC41）はテキストへ落とさず、分割の結合を経てから読む。
       if (isBinaryTelegramType(headType)) {
-        const bytes = await fetchBinaryBody(item.url, apiKey)
-        const joined = bufrFragments.add(
-          fragmentKey(headType, 'RJTD', item.head.time), item.head.designation, bytes, Date.now(),
-        )
-        // まだ揃っていない断片。**取りこぼしには数えない**（残りは同じ一覧の別エントリにある）。
-        if (!joined) return
-        const binPayload = buildBinaryPayload(headType, joined, item.id, item.head.time)
-        if (!binPayload) {
+        const binPayload = binaries.accept(item, await fetchBinaryBody(item.url, apiKey))
+        if (binPayload === 'pending') return
+        if (binPayload === 'unreadable') {
           log.warn(`[replay] 二進電文の読み取りに失敗しスキップ id=${item.id} type=${headType}`)
           skipCounter.add(skipDayOf(item.receivedTime))
           return
@@ -743,41 +803,19 @@ export async function fetchLiveReplayEntries(
           `[replay] 電文は 429 の窓が明けるまで取りに行きません id=${item.id} type=${headType}`
           + `（あと ${Math.max(0, Math.round((e.until - Date.now()) / 1000))} 秒）`,
         )
-        // **二進電文は電文ごとに 1 度だけ数える**（通常の失敗と同じ理由。分割は最大 24 断片
-        // あり、窓は断片ごとの id に立つので複数が同時に見送られる）。
-        //
-        // **覚えておくのは、下の `pendingKeys` で `skipped` へ数えないため。** 一部の断片だけが
-        // 見送られると、残りは入れ物に入ったまま「揃わなかった断片」として掃引に掛かる ——
-        // そこで数えると、**同じ電文が「待っている」と「恒久的に失った」の両方に計上される**
-        // （2 巡目で入れたこの早期 return が、`countedBinaryKeys` に触らなかったために作った穴）。
-        if (isBinaryTelegramType(headType)) {
-          const key = fragmentKey(headType, 'RJTD', item.head.time)
-          if (rateLimitedBinaryKeys.has(key)) return
-          // **恒久的に失った側が既に数えていたら、こちらでは数えない。** 同じ電文の別の断片が
-          // 通信エラーで落ちていれば、その電文は待っても揃わない（下の「恒久失敗が勝つ」）
-          if (countedBinaryKeys.has(key)) return
-          rateLimitedBinaryKeys.add(key)
-        }
+        // **二進電文は電文ごとに 1 度だけ数える**（分割は最大 24 断片あり、窓は断片ごとの id に
+        // 立つので複数が同時に見送られる。→ `LiveBinaryTelegrams.noteRateLimited`）。
+        if (isBinaryTelegramType(headType) && !binaries.noteRateLimited(item)) return
         rateLimitedTelegrams++
         return
       }
       // 1 通の失敗（取得エラー・JSON 破損・パーサ内の例外）で全体を落とさない。
       log.error(`[replay] 電文の取り込みに失敗しスキップ id=${item.id} type=${headType}`, e)
-      // **二進電文は電文ごとに 1 度だけ数える。** 分割は最大 24 断片あり、通信の不調では
-      // 複数が同時に落ちる。断片ごとに数えると 1 通の障害が断片の数だけ膨らむ。
-      //
-      // 覚えておくのは、下の `pendingKeys` でもう一度数えないため。**その場で入れ物から
-      // 捨てるのでは足りない** —— 本体は同時に 8 通まで並行して取るので、この断片が落ちた
-      // 時点では相方がまだ入れ物に届いていないことがある（捨てても、そのあと入る）。
+      // **二進電文は電文ごとに 1 度だけ数える。恒久失敗が勝つ**（→ `LiveBinaryTelegrams.noteFailed`）。
       if (isBinaryTelegramType(headType)) {
-        const key = fragmentKey(headType, 'RJTD', item.head.time)
-        if (countedBinaryKeys.has(key)) return
-        // **恒久失敗が勝つ。** 同じ電文の断片が「1 つは通信エラー・1 つは 429 の窓」に分かれる
-        // ことがある（本体は 8 並列で取るため）。そのとき「待てば取れます」と伝えるのは嘘 ——
-        // 恒久的に失った断片がある電文は、窓が明けても揃わない。**待っている側から取り下げて
-        // こちらへ移す**（両方に 1 件ずつ入れると、1 通の障害が 2 件に見える）
-        if (rateLimitedBinaryKeys.delete(key)) rateLimitedTelegrams--
-        countedBinaryKeys.add(key)
+        const { countSkip, releaseRateLimited } = binaries.noteFailed(item)
+        if (releaseRateLimited) rateLimitedTelegrams--
+        if (!countSkip) return
       }
       skipCounter.add(skipDayOf(item.receivedTime))
     }
@@ -785,13 +823,7 @@ export async function fetchLiveReplayEntries(
 
   // **揃わなかった二進電文の断片を取りこぼしとして数える。** ここで見ないと誰も見ない ——
   // この入れ物は取得 1 回きりで使い捨てるので、残った断片は黙って消える。
-  for (const key of bufrFragments.pendingKeys) {
-    // 取得そのものが落ちて既に数えた電文は、ここでは数えない（上の注記）。
-    if (countedBinaryKeys.has(key)) continue
-    // **429 で見送った電文も数えない。** 断片が揃っていないのは事実だが、原因は
-    // 「こちらが待っている」ことなので恒久的な喪失ではない（既に `rateLimitedTelegrams` で
-    // 数えている）。ここで数えると同じ電文が両方の枠に入る
-    if (rateLimitedBinaryKeys.has(key)) continue
+  for (const key of binaries.unresolvedKeys()) {
     // **鍵からは日を復元できない**ので不明扱い（鍵は種別と発表時刻から作った文字列）。
     log.warn(`[replay] 二進電文の断片が揃いませんでした（分布は出ません）key=${key}`)
     skipCounter.add(UNKNOWN_SKIP_DAY)
@@ -865,8 +897,26 @@ export async function fetchLiveQuakeTelegrams(
   const quakes: JMAQuake[] = []
   const tsunamis: JMATsunami[] = []
   const extras: ReplayEntry[] = []
+  // 二進電文（推計震度分布図）の結合と数え方。**本編の再生と同じ規則**（→ `LiveBinaryTelegrams`）。
+  const binaries = new LiveBinaryTelegrams()
   await mapWithLimit(targets, BODY_CONCURRENCY, async (item) => {
     try {
+      // 二進電文はテキストへ落とさず、分割の結合を経てから読む（`fetchLiveReplayEntries` と同じ）。
+      if (isBinaryTelegramType(item.head.type)) {
+        const binPayload = binaries.accept(item, await fetchBinaryBody(item.url, apiKey))
+        if (binPayload === 'pending') return
+        if (binPayload === 'unreadable') {
+          log.warn(`[replay] 履歴用の二進電文の読み取りに失敗しスキップ id=${item.id} type=${item.head.type}`)
+          skipCounter.add(day)
+          return
+        }
+        if (isFilteredBinaryTelegram(binPayload, includeTest)) {
+          log.info(`[replay] 履歴用の二進電文の試験報を取り込みません id=${item.id} type=${item.head.type}`)
+          return
+        }
+        extras.push({ payload: binPayload, replayTime: new Date(item.head.time), silent: true })
+        return
+      }
       const payload = buildXmlPayload(item.head.type, await fetchBody(item.url, apiKey))
       if (HISTORY_EXTRA_TYPES.has(item.head.type)) {
         if (payload === null || historyExtraKey(payload) === null) {
@@ -900,12 +950,25 @@ export async function fetchLiveQuakeTelegrams(
           `[replay] 履歴用電文は 429 の窓が明けるまで取りに行きません id=${item.id} type=${item.head.type}`
           + `（あと ${Math.max(0, Math.round((e.until - Date.now()) / 1000))} 秒）`,
         )
+        // 二進電文は電文ごとに 1 度だけ数える（→ `LiveBinaryTelegrams.noteRateLimited`）
+        if (isBinaryTelegramType(item.head.type) && !binaries.noteRateLimited(item)) return
         rateLimitedTelegrams++
         return
       }
       log.error(`[replay] 履歴用電文の取り込みに失敗しスキップ id=${item.id} type=${item.head.type}`, e)
+      // 二進電文は電文ごとに 1 度だけ数える。恒久失敗が勝つ（→ `LiveBinaryTelegrams.noteFailed`）
+      if (isBinaryTelegramType(item.head.type)) {
+        const { countSkip, releaseRateLimited } = binaries.noteFailed(item)
+        if (releaseRateLimited) rateLimitedTelegrams--
+        if (!countSkip) return
+      }
       skipCounter.add(day)
     }
   })
+  // 揃わなかった二進電文の断片を取りこぼしとして数える（この関数は 1 日ぶんの担当なので `day`）。
+  for (const key of binaries.unresolvedKeys()) {
+    log.warn(`[replay] 履歴用の二進電文の断片が揃いませんでした（分布は出ません）key=${key}`)
+    skipCounter.add(day)
+  }
   return { quakes, tsunamis, extras, skippedByDay: skipCounter.toMap(), rateLimitedTelegrams }
 }

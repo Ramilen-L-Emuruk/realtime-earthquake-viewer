@@ -61,20 +61,15 @@ import { createSkipCounter, sumSkippedByDay, UNKNOWN_SKIP_DAY } from '../utils/t
  *
  * 日常的には数回押すだけなので、1 回が軽いほうを採る。7 日ぶんの有感地震は実測で 44 件
  * （長期震源カタログの確定値 1997〜2023 年で 1 日平均 7.3 件）。
+ *
+ * ## 件数の上限は置かない（2026-10-05 ユーザー承認）
+ *
+ * かつては 1 回で取り込む地震を 500 件で打ち切っていたが、**窓の日数そのものが上限**になって
+ * いるので外した。500 は測って決めた値ではなく、能登半島地震の 7 日間（2024-01-01〜07・
+ * 656 件）を日の境で切っていた。その 7 日ぶんを取り込んでも、カード 651 枚で最も長い処理が
+ * 0.7 秒・ヒープ 371 MB で、一覧のスクロールは 60 fps を保つ（実測）。
  */
 export const HISTORY_WINDOW_DAYS = 7
-
-/**
- * 1 回の取得で取り込む地震イベント数の**安全弁**。
- *
- * **目標ではない。** 通常は窓（`HISTORY_WINDOW_DAYS`）を丸ごと読み切るので、ここへ達しない。
- * 効くのは群発の最中だけ —— 能登半島地震の本震当日のように 1 日で数百件になると、日数だけで
- * 切った場合にカードが一度に千枚単位で増える。
- *
- * 達した日で地震の取り込みをやめ、カーソル（`oldestLoadedDay`）もそこで止まるので、続きは
- * 次に押したときに読める。
- */
-export const HISTORY_EVENT_SAFETY_CAP = 500
 
 /**
  * アーカイブの保存開始日（JST。地震津波関連の分類）。
@@ -1042,7 +1037,7 @@ export async function fetchDmdataReplayEvents(
   // **揃わなかった二進電文の断片を取りこぼしとして数える。** ここで見ないと誰も見ない ——
   // この入れ物は取得 1 回きりで使い捨てるので、残った断片は黙って消える。
   // 症状は「他の電文は全部読めているのに、その地震だけ分布が出ない」で、手掛かりが何も残らない。
-  for (const key of bufrFragments.pendingKeys) {
+  for (const key of bufrFragments.unresolvedKeys) {
     // 本体が見つからず既に数えた電文は、ここでは数えない（上の注記）。
     if (countedBinaryKeys.has(key)) continue
     // **鍵からは日を復元できない**ので不明扱い（鍵は種別と発表時刻から作った文字列）。
@@ -1234,10 +1229,42 @@ function resolveTsunamiPreWindowStates(
       continue
     }
     const validDateTime = latestValidDateTime(reports)
-    const expired = !!validDateTime && new Date(validDateTime).getTime() <= targetTime.getTime()
+    const expired = validDateTime
+      ? new Date(validDateTime).getTime() <= targetTime.getTime()
+      : isStaleWithoutValidity(reports, targetTime)
     states.set(key, { alive: !expired, validDateTime })
   }
   return states
+}
+
+/**
+ * 期限を一度も伝えていない津波を、どこまで遡って生かすか。
+ *
+ * 初期状態の材料は 7 日ぶんある（→ `useReplayController` の `assemblePreWindowMaterial`）が、
+ * **期限を持たない津波は、最後の報から 24 時間を過ぎたら終わったものとして扱う** ——
+ * 材料が 24 時間だけだった頃と同じ範囲に留める。7 日ぶん遡ると、期限を伝えないまま終わった
+ * 津波が 6 日後の再生でも「発表中」として甦る。
+ *
+ * 気象庁は予報のみになった津波に期限を付ける（→ `tsunami-spec.md` §3）ので、通常は期限か
+ * 解除のどちらかで決着し、ここへは来ない。来るのは期限を載せていない電文が混ざった場合で、
+ * 黙って落とすと理由が残らないので記録する。
+ */
+const TSUNAMI_WITHOUT_VALIDITY_MAX_AGE_MS = 24 * 3600_000
+
+function isStaleWithoutValidity(reports: JMATsunami[], targetTime: Date): boolean {
+  const latestMs = Math.max(...reports.map(r => Date.parse(r.time)).filter(Number.isFinite))
+  if (!Number.isFinite(latestMs)) {
+    // 古さを測れないので終わったとは決めない（材料が 24 時間だった頃と同じ扱い）。黙って
+    // 生かすと、その津波が居座る理由がどこにも残らないので記録する。
+    log.warn(`[replay] 有効期限も発表時刻も読めない津波を、失効の判定をせずに初期状態へ載せます: id=${reports[reports.length - 1]?.id}`)
+    return false
+  }
+  if (targetTime.getTime() - latestMs <= TSUNAMI_WITHOUT_VALIDITY_MAX_AGE_MS) return false
+  log.warn(
+    `[replay] 有効期限を伝えていない津波を、最後の報から 24 時間を過ぎたため初期状態に載せません: `
+    + `id=${reports[reports.length - 1].id}`,
+  )
+  return true
 }
 
 /**
@@ -1482,16 +1509,23 @@ function prefetchArchiveBody(item: ArchiveItem, apiKey: string): Promise<Prefetc
  * 履歴の取得（`fetchDmdataQuakeHistory`）向けの計画。**本体を落とさずに決まることだけ**を
  * 1 パスで求める（設計の意図は `ManifestPlan`）。
  *
- * 絞り込みは消費のループと同じ順序で当てる —— 種別 → 打ち切り（`takeQuakes`）→ 重複排除 →
+ * 絞り込みは消費のループと同じ順序で当てる —— 種別 → 重複排除 →
  * 時刻。**パース結果が控えにある電文は本体を要らない**ので、その日の全件が控えに揃っていれば
  * ダウンロードごと省ける。
  *
  * **`head` を持たないエントリは取りこぼしとして数える**（本編の `planReplayEntries` と同じ）。
  * 黙って落とすと、目録が壊れている日ほど「静かな日」に見える。
  */
+/**
+ * 履歴の電文をどの型として読むか。`binary` は二進電文（推計震度分布図）で、**分割された断片を
+ * 結合してから読む**ので、1 件ずつ読む `parseHistoryTelegram` は通らない
+ * （→ `fetchDmdataQuakeHistory` のループ）。
+ */
+type HistoryWant = ParsedTelegram['kind'] | 'binary'
+
 type HistoryPlan =
   | { kind: 'malformed'; entry: ManifestEntry | undefined; needsBody: false }
-  | ({ kind: 'entry'; want: ParsedTelegram['kind'] } & ManifestPlan)
+  | ({ kind: 'entry'; want: HistoryWant } & ManifestPlan)
 
 /**
  * 履歴の取得で、その電文を取り込む対象か。**再生開始時刻より後に発表された電文は、その時点で
@@ -1506,7 +1540,7 @@ function isHistoryTarget(time: Date, before: Date): boolean {
 
 function planHistoryEntries(
   manifest: ManifestEntry[],
-  opts: { includeTest: boolean; takeQuakes: boolean; before: Date },
+  opts: { includeTest: boolean; before: Date },
 ): HistoryPlan[] {
   const plans: HistoryPlan[] = []
   for (const entry of manifest) {
@@ -1519,11 +1553,12 @@ function planHistoryEntries(
     const isExtra = HISTORY_EXTRA_TYPES.has(entry.head.type)
     const isTsunami = TSUNAMI_TYPES.has(entry.head.type)
     if (!isQuake && !isExtra && !isTsunami) continue
-    if (isQuake && !opts.takeQuakes) continue
     // XML 版と JSON 版の 2 エントリで載るうち、XML 版（originalId 無し）だけを拾う
     if (entry.originalId) continue
     // **3 つのセットは互いに素**なので、種別からどの型として読むかが一意に決まる。
-    const want: ParsedTelegram['kind'] = isExtra ? 'extra' : isTsunami ? 'tsunami' : 'quake'
+    // 二進電文は補完の種別（`HISTORY_EXTRA_TYPES`）に入っているが、読み方だけが違う。
+    const want: HistoryWant =
+      isBinaryTelegramType(entry.head.type) ? 'binary' : isExtra ? 'extra' : isTsunami ? 'tsunami' : 'quake'
     const time = manifestTimeWithoutBody(entry)
     // 時刻が決まらないなら、補うために本体が要る（`resolveManifestTime`）。
     // **対象かどうかは時刻が決まるまで判らない**ので `include` は未定のまま。
@@ -1598,8 +1633,7 @@ function parseHistoryTelegram(
  * 遡り幅も違う。カードを厚くするために 24 時間を延ばすと、EEW アーカイブの解析まで
  * 巻き添えで増える。ここでは `telegram.earthquake` だけを読む。
  *
- * 打ち切りは**日単位**で行う。イベント数が目標に届いた時点で、それより古い日は解析しない。
- * 日の途中で切ると同一イベントの続報が分断され、震度速報だけのカードが残りうる。
+ * 区切りは**日数だけ**（`maxDays`）。地震の件数では打ち切らない（→ `HISTORY_WINDOW_DAYS`）。
  *
  * ダウンロード自体は `maxDays` ぶんを並列で走らせる。日次アーカイブは 1 日 10〜70KB と小さく、
  * 逐次に落として都度判定すると往復のぶんだけ再生開始が遅れるため（ライブの履歴取得が
@@ -1616,14 +1650,11 @@ function parseHistoryTelegram(
  * カーソル方式では初回ロードとリプレイ復元が重なる場面にしか効かない。
  *
  * @param before この時刻より後に発表された電文は採らない（＝窓の上端。カーソル）
- * @param targetEvents 取り込む地震イベント数の**上限**（続報は 1 件と数える）。
- *   **目標ではない** —— 通常は窓を丸ごと読み切るので達しない（→ `HISTORY_EVENT_SAFETY_CAP`）
  * @param maxDays この窓で読む日数（→ `HISTORY_WINDOW_DAYS`）。**遡れる範囲の上限ではない**
  */
 export async function fetchDmdataQuakeHistory(
   apiKey: string,
   before: Date,
-  targetEvents: number,
   maxDays: number,
   includeTest: boolean,
   /**
@@ -1784,8 +1815,30 @@ export async function fetchDmdataQuakeHistory(
   const rateLimitedSources: string[] = []
   /** 429 の窓で見送った**電文**の数（取得元とは単位が違う）。 */
   let rateLimitedTelegrams = 0
-  /** 帯と長周期は種別ごとに最新 1 通だけ残す（鍵の作り方は `historyExtraKey`）。 */
+  /**
+   * 帯と長周期は種別ごとに最新 1 通だけ残す（鍵の作り方は `historyExtraKey`）。
+   * 推計震度分布図は電文ごとに別の鍵なので全部残る（どれが同じ地震かは受け手が決める）。
+   */
   const extraLatest = new Map<string, { payload: ReplayPayload; timeMs: number }>()
+  const keepExtra = (key: string, payload: ReplayPayload, timeMs: number) => {
+    const prev = extraLatest.get(key)
+    if (!prev || timeMs > prev.timeMs) extraLatest.set(key, { payload, timeMs })
+  }
+  /**
+   * 分割された二進電文（推計震度分布図）の結合待ち。**この取得 1 回きりの入れ物**で、
+   * 日をまたいでも使い回す（断片は数秒のうちに続けて届くが、日の境目を挟むことはありうる）。
+   *
+   * **既知の制限: 当日経路の日とは共有していない。** 当日経路（`fetchLiveQuakeTelegrams`）は
+   * 自分の入れ物を持つので、1 通の断片が「アーカイブのある日」と「まだ無い日」にまたがると
+   * どちらでも揃わず、両方が 1 件ずつ取りこぼしに数える（1 通が 2 件に見える）。起きるのは
+   * 日本時間の 0 時をまたいで配信され、しかもその境目がアーカイブの在庫の端と重なったとき
+   * だけなので、共有して数え方を組み直すことはしていない。
+   */
+  const bufrFragments = new BufrFragmentStore()
+  /** 結合待ちの断片の目録エントリ id（結合できたら、全部の id に解析結果を控える）。 */
+  const fragmentEntryIds = new Map<string, string[]>()
+  /** 本体が見つからず、既に取りこぼしとして数えた二進電文の識別名（電文ごとに 1 度だけ数える）。 */
+  const countedBinaryKeys = new Set<string>()
   /** 取りこぼしは**日ごとに**数える（理由は `utils/telegramLoss.ts` の `skippedByDay`）。 */
   const skipCounter = createSkipCounter()
   /**
@@ -1801,9 +1854,9 @@ export async function fetchDmdataQuakeHistory(
   /**
    * 地震を最後まで読み切れた日（`sources` の日付そのもの）。
    *
-   * **「読んだ日」ではなく「読み切った日」を集めること。** 件数の安全弁に達したあとの日も
-   * 帯と長周期のために走査は続くので、`usedDays` で代用すると読んでいない日までカーソルが
-   * 進み、その範囲の地震が二度と読まれない。
+   * **「読んだ日」ではなく「読み切った日」を集めること。** 取得に失敗した日も `usedDays` には
+   * 数えるので、それで代用すると読めていない日までカーソルが進み、その範囲の地震が二度と
+   * 読まれない。
    *
    * **カーソルにするのは、ここから「新しい側から連続している範囲」だけ**（下の
    * `oldestLoadedDay` の組み立て）。1 日でも失敗を挟んだら、その手前で止める。
@@ -1811,15 +1864,9 @@ export async function fetchDmdataQuakeHistory(
   const loadedDays = new Set<string>()
 
   for (const source of sources) {
-    // **地震は上限に達した日で打ち切る**（群発の最中だけ効く安全弁。通常は窓を丸ごと読み切る）。
-    // 日の途中で切ると同一イベントの続報が分断され、震度速報だけのカードが残りうる。
-    //
-    // **帯と長周期は打ち切らない**（`HISTORY_EXTRA_TYPES`）。7 日ぶん画面に出続けるもの・
-    // 地震ごとに紐づくもので、**地震活動が多い期間ほど早く打ち切られる**と、いちばん復元
-    // したい状況（群発の最中）で復元できない。アーカイブは上で並列にダウンロードしてあるので、
-    // 増えるのは目録の走査と、その日を初めて読むときの 1 日数通のパースだけ。
+    // **地震も帯も長周期も、窓の日を全部読む。** 件数では打ち切らない（理由は
+    // `HISTORY_WINDOW_DAYS` の「件数の上限は置かない」）。
     if (shouldStop?.()) { stoppedEarly = true; break }
-    const takeQuakes = eventIds.size < targetEvents
     usedDays++
 
     /**
@@ -1833,7 +1880,7 @@ export async function fetchDmdataQuakeHistory(
      *
      * 失敗した日で止めておけば、次に押したときその日から読み直せる。
      */
-    const markDayLoaded = () => { if (takeQuakes) loadedDays.add(source.date) }
+    const markDayLoaded = () => { loadedDays.add(source.date) }
 
     if (!source.item) {
       // 当日経路。読めなくてもアーカイブ側の成果は活かす（アーカイブ 1 日ぶんが読めなかったときと
@@ -1942,7 +1989,7 @@ export async function fetchDmdataQuakeHistory(
 
     // 絞り込み（試験報・打ち切り・重複排除・時刻）は計画へ集約してある。
     // **判定と消費で同じ配列を回すこと**が肝（→ `ManifestPlan`）。
-    const plans = planHistoryEntries(manifest, { includeTest, takeQuakes, before })
+    const plans = planHistoryEntries(manifest, { includeTest, before })
     // **控えで読み切れる日は本体を落とさない。** 目録もパース結果も上限と期限を持たないので、
     // 本体だけが先に落ちる組み合わせが普通に起きる（→ `ManifestPlan`）。
     if (files === undefined && planNeedsBody(plans)) {
@@ -1982,6 +2029,60 @@ export async function fetchDmdataQuakeHistory(
       if (!include) continue
 
       try {
+        if (plan.want === 'binary') {
+          // **二進電文（推計震度分布図）。** 断片を結合してから読む（本編の再生と同じ処理）。
+          // 結合できたら、**その電文の断片すべての id に**解析結果を控える —— 次に同じ日を
+          // 読むとき、どの断片から見ても本体を要らなくするため（→ `planHistoryEntries`）。
+          const cached = parsedTelegramCache.get(entry.id)
+          if (cached?.kind === 'extra') { keepExtra(cached.key, cached.payload, entryTime.getTime()); continue }
+          if (files === undefined) {
+            warnBodyNotDownloaded(entry, item.date, '二進電文の読み取り')
+            planMismatch++
+            skipCounter.add(item.date)
+            continue
+          }
+          const fkey = fragmentKey(entry.head.type, 'RJTD', entry.head.time)
+          const binName = findBodyFileName(entry, files)
+          const binBytes = binName ? files.get(binName) : undefined
+          if (!binBytes) {
+            log.warn(`[replay] 履歴用の二進電文の本体が見つからずスキップ id=${entry.id} type=${entry.head.type}（${bodyMissReason(entry)}）`)
+            // 電文ごとに 1 度だけ数える（分割は最大 24 断片あり、部分破損では複数が同時に欠ける）
+            if (!countedBinaryKeys.has(fkey)) {
+              countedBinaryKeys.add(fkey)
+              skipCounter.add(item.date)
+            }
+            continue
+          }
+          const ids = fragmentEntryIds.get(fkey) ?? []
+          ids.push(entry.id)
+          fragmentEntryIds.set(fkey, ids)
+          const joined = bufrFragments.add(fkey, entry.head.designation, binBytes, Date.now())
+          // まだ揃っていない断片。**取りこぼしには数えない**（残りは後続のエントリにある）。
+          if (!joined) continue
+          fragmentEntryIds.delete(fkey)
+          const binPayload = buildBinaryPayload(entry.head.type, joined, entry.id, entry.head.time)
+          if (!binPayload) {
+            log.warn(`[replay] 履歴用の二進電文の読み取りに失敗しスキップ id=${entry.id} type=${entry.head.type}`)
+            skipCounter.add(item.date)
+            continue
+          }
+          // **試験報は取りこぼしに数えない**（正常な配信。非 XML 電文は `head.test` で弾けない
+          // ため本文で判定する → `isFilteredBinaryTelegram`）。捨てたことは本編と同じく残す。
+          if (isFilteredBinaryTelegram(binPayload, includeTest)) {
+            log.info(`[replay] 履歴用の二進電文の試験報を取り込みません id=${entry.id} type=${entry.head.type}`)
+            continue
+          }
+          const key = historyExtraKey(binPayload)
+          if (key === null) {
+            // `historyExtraKey` へ種別を書き忘れた形。黙って捨てると分布だけ静かに消える。
+            log.error(`[replay] 履歴用の二進電文に鍵を作れません type=${entry.head.type}（historyExtraKey を確かめること）`)
+            skipCounter.add(item.date)
+            continue
+          }
+          for (const id of ids) parsedTelegramCache.set(id, { kind: 'extra', key, payload: binPayload })
+          keepExtra(key, binPayload, entryTime.getTime())
+          continue
+        }
         // どの型として読むかは計画が種別から決めている（`planHistoryEntries`）。
         // **本体が無いのに要求された場合も `null`** が返る（`warnBodyNotDownloaded` が鳴る）。
         // その 1 件は事前判定のずれとして別に数える。
@@ -1989,15 +2090,11 @@ export async function fetchDmdataQuakeHistory(
         const parsed = parseHistoryTelegram(entry, files, dec, plan.want, item.date)
         if (!parsed) { skipCounter.add(item.date); continue }
         switch (parsed.kind) {
-          case 'extra': {
+          case 'extra':
             // 帯と長周期は「種別ごとに最新 1 通」だけを残す（画面に出るのは 1 つ・長周期は
             // 地震ごと）。古い報まで流すと、初期状態が入れた新しい値を上書きしうる。
-            const prev = extraLatest.get(parsed.key)
-            if (!prev || entryTime.getTime() > prev.timeMs) {
-              extraLatest.set(parsed.key, { payload: parsed.payload, timeMs: entryTime.getTime() })
-            }
+            keepExtra(parsed.key, parsed.payload, entryTime.getTime())
             break
-          }
           case 'tsunami':
             tsunamis.push(parsed.tsunami)
             break
@@ -2033,9 +2130,8 @@ export async function fetchDmdataQuakeHistory(
   // さらに古い日が成功していると、その穴を跨いでカーソルが進み、窓が重ならない設計と
   // 噛み合って**失敗した日が二度と要求されなくなる**。
   //
-  // 止まる理由は 4 つとも同じ扱いでよい（どれも「その日から先はまだ読んでいない」）。
+  // 止まる理由は 3 つとも同じ扱いでよい（どれも「その日から先はまだ読んでいない」）。
   //   - その日の取得に失敗した（`markDayLoaded` を呼ばずに `continue` した）
-  //   - 件数の安全弁に達して地震を取り込まなかった（`takeQuakes` が偽）
   //   - `shouldStop` で打ち切った（そもそもループに入っていない）
   //   - **どの担当にもならなかった**（`uncovered`。下記）
   //
@@ -2114,19 +2210,25 @@ export async function fetchDmdataQuakeHistory(
   } else if (quakes.length === 0) {
     log.warn(`[replay] 履歴用に ${usedDays} 日ぶんを読んだが地震電文は 0 件（${before.toISOString()} 以前）`)
   }
-  // 帯と長周期は古い順に流す（`useReplayController` が初期状態の後に注入する）。
+  // **揃わなかった二進電文の断片を取りこぼしとして数える**（本編の再生と同じ理由。この入れ物は
+  // 取得 1 回きりなので、ここで見ないと残った断片は黙って消え、その地震だけ分布が出ない）。
+  for (const key of bufrFragments.unresolvedKeys) {
+    if (countedBinaryKeys.has(key)) continue
+    // **鍵からは日を復元できない**ので不明扱い（鍵は種別と発表時刻から作った文字列）。
+    log.warn(`[replay] 履歴用の二進電文の断片が揃いませんでした（分布は出ません）key=${key}`)
+    skipCounter.add(UNKNOWN_SKIP_DAY)
+  }
+
+  // 帯と長周期は古い順に流す（`useReplayController` が初期状態の材料へ混ぜる）。
   const extras: ReplayEntry[] = [...extraLatest.values()]
     .sort((a, b) => a.timeMs - b.timeMs)
     .map((x) => ({ payload: x.payload, replayTime: new Date(x.timeMs), silent: true }))
-  // 走査日数は**常に取得元の全日数**（＝`sources.length`。帯と長周期のために打ち切らない）。
-  // 地震が何日で目標に達したかとは別の数字なので、混ぜて読まないこと。
-  //
   // **打ち切ったときは出さない。** 上で打ち切りを記録済みで、こちらは「復元した」と名乗るため
   // 0 件の行が並ぶと復元できなかったのか静かだったのか読めない。
   if (!stoppedEarly) {
     log.info(
       `[replay] 地震カードの履歴を復元 電文=${quakes.length} イベント=${eventIds.size}`
-      + ` 走査日数=${usedDays}（うち当日経路=${liveDays.length}）帯と長周期=${extras.length}`,
+      + ` 走査日数=${usedDays}（うち当日経路=${liveDays.length}）津波=${tsunamis.length} 帯と長周期=${extras.length}`,
     )
   }
   // **「さらに古い方に在庫がありそうか」。**
@@ -2139,11 +2241,6 @@ export async function fetchDmdataQuakeHistory(
   // ほうが安全側 —— 在庫が本当に尽きていれば、窓が保存開始を越えた時点で止まる。
   //
   // **`sources` で数えないこと**（当日経路の日を含むので、在庫の端でも真を返し続ける）。
-  //
-  // **目標件数に達したかどうかは見ない。** 達していても在庫は残っているので、呼び出し側は
-  // カーソル（`oldestLoadedDay`）を進めて次の窓を読める。かつては呼び出し側が遡り幅の上限に
-  // 達したかどうかで判定していて、**件数で打ち切った回も上限に達したと見なして押せなく
-  // なっていた**（読み残した日を抱えたままボタンが死ぬ）。
   //
   // 打ち切った場合は「もう要らない」ので真にしない（`stoppedEarly`）。
   const windowReachesInventory = [...wantedDays].some(d => d >= ARCHIVE_START_DAY)

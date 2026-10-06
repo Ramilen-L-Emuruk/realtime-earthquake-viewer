@@ -314,3 +314,43 @@ describe('BufrFragmentStore', () => {
     expect([...out!.slice(20, 23)]).toEqual([...tail(10, 2).slice(0, 3)])
   })
 })
+
+// 途中で捨てた電文も「最後まで読めなかった」として集計へ渡す。捨てると入れ物から消えるので、
+// 揃わずに残っている電文（`pendingKeys`）だけを見ると集計から漏れ、警告のログにしか残らない。
+describe('unresolvedKeys', () => {
+  // 正: 知らない符号で捨てた電文も含む。
+  it('知らない符号で捨てた電文を含む', () => {
+    const s = new BufrFragmentStore()
+    s.add('k1', 'ZZZ', tail(10, 4), 0)
+    expect(s.pendingKeys).toEqual([])
+    expect(s.unresolvedKeys).toEqual(['k1'])
+  })
+
+  // 正: 抱えすぎで追い出した電文も含む。
+  it('上限で追い出した電文を含む', () => {
+    const s = new BufrFragmentStore({ maxGroups: 1 })
+    s.add('k1', null, head(100, 10), 0)
+    s.add('k2', null, head(100, 10), 1)
+    expect(s.unresolvedKeys.sort()).toEqual(['k1', 'k2'])
+  })
+
+  // 対照: 揃って結合できた電文は含まない（捨てた後に同じ電文が揃い直しても外す）。
+  it('結合できた電文は含まない', () => {
+    const s = new BufrFragmentStore()
+    s.add('k1', 'ZZZ', tail(10, 4), 0)
+    expect(s.add('k1', null, head(10, 10), 1)).not.toBeNull()
+    expect(s.unresolvedKeys).toEqual([])
+  })
+})
+
+// 安全弁: 捨てた鍵の記録は上限で古い順に落ちる（ライブの入れ物は切断まで使い続けるため）。
+describe('捨てた鍵の上限', () => {
+  it('上限を超えたら古いものから落とす', () => {
+    const s = new BufrFragmentStore()
+    for (let i = 0; i < 70; i++) s.add(`k${i}`, 'ZZZ', tail(10, 4), 0)
+    const keys = s.unresolvedKeys
+    expect(keys).toHaveLength(64)
+    expect(keys).not.toContain('k0')
+    expect(keys).toContain('k69')
+  })
+})

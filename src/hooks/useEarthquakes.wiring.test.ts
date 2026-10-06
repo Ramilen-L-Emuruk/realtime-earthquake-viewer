@@ -56,7 +56,7 @@ vi.mock('../utils/logger', async (importOriginal) => ({
 vi.mock('../utils/stationCoords', () => ({
   loadStationCoords: vi.fn(() => Promise.resolve({})),
   onStationCoordsLoaded: vi.fn(() => () => {}),
-  buildAreaPrefIndex: vi.fn(() => new Map()),
+  areaPrefIndexOf: vi.fn(() => new Map()),
   // 点の役割の判定へ渡す索引（→ quakePoints.ts の isAreaPoint）。この配線テストは区域名の
   // 衝突を見ないので、座標テーブル未読み込みと同じ null を返す。
   getAreaPrefIndexCache: vi.fn(() => null),
@@ -1387,31 +1387,44 @@ describe('推計震度分布図の結線', () => {
     const h = setup({ onLiveEvent: (e) => { events.push(e) } })
     await h.flush()
     push(h, KUMA)
-    expect(h.current.estimatedIntensity?.arrivalTime).toBe(KUMA.arrivalTime)
+    expect(h.current.estimatedIntensities.map(e => e.arrivalTime)).toEqual([KUMA.arrivalTime])
     expect(events.filter(e => (e.kind as string) === 'estimatedIntensity')).toHaveLength(1)
   })
 
-  // 正: 別の地震の新しい分布へは入れ替える（アプリが持つのは最新の 1 通だけ）。
-  it('別の地震の新しい分布へ入れ替える', async () => {
+  // 正: **別の地震の分布は置き換えずに足す**（地震ごとに 1 通持つ）。前の地震のカードは
+  // 自分の分布を出し続ける。
+  it('別の地震の分布は足して両方持つ', async () => {
     const events: LiveEvent[] = []
     const h = setup({ onLiveEvent: (e) => { events.push(e) } })
     await h.flush()
     push(h, KUMA)
     push(h, LATER)
-    expect(h.current.estimatedIntensity?.arrivalTime).toBe(LATER.arrivalTime)
+    expect(h.current.estimatedIntensities.map(e => e.arrivalTime)).toEqual([KUMA.arrivalTime, LATER.arrivalTime])
     expect(events.filter(e => (e.kind as string) === 'estimatedIntensity')).toHaveLength(2)
   })
 
-  // 対照: **発表が古い報では退行しない。別の地震のものでも採らない。**
-  // 到着順は発表順と一致しない（分割の結合が遅れる・当日経路とライブが前後する）ので、
-  // 震度5弱以上が短時間に続く場面で、遅れて届いた古い分布が新しい分布を押しのけうる。
-  it('発表が古い報では退行しない', async () => {
+  // 正: 遅れて届いた**別の地震の**分布も足す。新しい地震の分布は押しのけられない
+  // （最新の 1 通しか持たなかった頃は、押しのけを防ぐために古い地震の分布を捨てていた）。
+  it('遅れて届いた別の地震の分布も、新しい地震の分布を残したまま足す', async () => {
     const events: LiveEvent[] = []
     const h = setup({ onLiveEvent: (e) => { events.push(e) } })
     await h.flush()
     push(h, LATER)
     push(h, KUMA)
-    expect(h.current.estimatedIntensity?.arrivalTime).toBe(LATER.arrivalTime)
+    expect(h.current.estimatedIntensities.map(e => e.arrivalTime)).toEqual([LATER.arrivalTime, KUMA.arrivalTime])
+    expect(events.filter(e => (e.kind as string) === 'estimatedIntensity')).toHaveLength(2)
+  })
+
+  // 対照: **同じ地震の、発表が古い報では退行しない。** 到着順は発表順と一致しない
+  // （分割の結合が遅れる・当日経路とライブが前後する・履歴の補完が後から届く）。
+  it('同じ地震の発表が古い報では退行しない', async () => {
+    const events: LiveEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+    await h.flush()
+    push(h, KUMA_FOLLOW)
+    push(h, KUMA)
+    expect(h.current.estimatedIntensities).toHaveLength(1)
+    expect(h.current.estimatedIntensities[0]?.time).toBe(KUMA_FOLLOW.time)
     expect(events.filter(e => (e.kind as string) === 'estimatedIntensity')).toHaveLength(1)
   })
 
@@ -1433,10 +1446,58 @@ describe('推計震度分布図の結線', () => {
     await h.flush()
     push(h, KUMA)
     act(() => { h.current.resetState() })
-    expect(h.current.estimatedIntensity).toBeNull()
+    expect(h.current.estimatedIntensities).toEqual([])
 
     push(h, KUMA)
-    expect(h.current.estimatedIntensity?.arrivalTime).toBe(KUMA.arrivalTime)
+    expect(h.current.estimatedIntensities.map(e => e.arrivalTime)).toEqual([KUMA.arrivalTime])
+  })
+
+  // 正: **起動時の履歴（7 日）に入っていた分布も持つ**。過去の地震のカードにも分布が付く。
+  // 音・読み上げの経路へは流さない（いま届いたものではない）。
+  it('起動時の履歴に入っていた分布を、鳴らさずに地震ごとに持つ', async () => {
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValueOnce(history({
+      extras: [extra({ kind: 'estimatedIntensity', data: KUMA }), extra({ kind: 'estimatedIntensity', data: LATER })],
+    }))
+    const events: LiveEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+    await h.flush()
+
+    expect(h.current.estimatedIntensities.map(e => e.arrivalTime)).toEqual([KUMA.arrivalTime, LATER.arrivalTime])
+    expect(events.filter(e => (e.kind as string) === 'estimatedIntensity')).toHaveLength(0)
+  })
+
+  // 安全弁: 履歴から黙って取り込んだ地震の続報がライブで届いたら、**「受信しました」側で読む**。
+  // 分布を持ってはいるが、まだ伝えていない —— 「更新されました」と読むと、聞き手は
+  // 前の報を聞き逃したと思う（判定は読み上げの台帳。→ `isNewEstimatedIntensity`）。
+  it('履歴から黙って取り込んだ地震の続報は、初報として読む', async () => {
+    vi.mocked(fetchDmdataQuakeHistory).mockResolvedValueOnce(history({
+      extras: [extra({ kind: 'estimatedIntensity', data: KUMA })],
+    }))
+    const events: LiveEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+    await h.flush()
+
+    push(h, KUMA_FOLLOW)
+
+    expect(isNewFlags(events)).toEqual([true])
+    expect(h.current.estimatedIntensities).toHaveLength(1)
+    expect(h.current.estimatedIntensities[0]?.time).toBe(KUMA_FOLLOW.time)
+  })
+
+  // 正: **「もっと見る」で遡った分の分布も持つ**（押して増えたカードに分布が付く）。
+  // 対照を兼ねる: 既に持っている新しい地震の分布は押しのけない。
+  it('「もっと見る」で遡った分布も、今ある分布を残したまま足す', async () => {
+    vi.mocked(fetchDmdataQuakeHistory)
+      .mockResolvedValueOnce(history({ extras: [extra({ kind: 'estimatedIntensity', data: LATER })], hasMore: true, oldestLoadedDay: '2026-07-28' }))
+      .mockResolvedValueOnce(history({ extras: [extra({ kind: 'estimatedIntensity', data: KUMA })] }))
+    const events: LiveEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+    await h.flush()
+
+    await act(async () => { await h.current.loadMoreEarthquakes() })
+
+    expect(h.current.estimatedIntensities.map(e => e.arrivalTime)).toEqual([LATER.arrivalTime, KUMA.arrivalTime])
+    expect(events.filter(e => (e.kind as string) === 'estimatedIntensity')).toHaveLength(0)
   })
 
   // 正: **別の地震の分布を挟んでも、同じ地震の続報は続報として流す。**
@@ -1622,9 +1683,9 @@ describe('DMDSS 版: 「もっと見る」で遡れる範囲', () => {
     }
   }
 
-  /** 呼ばれたときの `maxDays`（第 4 引数）を順に返す。 */
+  /** 呼ばれたときの `maxDays`（第 3 引数）を順に返す。 */
   function requestedDays(): number[] {
-    return vi.mocked(fetchDmdataQuakeHistory).mock.calls.map(c => c[3])
+    return vi.mocked(fetchDmdataQuakeHistory).mock.calls.map(c => c[2])
   }
 
   /** 呼ばれたときの窓の上端（第 2 引数＝カーソル）を ISO で順に返す。 */
@@ -2853,10 +2914,10 @@ describe('テストボタンの待ちの後始末', () => {
     await h.flush()
 
     await act(async () => { await h.current.simulateEstimatedIntensity() })
-    expect(h.current.estimatedIntensity).toBeNull()
+    expect(h.current.estimatedIntensities).toHaveLength(0)
 
     act(() => { vi.advanceTimersByTime(5_000) })
-    expect(h.current.estimatedIntensity).not.toBeNull()
+    expect(h.current.estimatedIntensities).toHaveLength(1)
   })
 
   // 正: 続報まで流し、**初報と続報で「初めて受信したか」の印が入れ替わる**こと。
@@ -2939,7 +3000,7 @@ describe('テストボタンの待ちの後始末', () => {
     act(() => { h.current.resetState() })
 
     act(() => { vi.advanceTimersByTime(10_000) })
-    expect(h.current.estimatedIntensity).toBeNull()
+    expect(h.current.estimatedIntensities).toHaveLength(0)
   })
 
   // 安全弁: アンマウントでも落ちること。**リセットだけ配線して cleanup を忘れる**のが

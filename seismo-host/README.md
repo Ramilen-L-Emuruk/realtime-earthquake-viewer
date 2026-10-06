@@ -266,15 +266,16 @@ scp -r seismo-host/src <配り先>:<置き場所>/seismo-host/
 
 | ファイル | 読む部分 |
 |---|---|
-| `src/utils/knet/realtimeIntensity.ts`・`src/utils/knet/intensityCommon.ts` | 計測震度相当 |
+| `src/utils/knet/realtimeIntensity.ts`・`src/utils/knet/intensityCommon.ts`・`src/utils/knet/seismicIntensity.ts`・`src/utils/knet/fft.ts` | 計測震度相当・地震 1 件ぶんの震度（`seismicIntensity.ts` は `fft.ts` を読む） |
 | `src/utils/geo.ts`・`src/utils/travelTime.ts`・`src/data/jma2001TravelTime.ts` | 地震検出（地震情報との照合） |
 
 ```bash
-scp src/utils/knet/realtimeIntensity.ts src/utils/knet/intensityCommon.ts <配り先>:<置き場所>/src/utils/knet/
+scp src/utils/knet/realtimeIntensity.ts src/utils/knet/intensityCommon.ts src/utils/knet/seismicIntensity.ts src/utils/knet/fft.ts <配り先>:<置き場所>/src/utils/knet/
 scp src/utils/geo.ts src/utils/travelTime.ts <配り先>:<置き場所>/src/utils/
 scp src/data/jma2001TravelTime.ts <配り先>:<置き場所>/src/data/
 ```
 
+読み込み先が増えたかは `grep -rhn "from '../../../src" seismo-host/src seismo-host/main.ts` で数え直す。
 `package.json` の依存が変わったときは配り先で `npm install` も要る。
 
 **Windows の配り先へ ssh で起動するときは `cmd.exe /c '…'` と包む** ——
@@ -809,6 +810,7 @@ SEISMO_HTTP_PORT=50506 SEISMO_HTTP_ADDRESS=0.0.0.0 npm run seismo-host
 | `GET /stream` | 計測震度を押し出す（SSE）。`?wave=` で波形も付く（下記） | **地震ビューアー**・**管理コンソール** |
 | `GET /waves` | 過ぎた合成波形を時刻の範囲で返す（下記） | **地震ビューアー** |
 | `GET /events` | 検出した揺れの記録を時刻の範囲で返す（→「地震検出」） | **地震ビューアー** |
+| `GET /quake-intensity` | 地震 1 件ぶんの区間の最大リアルタイム震度と計測震度を返す（下記） | **地震ビューアー** |
 | `GET /healthz` | `{"ok":true}` だけを返す。**中身を組み立てない**（ホストの処理が回っているかの確かめ。[`firmware/README.md`](../firmware/README.md)「届いたかをホストに訊く」） | **基板** |
 | `/api/*` | 設定・履歴・管理操作（要認証） | **管理コンソール** |
 
@@ -930,6 +932,33 @@ GET /waves?station=<観測点ID>&from=<unix ミリ秒>&to=<unix ミリ秒>[&colu
 捨てた）は別に数える —— 前者はディスクの話、後者は合成の側の話で、手当てが違う。
 流し口が壊れた回数（`writeErrors`）は**開き直しの間隔ごとにしか増えない**ので、
 失われた量は `lostRecords` のほうで見ること。
+
+### 地震の区間の震度を返す（`GET /quake-intensity`）
+
+地震カードに出す 2 つの震度を、`GET /waves` と同じ合成波形の控えから出す
+（計算は `src/receiver/quakeIntensity.ts`、式はアプリと共有の `src/utils/knet/`）。
+
+```
+GET /quake-intensity?station=<観測点ID>&from=<unix ミリ秒>&to=<unix ミリ秒>
+```
+
+| 返す値 | |
+|---|---|
+| `maxRealtime`・`maxRealtimeAtMs` | 区間の中で出た最大のリアルタイム震度（押し出しと同じ方式・1 秒刻み）と、その時刻 |
+| `realtimeSeries` | 区間の中の 1 秒ごとのリアルタイム震度（`{ atMs, value }` の並び・時刻順）。最大はここから取っている。**途切れた所は補わない**（時刻が飛ぶ）。値が出なかった刻みは `value: null`。地震ビューアーの詳細の窓が「震度の推移」に使う |
+| `measured` | 計測震度（気象庁の手順を区間の波形全体へ 1 回当てた値）。出せなければ `null` |
+| `measuredUnavailable` | `measured` が `null` の理由。`no-data`（記録が無い）・`gap`（区間の中で途切れている）・`not-covered`（区間の頭か終わりまで記録が無い）・`no-value`（値にならない） |
+| `gapCount`・`invalidChunkCount` | 区間の中の途切れの数と、値が壊れていて捨てたまとまりの数 |
+| `filesMissing` ほか | 読めなかった量（`GET /waves` と同じ欄） |
+
+- **範囲は 10 分まで**（`GET /waves` の列と同じ上限・同じ守り）。読むのは区間の **60 秒前**から
+  —— リアルタイム震度は直近 60 秒で判定するので、そこから通せば区間の頭も窓が埋まった値になる
+- **当時押し出した値と同じになるとは限らない。** 押し出しの計算器は区間（`segmentId`）の頭から通し
+  続けたもので、刻みの位置と直流の推定がずれる（合成波形は直流を引いてあるので、ずれは小さい）
+- **途切れた波形を繋がない。** 時刻が飛んだところで計算器を作り直し、**区間の中に 1 か所でも途切れが
+  あれば計測震度は出さない** —— 欠けた波形から出した値は小さく出るだけで、見た目では気づけない
+- **計算は 10 分ぶんで 0.1 秒ほど**（2026-10-04 の実測）。受信のイベントループを止める長さではない
+  （FFT を自前の実装にしたのはこのため。`fft-js` では 1 秒を超えていた）
 
 ### `/api/*` の認証
 
@@ -1742,7 +1771,7 @@ GET /events?from=<unix ミリ秒>&to=<unix ミリ秒>[&station=<観測点ID>]
 for day in 2026-09-28 2026-09-29 2026-09-30 2026-10-01 2026-10-02 2026-10-03; do
   npx tsx seismo-host/bench/build-station-cache.ts --day "$day" --station <観測点ID> --raw <生データの置き場所> --out <控えの置き場所>
 done
-# 控えを検出器へ流し、地震の一覧と突き合わせる
+# 控えを検出器へ流し、地震の一覧と突き合わせる（観測点の位置は省けない）
 npx tsx seismo-host/bench/bench-detect.ts --days 2026-09-28,2026-09-29,2026-09-30,2026-10-01,2026-10-02,2026-10-03 --station <観測点ID> --lat <観測点の緯度> --lon <観測点の経度> --labels <地震の一覧.json> --cache <控えの置き場所> --radius 200
 ```
 

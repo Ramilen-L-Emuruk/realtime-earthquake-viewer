@@ -13,9 +13,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { filterPreWindowEvents } from '../services/dmdataReplay'
 import { historyExtraKey } from '../services/dmdataTelegramPayload'
-import { MAX_HISTORY_RETAINED } from './useEarthquakes'
 import type { ReplayEntry, ReplayFetchResult, QuakeHistoryResult } from '../types/replay'
-import type { JMAQuake } from '../types/earthquake'
+import type { JMAQuake, JMATsunami } from '../types/earthquake'
 import { serverNow, serverDate } from '../utils/clock'
 import { log } from '../utils/logger'
 import { recordReplayEvent } from '../utils/replayEventLog'
@@ -73,21 +72,88 @@ export function replayTargetProblem(targetDate: Date, nowMs: number): string | n
 }
 
 /**
- * 地震カードの履歴として集めるイベント数。
- *
- * ライブ接続時の初回履歴と同じ枚数にする。初期状態の 24 時間だけでカードを作ると、地震の
- * 少ない日は一覧が数枚しか並ばず、ライブと見え方が大きく変わる（実測では 1 日あたり 4〜21 件）。
- *
- * 値を書かずライブ側から取るのは、同じ意図の数を 2 箇所に置かないため。コメントで結ぶだけだと、
- * 片方を動かしたときに型検査もテストも黙って通る。
+ * 津波の報 1 通を指す鍵。**`id` だけでは足りない** —— `id` は `EventID` と報番号（`Serial`）から
+ * 作るが、報番号は電文の種別（津波警報・注意報・予報／津波情報／沖合の津波観測に関する情報）ごとに
+ * 別々に数えられるので、同じ津波の別種別の報が同じ `id` になる。発表時刻も足りない（警報と
+ * 津波情報の第 1 報は同時に出る）ので、電文が名乗る情報名（`Head/Title`）まで含める。
  */
-export const QUAKE_HISTORY_EVENTS = MAX_HISTORY_RETAINED
+function tsunamiReportKey(tsunami: JMATsunami): string {
+  return `${tsunami.id}|${tsunami.time}|${tsunami.infoName ?? ''}`
+}
+
 /**
- * 履歴のために遡ってよい日数の上限（DMDSS 版のアーカイブ経路のみ）。
+ * 初期状態の材料を 1 本にまとめる。**24 時間の電文に、履歴（DMDSS 版は 7 日）の津波・帯・
+ * 長周期のうち 24 時間に無いものを足す**（2026-10-05 ユーザー承認）。
  *
- * 上の件数に届かなくてもここで打ち切る。地震活動が極端に少ない期間で延々と過去を掘らないため。
+ * 足す理由は種別ごとに違う。
+ * - **津波** —— 24 時間より前に発表された津波が、まだ有効なまま続いていることがある。
+ *   有効かどうかは報 1 通では決まらず、その津波の報が揃って初めて判定できる
+ *   （`resolveTsunamiPreWindowStates`）ので、境目をまたいだ報を全部入れる
+ * - **帯・長周期** —— 7 日間画面に出続ける（種別の列挙は `HISTORY_EXTRA_TYPES`）
+ *
+ * **1 本にするのは、画面の判定と記憶の復元に同じものを渡すため**
+ * （`filterPreWindowEvents` と `restorePreWindowTracking`）。後から別経路で足すと記憶の
+ * 復元を通らず、たとえば津波は「直前の等級」が空のまま始まって、窓の中の最初の続報を
+ * 新たな発表として読む。
+ *
+ * **緊急地震速報と地震は足さない。** 緊急地震速報は数分で失効するので 24 時間で足りる。
+ * 地震は履歴をカードの一覧へ直接戻している（`restoreQuakeHistory`）。
+ *
+ * **既にあるものは足さない。** 津波は報の鍵（`tsunamiReportKey`）で、帯と長周期は種別ごとの鍵
+ * （`historyExtraKey`）で見る。履歴は帯と長周期を鍵ごとに最新 1 通へ畳んであるので、
+ * 24 時間側にある鍵を足すと、古い報が新しい値を上書きしうる。**本編も「既にある」側に
+ * 数える** —— 開始時刻ちょうどの電文は履歴（`<= T`）と本編（`>= T`）の両方に入る。
+ *
+ * 並びは発表時刻の昇順（同時刻は元の順を保つ）。津波は報を跨いで状態が積み上がるので、
+ * 古い報から流さないと続報の引き継ぎが逆になる。
  */
-export const QUAKE_HISTORY_MAX_DAYS = 7
+export function assemblePreWindowMaterial(
+  pre: ReplayEntry[],
+  history: Pick<QuakeHistoryResult, 'tsunamis' | 'extras'> | null,
+  normal: ReplayEntry[],
+): ReplayEntry[] {
+  if (history === null) return pre
+  const tsunamiKeys = new Set<string>()
+  const extraKeys = new Set<string>()
+  for (const e of [...pre, ...normal]) {
+    if (e.payload.kind === 'event' && e.payload.event.kind === 'tsunami') tsunamiKeys.add(tsunamiReportKey(e.payload.event as JMATsunami))
+    const key = historyExtraKey(e.payload)
+    if (key !== null) extraKeys.add(key)
+  }
+  const added: ReplayEntry[] = []
+  for (const tsunami of history.tsunamis) {
+    const reportKey = tsunamiReportKey(tsunami)
+    if (tsunamiKeys.has(reportKey)) continue
+    const timeMs = Date.parse(tsunami.time)
+    // 並べる位置が決まらない報は足さない。黙って落とすと、その津波が初期状態に出ない理由が
+    // どこにも残らないので記録する（パーサーが時刻を検分しているので、通常は来ない）。
+    if (!Number.isFinite(timeMs)) {
+      log.warn(`[replay] 発表時刻が読めない津波の報を初期状態の材料に足しません: id=${tsunami.id}`)
+      continue
+    }
+    tsunamiKeys.add(reportKey)
+    added.push({ payload: { kind: 'event', event: tsunami }, replayTime: new Date(timeMs) })
+  }
+  for (const e of history.extras) {
+    const key = historyExtraKey(e.payload)
+    if (key === null || extraKeys.has(key)) continue
+    added.push(e)
+  }
+  // **0 件でも記録する。** 「足すものが無かった」と「絞り込みが壊れて全部落ちた」は、
+  // 画面からも挙動からも区別が付かない（帯や津波が出ないのは発表が無いのと同じに見える）。
+  if (added.length === 0) {
+    log.info(`[replay] 初期状態の材料に足す 24 時間より前の電文はなし（履歴が持っていたのは津波 ${history.tsunamis.length} 通・帯と長周期 ${history.extras.length} 件）`)
+    return pre
+  }
+  // **種別まで出す。** 件数だけだと「何が足されたのか」が分からず、復元できていないときの
+  // 切り分けに使えない。
+  const kinds = [...new Set(added.map(e => e.payload.kind === 'event' ? e.payload.event.kind : e.payload.kind))].join('・')
+  log.info(`[replay] 初期状態の材料に 24 時間より前の ${added.length} 件を足す（${kinds}）`)
+  return [...added, ...pre]
+    .map((entry, index) => ({ entry, index }))
+    .sort((a, b) => a.entry.replayTime.getTime() - b.entry.replayTime.getTime() || a.index - b.index)
+    .map(x => x.entry)
+}
 
 export interface ReplayControllerDeps {
   /**
@@ -96,12 +162,14 @@ export interface ReplayControllerDeps {
    */
   fetchEvents: (fromTime: Date, toTime: Date) => Promise<ReplayFetchResult>
   /**
-   * 地震カードの履歴を取得する（再生開始時刻より前に発表された電文）。
+   * 再生開始時刻より前の履歴を取得する。使い道は 2 つ。
+   * - 地震カードの一覧を、ライブ接続時と同じ厚みにする（`restoreQuakeHistory`）
+   * - 初期状態の材料に、24 時間より前の津波・帯・長周期を足す（`assemblePreWindowMaterial`）
    *
-   * 再生される電文の取得（`fetchEvents`）とは目的が別で、こちらはカードの一覧を
-   * ライブ接続時と同じ厚みにするためだけに使う。取得元はバリアントで差し替える。
+   * **遡る範囲はバリアントが決める**（ライブ接続時の初回履歴と揃える。DMDSS 版は 7 日、
+   * 標準版とローカル履歴アーカイブは件数）。取得元はバリアントで差し替える。
    */
-  fetchQuakeHistory: (before: Date, targetEvents: number, maxDays: number) => Promise<QuakeHistoryResult>
+  fetchQuakeHistory: (before: Date) => Promise<QuakeHistoryResult>
   /** 取得した履歴をカード一覧へ反映する。 */
   restoreQuakeHistory: (quakes: JMAQuake[]) => void
   /** 取得キャッシュを破棄する（開始・停止のたびに呼ぶ）。 */
@@ -296,44 +364,31 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
     recordReplayEvent({ type: 'control', action: 'start', target: targetDate.toISOString(), offset })
     recordReplayEvent({ type: 'fetch', phase: 'start', target: 'main', message: null })
 
-    // 地震カードの履歴。本編・初期状態とは切り離して走らせる。
-    // - 失敗しても再生は成立する（一覧が薄くなるだけ）ので、Promise.all に混ぜて
-    //   リプレイ全体を中止させない
-    // - await しないのは、履歴が揃うまで再生開始を待たせないため。復元は後から届いても
-    //   既存カードへ統合される（`restoreQuakeHistory` 参照）
-    const historyPromise = d.fetchQuakeHistory(targetDate, QUAKE_HISTORY_EVENTS, QUAKE_HISTORY_MAX_DAYS)
-    void historyPromise
-      .then((result) => {
-        if (!guard.isCurrent(session)) {
-          log.info('[replay] 履歴の取得完了時に別セッションへ切り替わっていたため結果を破棄')
-          return
-        }
-        depsRef.current.restoreQuakeHistory(result.quakes)
-        // 取りこぼしは本編・初期状態と同じ枠で申告する。履歴は初期状態と日付範囲が重なるため、
-        // 同じ電文の破損を二重に数えることがある（アーカイブ単位は URL の集合で重複が除かれる）。
-        // 少なく見せて「静かな時間帯だった」と誤読されるより、多めに申告する側へ倒す。
-        setLoss(prev => addLoss(prev, result))
-      })
-      .catch((e) => {
-        log.error('[replay] 地震カードの履歴取得に失敗', e)
-        if (!guard.isCurrent(session)) {
-          log.info('[replay] 履歴の取得失敗時に別セッションへ切り替わっていたためエラー表示を抑制')
-          return
-        }
-        setHistoryError(`地震カードの履歴を復元できませんでした（再生開始より前の地震が一覧に出ません。再生は継続中）: ${msgOf(e)}`)
-      })
+    // 履歴（地震カードの一覧と、初期状態の材料に足す 24 時間より前の電文）。
+    //
+    // **失敗しても再生は止めない。** 一覧が薄くなり、初期状態が 24 時間だけになるだけなので、
+    // 失敗は値として受け取り、本編・初期状態の `Promise.all` を中止させない。
+    //
+    // **成功したときは揃うまで待つ**（2026-10-05 ユーザー承認）。初期状態の材料に混ぜるには、
+    // 24 時間の電文と同時に手元に無いといけない（理由は `assemblePreWindowMaterial`）。
+    // 待つ長さは能登半島地震の 7 日間で初回 5.9 秒、2 度目以降は控えが効いて 0.2 秒（実測）。
+    const historySettled = d.fetchQuakeHistory(targetDate).then(
+      (result) => ({ ok: true as const, result }),
+      (error: unknown) => ({ ok: false as const, error }),
+    )
 
     try {
       // 本編と初期状態を同時に取る。どちらかが失敗したらリプレイ全体を中止する
       // （初期状態が欠けたまま再生すると、地震が起きていない状態から始まって
       //   実際の状況と食い違うため）。どちらで失敗したかはメッセージに含める。
-      const [normal, pre] = await Promise.all([
+      const [normal, pre, history] = await Promise.all([
         d.fetchEvents(targetDate, toTime).catch((e) => {
           throw new Error(`本編（${fmt(targetDate)} 以降）の取得に失敗: ${msgOf(e)}`)
         }),
         d.fetchEvents(preFrom, targetDate).catch((e) => {
           throw new Error(`初期状態（過去 24 時間）の取得に失敗: ${msgOf(e)}`)
         }),
+        historySettled,
       ])
 
       // 取得中に停止・別日での再開が行われていたら、この結果は捨てる（以降の
@@ -344,17 +399,37 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
         return
       }
 
+      if (history.ok) {
+        d.restoreQuakeHistory(history.result.quakes)
+      } else {
+        log.error('[replay] 履歴の取得に失敗（初期状態は 24 時間ぶんで作る）', history.error)
+        setHistoryError(`地震カードの履歴を復元できませんでした（再生開始より前の地震が一覧に出ません。再生は継続中）: ${msgOf(history.error)}`)
+      }
+
       // pre-window: T 時点で有効な電文を即時発火（replayTime = T-1ms）させて初期状態を再現する
       //
       // **区域名の索引はここで渡す。** `filterPreWindowEvents` は地震を 1 地震へ畳むときに
       // ライブ経路と同じ同一性判定を通すが、あちらのモジュールは座標テーブルを import できない
       // （node 側スクリプトの型検査対象に入るため。→ `utils/quakeMerge.ts` の `areaNames`）。
       // 渡さないと区域名が県名と同じ奈良県を取りこぼし、**同じ分の別の地震を 1 件へ畳みうる**。
-      const preFiltered = filterPreWindowEvents(pre.entries, targetDate, getAreaPrefIndexCache())
+      //
+      // **材料の組み立ての失敗で再生を止めない。** 足すのは履歴の分だけなので、失敗したら 24 時間
+      // だけで作る（履歴の取得に失敗したときと同じ縮退）。下の `catch` へ落とすと、取得は成功して
+      // いるのに「リプレイデータ取得失敗」と出て電文が 1 通も再生されない。
+      let material: ReplayEntry[] = pre.entries
+      try {
+        material = assemblePreWindowMaterial(pre.entries, history.ok ? history.result : null, normal.entries)
+      } catch (e) {
+        log.error('[replay] 初期状態の材料に履歴を足せなかった（24 時間ぶんだけで再生を続ける）', e)
+      }
+      const preFiltered = filterPreWindowEvents(material, targetDate, getAreaPrefIndexCache())
         .map(e => ({ ...e, replayTime: new Date(targetDate.getTime() - 1), silent: true }))
       // フェッチ中に WS 切断タイミングで ref が再セットされる競合を排除するため直前に再リセット
       d.resetTracking()
       // pre-window イベントから T 時点の追跡 ref を復元する（サイレント注入後の正確な音判定に必要）
+      //
+      // **画面へ流すものと同じ `preFiltered` を渡す。** 片方だけに足すと、画面には出ているのに
+      // 記憶が空、という食い違いになる（→ `assemblePreWindowMaterial`）。
       //
       // **復元の失敗で再生を止めない。** 下の `catch` は「リプレイデータ取得失敗」の文面を出すが、
       // ここまで来ていれば取得は成功している。投げたまま抜けると `loadReplayEvents` へ届かず、
@@ -370,58 +445,17 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
 
       d.loadReplayEvents([...preFiltered, ...normal.entries])
 
-      // 初期状態（24 時間）では足りないものを、地震カードの履歴（最大 7 日）から補う。
-      // 対象は長周期地震動と、地震カードの履歴が読むアーカイブに入っている帯
-      // （種別の列挙は `HISTORY_EXTRA_TYPES` が単一情報源）。
-      //
-      // **既に流れる種別は補わない。** 初期状態のほうが新しいので、古い報を後から流すと
-      // 上書きしてしまう。**注入も初期状態より後に置く**（履歴の取得は別で走っているので、
-      // ここで繋がないと先に流れうる）。
-      void historyPromise
-        .then((result) => {
-          if (!guard.isCurrent(session)) return
-          // **本編で流れる分も「既にある」側に数える。** 開始時刻ちょうどに発表された電文は
-          // 履歴（`entryTime <= T`）と本編（`entryTime >= T`）の両方に入るため、ここで
-          // 除かないと同じ電文を 2 度積むことになる。
-          const covered = new Set(
-            [...preFiltered, ...normal.entries]
-              .map(e => historyExtraKey(e.payload))
-              .filter((k): k is string => k !== null),
-          )
-          const supplements = result.extras
-            .filter((e) => {
-              const key = historyExtraKey(e.payload)
-              return key !== null && !covered.has(key)
-            })
-            .map(e => ({ ...e, replayTime: new Date(targetDate.getTime() - 1), silent: true }))
-          // **0 件でも記録する。** 「補うものが無かった」と「絞り込みが壊れて全部落ちた」は
-          // 画面からも挙動からも区別が付かない（帯が出ないのは発表が無いのと同じに見える）。
-          if (supplements.length === 0) {
-            log.info(`[replay] 初期状態に無い帯・長周期はなし（履歴が持っていたのは ${result.extras.length} 件）`)
-            return
-          }
-          // 種別まで出す。件数だけだと「何が補われたのか」「何が初期状態で足りていたのか」が
-          // 分からず、復元できていないときの切り分けに使えない。
-          const kinds = [...new Set(supplements.map(e => e.payload.kind))].join('・')
-          log.info(`[replay] 初期状態に無い帯・長周期を履歴から補う: ${supplements.length} 件（${kinds}）`)
-          depsRef.current.loadReplayEvents(supplements)
-        })
-        .catch((e) => {
-          // **取得の失敗とは限らない。** この `.then` の中で起きた例外もここへ落ちる
-          // （種別を足したのに `historyExtraKey` へ書き忘れた、など）。取得の失敗は上の
-          // `.catch` が画面へ出すので、こちらは二重に表示せず記録だけ残す —— 黙って
-          // 握ると、補完が丸ごと効かなくなっても痕跡が残らない。
-          if (!guard.isCurrent(session)) return
-          log.error('[replay] 帯・長周期の補完に失敗（再生は継続）', e)
-        })
-
       // 取りこぼしがあれば、再生は始まっていても必ず知らせる。黙って減った電文は
       // 「そういう時間帯だった」と見分けが付かず、テスト結果の誤読につながる。
       // 本編と初期状態は日付範囲が重なり同じアーカイブを読むため、URL の集合で重複を除く。
-      setLoss(prev => addLoss(
-        addLoss(prev, normal),
-        pre,
-      ))
+      //
+      // 履歴も同じ枠で申告する。履歴は初期状態と日付範囲が重なるため、同じ電文の破損を
+      // 二重に数えることがある（アーカイブ単位は URL の集合で重複が除かれる）。少なく見せて
+      // 「静かな時間帯だった」と誤読されるより、多めに申告する側へ倒す。
+      setLoss(prev => {
+        const withMain = addLoss(addLoss(prev, normal), pre)
+        return history.ok ? addLoss(withMain, history.result) : withMain
+      })
     } catch (e) {
       log.error('[replay] リプレイデータ取得失敗', e)
       // 既に別セッションへ移っていれば、そちらのエラー表示や再生を上書きしない。

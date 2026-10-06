@@ -68,7 +68,7 @@ const renderTab = (quake: JMAQuake) => render(
     updateMarks={new Map()}
     activeLpgmEventId={null}
     onToggleLpgm={() => {}}
-    estimatedIntensity={null}
+    estimatedIntensities={[]}
     distributionQuakeKey={null}
     onToggleDistribution={() => {}}
     unreceivedQuakeKey={null}

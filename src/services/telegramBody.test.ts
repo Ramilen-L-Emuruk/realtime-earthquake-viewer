@@ -4,8 +4,11 @@ import {
   fetchTelegramText, fetchTelegramBytes, telegramBodyStats,
   resetTelegramBodyStatsForTest, setBodyGateIntervalForTest,
 } from './telegramBody'
-import { clearTelegramBodyCache, telegramCacheStats, MAX_ENTRIES } from '../utils/telegramBodyCache'
+import { clearTelegramBodyCache, MAX_ENTRIES } from '../utils/telegramBodyCache'
+import { idbMetaStats, TELEGRAM_CACHE_DB } from '../test-utils/idbMetaStats'
 import { resetRateLimitsForTest } from './dmdataRequestGates'
+
+const telegramCacheStats = () => idbMetaStats(TELEGRAM_CACHE_DB)
 
 // 429 を受けた id の「取りに行かない窓」はセッション内のメモリに残るので、テストごとに空にする。
 // **トップレベルに置くのは、`describe` 内の `beforeEach` が兄弟の `describe` に届かないため。**
