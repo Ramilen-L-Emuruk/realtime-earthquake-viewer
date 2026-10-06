@@ -1715,11 +1715,13 @@ async function readStraddlingQuakes(
   includeTest: boolean,
   before: Date,
   dec: TextDecoder,
+  /** 門の待ちに付ける印（→ `downloadArchive`）。補いは「もっと見る」の 1 回の取得の一部なので、本編と同じ印を渡す。 */
+  gateTag: GateTag | null,
 ): Promise<{ quakes: JMAQuake[]; skipped: number; unattributable: number }> {
   let files: Map<string, Uint8Array> | undefined
   let manifest = manifestCache.get(item.url)
   if (!manifest) {
-    files = await downloadArchive(item.url, apiKey, item.date)
+    files = await downloadArchive(item.url, apiKey, item.date, gateTag)
     const manifestBytes = files.get('telegrams.json')
     if (!manifestBytes) throw new Error(`アーカイブに telegrams.json がありません date=${item.date}`)
     manifest = JSON.parse(dec.decode(manifestBytes)) as ManifestEntry[]
@@ -1740,7 +1742,7 @@ async function readStraddlingQuakes(
   const unlabeled = candidates.filter(entry => !entry.xmlReport?.head?.eventId)
   const needsBody = [...wanted, ...unlabeled].some(entry => !parsedTelegramCache.has(entry.id))
   if (files === undefined && needsBody) {
-    files = await downloadArchive(item.url, apiKey, item.date)
+    files = await downloadArchive(item.url, apiKey, item.date, gateTag)
   }
   const quakes: JMAQuake[] = []
   let skipped = 0
@@ -2340,7 +2342,7 @@ export async function fetchDmdataQuakeHistory(
           const range = archiveListRange(new Set([day]))
           const listed = range === null
             ? []
-            : await listArchives(apiKey, range.from, range.to, 'telegram.earthquake', signal)
+            : await listArchives(apiKey, range.from, range.to, 'telegram.earthquake', signal, gateTag ?? null)
           item = listed.find(i => i.date === day)
         }
         if (!item) {
@@ -2348,7 +2350,7 @@ export async function fetchDmdataQuakeHistory(
           straddleFailures.push(`straddle:${day}`)
           continue
         }
-        const supplemented = await readStraddlingQuakes(item, eventIdsOfDay, apiKey, includeTest, before, dec)
+        const supplemented = await readStraddlingQuakes(item, eventIdsOfDay, apiKey, includeTest, before, dec, gateTag ?? null)
         for (const quake of supplemented.quakes) quakes.push(quake)
         straddleSupplemented += supplemented.quakes.length
         for (let i = 0; i < supplemented.skipped; i++) skipCounter.add(day)
