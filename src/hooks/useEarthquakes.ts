@@ -10,6 +10,7 @@ import { DmdataWebSocket, fetchDmdataActiveEews } from '../services/dmdata'
 // 履歴の取得はリプレイ開始時の復元と実装を共有する（→ `data-sources-spec.md` §2
 // 「大量に取るならアーカイブを使う」）。同じ目的の実装を 2 本持たない。
 import { fetchDmdataQuakeHistory, HISTORY_WINDOW_DAYS } from '../services/dmdataReplay'
+import { beginLoadMoreGateTag } from '../services/dmdataRequestGates'
 import {
   type TelegramLoss, createEmptyTelegramLoss, telegramLossFrom, isTelegramLossEmpty,
   mergeHistoryLoss,
@@ -2701,9 +2702,12 @@ export function useEarthquakes(
         // カーソルが無いのは初回の履歴を読めていない場合。そのときは初回と同じ範囲を
         // もう一度試す（進めないだけで、押しても何も起きない状態にはしない）。
         const before = historyCursorRef.current ?? serverDate()
+        // **押すたびに新しい印を付けて取る**（`beginLoadMoreGateTag`）。ボタンが、この取得が門を
+        // 通り終えるまでの残り時間を数える（→ `components/EarthquakeTab/LoadMoreButton.tsx`）。
+        // 使い回さないのは、中断された前回の待ちを今回の分として数えないため（理由はその関数）。
         const history = await fetchDmdataQuakeHistory(
           apiKey, before, HISTORY_WINDOW_DAYS, dmdataTestDeliveryRef.current,
-          applyPartialMore, stale,
+          applyPartialMore, stale, beginLoadMoreGateTag(),
         )
         // 時間軸が変わっていたら、取れた分ごと捨てる（「取得中」の解除は finally が担う）
         if (stale()) return

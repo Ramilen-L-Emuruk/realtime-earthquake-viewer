@@ -28,6 +28,7 @@ import {
   waitForDataApiSlot, waitForApiSlot, rateLimitedUntil, noteRateLimited, noteRateLimitCleared,
   RateLimitWindowError,
 } from './dmdataRequestGates'
+import type { GateTag } from '../utils/requestGate'
 import { createSkipCounter, sumSkippedByDay, UNKNOWN_SKIP_DAY } from '../utils/telegramLoss'
 
 /**
@@ -287,8 +288,14 @@ const warnSameDayArchive = createLogThrottle(60_000)
 
 /**
  * アーカイブ本体を落とす（控えを通す）。`date` はそのアーカイブが覆う JST 日。
+ *
+ * `gateTag` は門の待ちに付ける印（→ `services/dmdataRequestGates.ts` の `beginLoadMoreGateTag`）。
+ * 付けないなら `null` を渡す。**同じ URL を別の経路が取りに行っている最中なら、そちらの取得に
+ * 相乗りするので印は付かない**（同時要求を 1 本にまとめる控えの性質。`archiveBodyCache.ts`）。
  */
-function downloadArchive(url: string, apiKey: string, date: string): Promise<Map<string, Uint8Array>> {
+function downloadArchive(
+  url: string, apiKey: string, date: string, gateTag: GateTag | null,
+): Promise<Map<string, Uint8Array>> {
   const cacheable = isArchiveCacheable(date, Date.now())
   if (!cacheable) {
     warnSameDayArchive(() => log.warn(
@@ -308,7 +315,7 @@ function downloadArchive(url: string, apiKey: string, date: string): Promise<Map
     // 50req/5min の対象で、レート表の読み方が「3 行それぞれ」とも「3 行の合計」とも
     // 取れるため合算として扱う（→ `services/dmdataRequestGates.ts`）。
     // **控えから読めた分はここを通らない**（`archiveCache.get` が返す）。
-    await waitForDataApiSlot()
+    await waitForDataApiSlot(gateTag ? { tag: gateTag } : undefined)
     const res = await fetch(url, { headers: { Authorization: authHeader(apiKey) } })
     if (!res.ok) {
       // **429 だけは窓を置く**（他の失敗は次の操作で取り直してよい）
@@ -595,6 +602,8 @@ async function listArchives(
   startDate: string,
   endDate: string,
   classification: string,
+  /** 門の待ちに付ける印（→ `downloadArchive`）。付けないなら `null`。 */
+  gateTag: GateTag | null,
 ): Promise<ArchiveItem[]> {
   const items: ArchiveItem[] = []
   let cursorToken: string | undefined
@@ -609,7 +618,7 @@ async function listArchives(
     // **枠を待ってから投げる。** ここは `api.dmdata.jp` なので本体の門（6 秒）ではなく
     // そちら側の門（500ms）を通る。**ページを辿るループの中なので、応答が速ければ
     // 待ちなしで連投される**（→ `services/dmdataRequestGates.ts`）。
-    await waitForApiSlot()
+    await waitForApiSlot(gateTag ? { tag: gateTag } : undefined)
     const listRes = await fetch(
       `https://api.dmdata.jp/v2/archive?${params.toString()}`,
       { headers: { Authorization: authHeader(apiKey) } },
@@ -779,7 +788,7 @@ export async function fetchDmdataReplayEvents(
   }
   const items = listRange === null
     ? []
-    : await listArchives(apiKey, listRange.from, listRange.to, CLASSIFICATIONS.join(','))
+    : await listArchives(apiKey, listRange.from, listRange.to, CLASSIFICATIONS.join(','), null)
   // **絞るのはダウンロードだけ。`resolveLiveDates` には絞る前の `items` を渡す**（下の
   // `liveDates`）—— 絞った後を渡すと、窓の外の日を「アーカイブが無い」と誤認して
   // 当日経路が余計に走る。目録の範囲は `wantedDays` を覆うだけなので通常は差が出ないが、
@@ -856,7 +865,7 @@ export async function fetchDmdataReplayEvents(
        */
       const loadBody = async (): Promise<Map<string, Uint8Array> | undefined> => {
         try {
-          return await downloadArchive(item.url, apiKey, item.date)
+          return await downloadArchive(item.url, apiKey, item.date, null)
         } catch (e) {
           if (e instanceof RateLimitWindowError) {
             // **正常な待ちなので `error` では記録しない。** 待てば取れる
@@ -1498,8 +1507,10 @@ type PrefetchedBody =
   | { error: unknown }
 
 /** 本体の取得を投げて、結果に畳む（失敗も値として持つ。理由は `PrefetchedBody`）。 */
-function prefetchArchiveBody(item: ArchiveItem, apiKey: string): Promise<PrefetchedBody> {
-  return downloadArchive(item.url, apiKey, item.date).then(
+function prefetchArchiveBody(
+  item: ArchiveItem, apiKey: string, gateTag: GateTag | null,
+): Promise<PrefetchedBody> {
+  return downloadArchive(item.url, apiKey, item.date, gateTag).then(
     files => ({ files }),
     (error: unknown) => ({ error }),
   )
@@ -1679,6 +1690,17 @@ export async function fetchDmdataQuakeHistory(
    * 解析を出さないこと。
    */
   shouldStop?: () => boolean,
+  /**
+   * 門の待ちに付ける印。**「もっと見る」だけが渡す**（押すたびに `beginLoadMoreGateTag` で作る）——ボタンが、
+   * 自分の取得が通り終えるまでの残り時間を数えるため（→ `components/EarthquakeTab/LoadMoreButton.tsx`）。
+   *
+   * 印が付くのは目録とアーカイブ本体だけ。**当日経路（アーカイブがまだ無い日を 1 通ずつ取る）は
+   * 付かない** ——「もっと見る」は古い方へ進むので、そこを通るのは初回の窓に限られる。
+   *
+   * **任意にしているのは、渡す口が 1 箇所しか無いため**（起動時の履歴・リプレイの復元・テストの
+   * 呼び出し 60 件余りは付けない）。渡し忘れても残り時間が出ず「取得中…」に戻るだけで、取得は変わらない。
+   */
+  gateTag?: GateTag,
 ): Promise<QuakeHistoryResult> {
   // 落とす日と目録の範囲は、どちらも JST 日から導く（`fetchDmdataReplayEvents` と同じ理由。
   // 根拠と境界の実測は `archiveDaysForWindow` / `archiveListRange`）。
@@ -1691,7 +1713,7 @@ export async function fetchDmdataQuakeHistory(
   const listRange = archiveListRange(wantedDays)
   const items = listRange === null
     ? []
-    : await listArchives(apiKey, listRange.from, listRange.to, 'telegram.earthquake')
+    : await listArchives(apiKey, listRange.from, listRange.to, 'telegram.earthquake', gateTag ?? null)
   // **絞るのはダウンロードだけ。`resolveLiveDates` には絞る前の `items` を渡す**（下の
   // `liveDays`）—— 絞った後を渡すと、窓の外の日を「アーカイブが無い」と誤認して
   // 当日経路が余計に走る。
@@ -1786,7 +1808,7 @@ export async function fetchDmdataQuakeHistory(
     if (shouldStop?.()) break
     if (!source.item) continue
     if (manifestCache.has(source.item.url)) continue
-    prefetchedBodies.set(source.item.url, prefetchArchiveBody(source.item, apiKey))
+    prefetchedBodies.set(source.item.url, prefetchArchiveBody(source.item, apiKey, gateTag ?? null))
   }
 
   const dec = new TextDecoder()
@@ -1945,7 +1967,7 @@ export async function fetchDmdataQuakeHistory(
           if ('error' in got) throw got.error
           return got.files
         }
-        return await downloadArchive(item.url, apiKey, item.date)
+        return await downloadArchive(item.url, apiKey, item.date, gateTag ?? null)
       } catch (e) {
         if (e instanceof RateLimitWindowError) {
           // **取得の失敗と別の枠で数える。** 打てる手が違い（こちらは窓が明けるまで待つ）、

@@ -72,6 +72,7 @@ const renderQuake = (quake: JMAQuake, selected = true) =>
       isLoadingMore={false}
       hasMore={false}
       onLoadMore={() => {}}
+      watchLoadMoreThrottle={false}
       error={null}
       historyLoss={createEmptyTelegramLoss()}
       loadMoreFailed={false}

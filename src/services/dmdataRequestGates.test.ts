@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   noteRateLimited, rateLimitedUntil, noteRateLimitCleared, resetRateLimitsForTest,
+  beginLoadMoreGateTag, loadMoreDrainsAt, waitForDataApiSlot, resetLoadMoreGateTagForTest,
+  setDataApiGateIntervalForTest, resetDataApiGateForTest,
 } from './dmdataRequestGates'
 import { log } from '../utils/logger'
 
@@ -124,5 +126,51 @@ describe('429 を受けたものは、しばらく取りに行かない', () => 
     vi.clearAllMocks()
     noteRateLimited('body', 'd1')
     expect(String(vi.mocked(log.warn).mock.calls[0][0])).toContain('連続 1 回目')
+  })
+})
+
+// 「もっと見る」の印は押すたびに作り直す（→ `beginLoadMoreGateTag`）。
+//
+// 接続の張り直しで中断された前回の「もっと見る」は、結果を使わないまま待ちだけが門に残る
+// （門の待ちは取り消せない）。印を使い回すと、その待ちが次の押下の「自分の分」に混ざる。
+describe('「もっと見る」の印', () => {
+  const WINDOW = 1000
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    // 「1 窓に 1 件」の門にする（作り直すので前のテストの記録も消える）
+    setDataApiGateIntervalForTest(WINDOW)
+  })
+  afterEach(() => {
+    resetDataApiGateForTest()
+    setDataApiGateIntervalForTest(0)
+    resetLoadMoreGateTagForTest()
+    vi.useRealTimers()
+  })
+
+  // 正: まだ並んでいない新しい押下は数えない（前回の残りを「自分の分」として出さない）
+  it('前回の押下の待ちが残っていても、今回の分が並ぶまでは null', () => {
+    void waitForDataApiSlot()                         // 枠を使い切る（0 ms）
+    const prev = beginLoadMoreGateTag()
+    void waitForDataApiSlot({ tag: prev })            // 前回の残り（1000 ms）
+    beginLoadMoreGateTag()                            // 押し直した（まだ何も並べていない）
+    expect(loadMoreDrainsAt()).toBeNull()
+  })
+
+  // 正: 前回の残りは前に並ぶ他の待ちとして順に通し、今回の分の最後の 1 件の時刻を返す
+  it('前回の残りの後ろで待つ今回の分の時刻を返す', () => {
+    void waitForDataApiSlot()                         // 0 ms
+    const prev = beginLoadMoreGateTag()
+    void waitForDataApiSlot({ tag: prev })            // 前回の残り（1000 ms）
+    const now = beginLoadMoreGateTag()
+    void waitForDataApiSlot({ tag: now })             // 今回（2000 ms）
+    expect(loadMoreDrainsAt()).toBe(2 * WINDOW)
+  })
+
+  // 対照: まだ一度も押していなければ null
+  it('押していなければ null（門が埋まっていても）', () => {
+    void waitForDataApiSlot()
+    void waitForDataApiSlot()
+    expect(loadMoreDrainsAt()).toBeNull()
   })
 })

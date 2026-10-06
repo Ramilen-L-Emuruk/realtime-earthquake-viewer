@@ -327,6 +327,23 @@ export const HISTORY_LOAD_MORE_FAILED_NOTICE = '続きの読み込みに失敗�
 export const FETCH_THROTTLED_NOTICE = 'リクエスト過多のため、取得制限中（自動で再開します）'
 
 /**
+ * 「もっと見る」が上限で待たされている間、ボタンに出す一文（例「取得制限中（あと 2:15）」）。
+ *
+ * **上の帯は一覧のいちばん上にあって、ボタンを押した位置からは見えない。** 押した場所で
+ * 待っている理由と長さが分かるよう、ボタン自身に出す（2026-10-06 ユーザー承認）。
+ *
+ * **秒は切り上げる。** 切り捨てると、まだ待っているのに「あと 0:00」と出る 1 秒ができる。
+ *
+ * @param remainingMs 待っている取得が全部通り終えるまでの残り（→ `dmdataThrottleDrainsAt`）
+ */
+export function formatLoadMoreThrottleLabel(remainingMs: number): string {
+  const sec = Math.max(1, Math.ceil(remainingMs / 1000))
+  const m = Math.floor(sec / 60)
+  const s = sec % 60
+  return `取得制限中（あと ${m}:${String(s).padStart(2, '0')}）`
+}
+
+/**
  * 429 の窓で取りに行かなかった分を知らせる一文。見送りが無ければ null。
  *
  * **上の `FETCH_THROTTLED_NOTICE` と主節をそろえ、括弧だけ変える。** あちらは「待っていて、
