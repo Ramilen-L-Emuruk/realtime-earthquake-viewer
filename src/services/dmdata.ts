@@ -20,6 +20,7 @@ import {
 import { BufrFragmentStore, fragmentKey } from './bufrTelegramAssembly'
 import { log, createLogThrottle } from '../utils/logger'
 import { authHeader, DmdataApiKeyError, dmdataApiKeyProblem, dmdataApiKeyMessage } from '../utils/dmdataApiKey'
+import { fetchJsonOutcome, outcomeJson, API_FETCH_TIMEOUT_MS } from '../utils/fetchWithTimeout'
 import { fetchTelegramText } from './telegramBody'
 import { waitForApiSlot } from './dmdataRequestGates'
 
@@ -262,24 +263,31 @@ async function tryFetchTicket(
   // 震源カタログが同じ門に並ぶため、後ろへ回すと**緊急地震速報の受信開始が遅れる**。
   // 間隔は変えない（変えればレート制限に触れる）。
   await waitForApiSlot({ urgent: true })
-  const res = await fetch(`${API_BASE}/socket`, {
-    method: 'POST',
-    headers: {
-      Authorization: authHeader(apiKey),
-      'Content-Type': 'application/json',
+  // **上限を掛ける。** ここが黙ると再接続のバックオフも 409 の判定も走らず、ライブの受信が
+  // 始まらないまま止まる（接続後の見張り `PING_WATCHDOG_MS` は繋がってからしか効かない）。
+  // 上限に当たれば通信の失敗と同じく例外になり、呼び出し側の再接続へ乗る。
+  const res = await fetchJsonOutcome(`${API_BASE}/socket`, {
+    timeoutMs: API_FETCH_TIMEOUT_MS,
+    signal: null,
+    init: {
+      method: 'POST',
+      headers: {
+        Authorization: authHeader(apiKey),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        classifications,
+        // 試験報・訓練報（EEW 配信テスト VXSE42 等）は including 指定時のみ配信される。
+        test: testParam,
+        // 気象庁の XML をそのまま受け取る。JSON 変換版は使わない ―― 変換は「利用頻度の高い
+        // データ」に絞った独自スキーマで、無損失を謳っていない（実際に津波の注意文と
+        // 予想波高の「未満」が落ちていた）。読み取りを 1 本にすれば穴も 1 つで済む。
+        formatMode: 'raw',
+        appName: 'quake-viewer-dmdss',
+      }),
     },
-    body: JSON.stringify({
-      classifications,
-      // 試験報・訓練報（EEW 配信テスト VXSE42 等）は including 指定時のみ配信される。
-      test: testParam,
-      // 気象庁の XML をそのまま受け取る。JSON 変換版は使わない ―― 変換は「利用頻度の高い
-      // データ」に絞った独自スキーマで、無損失を謳っていない（実際に津波の注意文と
-      // 予想波高の「未満」が落ちていた）。読み取りを 1 本にすれば穴も 1 つで済む。
-      formatMode: 'raw',
-      appName: 'quake-viewer-dmdss',
-    }),
-  })
-  const body = await res.json() as Record<string, unknown>
+  }, () => true)
+  const body = outcomeJson<Record<string, unknown>>(res)
   if (res.status === 200) {
     if (debug) dlog('socket チケット取得 OK', { status: res.status })
   } else {
@@ -337,10 +345,11 @@ export async function releaseSocket(
   try {
     // 枠の解放も先に通す（塞がっている枠を返すのが早いほど、次の接続が早く繋がる）
     await waitForApiSlot({ urgent: true })
-    const res = await fetch(`${API_BASE}/socket/${socketId}`, {
-      method: 'DELETE',
-      headers: { Authorization: authHeader(apiKey) },
-    })
+    const res = await fetchJsonOutcome(`${API_BASE}/socket/${socketId}`, {
+      timeoutMs: API_FETCH_TIMEOUT_MS,
+      signal: null,
+      init: { method: 'DELETE', headers: { Authorization: authHeader(apiKey) } },
+    }, () => false)
     if (debug) dlog('socket の枠を返した', { socketId, status: res.status })
     if (!res.ok) {
       // 403 は `socket.close` スコープが無い場合。**警告に留める** —— 枠を返せないだけで、
@@ -968,14 +977,14 @@ export async function fetchDmdataGdEarthquakes(apiKey: string, days: number): Pr
     // **ページを辿るループの中なので枠を待つ。** 応答が速ければ待ちなしで次のページへ
     // 進むため、門が無いと瞬間のレートが上限へ寄る（→ `services/dmdataRequestGates.ts`）。
     await waitForApiSlot()
-    const res = await fetch(`${API_BASE}/gd/earthquake?limit=100${qs}`, { headers })
+    const res = await fetchJsonOutcome(`${API_BASE}/gd/earthquake?limit=100${qs}`, { timeoutMs: API_FETCH_TIMEOUT_MS, signal: null, init: { headers } }, (r) => r.ok)
     if (!res.ok) {
       // 呼び出し側は失敗の中身で挙動を変えないため、恒久（スコープ不足）と一時（500 等）の
       // 区別はここでログに残す。例外自体は従来どおり投げて取得を止める。
       logRestFailure('震源カタログ (gd/earthquake)', res.status)
       throw new Error(`gd/earthquake: ${res.status}`)
     }
-    const json = await res.json() as {
+    const json = outcomeJson<{
       items?: Array<{
         eventId: string
         // 震源が未決定の地震（震度速報だけが出て震源・震度情報がまだ発表されていない等）は、
@@ -993,7 +1002,7 @@ export async function fetchDmdataGdEarthquakes(apiKey: string, days: number): Pr
         magnitude?: { value?: string }
       }>
       nextToken?: string
-    }
+    }>(res)
     const items = json.items ?? []
     if (items.length === 0) break
 
@@ -1120,9 +1129,9 @@ async function fetchLatestEewReport(
 ): Promise<EEWAlert | null> {
   // **発表中の件数だけ繰り返し呼ばれる**ので枠を待つ（→ `services/dmdataRequestGates.ts`）。
   await waitForApiSlot()
-  const res = await fetch(`${API_BASE}/gd/eew/${encodeURIComponent(eventId)}`, { headers })
+  const res = await fetchJsonOutcome(`${API_BASE}/gd/eew/${encodeURIComponent(eventId)}`, { timeoutMs: API_FETCH_TIMEOUT_MS, signal: null, init: { headers } }, (r) => r.ok)
   if (!res.ok) { logRestFailure(`緊急地震速報の詳細 (${eventId})`, res.status); return null }
-  const json = await res.json() as { items?: GdEewReportItem[] }
+  const json = outcomeJson<{ items?: GdEewReportItem[] }>(res)
   const items = json.items ?? []
   // 一覧に載っていた地震なのに報が 1 通も返らないのは異常。黙って「発表なし」に混ぜない。
   if (items.length === 0) {
@@ -1203,7 +1212,7 @@ export async function fetchDmdataActiveEews(apiKey: string): Promise<EEWAlert[]>
       if (cursorToken) params.set('cursorToken', cursorToken)
       // **ページを辿るループの中なので枠を待つ**（→ `services/dmdataRequestGates.ts`）。
       await waitForApiSlot()
-      const res = await fetch(`${API_BASE}/gd/eew?${params.toString()}`, { headers })
+      const res = await fetchJsonOutcome(`${API_BASE}/gd/eew?${params.toString()}`, { timeoutMs: API_FETCH_TIMEOUT_MS, signal: null, init: { headers } }, (r) => r.ok)
       // **集めた分は捨てない。** 2 ページ目以降で落ちたときに諦めると、1 ページ目で確認できて
       // いた発表中の緊急地震速報まで消える。ページが分かれるほど発表が集中している状況
       // （＝いちばん復元したい場面）でだけ起きるので、そこで全部を失うのは割に合わない。
@@ -1212,7 +1221,7 @@ export async function fetchDmdataActiveEews(apiKey: string): Promise<EEWAlert[]>
         cursorToken = undefined
         break
       }
-      const json = await res.json() as { items?: GdEewListItem[]; nextToken?: string }
+      const json = outcomeJson<{ items?: GdEewListItem[]; nextToken?: string }>(res)
       events.push(...(json.items ?? []))
       cursorToken = json.nextToken
       if (!cursorToken) break
@@ -1332,13 +1341,13 @@ export async function fetchDmdataEewOriginTimes(
       if (cursorToken) params.set('cursorToken', cursorToken)
       // **ページを辿るループの中なので枠を待つ**（→ `services/dmdataRequestGates.ts`）。
       await waitForApiSlot()
-      const res = await fetch(`${API_BASE}/gd/eew?${params.toString()}`, { headers })
+      const res = await fetchJsonOutcome(`${API_BASE}/gd/eew?${params.toString()}`, { timeoutMs: API_FETCH_TIMEOUT_MS, signal: null, init: { headers } }, (r) => r.ok)
       if (!res.ok) {
         logRestFailure(`緊急地震速報の発生時刻（${pages + 1} ページ目・ここまで ${out.size} 件）`, res.status)
         cursorToken = undefined
         break
       }
-      const json = await res.json() as { items?: GdEewListItem[]; nextToken?: string }
+      const json = outcomeJson<{ items?: GdEewListItem[]; nextToken?: string }>(res)
       for (const item of json.items ?? []) {
         if (item.isCanceled === true) { canceled += 1; continue }
         const originMs = Date.parse(item.earthquake?.originTime ?? '')

@@ -204,13 +204,15 @@ async function fetchAllPages(resource: 'quake' | 'tsunami', dateParam: string): 
   // **この関数は 1 日ぶんを担当する**（`dateParam`）ので、取りこぼしはすべてその日に付く。
   const skipCounter = createSkipCounter()
   for (let page = 0; page < MAX_PAGES_PER_DAY; page++) {
+    // **止める合図は渡さない。** 日ごとの取得は本編と初期状態が相乗りする（`loadDay` の
+    // `dayCache`）ので、片方が止めると相乗りした側まで落ちる。上限だけで抑える。
     const raws = await fetchJmaArchiveRaw(resource, {
       sinceDate: dateParam,
       untilDate: dateParam,
       order: 1,
       limit: PAGE_SIZE,
       offset: page * PAGE_SIZE,
-    })
+    }, null)
     for (const raw of raws) {
       // 種別そのものが読めない電文は「正常なフィルタ」ではなく破損。無言で捨てると検知できない。
       if (typeof raw?.code !== 'number') {
@@ -270,12 +272,17 @@ function toEntry(raw: RawP2PEvent): ReplayEntry | null {
  * standard 版だけ 84 枚、DMDSS 版は 50 枚台）。同一イベントの判定にはカードの統合と同じ
  * `sameQuakeEntry` を使う（別の物差しで数えると、統合後の枚数と合わない）。
  */
-export async function fetchP2PQuakeHistory(before: Date, targetEvents: number): Promise<QuakeHistoryResult> {
+export async function fetchP2PQuakeHistory(
+  before: Date,
+  targetEvents: number,
+  /** 止める合図（再生の停止・始め直し）。 */
+  signal: AbortSignal | null,
+): Promise<QuakeHistoryResult> {
   const raws = await fetchJmaArchiveRaw('quake', {
     untilDate: toDateParam(before),
     order: -1,
     limit: HISTORY_PAGE_SIZE,
-  })
+  }, signal)
 
   // 打ち切りの前に、読める電文だけを集めて発表時刻の新しい順に整える。
   // `order: -1` を渡しているので応答は既に新しい順のはずだが、**どこで切るかを外部 API の

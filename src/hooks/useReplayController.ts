@@ -165,7 +165,7 @@ export interface ReplayControllerDeps {
    * 指定範囲の電文を取得する。バリアントごとの取得元をここで差し替える
    * （DMDSS 版は DMDATA アーカイブ、standard 版は P2PQuake の日付指定クエリ）。
    */
-  fetchEvents: (fromTime: Date, toTime: Date) => Promise<ReplayFetchResult>
+  fetchEvents: (fromTime: Date, toTime: Date, signal: AbortSignal) => Promise<ReplayFetchResult>
   /**
    * 再生開始時刻より前の履歴を取得する。使い道は 2 つ。
    * - 地震カードの一覧を、ライブ接続時と同じ厚みにする（`restoreQuakeHistory`）
@@ -174,7 +174,7 @@ export interface ReplayControllerDeps {
    * **遡る範囲はバリアントが決める**（ライブ接続時の初回履歴と揃える。DMDSS 版は 7 日、
    * 標準版とローカル履歴アーカイブは件数）。取得元はバリアントで差し替える。
    */
-  fetchQuakeHistory: (before: Date) => Promise<QuakeHistoryResult>
+  fetchQuakeHistory: (before: Date, signal: AbortSignal) => Promise<QuakeHistoryResult>
   /** 取得した履歴をカード一覧へ反映する。 */
   restoreQuakeHistory: (quakes: JMAQuake[]) => void
   /** 取得キャッシュを破棄する（開始・停止のたびに呼ぶ）。 */
@@ -210,29 +210,41 @@ export interface ReplayController {
 }
 
 /**
- * 「いま自分が現役のセッションか」を判定するための世代カウンタ。
+ * 「いま自分が現役のセッションか」を判定するための世代カウンタと、そのセッションの取得を
+ * 打ち切る合図。
  *
- * アーカイブ取得は中断できないため、停止・再開をまたいで古い取得が後から完了する。
- * その結果を受け取ってよいかを判定する責務だけをここに閉じ込め、単体で検証できるようにする。
+ * **打ち切れない取得がある。** アーカイブと電文の本体は複数の取得が相乗りするので合図を渡さない
+ * （→ `fetchDmdataReplayEvents`）。そのため停止・再開をまたいで古い取得が後から完了しうる。
+ * その結果を受け取ってよいかを判定するのが世代番号で、合図は目録・一覧の取得を早く畳むためのもの
+ * （止めた後もページを辿り続けると、その分だけ配信元へ要求が出る）。
+ * 判定の責務だけをここに閉じ込め、単体で検証できるようにする。
  */
 export interface SessionGuard {
-  /** 新しいセッションを始め、その世代番号を返す。 */
+  /** 新しいセッションを始め、その世代番号を返す。前のセッションの取得は打ち切る。 */
   begin: () => number
   /** 現在の世代番号を読む（新しく始めない。先読みのように既存セッションに属する処理で使う）。 */
   current: () => number
   /** 世代番号が現役かどうか。false なら結果を捨てる。 */
   isCurrent: (session: number) => boolean
-  /** 進行中のセッションをすべて無効化する（停止時に使う）。 */
+  /** 進行中のセッションをすべて無効化し、その取得を打ち切る（停止時・画面を閉じたときに使う）。 */
   invalidate: () => void
+  /** 現在のセッションの取得へ渡す合図。無効化・次のセッションの開始で立つ。 */
+  signal: () => AbortSignal
 }
 
 export function createSessionGuard(): SessionGuard {
   let generation = 0
+  let controller = new AbortController()
+  const renew = () => {
+    controller.abort()
+    controller = new AbortController()
+  }
   return {
-    begin: () => ++generation,
+    begin: () => { renew(); return ++generation },
     current: () => generation,
     isCurrent: (session) => generation === session,
-    invalidate: () => { generation++ },
+    invalidate: () => { renew(); generation++ },
+    signal: () => controller.signal,
   }
 }
 
@@ -334,6 +346,9 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
   const depsRef = useRef(deps)
   depsRef.current = deps
 
+  // 画面を閉じたら、進行中のセッションの取得を打ち切る（目録・一覧のページを辿り続けない）。
+  useEffect(() => () => guard.invalidate(), [guard])
+
   const start = useCallback(async (targetDate: Date) => {
     // **取得を 1 件も投げる前に弾く。** 範囲外の指定を下流へ流すと、取得元の数だけ
     // 空振りのリクエストが出る（→ `replayTargetProblem`）。
@@ -377,7 +392,9 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
     // **成功したときは揃うまで待つ**（2026-10-05 ユーザー承認）。初期状態の材料に混ぜるには、
     // 24 時間の電文と同時に手元に無いといけない（理由は `assemblePreWindowMaterial`）。
     // 待つ長さは能登半島地震の 7 日間で初回 5.9 秒、2 度目以降は控えが効いて 0.2 秒（実測）。
-    const historySettled = d.fetchQuakeHistory(targetDate).then(
+    // 止める合図はセッションに 1 本（`SessionGuard.signal`）。停止・次の開始で立つ。
+    const signal = guard.signal()
+    const historySettled = d.fetchQuakeHistory(targetDate, signal).then(
       (result) => ({ ok: true as const, result }),
       (error: unknown) => ({ ok: false as const, error }),
     )
@@ -387,10 +404,10 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
       // （初期状態が欠けたまま再生すると、地震が起きていない状態から始まって
       //   実際の状況と食い違うため）。どちらで失敗したかはメッセージに含める。
       const [normal, pre, history] = await Promise.all([
-        d.fetchEvents(targetDate, toTime).catch((e) => {
+        d.fetchEvents(targetDate, toTime, signal).catch((e) => {
           throw new Error(`本編（${fmt(targetDate)} 以降）の取得に失敗: ${msgOf(e)}`)
         }),
-        d.fetchEvents(preFrom, targetDate).catch((e) => {
+        d.fetchEvents(preFrom, targetDate, signal).catch((e) => {
           throw new Error(`初期状態（過去 24 時間）の取得に失敗: ${msgOf(e)}`)
         }),
         historySettled,
@@ -462,12 +479,14 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
         return history.ok ? addLoss(withMain, history.result) : withMain
       })
     } catch (e) {
-      log.error('[replay] リプレイデータ取得失敗', e)
       // 既に別セッションへ移っていれば、そちらのエラー表示や再生を上書きしない。
+      // **記録もここより後に置く** —— 停止・始め直しは取得を打ち切る（`SessionGuard.signal`）ので、
+      // 前に置くと止めただけで「取得失敗」がエラーとして並ぶ。
       if (!guard.isCurrent(session)) {
-        log.info('[replay] 取得失敗時に別セッションへ切り替わっていたためエラー表示を抑制')
+        log.info('[replay] 取得失敗時に別セッションへ切り替わっていたためエラー表示を抑制', msgOf(e))
         return
       }
+      log.error('[replay] リプレイデータ取得失敗', e)
       // 地震電文が取れなくても**強震モニタのリプレイは成立する**ため、時刻オフセットは戻さない。
       // 強震モニタの供給元は `timeOffset != null` だけで過去フレームへ切り替わる別経路
       // （`useKyoshinRealtime` → `createYahooArchiveSource`）で、DMDATA のアーカイブには依存しない。
@@ -529,9 +548,9 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
     prefetchEndRef.current = nextTo
     setIsFetching(true)
     recordReplayEvent({ type: 'fetch', phase: 'start', target: 'prefetch', message: null })
-    // 先読みも本編と同じく中断できないため、完了時に世代を照合する。
+    // 先読みも本編と同じく打ち切れない取得を含むため、完了時に世代を照合する。
     const session = guard.current()
-    fetchEvents(nextFrom, nextTo)
+    fetchEvents(nextFrom, nextTo, guard.signal())
       .then((result) => {
         if (!guard.isCurrent(session)) {
           log.info('[replay] 先読み完了時に別セッションへ切り替わっていたため結果を破棄')
@@ -544,11 +563,12 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
         setLoss(prev => addLoss(prev, result))
       })
       .catch((e) => {
-        log.error('[replay] 先読み取得失敗', e)
+        // 記録は世代の照合の後（本編の失敗と同じ理由。止めた打ち切りをエラーとして並べない）
         if (!guard.isCurrent(session)) {
-          log.info('[replay] 先読み失敗時に別セッションへ切り替わっていたためエラー表示を抑制')
+          log.info('[replay] 先読み失敗時に別セッションへ切り替わっていたためエラー表示を抑制', msgOf(e))
           return
         }
+        log.error('[replay] 先読み取得失敗', e)
         // 失敗した区間は読み直さない（理由は ReplayLoss.failedPrefetches の注記）。欠けた事実は
         // 損失として確定させ、次の先読みが成功しても消えないようにする。原因の文言は回復しうる
         // 情報なので fetchError 側に出す（次の成功で消えてよい）。
