@@ -1799,8 +1799,8 @@ GET /events?from=<unix ミリ秒>&to=<unix ミリ秒>[&station=<観測点ID>]
 for day in 2026-09-28 2026-09-29 2026-09-30 2026-10-01 2026-10-02 2026-10-03; do
   npx tsx seismo-host/bench/build-station-cache.ts --day "$day" --raw <生データの置き場所> --out <控えの置き場所>
 done
-# 控えを検出器へ流し、地震の一覧と突き合わせる
-npx tsx seismo-host/bench/bench-detect.ts --days 2026-09-28,2026-09-29,2026-09-30,2026-10-01,2026-10-02,2026-10-03 --labels <地震の一覧.json> --cache <控えの置き場所> --radius 200
+# 控えを検出器へ流し、地震の一覧と突き合わせる（観測点の位置は省けない）
+npx tsx seismo-host/bench/bench-detect.ts --days 2026-09-28,2026-09-29,2026-09-30,2026-10-01,2026-10-02,2026-10-03 --labels <地震の一覧.json> --lat <観測点の緯度> --lon <観測点の経度> --cache <控えの置き場所> --radius 200
 ```
 
 日ごとに概要の 1 行（揺れの件数・地震と一致した数・一致しない揺れの内訳）と、範囲内の地震

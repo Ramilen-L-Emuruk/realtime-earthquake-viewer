@@ -26,14 +26,15 @@ const CONFIG: StationConfig = {
   ],
 } as unknown as StationConfig
 
-const AMAKUSA: P2pReferenceQuake = {
+// 観測点から約 82 km の架空の地震。
+const QUAKE: P2pReferenceQuake = {
   originMs: Date.UTC(2026, 9, 3, 4, 26, 0),
   originPrecisionMs: 60_000,
-  lat: 32.5,
-  lon: 130.5,
+  lat: 34.3,
+  lon: 135.3,
   depthKm: 0,
   magnitude: 3.5,
-  name: '熊本県天草・芦北地方',
+  name: '架空の震央',
   maxScale: 20,
   key: 'k',
 }
@@ -125,7 +126,7 @@ describe('StationDetection', () => {
     expect(t.saved[0].maxIntensity).toBe(1.4)
     expect(t.saved[0].sensors).toEqual([{ boardKey: 'mac:020000000001', sensorId: 'i2c0-68' }])
     expect(t.published).toEqual(t.saved)
-    t.detection.addQuake(AMAKUSA)
+    t.detection.addQuake(QUAKE)
     expect(t.saved.map((r) => r.verdict)).toEqual(['pending', 'quake'])
     expect(t.detection.snapshot().shakes).toBe(1)
   })
