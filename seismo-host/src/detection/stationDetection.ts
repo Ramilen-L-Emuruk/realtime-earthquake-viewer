@@ -19,6 +19,9 @@ import type { P2pReferenceQuake } from './p2pQuake'
 import { DETECTOR_VERSION, QuakeDetector } from './quakeDetector'
 import type { DetectedShake } from './quakeDetector'
 import type { QuakeFeedStatus } from './quakeFeed'
+import { JST_OFFSET_MS } from '../receiver/jstTime'
+import { emptyTriggerHealth } from './quakeTrigger'
+import type { TriggerHealth, TriggerPeak } from './quakeTrigger'
 import { ShakeEventBook } from './shakeEventBook'
 import type { ShakeEventRecord, ShakeSensorRef } from './shakeEvent'
 
@@ -49,6 +52,134 @@ export interface DetectionStatus {
   readonly store: { readonly written: number; readonly writeErrors: number; readonly lastWriteError: string | null }
   /** 気象庁の地震情報の受信。止めてあれば null。 */
   readonly feed: QuakeFeedStatus | null
+  /**
+   * 観測点ごとの引き金のいまの状態（`TriggerHealth`）。**揺れの記録が 0 件のとき、静かだった
+   * だけか止まっているかを見分ける材料**（`shakes` などの数え上げだけでは見分けられない）。
+   *
+   * **設定にある観測点を全部載せる** —— 合成波形が一度も来ていない観測点（有効なセンサーが
+   * 2 台に満たず合成が組まれない等）は検出器そのものが作られず、`stations` に現れない。
+   * そこを載せないと、いちばん見つけたい「止まっている」形が一覧から消える。
+   */
+  readonly triggers: readonly StationTriggerStatus[]
+}
+
+/** 観測点 1 つぶんの引き金の状態。 */
+export interface StationTriggerStatus extends TriggerHealth {
+  readonly stationId: string
+  /**
+   * 検出器が最後にサンプルを使えた時刻を、**ホストの時計で**（`StationDetectionOptions.now`）。
+   * 一度も使えていなければ null。
+   *
+   * **「届いているか」はこちらで見る。** `lastSampleMs` は基板が名乗るデータの時刻なので、
+   * 基板の時計が先へずれていると「最後のサンプルが未来」になり、止まっても古くならない。
+   */
+  readonly lastFedAtMs: number | null
+  /**
+   * この観測点で、刻みが読めない・粗すぎて捨てた合成波形のまとまりの数（起動してからの合計）。
+   * **波形は届いているのに使えていない**形を、「届いていない」と見分ける手がかり。
+   */
+  readonly droppedChunks: number
+}
+
+/** 1 時間に 1 度の行（`StationDetection.hourlyLines`）。 */
+export interface DetectionHourlyLine {
+  readonly level: 'log' | 'warn'
+  /** 間引きの鍵。観測点ごとに分ける（1 つにすると 2 つ目の観測点の行が黙る）。 */
+  readonly key: string
+  readonly line: string
+}
+
+/**
+ * 検出器が最後にサンプルを使えてから（ホストの時計で）これだけ経っていたら「波形が届いていない」と
+ * 書く（ミリ秒）。
+ *
+ * **1 時間に 1 度の行なので、短い途切れは拾わなくてよい**（途切れは `resets` と毎分の要約が
+ * 拾う）。合成波形は 0.3 秒ごとに届くので、1 分来なければ止まっていると言える。
+ */
+export const HOURLY_SILENT_AFTER_MS = 60_000
+
+/** 日本時間の `HH:MM`。`nowMs` と日本時間の日付が違えば `MM/DD HH:MM`。 */
+function jstClock(ms: number, nowMs: number): string {
+  const d = new Date(ms + JST_OFFSET_MS)
+  const now = new Date(nowMs + JST_OFFSET_MS)
+  const two = (n: number): string => String(n).padStart(2, '0')
+  const hm = `${two(d.getUTCHours())}:${two(d.getUTCMinutes())}`
+  const sameDay =
+    d.getUTCFullYear() === now.getUTCFullYear() && d.getUTCMonth() === now.getUTCMonth() && d.getUTCDate() === now.getUTCDate()
+  return sameDay ? hm : `${two(d.getUTCMonth() + 1)}/${two(d.getUTCDate())} ${hm}`
+}
+
+/**
+ * 平常時の揺れの見せ方。**0 と 0.01 未満を分ける** —— 小数 2 桁へ丸めるだけだと、平らな値しか
+ * 来ていない（センサーが動いていない）のと、ごく静かなのが同じ「0.00」に見える。
+ */
+function formatBaseline(gal: number | null): string {
+  if (gal === null || !Number.isFinite(gal)) return '不明'
+  if (gal === 0) return '0 gal'
+  if (gal < 0.01) return '0.01 gal 未満'
+  return `${gal.toFixed(2)} gal`
+}
+
+/**
+ * 観測点 1 つぶんの、1 時間に 1 度の行を組む。
+ *
+ * - **一度も波形が来ていない／`HOURLY_SILENT_AFTER_MS` 来ていない** → 警告。止まっている
+ * - **この 1 時間に引き金を引ける状態のサンプルが無い**（助走から抜けられない） → 警告
+ * - それ以外 → 比の最大とその時刻・平常時の揺れ・いまの状態
+ *
+ * `hourPeak` は呼び出し側が引き金から引いた、この 1 時間の比の最大。`nowMs` はホストの時計。
+ * 時刻はどれも日本時間で出す。
+ *
+ * **2 つの時計を混ぜない。** 「届いているか」はホストの時計（`lastFedAtMs` と `nowMs`）だけで、
+ * 比の最大の時刻はデータの時刻だけで決まる（引き金がデータの時刻で進むため）。
+ */
+export function formatDetectionHourly(
+  status: StationTriggerStatus,
+  hourPeak: TriggerPeak | null,
+  nowMs: number,
+): DetectionHourlyLine {
+  const head = `[detect] ${status.stationId} この 1 時間: `
+  const key = `hourly:${status.stationId}`
+  if (status.lastFedAtMs === null) {
+    return { level: 'warn', key, line: `${head}波形が届いていない（起動から一度も）` }
+  }
+  if (nowMs - status.lastFedAtMs >= HOURLY_SILENT_AFTER_MS) {
+    return { level: 'warn', key, line: `${head}波形が届いていない（最後は ${jstClock(status.lastFedAtMs, nowMs)}）` }
+  }
+  // 助走が明ける時刻を持たないのは、フィルタを組めずに待っているとき。残り秒数は言えない。
+  const warmLeft =
+    status.warmUntilMs !== null && status.lastSampleMs !== null
+      ? `（あと ${Math.max(0, Math.round((status.warmUntilMs - status.lastSampleMs) / 1000))} 秒）`
+      : ''
+  const state = status.inEvent ? '揺れを記録中' : status.armed ? '見張り中' : `助走中${warmLeft}`
+  const peak = hourPeak === null ? 'なし' : `${hourPeak.ratio.toFixed(2)} 倍（${jstClock(hourPeak.atMs, nowMs)}）`
+  return {
+    level: hourPeak === null ? 'warn' : 'log',
+    key,
+    line: `${head}比の最大 ${peak}・平常時の揺れ ${formatBaseline(status.baselineGal)}・${state}`,
+  }
+}
+
+/**
+ * 1 時間に 1 度の行を組んで出す（`main.ts` のタイマーが呼ぶ）。**組めたら true** を返し、呼び出し側は
+ * そのときだけ起点を進める —— 失敗した回の 1 時間は、次の回が広い窓で拾い直す。
+ *
+ * **ここへ切り出してあるのは、`main.ts` の中に書くと自動テストが届かないから。** 投げない。
+ */
+export function emitDetectionHourly(
+  build: () => readonly DetectionHourlyLine[],
+  emit: (line: DetectionHourlyLine) => void,
+  onError: (message: string) => void,
+): boolean {
+  let lines: readonly DetectionHourlyLine[]
+  try {
+    lines = build()
+  } catch (error) {
+    onError(messageOf(error))
+    return false
+  }
+  for (const l of lines) emit(l)
+  return true
 }
 
 export interface StationDetectionOptions {
@@ -121,6 +252,8 @@ export class StationDetection {
   private lastFailure: string | null = null
   /** 設定から外して捨てた検出器の数え上げ（合計を減らさないため）。 */
   private retired = { resets: 0, droppedChunks: 0, phaseWindowsBroken: 0, phaseFailures: 0 }
+  /** 観測点ごとに、検出器が最後にサンプルを使えた時刻（ホストの時計。`StationTriggerStatus.lastFedAtMs`）。 */
+  private readonly fedAt = new Map<string, number>()
 
   constructor(options: StationDetectionOptions) {
     this.opts = options
@@ -144,12 +277,17 @@ export class StationDetection {
       detector = new QuakeDetector()
       this.detectors.set(w.stationId, detector)
     }
+    const before = detector.lastSampleAtMs
     let closed: DetectedShake[]
     try {
       closed = detector.push(w)
     } catch (error) {
       this.fail('detect', `[detect] ${w.stationId} の検出に失敗: ${messageOf(error)}`)
       return
+    } finally {
+      // **使えたときだけ進める**（届いたかではなく）。刻みが読めず捨てたまとまりで進めると、
+      // 検出が止まっているのに「届いている」に見える。
+      if (detector.lastSampleAtMs !== before) this.fedAt.set(w.stationId, this.opts.now())
     }
     for (const shake of closed) this.record(w.stationId, shake)
   }
@@ -193,6 +331,7 @@ export class StationDetection {
       this.retired.phaseWindowsBroken += detector.phaseWindowsBroken
       this.retired.phaseFailures += detector.phaseFailures
       this.detectors.delete(stationId)
+      this.fedAt.delete(stationId)
     }
   }
 
@@ -221,7 +360,44 @@ export class StationDetection {
       lastFailure: this.lastFailure,
       store: this.opts.storeStatus(),
       feed: this.opts.feedStatus(),
+      triggers: this.stationIds().map((stationId) => this.triggerStatus(stationId)),
     }
+  }
+
+  /**
+   * 観測点ごとの、1 時間に 1 度の行（`formatDetectionHourly`）。`sinceMs` は前回この行を
+   * 出した時刻（初回は起動した時刻）、`nowMs` はいまの時刻で、**どちらもホストの時計**。
+   *
+   * **比の最大はデータの時刻の窓で引く** —— 最後のサンプルから `nowMs - sinceMs` だけ遡る
+   * （1 分単位）。ホストの時計の範囲をそのまま渡すと、基板の時計がずれた分だけ窓が外れ、
+   * 動いているのに「比の最大 なし」になる。
+   */
+  hourlyLines(sinceMs: number, nowMs: number): DetectionHourlyLine[] {
+    const spanMs = Math.max(0, nowMs - sinceMs)
+    return this.stationIds().map((stationId) => {
+      const status = this.triggerStatus(stationId)
+      const d = this.detectors.get(stationId)
+      const last = status.lastSampleMs
+      const peak = d === undefined || last === null ? null : d.peakBetween(last - spanMs, last)
+      return formatDetectionHourly(status, peak, nowMs)
+    })
+  }
+
+  private triggerStatus(stationId: string): StationTriggerStatus {
+    const d = this.detectors.get(stationId)
+    return {
+      stationId,
+      ...(d?.health() ?? emptyTriggerHealth()),
+      lastFedAtMs: this.fedAt.get(stationId) ?? null,
+      droppedChunks: d?.droppedChunks ?? 0,
+    }
+  }
+
+  /** 設定にある観測点と、検出器を持つ観測点を合わせた一覧（並びは ID 順）。 */
+  private stationIds(): string[] {
+    const ids = new Set(this.opts.config().stations.map((s) => s.stationId))
+    for (const id of this.detectors.keys()) ids.add(id)
+    return [...ids].sort()
   }
 
   private record(stationId: string, shake: DetectedShake): void {

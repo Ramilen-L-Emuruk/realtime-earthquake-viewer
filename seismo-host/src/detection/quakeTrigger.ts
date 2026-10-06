@@ -104,6 +104,74 @@ export interface TriggerInput {
   readonly gal: readonly [ArrayLike<number>, ArrayLike<number>, ArrayLike<number>]
 }
 
+/** 比がいちばん大きかったサンプル。 */
+export interface TriggerPeak {
+  readonly ratio: number
+  /** そのサンプルの時刻（データの時刻・unix ミリ秒）。 */
+  readonly atMs: number
+}
+
+/**
+ * 引き金のいまの状態（`TriggerDetector.health`）。**揺れを記録していないとき、それが
+ * 「静かだっただけ」なのか「止まっている」のかを見分ける材料。**
+ *
+ * 揺れの記録が 0 件のまま続く形は 4 つあり、数え上げ（`resets` など）だけでは見分けられない。
+ *
+ * | 形 | ここでどう見えるか |
+ * |---|---|
+ * | 静かで、比が `onRatio` に届かないだけ | `armed` で、`peak24h.ratio` が `onRatio` 未満 |
+ * | 波形が来ない（観測点の合成が組まれない等） | `lastSampleMs` が古いか null |
+ * | 途切れが繰り返し、助走から抜けられない | `armed` が立たない（`warmUntilMs` が先送りされ続ける） |
+ * | 平らな値しか来ない | `baselineGal` が 0（比も 0 のまま） |
+ */
+export interface TriggerHealth {
+  /** 検出に使えた最後のサンプルの時刻（データの時刻）。一度も受けていなければ null。 */
+  readonly lastSampleMs: number | null
+  /** 検出に使えた最初のサンプルの時刻。 */
+  readonly firstSampleMs: number | null
+  /** 助走が明けて、引き金を引ける状態か。 */
+  readonly armed: boolean
+  /** 助走中なら、明ける時刻（データの時刻）。 */
+  readonly warmUntilMs: number | null
+  /** 揺れの区間を開いている。 */
+  readonly inEvent: boolean
+  /** 平常時の強さ（LTA の振幅・gal）。助走中も出す（落ち着く途中の値）。 */
+  readonly baselineGal: number | null
+  /** いまの比（√(STA/LTA)）。引き金を引けない間は null。 */
+  readonly ratio: number | null
+  /** 引き金を引く比（`TriggerConfig.onRatio`）。 */
+  readonly onRatio: number
+  /**
+   * 直近 24 時間（最後のサンプルから遡る・1 分単位）で比がいちばん大きかったサンプル。
+   * **引き金を引ける状態のサンプルだけを数える**（助走中の比は 0 で、数えると意味を持たない）。
+   * 該当するサンプルが無ければ null。**揺れの区間の最中も数える** —— 引き金を引いた揺れでは
+   * `onRatio` 以上になる。
+   */
+  readonly peak24h: TriggerPeak | null
+  /** `peak24h` が見ている範囲の頭。24 時間に満たなければ最初のサンプルの時刻。 */
+  readonly peakWindowFromMs: number | null
+}
+
+/** まだ 1 サンプルも受けていない引き金の状態（検出器を作る前の観測点に使う）。 */
+export function emptyTriggerHealth(cfg: TriggerConfig = TRIGGER_CONFIG_DEFAULT): TriggerHealth {
+  return {
+    lastSampleMs: null,
+    firstSampleMs: null,
+    armed: false,
+    warmUntilMs: null,
+    inEvent: false,
+    baselineGal: null,
+    ratio: null,
+    onRatio: cfg.onRatio,
+    peak24h: null,
+    peakWindowFromMs: null,
+  }
+}
+
+/** 比の最大を何分ぶん覚えるか（24 時間）。 */
+const PEAK_MINUTES = 24 * 60
+const MINUTE_MS = 60_000
+
 interface Filters {
   readonly sampleHz: number
   readonly trigger: [BandPass, BandPass]
@@ -148,6 +216,16 @@ export class TriggerDetector {
   private lta = 0
   private ltaReady = false
   private open: OpenEvent | null = null
+  private ratio = 0
+  private firstSampleMs: number | null = null
+  private lastSampleMs: number | null = null
+  /**
+   * 1 分ごとの比の最大（輪）。`peakMinute[i]` がその枠の分（unix 分）で、別の分なら空として扱う。
+   * **途切れ・助走で作り直しても消さない** —— 消すと、途切れの前に揺れていたことが見えなくなる。
+   */
+  private readonly peakMinute = new Float64Array(PEAK_MINUTES).fill(Number.NaN)
+  private readonly peakRatio = new Float64Array(PEAK_MINUTES)
+  private readonly peakAtMs = new Float64Array(PEAK_MINUTES)
   /**
    * 捨てたまとまりの数。刻みが読めないものと、刻みが粗すぎて帯域フィルタを組めないもの
    * （特徴量の最上の帯 20〜45 Hz はサンプリングが 90 Hz を超えないと組めない）。
@@ -179,6 +257,10 @@ export class TriggerDetector {
         // 組めない刻み。次に組める刻みのまとまりが来たら、そこから助走でやり直す。
         this.filters = null
         this.nextMs = null
+        // **引き金を引ける状態も落とす。** 残すと、検出が止まっているのに `health()` が
+        // 前の「見張り中」と古い比を返し続ける。
+        this.ltaReady = false
+        this.ratio = 0
         this.droppedChunks++
         return out
       }
@@ -216,6 +298,10 @@ export class TriggerDetector {
         if (t >= this.warmUntilMs) this.ltaReady = true
       }
       const ratio = this.ltaReady && this.lta > 0 ? Math.sqrt(this.sta / this.lta) : 0
+      this.ratio = ratio
+      if (this.firstSampleMs === null) this.firstSampleMs = t
+      this.lastSampleMs = t
+      if (this.ltaReady) this.notePeak(t, ratio)
 
       if (this.open === null) {
         if (ratio >= this.cfg.onRatio) {
@@ -261,6 +347,66 @@ export class TriggerDetector {
     }
     this.nextMs = chunk.firstSampleMs + n * dt
     return out
+  }
+
+  /** 検出に使えた最後のサンプルの時刻（データの時刻）。`health()` を組まずに進んだかだけを見る口。 */
+  get lastSampleAtMs(): number | null {
+    return this.lastSampleMs
+  }
+
+  /** いまの状態（`TriggerHealth`）。読むだけで、切り出す区間には触らない。 */
+  health(): TriggerHealth {
+    const last = this.lastSampleMs
+    let windowFrom: number | null = null
+    let peak: TriggerPeak | null = null
+    if (last !== null) {
+      // 輪が覚えている 1440 分ぶん（最後のサンプルの分を含む）。
+      const headMs = (Math.floor(last / MINUTE_MS) - (PEAK_MINUTES - 1)) * MINUTE_MS
+      // 最後のサンプルを越えさせない（時計が最初のサンプルより前へ戻ると、頭が終わりを追い越す）。
+      windowFrom = Math.min(last, Math.max(headMs, this.firstSampleMs ?? headMs))
+      peak = this.peakBetween(headMs, last)
+    }
+    return {
+      lastSampleMs: last,
+      firstSampleMs: this.firstSampleMs,
+      armed: this.ltaReady,
+      warmUntilMs: this.filters !== null && !this.ltaReady ? this.warmUntilMs : null,
+      inEvent: this.open !== null,
+      baselineGal: this.filters !== null && last !== null ? Math.sqrt(this.lta) : null,
+      ratio: this.ltaReady ? this.ratio : null,
+      onRatio: this.cfg.onRatio,
+      peak24h: peak,
+      peakWindowFromMs: windowFrom,
+    }
+  }
+
+  /**
+   * `[fromMs, toMs]`（データの時刻）で比がいちばん大きかったサンプル。**範囲は 1 分単位へ外向きに
+   * 丸める**（覚えているのが 1 分ごとの最大なので）。覚えているのは最後のサンプルから 24 時間ぶん。
+   */
+  peakBetween(fromMs: number, toMs: number): TriggerPeak | null {
+    const fromMin = Math.floor(fromMs / MINUTE_MS)
+    const toMin = Math.floor(toMs / MINUTE_MS)
+    let best: TriggerPeak | null = null
+    for (let i = 0; i < PEAK_MINUTES; i++) {
+      const m = this.peakMinute[i]
+      if (!(m >= fromMin && m <= toMin)) continue
+      if (best === null || this.peakRatio[i] > best.ratio) best = { ratio: this.peakRatio[i], atMs: this.peakAtMs[i] }
+    }
+    return best
+  }
+
+  private notePeak(t: number, ratio: number): void {
+    const m = Math.floor(t / MINUTE_MS)
+    const i = ((m % PEAK_MINUTES) + PEAK_MINUTES) % PEAK_MINUTES
+    if (this.peakMinute[i] !== m) {
+      this.peakMinute[i] = m
+      this.peakRatio[i] = ratio
+      this.peakAtMs[i] = t
+    } else if (ratio > this.peakRatio[i]) {
+      this.peakRatio[i] = ratio
+      this.peakAtMs[i] = t
+    }
   }
 
   /** 開いている区間を閉じて返す（流し終えたとき）。 */

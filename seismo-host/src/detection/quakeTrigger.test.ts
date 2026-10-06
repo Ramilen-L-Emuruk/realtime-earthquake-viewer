@@ -162,3 +162,169 @@ describe('TriggerDetector', () => {
     expect(det.droppedChunks).toBe(1)
   })
 })
+
+/** まとまりの時刻を `ms` だけずらす。 */
+function shifted(chunks: readonly TriggerInput[], ms: number): TriggerInput[] {
+  return chunks.map((c) => ({ ...c, firstSampleMs: c.firstSampleMs + ms }))
+}
+
+describe('TriggerDetector.health — 静かだっただけか、止まっているか', () => {
+  const HOUR = 3_600_000
+
+  it('一度も受けていなければ、どの値も「無い」で返す', () => {
+    const h = new TriggerDetector().health()
+    expect(h).toMatchObject({
+      lastSampleMs: null,
+      firstSampleMs: null,
+      armed: false,
+      warmUntilMs: null,
+      inEvent: false,
+      baselineGal: null,
+      ratio: null,
+      peak24h: null,
+      peakWindowFromMs: null,
+    })
+    expect(h.onRatio).toBe(TRIGGER_CONFIG_DEFAULT.onRatio)
+  })
+
+  it('正: 静かな波形だけでも、引き金が生きていることが値で分かる（比の最大は引き金に届かない）', () => {
+    const det = new TriggerDetector()
+    run(signal(150, []), det)
+    const h = det.health()
+    expect(h.armed).toBe(true)
+    expect(h.warmUntilMs).toBeNull()
+    expect(h.inEvent).toBe(false)
+    expect(h.lastSampleMs).toBe(T0 + 150_000 - DT)
+    expect(h.firstSampleMs).toBe(T0)
+    // ノイズ 0.5 gal を 5〜10 Hz で絞った水平 2 成分の合成は約 0.3 gal
+    expect(h.baselineGal).toBeGreaterThan(0.15)
+    expect(h.baselineGal).toBeLessThan(0.5)
+    expect(h.ratio).toBeGreaterThan(0.3)
+    expect(h.ratio).toBeLessThan(TRIGGER_CONFIG_DEFAULT.onRatio)
+    expect(h.peak24h).not.toBeNull()
+    expect(h.peak24h!.ratio).toBeGreaterThan(1)
+    expect(h.peak24h!.ratio).toBeLessThan(TRIGGER_CONFIG_DEFAULT.onRatio)
+    // 助走の間は比を数えないので、最大は助走が明けた後
+    expect(h.peak24h!.atMs).toBeGreaterThanOrEqual(T0 + TRIGGER_CONFIG_DEFAULT.warmupSec * 1000)
+    // 起動して 24 時間に満たないので、見ている範囲は最初に受けた時刻から
+    expect(h.peakWindowFromMs).toBe(T0)
+  })
+
+  it('正: 揺れがあれば、比の最大とその時刻がその揺れを指す', () => {
+    const det = new TriggerDetector()
+    run(signal(150, [{ startSec: 100, durationSec: 6, hz: 7, amplitude: 1.5 }]), det)
+    const p = det.health().peak24h!
+    expect(p.ratio).toBeGreaterThan(3)
+    expect(p.atMs - T0).toBeGreaterThanOrEqual(100_000)
+    expect(p.atMs - T0).toBeLessThan(107_000)
+  })
+
+  it('正: 揺れの区間を開いている間は inEvent が立つ', () => {
+    const det = new TriggerDetector()
+    for (const c of signal(103, [{ startSec: 100, durationSec: 6, hz: 7, amplitude: 1.5 }])) det.push(c)
+    expect(det.health().inEvent).toBe(true)
+  })
+
+  it('対照: 助走の間は引き金を引けない状態として返し、比も最大も出さない（平常時の強さは出す）', () => {
+    const det = new TriggerDetector()
+    run(signal(30, []), det)
+    const h = det.health()
+    expect(h.armed).toBe(false)
+    expect(h.warmUntilMs).toBe(T0 + TRIGGER_CONFIG_DEFAULT.warmupSec * 1000)
+    expect(h.ratio).toBeNull()
+    expect(h.peak24h).toBeNull()
+    expect(h.baselineGal).toBeGreaterThan(0)
+  })
+
+  it('対照: 平らな値しか来なければ、平常時の強さが 0 になる（比も 0 のまま）', () => {
+    const det = new TriggerDetector()
+    const flat: TriggerInput[] = []
+    for (let i = 0; i < 90 * FS; i += 30) {
+      const z = new Array(30).fill(0)
+      flat.push({ firstSampleMs: T0 + i * DT, msPerSample: DT, gal: [z, z, z] })
+    }
+    run(flat, det)
+    const h = det.health()
+    expect(h.armed).toBe(true)
+    expect(h.baselineGal).toBe(0)
+    expect(h.ratio).toBe(0)
+    expect(h.peak24h!.ratio).toBe(0)
+  })
+
+  it('安全弁: 24 時間より前の揺れは、比の最大から外れる', () => {
+    const det = new TriggerDetector()
+    run(signal(150, [{ startSec: 100, durationSec: 6, hz: 7, amplitude: 1.5 }]), det)
+    // 25 時間後に静かな波形が戻ってくる（途切れたので助走からやり直す）
+    run(shifted(signal(150, [], 0.5, 2), 25 * HOUR), det)
+    const h = det.health()
+    expect(h.peak24h!.ratio).toBeLessThan(TRIGGER_CONFIG_DEFAULT.onRatio)
+    expect(h.peak24h!.atMs).toBeGreaterThanOrEqual(T0 + 25 * HOUR)
+    // 見ている範囲の頭は 24 時間前（1 分単位）。最初に受けた時刻より後になる
+    expect(h.peakWindowFromMs).toBeGreaterThan(T0)
+    expect(h.lastSampleMs! - h.peakWindowFromMs!).toBeLessThanOrEqual(24 * HOUR)
+    expect(h.lastSampleMs! - h.peakWindowFromMs!).toBeGreaterThan(24 * HOUR - 60_000)
+  })
+
+  it('安全弁: 途切れて助走へ戻っても、それまでの 24 時間の最大は残る', () => {
+    const det = new TriggerDetector()
+    run(signal(150, [{ startSec: 100, durationSec: 6, hz: 7, amplitude: 1.5 }]), det)
+    run(shifted(signal(30, [], 0.5, 2), HOUR), det)
+    const h = det.health()
+    expect(h.armed).toBe(false)
+    expect(h.peak24h!.ratio).toBeGreaterThan(3)
+  })
+
+  it('peakBetween: 範囲（1 分単位）に入る最大だけを返し、入らなければ null', () => {
+    const det = new TriggerDetector()
+    run(signal(200, [{ startSec: 130, durationSec: 6, hz: 7, amplitude: 1.5 }]), det)
+    expect(det.peakBetween(T0, T0 + 200_000)!.ratio).toBeGreaterThan(3)
+    // 揺れ（130 秒〜）より前の 1 分（60〜120 秒）だけ
+    const before = det.peakBetween(T0 + 60_000, T0 + 110_000)
+    expect(before!.ratio).toBeLessThan(TRIGGER_CONFIG_DEFAULT.onRatio)
+    // 1 分単位へ外向きに丸める: 121 秒〜122 秒を訊いても、その分（120〜180 秒）にある揺れを返す
+    const rounded = det.peakBetween(T0 + 121_000, T0 + 122_000)
+    expect(rounded!.ratio).toBeGreaterThan(3)
+    expect(rounded!.atMs - T0).toBeGreaterThanOrEqual(130_000)
+    // 何も受けていない範囲
+    expect(det.peakBetween(T0 + HOUR, T0 + 2 * HOUR)).toBeNull()
+  })
+
+  it('安全弁: 刻みが変わってフィルタを組めなくなったら、「引き金を引ける」状態も落とす（古い比を残さない）', () => {
+    const det = new TriggerDetector()
+    run(signal(150, []), det)
+    expect(det.health().armed).toBe(true)
+    // 50 Hz（特徴量の最上の帯を組めない刻み）のまとまりが続きに来る
+    det.push({ firstSampleMs: T0 + 150_000, msPerSample: 20, gal: [[1, 2], [1, 2], [1, 2]] })
+    const h = det.health()
+    expect(h.armed).toBe(false)
+    expect(h.ratio).toBeNull()
+    expect(h.warmUntilMs).toBeNull()
+    expect(det.droppedChunks).toBe(1)
+  })
+
+  it('安全弁: 時計が最初のサンプルより前へ戻っても、比の最大の範囲の頭は最後のサンプルを越えない', () => {
+    const det = new TriggerDetector()
+    run(signal(150, []), det)
+    run(shifted(signal(30, [], 0.5, 3), -2 * HOUR), det)
+    const h = det.health()
+    expect(h.lastSampleMs!).toBeLessThan(T0)
+    expect(h.peakWindowFromMs!).toBeLessThanOrEqual(h.lastSampleMs!)
+  })
+
+  it('安全弁: 状態を読んでも、切り出す区間は変わらない', () => {
+    const chunks = signal(200, [
+      { startSec: 100, durationSec: 3, hz: 7, amplitude: 1.5 },
+      { startSec: 130, durationSec: 3, hz: 7, amplitude: 1.5 },
+    ])
+    const plain = run(chunks)
+    const det = new TriggerDetector()
+    const watched: TriggerEvent[] = []
+    for (const c of chunks) {
+      watched.push(...det.push(c))
+      det.health()
+      det.peakBetween(T0, T0 + 200_000)
+    }
+    watched.push(...det.flush())
+    expect(watched).toEqual(plain)
+  })
+})
