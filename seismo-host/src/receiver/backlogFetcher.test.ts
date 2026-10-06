@@ -47,8 +47,8 @@ function harness(
 ): Harness {
   const clock = { now: 0 }
   const book = new BacklogBook({
-    settleMs: 2_000, retryBaseMs: 5_000, retryMaxMs: 60_000, giveUpAfterMs: 20 * 60_000,
-    maxGaps: 100,
+    settleMs: 2_000, holdMs: 25_000, retryUrgentMs: 1_000, retryBaseMs: 5_000, retryMaxMs: 60_000, giveUpAfterMs: 20 * 60_000,
+    maxGaps: 100, maxSpanSamples: 900,
   })
   const urls: string[] = []
   const written: Array<{ source: string; payload: string }> = []
@@ -106,6 +106,7 @@ describe('BacklogFetcher', () => {
     expect(snap.pendingGaps).toBe(0)
     expect(snap.recoveredSamples).toBe(60)
     expect(snap.recoveredPackets).toBe(2)
+    expect(snap.skippedPackets).toBe(0)
     // 対照: 全部使えた答えでは「混ざった」と言わない。
     expect(h.events.map((e) => e.kind)).toEqual(['recovered'])
   })
@@ -433,8 +434,8 @@ describe('BacklogFetcher', () => {
     const events: unknown[] = []
     const clock = { now: 10_000 }
     const book = new BacklogBook({
-      settleMs: 2_000, retryBaseMs: 5_000, retryMaxMs: 60_000, giveUpAfterMs: 20 * 60_000,
-      maxGaps: 100,
+      settleMs: 2_000, holdMs: 25_000, retryUrgentMs: 1_000, retryBaseMs: 5_000, retryMaxMs: 60_000, giveUpAfterMs: 20 * 60_000,
+      maxGaps: 100, maxSpanSamples: 900,
     })
     for (const q of [0, 90]) book.notePacket({ stream: S, firstSeq: q, count: 30, address: ADDR, atMs: 0 })
     const fetcher = new BacklogFetcher({
@@ -455,8 +456,8 @@ describe('BacklogFetcher', () => {
   it('安全弁: 知らせる口が投げても、取り戻しは止まらずに次の回を張る', async () => {
     const clock = { now: 10_000 }
     const book = new BacklogBook({
-      settleMs: 2_000, retryBaseMs: 5_000, retryMaxMs: 60_000, giveUpAfterMs: 20 * 60_000,
-      maxGaps: 100,
+      settleMs: 2_000, holdMs: 25_000, retryUrgentMs: 1_000, retryBaseMs: 5_000, retryMaxMs: 60_000, giveUpAfterMs: 20 * 60_000,
+      maxGaps: 100, maxSpanSamples: 900,
     })
     for (const q of [0, 90]) book.notePacket({ stream: S, firstSeq: q, count: 30, address: ADDR, atMs: 0 })
     let calls = 0
@@ -481,5 +482,179 @@ describe('BacklogFetcher', () => {
     await fetcher.stop()
     expect(calls).toBeGreaterThanOrEqual(2)
     expect(fetcher.snapshot().failures.internal).toBeGreaterThanOrEqual(1)
+  })
+})
+
+describe('BacklogFetcher（近い欠けをまとめて訊く・基板ごとに並行して訊く）', () => {
+  const S2: StreamRef = { boardKey: 'mac:020000000002', bootId: '5c1d2e3f', sensorId: 'i2c0-68' }
+  const ADDR2 = '192.0.2.42'
+
+  function packet2(q: number): string {
+    return packet(q, 30, { mac: '020000000002', bid: S2.bootId, sid: S2.sensorId })
+  }
+
+  it('正: 同じ流れの近い欠けを 1 回で訊き、挟まる受信済みの分は書かずに捨てる', async () => {
+    // [30,60) と [90,120) が欠け、[60,90) は届いている。基板は [30,120) を全部返す。
+    const h = harness(async () =>
+      response(200, packet(30) + packet(60) + packet(90), {
+        'X-Backlog-Have': '0-500', 'X-Backlog-More': '0', 'X-Backlog-Next': '120',
+      }),
+    )
+    for (const q of [0, 60, 120]) h.book.notePacket({ stream: S, firstSeq: q, count: 30, address: ADDR, atMs: 0 })
+    h.clock.now = 10_000
+    await h.fetcher.step()
+    expect(h.urls).toEqual([`http://${ADDR}/backlog?sid=i2c0-68&bid=34b6e78f&from=30&to=120`])
+    // 受信済みの [60,90) は生データへ二度入れない。捨てた数は数える。
+    expect(h.written.map((w) => w.payload)).toEqual([packet(30), packet(90)])
+    const snap = h.fetcher.snapshot()
+    expect(snap.skippedPackets).toBe(1)
+    expect(snap.pendingGaps).toBe(0)
+    expect(snap.recoveredSamples).toBe(60)
+    expect(snap.unrecoverableSamples).toEqual({})
+  })
+
+  it('安全弁: まとめて訊いて答え切ったのに返らなかった欠けだけを、取り戻せなかったに数える', async () => {
+    const h = harness(async () =>
+      response(200, packet(30) + packet(60), { 'X-Backlog-Have': '0-500', 'X-Backlog-More': '0', 'X-Backlog-Next': '120' }),
+    )
+    for (const q of [0, 60, 120]) h.book.notePacket({ stream: S, firstSeq: q, count: 30, address: ADDR, atMs: 0 })
+    h.clock.now = 10_000
+    await h.fetcher.step()
+    expect(h.fetcher.snapshot().unrecoverableSamples).toEqual({ 'not-held': 30 })
+    expect(h.fetcher.snapshot().recoveredSamples).toBe(30)
+  })
+
+  it('正: 1 枚の基板が答えずにいる間も、別の基板へは並行して訊く', async () => {
+    let releaseA: () => void = () => {}
+    const h = harness(async (url) => {
+      if (url.includes(ADDR)) {
+        await new Promise<void>((resolve) => (releaseA = resolve))
+        throw new Error('timeout')
+      }
+      return response(200, packet2(30), { 'X-Backlog-Have': '0-500', 'X-Backlog-More': '0', 'X-Backlog-Next': '60' })
+    })
+    withGap(h)
+    for (const q of [0, 60]) h.book.notePacket({ stream: S2, firstSeq: q, count: 30, address: ADDR2, atMs: 0 })
+    const a = h.fetcher.step()
+    // A が答えを待っている間に、B の分を訊きに行ける。
+    expect(await h.fetcher.step()).toBe(true)
+    expect(h.urls.map((u) => u.startsWith(`http://${ADDR2}/`))).toEqual([false, true])
+    expect(h.fetcher.snapshot().recoveredSamples).toBe(30)
+    releaseA()
+    expect(await a).toBe(true)
+  })
+
+  it('対照: 訊いている最中の基板へは重ねて訊かない（基板は答えている間、吸い出しが止まる）', async () => {
+    let release: () => void = () => {}
+    const h = harness(async () => {
+      await new Promise<void>((resolve) => (release = resolve))
+      return response(200, packet(30), { 'X-Backlog-Have': '0-500', 'X-Backlog-More': '0', 'X-Backlog-Next': '60' })
+    })
+    // 同じ基板の別のセンサーにも欠けを作る。
+    withGap(h)
+    const other: StreamRef = { ...S, sensorId: 'i2c0-69' }
+    for (const q of [0, 60]) h.book.notePacket({ stream: other, firstSeq: q, count: 30, address: ADDR, atMs: 0 })
+    const first = h.fetcher.step()
+    expect(await h.fetcher.step()).toBe(false)
+    expect(h.urls).toHaveLength(1)
+    release()
+    await first
+  })
+
+  it('安全弁: 動かし始めたら、1 枚の時間切れを待たずに別の基板の欠けを取り戻し続ける', async () => {
+    let releaseA: () => void = () => {}
+    const heldA = new Promise<void>((resolve) => (releaseA = resolve))
+    const clock = { now: 10_000 }
+    const book = new BacklogBook({
+      settleMs: 2_000, holdMs: 25_000, retryUrgentMs: 1_000, retryBaseMs: 5_000, retryMaxMs: 60_000,
+      giveUpAfterMs: 20 * 60_000, maxGaps: 100, maxSpanSamples: 900,
+    })
+    for (const q of [0, 90]) book.notePacket({ stream: S, firstSeq: q, count: 30, address: ADDR, atMs: 0 })
+    // B に、まとめて訊ける長さを超えて離れた欠けを 2 つ作る（2 回訊かないと取り戻せない）。
+    for (const q of [0, 60, 2_000, 2_060]) book.notePacket({ stream: S2, firstSeq: q, count: 30, address: ADDR2, atMs: 0 })
+    const fetcher = new BacklogFetcher({
+      book,
+      get: async (url) => {
+        if (url.includes(ADDR)) {
+          // A は答えない（干渉で時間切れになる形）。
+          await heldA
+          throw new Error('timeout')
+        }
+        const q = Number(/from=(\d+)/.exec(url)?.[1])
+        return response(200, packet2(q), { 'X-Backlog-Have': '0-5000', 'X-Backlog-More': '0', 'X-Backlog-Next': String(q + 30) })
+      },
+      keepRecovered: async () => true,
+      now: () => clock.now,
+      timeoutMs: 3_000, spacingMs: 1, idleMs: 1,
+      onEvent: () => {},
+    })
+    fetcher.start()
+    await new Promise((r) => setTimeout(r, 50))
+    // A は答えないまま。B の欠けは 2 つとも取り戻している。
+    expect(book.overlapsGap(streamKey(S2), 0, 3_000)).toBe(false)
+    expect(book.overlapsGap(KEY, 0, 3_000)).toBe(true)
+    releaseA()
+    await fetcher.stop()
+  })
+
+  it('安全弁: 2 枚の基板で書き込みを待ちきれなかったら、両方が決着するまで次を訊かない', async () => {
+    const finishers: Array<(ok: boolean) => void> = []
+    const h = harness(
+      async (url) =>
+        url.includes(ADDR2)
+          ? response(200, packet2(30), { 'X-Backlog-Have': '0-500', 'X-Backlog-More': '0', 'X-Backlog-Next': '60' })
+          : response(200, packet(30), { 'X-Backlog-Have': '0-500', 'X-Backlog-More': '1', 'X-Backlog-Next': '60' }),
+      () => new Promise<boolean>((resolve) => finishers.push(resolve)),
+      20,
+    )
+    withGap(h)
+    for (const q of [0, 60]) h.book.notePacket({ stream: S2, firstSeq: q, count: 30, address: ADDR2, atMs: 0 })
+    await Promise.all([h.fetcher.step(), h.fetcher.step()])
+    expect(finishers).toHaveLength(2)
+    expect(h.fetcher.snapshot().unsettledWriteSinceMs).toBe(10_000)
+    h.clock.now += 60_000
+    expect(await h.fetcher.step()).toBe(false)
+    finishers[0]!(true)
+    await new Promise((r) => setTimeout(r, 0))
+    // 片方が残っている間はまだ止めている。
+    expect(h.fetcher.snapshot().unsettledWriteSinceMs).toBe(10_000)
+    expect(await h.fetcher.step()).toBe(false)
+    finishers[1]!(true)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(h.fetcher.snapshot().unsettledWriteSinceMs).toBeNull()
+    expect(await h.fetcher.step()).toBe(true)
+  })
+  it('安全弁: 次に訊く欠けを選ぶところで投げても、取り戻しは止まらず次の回を張る（投げたことは数える）', async () => {
+    const clock = { now: 10_000 }
+    const book = new BacklogBook({
+      settleMs: 2_000, holdMs: 25_000, retryUrgentMs: 1_000, retryBaseMs: 5_000, retryMaxMs: 60_000,
+      giveUpAfterMs: 20 * 60_000, maxGaps: 100, maxSpanSamples: 900,
+    })
+    for (const q of [0, 90]) book.notePacket({ stream: S, firstSeq: q, count: 30, address: ADDR, atMs: 0 })
+    const original = book.nextDueWhere.bind(book)
+    let calls = 0
+    book.nextDueWhere = (now, accept) => {
+      calls += 1
+      if (calls === 1) throw new Error('boom')
+      return original(now, accept)
+    }
+    const urls: string[] = []
+    const fetcher = new BacklogFetcher({
+      book,
+      get: async (url) => {
+        urls.push(url)
+        return response(200, packet(30) + packet(60), { 'X-Backlog-Have': '0-500', 'X-Backlog-More': '0', 'X-Backlog-Next': '90' })
+      },
+      keepRecovered: async () => true,
+      now: () => clock.now,
+      timeoutMs: 3_000, spacingMs: 1, idleMs: 1,
+      onEvent: () => {},
+    })
+    fetcher.start()
+    await new Promise((r) => setTimeout(r, 30))
+    await fetcher.stop()
+    expect(fetcher.snapshot().failures.internal).toBe(1)
+    expect(urls.length).toBeGreaterThanOrEqual(1)
+    expect(book.snapshot().pendingGaps).toBe(0)
   })
 })

@@ -14,10 +14,13 @@ const ADDR = '192.0.2.41'
 
 const OPTIONS: BacklogBookOptions = {
   settleMs: 2_000,
+  holdMs: 25_000,
+  retryUrgentMs: 1_000,
   retryBaseMs: 5_000,
   retryMaxMs: 60_000,
   giveUpAfterMs: 20 * 60_000,
   maxGaps: 100,
+  maxSpanSamples: 900,
 }
 
 function book(options: Partial<BacklogBookOptions> = {}): BacklogBook {
@@ -106,10 +109,22 @@ describe('BacklogBook', () => {
     expect(b.snapshot().recoveredSamples).toBe(10)
   })
 
-  it('失敗したら間隔を倍々に空け、上限で頭打ちにする', () => {
+  it('正: 見つけてから holdMs の間に失敗したら、待ちを伸ばさず retryUrgentMs で訊き直す（基板の輪にあるうちに）', () => {
     const b = book()
     feed(b, S, [0, 60], 0)
-    const t0 = 10_000
+    for (const t0 of [10_000, 12_000, 20_000]) {
+      b.failed(KEY, 30, 60, t0)
+      expect(b.nextDue(t0 + 999)).toBeNull()
+      expect(b.nextDue(t0 + 1_000)).not.toBeNull()
+    }
+  })
+
+  it('対照（従来の倍々を holdMs の後へ移した）: holdMs を過ぎてから失敗したら、過ぎてからの回数で倍々に空け、上限で頭打ちにする', () => {
+    const b = book()
+    feed(b, S, [0, 60], 0)
+    // 若いうちの失敗は倍々の回数に数えない。
+    for (let i = 0; i < 5; i++) b.failed(KEY, 30, 60, 10_000)
+    const t0 = 30_000
     b.failed(KEY, 30, 60, t0)
     expect(b.nextDue(t0 + 4_999)).toBeNull()
     expect(b.nextDue(t0 + 5_000)).not.toBeNull()
@@ -121,6 +136,53 @@ describe('BacklogBook', () => {
     expect(b.nextDue(t0 + 60_000)).not.toBeNull()
   })
 
+  it('安全弁: holdMs の境目ちょうどからは倍々の側へ移る', () => {
+    const b = book()
+    feed(b, S, [0, 60], 0)
+    b.failed(KEY, 30, 60, 25_000)
+    expect(b.nextDue(26_000)).toBeNull()
+    expect(b.nextDue(30_000)).not.toBeNull()
+  })
+
+  it('正: 同じ流れの近い欠けは、いちばん古い欠けの頭から maxSpanSamples に収まる末尾まで 1 件で返す', () => {
+    const b = book()
+    // [30,60)・[90,120)・[150,180) が欠ける。
+    feed(b, S, [0, 60, 120, 180], 0)
+    expect(b.nextDue(10_000)).toMatchObject({ key: KEY, from: 30, to: 180 })
+  })
+
+  it('対照: maxSpanSamples を超える先の欠けは伸ばさない（次の回に回す）', () => {
+    const b = book({ maxSpanSamples: 100 })
+    feed(b, S, [0, 60, 120, 180], 0)
+    // [30,180) は 150 サンプル。[90,120) までなら 90 に収まる。
+    expect(b.nextDue(10_000)).toMatchObject({ from: 30, to: 120 })
+  })
+
+  it('対照: 別のセンサーの欠けは伸ばす先に入れない', () => {
+    const b = book()
+    feed(b, S, [0, 60], 0)
+    feed(b, { ...S, sensorId: 'i2c0-69' }, [0, 60, 120], 0)
+    expect(b.nextDue(10_000)).toMatchObject({ key: KEY, from: 30, to: 60 })
+  })
+
+  it('安全弁: 伸ばした範囲の途中にある受信済みの分は欠けに掛からない（書かずに捨てられるように）', () => {
+    const b = book()
+    feed(b, S, [0, 60, 120], 0)
+    expect(b.overlapsGap(KEY, 60, 90)).toBe(false)
+    expect(b.overlapsGap(KEY, 30, 60)).toBe(true)
+    expect(b.overlapsGap(KEY, 80, 100)).toBe(true)
+    expect(b.overlapsGap(streamKey({ ...S, sensorId: 'i2c0-69' }), 30, 60)).toBe(false)
+  })
+
+  it('正: nextDueWhere は通さない流れを飛ばし、次に古いものを返す（訊いている最中の基板を外す）', () => {
+    const b = book()
+    const other: StreamRef = { ...S, boardKey: 'mac:020000000002' }
+    feed(b, S, [0, 60], 500)
+    feed(b, other, [0, 60], 1_000)
+    expect(b.nextDueWhere(10_000, (s) => s.boardKey !== S.boardKey)).toMatchObject({ key: streamKey(other) })
+    expect(b.nextDueWhere(10_000, () => false)).toBeNull()
+  })
+
   it('古すぎる欠けは諦めて「取り戻せなかった」に数える', () => {
     const b = book({ giveUpAfterMs: 60_000 })
     feed(b, S, [0, 60], 0)
@@ -130,7 +192,8 @@ describe('BacklogBook', () => {
   })
 
   it('欠けの数が上限を超えたら、いちばん古いものから捨てて数える', () => {
-    const b = book({ maxGaps: 2 })
+    // 残った 2 件を 1 件にまとめないよう、伸ばす長さを 1 まとまりに絞る。
+    const b = book({ maxGaps: 2, maxSpanSamples: 30 })
     feed(b, S, [0, 60, 120, 180], 1_000)
     const snap = b.snapshot()
     expect(snap.pendingGaps).toBe(2)

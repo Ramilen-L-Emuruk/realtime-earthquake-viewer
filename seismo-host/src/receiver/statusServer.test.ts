@@ -45,7 +45,7 @@ function report(hub: ReadingHub): StatusReport {
     loopStalls: { thresholdMs: 1000, count: 0, totalMs: 0, longestMs: null, last: null },
     backlog: {
       pendingGaps: 0, pendingSamples: 0, recoveredSamples: 0, unrecoverableSamples: {},
-      requests: 0, recoveredPackets: 0, failures: {}, badPackets: 0, foreignPackets: 0, unsavedPackets: 0,
+      requests: 0, recoveredPackets: 0, failures: {}, badPackets: 0, foreignPackets: 0, unsavedPackets: 0, skippedPackets: 0,
       unsettledWriteSinceMs: null,
     },
     http: { address: '0.0.0.0', port: 50506 },

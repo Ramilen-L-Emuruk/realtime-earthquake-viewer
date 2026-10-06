@@ -134,9 +134,20 @@ function defaultBacklogBookPath(): string {
  *   約 11 分ぶん抱えられる（ファームの `SPILL_AFTER_MS`）。それより長く待っても取り戻せない
  * - **欠けは 1 万件まで**: 1 件は数十バイト。2026-10-02 20:21〜20:26 に Wi-Fi の区間で
  *   落ちたときは、5 分間に 3 枚合わせて約 390 件だった
+ * - **見つけてから 25 秒は待ちを伸ばさず 1 秒で訊き直す**: 基板のメモリの輪は 300 まとまりを
+ *   3 センサーで分け合い、1 まとまり 0.3 秒なので約 30 秒（ファームの `BACKLOG_SLOTS`）。
+ *   その手前で切る。2026-10-06 の電子レンジの干渉では、取り戻せたのは 11,199 サンプル、取り戻せなかった
+ *   66,671 サンプルは理由がすべて「基板がもう抱えていない」だった（失敗のたびに 5→60 秒と伸ばす待ちと、
+ *   取りに行く速さの不足の両方で、訊く前に輪が上書きしたと見ている。どちらがどれだけ効いたかは測っていない）
+ * - **1 回に訊く範囲は 900 サンプルまで**: 基板が 1 回に返すのは 30 まとまり（ファームの
+ *   `BACKLOG_MAX_PER_REPLY`）、1 まとまり 30 サンプル。挟まる受信済みの分も枠を食うので、それ以上は
+ *   伸ばさない
  */
 const BACKLOG_BOOK_OPTIONS: BacklogBookOptions = {
   settleMs: 2_000,
+  holdMs: 25_000,
+  retryUrgentMs: 1_000,
+  maxSpanSamples: 900,
   retryBaseMs: 5_000,
   retryMaxMs: 60_000,
   giveUpAfterMs: 20 * 60_000,
@@ -2381,6 +2392,9 @@ async function main(): Promise<void> {
         fetched.badPackets + fetched.foreignPackets,
       ),
       backlogUnsaved: delta('backlogUnsaved', '取り戻したまとまりを生データへ書けず訊き直す', fetched.unsavedPackets),
+      // まとめて訊いた答えに入っていた受信済みのまとまり。取り戻した数に比べて多すぎるなら、
+      // まとめる長さが欠けの散らばり方に合っていない。
+      backlogSkipped: delta('backlogSkipped', '取りに行った答えのうち受信済みで書かなかったまとまり', fetched.skippedPackets),
     }
     // **取り戻せなかった分は理由ごとに出す** —— 再起動・上書き・古いファーム・諦め・捨てたで手当てが違う。
     // 欄は `UNRECOVERABLE_TEXT` の鍵から引く（理由を足せば黙って付いてくる）。

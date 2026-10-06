@@ -162,7 +162,7 @@ function input(overrides: Partial<StatusReportInput> = {}): StatusReportInput {
     loopStalls: { thresholdMs: 1000, count: 0, totalMs: 0, longestMs: null, last: null },
     backlog: {
       pendingGaps: 1, pendingSamples: 30, recoveredSamples: 60, unrecoverableSamples: { 'not-held': 30 },
-      requests: 3, recoveredPackets: 2, failures: { network: 1 }, badPackets: 0, foreignPackets: 0, unsavedPackets: 0,
+      requests: 3, recoveredPackets: 2, failures: { network: 1 }, badPackets: 0, foreignPackets: 0, unsavedPackets: 0, skippedPackets: 0,
       unsettledWriteSinceMs: null,
     },
     http: { address: '0.0.0.0', port: 50506 },
