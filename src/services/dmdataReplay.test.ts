@@ -41,7 +41,9 @@ import { buildSampleTelegram, buildSample1kmTelegram, withWmoHeading } from '../
 import {
   setDataApiGateIntervalForTest, resetDataApiGateForTest,
   setApiGateIntervalForTest, resetApiGateForTest, resetRateLimitsForTest,
+  dmdataThrottleDrainsAt,
 } from './dmdataRequestGates'
+import { createGateTag, type GateTag } from '../utils/requestGate'
 // **アーカイブ本体の取得も門（`services/dmdataRequestGates.ts`）を通る**ので、本番の 6 秒間隔のままでは
 // 1 件取るだけで既定のタイムアウト（5 秒）を超える。**門が効いているかは
 // `utils/requestGate.test.ts` が本物の間隔で確かめている**ので、ここでは 0 にして経路だけを見る。
@@ -254,6 +256,41 @@ describe('アーカイブ本体の取得は門を通る', () => {
     expect(at.length).toBe(2)
     // 門を通らなければ 2 件はほぼ同時（実測 1ms 未満）に飛ぶ。
     expect(at[1] - at[0]).toBeGreaterThanOrEqual(50)
+  })
+
+  // 正: 「もっと見る」の印（`gateTag`）を渡すと、本体の待ちに印が付く。ボタンはこの印の待ちだけを
+  // 数えて残り時間を出す（→ `components/EarthquakeTab/LoadMoreButton.tsx`）。**本体の 1 本目を
+  // 取りに行った瞬間には 2 本目が門で待っている**ので、そこで印の待ちが見えるかを測る。
+  it('印を渡すと本体の待ちに付き、渡さなければ付かない', async () => {
+    const gz = await makeTarGz([
+      { name: 'telegrams.json', content: enc.encode(JSON.stringify([manifestEntry('a1', 'VXSE53')])) },
+      { name: defaultFileName('a1'), content: enc.encode(quakeBody('石川県能登地方')) },
+    ])
+    const tag = createGateTag('test-load-more')
+    // **2 回目は別の URL で組む。** 同じ URL だと 1 回目の目録の控えが効いて本体を取りに行かない
+    const run = async (gateTag: GateTag | undefined, prefix: string): Promise<Array<number | null>> => {
+      const seen: Array<number | null> = []
+      const base = mockArchives([
+        { url: `https://data.api.dmdata.jp/v1/archive/${prefix}1`, gz },
+        { url: `https://data.api.dmdata.jp/v1/archive/${prefix}2`, gz },
+      ])
+      globalThis.fetch = (async (input: string) => {
+        if (String(input).includes('/v1/archive/')) seen.push(dmdataThrottleDrainsAt(tag))
+        return base(String(input))
+      }) as unknown as typeof fetch
+      setDataApiGateIntervalForTest(60)
+      await fetchDmdataQuakeHistory('key', TO, 2, false, null, undefined, undefined, gateTag)
+      return seen
+    }
+
+    const tagged = await run(tag, 'tagged')
+    expect(tagged).toHaveLength(2)
+    expect(tagged[0]).not.toBeNull()   // 1 本目のとき、2 本目が印つきで待っている
+    expect(tagged[1]).toBeNull()       // 2 本目が通ったら、印の待ちは無い
+
+    const untagged = await run(undefined, 'untagged')
+    expect(untagged).toHaveLength(2)
+    expect(untagged.every(v => v === null)).toBe(true)
   })
 
   // 対照: 控えから読めた分は門を通らない（通信しないので待つ理由がない）。
@@ -1358,6 +1395,171 @@ describe('fetchDmdataQuakeHistory', () => {
     globalThis.fetch = originalFetch
     await clearAllCaches()
     vi.restoreAllMocks()
+  })
+
+  // **窓の端で切れた地震を、発生日のアーカイブから補う。**
+  //
+  // 窓は電文の発表日で切るので、日をまたいで報が出た地震は後ろ半分だけが窓に入る（実例:
+  // 2026-06-26 22:29 の山梨県東部・富士五湖は、震源要素更新だけが翌日 00:40 の発表）。
+  // 目録の `xmlReport.head.eventId` で、本体を落とさずにどの地震の電文かが分かる。
+  describe('窓の端で切れた地震', () => {
+    /** `xmlReport.head.eventId` を持つ目録の 1 日ぶん（実アーカイブと同じ形）。 */
+    async function dayArchiveWithEventIds(
+      telegrams: Array<{
+        id: string; eventId: string; time: string; serial?: string
+        /** 目録の `xmlReport.head.eventId` を落とす */
+        omitEventId?: boolean
+        /** 本体を読めない形にする */
+        brokenBody?: boolean
+      }>,
+    ) {
+      return makeTarGz([
+        {
+          name: 'telegrams.json',
+          content: JSON.stringify(telegrams.map(t => ({
+            ...manifestEntry(t.id, 'VXSE53', t.time),
+            ...(!t.omitEventId && { xmlReport: { head: { eventId: t.eventId } } }),
+          }))),
+        },
+        ...telegrams.map(t => ({
+          name: `${t.id}_20260810120500000_0.xml`,
+          content: t.brokenBody ? '<Report>' : historyBody(t.eventId, t.time, t.serial),
+        })),
+      ])
+    }
+
+    // 窓は 08-09〜08-10。08-08 22:30 の地震は後ろの報（08-09 00:40）だけが窓に入る
+    const BEFORE = new Date('2026-08-10T12:00:00+09:00')
+    const STRADDLING = '20260808223000'
+    const OTHER_ON_DAY_BEFORE = '20260808100000'
+
+    async function archives(dayBefore: Uint8Array | 'error') {
+      const d09 = await dayArchiveWithEventIds([
+        { id: 'late0001', eventId: STRADDLING, time: '2026-08-09T00:40:00+09:00', serial: '2' },
+      ])
+      const d10 = await dayArchiveWithEventIds([])
+      return [
+        { date: '2026-08-08', url: 'https://x/d08', gz: dayBefore },
+        { date: '2026-08-09', url: 'https://x/d09', gz: d09 },
+        { date: '2026-08-10', url: 'https://x/d10', gz: d10 },
+      ]
+    }
+
+    // **正**: 前半が補われ、1 回の取り込みで地震の報の列が閉じる
+    it('前日のアーカイブから、その地震の電文だけを補う', async () => {
+      const d08 = await dayArchiveWithEventIds([
+        { id: 'early001', eventId: STRADDLING, time: '2026-08-08T22:35:00+09:00', serial: '1' },
+        { id: 'other001', eventId: OTHER_ON_DAY_BEFORE, time: '2026-08-08T10:05:00+09:00' },
+      ])
+      const fetchMock = mockHistoryArchives(await archives(d08))
+      globalThis.fetch = fetchMock as unknown as typeof fetch
+
+      const result = await fetchDmdataQuakeHistory('key', BEFORE, 1, false, null)
+
+      const ids = result.quakes.map(q => q.telegramKey ?? q.id)
+      expect(result.quakes.filter(q => q.id.includes(STRADDLING))).toHaveLength(2)
+      // **対照**: 前日のほかの地震は次の窓が読む（ここでは取り込まない）
+      expect(result.quakes.some(q => q.id.includes(OTHER_ON_DAY_BEFORE))).toBe(false)
+      expect(ids).toHaveLength(2)
+      // **安全弁**: カーソルは窓の日で止める（補った日まで進めると、前日のほかの地震が二度と読まれない）
+      expect(result.oldestLoadedDay).toBe('2026-08-09')
+      expect(result.failedArchiveUrls).toEqual([])
+    })
+
+    it('補えなかったら例外にせず、読めなかった取得元として返す', async () => {
+      globalThis.fetch = mockHistoryArchives(await archives('error')) as unknown as typeof fetch
+
+      const result = await fetchDmdataQuakeHistory('key', BEFORE, 1, false, null)
+
+      expect(result.quakes.filter(q => q.id.includes(STRADDLING))).toHaveLength(1)
+      expect(result.failedArchiveUrls).toContain('straddle:2026-08-08')
+      expect(result.oldestLoadedDay).toBe('2026-08-09')
+    })
+
+    // **目録に EventID が無いエントリは、本体を読んでどの地震かを決める。** 目録だけで外すと
+    // 目的の地震の報を取りこぼし、一律に失敗とすると無関係な地震の 1 通で日ごと失敗になる
+    it('目録に EventID が無くても、本体で目的の地震と分かれば補う', async () => {
+      const d08 = await dayArchiveWithEventIds([
+        { id: 'noeid001', eventId: STRADDLING, time: '2026-08-08T22:35:00+09:00', serial: '1', omitEventId: true },
+      ])
+      globalThis.fetch = mockHistoryArchives(await archives(d08)) as unknown as typeof fetch
+
+      const result = await fetchDmdataQuakeHistory('key', BEFORE, 1, false, null)
+
+      expect(result.quakes.filter(q => q.id.includes(STRADDLING))).toHaveLength(2)
+      expect(result.failedArchiveUrls).toEqual([])
+    })
+
+    // **対照**: 無関係な地震の電文が EventID を欠いていても、目的の地震が補えたなら失敗にしない
+    it('無関係な地震の目録に EventID が無いだけなら、補えなかった日にしない', async () => {
+      const d08 = await dayArchiveWithEventIds([
+        { id: 'early001', eventId: STRADDLING, time: '2026-08-08T22:35:00+09:00', serial: '1' },
+        { id: 'noeid002', eventId: OTHER_ON_DAY_BEFORE, time: '2026-08-08T10:05:00+09:00', omitEventId: true },
+      ])
+      globalThis.fetch = mockHistoryArchives(await archives(d08)) as unknown as typeof fetch
+
+      const result = await fetchDmdataQuakeHistory('key', BEFORE, 1, false, null)
+
+      expect(result.quakes.filter(q => q.id.includes(STRADDLING))).toHaveLength(2)
+      expect(result.quakes.some(q => q.id.includes(OTHER_ON_DAY_BEFORE))).toBe(false)
+      expect(result.failedArchiveUrls).toEqual([])
+    })
+
+    // **安全弁**: 本体を読んでも地震が決まらなければ、目的の地震の報が混ざっていたかは分からない。
+    // 「その日に報が無かった」と区別できるよう、補えなかった日として返す
+    it('目録に EventID が無く本体も読めないエントリがあれば、補えなかった日として返す', async () => {
+      const d08 = await dayArchiveWithEventIds([
+        { id: 'noeid003', eventId: STRADDLING, time: '2026-08-08T22:35:00+09:00', omitEventId: true, brokenBody: true },
+      ])
+      globalThis.fetch = mockHistoryArchives(await archives(d08)) as unknown as typeof fetch
+
+      const result = await fetchDmdataQuakeHistory('key', BEFORE, 1, false, null)
+
+      expect(result.failedArchiveUrls).toContain('straddle:2026-08-08')
+    })
+
+    it('目録の見出しごと壊れたエントリがあれば、補えなかった日として返す', async () => {
+      const d08 = await makeTarGz([
+        { name: 'telegrams.json', content: JSON.stringify([{ id: 'nohead01' }]) },
+      ])
+      globalThis.fetch = mockHistoryArchives(await archives(d08)) as unknown as typeof fetch
+
+      const result = await fetchDmdataQuakeHistory('key', BEFORE, 1, false, null)
+
+      expect(result.failedArchiveUrls).toContain('straddle:2026-08-08')
+    })
+
+    // 目録は**前日まで広げて 1 本で引く**（補いのために一覧を引き直さない）。左端は排他なので
+    // （→ `archiveListRange`）、窓 08-09〜 の前日 08-08 を含めると `from` は 08-07 になる
+    it('目録は窓の前日まで広げて 1 本で引く', async () => {
+      const fetchMock = mockHistoryArchives(await archives(await dayArchiveWithEventIds([
+        { id: 'early001', eventId: STRADDLING, time: '2026-08-08T22:35:00+09:00', serial: '1' },
+      ])))
+      globalThis.fetch = fetchMock as unknown as typeof fetch
+
+      await fetchDmdataQuakeHistory('key', BEFORE, 1, false, null)
+
+      const listCalls = fetchMock.mock.calls.map(([url]) => String(url)).filter(url => url.includes('/v2/archive?'))
+      expect(listCalls).toHaveLength(1)
+      expect(decodeURIComponent(listCalls[0])).toContain('datetime=2026-08-07~')
+    })
+
+    it('窓の中で閉じている地震では、前日のアーカイブを落とさない', async () => {
+      const d09 = await dayArchiveWithEventIds([
+        { id: 'inwin001', eventId: '20260809120000', time: '2026-08-09T12:05:00+09:00' },
+      ])
+      const fetchMock = mockHistoryArchives([
+        { date: '2026-08-08', url: 'https://x/d08', gz: 'error' },
+        { date: '2026-08-09', url: 'https://x/d09', gz: d09 },
+        { date: '2026-08-10', url: 'https://x/d10', gz: await dayArchiveWithEventIds([]) },
+      ])
+      globalThis.fetch = fetchMock as unknown as typeof fetch
+
+      const result = await fetchDmdataQuakeHistory('key', BEFORE, 1, false, null)
+
+      expect(fetchMock.mock.calls.some(([url]) => url === 'https://x/d08')).toBe(false)
+      expect(result.failedArchiveUrls).toEqual([])
+    })
   })
 
   // アーカイブは日単位なので、指定時刻と同じ日の「まだ発表されていない」電文が必ず混ざる。

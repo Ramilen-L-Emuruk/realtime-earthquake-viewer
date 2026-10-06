@@ -67,6 +67,7 @@ const renderTab = (updateMarks: ReadonlyMap<string, QuakeCardMarks>, selectedId:
     isLoadingMore={false}
     hasMore={false}
     onLoadMore={() => {}}
+    watchLoadMoreThrottle={false}
     error={null}
     historyLoss={createEmptyTelegramLoss()}
     loadMoreFailed={false}
@@ -125,6 +126,7 @@ describe('印の付いた行の自動展開（カードとの配線）', () => {
         isLoadingMore={false}
         hasMore={false}
         onLoadMore={() => {}}
+        watchLoadMoreThrottle={false}
         error={null}
         historyLoss={createEmptyTelegramLoss()}
         loadMoreFailed={false}

@@ -52,6 +52,20 @@ export interface RateLimitWindow {
   max: number
 }
 
+/**
+ * 門の待ちに付ける印。**誰の待ちかを、門の外から数えるためだけに使う**（配り方には効かない）。
+ *
+ * 同一性で見分ける（中身は記録用の名前だけ）。作るのは {@link createGateTag}。
+ */
+export interface GateTag {
+  readonly label: string
+}
+
+/** 印を 1 つ作る。**同じ名前で 2 度作っても別の印になる**（同一性で見分けるため）。 */
+export function createGateTag(label: string): GateTag {
+  return Object.freeze({ label })
+}
+
 /** 待ちを実測できるようにしておく（検証で `window.__telegramBodyStats()` と併せて読む）。 */
 export interface RateGate {
   /**
@@ -59,8 +73,11 @@ export interface RateGate {
    *
    * `urgent` を渡したものは、待っている通常の要求を追い越して先に通る（上限は守る）。
    * 追い越しの中では到来順。
+   *
+   * `tag` は誰の待ちかの印（→ {@link GateTag}）。**配り方には効かない** —— `drainsAt` が
+   * 「その印の最後の 1 件が通る時刻」を答えるためだけに持つ。
    */
-  wait: (opts?: { urgent?: boolean }) => Promise<void>
+  wait: (opts?: { urgent?: boolean; tag?: GateTag }) => Promise<void>
   /** いま枠を待っている数。逐次反映の進捗と、詰まりの検証に使う。 */
   waiting: () => number
   /**
@@ -71,6 +88,20 @@ export interface RateGate {
    * 画面に出す意味が生まれる。
    */
   throttledUntil: () => number | null
+  /**
+   * `tag` の印を持つ待ちが、最後の 1 件まで通り終える時刻（ミリ秒）。その印の待ちが無ければ `null`。
+   *
+   * **「もっと見る」のボタンに残り時間を出すために読む。** `throttledUntil` は次の 1 枠だけを
+   * 答えるので、まとめて入った取得（アーカイブ本体を最大 8 本）では 1 本通るたびに数え直しになる。
+   *
+   * **印で絞るのは、同じ門に他の経路の待ちも並ぶため。** 列の全員を数えると、印の待ちより
+   * 後ろに並んだ他人の分まで残り時間へ混ざる。前に並んでいる分は印の待ちもその後ろで待つので、
+   * 試算の中で順番どおりに通す（急ぎの追い越しも実際の配り方 `takeNext` と同じに扱う）。
+   *
+   * **これから積まれる分は数えない**（呼んだ時点の列だけで見積もる）。後から急ぎの待ちが
+   * 割り込めば、そのぶん実際は遅れる。
+   */
+  drainsAt: (tag: GateTag) => number | null
   /** テスト用。待っているものを通してから空にする。 */
   resetForTest: () => void
 }
@@ -102,7 +133,7 @@ export interface RateGate {
 export function createRateGate(limits: readonly RateLimitWindow[]): RateGate {
   // 上限 0 件は毎回の判定で通るので、鳴らしっぱなしにせず間引く
   const warnZeroLimit = createLogThrottle(60_000)
-  interface Waiter { resolve: () => void; urgent: boolean }
+  interface Waiter { resolve: () => void; urgent: boolean; tag: GateTag | null }
   const queue: Waiter[] = []
   /** 実際に通した時刻（昇順）。いちばん長い窓より古いものは捨てる。 */
   const fired: number[] = []
@@ -112,11 +143,11 @@ export function createRateGate(limits: readonly RateLimitWindow[]): RateGate {
   const maxWindowMs = limits.reduce((m, l) => Math.max(m, l.windowMs), 0)
 
   /** どの窓にも効かなくなった記録を落とす（放っておくと際限なく積み上がる）。 */
-  function prune(now: number): void {
+  function prune(history: number[], now: number): void {
     const cutoff = now - maxWindowMs
     let drop = 0
-    while (drop < fired.length && fired[drop] <= cutoff) drop++
-    if (drop > 0) fired.splice(0, drop)
+    while (drop < history.length && history[drop] <= cutoff) drop++
+    if (drop > 0) history.splice(0, drop)
   }
 
   /**
@@ -125,9 +156,12 @@ export function createRateGate(limits: readonly RateLimitWindow[]): RateGate {
    * **すべての制限を満たす時刻を採る**（いちばん遅いものに合わせる）。ある制限が上限に
    * 達していたら、その窓に効いている記録のうち**いちばん古いものが窓から抜けた瞬間**に
    * 1 枠だけ空く —— だから 5 分まるごと止まるわけではない。
+   *
+   * `history` は通した時刻の記録。**既定は本物の `fired`**で、`drainsAt` だけが写しを渡して
+   * 「この先こう通っていく」を試算する（本物の記録は書き換えない）。
    */
-  function nextSlotAt(now: number): number {
-    prune(now)
+  function nextSlotAt(now: number, history: number[] = fired): number {
+    prune(history, now)
     let at = now
     for (const l of limits) {
       // 0 件しか通さない設定は使っていないが、入ってきたら永久に待たせる側へ倒す
@@ -142,22 +176,27 @@ export function createRateGate(limits: readonly RateLimitWindow[]): RateGate {
         ))
         return Number.POSITIVE_INFINITY
       }
-      if (fired.length < l.max) continue
-      // `fired` は昇順。窓に入っているのは `now - windowMs` より後のもの。
+      if (history.length < l.max) continue
+      // `history` は昇順。窓に入っているのは `now - windowMs` より後のもの。
       const from = now - l.windowMs
-      let i = fired.length
-      while (i > 0 && fired[i - 1] > from) i--
-      if (fired.length - i < l.max) continue
+      let i = history.length
+      while (i > 0 && history[i - 1] > from) i--
+      if (history.length - i < l.max) continue
       // 窓の中で上限に達している。抜けるのを待つのは「上限の枚数ぶん遡った 1 件」。
-      at = Math.max(at, fired[fired.length - l.max] + l.windowMs)
+      at = Math.max(at, history[history.length - l.max] + l.windowMs)
     }
     return at
   }
 
-  /** 列の先頭に出すものを選ぶ。`urgent` が居ればその最初のもの、居なければ到来順の先頭。 */
-  function takeNext(): Waiter | undefined {
-    const i = queue.findIndex(w => w.urgent)
-    return queue.splice(i >= 0 ? i : 0, 1)[0]
+  /**
+   * 列の先頭に出すものを選ぶ。`urgent` が居ればその最初のもの、居なければ到来順の先頭。
+   *
+   * `from` は選ぶ列。**既定は本物の `queue`**で、`drainsAt` だけが写しを渡して配る順を試算する
+   * （順の決め方を 2 箇所に書くと、片方だけ直したときに残り時間が実際の配り方からずれる）。
+   */
+  function takeNext<T extends { urgent: boolean }>(from: T[]): T | undefined {
+    const i = from.findIndex(w => w.urgent)
+    return from.splice(i >= 0 ? i : 0, 1)[0]
   }
 
   function pump(): void {
@@ -167,7 +206,7 @@ export function createRateGate(limits: readonly RateLimitWindow[]): RateGate {
     const delay = Math.max(0, nextSlotAt(now) - now)
     timer = setTimeout(() => {
       timer = null
-      const next = takeNext()
+      const next = takeNext(queue)
       if (!next) return
       fired.push(Date.now())
       next.resolve()
@@ -188,7 +227,7 @@ export function createRateGate(limits: readonly RateLimitWindow[]): RateGate {
         return Promise.resolve()
       }
       return new Promise<void>(resolve => {
-        queue.push({ resolve, urgent: opts?.urgent ?? false })
+        queue.push({ resolve, urgent: opts?.urgent ?? false, tag: opts?.tag ?? null })
         pump()
       })
     },
@@ -199,6 +238,25 @@ export function createRateGate(limits: readonly RateLimitWindow[]): RateGate {
       if (queue.length === 0) return null
       const now = Date.now()
       const at = nextSlotAt(now)
+      return at > now ? at : null
+    },
+    drainsAt: (tag) => {
+      // 列と記録の写しの上で、実際と同じ順に 1 件ずつ通していく。印の最後の 1 件が通った時刻が答え。
+      // **印の待ちより後ろは試算しない**（答えに効かない）。
+      const pending = queue.slice()
+      let remaining = pending.filter(w => w.tag === tag).length
+      if (remaining === 0) return null
+      const now = Date.now()
+      const history = fired.slice()
+      let at = now
+      while (remaining > 0) {
+        const next = takeNext(pending)
+        if (!next) break
+        at = nextSlotAt(at, history)
+        if (!Number.isFinite(at)) return at   // 上限 0 件の窓（永久に待つ）はそのまま返す
+        history.push(at)
+        if (next.tag === tag) remaining--
+      }
       return at > now ? at : null
     },
     resetForTest: () => {

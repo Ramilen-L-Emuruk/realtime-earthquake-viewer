@@ -32,7 +32,7 @@
  * `telegramBody.ts` の中にあり `bodyGate` という名前だったので、アーカイブ本体から
  * 使うと名前が実態と食い違った。
  */
-import { createRateGate, type RateLimitWindow } from '../utils/requestGate'
+import { createRateGate, createGateTag, type GateTag, type RateLimitWindow } from '../utils/requestGate'
 import { log } from '../utils/logger'
 
 /**
@@ -74,8 +74,10 @@ let gate = createRateGate(DATA_API_LIMITS)
  * 復元する経路だけが使う。
  * **履歴・補助情報・リプレイ・アーカイブ本体には渡さないこと**（全部が urgent なら
  * 優先度は意味を失う）。
+ *
+ * `tag` は誰の待ちかの印。**配り方には効かない**（→ `dmdataThrottleDrainsAt`）。
  */
-export function waitForDataApiSlot(opts?: { urgent?: boolean }): Promise<void> {
+export function waitForDataApiSlot(opts?: { urgent?: boolean; tag?: GateTag }): Promise<void> {
   return gate.wait(opts)
 }
 
@@ -118,7 +120,7 @@ let apiGate = createRateGate(API_LIMITS)
  * だけ —— あれは電文の受信そのものの起点で、一覧や目録の待ち行列の後ろに回すと EEW の
  * 受信開始が遅れる。
  */
-export function waitForApiSlot(opts?: { urgent?: boolean }): Promise<void> {
+export function waitForApiSlot(opts?: { urgent?: boolean; tag?: GateTag }): Promise<void> {
   return apiGate.wait(opts)
 }
 
@@ -142,6 +144,54 @@ export function resetApiGateForTest(): void {
 export function dmdataThrottledUntil(): number | null {
   const a = gate.throttledUntil()
   const b = apiGate.throttledUntil()
+  if (a === null) return b
+  if (b === null) return a
+  return Math.max(a, b)
+}
+
+/**
+ * いまの「もっと見る」の取得に付けている印（→ `utils/requestGate.ts` の `GateTag`）。まだ押していなければ `null`。
+ *
+ * **押すたびに作り直す**（{@link beginLoadMoreGateTag}）。取得の途中で接続が張り直されると、
+ * もう結果を使わない待ちが門に残る（門の待ちは取り消せない）。印を使い回すと、次の押下の残り時間に
+ * その待ちまで「自分の分」として混ざる。作り直せば、残った待ちは古い印のまま門に並び、
+ * 新しい押下の試算ではただ「前に並んでいる他人の待ち」として順番どおりに通される。
+ *
+ * 1 つの変数で持てるのは、「もっと見る」が同時に 1 本しか走らないため（押している間はボタンが無効）。
+ */
+let loadMoreGateTag: GateTag | null = null
+
+/** 「もっと見る」を押したときに呼び、その取得に付ける新しい印を返す。 */
+export function beginLoadMoreGateTag(): GateTag {
+  loadMoreGateTag = createGateTag('load-more')
+  return loadMoreGateTag
+}
+
+/** テスト用。いまの「もっと見る」の印を捨てる（押していない状態へ戻す）。 */
+export function resetLoadMoreGateTagForTest(): void {
+  loadMoreGateTag = null
+}
+
+/**
+ * いまの「もっと見る」の取得が門を通り終える時刻。印の待ちが無ければ（まだ押していない・
+ * まだ門に並んでいない・もう通り終えた）`null`。ボタンが残り時間を数えるために読む。
+ */
+export function loadMoreDrainsAt(): number | null {
+  return loadMoreGateTag ? dmdataThrottleDrainsAt(loadMoreGateTag) : null
+}
+
+/**
+ * `tag` の印を持つ待ちが、どちらの門でも通り終える時刻。その印の待ちが無ければ `null`。
+ *
+ * **「もっと見る」のボタンが残り時間を数えるために読む**（→ `components/EarthquakeTab/LoadMoreButton.tsx`）。
+ * `dmdataThrottledUntil` は次の 1 枠しか答えないので、アーカイブ本体をまとめて待つ「もっと見る」では
+ * 1 本通るたびに数え直しになる。印で絞るのは、同じ門に並ぶ他の経路の待ちを混ぜないため。
+ *
+ * **遅いほうを返す**のは `dmdataThrottledUntil` と同じ理由。
+ */
+export function dmdataThrottleDrainsAt(tag: GateTag): number | null {
+  const a = gate.drainsAt(tag)
+  const b = apiGate.drainsAt(tag)
   if (a === null) return b
   if (b === null) return a
   return Math.max(a, b)

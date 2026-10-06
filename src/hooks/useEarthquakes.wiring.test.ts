@@ -1732,6 +1732,25 @@ describe('DMDSS 版: 「もっと見る」で遡れる範囲', () => {
     expect(third).toBe(new Date(Date.parse('2026-08-20T00:00:00+09:00') - 1).toISOString())
   })
 
+  // 「もっと見る」の取得にだけ門の印を付ける。ボタンはこの印の待ちだけを数えるので
+  // （→ `components/EarthquakeTab/LoadMoreButton.tsx`）、渡し忘れると残り時間が出ず「取得中…」に戻る。
+  //
+  // **印は押すたびに作り直す。** 使い回すと、中断された前回の待ちが門に残ったとき、次の押下の
+  // 残り時間にそれまで「自分の分」として混ざる（→ `services/dmdataRequestGates.ts` の `beginLoadMoreGateTag`）。
+  it('正: 「もっと見る」は押すたびに新しい印を付けて取り、起動時の履歴は付けない', async () => {
+    const h = setup({ offset: null })
+    await h.flush()
+
+    await act(async () => { await h.current.loadMoreEarthquakes() })
+    await act(async () => { await h.current.loadMoreEarthquakes() })
+
+    const tags = vi.mocked(fetchDmdataQuakeHistory).mock.calls.map(c => c[7])
+    expect(tags[0]).toBeUndefined()                    // 起動時
+    expect(tags[1]).toEqual({ label: 'load-more' })    // もっと見る（1 回目）
+    expect(tags[2]).toEqual({ label: 'load-more' })    // もっと見る（2 回目）
+    expect(tags[2]).not.toBe(tags[1])                  // 別の印
+  })
+
   // 窓の幅は毎回同じ。**日数を伸ばしていく形へ戻さないこと** —— あれは押すたびに範囲全体を
   // 読み直す作りで、遡るほど 1 回の解析量が増えていた。
   it('正: 窓の幅は毎回一定', async () => {

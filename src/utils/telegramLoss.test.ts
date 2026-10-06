@@ -9,7 +9,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   createEmptyTelegramLoss, addTelegramLoss, telegramLossFrom, isTelegramLossEmpty,
-  describeTelegramLossParts, formatHistoryLossNotice, formatRateLimitedNotice,
+  describeTelegramLossParts, formatHistoryLossNotice, formatRateLimitedNotice, formatLoadMoreThrottleLabel,
   FETCH_THROTTLED_NOTICE, totalSkipped, mergeHistoryLoss, createSkipCounter, UNKNOWN_SKIP_DAY,
 } from './telegramLoss'
 
@@ -386,5 +386,24 @@ describe('mergeHistoryLoss', () => {
 
     expect(next.failedSources.size).toBe(0)
     expect(totalSkipped(next)).toBe(1)
+  })
+})
+
+// 「もっと見る」のボタンに出す残り時間（→ `components/EarthquakeTab/LoadMoreButton.tsx`）。
+describe('formatLoadMoreThrottleLabel', () => {
+  // 正: 分と秒（秒は 2 桁）
+  it('分:秒 で出す', () => {
+    expect(formatLoadMoreThrottleLabel(135_000)).toBe('取得制限中（あと 2:15）')
+    expect(formatLoadMoreThrottleLabel(42_000)).toBe('取得制限中（あと 0:42）')
+  })
+  // 対照: 秒の端数は切り上げる（まだ待っているのに「0:00」と出す 1 秒を作らない）
+  it('秒の端数は切り上げる', () => {
+    expect(formatLoadMoreThrottleLabel(59_001)).toBe('取得制限中（あと 1:00）')
+    expect(formatLoadMoreThrottleLabel(1)).toBe('取得制限中（あと 0:01）')
+  })
+  // 安全弁: 0 以下が来ても「0:00」や負の値にしない（呼んだ時点で過ぎていた場合）
+  it('0 以下でも 1 秒として出す', () => {
+    expect(formatLoadMoreThrottleLabel(0)).toBe('取得制限中（あと 0:01）')
+    expect(formatLoadMoreThrottleLabel(-500)).toBe('取得制限中（あと 0:01）')
   })
 })

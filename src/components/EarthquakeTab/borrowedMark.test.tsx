@@ -73,6 +73,7 @@ const renderTab = (quake: JMAQuake) => render(
     isLoadingMore={false}
     hasMore={false}
     onLoadMore={() => {}}
+    watchLoadMoreThrottle={false}
     error={null}
     historyLoss={createEmptyTelegramLoss()}
     loadMoreFailed={false}

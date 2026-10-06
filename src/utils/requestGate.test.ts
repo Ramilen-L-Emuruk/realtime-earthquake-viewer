@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { createRateGate } from './requestGate'
+import { createRateGate, createGateTag } from './requestGate'
 
 // 起動時の履歴取得は `Promise.allSettled(items.map(...))` で全件を同時に投げる。
 // 配信元の上限（電文本体は 50req/5min）を守れるかは、**上限に達したあとこの門が
@@ -237,5 +237,126 @@ describe('throttledUntil', () => {
     await pending
     // 待ちが解けたら消える
     expect(gate.throttledUntil()).toBeNull()
+  })
+})
+
+// 「もっと見る」のボタンに残り時間を出すための口（→ `components/EarthquakeTab/LoadMoreButton.tsx`）。
+// **時刻は偽のタイマーで止めて測る**（`Date.now()` も止まるので、答えをぴったり比べられる）。
+describe('drainsAt', () => {
+  const WINDOW = 1000
+  /**
+   * 1 窓ぶん進める。**+1 ms するのは、偽のタイマーが遅延 0 の連鎖（同じ時刻に 2 人目を通す
+   * `setTimeout(…, 0)`）を次の 1 ms へ回すため**（実測。門の答えはこの 1 ms を含まない）。
+   */
+  const advanceOneWindow = () => vi.advanceTimersByTime(WINDOW + 1)
+
+  function withFakeTime(fn: () => void): void {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    try { fn() } finally { vi.useRealTimers() }
+  }
+
+  /** 2 枠の窓で、枠を使い切った門（0 ms に 2 件通した状態）。 */
+  function fullGate() {
+    const gate = createRateGate([{ windowMs: WINDOW, max: 2 }])
+    void gate.wait()
+    void gate.wait()
+    return gate
+  }
+
+  // 対照: 印の待ちが無ければ null（枠を使い切っていても・他人が待っていても）
+  it('印の待ちが無ければ null', () => {
+    withFakeTime(() => {
+      const mine = createGateTag('mine')
+      const gate = fullGate()
+      expect(gate.drainsAt(mine)).toBeNull()
+      void gate.wait()   // 印の無い待ち
+      expect(gate.drainsAt(mine)).toBeNull()
+    })
+  })
+
+  // 正: **次の 1 枠ではなく、印の最後の 1 件が通る時刻**を返す。2 枠の窓で 3 件待てば、
+  // 3 件目は 1 窓待った枠（1000 ms）のさらに 1 窓後（2000 ms）に通る
+  it('まとめて待っている印の取得が全部通り終える時刻を返す', () => {
+    withFakeTime(() => {
+      const mine = createGateTag('mine')
+      const gate = fullGate()
+      for (let i = 0; i < 3; i++) void gate.wait({ tag: mine })
+      expect(gate.throttledUntil()).toBe(WINDOW)       // 次の 1 枠
+      expect(gate.drainsAt(mine)).toBe(2 * WINDOW)     // 印の最後の 1 件
+    })
+  })
+
+  // 正: **前に並んでいる他人の分は数える**（印の取得はその後ろで待つ）
+  it('前に並んでいる他の待ちのぶん遅れる', () => {
+    withFakeTime(() => {
+      const mine = createGateTag('mine')
+      const gate = fullGate()
+      void gate.wait()                 // 他人（1000 ms）
+      void gate.wait()                 // 他人（1000 ms）
+      void gate.wait({ tag: mine })    // 自分（2000 ms）
+      expect(gate.drainsAt(mine)).toBe(2 * WINDOW)
+    })
+  })
+
+  // 正: **後ろに並んだ他人の分は数えない**（これを数えると、自分の取得が終わっても数字が残る）
+  it('後ろに並んだ他の待ちは数えない', () => {
+    withFakeTime(() => {
+      const mine = createGateTag('mine')
+      const gate = fullGate()
+      void gate.wait({ tag: mine })    // 自分（1000 ms）
+      for (let i = 0; i < 4; i++) void gate.wait()   // 他人（1000〜3000 ms）
+      expect(gate.drainsAt(mine)).toBe(WINDOW)
+    })
+  })
+
+  // 正: **後から来た急ぎの待ちが追い越すぶんは数える**（実際の配り方 `takeNext` と同じ順で試算する）
+  it('急ぎの追い越しは実際の配り方どおりに数える', () => {
+    withFakeTime(() => {
+      const mine = createGateTag('mine')
+      const gate = fullGate()
+      void gate.wait({ tag: mine })                // 自分。追い越されなければ 1000 ms
+      void gate.wait({ tag: mine })                // 自分。追い越されなければ 1000 ms
+      void gate.wait({ urgent: true })             // 急ぎ。前の 2 件を追い越して 1000 ms
+      expect(gate.drainsAt(mine)).toBe(2 * WINDOW) // 自分の 2 件目は次の窓へ押し出される
+    })
+  })
+
+  // 正: 通るたびに印の待ちが減り、答えは動かない（数え直しにならない）。空になったら null
+  it('通っていく間も同じ時刻を返し、印の待ちが空になったら null', () => {
+    withFakeTime(() => {
+      const mine = createGateTag('mine')
+      const gate = fullGate()
+      for (let i = 0; i < 3; i++) void gate.wait({ tag: mine })
+      advanceOneWindow()
+      expect(gate.waiting()).toBe(1)
+      expect(gate.drainsAt(mine)).toBe(2 * WINDOW)
+      advanceOneWindow()
+      expect(gate.waiting()).toBe(0)
+      expect(gate.drainsAt(mine)).toBeNull()
+    })
+  })
+
+  // 安全弁: 試算は写しの上で行う。**本物の列や記録を書き換えると、門そのものの配り方が狂う**
+  it('何度呼んでも門の配り方を変えない', () => {
+    withFakeTime(() => {
+      const mine = createGateTag('mine')
+      const gate = fullGate()
+      for (let i = 0; i < 3; i++) void gate.wait({ tag: mine })
+      for (let i = 0; i < 10; i++) gate.drainsAt(mine)
+      expect(gate.waiting()).toBe(3)
+      expect(gate.throttledUntil()).toBe(WINDOW)
+      advanceOneWindow()
+      expect(gate.waiting()).toBe(1)
+    })
+  })
+
+  // 安全弁: 同じ名前の印でも別物として扱う（同一性で見分ける）
+  it('同じ名前で作った別の印は数えない', () => {
+    withFakeTime(() => {
+      const gate = fullGate()
+      void gate.wait({ tag: createGateTag('mine') })
+      expect(gate.drainsAt(createGateTag('mine'))).toBeNull()
+    })
   })
 })
