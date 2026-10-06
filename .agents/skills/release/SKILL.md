@@ -12,6 +12,6 @@ Use this skill only when the user explicitly requests a release, merge, tag, or 
 3. Present the planned merge, validation, version update, tag, and push steps when the request does not make those operations unambiguous. Obtain confirmation before actions that alter shared history, publish artifacts, or deploy.
 4. Merge without rewriting history, run the required integration validation, then perform versioning and tagging only if validation passes.
 5. Fetch again immediately before push. If push or CI fails, do not force-push, recreate version tags, or discard the resulting state. Report the exact state and await direction.
-6. Remove only confirmed, merged worktrees or branches. Never use forced branch deletion or recursive removal against an unverified path.
+6. Remove only confirmed, merged worktrees or branches. Never use forced branch deletion or recursive removal against an unverified path. If the repository documents a worktree removal command (see its AGENTS.md), use it instead of a bare `git worktree remove`: a `node_modules` junction left inside the worktree otherwise makes git delete the contents of the junction target.
 
 Use `release-manager` for release preflight and coordination. Preserve any project-specific release lock only when its mechanism is documented and usable in Codex.

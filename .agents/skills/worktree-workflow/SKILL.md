@@ -10,5 +10,5 @@ Use this skill when work needs an isolated checkout or when coordinating indepen
 1. Inspect the current Git root, branch, existing worktrees, and working-tree state before creating anything.
 2. Create a clearly named branch and worktree with Git. Keep project-local worktrees under `.codex/worktrees/` only when the target repository's `.gitignore` includes that path; otherwise use the repository's documented location. Do not rely on Claude-specific worktree commands or undocumented tool names.
 3. Run commands in the intended worktree and report its path and branch when they matter to later steps.
-4. Before cleanup, verify the exact worktree-to-branch mapping with `git worktree list`. Remove only the named, clean, merged worktree after confirmation when cleanup affects user work.
+4. Before cleanup, verify the exact worktree-to-branch mapping with `git worktree list`. Remove only the named, clean, merged worktree after confirmation when cleanup affects user work. If the repository documents a worktree removal command (see its AGENTS.md), use it instead of a bare `git worktree remove`: a `node_modules` junction left inside the worktree otherwise makes git delete the contents of the junction target.
 5. Never use forced removal or branch deletion to bypass uncommitted changes or unmerged commits.
