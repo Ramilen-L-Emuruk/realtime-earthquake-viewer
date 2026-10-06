@@ -38,6 +38,7 @@ const LOCAL: LocalRules = parseLocalRules(
 const ALLOW: Allowlist = {
   publicDataPaths: ['public/data/'],
   values: [s('35.12345', ', ', '139.98765')],
+  fileValues: [{ path: 'src/xml.ts', value: s('el', '.local') }],
   identityEmails: ['^noreply@example\\.com$'],
   binaryExtensions: ['pbf'],
 }
@@ -140,6 +141,23 @@ describe('一般的な形', () => {
     expect(kinds('a.md', s('http://living-pc', '.local/'))).toContain('hostname')
     expect(kinds('a.md', s('.env', '.local と settings', '.local.json'))).not.toContain('hostname')
     expect(kinds('a.ino', s('printf("%s', '.local")'))).not.toContain('hostname')
+  })
+
+  it('正: 許可リストの fileValues に載せた値は、そのファイルの中でだけ通す', () => {
+    expect(kinds('src/xml.ts', s('return numberText(el.text, el', '.local, where)'))).not.toContain('hostname')
+  })
+
+  it('対照: 同じ値でも、別のファイル・ファイル名・コミットメッセージ・ref 名では止める', () => {
+    expect(kinds('src/other.ts', s('return numberText(el.text, el', '.local, where)'))).toContain('hostname')
+    expect(kinds('src/xml.ts（ファイル名）', s('el', '.local'))).toContain('hostname')
+    expect(kinds('commit abc のメッセージ', s('el', '.local へ配った'))).toContain('hostname')
+    // ref 名は道筋の形をしていても前置きが付くので、ファイルの組とは一致しない。
+    expect(kinds('ref 名 src/xml.ts', s('el', '.local'))).toContain('hostname')
+  })
+
+  it('安全弁: 載せたファイルの中でも、載せていない値は止める（形で推し量って外さない）', () => {
+    expect(kinds('src/xml.ts', s('const host = el', '.local + root', '.local'))).toContain('hostname')
+    expect(kinds('src/xml.ts', s("fetch('http://living", ".local/')"))).toContain('hostname')
   })
 
   it('鍵の形は止める', () => {

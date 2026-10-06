@@ -71,6 +71,12 @@ export interface Allowlist {
   readonly publicDataPaths: readonly string[]
   /** 形の検査で当たっても出してよい値（完全一致）。見本のアドレス・公的な震央など。理由は呼び出し側の JSON に書く。 */
   readonly values: readonly string[]
+  /**
+   * そのファイルの中に限って出してよい値（道筋も値も完全一致）。形だけが似ている別物
+   * （XML 要素の `local` というプロパティを読むコードを機器名と取り違える等）を、確かめた 1 件ずつ外す。道筋が一致しない
+   * ところ（別のファイル・ファイル名・コミットメッセージ・ref 名）では効かない。
+   */
+  readonly fileValues: readonly { readonly path: string; readonly value: string }[]
   /** 作者・コミッターとして出してよいメールアドレス（正規表現）。 */
   readonly identityEmails: readonly string[]
   /** 中身を読まずに出してよいバイナリの拡張子（小文字・ドットなし）。 */
@@ -210,7 +216,8 @@ const PATTERNS: readonly Pattern[] = [
   {
     kind: 'hostname',
     // ファイル名（`.env.local`・`settings.local.json`）は外す: 直前が `.` か語の一部、直後に拡張子が続くもの。
-    // 書式の穴（`%s.local`）も外す。
+    // 書式の穴（`%s.local`）も外す。`local` というプロパティを読むコードは形では見分けないので、
+    // 確かめたものだけを許可リストの `fileValues` にファイルと組で載せる。
     re: /(?<![\w.%])[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.(?:local|lan|home\.arpa|localdomain|ts\.net)(?![\w-]|\.[a-z])/gi,
     ok: (m) => /(^|\.)example\./i.test(m),
   },
@@ -366,7 +373,10 @@ export function scanFileName(path: string, local: LocalRules, allow: Allowlist):
 
 function scanLines(where: string, publicData: boolean, text: string, local: LocalRules, allow: Allowlist): Finding[] {
   const findings = scanLocal(where, text, local)
-  const allowed = new Set(allow.values)
+  const allowed = new Set([
+    ...allow.values,
+    ...allow.fileValues.filter((f) => f.path === where).map((f) => f.value),
+  ])
   const lines = text.split(/\r?\n/)
   lines.forEach((line, i) => {
     for (const p of PATTERNS) {

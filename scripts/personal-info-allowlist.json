@@ -1,5 +1,5 @@
 {
-  "_読み方": "公開前の個人情報の検査（scripts/check-personal-info.ts）で、一般的な形の検査から外すもの。**このファイルも公開されるので、個人情報を書かない。** 手元の照合ファイルの値には効かない。載せてよいのは、公的なデータ・架空の値・本人が自ら公開している第三者の連絡先（依存パッケージのライセンス文など）だけ。binaryExtensions は付帯情報を持たない種類だけ。足すときは理由を書くこと。",
+  "_読み方": "公開前の個人情報の検査（scripts/check-personal-info.ts）で、一般的な形の検査から外すもの。**このファイルも公開されるので、個人情報を書かない。** 手元の照合ファイルの値には効かない。values・publicDataPaths に載せてよいのは、公的なデータ・架空の値・本人が自ら公開している第三者の連絡先（依存パッケージのライセンス文など）だけ。fileValues には、形だけが似ている別物（コードの識別子など）を、確かめたファイルと組で 1 件ずつ載せる。binaryExtensions は付帯情報を持たない種類だけ。足すときは理由を書くこと。",
   "publicDataPaths": [
     { "path": "public/data/", "reason": "公的なデータ（国土数値情報・気象庁・産総研など）から作った地図・観測点・断層の生成物" }
   ],
@@ -18,6 +18,12 @@
     { "value": "35.12345, 139.98765", "reason": "テスト用の架空の座標" },
     { "value": "35.68123, 139.76711", "reason": "東京駅の公表位置の近くに置いたテスト用の座標" },
     { "value": "35.68119, 139.76713", "reason": "同上" }
+  ],
+  "fileValues": [
+    { "path": "seismo-host/src/receiver/stationXml.ts", "value": "el.local", "reason": "XML 要素の名前空間を除いた名前（プロパティの参照）。機器名ではない。この 4 件のファイルは作業中の worktree/feat/seismo-mseed-only にしかまだ無いので、出すときに式が変わっていないか確かめる" },
+    { "path": "seismo-host/src/receiver/stationXml.ts", "value": "root.local", "reason": "同上" },
+    { "path": "seismo-host/src/receiver/xmlLite.ts", "value": "c.local", "reason": "同上" },
+    { "path": "seismo-host/src/receiver/xmlLite.test.ts", "value": "root.local", "reason": "同上" }
   ],
   "identityEmails": [
     { "pattern": "^\\d+\\+Ramilen-L-Emuruk@users\\.noreply\\.github\\.com$", "reason": "GitHub の noreply（このリポジトリの持ち主）" },

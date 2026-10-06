@@ -69,11 +69,15 @@ function loadLocalRules(): LocalRules {
   return parseLocalRules(readFileSync(path, 'utf8'))
 }
 
+/** 許可リストのファイルの、リポジトリからの道筋（検査で付く `where` と同じ形）。 */
+const ALLOWLIST_PATH = 'scripts/personal-info-allowlist.json'
+
 function loadAllowlist(): Allowlist {
   const here = dirname(fileURLToPath(import.meta.url))
   const raw = JSON.parse(readFileSync(join(here, 'personal-info-allowlist.json'), 'utf8')) as {
     publicDataPaths: { path: string }[]
     values: { value: string }[]
+    fileValues: { path: string; value: string }[]
     identityEmails: { pattern: string }[]
     binaryExtensions: { ext: string }[]
   }
@@ -90,6 +94,13 @@ function loadAllowlist(): Allowlist {
   return {
     publicDataPaths: strings(raw.publicDataPaths, 'path'),
     values: strings(raw.values, 'value'),
+    fileValues: (() => {
+      const paths = strings(raw.fileValues, 'path')
+      const values = strings(raw.fileValues, 'value')
+      const listed = paths.map((path, i) => ({ path, value: values[i] }))
+      // 許可リストのファイル自体にも同じ値が書いてあるので、そこでも通す（でないと、このファイルが止まる）。
+      return [...listed, ...listed.map(({ value }) => ({ path: ALLOWLIST_PATH, value }))]
+    })(),
     identityEmails: strings(raw.identityEmails, 'pattern'),
     binaryExtensions: strings(raw.binaryExtensions, 'ext'),
   }
