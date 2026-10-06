@@ -9,7 +9,7 @@ import { fetchHistory, fetchJmaQuake, P2PQuakeWebSocket } from '../services/p2pq
 import { DmdataWebSocket, fetchDmdataActiveEews } from '../services/dmdata'
 // 履歴の取得はリプレイ開始時の復元と実装を共有する（→ `data-sources-spec.md` §2
 // 「大量に取るならアーカイブを使う」）。同じ目的の実装を 2 本持たない。
-import { fetchDmdataQuakeHistory, HISTORY_WINDOW_DAYS, HISTORY_EVENT_SAFETY_CAP } from '../services/dmdataReplay'
+import { fetchDmdataQuakeHistory, HISTORY_WINDOW_DAYS } from '../services/dmdataReplay'
 import {
   type TelegramLoss, createEmptyTelegramLoss, telegramLossFrom, isTelegramLossEmpty,
   mergeHistoryLoss,
@@ -94,9 +94,9 @@ function lpgmNotifiable(lpgm: JMALpgm): boolean {
   return !lpgm.cancelled && lpgm.maxClass >= 1
 }
 
-// 初回取得件数（設定の最大選択値に合わせる）。リプレイ開始時の履歴復元（useReplayController の
-// QUAKE_HISTORY_EVENTS）もこの値をそのまま目標にするため export している。片方だけ動かすと、
-// ライブと再生でカードの厚みが黙って食い違う。
+// 初回取得件数（設定の最大選択値に合わせる。standard 版の経路だけが使う —— DMDSS 版は日数で
+// 区切る）。リプレイ開始時の履歴復元（App の `fetchReplayQuakeHistory`）もこの値をそのまま使うため
+// export している。片方だけ動かすと、ライブと再生でカードの厚みが黙って食い違う。
 export const MAX_HISTORY_RETAINED = 50
 const LOAD_MORE_BATCH = 50        // 「もっと見る」1回あたりの取得件数
 const MAX_TELEGRAM_LOG = 200      // 電文ログの最大保持件数
@@ -2241,7 +2241,7 @@ export function useEarthquakes(
       // 実装はリプレイ開始時の履歴復元と共有する（`fetchDmdataQuakeHistory`）。同じ目的の
       // 実装を 2 本持つと、片方だけがアーカイブを使う今までの形に戻る。
       fetchDmdataQuakeHistory(
-        dmdataApiKey, serverDate(), HISTORY_EVENT_SAFETY_CAP, HISTORY_WINDOW_DAYS, dmdataTestDelivery,
+        dmdataApiKey, serverDate(), HISTORY_WINDOW_DAYS, dmdataTestDelivery,
         applyPartialQuakes, () => cancelled,
       )
         .then((history) => {
@@ -2695,14 +2695,14 @@ export function useEarthquakes(
             }
           })
         }
-        // **前回の続きから、窓 1 つぶんを丸ごと読む**（→ `historyCursorRef`）。件数は目標では
-        // なく安全弁なので、既存カードとの合計も渡さない（→ `HISTORY_EVENT_SAFETY_CAP`）。
+        // **前回の続きから、窓 1 つぶんを丸ごと読む**（→ `historyCursorRef`）。件数では打ち切らない
+        // （→ `HISTORY_WINDOW_DAYS` の「件数の上限は置かない」）。
         //
         // カーソルが無いのは初回の履歴を読めていない場合。そのときは初回と同じ範囲を
         // もう一度試す（進めないだけで、押しても何も起きない状態にはしない）。
         const before = historyCursorRef.current ?? serverDate()
         const history = await fetchDmdataQuakeHistory(
-          apiKey, before, HISTORY_EVENT_SAFETY_CAP, HISTORY_WINDOW_DAYS, dmdataTestDeliveryRef.current,
+          apiKey, before, HISTORY_WINDOW_DAYS, dmdataTestDeliveryRef.current,
           applyPartialMore, stale,
         )
         // 時間軸が変わっていたら、取れた分ごと捨てる（「取得中」の解除は finally が担う）
