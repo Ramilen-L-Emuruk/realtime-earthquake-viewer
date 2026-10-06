@@ -35,18 +35,26 @@ interface Case {
  *
  * - 測定範囲（±2 g・±500 mg）と出力頻度（100 Hz・104 Hz）は、ファームで設定している値
  * - σ は firmware/README.md「センサーの品種を比べた」の実測値
- * - IIS2ICLX の傾き 87.39 mg は、実測した 2 枚 4 軸の平均のうち絶対値がいちばん大きいもの
- *   （その軸は、揺れに使える余地がそのぶん片側で狭い）
+ * - IIS2ICLX の傾き（±500 mg で 65.00 mg、±2 g で 66.08 mg）は、その測定範囲で実測した
+ *   2 枚 4 軸の平均のうち絶対値がいちばん大きいもの（その軸は、揺れに使える余地がそのぶん
+ *   片側で狭い）。範囲によって少し違う理由は確かめていない
+ * - IIS2ICLX の σ は、寝かせた 2 枚の水平 4 軸の中央値のうち最小と最大（測定範囲ごと）
+ * - 「立てた軸」は重力 1 g を受ける向きに置いた軸。±2 g でも片側の余地は 1 g しか無い
  */
 const CASES: readonly Case[] = [
   { label: 'MPU6050 水平の飽和（±2 g）', amplitudeMg: 2000, hz: 100 },
   { label: 'MPU6050 上下の飽和（重力 1 g を引いた余地）', amplitudeMg: 1000, hz: 100 },
   { label: 'MPU6050 水平 σ×3（σ = 1.04 mg）', amplitudeMg: 1.04 * 3, hz: 100 },
   { label: 'MPU6050 上下 σ×3（σ = 1.53 mg）', amplitudeMg: 1.53 * 3, hz: 100 },
-  { label: 'IIS2ICLX の飽和（±500 mg）', amplitudeMg: 500, hz: 104 },
-  { label: 'IIS2ICLX の飽和（傾き 87.39 mg を引いた余地）', amplitudeMg: 500 - 87.39, hz: 104 },
-  { label: 'IIS2ICLX σ×3（σ = 0.15 mg）', amplitudeMg: 0.15 * 3, hz: 104 },
-  { label: 'IIS2ICLX σ×3（σ = 0.20 mg）', amplitudeMg: 0.2 * 3, hz: 104 },
+  { label: 'IIS2ICLX ±500 mg の飽和', amplitudeMg: 500, hz: 104 },
+  { label: 'IIS2ICLX ±500 mg の飽和（傾き 65.00 mg を引いた余地）', amplitudeMg: 500 - 65.0, hz: 104 },
+  { label: 'IIS2ICLX ±500 mg σ×3（σ = 0.102 mg）', amplitudeMg: 0.102 * 3, hz: 104 },
+  { label: 'IIS2ICLX ±500 mg σ×3（σ = 0.121 mg）', amplitudeMg: 0.121 * 3, hz: 104 },
+  { label: 'IIS2ICLX ±2 g の飽和', amplitudeMg: 2000, hz: 104 },
+  { label: 'IIS2ICLX ±2 g の飽和（傾き 66.08 mg を引いた余地）', amplitudeMg: 2000 - 66.08, hz: 104 },
+  { label: 'IIS2ICLX ±2 g の立てた軸の飽和（重力 1 g を引いた余地）', amplitudeMg: 1000, hz: 104 },
+  { label: 'IIS2ICLX ±2 g σ×3（σ = 0.106 mg）', amplitudeMg: 0.106 * 3, hz: 104 },
+  { label: 'IIS2ICLX ±2 g σ×3（σ = 0.123 mg）', amplitudeMg: 0.123 * 3, hz: 104 },
 ]
 
 function intensityAt(amplitudeMg: number, freqHz: number, hz: number): number | null {
