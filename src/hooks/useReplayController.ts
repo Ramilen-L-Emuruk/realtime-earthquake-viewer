@@ -72,10 +72,12 @@ export function replayTargetProblem(targetDate: Date, nowMs: number): string | n
 }
 
 /**
- * 津波の報 1 通を指す鍵。**`id` だけでは足りない** —— `id` は `EventID` と報番号（`Serial`）から
- * 作るが、報番号は電文の種別（津波警報・注意報・予報／津波情報／沖合の津波観測に関する情報）ごとに
- * 別々に数えられるので、同じ津波の別種別の報が同じ `id` になる。発表時刻も足りない（警報と
- * 津波情報の第 1 報は同時に出る）ので、電文が名乗る情報名（`Head/Title`）まで含める。
+ * 津波の報 1 通を指す鍵。報番号（`Serial`）は電文の種別（津波警報・注意報・予報／津波情報／
+ * 沖合の津波観測に関する情報）ごとに別々に数えられる。`id` はいまは種別を含めて作るので
+ * 種別をまたいでも重ならない（→ `parseTsunamiFromXml`）が、かつては `EventID` と報番号だけで
+ * 作っていて、この突き合わせを `id` だけで書いたときに別種別の報を「既にある」と取り違えた
+ * （実電文で起きた。経緯は `parseTsunamiFromXml` の `id` の箇所）。`id` の作り方がまた変わっても
+ * 取り違えないよう、発表時刻と電文が名乗る情報名（`Head/Title`）も鍵に残す。
  */
 function tsunamiReportKey(tsunami: JMATsunami): string {
   return `${tsunami.id}|${tsunami.time}|${tsunami.infoName ?? ''}`
