@@ -205,19 +205,38 @@ describe('RecordAssembler', () => {
     expect(a.pendingSamples).toBe(0)
   })
 
-  it('取り戻した分は別の流れで溜め、いま届いている分の繋がりを崩さない', () => {
+  it('正: 取り戻した分は溜めずに、届いたその場で軸ごとに 1 本ずつ切る（溜めていた従来の形を覆した）', () => {
+    // 書けたかをその場で確かめて欠けを外すため（`backlogFetcher.ts`）。溜めると、書けないと
+    // 分かる前に欠けを閉じてしまい、書けなかった分を訊き直せない。
+    const a = new RecordAssembler()
+    const back = a.push(pkt({ firstSeq: 1000 }), 'backlog', BASE_MS)
+    expect(back.rejected).toBeNull()
+    expect(back.records.map((r) => [r.lane, r.cut, r.firstSeq, r.sampleCount])).toEqual([
+      ['backlog', 'recovered', 1000, PER_PACKET],
+      ['backlog', 'recovered', 1000, PER_PACKET],
+      ['backlog', 'recovered', 1000, PER_PACKET],
+    ])
+    expect(ofAxis(back.records, 2)[0]!.startMs).toBe(BASE_MS + 1000 * PERIOD_MS)
+    expect(decoded(ofAxis(back.records, 2)[0]!)).toEqual(Array.from({ length: PER_PACKET }, (_, i) => value(1000 + i, 1, 30)))
+    expect(a.pendingSamples).toBe(0)
+    expect(a.cutCounts.recovered).toBe(3)
+  })
+
+  it('対照: いま届いた分は従来どおり溜める（取り戻した分だけをその場で切る）', () => {
+    const a = new RecordAssembler()
+    expect(run(a, 1)).toHaveLength(0)
+    expect(a.pendingSamples).toBe(3 * PER_PACKET)
+    expect(a.cutCounts.recovered).toBe(0)
+  })
+
+  it('安全弁: 取り戻した分をその場で切っても、いま届いている分の繋がりは崩さない', () => {
     const a = new RecordAssembler()
     run(a, 2)
-    const back = a.push(pkt({ firstSeq: 1000 }), 'backlog', BASE_MS)
-    expect(back.records).toHaveLength(0)
+    a.push(pkt({ firstSeq: 1000 }), 'backlog', BASE_MS)
     run(a, 1, 2 * PER_PACKET)
-    const out = a.flushAll()
-    const live = ofAxis(out, 1).filter((r) => r.lane === 'live')
-    const recovered = ofAxis(out, 1).filter((r) => r.lane === 'backlog')
-    expect(live).toHaveLength(1)
+    const live = ofAxis(a.flushAll(), 1)
+    expect(live.map((r) => r.lane)).toEqual(['live'])
     expect(live[0]!.sampleCount).toBe(3 * PER_PACKET)
-    expect(recovered).toHaveLength(1)
-    expect(recovered[0]!.startMs).toBe(BASE_MS + 1000 * PERIOD_MS)
   })
 
   it('時計が合う前の値は旗を立て、受け取った時刻で振り分ける', () => {
@@ -312,17 +331,18 @@ describe('RecordAssembler', () => {
   it('拡張ヘッダに起動 ID と先頭サンプルの通し番号を入れる（取り戻した分には印）', () => {
     const a = new RecordAssembler()
     run(a, 200, 0, { amp: 3000 })
-    a.push(pkt({ firstSeq: 5000 }), 'backlog', BASE_MS)
-    const all = ofAxis(a.flushAll(), 1)
+    // 取り戻した分は届いたその場で切れて出る。
+    const recovered = a.push(pkt({ firstSeq: 5000 }), 'backlog', BASE_MS).records
+    const all = ofAxis([...recovered, ...a.flushAll()], 1)
     const extraOf = (r: AssembledRecord): unknown => {
       const sidLen = r.bytes[33]!
       const len = header(r).getUint16(34, true)
       return JSON.parse(new TextDecoder().decode(r.bytes.subarray(40 + sidLen, 40 + sidLen + len)))
     }
     const live = all.find((r) => r.lane === 'live')!
-    expect(extraOf(live)).toEqual({ b: '63c9812e', q: live.firstSeq })
+    expect(extraOf(live)).toEqual({ Seismo: { b: '63c9812e', q: live.firstSeq } })
     const back = all.find((r) => r.lane === 'backlog')!
-    expect(extraOf(back)).toEqual({ b: '63c9812e', q: 5000, r: 1 })
+    expect(extraOf(back)).toEqual({ Seismo: { b: '63c9812e', q: 5000, r: 1 } })
   })
 
   it('レコードの先頭の通し番号は、前のレコードの続き（途中で切れても）', () => {
@@ -357,7 +377,7 @@ describe('RecordAssembler', () => {
     const v = header(late[0]!)
     const sidLen = late[0]!.bytes[33]!
     const extra = new TextDecoder().decode(late[0]!.bytes.subarray(40 + sidLen, 40 + sidLen + v.getUint16(34, true)))
-    expect(JSON.parse(extra)).toEqual({ b: '63c9812e', q: PER_PACKET, l: 1 })
+    expect(JSON.parse(extra)).toEqual({ Seismo: { b: '63c9812e', q: PER_PACKET, l: 1 } })
     expect(a.cutCounts['seq-gap']).toBe(0)
   })
 
@@ -372,8 +392,9 @@ describe('RecordAssembler', () => {
   it('取り戻した分は、番号がいまの流れより前でも取り戻した分の流れへ入れる（安全弁）', () => {
     const a = new RecordAssembler()
     run(a, 3)
-    a.push(pkt({ firstSeq: 0 }), 'backlog', BASE_MS)
-    expect(ofAxis(a.flushAll(), 1).map((x) => x.lane).sort()).toEqual(['backlog', 'live'])
+    const recovered = a.push(pkt({ firstSeq: 0 }), 'backlog', BASE_MS).records
+    expect(ofAxis(recovered, 1).map((x) => x.lane)).toEqual(['backlog'])
+    expect(ofAxis(a.flushAll(), 1).map((x) => x.lane)).toEqual(['live'])
   })
 
   it('隣り合う差が 30 ビットに収まらないところで切り、理由を value-jump として数える', () => {

@@ -7,6 +7,7 @@ import { getTtsEpicenterAccentsCache, loadTtsEpicenterAccents } from './ttsEpice
 import { mergeSpeechDicts } from './ttsGeneratedDict'
 import { speechChunkKey, takeCachedChunk, hasCachedChunk, putCachedChunk, clearSpeechAudioCache, registerSpeechCacheExtraStats } from './speechAudioCache'
 import { log, createLogThrottle } from './logger'
+import { fetchWithTimeout } from './fetchWithTimeout'
 
 /**
  * 設定の接続先を使って通信を始めるまでに、入力が落ち着くのを待つ時間。
@@ -426,12 +427,20 @@ export async function checkVoicevoxAvailable(baseUrl: string): Promise<boolean> 
   }
 }
 
-/** 利用可能な話者一覧を取得する。失敗時は空配列を返す。 */
+/**
+ * 話者一覧の取得の上限。**黙ると設定タブの話者の欄が読み込み中のまま戻らない**ので上限を置く。
+ * 一覧は数十 KB で、同じ接続先への合成の上限（作り置き・投機の 10 秒）に揃える。
+ */
+const SPEAKERS_FETCH_TIMEOUT_MS = 10_000
+
+/** 利用可能な話者一覧を取得する。失敗時（上限に当たったときも）は空配列を返す。 */
 export async function fetchVoicevoxSpeakers(baseUrl: string): Promise<VoicevoxSpeaker[]> {
   try {
-    const res = await fetch(`${apiBase(baseUrl)}/speakers`)
-    if (!res.ok) return []
-    return res.json() as Promise<VoicevoxSpeaker[]>
+    return await fetchWithTimeout(
+      `${apiBase(baseUrl)}/speakers`,
+      { timeoutMs: SPEAKERS_FETCH_TIMEOUT_MS, signal: null },
+      async (res) => (res.ok ? await res.json() as VoicevoxSpeaker[] : []),
+    )
   } catch {
     return []
   }

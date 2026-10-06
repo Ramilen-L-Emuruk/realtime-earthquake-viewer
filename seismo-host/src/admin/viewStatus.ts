@@ -58,12 +58,14 @@ interface StatusReportView {
       readonly sampleCount: readonly number[]
     }[]
   }[]
-  readonly raw: {
+  /** 生データ（miniSEED）の記録の健全性（`receiver/mseedRecorder.ts` の `MseedHealth` のうち画面に出す欄）。 */
+  readonly mseed: {
     readonly writeErrors: number
     readonly lostRecords: number
-    readonly cutShort: boolean
-    readonly currentDay: string | null
+    readonly recordsWritten: number
+    readonly unreadableWritten: number
     readonly lastWriteError: string | null
+    readonly lastInternalError: string | null
   }
   readonly stationConfigWarning: string | null
   readonly ungroupedMultiBoardStations: readonly string[]
@@ -188,6 +190,27 @@ type PairDiffView = StatusReportView['stationIntensities'][number]['pairDiffs'][
  * **軸ごとの最大を採る。** 感度のずれは軸ごとに現れる（#367）ので、
  * 3 軸を平均すると 1 軸だけおかしい対が薄まる。
  */
+/**
+ * 生データの記録の警告。**組み立て済みの HTML**（理由は `escapeHtml` を通す —— 例外の文面には
+ * 無認証の UDP で届いた中身が混ざりうる）。理由はホストが最後に起きたものを持ち続けるので、
+ * 一度出たら消えない（いつかは起きたことを見落とさないため）。
+ */
+export function mseedWarnings(m: StatusReportView['mseed']): readonly string[] {
+  const out: string[] = []
+  if (m.lastWriteError !== null) out.push(`生データの書き込みエラー: ${escapeHtml(m.lastWriteError)}`)
+  // **こちらの不具合の印。** 受け止めたパケットは中身ごと残してあるが、出たら直す対象。
+  if (m.lastInternalError !== null) out.push(`生データの組み立てで想定外の例外: ${escapeHtml(m.lastInternalError)}`)
+  return out
+}
+
+/** 「生データの保存」欄の 1 行（数だけなのでエスケープは要らない）。 */
+export function mseedSummary(m: StatusReportView['mseed']): string {
+  return (
+    `書き込みエラー: ${m.writeErrors} 件 / 失った記録: ${m.lostRecords} 本 / ` +
+    `書けたレコード: ${m.recordsWritten} 本 / 中身ごと残した読めないパケット: ${m.unreadableWritten} 件`
+  )
+}
+
 export function worstPairDiff(
   pairs: readonly PairDiffView[],
 ): { readonly pair: PairDiffView; readonly rmsGal: number } | null {
@@ -353,10 +376,7 @@ export async function initStatusView(container: HTMLElement, signal: AbortSignal
         `複数基板だが合成グループが組めていない観測点: ${escapeHtml(status.ungroupedMultiBoardStations.join('、'))}`,
       )
     }
-    if (status.raw.cutShort) warnings.push('生データの保存が途中で打ち切られた')
-    if (status.raw.lastWriteError !== null) {
-      warnings.push(`生データの書き込みエラー: ${escapeHtml(status.raw.lastWriteError)}`)
-    }
+    warnings.push(...mseedWarnings(status.mseed))
     // **組み立て済みの HTML**（中で `escapeHtml` を通している）なので、ここで重ねて通さない。
     const assignedBoards = assignedBoardsOf(status)
     warnings.push(...assignedSilenceWarnings(now, assignedBoards))
@@ -423,8 +443,7 @@ export async function initStatusView(container: HTMLElement, signal: AbortSignal
       </section>
       <section class="panel">
         <h2>生データの保存</h2>
-        <p>書き込みエラー: ${status.raw.writeErrors} 件 / 失った記録: ${status.raw.lostRecords} 件 /
-        現在の日: ${escapeHtml(status.raw.currentDay ?? '不明')}</p>
+        <p>${mseedSummary(status.mseed)}</p>
       </section>
     `
   }

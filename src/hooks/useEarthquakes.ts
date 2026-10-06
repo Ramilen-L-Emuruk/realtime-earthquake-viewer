@@ -873,6 +873,8 @@ export function useEarthquakes(
    * 「もっと見る」からは触れないため、共有できる形で持つ。
    */
   const liveGenerationRef = useRef(0)
+  /** 現在の時間軸の履歴取得を打ち切る合図（接続 effect が世代と一緒に作り直す）。 */
+  const liveHistoryAbortRef = useRef<AbortController | null>(null)
   const dmdataApiKeyRef = useRef(dmdataApiKey)
   dmdataApiKeyRef.current = dmdataApiKey
   // 「もっと見る」は依存を持たない `useCallback` なので、設定は ref で見る
@@ -2138,6 +2140,10 @@ export function useEarthquakes(
     let cancelled = false
     // 時間軸が変わった印。ここより前に始まった取得は、以後の結果を捨てる
     liveGenerationRef.current++
+    // この時間軸の履歴の取得（初回・もっと見る）を打ち切る合図。クリーンアップで立てる。
+    // 世代番号（結果を捨てる判定）と対で持つ —— こちらは目録・一覧のページを辿り続けないため。
+    const historyAbort = new AbortController()
+    liveHistoryAbortRef.current = historyAbort
     // カーソルも初期値へ戻す（戻さないと、接続を張り直したあとの「もっと見る」が
     // 前の時間軸で読んだ位置から続きを読む）
     historyCursorRef.current = null
@@ -2241,7 +2247,7 @@ export function useEarthquakes(
       // 実装はリプレイ開始時の履歴復元と共有する（`fetchDmdataQuakeHistory`）。同じ目的の
       // 実装を 2 本持つと、片方だけがアーカイブを使う今までの形に戻る。
       fetchDmdataQuakeHistory(
-        dmdataApiKey, serverDate(), HISTORY_WINDOW_DAYS, dmdataTestDelivery,
+        dmdataApiKey, serverDate(), HISTORY_WINDOW_DAYS, dmdataTestDelivery, historyAbort.signal,
         applyPartialQuakes, () => cancelled,
       )
         .then((history) => {
@@ -2545,6 +2551,7 @@ export function useEarthquakes(
 
       return () => {
         cancelled = true
+        historyAbort.abort()
         unsubscribeStationCoords()
         ws.disconnect()
       }
@@ -2557,8 +2564,8 @@ export function useEarthquakes(
     // 「0 件」として表示されてしまう（EarthquakeTab は isLoading → error → 0件 の順に見る）。
     setState(prev => (prev.isLoading && !prev.error ? prev : { ...prev, isLoading: true, error: null }))
     Promise.all([
-      fetchJmaQuake({ limit: MAX_HISTORY_RETAINED }),
-      fetchHistory([552], 10),
+      fetchJmaQuake({ limit: MAX_HISTORY_RETAINED }, historyAbort.signal),
+      fetchHistory([552], 10, 0, historyAbort.signal),
     ])
       .then(([quakeEvents, tsunamiEvents]) => {
         if (cancelled) return
@@ -2661,6 +2668,7 @@ export function useEarthquakes(
 
     return () => {
       cancelled = true
+      historyAbort.abort()
       ws.disconnect()
     }
   }, [handleEvent, enqueueEvent, appendTelegramLog, dmdataApiKey, dmdataTestDelivery, replayTimeOffset])
@@ -2674,6 +2682,8 @@ export function useEarthquakes(
     // 作り直しのたびに進む世代の番号で見分ける。
     const generation = liveGenerationRef.current
     const stale = () => liveGenerationRef.current !== generation
+    // 同じ時間軸の打ち切りの合図（接続 effect が作り、作り直しのクリーンアップで立てる）
+    const signal = liveHistoryAbortRef.current?.signal ?? null
     setState(prev => ({ ...prev, isLoadingMore: true }))
     try {
       if (isDmdss) {
@@ -2702,7 +2712,7 @@ export function useEarthquakes(
         // もう一度試す（進めないだけで、押しても何も起きない状態にはしない）。
         const before = historyCursorRef.current ?? serverDate()
         const history = await fetchDmdataQuakeHistory(
-          apiKey, before, HISTORY_WINDOW_DAYS, dmdataTestDeliveryRef.current,
+          apiKey, before, HISTORY_WINDOW_DAYS, dmdataTestDeliveryRef.current, signal,
           applyPartialMore, stale,
         )
         // 時間軸が変わっていたら、取れた分ごと捨てる（「取得中」の解除は finally が担う）
@@ -2836,7 +2846,7 @@ export function useEarthquakes(
         })
       } else {
         const offset = p2pRawOffsetRef.current
-        const events = await fetchJmaQuake({ limit: LOAD_MORE_BATCH, offset })
+        const events = await fetchJmaQuake({ limit: LOAD_MORE_BATCH, offset }, signal)
         p2pRawOffsetRef.current += events.length
         // 既存カード群を base に新バッチを統合する（DMDSS 版と同じ扱い）。
         // バッチ跨ぎで同一イベントの続報が届いた場合もリアルタイムと同一結果になる。

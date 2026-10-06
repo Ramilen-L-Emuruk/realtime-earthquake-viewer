@@ -6,9 +6,13 @@ import { decodeSteim2 } from 'seisplotjs-seedcodec'
 
 import { crc32c } from './crc32c'
 import {
+  MSEED3_HOST_LOG_SOURCE_ID,
   MSEED3_MAX_RECORD_BYTES,
+  MSEED3_MAX_TEXT_BYTES,
   buildMseed3Record,
+  buildMseed3TextRecord,
   framesForRecord,
+  mseed3LogSourceId,
   mseed3SourceId,
 } from './mseed3Record'
 import { encodeSteim2 } from './steim2'
@@ -153,6 +157,52 @@ describe('mseed3SourceId', () => {
   it('チャンネルが英数字 3 文字でなければ作らない', () => {
     expect(mseed3SourceId('mac:020000000001', 'i2c0-68', 'HN')).toBeNull()
     expect(mseed3SourceId('mac:020000000001', 'i2c0-68', 'HN-')).toBeNull()
+  })
+})
+
+describe('mseed3LogSourceId', () => {
+  it('波形と同じ局・ロケーションで、チャンネルだけ LOG にする', () => {
+    expect(mseed3LogSourceId('mac:020000000001', 'i2c0-68')).toBe('FDSN:XX_00000001_I2C0-68_L_O_G')
+  })
+
+  it('波形の識別子を作れない基板・センサーには作らない', () => {
+    expect(mseed3LogSourceId('name:seismo-3', 'i2c0-68')).toBeNull()
+    expect(mseed3LogSourceId('mac:020000000001', 'i2c0_68')).toBeNull()
+  })
+
+  it('ホストの記録の局 HOST は、どの基板の局とも重ならない（16 進の文字ではない）', () => {
+    expect(MSEED3_HOST_LOG_SOURCE_ID).toBe('FDSN:XX_HOST__L_O_G')
+    expect(/^[0-9A-F]{8}$/.test('HOST')).toBe(false)
+  })
+})
+
+describe('buildMseed3TextRecord', () => {
+  const sid = 'FDSN:XX_00000001_I2C0-68_L_O_G'
+  const startMs = Date.UTC(2026, 9, 1, 3, 30, 0, 250)
+
+  it('テキスト形式（encoding 0）・刻み 0・サンプル数はバイト数で組み立てる', () => {
+    const text = '{"seq":0,"note":"受信"}'
+    const r = buildMseed3TextRecord({ sourceId: sid, startMs, text })
+    const v = new DataView(r.buffer)
+    expect(r[15]).toBe(0)
+    expect(v.getFloat64(16, true)).toBe(0)
+    const bytes = new TextEncoder().encode(text)
+    expect(v.getUint32(24, true)).toBe(bytes.byteLength)
+    expect(v.getUint32(36, true)).toBe(bytes.byteLength)
+    expect(Array.from(r.subarray(40 + sid.length))).toEqual(Array.from(bytes))
+    const crc = v.getUint32(28, true)
+    const copy = r.slice()
+    new DataView(copy.buffer).setUint32(28, 0, true)
+    expect(crc32c(copy)).toBe(crc)
+  })
+
+  it('512 バイトに縛らない（中身の長さで決まる）', () => {
+    const r = buildMseed3TextRecord({ sourceId: sid, startMs, text: 'x'.repeat(4000) })
+    expect(r.byteLength).toBeGreaterThan(MSEED3_MAX_RECORD_BYTES)
+  })
+
+  it('上限を超える中身は受け付けない', () => {
+    expect(() => buildMseed3TextRecord({ sourceId: sid, startMs, text: 'x'.repeat(MSEED3_MAX_TEXT_BYTES + 1) })).toThrow(RangeError)
   })
 })
 

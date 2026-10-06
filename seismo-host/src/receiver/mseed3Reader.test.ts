@@ -1,7 +1,8 @@
 import { decodeSteim2 as referenceDecode } from 'seisplotjs-seedcodec'
 import { describe, expect, it } from 'vitest'
 
-import { buildMseed3Record, framesForRecord } from './mseed3Record'
+import { crc32c } from './crc32c'
+import { buildMseed3Record, buildMseed3TextRecord, framesForRecord } from './mseed3Record'
 import { readMseed3Records } from './mseed3Reader'
 import { decodeSteim2, encodeSteim2 } from './steim2'
 
@@ -80,6 +81,22 @@ describe('readMseed3Records', () => {
     expect(r1!.timeQuestionable).toBe(true)
   })
 
+  it('Node の Buffer（ファイルから読んだもの）でも全部のレコードを読み、渡したバッファを書き換えない', () => {
+    // **`Buffer#slice` は写しを作らない。** 写しのつもりで検査値の欄を 0 にすると、元のバッファ
+    // （の先頭レコード）を書き換え、2 本目以降はすべて「検査値が合わない」に化ける。
+    // 前に余白を置き、バッファがメモリの先頭から始まらない形にする（readFileSync の大きなファイルと同じ）。
+    const bytes = new Uint8Array([...record(walk(200, 40, 11), T), ...record(walk(200, 40, 12), T + 2_000), ...record(walk(200, 40, 13), T + 4_000)])
+    const backing = Buffer.alloc(bytes.length + 64)
+    backing.set(bytes, 64)
+    const buf = backing.subarray(64)
+    const before = Buffer.from(buf)
+    const out = readMseed3Records(buf)
+    expect(out.crcFailures).toBe(0)
+    expect(out.records).toHaveLength(3)
+    expect(Buffer.compare(buf, before)).toBe(0)
+    expect(Buffer.compare(backing.subarray(0, 64), Buffer.alloc(64))).toBe(0)
+  })
+
   it('検査値が合わないレコードは採らずに数え、次のレコードへ進む', () => {
     const good = record(walk(100, 10, 4), T)
     const bad = record(walk(100, 10, 5), T + 1_000)
@@ -101,5 +118,34 @@ describe('readMseed3Records', () => {
     const out = readMseed3Records(new Uint8Array([0x4d, 0x53, 2, ...new Uint8Array(60)]))
     expect(out.records).toHaveLength(0)
     expect(out.skippedBytes).toBe(63)
+  })
+
+  it('波形と受信の記録（テキスト）が混ざって並んでも、それぞれの中身を戻す', () => {
+    const wave = walk(200, 40, 7)
+    const text = '{"seq":0,"packets":[[0,30,0,0,0]]}'
+    const buf = new Uint8Array([
+      ...record(wave, T),
+      ...buildMseed3TextRecord({ sourceId: 'FDSN:XX_00000001_I2C0-68_L_O_G', startMs: T, text }),
+      ...record(walk(100, 40, 8), T + 2_000),
+    ])
+    const out = readMseed3Records(buf)
+    expect(out.skippedBytes).toBe(0)
+    expect(out.records.map((r) => r.encoding)).toEqual([11, 0, 11])
+    expect(out.records[1]!.text).toBe(text)
+    expect(out.records[1]!.samples).toBeNull()
+    expect(out.records[0]!.text).toBeNull()
+  })
+
+  it('UTF-8 として読めないテキストは置換文字で通さず、復号できなかったと数える', () => {
+    const r = buildMseed3TextRecord({ sourceId: 'FDSN:XX_00000001_I2C0-68_L_O_G', startMs: T, text: 'ab' })
+    // データ部の 1 バイト目を UTF-8 の続きのバイト（単独では不正）へ差し替え、検査値を付け直す。
+    const sidLen = r[33]!
+    r[40 + sidLen] = 0x80
+    const v = new DataView(r.buffer)
+    v.setUint32(28, 0, true)
+    v.setUint32(28, crc32c(r), true)
+    const out = readMseed3Records(r)
+    expect(out.decodeFailures).toBe(1)
+    expect(out.records[0]!.text).toBeNull()
   })
 })

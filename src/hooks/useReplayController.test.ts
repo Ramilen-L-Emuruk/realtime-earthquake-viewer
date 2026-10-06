@@ -93,6 +93,43 @@ describe('createSessionGuard', () => {
 
     expect(a.isCurrent(sa)).toBe(true)
   })
+
+  // 正: 停止すると、そのセッションの取得へ渡した合図が立つ（目録・一覧のページを辿り続けない）。
+  it('無効化すると、そのセッションの合図が立つ', () => {
+    const guard = createSessionGuard()
+    guard.begin()
+    const signal = guard.signal()
+    guard.invalidate()
+    expect(signal.aborted).toBe(true)
+  })
+
+  // 正: 別の時刻で始め直すと、前のセッションの合図が立つ。
+  it('新しく開始すると、前のセッションの合図が立つ', () => {
+    const guard = createSessionGuard()
+    guard.begin()
+    const first = guard.signal()
+    guard.begin()
+    expect(first.aborted).toBe(true)
+  })
+
+  // 対照: 新しいセッションの合図は立っていない（始めた直後の取得が即座に打ち切られない）。
+  it('始めたばかりのセッションの合図は立っていない', () => {
+    const guard = createSessionGuard()
+    guard.begin()
+    guard.invalidate()
+    guard.begin()
+    expect(guard.signal().aborted).toBe(false)
+  })
+
+  // 安全弁: 先読み（`current()`）は合図を作り直さない（同じセッションの取得まで打ち切らない）。
+  it('current() は合図を立てない', () => {
+    const guard = createSessionGuard()
+    guard.begin()
+    const signal = guard.signal()
+    guard.current()
+    expect(signal.aborted).toBe(false)
+    expect(guard.signal()).toBe(signal)
+  })
 })
 
 /**

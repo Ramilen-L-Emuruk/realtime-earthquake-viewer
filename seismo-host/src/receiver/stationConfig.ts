@@ -12,8 +12,8 @@
 // あっても、受信・震度算出は止めない —— 設置場所や校正を知らないだけで、揺れを
 // 測る仕事とは無関係。
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+// **読み書きは `stationStore.ts`**（設定の正は StationXML。形は `stationXml.ts`）。ここは
+// 中身の検証（`parseStationConfig`）と、処理が引く帳面（`StationDirectory`）だけを持つ。
 
 // **型・既定値は `stationConfigTypes.ts` に置く。** 管理コンソール（`src/admin/`）が
 // `import type` で使うため、Node 専用コード（`node:fs` 等）と同じファイルへ置けない
@@ -37,6 +37,9 @@ import type {
   Vec3,
 } from './stationConfigTypes'
 import type { BoardKey } from '../protocol/types'
+import { isInvertibleRotation } from './matrix3'
+import { mseed3LocationCode, mseed3StationCode } from './mseed3Record'
+import { isXmlChars } from './xmlLite'
 
 export type StationConfigParseFailure =
   | { readonly reason: 'not-an-object' }
@@ -83,11 +86,16 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
 
-/** 空白だけの値は拒み、前後の空白は落とす（`parsePacket.ts` の `nonEmptyString` と同じ理由）。 */
+/**
+ * 空白だけの値は拒み、前後の空白は落とす（`parsePacket.ts` の `nonEmptyString` と同じ理由）。
+ * **XML に書けない文字（制御文字・対になっていないサロゲート）を含む値も拒む** —— 設定は
+ * StationXML へ書くので、受け付けてから書けずに落ちるより、入口で弾くほうが理由が伝わる
+ * （`/api/stations/:stationId` は URL から来るので、JSON の段で弾かれない）。
+ */
 function nonEmptyString(v: unknown): string | null {
   if (typeof v !== 'string') return null
   const trimmed = v.trim()
-  return trimmed.length > 0 ? trimmed : null
+  return trimmed.length > 0 && isXmlChars(trimmed) ? trimmed : null
 }
 
 function isFiniteNumber(v: unknown): v is number {
@@ -213,8 +221,10 @@ function parseSensors(
       return { ok: false, failure: { reason: 'sensor-not-an-object', boardIndex, sensorIndex: i } }
     }
 
+    // **ロケーションコードを作れない ID は受けない**（`mseed3LocationCode`）。そのセンサーの波形は
+    // miniSEED に残せず、StationXML の Channel にもならない。
     const sensorId = nonEmptyString(entry.sensorId)
-    if (sensorId === null) {
+    if (sensorId === null || mseed3LocationCode(sensorId) === null) {
       return {
         ok: false,
         failure: {
@@ -242,7 +252,10 @@ function parseSensors(
     }
 
     const rotation = entry.rotation ?? IDENTITY_ROTATION
-    if (!isMat3(rotation)) {
+    // **逆行列を持たない行列も弾く。** その向きの揺れを消す行列は「補正」ではなく「壊す」側で
+    // （`sensitivity` の 0 と同じ）、設定の履歴（`stationXml.ts`）はチャンネルが測っている向きを
+    // `rotation` の逆行列から書くので、逆行列が無いと書けない。
+    if (!isMat3(rotation) || !isInvertibleRotation(rotation)) {
       return {
         ok: false,
         failure: {
@@ -301,10 +314,13 @@ function parseSensors(
 
     // **同じ基板の中で sensorId が 2 度現れたら弾く。** 別の基板でなら使い回せる ——
     // 配線の都合で同じ名前が複数の基板に現れるのは自然（例: どの基板も `i2c0-68`）。
-    if (seen.has(sensorId)) {
+    // **大文字小文字だけが違う ID も重複として弾く** —— ロケーションコードは大文字にするので、
+    // miniSEED と StationXML の上では同じセンサーになってしまう。
+    const location = mseed3LocationCode(sensorId) as string
+    if (seen.has(location)) {
       return { ok: false, failure: { reason: 'duplicate-sensor-id', boardIndex, sensorId } }
     }
-    seen.add(sensorId)
+    seen.add(location)
 
     sensors.push({
       sensorId,
@@ -338,8 +354,11 @@ export function parseStationConfig(raw: unknown): StationConfigParseResult {
     const entry: unknown = raw.boards[i]
     if (!isRecord(entry)) return { ok: false, failure: { reason: 'board-not-an-object', index: i } }
 
+    // **局コードを作れない基板は観測点へ割り当てない**（`mseed3StationCode`。MAC を名乗らない版 1 の
+    // 基板）—— 波形を miniSEED に残せず、StationXML の Station にもならない。受信は今までどおりで、
+    // そのパケットはホストの受信の記録へ中身ごと残る。
     const boardKey = normalizeBoardKey(entry.boardKey)
-    if (boardKey === null) {
+    if (boardKey === null || mseed3StationCode(boardKey) === null) {
       return {
         ok: false,
         failure: { reason: 'board-field-invalid', index: i, field: 'boardKey', value: entry.boardKey },
@@ -356,10 +375,13 @@ export function parseStationConfig(raw: unknown): StationConfigParseResult {
       return { ok: false, failure: { reason: 'unknown-station-id', boardIndex: i, stationId } }
     }
 
-    if (seenBoardKeys.has(boardKey)) {
+    // **局コード（MAC の下位 8 桁）が同じ基板も重複として弾く** —— miniSEED と StationXML の上では
+    // 同じ基板になってしまう。鍵そのものが同じなら局コードも同じなので、これで両方を見られる。
+    const stationCode = mseed3StationCode(boardKey) as string
+    if (seenBoardKeys.has(stationCode)) {
       return { ok: false, failure: { reason: 'duplicate-board-key', boardKey } }
     }
-    seenBoardKeys.add(boardKey)
+    seenBoardKeys.add(stationCode)
 
     const parsedSensors = parseSensors(entry.sensors, i)
     if (!parsedSensors.ok) return parsedSensors
@@ -416,63 +438,6 @@ export function describeFailure(f: StationConfigParseFailure): string {
 
 function assertNever(value: never): never {
   throw new Error(`理由を決めていない失敗: ${JSON.stringify(value)}`)
-}
-
-/** `readingHub.ts` と同じ形。`Error` でない値が投げられても `.message` で墜落しない。 */
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
-/**
- * 設定ファイルを読む。**ファイルが無いのは異常ではない** —— 観測点・校正の割り当ては
- * 任意で、無ければ全基板が未割当・全センサーが既定の校正値のまま動き続ける。
- *
- * 読めてパースもできたときだけ `warning` は `null`。それ以外は空の設定へ倒し、
- * 理由を `warning` へ返す。**黙って空にはしない** —— 運用者が書き間違えたまま
- * 気づけなくなる。
- */
-export function loadStationConfig(path: string): { config: StationConfig; warning: string | null } {
-  if (!existsSync(path)) return { config: EMPTY_STATION_CONFIG, warning: null }
-
-  let text: string
-  try {
-    text = readFileSync(path, 'utf8')
-  } catch (e) {
-    return { config: EMPTY_STATION_CONFIG, warning: `読めない: ${messageOf(e)}` }
-  }
-
-  let raw: unknown
-  try {
-    raw = JSON.parse(text)
-  } catch (e) {
-    return { config: EMPTY_STATION_CONFIG, warning: `JSON として読めない: ${messageOf(e)}` }
-  }
-
-  const result = parseStationConfig(raw)
-  if (!result.ok) return { config: EMPTY_STATION_CONFIG, warning: describeFailure(result.failure) }
-  return { config: result.config, warning: null }
-}
-
-/**
- * 設定ファイルを書く。**管理コンソール（`/api/*`）からの書き込みが呼ぶ**
- * （#313 段 B）。呼び出し側は事前に `parseStationConfig` を通した `StationConfig` を
- * 渡すこと ——ここでは検証をやり直さない（検証の単一情報源を `parseStationConfig` に
- * 保つため）。
- *
- * **一時ファイルへ書いてから改名する。** 書き込みの途中でプロセスが落ちても、
- * 改名（同期・原子的）が終わるまでは元のファイルが残る ——`rawStore.ts` の
- * 圧縮ファイル書き出しと同じ理由。
- *
- * **例外を投げる。** `loadStationConfig` と違い、こちらの失敗は運用者の書き間違いではなく
- * ディスクの都合（権限・空き容量）なので、黙って諦めると「保存したはずなのに次の起動で
- * 消えている」という一番気づきにくい壊れ方をする。呼び出し側（`/api/*` のハンドラ）が
- * 捕まえて 500 へ変える。
- */
-export function saveStationConfig(path: string, config: StationConfig): void {
-  mkdirSync(dirname(path), { recursive: true })
-  const temp = `${path}.tmp`
-  writeFileSync(temp, JSON.stringify(config, null, 2))
-  renameSync(temp, path)
 }
 
 /** `boardKey`・`(boardKey, sensorId)` から観測点・校正値を引く。 */

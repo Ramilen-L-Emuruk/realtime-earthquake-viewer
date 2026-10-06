@@ -9,7 +9,8 @@ import type { SensorHealth } from './sensorHealth'
 import { StationDirectory } from './stationConfig'
 import type { StationHealth } from './stationHealth'
 import { buildStatusReport } from './statusReport'
-import type { RawStoreStatus, StatusReportInput, WaveArchiveStatus } from './statusReport'
+import type { StatusReportInput, WaveArchiveStatus } from './statusReport'
+import type { MseedHealth } from './mseedRecorder'
 import type { DetectionStatus } from '../detection/stationDetection'
 
 const DETECTION_OK: DetectionStatus = {
@@ -56,22 +57,21 @@ const VERDICT: GravityVerdict = {
   restless: false,
 }
 
-const RAW_OK: RawStoreStatus = {
-  writeErrors: 0,
+const MSEED_OK: MseedHealth = {
+  recordsWritten: 120,
+  packetsLogged: 40,
+  unreadableWritten: 0,
   lostRecords: 0,
-  slowCloses: 0,
-  compressed: 2,
-  compressFailures: 0,
-  leftovers: 0,
-  listFailures: 0,
-  escaped: 0,
-  openFiles: 1,
-  stuckBooks: 0,
-  recordsAtRisk: 0,
-  cutShort: false,
-  currentDay: '2026-09-26',
+  badTimes: 0,
+  writeErrors: 0,
   lastWriteError: null,
-  lastSweepError: null,
+  openBooks: 1,
+  slowClose: false,
+  pendingSamples: 0,
+  bufferedPackets: 0,
+  cuts: { full: 0, 'seq-gap': 0, 'rate-change': 0, 'clock-sync': 0, 'time-drift': 0, hour: 0, hold: 0, idle: 0, flush: 0, 'value-jump': 0, recovered: 0 },
+  internalErrors: 0,
+  lastInternalError: null,
 }
 
 const WAVE_OK: WaveArchiveStatus = {
@@ -162,7 +162,8 @@ function input(overrides: Partial<StatusReportInput> = {}): StatusReportInput {
     loopStalls: { thresholdMs: 1000, count: 0, totalMs: 0, longestMs: null, last: null },
     backlog: {
       pendingGaps: 1, pendingSamples: 30, recoveredSamples: 60, unrecoverableSamples: { 'not-held': 30 },
-      requests: 3, recoveredPackets: 2, failures: { network: 1 }, rawUnsaved: 0, badPackets: 0, foreignPackets: 0,
+      requests: 3, recoveredPackets: 2, failures: { network: 1 }, badPackets: 0, foreignPackets: 0, unsavedPackets: 0,
+      unsettledWriteSinceMs: null,
     },
     http: { address: '0.0.0.0', port: 50506 },
     tally: tally.snapshotTotal(),
@@ -174,23 +175,7 @@ function input(overrides: Partial<StatusReportInput> = {}): StatusReportInput {
     gravity: EMPTY_GRAVITY,
     segments: [segment()],
     unusableIntensities: 0,
-    raw: RAW_OK,
-    mseed: {
-      recordsWritten: 0,
-      packetsWritten: 0,
-      unreadableWritten: 0,
-      lostRecords: 0,
-      badTimes: 0,
-      writeErrors: 0,
-      lastWriteError: null,
-      openBooks: 0,
-      slowClose: false,
-      pendingSamples: 0,
-      bufferedPackets: 0,
-      cuts: { full: 0, 'seq-gap': 0, 'rate-change': 0, 'clock-sync': 0, 'time-drift': 0, hour: 0, hold: 0, idle: 0, flush: 0, 'value-jump': 0 },
-      internalErrors: 0,
-      lastInternalError: null,
-    },
+    mseed: MSEED_OK,
     stationHistory: { recorded: 1, writeFailures: 0, lastError: null },
     waveArchive: WAVE_OK,
     hub: new ReadingHub().snapshot(),
@@ -225,12 +210,12 @@ describe('buildStatusReport', () => {
 
   it('保存の健全性をそのまま通す（数え上げだけを配らない）', () => {
     const report = buildStatusReport(
-      input({ raw: { ...RAW_OK, lostRecords: 3, lastWriteError: 'ディスクが一杯' } }),
+      input({ mseed: { ...MSEED_OK, lostRecords: 3, lastWriteError: 'ディスクが一杯' } }),
     )
 
-    expect(report.raw.lostRecords).toBe(3)
-    expect(report.raw.lastWriteError).toBe('ディスクが一杯')
-    expect(report.raw.currentDay).toBe('2026-09-26')
+    expect(report.mseed.lostRecords).toBe(3)
+    expect(report.mseed.lastWriteError).toBe('ディスクが一杯')
+    expect(report.mseed.recordsWritten).toBe(120)
   })
 
   it('基板ごとの時計のずれを通し、壊れた値は null にして時刻の欄として数える', () => {

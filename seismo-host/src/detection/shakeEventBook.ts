@@ -26,7 +26,7 @@ export const MEMORY_MS = 2 * 3_600_000
 const READING_MEMORY_MS = 10 * 60_000
 
 export interface ShakeEventBookOptions {
-  /** 版を残す（`ShakeEventStore.append`）。 */
+  /** 版を残す（`ShakeEventStore.save`）。 */
   readonly save: (rec: ShakeEventRecord) => void
   /** 版を押し出す（`ReadingHub`）。 */
   readonly publish: (rec: ShakeEventRecord) => void

@@ -65,7 +65,7 @@ export async function fetchJmaQuakeList(): Promise<JmaQuakeListEntry[]> {
 export async function fetchP2PEewOriginTimes(): Promise<Map<string, number>> {
   const out = new Map<string, number>()
   try {
-    const events = await fetchHistory([556], 100)
+    const events = await fetchHistory([556], 100, 0, null)
     for (const ev of events) {
       if (ev.kind !== 'eew') continue
       const eew = ev as EEWAlert

@@ -79,7 +79,8 @@ export const HANDLED_TYPES = new Set([
  * どれも取得済みのアーカイブに入っているので、拾うだけで追加の通信は要らない。
  *
  * **津波・緊急地震速報は入れない。** 「その時刻に発表中だったか」の判定は初期状態の担当で、
- * 遡り幅も目的も違う（イベント単位の生存判定が要る）。
+ * 遡り幅も目的も違う（イベント単位の生存判定が要る）。津波は全報を別の欄（`tsunamis`）で渡し、
+ * 緊急地震速報は初期状態へも足さない（理由は `useReplayController` の `assemblePreWindowMaterial`）。
  *
  * **推計震度分布図（IXAC41・IXAC40）も入れる**（2026-10-05 ユーザー承認）。地震ごとに持つので
  * （→ `EarthquakeState.estimatedIntensities`）、遡った地震のカードにも分布が付く。

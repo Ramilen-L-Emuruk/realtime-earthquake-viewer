@@ -1,11 +1,11 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
 import type { ShakeEventRecord } from './shakeEvent'
-import { ShakeEventStore, eventFileName, jstMonth, monthsBetween, readEventRange } from './shakeEventStore'
+import { eventFileName, eventFilePath, jstMonth, monthsBetween, readEventRange, ShakeEventStore } from './shakeEventStore'
 
 const dirs: string[] = []
 function tempDir(): string {
@@ -48,6 +48,8 @@ function rec(id: string, startMs: number, rev: number, verdict: ShakeEventRecord
   }
 }
 
+const T = Date.UTC(2026, 9, 3, 4, 27, 0)
+
 describe('monthsBetween / jstMonth', () => {
   it('日本時間で月を決める（UTC の 9/30 15:00 は日本時間の 10 月）', () => {
     expect(jstMonth(Date.UTC(2026, 8, 30, 15, 0))).toBe('2026-10')
@@ -59,39 +61,94 @@ describe('monthsBetween / jstMonth', () => {
   })
 })
 
+describe('eventFileName', () => {
+  it('ふつうの id はそのまま名前にする', () => {
+    expect(eventFileName('station-1-1759465588000')).toBe('station-1-1759465588000.json')
+  })
+
+  it('置き場所を外れる文字・Windows で書けない文字・英数字以外は逃がす', () => {
+    // 観測点の ID は管理コンソールから自由に付けられる。
+    expect(eventFileName('../a/b:c*書斎-1')).toBe('%2E.%2Fa%2Fb%3Ac%2A%E6%9B%B8%E6%96%8E-1.json')
+    expect(eventFileName('.hidden-1')).toBe('%2Ehidden-1.json')
+  })
+
+  it('日本時間の始まりの月のディレクトリへ置く', () => {
+    expect(eventFilePath('/d', { id: 'a-1', startMs: Date.UTC(2026, 8, 30, 15, 0) })).toBe(join('/d', '2026-10', 'a-1.json'))
+  })
+})
+
 describe('ShakeEventStore / readEventRange', () => {
-  it('追記した版を、id ごとに最後の版で読み返す', async () => {
+  it('揺れごとに 1 本で持ち、版が進んだら置き換える', async () => {
     const dir = tempDir()
     const store = new ShakeEventStore({ dir })
-    const t = Date.UTC(2026, 9, 3, 4, 27, 0)
-    store.append(rec('a', t, 1, 'pending'))
-    store.append(rec('b', t + 60_000, 1, 'pending'))
-    store.append(rec('a', t, 2, 'quake'))
-    const { events, unreadableLines } = await readEventRange({ dir, fromMs: t - 1, toMs: t + 3_600_000 })
+    expect(store.save(rec('a', T, 1, 'pending'))).toBe(true)
+    expect(store.save(rec('b', T + 60_000, 1, 'pending'))).toBe(true)
+    expect(store.save(rec('a', T, 2, 'quake'))).toBe(true)
+
+    expect(readdirSync(join(dir, '2026-10')).sort()).toEqual(['a.json', 'b.json'])
+    const { events, unreadableFiles } = await readEventRange({ dir, fromMs: T - 1, toMs: T + 3_600_000 })
     expect(events.map((e) => [e.id, e.rev, e.verdict])).toEqual([
       ['a', 2, 'quake'],
       ['b', 1, 'pending'],
     ])
-    expect(unreadableLines).toBe(0)
+    expect(unreadableFiles).toEqual([])
     expect(store.written).toBe(3)
   })
 
-  it('範囲の外の揺れは返さない。壊れた行は数えて飛ばす', async () => {
+  it('古い版で新しい版を上書きしない（失敗として数え、新しい版を残す）', () => {
     const dir = tempDir()
-    const t = Date.UTC(2026, 9, 3, 4, 27, 0)
-    writeFileSync(
-      join(dir, eventFileName('2026-10')),
-      `${JSON.stringify(rec('a', t, 1, 'pending'))}\n{こわれた\n${JSON.stringify(rec('c', t + 86_400_000, 1, 'pending'))}\n`,
-    )
-    const { events, unreadableLines } = await readEventRange({ dir, fromMs: t, toMs: t + 3_600_000 })
-    expect(events.map((e) => e.id)).toEqual(['a'])
-    expect(unreadableLines).toBe(1)
+    const store = new ShakeEventStore({ dir })
+    store.save(rec('a', T, 3, 'quake'))
+    expect(store.save(rec('a', T, 2, 'pending'))).toBe(false)
+    expect(store.writeErrors).toBe(1)
+    expect(store.lastWriteError).toContain('版 2')
+    const kept = JSON.parse(readFileSync(eventFilePath(dir, { id: 'a', startMs: T }), 'utf8')) as ShakeEventRecord
+    expect(kept.rev).toBe(3)
   })
 
-  it('ファイルが無い月は「揺れが無かった」として数えない', async () => {
+  it('同じ版の書き直しは通す（対照）', () => {
+    const dir = tempDir()
+    const store = new ShakeEventStore({ dir })
+    store.save(rec('a', T, 2, 'pending'))
+    expect(store.save(rec('a', T, 2, 'quake'))).toBe(true)
+  })
+
+  it('読めない前の版は、新しい版で置き換える（版は毎回まるごとの写し）', () => {
+    const dir = tempDir()
+    mkdirSync(join(dir, '2026-10'), { recursive: true })
+    writeFileSync(eventFilePath(dir, { id: 'a', startMs: T }), '{こわれた')
+    const store = new ShakeEventStore({ dir })
+    expect(store.save(rec('a', T, 1, 'pending'))).toBe(true)
+  })
+
+  it('一時ファイルを残さず、読み手も一時ファイルを読まない', async () => {
+    const dir = tempDir()
+    const store = new ShakeEventStore({ dir })
+    store.save(rec('a', T, 1, 'pending'))
+    expect(existsSync(`${eventFilePath(dir, { id: 'a', startMs: T })}.tmp`)).toBe(false)
+    // 書き込みの途中で落ちた形を作る。
+    writeFileSync(join(dir, '2026-10', 'b.json.tmp'), '{途中')
+    const r = await readEventRange({ dir, fromMs: T - 1, toMs: T + 1 })
+    expect(r.events.map((e) => e.id)).toEqual(['a'])
+    expect(r.unreadableFiles).toEqual([])
+  })
+
+  it('範囲の外の揺れは返さない。壊れたファイルは名前を添えて飛ばす', async () => {
+    const dir = tempDir()
+    const store = new ShakeEventStore({ dir })
+    store.save(rec('a', T, 1, 'pending'))
+    store.save(rec('c', T + 86_400_000, 1, 'pending'))
+    writeFileSync(join(dir, '2026-10', 'x.json'), '{こわれた')
+    writeFileSync(join(dir, '2026-10', 'y.json'), '{"id":"y"}')
+    const { events, unreadableFiles } = await readEventRange({ dir, fromMs: T, toMs: T + 3_600_000 })
+    expect(events.map((e) => e.id)).toEqual(['a'])
+    expect(unreadableFiles).toEqual(['2026-10/x.json', '2026-10/y.json'])
+  })
+
+  it('記録が無い月は「揺れが無かった」として数えない', async () => {
     const dir = tempDir()
     const r = await readEventRange({ dir, fromMs: Date.UTC(2026, 0, 1), toMs: Date.UTC(2026, 2, 1) })
-    expect(r).toEqual({ events: [], unreadableLines: 0, unreadableFiles: [] })
+    expect(r).toEqual({ events: [], unreadableFiles: [] })
   })
 
   it('書けなくても投げずに数える', () => {
@@ -100,7 +157,7 @@ describe('ShakeEventStore / readEventRange', () => {
     const blocked = join(dir, 'blocked')
     writeFileSync(blocked, 'x')
     const store = new ShakeEventStore({ dir: blocked })
-    expect(store.append(rec('a', Date.UTC(2026, 9, 3), 1, 'pending'))).toBe(false)
+    expect(store.save(rec('a', T, 1, 'pending'))).toBe(false)
     expect(store.writeErrors).toBe(1)
     expect(store.lastWriteError).not.toBeNull()
     expect(readFileSync(blocked, 'utf8')).toBe('x')
