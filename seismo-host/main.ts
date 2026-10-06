@@ -1,12 +1,12 @@
 // 自作センサーの受け手。UDP で待ち受け、届いたパケットを段 1〜3 へ通して
 // 計測震度相当を出す常駐プロセス。
 //
-// **出口は 4 つ。** 標準出力・生データのファイル・状態の口（`GET /status`）・
+// **出口は 4 つ。** 標準出力・生データのファイル（miniSEED 3）・状態の口（`GET /status`）・
 // 押し出しの口（`GET /stream`）。後ろ 2 つは HTTP で、宛先が違う ——
 // 状態は**運用者**、押し出しは **PWA**（観測結果はビューアー、機材の管理はビューアーの外）。
 //
 // **状態の口へ配る中身は 5 系統ある** —— 数え上げ（`src/receiver/packetTally.ts`）・
-// **保存の健全性**（`RawStore` の読み取り専用の値）・**センサーごとの生存**
+// **保存の健全性**（`MseedRecorder.health()`）・**センサーごとの生存**
 // （`src/receiver/sensorHealth.ts`）・**換算の自己診断**（`src/receiver/gravityCheck.ts`）・
 // **観測点ぶんの合成の生存**（`src/receiver/stationHealth.ts`。複数センサーの波形合成
 // ・REQUIREMENTS.md §7）。数え上げだけを配ると「生データが残っていない」ことも
@@ -24,11 +24,10 @@
 // 起動:
 //   npm run seismo-host
 //   SEISMO_UDP_PORT=50505 SEISMO_UDP_ADDRESS=0.0.0.0 npm run seismo-host
-import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { GAL_PER_G } from './src/intensity/units'
-import { MAX_TIME_MS, parseSensorPacket } from './src/protocol/parsePacket'
+import { MAX_TIME_MS } from './src/protocol/parsePacket'
 import { AckReplier, readAckEnabled } from './src/receiver/ackReplier'
 import {
   AssignmentClock,
@@ -48,8 +47,8 @@ import { LogThrottle, suppressedSuffix } from './src/receiver/logThrottle'
 import { PacketTally, formatTally } from './src/receiver/packetTally'
 import type { TallySnapshot } from './src/receiver/packetTally'
 import { MseedRecorder } from './src/receiver/mseedRecorder'
-import { RawStore } from './src/receiver/rawStore'
-import { StationConfigHistory } from './src/receiver/stationConfigHistory'
+import type { MseedHealth } from './src/receiver/mseedRecorder'
+import { STATION_CONFIG_FILE, StationStore } from './src/receiver/stationStore'
 import { ReadingHub } from './src/receiver/readingHub'
 import { WaveArchive, readWaveRange } from './src/receiver/waveArchive'
 import { SensorFusion } from './src/receiver/sensorFusion'
@@ -62,12 +61,7 @@ import type {
   StationIntensityReading,
 } from './src/receiver/sensorFusion'
 import { SensorHealthBook } from './src/receiver/sensorHealth'
-import {
-  StationDirectory,
-  loadStationConfig,
-  saveStationConfig,
-  stationsWithMultipleBoards,
-} from './src/receiver/stationConfig'
+import { StationDirectory, stationsWithMultipleBoards } from './src/receiver/stationConfig'
 import type { StationConfig } from './src/receiver/stationConfig'
 import { StationHealthBook } from './src/receiver/stationHealth'
 import { buildStatusReport } from './src/receiver/statusReport'
@@ -201,7 +195,13 @@ export function buildBacklogEventLine(event: BacklogEvent): {
         detail: `suspect|${event.key}`,
         line:
           `[backlog] ${event.key} 基板 ${event.address} の答えに使えないまとまりが混ざった` +
-          `（読めない ${event.badPackets}・別の流れ ${event.foreignPackets}・生データへ書けず ${event.rawUnsaved}）。あとで訊き直す`,
+          `（読めない ${event.badPackets}・別の流れ ${event.foreignPackets}）。あとで訊き直す`,
+      }
+    case 'unsaved':
+      return {
+        level: 'warn',
+        detail: `unsaved|${event.key}`,
+        line: `[backlog] ${event.key} 基板 ${event.address} から取り戻した ${event.packets} まとまりを生データへ書けなかった。あとで訊き直す`,
       }
     case 'failed':
       return {
@@ -215,12 +215,12 @@ export function buildBacklogEventLine(event: BacklogEvent): {
 }
 
 /**
- * 生データの既定の置き場所。
+ * 生データ（miniSEED 3）の既定の置き場所。
  *
  * **このファイルからの相対で解決する。** 実行時の作業ディレクトリを基準にすると、
  * どこから `npm run seismo-host` を叩いたかで書き出し先が変わる。
- * `.gitignore` 済み —— **このリポジトリは公開されていて、3 台 1 日で 600 MB 前後増える。**
- * （封筒を付けたあとの嵩。内訳は `seismo-host/README.md`「日の境目と圧縮」）
+ * `.gitignore` 済み —— **このリポジトリは公開されていて、3 台 1 日で 0.35 GB 前後増える。**
+ * （内訳は `seismo-host/README.md`「生のパケットを miniSEED 3 で時間ごとに残す」）
  */
 function defaultRawDir(): string {
   return fileURLToPath(new URL('./data/raw/', import.meta.url))
@@ -229,9 +229,8 @@ function defaultRawDir(): string {
 /**
  * 合成波形の既定の置き場所（`defaultRawDir` と同じ理由でこのファイルからの相対）。
  *
- * **生データとは別の場所へ置く。** 切り方（あちらは日ごと・こちらは時ごと）も
- * 後始末（あちらは古い日を gzip・こちらは圧縮しない）も違うので、混ぜると
- * どちらの掃き取りも相手のファイルを跨いで走ることになる。
+ * **生データとは別の場所へ置く。** 生データは基板とセンサーごとの生のカウント値、
+ * こちらは観測点ごとの合成波形で、読み返す口（`GET /waves`）もこちらだけを読む。
  *
  * `data/` は `.gitignore` 済み。**1 観測点あたり 1 日 120 MB 前後**増える
  * （3 軸 × 100 Hz × 4 バイト ＋ 効いた本数）。
@@ -258,13 +257,13 @@ export function readQuakeFeedEnabled(raw: string | undefined): boolean {
 }
 
 /**
- * 観測点の設定ファイルの既定の置き場所。
+ * 観測点の設定ファイル（StationXML。`stationStore.ts`）の既定の置き場所。
  *
  * **このファイルからの相対で解決する**（`defaultRawDir` と同じ理由）。`.gitignore` 済み
  * —— 設置場所（＝自宅の間取り）を書くので、生データと同じく公開リポジトリへは入れない。
  */
 function defaultStationConfigPath(): string {
-  return fileURLToPath(new URL('./config/stations.json', import.meta.url))
+  return fileURLToPath(new URL(`./config/${STATION_CONFIG_FILE}`, import.meta.url))
 }
 
 /**
@@ -415,89 +414,42 @@ export interface RawWarning {
 }
 
 export interface RawWarningInput {
-  /** この窓で書き損ねた件数。 */
+  /** この窓で書き損ねたレコードの本数。 */
   readonly lost: number
   /** この窓で流し口が壊れた回数。 */
   readonly sinkBroken: number
-  /** この窓で圧縮できなかった本の数。 */
-  readonly compressFailed: number
-  /** この窓で元を消せなかった本の数。 */
-  readonly leftover: number
+  /** この窓で組み立てが想定外の例外を受け止めた回数。 */
+  readonly internal: number
   readonly lastWriteError: string | null
-  readonly lastSweepError: string | null
-  /** 開いたまま閉じていない本の数。**正常は 1 本。** */
-  readonly openFiles: number
-  /**
-   * 締めくくりに入ってから長く閉じ終わらない本の数。
-   *
-   * **これが閉じ忘れの印で、開いたままの本の数ではない。** 日が変わる瞬間は新旧 2 冊が
-   * 数秒だけ共存するのが正常なので、冊数で鳴らすと毎日その瞬間に誤報が出る。
-   */
-  readonly stuckBooks: number
-  /** 置き場所そのものを読めなかった回数（この窓ぶん）。 */
-  readonly listFailures: number
-  /** 同じ日の `.gz` と中身が食い違い、別名へ逃がした本の数（この窓ぶん）。 */
-  readonly escaped: number
+  readonly lastInternalError: string | null
 }
 
 /**
- * 生データの保存について、1 分ごとの要約のあとに出す警告を組み立てる。
+ * 生データ（miniSEED）の記録について、1 分ごとの要約のあとに出す警告を組み立てる。
  *
  * **1 件ずつ出る経路が無いものをここで拾う。** 件数は要約の行が持つので、ここで出すのは
- * 理由と、件数では表せない状態（開いたままの本）だけ。掃き取りは日に 1 度の裏の仕事、
- * 書き損ねはコールバックで後から判るので、どちらも受信の経路では 1 行も出ない。
+ * 理由だけ。記録はレコードを溜めてから書くので、書き損ねは受信の経路では 1 行も出ない。
  */
 export function buildRawWarnings(input: RawWarningInput): readonly RawWarning[] {
   const out: RawWarning[] = []
-  // **理由そのものは鍵へ入れない。** 開いたままの本の数（下を見よ）と違って、文面は
-  // 無限に変わりうる —— 入れると間引きの枠（種類ごとに 64）を使い切り、そのぶん
-  // 別の種類の記録を押し出す。間隔が明ければ新しい理由は出るので、失うのは速さだけ。
+  // **理由そのものは鍵へ入れない。** 文面は無限に変わりうる —— 入れると間引きの枠
+  // （種類ごとに 64）を使い切り、そのぶん別の種類の記録を押し出す。間隔が明ければ
+  // 新しい理由は出るので、失うのは速さだけ。
   if ((input.lost > 0 || input.sinkBroken > 0) && input.lastWriteError !== null) {
     out.push({
       level: 'warn',
       kind: 'raw-write',
       detail: 'sink',
-      line: `[raw] 書き出せなかった理由: ${shorten(input.lastWriteError)}`,
+      line: `[mseed] 書き出せなかった理由: ${shorten(input.lastWriteError)}`,
     })
   }
-  if (input.listFailures > 0) {
+  // **こちらの不具合の印。** 受け止めたパケットは中身ごと残してあるが、0 でなければ直す対象。
+  if (input.internal > 0 && input.lastInternalError !== null) {
     out.push({
       level: 'warn',
-      kind: 'raw-list',
-      detail: 'dir',
-      line: '[raw] 生データの置き場所を読めず、古い記録を掃き取れていない（何本残っているかも判らない）',
-    })
-  }
-  if (input.escaped > 0) {
-    out.push({
-      level: 'warn',
-      kind: 'raw-escaped',
-      // 開いたままの本と同じ理由で件数を鍵へ入れる —— 増えていることが間引かれない。
-      detail: `clock:${input.escaped}`,
-      line: `[raw] 同じ日の記録が別の中身で ${input.escaped} 本できた（時計が戻った疑い。別名へ逃がしてある）`,
-    })
-  }
-  if ((input.compressFailed > 0 || input.leftover > 0 || input.listFailures > 0) && input.lastSweepError !== null) {
-    out.push({
-      level: 'warn',
-      kind: 'raw-sweep',
-      detail: 'sweep',
-      line: `[raw] 掃き取れなかった理由: ${shorten(input.lastSweepError)}`,
-    })
-  }
-  // **閉じ終わらない本があれば報せる。** 閉じ忘れは中身の欠けとしては現れず、
-  // 1 年動かしてファイルの上限に触れて初めて表に出る（そのときには原因を辿れない）。
-  //
-  // **鍵へ件数を入れる。** 定数にすると 1 本 → 3 本 → 10 本と悪化しても最初の 1 行しか
-  // 出ない —— いちばん知りたい「増えていること」が間引かれる側へ入る。
-  if (input.stuckBooks > 0) {
-    out.push({
-      level: 'warn',
-      kind: 'raw-open',
-      detail: `stuck:${input.stuckBooks}`,
-      line:
-        `[raw] 生データの本が ${input.stuckBooks} 本、締めくくりから戻ってこない` +
-        `（開いたままは全部で ${input.openFiles} 本）`,
+      kind: 'raw-internal',
+      detail: 'internal',
+      line: `[mseed] 組み立てで受け止めた例外: ${shorten(input.lastInternalError)}`,
     })
   }
   return out
@@ -538,6 +490,25 @@ export function buildBacklogBookWarning(problem: string | null): readonly RawWar
       kind: 'backlog-book',
       detail: problem,
       line: `[backlog] 前回の欠けの帳面を読めなかった（${problem}）。止まっていた間の欠けは取り戻さない`,
+    },
+  ]
+}
+
+/**
+ * 取り戻したまとまりの書き終わりを待っていて、取り戻しを止めていることを知らせる
+ * （`BacklogFetcher` の `inflight`）。**毎分の要約で、待っている間は毎回出す。**
+ * 止まっている間は他の数え上げが増えないので、ここで出さないと「取り戻すものが無い」と
+ * 見分けが付かない。詰まったのが過去の時の本だけなら、届いた分の保存の失敗にも現れない。
+ */
+export function buildBacklogUnsettledWarning(sinceMs: number | null, nowMs: number): readonly RawWarning[] {
+  if (sinceMs === null) return []
+  const seconds = Math.max(0, Math.round((nowMs - sinceMs) / 1000))
+  return [
+    {
+      level: 'warn',
+      kind: 'backlog-unsettled',
+      detail: 'unsettled',
+      line: `[backlog] 取り戻したまとまりの書き終わりを待っていて、取り戻しを止めている（${seconds} 秒）`,
     },
   ]
 }
@@ -1099,15 +1070,12 @@ export function deliverFusionClosing(to: FusionClosingSinks, closing: SensorFusi
  * 古い合成を締めて出たものの配り先は `FusionClosingSinks` から受ける（終了時と同じ）。
  */
 export interface ApplyStationConfigDeps extends FusionClosingSinks {
-  /** ディスクへ保存する。**投げうる**——投げたら以降は一切呼ばない。 */
-  readonly save: (config: StationConfig) => void
   /**
-   * 保存できた設定を履歴へ足す（`StationConfigHistory.record`）。**投げない**前提。
-   *
-   * **保存の直後に呼ぶ。** 設定ファイルは上書きされるので、ここで残さないと、
-   * 変える前の割り当てと校正値は二度と分からない（生データは補正前の値で、読み直すのにそれが要る）。
+   * 設定を記録として足し、設定ファイル（StationXML）へ書く（`StationStore.record`）。
+   * **投げうる**——投げたら以降は一切呼ばない。設定ファイルは履歴でもあるので、保存できれば
+   * 変える前の割り当てと校正値も残る（生データは補正前の値で、読み直すのにそれが要る）。
    */
-  readonly recordHistory: (config: StationConfig) => void
+  readonly save: (config: StationConfig) => void
   /** `/api/stations`・`/api/boards` の GET が返す値を差し替える。 */
   readonly setCurrentConfig: (config: StationConfig) => void
   /**
@@ -1168,7 +1136,6 @@ export interface ApplyStationConfigDeps extends FusionClosingSinks {
  */
 export function applyStationConfigCore(deps: ApplyStationConfigDeps, newConfig: StationConfig): void {
   deps.save(newConfig)
-  deps.recordHistory(newConfig)
 
   deps.setCurrentConfig(newConfig)
   // **割り当てと「いつ割り当てたか」を続けて動かす。** 間に何か挟むと、その間に
@@ -1221,8 +1188,8 @@ export function applyStationConfigCore(deps: ApplyStationConfigDeps, newConfig: 
 export interface CloseHostDeps {
   /** UDP の受信口を閉じる。 */
   readonly closeReceiver: () => Promise<void>
-  /** 生データの保存を流し切って閉じる。 */
-  readonly closeRawStore: () => Promise<void>
+  /** 生データ（miniSEED）の記録を流し切って閉じる。 */
+  readonly closeRecorder: () => Promise<void>
   /** 単独センサーの計測震度を締める（`IntensityPipeline.closeAll()`）。 */
   readonly closePipeline: () => { readonly readings: readonly IntensityReading[]; readonly failures: readonly CloseFailure[] }
   readonly reportPipelineCloseFailures: (failures: readonly CloseFailure[]) => void
@@ -1251,8 +1218,8 @@ export interface CloseHostDeps {
  * 1. **受信口を先に閉じる。** 締めくくりを先にすると、空にしたそばから届いた分が
  *    新しい区間を開き、二度と締められないまま終わる（その基板の最後の窓ぶんが、
  *    警告も記録も無いまま消える）
- * 2. **生データを流し切る。** 圧縮の途中で抜けると `.gz.tmp` が残り、次の起動が
- *    書きかけのファイルを見る
+ * 2. **生データを流し切る。** 溜めている波形（最長 5 秒）と受信の記録（最長 30 秒）を
+ *    レコードにして書き出してから閉じる。抜けるとその分が消える
  * 3. **単独センサーの震度を締めくくる。** 出さずに終えると、最後の窓ぶんの答えが消える
  * 4. **観測点の合成を締めくくる。** 待たせていたまとまりの波形と差分もここで配る（#402）。
  *    続けて地震検出の開いている揺れを閉じて記録する（配った最後の波形まで見てから）
@@ -1279,9 +1246,9 @@ export async function closeHostCore(deps: CloseHostDeps): Promise<void> {
   }
 
   try {
-    await deps.closeRawStore()
+    await deps.closeRecorder()
   } catch (error) {
-    deps.logError(`[raw] 生データの締めに失敗: ${messageOf(error)}`)
+    deps.logError(`[mseed] 生データの締めに失敗: ${messageOf(error)}`)
   }
 
   try {
@@ -1437,36 +1404,12 @@ export interface ClosingLinesInput {
    * `GRAVITY_LABELS` が持つ。
    */
   readonly gravity: GravityCounts
-  readonly writeErrors: number
-  readonly lostRecords: number
-  readonly slowCloses: number
-  readonly compressed: number
-  readonly compressFailures: number
-  readonly leftovers: number
-  /** 締め終えたあとも開いたままの本の数。**上限で切り上げれば 0 とは限らない。** */
-  readonly openFiles: number
-  /** 締めくくりを待ち時間の上限で切り上げたか。 */
-  readonly cutShort: boolean
   /**
-   * 締めくくりから戻ってこない本の数。
-   *
-   * **開いたままの本の数とは別に出す。** 終了の合図と日の境目が重なれば、正常な
-   * 2 冊の共存がそのまま最後の記録に残る —— それと「ずっと居座っていた本」を
-   * 数字だけで見分けられない。
+   * 生データ（miniSEED）の記録の健全性。**記録が返すものをそのまま受け取る**（`gravity` と
+   * 同じ理由。欄を 1 つずつ並べると、あちらへ数を足したときにここで渡し忘れる）。
+   * 締めくくりの後に読むので、開いたままの本の数（`openBooks`）は「閉じ切れなかった本」になる。
    */
-  readonly stuckBooks: number
-  /**
-   * 締めくくりの最中の本が抱えたままの件数。
-   *
-   * **打ち切ったときの被害の大きさ。** 失った件数（`lostRecords`）は締め終わって初めて
-   * 確定するので、上限で切り上げるとその加算が間に合わない —— この値だけが、
-   * 何件を書き切れなかったかを示す。
-   */
-  readonly recordsAtRisk: number
-  readonly listFailures: number
-  readonly escaped: number
-  readonly lastWriteError: string | null
-  readonly lastSweepError: string | null
+  readonly mseed: MseedHealth
   /**
    * 合成波形の保存（`waveArchive.ts`）の累計。**生データの欄とは別に持つ。**
    *
@@ -1477,7 +1420,7 @@ export interface ClosingLinesInput {
   readonly waveWriteErrors: number
   readonly waveLostRecords: number
   readonly waveBadChunks: number
-  /** 締めくくりを待ちきれなかったか。**1 件も失っていない**（`slowCloses` と同じ位置づけ）。 */
+  /** 締めくくりを待ちきれなかったか。**1 件も失っていない**ので、件数の行とは分けて出す。 */
   readonly waveSlowClose: boolean
   readonly waveLastWriteError: string | null
   /**
@@ -1502,18 +1445,14 @@ export function buildClosingLines(input: ClosingLinesInput): readonly ClosingLin
     { label: 'センサーの生存の枠を捨てた', value: input.sensorEvictions },
     { label: '観測点ぶんの合成の生存の枠を捨てた', value: input.stationEvictions },
     ...gravityCountEntries(input.gravity),
-    { label: '生データを残せず流し口が壊れた', value: input.writeErrors },
-    { label: '生データを書き損ねた', value: input.lostRecords },
-    { label: '生データの締めくくりが遅い', value: input.slowCloses },
-    { label: '古い記録を圧縮した', value: input.compressed },
-    { label: '古い記録を圧縮できず', value: input.compressFailures },
-    { label: '置き場所を読めず掃き取れず', value: input.listFailures },
-    { label: '同じ日の記録が別の中身で残った', value: input.escaped },
-    { label: '圧縮したが元を消せず', value: input.leftovers },
+    { label: '生データを残せず流し口が壊れた', value: input.mseed.writeErrors },
+    { label: '生データのレコードを書き損ねた', value: input.mseed.lostRecords },
+    { label: '生データの振り分け先を時刻から決められず', value: input.mseed.badTimes },
+    { label: '読めなかったパケットを中身ごと残した', value: input.mseed.unreadableWritten },
+    { label: '生データの組み立てで想定外の例外を受け止めた', value: input.mseed.internalErrors },
     // **閉じ切れなかった本も出す。** `close()` には待ち時間の上限があるので、ここへ来ても
     // 0 とは限らない。0 なら行ごと出ないので、平時の締めくくりは何も変わらない。
-    { label: '閉じ切れなかった生データの本', value: input.openFiles },
-    { label: 'うち締めくくりから戻ってこない本', value: input.stuckBooks },
+    { label: '閉じ切れなかった生データの本', value: input.mseed.openBooks },
     { label: '合成波形を残せず流し口が壊れた', value: input.waveWriteErrors },
     { label: '合成波形を書き損ねた', value: input.waveLostRecords },
     { label: '合成波形を形にできず捨てた', value: input.waveBadChunks },
@@ -1526,23 +1465,21 @@ export function buildClosingLines(input: ClosingLinesInput): readonly ClosingLin
   // **打ち切ったなら言う。** 黙って打ち切ると「全部片付けて終わった」のと見分けが付かない。
   // 上の行は開いたままの本の数を出すが、打ち切った直後に閉じ終われば 0 に戻るので、
   // **打ち切った事実はそれとは別に残す**。
-  if (input.cutShort) {
-    out.push({
-      level: 'error',
-      line:
-        '  生データの締めくくりを待ち時間の上限で打ち切りました' +
-        `（書き切れていない ${input.recordsAtRisk} 件）`,
-    })
+  if (input.mseed.slowClose) {
+    out.push({ level: 'error', line: '  生データの締めくくりを待ち時間の上限で打ち切りました' })
   }
 
   // **理由も出す。** 締めくくりでは毎分の要約が止まっているので、最後の窓で起きた失敗は
   // **件数だけが累計に載り、理由はどこにも出ないまま失われる**。運用者が最後に読むのは
   // ここで、しかも原因がいちばん要るのは障害の直後。
-  if (input.lastWriteError !== null) {
-    out.push({ level: 'error', line: `  生データを書き出せなかった理由: ${shorten(input.lastWriteError)}` })
+  if (input.mseed.lastWriteError !== null) {
+    out.push({ level: 'error', line: `  生データを書き出せなかった理由: ${shorten(input.mseed.lastWriteError)}` })
   }
-  if (input.lastSweepError !== null) {
-    out.push({ level: 'error', line: `  古い記録を掃き取れなかった理由: ${shorten(input.lastSweepError)}` })
+  if (input.mseed.lastInternalError !== null) {
+    out.push({
+      level: 'error',
+      line: `  生データの組み立てで最後に受け止めた例外: ${shorten(input.mseed.lastInternalError)}`,
+    })
   }
   if (input.waveLastWriteError !== null) {
     out.push({
@@ -1659,19 +1596,21 @@ async function main(): Promise<void> {
   // **`pipeline` より先に作る。** 校正（REQUIREMENTS.md §16）の適用にはセンサーの
   // 割り当てが要るので、`IntensityPipeline` のコンストラクタへ渡す。
   const stationConfigPath = process.env.SEISMO_STATION_CONFIG ?? defaultStationConfigPath()
-  const stationConfigLoad = loadStationConfig(stationConfigPath)
+  const stationStore = new StationStore({ path: stationConfigPath })
+  const stationConfigLoad = stationStore.open()
   // **文面はここで直書きしない。** `buildStationConfigWarning`（定期要約でも使う）と
   // 別の文字列を持つと、起動直後のログと 60 秒後以降の再掲ログの表現がずれる。
   for (const w of buildStationConfigWarning(stationConfigLoad.warning)) console.warn(w.line)
-  // **生データの置き場所はここで決める**（設定の履歴も同じ場所へ置くため、`RawStore` より先に要る）。
-  const rawDir = process.env.SEISMO_RAW_DIR ?? defaultRawDir()
-  // **起動のたびに、そのとき使う設定を履歴へ 1 行足す**（`stationConfigHistory.ts`）。
-  // 読めなかったときも、空の設定と警告をそのまま書く —— その間の生データは、
-  // どの観測点にも割り当てずに受けていたことが後から分かる。
-  const stationHistory = new StationConfigHistory({ dir: rawDir })
-  if (!stationHistory.record(stationConfigLoad.config, 'startup', stationConfigLoad.warning)) {
-    console.error(`[station-history] 観測点の設定の履歴を書けず: ${shorten(stationHistory.lastError ?? '')}`)
+  // **起動のたびに、起動したことを設定ファイルへ記録する**（`stationStore.ts`。設定は変わらないので
+  // 期間は続き、記録だけが増える）。読めなかったときは書かない —— 書き直すと読めなかった分の履歴が消える。
+  if (stationConfigLoad.warning === null) {
+    try {
+      stationStore.record(stationConfigLoad.config, 'startup')
+    } catch (error) {
+      console.error(`[station-history] 観測点の設定へ起動の記録を書けず: ${shorten(messageOf(error))}`)
+    }
   }
+  const rawDir = process.env.SEISMO_RAW_DIR ?? defaultRawDir()
   // **以下 5 つは `/api/*`（#313 段 B）が書き換える。** 設定を保存・反映するたびに
   // `applyStationConfig`（このスコープの下のほうで定義）がまとめて差し替える——
   // 個別に更新すると、一部だけ新しい設定を見て残りが古いままになる（例えば
@@ -1710,13 +1649,11 @@ async function main(): Promise<void> {
   const boardClocks = new BoardClockBook()
   const stationHealth = new StationHealthBook()
   const gravity = new GravityCheckBook()
-  // **作れなければここで落ちる。** 黙って保存せずに走るのがいちばん悪い ——
-  // 基板は送っていて震度も出ていて、生だけが残っていない状態に外から気づけない。
-  const rawStore = new RawStore({ dir: rawDir })
-  // **miniSEED 3 でも残す**（REQUIREMENTS.md §9）。突き合わせが済むまでは NDJSON（`rawStore`）と
-  // 並行して書く。置き場所は生データの下の `mseed/`。**こちらも作れなければ落ちる**（同じ理由）。
-  const mseedRecorder = new MseedRecorder({ dir: join(rawDir, 'mseed') })
-  // **こちらも作れなければ落ちる**（`RawStore` と同じ理由）。読み返しの口
+  // **生データは miniSEED 3 で残す**（REQUIREMENTS.md §9）。**作れなければここで落ちる。**
+  // 黙って保存せずに走るのがいちばん悪い —— 基板は送っていて震度も出ていて、生だけが
+  // 残っていない状態に外から気づけない。
+  const mseedRecorder = new MseedRecorder({ dir: rawDir })
+  // **こちらも作れなければ落ちる**（生データと同じ理由）。読み返しの口
   // （`GET /waves`）が返せるのはここへ残った分だけなので、黙って保存せずに走ると
   // 「揺れたときに遡れない」ことへ外から気づく手立てが無い。
   // **読み返しの口も同じ変数を見る。** 2 度解くと、環境変数で移した先を片方だけが
@@ -1724,8 +1661,8 @@ async function main(): Promise<void> {
   const waveDir = process.env.SEISMO_WAVE_DIR ?? defaultWaveDir()
   const waveArchive = new WaveArchive({ dir: waveDir })
 
-  // **地震検出（REQUIREMENTS.md §6・§9）。** 揺れの記録は月ごとの NDJSON へ追記し
-  // （`GET /events` も同じ置き場所を読む）、気象庁の地震情報と照らし合わせる。
+  // **地震検出（REQUIREMENTS.md §6・§9）。** 揺れの記録を残し（`GET /events` も同じ
+  // 置き場所を読む）、気象庁の地震情報と照らし合わせる。
   // 配線そのものは `StationDetection` が持つ（自動テストの届く場所に置くため）。
   const eventDir = process.env.SEISMO_EVENT_DIR ?? defaultEventDir()
   const eventStore = new ShakeEventStore({ dir: eventDir })
@@ -1743,7 +1680,7 @@ async function main(): Promise<void> {
     : null
   const detection = new StationDetection({
     save: (rec) => {
-      if (!eventStore.append(rec)) {
+      if (!eventStore.save(rec)) {
         emit('error', 'event-store', 'write', `[detect] 揺れの記録を書けず: ${shorten(eventStore.lastWriteError ?? '')}`)
       }
     },
@@ -1795,19 +1732,14 @@ async function main(): Promise<void> {
     else console.log(text)
   }
 
-  // **取り戻した分は記録（生データと miniSEED）にだけ書く** —— 震度・合成・押し出し・
-  // 時計の推定には混ぜない（理由は `backlogFetcher.ts` の冒頭）。
+  // **取り戻した分は生データの記録にだけ渡す** —— 震度・合成・押し出し・時計の推定には
+  // 混ぜない（理由は `backlogFetcher.ts` の冒頭）。
   const backlogFetcher = new BacklogFetcher({
     book: backlogBook,
     get: fetchBacklog,
-    writeRecovered: (source, payload) => {
-      // 受け取った時刻は 1 回だけ読んで両方へ渡す（届いた分と同じ理由）。
-      const receivedAtMs = Date.now()
-      const stored = rawStore.writeRecovered(source, payload, receivedAtMs)
-      // **取り戻した分は波形の時刻の時の本へ入れる**（`mseedStore.ts`）。投げない。
-      mseedRecorder.handle(source, payload, receivedAtMs, 'backlog')
-      return stored
-    },
+    // **取り戻した分は波形の時刻の時の本へ入る**（`mseedStore.ts`）。溜めずに書き、書き終わりを待って、
+    // 書けなかった分は欠けに残して訊き直させる（`acceptRecovered`）。投げない。
+    keepRecovered: (source, payload) => mseedRecorder.acceptRecovered(source, payload, Date.now()),
     now: Date.now,
     timeoutMs: BACKLOG_TIMEOUT_MS,
     spacingMs: BACKLOG_SPACING_MS,
@@ -1937,7 +1869,7 @@ async function main(): Promise<void> {
       detection.pushStationWave(w)
       const stored = waveArchive.write(w)
       if (!stored.saved) {
-        // **理由の文面は、その理由が書き込み系のときだけ添える**（`rawStore` と同じ判断）。
+        // **理由の文面は、その理由が書き込み系のときだけ添える。**
         // 形にできなかった（`bad-chunk`）のはディスクと無関係なので、直前の書き込み障害の
         // 文面を付けると原因を取り違えさせる。
         const why =
@@ -1994,12 +1926,7 @@ async function main(): Promise<void> {
   const applyStationConfig = (newConfig: StationConfig): void => {
     applyStationConfigCore(
       {
-        save: (config) => saveStationConfig(stationConfigPath, config),
-        recordHistory: (config) => {
-          if (!stationHistory.record(config, 'changed', null)) {
-            console.error(`[station-history] 観測点の設定の履歴を書けず: ${shorten(stationHistory.lastError ?? '')}`)
-          }
-        },
+        save: (config) => stationStore.record(config, 'changed'),
         setCurrentConfig: (config) => {
           currentStationConfig = config
         },
@@ -2047,8 +1974,8 @@ async function main(): Promise<void> {
     onDatagram: (payload, from, reply) => {
       // **受け取った時刻は最初に読む**（時計のずれを測る `boardClocks` が使う）。保存や
       // 読み取りの後で読むと、その処理時間が「届くまでの時間」に乗り、ずれが大きく見える。
-      // **読むのはここの 1 回だけ。** 生データと miniSEED の見出しへも同じ値を渡す ——
-      // それぞれが読み直すと、ミリ秒の繰り上がりで同じパケットの受け取った時刻が食い違う。
+      // **読むのはここの 1 回だけ。** 生データの受信の記録・欠けの帳面・時計のずれへ同じ値を
+      // 渡す —— それぞれが読み直すと、ミリ秒の繰り上がりで同じパケットの時刻が食い違う。
       const receivedAtMs = Date.now()
       // **届いた件数は上限を掛ける前に数える。** あとだと分母が上限そのものになり、
       // 「どれだけ撃たれているか」が表から読めなくなる。
@@ -2062,32 +1989,13 @@ async function main(): Promise<void> {
         return
       }
 
-      // **保存は上限の後・読み取りの前。** 前に置くと壊れた送り手 1 台にディスクを
+      // **保存は上限の後・震度の処理の前。** 前に置くと壊れた送り手 1 台にディスクを
       // 埋められる（削除しない約束なので、埋まったら人が来るまで戻らない）。
-      // 後ろに置くと**いちばん残したい読めなかったパケット**が消える。
-      const stored = rawStore.write(formatSource(from), payload, receivedAtMs)
-      if (!stored.saved) {
-        tally.record({ kind: 'raw-unsaved', source: from.address, reason: stored.reason })
-        // **理由の文面は、その理由が書き込み系のときだけ添える。** 抱えきれずに捨てた
-        // （`backpressure`）のはディスクと無関係なので、直前の書き込み障害の文面を
-        // 付けると原因を取り違えさせる。
-        const why =
-          (stored.reason === 'no-stream' || stored.reason === 'write-failed') &&
-          rawStore.lastWriteError !== null
-            ? `: ${shorten(rawStore.lastWriteError)}`
-            : ''
-        emit(
-          'warn',
-          'raw',
-          `${from.address}|${stored.reason}`,
-          `[raw] ${formatSource(from)} 生データを残せず（${stored.reason}）${why}`,
-        )
-      }
-
-      const read = parseSensorPacket(payload)
-      // **miniSEED 3 へも残す。読めなかったパケットも理由を付けて丸ごと残す**ので、下の
-      // 「読めなければ戻る」より前に置く。読んだ結果を渡して二度読まない。投げない。
-      mseedRecorder.handle(formatSource(from), payload, receivedAtMs, 'live', read)
+      // 震度の処理の後ろに置くと、そちらで例外が出たときに生データが残らない。
+      // **読み取りも記録が行い、その結果を受け取る**（二度読まない）。読めなかったパケットも
+      // 理由を付けて中身ごと残すので、下の「読めなければ戻る」より前に置く。投げない。
+      // 書き出せなかった分は記録が数える（`MseedHealth`。毎分の要約と `/status` に出る）。
+      const read = mseedRecorder.accept(formatSource(from), payload, receivedAtMs)
       if (!read.ok) {
         // **ここは基板で数えられない。** ヘッダが読めていないので誰が送ったか判らず、
         // 判るのは送信元アドレスだけ（`packetTally.ts` が表を 2 つに分けている理由）。
@@ -2346,33 +2254,15 @@ async function main(): Promise<void> {
         gravity: gravity.snapshot(),
         segments: pipeline.openSegments(),
         unusableIntensities: pipeline.unusableIntensities,
-        // **`RawStore` の欄をここで書き写す。** 表の外にある値なので、
-        // 足したときにここへ反映し忘れると状態の口からだけ静かに落ちる。
-        raw: {
-          writeErrors: rawStore.writeErrors,
-          lostRecords: rawStore.lostRecords,
-          slowCloses: rawStore.slowCloses,
-          compressed: rawStore.compressed,
-          compressFailures: rawStore.compressFailures,
-          leftovers: rawStore.leftovers,
-          listFailures: rawStore.listFailures,
-          escaped: rawStore.escaped,
-          openFiles: rawStore.openFiles,
-          stuckBooks: rawStore.stuckBooks,
-          recordsAtRisk: rawStore.recordsAtRisk,
-          cutShort: rawStore.cutShort,
-          currentDay: rawStore.currentDay,
-          lastWriteError: rawStore.lastWriteError,
-          lastSweepError: rawStore.lastSweepError,
-        },
-        // **miniSEED の欄は部品が返すものをそのまま渡す**（欄を足したときに渡し忘れないように）。
+        // **生データの欄は部品が返すものをそのまま渡す**（欄を足したときに渡し忘れないように）。
         mseed: mseedRecorder.health(),
         stationHistory: {
-          recorded: stationHistory.recorded,
-          writeFailures: stationHistory.writeFailures,
-          lastError: stationHistory.lastError,
+          recorded: stationStore.recorded,
+          writeFailures: stationStore.writeFailures,
+          lastError: stationStore.lastError,
         },
-        // **`WaveArchive` の欄もここで書き写す**（`raw` と同じ理由・同じ落とし穴）。
+        // **`WaveArchive` の欄はここで書き写す。** 表の外にある値なので、足したときに
+        // ここへ反映し忘れると状態の口からだけ静かに落ちる。
         waveArchive: {
           writeErrors: waveArchive.writeErrors,
           lostRecords: waveArchive.lostRecords,
@@ -2399,11 +2289,6 @@ async function main(): Promise<void> {
     `[http] ${httpAddress ?? '0.0.0.0'}:${statusServer.port} で待ち受け中`
     + '（/status は状態・/stream は震度の押し出し。?wave=station で観測点の合成波形・?wave=1 でセンサー単独も）',
   )
-
-  // **起動時にも掃き取る。** 回転は日が変わったときにしか走らないので、
-  // これが無いと止まっていた間に古くなった分が素のまま残り続ける。
-  // 待たない —— 圧縮に数十秒かかることがあり、その間パケットを取りこぼす。
-  void rawStore.sweep()
 
   let quietReported = false
   /** 前の窓で黙っていた割り当て（`buildAssignedSilenceReport`）。戻ったことを言うために持ち越す。 */
@@ -2472,26 +2357,18 @@ async function main(): Promise<void> {
         '押し出しを切ったことを報せられず',
         hub.snapshot().notifyFailed,
       ),
-      sinkBroken: delta('sinkBroken', '生データを残せず流し口が壊れた', rawStore.writeErrors),
-      lost: delta('lost', '生データを書き損ねた', rawStore.lostRecords),
-      slowClose: delta('slowClose', '生データの締めくくりが遅い', rawStore.slowCloses),
-      compressed: delta('compressed', '古い記録を圧縮した', rawStore.compressed),
-      compressFailed: delta('compressFailed', '古い記録を圧縮できず', rawStore.compressFailures),
-      leftover: delta('leftover', '圧縮したが元を消せず', rawStore.leftovers),
-      listFailed: delta('listFailed', '置き場所を読めず掃き取れず', rawStore.listFailures),
-      escaped: delta('escaped', '同じ日の記録が別の中身で残った', rawStore.escaped),
+      // **生データの記録を要約へ出す。** 書き損ねは溜めた後で判るので、受信の経路では 1 行も出ない。
+      sinkBroken: delta('sinkBroken', '生データを残せず流し口が壊れた', mseedHealth.writeErrors),
+      lost: delta('lost', '生データのレコードを書き損ねた', mseedHealth.lostRecords),
+      badTime: delta('badTime', '生データの振り分け先を時刻から決められず', mseedHealth.badTimes),
+      unreadable: delta('unreadable', '読めなかったパケットを中身ごと残した', mseedHealth.unreadableWritten),
+      internal: delta('internal', '生データの組み立てで想定外の例外を受け止めた', mseedHealth.internalErrors),
       // **合成波形の保存も要約へ出す。** `/status` は見に来た人にしか届かない ——
       // ここから漏れると、読み返しの口が空を返すようになったことに再起動まで誰も気づけない。
       waveSinkBroken: delta('waveSinkBroken', '合成波形を残せず流し口が壊れた', waveArchive.writeErrors),
       waveLost: delta('waveLost', '合成波形を書き損ねた', waveArchive.lostRecords),
       waveBadChunk: delta('waveBadChunk', '合成波形を形にできず捨てた', waveArchive.badChunks),
-      // **miniSEED での生データも要約へ出す**（NDJSON と並行して書いている間、片方だけ止まる形を見分ける）。
-      mseedSinkBroken: delta('mseedSinkBroken', 'miniSEED を残せず流し口が壊れた', mseedHealth.writeErrors),
-      mseedLost: delta('mseedLost', 'miniSEED を書き損ねた', mseedHealth.lostRecords),
-      mseedBadTime: delta('mseedBadTime', 'miniSEED の振り分け先を時刻から決められず', mseedHealth.badTimes),
-      mseedUnreadable: delta('mseedUnreadable', '読めないパケットを miniSEED の外へ残した', mseedHealth.unreadableWritten),
-      mseedInternal: delta('mseedInternal', 'miniSEED の組み立てで想定外の例外を受け止めた', mseedHealth.internalErrors),
-      stationHistoryFailed: delta('stationHistoryFailed', '観測点の設定の履歴を書けず', stationHistory.writeFailures),
+      stationHistoryFailed: delta('stationHistoryFailed', '観測点の設定ファイルを書けず', stationStore.writeFailures),
       // **止まった回数も要約へ出す。** 1 件ずつの `[stall]` の行は間引きを通るので、
       // 機械が詰まり続けた間の回数はここでしか数えられない。
       loopStall: delta('loopStall', '処理が 1 秒以上止まった', loopStalls.snapshot().count),
@@ -2501,8 +2378,9 @@ async function main(): Promise<void> {
       backlogSuspect: delta(
         'backlogSuspect',
         '取りに行った答えに使えないまとまりが混ざった',
-        fetched.badPackets + fetched.foreignPackets + fetched.rawUnsaved,
+        fetched.badPackets + fetched.foreignPackets,
       ),
+      backlogUnsaved: delta('backlogUnsaved', '取り戻したまとまりを生データへ書けず訊き直す', fetched.unsavedPackets),
     }
     // **取り戻せなかった分は理由ごとに出す** —— 再起動・上書き・古いファーム・諦め・捨てたで手当てが違う。
     // 欄は `UNRECOVERABLE_TEXT` の鍵から引く（理由を足せば黙って付いてくる）。
@@ -2544,14 +2422,9 @@ async function main(): Promise<void> {
     const warnings = buildRawWarnings({
       lost: counters.lost.value,
       sinkBroken: counters.sinkBroken.value,
-      compressFailed: counters.compressFailed.value,
-      leftover: counters.leftover.value,
-      listFailures: counters.listFailed.value,
-      escaped: counters.escaped.value,
-      lastWriteError: rawStore.lastWriteError,
-      lastSweepError: rawStore.lastSweepError,
-      openFiles: rawStore.openFiles,
-      stuckBooks: rawStore.stuckBooks,
+      internal: counters.internal.value,
+      lastWriteError: mseedHealth.lastWriteError,
+      lastInternalError: mseedHealth.lastInternalError,
     })
     for (const w of warnings) emit(w.level, w.kind, w.detail, w.line)
     // **設定ファイルの破損・合成グループの乖離も、間引きつつ再掲する。** 起動時の
@@ -2559,6 +2432,7 @@ async function main(): Promise<void> {
     // 伝わらない（`buildStationConfigWarning`・`buildStationGroupingWarning` のコメント参照）。
     for (const w of buildStationConfigWarning(stationConfigWarning)) emit(w.level, w.kind, w.detail, w.line)
     for (const w of buildBacklogBookWarning(backlogBookLoad.problem)) emit(w.level, w.kind, w.detail, w.line)
+    for (const w of buildBacklogUnsettledWarning(fetched.unsettledWriteSinceMs, now)) emit(w.level, w.kind, w.detail, w.line)
     for (const w of buildStationGroupingWarning(ungroupedMultiBoardStations)) {
       emit(w.level, w.kind, w.detail, w.line)
     }
@@ -2617,15 +2491,8 @@ async function main(): Promise<void> {
     // 空関数にしても別の段を渡しても型検査は通り、終了の合図を受けるまで何も起きない。
     await closeHostCore({
       closeReceiver: () => receiver.close(),
-      // **NDJSON と miniSEED の両方を流し切る。** 片方が投げても、もう片方は必ず締める ——
-      // 締めないと、溜めていた最後の 5 秒ぶんと見出しが書かれずに消える。
-      closeRawStore: async () => {
-        try {
-          await rawStore.close()
-        } finally {
-          await mseedRecorder.close()
-        }
-      },
+      // **締めないと、溜めていた最後の波形（5 秒）と受信の記録（30 秒）が書かれずに消える。**
+      closeRecorder: () => mseedRecorder.close(),
       closePipeline: () => pipeline.closeAll(),
       reportPipelineCloseFailures: reportCloseFailures,
       emitPipelineReading: emitReading,
@@ -2671,20 +2538,7 @@ async function main(): Promise<void> {
       sensorEvictions: health.evictions,
       stationEvictions: stationHealth.evictions,
       gravity: lastDiag,
-      writeErrors: rawStore.writeErrors,
-      lostRecords: rawStore.lostRecords,
-      slowCloses: rawStore.slowCloses,
-      compressed: rawStore.compressed,
-      compressFailures: rawStore.compressFailures,
-      leftovers: rawStore.leftovers,
-      listFailures: rawStore.listFailures,
-      escaped: rawStore.escaped,
-      openFiles: rawStore.openFiles,
-      cutShort: rawStore.cutShort,
-      stuckBooks: rawStore.stuckBooks,
-      recordsAtRisk: rawStore.recordsAtRisk,
-      lastWriteError: rawStore.lastWriteError,
-      lastSweepError: rawStore.lastSweepError,
+      mseed: mseedRecorder.health(),
       waveWriteErrors: waveArchive.writeErrors,
       waveLostRecords: waveArchive.lostRecords,
       waveBadChunks: waveArchive.badChunks,

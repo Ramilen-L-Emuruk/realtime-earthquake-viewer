@@ -1744,7 +1744,7 @@ describe('DMDSS 版: 「もっと見る」で遡れる範囲', () => {
     await act(async () => { await h.current.loadMoreEarthquakes() })
     await act(async () => { await h.current.loadMoreEarthquakes() })
 
-    const tags = vi.mocked(fetchDmdataQuakeHistory).mock.calls.map(c => c[6])
+    const tags = vi.mocked(fetchDmdataQuakeHistory).mock.calls.map(c => c[7])
     expect(tags[0]).toBeUndefined()                    // 起動時
     expect(tags[1]).toEqual({ label: 'load-more' })    // もっと見る（1 回目）
     expect(tags[2]).toEqual({ label: 'load-more' })    // もっと見る（2 回目）

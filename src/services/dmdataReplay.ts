@@ -8,6 +8,9 @@ import { readArchiveBody, writeArchiveBody } from '../utils/archiveBodyDb'
 import { log, createLogThrottle } from '../utils/logger'
 import { authHeader } from '../utils/dmdataApiKey'
 import {
+  fetchWithTimeout, isAbortedByCaller, ARCHIVE_BODY_FETCH_TIMEOUT_MS, API_FETCH_TIMEOUT_MS,
+} from '../utils/fetchWithTimeout'
+import {
   addQuakeRetraction, createQuakeFoldKeys, extractQuakeEventIdFromId, isRetractedQuakeReport,
   quakeRetractionOf, QUAKE_ISSUE_PRIORITY, type QuakeRetraction,
 } from '../utils/quakeMerge'
@@ -316,15 +319,21 @@ function downloadArchive(
     // 取れるため合算として扱う（→ `services/dmdataRequestGates.ts`）。
     // **控えから読めた分はここを通らない**（`archiveCache.get` が返す）。
     await waitForDataApiSlot(gateTag ? { tag: gateTag } : undefined)
-    const res = await fetch(url, { headers: { Authorization: authHeader(apiKey) } })
-    if (!res.ok) {
+    // **止める合図は渡さない。** 同じアーカイブは本編・初期状態・履歴が相乗りする
+    // （`archiveCache`）ので、1 人が止めると相乗りした側まで落ちる。上限だけで抑え、取れた分は
+    // 控えに残して次に使う。
+    const { status, gz } = await fetchWithTimeout(
+      url,
+      { timeoutMs: ARCHIVE_BODY_FETCH_TIMEOUT_MS, signal: null, init: { headers: { Authorization: authHeader(apiKey) } } },
+      async res => ({ status: res.status, gz: res.ok ? new Uint8Array(await res.arrayBuffer()) : null }),
+    )
+    if (gz === null) {
       // **429 だけは窓を置く**（他の失敗は次の操作で取り直してよい）
-      if (id && res.status === 429) noteRateLimited('archive', id)
-      throw new Error(`Archive fetch failed: ${res.status}`)
+      if (id && status === 429) noteRateLimited('archive', id)
+      throw new Error(`Archive fetch failed: ${status}`)
     }
     // **成功したら窓と回数を捨てる**
     if (id) noteRateLimitCleared('archive', id)
-    const gz = new Uint8Array(await res.arrayBuffer())
     const { files, bytes } = await expandArchive(gz)
     // **`gz` も渡す。** 端末の控えは圧縮のまま置く（展開比は実測 ×11.5〜×18.1）。
     return { files, bytes, cacheable, gz }
@@ -602,6 +611,7 @@ async function listArchives(
   startDate: string,
   endDate: string,
   classification: string,
+  signal: AbortSignal | null,
   /** 門の待ちに付ける印（→ `downloadArchive`）。付けないなら `null`。 */
   gateTag: GateTag | null,
 ): Promise<ArchiveItem[]> {
@@ -619,12 +629,14 @@ async function listArchives(
     // そちら側の門（500ms）を通る。**ページを辿るループの中なので、応答が速ければ
     // 待ちなしで連投される**（→ `services/dmdataRequestGates.ts`）。
     await waitForApiSlot(gateTag ? { tag: gateTag } : undefined)
-    const listRes = await fetch(
+    const listJson = await fetchWithTimeout(
       `https://api.dmdata.jp/v2/archive?${params.toString()}`,
-      { headers: { Authorization: authHeader(apiKey) } },
+      { timeoutMs: API_FETCH_TIMEOUT_MS, signal, init: { headers: { Authorization: authHeader(apiKey) } } },
+      async (res) => {
+        if (!res.ok) throw new Error(`Archive list failed: ${res.status}`)
+        return (await res.json()) as { status: string; items: ArchiveItem[]; nextToken?: string }
+      },
     )
-    if (!listRes.ok) throw new Error(`Archive list failed: ${listRes.status}`)
-    const listJson = (await listRes.json()) as { status: string; items: ArchiveItem[]; nextToken?: string }
     if (listJson.status !== 'ok') throw new Error('Archive list error')
     items.push(...listJson.items)
     if (!listJson.nextToken) break
@@ -763,6 +775,12 @@ export async function fetchDmdataReplayEvents(
   fromTime: Date,
   toTime: Date,
   includeTest: boolean,
+  /**
+   * 止める合図（再生の停止・始め直し）。目録・一覧の取得を打ち切る。
+   * **アーカイブと電文の本体は打ち切らない** —— 本編・初期状態・履歴が同じ本体に相乗りするので、
+   * 止めた側だけで切ると相乗りした側まで落ちる（取れた分は控えに残る）。
+   */
+  signal: AbortSignal | null,
 ): Promise<ReplayFetchResult> {
   // **落とす日を JST で決めて、目録もその範囲だけ引く。**
   //
@@ -788,7 +806,7 @@ export async function fetchDmdataReplayEvents(
   }
   const items = listRange === null
     ? []
-    : await listArchives(apiKey, listRange.from, listRange.to, CLASSIFICATIONS.join(','), null)
+    : await listArchives(apiKey, listRange.from, listRange.to, CLASSIFICATIONS.join(','), signal, null)
   // **絞るのはダウンロードだけ。`resolveLiveDates` には絞る前の `items` を渡す**（下の
   // `liveDates`）—— 絞った後を渡すと、窓の外の日を「アーカイブが無い」と誤認して
   // 当日経路が余計に走る。目録の範囲は `wantedDays` を覆うだけなので通常は差が出ないが、
@@ -1068,7 +1086,7 @@ export async function fetchDmdataReplayEvents(
   const liveDates = resolveLiveDates(fromTime, toTime, items.map(i => i.date))
   if (liveDates.length > 0) {
     try {
-      const live = await fetchLiveReplayEntries(apiKey, fromTime, toTime, liveDates, includeTest)
+      const live = await fetchLiveReplayEntries(apiKey, fromTime, toTime, liveDates, includeTest, signal)
       entries.push(...live.entries)
       windowSkips.addAll(live.skippedByDay)
       scanSkips.addAll(live.scanSkippedByDay)
@@ -1078,6 +1096,10 @@ export async function fetchDmdataReplayEvents(
       // アーカイブ 1 日ぶんが読めなかったときと同じ扱いにする。ここで素通しすると、当日の
       // 一覧 API が一度こけただけで、既に読めているアーカイブ側の電文まで巻き添えで捨てられる
       // （この関数は本編と初期状態の 2 回、`Promise.all` で呼ばれるため再生自体が始まらなくなる）。
+      //
+      // **止められたものだけは投げ直す。** 呼び出し元が要らないと決めた結果なので、失敗として
+      // 記録したうえで続きを組み立てる意味が無い（呼び出し元は世代の照合で捨てる）。
+      if (isAbortedByCaller(e)) throw e
       log.error(`[replay] 当日経路の取得に失敗したためスキップ 日=${liveDates.join(',')}`, e)
       failedArchiveUrls.push(...liveDates.map(liveSourceId))
       failedSourceDays += liveDates.length
@@ -1669,6 +1691,12 @@ export async function fetchDmdataQuakeHistory(
   maxDays: number,
   includeTest: boolean,
   /**
+   * 止める合図。目録・一覧の取得を打ち切る（本体を打ち切らない理由は `fetchDmdataReplayEvents`）。
+   * 下の `shouldStop` と役割が違う —— あちらは次の日へ進む前に見る判定で、
+   * **既に投げた取得は止められない**。
+   */
+  signal: AbortSignal | null,
+  /**
    * 1 日ぶんを読み終えるたびに、そこまでの地震を流す先。
    *
    * **当日ぶんは 1 件ずつ取るので門で直列化される**（→ `services/telegramBody.ts`）。
@@ -1702,6 +1730,12 @@ export async function fetchDmdataQuakeHistory(
    */
   gateTag?: GateTag,
 ): Promise<QuakeHistoryResult> {
+  /**
+   * 打ち切るか。**止める合図（`signal`）と `shouldStop` を 1 つにまとめて、見る場所すべてでこれを使う。**
+   * 片方だけ見る箇所があると、もう片方だけを渡す呼び出し（リプレイの履歴は `signal` だけ）で
+   * その箇所が打ち切りを素通りする（本体の先行投入が止まらず、要らない日を落としていた）。
+   */
+  const isStopped = (): boolean => signal?.aborted === true || shouldStop?.() === true
   // 落とす日と目録の範囲は、どちらも JST 日から導く（`fetchDmdataReplayEvents` と同じ理由。
   // 根拠と境界の実測は `archiveDaysForWindow` / `archiveListRange`）。
   //
@@ -1713,7 +1747,7 @@ export async function fetchDmdataQuakeHistory(
   const listRange = archiveListRange(wantedDays)
   const items = listRange === null
     ? []
-    : await listArchives(apiKey, listRange.from, listRange.to, 'telegram.earthquake', gateTag ?? null)
+    : await listArchives(apiKey, listRange.from, listRange.to, 'telegram.earthquake', signal, gateTag ?? null)
   // **絞るのはダウンロードだけ。`resolveLiveDates` には絞る前の `items` を渡す**（下の
   // `liveDays`）—— 絞った後を渡すと、窓の外の日を「アーカイブが無い」と誤認して
   // 当日経路が余計に走る。
@@ -1793,7 +1827,7 @@ export async function fetchDmdataQuakeHistory(
    * **処理は日付順のまま**（下のループ）。受け取り順で処理すると `onPartial` が新しい日から
    * 順に流れなくなる（カードは新しい順に並ぶ）。
    *
-   * **打ち切り（`shouldStop`）はこのループの各反復で見る。** 見ないと、既に要らないと
+   * **打ち切り（`isStopped`＝止める合図か `shouldStop`）はこのループの各反復で見る。** 見ないと、既に要らないと
    * 決まった取得でも全日ぶんがネットワークへ出る —— **`StrictMode` の二重実行では
    * 1 回目が即座に打ち切られる**ので、dev では毎回それを踏む。
    * 止められないのは「打ち切りが立つ前に投げた分」だけで、そこは結果に畳んで捨てる
@@ -1805,7 +1839,7 @@ export async function fetchDmdataQuakeHistory(
     // 全日ぶんがネットワークへ出てしまう —— **`StrictMode` の二重実行では 1 回目の
     // 取得が即座に打ち切られる**ので、dev では毎回それが起きる。
     // 見ても止まらないのは「この反復より前に投げた分」だけになる。
-    if (shouldStop?.()) break
+    if (isStopped()) break
     if (!source.item) continue
     if (manifestCache.has(source.item.url)) continue
     prefetchedBodies.set(source.item.url, prefetchArchiveBody(source.item, apiKey, gateTag ?? null))
@@ -1888,7 +1922,9 @@ export async function fetchDmdataQuakeHistory(
   for (const source of sources) {
     // **地震も帯も長周期も、窓の日を全部読む。** 件数では打ち切らない（理由は
     // `HISTORY_WINDOW_DAYS` の「件数の上限は置かない」）。
-    if (shouldStop?.()) { stoppedEarly = true; break }
+    // **止める合図も打ち切りとして見る**（`isStopped`）。`shouldStop` を渡さない呼び出し（リプレイの履歴）では、
+    // 止めた後も残りの日へ進み、日ごとに打ち切りを「取得に失敗」と記録していた。
+    if (isStopped()) { stoppedEarly = true; break }
     usedDays++
 
     /**
@@ -1909,7 +1945,7 @@ export async function fetchDmdataQuakeHistory(
       // 同じ扱い）。ここで例外にすると、当日の一覧 API が一度こけただけで過去数日ぶんの
       // カードごと消える。
       try {
-        const live = await fetchLiveQuakeTelegrams(apiKey, source.date, before, includeTest)
+        const live = await fetchLiveQuakeTelegrams(apiKey, source.date, before, includeTest, signal)
         for (const quake of live.quakes) {
           quakes.push(quake)
           eventIds.add(extractQuakeEventIdFromId(quake.id) ?? quake.id)
@@ -1936,6 +1972,8 @@ export async function fetchDmdataQuakeHistory(
         // 非対称だった。**
         if (live.rateLimitedTelegrams === 0) markDayLoaded()
       } catch (e) {
+        // 止められたものは失敗に数えない（打ち切りとして抜ける）
+        if (isAbortedByCaller(e)) { stoppedEarly = true; break }
         log.error(`[replay] 履歴用の当日経路の取得に失敗 date=${source.date}`, e)
         failedArchiveUrls.push(liveSourceId(source.date))
       }

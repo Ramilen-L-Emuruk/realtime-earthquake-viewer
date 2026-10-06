@@ -10,9 +10,9 @@
 // 付けると、実装が持っていない精度を装うことになる（強震モニタの検知でも同じ判断をした。
 // docs/spec/kyoshin-detection-spec.md §8）。代わりに、何を根拠にどこまで言えるかを段で持つ。
 //
-// **記録は追記で版を重ねる。** 揺れが閉じた時点では気象庁の地震情報はまだ届いていない
-// （数分遅れる）。照合の結果が出たら、同じ `id` で `rev` を 1 つ進めた行を足す。読む側は
-// `id` ごとに最後の行を採る（`shakeEventStore.ts`）。
+// **記録は版を重ねる。** 揺れが閉じた時点では気象庁の地震情報はまだ届いていない
+// （数分遅れる）。照合の結果が出たら、同じ `id` で `rev` を 1 つ進めた版を作り、
+// 保存側（`shakeEventStore.ts`）がその揺れの記録を新しい版へ置き換える。
 
 import type { DetectedShake, PhaseWindowState } from './quakeDetector'
 import type { ArrivalWindow } from './quakeMatch'

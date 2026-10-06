@@ -29,33 +29,9 @@ import type { StationDirectory, StationInfo } from './stationConfig'
 import type { StationHealth } from './stationHealth'
 
 /**
- * 生データの保存の様子。**`RawStore` の読み取り専用の値をそのまま並べる。**
+ * 観測点の設定ファイル（StationXML。`stationStore.ts`）へ書いた様子。
  *
- * クラスを直に受け取らない —— 純関数の入力を実物のクラスへ結ぶと、試すのに
- * ディスクが要る。4-2 の `buildClosingLines` が同じ形を採っている。
- */
-export interface RawStoreStatus {
-  readonly writeErrors: number
-  readonly lostRecords: number
-  readonly slowCloses: number
-  readonly compressed: number
-  readonly compressFailures: number
-  readonly leftovers: number
-  readonly listFailures: number
-  readonly escaped: number
-  readonly openFiles: number
-  readonly stuckBooks: number
-  readonly recordsAtRisk: number
-  readonly cutShort: boolean
-  readonly currentDay: string | null
-  readonly lastWriteError: string | null
-  readonly lastSweepError: string | null
-}
-
-/**
- * 観測点の設定の履歴（`stationConfigHistory.ts`）の様子。
- *
- * **`writeFailures` が増えていたら、その間に変えた割り当て・校正値が残っていない。**
+ * **`writeFailures` が増えていたら、その間に変えた割り当て・校正値がファイルに残っていない。**
  * 生データは補正前の値なので、後から読み直すときにその区間だけ当時の設定が分からなくなる。
  */
 export interface StationHistoryStatus {
@@ -65,9 +41,11 @@ export interface StationHistoryStatus {
 }
 
 /**
- * 合成波形の保存の様子。**`WaveArchive` の読み取り専用の値をそのまま並べる**（`RawStoreStatus` と同じ形）。
+ * 合成波形の保存の様子。**`WaveArchive` の読み取り専用の値をそのまま並べる。**
  *
- * **生データの欄（`RawStoreStatus`）では代われない。** 残しているものが違う ——
+ * クラスを直に受け取らない —— 純関数の入力を実物のクラスへ結ぶと、試すのにディスクが要る。
+ *
+ * **生データの欄（`mseed`）では代われない。** 残しているものが違う ——
  * あちらはセンサー単独の生値、こちらは観測点の合成波形。片方だけ止まる形（合成の
  * 相手が落ちて `station-wave` が流れなくなる）が現に起きうるので、別々に数える。
  */
@@ -123,11 +101,7 @@ export interface StatusReportInput {
    * あちらへ数を足したときにここで渡し忘れる（`gravityCheck.ts` の `snapshot`）。
    */
   readonly gravity: GravityCheckSnapshot
-  readonly raw: RawStoreStatus
-  /**
-   * miniSEED 3 での生データの保存（`mseedRecorder.ts`）。**`raw`（NDJSON）とは別に持つ** ——
-   * 並行して書いている間、片方だけ止まる形を見分けるため。
-   */
+  /** 生データ（miniSEED 3）の記録（`mseedRecorder.ts`）。**部品が返すものをそのまま受け取る。** */
   readonly mseed: MseedHealth
   /** 観測点の設定の履歴。 */
   readonly stationHistory: StationHistoryStatus
@@ -157,9 +131,9 @@ export interface StatusReportInput {
   /**
    * 観測点の設定ファイルを読めなかった・パースできなかった理由。読めていれば `null`。
    *
-   * **標準出力への `console.warn` だけでは足りない。** `RawStoreStatus` の
-   * `lastWriteError` / `lastSweepError` と同じ理由——この口は運用者が見に来る
-   * ものなので、起動時にしか出ない警告は「見に来た時点でもう流れている」。
+   * **標準出力への `console.warn` だけでは足りない。** 生データの `lastWriteError` と
+   * 同じ理由——この口は運用者が見に来るものなので、起動時にしか出ない警告は
+   * 「見に来た時点でもう流れている」。
    */
   readonly stationConfigWarning: string | null
   /**
@@ -324,10 +298,10 @@ export interface StatusReport {
     readonly sources: Record<string, unknown>
     readonly boards: Record<string, unknown>
   }
-  readonly raw: RawStoreStatus
   /**
-   * miniSEED 3 での生データの保存。**`lostRecords` と `writeErrors` が 0、`recordsWritten` が
-   * 増え続けていれば正常。** `cuts` は切った理由ごとの本数で、ふだんはほぼすべて `full`。
+   * 生データ（miniSEED 3）の記録。**`lostRecords` と `writeErrors` が 0、`recordsWritten` と
+   * `packetsLogged` が増え続けていれば正常。** `cuts` は波形のレコードを切った理由ごとの本数で、
+   * ふだんはほぼすべて `full`。
    */
   readonly mseed: MseedHealth
   /** 観測点の設定の履歴。**`writeFailures` が 0 なら、変えた設定はすべて残っている。** */
@@ -529,7 +503,6 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     unusableIntensities: input.unusableIntensities,
     gravity,
     tally: { sources, boards },
-    raw: input.raw,
     mseed: input.mseed,
     stationHistory: input.stationHistory,
     waveArchive: input.waveArchive,

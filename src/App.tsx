@@ -1624,7 +1624,7 @@ export function App() {
   // 通常のアーカイブ取得の代わりにこちらを使う（localArchiveReplay.ts 参照）。
   const { archives: historicalArchives, isLoading: historicalArchivesLoading } = useHistoricalArchiveIndex()
   const fetchReplayEvents = useCallback(
-    (from: Date, to: Date) => {
+    (from: Date, to: Date, signal: AbortSignal) => {
       const covering = findCoveringArchiveSync(historicalArchives, from, to)
       if (covering) return fetchLocalArchiveEvents(covering, from, to)
       // 収録範囲の終端を過ぎた直後（先読みが1時間ごとに次のウィンドウを取りに来た結果、
@@ -1642,7 +1642,9 @@ export function App() {
         // 経路を限っていない**のに、ここへ渡さないと「ライブでは届くが再生では届かない」
         // という、名前から読み取れない食い違いになる。訓練報は年に数回しか流れないので、
         // 再生で拾えないと実電文で確かめる手段が事実上テストボタンだけになる。
-        ? fetchDmdataReplayEvents(settings.dmdataApiKey, from, to, settings.dmdataTestDelivery)
+        ? fetchDmdataReplayEvents(settings.dmdataApiKey, from, to, settings.dmdataTestDelivery, signal)
+        // standard 版は合図を受け取らない —— 日ごとの取得を本編と初期状態が相乗りするため
+        // （→ `p2pquakeReplay.ts` の `fetchAllPages`）
         : fetchP2PReplayEvents(from, to)
     },
     [settings.dmdataApiKey, settings.dmdataTestDelivery, historicalArchives],
@@ -1662,14 +1664,14 @@ export function App() {
   // 重ならないのに履歴だけ数日先の無関係なアーカイブに重なってしまい、再生は実データ側で
   // 止まっているのに地震カードだけローカルアーカイブ由来の古い1件を表示する、という不整合が起きる。
   const fetchReplayQuakeHistory = useCallback(
-    (before: Date) => {
+    (before: Date, signal: AbortSignal) => {
       const covering = findCoveringArchiveSync(historicalArchives, new Date(before.getTime() - REPLAY_PRE_WINDOW_MS), before)
       if (covering) return fetchLocalArchiveQuakeHistory(covering, before, MAX_HISTORY_RETAINED)
       return isDmdss
         // 履歴（再生開始より前の地震カード）も本編と同じ扱いにする。片方だけ通すと
         // 「再生には訓練報が出るのにカードの一覧には無い」形でずれる。
-        ? fetchDmdataQuakeHistory(settings.dmdataApiKey, before, HISTORY_WINDOW_DAYS, settings.dmdataTestDelivery)
-        : fetchP2PQuakeHistory(before, MAX_HISTORY_RETAINED)
+        ? fetchDmdataQuakeHistory(settings.dmdataApiKey, before, HISTORY_WINDOW_DAYS, settings.dmdataTestDelivery, signal)
+        : fetchP2PQuakeHistory(before, MAX_HISTORY_RETAINED, signal)
     },
     [settings.dmdataApiKey, settings.dmdataTestDelivery, historicalArchives],
   )

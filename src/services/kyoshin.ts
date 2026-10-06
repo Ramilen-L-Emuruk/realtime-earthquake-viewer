@@ -14,6 +14,10 @@ import { feedServerSample, getServerClockSampleAgeMs, serverNow } from '../utils
 import { createLogThrottle, log } from '../utils/logger'
 import { fetchServerTime, SERVER_TIME_SKIPPED } from './akamaiClock'
 import { createKyoshinFrameCache } from '../utils/kyoshinFrameCache'
+import {
+  fetchJsonOutcome, outcomeJson, API_FETCH_TIMEOUT_MS, KYOSHIN_FRAME_FETCH_TIMEOUT_MS, FetchTimeoutError,
+  type JsonOutcome,
+} from '../utils/fetchWithTimeout'
 
 /** 観測点座標の配列（[緯度, 経度]）。インデックスが intensity 文字列の位置に対応。 */
 export type SiteCoords = [number, number][]
@@ -44,10 +48,10 @@ export function fetchSiteList(siteConfigId?: string): Promise<SiteCoords> {
     ? `${SITELIST_BASE}/sitelist_${siteConfigId}.json`
     : `${SITELIST_BASE}/sitelist.json`
 
-  const promise = fetch(url)
+  const promise = fetchJsonOutcome(url, { timeoutMs: API_FETCH_TIMEOUT_MS, signal: null }, (r) => r.ok)
     .then((res) => {
       if (!res.ok) throw new Error(`sitelist fetch failed: ${res.status}`)
-      return res.json() as Promise<{ items: SiteCoords }>
+      return outcomeJson<{ items: SiteCoords }>(res)
     })
     .then((json) => json.items)
     .catch((err) => {
@@ -277,23 +281,29 @@ export async function fetchRealtimeIntensity(
     }
   }
   let lastErr: unknown = null
-  // AbortController は付けていない。呼び出し元（services/kyoshinSource.ts の Yahoo ソース）の
-  // tick は .then/.catch 内でのみ次の setTimeout を仕込む設計で、1 本のソース内では直列。
-  // ただしライブ/リプレイ切替でソースを差し替えた瞬間だけ、旧ソースの in-flight fetch と
-  // 新ソースの初回 tick が短時間並走しうる。旧ソースの stop() は active=false を立てて結果を
-  // 握り潰すため実害はないが、厳密には「多重リクエストが起き得る」状態。
-  // 復帰時の即時サンプルを優先し abort は行わない設計。
+  // **上限を掛ける**（`KYOSHIN_FRAME_FETCH_TIMEOUT_MS`）。呼び出し元（services/kyoshinSource.ts の
+  // Yahoo ソース）の tick は .then/.catch 内でのみ次の setTimeout を仕込む設計で、1 本のソース内では
+  // 直列。**黙った取得が 1 本あるだけで次の tick が仕込まれず、「更新停止」も出ない**（判定が
+  // .catch でしか動かない）。上限に当たれば失敗として次の局（east）へ進み、両方駄目なら投げる。
+  //
+  // 止める合図は渡さない。ライブ/リプレイ切替でソースを差し替えた瞬間だけ、旧ソースの in-flight
+  // fetch と新ソースの初回 tick が短時間並走しうるが、旧ソースの stop() は active=false を立てて
+  // 結果を握り潰すため実害はない（上限があるので並走も長くは続かない）。復帰時の即時サンプルを
+  // 優先し abort は行わない設計。
   for (const edge of ['west', 'east'] as const) {
     try {
-      const res = await fetch(`${REALTIME_BASE(edge)}/${dateStr}/${ts}.json`)
+      const res = await fetchJsonOutcome(`${REALTIME_BASE(edge)}/${dateStr}/${ts}.json`, {
+        timeoutMs: KYOSHIN_FRAME_FETCH_TIMEOUT_MS,
+        signal: null,
+      }, (r) => r.ok)
       if (!res.ok) {
         lastErr = new Error(`realtime fetch failed: ${res.status}`)
         continue
       }
-      const json = (await res.json()) as {
+      const json = outcomeJson<{
         realTimeData?: { dataTime?: string; siteConfigId?: string; intensity?: string }
         hypoInfo?: { items?: YahooHypoInfoItem[] }
-      }
+      }>(res)
       // KYO-3: realTimeData / intensity の欠落・空文字はメンテナンス・空応答の兆候。
       // silent に「空震度配列」で返すと検知エンジンが「全点データ無し」と正しく判定できず、
       // 誤って success として集計される。フィールド欠落・型不一致に加え空文字も失敗として扱う。
@@ -359,9 +369,18 @@ const SYNC_EDGE: 'west' | 'east' = 'west'
  */
 export async function isRegistered(edge: 'west' | 'east', epochSec: number): Promise<boolean | null> {
   const { dateStr, ts } = jstParts(new Date(epochSec * 1000))
-  const res = await fetch(`${REALTIME_BASE(edge)}/${dateStr}/${ts}.json?_=${Math.random()}`, {
-    cache: 'no-store',
-  })
+  let res: JsonOutcome
+  try {
+    res = await fetchJsonOutcome(`${REALTIME_BASE(edge)}/${dateStr}/${ts}.json?_=${Math.random()}`, {
+      timeoutMs: KYOSHIN_FRAME_FETCH_TIMEOUT_MS,
+      signal: null,
+      init: { cache: 'no-store' },
+    }, () => false)
+  } catch (err) {
+    // 上限に当たったものは「判定不能」（上の約束どおり）。通信の失敗はそのまま投げる（従来どおり）。
+    if (err instanceof FetchTimeoutError) return null
+    throw err
+  }
   if (res.status === 200) return true
   if (res.status === 403 || res.status === 404) return false
   return null

@@ -19,6 +19,7 @@
 // アーカイブとの同等性は実データで確認済み。詳細は docs/spec/settings-pwa-spec.md §6。
 import { log } from '../utils/logger'
 import { authHeader } from '../utils/dmdataApiKey'
+import { fetchWithTimeout, isAbortedByCaller, API_FETCH_TIMEOUT_MS } from '../utils/fetchWithTimeout'
 import { fetchTelegramText, fetchTelegramBytes, telegramIdFromUrl } from './telegramBody'
 import { RateLimitWindowError } from './dmdataRequestGates'
 import type { JMAQuake, JMATsunami } from '../types/earthquake'
@@ -283,12 +284,14 @@ async function mapWithLimit<T>(items: T[], limit: number, fn: (item: T) => Promi
   })
   await Promise.all(workers)
   if (errors.length > 0) {
+    // 止められて抜けた分は数えない（並列のぶんだけ同じ打ち切りが積もるだけで、障害ではない）
+    if (errors.every(isAbortedByCaller)) throw errors[0]
     if (errors.length > 1) log.error(`[replay] 並列処理で ${errors.length} 件の例外が発生した（最初の 1 件を投げ直す）`, errors)
     throw errors[0]
   }
 }
 
-async function getJson<T>(url: string, apiKey: string, what: string): Promise<T> {
+async function getJson<T>(url: string, apiKey: string, what: string, signal: AbortSignal | null): Promise<T> {
   // **枠を待ってから投げる。** ここを通るのは `api.dmdata.jp` の一覧・目録・EEW の詳細で、
   // **どれもページを辿るループの中にいる** —— 応答が速ければ待ちなしで次のページへ進むので、
   // 門が無いと瞬間のレートが上限へ寄る。配信元は「定常的に 2req/s 以上のアクセスはお控え
@@ -297,9 +300,14 @@ async function getJson<T>(url: string, apiKey: string, what: string): Promise<T>
   // **共通の口へ置く。** 呼び出し側ごとに書くと、経路を足したときに掛け忘れる
   // （実際に一覧の 3 経路が素通ししていた）。
   await waitForApiSlot()
-  const res = await fetch(url, { headers: { Authorization: authHeader(apiKey) } })
-  if (!res.ok) throw new Error(`${what} failed: ${res.status}`)
-  const json = (await res.json()) as { status?: string } & T
+  const json = await fetchWithTimeout(
+    url,
+    { timeoutMs: API_FETCH_TIMEOUT_MS, signal, init: { headers: { Authorization: authHeader(apiKey) } } },
+    async (res) => {
+      if (!res.ok) throw new Error(`${what} failed: ${res.status}`)
+      return (await res.json()) as { status?: string } & T
+    },
+  )
   if (json.status !== 'ok') throw new Error(`${what} error`)
   return json
 }
@@ -377,6 +385,7 @@ async function listTelegrams(
   utcFrom: string,
   utcTo: string,
   includeTest: boolean,
+  signal: AbortSignal | null,
 ): Promise<TelegramListItem[]> {
   const items: TelegramListItem[] = []
   let cursorToken: string | undefined
@@ -389,7 +398,7 @@ async function listTelegrams(
     if (includeTest) params.set('test', 'including')
     if (cursorToken) params.set('cursorToken', cursorToken)
     const json = await getJson<{ items?: TelegramListItem[]; nextToken?: string }>(
-      `${API_BASE}/telegram?${params.toString()}`, apiKey, 'Telegram list',
+      `${API_BASE}/telegram?${params.toString()}`, apiKey, 'Telegram list', signal,
     )
     items.push(...(json.items ?? []))
     if (!json.nextToken) break
@@ -493,6 +502,7 @@ async function listEewTelegrams(
   utcTo: string,
   fromTime: Date,
   toTime: Date,
+  signal: AbortSignal | null,
 ): Promise<{ items: TelegramListItem[]; failedSources: string[]; skippedByDay: ReadonlyMap<string, number> }> {
   const events: EewListItem[] = []
   let cursorToken: string | undefined
@@ -501,7 +511,7 @@ async function listEewTelegrams(
     const params = new URLSearchParams({ datetime: `${utcFrom}~${utcTo}`, limit: String(LIST_LIMIT) })
     if (cursorToken) params.set('cursorToken', cursorToken)
     const json = await getJson<{ items?: EewListItem[]; nextToken?: string }>(
-      `${API_BASE}/gd/eew?${params.toString()}`, apiKey, 'EEW list',
+      `${API_BASE}/gd/eew?${params.toString()}`, apiKey, 'EEW list', signal,
     )
     events.push(...(json.items ?? []))
     if (!json.nextToken) break
@@ -543,7 +553,7 @@ async function listEewTelegrams(
       // 直列化する**ので瞬間 8req/s にはならない（同じ定数を使う電文本体の取得は
       // 6 秒の門で直列化されている）。
       const json = await getJson<{ items?: Array<{ telegrams?: TelegramListItem[] }> }>(
-        `${API_BASE}/gd/eew/${encodeURIComponent(ev.eventId)}`, apiKey, 'EEW detail',
+        `${API_BASE}/gd/eew/${encodeURIComponent(ev.eventId)}`, apiKey, 'EEW detail', signal,
       )
       for (const rep of json.items ?? []) {
         for (const tg of rep.telegrams ?? []) {
@@ -565,6 +575,9 @@ async function listEewTelegrams(
       // 1 イベントの詳細が引けなくても他のイベントは活かす。失ったのは「そのイベントの全報」で
       // 報数は分からないため、電文の件数ではなく**取得元**として数える（電文 1 件として数えると、
       // 数十報のイベントを失っても UI には「1 件」としか出ず実態より軽く見える）。
+      //
+      // 止められたものは失敗に数えず投げ直す（呼び出し元が要らないと決めた結果）。
+      if (isAbortedByCaller(e)) throw e
       log.error(`[replay] EEW の詳細取得に失敗したためスキップ eventId=${ev.eventId}`, e)
       failedSources.push(`eew:${ev.eventId}`)
     }
@@ -702,6 +715,8 @@ export async function fetchLiveReplayEntries(
   toTime: Date,
   days: string[],
   includeTest: boolean,
+  /** 止める合図。一覧と EEW の詳細の取得を打ち切る（電文本体は相乗りするので打ち切らない）。 */
+  signal: AbortSignal | null,
 ): Promise<LiveReplayResult> {
   if (days.length === 0) {
     return { entries: [], skippedByDay: new Map(), scanSkippedByDay: new Map(), failedSources: [], rateLimitedTelegrams: 0 }
@@ -714,9 +729,13 @@ export async function fetchLiveReplayEntries(
   // 当日経路 1 本しか無い窓（本編の 1 時間）では、それが全滅と見なされて例外になり、
   // 地震電文が取れていたのに再生ごと止まる。
   const settled = await Promise.allSettled([
-    listTelegrams(apiKey, utcFrom, utcTo, includeTest),
-    listEewTelegrams(apiKey, utcFrom, utcTo, fromTime, toTime),
+    listTelegrams(apiKey, utcFrom, utcTo, includeTest, signal),
+    listEewTelegrams(apiKey, utcFrom, utcTo, fromTime, toTime, signal),
   ])
+  // **止められたら、一覧の失敗として記録せずに打ち切りを投げる**（呼び出し元が要らないと決めた結果）
+  for (const r of settled) {
+    if (r.status === 'rejected' && isAbortedByCaller(r.reason)) throw r.reason
+  }
   const dayLabel = days.join(',')
   const listFailures: string[] = []
   // 失敗した一覧の本数。全滅（＝その日ぶんが 1 通も取れていない）の判定に使う。
@@ -854,6 +873,8 @@ export async function fetchLiveQuakeTelegrams(
   day: string,
   before: Date,
   includeTest: boolean,
+  /** 止める合図。一覧の取得を打ち切る（電文本体は相乗りするので打ち切らない）。 */
+  signal: AbortSignal | null,
 ): Promise<{
   quakes: JMAQuake[]; tsunamis: JMATsunami[]; extras: ReplayEntry[]
   skippedByDay: ReadonlyMap<string, number>
@@ -873,7 +894,7 @@ export async function fetchLiveQuakeTelegrams(
   // 窓判定は上限を含まないため、1ms 足して同じ範囲にする。
   const until = new Date(before.getTime() + 1)
 
-  const list = await listTelegrams(apiKey, utcFrom, utcTo, includeTest)
+  const list = await listTelegrams(apiKey, utcFrom, utcTo, includeTest, signal)
   // **この関数は 1 日ぶんを担当する**（引数 `day`）ので、取りこぼしはすべてその日に付く。
   const skipCounter = createSkipCounter()
   /** 429 の窓で見送った電文の数。**取りこぼしとは別に数える**（待てば取れる）。 */

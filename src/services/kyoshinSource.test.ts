@@ -200,6 +200,26 @@ describe('Yahoo 強震モニタソース', () => {
       source.stop()
     })
 
+    // 正: 応答が返らず上限で失敗した取得は、**始めた時刻**から測る。失敗が分かった時刻から
+    // 測っていた頃は、局 2 つ（最長で上限の 2 倍）を待ったうえにさらに STALLED_AFTER_MS 待っていた。
+    it('上限まで待って失敗した取得は、始めた時刻から更新停止までを測る', async () => {
+      fetchMock.mockImplementation(() => new Promise((_resolve, reject) => {
+        setTimeout(() => reject(new Error('timeout')), STALLED_AFTER_MS * 2)
+      }))
+      const sink = createSink()
+      const source = createYahooLiveSource()
+      source.start(sink)
+
+      // 対照: 1 回目の失敗が分かる手前では出さない
+      await vi.advanceTimersByTimeAsync(STALLED_AFTER_MS * 2 - 1)
+      expect(sink.stalled).not.toContain(true)
+
+      // 1 回目が失敗した時点で、始めてから STALLED_AFTER_MS を過ぎているので出す
+      await vi.advanceTimersByTimeAsync(1)
+      expect(sink.stalled).toContain(true)
+      source.stop()
+    })
+
     it('同じデータ時刻の失敗が REALTIME_MAX_RETRY_COUNT 回に達したら現在時刻ベースへ戻す', async () => {
       fetchMock.mockRejectedValue(new Error('permanent'))
       const sink = createSink()

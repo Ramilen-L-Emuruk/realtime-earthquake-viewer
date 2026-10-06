@@ -766,6 +766,11 @@ export interface TsunamiObservation {
 
 export interface JMATsunami {
   kind: 'tsunami'
+  /**
+   * 報 1 通の識別子。**同じ津波かどうかの判定には使わない**（それは `eventId`）。
+   * DMDSS 版は `EventID`・種別・報番号から作る（作り方と種別を入れる理由は `parseTsunamiFromXml`）。
+   * standard 版は P2PQuake の文書 ID。
+   */
   id: string
   eventId?: string
   time: string

@@ -1,7 +1,7 @@
 // 観測点の合成波形を、日本時間の 1 日ごとに手元へ控える（評価台の下ごしらえ）。
 //
-// **生データから合成波形を作り直すのは重い**（1 日 2.6M 行の展開と、補正・区間・合成の鎖。
-// 実測で 1 日 7 分）。検出の閾値を試すたびにそれを待たずに済むよう、鎖の出口（合成波形）を
+// **生データから合成波形を作り直すのは重い**（1 日ぶんの miniSEED を解いてパケットへ組み立て直し、
+// 補正・区間・合成の鎖を通す）。検出の閾値を試すたびにそれを待たずに済むよう、鎖の出口（合成波形）を
 // 一度だけ作って控え、2 回目からはそれを読む。
 //
 // **控えの中身は鎖の出力そのもの**（`FusedWaveChunk` の時刻・刻み・3 成分）。手を加えた値を
@@ -13,8 +13,8 @@
 
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 
-import { replayRaw } from './rawReplay'
-import type { ReplayCounts, StationHistoryEntry } from './rawReplay'
+import { emptyReplayCounts, replayMseed } from './rawReplay'
+import type { HourFile, ReplayCounts, StationHistoryEntry } from './rawReplay'
 
 /** 控えから読み戻した 1 まとまり。 */
 export interface CachedChunk {
@@ -58,7 +58,7 @@ export function cacheIsFresh(cachePath: string, paths: readonly string[], statio
  */
 export async function buildStationWaveCache(params: {
   readonly cachePath: string
-  readonly paths: readonly string[]
+  readonly files: readonly HourFile[]
   readonly stationId: string
   readonly fromMs: number
   readonly toMs: number
@@ -66,18 +66,11 @@ export async function buildStationWaveCache(params: {
   /** 検出の助走ぶん、窓より前から鎖へ通す（ミリ秒）。 */
   readonly leadMs: number
 }): Promise<ReplayCounts> {
-  const counts: ReplayCounts = {
-    lines: 0,
-    unreadableLines: 0,
-    backlogSkipped: 0,
-    parseFailed: 0,
-    outOfWindow: 0,
-    configSwitches: 0,
-  }
+  const counts: ReplayCounts = emptyReplayCounts()
   const parts: Buffer[] = []
   let chunks = 0
-  for await (const item of replayRaw({
-    paths: params.paths,
+  for await (const item of replayMseed({
+    files: params.files,
     fromMs: params.fromMs - params.leadMs,
     toMs: params.toMs,
     history: params.history,
@@ -104,7 +97,7 @@ export async function buildStationWaveCache(params: {
     stationId: params.stationId,
     fromMs: params.fromMs,
     toMs: params.toMs,
-    sources: sourcesOf(params.paths),
+    sources: sourcesOf(params.files.map((f) => f.path)),
     counts,
     chunks,
   }

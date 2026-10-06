@@ -287,7 +287,7 @@ describe('fetchP2PQuakeHistory', () => {
   it('指定時刻の日付までを、新しい順に 1 リクエストで引く', async () => {
     respondWith({ quake: [[quake('a', new Date(2024, 0, 1, 10, 0, 0))]] })
 
-    const result = await fetchP2PQuakeHistory(T, 50)
+    const result = await fetchP2PQuakeHistory(T, 50, null)
 
     expect(mockFetch).toHaveBeenCalledTimes(1)
     const [resource, query] = mockFetch.mock.calls[0]
@@ -307,7 +307,7 @@ describe('fetchP2PQuakeHistory', () => {
       ]],
     })
 
-    const result = await fetchP2PQuakeHistory(T, 50)
+    const result = await fetchP2PQuakeHistory(T, 50, null)
 
     expect(result.quakes.map(q => q.id)).toEqual(['past'])
   })
@@ -315,7 +315,7 @@ describe('fetchP2PQuakeHistory', () => {
   it('種別を読めない電文は取りこぼしとして数える', async () => {
     respondWith({ quake: [[{ id: 'broken' } as unknown as RawP2PEvent]] })
 
-    const result = await fetchP2PQuakeHistory(T, 50)
+    const result = await fetchP2PQuakeHistory(T, 50, null)
 
     expect(result.quakes).toHaveLength(0)
     expect(skippedTotal(result.skippedByDay)).toBe(1)
@@ -326,7 +326,7 @@ describe('fetchP2PQuakeHistory', () => {
   it('取得に失敗したら例外をそのまま返す', async () => {
     mockFetch.mockRejectedValue(new Error('P2PQuake の取得制限に達しました（jma/quake）'))
 
-    await expect(fetchP2PQuakeHistory(T, 50)).rejects.toThrow(/取得制限/)
+    await expect(fetchP2PQuakeHistory(T, 50, null)).rejects.toThrow(/取得制限/)
   })
 })
 
@@ -342,7 +342,7 @@ describe('fetchP2PQuakeHistory の打ち切り', () => {
       ]],
     })
 
-    const result = await fetchP2PQuakeHistory(T, 2)
+    const result = await fetchP2PQuakeHistory(T, 2, null)
 
     expect(result.quakes.map(q => q.id)).toEqual(['a', 'b'])
   })
@@ -360,7 +360,7 @@ describe('fetchP2PQuakeHistory の打ち切り', () => {
       ]],
     })
 
-    const result = await fetchP2PQuakeHistory(T, 2)
+    const result = await fetchP2PQuakeHistory(T, 2, null)
 
     // 返す順は発表時刻の降順（取得側で並べ直すため、応答の並びとは一致しない）。
     // カードの並びは呼び出し先の mergeQuakeHistory が決めるので、ここでは採否だけが意味を持つ。
@@ -380,7 +380,7 @@ describe('fetchP2PQuakeHistory は応答の並び順に依存しない', () => {
       ]],
     })
 
-    const result = await fetchP2PQuakeHistory(T, 2)
+    const result = await fetchP2PQuakeHistory(T, 2, null)
 
     expect(result.quakes.map(q => q.id)).toEqual(['newest', 'middle'])
   })

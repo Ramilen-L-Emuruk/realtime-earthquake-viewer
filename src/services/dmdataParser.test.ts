@@ -2717,6 +2717,31 @@ const BODY_TEXT_LINE = `    <Text>若干の海面変動が予想される時刻�
 describe('XML 経路が落としてはいけない項目（津波）', () => {
   const fromXml = () => parseTsunamiFromXml('VTSE51', PARITY_TSUNAMI_XML)!
 
+  // ---- 報の id ----
+  //
+  // 報番号は種別ごとに別々に数えるので、同じ EventID・同じ報番号の別種別の報が実配信で並ぶ
+  // （警報の第 1 報と津波情報の第 1 報）。同じ電文を種別だけ変えて読ませ、その形を作る。
+
+  // 正: 種別が違えば id も違う。
+  it('同じ EventID・報番号でも種別が違えば id が分かれる', () => {
+    const ids = (['VTSE41', 'VTSE51', 'VTSE52'] as const)
+      .map(type => parseTsunamiFromXml(type, PARITY_TSUNAMI_XML)!.id)
+    expect(new Set(ids).size).toBe(3)
+  })
+
+  // 対照: 同じ種別・同じ報番号なら同じ id（報 1 通を指す値であることは変えていない）。
+  it('同じ種別・同じ報番号なら id は同じ', () => {
+    expect(fromXml().id).toBe(parseTsunamiFromXml('VTSE51', PARITY_TSUNAMI_XML)!.id)
+  })
+
+  // 安全弁: EventID と報番号は id に残っている（報番号の違う報まで同じ id にしていない）。
+  it('id は EventID・種別・報番号から作る', () => {
+    expect(fromXml().id).toBe('dmdata-tsunami-20260101120000-VTSE51-1')
+    const serial2 = PARITY_TSUNAMI_XML.replace('<Serial>1</Serial>', '<Serial>2</Serial>')
+    expect(serial2).not.toBe(PARITY_TSUNAMI_XML)
+    expect(parseTsunamiFromXml('VTSE51', serial2)!.id).toBe('dmdata-tsunami-20260101120000-VTSE51-2')
+  })
+
   // ---- 電文が名乗る情報名（Head/Title）----
   //
   // 雛形は Control/Title が「津波情報a」、Head/Title が「津波情報」で**値が違う**ので、
