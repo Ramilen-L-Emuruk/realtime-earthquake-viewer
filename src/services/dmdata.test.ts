@@ -450,9 +450,13 @@ describe('APIキーが不正なときの取得の振る舞い', () => {
 // authHeader はチケット取得の fetch より先に投げるため `new WebSocket()` へ到達しない。
 // よって WebSocket をモックしなくてもこの分岐だけを検証できる。
 describe('DmdataWebSocket: APIキーが不正なとき', () => {
-  /** tryConnect は async。catch へ到達するまでマイクロタスクを流す。 */
+  /**
+   * tryConnect は async。catch へ到達するまでマイクロタスクを流す。
+   * **回数は取得の段の深さに依る**（上限つきの取得口 `fetchJsonOutcome` を挟むと段が増える）ので、
+   * 余裕を持たせる。流しすぎて困ることはない（時刻は進めない）。
+   */
   async function drain() {
-    for (let i = 0; i < 5; i++) await Promise.resolve()
+    for (let i = 0; i < 20; i++) await Promise.resolve()
   }
 
   it('再接続せず停止し、理由を error として記録する', async () => {
@@ -497,9 +501,13 @@ describe('DmdataWebSocket: APIキーが不正なとき', () => {
 // 停止させない。一方で通常の上限（30 秒）のまま待ち続けると、繋がらないと分かっている
 // 要求を毎時 120 回投げ続ける（実測 2026-09-13: 1 セッションが 2 時間 27 分・304 回）。
 describe('DmdataWebSocket: 同時接続数の上限で断られたとき', () => {
-  /** tryConnect は async。catch へ到達するまでマイクロタスクを流す。 */
+  /**
+   * tryConnect は async。catch へ到達するまでマイクロタスクを流す。
+   * **回数は取得の段の深さに依る**（上限つきの取得口 `fetchJsonOutcome` を挟むと段が増える）ので、
+   * 余裕を持たせる。流しすぎて困ることはない（時刻は進めない）。
+   */
   async function drain() {
-    for (let i = 0; i < 5; i++) await Promise.resolve()
+    for (let i = 0; i < 20; i++) await Promise.resolve()
   }
 
   /**

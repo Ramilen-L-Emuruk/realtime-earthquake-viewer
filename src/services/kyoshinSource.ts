@@ -429,6 +429,10 @@ function createYahooPollingSource(): KyoshinSource {
    *
    * **更新停止の判定は経過時間で行う**（→ `STALLED_AFTER_MS`）。回数で数えると、
    * 再試行の間隔が伸びたぶんだけ判定が遅れる。
+   *
+   * **起点は「失敗した取得を始めた時刻」で、失敗が分かった時刻ではない。** 応答が返らない取得は
+   * 上限（`KYOSHIN_FRAME_FETCH_TIMEOUT_MS`・局ごと）に当たるまで失敗にならないので、分かった
+   * 時刻から測ると、その待ちのぶんだけ判定が遅れる（黙った回線で、更新停止の表示が 2 倍以上遅れていた）。
    */
   let failingSince: number | null = null
   /** 更新停止を通知済みか。同じ障害で何度も通知しないため。 */
@@ -509,7 +513,7 @@ function createYahooPollingSource(): KyoshinSource {
             if (!active) return
             attemptFailures += 1
             // 失敗が続いた**経過時間**で「更新停止」を通知する
-            if (failingSince === null) failingSince = Date.now()
+            if (failingSince === null) failingSince = fetchStart
             // **ここも `notifyStalled` を通す。** 素で `sink.setStalled(true)` を呼んでいた頃は、
             // 消費側が投げると例外が `.catch` の外へ抜け、**この下の `setTimeout` を仕込む前に
             // 処理が終わってポーリングが無音で永久停止した**（成功側だけ囲ってあって、

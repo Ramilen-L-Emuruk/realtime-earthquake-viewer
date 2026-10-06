@@ -25,6 +25,8 @@ import {
   firstContinuousIndex,
 } from '../utils/kyoshinWarmup'
 import { log } from '../utils/logger'
+import { fetchJsonOutcome, outcomeJson, type JsonOutcome } from '../utils/fetchWithTimeout'
+import { DATA_FETCH_TIMEOUT_MS } from '../utils/fetchJson'
 
 /**
  * 収録ぶんのフレームから、検知エンジンの助走に使う区間を切り出す。
@@ -140,9 +142,16 @@ function loadLocalKyoshinArchive(id: string): Promise<LoadResult> {
 /** 静的ファイル（capture-kyoshin-waveform.tsの出力）から取得する（従来からの経路）。 */
 function loadStaticFile(id: string): Promise<LoadResult> {
   return (async (): Promise<LoadResult> => {
-    let res: Response
+    let res: JsonOutcome
     try {
-      res = await fetch(fileUrl(id))
+      // 同じ配信元の静的ファイルなので、生成データと同じ上限（遅い回線の見積もり）を使う。
+      // 上限に当たったものも、通信の失敗と同じく取り直しの余地があるものとして扱う。
+      // **読むのは下の判定を全部通る応答だけ**（404・SPA フォールバックの HTML・5xx は読まない）。
+      res = await fetchJsonOutcome(
+        fileUrl(id),
+        { timeoutMs: DATA_FETCH_TIMEOUT_MS, signal: null },
+        (r) => r.ok && (r.headers?.get('content-type') ?? '').includes('application/json'),
+      )
     } catch (err) {
       // ネットワーク層の失敗（オフライン・一過性の接続断等）。再試行の余地があるためキャッシュしない。
       log.warn(`[kyoshinLocalArchive] ${id}.json の取得に失敗しました（ネットワーク層）`, err)
@@ -154,7 +163,7 @@ function loadStaticFile(id: string): Promise<LoadResult> {
     // 返す。本番の静的配信では同じ状況は404になるため、これも「未生成」と同じ静かな扱いにする
     // （実機確認で判明: この判定が無いと、他の3件のアーカイブを再生するたびに毎回
     // 「JSON解析に失敗しました」という誤った警告が出る）。
-    const contentType = res.headers.get('content-type') ?? ''
+    const contentType = res.headers?.get('content-type') ?? ''
     if (!contentType.includes('application/json')) return { kind: 'not-generated' }
     if (!res.ok) {
       // 404以外の失敗（5xx等）。未生成とは異なり本来なら取得できるはずのファイルが取れていない
@@ -164,7 +173,7 @@ function loadStaticFile(id: string): Promise<LoadResult> {
     }
     let raw: unknown
     try {
-      raw = await res.json()
+      raw = outcomeJson<unknown>(res)
     } catch (err) {
       log.warn(`[kyoshinLocalArchive] ${id}.json のJSON解析に失敗しました`, err)
       return { kind: 'failed', retryable: false }

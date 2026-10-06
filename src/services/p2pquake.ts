@@ -7,6 +7,7 @@ import { serverNow, serverDate } from '../utils/clock'
 import { quakeIdentityKey } from '../utils/quakeHeatmap'
 import { isValidIntensityScale } from '../utils/intensity'
 import { log } from '../utils/logger'
+import { fetchWithTimeout, API_FETCH_TIMEOUT_MS } from '../utils/fetchWithTimeout'
 // 数値はローカルの readNumber で読む（理由は readNumber の注記）
 import { arr, obj, str } from './parseHelpers'
 
@@ -465,17 +466,24 @@ export function isSupportedCode(code: unknown): boolean {
 }
 
 export async function fetchHistory(
-  codes: number[] = [551, 552, 556],
-  limit = 20,
-  offset = 0,
+  codes: number[],
+  limit: number,
+  offset: number,
+  /** 止める合図（止める手立てを持たない呼び出しは `null`）。 */
+  signal: AbortSignal | null,
 ): Promise<AppEvent[]> {
   const params = new URLSearchParams()
   codes.forEach(c => params.append('codes', String(c)))
   params.set('limit', String(limit))
   if (offset > 0) params.set('offset', String(offset))
-  const res = await fetch(`${API_BASE}/history?${params.toString()}`)
-  if (!res.ok) throw new Error(`P2PQuake API error: ${res.status}`)
-  const raws = await res.json() as RawP2PEvent[]
+  const raws = await fetchWithTimeout(
+    `${API_BASE}/history?${params.toString()}`,
+    { timeoutMs: API_FETCH_TIMEOUT_MS, signal },
+    async (res) => {
+      if (!res.ok) throw new Error(`P2PQuake API error: ${res.status}`)
+      return await res.json() as RawP2PEvent[]
+    },
+  )
   return raws.flatMap(r => { const e = convertEvent(r); return e ? [e] : [] })
 }
 
@@ -506,35 +514,42 @@ export interface JmaArchiveQuery {
  */
 export async function fetchJmaArchiveRaw(
   resource: 'quake' | 'tsunami',
-  query: JmaArchiveQuery = {},
+  query: JmaArchiveQuery,
+  /** 止める合図（止める手立てを持たない呼び出しは `null`）。 */
+  signal: AbortSignal | null,
 ): Promise<RawP2PEvent[]> {
   const params = new URLSearchParams({ limit: String(query.limit ?? 50) })
   if (query.offset) params.set('offset', String(query.offset))
   if (query.sinceDate) params.set('since_date', query.sinceDate)
   if (query.untilDate) params.set('until_date', query.untilDate)
   if (query.order) params.set('order', String(query.order))
-  const res = await fetch(`${API_BASE}/jma/${resource}?${params.toString()}`)
-  // 429 は原因も対処もはっきりしている（叩きすぎ・待てば直る）ので、番号だけ出さず言葉にする。
-  // これは UI にそのまま出るメッセージで、読むのは開発者とは限らない。
-  if (res.status === 429) {
-    throw new Error(`P2PQuake の取得制限に達しました（jma/${resource}）。しばらく待ってから再試行してください`)
-  }
-  if (!res.ok) throw new Error(`P2PQuake jma/${resource} error: ${res.status}`)
-  const json = await res.json()
+  const json: unknown = await fetchWithTimeout(
+    `${API_BASE}/jma/${resource}?${params.toString()}`,
+    { timeoutMs: API_FETCH_TIMEOUT_MS, signal },
+    async (res) => {
+      // 429 は原因も対処もはっきりしている（叩きすぎ・待てば直る）ので、番号だけ出さず言葉にする。
+      // これは UI にそのまま出るメッセージで、読むのは開発者とは限らない。
+      if (res.status === 429) {
+        throw new Error(`P2PQuake の取得制限に達しました（jma/${resource}）。しばらく待ってから再試行してください`)
+      }
+      if (!res.ok) throw new Error(`P2PQuake jma/${resource} error: ${res.status}`)
+      return await res.json()
+    },
+  )
   // 配列以外が返ると呼び出し側の走査が TypeError になり、原因が API 応答だと分からなくなる。
   if (!Array.isArray(json)) throw new Error(`P2PQuake jma/${resource} の応答が配列ではありません`)
   return json as RawP2PEvent[]
 }
 
 // /v2/history より大幅に深い履歴（地震情報は 2015-01-10 〜）を持つ地震情報専用エンドポイント
-export async function fetchJmaQuake(query: JmaArchiveQuery = {}): Promise<JMAQuake[]> {
-  const raws = await fetchJmaArchiveRaw('quake', query)
+export async function fetchJmaQuake(query: JmaArchiveQuery, signal: AbortSignal | null): Promise<JMAQuake[]> {
+  const raws = await fetchJmaArchiveRaw('quake', query, signal)
   return raws.flatMap(r => { const e = convertEvent(r); return e && e.kind === 'quake' ? [e] : [] })
 }
 
 // 津波予報の履歴（2016-11-22 〜）。地震情報と同じクエリで引ける。
-export async function fetchJmaTsunami(query: JmaArchiveQuery = {}): Promise<JMATsunami[]> {
-  const raws = await fetchJmaArchiveRaw('tsunami', query)
+export async function fetchJmaTsunami(query: JmaArchiveQuery, signal: AbortSignal | null): Promise<JMATsunami[]> {
+  const raws = await fetchJmaArchiveRaw('tsunami', query, signal)
   return raws.flatMap(r => { const e = convertEvent(r); return e && e.kind === 'tsunami' ? [e] : [] })
 }
 
@@ -550,7 +565,7 @@ export async function fetchJmaQuakeHistory(days: number): Promise<JMAQuake[]> {
   let offset = 0
   let page = 0
   for (; page < JMA_QUAKE_HISTORY_MAX_PAGES; page++) {
-    const batch = await fetchJmaQuake({ limit: 100, offset })
+    const batch = await fetchJmaQuake({ limit: 100, offset }, null)
     if (batch.length === 0) break
     collected.push(...batch)
     const oldestTime = new Date(batch[batch.length - 1].earthquake.time).getTime()

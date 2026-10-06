@@ -1,6 +1,7 @@
 import { REFERENCE_FIT_MAX_ZOOM } from '../components/Map/gl/camera'
 import { JAPAN_WIDE_BOUNDS } from '../components/Map/gl/bounds'
 import { log } from './logger'
+import { fetchWithTimeout, API_FETCH_TIMEOUT_MS } from './fetchWithTimeout'
 
 // GEBCO 海底地形タイル（BaseMapGL.tsx の背景ラスタソースと同一 URL）の先読み。
 // アイドル時に低ズーム優先でバックグラウンド fetch し、ブラウザの HTTP キャッシュへ温めておく。
@@ -287,9 +288,12 @@ function runPrefetchPass(
         // キャッシュモードは既定のまま渡さない（理由は PREFETCH_REFRESH_MS）。
         // **失敗は握りつぶすが、成否は数える。** 1 枚も取れなかった巡は呼び出し側が記録する
         // （先読みは画面に何も出さないので、数えないと全滅しても誰も気づけない）。
-        fetch(tileUrl(tile), { signal })
-          .then((res) => {
-            if (!res.ok) return
+        // **上限も掛ける。** 合図（地図の寿命）だけだと、黙った 1 枚が並列の枠を地図が生きている
+        // 間ずっと塞ぐ。中身は読まない（従来どおり。HTTP の控えに載せるための取得で、枠は応答の
+        // 見出しが返った時点で次へ譲る）。
+        fetchWithTimeout(tileUrl(tile), { timeoutMs: API_FETCH_TIMEOUT_MS, signal }, async (res) => res.ok)
+          .then((ok) => {
+            if (!ok) return
             succeeded++
             if (isGlobal) globalSucceeded++
           })
