@@ -1,16 +1,10 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import {
   DEFAULT_SENSOR_CALIBRATION,
   EMPTY_STATION_CONFIG,
   StationDirectory,
-  loadStationConfig,
   parseStationConfig,
-  saveStationConfig,
   stationsWithMultipleBoards,
 } from './stationConfig'
 import type { StationConfig } from './stationConfig'
@@ -199,6 +193,33 @@ describe('parseStationConfig', () => {
     })
   })
 
+  it('対照: XML に書けない文字（制御文字）を含む stationId・displayName は弾く', () => {
+    // `/api/stations/:stationId` は URL から来るので、`%01` が JSON の段で弾かれずに届く。
+    expect(
+      parseStationConfig({
+        stations: [{ stationId: 'st\u0001', displayName: '書斎', lat: 35.6, lon: 139.7 }],
+        boards: [],
+      }),
+    ).toEqual({
+      ok: false,
+      failure: { reason: 'station-field-invalid', index: 0, field: 'stationId', value: 'st\u0001' },
+    })
+    expect(
+      parseStationConfig({
+        stations: [{ stationId: 'study', displayName: '書\uD800斎', lat: 35.6, lon: 139.7 }],
+        boards: [],
+      }),
+    ).toMatchObject({ ok: false, failure: { reason: 'station-field-invalid', field: 'displayName' } })
+  })
+
+  it('安全弁: 改行や絵文字を含む表示名は受け付ける（XML に書ける文字）', () => {
+    const result = parseStationConfig({
+      stations: [{ stationId: 'study', displayName: '書斎\n🏠', lat: 35.6, lon: 139.7 }],
+      boards: [],
+    })
+    expect(result.ok).toBe(true)
+  })
+
   it('対照: 観測点の displayName が欠けていると弾く', () => {
     const result = parseStationConfig({
       stations: [{ stationId: 'study', lat: 35.6, lon: 139.7 }],
@@ -283,6 +304,45 @@ describe('parseStationConfig', () => {
     })
   })
 
+  it('MAC を名乗らない基板（版 1）は観測点へ割り当てられない（miniSEED・StationXML で名乗れない）', () => {
+    const result = parseStationConfig({
+      stations: [{ stationId: 'study', displayName: '書斎', lat: 35.6, lon: 139.7 }],
+      boards: [{ boardKey: 'name:seismo-3', stationId: 'study', sensors: [] }],
+    })
+    expect(result).toEqual({
+      ok: false,
+      failure: { reason: 'board-field-invalid', index: 0, field: 'boardKey', value: 'name:seismo-3' },
+    })
+  })
+
+  it('MAC の下位 8 桁が同じ基板は、鍵が違っても重複として弾く（局コードがぶつかる）', () => {
+    const raw = validRaw()
+    ;(raw.boards as Record<string, unknown>[]).push({ boardKey: 'mac:ffff00000003', stationId: 'study', sensors: [] })
+    const result = parseStationConfig(raw)
+    expect(result).toEqual({ ok: false, failure: { reason: 'duplicate-board-key', boardKey: 'mac:ffff00000003' } })
+  })
+
+  it('ロケーションコードを作れないセンサー ID は弾く（記号・9 文字以上・「--」）', () => {
+    for (const sensorId of ['i2c0_68', 'i2c0-68-x', '--']) {
+      const raw = validRaw()
+      const sensors = (raw.boards as Record<string, unknown>[])[0].sensors as Record<string, unknown>[]
+      sensors[0] = { ...sensors[0], sensorId }
+      const result = parseStationConfig(raw)
+      expect(result).toEqual({
+        ok: false,
+        failure: { reason: 'sensor-field-invalid', boardIndex: 0, sensorIndex: 0, field: 'sensorId', value: sensorId },
+      })
+    }
+  })
+
+  it('大文字小文字だけが違うセンサー ID は重複として弾く（ロケーションコードは大文字）', () => {
+    const raw = validRaw()
+    const sensors = (raw.boards as Record<string, unknown>[])[0].sensors as Record<string, unknown>[]
+    sensors.push({ ...sensors[0], sensorId: 'I2C0-68' })
+    const result = parseStationConfig(raw)
+    expect(result).toEqual({ ok: false, failure: { reason: 'duplicate-sensor-id', boardIndex: 0, sensorId: 'I2C0-68' } })
+  })
+
   it('対照: 基板が存在しない観測点を指すと弾く（参照整合性）', () => {
     const result = parseStationConfig({
       stations: [{ stationId: 'study', displayName: '書斎', lat: 35.6, lon: 139.7 }],
@@ -352,6 +412,32 @@ describe('parseStationConfig', () => {
         value,
       },
     })
+  })
+
+  it.each([
+    ['列が 0', [[1, 0, 0], [0, 1, 0], [0, 0, 0]]],
+    ['2 列が同じ向き', [[1, 2, 0], [0, 0, 0], [0, 0, 1]]],
+    ['2 列がほぼ同じ向き（アダマール比 1e-7）', [[1, 0, 0], [0, 1, 1], [0, 0, 1e-7]]],
+  ])('正: 逆行列を持たない rotation は弾く（%s）', (_, value) => {
+    // その向きの揺れを消す行列で、設定の履歴（StationXML）も測っている向きを書けない。
+    const raw = validRaw()
+    const sensors = (raw.boards as Record<string, unknown>[])[0].sensors as Record<string, unknown>[]
+    sensors[0].rotation = value
+    expect(parseStationConfig(raw)).toEqual({
+      ok: false,
+      failure: { reason: 'sensor-field-invalid', boardIndex: 0, sensorIndex: 0, field: 'rotation', value },
+    })
+  })
+
+  it.each([
+    ['直交でない（軸どうしの直角のずれを直す）', [[1.2, 0.1, 0], [0.05, 0.9, 0.2], [0, -0.3, 1.1]]],
+    ['倍率を含む（列の長さが 1 でない）', [[3, 0, 0], [0, 0.01, 0], [0, 0, 7]]],
+  ])('対照: 逆行列を持つなら直交でなくても通す（%s）', (_, value) => {
+    // 直交性は求めない（`SensorCalibration` の定義）。逆行列の有無だけを見る。
+    const raw = validRaw()
+    const sensors = (raw.boards as Record<string, unknown>[])[0].sensors as Record<string, unknown>[]
+    sensors[0].rotation = value
+    expect(parseStationConfig(raw).ok).toBe(true)
   })
 
   it.each([
@@ -485,107 +571,6 @@ describe('StationDirectory', () => {
     } finally {
       warn.mockRestore()
     }
-  })
-})
-
-describe('loadStationConfig', () => {
-  let dir: string
-
-  beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), 'seismo-station-config-'))
-  })
-
-  afterEach(() => {
-    rmSync(dir, { recursive: true, force: true })
-  })
-
-  it('対照: ファイルが無ければ空の設定・警告なし（割り当ては任意）', () => {
-    const result = loadStationConfig(join(dir, 'stations.json'))
-    expect(result).toEqual({ config: EMPTY_STATION_CONFIG, warning: null })
-  })
-
-  it('正: 書いたとおりに読める', () => {
-    const path = join(dir, 'stations.json')
-    writeFileSync(path, JSON.stringify(validRaw()))
-    const result = loadStationConfig(path)
-    expect(result.warning).toBeNull()
-    expect(result.config.boards).toHaveLength(1)
-  })
-
-  it('対照: JSON として読めなければ空の設定へ倒し、理由を warning へ出す', () => {
-    const path = join(dir, 'stations.json')
-    writeFileSync(path, '{not valid json')
-    const result = loadStationConfig(path)
-    expect(result.config).toEqual(EMPTY_STATION_CONFIG)
-    expect(result.warning).not.toBeNull()
-  })
-
-  it('対照: 書式が崩れていれば空の設定へ倒し、理由を warning へ出す（実際に書いた不正な値も添える）', () => {
-    const path = join(dir, 'stations.json')
-    writeFileSync(path, JSON.stringify({ stations: [{ stationId: 'a' }], boards: [] }))
-    const result = loadStationConfig(path)
-    expect(result.config).toEqual(EMPTY_STATION_CONFIG)
-    expect(result.warning).toContain('displayName')
-  })
-})
-
-describe('saveStationConfig', () => {
-  let dir: string
-
-  beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), 'seismo-station-config-save-'))
-  })
-
-  afterEach(() => {
-    rmSync(dir, { recursive: true, force: true })
-  })
-
-  it('正: 書いた内容を loadStationConfig で読み直せる（往復）', () => {
-    const path = join(dir, 'stations.json')
-    const parsed = parseStationConfig(validRaw())
-    if (!parsed.ok) throw new Error('テストの前提データが不正')
-
-    saveStationConfig(path, parsed.config)
-
-    const result = loadStationConfig(path)
-    expect(result.warning).toBeNull()
-    expect(result.config).toEqual(parsed.config)
-  })
-
-  it('正: 親ディレクトリが無ければ作る', () => {
-    const path = join(dir, 'nested', 'deeper', 'stations.json')
-    saveStationConfig(path, EMPTY_STATION_CONFIG)
-    expect(existsSync(path)).toBe(true)
-  })
-
-  it('正: 書き込み後に一時ファイルが残らない', () => {
-    const path = join(dir, 'stations.json')
-    saveStationConfig(path, EMPTY_STATION_CONFIG)
-    expect(existsSync(`${path}.tmp`)).toBe(false)
-  })
-
-  // **対照**: 空の設定でも「stations: []・boards: []」の形で書ける（EMPTY_STATION_CONFIG が
-  // parseStationConfig を素通りすることの裏付け）。
-  it('対照: 空の設定を書いても不正な JSON にはならない', () => {
-    const path = join(dir, 'stations.json')
-    saveStationConfig(path, EMPTY_STATION_CONFIG)
-    const text = readFileSync(path, 'utf8')
-    expect(JSON.parse(text)).toEqual({ stations: [], boards: [] })
-  })
-
-  // **安全弁**: 既存ファイルを上書きしても、書き込みが完了するまでは古い内容が読める
-  // （tmp + rename の途中経過を模倣。rename 自体は同期なので瞬間的だが、実装が
-  // 「先に消してから書く」形に変わっていないことをここで縛る）。
-  it('安全弁: 上書き保存後は新しい内容だけが残り、古い内容は残らない', () => {
-    const path = join(dir, 'stations.json')
-    saveStationConfig(path, EMPTY_STATION_CONFIG)
-
-    const parsed = parseStationConfig(validRaw())
-    if (!parsed.ok) throw new Error('テストの前提データが不正')
-    saveStationConfig(path, parsed.config)
-
-    const result = loadStationConfig(path)
-    expect(result.config).toEqual(parsed.config)
   })
 })
 

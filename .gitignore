@@ -115,10 +115,11 @@ scripts/_*.cjs
 firmware/**/wifi_config.h
 
 # 自作センサーの生データ（受け手が書き出す）
-# **このリポジトリは公開されている**うえ、3 台 1 日で 600 MB 前後増える。
+# **このリポジトリは公開されている**うえ、3 台 1 日で 350 MB 前後増える。
 seismo-host/data/
 
-# 観測点の設定（基板がどこに置かれているか）。
+# 観測点の設定（基板がどこに置かれているか。StationXML の stations.xml とその書きかけ）。
 # 設置場所（＝自宅の間取り）を書くので、生データと同じ理由でコミットしない。
-# 雛形（stations.example.json）だけをコミットする。
-seismo-host/config/stations.json
+# 雛形（stations.example.xml）だけをコミットする。
+seismo-host/config/*
+!seismo-host/config/stations.example.xml

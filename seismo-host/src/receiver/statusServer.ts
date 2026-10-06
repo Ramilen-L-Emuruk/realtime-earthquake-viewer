@@ -280,8 +280,7 @@ export type EventQuery =
 /**
  * `GET /events` の問い合わせを読む。`from`・`to`（unix ミリ秒）は必須、`station` は任意。
  *
- * **範囲は {@link EVENT_RANGE_MAX_MS} まで。** 記録は月ごとのファイルを頭から読むので、
- * 際限なく広げさせない。
+ * **範囲は {@link EVENT_RANGE_MAX_MS} まで。** 掛かる月の記録を全部読むので、際限なく広げさせない。
  */
 export function parseEventQuery(params: URLSearchParams): EventQuery {
   const fromMs = decimalInt(params.get('from'))
@@ -293,7 +292,7 @@ export function parseEventQuery(params: URLSearchParams): EventQuery {
 }
 
 /**
- * 読み返した揺れを応答の形へ。**読めなかった行・ファイルの数を必ず添える** ——
+ * 読み返した揺れを応答の形へ。**読めなかったファイルを必ず添える** ——
  * 無いと、受け手からは「揺れが無かった」と「記録が壊れていた」が同じ空の配列に見える。
  */
 export function buildEventResponse(query: Extract<EventQuery, { ok: true }>, result: EventRangeResult): Record<string, unknown> {
@@ -303,7 +302,6 @@ export function buildEventResponse(query: Extract<EventQuery, { ok: true }>, res
     toMs: query.toMs,
     stationId: query.stationId,
     events,
-    unreadableLines: result.unreadableLines,
     unreadableFiles: result.unreadableFiles,
   }
 }

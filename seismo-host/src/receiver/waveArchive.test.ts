@@ -34,7 +34,7 @@ afterEach(() => {
  * `want()` が真になるまで待つ。**固定時間で待たない。**
  *
  * 待っているのはファイル書き込みの非同期のコールバックで、届くまでの時間は
- * その機械の都合で決まる（`rawStore.test.ts` と同じ理由）。
+ * その機械の都合で決まる。
  */
 async function until(want: () => boolean, budgetMs = 2_000): Promise<void> {
   const deadline = Date.now() + budgetMs

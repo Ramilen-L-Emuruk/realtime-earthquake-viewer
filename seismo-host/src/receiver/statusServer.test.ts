@@ -10,30 +10,12 @@ import type { FusedWaveChunk, SensorPairDiff, StationIntensityReading } from './
 import { EMPTY_STATION_CONFIG, StationDirectory } from './stationConfig'
 import type { StationConfig } from './stationConfig'
 import { buildStatusReport } from './statusReport'
-import type { RawStoreStatus, StatusReport, WaveArchiveStatus } from './statusReport'
+import type { StatusReport, WaveArchiveStatus } from './statusReport'
 import { buildWaveResponse, parseDiffParams, parseEventQuery, parseWaveParam, parseWaveQuery, startStatusServer } from './statusServer'
 import type { ShakeEventRecord } from '../detection/shakeEvent'
 import type { EventRangeResult } from '../detection/shakeEventStore'
 import type { StatusServer, StatusServerOptions } from './statusServer'
 import type { ArchivedWaveChunk, WaveRangeResult } from './waveArchive'
-
-const RAW: RawStoreStatus = {
-  writeErrors: 0,
-  lostRecords: 0,
-  slowCloses: 0,
-  compressed: 0,
-  compressFailures: 0,
-  leftovers: 0,
-  listFailures: 0,
-  escaped: 0,
-  openFiles: 1,
-  stuckBooks: 0,
-  recordsAtRisk: 0,
-  cutShort: false,
-  currentDay: '2026-09-26',
-  lastWriteError: null,
-  lastSweepError: null,
-}
 
 const WAVE_ARCHIVE: WaveArchiveStatus = {
   writeErrors: 0,
@@ -55,7 +37,8 @@ function report(hub: ReadingHub): StatusReport {
     loopStalls: { thresholdMs: 1000, count: 0, totalMs: 0, longestMs: null, last: null },
     backlog: {
       pendingGaps: 0, pendingSamples: 0, recoveredSamples: 0, unrecoverableSamples: {},
-      requests: 0, recoveredPackets: 0, failures: {}, rawUnsaved: 0, badPackets: 0, foreignPackets: 0,
+      requests: 0, recoveredPackets: 0, failures: {}, badPackets: 0, foreignPackets: 0, unsavedPackets: 0,
+      unsettledWriteSinceMs: null,
     },
     http: { address: '0.0.0.0', port: 50506 },
     tally: new PacketTally().snapshotTotal(),
@@ -74,10 +57,9 @@ function report(hub: ReadingHub): StatusReport {
     },
     segments: [],
     unusableIntensities: 0,
-    raw: RAW,
     mseed: {
-      recordsWritten: 0,
-      packetsWritten: 0,
+      recordsWritten: 7,
+      packetsLogged: 0,
       unreadableWritten: 0,
       lostRecords: 0,
       badTimes: 0,
@@ -87,7 +69,7 @@ function report(hub: ReadingHub): StatusReport {
       slowClose: false,
       pendingSamples: 0,
       bufferedPackets: 0,
-      cuts: { full: 0, 'seq-gap': 0, 'rate-change': 0, 'clock-sync': 0, 'time-drift': 0, hour: 0, hold: 0, idle: 0, flush: 0, 'value-jump': 0 },
+      cuts: { full: 0, 'seq-gap': 0, 'rate-change': 0, 'clock-sync': 0, 'time-drift': 0, hour: 0, hold: 0, idle: 0, flush: 0, 'value-jump': 0, recovered: 0 },
       internalErrors: 0,
       lastInternalError: null,
     },
@@ -474,7 +456,7 @@ describe('startStatusServer', () => {
     expect(res.headers.get('access-control-allow-origin')).toBe('*')
     const body = (await res.json()) as StatusReport
     expect(body.uptimeSec).toBe(100)
-    expect(body.raw.currentDay).toBe('2026-09-26')
+    expect(body.mseed.recordsWritten).toBe(7)
     expect(body.udp.port).toBe(50505)
   })
 
@@ -1657,11 +1639,10 @@ describe('GET /events（#312）', () => {
   const T = Date.UTC(2026, 9, 3, 4, 27, 0)
   const result = (stationIds: string[]): EventRangeResult => ({
     events: stationIds.map((stationId, i) => ({ id: `${stationId}-${T + i}`, stationId, startMs: T + i, rev: 1 }) as unknown as ShakeEventRecord),
-    unreadableLines: 2,
-    unreadableFiles: [],
+    unreadableFiles: ['2026-10/broken.json'],
   })
 
-  it('範囲の揺れを返し、読めなかった行の数を添える。観測点で絞れる', async () => {
+  it('範囲の揺れを返し、読めなかったファイルを添える。観測点で絞れる', async () => {
     const asked: { fromMs: number; toMs: number }[] = []
     const base = await start(new ReadingHub(), undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, async (p) => {
       asked.push(p)
@@ -1669,9 +1650,9 @@ describe('GET /events（#312）', () => {
     })
     const res = await fetch(`${base}/events?from=${T - 1000}&to=${T + 1000}&station=station-1`)
     expect(res.status).toBe(200)
-    const body = (await res.json()) as { events: { stationId: string }[]; unreadableLines: number }
+    const body = (await res.json()) as { events: { stationId: string }[]; unreadableFiles: string[] }
     expect(body.events.map((e) => e.stationId)).toEqual(['station-1'])
-    expect(body.unreadableLines).toBe(2)
+    expect(body.unreadableFiles).toEqual(['2026-10/broken.json'])
     expect(asked).toEqual([{ fromMs: T - 1000, toMs: T + 1000 }])
   })
 
