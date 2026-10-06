@@ -7,3 +7,6 @@
 # の版の照合）を持つ。core.autocrlf=true の環境ではチェックアウトで CRLF へ変換され、そのテストが
 # 全件落ちる。経緯と見分け方は CLAUDE.md の「検証」節。
 public/third-party-licenses.txt text eol=lf
+
+# git のフックはシェルが読む。CRLF のまま Mac・Linux へ渡ると `#!/bin/sh\r` になって起動しない。
+scripts/git-hooks/* text eol=lf
