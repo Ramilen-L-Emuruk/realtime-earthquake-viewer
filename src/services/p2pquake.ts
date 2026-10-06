@@ -598,11 +598,32 @@ export async function fetchJmaQuakeHistory(days: number): Promise<JMAQuake[]> {
   return deduped.filter(q => new Date(q.earthquake.time).getTime() >= cutoffMs)
 }
 
+/**
+ * 何も届かないまま、これだけ経ったら接続が死んでいるとみなして張り直す (ms)。
+ *
+ * **P2PQuake は生存確認の合図（ping）を送らない。** 届くのは情報そのもの（各地域のピア数 555・
+ * 地震感知情報 561 など）だけで、平常でも長く黙る —— 実測（2026-10-06・平日の夕方 75 分）で
+ * 無音の最長は 386.5 秒。これより短くすると、静かなだけの時間に張り直しを繰り返す。観測した時間帯が
+ * 限られるので、深夜などもっと静かな時間帯の分も見込んで約 2.3 倍を取った（2026-10-06 ユーザー承認）。
+ *
+ * **これが要るのは、切れたことがこちらへ届かない回線**（繋がったまま黙る・半開き）。ブラウザが
+ * 切断を知らせてくれる限りは `onclose` から張り直すので、この見張りは発火しない。
+ */
+export const P2P_SILENT_RECONNECT_MS = 15 * 60 * 1000
+/** 見張りが無音の長さを確かめる間隔 (ms)。 */
+const P2P_SILENCE_CHECK_MS = 30_000
+
 export class P2PQuakeWebSocket {
   private ws: WebSocket | null = null
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private reconnectDelay = 3000
   private shouldReconnect = false
+  /**
+   * 最後に何かが届いた時刻（`performance.now()`）。接続を始めた時刻で初期化するので、
+   * 開く途中で止まった接続も同じ見張りに掛かる。時計の較正で飛ばないよう単調な時計で測る。
+   */
+  private lastActivityAt = 0
+  private silenceTimer: ReturnType<typeof setInterval> | null = null
 
   onEvent: ((event: AppEvent) => void) | null = null
   onStatusChange: ((status: 'connecting' | 'connected' | 'disconnected') => void) | null = null
@@ -616,13 +637,18 @@ export class P2PQuakeWebSocket {
   private createConnection() {
     this.onStatusChange?.('connecting')
     this.ws = new WebSocket(WS_URL)
+    this.lastActivityAt = performance.now()
+    this.startSilenceWatch()
 
     this.ws.onopen = () => {
+      this.lastActivityAt = performance.now()
       this.reconnectDelay = 3000
       this.onStatusChange?.('connected')
     }
 
     this.ws.onmessage = (event) => {
+      // 読めないメッセージも「届いた」には数える（回線が生きている証拠なのは同じ）
+      this.lastActivityAt = performance.now()
       let raw: RawP2PEvent
       try {
         raw = JSON.parse(event.data as string) as RawP2PEvent
@@ -655,18 +681,67 @@ export class P2PQuakeWebSocket {
     }
 
     this.ws.onclose = () => {
+      this.stopSilenceWatch()
       this.onStatusChange?.('disconnected')
-      if (this.shouldReconnect) {
-        this.reconnectTimer = setTimeout(() => {
-          this.reconnectDelay = Math.min(this.reconnectDelay * 1.5, 30000)
-          this.createConnection()
-        }, this.reconnectDelay)
-      }
+      this.scheduleReconnect()
     }
 
     this.ws.onerror = () => {
       this.ws?.close()
     }
+  }
+
+  private scheduleReconnect() {
+    if (!this.shouldReconnect) return
+    // 予約は常に高々 1 本（入口が 2 つあるので、重なっても接続を二重に作らない）
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null
+      this.reconnectDelay = Math.min(this.reconnectDelay * 1.5, 30000)
+      this.createConnection()
+    }, this.reconnectDelay)
+  }
+
+  /**
+   * 黙った接続の見張り（→ `P2P_SILENT_RECONNECT_MS`）。
+   *
+   * **閉じたら `onclose` を待たずに張り直しを予約する。** 切れたことが届かない回線では、
+   * `close()` しても閉じる手続きが相手に届かず、`onclose` の発火がブラウザの待ち時間任せになる
+   * （DMDATA 側の見張りの注記と同じ事情）。ハンドラを外して古い接続を捨て、こちらから進める。
+   */
+  private startSilenceWatch() {
+    this.stopSilenceWatch()
+    this.silenceTimer = setInterval(() => {
+      const silentMs = performance.now() - this.lastActivityAt
+      if (silentMs < P2P_SILENT_RECONNECT_MS) return
+      log.warn(`[p2pquake] ${Math.round(silentMs / 1000)} 秒何も届かないため接続を張り直します`)
+      this.stopSilenceWatch()
+      this.discardSocket()
+      this.onStatusChange?.('disconnected')
+      this.scheduleReconnect()
+    }, P2P_SILENCE_CHECK_MS)
+  }
+
+  private stopSilenceWatch() {
+    if (this.silenceTimer !== null) {
+      clearInterval(this.silenceTimer)
+      this.silenceTimer = null
+    }
+  }
+
+  /**
+   * 今の接続を捨てる。**close() 前に全ハンドラを外す。** onclose に再接続ロジックがあるため、
+   * 参照を残したまま close() すると、止めた後でも onStatusChange('disconnected') や再接続が走り、
+   * 後続の GC タイミングでゾンビイベントが発火する可能性がある。
+   */
+  private discardSocket() {
+    if (!this.ws) return
+    this.ws.onopen = null
+    this.ws.onmessage = null
+    this.ws.onclose = null
+    this.ws.onerror = null
+    try { this.ws.close() } catch { /* 既に閉じている */ }
+    this.ws = null
   }
 
   disconnect() {
@@ -675,16 +750,7 @@ export class P2PQuakeWebSocket {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
-    if (this.ws) {
-      // close() 前に全ハンドラを外す。onclose に再接続ロジックがあるため、
-      // 参照を残したまま close() すると shouldReconnect=false でも onStatusChange('disconnected')
-      // が呼ばれ、後続の GC タイミングでゾンビイベントが発火する可能性がある。
-      this.ws.onopen = null
-      this.ws.onmessage = null
-      this.ws.onclose = null
-      this.ws.onerror = null
-      this.ws.close()
-      this.ws = null
-    }
+    this.stopSilenceWatch()
+    this.discardSocket()
   }
 }
