@@ -2411,6 +2411,7 @@ export function App() {
                 isLoadingMore={isLoadingMore}
                 hasMore={hasMore}
                 onLoadMore={loadMoreEarthquakes}
+                watchLoadMoreThrottle={isDmdss}
                 error={error}
                 historyLoss={historyLoss}
                 loadMoreFailed={loadMoreFailed}

@@ -1,6 +1,7 @@
 import { memo, useLayoutEffect, useRef } from 'react'
 import type { JMAQuake, JMALpgm, JMAEstimatedIntensity } from '../../types/earthquake'
 import { EarthquakeCard } from './EarthquakeCard'
+import { LoadMoreButton } from './LoadMoreButton'
 import { extractQuakeEventId, quakeEventKey } from '../../utils/quakeMerge'
 import type { SeismoQuakeWave } from '../../hooks/useSeismoQuakeWaves'
 import { lpgmMarkKey, type QuakeCardMarks } from '../../utils/quakeUpdateMark'
@@ -28,6 +29,11 @@ interface Props {
   isLoadingMore: boolean
   hasMore: boolean
   onLoadMore: () => void
+  /**
+   * 「もっと見る」が取得制限で待たされている間、ボタンに残り時間を出すか（→ `LoadMoreButton`）。
+   * **DMDSS 版だけ `true`**（標準版は門を通らない）。
+   */
+  watchLoadMoreThrottle: boolean
   error: string | null
   /**
    * 履歴取得で確定した損失。**カードが 1 件も無いときも出す** —— 出さないと
@@ -183,7 +189,7 @@ function useQuakeCardScroll(
 // 地震情報タブの右パネル。地震カードの一覧を表示し、クリックで地図表示対象を選択する。
 // 地図そのものは App が常時表示する。
 // React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
-export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selectedId, speakingKey, followSpeech, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, error, historyLoss, loadMoreFailed, fetchThrottled, lpgmByEventId, updateMarks, activeLpgmEventId, onToggleLpgm, estimatedIntensities, distributionQuakeKey, onToggleDistribution, unreceivedQuakeKey, onToggleUnreceived, onFocusMap, speakingTelegramTextSubject, seismoWaves }: Props) {
+export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selectedId, speakingKey, followSpeech, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, watchLoadMoreThrottle, error, historyLoss, loadMoreFailed, fetchThrottled, lpgmByEventId, updateMarks, activeLpgmEventId, onToggleLpgm, estimatedIntensities, distributionQuakeKey, onToggleDistribution, unreceivedQuakeKey, onToggleUnreceived, onFocusMap, speakingTelegramTextSubject, seismoWaves }: Props) {
   // **早期 return より前に置く**（フックの数を回ごとに変えないため）。一覧が無い回は寄せずに持ち越す。
   const listRef = useRef<HTMLDivElement>(null)
   useQuakeCardScroll(listRef, quakeCardScrollTarget({ earthquakes, selectedKey: selectedId, speakingKey, followSpeech }))
@@ -272,13 +278,7 @@ export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selected
         />
       ))}
       {hasMore && (
-        <button
-          onClick={onLoadMore}
-          disabled={isLoadingMore}
-          className="w-full py-2.5 text-sm text-secondary hover:text-white bg-card border border-border hover:border-blue-600 rounded-lg transition-colors disabled:opacity-50"
-        >
-          {isLoadingMore ? '取得中…' : 'もっと見る'}
-        </button>
+        <LoadMoreButton onLoadMore={onLoadMore} isLoadingMore={isLoadingMore} watchThrottle={watchLoadMoreThrottle} />
       )}
       {!hasMore && earthquakes.length > 0 && (
         // 「すべての履歴」とは書かない。**止まる理由はバリアントで違う**（`useEarthquakes` の

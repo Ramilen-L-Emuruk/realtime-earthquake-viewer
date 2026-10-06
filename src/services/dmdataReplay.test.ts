@@ -41,7 +41,9 @@ import { buildSampleTelegram, buildSample1kmTelegram, withWmoHeading } from '../
 import {
   setDataApiGateIntervalForTest, resetDataApiGateForTest,
   setApiGateIntervalForTest, resetApiGateForTest, resetRateLimitsForTest,
+  dmdataThrottleDrainsAt,
 } from './dmdataRequestGates'
+import { createGateTag, type GateTag } from '../utils/requestGate'
 // **アーカイブ本体の取得も門（`services/dmdataRequestGates.ts`）を通る**ので、本番の 6 秒間隔のままでは
 // 1 件取るだけで既定のタイムアウト（5 秒）を超える。**門が効いているかは
 // `utils/requestGate.test.ts` が本物の間隔で確かめている**ので、ここでは 0 にして経路だけを見る。
@@ -254,6 +256,41 @@ describe('アーカイブ本体の取得は門を通る', () => {
     expect(at.length).toBe(2)
     // 門を通らなければ 2 件はほぼ同時（実測 1ms 未満）に飛ぶ。
     expect(at[1] - at[0]).toBeGreaterThanOrEqual(50)
+  })
+
+  // 正: 「もっと見る」の印（`gateTag`）を渡すと、本体の待ちに印が付く。ボタンはこの印の待ちだけを
+  // 数えて残り時間を出す（→ `components/EarthquakeTab/LoadMoreButton.tsx`）。**本体の 1 本目を
+  // 取りに行った瞬間には 2 本目が門で待っている**ので、そこで印の待ちが見えるかを測る。
+  it('印を渡すと本体の待ちに付き、渡さなければ付かない', async () => {
+    const gz = await makeTarGz([
+      { name: 'telegrams.json', content: enc.encode(JSON.stringify([manifestEntry('a1', 'VXSE53')])) },
+      { name: defaultFileName('a1'), content: enc.encode(quakeBody('石川県能登地方')) },
+    ])
+    const tag = createGateTag('test-load-more')
+    // **2 回目は別の URL で組む。** 同じ URL だと 1 回目の目録の控えが効いて本体を取りに行かない
+    const run = async (gateTag: GateTag | undefined, prefix: string): Promise<Array<number | null>> => {
+      const seen: Array<number | null> = []
+      const base = mockArchives([
+        { url: `https://data.api.dmdata.jp/v1/archive/${prefix}1`, gz },
+        { url: `https://data.api.dmdata.jp/v1/archive/${prefix}2`, gz },
+      ])
+      globalThis.fetch = (async (input: string) => {
+        if (String(input).includes('/v1/archive/')) seen.push(dmdataThrottleDrainsAt(tag))
+        return base(String(input))
+      }) as unknown as typeof fetch
+      setDataApiGateIntervalForTest(60)
+      await fetchDmdataQuakeHistory('key', TO, 2, false, null, undefined, undefined, gateTag)
+      return seen
+    }
+
+    const tagged = await run(tag, 'tagged')
+    expect(tagged).toHaveLength(2)
+    expect(tagged[0]).not.toBeNull()   // 1 本目のとき、2 本目が印つきで待っている
+    expect(tagged[1]).toBeNull()       // 2 本目が通ったら、印の待ちは無い
+
+    const untagged = await run(undefined, 'untagged')
+    expect(untagged).toHaveLength(2)
+    expect(untagged.every(v => v === null)).toBe(true)
   })
 
   // 対照: 控えから読めた分は門を通らない（通信しないので待つ理由がない）。

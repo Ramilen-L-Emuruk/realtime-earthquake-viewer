@@ -62,6 +62,7 @@ const renderTab = (quake: JMAQuake, opts: { unreceivedOpen?: boolean } = {}) => 
     isLoadingMore={false}
     hasMore={false}
     onLoadMore={() => {}}
+    watchLoadMoreThrottle={false}
     error={null}
     historyLoss={createEmptyTelegramLoss()}
     loadMoreFailed={false}
@@ -124,6 +125,7 @@ describe('未入電トグル', () => {
         isLoadingMore={false}
         hasMore={false}
         onLoadMore={() => {}}
+        watchLoadMoreThrottle={false}
         error={null}
         historyLoss={createEmptyTelegramLoss()}
         loadMoreFailed={false}
