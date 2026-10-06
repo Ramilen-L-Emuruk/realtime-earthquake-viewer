@@ -182,13 +182,14 @@ describe('現在地から座標を入れる', () => {
   it('取得できたら緯度・経度を埋め、誤差を添える', async () => {
     stubGeolocation(true, {
       getCurrentPosition: (ok: (p: unknown) => void) =>
-        ok({ coords: { latitude: 35.658034729, longitude: 139.747535705, accuracy: 32.4 } }),
+        // 公開前の検査が座標として拾わないよう、日本の外（赤道付近の海上）の値にしてある。
+        ok({ coords: { latitude: 1.234567891, longitude: 2.345678912, accuracy: 32.4 } }),
     })
     const container = await mount()
     container.querySelector<HTMLButtonElement>('.use-current-location')?.click()
 
-    expect(container.querySelector<HTMLInputElement>('[name=lat]')?.value).toBe('35.658035')
-    expect(container.querySelector<HTMLInputElement>('[name=lon]')?.value).toBe('139.747536')
+    expect(container.querySelector<HTMLInputElement>('[name=lat]')?.value).toBe('1.234568')
+    expect(container.querySelector<HTMLInputElement>('[name=lon]')?.value).toBe('2.345679')
     expect(container.querySelector('.location-note')?.textContent).toContain('±32 m')
   })
 

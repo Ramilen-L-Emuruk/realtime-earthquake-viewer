@@ -2,8 +2,12 @@
 // `QuakeDetector`）へ流し、気象庁の地震情報と突き合わせて、当たり・取りこぼし・空振りを日ごとに数える。
 //
 //   npx tsx seismo-host/bench/bench-detect.ts --days 2026-09-28,2026-09-29 --labels <p2pquake.json>
-//     [--cache <控えの置き場所>] [--station station-1] [--lat 35.0 --lon 135.0] [--radius 300]
+//     --lat <観測点の緯度> --lon <観測点の経度>
+//     [--cache <控えの置き場所>] [--station station-1] [--radius 300]
 //     [--events]（区間を 1 件ずつ出す）
+//
+// 観測点の位置は既定値を持たない。黙って別の位置で数えると、走時の窓がずれたまま
+// 「当たり・取りこぼし」が出てしまう。
 //
 // `--labels` は P2PQuake の地震情報（code 551）の配列（`/v2/history?codes=551` や
 // `/v2/jma/quake` の応答をそのまま保存したもの）。**この台は通信を出さない** —— ラベルは
@@ -85,7 +89,11 @@ function main(): void {
   }
   const cacheDir = arg('cache') ?? '.claude/seismo-bench-cache/station'
   const stationId = arg('station') ?? 'station-1'
-  const at = { lat: Number(arg('lat') ?? 35.0), lon: Number(arg('lon') ?? 135.0) }
+  const at = { lat: Number(arg('lat')), lon: Number(arg('lon')) }
+  if (!Number.isFinite(at.lat) || !Number.isFinite(at.lon)) {
+    console.error('--lat <観測点の緯度> と --lon <観測点の経度> が要る')
+    process.exit(2)
+  }
   const radiusKm = Number(arg('radius') ?? 300)
   const showEvents = process.argv.includes('--events')
 

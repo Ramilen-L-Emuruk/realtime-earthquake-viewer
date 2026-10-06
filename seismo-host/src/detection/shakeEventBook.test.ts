@@ -6,19 +6,20 @@ import { MATCH_DEADLINE_MS, MEMORY_MS, ShakeEventBook } from './shakeEventBook'
 import type { ShakeEventRecord } from './shakeEvent'
 
 const HOME = { lat: 35.0, lon: 135.0 }
-// 2026-10-03 13:26 の熊本県天草・芦北地方（M3.5）と、引き金の時刻（架空）。
+// 観測点から約 82 km の地震（M3.5）と、引き金の時刻。観測点と震央の位置は架空で、
+// 発生時刻・規模・深さはその位置と関係なく置いた値。
 const ORIGIN = Date.UTC(2026, 9, 3, 4, 26, 0)
 const ON = Date.UTC(2026, 9, 3, 4, 27, 0)
-const AMAKUSA: P2pReferenceQuake = {
+const QUAKE: P2pReferenceQuake = {
   originMs: ORIGIN,
   originPrecisionMs: 60_000,
-  lat: 32.5,
-  lon: 130.5,
+  lat: 34.3,
+  lon: 135.3,
   depthKm: 0,
   magnitude: 3.5,
-  name: '熊本県天草・芦北地方',
+  name: '架空の震央',
   maxScale: 20,
-  key: '2026/10/03 13:26:00|熊本県天草・芦北地方',
+  key: '2026/10/03 13:26:00|架空の震央',
 }
 
 function shake(onMs: number, shakeClass: 'quake-like' | 'local-like' = 'quake-like'): DetectedShake {
@@ -79,15 +80,15 @@ describe('ShakeEventBook', () => {
   it('正: 時刻の合う地震情報が後から届いたら `quake` の版（rev 2）を足す', () => {
     const { book, saved } = setup()
     book.addShake('station-1', shake(ON), SENSORS)
-    book.addQuake(AMAKUSA)
+    book.addQuake(QUAKE)
     expect(saved.map((r) => [r.rev, r.verdict])).toEqual([[1, 'pending'], [2, 'quake']])
-    expect(saved[1].matchedQuake?.name).toBe('熊本県天草・芦北地方')
+    expect(saved[1].matchedQuake?.name).toBe('架空の震央')
     expect(saved[1].matchedQuake?.distanceKm).toBeGreaterThan(0)
   })
 
   it('正: 先に届いていた地震情報とも、揺れが閉じた時点で照らし合わせる', () => {
     const { book, saved } = setup()
-    book.addQuake(AMAKUSA)
+    book.addQuake(QUAKE)
     book.addShake('station-1', shake(ON), SENSORS)
     expect(saved.map((r) => r.verdict)).toEqual(['pending', 'quake'])
   })
@@ -95,7 +96,7 @@ describe('ShakeEventBook', () => {
   it('対照: 時刻の合わない地震情報では判定を変えない', () => {
     const { book, saved } = setup()
     book.addShake('station-1', shake(ON + 5 * 60_000), SENSORS)
-    book.addQuake(AMAKUSA)
+    book.addQuake(QUAKE)
     expect(saved.map((r) => r.verdict)).toEqual(['pending'])
   })
 
@@ -123,7 +124,7 @@ describe('ShakeEventBook', () => {
     book.addShake('station-1', shake(ON), SENSORS)
     advance(MATCH_DEADLINE_MS)
     book.tick()
-    book.addQuake(AMAKUSA)
+    book.addQuake(QUAKE)
     expect(saved.map((r) => r.verdict)).toEqual(['pending', 'unchecked', 'quake'])
   })
 
@@ -134,7 +135,7 @@ describe('ShakeEventBook', () => {
     book.tick()
     advance(MEMORY_MS)
     book.tick()
-    book.addQuake(AMAKUSA)
+    book.addQuake(QUAKE)
     expect(saved.map((r) => r.verdict)).toEqual(['pending', 'quake-like'])
   })
 
@@ -151,26 +152,26 @@ describe('ShakeEventBook', () => {
   it('正: 同じ地震の続報で規模・震源が変われば、その値で版を足す', () => {
     const { book, saved } = setup()
     book.addShake('station-1', shake(ON), SENSORS)
-    book.addQuake(AMAKUSA)
-    book.addQuake({ ...AMAKUSA, magnitude: 3.7, lat: 32.45 })
+    book.addQuake(QUAKE)
+    book.addQuake({ ...QUAKE, magnitude: 3.7, lat: 34.25 })
     expect(saved.map((r) => [r.rev, r.verdict])).toEqual([[1, 'pending'], [2, 'quake'], [3, 'quake']])
     expect(saved[2].matchedQuake?.magnitude).toBe(3.7)
-    expect(saved[2].matchedQuake?.lat).toBe(32.45)
+    expect(saved[2].matchedQuake?.lat).toBe(34.25)
     expect(saved[2].matchedQuake?.distanceKm).not.toBe(saved[1].matchedQuake?.distanceKm)
   })
 
   it('対照: 同じ報をもう一度受けても版を足さない', () => {
     const { book, saved } = setup()
     book.addShake('station-1', shake(ON), SENSORS)
-    book.addQuake(AMAKUSA)
-    book.addQuake({ ...AMAKUSA })
+    book.addQuake(QUAKE)
+    book.addQuake({ ...QUAKE })
     expect(saved).toHaveLength(2)
   })
 
   it('観測点の位置が分からなければ照合しない（期限で揺れ方に倒れる）', () => {
     const { book, saved } = setup()
     book.addShake('station-x', shake(ON), SENSORS)
-    book.addQuake(AMAKUSA)
+    book.addQuake(QUAKE)
     expect(saved.map((r) => r.verdict)).toEqual(['pending'])
   })
 })
