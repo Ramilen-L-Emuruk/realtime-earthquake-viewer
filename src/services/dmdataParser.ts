@@ -1859,6 +1859,8 @@ function tsunamiWarningCommentKey(headType: string, infoName: string | undefined
  *    「運ばない種別だから」なのか「気象庁が出さなくなった」なのかを分ける
  *    （→ `tsunami.ts` の `mergeTsunamiAreas`）
  * 3. **固定付加文の主題の鍵**（→ `tsunamiWarningCommentKey`）
+ *
+ * 判定とは別に、報の `id` にも入れる（報番号が種別ごとに別々に数えられるため。理由は `id` の箇所）。
  */
 export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami | null {
   const doc = parseTelegramXml(xml, TSUNAMI_LOG_PREFIX)
@@ -1967,7 +1969,12 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
   }).filter(eq => eq.hypocenterName)
   const sourceEarthquakes = sourceEarthquakeList.length > 0 ? sourceEarthquakeList : undefined
 
-  const id = `dmdata-tsunami-${eventId ?? ''}-${serial}`
+  // **種別（`headType`）を入れる。** 報番号（`Serial`）は VTSE41・VTSE51・VTSE52 で別々に数えるので、
+  // `EventID` と報番号だけでは同じ津波の別種別の報が同じ id になる（警報の第 1 報と津波情報の
+  // 第 1 報はどちらも 1 番）。リプレイの初期状態を作る突き合わせ（`useReplayController`）を
+  // 作っている途中で id だけを鍵にしたとき、実電文（2025-07-30 カムチャツカ半島付近の地震の
+  // 津波 82 通）で 24 時間より前の報が 1 通も足されなかった。
+  const id = `dmdata-tsunami-${eventId ?? ''}-${headType}-${serial}`
   const cancelled = infoType === '取消'
 
   // InfoType=取消: 誤って発表した電文そのものの取消（誤報取消）
