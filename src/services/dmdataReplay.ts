@@ -192,6 +192,15 @@ interface ManifestEntry {
    * 実アーカイブで確認済み（2026-07-28 の IXAC41 が 1 報目 null・2 報目 "RRA"）。
    */
   head: { type: string; time: string; test: boolean; designation?: string | null }
+  /**
+   * 電文の見出しを配信元が抜き出したもの。**使うのは `head.eventId` だけ**（その電文がどの地震の
+   * ものか。本体を落とさずに分かる）。窓の端で切れた地震を補うときに、その日の目録から
+   * 当の地震の電文だけを選ぶのに使う（→ `readStraddlingQuakes`）。
+   *
+   * 実アーカイブ（2026-06-26）では XML 版のエントリに `xmlReport.head.eventId` が入っていた。
+   * **任意にしてある理由は `filename` と同じ。**
+   */
+  xmlReport?: { head?: { eventId?: string } }
 }
 
 /**
@@ -1647,6 +1656,110 @@ function parseHistoryTelegram(
   return parsed
 }
 
+/** `EventID`（14 桁・日本時間）が指す地震の発生日（JST の `YYYY-MM-DD`）。読めなければ null。 */
+function eventIdDay(eventId: string): string | null {
+  const m = eventId.match(/^(\d{4})(\d{2})(\d{2})\d{6}$/)
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : null
+}
+
+/**
+ * 窓の中に電文があるのに、発生日が窓の最初の日より前の地震（＝窓の端で報の列が切れた地震）を、
+ * 発生日ごとに集める。
+ *
+ * **窓は電文の発表日で切っているので、日をまたいで報が出た地震は後ろ半分だけが窓に入る。**
+ * 実例: 2026-06-26 22:29 の山梨県東部・富士五湖は、震源要素更新（VXSE61）だけが翌日 00:40 の
+ * 発表で、その日から始まる窓では「震源と規模はあるが震度も津波区分も無い」カードになっていた。
+ */
+function straddlingQuakeDays(quakes: readonly JMAQuake[], firstWindowDay: string): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>()
+  for (const quake of quakes) {
+    const eventId = extractQuakeEventIdFromId(quake.id)
+    const day = eventId ? eventIdDay(eventId) : null
+    if (!eventId || !day || day >= firstWindowDay) continue
+    const ids = out.get(day) ?? new Set<string>()
+    ids.add(eventId)
+    out.set(day, ids)
+  }
+  return out
+}
+
+/**
+ * 発生日のアーカイブから、指定した地震の電文だけを読む（窓の端で切れた地震を補う）。
+ *
+ * **その日をまるごと取り込まない。** 補いの目的は「切れた地震を閉じる」ことだけで、その日の
+ * ほかの地震は次の窓（「もっと見る」）が読む。まるごと入れると、カーソルの外の日のカードが
+ * 一覧に混ざり、窓が重ならない設計と食い違う。
+ *
+ * **通信は増えない（定常状態では）。** 目録・本体・解析結果はどれも控えに残るので、次の窓が
+ * この日を読むときは 0 件で済む（本体の控えは端末にも残る → `data-sources-spec.md` §2）。
+ * 先に 1 日ぶんを前倒しで読むだけ。
+ *
+ * 取得の失敗は投げる（呼び出し側が記録して画面へ出す）。個々の電文が読めないのは
+ * 取りこぼしとして数えるので、件数を返す。
+ */
+async function readStraddlingQuakes(
+  item: ArchiveItem,
+  eventIds: ReadonlySet<string>,
+  apiKey: string,
+  includeTest: boolean,
+  before: Date,
+  dec: TextDecoder,
+): Promise<{ quakes: JMAQuake[]; skipped: number; unattributable: number }> {
+  let files: Map<string, Uint8Array> | undefined
+  let manifest = manifestCache.get(item.url)
+  if (!manifest) {
+    files = await downloadArchive(item.url, apiKey, item.date)
+    const manifestBytes = files.get('telegrams.json')
+    if (!manifestBytes) throw new Error(`アーカイブに telegrams.json がありません date=${item.date}`)
+    manifest = JSON.parse(dec.decode(manifestBytes)) as ManifestEntry[]
+    manifestCache.set(item.url, manifest)
+  }
+  // 絞り込みは本編の計画（`planHistoryEntries`）と同じ順序 —— 種別 → 試験報 → XML 版だけ。そこへ地震で絞る。
+  const candidates = manifest.filter(entry =>
+    entry?.head
+    && QUAKE_TYPES.has(entry.head.type)
+    && (includeTest || !entry.head.test)
+    && !entry.originalId)
+  // **目録に EventID が無いエントリは、本体を読んでどの地震かを確かめる。** 目録だけで外すと
+  // 目的の地震の報を取りこぼしうるし、一律に「補えなかった」とすると、無関係な地震の 1 通の
+  // 欠落で日ごと失敗扱いになる。控え 7 日分の目録（日付と種別は `data-sources-spec.md` §2
+  // 「窓の端で切れた地震は、発生日から補う」）では欠落 0 件だったが、全期間は数えていない
+  // （2026-10-06 実測）。
+  const wanted = candidates.filter(entry => eventIds.has(entry.xmlReport?.head?.eventId ?? ''))
+  const unlabeled = candidates.filter(entry => !entry.xmlReport?.head?.eventId)
+  const needsBody = [...wanted, ...unlabeled].some(entry => !parsedTelegramCache.has(entry.id))
+  if (files === undefined && needsBody) {
+    files = await downloadArchive(item.url, apiKey, item.date)
+  }
+  const quakes: JMAQuake[] = []
+  let skipped = 0
+  // 本体を読んでも地震を決められなかった数。この中に目的の地震の報が混ざっていたかは分からない。
+  // 目録の見出し（`head`）ごと壊れたエントリは種別すら読めないので、ここへ含める
+  let unattributable = manifest.filter(entry => !entry?.head).length
+  const take = (entry: ManifestEntry, labeled: boolean) => {
+    const time = manifestTimeWithoutBody(entry) ?? (files ? resolveManifestTime(entry, files) : null)
+    if (time === null) {
+      if (labeled) skipped++
+      else unattributable++
+      return
+    }
+    if (!isHistoryTarget(time, before)) return
+    const parsed = parseHistoryTelegram(entry, files, dec, 'quake', item.date)
+    if (parsed?.kind !== 'quake') {
+      if (labeled) skipped++
+      else unattributable++
+      return
+    }
+    if (labeled) { quakes.push(parsed.quake); return }
+    const eventId = extractQuakeEventIdFromId(parsed.quake.id)
+    if (eventId === null) unattributable++
+    else if (eventIds.has(eventId)) quakes.push(parsed.quake)
+  }
+  for (const entry of wanted) take(entry, true)
+  for (const entry of unlabeled) take(entry, false)
+  return { quakes, skipped, unattributable }
+}
+
 /**
  * 指定時刻より前に発表された地震電文を、日次アーカイブを遡って集める（地震カードの履歴復元用）。
  *
@@ -1722,7 +1835,19 @@ export async function fetchDmdataQuakeHistory(
   const startObj = new Date(before)
   startObj.setDate(startObj.getDate() - maxDays)
   const wantedDays = archiveDaysForWindow(startObj, new Date(before.getTime() + 1))
-  const listRange = archiveListRange(wantedDays)
+  /** 窓の最初の日。これより前に発生した地震は「窓の端で切れた地震」（→ `straddlingQuakeDays`）。 */
+  const firstWindowDay = [...wantedDays].sort()[0] ?? null
+  /**
+   * 窓の最初の日の前日。**目録はここまで広げて引く**（一覧のリクエストは 1 本のまま）。
+   * 窓の端で切れた地震の発生日はほとんどがこの日なので（震源要素更新が翌日の未明に出る形）、
+   * 補うときに一覧を引き直さずに済む。**本体はここでは落とさない**（下の `targets` は窓の日だけ）。
+   */
+  const dayBeforeWindow = firstWindowDay === null
+    ? null
+    : toJstDateStr(new Date(Date.parse(`${firstWindowDay}T00:00:00+09:00`) - DAY_MS))
+  const listRange = archiveListRange(
+    dayBeforeWindow === null ? wantedDays : new Set([...wantedDays, dayBeforeWindow]),
+  )
   const items = listRange === null
     ? []
     : await listArchives(apiKey, listRange.from, listRange.to, 'telegram.earthquake', signal)
@@ -2161,6 +2286,94 @@ export async function fetchDmdataQuakeHistory(
     }
   }
 
+  // **窓の端で切れた地震を、発生日のアーカイブから補う**（→ `readStraddlingQuakes`）。
+  //
+  // 窓は電文の発表日で切っているので、日をまたいで報が出た地震は後ろ半分だけが窓に入る。
+  // そのままにすると「震源と規模はあるが震度も津波区分も無い」カードが、次の窓を読むまで
+  // （「もっと見る」を押さなければずっと）一覧に残る。カードの統合は回をまたいで古い報が
+  // 当たっても正しく当て直すので（`refoldQuakeCard`）、ここで前半を補えば 1 回で閉じる。
+  //
+  // **補いの失敗は日の失敗にしない。** カーソルも全滅判定も窓の日だけで決める —— 補う日は
+  // 次の窓が改めて読むので、ここで失敗しても取り返せる。画面へは「読めなかった取得元」として出す。
+  //
+  // **当日経路（`fetchLiveQuakeTelegrams`）への切り替えは持たない。** 補う日は窓の最初の日より
+  // 前なので、起動時の窓でも今日から `HISTORY_WINDOW_DAYS` 日以上前になる。当日経路が受け持つのは
+  // 窓の上端から `LIVE_FALLBACK_DAYS` 日だけで、そこまで新しい日はここへ来ない。アーカイブが
+  // 見つからなければ、それは生成の遅れではなく取得の失敗として扱う。
+  const straddleFailures: string[] = []
+  let straddleSupplemented = 0
+  if (!stoppedEarly && firstWindowDay !== null) {
+    const itemsByDay = new Map(items.map(item => [item.date, item]))
+    for (const [day, eventIdsOfDay] of straddlingQuakeDays(quakes, firstWindowDay)) {
+      if (isStopped()) { stoppedEarly = true; break }
+      // 保存開始より前は取りようが無い（在庫の端）。カードは後ろ半分のまま残る
+      if (day < ARCHIVE_START_DAY) {
+        log.info(`[replay] 窓の端で切れた地震の発生日が保存開始より前のため補えません date=${day} 地震=${[...eventIdsOfDay].join(',')}`)
+        continue
+      }
+      try {
+        // ほとんどは前日（目録を広げて引いてある）。それより前に発生した地震だけ一覧を引き直す
+        let item = itemsByDay.get(day)
+        if (!item) {
+          const range = archiveListRange(new Set([day]))
+          const listed = range === null
+            ? []
+            : await listArchives(apiKey, range.from, range.to, 'telegram.earthquake', signal)
+          item = listed.find(i => i.date === day)
+        }
+        if (!item) {
+          log.warn(`[replay] 窓の端で切れた地震の発生日のアーカイブが見つかりません date=${day} 地震=${[...eventIdsOfDay].join(',')}`)
+          straddleFailures.push(`straddle:${day}`)
+          continue
+        }
+        const supplemented = await readStraddlingQuakes(item, eventIdsOfDay, apiKey, includeTest, before, dec)
+        for (const quake of supplemented.quakes) quakes.push(quake)
+        straddleSupplemented += supplemented.quakes.length
+        for (let i = 0; i < supplemented.skipped; i++) skipCounter.add(day)
+        // **本体を読んでもどの地震の電文か決められないエントリがあったら、補えたとは言えない。**
+        // その中に目的の地震の電文が混ざっていたかを確かめられないので、補えなかった日として画面へ出す。
+        // 目録に EventID が無いだけなら本体で決まるので、ここへは来ない。
+        if (supplemented.unattributable > 0) {
+          log.warn(
+            `[replay] 窓の端で切れた地震を補う日に、どの地震の電文か決められないエントリが`
+            + ` ${supplemented.unattributable} 件ありました（目録に EventID が無く、本体も読めない）date=${day}`
+            + ` 地震=${[...eventIdsOfDay].join(',')} 補えた電文=${supplemented.quakes.length}`,
+          )
+          straddleFailures.push(`straddle:${day}`)
+        } else {
+          // 電文 0 件は異常ではない —— 発生の直後に日付が変わると、発生日には報が 1 通も無い
+          log.info(
+            `[replay] 窓の端で切れた地震を発生日のアーカイブから補った date=${day}`
+            + ` 地震=${eventIdsOfDay.size} 電文=${supplemented.quakes.length}`,
+          )
+        }
+      } catch (e) {
+        // 429 の窓による見送りも同じ扱い（待てば次の窓で取れる）。記録の文言だけ分ける
+        if (e instanceof RateLimitWindowError) {
+          log.info(`[replay] 窓の端で切れた地震の補いを 429 の窓が明けるまで見送りました date=${day}`)
+        } else {
+          log.error(`[replay] 窓の端で切れた地震を補えませんでした date=${day}`, e)
+        }
+        straddleFailures.push(`straddle:${day}`)
+      }
+    }
+    // **要約も出す。** 下の「読めなかった取得元」の要約は窓の日だけを数えるので（補いの失敗を
+    // 全滅判定へ混ぜないため）、ここで別に 1 行残す。個々の失敗は上で 1 行ずつ出ている
+    if (straddleFailures.length > 0) {
+      log.warn(
+        `[replay] 窓の端で切れた地震を補えなかった日が ${straddleFailures.length} 日ありました`
+        + `（その地震のカードは後ろの報だけで出ます。次の窓を読めば揃います）: ${straddleFailures.join(', ')}`,
+      )
+    }
+    if (onPartial && straddleSupplemented > 0) {
+      try {
+        onPartial(orderedForMerge(quakes))
+      } catch (e) {
+        log.warn('[replay] 履歴の途中経過を反映できませんでした（取得は続けます）', e)
+      }
+    }
+  }
+
   // **カーソルは「新しい側から連続して読み切れた範囲」の最古まで。**
   //
   // `sources` は新しい日から並ぶので、頭から見て最初に読み切れていない日が現れたところで
@@ -2295,7 +2508,10 @@ export async function fetchDmdataQuakeHistory(
     //
     // 日を識別子にするのは当日経路の `live-telegram:<日>` と同じ形。呼び出し側は集合へ積むので
     // 同じ日を何度返しても 1 件のまま。
-    failedArchiveUrls: [...failedArchiveUrls, ...uncovered.map(d => `uncovered:${d}`)],
+    //
+    // **窓の端で切れた地震を補えなかった日も同じく載せる**（`straddle:<日>`）。全滅判定の分子に
+    // 混ぜない理由は `uncovered` と同じ（取りに行ったのは窓の外の日）。
+    failedArchiveUrls: [...failedArchiveUrls, ...uncovered.map(d => `uncovered:${d}`), ...straddleFailures],
     rateLimitedSources, rateLimitedTelegrams, hasMore, oldestLoadedDay,
   }
 }
