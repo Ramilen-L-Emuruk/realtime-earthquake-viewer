@@ -87,6 +87,7 @@ const renderTab = (quake: JMAQuake, lpgm?: JMALpgm, opts: { unreceivedOpen?: boo
     isLoadingMore={false}
     hasMore={false}
     onLoadMore={() => {}}
+    watchLoadMoreThrottle={false}
     error={null}
     historyLoss={createEmptyTelegramLoss()}
     loadMoreFailed={false}

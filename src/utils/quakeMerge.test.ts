@@ -49,15 +49,16 @@ const isRetractedQuakeReport = (
 ) => isRetractedQuakeReportWithIndex(retractions, incoming, idx)
 
 /**
- * 受け取った電文種別の記録（`reports`）を除いた中身。
+ * 受け取った電文種別の記録（`reports`）と当てた電文の控え（`sourceTelegrams`）を除いた中身。
  *
- * **据え置き・置換の確認に同一参照や素の `toEqual` は使えない。** 記録は据え置く経路でも
+ * **据え置き・置換の確認に同一参照や素の `toEqual` は使えない。** 記録と控えは据え置く経路でも
  * 更新されるため（→ quakeMerge.ts の `holdBack`）、内容が据え置かれた回でも新しい
  * オブジェクトが返る。ここで見たいのは「incoming の内容を採ったかどうか」なので、
- * 記録を外して比べる。記録の積み上がり方は専用の describe（「受け取った電文種別の記録」）が見る。
+ * 両方を外して比べる。記録の積み上がり方は専用の describe（「受け取った電文種別の記録」）が、
+ * 控えの持ち方は `quakeMergeOrder.test.ts` が見る。
  */
-function withoutReports(q: JMAQuake): Omit<JMAQuake, 'reports'> {
-  const { reports: _reports, ...rest } = q
+function withoutReports(q: JMAQuake): Omit<JMAQuake, 'reports' | 'sourceTelegrams'> {
+  const { reports: _reports, sourceTelegrams: _sourceTelegrams, ...rest } = q
   return rest
 }
 

@@ -241,6 +241,103 @@ export function mergeQuakeReports(
   return normalized
 }
 
+// --- 当てた電文の控え（当て直しの材料。→ `JMAQuake.sourceTelegrams`） ---
+
+/** 同じ電文か。鍵（`telegramKey`）が無い電文は id・発表時刻・種別の組で見る。 */
+function isSameTelegram(a: JMAQuake, b: JMAQuake): boolean {
+  if (a === b) return true
+  if (a.telegramKey || b.telegramKey) return a.telegramKey === b.telegramKey
+  return a.id === b.id && a.time === b.time && a.issue.type === b.issue.type
+}
+
+/**
+ * 控えに `incoming` を積む。**何も増えなければ `base` をそのまま返す**（「変化なし＝同一参照」を保つ）。
+ *
+ * `incoming` がカード（暫定 ID の畳み込みでカードどうしを合わせるとき）なら、その控えを合わせる。
+ * 受け取った種別の記録（`mergeQuakeReports`）と同じ形。
+ *
+ * **生電文はそのまま積む（複製しない）。** 宣言箇所の注記（メモリの見積もり）を参照。
+ */
+function mergeSourceTelegrams(base: readonly JMAQuake[] | undefined, incoming: JMAQuake): readonly JMAQuake[] {
+  const added = incoming.sourceTelegrams ?? [incoming]
+  const next = base ? [...base] : []
+  let grew = false
+  for (const telegram of added) {
+    if (next.some(known => isSameTelegram(known, telegram))) continue
+    next.push(telegram)
+    grew = true
+  }
+  return base && !grew ? base : next
+}
+
+/** 発表時刻のミリ秒。**読めない時刻は末尾へ寄せる**（理由は `mergeQuakeHistory` の並べ替え）。 */
+function issuedAtMs(q: JMAQuake): number {
+  const ms = new Date(q.time).getTime()
+  return Number.isFinite(ms) ? ms : Number.POSITIVE_INFINITY
+}
+
+/**
+ * `incoming` を当てるには当て直しが要るか。
+ *
+ * **要るのは「控えにある報より古い報が、後から当たった」ときだけ。** 統合の規則は発表時刻の順に
+ * 1 通ずつ当てる前提で書かれているので（→ `mergeQuakeInto` の据え置き判定の注記）、それより
+ * 新しい報なら 1 通ずつ当てても当て直しと同じ答えになる。控えに無いカード（統合を通さずに
+ * 作られたもの）は当て直せないので従来どおり 1 通ずつ当てる。
+ */
+function needsRefold(existing: JMAQuake, incoming: JMAQuake): boolean {
+  const sources = existing.sourceTelegrams
+  if (!sources || sources.length === 0) return false
+  if (sources.some(known => isSameTelegram(known, incoming))) return false
+  const at = issuedAtMs(incoming)
+  return sources.some(known => issuedAtMs(known) > at)
+}
+
+/**
+ * 控えと `incoming` を発表時刻の順に並べ、空のカードから 1 通ずつ当て直す。
+ *
+ * **ライブと同じ答えにするための形。** ライブは発表時刻の順に届くので、`mergeQuakeInto` を
+ * 1 通ずつ当てた結果がそのまま正しい。履歴は新しい日から読むので、前の回で作ったカードへ
+ * 古い報が後から当たる —— そのまま当てると、先にいるカードの状態を見て後から来た報を捨てる
+ * 規則（震源要素更新と合流済みのカードは以後の通常電文を据え置く・時刻の古い完全版は据え置く）が、
+ * 届く順番が逆のときだけ逆の答えを出す。実電文（控え 7 日分・64 地震）で、日付の境目を
+ * どこに置いてもずれるのはこの形だけだった（2026-10-06 実測）。
+ *
+ * **同じ発表時刻の電文どうしは受け取った順のまま**（安定ソート）。`mergeQuakeHistory` が
+ * 1 回の中で作る並びと同じ規則。
+ *
+ * - **鍵（`eventKey`）は既存を引き継ぐ。** P2PQuake の鍵は最初に当たった報から作るので、
+ *   当て直しで最初の報が変わると鍵が変わり、選択・既読・更新の印との紐づきが切れる
+ * - **取消より前に発表された報は当て直しでも採らない**（`isRetractedQuakeReport`）
+ * - **据え置きの記録は出さない**（`quiet`）。同じ電文を何度も当てるので、記録が電文数の何倍にも
+ *   膨らむ。当て直した事実は呼び出し側が 1 行だけ残す
+ * - **津波電文から借りた値は落ちる。** 呼び出し側は畳み込みの後に借り直す
+ *   （`borrowFromTsunamiIntoCards`）。1 回の取り込みの中で借りないのは `mergeQuakeHistory` の
+ *   従来の扱いと同じ
+ */
+export function refoldQuakeCard(
+  existing: JMAQuake,
+  incoming: JMAQuake,
+  retractions: readonly QuakeRetraction[],
+  areaPrefIndex: AreaPrefIndex,
+): JMAQuake {
+  const sources = mergeSourceTelegrams(existing.sourceTelegrams, incoming)
+  const ordered = [...sources].sort((a, b) => {
+    const at = issuedAtMs(a)
+    const bt = issuedAtMs(b)
+    return at === bt ? 0 : at - bt
+  })
+  let card: JMAQuake | undefined
+  for (const telegram of ordered) {
+    if (isRetractedQuakeReport(retractions, telegram, areaPrefIndex)) continue
+    card = card === undefined
+      ? { ...mergeQuakeInto(undefined, telegram, { quiet: true }), eventKey: quakeEventKey(existing) }
+      : mergeQuakeInto(card, telegram, { quiet: true })
+  }
+  // 全部が取り下げ済みなら当て直す材料が無い（呼び出し側は取り下げ済みの報を先に捨てているので、
+  // `incoming` 自身はここへ来ない。控えの側が全部取り下げられた場合の安全弁）
+  return card ?? existing
+}
+
 // 電文 ID 文字列から eventId（14桁タイムスタンプ）を抽出する。
 // VXSE51/52/53/61 はすべて同じ eventId を共有するため、同一地震の同定に使用できる。
 // 電文 ID の書式: `dmdata-quake-YYYYMMDDhhmmss-<serial>`。
@@ -597,17 +694,23 @@ export function mergeQuakeInto(
   // カードの中身が変わらなくても見出しに出したい事実だから。同じ電文が二度流れて記録も
   // 変わらないときは `existing` をそのまま返し、「変化なし＝同一参照」の約束を保つ。
   const reports = mergeQuakeReports(existing?.reports, incoming)
-  /** 中身は据え置き。記録だけ変わったならそれを載せて返す。 */
+  // 当てた電文の控え（当て直しの材料。→ `refoldQuakeCard`）。**据え置く経路でも積む** ——
+  // 届く順番が違えば採られる電文なので、捨てると当て直しが同じ答えにならない。
+  const sourceTelegrams = mergeSourceTelegrams(existing?.sourceTelegrams, incoming)
+  /** 中身は据え置き。記録・控えだけ変わったならそれを載せて返す。 */
   const holdBack = (card: JMAQuake): JMAQuake =>
-    reports === card.reports ? card : { ...card, reports }
+    reports === card.reports && sourceTelegrams === card.sourceTelegrams
+      ? card
+      : { ...card, reports, sourceTelegrams }
 
   // --- A. incoming が VXSE61（顕著地震の震源要素更新） ---
   if (incoming.issue.type === AMENDMENT_TYPE) {
-    if (!existing) return { ...incoming, eventKey, reports }
+    if (!existing) return { ...incoming, eventKey, reports, sourceTelegrams }
     return {
       ...existing,
       eventKey,
       reports,
+      sourceTelegrams,
       time: incoming.time,
       issue: incoming.issue,
       earthquake: {
@@ -646,7 +749,7 @@ export function mergeQuakeInto(
   }
 
   // --- B. incoming が通常電文 ---
-  if (!existing) return { ...incoming, eventKey, reports }
+  if (!existing) return { ...incoming, eventKey, reports, sourceTelegrams }
 
   // 据え置き判定: 既存が実震度を持ち・未取消のとき、incoming を無視するかどうかを判定する。
   // hasIntensity を条件に含めることで、VXSE61 単独カードや震度欠落カードは
@@ -769,7 +872,7 @@ export function mergeQuakeInto(
     })
   }
 
-  let result: JMAQuake = { ...incoming, eventKey, reports }
+  let result: JMAQuake = { ...incoming, eventKey, reports, sourceTelegrams }
 
   // 震度欠落の後続電文（震源のみ等）は既存の震度で補完する。
   if (!hasIntensity(incoming) && hasIntensity(existing)) {
@@ -1195,7 +1298,17 @@ export function mergeQuakeHistory(
     // 混ざりうるため、ライブ経路と同じ守りをここにも置く。
     const index = merged.findIndex(e => !e.cancelledAt && sameQuakeEntry(e, q, areaPrefIndex))
     const before = index >= 0 ? merged[index] : undefined
-    const card = mergeQuakeInto(before, q)
+    // **前の回で作ったカードへ古い報が当たるなら、控えと合わせて当て直す**（→ `refoldQuakeCard`）。
+    // 履歴は新しい日から読むので、日・窓の境目をまたいだ地震は後ろの報から先に当たる。
+    // 1 回の中は時刻順に並べ替えてあるので、当て直しが要るのは回をまたいだときだけ。
+    const refold = before !== undefined && needsRefold(before, q)
+    const card = refold ? refoldQuakeCard(before, q, retractions, areaPrefIndex) : mergeQuakeInto(before, q)
+    if (refold) {
+      log.debug('[quake] 古い報が後から当たったので、控えと合わせて当て直した', {
+        eventKey: quakeEventKey(before), incomingId: q.id, incomingType: q.issue.type, incomingTime: q.time,
+        telegrams: card.sourceTelegrams?.length ?? 0,
+      })
+    }
     if (index >= 0) merged[index] = card
     else merged.push(card)
     // **据え置かれた報では記憶を進めない**（`mergeQuakeInto` が同じ参照を返す）。カードの

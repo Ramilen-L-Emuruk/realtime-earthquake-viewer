@@ -67,6 +67,7 @@ function renderTab(opts: {
       isLoadingMore={false}
       hasMore={false}
       onLoadMore={() => {}}
+      watchLoadMoreThrottle={false}
       error={opts.error ?? null}
       historyLoss={opts.historyLoss ?? createEmptyTelegramLoss()}
       loadMoreFailed={opts.loadMoreFailed ?? false}
