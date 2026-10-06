@@ -11,6 +11,9 @@
 // **値の読み方は 2 つ。** シリアル（毎秒 1 行）と `GET /`（JSON）。後者があるのは、
 // シリアルを読むのに基板の繋がった PC へ入り直す手間を省くため。
 //
+// **測定範囲は `POST /fs?g=0.5|1|2|3` で切り替えられる**（起動時は ±500mg）。焼き直さずに
+// 同じ置き方のまま範囲を行き来して、範囲ごとのノイズを測り比べるため。
+//
 // 段を分けて、それぞれの結果を出す —— 途中で止まったとき、どこまで進んだかが
 // 出力から読めるようにするため。
 //   1. 2 本のバスを開く
@@ -70,17 +73,37 @@ static const uint8_t CTRL3_IF_INC   = 0x04;  // 連続読みでアドレスが�
 static const uint8_t CTRL3_BDU      = 0x40;  // 上下バイトが別の標本になるのを防ぐ
 
 // ---- 測定範囲（fs_xl）----
-// **並びが昇順ではない。** 0=±500mg / 1=±3g / 2=±1g / 3=±2g。
-// 「値が大きいほど広い」と読むと 4 倍ずれる。
-static const uint8_t FS_500MG = 0;
-static const float MG_PER_LSB = 0.015f;  // iis2iclx_from_fs500mg_to_mg
+// **並びが昇順ではない。** 0=±500mg / 1=±3g / 2=±1g / 3=±2g（iis2iclx_fs_xl_t）。
+// 「値が大きいほど広い」と読むと 4 倍ずれる。感度は iis2iclx_from_fs*_to_mg の値。
+struct FullScale {
+  const char *query;  // POST /fs?g= に渡す値
+  const char *label;  // 状態の口とシリアルに出す名前
+  uint8_t code;       // CTRL1_XL の fs_xl
+  float mgPerLsb;
+};
+static const FullScale FULL_SCALES[] = {
+  { "0.5", "±500mg", 0, 0.015f },
+  { "1",   "±1g",    2, 0.031f },
+  { "2",   "±2g",    3, 0.061f },
+  { "3",   "±3g",    1, 0.122f },
+};
+static const int FULL_SCALE_COUNT = sizeof(FULL_SCALES) / sizeof(FULL_SCALES[0]);
+
+/**
+ * いまの測定範囲（FULL_SCALES の添字）。起動時は ±500mg。
+ *
+ * **起動のたびに ±500mg へ戻る**（覚えておかない）。切り替えは測り比べるための
+ * 一時的な操作で、電源を入れ直したら既定の状態から始まるほうが取り違えにくい。
+ */
+static int g_fsIndex = 0;
+/** 切り替えた回数。状態の口へ出し、読む側が「切り替え後の値か」を見分ける。 */
+static uint32_t g_fsGeneration = 0;
 
 // ---- 出力頻度（odr_xl）----
 // **100Hz は無い。** 1=12.5 / 2=26 / 3=52 / 4=104 / 5=208 / 6=416 / 7=833 Hz。
 static const uint8_t ODR_104HZ = 4;
 static const int ODR_104HZ_NOMINAL = 104;
 
-static const uint8_t CTRL1_XL_WANT = (uint8_t)((ODR_104HZ << 4) | (FS_500MG << 2));
 static const uint8_t CTRL3_C_WANT  = (uint8_t)(CTRL3_BDU | CTRL3_IF_INC);
 
 // 1 mg を gal（cm/s²）へ。標準重力 980.665 gal = 1000 mg。
@@ -110,6 +133,14 @@ struct Sensor {
   double sumX, sumY, sumXX, sumYY;
   int16_t minX, maxX, minY, maxY;
   Stat last;
+  /**
+   * 次の周期の結果を捨てる印。**測定範囲を切り替えた直後の周期には、切り替え前の
+   * 標本が混ざる**（周期の途中で切り替えるため）。そのまま出すと、2 つの範囲の
+   * 値が 1 つの σ に混ざる。
+   */
+  bool discardNext;
+  /** 周期を締めた回数。読む側が同じ周期を 2 度数えないための通し番号。 */
+  uint32_t period;
 };
 
 static Sensor sensors[4];
@@ -120,6 +151,17 @@ static uint32_t g_bootMs = 0;
 static bool g_wifiOk = false;
 /** OTA の最中は I²C を読まない。**更新を邪魔しない**ため。 */
 static bool g_otaBusy = false;
+
+/**
+ * いまの測定範囲で CTRL1_XL に書く値。
+ *
+ * **関数は構造体の定義より後ろに置く。** arduino-cli は、ファイルで最初に現れる関数の
+ * 手前へ全関数の宣言を差し込む。構造体より前に関数があると、宣言が `Sensor` を
+ * 知らない位置に入って組み立てが落ちる。
+ */
+static uint8_t ctrl1XlFor(int fsIndex) {
+  return (uint8_t)((ODR_104HZ << 4) | (FULL_SCALES[fsIndex].code << 2));
+}
 
 /** レジスタを n バイト読む。相手が応答しなければ false。 */
 static bool readRegs(TwoWire &bus, uint8_t addr, uint8_t reg, uint8_t *buf, size_t n) {
@@ -185,7 +227,8 @@ static bool initSensor(Sensor &s) {
     Serial.println("    CTRL3_C の書き込みに失敗");
     return false;
   }
-  if (!writeReg(*s.bus, s.addr, REG_CTRL1_XL, CTRL1_XL_WANT)) {
+  const uint8_t want1 = ctrl1XlFor(g_fsIndex);
+  if (!writeReg(*s.bus, s.addr, REG_CTRL1_XL, want1)) {
     Serial.println("    CTRL1_XL の書き込みに失敗");
     return false;
   }
@@ -196,14 +239,45 @@ static bool initSensor(Sensor &s) {
     return false;
   }
   Serial.printf("    CTRL1_XL = 0x%02X（期待 0x%02X）%s\n",
-                c1, CTRL1_XL_WANT, c1 == CTRL1_XL_WANT ? "" : "  ← 食い違い");
+                c1, want1, c1 == want1 ? "" : "  ← 食い違い");
   Serial.printf("    CTRL3_C  = 0x%02X（期待 0x%02X）%s\n",
                 c3, CTRL3_C_WANT, c3 == CTRL3_C_WANT ? "" : "  ← 食い違い");
-  if (c1 != CTRL1_XL_WANT || c3 != CTRL3_C_WANT) return false;
+  if (c1 != want1 || c3 != CTRL3_C_WANT) return false;
 
-  Serial.printf("    測定範囲 ±500mg（%.3f mg/LSB）・出力頻度 %d Hz\n",
-                MG_PER_LSB, ODR_104HZ_NOMINAL);
+  Serial.printf("    測定範囲 %s（%.3f mg/LSB）・出力頻度 %d Hz\n",
+                FULL_SCALES[g_fsIndex].label, FULL_SCALES[g_fsIndex].mgPerLsb, ODR_104HZ_NOMINAL);
   resetStats(s);
+  return true;
+}
+
+/**
+ * 測定範囲だけを書き換える（リセットはしない）。**書いた値を読み返して照合する。**
+ *
+ * 失敗したら `initialized` を下ろす —— 範囲が分からないまま値を出すと、
+ * 感度を取り違えた σ が正しい顔をして出てしまう。
+ */
+static bool applyFullScale(Sensor &s) {
+  if (!s.initialized) return false;
+  const uint8_t want1 = ctrl1XlFor(g_fsIndex);
+  uint8_t c1 = 0;
+  // **3 回までやり直す。** 一度の I²C の乱れで initialized を下ろすと、再起動するまで
+  // そのセンサーを取り戻す道が無い（initSensor は起動時にしか呼ばない）
+  bool ok = false;
+  for (int attempt = 0; attempt < 3 && !ok; attempt++) {
+    ok = writeReg(*s.bus, s.addr, REG_CTRL1_XL, want1) && readReg(*s.bus, s.addr, REG_CTRL1_XL, &c1)
+         && c1 == want1;
+  }
+  if (!ok) {
+    Serial.printf("[%s 0x%02X] 測定範囲の切り替えに失敗（読み返し 0x%02X・期待 0x%02X）\n",
+                  s.busName, s.addr, c1, want1);
+    s.initialized = false;
+    s.last.ready = false;
+    return false;
+  }
+  // 切り替え前の標本を捨て、続く 1 周期も捨てる（途中で切り替えたので混ざる）
+  resetStats(s);
+  s.discardNext = true;
+  s.last.ready = false;
   return true;
 }
 
@@ -221,7 +295,7 @@ static int probeBus(TwoWire &bus, const char *busName) {
     }
     Serial.println("  ← IIS2ICLX");
     if (sensorCount >= (int)(sizeof(sensors) / sizeof(sensors[0]))) continue;
-    sensors[sensorCount] = Sensor{ &bus, busName, addr, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, Stat{} };
+    sensors[sensorCount] = Sensor{ &bus, busName, addr, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, Stat{}, false, 0 };
     sensorCount++;
     found++;
   }
@@ -266,6 +340,22 @@ static double stddevLsb(double sum, double sumSq, uint32_t n) {
 
 /** 1 周期を締める。**シリアルへ出し、状態の口が読む値も更新する。** */
 static void report(Sensor &s) {
+  if (!s.initialized) {
+    // **初期化できていない（設定が分からない）センサーの値は出さない。** 感度を
+    // 取り違えた σ が正しい顔をして出てしまう。一覧には残るので、状態の口から
+    // initialized:false として見える（黙って消えはしない）
+    resetStats(s);
+    s.last.ready = false;
+    return;
+  }
+  if (s.discardNext) {
+    // 測定範囲を切り替えた周期。値は出さずに捨てる（s.last.ready は false のまま）
+    s.discardNext = false;
+    resetStats(s);
+    return;
+  }
+  const float mgPerLsb = FULL_SCALES[g_fsIndex].mgPerLsb;
+  s.period++;
   if (s.count == 0) {
     // **件数 0 でも記録は残す。** 状態の口から「黙っている」ことが読めないと、
     // 初期化に失敗した個体と、そもそも見つからなかった個体を区別できない。
@@ -280,9 +370,9 @@ static void report(Sensor &s) {
 
   s.last = Stat{
     true, s.count, s.readErrors,
-    mx * MG_PER_LSB, my * MG_PER_LSB,
-    sx * MG_PER_LSB, sy * MG_PER_LSB,
-    (double)(s.maxX - s.minX) * MG_PER_LSB, (double)(s.maxY - s.minY) * MG_PER_LSB,
+    mx * mgPerLsb, my * mgPerLsb,
+    sx * mgPerLsb, sy * mgPerLsb,
+    (double)(s.maxX - s.minX) * mgPerLsb, (double)(s.maxY - s.minY) * mgPerLsb,
   };
 
   // **件数は出力頻度が効いているかの裏付け。** 104 から大きく外れるなら
@@ -311,10 +401,14 @@ static void handleStatus() {
   out += WiFi.RSSI();
   out += ",\"uptimeSec\":";
   out += (millis() - g_bootMs) / 1000;
-  out += ",\"fullScale\":\"±500mg\",\"odrHz\":";
+  out += ",\"fullScale\":\"";
+  out += FULL_SCALES[g_fsIndex].label;
+  out += "\",\"fsGeneration\":";
+  out += g_fsGeneration;
+  out += ",\"odrHz\":";
   out += ODR_104HZ_NOMINAL;
   out += ",\"mgPerLsb\":";
-  out += String(MG_PER_LSB, 4);
+  out += String(FULL_SCALES[g_fsIndex].mgPerLsb, 4);
   out += ",\"sensors\":[";
   for (int i = 0; i < sensorCount; i++) {
     const Sensor &s = sensors[i];
@@ -331,7 +425,9 @@ static void handleStatus() {
       out += ",\"measured\":false}";
       continue;
     }
-    out += ",\"measured\":true,\"n\":";
+    out += ",\"measured\":true,\"period\":";
+    out += s.period;
+    out += ",\"n\":";
     out += s.last.count;
     out += ",\"readErrors\":";
     out += s.last.readErrors;
@@ -351,6 +447,47 @@ static void handleStatus() {
   }
   out += "]}";
   http.send(200, "application/json; charset=utf-8", out);
+}
+
+/**
+ * 測定範囲を切り替える口（`POST /fs?g=0.5|1|2|3`）。**全センサーへ同じ範囲を書く。**
+ *
+ * 測り比べのための口なので、**認証は無い**。この基板は LAN 内の切り分け用で、
+ * 観測には使っていない。返すのは切り替え後の状態の口と同じ形ではなく、
+ * 成否と範囲だけ（値は次の周期を待たないと出ないため）。
+ */
+static void handleFullScale() {
+  if (http.method() != HTTP_POST) {
+    http.send(405, "text/plain; charset=utf-8", "POST で呼ぶこと\n");
+    return;
+  }
+  const String g = http.arg("g");
+  int next = -1;
+  for (int i = 0; i < FULL_SCALE_COUNT; i++) {
+    if (g == FULL_SCALES[i].query) next = i;
+  }
+  if (next < 0) {
+    http.send(400, "text/plain; charset=utf-8", "g は 0.5 / 1 / 2 / 3 のどれか\n");
+    return;
+  }
+  g_fsIndex = next;
+  g_fsGeneration++;
+  int ok = 0, failed = 0;
+  for (int i = 0; i < sensorCount; i++) {
+    if (!sensors[i].initialized) continue;
+    if (applyFullScale(sensors[i])) ok++; else failed++;
+  }
+  Serial.printf("# 測定範囲を %s へ（成功 %d・失敗 %d）\n", FULL_SCALES[next].label, ok, failed);
+  String out = "{\"fullScale\":\"";
+  out += FULL_SCALES[next].label;
+  out += "\",\"fsGeneration\":";
+  out += g_fsGeneration;
+  out += ",\"applied\":";
+  out += ok;
+  out += ",\"failed\":";
+  out += failed;
+  out += "}";
+  http.send(failed == 0 ? 200 : 500, "application/json; charset=utf-8", out);
 }
 
 /** Wi-Fi・OTA・状態の口。**繋がらなくてもシリアルでは動き続ける。** */
@@ -391,6 +528,7 @@ static void startNetwork() {
   Serial.printf("# ota %s:3232\n", WiFi.localIP().toString().c_str());
 
   http.on("/", handleStatus);
+  http.on("/fs", handleFullScale);
   http.begin();
   Serial.printf("# http http://%s/\n", WiFi.localIP().toString().c_str());
 }
@@ -433,8 +571,8 @@ void setup() {
       if (sensors[i].initialized) ready++;
     }
     Serial.printf("  → %d / %d 個\n", ready, sensorCount);
-    // 初期化に失敗したものも一覧には残す。poll が読み取り失敗として数え、
-    // 「黙って消える」のを防ぐ。
+    // 初期化に失敗したものも一覧には残す。状態の口に initialized:false で出て、
+    // 「黙って消える」のを防ぐ（値は report が出さない）。
   }
 
   // **素子が 1 個も無くても網は開く。** OTA が生きていれば、USB へ触らずに
