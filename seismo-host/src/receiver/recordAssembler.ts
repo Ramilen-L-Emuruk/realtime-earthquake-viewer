@@ -12,17 +12,20 @@
 //
 // **時刻を外挿で済ませない。** レコードの先頭時刻は、その頭にあたるパケットが名乗る時刻から取る。
 // 公称の刻みで外挿した時刻は、パケットが名乗る時刻から 10 秒で ±20 ms ずれる（実測）。
-// パケットごとの時刻は見出しの側にも残すが、miniSEED だけを読んでも大きく外さないようにする。
+// パケットごとの時刻は受信の記録（`receptionLog.ts`）にも残すが、波形のレコードだけを読んでも
+// 大きく外さないようにする。
 //
-// **取り戻した分は別の流れで溜める。** 基板が後から送り直した波形は、いま届いている分とは
-// 時刻も番号も離れている。同じ流れへ混ぜると、取り戻すたびにいまのレコードが途切れる。
+// **取り戻した分は別の流れに入れ、溜めずにパケットごとにその場で切る。** 基板が後から送り直した
+// 波形は、いま届いている分とは時刻も番号も離れている。同じ流れへ混ぜると、取り戻すたびにいまの
+// レコードが途切れる。溜めないのは、書けたかをその場で確かめて欠けを外すため
+// （`mseedRecorder.ts` の `acceptRecovered`）—— 溜めると、書けないと分かる前に欠けを閉じてしまう。
 //
 // **遅れて届いた・重なって届いたパケットも別の流れで溜める**（`late`）。番号がいまの流れより
 // 前へ戻るパケットを同じ流れへ入れると、そこで切れたうえに、いまの流れの続きの番号まで
 // 巻き戻されて、次に届く正しいパケットでもう一度切れる。捨てはしない（生データは全部残す）。
 
 import type { SensorPacket } from '../protocol/types'
-import { buildMseed3Record, framesForRecord, mseed3SourceId } from './mseed3Record'
+import { MSEED3_EXTRA_NAMESPACE, buildMseed3Record, framesForRecord, mseed3SourceId } from './mseed3Record'
 import { encodeSteim2 } from './steim2'
 
 /** 呼び出し側が渡す届き方。 */
@@ -59,6 +62,8 @@ export type RecordCutReason =
   | 'idle'
   /** 締めくくり（`flushAll`）。 */
   | 'flush'
+  /** 取り戻した分で、溜めずにその場で切った。 */
+  | 'recovered'
 
 export const RECORD_CUT_REASONS: readonly RecordCutReason[] = [
   'full',
@@ -71,6 +76,7 @@ export const RECORD_CUT_REASONS: readonly RecordCutReason[] = [
   'hold',
   'idle',
   'flush',
+  'recovered',
 ]
 
 export interface AssembledRecord {
@@ -105,10 +111,17 @@ export type AssemblerRejection =
   /** 起動 ID が長すぎて、拡張ヘッダを入れると 512 バイトに収まらない（`MAX_BOOT_ID_LENGTH`）。 */
   | 'boot-id-too-long'
 
-export interface PushResult {
-  readonly records: readonly AssembledRecord[]
-  readonly rejected: AssemblerRejection | null
-}
+export type PushResult =
+  | {
+      readonly records: readonly AssembledRecord[]
+      readonly rejected: null
+      /**
+       * このパケットを溜めた流れの届き方（`late` へ回したかどうかを含む）。**受信の記録も
+       * 同じ届き方で残す** —— 別々に決めると、読み返すときに区切りとサンプルが対応しない。
+       */
+      readonly lane: StreamLane
+    }
+  | { readonly records: readonly AssembledRecord[]; readonly rejected: AssemblerRejection }
 
 export interface RecordAssemblerOptions {
   /** 溜めておく上限（ミリ秒）。 */
@@ -165,15 +178,15 @@ function byteLengthOf(s: string): number {
 
 /**
  * 拡張ヘッダ。**レコードの先頭サンプルの起動 ID と通し番号**、取り戻した分なら `r`、
- * 遅れて届いた分なら `l` の印。
+ * 遅れて届いた分なら `l` の印。規格に従い、この観測網の値は名前付きのオブジェクト
+ * （`MSEED3_EXTRA_NAMESPACE`）の中へ入れる。
  *
- * これがあれば、パケットごとの見出し（起動 ID・センサー・番号・件数）とレコードのサンプルを
- * 番号で 1 件ずつ突き合わせられる。時刻で寄せると、取り戻した分が重なったときに見分けられない。
+ * これがあれば、受信の記録（`receptionLog.ts`）に残したパケットの区切りとレコードのサンプルを
+ * 番号で 1 件ずつ対応させられる。時刻で寄せると、取り戻した分が重なったときに見分けられない。
  */
 function extraHeadersOf(bootId: string, firstSeq: number, lane: StreamLane): string {
-  if (lane === 'backlog') return JSON.stringify({ b: bootId, q: firstSeq, r: 1 })
-  if (lane === 'late') return JSON.stringify({ b: bootId, q: firstSeq, l: 1 })
-  return JSON.stringify({ b: bootId, q: firstSeq })
+  const mark = lane === 'backlog' ? { r: 1 } : lane === 'late' ? { l: 1 } : {}
+  return JSON.stringify({ [MSEED3_EXTRA_NAMESPACE]: { b: bootId, q: firstSeq, ...mark } })
 }
 
 /** パケットの頭にあたる位置と、そのパケットが名乗った時刻・番号・受け取った時刻。 */
@@ -211,10 +224,10 @@ function isInt32(v: number): boolean {
 /**
  * そのパケットを miniSEED に入れられない理由。入れられるなら `null`。
  *
- * **組み立て（`push`）と突き合わせ（`rawCompare.ts`）が同じ関数を通す** —— 別々に判定すると、
- * 退けたものを「入っているはず」と数えるか、その逆になる。
+ * 退けたパケットは記録の側（`mseedRecorder.ts`）がホストの受信の記録へ中身ごと残すので、
+ * 読み返す側はこの判定をやり直さずに済む。
  */
-export function assemblerRejectionOf(packet: SensorPacket): AssemblerRejection | null {
+function assemblerRejectionOf(packet: SensorPacket): AssemblerRejection | null {
   if (packet.bootId.length > MAX_BOOT_ID_LENGTH) return 'boot-id-too-long'
   for (const ch of packet.channels) {
     if (mseed3SourceId(packet.boardKey, packet.sensorId, ch) === null) return 'no-source-id'
@@ -299,9 +312,10 @@ export class RecordAssembler {
       s.nextSeq = packet.firstSeq + packet.samples.length
       s.lastRx = receivedAtMs
       this.emitFull(s, out)
-      if (s.pending.length > 0 && (s.pending.length * 1000) / s.rate >= this.maxHoldMs) this.drain(s, out, 'hold')
+      if (streamLane === 'backlog') this.drain(s, out, 'recovered')
+      else if (s.pending.length > 0 && (s.pending.length * 1000) / s.rate >= this.maxHoldMs) this.drain(s, out, 'hold')
     })
-    return { records: out, rejected: null }
+    return { records: out, rejected: null, lane: streamLane }
   }
 
   /**

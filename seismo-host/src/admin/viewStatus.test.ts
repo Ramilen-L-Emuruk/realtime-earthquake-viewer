@@ -8,10 +8,44 @@ import {
   boardClocksOf,
   countLive,
   memberCell,
+  mseedSummary,
+  mseedWarnings,
   sensorRowHtml,
   stationRowHtml,
   worstPairDiff,
 } from './viewStatus'
+
+const MSEED_QUIET = {
+  writeErrors: 0,
+  lostRecords: 0,
+  recordsWritten: 41235,
+  unreadableWritten: 3,
+  lastWriteError: null,
+  lastInternalError: null,
+} as const
+
+describe('mseedWarnings / mseedSummary', () => {
+  it('正: 書き込みの理由と組み立ての例外を、それぞれ 1 行で出す', () => {
+    expect(mseedWarnings({ ...MSEED_QUIET, lastWriteError: 'ENOSPC', lastInternalError: 'TypeError: x' })).toEqual([
+      '生データの書き込みエラー: ENOSPC',
+      '生データの組み立てで想定外の例外: TypeError: x',
+    ])
+  })
+
+  it('対照: どちらの理由も無ければ何も出さない', () => {
+    expect(mseedWarnings(MSEED_QUIET)).toEqual([])
+  })
+
+  it('安全弁: 理由の文面はエスケープする（無認証の UDP 由来の中身が混ざりうる）', () => {
+    expect(mseedWarnings({ ...MSEED_QUIET, lastInternalError: '<img src=x>' })[0]).toContain('&lt;img')
+  })
+
+  it('欄の 1 行に 4 つの数を並べる', () => {
+    expect(mseedSummary(MSEED_QUIET)).toBe(
+      '書き込みエラー: 0 件 / 失った記録: 0 本 / 書けたレコード: 41235 本 / 中身ごと残した読めないパケット: 3 件',
+    )
+  })
+})
 
 /** センサー対 1 組ぶんの差分の強さ（`/status` から読む形）。 */
 function pair(rmsGal: readonly (number | null)[], id = 'a') {

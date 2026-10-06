@@ -1,20 +1,36 @@
 // miniSEED 3 のレコードを 1 本組み立てる（FDSN miniSEED 3 の定義）。
 //
 // 形: 40 バイトの固定ヘッダ → 識別子（FDSN の Source Identifier）→ 拡張ヘッダ（JSON）→
-// データ部（Steim2）。**ヘッダは小さいバイト順、Steim2 のデータ部は大きいバイト順。**
+// データ部。**ヘッダは小さいバイト順、Steim2 のデータ部は大きいバイト順。**
 // CRC は CRC 欄を 0 にした記録全体の CRC-32C。
 //
-// **1 本を 512 バイトまでにする**（2026-10-03 決定）。1 本ずつが自分の先頭値・末尾値・CRC を
-// 持つので、細かく切っても誤りは増えない —— 書きかけで落ちたときに失うのが 1 本だけになる。
-// 代わりに 1 本ごとに約 100 バイトの見出しが付く（固定部 40・識別子 30・拡張ヘッダ 27 前後）。
+// **レコードは 2 種類ある。**
+// - 波形（Steim2）—— センサーの軸ごと。**1 本を 512 バイトまでにする**（2026-10-03 決定）。
+//   1 本ずつが自分の先頭値・末尾値・CRC を持つので、細かく切っても誤りは増えない ——
+//   書きかけで落ちたときに失うのが 1 本だけになる。代わりに 1 本ごとに約 100 バイトの見出しが付く。
+// - 受信の記録（テキスト・`LOG` チャンネル）—— 波形の外にある事実（パケットの区切り・名乗った時刻・
+//   受け取った時刻、読めなかったパケット）。地震計の世界でログに使う `LOG` チャンネルの慣例に倣う。
+//   **512 バイトに縛らない** —— 中身の長さはパケットの数と読めなかった中身で決まる。
 
 import { crc32c } from './crc32c'
 import type { Steim2Block } from './steim2'
 
 export const MSEED3_MAX_RECORD_BYTES = 512
+/**
+ * テキストのレコードのデータ部の上限（バイト）。**届いた中身を丸ごと入れる**ので、UDP の最大
+ * （65507 バイト）を JSON の文字列にしたときの膨らみ（制御文字は 6 倍）まで収める。
+ */
+export const MSEED3_MAX_TEXT_BYTES = 1024 * 1024
+
+/**
+ * 拡張ヘッダの中で、この観測網の値を入れる名前（規格: FDSN 以外の値は、名前の付いた最上位の
+ * オブジェクトの中へ入れる）。
+ */
+export const MSEED3_EXTRA_NAMESPACE = 'Seismo'
 
 const FIXED_HEADER_BYTES = 40
 const FRAME_BYTES = 64
+const ENCODING_TEXT = 0
 const ENCODING_STEIM2 = 11
 /** データの版。**生データなので 1**（後から作り直した版を区別するための欄）。 */
 const PUBLICATION_VERSION = 1
@@ -40,15 +56,53 @@ const MAC_RE = /^mac:([0-9a-f]{12})$/
  * **呼び出し側はそのパケットを miniSEED に入れず、別に残す** —— 黙って捨てない。
  */
 export function mseed3SourceId(boardKey: string, sensorId: string, channel: string): string | null {
+  const cha = channel.toUpperCase()
+  if (!CHANNEL_RE.test(cha)) return null
+  return sourceIdOf(boardKey, sensorId, cha)
+}
+
+/**
+ * そのセンサーの受信の記録（`LOG` チャンネル）の識別子。波形と同じ局・ロケーションで、
+ * チャンネルだけが `L_O_G`。作れなければ `null`（波形の識別子を作れないときと同じ条件）。
+ */
+export function mseed3LogSourceId(boardKey: string, sensorId: string): string | null {
+  return sourceIdOf(boardKey, sensorId, 'LOG')
+}
+
+/**
+ * ホスト自身の受信の記録の識別子。**どの基板・センサーのものか分からない記録**（読めなかった
+ * パケット・識別子を作れないパケット）をここへ入れる。局 `HOST` は MAC の下位 8 桁（16 進）と
+ * 重ならない（`H`・`O`・`S`・`T` は 16 進の文字ではない）。
+ */
+export const MSEED3_HOST_LOG_SOURCE_ID = `FDSN:${NETWORK}_HOST__L_O_G`
+
+/**
+ * 基板の局コード（MAC の下位 8 桁・大文字）。作れなければ `null`（MAC を名乗らない版 1 の基板）。
+ * **観測点の設定の検証（`stationConfig.ts`）と StationXML（`stationXml.ts`）も、これで名乗れるかを決める**
+ * —— 名乗れない基板は波形を miniSEED に残せないので、観測点へ割り当てられない。
+ */
+export function mseed3StationCode(boardKey: string): string | null {
   const mac = MAC_RE.exec(boardKey)?.[1]
   if (mac === undefined) return null
   const station = mac.slice(-8).toUpperCase()
+  return STATION_RE.test(station) ? station : null
+}
+
+/**
+ * センサーのロケーションコード（センサー ID の大文字）。規則（英数字とハイフン・8 文字まで）に
+ * 収まらなければ `null`。**大文字にするので、大文字小文字だけが違う ID は同じコードになる。**
+ */
+export function mseed3LocationCode(sensorId: string): string | null {
   const location = sensorId.toUpperCase()
-  const cha = channel.toUpperCase()
-  if (!STATION_RE.test(station)) return null
-  // 規格は「--」だけをロケーションとして禁じている（空の印と紛れるため）。
-  if (!LOCATION_RE.test(location) || location === '--') return null
-  if (!CHANNEL_RE.test(cha)) return null
+  // 規格は「--」だけをロケーションとして禁じている（空の印と紛れるため）。空は名乗りにならないので使わない。
+  if (location === '' || !LOCATION_RE.test(location) || location === '--') return null
+  return location
+}
+
+function sourceIdOf(boardKey: string, sensorId: string, cha: string): string | null {
+  const station = mseed3StationCode(boardKey)
+  const location = mseed3LocationCode(sensorId)
+  if (station === null || location === null) return null
   return `FDSN:${NETWORK}_${station}_${location}_${cha[0]}_${cha[1]}_${cha[2]}`
 }
 
@@ -106,41 +160,100 @@ function timeFieldsOf(startMs: number): TimeFields {
   return { year, dayOfYear, hour: d.getUTCHours(), minute: d.getUTCMinutes(), second: d.getUTCSeconds(), nanosecond }
 }
 
+/** 波形のレコード（Steim2）。**512 バイトを超えたら投げる**（組み立て側の取り違えなので）。 */
 export function buildMseed3Record(input: Mseed3RecordInput): Uint8Array {
-  const { sourceId, startMs, sampleRateHz, block } = input
-  if (!Number.isFinite(startMs) || startMs < 0) throw new RangeError(`先頭の時刻が不正: ${startMs}`)
+  const { sampleRateHz, block } = input
   if (!Number.isFinite(sampleRateHz) || sampleRateHz <= 0) throw new RangeError(`刻みが不正: ${sampleRateHz}`)
-  const sid = new TextEncoder().encode(sourceId)
-  if (sid.byteLength === 0 || sid.byteLength > 255) throw new RangeError(`識別子の長さが不正: ${sid.byteLength}`)
-  const extra = new TextEncoder().encode(input.extraHeaders ?? '')
-  if (extra.byteLength > 0xffff) throw new RangeError(`拡張ヘッダが長すぎる: ${extra.byteLength}`)
-  const total = FIXED_HEADER_BYTES + sid.byteLength + extra.byteLength + block.payload.byteLength
-  if (total > MSEED3_MAX_RECORD_BYTES) throw new RangeError(`レコードが ${MSEED3_MAX_RECORD_BYTES} バイトを超える: ${total}`)
+  return assemble({
+    sourceId: input.sourceId,
+    startMs: input.startMs,
+    timeQuestionable: input.timeQuestionable === true,
+    extraHeaders: input.extraHeaders ?? '',
+    encoding: ENCODING_STEIM2,
+    sampleRateHz,
+    sampleCount: block.sampleCount,
+    payload: block.payload,
+    maxBytes: MSEED3_MAX_RECORD_BYTES,
+  })
+}
 
-  const t = timeFieldsOf(startMs)
+export interface Mseed3TextRecordInput {
+  readonly sourceId: string
+  /** その記録が指す時刻（unix ミリ秒・端数可）。 */
+  readonly startMs: number
+  /** データ部（UTF-8）。 */
+  readonly text: string
+  readonly timeQuestionable?: boolean
+  readonly extraHeaders?: string
+}
+
+/**
+ * テキストのレコード（受信の記録）。刻みは 0（時系列ではない）、サンプル数はデータ部のバイト数
+ * （テキストは 1 バイトを 1 サンプルとして数える libmseed の扱いに揃える）。
+ */
+export function buildMseed3TextRecord(input: Mseed3TextRecordInput): Uint8Array {
+  const payload = new TextEncoder().encode(input.text)
+  if (payload.byteLength > MSEED3_MAX_TEXT_BYTES) {
+    throw new RangeError(`テキストが ${MSEED3_MAX_TEXT_BYTES} バイトを超える: ${payload.byteLength}`)
+  }
+  return assemble({
+    sourceId: input.sourceId,
+    startMs: input.startMs,
+    timeQuestionable: input.timeQuestionable === true,
+    extraHeaders: input.extraHeaders ?? '',
+    encoding: ENCODING_TEXT,
+    sampleRateHz: 0,
+    sampleCount: payload.byteLength,
+    payload,
+    maxBytes: Number.POSITIVE_INFINITY,
+  })
+}
+
+interface RecordFields {
+  readonly sourceId: string
+  readonly startMs: number
+  readonly timeQuestionable: boolean
+  readonly extraHeaders: string
+  readonly encoding: number
+  readonly sampleRateHz: number
+  readonly sampleCount: number
+  readonly payload: Uint8Array
+  readonly maxBytes: number
+}
+
+function assemble(f: RecordFields): Uint8Array {
+  if (!Number.isFinite(f.startMs) || f.startMs < 0) throw new RangeError(`先頭の時刻が不正: ${f.startMs}`)
+  const sid = new TextEncoder().encode(f.sourceId)
+  if (sid.byteLength === 0 || sid.byteLength > 255) throw new RangeError(`識別子の長さが不正: ${sid.byteLength}`)
+  const extra = new TextEncoder().encode(f.extraHeaders)
+  if (extra.byteLength > 0xffff) throw new RangeError(`拡張ヘッダが長すぎる: ${extra.byteLength}`)
+  const total = FIXED_HEADER_BYTES + sid.byteLength + extra.byteLength + f.payload.byteLength
+  if (total > f.maxBytes) throw new RangeError(`レコードが ${f.maxBytes} バイトを超える: ${total}`)
+
+  const t = timeFieldsOf(f.startMs)
   const record = new Uint8Array(total)
-  const view = new DataView(record.buffer)
+  const view = new DataView(record.buffer, record.byteOffset, record.byteLength)
   record[0] = 0x4d // 'M'
   record[1] = 0x53 // 'S'
   record[2] = 3
-  record[3] = input.timeQuestionable === true ? FLAG_TIME_QUESTIONABLE : 0
+  record[3] = f.timeQuestionable ? FLAG_TIME_QUESTIONABLE : 0
   view.setUint32(4, t.nanosecond, true)
   view.setUint16(8, t.year, true)
   view.setUint16(10, t.dayOfYear, true)
   record[12] = t.hour
   record[13] = t.minute
   record[14] = t.second
-  record[15] = ENCODING_STEIM2
-  view.setFloat64(16, sampleRateHz, true)
-  view.setUint32(24, block.sampleCount, true)
+  record[15] = f.encoding
+  view.setFloat64(16, f.sampleRateHz, true)
+  view.setUint32(24, f.sampleCount, true)
   // 28〜31 は CRC。0 のまま組み立ててから最後に書く。
   record[32] = PUBLICATION_VERSION
   record[33] = sid.byteLength
   view.setUint16(34, extra.byteLength, true)
-  view.setUint32(36, block.payload.byteLength, true)
+  view.setUint32(36, f.payload.byteLength, true)
   record.set(sid, FIXED_HEADER_BYTES)
   record.set(extra, FIXED_HEADER_BYTES + sid.byteLength)
-  record.set(block.payload, FIXED_HEADER_BYTES + sid.byteLength + extra.byteLength)
+  record.set(f.payload, FIXED_HEADER_BYTES + sid.byteLength + extra.byteLength)
   view.setUint32(28, crc32c(record), true)
   return record
 }

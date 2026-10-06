@@ -33,26 +33,6 @@ describe('PacketTally', () => {
     expect(snap.sources.get(BOARD)).toBeUndefined()
   })
 
-  it('生データを残せなかった件数は送信元の表へ数える', () => {
-    // **読み取りより前の出来事なので、まだ誰の基板か判らない。**
-    const tally = new PacketTally()
-    feed(tally, [
-      { kind: 'received', source: SOURCE },
-      { kind: 'raw-unsaved', source: SOURCE, reason: 'backpressure' },
-      { kind: 'received', source: SOURCE },
-      { kind: 'raw-unsaved', source: SOURCE, reason: 'no-stream' },
-      { kind: 'raw-unsaved', source: SOURCE, reason: 'no-stream' },
-    ])
-
-    const snap = tally.snapshotTotal()
-    expect(snap.sources.get(SOURCE)?.rawUnsaved.get('backpressure')).toBe(1)
-    expect(snap.sources.get(SOURCE)?.rawUnsaved.get('no-stream')).toBe(2)
-    expect(snap.boards.size).toBe(0)
-    expect(formatTally(snap)).toEqual([
-      `送信元 ${SOURCE} 届いた=2 残せず: no-stream=2 backpressure=1`,
-    ])
-  })
-
   it('分母を数える（落とした件数だけでは意味が決まらない）', () => {
     const tally = new PacketTally()
     feed(tally, [
