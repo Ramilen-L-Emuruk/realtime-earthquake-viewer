@@ -292,7 +292,7 @@ ssh <配り先> "cmd.exe /c 'cd /d <置き場所> && set SEISMO_ADMIN_TOKEN=<値
 正常に終わると `[host] 正常に終了した（日時）` を書くので、どこから今回の分かはそこで分かる。
 **前回が正常に終わらなかったことは、次の起動が自分で書く**（下の「止まった・落とされたことを残す」）。
 
-**止めるときは、止める口を叩く。** `Stop-Process` や `process.kill` は SIGINT のハンドラを
+**止めるときは、止める口を叩く**（サービスで動かしているなら `Stop-Service`。→ 下の「Windows で常駐させる」）。`Stop-Process` や `process.kill` は SIGINT のハンドラを
 呼ばずにプロセスを落とすので締めくくりが走らず、**miniSEED が溜めていた波形（最長 5 秒ぶん）と
 受信の記録（最長 30 秒ぶん）が書かれずに消える。** 認証つきの `POST /api/shutdown`（下の「止める合図」）を叩けば、
 締めくくりを走らせてから自分で終わる。**`<配り先>:50506` は起動時の
@@ -313,6 +313,118 @@ curl -X POST -H "Authorization: Bearer <トークン>" -H "Origin: <許したオ
 `true` / `false` の**真偽値**なら `?wave=` に粒度を足す前の版。
 
 > 止めている間は UDP を受けない。**基板は送り続けるので、その秒数ぶんの生データが欠ける。**
+
+### Windows で常駐させる（サービス）
+
+**常時動かす機では、Windows のサービスとして動かす。** 求めるのは 2 つ ——
+電源が入ったら誰もサインインしなくても動き出すこと、**再起動（Windows Update の自動再起動を含む）の前に
+締めくくりを走らせてから止まること**。後者が無いと、再起動のたびに miniSEED の溜め（最長 5 秒）と
+受信の記録（最長 30 秒）が消える。
+
+ラッパーは [WinSW](https://github.com/winsw/winsw) の **v3.0.0-alpha.11**（プレリリース）を使う。
+Windows がシャットダウン・再起動の前にサービスへ送る通知は 2 つあり、ラッパーの版で受けられるものが違う
+（版ごとの受け方は WinSW のソースで確かめた。通知そのものの仕様は下の Microsoft Learn）。
+
+| 版 | 受ける通知 | Windows が待つ長さ |
+|---|---|---|
+| v2.12.0（安定版） | 普通の停止通知（`SERVICE_CONTROL_SHUTDOWN`）だけ | `HKLM\SYSTEM\CurrentControlSet\Control` の `WaitToKillServiceTimeout`。**実際に配った機では 5000 ミリ秒（5 秒）だった**。ホストの締めくくりは実測 1〜2 秒だが、Windows Update の再起動のようにディスクが混む場面で収まるかは確かめていない |
+| v3.0.0-alpha.11 | 止まる前の通知（`SERVICE_CONTROL_PRESHUTDOWN`）だけ（`<preshutdown>true</preshutdown>` のとき） | サービスが止まるか、サービスごとに決めた期限（下の設定では 1 分）が来るまで。ほかのサービスが止まり始める前に走る |
+
+（通知の順序と待ち方は Microsoft Learn の [Service Control Handler Function](https://learn.microsoft.com/en-us/windows/win32/services/service-control-handler-function)）
+
+**v3 は普通の停止通知を受け付けない**（`CanShutdown` を立てていない）。止まる前の通知の登録が外れていると、
+**締めくくりの機会は 1 つも無く、再起動で強制終了される**。登録したら「登録・止める・起動する」の表の方法で必ず確かめること。
+
+**タスクスケジューラで動かさない。** 再起動のとき、タスクのプロセスが締めくくりの前に落とされない保証を
+資料で確かめられなかった（落とされる順序を書いた資料が見つからない）。
+
+#### 置くもの
+
+配り先の `<置き場所>` の直下に、WinSW の実行ファイルと設定の XML を**同じ名前で**置く
+（WinSW は自分と同じ名前の XML を読む）。トークンを書くので、**XML は配り先にしか置かない**。
+
+- `seismo-host-service.exe` —— 配布物の `WinSW-x64.exe` を改名したもの。署名は付いていない。
+  2026-10-07 に取得したものの SHA-256 は `a2daa6a33a9c2b791ae31d9092e7935c339d1e03e89bfb747618ce2f4e819e20`。
+  一致しなければ使わない（取得し直して、配布元が差し替わっていないかを確かめる）
+- `seismo-host-service.xml`
+
+```xml
+<service>
+  <id>seismo-host</id>
+  <name>seismo-host</name>
+  <description>self-built seismometer host (realtime-earthquake-viewer)</description>
+
+  <executable>C:\Windows\System32\cmd.exe</executable>
+  <arguments>/d /c ""C:\Program Files\nodejs\node.exe" --import tsx seismo-host/main.ts >> seismo-host.log 2>&amp;1"</arguments>
+  <workingdirectory><置き場所></workingdirectory>
+
+  <env name="SEISMO_ADMIN_TOKEN" value="<値>"/>
+  <env name="SEISMO_ADMIN_ALLOWED_HOSTS" value="<host:port>"/>
+  <env name="SEISMO_ADMIN_ALLOWED_ORIGINS" value="<origin>"/>
+
+  <startmode>Automatic</startmode>
+  <preshutdown>true</preshutdown>
+  <preshutdownTimeout>1 min</preshutdownTimeout>
+  <stoptimeout>30 sec</stoptimeout>
+
+  <onfailure action="restart" delay="1 min"/>
+  <resetfailure>1 hour</resetfailure>
+
+  <logpath><置き場所>\service-logs</logpath>
+  <log mode="append"/>
+</service>
+```
+
+- **`cmd.exe` を挟むのは、ログを 1 本のファイルへ追記するため。** WinSW は標準出力と標準エラーを
+  別々のファイル（`.out.log` と `.err.log`）にしか書けず、2 本に割れると前後関係が読めなくなる。
+  `service-logs\` に残るのは WinSW 自身のログ
+- **`npm run` を挟まない**（`node --import tsx` で node 1 本にする）。止めるときの Ctrl+C で締めくくりを
+  走らせるのが node 1 つになり、npm・tsx の CLI を挟んだ多段の木を気にしなくてよくなる。配った機の Node 24・tsx 4.23 で動いた
+- **動かすアカウントは既定の LocalSystem**（パスワードを登録しない）。`<置き場所>` に SYSTEM の書き込み権限が
+  要る（ユーザーのホームの下なら既定で付いている）。ホストは管理用の口（`/api/*`）を開けているので、
+  そこに穴があれば最も強い権限を渡すことになる —— それを避けたいなら `<serviceaccount>` で普通のアカウントを指定する
+- 異常終了（終了コードが 0 でない）なら 1 分後に起動し直す。**止める口で終わらせたときは終了コードが 0 なので
+  起動し直さない**
+
+#### 登録・止める・起動する
+
+管理者の PowerShell で、`<置き場所>` から:
+
+```powershell
+.\seismo-host-service.exe install
+.\seismo-host-service.exe start
+```
+
+| したいこと | すること |
+|---|---|
+| 止める | `Stop-Service -Name seismo-host`。WinSW が Ctrl+C を送り、ホストは SIGINT で締めくくりを走らせて終わる（ログに `[udp] SIGINT を受けたので締めます` → `[host] 正常に終了した`）。30 秒たっても残っていれば WinSW が強制終了する |
+| 起動する | `Start-Service -Name seismo-host` |
+| 配り直す | 送る → ハッシュを照合する → `Stop-Service` → `Start-Service` → `/status` で確かめる（上の「入れ替わったか」） |
+| 止まる前の通知を受けるか確かめる（登録したら必ず） | `sc.exe query seismo-host` の `STATE` に `ACCEPTS_PRESHUTDOWN` が出る。期限は `HKLM\SYSTEM\CurrentControlSet\Services\seismo-host` の `PreshutdownTimeout`（ミリ秒） |
+
+止める口（`POST /api/shutdown`）で止めてもよい。その場合サービスは止まったままになるので、`Start-Service` で起こす。
+
+**実機の再起動で確かめた**（2026-10-08）。再起動の操作から 13 秒後に `[host] 正常に終了した`、
+Windows が起動した 16 秒後にサービスが `[host] 起動した` を書き、止まっていた約 1 分の分は
+基板の溜めから取り戻して欠けは 0 だった。
+
+#### 高速スタートアップのまま「シャットダウン」したとき
+
+**再起動とは振る舞いが違う。** Windows の高速スタートアップ（既定で有効）は再起動には効かず、
+「シャットダウン」にだけ効く。そのときはユーザーのセッションだけを閉じ、**カーネル・ドライバ・サービスは
+止めずに休止状態として保存し、次に電源を入れたときに元へ戻す**
+（[Delivering a great startup and shutdown experience](https://learn.microsoft.com/windows-hardware/test/weg/delivering-a-great-startup-and-shutdown-experience)・
+[Fast startup causes hibernation or shutdown to fail](https://learn.microsoft.com/en-us/troubleshoot/windows-client/setup-upgrade-and-drivers/fast-startup-causes-system-hibernation-shutdown-fail)）。
+サービスに届くのは電源の通知だけで、止まる前の通知は届かない
+（[Suspend Services Duration](https://learn.microsoft.com/windows-hardware/test/assessments/suspend-services-duration)）。
+
+ホストもサービスとして保存される側に入るので、**止まらないし、起動し直しもしない**。メモリごと保存されるので
+溜めている波形も消えず、電源を入れ直すと止まった時点の続きから動く。**戻ったあとに時刻の飛んだ状態から
+問題なく続けられるか（基板からの取り戻し・押し出しの張り直し）は、まだ確かめていない。**
+
+**高速スタートアップは切らない。** 再起動には効かないので、切っても再起動の振る舞いは変わらず、
+シャットダウン後の起動が遅くなるだけ。その代わり、**シャットダウンから電源を入れ直したら `/status` で
+センサーが届いているかを確かめる**（届いていなければ `Stop-Service`・`Start-Service` で起こし直す）。
 
 ### 重力を引くのはここで決める
 
@@ -530,7 +642,7 @@ SNTP に届かない基板はまさにこの形になる。
   「最後に生きていた時刻」を進め、正常に終わったら消す。**印が残ったまま次に起動したら、
   前回は終了の記録を残せずに止まった**ので、起動時に
   `[host] 前回のホスト（pid …）は終了の記録を残さずに止まっていた（起動 …・最後に生きていたのは …）` を出す。
-  `Stop-Process`・PC の再起動・電源断のいずれでも、止まった時刻を 1 分の幅で絞れる。
+  `Stop-Process`・PC の再起動（サービスで動かしていない場合）・電源断のいずれでも、止まった時刻を 1 分の幅で絞れる。
   **配り直しで `Stop-Process` を使うと、次の起動では毎回この行が出る**（強制終了なので正しい）
 
 **実機で 50 秒止めて確かめた**（2026-10-02。プロセスを `NtSuspendProcess` で一時停止）。再開した直後に
@@ -1140,8 +1252,9 @@ IP アドレスへ向け直し、ブラウザに社内・宅内の機器を叩�
 ### `POST /api/shutdown`（止める合図）
 
 締めくくり（残りの震度を出し、生データ・miniSEED・合成波形・揺れの記録を書き出して閉じる。
-全段と順序は `main.ts` の `closeHostCore`）を走らせてから、ホストが自分で終わる。**Windows では、外からこれを走らせる手段がこの口しか無い** ——
-`Stop-Process` も `process.kill` も SIGINT のハンドラを呼ばずに落とす。
+全段と順序は `main.ts` の `closeHostCore`）を走らせてから、ホストが自分で終わる。**Windows で手で止めるなら、この口を使う** ——
+`Stop-Process` も `process.kill` も SIGINT のハンドラを呼ばずに落とす。もう 1 つの経路はホストのコンソールへ
+Ctrl+C を送ること（サービスとして動かしたときに WinSW がこれをする。→「Windows で常駐させる」）。
 
 | 答え | 意味 |
 |---|---|
