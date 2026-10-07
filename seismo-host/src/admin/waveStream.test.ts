@@ -29,7 +29,6 @@ function waveJson(overrides: Record<string, unknown> = {}): Record<string, unkno
 function stationWaveJson(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     stationId: 'garage',
-    driver: { boardKey: 'board-1', sensorId: 'accel-0' },
     firstSampleIndex: 0,
     firstSampleMs: 1_700_000_000_000,
     msPerSample: 10,

@@ -253,6 +253,42 @@ describe('MseedRecorder', () => {
     expect(textOf(T, LOG_SID)).toHaveLength(1)
   })
 
+  it('正: 読み直す前に吐き出すと、溜めていたパケットが閉じずにそのまま読める（#596）', async () => {
+    const r = recorder()
+    r.accept(SRC, payload(0), T)
+    r.accept(SRC, payload(10), T + 100)
+    // 刻みの前（波形 5 秒・受信の記録 30 秒の手前）でも、待ち終えればファイルにある。
+    expect(await r.flushForRead()).toBe(true)
+    const { readMseedRange } = await import('./mseedPacketReader')
+    const read = readMseedRange(new Uint8Array(readFileSync(mseedFilePath(dir, T)!)), T - 1_000, T + 1_000)
+    expect(read.packets.map((p) => p.packet.firstSeq)).toEqual([0, 10])
+    // 対照: 閉じていないので、続けて届いた分も従来どおり受ける。
+    r.accept(SRC, payload(20), T + 200)
+    await r.close()
+    expect(textOf(T, LOG_SID)).toHaveLength(2)
+  })
+
+  it('正: 区間だけ読むと、区間の中のパケットは全部読んだときと同じで、遠く離れたレコードは解かない（#596）', async () => {
+    const r = recorder()
+    // 0 秒・60 秒・180 秒に 1 つずつ。受信の記録は 30 秒で切れるので、それぞれ別のレコードになる。
+    for (const [q, at] of [[0, T], [6_000, T + 60_000], [18_000, T + 180_000]] as const) {
+      now = at
+      r.accept(SRC, payload(q, at), at)
+      now = at + 31_000
+      r.tick(now)
+    }
+    await r.close()
+    const { readMseedHour, readMseedRange } = await import('./mseedPacketReader')
+    const buf = new Uint8Array(readFileSync(mseedFilePath(dir, T)!))
+    const all = readMseedHour(buf)
+    const part = readMseedRange(buf, T + 55_000, T + 65_000)
+    const inWindow = (p: { packet: { firstSampleMs: number } }) => p.packet.firstSampleMs >= T + 55_000 && p.packet.firstSampleMs < T + 65_000
+    expect(part.packets.filter(inWindow)).toEqual(all.packets.filter(inWindow))
+    expect(part.packets.filter(inWindow)).toHaveLength(1)
+    // 対照: 区間から 35 秒より前・区間の後のパケットは組み上がらない（そのレコードを読んでいない）。
+    expect(part.packets.map((p) => p.packet.firstSeq)).toEqual([6_000])
+  })
+
   it('組み立ての途中で想定外の例外が出ても投げず、数えて、そのパケットを中身ごと残す', async () => {
     const p = payload(0)
     // 軸の並びを持たない壊れた読み取り結果を 1 回だけ返す（組み立てが中で投げる）。

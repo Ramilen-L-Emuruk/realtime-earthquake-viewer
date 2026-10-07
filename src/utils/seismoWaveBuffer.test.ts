@@ -99,7 +99,7 @@ describe('SeismoWaveBuffer', () => {
   })
 
   it('正: 効いたセンサーの本数をサンプルごとに保つ（1 本の区間を見分ける）', () => {
-    // 合成を名乗れない区間（駆動役だけ）を段 4 が示せるようにするための値。
+    // 合成を名乗れない区間（1 台だけ）を段 4 が示せるようにするための値。
     const buffer = new SeismoWaveBuffer(60)
     buffer.push(chunk(1000, { length: 4, members: (i) => (i < 2 ? 9 : 1) }))
     const window = buffer.snapshot()
@@ -110,7 +110,7 @@ describe('SeismoWaveBuffer', () => {
   it('正: 刻みが大きく変われば作り直す', () => {
     const buffer = new SeismoWaveBuffer(60)
     buffer.push(chunk(1000))
-    // 100 Hz → 50 Hz（センサーの入れ替え・駆動役の交代）。
+    // 100 Hz → 50 Hz（サンプリング周波数の設定を変えた）。
     const result = buffer.push(chunk(1300, { msPerSample: 20 }))
     expect(result.kind).toBe('restarted')
     const window = buffer.snapshot()
@@ -286,5 +286,222 @@ describe('SeismoWaveBuffer', () => {
     expect(kinds.slice(1).every((k) => k === 'appended')).toBe(true)
     // 巻き戻った後のデータが全部残っている（20 まとまり × 30）。
     expect(buffer.sampleCount).toBe(600)
+  })
+})
+
+// 取り戻した区間で穴を埋める（#597）。ホストが作り直した合成波形を `/waves` から取り、
+// **届かなかったところへだけ**書く。
+describe('SeismoWaveBuffer.fill', () => {
+  /** 1000 ms から 3 まとまり、真ん中の 1 まとまり（1300〜1590 ms）が届かなかった入れ物。 */
+  function withHole(): SeismoWaveBuffer {
+    const buffer = new SeismoWaveBuffer(60)
+    buffer.push(chunk(1000))
+    buffer.push(chunk(1600))
+    return buffer
+  }
+
+  it('正: 穴の時刻に合うサンプルを書き、届かなかった数から埋めた分を引く', () => {
+    const buffer = withHole()
+    expect(buffer.tally.gapSamples).toBe(30)
+
+    const filled = buffer.fill([chunk(1300, { value: (i) => 100 + i, members: () => 3 })])
+
+    expect(filled).toBe(30)
+    const w = buffer.snapshot()
+    if (w === null) throw new Error('窓が空')
+    expect(w.gal[0][30]).toBe(100)
+    expect(w.gal[1][59]).toBe(129 * 2)
+    expect(w.gal[2][45]).toBe(115 * 3)
+    expect(w.memberCount[40]).toBe(3)
+    // 「欠測」は届かなかったうち埋まらなかった数（2026-10-07 ユーザー承認）。
+    expect(buffer.tally.gapSamples).toBe(0)
+  })
+
+  it('対照: 届いた値は、取り戻した値が重なっていても上書きしない', () => {
+    const buffer = withHole()
+    // 0〜90 サンプルぶん（1000〜1890 ms）を丸ごと覆う取り戻し。
+    const filled = buffer.fill([chunk(1000, { length: 90, value: () => -1 })])
+
+    // 埋まるのは穴の 30 だけ。
+    expect(filled).toBe(30)
+    const w = buffer.snapshot()
+    if (w === null) throw new Error('窓が空')
+    expect(w.gal[0][0]).toBe(0)
+    expect(w.gal[0][29]).toBe(29)
+    expect(w.gal[0][30]).toBe(-1)
+    expect(w.gal[0][60]).toBe(0)
+  })
+
+  it('対照: 取り戻した区間が穴の一部しか覆わなければ、残りは穴のまま数える', () => {
+    const buffer = withHole()
+    const filled = buffer.fill([chunk(1300, { length: 10 })])
+
+    expect(filled).toBe(10)
+    const w = buffer.snapshot()
+    if (w === null) throw new Error('窓が空')
+    expect(Number.isNaN(w.gal[0][40])).toBe(true)
+    expect(buffer.tally.gapSamples).toBe(20)
+  })
+
+  it('安全弁: 最寄りのサンプルが半サンプルを超えて離れた穴は埋めない', () => {
+    const buffer = withHole()
+    // 6 ms ずれた取り戻し（1306〜1596 ms）。穴 1310〜1590 ms は 4 ms 先のサンプルで埋まるが、
+    // **穴 1300 ms の最寄りは 1306 ms（6 ms 離れる）なので埋めない**。
+    const filled = buffer.fill([chunk(1306)])
+
+    expect(filled).toBe(29)
+    const w = buffer.snapshot()
+    if (w === null) throw new Error('窓が空')
+    expect(Number.isNaN(w.gal[0][30])).toBe(true)
+    expect(w.gal[0][31]).toBe(0)
+  })
+
+  it('安全弁: 読めない値（NaN）のサンプルでは穴を埋めない', () => {
+    const buffer = withHole()
+    const filled = buffer.fill([chunk(1300, { value: (i) => (i < 5 ? Number.NaN : i) })])
+
+    expect(filled).toBe(25)
+    expect(buffer.tally.gapSamples).toBe(5)
+  })
+
+  it('安全弁: 抱える長さを過ぎて押し出された穴は埋めない（窓の外を書かない）', () => {
+    // 1 秒しか抱えない入れ物（100 サンプル）。
+    const buffer = new SeismoWaveBuffer(1)
+    buffer.push(chunk(1000))
+    buffer.push(chunk(1600))
+    // 先へ流して穴（1300〜1590 ms）を押し出す。
+    for (let t = 1900; t < 3000; t += 300) buffer.push(chunk(t))
+
+    expect(buffer.fill([chunk(1300)])).toBe(0)
+  })
+
+  it('正: 穴の範囲を返す。範囲に掛からなければ null', () => {
+    const buffer = withHole()
+
+    // **半開区間で返す**（終わりは最後の穴の 1 サンプル先。そのまま `/waves` の `to` へ渡せる）。
+    expect(buffer.holesIn(0, 10_000)).toEqual({ fromMs: 1300, toMs: 1600 })
+    // 1450 ms の穴は範囲の外（終わりは含まない）。
+    expect(buffer.holesIn(1400, 1450)).toEqual({ fromMs: 1400, toMs: 1450 })
+    expect(buffer.holesIn(1600, 2000)).toBeNull()
+
+    buffer.fill([chunk(1300)])
+    expect(buffer.holesIn(0, 10_000)).toBeNull()
+  })
+
+  it('正: 刻みが揺らいでいても、穴の時刻は前後の届いた値の間へ均して置く', () => {
+    // 前のまとまりは 10 ms 刻み、次のまとまりは 1601 ms から（隙間ぶんが 30 サンプルと 1 ms）。
+    const buffer = new SeismoWaveBuffer(60)
+    buffer.push(chunk(1000))
+    buffer.push(chunk(1601))
+    const hole = buffer.holesIn(0, 10_000)
+    if (hole === null) throw new Error('穴が無い')
+    // 起点からの「位置 × 刻み」で測ると 1300 ms で、均した値と 1 ms 未満しか違わない。
+    expect(hole.fromMs).toBeGreaterThan(1300)
+    expect(hole.fromMs).toBeLessThan(1301)
+    // 最後の穴は 1591 ms 手前・終わりはその 1 刻み先（次に届いた値の 1601 ms を越えない）。
+    expect(hole.toMs).toBeLessThanOrEqual(1601)
+  })
+})
+
+describe('SeismoWaveBuffer.prepend', () => {
+  /** 10000 ms から 1 まとまり（30 サンプル）だけ届いた入れ物。起動直後の形。 */
+  function justStarted(retainSec = 60): SeismoWaveBuffer {
+    const buffer = new SeismoWaveBuffer(retainSec)
+    buffer.push(chunk(10_000))
+    return buffer
+  }
+
+  it('正: 空きがあれば最も古いサンプルの手前へ継ぎ足し、時刻の昇順で読み出せる', () => {
+    const buffer = justStarted()
+    expect(buffer.oldestSampleMs).toBe(10_000)
+
+    const placed = buffer.prepend([chunk(9700, { value: (i) => 100 + i })])
+
+    expect(placed).toBe(30)
+    const w = buffer.snapshot()
+    if (w === null) throw new Error('窓が空')
+    expect(w.firstSampleMs).toBe(9700)
+    expect(w.gal[0].length).toBe(60)
+    expect(w.gal[0][0]).toBe(100)
+    expect(w.gal[0][29]).toBe(129)
+    expect(w.gal[0][30]).toBe(0)
+    expect(buffer.oldestSampleMs).toBe(9700)
+    // 続けて届いたまとまりは、継ぎ足した分と関係なく末尾へ繋がる。
+    expect(buffer.push(chunk(10_300)).kind).toBe('appended')
+  })
+
+  it('対照: 既に抱えている時刻のサンプルは継ぎ足さない（届いた値を上書きしない）', () => {
+    const buffer = justStarted()
+    // 9850〜10140 ms。手前の 15 サンプル（9850〜9990 ms）だけが継ぎ足せる。
+    const placed = buffer.prepend([chunk(9850, { value: () => -1 })])
+
+    expect(placed).toBe(15)
+    const w = buffer.snapshot()
+    if (w === null) throw new Error('窓が空')
+    expect(w.gal[0][14]).toBe(-1)
+    expect(w.gal[0][15]).toBe(0)
+  })
+
+  it('安全弁: 空きを超えては書かない（新しい側を押し出さない）', () => {
+    // 1 秒しか抱えない入れ物（100 サンプル）に 30 サンプル。空きは 70。
+    const buffer = justStarted(1)
+    expect(buffer.freeSamples).toBe(70)
+
+    const placed = buffer.prepend([chunk(9000, { length: 100, value: () => 5 })])
+
+    expect(placed).toBe(70)
+    expect(buffer.freeSamples).toBe(0)
+    const w = buffer.snapshot()
+    if (w === null) throw new Error('窓が空')
+    // 残るのは新しい側の 70（9300〜9990 ms）と元の 30。
+    expect(w.firstSampleMs).toBe(9300)
+    expect(w.gal[0][69]).toBe(5)
+    expect(w.gal[0][70]).toBe(0)
+  })
+
+  it('正: 取り戻した値と最も古いサンプルの間が空いていれば、穴として置いて欠測に数える', () => {
+    const buffer = justStarted()
+    // 9600〜9890 ms。9900〜9990 ms の 10 サンプルが控えにも無かった形。
+    const placed = buffer.prepend([chunk(9600)])
+
+    expect(placed).toBe(30)
+    expect(buffer.tally.gapSamples).toBe(10)
+    expect(buffer.holesIn(0, 20_000)).toEqual({ fromMs: 9900, toMs: 10_000 })
+    // **後から埋まれば引く**（穴埋めの数え方と同じ）。
+    expect(buffer.fill([chunk(9900, { length: 10 })])).toBe(10)
+    expect(buffer.tally.gapSamples).toBe(0)
+  })
+
+  it('正: 読めない値（NaN）のサンプルは穴として置き、継ぎ足した数には数えない', () => {
+    const buffer = justStarted()
+    const placed = buffer.prepend([chunk(9700, { value: (i) => (i >= 25 ? Number.NaN : i) })])
+
+    expect(placed).toBe(25)
+    expect(buffer.tally.gapSamples).toBe(5)
+    expect(buffer.holesIn(0, 20_000)).toEqual({ fromMs: 9950, toMs: 10_000 })
+  })
+
+  it('安全弁: 取り戻した値まで空きを超える隙間があれば、穴だけで空きを埋めない', () => {
+    // 1 秒しか抱えない入れ物（空き 70）。取り戻した値は最も古いサンプルの 2 秒前（間が 200 サンプル）。
+    const buffer = justStarted(1)
+    const placed = buffer.prepend([chunk(8000)])
+
+    expect(placed).toBe(0)
+    expect(buffer.freeSamples).toBe(70)
+    expect(buffer.tally.gapSamples).toBe(0)
+    expect(buffer.snapshot()?.firstSampleMs).toBe(10_000)
+  })
+
+  it('安全弁: 刻みの違う取り戻しは継ぎ足さない（時間軸を混ぜない）', () => {
+    const buffer = justStarted()
+    expect(buffer.prepend([chunk(9400, { msPerSample: 20 })])).toBe(0)
+    expect(buffer.snapshot()?.firstSampleMs).toBe(10_000)
+  })
+
+  it('安全弁: 何も抱えていなければ継ぎ足さない（起点は届いたまとまりが決める）', () => {
+    const buffer = new SeismoWaveBuffer(60)
+    expect(buffer.prepend([chunk(9700)])).toBe(0)
+    expect(buffer.oldestSampleMs).toBeNull()
+    expect(buffer.snapshot()).toBeNull()
   })
 })

@@ -56,7 +56,6 @@ const STATION_WAVE: HubMessage = {
   kind: 'station-wave',
   wave: {
     stationId: 'garage',
-    driver: { boardKey: 'mac:aa', sensorId: 's0' },
     firstSampleIndex: 0,
     firstSampleMs: 1_700_000_000_000,
     msPerSample: 10,
@@ -64,6 +63,7 @@ const STATION_WAVE: HubMessage = {
     // 落とした直流（`gal` と足せば校正済み gal の重み付き平均になる値）。
     dcGal: [[0], [0], [980]],
     memberCount: [2],
+    axisMemberCount: [[2], [2], [2]],
   },
 }
 
@@ -224,6 +224,37 @@ describe('ReadingHub', () => {
 
     // 管理コンソールの波形タブ（`?wave=1`）がここに乗っている。**狭めない。**
     expect(full.got).toEqual([WAVE, STATION_WAVE])
+  })
+
+  // 作り直しの知らせ（#597）。**合成波形と同じ層。** 受け手は合成波形の穴を埋めるために読むので、
+  // 合成波形を受けていない相手には意味が無い。
+  const WAVE_REVISED: HubMessage = {
+    kind: 'station-wave-revised',
+    revised: { stationId: 'garage', fromMs: 1_700_000_000_000, toMs: 1_700_000_030_000 },
+  }
+
+  it("正: 作り直しの知らせは、合成波形を望んだ相手（'station'・'all'）へ配る", () => {
+    const hub = new ReadingHub()
+    const onlyStation = sink({ wave: 'station' })
+    const full = sink({ wave: 'all' })
+    onlyStation.attach(hub)
+    full.attach(hub)
+
+    hub.publish(WAVE_REVISED)
+
+    expect(onlyStation.got).toEqual([WAVE_REVISED])
+    expect(full.got).toEqual([WAVE_REVISED])
+  })
+
+  it('対照: 波形を欲しがっていない相手へは、作り直しの知らせを配らない', () => {
+    const hub = new ReadingHub()
+    const plain = sink({ wave: 'none' })
+    plain.attach(hub)
+
+    hub.publish(WAVE_REVISED)
+    hub.publish(READING)
+
+    expect(plain.got).toEqual([READING])
   })
 
   // センサー対の差分（#372）。**梯子ではなく顔ぶれで配る。** 全ペアぶん作られるので

@@ -169,3 +169,62 @@ export function appendWaveWindow(params: {
   }
   return { ...base, columns: next }
 }
+
+/** 取り直す列の範囲（{@link revisedColumnSpan}）。`first` 番目から `count` 列・時刻では `[fromMs, toMs)`。 */
+export interface RevisedColumnSpan {
+  readonly first: number
+  readonly count: number
+  readonly fromMs: number
+  readonly toMs: number
+}
+
+/**
+ * ホストが作り直した範囲 `[fromMs, toMs)` に掛かる列を、列の境目へ揃えて返す（#597）。
+ * **持っている列の外は含めない。掛かる列が無ければ `null`。**
+ *
+ * **境目へ揃えるのは、取り直した列をそのまま差し替えるため。** ホストは頼まれた範囲を頼まれた列数で
+ * 等分して返すので（`seismo-host/src/receiver/waveEnvelope.ts`）、境目から列数ぶんを頼めば同じ刻みで返る。
+ *
+ * **持っている列の外を含めないのは、継ぎ足しの起点を動かさないため。** {@link appendWaveWindow} は
+ * 値のある最後の列の次から足すので、先の列を埋めるとその間を押し出しで足せなくなる。
+ */
+export function revisedColumnSpan(base: TimedColumns, fromMs: number, toMs: number): RevisedColumnSpan | null {
+  const span = base.columnSpanMs
+  if (!(span > 0) || !Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs <= fromMs) return null
+  const first = Math.max(0, Math.floor((fromMs - base.fromMs) / span))
+  const end = Math.min(base.columns.length, Math.ceil((toMs - base.fromMs) / span))
+  if (end <= first) return null
+  return { first, count: end - first, fromMs: base.fromMs + first * span, toMs: base.fromMs + end * span }
+}
+
+/**
+ * ホストから取り直した列で差し替える（#597）。**変わらなければ同じ参照を返す。**
+ *
+ * **ホストが値を持つ列だけを差し替える。** 穴だった列も、押し出しで作った列も、取り戻した区間では
+ * ホストのほうが材料が揃っている（押し出しの列は届いた分だけで上下の端を取っている）。**ホストが値を
+ * 持たない列は触らない** —— 値のある列を穴へ戻すと、見えていたものが消える。
+ *
+ * **起点か刻みが列の境目と合わなければ何もしない。** ずれた列を差し込むと、別の時刻の値を描くことになる。
+ */
+export function spliceRevisedColumns(
+  base: TimedColumns,
+  revised: { readonly fromMs: number; readonly columnSpanMs: number; readonly columns: readonly (WaveHistoryColumn | null)[] },
+): TimedColumns {
+  const span = base.columnSpanMs
+  if (!(span > 0) || Math.abs(revised.columnSpanMs - span) > 1e-6) return base
+  const offset = (revised.fromMs - base.fromMs) / span
+  const first = Math.round(offset)
+  if (Math.abs(offset - first) > 1e-6) return base
+
+  let next: (WaveHistoryColumn | null)[] | null = null
+  for (let i = 0; i < revised.columns.length; i += 1) {
+    const at = first + i
+    if (at < 0) continue
+    if (at >= base.columns.length) break
+    const col = revised.columns[i]
+    if (col === null) continue
+    next ??= base.columns.slice()
+    next[at] = col
+  }
+  return next === null ? base : { ...base, columns: next }
+}

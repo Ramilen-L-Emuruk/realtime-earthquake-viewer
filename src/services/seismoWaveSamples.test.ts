@@ -65,6 +65,20 @@ describe('readWaveSamples', () => {
     expect('detail' in readWaveSamples(bad)).toBe(true)
   })
 
+  // 正: 下部の波形の穴を埋めるとき、そのサンプルに効いたセンサーの本数も一緒に置く（#597）。
+  it('memberCount を読む', () => {
+    const r = readWaveSamples(body(T0))
+    if (!('value' in r)) throw new Error(r.detail)
+    expect(Array.from(r.value.chunks[0].memberCount)).toEqual([3, 3])
+  })
+
+  // 安全弁: 長さがずれたまま置くと、別のサンプルの本数を見せることになる。
+  it('memberCount の長さが gal と揃っていなければ読めない', () => {
+    const bad = body(T0) as { chunks: { memberCount: unknown[] }[] }
+    bad.chunks[0].memberCount = [3]
+    expect('detail' in readWaveSamples(bad)).toBe(true)
+  })
+
   it('成分の長さが揃っていなければ読めない', () => {
     const bad = body(T0) as { chunks: { gal: unknown[][] }[] }
     bad.chunks[0].gal[2] = [1]

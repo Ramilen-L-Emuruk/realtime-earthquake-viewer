@@ -148,7 +148,7 @@ export async function* replayMseed(params: {
       }
       if (fusion !== null) {
         const closing = fusion.closeAll()
-        for (const w of closing.drained) if (w.fusedWave !== null) yield { kind: 'station', wave: w.fusedWave }
+        for (const w of closing.drained) yield { kind: 'station', wave: w.fusedWave }
       }
       fusion = new SensorFusion(wanted.config)
       current = wanted
@@ -157,8 +157,7 @@ export async function* replayMseed(params: {
     const outcome = pipeline.handlePacket(stored.packet)
     if (outcome.wave === null) return
     yield { kind: 'sensor', wave: outcome.wave }
-    const fused = fusion.ingest(outcome.wave)
-    if (fused.fusedWave !== null) yield { kind: 'station', wave: fused.fusedWave }
+    for (const fused of fusion.ingest(outcome.wave, stored.rx)) yield { kind: 'station', wave: fused.fusedWave }
   }
 
   for (const [i, file] of params.files.entries()) {

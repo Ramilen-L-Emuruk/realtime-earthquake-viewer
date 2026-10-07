@@ -120,6 +120,29 @@ export class StationStore {
   }
 
   /**
+   * `[fromMs, toMs]` の間ずっと効いていた設定（合成波形の作り直しが使う。`rewaveRunner.ts`）。
+   * **途中で変わっていれば `'changed'`**、ファイルを読めていない・履歴が通らなければ `null`。投げない。
+   *
+   * **起動の記録は設定を変えないので、ここでは変わったと見なさない** —— 再起動をまたいだ区間も、
+   * 設定を触っていなければそのまま作り直せる。比べるのは記録ごとの設定の中身。
+   */
+  configThrough(fromMs: number, toMs: number): StationConfig | 'changed' | null {
+    if (this.doc === null) return null
+    try {
+      const first = configAt(this.doc, fromMs)
+      const key = JSON.stringify(first)
+      for (const r of this.doc.revisions) {
+        if (r.effectiveMs <= fromMs || r.effectiveMs > toMs) continue
+        if (JSON.stringify(configAt(this.doc, r.effectiveMs)) !== key) return 'changed'
+      }
+      const checked = parseStationConfig(first)
+      return checked.ok ? checked.config : null
+    } catch {
+      return null
+    }
+  }
+
+  /**
    * その時点の設定を記録として足し、ファイルへ書く。**投げる** —— 管理コンソールの保存は、
    * 書けなかったことを失敗として返さねばならない（黙って諦めると「保存したはずなのに次の起動で
    * 消えている」という一番気づきにくい壊れ方をする）。起動の記録は呼び出し側が受け止める。

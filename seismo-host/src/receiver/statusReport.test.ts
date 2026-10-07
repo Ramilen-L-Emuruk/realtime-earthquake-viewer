@@ -84,6 +84,8 @@ const WAVE_OK: WaveArchiveStatus = {
   openBooks: 1,
   slowClose: false,
   lastWriteError: null,
+  revisedWritten: 0,
+  revisedLost: 0,
 }
 
 function segment(overrides: Partial<SegmentState['timebase']> = {}): SegmentState {
@@ -163,9 +165,10 @@ function input(overrides: Partial<StatusReportInput> = {}): StatusReportInput {
     loopStalls: { thresholdMs: 1000, count: 0, totalMs: 0, longestMs: null, last: null },
     backlog: {
       pendingGaps: 1, pendingSamples: 30, recoveredSamples: 60, unrecoverableSamples: { 'not-held': 30 },
-      requests: 3, recoveredPackets: 2, failures: { network: 1 }, badPackets: 0, foreignPackets: 0, unsavedPackets: 0,
+      requests: 3, recoveredPackets: 2, failures: { network: 1 }, badPackets: 0, foreignPackets: 0, unsavedPackets: 0, skippedPackets: 0,
       unsettledWriteSinceMs: null,
     },
+    rewave: { waiting: 0, running: false, jobs: 0, chunks: 0, rawIssues: 0, skipped: {} },
     http: { address: '0.0.0.0', port: 50506 },
     tally: tally.snapshotTotal(),
     sensors: [sensor()],

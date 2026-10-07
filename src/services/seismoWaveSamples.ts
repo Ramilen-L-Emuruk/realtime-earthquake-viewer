@@ -1,6 +1,8 @@
 // 過ぎた合成波形を、列に畳まずサンプルのまま取る（`GET /waves` を `columns` なしで呼ぶ）。
 //
-// **使うのは詳細の窓（`components/SeismoWaveDetail`）だけ。** カードの列（上下の端）では、
+// **使うのは詳細の窓（`components/SeismoWaveDetail`）と、下部の波形の穴埋め（`services/seismoWaveRefill.ts`）。**
+// 穴埋めは抱えている 60 秒の中の穴の範囲だけを取るので、2 分ずつ区切る下の分割には掛からない。
+// 詳細の窓について —— カードの列（上下の端）では、
 // 寄せたときにサンプルが時間順にどう動いたかが分からず、波の形を描けない
 // （2026-10-05 のユーザー指摘「拡大したら波になってない」）。窓を開いたときに区間ぶんを
 // まとめて取り、拡大・送りの最中には取りに行かない。
@@ -28,6 +30,11 @@ export interface WaveSampleChunk {
   readonly firstSampleMs: number
   readonly msPerSample: number
   readonly gal: readonly [Float32Array, Float32Array, Float32Array]
+  /**
+   * そのサンプルへ効いたセンサーの本数（`gal` と同じ長さ）。下部の波形の穴を埋めるとき
+   * （`utils/seismoWaveBuffer.ts` の `fill`）に、押し出しで届いた値と同じく本数も置くために読む。
+   */
+  readonly memberCount: Float32Array
 }
 
 /** 取り込んだサンプルと、ホストが申告した読み込みの欠け。 */
@@ -87,7 +94,12 @@ export function readWaveSamples(parsed: unknown): { value: WaveSamples } | { det
     const ud = readAxis(gal[2])
     if (ns === null || ew === null || ud === null) return { detail: 'gal を読めない' }
     if (ns.length !== ew.length || ns.length !== ud.length) return { detail: 'gal の成分の長さが揃っていない' }
-    chunks.push({ firstSampleMs, msPerSample, gal: [ns, ew, ud] })
+    // **本数も値と同じ規則で読む**（`null` は 0、数でなければ応答ごと捨てる）。長さがずれたまま置くと、
+    // 別のサンプルの本数を見せることになる。
+    const members = readAxis(c.memberCount)
+    if (members === null || members.length !== ns.length) return { detail: 'memberCount が gal と揃っていない' }
+    for (let i = 0; i < members.length; i += 1) if (Number.isNaN(members[i])) members[i] = 0
+    chunks.push({ firstSampleMs, msPerSample, gal: [ns, ew, ud], memberCount: members })
   }
   return {
     value: {

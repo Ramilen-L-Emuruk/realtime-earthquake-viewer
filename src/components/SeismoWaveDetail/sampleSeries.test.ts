@@ -22,7 +22,12 @@ const MS = 10
 
 function chunk(startMs: number, values: number[]): WaveSampleChunk {
   const a = Float32Array.from(values)
-  return { firstSampleMs: startMs, msPerSample: MS, gal: [a, Float32Array.from(values.map((x) => x / 2)), Float32Array.from(values.map(() => 0))] }
+  return {
+    firstSampleMs: startMs,
+    msPerSample: MS,
+    gal: [a, Float32Array.from(values.map((x) => x / 2)), Float32Array.from(values.map(() => 0))],
+    memberCount: Float32Array.from(values.map(() => 3)),
+  }
 }
 
 describe('buildSampleSeries', () => {
@@ -223,7 +228,14 @@ describe('measureMagnitudeFloor', () => {
     for (let i = 0; i < seconds * 100; i += 1) values.push(i % 100 === 50 ? peak(Math.floor(i / 100)) : 0.1)
     const start = ZERO - seconds * 1000
     const a = Float32Array.from(values)
-    return buildSampleSeries([{ firstSampleMs: start, msPerSample: 10, gal: [a, new Float32Array(a.length), new Float32Array(a.length)] }])
+    return buildSampleSeries([
+      {
+        firstSampleMs: start,
+        msPerSample: 10,
+        gal: [a, new Float32Array(a.length), new Float32Array(a.length)],
+        memberCount: new Float32Array(a.length).fill(3),
+      },
+    ])
   }
 
   it('1 秒ごとの最大の中央値の 1.5 倍', () => {

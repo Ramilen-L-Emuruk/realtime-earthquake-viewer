@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -82,6 +82,44 @@ describe('StationStore', () => {
     ])
     expect(configAt(doc, 2_500)).toEqual(CONFIG_A)
     expect(configAt(doc, 3_000)).toEqual(CONFIG_B)
+  })
+
+  describe('configThrough（作り直しが使う「区間の間ずっと効いていた設定」）', () => {
+    function storeWith(records: Array<[number, StationConfig, 'startup' | 'changed']>): StationStore {
+      let now = 0
+      const store = new StationStore({ path, now: () => now })
+      store.open()
+      for (const [at, config, reason] of records) {
+        now = at
+        store.record(config, reason)
+      }
+      return store
+    }
+
+    it('正: 区間の中に起動の記録しか無ければ、その設定を返す（再起動をまたいでも作り直せる）', () => {
+      const store = storeWith([[1_000, CONFIG_A, 'startup'], [2_000, CONFIG_A, 'startup']])
+      expect(store.configThrough(1_500, 2_500)).toEqual(CONFIG_A)
+    })
+
+    it('対照: 区間の中で設定が変わっていれば changed（区間の外で変わったなら、その時点の設定）', () => {
+      const store = storeWith([[1_000, CONFIG_A, 'startup'], [3_000, CONFIG_B, 'changed']])
+      expect(store.configThrough(2_000, 3_500)).toBe('changed')
+      expect(store.configThrough(1_500, 2_500)).toEqual(CONFIG_A)
+      expect(store.configThrough(3_000, 4_000)).toEqual(CONFIG_B)
+    })
+
+    it('安全弁: 区間の中で変えて元へ戻しても changed（両端だけ比べない）', () => {
+      const store = storeWith([[1_000, CONFIG_A, 'startup'], [2_000, CONFIG_B, 'changed'], [3_000, CONFIG_A, 'changed']])
+      expect(store.configThrough(1_500, 3_500)).toBe('changed')
+    })
+
+    it('安全弁: ファイルを読めていなければ null（いまの設定で代わりに作らない）', () => {
+      mkdirSync(join(dir, 'config'), { recursive: true })
+      writeFileSync(path, 'not xml')
+      const store = new StationStore({ path })
+      store.open()
+      expect(store.configThrough(0, 1_000)).toBeNull()
+    })
   })
 
   it('読めないファイルは空の設定と理由で開き、以後は書かず（投げる）、ファイルをそのまま残す', () => {

@@ -382,6 +382,37 @@ describe('connectSeismoStream', () => {
     })
   })
 
+  it('正: 作り直しの知らせ（station-wave-revised）を読んで渡す（#597）', async () => {
+    const got: SeismoMessage[] = []
+    const unreadable: string[] = []
+    const ctrl = new AbortController()
+    const fetchImpl = streamOnce(ctrl, [
+      'event: station-wave-revised\ndata: {"stationId":"home","fromMs":1000,"toMs":31000}\n\n',
+      // **範囲が逆向き・読めない時刻は捨てる。** 取りに行く範囲がそこで壊れる。
+      'event: station-wave-revised\ndata: {"stationId":"home","fromMs":5000,"toMs":4000}\n\n',
+      'event: station-wave-revised\ndata: {"stationId":"home","fromMs":"a","toMs":4000}\n\n',
+      'event: station-wave-revised\ndata: {"fromMs":1000,"toMs":2000}\n\n',
+    ])
+
+    connectSeismoStream({
+      baseUrl: 'http://host:50506',
+      wave: 'station',
+      signal: ctrl.signal,
+      onMessage: (m) => got.push(m),
+      onState: () => {},
+      onUnreadable: (_n, d) => unreadable.push(d),
+      fetchImpl,
+      sleep: noSleep,
+    })
+    await settle()
+    ctrl.abort()
+
+    expect(got).toEqual([
+      { kind: 'station-wave-revised', revised: { stationId: 'home', fromMs: 1000, toMs: 31000 } },
+    ])
+    expect(unreadable).toHaveLength(3)
+  })
+
   it('正: 波形が要るときだけ ?wave=station を付ける', async () => {
     const ctrl = new AbortController()
     const fetchImpl = vi.fn(async () => emptyStream()) as unknown as typeof fetch

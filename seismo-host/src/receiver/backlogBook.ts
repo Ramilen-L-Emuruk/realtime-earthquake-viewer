@@ -61,9 +61,29 @@ export interface BacklogBookOptions {
    * 遅れて届くだけのパケットを、取りに行く前に待つ。
    */
   readonly settleMs: number
-  /** 取りに行って失敗したときの待ち。失敗が続くたびに倍にし、`retryMaxMs` で頭打ち。 */
+  /**
+   * 基板のメモリの輪がまだ抱えていそうな間（見つけてからの経過）。**この間に失敗したら、待ちを
+   * 伸ばさず `retryUrgentMs` で訊き直す** —— 倍々に伸ばすと、待っている間に輪が上書きする
+   * （2026-10-06 の電子レンジの干渉では、取り戻せなかった 66,671 サンプルの理由がすべて「基板がもう
+   * 抱えていない」だった。待ちの伸びと取りに行く速さの不足のどちらがどれだけ効いたかは測っていない）。
+   */
+  readonly holdMs: number
+  /** `holdMs` の間に失敗したときの待ち。伸ばさない。 */
+  readonly retryUrgentMs: number
+  /**
+   * `holdMs` を過ぎてから失敗したときの待ち。過ぎてから失敗が続くたびに倍にし、`retryMaxMs` で頭打ち
+   * （その頃にはフラッシュの輪にしか残っていないので、急いでも取り戻せる分は増えない）。
+   */
   readonly retryBaseMs: number
   readonly retryMaxMs: number
+  /**
+   * 1 回で訊く範囲の長さ（サンプル数）。**同じ流れの近い欠けをまとめて訊く** —— 干渉では欠けが
+   * 1 まとまりずつ散らばるので、1 件ずつ訊くと取りに行く速さが欠けのできる速さに負ける。
+   * 範囲に入る受信済みの分も基板は返すので、基板が 1 回に返すまとまりの数（ファームの
+   * `BACKLOG_MAX_PER_REPLY`）を超えない長さにする。超えても `X-Backlog-More` で続きを訊けるが、
+   * 受信済みの分で答えの枠を食う。
+   */
+  readonly maxSpanSamples: number
   /**
    * 見つけてからこれを過ぎても取り戻せない欠けは諦める。**基板が抱えていられる時間より
    * 長く待っても取り戻せない** —— 待ち続けると、欠けの表が古いもので埋まる。
@@ -133,6 +153,8 @@ interface GapState {
   len: number
   readonly foundAtMs: number
   attempts: number
+  /** `holdMs` を過ぎてから失敗した回数。倍々の待ちはこれで数える。 */
+  lateAttempts: number
   nextTryMs: number
 }
 
@@ -248,6 +270,23 @@ export class BacklogBook {
    * **古くなりすぎた欠けはここで諦める**（`gave-up`）。
    */
   nextDue(nowMs: number): Gap | null {
+    return this.nextDueWhere(nowMs, () => true)
+  }
+
+  /**
+   * `nextDue` のうち、`accept` が通す流れに限ったもの。**取りに行く係が、いま訊いている最中の
+   * 基板を外すために使う**（基板ごとに 1 件ずつ並行して訊く。`backlogFetcher.ts`）。
+   *
+   * **返す範囲は、同じ流れの近い欠けまで伸ばす**（`maxSpanSamples`）。起点はいちばん古い欠けの頭で、
+   * そこから `maxSpanSamples` に収まる欠けの末尾まで。間に挟まる受信済みの分も範囲に入るので、
+   * 返ってきたパケットのうち欠けに掛からないものは書かない（`overlapsGap`）。
+   * 伸ばす先の欠けは、待ちの最中（`nextTryMs` の前）でも含める —— 早く取り戻せて困ることは無い。
+   *
+   * **伸ばす先には `accept` を掛け直さない。** 同じ流れ（`key` が同じ）の欠けは流れも同じなので、
+   * `accept` が流れだけを見ている限り答えは起点と変わらない。流れ以外（欠けごとの状態）を見る
+   * `accept` を渡すようになったら、ここでも掛けること。
+   */
+  nextDueWhere(nowMs: number, accept: (stream: StreamRef) => boolean): Gap | null {
     const keep: GapState[] = []
     for (const g of this.gaps) {
       if (nowMs - g.foundAtMs > this.options.giveUpAfterMs) this.count('gave-up', g.len)
@@ -256,10 +295,26 @@ export class BacklogBook {
     this.gaps = keep
     let best: GapState | null = null
     for (const g of this.gaps) {
-      if (g.nextTryMs > nowMs) continue
+      if (g.nextTryMs > nowMs || !accept(g.stream)) continue
       if (best === null || g.foundAtMs < best.foundAtMs) best = g
     }
-    return best === null ? null : this.view(best)
+    if (best === null) return null
+    let len = best.len
+    for (const g of this.gaps) {
+      if (g.key !== best.key) continue
+      const start = seqDiff(g.from, best.from)
+      if (start <= 0) continue
+      const end = start + g.len
+      if (end <= this.options.maxSpanSamples && end > len) len = end
+    }
+    return { ...this.view(best), to: seqAdd(best.from, len) }
+  }
+
+  /** `[from, to)` が、いま覚えている欠けに少しでも掛かるか。 */
+  overlapsGap(key: string, from: number, to: number): boolean {
+    const len = seqLen(from, to)
+    if (len === 0) return false
+    return this.gaps.some((g) => g.key === key && this.overlaps(g, from, len))
   }
 
   /** `[from, to)` を取り戻した。**欠けていた分だけ**数えて返す。 */
@@ -276,14 +331,31 @@ export class BacklogBook {
     return n
   }
 
-  /** `[from, to)` に掛かる欠けを取りに行って失敗した。待ちを倍にして、あとで訊き直す。 */
+  /**
+   * `[from, to)` に掛かる欠けを取りに行って失敗した。あとで訊き直す。
+   *
+   * **見つけてから `holdMs` の間は待ちを伸ばさない**（基板のメモリの輪にまだあるうちに訊き直す）。
+   * 過ぎてからは倍々に空ける。
+   *
+   * **範囲に掛かる欠けは全部まとめて待たせる。** まとめて訊いた（`nextDueWhere`）範囲なら、まだ待ちの
+   * 最中だった隣の欠けの待ちも動く。失敗の理由（繋がらない・ディスクが詰まった）はその隣にも同じく
+   * 効くので、別々に数えない。
+   *
+   * 回数（`attempts`・`lateAttempts`）は帳面へ書き出さない。ホストを起動し直すと倍々は 5 秒から
+   * やり直す —— 止まっていた間に状況は変わっているので、前の待ちを引き継ぐ理由が無い。
+   */
   failed(key: string, from: number, to: number, nowMs: number): void {
     const len = seqLen(from, to)
+    const { holdMs, retryUrgentMs, retryBaseMs, retryMaxMs } = this.options
     for (const g of this.gaps) {
       if (g.key !== key || !this.overlaps(g, from, len)) continue
       g.attempts += 1
-      const wait = Math.min(this.options.retryMaxMs, this.options.retryBaseMs * 2 ** (g.attempts - 1))
-      g.nextTryMs = nowMs + wait
+      if (nowMs - g.foundAtMs < holdMs) {
+        g.nextTryMs = nowMs + retryUrgentMs
+        continue
+      }
+      g.lateAttempts += 1
+      g.nextTryMs = nowMs + Math.min(retryMaxMs, retryBaseMs * 2 ** (g.lateAttempts - 1))
     }
   }
 
@@ -334,7 +406,7 @@ export class BacklogBook {
       if (len === 0) continue
       this.pushGap({
         key: streamKey(stream), stream, address: g.address, from: g.from, len,
-        foundAtMs: g.foundAtMs, attempts: 0, nextTryMs: nowMs + this.options.settleMs,
+        foundAtMs: g.foundAtMs, attempts: 0, lateAttempts: 0, nextTryMs: nowMs + this.options.settleMs,
       })
     }
   }
@@ -343,7 +415,7 @@ export class BacklogBook {
     const len = seqLen(from, to)
     if (len === 0) return
     this.pushGap({
-      key, stream, address, from, len, foundAtMs: atMs, attempts: 0, nextTryMs: atMs + this.options.settleMs,
+      key, stream, address, from, len, foundAtMs: atMs, attempts: 0, lateAttempts: 0, nextTryMs: atMs + this.options.settleMs,
     })
   }
 

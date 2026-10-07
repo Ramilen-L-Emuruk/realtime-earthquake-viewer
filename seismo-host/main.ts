@@ -24,10 +24,12 @@
 // 起動:
 //   npm run seismo-host
 //   SEISMO_UDP_PORT=50505 SEISMO_UDP_ADDRESS=0.0.0.0 npm run seismo-host
+import { readFile } from 'node:fs/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { GAL_PER_G } from './src/intensity/units'
 import { MAX_TIME_MS } from './src/protocol/parsePacket'
+import type { BoardKey } from './src/protocol/types'
 import { AckReplier, readAckEnabled } from './src/receiver/ackReplier'
 import {
   AssignmentClock,
@@ -47,6 +49,7 @@ import { LogThrottle, suppressedSuffix } from './src/receiver/logThrottle'
 import { PacketTally, formatTally } from './src/receiver/packetTally'
 import type { TallySnapshot } from './src/receiver/packetTally'
 import { MseedRecorder } from './src/receiver/mseedRecorder'
+import { mseedFilePath } from './src/receiver/mseedStore'
 import type { MseedHealth } from './src/receiver/mseedRecorder'
 import { STATION_CONFIG_FILE, StationStore } from './src/receiver/stationStore'
 import { ReadingHub } from './src/receiver/readingHub'
@@ -81,6 +84,10 @@ import type { BacklogBookOptions, UnrecoverableReason } from './src/receiver/bac
 import { BacklogBookWriter, readBacklogBookFile } from './src/receiver/backlogBookFile'
 import { BacklogFetcher, fetchBacklog } from './src/receiver/backlogFetcher'
 import type { BacklogEvent } from './src/receiver/backlogFetcher'
+import { RewaveRunner } from './src/receiver/rewaveRunner'
+import type { RewaveEvent, RewaveSkipReason } from './src/receiver/rewaveRunner'
+import { RewaveScheduler } from './src/receiver/rewaveScheduler'
+import type { RewaveSchedulerOptions } from './src/receiver/rewaveScheduler'
 import { streamKeyOf } from './src/timebase/segmenter'
 import { QuakeFeed } from './src/detection/quakeFeed'
 import { ShakeEventStore, readEventRange } from './src/detection/shakeEventStore'
@@ -142,9 +149,20 @@ function defaultBacklogBookPath(): string {
  *   約 11 分ぶん抱えられる（ファームの `SPILL_AFTER_MS`）。それより長く待っても取り戻せない
  * - **欠けは 1 万件まで**: 1 件は数十バイト。2026-10-02 20:21〜20:26 に Wi-Fi の区間で
  *   落ちたときは、5 分間に 3 枚合わせて約 390 件だった
+ * - **見つけてから 25 秒は待ちを伸ばさず 1 秒で訊き直す**: 基板のメモリの輪は 300 まとまりを
+ *   3 センサーで分け合い、1 まとまり 0.3 秒なので約 30 秒（ファームの `BACKLOG_SLOTS`）。
+ *   その手前で切る。2026-10-06 の電子レンジの干渉では、取り戻せたのは 11,199 サンプル、取り戻せなかった
+ *   66,671 サンプルは理由がすべて「基板がもう抱えていない」だった（失敗のたびに 5→60 秒と伸ばす待ちと、
+ *   取りに行く速さの不足の両方で、訊く前に輪が上書きしたと見ている。どちらがどれだけ効いたかは測っていない）
+ * - **1 回に訊く範囲は 900 サンプルまで**: 基板が 1 回に返すのは 30 まとまり（ファームの
+ *   `BACKLOG_MAX_PER_REPLY`）、1 まとまり 30 サンプル。挟まる受信済みの分も枠を食うので、それ以上は
+ *   伸ばさない
  */
 const BACKLOG_BOOK_OPTIONS: BacklogBookOptions = {
   settleMs: 2_000,
+  holdMs: 25_000,
+  retryUrgentMs: 1_000,
+  maxSpanSamples: 900,
   retryBaseMs: 5_000,
   retryMaxMs: 60_000,
   giveUpAfterMs: 20 * 60_000,
@@ -173,6 +191,75 @@ const UNRECOVERABLE_TEXT: Record<UnrecoverableReason, string> = {
 
 /** 取り戻せなかった理由の全部。**`UNRECOVERABLE_TEXT` から引く** —— 型が全部の理由を書かせる。 */
 const UNRECOVERABLE_REASONS = Object.keys(UNRECOVERABLE_TEXT) as UnrecoverableReason[]
+
+/**
+ * 合成波形を作り直す区間の決めごと（`rewaveScheduler.ts`）。
+ *
+ * - **前後の余白 2 秒**: 作り直した分とライブの分の継ぎ目を、欠けた所から離す
+ * - **最後に取り戻してから 3 秒待つ**: 干渉の最中は取り戻しが続けて届くので、1 件へまとめる
+ * - **落ち着かなくても、最初に取り戻してから 10 秒で作り直す**: PWA の下部の波形は直近 60 秒しか抱えないので、
+ *   取り戻した区間はそれより十分早く作り直して知らせる。観測点に欠けが残っていても待たない（理由は `rewaveScheduler.ts`）
+ * - **1 件は 3 分まで**: 3 分ぶん（9 センサー）を読んで作り直すのに手元の機械で 1 秒前後
+ *   （2026-10-06 の 21 時台の生データで実測）。それより長い区間は区切って順に回す
+ */
+const REWAVE_SCHEDULER_OPTIONS: RewaveSchedulerOptions = {
+  padMs: 2_000,
+  settleMs: 3_000,
+  maxWaitMs: 10_000,
+  maxSpanMs: 180_000,
+}
+
+/** 作り直しを見に行く間隔。 */
+const REWAVE_TICK_MS = 1_000
+
+const REWAVE_SKIP_TEXT: Record<RewaveSkipReason, string> = {
+  'config-changed': '区間の中で観測点の設定が変わった',
+  'config-unknown': '観測点の設定の履歴を読めていない',
+  'flush-failed': '生データを書き終えられなかった',
+  'no-raw': '区間の生データが無い',
+  empty: '作り直した合成が無かった',
+  'write-failed': '控えへ書けなかった分があった',
+  internal: '作り直しの途中で想定外の例外が出た',
+}
+
+/** 作り直さなかった理由の全部。**`REWAVE_SKIP_TEXT` から引く。** */
+const REWAVE_SKIP_REASONS = Object.keys(REWAVE_SKIP_TEXT) as RewaveSkipReason[]
+
+/** 日本時間の時刻（時:分:秒）。 */
+function jstClock(ms: number): string {
+  return new Date(ms + 9 * 3_600_000).toISOString().slice(11, 19)
+}
+
+/**
+ * 作り直しの出来事を、間引きに渡す 1 行にする。**作り直せた分は `log`（読んだ生データに壊れがあれば
+ * `warn`）、それ以外は `warn`。**
+ * 間引きの鍵（`detail`）は観測点と理由まで。
+ */
+export function buildRewaveEventLine(event: RewaveEvent): {
+  readonly level: 'log' | 'warn'
+  readonly detail: string
+  readonly line: string
+} {
+  const { job } = event
+  const span = `${jstClock(job.fromMs)}〜${jstClock(job.toMs)}`
+  if (event.kind === 'rewaved') {
+    // **生データに壊れがあれば warn。** 作り直した分にもその欠けが残っている。
+    const notes = [
+      ...(event.rawIssues > 0 ? [`生データの壊れ ${event.rawIssues}`] : []),
+      ...(event.duplicates > 0 ? [`重複して捨てたまとまり ${event.duplicates}`] : []),
+    ]
+    return {
+      level: event.rawIssues > 0 ? 'warn' : 'log',
+      detail: `${job.stationId}|rewaved${event.rawIssues > 0 ? '|raw-issues' : ''}`,
+      line: `[rewave] ${job.stationId} の ${span} の合成波形を作り直した（${[`${event.chunks} まとまり`, `${event.elapsedMs} ms`, ...notes].join('・')}）`,
+    }
+  }
+  return {
+    level: 'warn',
+    detail: `${job.stationId}|${event.reason}`,
+    line: `[rewave] ${job.stationId} の ${span} の合成波形を作り直さなかった（${REWAVE_SKIP_TEXT[event.reason]}: ${event.detail}）`,
+  }
+}
 
 /**
  * 取り戻しの出来事を、間引きに渡す 1 行にする。**取り戻せた分は `log`、それ以外は `warn`。**
@@ -911,12 +998,9 @@ export interface StationFusionSinks {
    * 決める」と宣言しているので、覚える先を配達の中へ隠すと一覧性が壊れる
    * （`noteReading` と `publish` を分けているのと同じ理由）。
    */
-  readonly noteWave: (w: FusedWaveChunk, backupsCovered: boolean) => void
+  readonly noteWave: (w: FusedWaveChunk, allMembersCovered: boolean) => void
   /**
    * センサー対ごとの差分を覚える（#315）。**要約するのは受け手の仕事。**
-   *
-   * **`fusedWave` が非 null の回にしか非空にならない**（取り出しが起きなかった回は
-   * `nothingOutcome()` が空配列を返す）ので、あちらと同じ分岐の中で呼ぶ。
    *
    * **観測点を一緒に渡す。** 空配列からは観測点が引けないが、**空も伝えなければ
    * ならない** —— センサーを無効化して観測点が 1 台へ縮小すると差分は空になり、
@@ -959,56 +1043,84 @@ export interface StationFusionSinks {
 }
 
 /**
- * `SensorFusion.ingest()` が返す 1 回ぶんの結果を配る。
+ * `SensorFusion.ingest()` が返す結果を 1 つ配る（`ingest()` は 0 個以上を返すので、呼び出し側が
+ * 1 つずつ通す）。**どの結果にも合成波形が入っている。**
  *
  * **読みを先に配り、いまの合成状態（`noteSkip`）は最後に確定させる。**
- * `fusion.readings` には区間の作り直しで前区間の残り（`carried`。
- * `../src/receiver/sensorFusion.ts` の `ingest()` を見ること）が混ざりうる——
- * それは「たった今出た、新しい区間より古い震度」なので、`noteReading` が無条件に
+ * `fusion.readings` には流し込みの作り直しで締めた分（前の流し込みの末尾）が混ざりうる——
+ * それは「たった今出た、新しい流し込みより古い震度」なので、`noteReading` が無条件に
  * クリアする `lastSkipReason` を、直前にセットしたばかりの「いまの異常」の上へ
  * 被せてしまう（`sensorHealth.ts` が同じ形の競合を `skipStreamKey`/`skipSegmentId`
  * で明示的にガードしているのと同じ症状——壊れた合成が一瞬だけ健全に見える）。
  * 順序を「過去の読み → いまの状態」にすれば、いまの状態が必ず最後に残る。
- *
- * **`closeFailure`・`intensitySkipReason` は「待たせていたまとまりを取り出して合成した回」
- * にだけ意味を持つ**（`fusedWave` が非 null の回に限る）。**取り出しは駆動役の到着に
- * 限らない** —— 裏付けが届いても待ちが満たされることがある（`sensorFusion.ts` の
- * `FusionOutcome`・`FUSION_WAIT_MS_DEFAULT` を見ること）。ここが `fusedWave` の非 null で
- * 分岐しているのはそのためで、**到着したセンサーが駆動役かどうかで分けてはいけない**。
  */
 export function deliverStationFusion(to: StationFusionSinks, fusion: FusionOutcome): void {
-  if (fusion.fusedWave !== null && fusion.closeFailure !== null) {
-    to.reportCloseFailure(fusion.closeFailure)
-  }
+  if (fusion.closeFailure !== null) to.reportCloseFailure(fusion.closeFailure)
   for (const r of fusion.readings) {
     to.noteReading(r)
     to.publish(r)
   }
-  if (fusion.fusedWave !== null) {
-    // **取り出して合成した回だけ波形が出る。** この分岐がその回を表す唯一の場所なので、
-    // 覚えるのと配るのもここに置く（判定を 2 箇所へ分けない）。
-    to.noteWave(fusion.fusedWave, fusion.backupsCovered)
-    to.notePairDiffs(fusion.fusedWave.stationId, fusion.pairDiffs)
-    to.publishPairDiffs(fusion.pairDiffs)
-    to.publishWave(fusion.fusedWave)
-    to.noteSkip(fusion.fusedWave.stationId, fusion.intensitySkipReason)
-    // **異常が続いている間は毎回呼ぶ。正常なら状態が変わった回にだけ呼ぶ。**
-    //
-    // `intensitySkipReason` が非 null（＝合成の震度が出せない）の間は、`ingest()`
-    // が `intensityStateChanged` を再び立てない場合がある——`push()` の失敗は
-    // 区間の作り直しを伴わず、`SensorFusion` 側に自己回復の仕組みが無いため
-    // （`sensorFusion.ts` の `ingest()` を見ること）、壊れた状態が同じ区間の間
-    // ずっと続きうる。`intensityStateChanged` だけで絞ると、**最初の 1 回しか
-    // ログが出ず、以後「合成が壊れたままだ」という事実そのものが沈黙する**。
-    // 間引き（`logThrottle.shouldLog`）が「初回は必ず出し、以後も間隔ごとに
-    // 出し直す」設計を持つので、毎回呼んでも実際の出力頻度はあちらに任せられる。
-    //
-    // 正常（`null`）に戻った回は、区間が変わった・push が成功した等の
-    // `intensityStateChanged` が立つ回にだけ知らせれば十分——正常が続く間、
-    // 毎パケット「合成の状態が変わった」と言い続ける理由は無い。
-    if (fusion.intensitySkipReason !== null || fusion.intensityStateChanged) {
-      to.logSegment(fusion.fusedWave.stationId, fusion.intensitySkipReason)
-    }
+  to.noteWave(fusion.fusedWave, fusion.allMembersCovered)
+  to.notePairDiffs(fusion.fusedWave.stationId, fusion.pairDiffs)
+  to.publishPairDiffs(fusion.pairDiffs)
+  to.publishWave(fusion.fusedWave)
+  to.noteSkip(fusion.fusedWave.stationId, fusion.intensitySkipReason)
+  // **異常が続いている間は毎回呼ぶ。正常なら状態が変わった回にだけ呼ぶ。**
+  //
+  // `intensitySkipReason` が非 null（＝合成の震度が出せない）の間は、`ingest()`
+  // が `intensityStateChanged` を再び立てない場合がある——`push()` の失敗は
+  // 次の欠けまで作り直しを伴わないため（`sensorFusion.ts` の `Group.streamNext` を
+  // 見ること）、壊れた状態がしばらく続きうる。`intensityStateChanged` だけで絞ると、
+  // **最初の 1 回しかログが出ず、以後「合成が壊れたままだ」という事実そのものが沈黙する**。
+  // 間引き（`logThrottle.shouldLog`）が「初回は必ず出し、以後も間隔ごとに
+  // 出し直す」設計を持つので、毎回呼んでも実際の出力頻度はあちらに任せられる。
+  //
+  // 正常（`null`）に戻った回は、流し込みを作り直した等の `intensityStateChanged` が立つ回に
+  // だけ知らせれば十分——正常が続く間、毎まとまり「合成の状態が変わった」と言い続ける
+  // 理由は無い。
+  if (fusion.intensitySkipReason !== null || fusion.intensityStateChanged) {
+    to.logSegment(fusion.fusedWave.stationId, fusion.intensitySkipReason)
+  }
+}
+
+/** 観測点の合成の数え上げ（`SensorFusion` の累計）。毎分の要約が差で増分を出す。 */
+export interface FusionCounts {
+  readonly lateSamples: number
+  readonly futureSamples: number
+  readonly discardedSamples: number
+  readonly unusableIntensities: number
+}
+
+export const ZERO_FUSION_COUNTS: FusionCounts = {
+  lateSamples: 0,
+  futureSamples: 0,
+  discardedSamples: 0,
+  unusableIntensities: 0,
+}
+
+/** いまの部品の累計を読む。**欄を足したら、ここと `addFusionCounts` の両方へ足す**（型が漏れを止める）。 */
+export function fusionCountsOf(fusion: SensorFusion): FusionCounts {
+  return {
+    lateSamples: fusion.lateSamples,
+    futureSamples: fusion.futureSamples,
+    discardedSamples: fusion.discardedSamples,
+    unusableIntensities: fusion.unusableIntensities,
+  }
+}
+
+/**
+ * 持ち越した累計に、いまの部品の累計を足す。
+ *
+ * **部品は設定を変えるたびに作り直されて 0 から数え直す**ので、作り直す前の累計を持ち越さないと、
+ * 毎分の要約（累計の差で増分を出す）が作り直した窓で負になる。呼び出し側は**作り直す直前に**
+ * この値を持ち越しへ置き換える。
+ */
+export function addFusionCounts(carried: FusionCounts, current: FusionCounts): FusionCounts {
+  return {
+    lateSamples: carried.lateSamples + current.lateSamples,
+    futureSamples: carried.futureSamples + current.futureSamples,
+    discardedSamples: carried.discardedSamples + current.discardedSamples,
+    unusableIntensities: carried.unusableIntensities + current.unusableIntensities,
   }
 }
 
@@ -1063,7 +1175,7 @@ export function deliverFusionClosing(to: FusionClosingSinks, closing: SensorFusi
     }
   }
   for (const fusion of closing.drained) {
-    attempt(`波形 ${fusion.fusedWave?.stationId ?? '(観測点不明)'}`, () => to.deliverFusion(fusion))
+    attempt(`波形 ${fusion.fusedWave.stationId}`, () => to.deliverFusion(fusion))
   }
   attempt('締めくくりの失敗の報告', () => to.reportCloseFailures(closing.failures))
   for (const r of closing.readings) attempt(`震度 ${r.stationId}`, () => to.emitReading(r))
@@ -1635,6 +1747,10 @@ async function main(): Promise<void> {
   // 観測点はグループを組まない（`sensorFusion.ts` の `buildGroups`）ので、単一センサーの
   // 構成では常に何もしない——観測点を割り当てていない構成と同じく安全に無視できる。
   let sensorFusion = new SensorFusion(stationConfigLoad.config)
+  // **合成の数え上げは、作り直しをまたいで数え続ける。** 部品は設定を変えるたびに作り直されて
+  // 0 から数え直すので、古い部品の数を持ち越す（`addFusionCounts` の説明を見ること）。
+  let fusionCarried: FusionCounts = ZERO_FUSION_COUNTS
+  const fusionTotals = (): FusionCounts => addFusionCounts(fusionCarried, fusionCountsOf(sensorFusion))
   let ungroupedMultiBoardStations = findUngroupedMultiBoardStations(
     stationConfigLoad.config,
     sensorFusion.groupedStationIds,
@@ -1740,6 +1856,18 @@ async function main(): Promise<void> {
     else console.log(text)
   }
 
+  // **取り戻した区間の合成波形は、あとで生データから作り直す**（`rewaveScheduler.ts`・`rewaveRunner.ts`）。
+  // 取り戻した分そのものはライブの合成へ混ぜない（下の取り戻しの口の理由）ので、控えへ戻すにはこの経路しかない。
+  const rewaveScheduler = new RewaveScheduler(REWAVE_SCHEDULER_OPTIONS)
+  /**
+   * 欠けの帳面が持つ基板の鍵（ファイルから読み戻すので文字列のまま）から観測点を引く。
+   * **鍵の形でないものは未割当として扱う。**
+   */
+  const stationIdOfBoard = (boardKey: string): string | null =>
+    boardKey.startsWith('mac:') || boardKey.startsWith('name:')
+      ? stations.resolve(boardKey as BoardKey)?.stationId ?? null
+      : null
+
   // **取り戻した分は生データの記録にだけ渡す** —— 震度・合成・押し出し・時計の推定には
   // 混ぜない（理由は `backlogFetcher.ts` の冒頭）。
   const backlogFetcher = new BacklogFetcher({
@@ -1755,6 +1883,48 @@ async function main(): Promise<void> {
     onEvent: (event) => {
       const out = buildBacklogEventLine(event)
       emit(out.level, 'backlog', out.detail, out.line)
+      if (event.kind === 'recovered') {
+        // 流れの鍵は「基板|起動 ID|センサー」（`backlogBook.ts` の `streamKey`）。
+        const stationId = stationIdOfBoard(event.key.split('|')[0] ?? '')
+        if (stationId !== null) rewaveScheduler.note(stationId, event.fromMs, event.toMs, Date.now())
+      }
+    },
+  })
+
+  const rewaveRunner = new RewaveRunner({
+    scheduler: rewaveScheduler,
+    // **区間の当時の設定を履歴から引く**（`stationStore.ts`）。いまの設定で過去の区間を作らない。
+    configThrough: (fromMs, toMs) => stationStore.configThrough(fromMs, toMs),
+    flush: () => mseedRecorder.flushForRead(),
+    readHour: async (atMs) => {
+      const path = mseedFilePath(rawDir, atMs)
+      if (path === null) return null
+      try {
+        return new Uint8Array(await readFile(path))
+      } catch (error) {
+        if ((error as { code?: string }).code === 'ENOENT') return null
+        throw error
+      }
+    },
+    writeRevised: (stationId, chunks) => waveArchive.writeRevised(stationId, chunks),
+    now: Date.now,
+    pause: () => new Promise((resolve) => setImmediate(resolve)),
+    onEvent: (event) => {
+      const out = buildRewaveEventLine(event)
+      emit(out.level, 'rewave', out.detail, out.line)
+      // **控えへ足し終えたことを押し出す**（#597）。受け手（PWA の下部の波形・地震カード）は
+      // 自分の抱えている穴と重なるときだけ `/waves` を取りに来る。書き終える前に知らせると、
+      // 取りに来た時点でまだ作り直した分が無い。
+      //
+      // **一部を書けなかった（`write-failed`）ときも知らせる。** 書けた分があれば控えに入っているので、知らせないと
+      // 受け手はその区間を二度と取りに来ない（取りに来る契機はこの知らせだけ）。全部書けなかったときも知らせるが、
+      // 受け手が 1 度取り直して何も変わらないだけで済む。
+      if (event.kind === 'rewaved' || (event.kind === 'skipped' && event.reason === 'write-failed')) {
+        hub.publish({
+          kind: 'station-wave-revised',
+          revised: { stationId: event.job.stationId, fromMs: event.job.fromMs, toMs: event.job.toMs },
+        })
+      }
     },
   })
 
@@ -1950,6 +2120,8 @@ async function main(): Promise<void> {
             `[station-close] 設定変更に伴う観測点合成の締めくくり（または配れなかったことの報告）に失敗: ${messageOf(error)}`,
           ),
         rebuildSensorFusion: (config) => {
+          // **作り直す前に持ち越す。** 古い部品はこの後の参照を失うので、ここが数を読む最後の機会。
+          fusionCarried = fusionTotals()
           sensorFusion = new SensorFusion(config)
           return sensorFusion.groupedStationIds
         },
@@ -2055,7 +2227,9 @@ async function main(): Promise<void> {
       // が素通りするので、単一センサー構成では何もしない。`ingest()` 自体は投げない
       // 契約（`sensorFusion.ts` を見ること）だが、**結果を配る（`deliverStationFusion`）
       // のはここでは行わない** —— 下で単一センサー側の報告を出し切ってから。
-      const fusion = outcome.wave !== null ? sensorFusion.ingest(outcome.wave) : null
+      // **揃ったまとまりは 0 個以上**（1 回の到着で複数揃うことも、欠けで途中が切れることもある）。
+      // **受け取った時刻を渡す**（その時刻より先を名乗るサンプルは、時計の壊れた台のものとして混ぜない）。
+      const fusions = outcome.wave !== null ? sensorFusion.ingest(outcome.wave, receivedAtMs) : []
 
       if (outcome.dropped !== null) {
         tally.record({ kind: 'dropped', board, reason: outcome.dropped })
@@ -2122,7 +2296,7 @@ async function main(): Promise<void> {
       // 呼ぶので、投げない契約が将来崩れる余地がある——手前に置いて投げると、この
       // データグラムが運んできた単一センサー側の報告（上の dropped・startedBecause・
       // closed・closeFailures・readings）がまとめて消える（下の自己診断と同じ理由）。
-      if (fusion !== null) deliverStationFusion(stationFusionSinks, fusion)
+      for (const fusion of fusions) deliverStationFusion(stationFusionSinks, fusion)
 
       // **自己診断は本筋を出し切ってから。** このデータグラムの受け手は例外を囲わない
       // 方針（段 4-1）なので、ここで投げると**そのパケットが運んできた計測震度ごと**
@@ -2173,6 +2347,7 @@ async function main(): Promise<void> {
   // **miniSEED の溜め置きを毎秒見る。** 基板が黙ると、溜まった分は次のパケットが来るまで
   // 出ていかない（5 秒の上限は、届いたときにしか測れない）。投げない。
   const mseedTimer = setInterval(() => mseedRecorder.tick(Date.now()), 1_000)
+  const rewaveTimer = setInterval(() => rewaveRunner.tick(), REWAVE_TICK_MS)
   const backlogSaveTimer = setInterval(() => {
     void backlogWriter.save(backlogBook.toJSON()).then((error) => {
       if (error !== null) emit('warn', 'backlog', 'save', `[backlog] 欠けの帳面を書き出せなかった（${error}）`)
@@ -2269,6 +2444,7 @@ async function main(): Promise<void> {
         udpRecvBuffer: receiver.recvBuffer,
         loopStalls: loopStalls.snapshot(),
         backlog: backlogFetcher.snapshot(),
+        rewave: rewaveRunner.snapshot(),
         http: { address: httpAddress ?? '0.0.0.0', port: statusServer.port },
         tally: tally.snapshotTotal(),
         sensors: health.snapshot(),
@@ -2297,6 +2473,8 @@ async function main(): Promise<void> {
           openBooks: waveArchive.openBooks,
           slowClose: waveArchive.slowClose,
           lastWriteError: waveArchive.lastWriteError,
+          revisedWritten: waveArchive.revisedWritten,
+          revisedLost: waveArchive.revisedLost,
         },
         hub: hub.snapshot(),
         acks: acks.snapshot(),
@@ -2345,6 +2523,7 @@ async function main(): Promise<void> {
     const diag = gravity.snapshot()
     const fetched = backlogFetcher.snapshot()
     const mseedHealth = mseedRecorder.health()
+    const fusionNow = fusionTotals()
     // **地震検出と地震情報の受信も要約へ出す**（並びと見出しは `detectionCountEntries`）。
     const detectCounters = detectionCountEntries(detection.snapshot()).map((e) =>
       delta(`detect:${e.key}`, e.label, e.value),
@@ -2366,6 +2545,13 @@ async function main(): Promise<void> {
         '数として出せなかった計測震度',
         pipeline.unusableIntensities,
       ),
+      // **観測点の合成の数え上げも要約へ出す。** どれも 1 件ずつの行を持たない。
+      // 遅れて届いた分は異常ではない（作り直しが埋める）が、電子レンジの干渉のような
+      // 途切れの最中にどれだけ合成から漏れたかは、ここでしか数えられない。
+      fusionLate: delta('fusionLate', '観測点の合成に間に合わず混ぜなかったサンプル', fusionNow.lateSamples),
+      fusionFuture: delta('fusionFuture', '観測点の合成で受け取った時刻より先を名乗って混ぜなかったサンプル', fusionNow.futureSamples),
+      fusionDiscarded: delta('fusionDiscarded', '観測点の合成で抱えたまま混ぜずに捨てたサンプル', fusionNow.discardedSamples),
+      fusionUnusable: delta('fusionUnusable', '数として出せなかった観測点の計測震度', fusionNow.unusableIntensities),
       sensorEvicted: delta('sensorEvicted', 'センサーの生存の枠を捨てた', health.evictions),
       boardClockEvicted: delta(
         'boardClockEvicted',
@@ -2406,6 +2592,9 @@ async function main(): Promise<void> {
         fetched.badPackets + fetched.foreignPackets,
       ),
       backlogUnsaved: delta('backlogUnsaved', '取り戻したまとまりを生データへ書けず訊き直す', fetched.unsavedPackets),
+      // まとめて訊いた答えに入っていた受信済みのまとまり。取り戻した数に比べて多すぎるなら、
+      // まとめる長さが欠けの散らばり方に合っていない。
+      backlogSkipped: delta('backlogSkipped', '取りに行った答えのうち受信済みで書かなかったまとまり', fetched.skippedPackets),
     }
     // **取り戻せなかった分は理由ごとに出す** —— 再起動・上書き・古いファーム・諦め・捨てたで手当てが違う。
     // 欄は `UNRECOVERABLE_TEXT` の鍵から引く（理由を足せば黙って付いてくる）。
@@ -2419,6 +2608,17 @@ async function main(): Promise<void> {
     const backlogFailedCounters = Object.entries(fetched.failures).map(([reason, n]) =>
       delta(`backlogFailed:${reason}`, `欠けを取りに行けず訊き直す（${reason}）`, n ?? 0),
     )
+    // **合成波形の作り直しも要約へ出す。** 1 件ずつの `[rewave]` の行は間引きを通るので、
+    // 作り直せなかった回数は理由ごとにここで数える（`REWAVE_SKIP_TEXT` の鍵から引く）。
+    const rewave = rewaveRunner.snapshot()
+    const rewaveCounters = [
+      delta('rewaveJobs', '取り戻した区間の合成波形を作り直した', rewave.jobs),
+      delta('rewaveChunks', '作り直して控えへ足した合成のまとまり', rewave.chunks),
+      delta('rewaveRawIssues', '作り直しで読んだ生データの壊れ', rewave.rawIssues),
+      ...REWAVE_SKIP_REASONS.map((reason) =>
+        delta(`rewaveSkipped:${reason}`, `合成波形を作り直さなかった（${REWAVE_SKIP_TEXT[reason]}）`, rewave.skipped[reason] ?? 0),
+      ),
+    ]
     const now = Date.now()
     // **まだ動いていることを印へ残す**（`hostLifeMark.ts`）。待たない —— 書き込みが詰まっても
     // 要約を遅らせない。失敗は間引きを通して出す（毎分失敗し続けうる）。
@@ -2435,6 +2635,7 @@ async function main(): Promise<void> {
         ...gravityCounters,
         ...backlogLostCounters,
         ...backlogFailedCounters,
+        ...rewaveCounters,
         ...detectCounters,
       ],
       quietReported,
@@ -2489,6 +2690,7 @@ async function main(): Promise<void> {
     clearInterval(loopStallTimer)
     clearInterval(backlogSaveTimer)
     clearInterval(mseedTimer)
+    clearInterval(rewaveTimer)
     clearInterval(detectionTimer)
     clearInterval(detectionHourlyTimer)
     console.log(`[udp] ${signal} を受けたので締めます`)
@@ -2506,6 +2708,12 @@ async function main(): Promise<void> {
       await backlogFetcher.stop()
     } catch (error) {
       console.error(`[backlog] 締めくくりで取り戻しを止められなかった（${error instanceof Error ? error.message : String(error)}）`)
+    }
+    // **作り直しも、生データと控えを締める前に止める**（作り直している最中の 1 件は待つ）。
+    try {
+      await rewaveRunner.stop()
+    } catch (error) {
+      console.error(`[rewave] 締めくくりで作り直しを止められなかった（${error instanceof Error ? error.message : String(error)}）`)
     }
 
     // **順序は `closeHostCore` が持つ**（理由もあちらに書いてある）。ここは

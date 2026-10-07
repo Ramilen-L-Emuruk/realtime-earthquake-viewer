@@ -34,6 +34,8 @@ const WAVE_ARCHIVE: WaveArchiveStatus = {
   openBooks: 0,
   slowClose: false,
   lastWriteError: null,
+  revisedWritten: 0,
+  revisedLost: 0,
 }
 
 function report(hub: ReadingHub): StatusReport {
@@ -45,9 +47,10 @@ function report(hub: ReadingHub): StatusReport {
     loopStalls: { thresholdMs: 1000, count: 0, totalMs: 0, longestMs: null, last: null },
     backlog: {
       pendingGaps: 0, pendingSamples: 0, recoveredSamples: 0, unrecoverableSamples: {},
-      requests: 0, recoveredPackets: 0, failures: {}, badPackets: 0, foreignPackets: 0, unsavedPackets: 0,
+      requests: 0, recoveredPackets: 0, failures: {}, badPackets: 0, foreignPackets: 0, unsavedPackets: 0, skippedPackets: 0,
       unsettledWriteSinceMs: null,
     },
+    rewave: { waiting: 0, running: false, jobs: 0, chunks: 0, rawIssues: 0, skipped: {} },
     http: { address: '0.0.0.0', port: 50506 },
     tally: new PacketTally().snapshotTotal(),
     sensors: [],
@@ -139,7 +142,6 @@ const WAVE: WaveChunk = {
 
 const STATION_WAVE: FusedWaveChunk = {
   stationId: 'garage',
-  driver: { boardKey: 'mac:aa', sensorId: 's0' },
   firstSampleIndex: 0,
   firstSampleMs: 1_700_000_000_000,
   msPerSample: 10,
@@ -147,6 +149,7 @@ const STATION_WAVE: FusedWaveChunk = {
   // 落とした直流（`gal` と足せば校正済み gal の重み付き平均になる値）。
   dcGal: [[0], [0], [980]],
   memberCount: [9],
+  axisMemberCount: [[9], [9], [9]],
 }
 
 /** 立てたものを必ず畳む。 */
@@ -612,6 +615,20 @@ describe('startStatusServer', () => {
     expect(got).toHaveLength(1)
     expect(got[0].name).toBe('station-wave')
     expect(got[0].data).toEqual(STATION_WAVE)
+  })
+
+  it('正: ?wave=station へは作り直しの知らせ（station-wave-revised）も押し出す（#597）', async () => {
+    const hub = new ReadingHub()
+    const base = await start(hub)
+    const revised = { stationId: 'garage', fromMs: 1_700_000_000_000, toMs: 1_700_000_030_000 }
+
+    const got = await readEvents(base, '/stream?wave=station', 1, () => {
+      hub.publish({ kind: 'station-wave-revised', revised })
+    })
+
+    expect(got).toHaveLength(1)
+    expect(got[0].name).toBe('station-wave-revised')
+    expect(got[0].data).toEqual(revised)
   })
 
   it('対照: ?wave=station へはセンサー単独の波形が付いてこない', async () => {
@@ -1446,6 +1463,7 @@ describe('GET /waves（#357）', () => {
       ],
       dcGal: [0, 0, 980],
       memberCount: Uint8Array.from([3, 3, 2]),
+      revised: false,
     }
   }
 
@@ -1737,6 +1755,7 @@ describe('GET /quake-intensity（#494 段3）', () => {
       gal: [axis(0), axis(1), axis(2)],
       dcGal: [0, 0, 980],
       memberCount: new Uint8Array(n).fill(3),
+      revised: false,
     }
   }
 

@@ -18,7 +18,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { fetchSeismoQuakeIntensity, type QuakeIntensity } from '../services/seismoQuakeIntensity'
 import { fetchSeismoWaveHistory, buildWaveHistoryRange } from '../services/seismoWaveHistory'
-import { fetchSeismoStatus, isValidSeismoHostUrl } from '../services/seismoStream'
+import { fetchSeismoStatus, isValidSeismoHostUrl, type SeismoStationWaveRevised } from '../services/seismoStream'
+import { RangeCoalescer } from '../services/seismoWaveRefill'
 import { quakeScaleForScope, type NearbyScope } from '../utils/actionChecklistTrigger'
 import { serverNow } from '../utils/clock'
 import { log } from '../utils/logger'
@@ -36,6 +37,8 @@ import { computeHypocentralDistanceKm, computeWaveArrival, type WaveArrival } fr
 import {
   appendWaveWindow,
   isSettled,
+  revisedColumnSpan,
+  spliceRevisedColumns,
   trimAfter,
   type TimedColumns,
 } from '../utils/seismoWaveColumns'
@@ -419,8 +422,14 @@ export function useSeismoQuakeWaves(params: {
   replayOffsetMs: number | null
   /** 地震カードごとの発生時刻（秒まで。→ `hooks/useQuakeOriginSeconds.ts`）。P/S 線の起点。 */
   originSeconds: ReadonlyMap<string, OriginSeconds>
+  /**
+   * ホストが取り戻した区間を作り直した知らせを受け取る（→ `useSeismoStation` の `subscribeWaveRevised`・#597）。
+   * **受けたら、その区間に掛かる列をホストから取り直して差し替える** —— 押し出しから作った列は、
+   * 届かなかったところが穴のまま残っている。
+   */
+  subscribeWaveRevised: (listener: (revised: SeismoStationWaveRevised) => void) => () => void
 }): ReadonlyMap<string, readonly SeismoQuakeWave[]> {
-  const { enabled, baseUrl, quakes, scope, readWave, replayOffsetMs, originSeconds } = params
+  const { enabled, baseUrl, quakes, scope, readWave, replayOffsetMs, originSeconds, subscribeWaveRevised } = params
   const [waves, setWaves] = useState<ReadonlyMap<string, readonly SeismoQuakeWave[]>>(new Map())
 
   const canFetch = enabled && isValidSeismoHostUrl(baseUrl)
@@ -783,6 +792,81 @@ export function useSeismoQuakeWaves(params: {
     }, APPEND_INTERVAL_MS)
     return () => clearInterval(timer)
   }, [canFetch])
+
+  // **取り戻した区間を作り直したら、その区間に掛かる列を取り直して差し替える**（#597・2026-10-07 ユーザー承認）。
+  //
+  // **押し出しから作った列は、届かなかったところが穴のまま残る。** 継ぎ足し（{@link appendWaveWindow}）は
+  // 値のある最後の列の次からしか足さないので、後で下部の波形の穴が埋まっても、ここへは戻ってこない。
+  //
+  // **ライブのときだけ。** 再生中は押し出しを繋がないので知らせ自体が来ないが、時間軸の違う列へ
+  // ライブの知らせを当てないよう、ここでも見る。
+  useEffect(() => {
+    if (!canFetch) return
+    const ctrl = new AbortController()
+    /** 鍵は `地震|観測点`。差し替えたのが同じ帳面かは、取りに行った時点の `resetKey` で見分ける。 */
+    const runner = new RangeCoalescer(
+      async (key, range) => {
+        const sep = key.lastIndexOf('|')
+        const eventKey = key.slice(0, sep)
+        const stationId = key.slice(sep + 1)
+        const token = resetKeyRef.current
+        const entryOf = () => bookRef.current.get(eventKey)?.find((e) => e.stationId === stationId)
+        const before = entryOf()
+        if (before === undefined) return
+        const span = revisedColumnSpan(before.columns, range.fromMs, range.toMs)
+        if (span === null) return
+        const result = await fetchSeismoWaveHistory({
+          baseUrl,
+          stationId,
+          range: { fromMs: span.fromMs, toMs: span.toMs },
+          columns: span.count,
+          signal: ctrl.signal,
+        })
+        // **取りに行っている間に帳面が捨てられていたら書かない**（接続先・時間軸が変わった）。
+        if (result.kind !== 'ok' || ctrl.signal.aborted || resetKeyRef.current !== token) return
+        // **初回の読み返しと同じく、ホストの申告は記録へ残す**（画面からは「埋まらない」としか見えない）。
+        const { filesMissing, filesFailed, skippedBytes, truncated } = result.history
+        if (filesMissing > 0 || filesFailed > 0 || skippedBytes > 0 || truncated) {
+          log.warn(
+            `[seismo] 取り直した波形に欠けがある（${stationId}）: ` +
+              `無かったファイル ${filesMissing}・読めなかったファイル ${filesFailed}・` +
+              `読み飛ばし ${skippedBytes} バイト・打ち切り ${truncated ? 'あり' : 'なし'}`,
+          )
+        }
+        if (!result.history.stationKnown) {
+          log.warn(`[seismo] ホストが知らない観測点の波形を取り直した: ${stationId}`)
+          return
+        }
+        const entry = entryOf()
+        if (entry === undefined) return
+        const next = spliceRevisedColumns(entry.columns, result.history)
+        if (next === entry.columns) {
+          // **列の境目が合わなかった**（{@link spliceRevisedColumns}）か、ホストも値を持っていなかった。
+          log.debug(`[seismo] 取り戻した区間の列を取り直したが、カードの列は変わらなかった（${stationId}）`)
+          return
+        }
+        entry.columns = next
+        log.info(`[seismo] 取り戻した区間で地震カードの波形を差し替えた（${stationId}・${span.count} 列）`)
+        publishRef.current()
+      },
+      ctrl.signal,
+      (key, error) => log.error(`[seismo] 地震カードの波形を差し替える途中で投げた（${key}）`, error),
+    )
+    const unsubscribe = subscribeWaveRevised((revised) => {
+      if (replayOffsetRef.current !== null) return
+      for (const [eventKey, entries] of bookRef.current) {
+        for (const e of entries) {
+          if (e.stationId !== revised.stationId) continue
+          if (revisedColumnSpan(e.columns, revised.fromMs, revised.toMs) === null) continue
+          runner.push(`${eventKey}|${e.stationId}`, revised)
+        }
+      }
+    })
+    return () => {
+      unsubscribe()
+      ctrl.abort()
+    }
+  }, [canFetch, baseUrl, subscribeWaveRevised])
 
   // **震源が動いたら到達の線を引き直す。**
   //

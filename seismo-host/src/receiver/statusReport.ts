@@ -23,6 +23,7 @@ import type { RecvBufferOutcome } from './udpReceiver'
 import type { TallySnapshot } from './packetTally'
 import type { HubSnapshot } from './readingHub'
 import type { MseedHealth } from './mseedRecorder'
+import type { RewaveSnapshot } from './rewaveRunner'
 import type { DetectionStatus } from '../detection/stationDetection'
 import type { SensorHealth } from './sensorHealth'
 import type { StationDirectory, StationInfo } from './stationConfig'
@@ -60,6 +61,10 @@ export interface WaveArchiveStatus {
   readonly openBooks: number
   readonly slowClose: boolean
   readonly lastWriteError: string | null
+  /** 作り直した合成のまとまりのうち、流し口へ渡せた数（`writeRevised`）。 */
+  readonly revisedWritten: number
+  /** 作り直した合成のまとまりのうち、書けなかった数。 */
+  readonly revisedLost: number
 }
 
 export interface Endpoint {
@@ -78,6 +83,8 @@ export interface StatusReportInput {
   readonly loopStalls: LoopStallSnapshot
   /** 届かなかった分を基板へ取りに行った結果（`backlogFetcher.ts`）。 */
   readonly backlog: BacklogFetcherSnapshot
+  /** 取り戻した区間の合成波形を作り直した結果（`rewaveRunner.ts`）。 */
+  readonly rewave: RewaveSnapshot
   readonly http: Endpoint
   readonly tally: TallySnapshot
   readonly sensors: readonly SensorHealth[]
@@ -262,6 +269,11 @@ export interface StatusReport {
    * 基板が抱えている時間より長く途絶えていた（または基板が再起動した）。
    */
   readonly backlog: BacklogFetcherSnapshot
+  /**
+   * 取り戻した区間の合成波形を生データから作り直した結果。`waiting` が減らないなら
+   * 欠けが片付いていない（作り直しは片付くか待ちの上限を過ぎるまで始めない）。
+   */
+  readonly rewave: RewaveSnapshot
   readonly http: Endpoint
   readonly sensors: readonly SensorStatus[]
   readonly sensorEvictions: number
@@ -494,6 +506,7 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     udpRecvBuffer: input.udpRecvBuffer,
     loopStalls: input.loopStalls,
     backlog: input.backlog,
+    rewave: input.rewave,
     http: input.http,
     sensors,
     sensorEvictions: input.sensorEvictions,

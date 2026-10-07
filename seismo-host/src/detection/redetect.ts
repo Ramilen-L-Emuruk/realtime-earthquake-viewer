@@ -25,7 +25,7 @@ import { STEP_SEC_DEFAULT } from '../../../src/utils/knet/intensityCommon'
 import { IntensityStream } from '../intensity/intensityStream'
 import { normalizeIntensity } from '../receiver/intensityPipeline'
 import { jstHour, jstHourStartMs } from '../receiver/jstTime'
-import { decodeWaveFile, waveFileName } from '../receiver/waveArchive'
+import { decodeWaveFile, resolveRevisions, waveFileName } from '../receiver/waveArchive'
 import type { ArchivedWaveChunk } from '../receiver/waveArchive'
 import type { P2pReferenceQuake } from './p2pQuake'
 import { DETECTOR_VERSION, QuakeDetector } from './quakeDetector'
@@ -197,8 +197,11 @@ export async function* archiveChunks(params: {
       tally.hoursTruncated++
       tally.skippedBytes += r.skippedBytes
     }
-    // 並べ直す（同じ区間が後から書き足された分がファイルの後ろにいる）。
-    const sorted = [...r.chunks].sort((a, b) => a.firstSampleMs - b.firstSampleMs)
+    // **作り直した分をライブの分より優先する**（控えの読み返しと同じ解き方。`resolveRevisions` は
+    // 書いた順＝ファイルの順で渡す）。その後で並べ直す（同じ区間が後から書き足された分がファイルの後ろにいる）。
+    // 時ごとに解いて足りるのは、合成のまとまりが時の境目をまたがないから（目盛りの 300 ms が 1 時間を割り切る。
+    // `sensorFusion.ts` の STATION_GRID_MS × STATION_CHUNK_POINTS）。これを変えるなら、時をまたいで集めてから解くこと。
+    const sorted = resolveRevisions(r.chunks).sort((a, b) => a.firstSampleMs - b.firstSampleMs)
     for (const c of sorted) {
       const endMs = c.firstSampleMs + c.gal[0].length * c.msPerSample
       if (endMs <= fromMs || c.firstSampleMs > toMs) continue

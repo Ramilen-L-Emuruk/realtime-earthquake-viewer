@@ -4,7 +4,14 @@ import { IntensityStream } from '../intensity/intensityStream'
 import type { BoardKey, SensorPacket } from '../protocol/types'
 import { IntensityPipeline } from './intensityPipeline'
 import type { WaveChunk } from './intensityPipeline'
-import { FUSION_WAIT_MS_DEFAULT, SensorFusion } from './sensorFusion'
+import {
+  FUSION_LIVE_MS,
+  FUSION_MAX_FUTURE_MS,
+  FUSION_WAIT_MS_DEFAULT,
+  STATION_CHUNK_POINTS,
+  STATION_GRID_MS,
+  SensorFusion,
+} from './sensorFusion'
 import type { FusedWaveChunk, FusionOutcome, StationIntensityReading } from './sensorFusion'
 import { StationDirectory } from './stationConfig'
 import type { StationConfig } from './stationConfig'
@@ -15,18 +22,19 @@ const IDENTITY = [
   [0, 0, 1],
 ] as const
 
-const BASE_MS = 1790181865671
-const HZ = 100
-const MS_PER_SAMPLE = 1000 / HZ
+/**
+ * 観測点の目盛りのまとまり（300 ms）の境目に乗る時刻。**境目に揃えておくと、
+ * センサーのまとまりと出てくるまとまりが 1 対 1 になって読みやすい**（揃えない形は
+ * 実機の到着を写したテストが見る）。
+ */
+const T0 = 1_790_181_865_800
+const CHUNK_MS = STATION_GRID_MS * STATION_CHUNK_POINTS
+const HZ = 1000 / STATION_GRID_MS
 
 /**
- * 裏付けの到着を待たせない指定。**「1 まとまり流したら即合成」を見るテスト用。**
- *
- * 既定（`FUSION_WAIT_MS_DEFAULT`）のままだと、まとまりを 1 つ流しただけでは
- * 裏付けが 1 本も揃わず、待ちの上限にも達しないので合成が起きない
- * （**値はあちらを見ること。ここへ書き写さない**）。**待ちそのものの検証は別のテストが持つ**
- * （「裏付けを待って顔ぶれを揃える」）——こちらを 0 にしておけば、待ちと
- * 重み付き平均・差分・流し込みの検証を独立に読める。
+ * 待ちを 0 にする指定。**届いたまとまりの末尾まで時刻が進めば、その場で出す。**
+ * 待ちと、重み付き平均・差分・流し込みの検証を独立に読むためのもの
+ * （待ちそのものは「待って顔ぶれを揃える」の節が見る）。
  */
 const NO_WAIT = { waitMs: 0 }
 
@@ -35,44 +43,34 @@ const BOARD_B: BoardKey = 'mac:bbbbbbbbbbbb'
 const BOARD_C: BoardKey = 'mac:cccccccccccc'
 const BOARD_D: BoardKey = 'mac:dddddddddddd'
 
-/** 観測点 1 つに 2 センサーを割り当てた設定。ノイズ密度・enabled を差し替えられる。 */
+type SensorEntry = StationConfig['boards'][number]['sensors'][number]
+
+function sensorEntry(sensorId: string, noiseDensity: number | null, enabled = true): SensorEntry {
+  return { sensorId, enabled, rotation: IDENTITY, offset: [0, 0, 0], sensitivity: [1, 1, 1], noiseDensity }
+}
+
+/** 観測点 1 つに、基板 1 枚ずつのセンサーを並べた設定。**並び順は引数の順。** */
+function stationConfig(
+  members: readonly { boardKey: BoardKey; sensorId: string; noiseDensity: number | null; enabled?: boolean }[],
+): StationConfig {
+  return {
+    stations: [{ stationId: 'home', displayName: '自宅', lat: 35.6, lon: 139.7 }],
+    boards: members.map((m) => ({
+      boardKey: m.boardKey,
+      stationId: 'home',
+      sensors: [sensorEntry(m.sensorId, m.noiseDensity, m.enabled ?? true)],
+    })),
+  }
+}
+
 function twoSensorConfig(
   a: { noiseDensity: number | null; enabled?: boolean },
   b: { noiseDensity: number | null; enabled?: boolean },
 ): StationConfig {
-  return {
-    stations: [{ stationId: 'home', displayName: '自宅', lat: 35.6, lon: 139.7 }],
-    boards: [
-      {
-        boardKey: BOARD_A,
-        stationId: 'home',
-        sensors: [
-          {
-            sensorId: 'sensorA',
-            enabled: a.enabled ?? true,
-            rotation: IDENTITY,
-            offset: [0, 0, 0],
-            sensitivity: [1, 1, 1],
-            noiseDensity: a.noiseDensity,
-          },
-        ],
-      },
-      {
-        boardKey: BOARD_B,
-        stationId: 'home',
-        sensors: [
-          {
-            sensorId: 'sensorB',
-            enabled: b.enabled ?? true,
-            rotation: IDENTITY,
-            offset: [0, 0, 0],
-            sensitivity: [1, 1, 1],
-            noiseDensity: b.noiseDensity,
-          },
-        ],
-      },
-    ],
-  }
+  return stationConfig([
+    { boardKey: BOARD_A, sensorId: 'sensorA', ...a },
+    { boardKey: BOARD_B, sensorId: 'sensorB', ...b },
+  ])
 }
 
 function wave(over: Partial<WaveChunk> & { boardKey: BoardKey; sensorId: string }): WaveChunk {
@@ -82,12 +80,53 @@ function wave(over: Partial<WaveChunk> & { boardKey: BoardKey; sensorId: string 
     segmentId: 1,
     channels: ['HN1', 'HN2', 'HN3'],
     firstSampleIndex: 0,
-    firstSampleMs: BASE_MS,
-    msPerSample: MS_PER_SAMPLE,
+    firstSampleMs: T0,
+    msPerSample: STATION_GRID_MS,
     timebaseNominalReason: null,
     gal: [new Array(n).fill(0), new Array(n).fill(0), new Array(n).fill(0)],
     ...over,
   }
+}
+
+function rows(n: number, v: number): [number[], number[], number[]] {
+  return [new Array(n).fill(v), new Array(n).fill(v), new Array(n).fill(v)]
+}
+
+/** 目盛りの `k` 番目（`T0` から数えて）から `n` サンプル、刻み 10 ms のまとまり。 */
+function gridChunk(
+  boardKey: BoardKey,
+  sensorId: string,
+  k: number,
+  gal: [number[], number[], number[]],
+  over: Partial<WaveChunk> = {},
+): WaveChunk {
+  return wave({ boardKey, sensorId, firstSampleIndex: k, firstSampleMs: T0 + k * STATION_GRID_MS, gal, ...over })
+}
+
+/** 合成波形の値を、落とした直流を足し戻して読む（＝落とす前の「校正済み gal の重み付き平均」）。 */
+function restored(w: FusedWaveChunk, axis: number, i: number): number {
+  return w.gal[axis][i] + w.dcGal[axis][i]
+}
+
+function wavesOf(outs: readonly FusionOutcome[]): FusedWaveChunk[] {
+  return outs.map((o) => o.fusedWave)
+}
+
+/** 出た合成波形が、目盛りの上で隙間なく続いているか。**続いていなければ最初の切れ目の位置を返す。** */
+function firstBreak(waves: readonly FusedWaveChunk[]): number | null {
+  for (let i = 1; i < waves.length; i++) {
+    const prev = waves[i - 1]
+    if (waves[i].firstSampleIndex !== prev.firstSampleIndex + prev.gal[0].length) return i
+  }
+  return null
+}
+
+/**
+ * 時計の合っている台が届けた形で流す（受け取った時刻＝そのまとまりの末尾のサンプルの時刻）。
+ * **時計が飛ぶ形を作るテストは、受け取った時刻を明示して `fusion.ingest()` を呼ぶこと。**
+ */
+function ingestNow(fusion: SensorFusion, w: WaveChunk): readonly FusionOutcome[] {
+  return fusion.ingest(w, w.firstSampleMs + (w.gal[0].length - 1) * w.msPerSample)
 }
 
 describe('SensorFusion.groupedStationIds', () => {
@@ -110,333 +149,208 @@ describe('SensorFusion.groupedStationIds', () => {
 describe('SensorFusion.ingest — グループ化と対象外の扱い', () => {
   it('対照: 観測点に割り当てが無いセンサーは合成の対象にならない', () => {
     const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), NO_WAIT)
-    const out = fusion.ingest(wave({ boardKey: BOARD_C, sensorId: 'lonely', gal: [[100], [0], [0]] }))
-    expect(out.fusedWave).toBeNull()
-    expect(out.pairDiffs).toEqual([])
-    expect(out.readings).toEqual([])
+    expect(ingestNow(fusion, gridChunk(BOARD_C, 'lonely', 0, rows(30, 100)))).toEqual([])
+    expect(fusion.closeAll().drained).toEqual([])
   })
 
   it('安全弁: 観測点に 1 台しか割り当てが無ければ、その 1 台も合成対象にならない', () => {
-    // home には sensorA だけ・sensorB は別観測点という体で、boards から sensorB を抜く。
     const config = twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 })
-    const soloConfig: StationConfig = { ...config, boards: [config.boards[0]] }
-    const fusion = new SensorFusion(soloConfig)
-    const out = fusion.ingest(wave({ boardKey: BOARD_A, sensorId: 'sensorA', gal: [[100], [0], [0]] }))
-    expect(out.fusedWave).toBeNull()
+    const fusion = new SensorFusion({ ...config, boards: [config.boards[0]] }, NO_WAIT)
+    expect(ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', 0, rows(30, 100)))).toEqual([])
   })
 
   it('安全弁: enabled:false のセンサーはグループに入らない（相方が居ないのと同じ扱いになる）', () => {
-    const fusion = new SensorFusion(
-      twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20, enabled: false }),
-    )
-    // sensorB（無効）を先に流しても素通り、sensorA（唯一の enabled）を流しても
-    // グループが組めていないので合成は起きない。
-    fusion.ingest(wave({ boardKey: BOARD_B, sensorId: 'sensorB', gal: [[50], [0], [0]] }))
-    const out = fusion.ingest(wave({ boardKey: BOARD_A, sensorId: 'sensorA', gal: [[100], [0], [0]] }))
-    expect(out.fusedWave).toBeNull()
+    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20, enabled: false }), NO_WAIT)
+    ingestNow(fusion, gridChunk(BOARD_B, 'sensorB', 0, rows(30, 50)))
+    expect(ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', 0, rows(30, 100)))).toEqual([])
+  })
+})
+
+describe('SensorFusion.ingest — 観測点の目盛り', () => {
+  it('正: 刻みは 10 ms 固定・位置は絶対時刻の通し番号（センサーの刻みが揺らいでも）', () => {
+    // 実機の刻みは基板ごとに 9.979〜10.018 ms で揺らぐ。**それを合成の刻みへ持ち込むと、
+    // PWA は刻みが 0.5% 動いたところで溜めた波形を捨てる**ので、目盛りは固定にする。
+    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), NO_WAIT)
+    const outs: FusionOutcome[] = []
+    for (let c = 0; c < 6; c++) {
+      outs.push(
+        ...ingestNow(fusion, 
+          wave({ boardKey: BOARD_A, sensorId: 'sensorA', firstSampleMs: T0 + 7 + c * 31 * 9.9792, msPerSample: 9.9792, gal: rows(31, 1) }),
+        ),
+        ...ingestNow(fusion, 
+          wave({ boardKey: BOARD_B, sensorId: 'sensorB', firstSampleMs: T0 + 3 + c * 30 * 10.0178, msPerSample: 10.0178, gal: rows(30, 1) }),
+        ),
+      )
+    }
+    outs.push(...fusion.closeAll().drained)
+    const waves = wavesOf(outs)
+    expect(waves.length).toBeGreaterThan(0)
+    for (const w of waves) {
+      expect(w.msPerSample).toBe(STATION_GRID_MS)
+      expect(w.firstSampleMs).toBe(w.firstSampleIndex * STATION_GRID_MS)
+    }
+    expect(firstBreak(waves)).toBeNull()
   })
 
-  it('対照: 裏付け側（駆動役でない方）の到着では合成波形は出ない（覚えるだけ）', () => {
+  it('正: まとまりの境目は絶対時刻で決まる（300 ms の倍数）。届き方によらない', () => {
     const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), NO_WAIT)
-    // noiseDensity が低い sensorA が駆動役。sensorB（裏付け側）だけを流す。
-    const out = fusion.ingest(wave({ boardKey: BOARD_B, sensorId: 'sensorB', gal: [[50], [0], [0]] }))
-    expect(out.fusedWave).toBeNull()
-    expect(out.pairDiffs).toEqual([])
+    const outs: FusionOutcome[] = []
+    // 境目からずれた位置（目盛り 13 番目）から始まるセンサー。
+    for (let c = 0; c < 4; c++) {
+      outs.push(...ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', 13 + c * 30, rows(30, 1))))
+      outs.push(...ingestNow(fusion, gridChunk(BOARD_B, 'sensorB', 13 + c * 30, rows(30, 1))))
+    }
+    outs.push(...fusion.closeAll().drained)
+    const waves = wavesOf(outs)
+    // 先頭は境目の手前で切れ（13〜29）、以後は境目から 30 点ずつ。
+    expect(waves[0].firstSampleIndex).toBe(T0 / STATION_GRID_MS + 13)
+    for (const w of waves.slice(1)) {
+      expect(w.firstSampleMs % CHUNK_MS).toBe(0)
+    }
   })
 })
 
 describe('SensorFusion.ingest — 重み付き平均と差分', () => {
-  // **合成値は「直流を落とした変動分」なので、1 サンプルだけ流すと必ず 0 になる**
-  // （そのサンプル自身が直流の推定になるため。`DcTracker` を見ること）。
-  // 重みの計算はそのまま落とした直流のほうへ現れるので、**足し戻した値**
-  // （`gal + dcGal` ＝ 落とす前の「校正済み gal の重み付き平均」）で確かめる。
-  // 足し戻しが成り立つこと自体、下流（#315）が元の値を取り戻せる根拠になる。
-  function restored(out: FusionOutcome, axis: number, i: number): number {
-    const w = out.fusedWave
-    if (w === null) throw new Error('合成波形が出ていない')
-    return w.gal[axis][i] + w.dcGal[axis][i]
-  }
-
-  it('正: 駆動役だけが届いていれば、合成値は駆動役自身の値になる（memberCount=1）', () => {
+  it('正: 1 台だけが届いていれば、合成値はその台の値になる（memberCount=1）', () => {
     const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), NO_WAIT)
-    const out = fusion.ingest(wave({ boardKey: BOARD_A, sensorId: 'sensorA', gal: [[100], [0], [0]] }))
-    expect(restored(out, 0, 0)).toBeCloseTo(100, 9)
-    expect(out.fusedWave?.memberCount).toEqual([1])
+    const [out] = ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', 0, rows(30, 100)))
+    expect(restored(out.fusedWave, 0, 5)).toBeCloseTo(100, 9)
+    expect(out.fusedWave.memberCount.every((m) => m === 1)).toBe(true)
   })
 
   it('正: 両方届けば、重み（ノイズ密度の逆数分散）付きの平均になる', () => {
-    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), NO_WAIT)
-    // 先に裏付け側（sensorB）を届ける。
-    fusion.ingest(wave({ boardKey: BOARD_B, sensorId: 'sensorB', gal: [[50], [0], [0]] }))
-    // 駆動役（sensorA、noiseDensity が低い）が届いて初めて合成が動く。
-    const out = fusion.ingest(wave({ boardKey: BOARD_A, sensorId: 'sensorA', gal: [[100], [0], [0]] }))
-    // 重み: wA=1/10²=0.01, wB=1/20²=0.0025。
-    // (0.01*100 + 0.0025*50) / (0.01+0.0025) = 1.125 / 0.0125 = 90
-    expect(restored(out, 0, 0)).toBeCloseTo(90, 9)
-    expect(out.fusedWave?.memberCount).toEqual([2])
+    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }))
+    expect(ingestNow(fusion, gridChunk(BOARD_B, 'sensorB', 0, rows(30, 50)))).toEqual([])
+    const [out] = ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', 0, rows(30, 100)))
+    // wA=1/10²=0.01, wB=1/20²=0.0025 → (0.01*100 + 0.0025*50) / 0.0125 = 90
+    expect(restored(out.fusedWave, 0, 0)).toBeCloseTo(90, 9)
+    expect(out.fusedWave.memberCount.every((m) => m === 2)).toBe(true)
+    expect(out.allMembersCovered).toBe(true)
   })
 
   it('正: ノイズ密度が片方でも未申告なら、グループ全体を単純平均へ倒す', () => {
-    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: null }, { noiseDensity: 100 }), NO_WAIT)
-    fusion.ingest(wave({ boardKey: BOARD_B, sensorId: 'sensorB', gal: [[50], [0], [0]] }))
-    const out = fusion.ingest(wave({ boardKey: BOARD_A, sensorId: 'sensorA', gal: [[100], [0], [0]] }))
-    // 単純平均: (100+50)/2 = 75
-    expect(restored(out, 0, 0)).toBeCloseTo(75, 9)
+    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: null }, { noiseDensity: 100 }))
+    ingestNow(fusion, gridChunk(BOARD_B, 'sensorB', 0, rows(30, 50)))
+    const [out] = ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', 0, rows(30, 100)))
+    expect(restored(out.fusedWave, 0, 0)).toBeCloseTo(75, 9)
+  })
+
+  it('正: 成分ごとの本数（axisMemberCount）を持ち、3 軸の台では 3 成分とも同じ', () => {
+    // 2 軸の台を後から受けるための備え。**今の台はどれも 3 軸なので値は揃う**。
+    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }))
+    ingestNow(fusion, gridChunk(BOARD_B, 'sensorB', 0, rows(30, 50)))
+    const [out] = ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', 0, rows(30, 100)))
+    for (let axis = 0; axis < 3; axis++) expect(out.fusedWave.axisMemberCount[axis]).toEqual(out.fusedWave.memberCount)
   })
 
   it('正: 差分 d=(a1-a2)/2 を出す（メンバー順は設定の並び順）', () => {
-    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), NO_WAIT)
-    // **2 サンプル流す。** 差分も直流を落とした後の値から作るので、1 サンプルでは
-    // 両方 0 になって式を確かめられない。
-    // sensorB: [0, 0] → 直流を引いた後も [0, 0]（動いていない）。
-    // sensorA: [0, 100] → 2 サンプル目の直流は (0+100)/2 = 50 なので 100-50 = 50。
-    fusion.ingest(wave({ boardKey: BOARD_B, sensorId: 'sensorB', gal: [[0, 0], [0, 0], [0, 0]] }))
-    const out = fusion.ingest(wave({ boardKey: BOARD_A, sensorId: 'sensorA', gal: [[0, 100], [0, 0], [0, 0]] }))
+    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }))
+    // sensorA: [0, 100, 0, …] → 2 サンプル目の直流は (0+100)/2 = 50 なので 100-50 = 50。
+    const a = rows(30, 0)
+    a[0][1] = 100
+    ingestNow(fusion, gridChunk(BOARD_B, 'sensorB', 0, rows(30, 0)))
+    const [out] = ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', 0, a))
     expect(out.pairDiffs).toHaveLength(1)
     const d = out.pairDiffs[0]
     expect(d.memberA).toEqual({ boardKey: BOARD_A, sensorId: 'sensorA' })
     expect(d.memberB).toEqual({ boardKey: BOARD_B, sensorId: 'sensorB' })
-    expect(d.diffGal[0][1]).toBeCloseTo((50 - 0) / 2, 9)
+    expect(d.firstSampleIndex).toBe(out.fusedWave.firstSampleIndex)
+    expect(d.msPerSample).toBe(STATION_GRID_MS)
+    expect(d.diffGal[0][1]).toBeCloseTo(25, 9)
   })
 
   it('正: 取り付けの向き・感度のずれ（直流の差）は差分に現れない', () => {
-    // **差分の用途はセンサー自己ノイズの推定と異常センサーの検出。** 実機では
-    // 静止時の Z 軸が 662〜1200 gal に散っていて（感度が未校正）、落とさずに差を
-    // とると**そのずれが差を支配して何も見分けられない**（#362）。
-    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), NO_WAIT)
-    // 2 本の直流は 538 gal 違うが、どちらも動いていない。
-    fusion.ingest(wave({ boardKey: BOARD_B, sensorId: 'sensorB', gal: [[0, 0], [0, 0], [662, 662]] }))
-    const out = fusion.ingest(
-      wave({ boardKey: BOARD_A, sensorId: 'sensorA', gal: [[0, 0], [0, 0], [1200, 1200]] }),
-    )
-    expect(out.pairDiffs[0].diffGal[2][1]).toBeCloseTo(0, 9)
+    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }))
+    const b = rows(30, 0)
+    b[2].fill(662)
+    const a = rows(30, 0)
+    a[2].fill(1200)
+    ingestNow(fusion, gridChunk(BOARD_B, 'sensorB', 0, b))
+    const [out] = ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', 0, a))
+    expect(out.pairDiffs[0].diffGal[2][10]).toBeCloseTo(0, 9)
   })
 
-  it('安全弁: 裏付け側の値が時刻的に離れすぎていれば外挿せず、駆動役だけの値になる', () => {
-    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), NO_WAIT)
-    // sensorB の 1 サンプルは 100 秒後の時刻を名乗る —— 駆動役の時刻からは大きく外れる。
-    fusion.ingest(
-      wave({
-        boardKey: BOARD_B,
-        sensorId: 'sensorB',
-        firstSampleMs: BASE_MS + 100_000,
-        gal: [[50], [0], [0]],
-      }),
+  it('正: 3 台のグループでは全ペア（3 組）の差分が出る', () => {
+    const fusion = new SensorFusion(
+      stationConfig([
+        { boardKey: BOARD_A, sensorId: 'sensorA', noiseDensity: 50 },
+        { boardKey: BOARD_B, sensorId: 'sensorB', noiseDensity: 5 },
+        { boardKey: BOARD_C, sensorId: 'sensorC', noiseDensity: 20 },
+      ]),
     )
-    const out = fusion.ingest(wave({ boardKey: BOARD_A, sensorId: 'sensorA', gal: [[100], [0], [0]] }))
-    expect(restored(out, 0, 0)).toBeCloseTo(100, 9)
-    expect(out.fusedWave?.memberCount).toEqual([1])
-    expect(out.pairDiffs[0].diffGal[0][0]).toBeNull()
+    ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', 0, rows(30, 100)))
+    ingestNow(fusion, gridChunk(BOARD_C, 'sensorC', 0, rows(30, 100)))
+    const [out] = ingestNow(fusion, gridChunk(BOARD_B, 'sensorB', 0, rows(30, 50)))
+    expect(out.fusedWave.memberCount.every((m) => m === 3)).toBe(true)
+    expect(out.pairDiffs).toHaveLength(3)
   })
 })
 
-describe('SensorFusion.ingest — 裏付けを待って顔ぶれを揃える（#362・#374）', () => {
-  /** 実機と同じ 1 まとまり 10 サンプル（100ms）。 */
-  const CHUNK = 10
-  /** 実機の基板間の起点差（実測 160ms まで）。 */
-  const SKEW_B = 73
-  const SKEW_C = 160
-
-  function threeSensorConfig(): StationConfig {
-    function entry(sensorId: string) {
-      return {
-        sensorId,
-        enabled: true,
-        rotation: IDENTITY,
-        offset: [0, 0, 0] as const,
-        sensitivity: [1, 1, 1] as const,
-        noiseDensity: null,
-      }
-    }
-    return {
-      stations: [{ stationId: 'home', displayName: '自宅', lat: 35.6, lon: 139.7 }],
-      boards: [
-        { boardKey: BOARD_A, stationId: 'home', sensors: [entry('sensorA')] },
-        { boardKey: BOARD_B, stationId: 'home', sensors: [entry('sensorB')] },
-        { boardKey: BOARD_C, stationId: 'home', sensors: [entry('sensorC')] },
-      ],
-    }
+describe('SensorFusion.ingest — 刻みの違う台を目盛りへ揃える（補間）', () => {
+  /** 時刻に比例する値。**線形補間なら、どの時刻でも誤差なく引ける。** */
+  function ramp(tMs: number): number {
+    return (tMs - T0) * 0.5
   }
 
-  function rows(n: number, v: number): [number[], number[], number[]] {
-    return [new Array(n).fill(v), new Array(n).fill(v), new Array(n).fill(v)]
+  function rampChunk(boardKey: BoardKey, sensorId: string, firstMs: number, n: number, mps: number): WaveChunk {
+    const g: [number[], number[], number[]] = [[], [], []]
+    for (let i = 0; i < n; i++) {
+      const v = ramp(firstMs + i * mps)
+      g[0].push(v)
+      g[1].push(-v)
+      g[2].push(1000 + v)
+    }
+    return wave({ boardKey, sensorId, firstSampleMs: firstMs, msPerSample: mps, gal: g })
   }
 
-  /**
-   * 実機の到着の形（基板ごとに起点がずれる）で流し、混ざった本数を集める。
-   *
-   * `backupRounds` を絞ると「裏付けが途中で落ちた」形になる。
-   */
-  function runChunks(waitMs: number, rounds: number, backupRounds = rounds): number[][] {
-    const fusion = new SensorFusion(threeSensorConfig(), { dcWindowSec: 1, stepSec: 1, waitMs })
-    const counts: number[][] = []
-    for (let c = 0; c < rounds; c++) {
-      const at = c * CHUNK
-      const outs = [
-        fusion.ingest(
-          wave({
-            boardKey: BOARD_A,
-            sensorId: 'sensorA',
-            firstSampleIndex: at,
-            firstSampleMs: BASE_MS + at * MS_PER_SAMPLE,
-            gal: rows(CHUNK, 1),
-          }),
-        ),
-      ]
-      if (c < backupRounds) {
-        for (const [boardKey, sensorId, skew] of [
-          [BOARD_B, 'sensorB', SKEW_B],
-          [BOARD_C, 'sensorC', SKEW_C],
-        ] as const) {
-          outs.push(
-            fusion.ingest(
-              wave({
-                boardKey,
-                sensorId,
-                firstSampleIndex: at,
-                firstSampleMs: BASE_MS + skew + at * MS_PER_SAMPLE,
-                gal: rows(CHUNK, 1),
-              }),
-            ),
-          )
-        }
-      }
-      for (const out of outs) {
-        if (out.fusedWave !== null) counts.push([...out.fusedWave.memberCount])
-      }
+  it('正: 104 Hz の台と 100 Hz の台が混ざっても、目盛りの時刻の値を引く', () => {
+    // IIS2ICLX は 104 Hz。**最寄りのサンプルを当てると最大で半サンプル（約 5 ms）ずれる。**
+    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 10 }))
+    const mps104 = 1000 / 104
+    ingestNow(fusion, rampChunk(BOARD_B, 'sensorB', T0 - 3, 40, mps104))
+    const outs = ingestNow(fusion, rampChunk(BOARD_A, 'sensorA', T0, 30, STATION_GRID_MS))
+    expect(outs).toHaveLength(1)
+    const w = outs[0].fusedWave
+    for (let i = 0; i < w.gal[0].length; i++) {
+      const t = w.firstSampleMs + i * STATION_GRID_MS
+      expect(w.memberCount[i]).toBe(2)
+      expect(restored(w, 0, i)).toBeCloseTo(ramp(t), 6)
+      expect(restored(w, 1, i)).toBeCloseTo(-ramp(t), 6)
+      expect(restored(w, 2, i)).toBeCloseTo(1000 + ramp(t), 6)
     }
-    return counts
-  }
-
-  /** `runChunks` をまとまりの区切りを捨てて平坦にしたもの。 */
-  function run(waitMs: number, rounds: number, backupRounds = rounds): number[] {
-    return runChunks(waitMs, rounds, backupRounds).flat()
-  }
-
-  it('正: 待てば 3 本とも混ざる（立ち上がりを過ぎれば顔ぶれが揺れない）', () => {
-    // 実機（2026-09-28）では基板間の到着差が最大 173ms あった。**混ざった本数は
-    // 状態の口に出ない**ので、その到着の形を写した台で測ると、待たずに合成した場合は
-    // **9 本のうち 1〜7 本を揺れ動いた**（8000 サンプル中、9 本が揃った瞬間は 0 回）。
-    const counts = run(300, 16)
-    // **最初の数まとまりは揃わない。これは待ちでは直せない。** 裏付けの基板は
-    // 駆動役より遅く起動しているので（実機の起点差は最大 160ms）、いちばん古い
-    // 駆動役のまとまりを覆うサンプルをそもそも持っていない。
-    const settled = new Set(counts.slice(CHUNK * 3))
-    expect(settled).toEqual(new Set([3]))
   })
 
-  it('対照: 待たなければ顔ぶれが揃わない（落ち着いた後も 3 本未満が混ざる）', () => {
-    // **待ちが効いていることの裏取り。** これが {3} になってしまうなら、上の
-    // テストは症状の条件を作れていない（待つ前から揃っていた）ことになる。
-    const counts = run(0, 16).slice(CHUNK * 3)
-    expect(counts.some((m) => m < 3)).toBe(true)
+  it('安全弁: 外へは延ばさない（最後のサンプルより後の目盛りには混ざらない）', () => {
+    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 10 }), NO_WAIT)
+    // sensorB は目盛り 0〜14 だけ持つ。
+    ingestNow(fusion, gridChunk(BOARD_B, 'sensorB', 0, rows(15, 50)))
+    const outs = ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', 0, rows(30, 100)))
+    const counts = wavesOf(outs).flatMap((w) => [...w.memberCount])
+    expect(counts.slice(0, 15).every((m) => m === 2)).toBe(true)
+    expect(counts.slice(15).every((m) => m === 1)).toBe(true)
   })
 
-  it('安全弁: 裏付けが途中で落ちても合成は止まらない（その時点の本数で続ける）', () => {
-    // 前半だけ裏付けが届き、以後は駆動役だけ。**永久に待たない**こと——待ち続けると
-    // 観測点の震度がその時点で止まり、理由も残らない。
-    const counts = new Set(run(300, 16, 4))
-    expect(counts.has(1)).toBe(true)
-    expect(counts.size).toBeGreaterThan(1)
+  it('安全弁: 刻みの 1.5 倍を超える隙間は補間でまたがない', () => {
+    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 10 }))
+    // sensorB は目盛り 10〜12 が抜けている（13 番目から再開）。
+    ingestNow(fusion, gridChunk(BOARD_B, 'sensorB', 0, rows(10, 50)))
+    ingestNow(fusion, gridChunk(BOARD_B, 'sensorB', 13, rows(17, 50)))
+    const outs = ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', 0, rows(30, 100)))
+    const counts = wavesOf(outs).flatMap((w) => [...w.memberCount])
+    expect(counts.slice(0, 10).every((m) => m === 2)).toBe(true)
+    expect(counts.slice(10, 13)).toEqual([1, 1, 1])
+    expect(counts.slice(13).every((m) => m === 2)).toBe(true)
   })
+})
 
-  it('安全弁: 時刻が進まなくても、溜まりが上限に達したら待ちを切り上げる', () => {
-    // **待ちの計時は届いたまとまりの時刻で行う**ので、時刻が進まない入力
-    // （同じ `firstSampleMs` を名乗り続ける＝基板の時計が止まった形）では待ちが
-    // 永久に満たされない。**溜め続けるとメモリが伸び、捨てると波形が消える**ので、
-    // 上限（`MAX_HELD_CHUNKS`）で切り上げてその時点の顔ぶれで合成する。
-    const fusion = new SensorFusion(threeSensorConfig(), { dcWindowSec: 1, stepSec: 1, waitMs: 300 })
-    let fused = 0
-    // 位置だけ進めて時刻は据え置く。上限（32）を超えるまで送る。
-    for (let c = 0; c < 40; c++) {
-      const out = fusion.ingest(
-        wave({
-          boardKey: BOARD_A,
-          sensorId: 'sensorA',
-          firstSampleIndex: c * CHUNK,
-          firstSampleMs: BASE_MS,
-          gal: rows(CHUNK, 1),
-        }),
-      )
-      if (out.fusedWave !== null) fused++
-    }
-    // 切り上げが無ければ 1 度も合成されない（待ちが永久に満たされないため）。
-    expect(fused).toBeGreaterThan(0)
-    // **上限を超えた分だけが出る。** 40 回送って上限 32 なら、出るのは 8 回前後。
-    // 全部出ていたら待ちそのものが効いていない。
-    expect(fused).toBeLessThan(40)
-  })
-
-  it('安全弁: 駆動役が止まっても裏付けのキャッシュは頭打ちになる', () => {
-    // 裏付けだけが届き続ける形（駆動役の基板が落ちた）。**`trimCache` は保留の
-    // 進みでしか捨てない**ので、駆動役が来なければ捨てる契機が無い —— 上限
-    // （`MAX_CACHED_CHUNKS`）が唯一の歯止め。伸び続けていないことを、覚えている
-    // まとまりから引ける時刻の幅で見る。
-    //
-    // **待ちは 0。** ここで見たいのはキャッシュの頭打ちだけで、待ちは上の
-    // 3 つのテストが見ている（混ぜると「引けないのは捨てられたからか、まだ
-    // 待っているからか」が分からなくなる）。
-    const fusion = new SensorFusion(threeSensorConfig(), { dcWindowSec: 1, stepSec: 1, waitMs: 0 })
-    for (let c = 0; c < 400; c++) {
-      const at = c * CHUNK
-      fusion.ingest(
-        wave({
-          boardKey: BOARD_B,
-          sensorId: 'sensorB',
-          firstSampleIndex: at,
-          firstSampleMs: BASE_MS + at * MS_PER_SAMPLE,
-          gal: rows(CHUNK, 1),
-        }),
-      )
-    }
-    // 400 まとまり送ったあと、**いちばん古い時刻はもう引けない**（上限で捨てられた）。
-    // 引けてしまうなら 400 個すべて抱えていることになる。
-    //
-    const out = fusion.ingest(
-      wave({
-        boardKey: BOARD_A,
-        sensorId: 'sensorA',
-        firstSampleIndex: 0,
-        firstSampleMs: BASE_MS,
-        gal: rows(CHUNK, 1),
-      }),
-    )
-    expect(out.fusedWave).not.toBeNull()
-    // 先頭の時刻では裏付けを 1 本も引けない＝駆動役だけの合成になる。
-    expect(out.fusedWave?.memberCount.every((m) => m === 1)).toBe(true)
-    // 最新側の時刻なら引ける（キャッシュが空になったわけではない）。
-    const recentAt = 399 * CHUNK
-    const recent = fusion.ingest(
-      wave({
-        boardKey: BOARD_A,
-        sensorId: 'sensorA',
-        firstSampleIndex: CHUNK,
-        firstSampleMs: BASE_MS + recentAt * MS_PER_SAMPLE,
-        gal: rows(CHUNK, 1),
-      }),
-    )
-    expect(recent.fusedWave).not.toBeNull()
-    expect(recent.fusedWave?.memberCount.some((m) => m > 1)).toBe(true)
-  })
-
-  /** 実機と同じ 1 まとまり 30 サンプル（約 300ms）。**`CHUNK`（10）では症状が出ない。** */
+describe('SensorFusion.ingest — 待って顔ぶれを揃える（#362・#374）', () => {
+  /** 実機と同じ 1 まとまり 30 サンプル（約 300ms）。 */
   const WIDE_CHUNK = 30
 
   /**
-   * 実機（2026-09-30・3 基板 × 3 センサー）の到着の形を写した 9 本。
-   *
-   * 数値は `/stream?wave=all` の実測（中央値）。**3 つとも要る。**
-   *
-   * - `phase` —— まとまりの境目（`firstSampleMs` を名目のまとまり長で割った余り）。
-   *   **これがばらけていることが症状の条件。** 位相が揃っていると、到着さえすれば
-   *   駆動役のまとまりを丸ごと覆えるので欠けない
-   * - `lag` —— 駆動役に対する到着の遅れ。実測では `020000000001` の 2 本だけが
-   *   遅く（+144 / +142ms）、残りは駆動役と同じか早い
-   * - `mps` —— サンプルの刻み。基板ごとにわずかに違う（駆動役だけ 9.9792 で他より短い）
-   *
-   * **基板の識別子は架空のもの**（`BOARD_A`〜`C`）へ置き換えてある。位相・遅れ・刻みが
-   * 症状を決めるので、実機の MAC アドレスそのものは要らない。**並び順の先頭が
-   * 駆動役**になる（`noiseDensity` を全部 null にしてあるため）。
+   * 実機（2026-09-30・3 基板 × 3 センサー）の到着の形を写した 9 本。数値は
+   * `/stream?wave=all` の実測（中央値）。**位相（まとまりの境目）・到着の遅れ・刻みの
+   * 3 つが揃って初めて #374 の症状が出る。** 基板の識別子は架空のもの。
    */
   const REAL_SENSORS = [
     { boardKey: BOARD_A, sensorId: 'a1', phase: 229, lag: 0, mps: 9.9792 },
@@ -451,21 +365,12 @@ describe('SensorFusion.ingest — 裏付けを待って顔ぶれを揃える（#
   ] as const
 
   function nineSensorConfig(): StationConfig {
-    type SensorEntry = StationConfig['boards'][number]['sensors'][number]
     const byBoard = new Map<BoardKey, SensorEntry[]>()
-    // **並び順が駆動役を決める**ので、`REAL_SENSORS` に現れた順で基板を並べる。
     const order: BoardKey[] = []
     for (const s of REAL_SENSORS) {
       if (!order.includes(s.boardKey)) order.push(s.boardKey)
       const list = byBoard.get(s.boardKey) ?? []
-      list.push({
-        sensorId: s.sensorId,
-        enabled: true,
-        rotation: IDENTITY,
-        offset: [0, 0, 0],
-        sensitivity: [1, 1, 1],
-        noiseDensity: null,
-      })
+      list.push(sensorEntry(s.sensorId, null))
       byBoard.set(s.boardKey, list)
     }
     return {
@@ -474,521 +379,525 @@ describe('SensorFusion.ingest — 裏付けを待って顔ぶれを揃える（#
     }
   }
 
-  /**
-   * 到着順（lockstep ではない）で流し、まとまりごとの本数を返す。
-   *
-   * **`run()` と分けてあるのが要。** あちらは「駆動役 → 裏付け」を 1 ラウンドずつ
-   * 揃えて流すので、裏付けが駆動役より遅れる形を作れない（#374 の症状が出ない）。
-   */
-  function runSkewed(waitMs: number, rounds: number): number[][] {
-    const fusion = new SensorFusion(nineSensorConfig(), { dcWindowSec: 1, stepSec: 1, waitMs })
+  /** 決まった形の揺れ（センサーごとに同じ物理量）。 */
+  function shakeAt(tMs: number): number {
+    const t = (tMs - T0) / 1000
+    return 3 * Math.sin(2 * Math.PI * 2 * t) + Math.cos(2 * Math.PI * 7 * t)
+  }
+
+  function skewedEvents(rounds: number, sensors: readonly (typeof REAL_SENSORS)[number][] = REAL_SENSORS) {
     const events: { at: number; wave: WaveChunk }[] = []
-    for (const s of REAL_SENSORS) {
+    for (const s of sensors) {
       for (let k = 0; k < rounds; k++) {
-        const firstSampleMs = BASE_MS + s.phase + k * WIDE_CHUNK * s.mps
+        const firstSampleMs = T0 + s.phase + k * WIDE_CHUNK * s.mps
+        const g: [number[], number[], number[]] = [[], [], []]
+        for (let i = 0; i < WIDE_CHUNK; i++) {
+          const v = shakeAt(firstSampleMs + i * s.mps)
+          g[0].push(v)
+          g[1].push(v)
+          g[2].push(980 + v)
+        }
         events.push({
           at: firstSampleMs + WIDE_CHUNK * s.mps + s.lag,
-          wave: wave({
-            boardKey: s.boardKey,
-            sensorId: s.sensorId,
-            firstSampleIndex: k * WIDE_CHUNK,
-            firstSampleMs,
-            msPerSample: s.mps,
-            gal: rows(WIDE_CHUNK, 1),
-          }),
+          wave: wave({ boardKey: s.boardKey, sensorId: s.sensorId, firstSampleIndex: k * WIDE_CHUNK, firstSampleMs, msPerSample: s.mps, gal: g }),
         })
       }
     }
-    // 同時刻はセンサー名で割って並びを決める（入力を決定的にする）。
-    events.sort((a, b) => a.at - b.at || a.wave.sensorId.localeCompare(b.wave.sensorId))
-    const out: number[][] = []
-    for (const e of events) {
-      const r = fusion.ingest(e.wave)
-      if (r.fusedWave !== null) out.push([...r.fusedWave.memberCount])
-    }
-    return out
+    return events
   }
 
-  /** 立ち上がり（裏付けがまだ揃わない最初の数まとまり）を除いて数える。 */
-  function settledChunks(chunks: number[][]): number[][] {
-    return chunks.slice(4)
+  /** 到着順に流す（実機の形）。`sortByData` なら、データの時刻順に流す（作り直しの形）。 */
+  function runSkewed(waitMs: number, rounds: number, sortByData = false) {
+    const fusion = new SensorFusion(nineSensorConfig(), { dcWindowSec: 1, stepSec: 1, waitMs })
+    const events = skewedEvents(rounds)
+    if (sortByData) events.sort((a, b) => a.wave.firstSampleMs - b.wave.firstSampleMs || a.wave.sensorId.localeCompare(b.wave.sensorId))
+    else events.sort((a, b) => a.at - b.at || a.wave.sensorId.localeCompare(b.wave.sensorId))
+    const outs: FusionOutcome[] = []
+    for (const e of events) outs.push(...ingestNow(fusion, e.wave))
+    const live = outs.length
+    outs.push(...fusion.closeAll().drained)
+    return { outs, live }
   }
 
-  it('正: 既定の待ちなら、まとまりの末尾まで顔ぶれが揃う（#374）', () => {
-    // **実機（2026-09-30・9 センサー）では末尾の 3 サンプルが 100 まとまりすべてで
-    // 2 本欠けていた。** 到着差は 200ms で待ちの 300ms より小さかったのに欠けたのは、
-    // 裏付けの「次のまとまり」が届くまで末尾を覆えないため。
-    const chunks = settledChunks(runSkewed(FUSION_WAIT_MS_DEFAULT, 20))
-    expect(chunks.length).toBeGreaterThan(0)
-    const counts = new Set(chunks.flat())
-    expect(counts).toEqual(new Set([9]))
+  /** 立ち上がり（全員の最初のまとまりが揃う前）と、データの尽きる末尾を除いた本数。 */
+  function settledCounts(outs: readonly FusionOutcome[]): number[] {
+    return wavesOf(outs).slice(3, -3).flatMap((w) => [...w.memberCount])
+  }
+
+  it('正: 既定の待ちなら、まとまりの頭から末尾まで顔ぶれが揃う（#374）', () => {
+    const { outs } = runSkewed(FUSION_WAIT_MS_DEFAULT, 20)
+    const counts = settledCounts(outs)
+    expect(counts.length).toBeGreaterThan(0)
+    expect(new Set(counts)).toEqual(new Set([9]))
   })
 
-  it('対照: 待ちの上限を絞ると末尾が欠ける（症状の条件が作れていることの裏取り）', () => {
-    // **これが {3} になってしまうなら、上のテストは症状を作れていない**（上限に
-    // 関わらず揃っていた）ことになる。300ms は #374 より前の既定値。
-    const chunks = settledChunks(runSkewed(300, 20))
-    const tails = chunks.map((c) => c[c.length - 1])
-    expect(tails.some((m) => m < 9)).toBe(true)
-  })
-
-  it('正: 保留が空になってもまとまりの先頭で顔ぶれが欠けない（#374）', () => {
-    // **顔ぶれが揃って保留が空になると、`trimCache` は捨てる根拠を持たない**
-    // （次に届く駆動役のまとまりがどの範囲を求めるかは、届くまで分からない）。
-    // 以前は「最新の 1 つだけ残す」形で捨てていて、**起点が駆動役より後ろの裏付けが
-    // 先頭側を覆えなくなっていた** —— 実機では先頭の 4 サンプルが 100 まとまり
-    // すべてで 1 本欠けていた。
-    //
-    // **ここは `run()`（lockstep）で見る。`runSkewed` では症状が出ない** ——
-    // あちらは待ちの上限が長いぶん保留が数まとまり残り続けるので、`trimCache` は
-    // 常に捨てる根拠を持ち、捨てすぎの形にならない。**保留が空になる形を作れる
-    // のが lockstep のほう。**
-    //
-    // **末尾とは別に見る。** 末尾は待ちの上限が担い、先頭は捨て方が担う ——
-    // 混ぜると、どちらが直っていないのか分からない。
-    // 立ち上がりの 3 まとまりを除く（`run()` の「正」が `CHUNK * 3` サンプル＝
-    // 3 まとまりを除いているのと同じ範囲。こちらはまとまり単位で数える）。
-    const chunks = runChunks(300, 16).slice(3)
-    expect(chunks.length).toBeGreaterThan(0)
-    const heads = chunks.map((c) => c[0])
-    expect(heads.every((m) => m === 3)).toBe(true)
+  it('対照: 待ちを 0 にすると顔ぶれが欠ける（症状の条件が作れていることの裏取り）', () => {
+    // **全員が揃うのを待つ判定**が働いていれば 0 でも揃う —— 待ちが要るのは
+    // 「まだ届いていない台」を生きている扱いにしたときだけ。ここで見ているのは、
+    // 揃ったかの判定を外したら（待ち 0 で、届いた端から出したら）欠けること。
+    const fusion = new SensorFusion(nineSensorConfig(), { dcWindowSec: 1, stepSec: 1, waitMs: 0 })
+    const events = skewedEvents(20).sort((a, b) => a.at - b.at || a.wave.sensorId.localeCompare(b.wave.sensorId))
+    const outs: FusionOutcome[] = []
+    for (const e of events) outs.push(...ingestNow(fusion, e.wave))
+    // 揃った回に出るので、待ち 0 でも揃っていれば 9。**欠けるのは時刻で切り上げた回だけ。**
+    // 待ち 0 では「末尾まで時刻が進んだ」が即座に成り立つので、遅れて届く台が欠ける。
+    expect(settledCounts(outs).some((m) => m < 9)).toBe(true)
   })
 
   it('対照: 顔ぶれが揃っていれば、待ちの上限を延ばしても出る件数は変わらない', () => {
-    // **上限は「揃わないときの頭打ち」で、揃っていれば待たない。** ここが
-    // 「常に上限まで待つ」形になっていると、上限を延ばしたぶん出足が遅れて
-    // 件数が減る。
-    const base = runSkewed(FUSION_WAIT_MS_DEFAULT, 20).length
-    const longer = runSkewed(FUSION_WAIT_MS_DEFAULT * 4, 20).length
+    const base = runSkewed(FUSION_WAIT_MS_DEFAULT, 20).live
+    const longer = runSkewed(FUSION_WAIT_MS_DEFAULT * 4, 20).live
     expect(longer).toBe(base)
   })
 
-  it('安全弁: 一度も届かない裏付けがあっても、上限で切り上げて出す', () => {
-    // 設定にあるのに 1 本も来ない（基板が落ちている・電源が入っていない）形。
-    // **`backupsCoverTail` は永久に偽**なので、上限が引き取らなければその観測点の
-    // 合成は一度も出ない。
-    const fusion = new SensorFusion(nineSensorConfig(), {
-      dcWindowSec: 1,
-      stepSec: 1,
-      waitMs: FUSION_WAIT_MS_DEFAULT,
-    })
-    let fused = 0
-    // 9 本のうち駆動役と 1 本だけを流す。残り 7 本は設定にあるのに来ない。
-    for (let k = 0; k < 20; k++) {
-      for (const s of [REAL_SENSORS[0], REAL_SENSORS[1]]) {
-        const out = fusion.ingest(
-          wave({
-            boardKey: s.boardKey,
-            sensorId: s.sensorId,
-            firstSampleIndex: k * WIDE_CHUNK,
-            firstSampleMs: BASE_MS + s.phase + k * WIDE_CHUNK * s.mps,
-            msPerSample: s.mps,
-            gal: rows(WIDE_CHUNK, 1),
-          }),
-        )
-        if (out.fusedWave !== null) fused++
-      }
+  it('正: 届いた順に流しても、データの時刻順に流しても（作り直しの形）、同じ合成になる', () => {
+    // **作り直し（`stationRewave.ts`）は生データを時刻順に流し直す。** ライブで全員が
+    // 間に合っていた区間は、作り直しても同じ値・同じ切れ目になること —— 目盛りが
+    // 絶対時刻で決まるので、届き方に依らない。
+    const live = wavesOf(runSkewed(FUSION_WAIT_MS_DEFAULT, 20).outs)
+    const rewave = wavesOf(runSkewed(FUSION_WAIT_MS_DEFAULT, 20, true).outs)
+    const byIndex = new Map(rewave.map((w) => [w.firstSampleIndex, w]))
+    const compared = live.slice(3, -3)
+    expect(compared.length).toBeGreaterThan(0)
+    for (const w of compared) {
+      const r = byIndex.get(w.firstSampleIndex)
+      expect(r).toBeDefined()
+      expect(r?.memberCount).toEqual(w.memberCount)
+      for (let i = 0; i < w.gal[0].length; i++) expect(r?.gal[0][i]).toBeCloseTo(w.gal[0][i], 9)
     }
-    expect(fused).toBeGreaterThan(0)
-    // **全部は出ない。** 上限まで待つぶん保留に残るので、送った回数より少ない。
-    expect(fused).toBeLessThan(20)
   })
 
-  /**
-   * 9 本のうち駆動役と 1 本だけを `rounds` 回流す（上の「一度も届かない裏付け」と同じ形）。
-   * **揃わない相手を待つので、末尾の数まとまりは保留に残ったまま終わる** ——
-   * `closeAll()` が流し切るものを確実に作れる形。
-   */
-  function feedPartial(waitMs: number, rounds: number) {
-    const fusion = new SensorFusion(nineSensorConfig(), { dcWindowSec: 1, stepSec: 1, waitMs })
-    const waves: FusedWaveChunk[] = []
-    let readings = 0
-    for (let k = 0; k < rounds; k++) {
-      for (const s of [REAL_SENSORS[0], REAL_SENSORS[1]]) {
-        const out = fusion.ingest(
-          wave({
-            boardKey: s.boardKey,
-            sensorId: s.sensorId,
-            firstSampleIndex: k * WIDE_CHUNK,
-            firstSampleMs: BASE_MS + s.phase + k * WIDE_CHUNK * s.mps,
-            msPerSample: s.mps,
-            gal: rows(WIDE_CHUNK, 1),
-          }),
-        )
-        if (out.fusedWave !== null) waves.push(out.fusedWave)
-        readings += out.readings.length
-      }
-    }
-    return { fusion, waves, readings }
-  }
+  it('安全弁: 一度も届かない台があっても、上限で切り上げて出す', () => {
+    const fusion = new SensorFusion(nineSensorConfig(), { dcWindowSec: 1, stepSec: 1, waitMs: FUSION_WAIT_MS_DEFAULT })
+    const events = skewedEvents(20, [REAL_SENSORS[0], REAL_SENSORS[1]]).sort((a, b) => a.at - b.at)
+    const outs: FusionOutcome[] = []
+    for (const e of events) outs.push(...ingestNow(fusion, e.wave))
+    expect(outs.length).toBeGreaterThan(0)
+    expect(outs.some((o) => !o.allMembersCovered)).toBe(true)
+  })
 
-  it('正: closeAll() は待たせていたまとまりを、合成波形ごと drained へ返す（#402）', () => {
-    // **捨てると、終了・設定変更のたびに観測点ごとの末尾の波形が押し出しにも
-    // `data/wave/` にも出ずに消える。** 震度は出続けるので外からは気づけない。
-    const rounds = 20
-    const { fusion, waves } = feedPartial(FUSION_WAIT_MS_DEFAULT, rounds)
-    // 症状の条件が作れていることの裏取り —— 保留に残っていなければこのテストは何も見ていない。
-    expect(waves.length).toBeLessThan(rounds)
+  it('正: closeAll() は待たせていた分を、届いたデータの末尾まで drained へ返す（#402）', () => {
+    const fusion = new SensorFusion(nineSensorConfig(), { dcWindowSec: 1, stepSec: 1, waitMs: FUSION_WAIT_MS_DEFAULT })
+    const events = skewedEvents(20, [REAL_SENSORS[0], REAL_SENSORS[1]]).sort((a, b) => a.at - b.at)
+    const live: FusionOutcome[] = []
+    for (const e of events) live.push(...ingestNow(fusion, e.wave))
     const closed = fusion.closeAll()
-    const drained = closed.drained.map((o) => o.fusedWave)
-    expect(drained.every((w) => w !== null)).toBe(true)
-    // **送った駆動役のまとまりが、普段出た分と流し切った分で過不足なく揃う。**
-    const all = [...waves, ...(drained as FusedWaveChunk[])]
-    expect(all.map((w) => w.firstSampleIndex)).toEqual(
-      Array.from({ length: rounds }, (_, k) => k * WIDE_CHUNK),
-    )
-    for (const w of all) expect(w.stationId).toBe('home')
-    // 流し切った回は `ingest()` と同じ形なので、差分も運ぶ（捨てていた 2 つめの事実）。
+    // 症状の条件が作れていることの裏取り —— 待たせていた分が無ければ何も見ていない。
+    expect(closed.drained.length).toBeGreaterThan(0)
+    const all = wavesOf([...live, ...closed.drained])
+    expect(firstBreak(all)).toBeNull()
+    // 最後に出た目盛りは、届いたデータの末尾に届いている。
+    const lastData = Math.max(...events.map((e) => e.wave.firstSampleMs + (WIDE_CHUNK - 1) * e.wave.msPerSample))
+    const last = all[all.length - 1]
+    const lastGridMs = last.firstSampleMs + (last.gal[0].length - 1) * STATION_GRID_MS
+    expect(lastData - lastGridMs).toBeLessThan(STATION_GRID_MS)
     for (const o of closed.drained) expect(o.pairDiffs.length).toBeGreaterThan(0)
     expect(closed.failures).toEqual([])
   })
 
-  it('対照: 待たせていたまとまりが無ければ drained は空', () => {
-    // 待ち 0 なら届いた瞬間に合成されるので、締めくくりで流し切るものは無い。
-    const { fusion, waves } = feedPartial(0, 20)
-    expect(waves).toHaveLength(20)
+  it('対照: 待たせていた分が無ければ drained は空', () => {
+    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), NO_WAIT)
+    for (let c = 0; c < 5; c++) {
+      ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', c * 30, rows(30, 1)))
+      ingestNow(fusion, gridChunk(BOARD_B, 'sensorB', c * 30, rows(30, 1)))
+    }
     expect(fusion.closeAll().drained).toEqual([])
   })
+})
 
-  it('安全弁: 流し切った回の震度を drained へ移しても、出る震度の件数は待ちの有無で変わらない', () => {
-    // **`readings` から流し切った回のぶんを抜いたので、呼び出し側が `drained` を
-    // 配り忘れると震度がその分だけ減る。** ここでは「両方を合わせれば従来と同じ件数」を固定する。
-    const count = (waitMs: number): number => {
-      const { fusion, readings } = feedPartial(waitMs, 20)
-      const closed = fusion.closeAll()
-      return readings + closed.readings.length + closed.drained.reduce((n, o) => n + o.readings.length, 0)
+describe('SensorFusion.ingest — 1 台が止まっても観測点は続く', () => {
+  const OPTS = { dcWindowSec: 1, stepSec: 1, waitMs: FUSION_WAIT_MS_DEFAULT }
+
+  function threeConfig(): StationConfig {
+    // sensorA がいちばん静か（以前の作りでは、この 1 台が合成を進める「駆動役」だった）。
+    return stationConfig([
+      { boardKey: BOARD_A, sensorId: 'sensorA', noiseDensity: 5 },
+      { boardKey: BOARD_B, sensorId: 'sensorB', noiseDensity: 20 },
+      { boardKey: BOARD_C, sensorId: 'sensorC', noiseDensity: 20 },
+    ])
+  }
+
+  function shake(k: number, n: number): [number[], number[], number[]] {
+    const g: [number[], number[], number[]] = [[], [], []]
+    for (let i = 0; i < n; i++) {
+      const t = (k + i) / HZ
+      g[0].push(20 * Math.sin(2 * Math.PI * 3 * t))
+      g[1].push(20 * Math.cos(2 * Math.PI * 5 * t))
+      g[2].push(1000 + 20 * Math.sin(2 * Math.PI * 7 * t))
     }
-    const immediate = count(0)
-    expect(immediate).toBeGreaterThan(0)
-    expect(count(FUSION_WAIT_MS_DEFAULT)).toBe(immediate)
+    return g
+  }
+
+  /**
+   * 全員を 300 ms ずつ `rounds` 回流す。`skip(member, round)` が真の回はその台を送らない。
+   * 返すのは、出た結果と、その結果が出た回。
+   */
+  function run(rounds: number, skip: (sensorId: string, round: number) => boolean) {
+    const fusion = new SensorFusion(threeConfig(), OPTS)
+    const emitted: { round: number; out: FusionOutcome }[] = []
+    for (let r = 0; r < rounds; r++) {
+      for (const [boardKey, sensorId] of [
+        [BOARD_A, 'sensorA'],
+        [BOARD_B, 'sensorB'],
+        [BOARD_C, 'sensorC'],
+      ] as const) {
+        if (skip(sensorId, r)) continue
+        for (const out of ingestNow(fusion, gridChunk(boardKey, sensorId, r * 30, shake(r * 30, 30)))) emitted.push({ round: r, out })
+      }
+    }
+    for (const out of fusion.closeAll().drained) emitted.push({ round: rounds, out })
+    return emitted
+  }
+
+  it('正: いちばん静かな 1 台が 2 秒止まっても、波形も震度も途切れない', () => {
+    // 2026-10-07 13:42 の実機: 「駆動役」の基板が FIFO あふれで 2〜3 秒ずつ欠け、
+    // **ほかの 2 枚が持っていたのに**観測点の波形に穴が残った。
+    const emitted = run(40, (id, r) => id === 'sensorA' && r >= 14 && r < 21)
+    const waves = emitted.map((e) => e.out.fusedWave)
+    expect(firstBreak(waves)).toBeNull()
+    const counts = waves.flatMap((w) => [...w.memberCount])
+    expect(counts.slice(0, 14 * 30).every((m) => m === 3)).toBe(true)
+    expect(counts.slice(14 * 30, 21 * 30).every((m) => m === 2)).toBe(true)
+    expect(counts.slice(21 * 30).every((m) => m === 3)).toBe(true)
+    // 震度は最初の 1 回だけ作り、以後は作り直さない（止まった間も続く）。
+    const changed = emitted.filter((e) => e.out.intensityStateChanged)
+    expect(changed).toHaveLength(1)
+    const readings = emitted.flatMap((e) => e.out.readings)
+    expect(readings.length).toBeGreaterThan(10)
+    for (let i = 1; i < readings.length; i++) expect(readings[i].atMs - readings[i - 1].atMs).toBe(1000)
+  })
+
+  it('対照: 全員が止まった区間は欠けになり、震度はそこで作り直す', () => {
+    const emitted = run(40, (_, r) => r >= 14 && r < 21)
+    const waves = emitted.map((e) => e.out.fusedWave)
+    const at = firstBreak(waves)
+    expect(at).not.toBeNull()
+    expect(waves[at as number].firstSampleMs - T0).toBe(21 * CHUNK_MS)
+    expect(emitted.filter((e) => e.out.intensityStateChanged)).toHaveLength(2)
+  })
+
+  it('安全弁: 止まった 1 台を毎回待たない（生きている扱いを外れたら、揃った回にすぐ出す）', () => {
+    const emitted = run(60, (id, r) => id === 'sensorA' && r >= 10)
+    /** 目盛りのまとまり番号ごとに、それが出た回。 */
+    const roundOf = new Map<number, number>()
+    for (const e of emitted) roundOf.set((e.out.fusedWave.firstSampleMs - T0) / CHUNK_MS, e.round)
+    // 止まった直後は「まだ生きているかもしれない」ので待ちの上限（2 回ぶん）まで待つ。
+    expect(roundOf.get(12)).toBeGreaterThan(12)
+    // 生きている扱いを外れた後（`FUSION_LIVE_MS` の後）は、その回のうちに出る。
+    const staleRound = 10 + Math.ceil(FUSION_LIVE_MS / CHUNK_MS) + 2
+    for (let r = staleRound; r < 59; r++) expect(roundOf.get(r)).toBe(r)
+  })
+
+  it('正: 1 台の区間（segmentId）が変わっても、震度の流し込みは作り直さない', () => {
+    // 以前は「駆動役」の区間が切れるたびに観測点の震度が 60 秒の助走からやり直しだった
+    // （その台の再起動・パケット落ち・FIFO あふれのたび）。
+    const fusion = new SensorFusion(threeConfig(), OPTS)
+    const outs: FusionOutcome[] = []
+    for (let r = 0; r < 20; r++) {
+      outs.push(...ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', r * 30, shake(r * 30, 30), { segmentId: r < 10 ? 1 : 2 })))
+      outs.push(...ingestNow(fusion, gridChunk(BOARD_B, 'sensorB', r * 30, shake(r * 30, 30))))
+      outs.push(...ingestNow(fusion, gridChunk(BOARD_C, 'sensorC', r * 30, shake(r * 30, 30))))
+    }
+    expect(outs.filter((o) => o.intensityStateChanged)).toHaveLength(1)
+  })
+})
+
+describe('SensorFusion.ingest — 時刻の外れたデータ', () => {
+  it('安全弁: 一度出した目盛りより前に届いたサンプルは混ぜず、数える', () => {
+    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), NO_WAIT)
+    ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', 0, rows(30, 1)))
+    ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', 30, rows(30, 1)))
+    expect(fusion.lateSamples).toBe(0)
+    // 0〜29 はもう出した。sensorB のその区間は遅すぎる。
+    expect(ingestNow(fusion, gridChunk(BOARD_B, 'sensorB', 0, rows(30, 1)))).toEqual([])
+    expect(fusion.lateSamples).toBeGreaterThan(0)
+  })
+
+  /** 目盛りの `k` から 30 サンプルのまとまりを、本当の時刻どおりに受け取った時刻（末尾のサンプルの本当の時刻）。 */
+  const trueRx = (k: number): number => T0 + (k + 29) * STATION_GRID_MS
+
+  it('安全弁: 1 台だけ時計が大きく先へ飛んだら、その台の分は混ぜずに数え、観測点は止まらない', () => {
+    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }))
+    const outs: FusionOutcome[] = []
+    for (let r = 0; r < 10; r++) {
+      outs.push(...ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', r * 30, rows(30, 1))))
+      // sensorB は 5 回目から 1 時間先の時刻を名乗る（受け取るのは本当の時刻）。
+      const k = r < 5 ? r * 30 : r * 30 + 360_000
+      outs.push(...fusion.ingest(gridChunk(BOARD_B, 'sensorB', k, rows(30, 1)), trueRx(r * 30)))
+    }
+    expect(fusion.futureSamples).toBe(5 * 30)
+    // sensorA の分は途切れず出続ける。
+    const waves = wavesOf(outs)
+    expect(firstBreak(waves)).toBeNull()
+    expect(waves.every((w) => w.firstSampleMs < T0 + 60_000)).toBe(true)
+    expect(waves[waves.length - 1].firstSampleMs - T0).toBeGreaterThanOrEqual(7 * CHUNK_MS)
+  })
+
+  it('安全弁: 全員の時計が別々の先へ飛んでも、偽の時刻へ観測点ごと移らない', () => {
+    // 台どうしを比べる形では、比べる相手がいなくなったときに、いちばん先へ飛んだ台の時刻へ移りうる。
+    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), NO_WAIT)
+    const outs: FusionOutcome[] = []
+    const rounds = 40
+    for (let r = 0; r < rounds; r++) {
+      outs.push(...fusion.ingest(gridChunk(BOARD_A, 'sensorA', r < 3 ? r * 30 : r * 30 + 360_000, rows(30, 1)), trueRx(r * 30)))
+      outs.push(...fusion.ingest(gridChunk(BOARD_B, 'sensorB', r < 3 ? r * 30 : r * 30 + 720_000, rows(30, 1)), trueRx(r * 30)))
+    }
+    expect(outs.length).toBeGreaterThan(0)
+    expect(wavesOf(outs).every((w) => w.firstSampleMs < T0 + 60_000)).toBe(true)
+    expect(fusion.futureSamples).toBe(2 * (rounds - 3) * 30)
+  })
+
+  it('正: 全員が長く止まって揃って再開したときは、受け取った時刻も進むので混ぜる', () => {
+    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), NO_WAIT)
+    const outs: FusionOutcome[] = []
+    const gap = 360_000 // 1 時間止まっていた
+    for (let r = 0; r < 10; r++) {
+      const k = r < 5 ? r * 30 : r * 30 + gap
+      outs.push(...fusion.ingest(gridChunk(BOARD_A, 'sensorA', k, rows(30, 1)), trueRx(k)))
+      outs.push(...fusion.ingest(gridChunk(BOARD_B, 'sensorB', k, rows(30, 1)), trueRx(k)))
+    }
+    expect(fusion.futureSamples).toBe(0)
+    expect(wavesOf(outs).some((w) => w.firstSampleIndex >= T0 / STATION_GRID_MS + gap)).toBe(true)
+  })
+
+  it('対照: 受け取った時刻から線（FUSION_MAX_FUTURE_MS）ちょうど先までは混ぜ、それを超える分だけを落とす（まとまりの途中で切る）', () => {
+    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), NO_WAIT)
+    // 20 番目（添字 19）のサンプルの時刻が、受け取った時刻 + 線ちょうど。
+    const rx = T0 + 19 * STATION_GRID_MS - FUSION_MAX_FUTURE_MS
+    fusion.ingest(gridChunk(BOARD_B, 'sensorB', 0, rows(30, 1)), rx)
+    expect(fusion.futureSamples).toBe(10)
+  })
+
+  it('安全弁: 1 パケットだけ数十秒先を名乗っても、観測点はその間止まらない', () => {
+    // 線を広く取ると、線の手前を名乗る 1 パケットで目盛りがそこまで進み、後から届く正しい時刻の分が
+    // すべて「出した後」に落ちる（現実の時刻がその偽の時刻へ追いつくまで観測点が止まる）。
+    // 待ちは既定のまま（0 にすると、先に届いた台だけで毎回まとまりが出て、もう 1 台が常に遅れて見える）。
+    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }))
+    const outs: FusionOutcome[] = []
+    for (let r = 0; r < 40; r++) {
+      outs.push(...fusion.ingest(gridChunk(BOARD_A, 'sensorA', r * 30, rows(30, 1)), trueRx(r * 30)))
+      // sensorB は 10 回目の 1 パケットだけ 30 秒先を名乗り、あとは正しい時刻に戻る。
+      const k = r === 10 ? r * 30 + 3_000 : r * 30
+      outs.push(...fusion.ingest(gridChunk(BOARD_B, 'sensorB', k, rows(30, 1)), trueRx(r * 30)))
+    }
+    expect(fusion.futureSamples).toBe(30)
+    expect(fusion.lateSamples).toBe(0)
+    const waves = wavesOf(outs)
+    expect(firstBreak(waves)).toBeNull()
+    expect(waves.every((w) => w.firstSampleMs < T0 + 60 * CHUNK_MS)).toBe(true)
+    expect(waves[waves.length - 1].firstSampleMs - T0).toBeGreaterThanOrEqual(38 * CHUNK_MS)
+  })
+
+  it('対照: 線の内側（待ちより先・2 秒以内）の先回りは混ぜる。空く穴とほかの台の遅れはその幅までに収まり、後は続く', () => {
+    // 線を狭めても、線の内側の先回りは残る。目盛りはその分だけ先へ進み、ほかの台の分は「出した後」に落ちる。
+    // **失うのは先回りした幅まで**（その幅の穴が空くことがある）。数えるのは futureSamples ではなく lateSamples。
+    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }))
+    const outs: FusionOutcome[] = []
+    for (let r = 0; r < 40; r++) {
+      outs.push(...fusion.ingest(gridChunk(BOARD_A, 'sensorA', r * 30, rows(30, 1)), trueRx(r * 30)))
+      // sensorB は 10 回目の 1 パケットだけ 1.5 秒先を名乗る。
+      const k = r === 10 ? r * 30 + 150 : r * 30
+      outs.push(...fusion.ingest(gridChunk(BOARD_B, 'sensorB', k, rows(30, 1)), trueRx(r * 30)))
+    }
+    expect(fusion.futureSamples).toBe(0)
+    expect(fusion.lateSamples).toBeGreaterThan(0)
+    expect(fusion.lateSamples).toBeLessThanOrEqual(2 * (FUSION_MAX_FUTURE_MS / STATION_GRID_MS))
+    const waves = wavesOf(outs)
+    let holeMs = 0
+    for (let i = 1; i < waves.length; i++) {
+      const prev = waves[i - 1]
+      holeMs += waves[i].firstSampleMs - (prev.firstSampleMs + prev.gal[0].length * STATION_GRID_MS)
+    }
+    expect(holeMs).toBeLessThanOrEqual(FUSION_MAX_FUTURE_MS)
+    expect(waves[waves.length - 1].firstSampleMs - T0).toBeGreaterThanOrEqual(38 * CHUNK_MS)
+  })
+
+  it('対照: 受け取った時刻が判らない（記録に残っていない古い控え）ときは判定しない', () => {
+    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), NO_WAIT)
+    for (let r = 0; r < 10; r++) {
+      fusion.ingest(gridChunk(BOARD_A, 'sensorA', r * 30, rows(30, 1)), null)
+      fusion.ingest(gridChunk(BOARD_B, 'sensorB', r < 5 ? r * 30 : r * 30 + 360_000, rows(30, 1)), null)
+    }
+    expect(fusion.futureSamples).toBe(0)
+  })
+
+  it('対照: ほかの台が止まっている間に進み続ける台は、時計が合っていれば混ぜ続ける', () => {
+    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), NO_WAIT)
+    const outs: FusionOutcome[] = []
+    for (let r = 0; r < 400; r++) {
+      if (r < 5) outs.push(...ingestNow(fusion, gridChunk(BOARD_B, 'sensorB', r * 30, rows(30, 1))))
+      outs.push(...ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', r * 30, rows(30, 1))))
+    }
+    expect(fusion.futureSamples).toBe(0)
+    expect(firstBreak(wavesOf(outs))).toBeNull()
+  })
+
+  it('安全弁: 2 度目の closeAll() は何もしない（投げずに空を返す）', () => {
+    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), NO_WAIT)
+    ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', 0, rows(30, 1)))
+    fusion.closeAll()
+    expect(fusion.closeAll()).toEqual({ drained: [], readings: [], failures: [] })
+  })
+
+  it('対照: 上限に届かなければ数えない（ふだんの流れでは 0）', () => {
+    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), NO_WAIT)
+    for (let r = 0; r < 260; r++) {
+      ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', r * 30, rows(30, 1)))
+      ingestNow(fusion, gridChunk(BOARD_B, 'sensorB', r * 30, rows(30, 1)))
+    }
+    expect(fusion.discardedSamples).toBe(0)
+  })
+
+  it('安全弁: 全員が長く止まって揃って再開しても、観測点は動き出し、空のまとまりを 1 つずつ回さない', () => {
+    // 11 日ぶん（約 330 万まとまり）。1 つずつ回すと時間切れになる。
+    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), NO_WAIT)
+    ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', 0, rows(30, 1)))
+    ingestNow(fusion, gridChunk(BOARD_B, 'sensorB', 0, rows(30, 1)))
+    const far = 100_000_000
+    const outs = [
+      ...ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', far, rows(30, 1))),
+      ...ingestNow(fusion, gridChunk(BOARD_B, 'sensorB', far, rows(30, 1))),
+    ]
+    expect(wavesOf(outs).some((w) => w.firstSampleIndex === T0 / STATION_GRID_MS + far)).toBe(true)
   })
 })
 
 describe('SensorFusion.ingest — 観測点ぶんの計測震度相当', () => {
-  // **待ちは 0。** この節が見るのは流し込み（区間の作り直し・位置の連続・締めくくり）
-  // なので、裏付けの到着待ちは混ぜない（理由は `NO_WAIT` を見ること）。
   const OPTS = { dcWindowSec: 1, stepSec: 1, waitMs: 0 }
 
   /** 決まった形の揺れ。乱数は使わない —— 走るたびに値が変わると再現できない。 */
-  function galRows(firstSampleIndex: number, n: number, amp: number): [number[], number[], number[]] {
+  function galRows(k: number, n: number, amp: number): [number[], number[], number[]] {
     const out: [number[], number[], number[]] = [new Array(n), new Array(n), new Array(n)]
     for (let i = 0; i < n; i++) {
-      const t = (firstSampleIndex + i) / HZ
+      const t = (k + i) / HZ
       out[0][i] = amp * Math.sin(2 * Math.PI * 3 * t)
       out[1][i] = amp * Math.cos(2 * Math.PI * 5 * t)
-      // 3 軸目には重力の直流を乗せる（`DcTracker` が引く対象）。
       out[2][i] = 1000 + amp * Math.sin(2 * Math.PI * 7 * t)
     }
     return out
   }
 
+  function feedA(fusion: SensorFusion, k: number, n: number): readonly FusionOutcome[] {
+    return ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', k, galRows(k, n, 40)))
+  }
+
   it('正: 合成波形を計測震度の流し込みへ通し、観測点ぶんの震度が出る', () => {
     const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), OPTS)
-    const chunkSize = 50
-    const chunkCount = 8 // 400 サンプル。3 秒（300 サンプル）で最初の答えが出るはず。
-    let readingCount = 0
-    for (let c = 0; c < chunkCount; c++) {
-      const firstSampleIndex = c * chunkSize
-      const gal = galRows(firstSampleIndex, chunkSize, 40)
-      const out = fusion.ingest(
-        wave({
-          boardKey: BOARD_A,
-          sensorId: 'sensorA',
-          firstSampleIndex,
-          firstSampleMs: BASE_MS + firstSampleIndex * MS_PER_SAMPLE,
-          gal,
-        }),
-      )
-      for (const r of out.readings) {
-        expect(r.stationId).toBe('home')
-        expect(typeof r.intensity).toBe('number')
-        readingCount++
-      }
+    const readings: StationIntensityReading[] = []
+    for (let c = 0; c < 14; c++) for (const o of feedA(fusion, c * 30, 30)) readings.push(...o.readings)
+    expect(readings.length).toBeGreaterThan(0)
+    for (const r of readings) {
+      expect(r.stationId).toBe('home')
+      expect(typeof r.intensity).toBe('number')
     }
-    expect(readingCount).toBeGreaterThan(0)
     expect(fusion.unusableIntensities).toBe(0)
   })
 
-  it('正: 駆動役の区間（segmentId）が変わると、合成の流し込みを作り直す（streamKey が同じでも）', () => {
-    // 版1プロトコルの再起動（seq-reset）は streamKey を変えない。segmentId だけで見ること。
+  it('正: 震度の時刻は目盛りの絶対時刻（流し込みを始めた位置から数えた秒）', () => {
     const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), OPTS)
-    const first = fusion.ingest(
-      wave({
-        boardKey: BOARD_A,
-        sensorId: 'sensorA',
-        streamKey: 'stream-1',
-        segmentId: 1,
-        firstSampleIndex: 0,
-        gal: galRows(0, 50, 40),
-      }),
-    )
-    expect(first.readings).toEqual([])
-    expect(first.intensitySkipReason).toBeNull()
-    // **区間が変わった回は `intensityStateChanged` が立つ**——呼び出し側（main.ts）が
-    // ここを見て「状態が変わったときにだけログを出す」判定を再現できるかの根拠。
+    // 区間の途中にあたる位置（センサーの通し番号は 92949）から始めても、時刻は目盛りで決まる。
+    const readings: StationIntensityReading[] = []
+    for (let c = 0; c < 8; c++) {
+      for (const o of ingestNow(fusion, 
+        gridChunk(BOARD_A, 'sensorA', c * 30, galRows(c * 30, 30, 40), { firstSampleIndex: 92949 + c * 30 }),
+      )) {
+        expect(o.intensitySkipReason).toBeNull()
+        readings.push(...o.readings)
+      }
+    }
+    // 刻み 1 秒なので、最初の答えは流し込みを始めてから 100 点目。
+    expect(readings[0].atMs).toBe(T0 + 100 * STATION_GRID_MS)
+  })
+
+  it('正: 最初の回だけ intensityStateChanged が立ち、続く回では立たない', () => {
+    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), OPTS)
+    const [first] = feedA(fusion, 0, 30)
     expect(first.intensityStateChanged).toBe(true)
-    // 区間が切れて作り直された想定（segmentId だけ変わり、位置は 0 から再スタート）。
-    const second = fusion.ingest(
-      wave({
-        boardKey: BOARD_A,
-        sensorId: 'sensorA',
-        streamKey: 'stream-1',
-        segmentId: 2,
-        firstSampleIndex: 0,
-        gal: galRows(0, 50, 40),
-      }),
-    )
-    expect(second.readings).toEqual([])
-    expect(second.intensitySkipReason).toBeNull()
-    expect(second.intensityStateChanged).toBe(true)
+    expect(first.intensitySkipReason).toBeNull()
+    const [second] = feedA(fusion, 30, 30)
+    expect(second.intensityStateChanged).toBe(false)
   })
 
   it('正: 直流の違う 3 本を時刻をずらして流しても、合成の震度が跳ばない（#362）', () => {
-    // 実機（2026-09-28）で観測した形。静止時の Z 軸が 662〜1200 gal に散っていて
-    // （感度が未校正）、裏付け側は「直近の 1 まとまり」しか持たないので混ざる顔ぶれが
-    // サンプルごとに変わる。**直流を落としていないと、顔ぶれが入れ替わるたびに
-    // 数十 gal のステップが立ち、周期補正フィルタがそれを震度として出す**
-    // （実機の合成は 4.36、単体は 1.12〜1.24 だった）。
-    function entry(sensorId: string) {
-      return {
-        sensorId,
-        enabled: true,
-        rotation: IDENTITY,
-        offset: [0, 0, 0] as const,
-        sensitivity: [1, 1, 1] as const,
-        // 実機と同じく全 9 本が未申告だった＝単純平均・駆動役は設定の先頭。
-        noiseDensity: null,
-      }
-    }
-    const config: StationConfig = {
-      stations: [{ stationId: 'home', displayName: '自宅', lat: 35.6, lon: 139.7 }],
-      boards: [
-        { boardKey: BOARD_A, stationId: 'home', sensors: [entry('sensorA')] },
-        { boardKey: BOARD_B, stationId: 'home', sensors: [entry('sensorB')] },
-        { boardKey: BOARD_C, stationId: 'home', sensors: [entry('sensorC')] },
-      ],
-    }
-    /** 静かな揺れ（振幅 1 gal ＝実機の静止ノイズ相当）に、そのセンサーの直流を乗せる。 */
-    function quiet(firstSampleIndex: number, n: number, dcZ: number): [number[], number[], number[]] {
+    // 実機（2026-09-28）: 静止時の Z 軸が 662〜1200 gal に散っていた（感度が未校正）。
+    // **直流を落とさずに混ぜると、顔ぶれが入れ替わるたびに数十 gal の段差が立ち、
+    // 周期補正フィルタがそれを震度として出す**（実機の合成は 4.36、単体は 1.12〜1.24）。
+    const config = stationConfig([
+      { boardKey: BOARD_A, sensorId: 'sensorA', noiseDensity: null },
+      { boardKey: BOARD_B, sensorId: 'sensorB', noiseDensity: null },
+      { boardKey: BOARD_C, sensorId: 'sensorC', noiseDensity: null },
+    ])
+    function quiet(k: number, n: number, dcZ: number): [number[], number[], number[]] {
       const out: [number[], number[], number[]] = [new Array(n), new Array(n), new Array(n)]
       for (let i = 0; i < n; i++) {
-        const t = (firstSampleIndex + i) / HZ
+        const t = (k + i) / HZ
         out[0][i] = Math.sin(2 * Math.PI * 3 * t)
         out[1][i] = Math.cos(2 * Math.PI * 5 * t)
         out[2][i] = dcZ + Math.sin(2 * Math.PI * 7 * t)
       }
       return out
     }
-    // 実機の実測から 3 本ぶん（駆動役・最小・最大）。
-    const DC_A = 1071.8
-    const DC_B = 662.1
-    const DC_C = 1200.2
-    const chunkSize = 50
-    /** 裏付け側をずらす量。駆動役の 1 まとまりの半分だけ重なる（顔ぶれを変動させる）。 */
-    const SKEW = 25
-
-    function runWith(withBackups: boolean): { intensities: number[]; memberCounts: Set<number> } {
+    /** 裏付けをずらす量。まとまりの半分だけ重なる（顔ぶれを変動させる）。 */
+    const SKEW = 15
+    function runWith(withOthers: boolean) {
       const fusion = new SensorFusion(config, OPTS)
       const intensities: number[] = []
-      const memberCounts = new Set<number>()
-      for (let c = 0; c < 12; c++) {
-        const at = c * chunkSize
-        if (withBackups) {
-          for (const [boardKey, sensorId, dc] of [
-            [BOARD_B, 'sensorB', DC_B],
-            [BOARD_C, 'sensorC', DC_C],
-          ] as const) {
-            fusion.ingest(
-              wave({
-                boardKey,
-                sensorId,
-                segmentId: 1,
-                firstSampleIndex: at,
-                firstSampleMs: BASE_MS + (at + SKEW) * MS_PER_SAMPLE,
-                gal: quiet(at + SKEW, chunkSize, dc),
-              }),
-            )
-          }
+      const counts = new Set<number>()
+      for (let c = 0; c < 14; c++) {
+        const k = c * 30
+        const outs: FusionOutcome[] = []
+        if (withOthers) {
+          outs.push(...ingestNow(fusion, gridChunk(BOARD_B, 'sensorB', k + SKEW, quiet(k + SKEW, 30, 662.1))))
+          outs.push(...ingestNow(fusion, gridChunk(BOARD_C, 'sensorC', k + SKEW, quiet(k + SKEW, 30, 1200.2))))
         }
-        const out = fusion.ingest(
-          wave({
-            boardKey: BOARD_A,
-            sensorId: 'sensorA',
-            segmentId: 1,
-            firstSampleIndex: at,
-            firstSampleMs: BASE_MS + at * MS_PER_SAMPLE,
-            gal: quiet(at, chunkSize, DC_A),
-          }),
-        )
-        if (out.fusedWave !== null) for (const m of out.fusedWave.memberCount) memberCounts.add(m)
-        for (const r of out.readings) if (r.intensity !== null) intensities.push(r.intensity)
+        outs.push(...ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', k, quiet(k, 30, 1071.8))))
+        for (const o of outs) {
+          for (const m of o.fusedWave.memberCount) counts.add(m)
+          for (const r of o.readings) if (r.intensity !== null) intensities.push(r.intensity)
+        }
       }
-      return { intensities, memberCounts }
+      return { intensities, counts }
     }
-
     const fused = runWith(true)
-    const driverOnly = runWith(false)
-
-    // **顔ぶれが実際に変動していること**を先に確かめる —— ここが 1 本だけに
-    // なっていたら、このテストは症状の条件を作れていない（跳ばないのは当たり前）。
-    expect(fused.memberCounts.size).toBeGreaterThan(1)
-    expect(driverOnly.memberCounts).toEqual(new Set([1]))
-
-    // 駆動役だけを流した場合（＝合成が効いていない状態）と同程度に収まること。
-    // 直流を落としていなければ、ここで 3 以上の差が出る。
+    const single = runWith(false)
+    expect(fused.counts.size).toBeGreaterThan(1)
     expect(fused.intensities.length).toBeGreaterThan(0)
-    const worst = Math.max(...fused.intensities)
-    const reference = Math.max(...driverOnly.intensities)
-    expect(worst).toBeLessThan(reference + 0.5)
+    expect(Math.max(...fused.intensities)).toBeLessThan(Math.max(...single.intensities) + 0.5)
   })
 
-  it('正: 区間の途中から合成を始めても震度が出る（設定を変えて作り直した形・#362）', () => {
-    // 実機（2026-09-28）で観測した形——管理コンソールで基板を観測点へ割り当てると
-    // `SensorFusion` だけが作り直されるが、駆動役の区間は切れていないので位置は
-    // 途中の値（実測 92949）のまま来る。流し込みの位置を合成側の起点から数え直して
-    // いないと、位置 0 を待っている流し込みが弾き、**ホストを入れ直すまで合成が
-    // 動かない**（実機でそうなった）。
+  it('安全弁: 流し込みが投げても投げずに理由を残す（合成波形・差分は道連れにしない）', () => {
     const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), OPTS)
-    const START = 92949
-    const chunkSize = 50
-    const readings: StationIntensityReading[] = []
-    for (let c = 0; c < 8; c++) {
-      const firstSampleIndex = START + c * chunkSize
-      const out = fusion.ingest(
-        wave({
-          boardKey: BOARD_A,
-          sensorId: 'sensorA',
-          segmentId: 1,
-          firstSampleIndex,
-          firstSampleMs: BASE_MS + firstSampleIndex * MS_PER_SAMPLE,
-          gal: galRows(firstSampleIndex, chunkSize, 40),
-        }),
-      )
-      expect(out.intensitySkipReason).toBeNull()
-      readings.push(...out.readings)
-    }
-    expect(readings.length).toBeGreaterThan(0)
-    for (const r of readings) expect(typeof r.intensity).toBe('number')
-  })
-
-  it('安全弁: 区間の途中から始めても、震度の時刻は絶対時刻のまま（起点のずれが漏れない）', () => {
-    // 位置を数え直すだけでは足りない——答えを絶対時刻へ戻す起点も同じ数え方へ
-    // 揃えないと、**震度の値は正しいのに時刻だけが起点の差（実機なら 15 分ぶん）
-    // ずれる**。ずれても例外もログも出ないので、ここで値まで確かめる。
-    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), OPTS)
-    const START = 92949
-    const chunkSize = 50
-    const readings: StationIntensityReading[] = []
-    for (let c = 0; c < 8; c++) {
-      const firstSampleIndex = START + c * chunkSize
-      readings.push(
-        ...fusion.ingest(
-          wave({
-            boardKey: BOARD_A,
-            sensorId: 'sensorA',
-            segmentId: 1,
-            firstSampleIndex,
-            firstSampleMs: BASE_MS + firstSampleIndex * MS_PER_SAMPLE,
-            gal: galRows(firstSampleIndex, chunkSize, 40),
-          }),
-        ).readings,
-      )
-    }
-    // 刻み 1 秒なので最初の答えが名乗る位置は合成を始めてから 100 サンプル目
-    // （リアルタイム震度は先読みしないので、届いたその回に出る）。絶対位置は START + 100。
-    expect(readings.length).toBeGreaterThan(0)
-    expect(readings[0].atMs).toBeCloseTo(BASE_MS + (START + 100) * MS_PER_SAMPLE, 6)
-  })
-
-  it('対照: 同じ区間が続く回では intensityStateChanged が立たない', () => {
-    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), OPTS)
-    fusion.ingest(
-      wave({ boardKey: BOARD_A, sensorId: 'sensorA', segmentId: 1, firstSampleIndex: 0, gal: galRows(0, 50, 40) }),
-    )
-    // 同じ segmentId のまま続き、push も成功する（位置が連続している）。
-    const out = fusion.ingest(
-      wave({ boardKey: BOARD_A, sensorId: 'sensorA', segmentId: 1, firstSampleIndex: 50, gal: galRows(50, 50, 40) }),
-    )
-    expect(out.intensityStateChanged).toBe(false)
-  })
-
-  it('安全弁: 同じ区間内で位置が続きにならなければ、投げずに理由を残す（合成波形・差分は道連れにしない）', () => {
-    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), OPTS)
-    const first = fusion.ingest(
-      wave({ boardKey: BOARD_A, sensorId: 'sensorA', segmentId: 1, firstSampleIndex: 0, gal: galRows(0, 50, 40) }),
-    )
-    expect(first.intensitySkipReason).toBeNull()
-    // 同じ segmentId のまま位置が飛ぶ（本来ありえない不整合の防御）。push() が
-    // 投げ、この呼び出しで新しく理由が立つ。
-    let desynced: FusionOutcome | undefined
+    feedA(fusion, 0, 30)
+    const spy = vi.spyOn(IntensityStream.prototype, 'push').mockImplementationOnce(() => {
+      throw new Error('流し込みに失敗した（テスト用）')
+    })
+    let failed: readonly FusionOutcome[] = []
     expect(() => {
-      desynced = fusion.ingest(
-        wave({
-          boardKey: BOARD_A,
-          sensorId: 'sensorA',
-          segmentId: 1,
-          firstSampleIndex: 200,
-          gal: galRows(200, 50, 40),
-        }),
-      )
+      failed = feedA(fusion, 30, 30)
     }).not.toThrow()
-    // **push() の失敗で新しく理由が立った回は `intensityStateChanged`——区間の
-    // 作り直しだけが変化点ではない。** ここが立たないと、呼び出し側は
-    // push 失敗という「いま起きた異常」に気づく機会を逃す。
-    expect(desynced?.intensityStateChanged).toBe(true)
-    const second = fusion.ingest(
-      wave({
-        boardKey: BOARD_A,
-        sensorId: 'sensorA',
-        segmentId: 1,
-        firstSampleIndex: 250,
-        gal: galRows(250, 50, 40),
-      }),
-    )
-    // 波形の合成・差分は投げていないので出続ける。
-    expect(second.fusedWave).not.toBeNull()
-    expect(second.intensitySkipReason).not.toBeNull()
-    // **理由自体は前回の呼び出しから引き継がれたままで、この回では何も変わっていない**
-    // （`group.stream` が既に null なので push は試みられない）。
-    expect(second.intensityStateChanged).toBe(false)
+    spy.mockRestore()
+    expect(failed[0].intensitySkipReason).toContain('流し込みに失敗した')
+    expect(failed[0].intensityStateChanged).toBe(true)
+    const [after] = feedA(fusion, 60, 30)
+    // 波形は出続け、理由は残ったまま（この回では何も変わっていない）。
+    expect(after.fusedWave.gal[0]).toHaveLength(30)
+    expect(after.intensitySkipReason).not.toBeNull()
+    expect(after.intensityStateChanged).toBe(false)
   })
 
   it('正: 刻みの位置まで届いた震度はその場で出て、closeAll() で出し残しは無い（失敗も無い）', () => {
-    // **リアルタイム震度は先読みしない。** 100 サンプル（刻み 1 秒）に届いた回で答えが出る。
     const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), OPTS)
-    const out = fusion.ingest(
-      wave({ boardKey: BOARD_A, sensorId: 'sensorA', segmentId: 1, firstSampleIndex: 0, gal: galRows(0, 150, 40) }),
-    )
-    expect(out.readings).toHaveLength(1)
-    expect(out.readings[0].stationId).toBe('home')
-    const flushed = fusion.closeAll()
-    expect(flushed.readings).toEqual([])
-    expect(flushed.failures).toEqual([])
+    const readings = feedA(fusion, 0, 150).flatMap((o) => o.readings)
+    expect(readings).toHaveLength(1)
+    const closed = fusion.closeAll()
+    expect(closed.readings).toEqual([])
+    expect(closed.failures).toEqual([])
   })
 
   it('安全弁: closeAll() のあとに ingest() を呼ぶと投げる', () => {
     const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), OPTS)
     fusion.closeAll()
-    expect(() =>
-      fusion.ingest(wave({ boardKey: BOARD_A, sensorId: 'sensorA', gal: galRows(0, 50, 40) })),
-    ).toThrow()
-  })
-
-  it('正: 区間が変わっても、旧区間の答えは閉じる前に出し切れていて、新区間は 0 から数え直す', () => {
-    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), OPTS)
-    // 区間1へ 320 サンプル（stepSec=1・HZ=100 なので 100・200・300 の 3 点が出る）。
-    const first = fusion.ingest(
-      wave({ boardKey: BOARD_A, sensorId: 'sensorA', segmentId: 1, firstSampleIndex: 0, gal: galRows(0, 320, 40) }),
-    )
-    expect(first.readings).toHaveLength(3)
-    // 区間が切れて作り直される。旧区間から持ち越す答えは無く、新区間は 100 サンプル
-    // 届くまで出さない。
-    const second = fusion.ingest(
-      wave({ boardKey: BOARD_A, sensorId: 'sensorA', segmentId: 2, firstSampleIndex: 0, gal: galRows(0, 50, 40) }),
-    )
-    expect(second.readings).toEqual([])
-    expect(second.closeFailure).toBeNull()
-    expect(second.intensityStateChanged).toBe(true)
+    expect(() => feedA(fusion, 0, 30)).toThrow()
   })
 
   describe('締めくくり（end()）が失敗したとき', () => {
@@ -996,36 +905,20 @@ describe('SensorFusion.ingest — 観測点ぶんの計測震度相当', () => {
       vi.restoreAllMocks()
     })
 
-    it('安全弁: 締めくくりの失敗は、直後に成功する新区間の構築で消えず closeFailure に残る', () => {
+    it('安全弁: 欠けで締めたときの失敗は、直後に成功する作り直しで消えず closeFailure に残る', () => {
       const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), OPTS)
-      fusion.ingest(
-        wave({ boardKey: BOARD_A, sensorId: 'sensorA', segmentId: 1, firstSampleIndex: 0, gal: galRows(0, 50, 40) }),
-      )
+      feedA(fusion, 0, 30)
       vi.spyOn(IntensityStream.prototype, 'end').mockImplementation(() => {
         throw new Error('締めくくりに失敗した（テスト用）')
       })
-      // 区間が変わる → 旧区間を締めようとして失敗する。ただし新区間の構築自体は成功する。
-      const out = fusion.ingest(
-        wave({ boardKey: BOARD_A, sensorId: 'sensorA', segmentId: 2, firstSampleIndex: 0, gal: galRows(0, 50, 40) }),
-      )
+      // 目盛り 30〜59 が欠けて 60 から再開 → 古い流し込みを締めて作り直す。
+      const [out] = feedA(fusion, 60, 30)
       expect(out.closeFailure).toEqual({ stationId: 'home', detail: expect.stringContaining('締めくくりに失敗した') })
-      // 新区間の構築は成功しているので、いまの流し込みの健全性（intensitySkipReason）は別物。
       expect(out.intensitySkipReason).toBeNull()
+      expect(out.intensityStateChanged).toBe(true)
     })
 
     it('正: closeAll() は締めくくりの失敗を failures へ集め、他の観測点の回収は止めない（2 観測点で検証）', () => {
-      // home・garage の 2 観測点。1 観測点だけだと「失敗した観測点」と「回収を試みた
-      // 観測点」が同じになり、ループが 1 件目の失敗で止まっていないことを示せない。
-      function sensorEntry(sensorId: string, noiseDensity: number) {
-        return {
-          sensorId,
-          enabled: true,
-          rotation: IDENTITY,
-          offset: [0, 0, 0] as const,
-          sensitivity: [1, 1, 1] as const,
-          noiseDensity,
-        }
-      }
       const config: StationConfig = {
         stations: [
           { stationId: 'home', displayName: '自宅', lat: 35.6, lon: 139.7 },
@@ -1039,99 +932,22 @@ describe('SensorFusion.ingest — 観測点ぶんの計測震度相当', () => {
         ],
       }
       const fusion = new SensorFusion(config, OPTS)
-      // 両方の駆動役（noiseDensity が低い sensorA・sensorC）を届け、両グループとも
-      // `stream` を持った状態にする（closeAll() が両方で end() を呼ぶようにするため）。
-      fusion.ingest(
-        wave({ boardKey: BOARD_A, sensorId: 'sensorA', segmentId: 1, firstSampleIndex: 0, gal: galRows(0, 50, 40) }),
-      )
-      fusion.ingest(
-        wave({ boardKey: BOARD_C, sensorId: 'sensorC', segmentId: 1, firstSampleIndex: 0, gal: galRows(0, 50, 40) }),
-      )
-      // 1 回だけ投げる —— buildGroups は設定に並んだ順（home → garage）でグループを
-      // 作るので、home 側の end() だけが失敗し、garage 側は本物の実装のまま通る。
+      ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', 0, galRows(0, 30, 40)))
+      ingestNow(fusion, gridChunk(BOARD_C, 'sensorC', 0, galRows(0, 30, 40)))
       vi.spyOn(IntensityStream.prototype, 'end').mockImplementationOnce(() => {
         throw new Error('締めくくりに失敗した（テスト用・home のみ）')
       })
       const closed = fusion.closeAll()
-      expect(closed.failures).toEqual([
-        { stationId: 'home', detail: expect.stringContaining('締めくくりに失敗した') },
-      ])
-      // garage 側は正常に回収を試みている（50 サンプルでは震度は出ないが、
-      // failures にも載らない —— home の失敗で処理が止まっていない証拠）。
-      expect(closed.failures.some((f) => f.stationId === 'garage')).toBe(false)
+      expect(closed.failures).toEqual([{ stationId: 'home', detail: expect.stringContaining('締めくくりに失敗した') }])
     })
-  })
-
-  it('正: 3 台のグループでは全ペア（3 組）の差分が出て、最も低雑音の 1 台が駆動役になる', () => {
-    const config: StationConfig = {
-      stations: [{ stationId: 'home', displayName: '自宅', lat: 35.6, lon: 139.7 }],
-      boards: [
-        {
-          boardKey: BOARD_A,
-          stationId: 'home',
-          sensors: [
-            {
-              sensorId: 'sensorA',
-              enabled: true,
-              rotation: IDENTITY,
-              offset: [0, 0, 0],
-              sensitivity: [1, 1, 1],
-              noiseDensity: 50,
-            },
-          ],
-        },
-        {
-          boardKey: BOARD_B,
-          stationId: 'home',
-          sensors: [
-            {
-              sensorId: 'sensorB',
-              enabled: true,
-              rotation: IDENTITY,
-              offset: [0, 0, 0],
-              sensitivity: [1, 1, 1],
-              // 3 候補の真ん中でも末尾でもなく、最小値が正しく選ばれるかを見る。
-              noiseDensity: 5,
-            },
-          ],
-        },
-        {
-          boardKey: BOARD_C,
-          stationId: 'home',
-          sensors: [
-            {
-              sensorId: 'sensorC',
-              enabled: true,
-              rotation: IDENTITY,
-              offset: [0, 0, 0],
-              sensitivity: [1, 1, 1],
-              noiseDensity: 20,
-            },
-          ],
-        },
-      ],
-    }
-    const fusion = new SensorFusion(config, NO_WAIT)
-    fusion.ingest(wave({ boardKey: BOARD_A, sensorId: 'sensorA', gal: [[100], [0], [0]] }))
-    fusion.ingest(wave({ boardKey: BOARD_C, sensorId: 'sensorC', gal: [[100], [0], [0]] }))
-    // sensorB（noiseDensity=5 で最小）が駆動役のはず。
-    const out = fusion.ingest(wave({ boardKey: BOARD_B, sensorId: 'sensorB', gal: [[50], [0], [0]] }))
-    expect(out.fusedWave?.driver).toEqual({ boardKey: BOARD_B, sensorId: 'sensorB' })
-    expect(out.fusedWave?.memberCount).toEqual([3])
-    expect(out.pairDiffs).toHaveLength(3)
   })
 })
 
 /**
- * `IntensityPipeline` が実際に組み立てた `WaveChunk`（校正適用後）を
- * `SensorFusion.ingest()` へ流す。**手組みの `WaveChunk` だけでは、フェーズをまたぐ
- * 接続点（校正済みの gal が実際に合成へ渡っているか）を検証できない**——敵対的
- * レビューで指摘された穴（main.ts:875-886 相当の配線をテストが一度も通していない）
- * を塞ぐ。
+ * `IntensityPipeline` が実際に組み立てた `WaveChunk`（校正適用後）を合成へ流す。
+ * **手組みの `WaveChunk` だけでは、校正済みの gal が実際に合成へ渡っているかを検証できない。**
  */
 describe('SensorFusion.ingest — 実際の IntensityPipeline から出た WaveChunk で合成する', () => {
-  const HZ_INT = 100
-
   function packetFor(boardKey: BoardKey, sensorId: string, firstSeq: number): SensorPacket {
     return {
       version: 2,
@@ -1142,12 +958,11 @@ describe('SensorFusion.ingest — 実際の IntensityPipeline から出た WaveC
       channels: ['HN1', 'HN2', 'HN3'],
       ugPerLsb: 61.0352,
       fullScaleG: 2,
-      sampleRateHz: HZ_INT,
-      firstSampleMs: BASE_MS + (firstSeq * 1000) / HZ_INT,
+      sampleRateHz: HZ,
+      firstSampleMs: T0 + (firstSeq * 1000) / HZ,
       firstSeq,
       overflowCount: 0,
-      // 静止（全軸カウント 0）。校正の効きだけを見たいので揺れは混ぜない。
-      samples: Array.from({ length: 10 }, () => [0, 0, 0]),
+      samples: Array.from({ length: 30 }, () => [0, 0, 0]),
     }
   }
 
@@ -1155,59 +970,19 @@ describe('SensorFusion.ingest — 実際の IntensityPipeline から出た WaveC
     const config: StationConfig = {
       stations: [{ stationId: 'home', displayName: '自宅', lat: 35.6, lon: 139.7 }],
       boards: [
-        {
-          boardKey: BOARD_A,
-          stationId: 'home',
-          sensors: [
-            {
-              sensorId: 'sensorA',
-              enabled: true,
-              rotation: IDENTITY,
-              // 第 1 軸に +10 gal のオフセット。校正後は 0 - 10 = -10 になるはず。
-              offset: [10, 0, 0],
-              sensitivity: [1, 1, 1],
-              noiseDensity: 10,
-            },
-          ],
-        },
-        {
-          boardKey: BOARD_B,
-          stationId: 'home',
-          sensors: [
-            {
-              sensorId: 'sensorB',
-              enabled: true,
-              rotation: IDENTITY,
-              offset: [0, 0, 0],
-              sensitivity: [1, 1, 1],
-              // 重みを sensorA と揃える（単純平均になる）。
-              noiseDensity: 10,
-            },
-          ],
-        },
+        { boardKey: BOARD_A, stationId: 'home', sensors: [{ ...sensorEntry('sensorA', 10), offset: [10, 0, 0] }] },
+        { boardKey: BOARD_B, stationId: 'home', sensors: [sensorEntry('sensorB', 10)] },
       ],
     }
     const pipeline = new IntensityPipeline({ stations: new StationDirectory(config) })
-    const fusion = new SensorFusion(config, NO_WAIT)
-
-    const outcomeA = pipeline.handlePacket(packetFor(BOARD_A, 'sensorA', 0))
-    const outcomeB = pipeline.handlePacket(packetFor(BOARD_B, 'sensorB', 0))
-    expect(outcomeA.wave).not.toBeNull()
-    expect(outcomeB.wave).not.toBeNull()
-
-    // **駆動役（sensorA。設定の先頭・同じ noiseDensity）を後に流す**——合成は
-    // 駆動役の到着でしか起きない（`sensorFusion.ts` 冒頭コメント）。裏付け側
-    // （sensorB）を先に流し、直近の 1 まとまりとして覚えさせる。
-    fusion.ingest(outcomeB.wave as WaveChunk)
-    const out = fusion.ingest(outcomeA.wave as WaveChunk)
-
+    const fusion = new SensorFusion(config)
+    const a = pipeline.handlePacket(packetFor(BOARD_A, 'sensorA', 0)).wave
+    const b = pipeline.handlePacket(packetFor(BOARD_B, 'sensorB', 0)).wave
+    expect(a).not.toBeNull()
+    expect(b).not.toBeNull()
+    const outs = [...ingestNow(fusion, a as WaveChunk), ...ingestNow(fusion, b as WaveChunk), ...fusion.closeAll().drained]
+    expect(outs.length).toBeGreaterThan(0)
     // sensorA は校正で -10、sensorB は 0 のまま。重みが同じなので単純平均 -5。
-    // **校正前の生値（0 と 0）を混ぜていれば 0 になる**——それとの違いで確かめる。
-    //
-    // 合成値そのものは直流を落とした変動分（この入力は静止なので 0）なので、
-    // **落とした直流を足し戻した値**で見る（上の「重み付き平均と差分」と同じ理由）。
-    const w = out.fusedWave
-    expect(w).not.toBeNull()
-    expect((w as FusedWaveChunk).gal[0][0] + (w as FusedWaveChunk).dcGal[0][0]).toBeCloseTo(-5)
+    expect(restored(outs[0].fusedWave, 0, 0)).toBeCloseTo(-5)
   })
 })

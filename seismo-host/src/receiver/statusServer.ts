@@ -628,6 +628,8 @@ function encode(message: HubMessage): string {
       return sseEvent('station-diff', message.diff)
     case 'shake-event':
       return sseEvent('shake-event', message.event)
+    case 'station-wave-revised':
+      return sseEvent('station-wave-revised', message.revised)
   }
 }
 
