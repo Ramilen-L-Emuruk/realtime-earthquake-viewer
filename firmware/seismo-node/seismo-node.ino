@@ -354,8 +354,22 @@ struct BacklogSlot {
   uint32_t overflow;
   uint8_t  sensor;   // `g_sensors` の添字
   uint8_t  n;        // 積んだサンプル数
+  // フラッシュへ写したか（→ `spillPump`）。**写したかどうかは位置では分からない** —— `gap=` で
+  // 書き出すと輪の途中から写し始め、手前を後から追って写すので、写した分は輪の中で飛び飛びになる。
+  // 輪へ積むたびに 0 へ戻す（`backlogPut`）。
+  uint8_t  flashed;
   int16_t  v[MAX_PER_PACKET * 3];
 };
+
+// `/backlog` が返すまとまりの在りか（→ `collectBacklog`）。中身は持たず、返すときに取り出す。
+// 宣言をここに置く理由は `Packet` と同じ。
+struct BacklogRef {
+  uint32_t seq0;
+  uint16_t sector;   // フラッシュの区画の添字。`BACKLOG_REF_MEMORY` ならメモリの輪
+  uint16_t at;       // 区画の中のバイト位置か、メモリの輪の位置（0 がいちばん古い）
+  uint8_t  n;
+};
+static const uint16_t BACKLOG_REF_MEMORY = 0xFFFF;
 
 // フラッシュの 1 区画が抱える、センサーごとの通し番号の範囲 `[from, to)`。
 struct FlashRange {
@@ -534,6 +548,8 @@ static bool       g_gapHas[SENSOR_N] = {};
 static uint32_t   g_lastGapMs = 0;       // 最後に `gap=` 付きの返事を受けた時刻（`g_gapAcks` が 0 なら無意味）
 static uint32_t   g_gapAcks = 0;         // `gap=` 付きの返事を受けた数
 static uint32_t   g_gapBad = 0;          // `gap=` の中身を読めなかった数（返事としては受ける）
+// `gap=` を受けてから、書き出しの位置より手前をまだ見直していない（→ `spillBackCopy`）。
+static bool       g_gapBackPending = false;
 static uint32_t   g_ackReconnects = 0;   // 返事の途絶で Wi-Fi を繋ぎ直した回数
 static uint32_t   g_hostProbeFail = 0;   // 返事が途絶えてホストへ HTTP で訊いたが答えが無かった回数
 static uint32_t   g_restartSkipped = 0;  // 再起動の段に来たが上限で飛ばした回数
@@ -647,6 +663,7 @@ static uint32_t   g_backlogRequests = 0;    // `/backlog` を受けた回数
 static uint32_t   g_backlogServed = 0;      // 返したまとまりの数
 static uint32_t   g_backlogBad = 0;         // 引数が読めずに断った回数
 static uint32_t   g_backlogOtherBoot = 0;   // 訊かれた起動 ID の分がメモリにもフラッシュにも無かった回数
+static uint32_t   g_backlogLoadFails = 0;   // 返す分を取り出せず 500 で答えた回数（→ `handleBacklog`）
 static uint32_t   g_bootIdNum = 0;          // `g_bootId` を数にしたもの（フラッシュの区画が名乗る）
 
 // --- フラッシュの輪（→ `FlashSectorHead`・`spillPump`） ---
@@ -670,6 +687,7 @@ static bool       g_spillDraining = false;
 static uint32_t   g_spillStarts = 0;        // 書き出しを始めた回数
 static uint32_t   g_spillGapStarts = 0;     // そのうち、返事は届いていて `gap=` で始めた回数
 static uint32_t   g_spillLost = 0;          // 写す前にメモリの輪が上書きしてしまったまとまりの数
+static uint32_t   g_spillBackCopies = 0;    // 書き出しの位置より手前から追って写したまとまりの数（→ `spillBackCopy`）
 // `g_spillCursor` が前の書き出しの位置を指しているか。**始め直すときはそこより前へ戻らない**
 // （→ `spillPump`）—— もう写した分を写し直すと、返事が途切れるたびに同じ分で区画を食う。
 static bool       g_spillCursorValid = false;
@@ -952,6 +970,7 @@ static void backlogPut(const Sensor &s, const int16_t *v, size_t n, uint32_t seq
   b.overflow = s.overflow;
   b.sensor = (uint8_t)(&s - g_sensors);
   b.n = (uint8_t)n;
+  b.flashed = 0;
   memcpy(b.v, v, n * 3 * sizeof(int16_t));
   g_backlogTotal++;
   if (g_backlogUsed < BACKLOG_SLOTS) g_backlogUsed++;
@@ -1179,7 +1198,8 @@ static void flashInit(){
 // 前にメモリの輪から消えていた（2026-10-06、約 86% が取り戻せなかった）。写し始めは指された
 // 番号のまとまりから。`gap=` の無い返事が来たら欠けは片付いたので、写し切って止める。
 // `gap=` 付きの返事が `SPILL_AFTER_MS` 来なくても止める（返事そのものが落ちている間は、
-// 途絶えの判定のほうが引き継ぐ）。
+// 途絶えの判定のほうが引き継ぐ）。書き出しの位置より手前に指されたまとまりが残っていれば、
+// それも追って写す（`spillBackCopy`）。
 static bool gapHinted(uint32_t nowMs){
   if (g_gapAcks == 0 || (int32_t)(nowMs - g_lastGapMs) > (int32_t)SPILL_AFTER_MS) return false;
   for (size_t s = 0; s < SENSOR_N; s++) if (g_gapHas[s]) return true;
@@ -1198,6 +1218,38 @@ static uint32_t gapCursor(){
     }
   }
   return g_backlogTotal;
+}
+
+// 書き出しの位置より手前で、`gap=` が指しているのにまだ写していないまとまりを写す。
+// **区画を書いたら真**（1 周に書く区画は 1 つまで。呼び出し側はその周を終える）。
+//
+// **前へ進む写しだけでは拾えない分がある。** 書き出しは指された欠けのうち輪でいちばん手前の位置から
+// 始めるが、ホストがまだ気づいていない欠けはそこに入っていない —— あるセンサーのまとまりが届かず、
+// その後のまとまりも届かないうちは、ホストはそのセンサーの欠けを知らない。別のセンサーの欠けで
+// 書き出しが先に始まると、気づかれていない側のまとまりは位置の手前に取り残され、メモリの輪から
+// 落ちた時点で失われる（2026-10-08 の電子レンジで 3 か所、それぞれ 1 まとまり）。
+//
+// 見直すのは `gap=` を受けた後に 1 回だけ（`g_gapBackPending`）。写したかは区画の印で見るので、
+// 同じまとまりを二度写さない。
+static bool spillBackCopy(){
+  if (!g_gapBackPending) return false;
+  const uint32_t oldest = g_backlogTotal - (uint32_t)g_backlogUsed;
+  for (size_t k = 0; k < g_backlogUsed; k++) {
+    const uint32_t pos = oldest + (uint32_t)k;
+    // **ここから先は前へ進む写しが受け持つ。**
+    if ((int32_t)(pos - g_spillCursor) >= 0) break;
+    BacklogSlot &b = g_backlog[pos % BACKLOG_SLOTS];
+    if (b.flashed || b.sensor >= SENSOR_N || !g_gapHas[b.sensor]) continue;
+    if ((int32_t)(b.seq0 + (uint32_t)b.n - g_gapFrom[b.sensor]) <= 0) continue;
+    if (!pageAppend(b)) {
+      flashFlushPage();
+      return true;  // 見直しは次の周に続ける（`g_gapBackPending` は立てたまま）
+    }
+    b.flashed = 1;
+    g_spillBackCopies++;
+  }
+  g_gapBackPending = false;
+  return false;
 }
 
 static void spillPump(uint32_t nowMs){
@@ -1263,6 +1315,11 @@ static void spillPump(uint32_t nowMs){
                   (unsigned long)(SPILL_MAX_MS / 60000UL));
     return;
   }
+  // **手前に取り残した分を先に写す**（`spillBackCopy`）。輪から先に落ちるのは古い側なので。
+  // **`gap=` の鮮度（`hinted`）では止めない。** 干渉で `gap=` 付きの返事が 8 秒途絶えても、
+  // 書き出しは途絶えの判定で続く —— そこで手前を追うのをやめると、直したい場面そのもので働かない。
+  // 何を写すかは最後に受けた `gap=` が決める（欠けが片付いた返事なら `g_gapHas` が落ちていて何も写さない）。
+  if (spillBackCopy()) return;
   const uint32_t target = g_spillDraining ? g_spillStopAt : g_backlogTotal;
   while ((int32_t)(target - g_spillCursor) > 0) {
     const uint32_t oldest = g_backlogTotal - (uint32_t)g_backlogUsed;
@@ -1271,9 +1328,14 @@ static void spillPump(uint32_t nowMs){
       g_spillCursor = oldest;
       continue;
     }
-    if (!pageAppend(g_backlog[g_spillCursor % BACKLOG_SLOTS])) {
-      flashFlushPage();
-      return;
+    BacklogSlot &slot = g_backlog[g_spillCursor % BACKLOG_SLOTS];
+    // 手前から追って写した分（`spillBackCopy`）は写し直さない。
+    if (!slot.flashed) {
+      if (!pageAppend(slot)) {
+        flashFlushPage();
+        return;
+      }
+      slot.flashed = 1;
     }
     g_spillCursor++;
   }
@@ -1285,27 +1347,46 @@ static void spillPump(uint32_t nowMs){
   }
 }
 
-// `[from, to)` に掛かる、起動 ID とセンサーの合うまとまりを、**通し番号の若い順に** `visit` へ渡す。
-// `visit` が偽を返したら止める。
+// `[from, to)` に掛かる、起動 ID とセンサーの合うまとまりのうち、**通し番号の若いものから
+// `cap` 個**の在りかを `refs` へ並べて数を返す。それより後ろにもまだあれば `more` を立てる。
 //
-// **フラッシュ（古い区画から）→ メモリの輪の順に見る。** 同じ起動の中では、フラッシュには
-// 輪から写した分しか無く、写すのは古い順なので、この順で並ぶ。**重なりは落とす** ——
-// 書き出し中の分は両方にあり、書き出しを始め直すと同じ分をもう一度写すこともある。
+// **フラッシュとメモリの輪を、通し番号で突き合わせて並べる。** どちらかの順に読んで「直前に返した
+// 末尾より手前は重なり」と捨てる形は、フラッシュが輪の古い側だけを持つときにしか成り立たない。
+// `gap=` で書き出すと輪の途中から写すので、フラッシュの分のほうが後ろの番号を持つことがあり、
+// その形ではメモリの輪にしか無い手前のまとまりを重なりと取り違えて落としていた（2026-10-08、
+// ホストは「基板がもう抱えていない」と諦めた）。手前から追って写す分（`spillBackCopy`）もあるので、
+// フラッシュの中でも番号順には並ばない。
 //
-// **テンプレートにしない。** Arduino はファイル中の関数の宣言を自動で前へ挿し込むが、
-// テンプレートの宣言は型の引数を落として作るので通らない（実際に `Visit has not been declared`
-// で落ちた）。`std::function` なら普通の関数として宣言される。
-static void forEachBacklog(uint32_t bid, uint8_t si, uint32_t from, uint32_t to,
-                           const std::function<bool(const BacklogSlot&)> &visit){
-  bool started = false;
-  uint32_t lastEnd = 0;
-  auto offer = [&](const BacklogSlot &b) -> bool {
-    if (!backlogOverlaps(b, from, to)) return true;
-    const uint32_t end = b.seq0 + b.n;
-    if (started && (int32_t)(end - lastEnd) <= 0) return true;
-    started = true;
-    lastEnd = end;
-    return visit(b);
+// **同じまとまりは 1 つにまとめる**（同じ `seq0`。書き出し中の分は両方にあり、書き出しを始め直すと
+// 同じ分をもう一度写すこともある）。両方にあればメモリの輪のほうを採る（返すときに読み直さずに済む）。
+static size_t collectBacklog(uint32_t bid, uint8_t si, uint32_t from, uint32_t to,
+                             BacklogRef *refs, size_t cap, bool &more){
+  size_t count = 0;
+  more = false;
+  auto consider = [&](const BacklogSlot &b, uint16_t sector, uint16_t at){
+    if (b.sensor != si || !backlogOverlaps(b, from, to)) return;
+    // **並べる鍵は `from` からの差。** 通し番号は約 497 日で一周するので、そのまま比べない。
+    const int32_t key = (int32_t)(b.seq0 - from);
+    size_t pos = count;
+    for (size_t i = 0; i < count; i++) {
+      const int32_t ki = (int32_t)(refs[i].seq0 - from);
+      if (ki == key) {
+        if (sector == BACKLOG_REF_MEMORY) { refs[i].sector = sector; refs[i].at = at; }
+        return;
+      }
+      if (key < ki) { pos = i; break; }
+    }
+    if (count == cap) {
+      more = true;
+      if (pos == cap) return;
+      count--;  // いちばん後ろを押し出す（そちらは次に訊かれたときに返す）
+    }
+    for (size_t i = count; i > pos; i--) refs[i] = refs[i - 1];
+    refs[pos].seq0 = b.seq0;
+    refs[pos].sector = sector;
+    refs[pos].at = at;
+    refs[pos].n = b.n;
+    count++;
   };
   if (g_flashPart != nullptr) {
     for (size_t k = 0; k < g_flashSectors; k++) {
@@ -1313,6 +1394,13 @@ static void forEachBacklog(uint32_t bid, uint8_t si, uint32_t from, uint32_t to,
       const FlashSectorIndex &ix = g_flashIndex[i];
       if (!ix.valid || ix.bid != bid || !ix.range[si].has) continue;
       if (!((int32_t)(ix.range[si].to - from) > 0 && (int32_t)(to - ix.range[si].from) > 0)) continue;
+      // **揃った後は、後ろにしか無い区画を読まない。** 目録の範囲の頭が `cap` 個目より後ろなら、
+      // その区画からは並びに入るものが無い（あることだけ分かれば足りる）。これが無いと、
+      // 長い欠けを訊かれるたびにフラッシュの区画を全部読み、その間ずっと吸い出しが止まる。
+      if (count == cap && (int32_t)(ix.range[si].from - from) > (int32_t)(refs[cap - 1].seq0 - from)) {
+        more = true;
+        continue;
+      }
       if (esp_partition_read(g_flashPart, i * FLASH_SECTOR, g_flashRead, FLASH_SECTOR) != ESP_OK) {
         g_flashReadFails++;
         continue;
@@ -1330,19 +1418,39 @@ static void forEachBacklog(uint32_t bid, uint8_t si, uint32_t from, uint32_t to,
       BacklogSlot b;
       for (uint16_t r = 0; r < h.records; r++) {
         if (!flashDecode(g_flashRead + off, h.used - off, b)) break;
+        consider(b, (uint16_t)i, (uint16_t)off);
         off += flashRecordSize(b.n);
-        if (b.sensor != si) continue;
-        if (!offer(b)) return;
       }
     }
   }
   if (bid == g_bootIdNum) {
-    for (size_t k = 0; k < g_backlogUsed; k++) {
-      const BacklogSlot &b = backlogAt(k);
-      if (b.sensor != si) continue;
-      if (!offer(b)) return;
-    }
+    for (size_t k = 0; k < g_backlogUsed; k++) consider(backlogAt(k), BACKLOG_REF_MEMORY, (uint16_t)k);
   }
+  return count;
+}
+
+// `collectBacklog` が並べた在りかから、まとまりを取り出す。**取り出せなければ偽**（区画を読めない・
+// 並べた後で中身が食い違う）。`cachedSector` は `g_flashRead` に入っている区画（無ければ -1）——
+// 同じ区画のまとまりが続く間は読み直さない。**いつも続くとは限らない**（手前から追って写した分は
+// 後の区画に入るので、番号順に並べると区画が行き来する）。そのときは読み直すだけで、中身は変わらない。
+static bool loadBacklogRef(const BacklogRef &r, BacklogSlot &out, int32_t &cachedSector){
+  if (r.sector == BACKLOG_REF_MEMORY) {
+    out = backlogAt(r.at);
+    return out.seq0 == r.seq0;
+  }
+  if (cachedSector != (int32_t)r.sector) {
+    cachedSector = -1;
+    if (esp_partition_read(g_flashPart, (size_t)r.sector * FLASH_SECTOR, g_flashRead, FLASH_SECTOR) != ESP_OK) {
+      g_flashReadFails++;
+      return false;
+    }
+    cachedSector = (int32_t)r.sector;
+  }
+  const FlashSectorHead &h = *reinterpret_cast<const FlashSectorHead*>(g_flashRead);
+  // 並べてから取り出すまでの間に区画は書き換わらない（書くのも読むのも `loop()` だけ）。それでも
+  // 目印と範囲は確かめる —— 前提が崩れたとき、別の中身をまとまりとして読まないため。
+  if (h.magic != FLASH_MAGIC || h.used > FLASH_SECTOR || r.at >= h.used) return false;
+  return flashDecode(g_flashRead + r.at, h.used - r.at, out) && out.seq0 == r.seq0;
 }
 
 // 送ったまとまりを返す口。`GET /backlog?sid=<センサー>&bid=<起動 ID>&from=<q>&to=<q>`。
@@ -1416,15 +1524,26 @@ static void handleBacklog(){
 
   // **見出しは本文より先に出す**ので、何を返すかを先に数えてから書き出す。
   // 応答を作っている間に輪は書き換わらない（書くのも読むのも `loop()` だけ）。
-  size_t picked = 0;
+  static BacklogRef refs[BACKLOG_MAX_PER_REPLY];
   bool more = false;
-  uint32_t next = from;
-  forEachBacklog(bid, sensor, from, to, [&](const BacklogSlot &b) -> bool {
-    if (picked == BACKLOG_MAX_PER_REPLY) { more = true; return false; }
-    picked++;
-    next = b.seq0 + b.n;
-    return true;
-  });
+  const size_t found = collectBacklog(bid, sensor, from, to, refs, BACKLOG_MAX_PER_REPLY, more);
+  // **見出しを出す前に、返す分を作業場へ取り出し切る。** 見出しで「ここまで答えた」と名乗った後で
+  // 取り出しに失敗して飛ばすと、ホストは答え切ったのに残った分を「基板がもう抱えていない」と諦める。
+  // **1 つでも取り出せなければ応答ごと 500 にする** —— ホストは「取りに行けず」として間を空けて訊き直す
+  // （`backlogFetcher.ts`）。取り出せた分だけ返して `more` を立てる形は、ホストが間を空けずに訊き直すので、
+  // 読めない区画が続くと休みなく訊かれる輪になる。作業場は `static`（30 × 264 バイト。`loop()` の
+  // タスクのスタックは 8 KB しかない）。
+  static BacklogSlot slots[BACKLOG_MAX_PER_REPLY];
+  int32_t cachedSector = -1;
+  for (size_t k = 0; k < found; k++) {
+    if (!loadBacklogRef(refs[k], slots[k], cachedSector)) {
+      g_backlogLoadFails++;
+      http.send(500, "text/plain", "backlog read failed\n");
+      return;
+    }
+  }
+  const size_t picked = found;
+  const uint32_t next = picked > 0 ? slots[picked - 1].seq0 + slots[picked - 1].n : from;
   http.sendHeader("X-Backlog-Have", have ? String(haveFrom) + "-" + String(haveTo) : String("none"));
   http.sendHeader("X-Backlog-More", more ? "1" : "0");
   http.sendHeader("X-Backlog-Next", String(next));
@@ -1436,12 +1555,10 @@ static void handleBacklog(){
   char bidText[9];
   snprintf(bidText, sizeof(bidText), "%08lx", (unsigned long)bid);
   const Sensor &s = g_sensors[sensor];
-  size_t written = 0;
-  forEachBacklog(bid, sensor, from, to, [&](const BacklogSlot &b) -> bool {
-    if (written == picked) return false;
-    written++;
+  for (size_t k = 0; k < picked; k++) {
+    const BacklogSlot &b = slots[k];
     const int hl = formatHead(buf, sizeof(buf), bidText, s, b.n, b.seq0, b.tFirstMs, b.overflow);
-    if (hl <= 0 || (size_t)hl >= sizeof(buf)) { g_headTrunc++; return true; }
+    if (hl <= 0 || (size_t)hl >= sizeof(buf)) { g_headTrunc++; continue; }
     size_t u = (size_t)hl;
     for (size_t i = 0; i < b.n; i++) {
       const int ll = formatLine(buf + u, sizeof(buf) - u, &b.v[i * 3]);
@@ -1450,8 +1567,7 @@ static void handleBacklog(){
     }
     http.sendContent(buf, u);
     g_backlogServed++;
-    return true;
-  });
+  }
   http.sendContent("");
 }
 
@@ -1528,10 +1644,10 @@ static void handleStatus(){
   }
   appendf(buf, sizeof(buf), u,
     "\"backlog_ok\":%s,\"backlog_slots\":%u,\"backlog_used\":%u,\"backlog_oldest_age_s\":%ld,"
-    "\"backlog_requests\":%lu,\"backlog_served\":%lu,\"backlog_bad\":%lu,\"backlog_other_boot\":%lu,",
+    "\"backlog_requests\":%lu,\"backlog_served\":%lu,\"backlog_bad\":%lu,\"backlog_other_boot\":%lu,\"backlog_load_fails\":%lu,",
     g_backlog != nullptr ? "true":"false", (unsigned)BACKLOG_SLOTS, (unsigned)g_backlogUsed, backlogAge,
     (unsigned long)g_backlogRequests, (unsigned long)g_backlogServed,
-    (unsigned long)g_backlogBad, (unsigned long)g_backlogOtherBoot);
+    (unsigned long)g_backlogBad, (unsigned long)g_backlogOtherBoot, (unsigned long)g_backlogLoadFails);
   // フラッシュの輪（→ `spillPump`）。**`flash_max_ms` は 1 区画の消去と書き込みの最長** ——
   // 吸い出しが待てるのは 1.4 秒まで（`HOST_PROBE_TIMEOUT_MS` の項）なので、ここが近づいたら危ない。
   size_t flashValid = 0;
@@ -1539,12 +1655,12 @@ static void handleStatus(){
   appendf(buf, sizeof(buf), u,
     "\"flash_ok\":%s,\"flash_sectors\":%u,\"flash_valid\":%u,\"spilling\":%s,\"spill_starts\":%lu,"
     "\"spill_gap_starts\":%lu,\"gap_acks\":%lu,\"gap_bad\":%lu,"
-    "\"spill_lost\":%lu,\"spill_caps\":%lu,\"spill_capped\":%s,\"flash_writes\":%lu,\"flash_fails\":%lu,"
+    "\"spill_lost\":%lu,\"spill_back_copies\":%lu,\"spill_caps\":%lu,\"spill_capped\":%s,\"flash_writes\":%lu,\"flash_fails\":%lu,"
     "\"flash_read_fails\":%lu,\"flash_crc_bad\":%lu,\"flash_max_ms\":%lu,\"flash_init_ms\":%lu,",
     g_flashPart != nullptr ? "true":"false", (unsigned)g_flashSectors, (unsigned)flashValid,
     g_spilling ? "true":"false", (unsigned long)g_spillStarts,
     (unsigned long)g_spillGapStarts, (unsigned long)g_gapAcks, (unsigned long)g_gapBad,
-    (unsigned long)g_spillLost,
+    (unsigned long)g_spillLost, (unsigned long)g_spillBackCopies,
     (unsigned long)g_spillCaps, g_spillCapped ? "true":"false",
     (unsigned long)g_flashWrites, (unsigned long)g_flashFails,
     (unsigned long)g_flashReadFails, (unsigned long)g_flashCrcBad, (unsigned long)g_flashMaxMs,
@@ -2095,7 +2211,7 @@ static void readAcks(){
       } else if (parseGapField(got + wl + 5)) {
         bool any = false;
         for (size_t s = 0; s < SENSOR_N; s++) any = any || g_gapHas[s];
-        if (any) { g_gapAcks++; g_lastGapMs = millis(); }
+        if (any) { g_gapAcks++; g_lastGapMs = millis(); g_gapBackPending = true; }
       } else {
         g_gapBad++;
       }
