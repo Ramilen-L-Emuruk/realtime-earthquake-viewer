@@ -215,6 +215,51 @@ describe('initRecordsView', () => {
     expect(root.querySelector('.records-marks-note')!.textContent).toContain('このセンサーの基板は観測点に割り当てていないので、P・S の線は引けない')
   })
 
+  it('周波数: 軸ごとにスペクトログラムと範囲のスペクトルを取り、見出しと色の物差しを書く', async () => {
+    const problems = { skippedBytes: 0, badRecords: 0, unscaledHours: 0 }
+    respond = (url) => {
+      if (url.startsWith('/api/records/channels')) return { status: 200, body: CHANNELS }
+      if (url.startsWith('/api/records/envelope')) return { status: 200, body: envelope() }
+      if (url.startsWith('/api/records/spectrogram')) {
+        return {
+          status: 200,
+          body: {
+            source: 'minutes',
+            unit: 'gal',
+            binEdgesHz: [0.1, 1, 10, 50],
+            columnMs: 60_000,
+            firstColumnMs: H0,
+            segments: [11],
+            power: [[1e-4, 1e-5, null]],
+            hours: { ok: 1, stale: 0, pending: 0, failed: 0, absent: 0 },
+            irregularHours: [],
+            files: null,
+            problems,
+          },
+        }
+      }
+      if (url.startsWith('/api/records/spectrum')) {
+        return { status: 200, body: { source: 'minutes', unit: 'gal', binEdgesHz: [0.1, 1, 10, 50], power: [1e-4, 1e-5, null], segments: 660, problems } }
+      }
+      return { status: 404, body: { error: 'not-found' } }
+    }
+    const root = document.createElement('div')
+    await initRecordsView(root, new AbortController().signal)
+    await settle()
+    const grams = requested.filter((u) => u.startsWith('/api/records/spectrogram'))
+    const spectra = requested.filter((u) => u.startsWith('/api/records/spectrum'))
+    expect(grams.map((u) => new URLSearchParams(u.split('?')[1]).get('channel'))).toEqual(['station/home/X', 'station/home/Y', 'station/home/Z'])
+    expect(spectra).toHaveLength(3)
+    expect(root.querySelectorAll('canvas.records-spectrogram')).toHaveLength(3)
+    expect(root.querySelector('.records-spectrogram-header')!.textContent).toBe('0.1〜50 Hz（縦は対数）・列の幅 1 分')
+    // 1e-4・1e-5 gal²/Hz は −80・−90 dB（0 dB = 1 (m/s²)²/Hz）
+    expect(root.querySelector('.records-db-scale')!.textContent).toBe('色: −90〜−80 dB（0 dB = 1 (m/s²)²/Hz）')
+    expect(root.querySelector('.records-spectrum-header')!.textContent).toBe('約 10 秒の区間 660 本の平均（1 分ごとの PSD から）')
+    expect(root.querySelector('.records-spectrum-legend')!.textContent).toContain('破線: Peterson の低ノイズ・高ノイズのモデル（NLNM・NHNM）')
+    // ノイズの段は要約の noiseStd（0.5 gal）から
+    expect(root.querySelector('.records-noise-header')!.textContent).toBe('1 秒より速い揺れの RMS（縦は対数）　0.50〜0.50 gal')
+  })
+
   it('生データを選ぶと単位の切り替えが出て、生の値を選ぶと native で取り直す', async () => {
     const root = document.createElement('div')
     await initRecordsView(root, new AbortController().signal)

@@ -183,6 +183,39 @@ export function intervalPsd(
   return combineRebins(byRebin)
 }
 
+/** 列ごとの PSD。添字 j は `firstColumn + j` 列目（列 c は `[c × columnMs, (c + 1) × columnMs)`）。 */
+export interface ColumnPsd {
+  readonly firstColumn: number
+  /** 列へ数えた区間の数。**0 なら作れなかった列**（`power` の行はすべて `NaN`）。 */
+  readonly segments: number[]
+  /** `[列][区画]`。 */
+  readonly power: Float64Array[]
+}
+
+/**
+ * 範囲 `[fromMs, toMs)` を `columnMs` ごとの列に分け、**中心の時刻が入る列へ区間を積む**（{@link minutePsd} と
+ * 同じ数え方で、列の幅だけが違う）。中心が範囲の外にある区間は使わない。投げない。
+ *
+ * 区間（約 10 秒）は列より長いことがあり、そのときは列の外のサンプルも使う。範囲の端の列まで区間を作るには、
+ * 呼び出し側が範囲の前後に区間の半分ずつ余分に読んで渡す。**列の幅は区間を進める幅（{@link PSD_HOP} 点）
+ * より広くする** —— 狭いと区間の入らない列が出る。
+ */
+export function columnPsd(chunks: readonly PsdChunk[], fromMs: number, toMs: number, columnMs: number): ColumnPsd {
+  const firstColumn = Math.floor(fromMs / columnMs)
+  const count = Math.max(0, Math.floor((toMs - 1) / columnMs) - firstColumn + 1)
+  const sums = accumulateSegments(chunks, (_startMs, centerMs) => (centerMs >= fromMs && centerMs < toMs ? Math.floor(centerMs / columnMs) : null))
+  const segments = new Array<number>(count).fill(0)
+  const power = Array.from({ length: count }, () => new Float64Array(PSD_BIN_COUNT).fill(Number.NaN))
+  for (const [column, byRebin] of sums) {
+    const j = column - firstColumn
+    if (j < 0 || j >= count) continue
+    const combined = combineRebins(byRebin)
+    segments[j] = combined.segments
+    power[j] = Float64Array.from(combined.power)
+  }
+  return { firstColumn, segments, power }
+}
+
 type RebinSums = Map<Rebin, { acc: Float64Array; segments: number }>
 
 /**

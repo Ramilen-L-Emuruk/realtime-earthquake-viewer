@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { PSD_BIN_COUNT, PSD_BIN_EDGES_HZ, PSD_HOP, PSD_NFFT, intervalPsd, minutePsd, welchPsd } from './wavePsd'
+import { PSD_BIN_COUNT, PSD_BIN_EDGES_HZ, PSD_HOP, PSD_NFFT, columnPsd, intervalPsd, minutePsd, welchPsd } from './wavePsd'
 
 const T0 = Date.parse('2026-10-07T03:00:00.000Z')
 const FS = 100
@@ -200,5 +200,31 @@ describe('intervalPsd', () => {
     const none = intervalPsd([], T0, T0 + 1)
     expect(none.segments).toBe(0)
     expect(Array.from(none.power).every((v) => Number.isNaN(v))).toBe(true)
+  })
+})
+
+describe('columnPsd', () => {
+  it('区間を中心の時刻が入る列へ積み、範囲の外に中心がある区間は使わない', () => {
+    // 60 秒ぶん。区間の中心は 5.12・10.24・…・51.2 秒（10 本）
+    const x = sine(6000, 5, 2)
+    const got = columnPsd(chunks(x, T0, 500), T0 + 12_000, T0 + 72_000, 6000)
+    expect(got.firstColumn).toBe((T0 + 12_000) / 6000)
+    expect(got.segments).toHaveLength(10)
+    // 中心が 12 秒より前の 2 本（5.12・10.24 秒）は使わない
+    expect(got.segments.reduce((a, b) => a + b, 0)).toBe(Math.floor((6000 - PSD_NFFT) / PSD_HOP) + 1 - 2)
+    // 記録の無い末尾の列（66 秒以降）は区間 0・NaN
+    expect(got.segments[9]).toBe(0)
+    expect(Array.from(got.power[9]!).every((v) => Number.isNaN(v))).toBe(true)
+    // 区間のある列は、周波数で積分すると分散（振幅 2 の正弦波で 2）に戻る
+    expect(got.segments[0]).toBeGreaterThan(0)
+    expect(integrate(got.power[0]!) / 2).toBeGreaterThan(0.9)
+    expect(integrate(got.power[0]!) / 2).toBeLessThan(1.1)
+  })
+
+  it('列の幅が区間の進め方より細いと、区間の入らない列が出る（細くしすぎない理由）', () => {
+    const x = sine(6000, 5, 1)
+    const got = columnPsd(chunks(x, T0, 500), T0, T0 + 60_000, 1000)
+    expect(got.segments.filter((s) => s > 0).length).toBe(Math.floor((6000 - PSD_NFFT) / PSD_HOP) + 1)
+    expect(got.segments.filter((s) => s === 0).length).toBeGreaterThan(0)
   })
 })

@@ -55,8 +55,46 @@ import {
   type Span,
   type UnderlineKind,
 } from './recordsMarks'
+import {
+  FREQ_MAX_HZ,
+  FREQ_MIN_HZ,
+  NHNM,
+  NLNM,
+  NOISE_MODEL_LEGEND,
+  NOISE_TITLE,
+  SPECTRUM_EMPTY_TEXT,
+  SPECTRUM_TITLE,
+  binAt,
+  colorOfDb,
+  colorScaleCss,
+  dbExtent,
+  dbRange,
+  dbScaleText,
+  formatDb,
+  hzOfX,
+  hzOfY,
+  noiseHeader,
+  noiseModelCurve,
+  noiseOfEnvelopeColumns,
+  noiseRange,
+  psdToDb,
+  readSpectrogramData,
+  readSpectrumData,
+  secondRms,
+  spectrogramHeader,
+  spectrogramReadout,
+  spectrogramTitle,
+  spectrumHeader,
+  spectrumReadout,
+  xOfHz,
+  yOfHz,
+  type NoiseSeries,
+  type SpectrogramData,
+  type SpectrumData,
+} from './recordsSpectrum'
 import { EVENTS_PAGE_LIMIT, readShakeRange, type ShakeRecordView, type ShakeVerdictView } from './shakeHistory'
 import {
+  COLUMNS_MAX,
   COMPOSITE_TITLE,
   COMPOSITE_TOO_WIDE_TEXT,
   EMPTY_RANGE_TEXT,
@@ -117,6 +155,7 @@ import {
 
 /** 操作が止まってから取り直すまで。 */
 const RELOAD_DEBOUNCE_MS = 150
+const HOUR_MS = 3_600_000
 /** 最初に映す幅（記録の新しい側の 1 時間）。 */
 const INITIAL_SPAN_MS = 3_600_000
 /** ホイール 1 刻みで寄せる・引く倍率。 */
@@ -162,6 +201,19 @@ const SHAKE_LEAD_MS = 10 * 60_000
 const HOVER_TOLERANCE_PX = 4
 /** 指した所に掛かる地震・揺れの記録を何件まで並べるか。 */
 const READOUT_MAX_ITEMS = 2
+const NOISE_HEIGHT = 90
+const SPECTROGRAM_HEIGHT = 80
+const SPECTRUM_HEIGHT = 220
+/** 範囲のスペクトルの下端に周波数の文字を置く高さ。 */
+const SPECTRUM_LABEL_HEIGHT = 16
+/** 範囲のスペクトルでモデルの線を引く点の数。 */
+const NOISE_MODEL_STEPS = 120
+/**
+ * 軸ごとの線の色（ノイズの段と範囲のスペクトルで重ねるとき）。**軸の並びの順に固定**（消した軸があっても色がずれない）。
+ * 色相を離し、白い地でも読める濃さにする。
+ */
+const AXIS_LINE_COLORS: readonly string[] = ['rgba(37, 99, 168, 0.95)', 'rgba(211, 84, 0, 0.95)', 'rgba(30, 132, 73, 0.95)']
+const NOISE_MODEL_COLOR = 'rgba(128, 128, 128, 0.85)'
 
 /** 軸 1 本ぶんの取れた値。 */
 interface AxisData {
@@ -172,6 +224,19 @@ interface AxisData {
   readonly hours: HourTallyView | null
   readonly irregular: readonly IrregularHourView[]
   readonly unscaledHours: number
+  /** 1 秒より速い揺れの RMS（ノイズ水準の段）。 */
+  readonly noise: NoiseSeries
+}
+
+/**
+ * 周波数の材料（軸の id ごと）。波形と別に取る。**取り直すまで前の材料を描き続ける**
+ * （スペクトログラムは時刻で置くので重なる所はそのまま正しく、範囲のスペクトルはすぐ差し替わる）。
+ */
+interface FreqState {
+  readonly groupKey: string
+  readonly unit: 'gal' | 'native'
+  readonly spectrograms: ReadonlyMap<string, SpectrogramData>
+  readonly spectra: ReadonlyMap<string, SpectrumData>
 }
 
 interface Loaded {
@@ -468,6 +533,224 @@ function drawMarks(canvas: HTMLCanvasElement, m: MarksState | null, r: TimeRange
   }
 }
 
+/** 指している時刻の縦線。 */
+function drawHoverLine(ctx: CanvasRenderingContext2D, hoverX: number | null, height: number): void {
+  if (hoverX === null) return
+  ctx.strokeStyle = 'rgba(128, 128, 128, 0.8)'
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.moveTo(hoverX + 0.5, 0)
+  ctx.lineTo(hoverX + 0.5, height)
+  ctx.stroke()
+}
+
+/** 対数の縦の目盛りの文字（`0.01`・`0.1`・`1`・`10`）。 */
+function decadeLabel(v: number): string {
+  return v >= 1 ? String(Math.round(v)) : String(Number(v.toPrecision(1)))
+}
+
+/** ノイズ水準の線（縦は対数・10 倍ごとに目盛り）。値の無い列で線を切る。 */
+function drawNoise(
+  ctx: CanvasRenderingContext2D,
+  lines: readonly { readonly color: string; readonly series: NoiseSeries }[],
+  nr: { readonly min: number; readonly max: number },
+  r: TimeRange,
+  width: number,
+  height: number,
+  ink: string,
+): void {
+  const lo = 10 ** Math.floor(Math.log10(nr.min))
+  let hi = 10 ** Math.ceil(Math.log10(nr.max))
+  if (hi <= lo) hi = lo * 10
+  const span = Math.log10(hi) - Math.log10(lo)
+  const yOf = (v: number): number => height - PLOT_PADDING_Y - ((Math.log10(v) - Math.log10(lo)) / span) * (height - 2 * PLOT_PADDING_Y)
+  ctx.font = '10px system-ui, sans-serif'
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'middle'
+  for (let d = lo; d <= hi * 1.0001; d *= 10) {
+    ctx.strokeStyle = 'rgba(128, 128, 128, 0.2)'
+    ctx.beginPath()
+    ctx.moveTo(0, yOf(d))
+    ctx.lineTo(width, yOf(d))
+    ctx.stroke()
+    ctx.fillStyle = ink
+    ctx.fillText(decadeLabel(d), 3, yOf(d))
+  }
+  for (const l of lines) {
+    const s = l.series
+    ctx.strokeStyle = l.color
+    ctx.lineWidth = 1.2
+    ctx.beginPath()
+    let drawing = false
+    for (let j = 0; j < s.values.length; j += 1) {
+      const v = s.values[j]!
+      const at = s.firstColumnMs + (j + 0.5) * s.columnMs
+      if (at < r.fromMs || at >= r.toMs || !Number.isFinite(v) || v <= 0) {
+        drawing = false
+        continue
+      }
+      const x = xOf(at, r, width)
+      if (drawing) ctx.lineTo(x, yOf(v))
+      else ctx.moveTo(x, yOf(v))
+      drawing = true
+    }
+    ctx.stroke()
+  }
+}
+
+/**
+ * スペクトログラムの色を塗った絵の控え。**指した所の値を出すたびに描き直すので、升（1 段に最大 4 万個）を
+ * 毎回塗らない** —— 材料・物差し・範囲・大きさが同じなら控えた絵を貼る。
+ */
+const spectrogramImages = new WeakMap<SpectrogramData, { readonly key: string; readonly image: HTMLCanvasElement }>()
+
+function drawSpectrogram(ctx: CanvasRenderingContext2D, g: SpectrogramData, dbr: { readonly lo: number; readonly hi: number }, r: TimeRange, width: number, height: number): void {
+  const dpr = globalThis.devicePixelRatio > 0 ? globalThis.devicePixelRatio : 1
+  const key = `${dbr.lo}|${dbr.hi}|${r.fromMs}|${r.toMs}|${width}|${height}|${dpr}`
+  let cached = spectrogramImages.get(g)
+  if (cached === undefined || cached.key !== key) {
+    const image = document.createElement('canvas')
+    image.width = Math.round(width * dpr)
+    image.height = Math.round(height * dpr)
+    const ic = image.getContext('2d')
+    if (ic === null) return
+    ic.setTransform(dpr, 0, 0, dpr, 0, 0)
+    for (let j = 0; j < g.power.length; j += 1) {
+      const from = g.firstColumnMs + j * g.columnMs
+      const to = from + g.columnMs
+      if (to <= r.fromMs || from >= r.toMs) continue
+      const x0 = xOf(from, r, width)
+      const x1 = Math.max(x0 + 1, xOf(to, r, width))
+      const row = g.power[j]!
+      for (let b = 0; b < row.length; b += 1) {
+        const c = colorOfDb(psdToDb(row[b]!, g.unit), dbr)
+        if (c === null) continue
+        const top = yOfHz(Math.min(g.binEdgesHz[b + 1]!, FREQ_MAX_HZ), height)
+        const bottom = yOfHz(Math.max(g.binEdgesHz[b]!, FREQ_MIN_HZ), height)
+        ic.fillStyle = `rgb(${c[0]}, ${c[1]}, ${c[2]})`
+        // 升の境目に隙間が出ないよう、縦を半画素ぶん重ねる。
+        ic.fillRect(x0, top, x1 - x0, bottom - top + 0.5)
+      }
+    }
+    cached = { key, image }
+    spectrogramImages.set(g, cached)
+  }
+  ctx.drawImage(cached.image, 0, 0, width, height)
+  // 要約がまだ無い時（作り終えると出る）。
+  drawHatch(
+    ctx,
+    g.irregularHours.filter((h) => h.state === 'pending').map((h) => ({ fromMs: h.hourStartMs, toMs: h.hourStartMs + HOUR_MS, kind: 'pending' as const })),
+    r,
+    width,
+    height,
+  )
+}
+
+/** スペクトログラムの縦の目盛り（1 Hz・10 Hz）。 */
+function drawFrequencyLabels(ctx: CanvasRenderingContext2D, height: number): void {
+  ctx.font = '10px system-ui, sans-serif'
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'middle'
+  for (const hz of [1, 10]) {
+    const y = yOfHz(hz, height)
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)'
+    ctx.beginPath()
+    ctx.moveTo(0, y)
+    ctx.lineTo(16, y)
+    ctx.stroke()
+    // 色の上でも読めるよう、白地に黒の文字。
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.75)'
+    ctx.fillRect(18, y - 6, 32, 12)
+    ctx.fillStyle = '#222'
+    ctx.fillText(`${hz} Hz`, 20, y)
+  }
+}
+
+/** 範囲のスペクトル（横は周波数・縦は dB）。Peterson のモデルを破線で重ねる（gal のときだけ）。 */
+function drawSpectrum(
+  ctx: CanvasRenderingContext2D,
+  lines: readonly { readonly color: string; readonly data: SpectrumData }[],
+  unit: ValueUnit,
+  width: number,
+  height: number,
+  ink: string,
+  hoverX: number | null,
+): void {
+  const plotHeight = height - SPECTRUM_LABEL_HEIGHT
+  const models = unit === 'gal' ? [NLNM, NHNM].map((m) => noiseModelCurve(m, FREQ_MIN_HZ, FREQ_MAX_HZ, NOISE_MODEL_STEPS)) : []
+  const values: number[] = []
+  for (const l of lines) for (const p of l.data.power) values.push(psdToDb(p, l.data.unit))
+  for (const m of models) for (const p of m) values.push(p.db)
+  ctx.strokeStyle = 'rgba(128, 128, 128, 0.45)'
+  ctx.lineWidth = 1
+  ctx.strokeRect(0.5, 0.5, width - 1, plotHeight - 1)
+  // 横の目盛り（0.1・1・10・50 Hz）。
+  ctx.font = '11px system-ui, sans-serif'
+  ctx.textBaseline = 'top'
+  for (const hz of [0.1, 1, 10, 50]) {
+    const x = xOfHz(hz, width)
+    ctx.strokeStyle = 'rgba(128, 128, 128, 0.25)'
+    ctx.beginPath()
+    ctx.moveTo(x, 0)
+    ctx.lineTo(x, plotHeight)
+    ctx.stroke()
+    ctx.fillStyle = ink
+    ctx.textAlign = hz === 0.1 ? 'left' : hz === 50 ? 'right' : 'center'
+    ctx.fillText(`${hz} Hz`, x, plotHeight + 2)
+  }
+  const dbr = dbExtent(values)
+  if (dbr === null) return
+  const yOf = (db: number): number => PLOT_PADDING_Y + ((dbr.hi - db) / (dbr.hi - dbr.lo)) * (plotHeight - 2 * PLOT_PADDING_Y)
+  // 縦の目盛り（20 dB ごと。狭ければ 10 dB ごと）。
+  const step = dbr.hi - dbr.lo > 60 ? 20 : 10
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'middle'
+  for (let db = Math.ceil(dbr.lo / step) * step; db <= dbr.hi; db += step) {
+    ctx.strokeStyle = 'rgba(128, 128, 128, 0.2)'
+    ctx.beginPath()
+    ctx.moveTo(0, yOf(db))
+    ctx.lineTo(width, yOf(db))
+    ctx.stroke()
+    ctx.fillStyle = ink
+    ctx.fillText(`${formatDb(db)} dB`, 3, yOf(db))
+  }
+  // モデルの破線。
+  ctx.save()
+  ctx.setLineDash([5, 4])
+  ctx.strokeStyle = NOISE_MODEL_COLOR
+  ctx.lineWidth = 1.2
+  for (const m of models) {
+    ctx.beginPath()
+    m.forEach((p, i) => {
+      if (i === 0) ctx.moveTo(xOfHz(p.hz, width), yOf(p.db))
+      else ctx.lineTo(xOfHz(p.hz, width), yOf(p.db))
+    })
+    ctx.stroke()
+  }
+  ctx.restore()
+  // 軸ごとの線（区画の中心＝境目の幾何平均に点を置き、値の無い区画で切る）。
+  for (const l of lines) {
+    const edges = l.data.binEdgesHz
+    ctx.strokeStyle = l.color
+    ctx.lineWidth = 1.5
+    ctx.beginPath()
+    let drawing = false
+    for (let b = 0; b + 1 < edges.length; b += 1) {
+      const db = psdToDb(l.data.power[b]!, l.data.unit)
+      if (!Number.isFinite(db)) {
+        drawing = false
+        continue
+      }
+      const x = xOfHz(Math.sqrt(edges[b]! * edges[b + 1]!), width)
+      if (drawing) ctx.lineTo(x, yOf(db))
+      else ctx.moveTo(x, yOf(db))
+      drawing = true
+    }
+    ctx.stroke()
+  }
+  drawHoverLine(ctx, hoverX, plotHeight)
+}
+
 export async function initRecordsView(container: HTMLElement, signal: AbortSignal): Promise<void> {
   container.innerHTML = `
     <section class="panel">
@@ -508,6 +791,16 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
       </div>
       <div class="records-rows"></div>
       <p class="records-readout muted" style="white-space: pre-line"></p>
+      <!-- 範囲のスペクトルは横が周波数なので、時刻の段（寄せる・送る操作の対象）の外に置く。 -->
+      <div class="records-spectrum-frame" style="margin-top: 0.8rem">
+        <div class="row" style="justify-content: space-between; align-items: baseline">
+          <strong>${SPECTRUM_TITLE}</strong>
+          <span class="muted records-spectrum-header"></span>
+        </div>
+        <canvas class="wave-canvas records-spectrum" style="height: ${SPECTRUM_HEIGHT}px"></canvas>
+        <p class="muted records-spectrum-legend" style="margin: 0.3rem 0 0; white-space: pre-line"></p>
+        <p class="muted records-spectrum-readout" style="margin: 0.2rem 0 0"></p>
+      </div>
       <p class="muted records-legend">
         <span class="records-hatch records-hatch-none"></span>${GAP_NONE_LEGEND}
         <span class="records-hatch records-hatch-pending" style="margin-left: 1rem"></span>${GAP_PENDING_LEGEND}
@@ -533,6 +826,10 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
   const noteEl = qs(container, '.records-note')
   const marksLegendEl = qs(container, '.records-marks-legend')
   const marksNoteEl = qs(container, '.records-marks-note')
+  const spectrumEl = qs<HTMLCanvasElement>(container, 'canvas.records-spectrum')
+  const spectrumHeaderEl = qs(container, '.records-spectrum-header')
+  const spectrumLegendEl = qs(container, '.records-spectrum-legend')
+  const spectrumReadoutEl = qs(container, '.records-spectrum-readout')
 
   let groups: RecordGroup[] = []
   let group: RecordGroup | null = null
@@ -546,18 +843,36 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
   let overviewController: AbortController | null = null
   let marks: MarksState | null = null
   let marksController: AbortController | null = null
+  let freq: FreqState | null = null
+  let freqController: AbortController | null = null
+  let freqFailure: string | null = null
   let reloadTimer: ReturnType<typeof setTimeout> | null = null
   let failure: string | null = null
   let hoverX: number | null = null
+  /** スペクトログラムの段を指しているときだけ、その段の中の縦の位置（周波数の読み取りに使う）。 */
+  let hoverSpectrogramY: number | null = null
+  /** 範囲のスペクトルの枠を指しているときの横の位置。 */
+  let hoverSpectrumX: number | null = null
 
   signal.addEventListener('abort', () => {
     loadController?.abort()
     overviewController?.abort()
     marksController?.abort()
+    freqController?.abort()
     if (reloadTimer !== null) clearTimeout(reloadTimer)
   })
 
   const visibleAxes = (): RecordGroup['axes'] => (group === null ? [] : group.axes.filter((a) => !hidden.has(a.id)))
+  /** 軸の線の色（軸の並びの順に固定）。 */
+  const axisLineColor = (id: string): string => {
+    const i = group === null ? 0 : Math.max(0, group.axes.findIndex((a) => a.id === id))
+    return AXIS_LINE_COLORS[i % AXIS_LINE_COLORS.length]!
+  }
+  /** 色の凡例（`■ X　■ Y　■ Z`）。 */
+  const axisColorLegend = (): string =>
+    visibleAxes()
+      .map((a) => `<span style="color: ${axisLineColor(a.id)}">■</span> ${escapeHtml(a.short)}`)
+      .join('　')
 
   // ---- 段の骨組み（記録を選び直したとき・軸を消したとき・範囲が 10 分をまたいだときに作り直す） ----
 
@@ -597,6 +912,23 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     if (group.kind !== 'station') html += `<p class="muted" style="margin: 0.5rem 0 0">${INTENSITY_STATION_ONLY_TEXT}</p>`
     else if (!samples) html += `<p class="muted" style="margin: 0.5rem 0 0">${INTENSITY_TOO_WIDE_TEXT}</p>`
     else html += `${header(INTENSITY_TITLE, 'records-intensity-header')}<canvas class="wave-canvas records-canvas records-intensity" style="height: ${INTENSITY_HEIGHT}px"></canvas>`
+    // ノイズ水準の推移（見えている軸を 1 枚に重ねる）。
+    html += `
+      <div class="row" style="justify-content: space-between; align-items: baseline; margin-top: 0.5rem">
+        <span><strong>${escapeHtml(NOISE_TITLE)}</strong>　<span class="muted">${axisColorLegend()}</span></span>
+        <span class="muted records-noise-header"></span>
+      </div>
+      <canvas class="wave-canvas records-canvas records-noise" style="height: ${NOISE_HEIGHT}px"></canvas>`
+    // スペクトログラム（見えている軸ごと）。色の物差しは最後の段の下に 1 つ。
+    for (const a of visibleAxes()) {
+      html += `
+        <div class="row" style="justify-content: space-between; align-items: baseline; margin-top: 0.5rem">
+          <strong>${escapeHtml(spectrogramTitle(a.short))}</strong>
+          <span class="muted records-spectrogram-header" data-axis-id="${escapeHtml(a.id)}"></span>
+        </div>
+        <canvas class="wave-canvas records-canvas records-spectrogram" data-axis-id="${escapeHtml(a.id)}" style="height: ${SPECTROGRAM_HEIGHT}px"></canvas>`
+    }
+    html += `<p class="muted records-db-scale" style="margin: 0.3rem 0 0"></p>`
     rowsEl.innerHTML = html
   }
 
@@ -775,6 +1107,88 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
       }
     }
 
+    // ノイズ水準の推移（見えている軸を重ねる。縦は対数）。
+    const noiseCanvas = rowsEl.querySelector<HTMLCanvasElement>('canvas.records-noise')
+    if (noiseCanvas !== null) {
+      const headerEl = rowsEl.querySelector<HTMLElement>('.records-noise-header')
+      const lines = axes.flatMap((a, i) => {
+        const t = traces[i]
+        return t === null || t === undefined ? [] : [{ color: axisLineColor(a.id), series: t.noise }]
+      })
+      const nr = noiseRange(lines.map((l) => l.series))
+      if (headerEl !== null) headerEl.textContent = nr === null ? '' : noiseHeader(nr, valueUnit)
+      const prepared = prepareCanvas(noiseCanvas, NOISE_HEIGHT)
+      if (prepared !== null) {
+        const { ctx, width, height } = prepared
+        ctx.strokeStyle = 'rgba(128, 128, 128, 0.45)'
+        ctx.strokeRect(0.5, 0.5, width - 1, height - 1)
+        drawTicks(ctx, range, width, height, false, ink)
+        if (nr !== null) drawNoise(ctx, lines, nr, range, width, height, ink)
+        drawHoverLine(ctx, hoverX, height)
+      }
+    }
+
+    // スペクトログラム（見えている軸ごと。色の物差しは段どうしで共通）。
+    const f = freq !== null && freq.groupKey === group.key && freq.unit === unit ? freq : null
+    const grams = axes.map((a) => f?.spectrograms.get(a.id) ?? null)
+    const gramUnit: ValueUnit = grams.find((g) => g !== null)?.unit ?? valueUnit
+    const gramRange = dbRange(
+      (function* () {
+        for (const g of grams) if (g !== null) for (const row of g.power) for (const p of row) yield psdToDb(p, g.unit)
+      })(),
+    )
+    const gramCanvases = [...rowsEl.querySelectorAll<HTMLCanvasElement>('canvas.records-spectrogram')]
+    const gramHeaders = [...rowsEl.querySelectorAll<HTMLElement>('.records-spectrogram-header')]
+    gramCanvases.forEach((canvas, i) => {
+      const g = grams[i] ?? null
+      const headerEl = gramHeaders[i]
+      if (headerEl !== undefined) headerEl.textContent = g === null ? '' : spectrogramHeader(g.columnMs)
+      const prepared = prepareCanvas(canvas, SPECTROGRAM_HEIGHT)
+      if (prepared === null) return
+      const { ctx, width, height } = prepared
+      if (g !== null && gramRange !== null) drawSpectrogram(ctx, g, gramRange, range, width, height)
+      ctx.strokeStyle = 'rgba(128, 128, 128, 0.45)'
+      ctx.lineWidth = 1
+      ctx.strokeRect(0.5, 0.5, width - 1, height - 1)
+      drawFrequencyLabels(ctx, height)
+      drawHoverLine(ctx, hoverX, height)
+    })
+    const dbScaleEl = rowsEl.querySelector<HTMLElement>('.records-db-scale')
+    if (dbScaleEl !== null) {
+      dbScaleEl.innerHTML =
+        gramRange === null
+          ? ''
+          : `<span style="display: inline-block; width: 120px; height: 10px; vertical-align: middle; margin-right: 0.4rem; background: ${colorScaleCss()}"></span>${escapeHtml(dbScaleText(gramRange, gramUnit))}`
+    }
+
+    // 範囲のスペクトル（横は周波数）。
+    const spectra = axes.map((a) => ({ axis: a, data: f?.spectra.get(a.id) ?? null }))
+    const firstSpectrum = spectra.find((s) => s.data !== null)?.data ?? null
+    spectrumHeaderEl.textContent =
+      firstSpectrum === null ? '' : firstSpectrum.segments === 0 ? SPECTRUM_EMPTY_TEXT : spectrumHeader(firstSpectrum.segments, firstSpectrum.source)
+    const spectrumUnit: ValueUnit = firstSpectrum?.unit ?? valueUnit
+    const legendLines = [axisColorLegend()]
+    if (spectrumUnit === 'gal') legendLines.push(escapeHtml(NOISE_MODEL_LEGEND))
+    spectrumLegendEl.innerHTML = legendLines.join('\n')
+    {
+      const prepared = prepareCanvas(spectrumEl, SPECTRUM_HEIGHT)
+      if (prepared !== null) {
+        const { ctx, width, height } = prepared
+        const lines = spectra.flatMap((s) => (s.data === null ? [] : [{ color: axisLineColor(s.axis.id), data: s.data }]))
+        drawSpectrum(ctx, lines, spectrumUnit, width, height, ink, hoverSpectrumX)
+      }
+    }
+    if (hoverSpectrumX === null || firstSpectrum === null) {
+      spectrumReadoutEl.textContent = ''
+    } else {
+      const hz = hzOfX(hoverSpectrumX, Math.max(1, spectrumEl.clientWidth))
+      const items = spectra.map((s) => {
+        const b = s.data === null ? -1 : binAt(s.data.binEdgesHz, hz)
+        return { short: s.axis.short, db: s.data === null || b < 0 ? Number.NaN : psdToDb(s.data.power[b]!, s.data.unit) }
+      })
+      spectrumReadoutEl.textContent = spectrumReadout(hz, items) ?? ''
+    }
+
     // 状態の行。
     const axisData = traces.filter((t): t is AxisData => t !== null)
     if (data === null) {
@@ -787,6 +1201,7 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     if (getStoredToken() === null) notes.push(TOKEN_MISSING_TEXT)
     if (failure !== null) notes.push(fetchFailureText(failure))
     if (m?.failure !== null && m?.failure !== undefined) notes.push(fetchFailureText(m.failure))
+    if (freqFailure !== null) notes.push(fetchFailureText(freqFailure))
     if (data !== null) {
       if (axisData.length > 0 && peaks.every((p) => p === null)) notes.push(EMPTY_RANGE_TEXT)
       const problems = problemsNote(maxTally(axisData.map((a) => a.hours)))
@@ -837,6 +1252,19 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
           ),
         )
       }
+      if (hoverSpectrogramY !== null) {
+        const hz = hzOfY(hoverSpectrogramY, SPECTROGRAM_HEIGHT)
+        const items = axes.map((a, i) => {
+          const g = grams[i] ?? null
+          if (g === null) return { short: a.short, db: Number.NaN }
+          const j = Math.floor((at - g.firstColumnMs) / g.columnMs)
+          const b = binAt(g.binEdgesHz, hz)
+          const p = b < 0 ? undefined : g.power[j]?.[b]
+          return { short: a.short, db: p === undefined ? Number.NaN : psdToDb(p, g.unit) }
+        })
+        const line = spectrogramReadout(hz, items)
+        if (line !== null) lines.push(line)
+      }
       if (m !== null) {
         for (const q of quakesAt(m.quakes?.quakes ?? [], at, tol).slice(0, READOUT_MAX_ITEMS)) lines.push(quakeReadout(q))
         for (const e of shakesAt(m.shakes, at, tol).slice(0, READOUT_MAX_ITEMS)) lines.push(shakeReadout(e))
@@ -878,7 +1306,19 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
             const body = await apiFetch<unknown>(recordsUrl('samples', { channel: a.id, from: r.fromMs, to: r.toMs, unit: u }), { signal: controller.signal })
             const s = readSamplesData(body)
             if (s === null) throw new Error('応答の形が違う')
-            return [a.id, { trace: traceOfSamples(s), unit: s.unit, source: 'raw-samples', columnMs: null, hours: null, irregular: [], unscaledHours: s.problems.unscaledHours }]
+            return [
+              a.id,
+              {
+                trace: traceOfSamples(s),
+                unit: s.unit,
+                source: 'raw-samples',
+                columnMs: null,
+                hours: null,
+                irregular: [],
+                unscaledHours: s.problems.unscaledHours,
+                noise: secondRms(s.runs, r),
+              },
+            ]
           }
           const body = await apiFetch<unknown>(
             recordsUrl('envelope', { channel: a.id, from: r.fromMs, to: r.toMs, columns: plan.columns, unit: u }),
@@ -896,6 +1336,7 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
               hours: e.hours,
               irregular: e.irregularHours,
               unscaledHours: e.problems.unscaledHours,
+              noise: noiseOfEnvelopeColumns(e),
             },
           ]
         }),
@@ -1036,12 +1477,56 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     }
   }
 
+  /**
+   * 周波数の材料（軸ごとのスペクトログラムと範囲のスペクトル）を取る。**波形と別に取る**（1 分ごとの PSD を
+   * 長い範囲で束ねると時間が掛かるので、波形を待たせない）。見えていない軸の分も取る（消した軸を戻したとき
+   * 取り直さずに済むように）。前の取得は打ち切るが、前の材料は取り直すまで描き続ける。
+   */
+  const loadFreq = async (): Promise<void> => {
+    if (group === null || getStoredToken() === null) return
+    freqController?.abort()
+    const controller = new AbortController()
+    freqController = controller
+    const g = group
+    const u = unit
+    const r = range
+    const width = Math.max(1, rowsEl.querySelector<HTMLCanvasElement>('canvas.records-spectrogram')?.clientWidth ?? rowsEl.clientWidth)
+    const columns = Math.max(1, Math.min(COLUMNS_MAX, Math.floor(width)))
+    try {
+      const results = await Promise.all(
+        g.axes.map(async (a) => {
+          const [gramBody, spectrumBody] = await Promise.all([
+            apiFetch<unknown>(recordsUrl('spectrogram', { channel: a.id, from: r.fromMs, to: r.toMs, columns, unit: u }), { signal: controller.signal }),
+            apiFetch<unknown>(recordsUrl('spectrum', { channel: a.id, from: r.fromMs, to: r.toMs, unit: u }), { signal: controller.signal }),
+          ])
+          const gram = readSpectrogramData(gramBody)
+          const spectrum = readSpectrumData(spectrumBody)
+          if (gram === null || spectrum === null) throw new Error('応答の形が違う')
+          return { id: a.id, gram, spectrum }
+        }),
+      )
+      if (controller.signal.aborted || signal.aborted) return
+      freq = {
+        groupKey: g.key,
+        unit: u,
+        spectrograms: new Map(results.map((x) => [x.id, x.gram])),
+        spectra: new Map(results.map((x) => [x.id, x.spectrum])),
+      }
+      freqFailure = null
+    } catch (error) {
+      if (isAbort(error) || controller.signal.aborted || signal.aborted) return
+      freqFailure = failureReason(error)
+    }
+    draw()
+  }
+
   const scheduleLoad = (): void => {
     if (reloadTimer !== null) clearTimeout(reloadTimer)
     reloadTimer = setTimeout(() => {
       reloadTimer = null
       void load()
       loadMarks()
+      void loadFreq()
     }, RELOAD_DEBOUNCE_MS)
   }
 
@@ -1061,6 +1546,9 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     overview = null
     marks = null
     marksController?.abort()
+    freq = null
+    freqController?.abort()
+    freqFailure = null
     failure = null
     if (group === null) {
       bodyEl.hidden = true
@@ -1083,6 +1571,7 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     void load()
     void loadOverview()
     loadMarks()
+    void loadFreq()
   }
 
   groupEl.addEventListener('change', () => selectGroup(groupEl.value), { signal })
@@ -1099,6 +1588,7 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
       loaded = null
       void load()
       void loadOverview()
+      void loadFreq()
     },
     { signal },
   )
@@ -1199,6 +1689,9 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
       }
       if (canvas === null) return
       hoverX = timeAtEvent(e, canvas).x
+      hoverSpectrogramY = canvas.classList.contains('records-spectrogram')
+        ? Math.min(SPECTROGRAM_HEIGHT, Math.max(0, e.clientY - canvas.getBoundingClientRect().top))
+        : null
       draw()
     },
     { signal },
@@ -1213,6 +1706,26 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     () => {
       if (drag !== null) return
       hoverX = null
+      hoverSpectrogramY = null
+      draw()
+    },
+    { signal },
+  )
+
+  // 範囲のスペクトルの枠で指した所（周波数と軸ごとの dB）。
+  spectrumEl.addEventListener(
+    'pointermove',
+    (e) => {
+      const rect = spectrumEl.getBoundingClientRect()
+      hoverSpectrumX = Math.min(rect.width, Math.max(0, e.clientX - rect.left))
+      draw()
+    },
+    { signal },
+  )
+  spectrumEl.addEventListener(
+    'pointerleave',
+    () => {
+      hoverSpectrumX = null
       draw()
     },
     { signal },

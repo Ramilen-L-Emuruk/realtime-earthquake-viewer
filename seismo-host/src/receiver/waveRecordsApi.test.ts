@@ -127,6 +127,24 @@ describe('handleRecordsRequest の中身', () => {
     const body = JSON.parse(JSON.stringify(got.body)) as { runs: { values: (number | null)[] }[] }
     expect(body.runs[0]!.values).toEqual([1, null, 3])
   })
+
+  it('スペクトログラムは作り方・正常でない時・読んだファイルを添えて返す', async () => {
+    await writeWaveHour(KEY, H0, Array.from({ length: 6000 }, (_, i) => Math.sin(i / 3)))
+    const channel = `station/${KEY}/X`
+    const fine = await handleRecordsRequest('spectrogram', q({ channel, from: H0, to: H0 + 60_000, columns: 100 }), deps)
+    expect(fine.status).toBe(200)
+    const fb = JSON.parse(JSON.stringify(fine.body)) as { source: string; columnMs: number; irregularHours: unknown[]; hours: unknown; files: unknown }
+    expect(fb.source).toBe('samples')
+    expect(fb.columnMs).toBe(6000)
+    expect(fb.irregularHours).toEqual([])
+    expect(fb.hours).toBeNull()
+    expect(fb.files).not.toBeNull()
+    const wide = await handleRecordsRequest('spectrogram', q({ channel, from: H0, to: H0 + 2 * HOUR, columns: 120 }), deps)
+    const wb = JSON.parse(JSON.stringify(wide.body)) as { source: string; irregularHours: unknown[]; files: unknown }
+    expect(wb.source).toBe('minutes')
+    expect(wb.files).toBeNull()
+    expect(Array.isArray(wb.irregularHours)).toBe(true)
+  })
 })
 
 describe('intensity', () => {

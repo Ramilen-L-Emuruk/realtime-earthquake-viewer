@@ -12,7 +12,7 @@
 // | `envelope` | `channel`・`from`・`to`・`columns`・`unit` | 列ごとの本数・最小・最大・平均・標準偏差・ノイズ |
 // | `samples` | `channel`・`from`・`to`・`unit` | 生のサンプル（{@link SAMPLES_RANGE_MAX_MS} まで） |
 // | `spectrum` | `channel`・`from`・`to`・`unit` | 区間のスペクトル |
-// | `spectrogram` | `channel`・`from`・`to`・`columns`・`unit` | 列ごとのスペクトル |
+// | `spectrogram` | `channel`・`from`・`to`・`columns`・`unit` | 列ごとのスペクトル（10 分以内は生のサンプルから 6 秒以上の列で、それより広ければ 1 分ごとの PSD から） |
 // | `reception` | `from`・`to`・`sensor`（任意） | 受信の記録の帯と読めなかったパケット |
 // | `intensity` | `station`（観測点の札）・`from`・`to` | 刻みごとのリアルタイム震度と計測震度（{@link SAMPLES_RANGE_MAX_MS} まで） |
 // | `quakes` | `from`・`to`・`station`（観測点 ID・任意） | 気象庁の地震と、その観測点へ P・S が届く時刻（`recordQuakes.ts`。7 日まで） |
@@ -263,6 +263,7 @@ export async function handleRecordsRequest(route: string, params: URLSearchParam
       status: 200,
       body: {
         channel: ref.id,
+        source: got.source,
         unit: got.unit,
         binEdgesHz: numbers(got.binEdgesHz),
         columnMs: got.columnMs,
@@ -270,6 +271,8 @@ export async function handleRecordsRequest(route: string, params: URLSearchParam
         segments: got.segments,
         power: got.power.map((row) => numbers(row)),
         hours: got.hours,
+        irregularHours: got.irregularHours,
+        files: got.files,
         problems: got.problems,
       },
     }

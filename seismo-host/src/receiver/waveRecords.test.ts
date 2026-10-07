@@ -11,6 +11,7 @@ import { encodeWaveChunk } from './waveArchive'
 import {
   FINE_RANGE_MAX_MS,
   GAL_PER_UG,
+  SPECTROGRAM_SAMPLES_MIN_COLUMN_MS,
   chooseEnvelopeSource,
   columnMsFor,
   hoursToOpen,
@@ -352,11 +353,49 @@ describe('readSpectrogram', () => {
     const values = Array.from({ length: 6000 }, (_, i) => Math.sin(i / 3))
     await writeWaveHour(H0, [[H0 + 2 * 60_000, values]])
     const ref = parseChannelId(`station/${KEY}/Z`)!
-    const got = await readSpectrogram({ dirs, ref, fromMs: H0, toMs: H0 + 6 * 60_000, columns: 3, unit: 'gal' })
+    // 10 分より広い範囲で 1 分ごとの PSD を束ねる形を見る（10 分以内は生のサンプルから作る）
+    const got = await readSpectrogram({ dirs, ref, fromMs: H0, toMs: H0 + 12 * 60_000, columns: 6, unit: 'gal' })
+    expect(got.source).toBe('minutes')
     expect(got.columnMs).toBe(120_000)
     expect(got.segments[0]).toBe(0)
     expect(got.segments[1]! + got.segments[2]!).toBe(Math.floor((6000 - 1024) / 512) + 1)
     expect(Array.from(got.power[0]!).every((v) => Number.isNaN(v))).toBe(true)
+  })
+
+  it('要約がまだ無い時を、頭の時刻つきで返す', async () => {
+    const values = Array.from({ length: 6000 }, (_, i) => Math.sin(i / 3))
+    await writeWaveHour(H0, [[H0, values]])
+    await writeWaveHour(H0 + HOUR, [[H0 + HOUR, values]], false)
+    const ref = parseChannelId(`station/${KEY}/Z`)!
+    const got = await readSpectrogram({ dirs, ref, fromMs: H0, toMs: H0 + 2 * HOUR, columns: 120, unit: 'gal' })
+    expect(got.irregularHours).toEqual([{ hourStartMs: H0 + HOUR, state: 'pending' }])
+    expect(got.hours?.pending).toBe(1)
+  })
+
+  it('10 分以内は生のサンプルから約 6 秒ごとの列で作り、範囲の前後を区間の半分ずつ余分に読む', async () => {
+    // 12:00:00〜12:01:00 の 60 秒ぶん
+    const values = Array.from({ length: 6000 }, (_, i) => Math.sin((2 * Math.PI * 5 * i) / 100))
+    await writeWaveHour(H0, [[H0, values]])
+    const ref = parseChannelId(`station/${KEY}/X`)!
+    const got = await readSpectrogram({ dirs, ref, fromMs: H0 + 30_000, toMs: H0 + 90_000, columns: 1000, unit: 'gal' })
+    expect(got.source).toBe('samples')
+    expect(got.columnMs).toBe(SPECTROGRAM_SAMPLES_MIN_COLUMN_MS)
+    expect(got.firstColumnMs).toBe(H0 + 30_000)
+    expect(got.segments).toHaveLength(10)
+    expect(got.irregularHours).toEqual([])
+    expect(got.hours).toBeNull()
+    // 前を余分に読むので、頭の列（30〜36 秒）にも区間が入る。余分に読まなければ 4 本、読めば 5 本
+    expect(got.segments[0]).toBeGreaterThan(0)
+    expect(got.segments.reduce((a, b) => a + b, 0)).toBe(5)
+    // 記録の無い 60 秒より後の列は 0
+    expect(got.segments.slice(5).every((s) => s === 0)).toBe(true)
+  })
+
+  it('10 分以内でも、画面の幅が狭ければ列は 1 秒単位で広がる', async () => {
+    const ref = parseChannelId(`station/${KEY}/X`)!
+    const got = await readSpectrogram({ dirs, ref, fromMs: H0, toMs: H0 + 10 * 60_000, columns: 50, unit: 'gal' })
+    expect(got.source).toBe('samples')
+    expect(got.columnMs).toBe(12_000)
   })
 })
 

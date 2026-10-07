@@ -23,7 +23,7 @@ import { mseed3SourceId } from './mseed3Record'
 import { readMseed3RecordsMatching } from './mseed3Reader'
 import { RECORD_SPAN_MAX_MS, laneOfRecord } from './mseedPacketReader'
 import { readWaveRangeByToken, waveFileNameOfToken } from './waveArchive'
-import { PSD_BIN_COUNT, PSD_BIN_EDGES_HZ, intervalPsd } from './wavePsd'
+import { PSD_BIN_COUNT, PSD_BIN_EDGES_HZ, columnPsd, intervalPsd } from './wavePsd'
 import {
   SUMMARY_COARSE_MS,
   SUMMARY_FINE_MS,
@@ -855,22 +855,39 @@ export async function readSpectrum(params: {
 
 /** 列ごとの PSD（スペクトログラム）。 */
 export interface SpectrogramResult {
+  /** 生のサンプルから列ごとに出したか、1 分ごとの PSD を束ねたか。 */
+  readonly source: 'samples' | 'minutes'
   readonly unit: 'gal' | 'count'
   readonly binEdgesHz: readonly number[]
-  /** 列の幅（1 分の整数倍）。 */
+  /** 列の幅（`samples` は 1 秒の整数倍で {@link SPECTROGRAM_SAMPLES_MIN_COLUMN_MS} 以上、`minutes` は 1 分の整数倍）。 */
   readonly columnMs: number
   readonly firstColumnMs: number
   /** 列ごとに平均した区間の数。**0 の列は作れなかった**（`power` の行はすべて `NaN`）。 */
   readonly segments: number[]
   /** `[列][区画]`。 */
   readonly power: Float64Array[]
-  readonly hours: HourTally
+  /** 開いた時の数え（`minutes` のとき）。`samples` は要約を読まないので `null`。 */
+  readonly hours: HourTally | null
+  /** 正常でない時（`minutes` のとき。画面が「要約がまだ無い」を時刻の上に塗る）。`samples` は空。 */
+  readonly irregularHours: readonly IrregularHour[]
+  /** 読んだ元のファイルの数え（`samples` のとき）。 */
+  readonly files: FileTally | null
   readonly problems: ReadProblems
 }
 
 /**
- * 前もって作った 1 分ごとの PSD を列へ束ねる（列の幅は 1 分の整数倍）。列の中の分は、区間の数で
- * 重みを付けて平均する。投げない。
+ * 生のサンプルから作るときの列の幅の下限。**区間（約 10 秒）を進める幅（約 5 秒）より広くする** ——
+ * 狭いと区間の入らない列が縞のように出る（`columnPsd`）。1 秒の整数倍に揃える。
+ */
+export const SPECTROGRAM_SAMPLES_MIN_COLUMN_MS = 6000
+/** 生のサンプルから作るとき、範囲の前後に余分に読む幅（区間の半分 ＝ 公称 100 Hz で 5.12 秒を覆う）。 */
+const SPECTROGRAM_SAMPLES_PAD_MS = 6000
+
+/**
+ * 列ごとのスペクトル。**{@link SAMPLES_RANGE_MAX_MS} 以内なら生のサンプルから**、約 10 秒の区間を中心の時刻が
+ * 入る列へ積む（列は 6 秒以上）。範囲の端の列まで区間を作るため、前後を区間の半分ずつ余分に読む。
+ * それより広ければ前もって作った 1 分ごとの PSD を列へ束ねる（列の幅は 1 分の整数倍。列の中の分は、
+ * 区間の数で重みを付けて平均する）。投げない。
  */
 export async function readSpectrogram(params: {
   readonly dirs: RecordDirs
@@ -881,6 +898,24 @@ export async function readSpectrogram(params: {
   readonly unit: UnitChoice
 }): Promise<SpectrogramResult> {
   const { dirs, ref, fromMs, toMs, columns, unit } = params
+  if (toMs - fromMs <= SAMPLES_RANGE_MAX_MS) {
+    const columnMs = Math.max(SPECTROGRAM_SAMPLES_MIN_COLUMN_MS, columnMsFor(fromMs, toMs, columns, 1000))
+    const samples = await readSamples({ dirs, ref, fromMs: fromMs - SPECTROGRAM_SAMPLES_PAD_MS, toMs: toMs + SPECTROGRAM_SAMPLES_PAD_MS, unit })
+    const psd = columnPsd(samples.runs, fromMs, toMs, columnMs)
+    return {
+      source: 'samples',
+      unit: samples.unit,
+      binEdgesHz: PSD_BIN_EDGES_HZ,
+      columnMs,
+      firstColumnMs: psd.firstColumn * columnMs,
+      segments: psd.segments,
+      power: psd.power,
+      hours: null,
+      irregularHours: [],
+      files: samples.files,
+      problems: samples.problems,
+    }
+  }
   const columnMs = columnMsFor(fromMs, toMs, columns, SUMMARY_COARSE_MS)
   const firstColumn = Math.floor(fromMs / columnMs)
   const count = Math.max(0, Math.floor((toMs - 1) / columnMs) - firstColumn + 1)
@@ -918,6 +953,7 @@ export async function readSpectrogram(params: {
     return row
   })
   return {
+    source: 'minutes',
     unit: unitLabelOf(ref, unit),
     binEdgesHz: PSD_BIN_EDGES_HZ,
     columnMs,
@@ -925,6 +961,8 @@ export async function readSpectrogram(params: {
     segments,
     power,
     hours: read.tally,
+    irregularHours: read.irregular,
+    files: null,
     problems: sumProblems(read.hours, unscaledHours),
   }
 }

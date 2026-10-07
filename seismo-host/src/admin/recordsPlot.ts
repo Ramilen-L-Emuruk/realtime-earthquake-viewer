@@ -374,13 +374,31 @@ export interface EnvelopeData {
   readonly min: readonly number[]
   readonly max: readonly number[]
   readonly mean: readonly number[]
+  /** 1 秒より速い揺れの強さ（ノイズ水準の推移に使う）。本数が 0 の列は NaN。 */
+  readonly noiseStd: readonly number[]
   /** 要約から作ったときだけ（生のサンプルから束ねたときは null）。 */
   readonly hours: HourTallyView | null
   readonly irregularHours: readonly IrregularHourView[]
   readonly problems: ReadProblemsView
 }
 
-function readProblems(v: unknown): ReadProblemsView | null {
+/** 正常でない時の一覧を読む。`null` は「一覧が無い」（生のサンプルから作った応答）で、空の一覧として返す。 */
+export function readIrregularHours(v: unknown): IrregularHourView[] | null {
+  if (v === null) return []
+  if (!Array.isArray(v)) return null
+  const out: IrregularHourView[] = []
+  for (const h of v) {
+    if (typeof h !== 'object' || h === null) return null
+    const o = h as Record<string, unknown>
+    const hourStartMs = readFinite(o.hourStartMs)
+    const state = o.state === 'stale' || o.state === 'pending' || o.state === 'failed' ? o.state : null
+    if (hourStartMs === null || state === null) return null
+    out.push({ hourStartMs, state })
+  }
+  return out
+}
+
+export function readProblems(v: unknown): ReadProblemsView | null {
   if (typeof v !== 'object' || v === null) return null
   const o = v as Record<string, unknown>
   const skippedBytes = readFinite(o.skippedBytes)
@@ -402,7 +420,7 @@ export function readTally(v: unknown): HourTallyView | null {
   return { ok, stale, pending, failed, absent }
 }
 
-function readUnit(v: unknown): ValueUnit | null {
+export function readUnit(v: unknown): ValueUnit | null {
   return v === 'gal' || v === 'count' ? v : null
 }
 
@@ -418,28 +436,19 @@ export function readEnvelopeData(value: unknown): EnvelopeData | null {
   const min = readFiniteArrayWithGaps(v.min)
   const max = readFiniteArrayWithGaps(v.max)
   const mean = readFiniteArrayWithGaps(v.mean)
+  const noiseStd = readFiniteArrayWithGaps(v.noiseStd)
   const problems = readProblems(v.problems)
   if (source === null || unit === null || columnMs === null || columnMs <= 0 || firstColumnMs === null) return null
-  if (n === null || min === null || max === null || mean === null || problems === null) return null
-  if (min.length !== n.length || max.length !== n.length || mean.length !== n.length) return null
+  if (n === null || min === null || max === null || mean === null || noiseStd === null || problems === null) return null
+  if (min.length !== n.length || max.length !== n.length || mean.length !== n.length || noiseStd.length !== n.length) return null
   let hours: HourTallyView | null = null
   if (v.hours !== null) {
     hours = readTally(v.hours)
     if (hours === null) return null
   }
-  const irregularHours: IrregularHourView[] = []
-  if (v.irregularHours !== null) {
-    if (!Array.isArray(v.irregularHours)) return null
-    for (const h of v.irregularHours) {
-      if (typeof h !== 'object' || h === null) return null
-      const o = h as Record<string, unknown>
-      const hourStartMs = readFinite(o.hourStartMs)
-      const state = o.state === 'stale' || o.state === 'pending' || o.state === 'failed' ? o.state : null
-      if (hourStartMs === null || state === null) return null
-      irregularHours.push({ hourStartMs, state })
-    }
-  }
-  return { source, unit, columnMs, firstColumnMs, n, min, max, mean, hours, irregularHours, problems }
+  const irregularHours = readIrregularHours(v.irregularHours)
+  if (irregularHours === null) return null
+  return { source, unit, columnMs, firstColumnMs, n, min, max, mean, noiseStd, hours, irregularHours, problems }
 }
 
 /** そのサンプルがどう届いたか（ホストの `SampleOrigin`）。知らない値は `unknown` として読む。 */
