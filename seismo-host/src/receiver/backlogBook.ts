@@ -55,6 +55,13 @@ export interface Gap {
   readonly nextTryMs: number
 }
 
+/** センサー 1 本の、いちばん古い欠けの始まり（`pendingGapStarts`）。 */
+export interface GapStart {
+  readonly sensorId: string
+  /** 通し番号（32 bit）。 */
+  readonly from: number
+}
+
 export interface BacklogBookOptions {
   /**
    * 欠けを見つけてから取りに行くまで待つ時間。**UDP は順序を保証しない** —— 入れ替わって
@@ -224,7 +231,13 @@ export class BacklogBook {
     this.options = options
   }
 
-  /** 受けたパケットを 1 つ記録する。**読み取りに通ったものだけ渡すこと。** */
+  /**
+   * 受けたパケットを 1 つ記録する。**読み取りに通ったものだけ渡すこと。**
+   *
+   * **投げない。** 受信の口（`main.ts`）はこれを基板への返事より先に呼ぶ（このパケットで見つかった
+   * 欠けを同じ回の返事の `gap=` に載せるため）。ここで投げると返事が出ず、基板はホストの不具合を
+   * 「送れていない」と取り違えて繋ぎ直しと再起動を始める。読めない値は例外にせず黙って捨てること。
+   */
   notePacket(input: {
     readonly stream: StreamRef
     readonly firstSeq: number
@@ -308,6 +321,36 @@ export class BacklogBook {
       if (end <= this.options.maxSpanSamples && end > len) len = end
     }
     return { ...this.view(best), to: seqAdd(best.from, len) }
+  }
+
+  /**
+   * その基板のいまの起動について、センサーごとの**いちばん古い欠けの始まり**。名前の順。
+   * **返事（`ackReplier.ts`）へ載せて、基板にフラッシュへの書き出しを始めさせる。**
+   *
+   * 基板は返事が途絶えたときしか書き出さない。電子レンジのように返事がまばらに届く干渉では
+   * 一度も書かず、取りに行くのが遅れた分はメモリの輪（約 30 秒）から消えていた
+   * （2026-10-06、約 86% が `not-held`）。欠けを知っているのはホストだけなので、こちらから言う。
+   *
+   * **見つけた直後から載せる**（`settleMs` の待ちの間も）。遅れて届いただけなら次の返事で
+   * 消える。書き出しが 1 区画ぶん無駄になるだけで、取りこぼすよりはよい。
+   *
+   * **起動 ID が違う欠けは載せない。** 基板のメモリの輪にあるのはいまの起動の分だけで、
+   * 前の起動の分はもうフラッシュにしか無い（そちらは取りに行く係が訊く）。
+   *
+   * **諦める年齢（`giveUpAfterMs`）を過ぎた欠けは載せない。** 片付けるのは `nextDueWhere` に任せ、
+   * ここでは帳面を動かさない —— 返事のたびに呼ぶ口で状態を変えると、数え方が呼ぶ頻度に引きずられる。
+   */
+  pendingGapStarts(boardKey: string, bootId: string, nowMs: number): readonly GapStart[] {
+    const oldest = new Map<string, number>()
+    for (const g of this.gaps) {
+      if (g.stream.boardKey !== boardKey || g.stream.bootId !== bootId) continue
+      if (nowMs - g.foundAtMs > this.options.giveUpAfterMs) continue
+      const cur = oldest.get(g.stream.sensorId)
+      if (cur === undefined || seqDiff(g.from, cur) < 0) oldest.set(g.stream.sensorId, g.from)
+    }
+    return [...oldest]
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([sensorId, from]) => ({ sensorId, from }))
   }
 
   /** `[from, to)` が、いま覚えている欠けに少しでも掛かるか。 */

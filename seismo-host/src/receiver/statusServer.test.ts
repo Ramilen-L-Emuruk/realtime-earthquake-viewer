@@ -101,7 +101,7 @@ function report(hub: ReadingHub): StatusReport {
       running: false,
     },
     hub: hub.snapshot(),
-    acks: { enabled: true, sent: 0, failures: 0, throttled: 0, lastError: null },
+    acks: { enabled: true, sent: 0, failures: 0, throttled: 0, withGaps: 0, gapLookupFailures: 0, gapEntriesRejected: 0, lastError: null },
     detection: {
       detectorVersion: 1,
       stations: [],

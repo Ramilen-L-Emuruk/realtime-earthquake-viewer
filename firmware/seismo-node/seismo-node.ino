@@ -237,7 +237,7 @@ static const uint32_t SPILL_AFTER_MS = 8000;
 // 実測で 100 秒に 49 区画になり、区画の書き換え回数を数か月で使い切る勢いだった。
 // 2 秒は、返事が 1 秒に 1 回であることと、返事の往復のぶんの余裕。
 static const int64_t SPILL_BACKFILL_MS = 2000;
-// 続けて書き出すのはここまで（→ `spillPump`）。**返事を一度も返さないホスト**（返事の口を
+// 返事が途絶えたまま書き出すのはここまで（→ `spillPump`）。**返事を一度も返さないホスト**（返事の口を
 // 持たない古いホスト・返事を止めた設定）や、繋がらないまま動き続ける基板では、途絶えが
 // 終わらないので書き出しも終わらない。止めないと、フラッシュの輪を 11 分に 1 周ずつ
 // 書き換え続ける（1 区画の書き換えは約 10 万回まで）。
@@ -247,6 +247,10 @@ static const int64_t SPILL_BACKFILL_MS = 2000;
 // 取り戻せる分は増えず、上書きが増えるだけ。PC の再起動や Wi-Fi の数分の途絶えは十分覆う。
 // 止めた後は、**返事が一度戻るまで書き始めない**（戻らないまま 8 秒ごとに書き始め直すと、
 // 止めた意味が無くなる）。
+//
+// **`gap=` で頼まれて書いている間には掛けない。** 返事が届いているのでホストは生きていて、
+// 指しているのは書く値打ちのある欠け。欠けはホストが 20 分で諦めるので、同じ欠けのために
+// 書き続けることもない。干渉が長く続けばそのぶん書くが、それは取り戻せる分を救っている。
 static const uint32_t SPILL_MAX_MS = 30UL * 60UL * 1000UL;
 // フラッシュの消去の単位。**書き出しは 1 区画（4 KB）ずつ**、`loop()` の 1 周に 1 回まで ——
 // 消去の間は処理が止まる（典型で数十ミリ秒）ので、まとめてやると吸い出しを待たせる。
@@ -523,6 +527,13 @@ static uint32_t   g_ackWaitStartMs = 0;
 // Wi-Fi が繋がり直しても戻さない——戻すと繋ぎ直しのたびに 0 からやり直し、再起動の段へ届かない。
 static uint8_t    g_ackLevel = 0;
 static uint32_t   g_ackRearms = 0;       // 返事の途絶で UDP を作り直した回数
+// 返事の `gap=`（→ `readAcks`・`spillPump`）。**ホストがまだ取り戻せていない欠けの、
+// センサーごとのいちばん古い始まり。** 最後に `gap=` 付きの返事を受けたときの値を持つ。
+static uint32_t   g_gapFrom[SENSOR_N] = {};
+static bool       g_gapHas[SENSOR_N] = {};
+static uint32_t   g_lastGapMs = 0;       // 最後に `gap=` 付きの返事を受けた時刻（`g_gapAcks` が 0 なら無意味）
+static uint32_t   g_gapAcks = 0;         // `gap=` 付きの返事を受けた数
+static uint32_t   g_gapBad = 0;          // `gap=` の中身を読めなかった数（返事としては受ける）
 static uint32_t   g_ackReconnects = 0;   // 返事の途絶で Wi-Fi を繋ぎ直した回数
 static uint32_t   g_hostProbeFail = 0;   // 返事が途絶えてホストへ HTTP で訊いたが答えが無かった回数
 static uint32_t   g_restartSkipped = 0;  // 再起動の段に来たが上限で飛ばした回数
@@ -657,6 +668,7 @@ static uint32_t   g_spillCursor = 0;
 static uint32_t   g_spillStopAt = 0;
 static bool       g_spillDraining = false;
 static uint32_t   g_spillStarts = 0;        // 書き出しを始めた回数
+static uint32_t   g_spillGapStarts = 0;     // そのうち、返事は届いていて `gap=` で始めた回数
 static uint32_t   g_spillLost = 0;          // 写す前にメモリの輪が上書きしてしまったまとまりの数
 // `g_spillCursor` が前の書き出しの位置を指しているか。**始め直すときはそこより前へ戻らない**
 // （→ `spillPump`）—— もう写した分を写し直すと、返事が途切れるたびに同じ分で区画を食う。
@@ -1159,9 +1171,38 @@ static void flashInit(){
 // **1 周に書く区画は 1 つまで**（`FLASH_SECTOR` の項）。書き出しが追いつかず、写す前に
 // メモリの輪が上書きした分は `g_spillLost` に数える。
 //
-// **続けて書くのは `SPILL_MAX_MS` まで。** 止めたら、返事が一度戻るまで書き始めない。
+// **返事が途絶えたまま書くのは `SPILL_MAX_MS` まで。** 止めたら、返事が一度戻るまで書き始めない。
+// `gap=` で頼まれて書いている間には掛けない（`SPILL_MAX_MS` の項）。
+//
+// **返事が届いていても、ホストが `gap=` で欠けを知らせてきたら書き出す**（→ `readAcks`）。
+// 電子レンジのような干渉では返事がまばらに届くので途絶えの判定が立たず、ホストが取りに来る
+// 前にメモリの輪から消えていた（2026-10-06、約 86% が取り戻せなかった）。写し始めは指された
+// 番号のまとまりから。`gap=` の無い返事が来たら欠けは片付いたので、写し切って止める。
+// `gap=` 付きの返事が `SPILL_AFTER_MS` 来なくても止める（返事そのものが落ちている間は、
+// 途絶えの判定のほうが引き継ぐ）。
+static bool gapHinted(uint32_t nowMs){
+  if (g_gapAcks == 0 || (int32_t)(nowMs - g_lastGapMs) > (int32_t)SPILL_AFTER_MS) return false;
+  for (size_t s = 0; s < SENSOR_N; s++) if (g_gapHas[s]) return true;
+  return false;
+}
+
+// 指された欠けの始まりを含むまとまりのうち、いちばん古いものの位置（`g_backlogTotal` と同じ数え方）。
+// 指された番号がもう輪に無ければ、輪のいちばん古いところ（そこから先は残っている）。
+static uint32_t gapCursor(){
+  const uint32_t oldest = g_backlogTotal - (uint32_t)g_backlogUsed;
+  for (size_t k = 0; k < g_backlogUsed; k++) {
+    const BacklogSlot &b = backlogAt(k);
+    if (b.sensor < SENSOR_N && g_gapHas[b.sensor]
+        && (int32_t)(b.seq0 + (uint32_t)b.n - g_gapFrom[b.sensor]) > 0) {
+      return oldest + (uint32_t)k;
+    }
+  }
+  return g_backlogTotal;
+}
+
 static void spillPump(uint32_t nowMs){
   if (g_flashPart == nullptr || g_backlog == nullptr) return;
+  const bool hinted = gapHinted(nowMs);
   const uint32_t heardMs = g_acks > 0 ? g_lastAckMs : g_bootMs;
   // **差は符号付きで取る。** `nowMs` は `loop()` の頭で取った時刻で、同じ周の `readAcks()` が
   // それより後の `millis()` を `g_lastAckMs` へ書く。符号無しで引くと負の差が約 49 日に化けて
@@ -1170,13 +1211,19 @@ static void spillPump(uint32_t nowMs){
   // 符号付きで測れるのは約 24.8 日まで（それを超えて返事が無いと「途絶えていない」に戻る）。
   // その頃には `SPILL_MAX_MS` で書き出しを止めてあり、`silent` が偽に戻っても書き始めないので、挙動は変わらない。
   const bool silent = (int32_t)(nowMs - heardMs) > (int32_t)SPILL_AFTER_MS;
+  const bool wanted = silent || hinted;
+  // **止めたままにするのは返事が途絶えている間だけ**（`SPILL_MAX_MS` の項）。`gap=` は返事に乗って
+  // 来るので、それが届いている間はホストが生きていて、書く値打ちのある欠けを指している。
   if (!silent) g_spillCapped = false;
-  if (silent && !g_spilling && !g_spillCapped) {
+  if (wanted && !g_spilling && !g_spillCapped) {
     g_spilling = true;
     g_spillDraining = false;
     g_spillSinceMs = nowMs;
     uint32_t cursor = g_backlogTotal - (uint32_t)g_backlogUsed;
-    if (g_acks > 0) {
+    if (!silent) {
+      cursor = gapCursor();
+      g_spillGapStarts++;
+    } else if (g_acks > 0) {
       const int64_t since = g_lastAckUnixMs - SPILL_BACKFILL_MS;
       for (size_t k = 0; k < g_backlogUsed; k++) {
         const BacklogSlot &b = backlogAt(k);
@@ -1190,23 +1237,29 @@ static void spillPump(uint32_t nowMs){
     g_spillCursor = cursor;
     g_spillCursorValid = true;
     g_spillStarts++;
-    Serial.printf("# ホストの返事が %lu ms 途絶えた。送った分をフラッシュへ書き出す\n",
-                  (unsigned long)(nowMs - heardMs));
-  } else if (silent && g_spillDraining) {
-    // 止める途中でまた途絶えた。写した位置はそのまま、止めるのをやめる。
+    if (silent) {
+      Serial.printf("# ホストの返事が %lu ms 途絶えた。送った分をフラッシュへ書き出す\n",
+                    (unsigned long)(nowMs - heardMs));
+    } else {
+      Serial.println("# ホストが欠けを知らせてきた。送った分をフラッシュへ書き出す");
+    }
+  } else if (wanted && g_spillDraining) {
+    // 止める途中でまた途絶えた・欠けを知らされた。写した位置はそのまま、止めるのをやめる。
     g_spillDraining = false;
-  } else if (!silent && g_spilling && !g_spillDraining) {
+  } else if (!wanted && g_spilling && !g_spillDraining) {
     g_spillDraining = true;
     g_spillStopAt = g_backlogTotal;
   }
   if (!g_spilling) return;
-  if (!g_spillDraining && (nowMs - g_spillSinceMs) > SPILL_MAX_MS) {
+  // **測るのは返事が途絶えてからの長さ。** 書き始めてからの長さで測ると、`gap=` で頼まれて書いている
+  // 間（干渉が 30 分を超えて続く場面）まで止めてしまい、返事は届き続けるので止めたまま解けない。
+  if (!g_spillDraining && silent && (int32_t)(nowMs - heardMs) > (int32_t)SPILL_MAX_MS) {
     // 写した分を書いて止める（`SPILL_MAX_MS` の項）。
     flashFlushPage();
     g_spilling = false;
     g_spillCapped = true;
     g_spillCaps++;
-    Serial.printf("# フラッシュへの書き出しが %lu 分続いたので止めた。返事が戻るまで書き始めない\n",
+    Serial.printf("# ホストの返事が %lu 分途絶えたので書き出しを止めた。返事が戻るまで書き始めない\n",
                   (unsigned long)(SPILL_MAX_MS / 60000UL));
     return;
   }
@@ -1228,7 +1281,7 @@ static void spillPump(uint32_t nowMs){
     flashFlushPage();
     g_spilling = false;
     g_spillDraining = false;
-    Serial.println("# ホストの返事が戻った。フラッシュへの書き出しを止めた");
+    Serial.println("# ホストの返事が戻り、欠けも片付いた。フラッシュへの書き出しを止めた");
   }
 }
 
@@ -1485,10 +1538,13 @@ static void handleStatus(){
   for (size_t i = 0; g_flashPart != nullptr && i < g_flashSectors; i++) if (g_flashIndex[i].valid) flashValid++;
   appendf(buf, sizeof(buf), u,
     "\"flash_ok\":%s,\"flash_sectors\":%u,\"flash_valid\":%u,\"spilling\":%s,\"spill_starts\":%lu,"
+    "\"spill_gap_starts\":%lu,\"gap_acks\":%lu,\"gap_bad\":%lu,"
     "\"spill_lost\":%lu,\"spill_caps\":%lu,\"spill_capped\":%s,\"flash_writes\":%lu,\"flash_fails\":%lu,"
     "\"flash_read_fails\":%lu,\"flash_crc_bad\":%lu,\"flash_max_ms\":%lu,\"flash_init_ms\":%lu,",
     g_flashPart != nullptr ? "true":"false", (unsigned)g_flashSectors, (unsigned)flashValid,
-    g_spilling ? "true":"false", (unsigned long)g_spillStarts, (unsigned long)g_spillLost,
+    g_spilling ? "true":"false", (unsigned long)g_spillStarts,
+    (unsigned long)g_spillGapStarts, (unsigned long)g_gapAcks, (unsigned long)g_gapBad,
+    (unsigned long)g_spillLost,
     (unsigned long)g_spillCaps, g_spillCapped ? "true":"false",
     (unsigned long)g_flashWrites, (unsigned long)g_flashFails,
     (unsigned long)g_flashReadFails, (unsigned long)g_flashCrcBad, (unsigned long)g_flashMaxMs,
@@ -1986,20 +2042,63 @@ static void retryUdpOpen(uint32_t nowMs){
 // **送り元のアドレスは見ない。** `UDP_HOST` は名前でも書けるので突き合わせには
 // 名前解決が要り、LAN の中で返事を偽る相手は想定していない。宛名の MAC だけを照合する。
 //
+// **返事は `seismo-ack <MAC>[ gap=<sid>:<seq>,…]\n`。** 宛名の後ろが改行なら欠けは無く、
+// ` gap=` が続けば、ホストがまだ取り戻せていない欠けのいちばん古い始まりがセンサーごとに並ぶ
+// （ホストの `ackReplier.ts`）。読めた分を `g_gapFrom` へ写し、`spillPump` が書き出しを始める。
+// **`gap=` の中身が読めなくても返事としては受ける** —— 返事を落とすと段が上がり始める。
+// 知らない名前のセンサーは飛ばす（届くのは自分の名乗った名前だけのはず）。
+//
 // 1 周に読むのは 4 つまで。返事は 1 秒に 1 つなので、溜まっていても次の周で読める。
+static const size_t ACK_LINE_MAX = 192;
+static bool parseGapField(const char* p){
+  bool has[SENSOR_N] = {};
+  uint32_t from[SENSOR_N] = {};
+  while (*p != '\n') {
+    const char* colon = strchr(p, ':');
+    if (colon == nullptr || colon == p) return false;
+    const size_t nameLen = (size_t)(colon - p);
+    char* end = nullptr;
+    const unsigned long long seq = strtoull(colon + 1, &end, 10);
+    if (end == colon + 1 || seq > 0xffffffffULL || (*end != ',' && *end != '\n')) return false;
+    for (size_t s = 0; s < SENSOR_N; s++) {
+      const char* sid = g_sensors[s].sid;
+      if (strlen(sid) == nameLen && memcmp(sid, p, nameLen) == 0) {
+        has[s] = true;
+        from[s] = (uint32_t)seq;
+      }
+    }
+    p = *end == ',' ? end + 1 : end;
+  }
+  for (size_t s = 0; s < SENSOR_N; s++) { g_gapHas[s] = has[s]; g_gapFrom[s] = from[s]; }
+  return true;
+}
+
 static void readAcks(){
   // Wi-Fi が切れている間は読まない（`retryUdpOpen`・`checkAck` と同じ門）。切れても記述子は
   // 有効なままなので読んで害は無いが、届くはずの無いものを読みに行く理由も無い。
   if (!g_wifiUp || !g_udpOpen) return;
   char want[32];
-  const int wl = snprintf(want, sizeof(want), "seismo-ack %s\n", g_macFlat);
+  const int wl = snprintf(want, sizeof(want), "seismo-ack %s", g_macFlat);
   for (int i = 0; i < 4; i++) {
     if (udp.parsePacket() <= 0) return;
-    char got[40];
+    char got[ACK_LINE_MAX];
     const int n = udp.read(got, sizeof(got) - 1);
     udp.clear();
     got[n > 0 ? n : 0] = '\0';
-    if (wl > 0 && n == wl && memcmp(got, want, (size_t)wl) == 0) {
+    // 宛名まで一致し、その直後が改行か ` gap=`。**改行で終わっていない行は受けない**
+    // （入れ物からはみ出して切れた行を、欠けの無い返事と取り違えない）。
+    const bool mine = wl > 0 && n > wl && memcmp(got, want, (size_t)wl) == 0
+                      && got[n - 1] == '\n' && (got[wl] == '\n' || strncmp(got + wl, " gap=", 5) == 0);
+    if (mine) {
+      if (got[wl] == '\n') {
+        for (size_t s = 0; s < SENSOR_N; s++) g_gapHas[s] = false;
+      } else if (parseGapField(got + wl + 5)) {
+        bool any = false;
+        for (size_t s = 0; s < SENSOR_N; s++) any = any || g_gapHas[s];
+        if (any) { g_gapAcks++; g_lastGapMs = millis(); }
+      } else {
+        g_gapBad++;
+      }
       g_acks++;
       g_lastAckMs = millis();
       {

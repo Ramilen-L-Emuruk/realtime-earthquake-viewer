@@ -276,7 +276,7 @@ describe('buildStatusReport', () => {
 
   it('基板への返事の数をそのまま通す（返せていないことが基板の側からは見えないため）', () => {
     const report = buildStatusReport(
-      input({ acks: { enabled: false, sent: 7, failures: 2, throttled: 40, lastError: 'EHOSTUNREACH' } }),
+      input({ acks: { enabled: false, sent: 7, failures: 2, throttled: 40, withGaps: 3, gapLookupFailures: 1, gapEntriesRejected: 2, lastError: 'EHOSTUNREACH' } }),
     )
     const round = JSON.parse(JSON.stringify(report))
 
@@ -285,6 +285,9 @@ describe('buildStatusReport', () => {
       sent: 7,
       failures: 2,
       throttled: 40,
+      withGaps: 3,
+      gapLookupFailures: 1,
+      gapEntriesRejected: 2,
       lastError: 'EHOSTUNREACH',
     })
   })
