@@ -189,9 +189,9 @@ describe('archiveChunks — 控えから時刻順に重なりなく出す', () =
   // 2026-10-03 13:00 JST
   const H0 = Date.UTC(2026, 9, 3, 4, 0, 0)
 
-  function chunk(firstSampleMs: number, n = 30): ArchivedWaveChunk {
-    const z = new Float32Array(n)
-    return { firstSampleMs, msPerSample: DT, gal: [z, z, z], dcGal: [0, 0, 0], memberCount: new Uint8Array(n) }
+  function chunk(firstSampleMs: number, n = 30, revised = false, value = 0): ArchivedWaveChunk {
+    const z = new Float32Array(n).fill(value)
+    return { firstSampleMs, msPerSample: DT, gal: [z, z, z], dcGal: [0, 0, 0], memberCount: new Uint8Array(n), revised }
   }
 
   /** 時ごとのファイル。無い時は `missing`、`failed` に入れた時は開けない、`skipped` は末尾を打ち切ったバイト数。 */
@@ -231,6 +231,14 @@ describe('archiveChunks — 控えから時刻順に重なりなく出す', () =
     const { out, tally } = await collect(reader(byHour), H0, H0 + H - 1)
     expect(out.map((c) => c.firstSampleMs)).toEqual([H0, H0 + 300])
     expect(tally.overlapped).toBe(1)
+  })
+
+  it('正: 取り戻した区間を作り直した分（revised）は、同じ時刻のライブの分より優先して流す', async () => {
+    // 作り直した分はライブの分の後ろへ書き足される。時刻で並べて先に来た方を採ると、穴の残ったライブの分が勝つ。
+    const byHour = new Map([[H0, [chunk(H0, 30, false, 1), chunk(H0, 30, true, 5)]]])
+    const { out } = await collect(reader(byHour), H0, H0 + H - 1)
+    expect(out).toHaveLength(1)
+    expect(out[0].gal[0][0]).toBe(5)
   })
 
   it('正: 無かった・開けなかった・途中で打ち切った時を分けて数える（「無かった」と「読めなかった」を分ける）', async () => {
