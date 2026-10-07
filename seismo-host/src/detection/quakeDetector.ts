@@ -16,7 +16,7 @@ import type { ShakeClass, ShakeEnvelope, ShakeRatios } from './eventClassifier'
 import { PHASE_PICK_CONFIG_DEFAULT, horizontalEnvelope, pickPhases } from './phasePicker'
 import type { PhasePicks } from './phasePicker'
 import { TRIGGER_CONFIG_DEFAULT, TriggerDetector, featureBandIndex } from './quakeTrigger'
-import type { TriggerConfig, TriggerEvent, TriggerInput } from './quakeTrigger'
+import type { TriggerConfig, TriggerEvent, TriggerHealth, TriggerInput, TriggerPeak } from './quakeTrigger'
 
 /** 検出器の版。記録に残し、後から「どの判定で出した区間か」を辿れるようにする。 */
 export const DETECTOR_VERSION = 1
@@ -248,6 +248,21 @@ export class QuakeDetector {
 
   get resets(): number {
     return this.trigger.resets
+  }
+
+  /** 引き金が最後にサンプルを使えた時刻（データの時刻。`TriggerDetector.lastSampleAtMs`）。 */
+  get lastSampleAtMs(): number | null {
+    return this.trigger.lastSampleAtMs
+  }
+
+  /** 引き金のいまの状態（`TriggerDetector.health`）。 */
+  health(): TriggerHealth {
+    return this.trigger.health()
+  }
+
+  /** 範囲（データの時刻・1 分単位）で比がいちばん大きかったサンプル（`TriggerDetector.peakBetween`）。 */
+  peakBetween(fromMs: number, toMs: number): TriggerPeak | null {
+    return this.trigger.peakBetween(fromMs, toMs)
   }
 
   push(chunk: TriggerInput): DetectedShake[] {

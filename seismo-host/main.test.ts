@@ -803,6 +803,7 @@ describe('buildClosingLines', () => {
       lastFailure: null,
       store: { written: 5, writeErrors: 0, lastWriteError: null },
       feed: null,
+      triggers: [],
     },
   } as const
 

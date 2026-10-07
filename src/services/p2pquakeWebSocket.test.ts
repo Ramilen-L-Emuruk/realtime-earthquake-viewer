@@ -105,3 +105,81 @@ describe('P2PQuakeWebSocket の黙った接続の見張り', () => {
     ws.disconnect()
   })
 })
+
+describe('P2PQuakeWebSocket の張り直しの知らせ', () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = []
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'] })
+    vi.setSystemTime(new Date('2026-10-06T09:00:00Z'))
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  // 対照: 最初の接続は張り直しではない（起動時の履歴が別に取る）。
+  it('最初に繋がったときは知らせない', () => {
+    const ws = new P2PQuakeWebSocket()
+    const calls: number[] = []
+    ws.onReconnected = ms => calls.push(ms)
+    ws.connect()
+    FakeWebSocket.instances[0].onopen?.()
+    expect(calls).toEqual([])
+    ws.disconnect()
+  })
+
+  // 正: 普通の切断から繋がり直したら、切れる前に最後に届いた時刻を添えて知らせる。
+  it('onclose から繋がり直したら、最後に届いた時刻を添えて知らせる', async () => {
+    const ws = new P2PQuakeWebSocket()
+    const calls: number[] = []
+    ws.onReconnected = ms => calls.push(ms)
+    ws.connect()
+    FakeWebSocket.instances[0].onopen?.()
+    await vi.advanceTimersByTimeAsync(2 * MINUTE)
+    FakeWebSocket.instances[0].receive()
+    const lastReceived = Date.now()
+    await vi.advanceTimersByTimeAsync(MINUTE)
+    FakeWebSocket.instances[0].onclose?.()
+    await vi.advanceTimersByTimeAsync(3_000)
+    FakeWebSocket.instances[1].onopen?.()
+    expect(calls).toEqual([lastReceived])
+    ws.disconnect()
+  })
+
+  // 正: 見張りの張り直しでも同じく知らせる。繋がらない試行を挟んでも、起点は最後に届いた時刻のまま。
+  it('見張りの張り直しでも知らせ、繋がらなかった試行の分も起点に含める', async () => {
+    const ws = new P2PQuakeWebSocket()
+    const calls: number[] = []
+    ws.onReconnected = ms => calls.push(ms)
+    ws.connect()
+    FakeWebSocket.instances[0].onopen?.()
+    FakeWebSocket.instances[0].receive()
+    const lastReceived = Date.now()
+    await vi.advanceTimersByTimeAsync(P2P_SILENT_RECONNECT_MS + 30_000 + 3_000)
+    // 2 本目は開かないまま切れる
+    FakeWebSocket.instances[1].onclose?.()
+    await vi.advanceTimersByTimeAsync(5_000)
+    FakeWebSocket.instances[2].onopen?.()
+    expect(calls).toEqual([lastReceived])
+    ws.disconnect()
+  })
+
+  // 安全弁: 受け手が例外を投げても、接続の処理（届いた電文の受け渡し）は止まらない。
+  it('受け手の例外で接続を止めない', async () => {
+    const ws = new P2PQuakeWebSocket()
+    ws.onReconnected = () => { throw new Error('boom') }
+    const statuses: string[] = []
+    ws.onStatusChange = s => statuses.push(s)
+    ws.connect()
+    FakeWebSocket.instances[0].onopen?.()
+    FakeWebSocket.instances[0].onclose?.()
+    await vi.advanceTimersByTimeAsync(3_000)
+    expect(() => FakeWebSocket.instances[1].onopen?.()).not.toThrow()
+    expect(statuses[statuses.length - 1]).toBe('connected')
+    ws.disconnect()
+  })
+})

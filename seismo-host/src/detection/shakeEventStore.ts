@@ -18,18 +18,16 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, re
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-import { JST_OFFSET_MS } from '../receiver/jstTime'
+import { jstMonth, monthsBetween, nameMayStartInRange, startMsFromFileName } from './eventRange'
 import type { ShakeEventRecord } from './shakeEvent'
 
-/** 読み返す範囲の上限（ミリ秒）。掛かる月の記録を全部読むので、際限なく広げさせない。 */
-export const EVENT_RANGE_MAX_MS = 93 * 24 * 3_600_000
+/**
+ * 範囲の上限・月の数え方・名前から始まりを読む決まりは `eventRange.ts` が持つ
+ * （管理コンソールと共有するため）。
+ */
+export { EVENT_RANGE_MAX_MS, jstMonth, monthsBetween, startMsFromFileName } from './eventRange'
 
 const SUFFIX = '.json'
-
-/** 日本時間の年月（`YYYY-MM`）。 */
-export function jstMonth(ms: number): string {
-  return new Date(ms + JST_OFFSET_MS).toISOString().slice(0, 7)
-}
 
 /**
  * `id` をファイル名へ。**英数字と `.`・`_`・`-` 以外は `%XX` へ逃がす** —— `id` は観測点の ID を含み、
@@ -49,20 +47,6 @@ export function eventFileName(id: string): string {
 /** その版の置き場所。 */
 export function eventFilePath(dir: string, rec: Pick<ShakeEventRecord, 'id' | 'startMs'>): string {
   return join(dir, jstMonth(rec.startMs), eventFileName(rec.id))
-}
-
-/** `[fromMs, toMs)` に掛かる日本時間の月（古い順）。 */
-export function monthsBetween(fromMs: number, toMs: number): string[] {
-  const out: string[] = []
-  let month = jstMonth(fromMs)
-  const last = jstMonth(Math.max(fromMs, toMs - 1))
-  for (let guard = 0; guard < 1200; guard++) {
-    out.push(month)
-    if (month === last) break
-    const [y, m] = month.split('-').map(Number)
-    month = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`
-  }
-  return out
 }
 
 function isRecord(v: unknown): v is ShakeEventRecord {
@@ -146,7 +130,16 @@ export interface EventRangeResult {
   readonly unreadableFiles: string[]
 }
 
-/** 範囲の揺れを読み返す。範囲の上限はここでは見ない（呼び出し側が入口で弾く）。 */
+/**
+ * 範囲の揺れを読み返す。範囲の上限はここでは見ない（呼び出し側が入口で弾く）。
+ *
+ * **名前で範囲の外と分かるファイルは開かない。** 管理コンソールは直近 3 時間を 30 秒ごとに読み直すので、
+ * 月のファイルを全部開くと、そのたびに数百本ぶんの読み込みが走る（観測点 3 つ・月 1350 本の実測で 1 回 0.5〜0.7 秒。
+ * 名前で飛ばすと 7〜11 ミリ秒）。
+ * **名前の始まりは中身の始まりを整数へ丸めた値なので、範囲の両端を 1 ミリ秒ずつ広げて比べる**
+ * （`nameMayStartInRange`）—— 端の内側で始まった揺れを、丸めで外を名乗るというだけで取りこぼさない。
+ * 名前から始まりを読めないファイルは、これまでどおり開いて中身で決める。
+ */
 export async function readEventRange(params: {
   readonly dir: string
   readonly fromMs: number
@@ -164,6 +157,8 @@ export async function readEventRange(params: {
     }
     // 一時ファイル（`.json.tmp`）は書き込みの途中なので読まない。
     for (const name of names.filter((n) => n.endsWith(SUFFIX)).sort()) {
+      const startFromName = startMsFromFileName(name)
+      if (startFromName !== null && !nameMayStartInRange(startFromName, params.fromMs, params.toMs)) continue
       let rec: unknown
       try {
         rec = JSON.parse(await readFile(join(params.dir, month, name), 'utf8'))

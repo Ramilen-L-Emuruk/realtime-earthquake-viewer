@@ -41,6 +41,7 @@
 #include <esp_sntp.h>
 #include <esp_partition.h>
 #include <esp_rom_crc.h>
+#include <Preferences.h>
 #include <functional>
 #include "wifi_config.h"
 
@@ -144,6 +145,31 @@ static const uint32_t HOST_PROBE_REPLY_MS = 500;
 // 飛ばし、UDP の作り直しと Wi-Fi の繋ぎ直しは続ける（どちらも波形を止める時間が短い）。
 static const uint32_t SELF_RESTART_MAX = 3;
 static const int64_t  SELF_RESTART_WINDOW_S = 6 * 3600;
+
+// 直前の状態を NVS へ書く間隔（→ `PrevState`・`prevPump`）。
+//
+// **何も変わらなくても書く。** 書いた時刻が「最後に生きていた時刻」になる —— 固まった基板は
+// 固まった時刻で記録が止まり、Wi-Fi に戻れないだけの基板は電源を抜く直前まで書き続ける。
+// 変わったときだけ書く形だと、この 2 つが同じ「古い記録」に化ける。
+//
+// 1 回の記録（`PrevState`・72 バイト）は NVS の項目 5 つ（1 項目 32 バイト。blob のデータの
+// 見出し 1 ＋ 中身 3 ＋ blob の索引 1）。既定の区画（20 KB・使い回すのは 4 ページ・1 ページ
+// 126 項目）だと 1 ページに約 25 回ぶん入り、各ページの消去は 60 秒ごとの書き込みで約 100 分に
+// 1 回 —— 消去の寿命（約 10 万回）まで約 19 年。Wi-Fi の設定も同じ区画に置かれ、ページを
+// 詰め直すたびに新しいページへ写し直される（中身は変わらない。写し直しも上の消去の回数に含まれる）。
+static const uint32_t PREV_HEARTBEAT_MS = 60000;
+// 状態が変わったときに書く間隔の下限。**Wi-Fi が明滅すると変わり目が 1 秒に何度も来る**ので、
+// 変わり目ごとに書くと上の見積もりが崩れる。間引いても最新の状態はこの間隔で必ず書く
+// （`g_prevDirty`）。**起動直後もこの間は書かない** —— 起動してすぐ落ちる繰り返しに入った
+// 基板が、起動のたびに NVS を書くことになるうえ、前回まで動けていた起動の記録をすぐ潰す。
+static const uint32_t PREV_MIN_GAP_MS = 10000;
+// `loop()` の 1 周がここまで時間を使っていたら、その周では書かずに次の周へ回す（→ `prevPump`）。
+//
+// **吸い出しが待てるのは 1.4 秒まで**（→ `HOST_PROBE_TIMEOUT_MS`）。返事が途絶えている最中は、
+// 同じ周でホストへの問い合わせ（最大 1.0 秒）とフラッシュの区画の書き出し（実機で最長 57 ms。
+// 2026-10-06）が重なりうる。NVS もページを詰め直す回は消去が入るので、そこへ 3 つ目を
+// 積まない。200 ms なら、問い合わせを挟んだ周だけを避け、普段の周（数 ms）は止めない。
+static const uint32_t PREV_DEFER_AFTER_MS = 200;
 
 // 端数（FIFO の件数が 6 の倍数でない）がこの回数だけ続いたら FIFO を作り直す。
 //
@@ -526,6 +552,74 @@ RTC_NOINIT_ATTR static RestartLedger g_restartLedger;
 // `/restart` でも OTA でも理由は同じ `ESP_RST_SW` になるので、理由だけでは分けられない。
 static bool       g_bootedBySelfRestart = false;
 static esp_reset_reason_t g_resetReason = ESP_RST_UNKNOWN;
+
+// --- 直前の状態（→ `prevSave`・`prevPump`） ---
+//
+// **電源を入れ直しても消えない場所に、いまの様子を書いておく。** 上の帳面（`RTC_NOINIT_ATTR`）も
+// 数え上げ（`g_ackReconnects` など）も電源を切ると消える。2026-10-05 01:02 に 3 枚が同時に受信を
+// 欠き、1 枚だけが戻らず ping も ARP も消えた —— 電源を入れ直すしか戻す手が無く、入れ直した時点で
+// `reset_reason=poweron`・数え上げは 0 になり、「Wi-Fi に戻れなかった」のか「固まった」のかを
+// 見分ける手掛かりが全部消えた。
+//
+// **見分ける手掛かりは書いた時刻（`savedUnix`・`uptimeS`）。** 生きていれば 60 秒ごとに書くので
+// （`PREV_HEARTBEAT_MS`）、固まった基板の記録は固まった時刻で止まり、動いていた基板の記録は
+// 電源を抜く直前まで進む。
+//
+// **置き場所は NVS。** フラッシュのデータ領域（`spiffs`）は送った分の輪が丸ごと使っている
+// （→ `flashInit`）。NVS は書き込みを区画へ散らし、1 件の書き込みを丸ごと残すか残さないかの
+// どちらかにする（書いている途中で電源が落ちても、前の記録が残る）。
+//
+// **形を変えたら `PREV_STATE_VERSION` を上げる。** 大きさが同じまま意味の違う欄を読むと、
+// 前の版の記録を別の値として出してしまう。
+struct PrevState {
+  uint32_t version;       // `PREV_STATE_VERSION`
+  uint32_t bootId;        // 書いた起動の `g_bootIdNum`
+  uint32_t savedUnix;     // 書いた時刻（unix 秒）。**時計が合う前（`clockTrusted` が偽）なら 0**
+  uint32_t uptimeS;       // 書いた時点の稼働秒数
+  uint32_t saves;         // この起動で書いた回数（自分を含む）
+  uint8_t  why;           // 書いた理由（`PrevWhy`）
+  uint8_t  resetReason;   // その起動の理由（`esp_reset_reason_t`）
+  uint8_t  bootedBySelfRestart;
+  uint8_t  wifiUp;
+  uint8_t  ackLevel;
+  uint8_t  sensorsOk;     // `ok` が立っていたセンサーの数
+  int16_t  rssi;          // 最後に繋がっていたときの電波の強さ（一度も繋がっていなければ 0）
+  uint32_t wifiDownS;     // 切れていたなら、切れてからの秒数（繋がっていれば 0）
+  uint32_t wifiDowns;     // この起動で切れた回数
+  int32_t  ackAgeS;       // 最後の返事からの秒数（一度も受けていなければ -1）
+  uint32_t acks;
+  uint32_t ackRearms;
+  uint32_t ackReconnects;
+  uint32_t hostProbeFail;
+  uint32_t selfRestarts;  // 数え直しの窓の中で自分から再起動した回数（`selfRestartsInWindow`）
+  uint32_t restartSkipped;
+  uint32_t sntpSyncs;
+  uint32_t freeHeap;
+};
+static const uint32_t PREV_STATE_VERSION = 1;
+// 大きさは `PREV_HEARTBEAT_MS` のすり減りの見積もりの前提。**欄を足したらあちらも見直す。**
+static_assert(sizeof(PrevState) == 72, "PrevState size changed: revisit PREV_HEARTBEAT_MS wear estimate");
+// 書いた理由。**状態ページへは名前で出す**（`prevWhyName`）。
+enum PrevWhy : uint8_t { PREV_WHY_HEARTBEAT = 0, PREV_WHY_CHANGE = 1, PREV_WHY_RESTART = 2, PREV_WHY_OTA = 3 };
+
+static Preferences g_prefs;
+static bool       g_prefsOk = false;      // NVS を開けたか
+// 起動時に読んだ前の起動の記録。**この起動の最初の書き込みで NVS からは消える**ので、
+// 読んだ時点でここへ写しておく。
+static PrevState  g_prev;
+static bool       g_prevValid = false;
+static PrevState  g_cur;                  // この起動の記録（書くたびに組み直す）
+static uint32_t   g_prevSaves = 0;
+static uint32_t   g_prevSaveFails = 0;
+static uint32_t   g_prevSaveMaxMs = 0;    // 1 回の書き込みにかかった最長の時間
+static uint32_t   g_lastPrevSaveMs = 0;   // 最後に書いた時刻（`millis()`）。起動時は `g_bootMs`
+// 書いていない変わり目があるか。**間引いた分を落とさない**ための旗（→ `PREV_MIN_GAP_MS`）。
+// 起動したこと自体が変わり目なので、真から始める。
+static bool       g_prevDirty = true;
+// Wi-Fi が切れた回数と、切れた時刻。**一度も繋がっていなければ起動から数える。**
+static uint32_t   g_wifiDowns = 0;
+static uint32_t   g_wifiDownSinceMs = 0;
+static int16_t    g_lastRssi = 0;
 
 // --- 送った分の輪（→ `BacklogSlot`・`handleBacklog`） ---
 //
@@ -1327,7 +1421,10 @@ static void handleBacklog(){
 // 430 バイトある。
 static void handleStatus(){
   time_t now = time(nullptr);
-  static char buf[3072];
+  // **前の起動の記録（`prev`）で約 700 バイト増えたので 4 KB にした。** センサー 3 個の実機で
+  // 足す前が約 2050 バイト（2026-10-06）で、足すと 3 KB の手前まで来る。数え上げの桁が
+  // 伸びれば溢れうる（溢れたら下で 500 を返す）。
+  static char buf[4096];
   size_t u = 0;
   appendf(buf, sizeof(buf), u,
     "{\"node\":\"%s\",\"mac\":\"%s\",\"boot_id\":\"%s\",\"sensor\":\"MPU6050\","
@@ -1396,6 +1493,34 @@ static void handleStatus(){
     (unsigned long)g_flashWrites, (unsigned long)g_flashFails,
     (unsigned long)g_flashReadFails, (unsigned long)g_flashCrcBad, (unsigned long)g_flashMaxMs,
     (unsigned long)g_flashInitMs);
+  // 直前の状態（→ `PrevState`）。**この起動の書き込みの健全性と、前の起動の最後の記録を並べる。**
+  // `prev` は記録が無ければ null。`saved_age_s` は書いてから今までの秒数で、
+  // 書いた時刻か今の時計のどちらかが合っていなければ -1（電源投入の直後、SNTP が合うまで）。
+  appendf(buf, sizeof(buf), u,
+    "\"wifi_downs\":%lu,\"nvs_ok\":%s,\"prev_saves\":%lu,\"prev_save_fails\":%lu,\"prev_save_max_ms\":%lu,",
+    (unsigned long)g_wifiDowns, g_prefsOk ? "true":"false", (unsigned long)g_prevSaves,
+    (unsigned long)g_prevSaveFails, (unsigned long)g_prevSaveMaxMs);
+  if (g_prevValid) {
+    const PrevState &p = g_prev;
+    const long savedAge = (p.savedUnix > 0 && clockTrusted(now)) ? (long)((int64_t)now - p.savedUnix) : -1L;
+    appendf(buf, sizeof(buf), u,
+      "\"prev\":{\"boot_id\":\"%08lx\",\"reset_reason\":\"%s\",\"booted_by_self_restart\":%s,"
+      "\"why\":\"%s\",\"saved_unix\":%lu,\"saved_age_s\":%ld,\"uptime_s\":%lu,\"saves\":%lu,"
+      "\"wifi_up\":%s,\"wifi_down_s\":%lu,\"wifi_downs\":%lu,\"rssi\":%d,"
+      "\"ack_level\":%u,\"ack_age_s\":%ld,\"acks\":%lu,\"ack_rearms\":%lu,\"ack_reconnects\":%lu,"
+      "\"host_probe_fail\":%lu,\"self_restarts\":%lu,\"restart_skipped\":%lu,"
+      "\"sntp_syncs\":%lu,\"free_heap\":%lu,\"sensors_ok\":%u},",
+      (unsigned long)p.bootId, resetReasonName((esp_reset_reason_t)p.resetReason),
+      p.bootedBySelfRestart ? "true":"false", prevWhyName(p.why),
+      (unsigned long)p.savedUnix, savedAge, (unsigned long)p.uptimeS, (unsigned long)p.saves,
+      p.wifiUp ? "true":"false", (unsigned long)p.wifiDownS, (unsigned long)p.wifiDowns, (int)p.rssi,
+      (unsigned)p.ackLevel, (long)p.ackAgeS, (unsigned long)p.acks, (unsigned long)p.ackRearms,
+      (unsigned long)p.ackReconnects, (unsigned long)p.hostProbeFail, (unsigned long)p.selfRestarts,
+      (unsigned long)p.restartSkipped, (unsigned long)p.sntpSyncs, (unsigned long)p.freeHeap,
+      (unsigned)p.sensorsOk);
+  } else {
+    appendf(buf, sizeof(buf), u, "\"prev\":null,");
+  }
   appendf(buf, sizeof(buf), u, "\"i2c\":[");
   for (int b = 0; b < 2; b++) {
     appendf(buf, sizeof(buf), u,
@@ -1502,6 +1627,7 @@ static bool adminAllowed(){
 static void handleRestart(){
   if (!adminAllowed()) return;
   Serial.println("# /restart を受けたので再起動する");
+  prevSave(millis(), PREV_WHY_RESTART);
   http.send(200, "text/plain", "restarting\n");
   // **応答が出ていく猶予は `delay` が作っている。`flush()` ではない。**
   // Arduino の `Client::flush()` は**受け取ったまま読んでいないものを捨てる**操作で、
@@ -1647,6 +1773,10 @@ static void onWifiUp(){
   if (g_servicesUp) return;
   if (MDNS.begin(g_node)) Serial.printf("# mdns %s.local\n", g_node);
   ArduinoOTA.setHostname(g_node);
+  // 焼き直しも再起動を伴うので、始める前に書く（`why: "ota"`）。書かないと前の起動の記録は
+  // 最大 60 秒前の生存記録のまま残り、焼き直したのか止まったのかが記録から読めない。
+  // 呼ばれるのは `ArduinoOTA.handle()` の中、つまり `loop()` の流れ。
+  ArduinoOTA.onStart([](){ prevSave(millis(), PREV_WHY_OTA); });
   ArduinoOTA.begin();
   http.on("/", handleStatus);
   http.on("/restart", HTTP_POST, handleRestart);
@@ -1673,6 +1803,10 @@ void setup(){
   delay(300);
   g_bootMs = millis();
   resolveNodeName();
+  // 前の起動の記録を読む（→ `PrevState`）。書くのは `PREV_MIN_GAP_MS` 経ってから。
+  prevLoad();
+  g_lastPrevSaveMs = g_bootMs;
+  g_wifiDownSinceMs = g_bootMs;
 
   // 送った分の輪（→ `g_backlog`）。**Wi-Fi やソケットより先に取る** —— 大きな塊は、
   // ヒープが細切れになる前のほうが取りやすい。
@@ -1737,6 +1871,17 @@ void setup(){
                 g_node, g_mac, g_bootId, resetReasonName(g_resetReason),
                 g_bootedBySelfRestart ? "（返事の途絶で自分から）" : "",
                 (unsigned long)g_restartLedger.count);
+  if (g_prevValid) {
+    const PrevState &p = g_prev;
+    Serial.printf("# 前の起動 bid=%08lx reset=%s 最後の記録=%s uptime=%lus unix=%lu "
+                  "wifi_up=%u down=%lus downs=%lu rssi=%d ack_level=%u ack_age=%lds\n",
+                  (unsigned long)p.bootId, resetReasonName((esp_reset_reason_t)p.resetReason),
+                  prevWhyName(p.why), (unsigned long)p.uptimeS, (unsigned long)p.savedUnix,
+                  (unsigned)p.wifiUp, (unsigned long)p.wifiDownS, (unsigned long)p.wifiDowns,
+                  (int)p.rssi, (unsigned)p.ackLevel, (long)p.ackAgeS);
+  } else {
+    Serial.println("# 前の起動の記録は無い");
+  }
   for (int b = 0; b < 2; b++) {
     Serial.printf("# i2c%d begun=%d scan: %u found (%s)%s\n",
                   b, g_busOk[b], (unsigned)g_scanN[b], g_scan[b], g_scanCut[b] ? " …切れ" : "");
@@ -1865,6 +2010,7 @@ static void readAcks(){
       if (g_ackLevel != 0) {
         Serial.printf("# ホストの返事が戻った（段 %u まで上がっていた）\n", (unsigned)g_ackLevel);
         g_ackLevel = 0;
+        g_prevDirty = true;
       }
     } else {
       g_ackForeign++;
@@ -1931,6 +2077,112 @@ static uint32_t selfRestartsInWindow(time_t now){
   return restartWindowExpired(now) ? 0 : g_restartLedger.count;
 }
 
+static const char* prevWhyName(uint8_t why){
+  switch (why) {
+    case PREV_WHY_HEARTBEAT: return "heartbeat";
+    case PREV_WHY_CHANGE:    return "change";
+    case PREV_WHY_RESTART:   return "restart";
+    case PREV_WHY_OTA:       return "ota";
+    default:                 return "unknown";
+  }
+}
+
+// 前の起動の記録を読む（→ `PrevState`）。**`setup()` の最初の方で 1 度だけ呼ぶ。**
+//
+// **キーがあるかを先に訊く。** 無いキーの長さを訊くと、コアが初回の起動でエラーの行を
+// ログへ出す（記録が無いのは正常なのに、異常に見える）。
+static void prevLoad(){
+  g_prefsOk = g_prefs.begin("seismo", false);
+  if (!g_prefsOk) {
+    Serial.println("# WARN NVS を開けなかった。直前の状態は残らない");
+    return;
+  }
+  if (!g_prefs.isKey("prev")) return;
+  // **大きさと版の両方が合ったときだけ信じる。** 大きさだけだと、欄の意味を変えた前の版の
+  // 記録を読み違える（→ `PREV_STATE_VERSION`）。
+  if (g_prefs.getBytesLength("prev") != sizeof(PrevState)) return;
+  if (g_prefs.getBytes("prev", &g_prev, sizeof(g_prev)) != sizeof(g_prev)) return;
+  g_prevValid = g_prev.version == PREV_STATE_VERSION;
+}
+
+// いまの様子を NVS へ書く。**成否に関わらず計時は進める** —— 書けない NVS へ毎周書きに
+// 行くと、その間ずっと吸い出しを待たせる。
+//
+// **`why` を `PrevWhy` で受けない。** arduino-cli は `.ino` の関数の宣言を先頭へ自動で
+// 足すが、その位置からは `PrevWhy` がまだ見えずコンパイルが落ちる（実際に落ちた）。
+static void prevSave(uint32_t nowMs, uint8_t why){
+  g_lastPrevSaveMs = nowMs;
+  g_prevDirty = false;
+  if (!g_prefsOk) return;
+  const time_t now = time(nullptr);
+  if (g_wifiUp) g_lastRssi = (int16_t)WiFi.RSSI();
+  uint8_t sensorsOk = 0;
+  for (size_t i = 0; i < SENSOR_N; i++) if (g_sensors[i].ok) sensorsOk++;
+
+  PrevState &c = g_cur;
+  c.version = PREV_STATE_VERSION;
+  c.bootId = g_bootIdNum;
+  // **合っていない時計の時刻は書かない。** 電源投入直後は 1970 年、ソフトウェアの再起動の
+  // 直後は前の起動から持ち越したずれた時刻で（→ `clockTrusted`）、どちらも「いつ」の
+  // 答えにならない。そのときは稼働秒数だけが手掛かりになる。
+  c.savedUnix = clockTrusted(now) ? (uint32_t)now : 0;
+  c.uptimeS = (nowMs - g_bootMs) / 1000;
+  c.saves = g_prevSaves + 1;
+  c.why = why;
+  c.resetReason = (uint8_t)g_resetReason;
+  c.bootedBySelfRestart = g_bootedBySelfRestart ? 1 : 0;
+  c.wifiUp = g_wifiUp ? 1 : 0;
+  c.ackLevel = g_ackLevel;
+  c.sensorsOk = sensorsOk;
+  c.rssi = g_lastRssi;
+  c.wifiDownS = g_wifiUp ? 0 : (nowMs - g_wifiDownSinceMs) / 1000;
+  c.wifiDowns = g_wifiDowns;
+  c.ackAgeS = g_acks == 0 ? -1 : (int32_t)((nowMs - g_lastAckMs) / 1000);
+  c.acks = g_acks;
+  c.ackRearms = g_ackRearms;
+  c.ackReconnects = g_ackReconnects;
+  c.hostProbeFail = g_hostProbeFail;
+  c.selfRestarts = selfRestartsInWindow(now);
+  c.restartSkipped = g_restartSkipped;
+  c.sntpSyncs = g_sntpSyncs;
+  c.freeHeap = ESP.getFreeHeap();
+
+  // **かかった時間を測る。** NVS がページを詰め直す回は消去が入り、その間は吸い出しが止まる
+  // （待てるのは 1.4 秒まで。→ `HOST_PROBE_TIMEOUT_MS`）。
+  const uint32_t t0 = millis();
+  const size_t n = g_prefs.putBytes("prev", &c, sizeof(c));
+  const uint32_t dt = millis() - t0;
+  if (dt > g_prevSaveMaxMs) g_prevSaveMaxMs = dt;
+  // 書けない状態は続きがちなので、**書けていた状態から書けなくなったときだけ**出す
+  // （数は状態ページの `prev_save_fails`）。初回だけにすると、一度戻ってから再発したときに黙る。
+  static bool lastFailed = false;
+  if (n == sizeof(c)) {
+    g_prevSaves++;
+    lastFailed = false;
+  } else {
+    g_prevSaveFails++;
+    if (!lastFailed) Serial.println("# WARN 直前の状態を NVS へ書けなかった");
+    lastFailed = true;
+  }
+}
+
+// 書く番か。**毎周呼ぶ**（`loop()`）。変わり目は間引いて書き（`PREV_MIN_GAP_MS`）、
+// 変わらなくても `PREV_HEARTBEAT_MS` ごとに書く。
+//
+// 符号無しで引いてよいのは、`g_lastPrevSaveMs` を書くのが `prevSave` だけで、そこへ渡すのは
+// 同じ周か過去の `millis()` だから。
+static void prevPump(uint32_t nowMs){
+  // この周がもう時間を使っていれば次の周へ回す（`PREV_DEFER_AFTER_MS`）。`nowMs` は周の頭で
+  // 読んだ値なので、ここまでの所要時間になる。書く番は旗と計時のまま残るので、落としはしない。
+  if (millis() - nowMs > PREV_DEFER_AFTER_MS) return;
+  const uint32_t since = nowMs - g_lastPrevSaveMs;
+  if (since >= PREV_HEARTBEAT_MS) {
+    prevSave(nowMs, g_prevDirty ? PREV_WHY_CHANGE : PREV_WHY_HEARTBEAT);
+  } else if (g_prevDirty && since >= PREV_MIN_GAP_MS) {
+    prevSave(nowMs, PREV_WHY_CHANGE);
+  }
+}
+
 // 返事が途絶えたら、段を 1 つ上げて立て直す。
 //
 // **これが段 A で残した穴を塞ぐ。** 段 A は「Wi-Fi が繋がり直したら UDP を開き直す」で、
@@ -1968,6 +2220,8 @@ static void checkAck(uint32_t nowMs){
     return;
   }
 
+  // ここから先はどの道も残すべき変わり目（ホストが答えない・段が上がる）。
+  g_prevDirty = true;
   if (!hostReachable()) {
     g_hostProbeFail++;
     Serial.printf("# 返事が %lu 秒途絶えたが、ホスト %s:%d も HTTP に答えない。止まっていると見て待つ\n",
@@ -2003,6 +2257,9 @@ static void checkAck(uint32_t nowMs){
       l.count++;
       l.pending = 1;
       Serial.printf("# 繋ぎ直しても返事が戻らない。再起動する（%lu 回目）\n", (unsigned long)l.count);
+      // **落とす直前に書く。** 次の起動が電源投入で始まることもある（再起動へ向かう途中で
+      // 電源を抜かれた等）ので、帳面（`RTC_NOINIT_ATTR`）だけに頼らない。
+      prevSave(millis(), PREV_WHY_RESTART);
       delay(100);   // シリアルへ出し切る
       ESP.restart();
     }
@@ -2216,8 +2473,14 @@ void loop(){
   const bool up = WiFi.status() == WL_CONNECTED;
   if (up != g_wifiUp) {
     g_wifiUp = up;
-    if (up) onWifiUp();
-    else Serial.println("# wifi down");
+    if (up) {
+      onWifiUp();
+    } else {
+      Serial.println("# wifi down");
+      g_wifiDowns++;
+      g_wifiDownSinceMs = millis();
+    }
+    g_prevDirty = true;
   }
 
   // **立てる前に回さない。** `begin()` を通っていない口を叩くのは、たとえ無害でも
@@ -2245,6 +2508,7 @@ void loop(){
   // 返事の途絶を見てフラッシュへ書き出す（→ `spillPump`）。**毎周呼ぶ** —— 1 周に書く区画は
   // 1 つまでなので、吸い出しの周期に合わせると書き出しが追いつかない。
   spillPump(nowMs);
+  prevPump(nowMs);
 
   static uint32_t lastRetry = 0;
   if (nowMs - lastRetry >= RETRY_MS) { lastRetry = nowMs; retryStuck(); }

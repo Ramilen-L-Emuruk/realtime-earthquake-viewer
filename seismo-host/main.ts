@@ -91,7 +91,7 @@ import type { RewaveSchedulerOptions } from './src/receiver/rewaveScheduler'
 import { streamKeyOf } from './src/timebase/segmenter'
 import { QuakeFeed } from './src/detection/quakeFeed'
 import { ShakeEventStore, readEventRange } from './src/detection/shakeEventStore'
-import { StationDetection, detectionCountEntries } from './src/detection/stationDetection'
+import { StationDetection, detectionCountEntries, emitDetectionHourly } from './src/detection/stationDetection'
 import type { DetectionStatus } from './src/detection/stationDetection'
 
 /** 記録係の原型（`capture.mjs`）と同じ口。基板の送り先もこの値。 */
@@ -105,6 +105,14 @@ const DETAIL_CHARS = 120
 
 /** 要約を出す間隔。 */
 const SUMMARY_INTERVAL_MS = 60_000
+
+/**
+ * 地震検出の引き金が生きているかを記録へ残す間隔（`StationDetection.hourlyLines`）。
+ * **毎分の要約には載せない** —— 観測点ごとに 1 行なので、毎分出すと 1 日に 1440 行ずつ伸びる
+ * （2026-10-06 ユーザー選択）。`/status` は直近 24 時間しか見せないので、それより前を
+ * 遡って調べるにはこの行が要る。
+ */
+const DETECTION_HOURLY_INTERVAL_MS = 3_600_000
 
 /**
  * UDP の受信バッファ（`udpReceiver.ts` の `recvBufferBytes`）。
@@ -2351,6 +2359,23 @@ async function main(): Promise<void> {
   if (quakeFeed === null) console.warn('[quake-feed] 地震情報を受け取らない設定（SEISMO_QUAKE_FEED=0）。揺れはすべて照合できずに終わる')
   // 照合の期限を見る（揺れが閉じてから 15 分）。30 秒ごとで足りる。
   const detectionTimer = setInterval(() => detection.tick(), 30_000)
+  // 引き金が生きているかを 1 時間に 1 行残す（`StationDetection.hourlyLines`）。揺れの記録が
+  // 0 件のまま続くとき、静かだっただけか止まっているかを後から遡って見分けるため。
+  // **投げない** —— タイマーの中の例外は受信ごとホストを落とす。
+  // **間引きの枠は揺れの行（'detect'）と分ける** —— 群発で揺れの鍵が枠を埋めると、1 時間に
+  // 1 度しか出ないこの行が共有の枠へ落ちて黙る。
+  let detectionHourlySinceMs = Date.now()
+  const detectionHourlyTimer = setInterval(() => {
+    const now = Date.now()
+    const ok = emitDetectionHourly(
+      () => detection.hourlyLines(detectionHourlySinceMs, now),
+      (l) => emit(l.level, 'detect-hourly', l.key, l.line),
+      (message) =>
+        emit('error', 'detect-hourly', 'failure', `[detect] 1 時間の行を組めず（${new Date(detectionHourlySinceMs).toISOString()} から）: ${message}`),
+    )
+    // 組めたときだけ起点を進める（`emitDetectionHourly`）。
+    if (ok) detectionHourlySinceMs = now
+  }, DETECTION_HOURLY_INTERVAL_MS)
 
   // 止める合図（`POST /api/shutdown`）の受け先。**締めくくり（`shutdown`）は状態の口を
   // 開けた後で作る**（締めくくりが状態の口を閉じるため）ので、それまでは `not-ready` で断る。
@@ -2626,6 +2651,7 @@ async function main(): Promise<void> {
     clearInterval(mseedTimer)
     clearInterval(rewaveTimer)
     clearInterval(detectionTimer)
+    clearInterval(detectionHourlyTimer)
     console.log(`[udp] ${signal} を受けたので締めます`)
     // **ここから `closeHostCore` までの段も投げさせない。** 投げると締めくくりの本体
     // （生データ・miniSEED・波形・揺れの記録の書き出し）へ一度も届かずに終わる ——

@@ -101,6 +101,7 @@ function report(hub: ReadingHub): StatusReport {
       lastFailure: null,
       store: { written: 0, writeErrors: 0, lastWriteError: null },
       feed: null,
+      triggers: [],
     },
     stations: StationDirectory.empty(),
     stationConfigWarning: null,

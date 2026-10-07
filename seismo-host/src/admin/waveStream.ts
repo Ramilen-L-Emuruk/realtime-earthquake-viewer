@@ -15,6 +15,8 @@
 // くれないので、503 の `too-many-subscribers` はここへ届かない。**繋げないという事実だけを
 // 出し、理由の引き当ては画面側が `/status` の `stream` を見て添える**（`viewWaves.ts`）。
 
+import { readShakeRecord } from './shakeHistory'
+import type { ShakeRecordView } from './shakeHistory'
 import type { WaveChunkView } from './waveBuffer'
 import { readFinite, readFiniteArray, readFiniteArrayWithGaps, readNonEmptyString } from './readJson'
 
@@ -105,6 +107,11 @@ export interface WaveStreamOptions {
    */
   readonly onPairDiff?: (chunk: WaveChunkView) => void
   readonly onReading?: (reading: SensorReadingView) => void
+  /**
+   * 検出した揺れの記録 1 版（`shake-event`）。**購読の種類によらず流れてくる**
+   * （`readingHub.ts` の `'shake-event': 'always'`）。照合が済むと同じ `id` の版が進んで届き直す。
+   */
+  readonly onShakeEvent?: (record: ShakeRecordView) => void
   /** 繋がり具合が変わったら呼ぶ。**同じ状態では呼ばない。** */
   readonly onState: (state: WaveStreamState) => void
   /**
@@ -410,4 +417,5 @@ export function openWaveStream(options: WaveStreamOptions): void {
   listen('station-wave', readStationWaveChunk, options.onStationWave)
   listen('station-diff', readPairDiffChunk, options.onPairDiff)
   listen('reading', readSensorReading, options.onReading)
+  listen('shake-event', readShakeRecord, options.onShakeEvent)
 }

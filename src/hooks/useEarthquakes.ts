@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useLazyRef } from './useLazyRef'
 import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMANankaiCommentary, JMAKohatsu, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity, EEWAlert, IntensityScale, EarthquakePoint, AppEvent, LiveEvent, LiveEventMeta, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
-import { fetchHistory, fetchJmaQuake, P2PQuakeWebSocket } from '../services/p2pquake'
+import { fetchHistory, fetchHistorySince, fetchJmaQuake, P2PQuakeWebSocket } from '../services/p2pquake'
 // 種別ごとの取得関数（`fetchDmdataEarthquakes` ほか 8 本）は撤去済み。履歴はアーカイブ経由の
 // 1 本へ寄せてある（→ `data-sources-spec.md` §2「大量に取るならアーカイブを使う」）。
 // **発表中の緊急地震速報だけは別**で、`/v2/telegram` にも当日のアーカイブにも無いため
@@ -570,6 +570,37 @@ function marksFromHistory(
     quakeMarkMemory: trimQuakeMarkMemory(markMemory, liveKeys),
   }
 }
+
+/**
+ * P2PQuake の津波の報（552）の束から、いま画面に出す津波を決める。
+ *
+ * **起動時の履歴と、張り直したときの取り戻しが同じ判断を通る**ためにここへ置く（片方だけ
+ * 直すと、次に触る人がどちらが正なのか判らない）。P2PQuake の 552 は毎報が全区域の写しなので、
+ * いちばん新しい 1 報だけを見ればよい。取消・失効していれば何も出さない。
+ */
+function selectP2pTsunamiSnapshot(
+  tsunamiEvents: readonly JMATsunami[],
+  now: Date,
+): { latest: JMATsunami | undefined; active: JMATsunami[] } {
+  const all = [...tsunamiEvents].sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
+  // DMDSS 側と同じ引き継ぎ。P2PQuake の 552 は有効期限を持たないため実際には何も変わらないが、
+  // 経路ごとに扱いを違えない（片方だけ直すと、次に触る人がどちらが正なのか判断できない）。
+  const latest = all[0] && withInheritedTsunamiFacts(all[0], all)
+  const active = latest
+    && !latest.cancelled
+    && !(latest.validDateTime && new Date(latest.validDateTime) <= now)
+    ? [latest] : []
+  return { latest, active }
+}
+
+/**
+ * 張り直したとき、最後に何かが届いた時刻からさらにこれだけ遡って取り戻す (ms)。
+ *
+ * 比べるのは手元の時計（`serverNow()`）と配信元が受け取った時刻なので、両者のずれと、
+ * 切れる直前に届いていたはずの報が配信元で遅れて記録された分を見込む。重なって取った分は
+ * 統合が同じ電文として重ねない（→ `utils/quakeMerge.ts` の `isSameTelegram`）。
+ */
+const P2P_RECONNECT_BACKFILL_MARGIN_MS = 5 * 60 * 1000
 
 function liveMarkKeys(
   earthquakes: readonly JMAQuake[],
@@ -2564,7 +2595,47 @@ export function useEarthquakes(
     // isLoading を畳んでおり、stop() が state を空にした状態でこの分岐へ入るため、未取得なのに
     // 「0 件」として表示されてしまう（EarthquakeTab は isLoading → error → 0件 の順に見る）。
     setState(prev => (prev.isLoading && !prev.error ? prev : { ...prev, isLoading: true, error: null }))
-    Promise.all([
+
+    // **この接続で見た津波の報のうち、いちばん新しい発表時刻**（エポックミリ秒）。張り直したときの
+    // 取り戻しは、これより新しい報があるときだけ津波を差し替える —— 張り直した直後にライブで
+    // 届いた取消を取り戻した古い発表報で上書きし、終わった津波を甦らせないため。
+    let p2pTsunamiSeenMs = Number.NEGATIVE_INFINITY
+    // 張り直しの取り戻しを順に並べる鎖（→ `ws.onReconnected`）。**先頭は起動時の履歴**（下で繋ぐ）
+    let p2pBackfillChain: Promise<void>
+    const noteP2pTsunamiSeen = (t: JMATsunami | undefined): void => {
+      if (!t) return
+      const ms = new Date(t.time).getTime()
+      if (Number.isFinite(ms) && ms > p2pTsunamiSeenMs) p2pTsunamiSeenMs = ms
+    }
+    // 有効な津波（validDateTime が未来）なら、キューへ解除イベントを挿入する。
+    // VAR-1 の副作用対応: standard 版で kyoshin リプレイのトグル時にこの effect が cleanup→
+    // 再実行されるため、同一 eventId の既存 expired 予約を除去してから積む（TSU-1 と同じ排除）。
+    // 起動時の履歴と、張り直したときの取り戻しの両方が通る。
+    const armP2pTsunamiExpiry = (latestTsunami: JMATsunami): void => {
+      if (!latestTsunami.validDateTime) return
+      const purgeKey = latestTsunami.eventId
+      eventQueueRef.current.retain(entry => {
+        if (entry.payload.kind !== 'event') return true
+        const ev = entry.payload.event
+        if (ev.kind !== 'tsunami') return true
+        const evAny = ev as JMATsunami
+        if (evAny.cancelReason !== 'expired') return true
+        if (purgeKey && evAny.eventId) return evAny.eventId !== purgeKey
+        return evAny.id !== latestTsunami.id
+      })
+      const expireTime = new Date(latestTsunami.validDateTime)
+      if (expireTime > serverDate()) {
+        eventQueueRef.current.push({
+          eventTime: expireTime,
+          payload: { kind: 'event', event: { ...latestTsunami, cancelled: true, cancelReason: 'expired' } as AppEvent },
+        })
+      }
+    }
+
+    // **張り直しの取り戻しは、この取得が片付いてから走らせる**（鎖の先頭に置く）。この取得は一覧を
+    // 空から組み直して丸ごと差し替えるので、取り戻しが先に終わると積んだ分を消してしまう。
+    // 失敗しても下の `.catch` で受けるので、鎖は止まらない
+    p2pBackfillChain = Promise.all([
       fetchJmaQuake({ limit: MAX_HISTORY_RETAINED }, historyAbort.signal),
       fetchHistory([552], 10, 0, historyAbort.signal),
     ])
@@ -2576,16 +2647,7 @@ export function useEarthquakes(
         rememberQuakeRetractionsFromBatch(quakeEvents)
         // 畳み込みが作った記憶も受け取る（印は出さない。→ `marksFromHistory`）。
         const { cards: earthquakes, markMemory } = mergeQuakeHistory(quakeEvents, [], quakeRetractionsRef.current, getAreaPrefIndexCache())
-        const allTsunami = (tsunamiEvents as JMATsunami[])
-          .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
-        // DMDSS 側と同じ引き継ぎ。P2PQuake の 552 は有効期限を持たないため実際には何も変わらないが、
-        // 経路ごとに扱いを違えない（片方だけ直すと、次に触る人がどちらが正なのか判断できない）。
-        const latestTsunami = allTsunami[0] && withInheritedTsunamiFacts(allTsunami[0], allTsunami)
-        const nowP2p = serverDate()
-        const tsunamis = latestTsunami
-          && !latestTsunami.cancelled
-          && !(latestTsunami.validDateTime && new Date(latestTsunami.validDateTime) <= nowP2p)
-          ? [latestTsunami] : []
+        const { latest: latestTsunami, active: tsunamis } = selectP2pTsunamiSnapshot(tsunamiEvents as JMATsunami[], serverDate())
         p2pRawOffsetRef.current = quakeEvents.length
         setState(prev => ({
           ...prev,
@@ -2601,31 +2663,11 @@ export function useEarthquakes(
           hasMore: quakeEvents.length === MAX_HISTORY_RETAINED,
           error: null,
         }))
+        noteP2pTsunamiSeen(latestTsunami)
         // 津波の復元は **standard 版でも効く**（DMDSS 版限定なのは緊急地震速報のほうだけで、
         // P2PQuake には発表中の緊急地震速報を取る経路が無い）。
         if (tsunamis.length > 0) onStartupRestoreRef.current?.('tsunami')
-        // 初回ロードで津波が有効（validDateTime未来）の場合、キューへ解除イベントを挿入する。
-        // VAR-1 の副作用対応: standard 版で kyoshin リプレイのトグル時にこの effect が cleanup→
-        // 再実行されるため、同一 eventId の既存 expired 予約を除去してから積む（TSU-1 と同じ排除）。
-        if (tsunamis.length > 0 && latestTsunami?.validDateTime) {
-          const purgeKey = latestTsunami.eventId
-          eventQueueRef.current.retain(entry => {
-            if (entry.payload.kind !== 'event') return true
-            const ev = entry.payload.event
-            if (ev.kind !== 'tsunami') return true
-            const evAny = ev as JMATsunami
-            if (evAny.cancelReason !== 'expired') return true
-            if (purgeKey && evAny.eventId) return evAny.eventId !== purgeKey
-            return evAny.id !== latestTsunami.id
-          })
-          const expireTime = new Date(latestTsunami.validDateTime)
-          if (expireTime > serverDate()) {
-            eventQueueRef.current.push({
-              eventTime: expireTime,
-              payload: { kind: 'event', event: { ...latestTsunami, cancelled: true, cancelReason: 'expired' } as AppEvent },
-            })
-          }
-        }
+        if (tsunamis.length > 0 && latestTsunami) armP2pTsunamiExpiry(latestTsunami)
       })
       .catch((err: unknown) => {
         if (cancelled) return
@@ -2660,11 +2702,70 @@ export function useEarthquakes(
         }
         return
       }
+      if (event.kind === 'tsunami') noteP2pTsunamiSeen(event as JMATsunami)
       enqueueEvent(event)
     }
     ws.onStatusChange = status =>
       setState(prev => ({ ...prev, connectionStatus: status }))
     ws.onRawMessage = appendTelegramLog
+    // **張り直したら、切れていた間の情報を取り戻す**（2026-10-06 ユーザー承認。見張りの張り直しも
+    // 普通の切断からの張り直しも同じ）。切れていた間に配信された報はこの接続では二度と届かない。
+    // 起動時の履歴と同じ扱いで積み、音・読み上げは出さない（2026-10-06 ユーザー承認）。
+    //
+    // **取り戻しは 1 本ずつ順に走らせる。** 回線が明滅して張り直しが重なると、取り戻しが並行して
+    // 同じ時間を何度も取る（`/history` の枠を想定より早く使う）。前の回を打ち切る形にしないのは、
+    // 前の回が担う「それより前に切れていた間」を落とすため。
+    ws.onReconnected = lastReceivedAtMs => {
+      p2pBackfillChain = p2pBackfillChain.then(() => backfillSince(lastReceivedAtMs))
+    }
+    const backfillSince = (lastReceivedAtMs: number): Promise<void> => {
+      if (cancelled) return Promise.resolve()
+      const sinceMs = lastReceivedAtMs - P2P_RECONNECT_BACKFILL_MARGIN_MS
+      return fetchHistorySince([551, 552], sinceMs, historyAbort.signal)
+        .then(({ events, rawCount, truncated }) => {
+          if (cancelled) return
+          if (truncated) {
+            // 黙って切ると、遡り切れなかった時間が「何も無かった」に化ける
+            log.warn(`[p2pquake] 張り直し後の取り戻しがページ上限に達しました（${new Date(sinceMs).toISOString()} まで遡り切れていない可能性・取得 ${events.length} 件）`)
+          }
+          const quakes = events.filter((e): e is JMAQuake => e.kind === 'quake')
+          const tsunamiEvents = events.filter((e): e is JMATsunami => e.kind === 'tsunami')
+          const { latest: latestTsunami, active } = selectP2pTsunamiSnapshot(tsunamiEvents, serverDate())
+          const latestMs = latestTsunami ? new Date(latestTsunami.time).getTime() : Number.NaN
+          const replaceTsunami = latestTsunami !== undefined && Number.isFinite(latestMs) && latestMs > p2pTsunamiSeenMs
+          // 届いた件数も並べる。差は壊れていて捨てた分で、個々の理由は変換側が記録する
+          log.info(`[p2pquake] 張り直し後に取り戻した報: 配信元 ${rawCount} 件のうち 地震情報 ${quakes.length} 件・津波 ${tsunamiEvents.length} 件${replaceTsunami ? '（津波を差し替え）' : ''}`)
+          if (quakes.length === 0 && !replaceTsunami) return
+          noteP2pTsunamiSeen(latestTsunami)
+          rememberQuakeRetractionsFromBatch(quakes)
+          setState(prev => {
+            const tsunamis = replaceTsunami ? active : prev.tsunamis
+            // 既存カード群を base に統合する（「もっと見る」と同じ扱い）。同じ電文は重ねず、
+            // 古い報が後から当たっても当て直すので、ライブで届いた分と順番が前後しても崩れない。
+            const { cards, markMemory } = mergeQuakeHistory(
+              quakes, prev.earthquakes, quakeRetractionsRef.current, getAreaPrefIndexCache(), prev.quakeMarkMemory,
+            )
+            return {
+              ...prev,
+              ...marksFromHistory(markMemory, cards, prev.lpgmByEventId, prev.quakeUpdateMarks),
+              earthquakes: borrowFromTsunamiIntoCards(cards, tsunamis),
+              tsunamis,
+              lastUpdate: serverDate(),
+            }
+          })
+          if (replaceTsunami && active.length > 0 && latestTsunami) {
+            onStartupRestoreRef.current?.('tsunami')
+            armP2pTsunamiExpiry(latestTsunami)
+          }
+        })
+        .catch((err: unknown) => {
+          if (cancelled) return
+          // 失敗しても再試行しない（次に張り直したときにまた取りに行く）。黙ると取りこぼしに気づけない。
+          // **画面には出さない**（記録だけ。2026-10-06 ユーザー承認）。切れていた間の分は一覧に無いまま残る。
+          // ここで投げ直さないので、順に並べる鎖（`p2pBackfillChain`）は止まらない
+          log.error('[p2pquake] 張り直し後の取り戻しに失敗', err)
+        })
+    }
     ws.connect()
 
     return () => {

@@ -4,7 +4,8 @@ import type { FusedWaveChunk } from '../receiver/sensorFusion'
 import type { StationConfig } from '../receiver/stationConfig'
 import type { P2pReferenceQuake } from './p2pQuake'
 import type { ShakeEventRecord } from './shakeEvent'
-import { StationDetection, sensorsOf } from './stationDetection'
+import { StationDetection, emitDetectionHourly, formatDetectionHourly, sensorsOf } from './stationDetection'
+import type { StationTriggerStatus } from './stationDetection'
 
 const FS = 100
 const DT = 1000 / FS
@@ -200,5 +201,222 @@ describe('StationDetection', () => {
     }).not.toThrow()
     expect(detection.snapshot().failures).toBe(1)
     expect(logs.some((l) => l.includes('disk full'))).toBe(true)
+  })
+})
+
+describe('StationDetection — 静かだっただけか、止まっているか', () => {
+  // T0 は 2026-10-03 13:24:00 JST
+  const JST_1325 = '13:25'
+  const HOUR = 3_600_000
+
+  /** 合成波形を流す。ホストの時計は、そのまとまりの時刻 ＋ `hostOffsetMs`（基板の時計のずれの逆）。 */
+  function feed(t: ReturnType<typeof setup>, chunks: readonly FusedWaveChunk[], hostOffsetMs = 0): void {
+    for (const w of chunks) {
+      t.setNow(w.firstSampleMs + hostOffsetMs)
+      t.detection.pushStationWave(w)
+    }
+  }
+
+  it('設定にあるのに波形が一度も来ていない観測点も、「届いていない」として状態に載る', () => {
+    const t = setup()
+    const s = t.detection.snapshot()
+    expect(s.stations).toEqual([])
+    expect(s.triggers).toHaveLength(1)
+    expect(s.triggers[0]).toMatchObject({
+      stationId: 'station-1',
+      lastSampleMs: null,
+      lastFedAtMs: null,
+      armed: false,
+      peak24h: null,
+      droppedChunks: 0,
+    })
+  })
+
+  it('正: 波形が流れていれば、引き金の状態（比の最大・平常時の強さ・最後に使えた時刻）が観測点ごとに載る', () => {
+    const t = setup()
+    feed(t, waves(170))
+    const [tr] = t.detection.snapshot().triggers
+    expect(tr.stationId).toBe('station-1')
+    expect(tr.armed).toBe(true)
+    expect(tr.baselineGal).toBeGreaterThan(0)
+    expect(tr.peak24h!.ratio).toBeGreaterThan(tr.onRatio)
+    // 0.3 秒のまとまりで流すので、最後のサンプルは 170 秒をわずかに越える
+    expect(tr.lastSampleMs! - T0).toBeGreaterThan(169_000)
+    expect(tr.lastSampleMs! - T0).toBeLessThan(170_300)
+    expect(tr.lastFedAtMs! - T0).toBeGreaterThan(169_000)
+  })
+
+  it('設定から外して捨てた観測点は、状態から消える', () => {
+    const t = setup()
+    feed(t, waves(70))
+    t.setConfig({ stations: [], boards: [] } as unknown as StationConfig)
+    t.detection.forgetRemovedStations()
+    expect(t.detection.snapshot().triggers).toEqual([])
+  })
+
+  it('1 時間の行: 静かに見張っていれば、比の最大・時刻・平常時の揺れ・状態を 1 行で出す', () => {
+    const t = setup()
+    feed(t, waves(100))
+    const lines = t.detection.hourlyLines(T0, T0 + 100_000)
+    expect(lines).toHaveLength(1)
+    expect(lines[0].level).toBe('log')
+    expect(lines[0].key).toBe('hourly:station-1')
+    expect(lines[0].line).toMatch(
+      new RegExp(`^\\[detect\\] station-1 この 1 時間: 比の最大 \\d\\.\\d\\d 倍（${JST_1325}）・平常時の揺れ 0\\.\\d\\d gal・見張り中$`),
+    )
+  })
+
+  it('1 時間の行: 一度も波形が来ていなければ「届いていない（起動から一度も）」を警告で出す', () => {
+    const t = setup()
+    const [l] = t.detection.hourlyLines(T0, T0 + HOUR)
+    expect(l.level).toBe('warn')
+    expect(l.line).toBe('[detect] station-1 この 1 時間: 波形が届いていない（起動から一度も）')
+  })
+
+  it('1 時間の行: 波形が止まっていれば、最後に届いた時刻を添えて警告で出す', () => {
+    const t = setup()
+    feed(t, waves(100))
+    const [l] = t.detection.hourlyLines(T0, T0 + 100_000 + 5 * 60_000)
+    expect(l.level).toBe('warn')
+    expect(l.line).toBe(`[detect] station-1 この 1 時間: 波形が届いていない（最後は ${JST_1325}）`)
+  })
+
+  it('対照: 止まってから 1 分に満たなければ、まだ「届いていない」とは言わない', () => {
+    const t = setup()
+    feed(t, waves(100))
+    const [l] = t.detection.hourlyLines(T0, T0 + 100_000 + 50_000)
+    expect(l.level).toBe('log')
+    expect(l.line).toContain('見張り中')
+  })
+
+  it('1 時間の行: 最後に届いた日が今日（日本時間）でなければ、日付も添える', () => {
+    const t = setup()
+    feed(t, waves(100))
+    const [l] = t.detection.hourlyLines(T0, T0 + 24 * HOUR)
+    expect(l.line).toBe(`[detect] station-1 この 1 時間: 波形が届いていない（最後は 10/03 ${JST_1325}）`)
+  })
+
+  it('1 時間の行: 助走から抜けられないまま 1 時間を終えたら、比の最大「なし」を警告で出す', () => {
+    const t = setup()
+    feed(t, waves(30))
+    const [l] = t.detection.hourlyLines(T0, T0 + 30_000)
+    expect(l.level).toBe('warn')
+    expect(l.line).toMatch(/^\[detect\] station-1 この 1 時間: 比の最大 なし・平常時の揺れ \S+ gal・助走中（あと 30 秒）$/)
+  })
+
+  it('1 時間の行: 揺れの区間を開いている最中なら「揺れを記録中」', () => {
+    const t = setup()
+    feed(t, waves(S_AT_SEC + 3))
+    const [l] = t.detection.hourlyLines(T0, T0 + (S_AT_SEC + 3) * 1000)
+    expect(l.line).toMatch(/・揺れを記録中$/)
+  })
+
+  it('正: 基板の時計が 2 時間先へずれていても、比の最大はデータの時刻で拾い、届いているかはホストの時計で見る', () => {
+    const t = setup()
+    // ホストの時計は、基板が名乗る時刻より 2 時間遅れている
+    feed(t, waves(100), -2 * HOUR)
+    const hostNow = T0 + 100_000 - 2 * HOUR
+    const [alive] = t.detection.hourlyLines(hostNow - HOUR, hostNow)
+    expect(alive.level).toBe('log')
+    expect(alive.line).toContain('見張り中')
+    expect(alive.line).not.toContain('比の最大 なし')
+    // 止まって 5 分経てば、データの時刻が「未来」のままでも「届いていない」になる
+    const [silent] = t.detection.hourlyLines(hostNow - HOUR, hostNow + 5 * 60_000)
+    expect(silent.level).toBe('warn')
+    expect(silent.line).toContain('波形が届いていない（最後は ')
+  })
+
+  it('対照: 基板の時計が 2 時間遅れていても、動いているうちは「届いていない」と言わない', () => {
+    const t = setup()
+    feed(t, waves(100), 2 * HOUR)
+    const hostNow = T0 + 100_000 + 2 * HOUR
+    const [l] = t.detection.hourlyLines(hostNow - HOUR, hostNow)
+    expect(l.level).toBe('log')
+    expect(l.line).toContain('見張り中')
+  })
+
+  it('安全弁: 刻みが読めず捨てたまとまりは「届いている」に数えない（捨てた数は状態に出る）', () => {
+    const t = setup()
+    feed(t, waves(100))
+    const fedBefore = t.detection.snapshot().triggers[0].lastFedAtMs
+    const bad = { ...waves(1)[0], firstSampleMs: T0 + 100_000, msPerSample: Number.NaN }
+    t.setNow(T0 + 10 * 60_000)
+    t.detection.pushStationWave(bad)
+    const [tr] = t.detection.snapshot().triggers
+    expect(tr.lastFedAtMs).toBe(fedBefore)
+    expect(tr.droppedChunks).toBe(1)
+    const [l] = t.detection.hourlyLines(T0, T0 + 10 * 60_000)
+    expect(l.line).toContain('波形が届いていない')
+  })
+})
+
+describe('formatDetectionHourly — 数の見せ方', () => {
+  const base: StationTriggerStatus = {
+    stationId: 'station-1',
+    lastSampleMs: T0,
+    firstSampleMs: T0,
+    lastFedAtMs: T0,
+    droppedChunks: 0,
+    armed: true,
+    warmUntilMs: null,
+    inEvent: false,
+    baselineGal: 0.16,
+    ratio: 1,
+    onRatio: 2.5,
+    peak24h: { ratio: 1.59, atMs: T0 },
+    peakWindowFromMs: T0,
+  }
+
+  it('平らな値しか来ていなければ、平常時の揺れを「0 gal」と出す（0.00 と丸めて紛れさせない）', () => {
+    const l = formatDetectionHourly({ ...base, baselineGal: 0 }, { ratio: 0, atMs: T0 }, T0)
+    expect(l.line).toContain('平常時の揺れ 0 gal')
+  })
+
+  it('0.01 gal に満たない平常時の揺れは「0.01 gal 未満」と出す', () => {
+    const l = formatDetectionHourly({ ...base, baselineGal: 0.004 }, { ratio: 1.2, atMs: T0 }, T0)
+    expect(l.line).toContain('平常時の揺れ 0.01 gal 未満')
+  })
+
+  it('引き金を引いた揺れがあった時間は、比の最大が引き金を超える（行の形は同じ）', () => {
+    const l = formatDetectionHourly({ ...base, lastFedAtMs: T0 + 119_000 }, { ratio: 5.31, atMs: T0 + 90_000 }, T0 + 120_000)
+    expect(l.level).toBe('log')
+    expect(l.line).toBe('[detect] station-1 この 1 時間: 比の最大 5.31 倍（13:25）・平常時の揺れ 0.16 gal・見張り中')
+  })
+
+  it('助走が明ける時刻を持たない（フィルタを組めず待っている）ときは、残り秒数を言わない', () => {
+    const l = formatDetectionHourly({ ...base, armed: false, warmUntilMs: null }, null, T0)
+    expect(l.line).toMatch(/・助走中$/)
+    expect(l.line).not.toContain('あと 0 秒')
+  })
+})
+
+describe('emitDetectionHourly — 1 時間の行を出し、起点を進めてよいかを返す', () => {
+  const line = { level: 'log' as const, key: 'hourly:station-1', line: '[detect] station-1 この 1 時間: x' }
+
+  it('正: 組めたら全行を出し、true（起点を進めてよい）を返す', () => {
+    const out: string[] = []
+    const errors: string[] = []
+    const ok = emitDetectionHourly(() => [line, line], (l) => out.push(l.key), (m) => errors.push(m))
+    expect(ok).toBe(true)
+    expect(out).toHaveLength(2)
+    expect(errors).toEqual([])
+  })
+
+  it('安全弁: 組む途中で投げたら 1 行も出さず、理由を渡して false（起点を進めない）を返す。自分は投げない', () => {
+    const out: string[] = []
+    const errors: string[] = []
+    let ok = true
+    expect(() => {
+      ok = emitDetectionHourly(
+        () => {
+          throw new Error('boom')
+        },
+        (l) => out.push(l.key),
+        (m) => errors.push(m),
+      )
+    }).not.toThrow()
+    expect(ok).toBe(false)
+    expect(out).toEqual([])
+    expect(errors).toEqual(['boom'])
   })
 })
