@@ -7,6 +7,7 @@
 
 import { MSEED3_HOST_LOG_SOURCE_ID, mseed3SourceId } from './mseed3Record'
 import { readMseed3Records } from './mseed3Reader'
+import { summarizeReception, type ReceptionSummary } from './receptionSummary'
 import { decodeWaveFile, resolveRevisions } from './waveArchive'
 import { SummaryBuilder, type SummaryFile } from './waveSummary'
 
@@ -32,7 +33,7 @@ export function stationWaveChannelId(stationKey: string, axis: 0 | 1 | 2): strin
  * **ここで要るのは分解能だけ**なので、パケットを組み立て直す読み手（`mseedPacketReader.ts`）ほど
  * 厳しく欄を揃えることは求めない —— 揃わないとそのセンサーの換算が丸ごと消える。
  */
-function scaleOfLog(text: string): { board: string; sensor: string; channels: string[]; ugPerLsb: number } | null {
+export function scaleOfLog(text: string): { board: string; sensor: string; channels: string[]; ugPerLsb: number } | null {
   let o: Record<string, unknown>
   try {
     const parsed: unknown = JSON.parse(text)
@@ -55,6 +56,17 @@ function scaleOfLog(text: string): { board: string; sensor: string; channels: st
  * 受け取った時のファイルへ入った 1970 年の時刻のもの。`recordAssembler.ts` の `fileTimeOf`）は数えて外す。
  */
 export function summarizeMseedHour(buf: Uint8Array, hourStartMs: number): SummaryFile {
+  return summarizeMseedHourWithReception(buf, hourStartMs).file
+}
+
+/**
+ * {@link summarizeMseedHour} と同じ読み込みで、受信の記録の要約（`receptionSummary.ts`）も作る。
+ * **1 時間ぶんの復号を 2 回払わないため**、要約を作る係はこちらを使う。投げない。
+ */
+export function summarizeMseedHourWithReception(
+  buf: Uint8Array,
+  hourStartMs: number,
+): { readonly file: SummaryFile; readonly reception: ReceptionSummary } {
   const read = readMseed3Records(buf)
   const builder = new SummaryBuilder({ fromMs: hourStartMs, toMs: hourStartMs + HOUR_MS })
   for (const r of read.records) {
@@ -71,10 +83,11 @@ export function summarizeMseedHour(buf: Uint8Array, hourStartMs: number): Summar
     if (r.encoding !== ENCODING_STEIM2 || r.samples === null || !(r.sampleRateHz > 0)) continue
     builder.add(r.sourceId, r.startMs, 1000 / r.sampleRateHz, r.samples)
   }
-  return builder.build(buf.length, {
+  const file = builder.build(buf.length, {
     skippedBytes: read.skippedBytes,
     badRecords: read.crcFailures + read.decodeFailures,
   })
+  return { file, reception: summarizeReception(read.records, buf.length) }
 }
 
 /**

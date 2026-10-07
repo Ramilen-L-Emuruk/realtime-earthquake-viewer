@@ -86,6 +86,11 @@ function waveKeyOf(r: ParsedMseed3Record): { boot: string; seq: number; lane: St
   return { boot: e.b, seq: e.q, lane: laneOfExtra(e) }
 }
 
+/** 波形のレコードの届き方（拡張ヘッダの印）。印を読めなければ `null`。 */
+export function laneOfRecord(r: ParsedMseed3Record): StreamLane | null {
+  return waveKeyOf(r)?.lane ?? null
+}
+
 function isFiniteNumber(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v)
 }

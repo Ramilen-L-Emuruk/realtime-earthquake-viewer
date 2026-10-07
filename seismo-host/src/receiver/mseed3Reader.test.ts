@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 
 import { crc32c } from './crc32c'
 import { buildMseed3Record, buildMseed3TextRecord, framesForRecord } from './mseed3Record'
-import { readMseed3Records } from './mseed3Reader'
+import { readMseed3Records, readMseed3RecordsMatching } from './mseed3Reader'
 import { decodeSteim2, encodeSteim2 } from './steim2'
 
 function seeded(seed: number): () => number {
@@ -134,6 +134,17 @@ describe('readMseed3Records', () => {
     expect(out.records[1]!.text).toBe(text)
     expect(out.records[1]!.samples).toBeNull()
     expect(out.records[0]!.text).toBeNull()
+  })
+
+  it('識別子でも絞れ、通らないレコードは検査値も見ない（壊れていても数えない）', () => {
+    const other = record(walk(100, 10, 9), T)
+    other[other.length - 1] = other[other.length - 1]! ^ 0xff
+    const text = buildMseed3TextRecord({ sourceId: 'FDSN:XX_00000001_I2C0-68_L_O_G', startMs: T, text: '{}' })
+    const mine = record(walk(100, 10, 10), T + 1_000)
+    const out = readMseed3RecordsMatching(new Uint8Array([...other, ...text, ...mine]), (_t, sid) => sid === SID && _t > T)
+    expect(out.records.map((r) => r.startMs)).toEqual([T + 1_000])
+    expect(out.crcFailures).toBe(0)
+    expect(out.skippedBytes).toBe(0)
   })
 
   it('UTF-8 として読めないテキストは置換文字で通さず、復号できなかったと数える', () => {

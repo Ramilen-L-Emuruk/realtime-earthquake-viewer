@@ -7,6 +7,7 @@ import {
   SUMMARY_PEEK_BYTES,
   SummaryBuilder,
   decodeSummaryPart,
+  decodeSummaryPartWhere,
   encodeSummaryPart,
   peekSummarySourceBytes,
   type SummaryChannel,
@@ -241,6 +242,28 @@ describe('encodeSummaryPart / decodeSummaryPart', () => {
     // PSD のあるもの・無いものが両方入っていることを確かめておく（片方だけだと読み戻しの検査が空振る）
     expect(channel(file, 'station/home/UD').psd).not.toBeNull()
     expect(channel(file, 'station/home/NS').psd).toBeNull()
+  })
+
+  it('チャンネルを絞って読んでも、残したチャンネルは全部読んだときと同じ（PSD を持つチャンネルも飛ばせる）', () => {
+    const b = builder()
+    b.declare('FDSN:XX_A1B2C3D4_S1_H_N_Z', { unit: 'count', ugPerLsb: 61.0352 })
+    b.declare('station/home/UD', { unit: 'gal', ugPerLsb: null })
+    b.add('FDSN:XX_A1B2C3D4_S1_H_N_Z', HOUR_START, 10, new Array(3000).fill(0).map((_, i) => 16000 + (i % 7)))
+    b.add('station/home/UD', HOUR_START, 10, new Array(3000).fill(0).map((_, i) => Math.sin(i / 3)))
+    const file = b.build(1)
+    // 両方とも PSD を持つ（飛ばす側に中身のある PSD が来ないと、飛ばし方の検査が空振る）
+    expect(file.channels.every((c) => c.psd !== null)).toBe(true)
+    for (const part of SUMMARY_PARTS) {
+      const buf = encodeSummaryPart(file, part)
+      const full = decodeSummaryPart(buf)!
+      for (const keepId of ['FDSN:XX_A1B2C3D4_S1_H_N_Z', 'station/home/UD']) {
+        const only = decodeSummaryPartWhere(buf, (id) => id === keepId)
+        expect(only).not.toBeNull()
+        expect(only!.channels).toEqual(full.channels.filter((c) => c.id === keepId))
+      }
+      // 飛ばしたチャンネルの途中で切れていても読まない
+      expect(decodeSummaryPartWhere(buf.subarray(0, buf.length - 1), (id) => id === 'nothing')).toBeNull()
+    }
   })
 
   it('目印が合わない・版が違う・途中で切れたファイルは読まない（null）', () => {

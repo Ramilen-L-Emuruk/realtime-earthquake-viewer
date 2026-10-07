@@ -13,6 +13,7 @@ const ENCODING_STEIM2 = 11
 const FLAG_TIME_QUESTIONABLE = 0b10
 /** 壊れた UTF-8 を置換文字で黙って通さない（中身を取り違えたまま読むより、読めないと数える）。 */
 const UTF8_STRICT = new TextDecoder('utf-8', { fatal: true })
+const UTF8 = new TextDecoder()
 
 export interface ParsedMseed3Record {
   readonly sourceId: string
@@ -65,6 +66,18 @@ export function readMseed3Records(buf: Uint8Array): Mseed3ReadResult {
  * 飛ばしたレコードは数えない（壊れていたのか確かめていない）。
  */
 export function readMseed3RecordsWhere(buf: Uint8Array, keep: (startMs: number) => boolean): Mseed3ReadResult {
+  return readMseed3RecordsMatching(buf, (startMs) => keep(startMs))
+}
+
+/**
+ * `readMseed3RecordsWhere` の、識別子でも絞れる形。**通らないレコードは検査値も中身も見ずに飛ばす**
+ * （識別子だけは読む）。管理コンソールが 1 チャンネルの生のサンプルを見るとき、27 チャンネルぶんの
+ * 検査と復号を払わずに済む。
+ */
+export function readMseed3RecordsMatching(
+  buf: Uint8Array,
+  keep: (startMs: number, sourceId: string) => boolean,
+): Mseed3ReadResult {
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
   const records: ParsedMseed3Record[] = []
   let crcFailures = 0
@@ -77,7 +90,11 @@ export function readMseed3RecordsWhere(buf: Uint8Array, keep: (startMs: number) 
     const payloadLen = view.getUint32(pos + 36, true)
     const total = FIXED_HEADER_BYTES + sidLen + extraLen + payloadLen
     if (pos + total > buf.length) break
-    if (!keep(timeOf(view, pos))) {
+    const sidStart = pos + FIXED_HEADER_BYTES
+    // 識別子は検査値を確かめる前に読む（絞るのに使うだけ。壊れていれば別の識別子に見えて飛ぶか、
+    // 残ったうえで検査値で落ちる）。
+    const sourceId = UTF8.decode(buf.subarray(sidStart, sidStart + sidLen))
+    if (!keep(timeOf(view, pos), sourceId)) {
       pos += total
       continue
     }
@@ -94,8 +111,6 @@ export function readMseed3RecordsWhere(buf: Uint8Array, keep: (startMs: number) 
       continue
     }
 
-    const sidStart = pos + FIXED_HEADER_BYTES
-    const sourceId = new TextDecoder().decode(buf.subarray(sidStart, sidStart + sidLen))
     let extra: unknown = null
     if (extraLen > 0) {
       try {

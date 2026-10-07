@@ -151,13 +151,58 @@ export interface MinutePsd {
  * なら繋ぐ**。それ以外（欠け・重なり・刻みの変化）で切る。区間はその中心の時刻が入る分へ数える。
  */
 export function minutePsd(chunks: readonly PsdChunk[]): MinutePsd | null {
+  const sums = accumulateSegments(chunks, (_startMs, centerMs) => Math.floor(centerMs / MINUTE_MS))
+  if (sums.size === 0) return null
+  const minutes = [...sums.keys()]
+  const firstMinute = Math.min(...minutes)
+  const len = Math.max(...minutes) - firstMinute + 1
+  const segments = new Uint8Array(len)
+  const power = new Float32Array(len * PSD_BIN_COUNT).fill(Number.NaN)
+  for (const [minute, byRebin] of sums) {
+    const i = minute - firstMinute
+    const combined = combineRebins(byRebin)
+    segments[i] = Math.min(255, combined.segments)
+    for (let b = 0; b < PSD_BIN_COUNT; b += 1) power[i * PSD_BIN_COUNT + b] = combined.power[b]!
+  }
+  return { firstMinute, segments, power }
+}
+
+/**
+ * 範囲 `[fromMs, toMs)` に収まる区間だけで作る 1 本の PSD（区画ごと）。管理コンソールで選んだ区間の
+ * スペクトルに使う。区間の作り方（繋ぎ方・有限でない区間を外す）は {@link minutePsd} と同じ。
+ * 区間を 1 つも作れなければ区間 0・すべて `NaN`。投げない。
+ */
+export function intervalPsd(
+  chunks: readonly PsdChunk[],
+  fromMs: number,
+  toMs: number,
+): { readonly power: Float64Array; readonly segments: number } {
+  const sums = accumulateSegments(chunks, (startMs, _centerMs, endMs) => (startMs >= fromMs && endMs <= toMs ? 0 : null))
+  const byRebin = sums.get(0)
+  if (byRebin === undefined) return { power: new Float64Array(PSD_BIN_COUNT).fill(Number.NaN), segments: 0 }
+  return combineRebins(byRebin)
+}
+
+type RebinSums = Map<Rebin, { acc: Float64Array; segments: number }>
+
+/**
+ * まとまりを繋いで区間に切り、区間ごとに `keyOf` が返す鍵へ積む。`keyOf` が `null` を返した区間は使わない。
+ * 鍵は区間の先頭・中心・末尾（末尾の次のサンプル）の時刻から決める。
+ *
+ * まとまりは時刻で並べ直し、**先頭が前の末尾の次のサンプルの近くにあり、刻みが同じ（1% 以内）
+ * なら繋ぐ**。それ以外（欠け・重なり・刻みの変化）で切る。
+ */
+function accumulateSegments(
+  chunks: readonly PsdChunk[],
+  keyOf: (startMs: number, centerMs: number, endMs: number) => number | null,
+): Map<number, RebinSums> {
   const sorted = chunks
     .filter((c) => Number.isFinite(c.firstSampleMs) && Number.isFinite(c.msPerSample) && c.msPerSample > 0 && c.values.length > 0)
     .slice()
     .sort((a, b) => a.firstSampleMs - b.firstSampleMs)
 
-  // 刻みが走ごとに違うと区画の重みも違うので、分ごとに「重み付きの和」を走の刻みごとに分けて持つ。
-  const sums = new Map<number, Map<Rebin, { acc: Float64Array; segments: number }>>()
+  // 刻みが走ごとに違うと区画の重みも違うので、鍵ごとに「重み付きの和」を走の刻みごとに分けて持つ。
+  const sums = new Map<number, RebinSums>()
 
   const flush = (run: PsdChunk[]): void => {
     let total = 0
@@ -174,6 +219,8 @@ export function minutePsd(chunks: readonly PsdChunk[]): MinutePsd | null {
     const rebin = rebinFor(fs)
     const start = run[0]!.firstSampleMs
     for (let from = 0; from + PSD_NFFT <= total; from += PSD_HOP) {
+      const key = keyOf(start + from * ms, start + (from + PSD_NFFT / 2) * ms, start + (from + PSD_NFFT) * ms)
+      if (key === null) continue
       // **値が有限でない区間は使わない**（FFT が全部の線を NaN にする）。
       let finite = true
       for (let i = 0; i < PSD_NFFT; i += 1) {
@@ -183,12 +230,10 @@ export function minutePsd(chunks: readonly PsdChunk[]): MinutePsd | null {
         }
       }
       if (!finite) continue
-      const center = start + (from + PSD_NFFT / 2) * ms
-      const minute = Math.floor(center / MINUTE_MS)
-      let byRebin = sums.get(minute)
+      let byRebin = sums.get(key)
       if (byRebin === undefined) {
         byRebin = new Map()
-        sums.set(minute, byRebin)
+        sums.set(key, byRebin)
       }
       let s = byRebin.get(rebin)
       if (s === undefined) {
@@ -223,30 +268,24 @@ export function minutePsd(chunks: readonly PsdChunk[]): MinutePsd | null {
     slack = c.msPerSample / 2 + c.values.length * c.msPerSample * 0.01
   }
   flush(run)
+  return sums
+}
 
-  if (sums.size === 0) return null
-  const minutes = [...sums.keys()]
-  const firstMinute = Math.min(...minutes)
-  const len = Math.max(...minutes) - firstMinute + 1
-  const segments = new Uint8Array(len)
-  const power = new Float32Array(len * PSD_BIN_COUNT).fill(Number.NaN)
-  for (const [minute, byRebin] of sums) {
-    const i = minute - firstMinute
-    // 刻みの違う走が同じ分にあれば、区間の数で重みを付けて平均する。
-    const acc = new Float64Array(PSD_BIN_COUNT)
-    const n = new Float64Array(PSD_BIN_COUNT)
-    let count = 0
-    for (const [rebin, s] of byRebin) {
-      const psd = finish(s.acc, s.segments, rebin)
-      for (let b = 0; b < PSD_BIN_COUNT; b += 1) {
-        if (!Number.isFinite(psd[b]!)) continue
-        acc[b] = acc[b]! + psd[b]! * s.segments
-        n[b] = n[b]! + s.segments
-      }
-      count += s.segments
+/** 刻みの違う走が同じ鍵にあれば、区間の数で重みを付けて平均する。 */
+function combineRebins(byRebin: RebinSums): { readonly power: Float64Array; readonly segments: number } {
+  const acc = new Float64Array(PSD_BIN_COUNT)
+  const n = new Float64Array(PSD_BIN_COUNT)
+  let segments = 0
+  for (const [rebin, s] of byRebin) {
+    const psd = finish(s.acc, s.segments, rebin)
+    for (let b = 0; b < PSD_BIN_COUNT; b += 1) {
+      if (!Number.isFinite(psd[b]!)) continue
+      acc[b] = acc[b]! + psd[b]! * s.segments
+      n[b] = n[b]! + s.segments
     }
-    segments[i] = Math.min(255, count)
-    for (let b = 0; b < PSD_BIN_COUNT; b += 1) if (n[b]! > 0) power[i * PSD_BIN_COUNT + b] = acc[b]! / n[b]!
+    segments += s.segments
   }
-  return { firstMinute, segments, power }
+  const power = new Float64Array(PSD_BIN_COUNT).fill(Number.NaN)
+  for (let b = 0; b < PSD_BIN_COUNT; b += 1) if (n[b]! > 0) power[b] = acc[b]! / n[b]!
+  return { power, segments }
 }

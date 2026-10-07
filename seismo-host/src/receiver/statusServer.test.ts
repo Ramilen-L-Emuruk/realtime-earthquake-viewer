@@ -233,6 +233,8 @@ async function start(
     readWaves: readWaves ?? null,
     // **既定は `null`（記録を持たない構成）。** 揺れの記録を試すテストだけが渡す。
     readEvents: readEvents ?? null,
+    // 保存した波形の読み返しは `/api/*`（認証つき）なので、試すテストは `startAuthed` を使う。
+    records: null,
   })
   running.server = server
   return `http://127.0.0.1:${server.port}`
@@ -970,6 +972,7 @@ describe('/api/*', () => {
     stationConfig?: StatusServerOptions['stationConfig'],
     readRestWindows: StatusServerOptions['readRestWindows'] = () => [],
     requestShutdown: StatusServerOptions['requestShutdown'] = () => 'not-ready',
+    records: StatusServerOptions['records'] = null,
   ): Promise<string> {
     const port = await getFreePort()
     const adminAuth: AdminAuthConfig = {
@@ -991,6 +994,7 @@ describe('/api/*', () => {
       adminConsole: TEST_ADMIN_CONSOLE,
       readWaves: null,
       readEvents: null,
+      records,
     })
     running.server = server
     return `http://127.0.0.1:${server.port}`
@@ -1086,6 +1090,57 @@ describe('/api/*', () => {
     })
     expect(res.status).toBe(401)
     expect(await res.json()).toEqual({ error: 'invalid-token' })
+  })
+
+  describe('保存した波形の読み返し（GET /api/records/*）', () => {
+    const authed = { Authorization: `Bearer ${TOKEN}`, Origin: ORIGIN }
+
+    it('正: 後ろの経路と問い合わせをそのまま渡し、返した状態と本文で答える', async () => {
+      const seen: Array<[string, string]> = []
+      const base = await startAuthed(new ReadingHub(), {}, undefined, undefined, undefined, undefined, async (route, params) => {
+        seen.push([route, params.toString()])
+        return { status: 400, body: { error: 'bad-range' } }
+      })
+      const res = await fetch(`${base}/api/records/envelope?channel=x&from=1&to=2`, { headers: authed })
+      expect(res.status).toBe(400)
+      expect(await res.json()).toEqual({ error: 'bad-range' })
+      expect(seen).toEqual([['envelope', 'channel=x&from=1&to=2']])
+    })
+
+    it('対照: GET 以外は渡さずに 405', async () => {
+      let calls = 0
+      const base = await startAuthed(new ReadingHub(), {}, undefined, undefined, undefined, undefined, async () => {
+        calls += 1
+        return { status: 200, body: {} }
+      })
+      const res = await fetch(`${base}/api/records/channels`, { method: 'POST', headers: authed })
+      expect(res.status).toBe(405)
+      expect(calls).toBe(0)
+    })
+
+    it('読み手を持たない構成は 503（「記録が 0 件」と区別させる）', async () => {
+      const base = await startAuthed(new ReadingHub(), {})
+      const res = await fetch(`${base}/api/records/channels`, { headers: authed })
+      expect(res.status).toBe(503)
+      expect(await res.json()).toEqual({ error: 'records-not-configured' })
+    })
+
+    it('安全弁: トークンが無ければ 401 で、読み手は呼ばない', async () => {
+      let calls = 0
+      const base = await startAuthed(new ReadingHub(), {}, undefined, undefined, undefined, undefined, async () => {
+        calls += 1
+        return { status: 200, body: {} }
+      })
+      const res = await fetch(`${base}/api/records/channels`, { headers: { Origin: ORIGIN } })
+      expect(res.status).toBe(401)
+      expect(calls).toBe(0)
+    })
+
+    it('/api/records/ だけ（後ろが空）は 404', async () => {
+      const base = await startAuthed(new ReadingHub(), {}, undefined, undefined, undefined, undefined, async () => ({ status: 200, body: {} }))
+      const res = await fetch(`${base}/api/records/`, { headers: authed })
+      expect(res.status).toBe(404)
+    })
   })
 
   it('正: GET /api/rest-windows はセンサーごとの静止窓と、いまの静止の始まりを返す', async () => {

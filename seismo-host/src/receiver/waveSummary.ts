@@ -513,6 +513,17 @@ export function peekSummarySourceBytes(head: Buffer): number | null {
  * 読める分だけ拾うことはしない —— 書きかけ・別の形式を部分的に信じると、俯瞰に偽の欠けが出る）。投げない。
  */
 export function decodeSummaryPart(buf: Buffer): SummaryPartFile | null {
+  return decodeSummaryPartWhere(buf, () => true)
+}
+
+/**
+ * `decodeSummaryPart` のうち、識別子が `keep` を通るチャンネルだけを解く。**通らないチャンネルは
+ * 長さだけ確かめて飛ばす**（配列を作らない）—— 読み返しが欲しいのはふつう 1 チャンネルで、1 秒の段の
+ * 1 時間ぶん（27 チャンネル・約 1.9 MB）を全部解くと、1 日の俯瞰で 24 回それを払う。
+ *
+ * 飛ばしたチャンネルも長さが合わなければ `null`（形が壊れていることに変わりはない）。
+ */
+export function decodeSummaryPartWhere(buf: Buffer, keep: (id: string) => boolean): SummaryPartFile | null {
   try {
     if (buf.length < HEADER_BYTES) return null
     if (buf.readUInt32LE(0) !== MAGIC || buf.readUInt8(4) !== FORMAT_VERSION) return null
@@ -538,6 +549,12 @@ export function decodeSummaryPart(buf: Buffer): SummaryPartFile | null {
       const ug = buf.readDoubleLE(p + 1)
       p += 9
       const ugPerLsb = Number.isFinite(ug) ? ug : null
+      if (!keep(id)) {
+        const end = part === 'psd' ? skipPsd(buf, p) : skipLevel(buf, p)
+        if (end === null) return null
+        p = end
+        continue
+      }
       if (part === 'psd') {
         const psd = readPsd(buf, p)
         if (psd === null) return null
@@ -556,6 +573,62 @@ export function decodeSummaryPart(buf: Buffer): SummaryPartFile | null {
     // 長さの欄を信じて範囲の外を読んだ（`RangeError`）。壊れたファイルとして扱う。
     return null
   }
+}
+
+/**
+ * 要約の 1 部分に入っているチャンネルの名乗りだけを読む（中身は長さを確かめて飛ばす）。
+ * チャンネルの一覧を作るのに使う。形が合わなければ `null`。投げない。
+ */
+export function listSummaryPartChannels(
+  buf: Buffer,
+): { readonly part: SummaryPart; readonly channels: readonly { readonly id: string; readonly unit: SummaryUnit; readonly ugPerLsb: number | null }[] } | null {
+  try {
+    if (buf.length < HEADER_BYTES) return null
+    if (buf.readUInt32LE(0) !== MAGIC || buf.readUInt8(4) !== FORMAT_VERSION) return null
+    const part = SUMMARY_PARTS.find((p) => PART_CODES[p] === buf.readUInt8(5))
+    if (part === undefined) return null
+    const count = buf.readUInt32LE(52)
+    let p = HEADER_BYTES
+    const channels: { id: string; unit: SummaryUnit; ugPerLsb: number | null }[] = []
+    for (let c = 0; c < count; c += 1) {
+      const idLen = buf.readUInt16LE(p)
+      if (p + 2 + idLen > buf.length) return null
+      const id = buf.toString('utf8', p + 2, p + 2 + idLen)
+      p += 2 + idLen
+      const unitCode = buf.readUInt8(p)
+      const unit = unitCode === UNIT_CODES.gal ? 'gal' : unitCode === UNIT_CODES.count ? 'count' : null
+      if (unit === null) return null
+      const ug = buf.readDoubleLE(p + 1)
+      p += 9
+      const end = part === 'psd' ? skipPsd(buf, p) : skipLevel(buf, p)
+      if (end === null) return null
+      p = end
+      channels.push({ id, unit, ugPerLsb: Number.isFinite(ug) ? ug : null })
+    }
+    return p === buf.length ? { part, channels } : null
+  } catch {
+    return null
+  }
+}
+
+/** 段を読まずに飛ばした先。長さが足りなければ `null`。 */
+function skipLevel(buf: Buffer, at: number): number | null {
+  const len = buf.readUInt32LE(at + 12)
+  const flags = buf.readUInt8(at + 16)
+  const end = at + 17 + len * ((flags & 0b10) !== 0 ? 4 : 2) + len * (16 + ((flags & 0b1) !== 0 ? 4 : 0))
+  return end <= buf.length ? end : null
+}
+
+/** PSD を読まずに飛ばした先。形が違う・長さが足りなければ `null`（`readPsd` と同じ条件）。 */
+function skipPsd(buf: Buffer, at: number): number | null {
+  const has = buf.readUInt8(at)
+  if (has === 0) return at + 1
+  if (has !== 1) return null
+  const len = buf.readUInt32LE(at + 9)
+  const bins = buf.readUInt16LE(at + 13)
+  if (bins !== PSD_BIN_COUNT) return null
+  const end = at + 15 + len + len * bins * 4
+  return end <= buf.length ? end : null
 }
 
 function readLevel(buf: Buffer, at: number): { level: SummaryLevel; end: number } | null {

@@ -54,6 +54,8 @@ import type { MseedHealth } from './src/receiver/mseedRecorder'
 import { STATION_CONFIG_FILE, StationStore } from './src/receiver/stationStore'
 import { ReadingHub } from './src/receiver/readingHub'
 import { WaveArchive, readWaveRange } from './src/receiver/waveArchive'
+import { RecordChannelIndex } from './src/receiver/waveRecordChannels'
+import { handleRecordsRequest } from './src/receiver/waveRecordsApi'
 import { WaveSummaryKeeper } from './src/receiver/waveSummaryKeeper'
 import { SummaryWorkerRunner } from './src/receiver/waveSummaryWorkerRunner'
 import { SensorFusion } from './src/receiver/sensorFusion'
@@ -1810,6 +1812,8 @@ async function main(): Promise<void> {
     run: (job) => summaryRunner.run(job),
   })
   summaryKeeper.start(60_000, 30_000)
+  // 保存した波形の読み返し（`GET /api/records/*`）。チャンネルの一覧は要約の置き場所から作り、名乗りを控える。
+  const recordChannels = new RecordChannelIndex(summaryDir)
 
   // **地震検出（REQUIREMENTS.md §6・§9）。** 揺れの記録を残し（`GET /events` も同じ
   // 置き場所を読む）、気象庁の地震情報と照らし合わせる。
@@ -2457,6 +2461,13 @@ async function main(): Promise<void> {
     readWaves: (params) => readWaveRange({ dir: waveDir, ...params }),
     // 検出した揺れの読み返し（#312）。置き場所は記録と同じ `eventDir`。
     readEvents: (params) => readEventRange({ dir: eventDir, ...params }),
+    // 保存した波形の読み返し（#621）。置き場所は要約を作る係と同じ。
+    records: (route, params) =>
+      handleRecordsRequest(route, params, {
+        dirs: { summaryDir, rawDir, waveDir },
+        channels: recordChannels,
+        config: () => currentStationConfig,
+      }),
     // **呼ばれた時点で組み立てる。** 溜め込んだものを返すと、見に来た人が
     // 「いつの様子か」を自分で確かめられない。
     status: () => {

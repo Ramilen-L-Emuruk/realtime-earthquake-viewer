@@ -9,6 +9,7 @@
 //
 // 部分は `fine`（1 秒ごとの段）・`coarse`（1 分ごとの段）・`psd`（1 分ごとの PSD）の 3 本
 // （分ける理由は `waveSummary.ts` の書き出しの節）。`SummaryJob.summaryPath` は部分を除いた名前の元。
+// 生データの時だけ、受信の記録の要約（`<名前の元>.reception.json`・`receptionSummary.ts`）も置く。
 //
 // **合成波形は観測点の札（`stationFileToken`）で引く。** 札から観測点の識別子へは戻せない
 // （均して指紋を足した名前なので）。読み返す側は識別子から札を作って引く。
@@ -28,7 +29,8 @@ import {
   type SourceProblems,
   type SummaryPart,
 } from './waveSummary'
-import { summarizeMseedHour, summarizeWaveHour } from './waveSummarySources'
+import { encodeReceptionSummary } from './receptionSummary'
+import { summarizeMseedHourWithReception, summarizeWaveHour } from './waveSummarySources'
 
 const RAW_FILE_RE = /^raw-(\d{4}-\d{2}-\d{2}T\d{2})\.mseed3$/
 const WAVE_FILE_RE = /^wave-(.+)-(\d{4}-\d{2}-\d{2}T\d{2})\.bin$/
@@ -78,6 +80,11 @@ export function waveSummaryPath(summaryDir: string, stationKey: string, hourKey:
 /** 名前の元に部分を付けた、実際のファイルの場所。 */
 export function summaryPartPath(summaryBase: string, part: SummaryPart): string {
   return `${summaryBase}.${part}.wsum`
+}
+
+/** 生データの時の、受信の記録の要約（`receptionSummary.ts`）の場所。合成波形には無い。 */
+export function receptionSummaryPath(summaryBase: string): string {
+  return `${summaryBase}.reception.json`
 }
 
 /** 一覧を作れなかった場所。**「元のファイルが無い」と区別する**（数えて状態の口へ出す）。 */
@@ -206,12 +213,23 @@ export async function buildSummaryFile(job: SummaryJob): Promise<SummaryJobResul
   let tmp: string | null = null
   try {
     const buf = await readFile(job.sourcePath)
-    const file =
+    const built =
       job.kind === 'raw'
-        ? summarizeMseedHour(buf, job.hourStartMs)
-        : summarizeWaveHour(buf, job.stationKey ?? '', job.hourStartMs)
+        ? summarizeMseedHourWithReception(buf, job.hourStartMs)
+        : { file: summarizeWaveHour(buf, job.stationKey ?? '', job.hourStartMs), reception: null }
+    const file = built.file
     await mkdir(dirname(job.summaryPath), { recursive: true })
     let summaryBytes = 0
+    // **受信の記録の要約は PSD より先に置く**（作り直すかは PSD の頭で決めるので、ここで落ちても作り直しになる）。
+    if (built.reception !== null) {
+      const encoded = encodeReceptionSummary(built.reception)
+      const path = receptionSummaryPath(job.summaryPath)
+      tmp = `${path}.tmp`
+      await writeFile(tmp, encoded)
+      await rename(tmp, path)
+      tmp = null
+      summaryBytes += Buffer.byteLength(encoded)
+    }
     // **最後に書く部分（`SUMMARY_LAST_PART`）を最後に置き換える。** 作り直すかはその頭で決める。
     for (const part of SUMMARY_PARTS) {
       const encoded = encodeSummaryPart(file, part)

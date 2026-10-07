@@ -36,6 +36,7 @@ import type { AdminConsoleAssets } from './adminConsoleAssets'
 import { checkAdminAuth } from './adminAuth'
 import type { AdminAuthConfig, AdminAuthFailure } from './adminAuth'
 import type { SensorRestWindows } from './gravityCheck'
+import { decimalInt } from './httpQuery'
 import { computeQuakeIntensity, QUAKE_INTENSITY_LEAD_MS } from './quakeIntensity'
 import type { QuakeIntensityResult } from './quakeIntensity'
 import type { HubMessage, PairWant, ReadingHub, WaveWant } from './readingHub'
@@ -223,18 +224,6 @@ const WAVE_RAW_RANGE_MAX_MS = 2 * 60 * 1000
 
 /** 落とせる列の数の上限。画面の横幅より多く要る用途は無い。 */
 const WAVE_COLUMNS_MAX = 4096
-
-/**
- * 10 進の整数だけを通す。**`Number()` に任せない** —— あれは `0x10` も空文字も受ける
- * （`main.ts` の `DECIMAL_PORT_RE` と同じ判断）。時刻は 13 桁なので 16 桁まで許す。
- */
-const DECIMAL_INT_RE = /^-?\d{1,16}$/
-
-function decimalInt(raw: string | null): number | null {
-  if (raw === null || !DECIMAL_INT_RE.test(raw)) return null
-  const n = Number(raw)
-  return Number.isSafeInteger(n) ? n : null
-}
 
 /** 読み返しの問い合わせ。**`columns` が `null` ならサンプルのまま返す。** */
 export type WaveQuery =
@@ -592,6 +581,13 @@ export interface StatusServerOptions {
    * **`null` なら記録を持たない構成** —— 503 で答え、「揺れが無かった」と区別させる。
    */
   readonly readEvents: ((params: Omit<EventRangeParams, 'dir'>) => Promise<EventRangeResult>) | null
+  /**
+   * 保存した波形の読み返し（`GET /api/records/*`・#621）。`/api/records/` の後ろと問い合わせを渡すと、
+   * 答えの HTTP ステータスと本文を返す（中身は `waveRecordsApi.ts`）。
+   *
+   * **`null` なら口ごと 503**（保存を持たない構成。`readWaves` と同じ理由で「0 件」と区別させる）。
+   */
+  readonly records: ((route: string, params: URLSearchParams) => Promise<{ readonly status: number; readonly body: unknown }>) | null
 }
 
 export interface StatusServer {
@@ -762,6 +758,8 @@ type AdminRoute =
   | { readonly kind: 'board'; readonly boardKey: string }
   | { readonly kind: 'rest-windows' }
   | { readonly kind: 'shutdown' }
+  /** `/api/records/` の後ろ（`channels`・`envelope` など。解くのは `waveRecordsApi.ts`）。 */
+  | { readonly kind: 'records'; readonly route: string }
 
 /**
  * `/api/*` の経路を解く。**マッチしなければ `null`**（呼び出し側が 404 にする）。
@@ -783,6 +781,10 @@ function parseAdminRoute(pathname: string): AdminRoute | null {
   }
   if (pathname === '/api/rest-windows') return { kind: 'rest-windows' }
   if (pathname === '/api/shutdown') return { kind: 'shutdown' }
+  if (pathname.startsWith('/api/records/')) {
+    const route = pathname.slice('/api/records/'.length)
+    return route.length > 0 ? { kind: 'records', route } : null
+  }
   return null
 }
 
@@ -1041,6 +1043,7 @@ async function handleAdmin(
   stationConfig: StationConfigOps,
   readRestWindows: () => readonly SensorRestWindows[],
   requestShutdown: () => ShutdownRequestResult,
+  records: StatusServerOptions['records'],
 ): Promise<void> {
   applyAdminCors(req, res, adminAuth.allowedOrigins)
 
@@ -1123,6 +1126,19 @@ async function handleAdmin(
     // **誰が止めたかを残す。** 落ちた記録（「終了の記録を残さずに止まっていた」）と
     // 見分けるのはこの行と、締めくくりの最後の「正常に終了した」。
     if (result === 'accepted') log('warn', 'admin', 'shutdown', '[admin] 止める合図を受けた（POST /api/shutdown）。締めくくりを始める')
+    return
+  }
+  if (route.kind === 'records') {
+    if (req.method !== 'GET') {
+      sendAdminJson(res, 405, { error: 'method-not-allowed' })
+      return
+    }
+    if (records === null) {
+      sendAdminJson(res, 503, { error: 'records-not-configured' })
+      return
+    }
+    const answer = await records(route.route, url.searchParams)
+    sendAdminJson(res, answer.status, answer.body)
     return
   }
   // route.kind === 'board'
@@ -1297,7 +1313,17 @@ export async function startStatusServer(options: StatusServerOptions): Promise<S
         // `createServer` のコールバックは同期関数なので、万一 reject すると
         // `unhandledRejection` としてプロセスの外へ漏れる——`/status` の
         // 応答作成失敗と同じ扱いで押さえる。
-        handleAdmin(req, res, url, options.adminAuth, log, options.stationConfig, options.readRestWindows, options.requestShutdown).catch((error: unknown) => {
+        handleAdmin(
+          req,
+          res,
+          url,
+          options.adminAuth,
+          log,
+          options.stationConfig,
+          options.readRestWindows,
+          options.requestShutdown,
+          options.records,
+        ).catch((error: unknown) => {
           const detail = error instanceof Error ? error.message : String(error)
           log('error', 'admin', 'handler', `[admin] /api/* の処理に失敗: ${detail}`)
           if (!res.headersSent) {

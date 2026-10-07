@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { PSD_BIN_COUNT, PSD_BIN_EDGES_HZ, PSD_HOP, PSD_NFFT, minutePsd, welchPsd } from './wavePsd'
+import { PSD_BIN_COUNT, PSD_BIN_EDGES_HZ, PSD_HOP, PSD_NFFT, intervalPsd, minutePsd, welchPsd } from './wavePsd'
 
 const T0 = Date.parse('2026-10-07T03:00:00.000Z')
 const FS = 100
@@ -172,5 +172,33 @@ describe('minutePsd', () => {
   it('区間を 1 つも作れない分は区間 0・NaN、何も作れなければ null', () => {
     expect(minutePsd(chunks(sine(500, 5, 1), T0, 500))).toBeNull()
     expect(minutePsd([])).toBeNull()
+  })
+})
+
+describe('intervalPsd', () => {
+  it('範囲に収まる区間だけで 1 本の PSD を作り、繋ぎ方は 1 分ごとの PSD と同じ', () => {
+    const x = sine(6000, 5, 2)
+    const got = intervalPsd(chunks(x, T0, 500), T0, T0 + 60_000)
+    expect(got.segments).toBe(Math.floor((6000 - PSD_NFFT) / PSD_HOP) + 1)
+    expect(integrate(got.power) / 2).toBeGreaterThan(0.9)
+    expect(integrate(got.power) / 2).toBeLessThan(1.1)
+  })
+
+  it('範囲の端からはみ出す区間は使わない', () => {
+    const x = sine(6000, 5, 1)
+    // 範囲は先頭から 2 区間ぶん（1024 + 512 点）。3 本目の区間は末尾がはみ出す。
+    const got = intervalPsd(chunks(x, T0, 500), T0, T0 + (PSD_NFFT + PSD_HOP) * MS)
+    expect(got.segments).toBe(2)
+  })
+
+  it('有限でない値を含む区間は使わず、何も作れなければ区間 0・NaN', () => {
+    const x = sine(2048, 5, 1)
+    x[100] = Number.NaN
+    const got = intervalPsd(chunks(x, T0, 512), T0, T0 + 60_000)
+    // 区間は 0・512・1024 点目からの 3 本。NaN（100 点目）を含むのは 1 本目だけなので、残るのは 2 本
+    expect(got.segments).toBe(2)
+    const none = intervalPsd([], T0, T0 + 1)
+    expect(none.segments).toBe(0)
+    expect(Array.from(none.power).every((v) => Number.isNaN(v))).toBe(true)
   })
 })

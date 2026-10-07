@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { buildMseed3Record, buildMseed3TextRecord, mseed3LogSourceId, mseed3SourceId } from './mseed3Record'
 import type { FusedWaveChunk } from './sensorFusion'
+import { decodeReceptionSummary } from './receptionSummary'
 import { encodeSteim2 } from './steim2'
 import { encodeWaveChunk } from './waveArchive'
 import { decodeSummaryPart } from './waveSummary'
@@ -14,6 +15,7 @@ import {
   hourStartOf,
   listSummaryJobs,
   rawSummaryPath,
+  receptionSummaryPath,
   summarizedSourceBytes,
   summaryPartPath,
   waveSummaryPath,
@@ -122,12 +124,15 @@ describe('buildSummaryFile', () => {
     expect(decoded).not.toBeNull()
     expect(decoded!.part).toBe('coarse')
     expect(decoded!.channels[0]!.ugPerLsb).toBe(61.0352)
-    // 3 部分が並び、一時ファイルは残らない
+    // 3 部分と受信の記録の要約が並び、一時ファイルは残らない
     expect(readdirSync(join(summaryDir, 'raw', '2026-10-07')).sort()).toEqual([
       `raw-${HOUR_KEY}.coarse.wsum`,
       `raw-${HOUR_KEY}.fine.wsum`,
       `raw-${HOUR_KEY}.psd.wsum`,
+      `raw-${HOUR_KEY}.reception.json`,
     ])
+    const reception = decodeReceptionSummary(readFileSync(receptionSummaryPath(summaryPath), 'utf8'))
+    expect(reception?.sourceBytes).toBe(bytes.length)
     expect(await summarizedSourceBytes(summaryPath)).toBe(bytes.length)
   })
 
