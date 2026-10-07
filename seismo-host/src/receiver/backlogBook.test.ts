@@ -321,4 +321,67 @@ describe('BacklogBook', () => {
     expect(after.toJSON().streams.map((s) => s.bootId)).toEqual(['ffff0000'])
     expect(after.snapshot().pendingGaps).toBe(0)
   })
+
+  describe('pendingGapStarts（返事へ載せる「欠けがある」）', () => {
+    it('対照: 欠けが無ければ空', () => {
+      const b = book()
+      feed(b, S, [0, 30, 60], 1_000)
+      expect(b.pendingGapStarts(S.boardKey, S.bootId, 1_000)).toEqual([])
+    })
+
+    it('正: 欠けを見つけたらすぐ載せる（取りに行くまでの待ち settleMs の間も）', () => {
+      const b = book()
+      feed(b, S, [0, 30, 120], 1_000)
+      expect(b.pendingGapStarts(S.boardKey, S.bootId, 1_000)).toEqual([{ sensorId: 'i2c0-68', from: 60 }])
+    })
+
+    it('正: センサーごとに、いちばん古い欠けの始まりを 1 つずつ。名前の順に並べる', () => {
+      const b = book()
+      const s69 = { ...S, sensorId: 'i2c0-69' }
+      feed(b, s69, [0, 60, 150], 1_000)
+      feed(b, S, [0, 90, 180], 1_000)
+      expect(b.pendingGapStarts(S.boardKey, S.bootId, 1_000)).toEqual([
+        { sensorId: 'i2c0-68', from: 30 },
+        { sensorId: 'i2c0-69', from: 30 },
+      ])
+    })
+
+    it('正: 番号が 32 bit を一周しても、古いほうを始まりにする', () => {
+      const b = book()
+      const near = 0xffff_ffff - 59
+      // 欠けは [near+30, 0) と、一周した先の [30, 60)。数の上では後者のほうが小さい。
+      feed(b, S, [near, (near + 60) >>> 0, (near + 120) >>> 0], 1_000)
+      expect(b.pendingGapStarts(S.boardKey, S.bootId, 1_000)).toEqual([{ sensorId: 'i2c0-68', from: near + 30 }])
+    })
+
+    it('安全弁: 起動 ID が違う欠けは載せない（基板のメモリの輪にあるのはいまの起動の分だけ）', () => {
+      const b = book()
+      feed(b, S, [0, 90], 0)
+      feed(b, { ...S, bootId: 'ffff0000' }, [0, 30], 1_000)
+      expect(b.pendingGapStarts(S.boardKey, 'ffff0000', 1_000)).toEqual([])
+    })
+
+    it('安全弁: 別の基板の欠けは載せない', () => {
+      const b = book()
+      feed(b, { ...S, boardKey: 'mac:ffffffffffff' }, [0, 90], 1_000)
+      expect(b.pendingGapStarts(S.boardKey, S.bootId, 1_000)).toEqual([])
+    })
+
+    it('安全弁: 取り戻した・取り戻せないと分かった欠けは載せない', () => {
+      const b = book()
+      feed(b, S, [0, 30, 120, 150, 240], 1_000)
+      b.recovered(KEY, 60, 120)
+      expect(b.pendingGapStarts(S.boardKey, S.bootId, 1_000)).toEqual([{ sensorId: 'i2c0-68', from: 180 }])
+      b.unrecoverable(KEY, 180, 240, 'not-held')
+      expect(b.pendingGapStarts(S.boardKey, S.bootId, 1_000)).toEqual([])
+    })
+
+    it('安全弁: 諦める年齢（giveUpAfterMs）を過ぎた欠けは載せない（帳面の中身は動かさない）', () => {
+      const b = book()
+      feed(b, S, [0, 90], 0)
+      expect(b.pendingGapStarts(S.boardKey, S.bootId, OPTIONS.giveUpAfterMs)).toHaveLength(1)
+      expect(b.pendingGapStarts(S.boardKey, S.bootId, OPTIONS.giveUpAfterMs + 1)).toEqual([])
+      expect(b.snapshot().pendingGaps).toBe(1)
+    })
+  })
 })
