@@ -24,10 +24,12 @@
 // 起動:
 //   npm run seismo-host
 //   SEISMO_UDP_PORT=50505 SEISMO_UDP_ADDRESS=0.0.0.0 npm run seismo-host
+import { readFile } from 'node:fs/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { GAL_PER_G } from './src/intensity/units'
 import { MAX_TIME_MS } from './src/protocol/parsePacket'
+import type { BoardKey } from './src/protocol/types'
 import { AckReplier, readAckEnabled } from './src/receiver/ackReplier'
 import {
   AssignmentClock,
@@ -47,6 +49,7 @@ import { LogThrottle, suppressedSuffix } from './src/receiver/logThrottle'
 import { PacketTally, formatTally } from './src/receiver/packetTally'
 import type { TallySnapshot } from './src/receiver/packetTally'
 import { MseedRecorder } from './src/receiver/mseedRecorder'
+import { mseedFilePath } from './src/receiver/mseedStore'
 import type { MseedHealth } from './src/receiver/mseedRecorder'
 import { STATION_CONFIG_FILE, StationStore } from './src/receiver/stationStore'
 import { ReadingHub } from './src/receiver/readingHub'
@@ -81,6 +84,10 @@ import type { BacklogBookOptions, UnrecoverableReason } from './src/receiver/bac
 import { BacklogBookWriter, readBacklogBookFile } from './src/receiver/backlogBookFile'
 import { BacklogFetcher, fetchBacklog } from './src/receiver/backlogFetcher'
 import type { BacklogEvent } from './src/receiver/backlogFetcher'
+import { RewaveRunner } from './src/receiver/rewaveRunner'
+import type { RewaveEvent, RewaveSkipReason } from './src/receiver/rewaveRunner'
+import { RewaveScheduler } from './src/receiver/rewaveScheduler'
+import type { RewaveSchedulerOptions } from './src/receiver/rewaveScheduler'
 import { streamKeyOf } from './src/timebase/segmenter'
 import { QuakeFeed } from './src/detection/quakeFeed'
 import { ShakeEventStore, readEventRange } from './src/detection/shakeEventStore'
@@ -176,6 +183,74 @@ const UNRECOVERABLE_TEXT: Record<UnrecoverableReason, string> = {
 
 /** 取り戻せなかった理由の全部。**`UNRECOVERABLE_TEXT` から引く** —— 型が全部の理由を書かせる。 */
 const UNRECOVERABLE_REASONS = Object.keys(UNRECOVERABLE_TEXT) as UnrecoverableReason[]
+
+/**
+ * 合成波形を作り直す区間の決めごと（`rewaveScheduler.ts`）。
+ *
+ * - **前後の余白 2 秒**: 作り直した分とライブの分の継ぎ目を、欠けた所から離す
+ * - **最後に取り戻してから 3 秒待つ**: 干渉の最中は取り戻しが続けて届くので、1 件へまとめる
+ * - **欠けが片付かなくても 2 分で作り直す**: 欠けは最長 20 分諦めないので、待ち続けると画面へ戻すのが遅れる
+ * - **1 件は 3 分まで**: 3 分ぶん（9 センサー）を読んで作り直すのに手元の機械で 1 秒前後
+ *   （2026-10-06 の 21 時台の生データで実測）。それより長い区間は区切って順に回す
+ */
+const REWAVE_SCHEDULER_OPTIONS: RewaveSchedulerOptions = {
+  padMs: 2_000,
+  settleMs: 3_000,
+  maxWaitMs: 120_000,
+  maxSpanMs: 180_000,
+}
+
+/** 作り直しを見に行く間隔。 */
+const REWAVE_TICK_MS = 1_000
+
+const REWAVE_SKIP_TEXT: Record<RewaveSkipReason, string> = {
+  'config-changed': '区間の中で観測点の設定が変わった',
+  'config-unknown': '観測点の設定の履歴を読めていない',
+  'flush-failed': '生データを書き終えられなかった',
+  'no-raw': '区間の生データが無い',
+  empty: '作り直した合成が無かった',
+  'write-failed': '控えへ書けなかった分があった',
+  internal: '作り直しの途中で想定外の例外が出た',
+}
+
+/** 作り直さなかった理由の全部。**`REWAVE_SKIP_TEXT` から引く。** */
+const REWAVE_SKIP_REASONS = Object.keys(REWAVE_SKIP_TEXT) as RewaveSkipReason[]
+
+/** 日本時間の時刻（時:分:秒）。 */
+function jstClock(ms: number): string {
+  return new Date(ms + 9 * 3_600_000).toISOString().slice(11, 19)
+}
+
+/**
+ * 作り直しの出来事を、間引きに渡す 1 行にする。**作り直せた分は `log`（読んだ生データに壊れがあれば
+ * `warn`）、それ以外は `warn`。**
+ * 間引きの鍵（`detail`）は観測点と理由まで。
+ */
+export function buildRewaveEventLine(event: RewaveEvent): {
+  readonly level: 'log' | 'warn'
+  readonly detail: string
+  readonly line: string
+} {
+  const { job } = event
+  const span = `${jstClock(job.fromMs)}〜${jstClock(job.toMs)}`
+  if (event.kind === 'rewaved') {
+    // **生データに壊れがあれば warn。** 作り直した分にもその欠けが残っている。
+    const notes = [
+      ...(event.rawIssues > 0 ? [`生データの壊れ ${event.rawIssues}`] : []),
+      ...(event.duplicates > 0 ? [`重複して捨てたまとまり ${event.duplicates}`] : []),
+    ]
+    return {
+      level: event.rawIssues > 0 ? 'warn' : 'log',
+      detail: `${job.stationId}|rewaved${event.rawIssues > 0 ? '|raw-issues' : ''}`,
+      line: `[rewave] ${job.stationId} の ${span} の合成波形を作り直した（${[`${event.chunks} まとまり`, `${event.elapsedMs} ms`, ...notes].join('・')}）`,
+    }
+  }
+  return {
+    level: 'warn',
+    detail: `${job.stationId}|${event.reason}`,
+    line: `[rewave] ${job.stationId} の ${span} の合成波形を作り直さなかった（${REWAVE_SKIP_TEXT[event.reason]}: ${event.detail}）`,
+  }
+}
 
 /**
  * 取り戻しの出来事を、間引きに渡す 1 行にする。**取り戻せた分は `log`、それ以外は `warn`。**
@@ -1743,6 +1818,18 @@ async function main(): Promise<void> {
     else console.log(text)
   }
 
+  // **取り戻した区間の合成波形は、あとで生データから作り直す**（`rewaveScheduler.ts`・`rewaveRunner.ts`）。
+  // 取り戻した分そのものはライブの合成へ混ぜない（下の取り戻しの口の理由）ので、控えへ戻すにはこの経路しかない。
+  const rewaveScheduler = new RewaveScheduler(REWAVE_SCHEDULER_OPTIONS)
+  /**
+   * 欠けの帳面が持つ基板の鍵（ファイルから読み戻すので文字列のまま）から観測点を引く。
+   * **鍵の形でないものは未割当として扱う。**
+   */
+  const stationIdOfBoard = (boardKey: string): string | null =>
+    boardKey.startsWith('mac:') || boardKey.startsWith('name:')
+      ? stations.resolve(boardKey as BoardKey)?.stationId ?? null
+      : null
+
   // **取り戻した分は生データの記録にだけ渡す** —— 震度・合成・押し出し・時計の推定には
   // 混ぜない（理由は `backlogFetcher.ts` の冒頭）。
   const backlogFetcher = new BacklogFetcher({
@@ -1758,6 +1845,36 @@ async function main(): Promise<void> {
     onEvent: (event) => {
       const out = buildBacklogEventLine(event)
       emit(out.level, 'backlog', out.detail, out.line)
+      if (event.kind === 'recovered') {
+        // 流れの鍵は「基板|起動 ID|センサー」（`backlogBook.ts` の `streamKey`）。
+        const stationId = stationIdOfBoard(event.key.split('|')[0] ?? '')
+        if (stationId !== null) rewaveScheduler.note(stationId, event.fromMs, event.toMs, Date.now())
+      }
+    },
+  })
+
+  const rewaveRunner = new RewaveRunner({
+    scheduler: rewaveScheduler,
+    hasPending: (stationId) => backlogBook.hasPendingWhere((s) => stationIdOfBoard(s.boardKey) === stationId),
+    // **区間の当時の設定を履歴から引く**（`stationStore.ts`）。いまの設定で過去の区間を作らない。
+    configThrough: (fromMs, toMs) => stationStore.configThrough(fromMs, toMs),
+    flush: () => mseedRecorder.flushForRead(),
+    readHour: async (atMs) => {
+      const path = mseedFilePath(rawDir, atMs)
+      if (path === null) return null
+      try {
+        return new Uint8Array(await readFile(path))
+      } catch (error) {
+        if ((error as { code?: string }).code === 'ENOENT') return null
+        throw error
+      }
+    },
+    writeRevised: (stationId, chunks) => waveArchive.writeRevised(stationId, chunks),
+    now: Date.now,
+    pause: () => new Promise((resolve) => setImmediate(resolve)),
+    onEvent: (event) => {
+      const out = buildRewaveEventLine(event)
+      emit(out.level, 'rewave', out.detail, out.line)
     },
   })
 
@@ -2176,6 +2293,7 @@ async function main(): Promise<void> {
   // **miniSEED の溜め置きを毎秒見る。** 基板が黙ると、溜まった分は次のパケットが来るまで
   // 出ていかない（5 秒の上限は、届いたときにしか測れない）。投げない。
   const mseedTimer = setInterval(() => mseedRecorder.tick(Date.now()), 1_000)
+  const rewaveTimer = setInterval(() => rewaveRunner.tick(), REWAVE_TICK_MS)
   const backlogSaveTimer = setInterval(() => {
     void backlogWriter.save(backlogBook.toJSON()).then((error) => {
       if (error !== null) emit('warn', 'backlog', 'save', `[backlog] 欠けの帳面を書き出せなかった（${error}）`)
@@ -2255,6 +2373,7 @@ async function main(): Promise<void> {
         udpRecvBuffer: receiver.recvBuffer,
         loopStalls: loopStalls.snapshot(),
         backlog: backlogFetcher.snapshot(),
+        rewave: rewaveRunner.snapshot(),
         http: { address: httpAddress ?? '0.0.0.0', port: statusServer.port },
         tally: tally.snapshotTotal(),
         sensors: health.snapshot(),
@@ -2283,6 +2402,8 @@ async function main(): Promise<void> {
           openBooks: waveArchive.openBooks,
           slowClose: waveArchive.slowClose,
           lastWriteError: waveArchive.lastWriteError,
+          revisedWritten: waveArchive.revisedWritten,
+          revisedLost: waveArchive.revisedLost,
         },
         hub: hub.snapshot(),
         acks: acks.snapshot(),
@@ -2408,6 +2529,17 @@ async function main(): Promise<void> {
     const backlogFailedCounters = Object.entries(fetched.failures).map(([reason, n]) =>
       delta(`backlogFailed:${reason}`, `欠けを取りに行けず訊き直す（${reason}）`, n ?? 0),
     )
+    // **合成波形の作り直しも要約へ出す。** 1 件ずつの `[rewave]` の行は間引きを通るので、
+    // 作り直せなかった回数は理由ごとにここで数える（`REWAVE_SKIP_TEXT` の鍵から引く）。
+    const rewave = rewaveRunner.snapshot()
+    const rewaveCounters = [
+      delta('rewaveJobs', '取り戻した区間の合成波形を作り直した', rewave.jobs),
+      delta('rewaveChunks', '作り直して控えへ足した合成のまとまり', rewave.chunks),
+      delta('rewaveRawIssues', '作り直しで読んだ生データの壊れ', rewave.rawIssues),
+      ...REWAVE_SKIP_REASONS.map((reason) =>
+        delta(`rewaveSkipped:${reason}`, `合成波形を作り直さなかった（${REWAVE_SKIP_TEXT[reason]}）`, rewave.skipped[reason] ?? 0),
+      ),
+    ]
     const now = Date.now()
     // **まだ動いていることを印へ残す**（`hostLifeMark.ts`）。待たない —— 書き込みが詰まっても
     // 要約を遅らせない。失敗は間引きを通して出す（毎分失敗し続けうる）。
@@ -2424,6 +2556,7 @@ async function main(): Promise<void> {
         ...gravityCounters,
         ...backlogLostCounters,
         ...backlogFailedCounters,
+        ...rewaveCounters,
         ...detectCounters,
       ],
       quietReported,
@@ -2478,6 +2611,7 @@ async function main(): Promise<void> {
     clearInterval(loopStallTimer)
     clearInterval(backlogSaveTimer)
     clearInterval(mseedTimer)
+    clearInterval(rewaveTimer)
     clearInterval(detectionTimer)
     console.log(`[udp] ${signal} を受けたので締めます`)
     // **ここから `closeHostCore` までの段も投げさせない。** 投げると締めくくりの本体
@@ -2494,6 +2628,12 @@ async function main(): Promise<void> {
       await backlogFetcher.stop()
     } catch (error) {
       console.error(`[backlog] 締めくくりで取り戻しを止められなかった（${error instanceof Error ? error.message : String(error)}）`)
+    }
+    // **作り直しも、生データと控えを締める前に止める**（作り直している最中の 1 件は待つ）。
+    try {
+      await rewaveRunner.stop()
+    } catch (error) {
+      console.error(`[rewave] 締めくくりで作り直しを止められなかった（${error instanceof Error ? error.message : String(error)}）`)
     }
 
     // **順序は `closeHostCore` が持つ**（理由もあちらに書いてある）。ここは

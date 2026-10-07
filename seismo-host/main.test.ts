@@ -17,6 +17,7 @@ import {
   buildGravityWarnings,
   buildLoopStallWarning,
   buildRecvBufferLine,
+  buildRewaveEventLine,
   deliverReading,
   deliverStationFusion,
   buildRawWarnings,
@@ -544,7 +545,7 @@ describe('buildBacklogEventLine', () => {
   const KEY = 'mac:020000000001|34b6e78f|i2c0-68'
 
   it('取り戻せた分は log で、サンプル数とまとまりの数を添える', () => {
-    const out = buildBacklogEventLine({ kind: 'recovered', key: KEY, address: '192.0.2.41', packets: 2, samples: 60 })
+    const out = buildBacklogEventLine({ kind: 'recovered', key: KEY, address: '192.0.2.41', packets: 2, samples: 60, fromMs: 0, toMs: 600 })
     expect(out.level).toBe('log')
     expect(out.line).toBe(`[backlog] ${KEY} 基板から 60 サンプル（2 まとまり）を取り戻した`)
   })
@@ -564,8 +565,8 @@ describe('buildBacklogEventLine', () => {
   })
 
   it('間引きの鍵に数を混ぜない（数が変わるたびに枠が増えないように）', () => {
-    const a = buildBacklogEventLine({ kind: 'recovered', key: KEY, address: '192.0.2.41', packets: 1, samples: 30 })
-    const b = buildBacklogEventLine({ kind: 'recovered', key: KEY, address: '192.0.2.41', packets: 9, samples: 270 })
+    const a = buildBacklogEventLine({ kind: 'recovered', key: KEY, address: '192.0.2.41', packets: 1, samples: 30, fromMs: 0, toMs: 300 })
+    const b = buildBacklogEventLine({ kind: 'recovered', key: KEY, address: '192.0.2.41', packets: 9, samples: 270, fromMs: 1000, toMs: 3700 })
     expect(a.detail).toBe(b.detail)
     const c = buildBacklogEventLine({ kind: 'unrecoverable', key: KEY, address: '192.0.2.41', reason: 'not-held', samples: 30 })
     const d = buildBacklogEventLine({ kind: 'unrecoverable', key: KEY, address: '192.0.2.41', reason: 'not-held', samples: 900 })
@@ -598,6 +599,33 @@ describe('buildBacklogEventLine', () => {
     expect(out.line).toContain('2 まとまりを生データへ書けなかった。あとで訊き直す')
     const again = buildBacklogEventLine({ kind: 'unsaved', key: KEY, address: '192.0.2.41', packets: 9 })
     expect(again.detail).toBe(out.detail)
+  })
+})
+
+describe('buildRewaveEventLine', () => {
+  /** 2026-10-06 21:44:00 JST。 */
+  const AT = Date.UTC(2026, 9, 6, 12, 44, 0)
+  const JOB = { stationId: 'station-1', fromMs: AT, toMs: AT + 65_000 }
+
+  it('作り直せた分は log で、区間を日本時間で書き、間引きの鍵は観測点ごと', () => {
+    const out = buildRewaveEventLine({ kind: 'rewaved', job: JOB, chunks: 14, fed: 690, elapsedMs: 812, rawIssues: 0, duplicates: 0 })
+    expect(out.level).toBe('log')
+    expect(out.detail).toBe('station-1|rewaved')
+    expect(out.line).toBe('[rewave] station-1 の 21:44:00〜21:45:05 の合成波形を作り直した（14 まとまり・812 ms）')
+  })
+
+  it('読んだ生データに壊れがあれば warn で、壊れと重複の数を添える（別の鍵で間引く）', () => {
+    const out = buildRewaveEventLine({ kind: 'rewaved', job: JOB, chunks: 14, fed: 690, elapsedMs: 812, rawIssues: 2, duplicates: 3 })
+    expect(out.level).toBe('warn')
+    expect(out.detail).toBe('station-1|rewaved|raw-issues')
+    expect(out.line).toContain('14 まとまり・812 ms・生データの壊れ 2・重複して捨てたまとまり 3')
+  })
+
+  it('作り直さなかった分は warn で、理由ごとに間引く', () => {
+    const out = buildRewaveEventLine({ kind: 'skipped', job: JOB, reason: 'no-raw', detail: '区間の時の本が無い' })
+    expect(out.level).toBe('warn')
+    expect(out.detail).toBe('station-1|no-raw')
+    expect(out.line).toContain('区間の生データが無い: 区間の時の本が無い')
   })
 })
 

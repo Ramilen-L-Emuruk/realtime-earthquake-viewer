@@ -38,6 +38,7 @@ function chunksOf(startMs: number, samples: number[][]): ArchivedWaveChunk[] {
       ],
       dcGal: [0, 0, 980],
       memberCount: new Uint8Array(n).fill(3),
+      revised: false,
     })
   }
   return chunks

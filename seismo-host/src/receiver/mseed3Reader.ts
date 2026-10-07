@@ -53,6 +53,18 @@ function timeOf(view: DataView, at: number): number {
 }
 
 export function readMseed3Records(buf: Uint8Array): Mseed3ReadResult {
+  return readMseed3RecordsWhere(buf, () => true)
+}
+
+/**
+ * `readMseed3Records` のうち、先頭の時刻が `keep` を通るレコードだけを読む。**通らないレコードは
+ * 検査値も中身も見ずに飛ばす** —— 1 時間ぶん（約 14 MB）を全部解くと手元の機械で 4 秒を超え、
+ * ホストの受信の流れの中で回すと、その間 UDP を受けられない。区間を作り直すとき
+ * （`stationRewave.ts`）に必要なのは数分ぶんだけ。
+ *
+ * 飛ばしたレコードは数えない（壊れていたのか確かめていない）。
+ */
+export function readMseed3RecordsWhere(buf: Uint8Array, keep: (startMs: number) => boolean): Mseed3ReadResult {
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
   const records: ParsedMseed3Record[] = []
   let crcFailures = 0
@@ -65,6 +77,10 @@ export function readMseed3Records(buf: Uint8Array): Mseed3ReadResult {
     const payloadLen = view.getUint32(pos + 36, true)
     const total = FIXED_HEADER_BYTES + sidLen + extraLen + payloadLen
     if (pos + total > buf.length) break
+    if (!keep(timeOf(view, pos))) {
+      pos += total
+      continue
+    }
 
     // **写しは自分で作る。** `buf` が Node の `Buffer` だと `slice` は写しを作らず元を指す ——
     // そこで検査値の欄を 0 にすると渡されたバッファを書き換え、検査も素通りの値で回ることになる。

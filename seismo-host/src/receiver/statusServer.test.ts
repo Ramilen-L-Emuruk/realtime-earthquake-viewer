@@ -34,6 +34,8 @@ const WAVE_ARCHIVE: WaveArchiveStatus = {
   openBooks: 0,
   slowClose: false,
   lastWriteError: null,
+  revisedWritten: 0,
+  revisedLost: 0,
 }
 
 function report(hub: ReadingHub): StatusReport {
@@ -48,6 +50,7 @@ function report(hub: ReadingHub): StatusReport {
       requests: 0, recoveredPackets: 0, failures: {}, badPackets: 0, foreignPackets: 0, unsavedPackets: 0, skippedPackets: 0,
       unsettledWriteSinceMs: null,
     },
+    rewave: { waiting: 0, running: false, jobs: 0, chunks: 0, rawIssues: 0, skipped: {} },
     http: { address: '0.0.0.0', port: 50506 },
     tally: new PacketTally().snapshotTotal(),
     sensors: [],
@@ -1445,6 +1448,7 @@ describe('GET /waves（#357）', () => {
       ],
       dcGal: [0, 0, 980],
       memberCount: Uint8Array.from([3, 3, 2]),
+      revised: false,
     }
   }
 
@@ -1700,6 +1704,7 @@ describe('GET /quake-intensity（#494 段3）', () => {
       gal: [axis(0), axis(1), axis(2)],
       dcGal: [0, 0, 980],
       memberCount: new Uint8Array(n).fill(3),
+      revised: false,
     }
   }
 

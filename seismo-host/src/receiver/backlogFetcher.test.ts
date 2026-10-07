@@ -129,7 +129,7 @@ describe('BacklogFetcher', () => {
     expect(snap.pendingSamples).toBe(30)
     expect(snap.unrecoverableSamples).toEqual({})
     expect(h.events).toEqual([
-      { kind: 'recovered', key: KEY, address: ADDR, packets: 1, samples: 30 },
+      { kind: 'recovered', key: KEY, address: ADDR, packets: 1, samples: 30, fromMs: 1_790_941_894_594, toMs: 1_790_941_894_894 },
       { kind: 'unsaved', key: KEY, address: ADDR, packets: 1 },
     ])
     // **すぐには訊き直さない** —— 書けないのはディスクの側の事情で、続けて訊いても同じく書けない。
@@ -448,7 +448,8 @@ describe('BacklogFetcher', () => {
     })
     await fetcher.step()
     expect(events).toEqual([
-      { kind: 'recovered', key: KEY, address: ADDR, packets: 1, samples: 30 },
+      // 取り戻したまとまりの波形の時刻（packet(60) の t から 30 サンプルぶん）。
+      { kind: 'recovered', key: KEY, address: ADDR, packets: 1, samples: 30, fromMs: 1_790_941_894_894, toMs: 1_790_941_895_194 },
       { kind: 'unrecoverable', key: KEY, address: ADDR, reason: 'not-held', samples: 30 },
     ])
   })

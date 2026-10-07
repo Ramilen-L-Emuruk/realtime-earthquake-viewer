@@ -13,8 +13,8 @@
 // 書けなかった区間）も数える —— 区切りは戻せないが、波形そのものは失っていない。
 
 import type { SensorPacket } from '../protocol/types'
-import { readMseed3Records } from './mseed3Reader'
-import type { ParsedMseed3Record } from './mseed3Reader'
+import { readMseed3Records, readMseed3RecordsWhere } from './mseed3Reader'
+import type { Mseed3ReadResult, ParsedMseed3Record } from './mseed3Reader'
 import { MSEED3_EXTRA_NAMESPACE, MSEED3_HOST_LOG_SOURCE_ID, mseed3SourceId } from './mseed3Record'
 import type { StreamLane } from './recordAssembler'
 
@@ -185,7 +185,29 @@ function claim(segments: readonly Segment[], seq: number, count: number): void {
 
 /** 1 時間の 1 本を読む。**投げない。** */
 export function readMseedHour(buf: Uint8Array): MseedHourRead {
-  const read = readMseed3Records(buf)
+  return assemblePackets(readMseed3Records(buf))
+}
+
+/**
+ * レコードが覆いうる最長の長さ。受信の記録（`receptionLog.ts` の `MAX_HOLD_MS_DEFAULT`）が 30 秒、
+ * 波形（`recordAssembler.ts` の `MAX_HOLD_MS_DEFAULT`）が 5 秒。**区間の手前でこれだけ広く拾う** ——
+ * 先頭の時刻だけで切ると、区間の頭のパケットの受信の記録が手前のレコードにいて落ちる。
+ */
+export const RECORD_SPAN_MAX_MS = 35_000
+
+/**
+ * 1 本のうち、`[fromMs, toMs)` に掛かりうるレコードだけを読んでパケットに組み直す。**投げない。**
+ *
+ * 範囲の外のパケットも混ざって返る（レコードの単位で拾うため）。使う側が時刻で選ぶこと。
+ * 区間の手前でレコードを切った分は、サンプルの揃わないパケット（`incompletePackets`）や
+ * どこにも属さないサンプル（`unclaimedSamples`）として数えられうる —— 範囲の外の話なので、
+ * 区間の中の欠けと取り違えないこと。
+ */
+export function readMseedRange(buf: Uint8Array, fromMs: number, toMs: number): MseedHourRead {
+  return assemblePackets(readMseed3RecordsWhere(buf, (startMs) => startMs >= fromMs - RECORD_SPAN_MAX_MS && startMs < toMs))
+}
+
+function assemblePackets(read: Mseed3ReadResult): MseedHourRead {
   const segments = new Map<string, Segment[]>()
   const logs: string[] = []
   const unreadable: StoredUnreadable[] = []

@@ -260,6 +260,45 @@ export class MseedRecorder {
   }
 
   /**
+   * 溜めている波形と受信の記録をいま書き出し、**ディスクへ書き終えるまで待つ**。閉じない。投げない。
+   * 全部書けたら true。
+   *
+   * **生データを読み直す前に呼ぶ**（`stationRewave.ts`）。受信の記録は最長 30 秒溜めてから書くので、
+   * 呼ばずに読むと直近のパケットがファイルにまだ無い（波形はあっても受信の記録が無いパケットは
+   * 組み上がらない。`mseedPacketReader.ts`）。
+   *
+   * 途中で吐き出したぶんレコードは短くなる（切れ目の理由は `flush`）。読み直すのは欠けを取り戻した
+   * あとだけなので、頻度は欠けの数で頭打ちになる。**同じ流し口の先に積まれた書き込みは、ここで
+   * 待つ書き込みより先に済む**（流し口は順に書く）ので、待ち終えた時点でそれまでの分も読める。
+   */
+  async flushForRead(): Promise<boolean> {
+    let waves: readonly AssembledRecord[]
+    let logs: readonly LogRecord[]
+    try {
+      waves = this.assembler.flushAll()
+      logs = this.log.flushAll()
+    } catch (error) {
+      this.noteInternalError(error)
+      return false
+    }
+    const wavesOk = await Promise.all(
+      waves.map(async (r) => {
+        const ok = await this.store.writeConfirmed(r.bytes, r.fileAtMs)
+        if (ok) this.recordsWrittenCount += 1
+        return ok
+      }),
+    )
+    const logsOk = await Promise.all(
+      logs.map(async (r) => {
+        const ok = await this.store.writeConfirmed(r.bytes, r.fileAtMs)
+        if (ok) this.packetsLoggedCount += r.packetCount
+        return ok
+      }),
+    )
+    return wavesOk.every(Boolean) && logsOk.every(Boolean)
+  }
+
+  /**
    * 溜めた分を全部書き出してから閉じる。**書き出しで投げても閉じる**（閉じないと最後の
    * レコードが流し口に残る）。
    */

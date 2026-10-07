@@ -38,6 +38,11 @@ const HEADER_BYTES = 32
 const MAGIC = 0x5357
 /** 書き出す形式の版。読む側が知らない版を見たらそこで打ち切る。 */
 const FORMAT_VERSION = 1
+/**
+ * 頭の 5 バイト目（旗）のうち「作り直した分」の印。**版は上げない** —— 旧い読み手はこのバイトを
+ * 読まないので、印の付いた分もただのまとまりとして読める（二重に見えるだけで、壊れはしない）。
+ */
+const FLAG_REVISED = 0b1
 /** 1 サンプルぶんの本体（3 軸 × f32 ＋ 効いたセンサーの本数 u8）。 */
 const BYTES_PER_SAMPLE = 3 * 4 + 1
 
@@ -110,6 +115,16 @@ export type WaveWriteResult =
     }
   | { readonly saved: false; readonly reason: WaveUnsavedReason }
 
+/** 作り直した分を足した結果（{@link WaveArchive.writeRevised}）。 */
+export interface RevisedWriteResult {
+  /** 書き終えたまとまりの数。 */
+  readonly written: number
+  /** 書けなかったまとまりの数（流し口を開けない・書き込みの失敗・締めたあと）。 */
+  readonly lost: number
+  /** 形にできずに捨てたまとまりの数（`bad-chunk` と同じ理由）。 */
+  readonly bad: number
+}
+
 export interface WaveArchiveOptions {
   /** 書き出す先。無ければ作る。**作れなければ投げる。** */
   readonly dir: string
@@ -155,7 +170,7 @@ export function waveFileName(stationId: string, hourKey: string): string {
  *
  * 形にできなければ `null` —— 呼び出し側は `bad-chunk` として数える。
  */
-export function encodeWaveChunk(chunk: FusedWaveChunk): Buffer | null {
+export function encodeWaveChunk(chunk: FusedWaveChunk, revised: boolean): Buffer | null {
   // **3 成分あることを実行時にも確かめる。** 型は組（タプル）で縛っているが、
   // ここで崩れると `axis.length` が投げ、**投げた先はこのまとまりを運んできた
   // データグラムの処理全体**（`main.ts` の受け手は例外を囲わない方針）——
@@ -179,7 +194,7 @@ export function encodeWaveChunk(chunk: FusedWaveChunk): Buffer | null {
   buf.writeUInt16LE(MAGIC, 0)
   buf.writeUInt16LE(count, 2)
   buf.writeUInt8(FORMAT_VERSION, 4)
-  buf.writeUInt8(0, 5)
+  buf.writeUInt8(revised ? FLAG_REVISED : 0, 5)
   buf.writeUInt16LE(0, 6)
   buf.writeDoubleLE(chunk.firstSampleMs, 8)
   buf.writeFloatLE(chunk.msPerSample, 16)
@@ -231,6 +246,11 @@ export interface ArchivedWaveChunk {
   readonly dcGal: readonly [number, number, number]
   /** 各サンプルへ実際に効いたセンサーの数。 */
   readonly memberCount: Uint8Array
+  /**
+   * 欠けを取り戻したあとで生データから作り直した分か（`stationRewave.ts`）。読み返しは、
+   * 重なるライブの分より印の付いた分を採る（{@link resolveRevisions}）。
+   */
+  readonly revised: boolean
 }
 
 export interface WaveRangeResult {
@@ -297,6 +317,7 @@ export function decodeWaveFile(
         gal,
         dcGal: [buf.readFloatLE(pos + 20), buf.readFloatLE(pos + 24), buf.readFloatLE(pos + 28)],
         memberCount,
+        revised: (buf.readUInt8(pos + 5) & FLAG_REVISED) !== 0,
       })
     }
     pos += total
@@ -353,10 +374,74 @@ export async function readWaveRange(params: {
     skippedBytes += decoded.skippedBytes
   }
 
-  // **並べ直す。** 走査はファイル順（＝時刻順）だが、1 時間前から見る都合で
-  // 跨いだまとまりが先に来る。時刻で揃えておけば、受け手が並び順を気にせず繋げる。
-  chunks.sort((a, b) => a.firstSampleMs - b.firstSampleMs)
-  return { chunks, filesRead, filesMissing, filesFailed, skippedBytes, truncated }
+  // **重なりを解いてから並べ直す。** `chunks` はいま書いた順（ファイル順・ファイルの中の順）で、
+  // 作り直し同士は後から書いたほうを採るのにその順を使う。走査はファイル順（＝時刻順）だが、
+  // 1 時間前から見る都合で跨いだまとまりが先に来る。時刻で揃えておけば、受け手が並び順を気にせず繋げる。
+  const resolved = resolveRevisions(chunks)
+  resolved.sort((a, b) => a.firstSampleMs - b.firstSampleMs)
+  return { chunks: resolved, filesRead, filesMissing, filesFailed, skippedBytes, truncated }
+}
+
+/** まとまりの `[from, to)` 番目のサンプルだけを切り出す。 */
+function sliceChunk(c: ArchivedWaveChunk, from: number, to: number): ArchivedWaveChunk {
+  return {
+    firstSampleMs: c.firstSampleMs + from * c.msPerSample,
+    msPerSample: c.msPerSample,
+    gal: [c.gal[0].subarray(from, to), c.gal[1].subarray(from, to), c.gal[2].subarray(from, to)],
+    dcGal: c.dcGal,
+    memberCount: c.memberCount.subarray(from, to),
+    revised: c.revised,
+  }
+}
+
+/**
+ * 作り直した分とライブの分の重なりを解く。`chunks` は**書いた順**で渡すこと。
+ *
+ * - **作り直した分はライブの分より優先する。** 重なったライブのサンプルは返さない
+ * - **作り直し同士は、後から書いたほうを優先する**（もう一度作り直したら、新しいほうが正）
+ * - **削るのはサンプル単位。** まとまりごと捨てると、境目でライブのまとまりの残り半分が穴になる
+ *   （作り直しの区切りとライブの区切りは揃わない）
+ *
+ * あるサンプルが覆われているかは、優先する側のまとまりの「最初のサンプルの半刻み手前から最後の
+ * サンプルの半刻み先まで」に入るかで見る。**作り直した分が 1 つも無ければ、そのまま返す。**
+ */
+export function resolveRevisions(chunks: readonly ArchivedWaveChunk[]): ArchivedWaveChunk[] {
+  if (!chunks.some((c) => c.revised)) return [...chunks]
+  const covered: Array<[number, number]> = []
+  const isCovered = (t: number): boolean => covered.some(([a, b]) => t >= a && t < b)
+  const out: ArchivedWaveChunk[] = []
+  const take = (c: ArchivedWaveChunk): void => {
+    const n = c.memberCount.length
+    let runStart = -1
+    for (let i = 0; i <= n; i += 1) {
+      const free = i < n && !isCovered(c.firstSampleMs + i * c.msPerSample)
+      if (free && runStart < 0) runStart = i
+      if (!free && runStart >= 0) {
+        out.push(runStart === 0 && i === n ? c : sliceChunk(c, runStart, i))
+        runStart = -1
+      }
+    }
+  }
+  // 作り直した分を新しい順に。採った範囲を覆いへ足していく。
+  for (let i = chunks.length - 1; i >= 0; i -= 1) {
+    const c = chunks[i]!
+    if (!c.revised) continue
+    take(c)
+    const half = c.msPerSample / 2
+    const span: [number, number] = [c.firstSampleMs - half, c.firstSampleMs + (c.memberCount.length - 1) * c.msPerSample + half]
+    // **直前に足した覆いと接していれば繋ぐ。** 1 回の作り直しは数百まとまりを時刻順に書くので、
+    // 新しい順に回すと隣り合ったまとまりが続けて来る。繋がないと、覆いの判定がサンプルごとに
+    // その数だけ回る（10 分の読み返しで 1 億回近く）。
+    const last = covered[covered.length - 1]
+    if (last !== undefined && span[1] >= last[0] && span[0] <= last[1]) {
+      last[0] = Math.min(last[0], span[0])
+      last[1] = Math.max(last[1], span[1])
+    } else {
+      covered.push(span)
+    }
+  }
+  for (const c of chunks) if (!c.revised) take(c)
+  return out
 }
 
 interface OpenBook {
@@ -364,6 +449,11 @@ interface OpenBook {
   readonly hourKey: string
   pending: number
   broken: boolean
+  /**
+   * ライブの本として持っている観測点。**作り直しが開いた脇の本（{@link WaveArchive.writeRevised}）は
+   * `null`** で、ライブがその時へ切り替わったら引き継いで観測点を入れる。
+   */
+  owner: string | null
 }
 
 function messageOf(error: unknown): string {
@@ -380,6 +470,16 @@ export class WaveArchive {
 
   /** 観測点ごとに 1 冊。**時が変われば閉じて開き直す。** */
   private readonly books = new Map<string, OpenBook>()
+  /**
+   * 作り直しがライブの外の時へ書くために開いた本（ファイルの場所ごと）。**ライブが同じ時へ
+   * 切り替わったら、新しく開かずにこれを引き継ぐ** —— 1 つのファイルへ 2 本の書き口を開かない。
+   */
+  private readonly sideBooks = new Map<string, OpenBook>()
+  /**
+   * 脇の本を次に開いてよい時刻（ファイルの場所ごと）。**ライブの {@link reopenAt} とは分ける** ——
+   * 過去の時のファイルが開けないだけで、ライブが次の時を開くのまで待たせない。
+   */
+  private readonly sideReopenAt = new Map<string, number>()
   /** 観測点ごとの、次に開いてよい時刻。**壊れた直後に開き直し続けないため。** */
   private readonly reopenAt = new Map<string, number>()
   /** 締め終わっていない本。**解決したら外す** —— 積みっぱなしにすると伸び続ける。 */
@@ -390,6 +490,8 @@ export class WaveArchive {
   private lostCount = 0
   private badChunkCount = 0
   private writtenCount = 0
+  private revisedWrittenCount = 0
+  private revisedLostCount = 0
   private rotatedCount = 0
   private slowCloseFlag = false
   private lastWriteErrorText: string | null = null
@@ -431,6 +533,16 @@ export class WaveArchive {
     return this.writtenCount
   }
 
+  /** 作り直して足したまとまりの件数（{@link writeRevised}）。 */
+  get revisedWritten(): number {
+    return this.revisedWrittenCount
+  }
+
+  /** 作り直したのに書けなかったまとまりの件数。 */
+  get revisedLost(): number {
+    return this.revisedLostCount
+  }
+
   /** 時が変わって本を切り替えた回数。 */
   get rotated(): number {
     return this.rotatedCount
@@ -466,7 +578,7 @@ export class WaveArchive {
     if (chunk.gal.length === 3 && chunk.gal[0].length === 0) return { saved: true, empty: true }
 
 
-    const payload = encodeWaveChunk(chunk)
+    const payload = encodeWaveChunk(chunk, false)
     if (payload === null) {
       this.badChunkCount += 1
       return { saved: false, reason: 'bad-chunk' }
@@ -512,6 +624,147 @@ export class WaveArchive {
   }
 
   /**
+   * 生データから作り直したまとまり（`stationRewave.ts`）を、「作り直し」の印を付けて足す。
+   * **書き終えるまで待つ**（書けた数を返す）。投げない。
+   *
+   * **ライブの {@link write} を通さない。** あちらは時が変わると本を閉じて開き直すので、過去の時の
+   * まとまりを渡すと、いま書いている本を閉じて過去の本を開き、次のライブのまとまりでまた開き直す。
+   * - その時の本をライブで開いていれば、その流し口へ続けて書く（**1 つのファイルへ 2 か所から書かない**）
+   * - 開いていなければ、その時のファイルを追記で開き（脇の本・{@link sideBooks}）、書き終えたら閉じる。
+   *   **書いている最中にライブがその時へ切り替わったら、ライブはそれを引き継ぐ**（閉じるのはライブの側）
+   * - 閉じかけのライブの本（時が変わって締めくくりへ回した本）とは、書き口が一時 2 本になりうる。
+   *   閉じかけの本はもう新しく書かず、溜めた分を吐き出すだけで、追記は 1 回の書き込みごとに末尾へ足される
+   *   ので、まとまりが途中で混ざることはない
+   *
+   * 印の付いた分は読み返しでライブより優先される（{@link resolveRevisions}）ので、ファイルを
+   * 書き換えずに済む。
+   */
+  async writeRevised(stationId: string, chunks: readonly FusedWaveChunk[]): Promise<RevisedWriteResult> {
+    let written = 0
+    let lost = 0
+    let bad = 0
+    const byHour = new Map<string, Buffer[]>()
+    for (const chunk of chunks) {
+      const hourKey = jstHour(chunk.firstSampleMs)
+      const payload = hourKey === null ? null : encodeWaveChunk(chunk, true)
+      if (hourKey === null || payload === null) {
+        bad += 1
+        continue
+      }
+      const list = byHour.get(hourKey) ?? []
+      list.push(payload)
+      byHour.set(hourKey, list)
+    }
+    for (const [hourKey, payloads] of byHour) {
+      if (this.closed) {
+        lost += payloads.length
+        continue
+      }
+      const live = this.books.get(stationId)
+      let ok: number
+      if (live !== undefined && !live.broken && live.hourKey === hourKey) {
+        ok = await this.appendPayloads(live, payloads)
+      } else {
+        const path = join(this.dir, waveFileName(stationId, hourKey))
+        const side = this.sideBookFor(path, hourKey)
+        ok = side === null ? 0 : await this.appendPayloads(side, payloads)
+        // **ライブが引き継いでいなければ閉じる**（引き継いだなら、閉じるのはライブの側）。
+        if (side !== null && this.sideBooks.get(path) === side) {
+          this.sideBooks.delete(path)
+          this.retire(side)
+        }
+      }
+      written += ok
+      lost += payloads.length - ok
+    }
+    this.revisedWrittenCount += written
+    this.revisedLostCount += lost
+    this.badChunkCount += bad
+    return { written, lost, bad }
+  }
+
+  /**
+   * 本へまとめて書き、書けた数を返す。投げない。**抱える量の上限はライブの {@link write} と同じに
+   * 数える** —— 作り直しは数百まとまりを一度に渡すので、数えないとディスクが詰まった間に
+   * 上限を越えて抱え込み、そのことがどの数え上げにも出ない。上限を越える分は書かない。
+   */
+  private appendPayloads(book: OpenBook, payloads: readonly Buffer[]): Promise<number> {
+    return Promise.all(
+      payloads.map(
+        (p) =>
+          new Promise<boolean>((resolve) => {
+            if (book.broken || book.pending + p.length > this.maxPendingBytes) {
+              resolve(false)
+              return
+            }
+            book.pending += p.length
+            try {
+              book.stream.write(p, (error) => {
+                book.pending = Math.max(0, book.pending - p.length)
+                if (error) this.lastWriteErrorText = messageOf(error)
+                resolve(!error)
+              })
+            } catch (error) {
+              book.pending = Math.max(0, book.pending - p.length)
+              this.lastWriteErrorText = messageOf(error)
+              resolve(false)
+            }
+          }),
+      ),
+    ).then((results) => results.filter(Boolean).length)
+  }
+
+  /** 作り直しが書く脇の本。**開いていればそれ、無ければ開く。** 開けなければ `null`。投げない。 */
+  private sideBookFor(path: string, hourKey: string): OpenBook | null {
+    const open = this.sideBooks.get(path)
+    if (open !== undefined && !open.broken) return open
+    // **開けなかった・壊れた直後は開き直さない**（ライブの本と同じく、詰まったディスクを叩き続けない）。
+    const nowMs = this.now()
+    // **期限の切れた覚えはここで捨てる。** 鍵はファイル（観測点 × 時）なので、同じ時へ二度と書かなければ
+    // 残り続ける —— ディスクが長く詰まると、詰まっていた間に作り直した時の数だけ積み上がる。
+    for (const [p, until] of this.sideReopenAt) if (until <= nowMs) this.sideReopenAt.delete(p)
+    if (nowMs < (this.sideReopenAt.get(path) ?? 0)) return null
+    let stream: Writable
+    try {
+      stream = this.openStream(path)
+    } catch (error) {
+      this.writeErrorCount += 1
+      this.lastWriteErrorText = messageOf(error)
+      this.sideReopenAt.set(path, nowMs + this.reopenIntervalMs)
+      return null
+    }
+    this.sideReopenAt.delete(path)
+    const book: OpenBook = { stream, hourKey, pending: 0, broken: false, owner: null }
+    this.watchErrors(book)
+    this.sideBooks.set(path, book)
+    return book
+  }
+
+  /**
+   * 本の流し口の `error` を受ける。**壊れたら本ごと捨てる** —— `error` の後も書き続けると、
+   * 渡した分が黙って消える。ライブの本なら開き直しの間隔を置く（{@link breakBook}）。
+   */
+  private watchErrors(book: OpenBook): void {
+    book.stream.on('error', (error) => {
+      this.lastWriteErrorText = messageOf(error)
+      if (book.owner !== null) {
+        this.breakBook(book.owner, book)
+        return
+      }
+      // 脇の本。**ライブの本と同じく「流し口が壊れた」に数え**、しばらく開き直さない。
+      if (book.broken) return
+      book.broken = true
+      book.pending = 0
+      this.writeErrorCount += 1
+      for (const [path, side] of this.sideBooks) {
+        if (side !== book) continue
+        this.sideBooks.delete(path)
+        this.sideReopenAt.set(path, this.now() + this.reopenIntervalMs)
+      }
+    })
+  }
+
+  /**
    * その観測点・その時の本。**無ければ開く。**
    *
    * 開けなければ `null`（次に開いてよい時刻まで待つ）。
@@ -531,21 +784,26 @@ export class WaveArchive {
     const nowMs = this.now()
     if (nowMs < waitUntil) return null
 
+    const path = join(this.dir, waveFileName(stationId, hourKey))
+    // **作り直しがその時のファイルを開いていれば引き継ぐ**（{@link sideBooks}）。
+    const side = this.sideBooks.get(path)
+    if (side !== undefined && !side.broken) {
+      this.sideBooks.delete(path)
+      side.owner = stationId
+      this.books.set(stationId, side)
+      return side
+    }
     let stream: Writable
     try {
-      stream = this.openStream(join(this.dir, waveFileName(stationId, hourKey)))
+      stream = this.openStream(path)
     } catch (error) {
       this.writeErrorCount += 1
       this.lastWriteErrorText = messageOf(error)
       this.reopenAt.set(stationId, nowMs + this.reopenIntervalMs)
       return null
     }
-    const book: OpenBook = { stream, hourKey, pending: 0, broken: false }
-    // **壊れたら本ごと捨てる。** `error` の後も書き続けると、渡した分が黙って消える。
-    stream.on('error', (error) => {
-      this.lastWriteErrorText = messageOf(error)
-      this.breakBook(stationId, book)
-    })
+    const book: OpenBook = { stream, hourKey, pending: 0, broken: false, owner: stationId }
+    this.watchErrors(book)
     this.books.set(stationId, book)
     return book
   }
@@ -586,6 +844,8 @@ export class WaveArchive {
     this.closed = true
     for (const [, book] of this.books) this.retire(book)
     this.books.clear()
+    for (const [, book] of this.sideBooks) this.retire(book)
+    this.sideBooks.clear()
 
     const budget = new Promise<'timeout'>((resolve) => {
       const timer = setTimeout(() => resolve('timeout'), this.closeBudgetMs)

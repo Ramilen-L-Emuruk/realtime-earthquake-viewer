@@ -50,7 +50,19 @@ export type BacklogFailure =
   | `http-${number}`
 
 export type BacklogEvent =
-  | { readonly kind: 'recovered'; readonly key: string; readonly address: string; readonly packets: number; readonly samples: number }
+  | {
+      readonly kind: 'recovered'
+      readonly key: string
+      readonly address: string
+      readonly packets: number
+      readonly samples: number
+      /**
+       * 取り戻したまとまりの波形の時刻の範囲 `[fromMs, toMs)`（基板の時計）。**合成波形の作り直しが
+       * 区間を決めるのに使う**（`rewaveScheduler.ts`）。
+       */
+      readonly fromMs: number
+      readonly toMs: number
+    }
   | { readonly kind: 'unrecoverable'; readonly key: string; readonly address: string; readonly reason: UnrecoverableReason; readonly samples: number }
   /**
    * 答えに使えないまとまりが混ざった（読めない・別の流れを名乗る）。
@@ -148,6 +160,15 @@ function parseHave(text: string | null): { from: number; to: number } | 'none' |
   const to = Number(m[2])
   if (from > 0xffff_ffff || to > 0xffff_ffff) return undefined
   return { from, to }
+}
+
+/** パケットの波形が覆う時刻 `[fromMs, toMs)`（公称の刻みで）。 */
+function packetSpan(p: { readonly firstSampleMs: number; readonly sampleRateHz: number; readonly samples: { readonly length: number } }): {
+  readonly fromMs: number
+  readonly toMs: number
+} {
+  const ms = p.sampleRateHz > 0 ? 1000 / p.sampleRateHz : 0
+  return { fromMs: p.firstSampleMs, toMs: p.firstSampleMs + p.samples.length * ms }
 }
 
 function messageOf(error: unknown): string {
@@ -277,6 +298,8 @@ export class BacklogFetcher {
     // **生データへ書けた分だけ欠けから外す。** 読めない・別物・書けなかった分は欠けに残り、あとで訊き直す。
     let packets = 0
     let samples = 0
+    let spanFrom = Number.POSITIVE_INFINITY
+    let spanTo = Number.NEGATIVE_INFINITY
     let bad = 0
     let foreign = 0
     let unsaved = 0
@@ -303,16 +326,19 @@ export class BacklogFetcher {
       }
       // **1 まとまりでも書けなかったら、この答えの残りは書かずに欠けに残す。** ディスクが詰まって
       // いるときに書き続けても同じく書けず、待つ時間（1 まとまりにつき `timeoutMs`）が積み上がる。
-      if (unsaved > 0 || !(await this.keepWithin(gap, text, p.firstSeq, to))) {
+      const span = packetSpan(p)
+      if (unsaved > 0 || !(await this.keepWithin(gap, text, p.firstSeq, to, span))) {
         unsaved += 1
         continue
       }
+      spanFrom = Math.min(spanFrom, span.fromMs)
+      spanTo = Math.max(spanTo, span.toMs)
       packets += 1
       this.recoveredPackets += 1
       samples += book.recovered(gap.key, p.firstSeq, to)
     }
     if (packets > 0) {
-      this.options.onEvent({ kind: 'recovered', key: gap.key, address: gap.address, packets, samples })
+      this.options.onEvent({ kind: 'recovered', key: gap.key, address: gap.address, packets, samples, fromMs: spanFrom, toMs: spanTo })
     }
     const unsure = bad + foreign > 0
     if (unsure) {
@@ -367,7 +393,13 @@ export class BacklogFetcher {
    * **時間切れでも書き込みは止まらない**ので、決着を `inflight` に残す。遅れて成功したら、
    * そこでこのまとまりを欠けから外す（訊き直して二度書かない）。遅れて失敗したら欠けに残る。
    */
-  private async keepWithin(gap: Gap, text: string, from: number, to: number): Promise<boolean> {
+  private async keepWithin(
+    gap: Gap,
+    text: string,
+    from: number,
+    to: number,
+    span: { readonly fromMs: number; readonly toMs: number },
+  ): Promise<boolean> {
     // 拒否しない約束の口だが、型では縛れない。**来たら書けなかったとして扱う** —— 時間切れの前に
     // 来た拒否を素通しにすると、同じ答えの残りと欠けの扱い（`book.failed`）まで飛ばしてしまう。
     const write = this.options.keepRecovered(gap.address, text).catch(() => false)
@@ -378,7 +410,9 @@ export class BacklogFetcher {
         if (!ok) return
         const samples = this.options.book.recovered(gap.key, from, to)
         this.recoveredPackets += 1
-        this.options.onEvent({ kind: 'recovered', key: gap.key, address: gap.address, packets: 1, samples })
+        this.options.onEvent({
+          kind: 'recovered', key: gap.key, address: gap.address, packets: 1, samples, fromMs: span.fromMs, toMs: span.toMs,
+        })
       })
       .catch(() => {
         // `book.recovered` や `onEvent` が投げても、`inflight` は必ず外す（下の finally）。

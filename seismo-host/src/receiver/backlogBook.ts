@@ -281,6 +281,10 @@ export class BacklogBook {
    * そこから `maxSpanSamples` に収まる欠けの末尾まで。間に挟まる受信済みの分も範囲に入るので、
    * 返ってきたパケットのうち欠けに掛からないものは書かない（`overlapsGap`）。
    * 伸ばす先の欠けは、待ちの最中（`nextTryMs` の前）でも含める —— 早く取り戻せて困ることは無い。
+   *
+   * **伸ばす先には `accept` を掛け直さない。** 同じ流れ（`key` が同じ）の欠けは流れも同じなので、
+   * `accept` が流れだけを見ている限り答えは起点と変わらない。流れ以外（欠けごとの状態）を見る
+   * `accept` を渡すようになったら、ここでも掛けること。
    */
   nextDueWhere(nowMs: number, accept: (stream: StreamRef) => boolean): Gap | null {
     const keep: GapState[] = []
@@ -304,6 +308,15 @@ export class BacklogBook {
       if (end <= this.options.maxSpanSamples && end > len) len = end
     }
     return { ...this.view(best), to: seqAdd(best.from, len) }
+  }
+
+  /**
+   * `accept` が通す流れに、まだ片付いていない欠けが 1 つでもあるか。**作り直しの係が、観測点の
+   * 欠けが全部片付いた（取り戻したか諦めた）かを見るのに使う**（`rewaveScheduler.ts`）。
+   * 待ちの最中（`nextTryMs` の前）の欠けも数える。
+   */
+  hasPendingWhere(accept: (stream: StreamRef) => boolean): boolean {
+    return this.gaps.some((g) => accept(g.stream))
   }
 
   /** `[from, to)` が、いま覚えている欠けに少しでも掛かるか。 */

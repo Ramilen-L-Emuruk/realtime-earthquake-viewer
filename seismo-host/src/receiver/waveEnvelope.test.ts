@@ -24,6 +24,7 @@ function chunk(params: {
     ],
     dcGal: [0, 0, 980],
     memberCount: Uint8Array.from(params.members ?? new Array(n).fill(3)),
+    revised: false,
   }
 }
 
