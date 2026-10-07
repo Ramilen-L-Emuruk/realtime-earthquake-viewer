@@ -197,14 +197,15 @@ const UNRECOVERABLE_REASONS = Object.keys(UNRECOVERABLE_TEXT) as UnrecoverableRe
  *
  * - **前後の余白 2 秒**: 作り直した分とライブの分の継ぎ目を、欠けた所から離す
  * - **最後に取り戻してから 3 秒待つ**: 干渉の最中は取り戻しが続けて届くので、1 件へまとめる
- * - **欠けが片付かなくても 2 分で作り直す**: 欠けは最長 20 分諦めないので、待ち続けると画面へ戻すのが遅れる
+ * - **落ち着かなくても、最初に取り戻してから 10 秒で作り直す**: PWA の下部の波形は直近 60 秒しか抱えないので、
+ *   取り戻した区間はそれより十分早く作り直して知らせる。観測点に欠けが残っていても待たない（理由は `rewaveScheduler.ts`）
  * - **1 件は 3 分まで**: 3 分ぶん（9 センサー）を読んで作り直すのに手元の機械で 1 秒前後
  *   （2026-10-06 の 21 時台の生データで実測）。それより長い区間は区切って順に回す
  */
 const REWAVE_SCHEDULER_OPTIONS: RewaveSchedulerOptions = {
   padMs: 2_000,
   settleMs: 3_000,
-  maxWaitMs: 120_000,
+  maxWaitMs: 10_000,
   maxSpanMs: 180_000,
 }
 
@@ -1863,7 +1864,6 @@ async function main(): Promise<void> {
 
   const rewaveRunner = new RewaveRunner({
     scheduler: rewaveScheduler,
-    hasPending: (stationId) => backlogBook.hasPendingWhere((s) => stationIdOfBoard(s.boardKey) === stationId),
     // **区間の当時の設定を履歴から引く**（`stationStore.ts`）。いまの設定で過去の区間を作らない。
     configThrough: (fromMs, toMs) => stationStore.configThrough(fromMs, toMs),
     flush: () => mseedRecorder.flushForRead(),

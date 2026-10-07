@@ -67,12 +67,11 @@ async function writeRaw(): Promise<MseedRecorder> {
 
 function harness(recorder: MseedRecorder, over: { config?: StationConfig | 'changed' | null; flushOk?: boolean } = {}) {
   const seen: Array<[number, number]> = []
-  const scheduler = new RewaveScheduler({ padMs: 0, settleMs: 0, maxWaitMs: 300_000, maxSpanMs: 180_000 })
+  const scheduler = new RewaveScheduler({ padMs: 0, settleMs: 0, maxWaitMs: 10_000, maxSpanMs: 180_000 })
   const written: FusedWaveChunk[] = []
   const events: RewaveEvent[] = []
   const runner = new RewaveRunner({
     scheduler,
-    hasPending: () => false,
     configThrough: (fromMs, toMs) => {
       seen.push([fromMs, toMs])
       return over.config === undefined ? config() : over.config

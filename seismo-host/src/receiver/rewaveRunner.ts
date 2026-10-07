@@ -59,8 +59,6 @@ export type RewaveEvent =
 
 export interface RewaveRunnerDeps {
   readonly scheduler: RewaveScheduler
-  /** その観測点の流れに、まだ片付いていない欠けがあるか。 */
-  readonly hasPending: (stationId: string) => boolean
   /**
    * `[fromMs, toMs]` の間ずっと効いていた観測点の設定（`StationStore.configThrough`）。途中で変わって
    * いれば `'changed'`、履歴を読めていなければ `null`。
@@ -118,7 +116,7 @@ export class RewaveRunner {
     if (this.stopped || this.running !== null) return
     let job: RewaveJob | null
     try {
-      job = this.deps.scheduler.take(this.deps.now(), this.deps.hasPending)
+      job = this.deps.scheduler.take(this.deps.now())
     } catch {
       this.count('internal')
       return

@@ -310,15 +310,6 @@ export class BacklogBook {
     return { ...this.view(best), to: seqAdd(best.from, len) }
   }
 
-  /**
-   * `accept` が通す流れに、まだ片付いていない欠けが 1 つでもあるか。**作り直しの係が、観測点の
-   * 欠けが全部片付いた（取り戻したか諦めた）かを見るのに使う**（`rewaveScheduler.ts`）。
-   * 待ちの最中（`nextTryMs` の前）の欠けも数える。
-   */
-  hasPendingWhere(accept: (stream: StreamRef) => boolean): boolean {
-    return this.gaps.some((g) => accept(g.stream))
-  }
-
   /** `[from, to)` が、いま覚えている欠けに少しでも掛かるか。 */
   overlapsGap(key: string, from: number, to: number): boolean {
     const len = seqLen(from, to)
