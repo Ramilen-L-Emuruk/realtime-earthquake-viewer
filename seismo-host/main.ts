@@ -2809,8 +2809,9 @@ async function main(): Promise<void> {
   }
   process.on('SIGINT', () => void runShutdown('SIGINT'))
   process.on('SIGTERM', () => void runShutdown('SIGTERM'))
-  // **Windows で外から締めくくりを走らせる口はこれだけ**（`Stop-Process` は SIGINT の
-  // ハンドラを呼ばずに落とす）。配り直しはここを叩いてから起動し直す（README「常時動かす機へ配る」）。
+  // **Windows で手で止めるときはこの口を使う**（`Stop-Process` は SIGINT のハンドラを呼ばずに落とす）。
+  // もう 1 つの経路はコンソールへの Ctrl+C で、上の SIGINT に届く（サービスとして動かしたとき WinSW が送る。
+  // README「Windows で常駐させる」）。
   requestShutdownFromApi = makeShutdownRequester({
     isClosing: () => closing,
     start: () => void runShutdown('POST /api/shutdown'),
