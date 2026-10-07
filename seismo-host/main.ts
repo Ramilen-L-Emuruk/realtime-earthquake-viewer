@@ -54,6 +54,8 @@ import type { MseedHealth } from './src/receiver/mseedRecorder'
 import { STATION_CONFIG_FILE, StationStore } from './src/receiver/stationStore'
 import { ReadingHub } from './src/receiver/readingHub'
 import { WaveArchive, readWaveRange } from './src/receiver/waveArchive'
+import { WaveSummaryKeeper } from './src/receiver/waveSummaryKeeper'
+import { SummaryWorkerRunner } from './src/receiver/waveSummaryWorkerRunner'
 import { SensorFusion } from './src/receiver/sensorFusion'
 import type {
   FusedWaveChunk,
@@ -332,6 +334,16 @@ function defaultRawDir(): string {
  */
 function defaultWaveDir(): string {
   return fileURLToPath(new URL('./data/wave/', import.meta.url))
+}
+
+/**
+ * 保存した波形の要約（`src/receiver/waveSummary.ts`）の既定の置き場所（`defaultRawDir` と同じ理由で
+ * このファイルからの相対）。`SEISMO_SUMMARY_DIR` で変えられる。`data/` は `.gitignore` 済み。
+ * **1 日 55 MB 前後**増える（生データ 27 チャンネルぶんで 2 MB/時・合成波形ぶんで約 0.2 MB/時）。
+ * 消しても元のファイルから作り直せる。
+ */
+function defaultSummaryDir(): string {
+  return fileURLToPath(new URL('./data/summary/', import.meta.url))
 }
 
 /**
@@ -1785,6 +1797,20 @@ async function main(): Promise<void> {
   const waveDir = process.env.SEISMO_WAVE_DIR ?? defaultWaveDir()
   const waveArchive = new WaveArchive({ dir: waveDir })
 
+  // **保存した波形の要約**（管理コンソールで長い期間を俯瞰するため・#621）。生データと合成波形の時の
+  // ファイルを 1 分ごとに見回り、要約が古いものを別スレッドで作り直す。**作れなくても受信は止めない**
+  // （要約は元のファイルからいつでも作り直せる）。最初の見回りは起動の 30 秒後 —— 起動直後は欠けの
+  // 取り戻しと合成の作り直しが重なる。
+  const summaryDir = process.env.SEISMO_SUMMARY_DIR ?? defaultSummaryDir()
+  const summaryRunner = new SummaryWorkerRunner()
+  const summaryKeeper = new WaveSummaryKeeper({
+    rawDir,
+    waveDir,
+    summaryDir,
+    run: (job) => summaryRunner.run(job),
+  })
+  summaryKeeper.start(60_000, 30_000)
+
   // **地震検出（REQUIREMENTS.md §6・§9）。** 揺れの記録を残し（`GET /events` も同じ
   // 置き場所を読む）、気象庁の地震情報と照らし合わせる。
   // 配線そのものは `StationDetection` が持つ（自動テストの届く場所に置くため）。
@@ -2476,6 +2502,8 @@ async function main(): Promise<void> {
           revisedWritten: waveArchive.revisedWritten,
           revisedLost: waveArchive.revisedLost,
         },
+        // **部品が返すものをそのまま渡す**（`mseed` と同じ理由）。
+        waveSummary: summaryKeeper.snapshot(),
         hub: hub.snapshot(),
         acks: acks.snapshot(),
         // **部品が返すものをそのまま渡す**（`mseed` と同じ理由）。
@@ -2715,6 +2743,10 @@ async function main(): Promise<void> {
     } catch (error) {
       console.error(`[rewave] 締めくくりで作り直しを止められなかった（${error instanceof Error ? error.message : String(error)}）`)
     }
+    // **要約は待たずに止める。** 作りかけの 1 件は一時ファイルのまま残り、次の起動で作り直される
+    // （要約は元のファイルからいつでも作り直せるので、締めくくりを遅らせてまで書き終える理由が無い）。
+    summaryKeeper.stop()
+    await summaryRunner.close()
 
     // **順序は `closeHostCore` が持つ**（理由もあちらに書いてある）。ここは
     // `main()` のローカル変数を `deps` へ束ねる配線だけ。
