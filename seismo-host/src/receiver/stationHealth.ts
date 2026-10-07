@@ -75,9 +75,9 @@ export interface StationHealth {
    *
    * **`lastReadingAtMs` の代わりにはならない。** あちらは「震度が出た時刻」で、
    * こちらは震度・skip 理由・締めくくり失敗のいずれかに触れた時刻——合成が
-   * 恒久的に壊れて震度が二度と出なくなった場合でも、駆動役からのパケットが
-   * 届き続けている限り `noteSkip` は呼ばれ続けるので、この欄だけは動き続ける。
-   * これが無いと、「観測点が丸ごと沈黙した」のか「駆動役は生きているが合成だけ
+   * 恒久的に壊れて震度が二度と出なくなった場合でも、合成のまとまりが出続けている
+   * 限り `noteSkip` は呼ばれ続けるので、この欄だけは動き続ける。
+   * これが無いと、「観測点が丸ごと沈黙した」のか「センサーは生きているが合成の震度だけ
    * 壊れている」のかを `/status` から見分けられない（センサー側は
    * `sensors[].lastPacketMs` で見分けられるのと非対称になる）。
    */
@@ -89,7 +89,7 @@ export interface StationHealth {
   /**
    * 合成の計測震度を出せない理由。出せているなら null。
    *
-   * **駆動役の到着でだけ更新される。** `SensorFusion.FusionOutcome.intensitySkipReason` と
+   * **合成のまとまりが出た回にだけ更新される。** `SensorFusion.FusionOutcome.intensitySkipReason` と
    * 同じ意味で、震度が出た回（`noteReading`）にだけクリアする——`sensorHealth.ts` の
    * `lastSkipReason` と同じ設計。
    */
@@ -205,7 +205,7 @@ export class StationHealthBook {
    * 合成の計測震度が出せない理由が変わった（または初めて立った）。
    *
    * **`reason` が null なら何もしない。** `FusionOutcome.intensitySkipReason` は
-   * 駆動役の到着のたびに「いまの状態」を返すため、null（正常）を無条件に反映すると
+   * 合成のまとまりのたびに「いまの状態」を返すため、null（正常）を無条件に反映すると
    * `noteReading` が置いた「震度が出た」印より先にここが通ったとき、震度が出た事実の
    * ほうを消してしまう——理由をクリアする役目は `noteReading` に一本化する。
    */
@@ -223,9 +223,9 @@ export class StationHealthBook {
    * **合成だけで足りるなら `/stream?wave=station`**、センサー単独も要るなら
    * `?wave=1` へ繋ぐ（後者はそこへ毎秒 65 KB 積む。`readingHub.ts` の `WaveWant`）。
    *
-   * **`backupsCovered` は本数と別に要る**（`uncoveredFusions` の説明。#374）。
+   * **`allMembersCovered` は本数と別に要る**（`uncoveredFusions` の説明。#374）。
    */
-  noteWave(wave: FusedWaveChunk, backupsCovered: boolean): void {
+  noteWave(wave: FusedWaveChunk, allMembersCovered: boolean): void {
     // **空のまとまりでは触らない。** `SensorFusion` は空を返さないが、
     // 触ると「最後に合成した」印（`lastPacketMs`）だけが動いて、
     // 本数は null のまま残る形になる。
@@ -239,7 +239,7 @@ export class StationHealthBook {
     }
     entry.lastMemberCountMin = min
     entry.lastMemberCountMax = max
-    if (!backupsCovered) entry.uncoveredFusions += 1
+    if (!allMembersCovered) entry.uncoveredFusions += 1
   }
 
   /**

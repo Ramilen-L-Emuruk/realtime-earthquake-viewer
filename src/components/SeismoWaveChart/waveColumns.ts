@@ -33,7 +33,7 @@ export interface WaveColumn {
   /**
    * その列に効いたセンサーの最小本数。**値を持たない列では 0。**
    *
-   * 1 以下のところは合成の裏付けが無い（駆動役だけの値）。
+   * 1 以下のところは合成の裏付けが無い（1 台だけの値）。
    */
   readonly minMembers: number
 }

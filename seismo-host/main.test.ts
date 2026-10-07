@@ -4,8 +4,11 @@ import { describe, expect, it } from 'vitest'
 // `main()` は「直接実行のときだけ走らせる」門の中にあるので、ここでは走らない
 // （門が無ければ、このテストを走らせるたびに UDP の口が開く）。
 import {
+  ZERO_FUSION_COUNTS,
+  addFusionCounts,
   applyStationConfigCore,
   closeHostCore,
+  fusionCountsOf,
   makeShutdownRequester,
   deliverFusionClosing,
   buildAssignedSilenceReport,
@@ -59,6 +62,7 @@ import type {
   StationCloseFailure,
   StationIntensityReading,
 } from './src/receiver/sensorFusion'
+import { SensorFusion } from './src/receiver/sensorFusion'
 
 describe('formatAt', () => {
   it('普通の時刻はそのまま出す', () => {
@@ -1153,6 +1157,44 @@ describe('deliverReading', () => {
   })
 })
 
+describe('addFusionCounts（合成の数え上げを作り直しをまたいで持ち越す）', () => {
+  const counts = (n: number) => ({ lateSamples: n, futureSamples: n + 1, discardedSamples: n + 2, unusableIntensities: n + 3 })
+
+  it('正: 持ち越した累計に、いまの部品の累計を欄ごとに足す', () => {
+    expect(addFusionCounts(counts(10), counts(1))).toEqual({
+      lateSamples: 11,
+      futureSamples: 13,
+      discardedSamples: 15,
+      unusableIntensities: 17,
+    })
+  })
+
+  it('安全弁: 作り直す前に持ち越せば、作り直した後の累計は減らない（毎分の要約が負にならない）', () => {
+    let carried = ZERO_FUSION_COUNTS
+    const before = addFusionCounts(carried, counts(5))
+    // 作り直す直前に持ち越す → 新しい部品は 0 から数え直す。
+    carried = before
+    const after = addFusionCounts(carried, ZERO_FUSION_COUNTS)
+    for (const key of Object.keys(before) as (keyof typeof before)[]) expect(after[key]).toBeGreaterThanOrEqual(before[key])
+  })
+
+  it('対照: 持ち越さずに作り直すと、累計は減る（持ち越しが要る理由）', () => {
+    const before = addFusionCounts(ZERO_FUSION_COUNTS, counts(5))
+    const after = addFusionCounts(ZERO_FUSION_COUNTS, ZERO_FUSION_COUNTS)
+    expect(after.lateSamples).toBeLessThan(before.lateSamples)
+  })
+
+  it('正: 部品から読む欄は、部品の getter と同じ値', () => {
+    const fusion = new SensorFusion(EMPTY_STATION_CONFIG)
+    expect(fusionCountsOf(fusion)).toEqual({
+      lateSamples: fusion.lateSamples,
+      futureSamples: fusion.futureSamples,
+      discardedSamples: fusion.discardedSamples,
+      unusableIntensities: fusion.unusableIntensities,
+    })
+  })
+})
+
 describe('deliverStationFusion', () => {
   const STATION_READING: StationIntensityReading = {
     stationId: 'garage',
@@ -1162,7 +1204,6 @@ describe('deliverStationFusion', () => {
 
   const FUSED_WAVE: FusedWaveChunk = {
     stationId: 'garage',
-    driver: { boardKey: 'mac:aa', sensorId: 'i2c0-68' },
     firstSampleIndex: 0,
     firstSampleMs: 1_000,
     msPerSample: 10,
@@ -1170,11 +1211,12 @@ describe('deliverStationFusion', () => {
     // 落とした直流（`gal` と足せば校正済み gal の重み付き平均になる値）。
     dcGal: [[0], [0], [980]],
     memberCount: [2],
+    axisMemberCount: [[2], [2], [2]],
   }
 
   function fusion(overrides: Partial<FusionOutcome> = {}): FusionOutcome {
     return {
-      fusedWave: null,
+      fusedWave: FUSED_WAVE,
       pairDiffs: [],
       readings: [],
       intensitySkipReason: null,
@@ -1182,7 +1224,7 @@ describe('deliverStationFusion', () => {
       intensityStateChanged: false,
       // 既定は「揃っていた」。**揃わなかった回だけを数える**側なので、こちらを
       // 既定にしておけば、数えるテストだけが明示的に偽を渡す（#374）。
-      backupsCovered: true,
+      allMembersCovered: true,
       ...overrides,
     }
   }
@@ -1224,34 +1266,6 @@ describe('deliverStationFusion', () => {
     ])
   })
 
-  it('駆動役以外の到着（fusedWave が null）では publishWave・noteSkip・reportCloseFailure・logSegment を呼ばない', () => {
-    // `closeFailure`・`intensitySkipReason` は `fusedWave` が非 null の回にしか
-    // 意味を持たない契約（`sensorFusion.ts` の `FusionOutcome`）。契約に反する
-    // 入力（fusedWave が null なのに両方が非 null）を渡しても無視されることを確かめる。
-    const calls: string[] = []
-    deliverStationFusion(
-      {
-        noteReading: () => calls.push('noteReading'),
-        publish: () => calls.push('publish'),
-        noteWave: () => calls.push('noteWave'),
-        notePairDiffs: () => calls.push('notePairDiffs'),
-        publishPairDiffs: () => calls.push('publishPairDiffs'),
-        publishWave: () => calls.push('publishWave'),
-        reportCloseFailure: () => calls.push('reportCloseFailure'),
-        noteSkip: () => calls.push('noteSkip'),
-        logSegment: () => calls.push('logSegment'),
-      },
-      fusion({
-        fusedWave: null,
-        closeFailure: { stationId: 'garage', detail: 'x' },
-        intensitySkipReason: 'stream-rejected',
-        intensityStateChanged: true,
-      }),
-    )
-
-    expect(calls).toEqual([])
-  })
-
   it('締めくくり失敗（closeFailure）は読み・skip理由より前に配る', () => {
     const order: string[] = []
     deliverStationFusion(
@@ -1272,8 +1286,8 @@ describe('deliverStationFusion', () => {
       }),
     )
 
-    // readings が空でも、`fusedWave` が非 null の回は必ず `noteSkip` でいまの
-    // 状態（この場合は intensitySkipReason: null ＝ 正常）を確定させる。
+    // readings が空でも、必ず `noteSkip` でいまの状態（この場合は
+    // intensitySkipReason: null ＝ 正常）を確定させる。
     // `intensityStateChanged` を渡していない（既定 false）ので `logSegment` は呼ばない。
     expect(order).toEqual(['reportCloseFailure', 'noteWave', 'notePairDiffs', 'publishPairDiffs', 'publishWave', 'noteSkip'])
   })
@@ -1294,8 +1308,8 @@ describe('deliverStationFusion', () => {
       noteSkip: () => {},
       logSegment: () => {},
     }
-    deliverStationFusion(sinks, fusion({ fusedWave: FUSED_WAVE, backupsCovered: false }))
-    deliverStationFusion(sinks, fusion({ fusedWave: FUSED_WAVE, backupsCovered: true }))
+    deliverStationFusion(sinks, fusion({ fusedWave: FUSED_WAVE, allMembersCovered: false }))
+    deliverStationFusion(sinks, fusion({ fusedWave: FUSED_WAVE, allMembersCovered: true }))
 
     expect(covered).toEqual([false, true])
   })
@@ -1407,20 +1421,20 @@ describe('deliverStationFusion', () => {
 const DRAINED: FusionOutcome = {
   fusedWave: {
     stationId: 'study',
-    driver: { boardKey: 'mac:aa', sensorId: 'i2c0-68' },
     firstSampleIndex: 0,
     firstSampleMs: 1_000,
     msPerSample: 10,
     gal: [[1], [2], [3]],
     dcGal: [[0], [0], [980]],
     memberCount: [1],
+    axisMemberCount: [[1], [1], [1]],
   },
   pairDiffs: [],
   readings: [],
   intensitySkipReason: null,
   closeFailure: null,
   intensityStateChanged: false,
-  backupsCovered: false,
+  allMembersCovered: false,
 }
 
 describe('applyStationConfigCore', () => {
@@ -1870,12 +1884,12 @@ describe('deliverFusionClosing', () => {
   const READING_A: StationIntensityReading = { stationId: 'study', atMs: 3_000, intensity: 1.0 }
   const DRAINED_B: FusionOutcome = {
     ...DRAINED,
-    fusedWave: DRAINED.fusedWave === null ? null : { ...DRAINED.fusedWave, stationId: 'garage' },
+    fusedWave: { ...DRAINED.fusedWave, stationId: 'garage' },
   }
 
   function sinks(calls: string[], overrides: Partial<FusionClosingSinks> = {}): FusionClosingSinks {
     return {
-      deliverFusion: (o) => calls.push(`deliverFusion:${o.fusedWave?.stationId}`),
+      deliverFusion: (o) => calls.push(`deliverFusion:${o.fusedWave.stationId}`),
       reportCloseFailures: () => calls.push('reportCloseFailures'),
       emitReading: (r) => calls.push(`emitReading:${r.stationId}`),
       reportDeliveryFailure: (labels) => calls.push(`reportDeliveryFailure:${labels.join(',')}`),
@@ -1902,7 +1916,7 @@ describe('deliverFusionClosing', () => {
       sinks(calls, {
         deliverFusion: (o) => {
           if (o.fusedWave?.stationId === 'study') throw new Error('study だけ配れない')
-          calls.push(`deliverFusion:${o.fusedWave?.stationId}`)
+          calls.push(`deliverFusion:${o.fusedWave.stationId}`)
         },
       }),
       { drained: [DRAINED, DRAINED_B], failures: [], readings: [READING_A] },

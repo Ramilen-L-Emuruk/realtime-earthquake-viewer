@@ -47,7 +47,6 @@ async function until(want: () => boolean, budgetMs = 2_000): Promise<void> {
 function makeChunk(overrides: Partial<FusedWaveChunk> = {}): FusedWaveChunk {
   return {
     stationId: 'station-1',
-    driver: { boardKey: 'mac:aabbccddee01', sensorId: 'i2c0-68' },
     firstSampleIndex: 0,
     firstSampleMs: AT_2026_09_25_2300_JST,
     msPerSample: 10,
@@ -62,6 +61,7 @@ function makeChunk(overrides: Partial<FusedWaveChunk> = {}): FusedWaveChunk {
       [980, 980, 980],
     ],
     memberCount: [3, 3, 2],
+    axisMemberCount: [[3, 3, 2], [3, 3, 2], [3, 3, 2]],
     ...overrides,
   }
 }

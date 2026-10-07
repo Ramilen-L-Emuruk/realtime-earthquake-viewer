@@ -32,9 +32,9 @@ export interface WaveChunkView {
   /**
    * 基板の起動ごとに変わる。**これが変われば、前のチャンクとは繋がない。**
    *
-   * **観測点の合成（`kind: 'station'`）では null。** 合成の区間の連続性は駆動役の
-   * 流れが決めるが、`FusedWaveChunk` はそれを外へ出さない（あちらの型の説明を
-   * 見ること）。**無いものを埋めない** —— 連続性は時刻の隔たりで見る
+   * **観測点の合成（`kind: 'station'`）では null。** 合成は観測点の目盛り（絶対時刻）の上で
+   * 作るので、区間という単位を持たない（`sensorFusion.ts` の冒頭を見ること）。
+   * **無いものを埋めない** —— 連続性は時刻の隔たりで見る
    * （`CONTINUITY_TOLERANCE`）ので、この 2 つが無くても切れ目は検出できる。
    */
   readonly streamKey: string | null

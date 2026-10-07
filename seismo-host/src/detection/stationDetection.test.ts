@@ -65,13 +65,13 @@ function waves(totalSec: number, stationId = 'station-1'): FusedWaveChunk[] {
     }
     out.push({
       stationId,
-      driver: { boardKey: 'mac:020000000001', sensorId: 'i2c0-68' },
       firstSampleIndex: i0,
       firstSampleMs: T0 + i0 * DT,
       msPerSample: DT,
       gal,
       dcGal: [[], [], []],
       memberCount: Array(30).fill(9),
+      axisMemberCount: [Array(30).fill(9), Array(30).fill(9), Array(30).fill(9)],
     })
   }
   return out

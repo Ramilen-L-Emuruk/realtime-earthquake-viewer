@@ -25,13 +25,13 @@ function pairDiff(overrides: Partial<SensorPairDiff> = {}): SensorPairDiff {
 function fused(memberCount: readonly number[], stationId = 'garage'): FusedWaveChunk {
   return {
     stationId,
-    driver: { boardKey: 'mac:aa', sensorId: 's0' },
     firstSampleIndex: 0,
     firstSampleMs: 1_000,
     msPerSample: 10,
     gal: [[1], [2], [3]],
     dcGal: [[0], [0], [980]],
     memberCount,
+    axisMemberCount: [memberCount, memberCount, memberCount],
   }
 }
 
@@ -240,7 +240,7 @@ describe('StationHealthBook', () => {
   it('理由が null（正常）のときは何も書き換えない', () => {
     const book = new StationHealthBook()
     book.noteSkip('garage', 'stream-rejected')
-    // `FusionOutcome.intensitySkipReason` は駆動役の到着のたびに「いまの状態」を
+    // `FusionOutcome.intensitySkipReason` は合成のまとまりのたびに「いまの状態」を
     // 返すため、null を無条件に反映すると `noteReading` が置いた震度出た印より
     // 先にここが通ったとき、震度が出た事実のほうを消してしまう。
     book.noteSkip('garage', null)
@@ -288,11 +288,11 @@ describe('StationHealthBook', () => {
     expect(book.snapshot().map((s) => s.stationId)).toEqual(['c', 'b', 'a'])
   })
 
-  it('駆動役が生きている限り、合成が恒久的に壊れていても lastPacketMs は動き続ける', () => {
+  it('合成のまとまりが出ている限り、合成の震度が恒久的に壊れていても lastPacketMs は動き続ける', () => {
     // **`lastReadingAtMs`（震度が出た時刻）の代わりにはならない。** 合成が壊れて
-    // 震度が二度と出なくなっても、駆動役からの到着ごとに `noteSkip` は呼ばれ続ける
+    // 震度が二度と出なくなっても、合成のまとまりごとに `noteSkip` は呼ばれ続ける
     // ので、`lastPacketMs` だけは進む——これが無いと、観測点が丸ごと沈黙したのか
-    // 駆動役は生きているが合成だけ壊れているのかを `/status` から見分けられない。
+    // センサーは生きているが合成の震度だけ壊れているのかを `/status` から見分けられない。
     const t = clock()
     const book = new StationHealthBook({ now: t.now })
     book.noteReading({ stationId: 'garage', atMs: 1_000, intensity: 2.5 })

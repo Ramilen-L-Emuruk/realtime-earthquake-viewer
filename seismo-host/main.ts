@@ -998,12 +998,9 @@ export interface StationFusionSinks {
    * 決める」と宣言しているので、覚える先を配達の中へ隠すと一覧性が壊れる
    * （`noteReading` と `publish` を分けているのと同じ理由）。
    */
-  readonly noteWave: (w: FusedWaveChunk, backupsCovered: boolean) => void
+  readonly noteWave: (w: FusedWaveChunk, allMembersCovered: boolean) => void
   /**
    * センサー対ごとの差分を覚える（#315）。**要約するのは受け手の仕事。**
-   *
-   * **`fusedWave` が非 null の回にしか非空にならない**（取り出しが起きなかった回は
-   * `nothingOutcome()` が空配列を返す）ので、あちらと同じ分岐の中で呼ぶ。
    *
    * **観測点を一緒に渡す。** 空配列からは観測点が引けないが、**空も伝えなければ
    * ならない** —— センサーを無効化して観測点が 1 台へ縮小すると差分は空になり、
@@ -1046,56 +1043,84 @@ export interface StationFusionSinks {
 }
 
 /**
- * `SensorFusion.ingest()` が返す 1 回ぶんの結果を配る。
+ * `SensorFusion.ingest()` が返す結果を 1 つ配る（`ingest()` は 0 個以上を返すので、呼び出し側が
+ * 1 つずつ通す）。**どの結果にも合成波形が入っている。**
  *
  * **読みを先に配り、いまの合成状態（`noteSkip`）は最後に確定させる。**
- * `fusion.readings` には区間の作り直しで前区間の残り（`carried`。
- * `../src/receiver/sensorFusion.ts` の `ingest()` を見ること）が混ざりうる——
- * それは「たった今出た、新しい区間より古い震度」なので、`noteReading` が無条件に
+ * `fusion.readings` には流し込みの作り直しで締めた分（前の流し込みの末尾）が混ざりうる——
+ * それは「たった今出た、新しい流し込みより古い震度」なので、`noteReading` が無条件に
  * クリアする `lastSkipReason` を、直前にセットしたばかりの「いまの異常」の上へ
  * 被せてしまう（`sensorHealth.ts` が同じ形の競合を `skipStreamKey`/`skipSegmentId`
  * で明示的にガードしているのと同じ症状——壊れた合成が一瞬だけ健全に見える）。
  * 順序を「過去の読み → いまの状態」にすれば、いまの状態が必ず最後に残る。
- *
- * **`closeFailure`・`intensitySkipReason` は「待たせていたまとまりを取り出して合成した回」
- * にだけ意味を持つ**（`fusedWave` が非 null の回に限る）。**取り出しは駆動役の到着に
- * 限らない** —— 裏付けが届いても待ちが満たされることがある（`sensorFusion.ts` の
- * `FusionOutcome`・`FUSION_WAIT_MS_DEFAULT` を見ること）。ここが `fusedWave` の非 null で
- * 分岐しているのはそのためで、**到着したセンサーが駆動役かどうかで分けてはいけない**。
  */
 export function deliverStationFusion(to: StationFusionSinks, fusion: FusionOutcome): void {
-  if (fusion.fusedWave !== null && fusion.closeFailure !== null) {
-    to.reportCloseFailure(fusion.closeFailure)
-  }
+  if (fusion.closeFailure !== null) to.reportCloseFailure(fusion.closeFailure)
   for (const r of fusion.readings) {
     to.noteReading(r)
     to.publish(r)
   }
-  if (fusion.fusedWave !== null) {
-    // **取り出して合成した回だけ波形が出る。** この分岐がその回を表す唯一の場所なので、
-    // 覚えるのと配るのもここに置く（判定を 2 箇所へ分けない）。
-    to.noteWave(fusion.fusedWave, fusion.backupsCovered)
-    to.notePairDiffs(fusion.fusedWave.stationId, fusion.pairDiffs)
-    to.publishPairDiffs(fusion.pairDiffs)
-    to.publishWave(fusion.fusedWave)
-    to.noteSkip(fusion.fusedWave.stationId, fusion.intensitySkipReason)
-    // **異常が続いている間は毎回呼ぶ。正常なら状態が変わった回にだけ呼ぶ。**
-    //
-    // `intensitySkipReason` が非 null（＝合成の震度が出せない）の間は、`ingest()`
-    // が `intensityStateChanged` を再び立てない場合がある——`push()` の失敗は
-    // 区間の作り直しを伴わず、`SensorFusion` 側に自己回復の仕組みが無いため
-    // （`sensorFusion.ts` の `ingest()` を見ること）、壊れた状態が同じ区間の間
-    // ずっと続きうる。`intensityStateChanged` だけで絞ると、**最初の 1 回しか
-    // ログが出ず、以後「合成が壊れたままだ」という事実そのものが沈黙する**。
-    // 間引き（`logThrottle.shouldLog`）が「初回は必ず出し、以後も間隔ごとに
-    // 出し直す」設計を持つので、毎回呼んでも実際の出力頻度はあちらに任せられる。
-    //
-    // 正常（`null`）に戻った回は、区間が変わった・push が成功した等の
-    // `intensityStateChanged` が立つ回にだけ知らせれば十分——正常が続く間、
-    // 毎パケット「合成の状態が変わった」と言い続ける理由は無い。
-    if (fusion.intensitySkipReason !== null || fusion.intensityStateChanged) {
-      to.logSegment(fusion.fusedWave.stationId, fusion.intensitySkipReason)
-    }
+  to.noteWave(fusion.fusedWave, fusion.allMembersCovered)
+  to.notePairDiffs(fusion.fusedWave.stationId, fusion.pairDiffs)
+  to.publishPairDiffs(fusion.pairDiffs)
+  to.publishWave(fusion.fusedWave)
+  to.noteSkip(fusion.fusedWave.stationId, fusion.intensitySkipReason)
+  // **異常が続いている間は毎回呼ぶ。正常なら状態が変わった回にだけ呼ぶ。**
+  //
+  // `intensitySkipReason` が非 null（＝合成の震度が出せない）の間は、`ingest()`
+  // が `intensityStateChanged` を再び立てない場合がある——`push()` の失敗は
+  // 次の欠けまで作り直しを伴わないため（`sensorFusion.ts` の `Group.streamNext` を
+  // 見ること）、壊れた状態がしばらく続きうる。`intensityStateChanged` だけで絞ると、
+  // **最初の 1 回しかログが出ず、以後「合成が壊れたままだ」という事実そのものが沈黙する**。
+  // 間引き（`logThrottle.shouldLog`）が「初回は必ず出し、以後も間隔ごとに
+  // 出し直す」設計を持つので、毎回呼んでも実際の出力頻度はあちらに任せられる。
+  //
+  // 正常（`null`）に戻った回は、流し込みを作り直した等の `intensityStateChanged` が立つ回に
+  // だけ知らせれば十分——正常が続く間、毎まとまり「合成の状態が変わった」と言い続ける
+  // 理由は無い。
+  if (fusion.intensitySkipReason !== null || fusion.intensityStateChanged) {
+    to.logSegment(fusion.fusedWave.stationId, fusion.intensitySkipReason)
+  }
+}
+
+/** 観測点の合成の数え上げ（`SensorFusion` の累計）。毎分の要約が差で増分を出す。 */
+export interface FusionCounts {
+  readonly lateSamples: number
+  readonly futureSamples: number
+  readonly discardedSamples: number
+  readonly unusableIntensities: number
+}
+
+export const ZERO_FUSION_COUNTS: FusionCounts = {
+  lateSamples: 0,
+  futureSamples: 0,
+  discardedSamples: 0,
+  unusableIntensities: 0,
+}
+
+/** いまの部品の累計を読む。**欄を足したら、ここと `addFusionCounts` の両方へ足す**（型が漏れを止める）。 */
+export function fusionCountsOf(fusion: SensorFusion): FusionCounts {
+  return {
+    lateSamples: fusion.lateSamples,
+    futureSamples: fusion.futureSamples,
+    discardedSamples: fusion.discardedSamples,
+    unusableIntensities: fusion.unusableIntensities,
+  }
+}
+
+/**
+ * 持ち越した累計に、いまの部品の累計を足す。
+ *
+ * **部品は設定を変えるたびに作り直されて 0 から数え直す**ので、作り直す前の累計を持ち越さないと、
+ * 毎分の要約（累計の差で増分を出す）が作り直した窓で負になる。呼び出し側は**作り直す直前に**
+ * この値を持ち越しへ置き換える。
+ */
+export function addFusionCounts(carried: FusionCounts, current: FusionCounts): FusionCounts {
+  return {
+    lateSamples: carried.lateSamples + current.lateSamples,
+    futureSamples: carried.futureSamples + current.futureSamples,
+    discardedSamples: carried.discardedSamples + current.discardedSamples,
+    unusableIntensities: carried.unusableIntensities + current.unusableIntensities,
   }
 }
 
@@ -1150,7 +1175,7 @@ export function deliverFusionClosing(to: FusionClosingSinks, closing: SensorFusi
     }
   }
   for (const fusion of closing.drained) {
-    attempt(`波形 ${fusion.fusedWave?.stationId ?? '(観測点不明)'}`, () => to.deliverFusion(fusion))
+    attempt(`波形 ${fusion.fusedWave.stationId}`, () => to.deliverFusion(fusion))
   }
   attempt('締めくくりの失敗の報告', () => to.reportCloseFailures(closing.failures))
   for (const r of closing.readings) attempt(`震度 ${r.stationId}`, () => to.emitReading(r))
@@ -1722,6 +1747,10 @@ async function main(): Promise<void> {
   // 観測点はグループを組まない（`sensorFusion.ts` の `buildGroups`）ので、単一センサーの
   // 構成では常に何もしない——観測点を割り当てていない構成と同じく安全に無視できる。
   let sensorFusion = new SensorFusion(stationConfigLoad.config)
+  // **合成の数え上げは、作り直しをまたいで数え続ける。** 部品は設定を変えるたびに作り直されて
+  // 0 から数え直すので、古い部品の数を持ち越す（`addFusionCounts` の説明を見ること）。
+  let fusionCarried: FusionCounts = ZERO_FUSION_COUNTS
+  const fusionTotals = (): FusionCounts => addFusionCounts(fusionCarried, fusionCountsOf(sensorFusion))
   let ungroupedMultiBoardStations = findUngroupedMultiBoardStations(
     stationConfigLoad.config,
     sensorFusion.groupedStationIds,
@@ -2091,6 +2120,8 @@ async function main(): Promise<void> {
             `[station-close] 設定変更に伴う観測点合成の締めくくり（または配れなかったことの報告）に失敗: ${messageOf(error)}`,
           ),
         rebuildSensorFusion: (config) => {
+          // **作り直す前に持ち越す。** 古い部品はこの後の参照を失うので、ここが数を読む最後の機会。
+          fusionCarried = fusionTotals()
           sensorFusion = new SensorFusion(config)
           return sensorFusion.groupedStationIds
         },
@@ -2196,7 +2227,9 @@ async function main(): Promise<void> {
       // が素通りするので、単一センサー構成では何もしない。`ingest()` 自体は投げない
       // 契約（`sensorFusion.ts` を見ること）だが、**結果を配る（`deliverStationFusion`）
       // のはここでは行わない** —— 下で単一センサー側の報告を出し切ってから。
-      const fusion = outcome.wave !== null ? sensorFusion.ingest(outcome.wave) : null
+      // **揃ったまとまりは 0 個以上**（1 回の到着で複数揃うことも、欠けで途中が切れることもある）。
+      // **受け取った時刻を渡す**（その時刻より先を名乗るサンプルは、時計の壊れた台のものとして混ぜない）。
+      const fusions = outcome.wave !== null ? sensorFusion.ingest(outcome.wave, receivedAtMs) : []
 
       if (outcome.dropped !== null) {
         tally.record({ kind: 'dropped', board, reason: outcome.dropped })
@@ -2263,7 +2296,7 @@ async function main(): Promise<void> {
       // 呼ぶので、投げない契約が将来崩れる余地がある——手前に置いて投げると、この
       // データグラムが運んできた単一センサー側の報告（上の dropped・startedBecause・
       // closed・closeFailures・readings）がまとめて消える（下の自己診断と同じ理由）。
-      if (fusion !== null) deliverStationFusion(stationFusionSinks, fusion)
+      for (const fusion of fusions) deliverStationFusion(stationFusionSinks, fusion)
 
       // **自己診断は本筋を出し切ってから。** このデータグラムの受け手は例外を囲わない
       // 方針（段 4-1）なので、ここで投げると**そのパケットが運んできた計測震度ごと**
@@ -2490,6 +2523,7 @@ async function main(): Promise<void> {
     const diag = gravity.snapshot()
     const fetched = backlogFetcher.snapshot()
     const mseedHealth = mseedRecorder.health()
+    const fusionNow = fusionTotals()
     // **地震検出と地震情報の受信も要約へ出す**（並びと見出しは `detectionCountEntries`）。
     const detectCounters = detectionCountEntries(detection.snapshot()).map((e) =>
       delta(`detect:${e.key}`, e.label, e.value),
@@ -2511,6 +2545,13 @@ async function main(): Promise<void> {
         '数として出せなかった計測震度',
         pipeline.unusableIntensities,
       ),
+      // **観測点の合成の数え上げも要約へ出す。** どれも 1 件ずつの行を持たない。
+      // 遅れて届いた分は異常ではない（作り直しが埋める）が、電子レンジの干渉のような
+      // 途切れの最中にどれだけ合成から漏れたかは、ここでしか数えられない。
+      fusionLate: delta('fusionLate', '観測点の合成に間に合わず混ぜなかったサンプル', fusionNow.lateSamples),
+      fusionFuture: delta('fusionFuture', '観測点の合成で受け取った時刻より先を名乗って混ぜなかったサンプル', fusionNow.futureSamples),
+      fusionDiscarded: delta('fusionDiscarded', '観測点の合成で抱えたまま混ぜずに捨てたサンプル', fusionNow.discardedSamples),
+      fusionUnusable: delta('fusionUnusable', '数として出せなかった観測点の計測震度', fusionNow.unusableIntensities),
       sensorEvicted: delta('sensorEvicted', 'センサーの生存の枠を捨てた', health.evictions),
       boardClockEvicted: delta(
         'boardClockEvicted',

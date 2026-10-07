@@ -332,7 +332,7 @@ export function writeSensorCardOffsetSensitivity(
  * 未チェックにした」場合と「セレクタが `renderSensorCardHtml` の生成する
  * DOM 構造とずれて要素そのものが見つからない」場合が同じ値になり、後者が
  * 無言で保存されてしまう——`enabled: false` はそのセンサーを震度計算から
- * 丸ごと除外し、`noiseDensity` の欠落は複数センサー合成の駆動役選定に影響する
+ * 丸ごと除外し、`noiseDensity` の欠落は複数センサー合成の重み（1 台でも欠ければ単純平均）に影響する
  * ため、どちらも気づけないまま挙動が変わるのは避ける（敵対的レビューで検出）。
  */
 export function readSensorCardValues(card: ParentNode): SensorFormValues {

@@ -56,7 +56,6 @@ const STATION_WAVE: HubMessage = {
   kind: 'station-wave',
   wave: {
     stationId: 'garage',
-    driver: { boardKey: 'mac:aa', sensorId: 's0' },
     firstSampleIndex: 0,
     firstSampleMs: 1_700_000_000_000,
     msPerSample: 10,
@@ -64,6 +63,7 @@ const STATION_WAVE: HubMessage = {
     // 落とした直流（`gal` と足せば校正済み gal の重み付き平均になる値）。
     dcGal: [[0], [0], [980]],
     memberCount: [2],
+    axisMemberCount: [[2], [2], [2]],
   },
 }
 

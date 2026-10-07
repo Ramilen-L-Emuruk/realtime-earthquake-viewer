@@ -14,15 +14,13 @@
 // **新しい部品で作る。** ライブの合成の状態には触らない。直流（重力）の推定は 20 秒の窓を持つので、
 // 区間の {@link REWAVE_LEAD_MS} 前から流して落ち着かせ、その間の出力は捨てる。
 //
-// **既知の限界: 時刻の刻みはライブと揃わない。** センサーの時間軸は区間の頭からの全アンカーで直線を
-// 当てはめる（`../timebase/segmenter.ts`）。ライブの区間は何時間も続いた当てはめ、作り直しは
-// {@link REWAVE_LEAD_MS} からの当てはめなので傾きがわずかに違い（実測でライブ 10.0015 ms・作り直し
-// 9.99999〜10.0025 ms）、作り直した区間の両端でライブとの継ぎ目が少しずれる。2026-10-06 の 21 時台の
-// 4 区間（40 秒〜3 分）で測ると、継ぎ目のずれは ±5 ms 以内、作り直した分の中のまとまりどうしは 0.2 ms
-// 以内だった —— 計測震度の途切れの判定（`quakeIntensity.ts` の 1.5 サンプル＝15 ms）より小さく、継ぎ目を
-// 途切れと取り違えない。欠けの無い区間を作り直して比べると、補間した値の差は二乗平均 0.32 gal・最大
-// 0.92 gal（静穏時のノイズ 1.6 gal より小さい）。長い区間を区切って作り直したときの区切り目も、それぞれが
-// 同じ助走から当てはめ直すので、同じ程度のずれになる。
+// **目盛りの位置はライブと一致する。** 合成は観測点の目盛り（絶対時刻で決まる 10 ms 刻み。
+// `sensorFusion.ts` の冒頭）の上で作るので、作り直したまとまりの境目と目盛りは、ライブのものと同じ
+// 時刻に立つ（以前は駆動役の区間の当てはめが刻みを決めていて、作り直すと継ぎ目が最大 ±5 ms ずれた）。
+//
+// **値はわずかに動きうる。** センサーごとの時間軸は区間の頭からの全アンカーで直線を当てはめる
+// （`../timebase/segmenter.ts`）。ライブの区間は何時間も続いた当てはめ、作り直しは
+// {@link REWAVE_LEAD_MS} からの当てはめなので傾きがわずかに違い、目盛りの時刻へ補間する値もその分ずれる。
 
 import { IntensityPipeline } from './intensityPipeline'
 import type { StoredPacket } from './mseedPacketReader'
@@ -118,8 +116,8 @@ export async function rewaveStation(input: RewaveInput, pause: () => Promise<voi
   const pipeline = new IntensityPipeline({ stations: new StationDirectory(config) })
   const fusion = new SensorFusion(config)
   const out: FusedWaveChunk[] = []
-  const keep = (w: FusedWaveChunk | null): void => {
-    if (w === null || w.stationId !== stationId) return
+  const keep = (w: FusedWaveChunk): void => {
+    if (w.stationId !== stationId) return
     const last = w.firstSampleMs + (w.gal[0].length - 1) * w.msPerSample
     if (last >= fromMs && w.firstSampleMs < toMs) out.push(w)
   }
@@ -127,7 +125,8 @@ export async function rewaveStation(input: RewaveInput, pause: () => Promise<voi
     if (i > 0 && i % REWAVE_YIELD_EVERY === 0) await pause()
     const outcome = pipeline.handlePacket(p.packet)
     if (outcome.wave === null) continue
-    keep(fusion.ingest(outcome.wave).fusedWave)
+    // 受け取った時刻はライブと同じ判定に使う（記録に無い古い控えでは null で、判定しない）。
+    for (const fused of fusion.ingest(outcome.wave, p.rx)) keep(fused.fusedWave)
   }
   for (const d of fusion.closeAll().drained) keep(d.fusedWave)
   out.sort((a, b) => a.firstSampleMs - b.firstSampleMs)

@@ -142,7 +142,6 @@ const WAVE: WaveChunk = {
 
 const STATION_WAVE: FusedWaveChunk = {
   stationId: 'garage',
-  driver: { boardKey: 'mac:aa', sensorId: 's0' },
   firstSampleIndex: 0,
   firstSampleMs: 1_700_000_000_000,
   msPerSample: 10,
@@ -150,6 +149,7 @@ const STATION_WAVE: FusedWaveChunk = {
   // 落とした直流（`gal` と足せば校正済み gal の重み付き平均になる値）。
   dcGal: [[0], [0], [980]],
   memberCount: [9],
+  axisMemberCount: [[9], [9], [9]],
 }
 
 /** 立てたものを必ず畳む。 */

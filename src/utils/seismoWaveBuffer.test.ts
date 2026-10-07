@@ -99,7 +99,7 @@ describe('SeismoWaveBuffer', () => {
   })
 
   it('正: 効いたセンサーの本数をサンプルごとに保つ（1 本の区間を見分ける）', () => {
-    // 合成を名乗れない区間（駆動役だけ）を段 4 が示せるようにするための値。
+    // 合成を名乗れない区間（1 台だけ）を段 4 が示せるようにするための値。
     const buffer = new SeismoWaveBuffer(60)
     buffer.push(chunk(1000, { length: 4, members: (i) => (i < 2 ? 9 : 1) }))
     const window = buffer.snapshot()
@@ -110,7 +110,7 @@ describe('SeismoWaveBuffer', () => {
   it('正: 刻みが大きく変われば作り直す', () => {
     const buffer = new SeismoWaveBuffer(60)
     buffer.push(chunk(1000))
-    // 100 Hz → 50 Hz（センサーの入れ替え・駆動役の交代）。
+    // 100 Hz → 50 Hz（サンプリング周波数の設定を変えた）。
     const result = buffer.push(chunk(1300, { msPerSample: 20 }))
     expect(result.kind).toBe('restarted')
     const window = buffer.snapshot()

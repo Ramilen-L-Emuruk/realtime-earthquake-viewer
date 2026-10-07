@@ -225,8 +225,8 @@ export function readStationWaveChunk(value: unknown): WaveChunkView | null {
     segmentId: null,
     firstSampleMs,
     msPerSample,
-    // **合成波形は時刻の当てはめの状態を持たない。** 駆動役の区間から引いた値で
-    // 組んであるが、`FusedWaveChunk` はそれを外へ出さない。
+    // **合成波形は時刻の当てはめの状態を持たない。** 観測点の目盛り（絶対時刻・刻み固定）の
+    // 上で組んであるので、当てはめの状態に当たるものが無い。
     timebaseNominalReason: null,
     gal: [restored[0], restored[1], restored[2]],
     memberCount,
