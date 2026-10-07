@@ -371,6 +371,45 @@
         width: 100%;
         padding: 0;
       }
+      /* 揺れの記録タブ。期間のボタンは押されているものだけ色を付ける（いま見ている期間）。 */
+      .period-buttons {
+        display: inline-flex;
+        gap: 0.3rem;
+        flex: 0 0 auto;
+      }
+      .period-buttons button {
+        flex: 0 0 auto;
+      }
+      .period-buttons button[aria-pressed='true'] {
+        background: var(--accent-soft);
+        color: var(--accent-text);
+        border-color: var(--accent);
+      }
+      .shake-row {
+        cursor: pointer;
+      }
+      /* **数と判定の列は折り返さない。** 「14.2 秒」が「14.2 / 秒」に割れると数として読みにくく、
+         バッジは「照合待 / ち」に割れる。折り返してよいのは照合した地震（震央の名前）だけ。 */
+      .shake-row td:not(:nth-child(8)) {
+        white-space: nowrap;
+      }
+      .shake-row.selected {
+        background: var(--accent-soft);
+      }
+      /* 判定の色は強い順に濃く。**生活振動らしいもの・照合できずは色を付けない**（地震と見間違えないため）。 */
+      .badge.verdict-quake {
+        background: var(--danger-soft);
+        color: var(--danger);
+      }
+      .badge.verdict-quake-like {
+        background: var(--accent-soft);
+        color: var(--accent-text);
+      }
+      .badge.verdict-pending,
+      .badge.verdict-local-like,
+      .badge.verdict-unchecked {
+        background: var(--surface-raised);
+      }
       /* **`display: block` を明示する。** `canvas` の既定は inline で、行の下に
          数ピクセルの余白が付く（枠の中で下だけ空く）。 */
       .wave-canvas {

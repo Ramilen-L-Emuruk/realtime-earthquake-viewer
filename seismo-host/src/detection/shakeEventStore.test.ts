@@ -5,7 +5,15 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import type { ShakeEventRecord } from './shakeEvent'
-import { eventFileName, eventFilePath, jstMonth, monthsBetween, readEventRange, ShakeEventStore } from './shakeEventStore'
+import {
+  eventFileName,
+  eventFilePath,
+  jstMonth,
+  monthsBetween,
+  readEventRange,
+  ShakeEventStore,
+  startMsFromFileName,
+} from './shakeEventStore'
 
 const dirs: string[] = []
 function tempDir(): string {
@@ -143,6 +151,59 @@ describe('ShakeEventStore / readEventRange', () => {
     const { events, unreadableFiles } = await readEventRange({ dir, fromMs: T, toMs: T + 3_600_000 })
     expect(events.map((e) => e.id)).toEqual(['a'])
     expect(unreadableFiles).toEqual(['2026-10/x.json', '2026-10/y.json'])
+  })
+
+  it('正: 名前で範囲の外と分かるファイルは開かない（壊れていても読めなかったに数えない）', async () => {
+    const dir = tempDir()
+    const store = new ShakeEventStore({ dir })
+    store.save(rec(`s-${T}`, T, 1, 'pending'))
+    // 名前は範囲の外（1 日後）を名乗る。開けば壊れているが、開かないので数えない。
+    writeFileSync(join(dir, '2026-10', `s-${T + 86_400_000}.json`), '{こわれた')
+    const r = await readEventRange({ dir, fromMs: T, toMs: T + 3_600_000 })
+    expect(r.events.map((e) => e.id)).toEqual([`s-${T}`])
+    expect(r.unreadableFiles).toEqual([])
+  })
+
+  it('対照: 名前が範囲の中を名乗るファイルは開く（壊れていれば読めなかったに数える）', async () => {
+    const dir = tempDir()
+    mkdirSync(join(dir, '2026-10'), { recursive: true })
+    writeFileSync(join(dir, '2026-10', `s-${T + 60_000}.json`), '{こわれた')
+    const r = await readEventRange({ dir, fromMs: T, toMs: T + 3_600_000 })
+    expect(r.unreadableFiles).toEqual([`2026-10/s-${T + 60_000}.json`])
+  })
+
+  it('正: 名前は丸めで右端を名乗っても、中身が端の内側で始まっていれば返す（id は始まりを整数へ丸める）', async () => {
+    const dir = tempDir()
+    const store = new ShakeEventStore({ dir })
+    // 始まり T+0.6 の id は `s-<T+1>`（`initialRecord` の `toFixed(0)`）。範囲の右端を T+1 にすると、
+    // 名前は外を名乗るが中身は内側にある。
+    const r = rec(`s-${T + 1}`, T + 0.6, 1, 'pending')
+    store.save(r)
+    const got = await readEventRange({ dir, fromMs: T - 60_000, toMs: T + 1 })
+    expect(got.events.map((e) => e.id)).toEqual([`s-${T + 1}`])
+  })
+
+  it('対照: 中身も範囲の外なら返さない（名前の余裕は開くかどうかにだけ効く）', async () => {
+    const dir = tempDir()
+    const store = new ShakeEventStore({ dir })
+    store.save(rec(`s-${T + 1}`, T + 1, 1, 'pending'))
+    const got = await readEventRange({ dir, fromMs: T - 60_000, toMs: T + 1 })
+    expect(got.events).toEqual([])
+    expect(got.unreadableFiles).toEqual([])
+  })
+
+  it('安全弁: 余裕は 1 ミリ秒だけ。それより外を名乗るファイルは開かない', async () => {
+    const dir = tempDir()
+    mkdirSync(join(dir, '2026-10'), { recursive: true })
+    writeFileSync(join(dir, '2026-10', `s-${T + 2}.json`), '{こわれた')
+    const r = await readEventRange({ dir, fromMs: T - 60_000, toMs: T + 1 })
+    expect(r.unreadableFiles).toEqual([])
+  })
+
+  it('startMsFromFileName: 末尾の -<数字>.json を読む。読めなければ null（開いて確かめる）', () => {
+    expect(startMsFromFileName(`station-1-${T}.json`)).toBe(T)
+    expect(startMsFromFileName(`%3Cb%3E-${T}.json`)).toBe(T)
+    expect(startMsFromFileName('x.json')).toBeNull()
   })
 
   it('記録が無い月は「揺れが無かった」として数えない', async () => {

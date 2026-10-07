@@ -475,3 +475,54 @@ describe('readPairDiffChunk（#372）', () => {
     expect(readPairDiffChunk(diffJson({ diffGal: [[Number.NaN], [1], [1]] }))).toBeNull()
   })
 })
+
+describe('openWaveStream の shake-event（#313）', () => {
+  function openShakes(): { source: FakeSource; got: unknown[]; unreadable: string[] } {
+    const got: unknown[] = []
+    const unreadable: string[] = []
+    let source: FakeSource | null = null
+    openWaveStream({
+      wave: false,
+      diff: null,
+      signal: new AbortController().signal,
+      onState: () => {},
+      onShakeEvent: (rec) => got.push(rec),
+      onUnreadable: (_count, detail) => unreadable.push(detail),
+      create: (url) => {
+        source = new FakeSource(url)
+        return source
+      },
+    })
+    if (source === null) throw new Error('押し出しが作られなかった')
+    return { source, got, unreadable }
+  }
+
+  const shake = {
+    id: 'station-1-1000',
+    rev: 2,
+    stationId: 'station-1',
+    startMs: 1000,
+    endMs: 6000,
+    sMs: null,
+    pMs: null,
+    peakAccelGal: 2,
+    maxIntensity: null,
+    peakRatio: 3,
+    verdict: 'quake-like',
+    matchedQuake: null,
+  }
+
+  it('正: 揺れの記録を読んで渡す', () => {
+    const h = openShakes()
+    h.source.emit('shake-event', JSON.stringify(shake))
+    expect(h.got).toHaveLength(1)
+    expect(h.unreadable).toEqual([])
+  })
+
+  it('安全弁: 形の違う記録は読めなかったとして数える（黙って捨てない）', () => {
+    const h = openShakes()
+    h.source.emit('shake-event', JSON.stringify({ ...shake, verdict: 'x' }))
+    expect(h.got).toEqual([])
+    expect(h.unreadable).toEqual(['shake-event: 形が合わない'])
+  })
+})
