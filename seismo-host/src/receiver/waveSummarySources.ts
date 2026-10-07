@@ -15,8 +15,15 @@ const HOUR_MS = 3_600_000
 const ENCODING_TEXT = 0
 const ENCODING_STEIM2 = 11
 
-/** 合成波形の向きの名前。`waveArchive.ts` の並び（南北・東西・上下）に合わせる。 */
-const STATION_AXES = ['NS', 'EW', 'UD'] as const
+/**
+ * 合成波形の向きの名前。**共通座標（ENU）の X・Y・Z**（`gal[0]` が東・`gal[1]` が北・`gal[2]` が上。
+ * README「共通座標は ENU」）。管理コンソールの波形タブの段の名前と揃える。
+ *
+ * **南北・東西の名で名乗らない。** `waveArchive.ts` の変数名（`ns`・`ew`・`ud`）と PWA の段の名前は
+ * 1 番目を南北と呼んでいて、共通座標と食い違っている疑いがある（#603。どちらへ揃えるかは未決）。
+ * 要約はファイルへ焼くので、疑いのある名前を写すと、決着した後も古い名前が残る。
+ */
+const STATION_AXES = ['X', 'Y', 'Z'] as const
 
 /**
  * 合成波形の要約のチャンネルの名前。`stationKey` は合成波形のファイル名に入っている観測点の札

@@ -190,14 +190,14 @@ describe('encodeSummaryPart / decodeSummaryPart', () => {
   it('書いたものをそのまま読み戻せる', () => {
     const b = builder()
     b.declare('FDSN:XX_A1B2C3D4_S1_H_N_Z', { unit: 'count', ugPerLsb: 61.0352 })
-    b.declare('station/home/NS', { unit: 'gal', ugPerLsb: null })
+    b.declare('station/home/X', { unit: 'gal', ugPerLsb: null })
     b.add('FDSN:XX_A1B2C3D4_S1_H_N_Z', HOUR_START, 10, new Array(250).fill(0).map((_, i) => 16000 + (i % 7)))
-    b.add('station/home/NS', HOUR_START + 500, 10, new Array(80).fill(0).map((_, i) => Math.sin(i / 5)))
-    b.add('station/home/NS', HOUR_START + 70_000, 10, new Array(50).fill(0.25))
-    b.add('station/home/NS', 5, 10, [1])
-    b.add('station/home/NS', HOUR_START, 10, [Number.NaN])
-    b.declare('station/home/UD', { unit: 'gal', ugPerLsb: null })
-    b.add('station/home/UD', HOUR_START, 10, new Array(3000).fill(0).map((_, i) => Math.sin(i / 3)))
+    b.add('station/home/X', HOUR_START + 500, 10, new Array(80).fill(0).map((_, i) => Math.sin(i / 5)))
+    b.add('station/home/X', HOUR_START + 70_000, 10, new Array(50).fill(0.25))
+    b.add('station/home/X', 5, 10, [1])
+    b.add('station/home/X', HOUR_START, 10, [Number.NaN])
+    b.declare('station/home/Z', { unit: 'gal', ugPerLsb: null })
+    b.add('station/home/Z', HOUR_START, 10, new Array(3000).fill(0).map((_, i) => Math.sin(i / 3)))
     const file = b.build(987654, { skippedBytes: 17, badRecords: 2 })
 
     for (const part of SUMMARY_PARTS) {
@@ -240,23 +240,23 @@ describe('encodeSummaryPart / decodeSummaryPart', () => {
       }
     }
     // PSD のあるもの・無いものが両方入っていることを確かめておく（片方だけだと読み戻しの検査が空振る）
-    expect(channel(file, 'station/home/UD').psd).not.toBeNull()
-    expect(channel(file, 'station/home/NS').psd).toBeNull()
+    expect(channel(file, 'station/home/Z').psd).not.toBeNull()
+    expect(channel(file, 'station/home/X').psd).toBeNull()
   })
 
   it('チャンネルを絞って読んでも、残したチャンネルは全部読んだときと同じ（PSD を持つチャンネルも飛ばせる）', () => {
     const b = builder()
     b.declare('FDSN:XX_A1B2C3D4_S1_H_N_Z', { unit: 'count', ugPerLsb: 61.0352 })
-    b.declare('station/home/UD', { unit: 'gal', ugPerLsb: null })
+    b.declare('station/home/Z', { unit: 'gal', ugPerLsb: null })
     b.add('FDSN:XX_A1B2C3D4_S1_H_N_Z', HOUR_START, 10, new Array(3000).fill(0).map((_, i) => 16000 + (i % 7)))
-    b.add('station/home/UD', HOUR_START, 10, new Array(3000).fill(0).map((_, i) => Math.sin(i / 3)))
+    b.add('station/home/Z', HOUR_START, 10, new Array(3000).fill(0).map((_, i) => Math.sin(i / 3)))
     const file = b.build(1)
     // 両方とも PSD を持つ（飛ばす側に中身のある PSD が来ないと、飛ばし方の検査が空振る）
     expect(file.channels.every((c) => c.psd !== null)).toBe(true)
     for (const part of SUMMARY_PARTS) {
       const buf = encodeSummaryPart(file, part)
       const full = decodeSummaryPart(buf)!
-      for (const keepId of ['FDSN:XX_A1B2C3D4_S1_H_N_Z', 'station/home/UD']) {
+      for (const keepId of ['FDSN:XX_A1B2C3D4_S1_H_N_Z', 'station/home/Z']) {
         const only = decodeSummaryPartWhere(buf, (id) => id === keepId)
         expect(only).not.toBeNull()
         expect(only!.channels).toEqual(full.channels.filter((c) => c.id === keepId))

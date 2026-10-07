@@ -4,13 +4,15 @@ import { join } from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { buildMseed3Record, mseed3SourceId } from './mseed3Record'
 import type { FusedWaveChunk } from './sensorFusion'
+import { encodeSteim2 } from './steim2'
 import type { StationConfig } from './stationConfigTypes'
 import { encodeWaveChunk, stationFileToken } from './waveArchive'
 import { RecordChannelIndex } from './waveRecordChannels'
 import { RECORDS_COLUMNS_MAX, RECORDS_RANGE_MAX_MS, handleRecordsRequest, type RecordsApiDeps } from './waveRecordsApi'
 import { SAMPLES_RANGE_MAX_MS, type RecordDirs } from './waveRecords'
-import { buildSummaryFile, waveSummaryPath } from './waveSummaryFiles'
+import { buildSummaryFile, rawSummaryPath, waveSummaryPath } from './waveSummaryFiles'
 
 const H0 = Date.parse('2026-10-07T12:00:00+09:00')
 const HOUR = 3_600_000
@@ -67,14 +69,14 @@ function q(params: Record<string, string | number>): URLSearchParams {
 }
 
 describe('handleRecordsRequest の入口', () => {
-  const channel = `station/${KEY}/NS`
+  const channel = `station/${KEY}/X`
 
   it.each([
     ['範囲が無い', { channel, columns: 10 }, 'bad-range'],
     ['終わりが始まり以前', { channel, from: H0, to: H0, columns: 10 }, 'bad-range'],
     ['10 進でない時刻', { channel, from: '0x10', to: H0, columns: 10 }, 'bad-range'],
     ['チャンネルが無い', { from: H0, to: H0 + 1000, columns: 10 }, 'bad-channel'],
-    ['置き場所の外を指すチャンネル', { channel: 'station/../NS', from: H0, to: H0 + 1000, columns: 10 }, 'bad-channel'],
+    ['置き場所の外を指すチャンネル', { channel: 'station/../X', from: H0, to: H0 + 1000, columns: 10 }, 'bad-channel'],
     ['列が 0', { channel, from: H0, to: H0 + 1000, columns: 0 }, 'bad-columns'],
     ['列が多すぎる', { channel, from: H0, to: H0 + 1000, columns: RECORDS_COLUMNS_MAX + 1 }, 'bad-columns'],
     ['知らない単位', { channel, from: H0, to: H0 + 1000, columns: 10, unit: 'm/s2' }, 'bad-unit'],
@@ -104,7 +106,7 @@ describe('handleRecordsRequest の入口', () => {
 describe('handleRecordsRequest の中身', () => {
   it('列の幅で段を選び、届いていない列は null で返す', async () => {
     await writeWaveHour(KEY, H0, [1, 2, 3])
-    const channel = `station/${KEY}/NS`
+    const channel = `station/${KEY}/X`
     const coarse = await handleRecordsRequest('envelope', q({ channel, from: H0, to: H0 + HOUR, columns: 60 }), deps)
     expect(coarse.status).toBe(200)
     const cb = coarse.body as { source: string; n: number[]; mean: (number | null)[]; columnMs: number }
@@ -120,9 +122,63 @@ describe('handleRecordsRequest の中身', () => {
 
   it('有限でない値は JSON で null になる（欠けを 0 に化けさせない）', async () => {
     await writeWaveHour(KEY, H0, [1, Number.NaN, 3])
-    const got = await handleRecordsRequest('samples', q({ channel: `station/${KEY}/UD`, from: H0, to: H0 + 30 }), deps)
+    const got = await handleRecordsRequest('samples', q({ channel: `station/${KEY}/Z`, from: H0, to: H0 + 30 }), deps)
     const body = JSON.parse(JSON.stringify(got.body)) as { runs: { values: (number | null)[] }[] }
     expect(body.runs[0]!.values).toEqual([1, null, 3])
+  })
+})
+
+describe('intensity', () => {
+  it('札で引いた合成波形から、刻みごとのリアルタイム震度と計測震度を返す', async () => {
+    // 2 分ぶん（100 Hz）。前の 60 秒は判定の窓を埋めるために読む
+    const values = Array.from({ length: 12_000 }, (_, i) => 20 * Math.sin(i / 4))
+    await writeWaveHour(KEY, H0, values)
+    const got = await handleRecordsRequest('intensity', q({ station: KEY, from: H0 + 60_000, to: H0 + 90_000 }), deps)
+    expect(got.status).toBe(200)
+    const body = got.body as { station: string; realtimeSeries: { atMs: number; value: number | null }[]; maxRealtime: number | null; measured: number | null }
+    expect(body.station).toBe(KEY)
+    expect(body.realtimeSeries.length).toBeGreaterThan(20)
+    expect(body.maxRealtime).not.toBeNull()
+    expect(body.measured).not.toBeNull()
+  })
+
+  it('札の形でないもの・10 分を超える範囲は弾く', async () => {
+    expect(await handleRecordsRequest('intensity', q({ station: '../x', from: H0, to: H0 + 1000 }), deps)).toEqual({
+      status: 400,
+      body: { error: 'bad-station' },
+    })
+    expect(await handleRecordsRequest('intensity', q({ station: KEY, from: H0, to: H0 + SAMPLES_RANGE_MAX_MS + 1 }), deps)).toEqual({
+      status: 400,
+      body: { error: 'range-too-wide' },
+    })
+  })
+
+  it('記録が無ければ値は null で、読んだファイルの数を添える', async () => {
+    const got = await handleRecordsRequest('intensity', q({ station: KEY, from: H0, to: H0 + 1000 }), deps)
+    expect(got.status).toBe(200)
+    const body = got.body as { maxRealtime: number | null; measuredUnavailable: string | null; filesMissing: number }
+    expect(body.maxRealtime).toBeNull()
+    expect(body.measuredUnavailable).toBe('no-data')
+    expect(body.filesMissing).toBeGreaterThan(0)
+  })
+})
+
+describe('envelope の正常でない時', () => {
+  it('要約がまだ無い時を頭の時刻つきで返す', async () => {
+    // 元のファイルだけ置き、要約は作らない
+    mkdirSync(dirs.waveDir, { recursive: true })
+    const chunk = {
+      stationId: STATION,
+      firstSampleIndex: 0,
+      firstSampleMs: H0,
+      msPerSample: 10,
+      gal: [[1], [1], [1]],
+      dcGal: [[0], [0], [980]],
+      memberCount: [3],
+    } as unknown as FusedWaveChunk
+    writeFileSync(join(dirs.waveDir, `wave-${KEY}-${hourKeyOf(H0)}.bin`), encodeWaveChunk(chunk, false)!)
+    const got = await handleRecordsRequest('envelope', q({ channel: `station/${KEY}/X`, from: H0, to: H0 + HOUR, columns: 60 }), deps)
+    expect((got.body as { irregularHours: unknown }).irregularHours).toEqual([{ hourStartMs: H0, state: 'pending' }])
   })
 })
 
@@ -135,12 +191,33 @@ describe('channels', () => {
     const got = await handleRecordsRequest('channels', q({}), deps)
     const body = got.body as { channels: Array<{ id: string; station: unknown; hours: number; firstHourMs: number; lastHourMs: number }>; unreadable: number }
     expect(body.unreadable).toBe(0)
-    const ns = body.channels.find((c) => c.id === `station/${KEY}/NS`)!
+    const ns = body.channels.find((c) => c.id === `station/${KEY}/X`)!
     expect(ns.station).toEqual({ stationId: STATION, displayName: '自宅' })
     expect([ns.hours, ns.firstHourMs, ns.lastHourMs]).toEqual([2, H0, H0 + HOUR])
-    const old = body.channels.find((c) => c.id === `station/${gone}/NS`)!
+    const old = body.channels.find((c) => c.id === `station/${gone}/X`)!
     expect(old.station).toBeNull()
     expect(body.channels).toHaveLength(6)
+  })
+
+  it('生データの行には、いまの設定でそのセンサーを持つ基板と観測点の名前を添える', async () => {
+    const board = 'mac:02000000a1b2'
+    const hourKey = hourKeyOf(H0)
+    mkdirSync(join(dirs.rawDir, hourKey.slice(0, 10)), { recursive: true })
+    const sourcePath = join(dirs.rawDir, hourKey.slice(0, 10), `raw-${hourKey}.mseed3`)
+    const wave = buildMseed3Record({
+      sourceId: mseed3SourceId(board, 'S1', 'HN1')!,
+      startMs: H0,
+      sampleRateHz: 100,
+      block: encodeSteim2(Int32Array.from({ length: 50 }, () => 100), 7),
+    })
+    writeFileSync(sourcePath, wave)
+    await buildSummaryFile({ kind: 'raw', sourcePath, summaryPath: rawSummaryPath(dirs.summaryDir, hourKey), hourKey, hourStartMs: H0, stationKey: null })
+    const unit = { enabled: true, rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], offset: [0, 0, 0], sensitivity: [1, 1, 1], noiseDensity: null } as const
+    config = { ...config, boards: [{ boardKey: board, stationId: STATION, sensors: [{ sensorId: 'S1', ...unit }] }] }
+    const got = await handleRecordsRequest('channels', q({}), deps)
+    const body = got.body as { channels: Array<{ id: string; board: unknown }> }
+    const raw = body.channels.find((c) => c.id === mseed3SourceId(board, 'S1', 'HN1'))!
+    expect(raw.board).toEqual({ boardKey: board, sensorId: 'S1', stationId: STATION, stationName: '自宅' })
   })
 
   it('読めない要約は数えて一覧から外す', async () => {

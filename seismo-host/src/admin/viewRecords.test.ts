@@ -1,0 +1,180 @@
+// @vitest-environment jsdom
+//
+// **`initRecordsView` の配線**（何を取りに行き、何を画面へ出すか）。jsdom には canvas の 2D 文脈が無いので
+// 絵そのものは見られない —— 逆に「文脈が取れなくても落ちない」ことをここで固定する。
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { TOKEN_STORAGE_KEY } from './api'
+import { initRecordsView } from './viewRecords'
+
+const H0 = new Date(2026, 9, 7, 12, 0, 0).getTime()
+const HOUR = 3_600_000
+
+function channel(id: string, kind: 'raw' | 'station', extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return { id, kind, unit: 'gal', firstHourMs: H0 - 2 * HOUR, lastHourMs: H0, hours: 3, sensor: null, board: null, station: null, ...extra }
+}
+
+const CHANNELS = {
+  channels: [
+    channel('station/home/X', 'station', { station: { stationId: 'home', displayName: '<自宅>' } }),
+    channel('station/home/Y', 'station', { station: { stationId: 'home', displayName: '<自宅>' } }),
+    channel('station/home/Z', 'station', { station: { stationId: 'home', displayName: '<自宅>' } }),
+    channel('FDSN:XX_A1_S1_H_N_1', 'raw', { sensor: 'FDSN:XX_A1_S1', unit: 'count' }),
+  ],
+  unreadable: 1,
+}
+
+function envelope(): Record<string, unknown> {
+  return {
+    source: 'coarse',
+    unit: 'gal',
+    columnMs: 60_000,
+    firstColumnMs: H0,
+    n: [5],
+    min: [-1],
+    max: [1],
+    mean: [0],
+    std: [0.5],
+    noiseStd: [0.5],
+    hours: { ok: 1, stale: 0, pending: 2, failed: 0, absent: 0 },
+    irregularHours: [{ hourStartMs: H0 - HOUR, state: 'pending' }],
+    files: null,
+    problems: { skippedBytes: 0, badRecords: 0, unscaledHours: 0 },
+  }
+}
+
+let requested: string[] = []
+let respond: (url: string) => { status: number; body: unknown }
+
+beforeEach(() => {
+  requested = []
+  localStorage.setItem(TOKEN_STORAGE_KEY, 'test-token')
+  respond = (url) => {
+    if (url.startsWith('/api/records/channels')) return { status: 200, body: CHANNELS }
+    if (url.startsWith('/api/records/envelope')) return { status: 200, body: envelope() }
+    return { status: 404, body: { error: 'not-found' } }
+  }
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      requested.push(url)
+      const r = respond(url)
+      return new Response(JSON.stringify(r.body), { status: r.status, headers: { 'Content-Type': 'application/json' } })
+    }),
+  )
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+  localStorage.clear()
+})
+
+async function settle(): Promise<void> {
+  for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0))
+}
+
+describe('initRecordsView', () => {
+  it('トークンが無ければ何も取りに行かず、そう書く', async () => {
+    localStorage.clear()
+    const root = document.createElement('div')
+    await initRecordsView(root, new AbortController().signal)
+    expect(requested).toEqual([])
+    expect(root.querySelector('.records-list-note')!.textContent).toBe('管理トークンを設定すると読める')
+  })
+
+  it('一覧を記録に束ねて選ぶ欄へ並べ（名前はエスケープ）、1 本目の新しい側 1 時間を列で取りに行く', async () => {
+    const root = document.createElement('div')
+    await initRecordsView(root, new AbortController().signal)
+    await settle()
+    const select = root.querySelector<HTMLSelectElement>('.records-group')!
+    expect([...select.querySelectorAll('optgroup')].map((g) => g.label)).toEqual(['観測点の合成波形', 'センサーの生データ'])
+    expect(select.innerHTML).toContain('&lt;自宅&gt;')
+    expect(root.querySelector('.records-list-note')!.textContent).toBe('読めない要約が 1 件あり、一覧から漏れているかもしれない')
+    expect(root.querySelector('.records-period')!.textContent).toContain('（3 時間ぶん）')
+    // 合成波形には単位の切り替えが無い
+    expect(root.querySelector<HTMLElement>('.records-unit')!.hidden).toBe(true)
+    const envelopes = requested.filter((u) => u.startsWith('/api/records/envelope'))
+    const views = envelopes.filter((u) => u.includes(`from=${H0}`) && u.includes(`to=${H0 + HOUR}`))
+    expect(views.map((u) => new URLSearchParams(u.split('?')[1]).get('channel'))).toEqual(['station/home/X', 'station/home/Y', 'station/home/Z'])
+    // 範囲が 10 分を超えるので、合成と震度の段は文言だけ
+    expect(root.textContent).toContain('3 軸の合成は 10 分以内まで寄せると出る')
+    expect(root.textContent).toContain('震度の推移は 10 分以内まで寄せると出る')
+    // 要約の不調の行
+    expect(root.querySelector('.records-note')!.textContent).toContain('要約がまだ無い時が 2')
+  })
+
+  it('10 分の幅を押すと、軸ごとの生のサンプルと震度の推移を取りに行く', async () => {
+    respond = (url) => {
+      if (url.startsWith('/api/records/channels')) return { status: 200, body: CHANNELS }
+      if (url.startsWith('/api/records/envelope')) return { status: 200, body: envelope() }
+      if (url.startsWith('/api/records/samples'))
+        return {
+          status: 200,
+          body: { unit: 'gal', runs: [{ firstSampleMs: H0 + 50 * 60_000, msPerSample: 10, origin: 'live', timeQuestionable: false, values: [1, -2, null] }], problems: { skippedBytes: 0, badRecords: 0, unscaledHours: 0 } },
+        }
+      if (url.startsWith('/api/records/intensity'))
+        return { status: 200, body: { maxRealtime: 1.2, maxRealtimeAtMs: H0 + 55 * 60_000, measured: 0.8, realtimeSeries: [] } }
+      return { status: 404, body: { error: 'not-found' } }
+    }
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const root = document.createElement('div')
+      await initRecordsView(root, new AbortController().signal)
+      await settle()
+      requested = []
+      root.querySelector<HTMLButtonElement>('button[data-span-index="5"]')!.click()
+      await vi.advanceTimersByTimeAsync(200)
+      await settle()
+      expect(requested.filter((u) => u.startsWith('/api/records/samples'))).toHaveLength(3)
+      const intensity = requested.find((u) => u.startsWith('/api/records/intensity'))!
+      expect(new URLSearchParams(intensity.split('?')[1]).get('station')).toBe('home')
+      expect(root.querySelector('.records-intensity-header')!.textContent).toMatch(/^最大 1\.2（\d\d:\d\d:\d\d）計測 0\.8$/)
+      expect(root.querySelector('.records-source')!.textContent).toBe('生のサンプルから描いている')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('取れなかったら理由を添えて書く', async () => {
+    respond = (url) => {
+      if (url.startsWith('/api/records/channels')) return { status: 200, body: CHANNELS }
+      return { status: 400, body: { error: 'range-too-wide' } }
+    }
+    const root = document.createElement('div')
+    await initRecordsView(root, new AbortController().signal)
+    await settle()
+    expect(root.querySelector('.records-note')!.textContent).toContain('波形の記録を取得できていない（range-too-wide）')
+  })
+
+  it('軸の段は消せるが、最後の 1 本は消さない', async () => {
+    const root = document.createElement('div')
+    await initRecordsView(root, new AbortController().signal)
+    await settle()
+    const buttons = [...root.querySelectorAll<HTMLButtonElement>('.records-axes button')]
+    expect(buttons.map((b) => b.textContent)).toEqual(['X 軸（東が ＋）', 'Y 軸（北が ＋）', 'Z 軸（上が ＋）'])
+    buttons[0]!.click()
+    buttons[1]!.click()
+    buttons[2]!.click()
+    expect(buttons.map((b) => b.getAttribute('aria-pressed'))).toEqual(['false', 'false', 'true'])
+    expect(root.querySelectorAll('canvas.records-axis')).toHaveLength(1)
+  })
+
+  it('生データを選ぶと単位の切り替えが出て、生の値を選ぶと native で取り直す', async () => {
+    const root = document.createElement('div')
+    await initRecordsView(root, new AbortController().signal)
+    await settle()
+    const select = root.querySelector<HTMLSelectElement>('.records-group')!
+    select.value = 'FDSN:XX_A1_S1'
+    select.dispatchEvent(new Event('change'))
+    await settle()
+    expect(root.querySelector<HTMLElement>('.records-unit')!.hidden).toBe(false)
+    expect(root.textContent).toContain('震度の推移は観測点の合成波形にだけ出る')
+    requested = []
+    root.querySelector<HTMLButtonElement>('button[data-unit="native"]')!.click()
+    await settle()
+    expect(requested.length).toBeGreaterThan(0)
+    expect(requested.every((u) => u.includes('unit=native'))).toBe(true)
+  })
+})

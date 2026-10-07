@@ -14,11 +14,17 @@
 // | `spectrum` | `channel`・`from`・`to`・`unit` | 区間のスペクトル |
 // | `spectrogram` | `channel`・`from`・`to`・`columns`・`unit` | 列ごとのスペクトル |
 // | `reception` | `from`・`to`・`sensor`（任意） | 受信の記録の帯と読めなかったパケット |
+// | `intensity` | `station`（観測点の札）・`from`・`to` | 刻みごとのリアルタイム震度と計測震度（{@link SAMPLES_RANGE_MAX_MS} まで） |
 //
 // `from`・`to` は unix ミリ秒（`to` は含まない）。`unit` は `gal`（既定。カウントを換算する）か `native`。
+//
+// **震度は `/quake-intensity` と同じ計算（`quakeIntensity.ts`）を札で引く。** あちらは観測点 ID で引くので、
+// 設定から外した観測点の記録には届かない（札から ID へは戻せない）。
 
 import { decimalInt } from './httpQuery'
+import { computeQuakeIntensity, QUAKE_INTENSITY_LEAD_MS } from './quakeIntensity'
 import type { StationConfig } from './stationConfigTypes'
+import { readWaveRangeByToken } from './waveArchive'
 import type { RecordChannelIndex } from './waveRecordChannels'
 import {
   SAMPLES_RANGE_MAX_MS,
@@ -43,6 +49,8 @@ export const RECORDS_RANGE_MAX_MS = 400 * 24 * 3_600_000
 export const RECORDS_COLUMNS_MAX = 4096
 
 const SENSOR_RE = /^FDSN:[A-Za-z0-9_-]{1,64}$/
+/** 観測点の札（`waveArchive.ts` の `stationFileToken` が作る形。チャンネルの名乗りの札と同じ）。 */
+const STATION_KEY_RE = /^[A-Za-z0-9_-]{1,64}$/
 
 export interface RecordsApiDeps {
   readonly dirs: RecordDirs
@@ -125,6 +133,40 @@ export async function handleRecordsRequest(route: string, params: URLSearchParam
     if (sensor !== null && !SENSOR_RE.test(sensor)) return bad('bad-sensor')
     return { status: 200, body: await readReception({ dirs, fromMs: range.fromMs, toMs: range.toMs, sensor }) }
   }
+  if (route === 'intensity') {
+    const station = params.get('station')
+    if (station === null || !STATION_KEY_RE.test(station)) return bad('bad-station')
+    const range = readRange(params, SAMPLES_RANGE_MAX_MS)
+    if (!range.ok) return bad(range.error)
+    // **判定の窓の分だけ手前から読む**（`QUAKE_INTENSITY_LEAD_MS` の説明）。読み手は投げない。
+    const read = await readWaveRangeByToken({
+      dir: dirs.waveDir,
+      stationKey: station,
+      fromMs: range.fromMs - QUAKE_INTENSITY_LEAD_MS,
+      toMs: range.toMs,
+    })
+    const result = computeQuakeIntensity({ chunks: read.chunks, fromMs: range.fromMs, toMs: range.toMs })
+    return {
+      status: 200,
+      body: {
+        station,
+        fromMs: range.fromMs,
+        toMs: range.toMs,
+        maxRealtime: result.maxRealtime,
+        maxRealtimeAtMs: result.maxRealtimeAtMs,
+        realtimeSeries: result.realtimeSeries,
+        measured: result.measured,
+        measuredUnavailable: result.measuredUnavailable,
+        gapCount: result.gapCount,
+        invalidChunkCount: result.invalidChunkCount,
+        filesRead: read.filesRead,
+        filesMissing: read.filesMissing,
+        filesFailed: read.filesFailed,
+        skippedBytes: read.skippedBytes,
+        truncated: read.truncated,
+      },
+    }
+  }
   if (route !== 'envelope' && route !== 'samples' && route !== 'spectrum' && route !== 'spectrogram') {
     return { status: 404, body: { error: 'not-found' } }
   }
@@ -202,12 +244,30 @@ export async function handleRecordsRequest(route: string, params: URLSearchParam
     const got = await readSamplesEnvelope({ dirs, ref, fromMs, toMs, columns: columns.columns, unit: unit.unit })
     return {
       status: 200,
-      body: { channel: ref.id, source, unit: got.unit, ...columnsBody(got.columns), hours: null, files: got.files, problems: got.problems },
+      body: {
+        channel: ref.id,
+        source,
+        unit: got.unit,
+        ...columnsBody(got.columns),
+        hours: null,
+        irregularHours: null,
+        files: got.files,
+        problems: got.problems,
+      },
     }
   }
   const got = await readSummaryEnvelope({ dirs, ref, source, fromMs, toMs, columns: columns.columns, unit: unit.unit })
   return {
     status: 200,
-    body: { channel: ref.id, source, unit: got.unit, ...columnsBody(got.columns), hours: got.hours, files: null, problems: got.problems },
+    body: {
+      channel: ref.id,
+      source,
+      unit: got.unit,
+      ...columnsBody(got.columns),
+      hours: got.hours,
+      irregularHours: got.irregularHours,
+      files: null,
+      problems: got.problems,
+    },
   }
 }

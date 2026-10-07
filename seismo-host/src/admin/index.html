@@ -427,6 +427,22 @@
         touch-action: none;
         cursor: ew-resize;
       }
+      /* 波形の記録の欠けの凡例。**色は `viewRecords.ts` の `HATCH_NONE`・`HATCH_PENDING` と同じ**
+         （凡例と絵で色が食い違うと、どちらの欠けかを読み違える）。 */
+      .records-hatch {
+        display: inline-block;
+        width: 1.6em;
+        height: 0.9em;
+        margin-right: 0.3em;
+        vertical-align: middle;
+        border: 1px solid var(--border);
+      }
+      .records-hatch-none {
+        background: repeating-linear-gradient(-45deg, rgba(179, 38, 30, 0.35) 0 1px, transparent 1px 6px);
+      }
+      .records-hatch-pending {
+        background: repeating-linear-gradient(-45deg, rgba(128, 128, 128, 0.5) 0 1px, transparent 1px 6px);
+      }
     </style>
   </head>
   <body>

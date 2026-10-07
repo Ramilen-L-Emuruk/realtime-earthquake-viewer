@@ -7,12 +7,13 @@
 import { clearStoredToken, getStoredToken, onTokenCleared, setStoredToken } from './api'
 import { qs } from './dom'
 import { initBoardsView } from './viewBoards'
+import { initRecordsView } from './viewRecords'
 import { initShakesView } from './viewShakes'
 import { initStationsView } from './viewStations'
 import { initStatusView } from './viewStatus'
 import { initWavesView } from './viewWaves'
 
-type TabKey = 'stations' | 'boards' | 'status' | 'waves' | 'shakes'
+type TabKey = 'stations' | 'boards' | 'status' | 'waves' | 'shakes' | 'records'
 
 const TABS: readonly { readonly key: TabKey; readonly label: string }[] = [
   { key: 'stations', label: '観測点' },
@@ -20,6 +21,8 @@ const TABS: readonly { readonly key: TabKey; readonly label: string }[] = [
   { key: 'status', label: '稼働状況' },
   { key: 'waves', label: '波形' },
   { key: 'shakes', label: '揺れの記録' },
+  // 2026-10-07 ユーザー承認（揺れの記録の右）。
+  { key: 'records', label: '波形の記録' },
 ]
 
 function renderShell(root: HTMLElement): void {
@@ -73,6 +76,7 @@ async function mountTab(root: HTMLElement, key: TabKey): Promise<void> {
   else if (key === 'boards') await initBoardsView(content, controller.signal)
   else if (key === 'waves') await initWavesView(content, controller.signal)
   else if (key === 'shakes') await initShakesView(content, controller.signal)
+  else if (key === 'records') await initRecordsView(content, controller.signal)
   else await initStatusView(content, controller.signal)
 }
 

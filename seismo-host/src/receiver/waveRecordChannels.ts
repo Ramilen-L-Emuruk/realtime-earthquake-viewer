@@ -34,8 +34,16 @@ export interface RecordChannel {
   readonly hours: number
   /** 生データ: センサーの識別子（受信の記録の帯を引くのに使う）。合成波形は `null`。 */
   readonly sensor: string | null
-  /** 生データ: いまの設定でこのセンサーを持つ基板とセンサー。設定に無ければ `null`。 */
-  readonly board: { readonly boardKey: string; readonly sensorId: string; readonly stationId: string } | null
+  /**
+   * 生データ: いまの設定でこのセンサーを持つ基板とセンサー。設定に無ければ `null`。
+   * `stationName` は割り当て先の観測点の表示名（観測点が設定に無ければ `null`）。
+   */
+  readonly board: {
+    readonly boardKey: string
+    readonly sensorId: string
+    readonly stationId: string
+    readonly stationName: string | null
+  } | null
   /** 合成波形: いまの設定でこの札になる観測点。設定に無ければ `null`（外した観測点）。 */
   readonly station: { readonly stationId: string; readonly displayName: string } | null
 }
@@ -126,11 +134,18 @@ export class RecordChannelIndex {
     // **消えたファイルの控えは捨てる**（溜め続けない）。
     for (const path of this.cache.keys()) if (!seen.has(path)) this.cache.delete(path)
 
-    const sensorOwners = new Map<string, { boardKey: string; sensorId: string; stationId: string }>()
+    const stationNames = new Map(config.stations.map((s) => [s.stationId, s.displayName]))
+    const sensorOwners = new Map<string, NonNullable<RecordChannel['board']>>()
     for (const b of config.boards) {
       for (const s of b.sensors) {
         const sid = mseed3SourceId(b.boardKey, s.sensorId, 'HNZ')
-        if (sid !== null) sensorOwners.set(sensorOfSourceId(sid), { boardKey: b.boardKey, sensorId: s.sensorId, stationId: b.stationId })
+        if (sid === null) continue
+        sensorOwners.set(sensorOfSourceId(sid), {
+          boardKey: b.boardKey,
+          sensorId: s.sensorId,
+          stationId: b.stationId,
+          stationName: stationNames.get(b.stationId) ?? null,
+        })
       }
     }
     const stationsByToken = new Map(config.stations.map((s) => [stationFileToken(s.stationId), { stationId: s.stationId, displayName: s.displayName }]))

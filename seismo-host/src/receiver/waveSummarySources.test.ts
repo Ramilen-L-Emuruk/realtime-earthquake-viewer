@@ -147,6 +147,6 @@ describe('summarizeWaveHour', () => {
   })
 
   it('観測点の識別子に区切り文字が入っていても、向きまで読み戻せる', () => {
-    expect(stationWaveChannelId('a/b', 2)).toBe('station/a/b/UD')
+    expect(stationWaveChannelId('a/b', 2)).toBe('station/a/b/Z')
   })
 })

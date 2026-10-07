@@ -152,9 +152,9 @@ describe('buildSummaryFile', () => {
     expect(result.ok).toBe(true)
     const decoded = decodeSummaryPart(readFileSync(summaryPartPath(summaryPath, 'fine')))!
     expect(decoded.channels.map((c) => c.id).sort()).toEqual([
-      'station/home-0123456789ab/EW',
-      'station/home-0123456789ab/NS',
-      'station/home-0123456789ab/UD',
+      'station/home-0123456789ab/X',
+      'station/home-0123456789ab/Y',
+      'station/home-0123456789ab/Z',
     ])
   })
 

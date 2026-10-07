@@ -5,7 +5,7 @@
 //
 // **チャンネルの名乗り**は要約と同じ（`waveSummarySources.ts`）。
 // - 生データ: miniSEED の識別子（`FDSN:XX_<局>_<センサー>_H_N_<向き>`）
-// - 合成波形: `station/<観測点の札>/<NS|EW|UD>`（札は `waveArchive.ts` の `stationFileToken`）
+// - 合成波形: `station/<観測点の札>/<X|Y|Z>`（共通座標 ENU の軸。札は `waveArchive.ts` の `stationFileToken`）
 //
 // **前の時の要約も重ねる。** まとまりは先頭の時刻で時のファイルへ入るので、時の境目の直後
 // （合成波形なら最大 10 分）は前の時の要約にある（`waveSummary.ts` の `OVERHANG_MS`）。
@@ -68,8 +68,9 @@ export type ChannelRef =
   | { readonly kind: 'station'; readonly id: string; readonly stationKey: string; readonly axis: 0 | 1 | 2 }
 
 const RAW_ID_RE = /^FDSN:[A-Za-z0-9_-]{1,64}$/
-const STATION_ID_RE = /^station\/([A-Za-z0-9_-]{1,64})\/(NS|EW|UD)$/
-const AXES = ['NS', 'EW', 'UD'] as const
+const STATION_ID_RE = /^station\/([A-Za-z0-9_-]{1,64})\/(X|Y|Z)$/
+/** 共通座標（ENU）の軸。並びは `waveSummarySources.ts` の `stationWaveChannelId` と同じ。 */
+const AXES = ['X', 'Y', 'Z'] as const
 
 /**
  * チャンネルの名乗りを解く。**名乗りの形に合わなければ `null`**（読み手は名乗りからファイルの場所を
@@ -176,6 +177,15 @@ async function readOneHour(dirs: RecordDirs, ref: ChannelRef, part: SummaryPart,
   }
 }
 
+/**
+ * 正常でない時 1 つ（{@link HourTally} の `stale`・`pending`・`failed`）。**数だけでは場所が判らない**ので、
+ * 画面が「記録が無い」と「要約がまだ無い」を時刻の上で塗り分けられるよう、頭の時刻を添えて返す。
+ */
+export interface IrregularHour {
+  readonly hourStartMs: number
+  readonly state: 'stale' | 'pending' | 'failed'
+}
+
 /** 範囲に触れる時の要約から、そのチャンネルの 1 部分を集める。投げない。 */
 export async function readHourChannels(
   dirs: RecordDirs,
@@ -183,18 +193,23 @@ export async function readHourChannels(
   part: SummaryPart,
   fromMs: number,
   toMs: number,
-): Promise<{ readonly hours: readonly HourChannel[]; readonly tally: HourTally }> {
+): Promise<{ readonly hours: readonly HourChannel[]; readonly tally: HourTally; readonly irregular: readonly IrregularHour[] }> {
   const starts = hoursToOpen(fromMs, toMs)
   const tally = emptyTally()
   const hours: HourChannel[] = []
+  const irregular: IrregularHour[] = []
   for (let i = 0; i < starts.length; i += READ_PARALLEL) {
-    const batch = await Promise.all(starts.slice(i, i + READ_PARALLEL).map((h) => readOneHour(dirs, ref, part, h)))
-    for (const outcome of batch) {
+    const slice = starts.slice(i, i + READ_PARALLEL)
+    const batch = await Promise.all(slice.map((h) => readOneHour(dirs, ref, part, h)))
+    batch.forEach((outcome, k) => {
       tally[outcome.state] += 1
+      if (outcome.state === 'stale' || outcome.state === 'pending' || outcome.state === 'failed') {
+        irregular.push({ hourStartMs: slice[k]!, state: outcome.state })
+      }
       if ((outcome.state === 'ok' || outcome.state === 'stale') && outcome.found !== null) hours.push(outcome.found)
-    }
+    })
   }
-  return { hours, tally }
+  return { hours, tally, irregular }
 }
 
 // ---- 列へ束ねる ---------------------------------------------------------------------------
@@ -416,6 +431,8 @@ export interface EnvelopeResult {
   readonly unit: 'gal' | 'count'
   readonly columns: EnvelopeColumns
   readonly hours: HourTally
+  /** 正常でない時（時刻の順）。範囲の手前の時（前の時からはみ出した分を拾うために開いた時）も含む。 */
+  readonly irregularHours: readonly IrregularHour[]
   readonly problems: ReadProblems
 }
 
@@ -459,6 +476,7 @@ export async function readSummaryEnvelope(params: {
     unit: unitLabelOf(ref, unit),
     columns: levelsToColumns(levels, fromMs, toMs, columnMs),
     hours: read.tally,
+    irregularHours: read.irregular,
     problems: sumProblems(read.hours, unscaledHours),
   }
 }
