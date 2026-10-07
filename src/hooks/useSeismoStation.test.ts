@@ -15,7 +15,7 @@
 // React を動かすため、このファイルだけ jsdom 環境で実行する。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act, cleanup } from '@testing-library/react'
-import { useSeismoStation } from './useSeismoStation'
+import { useSeismoStation, WAVE_REFILL_DELAY_MS, WAVE_RETAIN_SEC } from './useSeismoStation'
 import { log } from '../utils/logger'
 import {
   connectSeismoStream,
@@ -659,8 +659,8 @@ describe('useSeismoStation', () => {
 describe('useSeismoStation: 作り直しの知らせ', () => {
   const options = { enabled: true, baseUrl: 'http://host:50506', wave: 'station' as const }
 
-  /** `/status` は台帳、`/waves` は 1030 ms から 3 サンプル（穴の位置）を返す。 */
-  function stubHost(): string[] {
+  /** `/status` は台帳、`/waves` は `firstSampleMs`（既定は穴の位置の 1030 ms）から 3 サンプルを返す。 */
+  function stubHost(firstSampleMs = 1030): string[] {
     const urls: string[] = []
     vi.stubGlobal(
       'fetch',
@@ -676,7 +676,7 @@ describe('useSeismoStation: 作り直しの知らせ', () => {
               truncated: false,
               chunks: [
                 {
-                  firstSampleMs: 1030,
+                  firstSampleMs,
                   msPerSample: 10,
                   dcGal: [0, 0, 980],
                   gal: [[11, 12, 13], [14, 15, 16], [17, 18, 19]],
@@ -715,6 +715,49 @@ describe('useSeismoStation: 作り直しの知らせ', () => {
     const w = h.result.current.readWave('home')
     expect(w?.gal[0][3]).toBe(11)
     expect(w?.gal[2][5]).toBe(19)
+    expect(h.result.current.stations[0].waveTally.gapSamples).toBe(0)
+  })
+
+  it('正: 起点から作り直したら、待ってから抱える長さぶん手前を控えから取って継ぎ足す', async () => {
+    const urls = stubHost(970)
+    const h = renderHook(() => useSeismoStation(options))
+    await settleDirectory()
+    deliver(stationReading('home', 0.1))
+    // 最初のまとまり（起動直後の形）。
+    deliver(stationWave('home', 1000))
+    await tick()
+    expect(urls.filter((u) => u.includes('/waves'))).toHaveLength(0)
+
+    await tick(WAVE_REFILL_DELAY_MS)
+
+    const waves = urls.filter((u) => u.includes('/waves'))
+    expect(waves).toHaveLength(1)
+    // **長さは入れ物が抱える長さで決まる**（空き 5997 サンプル × 10 ms 手前から）。
+    expect(waves[0]).toContain(`from=${1000 - (WAVE_RETAIN_SEC * 100 - 3) * 10}`)
+    expect(waves[0]).toContain('to=1000')
+    const w = h.result.current.readWave('home')
+    expect(w?.firstSampleMs).toBe(970)
+    expect(w?.gal[0][0]).toBe(11)
+    expect(w?.gal[0][3]).toBe(1)
+  })
+
+  it('正: 繋ぎ直しなどで空いた穴は、作り直しの知らせが無くても待ってから控えから埋める', async () => {
+    const urls = stubHost()
+    const h = renderHook(() => useSeismoStation(options))
+    await settleDirectory()
+    deliver(stationReading('home', 0.1))
+    deliver(stationWave('home', 1000))
+    deliver(stationWave('home', 1060))
+    await tick()
+    expect(h.result.current.stations[0].waveTally.gapSamples).toBe(3)
+
+    await tick(WAVE_REFILL_DELAY_MS)
+
+    // 起点の作り直し（手前の空き）と穴の予約は、待っている間に 1 回へ束ねる。
+    const waves = urls.filter((u) => u.includes('/waves'))
+    expect(waves).toHaveLength(1)
+    expect(waves[0]).toContain('to=1060')
+    expect(h.result.current.readWave('home')?.gal[0][3]).toBe(11)
     expect(h.result.current.stations[0].waveTally.gapSamples).toBe(0)
   })
 

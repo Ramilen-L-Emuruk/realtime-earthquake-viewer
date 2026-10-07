@@ -29,7 +29,7 @@ import {
   type SeismoWaveWant,
 } from '../services/seismoStream'
 import { fetchSeismoWaveSamples } from '../services/seismoWaveSamples'
-import { SeismoWaveRefiller } from '../services/seismoWaveRefill'
+import { SeismoWaveRefiller, type SeismoWaveRefillSkip } from '../services/seismoWaveRefill'
 import {
   SeismoWaveBuffer,
   type SeismoWaveTally,
@@ -90,6 +90,23 @@ export const WAVE_STALE_MS = 5000
  * なのか分からなくなる。
  */
 export const WAVE_RETAIN_SEC = 60
+
+/**
+ * 下部の波形で穴を見つけてから、ホストの控え（`/waves`）へ取りに行くまで待つ時間（ms）。
+ *
+ * 起点から作り直したとき（起動直後・抱える長さを超える切断の後）も、同じだけ待って手前の空きを取りに行く。
+ * 待つ理由は `services/seismoWaveRefill.ts` の `delayMs`（控えへの書き込みが追いつくのを待つ・続けてできた
+ * 穴を 1 回へまとめる）。**数秒で足りる** —— ホストは押し出しと同時に控えへ書き、書き込み自体は非同期でも
+ * ミリ秒で終わる。長くすると、穴が埋まるまで絵に空白が見えている時間がそのぶん伸びる。
+ */
+export const WAVE_REFILL_DELAY_MS = 3000
+
+/** 穴埋めを見送った理由の記録の文面（`services/seismoWaveRefill.ts` の `SeismoWaveRefillSkip`）。 */
+const SKIP_REASON_TEXT: Record<SeismoWaveRefillSkip, string> = {
+  'no-buffer': 'その観測点の波形をまだ抱えていない',
+  'nothing-to-do': '範囲に穴も手前の空きも無い',
+  restarted: '取りに行っている間に起点から作り直した（新しい起点で取り直す）',
+}
 
 /**
  * 観測点ごとの姿を作り直す間隔（ms）。
@@ -380,12 +397,23 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
       fetchSamples: ({ stationId, fromMs, toMs }) =>
         fetchSeismoWaveSamples({ baseUrl, stationId, fromMs, toMs, signal: ctrl.signal }),
       signal: ctrl.signal,
-      onFilled: (stationId, filled) => {
+      delayMs: WAVE_REFILL_DELAY_MS,
+      onFilled: (stationId, { filled, prepended, fromMs, toMs, chunks }) => {
         // **埋まらなかったことも残す。** 取りに行ったのに 0 なら、ホストがまだ作り直した分を
         // 読めていないか、時刻が合っていない —— 画面からは「埋まらない」としか見えない。
-        if (filled > 0) log.info(`[seismo] 取り戻した区間で下部の波形の穴を埋めた（${stationId}）: ${filled} サンプル`)
-        else log.debug(`[seismo] 取り戻した区間を取ったが、下部の波形の穴は埋まらなかった（${stationId}）`)
+        // 取った範囲とまとまりの数を添えるのは、「控えに無かった（0 件）」と「あったが合わなかった」を見分けるため。
+        if (filled > 0) log.info(`[seismo] ホストの控えから下部の波形の穴を埋めた（${stationId}）: ${filled} サンプル`)
+        if (prepended > 0) log.info(`[seismo] ホストの控えから下部の波形の手前を継ぎ足した（${stationId}）: ${prepended} サンプル`)
+        if (filled === 0 && prepended === 0) {
+          log.debug(
+            `[seismo] ホストの控えを取ったが、下部の波形は埋まらなかった（${stationId}）: ` +
+              `${new Date(fromMs).toISOString()}〜${new Date(toMs).toISOString()}・${chunks} まとまり`,
+          )
+        }
       },
+      // **どれも正常に起きうる**（知らせが波形より先に届いた・取る物が無い・取っている間に作り直した）ので debug に留める。
+      onSkipped: (stationId, reason) =>
+        log.debug(`[seismo] 下部の波形の穴埋めを見送った（${stationId}）: ${SKIP_REASON_TEXT[reason]}`),
       onError: (stationId, error) =>
         throttledRevisedListener(() => log.error(`[seismo] 下部の波形の穴を埋める途中で投げた（${stationId}）`, error)),
     })
@@ -460,6 +488,7 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
           // 停滞検出と同じ扱い）。重なりで捨てた場合も押し出しは生きているので、
           // ここで更新しないと正常な取り直しが「途絶えた」に見える。
           entry.waveReceivedAt = receivedAt
+          const previousLastMs = entry.wave.lastSampleMs
           const result = entry.wave.push(w)
           // **作り直したことは記録へ出す。** 起点が引き直されたのは時刻が飛んだ
           // 印で、絵の上では「急に短くなった」としか見えない。
@@ -467,6 +496,14 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
             throttledWaveRestart(w.stationId, () =>
               log.warn(`[seismo] 波形を作り直した（${w.stationId}）: ${result.why}`),
             )
+            // **手前の空きをホストの控えから継ぎ足す**（2026-10-07 ユーザー依頼）。起動直後も、
+            // 届いたところから描き始めず、抱える長さぶん遡った絵にする。
+            refiller.schedule(w.stationId, { fromMs: Number.NEGATIVE_INFINITY, toMs: w.firstSampleMs })
+          } else if (result.kind === 'gap' && previousLastMs !== null) {
+            // **こちらで見つけた穴も取りに行く**（2026-10-07 ユーザー承認）。繋ぎ直しの間や、押し出しが
+            // 遅い受け手のぶんを捨てた間は、ホストは受け取れているので作り直しの知らせが来ない。
+            // `previousLastMs !== null` は型を絞るためだけ（`gap` は抱えているときにしか返らない）。
+            refiller.schedule(w.stationId, { fromMs: previousLastMs, toMs: w.firstSampleMs })
           }
           return
         }

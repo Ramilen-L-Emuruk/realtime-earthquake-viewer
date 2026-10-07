@@ -53,7 +53,9 @@ describe('SeismoWaveRefiller', () => {
       bufferOf: () => buffer,
       fetchSamples,
       signal: new AbortController().signal,
-      onFilled: (_id, n) => filled.push(n),
+      delayMs: 3000,
+      onFilled: (_id, r) => filled.push(r.filled),
+      onSkipped: () => {},
       onError: (_id, e) => { throw e },
     })
 
@@ -74,7 +76,9 @@ describe('SeismoWaveRefiller', () => {
       bufferOf: (id) => (id === 'home' ? buffer : null),
       fetchSamples,
       signal: new AbortController().signal,
+      delayMs: 3000,
       onFilled: () => {},
+      onSkipped: () => {},
       onError: (_id, e) => { throw e },
     })
 
@@ -99,7 +103,9 @@ describe('SeismoWaveRefiller', () => {
       bufferOf: () => buffer,
       fetchSamples,
       signal: new AbortController().signal,
+      delayMs: 3000,
       onFilled: () => {},
+      onSkipped: () => {},
       onError: (_id, e) => { throw e },
     })
 
@@ -131,7 +137,9 @@ describe('SeismoWaveRefiller', () => {
       bufferOf: () => buffer,
       fetchSamples,
       signal: new AbortController().signal,
+      delayMs: 3000,
       onFilled: () => {},
+      onSkipped: () => {},
       onError: (_id, e) => { throw e },
     })
 
@@ -152,7 +160,9 @@ describe('SeismoWaveRefiller', () => {
       bufferOf: () => buffer,
       fetchSamples,
       signal: ctrl.signal,
+      delayMs: 3000,
       onFilled: () => {},
+      onSkipped: () => {},
       onError: (_id, e) => { throw e },
     })
 
@@ -161,5 +171,230 @@ describe('SeismoWaveRefiller', () => {
     await settle()
 
     expect(fetchSamples).not.toHaveBeenCalled()
+  })
+})
+
+describe('SeismoWaveRefiller.schedule', () => {
+  /** 10000 ms から 1 まとまりだけ届いた入れ物（起動直後の形）。 */
+  function justStarted(retainSec = 60): SeismoWaveBuffer {
+    const buffer = new SeismoWaveBuffer(retainSec)
+    buffer.push(chunk(10_000))
+    return buffer
+  }
+
+  function refillerOf(
+    buffer: SeismoWaveBuffer,
+    fetchSamples: (p: { stationId: string; fromMs: number; toMs: number }) => Promise<WaveSamplesResult>,
+    results: { filled: number; prepended: number }[] = [],
+    signal: AbortSignal = new AbortController().signal,
+  ): SeismoWaveRefiller {
+    return new SeismoWaveRefiller({
+      bufferOf: (id) => (id === 'home' ? buffer : null),
+      fetchSamples,
+      signal,
+      delayMs: 3000,
+      onFilled: (_id, r) => results.push({ filled: r.filled, prepended: r.prepended }),
+      onSkipped: () => {},
+      onError: (_id, e) => { throw e },
+    })
+  }
+
+  it('正: 待ってから、抱えている長さの空きぶんだけ最も古いサンプルの手前を取って継ぎ足す', async () => {
+    vi.useFakeTimers()
+    try {
+      // 1 秒しか抱えない入れ物（100 サンプル・空き 70）。**取る長さは入れ物が決める**（60 秒を決め打ちしない）。
+      const buffer = justStarted(1)
+      const fetchSamples = vi.fn(async () => ok([chunk(9000, 7, 100)]))
+      const results: { filled: number; prepended: number }[] = []
+      const refiller = refillerOf(buffer, fetchSamples, results)
+
+      refiller.schedule('home', { fromMs: Number.NEGATIVE_INFINITY, toMs: 10_000 })
+      await settle()
+      expect(fetchSamples).not.toHaveBeenCalled()
+
+      await vi.advanceTimersByTimeAsync(3000)
+      await settle()
+
+      expect(fetchSamples.mock.calls).toEqual([[{ stationId: 'home', fromMs: 9300, toMs: 10_000 }]])
+      expect(results).toEqual([{ filled: 0, prepended: 70 }])
+      expect(buffer.snapshot()?.firstSampleMs).toBe(9300)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('正: 押し出しの途中にできた穴（ホストの控えにはある）も、待ってから取って埋める', async () => {
+    vi.useFakeTimers()
+    try {
+      const buffer = withHole()
+      // 空きで継ぎ足さないよう、範囲は穴の前後だけにする。
+      const fetchSamples = vi.fn(async () => ok([chunk(1300, 7)]))
+      const results: { filled: number; prepended: number }[] = []
+      const refiller = refillerOf(buffer, fetchSamples, results)
+
+      refiller.schedule('home', { fromMs: 1290, toMs: 1600 })
+      await vi.advanceTimersByTimeAsync(3000)
+      await settle()
+
+      expect(fetchSamples.mock.calls).toEqual([[{ stationId: 'home', fromMs: 1300, toMs: 1600 }]])
+      expect(results).toEqual([{ filled: 30, prepended: 0 }])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('安全弁: 取りに行っている間に入れ物が作り直されたら、継ぎ足しは見送る（記録へ残す）', async () => {
+    vi.useFakeTimers()
+    try {
+      const buffer = justStarted()
+      const skipped: string[] = []
+      const fetchSamples = vi.fn(async () => {
+        // 取りに行っている最中に、時刻が飛んで起点から作り直された。
+        buffer.push(chunk(500_000))
+        return ok([chunk(9700, 7)])
+      })
+      const results: { filled: number; prepended: number }[] = []
+      const refiller = new SeismoWaveRefiller({
+        bufferOf: (id) => (id === 'home' ? buffer : null),
+        fetchSamples,
+        signal: new AbortController().signal,
+        delayMs: 3000,
+        onFilled: (_id, r) => results.push({ filled: r.filled, prepended: r.prepended }),
+        onSkipped: (_id, why) => skipped.push(why),
+        onError: (_id, e) => { throw e },
+      })
+
+      refiller.schedule('home', { fromMs: Number.NEGATIVE_INFINITY, toMs: 10_000 })
+      await vi.advanceTimersByTimeAsync(3000)
+      await settle()
+
+      expect(fetchSamples).toHaveBeenCalledTimes(1)
+      expect(skipped).toEqual(['restarted'])
+      expect(results).toEqual([])
+      // 作り直した後の入れ物へ、遠い過去の値を穴ごと継ぎ足していない。
+      expect(buffer.snapshot()?.firstSampleMs).toBe(500_000)
+      expect(buffer.tally.gapSamples).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('対照: 抱える長さが埋まって古い側が押し出されただけなら、穴埋めは見送らない', async () => {
+    // 1.5 秒（150 サンプル）しか抱えない入れ物に穴を作り、取りに行っている間に新しいまとまりで
+    // 古い側（1000〜1290 ms）だけを押し出す。穴（1300〜1590 ms）は窓に残る。
+    const buffer = new SeismoWaveBuffer(1.5)
+    buffer.push(chunk(1000))
+    buffer.push(chunk(1600))
+    buffer.push(chunk(1900))
+    const fetchSamples = vi.fn(async () => {
+      buffer.push(chunk(2200))
+      buffer.push(chunk(2500))
+      return ok([chunk(1300, 7)])
+    })
+    const results: number[] = []
+    const refiller = new SeismoWaveRefiller({
+      bufferOf: () => buffer,
+      fetchSamples,
+      signal: new AbortController().signal,
+      delayMs: 3000,
+      onFilled: (_id, r) => results.push(r.filled),
+      onSkipped: (_id, why) => { throw new Error(`見送った: ${why}`) },
+      onError: (_id, e) => { throw e },
+    })
+
+    refiller.notice({ stationId: 'home', fromMs: 0, toMs: 10_000 })
+    await settle()
+
+    expect(results).toEqual([30])
+    expect(buffer.holesIn(0, 10_000)).toBeNull()
+  })
+
+  it('正: 何もせずに終えた理由を記録へ渡す（入れ物が無い・取る物が無い）', async () => {
+    vi.useFakeTimers()
+    try {
+      const buffer = justStarted(1)
+      buffer.prepend([chunk(9300, 0, 70)])
+      const skipped: string[] = []
+      const fetchSamples = vi.fn(async () => ok([]))
+      const refiller = new SeismoWaveRefiller({
+        bufferOf: (id) => (id === 'home' ? buffer : null),
+        fetchSamples,
+        signal: new AbortController().signal,
+        delayMs: 3000,
+        onFilled: () => {},
+        onSkipped: (id, why) => skipped.push(`${id}:${why}`),
+        onError: (_id, e) => { throw e },
+      })
+
+      refiller.notice({ stationId: 'shed', fromMs: 0, toMs: 10_000 })
+      refiller.schedule('home', { fromMs: Number.NEGATIVE_INFINITY, toMs: 10_000 })
+      await vi.advanceTimersByTimeAsync(3000)
+      await settle()
+
+      expect(fetchSamples).not.toHaveBeenCalled()
+      expect(skipped).toEqual(['shed:no-buffer', 'home:nothing-to-do'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('対照: 待っている間に重ねて予約しても、まとめて 1 回だけ取りに行く', async () => {
+    vi.useFakeTimers()
+    try {
+      const buffer = new SeismoWaveBuffer(60)
+      buffer.push(chunk(1000))
+      buffer.push(chunk(1600))
+      buffer.push(chunk(2200))
+      const fetchSamples = vi.fn(async () => ok([]))
+      const refiller = refillerOf(buffer, fetchSamples)
+
+      refiller.schedule('home', { fromMs: 1290, toMs: 1600 })
+      await vi.advanceTimersByTimeAsync(1000)
+      refiller.schedule('home', { fromMs: 1890, toMs: 2200 })
+      await vi.advanceTimersByTimeAsync(2000)
+      await settle()
+
+      // 2 つの穴（1300〜1590・1900〜2190 ms）を覆う 1 回。
+      expect(fetchSamples.mock.calls).toEqual([[{ stationId: 'home', fromMs: 1300, toMs: 2200 }]])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('対照: 空きも穴も無ければ取りに行かない', async () => {
+    vi.useFakeTimers()
+    try {
+      const buffer = justStarted(1)
+      buffer.prepend([chunk(9300, 0, 70)])
+      const fetchSamples = vi.fn(async () => ok([]))
+      const refiller = refillerOf(buffer, fetchSamples)
+
+      refiller.schedule('home', { fromMs: Number.NEGATIVE_INFINITY, toMs: 10_000 })
+      await vi.advanceTimersByTimeAsync(3000)
+      await settle()
+
+      expect(fetchSamples).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('安全弁: 待っている間に繋ぎを切ったら取りに行かない', async () => {
+    vi.useFakeTimers()
+    try {
+      const ctrl = new AbortController()
+      const fetchSamples = vi.fn(async () => ok([]))
+      const refiller = refillerOf(justStarted(), fetchSamples, [], ctrl.signal)
+
+      refiller.schedule('home', { fromMs: Number.NEGATIVE_INFINITY, toMs: 10_000 })
+      ctrl.abort()
+      await vi.advanceTimersByTimeAsync(3000)
+      await settle()
+
+      expect(fetchSamples).not.toHaveBeenCalled()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

@@ -392,6 +392,103 @@ export class SeismoWaveBuffer {
     return first === null || last === null ? null : { fromMs: first, toMs: last + this.msPerSample }
   }
 
+  /** 最も古いサンプルの時刻。**1 つも無ければ `null`。** */
+  get oldestSampleMs(): number | null {
+    const slots = this.slots
+    if (slots === null || this.count === 0) return null
+    return slots.timeMs[this.oldestSlot(slots)]
+  }
+
+  /** あと何サンプル、新しい側を押し出さずに置けるか。**場所がまだ無ければ 0。** */
+  get freeSamples(): number {
+    return this.slots === null ? 0 : this.slots.capacity - this.count
+  }
+
+  /**
+   * {@link prepend} で継ぎ足せるいちばん古い時刻（空きの分だけ手前）。**空きが無い・何も抱えていなければ `null`。**
+   *
+   * **長さはこの入れ物が抱える長さで決まる**（`retainSec`）。呼び手は数値を持たずにこれを訊く。
+   */
+  get prependFromMs(): number | null {
+    const oldestMs = this.oldestSampleMs
+    const free = this.freeSamples
+    if (oldestMs === null || free === 0) return null
+    return oldestMs - free * this.msPerSample
+  }
+
+  /**
+   * 最も古いサンプルより前の値を、空いている場所へ継ぎ足す。**継ぎ足した（読める値の）サンプル数を返す。**
+   *
+   * 起動直後・長い切断の後は起点から作り直すので、窓が届いたところから始まる。そこへホストの控え
+   * （`/waves`）から直前の分を足し、空白から描き始めないようにする（2026-10-07 ユーザー依頼）。
+   *
+   * - **空きの分だけ書く。** 新しい側（押し出しで届いた値）は押し出さない
+   * - **最も古いサンプルより前の時刻だけを採る。** 抱えている区間は {@link fill} の担当
+   * - **刻みが違えば採らない**（{@link push} が作り直すのと同じ許容幅）。時間軸が混ざる。許容幅の内で
+   *   違う刻みは入れ物の刻みへ取り込まない —— 描く側は窓全体を最新の刻みで等間隔に引くので、
+   *   {@link push} で届いた古い区間と同じ近似になる（実機の刻みの揺らぎは 0.16%）
+   * - **間が空いていれば穴として置き、欠測に数える**（読めない値のサンプルも同じ）。後から
+   *   {@link fill} で埋まれば引かれる。数えないと、埋めたときに欠測が負へ落ちる
+   *
+   * @param chunks 時刻の昇順でなくてもよい。
+   */
+  prepend(chunks: readonly SeismoWaveFillChunk[]): number {
+    const slots = this.slots
+    if (slots === null || this.count === 0) return 0
+    const dt = this.msPerSample
+    const oldestMs = slots.timeMs[this.oldestSlot(slots)]
+    // **新しい順に並べる**（最も古いサンプルの手前から後ろ向きに置くため）。
+    const samples: { t: number; ns: number; ew: number; ud: number; members: number }[] = []
+    for (const c of chunks) {
+      if (!Number.isFinite(c.firstSampleMs) || !(c.msPerSample > 0)) continue
+      if (Math.abs(c.msPerSample - dt) / dt > SAMPLE_INTERVAL_TOLERANCE) continue
+      for (let j = 0; j < c.gal[0].length; j += 1) {
+        const t = c.firstSampleMs + j * c.msPerSample
+        if (t >= oldestMs - dt / 2) break
+        samples.push({ t, ns: c.gal[0][j], ew: c.gal[1][j], ud: c.gal[2][j], members: c.memberCount[j] })
+      }
+    }
+    samples.sort((a, b) => b.t - a.t)
+
+    let placed = 0
+    let cursorMs = oldestMs
+    const put = (ns: number, ew: number, ud: number, members: number, t: number): boolean => {
+      if (this.count >= slots.capacity) return false
+      const slot = (this.oldestSlot(slots) - 1 + slots.capacity) % slots.capacity
+      slots.gal[0][slot] = ns
+      slots.gal[1][slot] = ew
+      slots.gal[2][slot] = ud
+      slots.memberCount[slot] = members
+      slots.timeMs[slot] = t
+      this.count += 1
+      this.firstMs = t
+      cursorMs = t
+      return true
+    }
+    for (const s of samples) {
+      // **同じ時刻を重ねて置かない**（まとまりの境目が重なって返ることがある）。
+      if (s.t > cursorMs - dt / 2) continue
+      // **間の穴は前後の値の間へ均して置く**（{@link fillGap} と同じ理由）。
+      const missing = Math.round((cursorMs - s.t) / dt) - 1
+      // **値を 1 つも置けない長さの穴は作らない。** 置くと空きを穴だけで使い切り、欠測の数だけが
+      // 空きの分ふくらむ（取りに行っている間に起点が作り直された場合などに起きうる）。
+      if (missing + 1 > slots.capacity - this.count) return placed
+      const step = (cursorMs - s.t) / (missing + 1)
+      const fromMs = cursorMs
+      for (let k = 1; k <= missing; k += 1) {
+        if (!put(NaN, NaN, NaN, 0, fromMs - k * step)) return placed
+        this.gapSamples += 1
+      }
+      const readable = Number.isFinite(s.ns) && Number.isFinite(s.ew) && Number.isFinite(s.ud)
+      if (!put(readable ? s.ns : NaN, readable ? s.ew : NaN, readable ? s.ud : NaN, readable ? s.members : 0, s.t)) {
+        return placed
+      }
+      if (readable) placed += 1
+      else this.gapSamples += 1
+    }
+    return placed
+  }
+
   /** 中身を捨てる。**次のまとまりが起点を決める。数え上げは残す。** */
   clear(): void {
     this.slots = null
