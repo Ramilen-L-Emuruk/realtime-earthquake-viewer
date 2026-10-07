@@ -2191,18 +2191,10 @@ async function main(): Promise<void> {
 
       const board = read.packet.boardKey
       tally.record({ kind: 'accepted', board })
-      // **返事は読み取れた直後に返す。** 基板が知りたいのは「届いて読めたか」で、
-      // 震度が出たか・区間がどう切れたかではない（それは基板が直せることではない）。
-      // **後ろへ置かない** —— この先の処理が投げると返事が出ず、ホストの不具合を
-      // 基板が「送れていない」と取り違えて、繋ぎ直しと再起動を始める。
-      // `offer` は投げない約束（`ackReplier.ts`）。手前の `tally.record` も数を足すだけで投げない。
-      // 版 1 は `ackRequested` が立たない（`mac:` の確かめは、その約束が崩れたときの安全弁）。
-      if (read.ackRequested && board.startsWith('mac:')) {
-        acks.offer(board.slice('mac:'.length), reply, Date.now())
-      }
       // **欠けの帳面へ、届いた番号を記録する**（`backlogBook.ts`）。取りに行けるのは
       // 起動 ID と MAC を名乗る基板（版 2）だけ —— 版 1 は番号が起動ごとに一意にならない。
-      // `notePacket` は投げない（数と範囲を覚えるだけ）。
+      // `notePacket` は投げない（数と範囲を覚えるだけ）。**返事より先に置く** ——
+      // このパケットで見つかった欠けを、この回の返事の `gap=` へ載せるため。
       if (board.startsWith('mac:') && read.packet.bootId !== '') {
         backlogBook.notePacket({
           stream: { boardKey: board, bootId: read.packet.bootId, sensorId: read.packet.sensorId },
@@ -2211,6 +2203,22 @@ async function main(): Promise<void> {
           address: from.address,
           atMs: receivedAtMs,
         })
+      }
+      // **返事は読み取れた直後に返す。** 基板が知りたいのは「届いて読めたか」で、
+      // 震度が出たか・区間がどう切れたかではない（それは基板が直せることではない）。
+      // **後ろへ置かない** —— この先の処理が投げると返事が出ず、ホストの不具合を
+      // 基板が「送れていない」と取り違えて、繋ぎ直しと再起動を始める。
+      // `offer` は投げない約束（欠けの引き出しが投げても `gap=` 無しで返す。`ackReplier.ts`）。
+      // 手前の `tally.record`・`notePacket` も数を足すだけで投げない。
+      // 版 1 は `ackRequested` が立たない（`mac:` の確かめは、その約束が崩れたときの安全弁）。
+      if (read.ackRequested && board.startsWith('mac:')) {
+        const bootId = read.packet.bootId
+        acks.offer(
+          board.slice('mac:'.length),
+          () => (bootId === '' ? [] : backlogBook.pendingGapStarts(board, bootId, receivedAtMs)),
+          reply,
+          Date.now(),
+        )
       }
       // **誰の声かが判るのはここから。** 読み取りに失敗した回は基板が判らないので覚えない。
       const current = streamKeyOf(read.packet)
