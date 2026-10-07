@@ -10,7 +10,8 @@
 // 読み返せる（どちらも自動では消さない約束）。
 //
 // **量は小さい。** 1 本 1 KB ほどで、実機の記録では 1 日 15 件前後 —— 月 450 本前後。
-// 範囲で読むときは、掛かる月のディレクトリを一覧して読む（索引は要らない）。
+// 範囲で読むときは、新しい月からディレクトリを一覧し、ファイル名の始まりで並べて上限の件数まで開く
+// （`readEventRange`。索引は要らない）。
 //
 // **書けなくても投げない。** 揺れの検出と押し出しを止めるほうが重い。数えて理由を残す。
 
@@ -18,14 +19,14 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, re
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-import { jstMonth, monthsBetween, nameMayStartInRange, startMsFromFileName } from './eventRange'
+import { jstMonth, NAME_START_SLACK_MS, nameMayStartInRange, startMsFromFileName } from './eventRange'
 import type { ShakeEventRecord } from './shakeEvent'
 
 /**
- * 範囲の上限・月の数え方・名前から始まりを読む決まりは `eventRange.ts` が持つ
+ * 件数の上限・月の数え方・名前から始まりを読む決まりは `eventRange.ts` が持つ
  * （管理コンソールと共有するため）。
  */
-export { EVENT_RANGE_MAX_MS, jstMonth, monthsBetween, startMsFromFileName } from './eventRange'
+export { EVENT_PAGE_LIMIT_MAX, jstMonth, monthsBetween, startMsFromFileName } from './eventRange'
 
 const SUFFIX = '.json'
 
@@ -120,59 +121,160 @@ export class ShakeEventStore {
   }
 }
 
-export interface EventRangeResult {
-  /** 範囲に始まりが入る揺れ（最新の版）。始まりの古い順。 */
-  readonly events: ShakeEventRecord[]
-  /**
-   * 読めなかったもの（`<月>/<ファイル名>` か、一覧できなかった `<月>`）。**無い月は数えない** ——
-   * その月に揺れが無かっただけ。
-   */
-  readonly unreadableFiles: string[]
-}
-
-/**
- * 範囲の揺れを読み返す。範囲の上限はここでは見ない（呼び出し側が入口で弾く）。
- *
- * **名前で範囲の外と分かるファイルは開かない。** 管理コンソールは直近 3 時間を 30 秒ごとに読み直すので、
- * 月のファイルを全部開くと、そのたびに数百本ぶんの読み込みが走る（観測点 3 つ・月 1350 本の実測で 1 回 0.5〜0.7 秒。
- * 名前で飛ばすと 7〜11 ミリ秒）。
- * **名前の始まりは中身の始まりを整数へ丸めた値なので、範囲の両端を 1 ミリ秒ずつ広げて比べる**
- * （`nameMayStartInRange`）—— 端の内側で始まった揺れを、丸めで外を名乗るというだけで取りこぼさない。
- * 名前から始まりを読めないファイルは、これまでどおり開いて中身で決める。
- */
-export async function readEventRange(params: {
+export interface EventRangeParams {
   readonly dir: string
   readonly fromMs: number
   readonly toMs: number
-}): Promise<EventRangeResult> {
-  const events: ShakeEventRecord[] = []
+  /** 返す件数の上限（新しいほうから数える）。 */
+  readonly limit: number
+  /** この観測点の記録だけ（null なら全部）。**数える前に絞る。** */
+  readonly stationId: string | null
+  /** 判定が「生活振動らしい」（`local-like`）ものを除く。**数える前に除く。** */
+  readonly hideLocal: boolean
+}
+
+export interface EventRangeResult {
+  /** 返す揺れ（最新の版）。始まりの古い順。 */
+  readonly events: ShakeEventRecord[]
+  /**
+   * 読めなかったもの（`<月>/<ファイル名>` か、一覧できなかった `<月>`）。**無い月は数えない** ——
+   * その月に揺れが無かっただけ。区切りより古くて開かなかったものは入らない。
+   */
+  readonly unreadableFiles: string[]
+  /** 範囲のうち古いほうに、返していない記録が残っているか（件数の上限で区切ったか）。 */
+  readonly truncated: boolean
+  /**
+   * **`[coveredFromMs, toMs)` に始まりが入る記録は漏れなく返した**（絞り込みに合うもの）。区切らなければ `fromMs`。
+   * 続きは `toMs` をこの値にして読めばよい（境目の記録が 2 回出ることはあるが、同じ `id` なので受け手で揃う）。
+   */
+  readonly coveredFromMs: number
+}
+
+/** 開く候補。`key` は並べる始まり（名前から読めればその値、読めなければ中身の始まり）。 */
+interface Candidate {
+  readonly path: string
+  readonly label: string
+  readonly key: number
+  /** 名前から始まりを読めず、並べるために先に開いた中身（読めなかったら null）。 */
+  readonly opened?: unknown
+}
+
+const MONTH_DIR = /^\d{4}-\d{2}$/
+
+/**
+ * 範囲の揺れを、**新しいほうから `limit` 件まで**読み返す（2026-10-07 ユーザー承認）。範囲の広さは見ない。
+ *
+ * **開くのは返す分だけ。** 範囲に掛かる月を一覧し、ファイル名の始まり（`<観測点>-<始まり>.json`）で新しい順に
+ * 並べ、上から開いていく。管理コンソールは直近 3 時間を 30 秒ごとに読み直すので、月のファイルを全部開くと
+ * そのたびに数百本ぶんの読み込みが走る（観測点 3 つ・月 1350 本の実測で 1 回 0.5〜0.7 秒。名前で飛ばすと 7〜11 ミリ秒）。
+ * **名前の始まりは中身の始まりを整数へ丸めた値なので、範囲の両端を 1 ミリ秒ずつ広げて比べる**
+ * （`nameMayStartInRange`）—— 端の内側で始まった揺れを、丸めで外を名乗るというだけで取りこぼさない。
+ *
+ * **区切りでは、同じ始まり（丸めの ±1 ミリ秒）の記録を分けない。** 上限に届いたら、届いた記録の名前の始まりから
+ * 1 ミリ秒以内のものまで続けて返し、見終えた範囲の頭をそこから 1 ミリ秒手前に置く。こうすると、返さなかった
+ * 記録の中身の始まりは必ずその頭より前にある（名前が 2 ミリ秒以上古い → 中身は 1.5 ミリ秒以上古い）。
+ *
+ * **名前から始まりを読めないファイルは、並べる前に開いて中身の始まりで並べる**（数は少ない前提）。
+ * 読めなかったものは数えず、名前を添える。
+ *
+ * **月は置き場所を一覧して拾う**（`monthsBetween` で範囲の月を作らない）—— 範囲に上限が無いので、1970 年から
+ * 2100 年までを頼まれても、実際にある月のディレクトリだけを見る。
+ */
+export async function readEventRange(params: EventRangeParams): Promise<EventRangeResult> {
+  const { dir, fromMs, toMs, limit } = params
   const unreadableFiles: string[] = []
-  for (const month of monthsBetween(params.fromMs, params.toMs)) {
-    let names: string[]
-    try {
-      names = await readdir(join(params.dir, month))
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') unreadableFiles.push(month)
-      continue
-    }
-    // 一時ファイル（`.json.tmp`）は書き込みの途中なので読まない。
-    for (const name of names.filter((n) => n.endsWith(SUFFIX)).sort()) {
-      const startFromName = startMsFromFileName(name)
-      if (startFromName !== null && !nameMayStartInRange(startFromName, params.fromMs, params.toMs)) continue
-      let rec: unknown
-      try {
-        rec = JSON.parse(await readFile(join(params.dir, month, name), 'utf8'))
-      } catch {
-        unreadableFiles.push(`${month}/${name}`)
-        continue
+  const fromMonth = jstMonth(fromMs)
+  const toMonth = jstMonth(Math.max(fromMs, toMs - 1))
+  let monthDirs: string[]
+  try {
+    monthDirs = await readdir(dir)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { events: [], unreadableFiles, truncated: false, coveredFromMs: fromMs }
+    throw error
+  }
+  // **新しい月から 1 か月ずつ一覧する。** 記録は中身の始まりの月へ置く（`eventFilePath`）ので、古い月の記録は
+  // 新しい月の記録より必ず古い。区切りに届いたら、それより古い月は一覧もしない —— 範囲に上限が無いので、
+  // 全部の月を一覧してから並べると、返すのは 500 件でも蓄積した年数に比例して重くなる。
+  const months = monthDirs.filter((m) => MONTH_DIR.test(m) && m >= fromMonth && m <= toMonth).sort().reverse()
+
+  const events: ShakeEventRecord[] = []
+  let cutKey: number | null = null
+  let truncated = false
+  scan: for (const month of months) {
+    const candidates = await monthCandidates(dir, month, fromMs, toMs, unreadableFiles)
+    for (const c of candidates) {
+      // 月をまたいでも同じ規則で切る（境目の丸め ±1 ミリ秒の記録は、古い月の側にあっても分けない）。
+      if (cutKey !== null && c.key < cutKey - NAME_START_SLACK_MS) {
+        truncated = true
+        break scan
       }
+      const rec = c.opened !== undefined ? c.opened : await readRecord(c.path)
       if (!isRecord(rec)) {
-        unreadableFiles.push(`${month}/${name}`)
+        unreadableFiles.push(c.label)
         continue
       }
-      if (rec.startMs >= params.fromMs && rec.startMs < params.toMs) events.push(rec)
+      if (!(rec.startMs >= fromMs && rec.startMs < toMs)) continue
+      if (params.stationId !== null && rec.stationId !== params.stationId) continue
+      if (params.hideLocal && rec.verdict === 'local-like') continue
+      events.push(rec)
+      if (cutKey === null && events.length >= limit) cutKey = c.key
     }
   }
   events.sort((a, b) => a.startMs - b.startMs)
-  return { events, unreadableFiles }
+  return {
+    events,
+    unreadableFiles: unreadableFiles.sort(),
+    truncated,
+    coveredFromMs: truncated && cutKey !== null ? cutKey - NAME_START_SLACK_MS : fromMs,
+  }
+}
+
+/**
+ * 1 か月ぶんの候補を、新しい順に並べて返す。一覧できなかった月・読めなかったファイルは `unreadableFiles` へ足す。
+ * 名前から始まりを読めないファイルはここで開き、中身の始まりで並べる（範囲の外なら候補にしない —— 残すと、
+ * 区切りより古い候補として「続きがある」と言ってしまう）。
+ */
+async function monthCandidates(
+  dir: string,
+  month: string,
+  fromMs: number,
+  toMs: number,
+  unreadableFiles: string[],
+): Promise<Candidate[]> {
+  let names: string[]
+  try {
+    names = await readdir(join(dir, month))
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') unreadableFiles.push(month)
+    return []
+  }
+  const candidates: Candidate[] = []
+  // 一時ファイル（`.json.tmp`）は書き込みの途中なので読まない。
+  for (const name of names.filter((n) => n.endsWith(SUFFIX))) {
+    const path = join(dir, month, name)
+    const label = `${month}/${name}`
+    const startFromName = startMsFromFileName(name)
+    if (startFromName !== null) {
+      if (nameMayStartInRange(startFromName, fromMs, toMs)) candidates.push({ path, label, key: startFromName })
+      continue
+    }
+    const opened = await readRecord(path)
+    if (opened === null) {
+      unreadableFiles.push(label)
+      continue
+    }
+    if (opened.startMs >= fromMs && opened.startMs < toMs) candidates.push({ path, label, key: opened.startMs, opened })
+  }
+  // 新しい順。同じ始まりは名前で並べて、毎回同じ順にする。
+  return candidates.sort((a, b) => b.key - a.key || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0))
+}
+
+/** 1 本読む。**読めなければ null**（壊れている・記録の形でない）。 */
+async function readRecord(path: string): Promise<ShakeEventRecord | null> {
+  try {
+    const rec: unknown = JSON.parse(await readFile(path, 'utf8'))
+    return isRecord(rec) ? rec : null
+  } catch {
+    return null
+  }
 }

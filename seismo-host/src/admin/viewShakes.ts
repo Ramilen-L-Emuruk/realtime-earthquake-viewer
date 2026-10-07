@@ -7,36 +7,47 @@
 // - **見張りの行を一覧の上に置く。** 空の一覧だけでは「静かだった」と「検出が止まっている」を
 //   見分けられない（#564 で `/status` に足した引き金の状態を読む）。
 // - **差し込む値は例外なく `escapeHtml` を通す**（`shakeHistory.ts` の組み立てが通している）。
+// - **期間は直近の日数（ボタン）か、日付の指定で選ぶ。範囲の広さに上限は無い**（2026-10-07 ユーザー承認）。
+//   ホストは新しいほうから 500 件で区切るので、続きは「さらに古い記録を読む」で読む（文言も同日承認）。
 //
 // `/events`・`/waves`・`/status`・`/stream` はどれも認証を持たない読み取りの口なので、トークンは付けない。
 
 import { escapeHtml, qs } from './dom'
 import {
+  clipRange,
   EMPTY_UNREADABLE_BOOK,
   eventsQueryRange,
+  eventsUrl,
   formatShakeStart,
+  INITIAL_LOAD_STATE,
+  jstDateOf,
+  jstDayRange,
+  truncatedNote,
   newerRecord,
+  nextLoadState,
   nextUnreadableBook,
   readShakeRange,
   recentQueryRange,
   readTriggers,
   shakeRowHtml,
+  startPeriodLoad,
+  tableFailure,
   triggerLine,
   unreadableCount,
   upsertShake,
   visibleShakes,
 } from './shakeHistory'
-import type { ShakeRecordView, UnreadableBook } from './shakeHistory'
+import type { LoadState, ReadKind, ShakeRecordView, TimeRange, UnreadableBook } from './shakeHistory'
 import { detailMarkers, detailNote, detailTicks, detailWindow, readEnvelope, wavesUrl } from './shakeWave'
 import type { EnvelopeView } from './shakeWave'
 import { openWaveStream } from './waveStream'
 import { formatGal, niceHalfSpanGal } from './wavePlot'
 
 /**
- * 期間の選択肢（日）。**既定は 7 日。** 93 日は `GET /events` の上限（`EVENTS_RANGE_MAX_MS`）で、
- * 問い合わせの幅は `eventsQueryRange` がその内側へ収める。
+ * 期間の選択肢（日。2026-10-07 ユーザー承認）。**既定は 7 日。** これより長い期間・過ぎた期間は
+ * 日付の指定で選ぶ（範囲の広さに上限は無い）。
  */
-const PERIOD_DAYS: readonly number[] = [1, 7, 30, 93]
+const PERIOD_DAYS: readonly number[] = [1, 7, 30, 90]
 const DEFAULT_PERIOD_DAYS = 7
 const DAY_MS = 24 * 3_600_000
 
@@ -65,6 +76,13 @@ export async function initShakesView(container: HTMLElement, signal: AbortSignal
             (d) => `<button type="button" data-days="${d}" aria-pressed="${d === DEFAULT_PERIOD_DAYS}">${d} 日</button>`,
           ).join('')}
         </div>
+        <div class="row" style="align-items: center; gap: 0.3rem; flex: 0 0 auto">
+          <input type="date" class="shake-from" />
+          <span>から</span>
+          <input type="date" class="shake-to" />
+          <span>まで</span>
+          <button type="button" class="shake-range-apply" disabled>この期間を読む</button>
+        </div>
         <label class="row" style="align-items: center; gap: 0.3rem; flex: 0 0 auto">
           <input type="checkbox" class="shake-hide-local" />
           <span>生活振動らしいものを隠す</span>
@@ -75,20 +93,51 @@ export async function initShakesView(container: HTMLElement, signal: AbortSignal
         <thead><tr><th>始まり</th><th>長さ</th><th>判定</th><th>最大加速度</th><th>計測震度相当</th><th>平常時の何倍</th><th>S 波</th><th>照合した地震</th><th>観測点</th></tr></thead>
         <tbody class="shake-rows"></tbody>
       </table>
+      <!-- **row（display: flex）を付けない** —— 付けると hidden 属性が効かず、区切っていないときも出たままになる。 -->
+      <div class="shake-more" style="margin-top: 0.6rem" hidden>
+        <span class="shake-more-note muted"></span>
+        <button type="button" class="shake-more-button" style="margin-left: 0.6rem">さらに古い記録を読む</button>
+        <div class="shake-more-error error"></div>
+      </div>
     </section>
-    <section class="panel shake-detail" hidden></section>
   `
 
   const healthEl = qs(container, '.shake-health')
   const noteEl = qs(container, '.shake-note')
   const rowsEl = qs(container, '.shake-rows')
   const hideLocalEl = qs<HTMLInputElement>(container, '.shake-hide-local')
-  const detailEl = qs(container, '.shake-detail')
+  /**
+   * 区間の波形の欄。**押した行のすぐ下に開く**（2026-10-07 ユーザー承認）—— 一覧の下に置くと、500 件を出したとき
+   * 上のほうの行を押すたびに下まで探しに行くことになる。一覧は押し出しや読み直しのたびに描き直すので、
+   * **この要素を作り直さずに選んだ行の下へ付け直す**（作り直すと、描いた波形と取得中の状態が消える）。
+   */
+  const detailEl = document.createElement('div')
+  detailEl.className = 'panel shake-detail'
+  detailEl.hidden = true
+  const fromDateEl = qs<HTMLInputElement>(container, '.shake-from')
+  const toDateEl = qs<HTMLInputElement>(container, '.shake-to')
+  const applyEl = qs<HTMLButtonElement>(container, '.shake-range-apply')
+  const moreEl = qs(container, '.shake-more')
+  const moreNoteEl = qs(container, '.shake-more-note')
+  const moreButtonEl = qs<HTMLButtonElement>(container, '.shake-more-button')
+  const moreErrorEl = qs(container, '.shake-more-error')
 
-  let periodDays = DEFAULT_PERIOD_DAYS
+  /**
+   * 選んでいる期間。**ボタンなら直近の日数**（右端はホストの時計で動く）、**日付の指定なら固定の範囲**。
+   */
+  let period: { readonly kind: 'days'; readonly days: number } | { readonly kind: 'dates'; readonly range: TimeRange } = {
+    kind: 'days',
+    days: DEFAULT_PERIOD_DAYS,
+  }
   let list: readonly ShakeRecordView[] = []
-  /** 読み返しの起点（ホストの時計）。**期間の左端はこれから測る。** */
+  /** 読み返しの起点（ホストの時計）。**直近の日数の期間の左端はこれから測る。** */
   let anchorMs = Date.now()
+  /**
+   * 読み込んだ分の頭（ここから期間の終わりまでは漏れなく読んだ）と、その先にまだ読んでいない記録があるか。
+   * **ホストは新しいほうから 500 件で区切る**ので、続きは「さらに古い記録を読む」でこの頭から読む。
+   */
+  let loadedFromMs = Number.NEGATIVE_INFINITY
+  let olderRemain = false
   /**
    * 読み返しで読めなかった記録の帳面（ホストが読めなかったファイルと、この画面が読めない形の記録）。
    * 期間全体の読み返しの分と直近の読み返しの分を分けて持つ（規則は `nextUnreadableBook`）。
@@ -96,24 +145,39 @@ export async function initShakesView(container: HTMLElement, signal: AbortSignal
   let unreadable: UnreadableBook = EMPTY_UNREADABLE_BOOK
   /** 押し出しで届いたが読めなかった記録（開いてからの累計）。 */
   let streamUnreadable = 0
-  /** 最後の読み返しが失敗していれば、その理由（表の中に出す）。 */
-  let loadFailed: string | null = null
+  /** 読み返しの成否（種類ごとに分けて持つ。規則は `nextLoadState`）。 */
+  let loadState: LoadState = INITIAL_LOAD_STATE
   let selectedId: string | null = null
   /** 読み返しの世代。期間を続けて押したとき、遅れて返った古い応答で一覧を上書きしない。 */
   let loadGeneration = 0
+  /**
+   * 期間全体を読み返している最中の世代（無ければ `null`）。**同じ世代で期間全体を 2 本同時に読まない** ——
+   * 選び直した読み込みが見張りの行を待っている間に 30 秒ごとの読み直しが来ると、両方が期間全体を読みに行き、
+   * 遅れて返った失敗が先に通った成功を上書きする。
+   */
+  let fullInFlight: number | null = null
   /** 波形の読み返しの世代（押し直し・閉じるで古い応答を捨てる）。 */
   let detailController: AbortController | null = null
   let detailEnvelope: { readonly record: ShakeRecordView; readonly envelope: EnvelopeView } | null = null
 
+  /** 一覧に見せる範囲。直近の日数なら右端を開けておく（押し出しで新しい揺れが入る）。 */
+  const shownRange = (): TimeRange =>
+    period.kind === 'days'
+      ? { fromMs: anchorMs - period.days * DAY_MS, toMs: Number.POSITIVE_INFINITY }
+      : period.range
+
+  /** 問い合わせる範囲（期間を選び直した回）。 */
+  const periodQuery = (): TimeRange => (period.kind === 'days' ? eventsQueryRange(anchorMs, period.days) : period.range)
+
   const renderRows = (): void => {
     const shown = visibleShakes(list, {
-      fromMs: anchorMs - periodDays * DAY_MS,
-      toMs: Number.POSITIVE_INFINITY,
+      ...shownRange(),
       hideLocal: hideLocalEl.checked,
     })
     // **取得に失敗したことを表の中に出す。** 表の外に小さく出すだけだと、手元に残った一覧（または空）が
     // 「その期間の全部」に見える。**失敗しているときは「揺れは無い」とは書かない** ——
     // 取れていないのか、無かったのかを取り違える。
+    const loadFailed = tableFailure(loadState)
     const failedRow =
       loadFailed === null ? '' : `<tr><td colspan="9" class="error">${escapeHtml(loadFailed)}</td></tr>`
     const body =
@@ -123,8 +187,32 @@ export async function initShakesView(container: HTMLElement, signal: AbortSignal
           ? '<tr><td colspan="9" class="muted">この期間に記録した揺れは無い</td></tr>'
           : ''
     rowsEl.innerHTML = failedRow + body
+    if (selectedId !== null) {
+      // **開いている区間の行のすぐ下へ、詳細の欄を付け直す。** 行が一覧から消えたら（期間・隠す指定を変えた）閉じる ——
+      // 見えない所で開いたままにすると、次に押した行と取り違える。id は `dataset` で比べる（セレクタへ差し込まない）。
+      const row = [...rowsEl.querySelectorAll<HTMLElement>('tr.shake-row')].find((r) => r.dataset.shakeId === selectedId)
+      if (row === undefined) {
+        // 描き直しはしない（選んだ行が無いので、いま描いた表がそのまま閉じた後の表になる）。
+        resetDetail()
+      } else {
+        const holder = document.createElement('tr')
+        holder.className = 'shake-detail-row'
+        const cell = document.createElement('td')
+        cell.colSpan = 9
+        cell.append(detailEl)
+        holder.append(cell)
+        row.after(holder)
+      }
+    }
     const unreadableTotal = unreadableCount(unreadable) + streamUnreadable
     noteEl.textContent = unreadableTotal > 0 ? `読めなかった記録が ${unreadableTotal} 件ある` : ''
+    // **区切ったことを表の下に出す**（2026-10-07 ユーザー承認）—— 出さないと、新しいほうの一部が
+    // 「その期間の全部」に見える。
+    moreEl.hidden = !olderRemain
+    moreNoteEl.textContent = olderRemain ? truncatedNote(shown.length) : ''
+    // 続きを読めなかったら、ボタンの下に出す（押し直せば読み直す）。表の中には出さない —— 読めていないのは
+    // 表の末尾の先で、表に出すと直近の読み直しが何度通っても消えない。
+    moreErrorEl.textContent = olderRemain ? (loadState.older ?? '') : ''
   }
 
   const renderHealth = (status: unknown): void => {
@@ -181,50 +269,120 @@ export async function initShakesView(container: HTMLElement, signal: AbortSignal
 
   /**
    * 範囲を読み返して一覧へ混ぜる。**押し出しで先に届いていた新しい版を、読み返しで戻さない**（`upsertShake`）。
-   * `full` は期間を選び直した読み返しで、**範囲より古い記録を捨てる**。読めなかった記録の帳面は
-   * `nextUnreadableBook` が進める（直近の読み返しでも、見直した範囲の古い目印は外れる）。
+   * - `full`（期間を選び直した回）は、**見直した範囲の外の記録を捨て**、読み込んだ分の頭を置き直す。
+   * - `older`（さらに古い記録を読む）は、続きを足して頭を下げる。
+   * - `recent`（直近の読み直し）は、頭も「続きがあるか」も変えない。
+   *
+   * **見直した範囲は、ホストが件数で区切ったなら見終えた範囲の頭から**（`coveredFromMs`）。読めなかった記録の
+   * 帳面へもこの範囲を渡す —— 範囲の頭から渡すと、読んでいない記録の目印まで「直った」として外す。
    */
-  const fetchInto = async (q: { fromMs: number; toMs: number }, generation: number, full: boolean): Promise<void> => {
+  const fetchInto = async (q: TimeRange, generation: number, kind: ReadKind): Promise<void> => {
     try {
-      const res = await fetch(`/events?from=${q.fromMs}&to=${q.toMs}`, { signal })
+      const res = await fetch(eventsUrl(q, hideLocalEl.checked), { signal })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const range = readShakeRange(await res.json())
       if (signal.aborted || generation !== loadGeneration) return
       if (range === null) throw new Error('応答の形が違う')
-      // 期間を選び直したら、範囲より古い記録は捨てる（開いたままのタブで一覧が際限なく膨らまない）。
-      let next: readonly ShakeRecordView[] = full ? list.filter((r) => r.startMs >= q.fromMs) : list
+      const covered: TimeRange = { fromMs: range.truncated ? range.coveredFromMs : q.fromMs, toMs: q.toMs }
+      // 期間を選び直したら、見直した範囲の外の記録は捨てる（開いたままのタブで一覧が際限なく膨らまない）。
+      let next: readonly ShakeRecordView[] =
+        kind === 'full' ? list.filter((r) => r.startMs >= covered.fromMs && r.startMs < covered.toMs) : list
       for (const r of range.events) next = upsertShake(next, r)
       list = next
-      unreadable = nextUnreadableBook(unreadable, range.marks, q, full)
-      loadFailed = null
+      unreadable = nextUnreadableBook(unreadable, range.marks, covered, kind)
+      if (kind !== 'recent') {
+        loadedFromMs = covered.fromMs
+        olderRemain = range.truncated
+      }
+      loadState = nextLoadState(loadState, kind, null)
       syncDetailRecord()
     } catch (error) {
       if (signal.aborted || generation !== loadGeneration) return
-      loadFailed = `揺れの記録を取得できていない（${error instanceof Error ? error.message : String(error)}）`
+      const message = `揺れの記録を取得できていない（${error instanceof Error ? error.message : String(error)}）`
+      loadState = nextLoadState(loadState, kind, message)
     }
     renderRows()
   }
 
+  /** 期間全体を読む（`fullInFlight` で、同じ世代の 2 本目を出させない）。 */
+  const fetchFull = async (generation: number): Promise<void> => {
+    fullInFlight = generation
+    try {
+      await fetchInto(periodQuery(), generation, 'full')
+    } finally {
+      if (fullInFlight === generation) fullInFlight = null
+    }
+  }
+
   const loadEvents = async (): Promise<void> => {
     const generation = ++loadGeneration
-    // **期間の右端はホストの時計で決める**（端末の時計は信用しない）。取れなければ端末の時計で代わりにする。
-    // **世代を確かめてから書き換える** —— 遅れて返った古い回が、新しい回の基準時刻を上書きしない。
-    const hostNow = await reloadHealth()
-    if (signal.aborted || generation !== loadGeneration) return
-    anchorMs = hostNow ?? Date.now()
-    await fetchInto(eventsQueryRange(anchorMs, periodDays), generation, true)
+    // **見張りの行を待つ間から読んでいる扱いにする** —— その間に来た 30 秒ごとの読み直しが、期間全体を読みに行かない。
+    fullInFlight = generation
+    // 前の期間の「続きがある」を、読み直している間に押させない。
+    olderRemain = false
+    loadState = startPeriodLoad(loadState)
+    renderRows()
+    try {
+      // **期間の右端はホストの時計で決める**（端末の時計は信用しない）。取れなければ端末の時計で代わりにする。
+      // **世代を確かめてから書き換える** —— 遅れて返った古い回が、新しい回の基準時刻を上書きしない。
+      const hostNow = await reloadHealth()
+      if (signal.aborted || generation !== loadGeneration) return
+      anchorMs = hostNow ?? Date.now()
+      await fetchFull(generation)
+    } finally {
+      if (fullInFlight === generation) fullInFlight = null
+    }
+  }
+
+  /** 「さらに古い記録を読む」。期間の頭から、読み込んだ分の頭までを読む（ホストはまた新しいほうから区切る）。 */
+  const loadOlder = async (): Promise<void> => {
+    if (!olderRemain) return
+    const generation = loadGeneration
+    const q: TimeRange = { fromMs: periodQuery().fromMs, toMs: loadedFromMs }
+    if (!(q.fromMs < q.toMs)) {
+      olderRemain = false
+      renderRows()
+      return
+    }
+    moreButtonEl.disabled = true
+    try {
+      await fetchInto(q, generation, 'older')
+    } finally {
+      moreButtonEl.disabled = false
+    }
   }
 
   /**
    * 開いている間の読み直し（見張りの行と直近 3 時間の記録）。**押し出しが切れていても一覧が追いつく** ——
    * 押し出しだけに頼ると、切れている間に記録された揺れが一覧へ入らず、画面からも気づけない。
+   * **選んだ期間に掛かる分だけ読む**（日付で過ぎた期間を選んでいれば、見張りの行だけ読み直す）。
    */
   const refreshRecent = async (): Promise<void> => {
     const generation = loadGeneration
     const hostNow = await reloadHealth()
     if (signal.aborted || generation !== loadGeneration) return
     if (hostNow !== null) anchorMs = hostNow
-    await fetchInto(recentQueryRange(anchorMs), generation, false)
+    // **期間をまだ一度も読めていなければ、期間全体を読み直す** —— 直近だけ読んで成功しても、期間の残りは空のまま。
+    // 同じ世代で期間全体を読んでいる最中なら、その結果を待つ（2 本目を出さない）。
+    if (!loadState.periodLoaded) {
+      if (fullInFlight !== generation) await fetchFull(generation)
+      return
+    }
+    const q = clipRange(recentQueryRange(anchorMs), periodQuery())
+    if (q === null) return
+    await fetchInto(q, generation, 'recent')
+  }
+
+  /** 日付の入力が期間として読めるときだけ「この期間を読む」を押せる。 */
+  const syncApply = (): void => {
+    applyEl.disabled = jstDayRange(fromDateEl.value, toDateEl.value) === null
+  }
+
+  /** 直近の日数を選んだとき、日付の入力をその期間の日付で埋める（そこから日付を動かして選び直せる）。 */
+  const prefillDates = (days: number): void => {
+    fromDateEl.value = jstDateOf(anchorMs - days * DAY_MS)
+    toDateEl.value = jstDateOf(anchorMs)
+    syncApply()
   }
 
   // ---- 段 2: 押した揺れの区間の波形 ----
@@ -335,13 +493,18 @@ export async function initShakesView(container: HTMLElement, signal: AbortSignal
     }
   }
 
-  const closeDetail = (): void => {
+  /** 詳細の欄を閉じた状態へ戻す（一覧は描き直さない）。 */
+  const resetDetail = (): void => {
     detailController?.abort()
     detailController = null
     detailEnvelope = null
     selectedId = null
     detailEl.hidden = true
     detailEl.innerHTML = ''
+  }
+
+  const closeDetail = (): void => {
+    resetDetail()
     renderRows()
   }
 
@@ -398,16 +561,36 @@ export async function initShakesView(container: HTMLElement, signal: AbortSignal
 
   // ---- 操作 ----
 
+  const pressPeriodButton = (pressed: Element | null): void => {
+    for (const b of container.querySelectorAll('.period-buttons button')) {
+      b.setAttribute('aria-pressed', String(b === pressed))
+    }
+  }
   for (const button of container.querySelectorAll<HTMLButtonElement>('.period-buttons button')) {
     button.addEventListener('click', () => {
-      periodDays = Number(button.dataset.days)
-      for (const b of container.querySelectorAll('.period-buttons button')) {
-        b.setAttribute('aria-pressed', String(b === button))
-      }
-      void loadEvents()
+      const days = Number(button.dataset.days)
+      period = { kind: 'days', days }
+      pressPeriodButton(button)
+      // **日付の欄は読み込みが終わってから埋める** —— 基準の時刻は読み込みの中でホストの時計へ合わせ直すので、
+      // 先に埋めると問い合わせた範囲とずれる。その間に別の期間を選んでいたら埋めない。
+      void loadEvents().then(() => {
+        if (period.kind === 'days' && period.days === days) prefillDates(days)
+      })
     })
   }
-  hideLocalEl.addEventListener('change', renderRows)
+  fromDateEl.addEventListener('input', syncApply)
+  toDateEl.addEventListener('input', syncApply)
+  applyEl.addEventListener('click', () => {
+    const range = jstDayRange(fromDateEl.value, toDateEl.value)
+    if (range === null) return
+    period = { kind: 'dates', range }
+    // 日付で選んだら、どの日数のボタンも押していない見た目にする。
+    pressPeriodButton(null)
+    void loadEvents()
+  })
+  moreButtonEl.addEventListener('click', () => void loadOlder())
+  // **隠す指定はホストへ渡して読み直す** —— 画面で隠すだけだと、区切られた 500 件の大半が隠れて数行しか残らないことがある。
+  hideLocalEl.addEventListener('change', () => void loadEvents())
   rowsEl.addEventListener('click', (e) => {
     const row = (e.target as HTMLElement).closest<HTMLElement>('tr.shake-row')
     if (row === null) return
@@ -444,6 +627,7 @@ export async function initShakesView(container: HTMLElement, signal: AbortSignal
 
   await loadEvents()
   if (signal.aborted) return
+  prefillDates(DEFAULT_PERIOD_DAYS)
   const timer = window.setInterval(() => void refreshRecent(), RELOAD_MS)
   signal.addEventListener('abort', () => window.clearInterval(timer), { once: true })
 }
