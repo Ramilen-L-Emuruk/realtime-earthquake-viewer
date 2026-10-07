@@ -19,7 +19,7 @@ import type { P2pReferenceQuake } from './p2pQuake'
 import { DETECTOR_VERSION, QuakeDetector } from './quakeDetector'
 import type { DetectedShake } from './quakeDetector'
 import type { QuakeFeedStatus } from './quakeFeed'
-import { JST_OFFSET_MS } from '../receiver/jstTime'
+import { formatBaseline, jstClock, SILENT_AFTER_MS, triggerStateWord } from './detectionWording'
 import { emptyTriggerHealth } from './quakeTrigger'
 import type { TriggerHealth, TriggerPeak } from './quakeTrigger'
 import { ShakeEventBook } from './shakeEventBook'
@@ -90,35 +90,10 @@ export interface DetectionHourlyLine {
 }
 
 /**
- * 検出器が最後にサンプルを使えてから（ホストの時計で）これだけ経っていたら「波形が届いていない」と
- * 書く（ミリ秒）。
- *
- * **1 時間に 1 度の行なので、短い途切れは拾わなくてよい**（途切れは `resets` と毎分の要約が
- * 拾う）。合成波形は 0.3 秒ごとに届くので、1 分来なければ止まっていると言える。
+ * 1 時間に 1 度の行で「波形が届いていない」と書くまで（ミリ秒）。**管理コンソールの見張りの行と
+ * 同じ値**（`detectionWording.ts` の `SILENT_AFTER_MS`）。
  */
-export const HOURLY_SILENT_AFTER_MS = 60_000
-
-/** 日本時間の `HH:MM`。`nowMs` と日本時間の日付が違えば `MM/DD HH:MM`。 */
-function jstClock(ms: number, nowMs: number): string {
-  const d = new Date(ms + JST_OFFSET_MS)
-  const now = new Date(nowMs + JST_OFFSET_MS)
-  const two = (n: number): string => String(n).padStart(2, '0')
-  const hm = `${two(d.getUTCHours())}:${two(d.getUTCMinutes())}`
-  const sameDay =
-    d.getUTCFullYear() === now.getUTCFullYear() && d.getUTCMonth() === now.getUTCMonth() && d.getUTCDate() === now.getUTCDate()
-  return sameDay ? hm : `${two(d.getUTCMonth() + 1)}/${two(d.getUTCDate())} ${hm}`
-}
-
-/**
- * 平常時の揺れの見せ方。**0 と 0.01 未満を分ける** —— 小数 2 桁へ丸めるだけだと、平らな値しか
- * 来ていない（センサーが動いていない）のと、ごく静かなのが同じ「0.00」に見える。
- */
-function formatBaseline(gal: number | null): string {
-  if (gal === null || !Number.isFinite(gal)) return '不明'
-  if (gal === 0) return '0 gal'
-  if (gal < 0.01) return '0.01 gal 未満'
-  return `${gal.toFixed(2)} gal`
-}
+export const HOURLY_SILENT_AFTER_MS = SILENT_AFTER_MS
 
 /**
  * 観測点 1 つぶんの、1 時間に 1 度の行を組む。
@@ -146,12 +121,7 @@ export function formatDetectionHourly(
   if (nowMs - status.lastFedAtMs >= HOURLY_SILENT_AFTER_MS) {
     return { level: 'warn', key, line: `${head}波形が届いていない（最後は ${jstClock(status.lastFedAtMs, nowMs)}）` }
   }
-  // 助走が明ける時刻を持たないのは、フィルタを組めずに待っているとき。残り秒数は言えない。
-  const warmLeft =
-    status.warmUntilMs !== null && status.lastSampleMs !== null
-      ? `（あと ${Math.max(0, Math.round((status.warmUntilMs - status.lastSampleMs) / 1000))} 秒）`
-      : ''
-  const state = status.inEvent ? '揺れを記録中' : status.armed ? '見張り中' : `助走中${warmLeft}`
+  const state = triggerStateWord(status)
   const peak = hourPeak === null ? 'なし' : `${hourPeak.ratio.toFixed(2)} 倍（${jstClock(hourPeak.atMs, nowMs)}）`
   return {
     level: hourPeak === null ? 'warn' : 'log',

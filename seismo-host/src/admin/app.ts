@@ -7,17 +7,19 @@
 import { clearStoredToken, getStoredToken, onTokenCleared, setStoredToken } from './api'
 import { qs } from './dom'
 import { initBoardsView } from './viewBoards'
+import { initShakesView } from './viewShakes'
 import { initStationsView } from './viewStations'
 import { initStatusView } from './viewStatus'
 import { initWavesView } from './viewWaves'
 
-type TabKey = 'stations' | 'boards' | 'status' | 'waves'
+type TabKey = 'stations' | 'boards' | 'status' | 'waves' | 'shakes'
 
 const TABS: readonly { readonly key: TabKey; readonly label: string }[] = [
   { key: 'stations', label: '観測点' },
   { key: 'boards', label: '基板' },
   { key: 'status', label: '稼働状況' },
   { key: 'waves', label: '波形' },
+  { key: 'shakes', label: '揺れの記録' },
 ]
 
 function renderShell(root: HTMLElement): void {
@@ -70,6 +72,7 @@ async function mountTab(root: HTMLElement, key: TabKey): Promise<void> {
   if (key === 'stations') await initStationsView(content, controller.signal)
   else if (key === 'boards') await initBoardsView(content, controller.signal)
   else if (key === 'waves') await initWavesView(content, controller.signal)
+  else if (key === 'shakes') await initShakesView(content, controller.signal)
   else await initStatusView(content, controller.signal)
 }
 
