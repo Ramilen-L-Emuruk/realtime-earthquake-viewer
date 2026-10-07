@@ -10,9 +10,52 @@
 // - **縦の物差しは軸の段で共通**（大きさを見比べられるように。PWA の詳細の窓と同じ）。中心は段ごとの平均
 //
 // 時刻はブラウザの時計の地域で出す（ほかのタブと同じ）。
+//
+// **印の段**（#621 段 f・文言は 2026-10-08 ユーザー承認）: 波形の段の上に受信・気象庁・揺れの記録の 3 列を置き、
+// 気象庁の P・S は波形の段も縦に貫く。印は波形と別に取る（気象庁の地震一覧は初めての範囲だと十数秒かかるので、
+// 波形の取得を待たせない）。当て方は `recordsMarks.ts`。
 
 import { ApiError, apiFetch, describeAdminAuthFailure, getStoredToken } from './api'
 import { escapeHtml, qs } from './dom'
+import {
+  LANE_QUAKE_TITLE,
+  LANE_RECEPTION_TITLE,
+  LANE_SHAKE_TITLE,
+  MARK_LANE_HEIGHT_PX,
+  QUAKES_RANGE_MAX_MS,
+  QUAKE_LEGEND,
+  QUAKE_LOADING_TEXT,
+  QUAKE_OFF_TEXT,
+  QUAKE_TOO_WIDE_TEXT,
+  QUAKE_UNLOCATED_TEXT,
+  RECEPTION_LEGEND,
+  RECEPTION_STATION_GONE_TEXT,
+  RECEPTION_STATION_NOTE,
+  RECEPTION_TRUNCATED_TEXT,
+  SHAKE_LEGEND,
+  SHAKE_TRUNCATED_TEXT,
+  UNDERLINE_HEIGHT_PX,
+  UNDERLINE_LEGEND,
+  arrivalMark,
+  originUnderline,
+  quakeFailedDaysText,
+  quakeFailureText,
+  quakeReadout,
+  quakesAt,
+  readQuakesData,
+  readReceptionData,
+  receptionAt,
+  receptionLane,
+  receptionPendingNote,
+  shakeReadout,
+  shakesAt,
+  spanX,
+  type QuakesView,
+  type ReceptionLane,
+  type Span,
+  type UnderlineKind,
+} from './recordsMarks'
+import { EVENTS_PAGE_LIMIT, readShakeRange, type ShakeRecordView, type ShakeVerdictView } from './shakeHistory'
 import {
   COMPOSITE_TITLE,
   COMPOSITE_TOO_WIDE_TEXT,
@@ -91,6 +134,34 @@ const INTENSITY_COLOR = 'rgba(179, 38, 30, 0.9)'
 /** 欠けの斜線。**凡例（`index.html` の `.records-hatch-*`）と同じ色。** */
 const HATCH_NONE = 'rgba(179, 38, 30, 0.35)'
 const HATCH_PENDING = 'rgba(128, 128, 128, 0.5)'
+/** 印の段の列の間（CSS ピクセル）。 */
+const MARK_LANE_GAP_PX = 2
+const MARKS_HEIGHT = 3 * MARK_LANE_HEIGHT_PX + 2 * MARK_LANE_GAP_PX
+/** 受信の帯と波形の下の線の色。**凡例の文（橙・紫・緑・赤）と合わせる。** */
+const MARK_COLORS: Readonly<Record<UnderlineKind, string>> = {
+  backlog: 'rgba(230, 126, 34, 0.9)',
+  late: 'rgba(142, 68, 173, 0.85)',
+  revised: 'rgba(39, 174, 96, 0.9)',
+  questionable: 'rgba(192, 57, 43, 0.9)',
+}
+const P_COLOR = 'rgba(37, 99, 168, 0.9)'
+const S_COLOR = 'rgba(179, 38, 30, 0.9)'
+const P_BAND = 'rgba(37, 99, 168, 0.12)'
+const S_BAND = 'rgba(179, 38, 30, 0.12)'
+/** 揺れの記録の帯の色。**揺れの記録タブの判定の色と同じ順**（地震だけ濃く、生活振動らしい・照合できずは灰）。 */
+const VERDICT_BAND: Readonly<Record<ShakeVerdictView, string>> = {
+  quake: 'rgba(179, 38, 30, 0.45)',
+  'quake-like': 'rgba(37, 99, 168, 0.4)',
+  pending: 'rgba(128, 128, 128, 0.35)',
+  'local-like': 'rgba(128, 128, 128, 0.35)',
+  unchecked: 'rgba(128, 128, 128, 0.35)',
+}
+/** 範囲の頭より前に始まった揺れも拾う幅（揺れの記録は始まりの時刻で引くので）。 */
+const SHAKE_LEAD_MS = 10 * 60_000
+/** 指した所の読み取りで、印を拾う幅（CSS ピクセル）。 */
+const HOVER_TOLERANCE_PX = 4
+/** 指した所に掛かる地震・揺れの記録を何件まで並べるか。 */
+const READOUT_MAX_ITEMS = 2
 
 /** 軸 1 本ぶんの取れた値。 */
 interface AxisData {
@@ -110,6 +181,24 @@ interface Loaded {
   /** 軸の id ごと。 */
   readonly axes: ReadonlyMap<string, AxisData>
   readonly intensity: IntensityData | null
+}
+
+/**
+ * 印の段の材料。**範囲を動かしても、取り直すまで前の材料を描き続ける**（印は時刻で置くので、重なる所はそのまま正しい）。
+ * 3 つの口はそれぞれ届いた順に書き込む。
+ */
+interface MarksState {
+  readonly groupKey: string
+  reception: ReceptionLane | null
+  receptionPending: number
+  receptionTruncated: boolean
+  quakes: QuakesView | null
+  quakeState: 'too-wide' | 'loading' | 'done' | 'failed'
+  quakeFailure: string | null
+  shakes: readonly ShakeRecordView[]
+  shakesTruncated: boolean
+  /** 受信・揺れの記録を取れなかった理由（気象庁は `quakeFailure`）。 */
+  failure: string | null
 }
 
 interface OverviewLoaded {
@@ -248,6 +337,137 @@ function drawTrace(ctx: CanvasRenderingContext2D, trace: AxisTrace, r: TimeRange
   ctx.stroke()
 }
 
+/** 気象庁の P・S を段に重ねる。**秒まで分かれば破線、幅があれば薄い帯**（`arrivalMark`）。 */
+function drawArrivals(ctx: CanvasRenderingContext2D, quakes: QuakesView | null, r: TimeRange, width: number, height: number): void {
+  if (quakes === null) return
+  for (const q of quakes.quakes) {
+    const phases: readonly (readonly [Span | null, string, string])[] = [
+      [q.p, P_COLOR, P_BAND],
+      [q.s, S_COLOR, S_BAND],
+    ]
+    for (const [span, lineColor, bandColor] of phases) {
+      if (span === null) continue
+      const m = arrivalMark(span, r, width)
+      if (m === null) continue
+      if (m.kind === 'band') {
+        ctx.fillStyle = bandColor
+        ctx.fillRect(m.x0, 0, m.x1 - m.x0, height)
+        continue
+      }
+      ctx.save()
+      ctx.strokeStyle = lineColor
+      ctx.lineWidth = 1
+      ctx.setLineDash([4, 3])
+      ctx.beginPath()
+      ctx.moveTo(m.x + 0.5, 0)
+      ctx.lineTo(m.x + 0.5, height)
+      ctx.stroke()
+      ctx.restore()
+    }
+  }
+}
+
+/** 波形の下の線（生のサンプルで描くときだけ）。**時刻の疑わしさは届き方の線の 1 段上へ**（重なっても両方見えるように）。 */
+function drawUnderline(ctx: CanvasRenderingContext2D, trace: AxisTrace, r: TimeRange, width: number, plotHeight: number): void {
+  if (trace.kind !== 'samples') return
+  for (const u of originUnderline(trace.runs)) {
+    const x = spanX(u, r, width)
+    if (x === null) continue
+    const y = plotHeight - (u.kind === 'questionable' ? 2 : 1) * UNDERLINE_HEIGHT_PX - 1
+    ctx.fillStyle = MARK_COLORS[u.kind]
+    ctx.fillRect(x.x0, y, x.x1 - x.x0, UNDERLINE_HEIGHT_PX)
+  }
+}
+
+/** 下向きの塗った三角（発生時刻の ▼）。 */
+function triangleDown(ctx: CanvasRenderingContext2D, x: number, top: number, size: number): void {
+  ctx.beginPath()
+  ctx.moveTo(x - size / 2, top)
+  ctx.lineTo(x + size / 2, top)
+  ctx.lineTo(x, top + size)
+  ctx.closePath()
+  ctx.fill()
+}
+
+/** 上向きの白抜きの三角（拾った P・S の △）。 */
+function triangleUp(ctx: CanvasRenderingContext2D, x: number, bottom: number, size: number): void {
+  ctx.beginPath()
+  ctx.moveTo(x - size / 2, bottom)
+  ctx.lineTo(x + size / 2, bottom)
+  ctx.lineTo(x, bottom - size)
+  ctx.closePath()
+  ctx.stroke()
+}
+
+/** 印の段（受信・気象庁・揺れの記録の 3 列）。 */
+function drawMarks(canvas: HTMLCanvasElement, m: MarksState | null, r: TimeRange, ink: string, hoverX: number | null): void {
+  const prepared = prepareCanvas(canvas, MARKS_HEIGHT)
+  if (prepared === null) return
+  const { ctx, width } = prepared
+  const laneY = (i: number): number => i * (MARK_LANE_HEIGHT_PX + MARK_LANE_GAP_PX)
+  ctx.fillStyle = 'rgba(128, 128, 128, 0.08)'
+  for (let i = 0; i < 3; i++) ctx.fillRect(0, laneY(i), width, MARK_LANE_HEIGHT_PX)
+  if (m !== null) {
+    const y0 = laneY(0)
+    if (m.reception !== null) {
+      for (const kind of ['backlog', 'late', 'questionable'] as const) {
+        ctx.fillStyle = MARK_COLORS[kind]
+        for (const s of m.reception[kind]) {
+          const x = spanX(s, r, width)
+          if (x !== null) ctx.fillRect(x.x0, y0, x.x1 - x.x0, MARK_LANE_HEIGHT_PX)
+        }
+      }
+      ctx.fillStyle = ink
+      for (const at of m.reception.unreadableAtMs) {
+        if (at >= r.fromMs && at <= r.toMs) ctx.fillRect(Math.floor(xOf(at, r, width)), y0, 1, MARK_LANE_HEIGHT_PX)
+      }
+    }
+    const y1 = laneY(1)
+    if (m.quakes !== null) {
+      ctx.save()
+      ctx.beginPath()
+      ctx.rect(0, y1, width, MARK_LANE_HEIGHT_PX)
+      ctx.clip()
+      ctx.translate(0, y1)
+      drawArrivals(ctx, m.quakes, r, width, MARK_LANE_HEIGHT_PX)
+      ctx.restore()
+      ctx.fillStyle = ink
+      for (const q of m.quakes.quakes) {
+        if (q.originMs >= r.fromMs && q.originMs <= r.toMs) triangleDown(ctx, xOf(q.originMs, r, width), y1 + 1, 6)
+      }
+    }
+    const y2 = laneY(2)
+    for (const e of m.shakes) {
+      const x = spanX({ fromMs: e.startMs, toMs: e.endMs }, r, width)
+      if (x === null) continue
+      ctx.fillStyle = VERDICT_BAND[e.verdict]
+      ctx.fillRect(x.x0, y2, x.x1 - x.x0, MARK_LANE_HEIGHT_PX)
+    }
+    ctx.strokeStyle = ink
+    ctx.lineWidth = 1
+    for (const e of m.shakes) {
+      for (const at of [e.pMs, e.sMs]) {
+        if (at !== null && at >= r.fromMs && at <= r.toMs) triangleUp(ctx, xOf(at, r, width), y2 + MARK_LANE_HEIGHT_PX - 1, 6)
+      }
+    }
+  }
+  // 列の名前（印の上に薄く重ねる）。
+  ctx.font = '10px system-ui, sans-serif'
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'middle'
+  ctx.fillStyle = ink
+  ctx.globalAlpha = 0.75
+  ;[LANE_RECEPTION_TITLE, LANE_QUAKE_TITLE, LANE_SHAKE_TITLE].forEach((t, i) => ctx.fillText(t, 3, laneY(i) + MARK_LANE_HEIGHT_PX / 2))
+  ctx.globalAlpha = 1
+  if (hoverX !== null) {
+    ctx.strokeStyle = 'rgba(128, 128, 128, 0.8)'
+    ctx.beginPath()
+    ctx.moveTo(hoverX + 0.5, 0)
+    ctx.lineTo(hoverX + 0.5, MARKS_HEIGHT)
+    ctx.stroke()
+  }
+}
+
 export async function initRecordsView(container: HTMLElement, signal: AbortSignal): Promise<void> {
   container.innerHTML = `
     <section class="panel">
@@ -287,11 +507,13 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
         <div class="period-buttons records-axes" role="group"></div>
       </div>
       <div class="records-rows"></div>
-      <p class="records-readout muted"></p>
+      <p class="records-readout muted" style="white-space: pre-line"></p>
       <p class="muted records-legend">
         <span class="records-hatch records-hatch-none"></span>${GAP_NONE_LEGEND}
         <span class="records-hatch records-hatch-pending" style="margin-left: 1rem"></span>${GAP_PENDING_LEGEND}
       </p>
+      <p class="muted records-marks-legend" style="white-space: pre-line"></p>
+      <p class="muted records-marks-note" style="white-space: pre-line"></p>
       <p class="records-source muted"></p>
       <p class="records-note error"></p>
     </section>
@@ -309,6 +531,8 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
   const readoutEl = qs(container, '.records-readout')
   const sourceEl = qs(container, '.records-source')
   const noteEl = qs(container, '.records-note')
+  const marksLegendEl = qs(container, '.records-marks-legend')
+  const marksNoteEl = qs(container, '.records-marks-note')
 
   let groups: RecordGroup[] = []
   let group: RecordGroup | null = null
@@ -320,6 +544,8 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
   let overview: OverviewLoaded | null = null
   let loadController: AbortController | null = null
   let overviewController: AbortController | null = null
+  let marks: MarksState | null = null
+  let marksController: AbortController | null = null
   let reloadTimer: ReturnType<typeof setTimeout> | null = null
   let failure: string | null = null
   let hoverX: number | null = null
@@ -327,6 +553,7 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
   signal.addEventListener('abort', () => {
     loadController?.abort()
     overviewController?.abort()
+    marksController?.abort()
     if (reloadTimer !== null) clearTimeout(reloadTimer)
   })
 
@@ -354,7 +581,8 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
         <strong>${escapeHtml(title)}</strong>
         <span class="muted ${cls}"></span>
       </div>`
-    let html = ''
+    // 印の段は見出しを持たない（列の名前は段の中に書く）。
+    let html = `<canvas class="wave-canvas records-canvas records-marks" style="height: ${MARKS_HEIGHT}px; margin-top: 0.5rem"></canvas>`
     html += samples
       ? `${header(COMPOSITE_TITLE, 'records-composite-peak')}<canvas class="wave-canvas records-canvas records-composite" style="height: ${COMPOSITE_HEIGHT}px"></canvas>`
       : `<p class="muted" style="margin: 0.5rem 0 0">${COMPOSITE_TOO_WIDE_TEXT}</p>`
@@ -423,6 +651,11 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     const halfSpan = sharedHalfSpan(peaks)
     const valueUnit: ValueUnit = traces.find((t) => t !== null)?.unit ?? 'gal'
     const ink = globalThis.getComputedStyle(rowsEl).color
+    const m = marks !== null && marks.groupKey === group.key ? marks : null
+    const quakes = m?.quakes ?? null
+
+    const marksCanvas = rowsEl.querySelector<HTMLCanvasElement>('canvas.records-marks')
+    if (marksCanvas !== null) drawMarks(marksCanvas, m, range, ink, hoverX)
 
     // 段は `buildRows` が `axes` の順に並べている（見出しと Canvas が同じ順）。
     const axisCanvases = [...rowsEl.querySelectorAll<HTMLCanvasElement>('canvas.records-axis')]
@@ -451,11 +684,13 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
       ctx.lineTo(width, mid)
       ctx.stroke()
       drawTicks(ctx, range, width, plotHeight, last, ink)
+      drawArrivals(ctx, quakes, range, width, plotHeight)
       if (axis !== null && data !== null) {
         drawHatch(ctx, traceGaps(axis.trace, range, data.fetched, axis.irregular), range, width, plotHeight)
         const c = Number.isFinite(centers[i]!) ? centers[i]! : 0
         const yOf = (v: number): number => mid - Math.max(-usable, Math.min(usable, ((v - c) / halfSpan) * usable))
         drawTrace(ctx, axis.trace, range, width, yOf, WAVE_COLOR)
+        drawUnderline(ctx, axis.trace, range, width, plotHeight)
       }
       if (hoverX !== null) {
         ctx.strokeStyle = 'rgba(128, 128, 128, 0.8)'
@@ -480,6 +715,7 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
         ctx.strokeStyle = 'rgba(128, 128, 128, 0.45)'
         ctx.strokeRect(0.5, 0.5, width - 1, height - 1)
         drawTicks(ctx, range, width, height, false, ink)
+        drawArrivals(ctx, quakes, range, width, height)
         if (trace !== null && p !== null) {
           // **下端を 0 に、上端をこの範囲の最大の少し上に**（合成は 0 以上）。
           const top = Math.max(p.deviation, 1e-9) * 1.1
@@ -501,6 +737,7 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
         ctx.strokeStyle = 'rgba(128, 128, 128, 0.45)'
         ctx.strokeRect(0.5, 0.5, width - 1, height - 1)
         drawTicks(ctx, range, width, height, false, ink)
+        drawArrivals(ctx, quakes, range, width, height)
         const values = d === null ? [] : d.series.flatMap((s) => (s.value === null ? [] : [s.value]))
         if (d !== null && values.length > 0) {
           const lo = Math.floor(Math.min(...values) - 0.1)
@@ -549,6 +786,7 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     const notes: string[] = []
     if (getStoredToken() === null) notes.push(TOKEN_MISSING_TEXT)
     if (failure !== null) notes.push(fetchFailureText(failure))
+    if (m?.failure !== null && m?.failure !== undefined) notes.push(fetchFailureText(m.failure))
     if (data !== null) {
       if (axisData.length > 0 && peaks.every((p) => p === null)) notes.push(EMPTY_RANGE_TEXT)
       const problems = problemsNote(maxTally(axisData.map((a) => a.hours)))
@@ -558,19 +796,54 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     }
     noteEl.textContent = notes.join('　')
 
-    // 指した所の値。
-    if (hoverX === null || data === null) {
+    // 印の段の凡例と注。
+    const legend = [RECEPTION_LEGEND, QUAKE_LEGEND, SHAKE_LEGEND]
+    if (span <= SAMPLES_RANGE_MAX_MS) legend.push(UNDERLINE_LEGEND)
+    marksLegendEl.textContent = legend.join('\n')
+    const marksNotes: string[] = []
+    if (group.kind === 'station') marksNotes.push(group.stationId === null ? RECEPTION_STATION_GONE_TEXT : RECEPTION_STATION_NOTE)
+    if (m !== null) {
+      const pending = receptionPendingNote(m.receptionPending)
+      if (pending !== null) marksNotes.push(pending)
+      if (m.receptionTruncated) marksNotes.push(RECEPTION_TRUNCATED_TEXT)
+      if (m.quakeState === 'too-wide') marksNotes.push(QUAKE_TOO_WIDE_TEXT)
+      else if (m.quakeState === 'loading') marksNotes.push(QUAKE_LOADING_TEXT)
+      else if (m.quakeState === 'failed') marksNotes.push(quakeFailureText(m.quakeFailure ?? ''))
+      if (m.quakeState !== 'too-wide' && m.quakes !== null) {
+        if (m.quakes.off) marksNotes.push(QUAKE_OFF_TEXT)
+        else if (m.quakes.failedDays.length > 0) marksNotes.push(quakeFailedDaysText(m.quakes.failedDays))
+      }
+      if (m.quakeState !== 'too-wide' && group.kind === 'raw' && group.stationId === null) marksNotes.push(QUAKE_UNLOCATED_TEXT)
+      if (m.shakesTruncated) marksNotes.push(SHAKE_TRUNCATED_TEXT)
+    }
+    marksNoteEl.textContent = marksNotes.join('\n')
+
+    // 指した所の値（波形・気象庁の地震・揺れの記録・受信）。
+    if (hoverX === null) {
       readoutEl.textContent = ''
     } else {
-      const canvas = axisCanvases[0]
-      const width = canvas === undefined ? 1 : Math.max(1, canvas.clientWidth)
+      const canvas = axisCanvases[0] ?? marksCanvas
+      const width = canvas === undefined || canvas === null ? 1 : Math.max(1, canvas.clientWidth)
       const at = range.fromMs + (hoverX / width) * span
-      readoutEl.textContent = readoutText(
-        axes.map((a, i) => ({ short: a.short, value: traces[i] === null ? null : traceValueAt(traces[i]!.trace, at) })),
-        valueUnit,
-        at,
-        span,
-      )
+      const tol = (HOVER_TOLERANCE_PX / width) * span
+      const lines: string[] = []
+      if (data !== null) {
+        lines.push(
+          readoutText(
+            axes.map((a, i) => ({ short: a.short, value: traces[i] === null ? null : traceValueAt(traces[i]!.trace, at) })),
+            valueUnit,
+            at,
+            span,
+          ),
+        )
+      }
+      if (m !== null) {
+        for (const q of quakesAt(m.quakes?.quakes ?? [], at, tol).slice(0, READOUT_MAX_ITEMS)) lines.push(quakeReadout(q))
+        for (const e of shakesAt(m.shakes, at, tol).slice(0, READOUT_MAX_ITEMS)) lines.push(shakeReadout(e))
+        const rec = m.reception === null ? null : receptionAt(m.reception, at, tol)
+        if (rec !== null) lines.push(rec)
+      }
+      readoutEl.textContent = lines.join('\n')
     }
 
     // **期間より広い幅は「全体」と同じ絵になるが、押した見た目にはしない**（記録が 1 時間しか無いと、
@@ -674,11 +947,101 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     draw()
   }
 
+  /**
+   * 印の段の材料を取る（受信・気象庁・揺れの記録をそれぞれ別に、届いた順に描く）。**前の取得は打ち切る**が、
+   * 前の材料は取り直すまで描き続ける（同じ記録なら時刻で置くので、重なる所はそのまま正しい）。
+   */
+  const loadMarks = (): void => {
+    if (group === null || getStoredToken() === null) return
+    marksController?.abort()
+    const controller = new AbortController()
+    marksController = controller
+    const g = group
+    const r = range
+    const prev = marks !== null && marks.groupKey === g.key ? marks : null
+    const tooWide = r.toMs - r.fromMs > QUAKES_RANGE_MAX_MS
+    const m: MarksState = {
+      groupKey: g.key,
+      reception: prev?.reception ?? null,
+      receptionPending: prev?.receptionPending ?? 0,
+      receptionTruncated: prev?.receptionTruncated ?? false,
+      quakes: tooWide ? null : (prev?.quakes ?? null),
+      quakeState: tooWide ? 'too-wide' : 'loading',
+      quakeFailure: null,
+      shakes: prev?.shakes ?? [],
+      shakesTruncated: prev?.shakesTruncated ?? false,
+      failure: null,
+    }
+    marks = m
+    const stale = (): boolean => controller.signal.aborted || signal.aborted
+    const fail = (error: unknown): void => {
+      if (isAbort(error) || stale()) return
+      m.failure = failureReason(error)
+    }
+
+    void (async () => {
+      try {
+        const rv = readReceptionData(await apiFetch<unknown>(recordsUrl('reception', { from: r.fromMs, to: r.toMs }), { signal: controller.signal }))
+        if (rv === null) throw new Error('応答の形が違う')
+        if (stale()) return
+        m.reception = receptionLane(rv, new Set(g.sensors))
+        m.receptionPending = rv.hours.pending
+        m.receptionTruncated = rv.unreadableTruncated
+      } catch (error) {
+        fail(error)
+      }
+      if (!stale()) draw()
+    })()
+
+    if (!tooWide) {
+      void (async () => {
+        try {
+          const params: Record<string, string | number> = { from: r.fromMs, to: r.toMs }
+          if (g.stationId !== null) params.station = g.stationId
+          const qv = readQuakesData(await apiFetch<unknown>(recordsUrl('quakes', params), { signal: controller.signal }))
+          if (qv === null) throw new Error('応答の形が違う')
+          if (stale()) return
+          m.quakes = qv
+          m.quakeState = 'done'
+        } catch (error) {
+          if (isAbort(error) || stale()) return
+          m.quakeState = 'failed'
+          m.quakeFailure = failureReason(error)
+        }
+        if (!stale()) draw()
+      })()
+    }
+
+    // 揺れの記録は観測点ごと（`/events` は誰でも読める口。揺れの記録タブと同じく素の fetch で取る）。
+    if (g.stationId === null) {
+      m.shakes = []
+      m.shakesTruncated = false
+    } else {
+      const stationId = g.stationId
+      void (async () => {
+        try {
+          const url = `/events?from=${Math.floor(r.fromMs - SHAKE_LEAD_MS)}&to=${Math.ceil(r.toMs)}&limit=${EVENTS_PAGE_LIMIT}&station=${encodeURIComponent(stationId)}`
+          const res = await fetch(url, { signal: controller.signal })
+          if (!res.ok) throw new Error(`HTTP ${res.status}`)
+          const sv = readShakeRange(await res.json())
+          if (sv === null) throw new Error('応答の形が違う')
+          if (stale()) return
+          m.shakes = sv.events
+          m.shakesTruncated = sv.truncated
+        } catch (error) {
+          fail(error)
+        }
+        if (!stale()) draw()
+      })()
+    }
+  }
+
   const scheduleLoad = (): void => {
     if (reloadTimer !== null) clearTimeout(reloadTimer)
     reloadTimer = setTimeout(() => {
       reloadTimer = null
       void load()
+      loadMarks()
     }, RELOAD_DEBOUNCE_MS)
   }
 
@@ -696,6 +1059,8 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     hidden = new Set()
     loaded = null
     overview = null
+    marks = null
+    marksController?.abort()
     failure = null
     if (group === null) {
       bodyEl.hidden = true
@@ -717,6 +1082,7 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     draw()
     void load()
     void loadOverview()
+    loadMarks()
   }
 
   groupEl.addEventListener('change', () => selectGroup(groupEl.value), { signal })

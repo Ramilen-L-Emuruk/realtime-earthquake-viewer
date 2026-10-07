@@ -67,6 +67,22 @@ describe('groupChannels', () => {
     expect(raw.stationKey).toBeNull()
   })
 
+  it('印の段の材料: 合成波形はいまの割り当てのセンサーを、生データは自分のセンサーと割り当て先を持つ', () => {
+    const groups = groupChannels([
+      ch({ id: 'station/home/X', kind: 'station', station: { stationId: 'home', displayName: '自宅' } }),
+      ch({ id: 'station/old/X', kind: 'station' }),
+      ch({ id: 'FDSN:XX_A1_S1_H_N_1', kind: 'raw', sensor: 'FDSN:XX_A1_S1', board: { boardKey: 'b1', sensorId: 'S1', stationId: 'home', stationName: '自宅' } }),
+      ch({ id: 'FDSN:XX_B2_S1_H_N_1', kind: 'raw', sensor: 'FDSN:XX_B2_S1', board: { boardKey: 'b2', sensorId: 'S1', stationId: 'home', stationName: '自宅' } }),
+      ch({ id: 'FDSN:XX_C3_S1_H_N_1', kind: 'raw', sensor: 'FDSN:XX_C3_S1' }),
+    ])
+    const by = (label: string) => groups.find((g) => g.label === label)!
+    expect(by('自宅')).toMatchObject({ stationId: 'home', sensors: ['FDSN:XX_A1_S1', 'FDSN:XX_B2_S1'] })
+    // 設定から外した観測点は、どのセンサーだったか分からない
+    expect(by('外した観測点（札 old）')).toMatchObject({ stationId: null, sensors: [] })
+    expect(by('自宅 ／ 基板 b1 のセンサー S1')).toMatchObject({ stationId: 'home', sensors: ['FDSN:XX_A1_S1'] })
+    expect(by('割り当ての無いセンサー（FDSN:XX_C3_S1）')).toMatchObject({ stationId: null, sensors: ['FDSN:XX_C3_S1'] })
+  })
+
   it('割り当てのある生データは「観測点名 ／ 基板 … のセンサー …」と名乗る（観測点が設定に無ければ ID）', () => {
     const [named] = groupChannels([
       ch({ id: 'FDSN:XX_A1_S1_H_N_1', kind: 'raw', sensor: 'FDSN:XX_A1_S1', board: { boardKey: 'b1', sensorId: 'S1', stationId: 'home', stationName: '自宅' } }),
@@ -207,7 +223,7 @@ const columnsTrace = (n: number[], min: number[], max: number[], mean: number[],
 
 const samplesTrace = (runs: Array<[number, number[]]>): AxisTrace => ({
   kind: 'samples',
-  runs: runs.map(([firstSampleMs, values]) => ({ firstSampleMs, msPerSample: 10, values })),
+  runs: runs.map(([firstSampleMs, values]) => ({ firstSampleMs, msPerSample: 10, values, origin: 'live' as const, timeQuestionable: false })),
 })
 
 describe('中心と最大', () => {
@@ -355,8 +371,8 @@ describe('文言', () => {
 
   it('震度の段の見出し', () => {
     const at = new Date(2026, 9, 7, 12, 3, 6).getTime()
-    expect(intensityHeader({ series: [], maxRealtime: 1.23, maxRealtimeAtMs: at, measured: 0.84 })).toBe('最大 1.2（12:03:06）計測 0.8')
-    expect(intensityHeader({ series: [], maxRealtime: null, maxRealtimeAtMs: null, measured: null })).toBe('最大 —計測 —')
+    expect(intensityHeader({ series: [], maxRealtime: 1.23, maxRealtimeAtMs: at, measured: 0.84 })).toBe('最大 1.2（12:03:06） 計測 0.8')
+    expect(intensityHeader({ series: [], maxRealtime: null, maxRealtimeAtMs: null, measured: null })).toBe('最大 — 計測 —')
   })
 
   it('指した所の値（負号は −）', () => {

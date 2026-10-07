@@ -461,11 +461,16 @@ const SCALE_NAMES: Readonly<Record<number, string>> = {
  * **分からない部分は省く**（推し量って埋めない）。HTML へ入れるときは呼び出し側でエスケープする。
  */
 export function formatMatchedQuake(q: MatchedQuakeView): string {
+  return `${formatQuakeName(q)}（${Math.round(q.distanceKm)} km）`
+}
+
+/** 地震の名前・規模・最大震度だけ（例「千葉県北西部 M4.2 最大震度3」）。距離の分からない地震にも使う。 */
+export function formatQuakeName(q: { readonly name: string; readonly magnitude: number | null; readonly maxScale: number | null }): string {
   const parts = [q.name]
   if (q.magnitude !== null) parts.push(`M${q.magnitude.toFixed(1)}`)
   const scale = q.maxScale === null ? undefined : SCALE_NAMES[q.maxScale]
   if (scale !== undefined) parts.push(`最大震度${scale}`)
-  return `${parts.join(' ')}（${Math.round(q.distanceKm)} km）`
+  return parts.join(' ')
 }
 
 /**

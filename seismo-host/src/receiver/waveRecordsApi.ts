@@ -15,14 +15,17 @@
 // | `spectrogram` | `channel`・`from`・`to`・`columns`・`unit` | 列ごとのスペクトル |
 // | `reception` | `from`・`to`・`sensor`（任意） | 受信の記録の帯と読めなかったパケット |
 // | `intensity` | `station`（観測点の札）・`from`・`to` | 刻みごとのリアルタイム震度と計測震度（{@link SAMPLES_RANGE_MAX_MS} まで） |
+// | `quakes` | `from`・`to`・`station`（観測点 ID・任意） | 気象庁の地震と、その観測点へ P・S が届く時刻（`recordQuakes.ts`。7 日まで） |
 //
 // `from`・`to` は unix ミリ秒（`to` は含まない）。`unit` は `gal`（既定。カウントを換算する）か `native`。
 //
 // **震度は `/quake-intensity` と同じ計算（`quakeIntensity.ts`）を札で引く。** あちらは観測点 ID で引くので、
 // 設定から外した観測点の記録には届かない（札から ID へは戻せない）。
 
+import { arrivalSpans } from '../detection/quakeRefine'
 import { decimalInt } from './httpQuery'
 import { computeQuakeIntensity, QUAKE_INTENSITY_LEAD_MS } from './quakeIntensity'
+import { RECORD_QUAKES_RANGE_MAX_MS, type RecordQuakes } from './recordQuakes'
 import type { StationConfig } from './stationConfigTypes'
 import { readWaveRangeByToken } from './waveArchive'
 import type { RecordChannelIndex } from './waveRecordChannels'
@@ -57,6 +60,8 @@ export interface RecordsApiDeps {
   readonly channels: RecordChannelIndex
   /** いまの設定（一覧へ名前を添えるのに使う）。 */
   readonly config: () => StationConfig
+  /** 気象庁の地震を集める係。**地震情報を受け取らない設定（`SEISMO_QUAKE_FEED=0`）なら null** —— 外へ取りに行かない。 */
+  readonly quakes: RecordQuakes | null
 }
 
 export interface RecordsResponse {
@@ -132,6 +137,38 @@ export async function handleRecordsRequest(route: string, params: URLSearchParam
     const sensor = params.get('sensor')
     if (sensor !== null && !SENSOR_RE.test(sensor)) return bad('bad-sensor')
     return { status: 200, body: await readReception({ dirs, fromMs: range.fromMs, toMs: range.toMs, sensor }) }
+  }
+  if (route === 'quakes') {
+    const range = readRange(params, RECORD_QUAKES_RANGE_MAX_MS)
+    if (!range.ok) return bad(range.error)
+    const stationId = params.get('station')
+    if (stationId !== null && (stationId.length === 0 || stationId.length > 128)) return bad('bad-station')
+    if (deps.quakes === null) return { status: 200, body: { off: true, located: false, quakes: [], failedDays: [], unreadable: 0, problem: null } }
+    // **観測点の位置はいまの設定から引く**（設定から外した観測点・割り当ての無い基板は P・S を引けない）。
+    const station = stationId === null ? undefined : deps.config().stations.find((s) => s.stationId === stationId)
+    const result = await deps.quakes.list(range.fromMs, range.toMs)
+    const quakes = []
+    for (const q of result.quakes) {
+      const a = station === undefined ? null : arrivalSpans(q, station)
+      // 範囲より前に起きた地震は、S 波がまだ範囲へ届くものだけ（届く時刻が引けなければ出さない）。
+      if (q.originMs < range.fromMs && (a === null || a.sToMs < range.fromMs)) continue
+      quakes.push({
+        name: q.name,
+        originMs: Math.round(q.originMs),
+        originPrecisionMs: q.originPrecisionMs,
+        originSource: q.originSource,
+        magnitude: q.magnitude,
+        maxScale: q.maxScale,
+        depthKm: q.depthKm,
+        distanceKm: a === null ? null : Math.round(a.distanceKm * 10) / 10,
+        p: a === null ? null : { fromMs: Math.round(a.pFromMs), toMs: Math.round(a.pToMs) },
+        s: a === null ? null : { fromMs: Math.round(a.sFromMs), toMs: Math.round(a.sToMs) },
+      })
+    }
+    return {
+      status: 200,
+      body: { off: false, located: station !== undefined, quakes, failedDays: result.failedDays, unreadable: result.unreadable, problem: result.problem },
+    }
   }
   if (route === 'intensity') {
     const station = params.get('station')

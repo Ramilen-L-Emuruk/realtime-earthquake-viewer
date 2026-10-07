@@ -111,6 +111,13 @@ export interface RecordGroup {
   readonly axes: readonly RecordAxis[]
   /** 合成波形の札（震度の推移を引くのに使う）。生データは null。 */
   readonly stationKey: string | null
+  /**
+   * いまの設定での観測点 ID（気象庁の地震の P・S と揺れの記録を引くのに使う）。合成波形は自分の観測点、
+   * 生データは割り当て先。**設定から外した観測点・割り当ての無いセンサーは null。**
+   */
+  readonly stationId: string | null
+  /** 受信の帯を重ねるセンサー。合成波形はいまこの観測点に割り当てている基板のもの、生データは自分。 */
+  readonly sensors: readonly string[]
   readonly firstHourMs: number
   readonly lastHourMs: number
   /** 軸のうち要約がある時のいちばん多い数。 */
@@ -162,10 +169,30 @@ export function groupChannels(channels: readonly RecordChannelView[]): RecordGro
     }
     b.items.push(c)
   }
+  // 観測点ごとの、いま割り当てているセンサー（生データの一覧の割り当てから引く）。
+  const sensorsOfStation = new Map<string, Set<string>>()
+  for (const c of channels) {
+    if (c.kind !== 'raw' || c.board === null || c.sensor === null) continue
+    let set = sensorsOfStation.get(c.board.stationId)
+    if (set === undefined) {
+      set = new Set()
+      sensorsOfStation.set(c.board.stationId, set)
+    }
+    set.add(c.sensor)
+  }
   const groups: RecordGroup[] = []
   for (const [key, b] of buckets) {
     const items = [...b.items].sort((a, c) => (a.id < c.id ? -1 : a.id > c.id ? 1 : 0))
     const first = items[0]!
+    const stationId = first.kind === 'station' ? (first.station?.stationId ?? null) : (first.board?.stationId ?? null)
+    const sensors =
+      first.kind === 'station'
+        ? stationId === null
+          ? []
+          : [...(sensorsOfStation.get(stationId) ?? [])].sort()
+        : first.sensor === null
+          ? []
+          : [first.sensor]
     const axes = items.map((c): RecordAxis => {
       if (c.kind === 'station') {
         const short = c.id.slice(-1)
@@ -180,6 +207,8 @@ export function groupChannels(channels: readonly RecordChannelView[]): RecordGro
       label: groupLabel(first, b.stationKey),
       axes,
       stationKey: b.stationKey,
+      stationId,
+      sensors,
       firstHourMs: Math.min(...items.map((c) => c.firstHourMs)),
       lastHourMs: Math.max(...items.map((c) => c.lastHourMs)),
       hours: Math.max(...items.map((c) => c.hours)),
@@ -360,7 +389,8 @@ function readProblems(v: unknown): ReadProblemsView | null {
   return skippedBytes === null || badRecords === null || unscaledHours === null ? null : { skippedBytes, badRecords, unscaledHours }
 }
 
-function readTally(v: unknown): HourTallyView | null {
+/** 時の数え（`ok`・`stale`・`pending`・`failed`・`absent`）を読む。 */
+export function readTally(v: unknown): HourTallyView | null {
   if (typeof v !== 'object' || v === null) return null
   const o = v as Record<string, unknown>
   const ok = readFinite(o.ok)
@@ -412,11 +442,19 @@ export function readEnvelopeData(value: unknown): EnvelopeData | null {
   return { source, unit, columnMs, firstColumnMs, n, min, max, mean, hours, irregularHours, problems }
 }
 
+/** そのサンプルがどう届いたか（ホストの `SampleOrigin`）。知らない値は `unknown` として読む。 */
+export type SampleOriginView = 'live' | 'backlog' | 'late' | 'revised' | 'unknown'
+
+const SAMPLE_ORIGINS: readonly SampleOriginView[] = ['live', 'backlog', 'late', 'revised', 'unknown']
+
 export interface SampleRunView {
   readonly firstSampleMs: number
   readonly msPerSample: number
   /** 値の無いサンプルは NaN。 */
   readonly values: readonly number[]
+  readonly origin: SampleOriginView
+  /** 生データのレコードが「時刻が疑わしい」の印を持っていたか。 */
+  readonly timeQuestionable: boolean
 }
 
 export interface SamplesData {
@@ -440,7 +478,9 @@ export function readSamplesData(value: unknown): SamplesData | null {
     const msPerSample = readFinite(o.msPerSample)
     const values = readFiniteArrayWithGaps(o.values)
     if (firstSampleMs === null || msPerSample === null || msPerSample <= 0 || values === null) return null
-    runs.push({ firstSampleMs, msPerSample, values })
+    // 届き方は印を描くだけなので、知らない値で応答ごと捨てない（`unknown` として線を引かない）。
+    const origin = SAMPLE_ORIGINS.find((x) => x === o.origin) ?? 'unknown'
+    runs.push({ firstSampleMs, msPerSample, values, origin, timeQuestionable: o.timeQuestionable === true })
   }
   runs.sort((a, b) => a.firstSampleMs - b.firstSampleMs)
   return { unit, runs, problems }
@@ -734,7 +774,8 @@ export function compositeRuns(traces: readonly AxisTrace[], centers: readonly nu
       }
       return Math.sqrt(sum)
     })
-    return { firstSampleMs: run.firstSampleMs, msPerSample: run.msPerSample, values }
+    // 届き方は 1 本目の軸のものを引き継ぐ（合成の段には届き方の線を引かない。`recordsMarks.ts` の `originUnderline`）。
+    return { firstSampleMs: run.firstSampleMs, msPerSample: run.msPerSample, values, origin: run.origin, timeQuestionable: run.timeQuestionable }
   })
 }
 
@@ -833,12 +874,15 @@ export function fetchFailureText(reason: string): string {
   return `波形の記録を取得できていない（${reason}）`
 }
 
-/** 震度の段の見出し（`最大 1.2（12:03:06）計測 0.8`）。 */
+/**
+ * 震度の段の見出し（`最大 1.2（12:03:06） 計測 0.8`）。**最大と計測の間は常に半角空白**（2026-10-08 ユーザー承認）
+ * —— 値が無いと `最大 —計測 —` と詰まって読めなかった。
+ */
 export function intensityHeader(d: IntensityData): string {
   const max = d.maxRealtime === null ? '—' : d.maxRealtime.toFixed(1)
   const at = d.maxRealtime !== null && d.maxRealtimeAtMs !== null ? `（${formatClockDigits(d.maxRealtimeAtMs, 0)}）` : ''
   const measured = d.measured === null ? '—' : d.measured.toFixed(1)
-  return `最大 ${max}${at}計測 ${measured}`
+  return `最大 ${max}${at} 計測 ${measured}`
 }
 
 /** 指した所の値の行。**軸ごとの値は同じ種類（サンプルか列）で揃っているものだけ並べる。** */

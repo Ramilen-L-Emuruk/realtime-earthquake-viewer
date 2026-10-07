@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { buildMseed3Record, mseed3SourceId } from './mseed3Record'
+import { RECORD_QUAKES_RANGE_MAX_MS, RecordQuakes } from './recordQuakes'
 import type { FusedWaveChunk } from './sensorFusion'
 import { encodeSteim2 } from './steim2'
 import type { StationConfig } from './stationConfigTypes'
@@ -28,7 +29,7 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'wave-records-api-'))
   dirs = { summaryDir: join(root, 'summary'), rawDir: join(root, 'raw'), waveDir: join(root, 'wave') }
   config = { stations: [{ stationId: STATION, displayName: '自宅', lat: 35, lon: 139 }], boards: [] }
-  deps = { dirs, channels: new RecordChannelIndex(dirs.summaryDir), config: () => config }
+  deps = { dirs, channels: new RecordChannelIndex(dirs.summaryDir), config: () => config, quakes: null }
 })
 
 afterEach(() => {
@@ -227,5 +228,51 @@ describe('channels', () => {
     const body = got.body as { channels: Array<{ hours: number }>; unreadable: number }
     expect(body.unreadable).toBe(1)
     expect(body.channels.every((c) => c.hours === 1)).toBe(true)
+  })
+})
+
+describe('quakes', () => {
+  /** 10/07 12:30 JST の地震 1 件を返す P2PQuake（それ以外は 404）。 */
+  function fakeQuakes(): RecordQuakes {
+    const item = {
+      code: 551,
+      earthquake: { time: '2026/10/07 12:30:00', maxScale: 20, hypocenter: { name: '茨城県南部', latitude: 36.1, longitude: 140.0, depth: 50, magnitude: 4.0 } },
+    }
+    return new RecordQuakes({
+      dir: join(root, 'quakes'),
+      get: async (url) => (url.startsWith('https://api.p2pquake.net/') ? { status: 200, body: JSON.stringify([item]) } : { status: 404, body: '' }),
+      sleep: async () => {},
+      now: () => H0 + 2 * HOUR,
+      dmdataApiKey: null,
+    })
+  }
+
+  it('観測点を渡せば、その観測点へ P・S が届く時刻の幅を添える（分の幅のまま）', async () => {
+    const got = await handleRecordsRequest('quakes', q({ from: H0, to: H0 + HOUR, station: STATION }), { ...deps, quakes: fakeQuakes() })
+    expect(got.status).toBe(200)
+    const body = got.body as { off: boolean; located: boolean; quakes: Array<{ name: string; originSource: string; p: { fromMs: number; toMs: number } | null; s: { fromMs: number; toMs: number } | null }> }
+    expect(body).toMatchObject({ off: false, located: true })
+    expect(body.quakes).toHaveLength(1)
+    const quake = body.quakes[0]!
+    expect(quake).toMatchObject({ name: '茨城県南部', originSource: 'quake-info' })
+    expect(quake.s!.toMs - quake.s!.fromMs).toBe(60_000)
+    expect(quake.p!.fromMs).toBeLessThan(quake.s!.fromMs)
+  })
+
+  it('観測点が設定に無ければ P・S は無し（地震そのものは出す）', async () => {
+    const got = await handleRecordsRequest('quakes', q({ from: H0, to: H0 + HOUR, station: 'gone' }), { ...deps, quakes: fakeQuakes() })
+    const body = got.body as { located: boolean; quakes: Array<{ p: unknown; s: unknown }> }
+    expect(body.located).toBe(false)
+    expect(body.quakes).toEqual([expect.objectContaining({ p: null, s: null })])
+  })
+
+  it('地震情報を受け取らない設定なら外へ取りに行かず、そう答える', async () => {
+    const got = await handleRecordsRequest('quakes', q({ from: H0, to: H0 + HOUR }), deps)
+    expect(got).toEqual({ status: 200, body: { off: true, located: false, quakes: [], failedDays: [], unreadable: 0, problem: null } })
+  })
+
+  it('7 日を超える範囲は断る', async () => {
+    const got = await handleRecordsRequest('quakes', q({ from: H0, to: H0 + RECORD_QUAKES_RANGE_MAX_MS + 1 }), { ...deps, quakes: fakeQuakes() })
+    expect(got).toEqual({ status: 400, body: { error: 'range-too-wide' } })
   })
 })

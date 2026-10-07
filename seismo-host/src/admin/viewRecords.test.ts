@@ -130,7 +130,7 @@ describe('initRecordsView', () => {
       expect(requested.filter((u) => u.startsWith('/api/records/samples'))).toHaveLength(3)
       const intensity = requested.find((u) => u.startsWith('/api/records/intensity'))!
       expect(new URLSearchParams(intensity.split('?')[1]).get('station')).toBe('home')
-      expect(root.querySelector('.records-intensity-header')!.textContent).toMatch(/^最大 1\.2（\d\d:\d\d:\d\d）計測 0\.8$/)
+      expect(root.querySelector('.records-intensity-header')!.textContent).toMatch(/^最大 1\.2（\d\d:\d\d:\d\d） 計測 0\.8$/)
       expect(root.querySelector('.records-source')!.textContent).toBe('生のサンプルから描いている')
     } finally {
       vi.useRealTimers()
@@ -159,6 +159,60 @@ describe('initRecordsView', () => {
     buttons[2]!.click()
     expect(buttons.map((b) => b.getAttribute('aria-pressed'))).toEqual(['false', 'false', 'true'])
     expect(root.querySelectorAll('canvas.records-axis')).toHaveLength(1)
+  })
+
+  it('印の段: 合成波形は観測点 ID で気象庁の地震と揺れの記録を取り、受信は割り当てのセンサーぶんを重ねる', async () => {
+    respond = (url) => {
+      if (url.startsWith('/api/records/channels')) return { status: 200, body: CHANNELS }
+      if (url.startsWith('/api/records/envelope')) return { status: 200, body: envelope() }
+      if (url.startsWith('/api/records/reception')) {
+        return { status: 200, body: { sensors: [], unreadable: { items: [], truncated: false, cappedHours: 0 }, unreadableLogs: 0, hours: { ok: 0, stale: 0, pending: 3, failed: 0, absent: 0 } } }
+      }
+      if (url.startsWith('/api/records/quakes')) {
+        return { status: 200, body: { off: false, located: true, quakes: [], failedDays: ['2026-10-06'], unreadable: 0, problem: 'P2PQuake: HTTP 503' } }
+      }
+      if (url.startsWith('/events')) return { status: 200, body: { events: [], truncated: true, coveredFromMs: H0 } }
+      return { status: 404, body: { error: 'not-found' } }
+    }
+    const root = document.createElement('div')
+    await initRecordsView(root, new AbortController().signal)
+    await settle()
+    const quakes = requested.find((u) => u.startsWith('/api/records/quakes'))!
+    expect(new URLSearchParams(quakes.split('?')[1]).get('station')).toBe('home')
+    const events = requested.find((u) => u.startsWith('/events'))!
+    expect(new URLSearchParams(events.split('?')[1]).get('station')).toBe('home')
+    expect(requested.some((u) => u.startsWith('/api/records/reception'))).toBe(true)
+    const note = root.querySelector('.records-marks-note')!.textContent!
+    expect(note).toContain('受信の帯は、いまこの観測点に割り当てている基板のもの')
+    expect(note).toContain('受信の記録の要約がまだ無い時が 3（作り終えると出る）')
+    expect(note).toContain('地震一覧を取れていない日がある（10/06）')
+    expect(note).toContain('揺れの記録が多く、新しい 500 件だけ印を付けている')
+    // 1 時間の範囲は 10 分を超えるので、波形の下の線の凡例は出さない
+    expect(root.querySelector('.records-marks-legend')!.textContent).not.toContain('波形の下の線')
+  })
+
+  it('印の段: 割り当ての無いセンサーは揺れの記録を取らず、P・S を引けないと書く', async () => {
+    respond = (url) => {
+      if (url.startsWith('/api/records/channels')) return { status: 200, body: CHANNELS }
+      if (url.startsWith('/api/records/envelope')) return { status: 200, body: envelope() }
+      if (url.startsWith('/api/records/reception')) {
+        return { status: 200, body: { sensors: [], unreadable: { items: [], truncated: false, cappedHours: 0 }, unreadableLogs: 0, hours: { ok: 1, stale: 0, pending: 0, failed: 0, absent: 0 } } }
+      }
+      if (url.startsWith('/api/records/quakes')) return { status: 200, body: { off: false, located: false, quakes: [], failedDays: [], unreadable: 0, problem: null } }
+      return { status: 404, body: { error: 'not-found' } }
+    }
+    const root = document.createElement('div')
+    await initRecordsView(root, new AbortController().signal)
+    await settle()
+    const select = root.querySelector<HTMLSelectElement>('.records-group')!
+    select.value = 'FDSN:XX_A1_S1'
+    requested = []
+    select.dispatchEvent(new Event('change'))
+    await settle()
+    expect(requested.some((u) => u.startsWith('/events'))).toBe(false)
+    const quakes = requested.find((u) => u.startsWith('/api/records/quakes'))!
+    expect(new URLSearchParams(quakes.split('?')[1]).get('station')).toBeNull()
+    expect(root.querySelector('.records-marks-note')!.textContent).toContain('このセンサーの基板は観測点に割り当てていないので、P・S の線は引けない')
   })
 
   it('生データを選ぶと単位の切り替えが出て、生の値を選ぶと native で取り直す', async () => {

@@ -25,6 +25,7 @@
 //   npm run seismo-host
 //   SEISMO_UDP_PORT=50505 SEISMO_UDP_ADDRESS=0.0.0.0 npm run seismo-host
 import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { GAL_PER_G } from './src/intensity/units'
@@ -54,6 +55,7 @@ import type { MseedHealth } from './src/receiver/mseedRecorder'
 import { STATION_CONFIG_FILE, StationStore } from './src/receiver/stationStore'
 import { ReadingHub } from './src/receiver/readingHub'
 import { WaveArchive, readWaveRange } from './src/receiver/waveArchive'
+import { fetchGet, readDmdataApiKey, RecordQuakes } from './src/receiver/recordQuakes'
 import { RecordChannelIndex } from './src/receiver/waveRecordChannels'
 import { handleRecordsRequest } from './src/receiver/waveRecordsApi'
 import { WaveSummaryKeeper } from './src/receiver/waveSummaryKeeper'
@@ -1832,6 +1834,18 @@ async function main(): Promise<void> {
         log: (level, line) => emit(level, 'quake-feed', 'feed', line),
       })
     : null
+  // **波形の記録へ重ねる気象庁の地震**（`GET /api/records/quakes`・#621 段 f）。地震情報を受け取らない設定
+  // （`SEISMO_QUAKE_FEED=0`）なら外へ取りに行かない。控えは要約の置き場所の下に置く。
+  // `SEISMO_DMDATA_API_KEY` があれば、震源リストに載る前の地震を緊急地震速報の発生時刻で秒まで補う。
+  const recordQuakes = quakeFeedEnabled
+    ? new RecordQuakes({
+        dir: join(summaryDir, 'quakes'),
+        get: fetchGet,
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        now: () => Date.now(),
+        dmdataApiKey: readDmdataApiKey(process.env.SEISMO_DMDATA_API_KEY),
+      })
+    : null
   const detection = new StationDetection({
     save: (rec) => {
       if (!eventStore.save(rec)) {
@@ -2467,6 +2481,7 @@ async function main(): Promise<void> {
         dirs: { summaryDir, rawDir, waveDir },
         channels: recordChannels,
         config: () => currentStationConfig,
+        quakes: recordQuakes,
       }),
     // **呼ばれた時点で組み立てる。** 溜め込んだものを返すと、見に来た人が
     // 「いつの様子か」を自分で確かめられない。
