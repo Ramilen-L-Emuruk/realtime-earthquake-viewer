@@ -162,6 +162,9 @@ describe('pickTargets', () => {
 // 地震カードの秒（緊急地震速報の発生時刻）。**地震情報の時刻（22:00:00）と 3 秒ずらしてある** ——
 // 線の起点がどちらから来たかをテストで見分けるため。
 const ORIGIN_SECONDS_MS = new Date('2026/09/29 22:00:03').getTime()
+/** 作り直しの知らせを流さない口（知らせを見る試験以外）。参照は安定。 */
+const NO_REVISED = (): (() => void) => () => {}
+
 const SECONDS_QUAKE = quake('a', '2026/09/29 22:00:00', 30, [] as JMAQuake['points'])
 const SECONDS: ReadonlyMap<string, OriginSeconds> = new Map([
   [quakeEventKey(SECONDS_QUAKE), { originMs: ORIGIN_SECONDS_MS, source: 'eew' as const }],
@@ -180,6 +183,7 @@ describe('useSeismoQuakeWaves', () => {
         readWave: () => null,
         replayOffsetMs: null,
         originSeconds,
+        subscribeWaveRevised: NO_REVISED,
       }),
     )
   }
@@ -243,6 +247,7 @@ describe('useSeismoQuakeWaves', () => {
           readWave: () => null,
           replayOffsetMs: null,
           originSeconds,
+          subscribeWaveRevised: NO_REVISED,
         }),
       { initialProps: { originSeconds: new Map() as ReadonlyMap<string, OriginSeconds> } },
     )
@@ -299,6 +304,7 @@ describe('useSeismoQuakeWaves', () => {
           readWave: () => null,
           replayOffsetMs: null,
           originSeconds,
+          subscribeWaveRevised: NO_REVISED,
         }),
       { initialProps: { originSeconds: new Map() as ReadonlyMap<string, OriginSeconds> } },
     )
@@ -323,6 +329,7 @@ describe('useSeismoQuakeWaves', () => {
           readWave: () => null,
           replayOffsetMs: null,
           originSeconds: SECONDS,
+          subscribeWaveRevised: NO_REVISED,
         }),
       { initialProps: { quakes: QUAKES } },
     )
@@ -623,6 +630,7 @@ describe('useSeismoQuakeWaves', () => {
             // ここだけが上の「正」と違う。
             replayOffsetMs: -3600_000,
             originSeconds: SECONDS,
+            subscribeWaveRevised: NO_REVISED,
           }),
         )
         await act(async () => {
@@ -656,6 +664,7 @@ describe('useSeismoQuakeWaves', () => {
               readWave: () => null,
               replayOffsetMs: null,
               originSeconds: SECONDS,
+              subscribeWaveRevised: NO_REVISED,
             }),
           { initialProps: { quakes: older } },
         )
@@ -734,6 +743,7 @@ describe('震度を訊く（#494 段3）', () => {
           readWave: () => null,
           replayOffsetMs,
           originSeconds,
+          subscribeWaveRevised: NO_REVISED,
         }),
       { initialProps: { originSeconds: SECONDS } },
     )
@@ -837,6 +847,7 @@ describe('震度を訊けなかったときの取り直し（#494 段3）', () =
         readWave: () => null,
         replayOffsetMs,
         originSeconds: SECONDS,
+        subscribeWaveRevised: NO_REVISED,
       }),
     )
   }
@@ -914,5 +925,112 @@ describe('judgeWaveInterrupted', () => {
   // 時刻の較正で `serverNow()` が巻き戻ることがある（→ `utils/seismoSilence.ts`）。
   it('安全弁: 時刻が巻き戻っても立てない', () => {
     expect(judgeWaveInterrupted({ growing: true, lastGrewAt: 10_000, now: 0 })).toBe(false)
+  })
+})
+
+// 取り戻した区間を作り直した知らせ（#597・2026-10-07 ユーザー承認）。カードの列のうち、その区間に掛かる
+// 列をホストから取り直して差し替える。
+describe('useSeismoQuakeWaves: 作り直しの知らせ', () => {
+  const QUAKES = [SECONDS_QUAKE]
+  const COL = (v: number) => ({ min: [-v, -v, -v] as const, max: [v, v, v] as const, minMembers: 9 })
+
+  /** 知らせを流す口。`emit` で 1 件流す。 */
+  function revisedChannel() {
+    const listeners = new Set<(r: { stationId: string; fromMs: number; toMs: number }) => void>()
+    return {
+      subscribe: (l: (r: { stationId: string; fromMs: number; toMs: number }) => void) => {
+        listeners.add(l)
+        return () => listeners.delete(l)
+      },
+      emit: (r: { stationId: string; fromMs: number; toMs: number }) => listeners.forEach((l) => l(r)),
+    }
+  }
+
+  function setup(channel: ReturnType<typeof revisedChannel>, replayOffsetMs: number | null = null) {
+    return renderHook(() =>
+      useSeismoQuakeWaves({
+        enabled: true,
+        baseUrl: 'http://host:50506',
+        quakes: QUAKES,
+        scope: NO_SCOPE,
+        readWave: () => null,
+        replayOffsetMs,
+        originSeconds: SECONDS,
+        subscribeWaveRevised: channel.subscribe,
+      }),
+    )
+  }
+
+  it('正: 知らせの区間に掛かる列を、列の境目へ揃えて取り直し差し替える', async () => {
+    fetchSeismoStatus.mockResolvedValue(okStatus())
+    // 起点 0・1 列 350 ms・3 列（真ん中が穴）。
+    fetchSeismoWaveHistory.mockResolvedValueOnce(history({ columns: [COL(1), null, COL(1)] }))
+    const channel = revisedChannel()
+    const { result } = setup(channel)
+    await waitFor(() => expect(result.current.size).toBe(1))
+
+    fetchSeismoWaveHistory.mockResolvedValueOnce(history({ fromMs: 350, columns: [COL(5)] }))
+    act(() => channel.emit({ stationId: 'station-1', fromMs: 400, toMs: 600 }))
+
+    await waitFor(() => expect([...result.current.values()][0]?.[0]?.columns.columns[1]).toEqual(COL(5)))
+    const call = fetchSeismoWaveHistory.mock.calls[1]?.[0] as { range: unknown; columns: number }
+    expect(call.range).toEqual({ fromMs: 350, toMs: 700 })
+    expect(call.columns).toBe(1)
+  })
+
+  it('安全弁: 取り直した列にホストが読み込みの欠けを申告していたら、差し替えたうえで記録へ残す', async () => {
+    const { log } = await import('../utils/logger')
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    fetchSeismoStatus.mockResolvedValue(okStatus())
+    fetchSeismoWaveHistory.mockResolvedValueOnce(history({ columns: [COL(1), null, COL(1)] }))
+    const channel = revisedChannel()
+    const { result } = setup(channel)
+    await waitFor(() => expect(result.current.size).toBe(1))
+
+    fetchSeismoWaveHistory.mockResolvedValueOnce(history({ fromMs: 350, columns: [COL(5)], filesFailed: 1 }))
+    act(() => channel.emit({ stationId: 'station-1', fromMs: 400, toMs: 600 }))
+
+    await waitFor(() => expect([...result.current.values()][0]?.[0]?.columns.columns[1]).toEqual(COL(5)))
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('取り直した波形に欠けがある'))).toBe(true)
+    warn.mockRestore()
+  })
+
+  it('対照: 別の観測点・カードの列に掛からない区間の知らせでは取りに行かない', async () => {
+    fetchSeismoStatus.mockResolvedValue(okStatus())
+    fetchSeismoWaveHistory.mockResolvedValueOnce(history({ columns: [COL(1), null, COL(1)] }))
+    const channel = revisedChannel()
+    const { result } = setup(channel)
+    await waitFor(() => expect(result.current.size).toBe(1))
+
+    act(() => {
+      channel.emit({ stationId: 'other', fromMs: 0, toMs: 1050 })
+      channel.emit({ stationId: 'station-1', fromMs: 1050, toMs: 5000 })
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(fetchSeismoWaveHistory).toHaveBeenCalledTimes(1)
+  })
+
+  it('安全弁: ホストが知らない観測点と答えたら差し替えず、記録へ残す', async () => {
+    const { log } = await import('../utils/logger')
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    fetchSeismoStatus.mockResolvedValue(okStatus())
+    fetchSeismoWaveHistory.mockResolvedValueOnce(history({ columns: [COL(1), null, COL(1)] }))
+    const channel = revisedChannel()
+    const { result } = setup(channel)
+    await waitFor(() => expect(result.current.size).toBe(1))
+
+    fetchSeismoWaveHistory.mockResolvedValueOnce(history({ fromMs: 350, columns: [COL(5)], stationKnown: false }))
+    act(() => channel.emit({ stationId: 'station-1', fromMs: 400, toMs: 600 }))
+    await waitFor(() => expect(fetchSeismoWaveHistory).toHaveBeenCalledTimes(2))
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect([...result.current.values()][0]?.[0]?.columns.columns[1]).toBeNull()
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('ホストが知らない観測点の波形を取り直した'))).toBe(true)
+    warn.mockRestore()
   })
 })

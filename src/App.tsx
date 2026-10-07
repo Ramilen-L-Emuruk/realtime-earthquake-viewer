@@ -2193,6 +2193,7 @@ export function App() {
     readWave: seismo.readWave,
     replayOffsetMs: replayTimeOffset,
     originSeconds: quakeOriginSeconds,
+    subscribeWaveRevised: seismo.subscribeWaveRevised,
   })
   // 絵を出すかどうかは受け取るかどうかと別に決める（→ hooks/useSeismoWaveVisibility.ts）。
   //

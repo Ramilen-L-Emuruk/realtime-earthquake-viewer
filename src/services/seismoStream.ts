@@ -144,11 +144,25 @@ export interface SeismoStationWave {
   readonly memberCount: readonly number[]
 }
 
+/**
+ * ホストが取り戻した区間の合成波形を作り直し、控え（`GET /waves`）へ足し終えた知らせ
+ * （`event: station-wave-revised`・#597）。**範囲だけで、波形は載っていない** —— 自分の抱えている
+ * 穴と重なるときだけ取りに行く。
+ */
+export interface SeismoStationWaveRevised {
+  readonly stationId: string
+  /** 作り直した範囲の始まり（含む）。 */
+  readonly fromMs: number
+  /** 作り直した範囲の終わり（含まない）。 */
+  readonly toMs: number
+}
+
 /** 押し出しで届く 1 件。 */
 export type SeismoMessage =
   | { readonly kind: 'reading'; readonly reading: SeismoSensorReading }
   | { readonly kind: 'station-reading'; readonly reading: SeismoStationReading }
   | { readonly kind: 'station-wave'; readonly wave: SeismoStationWave }
+  | { readonly kind: 'station-wave-revised'; readonly revised: SeismoStationWaveRevised }
 
 /**
  * 波形をどこまで要求するか。**ホストの `?wave=` に対応する。**
@@ -387,6 +401,19 @@ function readStationWave(data: unknown): ReadResult<SeismoStationWave> {
   return { value: { stationId, firstSampleMs, msPerSample, gal, memberCount } }
 }
 
+function readStationWaveRevised(data: unknown): ReadResult<SeismoStationWaveRevised> {
+  const o = obj(data)
+  const stationId = str(o.stationId)
+  if (stationId === '') return { detail: 'station-wave-revised に stationId が無い' }
+  const fromMs = readFinite(o.fromMs)
+  const toMs = readFinite(o.toMs)
+  // **逆向きの範囲は通さない。** 取りに行く範囲がそこで壊れる。
+  if (fromMs === null || toMs === null || toMs <= fromMs) {
+    return { detail: 'station-wave-revised の範囲が読めない' }
+  }
+  return { value: { stationId, fromMs, toMs } }
+}
+
 /**
  * 押し出しの 1 件を読む。
  *
@@ -397,7 +424,14 @@ function readStationWave(data: unknown): ReadResult<SeismoStationWave> {
  * わけではない。
  */
 function readMessage(event: string, data: string): ReadResult<SeismoMessage> | null {
-  if (event !== 'reading' && event !== 'station-reading' && event !== 'station-wave') return null
+  if (
+    event !== 'reading' &&
+    event !== 'station-reading' &&
+    event !== 'station-wave' &&
+    event !== 'station-wave-revised'
+  ) {
+    return null
+  }
   let parsed: unknown
   try {
     parsed = JSON.parse(data)
@@ -416,6 +450,10 @@ function readMessage(event: string, data: string): ReadResult<SeismoMessage> | n
     case 'station-wave': {
       const r = readStationWave(parsed)
       return 'value' in r ? { value: { kind: 'station-wave', wave: r.value } } : r
+    }
+    case 'station-wave-revised': {
+      const r = readStationWaveRevised(parsed)
+      return 'value' in r ? { value: { kind: 'station-wave-revised', revised: r.value } } : r
     }
   }
 }

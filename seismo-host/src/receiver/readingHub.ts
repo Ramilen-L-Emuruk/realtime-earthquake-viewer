@@ -72,6 +72,21 @@ export type HubMessage =
    * 新しい版が届く（受け手は `id` ごとに最後の `rev` を採る）。
    */
   | { readonly kind: 'shake-event'; readonly event: ShakeEventRecord }
+  /**
+   * 取り戻した区間の合成波形を作り直し、控え（`GET /waves`）へ足し終えた知らせ（#597）。
+   * **範囲だけを伝え、波形は載せない** —— 受け手は自分の抱えている穴と重なるときだけ取りに来る。
+   *
+   * **合成波形と同じ層**（`WAVE_TIER` の `'station'`）。受け手が読むのは合成波形の穴を埋めるためで、
+   * 合成波形を受けていない相手には使い道が無い。
+   */
+  | { readonly kind: 'station-wave-revised'; readonly revised: StationWaveRevised }
+
+/** 作り直した範囲。`[fromMs, toMs)` に掛かる合成のまとまりが控えで作り直した分へ替わった。 */
+export interface StationWaveRevised {
+  readonly stationId: string
+  readonly fromMs: number
+  readonly toMs: number
+}
 
 /**
  * 購読者が波形をどこまで欲しがっているか。
@@ -152,6 +167,7 @@ const WAVE_TIER: Record<HubMessage['kind'], WaveTier> = {
   'station-wave': 'station',
   'station-diff': 'pair',
   'shake-event': 'always',
+  'station-wave-revised': 'station',
 }
 
 /** 差分の種別なら中身を、そうでなければ null。**`'pair'` の場で型を絞るため。** */

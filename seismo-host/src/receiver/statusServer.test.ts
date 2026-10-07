@@ -616,6 +616,20 @@ describe('startStatusServer', () => {
     expect(got[0].data).toEqual(STATION_WAVE)
   })
 
+  it('正: ?wave=station へは作り直しの知らせ（station-wave-revised）も押し出す（#597）', async () => {
+    const hub = new ReadingHub()
+    const base = await start(hub)
+    const revised = { stationId: 'garage', fromMs: 1_700_000_000_000, toMs: 1_700_000_030_000 }
+
+    const got = await readEvents(base, '/stream?wave=station', 1, () => {
+      hub.publish({ kind: 'station-wave-revised', revised })
+    })
+
+    expect(got).toHaveLength(1)
+    expect(got[0].name).toBe('station-wave-revised')
+    expect(got[0].data).toEqual(revised)
+  })
+
   it('対照: ?wave=station へはセンサー単独の波形が付いてこない', async () => {
     const hub = new ReadingHub()
     const base = await start(hub)

@@ -226,6 +226,37 @@ describe('ReadingHub', () => {
     expect(full.got).toEqual([WAVE, STATION_WAVE])
   })
 
+  // 作り直しの知らせ（#597）。**合成波形と同じ層。** 受け手は合成波形の穴を埋めるために読むので、
+  // 合成波形を受けていない相手には意味が無い。
+  const WAVE_REVISED: HubMessage = {
+    kind: 'station-wave-revised',
+    revised: { stationId: 'garage', fromMs: 1_700_000_000_000, toMs: 1_700_000_030_000 },
+  }
+
+  it("正: 作り直しの知らせは、合成波形を望んだ相手（'station'・'all'）へ配る", () => {
+    const hub = new ReadingHub()
+    const onlyStation = sink({ wave: 'station' })
+    const full = sink({ wave: 'all' })
+    onlyStation.attach(hub)
+    full.attach(hub)
+
+    hub.publish(WAVE_REVISED)
+
+    expect(onlyStation.got).toEqual([WAVE_REVISED])
+    expect(full.got).toEqual([WAVE_REVISED])
+  })
+
+  it('対照: 波形を欲しがっていない相手へは、作り直しの知らせを配らない', () => {
+    const hub = new ReadingHub()
+    const plain = sink({ wave: 'none' })
+    plain.attach(hub)
+
+    hub.publish(WAVE_REVISED)
+    hub.publish(READING)
+
+    expect(plain.got).toEqual([READING])
+  })
+
   // センサー対の差分（#372）。**梯子ではなく顔ぶれで配る。** 全ペアぶん作られるので
   // （実機のセンサー 9 本なら 36 組・毎秒 240 KB（実測））、梯子へ載せると波形タブが
   // 黙ってその量を受けることになる。

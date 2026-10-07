@@ -24,9 +24,12 @@ import {
   isValidSeismoHostUrl,
   SeismoHostDirectory,
   type SeismoMessage,
+  type SeismoStationWaveRevised,
   type SeismoStreamState,
   type SeismoWaveWant,
 } from '../services/seismoStream'
+import { fetchSeismoWaveSamples } from '../services/seismoWaveSamples'
+import { SeismoWaveRefiller } from '../services/seismoWaveRefill'
 import {
   SeismoWaveBuffer,
   type SeismoWaveTally,
@@ -187,6 +190,14 @@ export interface SeismoStations {
    * （`requestAnimationFrame` で回すか、間引くか）が決める。
    */
   readonly readWave: (stationId: string) => SeismoWaveWindow | null
+  /**
+   * ホストが取り戻した区間の合成波形を作り直した知らせ（`station-wave-revised`・#597）を受け取る。
+   * **戻り値を呼ぶと受け取りをやめる。参照は安定。**
+   *
+   * 下部の波形（{@link readWave} の中身）の穴はこの層が自分で埋める。これを使うのは、
+   * 押し出しから作った列を別に持っている側（有感の地震カード・`hooks/useSeismoQuakeWaves.ts`）。
+   */
+  readonly subscribeWaveRevised: (listener: (revised: SeismoStationWaveRevised) => void) => () => void
 }
 
 export interface UseSeismoStationOptions {
@@ -290,6 +301,19 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
     return bookRef.current.get(stationId)?.wave?.snapshot() ?? null
   }, [])
 
+  // **繋ぎ直しをまたいで持つ。** 受け手（地震カード）は一度だけ登録し、繋ぎ直しのたびに登録し直さない。
+  const revisedListenersRef = useRef(new Set<(revised: SeismoStationWaveRevised) => void>())
+  const subscribeWaveRevised = useCallback(
+    (listener: (revised: SeismoStationWaveRevised) => void): (() => void) => {
+      const listeners = revisedListenersRef.current
+      listeners.add(listener)
+      return () => {
+        listeners.delete(listener)
+      }
+    },
+    [],
+  )
+
   // **URL の形はここでも見る。** 形が違えば `fetch` が投げるだけだが、
   // 繋ぎ直しの輪が 1 秒ごとに同じ例外を繰り返すことになる。
   const canConnect = enabled && isValidSeismoHostUrl(baseUrl)
@@ -348,6 +372,23 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
       }
       gate(emit)
     }
+
+    // **取り戻した区間で下部の波形の穴を埋める**（#597）。繋ぎを切ったら取得ごと打ち切る。
+    const throttledRevisedListener = createLogThrottle(LOG_THROTTLE_MS)
+    const refiller = new SeismoWaveRefiller({
+      bufferOf: (stationId) => book.get(stationId)?.wave ?? null,
+      fetchSamples: ({ stationId, fromMs, toMs }) =>
+        fetchSeismoWaveSamples({ baseUrl, stationId, fromMs, toMs, signal: ctrl.signal }),
+      signal: ctrl.signal,
+      onFilled: (stationId, filled) => {
+        // **埋まらなかったことも残す。** 取りに行ったのに 0 なら、ホストがまだ作り直した分を
+        // 読めていないか、時刻が合っていない —— 画面からは「埋まらない」としか見えない。
+        if (filled > 0) log.info(`[seismo] 取り戻した区間で下部の波形の穴を埋めた（${stationId}）: ${filled} サンプル`)
+        else log.debug(`[seismo] 取り戻した区間を取ったが、下部の波形の穴は埋まらなかった（${stationId}）`)
+      },
+      onError: (stationId, error) =>
+        throttledRevisedListener(() => log.error(`[seismo] 下部の波形の穴を埋める途中で投げた（${stationId}）`, error)),
+    })
 
     /** その観測点の項目。**無ければ作る。** */
     const entryFor = (stationId: string): StationEntry => {
@@ -426,6 +467,20 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
             throttledWaveRestart(w.stationId, () =>
               log.warn(`[seismo] 波形を作り直した（${w.stationId}）: ${result.why}`),
             )
+          }
+          return
+        }
+        case 'station-wave-revised': {
+          refiller.notice(message.revised)
+          // **受け手の 1 つが投げても、他の受け手と下部の波形には響かせない。**
+          for (const listener of revisedListenersRef.current) {
+            try {
+              listener(message.revised)
+            } catch (error) {
+              throttledRevisedListener(() =>
+                log.error('[seismo] 作り直しの知らせの受け手が投げた', error),
+              )
+            }
           }
           return
         }
@@ -578,7 +633,7 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
   }, [canConnect, baseUrl, wave])
 
   return useMemo(
-    () => ({ stations, stream, readWave }),
-    [stations, stream, readWave],
+    () => ({ stations, stream, readWave, subscribeWaveRevised }),
+    [stations, stream, readWave, subscribeWaveRevised],
   )
 }

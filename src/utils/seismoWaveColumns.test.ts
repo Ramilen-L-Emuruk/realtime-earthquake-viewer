@@ -11,6 +11,8 @@ import {
   appendWaveWindow,
   isSettled,
   lastFilledIndex,
+  revisedColumnSpan,
+  spliceRevisedColumns,
   trimAfter,
   trimTrailingGap,
   type TimedColumns,
@@ -201,5 +203,57 @@ describe('appendWaveWindow', () => {
     }
     const out = appendWaveWindow({ base: BASE, window: w, limitMs: 2000 })
     expect(out.columns[2]?.minMembers).toBe(1)
+  })
+})
+
+// 取り戻した区間の列を、ホストから取り直して差し替える（#597）。
+describe('revisedColumnSpan', () => {
+  it('正: 作り直した範囲に掛かる列を、列の境目へ揃えて返す', () => {
+    // 1150〜1320 ms に掛かるのは列 1（1100〜1200）〜列 3（1300〜1400）。
+    expect(revisedColumnSpan(BASE, 1150, 1320)).toEqual({ first: 1, count: 3, fromMs: 1100, toMs: 1400 })
+  })
+
+  it('対照: 持っている列の外は取りに行かない（その先は押し出しの継ぎ足しが受け持つ）', () => {
+    // 列は 5 つ（1000〜1500 ms）。1450〜2000 ms で掛かるのは列 4 だけ。
+    expect(revisedColumnSpan(BASE, 1450, 2000)).toEqual({ first: 4, count: 1, fromMs: 1400, toMs: 1500 })
+    expect(revisedColumnSpan(BASE, 1500, 2000)).toBeNull()
+    expect(revisedColumnSpan(BASE, 0, 1000)).toBeNull()
+  })
+
+  it('安全弁: 刻みが壊れていれば取りに行かない', () => {
+    expect(revisedColumnSpan({ ...BASE, columnSpanMs: 0 }, 1000, 1500)).toBeNull()
+  })
+})
+
+describe('spliceRevisedColumns', () => {
+  it('正: ホストが値を持つ列を差し替える（穴だった列も、押し出しで作った列も）', () => {
+    const base: TimedColumns = { ...BASE, columns: [col(1), null, col(2), null, null] }
+    const out = spliceRevisedColumns(base, { fromMs: 1100, columnSpanMs: 100, columns: [col(5), col(6)] })
+
+    expect(out.columns).toEqual([col(1), col(5), col(6), null, null])
+  })
+
+  it('対照: ホストが値を持たない列は触らない（値のある列を穴へ戻さない）', () => {
+    const base: TimedColumns = { ...BASE, columns: [col(1), col(2), col(3), null, null] }
+    const out = spliceRevisedColumns(base, { fromMs: 1100, columnSpanMs: 100, columns: [null, col(7)] })
+
+    expect(out.columns).toEqual([col(1), col(2), col(7), null, null])
+  })
+
+  it('安全弁: 起点か刻みが列の境目と合わなければ、何も変えずに同じ参照を返す', () => {
+    // ずれた列を差し込むと、別の時刻の値を描くことになる。
+    expect(spliceRevisedColumns(BASE, { fromMs: 1150, columnSpanMs: 100, columns: [col(9)] })).toBe(BASE)
+    expect(spliceRevisedColumns(BASE, { fromMs: 1100, columnSpanMs: 50, columns: [col(9)] })).toBe(BASE)
+  })
+
+  it('安全弁: 持っている列の外へは足さない（継ぎ足しの起点を動かさない）', () => {
+    const base: TimedColumns = { ...BASE, columns: [col(1), null] }
+    const out = spliceRevisedColumns(base, { fromMs: 1100, columnSpanMs: 100, columns: [col(4), col(5), col(6)] })
+
+    expect(out.columns).toEqual([col(1), col(4)])
+  })
+
+  it('正: 何も変わらなければ同じ参照を返す', () => {
+    expect(spliceRevisedColumns(BASE, { fromMs: 1200, columnSpanMs: 100, columns: [null, null] })).toBe(BASE)
   })
 })

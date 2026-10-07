@@ -1875,6 +1875,19 @@ async function main(): Promise<void> {
     onEvent: (event) => {
       const out = buildRewaveEventLine(event)
       emit(out.level, 'rewave', out.detail, out.line)
+      // **控えへ足し終えたことを押し出す**（#597）。受け手（PWA の下部の波形・地震カード）は
+      // 自分の抱えている穴と重なるときだけ `/waves` を取りに来る。書き終える前に知らせると、
+      // 取りに来た時点でまだ作り直した分が無い。
+      //
+      // **一部を書けなかった（`write-failed`）ときも知らせる。** 書けた分があれば控えに入っているので、知らせないと
+      // 受け手はその区間を二度と取りに来ない（取りに来る契機はこの知らせだけ）。全部書けなかったときも知らせるが、
+      // 受け手が 1 度取り直して何も変わらないだけで済む。
+      if (event.kind === 'rewaved' || (event.kind === 'skipped' && event.reason === 'write-failed')) {
+        hub.publish({
+          kind: 'station-wave-revised',
+          revised: { stationId: event.job.stationId, fromMs: event.job.fromMs, toMs: event.job.toMs },
+        })
+      }
     },
   })
 
