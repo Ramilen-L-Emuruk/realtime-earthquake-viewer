@@ -10,7 +10,7 @@
 
 import { formatBaseline, jstClock, SILENT_AFTER_MS, triggerStateWord } from '../detection/detectionWording'
 import {
-  EVENT_RANGE_MAX_MS,
+  EVENT_PAGE_LIMIT_MAX,
   monthsBetween,
   nameSurelyStartsInRange,
   startMsFromEventId,
@@ -149,6 +149,10 @@ export interface UnreadableMark {
 export interface ShakeRangeView {
   readonly events: readonly ShakeRecordView[]
   readonly marks: readonly UnreadableMark[]
+  /** 範囲のうち古いほうに、返されていない記録が残っているか（ホストが件数で区切ったか）。 */
+  readonly truncated: boolean
+  /** ここから範囲の終わりまでは漏れなく返された。続きはここを終わりにして読む。 */
+  readonly coveredFromMs: number
 }
 
 function fileMark(name: string): UnreadableMark {
@@ -167,6 +171,10 @@ function fileMark(name: string): UnreadableMark {
  */
 export function readShakeRange(value: unknown): ShakeRangeView | null {
   if (!isRecord(value) || !Array.isArray(value.events)) return null
+  // **区切ったかを読めなければ応答ごと読めない** —— 推し量ると、「その範囲の全部」と「新しいほうの一部」を
+  // 取り違える（続きを読むボタンが出ない、または出続ける）。
+  const coveredFromMs = readFinite(value.coveredFromMs)
+  if (typeof value.truncated !== 'boolean' || coveredFromMs === null) return null
   const events: ShakeRecordView[] = []
   const marks: UnreadableMark[] = []
   for (const raw of value.events) {
@@ -185,7 +193,7 @@ export function readShakeRange(value: unknown): ShakeRangeView | null {
   if (Array.isArray(value.unreadableFiles)) {
     for (const n of value.unreadableFiles) marks.push(fileMark(typeof n === 'string' ? n : JSON.stringify(n)))
   }
-  return { events, marks }
+  return { events, marks, truncated: value.truncated, coveredFromMs }
 }
 
 /**
@@ -213,20 +221,37 @@ export function rangeRechecks(mark: UnreadableMark, q: { readonly fromMs: number
 }
 
 /**
- * 読み返しの結果で帳面を進める。
+ * 読み返しの種類。`full` は期間を選び直した回、`recent` は開いている間の直近の読み直し、
+ * `older` は「さらに古い記録を読む」で続きを読んだ回。
+ */
+export type ReadKind = 'full' | 'recent' | 'older'
+
+/**
+ * 読み返しの結果で帳面を進める。`q` は**その回が漏れなく見直した範囲**（ホストが件数で区切ったなら、
+ * 範囲の頭ではなく見終えた範囲の頭から）。
  * - **期間を選び直した読み返し（`full`）** は、帳面をこの回の目印で置き換える。
- * - **直近の読み返し** は、直近の分をこの回の目印で置き換える。それまでの目印のうち、**この回が見直した範囲のもの
+ * - **直近の読み返し（`recent`）** は、直近の分をこの回の目印で置き換える。それまでの目印のうち、**この回が見直した範囲のもの
  *   は捨て**（出てこなければ直った）、**見直していないものは期間の分へ移して残す** —— 直近の範囲から外れていった
  *   記録の目印を、まだ壊れているのに黙って消さない。
+ * - **続きを読んだ回（`older`）** は、この回の目印を期間の分へ足す。見直した範囲の古い目印は捨て、直近の分は
+ *   置き換えない（直近の読み直しが次に見る）。
  */
 export function nextUnreadableBook(
   book: UnreadableBook,
   marks: readonly UnreadableMark[],
   q: { readonly fromMs: number; readonly toMs: number },
-  full: boolean,
+  kind: ReadKind,
 ): UnreadableBook {
   const fresh = new Map(marks.map((m) => [m.key, m] as const))
-  if (full) return { period: fresh, recent: new Map() }
+  if (kind === 'full') return { period: fresh, recent: new Map() }
+  if (kind === 'older') {
+    const period = new Map<string, UnreadableMark>()
+    for (const m of book.period.values()) if (!rangeRechecks(m, q)) period.set(m.key, m)
+    for (const [key, m] of fresh) period.set(key, m)
+    const recent = new Map<string, UnreadableMark>()
+    for (const m of book.recent.values()) if (!rangeRechecks(m, q)) recent.set(m.key, m)
+    return { period, recent }
+  }
   const period = new Map<string, UnreadableMark>()
   for (const m of [...book.period.values(), ...book.recent.values()]) {
     if (!rangeRechecks(m, q)) period.set(m.key, m)
@@ -238,6 +263,51 @@ export function nextUnreadableBook(
 export function unreadableCount(book: UnreadableBook): number {
   const keys = new Set([...book.period.keys(), ...book.recent.keys()])
   return keys.size
+}
+
+/**
+ * 読み返しの成否。**読み返しの種類ごとに分けて持つ** —— 1 つにまとめると、ある種類の成功が別の種類の失敗を消す
+ * （期間を一度も読めていないのに直近の読み直しの成功で失敗の行が消え、「揺れは無い」に化ける）か、
+ * ある種類の失敗を別の種類の成功が消せずに残り続ける（続きの失敗が、直近の読み直しが何度通っても表に居座る）。
+ */
+export interface LoadState {
+  /** 期間全体の読み返しの失敗（表の中に出す）。 */
+  readonly period: string | null
+  /** 直近の読み直しの失敗（表の中に出す）。 */
+  readonly recent: string | null
+  /** 続き（さらに古い記録）の読み返しの失敗。**表ではなく続きのボタンの横に出す**（読めていないのは表の末尾の先）。 */
+  readonly older: string | null
+  /** 選んだ期間を一度でも読めたか。読めるまでは、開いている間の読み直しで期間全体を読み直す。 */
+  readonly periodLoaded: boolean
+}
+
+export const INITIAL_LOAD_STATE: LoadState = { period: null, recent: null, older: null, periodLoaded: false }
+
+/**
+ * 期間を選び直したとき。**続きの失敗は前の期間のものなので捨てる。** 期間・直近の失敗は、読み直しの結果が
+ * 出るまで残す（結果が出る前に消すと、取れていないのに「揺れは無い」が一瞬出る）。
+ */
+export function startPeriodLoad(state: LoadState): LoadState {
+  return { ...state, older: null, periodLoaded: false }
+}
+
+/**
+ * 読み返しの結果で成否を進める（`failure` は失敗の理由。成功なら `null`）。
+ * - `full` が通れば、直近の範囲も含めて期間を読み直したので、期間・直近・続きの失敗をすべて消す。
+ * - `recent` / `older` は、自分の種類の失敗だけを書き換える。
+ */
+export function nextLoadState(state: LoadState, kind: ReadKind, failure: string | null): LoadState {
+  if (kind === 'full') {
+    return failure === null
+      ? { period: null, recent: null, older: null, periodLoaded: true }
+      : { ...state, period: failure }
+  }
+  return kind === 'recent' ? { ...state, recent: failure } : { ...state, older: failure }
+}
+
+/** 表の中に出す失敗の理由（無ければ `null`）。**続きの失敗は表に出さない**（`LoadState.older`）。 */
+export function tableFailure(state: LoadState): string | null {
+  return state.period ?? state.recent
 }
 
 /**
@@ -262,10 +332,10 @@ export function upsertShake(list: readonly ShakeRecordView[], rec: ShakeRecordVi
 }
 
 /**
- * `GET /events` が一度に返す範囲の上限（ミリ秒）。**ホストと同じ値を同じ場所から読む**
- * （`detection/eventRange.ts`）。幅がこれを超えると `400 range-too-wide` で断られる。
+ * `GET /events` に頼む件数（ホストが受け付ける上限ちょうど。2026-10-07 ユーザー承認）。**ホストと同じ値を
+ * 同じ場所から読む**（`detection/eventRange.ts`）—— 上限を超えて頼むと `400 bad-limit` で断られる。
  */
-export const EVENTS_RANGE_MAX_MS = EVENT_RANGE_MAX_MS
+export const EVENTS_PAGE_LIMIT = EVENT_PAGE_LIMIT_MAX
 /** 右端を少し先まで取る幅。押し出しが届く前に閉じた揺れを落とさない。 */
 const EVENTS_RIGHT_MARGIN_MS = 60_000
 /**
@@ -275,14 +345,69 @@ const EVENTS_RIGHT_MARGIN_MS = 60_000
  */
 const RECENT_RELOAD_MS = 3 * 3_600_000
 
+/** 時刻の範囲（`[fromMs, toMs)`）。 */
+export interface TimeRange {
+  readonly fromMs: number
+  readonly toMs: number
+}
+
 /**
- * 期間を選んだときの問い合わせの範囲。**幅は必ず `EVENTS_RANGE_MAX_MS` 以下に収める** ——
- * 右端に余裕を足したぶん左端を詰める（93 日ちょうどを選んでも断られない）。
+ * 期間のボタンを選んだときの問い合わせの範囲（直近 `periodDays` 日＋右端の余裕）。**幅は詰めない** ——
+ * ホストは範囲の広さではなく件数で区切る（`EVENTS_PAGE_LIMIT`）。
  */
-export function eventsQueryRange(anchorMs: number, periodDays: number): { readonly fromMs: number; readonly toMs: number } {
+export function eventsQueryRange(anchorMs: number, periodDays: number): TimeRange {
   const toMs = Math.ceil(anchorMs + EVENTS_RIGHT_MARGIN_MS)
-  const span = Math.min(periodDays * 24 * 3_600_000 + EVENTS_RIGHT_MARGIN_MS, EVENTS_RANGE_MAX_MS)
-  return { fromMs: toMs - span, toMs }
+  return { fromMs: toMs - (periodDays * 24 * 3_600_000 + EVENTS_RIGHT_MARGIN_MS), toMs }
+}
+
+/**
+ * `GET /events` の URL。**端は整数へ外向きに揃える**（ホストは 10 進の整数しか読まない）。
+ * 生活振動らしいものを隠すなら、ホストで除いてから数えてもらう —— 画面で隠すと、上限まで返った分の
+ * 大半が隠れて数行しか残らないことがある。
+ */
+export function eventsUrl(q: TimeRange, hideLocal: boolean): string {
+  return `/events?from=${Math.floor(q.fromMs)}&to=${Math.ceil(q.toMs)}&limit=${EVENTS_PAGE_LIMIT}${hideLocal ? '&hide=local' : ''}`
+}
+
+const DATE_TEXT = /^(\d{4})-(\d{2})-(\d{2})$/
+
+/** `YYYY-MM-DD`（日本時間）の 0 時。**読めない・存在しない日なら null。** */
+function jstMidnight(text: string): number | null {
+  const m = DATE_TEXT.exec(text)
+  if (m === null) return null
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])]
+  const utc = Date.UTC(y, mo - 1, d)
+  const back = new Date(utc)
+  if (back.getUTCFullYear() !== y || back.getUTCMonth() !== mo - 1 || back.getUTCDate() !== d) return null
+  return utc - JST_OFFSET_MS
+}
+
+/**
+ * 日付で選んだ期間（日本時間）。始まりの日の 0 時から、**終わりの日の翌日 0 時まで**（終わりの日を含む）。
+ * 終わりが始まりより前・日付として読めないなら null（問い合わせない）。
+ */
+export function jstDayRange(fromDate: string, toDate: string): TimeRange | null {
+  const fromMs = jstMidnight(fromDate)
+  const toStart = jstMidnight(toDate)
+  if (fromMs === null || toStart === null || toStart < fromMs) return null
+  return { fromMs, toMs: toStart + 24 * 3_600_000 }
+}
+
+/** 日本時間の日付（`YYYY-MM-DD`）。日付の入力へ入れる値。 */
+export function jstDateOf(ms: number): string {
+  return new Date(ms + JST_OFFSET_MS).toISOString().slice(0, 10)
+}
+
+/** 2 つの範囲の重なり。重ならなければ null。 */
+export function clipRange(a: TimeRange, b: TimeRange): TimeRange | null {
+  const fromMs = Math.max(a.fromMs, b.fromMs)
+  const toMs = Math.min(a.toMs, b.toMs)
+  return fromMs < toMs ? { fromMs, toMs } : null
+}
+
+/** ホストが件数で区切ったときに、表の下へ添える文（2026-10-07 ユーザー承認）。`shown` は出している件数。 */
+export function truncatedNote(shown: number): string {
+  return `新しいほうから ${shown} 件を出している`
 }
 
 /**

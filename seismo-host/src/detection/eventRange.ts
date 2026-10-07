@@ -1,14 +1,19 @@
 // 揺れの記録を範囲で読み返すときの決まり。**ホスト（`shakeEventStore.ts`・`GET /events`）と管理コンソール
-// （`admin/shakeHistory.ts`）で同じものを使う。** 画面側が別の値を持つと、最長の期間だけ
-// `400 range-too-wide` で断られる。また画面は「ホストがどのファイルを見直したか」から、読めなかった
+// （`admin/shakeHistory.ts`）で同じものを使う。** 画面側が別の値を持つと、件数の上限を超えて頼んだ回だけ
+// `400 bad-limit` で断られる。また画面は「ホストがどのファイルを見直したか」から、読めなかった
 // 記録の目印を消してよいかを決めるので、見直す範囲の決め方もここで共有する。
 //
 // 保存部品は Node の `fs` を読み込むのでブラウザからは引けない。決まりだけをここへ切り出してある。
 
 import { JST_OFFSET_MS } from '../receiver/jstTime'
 
-/** 読み返す範囲の上限（ミリ秒）。掛かる月の記録を全部読むので、際限なく広げさせない。 */
-export const EVENT_RANGE_MAX_MS = 93 * 24 * 3_600_000
+/**
+ * 1 回の読み返しで返す件数の上限（2026-10-07 ユーザー承認）。**範囲の広さには上限を置かない** ——
+ * 読み返しの重さは範囲の中の記録の数に比例する（1 件あたり約 1.2 ミリ秒・0.7 KB。3 観測点で 90 日 4,320 件・
+ * 約 5 秒・3 MB を実測）ので、縛るなら件数で縛る。範囲の広さで縛ると、揺れの多い時期は上限の内側でも重く、
+ * 静かな時期は軽いのに断る。新しいほうから数え、続きは見終えた範囲の頭から読む（`readEventRange`）。
+ */
+export const EVENT_PAGE_LIMIT_MAX = 500
 
 /** 日本時間の年月（`YYYY-MM`）。揺れの記録はこの月のディレクトリへ置く。 */
 export function jstMonth(ms: number): string {
@@ -51,7 +56,7 @@ export function startMsFromFileName(name: string): number | null {
 }
 
 /** 名前の始まり（丸めた値）と中身の始まりのずれの上限に、余裕を足したもの。 */
-const NAME_START_SLACK_MS = 1
+export const NAME_START_SLACK_MS = 1
 
 /**
  * 名前の始まりから見て、**中身の始まりが範囲 `[fromMs, toMs)` に入りうるか**。偽なら開かずに飛ばしてよい。
