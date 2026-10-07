@@ -239,7 +239,7 @@ export function arrivalMark(s: Span, r: TimeRange, width: number): ArrivalMark |
 
 // ---- カーソルの読み取り ----------------------------------------------------------------------
 
-/** 届く時刻（秒まで分かれば 1 つ・幅があれば幅）。 */
+/** 届く時刻（秒まで分かれば 1 つ・幅があれば `P 01:29:18〜01:30:18` のように幅。2026-10-08 ユーザー承認）。 */
 function arrivalText(s: Span): string {
   return s.toMs - s.fromMs <= 1000 ? formatClockDigits((s.fromMs + s.toMs) / 2, 1) : `${formatClockDigits(s.fromMs, 0)}〜${formatClockDigits(s.toMs, 0)}`
 }

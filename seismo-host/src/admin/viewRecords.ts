@@ -1200,6 +1200,8 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     const notes: string[] = []
     if (getStoredToken() === null) notes.push(TOKEN_MISSING_TEXT)
     if (failure !== null) notes.push(fetchFailureText(failure))
+    // 受信・揺れの記録・周波数の材料を取れなかったときも、波形と同じ「波形の記録を取得できていない（理由）」で出す
+    // （2026-10-08 ユーザー承認）。
     if (m?.failure !== null && m?.failure !== undefined) notes.push(fetchFailureText(m.failure))
     if (freqFailure !== null) notes.push(fetchFailureText(freqFailure))
     if (data !== null) {
