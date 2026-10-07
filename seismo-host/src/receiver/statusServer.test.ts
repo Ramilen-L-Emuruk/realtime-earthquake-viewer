@@ -1649,20 +1649,41 @@ describe('GET /events（#312）', () => {
   const result = (stationIds: string[]): EventRangeResult => ({
     events: stationIds.map((stationId, i) => ({ id: `${stationId}-${T + i}`, stationId, startMs: T + i, rev: 1 }) as unknown as ShakeEventRecord),
     unreadableFiles: ['2026-10/broken.json'],
+    truncated: true,
+    coveredFromMs: T - 10,
   })
 
-  it('範囲の揺れを返し、読めなかったファイルを添える。観測点で絞れる', async () => {
-    const asked: { fromMs: number; toMs: number }[] = []
+  it('範囲の揺れを返し、読めなかったファイル・区切ったか・見終えた範囲の頭を添える。絞り込みは読み返しへ渡す', async () => {
+    const asked: unknown[] = []
     const base = await start(new ReadingHub(), undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, async (p) => {
       asked.push(p)
-      return result(['station-1', 'station-2'])
+      return result(['station-1'])
     })
-    const res = await fetch(`${base}/events?from=${T - 1000}&to=${T + 1000}&station=station-1`)
+    const res = await fetch(`${base}/events?from=${T - 1000}&to=${T + 1000}&station=station-1&limit=20&hide=local`)
     expect(res.status).toBe(200)
-    const body = (await res.json()) as { events: { stationId: string }[]; unreadableFiles: string[] }
+    const body = (await res.json()) as {
+      events: { stationId: string }[]
+      unreadableFiles: string[]
+      truncated: boolean
+      coveredFromMs: number
+      limit: number
+    }
     expect(body.events.map((e) => e.stationId)).toEqual(['station-1'])
     expect(body.unreadableFiles).toEqual(['2026-10/broken.json'])
-    expect(asked).toEqual([{ fromMs: T - 1000, toMs: T + 1000 }])
+    expect(body.truncated).toBe(true)
+    expect(body.coveredFromMs).toBe(T - 10)
+    expect(body.limit).toBe(20)
+    expect(asked).toEqual([{ fromMs: T - 1000, toMs: T + 1000, limit: 20, stationId: 'station-1', hideLocal: true }])
+  })
+
+  it('正: 範囲の広さには上限を置かない（2026-10-07 ユーザー承認。縛るのは件数）', async () => {
+    const asked: unknown[] = []
+    const base = await start(new ReadingHub(), undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, async (p) => {
+      asked.push(p)
+      return result([])
+    })
+    expect((await fetch(`${base}/events?from=0&to=${T + 400 * 86_400_000}`)).status).toBe(200)
+    expect(asked).toEqual([{ fromMs: 0, toMs: T + 400 * 86_400_000, limit: 500, stationId: null, hideLocal: false }])
   })
 
   it('記録を持たない構成なら 503（「揺れが無かった」と区別する）', async () => {
@@ -1671,7 +1692,7 @@ describe('GET /events（#312）', () => {
     expect(res.status).toBe(503)
   })
 
-  it('範囲が読めない・広すぎるものは 400 で、読みに行かない', async () => {
+  it('範囲が読めないもの・件数の上限が範囲の外のものは 400 で、読みに行かない', async () => {
     let called = 0
     const base = await start(new ReadingHub(), undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, async () => {
       called++
@@ -1679,12 +1700,27 @@ describe('GET /events（#312）', () => {
     })
     expect((await fetch(`${base}/events?from=${T}`)).status).toBe(400)
     expect((await fetch(`${base}/events?from=${T}&to=${T}`)).status).toBe(400)
-    expect((await fetch(`${base}/events?from=${T}&to=${T + 94 * 86_400_000}`)).status).toBe(400)
+    expect((await fetch(`${base}/events?from=${T}&to=${T + 1000}&limit=0`)).status).toBe(400)
+    expect((await fetch(`${base}/events?from=${T}&to=${T + 1000}&limit=501`)).status).toBe(400)
+    expect((await fetch(`${base}/events?from=${T}&to=${T + 1000}&limit=1.5`)).status).toBe(400)
+    expect((await fetch(`${base}/events?from=${T}&to=${T + 1000}&hide=quake`)).status).toBe(400)
     expect(called).toBe(0)
   })
 
-  it('parseEventQuery: 観測点を省けば null', () => {
-    expect(parseEventQuery(new URLSearchParams(`from=1&to=2`))).toEqual({ ok: true, fromMs: 1, toMs: 2, stationId: null })
+  it('parseEventQuery: 観測点を省けば null・件数を省けば上限の 500・隠す指定を省けば隠さない', () => {
+    expect(parseEventQuery(new URLSearchParams(`from=1&to=2`))).toEqual({
+      ok: true,
+      fromMs: 1,
+      toMs: 2,
+      stationId: null,
+      limit: 500,
+      hideLocal: false,
+    })
+  })
+
+  it('対照: 件数の上限ちょうど（500）は通す', () => {
+    expect(parseEventQuery(new URLSearchParams(`from=1&to=2&limit=500`))).toMatchObject({ ok: true, limit: 500 })
+    expect(parseEventQuery(new URLSearchParams(`from=1&to=2&limit=1`))).toMatchObject({ ok: true, limit: 1 })
   })
 })
 

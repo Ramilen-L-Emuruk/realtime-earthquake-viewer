@@ -44,8 +44,8 @@ import type { StationConfig } from './stationConfig'
 import type { StatusReport } from './statusReport'
 import type { ArchivedWaveChunk, WaveRangeResult } from './waveArchive'
 import { buildWaveEnvelope } from './waveEnvelope'
-import { EVENT_RANGE_MAX_MS } from '../detection/shakeEventStore'
-import type { EventRangeResult } from '../detection/shakeEventStore'
+import { EVENT_PAGE_LIMIT_MAX } from '../detection/shakeEventStore'
+import type { EventRangeParams, EventRangeResult } from '../detection/shakeEventStore'
 
 /** 繋ぎ直すまでブラウザに待たせる時間。**SSE の `retry:` で伝える。** */
 const RETRY_MS = 3_000
@@ -278,21 +278,41 @@ export function parseWaveQuery(params: URLSearchParams): WaveQuery {
 }
 
 export type EventQuery =
-  | { readonly ok: true; readonly fromMs: number; readonly toMs: number; readonly stationId: string | null }
-  | { readonly ok: false; readonly error: 'bad-range' | 'range-too-wide' }
+  | {
+      readonly ok: true
+      readonly fromMs: number
+      readonly toMs: number
+      readonly stationId: string | null
+      readonly limit: number
+      readonly hideLocal: boolean
+    }
+  | { readonly ok: false; readonly error: 'bad-range' | 'bad-limit' | 'bad-hide' }
 
 /**
- * `GET /events` の問い合わせを読む。`from`・`to`（unix ミリ秒）は必須、`station` は任意。
+ * `GET /events` の問い合わせを読む。`from`・`to`（unix ミリ秒）は必須。任意で `station`（観測点 ID）・
+ * `limit`（1〜{@link EVENT_PAGE_LIMIT_MAX}。既定はその上限）・`hide=local`（生活振動らしいものを除く）。
  *
- * **範囲は {@link EVENT_RANGE_MAX_MS} まで。** 掛かる月の記録を全部読むので、際限なく広げさせない。
+ * **範囲の広さには上限を置かない**（2026-10-07 ユーザー承認）。読み返しの重さは返す件数で決まるので、
+ * 縛るのは件数（新しいほうから数える。`readEventRange`）。
  */
 export function parseEventQuery(params: URLSearchParams): EventQuery {
   const fromMs = decimalInt(params.get('from'))
   const toMs = decimalInt(params.get('to'))
   if (fromMs === null || toMs === null || toMs <= fromMs) return { ok: false, error: 'bad-range' }
-  if (toMs - fromMs > EVENT_RANGE_MAX_MS) return { ok: false, error: 'range-too-wide' }
+  const limitText = params.get('limit')
+  const limit = limitText === null ? EVENT_PAGE_LIMIT_MAX : decimalInt(limitText)
+  if (limit === null || limit < 1 || limit > EVENT_PAGE_LIMIT_MAX) return { ok: false, error: 'bad-limit' }
+  const hide = params.get('hide')
+  if (hide !== null && hide !== 'local') return { ok: false, error: 'bad-hide' }
   const station = params.get('station')
-  return { ok: true, fromMs, toMs, stationId: station === null || station.length === 0 ? null : station }
+  return {
+    ok: true,
+    fromMs,
+    toMs,
+    stationId: station === null || station.length === 0 ? null : station,
+    limit,
+    hideLocal: hide === 'local',
+  }
 }
 
 /**
@@ -300,13 +320,18 @@ export function parseEventQuery(params: URLSearchParams): EventQuery {
  * 無いと、受け手からは「揺れが無かった」と「記録が壊れていた」が同じ空の配列に見える。
  */
 export function buildEventResponse(query: Extract<EventQuery, { ok: true }>, result: EventRangeResult): Record<string, unknown> {
-  const events = query.stationId === null ? result.events : result.events.filter((e) => e.stationId === query.stationId)
   return {
     fromMs: query.fromMs,
     toMs: query.toMs,
     stationId: query.stationId,
-    events,
+    limit: query.limit,
+    hideLocal: query.hideLocal,
+    events: result.events,
     unreadableFiles: result.unreadableFiles,
+    // **区切ったら、続きを読むための頭を添える** —— 無いと、受け手には「その範囲の全部」と
+    // 「新しいほうの一部」が同じ配列に見える。
+    truncated: result.truncated,
+    coveredFromMs: result.coveredFromMs,
   }
 }
 
@@ -566,7 +591,7 @@ export interface StatusServerOptions {
    * 検出した揺れの記録を時刻の範囲で読み返す（`GET /events`。REQUIREMENTS.md §9）。
    * **`null` なら記録を持たない構成** —— 503 で答え、「揺れが無かった」と区別させる。
    */
-  readonly readEvents: ((params: { readonly fromMs: number; readonly toMs: number }) => Promise<EventRangeResult>) | null
+  readonly readEvents: ((params: Omit<EventRangeParams, 'dir'>) => Promise<EventRangeResult>) | null
 }
 
 export interface StatusServer {
@@ -1395,7 +1420,13 @@ export async function startStatusServer(options: StatusServerOptions): Promise<S
         // **投げさせない。** 読み込みは非同期なので、上の同期の `try` には捕まらない
         // （`/waves` と同じ理由で `log()` を通す）。
         void options
-          .readEvents({ fromMs: query.fromMs, toMs: query.toMs })
+          .readEvents({
+            fromMs: query.fromMs,
+            toMs: query.toMs,
+            limit: query.limit,
+            stationId: query.stationId,
+            hideLocal: query.hideLocal,
+          })
           .then((result) => {
             sendJson(res, 200, buildEventResponse(query, result))
           })

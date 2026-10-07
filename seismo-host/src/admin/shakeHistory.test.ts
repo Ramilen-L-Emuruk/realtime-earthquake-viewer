@@ -1,18 +1,27 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  clipRange,
   EMPTY_UNREADABLE_BOOK,
   eventsQueryRange,
-  EVENTS_RANGE_MAX_MS,
+  eventsUrl,
+  EVENTS_PAGE_LIMIT,
+  INITIAL_LOAD_STATE,
+  jstDateOf,
+  jstDayRange,
   recentQueryRange,
   formatMatchedQuake,
+  truncatedNote,
   formatShakeStart,
   newerRecord,
+  nextLoadState,
   nextUnreadableBook,
   readShakeRange,
   readShakeRecord,
   readTriggers,
   shakeRowHtml,
+  startPeriodLoad,
+  tableFailure,
   triggerLine,
   unreadableCount,
   upsertShake,
@@ -114,8 +123,12 @@ describe('readShakeRange — GET /events の応答を読む', () => {
     const r = readShakeRange({
       events: [wire()],
       unreadableFiles: [`2026-10/station-1-${T0}.json`, '2026-10/x.json', '2026-09'],
+      truncated: true,
+      coveredFromMs: T0 - HOUR,
     })
     expect(r?.events).toHaveLength(1)
+    expect(r?.truncated).toBe(true)
+    expect(r?.coveredFromMs).toBe(T0 - HOUR)
     expect(r?.marks).toEqual([
       { key: `file:2026-10/station-1-${T0}.json`, startMs: T0, month: '2026-10' },
       { key: 'file:2026-10/x.json', startMs: null, month: '2026-10' },
@@ -127,6 +140,8 @@ describe('readShakeRange — GET /events の応答を読む', () => {
     const r = readShakeRange({
       events: [wire(), wire({ id: `s-${T0}`, verdict: 'x' }), wire({ id: 'bad', verdict: 'x' }), 7],
       unreadableFiles: [],
+      truncated: false,
+      coveredFromMs: T0 - HOUR,
     })
     expect(r?.events).toHaveLength(1)
     expect(r?.marks).toEqual([
@@ -137,8 +152,14 @@ describe('readShakeRange — GET /events の応答を読む', () => {
   })
 
   it('安全弁: events が配列でなければ応答ごと読めない（空の一覧と取り違えない）', () => {
-    expect(readShakeRange({ unreadableFiles: [] })).toBeNull()
+    expect(readShakeRange({ unreadableFiles: [], truncated: false, coveredFromMs: T0 })).toBeNull()
     expect(readShakeRange('x')).toBeNull()
+  })
+
+  it('安全弁: 区切ったか・見終えた範囲の頭が読めなければ応答ごと読めない（「全部」と「一部」を取り違えない）', () => {
+    expect(readShakeRange({ events: [], unreadableFiles: [], coveredFromMs: T0 })).toBeNull()
+    expect(readShakeRange({ events: [], unreadableFiles: [], truncated: 'yes', coveredFromMs: T0 })).toBeNull()
+    expect(readShakeRange({ events: [], unreadableFiles: [], truncated: false })).toBeNull()
   })
 })
 
@@ -148,50 +169,129 @@ describe('nextUnreadableBook — 読めなかった記録の帳面', () => {
   const keys = (b: UnreadableBook): string[] => [...new Set([...b.period.keys(), ...b.recent.keys()])].sort()
 
   it('正: 直近の読み返しが見直した範囲の目印は、出てこなければ外す（一時的に読めなかっただけなら消える）', () => {
-    const book = nextUnreadableBook(EMPTY_UNREADABLE_BOOK, [fileMark(T0)], recent, false)
+    const book = nextUnreadableBook(EMPTY_UNREADABLE_BOOK, [fileMark(T0)], recent, 'recent')
     expect(unreadableCount(book)).toBe(1)
-    const after = nextUnreadableBook(book, [], recent, false)
+    const after = nextUnreadableBook(book, [], recent, 'recent')
     expect(unreadableCount(after)).toBe(0)
   })
 
   it('正: 期間の読み返しで拾った目印も、直近の読み返しが見直したら外す', () => {
-    const book = nextUnreadableBook(EMPTY_UNREADABLE_BOOK, [fileMark(T0)], eventsQueryRange(T0 + HOUR, 7), true)
-    expect(unreadableCount(nextUnreadableBook(book, [], recent, false))).toBe(0)
+    const book = nextUnreadableBook(EMPTY_UNREADABLE_BOOK, [fileMark(T0)], eventsQueryRange(T0 + HOUR, 7), 'full')
+    expect(unreadableCount(nextUnreadableBook(book, [], recent, 'recent'))).toBe(0)
   })
 
   it('対照: 直近の範囲より古い目印は、直近の読み返しで出てこなくても残す（見直していない）', () => {
     const old = fileMark(T0 - 5 * HOUR)
-    const book = nextUnreadableBook(EMPTY_UNREADABLE_BOOK, [old], eventsQueryRange(T0 + HOUR, 7), true)
-    expect(keys(nextUnreadableBook(book, [], recent, false))).toEqual([old.key])
+    const book = nextUnreadableBook(EMPTY_UNREADABLE_BOOK, [old], eventsQueryRange(T0 + HOUR, 7), 'full')
+    expect(keys(nextUnreadableBook(book, [], recent, 'recent'))).toEqual([old.key])
   })
 
   it('安全弁: 直近の範囲から外れていった目印は、まだ壊れているかもしれないので期間の分へ移して残す', () => {
     const m = fileMark(T0)
-    const book = nextUnreadableBook(EMPTY_UNREADABLE_BOOK, [m], recentQueryRange(T0 + HOUR), false)
+    const book = nextUnreadableBook(EMPTY_UNREADABLE_BOOK, [m], recentQueryRange(T0 + HOUR), 'recent')
     // 4 時間後の直近の範囲には T0 が入らない（見直されない）。
-    const later = nextUnreadableBook(book, [], recentQueryRange(T0 + 5 * HOUR), false)
+    const later = nextUnreadableBook(book, [], recentQueryRange(T0 + 5 * HOUR), 'recent')
     expect(keys(later)).toEqual([m.key])
     expect(later.period.has(m.key)).toBe(true)
   })
 
   it('安全弁: 範囲の端から 1 ミリ秒以内の目印は、見直したとみなさない（名前は始まりを丸めた値）', () => {
     const edge = fileMark(recent.fromMs)
-    const book = nextUnreadableBook(EMPTY_UNREADABLE_BOOK, [edge], eventsQueryRange(T0 + HOUR, 7), true)
-    expect(keys(nextUnreadableBook(book, [], recent, false))).toEqual([edge.key])
+    const book = nextUnreadableBook(EMPTY_UNREADABLE_BOOK, [edge], eventsQueryRange(T0 + HOUR, 7), 'full')
+    expect(keys(nextUnreadableBook(book, [], recent, 'recent'))).toEqual([edge.key])
   })
 
   it('正: 始まりの分からない目印は、その月を一覧した読み返しなら外す。月も分からなければ期間を選び直すまで残す', () => {
     const month: UnreadableMark = { key: 'file:2026-10', startMs: null, month: '2026-10' }
     const raw: UnreadableMark = { key: 'raw:7', startMs: null, month: null }
-    const book = nextUnreadableBook(EMPTY_UNREADABLE_BOOK, [month, raw], eventsQueryRange(T0 + HOUR, 7), true)
-    expect(keys(nextUnreadableBook(book, [], recent, false))).toEqual(['raw:7'])
-    expect(unreadableCount(nextUnreadableBook(book, [], eventsQueryRange(T0 + HOUR, 7), true))).toBe(0)
+    const book = nextUnreadableBook(EMPTY_UNREADABLE_BOOK, [month, raw], eventsQueryRange(T0 + HOUR, 7), 'full')
+    expect(keys(nextUnreadableBook(book, [], recent, 'recent'))).toEqual(['raw:7'])
+    expect(unreadableCount(nextUnreadableBook(book, [], eventsQueryRange(T0 + HOUR, 7), 'full'))).toBe(0)
   })
 
   it('正: 同じ目印が期間の分と直近の分の両方にあっても 1 件と数える', () => {
     const raw: UnreadableMark = { key: 'raw:7', startMs: null, month: null }
-    const book = nextUnreadableBook(EMPTY_UNREADABLE_BOOK, [raw], eventsQueryRange(T0 + HOUR, 7), true)
-    expect(unreadableCount(nextUnreadableBook(book, [raw], recent, false))).toBe(1)
+    const book = nextUnreadableBook(EMPTY_UNREADABLE_BOOK, [raw], eventsQueryRange(T0 + HOUR, 7), 'full')
+    expect(unreadableCount(nextUnreadableBook(book, [raw], recent, 'recent'))).toBe(1)
+  })
+
+  it('正: さらに古い記録を読んだ回は、拾った目印を期間の分へ足す（直近の分を置き換えない）', () => {
+    const newer = fileMark(T0)
+    const older = fileMark(T0 - 30 * 24 * HOUR)
+    const book = nextUnreadableBook(EMPTY_UNREADABLE_BOOK, [newer], recent, 'recent')
+    const page = { fromMs: T0 - 40 * 24 * HOUR, toMs: T0 - 20 * 24 * HOUR }
+    const after = nextUnreadableBook(book, [older], page, 'older')
+    expect(keys(after)).toEqual([older.key, newer.key].sort())
+    expect(after.period.has(older.key)).toBe(true)
+    expect(after.recent.has(newer.key)).toBe(true)
+  })
+
+  it('正: さらに古い記録を読んだ回が見直した範囲の目印は、出てこなければ外す', () => {
+    const older = fileMark(T0 - 30 * 24 * HOUR)
+    const page = { fromMs: T0 - 40 * 24 * HOUR, toMs: T0 - 20 * 24 * HOUR }
+    const book = nextUnreadableBook(EMPTY_UNREADABLE_BOOK, [older], page, 'older')
+    expect(unreadableCount(nextUnreadableBook(book, [], page, 'older'))).toBe(0)
+  })
+
+  it('対照: さらに古い記録を読んだ回は、見直していない範囲の目印を残す', () => {
+    const newer = fileMark(T0 - 2 * 24 * HOUR)
+    const book = nextUnreadableBook(EMPTY_UNREADABLE_BOOK, [newer], eventsQueryRange(T0 + HOUR, 7), 'full')
+    const page = { fromMs: T0 - 40 * 24 * HOUR, toMs: T0 - 20 * 24 * HOUR }
+    expect(keys(nextUnreadableBook(book, [], page, 'older'))).toEqual([newer.key])
+  })
+})
+
+describe('nextLoadState / tableFailure — 読み返しの成否', () => {
+  const loaded = nextLoadState(INITIAL_LOAD_STATE, 'full', null)
+
+  it('正: 期間全体を読めなかった失敗は、直近の読み直しが通っても表に残る', () => {
+    const failed = nextLoadState(INITIAL_LOAD_STATE, 'full', '期間の失敗')
+    const afterRecent = nextLoadState(failed, 'recent', null)
+    expect(tableFailure(afterRecent)).toBe('期間の失敗')
+    expect(afterRecent.periodLoaded).toBe(false)
+  })
+
+  it('正: 続きを読めなかった失敗は表に出さず、直近の読み直しでも消えない', () => {
+    const olderFailed = nextLoadState(loaded, 'older', '続きの失敗')
+    expect(tableFailure(olderFailed)).toBeNull()
+    expect(nextLoadState(olderFailed, 'recent', null).older).toBe('続きの失敗')
+  })
+
+  it('正: 続きの失敗は、続きを読み直して通れば消える', () => {
+    const olderFailed = nextLoadState(loaded, 'older', '続きの失敗')
+    expect(nextLoadState(olderFailed, 'older', null).older).toBeNull()
+  })
+
+  it('正: 期間を選び直すと、前の期間の続きの失敗を捨てる', () => {
+    const olderFailed = nextLoadState(loaded, 'older', '続きの失敗')
+    const restarted = startPeriodLoad(olderFailed)
+    expect(restarted.older).toBeNull()
+    expect(restarted.periodLoaded).toBe(false)
+  })
+
+  it('対照: 期間を選び直しても、結果が出るまでは期間・直近の失敗を残す', () => {
+    const failed = nextLoadState(nextLoadState(INITIAL_LOAD_STATE, 'full', '期間の失敗'), 'recent', '直近の失敗')
+    const restarted = startPeriodLoad(failed)
+    expect(restarted.period).toBe('期間の失敗')
+    expect(restarted.recent).toBe('直近の失敗')
+  })
+
+  it('正: 期間全体を読めたら、どの種類の失敗も消える', () => {
+    const failed = nextLoadState(
+      nextLoadState(nextLoadState(loaded, 'older', '続き'), 'recent', '直近'),
+      'full',
+      '期間',
+    )
+    const ok = nextLoadState(failed, 'full', null)
+    expect(ok).toEqual({ period: null, recent: null, older: null, periodLoaded: true })
+  })
+
+  it('安全弁: 読めた後の期間全体の失敗は、一度読めた印を降ろさない', () => {
+    expect(nextLoadState(loaded, 'full', '期間').periodLoaded).toBe(true)
+  })
+
+  it('安全弁: 直近の失敗は表に出る（期間の失敗が無いとき）', () => {
+    expect(tableFailure(nextLoadState(loaded, 'recent', '直近'))).toBe('直近')
   })
 })
 
@@ -239,23 +339,62 @@ describe('eventsQueryRange / recentQueryRange — 問い合わせの範囲', () 
     expect(r.toMs - r.fromMs).toBe(7 * 24 * HOUR + 60_000)
   })
 
-  it('安全弁: 93 日を選んでも幅はホストの上限を超えない（超えると 400 で断られる）', () => {
-    const r = eventsQueryRange(T0, 93)
-    expect(EVENTS_RANGE_MAX_MS).toBe(93 * 24 * HOUR)
-    expect(r.toMs - r.fromMs).toBeLessThanOrEqual(EVENTS_RANGE_MAX_MS)
-    // 右端の余裕は残す（押し出しより先に閉じた揺れを落とさない）
-    expect(r.toMs).toBe(T0 + 60_000)
+  it('正: 範囲の広さは詰めない（2026-10-07 ユーザー承認。ホストは件数で区切る）', () => {
+    const r = eventsQueryRange(T0, 400)
+    expect(r.toMs - r.fromMs).toBe(400 * 24 * HOUR + 60_000)
   })
 
-  it('対照: 30 日なら上限まで詰めない', () => {
-    const r = eventsQueryRange(T0, 30)
-    expect(r.toMs - r.fromMs).toBe(30 * 24 * HOUR + 60_000)
+  it('問い合わせの URL: 件数はホストの上限ちょうど・隠す指定はあるときだけ', () => {
+    expect(EVENTS_PAGE_LIMIT).toBe(500)
+    expect(eventsUrl({ fromMs: 1, toMs: 2 }, false)).toBe('/events?from=1&to=2&limit=500')
+    expect(eventsUrl({ fromMs: 1, toMs: 2 }, true)).toBe('/events?from=1&to=2&limit=500&hide=local')
+  })
+
+  it('問い合わせの URL: 端の値は整数へ揃える（ホストは 10 進の整数しか読まない）', () => {
+    // 見終えた範囲の頭は名前の丸めから来るので整数だが、念のため小数を渡しても断られない形にする。
+    expect(eventsUrl({ fromMs: 1.2, toMs: 2.7 }, false)).toBe('/events?from=1&to=3&limit=500')
   })
 
   it('正: 直近の読み返しは 3 時間ぶん（照合が最長 2 時間後まで版を進めるのを拾う）', () => {
     const r = recentQueryRange(T0)
     expect(r.fromMs).toBeLessThanOrEqual(T0 - 3 * HOUR)
     expect(r.toMs).toBe(T0 + 60_000)
+  })
+})
+
+describe('jstDayRange / jstDateOf / clipRange — 日付で選ぶ期間', () => {
+  it('正: 日本時間の始まりの日の 0 時から、終わりの日の翌日 0 時まで（終わりの日を含む）', () => {
+    const r = jstDayRange('2026-10-01', '2026-10-06')
+    expect(r).toEqual({ fromMs: Date.UTC(2026, 8, 30, 15, 0), toMs: Date.UTC(2026, 9, 6, 15, 0) })
+  })
+
+  it('対照: 同じ日を選べば 1 日ぶん', () => {
+    const r = jstDayRange('2026-10-06', '2026-10-06')
+    expect(r !== null && r.toMs - r.fromMs).toBe(24 * HOUR)
+  })
+
+  it('安全弁: 終わりが始まりより前・日付として読めない・存在しない日は null（問い合わせない）', () => {
+    expect(jstDayRange('2026-10-06', '2026-10-05')).toBeNull()
+    expect(jstDayRange('', '2026-10-05')).toBeNull()
+    expect(jstDayRange('2026-02-30', '2026-03-01')).toBeNull()
+    expect(jstDayRange('2026/10/01', '2026-10-05')).toBeNull()
+  })
+
+  it('jstDateOf: 日本時間の日付（UTC の 15 時は翌日）', () => {
+    expect(jstDateOf(Date.UTC(2026, 9, 6, 14, 59))).toBe('2026-10-06')
+    expect(jstDateOf(Date.UTC(2026, 9, 6, 15, 0))).toBe('2026-10-07')
+  })
+
+  it('clipRange: 重なる部分。重ならなければ null', () => {
+    expect(clipRange({ fromMs: 0, toMs: 10 }, { fromMs: 5, toMs: 20 })).toEqual({ fromMs: 5, toMs: 10 })
+    expect(clipRange({ fromMs: 0, toMs: 10 }, { fromMs: 10, toMs: 20 })).toBeNull()
+  })
+})
+
+describe('truncatedNote — 区切ったことの添え書き（2026-10-07 ユーザー承認）', () => {
+  it('出している件数を添える', () => {
+    expect(truncatedNote(500)).toBe('新しいほうから 500 件を出している')
+    expect(truncatedNote(1000)).toBe('新しいほうから 1000 件を出している')
   })
 })
 

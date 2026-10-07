@@ -396,6 +396,13 @@
       .shake-row.selected {
         background: var(--accent-soft);
       }
+      /* 押した行のすぐ下に開く区間の波形（2026-10-07 ユーザー承認）。行の色づけ・余白を受け継がない。 */
+      tbody tr.shake-detail-row:hover {
+        background: transparent;
+      }
+      tr.shake-detail-row > td {
+        padding: 0.6rem 0;
+      }
       /* 判定の色は強い順に濃く。**生活振動らしいもの・照合できずは色を付けない**（地震と見間違えないため）。 */
       .badge.verdict-quake {
         background: var(--danger-soft);
