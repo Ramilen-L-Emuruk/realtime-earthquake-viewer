@@ -26,6 +26,7 @@ const DETECTION_OK: DetectionStatus = {
   lastFailure: null,
   store: { written: 0, writeErrors: 0, lastWriteError: null },
   feed: null,
+  triggers: [],
 }
 
 const NOW = 1_700_000_100_000
