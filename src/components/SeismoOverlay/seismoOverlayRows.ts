@@ -10,7 +10,8 @@
 // 止まっていることは**行の色**が示す（`index.tsx`）。
 
 import type { SeismoStationState } from '../../hooks/useSeismoStation'
-import { formatMeasured, intensityGradeColor, measuredIntensityToGrade } from '../../utils/measuredIntensity'
+import { intensityGradeColor, measuredIntensityToGrade } from '../../utils/measuredIntensity'
+import { formatMeasured } from '../../utils/measuredIntensityRounding'
 
 export interface SeismoOverlayRow {
   readonly stationId: string
@@ -22,7 +23,8 @@ export interface SeismoOverlayRow {
   /**
    * 計測震度（小数 1 桁）。**出せていなければ `null`。**
    *
-   * **桁は気象庁の公表に合わせる**（計測震度は小数第 1 位まで）。静穏時は負の値も出る。
+   * **桁と丸め方は気象庁に合わせる**（第 3 位を四捨五入し第 2 位を切り捨て。`gradeLabel` も
+   * 同じ値から引くので、数字と階級は食い違わない）。静穏時は負の値も出る。
    */
   readonly valueText: string | null
   /** その震度をどこから採ったか。**途絶えているときは空。** */

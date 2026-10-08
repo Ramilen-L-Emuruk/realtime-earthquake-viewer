@@ -19,6 +19,7 @@ import {
 import { JST_OFFSET_MS } from '../receiver/jstTime'
 import { escapeHtml } from './dom'
 import { readFinite, readNonEmptyString } from './readJson'
+import { formatMeasured } from '../../../src/utils/measuredIntensityRounding'
 import { formatGal } from './wavePlot'
 
 /** 判定（`detection/shakeEvent.ts` の `ShakeVerdict`）。 */
@@ -482,7 +483,7 @@ export function formatQuakeName(q: { readonly name: string; readonly magnitude: 
 export function shakeRowHtml(r: ShakeRecordView, selected: boolean): string {
   const lengthSec = ((r.endMs - r.startMs) / 1000).toFixed(1)
   const s = r.sMs === null ? '—' : `+${((r.sMs - r.startMs) / 1000).toFixed(1)} 秒`
-  const intensity = r.maxIntensity === null ? '—' : r.maxIntensity.toFixed(1)
+  const intensity = r.maxIntensity === null ? '—' : formatMeasured(r.maxIntensity)
   const quake = r.matchedQuake === null ? '' : escapeHtml(formatMatchedQuake(r.matchedQuake))
   return (
     `<tr class="shake-row${selected ? ' selected' : ''}" data-shake-id="${escapeHtml(r.id)}">` +

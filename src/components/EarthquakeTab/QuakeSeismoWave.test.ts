@@ -166,7 +166,9 @@ describe('formatQuakeIntensityParts', () => {
   // 正: 短い名前と値だけ。階級は添えない（2026-10-05 のユーザー判断）。正式な名前はホバー用に持つ。
   it('2 つの値を短い名前で並べ、正式な名前を title に持つ', () => {
     const parts = formatQuakeIntensityParts(base, span)
-    expect(text(parts)).toBe('最大 2.3 計測 1.9')
+    // **従来の答えを覆した**（2026-10-08）: 計測 1.87 は四捨五入の「1.9」ではなく、
+    // 気象庁の手順（第 3 位を四捨五入・第 2 位を切り捨て）で「1.8」。
+    expect(text(parts)).toBe('最大 2.3 計測 1.8')
     expect(parts?.map((p) => p.title)).toEqual(['最大リアルタイム震度', '計測震度'])
   })
 

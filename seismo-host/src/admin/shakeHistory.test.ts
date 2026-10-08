@@ -467,6 +467,13 @@ describe('見せ方', () => {
     expect(html).toContain('+3.2 秒')
   })
 
+  // PWA の地図の帯・地震カードと同じ数字を出す（四捨五入なら 1.3 になる）。
+  it('震度は気象庁の手順で小数 1 桁にする（1.26 は 1.2）', () => {
+    const html = shakeRowHtml(rec({ maxIntensity: 1.26 }), false)
+    expect(html).toContain('<td>1.2</td>')
+    expect(html).not.toContain('1.3')
+  })
+
   it('対照: 拾えなかった S・届かなかった震度は「—」（0 と書かない）', () => {
     const html = shakeRowHtml(rec({ sMs: null, maxIntensity: null }), false)
     expect(html).not.toContain('+0.0 秒')
