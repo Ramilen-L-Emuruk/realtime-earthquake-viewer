@@ -194,7 +194,7 @@ export function laneGeometry(params: {
  * **向きの切り替えで消した成分は含めない**（2026-10-05 のユーザー判断。1 つだけ選べばその成分の振れの絶対値）。
  * ホストが返すサンプルは直流を引いた変動分なので、そのまま足せる。
  *
- * @param axes 成分ごとに含めるか（南北・東西・上下）
+ * @param axes 成分ごとに含めるか（東西・南北・上下）
  */
 export function vectorMagnitude(series: SampleSeries, axes: readonly boolean[]): Float32Array {
   const out = new Float32Array(series.length)

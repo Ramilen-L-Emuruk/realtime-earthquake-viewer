@@ -115,7 +115,7 @@ describe('laneGeometry', () => {
 
 describe('vectorMagnitude', () => {
   it('各時刻の 3 成分の二乗和の平方根', () => {
-    // chunk() は南北 x・東西 x/2・上下 0
+    // chunk() は東西 x・南北 x/2・上下 0
     const s = buildSampleSeries([chunk(T0, [2, -4])])
     const m = vectorMagnitude(s, [true, true, true])
     // Float32Array に入るので 32 bit の精度で比べる

@@ -181,10 +181,10 @@ export function encodeWaveChunk(chunk: FusedWaveChunk, revised: boolean): Buffer
   // データグラムの処理全体**（`main.ts` の受け手は例外を囲わない方針）——
   // 同じパケットの震度も自己診断もまとめて落ちるうえ、どの数え上げにも現れない。
   if (chunk.gal.length !== 3 || chunk.dcGal.length !== 3) return null
-  const [ns, ew, ud] = chunk.gal
-  const count = ns.length
+  const [ew, ns, ud] = chunk.gal
+  const count = ew.length
   if (count === 0) return null
-  if (ew.length !== count || ud.length !== count) return null
+  if (ns.length !== count || ud.length !== count) return null
   if (chunk.memberCount.length !== count) return null
   if (count > MAX_SAMPLES_PER_CHUNK) return null
   if (!Number.isFinite(chunk.firstSampleMs)) return null

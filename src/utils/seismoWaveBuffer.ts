@@ -355,12 +355,12 @@ export class SeismoWaveBuffer {
       const j = Math.round((t - c.firstSampleMs) / c.msPerSample)
       if (j < 0 || j >= c.gal[0].length) continue
       if (Math.abs(c.firstSampleMs + j * c.msPerSample - t) > c.msPerSample / 2) continue
-      const ns = c.gal[0][j]
-      const ew = c.gal[1][j]
+      const ew = c.gal[0][j]
+      const ns = c.gal[1][j]
       const ud = c.gal[2][j]
-      if (!Number.isFinite(ns) || !Number.isFinite(ew) || !Number.isFinite(ud)) continue
-      slots.gal[0][slot] = ns
-      slots.gal[1][slot] = ew
+      if (!Number.isFinite(ew) || !Number.isFinite(ns) || !Number.isFinite(ud)) continue
+      slots.gal[0][slot] = ew
+      slots.gal[1][slot] = ns
       slots.gal[2][slot] = ud
       slots.memberCount[slot] = c.memberCount[j]
       filled += 1
@@ -438,25 +438,25 @@ export class SeismoWaveBuffer {
     const dt = this.msPerSample
     const oldestMs = slots.timeMs[this.oldestSlot(slots)]
     // **新しい順に並べる**（最も古いサンプルの手前から後ろ向きに置くため）。
-    const samples: { t: number; ns: number; ew: number; ud: number; members: number }[] = []
+    const samples: { t: number; ew: number; ns: number; ud: number; members: number }[] = []
     for (const c of chunks) {
       if (!Number.isFinite(c.firstSampleMs) || !(c.msPerSample > 0)) continue
       if (Math.abs(c.msPerSample - dt) / dt > SAMPLE_INTERVAL_TOLERANCE) continue
       for (let j = 0; j < c.gal[0].length; j += 1) {
         const t = c.firstSampleMs + j * c.msPerSample
         if (t >= oldestMs - dt / 2) break
-        samples.push({ t, ns: c.gal[0][j], ew: c.gal[1][j], ud: c.gal[2][j], members: c.memberCount[j] })
+        samples.push({ t, ew: c.gal[0][j], ns: c.gal[1][j], ud: c.gal[2][j], members: c.memberCount[j] })
       }
     }
     samples.sort((a, b) => b.t - a.t)
 
     let placed = 0
     let cursorMs = oldestMs
-    const put = (ns: number, ew: number, ud: number, members: number, t: number): boolean => {
+    const put = (ew: number, ns: number, ud: number, members: number, t: number): boolean => {
       if (this.count >= slots.capacity) return false
       const slot = (this.oldestSlot(slots) - 1 + slots.capacity) % slots.capacity
-      slots.gal[0][slot] = ns
-      slots.gal[1][slot] = ew
+      slots.gal[0][slot] = ew
+      slots.gal[1][slot] = ns
       slots.gal[2][slot] = ud
       slots.memberCount[slot] = members
       slots.timeMs[slot] = t
@@ -479,8 +479,8 @@ export class SeismoWaveBuffer {
         if (!put(NaN, NaN, NaN, 0, fromMs - k * step)) return placed
         this.gapSamples += 1
       }
-      const readable = Number.isFinite(s.ns) && Number.isFinite(s.ew) && Number.isFinite(s.ud)
-      if (!put(readable ? s.ns : NaN, readable ? s.ew : NaN, readable ? s.ud : NaN, readable ? s.members : 0, s.t)) {
+      const readable = Number.isFinite(s.ew) && Number.isFinite(s.ns) && Number.isFinite(s.ud)
+      if (!put(readable ? s.ew : NaN, readable ? s.ns : NaN, readable ? s.ud : NaN, readable ? s.members : 0, s.t)) {
         return placed
       }
       if (readable) placed += 1
@@ -568,14 +568,14 @@ export class SeismoWaveBuffer {
   /** 1 サンプルを次の場所へ置き、抱える長さを超えたぶんを押し出す。 */
   private writeSample(
     slots: WaveSlots,
-    ns: number,
     ew: number,
+    ns: number,
     ud: number,
     members: number,
     timeMs: number,
   ): void {
-    slots.gal[0][this.writeAt] = ns
-    slots.gal[1][this.writeAt] = ew
+    slots.gal[0][this.writeAt] = ew
+    slots.gal[1][this.writeAt] = ns
     slots.gal[2][this.writeAt] = ud
     slots.memberCount[this.writeAt] = members
     slots.timeMs[this.writeAt] = timeMs

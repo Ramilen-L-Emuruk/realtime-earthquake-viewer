@@ -345,12 +345,12 @@ function readGal(
   value: unknown,
 ): readonly [readonly number[], readonly number[], readonly number[]] | null {
   if (!Array.isArray(value) || value.length !== 3) return null
-  const ns = readFiniteArray(value[0])
-  const ew = readFiniteArray(value[1])
+  const ew = readFiniteArray(value[0])
+  const ns = readFiniteArray(value[1])
   const ud = readFiniteArray(value[2])
-  if (ns === null || ew === null || ud === null) return null
-  if (ns.length !== ew.length || ns.length !== ud.length) return null
-  return [ns, ew, ud]
+  if (ew === null || ns === null || ud === null) return null
+  if (ew.length !== ns.length || ew.length !== ud.length) return null
+  return [ew, ns, ud]
 }
 
 /**

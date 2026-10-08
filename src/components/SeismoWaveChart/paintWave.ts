@@ -26,7 +26,14 @@ import type { TimeTick } from './timeTicks'
  * → `gl/psWaveStyle.ts`）から離れていれば足りる。
  */
 export const AXIS_COLORS = ['#4ade80', '#e879f9', '#facc15'] as const
-export const AXIS_LABELS = ['南北', '東西', '上下'] as const
+
+/**
+ * 3 成分の名前。**並びはホストが送ってくる `gal` の並び（東・北・上）に合わせる。**
+ * ホストは補正の後の波形を共通座標 ENU（X＝東・Y＝北・Z＝上）で出す
+ * （`seismo-host/README.md`「共通座標は ENU」）。**こちらで並べ替えない** —— 受け取る口で
+ * 入れ替えると、口が増えるたびに入れ替え忘れの経路ができる。
+ */
+export const AXIS_LABELS = ['東西', '南北', '上下'] as const
 
 /**
  * 2D コンテキストを取れなかったことの記録を間引く枠。
@@ -75,7 +82,7 @@ export interface PaintOptions {
    */
   readonly marks?: readonly WaveMark[]
   /**
-   * 描く向き（南北・東西・上下の順）。**渡さなければ 3 本とも描く。**
+   * 描く向き（東西・南北・上下の順）。**渡さなければ 3 本とも描く。**
    *
    * **縦の目盛りは呼び出し側が同じ指定で決める** —— ここで線を間引くだけだと、
    * 大きい成分を消しても振れ幅の分母がそのままで、残りが潰れたままになる。

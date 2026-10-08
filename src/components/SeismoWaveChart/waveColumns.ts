@@ -70,7 +70,7 @@ export function buildWaveColumns(params: {
   spanMs: number
   minScaleGal: number
   /**
-   * 振れ幅に数える向き（南北・東西・上下の順）。**省略すれば 3 成分すべて。**
+   * 振れ幅に数える向き（東西・南北・上下の順）。**省略すれば 3 成分すべて。**
    *
    * **消した向きを分母から外す**（読み返し側の `foldHistoryColumns` と揃える）——
    * 外さないと、いちばん大きい成分を消しても残りが潰れたままになる。
@@ -96,12 +96,12 @@ export function buildWaveColumns(params: {
   const leftMs = lastMs - spanMs
 
   for (let i = 0; i < count; i += 1) {
-    const ns = win.gal[0][i]
-    const ew = win.gal[1][i]
+    const ew = win.gal[0][i]
+    const ns = win.gal[1][i]
     const ud = win.gal[2][i]
     // **1 成分でも読めなければ、そのサンプルは無かったことにする。** 届かなかった
     // 区間は 3 成分そろって `NaN` で入るので、通常はここで 3 つとも落ちる。
-    if (!Number.isFinite(ns) || !Number.isFinite(ew) || !Number.isFinite(ud)) continue
+    if (!Number.isFinite(ew) || !Number.isFinite(ns) || !Number.isFinite(ud)) continue
 
     const t = win.firstSampleMs + i * win.msPerSample
     // **右端を含める。** 素直に割ると最後のサンプルだけが `columnCount` 番目
@@ -113,15 +113,15 @@ export function buildWaveColumns(params: {
     const m = win.memberCount[i]
     if (filled[c] === 0) {
       filled[c] = 1
-      mins[0][c] = ns; maxs[0][c] = ns
-      mins[1][c] = ew; maxs[1][c] = ew
+      mins[0][c] = ew; maxs[0][c] = ew
+      mins[1][c] = ns; maxs[1][c] = ns
       mins[2][c] = ud; maxs[2][c] = ud
       members[c] = m
     } else {
-      if (ns < mins[0][c]) mins[0][c] = ns
-      if (ns > maxs[0][c]) maxs[0][c] = ns
-      if (ew < mins[1][c]) mins[1][c] = ew
-      if (ew > maxs[1][c]) maxs[1][c] = ew
+      if (ew < mins[0][c]) mins[0][c] = ew
+      if (ew > maxs[0][c]) maxs[0][c] = ew
+      if (ns < mins[1][c]) mins[1][c] = ns
+      if (ns > maxs[1][c]) maxs[1][c] = ns
       if (ud < mins[2][c]) mins[2][c] = ud
       if (ud > maxs[2][c]) maxs[2][c] = ud
       // **いちばん少ない本数を採る。** 裏付けが 1 本まで落ちた瞬間が列の中に

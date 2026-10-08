@@ -132,11 +132,11 @@ export function appendWaveWindow(params: {
   const added = new Map<number, { min: [number, number, number]; max: [number, number, number]; members: number }>()
 
   for (let i = 0; i < count; i += 1) {
-    const ns = win.gal[0][i]
-    const ew = win.gal[1][i]
+    const ew = win.gal[0][i]
+    const ns = win.gal[1][i]
     const ud = win.gal[2][i]
     // **1 成分でも読めなければ、そのサンプルは無かったことにする**（`waveColumns.ts` と同じ）。
-    if (!Number.isFinite(ns) || !Number.isFinite(ew) || !Number.isFinite(ud)) continue
+    if (!Number.isFinite(ew) || !Number.isFinite(ns) || !Number.isFinite(ud)) continue
 
     const t = win.firstSampleMs + i * win.msPerSample
     const c = Math.floor((t - base.fromMs) / span)
@@ -145,13 +145,13 @@ export function appendWaveWindow(params: {
     const m = win.memberCount[i]
     const cur = added.get(c)
     if (cur === undefined) {
-      added.set(c, { min: [ns, ew, ud], max: [ns, ew, ud], members: m })
+      added.set(c, { min: [ew, ns, ud], max: [ew, ns, ud], members: m })
       continue
     }
-    if (ns < cur.min[0]) cur.min[0] = ns
-    if (ns > cur.max[0]) cur.max[0] = ns
-    if (ew < cur.min[1]) cur.min[1] = ew
-    if (ew > cur.max[1]) cur.max[1] = ew
+    if (ew < cur.min[0]) cur.min[0] = ew
+    if (ew > cur.max[0]) cur.max[0] = ew
+    if (ns < cur.min[1]) cur.min[1] = ns
+    if (ns > cur.max[1]) cur.max[1] = ns
     if (ud < cur.min[2]) cur.min[2] = ud
     if (ud > cur.max[2]) cur.max[2] = ud
     // **いちばん少ない本数を採る**（裏付けが落ちた瞬間を見落とさない）。

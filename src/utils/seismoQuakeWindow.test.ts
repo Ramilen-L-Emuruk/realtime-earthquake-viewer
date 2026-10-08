@@ -155,7 +155,7 @@ describe('selectQuakeWindow', () => {
 })
 
 describe('measureNoiseBand', () => {
-  /** 成分ごとに振れの大きさを変えた列（南北 v・東西 v・上下 1.5v）。 */
+  /** 成分ごとに振れの大きさを変えた列（東西 v・南北 v・上下 1.5v）。 */
   function axisColumns(
     fromSec: number,
     toSec: number,

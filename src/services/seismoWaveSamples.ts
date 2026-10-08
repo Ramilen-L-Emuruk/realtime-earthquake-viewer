@@ -89,17 +89,17 @@ export function readWaveSamples(parsed: unknown): { value: WaveSamples } | { det
     if (typeof msPerSample !== 'number' || !(msPerSample > 0)) return { detail: 'msPerSample を読めない' }
     const gal = arr(c.gal)
     if (gal.length !== 3) return { detail: 'gal が 3 成分ではない' }
-    const ns = readAxis(gal[0])
-    const ew = readAxis(gal[1])
+    const ew = readAxis(gal[0])
+    const ns = readAxis(gal[1])
     const ud = readAxis(gal[2])
-    if (ns === null || ew === null || ud === null) return { detail: 'gal を読めない' }
-    if (ns.length !== ew.length || ns.length !== ud.length) return { detail: 'gal の成分の長さが揃っていない' }
+    if (ew === null || ns === null || ud === null) return { detail: 'gal を読めない' }
+    if (ew.length !== ns.length || ew.length !== ud.length) return { detail: 'gal の成分の長さが揃っていない' }
     // **本数も値と同じ規則で読む**（`null` は 0、数でなければ応答ごと捨てる）。長さがずれたまま置くと、
     // 別のサンプルの本数を見せることになる。
     const members = readAxis(c.memberCount)
-    if (members === null || members.length !== ns.length) return { detail: 'memberCount が gal と揃っていない' }
+    if (members === null || members.length !== ew.length) return { detail: 'memberCount が gal と揃っていない' }
     for (let i = 0; i < members.length; i += 1) if (Number.isNaN(members[i])) members[i] = 0
-    chunks.push({ firstSampleMs, msPerSample, gal: [ns, ew, ud], memberCount: members })
+    chunks.push({ firstSampleMs, msPerSample, gal: [ew, ns, ud], memberCount: members })
   }
   return {
     value: {

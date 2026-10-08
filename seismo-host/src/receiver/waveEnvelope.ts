@@ -90,12 +90,12 @@ export function buildWaveEnvelope(params: {
   for (const chunk of chunks) {
     const count = chunk.gal[0].length
     for (let i = 0; i < count; i += 1) {
-      const ns = chunk.gal[0][i]
-      const ew = chunk.gal[1][i]
+      const ew = chunk.gal[0][i]
+      const ns = chunk.gal[1][i]
       const ud = chunk.gal[2][i]
       // **1 成分でも読めなければ、そのサンプルは無かったことにする。** 届かなかった
       // 区間は 3 成分そろって読めない形で入る。
-      if (!Number.isFinite(ns) || !Number.isFinite(ew) || !Number.isFinite(ud)) continue
+      if (!Number.isFinite(ew) || !Number.isFinite(ns) || !Number.isFinite(ud)) continue
 
       const t = chunk.firstSampleMs + i * chunk.msPerSample
       if (t < fromMs || t > toMs) continue
@@ -106,18 +106,18 @@ export function buildWaveEnvelope(params: {
       const m = chunk.memberCount[i]
       if (filled[c] === 0) {
         filled[c] = 1
-        mins[0][c] = ns
-        maxs[0][c] = ns
-        mins[1][c] = ew
-        maxs[1][c] = ew
+        mins[0][c] = ew
+        maxs[0][c] = ew
+        mins[1][c] = ns
+        maxs[1][c] = ns
         mins[2][c] = ud
         maxs[2][c] = ud
         members[c] = m
       } else {
-        if (ns < mins[0][c]) mins[0][c] = ns
-        if (ns > maxs[0][c]) maxs[0][c] = ns
-        if (ew < mins[1][c]) mins[1][c] = ew
-        if (ew > maxs[1][c]) maxs[1][c] = ew
+        if (ew < mins[0][c]) mins[0][c] = ew
+        if (ew > maxs[0][c]) maxs[0][c] = ew
+        if (ns < mins[1][c]) mins[1][c] = ns
+        if (ns > maxs[1][c]) maxs[1][c] = ns
         if (ud < mins[2][c]) mins[2][c] = ud
         if (ud > maxs[2][c]) maxs[2][c] = ud
         if (m < members[c]) members[c] = m
