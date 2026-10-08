@@ -12,15 +12,15 @@ const MS = 10
 const FIRST = 1000
 
 function win(
-  ns: readonly number[],
-  ew: readonly number[] = ns.map(() => 0),
-  ud: readonly number[] = ns.map(() => 0),
-  memberCount: readonly number[] = ns.map(() => 3),
+  ew: readonly number[],
+  ns: readonly number[] = ew.map(() => 0),
+  ud: readonly number[] = ew.map(() => 0),
+  memberCount: readonly number[] = ew.map(() => 3),
 ): SeismoWaveWindow {
   return {
     firstSampleMs: FIRST,
     msPerSample: MS,
-    gal: [new Float32Array(ns), new Float32Array(ew), new Float32Array(ud)],
+    gal: [new Float32Array(ew), new Float32Array(ns), new Float32Array(ud)],
     memberCount: new Float32Array(memberCount),
   }
 }

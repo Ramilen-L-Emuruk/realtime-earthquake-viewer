@@ -31,7 +31,7 @@ export function foldHistoryColumns(params: {
   columnCount: number
   minScaleGal: number
   /**
-   * 振れ幅に数える向き（南北・東西・上下の順）。**省略すれば 3 成分すべて。**
+   * 振れ幅に数える向き（東西・南北・上下の順）。**省略すれば 3 成分すべて。**
    *
    * **消した向きを分母から外す。** 外さないと、いちばん大きい成分を消しても
    * 残りが潰れたままで、消した意味がなくなる。

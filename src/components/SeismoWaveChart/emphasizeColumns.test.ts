@@ -44,7 +44,7 @@ describe('emphasizeColumns', () => {
   })
 
   test('どの成分も超えていなければ、いちばん近かった成分の幅を出す', () => {
-    // 上下は 1.9/2.0（差 −0.1）、南北は 0.5/1.3（差 −0.8）→ 上下を採る
+    // 上下は 1.9/2.0（差 −0.1）、東西は 0.5/1.3（差 −0.8）→ 上下を採る
     const r = emphasizeColumns({ folded: folded([col([-0.5, -0.5, -1.9], [0.5, 0.5, 1.9])]), noise })
     expect(r.scaleLabel).toBe('±2.0〜±2.5 gal')
   })

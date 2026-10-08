@@ -345,7 +345,7 @@ export function columnsSpan(columns: TimedColumns): { readonly fromMs: number; r
  */
 export const NOISE_WIDTH_RATIO = 1.5
 
-/** 平常時のノイズの帯（南北・東西・上下の順）。 */
+/** 平常時のノイズの帯（東西・南北・上下の順）。 */
 export interface NoiseBand {
   /** 帯の中心（gal）。**合成波形は直流を引いてあるので、ふつうは 0 近く。** */
   readonly center: readonly [number, number, number]
