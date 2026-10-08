@@ -96,6 +96,7 @@ const SUMMARY_OK: WaveSummaryKeeperStatus = {
   pending: 0,
   built: 2,
   failed: 0,
+  removed: 0,
   scanErrors: 0,
   lastError: null,
   lastBuiltHour: '2026-10-07T12',

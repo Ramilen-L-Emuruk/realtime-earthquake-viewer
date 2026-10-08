@@ -1812,6 +1812,10 @@ async function main(): Promise<void> {
     waveDir,
     summaryDir,
     run: (job) => summaryRunner.run(job),
+    // 元のファイルが無くなった要約を捨てたとき・捨てられなかったとき。捨てたほうは人が元を消したときにしか
+    // 起きない。捨てられなかったほうは消せない限り 1 分ごとに出るが、ファイルを掴まれ続けているという異常
+    // なので、黙らせずに出し続ける（`/status` の `scanErrors`・`lastError` と同じ事実）。
+    log: (line) => console.log(line),
   })
   summaryKeeper.start(60_000, 30_000)
   // 保存した波形の読み返し（`GET /api/records/*`）。チャンネルの一覧は要約の置き場所から作り、名乗りを控える。

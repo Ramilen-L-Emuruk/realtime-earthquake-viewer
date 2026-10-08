@@ -93,6 +93,7 @@ function report(hub: ReadingHub): StatusReport {
       pending: 0,
       built: 0,
       failed: 0,
+      removed: 0,
       scanErrors: 0,
       lastError: null,
       lastBuiltHour: null,

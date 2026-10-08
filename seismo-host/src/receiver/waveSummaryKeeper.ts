@@ -12,15 +12,26 @@
 //   いまの時を拾い直せるように**
 // - 作れなかったものは `failureRetryMs` 待ってから作り直す（読めないファイルを毎分叩き続けない）
 // - 見回りが重なったら後のほうは何もしない（前の見回りがまだ作っている）
+//
+// **元のファイルが消えた要約は捨てる**（2026-10-08 ユーザー承認）。人が元を消すのは、そのデータが要らない・
+// 誤っていると判断したとき（時計が合う前の 1970 年の合成波形を消した実例）。要約だけ残ると、管理コンソールの
+// チャンネルの一覧（要約の置き場所から作る）に元の無い時が出続ける。**捨てないのは次の 3 つのとき** ——
+// どれも「無い」のではなく「見えていない」かもしれない回で、そこで捨てると作り直せない要約まで失う。
+// - 元の一覧を作れなかった置き場所があった回
+// - 要約の置き場所を読み損ねた回
+// - その種類（生データ・合成波形）の元が 1 本も見つからなかった回（置き場所の付け替え・ドライブの外れ）
 
 import { jstHourStartMs } from './jstTime'
 import {
+  listSummaryFiles,
   listSummaryJobs,
+  removeSummaryFiles,
   sourceSizeOf,
   summarizedSourceBytes,
   type ListResult,
   type SummaryJob,
   type SummaryJobResult,
+  type SummaryListResult,
 } from './waveSummaryFiles'
 
 const CURRENT_HOUR_INTERVAL_MS_DEFAULT = 60_000
@@ -40,6 +51,10 @@ export interface WaveSummaryKeeperOptions {
   readonly list?: (dirs: { rawDir: string; waveDir: string; summaryDir: string }) => Promise<ListResult>
   readonly sizeOf?: (path: string) => Promise<number | null>
   readonly summarizedBytes?: (summaryPath: string) => Promise<number | null>
+  readonly listSummaries?: (summaryDir: string) => Promise<SummaryListResult>
+  readonly removeSummary?: (files: readonly string[]) => Promise<void>
+  /** 元の無い要約を捨てたとき・捨てられなかったときの 1 行。 */
+  readonly log?: (line: string) => void
 }
 
 /** 状態の口（`/status`）へ出すもの。 */
@@ -55,7 +70,9 @@ export interface WaveSummaryKeeperStatus {
   readonly built: number
   /** 作れなかった回数の累計。**0 でなければ `lastError` を見ること。** */
   readonly failed: number
-  /** 一覧を作れなかった・大きさを読めなかった回数の累計。 */
+  /** 元のファイルが消えたので捨てた要約の累計（名前の元の数）。 */
+  readonly removed: number
+  /** 一覧を作れなかった・大きさを読めなかった・元の消えた要約を捨てられなかった回数の累計。 */
   readonly scanErrors: number
   readonly lastError: string | null
   /** 直近に作った要約の時（`YYYY-MM-DDTHH`）と、作るのにかかった時間。 */
@@ -76,6 +93,8 @@ export class WaveSummaryKeeper {
   private readonly list: NonNullable<WaveSummaryKeeperOptions['list']>
   private readonly sizeOf: NonNullable<WaveSummaryKeeperOptions['sizeOf']>
   private readonly summarizedBytes: NonNullable<WaveSummaryKeeperOptions['summarizedBytes']>
+  private readonly listSummaries: NonNullable<WaveSummaryKeeperOptions['listSummaries']>
+  private readonly removeSummary: NonNullable<WaveSummaryKeeperOptions['removeSummary']>
   /** 要約が控えている元のファイルの大きさ（読んだもの・作ったもの）。`null` は「要約が無い」。 */
   private readonly known = new Map<string, number | null>()
   private readonly builtAt = new Map<string, number>()
@@ -88,6 +107,7 @@ export class WaveSummaryKeeper {
   private pending = 0
   private built = 0
   private failed = 0
+  private removed = 0
   private scanErrors = 0
   private lastError: string | null = null
   private lastBuiltHour: string | null = null
@@ -100,6 +120,8 @@ export class WaveSummaryKeeper {
     this.list = options.list ?? listSummaryJobs
     this.sizeOf = options.sizeOf ?? sourceSizeOf
     this.summarizedBytes = options.summarizedBytes ?? summarizedSourceBytes
+    this.listSummaries = options.listSummaries ?? listSummaryFiles
+    this.removeSummary = options.removeSummary ?? removeSummaryFiles
   }
 
   /** `intervalMs` ごとに見回る。最初の見回りは `firstDelayMs` 後（起動直後の忙しさを避ける）。 */
@@ -126,6 +148,7 @@ export class WaveSummaryKeeper {
       pending: this.pending,
       built: this.built,
       failed: this.failed,
+      removed: this.removed,
       scanErrors: this.scanErrors,
       lastError: this.lastError,
       lastBuiltHour: this.lastBuiltHour,
@@ -194,6 +217,7 @@ export class WaveSummaryKeeper {
       for (const map of [this.known, this.builtAt, this.retryAt]) {
         for (const path of map.keys()) if (!seen.has(path)) map.delete(path)
       }
+      await this.removeOrphans(listed.jobs, seen)
     }
 
     const due = stale.filter(({ job }) => {
@@ -233,5 +257,44 @@ export class WaveSummaryKeeper {
     this.sources = sources
     this.upToDate = upToDate + done
     this.pending = stale.length - done
+  }
+
+  /**
+   * 元のファイルが消えた要約を捨てる（冒頭の「元のファイルが消えた要約は捨てる」）。呼ぶのは元の一覧を
+   * 作れた回だけ。`seen` は大きさを確かめられた元（読み損ねたものも含む）の要約の名前。
+   */
+  private async removeOrphans(jobs: readonly SummaryJob[], seen: ReadonlySet<string>): Promise<void> {
+    // **投げない。** 捨てる側の取り違えで、同じ回の要約作り（主の仕事）まで止めない。
+    let listed: SummaryListResult
+    try {
+      listed = await this.listSummaries(this.opts.summaryDir)
+    } catch (error) {
+      this.scanErrors += 1
+      this.lastError = `要約の置き場所を数え上げられず: ${messageOf(error)}`
+      return
+    }
+    if (listed.errors.length > 0) {
+      this.scanErrors += listed.errors.length
+      this.lastError = listed.errors[0]!
+      return
+    }
+    // **その種類の元が 1 本も無い回は、その種類を捨てない**（置き場所の付け替え・ドライブの外れで全部を失わない）。
+    const kindsWithSource = new Set(jobs.map((j) => j.kind))
+    for (const summary of listed.summaries) {
+      if (seen.has(summary.summaryPath) || !kindsWithSource.has(summary.kind)) continue
+      try {
+        await this.removeSummary(summary.files)
+      } catch (error) {
+        // ファイルを消す操作の失敗なので、状態の口だけでなくログにも出す（`lastError` は後の失敗で上書きされうる）。
+        // 消せない限り次の見回りでもまた試すので、同じ要約の行は 1 分ごとに出る。
+        const message = `${summary.summaryPath} の要約を捨てられず: ${messageOf(error)}`
+        this.scanErrors += 1
+        this.lastError = message
+        this.opts.log?.(`[summary] ${message}`)
+        continue
+      }
+      this.removed += 1
+      this.opts.log?.(`[summary] 元のファイルが無くなった要約を捨てた: ${summary.summaryPath}`)
+    }
   }
 }

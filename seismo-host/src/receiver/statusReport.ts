@@ -326,7 +326,8 @@ export interface StatusReport {
   /**
    * 保存した波形の要約（管理コンソールで長い期間を俯瞰するためのもの）。**`failed` と `scanErrors` が 0 で
    * `pending` が減っていけば正常。** 初めて動かしたときは過去の分を作るので、しばらく `pending` が大きい。
-   * `lastScanAtMs` が null のままなら、まだ一度も見回っていない。
+   * `lastScanAtMs` が null のままなら、まだ一度も見回っていない。`removed`（元が消えて捨てた要約の累計）は
+   * 人が元を消したときに増えるもので、増えること自体は異常ではない。
    */
   readonly waveSummary: WaveSummaryKeeperStatus
   /**
