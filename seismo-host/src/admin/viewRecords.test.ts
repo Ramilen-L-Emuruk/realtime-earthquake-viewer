@@ -99,7 +99,7 @@ describe('initRecordsView', () => {
     const views = envelopes.filter((u) => u.includes(`from=${H0}`) && u.includes(`to=${H0 + HOUR}`))
     expect(views.map((u) => new URLSearchParams(u.split('?')[1]).get('channel'))).toEqual(['station/home/X', 'station/home/Y', 'station/home/Z'])
     // 範囲が 10 分を超えるので、合成と震度の段は文言だけ
-    expect(root.textContent).toContain('3 軸の合成は 10 分以内まで寄せると出る')
+    expect(root.textContent).toContain('合成は 10 分以内まで寄せると出る')
     expect(root.textContent).toContain('震度の推移は 10 分以内まで寄せると出る')
     // 要約の不調の行
     expect(root.querySelector('.records-note')!.textContent).toContain('要約がまだ無い時が 2')
@@ -169,9 +169,22 @@ describe('initRecordsView', () => {
         return { status: 200, body: { sensors: [], unreadable: { items: [], truncated: false, cappedHours: 0 }, unreadableLogs: 0, hours: { ok: 0, stale: 0, pending: 3, failed: 0, absent: 0 } } }
       }
       if (url.startsWith('/api/records/quakes')) {
-        return { status: 200, body: { off: false, located: true, quakes: [], failedDays: ['2026-10-06'], unreadable: 0, problem: 'P2PQuake: HTTP 503' } }
+        return {
+          status: 200,
+          body: {
+            off: false,
+            located: true,
+            quakes: [],
+            failedDays: ['2026-10-06'],
+            unreadable: 0,
+            problem: 'P2PQuake: HTTP 503',
+            refineFailedDays: { hypocenter: ['2026-10-05'], eew: [] },
+          },
+        }
       }
-      if (url.startsWith('/events')) return { status: 200, body: { events: [], truncated: true, coveredFromMs: H0 } }
+      if (url.startsWith('/events')) {
+        return { status: 200, body: { events: [{ id: 'broken' }], truncated: true, coveredFromMs: H0, unreadableFiles: ['2026-10/x.json'] } }
+      }
       return { status: 404, body: { error: 'not-found' } }
     }
     const root = document.createElement('div')
@@ -185,8 +198,11 @@ describe('initRecordsView', () => {
     const note = root.querySelector('.records-marks-note')!.textContent!
     expect(note).toContain('受信の帯は、いまこの観測点に割り当てている基板のもの')
     expect(note).toContain('受信の記録の要約がまだ無い時が 3（作り終えると出る）')
-    expect(note).toContain('地震一覧を取れていない日がある（10/06）')
+    expect(note).toContain('地震一覧を取れていない日がある（10/06。P2PQuake: HTTP 503）')
+    expect(note).toContain('発生時刻を秒まで寄せる材料を取れていない日がある（震源リスト: 10/05）')
     expect(note).toContain('揺れの記録が多く、新しい 500 件だけ印を付けている')
+    // 形の違う記録 1 件と、ホストが読めなかったファイル 1 本
+    expect(note).toContain('読めなかった揺れの記録が 2 件ある')
     // 1 時間の範囲は 10 分を超えるので、波形の下の線の凡例は出さない
     expect(root.querySelector('.records-marks-legend')!.textContent).not.toContain('波形の下の線')
   })
@@ -198,7 +214,12 @@ describe('initRecordsView', () => {
       if (url.startsWith('/api/records/reception')) {
         return { status: 200, body: { sensors: [], unreadable: { items: [], truncated: false, cappedHours: 0 }, unreadableLogs: 0, hours: { ok: 1, stale: 0, pending: 0, failed: 0, absent: 0 } } }
       }
-      if (url.startsWith('/api/records/quakes')) return { status: 200, body: { off: false, located: false, quakes: [], failedDays: [], unreadable: 0, problem: null } }
+      if (url.startsWith('/api/records/quakes')) {
+        return {
+          status: 200,
+          body: { off: false, located: false, quakes: [], failedDays: [], unreadable: 0, problem: null, refineFailedDays: { hypocenter: [], eew: [] } },
+        }
+      }
       return { status: 404, body: { error: 'not-found' } }
     }
     const root = document.createElement('div')

@@ -1,7 +1,7 @@
 // 「波形の記録」タブ（`/api/records/*` の読み返し。当て方は `recordsPlot.ts`）。
 // **宛先は運用者。** 画面の作りと文言は 2026-10-07 ユーザー承認。
 //
-// - **上から**: 記録の選択と期間 → 全体の帯（押すとその時刻へ寄る） → 範囲の操作 → 3 軸の合成 → 軸ごとの段 →
+// - **上から**: 記録の選択と期間 → 全体の帯（押すとその時刻へ寄る） → 範囲の操作 → 軸の合成 → 軸ごとの段 →
 //   リアルタイム震度の推移 → 指した所の値・欠けの凡例・状態の行
 // - **取り方**: 範囲が 10 分以内なら軸ごとの生のサンプル（寄せきれば 1 サンプルずつの点を結んだ線）、
 //   それより広ければ画面の幅ぶんの列（1 分か 1 秒の要約）。**操作の最中は取り直さず、止まってから取る**
@@ -39,6 +39,8 @@ import {
   arrivalMark,
   originUnderline,
   quakeFailedDaysText,
+  refineFailedDaysText,
+  shakeUnreadableText,
   quakeFailureText,
   quakeReadout,
   quakesAt,
@@ -111,6 +113,7 @@ import {
   centerAt,
   compositeRuns,
   fetchFailureText,
+  fullSpanMs,
   groupChannels,
   intensityHeader,
   overviewRange,
@@ -262,12 +265,19 @@ interface MarksState {
   quakeFailure: string | null
   shakes: readonly ShakeRecordView[]
   shakesTruncated: boolean
+  /** 読めなかった揺れの記録の数（ホストが読めなかったファイル・この画面が読めない形の記録）。 */
+  shakesUnreadable: number
   /** 受信・揺れの記録を取れなかった理由（気象庁は `quakeFailure`）。 */
   failure: string | null
 }
 
 interface OverviewLoaded {
   readonly groupKey: string
+  /**
+   * 取ったときの単位。**波形の段と同じく照らしてから描く** —— 帯は列ごとに振れ幅のいちばん大きい軸を選ぶので、
+   * 軸ごとに換算の係数が違えば、単位を切り替えた直後に別の軸の形を映しうる。
+   */
+  readonly unit: 'gal' | 'native'
   readonly range: TimeRange
   readonly firstColumnMs: number
   readonly columnMs: number
@@ -938,7 +948,7 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     const prepared = prepareCanvas(overviewEl, OVERVIEW_HEIGHT)
     if (prepared === null || group === null) return
     const { ctx, width, height } = prepared
-    const ov = overview !== null && overview.groupKey === group.key ? overview : null
+    const ov = overview !== null && overview.groupKey === group.key && overview.unit === unit ? overview : null
     const r = ov?.range ?? overviewRange(group)
     ctx.strokeStyle = 'rgba(128, 128, 128, 0.45)'
     ctx.strokeRect(0.5, 0.5, width - 1, height - 1)
@@ -1033,7 +1043,7 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
       }
     })
 
-    // 3 軸の合成（生のサンプルで描くときだけ）。
+    // 見えている軸の合成（生のサンプルで描くときだけ）。
     const compositeCanvas = rowsEl.querySelector<HTMLCanvasElement>('canvas.records-composite')
     if (compositeCanvas !== null) {
       const peakEl = rowsEl.querySelector<HTMLElement>('.records-composite-peak')
@@ -1228,10 +1238,14 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
       else if (m.quakeState === 'failed') marksNotes.push(quakeFailureText(m.quakeFailure ?? ''))
       if (m.quakeState !== 'too-wide' && m.quakes !== null) {
         if (m.quakes.off) marksNotes.push(QUAKE_OFF_TEXT)
-        else if (m.quakes.failedDays.length > 0) marksNotes.push(quakeFailedDaysText(m.quakes.failedDays))
+        else if (m.quakes.failedDays.length > 0) marksNotes.push(quakeFailedDaysText(m.quakes.failedDays, m.quakes.problem))
+        const refine = m.quakes.off ? null : refineFailedDaysText(m.quakes.refineFailedDays)
+        if (refine !== null) marksNotes.push(refine)
       }
       if (m.quakeState !== 'too-wide' && group.kind === 'raw' && group.stationId === null) marksNotes.push(QUAKE_UNLOCATED_TEXT)
       if (m.shakesTruncated) marksNotes.push(SHAKE_TRUNCATED_TEXT)
+      const shakeUnreadable = shakeUnreadableText(m.shakesUnreadable)
+      if (shakeUnreadable !== null) marksNotes.push(shakeUnreadable)
     }
     marksNoteEl.textContent = marksNotes.join('\n')
 
@@ -1280,7 +1294,7 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     // 全体・1 週・1 日・6 時間・1 時間がまとめて押された見た目になる）。
     for (const b of spansEl.querySelectorAll<HTMLButtonElement>('button[data-span-index]')) {
       const choice = SPAN_CHOICES[Number(b.dataset.spanIndex)]!
-      const target = choice.ms ?? bounds.toMs - bounds.fromMs
+      const target = choice.ms ?? fullSpanMs(bounds)
       b.setAttribute('aria-pressed', String(Math.abs(span - target) < 1))
     }
   }
@@ -1367,12 +1381,13 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     const controller = new AbortController()
     overviewController = controller
     const g = group
+    const u = unit
     const r = overviewRange(g)
-    const columns = Math.max(1, Math.min(4096, Math.floor(overviewEl.clientWidth) || 800))
+    const columns = Math.max(1, Math.min(COLUMNS_MAX, Math.floor(overviewEl.clientWidth) || 800))
     try {
       const envelopes = await Promise.all(
         g.axes.map(async (a) => {
-          const body = await apiFetch<unknown>(recordsUrl('envelope', { channel: a.id, from: r.fromMs, to: r.toMs, columns, unit }), {
+          const body = await apiFetch<unknown>(recordsUrl('envelope', { channel: a.id, from: r.fromMs, to: r.toMs, columns, unit: u }), {
             signal: controller.signal,
           })
           const e = readEnvelopeData(body)
@@ -1382,7 +1397,7 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
       )
       if (controller.signal.aborted || signal.aborted) return
       const spread = overviewSpread(envelopes as EnvelopeData[])
-      overview = spread === null ? null : { groupKey: g.key, range: r, ...spread }
+      overview = spread === null ? null : { groupKey: g.key, unit: u, range: r, ...spread }
     } catch (error) {
       if (isAbort(error) || controller.signal.aborted || signal.aborted) return
       failure = failureReason(error)
@@ -1413,6 +1428,7 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
       quakeFailure: null,
       shakes: prev?.shakes ?? [],
       shakesTruncated: prev?.shakesTruncated ?? false,
+      shakesUnreadable: prev?.shakesUnreadable ?? 0,
       failure: null,
     }
     marks = m
@@ -1459,6 +1475,7 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     if (g.stationId === null) {
       m.shakes = []
       m.shakesTruncated = false
+      m.shakesUnreadable = 0
     } else {
       const stationId = g.stationId
       void (async () => {
@@ -1471,6 +1488,8 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
           if (stale()) return
           m.shakes = sv.events
           m.shakesTruncated = sv.truncated
+          // **範囲ごとに読み直すので、その応答の分だけ数える**（揺れの記録タブのように積み上げない）。
+          m.shakesUnreadable = sv.marks.length
         } catch (error) {
           fail(error)
         }
@@ -1542,6 +1561,11 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
   // ---- 記録を選ぶ ----
 
   const selectGroup = (key: string): void => {
+    // 範囲を動かした直後の取り直しの予約は捨てる（下で新しい記録をすぐ取るので、残すと同じ取得が 2 回走る）。
+    if (reloadTimer !== null) {
+      clearTimeout(reloadTimer)
+      reloadTimer = null
+    }
     group = groups.find((g) => g.key === key) ?? null
     hidden = new Set()
     loaded = null

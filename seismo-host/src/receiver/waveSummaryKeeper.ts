@@ -162,6 +162,7 @@ export class WaveSummaryKeeper {
     const nowMs = this.now()
     const currentHour = jstHourStartMs(nowMs)
     const stale: { job: SummaryJob; size: number }[] = []
+    const seen = new Set<string>()
     let upToDate = 0
     let sources = 0
     for (const job of listed.jobs) {
@@ -169,12 +170,14 @@ export class WaveSummaryKeeper {
       try {
         size = await this.sizeOf(job.sourcePath)
       } catch (error) {
+        seen.add(job.summaryPath)
         this.scanErrors += 1
         this.lastError = `${job.sourcePath} の大きさを読めず: ${messageOf(error)}`
         continue
       }
       // 数え上げた後に消えた（人が消した）。
       if (size === null) continue
+      seen.add(job.summaryPath)
       sources += 1
       let known = this.known.get(job.summaryPath)
       if (known === undefined) {
@@ -183,6 +186,14 @@ export class WaveSummaryKeeper {
       }
       if (known === size) upToDate += 1
       else stale.push({ job, size })
+    }
+
+    // **元のファイルが消えた分の控えは捨てる**（人が古い生データを消すと、控えだけが動いている間ずっと残る）。
+    // 一覧を作れなかった置き場所があった回は捨てない —— そこにあるファイルは「消えた」のではなく見えていないだけ。
+    if (listed.errors.length === 0) {
+      for (const map of [this.known, this.builtAt, this.retryAt]) {
+        for (const path of map.keys()) if (!seen.has(path)) map.delete(path)
+      }
     }
 
     const due = stale.filter(({ job }) => {

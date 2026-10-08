@@ -169,6 +169,41 @@ describe('RecordQuakes', () => {
     const r = await make(fake).list(Q1 - 3_600_000, Q1 + 3_600_000)
     expect(fake.urls.some((u) => u.includes('dmdata'))).toBe(false)
     expect(r.quakes[0]).toMatchObject({ originSource: 'quake-info', originPrecisionMs: 60_000 })
+    // 取りに行っていないので「取れなかった」でもない
+    expect(r.refineFailedDays).toEqual({ hypocenter: [], eew: [] })
+  })
+
+  it('震源リストが取れなければ（404 以外）その日を秒の材料の「取れなかった日」に返し、待っている間も返す', async () => {
+    nowMs = D1 + 5 * DAY
+    const fake = fakeGet((url) =>
+      url.startsWith('https://api.p2pquake.net/') ? { status: 200, body: JSON.stringify([p2pItem(Q1)]) } : { status: 500, body: '' },
+    )
+    const rq = make(fake)
+    const r = await rq.list(D1, D1 + DAY)
+    expect(r.quakes[0]!.originSource).toBe('quake-info')
+    expect(r.refineFailedDays).toEqual({ hypocenter: ['2026-10-01'], eew: [] })
+    // 地震情報は取れているので、こちらの「取れなかった日」には混ぜない
+    expect(r.failedDays).toEqual([])
+    fake.urls.length = 0
+    nowMs += 60_000
+    const again = await rq.list(D1, D1 + DAY)
+    expect(fake.urls.filter((u) => u.includes('daily_map'))).toEqual([])
+    expect(again.refineFailedDays.hypocenter).toEqual(['2026-10-01'])
+  })
+
+  it('緊急地震速報の一覧が取れなければ、その日を秒の材料の「取れなかった日」に返す', async () => {
+    nowMs = Q1 + 3 * 3_600_000
+    const fake = fakeGet((url) => {
+      if (url.startsWith('https://api.p2pquake.net/')) return { status: 200, body: JSON.stringify([p2pItem(Q1)]) }
+      if (url.startsWith('https://api.dmdata.jp/')) return { status: 503, body: '' }
+      return { status: 404, body: '' }
+    })
+    const rq = make(fake, 'TEST-KEY')
+    const r = await rq.list(Q1 - 3_600_000, Q1 + 3_600_000)
+    expect(r.quakes[0]!.originSource).toBe('quake-info')
+    expect(r.refineFailedDays).toEqual({ hypocenter: [], eew: ['2026-10-01'] })
+    nowMs += 60_000
+    expect((await rq.list(Q1 - 3_600_000, Q1 + 3_600_000)).refineFailedDays.eew).toEqual(['2026-10-01'])
   })
 
   it('震源リストが 404（まだ載っていない）なら取れていない日にはせず、1 時間は取り直さない', async () => {
@@ -179,11 +214,14 @@ describe('RecordQuakes', () => {
     const rq = make(fake)
     const r = await rq.list(D1, D1 + DAY)
     expect(r.failedDays).toEqual([])
+    expect(r.refineFailedDays.hypocenter).toEqual([])
     expect(r.quakes[0]!.originSource).toBe('quake-info')
     fake.urls.length = 0
     nowMs += 30 * 60_000
-    await rq.list(D1, D1 + DAY)
+    const again = await rq.list(D1, D1 + DAY)
     expect(fake.urls.filter((u) => u.includes('daily_map'))).toEqual([])
+    // 待っている間も「取れなかった日」にはしない（載っていないだけ）
+    expect(again.refineFailedDays.hypocenter).toEqual([])
   })
 
   it('広すぎる範囲は 1 本も投げずに断る', async () => {

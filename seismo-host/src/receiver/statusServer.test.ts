@@ -1,6 +1,6 @@
 import { request as httpRequest } from 'node:http'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { AdminAuthConfig } from './adminAuth'
 import type { IntensityReading, WaveChunk } from './intensityPipeline'
@@ -1134,6 +1134,38 @@ describe('/api/*', () => {
       const res = await fetch(`${base}/api/records/channels`, { headers: { Origin: ORIGIN } })
       expect(res.status).toBe(401)
       expect(calls).toBe(0)
+    })
+
+    it('正: 答える前に見に来た側が切ったら、読み手へ渡した signal が立つ', async () => {
+      let seen: AbortSignal | null = null
+      let release: () => void = () => {}
+      const held = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const base = await startAuthed(new ReadingHub(), {}, undefined, undefined, undefined, undefined, async (_route, _params, signal) => {
+        seen = signal
+        await held
+        return { status: 200, body: {} }
+      })
+      const client = new AbortController()
+      const pending = fetch(`${base}/api/records/channels`, { headers: authed, signal: client.signal }).catch(() => null)
+      await vi.waitFor(() => expect(seen).not.toBeNull())
+      expect(seen!.aborted).toBe(false)
+      client.abort()
+      await vi.waitFor(() => expect(seen!.aborted).toBe(true))
+      release()
+      await pending
+    })
+
+    it('対照: 書き終えた要求の signal は、繋がりが閉じても立たない', async () => {
+      let seen: AbortSignal | null = null
+      const base = await startAuthed(new ReadingHub(), {}, undefined, undefined, undefined, undefined, async (_route, _params, signal) => {
+        seen = signal
+        return { status: 200, body: { ok: true } }
+      })
+      const res = await fetch(`${base}/api/records/channels`, { headers: authed })
+      expect(await res.json()).toEqual({ ok: true })
+      expect(seen!.aborted).toBe(false)
     })
 
     it('/api/records/ だけ（後ろが空）は 404', async () => {

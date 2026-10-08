@@ -57,7 +57,7 @@ const MAX_SAMPLES_PER_CHUNK = 65535
  * ときに 1 時間遡っただけでは届かない。実際のまとまりは 0.3 秒ほどなので、
  * ここへ掛かるのは上流（合成）が壊れたときだけ。
  */
-const MAX_CHUNK_SPAN_MS = 10 * 60 * 1000
+export const MAX_CHUNK_SPAN_MS = 10 * 60 * 1000
 
 /**
  * 抱えたまま書き出せていない量の上限。**超えたら捨てる。**

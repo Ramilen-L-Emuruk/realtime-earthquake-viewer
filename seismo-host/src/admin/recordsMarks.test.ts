@@ -11,7 +11,9 @@ import {
   receptionAt,
   receptionLane,
   receptionPendingNote,
+  refineFailedDaysText,
   shakeReadout,
+  shakeUnreadableText,
   shakesAt,
   spanX,
   type QuakeMarkView,
@@ -66,15 +68,26 @@ describe('readQuakesData', () => {
       failedDays: ['2026-10-03'],
       unreadable: 0,
       problem: null,
+      refineFailedDays: { hypocenter: ['2026-10-02'], eew: [] },
     })!
     expect(d.quakes).toHaveLength(2)
     expect(d.quakes[1]!.p).toBeNull()
     expect(d.failedDays).toEqual(['2026-10-03'])
+    expect(d.refineFailedDays).toEqual({ hypocenter: ['2026-10-02'], eew: [] })
   })
 
+  const none = { hypocenter: [], eew: [] }
+
   it('取らない設定の答えも読む', () => {
-    expect(readQuakesData({ off: true, located: false, quakes: [], failedDays: [], unreadable: 0, problem: null })!.off).toBe(true)
-    expect(readQuakesData({ off: false, located: true, quakes: [{ name: 1 }], failedDays: [], unreadable: 0, problem: null })).toBeNull()
+    expect(readQuakesData({ off: true, located: false, quakes: [], failedDays: [], unreadable: 0, problem: null, refineFailedDays: none })!.off).toBe(true)
+    expect(readQuakesData({ off: false, located: true, quakes: [{ name: 1 }], failedDays: [], unreadable: 0, problem: null, refineFailedDays: none })).toBeNull()
+  })
+
+  it('秒の材料の取れなかった日が無い・形が違う答えは読めない（黙って空にすると「載っていない」と同じに見える）', () => {
+    const base = { off: false, located: true, quakes: [], failedDays: [], unreadable: 0, problem: null }
+    expect(readQuakesData(base)).toBeNull()
+    expect(readQuakesData({ ...base, refineFailedDays: { hypocenter: [1], eew: [] } })).toBeNull()
+    expect(readQuakesData({ ...base, refineFailedDays: { hypocenter: [] } })).toBeNull()
   })
 })
 
@@ -154,8 +167,25 @@ describe('カーソルの読み取り', () => {
 
 describe('文言', () => {
   it('取れなかった日・要約の無い時', () => {
-    expect(quakeFailedDaysText(['2026-10-03', '2026-10-04'])).toBe('地震一覧を取れていない日がある（10/03・10/04）')
+    expect(quakeFailedDaysText(['2026-10-03', '2026-10-04'], 'P2PQuake: HTTP 503')).toBe('地震一覧を取れていない日がある（10/03・10/04。P2PQuake: HTTP 503）')
+    // 理由が分からなければ日付だけ
+    expect(quakeFailedDaysText(['2026-10-03'], null)).toBe('地震一覧を取れていない日がある（10/03）')
     expect(receptionPendingNote(3)).toBe('受信の記録の要約がまだ無い時が 3（作り終えると出る）')
     expect(receptionPendingNote(0)).toBeNull()
+  })
+
+  it('秒の材料を取れなかった日は出どころ別に並べ、無ければ出さない', () => {
+    expect(refineFailedDaysText({ hypocenter: ['2026-10-03'], eew: ['2026-10-04'] })).toBe(
+      '発生時刻を秒まで寄せる材料を取れていない日がある（震源リスト: 10/03・緊急地震速報: 10/04）',
+    )
+    expect(refineFailedDaysText({ hypocenter: [], eew: ['2026-10-04', '2026-10-05'] })).toBe(
+      '発生時刻を秒まで寄せる材料を取れていない日がある（緊急地震速報: 10/04・10/05）',
+    )
+    expect(refineFailedDaysText({ hypocenter: [], eew: [] })).toBeNull()
+  })
+
+  it('読めなかった揺れの記録は数を出し、0 なら出さない', () => {
+    expect(shakeUnreadableText(3)).toBe('読めなかった揺れの記録が 3 件ある')
+    expect(shakeUnreadableText(0)).toBeNull()
   })
 })

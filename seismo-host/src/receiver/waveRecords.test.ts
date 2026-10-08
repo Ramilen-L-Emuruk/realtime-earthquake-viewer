@@ -29,6 +29,8 @@ import {
 import type { SummaryLevel } from './waveSummary'
 import { buildSummaryFile, rawSummaryPath, waveSummaryPath } from './waveSummaryFiles'
 
+/** 取り消されない要求（見に来た側が繋がったまま）。 */
+const OPEN = new AbortController().signal
 const H0 = Date.parse('2026-10-07T12:00:00+09:00')
 const HOUR = 3_600_000
 const KEY = 'home-0123456789ab'
@@ -260,7 +262,7 @@ describe('readSamples', () => {
       [H0, [1, 2, 3], 'live'],
     ])
     const ref = parseChannelId(HNZ)!
-    const got = await readSamples({ dirs, ref, fromMs: H0 + 10, toMs: H0 + 1030, unit: 'gal' })
+    const got = await readSamples({ dirs, signal: OPEN,ref, fromMs: H0 + 10, toMs: H0 + 1030, unit: 'gal' })
     expect(got.unit).toBe('gal')
     expect(got.runs.map((r) => [r.firstSampleMs, r.origin, r.values.length])).toEqual([
       [H0 + 10, 'live', 2],
@@ -274,10 +276,10 @@ describe('readSamples', () => {
   it('換算の係数がどこにも無い時は外して数え、native ならカウントのまま返す', async () => {
     writeRawHour(H0, [[H0, [5, 6], 'live']], null)
     const ref = parseChannelId(HNZ)!
-    const gal = await readSamples({ dirs, ref, fromMs: H0, toMs: H0 + 1000, unit: 'gal' })
+    const gal = await readSamples({ dirs, signal: OPEN,ref, fromMs: H0, toMs: H0 + 1000, unit: 'gal' })
     expect(gal.runs).toHaveLength(0)
     expect(gal.problems.unscaledHours).toBe(1)
-    const native = await readSamples({ dirs, ref, fromMs: H0, toMs: H0 + 1000, unit: 'native' })
+    const native = await readSamples({ dirs, signal: OPEN,ref, fromMs: H0, toMs: H0 + 1000, unit: 'native' })
     expect(native.unit).toBe('count')
     expect(Array.from(native.runs[0]!.values)).toEqual([5, 6])
   })
@@ -286,7 +288,7 @@ describe('readSamples', () => {
     // 2 つ目のサンプル（H0 + 10）だけを作り直した
     await writeWaveHour(H0, [[H0, [1, 2, 3]], [H0 + 10, [20], true]], false)
     const ref = parseChannelId(`station/${KEY}/Y`)!
-    const got = await readSamples({ dirs, ref, fromMs: H0 + 10, toMs: H0 + 30, unit: 'gal' })
+    const got = await readSamples({ dirs, signal: OPEN,ref, fromMs: H0 + 10, toMs: H0 + 30, unit: 'gal' })
     expect(got.runs.map((r) => [r.firstSampleMs, r.origin, Array.from(r.values)])).toEqual([
       [H0 + 10, 'revised', [20]],
       [H0 + 20, 'live', [3]],
@@ -310,12 +312,12 @@ describe('readReception', () => {
     })
     // 次の時は元のファイルだけある（要約を作る係が追いついていない）
     writeRawHour(H0 + HOUR, [[H0 + HOUR, [1], 'live']])
-    const got = await readReception({ dirs, fromMs: H0 + 6000, toMs: H0 + HOUR + 1000, sensor: null })
+    const got = await readReception({ dirs, signal: OPEN,fromMs: H0 + 6000, toMs: H0 + HOUR + 1000, sensor: null })
     expect(got.sensors).toHaveLength(1)
     expect(got.sensors[0]!.backlog).toEqual([{ fromMs: H0 + 6000, toMs: H0 + 7000 }])
     expect(got.hours).toEqual({ ok: 1, stale: 0, pending: 1, failed: 0, absent: 1 })
     // センサーで絞ると、別のセンサーは出ない
-    const other = await readReception({ dirs, fromMs: H0, toMs: H0 + HOUR, sensor: 'FDSN:XX_FFFFFFFF_S9' })
+    const other = await readReception({ dirs, signal: OPEN,fromMs: H0, toMs: H0 + HOUR, sensor: 'FDSN:XX_FFFFFFFF_S9' })
     expect(other.sensors).toEqual([])
   })
 })
@@ -324,7 +326,7 @@ describe('readSamplesEnvelope', () => {
   it('生のサンプルを列へ束ねる（列の幅は整数のミリ秒）', async () => {
     writeRawHour(H0, [[H0, [1, 3, 5, 7], 'live']])
     const ref = parseChannelId(HNZ)!
-    const got = await readSamplesEnvelope({ dirs, ref, fromMs: H0, toMs: H0 + 40, columns: 2, unit: 'native' })
+    const got = await readSamplesEnvelope({ dirs, signal: OPEN,ref, fromMs: H0, toMs: H0 + 40, columns: 2, unit: 'native' })
     expect(got.columns.columnMs).toBe(20)
     expect(got.columns.n).toEqual([2, 2])
     expect(got.columns.mean).toEqual([2, 6])
@@ -336,10 +338,10 @@ describe('readSpectrum', () => {
     const values = Array.from({ length: 6000 }, (_, i) => Math.sin((2 * Math.PI * 5 * i) / 100))
     await writeWaveHour(H0, [[H0, values]])
     const ref = parseChannelId(`station/${KEY}/X`)!
-    const short = await readSpectrum({ dirs, ref, fromMs: H0, toMs: H0 + 60_000, unit: 'gal' })
+    const short = await readSpectrum({ dirs, signal: OPEN,ref, fromMs: H0, toMs: H0 + 60_000, unit: 'gal' })
     expect(short.source).toBe('samples')
     expect(short.segments).toBe(Math.floor((6000 - 1024) / 512) + 1)
-    const long = await readSpectrum({ dirs, ref, fromMs: H0, toMs: H0 + 20 * 60_000, unit: 'gal' })
+    const long = await readSpectrum({ dirs, signal: OPEN,ref, fromMs: H0, toMs: H0 + 20 * 60_000, unit: 'gal' })
     expect(long.source).toBe('minutes')
     expect(long.segments).toBe(short.segments)
     // 同じ区間から出したので、5 Hz を含む区画の値はほぼ同じ
@@ -354,7 +356,7 @@ describe('readSpectrogram', () => {
     await writeWaveHour(H0, [[H0 + 2 * 60_000, values]])
     const ref = parseChannelId(`station/${KEY}/Z`)!
     // 10 分より広い範囲で 1 分ごとの PSD を束ねる形を見る（10 分以内は生のサンプルから作る）
-    const got = await readSpectrogram({ dirs, ref, fromMs: H0, toMs: H0 + 12 * 60_000, columns: 6, unit: 'gal' })
+    const got = await readSpectrogram({ dirs, signal: OPEN,ref, fromMs: H0, toMs: H0 + 12 * 60_000, columns: 6, unit: 'gal' })
     expect(got.source).toBe('minutes')
     expect(got.columnMs).toBe(120_000)
     expect(got.segments[0]).toBe(0)
@@ -367,7 +369,7 @@ describe('readSpectrogram', () => {
     await writeWaveHour(H0, [[H0, values]])
     await writeWaveHour(H0 + HOUR, [[H0 + HOUR, values]], false)
     const ref = parseChannelId(`station/${KEY}/Z`)!
-    const got = await readSpectrogram({ dirs, ref, fromMs: H0, toMs: H0 + 2 * HOUR, columns: 120, unit: 'gal' })
+    const got = await readSpectrogram({ dirs, signal: OPEN,ref, fromMs: H0, toMs: H0 + 2 * HOUR, columns: 120, unit: 'gal' })
     expect(got.irregularHours).toEqual([{ hourStartMs: H0 + HOUR, state: 'pending' }])
     expect(got.hours?.pending).toBe(1)
   })
@@ -377,7 +379,7 @@ describe('readSpectrogram', () => {
     const values = Array.from({ length: 6000 }, (_, i) => Math.sin((2 * Math.PI * 5 * i) / 100))
     await writeWaveHour(H0, [[H0, values]])
     const ref = parseChannelId(`station/${KEY}/X`)!
-    const got = await readSpectrogram({ dirs, ref, fromMs: H0 + 30_000, toMs: H0 + 90_000, columns: 1000, unit: 'gal' })
+    const got = await readSpectrogram({ dirs, signal: OPEN,ref, fromMs: H0 + 30_000, toMs: H0 + 90_000, columns: 1000, unit: 'gal' })
     expect(got.source).toBe('samples')
     expect(got.columnMs).toBe(SPECTROGRAM_SAMPLES_MIN_COLUMN_MS)
     expect(got.firstColumnMs).toBe(H0 + 30_000)
@@ -393,7 +395,7 @@ describe('readSpectrogram', () => {
 
   it('10 分以内でも、画面の幅が狭ければ列は 1 秒単位で広がる', async () => {
     const ref = parseChannelId(`station/${KEY}/X`)!
-    const got = await readSpectrogram({ dirs, ref, fromMs: H0, toMs: H0 + 10 * 60_000, columns: 50, unit: 'gal' })
+    const got = await readSpectrogram({ dirs, signal: OPEN,ref, fromMs: H0, toMs: H0 + 10 * 60_000, columns: 50, unit: 'gal' })
     expect(got.source).toBe('samples')
     expect(got.columnMs).toBe(12_000)
   })
@@ -404,7 +406,7 @@ describe('readSummaryEnvelope', () => {
     // 12:59:59.5 から 1 秒ぶん → 13:00:00〜00.5 の 50 サンプルは 12 時の要約に入っている
     await writeWaveHour(H0, [[H0 + HOUR - 500, Array.from({ length: 100 }, () => 2)]])
     const ref = parseChannelId(`station/${KEY}/X`)!
-    const result = await readSummaryEnvelope({ dirs, ref, source: 'fine', fromMs: H0 + HOUR, toMs: H0 + HOUR + 2000, columns: 2, unit: 'gal' })
+    const result = await readSummaryEnvelope({ dirs, signal: OPEN,ref, source: 'fine', fromMs: H0 + HOUR, toMs: H0 + HOUR + 2000, columns: 2, unit: 'gal' })
     expect(result.unit).toBe('gal')
     expect(result.columns.n).toEqual([50, 0])
     expect(result.columns.mean[0]).toBe(2)
@@ -416,7 +418,7 @@ describe('readSummaryEnvelope', () => {
     const grown = await writeWaveHour(H0, [[H0, [1, 1]]])
     appendFileSync(grown, Buffer.from([0, 0, 0]))
     const ref = parseChannelId(`station/${KEY}/Z`)!
-    const result = await readSummaryEnvelope({ dirs, ref, source: 'coarse', fromMs: H0, toMs: H0 + HOUR, columns: 60, unit: 'gal' })
+    const result = await readSummaryEnvelope({ dirs, signal: OPEN,ref, source: 'coarse', fromMs: H0, toMs: H0 + HOUR, columns: 60, unit: 'gal' })
     expect(result.hours).toEqual({ ok: 0, stale: 1, pending: 1, failed: 0, absent: 0 })
     // どの時がそうなのかも返す（画面が「記録が無い」と「要約がまだ無い」を場所で塗り分ける）。時刻の順
     expect(result.irregularHours).toEqual([
@@ -430,7 +432,7 @@ describe('readSummaryEnvelope', () => {
   it('正常な時と記録していない時は、正常でない時の一覧に載せない', async () => {
     await writeWaveHour(H0, [[H0, [1, 1]]])
     const ref = parseChannelId(`station/${KEY}/Z`)!
-    const result = await readSummaryEnvelope({ dirs, ref, source: 'coarse', fromMs: H0, toMs: H0 + 2 * HOUR, columns: 60, unit: 'gal' })
+    const result = await readSummaryEnvelope({ dirs, signal: OPEN,ref, source: 'coarse', fromMs: H0, toMs: H0 + 2 * HOUR, columns: 60, unit: 'gal' })
     expect(result.hours).toEqual({ ok: 1, stale: 0, pending: 0, failed: 0, absent: 2 })
     expect(result.irregularHours).toEqual([])
   })
@@ -459,10 +461,10 @@ describe('readSummaryEnvelope', () => {
       stationKey: null,
     })
     const ref = parseChannelId(mseed3SourceId(BOARD, 'S1', 'HNZ')!)!
-    const gal = await readSummaryEnvelope({ dirs, ref, source: 'fine', fromMs: H0, toMs: H0 + 1000, columns: 1, unit: 'gal' })
+    const gal = await readSummaryEnvelope({ dirs, signal: OPEN,ref, source: 'fine', fromMs: H0, toMs: H0 + 1000, columns: 1, unit: 'gal' })
     expect(gal.unit).toBe('gal')
     expect(gal.columns.mean[0]).toBeCloseTo(16384 * 61.0352 * GAL_PER_UG, 2)
-    const native = await readSummaryEnvelope({ dirs, ref, source: 'fine', fromMs: H0, toMs: H0 + 1000, columns: 1, unit: 'native' })
+    const native = await readSummaryEnvelope({ dirs, signal: OPEN,ref, source: 'fine', fromMs: H0, toMs: H0 + 1000, columns: 1, unit: 'native' })
     expect(native.unit).toBe('count')
     expect(native.columns.mean[0]).toBe(16384)
     expect(native.problems).toEqual({ skippedBytes: 0, badRecords: 0, unscaledHours: 0 })

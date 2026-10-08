@@ -26,6 +26,10 @@ function harness(params: {
   nowMs: number
   fail?: Set<string>
   maxJobsPerTick?: number
+  /** 一覧を作れなかった置き場所（見回りのたびに読み直す）。 */
+  listErrors?: string[]
+  /** 大きさを読もうとすると投げる元のファイル（見回りのたびに読み直す）。 */
+  sizeThrows?: Set<string>
 }) {
   let now = params.nowMs
   const ran: string[] = []
@@ -35,8 +39,11 @@ function harness(params: {
     summaryDir: 'sum',
     now: () => now,
     maxJobsPerTick: params.maxJobsPerTick,
-    list: async () => ({ jobs: params.jobs, errors: [] }),
-    sizeOf: async (p) => params.sizes.get(p) ?? null,
+    list: async () => ({ jobs: params.jobs, errors: params.listErrors ?? [] }),
+    sizeOf: async (p) => {
+      if (params.sizeThrows?.has(p)) throw new Error('EBUSY')
+      return params.sizes.get(p) ?? null
+    },
     summarizedBytes: async (p) => params.summarized?.get(p) ?? null,
     run: async (j): Promise<SummaryJobResult> => {
       ran.push(j.hourKey)
@@ -94,6 +101,72 @@ describe('WaveSummaryKeeper', () => {
     h.advance(60_000)
     await h.keeper.tick()
     expect(h.ran).toHaveLength(2)
+  })
+
+  it('元のファイルが一覧から消えたら控えを捨てる（戻ってきたら要約を読み直す）', async () => {
+    const jobs = [job(H12 - 5 * HOUR_MS)]
+    const sizes = new Map([[jobs[0]!.sourcePath, 100]])
+    const h = harness({ jobs, sizes, nowMs: H12 + 60_000 })
+    await h.keeper.tick()
+    expect(h.ran).toHaveLength(1)
+    const gone = jobs.splice(0)
+    h.advance(60_000)
+    await h.keeper.tick()
+    // 戻ってきた。控えを捨てていれば要約を読み直す（このハーネスの要約は「無い」と答えるので作り直す）
+    jobs.push(...gone)
+    h.advance(60_000)
+    await h.keeper.tick()
+    expect(h.ran).toHaveLength(2)
+  })
+
+  it('対照: 一覧を作れなかった置き場所があった回は控えを捨てない（見えていないだけ）', async () => {
+    const jobs = [job(H12 - 5 * HOUR_MS)]
+    const sizes = new Map([[jobs[0]!.sourcePath, 100]])
+    const listErrors: string[] = []
+    const h = harness({ jobs, sizes, nowMs: H12 + 60_000, listErrors })
+    await h.keeper.tick()
+    const gone = jobs.splice(0)
+    listErrors.push('raw を一覧できず')
+    h.advance(60_000)
+    await h.keeper.tick()
+    jobs.push(...gone)
+    listErrors.length = 0
+    h.advance(60_000)
+    await h.keeper.tick()
+    expect(h.ran).toHaveLength(1)
+  })
+
+  it('安全弁: 大きさを読めなかった回は控えを捨てない（読めないだけで、元のファイルは消えていない）', async () => {
+    const jobs = [job(H12 - 5 * HOUR_MS)]
+    const sizes = new Map([[jobs[0]!.sourcePath, 100]])
+    const sizeThrows = new Set<string>()
+    const h = harness({ jobs, sizes, nowMs: H12 + 60_000, sizeThrows })
+    await h.keeper.tick()
+    sizeThrows.add(jobs[0]!.sourcePath)
+    h.advance(60_000)
+    await h.keeper.tick()
+    sizeThrows.clear()
+    h.advance(60_000)
+    await h.keeper.tick()
+    expect(h.ran).toHaveLength(1)
+  })
+
+  it('安全弁: 作れずに取り直しを待っている間に大きさを読めなかった回があっても、待ちは捨てない', async () => {
+    const jobs = [job(H12 - 5 * HOUR_MS)]
+    const sizes = new Map([[jobs[0]!.sourcePath, 100]])
+    const sizeThrows = new Set<string>()
+    const h = harness({ jobs, sizes, nowMs: H12 + 60_000, fail: new Set([jobs[0]!.sourcePath]), sizeThrows })
+    await h.keeper.tick()
+    expect(h.ran).toHaveLength(1)
+    // 大きさを読めなかった回は、控えを捨てる判定から外れる経路が `catch` の側だけになる
+    sizeThrows.add(jobs[0]!.sourcePath)
+    h.advance(60_000)
+    await h.keeper.tick()
+    sizeThrows.clear()
+    h.advance(60_000)
+    await h.keeper.tick()
+    // 取り直しの待ち（既定 10 分）の間は作らない
+    expect(h.ran).toHaveLength(1)
   })
 
   it('いまの時は、前に作ってから 1 分経つまで作り直さない（安全弁: 過去の時は待たない）', async () => {

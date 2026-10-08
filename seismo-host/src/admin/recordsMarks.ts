@@ -110,6 +110,13 @@ export interface QuakesView {
   /** 地震一覧を取れなかった日（`YYYY-MM-DD`）。 */
   readonly failedDays: readonly string[]
   readonly problem: string | null
+  /** 発生時刻を秒まで寄せる材料（震源リスト・緊急地震速報）を取れなかった日（`YYYY-MM-DD`）。 */
+  readonly refineFailedDays: { readonly hypocenter: readonly string[]; readonly eew: readonly string[] }
+}
+
+function readDays(v: unknown): string[] | null {
+  if (!Array.isArray(v)) return null
+  return v.every((d) => typeof d === 'string') ? (v as string[]) : null
 }
 
 function nullableFinite(v: unknown): number | null | undefined {
@@ -148,7 +155,13 @@ export function readQuakesData(value: unknown): QuakesView | null {
   }
   const failedDays = v.failedDays.filter((d): d is string => typeof d === 'string')
   const problem = typeof v.problem === 'string' ? v.problem : null
-  return { off: v.off, located: v.located, quakes, failedDays, problem }
+  // **秒の材料の取れなかった日は、形が違えば応答ごと読めない** —— 黙って空にすると「取れなかった」が
+  // 「載っていない」と同じ見え方へ戻る（この欄を足した理由そのもの）。
+  const rf = typeof v.refineFailedDays === 'object' && v.refineFailedDays !== null ? (v.refineFailedDays as Record<string, unknown>) : null
+  const hypocenter = rf === null ? null : readDays(rf.hypocenter)
+  const eew = rf === null ? null : readDays(rf.eew)
+  if (hypocenter === null || eew === null) return null
+  return { off: v.off, located: v.located, quakes, failedDays, problem, refineFailedDays: { hypocenter, eew } }
 }
 
 // ---- 受信の列 ------------------------------------------------------------------------------
@@ -305,7 +318,32 @@ export function quakeFailureText(reason: string): string {
   return `気象庁の地震一覧を取得できていない（${reason}）`
 }
 
-/** `地震一覧を取れていない日がある（10/03・10/04）`。 */
-export function quakeFailedDaysText(days: readonly string[]): string {
-  return `地震一覧を取れていない日がある（${days.map((d) => `${d.slice(5, 7)}/${d.slice(8, 10)}`).join('・')}）`
+function monthDay(d: string): string {
+  return `${d.slice(5, 7)}/${d.slice(8, 10)}`
+}
+
+/**
+ * `地震一覧を取れていない日がある（10/03・10/04。P2PQuake: HTTP 503）`。理由が分からなければ日付だけ
+ * （理由を添えるのは 2026-10-08 ユーザー承認）。
+ */
+export function quakeFailedDaysText(days: readonly string[], problem: string | null): string {
+  const dates = days.map(monthDay).join('・')
+  return `地震一覧を取れていない日がある（${problem === null ? dates : `${dates}。${problem}`}）`
+}
+
+/**
+ * `発生時刻を秒まで寄せる材料を取れていない日がある（震源リスト: 10/03・緊急地震速報: 10/04）`。**どちらも
+ * 無ければ null。** その日の地震は、材料に載っていないときと同じ分の幅の帯で描かれるので、取れなかったことを
+ * 別に書く（2026-10-08 ユーザー承認）。
+ */
+export function refineFailedDaysText(days: QuakesView['refineFailedDays']): string | null {
+  const parts: string[] = []
+  if (days.hypocenter.length > 0) parts.push(`震源リスト: ${days.hypocenter.map(monthDay).join('・')}`)
+  if (days.eew.length > 0) parts.push(`緊急地震速報: ${days.eew.map(monthDay).join('・')}`)
+  return parts.length === 0 ? null : `発生時刻を秒まで寄せる材料を取れていない日がある（${parts.join('・')}）`
+}
+
+/** `読めなかった揺れの記録が 3 件ある`。**0 なら null**（2026-10-08 ユーザー承認）。 */
+export function shakeUnreadableText(count: number): string | null {
+  return count > 0 ? `読めなかった揺れの記録が ${count} 件ある` : null
 }

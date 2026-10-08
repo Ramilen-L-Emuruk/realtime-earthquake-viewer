@@ -24,6 +24,7 @@
 // サンプルの時刻は「まとまりの先頭 ＋ i × 刻み」で、刻みのわずかな揺らぎはここでは問題にならない
 // （割り付ける先が 1 秒の幅を持つので、誤差が積み上がって偽の欠けに化けることはない）。
 
+import { MAX_CHUNK_SPAN_MS } from './waveArchive'
 import { PSD_BIN_COUNT, minutePsd, type MinutePsd, type PsdChunk } from './wavePsd'
 
 /** 細かい段の 1 まとまりの長さ。 */
@@ -37,9 +38,10 @@ export const SUMMARY_COARSE_MS = 60_000
  * **元のファイルはまとまりの先頭の時刻で選ばれる**（生データは `recordAssembler.ts` の `fileTimeOf`、
  * 合成波形は `waveArchive.ts`）ので、時の終わりの直前に始まったまとまりは次の時へはみ出す。
  * 合成波形のまとまりは最長 10 分まで許している（`waveArchive.ts` の `MAX_CHUNK_SPAN_MS`）ので、
- * それに合わせる。読み返す側は前の時の要約も重ねる。
+ * それに合わせる（**同じ定数を引く** —— 別に書くと、片方だけ伸ばしたときに長いまとまりが黙って窓から落ちる）。
+ * 読み返す側は前の時の要約も重ねる。
  */
-const OVERHANG_MS = 10 * 60 * 1000
+const OVERHANG_MS = MAX_CHUNK_SPAN_MS
 
 /** 細かい段の本数を持つ型（`u16`）の上限。超えたら頭打ちにして数える。 */
 const FINE_COUNT_MAX = 0xffff

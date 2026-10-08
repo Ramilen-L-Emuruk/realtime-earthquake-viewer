@@ -191,9 +191,15 @@ export function readSpectrogramData(value: unknown): SpectrogramData | null {
 
 // ---- 周波数の軸と色 ------------------------------------------------------------------------
 
-/** 周波数の入る区画（`[edges[b], edges[b+1])`）。範囲の外は -1。 */
+/**
+ * 周波数の入る区画（`[edges[b], edges[b+1])`。**最後の区画だけ上端を含む** —— 枠の右端・上端ちょうどを
+ * 指すと上端の周波数になるので、そこで読み取りが消えないように）。範囲の外は -1。
+ */
 export function binAt(edges: readonly number[], hz: number): number {
-  for (let b = 0; b + 1 < edges.length; b += 1) if (hz >= edges[b]! && hz < edges[b + 1]!) return b
+  const last = edges.length - 2
+  for (let b = 0; b <= last; b += 1) {
+    if (hz >= edges[b]! && (hz < edges[b + 1]! || (b === last && hz === edges[b + 1]!))) return b
+  }
   return -1
 }
 

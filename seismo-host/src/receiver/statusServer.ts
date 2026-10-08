@@ -36,7 +36,7 @@ import type { AdminConsoleAssets } from './adminConsoleAssets'
 import { checkAdminAuth } from './adminAuth'
 import type { AdminAuthConfig, AdminAuthFailure } from './adminAuth'
 import type { SensorRestWindows } from './gravityCheck'
-import { decimalInt } from './httpQuery'
+import { COLUMNS_MAX, decimalInt } from './httpQuery'
 import { computeQuakeIntensity, QUAKE_INTENSITY_LEAD_MS } from './quakeIntensity'
 import type { QuakeIntensityResult } from './quakeIntensity'
 import type { HubMessage, PairWant, ReadingHub, WaveWant } from './readingHub'
@@ -222,8 +222,8 @@ const WAVE_RANGE_MAX_MS = 10 * 60 * 1000
  */
 const WAVE_RAW_RANGE_MAX_MS = 2 * 60 * 1000
 
-/** 落とせる列の数の上限。画面の横幅より多く要る用途は無い。 */
-const WAVE_COLUMNS_MAX = 4096
+/** 落とせる列の数の上限（`/api/records/*` と共通の値）。 */
+const WAVE_COLUMNS_MAX = COLUMNS_MAX
 
 /** 読み返しの問い合わせ。**`columns` が `null` ならサンプルのまま返す。** */
 export type WaveQuery =
@@ -586,8 +586,12 @@ export interface StatusServerOptions {
    * 答えの HTTP ステータスと本文を返す（中身は `waveRecordsApi.ts`）。
    *
    * **`null` なら口ごと 503**（保存を持たない構成。`readWaves` と同じ理由で「0 件」と区別させる）。
+   *
+   * `signal` は、答えを書き終える前に見に来た側が切ったら立つ（読み手はそこで読むのをやめる）。
    */
-  readonly records: ((route: string, params: URLSearchParams) => Promise<{ readonly status: number; readonly body: unknown }>) | null
+  readonly records:
+    | ((route: string, params: URLSearchParams, signal: AbortSignal) => Promise<{ readonly status: number; readonly body: unknown }>)
+    | null
 }
 
 export interface StatusServer {
@@ -1137,8 +1141,21 @@ async function handleAdmin(
       sendAdminJson(res, 503, { error: 'records-not-configured' })
       return
     }
-    const answer = await records(route.route, url.searchParams)
-    sendAdminJson(res, answer.status, answer.body)
+    // **見に来た側が切ったら読むのをやめる。** 管理画面は範囲を動かすたびに前の要求を取り消すので、
+    // 取り消された分を読み切ると、素早く動かすほど宙に浮いた読み出しが積み重なる（400 日なら 9,600 時ぶん）。
+    // 応答の `close` は書き終えた後にも来るので、書き終えていないときだけ立てる。
+    const reading = new AbortController()
+    const onClose = (): void => {
+      if (!res.writableEnded) reading.abort()
+    }
+    res.on('close', onClose)
+    try {
+      const answer = await records(route.route, url.searchParams, reading.signal)
+      if (reading.signal.aborted) return
+      sendAdminJson(res, answer.status, answer.body)
+    } finally {
+      res.off('close', onClose)
+    }
     return
   }
   // route.kind === 'board'

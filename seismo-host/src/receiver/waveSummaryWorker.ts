@@ -8,5 +8,9 @@ import { parentPort } from 'node:worker_threads'
 import { buildSummaryFile, type SummaryJob } from './waveSummaryFiles'
 
 parentPort?.on('message', (msg: { readonly id: number; readonly job: SummaryJob }) => {
-  void buildSummaryFile(msg.job).then((result) => parentPort?.postMessage({ id: msg.id, result }))
+  // `buildSummaryFile` は投げない作りだが、**投げたら理由を付けて 1 件の失敗として返す** —— 受け止めないと
+  // この別スレッドごと落ち、親の記録には「終了コード 1」しか残らない。
+  void buildSummaryFile(msg.job)
+    .catch((error: unknown) => ({ ok: false as const, error: error instanceof Error ? error.message : String(error) }))
+    .then((result) => parentPort?.postMessage({ id: msg.id, result }))
 })

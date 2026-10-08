@@ -17,7 +17,8 @@
 //
 // **外へ投げるのは 1 本ずつ**（係の中で順に並べる）。2 つの画面が同時に頼んでも並行には投げない。
 //
-// **投げない。** 取れなかった理由は結果の `problem` と取れなかった日（`failedDays`）に入れる。
+// **投げない。** 取れなかった理由は結果の `problem` と取れなかった日（地震情報は `failedDays`、秒まで寄せる
+// 材料は `refineFailedDays`）に入れる。
 
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -98,6 +99,12 @@ export interface RecordQuakesResult {
   readonly unreadable: number
   /** 取れなかった理由（最初の 1 つ）。範囲が広すぎるときは `range-too-wide`。 */
   readonly problem: string | null
+  /**
+   * 発生時刻を秒まで寄せる材料を取れなかった日（出どころ別・日本時間の `YYYY-MM-DD`）。その日の地震は、
+   * 材料に載っていないときと同じく分の幅のまま返る —— **載っていないのか取れなかったのかを画面が見分けるため**に
+   * 分けて返す（2026-10-08 ユーザー承認）。震源リストがまだ載っていない日（404）は数えない。
+   */
+  readonly refineFailedDays: { readonly hypocenter: string[]; readonly eew: string[] }
 }
 
 type Source = 'p2p' | 'hypo' | 'eew'
@@ -165,8 +172,11 @@ function eewOriginOf(item: unknown): EewOrigin | null {
 export class RecordQuakes {
   private readonly deps: RecordQuakesDeps
   private readonly memo = new Map<string, Memo<unknown>>()
-  /** 取れなかった（または震源リストがまだ載っていない）日と、次に取りに行ってよい時刻。 */
-  private readonly retryAfter = new Map<string, number>()
+  /**
+   * 取れなかった（または震源リストがまだ載っていない）日と、次に取りに行ってよい時刻。`failed` は取れなかった
+   * ほう（待っている間も「取れなかった日」として返す）。
+   */
+  private readonly retryAfter = new Map<string, { readonly untilMs: number; readonly failed: boolean }>()
   private queue: Promise<unknown> = Promise.resolve()
   private lastP2pAtMs = Number.NEGATIVE_INFINITY
   private lastJmaAtMs = Number.NEGATIVE_INFINITY
@@ -186,7 +196,7 @@ export class RecordQuakes {
 
   private async listNow(fromMs: number, toMs: number): Promise<RecordQuakesResult> {
     if (!(toMs > fromMs) || toMs - fromMs > RECORD_QUAKES_RANGE_MAX_MS) {
-      return { quakes: [], failedDays: [], unreadable: 0, problem: 'range-too-wide' }
+      return { quakes: [], failedDays: [], unreadable: 0, problem: 'range-too-wide', refineFailedDays: { hypocenter: [], eew: [] } }
     }
     const originFrom = fromMs - RECORD_QUAKES_LEAD_MS
     const days: number[] = []
@@ -201,7 +211,8 @@ export class RecordQuakes {
       hypoDays.add(dayStartOf(q.originMs - REFINE_TIME_MARGIN_MS))
       hypoDays.add(dayStartOf(q.originMs + q.originPrecisionMs + REFINE_TIME_MARGIN_MS))
     }
-    const rows = await this.hypocenterRows([...hypoDays].sort((a, b) => a - b))
+    const hypo = await this.hypocenterRows([...hypoDays].sort((a, b) => a - b))
+    const rows = hypo.rows
 
     // 緊急地震速報: 震源リストで補えなかった地震の日だけ（API キーがあるときだけ）。
     const firstPass = quakes.map((q) => refineQuake(q, rows, []))
@@ -212,10 +223,17 @@ export class RecordQuakes {
       eewDays.add(dayStartOf(q.originMs - REFINE_TIME_MARGIN_MS))
       eewDays.add(dayStartOf(q.originMs + q.originPrecisionMs + REFINE_TIME_MARGIN_MS))
     })
-    const eews = eewDays.size === 0 ? [] : await this.eewOrigins([...eewDays].sort((a, b) => a - b))
+    const eew = eewDays.size === 0 ? { eews: [], failedDays: [] } : await this.eewOrigins([...eewDays].sort((a, b) => a - b))
+    const eews = eew.eews
     const refined = eews.length === 0 ? firstPass : quakes.map((q) => refineQuake(q, rows, eews))
 
-    return { quakes: refined, failedDays: p2p.failedDays, unreadable: p2p.unreadable, problem: p2p.problem }
+    return {
+      quakes: refined,
+      failedDays: p2p.failedDays,
+      unreadable: p2p.unreadable,
+      problem: p2p.problem,
+      refineFailedDays: { hypocenter: hypo.failedDays, eew: eew.failedDays },
+    }
   }
 
   // ---- 控え ----
@@ -259,13 +277,15 @@ export class RecordQuakes {
     }
   }
 
-  private waiting(source: Source, dayStartMs: number): boolean {
-    const until = this.retryAfter.get(`${source}/${dayKey(dayStartMs)}`)
-    return until !== undefined && this.deps.now() < until
+  /** 取り直しを待っている日なら、取れなかったのか（`failed`）・まだ載っていないのか（`not-yet`）。待っていなければ null。 */
+  private waiting(source: Source, dayStartMs: number): 'failed' | 'not-yet' | null {
+    const hold = this.retryAfter.get(`${source}/${dayKey(dayStartMs)}`)
+    if (hold === undefined || this.deps.now() >= hold.untilMs) return null
+    return hold.failed ? 'failed' : 'not-yet'
   }
 
-  private holdOff(source: Source, dayStartMs: number, ms: number): void {
-    this.retryAfter.set(`${source}/${dayKey(dayStartMs)}`, this.deps.now() + ms)
+  private holdOff(source: Source, dayStartMs: number, ms: number, failed: boolean): void {
+    this.retryAfter.set(`${source}/${dayKey(dayStartMs)}`, { untilMs: this.deps.now() + ms, failed })
   }
 
   private async spaceAfter(last: number, intervalMs: number): Promise<void> {
@@ -286,10 +306,11 @@ export class RecordQuakes {
       if (c !== null) {
         quakes.push(...c.quakes)
         unreadable += c.unreadable
-      } else if (this.waiting('p2p', d)) {
-        failedDays.push(dashed(dayKey(d)))
       } else {
-        missing.push(d)
+        // 待っている日は取りに行かない。数えるのは取れなかった日だけ（震源リストと同じ判定）。
+        const held = this.waiting('p2p', d)
+        if (held === 'failed') failedDays.push(dashed(dayKey(d)))
+        else if (held === null) missing.push(d)
       }
     }
     // 続いた日をまとめて 1 回で引く（日付でしか絞れないので、日の並びがそのまま問い合わせになる）。
@@ -320,7 +341,7 @@ export class RecordQuakes {
       for (const [i, d] of run.entries()) {
         if (result.error !== null || (result.truncated && d + DAY_MS > lastOrigin)) {
           failedDays.push(dashed(dayKey(d)))
-          this.holdOff('p2p', d, FAILED_RETRY_MS)
+          this.holdOff('p2p', d, FAILED_RETRY_MS, true)
           continue
         }
         const ofDay = result.quakes.filter((q) => q.originMs >= d && q.originMs < d + DAY_MS)
@@ -340,8 +361,10 @@ export class RecordQuakes {
 
   // ---- 震源リスト（気象庁） ----
 
-  private async hypocenterRows(days: readonly number[]): Promise<HypocenterRow[]> {
+  /** 震源リストの行と、取れなかった日（まだ載っていない日・載る前の日・日別ページの無い日は数えない）。 */
+  private async hypocenterRows(days: readonly number[]): Promise<{ rows: HypocenterRow[]; failedDays: string[] }> {
     const out: HypocenterRow[] = []
+    const failedDays: string[] = []
     for (const d of days) {
       if (d < HYPOCENTER_LIST_FIRST_MS || this.deps.now() < d + DAY_MS + HYPOCENTER_PUBLISH_LAG_MS) continue
       const c = await this.cached<HypocenterRow[]>('hypo', d)
@@ -349,14 +372,18 @@ export class RecordQuakes {
         out.push(...c)
         continue
       }
-      if (this.waiting('hypo', d)) continue
+      const held = this.waiting('hypo', d)
+      if (held !== null) {
+        if (held === 'failed') failedDays.push(dashed(dayKey(d)))
+        continue
+      }
       await this.spaceAfter(this.lastJmaAtMs, JMA_REQUEST_INTERVAL_MS)
       const url = `${HYPOCENTER_LIST_URL}/${dayKey(d)}.html`
       try {
         const res = await this.deps.get(url, {})
         this.lastJmaAtMs = this.deps.now()
         if (res.status === 404) {
-          this.holdOff('hypo', d, NOT_PUBLISHED_RETRY_MS)
+          this.holdOff('hypo', d, NOT_PUBLISHED_RETRY_MS, false)
           continue
         }
         if (res.status !== 200) throw new Error(`HTTP ${res.status}`)
@@ -369,26 +396,34 @@ export class RecordQuakes {
         out.push(...rows)
       } catch (error) {
         this.lastJmaAtMs = this.deps.now()
-        this.holdOff('hypo', d, FAILED_RETRY_MS)
+        this.holdOff('hypo', d, FAILED_RETRY_MS, true)
+        failedDays.push(dashed(dayKey(d)))
         console.warn(`[record-quakes] 震源リストを取れなかった（${dayKey(d)}）: ${messageOf(error)}`)
       }
     }
-    return out
+    return { rows: out, failedDays }
   }
 
   // ---- 緊急地震速報（DMDATA） ----
 
-  private async eewOrigins(days: readonly number[]): Promise<EewOrigin[]> {
+  /** 緊急地震速報の発生時刻と、取れなかった日。**API キーが無ければ取りに行かないので、取れなかった日も無い。** */
+  private async eewOrigins(days: readonly number[]): Promise<{ eews: EewOrigin[]; failedDays: string[] }> {
     const key = this.deps.dmdataApiKey
-    if (key === null || dmdataApiKeyProblem(key) !== null) return []
+    if (key === null || dmdataApiKeyProblem(key) !== null) return { eews: [], failedDays: [] }
     const out: EewOrigin[] = []
+    const failedDays: string[] = []
     const missing: number[] = []
     for (const d of days) {
       const c = await this.cached<EewOrigin[]>('eew', d)
-      if (c !== null) out.push(...c)
-      else if (!this.waiting('eew', d)) missing.push(d)
+      if (c !== null) {
+        out.push(...c)
+        continue
+      }
+      const held = this.waiting('eew', d)
+      if (held === 'failed') failedDays.push(dashed(dayKey(d)))
+      else if (held === null) missing.push(d)
     }
-    if (missing.length === 0) return out
+    if (missing.length === 0) return { eews: out, failedDays }
     const fromDay = missing[0]!
     const toDay = missing[missing.length - 1]! + DAY_MS
     // 一覧の `datetime` は UTC の日付の半開区間。終わりの日を含めるよう翌日まで指定する（PWA と同じ）。
@@ -418,14 +453,18 @@ export class RecordQuakes {
       console.warn(`[record-quakes] 緊急地震速報の一覧を取れなかった: ${messageOf(error)}`)
     }
     if (!complete) {
-      // 取りきれなかった日は控えに残さない（「その日は緊急地震速報が無かった」にしない）。
-      for (const d of missing) this.holdOff('eew', d, FAILED_RETRY_MS)
-      return [...out, ...got]
+      // 取りきれなかった日は控えに残さない（「その日は緊急地震速報が無かった」にしない）。ページの上限で
+      // 切った場合も同じ —— 取れた分は使うが、その日は「取れなかった日」として返す。
+      for (const d of missing) {
+        this.holdOff('eew', d, FAILED_RETRY_MS, true)
+        failedDays.push(dashed(dayKey(d)))
+      }
+      return { eews: [...out, ...got], failedDays: failedDays.sort() }
     }
     const fetchedAtMs = this.deps.now()
     for (const d of missing) {
       await this.store('eew', d, fetchedAtMs, got.filter((e) => e.originMs >= d && e.originMs < d + DAY_MS))
     }
-    return [...out, ...got]
+    return { eews: [...out, ...got], failedDays: failedDays.sort() }
   }
 }

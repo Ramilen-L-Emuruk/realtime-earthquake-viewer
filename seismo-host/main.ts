@@ -2484,13 +2484,18 @@ async function main(): Promise<void> {
     // 検出した揺れの読み返し（#312）。置き場所は記録と同じ `eventDir`。
     readEvents: (params) => readEventRange({ dir: eventDir, ...params }),
     // 保存した波形の読み返し（#621）。置き場所は要約を作る係と同じ。
-    records: (route, params) =>
-      handleRecordsRequest(route, params, {
-        dirs: { summaryDir, rawDir, waveDir },
-        channels: recordChannels,
-        config: () => currentStationConfig,
-        quakes: recordQuakes,
-      }),
+    records: (route, params, signal) =>
+      handleRecordsRequest(
+        route,
+        params,
+        {
+          dirs: { summaryDir, rawDir, waveDir },
+          channels: recordChannels,
+          config: () => currentStationConfig,
+          quakes: recordQuakes,
+        },
+        signal,
+      ),
     // **呼ばれた時点で組み立てる。** 溜め込んだものを返すと、見に来た人が
     // 「いつの様子か」を自分で確かめられない。
     status: () => {

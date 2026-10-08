@@ -23,7 +23,7 @@
 // 設定から外した観測点の記録には届かない（札から ID へは戻せない）。
 
 import { arrivalSpans } from '../detection/quakeRefine'
-import { decimalInt } from './httpQuery'
+import { COLUMNS_MAX, decimalInt } from './httpQuery'
 import { computeQuakeIntensity, QUAKE_INTENSITY_LEAD_MS } from './quakeIntensity'
 import { RECORD_QUAKES_RANGE_MAX_MS, type RecordQuakes } from './recordQuakes'
 import type { StationConfig } from './stationConfigTypes'
@@ -48,8 +48,8 @@ import {
 
 /** 1 回に読み返す範囲の広さの上限。 */
 export const RECORDS_RANGE_MAX_MS = 400 * 24 * 3_600_000
-/** 列の数の上限（`/waves` と同じ）。 */
-export const RECORDS_COLUMNS_MAX = 4096
+/** 列の数の上限（`/waves` と同じ値を引く）。 */
+export const RECORDS_COLUMNS_MAX = COLUMNS_MAX
 
 const SENSOR_RE = /^FDSN:[A-Za-z0-9_-]{1,64}$/
 /** 観測点の札（`waveArchive.ts` の `stationFileToken` が作る形。チャンネルの名乗りの札と同じ）。 */
@@ -125,8 +125,37 @@ function columnsBody(c: EnvelopeColumns): Record<string, unknown> {
   }
 }
 
-/** `/api/records/` の後ろ（`route`）と問い合わせから答えを作る。**投げない**（読み手が投げない作りのため）。 */
-export async function handleRecordsRequest(route: string, params: URLSearchParams, deps: RecordsApiDeps): Promise<RecordsResponse> {
+/**
+ * 見に来た画面が要求を取り消したときの答え。`statusServer.ts` は繋がりが切れていれば書かずに捨てるので、
+ * 画面には届かない（テストと、呼び出し側が「取り消された」と見分けるための値）。
+ */
+export const RECORDS_ABORTED_STATUS = 499
+
+/**
+ * `/api/records/` の後ろ（`route`）と問い合わせから答えを作る。**投げない**（読み手が投げない作りのため）。
+ *
+ * **`signal` は見に来た画面との繋がり**（`statusServer.ts` が応答の `close` で立てる）。範囲を動かすたびに
+ * 画面は前の要求を取り消して出し直すので、取り消された分を読み切らずにやめる —— 400 日の範囲は 9,600 時ぶんを
+ * 開くので、素早く動かすほど宙に浮いた読み出しが積み重なる。中断されたら {@link RECORDS_ABORTED_STATUS} を返す。
+ * 気象庁の地震一覧（`quakes`）だけは打ち切らない —— 取った分は控えへ残り、次の要求がそれを読むので無駄にならない。
+ */
+export async function handleRecordsRequest(
+  route: string,
+  params: URLSearchParams,
+  deps: RecordsApiDeps,
+  signal: AbortSignal,
+): Promise<RecordsResponse> {
+  try {
+    return await answerRecords(route, params, deps, signal)
+  } catch (error) {
+    // **取り消しそのものだけを 499 にする。** 取り消しと同じ時に別の例外が出たなら、それは読み手の取り違えで、
+    // 499 へ化けさせると「取り消された」としか残らない —— 投げ直して上で記録させる。
+    if (signal.aborted && error === signal.reason) return { status: RECORDS_ABORTED_STATUS, body: { error: 'aborted' } }
+    throw error
+  }
+}
+
+async function answerRecords(route: string, params: URLSearchParams, deps: RecordsApiDeps, signal: AbortSignal): Promise<RecordsResponse> {
   const { dirs } = deps
   if (route === 'channels') {
     return { status: 200, body: await deps.channels.list(deps.config()) }
@@ -136,14 +165,19 @@ export async function handleRecordsRequest(route: string, params: URLSearchParam
     if (!range.ok) return bad(range.error)
     const sensor = params.get('sensor')
     if (sensor !== null && !SENSOR_RE.test(sensor)) return bad('bad-sensor')
-    return { status: 200, body: await readReception({ dirs, fromMs: range.fromMs, toMs: range.toMs, sensor }) }
+    return { status: 200, body: await readReception({ dirs, fromMs: range.fromMs, toMs: range.toMs, sensor, signal }) }
   }
   if (route === 'quakes') {
     const range = readRange(params, RECORD_QUAKES_RANGE_MAX_MS)
     if (!range.ok) return bad(range.error)
     const stationId = params.get('station')
     if (stationId !== null && (stationId.length === 0 || stationId.length > 128)) return bad('bad-station')
-    if (deps.quakes === null) return { status: 200, body: { off: true, located: false, quakes: [], failedDays: [], unreadable: 0, problem: null } }
+    if (deps.quakes === null) {
+      return {
+        status: 200,
+        body: { off: true, located: false, quakes: [], failedDays: [], unreadable: 0, problem: null, refineFailedDays: { hypocenter: [], eew: [] } },
+      }
+    }
     // **観測点の位置はいまの設定から引く**（設定から外した観測点・割り当ての無い基板は P・S を引けない）。
     const station = stationId === null ? undefined : deps.config().stations.find((s) => s.stationId === stationId)
     const result = await deps.quakes.list(range.fromMs, range.toMs)
@@ -167,7 +201,15 @@ export async function handleRecordsRequest(route: string, params: URLSearchParam
     }
     return {
       status: 200,
-      body: { off: false, located: station !== undefined, quakes, failedDays: result.failedDays, unreadable: result.unreadable, problem: result.problem },
+      body: {
+        off: false,
+        located: station !== undefined,
+        quakes,
+        failedDays: result.failedDays,
+        unreadable: result.unreadable,
+        problem: result.problem,
+        refineFailedDays: result.refineFailedDays,
+      },
     }
   }
   if (route === 'intensity') {
@@ -218,7 +260,7 @@ export async function handleRecordsRequest(route: string, params: URLSearchParam
   const { fromMs, toMs } = range
 
   if (route === 'samples') {
-    const got = await readSamples({ dirs, ref, fromMs, toMs, unit: unit.unit })
+    const got = await readSamples({ dirs, ref, fromMs, toMs, unit: unit.unit, signal })
     return {
       status: 200,
       body: {
@@ -237,7 +279,7 @@ export async function handleRecordsRequest(route: string, params: URLSearchParam
     }
   }
   if (route === 'spectrum') {
-    const got = await readSpectrum({ dirs, ref, fromMs, toMs, unit: unit.unit })
+    const got = await readSpectrum({ dirs, ref, fromMs, toMs, unit: unit.unit, signal })
     return {
       status: 200,
       body: {
@@ -258,7 +300,7 @@ export async function handleRecordsRequest(route: string, params: URLSearchParam
   if (!columns.ok) return bad(columns.error)
 
   if (route === 'spectrogram') {
-    const got = await readSpectrogram({ dirs, ref, fromMs, toMs, columns: columns.columns, unit: unit.unit })
+    const got = await readSpectrogram({ dirs, ref, fromMs, toMs, columns: columns.columns, unit: unit.unit, signal })
     return {
       status: 200,
       body: {
@@ -281,7 +323,7 @@ export async function handleRecordsRequest(route: string, params: URLSearchParam
   // route === 'envelope'
   const source = chooseEnvelopeSource(fromMs, toMs, columns.columns, SAMPLES_RANGE_MAX_MS)
   if (source === 'samples') {
-    const got = await readSamplesEnvelope({ dirs, ref, fromMs, toMs, columns: columns.columns, unit: unit.unit })
+    const got = await readSamplesEnvelope({ dirs, ref, fromMs, toMs, columns: columns.columns, unit: unit.unit, signal })
     return {
       status: 200,
       body: {
@@ -296,7 +338,7 @@ export async function handleRecordsRequest(route: string, params: URLSearchParam
       },
     }
   }
-  const got = await readSummaryEnvelope({ dirs, ref, source, fromMs, toMs, columns: columns.columns, unit: unit.unit })
+  const got = await readSummaryEnvelope({ dirs, ref, source, fromMs, toMs, columns: columns.columns, unit: unit.unit, signal })
   return {
     status: 200,
     body: {

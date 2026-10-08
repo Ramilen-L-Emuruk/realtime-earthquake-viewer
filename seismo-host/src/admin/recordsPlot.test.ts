@@ -2,13 +2,16 @@ import { describe, expect, it } from 'vitest'
 
 import {
   MIN_SPAN_MS,
+  RANGE_MAX_MS,
   SAMPLES_RANGE_MAX_MS,
   centerAt,
   clampRange,
   compositeRuns,
   durationLabel,
+  fullSpanMs,
   groupChannels,
   intensityHeader,
+  overviewRange,
   overviewSpread,
   peakLabel,
   periodText,
@@ -37,6 +40,7 @@ import {
 } from './recordsPlot'
 
 const HOUR = 3_600_000
+const DAY = 24 * HOUR
 // **時刻は地域の時刻で組む**（目盛りや文言は地域の時刻で出すので、テストを走らせる端末の地域に依らないように）。
 const H0 = new Date(2026, 9, 7, 12, 0, 0, 0).getTime()
 
@@ -133,6 +137,33 @@ describe('範囲の操作', () => {
     const r = { fromMs: H0 + 4 * HOUR, toMs: H0 + 6 * HOUR }
     expect(withSpan(r, HOUR, bounds)).toEqual({ fromMs: H0 + 4.5 * HOUR, toMs: H0 + 5.5 * HOUR })
     expect(withSpan(r, null, bounds)).toEqual(bounds)
+  })
+
+  it('記録が 400 日より長くても、幅はホストが読む上限の 400 日まで（全体は新しい側の 400 日）', () => {
+    const long = { fromMs: H0, toMs: H0 + 500 * DAY }
+    expect(clampRange(long, long)).toEqual({ fromMs: H0, toMs: H0 + RANGE_MAX_MS })
+    expect(withSpan({ fromMs: H0, toMs: H0 + DAY }, null, long)).toEqual({ fromMs: long.toMs - RANGE_MAX_MS, toMs: long.toMs })
+    // 全体の帯と同じ範囲を指す
+    const [g] = groupChannels([ch({ id: 'station/home/X', kind: 'station', firstHourMs: long.fromMs, lastHourMs: long.toMs - HOUR })])
+    expect(withSpan({ fromMs: H0, toMs: H0 + DAY }, null, long)).toEqual(overviewRange(g!))
+    // 安全弁: 引いて広げても、送っても 400 日を超えない
+    const wide = zoomAt({ fromMs: H0 + 100 * DAY, toMs: H0 + 399 * DAY }, 2, H0 + 200 * DAY, long)
+    expect(wide.toMs - wide.fromMs).toBe(RANGE_MAX_MS)
+    const shifted = shiftBy(wide, 30 * DAY, long)
+    expect(shifted.toMs - shifted.fromMs).toBe(RANGE_MAX_MS)
+  })
+
+  it('対照: 記録が 400 日ちょうどなら全体は期間そのもの', () => {
+    const exact = { fromMs: H0, toMs: H0 + RANGE_MAX_MS }
+    expect(withSpan({ fromMs: H0, toMs: H0 + DAY }, null, exact)).toEqual(exact)
+  })
+
+  it('「全体」の幅（押された見た目の判定に使う）は、全体を押したときの幅と一致する', () => {
+    for (const days of [0.5, 400, 500]) {
+      const b = { fromMs: H0, toMs: H0 + days * DAY }
+      const r = withSpan({ fromMs: H0, toMs: H0 + HOUR }, null, b)
+      expect(r.toMs - r.fromMs).toBe(fullSpanMs(b))
+    }
   })
 
   it('指した時刻を動かさずに寄せる・送る・中心へ', () => {
@@ -323,7 +354,7 @@ describe('traceValueAt と合成', () => {
     expect(traceValueAt(t, H0 + 40)).toBeNull()
   })
 
-  it('3 軸の合成は各軸の中心を引いた √Σ²、1 軸でも欠けた時刻は NaN', () => {
+  it('軸の合成は各軸の中心を引いた √Σ²、1 軸でも欠けた時刻は NaN', () => {
     const x = samplesTrace([[H0, [3, 3]]])
     const y = samplesTrace([[H0, [4]]])
     const got = compositeRuns([x, y], [0, 0])!

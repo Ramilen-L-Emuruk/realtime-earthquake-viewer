@@ -186,19 +186,24 @@ export interface IrregularHour {
   readonly state: 'stale' | 'pending' | 'failed'
 }
 
-/** 範囲に触れる時の要約から、そのチャンネルの 1 部分を集める。投げない。 */
+/**
+ * 範囲に触れる時の要約から、そのチャンネルの 1 部分を集める。**投げるのは `signal` が中断されたときだけ**
+ * （`signal.reason`）—— 見に来た画面が要求を取り消したら、残りの時を読まずにやめる（400 日なら 9,600 時ぶん）。
+ */
 export async function readHourChannels(
   dirs: RecordDirs,
   ref: ChannelRef,
   part: SummaryPart,
   fromMs: number,
   toMs: number,
+  signal: AbortSignal,
 ): Promise<{ readonly hours: readonly HourChannel[]; readonly tally: HourTally; readonly irregular: readonly IrregularHour[] }> {
   const starts = hoursToOpen(fromMs, toMs)
   const tally = emptyTally()
   const hours: HourChannel[] = []
   const irregular: IrregularHour[] = []
   for (let i = 0; i < starts.length; i += READ_PARALLEL) {
+    signal.throwIfAborted()
     const slice = starts.slice(i, i + READ_PARALLEL)
     const batch = await Promise.all(slice.map((h) => readOneHour(dirs, ref, part, h)))
     batch.forEach((outcome, k) => {
@@ -446,7 +451,7 @@ function sumProblems(hours: readonly HourChannel[], unscaledHours: number): Read
   return { skippedBytes, badRecords, unscaledHours }
 }
 
-/** 要約から列を作る（1 分の段か 1 秒の段）。投げない。 */
+/** 要約から列を作る（1 分の段か 1 秒の段）。投げるのは `signal` が中断されたときだけ。 */
 export async function readSummaryEnvelope(params: {
   readonly dirs: RecordDirs
   readonly ref: ChannelRef
@@ -455,11 +460,12 @@ export async function readSummaryEnvelope(params: {
   readonly toMs: number
   readonly columns: number
   readonly unit: UnitChoice
+  readonly signal: AbortSignal
 }): Promise<EnvelopeResult> {
-  const { dirs, ref, source, fromMs, toMs, columns, unit } = params
+  const { dirs, ref, source, fromMs, toMs, columns, unit, signal } = params
   const bucketMs = source === 'coarse' ? SUMMARY_COARSE_MS : SUMMARY_FINE_MS
   const columnMs = columnMsFor(fromMs, toMs, columns, bucketMs)
-  const read = await readHourChannels(dirs, ref, source, fromMs, toMs)
+  const read = await readHourChannels(dirs, ref, source, fromMs, toMs, signal)
   const levels: ScaledLevel[] = []
   let unscaledHours = 0
   for (const h of read.hours) {
@@ -566,7 +572,14 @@ async function ugPerLsbOfHour(
   return null
 }
 
-async function readRawSamples(dirs: RecordDirs, ref: ChannelRef, fromMs: number, toMs: number, unit: UnitChoice): Promise<SamplesResult> {
+async function readRawSamples(
+  dirs: RecordDirs,
+  ref: ChannelRef,
+  fromMs: number,
+  toMs: number,
+  unit: UnitChoice,
+  signal: AbortSignal,
+): Promise<SamplesResult> {
   const files: FileTally = { read: 0, missing: 0, failed: 0 }
   let skippedBytes = 0
   let badRecords = 0
@@ -578,6 +591,7 @@ async function readRawSamples(dirs: RecordDirs, ref: ChannelRef, fromMs: number,
   const last = jstHourStartMs(toMs - 1)
   if (first === null || last === null) return { unit: unitLabelOf(ref, unit), runs, files, problems: { skippedBytes, badRecords, unscaledHours } }
   for (let at = first; at <= last; at += HOUR_MS) {
+    signal.throwIfAborted()
     const hourKey = jstHour(at)
     if (hourKey === null) continue
     let buf: Buffer
@@ -621,8 +635,11 @@ async function readStationSamples(
   ref: Extract<ChannelRef, { kind: 'station' }>,
   fromMs: number,
   toMs: number,
+  signal: AbortSignal,
 ): Promise<SamplesResult> {
   const read = await readWaveRangeByToken({ dir: dirs.waveDir, stationKey: ref.stationKey, fromMs, toMs })
+  // 10 分までなので開くのは 1〜2 時ぶん。読み終えてから確かめれば足りる（解いた後の組み立てを省く）。
+  signal.throwIfAborted()
   const runs: SampleRun[] = []
   for (const c of read.chunks) {
     const run = trimRun(c.firstSampleMs, c.msPerSample, c.gal[ref.axis], 1, fromMs, toMs, c.revised ? 'revised' : 'live', false)
@@ -636,16 +653,20 @@ async function readStationSamples(
   }
 }
 
-/** 範囲 `[fromMs, toMs)` の生のサンプルを読む。範囲の広さは呼び出し側が {@link SAMPLES_RANGE_MAX_MS} 以内に抑えること。投げない。 */
+/**
+ * 範囲 `[fromMs, toMs)` の生のサンプルを読む。範囲の広さは呼び出し側が {@link SAMPLES_RANGE_MAX_MS} 以内に抑えること。
+ * 投げるのは `signal` が中断されたときだけ。
+ */
 export async function readSamples(params: {
   readonly dirs: RecordDirs
   readonly ref: ChannelRef
   readonly fromMs: number
   readonly toMs: number
   readonly unit: UnitChoice
+  readonly signal: AbortSignal
 }): Promise<SamplesResult> {
-  const { dirs, ref, fromMs, toMs, unit } = params
-  return ref.kind === 'raw' ? readRawSamples(dirs, ref, fromMs, toMs, unit) : readStationSamples(dirs, ref, fromMs, toMs)
+  const { dirs, ref, fromMs, toMs, unit, signal } = params
+  return ref.kind === 'raw' ? readRawSamples(dirs, ref, fromMs, toMs, unit, signal) : readStationSamples(dirs, ref, fromMs, toMs, signal)
 }
 
 /** 生のサンプルから列を作る（要約より細かく見るとき）。 */
@@ -656,6 +677,7 @@ export async function readSamplesEnvelope(params: {
   readonly toMs: number
   readonly columns: number
   readonly unit: UnitChoice
+  readonly signal: AbortSignal
 }): Promise<{ readonly unit: 'gal' | 'count'; readonly columns: EnvelopeColumns; readonly files: FileTally; readonly problems: ReadProblems }> {
   const { fromMs, toMs, columns } = params
   const samples = await readSamples(params)
@@ -700,15 +722,17 @@ function clipSpans(spans: readonly ReceptionSpan[], fromMs: number, toMs: number
 
 /**
  * 範囲 `[fromMs, toMs)` の受信の記録の要約を読む（生データの時ごと）。`sensor` を渡せばそのセンサーだけ。
- * **要約の無い時は `pending`・`absent` として数える**（帯が無いのと「まだ作っていない」を混ぜない）。投げない。
+ * **要約の無い時は `pending`・`absent` として数える**（帯が無いのと「まだ作っていない」を混ぜない）。
+ * 投げるのは `signal` が中断されたときだけ。
  */
 export async function readReception(params: {
   readonly dirs: RecordDirs
   readonly fromMs: number
   readonly toMs: number
   readonly sensor: string | null
+  readonly signal: AbortSignal
 }): Promise<ReceptionRangeResult> {
-  const { dirs, fromMs, toMs, sensor } = params
+  const { dirs, fromMs, toMs, sensor, signal } = params
   const tally = emptyTally()
   const bySensor = new Map<string, { backlog: ReceptionSpan[]; late: ReceptionSpan[]; questionable: ReceptionSpan[] }>()
   const items: UnreadableEntry[] = []
@@ -736,6 +760,7 @@ export async function readReception(params: {
     return { state: sourceBytes === null || sourceBytes === summary.sourceBytes ? 'ok' : 'stale', summary }
   }
   for (let i = 0; i < starts.length; i += READ_PARALLEL) {
+    signal.throwIfAborted()
     const batch = await Promise.all(starts.slice(i, i + READ_PARALLEL).map(readOne))
     for (const { state, summary } of batch) {
       tally[state] += 1
@@ -786,7 +811,8 @@ export interface SpectrumResult {
 
 /**
  * 範囲のスペクトル。**{@link SAMPLES_RANGE_MAX_MS} 以内なら生のサンプルから Welch で出し**、それより
- * 広ければ前もって作った 1 分ごとの PSD を、範囲に丸ごと入る分だけ区間の数で重みを付けて平均する。投げない。
+ * 広ければ前もって作った 1 分ごとの PSD を、範囲に丸ごと入る分だけ区間の数で重みを付けて平均する。
+ * 投げるのは `signal` が中断されたときだけ。
  */
 export async function readSpectrum(params: {
   readonly dirs: RecordDirs
@@ -794,8 +820,9 @@ export async function readSpectrum(params: {
   readonly fromMs: number
   readonly toMs: number
   readonly unit: UnitChoice
+  readonly signal: AbortSignal
 }): Promise<SpectrumResult & { readonly hours: HourTally | null; readonly files: FileTally | null }> {
-  const { dirs, ref, fromMs, toMs, unit } = params
+  const { dirs, ref, fromMs, toMs, unit, signal } = params
   if (toMs - fromMs <= SAMPLES_RANGE_MAX_MS) {
     const samples = await readSamples(params)
     const psd = intervalPsd(samples.runs, fromMs, toMs)
@@ -812,7 +839,7 @@ export async function readSpectrum(params: {
   }
   const firstMinute = Math.ceil(fromMs / SUMMARY_COARSE_MS)
   const endMinute = Math.floor(toMs / SUMMARY_COARSE_MS)
-  const read = await readHourChannels(dirs, ref, 'psd', fromMs, toMs)
+  const read = await readHourChannels(dirs, ref, 'psd', fromMs, toMs, signal)
   const acc = new Float64Array(PSD_BIN_COUNT)
   const n = new Float64Array(PSD_BIN_COUNT)
   let segments = 0
@@ -887,7 +914,7 @@ const SPECTROGRAM_SAMPLES_PAD_MS = 6000
  * 列ごとのスペクトル。**{@link SAMPLES_RANGE_MAX_MS} 以内なら生のサンプルから**、約 10 秒の区間を中心の時刻が
  * 入る列へ積む（列は 6 秒以上）。範囲の端の列まで区間を作るため、前後を区間の半分ずつ余分に読む。
  * それより広ければ前もって作った 1 分ごとの PSD を列へ束ねる（列の幅は 1 分の整数倍。列の中の分は、
- * 区間の数で重みを付けて平均する）。投げない。
+ * 区間の数で重みを付けて平均する）。投げるのは `signal` が中断されたときだけ。
  */
 export async function readSpectrogram(params: {
   readonly dirs: RecordDirs
@@ -896,11 +923,19 @@ export async function readSpectrogram(params: {
   readonly toMs: number
   readonly columns: number
   readonly unit: UnitChoice
+  readonly signal: AbortSignal
 }): Promise<SpectrogramResult> {
-  const { dirs, ref, fromMs, toMs, columns, unit } = params
+  const { dirs, ref, fromMs, toMs, columns, unit, signal } = params
   if (toMs - fromMs <= SAMPLES_RANGE_MAX_MS) {
     const columnMs = Math.max(SPECTROGRAM_SAMPLES_MIN_COLUMN_MS, columnMsFor(fromMs, toMs, columns, 1000))
-    const samples = await readSamples({ dirs, ref, fromMs: fromMs - SPECTROGRAM_SAMPLES_PAD_MS, toMs: toMs + SPECTROGRAM_SAMPLES_PAD_MS, unit })
+    const samples = await readSamples({
+      dirs,
+      ref,
+      fromMs: fromMs - SPECTROGRAM_SAMPLES_PAD_MS,
+      toMs: toMs + SPECTROGRAM_SAMPLES_PAD_MS,
+      unit,
+      signal,
+    })
     const psd = columnPsd(samples.runs, fromMs, toMs, columnMs)
     return {
       source: 'samples',
@@ -922,7 +957,7 @@ export async function readSpectrogram(params: {
   const acc = Array.from({ length: count }, () => new Float64Array(PSD_BIN_COUNT))
   const n = Array.from({ length: count }, () => new Float64Array(PSD_BIN_COUNT))
   const segments = new Array<number>(count).fill(0)
-  const read = await readHourChannels(dirs, ref, 'psd', fromMs, toMs)
+  const read = await readHourChannels(dirs, ref, 'psd', fromMs, toMs, signal)
   let unscaledHours = 0
   for (const h of read.hours) {
     const psd = h.channel.psd

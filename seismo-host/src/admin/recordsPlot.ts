@@ -25,8 +25,11 @@ export const SAMPLES_RANGE_MAX_MS = 10 * MINUTE_MS
 export const COLUMNS_MAX = 4096
 /** 寄せられる幅の下限。100 Hz なら 10 サンプル —— 1 サンプルずつの点が見分けられる。 */
 export const MIN_SPAN_MS = 100
-/** 全体の帯で読む範囲の上限（ホストの `RECORDS_RANGE_MAX_MS` と同じ 400 日）。 */
-export const OVERVIEW_RANGE_MAX_MS = 400 * DAY_MS
+/**
+ * 一度に読む範囲の上限（ホストの `RECORDS_RANGE_MAX_MS` と同じ 400 日）。**全体の帯にも、段の範囲にも掛ける** ——
+ * 記録が 400 日より長い機で段だけを期間の幅まで広げると、ホストが `range-too-wide` で弾いて何も描けない。
+ */
+export const RANGE_MAX_MS = 400 * DAY_MS
 
 // ---- 一覧 -----------------------------------------------------------------------------------
 
@@ -279,12 +282,20 @@ export function boundsOf(g: RecordGroup): TimeRange {
 }
 
 /**
- * 範囲を期間の中へ収める。**幅は {@link MIN_SPAN_MS} から期間の幅まで**、はみ出した分は位置をずらして戻す
- * （幅は変えない）。端は整数のミリ秒へ —— ホストは整数でない時刻を `bad-range` で弾く。
+ * 「全体」の幅。期間の幅だが、{@link RANGE_MAX_MS} を超えればそこまで。**範囲の切り詰め（`clampRange`・`withSpan`）と
+ * 「全体」が押された見た目の判定（`viewRecords.ts`）はどれもこれを使う** —— 別々に求めると、400 日を超える記録で「全体」を
+ * 押しても押された見た目にならない。全体の帯（{@link overviewRange}）も同じ新しい側の範囲を指す。
+ */
+export function fullSpanMs(bounds: TimeRange): number {
+  return Math.min(bounds.toMs - bounds.fromMs, RANGE_MAX_MS)
+}
+
+/**
+ * 範囲を期間の中へ収める。**幅は {@link MIN_SPAN_MS} から {@link fullSpanMs} まで**、
+ * はみ出した分は位置をずらして戻す（幅は変えない）。端は整数のミリ秒へ —— ホストは整数でない時刻を `bad-range` で弾く。
  */
 export function clampRange(r: TimeRange, bounds: TimeRange): TimeRange {
-  const boundsSpan = bounds.toMs - bounds.fromMs
-  const span = Math.min(Math.max(r.toMs - r.fromMs, MIN_SPAN_MS), boundsSpan)
+  const span = Math.min(Math.max(r.toMs - r.fromMs, MIN_SPAN_MS), fullSpanMs(bounds))
   let fromMs = Number.isFinite(r.fromMs) ? r.fromMs : bounds.fromMs
   if (fromMs < bounds.fromMs) fromMs = bounds.fromMs
   if (fromMs + span > bounds.toMs) fromMs = bounds.toMs - span
@@ -292,9 +303,9 @@ export function clampRange(r: TimeRange, bounds: TimeRange): TimeRange {
   return { fromMs, toMs: fromMs + Math.round(span) }
 }
 
-/** 中心を保って幅を変える。`spanMs` が null なら期間の全体。 */
+/** 中心を保って幅を変える。`spanMs` が null なら期間の全体（長ければ全体の帯と同じ新しい側の {@link RANGE_MAX_MS}）。 */
 export function withSpan(r: TimeRange, spanMs: number | null, bounds: TimeRange): TimeRange {
-  if (spanMs === null) return clampRange(bounds, bounds)
+  if (spanMs === null) return clampRange({ fromMs: bounds.toMs - fullSpanMs(bounds), toMs: bounds.toMs }, bounds)
   const center = (r.fromMs + r.toMs) / 2
   return clampRange({ fromMs: center - spanMs / 2, toMs: center + spanMs / 2 }, bounds)
 }
@@ -318,10 +329,10 @@ export function centerAt(r: TimeRange, atMs: number, bounds: TimeRange): TimeRan
   return clampRange({ fromMs: atMs - half, toMs: atMs + half }, bounds)
 }
 
-/** 全体の帯で読む範囲。**期間が長ければ新しい側の {@link OVERVIEW_RANGE_MAX_MS} に留める。** */
+/** 全体の帯で読む範囲。**期間が長ければ新しい側の {@link RANGE_MAX_MS} に留める。** */
 export function overviewRange(g: RecordGroup): TimeRange {
   const b = boundsOf(g)
-  return { fromMs: Math.max(b.fromMs, b.toMs - OVERVIEW_RANGE_MAX_MS), toMs: b.toMs }
+  return { fromMs: Math.max(b.fromMs, b.toMs - RANGE_MAX_MS), toMs: b.toMs }
 }
 
 // ---- 取り方 ---------------------------------------------------------------------------------
@@ -761,7 +772,7 @@ export function traceValueAt(t: AxisTrace, atMs: number): TraceValue | null {
 }
 
 /**
- * 3 軸の合成（選んだ軸だけ・各軸の範囲の平均を引いてから √Σ²）。**サンプルで描くときだけ作る** ——
+ * 軸の合成（見えている軸だけ・各軸の範囲の平均を引いてから √Σ²）。**サンプルで描くときだけ作る** ——
  * 列の上下の端からは、同じ時刻に揃った値が取れない（各軸の山は列の中の別の時刻にありうる）。
  *
  * 時刻は 1 本目の軸の刻みに揃え、他の軸はその時刻にいちばん近い 1 点を使う。**1 軸でも値が無い時刻は NaN**
@@ -869,8 +880,12 @@ export function unreadableListNote(n: number): string | null {
 
 export const EMPTY_RANGE_TEXT = 'この範囲に記録は無い'
 export const TOKEN_MISSING_TEXT = '管理トークンを設定すると読める'
-export const COMPOSITE_TITLE = '3 軸の合成'
-export const COMPOSITE_TOO_WIDE_TEXT = '3 軸の合成は 10 分以内まで寄せると出る'
+/**
+ * 合成の段の見出し。**見えている軸だけで合成する**ので軸の数を名乗らない（PWA の詳細の窓と同じ。
+ * 2026-10-08 ユーザー承認）。
+ */
+export const COMPOSITE_TITLE = '合成'
+export const COMPOSITE_TOO_WIDE_TEXT = '合成は 10 分以内まで寄せると出る'
 export const INTENSITY_TITLE = 'リアルタイム震度の推移'
 export const INTENSITY_TOO_WIDE_TEXT = '震度の推移は 10 分以内まで寄せると出る'
 export const INTENSITY_STATION_ONLY_TEXT = '震度の推移は観測点の合成波形にだけ出る'

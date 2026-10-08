@@ -140,8 +140,13 @@ describe('binAt', () => {
     expect(binAt(EDGES, 0.5)).toBe(0)
     expect(binAt(EDGES, 1)).toBe(1)
     expect(binAt(EDGES, 49.9)).toBe(2)
-    expect(binAt(EDGES, 50)).toBe(-1)
     expect(binAt(EDGES, 0.05)).toBe(-1)
+    expect(binAt(EDGES, 50.01)).toBe(-1)
+  })
+
+  it('最後の区画だけ上端ちょうどを含む（枠の端を指しても読み取りが消えない）。途中の境目は上の区画へ', () => {
+    expect(binAt(EDGES, 50)).toBe(2)
+    expect(binAt(EDGES, 1)).toBe(1)
   })
 })
 
