@@ -13,7 +13,9 @@ import { decodeSummaryPart } from './waveSummary'
 import {
   buildSummaryFile,
   hourStartOf,
+  listSummaryFiles,
   listSummaryJobs,
+  removeSummaryFiles,
   rawSummaryPath,
   receptionSummaryPath,
   summarizedSourceBytes,
@@ -192,5 +194,58 @@ describe('summarizedSourceBytes', () => {
     // 途中で落ちて PSD を書けなかった跡（1 秒・1 分の部分は新しい）
     rmSync(summaryPartPath(summaryPath, 'psd'))
     expect(await summarizedSourceBytes(summaryPath)).toBeNull()
+  })
+})
+
+describe('listSummaryFiles', () => {
+  function touch(path: string): void {
+    mkdirSync(join(path, '..'), { recursive: true })
+    writeFileSync(path, 'x')
+  }
+
+  it('要約の置き場所を、元の名前ごとに部分と受信の記録をまとめて返す（書きかけの一時ファイルも含める）', async () => {
+    const raw = rawSummaryPath(summaryDir, HOUR_KEY)
+    const wave = waveSummaryPath(summaryDir, 'home-abc', HOUR_KEY)
+    for (const part of ['fine', 'coarse', 'psd'] as const) touch(summaryPartPath(raw, part))
+    touch(receptionSummaryPath(raw))
+    touch(`${summaryPartPath(raw, 'psd')}.tmp`)
+    for (const part of ['fine', 'coarse', 'psd'] as const) touch(summaryPartPath(wave, part))
+
+    const listed = await listSummaryFiles(summaryDir)
+    expect(listed.errors).toEqual([])
+    const byPath = new Map(listed.summaries.map((s) => [s.summaryPath, s]))
+    expect([...byPath.keys()].sort()).toEqual([raw, wave].sort())
+    expect(byPath.get(raw)!.kind).toBe('raw')
+    expect(byPath.get(raw)!.files).toHaveLength(5)
+    expect(byPath.get(wave)!.kind).toBe('wave')
+    expect(byPath.get(wave)!.files).toHaveLength(3)
+  })
+
+  it('要約でないファイル・地震一覧の控え（quakes/）には触れない', async () => {
+    touch(join(summaryDir, 'quakes', '2026-10-07.json'))
+    touch(join(summaryDir, 'raw', '2026-10-07', 'memo.txt'))
+    touch(join(summaryDir, 'wave', 'readme.wsum'))
+    const listed = await listSummaryFiles(summaryDir)
+    expect(listed).toEqual({ summaries: [], errors: [] })
+  })
+
+  it('名前の日付と置き場所の日が違う要約は拾わない（元があっても捨てる側へ倒さない）', async () => {
+    touch(join(summaryDir, 'raw', '2026-10-06', 'raw-2026-10-07T12.psd.wsum'))
+    const listed = await listSummaryFiles(summaryDir)
+    expect(listed).toEqual({ summaries: [], errors: [] })
+  })
+
+  it('置き場所がまだ無いのは異常ではない', async () => {
+    expect(await listSummaryFiles(join(root, 'nowhere'))).toEqual({ summaries: [], errors: [] })
+  })
+})
+
+describe('removeSummaryFiles', () => {
+  it('渡したファイルを消す。既に無いものは数えない', async () => {
+    const raw = rawSummaryPath(summaryDir, HOUR_KEY)
+    mkdirSync(join(raw, '..'), { recursive: true })
+    writeFileSync(summaryPartPath(raw, 'fine'), 'x')
+    await removeSummaryFiles([summaryPartPath(raw, 'fine'), summaryPartPath(raw, 'coarse')])
+    expect(readdirSync(join(raw, '..'))).toEqual([])
   })
 })

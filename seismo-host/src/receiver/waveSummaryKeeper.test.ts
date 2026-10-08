@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import type { SummaryJob, SummaryJobResult } from './waveSummaryFiles'
+import type { SummaryJob, SummaryJobResult, SummaryOnDisk } from './waveSummaryFiles'
 import { WaveSummaryKeeper } from './waveSummaryKeeper'
 
 const HOUR_MS = 3_600_000
@@ -30,9 +30,16 @@ function harness(params: {
   listErrors?: string[]
   /** 大きさを読もうとすると投げる元のファイル（見回りのたびに読み直す）。 */
   sizeThrows?: Set<string>
+  /** 要約の置き場所にあるもの。 */
+  summaries?: SummaryOnDisk[]
+  summaryListErrors?: string[]
+  /** 捨てようとすると投げる要約（名前の元）。 */
+  removeThrows?: Set<string>
 }) {
   let now = params.nowMs
   const ran: string[] = []
+  const removed: string[] = []
+  const logs: string[] = []
   const keeper = new WaveSummaryKeeper({
     rawDir: 'raw',
     waveDir: 'wave',
@@ -45,6 +52,13 @@ function harness(params: {
       return params.sizes.get(p) ?? null
     },
     summarizedBytes: async (p) => params.summarized?.get(p) ?? null,
+    listSummaries: async () => ({ summaries: params.summaries ?? [], errors: params.summaryListErrors ?? [] }),
+    removeSummary: async (files) => {
+      const owner = params.summaries?.find((s) => s.files === files)
+      if (owner !== undefined && params.removeThrows?.has(owner.summaryPath)) throw new Error('EPERM')
+      removed.push(...files)
+    },
+    log: (line) => logs.push(line),
     run: async (j): Promise<SummaryJobResult> => {
       ran.push(j.hourKey)
       if (params.fail?.has(j.sourcePath)) return { ok: false, error: '読めない' }
@@ -62,6 +76,8 @@ function harness(params: {
   return {
     keeper,
     ran,
+    removed,
+    logs,
     advance: (ms: number) => {
       now += ms
     },
@@ -237,6 +253,8 @@ describe('WaveSummaryKeeper', () => {
       list: async () => ({ jobs: [current], errors: [] }),
       sizeOf: async (p) => sizes.get(p) ?? null,
       summarizedBytes: async () => null,
+      // 実際の置き場所を読ませない（作業ディレクトリの sum/ に触れない）
+      listSummaries: async () => ({ summaries: [], errors: [] }),
       // 作り終えたのは 90 バイトの時点まで（読んでいる間に伸びた）
       run: async () => ({ ok: true, sourceBytes: 90, summaryBytes: 1, channels: 1, problems: { skippedBytes: 0, badRecords: 0 }, outOfWindowSamples: 0, ms: 1 }),
     })
@@ -251,6 +269,7 @@ describe('WaveSummaryKeeper', () => {
       waveDir: 'wave',
       summaryDir: 'sum',
       list: async () => ({ jobs: [], errors: ['生データの置き場所を読めず: EACCES'] }),
+      listSummaries: async () => ({ summaries: [], errors: [] }),
       run: async () => ({ ok: false, error: '呼ばれない' }),
     })
     await keeper.tick()
@@ -262,6 +281,10 @@ describe('WaveSummaryKeeper', () => {
   it('見回りが重なったら、後のほうは何もしない', async () => {
     const j = job(H12 - HOUR_MS)
     let release: () => void = () => undefined
+    let entered: () => void = () => undefined
+    const runEntered = new Promise<void>((r) => {
+      entered = r
+    })
     let calls = 0
     const keeper = new WaveSummaryKeeper({
       rawDir: 'raw',
@@ -271,20 +294,180 @@ describe('WaveSummaryKeeper', () => {
       list: async () => ({ jobs: [j], errors: [] }),
       sizeOf: async () => 100,
       summarizedBytes: async () => null,
+      // 実際の置き場所を読ませない（読みが挟まると run へ入る時刻がずれ、作業ディレクトリの sum/ にも触れる）
+      listSummaries: async () => ({ summaries: [], errors: [] }),
       run: () =>
         new Promise((resolve) => {
           calls += 1
           release = () => resolve({ ok: true, sourceBytes: 100, summaryBytes: 1, channels: 1, problems: { skippedBytes: 0, badRecords: 0 }, outOfWindowSamples: 0, ms: 1 })
+          entered()
         }),
     })
     const first = keeper.tick()
-    // 1 回目が run の中で待っている間に 2 回目
-    await new Promise((r) => setTimeout(r, 0))
+    // 1 回目が run の中で待っている間に 2 回目（時間ではなく、run へ入った合図で待つ）
+    await runEntered
     await keeper.tick()
     expect(keeper.snapshot().running).toBe(true)
     release()
     await first
     expect(calls).toBe(1)
     expect(keeper.snapshot().running).toBe(false)
+  })
+})
+
+describe('WaveSummaryKeeper — 元のファイルが無くなった要約を捨てる', () => {
+  function onDisk(j: SummaryJob): SummaryOnDisk {
+    return { kind: j.kind, summaryPath: j.summaryPath, files: [`${j.summaryPath}.fine.wsum`, `${j.summaryPath}.psd.wsum`] }
+  }
+  const kept = job(H12 - HOUR_MS)
+  const keptWave = job(H12 - HOUR_MS, 'wave')
+  const goneRaw = job(H12 - 5 * HOUR_MS)
+  const goneWave = job(H12 - 5 * HOUR_MS, 'wave')
+  const sizesOf = (jobs: SummaryJob[]) => new Map(jobs.map((j) => [j.sourcePath, 100]))
+  const upToDate = (jobs: SummaryJob[]) => new Map(jobs.map((j) => [j.summaryPath, 100]))
+
+  it('元の一覧に無い要約は、部分も含めて捨て、数えてログに残す（正）', async () => {
+    const jobs = [kept, keptWave]
+    const h = harness({
+      jobs,
+      sizes: sizesOf(jobs),
+      summarized: upToDate(jobs),
+      nowMs: H12 + 10 * 60_000,
+      summaries: [onDisk(kept), onDisk(keptWave), onDisk(goneRaw), onDisk(goneWave)],
+    })
+    await h.keeper.tick()
+    expect(h.removed.sort()).toEqual([...onDisk(goneRaw).files, ...onDisk(goneWave).files].sort())
+    expect(h.keeper.snapshot()).toMatchObject({ removed: 2, scanErrors: 0 })
+    expect(h.logs).toHaveLength(2)
+  })
+
+  it('数え上げた後に元が消えた（大きさが無い）要約も捨てる（正）', async () => {
+    const jobs = [kept, goneRaw]
+    const h = harness({
+      jobs,
+      sizes: sizesOf([kept]),
+      summarized: upToDate(jobs),
+      nowMs: H12 + 10 * 60_000,
+      summaries: [onDisk(kept), onDisk(goneRaw)],
+    })
+    await h.keeper.tick()
+    expect(h.removed).toEqual(onDisk(goneRaw).files)
+  })
+
+  it('元のある要約は捨てない（対照）', async () => {
+    const jobs = [kept, keptWave]
+    const h = harness({
+      jobs,
+      sizes: sizesOf(jobs),
+      summarized: upToDate(jobs),
+      nowMs: H12 + 10 * 60_000,
+      summaries: [onDisk(kept), onDisk(keptWave)],
+    })
+    await h.keeper.tick()
+    expect(h.removed).toEqual([])
+    expect(h.keeper.snapshot().removed).toBe(0)
+  })
+
+  it('元の大きさを読み損ねた要約は捨てない（安全弁）', async () => {
+    const jobs = [kept, goneRaw]
+    const h = harness({
+      jobs,
+      sizes: sizesOf(jobs),
+      summarized: upToDate(jobs),
+      nowMs: H12 + 10 * 60_000,
+      sizeThrows: new Set([goneRaw.sourcePath]),
+      summaries: [onDisk(kept), onDisk(goneRaw)],
+    })
+    await h.keeper.tick()
+    expect(h.removed).toEqual([])
+  })
+
+  it('元の一覧を作れなかった回は 1 本も捨てない（安全弁）', async () => {
+    const jobs = [kept]
+    const h = harness({
+      jobs,
+      sizes: sizesOf(jobs),
+      summarized: upToDate(jobs),
+      nowMs: H12 + 10 * 60_000,
+      listErrors: ['2026-10-07 を読めず'],
+      summaries: [onDisk(kept), onDisk(goneRaw)],
+    })
+    await h.keeper.tick()
+    expect(h.removed).toEqual([])
+  })
+
+  it('要約の置き場所を読み損ねた回は 1 本も捨てない（安全弁）', async () => {
+    const jobs = [kept]
+    const h = harness({
+      jobs,
+      sizes: sizesOf(jobs),
+      summarized: upToDate(jobs),
+      nowMs: H12 + 10 * 60_000,
+      summaries: [onDisk(kept), onDisk(goneRaw)],
+      summaryListErrors: ['要約 2026-10-07 を読めず'],
+    })
+    await h.keeper.tick()
+    expect(h.removed).toEqual([])
+    expect(h.keeper.snapshot().scanErrors).toBe(1)
+  })
+
+  it('その種類の元が 1 本も見つからない回は、その種類の要約を捨てない（安全弁）', async () => {
+    // 生データの置き場所が見えていない（付け替え・ドライブの外れ）。合成波形の元はある。
+    const jobs = [keptWave]
+    const h = harness({
+      jobs,
+      sizes: sizesOf(jobs),
+      summarized: upToDate(jobs),
+      nowMs: H12 + 10 * 60_000,
+      summaries: [onDisk(kept), onDisk(goneRaw), onDisk(keptWave), onDisk(goneWave)],
+    })
+    await h.keeper.tick()
+    expect(h.removed).toEqual(onDisk(goneWave).files)
+  })
+
+  it('捨てられなかった要約は数えて記録し、残りは捨て続ける', async () => {
+    const jobs = [kept]
+    const h = harness({
+      jobs,
+      sizes: sizesOf(jobs),
+      summarized: upToDate(jobs),
+      nowMs: H12 + 10 * 60_000,
+      summaries: [onDisk(kept), onDisk(goneRaw), onDisk(job(H12 - 6 * HOUR_MS))],
+      removeThrows: new Set([goneRaw.summaryPath]),
+    })
+    await h.keeper.tick()
+    expect(h.removed).toEqual(onDisk(job(H12 - 6 * HOUR_MS)).files)
+    expect(h.keeper.snapshot()).toMatchObject({ removed: 1, scanErrors: 1 })
+    expect(h.keeper.snapshot().lastError).toContain('捨てられず')
+    // ファイルを消す操作の失敗はログにも出す（lastError は後の失敗で上書きされうる）
+    expect(h.logs.filter((l) => l.includes('捨てられず'))).toHaveLength(1)
+  })
+
+  it('要約の置き場所の数え上げが投げても、同じ回の要約作りは止めない', async () => {
+    const j = job(H12 - HOUR_MS)
+    const ran: string[] = []
+    const keeper = new WaveSummaryKeeper({
+      rawDir: 'raw',
+      waveDir: 'wave',
+      summaryDir: 'sum',
+      now: () => H12 + 10 * 60_000,
+      list: async () => ({ jobs: [j], errors: [] }),
+      sizeOf: async () => 100,
+      summarizedBytes: async () => null,
+      listSummaries: async () => {
+        throw new Error('EIO')
+      },
+      removeSummary: async () => {
+        throw new Error('呼ばれてはならない')
+      },
+      run: async (x): Promise<SummaryJobResult> => {
+        ran.push(x.hourKey)
+        return { ok: true, sourceBytes: 100, summaryBytes: 1, channels: 1, problems: { skippedBytes: 0, badRecords: 0 }, outOfWindowSamples: 0, ms: 1 }
+      },
+    })
+    await keeper.tick()
+    expect(ran).toEqual([j.hourKey])
+    expect(keeper.snapshot()).toMatchObject({ built: 1, removed: 0, scanErrors: 1 })
+    expect(keeper.snapshot().lastError).toContain('数え上げられず')
   })
 })

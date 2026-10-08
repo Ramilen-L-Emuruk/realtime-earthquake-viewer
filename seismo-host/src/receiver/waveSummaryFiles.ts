@@ -169,6 +169,87 @@ export async function listSummaryJobs(dirs: {
   return { jobs, errors }
 }
 
+/** 置き場所にある要約 1 本（元の名前ごとに、部分・受信の記録・書きかけの一時ファイルをまとめたもの）。 */
+export interface SummaryOnDisk {
+  readonly kind: 'raw' | 'wave'
+  /** 名前の元（`SummaryJob.summaryPath` と同じ形）。 */
+  readonly summaryPath: string
+  readonly files: string[]
+}
+
+export interface SummaryListResult {
+  readonly summaries: SummaryOnDisk[]
+  /** 読み損ねた場所。**1 つでもあれば、この回の一覧で「無い」と判断してはならない。** */
+  readonly errors: string[]
+}
+
+const SUMMARY_SUFFIX_RE = new RegExp(
+  `\\.(?:(?:${SUMMARY_PARTS.join('|')})\\.wsum|reception\\.json)(?:\\.tmp)?$`,
+)
+const WAVE_SUMMARY_BASE_RE = /^wave-.+-\d{4}-\d{2}-\d{2}T\d{2}$/
+
+/**
+ * 要約の置き場所（`raw/<日>/` と `wave/`）にある要約を数え上げる。**要約の名前の形をしたものだけ**
+ * を拾い、それ以外（地震一覧の控え `quakes/` など）には触れない。置き場所がまだ無いのは異常ではない。
+ */
+export async function listSummaryFiles(summaryDir: string): Promise<SummaryListResult> {
+  const groups = new Map<string, SummaryOnDisk>()
+  const errors: string[] = []
+  const add = (kind: 'raw' | 'wave', dir: string, name: string, baseRe: RegExp): void => {
+    const m = SUMMARY_SUFFIX_RE.exec(name)
+    if (m === null) return
+    const base = name.slice(0, m.index)
+    if (!baseRe.test(base)) return
+    const summaryPath = join(dir, base)
+    let g = groups.get(summaryPath)
+    if (g === undefined) {
+      g = { kind, summaryPath, files: [] }
+      groups.set(summaryPath, g)
+    }
+    g.files.push(join(dir, name))
+  }
+
+  const rawRoot = join(summaryDir, 'raw')
+  let days: string[] = []
+  try {
+    days = (await readdir(rawRoot)).filter((d) => DAY_DIR_RE.test(d))
+  } catch (error) {
+    if (!isMissing(error)) errors.push(`要約（生データ）の置き場所を読めず: ${messageOf(error)}`)
+  }
+  for (const day of days) {
+    const dir = join(rawRoot, day)
+    // **名前の日付と置き場所の日が違うものは拾わない。** 書き手（`rawSummaryPath`）は必ず揃えて置くので、
+    // 違うものは書き手以外が置いたもの。拾うと元の名前と突き合わず、元があっても捨てる側へ倒れる。
+    const sameDay = new RegExp(`^raw-${day}T\\d{2}$`)
+    try {
+      for (const name of await readdir(dir)) add('raw', dir, name, sameDay)
+    } catch (error) {
+      if (!isMissing(error)) errors.push(`要約 ${day} を読めず: ${messageOf(error)}`)
+    }
+  }
+
+  const waveRoot = join(summaryDir, 'wave')
+  try {
+    for (const name of await readdir(waveRoot)) add('wave', waveRoot, name, WAVE_SUMMARY_BASE_RE)
+  } catch (error) {
+    if (!isMissing(error)) errors.push(`要約（合成波形）の置き場所を読めず: ${messageOf(error)}`)
+  }
+  return { summaries: [...groups.values()], errors }
+}
+
+/** 要約のファイルを消す。既に無いものは飛ばす。**消せなかったものがあれば、全部試してから最初の失敗を投げる。** */
+export async function removeSummaryFiles(files: readonly string[]): Promise<void> {
+  let first: unknown = null
+  for (const path of files) {
+    try {
+      await unlink(path)
+    } catch (error) {
+      if (!isMissing(error) && first === null) first = error
+    }
+  }
+  if (first !== null) throw first
+}
+
 /** 元のファイルの大きさ。無ければ `null`。 */
 export async function sourceSizeOf(path: string): Promise<number | null> {
   try {
