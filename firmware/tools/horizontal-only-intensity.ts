@@ -7,11 +7,10 @@
 // **震度は 2 つの方式で出す。** 計測震度（気象庁の方式・記録全体に 1 回）と、
 // リアルタイム震度の最大（ホストと同じ計算器・毎秒評価）。
 //
-// **計測震度は、記録の平均を引いてから計算する。** `calcSeismicIntensity` は記録を
-// そのまま 0 で詰めて FFT に掛けるので、K-NET の記録に残る直流のずれが詰め目で段差になり、
-// フィルタを抜けて震度を押し上げる（遠い観測点では 1 以上）。上下動は直流のずれが
-// 大きいので、引かずに比べると「上下を抜いたら大きく下がった」ように見えてしまう。
-// リアルタイム震度は計算器が最初の 1 秒の平均を引くので、ここでは何もしない。
+// **K-NET の記録に残る直流のずれは、どちらの方式も自分で引く。** 計測震度は
+// `applyJmaFilter` が記録全体の平均を引いてから 0 で詰め、リアルタイム震度は計算器が
+// 最初の 1 秒の平均を引く。ここでは生の値をそのまま渡す（重ねて引いても答えは変わらず、
+// 計算の側と二重に持つだけになる）。
 //
 // **階級の境目はアプリと同じ表**（`src/utils/measuredIntensity.ts`）から引く。この道具が数えるのは
 // 境目をまたいだかどうかなので、別の引き方をすると数えている当のものがずれる。
@@ -110,11 +109,6 @@ async function loadZip(origin: string, auth: string): Promise<Uint8Array | null>
   return buf
 }
 
-function demean(a: readonly number[]): number[] {
-  const m = a.reduce((p, x) => p + x, 0) / a.length
-  return a.map((x) => x - m)
-}
-
 /** リアルタイム震度の最大（毎秒評価）。刻みの決め方はホストと共有の関数に任せる。 */
 function realtimeMax(ns: readonly number[], ew: readonly number[], ud: readonly number[], hz: number): number | null {
   let max: number | null = null
@@ -204,13 +198,12 @@ async function main(): Promise<void> {
       const [NS, EW, UD] = [s.components.NS, s.components.EW, s.components.UD].map((a) => a.slice(0, len))
       const hz = s.samplingHz
       const zero = new Array<number>(len).fill(0)
-      const [ns, ew, ud] = [demean(NS), demean(EW), demean(UD)]
       try {
         rows.push({
           event: ev.id,
           station: s.stationCode,
-          jma3: calcSeismicIntensity(ns, ew, ud, hz),
-          jmaH: calcSeismicIntensity(ns, ew, zero, hz),
+          jma3: calcSeismicIntensity(NS, EW, UD, hz),
+          jmaH: calcSeismicIntensity(NS, EW, zero, hz),
           rt3: realtimeMax(NS, EW, UD, hz),
           rtH: realtimeMax(NS, EW, zero, hz),
         })

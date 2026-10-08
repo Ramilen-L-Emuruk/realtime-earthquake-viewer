@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import {
   applyJmaFilter,
+  calcSeismicIntensity,
   calcSeismicIntensityFromSynthesized,
   jmaFilterGain,
   synthesize3Components,
@@ -52,6 +53,54 @@ describe('applyJmaFilter', () => {
 
   test('空配列を渡すと空配列を返す', () => {
     expect(applyJmaFilter([], 100)).toEqual([])
+  })
+
+  // 気象庁のフィルタは直流のゲインが 0 なので、記録に一定のずれを足しても答えは変わらないはず。
+  // 2 の冪まで 0 で詰めると、ずれが詰め目で段差になってフィルタを抜ける —— 長さを 2 の冪から
+  // 外して（1000 点）、詰めが必ず起きる形で確かめる。
+  test('一定のずれを足しても、フィルタの出力は変わらない（正）', () => {
+    const sampleRateHz = 100
+    const signal = sineWave(2, 20, sampleRateHz, 1000)
+    const shifted = signal.map((v) => v + 50)
+
+    const a = applyJmaFilter(signal, sampleRateHz)
+    const b = applyJmaFilter(shifted, sampleRateHz)
+    for (let i = 0; i < a.length; i++) expect(b[i]).toBeCloseTo(a[i], 9)
+  })
+
+  test('渡した配列は書き換えない', () => {
+    const signal = [1, 2, 3, 4, 5]
+    applyJmaFilter(signal, 100)
+    expect(signal).toEqual([1, 2, 3, 4, 5])
+  })
+})
+
+describe('calcSeismicIntensity', () => {
+  const sampleRateHz = 100
+  const n = 1000
+  const ns = sineWave(2, 20, sampleRateHz, n)
+  const ew = sineWave(3, 15, sampleRateHz, n)
+  const ud = sineWave(5, 10, sampleRateHz, n)
+
+  test('3 成分それぞれに一定のずれを足しても、計測震度は変わらない（正）', () => {
+    const base = calcSeismicIntensity(ns, ew, ud, sampleRateHz)
+    const shifted = calcSeismicIntensity(
+      ns.map((v) => v + 30),
+      ew.map((v) => v - 20),
+      ud.map((v) => v + 980),
+      sampleRateHz,
+    )
+    expect(base).not.toBeNull()
+    expect(shifted).toBeCloseTo(base as number, 9)
+  })
+
+  // 引くのは記録全体で 1 つの平均だけ。記録の途中で水準が変わったものは揺れとして通す
+  // （平均を引いても段差は残る）。ずれを消すつもりで、途中の動きまで均してはいない。
+  test('記録の途中で水準が変わったものは、揺れとして震度に効く（対照）', () => {
+    const base = calcSeismicIntensity(ns, ew, ud, sampleRateHz) as number
+    const stepped = ns.map((v, i) => (i < n / 2 ? v : v + 50))
+    const withStep = calcSeismicIntensity(stepped, ew, ud, sampleRateHz) as number
+    expect(withStep).toBeGreaterThan(base + 0.5)
   })
 })
 

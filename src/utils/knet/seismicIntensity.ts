@@ -42,14 +42,23 @@ export function jmaFilterGain(fHz: number): number {
  * 加速度波形（等間隔サンプル）に気象庁の周期補正フィルターを適用する。
  * 内部でFFTのため2の冪へゼロ詰めし、フィルター後に逆FFTして元の長さへ切り詰める。
  * 実信号のみを扱うため逆FFT結果の虚部は無視する（丸め誤差程度に収まる前提）。
+ *
+ * **詰める前に記録全体の平均を引く。** フィルターは直流のゲインが 0 なので、記録に一定の
+ * ずれを足しても答えは変わらないはずだが、ずれを残したまま 0 で詰めると詰め目で段差になり、
+ * その段差が広い帯域に散ってフィルターを抜ける（K-NET の実波形 4 地震・2,305 点で、計測震度が
+ * リアルタイム震度より中央値で 0.61・上位 1 割で 2.28 高く出た。平均を引くと中央値 0.00）。
+ * 引くのは 1 つの値だけなので、記録の途中で水準が変わったものは揺れとして残る。
  */
 export function applyJmaFilter(samples: number[], sampleRateHz: number): number[] {
   const n = samples.length
   if (n === 0) return []
+  let sum = 0
+  for (let i = 0; i < n; i++) sum += samples[i]
+  const mean = sum / n
   const padded = nextPowerOfTwo(n)
   const re = new Float64Array(padded)
   const im = new Float64Array(padded)
-  for (let i = 0; i < n; i++) re[i] = samples[i]
+  for (let i = 0; i < n; i++) re[i] = samples[i] - mean
 
   fftInPlace(re, im, false)
   for (let k = 0; k < padded; k++) {
