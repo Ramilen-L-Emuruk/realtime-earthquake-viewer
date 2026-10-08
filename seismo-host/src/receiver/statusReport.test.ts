@@ -11,6 +11,7 @@ import type { StationHealth } from './stationHealth'
 import { buildStatusReport } from './statusReport'
 import type { StatusReportInput, WaveArchiveStatus } from './statusReport'
 import type { MseedHealth } from './mseedRecorder'
+import type { WaveSummaryKeeperStatus } from './waveSummaryKeeper'
 import type { DetectionStatus } from '../detection/stationDetection'
 
 const DETECTION_OK: DetectionStatus = {
@@ -86,6 +87,21 @@ const WAVE_OK: WaveArchiveStatus = {
   lastWriteError: null,
   revisedWritten: 0,
   revisedLost: 0,
+}
+
+const SUMMARY_OK: WaveSummaryKeeperStatus = {
+  dir: 'data/summary',
+  sources: 2,
+  upToDate: 2,
+  pending: 0,
+  built: 2,
+  failed: 0,
+  scanErrors: 0,
+  lastError: null,
+  lastBuiltHour: '2026-10-07T12',
+  lastBuildMs: 1400,
+  lastScanAtMs: 0,
+  running: false,
 }
 
 function segment(overrides: Partial<SegmentState['timebase']> = {}): SegmentState {
@@ -182,6 +198,7 @@ function input(overrides: Partial<StatusReportInput> = {}): StatusReportInput {
     mseed: MSEED_OK,
     stationHistory: { recorded: 1, writeFailures: 0, lastError: null },
     waveArchive: WAVE_OK,
+    waveSummary: SUMMARY_OK,
     hub: new ReadingHub().snapshot(),
     acks: new AckReplier({ enabled: true }).snapshot(),
     detection: DETECTION_OK,
@@ -600,5 +617,12 @@ describe('buildStatusReport', () => {
     // **時刻の欄が壊れても、残りは落とさない。** 判定そのものは読めている。
     expect(report.gravity.verdicts[0].scale).toBe('too-small')
     expect(report.gravity.verdicts[0].meanGal).toBe(VERDICT.meanGal)
+  })
+})
+
+describe('buildStatusReport の要約の欄', () => {
+  it('要約の係が返すものをそのまま載せる（作れなかった数・最後の誤りまで）', () => {
+    const waveSummary: WaveSummaryKeeperStatus = { ...SUMMARY_OK, failed: 3, pending: 7, lastError: '読めず' }
+    expect(buildStatusReport(input({ waveSummary })).waveSummary).toEqual(waveSummary)
   })
 })

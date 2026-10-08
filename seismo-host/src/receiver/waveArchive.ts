@@ -57,7 +57,7 @@ const MAX_SAMPLES_PER_CHUNK = 65535
  * ときに 1 時間遡っただけでは届かない。実際のまとまりは 0.3 秒ほどなので、
  * ここへ掛かるのは上流（合成）が壊れたときだけ。
  */
-const MAX_CHUNK_SPAN_MS = 10 * 60 * 1000
+export const MAX_CHUNK_SPAN_MS = 10 * 60 * 1000
 
 /**
  * 抱えたまま書き出せていない量の上限。**超えたら捨てる。**
@@ -162,7 +162,12 @@ export function stationFileToken(stationId: string): string {
 
 /** その観測点・その時のファイル名。 */
 export function waveFileName(stationId: string, hourKey: string): string {
-  return `wave-${stationFileToken(stationId)}-${hourKey}.bin`
+  return waveFileNameOfToken(stationFileToken(stationId), hourKey)
+}
+
+/** 札（{@link stationFileToken}）からの、その時のファイル名。 */
+export function waveFileNameOfToken(stationKey: string, hourKey: string): string {
+  return `wave-${stationKey}-${hourKey}.bin`
 }
 
 /**
@@ -341,7 +346,22 @@ export async function readWaveRange(params: {
   readonly fromMs: number
   readonly toMs: number
 }): Promise<WaveRangeResult> {
-  const { dir, stationId, fromMs, toMs } = params
+  const { stationId, ...rest } = params
+  return readWaveRangeByToken({ ...rest, stationKey: stationFileToken(stationId) })
+}
+
+/**
+ * {@link readWaveRange} を、観測点の識別子ではなくファイル名の札（{@link stationFileToken}）で引く形。
+ * **札から識別子へは戻せない**ので、ファイルの名前から観測点を知る読み手（管理コンソールの
+ * 「波形の記録」）はこちらを使う —— 設定から外した観測点の記録も読める。
+ */
+export async function readWaveRangeByToken(params: {
+  readonly dir: string
+  readonly stationKey: string
+  readonly fromMs: number
+  readonly toMs: number
+}): Promise<WaveRangeResult> {
+  const { dir, stationKey, fromMs, toMs } = params
   const chunks: ArchivedWaveChunk[] = []
   let filesRead = 0
   let filesMissing = 0
@@ -362,7 +382,7 @@ export async function readWaveRange(params: {
     if (hourKey === null) continue
     let buf: Buffer
     try {
-      buf = await readFile(join(dir, waveFileName(stationId, hourKey)))
+      buf = await readFile(join(dir, waveFileNameOfToken(stationKey, hourKey)))
     } catch (error) {
       if (isMissing(error)) filesMissing += 1
       else filesFailed += 1
