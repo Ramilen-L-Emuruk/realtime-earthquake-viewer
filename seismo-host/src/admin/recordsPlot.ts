@@ -12,6 +12,7 @@
 // （描く側が取った範囲を持って判定する）。取った範囲の中で値の無い所だけが欠け。
 
 import { readFinite, readFiniteArray, readFiniteArrayWithGaps, readNonEmptyString } from './readJson'
+import { formatMeasured } from '../../../src/utils/measuredIntensityRounding'
 import { formatGal, niceHalfSpanGal } from './wavePlot'
 
 const SECOND_MS = 1000
@@ -903,9 +904,9 @@ export function fetchFailureText(reason: string): string {
  * —— 値が無いと `最大 —計測 —` と詰まって読めなかった。
  */
 export function intensityHeader(d: IntensityData): string {
-  const max = d.maxRealtime === null ? '—' : d.maxRealtime.toFixed(1)
+  const max = d.maxRealtime === null ? '—' : formatMeasured(d.maxRealtime)
   const at = d.maxRealtime !== null && d.maxRealtimeAtMs !== null ? `（${formatClockDigits(d.maxRealtimeAtMs, 0)}）` : ''
-  const measured = d.measured === null ? '—' : d.measured.toFixed(1)
+  const measured = d.measured === null ? '—' : formatMeasured(d.measured)
   return `最大 ${max}${at} 計測 ${measured}`
 }
 

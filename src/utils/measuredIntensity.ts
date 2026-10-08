@@ -8,6 +8,7 @@
 // 画面の場所によって違う階級で出る。
 
 import { getIntensityColor } from './intensity'
+import { jmaMeasuredTenths } from './measuredIntensityRounding'
 
 /** 震度0（計測震度 0.0 以上 0.5 未満）の表示色。気象庁配色に震度0 の色は無いため灰色とする。 */
 export const SHINDO0_COLOR = '#9ca3af'
@@ -34,32 +35,24 @@ export interface IntensityGrade {
  *
  * **非有限値は `null` で弾く。** ここを省くと `NaN` がすべての比較を素通りして
  * 最後の枝（震度7）に落ちる —— 値が壊れたときに、いちばん強い階級が出る形になる。
+ *
+ * **境目と比べるのは、気象庁の手順で小数 1 桁へ直した値**（`measuredIntensityRounding.ts`）。
+ * 丸める前の値と比べると、2.4951 が「2.5」と表示されるのに震度2 になる。比べる値は
+ * 十分の一単位の整数で持つ（境目の 0.5 刻みを浮動小数で比べない）。
  */
 export function measuredIntensityToGrade(value: number): IntensityGrade | null {
   if (!Number.isFinite(value)) return null
-  if (value < 0.5) return { label: '0', scale: 10, rank: 0 }
-  if (value < 1.5) return { label: '1', scale: 10, rank: 1 }
-  if (value < 2.5) return { label: '2', scale: 20, rank: 2 }
-  if (value < 3.5) return { label: '3', scale: 30, rank: 3 }
-  if (value < 4.5) return { label: '4', scale: 40, rank: 4 }
-  if (value < 5.0) return { label: '5弱', scale: 45, rank: 5 }
-  if (value < 5.5) return { label: '5強', scale: 50, rank: 6 }
-  if (value < 6.0) return { label: '6弱', scale: 55, rank: 7 }
-  if (value < 6.5) return { label: '6強', scale: 60, rank: 8 }
+  const tenths = jmaMeasuredTenths(value)
+  if (tenths < 5) return { label: '0', scale: 10, rank: 0 }
+  if (tenths < 15) return { label: '1', scale: 10, rank: 1 }
+  if (tenths < 25) return { label: '2', scale: 20, rank: 2 }
+  if (tenths < 35) return { label: '3', scale: 30, rank: 3 }
+  if (tenths < 45) return { label: '4', scale: 40, rank: 4 }
+  if (tenths < 50) return { label: '5弱', scale: 45, rank: 5 }
+  if (tenths < 55) return { label: '5強', scale: 50, rank: 6 }
+  if (tenths < 60) return { label: '6弱', scale: 55, rank: 7 }
+  if (tenths < 65) return { label: '6強', scale: 60, rank: 8 }
   return { label: '7', scale: 70, rank: 9 }
-}
-
-/**
- * 計測震度を小数 1 桁の文字列にする。**マイナスゼロを出さない。**
- *
- * 静穏時のホストは `-0.04` のようなわずかな負の値をよく返すが、`toFixed` は符号を
- * 保つので `"-0.0"` になる。**あの見た目は表示が壊れたようにしか見えない** ——
- * 地図の左上の帯は「地震計が生きている」ことを示すのが主な役目なので、いちばん
- * 起こしたくない誤解になる。地震カードの震度の行も同じ見え方に揃える。
- */
-export function formatMeasured(value: number): string {
-  const rounded = Number(value.toFixed(1))
-  return (rounded === 0 ? 0 : rounded).toFixed(1)
 }
 
 /**

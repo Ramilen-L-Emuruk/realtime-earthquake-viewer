@@ -404,6 +404,8 @@ describe('文言', () => {
     const at = new Date(2026, 9, 7, 12, 3, 6).getTime()
     expect(intensityHeader({ series: [], maxRealtime: 1.23, maxRealtimeAtMs: at, measured: 0.84 })).toBe('最大 1.2（12:03:06） 計測 0.8')
     expect(intensityHeader({ series: [], maxRealtime: null, maxRealtimeAtMs: null, measured: null })).toBe('最大 — 計測 —')
+    // PWA と同じ数字を出す（気象庁の手順。四捨五入なら 1.3・0.9 になる）。
+    expect(intensityHeader({ series: [], maxRealtime: 1.26, maxRealtimeAtMs: null, measured: 0.86 })).toBe('最大 1.2 計測 0.8')
   })
 
   it('指した所の値（負号は −）', () => {

@@ -27,9 +27,19 @@ describe('seismoOverlayRows', () => {
     expect(seismoOverlayRows([])).toEqual([])
   })
 
-  it('計測震度は小数 1 桁（気象庁の公表に合わせる）', () => {
-    expect(seismoOverlayRows([station(1.26)])[0].valueText).toBe('1.3')
-    expect(seismoOverlayRows([station(0.193)])[0].valueText).toBe('0.2')
+  // **従来の答えを覆した**（2026-10-08）: 以前は四捨五入で 1.26 を「1.3」と出していた。
+  // 気象庁は小数第 3 位を四捨五入してから第 2 位を切り捨てる。
+  it('計測震度は気象庁の手順で小数 1 桁（1.26 は 1.2）', () => {
+    expect(seismoOverlayRows([station(1.26)])[0].valueText).toBe('1.2')
+    expect(seismoOverlayRows([station(0.193)])[0].valueText).toBe('0.1')
+  })
+
+  // #526: 数字と階級を別々の丸め方で出すと、「2.5」の隣に震度2 が並んだ。
+  it('数字と階級は同じ値から出る（2.4951 は「2.5」・震度3、2.46 は「2.4」・震度2）', () => {
+    const up = seismoOverlayRows([station(2.4951)])[0]
+    expect([up.valueText, up.gradeLabel]).toEqual(['2.5', '3'])
+    const down = seismoOverlayRows([station(2.46)])[0]
+    expect([down.valueText, down.gradeLabel]).toEqual(['2.4', '2'])
   })
 
   // 静穏時のホストは負の計測震度を返す。**行ごと消さない** ——

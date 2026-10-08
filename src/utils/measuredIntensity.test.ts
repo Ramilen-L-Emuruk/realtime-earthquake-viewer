@@ -25,9 +25,9 @@ describe('measuredIntensityToGrade', () => {
   it('境目の値は上の階級へ入る', () => {
     const cases: readonly [number, string][] = [
       [0.0, '0'],
-      [0.499, '0'],
+      [0.494, '0'],
       [0.5, '1'],
-      [1.499, '1'],
+      [1.494, '1'],
       [1.5, '2'],
       [2.5, '3'],
       [3.5, '4'],
@@ -41,6 +41,15 @@ describe('measuredIntensityToGrade', () => {
     for (const [value, label] of cases) {
       expect(measuredIntensityToGrade(value)?.label, `計測震度 ${value}`).toBe(label)
     }
+  })
+
+  // **従来の答えを覆した**（2026-10-08）: 以前は丸める前の値で境目と比べていたので、
+  // 0.499 は震度0 だった。気象庁は第 3 位を四捨五入してから階級を決めるので 0.50 で震度1。
+  it('階級は気象庁の手順で丸めた値から引く（0.499 は 0.50 を経て震度1）', () => {
+    expect(measuredIntensityToGrade(0.499)?.label).toBe('1')
+    expect(measuredIntensityToGrade(2.4951)?.label).toBe('3')
+    expect(measuredIntensityToGrade(2.4949)?.label).toBe('2')
+    expect(measuredIntensityToGrade(4.996)?.label).toBe('5強')
   })
 
   // 震度0 と震度1 は `scale` が同値（10）になる。**段が上がったかの判定に
