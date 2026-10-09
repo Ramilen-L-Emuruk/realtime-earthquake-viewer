@@ -9,6 +9,7 @@ import {
   sixFaceProblem,
 } from './sixFacePanel'
 import type { FaceCoverage } from './sixFaceFit'
+import type { Vec3 } from '../receiver/stationConfigTypes'
 
 const ALL: FaceCoverage = { '+x': true, '-x': true, '+y': true, '-y': true, '+z': true, '-z': true }
 const SOME: FaceCoverage = { '+x': true, '-x': true, '+y': false, '-y': false, '+z': true, '-z': false }
@@ -85,7 +86,7 @@ describe('文言', () => {
       '計算できなかった（方程式が解けない。置き直して測り直すこと）',
     )
     expect(sixFaceProblem({ ok: false, reason: 'out-of-range', faces: ALL, maxResidualGal: null })).toBe(
-      '出た値が個体差の幅を超えている（感度 0.5〜2 倍・オフセット ±490 gal）',
+      '出た値が個体差の幅を超えている（倍率 0.5〜2 倍・ゼロ点 ±490 gal）',
     )
     expect(sixFaceProblem({ ok: false, reason: 'residual-too-large', faces: ALL, maxResidualGal: 24.06 })).toBe(
       '姿勢の間で辻褄が合わない（残差 24.1 gal）。動かしている最中の窓が混ざった疑い',
@@ -111,21 +112,56 @@ describe('文言', () => {
     ).toBeNull()
   })
 
-  it('押した後: 7 姿勢なら残差、6 姿勢なら検算なし。桁を切って入れる', () => {
-    const seven = sixFaceApplied({
-      ok: true,
-      offset: [-82.123456, 5, -315.987],
-      sensitivity: [1.0234567, 0.98, 1.01],
-      faces: ALL,
-      poseCount: 7,
-      maxResidualGal: 3.21,
-    })
-    expect(seven.offset).toEqual(['-82.12', '5.00', '-315.99'])
-    expect(seven.sensitivity).toEqual(['1.02346', '0.98000', '1.01000'])
-    expect(seven.note).toBe(
-      'オフセットと感度を入れた（姿勢 7・残差 3.2 gal）。保存するまで効かない。保存したら元の場所へ据え直し、「鉛直を合わせる」を押し直すこと',
+  const UNIT: Vec3[] = [
+    [1, 0, 0],
+    [0, 1, 0],
+    [0, 0, 1],
+  ]
+
+  it('押した後: 7 姿勢なら残差、6 姿勢なら検算なし。ゼロ点と、長さを 1/倍率 にした向きを桁を切って入れる', () => {
+    const seven = sixFaceApplied(
+      {
+        ok: true,
+        offset: [-82.123456, 5, -315.987],
+        sensitivity: [1.0234567, 0.98, 1.01],
+        faces: ALL,
+        poseCount: 7,
+        maxResidualGal: 3.21,
+      },
+      UNIT,
     )
-    const six = sixFaceApplied({ ok: true, offset: [0, 0, 0], sensitivity: [1, 1, 1], faces: ALL, poseCount: 6, maxResidualGal: null })
+    if (!seven.ok) throw new Error(seven.reason)
+    expect(seven.axes.map((a) => a.offset)).toEqual(['-82.12', '5.00', '-315.99'])
+    expect(seven.axes.map((a) => a.vector)).toEqual([
+      ['0.977081', '0.000000', '0.000000'],
+      ['0.000000', '1.020408', '0.000000'],
+      ['0.000000', '0.000000', '0.990099'],
+    ])
+    expect(seven.note).toBe(
+      'ゼロ点と向きの長さを入れた（姿勢 7・残差 3.2 gal）。保存するまで効かない。保存したら元の場所へ据え直し、「鉛直を合わせる」を押し直すこと',
+    )
+    const six = sixFaceApplied({ ok: true, offset: [0, 0, 0], sensitivity: [1, 1, 1], faces: ALL, poseCount: 6, maxResidualGal: null }, UNIT)
+    if (!six.ok) throw new Error(six.reason)
     expect(six.note).toContain('（姿勢 6・検算なし）')
+  })
+
+  it('押した後: 測る向きはいまの欄の向きのまま、長さだけを変える（傾けて付けた軸の向きを保つ）', () => {
+    const tilted: Vec3[] = [
+      [0.6, 0.8, 0],
+      [-0.8, 0.6, 0],
+      [0, 0, 2],
+    ]
+    const got = sixFaceApplied({ ok: true, offset: [0, 0, 0], sensitivity: [2, 1, 1], faces: ALL, poseCount: 6, maxResidualGal: null }, tilted)
+    if (!got.ok) throw new Error(got.reason)
+    expect(got.axes.map((a) => a.vector)).toEqual([
+      ['0.300000', '0.400000', '0.000000'],
+      ['-0.800000', '0.600000', '0.000000'],
+      ['0.000000', '0.000000', '1.000000'],
+    ])
+  })
+
+  it('安全弁: 2 軸のセンサーには入れない（6 面法は 3 軸の当てはめ）', () => {
+    const got = sixFaceApplied({ ok: true, offset: [0, 0, 0], sensitivity: [1, 1, 1], faces: ALL, poseCount: 6, maxResidualGal: null }, UNIT.slice(0, 2))
+    expect(got).toEqual({ ok: false, reason: '6 面法は 3 軸のセンサーにしか使えない' })
   })
 })

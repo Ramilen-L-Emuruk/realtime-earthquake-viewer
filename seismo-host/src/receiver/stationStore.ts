@@ -98,7 +98,7 @@ export class StationStore {
    * 空の設定と理由（`warning`）を返し、以後は書かない。
    *
    * **中身は設定の検証（`parseStationConfig`）も通す。** 手で書き換えられたファイルでも、
-   * 処理が前提にする形（参照の整合・逆行列を持つ回転・正の感度）を崩させない。
+   * 処理が前提にする形（参照の整合・純粋な回転の基板の向き・解ける軸の向き）を崩させない。
    */
   open(): { readonly config: StationConfig; readonly warning: string | null } {
     let doc: StationHistoryDoc

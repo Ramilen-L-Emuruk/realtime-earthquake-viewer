@@ -15,6 +15,7 @@ import {
 import type { FusedWaveChunk, FusionOutcome, StationIntensityReading } from './sensorFusion'
 import { StationDirectory } from './stationConfig'
 import type { StationConfig } from './stationConfig'
+import { defaultAxes } from './stationConfigTypes'
 
 const IDENTITY = [
   [1, 0, 0],
@@ -46,7 +47,7 @@ const BOARD_D: BoardKey = 'mac:dddddddddddd'
 type SensorEntry = StationConfig['boards'][number]['sensors'][number]
 
 function sensorEntry(sensorId: string, noiseDensity: number | null, enabled = true): SensorEntry {
-  return { sensorId, enabled, rotation: IDENTITY, offset: [0, 0, 0], sensitivity: [1, 1, 1], noiseDensity }
+  return { sensorId, enabled, axes: defaultAxes(3), noiseDensity }
 }
 
 /** 観測点 1 つに、基板 1 枚ずつのセンサーを並べた設定。**並び順は引数の順。** */
@@ -58,6 +59,7 @@ function stationConfig(
     boards: members.map((m) => ({
       boardKey: m.boardKey,
       stationId: 'home',
+      orientation: IDENTITY,
       sensors: [sensorEntry(m.sensorId, m.noiseDensity, m.enabled ?? true)],
     })),
   }
@@ -375,7 +377,7 @@ describe('SensorFusion.ingest — 待って顔ぶれを揃える（#362・#374�
     }
     return {
       stations: [{ stationId: 'home', displayName: '自宅', lat: 35.6, lon: 139.7 }],
-      boards: order.map((boardKey) => ({ boardKey, stationId: 'home', sensors: byBoard.get(boardKey) ?? [] })),
+      boards: order.map((boardKey) => ({ boardKey, stationId: 'home', orientation: IDENTITY, sensors: byBoard.get(boardKey) ?? [] })),
     }
   }
 
@@ -925,10 +927,10 @@ describe('SensorFusion.ingest — 観測点ぶんの計測震度相当', () => {
           { stationId: 'garage', displayName: '倉庫', lat: 35.7, lon: 139.8 },
         ],
         boards: [
-          { boardKey: BOARD_A, stationId: 'home', sensors: [sensorEntry('sensorA', 10)] },
-          { boardKey: BOARD_B, stationId: 'home', sensors: [sensorEntry('sensorB', 20)] },
-          { boardKey: BOARD_C, stationId: 'garage', sensors: [sensorEntry('sensorC', 10)] },
-          { boardKey: BOARD_D, stationId: 'garage', sensors: [sensorEntry('sensorD', 20)] },
+          { boardKey: BOARD_A, stationId: 'home', orientation: IDENTITY, sensors: [sensorEntry('sensorA', 10)] },
+          { boardKey: BOARD_B, stationId: 'home', orientation: IDENTITY, sensors: [sensorEntry('sensorB', 20)] },
+          { boardKey: BOARD_C, stationId: 'garage', orientation: IDENTITY, sensors: [sensorEntry('sensorC', 10)] },
+          { boardKey: BOARD_D, stationId: 'garage', orientation: IDENTITY, sensors: [sensorEntry('sensorD', 20)] },
         ],
       }
       const fusion = new SensorFusion(config, OPTS)
@@ -970,8 +972,8 @@ describe('SensorFusion.ingest — 実際の IntensityPipeline から出た WaveC
     const config: StationConfig = {
       stations: [{ stationId: 'home', displayName: '自宅', lat: 35.6, lon: 139.7 }],
       boards: [
-        { boardKey: BOARD_A, stationId: 'home', sensors: [{ ...sensorEntry('sensorA', 10), offset: [10, 0, 0] }] },
-        { boardKey: BOARD_B, stationId: 'home', sensors: [sensorEntry('sensorB', 10)] },
+        { boardKey: BOARD_A, stationId: 'home', orientation: IDENTITY, sensors: [{ ...sensorEntry('sensorA', 10), axes: [{ vector: [1, 0, 0], offset: 10 }, ...defaultAxes(3).slice(1)] }] },
+        { boardKey: BOARD_B, stationId: 'home', orientation: IDENTITY, sensors: [sensorEntry('sensorB', 10)] },
       ],
     }
     const pipeline = new IntensityPipeline({ stations: new StationDirectory(config) })

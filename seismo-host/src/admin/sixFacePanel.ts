@@ -6,6 +6,8 @@
 import { FACE_ORDER, SIX_FACE_LIMITS } from './sixFaceFit'
 import type { Face, FaceCoverage, FitWindow, SixFaceFit, SixFaceRefusal } from './sixFaceFit'
 import { readFinite, readNonEmptyString, readVec3 } from './readJson'
+import type { AxisFormValues } from './sensorForm'
+import type { Vec3 } from '../receiver/stationConfigTypes'
 
 /** 静止窓 1 つ。6 面法の材料に、閉じた時刻（ホストの時計）を足したもの。 */
 export interface TimedFitWindow extends FitWindow {
@@ -90,7 +92,7 @@ export function sixFaceProblem(result: SixFaceFit | SixFaceRefusal): string | nu
       // 6 面が揃った後にしか来ないので、向きの足りなさを理由に挙げない。
       return '計算できなかった（方程式が解けない。置き直して測り直すこと）'
     case 'out-of-range':
-      return `出た値が個体差の幅を超えている（感度 ${SIX_FACE_LIMITS.sensitivityMin}〜${SIX_FACE_LIMITS.sensitivityMax} 倍・オフセット ±${Math.round(SIX_FACE_LIMITS.offsetMaxGal)} gal）`
+      return `出た値が個体差の幅を超えている（倍率 ${SIX_FACE_LIMITS.sensitivityMin}〜${SIX_FACE_LIMITS.sensitivityMax} 倍・ゼロ点 ±${Math.round(SIX_FACE_LIMITS.offsetMaxGal)} gal）`
     case 'residual-too-large':
       return `姿勢の間で辻褄が合わない（残差 ${result.maxResidualGal === null ? '—' : formatGal(result.maxResidualGal)} gal）。動かしている最中の窓が混ざった疑い`
   }
@@ -118,20 +120,36 @@ export function restWindowsFetchProblem(reason: string): string {
 }
 
 /**
- * フォームへ入れる値と、入れた後に出す文。
+ * フォームへ入れる値と、入れた後に出す文。**入れられなければ理由。**
  *
- * **桁は読める範囲で切る。** オフセットは 0.01 gal（静止窓の平均のぶれ 0.03 gal と同じ桁）、
- * 感度は 10⁻⁵（1 g に対して 0.01 gal）。
+ * 6 面法が出すのは軸ごとのゼロ点と倍率（`sixFaceFit.ts`。軸どうしは直交していると見なす）。
+ * **測る向きはいまの欄の向きのまま、長さだけを倍率に合わせる** —— 軸 j の向きの長さは
+ * 「1 gal の揺れで何 gal 読むか」なので `1 / sensitivity_j`。向きは 6 面法からは決まらない
+ * （基板の座標での向きは、基板ごとの 6 面法か手で入れた値が持つ）。
+ *
+ * **桁は読める範囲で切る。** ゼロ点は 0.01 gal（静止窓の平均のぶれ 0.03 gal と同じ桁）、
+ * 向きの成分は 10⁻⁶（1 g に対して 0.001 gal）。
  */
-export function sixFaceApplied(fit: SixFaceFit): {
-  readonly offset: readonly [string, string, string]
-  readonly sensitivity: readonly [string, string, string]
-  readonly note: string
-} {
+export function sixFaceApplied(
+  fit: SixFaceFit,
+  currentVectors: readonly Vec3[],
+): { readonly ok: true; readonly axes: readonly AxisFormValues[]; readonly note: string } | { readonly ok: false; readonly reason: string } {
+  if (currentVectors.length !== 3) return { ok: false, reason: '6 面法は 3 軸のセンサーにしか使えない' }
+  const axes: AxisFormValues[] = []
+  for (let j = 0; j < 3; j++) {
+    const v = currentVectors[j]!
+    const length = Math.hypot(v[0], v[1], v[2])
+    if (!Number.isFinite(length) || length === 0) return { ok: false, reason: `軸 ${j + 1} の向きの長さが 0` }
+    const scale = 1 / (length * fit.sensitivity[j]!)
+    axes.push({
+      vector: [(v[0] * scale).toFixed(6), (v[1] * scale).toFixed(6), (v[2] * scale).toFixed(6)],
+      offset: fit.offset[j]!.toFixed(2),
+    })
+  }
   const check = fit.maxResidualGal === null ? '検算なし' : `残差 ${formatGal(fit.maxResidualGal)} gal`
   return {
-    offset: [fit.offset[0].toFixed(2), fit.offset[1].toFixed(2), fit.offset[2].toFixed(2)],
-    sensitivity: [fit.sensitivity[0].toFixed(5), fit.sensitivity[1].toFixed(5), fit.sensitivity[2].toFixed(5)],
-    note: `オフセットと感度を入れた（姿勢 ${fit.poseCount}・${check}）。保存するまで効かない。保存したら元の場所へ据え直し、「鉛直を合わせる」を押し直すこと`,
+    ok: true,
+    axes,
+    note: `ゼロ点と向きの長さを入れた（姿勢 ${fit.poseCount}・${check}）。保存するまで効かない。保存したら元の場所へ据え直し、「鉛直を合わせる」を押し直すこと`,
   }
 }

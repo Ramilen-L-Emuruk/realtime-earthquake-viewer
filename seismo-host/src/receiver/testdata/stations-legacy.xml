@@ -6,11 +6,6 @@
     <Station code="00000003" startDate="2026-10-01T00:00:00.000Z">
       <seismo:Board>mac:020000000003</seismo:Board>
       <seismo:StationId>study</seismo:StationId>
-      <seismo:Orientation>
-        <seismo:X e="1" n="0" u="0"/>
-        <seismo:Y e="0" n="1" u="0"/>
-        <seismo:Z e="0" n="0" u="1"/>
-      </seismo:Orientation>
       <Latitude>35.6</Latitude>
       <Longitude>139.7</Longitude>
       <Elevation>0</Elevation>
@@ -19,7 +14,8 @@
         <seismo:Sensor>i2c0-68</seismo:Sensor>
         <seismo:Enabled>true</seismo:Enabled>
         <seismo:NoiseDensity unit="ug/sqrt(Hz)">400</seismo:NoiseDensity>
-        <seismo:Vector x="1" y="0" z="0"/>
+        <seismo:Rotation e="1" n="0" u="0"/>
+        <seismo:Sensitivity>1</seismo:Sensitivity>
         <Latitude>35.6</Latitude>
         <Longitude>139.7</Longitude>
         <Elevation>0</Elevation>
@@ -41,7 +37,8 @@
             <Coefficient number="1">1</Coefficient>
           </InstrumentPolynomial>
           <Stage number="1"><StageGain><Value>1</Value><Frequency>1</Frequency></StageGain></Stage>
-          <Stage number="2">
+          <Stage number="2"><StageGain><Value>1</Value><Frequency>1</Frequency></StageGain></Stage>
+          <Stage number="3">
             <Polynomial>
               <InputUnits><Name>cm/s**2</Name></InputUnits>
               <OutputUnits><Name>cm/s**2</Name></OutputUnits>
@@ -61,7 +58,8 @@
         <seismo:Sensor>i2c0-68</seismo:Sensor>
         <seismo:Enabled>true</seismo:Enabled>
         <seismo:NoiseDensity unit="ug/sqrt(Hz)">400</seismo:NoiseDensity>
-        <seismo:Vector x="0" y="1" z="0"/>
+        <seismo:Rotation e="0" n="1" u="0"/>
+        <seismo:Sensitivity>1</seismo:Sensitivity>
         <Latitude>35.6</Latitude>
         <Longitude>139.7</Longitude>
         <Elevation>0</Elevation>
@@ -83,7 +81,8 @@
             <Coefficient number="1">1</Coefficient>
           </InstrumentPolynomial>
           <Stage number="1"><StageGain><Value>1</Value><Frequency>1</Frequency></StageGain></Stage>
-          <Stage number="2">
+          <Stage number="2"><StageGain><Value>1</Value><Frequency>1</Frequency></StageGain></Stage>
+          <Stage number="3">
             <Polynomial>
               <InputUnits><Name>cm/s**2</Name></InputUnits>
               <OutputUnits><Name>cm/s**2</Name></OutputUnits>
@@ -103,12 +102,13 @@
         <seismo:Sensor>i2c0-68</seismo:Sensor>
         <seismo:Enabled>true</seismo:Enabled>
         <seismo:NoiseDensity unit="ug/sqrt(Hz)">400</seismo:NoiseDensity>
-        <seismo:Vector x="0" y="0" z="1"/>
+        <seismo:Rotation e="0" n="0" u="1"/>
+        <seismo:Sensitivity>1</seismo:Sensitivity>
         <Latitude>35.6</Latitude>
         <Longitude>139.7</Longitude>
         <Elevation>0</Elevation>
         <Depth>0</Depth>
-        <Azimuth>0</Azimuth>
+        <Azimuth>180</Azimuth>
         <Dip>-90</Dip>
         <Type>CONTINUOUS</Type>
         <Response>
@@ -125,7 +125,8 @@
             <Coefficient number="1">1</Coefficient>
           </InstrumentPolynomial>
           <Stage number="1"><StageGain><Value>1</Value><Frequency>1</Frequency></StageGain></Stage>
-          <Stage number="2">
+          <Stage number="2"><StageGain><Value>1</Value><Frequency>1</Frequency></StageGain></Stage>
+          <Stage number="3">
             <Polynomial>
               <InputUnits><Name>cm/s**2</Name></InputUnits>
               <OutputUnits><Name>cm/s**2</Name></OutputUnits>

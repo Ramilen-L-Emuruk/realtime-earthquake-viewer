@@ -4,23 +4,34 @@
 // tsc は型を解決するためにインポート元のファイル全体を型チェック対象へ含める。
 // 実装（`node:fs` の読み書き）まで同じファイルに置くと、admin 側のプロジェクトが
 // Node の型を持たないため解決できずに壊れる——このファイルを分けているのはそのため。
+//
+// ## 校正の形（REQUIREMENTS.md §16）
+//
+// **センサーの軸ごとに「何を測っているか」を持ち、基板の向きは基板に 1 つだけ持つ。**
+//
+// ```
+// 軸 j:   m_j − o_j = h_j · a_基板        m: 校正前の加速度（gal）  o: ゼロ点  h: 測る向き（長さが倍率）
+// 基板:   a_地面 = B × a_基板             B: 基板の向き（基板の座標 → 東・北・上）
+// ```
+//
+// 同じ基板に載ったセンサーは後から向きが変わらないので、取り付けの向き（`h_j`）は基板の座標で持ち、
+// 地面に対する向き（鉛直・方角）は基板ごとに 1 回だけ合わせる。**軸を 1 本ずつ持つので、2 軸の
+// センサー（IIS2ICLX）も 3 軸と同じ形で書ける** —— 2 軸の値から 3 成分の加速度は決まらないが、
+// 「その軸が何を測ったか」は決まっていて、観測点の合成は軸ごとの測定をまとめて解く。
 
 import type { BoardKey } from '../protocol/types'
 
-/** 3 成分。順序は `SensorPacket.channels` と揃える。 */
+/** 3 成分。 */
 export type Vec3 = readonly [number, number, number]
 
-/** 3x3 の回転行列。`a_world = R × a_sensor`（REQUIREMENTS.md §16）。 */
+/** 3x3 の行列（行の並び）。 */
 export type Mat3 = readonly [Vec3, Vec3, Vec3]
 
-/** `stationConfig.ts` の `parseSensors` も既定値として使う。 */
-export const IDENTITY_ROTATION: Mat3 = [
+export const IDENTITY_MATRIX: Mat3 = [
   [1, 0, 0],
   [0, 1, 0],
   [0, 0, 1],
 ]
-export const ZERO_OFFSET: Vec3 = [0, 0, 0]
-export const UNIT_SENSITIVITY: Vec3 = [1, 1, 1]
 
 /** 観測点 1 つ。**座標は PWA が地図へ出すための前提**（段 5 / #261）。 */
 export interface StationInfo {
@@ -30,35 +41,45 @@ export interface StationInfo {
   readonly lon: number
 }
 
-/**
- * センサー 1 個の校正値（REQUIREMENTS.md §15・§16）。
- *
- * **`rotation` に直交性（純粋な回転であること）は求めない。** 補正の対象が
- * 「取り付けの向き」なのか「軸どうしの直角のずれ」なのかはまだ決まっていない
- * （REQUIREMENTS.md §16 の注記）。前者だけを直すなら回転行列で足りるが、後者まで
- * 直すなら軸間のせん断を持つ行列になり、直交行列ではなくなる。ここで直交性を
- * 強制すると、その判断の余地を設定ファイルの形自体で塞いでしまう。
- */
+/** センサーの軸 1 本の校正値。 */
+export interface AxisCalibration {
+  /**
+   * この軸が測る向き（**基板の座標**）。**長さが倍率** —— 向き `û` に沿って 1 gal の加速度が
+   * 掛かったとき、この軸は校正前の値で `|vector|` gal を読む。軸どうしが直交している必要は無い
+   * （軸の直角のずれも、この向きのずれとして書ける）。
+   */
+  readonly vector: Vec3
+  /** ゼロ点（gal）。加速度が 0 のときに読む値。 */
+  readonly offset: number
+}
+
+/** センサー 1 個の校正値（REQUIREMENTS.md §15・§16）。 */
 export interface SensorCalibration {
   readonly enabled: boolean
-  readonly rotation: Mat3
-  readonly offset: Vec3
-  /** 各軸の倍率。**必ず正**（0 や負は軸を殺す・反転するので `enabled` と役割が重複する）。 */
-  readonly sensitivity: Vec3
+  /**
+   * 軸ごとの校正値。**並びはパケットの `channels` と同じ**で、本数も同じ（2 か 3）。
+   * 3 本なら測る向きが 1 つの面に寄っていない（3 成分を解ける）こと、2 本なら平行でないことを
+   * 設定の検証が確かめる。
+   */
+  readonly axes: readonly AxisCalibration[]
   /**
    * 公称ノイズ密度（µg/√Hz）。**複数センサーの合成（§7）で重みに使う。**
-   * 未設定なら null —— #298 の実測が出ていない・品種が分からない場合はここが null のまま。
+   * 未設定なら null —— 実測が出ていない・品種が分からない場合はここが null のまま。
    */
   readonly noiseDensity: number | null
 }
 
-/** 校正値が設定に無いセンサーへ渡す既定値。**単位行列・補正なし・有効。** */
-export const DEFAULT_SENSOR_CALIBRATION: SensorCalibration = {
-  enabled: true,
-  rotation: IDENTITY_ROTATION,
-  offset: ZERO_OFFSET,
-  sensitivity: UNIT_SENSITIVITY,
-  noiseDensity: null,
+/** 軸の本数。 */
+export type AxisCount = 2 | 3
+
+/** 補正なしの軸（基板の X・Y・Z をそのまま測る・倍率 1・ゼロ点 0）。 */
+export function defaultAxes(count: AxisCount): AxisCalibration[] {
+  return IDENTITY_MATRIX.slice(0, count).map((row) => ({ vector: row, offset: 0 }))
+}
+
+/** 校正値が設定に無いセンサーへ渡す既定値。**補正なし・有効。** */
+export function defaultSensorCalibration(count: AxisCount): SensorCalibration {
+  return { enabled: true, axes: defaultAxes(count), noiseDensity: null }
 }
 
 export interface SensorEntry extends SensorCalibration {
@@ -68,6 +89,12 @@ export interface SensorEntry extends SensorCalibration {
 export interface BoardEntry {
   readonly boardKey: BoardKey
   readonly stationId: string
+  /**
+   * 基板の向き。`a_地面 = orientation × a_基板` で、**列が基板の X・Y・Z 軸の向き**（東・北・上）。
+   * **純粋な回転だけを受ける**（設定の検証）—— 軸の倍率や直角のずれは各軸の `vector` が持つ。
+   * 単位行列なら、基板の X・Y・Z が東・北・上を向いている。
+   */
+  readonly orientation: Mat3
   readonly sensors: readonly SensorEntry[]
 }
 

@@ -2270,7 +2270,12 @@ async function main(): Promise<void> {
       }
       // **誰の声かが判るのはここから。** 読み取りに失敗した回は基板が判らないので覚えない。
       const current = streamKeyOf(read.packet)
-      health.notePacket({ boardKey: board, sensorId: read.packet.sensorId, streamKey: current })
+      health.notePacket({
+        boardKey: board,
+        sensorId: read.packet.sensorId,
+        streamKey: current,
+        axisCount: read.packet.channels.length,
+      })
       boardClocks.note(board, receivedAtMs, read.packet)
       const outcome = pipeline.handlePacket(read.packet)
 

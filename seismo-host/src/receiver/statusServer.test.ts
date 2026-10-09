@@ -7,7 +7,7 @@ import type { IntensityReading, WaveChunk } from './intensityPipeline'
 import { PacketTally } from './packetTally'
 import { ReadingHub } from './readingHub'
 import type { FusedWaveChunk, SensorPairDiff, StationIntensityReading } from './sensorFusion'
-import { EMPTY_STATION_CONFIG, StationDirectory } from './stationConfig'
+import { EMPTY_STATION_CONFIG, IDENTITY_MATRIX, StationDirectory } from './stationConfig'
 import type { StationConfig } from './stationConfig'
 import { buildStatusReport } from './statusReport'
 import type { StatusReport, WaveArchiveStatus } from './statusReport'
@@ -1425,7 +1425,7 @@ describe('/api/*', () => {
     it('安全弁: 基板が割り当て済みの観測点は 409 で拒む', async () => {
       const ops = makeStationConfigOps({
         stations: [{ stationId: 'study', ...STATION_BODY }],
-        boards: [{ boardKey: BOARD_KEY, stationId: 'study', sensors: [] }],
+        boards: [{ boardKey: BOARD_KEY, stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] }],
       })
       const base = await startAuthed(new ReadingHub(), {}, undefined, ops)
       const res = await fetch(`${base}/api/stations/study`, {
@@ -1478,7 +1478,7 @@ describe('/api/*', () => {
         body: JSON.stringify({ stationId: 'study', sensors: [] }),
       })
       expect(res.status).toBe(200)
-      expect(ops.get().boards).toEqual([{ boardKey: BOARD_KEY, stationId: 'study', sensors: [] }])
+      expect(ops.get().boards).toEqual([{ boardKey: BOARD_KEY, stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] }])
     })
 
     it('安全弁: ボディに別の boardKey が入っていても無視し、URL パスの値だけが使われる', async () => {
@@ -1495,7 +1495,7 @@ describe('/api/*', () => {
       })
       expect(res.status).toBe(200)
       // **`mac:eeeeeeeeeeee` という別の基板が作られていない。** URL の値だけが残る。
-      expect(ops.get().boards).toEqual([{ boardKey: BOARD_KEY, stationId: 'study', sensors: [] }])
+      expect(ops.get().boards).toEqual([{ boardKey: BOARD_KEY, stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] }])
     })
 
     it('対照: 存在しない stationId を指す基板は 400（参照整合性）', async () => {
@@ -1516,7 +1516,7 @@ describe('/api/*', () => {
     it('正: DELETE /api/boards/:boardKey で割当を外す（観測点自体は残る）', async () => {
       const ops = makeStationConfigOps({
         stations: [{ stationId: 'study', ...STATION_BODY }],
-        boards: [{ boardKey: BOARD_KEY, stationId: 'study', sensors: [] }],
+        boards: [{ boardKey: BOARD_KEY, stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] }],
       })
       const base = await startAuthed(new ReadingHub(), {}, undefined, ops)
       const res = await fetch(`${base}/api/boards/${encodeURIComponent(BOARD_KEY)}`, {

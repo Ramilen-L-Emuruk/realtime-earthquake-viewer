@@ -46,6 +46,11 @@ export type PacketDropReason =
   | 'stream-desync'
   /** 観測点設定でそのセンサーが無効（`enabled: false`）にされている。 */
   | 'sensor-disabled'
+  /**
+   * 観測点設定のそのセンサーの軸の本数が、届いたパケットの本数と違う。**校正を当てられない**
+   * （どちらの本数で読んでも、どれかの軸が別の軸の校正値で補正される）。
+   */
+  | 'calibration-axis-mismatch'
 
 /** その区間では震度を出さない理由。**パケットは受け取っている**（時間軸の統計には乗る）。 */
 export type IntensitySkipReason =
@@ -320,10 +325,19 @@ export class IntensityPipeline {
     // **無効センサーは換算より前で弾く。** §15 の「有効/無効」を読み取りへ反映しないと、
     // 設定した意味が無い。組み立て（`Segmenter`）にも渡さない —— 使わないと決めた
     // センサーのパケットを時間軸の統計に混ぜる理由が無い。
-    const calibration = this.stations.resolveSensor(packet.boardKey, packet.sensorId)
-    if (!calibration.enabled) {
+    if (!this.stations.isSensorEnabled(packet.boardKey, packet.sensorId)) {
       return { ...nothing(), dropped: 'sensor-disabled', detail: null }
     }
+    // **本数の食い違いも換算より前で弾く**（組み立てに渡さない理由は無効センサーと同じ）。
+    const resolution = this.stations.resolveSensor(packet.boardKey, packet.sensorId, packet.channels.length)
+    if (!resolution.ok) {
+      return {
+        ...nothing(),
+        dropped: 'calibration-axis-mismatch',
+        detail: `設定は ${resolution.configuredAxes} 軸・届いたのは ${packet.channels.length} 軸`,
+      }
+    }
+    const calibration = resolution.calibration
 
     // **換算を組み立てより先に済ませる。** 順序を逆にすると、範囲の外で捨てるパケットを
     // 組み立てが受理してしまい、**あちらの位置だけが進む**。以後どのパケットも
@@ -336,7 +350,16 @@ export class IntensityPipeline {
     // **校正（REQUIREMENTS.md §16）は換算のすぐ後、組み立てより前に適用する。**
     // `toGal` のフルスケール判定はセンサー自身の生の妥当性チェックで、校正（観測点固有の
     // 後処理）とは別の関心事 —— 順序を分けておく。
-    const gal = converted === null ? null : applyCalibration(converted.gal, calibration)
+    //
+    // **3 軸だけを地面の加速度へ解く**（`unmix` は 3 軸のときにしか無い）。2 軸は 3 成分を解けない。
+    const gal =
+      converted === null || calibration.unmix === null
+        ? null
+        : applyCalibration(
+            converted.gal,
+            [calibration.axes[0]!.offset, calibration.axes[1]!.offset, calibration.axes[2]!.offset],
+            calibration.unmix,
+          )
 
     const result = this.segmenter.accept(packet)
     if (!result.ok) return { ...nothing(), dropped: result.reason, detail: null }

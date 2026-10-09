@@ -53,7 +53,7 @@ import { STALE_AFTER_MS } from './src/receiver/assignedReception'
 import { CLOCK_OFFSET_WARN_MS } from './src/receiver/boardClockVerdict'
 import type { GravityVerdict } from './src/receiver/gravityCheck'
 import type { IntensityReading } from './src/receiver/intensityPipeline'
-import { EMPTY_STATION_CONFIG } from './src/receiver/stationConfig'
+import { EMPTY_STATION_CONFIG, IDENTITY_MATRIX } from './src/receiver/stationConfig'
 import type { StationConfig } from './src/receiver/stationConfig'
 import { PacketTally } from './src/receiver/packetTally'
 import type {
@@ -738,9 +738,9 @@ describe('findUngroupedMultiBoardStations', () => {
       { stationId: 'garage', displayName: '車庫', lat: 35.7, lon: 139.8 },
     ],
     boards: [
-      { boardKey: 'mac:aaaaaaaaaaaa', stationId: 'study', sensors: [] },
-      { boardKey: 'mac:bbbbbbbbbbbb', stationId: 'study', sensors: [] },
-      { boardKey: 'mac:cccccccccccc', stationId: 'garage', sensors: [] },
+      { boardKey: 'mac:aaaaaaaaaaaa', stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] },
+      { boardKey: 'mac:bbbbbbbbbbbb', stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] },
+      { boardKey: 'mac:cccccccccccc', stationId: 'garage', orientation: IDENTITY_MATRIX, sensors: [] },
     ],
   }
 
@@ -1653,8 +1653,8 @@ describe('applyStationConfigCore', () => {
     const config: StationConfig = {
       stations: [{ stationId: 'study', displayName: '書斎', lat: 35.6, lon: 139.7 }],
       boards: [
-        { boardKey: 'mac:aaaaaaaaaaaa', stationId: 'study', sensors: [] },
-        { boardKey: 'mac:bbbbbbbbbbbb', stationId: 'study', sensors: [] },
+        { boardKey: 'mac:aaaaaaaaaaaa', stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] },
+        { boardKey: 'mac:bbbbbbbbbbbb', stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] },
       ],
     }
     let received: readonly string[] | null = null

@@ -61,6 +61,7 @@ const DROP_ORDER = orderOf<PacketDropReason>({
   // **チェック順（`intensityPipeline.ts`）に合わせる。** 無効センサーは換算より前で弾く
   // ので最初に置く。
   'sensor-disabled': true,
+  'calibration-axis-mismatch': true,
   'scale-out-of-range': true,
   duplicate: true,
   'stream-desync': true,

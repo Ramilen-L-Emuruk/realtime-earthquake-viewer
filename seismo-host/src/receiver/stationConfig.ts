@@ -18,16 +18,21 @@
 // **型・既定値は `stationConfigTypes.ts` に置く。** 管理コンソール（`src/admin/`）が
 // `import type` で使うため、Node 専用コード（`node:fs` 等）と同じファイルへ置けない
 // ——理由はあちらの冒頭コメント。
-export type { Vec3, Mat3, StationInfo, SensorCalibration, SensorEntry, BoardEntry, StationConfig } from './stationConfigTypes'
-export { DEFAULT_SENSOR_CALIBRATION, EMPTY_STATION_CONFIG } from './stationConfigTypes'
-import {
-  DEFAULT_SENSOR_CALIBRATION,
-  EMPTY_STATION_CONFIG,
-  IDENTITY_ROTATION,
-  UNIT_SENSITIVITY,
-  ZERO_OFFSET,
+export type {
+  Vec3,
+  Mat3,
+  StationInfo,
+  AxisCalibration,
+  AxisCount,
+  SensorCalibration,
+  SensorEntry,
+  BoardEntry,
+  StationConfig,
 } from './stationConfigTypes'
+export { defaultSensorCalibration, EMPTY_STATION_CONFIG, IDENTITY_MATRIX } from './stationConfigTypes'
+import { defaultAxes, defaultSensorCalibration, EMPTY_STATION_CONFIG, IDENTITY_MATRIX } from './stationConfigTypes'
 import type {
+  AxisCalibration,
   BoardEntry,
   Mat3,
   SensorCalibration,
@@ -37,7 +42,8 @@ import type {
   Vec3,
 } from './stationConfigTypes'
 import type { BoardKey } from '../protocol/types'
-import { isInvertibleRotation } from './matrix3'
+import { axesAreIndependent, resolveCalibration, type ResolvedSensorCalibration } from './calibration'
+import { isProperRotation } from './matrix3'
 import { mseed3LocationCode, mseed3StationCode } from './mseed3Record'
 import { isXmlChars } from './xmlLite'
 
@@ -150,6 +156,23 @@ function isMat3(v: unknown): v is Mat3 {
   return Array.isArray(v) && v.length === 3 && v.every((row) => isVec3(row))
 }
 
+/**
+ * 軸ごとの校正値を読む。**本数は 2 か 3、測る向きは解ける形（3 本なら 1 つの面に寄っていない・
+ * 2 本なら平行でない）でなければ受けない** —— 解けない向きは、その向きの揺れを消す「壊す」側の値で、
+ * 設定の履歴（`stationXml.ts`）も地面での向きを書けない。読めなければ `null`。
+ */
+function parseAxes(v: unknown): AxisCalibration[] | null {
+  if (!Array.isArray(v) || (v.length !== 2 && v.length !== 3)) return null
+  const axes: AxisCalibration[] = []
+  for (const item of v as unknown[]) {
+    if (!isRecord(item) || !isVec3(item.vector)) return null
+    const offset = item.offset ?? 0
+    if (!isFiniteNumber(offset)) return null
+    axes.push({ vector: item.vector, offset })
+  }
+  return axesAreIndependent(axes.map((a) => a.vector)) ? axes : null
+}
+
 function parseStations(
   raw: unknown,
 ): { ok: true; stations: StationInfo[] } | { ok: false; failure: StationConfigParseFailure } {
@@ -251,49 +274,18 @@ function parseSensors(
       }
     }
 
-    const rotation = entry.rotation ?? IDENTITY_ROTATION
-    // **逆行列を持たない行列も弾く。** その向きの揺れを消す行列は「補正」ではなく「壊す」側で
-    // （`sensitivity` の 0 と同じ）、設定の履歴（`stationXml.ts`）はチャンネルが測っている向きを
-    // `rotation` の逆行列から書くので、逆行列が無いと書けない。
-    if (!isMat3(rotation) || !isInvertibleRotation(rotation)) {
+    // **省けば補正なしの 3 軸。** 2 軸のセンサーは本数で名乗るので、省くと 3 軸の設定になり、
+    // 届いた 2 軸のパケットとは本数が合わない（`StationDirectory.resolveSensor` が食い違いとして返す）。
+    const axes = entry.axes === undefined ? defaultAxes(3) : parseAxes(entry.axes)
+    if (axes === null) {
       return {
         ok: false,
         failure: {
           reason: 'sensor-field-invalid',
           boardIndex,
           sensorIndex: i,
-          field: 'rotation',
-          value: entry.rotation,
-        },
-      }
-    }
-
-    const offset = entry.offset ?? ZERO_OFFSET
-    if (!isVec3(offset)) {
-      return {
-        ok: false,
-        failure: {
-          reason: 'sensor-field-invalid',
-          boardIndex,
-          sensorIndex: i,
-          field: 'offset',
-          value: entry.offset,
-        },
-      }
-    }
-
-    const sensitivity = entry.sensitivity ?? UNIT_SENSITIVITY
-    // **各軸の倍率は正でなければならない。** 0 は軸を永久に殺し、負は符号を反転する ——
-    // どちらも「補正」ではなく「壊す」側の効果で、無効化したいだけなら `enabled` を使う。
-    if (!isVec3(sensitivity, (n) => n > 0)) {
-      return {
-        ok: false,
-        failure: {
-          reason: 'sensor-field-invalid',
-          boardIndex,
-          sensorIndex: i,
-          field: 'sensitivity',
-          value: entry.sensitivity,
+          field: 'axes',
+          value: entry.axes,
         },
       }
     }
@@ -322,14 +314,7 @@ function parseSensors(
     }
     seen.add(location)
 
-    sensors.push({
-      sensorId,
-      enabled,
-      rotation,
-      offset,
-      sensitivity,
-      noiseDensity: noiseDensityRaw,
-    })
+    sensors.push({ sensorId, enabled, axes, noiseDensity: noiseDensityRaw })
   }
 
   return { ok: true, sensors }
@@ -383,10 +368,20 @@ export function parseStationConfig(raw: unknown): StationConfigParseResult {
     }
     seenBoardKeys.add(stationCode)
 
+    // **基板の向きは純粋な回転だけを受ける。** 軸の倍率・直角のずれは各軸の `vector` が持つので、
+    // ここで倍率を受けると同じ事実を 2 か所で書ける形になる。
+    const orientation = entry.orientation ?? IDENTITY_MATRIX
+    if (!isMat3(orientation) || !isProperRotation(orientation)) {
+      return {
+        ok: false,
+        failure: { reason: 'board-field-invalid', index: i, field: 'orientation', value: entry.orientation },
+      }
+    }
+
     const parsedSensors = parseSensors(entry.sensors, i)
     if (!parsedSensors.ok) return parsedSensors
 
-    boards.push({ boardKey, stationId, sensors: parsedSensors.sensors })
+    boards.push({ boardKey, stationId, orientation, sensors: parsedSensors.sensors })
   }
 
   return { ok: true, config: { stations: parsedStations.stations, boards } }
@@ -440,10 +435,26 @@ function assertNever(value: never): never {
   throw new Error(`理由を決めていない失敗: ${JSON.stringify(value)}`)
 }
 
+/**
+ * センサーの校正値を引いた結果。**設定の軸の本数と届いたパケットの本数が違えば失敗** ——
+ * どちらの本数で読んでも、どれかの軸が別の軸の校正値で補正される。
+ */
+export type SensorResolution =
+  | { readonly ok: true; readonly calibration: ResolvedSensorCalibration }
+  | { readonly ok: false; readonly reason: 'axis-count-mismatch'; readonly configuredAxes: number }
+
 /** `boardKey`・`(boardKey, sensorId)` から観測点・校正値を引く。 */
 export class StationDirectory {
   private readonly boardToStation = new Map<BoardKey, StationInfo>()
+  private readonly boardOrientation = new Map<BoardKey, Mat3>()
   private readonly sensorCalibration = new Map<string, SensorCalibration>()
+  /** 基板の向きを掛け終えた形。**作るのは 1 回だけ**（パケットごとに逆行列を解かない）。 */
+  private readonly resolved = new Map<string, ResolvedSensorCalibration>()
+  /**
+   * 設定に無いセンサーへ返す既定値（基板ごと・軸の本数ごと）。**`resolved` と分けて持つ** ——
+   * 混ぜると、設定に無いセンサーが設定にあるように見える。
+   */
+  private readonly defaults = new Map<string, ResolvedSensorCalibration>()
 
   /**
    * **重複した `boardKey`・`stationId`・`sensorId` を弾く責務は `parseStationConfig` が
@@ -469,13 +480,26 @@ export class StationDirectory {
         continue
       }
       this.boardToStation.set(board.boardKey, station)
+      this.boardOrientation.set(board.boardKey, board.orientation)
       for (const sensor of board.sensors) {
         // **`sensorId` を持たせない。** `SensorEntry` は識別のためだけに `sensorId` を
-        // 足した型で、地図の鍵（`sensorKeyOf`）に既に畳み込んである。そのまま格納すると
-        // `resolveSensor` が返す値に `sensorId` が紛れ込み、`SensorCalibration` の形と
-        // 食い違う（呼び出し側は校正値だけを欲しがっている）。
+        // 足した型で、地図の鍵（`sensorKeyOf`）に既に畳み込んである。
         const { sensorId: _sensorId, ...calibration } = sensor
-        this.sensorCalibration.set(sensorKeyOf(board.boardKey, sensor.sensorId), calibration)
+        const key = sensorKeyOf(board.boardKey, sensor.sensorId)
+        const resolved = resolveCalibration(board.orientation, calibration)
+        // **ここには来ないはず**（`parseStationConfig` が回転と軸の向きを検査済み）。来たら
+        // 黙って既定値へ倒さず、そのセンサーを無効にする。**両方の表で無効にする** ——
+        // 片方だけだと、状態の口（`isSensorEnabled`）は「有効」と答え続けるのに震度は出ない。
+        if (resolved === null) {
+          console.warn(
+            `[station] ${board.boardKey} の ${sensor.sensorId} の校正値が解けない形（設定の生成経路を疑うこと）`,
+          )
+          this.sensorCalibration.set(key, { ...calibration, enabled: false })
+          this.resolved.set(key, { enabled: false, noiseDensity: null, axes: [], unmix: null })
+          continue
+        }
+        this.sensorCalibration.set(key, calibration)
+        this.resolved.set(key, resolved)
       }
     }
   }
@@ -491,12 +515,51 @@ export class StationDirectory {
   }
 
   /**
-   * センサーの校正値。**設定に無くても `null` を返さない** —— 呼び出し側（§7・§16 の
-   * 補正）が「設定なし」を毎回特別扱いしなくて済むよう、単位行列・補正なしの
-   * `DEFAULT_SENSOR_CALIBRATION` を返す。
+   * 基板の向き。設定に無い（観測点へ割り当てていない）基板は単位行列。
    */
-  resolveSensor(boardKey: BoardKey, sensorId: string): SensorCalibration {
-    return this.sensorCalibration.get(sensorKeyOf(boardKey, sensorId)) ?? DEFAULT_SENSOR_CALIBRATION
+  orientationOf(boardKey: BoardKey): Mat3 {
+    return this.boardOrientation.get(boardKey) ?? IDENTITY_MATRIX
+  }
+
+  /**
+   * センサーの校正値（基板の向きを掛け終えた形）。`axisCount` は届いたパケットの軸の本数。
+   *
+   * **設定に無くても失敗にしない** —— 呼び出し側（§7・§16 の補正）が「設定なし」を毎回
+   * 特別扱いしなくて済むよう、補正なしの軸に基板の向きだけを掛けた値を返す（基板を割り当てて
+   * いなければ基板の向きも単位行列）。**設定の軸の本数と違うときだけ失敗を返す。**
+   */
+  resolveSensor(boardKey: BoardKey, sensorId: string, axisCount: number): SensorResolution {
+    const key = sensorKeyOf(boardKey, sensorId)
+    const configured = this.resolved.get(key)
+    if (configured !== undefined) {
+      // 設定の軸の本数（解けなかったセンサーは `configured.axes` が空になるので、こちらで数える）。
+      // `resolved` に載っているものは必ず `sensorCalibration` にも載っている（同じループで入れる）。
+      const configuredAxes = this.sensorCalibration.get(key)!.axes.length
+      return configuredAxes === axisCount
+        ? { ok: true, calibration: configured }
+        : { ok: false, reason: 'axis-count-mismatch', configuredAxes }
+    }
+    // **2・3 軸以外のパケットは校正の形を持たない**（軸が空・`unmix` 無し）。落とさずに通すのは
+    // 前からの扱いで、組み立てと受信の記録には乗り、震度と合成は出ない（`intensityPipeline.ts`）。
+    if (axisCount !== 2 && axisCount !== 3) {
+      return { ok: true, calibration: { enabled: true, noiseDensity: null, axes: [], unmix: null } }
+    }
+    const defaultKey = `${boardKey}|${axisCount}`
+    let calibration = this.defaults.get(defaultKey)
+    if (calibration === undefined) {
+      // 回転と補正なしの軸は必ず解ける。
+      calibration = resolveCalibration(this.orientationOf(boardKey), defaultSensorCalibration(axisCount))!
+      this.defaults.set(defaultKey, calibration)
+    }
+    return { ok: true, calibration }
+  }
+
+  /**
+   * そのセンサーを使うか。**設定に無ければ使う**（既定値は有効）。軸の本数は問わない ——
+   * 本数が食い違っていても、使わないと決めたセンサーなら「使わない」が先に立つ。
+   */
+  isSensorEnabled(boardKey: BoardKey, sensorId: string): boolean {
+    return this.sensorCalibration.get(sensorKeyOf(boardKey, sensorId))?.enabled ?? true
   }
 
   /**

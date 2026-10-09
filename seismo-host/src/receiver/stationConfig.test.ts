@@ -1,13 +1,20 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import {
-  DEFAULT_SENSOR_CALIBRATION,
   EMPTY_STATION_CONFIG,
+  IDENTITY_MATRIX,
   StationDirectory,
+  defaultSensorCalibration,
   parseStationConfig,
   stationsWithMultipleBoards,
 } from './stationConfig'
 import type { StationConfig } from './stationConfig'
+
+const UNIT_AXES = [
+  { vector: [1, 0, 0], offset: 0 },
+  { vector: [0, 1, 0], offset: 0 },
+  { vector: [0, 0, 1], offset: 0 },
+]
 
 /** 有効な最小構成。**書斎に基板 1 枚・センサー 1 個。** */
 function validRaw(): Record<string, unknown> {
@@ -17,23 +24,26 @@ function validRaw(): Record<string, unknown> {
       {
         boardKey: 'mac:020000000003',
         stationId: 'study',
+        orientation: IDENTITY_MATRIX,
         sensors: [
           {
             sensorId: 'i2c0-68',
             enabled: true,
-            rotation: [
-              [1, 0, 0],
-              [0, 1, 0],
-              [0, 0, 1],
-            ],
-            offset: [0, 0, 0],
-            sensitivity: [1, 1, 1],
+            axes: UNIT_AXES,
             noiseDensity: 400,
           },
         ],
       },
     ],
   }
+}
+
+function sensorsOf(raw: Record<string, unknown>): Record<string, unknown>[] {
+  return (raw.boards as Record<string, unknown>[])[0].sensors as Record<string, unknown>[]
+}
+
+function boardOf(raw: Record<string, unknown>): Record<string, unknown> {
+  return (raw.boards as Record<string, unknown>[])[0]
 }
 
 describe('parseStationConfig', () => {
@@ -46,18 +56,25 @@ describe('parseStationConfig', () => {
     ])
     expect(result.config.boards).toHaveLength(1)
     expect(result.config.boards[0].boardKey).toBe('mac:020000000003')
+    expect(result.config.boards[0].orientation).toEqual(IDENTITY_MATRIX)
     expect(result.config.boards[0].sensors[0]).toEqual({
       sensorId: 'i2c0-68',
       enabled: true,
-      rotation: [
-        [1, 0, 0],
-        [0, 1, 0],
-        [0, 0, 1],
-      ],
-      offset: [0, 0, 0],
-      sensitivity: [1, 1, 1],
+      axes: UNIT_AXES,
       noiseDensity: 400,
     })
+  })
+
+  it('正: 2 軸のセンサー（立てて付けた IIS2ICLX など）を読める', () => {
+    const raw = validRaw()
+    sensorsOf(raw)[0].axes = [
+      { vector: [1, 0, 0], offset: 3 },
+      { vector: [0, 0, 1.02], offset: -5 },
+    ]
+    const result = parseStationConfig(raw)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.config.boards[0].sensors[0].axes).toHaveLength(2)
   })
 
   it('正: noiseDensity は省略できる（null になる）', () => {
@@ -81,38 +98,31 @@ describe('parseStationConfig', () => {
     expect(result.config.boards[0].sensors[0].enabled).toBe(true)
   })
 
-  it('正: rotation を省略すると単位行列になる', () => {
+  it('正: axes を省略すると補正なしの 3 軸になる', () => {
     const raw = validRaw()
-    const sensors = (raw.boards as Record<string, unknown>[])[0].sensors as Record<string, unknown>[]
-    delete sensors[0].rotation
+    delete sensorsOf(raw)[0].axes
     const result = parseStationConfig(raw)
     expect(result.ok).toBe(true)
     if (!result.ok) return
-    expect(result.config.boards[0].sensors[0].rotation).toEqual([
-      [1, 0, 0],
-      [0, 1, 0],
-      [0, 0, 1],
-    ])
+    expect(result.config.boards[0].sensors[0].axes).toEqual(UNIT_AXES)
   })
 
-  it('正: offset を省略するとゼロになる', () => {
+  it('正: 軸のゼロ点を省略すると 0 になる', () => {
     const raw = validRaw()
-    const sensors = (raw.boards as Record<string, unknown>[])[0].sensors as Record<string, unknown>[]
-    delete sensors[0].offset
+    sensorsOf(raw)[0].axes = [{ vector: [1, 0, 0] }, { vector: [0, 1, 0] }, { vector: [0, 0, 1] }]
     const result = parseStationConfig(raw)
     expect(result.ok).toBe(true)
     if (!result.ok) return
-    expect(result.config.boards[0].sensors[0].offset).toEqual([0, 0, 0])
+    expect(result.config.boards[0].sensors[0].axes.map((a) => a.offset)).toEqual([0, 0, 0])
   })
 
-  it('正: sensitivity を省略すると単位倍率になる', () => {
+  it('正: 基板の向きを省略すると単位行列になる', () => {
     const raw = validRaw()
-    const sensors = (raw.boards as Record<string, unknown>[])[0].sensors as Record<string, unknown>[]
-    delete sensors[0].sensitivity
+    delete boardOf(raw).orientation
     const result = parseStationConfig(raw)
     expect(result.ok).toBe(true)
     if (!result.ok) return
-    expect(result.config.boards[0].sensors[0].sensitivity).toEqual([1, 1, 1])
+    expect(result.config.boards[0].orientation).toEqual(IDENTITY_MATRIX)
   })
 
   it('対照: enabled が真偽値でない（文字列 "false" 等）と弾く（`??` は truthy/falsy ではなく null/undefined だけを既定値へ倒す）', () => {
@@ -346,7 +356,7 @@ describe('parseStationConfig', () => {
   it('対照: 基板が存在しない観測点を指すと弾く（参照整合性）', () => {
     const result = parseStationConfig({
       stations: [{ stationId: 'study', displayName: '書斎', lat: 35.6, lon: 139.7 }],
-      boards: [{ boardKey: 'mac:aabbccddeeff', stationId: 'living', sensors: [] }],
+      boards: [{ boardKey: 'mac:aabbccddeeff', stationId: 'living', orientation: IDENTITY_MATRIX, sensors: [] }],
     })
     expect(result).toEqual({
       ok: false,
@@ -394,73 +404,70 @@ describe('parseStationConfig', () => {
   })
 
   it.each([
-    ['rotation', [[1, 0], [0, 1, 0], [0, 0, 1]]],
-    ['rotation', [[1, 0, Number.NaN], [0, 1, 0], [0, 0, 1]]],
-    ['rotation', 'not-a-matrix'],
-  ])('対照: %s が 3x3 の有限数でなければ弾く', (field, value) => {
+    ['配列でない', 'not-axes'],
+    ['1 本だけ', [{ vector: [1, 0, 0], offset: 0 }]],
+    ['4 本ある', [...UNIT_AXES, { vector: [1, 1, 1], offset: 0 }]],
+    ['向きが 2 要素', [{ vector: [1, 0], offset: 0 }, ...UNIT_AXES.slice(1)]],
+    ['向きに NaN', [{ vector: [1, 0, Number.NaN], offset: 0 }, ...UNIT_AXES.slice(1)]],
+    ['ゼロ点が数でない', [{ vector: [1, 0, 0], offset: '0' }, ...UNIT_AXES.slice(1)]],
+    ['ゼロ点が NaN', [{ vector: [1, 0, 0], offset: Number.NaN }, ...UNIT_AXES.slice(1)]],
+  ])('対照: axes の形が読めなければ弾く（%s）', (_, value) => {
     const raw = validRaw()
-    const sensors = (raw.boards as Record<string, unknown>[])[0].sensors as Record<string, unknown>[]
-    sensors[0][field] = value
-    const result = parseStationConfig(raw)
-    expect(result).toEqual({
+    sensorsOf(raw)[0].axes = value
+    expect(parseStationConfig(raw)).toEqual({
       ok: false,
-      failure: {
-        reason: 'sensor-field-invalid',
-        boardIndex: 0,
-        sensorIndex: 0,
-        field,
-        value,
-      },
+      failure: { reason: 'sensor-field-invalid', boardIndex: 0, sensorIndex: 0, field: 'axes', value },
     })
   })
 
   it.each([
-    ['列が 0', [[1, 0, 0], [0, 1, 0], [0, 0, 0]]],
-    ['2 列が同じ向き', [[1, 2, 0], [0, 0, 0], [0, 0, 1]]],
-    ['2 列がほぼ同じ向き（アダマール比 1e-7）', [[1, 0, 0], [0, 1, 1], [0, 0, 1e-7]]],
-  ])('正: 逆行列を持たない rotation は弾く（%s）', (_, value) => {
-    // その向きの揺れを消す行列で、設定の履歴（StationXML）も測っている向きを書けない。
+    ['向きの長さが 0', [{ vector: [0, 0, 0], offset: 0 }, ...UNIT_AXES.slice(1)]],
+    ['3 本が 1 つの面に寄っている', [{ vector: [1, 0, 0], offset: 0 }, { vector: [0, 1, 0], offset: 0 }, { vector: [1, 1, 0], offset: 0 }]],
+    ['3 本がほぼ 1 つの面（アダマール比 1e-7）', [{ vector: [1, 0, 0], offset: 0 }, { vector: [0, 1, 0], offset: 0 }, { vector: [0, 1, 1e-7], offset: 0 }]],
+    ['2 本が平行', [{ vector: [1, 0, 0], offset: 0 }, { vector: [-2, 0, 0], offset: 0 }]],
+  ])('正: 解けない測る向きは弾く（%s）', (_, value) => {
+    // その向きの揺れを消す値で、設定の履歴（StationXML）も地面での向きを書けない。
     const raw = validRaw()
-    const sensors = (raw.boards as Record<string, unknown>[])[0].sensors as Record<string, unknown>[]
-    sensors[0].rotation = value
+    sensorsOf(raw)[0].axes = value
     expect(parseStationConfig(raw)).toEqual({
       ok: false,
-      failure: { reason: 'sensor-field-invalid', boardIndex: 0, sensorIndex: 0, field: 'rotation', value },
+      failure: { reason: 'sensor-field-invalid', boardIndex: 0, sensorIndex: 0, field: 'axes', value },
     })
   })
 
   it.each([
     ['直交でない（軸どうしの直角のずれを直す）', [[1.2, 0.1, 0], [0.05, 0.9, 0.2], [0, -0.3, 1.1]]],
-    ['倍率を含む（列の長さが 1 でない）', [[3, 0, 0], [0, 0.01, 0], [0, 0, 7]]],
-  ])('対照: 逆行列を持つなら直交でなくても通す（%s）', (_, value) => {
-    // 直交性は求めない（`SensorCalibration` の定義）。逆行列の有無だけを見る。
+    ['倍率を含む（長さが 1 でない）', [[3, 0, 0], [0, 0.01, 0], [0, 0, 7]]],
+  ])('対照: 解ける向きなら直交でなくても通す（%s）', (_, vectors) => {
     const raw = validRaw()
-    const sensors = (raw.boards as Record<string, unknown>[])[0].sensors as Record<string, unknown>[]
-    sensors[0].rotation = value
+    sensorsOf(raw)[0].axes = vectors.map((vector) => ({ vector, offset: 0 }))
     expect(parseStationConfig(raw).ok).toBe(true)
   })
 
   it.each([
-    ['offset', [0, 0]],
-    ['offset', [0, 0, Number.NaN]],
-    ['sensitivity', [1, 1]],
-    ['sensitivity', [1, 0, 1]],
-    ['sensitivity', [1, -1, 1]],
-  ])('対照: %s が 3 要素の有限数（sensitivity は正）でなければ弾く', (field, value) => {
+    ['3x3 でない', [[1, 0], [0, 1, 0], [0, 0, 1]]],
+    ['倍率を含む', [[2, 0, 0], [0, 1, 0], [0, 0, 1]]],
+    ['せん断を含む', [[1, 0.1, 0], [0, 1, 0], [0, 0, 1]]],
+    ['鏡映（行列式が負）', [[-1, 0, 0], [0, 1, 0], [0, 0, 1]]],
+    ['NaN を含む', [[1, 0, 0], [0, Number.NaN, 0], [0, 0, 1]]],
+  ])('対照: 基板の向きが純粋な回転でなければ弾く（%s）', (_, value) => {
+    // 軸の倍率・直角のずれは各軸の向きが持つ。基板の向きで受けると同じ事実を 2 か所で書ける。
     const raw = validRaw()
-    const sensors = (raw.boards as Record<string, unknown>[])[0].sensors as Record<string, unknown>[]
-    sensors[0][field] = value
-    const result = parseStationConfig(raw)
-    expect(result).toEqual({
+    boardOf(raw).orientation = value
+    expect(parseStationConfig(raw)).toEqual({
       ok: false,
-      failure: {
-        reason: 'sensor-field-invalid',
-        boardIndex: 0,
-        sensorIndex: 0,
-        field,
-        value,
-      },
+      failure: { reason: 'board-field-invalid', index: 0, field: 'orientation', value },
     })
+  })
+
+  it('安全弁: 小数 6 桁へ丸めた回転（管理コンソールの提案）は通す', () => {
+    const raw = validRaw()
+    boardOf(raw).orientation = [
+      [0.999844, -0.000312, 0.017659],
+      [-0.000312, 0.999688, 0.024984],
+      [-0.017659, -0.024984, 0.999532],
+    ]
+    expect(parseStationConfig(raw).ok).toBe(true)
   })
 
   it('対照: noiseDensity が 0 以下だと弾く', () => {
@@ -512,35 +519,73 @@ describe('StationDirectory', () => {
     const parsed = parseStationConfig(validRaw())
     if (!parsed.ok) throw new Error('setup failed')
     const dir = new StationDirectory(parsed.config)
-    expect(dir.resolveSensor('mac:020000000003', 'i2c0-68')).toEqual({
-      enabled: true,
-      rotation: [
-        [1, 0, 0],
-        [0, 1, 0],
-        [0, 0, 1],
-      ],
-      offset: [0, 0, 0],
-      sensitivity: [1, 1, 1],
-      noiseDensity: 400,
+    expect(dir.resolveSensor('mac:020000000003', 'i2c0-68', 3)).toEqual({
+      ok: true,
+      calibration: {
+        enabled: true,
+        noiseDensity: 400,
+        axes: UNIT_AXES,
+        unmix: IDENTITY_MATRIX,
+      },
     })
   })
 
-  it('対照: 設定に無いセンサーは既定の校正値（単位回転・補正なし）を返す（設定は任意という性質を維持）', () => {
+  /** 補正なしの 3 軸・単位行列の基板を解いた形。 */
+  const DEFAULT_RESOLVED = { ok: true, calibration: { enabled: true, noiseDensity: null, axes: UNIT_AXES, unmix: IDENTITY_MATRIX } }
+
+  it('対照: 設定に無いセンサーは補正なしの校正値を返す（設定は任意という性質を維持）', () => {
     const dir = new StationDirectory(EMPTY_STATION_CONFIG)
-    expect(dir.resolveSensor('mac:aa', 's0')).toEqual(DEFAULT_SENSOR_CALIBRATION)
+    expect(dir.resolveSensor('mac:aa', 's0', 3)).toEqual(DEFAULT_RESOLVED)
+    expect(dir.isSensorEnabled('mac:aa', 's0')).toBe(true)
   })
 
   it('対照: 基板は設定にあるがセンサーは設定に無ければ既定値を返す', () => {
     const parsed = parseStationConfig(validRaw())
     if (!parsed.ok) throw new Error('setup failed')
     const dir = new StationDirectory(parsed.config)
-    expect(dir.resolveSensor('mac:020000000003', 'i2c1-69')).toEqual(DEFAULT_SENSOR_CALIBRATION)
+    expect(dir.resolveSensor('mac:020000000003', 'i2c1-69', 3)).toEqual(DEFAULT_RESOLVED)
   })
 
   it('空の帳面はどの boardKey・センサーも未割当／既定値を返す', () => {
     const dir = StationDirectory.empty()
     expect(dir.resolve('mac:aa')).toBeNull()
-    expect(dir.resolveSensor('mac:aa', 's0')).toEqual(DEFAULT_SENSOR_CALIBRATION)
+    expect(dir.resolveSensor('mac:aa', 's0', 3)).toEqual(DEFAULT_RESOLVED)
+  })
+
+  it('正: 設定に無い 2 軸のセンサーは、補正なしの 2 軸を返す（3 成分へは解かない）', () => {
+    const dir = StationDirectory.empty()
+    expect(dir.resolveSensor('mac:aa', 's0', 2)).toEqual({
+      ok: true,
+      calibration: { enabled: true, noiseDensity: null, axes: UNIT_AXES.slice(0, 2), unmix: null },
+    })
+  })
+
+  it('安全弁: 設定の軸の本数と問い合わせの本数が違えば失敗を返す（どちらの本数で読んでも軸を取り違える）', () => {
+    const parsed = parseStationConfig(validRaw())
+    if (!parsed.ok) throw new Error('setup failed')
+    const dir = new StationDirectory(parsed.config)
+    expect(dir.resolveSensor('mac:020000000003', 'i2c0-68', 2)).toEqual({
+      ok: false,
+      reason: 'axis-count-mismatch',
+      configuredAxes: 3,
+    })
+    // 使うかどうかは本数と別に答える。
+    expect(dir.isSensorEnabled('mac:020000000003', 'i2c0-68')).toBe(true)
+  })
+
+  it('正: 基板の向きは、その基板の設定に無いセンサーにも掛かる', () => {
+    const raw = validRaw()
+    boardOf(raw).orientation = [
+      [0, -1, 0],
+      [1, 0, 0],
+      [0, 0, 1],
+    ]
+    const parsed = parseStationConfig(raw)
+    if (!parsed.ok) throw new Error('setup failed')
+    const got = new StationDirectory(parsed.config).resolveSensor('mac:020000000003', 'i2c1-69', 3)
+    if (!got.ok) throw new Error('解けない')
+    // 基板の X が北を向くので、軸 1（基板の X）の地面での向きは北。
+    expect(got.calibration.axes[0]!.vector).toEqual([0, 1, 0])
   })
 
   it('正: hasSensorCalibration は設定にあるセンサーで true を返す（resolveSensor だけでは「設定と一致したか」を見分けられない）', () => {
@@ -563,7 +608,7 @@ describe('StationDirectory', () => {
     try {
       const dir = new StationDirectory({
         stations: [{ stationId: 'study', displayName: '書斎', lat: 35.6, lon: 139.7 }],
-        boards: [{ boardKey: 'mac:aabbccddeeff', stationId: 'living', sensors: [] }],
+        boards: [{ boardKey: 'mac:aabbccddeeff', stationId: 'living', orientation: IDENTITY_MATRIX, sensors: [] }],
       })
       expect(dir.resolve('mac:aabbccddeeff')).toBeNull()
       expect(warn).toHaveBeenCalledTimes(1)
@@ -572,17 +617,63 @@ describe('StationDirectory', () => {
       warn.mockRestore()
     }
   })
+
+  // **状態の口と震度の口が同じ答えを返すこと。** 前は解けない校正値で `isSensorEnabled` だけが
+  // 「有効」と答え続け、状態の口では健全なのに震度が 1 つも出なかった（敵対的レビューで検出）。
+  it('安全弁: parseStationConfig を経由せず解けない軸が渡っても、そのセンサーは無効と答え、震度の材料を返さない', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const dir = new StationDirectory({
+        stations: [{ stationId: 'study', displayName: '書斎', lat: 35.6, lon: 139.7 }],
+        boards: [
+          {
+            boardKey: 'mac:aabbccddeeff',
+            stationId: 'study',
+            orientation: IDENTITY_MATRIX,
+            sensors: [
+              {
+                sensorId: 's0',
+                enabled: true,
+                noiseDensity: null,
+                axes: [
+                  { vector: [1, 0, 0], offset: 0 },
+                  { vector: [0, 1, 0], offset: 0 },
+                  { vector: [1, 1, 0], offset: 0 },
+                ],
+              },
+            ],
+          },
+        ],
+      })
+      expect(dir.isSensorEnabled('mac:aabbccddeeff', 's0')).toBe(false)
+      const got = dir.resolveSensor('mac:aabbccddeeff', 's0', 3)
+      expect(got.ok && got.calibration.enabled).toBe(false)
+      expect(got.ok && got.calibration.unmix).toBeNull()
+      expect(warn).toHaveBeenCalledTimes(1)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('対照: 設定に無いセンサーの既定値は、設定にあるセンサーとして数えない', () => {
+    const parsed = parseStationConfig(validRaw())
+    if (!parsed.ok) throw new Error('setup failed')
+    const dir = new StationDirectory(parsed.config)
+    expect(dir.resolveSensor('mac:020000000003', 'i2c1-69', 3).ok).toBe(true)
+    expect(dir.hasSensorCalibration('mac:020000000003', 'i2c1-69')).toBe(false)
+    expect(dir.isSensorEnabled('mac:020000000003', 'i2c1-69')).toBe(true)
+  })
 })
 
 describe('stationsWithMultipleBoards', () => {
-  const CAL = DEFAULT_SENSOR_CALIBRATION
+  const CAL = defaultSensorCalibration(3)
 
   it('正: 同一観測点へ 2 台以上の基板を割り当てていれば拾う（sensors[] が空でも）', () => {
     const config: StationConfig = {
       stations: [{ stationId: 'study', displayName: '書斎', lat: 35.6, lon: 139.7 }],
       boards: [
-        { boardKey: 'mac:aaaaaaaaaaaa', stationId: 'study', sensors: [] },
-        { boardKey: 'mac:bbbbbbbbbbbb', stationId: 'study', sensors: [{ sensorId: 's', ...CAL }] },
+        { boardKey: 'mac:aaaaaaaaaaaa', stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] },
+        { boardKey: 'mac:bbbbbbbbbbbb', stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [{ sensorId: 's', ...CAL }] },
       ],
     }
     expect(stationsWithMultipleBoards(config)).toEqual(['study'])
@@ -591,7 +682,7 @@ describe('stationsWithMultipleBoards', () => {
   it('対照: 1 台しか割り当てていない観測点は拾わない', () => {
     const config: StationConfig = {
       stations: [{ stationId: 'study', displayName: '書斎', lat: 35.6, lon: 139.7 }],
-      boards: [{ boardKey: 'mac:aaaaaaaaaaaa', stationId: 'study', sensors: [{ sensorId: 's', ...CAL }] }],
+      boards: [{ boardKey: 'mac:aaaaaaaaaaaa', stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [{ sensorId: 's', ...CAL }] }],
     }
     expect(stationsWithMultipleBoards(config)).toEqual([])
   })
@@ -603,9 +694,9 @@ describe('stationsWithMultipleBoards', () => {
         { stationId: 'garage', displayName: '車庫', lat: 35.7, lon: 139.8 },
       ],
       boards: [
-        { boardKey: 'mac:aaaaaaaaaaaa', stationId: 'study', sensors: [] },
-        { boardKey: 'mac:bbbbbbbbbbbb', stationId: 'study', sensors: [] },
-        { boardKey: 'mac:cccccccccccc', stationId: 'garage', sensors: [] },
+        { boardKey: 'mac:aaaaaaaaaaaa', stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] },
+        { boardKey: 'mac:bbbbbbbbbbbb', stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] },
+        { boardKey: 'mac:cccccccccccc', stationId: 'garage', orientation: IDENTITY_MATRIX, sensors: [] },
       ],
     }
     expect(stationsWithMultipleBoards(config)).toEqual(['study'])

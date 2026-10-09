@@ -39,6 +39,26 @@ describe('groupDetectedBoards', () => {
     expect(result.map((d) => d.boardKey)).toEqual(['mac:zzz', 'mac:aaa'])
   })
 
+  // **カードの軸の本数は届いた事実で決める**（`viewBoards.ts` の「登録」）。
+  it('正: センサーごとに届いた軸の本数（2 か 3）を覚える', () => {
+    const result = groupDetectedBoards([
+      { ...sensor('mac:aaa', 'i2c0-6a'), axisCount: 2 },
+      { ...sensor('mac:aaa', 'i2c0-68'), axisCount: 3 },
+    ])
+    expect(result[0].axisCounts).toEqual({ 'i2c0-6a': 2, 'i2c0-68': 3 })
+  })
+
+  it('安全弁: 欄の無い古いホスト・2 と 3 以外の本数は載せない（呼ぶ側が 3 軸で作る）', () => {
+    const result = groupDetectedBoards([
+      sensor('mac:aaa', 'old'),
+      { ...sensor('mac:aaa', 'odd'), axisCount: 6 },
+      { ...sensor('mac:aaa', 'text'), axisCount: '2' },
+      { ...sensor('mac:aaa', 'none'), axisCount: null },
+    ])
+    expect(result[0].axisCounts).toEqual({})
+    expect(result[0].sensorIds).toEqual(['old', 'odd', 'text', 'none'])
+  })
+
   it('同じセンサー ID が二度現れても候補は 1 つ', () => {
     const result = groupDetectedBoards([sensor('mac:aaa', 'accel-0'), sensor('mac:aaa', 'accel-0')])
     expect(result[0].sensorIds).toEqual(['accel-0'])

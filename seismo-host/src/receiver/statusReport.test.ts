@@ -7,6 +7,7 @@ import { PacketTally } from './packetTally'
 import { ReadingHub } from './readingHub'
 import type { SensorHealth } from './sensorHealth'
 import { StationDirectory } from './stationConfig'
+import { IDENTITY_MATRIX, defaultAxes } from './stationConfigTypes'
 import type { StationHealth } from './stationHealth'
 import { buildStatusReport } from './statusReport'
 import type { StatusReportInput, WaveArchiveStatus } from './statusReport'
@@ -140,6 +141,7 @@ function sensor(overrides: Partial<SensorHealth> = {}): SensorHealth {
     sensorId: 's0',
     lastPacketMs: NOW - 300,
     streamKey: 'mac:aa|s0|boot1',
+    axisCount: 3,
     segmentId: 7,
     lastIntensity: 1.25,
     lastReadingAtMs: NOW - 2_000,
@@ -416,7 +418,7 @@ describe('buildStatusReport', () => {
   it('正: 設定にある基板は、観測点（座標込み）を出す', () => {
     const stations = new StationDirectory({
       stations: [{ stationId: 'study', displayName: '書斎', lat: 35.6, lon: 139.7 }],
-      boards: [{ boardKey: 'mac:aa', stationId: 'study', sensors: [] }],
+      boards: [{ boardKey: 'mac:aa', stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] }],
     })
     const report = buildStatusReport(input({ stations }))
 
@@ -441,17 +443,12 @@ describe('buildStatusReport', () => {
         {
           boardKey: 'mac:aa',
           stationId: 'study',
+          orientation: IDENTITY_MATRIX,
           sensors: [
             {
               sensorId: 's0',
               enabled: true,
-              rotation: [
-                [1, 0, 0],
-                [0, 1, 0],
-                [0, 0, 1],
-              ],
-              offset: [0, 0, 0],
-              sensitivity: [1, 1, 1],
+              axes: defaultAxes(3),
               noiseDensity: null,
             },
           ],
@@ -469,7 +466,7 @@ describe('buildStatusReport', () => {
       // **基板は観測点に割り当てているが、センサーの校正値は 1 件も書いていない。**
       // `station` は付くが `calibrationConfigured` は別の問い —— 「どこに置いたか」を
       // 知っていることと「校正値を書いたか」は無関係な事実なので混ぜない。
-      boards: [{ boardKey: 'mac:aa', stationId: 'study', sensors: [] }],
+      boards: [{ boardKey: 'mac:aa', stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] }],
     })
     const report = buildStatusReport(input({ stations }))
 
@@ -484,17 +481,12 @@ describe('buildStatusReport', () => {
         {
           boardKey: 'mac:aa',
           stationId: 'study',
+          orientation: IDENTITY_MATRIX,
           sensors: [
             {
               sensorId: 's0',
               enabled: false,
-              rotation: [
-                [1, 0, 0],
-                [0, 1, 0],
-                [0, 0, 1],
-              ],
-              offset: [0, 0, 0],
-              sensitivity: [1, 1, 1],
+              axes: defaultAxes(3),
               noiseDensity: null,
             },
           ],
@@ -517,17 +509,12 @@ describe('buildStatusReport', () => {
         {
           boardKey: 'mac:aa',
           stationId: 'study',
+          orientation: IDENTITY_MATRIX,
           sensors: [
             {
               sensorId: 's0',
               enabled: true,
-              rotation: [
-                [1, 0, 0],
-                [0, 1, 0],
-                [0, 0, 1],
-              ],
-              offset: [0, 0, 0],
-              sensitivity: [1, 1, 1],
+              axes: defaultAxes(3),
               noiseDensity: null,
             },
           ],

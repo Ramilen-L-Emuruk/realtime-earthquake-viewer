@@ -10,6 +10,7 @@ import { RECORD_QUAKES_RANGE_MAX_MS, RecordQuakes } from './recordQuakes'
 import type { FusedWaveChunk } from './sensorFusion'
 import { encodeSteim2 } from './steim2'
 import type { StationConfig } from './stationConfigTypes'
+import { IDENTITY_MATRIX, defaultAxes } from './stationConfigTypes'
 import { encodeWaveChunk, stationFileToken } from './waveArchive'
 import { RecordChannelIndex } from './waveRecordChannels'
 import {
@@ -262,8 +263,8 @@ describe('channels', () => {
     })
     writeFileSync(sourcePath, wave)
     await buildSummaryFile({ kind: 'raw', sourcePath, summaryPath: rawSummaryPath(dirs.summaryDir, hourKey), hourKey, hourStartMs: H0, stationKey: null })
-    const unit = { enabled: true, rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], offset: [0, 0, 0], sensitivity: [1, 1, 1], noiseDensity: null } as const
-    config = { ...config, boards: [{ boardKey: board, stationId: STATION, sensors: [{ sensorId: 'S1', ...unit }] }] }
+    const unit = { enabled: true, axes: defaultAxes(3), noiseDensity: null }
+    config = { ...config, boards: [{ boardKey: board, stationId: STATION, orientation: IDENTITY_MATRIX, sensors: [{ sensorId: 'S1', ...unit }] }] }
     const got = await handleRecordsRequest('channels', q({}), deps, OPEN)
     const body = got.body as { channels: Array<{ id: string; board: unknown }> }
     const raw = body.channels.find((c) => c.id === mseed3SourceId(board, 'S1', 'HN1'))!

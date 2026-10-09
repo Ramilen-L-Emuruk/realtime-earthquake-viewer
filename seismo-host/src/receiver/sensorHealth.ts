@@ -37,6 +37,14 @@ export interface SensorHealth {
   /** 最後に見た流れ。再起動すると変わる。 */
   readonly streamKey: string
   /**
+   * 最後に届いたパケットの軸の本数。**まだパケットが届いていなければ `null`。**
+   *
+   * **設定ではなく届いた事実。** 管理コンソールが「登録」でカードを作るとき、この本数で
+   * 欄を作る —— 2 軸のセンサー（IIS2ICLX）に 3 軸のカードを作って保存すると、軸の本数が
+   * 食い違ってパケットを捨て続ける（`stationConfig.ts` の `resolveSensor`）。
+   */
+  readonly axisCount: number | null
+  /**
    * 最後に**震度を出せた**区間。まだ 1 つも出ていなければ null。
    *
    * **パケットが届いただけの回には触らない。** 区間の番号が自然に手に入るのは震度が
@@ -80,6 +88,7 @@ interface Entry {
   readonly sensorId: string
   lastPacketMs: number
   streamKey: string
+  axisCount: number | null
   segmentId: number | null
   lastIntensity: number | null
   lastReadingAtMs: number | null
@@ -117,10 +126,13 @@ export class SensorHealthBook {
     readonly boardKey: BoardKey
     readonly sensorId: string
     readonly streamKey: string
+    /** パケットの軸の本数（`packet.channels.length`）。 */
+    readonly axisCount: number
   }): void {
     const entry = this.touch(input.boardKey, input.sensorId)
     entry.lastPacketMs = this.now()
     entry.streamKey = input.streamKey
+    entry.axisCount = input.axisCount
   }
 
   /** 震度が 1 つ出た。 */
@@ -213,6 +225,7 @@ export class SensorHealthBook {
         sensorId: e.sensorId,
         lastPacketMs: e.lastPacketMs,
         streamKey: e.streamKey,
+        axisCount: e.axisCount,
         segmentId: e.segmentId,
         lastIntensity: e.lastIntensity,
         lastReadingAtMs: e.lastReadingAtMs,
@@ -245,6 +258,7 @@ export class SensorHealthBook {
       sensorId,
       lastPacketMs: this.now(),
       streamKey: '',
+      axisCount: null,
       segmentId: null,
       lastIntensity: null,
       lastReadingAtMs: null,

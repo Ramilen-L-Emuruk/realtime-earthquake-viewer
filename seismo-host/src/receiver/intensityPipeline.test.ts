@@ -4,8 +4,25 @@ import type { SensorPacket } from '../protocol/types'
 import { streamKeyOf } from '../timebase/segmenter'
 import { IntensityPipeline, normalizeIntensity } from './intensityPipeline'
 import type { IntensityReading, PacketOutcome } from './intensityPipeline'
+import { legacyAxes } from './calibration'
 import { StationDirectory } from './stationConfig'
-import type { SensorCalibration, StationConfig } from './stationConfig'
+import type { Mat3, SensorCalibration, StationConfig } from './stationConfig'
+import { IDENTITY_MATRIX, defaultAxes } from './stationConfigTypes'
+
+/** `pkt()` の boardKey・sensorId に校正を 1 つだけ持つ設定。省いた欄は補正なしの 3 軸。 */
+function configWith(sensor: Partial<SensorCalibration>, orientation: Mat3): StationConfig {
+  return {
+    stations: [{ stationId: 'study', displayName: '書斎', lat: 35.6, lon: 139.7 }],
+    boards: [
+      {
+        boardKey: 'mac:020000000003',
+        stationId: 'study',
+        orientation,
+        sensors: [{ sensorId: 'i2c0-68', enabled: true, axes: defaultAxes(3), noiseDensity: null, ...sensor }],
+      },
+    ],
+  }
+}
 
 /** 実際の記録と同じ起点。時刻が大きい状態で当てはめが効くことも併せて見る。 */
 const BASE_MS = 1790181865671
@@ -360,32 +377,8 @@ describe('IntensityPipeline', () => {
 
   describe('観測点校正の適用（REQUIREMENTS.md §16）', () => {
     /** `pkt()` の boardKey・sensorId に紐づく校正だけを持つ `StationDirectory` を作る。 */
-    function stationsWith(sensor: Partial<SensorCalibration>): StationDirectory {
-      const config: StationConfig = {
-        stations: [{ stationId: 'study', displayName: '書斎', lat: 35.6, lon: 139.7 }],
-        boards: [
-          {
-            boardKey: 'mac:020000000003',
-            stationId: 'study',
-            sensors: [
-              {
-                sensorId: 'i2c0-68',
-                enabled: true,
-                rotation: [
-                  [1, 0, 0],
-                  [0, 1, 0],
-                  [0, 0, 1],
-                ],
-                offset: [0, 0, 0],
-                sensitivity: [1, 1, 1],
-                noiseDensity: null,
-                ...sensor,
-              },
-            ],
-          },
-        ],
-      }
-      return new StationDirectory(config)
+    function stationsWith(sensor: Partial<SensorCalibration>, orientation: Mat3 = IDENTITY_MATRIX): StationDirectory {
+      return new StationDirectory(configWith(sensor, orientation))
     }
 
     it('対照: 割り当てが無ければ（既定の StationDirectory）波形は換算値のまま変わらない', () => {
@@ -403,11 +396,12 @@ describe('IntensityPipeline', () => {
       expect(outA.wave.gal[2][0]).toBe(outB.wave.gal[2][0])
     })
 
-    it('正: sensitivity が波形へ反映される（震度が食べる値と同じもの）', () => {
+    it('正: 測る向きの倍率が波形へ反映される（震度が食べる値と同じもの）', () => {
       const baseline = new IntensityPipeline(OPTS)
+      // 1 gal で 0.5 gal 読む軸 —— 読んだ値の 2 倍が地面の加速度。
       const scaled = new IntensityPipeline({
         ...OPTS,
-        stations: stationsWith({ sensitivity: [2, 2, 2] }),
+        stations: stationsWith({ axes: legacyAxes(IDENTITY_MATRIX, [2, 2, 2], [0, 0, 0])! }),
       })
 
       const outBaseline = baseline.handlePacket(pkt())
@@ -419,18 +413,20 @@ describe('IntensityPipeline', () => {
       expect(applied).toBeCloseTo(base * 2, 9)
     })
 
-    it('正: offset を引いてから sensitivity・rotation を適用する（適用順序の固定）', () => {
-      // 軸0を (v - 10) * 2 したうえで、回転で軸2へ足し込む（軸2' = 軸0' + 軸2）。
+    it('正: 前の形（ゼロ点 → 倍率 → 回転）から写した校正値で、前の式と同じ値になる', () => {
+      // 前の形で、軸0を (v - 10) * 2 したうえで、回転で軸2へ足し込む（軸2' = 軸0' + 軸2）設定。
       const combo = new IntensityPipeline({
         ...OPTS,
         stations: stationsWith({
-          offset: [10, 0, 0],
-          sensitivity: [2, 1, 1],
-          rotation: [
-            [1, 0, 0],
-            [0, 1, 0],
-            [1, 0, 1],
-          ],
+          axes: legacyAxes(
+            [
+              [1, 0, 0],
+              [0, 1, 0],
+              [1, 0, 1],
+            ],
+            [2, 1, 1],
+            [10, 0, 0],
+          )!,
         }),
       })
       const baseline = new IntensityPipeline(OPTS)
@@ -449,7 +445,7 @@ describe('IntensityPipeline', () => {
     it('正: 校正前の値（uncalibratedGal）は校正を掛ける前の換算値のまま出る（6 面法の材料）', () => {
       const combo = new IntensityPipeline({
         ...OPTS,
-        stations: stationsWith({ offset: [10, 20, 30], sensitivity: [2, 3, 4] }),
+        stations: stationsWith({ axes: legacyAxes(IDENTITY_MATRIX, [2, 3, 4], [10, 20, 30])! }),
       })
       const baseline = new IntensityPipeline(OPTS)
 
@@ -484,37 +480,69 @@ describe('IntensityPipeline', () => {
       // 組み立て（Segmenter）にも渡していないので、区間が始まった扱いにもならない。
       expect(out.startedBecause).toBeNull()
     })
+
+    it('正: 基板の向きが掛かる（基板の X が北を向くなら、X の読みが北の成分になる）', () => {
+      // 列が基板の X・Y・Z の向き: X→北、Y→西、Z→上。
+      const rotated = new IntensityPipeline({
+        ...OPTS,
+        stations: stationsWith(
+          {},
+          [
+            [0, -1, 0],
+            [1, 0, 0],
+            [0, 0, 1],
+          ],
+        ),
+      })
+      const baseline = new IntensityPipeline(OPTS)
+      const a = rotated.handlePacket(pkt()).wave
+      const b = baseline.handlePacket(pkt()).wave
+      if (a === null || b === null) throw new Error('波形が載っていない')
+      expect(a.gal[1][0]).toBeCloseTo(b.gal[0][0], 9)
+      expect(a.gal[0][0]).toBeCloseTo(-b.gal[1][0], 9)
+      expect(a.gal[2][0]).toBeCloseTo(b.gal[2][0], 9)
+    })
+
+    it('正: 基板の向きは設定に書いていないセンサーにも掛かる（向きは基板の事実）', () => {
+      const config = configWith({}, [
+        [0, -1, 0],
+        [1, 0, 0],
+        [0, 0, 1],
+      ])
+      // センサーを 1 個も書かず、基板だけを割り当てる。
+      const stations = new StationDirectory({ ...config, boards: config.boards.map((b) => ({ ...b, sensors: [] })) })
+      const a = new IntensityPipeline({ ...OPTS, stations }).handlePacket(pkt()).wave
+      const b = new IntensityPipeline(OPTS).handlePacket(pkt()).wave
+      if (a === null || b === null) throw new Error('波形が載っていない')
+      expect(a.gal[1][0]).toBeCloseTo(b.gal[0][0], 9)
+    })
+
+    it('安全弁: 設定の軸の本数と届いたパケットの本数が違えば、校正を当てずにパケットごと落とす', () => {
+      const p = new IntensityPipeline({ ...OPTS, stations: stationsWith({ axes: defaultAxes(2) }) })
+      const out = p.handlePacket(pkt())
+      expect(out.dropped).toBe('calibration-axis-mismatch')
+      expect(out.detail).toContain('設定は 2 軸')
+      expect(out.wave).toBeNull()
+      expect(out.startedBecause).toBeNull()
+    })
+
+    it('対照: 設定に無い 2 軸のセンサーは落とさない（組み立てには乗り、震度の流れは作らない）', () => {
+      const p = new IntensityPipeline(OPTS)
+      const out = p.handlePacket(
+        pkt({ channels: ['HN1', 'HN2'], samples: rows(0, PER_PACKET, SHAKE).map((r) => [r[0]!, r[1]!]) }),
+      )
+      expect(out.dropped).toBeNull()
+      expect(out.wave).toBeNull()
+    })
   })
 
   describe('updateStations（#313 段 B: /api/* からの実行時差し替え）', () => {
     /** `pkt()` の boardKey・sensorId に紐づく校正だけを持つ `StationDirectory` を作る。 */
     function stationsWith(sensor: Partial<SensorCalibration>): StationDirectory {
-      const config: StationConfig = {
-        stations: [{ stationId: 'study', displayName: '書斎', lat: 35.6, lon: 139.7 }],
-        boards: [
-          {
-            boardKey: 'mac:020000000003',
-            stationId: 'study',
-            sensors: [
-              {
-                sensorId: 'i2c0-68',
-                enabled: true,
-                rotation: [
-                  [1, 0, 0],
-                  [0, 1, 0],
-                  [0, 0, 1],
-                ],
-                offset: [0, 0, 0],
-                sensitivity: [1, 1, 1],
-                noiseDensity: null,
-                ...sensor,
-              },
-            ],
-          },
-        ],
-      }
-      return new StationDirectory(config)
+      return new StationDirectory(configWith(sensor, IDENTITY_MATRIX))
     }
+    /** 読んだ値を 2 倍した値が地面の加速度になる軸（1 gal で 0.5 gal 読む）。 */
+    const DOUBLED = legacyAxes(IDENTITY_MATRIX, [2, 2, 2], [0, 0, 0])!
 
     it('対照: updateStations を呼ぶ前は既定の校正値のまま（換算値は変わらない）', () => {
       const p = new IntensityPipeline(OPTS)
@@ -529,7 +557,7 @@ describe('IntensityPipeline', () => {
       // これで初めて「実行時の差し替え」自体が効いていることの証明になる。
       const baseline = new IntensityPipeline(OPTS)
       const viaUpdate = new IntensityPipeline({ ...OPTS, stations: StationDirectory.empty() })
-      viaUpdate.updateStations(stationsWith({ sensitivity: [2, 2, 2] }))
+      viaUpdate.updateStations(stationsWith({ axes: DOUBLED }))
 
       const outBaseline = baseline.handlePacket(pkt())
       const outUpdated = viaUpdate.handlePacket(pkt())
@@ -545,7 +573,7 @@ describe('IntensityPipeline', () => {
       feed(p, PACKETS_FOR_FIRST)
 
       // 区間が閉じる前に校正を差し替える。
-      p.updateStations(stationsWith({ sensitivity: [2, 2, 2] }))
+      p.updateStations(stationsWith({ axes: DOUBLED }))
       const out = p.handlePacket(pkt({ firstSeq: PACKETS_FOR_FIRST * PER_PACKET }))
 
       // **`stream-desync` にならない。** 差し替えは校正値だけを変え、組み立て

@@ -16,8 +16,8 @@ function clock(start = 1_700_000_000_000): { now: () => number; advance: (ms: nu
 describe('SensorHealthBook', () => {
   it('同じ基板でもセンサーごとに別の行になる', () => {
     const book = new SensorHealthBook()
-    book.notePacket({ boardKey: 'mac:aa', sensorId: 's0', streamKey: 'k0' })
-    book.notePacket({ boardKey: 'mac:aa', sensorId: 's1', streamKey: 'k1' })
+    book.notePacket({ boardKey: 'mac:aa', sensorId: 's0', streamKey: 'k0', axisCount: 3 })
+    book.notePacket({ boardKey: 'mac:aa', sensorId: 's1', streamKey: 'k1', axisCount: 3 })
 
     // **基板で丸めると、3 個のうち 1 個が死んでも健全に見える。**
     expect(book.size).toBe(2)
@@ -25,22 +25,35 @@ describe('SensorHealthBook', () => {
 
   it('基板が再起動しても同じ行のまま（流れの鍵だけ新しくなる）', () => {
     const book = new SensorHealthBook()
-    book.notePacket({ boardKey: 'mac:aa', sensorId: 's0', streamKey: 'mac:aa|s0|boot1' })
-    book.notePacket({ boardKey: 'mac:aa', sensorId: 's0', streamKey: 'mac:aa|s0|boot2' })
+    book.notePacket({ boardKey: 'mac:aa', sensorId: 's0', streamKey: 'mac:aa|s0|boot1', axisCount: 3 })
+    book.notePacket({ boardKey: 'mac:aa', sensorId: 's0', streamKey: 'mac:aa|s0|boot2', axisCount: 3 })
 
     // 流れの鍵で覚えると、古い行が「黙ったセンサー」として永久に残る
     expect(book.size).toBe(1)
     expect(book.snapshot()[0].streamKey).toBe('mac:aa|s0|boot2')
   })
 
+  it('最後に届いたパケットの軸の本数を覚え、まだ届いていなければ null', () => {
+    const book = new SensorHealthBook()
+    book.noteSkip({ boardKey: 'mac:aa', sensorId: 's1', reason: 'x', streamKey: 'k', segmentId: 0 })
+    book.notePacket({ boardKey: 'mac:aa', sensorId: 's0', streamKey: 'k', axisCount: 2 })
+    const byId = new Map(book.snapshot().map((s) => [s.sensorId, s.axisCount]))
+    expect(byId.get('s0')).toBe(2)
+    expect(byId.get('s1')).toBeNull()
+
+    // 付け替えた（3 軸のセンサーへ差し替えた）ら新しい本数になる。
+    book.notePacket({ boardKey: 'mac:aa', sensorId: 's0', streamKey: 'k', axisCount: 3 })
+    expect(book.snapshot().find((s) => s.sensorId === 's0')?.axisCount).toBe(3)
+  })
+
   it('最後にパケットが届いた時刻は受け手の時計で進む', () => {
     const t = clock()
     const book = new SensorHealthBook({ now: t.now })
-    book.notePacket({ boardKey: 'mac:aa', sensorId: 's0', streamKey: 'k' })
+    book.notePacket({ boardKey: 'mac:aa', sensorId: 's0', streamKey: 'k', axisCount: 3 })
     const first = book.snapshot()[0].lastPacketMs
 
     t.advance(5_000)
-    book.notePacket({ boardKey: 'mac:aa', sensorId: 's0', streamKey: 'k' })
+    book.notePacket({ boardKey: 'mac:aa', sensorId: 's0', streamKey: 'k', axisCount: 3 })
 
     expect(book.snapshot()[0].lastPacketMs).toBe(first + 5_000)
   })
@@ -81,15 +94,15 @@ describe('SensorHealthBook', () => {
   it('上限に達したら、いちばん長く音沙汰の無いものを押し出して数える', () => {
     const t = clock()
     const book = new SensorHealthBook({ maxSensors: 2, now: t.now })
-    book.notePacket({ boardKey: 'mac:aa', sensorId: 's0', streamKey: 'k' })
+    book.notePacket({ boardKey: 'mac:aa', sensorId: 's0', streamKey: 'k', axisCount: 3 })
     t.advance(1_000)
-    book.notePacket({ boardKey: 'mac:bb', sensorId: 's0', streamKey: 'k' })
+    book.notePacket({ boardKey: 'mac:bb', sensorId: 's0', streamKey: 'k', axisCount: 3 })
     t.advance(1_000)
     // 1 つ目に触れ直すと、押し出される順が入れ替わる
-    book.notePacket({ boardKey: 'mac:aa', sensorId: 's0', streamKey: 'k' })
+    book.notePacket({ boardKey: 'mac:aa', sensorId: 's0', streamKey: 'k', axisCount: 3 })
     t.advance(1_000)
 
-    book.notePacket({ boardKey: 'mac:cc', sensorId: 's0', streamKey: 'k' })
+    book.notePacket({ boardKey: 'mac:cc', sensorId: 's0', streamKey: 'k', axisCount: 3 })
 
     expect(book.size).toBe(2)
     expect(book.evictions).toBe(1)
@@ -99,18 +112,18 @@ describe('SensorHealthBook', () => {
   it('音沙汰の新しい順に返す（黙ったものが末尾へ寄る）', () => {
     const t = clock()
     const book = new SensorHealthBook({ now: t.now })
-    book.notePacket({ boardKey: 'mac:aa', sensorId: 's0', streamKey: 'k' })
+    book.notePacket({ boardKey: 'mac:aa', sensorId: 's0', streamKey: 'k', axisCount: 3 })
     t.advance(1_000)
-    book.notePacket({ boardKey: 'mac:bb', sensorId: 's0', streamKey: 'k' })
+    book.notePacket({ boardKey: 'mac:bb', sensorId: 's0', streamKey: 'k', axisCount: 3 })
     t.advance(1_000)
-    book.notePacket({ boardKey: 'mac:cc', sensorId: 's0', streamKey: 'k' })
+    book.notePacket({ boardKey: 'mac:cc', sensorId: 's0', streamKey: 'k', axisCount: 3 })
 
     expect(book.snapshot().map((s) => s.boardKey)).toEqual(['mac:cc', 'mac:bb', 'mac:aa'])
   })
 
   it('パケットが届いただけでは区間の番号を埋めない', () => {
     const book = new SensorHealthBook()
-    book.notePacket({ boardKey: 'mac:aa', sensorId: 's0', streamKey: 'k' })
+    book.notePacket({ boardKey: 'mac:aa', sensorId: 's0', streamKey: 'k', axisCount: 3 })
 
     // 0 を入れると、実在しない「0 番の区間」が状態の口に出る
     expect(book.snapshot()[0].segmentId).toBeNull()
@@ -120,7 +133,7 @@ describe('SensorHealthBook', () => {
     const book = new SensorHealthBook()
     // **流れの名乗りは実運用と同じに揃える。** パケットと震度は同じ流れから来るので、
     // ここを食い違わせると「古い世代の読み」の門に当たって落ちる。
-    book.notePacket({ boardKey: 'mac:aa', sensorId: 's0', streamKey: 'mac:aa|s0|boot1' })
+    book.notePacket({ boardKey: 'mac:aa', sensorId: 's0', streamKey: 'mac:aa|s0|boot1', axisCount: 3 })
     book.noteSkip({
       boardKey: 'mac:aa',
       sensorId: 's0',
@@ -148,7 +161,7 @@ describe('SensorHealthBook', () => {
 
   it('区間が再開した回に届く旧区間の締めくくりでは、理由を消さない', () => {
     const book = new SensorHealthBook()
-    book.notePacket({ boardKey: 'mac:aa', sensorId: 's0', streamKey: 'mac:aa|s0|boot1' })
+    book.notePacket({ boardKey: 'mac:aa', sensorId: 's0', streamKey: 'mac:aa|s0|boot1', axisCount: 3 })
     // 軸が 2 本になった区間（2 番）が始まり、震度を出せないと決まる
     book.noteSkip({
       boardKey: 'mac:aa',
@@ -179,7 +192,7 @@ describe('SensorHealthBook', () => {
   it('枠の上限で追い出された古い起動セッションの締めくくりでは、何も進めない', () => {
     const book = new SensorHealthBook()
     // いま届いているのは再起動後の流れ（boot2）。そこでは震度を出せていない。
-    book.notePacket({ boardKey: 'mac:aa', sensorId: 's0', streamKey: 'mac:aa|s0|boot2' })
+    book.notePacket({ boardKey: 'mac:aa', sensorId: 's0', streamKey: 'mac:aa|s0|boot2', axisCount: 3 })
     book.noteSkip({
       boardKey: 'mac:aa',
       sensorId: 's0',

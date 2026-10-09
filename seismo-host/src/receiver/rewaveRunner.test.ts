@@ -11,6 +11,7 @@ import { RewaveRunner } from './rewaveRunner'
 import { RewaveScheduler } from './rewaveScheduler'
 import type { FusedWaveChunk } from './sensorFusion'
 import type { StationConfig } from './stationConfig'
+import { defaultAxes } from './stationConfigTypes'
 import { REWAVE_LEAD_MS, REWAVE_TAIL_MS } from './stationRewave'
 
 /** 2026-10-01 12:30 JST。 */
@@ -24,10 +25,10 @@ const IDENTITY = [
 ] as const
 
 function config(): StationConfig {
-  const entry = { sensorId: SID, enabled: true, rotation: IDENTITY, offset: [0, 0, 0] as const, sensitivity: [1, 1, 1] as const, noiseDensity: null }
+  const entry = { sensorId: SID, enabled: true, axes: defaultAxes(3), noiseDensity: null }
   return {
     stations: [{ stationId: 'station-1', displayName: '観測点', lat: 35, lon: 135 }],
-    boards: MACS.map((mac) => ({ boardKey: `mac:${mac}`, stationId: 'station-1', sensors: [entry] })),
+    boards: MACS.map((mac) => ({ boardKey: `mac:${mac}`, stationId: 'station-1', orientation: IDENTITY, sensors: [entry] })),
   }
 }
 
