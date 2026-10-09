@@ -128,6 +128,16 @@ export interface StationHealth {
   /** その震度が代表する時刻。基板が名乗る時間軸。 */
   readonly lastReadingAtMs: number | null
   /**
+   * 最後に震度が出た時刻。**受け手の時計で測る**（`lastPacketMs` と同じ時計）。
+   * まだ 1 つも出ていなければ null。
+   *
+   * **震度の欄の古さはこれで測る。** `lastPacketMs` は合成波形が出るたびにも動くので、
+   * 3 方向のうち解けない向きがあって震度だけが止まった観測点（2 軸のセンサーが混ざると
+   * 起きる）でも動き続ける —— それで測ると、最後の震度が平常の色のまま居座る。
+   * `lastReadingAtMs` は基板が名乗る時間軸なので、受け手の時計と引き比べられない。
+   */
+  readonly lastReadingReceivedMs: number | null
+  /**
    * 合成の計測震度を出せない理由。出せているなら null。
    *
    * **合成のまとまりが出た回にだけ更新される。** `SensorFusion.FusionOutcome.intensitySkipReason` と
@@ -204,6 +214,7 @@ interface Entry {
   lastPacketMs: number
   lastIntensity: number | null
   lastReadingAtMs: number | null
+  lastReadingReceivedMs: number | null
   lastSkipReason: string | null
   closeFailures: number
   lastCloseFailure: string | null
@@ -246,6 +257,8 @@ export class StationHealthBook {
     // 値を上書きしないのは、直前まで出ていた値を消さないため（`sensorHealth.ts` と同じ）。
     if (reading.intensity !== null) entry.lastIntensity = reading.intensity
     entry.lastReadingAtMs = reading.atMs
+    // `touch` が同じ回に読んだ時計をそのまま使う（読み直すと `lastPacketMs` とずれる）。
+    entry.lastReadingReceivedMs = entry.lastPacketMs
     // **震度が出た＝出せない理由はもう無い。**
     entry.lastSkipReason = null
   }
@@ -358,6 +371,7 @@ export class StationHealthBook {
         lastPacketMs: e.lastPacketMs,
         lastIntensity: e.lastIntensity,
         lastReadingAtMs: e.lastReadingAtMs,
+        lastReadingReceivedMs: e.lastReadingReceivedMs,
         lastSkipReason: e.lastSkipReason,
         closeFailures: e.closeFailures,
         lastCloseFailure: e.lastCloseFailure,
@@ -396,6 +410,7 @@ export class StationHealthBook {
       lastPacketMs: this.now(),
       lastIntensity: null,
       lastReadingAtMs: null,
+      lastReadingReceivedMs: null,
       lastSkipReason: null,
       closeFailures: 0,
       lastCloseFailure: null,

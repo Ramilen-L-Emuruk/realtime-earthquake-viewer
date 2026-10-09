@@ -159,6 +159,7 @@ function station(overrides: Partial<StationHealth> = {}): StationHealth {
     lastPacketMs: NOW - 300,
     lastIntensity: 2.1,
     lastReadingAtMs: NOW - 2_000,
+    lastReadingReceivedMs: NOW - 300,
     lastSkipReason: null,
     closeFailures: 0,
     lastCloseFailure: null,
@@ -400,6 +401,13 @@ describe('buildStatusReport', () => {
     expect(report.stationIntensities[0].lastIntensity).toBeNull()
     expect(report.unreadableTimes).toBe(1)
     expect(report.unreadableIntensityValues).toBe(1)
+  })
+
+  it('観測点の震度を受け取った時刻（受け手の時計）も、時刻の番人を通る', () => {
+    const report = buildStatusReport(input({ stationIntensities: [station({ lastReadingReceivedMs: Number.NaN })] }))
+
+    expect(report.stationIntensities[0].lastReadingReceivedMs).toBeNull()
+    expect(report.unreadableTimes).toBe(1)
   })
 
   it('数として出せなかった震度の件数を、時刻とは別の数として出す', () => {

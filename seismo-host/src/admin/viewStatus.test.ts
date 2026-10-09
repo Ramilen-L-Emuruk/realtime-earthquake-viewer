@@ -170,11 +170,17 @@ describe('worstResidual（#688）', () => {
 const NOW = 1_800_000_000_000
 
 /** 観測点 1 つぶん（`/status` から読む形）。 */
-function station(lastPacketMs: number | null, lastSkipReason: string | null = null) {
+function station(
+  lastPacketMs: number | null,
+  lastSkipReason: string | null = null,
+  // 震度が毎秒出ている間は、受信の時刻と同じ回に動く。
+  lastReadingReceivedMs: number | null = lastPacketMs,
+) {
   return {
     stationId: 'station-1',
     lastPacketMs,
     lastIntensity: 1.23,
+    lastReadingReceivedMs,
     lastSkipReason,
     lastMemberCountMin: 8,
     lastMemberCountMax: 9,
@@ -226,6 +232,28 @@ describe('stationRowHtml', () => {
 
     expect(html).toContain('<td class="stale-value">1.23</td>')
     expect(html.match(/stale-value/g)?.length).toBe(1)
+  })
+
+  it('正: 波形は届いていても震度が止まって 60 秒を過ぎたら、理由が無くても震度の欄だけ赤くする', () => {
+    // 3 方向のうち解けない向きがあると、合成は解ける成分の波形だけを出し続けて震度は止まる。
+    // 例外ではないので `lastSkipReason` は立たない —— 受信の時刻で測っていた間は、最後の震度が
+    // 平常の色のまま居座っていた（2026-10-10 に使い捨てのホストで再現）。
+    const html = stationRowHtml(NOW, station(NOW - 1000, null, NOW - STALE_AFTER_MS - 1))
+
+    expect(html).toContain('<td class="stale-value">1.23</td>')
+    expect(html.match(/stale-value/g)?.length).toBe(1)
+  })
+
+  it('対照: 震度が止まってもちょうど 60 秒までは赤くしない（受信の欄と同じ境界）', () => {
+    expect(stationRowHtml(NOW, station(NOW - 1000, null, NOW - STALE_AFTER_MS))).not.toContain('stale-value')
+  })
+
+  it('安全弁: 震度を受け取った時刻の欄が無い（版のずれ）ときは古いと見る', () => {
+    // 数として引くと `NOW - undefined` は NaN で、「60 秒を超えた」が偽になる —— 止まった
+    // 震度が平常の色に戻る。分からないときは古い側へ倒す。
+    const row = { ...station(NOW - 1000), lastReadingReceivedMs: undefined } as unknown as ReturnType<typeof station>
+
+    expect(stationRowHtml(NOW, row)).toContain('<td class="stale-value">1.23</td>')
   })
 
   it('安全弁: 欄が無い（undefined）ときは理由が立っていないものとして扱う', () => {

@@ -185,6 +185,42 @@ describe('StationHealthBook', () => {
     expect(s.lastReadingAtMs).toBe(1_000)
   })
 
+  it('正: 震度が出た時刻を受け手の時計で覚え、合成波形だけが出た回には動かさない', () => {
+    // **震度の欄の古さはこの時刻で測る**（`viewStatus.ts` の `stationIntensityStale`）。3 方向のうち
+    // 解けない向きがあると、合成は波形だけを出し続けて震度は止まる —— そのとき受信の時刻
+    // （`lastPacketMs`）は動き続けるので、あちらでは止まったことが見えない。
+    const c = clock()
+    const book = new StationHealthBook({ now: c.now })
+    book.noteReading({ stationId: 'garage', atMs: 1_000, intensity: 2.5 })
+    const readAt = c.now()
+    c.advance(90_000)
+    book.noteWave(fused([2, 2, 2]), true)
+
+    const s = book.snapshot()[0]
+    expect(s.lastReadingReceivedMs).toBe(readAt)
+    expect(s.lastPacketMs).toBe(readAt + 90_000)
+  })
+
+  it('対照: 震度が出るたびに受け手の時刻も進む（基板が名乗る時刻ではない）', () => {
+    const c = clock()
+    const book = new StationHealthBook({ now: c.now })
+    book.noteReading({ stationId: 'garage', atMs: 1_000, intensity: 2.5 })
+    c.advance(1_000)
+    // 基板の時刻が巻き戻っていても、受け手の時刻はそれに引きずられない。
+    book.noteReading({ stationId: 'garage', atMs: 500, intensity: 2.4 })
+
+    const s = book.snapshot()[0]
+    expect(s.lastReadingReceivedMs).toBe(c.now())
+    expect(s.lastReadingReceivedMs).toBe(s.lastPacketMs)
+  })
+
+  it('安全弁: まだ震度が 1 つも出ていない観測点は null（波形だけ出ていても埋めない）', () => {
+    const book = new StationHealthBook()
+    book.noteWave(fused([2, 2, 2]), true)
+
+    expect(book.snapshot()[0].lastReadingReceivedMs).toBeNull()
+  })
+
   it('震度が出せなかった回でも、直前まで出ていた値を消さない', () => {
     const book = new StationHealthBook()
     book.noteReading({ stationId: 'garage', atMs: 1_000, intensity: 2.5 })

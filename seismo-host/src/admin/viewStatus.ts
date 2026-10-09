@@ -52,6 +52,11 @@ interface StatusReportView {
     readonly stationId: string
     readonly lastPacketMs: number | null
     readonly lastIntensity: number | null
+    /**
+     * 最後に震度が出た時刻（ホストの時計）。まだ出ていなければ null。
+     * **震度の欄の古さはこれで測る**（`stationIntensityStale`）。
+     */
+    readonly lastReadingReceivedMs: number | null
     /** 合成の計測震度を出せない理由。出せているなら null（同上）。 */
     readonly lastSkipReason: string | null
     /** 最後に合成したまとまりで実際に混ざった本数（#315）。 */
@@ -355,6 +360,18 @@ function isIntensityStale(nowMs: number, atMs: number | null, skipReason: unknow
 }
 
 /**
+ * 観測点の震度の欄が古いか。**受信の時刻ではなく、震度が出た時刻（ホストの時計）で測る**
+ * —— 受信の時刻では震度だけ止まった観測点を見落とす理由は `receiver/stationHealth.ts` の
+ * `lastReadingReceivedMs`。センサーの行は受信の時刻のままでよい（あちらは震度が止まれば理由が立つ）。
+ *
+ * **欄が無ければ古いと見る**（版がずれたとき。`undefined` を数として引くと「新しい」に化ける）。
+ */
+function stationIntensityStale(nowMs: number, s: StationView): boolean {
+  const at: unknown = s.lastReadingReceivedMs
+  return isIntensityStale(nowMs, typeof at === 'number' ? at : null, s.lastSkipReason)
+}
+
+/**
  * センサー 1 個ぶんの行。
  *
  * **運用者が入力した値（基板の鍵・センサーの名前・観測点の表示名）を埋め込む**ので
@@ -413,7 +430,7 @@ function readAxisMismatch(value: unknown): { configuredAxes: number; receivedAxe
  * **3 つの値は同じ回に更新されるとは限らない。** 混ざった本数と差分は合成波形が
  * 出た回に、震度は震度が出た回に書き換わる（`main.ts` の `deliverStationFusion`）
  * ——**波形は出ているが震度だけ出せない**状態がありうるので、震度の欄だけは
- * `lastSkipReason` も見る（`isIntensityStale`）。届かなくなったときは 3 つとも古い。
+ * 震度が出た時刻と `lastSkipReason` で測る（`stationIntensityStale`）。届かなくなったときは 3 つとも古い。
  */
 export function stationRowHtml(nowMs: number, s: StationView): string {
   const stale = staleAttr(isStale(nowMs, s.lastPacketMs))
@@ -421,7 +438,7 @@ export function stationRowHtml(nowMs: number, s: StationView): string {
           <tr>
             <td>${escapeHtml(s.stationId)}</td>
             <td>${receptionBadgeHtml(nowMs, s.lastPacketMs)} ${ago(nowMs, s.lastPacketMs)}</td>
-            <td${staleAttr(isIntensityStale(nowMs, s.lastPacketMs, s.lastSkipReason))}>${s.lastIntensity !== null ? s.lastIntensity.toFixed(2) : '—'}</td>
+            <td${staleAttr(stationIntensityStale(nowMs, s))}>${s.lastIntensity !== null ? s.lastIntensity.toFixed(2) : '—'}</td>
             <td${stale}>${memberCell(s.lastMemberCountMin, s.lastMemberCountMax)}</td>
             <td${stale}>${pairDiffCell(s.pairDiffs)}</td>
             <td${stale}>${residualCell(s.residuals)}</td>

@@ -243,9 +243,10 @@ export interface SensorStatus extends Omit<SensorHealth, 'lastPacketMs'> {
  * `SensorStatus` と同じ理由で、出せない時刻・震度を `0` で埋めない。
  */
 export interface StationIntensityStatus
-  extends Omit<StationHealth, 'lastPacketMs' | 'lastReadingAtMs' | 'lastIntensity'> {
+  extends Omit<StationHealth, 'lastPacketMs' | 'lastReadingAtMs' | 'lastReadingReceivedMs' | 'lastIntensity'> {
   readonly lastPacketMs: number | null
   readonly lastReadingAtMs: number | null
+  readonly lastReadingReceivedMs: number | null
   readonly lastIntensity: number | null
 }
 
@@ -465,6 +466,7 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     ...s,
     lastPacketMs: finite(s.lastPacketMs),
     lastReadingAtMs: finite(s.lastReadingAtMs),
+    lastReadingReceivedMs: finite(s.lastReadingReceivedMs),
     lastIntensity: finiteValue(s.lastIntensity),
   }))
 
