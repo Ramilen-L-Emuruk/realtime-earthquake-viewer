@@ -12,7 +12,7 @@
 // 3. **リプレイのリセットで印が落ちること。**
 import type { SpeechOutcome } from '../utils/voicevox'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook } from '@testing-library/react'
+import { renderHook, act } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
 import { DEFAULTS, type AppSettings } from './useSettings'
 import type { JMAQuake, JMATsunami, TsunamiArea } from '../types/earthquake'
@@ -41,11 +41,13 @@ async function flush() {
 
 /** 鳴っている発話をその都度完了させながら時間を進める（間を置く読み上げの発火を待つ）。 */
 async function drain() {
-  for (let i = 0; i < 30; i++) {
-    await vi.advanceTimersByTimeAsync(300)
-    for (const s of speeches) if (!s.done) { s.done = true; s.finish() }
-    await flush()
-  }
+  await act(async () => {
+    for (let i = 0; i < 30; i++) {
+      await vi.advanceTimersByTimeAsync(300)
+      for (const s of speeches) if (!s.done) { s.done = true; s.finish() }
+      await flush()
+    }
+  })
 }
 
 const EVENT_ID = '20260101120000'
@@ -119,7 +121,14 @@ function setup(overSettings: Partial<AppSettings> = {}) {
     expandPanelForSpecialInfo: vi.fn(), revertToDefaultTab: vi.fn(),
     selectQuake: vi.fn(), openLpgmFromQuake: vi.fn(), openEstimatedIntensity: vi.fn(), closeDistributionOnQuakeReport: vi.fn(),
   } as never))
-  return { ...result.current, earthquakesRef }
+  // `handleLiveEvent` / `resetTracking` は state を更新するので act() で包む。
+  const handleLiveEvent: typeof result.current.handleLiveEvent = (...args) => {
+    act(() => { result.current.handleLiveEvent(...args) })
+  }
+  const resetTracking: typeof result.current.resetTracking = (...args) => {
+    act(() => { result.current.resetTracking(...args) })
+  }
+  return { ...result.current, handleLiveEvent, resetTracking, earthquakesRef }
 }
 
 beforeEach(() => {

@@ -12,7 +12,7 @@
 // 3. **観測点更新の読み上げを潰さないこと**（既読になった後の続報は従来どおり観測情報として読む）
 import type { SpeechOutcome } from '../utils/voicevox'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook } from '@testing-library/react'
+import { renderHook, act } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
 import { DEFAULTS, type AppSettings } from './useSettings'
 import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiGrade } from '../types/earthquake'
@@ -50,10 +50,12 @@ async function flush() {
 
 /** 通知音の遅延を消化し、直前の発話を終わらせてから次を待てる状態にする */
 async function settle() {
-  await vi.advanceTimersByTimeAsync(5000)
-  await flush()
-  for (const s of speeches) if (!s.done) { s.done = true; s.finish() }
-  await flush()
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(5000)
+    await flush()
+    for (const s of speeches) if (!s.done) { s.done = true; s.finish() }
+    await flush()
+  })
 }
 
 type AreaSpec = { name: string; code: string; grade: TsunamiGrade; lastGrade?: TsunamiGrade }
@@ -129,14 +131,14 @@ function setup(voicevoxEnabled = true) {
   }))
   // 受信して、App が state を更新したあとの姿（次の報が見る `tsunamisRef`）まで進める
   const handle = (tsunami: JMATsunami) => {
-    result.current.handleLiveEvent(tsunami as never)
+    act(() => { result.current.handleLiveEvent(tsunami as never) })
     displayed[0] = tsunami
   }
   // App が持つ「表示中の津波」を更新せずに渡す。**同じ tick に複数の電文が捌ける形の再現**で、
   // 実運用ではアーカイブ再生の追いつき・長時間バックグラウンド後の復帰で起きる
   // （`useEarthquakes` のキューが 1 回のコールバックで連続して `handleEvent` を呼び、そのあいだ
   // React はコミットしないので `tsunamisRef` が tick 開始前の値に取り残される）。
-  const handleWithoutRender = (tsunami: JMATsunami) => { result.current.handleLiveEvent(tsunami as never) }
+  const handleWithoutRender = (tsunami: JMATsunami) => { act(() => { result.current.handleLiveEvent(tsunami as never) }) }
   return { handle, handleWithoutRender, setActiveTabNonRealtime, keys: () => result.current.areaGradeChangedKeys }
 }
 
@@ -335,7 +337,7 @@ describe('区域単位で等級が動いた報の読み上げ', () => {
     handle(makeReport(PARTIAL_LIFT))
     await settle()
     expect([...keys()].sort()).toEqual(['711', '720'])
-    await vi.advanceTimersByTimeAsync(60000)
+    await act(() => vi.advanceTimersByTimeAsync(60000))
     await flush()
     expect([...keys()]).toEqual([])
   })
@@ -350,7 +352,7 @@ describe('区域単位で等級が動いた報の読み上げ', () => {
     handle(makeReport(PARTIAL_LIFT))
     await settle()
     // 印を立ててから 45 秒。まだ寿命の内側
-    await vi.advanceTimersByTimeAsync(40000)
+    await act(() => vi.advanceTimersByTimeAsync(40000))
     await flush()
     handle(makeReport(PARTIAL_LIFT, [
       { name: '輪島港', district: '石川県能登', code: '360', value: 0.4 },
@@ -358,7 +360,7 @@ describe('区域単位で等級が動いた報の読み上げ', () => {
     await settle()
     expect([...keys()].sort()).toEqual(['711', '720'])
     // 続報から数えれば 20 秒だが、印を立ててからは 70 秒。張り直していなければ消えている
-    await vi.advanceTimersByTimeAsync(20000)
+    await act(() => vi.advanceTimersByTimeAsync(20000))
     await flush()
     expect([...keys()]).toEqual([])
   })

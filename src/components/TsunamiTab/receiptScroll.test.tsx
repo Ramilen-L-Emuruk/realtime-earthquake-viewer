@@ -8,6 +8,7 @@
 // 直前の報の位置を捨てる状態に逆戻りする。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render } from '@testing-library/react'
+import { flushDataEffects } from '../../test-utils/flushDataEffects'
 import { TsunamiTab, type FocusedDistrict } from './index'
 import type { JMATsunami } from '../../types/earthquake'
 
@@ -48,18 +49,21 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks() })
 
 describe('寄せ先が無い受信のスクロール', () => {
-  it('正: resetToTop が false なら動かさない', () => {
+  it('正: resetToTop が false なら動かさない', async () => {
     render(<TsunamiTab tsunamis={[TSUNAMI]} focusedDistrict={focus(false)} />)
+    await flushDataEffects()
     expect(scrollTo).not.toHaveBeenCalled()
   })
 
-  it('対照: resetToTop が true なら先頭へ戻す', () => {
+  it('対照: resetToTop が true なら先頭へ戻す', async () => {
     render(<TsunamiTab tsunamis={[TSUNAMI]} focusedDistrict={focus(true)} />)
+    await flushDataEffects()
     expect(scrollTo).toHaveBeenCalledWith({ top: 0, behavior: 'smooth' })
   })
 
-  it('安全弁: 要求が無ければどちらでもない（スクロールしない）', () => {
+  it('安全弁: 要求が無ければどちらでもない（スクロールしない）', async () => {
     render(<TsunamiTab tsunamis={[TSUNAMI]} focusedDistrict={null} />)
+    await flushDataEffects()
     expect(scrollTo).not.toHaveBeenCalled()
   })
 })

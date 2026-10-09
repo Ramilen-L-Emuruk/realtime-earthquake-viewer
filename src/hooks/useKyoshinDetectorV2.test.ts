@@ -7,7 +7,8 @@
 // どちらも「静かに劣化する」タイプの問題で、検知コアの単体テストでは捉えられない。
 //
 // React を動かすため、このファイルだけ jsdom 環境で実行する。
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { muteConsoleError } from '../test-utils/muteConsoleError'
 import { renderHook, cleanup } from '@testing-library/react'
 import { siteSignature, RESULT_STALL_RESET_FRAMES, WARMUP_WAIT_MAX_FRAMES, useKyoshinDetectorV2 } from './useKyoshinDetectorV2'
 import type { KyoshinWarmup } from './useKyoshinRealtime'
@@ -66,7 +67,7 @@ describe('useKyoshinDetectorV2: step() が壊れ続けたら検知結果を空�
   const indices = [12, 12, 12]
 
   beforeEach(() => {
-    vi.spyOn(console, 'error').mockImplementation(() => {})
+    muteConsoleError()
   })
 
   afterEach(() => {
@@ -163,7 +164,7 @@ describe('useKyoshinDetectorV2: 床は観測点の並びで返す', () => {
 
   beforeEach(() => {
     localStorage.clear()
-    vi.spyOn(console, 'error').mockImplementation(() => {})
+    muteConsoleError()
   })
 
   afterEach(() => {
@@ -286,7 +287,7 @@ describe('useKyoshinDetectorV2: 観測点数と震度の件数が食い違うと
 
   beforeEach(() => {
     localStorage.clear()
-    vi.spyOn(console, 'error').mockImplementation(() => {})
+    muteConsoleError()
   })
 
   afterEach(() => {
@@ -396,7 +397,7 @@ describe('useKyoshinDetectorV2: 供給が作り直されたら結果を空にす
 
   beforeEach(() => {
     localStorage.clear()
-    vi.spyOn(console, 'error').mockImplementation(() => {})
+    muteConsoleError()
   })
 
   afterEach(() => {
@@ -635,7 +636,7 @@ describe('useKyoshinDetectorV2: 助走を待つのは時間軸が変わったと
   const at = (offsetSec: number): string => new Date(startMs + offsetSec * 1000).toISOString()
 
   beforeEach(() => {
-    vi.spyOn(console, 'error').mockImplementation(() => {})
+    muteConsoleError()
   })
   afterEach(() => {
     cleanup()
@@ -700,7 +701,7 @@ describe('useKyoshinDetectorV2: 助走の消化で例外が出たとき', () => 
   const at = (offsetSec: number): string => new Date(startMs + offsetSec * 1000).toISOString()
 
   beforeEach(() => {
-    vi.spyOn(console, 'error').mockImplementation(() => {})
+    muteConsoleError()
   })
   afterEach(() => {
     cleanup()

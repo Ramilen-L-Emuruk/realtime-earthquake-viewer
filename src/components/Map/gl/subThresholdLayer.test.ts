@@ -9,7 +9,8 @@
 // 回復手段が無かった。
 //
 // jsdom なのは `render` が `window.devicePixelRatio` を読むため。
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { muteConsoleError } from '../../../test-utils/muteConsoleError'
 import type * as maplibregl from 'maplibre-gl'
 import { getRenderHealth, resetRenderHealthForTest } from '../../../utils/renderHealth'
 
@@ -116,14 +117,14 @@ describe('makeSubThresholdLayer', () => {
 
   it('リンクできなくても onAdd は投げない', () => {
     // **これが要点。** 投げるとレイヤーが登録されたまま固着し、再追加が弾かれる。
-    vi.spyOn(console, 'error').mockImplementation(() => {})
+    muteConsoleError()
     const { gl, layer } = setup(false)
     expect(() => layer.layer.onAdd?.(MAP, gl)).not.toThrow()
   })
 
   it('プログラムを用意できなければ描かず、画面に出す', () => {
     // 対照。`if (!quadProg) return` は例外を投げないので `guardRender` には掛からない。
-    vi.spyOn(console, 'error').mockImplementation(() => {})
+    muteConsoleError()
     const { gl, counts, layer } = setup(false)
     layer.layer.onAdd?.(MAP, gl)
     layer.layer.render(gl, ARGS)
@@ -134,7 +135,7 @@ describe('makeSubThresholdLayer', () => {
 
   it('投影シェーダーを用意できないときも画面に出す', () => {
     // 対照。合成用とは別の経路（キャッシュ側）でも同じ扱いにする。
-    vi.spyOn(console, 'error').mockImplementation(() => {})
+    muteConsoleError()
     projectionProgramStub = null
     const { gl, counts, layer } = setup(true)
     layer.layer.onAdd?.(MAP, gl)
@@ -145,7 +146,7 @@ describe('makeSubThresholdLayer', () => {
 
   it('直ったら画面から取り下げる', () => {
     // 安全弁。載せ直して作り直せたとき、印だけが居座らないこと。
-    vi.spyOn(console, 'error').mockImplementation(() => {})
+    muteConsoleError()
     projectionProgramStub = null
     const { gl, layer } = setup(true)
     layer.layer.onAdd?.(MAP, gl)
@@ -158,7 +159,7 @@ describe('makeSubThresholdLayer', () => {
 
   it('画面から外したら不調の記録も消す', () => {
     // 安全弁。隠したまま印だけ残ると、直ったのか消したのか区別できない。
-    vi.spyOn(console, 'error').mockImplementation(() => {})
+    muteConsoleError()
     const { gl, layer } = setup(false)
     layer.layer.onAdd?.(MAP, gl)
     layer.layer.render(gl, ARGS)
@@ -170,7 +171,7 @@ describe('makeSubThresholdLayer', () => {
   it('シェーダーをコンパイルできないときも投げず、画面に出す', () => {
     // 対照。リンクの失敗とは別の経路（`compile` の早期 return）を通す。
     // **ここを覆わないと、`compile` から `return null` を落としてもテストは通り続ける。**
-    vi.spyOn(console, 'error').mockImplementation(() => {})
+    muteConsoleError()
     const { gl, counts, layer } = setup({ linkOk: true, compileOk: false })
     expect(() => layer.layer.onAdd?.(MAP, gl)).not.toThrow()
     layer.layer.render(gl, ARGS)
@@ -181,7 +182,7 @@ describe('makeSubThresholdLayer', () => {
   it('GL の資源を作れないときも投げず、描かず、画面に出す', () => {
     // 対照。**`fbo` が null のまま進むと `bindFramebuffer` が描画先を画面そのものへ
     // 切り替える**（オフスクリーンのつもりの合成が本画面へ乗る）。GL を触る前に抜けること。
-    vi.spyOn(console, 'error').mockImplementation(() => {})
+    muteConsoleError()
     const { gl, counts, layer } = setup({ linkOk: true, resourcesFail: true })
     expect(() => layer.layer.onAdd?.(MAP, gl)).not.toThrow()
     layer.layer.render(gl, ARGS)
@@ -201,7 +202,7 @@ describe('makeSubThresholdLayer', () => {
     ['シェーダー', { linkOk: true, shaderCreateFail: true } as GlOptions, 'シェーダーを作成できません'],
     ['プログラム', { linkOk: true, programCreateFail: true } as GlOptions, 'プログラムを作成できません'],
   ])('%s を作成できないときも投げず、描かず、画面と記録に出す', (_name, options, message) => {
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const errorSpy = muteConsoleError()
     const { gl, counts, layer } = setup(options)
     expect(() => layer.layer.onAdd?.(MAP, gl)).not.toThrow()
     layer.layer.render(gl, ARGS)
@@ -216,7 +217,7 @@ describe('makeSubThresholdLayer', () => {
   it('隠したら「描けていない」も取り下げる', () => {
     // 安全弁。`render()` は `!visible` で資源の判定より手前に抜けるので、
     // **壊れた状態で隠すと取り下げる機会が無い**（意図的に隠しているだけなのに残る）。
-    vi.spyOn(console, 'error').mockImplementation(() => {})
+    muteConsoleError()
     const { gl, layer } = setup(false)
     layer.layer.onAdd?.(MAP, gl)
     layer.layer.render(gl, ARGS)

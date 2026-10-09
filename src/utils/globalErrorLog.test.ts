@@ -2,7 +2,8 @@
 //
 // React の外で投げられた例外を記録へ拾えていることを固定する。
 // **画面には何も出さない**のが前提なので、ここで見るのは記録だけ。
-import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
+import { muteConsoleError } from '../test-utils/muteConsoleError'
 import { installGlobalErrorLog, resetGlobalErrorLogForTest } from './globalErrorLog'
 
 let errorSpy: { mock: { calls: unknown[][] } }
@@ -28,7 +29,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   resetGlobalErrorLogForTest()
-  errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+  errorSpy = muteConsoleError()
 })
 
 afterEach(() => {

@@ -10,7 +10,7 @@
 // あちらは文単位の差分と同じ主題なので、そちらへ置いてある。
 import type { SpeechOutcome } from '../utils/voicevox'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook } from '@testing-library/react'
+import { renderHook, act } from '@testing-library/react'
 import { useLiveEventHandler, createPreWindowQuakeTopics } from './useLiveEventHandler'
 import { DEFAULTS, type AppSettings } from './useSettings'
 import { quakeEventKey } from '../utils/quakeMerge'
@@ -45,11 +45,13 @@ async function flush() {
 
 /** 鳴っている発話を細かく完了させながら時間を進める（telegramText のテストと同じ形）。 */
 async function drain() {
-  for (let i = 0; i < 30; i++) {
-    await vi.advanceTimersByTimeAsync(300)
-    for (const s of speeches) if (!s.done) { s.done = true; s.finish() }
-    await flush()
-  }
+  await act(async () => {
+    for (let i = 0; i < 30; i++) {
+      await vi.advanceTimersByTimeAsync(300)
+      for (const s of speeches) if (!s.done) { s.done = true; s.finish() }
+      await flush()
+    }
+  })
 }
 
 /** 電文本体の読み上げだけを拾う（気象庁が書いた文の発話と混ざらないように）。 */
@@ -126,7 +128,14 @@ function setup(overSettings: Partial<AppSettings> = {}) {
     expandPanelForSpecialInfo: vi.fn(), revertToDefaultTab: vi.fn(),
     selectQuake: vi.fn(), openLpgmFromQuake: vi.fn(), openEstimatedIntensity: vi.fn(), closeDistributionOnQuakeReport: vi.fn(),
   }))
-  return { ...result.current, earthquakesRef }
+  // `handleLiveEvent` / `restorePreWindowTracking` は state を更新するので act() で包む。
+  const handleLiveEvent: typeof result.current.handleLiveEvent = (...args) => {
+    act(() => { result.current.handleLiveEvent(...args) })
+  }
+  const restorePreWindowTracking: typeof result.current.restorePreWindowTracking = (...args) => {
+    act(() => { result.current.restorePreWindowTracking(...args) })
+  }
+  return { ...result.current, handleLiveEvent, restorePreWindowTracking, earthquakesRef }
 }
 
 /** 窓の手前の電文を `silent` で流したことにする（リプレイの初期状態の再現と同じ形）。 */

@@ -56,11 +56,13 @@ async function flush() {
  * **短い刻みで進めて、鳴ったものをその都度完了させる**。
  */
 async function drain() {
-  for (let i = 0; i < 30; i++) {
-    await vi.advanceTimersByTimeAsync(300)
-    for (const s of speeches) if (!s.done) { s.done = true; s.finish() }
-    await flush()
-  }
+  await act(async () => {
+    for (let i = 0; i < 30; i++) {
+      await vi.advanceTimersByTimeAsync(300)
+      for (const s of speeches) if (!s.done) { s.done = true; s.finish() }
+      await flush()
+    }
+  })
 }
 
 /** 本文の読み上げだけを拾う（電文本体の読み上げと混ざらないように） */
@@ -145,7 +147,17 @@ function setup(overSettings: Partial<AppSettings> = {}) {
     expandPanelForSpecialInfo: vi.fn(), revertToDefaultTab: vi.fn(),
     selectQuake: vi.fn(), openLpgmFromQuake: vi.fn(), openEstimatedIntensity: vi.fn(), closeDistributionOnQuakeReport: vi.fn(),
   }))
-  return result.current
+  // state を更新する関数は act() で包んでから返す。
+  const handleLiveEvent: typeof result.current.handleLiveEvent = (...args) => {
+    act(() => { result.current.handleLiveEvent(...args) })
+  }
+  const resetTracking: typeof result.current.resetTracking = (...args) => {
+    act(() => { result.current.resetTracking(...args) })
+  }
+  const restorePreWindowTracking: typeof result.current.restorePreWindowTracking = (...args) => {
+    act(() => { result.current.restorePreWindowTracking(...args) })
+  }
+  return { ...result.current, handleLiveEvent, resetTracking, restorePreWindowTracking }
 }
 
 /** 気象庁の文の追従セッション。begin/end の呼ばれ方と `subject` を記録する。 */
@@ -242,7 +254,7 @@ describe('気象庁が書いた文の読み上げ（配線）', () => {
     await drain()
     followCalls.length = 0
 
-    act(() => { resetTracking() })
+    resetTracking()
     expect(followCalls.map(c => c.kind)).toContain('reset')
   })
 
@@ -384,12 +396,14 @@ describe('気象庁が書いた文の読み上げ（配線）', () => {
       },
     } as never)
     // 本体を完了させずに、本文の予約・発火の時刻を過ぎるまで進める
-    await vi.advanceTimersByTimeAsync(10_000)
-    await flush()
-    // ここで本体が鳴り終わる
-    for (const s of speeches) if (!s.done) { s.done = true; s.finish() }
-    await vi.advanceTimersByTimeAsync(10_000)
-    await flush()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000)
+      await flush()
+      // ここで本体が鳴り終わる
+      for (const s of speeches) if (!s.done) { s.done = true; s.finish() }
+      await vi.advanceTimersByTimeAsync(10_000)
+      await flush()
+    })
     expect(telegramSpeeches().some(t => t.includes(COMMENT)), '地震情報の本文が取り下げられている').toBe(true)
   })
 

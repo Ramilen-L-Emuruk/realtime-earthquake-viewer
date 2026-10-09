@@ -4,7 +4,8 @@
 // **ここは全ソースを順に回す唯一の場所**なので、1 つが投げるとどのレイヤーもクリックに
 // 応じなくなる（どこを押しても区域名を出す最後の受け皿まで巻き添えになる）。
 // 背景は docs/spec/map-rendering-spec.md §16「描けているかを画面に出す」。
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { muteConsoleError } from '../../../test-utils/muteConsoleError'
 import type { MapGeoJSONFeature } from 'maplibre-gl'
 
 /** 吹き出しは DOM を触るだけなので、置き換えて中身を見ない。 */
@@ -52,7 +53,7 @@ const FEATURE = {
 
 beforeEach(() => {
   resetRenderHealthForTest()
-  vi.spyOn(console, 'error').mockImplementation(() => {})
+  muteConsoleError()
 })
 
 afterEach(() => {

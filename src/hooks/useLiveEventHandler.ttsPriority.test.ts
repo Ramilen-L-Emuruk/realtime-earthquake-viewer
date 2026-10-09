@@ -17,7 +17,7 @@
 // 読み上げの完了を任意の時点で起こせるよう、モックは解決関数を外に出して保持する。
 import type { SpeechOutcome } from '../utils/voicevox'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook } from '@testing-library/react'
+import { renderHook, act } from '@testing-library/react'
 import { CELL_LAT_DEG, CELL_LON_DEG } from '../utils/bufrEstimatedIntensity'
 import { useLiveEventHandler } from './useLiveEventHandler'
 import { DEFAULTS, type AppSettings } from './useSettings'
@@ -84,15 +84,32 @@ function spokenTexts(): string[] {
  */
 const openEstimatedIntensitySpy = vi.fn(() => false)
 
-/** 読み上げは Promise チェーンで繋がっているため、保留中のマイクロタスクを流し切る */
+/**
+ * 読み上げは Promise チェーンで繋がっているため、保留中のマイクロタスクを流し切る。
+ *
+ * **act() で包む。** `finishSpeech` は Promise を解決するだけで、実際に state を書き換える
+ * 続きはここでマイクロタスクを回している間に動く。呼び出し側で `finishSpeech(i)` の直後に
+ * 呼ぶ形が大半なので、ここで包めば個々の呼び出し側を書き換えずに済む。
+ */
 async function flush() {
-  for (let i = 0; i < 400; i++) await Promise.resolve()
+  await act(async () => {
+    for (let i = 0; i < 400; i++) await Promise.resolve()
+  })
 }
 
 /** 通知音との間（最長 2720ms＝津波警報）を消化してから発話に到達させる */
 async function settle() {
-  await vi.advanceTimersByTimeAsync(5000)
-  await flush()
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(5000)
+    await flush()
+  })
+}
+
+/** 時間を進めつつ、保留中の更新を act() の中で流し切る。 */
+async function advanceTimers(ms: number) {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms)
+  })
 }
 
 function makeQuake(over: { id?: string; type?: IssueType; addr?: string } = {}): JMAQuake {
@@ -255,7 +272,8 @@ function setup() {
     setActiveTabRealtimeUrgent: vi.fn(), followSpeechTab: vi.fn(), preSpeechTab: vi.fn(() => true), quakeSpeakingCard: null, expandPanelForSpecialInfo: vi.fn(), revertToDefaultTab: vi.fn(),
     selectQuake: vi.fn(), openLpgmFromQuake: vi.fn(), openEstimatedIntensity: openEstimatedIntensitySpy, closeDistributionOnQuakeReport: vi.fn(),
   }))
-  return result.current.handleLiveEvent
+  // `result.current` は呼ぶたびに引き直す（控えると最初のレンダーの関数に固定される）
+  return (event: Parameters<typeof result.current.handleLiveEvent>[0]) => { act(() => { result.current.handleLiveEvent(event) }) }
 }
 
 /** 南海トラフ関連解説情報（最下位の層）。複数の describe から使うためトップレベルに置く。 */
@@ -362,7 +380,7 @@ describe('非 EEW の読み上げの優先度', () => {
     for (let i = 0; i < 6; i++) {
       speeches.forEach((_, idx) => finishSpeech(idx))
       await flush()
-      await vi.advanceTimersByTimeAsync(5000)
+      await advanceTimers(5000)
       await flush()
     }
     // 2 件目を読み終えたあと、解説情報の番が来る
@@ -374,7 +392,7 @@ describe('非 EEW の読み上げの優先度', () => {
   it('まだ鳴っていない重い予約に追い越されたら、解説情報は取り下げられる', async () => {
     const handle = setup()
     handleCommentary(handle)
-    await vi.advanceTimersByTimeAsync(100)
+    await advanceTimers(100)
     await flush()
     handle(makeTsunami())
     await settle()
@@ -382,7 +400,7 @@ describe('非 EEW の読み上げの優先度', () => {
     for (let i = 0; i < 6; i++) {
       speeches.forEach((_, idx) => finishSpeech(idx))
       await flush()
-      await vi.advanceTimersByTimeAsync(5000)
+      await advanceTimers(5000)
       await flush()
     }
     expect(spokenTexts().some(t => t.includes('大津波警報'))).toBe(true)
@@ -466,7 +484,7 @@ describe('非 EEW の読み上げの優先度', () => {
     // 上限（90 秒）を大きく越えても、音が出ているので割り込まない
     // （**延長そのものの上限（4 分）より手前で見ること** —— そこまで進めると次のテストの
     // 検査対象と重なり、どちらが効いて割り込んだのか分からなくなる）
-    await vi.advanceTimersByTimeAsync(180000)
+    await advanceTimers(180000)
     await flush()
     expect(spokenTexts()).toHaveLength(1)
 
@@ -495,7 +513,7 @@ describe('非 EEW の読み上げの優先度', () => {
     expect(spokenTexts()).toHaveLength(1)   // 待っている
 
     // 鳴らしたまま、延長の上限（4 分）を越える
-    await vi.advanceTimersByTimeAsync(300000)
+    await advanceTimers(300000)
     await flush()
     expect(spokenTexts()).toHaveLength(2)
     expect(spokenTexts()[1]).toContain('震度速報')
@@ -515,7 +533,7 @@ describe('非 EEW の読み上げの優先度', () => {
     expect(spokenTexts()).toHaveLength(1)   // 待っている
 
     // 津波の読み上げは終わらせない（VOICEVOX の無応答を模擬）
-    await vi.advanceTimersByTimeAsync(90000)
+    await advanceTimers(90000)
     await flush()
     expect(spokenTexts()).toHaveLength(2)
     expect(spokenTexts()[1]).toContain('震度速報')
@@ -562,12 +580,12 @@ describe('非 EEW の読み上げの優先度', () => {
     await flush()
 
     handle(makeQuake())
-    await vi.advanceTimersByTimeAsync(1000)   // 地震情報の通知音の遅延
+    await advanceTimers(1000)   // 地震情報の通知音の遅延
     await flush()
     expect(spokenTexts()).toHaveLength(1)     // 滑り込まない
 
     // 上限で第 2 フェーズが読まれ、そのあとに地震情報が続く
-    await vi.advanceTimersByTimeAsync(3000)
+    await advanceTimers(3000)
     await flush()
     expect(spokenTexts()[1]).toContain('予想震度なし')
     finishSpeech(1)
@@ -594,7 +612,7 @@ describe('非 EEW の読み上げの優先度', () => {
     await flush()
 
     // 上限で「予想震度なし」を読み、確定する
-    await vi.advanceTimersByTimeAsync(3000)
+    await advanceTimers(3000)
     await flush()
     expect(spokenTexts()[1]).toContain('予想震度なし')
     finishSpeech(1)
@@ -605,7 +623,7 @@ describe('非 EEW の読み上げの優先度', () => {
     await flush()
 
     handle(makeQuake())
-    await vi.advanceTimersByTimeAsync(1000)   // 地震情報の通知音の遅延
+    await advanceTimers(1000)   // 地震情報の通知音の遅延
     await flush()
     expect(spokenTexts()[2]).toContain('震度速報')
   })
@@ -622,12 +640,12 @@ describe('非 EEW の読み上げの優先度', () => {
     await flush()
 
     // 上限（3 秒）に達する前に続報が届く
-    await vi.advanceTimersByTimeAsync(1000)
+    await advanceTimers(1000)
     handle(makeEEW({ noAreas: true, serial: 2 }))
     await flush()
 
     handle(makeQuake())
-    await vi.advanceTimersByTimeAsync(1000)   // 通知音の遅延を消化しても
+    await advanceTimers(1000)   // 通知音の遅延を消化しても
     await flush()
     expect(spokenTexts()).toHaveLength(1)     // 滑り込まない
   })
@@ -640,7 +658,7 @@ describe('非 EEW の読み上げの優先度', () => {
     await flush()
     finishSpeech(0)
     await flush()
-    await vi.advanceTimersByTimeAsync(3000)
+    await advanceTimers(3000)
     await flush()
     expect(spokenTexts()[1]).toContain('予想震度なし')
     finishSpeech(1)
@@ -648,7 +666,7 @@ describe('非 EEW の読み上げの優先度', () => {
 
     // 値が付いた続報。震度なし（0）からの跳躍なので安定待ちは長い側（2000ms）
     handle(makeEEW({ serial: 2 }))
-    await vi.advanceTimersByTimeAsync(2000)
+    await advanceTimers(2000)
     await flush()
     expect(spokenTexts()[2]).toContain('予想最大震度')
   })
@@ -666,7 +684,7 @@ describe('非 EEW の読み上げの優先度', () => {
     await flush()
     finishSpeech(0)
     await flush()
-    await vi.advanceTimersByTimeAsync(300)
+    await advanceTimers(300)
     await flush()
     expect(spokenTexts()[1]).toContain('予想最大震度')
     finishSpeech(1)
@@ -677,7 +695,7 @@ describe('非 EEW の読み上げの優先度', () => {
     await flush()
 
     handle(makeQuake())
-    await vi.advanceTimersByTimeAsync(1000)   // 通知音の遅延を消化しても
+    await advanceTimers(1000)   // 通知音の遅延を消化しても
     await flush()
     expect(spokenTexts()).toHaveLength(2)     // 訂正の待ちが立っているので滑り込まない
   })
@@ -699,16 +717,16 @@ describe('非 EEW の読み上げの優先度', () => {
     await flush()
 
     handle(makeQuake())
-    await vi.advanceTimersByTimeAsync(200)   // まだ安定待ちの途中
+    await advanceTimers(200)   // まだ安定待ちの途中
     await flush()
     expect(spokenTexts()).toHaveLength(1)    // 滑り込まない
 
     // 安定待ちが確定し、第 2 フェーズが読まれ、そのあとに地震情報が続く
-    await vi.advanceTimersByTimeAsync(200)
+    await advanceTimers(200)
     await flush()
     expect(spokenTexts()[1]).toContain('予想最大震度')
     finishSpeech(1)
-    await vi.advanceTimersByTimeAsync(3000)   // 地震情報の通知音の遅延
+    await advanceTimers(3000)   // 地震情報の通知音の遅延
     await flush()
     expect(spokenTexts()[2]).toContain('震度速報')
   })
@@ -725,7 +743,7 @@ describe('非 EEW の読み上げの優先度', () => {
     expect(spokenTexts()[0]).toContain('緊急地震速報')
 
     handle(makeQuake())
-    await vi.advanceTimersByTimeAsync(5000)   // 地震情報の通知音の遅延を消化しても
+    await advanceTimers(5000)   // 地震情報の通知音の遅延を消化しても
     await flush()
     expect(spokenTexts()).toHaveLength(1)     // 予約済みの第 2 フェーズを追い越さない
 
@@ -763,7 +781,7 @@ describe('非 EEW の読み上げの優先度', () => {
   it('先に届いた同格の読み上げは、後から届いた方に追い越されたら取り下げる', async () => {
     const handle = setup()
     handle(makeQuake({ type: '各地の震度情報' }))
-    await vi.advanceTimersByTimeAsync(100)     // 間（0.77 秒）が明ける前に
+    await advanceTimers(100)     // 間（0.77 秒）が明ける前に
     await flush()
     handle(makeQuake({ type: '震度速報' }))    // 間 0.5 秒 ＝ こちらが先に喋り始める
     await settle()
@@ -792,7 +810,7 @@ describe('非 EEW の読み上げの優先度', () => {
   it('後から届いたのが軽い読み上げなら、先に届いた重い方を取り下げない', async () => {
     const handle = setup()
     handle(makeTsunami())                       // 声までの間 2.3 秒
-    await vi.advanceTimersByTimeAsync(600)
+    await advanceTimers(600)
     await flush()
     handle(makeQuake())                         // 声までの間 0.5 秒
     await settle()
@@ -816,7 +834,7 @@ describe('非 EEW の読み上げの優先度', () => {
         headline: '北海道・三陸沖後発地震注意情報', cancelled: false,
       },
     } as never)
-    await vi.advanceTimersByTimeAsync(200)     // 後発地震の間（1.5 秒）が明ける前に
+    await advanceTimers(200)     // 後発地震の間（1.5 秒）が明ける前に
     await flush()
     handle(makeTsunami())                      // 同格（high）だが別の主題
     await settle()
@@ -842,10 +860,10 @@ describe('非 EEW の読み上げの優先度', () => {
   it('後から届いた EEW は、その前に予約されていた読み上げをまとめて取り下げる', async () => {
     const handle = setup()
     handle(makeQuake({ type: '各地の震度情報' }))  // 声までの間 0.77 秒
-    await vi.advanceTimersByTimeAsync(100)
+    await advanceTimers(100)
     await flush()
     handle(makeQuake({ type: '震度速報' }))        // 声までの間 0.5 秒（明けるのは 0.6 秒の時点）
-    await vi.advanceTimersByTimeAsync(100)
+    await advanceTimers(100)
     await flush()
 
     // どちらの間も明ける前に EEW が発報する（EEW は間を置かず即座に読む）
@@ -854,7 +872,7 @@ describe('非 EEW の読み上げの優先度', () => {
     expect(spokenTexts()[0]).toContain('緊急地震速報')
 
     // 震度速報は EEW に追い越されて取り下げられる
-    await vi.advanceTimersByTimeAsync(400)
+    await advanceTimers(400)
     await flush()
     expect(spokenTexts()).toHaveLength(1)
 
@@ -867,7 +885,7 @@ describe('非 EEW の読み上げの優先度', () => {
 
     // 各地の震度情報の間（0.77 秒）も明けるが、こちらも EEW より前の予約なので読まれない
     // （各地の震度情報は「地震情報。」と名乗る。震度速報の「震度速報。」とはここで見分ける）
-    await vi.advanceTimersByTimeAsync(2000)
+    await advanceTimers(2000)
     await flush()
     expect(spokenTexts().some(t => t.startsWith('地震情報。'))).toBe(false)
   })
@@ -878,7 +896,7 @@ describe('非 EEW の読み上げの優先度', () => {
   it('別の地震の読み上げは、同じ種別でも取り下げない', async () => {
     const handle = setup()
     handle(makeQuake({ id: 'quake-1', type: '震源情報' }))    // 声までの間 1.7 秒
-    await vi.advanceTimersByTimeAsync(200)
+    await advanceTimers(200)
     await flush()
     handle(makeQuake({ id: 'quake-2', type: '震度速報', addr: '富山県東部' }))   // 間 0.5 秒
     await settle()
@@ -1010,7 +1028,7 @@ describe('内容が重ならない同格どうしは互いに待つ', () => {
     for (let i = 0; i < 5; i++) {
       speeches.forEach((_, idx) => finishSpeech(idx))
       await flush()
-      await vi.advanceTimersByTimeAsync(3000)
+      await advanceTimers(3000)
       await flush()
     }
     expect(spokenTexts().some(t => t.includes('推計震度分布図'))).toBe(false)
@@ -1033,7 +1051,7 @@ describe('内容が重ならない同格どうしは互いに待つ', () => {
     for (let i = 0; i < 5; i++) {
       speeches.forEach((_, idx) => finishSpeech(idx))
       await flush()
-      await vi.advanceTimersByTimeAsync(3000)
+      await advanceTimers(3000)
       await flush()
     }
     expect(spokenTexts().some(t => t.includes('推計震度分布図'))).toBe(true)
@@ -1058,7 +1076,7 @@ describe('内容が重ならない同格どうしは互いに待つ', () => {
     for (let i = 0; i < 5; i++) {
       speeches.forEach((_, idx) => finishSpeech(idx))
       await flush()
-      await vi.advanceTimersByTimeAsync(3000)
+      await advanceTimers(3000)
       await flush()
     }
 
@@ -1088,7 +1106,7 @@ describe('内容が重ならない同格どうしは互いに待つ', () => {
     for (let i = 0; i < 5; i++) {
       speeches.forEach((_, idx) => finishSpeech(idx))
       await flush()
-      await vi.advanceTimersByTimeAsync(3000)
+      await advanceTimers(3000)
       await flush()
     }
     expect(spokenTexts().some(t => t.includes('推計震度分布図'))).toBe(true)
@@ -1142,7 +1160,7 @@ describe('内容が重ならない同格どうしは互いに待つ', () => {
   it('津波警報の予約は、後から届いた観測情報には取り下げられない', async () => {
     const handle = setup()
     handle(makeTsunami())              // 声までの間 2.3 秒
-    await vi.advanceTimersByTimeAsync(500)
+    await advanceTimers(500)
     await flush()
     handle(makeTsunamiObs())           // 間 0.8 秒。先に喋り始める
     await settle()
@@ -1205,7 +1223,7 @@ describe('内容が重ならない同格どうしは互いに待つ', () => {
     expect(spokenTexts()).toHaveLength(1)   // 相互譲りで待つ
 
     // 上位を待つ上限（90 秒）は超え、相互譲りの上限（180 秒）には届かない時間だけ待たせる
-    await vi.advanceTimersByTimeAsync(100000)
+    await advanceTimers(100000)
     await flush()
     expect(spokenTexts()).toHaveLength(1)
 
@@ -1253,7 +1271,7 @@ describe('内容が重ならない同格どうしは互いに待つ', () => {
     expect(spokenTexts()).toHaveLength(1)
 
     // 地震情報の読み上げは終わらせない（VOICEVOX の無応答を模擬）
-    await vi.advanceTimersByTimeAsync(90000)
+    await advanceTimers(90000)
     await flush()
     expect(spokenTexts()).toHaveLength(1)   // 見送る
   })
@@ -1267,7 +1285,7 @@ describe('読み上げた観測点の既読', () => {
     const handle = setup()
     // 観測情報 A（輪島港）を予約させ、間が明ける前に累積した B を届けて取り下げさせる
     handle(makeTsunamiObs({ points: [{ name: '輪島港', value: 0.3 }] }))
-    await vi.advanceTimersByTimeAsync(200)
+    await advanceTimers(200)
     await flush()
     handle(makeTsunamiObs({
       id: 'tsunami-obs-2',

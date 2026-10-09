@@ -22,7 +22,7 @@
 //
 // タイマー制御はブラウザでの目視確認が難しいため、fake timers で検証する。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook } from '@testing-library/react'
+import { renderHook, act } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
 import { splitIntoChunks, type SpeechOutcome } from '../utils/voicevox'
 // 安定待ちの猶予は定数から取る（数値を写すと、値を変えたときにテストだけが古い前提で通り続ける）
@@ -2639,9 +2639,9 @@ describe('いま声が語っているカードの配線', () => {
   it('リプレイのリセットで印も落とす', async () => {
     const stub = makeSpeakingCardStub()
     const handle = setup({}, stub.follow)
-    handle(makeEEW({ eventId: 'evt-A', scaleTo: 50 }))
-    await vi.advanceTimersByTimeAsync(1000)
-    capturedResult!.resetTracking()
+    act(() => { handle(makeEEW({ eventId: 'evt-A', scaleTo: 50 })) })
+    await act(() => vi.advanceTimersByTimeAsync(1000))
+    act(() => { capturedResult!.resetTracking() })
     expect(stub.calls).toContain('reset')
   })
 })

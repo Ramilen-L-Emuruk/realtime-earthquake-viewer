@@ -8,6 +8,7 @@
 // 純関数のテストでは原理的に出ない穴がここにある。
 import { describe, it, expect, afterEach } from 'vitest'
 import { render, cleanup } from '@testing-library/react'
+import { flushDataEffects } from '../../test-utils/flushDataEffects'
 import { EarthquakeTab } from './index'
 import { quakeEventKey } from '../../utils/quakeMerge'
 import { rowMarkKey, type QuakeCardMarks } from '../../utils/quakeUpdateMark'
@@ -56,7 +57,8 @@ const marksOf = (...keys: string[]): ReadonlyMap<string, QuakeCardMarks> => new 
   markedAt: Date.now(),
 }]])
 
-const renderTab = (updateMarks: ReadonlyMap<string, QuakeCardMarks>, selectedId: string | null) => render(
+const renderTab = async (updateMarks: ReadonlyMap<string, QuakeCardMarks>, selectedId: string | null) => {
+  const result = render(
   <EarthquakeTab
     earthquakes={[QUAKE]}
     selectedId={selectedId}
@@ -85,20 +87,23 @@ const renderTab = (updateMarks: ReadonlyMap<string, QuakeCardMarks>, selectedId:
     speakingTelegramTextSubject={null}
     seismoWaves={new Map()}
   />,
-)
+  )
+  await flushDataEffects()
+  return result
+}
 
 describe('印の付いた行の自動展開（カードとの配線）', () => {
   // 正: 押さずに観測点の行まで見えている（県 → 区域 → 市町村の 3 段が開く）。
-  it('印の付いた観測点の行が、一度も押さずに見えている', () => {
-    renderTab(marksOf(rowMarkKey.station(STATION)), KEY)
+  it('印の付いた観測点の行が、一度も押さずに見えている', async () => {
+    await renderTab(marksOf(rowMarkKey.station(STATION)), KEY)
     expect(findIntensityRow(STATION)).toBeDefined()
     // 途中の段も開いている（開いたのは祖先で、観測点そのものではない）。
     expect(findIntensityRow(CITY)).toBeDefined()
   })
 
   // 対照: 印が無ければ畳んだまま。既定はどの段も閉じている。
-  it('印が無ければ開かない', () => {
-    renderTab(new Map(), KEY)
+  it('印が無ければ開かない', async () => {
+    await renderTab(new Map(), KEY)
     expect(findIntensityRow(STATION)).toBeUndefined()
     expect(findIntensityRow(AREA)).toBeUndefined()
   })
@@ -108,9 +113,9 @@ describe('印の付いた行の自動展開（カードとの配線）', () => {
   // 「この印は見た」の記録を選択とは無関係に進めると、畳んでいる間の再描画で記録だけが進み、
   // あとでカードを開いても印の参照は変わっていないので**一度も自動で開かない**。
   // 単一選択なので「別のカードを見ている間に続報が届く」という、いちばん効いてほしい場面。
-  it('畳んでいる間に届いた印でも、カードを開けば展開される', () => {
+  it('畳んでいる間に届いた印でも、カードを開けば展開される', async () => {
     const marks = marksOf(rowMarkKey.station(STATION))
-    const { rerender } = renderTab(marks, 'ほかの地震')
+    const { rerender } = await renderTab(marks, 'ほかの地震')
     // 畳んでいる間は行そのものが無い。
     expect(findIntensityRow(STATION)).toBeUndefined()
 

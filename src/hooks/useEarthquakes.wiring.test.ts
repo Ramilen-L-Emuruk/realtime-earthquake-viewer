@@ -254,11 +254,13 @@ describe('DMDSS 版: 再生中は接続状態を replay にする（ライブ接
     expect(sockets.length).toBe(1)
   })
 
-  it('再生を終えると接続を張り直し、connecting へ戻る（API キーあり）', () => {
+  it('再生を終えると接続を張り直し、connecting へ戻る（API キーあり）', async () => {
     const h = setup({ offset: -3600_000 })
     expect(h.current.connectionStatus).toBe('replay')
 
     h.setOffset(null)
+    // 再生を終えた側の初回履歴取得（API キーがあるため走る）を流し切ってから見る。
+    await h.flush()
     expect(h.current.connectionStatus).toBe('connecting')
     expect(sockets.length).toBe(1)
     expect(sockets[0].connected).toBe(true)
@@ -494,8 +496,10 @@ describe('再生中もキューの予約は発火時刻を待つ', () => {
   // そのため**同じ報番号の非取消報が届くと「古い報」の判定をすり抜ける**。起動時の復元が
   // 取消の直前に発表された報を拾ったとき（一覧 API が取消を反映するまでの遅れ）と、ライブで
   // 到着順が入れ替わったときに現実に起きる。
-  it('取消済みの EEW は、同じ報番号の非取消報が届いても復活しない', () => {
+  it('取消済みの EEW は、同じ報番号の非取消報が届いても復活しない', async () => {
     const h = setup({})
+    // 初回履歴取得（空の結果が返るが、その反映も act() の外では起こさない）を流し切る。
+    await h.flush()
     const at = serverDate()
 
     act(() => { h.current.injectEvent(finalEEW(at)) })
@@ -980,9 +984,10 @@ describe('津波テストの解除電文', () => {
 
   // 上の 2 件はテストボタン経由。こちらは reducer の解除照合そのものを、実運用の
   // P2PQuake 相当の電文（eventId 無し・発表と解除で id が別）で直接確かめる。
-  it('eventId を持たない経路では、id が違っても解除を受け入れる（P2PQuake 相当）', () => {
+  it('eventId を持たない経路では、id が違っても解除を受け入れる（P2PQuake 相当）', async () => {
     mockIsDmdss = false
     const h = setup()
+    await flushInitialLoad()
 
     const base = serverDate().toISOString()
     const announce: JMATsunami = {
@@ -1011,9 +1016,10 @@ describe('津波テストの解除電文', () => {
 
   // ただし照合できないからといって何でも受け入れるわけではない。表示中より古い発表時刻の解除は
   // 「別イベントの遅延到達」として捨てる（1 件スロットのため、受け入れると別の津波が消える）。
-  it('eventId が無い経路でも、表示中より古い発表時刻の解除は受け入れない', () => {
+  it('eventId が無い経路でも、表示中より古い発表時刻の解除は受け入れない', async () => {
     mockIsDmdss = false
     const h = setup()
+    await flushInitialLoad()
 
     const older = new Date(Date.now() - 600_000).toISOString()
     const newer = new Date().toISOString()
@@ -1041,8 +1047,9 @@ describe('津波テストの解除電文', () => {
   })
 
   // 一方、双方が eventId を持つ DMDSS 経路では別イベントの解除に巻き込まれないこと。
-  it('双方が eventId を持つ場合は、別イベントの解除では消えない', () => {
+  it('双方が eventId を持つ場合は、別イベントの解除では消えない', async () => {
     const h = setup()
+    await flushInitialLoad()
 
     const base = serverDate().toISOString()
     const announce: JMATsunami = {
@@ -1428,8 +1435,9 @@ describe('地震・津波に関するお知らせ（VZSE40）と地震回数（V
   // `null` にしていたことがある（別の種別の行が紛れ込んでいた）。こうなると、そのあと届いた
   // 本物の取消が「別の群発への取消」と誤判定されて帯が消えず、しかもログには
   // それらしい説明が出るので気づけない。
-  it('お知らせの取消は地震回数の記憶を巻き込まない', () => {
+  it('お知らせの取消は地震回数の記憶を巻き込まない', async () => {
     const h = setup()
+    await h.flush()
     push(h, { kind: 'earthquakeCount', data: count('20080824150500', [item('累積地震回数', 1704, 1)]) })
     push(h, { kind: 'quakeNotice', data: notice('n-live', 60_000) })
     push(h, { kind: 'quakeNotice', data: { ...notice('n-live', 60_000), cancelled: true } })
@@ -2074,16 +2082,18 @@ describe('EEW の続報は古い報で退行しない', () => {
   const areasOf = (h: ReturnType<typeof setup>) =>
     [...h.current.activeEEWs.values()][0]?.areas?.map(a => a.name) ?? []
 
-  it('新しい報は反映する', () => {
+  it('新しい報は反映する', async () => {
     const h = setup()
+    await h.flush()
     act(() => { h.current.injectEvent(report('1', ['石川県能登'])) })
     act(() => { h.current.injectEvent(report('2', ['石川県能登', '富山県西部', '新潟県上越'])) })
     expect(areasOf(h)).toEqual(['石川県能登', '富山県西部', '新潟県上越'])
   })
 
   // 対照: これがこの修正の本体。展開順の入れ替わりを模して、古い報を後から入れる。
-  it('古い報が後から届いても上書きしない', () => {
+  it('古い報が後から届いても上書きしない', async () => {
     const h = setup()
+    await h.flush()
     act(() => { h.current.injectEvent(report('2', ['石川県能登', '富山県西部', '新潟県上越'])) })
     act(() => { h.current.injectEvent(report('1', ['石川県能登'])) })
     expect(areasOf(h)).toEqual(['石川県能登', '富山県西部', '新潟県上越'])
@@ -2091,8 +2101,9 @@ describe('EEW の続報は古い報で退行しない', () => {
 
   // 安全弁 1: 同じ報番号の再送は弾かない（内容が同じなので上書きしても害がなく、
   // 弾く実装にすると「同番の訂正報」を取りこぼす）。
-  it('同じ報番号の再送は受け入れる', () => {
+  it('同じ報番号の再送は受け入れる', async () => {
     const h = setup()
+    await h.flush()
     act(() => { h.current.injectEvent(report('2', ['石川県能登'])) })
     act(() => { h.current.injectEvent(report('2', ['石川県能登', '富山県西部'])) })
     expect(areasOf(h)).toEqual(['石川県能登', '富山県西部'])
@@ -2100,8 +2111,9 @@ describe('EEW の続報は古い報で退行しない', () => {
 
   // 安全弁 2: 報番号を持たない経路（P2PQuake は issue.serial が欠けることがある）では
   // 順序を決める根拠が無いため判定しない。0 で埋めて比較すると正しい報まで捨ててしまう。
-  it('報番号を持たない報は従来どおり後着を採る', () => {
+  it('報番号を持たない報は従来どおり後着を採る', async () => {
     const h = setup()
+    await h.flush()
     act(() => { h.current.injectEvent(report('2', ['石川県能登', '富山県西部'])) })
     act(() => { h.current.injectEvent(report('x', ['石川県能登'], { serial: '' })) })
     expect(areasOf(h)).toEqual(['石川県能登'])
@@ -2110,11 +2122,12 @@ describe('EEW の続報は古い報で退行しない', () => {
   // 状態（activeEEWs）だけを守っても足りない。通知は setState の外・入口で走るため、
   // ここを素通ししていると地図・カードは新しい報、読み上げとウィンドウタイトルは古い報という
   // 食い違いが起きる。揃って退行するより始末が悪いので、入口で捨てることを固定する。
-  it('古い報は通知（読み上げ・タイトル）へも渡さない', () => {
+  it('古い報は通知（読み上げ・タイトル）へも渡さない', async () => {
     const seen: string[] = []
     const h = setup({
       onLiveEvent: (e) => { if (e.kind === 'eew') seen.push((e as EEWAlert).issue?.serial ?? '') },
     })
+    await h.flush()
     act(() => { h.current.injectEvent(report('2', ['石川県能登', '富山県西部'])) })
     act(() => { h.current.injectEvent(report('1', ['石川県能登'])) })
     expect(seen).toEqual(['2'])
@@ -2124,11 +2137,12 @@ describe('EEW の続報は古い報で退行しない', () => {
   // まとめてキューに載るため、順序が入れ替わりうる場面ほどこうなる）。その間はレンダーが
   // 挟まらないので、判定を「レンダーで進む値」に頼ると直前に受理した報を見落とす。
   // レンダーを挟まない連続呼び出しでも守られることを固定する。
-  it('同じティックで連続処理されても古い報を通さない（状態・通知とも）', () => {
+  it('同じティックで連続処理されても古い報を通さない（状態・通知とも）', async () => {
     const seen: string[] = []
     const h = setup({
       onLiveEvent: (e) => { if (e.kind === 'eew') seen.push((e as EEWAlert).issue?.serial ?? '') },
     })
+    await h.flush()
     // 単一の act の中で 2 件続けて注入する＝間にレンダーが入らない
     act(() => {
       h.current.injectEvent(report('2', ['石川県能登', '富山県西部']))
@@ -2140,8 +2154,9 @@ describe('EEW の続報は古い報で退行しない', () => {
 
   // `eewSerial`（utils/eew.ts）に判定を委ねているため、0・負値・小数は報番号として採らない
   // ＝比較しない。ここを独自実装に戻すと、その値をそのまま大小比較に使ってしまう。
-  it('報番号として成立しない値（0）は判定に使わない', () => {
+  it('報番号として成立しない値（0）は判定に使わない', async () => {
     const h = setup()
+    await h.flush()
     act(() => { h.current.injectEvent(report('2', ['石川県能登', '富山県西部'])) })
     act(() => { h.current.injectEvent(report('0', ['石川県能登'], { serial: '0' })) })
     expect(areasOf(h)).toEqual(['石川県能登'])
@@ -2149,10 +2164,11 @@ describe('EEW の続報は古い報で退行しない', () => {
 
   // 台帳は表示が終わった EEW の分を落とす。落とさないと伸び続け、逆に落としすぎると保護が
   // 効かなくなる。解除で消えたあと、同じキーの報を初報として受け直せることで確認する。
-  it('表示が終わった EEW の報番号は台帳に残さない', () => {
+  it('表示が終わった EEW の報番号は台帳に残さない', async () => {
     vi.useFakeTimers()
     try {
       const h = setup()
+      await h.flush()
       act(() => { h.current.injectEvent(report('5', ['石川県能登', '富山県西部'])) })
       expect(h.current.activeEEWs.size).toBe(1)
 
@@ -2170,8 +2186,9 @@ describe('EEW の続報は古い報で退行しない', () => {
   })
 
   // 安全弁 3: 取消はガードの手前で処理される。報番号で弾かれると誤報を消せなくなる。
-  it('取消は報番号が古くても効く', () => {
+  it('取消は報番号が古くても効く', async () => {
     const h = setup()
+    await h.flush()
     act(() => { h.current.injectEvent(report('5', ['石川県能登'])) })
     act(() => {
       h.current.injectEvent({ ...report('1', []), cancelled: true })
@@ -2184,8 +2201,9 @@ describe('EEW の続報は古い報で退行しない', () => {
   // 地震・津波側と対の回帰テスト（3 種別すべての状態更新に同じ落とし穴がある）。
   // 描画側のテスト（`RealtimeTab/cancelReason.test.tsx`）は `EEWAlert` を直接渡すので
   // ここを通らない。両方無いと「電文は持っているのに画面へ届かない」を捕まえられない。
-  it('取消の理由を表示中の EEW へ引き継ぐ', () => {
+  it('取消の理由を表示中の EEW へ引き継ぐ', async () => {
     const h = setup()
+    await h.flush()
     act(() => { h.current.injectEvent(report('1', ['石川県能登'])) })
     act(() => {
       h.current.injectEvent({
@@ -2200,8 +2218,9 @@ describe('EEW の続報は古い報で退行しない', () => {
   })
 
   // 対照: 理由を持たない取消電文では作らない（無いものを埋めない）
-  it('理由を持たない取消では持たせない', () => {
+  it('理由を持たない取消では持たせない', async () => {
     const h = setup()
+    await h.flush()
     act(() => { h.current.injectEvent(report('1', ['石川県能登'])) })
     act(() => { h.current.injectEvent({ ...report('2', []), cancelled: true }) })
     const eew = [...h.current.activeEEWs.values()][0]
@@ -2213,8 +2232,9 @@ describe('EEW の続報は古い報で退行しない', () => {
   // （震度6弱以上）に達した事実は残す（アプリ独自の判断。eew-spec.md §4）。
   describe('特別警報の下げ止まり', () => {
     // 正: 初報が特別警報相当（scaleTo:60）→続報で警報未満（scaleTo:40）に下がっても印は残る。
-    it('特別警報になった後の続報で震度が下がっても印は立ったまま', () => {
+    it('特別警報になった後の続報で震度が下がっても印は立ったまま', async () => {
       const h = setup()
+      await h.flush()
       act(() => { h.current.injectEvent(report('1', ['石川県能登'], { scaleTo: 60 })) })
       act(() => { h.current.injectEvent(report('2', ['石川県能登'], { scaleTo: 40 })) })
       const eew = [...h.current.activeEEWs.values()][0]
@@ -2222,8 +2242,9 @@ describe('EEW の続報は古い報で退行しない', () => {
     })
 
     // 対照: 一度も特別警報相当に達していなければ印は立たない。
-    it('特別警報に達していない地震では印が立たない', () => {
+    it('特別警報に達していない地震では印が立たない', async () => {
       const h = setup()
+      await h.flush()
       act(() => { h.current.injectEvent(report('1', ['石川県能登'], { scaleTo: 40 })) })
       act(() => { h.current.injectEvent(report('2', ['石川県能登'], { scaleTo: 40 })) })
       const eew = [...h.current.activeEEWs.values()][0]
@@ -2231,8 +2252,9 @@ describe('EEW の続報は古い報で退行しない', () => {
     })
 
     // 安全弁: 解除後に別の eventId で始まった地震は、前の地震の印を引き継がない。
-    it('別の地震（別 eventId）には印を引き継がない', () => {
+    it('別の地震（別 eventId）には印を引き継がない', async () => {
       const h = setup()
+      await h.flush()
       act(() => { h.current.injectEvent(report('1', ['石川県能登'], { scaleTo: 60 })) })
       act(() => {
         h.current.injectEvent({
@@ -2280,15 +2302,17 @@ describe('P2PQuake 補完経路も古い報で退行しない', () => {
   const areasOfEnrich = (h: ReturnType<typeof setup>) =>
     [...h.current.activeEEWs.values()][0]?.areas?.map(a => a.name) ?? []
 
-  it('台帳より古い報番号の補完は適用しない', () => {
+  it('台帳より古い報番号の補完は適用しない', async () => {
     const h = setup()
+    await h.flush()
     act(() => { h.current.injectEvent(p2pReport('3', ['石川県能登'])) })
     act(() => { sockets[0].onEvent?.(p2pReport('2', ['新潟県上越'])) })
     expect(areasOfEnrich(h)).toEqual(['石川県能登'])
   })
 
-  it('新しい報の補完は適用し、報番号も進める', () => {
+  it('新しい報の補完は適用し、報番号も進める', async () => {
     const h = setup()
+    await h.flush()
     act(() => { h.current.injectEvent(p2pReport('3', ['石川県能登'])) })
     act(() => { sockets[0].onEvent?.(p2pReport('4', ['新潟県上越'])) })
     expect(areasOfEnrich(h)).toEqual(['新潟県上越'])
@@ -2297,8 +2321,9 @@ describe('P2PQuake 補完経路も古い報で退行しない', () => {
   })
 
   // 補完で進めた報番号が台帳にも入っていないと、次に来る古い報を主経路が通してしまう。
-  it('補完で進めた報番号は主経路の判定にも効く', () => {
+  it('補完で進めた報番号は主経路の判定にも効く', async () => {
     const h = setup()
+    await h.flush()
     act(() => { h.current.injectEvent(p2pReport('3', ['石川県能登'])) })
     act(() => { sockets[0].onEvent?.(p2pReport('5', ['新潟県上越'])) })
     act(() => { h.current.injectEvent(p2pReport('4', ['富山県西部'])) })
@@ -2308,8 +2333,9 @@ describe('P2PQuake 補完経路も古い報で退行しない', () => {
   // 特別警報の下げ止まり（`everSpecialWarning`）。この経路は `stateRef.current` から読んだ
   // 既存値を土台に組み立てるため、補完後の区域が弱くても、既に立っていた印を消してはならない
   // （eew-spec.md §4）。
-  it('補完後に区域の震度が弱くなっても、既に立っていた特別警報の印は消えない', () => {
+  it('補完後に区域の震度が弱くなっても、既に立っていた特別警報の印は消えない', async () => {
     const h = setup()
+    await h.flush()
     act(() => { h.current.injectEvent({ ...p2pReport('3', ['石川県能登']), areas: [{ pref: '', name: '石川県能登', scaleFrom: 55 as IntensityScale, scaleTo: 60 as IntensityScale, kindCode: '11', arrivalTime: null }] }) })
     expect([...h.current.activeEEWs.values()][0]?.everSpecialWarning).toBe(true)
     act(() => { sockets[0].onEvent?.(p2pReport('4', ['新潟県上越'])) }) // scaleTo:50（警報未満）で補完
@@ -2516,9 +2542,10 @@ describe('津波の有効期限は報を跨いで引き継ぐ', () => {
   beforeEach(() => { vi.useFakeTimers() })
   afterEach(() => { vi.useRealTimers() })
 
-  it('期限を持たない続報を受けてもカードは期限を保つ', () => {
+  it('期限を持たない続報を受けてもカードは期限を保つ', async () => {
     vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
     const h = setup()
+    await h.flush()
 
     act(() => { h.current.injectEvent(forecast(WITH_EXPIRE)) })
     act(() => { h.current.injectEvent(forecast(WITHOUT_EXPIRE)) })
@@ -2532,9 +2559,10 @@ describe('津波の有効期限は報を跨いで引き継ぐ', () => {
   // 実電文を数えると津波予報の VTSE41 の半数に入るだけで、続報の VTSE51/52 には 1 通も無い。
   // 引き継がないと「いつ来ていつまで続くか」が最初の観測情報で消える（この等級では区域に
   // 波高も到達時刻も付かないので、その文にしか無い）。
-  it('本文を持たない続報を受けてもカードは本文を保つ', () => {
+  it('本文を持たない続報を受けてもカードは本文を保つ', async () => {
     vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
     const h = setup()
+    await h.flush()
     const BODY = '若干の海面変動が予想される時刻は、早い沿岸で０２日１０時３０分頃です。'
 
     act(() => { h.current.injectEvent({ ...forecast(WITH_EXPIRE), bodyText: BODY }) })
@@ -2546,9 +2574,10 @@ describe('津波の有効期限は報を跨いで引き継ぐ', () => {
   })
 
   // 対照: 新しい報が本文を持てばそちらへ従う（前報で固定しない）
-  it('本文を持つ続報ではそちらへ差し替わる', () => {
+  it('本文を持つ続報ではそちらへ差し替わる', async () => {
     vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
     const h = setup()
+    await h.flush()
 
     act(() => { h.current.injectEvent({ ...forecast(WITH_EXPIRE), bodyText: '前の本文' }) })
     act(() => { h.current.injectEvent({ ...forecast(WITHOUT_EXPIRE), bodyText: '新しい本文' }) })
@@ -2559,9 +2588,10 @@ describe('津波の有効期限は報を跨いで引き継ぐ', () => {
 
   // 安全弁: 別の津波へ持ち込まない。引き継ぎは `isTsunamiContinuation`（`eventId` 一致）の
   // 内側でしか働かないことを固定する —— 緩めると、無関係な津波の本文を出すことになる。
-  it('別イベントの津波には前報の本文を引き継がない', () => {
+  it('別イベントの津波には前報の本文を引き継がない', async () => {
     vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
     const h = setup()
+    await h.flush()
 
     act(() => { h.current.injectEvent({ ...forecast(WITH_EXPIRE), bodyText: '能登の本文' }) })
     act(() => {
@@ -2578,9 +2608,10 @@ describe('津波の有効期限は報を跨いで引き継ぐ', () => {
   //
   // 正: 観測時点を持たない続報（等級の発表）が挟まっても、前報の値が残る。入るのは観測情報
   // （VTSE51/52）だけなので、落とすとカードの「観測 ◯◯ 時点」が出たり消えたりする。
-  it('観測時点を持たない続報が挟まっても前報の観測時点が残る', () => {
+  it('観測時点を持たない続報が挟まっても前報の観測時点が残る', async () => {
     vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
     const h = setup()
+    await h.flush()
 
     act(() => { h.current.injectEvent({ ...forecast(WITH_EXPIRE), observationDateTime: '2024-01-02T16:45:00+09:00' }) })
     act(() => { h.current.injectEvent(forecast(WITHOUT_EXPIRE)) })
@@ -2590,9 +2621,10 @@ describe('津波の有効期限は報を跨いで引き継ぐ', () => {
   })
 
   // 対照: 新しい観測時点を持つ続報が来たらそちらへ従う（古い値に居座らせない）。
-  it('新しい観測時点を持つ続報ではそちらへ従う', () => {
+  it('新しい観測時点を持つ続報ではそちらへ従う', async () => {
     vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
     const h = setup()
+    await h.flush()
 
     act(() => { h.current.injectEvent({ ...forecast(WITH_EXPIRE), observationDateTime: '2024-01-02T16:45:00+09:00' }) })
     act(() => { h.current.injectEvent({ ...forecast(WITHOUT_EXPIRE), observationDateTime: '2024-01-02T16:48:00+09:00' }) })
@@ -2602,9 +2634,10 @@ describe('津波の有効期限は報を跨いで引き継ぐ', () => {
   })
 
   // 安全弁: 別の津波へ持ち込まない（`bodyText` と同じ門の内側であることを固定する）。
-  it('別イベントの津波には前報の観測時点を引き継がない', () => {
+  it('別イベントの津波には前報の観測時点を引き継がない', async () => {
     vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
     const h = setup()
+    await h.flush()
 
     act(() => { h.current.injectEvent({ ...forecast(WITH_EXPIRE), observationDateTime: '2024-01-02T16:45:00+09:00' }) })
     act(() => {
@@ -2615,9 +2648,10 @@ describe('津波の有効期限は報を跨いで引き継ぐ', () => {
     expect(h.current.tsunamis[0].observationDateTime).toBeUndefined()
   })
 
-  it('日時として読めない期限を持つ続報でも、カードには前報の読める期限が残る', () => {
+  it('日時として読めない期限を持つ続報でも、カードには前報の読める期限が残る', async () => {
     vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
     const h = setup()
+    await h.flush()
 
     act(() => { h.current.injectEvent(forecast(WITH_EXPIRE)) })
     act(() => { h.current.injectEvent(forecast({ ...WITHOUT_EXPIRE, validDateTime: '壊れた期限' })) })
@@ -3238,8 +3272,9 @@ describe('津波の続報マージ（前報から引き継ぐもの）', () => {
   })
 
   // 正: 観測点を運ばない津波警報等が届いても、満潮時刻が残る。
-  it('津波警報等が届いても満潮時刻が消えない', () => {
+  it('津波警報等が届いても満潮時刻が消えない', async () => {
     const h = setup()
+    await h.flush()
     act(() => { h.current.injectEvent(warningTelegram(0, AREA_NAMES)) })
     act(() => { h.current.injectEvent(highTideTelegram(0, AREA_NAMES)) })
     expect(stationsOf(h, '岩手県')?.[0].highTideDateTime).toBe('2026-04-20T18:30:00+09:00')
@@ -3253,8 +3288,9 @@ describe('津波の続報マージ（前報から引き継ぐもの）', () => {
 
   // 対照: 観測点を運ぶ種別が観測点を載せなくなったら落とす（気象庁が発表をやめた合図）。
   // 実電文では等級が津波予報まで下がった時点でこの形になる。
-  it('津波情報が観測点を載せなくなったら落とす', () => {
+  it('津波情報が観測点を載せなくなったら落とす', async () => {
     const h = setup()
+    await h.flush()
     act(() => { h.current.injectEvent(highTideTelegram(0, AREA_NAMES)) })
     const empty = highTideTelegram(1, AREA_NAMES)
     empty.areas = empty.areas.map(a => ({ ...a, stations: undefined }))
@@ -3263,16 +3299,18 @@ describe('津波の続報マージ（前報から引き継ぐもの）', () => {
   })
 
   // 安全弁: 一部解除で区域が減ったら、減ったまま。前報から復活させない。
-  it('電文から消えた区域を前報から復活させない', () => {
+  it('電文から消えた区域を前報から復活させない', async () => {
     const h = setup()
+    await h.flush()
     act(() => { h.current.injectEvent(highTideTelegram(0, AREA_NAMES)) })
     act(() => { h.current.injectEvent(warningTelegram(1, ['岩手県'])) })
     expect(h.current.tsunamis[0].areas.map(a => a.name)).toEqual(['岩手県'])
   })
 
   // 正: 固定付加文は主題ごとに束ねる。避難の呼びかけが満潮の注記に差し替わらない。
-  it('避難の呼びかけが満潮時刻の報で消えない', () => {
+  it('避難の呼びかけが満潮時刻の報で消えない', async () => {
     const h = setup()
+    await h.flush()
     act(() => { h.current.injectEvent(warningTelegram(0, AREA_NAMES)) })
     act(() => { h.current.injectEvent(highTideTelegram(0, AREA_NAMES)) })
     const texts = h.current.tsunamis[0].warningComments!.map(c => c.text)
@@ -3281,8 +3319,9 @@ describe('津波の続報マージ（前報から引き継ぐもの）', () => {
   })
 
   // 正: 自由付加文も引き継ぐ。入るのは津波警報等だけなので、引き継がないと最初の続報で消える。
-  it('自由付加文が続報で消えない', () => {
+  it('自由付加文が続報で消えない', async () => {
     const h = setup()
+    await h.flush()
     act(() => { h.current.injectEvent(warningTelegram(0, AREA_NAMES)) })
     act(() => { h.current.injectEvent(highTideTelegram(0, AREA_NAMES)) })
     expect(h.current.tsunamis[0].freeText).toContain('予想される津波の高さの解説')
@@ -3290,8 +3329,9 @@ describe('津波の続報マージ（前報から引き継ぐもの）', () => {
 
   // 正: 沿岸への推定も引き継ぐ。**入るのは沖合の津波観測（VTSE52）だけ**で、実電文では最後の
   // VTSE52 のあとに津波情報が 20 通以上続く。引き継がないと次の報で推定が消える。
-  it('沿岸への推定が次の報で消えない', () => {
+  it('沿岸への推定が次の報で消えない', async () => {
     const h = setup()
+    await h.flush()
     const offshoreReport: JMATsunami = {
       ...highTideTelegram(0, AREA_NAMES),
       id: `dmdata-tsunami-${EVENT_ID}-o1`,
@@ -3310,8 +3350,9 @@ describe('津波の続報マージ（前報から引き継ぐもの）', () => {
 
   // 安全弁: 名乗り（`infoName`）は引き継がない。その報が何を出しているかを表すもので、
   // 引き継ぐと満潮時刻の報を見ているのに「津波警報・津波注意報・津波予報」と名乗る。
-  it('名乗りは最新の報のものを出す', () => {
+  it('名乗りは最新の報のものを出す', async () => {
     const h = setup()
+    await h.flush()
     act(() => { h.current.injectEvent(warningTelegram(0, AREA_NAMES)) })
     act(() => { h.current.injectEvent(highTideTelegram(0, AREA_NAMES)) })
     expect(h.current.tsunamis[0].infoName).toBe('各地の満潮時刻・津波到達予想時刻に関する情報')
@@ -4196,8 +4237,9 @@ describe('録画ツール向けの記録: onLiveEvent へ届かない電文', ()
   beforeEach(() => { __resetReplayEventLogForTest() })
   afterEach(() => { __resetReplayEventLogForTest(); vi.useRealTimers() })
 
-  it('緊急地震速報の古い報にも記録が残る', () => {
+  it('緊急地震速報の古い報にも記録が残る', async () => {
     const h = setup()
+    await h.flush()
     act(() => { h.current.injectEvent(eewReport('2')) })
     act(() => { h.current.injectEvent(eewReport('1')) })
 
@@ -4207,17 +4249,19 @@ describe('録画ツール向けの記録: onLiveEvent へ届かない電文', ()
     expect(skipped[0].serial).toBe('1')
   })
 
-  it('対照: 受理した報には見送りの印が付かない', () => {
+  it('対照: 受理した報には見送りの印が付かない', async () => {
     const h = setup()
+    await h.flush()
     act(() => { h.current.injectEvent(eewReport('1')) })
     // 受理した分の記録は `useLiveEventHandler` の担当なので、ここには落とした分だけが出る
     expect(loggedTelegrams().filter(t => t.skipped === 'staleSerial')).toHaveLength(0)
   })
 
-  it('地震・津波に関するお知らせにも記録が残る（音も読み上げも起こさない種別）', () => {
+  it('地震・津波に関するお知らせにも記録が残る（音も読み上げも起こさない種別）', async () => {
     // キューの捌きを進めるため（この経路は `injectEvent` と違って即時ではない）
     vi.useFakeTimers()
     const h = setup()
+    await h.flush()
     const now = serverDate()
     act(() => {
       h.current.loadReplayEvents([{
@@ -4245,9 +4289,10 @@ describe('録画ツール向けの記録: onLiveEvent へ届かない電文', ()
   // 正: リプレイ開始時の「窓の手前」を作るサイレント注入（silent: true）は onLiveEvent を
   // 呼ばないため、この経路で記録しないと録画ツールから再生開始直後の状態を電文一覧から
   // 追えなくなる（→ docs/spec/recording-interface-spec.md「電文の受信」）。
-  it('サイレント注入（silent: true）の南海トラフ臨時情報にも記録が残る', () => {
+  it('サイレント注入（silent: true）の南海トラフ臨時情報にも記録が残る', async () => {
     vi.useFakeTimers()
     const h = setup()
+    await h.flush()
     const now = serverDate()
     act(() => {
       h.current.loadReplayEvents([{
@@ -4273,9 +4318,10 @@ describe('録画ツール向けの記録: onLiveEvent へ届かない電文', ()
   })
 
   // 対照: サイレントでなければ従来どおり `onLiveEvent` を呼ぶので記録は残らない
-  it('対照: サイレントでない南海トラフ臨時情報には silentReplayInit が付かない', () => {
+  it('対照: サイレントでない南海トラフ臨時情報には silentReplayInit が付かない', async () => {
     vi.useFakeTimers()
     const h = setup()
+    await h.flush()
     const now = serverDate()
     act(() => {
       h.current.loadReplayEvents([{
@@ -4298,9 +4344,10 @@ describe('録画ツール向けの記録: onLiveEvent へ届かない電文', ()
 
   // 安全弁: 反映されなかった電文（棄却）は `notApplied` として記録する——サイレントかどうかとは
   // 独立の理由。「表示していない情報単位への取消」で `applyNankai` が偽を返すケースを使う。
-  it('反映されなかった南海トラフ臨時情報の取消には notApplied が付く', () => {
+  it('反映されなかった南海トラフ臨時情報の取消には notApplied が付く', async () => {
     vi.useFakeTimers()
     const h = setup()
+    await h.flush()
     const now = serverDate()
     act(() => {
       // 表示中の情報が無い状態で、取消（retracted）だけを流す → `applyNankai` は偽を返す
@@ -4338,9 +4385,10 @@ describe('録画ツール向けの記録: onLiveEvent へ届かない電文', ()
   // **理由は `notApplied` ではなく `notDispatched`。** `lpgmByEventId` は取消・階級 0 でも
   // 必ず書き換わる（＝反映される）ので、「反映されなかった」を意味する `notApplied` は
   // 使えない（3 巡目レビューで検出）。
-  it('取消された長周期地震動にも notDispatched の記録が残る', () => {
+  it('取消された長周期地震動にも notDispatched の記録が残る', async () => {
     vi.useFakeTimers()
     const h = setup()
+    await h.flush()
     act(() => {
       h.current.loadReplayEvents([{
         payload: { kind: 'lpgm', data: lpgmData({ cancelled: true }) },
@@ -4354,9 +4402,10 @@ describe('録画ツール向けの記録: onLiveEvent へ届かない電文', ()
     expect(notDispatched[0].kind).toBe('lpgm')
   })
 
-  it('階級 0 の長周期地震動にも notDispatched の記録が残る', () => {
+  it('階級 0 の長周期地震動にも notDispatched の記録が残る', async () => {
     vi.useFakeTimers()
     const h = setup()
+    await h.flush()
     act(() => {
       h.current.loadReplayEvents([{
         payload: { kind: 'lpgm', data: lpgmData({ maxClass: 0 }) },
@@ -4372,9 +4421,10 @@ describe('録画ツール向けの記録: onLiveEvent へ届かない電文', ()
 
   // 対照: 取消でも階級 0 でもない長周期地震動は、サイレントなら silentReplayInit として記録する
   // （他の 5 種別と同じ if/else に揃えたことの確認）。
-  it('対照: 取消でも階級 0 でもない長周期地震動はサイレント注入として記録する', () => {
+  it('対照: 取消でも階級 0 でもない長周期地震動はサイレント注入として記録する', async () => {
     vi.useFakeTimers()
     const h = setup()
+    await h.flush()
     act(() => {
       h.current.loadReplayEvents([{
         payload: { kind: 'lpgm', data: lpgmData() },

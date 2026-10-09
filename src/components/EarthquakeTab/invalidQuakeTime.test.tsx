@@ -10,6 +10,7 @@
 // **開いた表示と畳んだ表示の 2 か所にある。** 片方だけ直しても型検査は通り、例外も出ない。
 import { describe, it, expect, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
+import { flushDataEffects } from '../../test-utils/flushDataEffects'
 import { EarthquakeTab } from './index'
 import { quakeEventKey } from '../../utils/quakeMerge'
 import type { JMAQuake } from '../../types/earthquake'
@@ -39,7 +40,8 @@ function makeQuake(earthquakeTime: string): JMAQuake {
   }
 }
 
-const renderTab = (quake: JMAQuake, selected: boolean) => render(
+const renderTab = async (quake: JMAQuake, selected: boolean) => {
+  const result = render(
   <EarthquakeTab
     earthquakes={[quake]}
     selectedId={selected ? quakeEventKey(quake) : null}
@@ -68,32 +70,35 @@ const renderTab = (quake: JMAQuake, selected: boolean) => render(
     speakingTelegramTextSubject={null}
     seismoWaves={new Map()}
   />
-)
+  )
+  await flushDataEffects()
+  return result
+}
 
 describe('地震カードの発生時刻が読めないとき', () => {
   // 対照: 読める値では従来どおりの表記。ガードが正常な値まで止めていないこと。
-  it('読める値では従来どおり「◯月◯日 ◯:◯◯ごろ」を出す', () => {
-    renderTab(makeQuake('2024-01-01T07:10:00Z'), true)
+  it('読める値では従来どおり「◯月◯日 ◯:◯◯ごろ」を出す', async () => {
+    await renderTab(makeQuake('2024-01-01T07:10:00Z'), true)
     expect(screen.getAllByText(/1月1日 \d{1,2}:\d{2}ごろ/).length).toBeGreaterThan(0)
     expect(screen.queryByText('発生時刻不明')).toBeNull()
   })
 
   // 正: 開いた表示（選択中のカード）で語を出す。
-  it('開いた表示では「発生時刻不明」を出す', () => {
-    renderTab(makeQuake('壊れた値'), true)
+  it('開いた表示では「発生時刻不明」を出す', async () => {
+    await renderTab(makeQuake('壊れた値'), true)
     expect(screen.getAllByText('発生時刻不明').length).toBeGreaterThan(0)
   })
 
   // 正: 畳んだ表示にも同じ語を出す。**2 か所あるのがこのテストの要**
   // （片方だけ直しても型検査は通り、例外も出ない）。
-  it('畳んだ表示にも同じ語を出す', () => {
-    renderTab(makeQuake('壊れた値'), false)
+  it('畳んだ表示にも同じ語を出す', async () => {
+    await renderTab(makeQuake('壊れた値'), false)
     expect(screen.getAllByText('発生時刻不明').length).toBeGreaterThan(0)
   })
 
   // 安全弁: `NaN` がそのまま画面へ出ない（これが元の症状）。
-  it('NaN を画面に出さない', () => {
-    const { container } = renderTab(makeQuake('壊れた値'), true)
+  it('NaN を画面に出さない', async () => {
+    const { container } = await renderTab(makeQuake('壊れた値'), true)
     expect(container.textContent).not.toContain('NaN')
   })
 })

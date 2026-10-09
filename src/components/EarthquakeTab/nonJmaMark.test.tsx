@@ -10,6 +10,7 @@
 // 3 か所そろっていることをここで固定する。
 import { describe, it, expect, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
+import { flushDataEffects } from '../../test-utils/flushDataEffects'
 import { EarthquakeTab } from './index'
 import { quakeEventKey } from '../../utils/quakeMerge'
 import type { JMAQuake, JMALpgm, EarthquakePoint, JMAQuakeCity } from '../../types/earthquake'
@@ -76,7 +77,8 @@ const LPGM_BASE: JMALpgm = {
   regions: [],
 }
 
-const renderTab = (quake: JMAQuake, lpgm?: JMALpgm, opts: { unreceivedOpen?: boolean } = {}) => render(
+const renderTab = async (quake: JMAQuake, lpgm?: JMALpgm, opts: { unreceivedOpen?: boolean } = {}) => {
+  const result = render(
   <EarthquakeTab
     earthquakes={[quake]}
     selectedId={quakeEventKey(quake)}
@@ -105,13 +107,16 @@ const renderTab = (quake: JMAQuake, lpgm?: JMALpgm, opts: { unreceivedOpen?: boo
     speakingTelegramTextSubject={null}
     seismoWaves={new Map()}
   />
-)
+  )
+  await flushDataEffects()
+  return result
+}
 
 
 describe('地震カードの観測点名に付く「気象庁以外」の印', () => {
   // 正: 震度一覧の観測点の行に `＊` が出る。
-  it('震度一覧の観測点の行に印が出る', () => {
-    renderTab(makeQuake([
+  it('震度一覧の観測点の行に印が出る', async () => {
+    await renderTab(makeQuake([
       ...upperRows(30),
       station({ addr: NON_JMA_STATION, nonJma: true }),
       station(),
@@ -128,8 +133,8 @@ describe('地震カードの観測点名に付く「気象庁以外」の印', (
   // 正: 「震度を入手していない地点」の一覧にも `＊` が出る。
   // **この一覧は同名の地点を 1 行へまとめる**ので、印の経路が震度一覧とは別にある。
   // 一覧は未入電トグルを開いたときに出る（→ `unreceivedOpen`）。
-  it('「震度を入手していない地点」に印が出る', () => {
-    renderTab(makeQuake([
+  it('「震度を入手していない地点」に印が出る', async () => {
+    await renderTab(makeQuake([
       ...upperRows(45),
       station({ addr: NON_JMA_STATION, scale: 45, unreceived: true, nonJma: true }),
       station({ scale: 45, unreceived: true }),
@@ -141,8 +146,8 @@ describe('地震カードの観測点名に付く「気象庁以外」の印', (
   })
 
   // 正: 長周期地震動の観測点の行にも `＊` が出る。
-  it('長周期地震動の観測点の行に印が出る', () => {
-    renderTab(makeQuake([]), {
+  it('長周期地震動の観測点の行に印が出る', async () => {
+    await renderTab(makeQuake([]), {
       ...LPGM_BASE,
       points: [
         { code: '1', name: NON_JMA_STATION, pref: PREF, area: AREA, lgInt: 4, nonJma: true },
@@ -159,8 +164,8 @@ describe('地震カードの観測点名に付く「気象庁以外」の印', (
 
   // 安全弁: **印を県・区域・市町村の行へ広げていない。** 運用機関は観測点ごとの事実で、
   // 上の段へ持ち上げると「この区域は気象庁以外が測っている」という別のことを言ってしまう。
-  it('県・区域・市町村の行には印を付けない', () => {
-    renderTab(makeQuake([...upperRows(30), station({ addr: NON_JMA_STATION, nonJma: true })]))
+  it('県・区域・市町村の行には印を付けない', async () => {
+    await renderTab(makeQuake([...upperRows(30), station({ addr: NON_JMA_STATION, nonJma: true })]))
 
     for (const label of [PREF, AREA, CITY]) {
       expect(screen.queryByText(`${label}＊`), label).toBeNull()

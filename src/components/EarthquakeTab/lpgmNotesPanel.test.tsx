@@ -11,6 +11,7 @@
 // jsdom では測れない（要素の高さが 0 になる）。押し下げ量の確認は実機で行う。
 import { describe, it, expect, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/react'
+import { flushDataEffects } from '../../test-utils/flushDataEffects'
 import { EarthquakeTab } from './index'
 import { quakeEventKey } from '../../utils/quakeMerge'
 import { telegramTextSubject } from '../../utils/ttsFollow'
@@ -72,7 +73,8 @@ function makeLpgm(overrides: Partial<JMALpgm> = {}): JMALpgm {
 /** 畳む対象を 1 つも持たない電文。1 項目ずつ足して確かめるときの土台。 */
 const NO_NOTES = { forecastText: undefined, varCommentText: undefined, freeFormText: undefined, uri: undefined } as const
 
-const renderTab = (lpgm: JMALpgm) => render(
+const renderTab = async (lpgm: JMALpgm) => {
+  const result = render(
   <EarthquakeTab
     earthquakes={[QUAKE]}
     selectedId={quakeEventKey(QUAKE)}
@@ -101,7 +103,10 @@ const renderTab = (lpgm: JMALpgm) => render(
     speakingTelegramTextSubject={null}
     seismoWaves={new Map()}
   />
-)
+  )
+  await flushDataEffects()
+  return result
+}
 
 /** 読み上げの主題を渡せる版（自動展開の確認用）。**`rerender` へ渡せるよう JSX を返す。** */
 const tabWith = (subject: string | null, lpgm: JMALpgm = makeLpgm()) => (
@@ -134,8 +139,11 @@ const tabWith = (subject: string | null, lpgm: JMALpgm = makeLpgm()) => (
     seismoWaves={new Map()}
   />
 )
-const renderSpeaking = (subject: string | null, lpgm: JMALpgm = makeLpgm()) =>
-  render(tabWith(subject, lpgm))
+const renderSpeaking = async (subject: string | null, lpgm: JMALpgm = makeLpgm()) => {
+  const result = render(tabWith(subject, lpgm))
+  await flushDataEffects()
+  return result
+}
 
 /** この地震の長周期を読み上げている主題。 */
 const SPEAKING = telegramTextSubject('lpgm', EVENT_ID)
@@ -147,8 +155,8 @@ const notesHeader = () => screen.getByRole('button', { name: HEADER_NAME })
 
 describe('長周期地震動の「気象庁からの補足」の折りたたみ', () => {
   // 正: 見出しが出て、中身は押すまで出ない。
-  it('既定では畳んでおり、見出しを押すと付加文と詳細ページが出る', () => {
-    renderTab(makeLpgm())
+  it('既定では畳んでおり、見出しを押すと付加文と詳細ページが出る', async () => {
+    await renderTab(makeLpgm())
 
     const header = notesHeader()
     expect(header.getAttribute('aria-expanded')).toBe('false')
@@ -172,8 +180,8 @@ describe('長周期地震動の「気象庁からの補足」の折りたたみ'
   // **この 1 件だけは折りたたみを入れる前でも通る**（見出しという概念が無いため）。
   // 役目は将来 `hasLpgmNotes` の条件を緩めたときに落ちること。他の 4 件は実装を
   // 変更前へ戻すと落ちることを確認済み。
-  it('付加文も詳細ページも無ければ見出しを出さない', () => {
-    renderTab(makeLpgm(NO_NOTES))
+  it('付加文も詳細ページも無ければ見出しを出さない', async () => {
+    await renderTab(makeLpgm(NO_NOTES))
 
     expect(screen.queryByRole('button', { name: HEADER_NAME })).toBeNull()
     // 階級のバッジ自体は出ている（折りたたみが無いだけで、長周期の表示は生きている）
@@ -182,8 +190,8 @@ describe('長周期地震動の「気象庁からの補足」の折りたたみ'
 
   // 安全弁: アプリが組む一文は折りたたみへ巻き込まない。
   // 1 行しかないうえ、その地震でしか言えない事実なので常に見えていること。
-  it('観測情報の種類から出す一文は、畳んでいても開いていても出る', () => {
-    renderTab(makeLpgm())
+  it('観測情報の種類から出す一文は、畳んでいても開いていても出る', async () => {
+    await renderTab(makeLpgm())
 
     expect(screen.getByText(CATEGORY_NOTE)).toBeTruthy()
     fireEvent.click(notesHeader())
@@ -201,8 +209,8 @@ describe('長周期地震動の「気象庁からの補足」の折りたたみ'
     ['固定付加文（その他）', { varCommentText: VAR_COMMENT_TEXT }, VAR_COMMENT_TEXT],
     ['自由付加文', { freeFormText: FREE_FORM_HEAD }, FREE_FORM_HEAD],
     ['詳細ページ', { uri: URI }, URI_LABEL],
-  ])('%s だけを持つ電文でも見出しを出し、押すとその 1 つが出る', (_name, only, shown) => {
-    renderTab(makeLpgm({ ...NO_NOTES, ...only }))
+  ])('%s だけを持つ電文でも見出しを出し、押すとその 1 つが出る', async (_name, only, shown) => {
+    await renderTab(makeLpgm({ ...NO_NOTES, ...only }))
 
     // 押すまでは出ない
     expect(screen.queryByText(shown)).toBeNull()
@@ -214,8 +222,8 @@ describe('長周期地震動の「気象庁からの補足」の折りたたみ'
 
   // 開いた状態から閉じられること（`toggle` は既存の `expanded` Set を共有しており、
   // 鍵を取り違えると開きっぱなしになる）。
-  it('もう一度押すと畳む', () => {
-    renderTab(makeLpgm())
+  it('もう一度押すと畳む', async () => {
+    await renderTab(makeLpgm())
 
     fireEvent.click(notesHeader())
     expect(screen.getByText(FORECAST_TEXT)).toBeTruthy()
@@ -233,8 +241,8 @@ describe('長周期地震動の「気象庁からの補足」の折りたたみ'
 // 声だけが本文を伝えて画面は見出しのまま、という状態が残っていた。
 describe('読み上げに合わせて補足を開く', () => {
   // 正: 読み始めで開き、読み終わりで閉じる
-  it('読み始めで開き、読み終わりで閉じる', () => {
-    const { container, rerender } = renderSpeaking(null)
+  it('読み始めで開き、読み終わりで閉じる', async () => {
+    const { container, rerender } = await renderSpeaking(null)
     expect(container.textContent).not.toContain(FORECAST_TEXT)
 
     rerender(tabWith(SPEAKING))
@@ -246,8 +254,8 @@ describe('読み上げに合わせて補足を開く', () => {
 
   // 安全弁: **手で開いていたものは、読み終わりで閉じない。** 見ようとしていた中身を奪わない
   // （規約は `useAutoOpenWhileSpeakingIn` が持つ。ここでは配線が効いていることを確かめる）。
-  it('読み上げの前から手で開いていたものは、読み終わりで閉じない', () => {
-    const { container, rerender } = renderSpeaking(null)
+  it('読み上げの前から手で開いていたものは、読み終わりで閉じない', async () => {
+    const { container, rerender } = await renderSpeaking(null)
     fireEvent.click(notesHeader())
     expect(container.textContent).toContain(FORECAST_TEXT)
 
@@ -257,8 +265,8 @@ describe('読み上げに合わせて補足を開く', () => {
   })
 
   // 安全弁: 読み上げ中に手で閉じたら、その読み上げのあいだは開き直さない
-  it('読み上げ中に手で閉じたら、そのまま閉じたままにする', () => {
-    const { container, rerender } = renderSpeaking(SPEAKING)
+  it('読み上げ中に手で閉じたら、そのまま閉じたままにする', async () => {
+    const { container, rerender } = await renderSpeaking(SPEAKING)
     expect(container.textContent).toContain(FORECAST_TEXT)
 
     fireEvent.click(notesHeader())
@@ -270,20 +278,20 @@ describe('読み上げに合わせて補足を開く', () => {
 
   // 対照: **別の地震の長周期を読んでいるときは開かない。** カードは複数並ぶので、
   // 種別だけで判定すると読んでいるのとは違う地震の補足まで開く。
-  it('別の地震の長周期を読んでいるときは開かない', () => {
-    const { container } = renderSpeaking(telegramTextSubject('lpgm', '20240101999999'))
+  it('別の地震の長周期を読んでいるときは開かない', async () => {
+    const { container } = await renderSpeaking(telegramTextSubject('lpgm', '20240101999999'))
     expect(container.textContent).not.toContain(FORECAST_TEXT)
   })
 
   // 対照: 種別だけの主題（識別子なし）でも開かない
-  it('識別子を持たない主題では開かない', () => {
-    const { container } = renderSpeaking('telegramText:lpgm')
+  it('識別子を持たない主題では開かない', async () => {
+    const { container } = await renderSpeaking('telegramText:lpgm')
     expect(container.textContent).not.toContain(FORECAST_TEXT)
   })
 
   // 対照: 別種別の文を読んでいるときは開かない
-  it('別種別の文を読んでいるときは開かない', () => {
-    const { container } = renderSpeaking(telegramTextSubject('nankai'))
+  it('別種別の文を読んでいるときは開かない', async () => {
+    const { container } = await renderSpeaking(telegramTextSubject('nankai'))
     expect(container.textContent).not.toContain(FORECAST_TEXT)
   })
 })

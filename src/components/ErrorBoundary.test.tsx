@@ -4,7 +4,8 @@
 //
 // **ここで押さえられるのは React の呼び出しスタックの中だけ。** rAF・イベントハンドラ・Promise の
 // 中の例外はこの境界に届かないので、そちらは別の仕組みの担当（ErrorBoundary.tsx の冒頭を見ること）。
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { muteConsoleError } from '../test-utils/muteConsoleError'
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import { ErrorBoundary } from './ErrorBoundary'
 
@@ -28,7 +29,7 @@ let errorSpy: ErrorSpy
 
 beforeEach(() => {
   // React は境界が受け止めた例外も開発時に console へ出す。テストの出力を埋めるので黙らせる。
-  errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+  errorSpy = muteConsoleError()
 })
 
 afterEach(() => {

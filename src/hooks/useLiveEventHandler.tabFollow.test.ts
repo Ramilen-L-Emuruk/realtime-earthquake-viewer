@@ -13,7 +13,7 @@
 //   3. 読み上げを持たない経路（読み上げ無効の端末）は従来どおり受信時に取る
 import type { SpeechOutcome } from '../utils/voicevox'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook } from '@testing-library/react'
+import { renderHook, act } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
 import { playAlertSound } from '../utils/alertSound'
 import { TAB_PRIORITY } from '../utils/tabPriority'
@@ -69,8 +69,10 @@ function finishSpeech(index: number) {
 
 /** 通知音との間（最長 2720ms）と第 2 フェーズの待ち（6000ms）を消化して発話へ到達させる */
 async function settle() {
-  await vi.advanceTimersByTimeAsync(8000)
-  await flush()
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(8000)
+    await flush()
+  })
 }
 
 /**
@@ -87,8 +89,10 @@ async function settle() {
  * いるから。延長そのものの挙動は `useLiveEventHandler.ttsPriority.test.ts` が検査する。
  */
 async function advance(ms: number) {
-  await vi.advanceTimersByTimeAsync(ms)
-  await flush()
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms)
+    await flush()
+  })
 }
 
 function makeQuake(over: { id?: string; type?: IssueType } = {}): JMAQuake {
@@ -272,9 +276,10 @@ function setup(over: { voicevoxEnabled?: boolean; soundEnabled?: boolean } = {})
     selectQuake: vi.fn(), openLpgmFromQuake: vi.fn(), closeDistributionOnQuakeReport: vi.fn(),
     ...spies,
   }))
+  // `result.current` は呼ぶたびに引き直す（控えると最初のレンダーの関数に固定される）
   return {
-    handle: result.current.handleLiveEvent,
-    resetTracking: result.current.resetTracking,
+    handle: (event: Parameters<typeof result.current.handleLiveEvent>[0]) => { act(() => { result.current.handleLiveEvent(event) }) },
+    resetTracking: () => { act(() => { result.current.resetTracking() }) },
     // 画面側（観測点バッジ）を見るテストのために、フックの戻り値そのものも渡す。
     // `result.current` は常に最新のレンダー結果を返すので、state の更新後も追える。
     result,
@@ -442,8 +447,7 @@ describe('読み上げとタブ切替の同調', () => {
     // 1 点の更新で途中から消える）
     expect(spies.followSpeechTab).not.toHaveBeenCalled()
 
-    finishSpeech(0)
-    await flush()
+    await act(async () => { finishSpeech(0); await flush() })
     // 警報の読み上げ中に届いたので先出しは見送られている（`alreadyShown` は false）
     expect(spies.followSpeechTab).toHaveBeenCalledWith('tsunami', TAB_PRIORITY.tsunami, { alreadyShown: false })
   })
@@ -747,8 +751,7 @@ describe('読み上げとタブ切替の同調', () => {
     handle(makeTsunamiObsOnly())
     await settle()
     // 観測情報は警報の読み上げが終わってから読まれる（格が下がったため）
-    finishSpeech(0)
-    await flush()
+    await act(async () => { finishSpeech(0); await flush() })
     const spoken = speeches.map(s => s.text).join('')
     expect(spoken).not.toContain('解除')
     expect(spoken).toContain('輪島港')

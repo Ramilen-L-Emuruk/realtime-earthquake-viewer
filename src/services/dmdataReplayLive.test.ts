@@ -7,7 +7,8 @@
 //   - **日付の基準**: アーカイブは JST 日、電文一覧は UTC の半開区間。取り違えると丸一日ずれる
 //   - **担当日の排他**: アーカイブが持つ日を当日経路が二重に取らないこと
 //   - **版の選択**: 同じ電文が XML 版と JSON 版で一覧に載るため、種別ごとに片方だけ拾うこと
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { muteConsoleError } from '../test-utils/muteConsoleError'
 import { buildSampleTelegram } from '../test-utils/bufrBuild'
 import {
   enumerateJstDates, resolveLiveDates, toJstDateStr, archiveDaysForWindow, archiveListRange,
@@ -317,7 +318,7 @@ describe('一覧のページ送りは上限で打ち切る', () => {
 
   // 安全弁: 止められた打ち切りは「取得に失敗」として記録しない（並列の EEW 詳細でも同じ）。
   it('安全弁: 止められた打ち切りはエラーとして記録しない', async () => {
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const errorSpy = muteConsoleError()
     const caller = new AbortController()
     caller.abort()
     globalThis.fetch = vi.fn(async () => { throw new DOMException('aborted', 'AbortError') }) as unknown as typeof fetch
@@ -409,7 +410,7 @@ describe('fetchLiveReplayEntries', () => {
   beforeEach(() => {
     clearLiveReplayCache()
     vi.spyOn(console, 'warn').mockImplementation(() => {})
-    vi.spyOn(console, 'error').mockImplementation(() => {})
+    muteConsoleError()
   })
   afterEach(() => {
     globalThis.fetch = originalFetch
@@ -941,7 +942,7 @@ describe('電文本体を一斉に投げない', () => {
   beforeEach(() => {
     clearLiveReplayCache()
     vi.spyOn(console, 'warn').mockImplementation(() => {})
-    vi.spyOn(console, 'error').mockImplementation(() => {})
+    muteConsoleError()
   })
   afterEach(() => {
     globalThis.fetch = originalFetch
@@ -1027,7 +1028,7 @@ describe('EEW の詳細取得を一斉に投げない', () => {
   beforeEach(() => {
     clearLiveReplayCache()
     vi.spyOn(console, 'warn').mockImplementation(() => {})
-    vi.spyOn(console, 'error').mockImplementation(() => {})
+    muteConsoleError()
   })
 
   afterEach(() => {
@@ -1097,7 +1098,7 @@ describe('fetchLiveQuakeTelegrams', () => {
   beforeEach(() => {
     clearLiveReplayCache()
     vi.spyOn(console, 'warn').mockImplementation(() => {})
-    vi.spyOn(console, 'error').mockImplementation(() => {})
+    muteConsoleError()
   })
   afterEach(() => {
     globalThis.fetch = originalFetch

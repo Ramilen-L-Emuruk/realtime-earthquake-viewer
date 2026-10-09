@@ -10,6 +10,7 @@
 // 開いた状態・閉じた状態を作り、出るもの／出ないものを固定する。
 import { describe, it, expect, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
+import { flushDataEffects } from '../../test-utils/flushDataEffects'
 import { EarthquakeTab } from './index'
 import { quakeEventKey } from '../../utils/quakeMerge'
 import type { JMAQuake, EarthquakePoint, JMAQuakeCity } from '../../types/earthquake'
@@ -51,7 +52,8 @@ function makeQuake(points: EarthquakePoint[]): JMAQuake {
   }
 }
 
-const renderTab = (quake: JMAQuake, opts: { unreceivedOpen?: boolean } = {}) => render(
+const renderTab = async (quake: JMAQuake, opts: { unreceivedOpen?: boolean } = {}) => {
+  const result = render(
   <EarthquakeTab
     earthquakes={[quake]}
     selectedId={quakeEventKey(quake)}
@@ -80,7 +82,10 @@ const renderTab = (quake: JMAQuake, opts: { unreceivedOpen?: boolean } = {}) => 
     speakingTelegramTextSubject={null}
     seismoWaves={new Map()}
   />
-)
+  )
+  await flushDataEffects()
+  return result
+}
 
 /** 未入電の地点と、同じ市町村で観測できた地点が混じる電文。 */
 const MIXED: EarthquakePoint[] = [
@@ -92,8 +97,8 @@ const MIXED: EarthquakePoint[] = [
 
 describe('未入電トグル', () => {
   // 正: 開くと地点名が出る。
-  it('開くと地点名が出る', () => {
-    renderTab(makeQuake(MIXED), { unreceivedOpen: true })
+  it('開くと地点名が出る', async () => {
+    await renderTab(makeQuake(MIXED), { unreceivedOpen: true })
     expect(screen.getByText(`${UNRECEIVED_STATION}＊`)).toBeTruthy()
     // 県で区切る（どこの話かは見出しが示す）。
     expect(screen.getAllByText(PREF).length).toBeGreaterThan(0)
@@ -101,16 +106,16 @@ describe('未入電トグル', () => {
 
   // 対照: 閉じているあいだは地点名を出さない。件数はボタンに出したままにする
   // （押さなくても「震度が届いていない地点がある」ことは分かる）。
-  it('閉じているあいだは地点名を出さず、件数だけ見せる', () => {
-    renderTab(makeQuake(MIXED))
+  it('閉じているあいだは地点名を出さず、件数だけ見せる', async () => {
+    await renderTab(makeQuake(MIXED))
     expect(screen.queryByText(`${UNRECEIVED_STATION}＊`)).toBeNull()
     expect(screen.getByText('1地点')).toBeTruthy()
     expect(screen.getByText('震度を入手していない地点')).toBeTruthy()
   })
 
   // 正: 開いているあいだは震度一覧と差し替える（同じ場所に 2 つ並べない）。
-  it('開いているあいだは震度一覧を出さない', () => {
-    const { rerender } = renderTab(makeQuake(MIXED))
+  it('開いているあいだは震度一覧を出さない', async () => {
+    const { rerender } = await renderTab(makeQuake(MIXED))
     // 閉じているときは県の行（震度一覧の最上段）が出ている。
     expect(screen.getByText('震度4')).toBeTruthy()
 
@@ -148,33 +153,33 @@ describe('未入電トグル', () => {
   })
 
   // 安全弁: 未入電が 1 件も無い電文ではボタンを出さない（押しても何も出ないボタンを作らない）。
-  it('未入電が無ければボタンを出さない', () => {
+  it('未入電が無ければボタンを出さない', async () => {
     const observedOnly: EarthquakePoint[] = [
       { pref: PREF, addr: PREF, isArea: true, scale: 40 },
       { pref: '', addr: AREA, isArea: true, scale: 40 },
       station(),
     ]
-    renderTab(makeQuake(observedOnly))
+    await renderTab(makeQuake(observedOnly))
     expect(screen.queryByText(/^震度を入手していない/)).toBeNull()
   })
 
   // 安全弁: 続報で未入電が 1 件も無くなったら、トグルが開いていても震度一覧へ戻る
   // （地図側の後始末は App が `closeUnreceivedOverlay` で行う）。
-  it('未入電が無くなったら開いていても震度一覧へ戻る', () => {
+  it('未入電が無くなったら開いていても震度一覧へ戻る', async () => {
     const allObserved: EarthquakePoint[] = [
       { pref: PREF, addr: PREF, isArea: true, scale: 40 },
       { pref: '', addr: AREA, isArea: true, scale: 40 },
       station(),
       station({ addr: UNRECEIVED_STATION, scale: 40, nonJma: true }),
     ]
-    renderTab(makeQuake(allObserved), { unreceivedOpen: true })
+    await renderTab(makeQuake(allObserved), { unreceivedOpen: true })
     expect(screen.queryByText(/^震度を入手していない/)).toBeNull()
     expect(screen.getByText('震度4')).toBeTruthy()
   })
 
   // 安全弁: 単位は中身に合わせる。区域しか持たない電文（震度速報）では「地域」になる。
-  it('区域だけの電文では単位が「地域」になる', () => {
-    renderTab(makeQuake([
+  it('区域だけの電文では単位が「地域」になる', async () => {
+    await renderTab(makeQuake([
       { pref: PREF, addr: PREF, isArea: true, scale: 45 },
       { pref: '', addr: AREA, isArea: true, scale: 45, unreceived: true },
     ]))
