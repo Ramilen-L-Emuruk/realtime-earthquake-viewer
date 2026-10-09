@@ -140,6 +140,7 @@ function sensor(lastPacketMs: number | null, lastSkipReason: string | null = nul
     lastPacketMs,
     lastIntensity: 0.45,
     lastSkipReason,
+    axisCount: 3,
     enabled: true,
     calibrationConfigured: true,
     station: { displayName: '自宅' },
@@ -213,6 +214,38 @@ describe('sensorRowHtml', () => {
     // センサー側の `lastSkipReason` も観測点と同じ意味（軸数が違う・流し込みを作れない）。
     // **パケットは届くのに震度が出ない**状態が何日続いてもここが唯一の手掛かりになる。
     expect(sensorRowHtml(NOW, sensor(NOW - 1000, 'axis-mismatch'))).toContain('<td class="stale-value">0.45</td>')
+  })
+
+  it('正: 2 軸のセンサーは震度の欄に「2 軸」を灰色で出す（震度を出さないのが正しい状態）', () => {
+    const html = sensorRowHtml(NOW, { ...sensor(NOW - 1000, 'axis-count'), axisCount: 2, lastIntensity: null })
+    expect(html).toContain('<td class="muted">2 軸</td>')
+    expect(html).not.toContain('stale-value')
+  })
+
+  it('対照: 3 軸で軸の本数を理由に震度が出ていなければ、異常として赤くする', () => {
+    const html = sensorRowHtml(NOW, { ...sensor(NOW - 1000, 'axis-count'), axisCount: 3 })
+    expect(html).not.toContain('2 軸')
+    expect(html).toContain('<td class="stale-value">0.45</td>')
+  })
+
+  it('対照: 2 軸でも、出せない理由が軸の本数以外なら赤くする（本物の異常を灰色で隠さない）', () => {
+    const html = sensorRowHtml(NOW, { ...sensor(NOW - 1000, 'axis-mismatch'), axisCount: 2 })
+    expect(html).not.toContain('2 軸')
+    expect(html).toContain('stale-value')
+  })
+
+  it('正: 軸の本数が設定と違えば、校正の欄に理由を赤で出し、震度は赤い「—」にする', () => {
+    const html = sensorRowHtml(NOW, { ...sensor(NOW - 1000), axisMismatch: { configuredAxes: 3, receivedAxes: 2 } })
+    expect(html).toContain('<td class="stale-value">軸の本数が違う（設定 3 本・届いたのは 2 本）</td>')
+    expect(html).toContain('<td class="stale-value">—</td>')
+    expect(html).not.toContain('設定あり')
+  })
+
+  it('安全弁: 食い違いの欄が崩れていれば（版の違うホスト）、食い違っていないと読む', () => {
+    const broken = { ...sensor(NOW - 1000), axisMismatch: { configuredAxes: '3', receivedAxes: 2 } } as unknown as ReturnType<typeof sensor>
+    const html = sensorRowHtml(NOW, broken)
+    expect(html).toContain('<td>設定あり</td>')
+    expect(html).not.toContain('軸の本数が違う')
   })
 
   it('安全弁: 設定そのものの欄（有効・校正）は古くならないので赤くしない', () => {

@@ -39,13 +39,7 @@ export interface WaveChunkView {
    */
   readonly streamKey: string | null
   readonly segmentId: number | null
-  /**
-   * 先頭サンプルの時刻。
-   *
-   * **基板が名乗る軸の名前（`channels`）は受け取らない。** 校正の回転を通した後の値は
-   * 共通座標（ENU）で、センサーが名乗る軸名はもう当てはまらない —— 持っていても
-   * 表示に使えないので、使わないものを運ばない。
-   */
+  /** 先頭サンプルの時刻。 */
   readonly firstSampleMs: number
   readonly msPerSample: number
   /** 時刻の当てはめを公称値へ倒したなら理由。当てはめた値を使っていれば null。 */
@@ -61,8 +55,25 @@ export interface WaveChunkView {
    * **`0` で埋めない。** 差分の 0 は「2 台がぴったり一致した」を意味してしまう。
    * 畳み込み（`readWindow`）は `NaN` を飛ばし、**その先の列へ切れ目の印を立てる**
    * ——飛ばして詰めると、そこだけ時間が縮んだ絵になる。
+   *
+   * **本数は 2 通り。** 東・北・上の 3 本（`directions` が null）か、センサーの軸の本数ぶん
+   * （`directions` が非 null。2 軸のセンサーで、地面の 3 成分を解けない）。
    */
-  readonly gal: readonly [readonly number[], readonly number[], readonly number[]]
+  readonly gal: readonly (readonly number[])[]
+  /**
+   * 軸ごとの、地面（東・北・上）で見た測る向き（長さ 1）。**`gal` が東・北・上なら null。**
+   *
+   * **null のときだけ X・Y・Z の段へ描く。** 向きが東・北・上に揃っていない値を同じ段へ
+   * 重ねると、斜めに測った値を東や北の値として読ませることになる。
+   */
+  readonly directions: readonly (readonly [number, number, number])[] | null
+  /**
+   * 軸の名前（基板が名乗る `channels`）。`directions` と同じときだけ非 null で、並びも同じ。
+   *
+   * **東・北・上の値には持たせない。** 校正の回転を通した後の値は共通座標で、センサーが
+   * 名乗る軸名はもう当てはまらない。
+   */
+  readonly axisNames: readonly string[] | null
   /**
    * そのサンプルへ実際に効いたセンサーの本数（観測点の合成だけ）。
    * センサー単独では null。
@@ -182,7 +193,8 @@ interface StoredChunk {
   readonly startMs: number
   readonly msPerSample: number
   readonly count: number
-  readonly gal: readonly [Float32Array, Float32Array, Float32Array]
+  /** 軸ごとの値。本数は溜め場所の `axisCount`。 */
+  readonly gal: readonly Float32Array[]
   /** 前のチャンクと繋がっていない。 */
   readonly gapBefore: boolean
   readonly timebaseNominal: boolean
@@ -207,6 +219,10 @@ export class WaveBuffer {
   private droppedByCount = 0
   private lastMemberMin: number | null = null
   private lastMemberMax: number | null = null
+  /** 溜めている値の本数。**まだ何も溜めていなければ 0。** */
+  private axes = 0
+  private lastDirections: readonly (readonly [number, number, number])[] | null = null
+  private lastAxisNames: readonly string[] | null = null
 
   constructor(source: WaveSourceKey, options: { retainMs?: number; maxChunks?: number } = {}) {
     this.source = source
@@ -256,11 +272,45 @@ export class WaveBuffer {
     return { min: this.lastMemberMin, max: this.lastMemberMax }
   }
 
+  /**
+   * 最後に届いたまとまりの、軸ごとの測る向き。**東・北・上の値なら null**（`WaveChunkView.directions`）。
+   * まだ何も届いていなければ null。
+   */
+  get directions(): readonly (readonly [number, number, number])[] | null {
+    return this.lastDirections
+  }
+
+  /** 最後に届いたまとまりの軸の名前。`directions` と同じときだけ非 null。 */
+  get axisNames(): readonly string[] | null {
+    return this.lastAxisNames
+  }
+
   push(chunk: WaveChunkView): void {
-    // **3 軸のうちいちばん短いものに合わせる。** 欄の長さが揃っていない値が来たとき、
+    // **いちばん短い本に合わせる。** 欄の長さが揃っていない値が来たとき、
     // 長いほうに合わせると無い所を読むことになる。
-    const length = Math.min(chunk.gal[0].length, chunk.gal[1].length, chunk.gal[2].length)
+    if (chunk.gal.length === 0) return
+    let length = Infinity
+    for (const column of chunk.gal) length = Math.min(length, column.length)
     if (length === 0) return
+
+    // **値の形（本数・東北上かどうか・測る向き）が変わったら、溜めていたものを捨てて積み直す。**
+    // 本数の違うまとまりを 1 本の溜め場所へ並べると、切り出しが軸を取り違える。同じ名前の
+    // センサーを別の種類へ挿し替えたときにしか起きない。**測る向きが変わったとき**（設定の
+    // 書き換え）も捨てる —— 残すと、前の向きで測った値が新しい向きの凡例の下に描かれる。
+    const ground = chunk.directions === null
+    let reshaped = false
+    if (
+      this.count > 0 &&
+      (chunk.gal.length !== this.axes ||
+        ground !== (this.lastDirections === null) ||
+        !sameDirections(chunk.directions, this.lastDirections))
+    ) {
+      this.clear()
+      reshaped = true
+    }
+    this.axes = chunk.gal.length
+    this.lastDirections = chunk.directions
+    this.lastAxisNames = chunk.axisNames
 
     const previous = this.last()
     // **時刻が巻き戻ったら、持っているものを捨てて積み直す。** 並びが時刻順である
@@ -277,15 +327,11 @@ export class WaveBuffer {
       startMs: chunk.firstSampleMs,
       msPerSample: chunk.msPerSample,
       count: length,
-      gal: [
-        Float32Array.from(chunk.gal[0].slice(0, length)),
-        Float32Array.from(chunk.gal[1].slice(0, length)),
-        Float32Array.from(chunk.gal[2].slice(0, length)),
-      ],
+      gal: chunk.gal.map((column) => Float32Array.from(column.slice(0, length))),
       // **捨てた直後の 1 つは切れ目にする。** `isGap` は手前のチャンクと比べるが、
       // 捨てた後は比べる相手が無く必ず「続き」と答える —— **5 分ぶんが消えたのに
       // 「普通に波形が始まった」としか見えない**（レビューが 2 本とも指した形）。
-      gapBefore: rewound || this.isGap(chunk),
+      gapBefore: rewound || reshaped || this.isGap(chunk),
       timebaseNominal: chunk.timebaseNominalReason !== null,
       streamKey: chunk.streamKey,
       segmentId: chunk.segmentId,
@@ -332,30 +378,31 @@ export class WaveBuffer {
    * ここで上下の両端を採る（`WaveColumn` 参照）。
    */
   readWindow(fromMs: number, toMs: number, columnCount: number): WaveWindow {
+    // **本数は溜めている値の本数。** まだ何も溜めていなければ東・北・上の 3 本ぶんの空を返す
+    // （受け手がどちらの段でも空として扱えるように）。
+    const axisCount = this.axes === 0 ? 3 : this.axes
     const empty: WaveWindow = {
-      axes: [[], [], []],
+      axes: Array.from({ length: axisCount }, () => []),
       timebaseNominal: false,
-      stats: [null, null, null],
+      stats: new Array<WaveAxisStats | null>(axisCount).fill(null),
     }
     if (columnCount <= 0 || !(toMs > fromMs)) return empty
 
     const span = toMs - fromMs
-    const axes: (WaveColumn | null)[][] = [
+    const axes: (WaveColumn | null)[][] = Array.from({ length: axisCount }, () =>
       new Array<WaveColumn | null>(columnCount).fill(null),
-      new Array<WaveColumn | null>(columnCount).fill(null),
-      new Array<WaveColumn | null>(columnCount).fill(null),
-    ]
+    )
     let nominal = false
     // **軸ごとに「直前のサンプルが欠けていたか」を覚える。** 欠けを飛ばすだけだと
     // 前後が線で繋がり、**欠測を分けて持った意味が描画で消える**（`gal` の説明を
     // 見ること）。次に値があったサンプルの列へ切れ目の印を立てる。
-    const missing = [false, false, false]
+    const missing = new Array<boolean>(axisCount).fill(false)
     // 軸ごとの合計・件数・上下。**平均からの最大の隔たりは、全体の上下と平均から
     // 正確に出せる**（どちらか遠いほうを採る）ので、走査は 1 度で済む。
-    const sum = [0, 0, 0]
-    const counts = [0, 0, 0]
-    const lowest = [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY]
-    const highest = [Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY]
+    const sum = new Array<number>(axisCount).fill(0)
+    const counts = new Array<number>(axisCount).fill(0)
+    const lowest = new Array<number>(axisCount).fill(Number.POSITIVE_INFINITY)
+    const highest = new Array<number>(axisCount).fill(Number.NEGATIVE_INFINITY)
 
     for (let n = 0; n < this.count; n++) {
       const chunk = this.chunks[(this.head + n) % this.capacity]
@@ -377,8 +424,8 @@ export class WaveBuffer {
         // 広げると、同じ列に入った後続のサンプルが印を消してしまう。
         const gapBefore = chunk.gapBefore && i === 0
 
-        for (let axis = 0; axis < 3; axis++) {
-          const value = chunk.gal[axis][i]
+        for (let axis = 0; axis < axisCount; axis++) {
+          const value = chunk.gal[axis]![i]!
           // **値が無いサンプルは、切れ目の借りを作って飛ばす。** `Math.min`/`Math.max`
           // へ `NaN` を渡すと列ごと `NaN` に化け、平均も隔たりも壊れる。
           if (Number.isNaN(value)) {
@@ -454,6 +501,7 @@ export class WaveBuffer {
     this.chunks.fill(null)
     this.head = 0
     this.count = 0
+    // `axes`・向き・名前は戻さない —— 呼んだ側（`push`）が直後に今のまとまりの形で書き直す。
   }
 }
 
@@ -593,4 +641,14 @@ export function keyOf(key: WaveSourceKey): string {
     return `d:${key.stationId.length}:${key.stationId}${first}${second}`
   }
   return `s:${key.boardKey.length}:${key.boardKey}${key.sensorId}`
+}
+
+/** 測る向きが同じか。**どちらも東・北・上（null）なら同じ。** 同じ計算から来るので完全一致で見る。 */
+function sameDirections(
+  a: readonly (readonly [number, number, number])[] | null,
+  b: readonly (readonly [number, number, number])[] | null,
+): boolean {
+  if (a === null || b === null) return a === b
+  if (a.length !== b.length) return false
+  return a.every((d, j) => d[0] === b[j]![0] && d[1] === b[j]![1] && d[2] === b[j]![2])
 }

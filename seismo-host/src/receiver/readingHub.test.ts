@@ -41,7 +41,12 @@ function wave(overrides: Partial<WaveChunk> = {}): WaveChunk {
     firstSampleMs: 1_700_000_000_000,
     msPerSample: 10,
     timebaseNominalReason: null,
-    gal: [[1], [2], [3]],
+    ground: [[1], [2], [3]],
+    axes: [
+      { direction: [1, 0, 0], gal: [1] },
+      { direction: [0, 1, 0], gal: [2] },
+      { direction: [0, 0, 1], gal: [3] },
+    ],
     ...overrides,
   }
 }

@@ -29,6 +29,10 @@ export interface SensorFitWindows {
  * **崩れた要素だけ落として続けない。** センサーや窓を黙って落とすと、画面は「まだ揃って
  * いない面がある」と出るだけで、取得そのものが壊れていることと見分けが付かない
  * （ホストとこの画面で形がずれた日に、静止窓が無いのと同じ見た目になる）。
+ *
+ * **2 軸のセンサーの窓（`meanGal` が 2 本）は崩れた形ではないので、そのセンサーごと飛ばす。**
+ * センサーカードの 6 面法と「鉛直を合わせる」は 3 軸のセンサーの窓だけを使う（2 軸は 1 個では
+ * 解けない）。応答ごと捨てると、2 軸のセンサーを 1 個足しただけで 3 軸のセンサーの 6 面法まで止まる。
  */
 export function parseRestWindowsBody(body: unknown): readonly SensorFitWindows[] | null {
   if (typeof body !== 'object' || body === null) return null
@@ -49,14 +53,25 @@ export function parseRestWindowsBody(body: unknown): readonly SensorFitWindows[]
     if (boardKey === null || sensorId === null || !Array.isArray(rawWindows)) return null
     if (rawStill !== null && rawStill !== undefined && stillSinceMs === null) return null
     const windows: TimedFitWindow[] = []
+    let twoAxis = false
     for (const w of rawWindows) {
       if (typeof w !== 'object' || w === null) return null
-      const meanGal = readVec3((w as { meanGal?: unknown }).meanGal)
+      const rawMean = (w as { meanGal?: unknown }).meanGal
       const sampleCount = readFinite((w as { sampleCount?: unknown }).sampleCount)
       const atMs = readFinite((w as { atMs?: unknown }).atMs)
-      if (meanGal === null || sampleCount === null || sampleCount <= 0 || atMs === null) return null
+      if (sampleCount === null || sampleCount <= 0 || atMs === null) return null
+      if (Array.isArray(rawMean) && rawMean.length === 2) {
+        if (readFinite(rawMean[0]) === null || readFinite(rawMean[1]) === null) return null
+        twoAxis = true
+        continue
+      }
+      const meanGal = readVec3(rawMean)
+      if (meanGal === null) return null
       windows.push({ meanGal, sampleCount, atMs })
     }
+    // **本数の混ざったセンサーは崩れた応答。** ホストは本数が変わると覚えた窓を捨てる（`gravityCheck.ts`）。
+    if (twoAxis && windows.length > 0) return null
+    if (twoAxis) continue
     out.push({ boardKey, sensorId, stillSinceMs, windows })
   }
   return out

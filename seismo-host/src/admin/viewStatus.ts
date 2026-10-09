@@ -37,6 +37,13 @@ interface StatusReportView {
     readonly lastIntensity: number | null
     /** 震度そのものを出せない理由。出せているなら null（#373 で読むようになった）。 */
     readonly lastSkipReason: string | null
+    /** 最後に受け取ったパケットの軸の本数。まだ受け取っていなければ null。 */
+    readonly axisCount: number | null
+    /**
+     * 設定の軸の本数と届いた本数が違い、値を捨てているならその 2 つ（`receiver/sensorHealth.ts`）。
+     * **版の古いホストには欄が無い**ので、無ければ食い違っていないと読む。
+     */
+    readonly axisMismatch?: { readonly configuredAxes: number; readonly receivedAxes: number } | null
     readonly enabled: boolean
     readonly calibrationConfigured: boolean
     readonly station: { readonly displayName: string } | null
@@ -306,15 +313,49 @@ function isIntensityStale(nowMs: number, atMs: number | null, skipReason: unknow
  * 途絶しても赤くしない（`receiver/statusReport.ts` が毎回いまの設定から引き直す）。
  */
 export function sensorRowHtml(nowMs: number, s: SensorView): string {
+  const mismatch = readAxisMismatch(s.axisMismatch)
   return `
           <tr>
             <td>${escapeHtml(s.station?.displayName ?? '未割当')}</td>
             <td>${escapeHtml(s.boardKey)} / ${escapeHtml(s.sensorId)}</td>
             <td>${receptionBadgeHtml(nowMs, s.lastPacketMs)} ${ago(nowMs, s.lastPacketMs)}</td>
-            <td${staleAttr(isIntensityStale(nowMs, s.lastPacketMs, s.lastSkipReason))}>${s.lastIntensity !== null ? s.lastIntensity.toFixed(2) : '—'}</td>
+            ${sensorIntensityCellHtml(nowMs, s, mismatch !== null)}
             <td>${s.enabled ? '有効' : '無効'}</td>
-            <td>${s.calibrationConfigured ? '設定あり' : '既定値のまま'}</td>
+            ${
+              mismatch !== null
+                ? `<td${STALE_ATTR}>軸の本数が違う（設定 ${mismatch.configuredAxes} 本・届いたのは ${mismatch.receivedAxes} 本）</td>`
+                : `<td>${s.calibrationConfigured ? '設定あり' : '既定値のまま'}</td>`
+            }
           </tr>`
+}
+
+/**
+ * センサーの震度の欄。
+ *
+ * - **軸の本数が設定と食い違って値を捨てている**なら赤い「—」（何も出していない。2026-10-09 ユーザー承認）
+ * - **2 軸のセンサー**は「2 軸」を灰色で（震度を出さないのが正しい状態で、異常ではない。同日承認）。
+ *   見分けは「軸が 2 本で、出せない理由が軸の本数（`axis-count`）」—— 理由が別なら本物の異常なので赤くする
+ * - それ以外は値（古ければ赤）
+ */
+function sensorIntensityCellHtml(nowMs: number, s: SensorView, mismatched: boolean): string {
+  if (mismatched) return `<td${STALE_ATTR}>—</td>`
+  if (s.axisCount === 2 && s.lastSkipReason === 'axis-count') return '<td class="muted">2 軸</td>'
+  return `<td${staleAttr(isIntensityStale(nowMs, s.lastPacketMs, s.lastSkipReason))}>${
+    s.lastIntensity !== null ? s.lastIntensity.toFixed(2) : '—'
+  }</td>`
+}
+
+/**
+ * `/status` の `axisMismatch` を読む。**数として読めなければ食い違っていないと読む**
+ * （`/status` は無検証で読んでいるので、欄が無い・形が違う版のホストでも行を壊さない）。
+ */
+function readAxisMismatch(value: unknown): { configuredAxes: number; receivedAxes: number } | null {
+  if (typeof value !== 'object' || value === null) return null
+  const v = value as Record<string, unknown>
+  const configuredAxes = v.configuredAxes
+  const receivedAxes = v.receivedAxes
+  if (!Number.isInteger(configuredAxes) || !Number.isInteger(receivedAxes)) return null
+  return { configuredAxes: configuredAxes as number, receivedAxes: receivedAxes as number }
 }
 
 /**

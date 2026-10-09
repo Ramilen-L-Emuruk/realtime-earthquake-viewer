@@ -76,6 +76,8 @@ function pairChunk(overrides: Partial<WaveChunkView> = {}): WaveChunkView {
     timebaseNominalReason: null,
     gal: [axis, axis, axis],
     memberCount: null,
+    directions: null,
+    axisNames: null,
     ...overrides,
   }
 }
@@ -101,6 +103,8 @@ function stationChunk(overrides: Partial<WaveChunkView> = {}): WaveChunkView {
     timebaseNominalReason: null,
     gal: [axis, axis, axis],
     memberCount: Array.from({ length: 30 }, () => 9),
+    directions: null,
+    axisNames: null,
     ...overrides,
   }
 }
@@ -117,6 +121,8 @@ function chunk(overrides: ChunkOverrides = {}): WaveChunkView {
     timebaseNominalReason: null,
     gal: [axis, axis, axis],
     memberCount: null,
+    directions: null,
+    axisNames: null,
     ...rest,
   }
 }
@@ -339,6 +345,41 @@ describe('initWavesView', () => {
     // 枠と中心線だけでなく、波形の線が引かれている。
     expect(context?.calls.filter((c) => c.startsWith('lineTo')).length ?? 0).toBeGreaterThan(3)
     expect(context?.calls).toContain('clearRect(4)')
+  })
+
+  it('正: 2 軸のセンサーは自分の段に、測る向きの凡例つきで描く（2026-10-09 ユーザー承認の形）', async () => {
+    const container = await mount()
+    const axis = Array.from({ length: 30 }, (_, i) => Math.sin(i) * 2)
+    captured?.onWave?.(
+      chunk({ gal: [axis, axis], directions: [[0.866, 0.5, 0], [-0.5, 0.866, 0]], axisNames: ['HN1', 'HN2'] }),
+    )
+    await letItDraw()
+
+    const own = container.querySelectorAll('.wave-own')
+    expect(own).toHaveLength(1)
+    expect(own[0]?.querySelector('h3')?.textContent).toContain('（2 軸・測る向きのまま）')
+    const legend = own[0]?.querySelector('.wave-own-legend')?.textContent ?? ''
+    expect(legend).toContain('HN1 の向き: 東 +0.87・北 +0.50・上 0.00')
+    expect(legend).toContain('HN2 の向き: 東 -0.50・北 +0.87・上 0.00')
+    expect(own[0]?.querySelector('.wave-own-range')?.textContent).toMatch(/^±.+ gal$/)
+  })
+
+  it('対照: 3 軸（東・北・上）のセンサーだけなら、2 軸の段は出さない', async () => {
+    const container = await mount()
+    captured?.onWave?.(chunk())
+    await letItDraw()
+    expect(container.querySelectorAll('.wave-own')).toHaveLength(0)
+  })
+
+  it('安全弁: 基板が名乗る軸の名前は HTML として解釈しない', async () => {
+    const container = await mount()
+    const axis = Array.from({ length: 30 }, () => 1)
+    captured?.onWave?.(
+      chunk({ gal: [axis, axis], directions: [[1, 0, 0], [0, 1, 0]], axisNames: ['<img src=x>', 'HN2'] }),
+    )
+    await letItDraw()
+    expect(container.querySelector('.wave-own-legend img')).toBeNull()
+    expect(container.querySelector('.wave-own-legend')?.textContent).toContain('<img src=x> の向き')
   })
 
   it('溜まりが窓より短くても、最新を右端に置く（安全弁）', async () => {

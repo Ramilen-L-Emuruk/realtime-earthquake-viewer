@@ -44,6 +44,7 @@ import { describeFailure, normalizeBoardKey, parseStationConfig } from './statio
 import type { StationConfig } from './stationConfig'
 import type { StatusReport } from './statusReport'
 import type { ArchivedWaveChunk, WaveRangeResult } from './waveArchive'
+import type { WaveChunk } from './intensityPipeline'
 import { buildWaveEnvelope } from './waveEnvelope'
 import { EVENT_PAGE_LIMIT_MAX } from '../detection/shakeEventStore'
 import type { EventRangeParams, EventRangeResult } from '../detection/shakeEventStore'
@@ -600,6 +601,24 @@ export interface StatusServer {
   close(): Promise<void>
 }
 
+/**
+ * センサー単独の波形 1 まとまりを押し出す形にする。
+ *
+ * **地面の 3 成分（`ground`）を解けるセンサーは `gal` に 3 成分だけを載せ、軸ごとの値は送らない。**
+ * 3 軸なら同じ情報なので、両方送ると通信量が倍になる。**解けない（2 軸の）センサーは `gal` を
+ * `null` にし、軸ごとの値（`axes`: 地面で見た測る向きとその向きの gal）を載せる。** 管理コンソールは
+ * どちらが来たかで、X・Y・Z の段へ描くか、測る向きのまま別の段へ描くかを決める。
+ *
+ * **区間の位置（`firstSampleIndex`）と軸の名前（`channels`）も載せる。** `axes` の並びは
+ * `channels` と同じ。
+ */
+function toWireSensorWave(wave: WaveChunk): Record<string, unknown> {
+  const { ground, axes, ...rest } = wave
+  return ground !== null
+    ? { ...rest, gal: ground }
+    : { ...rest, gal: null, axes: axes.map((a) => ({ direction: a.direction, gal: a.gal })) }
+}
+
 /** SSE の 1 件。 */
 function sseEvent(name: string, data: unknown): string {
   return `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`
@@ -619,7 +638,7 @@ function encode(message: HubMessage): string {
     case 'reading':
       return sseEvent('reading', message.reading)
     case 'wave':
-      return sseEvent('wave', message.wave)
+      return sseEvent('wave', toWireSensorWave(message.wave))
     case 'station-reading':
       return sseEvent('station-reading', message.reading)
     case 'station-wave':

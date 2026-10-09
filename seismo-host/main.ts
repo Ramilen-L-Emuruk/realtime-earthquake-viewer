@@ -1479,6 +1479,7 @@ const GRAVITY_LABELS: Record<GravityCount, string> = {
   restlessWindows: '静止しているのに震度が高い窓',
   unjudged: '静止しておらず倍率を診られなかった窓',
   restarts: '基板の起動が変わり、診断の窓を捨てた',
+  axisReshapes: 'センサーの軸の本数が変わり、覚えた静止窓を捨てた',
   evictions: '自己診断の枠を捨てた',
 }
 
@@ -2278,6 +2279,8 @@ async function main(): Promise<void> {
       })
       boardClocks.note(board, receivedAtMs, read.packet)
       const outcome = pipeline.handlePacket(read.packet)
+      // **毎回書く**（食い違っていない回は null で消す）。設定を直せば次のパケットで消える。
+      health.noteAxisMismatch({ boardKey: board, sensorId: read.packet.sensorId, mismatch: outcome.axisMismatch })
 
       // **波形は震度より先に押し出す。** 震度は刻み（1 秒）の位置まで届いた回にしか出ない
       // ので、順を入れ替えると受け手の画面で波形だけが遅れて見える。
@@ -2371,7 +2374,7 @@ async function main(): Promise<void> {
           boardKey: outcome.wave.boardKey,
           sensorId: outcome.wave.sensorId,
           streamKey: outcome.wave.streamKey,
-          gal: outcome.wave.gal,
+          gal: outcome.wave.ground,
           uncalibratedGal: outcome.uncalibratedGal,
         })
         if (verdict !== null) {

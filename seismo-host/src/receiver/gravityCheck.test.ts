@@ -811,3 +811,77 @@ describe('静止窓の覚え（6 面法の材料）', () => {
     expect(ws[ws.length - 1]!.meanGal[0]).toBeCloseTo(198, 9)
   })
 })
+
+describe('2 軸のセンサー（地面の 3 成分を解けない）', () => {
+  const ID = { boardKey: BOARD, sensorId: 'iis', streamKey: 'mac:aa|iis|boot1' }
+
+  /** 2 本の軸に一定値（`swing` があれば 1 本目を ±swing で揺らす）。 */
+  function twoAxis(n: number, v: readonly [number, number], swing = 0): readonly (readonly number[])[] {
+    const a: number[] = []
+    const b: number[] = []
+    for (let i = 0; i < n; i++) {
+      a.push(v[0] + (i % 2 === 0 ? swing : -swing))
+      b.push(v[1])
+    }
+    return [a, b]
+  }
+
+  function note2(b: GravityCheckBook, raw: readonly (readonly number[])[]): GravityVerdict | null {
+    return b.noteWave({ ...ID, gal: null, uncalibratedGal: raw })
+  }
+
+  function windowsOf(b: GravityCheckBook) {
+    return b.restWindows().find((s) => s.sensorId === ID.sensorId)?.windows ?? []
+  }
+
+  it('正: 静止して閉じた窓は 2 本の軸の平均とばらつきで覚え、倍率の判定は出さない', () => {
+    const { b, advance } = book()
+    expect(note2(b, twoAxis(300, [12, -980]))).toBeNull()
+    advance(30_000)
+    // 窓を閉じる引き金。**判定は出ない**（倍率の診断は地面の 3 成分が要る）。
+    expect(note2(b, twoAxis(300, [12, -980]))).toBeNull()
+
+    const ws = windowsOf(b)
+    expect(ws).toHaveLength(1)
+    expect(ws[0]!.meanGal).toHaveLength(2)
+    expect(ws[0]!.meanGal[0]).toBeCloseTo(12, 9)
+    expect(ws[0]!.meanGal[1]).toBeCloseTo(-980, 9)
+    expect(ws[0]!.sdGal).toHaveLength(2)
+    expect(ws[0]!.sampleCount).toBe(300)
+  })
+
+  it('対照: 2 軸でも、揺れていた窓は覚えない', () => {
+    const { b, advance } = book()
+    note2(b, twoAxis(300, [12, -980], 20))
+    advance(30_000)
+    note2(b, twoAxis(300, [12, -980]))
+    expect(windowsOf(b)).toEqual([])
+  })
+
+  it('安全弁: 同じセンサーの軸の本数が変わったら、覚えた窓を捨てる（混ぜると 6 面法が壊れる）', () => {
+    const { b, advance } = book()
+    const three = constGal(300, [0, 0, GAL_PER_G])
+    b.noteWave({ ...ID, gal: three, uncalibratedGal: three })
+    advance(30_000)
+    b.noteWave({ ...ID, gal: three, uncalibratedGal: three }) // 3 軸の窓が 1 つ閉じる
+    expect(windowsOf(b)).toHaveLength(1)
+
+    note2(b, twoAxis(300, [12, -980]))
+    expect(windowsOf(b)).toEqual([])
+    // **捨てたことを数える**（黙って 0 へ戻ると「まだ揃っていない」だけに見える）。
+    expect(b.snapshot().axisReshapes).toBe(1)
+    advance(30_000)
+    note2(b, twoAxis(300, [12, -980]))
+    const ws = windowsOf(b)
+    expect(ws).toHaveLength(1)
+    expect(ws[0]!.meanGal).toHaveLength(2)
+  })
+
+  it('対照: 覚えた静止窓が無いうちに本数が変わっても数えない（捨てた物が無い）', () => {
+    const { b } = book()
+    const three = constGal(300, [0, 0, GAL_PER_G])
+    b.noteWave({ ...ID, gal: three, uncalibratedGal: three })
+    note2(b, twoAxis(300, [12, -980]))
+    expect(b.snapshot().axisReshapes).toBe(0)
+  })
+})

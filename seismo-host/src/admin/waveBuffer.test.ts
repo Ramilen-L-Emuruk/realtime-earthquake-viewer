@@ -31,6 +31,8 @@ function chunk(overrides: ChunkOverrides = {}): WaveChunkView {
     timebaseNominalReason: null,
     gal: [axis, axis, axis],
     memberCount: null,
+    directions: null,
+    axisNames: null,
     ...rest,
   }
 }
@@ -48,6 +50,8 @@ function stationChunk(overrides: Partial<WaveChunkView> = {}): WaveChunkView {
     timebaseNominalReason: null,
     gal: [axis, axis, axis],
     memberCount: Array.from({ length: SAMPLES }, () => 9),
+    directions: null,
+    axisNames: null,
     ...overrides,
   }
 }
@@ -77,6 +81,8 @@ function pairChunk(overrides: Partial<WaveChunkView> = {}): WaveChunkView {
     timebaseNominalReason: null,
     gal: [axis, axis, axis],
     memberCount: null,
+    directions: null,
+    axisNames: null,
     ...overrides,
   }
 }
@@ -349,6 +355,81 @@ describe('WaveBuffer', () => {
     expect(b.range()).toBeNull()
   })
 
+})
+
+describe('WaveBuffer — 2 軸のセンサー（測る向きのまま）', () => {
+  const DIRECTIONS = [
+    [0.866, 0.5, 0],
+    [-0.5, 0.866, 0],
+  ] as const
+  const values = Array.from({ length: SAMPLES }, (_, i) => i)
+
+  function twoAxisChunk(overrides: ChunkOverrides = {}): WaveChunkView {
+    return chunk({ gal: [values, values.map((v) => 0 - v)], directions: DIRECTIONS, axisNames: ['HN1', 'HN2'], ...overrides })
+  }
+
+  it('正: 軸を 2 本のまま畳み、測る向きと軸の名前を持つ', () => {
+    const b = buffer()
+    b.push(twoAxisChunk())
+
+    const window = b.readWindow(0, 300, 3)
+    expect(window.axes).toHaveLength(2)
+    expect(window.stats).toHaveLength(2)
+    expect(window.axes[1][0]).toEqual({ minGal: -9, maxGal: 0, gapBefore: false })
+    expect(b.directions).toEqual(DIRECTIONS)
+    expect(b.axisNames).toEqual(['HN1', 'HN2'])
+  })
+
+  it('対照: 3 軸（東・北・上）なら測る向きは null', () => {
+    const b = buffer()
+    b.push(chunk())
+    expect(b.directions).toBeNull()
+    expect(b.readWindow(0, 300, 3).axes).toHaveLength(3)
+  })
+
+  it('安全弁: 同じセンサーの本数が変わったら溜めたものを捨て、次の 1 つを切れ目にする', () => {
+    // 本数の違うまとまりを 1 本の溜め場所へ並べると、切り出しが軸を取り違える。
+    const b = buffer()
+    b.push(chunk({ firstSampleMs: 0 }))
+    b.push(twoAxisChunk({ firstSampleMs: SAMPLES * MS_PER_SAMPLE }))
+
+    expect(b.chunkCount).toBe(1)
+    const window = b.readWindow(SAMPLES * MS_PER_SAMPLE, 2 * SAMPLES * MS_PER_SAMPLE, 1)
+    expect(window.axes).toHaveLength(2)
+    expect(window.axes[0][0]?.gapBefore).toBe(true)
+  })
+
+  it('安全弁: 本数が同じでも、東北上から測る向きへ変わったら捨てて積み直す', () => {
+    const b = buffer()
+    b.push(chunk({ gal: [values, values, values], firstSampleMs: 0 }))
+    b.push(chunk({ gal: [values, values, values], directions: [DIRECTIONS[0], DIRECTIONS[1], [0, 0, 1]], axisNames: ['a', 'b', 'c'], firstSampleMs: SAMPLES * MS_PER_SAMPLE }))
+    expect(b.chunkCount).toBe(1)
+    expect(b.directions).not.toBeNull()
+  })
+
+  it('安全弁: 本数が同じでも測る向きが変わったら（設定の書き換え）捨てて積み直す', () => {
+    // 残すと、前の向きで測った値が新しい向きの凡例の下に描かれる。
+    const b = buffer()
+    b.push(twoAxisChunk({ firstSampleMs: 0 }))
+    const turned = [
+      [0, 1, 0],
+      [-1, 0, 0],
+    ] as const
+    b.push(twoAxisChunk({ directions: turned, firstSampleMs: SAMPLES * MS_PER_SAMPLE }))
+    expect(b.chunkCount).toBe(1)
+    expect(b.directions).toEqual(turned)
+  })
+
+  it('対照: 測る向きが同じなら続けて積む', () => {
+    const b = buffer()
+    b.push(twoAxisChunk({ firstSampleMs: 0 }))
+    b.push(twoAxisChunk({ directions: DIRECTIONS.map((d) => [...d] as [number, number, number]), firstSampleMs: SAMPLES * MS_PER_SAMPLE }))
+    expect(b.chunkCount).toBe(2)
+  })
+
+  it('安全弁: 空の溜め場所の窓は 3 軸ぶんの空で返す（描き手が軸の数を前提にしている）', () => {
+    expect(buffer().readWindow(0, 300, 3).axes).toHaveLength(3)
+  })
 })
 
 describe('WaveStore', () => {

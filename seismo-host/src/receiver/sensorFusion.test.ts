@@ -75,8 +75,13 @@ function twoSensorConfig(
   ])
 }
 
+/**
+ * 3 軸のセンサーのまとまり。**軸ごとの値（`axes`）は地面の値（`ground`）と同じものを東・北・上の向きで持たせる**
+ * （基板もセンサーも向きをそのままにした形。合成が読むのは `ground` だけ）。
+ */
 function wave(over: Partial<WaveChunk> & { boardKey: BoardKey; sensorId: string }): WaveChunk {
-  const n = over.gal?.[0].length ?? 1
+  const n = over.ground?.[0].length ?? 1
+  const ground = over.ground ?? [new Array(n).fill(0), new Array(n).fill(0), new Array(n).fill(0)]
   return {
     streamKey: `${over.boardKey}|${over.sensorId}|boot1`,
     segmentId: 1,
@@ -85,8 +90,9 @@ function wave(over: Partial<WaveChunk> & { boardKey: BoardKey; sensorId: string 
     firstSampleMs: T0,
     msPerSample: STATION_GRID_MS,
     timebaseNominalReason: null,
-    gal: [new Array(n).fill(0), new Array(n).fill(0), new Array(n).fill(0)],
+    axes: IDENTITY.map((direction, j) => ({ direction, gal: ground[j] })),
     ...over,
+    ground,
   }
 }
 
@@ -102,7 +108,7 @@ function gridChunk(
   gal: [number[], number[], number[]],
   over: Partial<WaveChunk> = {},
 ): WaveChunk {
-  return wave({ boardKey, sensorId, firstSampleIndex: k, firstSampleMs: T0 + k * STATION_GRID_MS, gal, ...over })
+  return wave({ boardKey, sensorId, firstSampleIndex: k, firstSampleMs: T0 + k * STATION_GRID_MS, ground: gal, ...over })
 }
 
 /** 合成波形の値を、落とした直流を足し戻して読む（＝落とす前の「校正済み gal の重み付き平均」）。 */
@@ -128,7 +134,7 @@ function firstBreak(waves: readonly FusedWaveChunk[]): number | null {
  * **時計が飛ぶ形を作るテストは、受け取った時刻を明示して `fusion.ingest()` を呼ぶこと。**
  */
 function ingestNow(fusion: SensorFusion, w: WaveChunk): readonly FusionOutcome[] {
-  return fusion.ingest(w, w.firstSampleMs + (w.gal[0].length - 1) * w.msPerSample)
+  return fusion.ingest(w, w.firstSampleMs + (w.ground![0].length - 1) * w.msPerSample)
 }
 
 describe('SensorFusion.groupedStationIds', () => {
@@ -145,6 +151,41 @@ describe('SensorFusion.groupedStationIds', () => {
   it('安全弁: 割り当てが無い（空の設定）なら空配列', () => {
     const fusion = new SensorFusion({ stations: [], boards: [] })
     expect(fusion.groupedStationIds).toEqual([])
+  })
+
+  it('対照: 2 軸のセンサーは数えない（3 軸 1 台＋2 軸 1 台なら含まれない）', () => {
+    const config = twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 })
+    const twoAxisBoard = { ...config.boards[1], sensors: [{ ...config.boards[1].sensors[0], axes: defaultAxes(2) }] }
+    const fusion = new SensorFusion({ ...config, boards: [config.boards[0], twoAxisBoard] })
+    expect(fusion.groupedStationIds).toEqual([])
+  })
+
+  /** 3 軸 2 台（A・B）に 3 台目（C）を並べた観測点。`cAxes` が C の軸の本数。 */
+  function threeMemberConfig(cAxes: 2 | 3): StationConfig {
+    const config = stationConfig([
+      { boardKey: BOARD_A, sensorId: 'sensorA', noiseDensity: 10 },
+      { boardKey: BOARD_B, sensorId: 'sensorB', noiseDensity: 20 },
+      { boardKey: BOARD_C, sensorId: 'sensorC', noiseDensity: 10 },
+    ])
+    const c = { ...config.boards[2], sensors: [{ ...config.boards[2].sensors[0], axes: defaultAxes(cAxes) }] }
+    return { ...config, boards: [config.boards[0], config.boards[1], c] }
+  }
+
+  it('正: 3 軸 2 台に 2 軸 1 台が並んでも、3 軸の 2 台で組み、2 軸の台を待たない', () => {
+    // 待ちは既定のまま。顔ぶれに入っていれば、一度も届いていない台も最初の到着から
+    // `FUSION_LIVE_MS` は「生きている」と見なして待つ（`isLive`）。
+    const fusion = new SensorFusion(threeMemberConfig(2))
+    expect(fusion.groupedStationIds).toEqual(['home'])
+    expect(ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', 0, rows(30, 100)))).toEqual([])
+    const outs = ingestNow(fusion, gridChunk(BOARD_B, 'sensorB', 0, rows(30, 100)))
+    expect(outs.length).toBeGreaterThan(0)
+    expect(outs[0].fusedWave.memberCount.every((m) => m === 2)).toBe(true)
+  })
+
+  it('対照: 3 台目が 3 軸なら、A・B が届いても 3 台目を待つ', () => {
+    const fusion = new SensorFusion(threeMemberConfig(3))
+    ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', 0, rows(30, 100)))
+    expect(ingestNow(fusion, gridChunk(BOARD_B, 'sensorB', 0, rows(30, 100)))).toEqual([])
   })
 })
 
@@ -166,6 +207,20 @@ describe('SensorFusion.ingest — グループ化と対象外の扱い', () => {
     ingestNow(fusion, gridChunk(BOARD_B, 'sensorB', 0, rows(30, 50)))
     expect(ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', 0, rows(30, 100)))).toEqual([])
   })
+
+  it('安全弁: 地面の値を持たないまとまり（ground が null）は受け取らない', () => {
+    // 待ちを 0 にしているので、受け取っていればその場で 1 台ぶんの合成が出る（対照は次のテスト）。
+    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), NO_WAIT)
+    const chunk = { ...gridChunk(BOARD_A, 'sensorA', 0, rows(30, 100)), ground: null }
+    expect(fusion.ingest(chunk, T0 + 29 * STATION_GRID_MS)).toEqual([])
+    expect(fusion.closeAll().drained).toEqual([])
+  })
+
+  it('対照: 同じまとまりでも地面の値があれば、その場で合成が出る', () => {
+    const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), NO_WAIT)
+    const chunk = gridChunk(BOARD_A, 'sensorA', 0, rows(30, 100))
+    expect(fusion.ingest(chunk, T0 + 29 * STATION_GRID_MS).length).toBeGreaterThan(0)
+  })
 })
 
 describe('SensorFusion.ingest — 観測点の目盛り', () => {
@@ -177,10 +232,10 @@ describe('SensorFusion.ingest — 観測点の目盛り', () => {
     for (let c = 0; c < 6; c++) {
       outs.push(
         ...ingestNow(fusion, 
-          wave({ boardKey: BOARD_A, sensorId: 'sensorA', firstSampleMs: T0 + 7 + c * 31 * 9.9792, msPerSample: 9.9792, gal: rows(31, 1) }),
+          wave({ boardKey: BOARD_A, sensorId: 'sensorA', firstSampleMs: T0 + 7 + c * 31 * 9.9792, msPerSample: 9.9792, ground: rows(31, 1) }),
         ),
         ...ingestNow(fusion, 
-          wave({ boardKey: BOARD_B, sensorId: 'sensorB', firstSampleMs: T0 + 3 + c * 30 * 10.0178, msPerSample: 10.0178, gal: rows(30, 1) }),
+          wave({ boardKey: BOARD_B, sensorId: 'sensorB', firstSampleMs: T0 + 3 + c * 30 * 10.0178, msPerSample: 10.0178, ground: rows(30, 1) }),
         ),
       )
     }
@@ -302,7 +357,7 @@ describe('SensorFusion.ingest — 刻みの違う台を目盛りへ揃える（�
       g[1].push(-v)
       g[2].push(1000 + v)
     }
-    return wave({ boardKey, sensorId, firstSampleMs: firstMs, msPerSample: mps, gal: g })
+    return wave({ boardKey, sensorId, firstSampleMs: firstMs, msPerSample: mps, ground: g })
   }
 
   it('正: 104 Hz の台と 100 Hz の台が混ざっても、目盛りの時刻の値を引く', () => {
@@ -401,7 +456,7 @@ describe('SensorFusion.ingest — 待って顔ぶれを揃える（#362・#374�
         }
         events.push({
           at: firstSampleMs + WIDE_CHUNK * s.mps + s.lag,
-          wave: wave({ boardKey: s.boardKey, sensorId: s.sensorId, firstSampleIndex: k * WIDE_CHUNK, firstSampleMs, msPerSample: s.mps, gal: g }),
+          wave: wave({ boardKey: s.boardKey, sensorId: s.sensorId, firstSampleIndex: k * WIDE_CHUNK, firstSampleMs, msPerSample: s.mps, ground: g }),
         })
       }
     }

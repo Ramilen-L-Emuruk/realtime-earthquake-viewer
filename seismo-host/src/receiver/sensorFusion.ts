@@ -625,15 +625,19 @@ interface Group {
 }
 
 /**
- * 設定から観測点ごとのグループを作る。**`enabled` なセンサーだけを見る。**
+ * 設定から観測点ごとのグループを作る。**`enabled` な 3 軸のセンサーだけを見る。**
  *
  * 2 台に満たない観測点は組まない——合成する相手が居ない。
+ *
+ * **2 軸のセンサーはまだ顔ぶれに入れない**（合成は東・北・上を 1 台で解ける値しか混ぜない）。
+ * 入れると、一度も値を届けない台として「届くはずの台」に数えられ、観測点に最初に値が届いてから
+ * しばらくは、その台を待って合成が遅れる（`isLive`）。
  */
 function buildGroups(config: StationConfig): Group[] {
   const listByStation = new Map<string, { boardKey: BoardKey; sensorId: string; noiseDensity: number | null }[]>()
   for (const board of config.boards) {
     for (const sensor of board.sensors) {
-      if (!sensor.enabled) continue
+      if (!sensor.enabled || sensor.axes.length !== REQUIRED_AXES) continue
       const list = listByStation.get(board.stationId) ?? []
       list.push({ boardKey: board.boardKey, sensorId: sensor.sensorId, noiseDensity: sensor.noiseDensity })
       listByStation.set(board.stationId, list)
@@ -924,7 +928,11 @@ export class SensorFusion {
     const found = this.groupByMemberKey.get(memberKeyOf(wave.boardKey, wave.sensorId))
     if (found === undefined) return []
     const { group, member } = found
-    const n = wave.gal[0].length
+    // **地面の 3 成分を解けないまとまりは混ぜない**（2 軸のセンサーは顔ぶれに入れないので、
+    // ここへ来るのは設定と食い違った回だけ）。
+    const ground = wave.ground
+    if (ground === null) return []
+    const n = ground[0].length
     if (n === 0) return []
 
     // **直流はここで落とす。届いたサンプルは全部通す**（遅すぎて混ぜない分も）——
@@ -935,11 +943,11 @@ export class SensorFusion {
     const dcs: [number[], number[], number[]] = [new Array(n), new Array(n), new Array(n)]
     for (let i = 0; i < n; i++) {
       times[i] = wave.firstSampleMs + i * wave.msPerSample
-      const after = tracker.step(wave.gal[0][i], wave.gal[1][i], wave.gal[2][i])
+      const after = tracker.step(ground[0][i], ground[1][i], ground[2][i])
       for (let axis = 0; axis < REQUIRED_AXES; axis++) {
         values[axis][i] = after[axis]
         // 引いた直流は差で持つ——`tracker.dc` を別に読むと、次のサンプルで動いた後の値を拾う。
-        dcs[axis][i] = wave.gal[axis][i] - after[axis]
+        dcs[axis][i] = ground[axis][i] - after[axis]
       }
     }
 

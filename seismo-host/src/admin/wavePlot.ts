@@ -98,6 +98,25 @@ export function formatGal(gal: number | null): string {
   return gal.toFixed(2)
 }
 
+/**
+ * 軸の測る向き（地面で見た長さ 1 の向き）を `東 +0.87・北 +0.50・上 0.00` の形で。
+ *
+ * **成分をそのまま出す。** 方位角と傾きへ直すと、真上・真下を向いた軸で方位が定まらない
+ * （どの値を出しても嘘になる）。成分なら向きを問わず同じ形で読める。
+ *
+ * **小数第 2 位で丸め、丸めて 0 になる値には符号を付けない。** `-0.00` は「わずかに負」を
+ * 意味するように読めるが、その桁では区別が付いていない。
+ */
+export function formatDirection(direction: readonly [number, number, number]): string {
+  const part = (v: number): string => {
+    if (!Number.isFinite(v)) return '—'
+    const rounded = Math.round(v * 100) / 100
+    if (rounded === 0) return '0.00'
+    return `${rounded > 0 ? '+' : '-'}${Math.abs(rounded).toFixed(2)}`
+  }
+  return `東 ${part(direction[0])}・北 ${part(direction[1])}・上 ${part(direction[2])}`
+}
+
 /** 窓の長さから、時刻に小数を付けるかを決める。**1 秒あたり 1 目盛りより細かいなら付ける。** */
 export function needsTenths(spanMs: number): boolean {
   return spanMs < 10_000

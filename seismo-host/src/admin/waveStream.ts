@@ -151,22 +151,48 @@ export function readWaveChunk(value: unknown): WaveChunkView | null {
   // 窓の切り出しが 1 列へ潰れる。
   if (msPerSample <= 0) return null
 
-  if (!Array.isArray(v.gal) || v.gal.length !== 3) return null
-  const x = readFiniteArray(v.gal[0])
-  const y = readFiniteArray(v.gal[1])
-  const z = readFiniteArray(v.gal[2])
-  if (x === null || y === null || z === null) return null
-
-  return {
+  const common = {
     source: { kind: 'sensor', boardKey, sensorId },
     streamKey,
     segmentId,
     firstSampleMs,
     msPerSample,
     timebaseNominalReason: readNonEmptyString(v.timebaseNominalReason),
-    gal: [x, y, z],
     memberCount: null,
+  } as const
+
+  // **地面の 3 成分を解けるセンサーは `gal` に東・北・上の 3 本が来る**（`statusServer.ts` の
+  // `toWireSensorWave`）。
+  if (Array.isArray(v.gal)) {
+    if (v.gal.length !== 3) return null
+    const x = readFiniteArray(v.gal[0])
+    const y = readFiniteArray(v.gal[1])
+    const z = readFiniteArray(v.gal[2])
+    if (x === null || y === null || z === null) return null
+    return { ...common, gal: [x, y, z], directions: null, axisNames: null }
   }
+
+  // **解けない（2 軸の）センサーは `gal` が null で、軸ごとの値が `axes` に来る。** 軸の名前
+  // （`channels`）と本数が揃っていなければ通さない —— 凡例が別の軸の向きを名乗ることになる。
+  if (v.gal !== null || !Array.isArray(v.axes) || !Array.isArray(v.channels)) return null
+  // **2・3 本だけを通す**（ホストが軸ごとの値を作るのは校正の形を持つ本数だけ）。
+  if (v.axes.length < 2 || v.axes.length > 3 || v.axes.length !== v.channels.length) return null
+  const gal: (readonly number[])[] = []
+  const directions: [number, number, number][] = []
+  const axisNames: string[] = []
+  for (let j = 0; j < v.axes.length; j++) {
+    const rawAxis: unknown = v.axes[j]
+    if (typeof rawAxis !== 'object' || rawAxis === null) return null
+    const axis = rawAxis as Record<string, unknown>
+    const values = readFiniteArray(axis.gal)
+    const direction = readFiniteArray(axis.direction)
+    const name = readNonEmptyString(v.channels[j])
+    if (values === null || direction === null || direction.length !== 3 || name === null) return null
+    gal.push(values)
+    directions.push([direction[0]!, direction[1]!, direction[2]!])
+    axisNames.push(name)
+  }
+  return { ...common, gal, directions, axisNames }
 }
 
 /**
@@ -229,6 +255,8 @@ export function readStationWaveChunk(value: unknown): WaveChunkView | null {
     // 上で組んであるので、当てはめの状態に当たるものが無い。
     timebaseNominalReason: null,
     gal: [restored[0], restored[1], restored[2]],
+    directions: null,
+    axisNames: null,
     memberCount,
   }
 }
@@ -285,6 +313,8 @@ export function readPairDiffChunk(value: unknown): WaveChunkView | null {
     msPerSample,
     timebaseNominalReason: null,
     gal: [x, y, z],
+    directions: null,
+    axisNames: null,
     memberCount: null,
   }
 }

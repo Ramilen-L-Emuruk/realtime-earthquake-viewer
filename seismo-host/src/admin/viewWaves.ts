@@ -13,6 +13,11 @@
 // 上向き軸は 980 gal 付近が定常値（`WaveAxisStats` のコメント）。重ねて形を比べたい相手
 // どうしで定常値が違うため、**中心はセンサーごと・縦の幅は軸ごとに共通**にしている。
 //
+// **X・Y・Z の段へ描くのは東・北・上へ解けた波形だけ。** 2 軸のセンサーは 3 成分を解けず、
+// 軸の向きも東・北・上に揃っているとは限らない（基板の方角しだいで斜めを向く）。同じ段へ
+// 重ねると斜めに測った値を東や北の値として読ませるので、**センサーごとに段を足し、測る向きの
+// まま描く**（凡例に向きを成分で出す。2026-10-09 ユーザー承認）。
+//
 // **`boardKey`・`sensorId`・観測点名を HTML へ差し込むときは `escapeHtml` を通す。**
 // 前 2 つは無認証の UDP パケット由来、観測点名は運用者の自由入力（`viewStatus.ts` 冒頭が
 // 言う事情と同じ）。通し忘れると、トークンを持たない攻撃者が UDP パケット 1 個で
@@ -21,8 +26,16 @@
 import { ago, escapeHtml, qs, receptionBadgeHtml } from './dom'
 import { readFinite, readNonEmptyString } from './readJson'
 import { WaveStore, keyOf } from './waveBuffer'
-import type { WaveChunkView, WaveSourceKey, WaveWindow } from './waveBuffer'
-import { colorForIndex, formatClock, formatGal, needsTenths, niceHalfSpanGal, timeTicks } from './wavePlot'
+import type { WaveAxisStats, WaveBuffer, WaveChunkView, WaveColumn, WaveSourceKey, WaveWindow } from './waveBuffer'
+import {
+  colorForIndex,
+  formatClock,
+  formatDirection,
+  formatGal,
+  needsTenths,
+  niceHalfSpanGal,
+  timeTicks,
+} from './wavePlot'
 import { openWaveStream } from './waveStream'
 import type { PairSelection, WaveStreamState } from './waveStream'
 
@@ -71,6 +84,14 @@ const TIME_AXIS_HEIGHT = 16
 
 /** 端からこれより内側なら、時刻の目盛りを中央揃えで置く（外側は内へ寄せる）。 */
 const TIME_LABEL_MARGIN = 28
+
+/** 段に描く線 1 本。 */
+interface PlotTrace {
+  readonly color: string
+  readonly columns: readonly (WaveColumn | null)[]
+  /** 窓にサンプルが 1 つも無ければ null（その線は描かない）。 */
+  readonly stats: WaveAxisStats | null
+}
 
 /** センサー 1 本の、機材としての様子（`/status` から引く）。 */
 interface SensorLabel {
@@ -304,6 +325,7 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
           <canvas class="wave-canvas"></canvas>
         </section>`,
       ).join('')}
+      <div class="wave-own-axes"></div>
     </div>
   `
 
@@ -694,10 +716,18 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
 
   // ---- 絵 ----
 
+  /** X・Y・Z の段（東・北・上へ解けた波形）。2 軸のセンサーの段はこの後で足す（`renderOwnAxes`）。 */
   const canvases = [...container.querySelectorAll<HTMLCanvasElement>('.wave-canvas')]
   const rangeLabels = [...container.querySelectorAll<HTMLElement>('.wave-axis-range')]
+  const ownAxesEl = qs(container, '.wave-own-axes')
 
-  for (const canvas of canvases) {
+  /**
+   * 絵の上での操作（ホイールで見る幅・引いて時間を送る）を付ける。
+   *
+   * **段を足したら必ずこれを通す。** 2 軸のセンサーの段だけ操作が効かないと、そこを触ったとき
+   * だけページが動く（ホイールの既定の動き）。
+   */
+  const attachPlotControls = (canvas: HTMLCanvasElement): void => {
     canvas.addEventListener(
       'wheel',
       (event) => {
@@ -743,6 +773,178 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
     canvas.addEventListener('pointerup', endDrag)
     canvas.addEventListener('pointercancel', endDrag)
   }
+  for (const canvas of canvases) attachPlotControls(canvas)
+
+  /** 2 軸のセンサーの段。鍵（`keyOf`）ごと。 */
+  let ownPanels = new Map<string, { readonly canvas: HTMLCanvasElement; readonly rangeLabel: HTMLElement }>()
+  let ownSignature = ''
+
+  /**
+   * 2 軸のセンサーの段を並べる。**顔ぶれ・名前・向きが変わったときだけ作り直す**
+   * （毎フレーム作り直すと、引いている最中の canvas が入れ替わる）。
+   */
+  const renderOwnAxes = (buffers: readonly { readonly buffer: WaveBuffer; readonly key: string }[]): void => {
+    const signature = buffers
+      .map(({ buffer, key }) =>
+        [
+          key,
+          displayNameOf(buffer.source, labels),
+          (buffer.axisNames ?? []).join('\u0001'),
+          (buffer.directions ?? []).map(formatDirection).join('\u0001'),
+        ].join('\u0002'),
+      )
+      .join('\u0000')
+    if (signature === ownSignature) return
+    ownSignature = signature
+
+    ownAxesEl.innerHTML = buffers
+      .map(({ buffer, key }) => {
+        const names = buffer.axisNames ?? []
+        const directions = buffer.directions ?? []
+        // **軸の名前は基板が名乗るもの（無認証の UDP パケット由来）なので `escapeHtml` を通す。**
+        const legend = directions
+          .map(
+            (direction, j) =>
+              `<div><span class="wave-swatch" style="background: ${colorForIndex(j)}"></span> ${escapeHtml(
+                names[j] ?? '',
+              )} の向き: ${formatDirection(direction)}</div>`,
+          )
+          .join('')
+        return `
+        <section class="panel wave-axis wave-own" data-key="${escapeHtml(key)}">
+          <div class="row" style="align-items: baseline; justify-content: space-between">
+            <h3 style="margin: 0">${escapeHtml(displayNameOf(buffer.source, labels))}（2 軸・測る向きのまま）</h3>
+            <span class="wave-own-range muted"></span>
+          </div>
+          <div class="wave-own-legend muted">${legend}</div>
+          <canvas class="wave-canvas wave-own-canvas"></canvas>
+        </section>`
+      })
+      .join('')
+
+    const next = new Map<string, { readonly canvas: HTMLCanvasElement; readonly rangeLabel: HTMLElement }>()
+    for (const section of ownAxesEl.querySelectorAll<HTMLElement>('.wave-own')) {
+      const key = section.dataset.key
+      const canvas = section.querySelector<HTMLCanvasElement>('.wave-own-canvas')
+      const rangeLabel = section.querySelector<HTMLElement>('.wave-own-range')
+      if (key === undefined || canvas === null || rangeLabel === null) continue
+      attachPlotControls(canvas)
+      next.set(key, { canvas, rangeLabel })
+    }
+    ownPanels = next
+  }
+
+  /**
+   * 1 枚の段に線を何本か描く。**X・Y・Z の段と 2 軸のセンサーの段で同じものを使う**
+   * （目盛り・枠・切れ目の扱いを 2 通りに書くと、片方だけ直したときに見え方が食い違う）。
+   *
+   * 縦の幅は段の中で共通、**中心は線ごと**（その線の平均）。
+   */
+  const drawPlot = (
+    canvas: HTMLCanvasElement,
+    rangeLabel: HTMLElement,
+    traces: readonly PlotTrace[],
+    window: { readonly fromMs: number; readonly toMs: number } | null,
+    fixed: number | null,
+    dpr: number,
+    describeRange: (halfSpan: number, centers: readonly number[]) => string,
+  ): void => {
+    const width = Math.max(1, Math.floor(canvas.clientWidth))
+    const height = Math.max(40, Math.floor(canvas.clientHeight))
+    if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
+      canvas.width = Math.round(width * dpr)
+      canvas.height = Math.round(height * dpr)
+    }
+    const ctx = canvas.getContext('2d')
+    if (ctx === null) return
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.clearRect(0, 0, width, height)
+
+    const plotHeight = height - TIME_AXIS_HEIGHT
+    const mid = plotHeight / 2
+    const usable = mid - PLOT_PADDING_Y
+    const ink = globalThis.getComputedStyle(canvas).color
+
+    // 枠と中心線。
+    ctx.strokeStyle = 'rgba(128, 128, 128, 0.45)'
+    ctx.lineWidth = 1
+    ctx.strokeRect(0.5, 0.5, width - 1, plotHeight - 1)
+    ctx.beginPath()
+    ctx.moveTo(0, mid)
+    ctx.lineTo(width, mid)
+    ctx.stroke()
+
+    let deviation = 0
+    for (const t of traces) {
+      if (t.stats !== null && t.stats.maxDeviationGal > deviation) deviation = t.stats.maxDeviationGal
+    }
+    const halfSpan = fixed !== null && Number.isFinite(fixed) && fixed > 0 ? fixed : niceHalfSpanGal(deviation)
+    const centers = traces.map((t) => t.stats?.meanGal).filter((v): v is number => v !== undefined)
+    rangeLabel.textContent = describeRange(halfSpan, centers)
+
+    if (window === null) {
+      ctx.fillStyle = ink
+      ctx.font = '12px system-ui, sans-serif'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText('波形を待っている', width / 2, mid)
+      return
+    }
+
+    // 時刻の目盛り。
+    const tenths = needsTenths(spanMs)
+    ctx.fillStyle = ink
+    ctx.font = '10px system-ui, sans-serif'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'top'
+    ctx.strokeStyle = 'rgba(128, 128, 128, 0.25)'
+    for (const at of timeTicks(window.fromMs, window.toMs, 6)) {
+      const x = ((at - window.fromMs) / spanMs) * width
+      ctx.beginPath()
+      ctx.moveTo(x, 0)
+      ctx.lineTo(x, plotHeight)
+      ctx.stroke()
+      // **端の目盛りは内側へ寄せる。** 中央揃えのままだと、いちばん左の時刻が
+      // 半分だけ枠の外へ出て読めない（`14:35:35` が `35:35` に見えた）。
+      ctx.textAlign = x < TIME_LABEL_MARGIN ? 'left' : x > width - TIME_LABEL_MARGIN ? 'right' : 'center'
+      ctx.fillText(formatClock(at, tenths), x, plotHeight + 2)
+    }
+
+    // 波形。
+    ctx.lineWidth = 1
+    for (const t of traces) {
+      if (t.stats === null) continue
+      const center = t.stats.meanGal
+      const yOf = (gal: number): number =>
+        mid - Math.max(-usable, Math.min(usable, ((gal - center) / halfSpan) * usable))
+
+      ctx.strokeStyle = t.color
+      ctx.beginPath()
+      let started = false
+      const columns = t.columns
+      for (let c = 0; c < columns.length; c++) {
+        const column = columns[c]
+        if (column === null) {
+          // 値の無い列は繋がない。**繋ぐと、届いていない時間帯が斜めの線になる。**
+          started = false
+          continue
+        }
+        // **列の位置は列数で割って幅へ写す。** 列数を 1 枚目の canvas の幅から
+        // 決めて段どうしで共有しているので、**幅が揃っている保証は無い** ——
+        // `c + 0.5` をそのまま x にすると、揃わなくなった日に波形と時刻の
+        // 目盛りが段ごとに黙ってずれる。
+        const x = ((c + 0.5) / columns.length) * width
+        if (!started || column.gapBefore) {
+          ctx.moveTo(x, yOf(column.minGal))
+          started = true
+        } else {
+          ctx.lineTo(x, yOf(column.minGal))
+        }
+        ctx.lineTo(x, yOf(column.maxGal))
+      }
+      ctx.stroke()
+    }
+  }
 
   const draw = (): void => {
     const buffers = store.buffersInOrder()
@@ -773,117 +975,37 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
     renderSensorList()
     renderSeek()
 
+    // **X・Y・Z の段は東・北・上へ解けた波形だけ**（このファイルの冒頭）。
+    const groundShown = shownBuffers.filter((s) => s.buffer.directions === null)
     for (let axis = 0; axis < canvases.length; axis++) {
-      const canvas = canvases[axis]
-      const width = Math.max(1, Math.floor(canvas.clientWidth))
-      const height = Math.max(40, Math.floor(canvas.clientHeight))
-      if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
-        canvas.width = Math.round(width * dpr)
-        canvas.height = Math.round(height * dpr)
-      }
-      const ctx = canvas.getContext('2d')
-      if (ctx === null) continue
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-      ctx.clearRect(0, 0, width, height)
-
-      const plotHeight = height - TIME_AXIS_HEIGHT
-      const mid = plotHeight / 2
-      const usable = mid - PLOT_PADDING_Y
-      const ink = globalThis.getComputedStyle(canvas).color
-
-      // 枠と中心線。
-      ctx.strokeStyle = 'rgba(128, 128, 128, 0.45)'
-      ctx.lineWidth = 1
-      ctx.strokeRect(0.5, 0.5, width - 1, plotHeight - 1)
-      ctx.beginPath()
-      ctx.moveTo(0, mid)
-      ctx.lineTo(width, mid)
-      ctx.stroke()
-
-      // 縦の幅は軸ごとに共通。**中心はセンサーごと**（重力の乗り方が違う）。
-      let deviation = 0
-      for (const s of shownBuffers) {
-        const stats = windows.get(s.key)?.stats[axis]
-        if (stats !== undefined && stats !== null && stats.maxDeviationGal > deviation) {
-          deviation = stats.maxDeviationGal
-        }
-      }
-      const halfSpan = fixed !== null && Number.isFinite(fixed) && fixed > 0 ? fixed : niceHalfSpanGal(deviation)
+      const traces: PlotTrace[] = groundShown.map((s) => {
+        const w = windows.get(s.key)
+        return { color: s.color, columns: w?.axes[axis] ?? [], stats: w?.stats[axis] ?? null }
+      })
       // **中心の値は絵の中に描かない。** センサーごとに中心が違うので、重ねた本数ぶん
       // 数字が並ぶ —— 9 本では左上で潰れて 1 つも読めなかった（実機で確認）。
       // 1 本に絞ったときだけ数字を出し、複数なら中心の決め方だけを伝える。
-      const centers = shownBuffers
-        .map((s) => windows.get(s.key)?.stats[axis]?.meanGal)
-        .filter((v): v is number => v !== undefined && v !== null)
-      rangeLabels[axis].textContent =
+      drawPlot(canvases[axis]!, rangeLabels[axis]!, traces, window, fixed, dpr, (halfSpan, centers) =>
         centers.length === 1
-          ? `中心 ${formatGal(centers[0])} gal ／ ±${formatGal(halfSpan)} gal`
-          : `±${formatGal(halfSpan)} gal（中心は各センサーの平均）`
+          ? `中心 ${formatGal(centers[0]!)} gal ／ ±${formatGal(halfSpan)} gal`
+          : `±${formatGal(halfSpan)} gal（中心は各センサーの平均）`,
+      )
+    }
 
-      if (window !== null) {
-        // 時刻の目盛り。
-        const tenths = needsTenths(spanMs)
-        ctx.fillStyle = ink
-        ctx.font = '10px system-ui, sans-serif'
-        ctx.textAlign = 'center'
-        ctx.textBaseline = 'top'
-        ctx.strokeStyle = 'rgba(128, 128, 128, 0.25)'
-        for (const at of timeTicks(window.fromMs, window.toMs, 6)) {
-          const x = ((at - window.fromMs) / spanMs) * width
-          ctx.beginPath()
-          ctx.moveTo(x, 0)
-          ctx.lineTo(x, plotHeight)
-          ctx.stroke()
-          // **端の目盛りは内側へ寄せる。** 中央揃えのままだと、いちばん左の時刻が
-          // 半分だけ枠の外へ出て読めない（`14:35:35` が `35:35` に見えた）。
-          ctx.textAlign =
-            x < TIME_LABEL_MARGIN ? 'left' : x > width - TIME_LABEL_MARGIN ? 'right' : 'center'
-          ctx.fillText(formatClock(at, tenths), x, plotHeight + 2)
-        }
-
-        // 波形。
-        ctx.lineWidth = 1
-        for (const s of shownBuffers) {
-          const w = windows.get(s.key)
-          const stats = w?.stats[axis]
-          if (w === undefined || stats === undefined || stats === null) continue
-          const center = stats.meanGal
-          const yOf = (gal: number): number =>
-            mid - Math.max(-usable, Math.min(usable, ((gal - center) / halfSpan) * usable))
-
-          ctx.strokeStyle = s.color
-          ctx.beginPath()
-          let started = false
-          const columns = w.axes[axis]
-          for (let c = 0; c < columns.length; c++) {
-            const column = columns[c]
-            if (column === null) {
-              // 値の無い列は繋がない。**繋ぐと、届いていない時間帯が斜めの線になる。**
-              started = false
-              continue
-            }
-            // **列の位置は列数で割って幅へ写す。** 列数を 1 枚目の canvas の幅から
-            // 決めて 3 軸で共有しているので、**幅が揃っている保証は無い** ——
-            // `c + 0.5` をそのまま x にすると、揃わなくなった日に波形と時刻の
-            // 目盛りが軸ごとに黙ってずれる。
-            const x = ((c + 0.5) / columns.length) * width
-            if (!started || column.gapBefore) {
-              ctx.moveTo(x, yOf(column.minGal))
-              started = true
-            } else {
-              ctx.lineTo(x, yOf(column.minGal))
-            }
-            ctx.lineTo(x, yOf(column.maxGal))
-          }
-          ctx.stroke()
-        }
-      } else {
-        ctx.fillStyle = ink
-        ctx.font = '12px system-ui, sans-serif'
-        ctx.textAlign = 'center'
-        ctx.textBaseline = 'middle'
-        ctx.fillText('波形を待っている', width / 2, mid)
-      }
+    // **2 軸のセンサーは 1 本ずつ自分の段へ。** 線の色は軸ごと（凡例の色と同じ）。
+    const ownShown = shownBuffers.filter((s) => s.buffer.directions !== null)
+    renderOwnAxes(ownShown)
+    for (const s of ownShown) {
+      const panel = ownPanels.get(s.key)
+      if (panel === undefined) continue
+      const w = windows.get(s.key)
+      const axisCount = s.buffer.directions?.length ?? 0
+      const traces: PlotTrace[] = Array.from({ length: axisCount }, (_, j) => ({
+        color: colorForIndex(j),
+        columns: w?.axes[j] ?? [],
+        stats: w?.stats[j] ?? null,
+      }))
+      drawPlot(panel.canvas, panel.rangeLabel, traces, window, fixed, dpr, (halfSpan) => `±${formatGal(halfSpan)} gal`)
     }
   }
 

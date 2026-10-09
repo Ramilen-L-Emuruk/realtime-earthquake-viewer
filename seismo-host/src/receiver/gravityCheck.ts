@@ -29,6 +29,10 @@
 // 鉛直に対する傾きが読める（REQUIREMENTS.md §16）。診断と同じ走和で済み、静止の判定
 // （合成のばらつき）もここにしか無いので、集めるのはこの 1 箇所にまとめる。
 // **決まるのは傾きの 2 軸だけ** —— 鉛直まわりの回転＝方角は重力から原理的に分からない。
+//
+// **2 軸のセンサーは静止窓だけを覚える。** 2 本の軸では 3 軸合成（1 g）を作れないので、
+// 倍率の診断・震度との突き合わせ・取り付けの傾きはどれも出さない。静止窓（校正前の軸ごとの
+// 平均）は基板ごとの 6 面法の材料になるので、軸の本数ぶん溜める。
 
 import { GAL_PER_G } from '../intensity/units'
 import type { BoardKey } from '../protocol/types'
@@ -253,10 +257,13 @@ export interface RestWindow {
   /** 窓を運んできた流れ。**起動し直しても前の窓は消さない**（校正前の値は起動に依らない）。 */
   readonly streamKey: string
   readonly sampleCount: number
-  /** 校正前の軸ごとの平均（gal）。静止していれば重力ベクトルそのもの。 */
-  readonly meanGal: Vec3
-  /** 校正前の軸ごとのばらつき（gal）。 */
-  readonly sdGal: Vec3
+  /**
+   * 校正前の軸ごとの平均（gal）。静止していれば重力ベクトルをその軸へ射影したもの。
+   * **本数はセンサーの軸の本数**（2 軸のセンサーなら 2 本）で、並びはパケットの軸と同じ。
+   */
+  readonly meanGal: readonly number[]
+  /** 校正前の軸ごとのばらつき（gal）。本数と並びは `meanGal` と同じ。 */
+  readonly sdGal: readonly number[]
 }
 
 /** 1 センサーぶんの静止窓。**古い順。** */
@@ -289,6 +296,7 @@ export type GravityCount =
   | 'unjudged'
   | 'restlessWindows'
   | 'restarts'
+  | 'axisReshapes'
   | 'evictions'
 
 /** 数え上げだけを集めたもの。 */
@@ -330,9 +338,19 @@ interface Entry {
    */
   sumAxis: [number, number, number]
   sumSqAxis: [number, number, number]
-  /** 校正前の軸ごとの走和（`RestWindow` の材料）。件数は同じく `count` を共用する。 */
-  sumRawAxis: [number, number, number]
-  sumSqRawAxis: [number, number, number]
+  /**
+   * 校正前の軸ごとの走和（`RestWindow` の材料）。件数は同じく `count` を共用する。
+   * **長さはセンサーの軸の本数**（`axisCount`）。
+   */
+  sumRawAxis: number[]
+  sumSqRawAxis: number[]
+  /**
+   * いまの窓のサンプルの形。軸の本数（まだ何も受けていなければ 0）と、地面の 3 成分
+   * （校正後の値）が付いているか。**1 つの窓の中では揃える** —— 揃わないまとまりが来たら窓を
+   * 捨てて数え直す（`reshape`）。混ぜると、合成の走和と軸の走和で件数がずれる。
+   */
+  axisCount: number
+  hasGround: boolean
   maxIntensity: number | null
   /**
    * 同じ流れの中で、続けて静止していた窓の数（いま閉じる窓は含まない）。
@@ -401,6 +419,7 @@ export class GravityCheckBook {
     unjudged: 0,
     restlessWindows: 0,
     restarts: 0,
+    axisReshapes: 0,
     evictions: 0,
   }
 
@@ -425,12 +444,16 @@ export class GravityCheckBook {
     readonly boardKey: BoardKey
     readonly sensorId: string
     readonly streamKey: string
-    readonly gal: readonly [readonly number[], readonly number[], readonly number[]]
     /**
-     * 同じサンプルの、校正を掛ける前の値（`IntensityPipeline` の `uncalibratedGal`）。
+     * 地面の 3 成分（校正後。`WaveChunk.ground`）。**2 軸のセンサーは `null`** —— その場合は
+     * 倍率の診断をせず、静止窓だけを覚える。
+     */
+    readonly gal: readonly [readonly number[], readonly number[], readonly number[]] | null
+    /**
+     * 同じサンプルの、校正を掛ける前の値（`IntensityPipeline` の `uncalibratedGal`）。本数は軸の本数。
      * **静止窓の覚え（6 面法の材料）にだけ使う。** 倍率の診断は `gal` で行う。
      */
-    readonly uncalibratedGal: readonly [readonly number[], readonly number[], readonly number[]]
+    readonly uncalibratedGal: readonly (readonly number[])[]
   }): GravityVerdict | null {
     const entry = this.touch(input.boardKey, input.sensorId)
 
@@ -454,40 +477,74 @@ export class GravityCheckBook {
       verdict = this.settle(entry)
       this.reset(entry, input.streamKey)
     }
+    // **形を見るのは窓を締めた後。** 締めた窓は前の形で溜めたものなので、本数が変わっていれば
+    // その窓も一緒に捨てる（覚えた静止窓と本数を揃える）。
+    this.reshape(entry, input.uncalibratedGal.length, input.gal !== null)
 
-    const [x, y, z] = input.gal
-    const [rx, ry, rz] = input.uncalibratedGal
-    // **3 本そろっている分だけ見る。** 呼ぶ側は長さの揃った 3 成分を渡す約束だが、
+    const raw = input.uncalibratedGal
+    const axisCount = raw.length
+    // **全部の本がそろっている分だけ見る。** 呼ぶ側は長さの揃った値を渡す約束だが、
     // 短いほうを超えて読むと `undefined` が走和へ入り、以後この窓は黙って NaN になる。
-    // 校正前の 3 本も同じ件数で足す（件数を `count` で共用するため）。
-    const n = Math.min(x.length, y.length, z.length, rx.length, ry.length, rz.length)
+    // 校正前の値と地面の 3 成分は同じ件数で足す（件数を `count` で共用するため）。
+    let n = Infinity
+    for (const column of raw) n = Math.min(n, column.length)
+    const ground = input.gal
+    if (ground !== null) n = Math.min(n, ground[0].length, ground[1].length, ground[2].length)
+    if (!Number.isFinite(n)) n = 0
     for (let i = 0; i < n; i++) {
-      // **一度だけ読んで使い回す。** 100 Hz × 3 軸ぶんがここを通るので、
-      // 添字の読み直しも配列の作り直しもしない。
-      const vx = x[i]
-      const vy = y[i]
-      const vz = z[i]
-      const m = Math.sqrt(vx * vx + vy * vy + vz * vz)
       entry.count += 1
-      entry.sum += m
-      entry.sumSq += m * m
-      entry.sumAxis[0] += vx
-      entry.sumAxis[1] += vy
-      entry.sumAxis[2] += vz
-      entry.sumSqAxis[0] += vx * vx
-      entry.sumSqAxis[1] += vy * vy
-      entry.sumSqAxis[2] += vz * vz
-      const ux = rx[i]
-      const uy = ry[i]
-      const uz = rz[i]
-      entry.sumRawAxis[0] += ux
-      entry.sumRawAxis[1] += uy
-      entry.sumRawAxis[2] += uz
-      entry.sumSqRawAxis[0] += ux * ux
-      entry.sumSqRawAxis[1] += uy * uy
-      entry.sumSqRawAxis[2] += uz * uz
+      if (ground !== null) {
+        // **一度だけ読んで使い回す。** 100 Hz × 3 軸ぶんがここを通るので、
+        // 添字の読み直しも配列の作り直しもしない。
+        const vx = ground[0][i]
+        const vy = ground[1][i]
+        const vz = ground[2][i]
+        const m = Math.sqrt(vx * vx + vy * vy + vz * vz)
+        entry.sum += m
+        entry.sumSq += m * m
+        entry.sumAxis[0] += vx
+        entry.sumAxis[1] += vy
+        entry.sumAxis[2] += vz
+        entry.sumSqAxis[0] += vx * vx
+        entry.sumSqAxis[1] += vy * vy
+        entry.sumSqAxis[2] += vz * vz
+      }
+      for (let axis = 0; axis < axisCount; axis++) {
+        const u = raw[axis]![i]!
+        entry.sumRawAxis[axis] += u
+        entry.sumSqRawAxis[axis] += u * u
+      }
     }
     return verdict
+  }
+
+  /**
+   * サンプルの形（軸の本数・地面の 3 成分の有無）が窓と違えば、窓を捨てて数え直す。
+   *
+   * **軸の本数が変わったら、覚えた静止窓も捨てる**（別のセンサーを同じ名前で挿し替えた）。
+   * 本数の違う窓が混ざると、6 面法が別の物を一緒に解くことになる。
+   * 地面の 3 成分の有無だけが変わったとき（設定の書き換え）は、静止窓は残す ——
+   * 校正前の値は設定に依らない。
+   */
+  private reshape(entry: Entry, axisCount: number, hasGround: boolean): void {
+    if (entry.axisCount === axisCount && entry.hasGround === hasGround) return
+    const fresh = entry.axisCount === 0
+    if (!fresh) {
+      // **捨てたら数える**（`restarts` と同じ理由。黙って 0 へ戻ると、6 面法の材料が
+      // 「まだ揃っていない」だけに見える）。
+      if (entry.axisCount !== axisCount) {
+        if (entry.restWindows.length > 0) this.counts.axisReshapes += 1
+        entry.restWindows.length = 0
+      }
+      entry.restStreak = 0
+      entry.stillSinceMs = null
+      entry.last = null
+    }
+    entry.axisCount = axisCount
+    entry.hasGround = hasGround
+    entry.sumRawAxis = new Array<number>(axisCount).fill(0)
+    entry.sumSqRawAxis = new Array<number>(axisCount).fill(0)
+    this.reset(entry, entry.streamKey)
   }
 
   /**
@@ -526,8 +583,8 @@ export class GravityCheckBook {
     if (e.stillSinceMs === null) return null
     if (now - e.windowStartMs > this.windowMs * 2) return null
     if (e.count >= this.minSamples) {
-      for (let i = 0; i < 3; i++) {
-        const { sd } = meanAndSd(e.sumRawAxis[i], e.sumSqRawAxis[i], e.count)
+      for (let i = 0; i < e.axisCount; i++) {
+        const { sd } = meanAndSd(e.sumRawAxis[i]!, e.sumSqRawAxis[i]!, e.count)
         if (!Number.isFinite(sd) || sd >= REST_SD_GAL) return null
       }
     }
@@ -593,8 +650,20 @@ export class GravityCheckBook {
     return { verdicts, ...this.counts }
   }
 
-  /** 窓を閉じて判定を作る。**数えるのもここ 1 箇所。** */
-  private settle(entry: Entry): GravityVerdict {
+  /**
+   * 窓を閉じて判定を作る。**数えるのもここ 1 箇所。**
+   *
+   * **地面の 3 成分が無い窓（2 軸のセンサー）は判定を出さない**（`null`）。静止窓だけ覚える。
+   * 判定の数（`mismatches`・`unjudged`）にも入れない —— 判定できないのは設計どおりで、
+   * 「揺れていて見送った」と同じ数へ混ぜると、2 軸のセンサーを足しただけで見送りが増え続ける。
+   */
+  private settle(entry: Entry): GravityVerdict | null {
+    if (!entry.hasGround) {
+      entry.restStreak = 0
+      entry.last = null
+      this.noteRestWindow(entry, this.now())
+      return null
+    }
     const base = {
       boardKey: entry.boardKey,
       sensorId: entry.sensorId,
@@ -674,14 +743,15 @@ export class GravityCheckBook {
    * 閉じた窓が静止していたなら、校正前の値で覚える。
    *
    * **倍率の診断とは独立に判じる。** あちらの静止は合成のばらつき（向きを変えても長さが
-   * 変わらないので回転を見逃す）、こちらは 3 軸それぞれのばらつき。倍率が `too-small` /
+   * 変わらないので回転を見逃す）、こちらは軸それぞれのばらつき。倍率が `too-small` /
    * `too-large` の窓も、校正前の値としては本物なので覚える（6 面法はまさにその狂いを測る）。
    */
   private noteRestWindow(entry: Entry, atMs: number): void {
-    const axis = [0, 1, 2].map((i) => meanAndSd(entry.sumRawAxis[i], entry.sumSqRawAxis[i], entry.count))
-    const meanGal: Vec3 = [axis[0].mean, axis[1].mean, axis[2].mean]
-    const sdGal: Vec3 = [axis[0].sd, axis[1].sd, axis[2].sd]
+    const axis = entry.sumRawAxis.map((sum, i) => meanAndSd(sum, entry.sumSqRawAxis[i]!, entry.count))
+    const meanGal = axis.map((a) => a.mean)
+    const sdGal = axis.map((a) => a.sd)
     const still =
+      entry.axisCount > 0 &&
       entry.count >= this.minSamples &&
       meanGal.every(Number.isFinite) &&
       sdGal.every(Number.isFinite) &&
@@ -711,12 +781,8 @@ export class GravityCheckBook {
     entry.sumSqAxis[0] = 0
     entry.sumSqAxis[1] = 0
     entry.sumSqAxis[2] = 0
-    entry.sumRawAxis[0] = 0
-    entry.sumRawAxis[1] = 0
-    entry.sumRawAxis[2] = 0
-    entry.sumSqRawAxis[0] = 0
-    entry.sumSqRawAxis[1] = 0
-    entry.sumSqRawAxis[2] = 0
+    entry.sumRawAxis.fill(0)
+    entry.sumSqRawAxis.fill(0)
     // `restWindows` は戻さない —— 窓をまたいで覚えておくためのもの。
     entry.maxIntensity = null
   }
@@ -749,8 +815,10 @@ export class GravityCheckBook {
       sumSq: 0,
       sumAxis: [0, 0, 0],
       sumSqAxis: [0, 0, 0],
-      sumRawAxis: [0, 0, 0],
-      sumSqRawAxis: [0, 0, 0],
+      sumRawAxis: [],
+      sumSqRawAxis: [],
+      axisCount: 0,
+      hasGround: false,
       maxIntensity: null,
       restStreak: 0,
       last: null,

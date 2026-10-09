@@ -13,6 +13,28 @@ function clock(start = 1_700_000_000_000): { now: () => number; advance: (ms: nu
   }
 }
 
+describe('SensorHealthBook.noteAxisMismatch', () => {
+  it('正: 軸の本数の食い違いを覚え、/status の行へ出す', () => {
+    const book = new SensorHealthBook()
+    book.notePacket({ boardKey: 'mac:aa', sensorId: 's0', streamKey: 'k', axisCount: 2 })
+    book.noteAxisMismatch({ boardKey: 'mac:aa', sensorId: 's0', mismatch: { configuredAxes: 3, receivedAxes: 2 } })
+    expect(book.snapshot()[0].axisMismatch).toEqual({ configuredAxes: 3, receivedAxes: 2 })
+  })
+
+  it('対照: 食い違わなかった回（null）で消す —— 設定を直した後まで赤く残らない', () => {
+    const book = new SensorHealthBook()
+    book.noteAxisMismatch({ boardKey: 'mac:aa', sensorId: 's0', mismatch: { configuredAxes: 3, receivedAxes: 2 } })
+    book.noteAxisMismatch({ boardKey: 'mac:aa', sensorId: 's0', mismatch: null })
+    expect(book.snapshot()[0].axisMismatch).toBeNull()
+  })
+
+  it('安全弁: 一度も知らせていないセンサーは null（食い違いを名乗らない）', () => {
+    const book = new SensorHealthBook()
+    book.notePacket({ boardKey: 'mac:aa', sensorId: 's0', streamKey: 'k', axisCount: 3 })
+    expect(book.snapshot()[0].axisMismatch).toBeNull()
+  })
+})
+
 describe('SensorHealthBook', () => {
   it('同じ基板でもセンサーごとに別の行になる', () => {
     const book = new SensorHealthBook()

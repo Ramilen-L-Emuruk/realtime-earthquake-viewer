@@ -41,6 +41,7 @@ const EMPTY_GRAVITY = {
   unjudged: 0,
   restlessWindows: 0,
   restarts: 0,
+  axisReshapes: 0,
   evictions: 0,
 } as const
 
@@ -147,6 +148,7 @@ function sensor(overrides: Partial<SensorHealth> = {}): SensorHealth {
     lastReadingAtMs: NOW - 2_000,
     lastNominalReason: null,
     lastSkipReason: null,
+    axisMismatch: null,
     ...overrides,
   }
 }
@@ -585,6 +587,7 @@ describe('buildStatusReport', () => {
       unjudged: 9,
       restlessWindows: 1,
       restarts: 4,
+      axisReshapes: 0,
       evictions: 2,
     }
 

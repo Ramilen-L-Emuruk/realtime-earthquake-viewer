@@ -41,6 +41,34 @@ describe('parseRestWindowsBody', () => {
     expect(withBad(null)).toBeNull()
   })
 
+  it('正: 2 軸のセンサー（窓の平均が 2 本）はそのセンサーだけ飛ばし、3 軸のセンサーは読む', () => {
+    // 6 面法と「鉛直を合わせる」は 3 軸の窓だけを使う。応答ごと捨てると、2 軸のセンサーを
+    // 1 個足しただけで 3 軸のセンサーの 6 面法まで止まる。
+    const three = { boardKey: 'mac:aa', sensorId: 's3', stillSinceMs: null, windows: [{ meanGal: [1, 2, 3], sampleCount: 10, atMs: 1 }] }
+    const two = { boardKey: 'mac:bb', sensorId: 's2', stillSinceMs: 5, windows: [{ meanGal: [1, 2], sampleCount: 10, atMs: 1 }] }
+    expect(parseRestWindowsBody({ sensors: [two, three] })).toEqual([
+      { boardKey: 'mac:aa', sensorId: 's3', stillSinceMs: null, windows: [{ meanGal: [1, 2, 3], sampleCount: 10, atMs: 1 }] },
+    ])
+  })
+
+  it('安全弁: 2 軸の窓でも値が数として読めなければ応答ごと null', () => {
+    const two = { boardKey: 'mac:bb', sensorId: 's2', stillSinceMs: null, windows: [{ meanGal: [1, 'x'], sampleCount: 10, atMs: 1 }] }
+    expect(parseRestWindowsBody({ sensors: [two] })).toBeNull()
+  })
+
+  it('安全弁: 1 つのセンサーに 2 本と 3 本の窓が混ざっていれば応答ごと null（ホストは本数が変わると窓を捨てる）', () => {
+    const mixed = {
+      boardKey: 'mac:bb',
+      sensorId: 's2',
+      stillSinceMs: null,
+      windows: [
+        { meanGal: [1, 2], sampleCount: 10, atMs: 1 },
+        { meanGal: [1, 2, 3], sampleCount: 10, atMs: 2 },
+      ],
+    }
+    expect(parseRestWindowsBody({ sensors: [mixed] })).toBeNull()
+  })
+
   it('安全弁: センサー 1 件の形が崩れていても応答ごと null', () => {
     const ok = { boardKey: 'mac:aa', sensorId: 's', stillSinceMs: null, windows: [] }
     expect(parseRestWindowsBody({ sensors: [ok, { boardKey: 'mac:aa', stillSinceMs: null, windows: [] }] })).toBeNull()

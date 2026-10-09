@@ -24,8 +24,9 @@ import type {
   Timebase,
 } from '../timebase/segmenter'
 import { applyCalibration } from './calibration'
-import type { GalTriple } from './calibration'
+import type { GalTriple, ResolvedSensorCalibration } from './calibration'
 import { StationDirectory } from './stationConfig'
+import type { Vec3 } from './stationConfigTypes'
 // **刻みは K-NET の取り込みと同じ値を使う。** 自作センサーの観測結果は最終的に
 // 同じ画面へ並ぶので、物差しが違えば「揺れ方の違い」と「測り方の違い」を見分けられない。
 // 写し取らずに読むのは、片方だけ動いたときに黙って離れるのを防ぐため。
@@ -108,7 +109,7 @@ export interface WaveChunk {
   readonly boardKey: BoardKey
   readonly sensorId: string
   /**
-   * 軸の名前。`gal` の並びと 1 対 1。
+   * 軸の名前。`axes` の並びと 1 対 1（`ground` とは対応しない —— あちらは東・北・上）。
    *
    * **読み取り専用。** 版 1 のパケットは全パケットが同じ配列を共有するので、
    * 1 箇所で書き換えるとプロセス内の全ストリームの軸名がまとめて壊れる
@@ -133,8 +134,33 @@ export interface WaveChunk {
    * （`IntensityReading.timebaseNominalReason` と同じ判断）。
    */
   readonly timebaseNominalReason: NominalReason | null
-  /** gal。`gal[axis][i]` が `channels[axis]` の i 番目。 */
-  readonly gal: readonly [readonly number[], readonly number[], readonly number[]]
+  /**
+   * 地面の加速度（gal）。`ground[k][i]` が東・北・上の k 番目の i 番目。**3 軸のセンサーだけ**で、
+   * 2 軸なら null（3 成分を解けない。`calibration.ts` の冒頭）。
+   *
+   * **震度へ流し込むのはこの配列そのもの。**
+   */
+  readonly ground: GalTriple | null
+  /**
+   * 軸ごとの値。並びは `channels` と同じ。**3 軸でも 2 軸でも入る。**
+   *
+   * **`ground` から作り直さない。** 3 軸なら同じ情報だが、2 軸では `ground` が無い ——
+   * 観測点の合成（§7）が他のセンサーの軸と一緒に解くための材料はここにしか無い。
+   */
+  readonly axes: readonly WaveAxis[]
+}
+
+/**
+ * センサーの軸 1 本ぶんの波形。
+ *
+ * 校正（`calibration.ts`）の `m − o = w · a_地面` を、向きの長さ（倍率）で割って
+ * **「その向きの地面の加速度」**にしたもの。だから `direction · a_地面 = gal[i]`。
+ */
+export interface WaveAxis {
+  /** 地面（東・北・上）で見た測る向き。**長さ 1。** */
+  readonly direction: Vec3
+  /** その向きの加速度（gal）。 */
+  readonly gal: readonly number[]
 }
 
 /** 締めくくりを出せなかった区間。**その区間の最後の窓ぶんが失われている。** */
@@ -196,7 +222,8 @@ export interface PacketOutcome {
    * このパケットの波形。**組み立てが受理して換算も通った回にだけ入る。**
    *
    * 落としたパケット（`dropped` が非 null かつ組み立てに届いていない回）と、
-   * 3 成分でないパケットでは null。**区間を畳み直した回（`stream-desync`）でも入る**
+   * 校正の形を持たない軸の本数（2・3 以外）のパケットでは null。2 軸なら `ground` の無い形で入る。
+   * **区間を畳み直した回（`stream-desync`）でも入る**
    * —— サンプルそのものは本物で、どの区間のどの位置かも `WaveChunk` が名乗るので、
    * 受け手は切れ目を見分けられる。いちばん様子を見たい状態で波形だけ黙るほうが困る。
    */
@@ -210,8 +237,22 @@ export interface PacketOutcome {
    *
    * **`WaveChunk` へは入れない。** 押し出しの口は波形のまとまりを丸ごと配るので、
    * 入れると誰も使わない値で通信量が倍になる。写しは取らない（`toGal` の出力そのもの）。
+   *
+   * 並びは `wave.channels` と同じで、**本数は軸の本数**（2 か 3）。
    */
-  readonly uncalibratedGal: GalTriple | null
+  readonly uncalibratedGal: readonly (readonly number[])[] | null
+  /**
+   * 設定の軸の本数と届いたパケットの本数が違って落とした回だけ、その 2 つ。ほかは null。
+   *
+   * **`detail` の文面から読み直させない。** 稼働状況の画面へ出すので、数として渡す。
+   */
+  readonly axisMismatch: AxisMismatch | null
+}
+
+/** 設定の軸の本数と、届いたパケットの軸の本数。 */
+export interface AxisMismatch {
+  readonly configuredAxes: number
+  readonly receivedAxes: number
 }
 
 export interface IntensityPipelineOptions {
@@ -249,17 +290,18 @@ function nothing(): Omit<PacketOutcome, 'dropped' | 'detail'> {
     intensitySkipped: null,
     wave: null,
     uncalibratedGal: null,
+    axisMismatch: null,
   }
 }
 
 type GalResult =
-  | { readonly ok: true; readonly gal: [number[], number[], number[]] }
+  | { readonly ok: true; readonly gal: number[][] }
   | { readonly ok: false; readonly detail: string }
 
 /**
- * カウント値を 3 成分の gal へ直す。**1 件でも範囲の外ならパケットごと捨てる。**
+ * カウント値を軸ごとの gal へ直す（軸の本数はパケットのまま）。**1 件でも範囲の外ならパケットごと捨てる。**
  *
- * 軸ごとに間引くと 3 成分の長さが食い違い、時刻の合わない値どうしを合成することになる
+ * 軸ごとに間引くと軸の長さが食い違い、時刻の合わない値どうしを合成することになる
  * （理由は `../intensity/units.ts`）。
  *
  * **どこで外れたかを返す。** 桁を取り違えたヘッダを名乗る基板は以後すべてのパケットで
@@ -267,10 +309,11 @@ type GalResult =
  */
 function toGal(p: SensorPacket): GalResult {
   const n = p.samples.length
-  const gal: [number[], number[], number[]] = [new Array(n), new Array(n), new Array(n)]
+  const axisCount = p.channels.length
+  const gal: number[][] = Array.from({ length: axisCount }, () => new Array<number>(n))
   for (let i = 0; i < n; i++) {
     const row = p.samples[i]
-    for (let axis = 0; axis < REQUIRED_AXES; axis++) {
+    for (let axis = 0; axis < axisCount; axis++) {
       const v = galFromCounts(row[axis], p)
       if (v === null) {
         return {
@@ -284,6 +327,25 @@ function toGal(p: SensorPacket): GalResult {
     }
   }
   return { ok: true, gal }
+}
+
+/**
+ * 校正前の軸ごとの値を、軸ごとの波形（`WaveAxis`）にする。
+ *
+ * 軸 j は `m_j − o_j = w_j · a` なので、`|w_j|` で割れば向き `w_j / |w_j|` の加速度になる。
+ * **`|w_j|` は 0 にならない** —— 設定の検証と `resolveCalibration` が、向きの解けない軸
+ * （長さ 0 を含む）を通さない。
+ */
+function toWaveAxes(gal: readonly (readonly number[])[], calibration: ResolvedSensorCalibration): WaveAxis[] {
+  return calibration.axes.map((axis, j) => {
+    const [x, y, z] = axis.vector
+    const length = Math.hypot(x, y, z)
+    const raw = gal[j]!
+    const values = new Array<number>(raw.length)
+    for (let i = 0; i < raw.length; i++) values[i] = (raw[i]! - axis.offset) / length
+    const direction: Vec3 = [x / length, y / length, z / length]
+    return { direction, gal: values }
+  })
 }
 
 export class IntensityPipeline {
@@ -335,6 +397,7 @@ export class IntensityPipeline {
         ...nothing(),
         dropped: 'calibration-axis-mismatch',
         detail: `設定は ${resolution.configuredAxes} 軸・届いたのは ${packet.channels.length} 軸`,
+        axisMismatch: { configuredAxes: resolution.configuredAxes, receivedAxes: packet.channels.length },
       }
     }
     const calibration = resolution.calibration
@@ -342,8 +405,11 @@ export class IntensityPipeline {
     // **換算を組み立てより先に済ませる。** 順序を逆にすると、範囲の外で捨てるパケットを
     // 組み立てが受理してしまい、**あちらの位置だけが進む**。以後どのパケットも
     // 震度側の待っている位置と噛み合わず、その基板の震度が本物の切れ目まで出なくなる。
-    const threeAxis = packet.channels.length === REQUIRED_AXES
-    const converted = threeAxis ? toGal(packet) : null
+    //
+    // **換算するのは校正の形を持つ本数（2・3 軸）だけ。** それ以外は前から波形を作らず、
+    // 組み立てと受信の記録にだけ乗る（`StationDirectory.resolveSensor`）。
+    const shaped = calibration.axes.length === packet.channels.length
+    const converted = shaped ? toGal(packet) : null
     if (converted !== null && !converted.ok) {
       return { ...nothing(), dropped: 'scale-out-of-range', detail: converted.detail }
     }
@@ -352,14 +418,15 @@ export class IntensityPipeline {
     // 後処理）とは別の関心事 —— 順序を分けておく。
     //
     // **3 軸だけを地面の加速度へ解く**（`unmix` は 3 軸のときにしか無い）。2 軸は 3 成分を解けない。
-    const gal =
+    const ground: GalTriple | null =
       converted === null || calibration.unmix === null
         ? null
         : applyCalibration(
-            converted.gal,
+            converted.gal as unknown as GalTriple,
             [calibration.axes[0]!.offset, calibration.axes[1]!.offset, calibration.axes[2]!.offset],
             calibration.unmix,
           )
+    const axes = converted === null ? null : toWaveAxes(converted.gal, calibration)
 
     const result = this.segmenter.accept(packet)
     if (!result.ok) return { ...nothing(), dropped: result.reason, detail: null }
@@ -380,10 +447,10 @@ export class IntensityPipeline {
     // **配るのは震度へ流し込むのと同じ配列そのもの（校正適用後）で、以後は写しを取らない。**
     // 二重にコピーすると毎秒 2,700 個ぶんの複製が常時走るうえ、**「計測震度が食べた値
     // そのもの」という保証が写した瞬間に 1 段弱くなる**（写し損ねても値の形は変わらない
-    // ので気づけない）。型は読み取り専用にしてあり、この先で `gal` を書き換える処理は無い。
+    // ので気づけない）。型は読み取り専用にしてあり、この先で `ground` を書き換える処理は無い。
     const timebase = result.segment.timebase
     const wave: WaveChunk | null =
-      gal === null
+      axes === null
         ? null
         : {
             streamKey: meta.streamKey,
@@ -395,16 +462,17 @@ export class IntensityPipeline {
             firstSampleMs: sampleTimeMs(timebase, result.firstSampleIndex),
             msPerSample: timebase.msPerSample,
             timebaseNominalReason: timebase.nominalReason,
-            gal,
+            ground,
+            axes,
           }
     // **`wave` と同じ回にだけ出す。** 校正前の値だけが残ると、組み立てに落とされた
     // パケットのサンプルが静止窓へ入る（`wave` を作らない理由と同じ）。
-    const uncalibratedGal: GalTriple | null = wave === null || converted === null ? null : converted.gal
+    const uncalibratedGal = wave === null || converted === null ? null : converted.gal
 
     let skipped: IntensitySkip | null = null
     let skipDetail: string | null = null
     if (result.startedBecause !== null) {
-      const created = this.createEntry(meta, threeAxis)
+      const created = this.createEntry(meta, packet.channels.length === REQUIRED_AXES)
       this.entries.set(meta.streamKey, created)
       skipped =
         created.skip === null
@@ -434,9 +502,10 @@ export class IntensityPipeline {
         intensitySkipped: skipped,
         wave,
         uncalibratedGal,
+        axisMismatch: null,
       }
     }
-    if (entry.stream === null || gal === null) {
+    if (entry.stream === null || ground === null) {
       return {
         readings,
         closed,
@@ -447,11 +516,12 @@ export class IntensityPipeline {
         intensitySkipped: skipped,
         wave,
         uncalibratedGal,
+        axisMismatch: null,
       }
     }
 
     try {
-      for (const p of entry.stream.push(result.firstSampleIndex, gal[0], gal[1], gal[2])) {
+      for (const p of entry.stream.push(result.firstSampleIndex, ground[0], ground[1], ground[2])) {
         readings.push(toReading(meta, result.segment.timebase, p, this.noteUnusable))
       }
     } catch (error) {
@@ -471,6 +541,7 @@ export class IntensityPipeline {
         intensitySkipped: skipped,
         wave,
         uncalibratedGal,
+        axisMismatch: null,
       }
     }
 
@@ -484,6 +555,7 @@ export class IntensityPipeline {
       intensitySkipped: skipped,
       wave,
       uncalibratedGal,
+      axisMismatch: null,
     }
   }
 

@@ -169,6 +169,66 @@ describe('readWaveChunk', () => {
     expect(readWaveChunk('wave')).toBeNull()
     expect(readWaveChunk(7)).toBeNull()
   })
+
+  it('対照: 3 軸（地面の東・北・上）なら測る向きも軸の名前も持たない', () => {
+    const chunk = readWaveChunk(waveJson())
+    expect(chunk?.directions).toBeNull()
+    expect(chunk?.axisNames).toBeNull()
+  })
+})
+
+describe('readWaveChunk — 2 軸のセンサー', () => {
+  /** ホストが押し出す 2 軸の形（`gal` が null・`axes` に軸ごとの値）。 */
+  function twoAxisJson(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return waveJson({
+      channels: ['HN1', 'HN2'],
+      gal: null,
+      axes: [
+        { direction: [0.866, 0.5, 0], gal: [1, 2, 3] },
+        { direction: [-0.5, 0.866, 0], gal: [4, 5, 6] },
+      ],
+      ...overrides,
+    })
+  }
+
+  it('正: 軸ごとの値・測る向き・軸の名前を、送られた順に読む', () => {
+    const chunk = readWaveChunk(twoAxisJson())
+    expect(chunk?.gal).toEqual([
+      [1, 2, 3],
+      [4, 5, 6],
+    ])
+    expect(chunk?.directions).toEqual([
+      [0.866, 0.5, 0],
+      [-0.5, 0.866, 0],
+    ])
+    expect(chunk?.axisNames).toEqual(['HN1', 'HN2'])
+  })
+
+  it('安全弁: 軸の本数と名前の本数が違えば通さない（凡例が別の軸の向きを名乗る）', () => {
+    expect(readWaveChunk(twoAxisJson({ channels: ['HN1'] }))).toBeNull()
+    expect(readWaveChunk(twoAxisJson({ channels: ['HN1', 'HN2', 'HN3'] }))).toBeNull()
+  })
+
+  it('安全弁: 向きが 3 成分でない・数として読めない軸があれば通さない', () => {
+    expect(readWaveChunk(twoAxisJson({ axes: [{ direction: [1, 0], gal: [1] }, { direction: [0, 1, 0], gal: [2] }] }))).toBeNull()
+    expect(
+      readWaveChunk(twoAxisJson({ axes: [{ direction: [1, 0, 0], gal: [Number.NaN] }, { direction: [0, 1, 0], gal: [2] }] })),
+    ).toBeNull()
+    expect(readWaveChunk(twoAxisJson({ axes: [null, { direction: [0, 1, 0], gal: [2] }] }))).toBeNull()
+  })
+
+  it('安全弁: gal が null でも axes が無ければ通さない／gal と axes の両方があれば 3 軸として読む', () => {
+    expect(readWaveChunk(twoAxisJson({ axes: undefined }))).toBeNull()
+    // `gal` が配列なら 3 軸の形。`axes` が添えられていても見ない（ホストは両方を送らない）。
+    expect(readWaveChunk(waveJson({ axes: [{ direction: [1, 0, 0], gal: [1] }] }))?.directions).toBeNull()
+  })
+
+  it('安全弁: 軸が 0〜1 本・4 本以上なら通さない（ホストが軸ごとの値を作るのは 2・3 本だけ）', () => {
+    expect(readWaveChunk(twoAxisJson({ axes: [], channels: [] }))).toBeNull()
+    expect(readWaveChunk(twoAxisJson({ axes: [{ direction: [1, 0, 0], gal: [1] }], channels: ['HN1'] }))).toBeNull()
+    const four = Array.from({ length: 4 }, () => ({ direction: [1, 0, 0], gal: [1] }))
+    expect(readWaveChunk(twoAxisJson({ axes: four, channels: ['a', 'b', 'c', 'd'] }))).toBeNull()
+  })
 })
 
 describe('readStationWaveChunk', () => {

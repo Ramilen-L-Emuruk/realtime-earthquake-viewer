@@ -64,6 +64,7 @@ function report(hub: ReadingHub): StatusReport {
       unjudged: 0,
       restlessWindows: 0,
       restarts: 0,
+      axisReshapes: 0,
       evictions: 0,
     },
     segments: [],
@@ -152,7 +153,12 @@ const WAVE: WaveChunk = {
   firstSampleMs: 1_700_000_000_000,
   msPerSample: 10,
   timebaseNominalReason: null,
-  gal: [[1.5], [2.5], [980]],
+  ground: [[1.5], [2.5], [980]],
+  axes: [
+    { direction: [1, 0, 0], gal: [1.5] },
+    { direction: [0, 1, 0], gal: [2.5] },
+    { direction: [0, 0, 1], gal: [980] },
+  ],
 }
 
 const STATION_WAVE: FusedWaveChunk = {
@@ -587,7 +593,39 @@ describe('startStatusServer', () => {
     })
 
     expect(got.map((e) => e.name)).toEqual(['wave', 'reading'])
-    expect((got[0].data as WaveChunk).gal[2]).toEqual([980])
+    const data = got[0].data as Record<string, unknown>
+    expect(data.gal).toEqual([[1.5], [2.5], [980]])
+    // 3 軸なら軸ごとの値は地面の 3 成分と同じ情報なので載せない（通信量が倍になる）。
+    expect(data).not.toHaveProperty('axes')
+    expect(data).not.toHaveProperty('ground')
+    expect(data.channels).toEqual(['HN1', 'HN2', 'HN3'])
+  })
+
+  it('正: 2 軸のセンサーの波形は gal を null にし、測る向きと軸ごとの値を載せる', async () => {
+    const hub = new ReadingHub()
+    const base = await start(hub)
+    const twoAxis: WaveChunk = {
+      ...WAVE,
+      channels: ['HN1', 'HN2'],
+      ground: null,
+      axes: [
+        { direction: [0.866, 0.5, 0], gal: [1.25] },
+        { direction: [-0.5, 0.866, 0], gal: [-0.75] },
+      ],
+    }
+
+    const got = await readEvents(base, '/stream?wave=1', 1, () => {
+      hub.publish({ kind: 'wave', wave: twoAxis })
+    })
+
+    const data = got[0].data as Record<string, unknown>
+    expect(data.gal).toBeNull()
+    expect(data.axes).toEqual([
+      { direction: [0.866, 0.5, 0], gal: [1.25] },
+      { direction: [-0.5, 0.866, 0], gal: [-0.75] },
+    ])
+    expect(data.channels).toEqual(['HN1', 'HN2'])
+    expect(data).not.toHaveProperty('ground')
   })
 
   it('正: 観測点ぶんの合成波形も、?wave=1 で専用の名前で押し出す（#315）', async () => {

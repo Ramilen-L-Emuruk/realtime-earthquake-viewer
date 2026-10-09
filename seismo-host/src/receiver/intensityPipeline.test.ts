@@ -331,23 +331,23 @@ describe('IntensityPipeline', () => {
       expect(w.firstSampleIndex).toBe(0)
       expect(w.firstSampleMs).toBe(BASE_MS)
       expect(w.msPerSample).toBeCloseTo(1000 / HZ, 9)
-      expect(w.gal.map((axis) => axis.length)).toEqual([PER_PACKET, PER_PACKET, PER_PACKET])
+      expect(w.ground!.map((axis) => axis.length)).toEqual([PER_PACKET, PER_PACKET, PER_PACKET])
       // **生のカウント値は配らない。** 受け手側で換算し直す形にすると経路が 2 本になり、
       // 片方だけずれても出てくる数字はそれらしい形をしている。
       // 先頭の標本は x=0・y=+300・z=16880 カウントなので、gal なら 0・約 18・約 1010。
-      expect(w.gal[0][0]).toBe(0)
-      expect(w.gal[1][0]).toBeGreaterThan(17)
-      expect(w.gal[1][0]).toBeLessThan(19)
-      expect(w.gal[2][0]).toBeGreaterThan(1000)
-      expect(w.gal[2][0]).toBeLessThan(1020)
+      expect(w.ground![0][0]).toBe(0)
+      expect(w.ground![1][0]).toBeGreaterThan(17)
+      expect(w.ground![1][0]).toBeLessThan(19)
+      expect(w.ground![2][0]).toBeGreaterThan(1000)
+      expect(w.ground![2][0]).toBeLessThan(1020)
     })
 
-    it('3 成分でなければ波形も載せない', () => {
+    it('校正の形を持たない本数（6 本）なら波形も載せない', () => {
       const p = new IntensityPipeline(OPTS)
 
       const out = p.handlePacket(pkt({ channels: ['HN1', 'HN2', 'HN3', 'HG1', 'HG2', 'HG3'] }))
 
-      // 合成できない以上、計測震度が食べた値は存在しない。
+      // 2・3 本でなければ校正を当てられず、計測震度が食べた値も存在しない。
       expect(out.wave).toBeNull()
     })
 
@@ -391,9 +391,9 @@ describe('IntensityPipeline', () => {
       // **両方 null では通した意味が無い。** `?.` だけの比較だと `undefined === undefined`
       // で素通りしてしまい、組み立て側の回帰で波形が両方とも消えても検知できない。
       if (outA.wave === null || outB.wave === null) throw new Error('波形が載っていない')
-      expect(outA.wave.gal[0][0]).toBe(outB.wave.gal[0][0])
-      expect(outA.wave.gal[1][0]).toBe(outB.wave.gal[1][0])
-      expect(outA.wave.gal[2][0]).toBe(outB.wave.gal[2][0])
+      expect(outA.wave.ground![0][0]).toBe(outB.wave.ground![0][0])
+      expect(outA.wave.ground![1][0]).toBe(outB.wave.ground![1][0])
+      expect(outA.wave.ground![2][0]).toBe(outB.wave.ground![2][0])
     })
 
     it('正: 測る向きの倍率が波形へ反映される（震度が食べる値と同じもの）', () => {
@@ -407,8 +407,8 @@ describe('IntensityPipeline', () => {
       const outBaseline = baseline.handlePacket(pkt())
       const outScaled = scaled.handlePacket(pkt())
 
-      const base = outBaseline.wave?.gal[2][0]
-      const applied = outScaled.wave?.gal[2][0]
+      const base = outBaseline.wave?.ground?.[2][0]
+      const applied = outScaled.wave?.ground?.[2][0]
       if (base === undefined || applied === undefined) throw new Error('波形が載っていない')
       expect(applied).toBeCloseTo(base * 2, 9)
     })
@@ -434,12 +434,12 @@ describe('IntensityPipeline', () => {
       const outCombo = combo.handlePacket(pkt())
       const outBaseline = baseline.handlePacket(pkt())
 
-      const rawAxis0 = outBaseline.wave?.gal[0][0]
-      const rawAxis2 = outBaseline.wave?.gal[2][0]
+      const rawAxis0 = outBaseline.wave?.ground?.[0][0]
+      const rawAxis2 = outBaseline.wave?.ground?.[2][0]
       if (rawAxis0 === undefined || rawAxis2 === undefined) throw new Error('波形が載っていない')
       const expectedAxis0 = (rawAxis0 - 10) * 2
-      expect(outCombo.wave?.gal[0][0]).toBeCloseTo(expectedAxis0, 9)
-      expect(outCombo.wave?.gal[2][0]).toBeCloseTo(expectedAxis0 + rawAxis2, 9)
+      expect(outCombo.wave?.ground?.[0][0]).toBeCloseTo(expectedAxis0, 9)
+      expect(outCombo.wave?.ground?.[2][0]).toBeCloseTo(expectedAxis0 + rawAxis2, 9)
     })
 
     it('正: 校正前の値（uncalibratedGal）は校正を掛ける前の換算値のまま出る（6 面法の材料）', () => {
@@ -456,10 +456,10 @@ describe('IntensityPipeline', () => {
       // 基準は単位の校正を通った値で、行列の積が 0 を -0 にすることがある。中身の差ではないので揃える。
       const plain = (a: readonly number[]) => a.map((v) => v + 0)
       for (const axis of [0, 1, 2] as const) {
-        expect(plain(outCombo.uncalibratedGal[axis])).toEqual(plain(outBaseline.wave.gal[axis]))
+        expect(plain(outCombo.uncalibratedGal[axis])).toEqual(plain(outBaseline.wave.ground![axis]))
       }
       // 対照: 波形のほうは校正を掛けた値になっている。
-      expect(outCombo.wave?.gal[0][0]).not.toBe(outCombo.uncalibratedGal[0][0])
+      expect(outCombo.wave?.ground?.[0][0]).not.toBe(outCombo.uncalibratedGal[0][0])
     })
 
     it('安全弁: 波形を出さない回は校正前の値も出さない', () => {
@@ -498,9 +498,9 @@ describe('IntensityPipeline', () => {
       const a = rotated.handlePacket(pkt()).wave
       const b = baseline.handlePacket(pkt()).wave
       if (a === null || b === null) throw new Error('波形が載っていない')
-      expect(a.gal[1][0]).toBeCloseTo(b.gal[0][0], 9)
-      expect(a.gal[0][0]).toBeCloseTo(-b.gal[1][0], 9)
-      expect(a.gal[2][0]).toBeCloseTo(b.gal[2][0], 9)
+      expect(a.ground![1][0]).toBeCloseTo(b.ground![0][0], 9)
+      expect(a.ground![0][0]).toBeCloseTo(-b.ground![1][0], 9)
+      expect(a.ground![2][0]).toBeCloseTo(b.ground![2][0], 9)
     })
 
     it('正: 基板の向きは設定に書いていないセンサーにも掛かる（向きは基板の事実）', () => {
@@ -514,7 +514,7 @@ describe('IntensityPipeline', () => {
       const a = new IntensityPipeline({ ...OPTS, stations }).handlePacket(pkt()).wave
       const b = new IntensityPipeline(OPTS).handlePacket(pkt()).wave
       if (a === null || b === null) throw new Error('波形が載っていない')
-      expect(a.gal[1][0]).toBeCloseTo(b.gal[0][0], 9)
+      expect(a.ground![1][0]).toBeCloseTo(b.ground![0][0], 9)
     })
 
     it('安全弁: 設定の軸の本数と届いたパケットの本数が違えば、校正を当てずにパケットごと落とす', () => {
@@ -524,14 +524,104 @@ describe('IntensityPipeline', () => {
       expect(out.detail).toContain('設定は 2 軸')
       expect(out.wave).toBeNull()
       expect(out.startedBecause).toBeNull()
+      // 稼働状況の画面へ出すため、本数は数として返す。
+      expect(out.axisMismatch).toEqual({ configuredAxes: 2, receivedAxes: 3 })
     })
 
-    it('対照: 設定に無い 2 軸のセンサーは落とさない（組み立てには乗り、震度の流れは作らない）', () => {
+    it('対照: 本数が合っていれば食い違いは返さない', () => {
+      const p = new IntensityPipeline({ ...OPTS, stations: stationsWith({}) })
+      expect(p.handlePacket(pkt()).axisMismatch).toBeNull()
+    })
+
+    /** 2 軸のパケット（`pkt()` の 1・2 本目の軸だけ）。 */
+    const twoAxisPacket = () =>
+      pkt({ channels: ['HN1', 'HN2'], samples: rows(0, PER_PACKET, SHAKE).map((r) => [r[0]!, r[1]!]) })
+
+    it('正: 2 軸のセンサーは地面の 3 成分を持たない波形を出す（軸ごとの値と測る向きを持つ）', () => {
       const p = new IntensityPipeline(OPTS)
-      const out = p.handlePacket(
-        pkt({ channels: ['HN1', 'HN2'], samples: rows(0, PER_PACKET, SHAKE).map((r) => [r[0]!, r[1]!]) }),
-      )
+      const out = p.handlePacket(twoAxisPacket())
       expect(out.dropped).toBeNull()
+      const w = out.wave
+      if (w === null) throw new Error('波形が載っていない')
+      expect(w.ground).toBeNull()
+      expect(w.channels).toEqual(['HN1', 'HN2'])
+      expect(w.axes.map((a) => a.direction)).toEqual([
+        [1, 0, 0],
+        [0, 1, 0],
+      ])
+      // 3 軸で同じ値を読んだときの東・北と同じ（既定の校正は補正なし・基板の向きは単位行列）。
+      const three = new IntensityPipeline(OPTS).handlePacket(pkt()).wave
+      if (three === null || three.ground === null) throw new Error('3 軸の波形が載っていない')
+      // 行列の積が 0 を -0 にすることがある。中身の差ではないので揃える。
+      const plain = (a: readonly number[]) => a.map((v) => v + 0)
+      expect(plain(w.axes[0]!.gal)).toEqual(plain(three.ground[0]))
+      expect(plain(w.axes[1]!.gal)).toEqual(plain(three.ground[1]))
+      // 校正前の値は 2 本。
+      expect(out.uncalibratedGal?.length).toBe(2)
+    })
+
+    it('安全弁: 2 軸のセンサーは震度の流れを作らない（理由は軸の本数）', () => {
+      const p = new IntensityPipeline(OPTS)
+      const out = p.handlePacket(twoAxisPacket())
+      expect(out.intensitySkipped?.reason).toBe('axis-count')
+      expect(out.readings).toEqual([])
+    })
+
+    it('正: 軸ごとの値は、測る向きの長さ（倍率）で割ってゼロ点を引いた「その向きの加速度」になる', () => {
+      // 軸 1 は基板の X を 2 倍に読み、ゼロ点 10。軸 2 は基板の X と Y の間（45°）を読む。
+      const half = Math.SQRT1_2
+      const p = new IntensityPipeline({
+        ...OPTS,
+        stations: stationsWith(
+          {
+            axes: [
+              { vector: [2, 0, 0], offset: 10 },
+              { vector: [half, half, 0], offset: 0 },
+            ],
+          },
+          [
+            [0, -1, 0],
+            [1, 0, 0],
+            [0, 0, 1],
+          ],
+        ),
+      })
+      const out = p.handlePacket(twoAxisPacket())
+      const w = out.wave
+      if (w === null || out.uncalibratedGal === null) throw new Error('波形が載っていない')
+      // 基板の X が北を向く ⇒ 軸 1 は北、軸 2 は北と西の間。
+      expect(w.axes[0]!.direction[0]).toBeCloseTo(0, 12)
+      expect(w.axes[0]!.direction[1]).toBeCloseTo(1, 12)
+      expect(w.axes[1]!.direction[0]).toBeCloseTo(-half, 12)
+      expect(w.axes[1]!.direction[1]).toBeCloseTo(half, 12)
+      const raw0 = out.uncalibratedGal[0]![0]!
+      expect(w.axes[0]!.gal[0]).toBeCloseTo((raw0 - 10) / 2, 9)
+      expect(w.axes[1]!.gal[0]).toBeCloseTo(out.uncalibratedGal[1]![0]!, 9)
+    })
+
+    it('正: 3 軸のセンサーも軸ごとの値を持ち、測る向きで地面の 3 成分へ射影したものと一致する', () => {
+      const p = new IntensityPipeline({
+        ...OPTS,
+        stations: stationsWith({ axes: legacyAxes(IDENTITY_MATRIX, [2, 3, 4], [10, 20, 30])! }),
+      })
+      const w = p.handlePacket(pkt()).wave
+      if (w === null || w.ground === null) throw new Error('波形が載っていない')
+      expect(w.axes).toHaveLength(3)
+      for (const [j, axis] of w.axes.entries()) {
+        const [dx, dy, dz] = axis.direction
+        const projected = dx * w.ground[0][0]! + dy * w.ground[1][0]! + dz * w.ground[2][0]!
+        expect(axis.gal[0]).toBeCloseTo(projected, 9)
+        expect(Math.hypot(dx, dy, dz)).toBeCloseTo(1, 12)
+        expect(j).toBeLessThan(3)
+      }
+    })
+
+    it('安全弁: 2 軸のパケットでもフルスケールの外ならパケットごと落とす', () => {
+      const p = new IntensityPipeline(OPTS)
+      const bad = rows(0, PER_PACKET, SHAKE).map((r) => [r[0]!, r[1]!])
+      bad[3] = [OVER_SCALE_COUNTS, 0]
+      const out = p.handlePacket(pkt({ channels: ['HN1', 'HN2'], samples: bad }))
+      expect(out.dropped).toBe('scale-out-of-range')
       expect(out.wave).toBeNull()
     })
   })
@@ -548,7 +638,7 @@ describe('IntensityPipeline', () => {
       const p = new IntensityPipeline(OPTS)
       const out = p.handlePacket(pkt())
       const baseline = new IntensityPipeline(OPTS).handlePacket(pkt())
-      expect(out.wave?.gal[2][0]).toBeCloseTo(baseline.wave?.gal[2][0] ?? NaN, 9)
+      expect(out.wave?.ground?.[2][0]).toBeCloseTo(baseline.wave?.ground?.[2][0] ?? NaN, 9)
     })
 
     it('正: updateStations を呼んだ後、以後のパケットへ新しい校正値が反映される', () => {
@@ -562,8 +652,8 @@ describe('IntensityPipeline', () => {
       const outBaseline = baseline.handlePacket(pkt())
       const outUpdated = viaUpdate.handlePacket(pkt())
 
-      const base = outBaseline.wave?.gal[2][0]
-      const applied = outUpdated.wave?.gal[2][0]
+      const base = outBaseline.wave?.ground?.[2][0]
+      const applied = outUpdated.wave?.ground?.[2][0]
       if (base === undefined || applied === undefined) throw new Error('波形が載っていない')
       expect(applied).toBeCloseTo(base * 2, 9)
     })

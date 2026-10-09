@@ -771,7 +771,7 @@ describe('buildClosingLines', () => {
     unusableIntensities: 0,
     sensorEvictions: 0,
     stationEvictions: 0,
-    gravity: { mismatches: 0, unjudged: 0, restlessWindows: 0, restarts: 0, evictions: 0 },
+    gravity: { mismatches: 0, unjudged: 0, restlessWindows: 0, restarts: 0, axisReshapes: 0, evictions: 0 },
     // 締めくくりの後に読む値なので、開いたままの本は 0 が正常。
     mseed: {
       recordsWritten: 120,
@@ -911,13 +911,14 @@ describe('buildClosingLines', () => {
     expect(
       buildClosingLines({
         ...quiet,
-        gravity: { mismatches: 1, unjudged: 2, restlessWindows: 3, restarts: 4, evictions: 5 },
+        gravity: { mismatches: 1, unjudged: 2, restlessWindows: 3, restarts: 4, axisReshapes: 6, evictions: 5 },
       }),
     ).toEqual([
       { level: 'log', line: '  換算の倍率が合わない窓=1' },
       { level: 'log', line: '  静止しているのに震度が高い窓=3' },
       { level: 'log', line: '  静止しておらず倍率を診られなかった窓=2' },
       { level: 'log', line: '  基板の起動が変わり、診断の窓を捨てた=4' },
+      { level: 'log', line: '  センサーの軸の本数が変わり、覚えた静止窓を捨てた=6' },
       { level: 'log', line: '  自己診断の枠を捨てた=5' },
     ])
   })
