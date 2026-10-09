@@ -198,8 +198,9 @@ describe('renderSensorCardHtml / readSensorCardValues', () => {
     expect(container.querySelectorAll('.s-axis-vector')).toHaveLength(6)
   })
 
-  it('6 面法の欄は 3 軸のカードにだけ出す（2 軸では揃う面が無い）', () => {
-    expect(mountCard(VALID_VALUES).querySelector('.s-sixface')).not.toBeNull()
+  // 2026-10-10 に覆した: 6 面法は基板の欄に 1 つだけ置く（全部のセンサーの軸を一緒に解く）。
+  it('6 面法の欄はセンサーカードに出さない（3 軸・2 軸とも。基板の欄にある）', () => {
+    expect(mountCard(VALID_VALUES).querySelector('.s-sixface')).toBeNull()
     expect(mountCard(TWO_AXIS_VALUES).querySelector('.s-sixface')).toBeNull()
   })
 
@@ -248,6 +249,18 @@ describe('基板の向きの欄', () => {
     expect(parseOrientationFormValues(readOrientationValues(container))).toEqual(IDENTITY_MATRIX)
     writeOrientationValues(container, YAW90)
     expect(parseOrientationFormValues(readOrientationValues(container))).toEqual(YAW90)
+  })
+
+  // 正（2026-10-10）: 6 面法は基板の欄に 1 つ。ゼロ点を入れる前に出した傾きはずれを抱え込むので、
+  // 「鉛直を合わせる」より前に置く。
+  it('基板の欄に 6 面法を 1 つ、「鉛直を合わせる」より前に置く', () => {
+    const container = document.createElement('div')
+    container.innerHTML = renderOrientationHtml(orientationToFormValues())
+    expect(container.querySelectorAll('.b-sixface .apply-sixface')).toHaveLength(1)
+    const sixFace = container.querySelector('.b-sixface')
+    const tilt = container.querySelector('.suggest-tilt')
+    if (sixFace === null || tilt === null) throw new Error('欄が無い')
+    expect(sixFace.compareDocumentPosition(tilt) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('純粋な回転でなければ理由を返す（倍率を含む・鏡映・数でない）', () => {

@@ -678,6 +678,39 @@ describe('静止窓の覚え（6 面法の材料）', () => {
     expect(ws[0]!.streamKey).toBe(ID.streamKey)
   })
 
+  // 正（2026-10-10）: 基板の 6 面法は、センサーどうしの窓を時間の重なりで突き合わせる。閉じた時刻だけでは
+  // 窓がどこから始まったかが分からず、続けて静止していたのか間に動いた窓が挟まったのかも見分けられない。
+  it('正: 窓の始まり（fromMs）を覚え、続けて閉じた窓は前の窓の終わりから始まる', () => {
+    const T0 = 1_700_000_000_000
+    const { b, advance } = book()
+    const still = constGal(300, [0, 0, GAL_PER_G])
+    feed(b, advance, still)
+    feed(b, advance, still)
+    wave(b, still, ID)
+
+    const ws = windowsOf(b)
+    expect(ws.map((w) => [w.fromMs, w.atMs])).toEqual([
+      [T0, T0 + 30_000],
+      [T0 + 30_000, T0 + 60_000],
+    ])
+  })
+
+  // 対照: 動いた窓が挟まると、次の静止窓の始まりは前の静止窓の終わりと繋がらない。
+  it('対照: 静止していない窓が挟まれば、次の静止窓の始まりは前の静止窓の終わりより後', () => {
+    const T0 = 1_700_000_000_000
+    const { b, advance } = book()
+    feed(b, advance, constGal(300, [0, 0, GAL_PER_G]))
+    feed(b, advance, constGal(300, [0, 0, GAL_PER_G], { axis: 0, gal: 20 }))
+    feed(b, advance, constGal(300, [GAL_PER_G, 0, 0]))
+    wave(b, restGal(300), ID)
+
+    const ws = windowsOf(b)
+    expect(ws.map((w) => [w.fromMs, w.atMs])).toEqual([
+      [T0, T0 + 30_000],
+      [T0 + 60_000, T0 + 90_000],
+    ])
+  })
+
   describe('いまの静止の始まり（stillSinceMs・「鉛直を合わせる」の材料）', () => {
     const T0 = 1_700_000_000_000
     const still = constGal(300, [0, 0, GAL_PER_G])

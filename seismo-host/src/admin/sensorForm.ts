@@ -156,24 +156,6 @@ function axesGridHtml(axes: readonly AxisFormValues[]): string {
  */
 export const SENSOR_ID_DATALIST_ID = 'detected-sensor-ids'
 
-/**
- * 「6 面で測る」欄。**3 軸のカードにだけ出す** —— 6 面法は 3 軸の当てはめ（`sixFaceFit.ts`）で、
- * 2 軸のセンサーでは揃う面が無いのに「まだ揃っていない面がある」と出続ける。
- *
- * **軸ごとの欄のすぐ下に置く。** 結果を入れる先がこの欄なので、離すと何が書き換わったのか
- * 追えない。詳細設定へ畳むと、面の揃い具合が見えない。中身（揃った面・押せない理由・結果）は
- * viewBoards が埋める。
- */
-const SIX_FACE_HTML = `
-      <div class="s-sixface" style="font-size: 0.8rem; margin-top: 0.5rem;">
-        <div class="muted">6 面で測る：基板を各軸の上向き・下向きの 6 方向へ置き、それぞれ 1 分以上動かさない。直近 30 分の静止した時間から計算する</div>
-        <div class="s-sixface-faces" style="margin-top: 0.2rem;"></div>
-        <div class="row" style="align-items: center; margin-top: 0.2rem;">
-          <button type="button" class="apply-sixface" style="flex: 0 0 auto;" disabled>6 面の結果を入れる</button>
-          <span class="muted s-sixface-why"></span>
-        </div>
-        <div class="muted s-sixface-result"></div>
-      </div>`
 
 /** センサー 1 個ぶんのカード HTML。**値は必ず `escapeHtml` を通す**——`sensorId` は運用者の自由入力。 */
 export function renderSensorCardHtml(values: SensorFormValues): string {
@@ -197,7 +179,6 @@ export function renderSensorCardHtml(values: SensorFormValues): string {
       <div class="muted" style="font-size: 0.75rem;">向き：その軸が基板のどの向きを測るか。長さが倍率（1 gal の揺れで何 gal 読むか）</div>
       <div class="muted" style="font-size: 0.75rem;">ゼロ点：揺れていないときに読む値</div>
       ${axesGridHtml(values.axes)}
-      ${values.axes.length === 3 ? SIX_FACE_HTML : ''}
       <!-- **静止窓の診断は畳まない。** 傾いて付いているという事実は、詳細設定を
            開いた人にしか見えないと気づかれない。中身は viewBoards が埋める。 -->
       <div class="muted s-rest-note" style="font-size: 0.8rem; margin-top: 0.5rem;"></div>
@@ -365,6 +346,20 @@ export function renderOrientationHtml(values: OrientationFormValues): string {
   return `
     <div class="board-orientation">
       <h3>基板の向き</h3>
+      <!-- **6 面法は基板に 1 つ**（2026-10-10 ユーザー承認。前はセンサーカードごとにあった）。基板に載った
+           全部のセンサーの軸を一緒に解き、結果は各カードの軸の欄へ入る。**鉛直合わせより先に置く** ——
+           ゼロ点を入れる前に出した傾きはずれを抱え込む。文言は 2026-10-10 ユーザー承認。中身（揃い具合・
+           押せない理由・結果）は viewBoards が埋める。 -->
+      <div class="b-sixface" style="font-size: 0.8rem; margin-bottom: 0.6rem;">
+        <div>6 面で測る（基板に載った全部のセンサー）</div>
+        <div class="muted">基板を X・Y・Z の上向き・下向きの 6 方向へ置き、それぞれ 1 分以上動かさない。姿勢が足りなければ、斜めにも置く。X・Y は 1 個目のセンサーの 1 本目・2 本目の軸。直近 30 分の静止した時間から計算する</div>
+        <div class="b-sixface-faces" style="margin-top: 0.2rem;"></div>
+        <div class="row" style="align-items: center; margin-top: 0.2rem;">
+          <button type="button" class="apply-sixface" style="flex: 0 0 auto;" disabled>6 面の結果を入れる</button>
+          <span class="muted b-sixface-why"></span>
+        </div>
+        <div class="muted b-sixface-result"></div>
+      </div>
       <!-- **方角は手で入れる。** 重力は鉛直まわりの回転について何も語らないので、
            自動では決まらない（REQUIREMENTS.md §16）。空のままなら水平面は回さない。
            **「向いている」ではなく「向ける」。** 入れるのは向かせたい方角で、実際に

@@ -108,9 +108,9 @@ const REST_SD_GAL = 5
 /**
  * 静止窓をどれだけの間覚えておくか（受け手の時計）。
  *
- * **6 面法の 1 回ぶんが収まる長さ。** 基板を 6 方向へ置き、それぞれ 1 分以上静止させる
- * ので、置き換えの手間を入れて 10〜15 分。その倍を取る。長くすると温度の変化（実機で
- * 数日に 10〜17 gal）がゼロ点に乗った窓まで混ざる。
+ * **6 面法の 1 回ぶんが収まる長さ。** 基板を 6 方向と斜め 3 回（9 姿勢・`admin/boardSixFace.ts`）へ
+ * 置き、それぞれ 1 分以上静止させるので、置き換えの手間を入れて 15〜20 分。それより余裕を取る。
+ * 長くすると温度の変化（実機で数日に 10〜17 gal）がゼロ点に乗った窓まで混ざる。
  */
 const REST_WINDOW_KEEP_MS = 30 * 60_000
 
@@ -252,6 +252,12 @@ export interface GravityVerdict {
  * 渡すと当てはめが黙って歪む。だからここは、3 軸それぞれのばらつきが小さい窓だけを採る。
  */
 export interface RestWindow {
+  /**
+   * 窓を始めた時刻（受け手の時計）。**続けて閉じた窓は、前の窓の `atMs` から始まる**ので、
+   * 間に静止と言えない窓が挟まったかはここで見分けられる。基板の 6 面法は、同じ基板の
+   * センサーどうしの窓をこの時刻と `atMs` の重なりで突き合わせる（`admin/boardSixFace.ts`）。
+   */
+  readonly fromMs: number
   /** 窓を閉じた時刻（受け手の時計）。 */
   readonly atMs: number
   /** 窓を運んできた流れ。**起動し直しても前の窓は消さない**（校正前の値は起動に依らない）。 */
@@ -763,7 +769,14 @@ export class GravityCheckBook {
       return
     }
     entry.stillSinceMs ??= entry.windowStartMs
-    entry.restWindows.push({ atMs, streamKey: entry.streamKey, sampleCount: entry.count, meanGal, sdGal })
+    entry.restWindows.push({
+      fromMs: entry.windowStartMs,
+      atMs,
+      streamKey: entry.streamKey,
+      sampleCount: entry.count,
+      meanGal,
+      sdGal,
+    })
     pruneRestWindows(entry.restWindows, atMs)
   }
 

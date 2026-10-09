@@ -89,6 +89,7 @@ import type { Mat3, Vec3 } from './stationConfigTypes'
 import type { WaveChunk } from './intensityPipeline'
 import { normalizeIntensity } from './intensityPipeline'
 import { resolveCalibration } from './calibration'
+import { FUSION_MIN_DIRECTION_INFO } from './directionInfo'
 import { dot3, eigenSym3, invert3, minEigenvalueSym3, multiplyMatVec3 } from './matrix3'
 // **刻みと震度の方式は単独センサーと揃える**（`intensityPipeline.ts` と同じ理由 ——
 // 物差しが違えば「揺れ方の違い」と「測り方の違い」を見分けられない）。
@@ -110,24 +111,7 @@ const GROUND_AXES = 3
 /** 対の差分 `(a − b) / 2` を出すセンサーの軸の本数。**3 軸どうしだけ**（{@link SensorPairDiff}）。 */
 const PAIR_DIFF_AXES = 3
 
-/**
- * 解いてよい、測る向きの散らばりの下限。**向きだけで作った `G = Σ d_j d_jᵀ` で測る。**
- *
- * 固有値は「その方向を何本ぶんの軸で測っているか」に当たる —— 東・北・上を 1 本ずつ測れば 1、
- * 水平の 2 本だけなら上の向きが 0。**1/9 は、その方向の雑音が 1 軸で真っすぐ測ったときの
- * 3 倍まで**（雑音の大きさは固有値の平方根に反比例する）。これより平面へ寄った並びを解くと、
- * 合成の 1 成分だけが雑音で何倍にも膨らみ、震度を押し上げる。
- *
- * 2 か所で使う ——
- *
- *   - **成分ごと**: その成分の雑音の倍率（`G` の逆の対角）が `1 / FUSION_MIN_DIRECTION_INFO` を
- *     超える成分は NaN にする（解けない向きに掛からない成分は出す）
- *   - **震度**: いちばん小さい固有値がこれ以上の目盛り（3 方向とも散っている）でだけ流す。
- *     どの向きへ揺れても 3 倍を超えないので、震度（3 成分の合成）が雑音で押し上がらない
- *
- * **直交した 3 軸のセンサーが 1 台でも値を持っていれば必ず通る**（その台だけで 1 になる）。
- */
-export const FUSION_MIN_DIRECTION_INFO = 1 / 9
+export { FUSION_MIN_DIRECTION_INFO }
 
 /**
  * `G` の固有値がこれより小さい向きは「まったく測っていない」とみなす。**解けるかの閾値ではない**

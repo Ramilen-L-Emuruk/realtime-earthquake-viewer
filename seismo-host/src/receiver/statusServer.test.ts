@@ -1288,13 +1288,13 @@ describe('/api/*', () => {
     })
   })
 
-  it('正: GET /api/rest-windows はセンサーごとの静止窓と、いまの静止の始まりを返す', async () => {
+  it('正: GET /api/rest-windows はセンサーごとの静止窓（始まりと終わり）と、いまの静止の始まりを返す', async () => {
     const sensors = [
       {
         boardKey: 'mac:aa' as const,
         sensorId: 'i2c0-68',
         stillSinceMs: 0,
-        windows: [{ atMs: 1, streamKey: 'k', sampleCount: 3000, meanGal: [1, 2, 980] as const, sdGal: [1, 1, 1.5] as const }],
+        windows: [{ fromMs: 0, atMs: 1, streamKey: 'k', sampleCount: 3000, meanGal: [1, 2, 980] as const, sdGal: [1, 1, 1.5] as const }],
       },
     ]
     const base = await startAuthed(new ReadingHub(), {}, undefined, undefined, () => sensors)

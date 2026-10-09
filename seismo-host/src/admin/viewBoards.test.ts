@@ -357,7 +357,7 @@ describe('認識済みの基板からの登録', () => {
 
   // **カードの軸の本数は届いた本数で作る。** 2 軸のセンサーに 3 軸のカードを作って保存すると、
   // 軸の本数が食い違ってパケットを捨て続ける（敵対的レビューで検出）。
-  it('正: 「登録」は届いたパケットの軸の本数でカードを作り、2 軸のカードには 6 面法の欄を出さない', async () => {
+  it('正: 「登録」は届いたパケットの軸の本数でカードを作る', async () => {
     vi.unstubAllGlobals()
     stubApiFetch({
       statusSensors: [
@@ -370,9 +370,8 @@ describe('認識済みの基板からの登録', () => {
 
     const cards = container.querySelectorAll<HTMLElement>('.sensor-card')
     expect(cards[0].querySelectorAll('.s-axis-offset')).toHaveLength(2)
-    expect(cards[0].querySelector('.s-sixface')).toBeNull()
     expect(cards[1].querySelectorAll('.s-axis-offset')).toHaveLength(3)
-    // 2 軸のカードに 6 面法の欄が無いことを「壊れた」と数えない。
+    // 2 軸のカードがあっても、欄の描き直しを「壊れた」と数えない。
     expect(container.querySelector('.boards-error')?.textContent).toBe('')
   })
 
@@ -577,23 +576,74 @@ describe('基板の傾きを合わせる', () => {
   })
 
   // **押しても何も起きない形にしない。** 理由が読めること。
-  it('いまの置き方で静止している 3 軸のセンサーが無ければ押せず、理由が出る', async () => {
+  it('いまの置き方で静止しているセンサーが無ければ押せず、理由が出る', async () => {
     restWindows.body.sensors[0] = { ...(restWindows.body.sensors[0] as object), stillSinceMs: null }
     const container = await mountRegistering()
 
     const button = tiltButton(container)
     expect(button.disabled).toBe(true)
-    expect(button.title).toBe('3 軸のセンサーがいまの置き方で静止していない')
+    expect(button.title).toBe('いまの置き方で静止した窓がまだ無い（置いてから 1 分ほど動かさずに待つこと）')
   })
 
-  // **2 本の軸から重力の 3 成分は決まらない。** 静止していても材料に数えない。
-  it('安全弁: 静止しているのが 2 軸のセンサーだけなら押せない', async () => {
+  // **水平の 2 本の軸だけでは重力の 3 成分は決まらない。**（2 軸のセンサーも材料に数えるが、
+  // 軸が 3 方向へ散っていなければ押せない。2026-10-10 から。）
+  it('安全弁: 静止しているのが水平の 2 軸のセンサーだけなら押せない', async () => {
+    restWindows.body.sensors[0] = {
+      ...(restWindows.body.sensors[0] as object),
+      windows: [{ atMs: 31_000, meanGal: [TILTED_15DEG[0], TILTED_15DEG[1]], sampleCount: 3000 }],
+    }
     const container = await mountRegistering()
     cardAt(container, 0).outerHTML = renderSensorCardHtml({ ...emptySensorFormValues(2), sensorId: 'accel-0' })
     cardAt(container, 0).querySelector('.s-sensorId')?.dispatchEvent(new Event('input', { bubbles: true }))
 
     expect(cardAt(container, 0).querySelectorAll('.s-axis-offset')).toHaveLength(2)
     expect(tiltButton(container).disabled).toBe(true)
+  })
+
+  // 正: 2 軸のセンサーだけの基板（IIS2ICLX を立てて付けたもの）でも、軸が 3 方向へ散っていれば
+  // 押せて、基板の向きが書き換わる。**画面の配線を通した確かめ**（解く本体は calibrationSuggest.test.ts）。
+  it('正: 2 軸のセンサーだけでも、軸が 3 方向へ散っていれば押せて、重力が真上を向く', async () => {
+    const [, gy, gz] = TILTED_15DEG
+    restWindows.body.sensors = [
+      { boardKey: 'mac:cccccccccccc', sensorId: 'accel-0', stillSinceMs: 1_000, windows: [{ atMs: 31_000, meanGal: [0, gy], sampleCount: 3000 }] },
+      // 立てて付けた 1 個: 1 本目が基板の Z、2 本目が X を測る。
+      { boardKey: 'mac:cccccccccccc', sensorId: 'accel-1', stillSinceMs: 1_000, windows: [{ atMs: 31_000, meanGal: [gz, 0], sampleCount: 3000 }] },
+    ]
+    const container = await mountRegistering()
+    cardAt(container, 0).outerHTML = renderSensorCardHtml({ ...emptySensorFormValues(2), sensorId: 'accel-0' })
+    cardAt(container, 1).outerHTML = renderSensorCardHtml({
+      ...emptySensorFormValues(2),
+      sensorId: 'accel-1',
+      axes: [
+        { vector: ['0', '0', '1'], offset: '0' },
+        { vector: ['1', '0', '0'], offset: '0' },
+      ],
+    })
+    cardAt(container, 1).querySelector('.s-sensorId')?.dispatchEvent(new Event('input', { bubbles: true }))
+
+    await vi.waitFor(() => expect(tiltButton(container).disabled).toBe(false))
+    expect(await pressTilt(container)).toContain('保存するまで効かない')
+
+    const fixed = applyTo(orientationOf(container), TILTED_15DEG)
+    expect(fixed[0]).toBeCloseTo(0, 2)
+    expect(fixed[1]).toBeCloseTo(0, 2)
+    expect(fixed[2]).toBeCloseTo(980.665, 2)
+  })
+
+  // 2026-10-10 に覆した: 前は読めないカードを飛ばして押せる・押せないを決め、押すと全部のカードを
+  // 読み直してそのカードで断っていた（押せるのに押すと断られる）。押す前から押せなくし、理由を出す。
+  it('安全弁: 読めないカード（打ちかけ）が 1 枚でもあれば押せず、押したときと同じ理由が出る', async () => {
+    const container = await mountRegistering()
+    expect(tiltButton(container).disabled).toBe(false)
+
+    const id = cardAt(container, 1).querySelector<HTMLInputElement>('.s-sensorId')
+    if (id === null) throw new Error('センサー ID の入力欄が無い')
+    id.value = ''
+    id.dispatchEvent(new Event('input', { bubbles: true }))
+
+    const button = tiltButton(container)
+    expect(button.disabled).toBe(true)
+    expect(button.title.startsWith('2 番目のセンサー: ')).toBe(true)
   })
 
   it('押すと基板の向きが書き換わり、その向きで重力が真上を向く', async () => {
@@ -650,7 +700,7 @@ describe('基板の傾きを合わせる', () => {
     // 開いた後で動かした（ホストの静止の始まりが消えた）。
     restWindows.body.sensors[0] = { ...(restWindows.body.sensors[0] as object), stillSinceMs: null }
 
-    expect(await pressTilt(container)).toBe('3 軸のセンサーがいまの置き方で静止していない')
+    expect(await pressTilt(container)).toBe('いまの置き方で静止した窓がまだ無い（置いてから 1 分ほど動かさずに待つこと）')
     expect(orientationOf(container)).toEqual(before)
     // 断った直後に、古い控えで押せる状態へ戻さない。
     expect(tiltButton(container).disabled).toBe(true)
@@ -672,7 +722,7 @@ describe('基板の傾きを合わせる', () => {
       // その後に基板を動かして押す（押した瞬間の答えは「いま静止していない」）。
       restWindows = tiltRestWindows()
       restWindows.body.sensors[0] = { ...(restWindows.body.sensors[0] as object), stillSinceMs: null }
-      expect(await pressTilt(container)).toBe('3 軸のセンサーがいまの置き方で静止していない')
+      expect(await pressTilt(container)).toBe('いまの置き方で静止した窓がまだ無い（置いてから 1 分ほど動かさずに待つこと）')
       expect(button.disabled).toBe(true)
 
       // 先に投げた返事が後から着く。
@@ -697,7 +747,7 @@ describe('基板の傾きを合わせる', () => {
 
     await vi.waitFor(() =>
       expect(container.querySelector('.board-orientation .b-tilt-result')?.textContent).toBe(
-        '3 軸のセンサーがいまの置き方で静止していない',
+        'いまの置き方で静止した窓がまだ無い（置いてから 1 分ほど動かさずに待つこと）',
       ),
     )
     expect(orientationOf(container)).toEqual(before)
@@ -713,7 +763,7 @@ describe('基板の傾きを合わせる', () => {
     const container = await mountRegistering()
     const button = tiltButton(container)
     expect(button.disabled).toBe(true)
-    expect(button.title).toBe('3 軸のセンサーがいまの置き方で静止していない')
+    expect(button.title).toBe('いまの置き方で静止した窓がまだ無い（置いてから 1 分ほど動かさずに待つこと）')
   })
 
   /**
@@ -899,11 +949,15 @@ describe('基板の傾きを合わせる', () => {
   })
 })
 
-/** 校正前の値で測った、ゼロ点 −80/5/−315 gal・感度 1.02/0.98/1.01 のセンサーの 6 面。 */
-function sixFaceWindows(): { meanGal: number[]; sampleCount: number; atMs: number }[] {
+/**
+ * 校正前の値で測った、基板の 6 面と斜め 3 回（9 姿勢）の静止窓。**真の軸は基板の X・Y・Z をそのまま
+ * 測り、倍率だけが `1 / sens`**（ゼロ点 `offset`）。姿勢ごとに 1 窓、窓の間は 30 秒空ける（置き換え）。
+ */
+function sixFaceWindows(
+  offset: readonly number[],
+  sens: readonly number[],
+): { meanGal: number[]; sampleCount: number; fromMs: number; atMs: number }[] {
   const g = 980.665
-  const offset = [-80, 5, -315]
-  const sens = [1.02, 0.98, 1.01]
   const dirs = [
     [1, 0, 0],
     [-1, 0, 0],
@@ -911,17 +965,25 @@ function sixFaceWindows(): { meanGal: number[]; sampleCount: number; atMs: numbe
     [0, -1, 0],
     [0, 0, 1],
     [0, 0, -1],
+    [Math.SQRT1_2, Math.SQRT1_2, 0],
+    [0, Math.SQRT1_2, Math.SQRT1_2],
+    [Math.SQRT1_2, 0, -Math.SQRT1_2],
   ]
-  return dirs.map((d, k) => ({ meanGal: d.map((v, i) => (v * g) / sens[i]! + offset[i]!), sampleCount: 3000, atMs: (k + 1) * 60_000 }))
+  return dirs.map((d, k) => ({
+    meanGal: d.map((v, i) => (v * g) / sens[i]! + offset[i]!),
+    sampleCount: 3000,
+    fromMs: k * 60_000,
+    atMs: k * 60_000 + 30_000,
+  }))
 }
 
 /**
- * 「6 面で測る」欄の配線（`GET /api/rest-windows` → 揃い具合・押せる押せない → 押してフォームへ）。
+ * 基板の「6 面で測る」欄の配線（`GET /api/rest-windows` → 揃い具合・押せる押せない → 押して各カードへ）。
  *
- * **計算と文言は `sixFaceFit.test.ts`・`sixFacePanel.test.ts` が見る。** ここは画面の配線だけ ——
- * 2 つの欄が画面上部のエラー表示を取り合った不具合はレビューでしか見つからなかった。
+ * **計算と文言は `boardSixFace.test.ts`・`sixFacePanel.test.ts` が見る。** ここは画面の配線だけ ——
+ * 欄どうしが画面上部のエラー表示を取り合った不具合はレビューでしか見つからなかった。
  */
-describe('6 面で測る', () => {
+describe('6 面で測る（基板の欄）', () => {
   /** 開いた画面。**後片付けで閉じる**（10 秒ごとの取り直しを次のテストへ持ち越さない）。 */
   let mounted: AbortController | null = null
 
@@ -949,72 +1011,99 @@ describe('6 面で測る', () => {
     return card
   }
 
-  const SIX = {
-    ok: true,
-    body: { sensors: [{ boardKey: 'mac:cccccccccccc', sensorId: 'accel-0', stillSinceMs: null, windows: sixFaceWindows() }] },
+  function panelOf(container: HTMLElement): HTMLElement {
+    const panel = container.querySelector<HTMLElement>('.board-orientation .b-sixface')
+    if (panel === null) throw new Error('基板の 6 面法の欄が無い')
+    return panel
   }
 
-  it('正: 6 面が揃ったセンサーはボタンが押せ、押すとゼロ点と向きの長さの欄へ入る', async () => {
-    const container = await mountWith(SIX)
-    const card = cardAt(container, 0)
-    expect(card.querySelector('.s-sixface-faces')?.textContent).toBe('＋X ✓　−X ✓　＋Y ✓　−Y ✓　＋Z ✓　−Z ✓')
-    const button = card.querySelector<HTMLButtonElement>('.apply-sixface')
+  const sensorWindows = (sensorId: string, offset: readonly number[], sens: readonly number[]) => ({
+    boardKey: 'mac:cccccccccccc',
+    sensorId,
+    stillSinceMs: null,
+    windows: sixFaceWindows(offset, sens),
+  })
+
+  /** 同じ基板の 3 軸のセンサー 2 個（accel-0・accel-1）が、同じ 9 姿勢で静止した窓。 */
+  const NINE = {
+    ok: true,
+    body: {
+      sensors: [sensorWindows('accel-0', [-80, 5, -315], [1.02, 0.98, 1.01]), sensorWindows('accel-1', [12, -30, 40], [0.99, 1.01, 1])],
+    },
+  }
+
+  it('正: 揃えばボタンが押せ、押すと全部のカードの軸の欄へ入る', async () => {
+    const container = await mountWith(NINE)
+    const panel = panelOf(container)
+    expect(panel.querySelector('.b-sixface-faces')?.textContent).toBe('＋X ✓　−X ✓　＋Y ✓　−Y ✓　＋Z ✓　−Z ✓　姿勢 9／9')
+    const button = panel.querySelector<HTMLButtonElement>('.apply-sixface')
     expect(button?.disabled).toBe(false)
 
     button?.click()
 
-    const offset = (axis: number) => card.querySelector<HTMLInputElement>(`.s-axis-offset[data-axis="${axis}"]`)?.value
-    const vector = (axis: number, comp: number) =>
-      card.querySelector<HTMLInputElement>(`.s-axis-vector[data-axis="${axis}"][data-comp="${comp}"]`)?.value
-    expect(offset(2)).toBe('-315.00')
-    // 感度 1.02 の軸は、1 gal の揺れで 1/1.02 gal 読む。向きは欄のまま（基板の X）。
-    expect([vector(0, 0), vector(0, 1), vector(0, 2)]).toEqual(['0.980392', '0.000000', '0.000000'])
-    expect(card.querySelector('.s-sixface-result')?.textContent).toContain('ゼロ点と向きの長さを入れた（姿勢 6・検算なし）')
+    const offset = (card: number, axis: number) =>
+      cardAt(container, card).querySelector<HTMLInputElement>(`.s-axis-offset[data-axis="${axis}"]`)?.value
+    const vector = (card: number, axis: number) =>
+      [0, 1, 2].map(
+        (comp) => cardAt(container, card).querySelector<HTMLInputElement>(`.s-axis-vector[data-axis="${axis}"][data-comp="${comp}"]`)?.value,
+      )
+    expect(offset(0, 2)).toBe('-315.00')
+    // 感度 1.02 の軸は、1 gal の揺れで 1/1.02 gal 読む。
+    expect(vector(0, 0)).toEqual(['0.980392', '0.000000', '0.000000'])
+    expect(offset(1, 1)).toBe('-30.00')
+    expect(vector(1, 0)).toEqual(['1.010101', '0.000000', '0.000000'])
+    expect(panel.querySelector('.b-sixface-result')?.textContent).toContain('全部のセンサーの軸の向き・倍率・ゼロ点を入れた（姿勢 9・残差')
   })
 
-  it('対照: 窓の無いセンサーは押せず、足りない面が理由に出る', async () => {
-    const container = await mountWith(SIX)
-    const card = cardAt(container, 1) // accel-1 には窓が無い
-    expect(card.querySelector<HTMLButtonElement>('.apply-sixface')?.disabled).toBe(true)
-    expect(card.querySelector('.s-sixface-why')?.textContent).toContain('まだ揃っていない面がある（＋X・−X・＋Y・−Y・＋Z・−Z）')
+  it('対照: ほかのセンサーと同時に静止した窓が無いセンサーがあれば押せず、その名前が理由に出る', async () => {
+    const container = await mountWith({ ok: true, body: { sensors: [NINE.body.sensors[0]] } })
+    const panel = panelOf(container)
+    expect(panel.querySelector<HTMLButtonElement>('.apply-sixface')?.disabled).toBe(true)
+    expect(panel.querySelector('.b-sixface-why')?.textContent).toBe('センサー accel-1 が、ほかのセンサーと同時に静止した置き方が無い')
   })
 
   it('安全弁: 取得に失敗したら押せず、取得できないことが理由に出る', async () => {
     const container = await mountWith({ ok: false, body: { error: 'boom' } })
-    const card = cardAt(container, 0)
-    expect(card.querySelector<HTMLButtonElement>('.apply-sixface')?.disabled).toBe(true)
-    expect(card.querySelector('.s-sixface-why')?.textContent).toContain('静止した窓を取得できない')
+    const panel = panelOf(container)
+    expect(panel.querySelector<HTMLButtonElement>('.apply-sixface')?.disabled).toBe(true)
+    expect(panel.querySelector('.b-sixface-why')?.textContent).toContain('静止した窓を取得できない')
+  })
+
+  // 2026-10-10 に覆した: 6 面法の欄はセンサーカードから基板の欄へ移した（全部の軸を一緒に解く）。
+  it('対照: センサーカードには 6 面法の欄を出さない', async () => {
+    const container = await mountWith(NINE)
+    expect(cardAt(container, 0).querySelector('.s-sixface')).toBeNull()
+    expect(container.querySelectorAll('.b-sixface')).toHaveLength(1)
   })
 
   it('押した後の結果は、描き直し（打ち換え・取り直し）で消えない', async () => {
-    const container = await mountWith(SIX)
-    const card = cardAt(container, 0)
-    card.querySelector<HTMLButtonElement>('.apply-sixface')?.click()
-    const before = card.querySelector('.s-sixface-result')?.textContent
+    const container = await mountWith(NINE)
+    const panel = panelOf(container)
+    panel.querySelector<HTMLButtonElement>('.apply-sixface')?.click()
+    const before = panel.querySelector('.b-sixface-result')?.textContent
 
-    // 2 枚目の ID 打ち換えで、全カードの欄が描き直される。
+    // 2 枚目の ID 打ち換えで、全部の欄が描き直される。
     const other = cardAt(container, 1).querySelector<HTMLInputElement>('.s-sensorId')
     if (other === null) throw new Error('センサー ID の入力欄が無い')
     other.value = 'accel-9'
     other.dispatchEvent(new Event('input', { bubbles: true }))
 
-    expect(card.querySelector('.s-sixface-result')?.textContent).toBe(before)
+    expect(panel.querySelector('.b-sixface-result')?.textContent).toBe(before)
   })
 
-  it('2 つの欄が同時に壊れても、知らせは 1 行にまとまって両方が残る', async () => {
-    const container = await mountWith(SIX)
+  it('2 つの欄が同時に壊れても、知らせは 1 行にまとまる', async () => {
+    const container = await mountWith(NINE)
     vi.spyOn(console, 'warn').mockImplementation(() => {})
-    // 1 枚目の両方の欄の出し先を外す（テンプレートとセレクタがずれた状態を模す）。
+    // カードの診断の欄と、基板の 6 面法の欄の出し先を外す（テンプレートとセレクタがずれた状態を模す）。
     cardAt(container, 0).querySelector('.s-rest-note')?.remove()
-    cardAt(container, 0).querySelector('.s-sixface-faces')?.remove()
+    panelOf(container).querySelector('.b-sixface-faces')?.remove()
 
     const other = cardAt(container, 1).querySelector<HTMLInputElement>('.s-sensorId')
     if (other === null) throw new Error('センサー ID の入力欄が無い')
     other.dispatchEvent(new Event('input', { bubbles: true }))
 
     expect(container.querySelector('.boards-error')?.textContent).toBe(
-      '1 枚のセンサーカードで取り付けの診断を、1 枚で 6 面法の欄を出せない。画面を再読込すること',
+      '1 枚のセンサーカードと基板の向きの欄で取り付けの診断を出せない。画面を再読込すること',
     )
   })
 })
-

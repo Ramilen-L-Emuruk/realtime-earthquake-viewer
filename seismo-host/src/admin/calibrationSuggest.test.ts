@@ -7,7 +7,7 @@ import type { Mat3, SensorCalibration, Vec3 } from '../receiver/stationConfigTyp
 import {
   boardGravityForTilt,
   multiplyMat3,
-  NO_STILL_THREE_AXIS,
+  NO_STILL_SPREAD,
   NO_STILL_WINDOW,
   stillMeanGal,
   suggestRotation,
@@ -289,7 +289,7 @@ describe('multiplyMat3', () => {
 })
 
 describe('「鉛直を合わせる」の材料（校正前の静止窓 → カードの軸の向きを通した、基板の座標の重力）', () => {
-  const still = (meanGal: Vec3): TiltSource => ({ stillSinceMs: 0, windows: [{ atMs: 1, meanGal, sampleCount: 3000 }] })
+  const still = (meanGal: readonly number[]): TiltSource => ({ stillSinceMs: 0, windows: [{ atMs: 1, meanGal, sampleCount: 3000 }] })
   const UNIT3: SensorCalibration = defaultSensorCalibration(3)
 
   it('正: いまの静止が始まった後の窓を、サンプル数で重み付けして平均する', () => {
@@ -332,7 +332,7 @@ describe('「鉛直を合わせる」の材料（校正前の静止窓 → カ�
         { vector: [1, 0, 0], offset: 0 },
       ],
     }
-    const got = boardGravityForTilt([{ source: still([500 + 100, 0, 0]), sensor }])
+    const got = boardGravityForTilt([{ sensorId: 'accel-0', source: still([500 + 100, 0, 0]), sensor }])
     if (!got.ok) throw new Error(got.reason)
     expect(got.gravity[2]).toBeCloseTo(G, 9)
     expect(got.gravity[0]).toBeCloseTo(0, 9)
@@ -346,7 +346,7 @@ describe('「鉛直を合わせる」の材料（校正前の静止窓 → カ�
     ]
     const axes = legacyAxes(swapXZ, [G / 500, 1, 1], [100, 0, 0])
     if (axes === null) throw new Error('読み替えられなかった')
-    const got = boardGravityForTilt([{ source: still([500 + 100, 0, 0]), sensor: { ...UNIT3, axes } }])
+    const got = boardGravityForTilt([{ sensorId: 'accel-0', source: still([500 + 100, 0, 0]), sensor: { ...UNIT3, axes } }])
     expect(got.ok && got.gravity[2]).toBeCloseTo(G, 9)
   })
 
@@ -354,7 +354,7 @@ describe('「鉛直を合わせる」の材料（校正前の静止窓 → カ�
   // 傾きは 0 になり向きは変わらない。前は向きを二重に掛けて約 140 度ずれた。いまは材料が
   // 基板の座標なので、地面の座標へ移すのは呼ぶ側（いまの基板の向きを掛ける）。
   it('正: 出した向きを基板へ入れてもう一度押すと、傾き 0° で同じ向きのまま', () => {
-    const got = boardGravityForTilt([{ source: still(tilted(15)), sensor: UNIT3 }])
+    const got = boardGravityForTilt([{ sensorId: 'accel-0', source: still(tilted(15)), sensor: UNIT3 }])
     if (!got.ok) throw new Error(got.reason)
     const r1 = suggestRotation({ gravity: multiplyMatVec3(IDENTITY_MATRIX, got.gravity), rotation: IDENTITY_MATRIX, headingDeg: null })
     if (!r1.ok) throw new Error(r1.reason)
@@ -367,31 +367,77 @@ describe('「鉛直を合わせる」の材料（校正前の静止窓 → カ�
     }
   })
 
-  it('正: 静止している 3 軸のセンサーが複数あれば、基板の座標で平均する', () => {
+  it('正: 静止している 3 軸のセンサーが複数あれば、全部の軸から最小二乗で一緒に解く', () => {
     const got = boardGravityForTilt([
-      { source: still([0, 0, 970]), sensor: UNIT3 },
-      { source: still([0, 0, 990]), sensor: UNIT3 },
+      { sensorId: 'accel-0', source: still([0, 0, 970]), sensor: UNIT3 },
+      { sensorId: 'accel-0', source: still([0, 0, 990]), sensor: UNIT3 },
     ])
     expect(got.ok && got.gravity).toEqual([0, 0, 980])
   })
 
-  it('対照: 2 軸のセンサーと、いま静止していない 3 軸のセンサーは混ぜない', () => {
+  // 対照（2026-10-10 に覆した: 前は 2 軸のセンサーを混ぜなかった）: 2 軸のセンサーも一緒に解く。
+  // いま静止していないセンサーは、前と同じく混ぜない。
+  it('対照: 2 軸のセンサーは一緒に解き、いま静止していないセンサーは混ぜない', () => {
     const got = boardGravityForTilt([
-      { source: still([0, 0, 970]), sensor: UNIT3 },
-      { source: still([5000, 5000, 5000]), sensor: defaultSensorCalibration(2) },
-      { source: { stillSinceMs: null, windows: [] }, sensor: UNIT3 },
-      { source: null, sensor: UNIT3 },
+      { sensorId: 'accel-0', source: still([0, 0, 970]), sensor: UNIT3 },
+      // 水平に付けた 2 軸。重力は X・Y に掛からないので 0 を読む（上の向きは決めない）。
+      { sensorId: 'accel-0', source: still([0, 0]), sensor: defaultSensorCalibration(2) },
+      { sensorId: 'accel-0', source: { stillSinceMs: null, windows: [] }, sensor: UNIT3 },
+      { sensorId: 'accel-0', source: null, sensor: UNIT3 },
     ])
     expect(got.ok && got.gravity).toEqual([0, 0, 970])
   })
 
-  it('安全弁: 静止している 3 軸のセンサーが 1 つも無ければ理由を返す（2 軸だけでは重力の 3 成分が決まらない）', () => {
-    expect(boardGravityForTilt([])).toEqual({ ok: false, reason: NO_STILL_THREE_AXIS })
-    expect(boardGravityForTilt([{ source: still([0, 0, G]), sensor: defaultSensorCalibration(2) }])).toEqual({
-      ok: false,
-      reason: NO_STILL_THREE_AXIS,
+  // 正（2026-10-10）: IIS2ICLX だけの基板（水平 1・立てて 90° 回した 2）でも合わせられる。
+  it('正: 2 軸のセンサーだけでも、軸が 3 方向へ散っていれば基板の座標の重力を解く', () => {
+    const two = (vectors: readonly Vec3[], offsets: readonly number[]): SensorCalibration => ({
+      enabled: true,
+      noiseDensity: null,
+      axes: vectors.map((vector, j) => ({ vector, offset: offsets[j]! })),
     })
-    expect(boardGravityForTilt([{ source: null, sensor: UNIT3 }])).toEqual({ ok: false, reason: NO_STILL_THREE_AXIS })
+    const g: Vec3 = [30, -40, 979]
+    const reads = (s: SensorCalibration) => s.axes.map((a) => a.vector[0] * g[0] + a.vector[1] * g[1] + a.vector[2] * g[2] + a.offset)
+    const flat = two([[1, 0, 0], [0, 1, 0]], [12, -8])
+    const upX = two([[1, 0, 0], [0, 0, 1]], [-20, 35])
+    const upY = two([[0, 1, 0], [0, 0, 1]], [5, -15])
+    const got = boardGravityForTilt([flat, upX, upY].map((sensor) => ({ sensorId: 'accel-0', source: still(reads(sensor)), sensor })))
+    if (!got.ok) throw new Error(got.reason)
+    for (let i = 0; i < 3; i++) expect(got.gravity[i]).toBeCloseTo(g[i]!, 9)
+  })
+
+  it('安全弁: 静止しているセンサーの軸が 3 方向へ散っていなければ理由を返す（水平の 2 軸だけ）', () => {
+    expect(boardGravityForTilt([{ sensorId: 'accel-0', source: still([0, 0]), sensor: defaultSensorCalibration(2) }])).toEqual({
+      ok: false,
+      reason: NO_STILL_SPREAD,
+      lacksMaterial: true,
+    })
+  })
+
+  // 対照: 静止しているセンサーが 1 つも無いのは「散っていない」ではなく「まだ静止していない」。
+  // 散り具合の理由を出すと、置いて待てば済むのに基板を回させてしまう。
+  it('対照: 静止しているセンサーが 1 つも無ければ、静止した窓がまだ無いと返す', () => {
+    expect(boardGravityForTilt([])).toEqual({ ok: false, reason: NO_STILL_WINDOW, lacksMaterial: true })
+    expect(boardGravityForTilt([{ sensorId: 'accel-0', source: null, sensor: UNIT3 }])).toEqual({
+      ok: false,
+      reason: NO_STILL_WINDOW,
+      lacksMaterial: true,
+    })
+  })
+
+  // 正（2026-10-10）: 静止しているのに本数がカードと合わないセンサーしか無いなら、本数の話をする。
+  // 「静止した窓がまだ無い」と言うと、待っても直らないのに待たせてしまう。
+  it('正: 静止しているセンサーの本数がカードと合わないだけなら、本数が合わないと返す', () => {
+    expect(boardGravityForTilt([{ sensorId: 'accel-2', source: still([0, 0, G]), sensor: defaultSensorCalibration(2) }])).toEqual({
+      ok: false,
+      reason: 'センサー accel-2 のカードの軸の本数（2 本）が、届いている値の本数（3 本）と合わない',
+      lacksMaterial: true,
+    })
+    // 対照: 本数の合うセンサーで解けるなら、合わないセンサーを除いて解く。
+    const got = boardGravityForTilt([
+      { sensorId: 'accel-0', source: still([0, 0, 980]), sensor: UNIT3 },
+      { sensorId: 'accel-2', source: still([0, 0, G]), sensor: defaultSensorCalibration(2) },
+    ])
+    expect(got.ok && got.gravity).toEqual([0, 0, 980])
   })
 
   it('安全弁: 軸の向きが 1 つの面に寄っていて解けないなら、向きを出さない', () => {
@@ -403,9 +449,10 @@ describe('「鉛直を合わせる」の材料（校正前の静止窓 → カ�
         { vector: [1, 1, 0], offset: 0 },
       ],
     }
-    expect(boardGravityForTilt([{ source: still([0, 0, G]), sensor: flat }])).toEqual({
+    expect(boardGravityForTilt([{ sensorId: 'accel-0', source: still([0, 0, G]), sensor: flat }])).toEqual({
       ok: false,
       reason: '軸の向きが解けない形になっている',
+      lacksMaterial: false,
     })
   })
 
@@ -419,11 +466,12 @@ describe('「鉛直を合わせる」の材料（校正前の静止窓 → カ�
         { vector: [0, 0, length], offset: 0 },
       ],
     })
-    expect(boardGravityForTilt([{ source: still([0, 0, G]), sensor: withZLength(1 / 0.3) }])).toEqual({
+    expect(boardGravityForTilt([{ sensorId: 'accel-0', source: still([0, 0, G]), sensor: withZLength(1 / 0.3) }])).toEqual({
       ok: false,
       reason: '換算の倍率が合っていない。先にそちらを確かめること',
+      lacksMaterial: false,
     })
     // 対照: 3 分の 1 の手前なら出す。
-    expect(boardGravityForTilt([{ source: still([0, 0, G]), sensor: withZLength(1 / 0.34) }]).ok).toBe(true)
+    expect(boardGravityForTilt([{ sensorId: 'accel-0', source: still([0, 0, G]), sensor: withZLength(1 / 0.34) }]).ok).toBe(true)
   })
 })
