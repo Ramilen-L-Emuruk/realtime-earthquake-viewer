@@ -37,7 +37,7 @@ import {
   timeTicks,
 } from './wavePlot'
 import { openWaveStream } from './waveStream'
-import type { PairSelection, WaveStreamState } from './waveStream'
+import type { PairSelection, ResidualSelection, WaveStreamState } from './waveStream'
 
 /** 見る時間の幅。**上限は溜め場所の長さ（`waveBuffer.ts` の既定 5 分）に合わせる。** */
 const SPAN_CHOICES: readonly { readonly ms: number; readonly label: string }[] = [
@@ -117,12 +117,17 @@ interface StatusView {
    * 「頼んだのに何も来ない」経路が消える。**
    */
   readonly pairs: readonly PairSelection[]
+  /**
+   * ずれを見られるセンサーの一覧（#688）。**`pairs` と同じく `/status` から選ばせる**
+   * （`stationIntensities[].residuals` は合成が実際にずれを出している台）。
+   */
+  readonly residuals: readonly ResidualSelection[]
 }
 
 /** `/status` から、この画面で使う欄だけを読む。 */
 export function readStatus(value: unknown): StatusView {
   if (typeof value !== 'object' || value === null)
-    return { generatedAtMs: null, sensors: [], stream: null, pairs: [] }
+    return { generatedAtMs: null, sensors: [], stream: null, pairs: [], residuals: [] }
   const v = value as Record<string, unknown>
   const sensors: SensorLabel[] = []
   if (Array.isArray(v.sensors)) {
@@ -150,6 +155,7 @@ export function readStatus(value: unknown): StatusView {
     sensors,
     stream: subscribers === null ? null : { open: subscribers, limit: readFinite(streamRaw?.limit) },
     pairs: readPairs(v.stationIntensities),
+    residuals: readResidualMembers(v.stationIntensities),
   }
 }
 
@@ -189,6 +195,28 @@ function readPairs(value: unknown): readonly PairSelection[] {
   return out
 }
 
+/**
+ * `/status` の `stationIntensities[].residuals` から、ずれを見られる台を並べる（#688）。
+ * **読めない要素は飛ばす**（{@link readPairs} と同じ理由）。版の古いホストはこの欄を持たない（空になる）。
+ */
+function readResidualMembers(value: unknown): readonly ResidualSelection[] {
+  if (!Array.isArray(value)) return []
+  const out: ResidualSelection[] = []
+  for (const rawStation of value) {
+    if (typeof rawStation !== 'object' || rawStation === null) continue
+    const station = rawStation as Record<string, unknown>
+    const stationId = readNonEmptyString(station.stationId)
+    if (stationId === null || !Array.isArray(station.residuals)) continue
+    for (const rawResidual of station.residuals) {
+      if (typeof rawResidual !== 'object' || rawResidual === null) continue
+      const member = readMember((rawResidual as Record<string, unknown>).member)
+      if (member === null) continue
+      out.push({ stationId, boardKey: member.boardKey, sensorId: member.sensorId })
+    }
+  }
+  return out
+}
+
 function readMember(value: unknown): { boardKey: string; sensorId: string } | null {
   if (typeof value !== 'object' || value === null) return null
   const v = value as Record<string, unknown>
@@ -206,6 +234,11 @@ function readMember(value: unknown): { boardKey: string; sensorId: string } | nu
  * 分からないと据え付けの判断に使えない。
  */
 function displayNameOf(source: WaveSourceKey, labels: readonly SensorLabel[]): string {
+  if (source.kind === 'residual') {
+    // **ずれも基板とセンサーの名前で出す**（差分と同じ理由）。段の見出しと同じ文言
+    // （2026-10-09 ユーザー承認）なので、センサーの一覧の行も同じ名前で並ぶ。
+    return `${source.boardKey} / ${source.sensorId}（ずれ・測る向きのまま）`
+  }
   if (source.kind === 'pair') {
     // **差分は基板とセンサーの名前で出す。** 観測点の名前で出すと合成の行と
     // 見分けが付かないが、**この行だけ別の量**（`d = (a − b) / 2`）なので、
@@ -224,6 +257,15 @@ function displayNameOf(source: WaveSourceKey, labels: readonly SensorLabel[]): s
   const station = found?.stationName
   const raw = `${source.boardKey} / ${source.sensorId}`
   return station === null || station === undefined ? raw : `${station}（${raw}）`
+}
+
+/**
+ * 測る向きのまま描く段の見出し。**2 軸のセンサーとずれで違う**（どちらも 2026-10-09 ユーザー承認の文言）。
+ * ずれは `displayNameOf` が見出しの形まで持つので、そのまま使う。
+ */
+function ownPanelTitleOf(source: WaveSourceKey, labels: readonly SensorLabel[]): string {
+  const name = displayNameOf(source, labels)
+  return source.kind === 'residual' ? name : `${name}（2 軸・測る向きのまま）`
 }
 
 /**
@@ -312,6 +354,7 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
         差分は 2 台の値の差（両方の半分）で、センサー単独や合成とは別の量。
         縦の幅は軸ごとに共通なので、揺れている間は絶対値の波形に重ねるとほぼ平らに見える。
         差分だけを選べば、縦の幅が差分に合う。
+        ずれは、そのセンサーを除いたほかのセンサーで解いた揺れを、そのセンサーが測る向きへ写して、測った値から引いたもの（半分にはしない）。
       </p>
     </section>
     <div class="wave-plots">
@@ -364,12 +407,19 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
   let sensorListSignature = ''
   /** 差分を見たい 1 組（#372）。選んでいなければ null。 */
   let diffSelection: PairSelection | null = null
-  /** 選んでから届いた差分の件数。**0 のまま続くのが「来ていない」の印。** */
-  let diffChunks = 0
+  /**
+   * 選んでから届いたまとまりの件数（組の差分・ずれのどちらか、選んでいるほう）。**0 のまま続くのが
+   * 「来ていない」の印。** 選べるのは 1 つだけなので 1 つの数で足りる（選び直すと 0 から数え直す）。
+   */
+  let selectionChunks = 0
   /** 組の選択肢の署名。**変わったときだけ作り直す**（選んでいる指の下で入れ替えない）。 */
   let diffListSignature = ''
   /** 差分を見られる組の一覧（`/status` から引く）。 */
   let pairs: readonly PairSelection[] = []
+  /** ずれを見たい 1 台（#688）。選んでいなければ null。**組（`diffSelection`）と同時には選ばない。** */
+  let residualSelection: ResidualSelection | null = null
+  /** ずれを見られる台の一覧（`/status` から引く）。 */
+  let residualCandidates: readonly ResidualSelection[] = []
   /**
    * いま見ている窓に、時刻の当てはめが倒れた区間が入っているか。
    *
@@ -417,6 +467,7 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
       statusGeneratedAtMs = status.generatedAtMs
       stream = status.stream
       pairs = status.pairs
+      residualCandidates = status.residuals
       errorEl.textContent = ''
       markDirty()
       renderHeader()
@@ -560,7 +611,7 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
       .join('')
   }
 
-  // ---- 差分の組の選び方（#372）----
+  // ---- 差分の組・ずれの台の選び方（#372・#688）----
 
   /** 選択欄の値。**`keyOf` と同じ形**なので、組を指す文字列が 2 通りにならない。 */
   const pairKeyOf = (p: PairSelection): string =>
@@ -576,14 +627,31 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
   const pairLabelOf = (p: PairSelection): string =>
     `${p.stationId}: ${p.boardKeyA} / ${p.sensorIdA} − ${p.boardKeyB} / ${p.sensorIdB}`
 
+  /** ずれの台の溜め場所の鍵（選択欄の値と同じ）。 */
+  const residualSourceOf = (r: ResidualSelection): WaveSourceKey => ({
+    kind: 'residual',
+    stationId: r.stationId,
+    boardKey: r.boardKey,
+    sensorId: r.sensorId,
+  })
+  const residualKeyOf = (r: ResidualSelection): string => keyOf(residualSourceOf(r))
+
+  /** ずれの選択肢の名前（2026-10-09 ユーザー承認の文言）。 */
+  const residualLabelOf = (r: ResidualSelection): string => `${r.boardKey} / ${r.sensorId} − ほかのセンサーの合成（ずれ）`
+
+  /** いま選んでいるものの鍵。選んでいなければ空文字（「選ばない」の値）。 */
+  const currentChoiceKey = (): string =>
+    diffSelection !== null ? pairKeyOf(diffSelection) : residualSelection !== null ? residualKeyOf(residualSelection) : ''
+
   /**
-   * 組の選択肢を並べる。
+   * 組とずれの台の選択肢を並べる。
    *
    * **既定は「選ばない」。** 選ぶと購読の中身が変わる（繋ぎ直す）ので、
    * 勝手に 1 組を流し始めない —— 実機は全ペアで 36 組・毎秒 240 KB（実測） ある。
+   * **組とずれは同じ欄で 1 つだけ選ぶ**（同時に流すと段が増えて、どちらを見ているか読めない）。
    */
   const renderDiffList = (): void => {
-    const signature = pairs.map(pairKeyOf).join('\u0000')
+    const signature = [...pairs.map(pairKeyOf), '\u0001', ...residualCandidates.map(residualKeyOf)].join('\u0000')
     if (signature === diffListSignature) return
     diffListSignature = signature
 
@@ -595,59 +663,78 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
         `<option value="${escapeHtml(pairKeyOf(p))}">${escapeHtml(pairLabelOf(p))}</option>`,
       )
     }
+    for (const r of residualCandidates) {
+      options.push(`<option value="${escapeHtml(residualKeyOf(r))}">${escapeHtml(residualLabelOf(r))}</option>`)
+    }
     diffEl.innerHTML = options.join('')
-    // **選んでいた組が一覧から消えていたら「選ばない」へ戻す。** 設定が変わって
-    // その組が無くなった場合で、黙って選択が残ると「選んでいるのに来ない」になる。
-    const current = diffSelection === null ? '' : pairKeyOf(diffSelection)
-    if (current !== '' && !pairs.some((p) => pairKeyOf(p) === current)) {
-      selectPair(null)
+    // **選んでいたものが一覧から消えていたら「選ばない」へ戻す。** 設定が変わって
+    // その組・台が無くなった場合で、黙って選択が残ると「選んでいるのに来ない」になる。
+    const current = currentChoiceKey()
+    const stillListed =
+      pairs.some((p) => pairKeyOf(p) === current) || residualCandidates.some((r) => residualKeyOf(r) === current)
+    if (current !== '' && !stillListed) {
+      selectChoice(null)
       return
     }
     diffEl.value = current
   }
 
-  /** 差分の様子を 1 行で出す。**届いていないことを黙らない。** */
+  /** 差分・ずれの様子を 1 行で出す。**届いていないことを黙らない。** */
   const renderDiffNote = (): void => {
-    if (diffSelection === null) {
+    if (diffSelection === null && residualSelection === null) {
       diffNoteEl.textContent = ''
       return
     }
-    if (diffChunks === 0) {
-      // **「まだ来ていない」を出す。** 設定が変わってその組が無くなった場合の症状は
-      // 1 件も届かないことだけなので、黙ると繋がっていないのと見分けが付かない。
-      diffNoteEl.textContent = 'この組の差分はまだ 1 件も届いていない（合成が作っていないか、設定が変わった可能性）'
+    // **「まだ来ていない」を出す。** 設定が変わってその組・台が無くなった場合の症状は
+    // 1 件も届かないことだけなので、黙ると繋がっていないのと見分けが付かない。
+    if (residualSelection !== null) {
+      // 文言は 2026-10-09 ユーザー承認。
+      diffNoteEl.textContent =
+        selectionChunks === 0
+          ? 'このセンサーのずれはまだ 1 件も届いていない（合成が作っていないか、設定が変わった可能性）'
+          : `このセンサーのずれを ${selectionChunks} まとまり受け取っている`
       return
     }
-    diffNoteEl.textContent = `この組の差分を ${diffChunks} まとまり受け取っている`
+    diffNoteEl.textContent =
+      selectionChunks === 0
+        ? 'この組の差分はまだ 1 件も届いていない（合成が作っていないか、設定が変わった可能性）'
+        : `この組の差分を ${selectionChunks} まとまり受け取っている`
   }
 
   /**
-   * 見る組を切り替える。**押し出しを繋ぎ直す。**
+   * 見る組・台を切り替える。**押し出しを繋ぎ直す。**
    *
-   * **前の組の溜め場所を落とす。** 溜め場所は 32 本までで、実機は全ペア 36 組 ——
+   * **前に選んでいたものの溜め場所を落とす。** 溜め場所は 32 本までで、実機は全ペア 36 組 ——
    * 落とさずに切り替え続けると、**ある時点から新しい組が上限で断られる**
    * （`WaveStore.remove` の説明を見ること）。
    */
-  const selectPair = (next: PairSelection | null): void => {
-    const before = diffSelection
+  const selectChoice = (
+    next: { readonly kind: 'pair'; readonly pair: PairSelection } | { readonly kind: 'residual'; readonly residual: ResidualSelection } | null,
+  ): void => {
+    const before: WaveSourceKey | null =
+      diffSelection !== null
+        ? {
+            kind: 'pair',
+            stationId: diffSelection.stationId,
+            boardKeyA: diffSelection.boardKeyA,
+            sensorIdA: diffSelection.sensorIdA,
+            boardKeyB: diffSelection.boardKeyB,
+            sensorIdB: diffSelection.sensorIdB,
+          }
+        : residualSelection !== null
+          ? residualSourceOf(residualSelection)
+          : null
     if (before !== null) {
-      const key = pairKeyOf(before)
-      store.remove({
-        kind: 'pair',
-        stationId: before.stationId,
-        boardKeyA: before.boardKeyA,
-        sensorIdA: before.sensorIdA,
-        boardKeyB: before.boardKeyB,
-        sensorIdB: before.sensorIdB,
-      })
-      shown.delete(key)
+      store.remove(before)
+      shown.delete(keyOf(before))
       // **一覧の署名を崩して作り直させる。** 溜め場所から消えたので、
       // センサーの一覧に残った行を掃除する必要がある。
       sensorListSignature = ''
     }
-    diffSelection = next
-    diffChunks = 0
-    diffEl.value = next === null ? '' : pairKeyOf(next)
+    diffSelection = next?.kind === 'pair' ? next.pair : null
+    residualSelection = next?.kind === 'residual' ? next.residual : null
+    selectionChunks = 0
+    diffEl.value = currentChoiceKey()
     renderDiffNote()
     renderSensorList()
     markDirty()
@@ -656,7 +743,17 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
 
   diffEl.addEventListener('change', () => {
     const value = diffEl.value
-    selectPair(value === '' ? null : (pairs.find((p) => pairKeyOf(p) === value) ?? null))
+    if (value === '') {
+      selectChoice(null)
+      return
+    }
+    const pair = pairs.find((p) => pairKeyOf(p) === value)
+    if (pair !== undefined) {
+      selectChoice({ kind: 'pair', pair })
+      return
+    }
+    const residual = residualCandidates.find((r) => residualKeyOf(r) === value)
+    selectChoice(residual === undefined ? null : { kind: 'residual', residual })
   })
 
   sensorsEl.addEventListener('change', (event) => {
@@ -813,7 +910,7 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
         return `
         <section class="panel wave-axis wave-own" data-key="${escapeHtml(key)}">
           <div class="row" style="align-items: baseline; justify-content: space-between">
-            <h3 style="margin: 0">${escapeHtml(displayNameOf(buffer.source, labels))}（2 軸・測る向きのまま）</h3>
+            <h3 style="margin: 0">${escapeHtml(ownPanelTitleOf(buffer.source, labels))}</h3>
             <span class="wave-own-range muted"></span>
           </div>
           <div class="wave-own-legend muted">${legend}</div>
@@ -1032,7 +1129,7 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
       // **観測点の合成は先着枠を使わず必ず出す。** この画面で合成を見る目的は
       // 「平均した 1 本が単体より静かか」の確認（#362 の効果）なので、
       // センサー 9 本の枠に埋もれて既定で非表示だと開いた意味が無い。
-      if (chunk.source.kind === 'station' || chunk.source.kind === 'pair') {
+      if (chunk.source.kind === 'station' || chunk.source.kind === 'pair' || chunk.source.kind === 'residual') {
         // **差分も先着枠を使わず必ず出す。** 届いたのは運用者が選んだからで
         // （頼まない限り 1 件も来ない）、枠に埋もれて見えないと選んだ意味が無い。
         shown.add(key)
@@ -1070,6 +1167,7 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
     openWaveStream({
       wave: true,
       diff: diffSelection,
+      residual: residualSelection,
       signal: ac.signal,
       onState: (next) => {
         state = next
@@ -1083,7 +1181,12 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
         // **溜め場所へ入ったものだけ数える。** 断られた分まで数えると、添え書きが
         // 「受け取っている」と言いながら行が 1 つも出ない形になる —— 上限に達したことは
         // 別の警告に出るが、**離れた場所にあって文言も結び付かない。**
-        if (takeChunk(chunk)) diffChunks++
+        if (takeChunk(chunk)) selectionChunks++
+        renderDiffNote()
+      },
+      // **ずれも同じ溜め場所へ**（鍵が `'residual'` を名乗る）。数え方は差分と同じ。
+      onResidual: (chunk) => {
+        if (takeChunk(chunk)) selectionChunks++
         renderDiffNote()
       },
       onUnreadable: (count, detail) => {

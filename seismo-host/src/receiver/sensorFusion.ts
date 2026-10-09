@@ -13,9 +13,8 @@
 //
 // **観測点ごとに、センサーと無関係な目盛りを 1 本持つ。** 刻みは 10 ms（100 Hz）に固定し、
 // 位置は絶対時刻で決める —— `k` 番目の目盛りは `k × 10 ms`（1970 年からの通し番号）。
-// 合成はこの目盛りの 1 点ずつについて、**成分ごとに、その時刻の値を持っているセンサー
-// 全員**から重み付きで混ぜる。設計の経緯は
-// [`docs/seismo-station-fusion-design.md`](../../../docs/seismo-station-fusion-design.md)。
+// 合成はこの目盛りの 1 点ずつについて、**その時刻の値を持っているセンサー全員の軸**から解く。
+// 設計の経緯は [`docs/seismo-station-fusion-design.md`](../../../docs/seismo-station-fusion-design.md)。
 //
 // **以前は 1 台（いちばん静かな台）を「駆動役」に固定し、その到着だけで合成を進めていた。**
 // その 1 台が欠けると、ほかのセンサーが生きていても観測点の波形と震度が止まる ——
@@ -31,8 +30,29 @@
 // - **値は補間で引く。** 目盛りを前後で挟む 2 サンプルが同じセンサーにあれば線形補間する
 //   （刻みの違う台 —— IIS2ICLX は 104 Hz —— が混ざっても揃う）。2 サンプルの間隔が刻みの
 //   1.5 倍を超えるなら引かない。**外へは延ばさない**
-// - **成分ごとに混ぜる。** 重みも本数も成分ごとに持つ。今の台はどれも 3 軸なので
-//   3 成分とも同じになるが、成分の揃わない台（2 軸）が混ざっても合成はこの形のまま動く
+//
+// ## 軸を 1 本ずつの観測として解く（最小二乗）
+//
+// **センサーの軸 1 本が 1 つの観測。** 軸 j は地面の加速度 `a`（東・北・上）を、自分の測る向き
+// `d_j`（長さ 1）へ写した値 `y_j = d_j · a` を測る（`intensityPipeline.ts` の `WaveAxis`）。
+// 目盛り 1 点ごとに、その時刻の値を持つセンサー全員の軸を並べて `a` を最小二乗で解く:
+//
+// ```
+// N = Σ w d_j d_jᵀ     b = Σ w d_j y_j     a = N⁻¹ b      （w はそのセンサーの重み）
+// ```
+//
+// - **3 軸のセンサーも軸 3 本として入る。** 特別な道は持たない。測る向きが直交していれば
+//   （回転だけの校正。いまの設定はすべてそう）`N` は成分ごとの重みの和の対角になり、
+//   **成分ごとの重み付き平均と同じ値**になる（以前の合成）
+// - **2 軸のセンサー（IIS2ICLX）も同じ形で入る。** 1 台では 3 成分を解けないが、ほかのセンサーの
+//   軸と並べれば解ける（水平に置いた 1 個と、立てて向きを変えた 2 個で 3 方向が揃う）
+// - **測る向きが 3 方向へ散っていなければ、解けない成分だけ欠け。** 向きだけで作った
+//   `G = Σ d_j d_jᵀ` から、成分ごとに「その成分の雑音が 1 軸で真っすぐ測ったときの何倍か」を出し、
+//   3 倍を超える成分を NaN にする（{@link FUSION_MIN_DIRECTION_INFO}）。**解けない向きに掛からない
+//   成分は出す** —— 上を測る台が止まって水平の台だけになっても、東・北の波形は続く（2026-10-09
+//   ユーザー承認）。**震度は 3 成分とも解けた目盛りでだけ流す**（`G` のいちばん小さい固有値が
+//   {@link FUSION_MIN_DIRECTION_INFO} 以上）。3 方向へ散っていない目盛りは数える
+//   （{@link SensorFusion.unsolvedPoints}）
 //
 // **いちばん静かな台が値を決める度合いは、以前と変わらない。** 重みが雑音の分散の逆数
 // なので、静かな 1 台がいればその台がほぼ値を決める（#93 の「役割分担」は重みとして残る）。
@@ -65,8 +85,11 @@ import { IntensityStream } from '../intensity/intensityStream'
 import type { IntensityPoint } from '../intensity/intensityStream'
 import type { BoardKey } from '../protocol/types'
 import type { StationConfig } from './stationConfig'
+import type { Mat3, Vec3 } from './stationConfigTypes'
 import type { WaveChunk } from './intensityPipeline'
 import { normalizeIntensity } from './intensityPipeline'
+import { resolveCalibration } from './calibration'
+import { dot3, eigenSym3, invert3, minEigenvalueSym3, multiplyMatVec3 } from './matrix3'
 // **刻みと震度の方式は単独センサーと揃える**（`intensityPipeline.ts` と同じ理由 ——
 // 物差しが違えば「揺れ方の違い」と「測り方の違い」を見分けられない）。
 import { STEP_SEC_DEFAULT, samplesForSeconds } from '../../../src/utils/knet/intensityCommon'
@@ -81,7 +104,43 @@ import { STEP_SEC_DEFAULT, samplesForSeconds } from '../../../src/utils/knet/int
  */
 export const FUSION_DC_WINDOW_SEC = 20
 
-const REQUIRED_AXES = 3
+/** 地面の成分の数（東・北・上）。 */
+const GROUND_AXES = 3
+
+/** 対の差分 `(a − b) / 2` を出すセンサーの軸の本数。**3 軸どうしだけ**（{@link SensorPairDiff}）。 */
+const PAIR_DIFF_AXES = 3
+
+/**
+ * 解いてよい、測る向きの散らばりの下限。**向きだけで作った `G = Σ d_j d_jᵀ` で測る。**
+ *
+ * 固有値は「その方向を何本ぶんの軸で測っているか」に当たる —— 東・北・上を 1 本ずつ測れば 1、
+ * 水平の 2 本だけなら上の向きが 0。**1/9 は、その方向の雑音が 1 軸で真っすぐ測ったときの
+ * 3 倍まで**（雑音の大きさは固有値の平方根に反比例する）。これより平面へ寄った並びを解くと、
+ * 合成の 1 成分だけが雑音で何倍にも膨らみ、震度を押し上げる。
+ *
+ * 2 か所で使う ——
+ *
+ *   - **成分ごと**: その成分の雑音の倍率（`G` の逆の対角）が `1 / FUSION_MIN_DIRECTION_INFO` を
+ *     超える成分は NaN にする（解けない向きに掛からない成分は出す）
+ *   - **震度**: いちばん小さい固有値がこれ以上の目盛り（3 方向とも散っている）でだけ流す。
+ *     どの向きへ揺れても 3 倍を超えないので、震度（3 成分の合成）が雑音で押し上がらない
+ *
+ * **直交した 3 軸のセンサーが 1 台でも値を持っていれば必ず通る**（その台だけで 1 になる）。
+ */
+export const FUSION_MIN_DIRECTION_INFO = 1 / 9
+
+/**
+ * `G` の固有値がこれより小さい向きは「まったく測っていない」とみなす。**解けるかの閾値ではない**
+ * （それは {@link FUSION_MIN_DIRECTION_INFO}）—— 丸め誤差で 0 にならない固有値を、測っている
+ * 向きと取り違えないための下限。
+ */
+const UNSEEN_DIRECTION_INFO = 1e-9
+
+/**
+ * まったく測っていない向きへ、その成分（測る向き）が掛かってよい大きさ（向きの内積）。
+ * **ここまでなら、測っていない向きの揺れが漏れても 0.1% に収まる。**
+ */
+const UNSEEN_LEAK_MAX = 1e-3
 
 /** 観測点の目盛りの刻み（ミリ秒）。**100 Hz に固定する**（冒頭の「観測点の時間の目盛り」）。 */
 export const STATION_GRID_MS = 10
@@ -164,11 +223,11 @@ const GAP_FACTOR = 1.5
 const MAX_SAMPLES_PER_MEMBER = 6_000
 
 /**
- * センサー 1 本ぶんの直流（重力）を追い、引いた値を返す。**窓は {@link FUSION_DC_WINDOW_SEC}。**
+ * センサー 1 本ぶんの直流（重力）を軸ごとに追い、引いた値を返す。**窓は {@link FUSION_DC_WINDOW_SEC}。**
  *
- * **なぜ引くのか。** 合成は「値が引けたセンサーだけ」で平均するので、顔ぶれは
+ * **なぜ引くのか。** 合成は「値が引けたセンサーだけ」で解くので、顔ぶれは
  * 目盛りごとに変わりうる。**各センサーの直流が揃っていないと、顔ぶれが 1 本入れ替わる
- * たびに平均の直流が跳ぶ** —— 実機では静止時の Z 軸が 662〜1200 gal に散っていて
+ * たびに合成の直流が跳ぶ** —— 実機では静止時の Z 軸が 662〜1200 gal に散っていて
  * （感度が未校正）、静止ノイズ 1.5 gal に対して数十 gal のステップが 100ms ごとに立ち、
  * 周期補正フィルタがそれを**実機で震度 4.36**（単体は 1.12〜1.24）として出していた
  * （2026-09-28・#362。実測値は `../../REQUIREMENTS.md` §7 の表）。
@@ -176,10 +235,13 @@ const MAX_SAMPLES_PER_MEMBER = 6_000
  * **震度の計算側が引く直流では消えない。** あちらは流し込みの最初のサンプルを
  * 差し引くだけで、**途中で立つ段差はそのまま揺れとして通る**。段差を作らせないには、
  * 混ぜる前に各センサーから直流を落としておくしかない。
+ *
+ * **軸ごとに追う。** 軸の値は「その向きの加速度」なので、重力もその向きへ写した分だけが乗る
+ * （2 軸でも 3 軸でも同じ形）。
  */
 export class DcTracker {
-  private readonly bufs: readonly [Float64Array, Float64Array, Float64Array]
-  private readonly sums: [number, number, number] = [0, 0, 0]
+  private readonly bufs: Float64Array[]
+  private readonly sums: number[]
   private next = 0
   private filled = 0
   /** 足し引きを重ねた回数。**1 周ごとに数え直して誤差の溜まりを断つ**（下記 `step`）。 */
@@ -191,16 +253,18 @@ export class DcTracker {
    * 2000 サンプル）から引くので通常は起きないが、`dcWindowSec` に極端に小さい値を渡すと
    * そうなる —— **合成波形も合成の震度も、全ゼロのまま出続ける**（例外にはならない）。
    */
-  constructor(capacity: number) {
+  constructor(capacity: number, channels: number) {
     if (!(capacity >= 1)) throw new Error('capacity は 1 以上で指定すること')
+    if (!(Number.isInteger(channels) && channels >= 1)) throw new Error('channels は 1 以上の整数で指定すること')
     const n = Math.floor(capacity)
-    this.bufs = [new Float64Array(n), new Float64Array(n), new Float64Array(n)]
+    this.bufs = Array.from({ length: channels }, () => new Float64Array(n))
+    this.sums = new Array(channels).fill(0)
   }
 
   /** いま引いている直流。**1 つも食わせていなければ 0**（引くものが無い）。 */
-  get dc(): readonly [number, number, number] {
-    if (this.filled === 0) return [0, 0, 0]
-    return [this.sums[0] / this.filled, this.sums[1] / this.filled, this.sums[2] / this.filled]
+  get dc(): readonly number[] {
+    if (this.filled === 0) return this.sums.map(() => 0)
+    return this.sums.map((s) => s / this.filled)
   }
 
   /** 溜まっているサンプルの数。窓に満たないうちは、溜まった分だけの平均を引く。 */
@@ -209,20 +273,22 @@ export class DcTracker {
   }
 
   /**
-   * 3 軸を 1 サンプル食わせ、**そのサンプルを含めた直流を引いた値**を返す。
+   * 軸の値を 1 サンプルぶん食わせ、**そのサンプルを含めた直流を引いた値**を返す。
+   * 本数は作ったときの `channels` と同じであること（違えば投げる）。
    *
    * **窓が埋まるのを待たない。** 待つと、待っている間の値が直流ごと合成へ流れて
    * 同じ症状になる（しかも「まだ溜まっていない」ことは下流から見えない）。
    * 溜まった分の平均でも、跳びを作らないという目的は果たせる。
    */
-  step(v0: number, v1: number, v2: number): [number, number, number] {
-    const cap = this.bufs[0].length
-    const values: readonly [number, number, number] = [v0, v1, v2]
-    for (let axis = 0; axis < REQUIRED_AXES; axis++) {
-      const buf = this.bufs[axis]
-      if (this.filled === cap) this.sums[axis] -= buf[this.next]
-      buf[this.next] = values[axis]
-      this.sums[axis] += values[axis]
+  step(values: readonly number[]): number[] {
+    const channels = this.bufs.length
+    if (values.length !== channels) throw new Error(`軸の本数が違う（${values.length} 本・作ったのは ${channels} 本）`)
+    const cap = this.bufs[0]!.length
+    for (let axis = 0; axis < channels; axis++) {
+      const buf = this.bufs[axis]!
+      if (this.filled === cap) this.sums[axis]! -= buf[this.next]!
+      buf[this.next] = values[axis]!
+      this.sums[axis]! += values[axis]!
     }
     this.next = this.next + 1 === cap ? 0 : this.next + 1
     if (this.filled < cap) this.filled++
@@ -234,27 +300,33 @@ export class DcTracker {
     this.sinceRebuild++
     if (this.sinceRebuild >= cap) {
       this.sinceRebuild = 0
-      for (let axis = 0; axis < REQUIRED_AXES; axis++) {
-        const buf = this.bufs[axis]
+      for (let axis = 0; axis < channels; axis++) {
+        const buf = this.bufs[axis]!
         let s = 0
-        for (let i = 0; i < this.filled; i++) s += buf[i]
+        for (let i = 0; i < this.filled; i++) s += buf[i]!
         this.sums[axis] = s
       }
     }
 
     const dc = this.dc
-    return [v0 - dc[0], v1 - dc[1], v2 - dc[2]]
+    return values.map((v, axis) => v - dc[axis]!)
   }
 }
 
-/** 補間で引いた 1 時刻ぶんの値（直流を引いた後）と、引いた直流。成分ごと。 */
+/**
+ * 補間で引いた 1 時刻ぶんの値（直流を引いた後）と、引いた直流。軸ごと。
+ *
+ * `dirs` はその値を測った向き（軸ごと・地面で見た長さ 1）。**向きの配列はセンサーごとに 1 つを
+ * 使い回すので、同じ向きかは参照で見分けられる**（`SensorFusion.ingest`）。
+ */
 interface SampleAt {
-  readonly value: [number, number, number]
-  readonly dc: [number, number, number]
+  readonly value: readonly number[]
+  readonly dc: readonly number[]
+  readonly dirs: readonly Vec3[]
 }
 
 /**
- * センサー 1 本ぶんのサンプルを、時刻順に抱える。**直流を引いた後の値と、引いた直流を持つ。**
+ * センサー 1 本ぶんのサンプルを、時刻順に抱える。**直流を引いた後の値と、引いた直流と、測った向きを持つ。**
  *
  * 先頭の捨て方は「出したまとまりの手前」まで（`trimBefore`）。**補間に要る 1 つ前の
  * サンプルは残す** —— 次のまとまりの最初の目盛りは、それと次のサンプルに挟まれる。
@@ -263,20 +335,27 @@ class SampleStore {
   private t: number[] = []
   /** そのサンプルが属していたまとまりの刻み。補間でまたいでよい間隔を決める。 */
   private step: number[] = []
-  private v: [number[], number[], number[]] = [[], [], []]
-  private d: [number[], number[], number[]] = [[], [], []]
+  /** そのサンプルを測った向き（参照を共有する）。 */
+  private dirs: (readonly Vec3[])[] = []
+  private v: number[][]
+  private d: number[][]
   private head = 0
+
+  constructor(private readonly channels: number) {
+    this.v = Array.from({ length: channels }, () => [])
+    this.d = Array.from({ length: channels }, () => [])
+  }
 
   get size(): number {
     return this.t.length - this.head
   }
 
   get lastMs(): number | null {
-    return this.size === 0 ? null : this.t[this.t.length - 1]
+    return this.size === 0 ? null : this.t[this.t.length - 1]!
   }
 
   get firstMs(): number | null {
-    return this.size === 0 ? null : this.t[this.head]
+    return this.size === 0 ? null : this.t[this.head]!
   }
 
   /**
@@ -292,17 +371,18 @@ class SampleStore {
   insert(
     times: readonly number[],
     msPerSample: number,
-    values: readonly [readonly number[], readonly number[], readonly number[]],
-    dcs: readonly [readonly number[], readonly number[], readonly number[]],
+    dirs: readonly Vec3[],
+    values: readonly (readonly number[])[],
+    dcs: readonly (readonly number[])[],
     from: number,
     to: number,
   ): number {
     if (from >= to) return 0
     const last = this.lastMs
-    if (last === null || times[from] > last) {
-      for (let i = from; i < to; i++) this.push(times[i], msPerSample, values, dcs, i)
+    if (last === null || times[from]! > last) {
+      for (let i = from; i < to; i++) this.push(times[i]!, msPerSample, dirs, values, dcs, i)
     } else {
-      this.mergeIn(times, msPerSample, values, dcs, from, to)
+      this.mergeIn(times, msPerSample, dirs, values, dcs, from, to)
     }
     let dropped = 0
     if (this.size > MAX_SAMPLES_PER_MEMBER) {
@@ -316,48 +396,65 @@ class SampleStore {
   private push(
     tMs: number,
     msPerSample: number,
-    values: readonly [readonly number[], readonly number[], readonly number[]],
-    dcs: readonly [readonly number[], readonly number[], readonly number[]],
+    dirs: readonly Vec3[],
+    values: readonly (readonly number[])[],
+    dcs: readonly (readonly number[])[],
     i: number,
   ): void {
     this.t.push(tMs)
     this.step.push(msPerSample)
-    for (let axis = 0; axis < REQUIRED_AXES; axis++) {
-      this.v[axis].push(values[axis][i])
-      this.d[axis].push(dcs[axis][i])
+    this.dirs.push(dirs)
+    for (let axis = 0; axis < this.channels; axis++) {
+      this.v[axis]!.push(values[axis]![i]!)
+      this.d[axis]!.push(dcs[axis]![i]!)
     }
   }
 
   private mergeIn(
     times: readonly number[],
     msPerSample: number,
-    values: readonly [readonly number[], readonly number[], readonly number[]],
-    dcs: readonly [readonly number[], readonly number[], readonly number[]],
+    dirs: readonly Vec3[],
+    values: readonly (readonly number[])[],
+    dcs: readonly (readonly number[])[],
     from: number,
     to: number,
   ): void {
-    const lo = times[from] - msPerSample / 2
-    const hi = times[to - 1] + msPerSample / 2
-    type Row = { t: number; step: number; v: [number, number, number]; d: [number, number, number] }
+    const lo = times[from]! - msPerSample / 2
+    const hi = times[to - 1]! + msPerSample / 2
+    type Row = { t: number; step: number; dirs: readonly Vec3[]; v: number[]; d: number[] }
     const rows: Row[] = []
+    const axes = Array.from({ length: this.channels }, (_, axis) => axis)
     for (let i = this.head; i < this.t.length; i++) {
-      if (this.t[i] >= lo && this.t[i] <= hi) continue
-      rows.push({ t: this.t[i], step: this.step[i], v: [this.v[0][i], this.v[1][i], this.v[2][i]], d: [this.d[0][i], this.d[1][i], this.d[2][i]] })
+      if (this.t[i]! >= lo && this.t[i]! <= hi) continue
+      rows.push({
+        t: this.t[i]!,
+        step: this.step[i]!,
+        dirs: this.dirs[i]!,
+        v: axes.map((axis) => this.v[axis]![i]!),
+        d: axes.map((axis) => this.d[axis]![i]!),
+      })
     }
     for (let i = from; i < to; i++) {
-      rows.push({ t: times[i], step: msPerSample, v: [values[0][i], values[1][i], values[2][i]], d: [dcs[0][i], dcs[1][i], dcs[2][i]] })
+      rows.push({
+        t: times[i]!,
+        step: msPerSample,
+        dirs,
+        v: axes.map((axis) => values[axis]![i]!),
+        d: axes.map((axis) => dcs[axis]![i]!),
+      })
     }
     rows.sort((a, b) => a.t - b.t)
     this.t = rows.map((r) => r.t)
     this.step = rows.map((r) => r.step)
-    this.v = [rows.map((r) => r.v[0]), rows.map((r) => r.v[1]), rows.map((r) => r.v[2])]
-    this.d = [rows.map((r) => r.d[0]), rows.map((r) => r.d[1]), rows.map((r) => r.d[2])]
+    this.dirs = rows.map((r) => r.dirs)
+    this.v = axes.map((axis) => rows.map((r) => r.v[axis]!))
+    this.d = axes.map((axis) => rows.map((r) => r.d[axis]!))
     this.head = 0
   }
 
   /** `ms` 以前のサンプルを、最後の 1 つを残して捨てる（補間に要る）。 */
   trimBefore(ms: number): void {
-    while (this.head + 1 < this.t.length && this.t[this.head + 1] <= ms) this.head++
+    while (this.head + 1 < this.t.length && this.t[this.head + 1]! <= ms) this.head++
     this.compact()
   }
 
@@ -365,15 +462,16 @@ class SampleStore {
     if (this.head < 1024) return
     this.t = this.t.slice(this.head)
     this.step = this.step.slice(this.head)
-    this.v = [this.v[0].slice(this.head), this.v[1].slice(this.head), this.v[2].slice(this.head)]
-    this.d = [this.d[0].slice(this.head), this.d[1].slice(this.head), this.d[2].slice(this.head)]
+    this.dirs = this.dirs.slice(this.head)
+    this.v = this.v.map((row) => row.slice(this.head))
+    this.d = this.d.map((row) => row.slice(this.head))
     this.head = 0
   }
 
   /** `ms` 以上で最初のサンプルの時刻。無ければ null。 */
   firstAtOrAfter(ms: number): number | null {
     const i = this.lowerBound(ms)
-    return i < this.t.length ? this.t[i] : null
+    return i < this.t.length ? this.t[i]! : null
   }
 
   /** `ms` 以上で最初のサンプルの位置（無ければ末尾の次）。 */
@@ -382,7 +480,7 @@ class SampleStore {
     let hi = this.t.length
     while (lo < hi) {
       const mid = (lo + hi) >>> 1
-      if (this.t[mid] < ms) lo = mid + 1
+      if (this.t[mid]! < ms) lo = mid + 1
       else hi = mid
     }
     return lo
@@ -391,24 +489,24 @@ class SampleStore {
   /**
    * 時刻 `ms` の値を引く。**挟む 2 サンプルが無ければ null（外へ延ばさない）。**
    * 2 サンプルの間隔が刻みの {@link GAP_FACTOR} 倍を超えても null（間に欠けがある）。
+   * **2 サンプルの測った向きが違っても null**（校正が変わった境目。向きの違う値は混ぜられない）。
    */
   at(ms: number): SampleAt | null {
     const i = this.lowerBound(ms)
-    if (i < this.t.length && Math.abs(this.t[i] - ms) < 1e-6) {
-      return { value: [this.v[0][i], this.v[1][i], this.v[2][i]], dc: [this.d[0][i], this.d[1][i], this.d[2][i]] }
+    if (i < this.t.length && Math.abs(this.t[i]! - ms) < 1e-6) {
+      return { value: this.v.map((row) => row[i]!), dc: this.d.map((row) => row[i]!), dirs: this.dirs[i]! }
     }
     const before = i - 1
     if (before < this.head || i >= this.t.length) return null
-    const span = this.t[i] - this.t[before]
-    if (span > GAP_FACTOR * Math.max(this.step[before], this.step[i])) return null
-    const f = (ms - this.t[before]) / span
-    const value: [number, number, number] = [0, 0, 0]
-    const dc: [number, number, number] = [0, 0, 0]
-    for (let axis = 0; axis < REQUIRED_AXES; axis++) {
-      value[axis] = this.v[axis][before] + (this.v[axis][i] - this.v[axis][before]) * f
-      dc[axis] = this.d[axis][before] + (this.d[axis][i] - this.d[axis][before]) * f
+    if (this.dirs[before] !== this.dirs[i]) return null
+    const span = this.t[i]! - this.t[before]!
+    if (span > GAP_FACTOR * Math.max(this.step[before]!, this.step[i]!)) return null
+    const f = (ms - this.t[before]!) / span
+    return {
+      value: this.v.map((row) => row[before]! + (row[i]! - row[before]!) * f),
+      dc: this.d.map((row) => row[before]! + (row[i]! - row[before]!) * f),
+      dirs: this.dirs[i]!,
     }
-    return { value, dc }
   }
 }
 
@@ -429,10 +527,10 @@ export interface SensorMemberRef {
 type AxisRows<T> = readonly [readonly T[], readonly T[], readonly T[]]
 
 /**
- * 観測点ひとつぶんの合成波形。**校正済み gal の重み付き平均**（REQUIREMENTS.md §7）。
+ * 観測点ひとつぶんの合成波形。**全センサーの軸を最小二乗で解いた、校正済み gal**（REQUIREMENTS.md §7・冒頭）。
  *
  * **刻みは常に {@link STATION_GRID_MS}、位置は観測点の目盛りの通し番号**
- * （`firstSampleMs === firstSampleIndex × STATION_GRID_MS`）。3 成分とも値がある目盛りだけを
+ * （`firstSampleMs === firstSampleIndex × STATION_GRID_MS`）。3 成分とも解けた目盛りだけを
  * 含む —— 欠けた目盛りでは、まとまりが切れる（次のまとまりの `firstSampleIndex` が飛ぶ）。
  */
 export interface FusedWaveChunk {
@@ -442,7 +540,7 @@ export interface FusedWaveChunk {
   readonly firstSampleMs: number
   readonly msPerSample: number
   /**
-   * 重み付き平均の gal。`gal[axis][i]` が i 番目のサンプル。
+   * 解いた gal（東・北・上）。`gal[axis][i]` が i 番目のサンプル。
    *
    * **直流（重力）を引いた変動分。** 混ぜる前に各センサーから落としてある
    * （`DcTracker` の説明を見ること）。落とさないと、顔ぶれが入れ替わるたびに
@@ -450,21 +548,26 @@ export interface FusedWaveChunk {
    */
   readonly gal: AxisRows<number>
   /**
-   * 上の `gal` から落とした直流。**同じ重みで平均してある**ので、
-   * `gal[axis][i] + dcGal[axis][i]` が「校正済み gal の重み付き平均」（落とす前の値）。
+   * 上の `gal` から落とした直流。**同じ重みで解いてある**ので、
+   * `gal[axis][i] + dcGal[axis][i]` が「校正済み gal を解いた値」（落とす前の値）。
    *
    * **落とした値を捨てない。** 重力の向きと大きさは取り付けの診断に使える事実で、
    * 変動分だけにすると下流からは二度と引けない。
    */
   readonly dcGal: AxisRows<number>
   /**
-   * 各目盛りへ実際に効いたセンサーの数。**3 成分のうち最も少ない成分の本数。**
+   * 各目盛りへ実際に効いたセンサーの数（値を持っていた台）。
    *
-   * 届いていない台が平均から外れたことを、値の形だけでは下流が見分けられない
+   * 届いていない台が合成から外れたことを、値の形だけでは下流が見分けられない
    * ——1 台の値がそのまま「合成」を名乗ることになるので、実際に混ぜた数を添える。
+   * **3 軸のセンサーだけなら、以前の「3 成分のうち最も少ない成分の本数」と同じ値**になる。
    */
   readonly memberCount: readonly number[]
-  /** 成分ごとの本数。**成分の揃わない台（2 軸）が混ざったときに `memberCount` と分かれる。** */
+  /**
+   * 成分ごとの本数。**その成分を自分の軸でじゅうぶんに測っている台の数**（自分の軸だけで作った
+   * `Σ d_j d_jᵀ` の対角が {@link FUSION_MIN_DIRECTION_INFO} 以上）。水平に置いた 2 軸の台は
+   * 上の成分に数えない。3 軸の台は 3 成分とも数える。
+   */
   readonly axisMemberCount: AxisRows<number>
 }
 
@@ -478,6 +581,9 @@ export interface FusedWaveChunk {
  * 3 台以上のグループでは**全ペアの組み合わせ**にこの式をそのまま適用する
  * （要件原文が定めるのは 2 台の式だけなので、新しい式は作らない）。
  * **目盛りは合成波形と同じ。**
+ *
+ * **3 軸のセンサーどうしだけ。** 2 軸のセンサーは 1 台で東・北・上を解けないので、成分ごとの
+ * 差を作れない。2 軸を含むずれは {@link SensorResidual} が受け持つ。
  */
 export interface SensorPairDiff {
   readonly stationId: string
@@ -486,8 +592,35 @@ export interface SensorPairDiff {
   readonly firstSampleIndex: number
   readonly firstSampleMs: number
   readonly msPerSample: number
-  /** 両方の値が揃う目盛りだけ埋まる。片方でも無ければ null（外挿しない）。 */
+  /** 両方の値が揃う目盛りだけ埋まる。片方でも無ければ null（外挿しない）。東・北・上。 */
   readonly diffGal: AxisRows<number | null>
+}
+
+/**
+ * センサー 1 台ぶんの「ずれ」。軸ごとに、**測った値 − そのセンサーを除いたほかのセンサーで解いた
+ * 揺れをその軸の向きへ写した値**（gal・直流を引いた後）。半分にはしない。
+ *
+ * **自分を除いて解く**（2026-10-09 ユーザー承認）。自分も含めた合成と比べると、重みの大きい台ほど
+ * 合成が自分へ寄ってずれが小さく出る —— IIS2ICLX は水平で MPU6050 の 8〜10 倍静かなので重みは
+ * 64〜100 倍になり、壊れても本当の食い違いの 1〜2% しか出ない。**いちばん信用している台の故障が
+ * 見えなくなる**のを避ける。
+ *
+ * **ほかのセンサーで東・北・上を解けない目盛りでは null**（その台を抜くと向きが平面へ寄る並び）。
+ * 2 軸のセンサーを含む観測点で「どの台がおかしいか」を見る手段がこれ（対の差分は 3 軸どうしだけ）。
+ */
+export interface SensorResidual {
+  readonly stationId: string
+  readonly member: SensorMemberRef
+  readonly firstSampleIndex: number
+  readonly firstSampleMs: number
+  readonly msPerSample: number
+  /** 軸の名前（センサーが名乗るもの）。`axes` の並びと 1 対 1。 */
+  readonly channels: readonly string[]
+  /**
+   * 軸ごとのずれ。`direction` はその軸が地面で測る向き（長さ 1）。
+   * 値は目盛りごとで、ずれを出せない目盛りは null。
+   */
+  readonly axes: readonly { readonly direction: Vec3; readonly residualGal: readonly (number | null)[] }[]
 }
 
 /** 合成波形から出した、観測点ぶんの計測震度相当。**震度の平均ではない。** */
@@ -513,6 +646,11 @@ export interface StationCloseFailure {
 export interface FusionOutcome {
   readonly fusedWave: FusedWaveChunk
   readonly pairDiffs: readonly SensorPairDiff[]
+  /**
+   * センサーごとのずれ（{@link SensorResidual}）。**値を一度でも届けたセンサー全員ぶん**（届けた
+   * ことの無い台は測る向きが分からないので入らない）。このまとまりで値を持たなかった台は全部 null。
+   */
+  readonly residuals: readonly SensorResidual[]
   /** このまとまりで出た震度。流し込みを作り直したときは、締めた分（前の流し込みの末尾）も混ざる。 */
   readonly readings: readonly StationIntensityReading[]
   /**
@@ -574,21 +712,31 @@ export interface SensorFusionClosing {
 
 interface Member {
   readonly ref: SensorMemberRef
-  /** 成分ごとの重み（ノイズ密度の逆数分散）。 */
-  readonly weights: readonly [number, number, number]
-  /**
-   * どの成分を測っているか。**今の台はどれも 3 軸なので全部真。** 成分の揃わない台
-   * （2 軸）を受けるときは、設定から引いてここへ入れる。
-   */
-  readonly axes: readonly [boolean, boolean, boolean]
+  /** 重み（ノイズ密度の逆数分散）。**センサーの軸は全部この重み。** */
+  readonly weight: number
+  /** 設定の軸の本数（2 か 3）。**違う本数のまとまりは混ぜない**（`ingest`）。 */
+  readonly axisCount: number
   readonly samples: SampleStore
   /** 届いた中でいちばん新しいサンプルの時刻。「生きているか」「揃ったか」に使う。 */
   lastSampleMs: number | null
   /**
    * 直流の追い方。**区間が切れても捨てない** —— 追っているのは物理量（重力）そのもので、
    * 捨てると、そのセンサーだけ直流の推定が 0 から立ち上がり直して**切れ目のたびに跳びを作る**。
+   * **測る向きが変わったときだけ作り直す**（向きの違う値の直流は混ぜられない）。
    */
   dc: DcTracker | null
+  /**
+   * いま届いている測る向き（軸ごと）。**同じ向きの間は同じ配列を使い回す**ので、サンプルの向きが
+   * 同じかを参照で見分けられる（`SampleStore.at`）。まだ何も届いていなければ null。
+   */
+  dirs: readonly Vec3[] | null
+  /** いま届いている軸の名前。`dirs` と同じ並び。 */
+  channels: readonly string[] | null
+  /**
+   * 3 軸のセンサーで、`dirs` を行に並べた行列の逆（軸の値 → 東・北・上）。対の差分に使う。
+   * `dirs` が変わったら作り直す。2 軸のセンサー・解けない向きでは null。
+   */
+  groundOf: { readonly dirs: readonly Vec3[]; readonly inverse: Mat3 | null } | null
 }
 
 interface Group {
@@ -622,24 +770,30 @@ interface Group {
   futureSamples: number
   /** 抱えたまま混ぜずに捨てたサンプル（{@link SensorFusion.discardedSamples}）。 */
   discarded: number
+  /** 値を持つ台がいたのに、3 方向へ散っておらず解けなかった目盛り（{@link SensorFusion.unsolvedPoints}）。 */
+  unsolvedPoints: number
 }
 
 /**
- * 設定から観測点ごとのグループを作る。**`enabled` な 3 軸のセンサーだけを見る。**
+ * 設定から観測点ごとのグループを作る。**`enabled` なセンサーを、軸の本数（2・3）を問わず見る。**
  *
  * 2 台に満たない観測点は組まない——合成する相手が居ない。
- *
- * **2 軸のセンサーはまだ顔ぶれに入れない**（合成は東・北・上を 1 台で解ける値しか混ぜない）。
- * 入れると、一度も値を届けない台として「届くはずの台」に数えられ、観測点に最初に値が届いてから
- * しばらくは、その台を待って合成が遅れる（`isLive`）。
  */
 function buildGroups(config: StationConfig): Group[] {
-  const listByStation = new Map<string, { boardKey: BoardKey; sensorId: string; noiseDensity: number | null }[]>()
+  const listByStation = new Map<
+    string,
+    { boardKey: BoardKey; sensorId: string; noiseDensity: number | null; axisCount: number }[]
+  >()
   for (const board of config.boards) {
     for (const sensor of board.sensors) {
-      if (!sensor.enabled || sensor.axes.length !== REQUIRED_AXES) continue
+      if (!sensor.enabled) continue
       const list = listByStation.get(board.stationId) ?? []
-      list.push({ boardKey: board.boardKey, sensorId: sensor.sensorId, noiseDensity: sensor.noiseDensity })
+      list.push({
+        boardKey: board.boardKey,
+        sensorId: sensor.sensorId,
+        noiseDensity: sensor.noiseDensity,
+        axisCount: sensor.axes.length,
+      })
       listByStation.set(board.stationId, list)
     }
   }
@@ -651,17 +805,17 @@ function buildGroups(config: StationConfig): Group[] {
     // 単純平均へ倒す**——一部だけ重み付けすると、申告の無いセンサーを暗黙に
     // ノイズ 0 として扱うことになる。
     const allKnown = list.every((m) => m.noiseDensity !== null)
-    const members: Member[] = list.map((m) => {
-      const w = allKnown ? 1 / (m.noiseDensity as number) ** 2 : 1
-      return {
-        ref: { boardKey: m.boardKey, sensorId: m.sensorId },
-        weights: [w, w, w],
-        axes: [true, true, true],
-        samples: new SampleStore(),
-        lastSampleMs: null,
-        dc: null,
-      }
-    })
+    const members: Member[] = list.map((m) => ({
+      ref: { boardKey: m.boardKey, sensorId: m.sensorId },
+      weight: allKnown ? 1 / (m.noiseDensity as number) ** 2 : 1,
+      axisCount: m.axisCount,
+      samples: new SampleStore(m.axisCount),
+      lastSampleMs: null,
+      dc: null,
+      dirs: null,
+      channels: null,
+      groundOf: null,
+    }))
     groups.push({
       stationId,
       members,
@@ -675,6 +829,7 @@ function buildGroups(config: StationConfig): Group[] {
       lateSamples: 0,
       futureSamples: 0,
       discarded: 0,
+      unsolvedPoints: 0,
     })
   }
   return groups
@@ -704,15 +859,187 @@ function allLiveCover(group: Group, clock: number, tailMs: number): boolean {
   return true
 }
 
-/** 1 まとまりぶんの目盛りの計算結果。`included[j]` が偽の目盛りは欠け。 */
+/**
+ * 正規方程式の足し込み（3x3 を 9 個の数で持つ）。**センサー 1 台ぶんずつ作って足す** ——
+ * 自分を除いて解く（{@link SensorResidual}）ときに、その台のぶんだけを引けるように。
+ */
+interface Normal {
+  /** `Σ w d dᵀ`（重みつき）。 */
+  readonly n: number[]
+  /** `Σ w d y`（値）。 */
+  readonly b: number[]
+  /** `Σ w d y_直流`（落とした直流）。 */
+  readonly bd: number[]
+  /** `Σ d dᵀ`（向きだけ。解けるかの判定に使う）。 */
+  readonly g: number[]
+}
+
+function emptyNormal(): Normal {
+  return { n: new Array(9).fill(0), b: [0, 0, 0], bd: [0, 0, 0], g: new Array(9).fill(0) }
+}
+
+function normalOf(s: SampleAt, weight: number): Normal {
+  const out = emptyNormal()
+  s.dirs.forEach((d, j) => {
+    for (let r = 0; r < 3; r++) {
+      out.b[r]! += weight * d[r] * s.value[j]!
+      out.bd[r]! += weight * d[r] * s.dc[j]!
+      for (let c = 0; c < 3; c++) {
+        out.n[r * 3 + c]! += weight * d[r] * d[c]
+        out.g[r * 3 + c]! += d[r] * d[c]
+      }
+    }
+  })
+  return out
+}
+
+function addNormal(acc: Normal, x: Normal, sign: 1 | -1): Normal {
+  return {
+    n: acc.n.map((v, i) => v + sign * x.n[i]!),
+    b: acc.b.map((v, i) => v + sign * x.b[i]!),
+    bd: acc.bd.map((v, i) => v + sign * x.bd[i]!),
+    g: acc.g.map((v, i) => v + sign * x.g[i]!),
+  }
+}
+
+function toMat3(m: readonly number[]): Mat3 {
+  return [
+    [m[0]!, m[1]!, m[2]!],
+    [m[3]!, m[4]!, m[5]!],
+    [m[6]!, m[7]!, m[8]!],
+  ]
+}
+
+/** 目盛り 1 点ぶんの解。**成分ごとに、解けたかが違いうる。** */
+interface PointSolution {
+  /** 解いた値（東・北・上）。**解けなかった成分は NaN**（{@link FUSION_MIN_DIRECTION_INFO}）。 */
+  readonly a: Vec3
+  /** 落とした直流を同じように解いた値。`a` と同じ成分が NaN。 */
+  readonly dc: Vec3
+  /** 3 方向とも散っている（`G` のいちばん小さい固有値が {@link FUSION_MIN_DIRECTION_INFO} 以上）。震度はここでだけ流す。 */
+  readonly full: boolean
+  /** 向き `d` へ写した値（`d · a`）。**その向きを解けないなら null**（成分と同じ判定を `d` へ当てる）。 */
+  project(d: Vec3): number | null
+}
+
+const AXIS_UNIT: readonly Vec3[] = [
+  [1, 0, 0],
+  [0, 1, 0],
+  [0, 0, 1],
+]
+
+/** 1〜3 元の連立方程式 `m c = r`（`m` は正定値の対称行列）。解けなければ null。 */
+function solveSmall(m: readonly (readonly number[])[], r: readonly number[]): readonly number[] | null {
+  if (m.length === 1) {
+    const c = r[0]! / m[0]![0]!
+    return Number.isFinite(c) ? [c] : null
+  }
+  if (m.length === 2) {
+    const det = m[0]![0]! * m[1]![1]! - m[0]![1]! * m[1]![0]!
+    if (!(det > 0)) return null
+    return [(m[1]![1]! * r[0]! - m[0]![1]! * r[1]!) / det, (m[0]![0]! * r[1]! - m[1]![0]! * r[0]!) / det]
+  }
+  const inverse = invert3(m as unknown as Mat3)
+  if (inverse === null) return null
+  return multiplyMatVec3(inverse, r as unknown as Vec3)
+}
+
+/**
+ * 目盛り 1 点を解く。**値を 1 つも出せなければ null。**
+ *
+ * **測っている向き（`G` の固有値が {@link UNSEEN_DIRECTION_INFO} 以上の固有の向き）の張る部分で
+ * 解く**（`a = V c`、`(Vᵀ N V) c = Vᵀ b`）。3 方向とも測っていれば `a = N⁻¹ b` そのもの。
+ * 測っていない向き（水平の台だけのときの上）は、データに 1 つも現れないので解かない ——
+ * そこへ値を置かないことは、その向きを 0 と決めつけることではない（**その向きに掛かる成分は
+ * 出さない**ので、0 と決めつけた値は外へ出ない）。
+ *
+ * **成分ごとに出すかを決めるのは雑音の倍率**（`G` の測っている部分の逆を、その成分へ当てた値）。
+ * 弱いながら測っている向き（平面からわずかに傾いた台）も解きに入れるので、東・北はその向きの
+ * 揺れに引きずられない —— 0 と決めつけて解くと、傾いた軸に乗った上の揺れが東へ漏れる。
+ */
+function solveNormal(x: Normal): PointSolution | null {
+  const eig = eigenSym3(toMat3(x.g))
+  if (eig === null) return null
+  const seen: Vec3[] = []
+  const seenInfo: number[] = []
+  const unseen: Vec3[] = []
+  eig.vectors.forEach((v, k) => {
+    if (eig.values[k]! >= UNSEEN_DIRECTION_INFO) {
+      seen.push(v)
+      seenInfo.push(eig.values[k]!)
+    } else {
+      unseen.push(v)
+    }
+  })
+  if (seen.length === 0) return null
+
+  let full: Vec3
+  let fullDc: Vec3
+  if (seen.length === 3) {
+    // **3 方向とも測っていれば、そのまま `N⁻¹ b`。** 3 軸のセンサーだけの観測点は、以前の
+    // 「成分ごとの重み付き平均」と同じ計算の順で同じ値になる。
+    const inverse = invert3(toMat3(x.n))
+    if (inverse === null) return null
+    full = multiplyMatVec3(inverse, [x.b[0]!, x.b[1]!, x.b[2]!])
+    fullDc = multiplyMatVec3(inverse, [x.bd[0]!, x.bd[1]!, x.bd[2]!])
+  } else {
+    const n = toMat3(x.n)
+    const m = seen.map((vi) => seen.map((vj) => dot3(vi, multiplyMatVec3(n, vj))))
+    const c = solveSmall(m, seen.map((v) => dot3(v, [x.b[0]!, x.b[1]!, x.b[2]!])))
+    const cd = solveSmall(m, seen.map((v) => dot3(v, [x.bd[0]!, x.bd[1]!, x.bd[2]!])))
+    if (c === null || cd === null) return null
+    const combine = (coef: readonly number[]): Vec3 => {
+      const out: [number, number, number] = [0, 0, 0]
+      seen.forEach((v, i) => {
+        for (let axis = 0; axis < 3; axis++) out[axis] += coef[i]! * v[axis]
+      })
+      return out
+    }
+    full = combine(c)
+    fullDc = combine(cd)
+  }
+  if (![...full, ...fullDc].every((v) => Number.isFinite(v))) return null
+
+  /** 向き `d` の雑音の倍率の 2 乗（1 軸で真っすぐ測ったときを 1）。測っていない向きに掛かれば無限大。 */
+  const noiseGain = (d: Vec3): number => {
+    for (const z of unseen) if (Math.abs(dot3(d, z)) > UNSEEN_LEAK_MAX) return Number.POSITIVE_INFINITY
+    let gain = 0
+    seen.forEach((v, i) => {
+      gain += dot3(d, v) ** 2 / seenInfo[i]!
+    })
+    return gain
+  }
+  const solvable = (d: Vec3): boolean => noiseGain(d) <= 1 / FUSION_MIN_DIRECTION_INFO
+  const mask = (v: Vec3): Vec3 => [
+    solvable(AXIS_UNIT[0]!) ? v[0] : Number.NaN,
+    solvable(AXIS_UNIT[1]!) ? v[1] : Number.NaN,
+    solvable(AXIS_UNIT[2]!) ? v[2] : Number.NaN,
+  ]
+  const a = mask(full)
+  if (!a.some((v) => Number.isFinite(v))) return null
+  return {
+    a,
+    dc: mask(fullDc),
+    full: eig.values[0]! >= FUSION_MIN_DIRECTION_INFO,
+    project: (d) => (solvable(d) ? dot3(d, full) : null),
+  }
+}
+
+/** 1 まとまりぶんの目盛りの計算結果。 */
 interface GridChunk {
   readonly startK: number
+  /** 3 方向とも解けた目盛り（震度を流す）。 */
   readonly included: boolean[]
+  /** 1 成分でも値を出せた目盛り（合成波形を出す）。`included` を含む。 */
+  readonly emitted: boolean[]
   readonly gal: [number[], number[], number[]]
   readonly dcGal: [number[], number[], number[]]
   readonly axisCount: [number[], number[], number[]]
+  readonly memberCount: number[]
   /** センサーごと・目盛りごとの値（差分を作るため）。引けなければ null。 */
   readonly perMember: (SampleAt | null)[][]
+  /** センサーごと・目盛りごと・軸ごとのずれ（{@link SensorResidual}）。目盛りに値が無ければ null。 */
+  readonly residual: ((number | null)[] | null)[][]
 }
 
 function computeChunk(group: Group, chunk: number): GridChunk {
@@ -720,86 +1047,136 @@ function computeChunk(group: Group, chunk: number): GridChunk {
   const gal: [number[], number[], number[]] = [[], [], []]
   const dcGal: [number[], number[], number[]] = [[], [], []]
   const axisCount: [number[], number[], number[]] = [[], [], []]
+  const memberCount: number[] = []
   const included: boolean[] = []
+  const emitted: boolean[] = []
   const perMember: (SampleAt | null)[][] = group.members.map(() => [])
+  const residual: ((number | null)[] | null)[][] = group.members.map(() => [])
   for (let j = 0; j < STATION_CHUNK_POINTS; j++) {
     const tMs = (startK + j) * STATION_GRID_MS
-    const vSum = [0, 0, 0]
-    const dSum = [0, 0, 0]
-    const wSum = [0, 0, 0]
+    let total = emptyNormal()
+    const own: (Normal | null)[] = []
     const count = [0, 0, 0]
+    let members = 0
     group.members.forEach((m, mi) => {
       const s = m.samples.at(tMs)
-      perMember[mi].push(s)
-      if (s === null) return
-      for (let axis = 0; axis < REQUIRED_AXES; axis++) {
-        if (!m.axes[axis]) continue
-        const w = m.weights[axis]
-        vSum[axis] += w * s.value[axis]
-        dSum[axis] += w * s.dc[axis]
-        wSum[axis] += w
-        count[axis]++
+      perMember[mi]!.push(s)
+      if (s === null) {
+        own.push(null)
+        return
+      }
+      const x = normalOf(s, m.weight)
+      own.push(x)
+      total = addNormal(total, x, 1)
+      members++
+      for (let axis = 0; axis < GROUND_AXES; axis++) {
+        if (x.g[axis * 4]! >= FUSION_MIN_DIRECTION_INFO) count[axis]!++
       }
     })
-    let ok = true
-    for (let axis = 0; axis < REQUIRED_AXES; axis++) {
-      axisCount[axis].push(count[axis])
-      if (count[axis] === 0) {
-        ok = false
-        gal[axis].push(Number.NaN)
-        dcGal[axis].push(Number.NaN)
-      } else {
-        gal[axis].push(vSum[axis] / wSum[axis])
-        dcGal[axis].push(dSum[axis] / wSum[axis])
-      }
+    const solved = solveNormal(total)
+    for (let axis = 0; axis < GROUND_AXES; axis++) {
+      axisCount[axis]!.push(count[axis]!)
+      gal[axis]!.push(solved === null ? Number.NaN : solved.a[axis]!)
+      dcGal[axis]!.push(solved === null ? Number.NaN : solved.dc[axis]!)
     }
-    included.push(ok)
+    memberCount.push(members)
+    included.push(solved !== null && solved.full)
+    emitted.push(solved !== null)
+    if (members > 0 && !(solved !== null && solved.full)) group.unsolvedPoints++
+
+    // **自分を除いて解く**（{@link SensorResidual}）。全体の足し込みから、その台のぶんだけを引く。
+    group.members.forEach((_, mi) => {
+      const s = perMember[mi]![j]!
+      const x = own[mi]!
+      if (s === null || x === null) {
+        residual[mi]!.push(null)
+        return
+      }
+      const others = solveNormal(addNormal(total, x, -1))
+      residual[mi]!.push(
+        s.dirs.map((d, axis) => {
+          // **その軸の向きをほかの台で解けなければ null。** 3 成分すべてが解けている必要はない ——
+          // 水平の軸のずれは、ほかの台が水平を解けていれば出せる。
+          const projected = others === null ? null : others.project(d)
+          return projected === null ? null : s.value[axis]! - projected
+        }),
+      )
+    })
   }
-  return { startK, included, gal, dcGal, axisCount, perMember }
+  return { startK, included, emitted, gal, dcGal, axisCount, memberCount, perMember, residual }
 }
 
-/** 3 成分とも値がある目盛りの、続いている範囲 `[from, to)` の一覧。 */
-function runsOf(included: readonly boolean[]): [number, number][] {
-  const runs: [number, number][] = []
+/**
+ * 値を出せた目盛りの、続いている範囲 `[from, to)` の一覧。**3 方向とも解けたか（`full`）が
+ * 変わるところでも切る** —— 震度を流すのは 3 方向とも解けた範囲だけなので、1 つの範囲の中で
+ * 流す・流さないが混ざらないように。
+ */
+function runsOf(grid: GridChunk): { readonly from: number; readonly to: number; readonly full: boolean }[] {
+  const runs: { from: number; to: number; full: boolean }[] = []
   let from = -1
-  for (let j = 0; j <= included.length; j++) {
-    const ok = j < included.length && included[j]
-    if (ok && from < 0) from = j
-    if (!ok && from >= 0) {
-      runs.push([from, j])
+  let full = false
+  const n = grid.emitted.length
+  for (let j = 0; j <= n; j++) {
+    const ok = j < n && grid.emitted[j]!
+    const isFull = ok && grid.included[j]!
+    if (from >= 0 && (!ok || isFull !== full)) {
+      runs.push({ from, to: j, full })
       from = -1
+    }
+    if (ok && from < 0) {
+      from = j
+      full = isFull
     }
   }
   return runs
 }
 
 /**
- * 全ペアの差分 `d=(a1-a2)/2` を作る。
+ * 3 軸のセンサーの、軸の値から東・北・上を引く行列（`dirs` を行に並べた行列の逆）。
+ * **向きが変わったときだけ作り直す。** 解けない向きなら null。
+ */
+function groundInverseOf(member: Member, dirs: readonly Vec3[]): Mat3 | null {
+  if (dirs.length !== PAIR_DIFF_AXES) return null
+  if (member.groundOf !== null && member.groundOf.dirs === dirs) return member.groundOf.inverse
+  const inverse = invert3([dirs[0]!, dirs[1]!, dirs[2]!])
+  member.groundOf = { dirs, inverse }
+  return inverse
+}
+
+/**
+ * 3 軸のセンサーどうしの全ペアの差分 `d=(a1-a2)/2` を作る（東・北・上）。
  *
  * **差も直流を引いた後の値から作る。** 用途はセンサー自己ノイズの推定と異常センサーの
  * 検出なので、取り付けの向きや感度のずれ（実機では Z 軸で最大 538 gal）が差を
- * 支配したままでは何も見分けられない。**同じ成分を両方が測っている成分だけ**値が立つ。
+ * 支配したままでは何も見分けられない。
  */
 function buildPairDiffs(group: Group, grid: GridChunk, from: number, to: number): SensorPairDiff[] {
   const out: SensorPairDiff[] = []
-  for (let a = 0; a < group.members.length; a++) {
-    for (let b = a + 1; b < group.members.length; b++) {
-      const ma = group.members[a]
-      const mb = group.members[b]
+  const groundAt = (mi: number, j: number): Vec3 | null => {
+    const s = grid.perMember[mi]![j]!
+    if (s === null) return null
+    const inverse = groundInverseOf(group.members[mi]!, s.dirs)
+    if (inverse === null) return null
+    return multiplyMatVec3(inverse, [s.value[0]!, s.value[1]!, s.value[2]!])
+  }
+  const threeAxis = group.members.map((m, mi) => ({ m, mi })).filter(({ m }) => m.axisCount === PAIR_DIFF_AXES)
+  for (let a = 0; a < threeAxis.length; a++) {
+    for (let b = a + 1; b < threeAxis.length; b++) {
+      const ma = threeAxis[a]!
+      const mb = threeAxis[b]!
       const diff: [(number | null)[], (number | null)[], (number | null)[]] = [[], [], []]
       for (let j = from; j < to; j++) {
-        const va = grid.perMember[a][j]
-        const vb = grid.perMember[b][j]
-        for (let axis = 0; axis < REQUIRED_AXES; axis++) {
-          const both = va !== null && vb !== null && ma.axes[axis] && mb.axes[axis]
-          diff[axis].push(both ? (va.value[axis] - vb.value[axis]) / 2 : null)
+        const va = groundAt(ma.mi, j)
+        const vb = groundAt(mb.mi, j)
+        for (let axis = 0; axis < GROUND_AXES; axis++) {
+          diff[axis]!.push(va !== null && vb !== null ? (va[axis] - vb[axis]) / 2 : null)
         }
       }
       const k = grid.startK + from
       out.push({
         stationId: group.stationId,
-        memberA: ma.ref,
-        memberB: mb.ref,
+        memberA: ma.m.ref,
+        memberB: mb.m.ref,
         firstSampleIndex: k,
         firstSampleMs: k * STATION_GRID_MS,
         msPerSample: STATION_GRID_MS,
@@ -807,6 +1184,48 @@ function buildPairDiffs(group: Group, grid: GridChunk, from: number, to: number)
       })
     }
   }
+  return out
+}
+
+/**
+ * センサーごとのずれを、続いている範囲 `[from, to)` へ切り出す。
+ *
+ * **向きはその範囲で最初に値を持った目盛りのもの。** 範囲の途中で向きが変わった（校正が変わった）
+ * 目盛りは null にする —— 違う向きの値を 1 本の線に並べると、軸の意味が途中で入れ替わる。
+ * 範囲の中で値を 1 つも持たない台は、いま届いている向きで全部 null を返す。
+ */
+function buildResiduals(group: Group, grid: GridChunk, from: number, to: number): SensorResidual[] {
+  const out: SensorResidual[] = []
+  const k = grid.startK + from
+  group.members.forEach((m, mi) => {
+    if (m.dirs === null || m.channels === null) return
+    let dirs: readonly Vec3[] = m.dirs
+    for (let j = from; j < to; j++) {
+      const s = grid.perMember[mi]![j]!
+      if (s !== null) {
+        dirs = s.dirs
+        break
+      }
+    }
+    const axes = dirs.map((direction, axis) => ({
+      direction,
+      residualGal: Array.from({ length: to - from }, (_, i): number | null => {
+        const s = grid.perMember[mi]![from + i]!
+        const r = grid.residual[mi]![from + i]!
+        if (s === null || r === null || s.dirs !== dirs) return null
+        return r[axis] ?? null
+      }),
+    }))
+    out.push({
+      stationId: group.stationId,
+      member: m.ref,
+      firstSampleIndex: k,
+      firstSampleMs: k * STATION_GRID_MS,
+      msPerSample: STATION_GRID_MS,
+      channels: m.channels,
+      axes,
+    })
+  })
   return out
 }
 
@@ -859,6 +1278,12 @@ function endGroupStream(group: Group): EndGroupStreamResult {
   return { readings, failure }
 }
 
+/** 2 つの向きの並びが同じか（値で比べる）。 */
+function sameDirections(a: readonly Vec3[], b: readonly Vec3[]): boolean {
+  if (a.length !== b.length) return false
+  return a.every((d, j) => d[0] === b[j]![0] && d[1] === b[j]![1] && d[2] === b[j]![2])
+}
+
 export interface SensorFusionOptions {
   /** 直流を追う窓の長さ（秒）。既定は {@link FUSION_DC_WINDOW_SEC}。 */
   readonly dcWindowSec?: number
@@ -905,7 +1330,7 @@ export class SensorFusion {
   private trackerFor(member: Member, msPerSample: number): DcTracker {
     if (member.dc !== null) return member.dc
     const capacity = Math.max(1, samplesForSeconds(this.dcWindowSec, 1000 / msPerSample))
-    member.dc = new DcTracker(capacity)
+    member.dc = new DcTracker(capacity, member.axisCount)
     return member.dc
   }
 
@@ -928,26 +1353,36 @@ export class SensorFusion {
     const found = this.groupByMemberKey.get(memberKeyOf(wave.boardKey, wave.sensorId))
     if (found === undefined) return []
     const { group, member } = found
-    // **地面の 3 成分を解けないまとまりは混ぜない**（2 軸のセンサーは顔ぶれに入れないので、
-    // ここへ来るのは設定と食い違った回だけ）。
-    const ground = wave.ground
-    if (ground === null) return []
-    const n = ground[0].length
-    if (n === 0) return []
+    // **設定と軸の本数が違うまとまりは混ぜない**（校正が解けなかったセンサーは軸が空で来る）。
+    // 食い違いそのものはセンサーの行（`axisMismatch`）が知らせる。
+    if (wave.axes.length !== member.axisCount) return []
+    const n = wave.axes[0]!.gal.length
+    if (n === 0 || wave.axes.some((a) => a.gal.length !== n)) return []
+
+    // **測る向きは、同じ向きの間は同じ配列を使い回す**（サンプルの向きを参照で見分けるため）。
+    // 変わったら（校正の設定が変わった）直流も追い直す —— 違う向きの値の直流は混ぜられない。
+    const incoming = wave.axes.map((a) => a.direction)
+    if (member.dirs === null || !sameDirections(member.dirs, incoming)) {
+      member.dirs = incoming
+      member.dc = null
+    }
+    member.channels = wave.channels
+    const dirs = member.dirs
 
     // **直流はここで落とす。届いたサンプルは全部通す**（遅すぎて混ぜない分も）——
     // 直流の推定を途切れさせないため。
     const tracker = this.trackerFor(member, wave.msPerSample)
     const times: number[] = new Array(n)
-    const values: [number[], number[], number[]] = [new Array(n), new Array(n), new Array(n)]
-    const dcs: [number[], number[], number[]] = [new Array(n), new Array(n), new Array(n)]
+    const values: number[][] = wave.axes.map(() => new Array(n))
+    const dcs: number[][] = wave.axes.map(() => new Array(n))
     for (let i = 0; i < n; i++) {
       times[i] = wave.firstSampleMs + i * wave.msPerSample
-      const after = tracker.step(ground[0][i], ground[1][i], ground[2][i])
-      for (let axis = 0; axis < REQUIRED_AXES; axis++) {
-        values[axis][i] = after[axis]
+      const raw = wave.axes.map((a) => a.gal[i]!)
+      const after = tracker.step(raw)
+      for (let axis = 0; axis < member.axisCount; axis++) {
+        values[axis]![i] = after[axis]!
         // 引いた直流は差で持つ——`tracker.dc` を別に読むと、次のサンプルで動いた後の値を拾う。
-        dcs[axis][i] = ground[axis][i] - after[axis]
+        dcs[axis]![i] = raw[axis]! - after[axis]!
       }
     }
 
@@ -958,20 +1393,20 @@ export class SensorFusion {
     let to = n
     if (receivedAtMs !== null) {
       const limit = receivedAtMs + FUSION_MAX_FUTURE_MS
-      while (to > 0 && times[to - 1] > limit) to--
+      while (to > 0 && times[to - 1]! > limit) to--
       group.futureSamples += n - to
     }
     let from = 0
     if (group.nextChunk !== null) {
       const cutoff = group.nextChunk * CHUNK_MS - 2 * wave.msPerSample
-      while (from < to && times[from] < cutoff) from++
+      while (from < to && times[from]! < cutoff) from++
       group.lateSamples += from
     }
     if (from < to) {
-      group.discarded += member.samples.insert(times, wave.msPerSample, values, dcs, from, to)
-      const last = times[to - 1]
+      group.discarded += member.samples.insert(times, wave.msPerSample, dirs, values, dcs, from, to)
+      const last = times[to - 1]!
       if (member.lastSampleMs === null || last > member.lastSampleMs) member.lastSampleMs = last
-      if (group.firstSeenMs === null) group.firstSeenMs = times[from]
+      if (group.firstSeenMs === null) group.firstSeenMs = times[from]!
     }
     return this.emitReady(group, false)
   }
@@ -1027,7 +1462,7 @@ export class SensorFusion {
   private fuseChunk(group: Group, chunk: number, covered: boolean): FusionOutcome[] {
     const grid = computeChunk(group, chunk)
     const outcomes: FusionOutcome[] = []
-    for (const [from, to] of runsOf(grid.included)) {
+    for (const { from, to, full } of runsOf(grid)) {
       const k = grid.startK + from
       const len = to - from
       const gal: [number[], number[], number[]] = [
@@ -1045,14 +1480,24 @@ export class SensorFusion {
         grid.axisCount[1].slice(from, to),
         grid.axisCount[2].slice(from, to),
       ]
-      const memberCount = axisMemberCount[0].map((c, i) => Math.min(c, axisMemberCount[1][i], axisMemberCount[2][i]))
+      const memberCount = grid.memberCount.slice(from, to)
 
       // **続いていなければ（欠けの後・最初の回）、古い流し込みを締めて作り直す。**
       // 締めて出た震度（前の流し込みの末尾ぶん）は、このまとまりの `readings` へ混ぜる。
       const readings: StationIntensityReading[] = []
       let closeFailure: StationCloseFailure | null = null
       let intensityStateChanged = false
-      if (group.streamNext !== k) {
+      if (!full) {
+        // **3 方向とも解けていない範囲では震度を流さない。** 流し込みはここで締め、続きを
+        // 切る（`streamNext` を空ける）—— 次に 3 方向とも解けた範囲から作り直す。
+        if (group.stream !== null) {
+          intensityStateChanged = true
+          const closed = endGroupStream(group)
+          readings.push(...closed.readings)
+          closeFailure = closed.failure
+        }
+        group.streamNext = null
+      } else if (group.streamNext !== k) {
         intensityStateChanged = true
         const closed = endGroupStream(group)
         readings.push(...closed.readings)
@@ -1067,7 +1512,7 @@ export class SensorFusion {
           group.streamError = messageOf(error)
         }
       }
-      if (group.stream !== null && group.streamOrigin !== null) {
+      if (full && group.stream !== null && group.streamOrigin !== null) {
         const origin = group.streamOrigin
         try {
           for (const p of group.stream.push(k - origin, gal[0], gal[1], gal[2])) {
@@ -1088,7 +1533,7 @@ export class SensorFusion {
           intensityStateChanged = true
         }
       }
-      group.streamNext = k + len
+      if (full) group.streamNext = k + len
 
       outcomes.push({
         fusedWave: {
@@ -1102,6 +1547,7 @@ export class SensorFusion {
           axisMemberCount,
         },
         pairDiffs: buildPairDiffs(group, grid, from, to),
+        residuals: buildResiduals(group, grid, from, to),
         readings,
         intensitySkipReason: group.streamError,
         closeFailure,
@@ -1180,4 +1626,60 @@ export class SensorFusion {
     for (const group of this.groups) total += group.discarded
     return total
   }
+
+  /**
+   * 値を持つ台がいたのに、測る向きが 3 方向へ散っておらず解けなかった目盛りの数（全観測点の合計）。
+   * **上だけ欠けた（東・北は出した）目盛りも数える** —— 震度はそこで出ない。**0 が正常。**
+   * 増え続けるなら、設定の向きが 3 方向へ散っていないか（{@link findUnderdeterminedStations}）、
+   * 上を測る台が止まっている。
+   */
+  get unsolvedPoints(): number {
+    let total = 0
+    for (const group of this.groups) total += group.unsolvedPoints
+    return total
+  }
+}
+
+/**
+ * 設定の時点で、合成で解けない向きがある観測点（設定の並び順）。**有効なセンサーが 2 台以上ある
+ * （合成を組む）観測点だけ**を見る —— 全員の軸の向きを束ねた `G` のいちばん小さい固有値が
+ * {@link FUSION_MIN_DIRECTION_INFO} を下回るなら、全員が届いていても 3 方向とも解けることは無い。
+ *
+ * **届いた波形からは分からない形を、届く前に知らせるためのもの。** 水平の 2 軸の台だけを
+ * 割り当てた観測点では震度が一度も出ないが、センサーは生きているように見える。
+ * 向きは読み取りと同じ校正（`resolveCalibration`）で地面の向きへ直す。校正が解けない台は
+ * 読み取りが波形を作らないので数えない。
+ */
+export function findUnderdeterminedStations(config: StationConfig): string[] {
+  const byStation = new Map<string, { count: number; g: [number[], number[], number[]] }>()
+  for (const board of config.boards) {
+    for (const sensor of board.sensors) {
+      if (!sensor.enabled) continue
+      const entry = byStation.get(board.stationId) ?? {
+        count: 0,
+        g: [
+          [0, 0, 0],
+          [0, 0, 0],
+          [0, 0, 0],
+        ],
+      }
+      entry.count++
+      byStation.set(board.stationId, entry)
+      const { sensorId: _sensorId, ...calibration } = sensor
+      const resolved = resolveCalibration(board.orientation, calibration)
+      if (resolved === null) continue
+      for (const axis of resolved.axes) {
+        const [x, y, z] = axis.vector
+        const length = Math.hypot(x, y, z)
+        const d: Vec3 = [x / length, y / length, z / length]
+        for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) entry.g[r]![c]! += d[r] * d[c]
+      }
+    }
+  }
+  const out: string[] = []
+  for (const [stationId, entry] of byStation) {
+    if (entry.count < 2) continue
+    if (!(minEigenvalueSym3(entry.g as unknown as Mat3) >= FUSION_MIN_DIRECTION_INFO)) out.push(stationId)
+  }
+  return out
 }

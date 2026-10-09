@@ -83,6 +83,19 @@ describe('TriggerDetector', () => {
     expect(strongest).toBe(2)
   })
 
+  it('安全弁（2026-10-09）: 1 成分だけ NaN のまとまりを挟んでも、フィルタが壊れず後の揺れを切り出す', () => {
+    // 観測点の合成は、測る向きが 3 方向へ散っていない間、解けない成分だけを NaN にして出す
+    // （2026-10-09 ユーザー承認）。NaN を 1 つでもフィルタへ通すと、以後の値がすべて NaN になる。
+    const chunks = signal(150, [{ startSec: 100, durationSec: 6, hz: 7, amplitude: 1.5 }]).map((c) =>
+      c.firstSampleMs - T0 >= 50_000 && c.firstSampleMs - T0 < 52_000
+        ? { ...c, gal: [c.gal[0], c.gal[1], Array.from(c.gal[2], () => Number.NaN)] as typeof c.gal }
+        : c,
+    )
+    const events = run(chunks)
+    expect(events).toHaveLength(1)
+    expect(Number.isFinite(events[0]!.peakRatio)).toBe(true)
+  })
+
   it('対照: 平常時の 2 倍に届かない揺れでは切り出さない', () => {
     const events = run(signal(150, [{ startSec: 100, durationSec: 6, hz: 7, amplitude: 0.35 }]))
     expect(events).toHaveLength(0)

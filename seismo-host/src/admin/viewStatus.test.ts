@@ -13,6 +13,7 @@ import {
   sensorRowHtml,
   stationRowHtml,
   worstPairDiff,
+  worstResidual,
 } from './viewStatus'
 
 const MSEED_QUIET = {
@@ -116,6 +117,55 @@ describe('worstPairDiff', () => {
   })
 })
 
+describe('worstResidual（#688）', () => {
+  function residual(sensorId: string, rms: readonly (number | null)[], channels = ['HN1', 'HN2']) {
+    return {
+      member: { boardKey: 'mac:cc', sensorId },
+      channels,
+      axes: rms.map((rmsGal) => ({ rmsGal })),
+    }
+  }
+
+  it('正: センサーと軸をまたいでいちばん大きいずれを採る', () => {
+    const worst = worstResidual([residual('a', [1, 2]), residual('b', [0.5, 3])])
+    expect(worst?.residual.member.sensorId).toBe('b')
+    expect(worst?.axis).toBe(1)
+    expect(worst?.rmsGal).toBe(3)
+  })
+
+  it('対照: 出せなかった軸（null）は候補にしない', () => {
+    expect(worstResidual([residual('a', [null, 2])])?.rmsGal).toBe(2)
+  })
+
+  it('安全弁: 欄が無い（版の古いホスト）・配列でない・全部 null なら null（行を落とさない）', () => {
+    expect(worstResidual(undefined)).toBeNull()
+    expect(worstResidual('x')).toBeNull()
+    expect(worstResidual([residual('a', [null, null])])).toBeNull()
+    expect(worstResidual([{ channels: [], axes: [{ rmsGal: 9 }] }])).toBeNull()
+  })
+
+  it('正: 欄には値とセンサー・軸の名前を出し、無ければ「—」', () => {
+    const html = stationRowHtml(NOW, { ...station(NOW - 1000), residuals: [residual('i2c0-6a', [0.1, 0.42])] })
+    expect(html).toContain('0.42 gal <span class="muted">mac:cc/i2c0-6a・HN2</span>')
+    const none = stationRowHtml(NOW, { ...station(NOW - 1000), residuals: [] })
+    expect(none.match(/<td>—<\/td>/g)?.length ?? 0).toBeGreaterThanOrEqual(1)
+  })
+
+  it('安全弁: 基板とセンサーの名前も escapeHtml を通す（無認証の UDP 由来）', () => {
+    const r = { member: { boardKey: '<i>b</i>', sensorId: '<script>s</script>' }, channels: ['HN1'], axes: [{ rmsGal: 1 }] }
+    const html = stationRowHtml(NOW, { ...station(NOW - 1000), residuals: [r] })
+    expect(html).not.toContain('<script>')
+    expect(html).not.toContain('<i>b</i>')
+    expect(html).toContain('&lt;script&gt;s&lt;/script&gt;')
+  })
+
+  it('安全弁: 軸の名前は escapeHtml を通す（無認証の UDP 由来）', () => {
+    const html = stationRowHtml(NOW, { ...station(NOW - 1000), residuals: [residual('a', [1], ['<b>x</b>'])] })
+    expect(html).not.toContain('<b>x</b>')
+    expect(html).toContain('&lt;b&gt;x&lt;/b&gt;')
+  })
+})
+
 /** 画面を組み立てた時刻（`/status` の `generatedAtMs`）。 */
 const NOW = 1_800_000_000_000
 
@@ -148,13 +198,13 @@ function sensor(lastPacketMs: number | null, lastSkipReason: string | null = nul
 }
 
 describe('stationRowHtml', () => {
-  it('正: 途絶したら震度・混ざった本数・差分の 3 欄を赤くする（#373）', () => {
+  it('正: 途絶したら震度・混ざった本数・差分・ずれの 4 欄を赤くする（#373・#688）', () => {
     // **合成の帳面は設定を変えても作り直さない**ので、管理コンソールで消した観測点の
-    // 行はホストを入れ直すまで残る。3 欄はどれも「最後に合成できたときの値」なので、
-    // 1 つだけ赤くすると残りが今の姿だと読めてしまう。
+    // 行はホストを入れ直すまで残る。4 欄はどれも「最後に合成できたときの値」なので、
+    // 1 つだけ赤くすると残りが今の姿だと読めてしまう。2026-10-09 にずれの欄を足して 3 → 4。
     const html = stationRowHtml(NOW, station(NOW - STALE_AFTER_MS - 1))
 
-    expect(html.match(/stale-value/g)?.length).toBe(3)
+    expect(html.match(/stale-value/g)?.length).toBe(4)
   })
 
   it('対照: 受信中の行には印を付けない（境界のちょうどは受信中）', () => {

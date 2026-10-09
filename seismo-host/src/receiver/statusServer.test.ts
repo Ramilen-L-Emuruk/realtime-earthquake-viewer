@@ -6,7 +6,7 @@ import type { AdminAuthConfig } from './adminAuth'
 import type { IntensityReading, WaveChunk } from './intensityPipeline'
 import { PacketTally } from './packetTally'
 import { ReadingHub } from './readingHub'
-import type { FusedWaveChunk, SensorPairDiff, StationIntensityReading } from './sensorFusion'
+import type { FusedWaveChunk, SensorPairDiff, SensorResidual, StationIntensityReading } from './sensorFusion'
 import { EMPTY_STATION_CONFIG, IDENTITY_MATRIX, StationDirectory } from './stationConfig'
 import type { StationConfig } from './stationConfig'
 import { buildStatusReport } from './statusReport'
@@ -14,6 +14,7 @@ import type { StatusReport, WaveArchiveStatus } from './statusReport'
 import {
   buildWaveResponse,
   parseDiffParams,
+  parseResidualParams,
   parseEventQuery,
   parseQuakeIntensityQuery,
   parseWaveParam,
@@ -480,6 +481,34 @@ describe('parseDiffParams（#372）', () => {
   })
 })
 
+describe('parseResidualParams（#688）', () => {
+  const FULL = { residualStation: 'garage', residualBoard: 'mac:aabbccddeeff', residualSensor: 'i2c0-6a' }
+  function query(values: Record<string, string>): URLSearchParams {
+    return new URLSearchParams(values)
+  }
+
+  it('正: 3 欄そろえば 1 台を指す（基板の書き方は設定と同じ形へ揃える・空白は落とす）', () => {
+    expect(parseResidualParams(query({ ...FULL, residualBoard: 'mac:AABBCCDDEEFF', residualSensor: ' i2c0-6a ' }))).toEqual({
+      want: { stationId: 'garage', member: { boardKey: 'mac:aabbccddeeff', sensorId: 'i2c0-6a' } },
+      problem: null,
+      problemKind: null,
+    })
+  })
+
+  it('対照: 何も書いていなければ頼んでいない（理由も立てない）', () => {
+    expect(parseResidualParams(query({ wave: '1' }))).toEqual({ want: null, problem: null, problemKind: null })
+  })
+
+  it('安全弁: 半端・空・長すぎ・基板の書き方違いは、ずれなしで理由を返す', () => {
+    expect(parseResidualParams(query({ residualStation: 'garage' })).problemKind).toBe('missing-fields')
+    expect(parseResidualParams(query({ ...FULL, residualSensor: '  ' })).problemKind).toBe('empty-field')
+    expect(parseResidualParams(query({ ...FULL, residualStation: 'x'.repeat(65) })).problemKind).toBe('too-long')
+    const bad = parseResidualParams(query({ ...FULL, residualBoard: 'aabbccddeeff' }))
+    expect(bad.problemKind).toBe('bad-board-key')
+    expect(bad.want).toBeNull()
+  })
+})
+
 describe('startStatusServer', () => {
   it('/status は組み立てた中身をそのまま返し、横断の許しを付ける', async () => {
     const hub = new ReadingHub()
@@ -569,6 +598,38 @@ describe('startStatusServer', () => {
     expect(got[0].data).toEqual(PAIR_DIFF)
   })
 
+  const RESIDUAL: SensorResidual = {
+    stationId: 'garage',
+    member: { boardKey: 'mac:aabbccddeeff', sensorId: 'i2c0-6a' },
+    firstSampleIndex: 0,
+    firstSampleMs: 1_700_000_000_000,
+    msPerSample: 10,
+    channels: ['HN1', 'HN2'],
+    axes: [
+      { direction: [1, 0, 0], residualGal: [0.1] },
+      { direction: [0, 0.6, 0.8], residualGal: [null] },
+    ],
+  }
+
+  it('正: 3 欄で頼んだ 1 台のずれは station-residual として届く（#688）', async () => {
+    const hub = new ReadingHub()
+    const base = await start(hub)
+
+    const got = await readEvents(
+      base,
+      '/stream?residualStation=garage&residualBoard=mac:aabbccddeeff&residualSensor=i2c0-6a',
+      1,
+      () => {
+        hub.publish({ kind: 'station-residual', residual: RESIDUAL })
+      },
+    )
+
+    expect(got).toHaveLength(1)
+    expect(got[0].name).toBe('station-residual')
+    // 測る向き・軸の名前・null（出せなかった目盛り）まで潰れずに届くこと。
+    expect(got[0].data).toEqual(RESIDUAL)
+  })
+
   it('対照: 差分は ?wave=1 だけの相手へは出ない（#372）', async () => {
     const hub = new ReadingHub()
     const base = await start(hub)
@@ -580,6 +641,19 @@ describe('startStatusServer', () => {
 
     // **梯子に載せていない。** 載せると 36 組ぶんが波形タブへ黙って乗り、**桁が変わる**
     // （量は README の「状態と押し出しの口」の節が単一情報源）。
+    expect(got.map((e) => e.name)).toEqual(['wave'])
+  })
+
+  it('対照: ずれは頼んでいない相手（?wave=1 だけ）へは出ない（#688）', async () => {
+    // **配る相手の選り分けを HTTP の口から通しで見る。** 振り分け自体は `readingHub.test.ts` が
+    // 見ているが、ここ（クエリの読み取り → 購読の登録）が崩れても向こうは通る。
+    const hub = new ReadingHub()
+    const base = await start(hub)
+
+    const got = await readEvents(base, '/stream?wave=1', 1, () => {
+      hub.publish({ kind: 'station-residual', residual: RESIDUAL })
+      hub.publish({ kind: 'wave', wave: WAVE })
+    })
     expect(got.map((e) => e.name)).toEqual(['wave'])
   })
 

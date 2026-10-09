@@ -81,6 +81,15 @@ export interface QuakeIntensityResult {
    * 「届いたが壊れていた」の見分けが付かない。
    */
   readonly invalidChunkCount: number
+  /**
+   * **観測点の合成が解けなかった成分（`NaN`）を含んでいたので捨てたまとまりの数**（読み込んだ範囲全体）。
+   *
+   * 有効なセンサーの測る向きが 3 方向へ散っていない間、合成は解けない成分だけを `NaN` にして出す
+   * （`sensorFusion.ts` の `solveNormal`）。震度は 3 成分が要るのでここでも捨てて区切るが、壊れた値では
+   * ないので {@link invalidChunkCount} と分けて数える —— 混ぜると、上が解けないだけの観測点で
+   * 「値の壊れたまとまり」が記録に出続ける。
+   */
+  readonly unsolvedChunkCount: number
 }
 
 /** リアルタイム震度の 1 刻み。 */
@@ -97,27 +106,46 @@ interface Run {
   readonly v: [number[], number[], number[]]
 }
 
-function allFinite(c: ArchivedWaveChunk): boolean {
+/**
+ * まとまりの値を見分ける。`'unsolved'` は解けなかった成分の `NaN` だけを含むもの、`'invalid'` は
+ * それ以外の有限でない値（±Infinity）や読めない時刻を持つもの。
+ *
+ * **`NaN` と ±Infinity で分けられるのは、控えが Float32 の 2 進で両者をそのまま残すから**
+ * （`waveArchive.ts` の `encodeWaveChunk`）。合成が `NaN` を出すのは解けない成分だけで、
+ * 桁あふれのような壊れ方は ±Infinity になる。
+ */
+function classifyChunk(c: ArchivedWaveChunk): 'ok' | 'unsolved' | 'invalid' {
+  if (!(Number.isFinite(c.firstSampleMs) && c.msPerSample > 0)) return 'invalid'
+  let unsolved = false
   for (const axis of c.gal) {
-    for (let i = 0; i < axis.length; i++) if (!Number.isFinite(axis[i])) return false
+    for (let i = 0; i < axis.length; i++) {
+      const v = axis[i]
+      if (Number.isFinite(v)) continue
+      if (!Number.isNaN(v)) return 'invalid'
+      unsolved = true
+    }
   }
-  return Number.isFinite(c.firstSampleMs) && c.msPerSample > 0
+  return unsolved ? 'unsolved' : 'ok'
 }
 
 /**
  * まとまりを、途切れずに続いている波形ごとに分ける。
  *
  * **有限でない値を含むまとまりは捨て、そこで区切る。** 近似フィルタは 1 度 NaN を通すと
- * 以後ずっと NaN を出す（`RealtimeIntensityCalculator.push` は投げて止める）。
+ * 以後ずっと NaN を出す（`RealtimeIntensityCalculator.push` は投げて止める）。捨てた数は
+ * 壊れた値（`invalid`）と解けなかった成分（`unsolved`）で分けて返す（{@link classifyChunk}）。
  */
-function splitRuns(chunks: readonly ArchivedWaveChunk[]): { runs: Run[]; invalid: number } {
+function splitRuns(chunks: readonly ArchivedWaveChunk[]): { runs: Run[]; invalid: number; unsolved: number } {
   const runs: Run[] = []
   let invalid = 0
+  let unsolved = 0
   let cur: Run | null = null
   let expectedMs = Number.NaN
   for (const c of [...chunks].sort((a, b) => a.firstSampleMs - b.firstSampleMs)) {
-    if (!allFinite(c)) {
-      invalid += 1
+    const kind = classifyChunk(c)
+    if (kind !== 'ok') {
+      if (kind === 'invalid') invalid += 1
+      else unsolved += 1
       cur = null
       continue
     }
@@ -137,7 +165,7 @@ function splitRuns(chunks: readonly ArchivedWaveChunk[]): { runs: Run[]; invalid
     }
     expectedMs = c.firstSampleMs + n * c.msPerSample
   }
-  return { runs: runs.filter((r) => r.t.length > 0), invalid }
+  return { runs: runs.filter((r) => r.t.length > 0), invalid, unsolved }
 }
 
 /** 区間 `[fromMs, toMs]` の震度を出す。`chunks` は `fromMs - QUAKE_INTENSITY_LEAD_MS` から読んだもの。 */
@@ -147,7 +175,7 @@ export function computeQuakeIntensity(params: {
   readonly toMs: number
 }): QuakeIntensityResult {
   const { fromMs, toMs } = params
-  const { runs, invalid: invalidChunkCount } = splitRuns(params.chunks)
+  const { runs, invalid: invalidChunkCount, unsolved: unsolvedChunkCount } = splitRuns(params.chunks)
 
   // 最大リアルタイム震度: 途切れごとに計算器を作り直し、区間の中の刻みだけを見る。
   let maxRealtime: number | null = null
@@ -174,7 +202,7 @@ export function computeQuakeIntensity(params: {
   // 区間に重なる波形
   const inside = runs.filter((r) => r.t[r.t.length - 1] >= fromMs && r.t[0] <= toMs)
   const gapCount = Math.max(0, inside.length - 1)
-  const base = { maxRealtime, maxRealtimeAtMs, realtimeSeries, gapCount, invalidChunkCount }
+  const base = { maxRealtime, maxRealtimeAtMs, realtimeSeries, gapCount, invalidChunkCount, unsolvedChunkCount }
   if (inside.length === 0) return { ...base, measured: null, measuredUnavailable: 'no-data' }
   if (inside.length > 1) return { ...base, measured: null, measuredUnavailable: 'gap' }
 

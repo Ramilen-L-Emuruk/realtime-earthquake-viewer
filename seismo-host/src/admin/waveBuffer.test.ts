@@ -59,7 +59,7 @@ function stationChunk(overrides: Partial<WaveChunkView> = {}): WaveChunkView {
 /**
  * センサー対 1 組ぶんの差分 1 まとまり（#372）。
  *
- * **値が無いサンプルは `NaN` で置く。** 差分だけが持つ形 —— 相手の値がまだ届いていない
+ * **値が無いサンプルは `NaN` で置く。** 差分・ずれ・観測点の合成（解けなかった成分）が持つ形 —— 相手の値がまだ届いていない
  * 範囲は引けないので、0 で埋めると「2 台がぴったり一致した」に見える。
  */
 function pairChunk(overrides: Partial<WaveChunkView> = {}): WaveChunkView {
@@ -145,6 +145,20 @@ describe('WaveBuffer', () => {
 
     expect(window.axes[0]).toEqual([null, null, null])
     expect(window.stats[0]).toBeNull()
+  })
+
+  it('正（2026-10-09）: 観測点の合成で 1 成分だけ値が無くても、残りの成分は列へ畳む', () => {
+    // 観測点の合成は、測る向きが 3 方向へ散っていない間、解けない成分だけを null（ここでは NaN）にして
+    // 残りを出す（2026-10-09 ユーザー承認）。上が欠けるだけで東・北の線まで消えないように。
+    const axis = Array.from({ length: SAMPLES }, (_, i) => i)
+    const none = Array.from({ length: SAMPLES }, () => NaN)
+    const b = new WaveBuffer({ kind: 'station', stationId: 'garage' })
+    b.push(stationChunk({ gal: [axis, [...axis], none] }))
+
+    const window = b.readWindow(0, 300, 3)
+    expect(window.axes[0][0]).toEqual({ minGal: 0, maxGal: 9, gapBefore: false })
+    expect(window.axes[1][2]).toEqual({ minGal: 20, maxGal: 29, gapBefore: false })
+    expect(window.axes[2]).toEqual([null, null, null])
   })
 
   it('列数が 0 以下、または窓が逆向きなら何も返さない', () => {
@@ -657,5 +671,19 @@ describe('センサー対の差分（#372）', () => {
     // **「値が無い」の記憶はまとまりを越えて持ち越す。** まとまりの末尾が欠けていたら、
     // 切れ目は次のまとまりの先頭へ立つ。
     expect(window.axes[0][3]?.gapBefore).toBe(true)
+  })
+})
+
+describe('keyOf — ずれ（#688）', () => {
+  it('安全弁: 同じ台のセンサー単独の鍵と混ざらず、観測点が違えば別の鍵', () => {
+    const residual = { kind: 'residual', stationId: 'garage', boardKey: 'mac:aa', sensorId: 's0' } as const
+    expect(keyOf(residual)).not.toBe(keyOf({ kind: 'sensor', boardKey: 'mac:aa', sensorId: 's0' }))
+    expect(keyOf(residual)).not.toBe(keyOf({ ...residual, stationId: 'garage-2' }))
+  })
+
+  it('安全弁: 境目の違う名前が同じ鍵に化けない', () => {
+    const left = keyOf({ kind: 'residual', stationId: 'g', boardKey: 'b', sensorId: '1:s' })
+    const right = keyOf({ kind: 'residual', stationId: 'g', boardKey: 'b1', sensorId: 's' })
+    expect(left).not.toBe(right)
   })
 })

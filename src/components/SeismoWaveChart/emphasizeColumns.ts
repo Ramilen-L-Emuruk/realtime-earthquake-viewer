@@ -29,7 +29,7 @@ export const MIN_EMPHASIZED_SCALE_GAL = 0.5
  * 中心からの距離のうち、幅を超えた分だけを残す（符号は保つ）。
  *
  * **非有限の値は非有限のまま返す。** 0 へ落とすと「欠測」が「ノイズの内側（本物の 0）」に化けて
- * 描かれる（いまの畳み方は 1 成分でも欠ければ列ごと値なしにするので、通常は届かない）。
+ * 描かれる（観測点の合成が解けなかった成分は、値を持つ列でもその成分だけ `NaN` で届く）。
  */
 function shrink(value: number, center: number, width: number): number {
   const d = value - center

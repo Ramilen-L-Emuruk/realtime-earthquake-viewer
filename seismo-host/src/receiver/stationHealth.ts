@@ -9,8 +9,10 @@ import type {
   FusedWaveChunk,
   SensorMemberRef,
   SensorPairDiff,
+  SensorResidual,
   StationIntensityReading,
 } from './sensorFusion'
+import type { Vec3 } from './stationConfigTypes'
 
 /** 覚えていられる観測点の数。**`SensorFusion` のグループ数を超えることはない。** */
 const MAX_STATIONS_DEFAULT = 64
@@ -65,6 +67,45 @@ export function pairDiffStrength(diff: SensorPairDiff): StationPairDiff {
     if (n > 0) rmsGal[axis] = Math.sqrt(sum / n)
   }
   return { a: diff.memberA, b: diff.memberB, rmsGal, sampleCount }
+}
+
+/**
+ * センサー 1 台ぶんのずれの強さ（`SensorResidual` を軸ごとの RMS へ）。
+ *
+ * **2 軸のセンサーも同じ形で出す。** 対の差分（{@link StationPairDiff}）は 3 軸どうしにしか
+ * 立たないので、2 軸の台がおかしいかはここでしか見えない。
+ */
+export interface StationSensorResidual {
+  readonly member: SensorMemberRef
+  /** 軸の名前（センサーが名乗るもの）。`axes` と同じ並び。 */
+  readonly channels: readonly string[]
+  /**
+   * 軸ごと。`direction` はその軸が地面で測る向き。`rmsGal` は**出せた目盛りだけ**で計算し、
+   * 1 つも無ければ null（{@link StationPairDiff.rmsGal} と同じく 0 で埋めない）。
+   */
+  readonly axes: readonly {
+    readonly direction: Vec3
+    readonly rmsGal: number | null
+    readonly sampleCount: number
+  }[]
+}
+
+/** ずれ 1 台ぶんの強さを出す。**null の目盛りは混ぜない**（{@link pairDiffStrength} と同じ理由）。 */
+export function residualStrength(residual: SensorResidual): StationSensorResidual {
+  return {
+    member: residual.member,
+    channels: residual.channels,
+    axes: residual.axes.map((axis) => {
+      let sum = 0
+      let n = 0
+      for (const v of axis.residualGal) {
+        if (v === null) continue
+        sum += v * v
+        n++
+      }
+      return { direction: axis.direction, rmsGal: n > 0 ? Math.sqrt(sum / n) : null, sampleCount: n }
+    }),
+  }
 }
 
 /** 観測点 1 つの様子。 */
@@ -143,6 +184,13 @@ export interface StationHealth {
    * **どの値を「おかしい」とするかの判定は持たない**（閾値が未設計。#370 の範囲外）。
    */
   readonly pairDiffs: readonly StationPairDiff[]
+  /**
+   * センサーごとのずれの強さ（§7・#688）。**最新のまとまりだけ。** 自分を除いたほかのセンサーで
+   * 解いた揺れと比べるので、重みの大きい台がおかしくなっても値が突出する（`SensorResidual`）。
+   *
+   * **どの値を「おかしい」とするかの判定は持たない**（`pairDiffs` と同じ）。
+   */
+  readonly residuals: readonly StationSensorResidual[]
 }
 
 export interface StationHealthBookOptions {
@@ -163,6 +211,7 @@ interface Entry {
   lastMemberCountMax: number | null
   uncoveredFusions: number
   pairDiffs: readonly StationPairDiff[]
+  residuals: readonly StationSensorResidual[]
 }
 
 /**
@@ -266,6 +315,19 @@ export class StationHealthBook {
       .map(pairDiffStrength)
   }
 
+  /**
+   * センサーごとのずれが出た（#688）。**強さへ要約して覚える。**
+   *
+   * **空でも書き換え、観測点は引数で受け、渡された観測点のぶんだけ採る** —— 理由はどれも
+   * {@link notePairDiffs} と同じ（センサーを無効化して顔ぶれが縮んだとき、消えた台のずれを
+   * 指したまま固まらないように）。
+   */
+  noteResiduals(stationId: string, residuals: readonly SensorResidual[]): void {
+    this.touch(stationId).residuals = residuals
+      .filter((r) => r.stationId === stationId)
+      .map(residualStrength)
+  }
+
   /** 合成の流し込みの締めくくりに失敗した。 */
   noteCloseFailure(stationId: string, detail: string): void {
     const entry = this.touch(stationId)
@@ -303,6 +365,7 @@ export class StationHealthBook {
         lastMemberCountMax: e.lastMemberCountMax,
         uncoveredFusions: e.uncoveredFusions,
         pairDiffs: e.pairDiffs,
+        residuals: e.residuals,
       }))
   }
 
@@ -340,6 +403,7 @@ export class StationHealthBook {
       lastMemberCountMax: null,
       uncoveredFusions: 0,
       pairDiffs: [],
+      residuals: [],
     }
     this.entries.set(stationId, created)
     return created

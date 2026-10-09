@@ -33,6 +33,25 @@ describe('foldHistoryColumns', () => {
     expect(columns.every((c) => c.hasValue)).toBe(true)
   })
 
+  it('正（2026-10-09）: 1 成分だけ値の無い列（NaN）を挟んでも、その成分の端は後の列から採る', () => {
+    // 観測点の合成は、解けない成分だけを NaN にして残りを出す（2026-10-09 ユーザー承認）。
+    // **最初に拾った NaN が居座らない**ことを見る（`x < NaN` は偽なので、比べるだけだと更新されない）。
+    const partial: WaveHistoryColumn = { min: [-1, -1, NaN], max: [1, 1, NaN], minMembers: 2 }
+    const source = [partial, col(-4, 4)]
+    const { columns, scaleGal } = foldHistoryColumns({ source, columnCount: 1, minScaleGal: 1 })
+    expect(columns[0].min[2]).toBe(-4)
+    expect(columns[0].max[2]).toBe(4)
+    expect(columns[0].max[0]).toBe(4)
+    expect(scaleGal).toBe(4)
+  })
+
+  it('対照: 畳んだ範囲でその成分が 1 つも無ければ、その成分だけ NaN（列は値を持つ）', () => {
+    const partial: WaveHistoryColumn = { min: [-1, -1, NaN], max: [1, 1, NaN], minMembers: 2 }
+    const { columns } = foldHistoryColumns({ source: [partial, partial], columnCount: 1, minScaleGal: 1 })
+    expect(columns[0].hasValue).toBe(true)
+    expect(columns[0].max[2]).toBeNaN()
+  })
+
   it('値の無い列は値なしのまま残す', () => {
     const source = [col(-1, 1), null, col(-1, 1)]
     const { columns } = foldHistoryColumns({ source, columnCount: 3, minScaleGal: 10 })

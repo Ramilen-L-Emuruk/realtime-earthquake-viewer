@@ -14,7 +14,13 @@
 // すると、上限いっぱいのとき双方が延々と切り合う。
 
 import type { IntensityReading, WaveChunk } from './intensityPipeline'
-import type { FusedWaveChunk, SensorMemberRef, SensorPairDiff, StationIntensityReading } from './sensorFusion'
+import type {
+  FusedWaveChunk,
+  SensorMemberRef,
+  SensorPairDiff,
+  SensorResidual,
+  StationIntensityReading,
+} from './sensorFusion'
 import type { ShakeEventRecord } from '../detection/shakeEvent'
 
 /**
@@ -66,6 +72,13 @@ export type HubMessage =
    * 配る相手は**顔ぶれで選ぶ**（`WAVE_TIER` の `'pair'` と {@link PairWant}）。
    */
   | { readonly kind: 'station-diff'; readonly diff: SensorPairDiff }
+  /**
+   * センサー 1 台ぶんのずれ（自分を除いた残りで解いた揺れとの差。§7・#688）。**頼んだ 1 台だけへ配る。**
+   *
+   * **差分（`station-diff`）と同じ理由で梯子に載せない**（合成のたびに全センサーぶん作られる）。
+   * 配る相手は顔ぶれで選ぶ（`WAVE_TIER` の `'residual'` と {@link ResidualWant}）。
+   */
+  | { readonly kind: 'station-residual'; readonly residual: SensorResidual }
   /**
    * 検出した揺れの記録 1 版（REQUIREMENTS.md §6・§9。`../detection/shakeEvent.ts`）。
    * **全員へ配る。** 1 日に十数件・1 件 1 KB ほどで、照合の結果が出るたびに同じ揺れの
@@ -138,6 +151,20 @@ export function pairMatches(want: PairWant, diff: SensorPairDiff): boolean {
 }
 
 /**
+ * ずれの波形を見たいセンサー 1 台（#688）。**差分の {@link PairWant} と並べて持つ**（両方を
+ * 同時に頼める。管理コンソールはどちらか一方だけを頼む）。
+ */
+export interface ResidualWant {
+  readonly stationId: string
+  readonly member: SensorMemberRef
+}
+
+/** 頼んだ 1 台と、いま流れてきたずれが同じ台か。 */
+export function residualMatches(want: ResidualWant, residual: SensorResidual): boolean {
+  return want.stationId === residual.stationId && sameMember(want.member, residual.member)
+}
+
+/**
  * その種別が波形のどの層に属するか。
  *
  * **`Record` にしてあるので、`HubMessage` へ種別を足してここへ書かなければ型検査が
@@ -159,6 +186,11 @@ type WaveTier =
    * （{@link PairWant}）。
    */
   | 'pair'
+  /**
+   * センサー 1 台ぶんのずれの波形。**梯子では決まらない** —— 頼んだ 1 台と突き合わせる
+   * （{@link ResidualWant}）。
+   */
+  | 'residual'
 
 const WAVE_TIER: Record<HubMessage['kind'], WaveTier> = {
   reading: 'always',
@@ -166,6 +198,7 @@ const WAVE_TIER: Record<HubMessage['kind'], WaveTier> = {
   'station-reading': 'always',
   'station-wave': 'station',
   'station-diff': 'pair',
+  'station-residual': 'residual',
   'shake-event': 'always',
   'station-wave-revised': 'station',
 }
@@ -175,10 +208,16 @@ function diffOf(message: HubMessage): SensorPairDiff | null {
   return message.kind === 'station-diff' ? message.diff : null
 }
 
+/** ずれの種別なら中身を、そうでなければ null。**`'residual'` の場で型を絞るため。** */
+function residualOf(message: HubMessage): SensorResidual | null {
+  return message.kind === 'station-residual' ? message.residual : null
+}
+
 /** 配るかを決めるのに要る、購読者側の希望。 */
 interface DeliveryWants {
   readonly wave: WaveWant
   readonly diff: PairWant | null
+  readonly residual: ResidualWant | null
 }
 
 /**
@@ -207,6 +246,12 @@ function shouldDeliver(wants: DeliveryWants, message: HubMessage): boolean {
       // null になることは無い。**それでも書く** —— 型を絞る手立てがこれしかなく、
       // 省くと「差分かどうか」の判定が層の表と二重になる。
       return diff !== null && pairMatches(wants.diff, diff)
+    }
+    case 'residual': {
+      if (wants.residual === null) return false
+      // `'pair'` と同じく、型を絞る手立てとして書く。
+      const residual = residualOf(message)
+      return residual !== null && residualMatches(wants.residual, residual)
     }
   }
 }
@@ -249,6 +294,10 @@ export interface SubscribeOptions {
    * と決めているのと同じ理由）。要らない購読は `null` と書く。
    */
   readonly diff: PairWant | null
+  /**
+   * ずれの波形を見たい 1 台（要らなければ null）。**省略できない**（`diff` と同じ理由）。
+   */
+  readonly residual: ResidualWant | null
   /**
    * 1 件渡す。**受け取ったら `true`、いま受け取れないなら `false`。**
    *
@@ -307,6 +356,8 @@ export interface SubscriberStats {
    * 出ていれば、いまの `pairDiffs` の一覧と見比べて「その組はもう無い」と分かる。
    */
   readonly diff: PairWant | null
+  /** ずれの波形を頼んでいる 1 台（頼んでいなければ null）。**状態の口へそのまま出す**（`diff` と同じ理由）。 */
+  readonly residual: ResidualWant | null
   /** 繋がった時刻（unix ミリ秒）。 */
   readonly sinceMs: number
   readonly delivered: number
@@ -359,6 +410,7 @@ interface Entry {
   readonly id: number
   readonly wave: WaveWant
   readonly diff: PairWant | null
+  readonly residual: ResidualWant | null
   readonly sinceMs: number
   readonly deliver: (message: HubMessage) => boolean
   readonly onDetach: (reason: DetachReason) => void
@@ -403,6 +455,7 @@ export class ReadingHub {
       id: this.nextId++,
       wave: options.wave,
       diff: options.diff,
+      residual: options.residual,
       sinceMs: this.now(),
       deliver: options.deliver,
       onDetach: options.onDetach,
@@ -484,6 +537,7 @@ export class ReadingHub {
         id: e.id,
         wave: e.wave,
         diff: e.diff,
+        residual: e.residual,
         sinceMs: e.sinceMs,
         delivered: e.delivered,
         dropped: e.dropped,

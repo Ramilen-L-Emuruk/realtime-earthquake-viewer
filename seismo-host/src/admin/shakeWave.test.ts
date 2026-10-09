@@ -77,6 +77,12 @@ describe('readEnvelope — 列ごとにまとめた波形を読む', () => {
     expect(readEnvelope(noTruncated)).toBeNull()
   })
 
+  it('正（2026-10-09）: 列の中で 1 成分だけ欠けていれば（null）、その成分だけ NaN にして読む', () => {
+    const e = readEnvelope(envelopeJson({ columns: [{ min: [-1, -2, null], max: [1, 2, null], minMembers: 2 }] }))
+    expect(e?.columns[0]?.min[0]).toBe(-1)
+    expect(e?.columns[0]?.min[2]).toBeNaN()
+  })
+
   it('安全弁: 列の形が違えば応答ごと読めない（欠けた列と取り違えない）', () => {
     expect(readEnvelope(envelopeJson({ columns: [{ min: [1, 2], max: [1, 2, 3] }] }))).toBeNull()
     expect(readEnvelope(envelopeJson({ columns: 'x' }))).toBeNull()

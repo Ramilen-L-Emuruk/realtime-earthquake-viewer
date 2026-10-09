@@ -218,4 +218,31 @@ describe('measureNoiseBand', () => {
   test('手前の記録が 10 秒あれば測る', () => {
     expect(measureNoiseBand(axisColumns(-10, 60, () => 1), ZERO_MS)).not.toBeNull()
   })
+
+  /** 上下だけ値が無い（NaN）列。観測点の合成が上を解けない間の形。 */
+  function upMissing(base: TimedColumns, fromSec: number): TimedColumns {
+    const columns = base.columns.map((c, i) => {
+      if (c === null) return c
+      const sec = fromSec + Math.floor((i * SPAN) / 1000)
+      return sec < -20 ? c : { ...c, min: [c.min[0], c.min[1], NaN] as const, max: [c.max[0], c.max[1], NaN] as const }
+    })
+    return { ...base, columns }
+  }
+
+  // 正（2026-10-09）: 上下の値が一部だけ欠けても、中心の中央値は値のある分だけで取る（NaN で壊れない）。
+  test('上下の値が一部欠けても、残った値で上下の帯を測る', () => {
+    const band = measureNoiseBand(upMissing(axisColumns(-30, 60, () => 1), -30), ZERO_MS)!
+    expect(band.width[0]).toBeCloseTo(NOISE_WIDTH_RATIO)
+    expect(band.center[2]).toBe(0)
+    expect(band.width[2]).toBeCloseTo(1.5 * NOISE_WIDTH_RATIO)
+  })
+
+  // 安全弁: 上下がずっと欠けていれば帯を作らない（推測で幅を置かない。描く側は潰さない絵へ戻る）。
+  test('上下の値が手前の窓でずっと無ければ、帯を作らない', () => {
+    const base = axisColumns(-30, 60, () => 1)
+    const columns = base.columns.map((c) =>
+      c === null ? c : { ...c, min: [c.min[0], c.min[1], NaN] as const, max: [c.max[0], c.max[1], NaN] as const },
+    )
+    expect(measureNoiseBand({ ...base, columns }, ZERO_MS)).toBeNull()
+  })
 })

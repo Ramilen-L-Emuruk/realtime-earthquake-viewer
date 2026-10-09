@@ -168,6 +168,7 @@ function station(overrides: Partial<StationHealth> = {}): StationHealth {
     // 顔ぶれが揃わないまま切り上げた回数（#374）。0 が正常。
     uncoveredFusions: 0,
     pairDiffs: [],
+    residuals: [],
     ...overrides,
   }
 }
@@ -556,8 +557,8 @@ describe('buildStatusReport', () => {
 
   it('押し出しの具合を出す', () => {
     const hub = new ReadingHub({ maxSubscribers: 1 })
-    hub.subscribe({ wave: 'all', diff: null, deliver: () => true, onDetach: () => {} })
-    hub.subscribe({ wave: 'none', diff: null, deliver: () => true, onDetach: () => {} })
+    hub.subscribe({ wave: 'all', diff: null, residual: null, deliver: () => true, onDetach: () => {} })
+    hub.subscribe({ wave: 'none', diff: null, residual: null, deliver: () => true, onDetach: () => {} })
 
     const report = buildStatusReport(input({ hub: hub.snapshot() }))
 

@@ -11,6 +11,7 @@ import {
   STATION_CHUNK_POINTS,
   STATION_GRID_MS,
   SensorFusion,
+  findUnderdeterminedStations,
 } from './sensorFusion'
 import type { FusedWaveChunk, FusionOutcome, StationIntensityReading } from './sensorFusion'
 import { StationDirectory } from './stationConfig'
@@ -153,11 +154,12 @@ describe('SensorFusion.groupedStationIds', () => {
     expect(fusion.groupedStationIds).toEqual([])
   })
 
-  it('対照: 2 軸のセンサーは数えない（3 軸 1 台＋2 軸 1 台なら含まれない）', () => {
+  it('正: 2 軸のセンサーも顔ぶれに数える（3 軸 1 台＋2 軸 1 台で組む）', () => {
+    // 2026-10-09 に覆した（#688）。以前は 2 軸の台を合成へ入れず、この並びでは組まなかった。
     const config = twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 })
     const twoAxisBoard = { ...config.boards[1], sensors: [{ ...config.boards[1].sensors[0], axes: defaultAxes(2) }] }
     const fusion = new SensorFusion({ ...config, boards: [config.boards[0], twoAxisBoard] })
-    expect(fusion.groupedStationIds).toEqual([])
+    expect(fusion.groupedStationIds).toEqual(['home'])
   })
 
   /** 3 軸 2 台（A・B）に 3 台目（C）を並べた観測点。`cAxes` が C の軸の本数。 */
@@ -171,19 +173,12 @@ describe('SensorFusion.groupedStationIds', () => {
     return { ...config, boards: [config.boards[0], config.boards[1], c] }
   }
 
-  it('正: 3 軸 2 台に 2 軸 1 台が並んでも、3 軸の 2 台で組み、2 軸の台を待たない', () => {
+  it.each([2, 3] as const)('正: 3 台目が %i 軸でも顔ぶれに入り、A・B が届いても 3 台目を待つ', (cAxes) => {
     // 待ちは既定のまま。顔ぶれに入っていれば、一度も届いていない台も最初の到着から
     // `FUSION_LIVE_MS` は「生きている」と見なして待つ（`isLive`）。
-    const fusion = new SensorFusion(threeMemberConfig(2))
+    // 2026-10-09 に 2 軸の側を覆した（#688）。以前は 2 軸の台を待たずに 3 軸の 2 台で出していた。
+    const fusion = new SensorFusion(threeMemberConfig(cAxes))
     expect(fusion.groupedStationIds).toEqual(['home'])
-    expect(ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', 0, rows(30, 100)))).toEqual([])
-    const outs = ingestNow(fusion, gridChunk(BOARD_B, 'sensorB', 0, rows(30, 100)))
-    expect(outs.length).toBeGreaterThan(0)
-    expect(outs[0].fusedWave.memberCount.every((m) => m === 2)).toBe(true)
-  })
-
-  it('対照: 3 台目が 3 軸なら、A・B が届いても 3 台目を待つ', () => {
-    const fusion = new SensorFusion(threeMemberConfig(3))
     ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', 0, rows(30, 100)))
     expect(ingestNow(fusion, gridChunk(BOARD_B, 'sensorB', 0, rows(30, 100)))).toEqual([])
   })
@@ -208,17 +203,18 @@ describe('SensorFusion.ingest — グループ化と対象外の扱い', () => {
     expect(ingestNow(fusion, gridChunk(BOARD_A, 'sensorA', 0, rows(30, 100)))).toEqual([])
   })
 
-  it('安全弁: 地面の値を持たないまとまり（ground が null）は受け取らない', () => {
+  it('安全弁: 軸の本数が設定と違うまとまりは受け取らない（校正が解けなかった台は軸が空で来る）', () => {
     // 待ちを 0 にしているので、受け取っていればその場で 1 台ぶんの合成が出る（対照は次のテスト）。
     const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), NO_WAIT)
-    const chunk = { ...gridChunk(BOARD_A, 'sensorA', 0, rows(30, 100)), ground: null }
-    expect(fusion.ingest(chunk, T0 + 29 * STATION_GRID_MS)).toEqual([])
+    const full = gridChunk(BOARD_A, 'sensorA', 0, rows(30, 100))
+    expect(fusion.ingest({ ...full, axes: full.axes.slice(0, 2) }, T0 + 29 * STATION_GRID_MS)).toEqual([])
+    expect(fusion.ingest({ ...full, axes: [] }, T0 + 29 * STATION_GRID_MS)).toEqual([])
     expect(fusion.closeAll().drained).toEqual([])
   })
 
-  it('対照: 同じまとまりでも地面の値があれば、その場で合成が出る', () => {
+  it('対照: 同じまとまりでも軸の本数が設定どおりなら、その場で合成が出る（地面の値 ground は読まない）', () => {
     const fusion = new SensorFusion(twoSensorConfig({ noiseDensity: 10 }, { noiseDensity: 20 }), NO_WAIT)
-    const chunk = gridChunk(BOARD_A, 'sensorA', 0, rows(30, 100))
+    const chunk = { ...gridChunk(BOARD_A, 'sensorA', 0, rows(30, 100)), ground: null }
     expect(fusion.ingest(chunk, T0 + 29 * STATION_GRID_MS).length).toBeGreaterThan(0)
   })
 })
@@ -340,6 +336,410 @@ describe('SensorFusion.ingest — 重み付き平均と差分', () => {
     const [out] = ingestNow(fusion, gridChunk(BOARD_B, 'sensorB', 0, rows(30, 50)))
     expect(out.fusedWave.memberCount.every((m) => m === 3)).toBe(true)
     expect(out.pairDiffs).toHaveLength(3)
+  })
+})
+
+describe('SensorFusion.ingest — 軸ごとの最小二乗（2 軸を含む）', () => {
+  type V3 = readonly [number, number, number]
+  const E: V3 = [1, 0, 0]
+  const N: V3 = [0, 1, 0]
+  const U: V3 = [0, 0, 1]
+  const ENU: readonly V3[] = [E, N, U]
+  /** IIS2ICLX の基板の並び: 水平に置いた 1 個（東・北）と、立てて向きを変えた 2 個（北・上／東・上）。 */
+  const FLAT: readonly V3[] = [E, N]
+  const STAND_N: readonly V3[] = [N, U]
+  const STAND_E: readonly V3[] = [E, U]
+
+  /** 観測点 1 つに、軸の本数を選んだセンサーを並べる。 */
+  function mixedConfig(
+    members: readonly { boardKey: BoardKey; sensorId: string; noiseDensity: number | null; axes: 2 | 3 }[],
+  ): StationConfig {
+    const config = stationConfig(members)
+    return {
+      ...config,
+      boards: config.boards.map((board, i) => ({
+        ...board,
+        sensors: [{ ...board.sensors[0]!, axes: defaultAxes(members[i]!.axes) }],
+      })),
+    }
+  }
+
+  /** 軸ごとの値で組んだまとまり。**地面の値（`ground`）は持たせない** —— 合成が読むのは軸の値だけ。 */
+  function axisChunk(
+    boardKey: BoardKey,
+    sensorId: string,
+    k: number,
+    dirs: readonly V3[],
+    values: readonly number[][],
+  ): WaveChunk {
+    return {
+      streamKey: `${boardKey}|${sensorId}|boot1`,
+      segmentId: 1,
+      boardKey,
+      sensorId,
+      channels: dirs.map((_, j) => `HN${j + 1}`),
+      firstSampleIndex: k,
+      firstSampleMs: T0 + k * STATION_GRID_MS,
+      msPerSample: STATION_GRID_MS,
+      timebaseNominalReason: null,
+      ground: null,
+      axes: dirs.map((direction, j) => ({ direction, gal: values[j]! })),
+    }
+  }
+
+  /** 揺れ `a`（一定）を、向き `dirs` の軸で測った 30 サンプル。 */
+  function steady(dirs: readonly V3[], a: V3): number[][] {
+    return dirs.map((d) => new Array(30).fill(d[0] * a[0] + d[1] * a[1] + d[2] * a[2]))
+  }
+
+  function ingestAxes(fusion: SensorFusion, w: WaveChunk): readonly FusionOutcome[] {
+    return fusion.ingest(w, w.firstSampleMs + (w.axes[0]!.gal.length - 1) * w.msPerSample)
+  }
+
+  const A: V3 = [3, 5, 7]
+
+  const c07 = Math.cos(0.7)
+  const s07 = Math.sin(0.7)
+  const ROTATED: readonly V3[] = [
+    [c07, s07, 0],
+    [-s07, c07, 0],
+    [0, 0, 1],
+  ]
+
+  it('対照: 3 軸の台の測る向きを回しても（直交）、成分ごとの重み付き平均と同じ値になる', () => {
+    const fusion = new SensorFusion(
+      mixedConfig([
+        { boardKey: BOARD_A, sensorId: 'sensorA', noiseDensity: 10, axes: 3 },
+        { boardKey: BOARD_B, sensorId: 'sensorB', noiseDensity: 20, axes: 3 },
+      ]),
+    )
+    const gA: V3 = [100, -40, 980]
+    const gB: V3 = [50, 20, 960]
+    ingestAxes(fusion, axisChunk(BOARD_B, 'sensorB', 0, ENU, steady(ENU, gB)))
+    const [out] = ingestAxes(fusion, axisChunk(BOARD_A, 'sensorA', 0, ROTATED, steady(ROTATED, gA)))
+    // wA=1/10²=0.01, wB=1/20²=0.0025 → 成分ごとに (0.01·gA + 0.0025·gB) / 0.0125。
+    for (let axis = 0; axis < 3; axis++) {
+      expect(restored(out!.fusedWave, axis, 5)).toBeCloseTo((0.01 * gA[axis] + 0.0025 * gB[axis]) / 0.0125, 9)
+    }
+  })
+
+  it('正: 3 軸の台が居なくても、2 軸の 3 台（水平 1・立てた 2）で東・北・上を解く', () => {
+    const fusion = new SensorFusion(
+      mixedConfig([
+        { boardKey: BOARD_A, sensorId: 'flat', noiseDensity: 1, axes: 2 },
+        { boardKey: BOARD_B, sensorId: 'standN', noiseDensity: 1, axes: 2 },
+        { boardKey: BOARD_C, sensorId: 'standE', noiseDensity: 1, axes: 2 },
+      ]),
+    )
+    ingestAxes(fusion, axisChunk(BOARD_A, 'flat', 0, FLAT, steady(FLAT, A)))
+    ingestAxes(fusion, axisChunk(BOARD_B, 'standN', 0, STAND_N, steady(STAND_N, A)))
+    const [out] = ingestAxes(fusion, axisChunk(BOARD_C, 'standE', 0, STAND_E, steady(STAND_E, A)))
+    for (let axis = 0; axis < 3; axis++) expect(restored(out!.fusedWave, axis, 0)).toBeCloseTo(A[axis], 9)
+    expect(out!.fusedWave.memberCount.every((m) => m === 3)).toBe(true)
+  })
+
+  it('正: 3 軸 1 台と水平の 2 軸 1 台を重みつきで解く（上は 3 軸の台だけが決める）', () => {
+    const fusion = new SensorFusion(
+      mixedConfig([
+        { boardKey: BOARD_A, sensorId: 'mpu', noiseDensity: 10, axes: 3 },
+        { boardKey: BOARD_B, sensorId: 'flat', noiseDensity: 1, axes: 2 },
+      ]),
+    )
+    ingestAxes(fusion, axisChunk(BOARD_B, 'flat', 0, FLAT, steady(FLAT, [0, 0, 0])))
+    const [out] = ingestAxes(fusion, axisChunk(BOARD_A, 'mpu', 0, ENU, steady(ENU, [100, 100, 100])))
+    // 東・北は重み 0.01 と 1 の平均（100·0.01 / 1.01）、上は 3 軸の台の値そのまま。
+    expect(restored(out!.fusedWave, 0, 0)).toBeCloseTo(1 / 1.01, 9)
+    expect(restored(out!.fusedWave, 1, 0)).toBeCloseTo(1 / 1.01, 9)
+    expect(restored(out!.fusedWave, 2, 0)).toBeCloseTo(100, 9)
+    // 水平の台は上の成分に数えない。
+    expect(out!.fusedWave.axisMemberCount[0]![0]).toBe(2)
+    expect(out!.fusedWave.axisMemberCount[2]![0]).toBe(1)
+    expect(out!.fusedWave.memberCount[0]).toBe(2)
+  })
+
+  it('正（2026-10-09 に覆した）: 水平の 2 軸の台だけが値を持つ目盛りでも、東・北は出す（上だけ欠け・震度は出さない）', () => {
+    // 以前は 3 成分まとめて欠けにしていた。**解けない向き（上）に掛からない成分は値がある**
+    // ので、それを捨てると、上を測る台が止まっただけで水平の波形まで消える（2026-10-09 ユーザー承認）。
+    const fusion = new SensorFusion(
+      mixedConfig([
+        { boardKey: BOARD_A, sensorId: 'mpu', noiseDensity: 10, axes: 3 },
+        { boardKey: BOARD_B, sensorId: 'flat', noiseDensity: 1, axes: 2 },
+      ]),
+      NO_WAIT,
+    )
+    const outs = ingestAxes(fusion, axisChunk(BOARD_B, 'flat', 0, FLAT, steady(FLAT, A)))
+    expect(outs).toHaveLength(1)
+    const w = outs[0]!.fusedWave
+    expect(restored(w, 0, 0)).toBeCloseTo(A[0], 9)
+    expect(restored(w, 1, 0)).toBeCloseTo(A[1], 9)
+    expect(w.gal[2].every((v) => Number.isNaN(v))).toBe(true)
+    expect(w.dcGal[2].every((v) => Number.isNaN(v))).toBe(true)
+    expect(outs[0]!.readings).toEqual([])
+    expect(fusion.unsolvedPoints).toBe(STATION_CHUNK_POINTS)
+  })
+
+  it('対照: 3 方向とも解けた目盛りは、解けなかった目盛りに数えない', () => {
+    const fusion = new SensorFusion(
+      mixedConfig([
+        { boardKey: BOARD_A, sensorId: 'mpu', noiseDensity: 10, axes: 3 },
+        { boardKey: BOARD_B, sensorId: 'flat', noiseDensity: 1, axes: 2 },
+      ]),
+    )
+    ingestAxes(fusion, axisChunk(BOARD_B, 'flat', 0, FLAT, steady(FLAT, A)))
+    const [out] = ingestAxes(fusion, axisChunk(BOARD_A, 'mpu', 0, ENU, steady(ENU, A)))
+    expect(out!.fusedWave.gal.every((axis) => axis.every((v) => Number.isFinite(v)))).toBe(true)
+    expect(fusion.unsolvedPoints).toBe(0)
+  })
+
+  it('正: 上だけ欠けた目盛りから 3 方向とも解けた目盛りへ戻ると、震度の流し込みを作り直して続ける', () => {
+    const fusion = new SensorFusion(
+      mixedConfig([
+        { boardKey: BOARD_A, sensorId: 'mpu', noiseDensity: 10, axes: 3 },
+        { boardKey: BOARD_B, sensorId: 'flat', noiseDensity: 1, axes: 2 },
+      ]),
+      NO_WAIT,
+    )
+    // まとまり 0 は水平の台だけ（上だけ欠け）、まとまり 1 は 3 軸の台が届いた時点で出る（待ちが 0）。
+    const [partial] = ingestAxes(fusion, axisChunk(BOARD_B, 'flat', 0, FLAT, steady(FLAT, A)))
+    const [full] = ingestAxes(fusion, axisChunk(BOARD_A, 'mpu', 30, ENU, steady(ENU, A)))
+    expect(partial!.intensityStateChanged).toBe(false)
+    expect(full!.fusedWave.firstSampleIndex).toBe(partial!.fusedWave.firstSampleIndex + STATION_CHUNK_POINTS)
+    expect(full!.intensityStateChanged).toBe(true)
+    expect(full!.fusedWave.gal[2].every((v) => Number.isFinite(v))).toBe(true)
+  })
+
+  it.each([
+    ['平面から 0.1 rad しか外れない並びは、上だけ欠けにする（東・北は出す）', 0.1, false],
+    ['平面から 0.6 rad 外れていれば 3 方向とも解く', 0.6, true],
+  ] as const)('安全弁: %s（向きの散らばりの下限）', (_name, tilt, upSolved) => {
+    const tilted: readonly V3[] = [E, [Math.cos(tilt), 0, Math.sin(tilt)]]
+    const fusion = new SensorFusion(
+      mixedConfig([
+        { boardKey: BOARD_A, sensorId: 'flat', noiseDensity: 1, axes: 2 },
+        { boardKey: BOARD_B, sensorId: 'tilted', noiseDensity: 1, axes: 2 },
+      ]),
+    )
+    ingestAxes(fusion, axisChunk(BOARD_A, 'flat', 0, FLAT, steady(FLAT, A)))
+    const [out] = ingestAxes(fusion, axisChunk(BOARD_B, 'tilted', 0, tilted, steady(tilted, A)))
+    // **上を解けなくても、東は傾いた軸に乗った上の揺れに引きずられない**（解けない向きを 0 と
+    // 決めつけて解くと、東へ上の揺れの一部が漏れる）。
+    expect(restored(out!.fusedWave, 0, 0)).toBeCloseTo(A[0], 9)
+    expect(restored(out!.fusedWave, 1, 0)).toBeCloseTo(A[1], 9)
+    expect(Number.isFinite(out!.fusedWave.gal[2][0]!)).toBe(upSolved)
+  })
+
+  it('正: 対の差分は 3 軸どうしだけ（2 軸の台を含む組は作らない）', () => {
+    const fusion = new SensorFusion(
+      mixedConfig([
+        { boardKey: BOARD_A, sensorId: 'mpuA', noiseDensity: 10, axes: 3 },
+        { boardKey: BOARD_B, sensorId: 'mpuB', noiseDensity: 10, axes: 3 },
+        { boardKey: BOARD_C, sensorId: 'flat', noiseDensity: 1, axes: 2 },
+      ]),
+    )
+    ingestAxes(fusion, axisChunk(BOARD_A, 'mpuA', 0, ENU, steady(ENU, A)))
+    ingestAxes(fusion, axisChunk(BOARD_C, 'flat', 0, FLAT, steady(FLAT, A)))
+    const [out] = ingestAxes(fusion, axisChunk(BOARD_B, 'mpuB', 0, ENU, steady(ENU, A)))
+    expect(out!.pairDiffs).toHaveLength(1)
+    expect(out!.pairDiffs[0]!.memberA.sensorId).toBe('mpuA')
+    expect(out!.pairDiffs[0]!.memberB.sensorId).toBe('mpuB')
+  })
+
+  it('正: 対の差分は東・北・上で出す（3 軸の台の測る向きが回っていても）', () => {
+    const fusion = new SensorFusion(
+      mixedConfig([
+        { boardKey: BOARD_A, sensorId: 'mpuA', noiseDensity: 10, axes: 3 },
+        { boardKey: BOARD_B, sensorId: 'mpuB', noiseDensity: 10, axes: 3 },
+      ]),
+    )
+    // A は 2 サンプル目だけ東へ 100 振れる（直流を引くと 50。差分はその半分）。B は静か。
+    const valuesA = ROTATED.map((d) => Array.from({ length: 30 }, (_, j) => (j === 1 ? d[0] * 100 : 0)))
+    ingestAxes(fusion, axisChunk(BOARD_B, 'mpuB', 0, ENU, steady(ENU, [0, 0, 0])))
+    const [out] = ingestAxes(fusion, axisChunk(BOARD_A, 'mpuA', 0, ROTATED, valuesA))
+    expect(out!.pairDiffs[0]!.diffGal[0]![1]).toBeCloseTo(25, 9)
+    expect(out!.pairDiffs[0]!.diffGal[1]![1]).toBeCloseTo(0, 9)
+  })
+
+  describe('ずれ（自分を除いた残りと比べる）', () => {
+    function threeMpu(noise: readonly [number, number, number]): SensorFusion {
+      return new SensorFusion(
+        mixedConfig([
+          { boardKey: BOARD_A, sensorId: 'a', noiseDensity: noise[0], axes: 3 },
+          { boardKey: BOARD_B, sensorId: 'b', noiseDensity: noise[1], axes: 3 },
+          { boardKey: BOARD_C, sensorId: 'c', noiseDensity: noise[2], axes: 3 },
+        ]),
+      )
+    }
+    /** 2 サンプル目だけ東へ 100 振れる（直流を引くと 50）。 */
+    function spikeEast(): number[][] {
+      const v = steady(ENU, [0, 0, 0])
+      v[0]![1] = 100
+      return v
+    }
+
+    it('正: 振れた台のずれは振れの全部（自分を含めた合成と比べた 2/3 ではない）', () => {
+      const fusion = threeMpu([10, 10, 10])
+      ingestAxes(fusion, axisChunk(BOARD_A, 'a', 0, ENU, steady(ENU, [0, 0, 0])))
+      ingestAxes(fusion, axisChunk(BOARD_B, 'b', 0, ENU, steady(ENU, [0, 0, 0])))
+      const [out] = ingestAxes(fusion, axisChunk(BOARD_C, 'c', 0, ENU, spikeEast()))
+      const c = out!.residuals.find((r) => r.member.sensorId === 'c')!
+      expect(c.axes[0]!.residualGal[1]).toBeCloseTo(50, 9)
+      // 振れていない台からは、残り（振れた台を含む 2 台）の平均ぶんだけ逆向きに見える。
+      const a = out!.residuals.find((r) => r.member.sensorId === 'a')!
+      expect(a.axes[0]!.residualGal[1]).toBeCloseTo(-25, 9)
+      expect(a.axes[1]!.residualGal[1]).toBeCloseTo(0, 9)
+    })
+
+    it('正: 重みの大きい台が振れても、ずれには振れの全部が出る', () => {
+      // a の重みは b・c の 100 倍。自分を含めた合成と比べると、ずれは振れの 1/51 しか出ない。
+      const fusion = threeMpu([1, 10, 10])
+      ingestAxes(fusion, axisChunk(BOARD_B, 'b', 0, ENU, steady(ENU, [0, 0, 0])))
+      ingestAxes(fusion, axisChunk(BOARD_C, 'c', 0, ENU, steady(ENU, [0, 0, 0])))
+      const [out] = ingestAxes(fusion, axisChunk(BOARD_A, 'a', 0, ENU, spikeEast()))
+      const a = out!.residuals.find((r) => r.member.sensorId === 'a')!
+      expect(a.axes[0]!.residualGal[1]).toBeCloseTo(50, 9)
+    })
+
+    it('正: 2 軸の台のずれは、その台の測る向きと軸の名前で出す', () => {
+      const fusion = new SensorFusion(
+        mixedConfig([
+          { boardKey: BOARD_A, sensorId: 'mpuA', noiseDensity: 10, axes: 3 },
+          { boardKey: BOARD_B, sensorId: 'mpuB', noiseDensity: 10, axes: 3 },
+          { boardKey: BOARD_C, sensorId: 'standN', noiseDensity: 1, axes: 2 },
+        ]),
+      )
+      const v = steady(STAND_N, [0, 0, 0])
+      v[1]![1] = 100
+      ingestAxes(fusion, axisChunk(BOARD_A, 'mpuA', 0, ENU, steady(ENU, [0, 0, 0])))
+      ingestAxes(fusion, axisChunk(BOARD_B, 'mpuB', 0, ENU, steady(ENU, [0, 0, 0])))
+      const [out] = ingestAxes(fusion, axisChunk(BOARD_C, 'standN', 0, STAND_N, v))
+      const r = out!.residuals.find((x) => x.member.sensorId === 'standN')!
+      expect(r.channels).toEqual(['HN1', 'HN2'])
+      expect(r.axes.map((x) => x.direction)).toEqual([N, U])
+      expect(r.axes[1]!.residualGal[1]).toBeCloseTo(50, 9)
+      expect(r.axes[0]!.residualGal[1]).toBeCloseTo(0, 9)
+      expect(r.firstSampleIndex).toBe(out!.fusedWave.firstSampleIndex)
+      expect(r.axes[0]!.residualGal).toHaveLength(out!.fusedWave.gal[0].length)
+    })
+
+    it('安全弁（2026-10-09 に覆した）: 自分を抜くと解けない向きを測る軸だけ null（解ける向きの軸は出す）', () => {
+      // 3 軸 1 台＋水平の 2 軸 1 台。3 軸の台を抜くと水平の 2 本しか残らない —— 東・北は解けるが
+      // 上は解けない。以前は 3 軸の台の 3 本とも null にしていた（2026-10-09 ユーザー承認で覆した）。
+      const fusion = new SensorFusion(
+        mixedConfig([
+          { boardKey: BOARD_A, sensorId: 'mpu', noiseDensity: 10, axes: 3 },
+          { boardKey: BOARD_B, sensorId: 'flat', noiseDensity: 1, axes: 2 },
+        ]),
+      )
+      ingestAxes(fusion, axisChunk(BOARD_B, 'flat', 0, FLAT, steady(FLAT, A)))
+      const [out] = ingestAxes(fusion, axisChunk(BOARD_A, 'mpu', 0, ENU, steady(ENU, A)))
+      const mpu = out!.residuals.find((r) => r.member.sensorId === 'mpu')!
+      expect(mpu.axes[0]!.residualGal.every((v) => v !== null && Math.abs(v) < 1e-9)).toBe(true)
+      expect(mpu.axes[1]!.residualGal.every((v) => v !== null && Math.abs(v) < 1e-9)).toBe(true)
+      expect(mpu.axes[2]!.residualGal.every((v) => v === null)).toBe(true)
+      const flat = out!.residuals.find((r) => r.member.sensorId === 'flat')!
+      expect(flat.axes.every((x) => x.residualGal.every((v) => v !== null && Math.abs(v) < 1e-9))).toBe(true)
+    })
+
+    it('正: 観測点全体で上が解けない目盛りでも、水平の台どうしのずれは出す', () => {
+      const fusion = new SensorFusion(
+        mixedConfig([
+          { boardKey: BOARD_A, sensorId: 'flatA', noiseDensity: 1, axes: 2 },
+          { boardKey: BOARD_B, sensorId: 'flatB', noiseDensity: 1, axes: 2 },
+        ]),
+      )
+      const v = steady(FLAT, [0, 0, 0])
+      v[0]![1] = 100
+      ingestAxes(fusion, axisChunk(BOARD_A, 'flatA', 0, FLAT, steady(FLAT, [0, 0, 0])))
+      const [out] = ingestAxes(fusion, axisChunk(BOARD_B, 'flatB', 0, FLAT, v))
+      const b = out!.residuals.find((r) => r.member.sensorId === 'flatB')!
+      expect(b.axes[0]!.residualGal[1]).toBeCloseTo(50, 9)
+      expect(b.axes[1]!.residualGal[1]).toBeCloseTo(0, 9)
+    })
+
+    it('対照: 一度も値を届けていない台はずれに入らない（測る向きが分からない）', () => {
+      const fusion = new SensorFusion(
+        mixedConfig([
+          { boardKey: BOARD_A, sensorId: 'a', noiseDensity: 10, axes: 3 },
+          { boardKey: BOARD_B, sensorId: 'b', noiseDensity: 10, axes: 3 },
+        ]),
+        NO_WAIT,
+      )
+      const [out] = ingestAxes(fusion, axisChunk(BOARD_A, 'a', 0, ENU, steady(ENU, A)))
+      expect(out!.residuals.map((r) => r.member.sensorId)).toEqual(['a'])
+      // 残りが居ないので、届けた台のずれも出せない。
+      expect(out!.residuals[0]!.axes.every((x) => x.residualGal.every((v) => v === null))).toBe(true)
+    })
+  })
+})
+
+describe('findUnderdeterminedStations — 設定の時点で、合成で解けない向きがある観測点', () => {
+  type V3 = readonly [number, number, number]
+  function config(
+    members: readonly { boardKey: BoardKey; sensorId: string; vectors: readonly V3[]; enabled?: boolean }[],
+  ): StationConfig {
+    const base = stationConfig(members.map((m) => ({ boardKey: m.boardKey, sensorId: m.sensorId, noiseDensity: 1 })))
+    return {
+      ...base,
+      boards: base.boards.map((board, i) => ({
+        ...board,
+        sensors: [
+          {
+            ...board.sensors[0]!,
+            enabled: members[i]!.enabled ?? true,
+            axes: members[i]!.vectors.map((vector) => ({ vector, offset: 0 })),
+          },
+        ],
+      })),
+    }
+  }
+  const E: V3 = [1, 0, 0]
+  const N: V3 = [0, 1, 0]
+  const U: V3 = [0, 0, 1]
+
+  it('正: 水平の 2 軸の台だけの観測点は、上を解けないので挙げる', () => {
+    expect(
+      findUnderdeterminedStations(
+        config([
+          { boardKey: BOARD_A, sensorId: 'flatA', vectors: [E, N] },
+          { boardKey: BOARD_B, sensorId: 'flatB', vectors: [E, N] },
+        ]),
+      ),
+    ).toEqual(['home'])
+  })
+
+  it('対照: 立てた台が 1 つあれば 3 方向へ散るので挙げない（3 軸の台が居ても同じ）', () => {
+    expect(
+      findUnderdeterminedStations(
+        config([
+          { boardKey: BOARD_A, sensorId: 'flat', vectors: [E, N] },
+          { boardKey: BOARD_B, sensorId: 'stand', vectors: [N, U] },
+        ]),
+      ),
+    ).toEqual([])
+    expect(
+      findUnderdeterminedStations(
+        config([
+          { boardKey: BOARD_A, sensorId: 'flat', vectors: [E, N] },
+          { boardKey: BOARD_B, sensorId: 'mpu', vectors: [E, N, U] },
+        ]),
+      ),
+    ).toEqual([])
+  })
+
+  it('安全弁: 無効にした台の向きは数えない（合成に入らない）', () => {
+    expect(
+      findUnderdeterminedStations(
+        config([
+          { boardKey: BOARD_A, sensorId: 'flatA', vectors: [E, N] },
+          { boardKey: BOARD_B, sensorId: 'flatB', vectors: [E, N] },
+          { boardKey: BOARD_C, sensorId: 'stand', vectors: [N, U], enabled: false },
+        ]),
+      ),
+    ).toEqual(['home'])
+  })
+
+  it('対照: 1 台しか無い観測点は合成を組まないので挙げない', () => {
+    expect(findUnderdeterminedStations(config([{ boardKey: BOARD_A, sensorId: 'flat', vectors: [E, N] }]))).toEqual([])
   })
 })
 

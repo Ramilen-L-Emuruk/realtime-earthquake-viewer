@@ -69,8 +69,10 @@ describe('buildWaveColumns', () => {
 
   describe('届かなかった区間', () => {
     it('その列は値を持たない', () => {
+      // **届かなかった区間は 3 成分そろって NaN で入る**（1 成分だけの NaN は下の「成分ごと」が見る）。
+      const gone = [1, 2, 3, 4, 5, NaN, NaN, NaN, NaN, NaN]
       const r = buildWaveColumns({
-        window: win([1, 2, 3, 4, 5, NaN, NaN, NaN, NaN, NaN]),
+        window: win(gone, gone, gone),
         columnCount: 2,
         spanMs: fullSpan(10),
         minScaleGal: 1,
@@ -95,22 +97,39 @@ describe('buildWaveColumns', () => {
       expect(r.columns[0].max[0]).toBe(4)
     })
 
-    // 安全弁: 1 成分だけが読めないサンプルは、そのサンプルごと落とす。
-    // 片方だけ採ると、成分によって時間軸の点の数が変わる。
-    it('1 成分でも読めないサンプルは数えない', () => {
+    // 正（2026-10-09 に覆した）: 1 成分だけが読めないサンプルは、読めた成分だけを列へ入れる。
+    // 観測点の合成が、測る向きが 3 方向へ散っていない間に解けない成分だけを NaN にして残りを出す
+    // ようになった（2026-10-09 ユーザー承認）。以前は「成分によって点の数が変わる」のを避けて
+    // サンプルごと落としていたが、それだと上が解けないだけで水平の線まで消える。
+    it('1 成分だけ読めないサンプルは、読めた成分だけを列へ入れる', () => {
       const r = buildWaveColumns({
         window: win([1, 2], [3, NaN], [5, 6]),
         columnCount: 1,
         spanMs: fullSpan(2),
         minScaleGal: 1,
       })
-      expect(r.columns[0].max[0]).toBe(1)
-      expect(r.columns[0].max[2]).toBe(5)
+      expect(r.columns[0].max[0]).toBe(2)
+      expect(r.columns[0].max[1]).toBe(3)
+      expect(r.columns[0].max[2]).toBe(6)
+    })
+
+    // 対照: その成分が列の中で 1 つも読めなければ、その成分だけ NaN（描く側はそこで線を切る）。
+    it('成分が列の中で 1 つも読めなければ、その成分だけ NaN で、列は値を持つ', () => {
+      const r = buildWaveColumns({
+        window: win([1, 2], [3, 4], [NaN, NaN]),
+        columnCount: 1,
+        spanMs: fullSpan(2),
+        minScaleGal: 1,
+      })
+      expect(r.columns[0].hasValue).toBe(true)
+      expect(r.columns[0].min[2]).toBeNaN()
+      expect(r.columns[0].max[2]).toBeNaN()
+      expect(r.scaleGal).toBe(4)
     })
 
     it('1 点も読めなければ値を持つ列が無い', () => {
       const r = buildWaveColumns({
-        window: win([NaN, NaN]),
+        window: win([NaN, NaN], [NaN, NaN], [NaN, NaN]),
         columnCount: 2,
         spanMs: fullSpan(2),
         minScaleGal: 4,

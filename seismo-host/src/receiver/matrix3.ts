@@ -102,3 +102,106 @@ export function isProperRotation(m: Mat3): boolean {
   }
   return det3(m) > 0
 }
+
+/**
+ * 対称な 3x3 行列のいちばん小さい固有値。**数でない値を含むなら NaN。**
+ *
+ * 観測点の合成（`sensorFusion.ts`）が「測る向きがどれだけ 3 方向へ散っているか」を測るのに使う
+ * （向きを並べた `Σ d dᵀ` の最小固有値が、いちばん測られていない方向の情報量になる）。
+ * 閉じた式（Smith 1961）で解く —— 反復を回さないので、目盛り 1 点ごとに呼んでも重くない。
+ * **対称であることは確かめない**（上三角だけを読む）。
+ */
+export function minEigenvalueSym3(m: Mat3): number {
+  const a00 = m[0][0]
+  const a11 = m[1][1]
+  const a22 = m[2][2]
+  const a01 = m[0][1]
+  const a02 = m[0][2]
+  const a12 = m[1][2]
+  if (![a00, a11, a22, a01, a02, a12].every((x) => Number.isFinite(x))) return Number.NaN
+  const p1 = a01 * a01 + a02 * a02 + a12 * a12
+  if (p1 === 0) return Math.min(a00, a11, a22)
+  const q = (a00 + a11 + a22) / 3
+  const p2 = (a00 - q) ** 2 + (a11 - q) ** 2 + (a22 - q) ** 2 + 2 * p1
+  const p = Math.sqrt(p2 / 6)
+  const b: Mat3 = [
+    [(a00 - q) / p, a01 / p, a02 / p],
+    [a01 / p, (a11 - q) / p, a12 / p],
+    [a02 / p, a12 / p, (a22 - q) / p],
+  ]
+  // 丸めで ±1 をわずかに越えることがあるので詰める（越えたまま acos へ渡すと NaN になる）。
+  const r = Math.max(-1, Math.min(1, det3(b) / 2))
+  const phi = Math.acos(r) / 3
+  return q + 2 * p * Math.cos(phi + (2 * Math.PI) / 3)
+}
+
+/** {@link eigenSym3} の答え。`values` は小さい順、`vectors[k]` が `values[k]` の向き（長さ 1・互いに直交）。 */
+export interface SymEigen3 {
+  readonly values: readonly [number, number, number]
+  readonly vectors: readonly [Vec3, Vec3, Vec3]
+}
+
+/** Jacobi 法の回転を回す上限。3x3 なら 10 回もかからず収まる（非対角が丸め誤差の大きさまで落ちる）。 */
+const JACOBI_MAX_SWEEPS = 50
+
+/**
+ * 対称な 3x3 行列の固有値と固有の向き。**数でない値を含むなら null。**
+ *
+ * 観測点の合成（`sensorFusion.ts`）が、測る向きの散らばりから「解けない向き」を取り出すのに使う
+ * （値だけなら {@link minEigenvalueSym3} の閉じた式で足りるが、向きが要る）。Jacobi 法で解く ——
+ * 収まりが速く、向きが互いに直交したまま出てくる。**対称であることは確かめない**（上三角だけを読む）。
+ */
+export function eigenSym3(m: Mat3): SymEigen3 | null {
+  const a = [
+    [m[0][0], m[0][1], m[0][2]],
+    [m[0][1], m[1][1], m[1][2]],
+    [m[0][2], m[1][2], m[2][2]],
+  ]
+  if (!a.every((row) => row.every((x) => Number.isFinite(x)))) return null
+  const v = [
+    [1, 0, 0],
+    [0, 1, 0],
+    [0, 0, 1],
+  ]
+  const scale = Math.max(1e-300, ...a.flat().map((x) => Math.abs(x)))
+  for (let sweep = 0; sweep < JACOBI_MAX_SWEEPS; sweep++) {
+    const off = Math.abs(a[0]![1]!) + Math.abs(a[0]![2]!) + Math.abs(a[1]![2]!)
+    if (off <= scale * 1e-15) break
+    for (const [p, q] of [
+      [0, 1],
+      [0, 2],
+      [1, 2],
+    ] as const) {
+      const apq = a[p]![q]!
+      if (apq === 0) continue
+      const theta = (a[q]![q]! - a[p]![p]!) / (2 * apq)
+      const t = Math.sign(theta || 1) / (Math.abs(theta) + Math.sqrt(theta * theta + 1))
+      const c = 1 / Math.sqrt(t * t + 1)
+      const s = t * c
+      for (let k = 0; k < 3; k++) {
+        const akp = a[k]![p]!
+        const akq = a[k]![q]!
+        a[k]![p] = c * akp - s * akq
+        a[k]![q] = s * akp + c * akq
+      }
+      for (let k = 0; k < 3; k++) {
+        const apk = a[p]![k]!
+        const aqk = a[q]![k]!
+        a[p]![k] = c * apk - s * aqk
+        a[q]![k] = s * apk + c * aqk
+      }
+      for (let k = 0; k < 3; k++) {
+        const vkp = v[k]![p]!
+        const vkq = v[k]![q]!
+        v[k]![p] = c * vkp - s * vkq
+        v[k]![q] = s * vkp + c * vkq
+      }
+    }
+  }
+  const order = [0, 1, 2].sort((x, y) => a[x]![x]! - a[y]![y]!)
+  const vec = (k: number): Vec3 => [v[0]![k]!, v[1]![k]!, v[2]![k]!]
+  return {
+    values: [a[order[0]!]![order[0]!]!, a[order[1]!]![order[1]!]!, a[order[2]!]![order[2]!]!],
+    vectors: [vec(order[0]!), vec(order[1]!), vec(order[2]!)],
+  }
+}

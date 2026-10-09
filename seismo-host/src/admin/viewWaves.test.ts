@@ -229,6 +229,26 @@ describe('readStatus', () => {
     expect(status.sensors[0].stationName).toBeNull()
   })
 
+  it('正: ずれを見られる台を stationIntensities[].residuals から読む（#688）', () => {
+    const status = readStatus({
+      stationIntensities: [
+        {
+          stationId: 'garage',
+          pairDiffs: [],
+          residuals: [
+            { member: { boardKey: 'mac:aa', sensorId: 's0' }, channels: ['HN1'], axes: [] },
+            { member: { boardKey: '', sensorId: 's1' } },
+          ],
+        },
+      ],
+    })
+    expect(status.residuals).toEqual([{ stationId: 'garage', boardKey: 'mac:aa', sensorId: 's0' }])
+  })
+
+  it('対照: 欄の無い版のホストでは、ずれの一覧は空', () => {
+    expect(readStatus({ stationIntensities: [{ stationId: 'garage', pairDiffs: [] }] }).residuals).toEqual([])
+  })
+
   it('形が違っても落ちない', () => {
     expect(readStatus(null).sensors).toEqual([])
     expect(readStatus({ sensors: 'x', stream: 7 }).stream).toBeNull()
@@ -362,6 +382,105 @@ describe('initWavesView', () => {
     expect(legend).toContain('HN1 の向き: 東 +0.87・北 +0.50・上 0.00')
     expect(legend).toContain('HN2 の向き: 東 -0.50・北 +0.87・上 0.00')
     expect(own[0]?.querySelector('.wave-own-range')?.textContent).toMatch(/^±.+ gal$/)
+  })
+
+  it('正: 組からずれへ・ずれから組へ選び直すと、頼むものが入れ替わり、届いた件数は数え直す', async () => {
+    // **1 つの選択欄に組とずれが並ぶ。** 選べるのはどちらか 1 つで、前のものは頼み直しで外す。
+    const container = await mount(
+      statusJson({
+        stationIntensities: [
+          {
+            stationId: 'station-1',
+            pairDiffs: [
+              {
+                a: { boardKey: 'board-1', sensorId: 'accel-0' },
+                b: { boardKey: 'board-2', sensorId: 'accel-1' },
+                rmsGal: [0.1, 0.1, 0.2],
+                sampleCount: [30, 30, 30],
+              },
+            ],
+            residuals: [{ member: { boardKey: 'board-3', sensorId: 'i2c0-6a' }, channels: ['HN1', 'HN2'], axes: [] }],
+          },
+        ],
+      }),
+    )
+    const select = container.querySelector<HTMLSelectElement>('.wave-diff')!
+    expect(select.options).toHaveLength(3)
+
+    select.value = select.options[1]!.value
+    select.dispatchEvent(new Event('change'))
+    expect(captured?.diff).not.toBeNull()
+    expect(captured?.residual).toBeNull()
+    captured?.onPairDiff?.(pairChunk())
+    expect(container.querySelector('.wave-diff-note')?.textContent).toContain('1 まとまり')
+
+    select.value = select.options[2]!.value
+    select.dispatchEvent(new Event('change'))
+    expect(captured?.diff).toBeNull()
+    expect(captured?.residual).toEqual({ stationId: 'station-1', boardKey: 'board-3', sensorId: 'i2c0-6a' })
+    // **数え直す。** 前の組の件数を引き継ぐと、ずれが届いていないのに「受け取っている」と出る。
+    expect(container.querySelector('.wave-diff-note')?.textContent).toBe(
+      'このセンサーのずれはまだ 1 件も届いていない（合成が作っていないか、設定が変わった可能性）',
+    )
+
+    select.value = select.options[1]!.value
+    select.dispatchEvent(new Event('change'))
+    expect(captured?.residual).toBeNull()
+    expect(captured?.diff).not.toBeNull()
+  })
+
+  it('正: ずれを選ぶと 1 台を頼み直し、届いたずれを測る向きのまま自分の段に描く（2026-10-09 ユーザー承認の文言）', async () => {
+    const container = await mount(
+      statusJson({
+        stationIntensities: [
+          {
+            stationId: 'station-1',
+            pairDiffs: [],
+            residuals: [{ member: { boardKey: 'board-3', sensorId: 'i2c0-6a' }, channels: ['HN1', 'HN2'], axes: [] }],
+          },
+        ],
+      }),
+    )
+    const select = container.querySelector<HTMLSelectElement>('.wave-diff')!
+    const labels = [...select.options].map((o) => o.textContent)
+    expect(labels).toContain('board-3 / i2c0-6a − ほかのセンサーの合成（ずれ）')
+
+    select.value = select.options[1]!.value
+    select.dispatchEvent(new Event('change'))
+    expect(captured?.residual).toEqual({ stationId: 'station-1', boardKey: 'board-3', sensorId: 'i2c0-6a' })
+    expect(captured?.diff).toBeNull()
+    expect(container.querySelector('.wave-diff-note')?.textContent).toBe(
+      'このセンサーのずれはまだ 1 件も届いていない（合成が作っていないか、設定が変わった可能性）',
+    )
+
+    const axis = Array.from({ length: 30 }, (_, i) => (i === 29 ? Number.NaN : Math.sin(i) * 0.05))
+    captured?.onResidual?.(
+      chunk({
+        source: { kind: 'residual', stationId: 'station-1', boardKey: 'board-3', sensorId: 'i2c0-6a' },
+        streamKey: null,
+        segmentId: null,
+        gal: [axis, axis],
+        directions: [
+          [0.866, 0.5, 0],
+          [0, 0, 1],
+        ],
+        axisNames: ['HN1', 'HN2'],
+      }),
+    )
+    await letItDraw()
+
+    const own = container.querySelectorAll('.wave-own')
+    expect(own).toHaveLength(1)
+    expect(own[0]?.querySelector('h3')?.textContent).toBe('board-3 / i2c0-6a（ずれ・測る向きのまま）')
+    expect(own[0]?.querySelector('.wave-own-legend')?.textContent).toContain('HN1 の向き: 東 +0.87・北 +0.50・上 0.00')
+    expect(container.querySelector('.wave-diff-note')?.textContent).toBe('このセンサーのずれを 1 まとまり受け取っている')
+
+    // 「選ばない」へ戻すと頼み直し、ずれの段は消える。
+    select.value = ''
+    select.dispatchEvent(new Event('change'))
+    await letItDraw()
+    expect(captured?.residual).toBeNull()
+    expect(container.querySelectorAll('.wave-own')).toHaveLength(0)
   })
 
   it('対照: 3 軸（東・北・上）のセンサーだけなら、2 軸の段は出さない', async () => {

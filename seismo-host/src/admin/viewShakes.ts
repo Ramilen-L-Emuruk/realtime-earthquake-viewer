@@ -424,7 +424,8 @@ export async function initShakesView(container: HTMLElement, signal: AbortSignal
       // **縦の幅は軸ごと。** 合成波形は直流を引いた変動分なので、中心は 0。
       let deviation = 0
       for (const c of envelope.columns) {
-        if (c === null) continue
+        // **その成分の値が無い列（NaN）は飛ばす。** 混ぜると縦の幅が NaN になり、段ごと描けない。
+        if (c === null || !Number.isFinite(c.min[axis]) || !Number.isFinite(c.max[axis])) continue
         deviation = Math.max(deviation, Math.abs(c.min[axis]), Math.abs(c.max[axis]))
       }
       const halfSpan = niceHalfSpanGal(deviation)
@@ -451,8 +452,9 @@ export async function initShakesView(container: HTMLElement, signal: AbortSignal
       ctx.beginPath()
       let started = false
       envelope.columns.forEach((c, i) => {
-        if (c === null) {
-          // 値の無い列は繋がない。**繋ぐと、届いていない時間帯が斜めの線になる。**
+        if (c === null || !Number.isFinite(c.min[axis]) || !Number.isFinite(c.max[axis])) {
+          // 値の無い列は繋がない。**繋ぐと、届いていない時間帯が斜めの線になる。** その成分だけ
+          // 解けなかった列（観測点の合成の向きが足りない間）も同じ。
           started = false
           return
         }
@@ -607,6 +609,7 @@ export async function initShakesView(container: HTMLElement, signal: AbortSignal
   openWaveStream({
     wave: false,
     diff: null,
+    residual: null,
     signal,
     onState: () => {},
     onShakeEvent: (rec) => {

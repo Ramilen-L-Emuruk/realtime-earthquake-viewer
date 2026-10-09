@@ -47,10 +47,11 @@ export interface WaveChunkView {
   /**
    * 値の並び。
    *
-   * **`NaN` は「そのサンプルの値が無い」。** 出どころはセンサー対の差分だけで
-   * （`sensorFusion.ts` が両方の値が揃わないサンプルを `null` にする。外挿しない）、
-   * センサー単独と観測点の合成では現れない —— あちらは受け口（`waveStream.ts` の
-   * `readFiniteArray`）が非有限を通さない。
+   * **`NaN` は「そのサンプルの値が無い」。** 出どころはセンサー対の差分・センサーのずれ・
+   * 観測点の合成（測る向きが 3 方向へ散っていない間に解けなかった成分）で、どれも
+   * `sensorFusion.ts` が値を出せないサンプルを `null` にしたもの（外挿しない）。
+   * センサー単独では現れない —— あちらは受け口（`waveStream.ts` の `readFiniteArray`）が
+   * 非有限を通さない。
    *
    * **`0` で埋めない。** 差分の 0 は「2 台がぴったり一致した」を意味してしまう。
    * 畳み込み（`readWindow`）は `NaN` を飛ばし、**その先の列へ切れ目の印を立てる**
@@ -109,6 +110,11 @@ export type WaveSourceKey =
       readonly boardKeyB: string
       readonly sensorIdB: string
     }
+  /**
+   * センサー 1 台ぶんのずれ（同 §7・#688）。**測った値 − ほかのセンサーで解いた揺れをその軸へ写した値。**
+   * 観測点を持つ理由は `'pair'` と同じ。
+   */
+  | { readonly kind: 'residual'; readonly stationId: string; readonly boardKey: string; readonly sensorId: string }
 
 /**
  * 画面の 1 列ぶん。**平均ではなく上下の両端を持つ。**
@@ -621,6 +627,10 @@ export class WaveStore {
  */
 export function keyOf(key: WaveSourceKey): string {
   if (key.kind === 'station') return `t:${key.stationId}`
+  if (key.kind === 'residual') {
+    // 長さを前に置く理由は `'pair'` と同じ（区切り文字に使える文字が無い）。
+    return `r:${key.stationId.length}:${key.stationId}${key.boardKey.length}:${key.boardKey}${key.sensorId}`
+  }
   if (key.kind === 'pair') {
     // **4 つとも長さを前に置く。** 上と同じ理由で、区切り文字は使えない
     // ——`boardKey`・`sensorId` に「現れない」と言い切れる文字が無い。

@@ -20,15 +20,19 @@ import type { SeismoWaveWindow } from '../../utils/seismoWaveBuffer'
 /** 画面の 1 列ぶん。 */
 export interface WaveColumn {
   /**
-   * 値を持つか。**持たない列では {@link min}・{@link max} は `NaN`。**
+   * 値を持つか（どれか 1 成分でも）。**持たない列では {@link min}・{@link max} は `NaN`。**
    *
    * 理由は 2 通りあるが描く側の扱いは同じ（線を切る）ので分けていない ——
    * 届かなかった区間（`NaN` で残っている）と、まだ抱えていない区間（起動直後の左側）。
    */
   readonly hasValue: boolean
-  /** 3 成分それぞれの下端（gal）。 */
+  /**
+   * 3 成分それぞれの下端（gal）。**値を持つ列でも、その成分だけ `NaN` のことがある** ——
+   * 観測点の合成が、測る向きが 3 方向へ散っていない間に解けない成分だけを欠けにする
+   * （`seismo-host/src/receiver/sensorFusion.ts`・2026-10-09 ユーザー承認）。描く側はその成分の線をそこで切る。
+   */
   readonly min: readonly [number, number, number]
-  /** 3 成分それぞれの上端（gal）。 */
+  /** 3 成分それぞれの上端（gal）。`min` と同じく、その成分だけ `NaN` のことがある。 */
   readonly max: readonly [number, number, number]
   /**
    * その列に効いたセンサーの最小本数。**値を持たない列では 0。**
@@ -90,18 +94,19 @@ export function buildWaveColumns(params: {
   const mins = [new Float32Array(columnCount), new Float32Array(columnCount), new Float32Array(columnCount)]
   const maxs = [new Float32Array(columnCount), new Float32Array(columnCount), new Float32Array(columnCount)]
   const members = new Float32Array(columnCount)
+  /** 列にサンプルが 1 つでも入ったか（本数を数える起点）。 */
   const filled = new Uint8Array(columnCount)
+  /** 成分ごとに、列へ値が入ったか。 */
+  const filledAxis = [new Uint8Array(columnCount), new Uint8Array(columnCount), new Uint8Array(columnCount)]
 
   const lastMs = win.firstSampleMs + (count - 1) * win.msPerSample
   const leftMs = lastMs - spanMs
 
   for (let i = 0; i < count; i += 1) {
-    const ew = win.gal[0][i]
-    const ns = win.gal[1][i]
-    const ud = win.gal[2][i]
-    // **1 成分でも読めなければ、そのサンプルは無かったことにする。** 届かなかった
-    // 区間は 3 成分そろって `NaN` で入るので、通常はここで 3 つとも落ちる。
-    if (!Number.isFinite(ew) || !Number.isFinite(ns) || !Number.isFinite(ud)) continue
+    const values = [win.gal[0][i], win.gal[1][i], win.gal[2][i]]
+    // **成分ごとに読む。** 届かなかった区間は 3 成分そろって `NaN` で入るのでそこで落ちる。
+    // 1 成分だけ `NaN`（観測点の合成が解けなかった成分）なら、残りの成分は列へ入れる。
+    if (!values.some((v) => Number.isFinite(v))) continue
 
     const t = win.firstSampleMs + i * win.msPerSample
     // **右端を含める。** 素直に割ると最後のサンプルだけが `columnCount` 番目
@@ -113,20 +118,23 @@ export function buildWaveColumns(params: {
     const m = win.memberCount[i]
     if (filled[c] === 0) {
       filled[c] = 1
-      mins[0][c] = ew; maxs[0][c] = ew
-      mins[1][c] = ns; maxs[1][c] = ns
-      mins[2][c] = ud; maxs[2][c] = ud
       members[c] = m
-    } else {
-      if (ew < mins[0][c]) mins[0][c] = ew
-      if (ew > maxs[0][c]) maxs[0][c] = ew
-      if (ns < mins[1][c]) mins[1][c] = ns
-      if (ns > maxs[1][c]) maxs[1][c] = ns
-      if (ud < mins[2][c]) mins[2][c] = ud
-      if (ud > maxs[2][c]) maxs[2][c] = ud
+    } else if (m < members[c]) {
       // **いちばん少ない本数を採る。** 裏付けが 1 本まで落ちた瞬間が列の中に
       // あれば、その列は「裏付けが無い」として示す（見落とす方が重い）。
-      if (m < members[c]) members[c] = m
+      members[c] = m
+    }
+    for (let a = 0; a < 3; a += 1) {
+      const v = values[a]
+      if (!Number.isFinite(v)) continue
+      if (filledAxis[a][c] === 0) {
+        filledAxis[a][c] = 1
+        mins[a][c] = v
+        maxs[a][c] = v
+      } else {
+        if (v < mins[a][c]) mins[a][c] = v
+        if (v > maxs[a][c]) maxs[a][c] = v
+      }
     }
   }
 
@@ -140,8 +148,10 @@ export function buildWaveColumns(params: {
     }
     // **`hasAnyValue` は向きの取捨に左右させない**（「その区間に届いているか」の話）。
     hasAnyValue = true
+    const end = (arrays: Float32Array[], a: number): number => (filledAxis[a][c] === 1 ? arrays[a][c] : NaN)
     for (let a = 0; a < 3; a += 1) {
       if (visibleAxes !== undefined && visibleAxes[a] === false) continue
+      if (filledAxis[a][c] === 0) continue
       const lo = Math.abs(mins[a][c])
       const hi = Math.abs(maxs[a][c])
       if (lo > peak) peak = lo
@@ -149,8 +159,8 @@ export function buildWaveColumns(params: {
     }
     columns.push({
       hasValue: true,
-      min: [mins[0][c], mins[1][c], mins[2][c]],
-      max: [maxs[0][c], maxs[1][c], maxs[2][c]],
+      min: [end(mins, 0), end(mins, 1), end(mins, 2)],
+      max: [end(maxs, 0), end(maxs, 1), end(maxs, 2)],
       minMembers: members[c],
     })
   }

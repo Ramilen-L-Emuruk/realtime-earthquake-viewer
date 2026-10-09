@@ -491,9 +491,9 @@ describe('connectSeismoStream', () => {
         'event: station-wave\ndata: {"stationId":"home","firstSampleMs":1,"msPerSample":0,'
           + '"gal":[[1],[2],[3]],"memberCount":[1]}\n\n',
         // **数として読めない点が混ざっている。** 読めない点だけ飛ばして繋ぐと
-        // そこだけ時間が縮んだ波形になる。
+        // そこだけ時間が縮んだ波形になる（`null` は欠けとして通すので、文字列で作る）。
         'event: station-wave\ndata: {"stationId":"home","firstSampleMs":1,"msPerSample":10,'
-          + '"gal":[[1,null],[3,4],[5,6]],"memberCount":[2,2]}\n\n',
+          + '"gal":[[1,"x"],[3,4],[5,6]],"memberCount":[2,2]}\n\n',
     ])
 
     connectSeismoStream({
@@ -516,6 +516,35 @@ describe('connectSeismoStream', () => {
     expect(unreadable[2]).toContain('memberCount')
     expect(unreadable[3]).toContain('刻み')
     expect(unreadable[4]).toContain('gal')
+  })
+
+  it('正（2026-10-09）: 成分の中の null は「その成分の値が無い」として NaN で通す', async () => {
+    // 観測点の合成は、測る向きが 3 方向へ散っていない間、解けない成分だけを null にして残りを出す
+    // （2026-10-09 ユーザー承認）。まとまりごと捨てると、上が解けないだけで水平の波形まで消える。
+    const got: SeismoMessage[] = []
+    const ctrl = new AbortController()
+    const fetchImpl = streamOnce(ctrl, [
+      'event: station-wave\ndata: {"stationId":"home","firstSampleMs":1,"msPerSample":10,'
+        + '"gal":[[1,2],[3,4],[null,null]],"memberCount":[2,2]}\n\n',
+    ])
+    connectSeismoStream({
+      baseUrl: 'http://host:50506',
+      wave: 'station',
+      signal: ctrl.signal,
+      onMessage: (m) => got.push(m),
+      onState: () => {},
+      onUnreadable: () => {},
+      fetchImpl,
+      sleep: noSleep,
+    })
+    await settle()
+    ctrl.abort()
+
+    expect(got).toHaveLength(1)
+    const m = got[0]!
+    if (m.kind !== 'station-wave') throw new Error('station-wave のはず')
+    expect(m.wave.gal[0]).toEqual([1, 2])
+    expect(m.wave.gal[2].every((v) => Number.isNaN(v))).toBe(true)
   })
 
   it('安全弁: 断られた理由が状態に載る（購読の上限を「落ちている」と混ぜない）', async () => {

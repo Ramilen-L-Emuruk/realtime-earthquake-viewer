@@ -340,14 +340,36 @@ function readFiniteArray(value: unknown): readonly number[] | null {
   return value as readonly number[]
 }
 
-/** 3 成分の並びとして読む。**成分の数が 3 でない・長さが揃わないものは通さない。** */
+/**
+ * 数の並びとして読む。ただし **`null` は「そのサンプルのその成分の値が無い」として `NaN` へ移す。**
+ *
+ * 出どころは観測点の合成波形 —— 測る向きが 3 方向へ散っていない間、ホストは解けない成分だけを
+ * `NaN`（JSON では `null`）にして残りを出す（`seismo-host/src/receiver/sensorFusion.ts`・2026-10-09
+ * ユーザー承認）。**`null` 以外の読めない値は通さない**（`readFiniteArray` と同じ理由）。
+ */
+function readFiniteArrayWithGaps(value: unknown): readonly number[] | null {
+  if (!Array.isArray(value)) return null
+  const out = new Array<number>(value.length)
+  for (let i = 0; i < value.length; i++) {
+    const n: unknown = value[i]
+    if (n === null) {
+      out[i] = Number.NaN
+      continue
+    }
+    if (typeof n !== 'number' || !Number.isFinite(n)) return null
+    out[i] = n
+  }
+  return out
+}
+
+/** 3 成分の並びとして読む。**成分の数が 3 でない・長さが揃わないものは通さない。** 成分ごとの欠け（`null`）は `NaN` で通す。 */
 function readGal(
   value: unknown,
 ): readonly [readonly number[], readonly number[], readonly number[]] | null {
   if (!Array.isArray(value) || value.length !== 3) return null
-  const ew = readFiniteArray(value[0])
-  const ns = readFiniteArray(value[1])
-  const ud = readFiniteArray(value[2])
+  const ew = readFiniteArrayWithGaps(value[0])
+  const ns = readFiniteArrayWithGaps(value[1])
+  const ud = readFiniteArrayWithGaps(value[2])
   if (ew === null || ns === null || ud === null) return null
   if (ew.length !== ns.length || ew.length !== ud.length) return null
   return [ew, ns, ud]

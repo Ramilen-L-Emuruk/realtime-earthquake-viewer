@@ -145,9 +145,48 @@ describe('isSettled', () => {
   it('1 列も無ければ収まっていない', () => {
     expect(isSettled({ fromMs: 0, columnSpanMs: 100, columns: [] }, 500, 3)).toBe(false)
   })
+
+  // 正（2026-10-09）: 観測点の合成は解けない成分だけを NaN にして出す（2026-10-09 ユーザー承認）。
+  // 欠けた成分を「揺れている」へ倒すと、上を解けない観測点のカードは打ち切りの上限まで伸び続ける。
+  it('値の無い成分（NaN）は判断に入れず、解けた成分が静かなら収まったと見なす', () => {
+    const upMissing = (v: number): WaveHistoryColumn => ({ min: [-v, -v, NaN], max: [v, v, NaN], minMembers: 2 })
+    const columns = new Array(10).fill(null).map(() => upMissing(1))
+    expect(isSettled({ fromMs: 1000, columnSpanMs: 100, columns }, 500, 3)).toBe(true)
+  })
+
+  // 対照: 上が欠けていても、解けた成分が揺れていれば収まっていない。
+  it('値の無い成分があっても、解けた成分が揺れていれば収まっていない', () => {
+    const columns = new Array(10)
+      .fill(null)
+      .map((): WaveHistoryColumn => ({ min: [-20, -1, NaN], max: [20, 1, NaN], minMembers: 2 }))
+    expect(isSettled({ fromMs: 1000, columnSpanMs: 100, columns }, 500, 3)).toBe(false)
+  })
 })
 
 describe('appendWaveWindow', () => {
+  it('正（2026-10-09）: 1 成分だけ欠けたサンプルは、読めた成分だけで列を作る（欠けた成分は NaN）', () => {
+    // 観測点の合成は、解けない成分だけを NaN にして残りを出す（2026-10-09 ユーザー承認）。
+    // **最初のサンプルの欠けが端に居座らない**ことも見る（`v < NaN` は偽）。
+    const w: SeismoWaveWindow = {
+      firstSampleMs: 1200,
+      msPerSample: 10,
+      gal: [Float32Array.from([3, -3]), Float32Array.from([NaN, 5]), Float32Array.from([NaN, NaN])],
+      memberCount: Float32Array.from([2, 2]),
+    }
+    const out = appendWaveWindow({ base: BASE, window: w, limitMs: 2000 })
+    expect(out.columns[2]?.max[0]).toBe(3)
+    expect(out.columns[2]?.min[0]).toBe(-3)
+    expect(out.columns[2]?.max[1]).toBe(5)
+    expect(out.columns[2]?.min[1]).toBe(5)
+    expect(out.columns[2]?.max[2]).toBeNaN()
+  })
+
+  it('対照: 3 成分とも欠けたサンプルだけなら列を作らない', () => {
+    const out = appendWaveWindow({ base: BASE, window: win(1200, [NaN, NaN]), limitMs: 2000 })
+    expect(out.columns).toHaveLength(BASE.columns.length)
+    expect(out.columns[2]).toBeNull()
+  })
+
   it('続きの列を足す', () => {
     // 3 列目（1200〜1300）に入るサンプル。
     const out = appendWaveWindow({ base: BASE, window: win(1200, [3, -3]), limitMs: 2000 })

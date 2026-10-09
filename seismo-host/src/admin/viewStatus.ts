@@ -64,6 +64,15 @@ interface StatusReportView {
       readonly rmsGal: readonly (number | null)[]
       readonly sampleCount: readonly number[]
     }[]
+    /**
+     * センサーごとのずれの強さ（#688）。**版の古いホストは持たない**ので、読むときは配列かを確かめる
+     * （{@link worstResidual}）。
+     */
+    readonly residuals?: readonly {
+      readonly member: { readonly boardKey: string; readonly sensorId: string }
+      readonly channels: readonly string[]
+      readonly axes: readonly { readonly rmsGal: number | null }[]
+    }[]
   }[]
   /** 生データ（miniSEED）の記録の健全性（`receiver/mseedRecorder.ts` の `MseedHealth` のうち画面に出す欄）。 */
   readonly mseed: {
@@ -256,6 +265,46 @@ export function memberCell(min: unknown, max: unknown): string {
   return `${lo}〜${hi} 本`
 }
 
+type ResidualView = NonNullable<StatusReportView['stationIntensities'][number]['residuals']>[number]
+
+/**
+ * いちばん大きいずれ（#688）。センサーと軸の組で 1 つ。無ければ null。
+ *
+ * **並べない・平均しない**理由は {@link worstPairDiff} と同じ（おかしい台があれば必ず最大に現れる。
+ * 軸ごとに見るのは、感度のずれが軸ごとに現れるため）。
+ *
+ * **配列でなければ無いものとして扱う。** `/status` は無検証のキャストで読んでいて、版の古いホストは
+ * この欄を持たない —— `undefined` のまま回すと行ごと例外で落ちる。
+ */
+export function worstResidual(
+  residuals: unknown,
+): { readonly residual: ResidualView; readonly axis: number; readonly rmsGal: number } | null {
+  if (!Array.isArray(residuals)) return null
+  let best: { residual: ResidualView; axis: number; rmsGal: number } | null = null
+  for (const residual of residuals as readonly ResidualView[]) {
+    if (!Array.isArray(residual?.axes)) continue
+    if (typeof residual.member?.boardKey !== 'string' || typeof residual.member.sensorId !== 'string') continue
+    residual.axes.forEach((axis, j) => {
+      const rms = readFinite(axis?.rmsGal)
+      // **出せなかった軸（null）は候補にしない**（{@link worstPairDiff} と同じ）。
+      if (rms === null) return
+      if (best === null || rms > best.rmsGal) best = { residual, axis: j, rmsGal: rms }
+    })
+  }
+  return best
+}
+
+/** ずれの欄。**いちばん大きいセンサーと軸だけ**を出す。 */
+function residualCell(residuals: unknown): string {
+  const worst = worstResidual(residuals)
+  if (worst === null) return '—'
+  const member = `${escapeHtml(worst.residual.member.boardKey)}/${escapeHtml(worst.residual.member.sensorId)}`
+  // **軸の名前はセンサーが名乗るもの**（無認証の UDP 由来）なので `escapeHtml` を通す。
+  const channels = Array.isArray(worst.residual.channels) ? worst.residual.channels : []
+  const axisName = typeof channels[worst.axis] === 'string' ? channels[worst.axis]! : `${worst.axis + 1}`
+  return `${worst.rmsGal.toFixed(2)} gal <span class="muted">${member}・${escapeHtml(axisName)}</span>`
+}
+
 /** 差分の欄。**いちばん離れている対だけ**を出す。 */
 function pairDiffCell(pairs: readonly PairDiffView[]): string {
   const worst = worstPairDiff(pairs)
@@ -375,6 +424,7 @@ export function stationRowHtml(nowMs: number, s: StationView): string {
             <td${staleAttr(isIntensityStale(nowMs, s.lastPacketMs, s.lastSkipReason))}>${s.lastIntensity !== null ? s.lastIntensity.toFixed(2) : '—'}</td>
             <td${stale}>${memberCell(s.lastMemberCountMin, s.lastMemberCountMax)}</td>
             <td${stale}>${pairDiffCell(s.pairDiffs)}</td>
+            <td${stale}>${residualCell(s.residuals)}</td>
           </tr>`
 }
 
@@ -478,8 +528,8 @@ export async function initStatusView(container: HTMLElement, signal: AbortSignal
                ことと、特定の対だけ差分が大きいことは、どちらも据え付けを疑う手掛かり
                （#362・#315）。震度だけでは、値が高いときに「本当に揺れた」のか
                「顔ぶれの入れ替わりで段差が乗った」のかを見分けられない。 -->
-          <thead><tr><th>観測点</th><th>受信</th><th>計測震度相当</th><th>混ざった本数</th><th>差分の最大（対）</th></tr></thead>
-          <tbody>${stationRows.length > 0 ? stationRows : '<tr><td colspan="5" class="muted">該当なし（2 台以上を割り当てた観測点のみ）</td></tr>'}</tbody>
+          <thead><tr><th>観測点</th><th>受信</th><th>計測震度相当</th><th>混ざった本数</th><th>差分の最大（対）</th><th>ずれの最大（軸）</th></tr></thead>
+          <tbody>${stationRows.length > 0 ? stationRows : '<tr><td colspan="6" class="muted">該当なし（2 台以上を割り当てた観測点のみ）</td></tr>'}</tbody>
         </table>
       </section>
       <section class="panel">
