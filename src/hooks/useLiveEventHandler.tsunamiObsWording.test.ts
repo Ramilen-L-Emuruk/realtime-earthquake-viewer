@@ -11,7 +11,7 @@
 //    カード上を飛び回り、追従スクロールが上下に往復する（→ docs/spec/tsunami-spec.md §9）
 import type { SpeechOutcome } from '../utils/voicevox'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook } from '@testing-library/react'
+import { renderHook, act } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
 import { DEFAULTS, type AppSettings } from './useSettings'
 import type { JMAQuake, JMATsunami } from '../types/earthquake'
@@ -52,10 +52,12 @@ async function flush() {
 
 /** 通知音の遅延を消化し、直前の発話を終わらせてから次を待てる状態にする */
 async function settle() {
-  await vi.advanceTimersByTimeAsync(5000)
-  await flush()
-  for (const s of speeches) if (!s.done) { s.done = true; s.finish() }
-  await flush()
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(5000)
+    await flush()
+    for (const s of speeches) if (!s.done) { s.done = true; s.finish() }
+    await flush()
+  })
 }
 
 /**
@@ -205,7 +207,9 @@ function setup(displayed: JMATsunami[] = []) {
     expandPanelForSpecialInfo: vi.fn(), revertToDefaultTab: vi.fn(),
     selectQuake: vi.fn(), openLpgmFromQuake: vi.fn(), openEstimatedIntensity: vi.fn(), closeDistributionOnQuakeReport: vi.fn(),
   }))
-  return result.current.handleLiveEvent
+  return (event: Parameters<typeof result.current.handleLiveEvent>[0]) => {
+    act(() => { result.current.handleLiveEvent(event) })
+  }
 }
 
 /** `setup` と同じ結線で、リプレイ復元も呼べるようにフックの戻り値ごと返す。 */
@@ -233,7 +237,14 @@ function setupFull(displayed: JMATsunami[] = []) {
     expandPanelForSpecialInfo: vi.fn(), revertToDefaultTab: vi.fn(),
     selectQuake: vi.fn(), openLpgmFromQuake: vi.fn(), openEstimatedIntensity: vi.fn(), closeDistributionOnQuakeReport: vi.fn(),
   }))
-  return result.current
+  return {
+    handleLiveEvent: (event: Parameters<typeof result.current.handleLiveEvent>[0]) => {
+      act(() => { result.current.handleLiveEvent(event) })
+    },
+    restorePreWindowTracking: (entries: Parameters<typeof result.current.restorePreWindowTracking>[0]) => {
+      act(() => { result.current.restorePreWindowTracking(entries) })
+    },
+  }
 }
 
 beforeEach(() => {

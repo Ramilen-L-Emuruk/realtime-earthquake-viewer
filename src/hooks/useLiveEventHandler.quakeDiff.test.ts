@@ -11,7 +11,7 @@
 // テストだけが古い境界を前提に通り続けるのを防ぐため。
 import type { SpeechOutcome } from '../utils/voicevox'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook } from '@testing-library/react'
+import { renderHook, act } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
 import { DEFAULTS, type AppSettings } from './useSettings'
 import type { JMAQuake, JMATsunami, IssueType, IntensityScale, EarthquakePoint } from '../types/earthquake'
@@ -72,8 +72,10 @@ async function flush() {
 
 /** 通知音の遅延を消化してから発話に到達させる */
 async function settle() {
-  await vi.advanceTimersByTimeAsync(5000)
-  await flush()
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(5000)
+    await flush()
+  })
 }
 
 /**
@@ -85,11 +87,13 @@ async function settle() {
 async function advanceSpeech(index: number, soundedChunks: number) {
   const s = speeches[index]
   if (!s) throw new Error(`読み上げ ${index} が無い`)
-  // 合成は再生より先へ進むため、予約は全チャンク届く
-  s.chunks.forEach((_, i) => s.onChunk?.(i, CHUNK_START_BASE + i, s.chunks))
-  // 鳴り始めたところまで時計を進める
-  clock = CHUNK_START_BASE + soundedChunks - 1 + 0.1
-  await flush()
+  await act(async () => {
+    // 合成は再生より先へ進むため、予約は全チャンク届く
+    s.chunks.forEach((_, i) => s.onChunk?.(i, CHUNK_START_BASE + i, s.chunks))
+    // 鳴り始めたところまで時計を進める
+    clock = CHUNK_START_BASE + soundedChunks - 1 + 0.1
+    await flush()
+  })
 }
 
 /**
@@ -101,8 +105,10 @@ async function advanceSpeech(index: number, soundedChunks: number) {
 async function playSpeech(index: number, soundedChunks: number) {
   await advanceSpeech(index, soundedChunks)
   const s = speeches[index]
-  if (!s.done) { s.done = true; s.finish() }
-  await flush()
+  await act(async () => {
+    if (!s.done) { s.done = true; s.finish() }
+    await flush()
+  })
 }
 
 function area(pref: string, addr: string, scale: number): EarthquakePoint {
@@ -171,7 +177,9 @@ function setup() {
     expandPanelForSpecialInfo: vi.fn(), revertToDefaultTab: vi.fn(),
     selectQuake: vi.fn(), openLpgmFromQuake: vi.fn(), openEstimatedIntensity: vi.fn(), closeDistributionOnQuakeReport: vi.fn(),
   }))
-  return result.current.handleLiveEvent
+  return (...args: Parameters<typeof result.current.handleLiveEvent>) => {
+    act(() => { result.current.handleLiveEvent(...args) })
+  }
 }
 
 beforeEach(() => {
@@ -459,10 +467,12 @@ describe('地震情報の続報: 既読は声になった分だけ進む', () =>
     handle(makeQuake(threeAreas))
     await settle()
     const s = speeches[0]
-    s.chunks.forEach((_, i) => s.onChunk?.(i, CHUNK_START_BASE + i, s.chunks))
-    clock = null
-    s.done = true; s.finish()
-    await flush()
+    await act(async () => {
+      s.chunks.forEach((_, i) => s.onChunk?.(i, CHUNK_START_BASE + i, s.chunks))
+      clock = null
+      s.done = true; s.finish()
+      await flush()
+    })
 
     handle(makeQuake(threeAreas))
     await settle()

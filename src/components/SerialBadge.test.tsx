@@ -8,6 +8,7 @@
 // 突き合わせる**。文字列で書き写すと、写した側だけが古くなる。
 import { describe, it, expect, afterEach } from 'vitest'
 import { render, cleanup } from '@testing-library/react'
+import { flushDataEffects } from '../test-utils/flushDataEffects'
 import { RealtimeTab } from './RealtimeTab'
 import { EarthquakeTab } from './EarthquakeTab'
 import { quakeEventKey } from '../utils/quakeMerge'
@@ -55,13 +56,16 @@ function makeQuake(reports: QuakeReportRecord[]): JMAQuake {
   }
 }
 
-const renderEEW = (eew: EEWAlert) =>
-  render(
+const renderEEW = async (eew: EEWAlert) => {
+  const { container } = render(
     <RealtimeTab eews={[eew]} swaveArrival={null} kyoshinV2Detections={[]} kyoshinDetectedPoints={[]} visible />,
-  ).container
+  )
+  await flushDataEffects()
+  return container
+}
 
-const renderQuake = (quake: JMAQuake, selected = true) =>
-  render(
+const renderQuake = async (quake: JMAQuake, selected = true) => {
+  const { container } = render(
     <EarthquakeTab
       earthquakes={[quake]}
       selectedId={selected ? quakeEventKey(quake) : 'other'}
@@ -90,7 +94,10 @@ const renderQuake = (quake: JMAQuake, selected = true) =>
       speakingTelegramTextSubject={null}
       seismoWaves={new Map()}
     />,
-  ).container
+  )
+  await flushDataEffects()
+  return container
+}
 
 /** 種別ヘッダー（`緊急地震速報（警報）#1` / `震度速報 #2 / 震源情報` を出す帯）。 */
 const header = (container: HTMLElement) => container.querySelector('.tracking-widest') as HTMLElement
@@ -112,8 +119,8 @@ const TWO_AND_ONE: QuakeReportRecord[] = [
 
 describe('報番号の見た目', () => {
   // 正: 緊急地震速報の報番号が、種別名とは別の要素として出る。
-  it('緊急地震速報では報番号が別の要素で出る', () => {
-    const head = header(renderEEW(makeEEW('1')))
+  it('緊急地震速報では報番号が別の要素で出る', async () => {
+    const head = header(await renderEEW(makeEEW('1')))
     expect(head.textContent).toContain('緊急地震速報（警報）')
     const badge = serialEl(head)
     expect(badge).not.toBeNull()
@@ -121,8 +128,8 @@ describe('報番号の見た目', () => {
   })
 
   // 正: 地震情報カードでも同じ形で出る。**種別名へ直付けしない。**
-  it('地震情報カードでも報番号が別の要素で出る', () => {
-    const head = header(renderQuake(makeQuake(TWO_AND_ONE)))
+  it('地震情報カードでも報番号が別の要素で出る', async () => {
+    const head = header(await renderQuake(makeQuake(TWO_AND_ONE)))
     expect(head.textContent).toContain('震度速報')
     expect(head.textContent).toContain('震源情報')
     const badge = serialEl(head)
@@ -133,12 +140,12 @@ describe('報番号の見た目', () => {
   })
 
   // **安全弁: 2 つの器が同じ見た目であること。** 片方だけ書き換えたらここで止まる。
-  it('緊急地震速報と地震情報カードで器のクラスが一致する', () => {
-    const eewHead = header(renderEEW(makeEEW('1')))
+  it('緊急地震速報と地震情報カードで器のクラスが一致する', async () => {
+    const eewHead = header(await renderEEW(makeEEW('1')))
     const eewBadge = serialEl(eewHead)!
     const eewClasses = { head: eewHead.className, badge: eewBadge.className }
     cleanup()
-    const quakeHead = header(renderQuake(makeQuake(TWO_AND_ONE)))
+    const quakeHead = header(await renderQuake(makeQuake(TWO_AND_ONE)))
     expect(serialEl(quakeHead)!.className).toBe(eewClasses.badge)
     // 種別ヘッダーそのものも同じ器。番号の細さ・薄さはこの中での相対的な弱さなので、
     // 器が違えば同じクラスでも見え方が変わる。
@@ -146,15 +153,15 @@ describe('報番号の見た目', () => {
   })
 
   // 対照: 1 通しか受け取っていない種別には番号を付けない。
-  it('1 通だけの種別には報番号を出さない', () => {
-    const head = header(renderQuake(makeQuake([{ type: '震源情報', keys: ['2024-01-01T07:10:30Z'] }])))
+  it('1 通だけの種別には報番号を出さない', async () => {
+    const head = header(await renderQuake(makeQuake([{ type: '震源情報', keys: ['2024-01-01T07:10:30Z'] }])))
     expect(head.textContent).toContain('震源情報')
     expect(serialEl(head)).toBeNull()
   })
 
   // 正: 畳んだカードの種別バッジでも同じ形で出す（開いた表示と語を揃える）。
-  it('畳んだカードでも報番号が別の要素で出る', () => {
-    const container = renderQuake(makeQuake(TWO_AND_ONE), false)
+  it('畳んだカードでも報番号が別の要素で出る', async () => {
+    const container = await renderQuake(makeQuake(TWO_AND_ONE), false)
     const badge = serialEl(container)
     expect(badge).not.toBeNull()
     expect(badge!.textContent).toBe('#2')

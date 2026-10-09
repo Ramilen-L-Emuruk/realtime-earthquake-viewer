@@ -16,7 +16,7 @@
 // 残るのは「等級が下がる並びをフックへ流す」この形だけ。
 import type { SpeechOutcome } from '../utils/voicevox'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook } from '@testing-library/react'
+import { renderHook, act } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
 import { DEFAULTS, type AppSettings } from './useSettings'
 import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiGrade } from '../types/earthquake'
@@ -54,10 +54,12 @@ async function flush() {
 
 /** 通知音の遅延を消化し、直前の発話を終わらせてから次を待てる状態にする */
 async function settle() {
-  await vi.advanceTimersByTimeAsync(5000)
-  await flush()
-  for (const s of speeches) if (!s.done) { s.done = true; s.finish() }
-  await flush()
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(5000)
+    await flush()
+    for (const s of speeches) if (!s.done) { s.done = true; s.finish() }
+    await flush()
+  })
 }
 
 // 2024 年能登半島地震の実値。10:00 発表の報が同日 17:00 の失効時刻を載せた
@@ -118,7 +120,7 @@ function setup() {
   }))
   // 受信して、App が state を更新したあとの姿（次の報が見る `tsunamisRef`）まで進める
   const handle = (tsunami: JMATsunami) => {
-    result.current.handleLiveEvent(tsunami as never)
+    act(() => { result.current.handleLiveEvent(tsunami as never) })
     displayed[0] = tsunami
   }
   return { handle }

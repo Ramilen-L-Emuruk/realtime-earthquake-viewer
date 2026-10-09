@@ -17,7 +17,7 @@
 // 配線が外れたことはここでしか検出できない。
 import type { SpeechOutcome } from '../utils/voicevox'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook } from '@testing-library/react'
+import { renderHook, act } from '@testing-library/react'
 import { showBrowserNotification } from '../utils/notifications'
 import { useLiveEventHandler } from './useLiveEventHandler'
 import { DEFAULTS, type AppSettings } from './useSettings'
@@ -51,10 +51,12 @@ async function flush() {
 
 /** 通知音の遅延を消化し、発話を終わらせる */
 async function settle() {
-  await vi.advanceTimersByTimeAsync(5000)
-  await flush()
-  for (const s of speeches) if (!s.done) { s.done = true; s.finish() }
-  await flush()
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(5000)
+    await flush()
+    for (const s of speeches) if (!s.done) { s.done = true; s.finish() }
+    await flush()
+  })
 }
 
 const area = (name: string, code: string, grade: string, height: string): TsunamiArea =>
@@ -109,7 +111,10 @@ function setup(displayed: JMATsunami[] = [], over: Partial<AppSettings> = {}) {
   }))
   // `focusedDistrict`（受信時スクロールの送り先）も見るため、フックの戻り値ごと返す。
   // `result.current` を毎回引き直すこと ―― 分割代入で控えると再レンダー前の値に固定される。
-  return { handle: result.current.handleLiveEvent, result }
+  const handle = (...args: Parameters<typeof result.current.handleLiveEvent>) => {
+    act(() => { result.current.handleLiveEvent(...args) })
+  }
+  return { handle, result }
 }
 
 beforeEach(() => {

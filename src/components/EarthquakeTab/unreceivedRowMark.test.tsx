@@ -8,6 +8,7 @@
 // 「震度5弱以上」としか出ず、なぜ「以上」なのかが読み取れなかった。
 import { describe, it, expect, afterEach } from 'vitest'
 import { render, cleanup } from '@testing-library/react'
+import { flushDataEffects } from '../../test-utils/flushDataEffects'
 import { EarthquakeTab } from './index'
 import { quakeEventKey } from '../../utils/quakeMerge'
 import type { JMAQuake, EarthquakePoint, JMAQuakeCity } from '../../types/earthquake'
@@ -49,7 +50,8 @@ function makeQuake(points: EarthquakePoint[], cities: JMAQuakeCity[] = CITIES): 
   }
 }
 
-const renderTab = (quake: JMAQuake) => render(
+const renderTab = async (quake: JMAQuake) => {
+  const result = render(
   <EarthquakeTab
     earthquakes={[quake]}
     selectedId={quakeEventKey(quake)}
@@ -78,7 +80,10 @@ const renderTab = (quake: JMAQuake) => render(
     speakingTelegramTextSubject={null}
     seismoWaves={new Map()}
   />,
-)
+  )
+  await flushDataEffects()
+  return result
+}
 
 /** 県 → 区域 → 市町村と開いて観測点の行まで降りる。 */
 const openDownToStations = () => openIntensityRows(PREF, AREA, CITY)
@@ -97,8 +102,8 @@ const MIXED: EarthquakePoint[] = [
 
 describe('震度一覧の未入電の印', () => {
   // 正: 行自身が未入電なら「未入電」。
-  it('未入電の観測点の行に「未入電」が出る', () => {
-    renderTab(makeQuake(MIXED))
+  it('未入電の観測点の行に「未入電」が出る', async () => {
+    await renderTab(makeQuake(MIXED))
     openDownToStations()
     expect(rowText(UNRECEIVED_STATION)).toContain('未入電')
     // 「以上」の語も併せて出る（なぜ「以上」なのかを印が説明する）。
@@ -106,15 +111,15 @@ describe('震度一覧の未入電の印', () => {
   })
 
   // 対照: 観測できた行には出ない。
-  it('観測できた観測点の行には出ない', () => {
-    renderTab(makeQuake(MIXED))
+  it('観測できた観測点の行には出ない', async () => {
+    await renderTab(makeQuake(MIXED))
     openDownToStations()
     expect(rowText(OBSERVED_STATION)).not.toContain('未入電')
   })
 
   // 安全弁: 配下にあるだけの行は「未入電あり」のまま。範囲の話と地点の話を混ぜない。
-  it('配下に未入電がある行は「未入電あり」のまま', () => {
-    renderTab(makeQuake(MIXED))
+  it('配下に未入電がある行は「未入電あり」のまま', async () => {
+    await renderTab(makeQuake(MIXED))
     expect(rowText(PREF)).toContain('未入電あり')
   })
 
@@ -123,14 +128,14 @@ describe('震度一覧の未入電の印', () => {
   // 標準版（P2PQuake）は区域のロールアップ点を持たないため、区域の値は配下の観測点から
   // 積み上がる。積み上げは震度の大小で決まるので、**観測できた震度3 と未入電（下限 45）が
   // 混在すると未入電が勝つ**。そこで「未入電」と書くと、届いている観測値を無かったことにする。
-  it('観測値と未入電が混在する区域・県は「未入電あり」にする', () => {
+  it('観測値と未入電が混在する区域・県は「未入電あり」にする', async () => {
     // 観測点を市町村へ紐付けない（標準版は市町村を配信しないので、観測点は区域の直下に付く
     // → docs/spec/quake-spec.md §5「観測点がどの市町村・区域に属するか」）。
     const mixedRollup: EarthquakePoint[] = [
       station({ addr: OBSERVED_STATION, scale: 30, city: undefined }),
       station({ addr: UNRECEIVED_STATION, scale: 45, unreceived: true, city: undefined }),
     ]
-    renderTab(makeQuake(mixedRollup))
+    await renderTab(makeQuake(mixedRollup))
     openIntensityRows(PREF)
     for (const name of [PREF, AREA]) {
       const text = rowText(name)
@@ -147,8 +152,8 @@ describe('震度一覧の未入電の印', () => {
   // 地名の右端を行ごとに揃えるための配置。地名と同じ流れに置くと、揃えるためにいちばん長い
   // 「未入電あり」ぶん（5 文字・約 3.75rem）の枠を全行で空けることになり、狭い画面では
   // **印を持たない行まで地名が折り返す**（実測: 幅 320px で 47 行中 7 行）。
-  it('印は震度の側に置き、地名の枠へ入れない', () => {
-    renderTab(makeQuake(MIXED))
+  it('印は震度の側に置き、地名の枠へ入れない', async () => {
+    await renderTab(makeQuake(MIXED))
     const row = rowEl(PREF)
     expect(row, '県の行が見つからない').toBeTruthy()
     expect(row!.children[0].textContent).toContain('未入電あり')
@@ -156,8 +161,8 @@ describe('震度一覧の未入電の印', () => {
   })
 
   // 安全弁: `＊` は地名と別の枠に出す（同じ理由。地名の右端が 1 文字ぶんずれるのを防ぐ）。
-  it('＊ は地名と別の枠に出す', () => {
-    renderTab(makeQuake([
+  it('＊ は地名と別の枠に出す', async () => {
+    await renderTab(makeQuake([
       { pref: PREF, addr: PREF, isArea: true, scale: 40 },
       { pref: '', addr: AREA, isArea: true, scale: 40 },
       station({ nonJma: true }),
@@ -171,8 +176,8 @@ describe('震度一覧の未入電の印', () => {
   })
 
   // 安全弁: 両方が立つ行でも印は 1 つだけ（「未入電 未入電あり」と重ねない）。
-  it('観測点の行に「未入電あり」を重ねない', () => {
-    renderTab(makeQuake(MIXED))
+  it('観測点の行に「未入電あり」を重ねない', async () => {
+    await renderTab(makeQuake(MIXED))
     openDownToStations()
     const text = rowText(UNRECEIVED_STATION)
     expect(text).toContain('未入電')
@@ -197,16 +202,16 @@ describe('市町村の「未入電あり」は配下の観測点からも立て�
   ]
 
   // 正: 電文が黙っていても、配下の観測点から立てる。
-  it('電文が Condition を付けていない市町村でも、配下に未入電があれば印が出る', () => {
-    renderTab(makeQuake(STRONG_CITY, CITY_WITHOUT_CONDITION))
+  it('電文が Condition を付けていない市町村でも、配下に未入電があれば印が出る', async () => {
+    await renderTab(makeQuake(STRONG_CITY, CITY_WITHOUT_CONDITION))
     openIntensityRows(PREF, AREA)
     expect(rowText(CITY)).toContain('未入電あり')
   })
 
   // 対照: 未入電を持たない市町村には出ない（同じ区域に未入電を抱えた市町村があっても）。
-  it('未入電を持たない市町村には出ない', () => {
+  it('未入電を持たない市町村には出ない', async () => {
     const OTHER_CITY = '日出町'
-    renderTab(makeQuake([
+    await renderTab(makeQuake([
       { pref: PREF, addr: PREF, isArea: true, scale: 55 },
       { pref: '', addr: AREA, isArea: true, scale: 55 },
       station({ scale: 55 }),

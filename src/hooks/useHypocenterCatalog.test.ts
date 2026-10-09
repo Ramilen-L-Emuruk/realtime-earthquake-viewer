@@ -3,8 +3,9 @@
 // 長期震源カタログの読み込みフックを固定する。
 // 取得そのもの（`utils/hypocenterCatalog.ts`）はモックし、ここでは**分岐だけ**を見る。
 // 背景は docs/spec/map-rendering-spec.md §16「長期震源カタログの点群」。
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { muteConsoleError } from '../test-utils/muteConsoleError'
+import { renderHook, waitFor, act } from '@testing-library/react'
 import type { HypocenterIndex, HypocenterYear } from '../utils/hypocenterCatalog'
 
 vi.mock('../utils/hypocenterCatalog', async () => {
@@ -65,7 +66,7 @@ beforeEach(() => {
   mockYear.mockReset()
   mockIndex.mockResolvedValue(INDEX)
   mockYear.mockImplementation((y: number) => Promise.resolve(makeYear(y)))
-  vi.spyOn(console, 'error').mockImplementation(() => {})
+  muteConsoleError()
 })
 
 afterEach(() => {
@@ -169,7 +170,7 @@ describe('useHypocenterCatalog', () => {
     const indexCalls = mockIndex.mock.calls.length
 
     mockYear.mockImplementation((y: number) => Promise.resolve(makeYear(y)))
-    result.current.retry()
+    act(() => { result.current.retry() })
     await waitFor(() => expect(result.current.years.length).toBe(3))
     expect(result.current.missingYears).toEqual([])
     expect(mockIndex.mock.calls.length).toBe(indexCalls)

@@ -12,6 +12,7 @@
 // 実際に画面がそうなって読みにくかった（震源と津波区分で別々に出していた）。
 import { describe, it, expect, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
+import { flushDataEffects } from '../../test-utils/flushDataEffects'
 import { EarthquakeTab } from './index'
 import { quakeEventKey } from '../../utils/quakeMerge'
 import type { JMAQuake, BorrowedFromTsunami } from '../../types/earthquake'
@@ -62,7 +63,8 @@ function makeQuake(over: Partial<JMAQuake> = {}): JMAQuake {
   }
 }
 
-const renderTab = (quake: JMAQuake) => render(
+const renderTab = async (quake: JMAQuake) => {
+  const result = render(
   <EarthquakeTab
     earthquakes={[quake]}
     selectedId={quakeEventKey(quake)}
@@ -91,60 +93,63 @@ const renderTab = (quake: JMAQuake) => render(
     speakingTelegramTextSubject={null}
     seismoWaves={new Map()}
   />
-)
+  )
+  await flushDataEffects()
+  return result
+}
 
 /** カード内の `※` の総数（説明の行に付く 1 つを含む）。 */
 const markCount = () => screen.getAllByText('※').length
 
 describe('地震カードの「津波情報より」の印', () => {
   // 正: 震源と津波区分の両方を借りたら、5 つの欄すべてに印が出る。
-  it('借りた欄すべてに印が出る（震央地名・座標・規模・深さ・津波区分）', () => {
-    renderTab(makeQuake({ hypocenterSource: FROM_INFO, domesticTsunamiSource: FROM_WARNING }))
+  it('借りた欄すべてに印が出る（震央地名・座標・規模・深さ・津波区分）', async () => {
+    await renderTab(makeQuake({ hypocenterSource: FROM_INFO, domesticTsunamiSource: FROM_WARNING }))
     // 5 欄ぶんの印。説明の行の `※` は本文に含まれるので `getAllByText('※')` には入らない。
     expect(markCount()).toBe(5)
   })
 
   // 正: 説明は 1 行だけ。欄ごとに書くと同じ語が並ぶ。
-  it('説明は 1 行だけ出る', () => {
-    renderTab(makeQuake({ hypocenterSource: FROM_INFO, domesticTsunamiSource: FROM_WARNING }))
+  it('説明は 1 行だけ出る', async () => {
+    await renderTab(makeQuake({ hypocenterSource: FROM_INFO, domesticTsunamiSource: FROM_WARNING }))
     expect(screen.getAllByText('※ 津波情報より')).toHaveLength(1)
   })
 
   // 正: 借りた報が違っても説明は割らず、ホバーの説明に両方を出す。
-  it('震源と津波区分で借りた報が違っても、説明は 1 行のまま（詳細はホバーへ）', () => {
-    renderTab(makeQuake({ hypocenterSource: FROM_INFO, domesticTsunamiSource: FROM_WARNING }))
+  it('震源と津波区分で借りた報が違っても、説明は 1 行のまま（詳細はホバーへ）', async () => {
+    await renderTab(makeQuake({ hypocenterSource: FROM_INFO, domesticTsunamiSource: FROM_WARNING }))
     const note = screen.getByText('※ 津波情報より')
     expect(note.getAttribute('title')).toContain('震源は16:22に発表された津波情報で伝えられました。')
     expect(note.getAttribute('title')).toContain('津波の有無は16:12に発表された津波警報・津波注意報・津波予報で伝えられました。')
   })
 
   // 対照: 震源だけを借りたときは、津波区分に印を付けない。
-  it('震源だけ借りたら、津波区分には印が付かない', () => {
-    renderTab(makeQuake({ hypocenterSource: FROM_INFO }))
+  it('震源だけ借りたら、津波区分には印が付かない', async () => {
+    await renderTab(makeQuake({ hypocenterSource: FROM_INFO }))
     // 震央地名・座標・規模・深さの 4 つ。
     expect(markCount()).toBe(4)
     expect(screen.getByText('※ 津波情報より').getAttribute('title')).not.toContain('津波の有無')
   })
 
   // 対照: 津波区分だけを借りたときは、震源の欄に印を付けない。
-  it('津波区分だけ借りたら、震源の欄には印が付かない', () => {
-    renderTab(makeQuake({ domesticTsunamiSource: FROM_WARNING }))
+  it('津波区分だけ借りたら、震源の欄には印が付かない', async () => {
+    await renderTab(makeQuake({ domesticTsunamiSource: FROM_WARNING }))
     expect(markCount()).toBe(1)
     expect(screen.getByText('※ 津波情報より').getAttribute('title')).not.toContain('震源は')
   })
 
   // 安全弁: 借りていないカードには印も説明も出さない。自前の震源にまで印が付くと、
   // 気象庁が地震情報で伝えた値まで「津波由来」に見える。
-  it('借りていないカードには印も説明も出ない', () => {
-    renderTab(makeQuake())
+  it('借りていないカードには印も説明も出ない', async () => {
+    await renderTab(makeQuake())
     expect(screen.queryByText('※')).toBeNull()
     expect(screen.queryByText('※ 津波情報より')).toBeNull()
   })
 
   // 安全弁: 座標を読めず「震源調査中」へ倒れた借り物には、震央地名の印を付けない。
   // 付けるとその文言自体が津波から来たように読め、借りたはずなのに調査中という矛盾に見える。
-  it('座標を読めなかった借り物では、「震源調査中」に印を付けない', () => {
-    renderTab(makeQuake({
+  it('座標を読めなかった借り物では、「震源調査中」に印を付けない', async () => {
+    await renderTab(makeQuake({
       hypocenterSource: FROM_INFO,
       earthquake: {
         ...makeQuake().earthquake,
@@ -159,8 +164,8 @@ describe('地震カードの「津波情報より」の印', () => {
 
   // 安全弁: 等級を名乗らない（「津波警報より」と書くと大津波警報の地震で一段軽く見える。
   // → docs/spec/quake-spec.md §3）。
-  it('画面に出す語は等級を名乗らない', () => {
-    renderTab(makeQuake({ hypocenterSource: FROM_WARNING, domesticTsunamiSource: FROM_WARNING }))
+  it('画面に出す語は等級を名乗らない', async () => {
+    await renderTab(makeQuake({ hypocenterSource: FROM_WARNING, domesticTsunamiSource: FROM_WARNING }))
     const note = screen.getByText('※ 津波情報より')
     expect(note.textContent).not.toContain('警報')
   })

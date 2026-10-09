@@ -11,6 +11,7 @@
 // 「まったく静かな期間だった」と同じ画になる。
 import { describe, it, expect, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
+import { flushDataEffects } from '../../test-utils/flushDataEffects'
 import { EarthquakeTab } from './index'
 import { quakeEventKey } from '../../utils/quakeMerge'
 import type { JMAQuake } from '../../types/earthquake'
@@ -48,7 +49,7 @@ const QUAKE: JMAQuake = {
   points: [{ pref: '石川県', addr: '石川県能登', isArea: true, scale: 45 }],
 }
 
-function renderTab(opts: {
+async function renderTab(opts: {
   earthquakes?: JMAQuake[]
   historyLoss?: TelegramLoss
   loadMoreFailed?: boolean
@@ -56,7 +57,7 @@ function renderTab(opts: {
   error?: string | null
 }) {
   const earthquakes = opts.earthquakes ?? [QUAKE]
-  return render(
+  const result = render(
     <EarthquakeTab
       earthquakes={earthquakes}
       selectedId={earthquakes[0] ? quakeEventKey(earthquakes[0]) : null}
@@ -86,26 +87,30 @@ function renderTab(opts: {
       seismoWaves={new Map()}
     />,
   )
+  // 観測点を持たない空の一覧（`earthquakes: []`）ではカードが 1 枚も描かれず、
+  // `useSubRegions` の失敗経路も起きない。それでも毎回呼んでおけば無害。
+  await flushDataEffects()
+  return result
 }
 
 describe('履歴の一部が取れなかったときの帯', () => {
-  it('正: 取得元が 1 件でも読めなければ帯を出す', () => {
-    renderTab({ historyLoss: addTelegramLoss(createEmptyTelegramLoss(), skips(0), ['https://x/a']) })
+  it('正: 取得元が 1 件でも読めなければ帯を出す', async () => {
+    await renderTab({ historyLoss: addTelegramLoss(createEmptyTelegramLoss(), skips(0), ['https://x/a']) })
 
     expect(screen.getByText(/取得元1件.*取り込めず/)).toBeTruthy()
   })
 
   // **カードは覆わない。** 全画面のエラー表示と違って、取れた分は見られなければならない。
-  it('正: 帯を出してもカードは残る', () => {
-    renderTab({ historyLoss: addTelegramLoss(createEmptyTelegramLoss(), skips(2), []) })
+  it('正: 帯を出してもカードは残る', async () => {
+    await renderTab({ historyLoss: addTelegramLoss(createEmptyTelegramLoss(), skips(2), []) })
 
     expect(screen.getByText(/電文2件/)).toBeTruthy()
     expect(screen.getByText('石川県能登地方')).toBeTruthy()
   })
 
   // ここが「静かな期間だった」との見分け。
-  it('正: カードが 0 件でも帯を出す（「地震情報はありません」だけにしない）', () => {
-    renderTab({
+  it('正: カードが 0 件でも帯を出す（「地震情報はありません」だけにしない）', async () => {
+    await renderTab({
       earthquakes: [],
       historyLoss: addTelegramLoss(createEmptyTelegramLoss(), skips(0), ['https://x/a', 'https://x/b']),
     })
@@ -114,14 +119,14 @@ describe('履歴の一部が取れなかったときの帯', () => {
     expect(screen.getByText(/取得元2件/)).toBeTruthy()
   })
 
-  it('対照: 何も欠けていなければ帯は出ない', () => {
-    renderTab({})
+  it('対照: 何も欠けていなければ帯は出ない', async () => {
+    await renderTab({})
 
     expect(screen.queryByText(/取り込めず/)).toBeNull()
   })
 
-  it('対照: カードが 0 件でも、欠けていなければ帯は出ない', () => {
-    renderTab({ earthquakes: [] })
+  it('対照: カードが 0 件でも、欠けていなければ帯は出ない', async () => {
+    await renderTab({ earthquakes: [] })
 
     expect(screen.getByText('地震情報はありません')).toBeTruthy()
     expect(screen.queryByText(/取り込めず/)).toBeNull()
@@ -129,14 +134,14 @@ describe('履歴の一部が取れなかったときの帯', () => {
 
   // 確定した損失と、押し直せば回復しうる失敗は別の文面で出す。混ぜると、戻せない損失と
   // 戻せる失敗が同じ重さに見える。
-  it('正: 「もっと見る」の失敗は別の文面で出す', () => {
-    renderTab({ loadMoreFailed: true })
+  it('正: 「もっと見る」の失敗は別の文面で出す', async () => {
+    await renderTab({ loadMoreFailed: true })
 
     expect(screen.getByText(/続きの読み込みに失敗/)).toBeTruthy()
   })
 
-  it('正: 両方あれば両方出す', () => {
-    renderTab({
+  it('正: 両方あれば両方出す', async () => {
+    await renderTab({
       historyLoss: addTelegramLoss(createEmptyTelegramLoss(), skips(1), []),
       loadMoreFailed: true,
     })
@@ -147,8 +152,8 @@ describe('履歴の一部が取れなかったときの帯', () => {
 
   // 安全弁: 1 件も取れなかったとき（`error`）は全画面の失敗表示が出る。そこへ帯を重ねない
   // ——「一部が欠けた」と「まるごと失敗した」が同じ画面に並ぶと、どちらの話か読めない。
-  it('安全弁: 全滅の表示中は帯を出さない', () => {
-    renderTab({
+  it('安全弁: 全滅の表示中は帯を出さない', async () => {
+    await renderTab({
       error: '取得失敗',
       historyLoss: addTelegramLoss(createEmptyTelegramLoss(), skips(1), ['https://x/a']),
     })
@@ -163,23 +168,23 @@ describe('履歴の一部が取れなかったときの帯', () => {
 describe('取得制限中の帯', () => {
   // 正: 待たされているあいだは出す。**利用者から見れば「止まっている」ようにしか見えない**ので、
   // 理由が画面に無いと故障と区別が付かない。
-  it('正: 上限に達して待っているあいだ、自動で再開すると伝える', () => {
-    renderTab({ fetchThrottled: true })
+  it('正: 上限に達して待っているあいだ、自動で再開すると伝える', async () => {
+    await renderTab({ fetchThrottled: true })
 
     expect(screen.getByText('リクエスト過多のため、取得制限中（自動で再開します）')).toBeTruthy()
   })
 
   // 対照: 待っていなければ出さない
-  it('対照: 待っていなければ出さない', () => {
-    renderTab({})
+  it('対照: 待っていなければ出さない', async () => {
+    await renderTab({})
 
     expect(screen.queryByText(/取得制限中/)).toBeNull()
   })
 
   // 正: 429 の窓で見送った分は、件数を添えて出す。
   // **この経路は型と集計だけがあって消費先が 1 つも無く、画面に一度も出ていなかった。**
-  it('正: 429 で見送った分を、取得元と電文それぞれの件数で出す', () => {
-    renderTab({
+  it('正: 429 で見送った分を、取得元と電文それぞれの件数で出す', async () => {
+    await renderTab({
       historyLoss: addTelegramLoss(createEmptyTelegramLoss(), skips(0), [], {
         sources: ['https://x/a', 'https://x/b'], telegrams: 5,
       }),
@@ -190,8 +195,8 @@ describe('取得制限中の帯', () => {
 
   // 安全弁: **取得元と電文は単位が違うので合算しない。** 取得元単位で見送った日は
   // 「その日に何通あったか」すら分からないため、電文数へ足せない。
-  it('安全弁: 取得元だけのときに電文の件数を足さない', () => {
-    renderTab({
+  it('安全弁: 取得元だけのときに電文の件数を足さない', async () => {
+    await renderTab({
       historyLoss: addTelegramLoss(createEmptyTelegramLoss(), skips(0), [], { sources: ['https://x/a'] }),
     })
 
@@ -200,8 +205,8 @@ describe('取得制限中の帯', () => {
 
   // 安全弁: **見送りと確定した損失は別の帯で出す。** 混ぜると、待てば取れるものが
   // 取り返しのつかない損失として読まれる。
-  it('安全弁: 確定した損失と見送りは別々の帯になる', () => {
-    renderTab({
+  it('安全弁: 確定した損失と見送りは別々の帯になる', async () => {
+    await renderTab({
       historyLoss: addTelegramLoss(createEmptyTelegramLoss(), skips(3), ['https://x/a'], { telegrams: 2 }),
     })
 

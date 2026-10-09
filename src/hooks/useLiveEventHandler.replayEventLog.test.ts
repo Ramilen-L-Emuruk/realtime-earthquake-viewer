@@ -12,7 +12,7 @@
 // 控え、割り込みで前の発話が完了扱いになる連鎖まで再現する）。
 import type { SpeechOutcome } from '../utils/voicevox'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook } from '@testing-library/react'
+import { renderHook, act } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
 import { DEFAULTS, type AppSettings } from './useSettings'
 import {
@@ -39,6 +39,13 @@ function finishSpeech(index: number) {
   const s = speeches[index]
   if (s && !s.done) { s.done = true; s.finish() }
 }
+/** 発話を終わらせ、その続きの state 更新を act() の中で消化する。 */
+async function finishAndFlush(index: number) {
+  await act(async () => {
+    finishSpeech(index)
+    await flush()
+  })
+}
 vi.mock('../utils/voicevox', () => ({
   speakWithVoicevox: (...args: unknown[]) => speakMock(...(args as [string, string])),
   prewarmVoicevox: () => null,
@@ -56,8 +63,10 @@ async function flush() {
   for (let i = 0; i < 400; i++) await Promise.resolve()
 }
 async function settle() {
-  await vi.advanceTimersByTimeAsync(5000)
-  await flush()
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(5000)
+    await flush()
+  })
 }
 
 function makeQuake(over: { id?: string; type?: IssueType } = {}): JMAQuake {
@@ -159,7 +168,10 @@ function setup() {
     selectQuake: vi.fn(), openLpgmFromQuake: vi.fn(), openEstimatedIntensity: vi.fn(() => false),
     closeDistributionOnQuakeReport: vi.fn(),
   }))
-  return { handle: result.current.handleLiveEvent, tsunamisRef }
+  const handle = (...args: Parameters<typeof result.current.handleLiveEvent>) => {
+    act(() => { result.current.handleLiveEvent(...args) })
+  }
+  return { handle, tsunamisRef }
 }
 
 const starts = (events: ReturnType<typeof drainReplayEvents>['events']): ReplaySpeechStartEvent[] =>
@@ -185,8 +197,7 @@ describe('読み上げは 1 本ずつ記録される', () => {
     const { handle } = setup()
     handle(makeQuake())
     await settle()
-    finishSpeech(0)
-    await flush()
+    await finishAndFlush(0)
 
     const events = drainReplayEvents().events
     expect(starts(events)).toHaveLength(1)
@@ -203,11 +214,9 @@ describe('読み上げは 1 本ずつ記録される', () => {
     handle(makeQuake())
     await settle()
     // 津波の読み上げが終わってから地震情報が読まれる（優先度の規則）
-    finishSpeech(0)
-    await flush()
+    await finishAndFlush(0)
     await settle()
-    finishSpeech(1)
-    await flush()
+    await finishAndFlush(1)
 
     const events = drainReplayEvents().events
     const s = starts(events)

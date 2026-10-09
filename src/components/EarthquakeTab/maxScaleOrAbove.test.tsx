@@ -11,6 +11,7 @@
 // `unreceivedRowMark.test.tsx` が守っている。分けたのは最大震度の欄だけ。
 import { describe, it, expect, afterEach } from 'vitest'
 import { render, cleanup, screen, within } from '@testing-library/react'
+import { flushDataEffects } from '../../test-utils/flushDataEffects'
 import { EarthquakeTab } from './index'
 import { quakeEventKey } from '../../utils/quakeMerge'
 import type { JMAQuake, EarthquakePoint, IntensityScale } from '../../types/earthquake'
@@ -65,7 +66,8 @@ const WITH_UNRECEIVED_BELOW_MAX: EarthquakePoint[] = [
 const WITHOUT_UNRECEIVED: EarthquakePoint[] = [station()]
 
 /** `selected` で開いた表示・畳んだ表示を出し分ける（`EarthquakeCard` の `isSelected`）。 */
-const renderTab = (quake: JMAQuake, selected: boolean) => render(
+const renderTab = async (quake: JMAQuake, selected: boolean) => {
+  render(
   <EarthquakeTab
     earthquakes={[quake]}
     selectedId={selected ? quakeEventKey(quake) : null}
@@ -94,7 +96,9 @@ const renderTab = (quake: JMAQuake, selected: boolean) => render(
     speakingTelegramTextSubject={null}
     seismoWaves={new Map()}
   />,
-)
+  )
+  await flushDataEffects()
+}
 
 /** 最大震度の欄（「最大震度」のラベルと値を抱える器）。 */
 const maxScaleBox = () => screen.getByText('最大震度').parentElement!
@@ -108,8 +112,8 @@ describe('カードの最大震度に付く「以上」', () => {
   it.each([
     ['開いた', true],
     ['畳んだ', false],
-  ] as const)('%s表示で「以上」が出る', (_label, selected) => {
-    renderTab(makeQuake(45, WITH_UNRECEIVED_AT_MAX), selected)
+  ] as const)('%s表示で「以上」が出る', async (_label, selected) => {
+    await renderTab(makeQuake(45, WITH_UNRECEIVED_AT_MAX), selected)
     expect(maxScaleBox().textContent).toContain('5弱')
     expect(within(maxScaleBox()).getByText('以上')).toBeTruthy()
   })
@@ -118,8 +122,8 @@ describe('カードの最大震度に付く「以上」', () => {
   it.each([
     ['開いた', true],
     ['畳んだ', false],
-  ] as const)('%s表示で、最大震度より低い階級の未入電では出ない', (_label, selected) => {
-    renderTab(makeQuake(50, WITH_UNRECEIVED_BELOW_MAX), selected)
+  ] as const)('%s表示で、最大震度より低い階級の未入電では出ない', async (_label, selected) => {
+    await renderTab(makeQuake(50, WITH_UNRECEIVED_BELOW_MAX), selected)
     expect(maxScaleBox().textContent).toContain('5強')
     expect(within(maxScaleBox()).queryByText('以上')).toBeNull()
   })
@@ -128,8 +132,8 @@ describe('カードの最大震度に付く「以上」', () => {
   it.each([
     ['開いた', true],
     ['畳んだ', false],
-  ] as const)('%s表示で、未入電が無ければ出ない', (_label, selected) => {
-    renderTab(makeQuake(45, WITHOUT_UNRECEIVED), selected)
+  ] as const)('%s表示で、未入電が無ければ出ない', async (_label, selected) => {
+    await renderTab(makeQuake(45, WITHOUT_UNRECEIVED), selected)
     expect(maxScaleBox().textContent).toContain('5弱')
     expect(within(maxScaleBox()).queryByText('以上')).toBeNull()
   })
@@ -144,8 +148,8 @@ describe('カードの最大震度に付く「以上」', () => {
   it.each([
     ['開いた', true],
     ['畳んだ', false],
-  ] as const)('%s表示で、「以上」は値の本体と別の要素で出す', (_label, selected) => {
-    renderTab(makeQuake(45, WITH_UNRECEIVED_AT_MAX), selected)
+  ] as const)('%s表示で、「以上」は値の本体と別の要素で出す', async (_label, selected) => {
+    await renderTab(makeQuake(45, WITH_UNRECEIVED_AT_MAX), selected)
     const orAbove = within(maxScaleBox()).getByText('以上')
     // 値の本体そのものではない（素のテキストとして混ざっていない）。
     expect(orAbove).not.toBe(valueEl())
@@ -156,8 +160,8 @@ describe('カードの最大震度に付く「以上」', () => {
   it.each([
     ['開いた', true],
     ['畳んだ', false],
-  ] as const)('%s表示で、「以上」は本体より小さいフォントサイズを持つ', (_label, selected) => {
-    renderTab(makeQuake(45, WITH_UNRECEIVED_AT_MAX), selected)
+  ] as const)('%s表示で、「以上」は本体より小さいフォントサイズを持つ', async (_label, selected) => {
+    await renderTab(makeQuake(45, WITH_UNRECEIVED_AT_MAX), selected)
     const orAbove = within(maxScaleBox()).getByText('以上')
     // 語の要素が自前のフォントサイズ指定を持つこと。持たないと本体の大きさを継ぎ、
     // 桁数が倍になって器から溢れる（jsdom は寸法を計算しないので、指定の有無で押さえる）。
