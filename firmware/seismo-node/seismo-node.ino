@@ -60,6 +60,7 @@
 #define HOST_HTTP_PORT 50506
 #endif
 
+// ---- MPU6050 ----
 static const uint8_t R_SMPLRT_DIV=0x19, R_CONFIG=0x1A, R_ACCEL_CFG=0x1C, R_FIFO_EN=0x23;
 static const uint8_t R_INT_STATUS=0x3A, R_USER_CTRL=0x6A, R_PWR_MGMT_1=0x6B;
 static const uint8_t R_FIFO_COUNTH=0x72, R_FIFO_RW=0x74, R_WHO_AM_I=0x75;
@@ -67,12 +68,47 @@ static const uint8_t R_FIFO_COUNTH=0x72, R_FIFO_RW=0x74, R_WHO_AM_I=0x75;
 // DLPF_CFG=4 は加速度側の帯域を 21Hz へ落とす。100Hz のナイキストは 50Hz なので、
 // 44Hz（=3）では余裕がなく帯域外が折り返して 0〜3Hz へ積もる。
 static const uint8_t DLPF_CFG=4, SMPLRT_DIV=9, AFS_SEL=0;
-static const int     SAMPLE_HZ  = 1000 / (1 + SMPLRT_DIV);
-static const float   UG_PER_LSB = 1000000.0f / 16384.0f;   // ±2g は 16384 LSB/g
-static const size_t  BPS = 6;                              // XYZ × 2 バイト
+static const int     MPU_SAMPLE_HZ  = 1000 / (1 + SMPLRT_DIV);
+static const float   MPU_UG_PER_LSB = 1000000.0f / 16384.0f;   // ±2g は 16384 LSB/g
+static const size_t  BPS = 6;                                  // MPU6050 の FIFO の 1 サンプル（XYZ × 2 バイト）
+
+// ---- IIS2ICLX（2 軸）----
+//
+// **レジスタの値はすべて ST 公式ドライバから写した**（`iis2iclx-probe` と同じ出典。
+// https://github.com/STMicroelectronics/iis2iclx-pid の `iis2iclx_reg.h`・`iis2iclx_reg.c`）。
+// 推測で書くと、動かないときに実装と仕様のどちらを疑うか分からなくなる。
+//
+// **MPU6050 と同じく、素子の FIFO へ溜めさせて吸い出す。** 状態レジスタを見に行って 1 件ずつ
+// 読む形（probe の読み方）だと、`loop()` が詰まった間の標本を落とす —— 吸い出しはホストへの
+// 問い合わせやフラッシュの書き出しで 1 秒近く待たされることがある（→ `HOST_PROBE_TIMEOUT_MS`）。
+static const uint8_t IIS_FIFO_CTRL3 = 0x09, IIS_FIFO_CTRL4 = 0x0A;
+static const uint8_t IIS_WHO_AM_I = 0x0F, IIS_CTRL1_XL = 0x10, IIS_CTRL3_C = 0x12;
+static const uint8_t IIS_FIFO_STATUS1 = 0x3A;   // 0x3B（FIFO_STATUS2）と続けて読む
+static const uint8_t IIS_FIFO_DATA_OUT_TAG = 0x78;  // 0x79..0x7E に X, Y,（使わない Z）が続く
+static const uint8_t IIS_WHO_AM_I_VALUE = 0x6B;  // IIS2ICLX_ID。**7bit アドレスの 0x6B とは別物**
+static const uint8_t IIS_CTRL3_SW_RESET = 0x01, IIS_CTRL3_IF_INC = 0x04, IIS_CTRL3_BDU = 0x40;
+static const uint8_t IIS_CTRL3_WANT = (uint8_t)(IIS_CTRL3_BDU | IIS_CTRL3_IF_INC);
+// 出力頻度 104 Hz（odr_xl=4。**100 Hz の設定は無い**）・測定範囲 ±2 g（fs_xl=3）。
+// **fs_xl の並びは昇順ではない**（0=±500mg / 1=±3g / 2=±1g / 3=±2g）。立てた 2 個は上下の軸に
+// 1 g が乗るので、±500mg では振り切れる（2026-10-09 ユーザー判断で 3 個とも ±2 g）。
+// **フィルタ（LPF2）は既定のまま（使わない）。** `iis2iclx-probe` でノイズを測ったのがこの状態で
+// （firmware/README.md）、変えるとその実測が当てにならなくなる。帯域外の揺れが 104 Hz で
+// 折り返して低い周波数へ積もるかは確かめていない（MPU6050 は DLPF で 21 Hz へ落としている）。
+static const uint8_t IIS_ODR_104HZ = 4, IIS_FS_2G = 3;
+static const uint8_t IIS_CTRL1_WANT = (uint8_t)((IIS_ODR_104HZ << 4) | (IIS_FS_2G << 2));
+static const uint8_t IIS_BDR_XL_104HZ = 4;   // FIFO_CTRL3 の bdr_xl。FIFO へ積む頻度を出力頻度と揃える
+static const uint8_t IIS_FIFO_BYPASS = 0, IIS_FIFO_STREAM = 6;  // FIFO_CTRL4 の fifo_mode
+static const uint8_t IIS_TAG_XL = 0x02;   // FIFO の語のタグ（上位 5 ビット）。加速度（圧縮なし）
+// FIFO_STATUS2 の旗。**どちらも「古い語を上書きした」**＝標本が抜けている。
+static const uint8_t IIS_FIFO_OVR_IA = 0x40, IIS_OVER_RUN_LATCHED = 0x08;
+static const size_t  IIS_FIFO_WORD = 7;   // タグ 1 ＋ データ 6 バイト
+static const int     IIS_SAMPLE_HZ = 104;
+static const float   IIS_UG_PER_LSB = 61.0f;   // ±2g は 0.061 mg/LSB（iis2iclx_from_fs2g_to_mg）
+
 static const uint32_t DRAIN_MS = 300;
 static const size_t  I2C_CHUNK = 120;   // Wire の受信バッファ超過は黙って切り捨てられる
 static const size_t  MAX_PER_PACKET = 40;  // UDP を MTU 内へ収める
+static const size_t  MAX_AXES = 3;         // 1 サンプルの値の数の上限（MPU6050 の 3。IIS2ICLX は 2）
 
 // バス 1 の割り当て。バス 0 は既定（GPIO21/22）のまま使う。
 // **ESP32-WROVER では使えない。** GPIO16/17 が内蔵 PSRAM に配線されている。
@@ -195,6 +231,16 @@ static const uint32_t PARTIAL_STREAK_TO_DROP = 2;
 // それが端数なしの読み出しを 1 度も挟まずに 5 回続く確率は無視できる。
 static const uint32_t REALIGN_STREAK_TO_DEMOTE = 5;
 
+// IIS2ICLX のあふれが、読めた周期を 1 度も挟まずにこの回数続いたら `ok` を下ろして初期化からやり直す。
+//
+// **MPU6050 とは扱いを変えてある**（あちらはあふれが続いても降格しない —— 吸い出しが間に合って
+// いないだけなので、初期化し直しても直らない）。IIS2ICLX で続くなら疑うのは**旗が下りていない**ほう:
+// あふれの旗（`over_run_latched`）が FIFO の素通しで下りるかは実機で確かめておらず、下りなければ
+// 吸い出しは毎周期「あふれた」と見て 1 件も読まずに作り直し続ける。作り直した直後の FIFO は空で、
+// 次の吸い出し（0.3 秒後）までに溜まるのは約 31 サンプルなので、本物のあふれが 3 回続くことは無い。
+// 初期化はソフトリセットから入るので、旗も含めて素子を作り直せる。
+static const uint32_t IIS_OVR_STREAK_TO_DEMOTE = 3;
+
 // 送った分を残しておく輪の区画数（→ `BacklogSlot`・`handleBacklog`）。
 //
 // **送れたかどうかに関わらず、時計が合ってから作ったまとまりは全部残す。** 基板は
@@ -269,19 +315,49 @@ static const uint32_t FLASH_MAGIC = 0x53424c32;   // "SBL2"
 //
 // **失敗も種類ごとに分ける。** 「読めていない」「境界が合わない」「送れていない」は
 // 原因も手当ても違うのに、1 つに合算すると状態ページを見ても何が起きたか判らない。
+//
+// **素子の種類（`SensorKind`）は基板ごとに 1 つ**で、起動時に決める（→ `chooseLayout`）。
+// 種類が決めるのは、読み出しの手順と、パケットが名乗る値（`st`・`ch`・`ug`・`fs`・`hz`）。
+//
+// 宣言をここに置く理由は `Packet` の項（関数より前に型を置く）。
+enum : uint8_t { KIND_MPU6050 = 1, KIND_IIS2ICLX = 2 };
+struct SensorKind {
+  uint8_t     id;          // `KIND_*`。フラッシュの記録が名乗る（→ `flashEncode`）
+  const char* name;        // パケットの `st`
+  uint8_t     axes;        // 1 サンプルの値の数。パケットの `ch` もこの数だけ並ぶ
+  const char* ch;          // パケットの `ch`（JSON の配列の中身）
+  float       ugPerLsb;
+  int         fsG;
+  int         hz;          // 名乗る出力頻度。時刻の逆算にも使う
+};
+static const SensorKind MPU6050_KIND  = { KIND_MPU6050,  "MPU6050",  3, "\"HN1\",\"HN2\",\"HN3\"", MPU_UG_PER_LSB, 2 << AFS_SEL, MPU_SAMPLE_HZ };
+// **IIS2ICLX の 2 本は素子の X と Y。** 地面のどの向きを測るかは置き方で決まり、ホストの
+// 校正値が持つ（→ seismo-host/REQUIREMENTS.md §16）。ここで東西・上下などとは名乗らない。
+static const SensorKind IIS2ICLX_KIND = { KIND_IIS2ICLX, "IIS2ICLX", 2, "\"HN1\",\"HN2\"",       IIS_UG_PER_LSB, 2,            IIS_SAMPLE_HZ };
+
 struct Sensor {
   TwoWire*    wire;
   uint8_t     addr;
   const char* sid;      // 受け手がこの名前で流れを分ける。バス番号とアドレスの組
+  const SensorKind* kind;
   bool        ok;
   uint8_t     who;
   uint32_t    seq;
   uint32_t    overflow;
   uint32_t    sent;
-  int16_t     last[3];
-  uint32_t    i2cFail;      // I2C の取引が失敗した回数（読み・書きとも）
+  int16_t     last[MAX_AXES];
+  // 吸い出したときに FIFO に溜まっていたサンプル数の最大。**吸い出しが待たされたときの余裕を
+  // 実機で読むための値**（IIS2ICLX の FIFO が何サンプル抱えられるかは実測していない）。
+  uint16_t    fifoPeak;
+  // IIS2ICLX の FIFO から加速度以外のタグの語が出た回数。**加速度しか積ませていない**ので
+  // 本来は 0。出たら FIFO を作り直す（→ `iisDrain`）。
+  uint32_t    badTag;
+  // IIS2ICLX のあふれが、読めた周期を 1 度も挟まずに続いた回数（→ `IIS_OVR_STREAK_TO_DEMOTE`）。
+  uint32_t    ovrStreak;
+  uint32_t    i2cFail;     // I2C の取引が失敗した回数（読み・書きとも）
   uint32_t    failStreak;   // 連続で失敗している回数。成功したら 0 へ戻す
-  // **FIFO の件数が 6 の倍数にならないことがある。それ自体は異常ではない。**
+  // **FIFO の件数が 6 の倍数にならないことがある。それ自体は異常ではない。**（MPU6050 だけ。
+  // IIS2ICLX の FIFO は件数を語の単位で数え、1 語ずつ取り出すので端数が出ない）
   //
   // データシート（RM-MPU-6000A-00）が定めているのは「FIFO_COUNT は溜まっている
   // **バイト数**」（Register 114/115）と「データは**レジスタ番号の順に** FIFO へ
@@ -314,12 +390,41 @@ struct Sensor {
 // 配列は全要素 0）で埋まる。3 行に 0 を並べる形だと欄を 1 つ足すたびに 3 行とも
 // 数え直すことになり、**数え違えても型検査は通る**——どれも同じ型の 0 なので、
 // ずれたまま隣の欄へ入るだけ。数える作業そのものを無くしてある。
+//
+// **基板に載せる素子の並びは 2 通り**で、どちらも 3 個。起動時にどちらかを `g_sensors` へ
+// 写す（→ `chooseLayout`）。**1 つのバイナリを全台へ焼ける形を保つため**（`resolveNodeName` の項）
+// —— 種類を焼くときの定義で選ぶ形にすると、焼き違えても何のエラーも出ない。
+//
+// IIS2ICLX のアドレスは SA0 で 0x6A / 0x6B の 2 つを選べる（ドライバの 8bit 表記 0xD5 / 0xD7 の
+// 半分）。3 個載せるには MPU6050 と同じくバスを 2 本に分け、バス 0 に 2 個（0x6B の 1 個は
+// 基板の SJ1 を 3.3V 側へブリッジしたもの）・バス 1 に 1 個を置く。
+static const Sensor MPU6050_LAYOUT[] = {
+  { &Wire,  0x68, "i2c0-68", &MPU6050_KIND },
+  { &Wire,  0x69, "i2c0-69", &MPU6050_KIND },
+  { &Wire1, 0x68, "i2c1-68", &MPU6050_KIND },
+};
+static const Sensor IIS2ICLX_LAYOUT[] = {
+  { &Wire,  0x6A, "i2c0-6a", &IIS2ICLX_KIND },
+  { &Wire,  0x6B, "i2c0-6b", &IIS2ICLX_KIND },
+  { &Wire1, 0x6A, "i2c1-6a", &IIS2ICLX_KIND },
+};
+static_assert(sizeof(MPU6050_LAYOUT) == sizeof(IIS2ICLX_LAYOUT), "layouts must have the same number of sensors");
+// **起動時は MPU6050 の並びで始める**（`chooseLayout` が決めるまで）。この起動で何も送る前に
+// 決めるので、ここでの値が外へ出ることは無い。
 static Sensor g_sensors[] = {
-  { &Wire,  0x68, "i2c0-68" },
-  { &Wire,  0x69, "i2c0-69" },
-  { &Wire1, 0x68, "i2c1-68" },
+  MPU6050_LAYOUT[0], MPU6050_LAYOUT[1], MPU6050_LAYOUT[2],
 };
 static const size_t SENSOR_N = sizeof(g_sensors) / sizeof(g_sensors[0]);
+static_assert(sizeof(MPU6050_LAYOUT) / sizeof(MPU6050_LAYOUT[0]) == SENSOR_N, "layout size must match SENSOR_N");
+
+// 起動時に決めた並びの見立て（→ `chooseLayout`）。状態ページとシリアルに出す。
+enum : uint8_t {
+  LAYOUT_UNDECIDED = 0,  // どちらの素子も応答しなかった。`retryStuck` が見つけ次第決め直す
+  LAYOUT_MPU6050   = 1,
+  LAYOUT_IIS2ICLX  = 2,
+  LAYOUT_MIXED     = 3,  // 両方が応答した。**混ぜて載せる形は扱わない**ので MPU6050 の並びで動く
+};
+static uint8_t g_layout = LAYOUT_UNDECIDED;
 
 // 組み立て中のパケット。
 //
@@ -340,7 +445,12 @@ struct Packet {
   size_t   n;
   uint32_t seq0;
   int64_t  tFirstMs;
-  int16_t  v[MAX_PER_PACKET * 3];
+  // 吸い出した 1 回ぶんの先頭の時刻と、そこから送り終えたサンプル数。**次のパケットの先頭は
+  // ここから毎回計算し直す**（→ `packetFlush`）。前のパケットの先頭へ「件数 × 間隔」を足していく
+  // 形だと、104 Hz では 1 サンプルの間隔（9.615… ms）がミリ秒で割り切れず、切り捨てが積もる。
+  int64_t  tBaseMs;
+  size_t   done;
+  int16_t  v[MAX_PER_PACKET * MAX_AXES];   // 1 サンプル `s->kind->axes` 個ずつ詰める
 };
 
 // 送った分の輪の 1 区画（→ `BACKLOG_SLOTS`）。**送ったときのヘッダを作り直せる値だけを持つ。**
@@ -358,7 +468,7 @@ struct BacklogSlot {
   // 書き出すと輪の途中から写し始め、手前を後から追って写すので、写した分は輪の中で飛び飛びになる。
   // 輪へ積むたびに 0 へ戻す（`backlogPut`）。
   uint8_t  flashed;
-  int16_t  v[MAX_PER_PACKET * 3];
+  int16_t  v[MAX_PER_PACKET * MAX_AXES];   // 1 サンプル `g_sensors[sensor].kind->axes` 個ずつ詰める
 };
 
 // `/backlog` が返すまとまりの在りか（→ `collectBacklog`）。中身は持たず、返すときに取り出す。
@@ -784,6 +894,15 @@ static bool r8(Sensor &s, uint8_t r, uint8_t &o){
   o = s.wire->read();
   return note(s, true);
 }
+// 続くレジスタを `n` バイト **1 回の取引で** 読む（IIS2ICLX は `IF_INC` でアドレスが進む）。
+// 件数の 2 バイトを別々に読むと、間に件数が変わったとき上下を取り違える（`readFifoCount` と同じ理由）。
+static bool rN(Sensor &s, uint8_t r, uint8_t *out, uint8_t n){
+  s.wire->beginTransmission(s.addr); s.wire->write(r);
+  if (s.wire->endTransmission(false) != 0) return note(s, false);
+  if (s.wire->requestFrom(s.addr, n) != n) return note(s, false);
+  for (uint8_t i = 0; i < n; i++) out[i] = (uint8_t)s.wire->read();
+  return note(s, true);
+}
 
 // FIFO の件数を **1 回の取引で** 読む。
 //
@@ -811,8 +930,17 @@ static bool readFifoCount(Sensor &s, uint16_t &cnt){
 // **必要な後始末は既に済んでいる**（失われるのは検出の進捗だけで、手当てではない）。
 // ここで連続を持ち越すほうが誤りで、境界が引き直された後の端数は別の観測。
 // なお `realignStreak` はここで消さないので、**降格までの積み上げは取り消されない**。
+//
+// **IIS2ICLX は FIFO を素通し（bypass）にしてから流し込み（stream）へ戻す。** 素通しにした
+// 時点で中身が捨てられる（ドライバの `iis2iclx_fifo_mode_set` と同じ書き方。他のビットは 0 ——
+// 温度と時刻を FIFO へ積まない）。**あふれの旗もこれで下りるはずだが、確かめていない**
+// （ドライバにも書かれていない）。下りなかったときの手当ては `IIS_OVR_STREAK_TO_DEMOTE`。
 static void fifoReset(Sensor &s){
   s.partialStreak = 0;
+  if (s.kind->id == KIND_IIS2ICLX) {
+    w8(s, IIS_FIFO_CTRL4, IIS_FIFO_BYPASS); delay(1); w8(s, IIS_FIFO_CTRL4, IIS_FIFO_STREAM);
+    return;
+  }
   w8(s, R_USER_CTRL, 0x04); delay(2); w8(s, R_USER_CTRL, 0x40);
 }
 
@@ -847,8 +975,7 @@ static void notePartial(Sensor &s, uint8_t rem){
 // WHO_AM_I は静的なレジスタなので、スリープ解除や FIFO_EN の書き込みが落ちていても
 // 平然と応答する。読めるが溜めないセンサーが `ok=true` のまま無言になるのがいちばん
 // 厄介な壊れ方——「届かない」は気づけるが、「健全と名乗って届かない」は気づけない。
-static void sensorInit(Sensor &s){
-  s.initTries++;
+static void mpuInit(Sensor &s){
   const uint32_t before = s.i2cFail;
   w8(s, R_PWR_MGMT_1, 0x80); delay(100);
   w8(s, R_PWR_MGMT_1, 0x01); delay(50);      // CLKSEL=1（ジャイロ X の PLL 参照）
@@ -868,6 +995,50 @@ static void sensorInit(Sensor &s){
   s.ok = whoOk && fails == 0;
 }
 
+// IIS2ICLX を初期化する。**書いた値を読み返して照合する**（`iis2iclx-probe` と同じ作法）——
+// 書き込みが ACK されても素子が受け付けたとは限らず、黙って既定のまま動かれると「測定範囲が
+// ±500mg のまま」が、立てた個体の上下の軸が振り切れるという形でしか現れない。
+//
+// **`ok` は「設定が読み返しで合ったか」で決める。** MPU6050 の「取引が 1 つも落ちなかったか」
+// より直接の確かめ方で、書き込みが届いたかを素子自身に答えさせている。リセットが終わるのを
+// 待つ間の読みは probe と同じく何度でもやり直すので、その途中の失敗では `ok` を下ろさない
+// （数は `initFails` に残る）。
+static void iisInit(Sensor &s){
+  const uint32_t before = s.i2cFail;
+  w8(s, IIS_CTRL3_C, IIS_CTRL3_SW_RESET);
+  // リセットが済むと sw_reset のビットが自分で 0 へ戻る。**戻るのを見てから進む**（probe と同じ）。
+  bool cleared = false;
+  for (int i = 0; i < 100 && !cleared; i++) {
+    delay(1);
+    uint8_t v = 0;
+    cleared = r8(s, IIS_CTRL3_C, v) && (v & IIS_CTRL3_SW_RESET) == 0;
+  }
+  if (!cleared) Serial.printf("# sensor %s リセットが終わらない\n", s.sid);
+  w8(s, IIS_CTRL3_C, IIS_CTRL3_WANT);
+  w8(s, IIS_CTRL1_XL, IIS_CTRL1_WANT);
+  w8(s, IIS_FIFO_CTRL3, IIS_BDR_XL_104HZ);
+  fifoReset(s);   // FIFO_CTRL4 を素通しから流し込みへ
+  uint8_t c1 = 0, c3 = 0, f3 = 0, f4 = 0;
+  const bool readBack = r8(s, IIS_CTRL1_XL, c1) && r8(s, IIS_CTRL3_C, c3)
+                     && r8(s, IIS_FIFO_CTRL3, f3) && r8(s, IIS_FIFO_CTRL4, f4);
+  // 他のビットも 0 で書いているので、読み返しは値そのものが一致するはず。
+  const bool matched = readBack && c1 == IIS_CTRL1_WANT && c3 == IIS_CTRL3_WANT
+                    && f3 == IIS_BDR_XL_104HZ && f4 == IIS_FIFO_STREAM;
+  if (readBack && !matched) {
+    Serial.printf("# sensor %s 設定の読み返しが合わない CTRL1_XL=0x%02X CTRL3_C=0x%02X FIFO_CTRL3=0x%02X FIFO_CTRL4=0x%02X\n",
+                  s.sid, c1, c3, f3, f4);
+  }
+  const bool whoOk = r8(s, IIS_WHO_AM_I, s.who) && s.who == IIS_WHO_AM_I_VALUE;
+  const uint32_t fails = s.i2cFail - before;
+  s.initFails = fails > 255 ? 255 : (uint8_t)fails;
+  s.ok = cleared && matched && whoOk;
+}
+
+static void sensorInit(Sensor &s){
+  s.initTries++;
+  if (s.kind->id == KIND_IIS2ICLX) iisInit(s); else mpuInit(s);
+}
+
 // 吸い出しを始められる状態にする。初期化のあとと、再試行で復帰したときに通す。
 //
 // **かつてここは「必ずあふれている」ことへの手当てだった。** `setup()` が Wi-Fi を
@@ -883,9 +1054,18 @@ static void sensorInit(Sensor &s){
 // **`overflow` には触らない。** ここで 0 へ戻すと、復帰したセンサーの `o` が落ちる前と
 // 同じ値（あふれの経験が無ければ 0 のまま）になり、**受け手は空白に気づかない**。
 // 空白があったかどうかを知っているのは呼び出し側なので、伝えるかどうかもそちらが決める。
+//
+// **IIS2ICLX も同じ形にしておく。** FIFO_STATUS2 の `over_run_latched` は名前のとおり旗を
+// 掴んだまま持つ（いつ下りるかはドライバに書かれていない）ので、素通しで作り直した後に
+// 一度読み捨てる。
 static void armSensor(Sensor &s){
   if (!s.ok) return;
   fifoReset(s);
+  if (s.kind->id == KIND_IIS2ICLX) {
+    uint8_t discard[2] = {0, 0};
+    rN(s, IIS_FIFO_STATUS1, discard, 2);
+    return;
+  }
   uint8_t discard = 0;
   r8(s, R_INT_STATUS, discard);
 }
@@ -914,6 +1094,78 @@ static uint8_t scanBus(TwoWire &w, char *out, size_t outSize, bool &cut){
     }
   }
   return found;
+}
+
+// 素子の 1 バイトのレジスタを、`Sensor` を作る前に読む（→ `chooseLayout`）。**勘定には入れない**
+// —— まだどの素子の失敗として数えるかが決まっていない。
+static bool peekReg(TwoWire &w, uint8_t addr, uint8_t reg, uint8_t &out){
+  w.beginTransmission(addr); w.write(reg);
+  if (w.endTransmission(false) != 0) return false;
+  if (w.requestFrom(addr, (uint8_t)1) != 1) return false;
+  out = (uint8_t)w.read();
+  return true;
+}
+
+// 並びの中で、その種類の素子として WHO_AM_I に答えた数。
+static size_t countResponders(const Sensor *layout){
+  size_t n = 0;
+  for (size_t i = 0; i < SENSOR_N; i++) {
+    const Sensor &c = layout[i];
+    uint8_t who = 0;
+    if (c.kind->id == KIND_IIS2ICLX) {
+      if (peekReg(*c.wire, c.addr, IIS_WHO_AM_I, who) && who == IIS_WHO_AM_I_VALUE) n++;
+    } else {
+      // MPU6050 は 0x69 の個体も 0x68 を返す（`mpuInit` の項）
+      if (peekReg(*c.wire, c.addr, R_WHO_AM_I, who) && (who == 0x68 || who == 0x69)) n++;
+    }
+  }
+  return n;
+}
+
+// この基板にどちらの素子が載っているかを決め、`g_sensors` へ写す。**この起動で何も送る前に呼ぶ**
+// （`setup()` と、決まらなかったときの `retryStuck`）。途中で写し替えると、通し番号の続いた流れが
+// 別の素子の値を名乗ることになる。
+//
+// **WHO_AM_I で見分ける。** 2 つの素子はアドレス（0x68/0x69 と 0x6A/0x6B）も WHO_AM_I の場所も
+// 違うので、取り違えようがない。
+// - 片方だけが答えた → その並び
+// - どちらも答えない → 決めない（`LAYOUT_UNDECIDED`）。起動時は配線の緩みや電源の立ち上がりが
+//   ありうるので、MPU6050 の並びのまま動かし、`retryStuck` が見つけ次第決め直す
+// - 両方が答えた → **混ぜて載せる形は扱わない**（`LAYOUT_MIXED`）。元から動いていた MPU6050 の
+//   並びで動かし、シリアルと状態ページで知らせる
+static void chooseLayout(){
+  const size_t mpu = countResponders(MPU6050_LAYOUT);
+  const size_t iis = countResponders(IIS2ICLX_LAYOUT);
+  const Sensor *layout = MPU6050_LAYOUT;
+  if (iis > 0 && mpu == 0) {
+    g_layout = LAYOUT_IIS2ICLX;
+    layout = IIS2ICLX_LAYOUT;
+  } else if (mpu > 0 && iis == 0) {
+    g_layout = LAYOUT_MPU6050;
+  } else if (mpu > 0 && iis > 0) {
+    g_layout = LAYOUT_MIXED;
+    Serial.printf("# WARN MPU6050 が %u 個・IIS2ICLX が %u 個答えた。混ぜて載せる形は扱わないので MPU6050 だけ読む\n",
+                  (unsigned)mpu, (unsigned)iis);
+  } else {
+    g_layout = LAYOUT_UNDECIDED;
+  }
+  // **素子の居場所と種類だけを写す。** 勘定（初期化を試みた回数・I2C の失敗）は残す ——
+  // 決め直したとき、決まらなかった間に何が起きていたかが状態ページから消えないように。
+  for (size_t i = 0; i < SENSOR_N; i++) {
+    g_sensors[i].wire = layout[i].wire;
+    g_sensors[i].addr = layout[i].addr;
+    g_sensors[i].sid  = layout[i].sid;
+    g_sensors[i].kind = layout[i].kind;
+  }
+}
+
+static const char* layoutName(uint8_t l){
+  switch (l) {
+    case LAYOUT_MPU6050:  return "MPU6050";
+    case LAYOUT_IIS2ICLX: return "IIS2ICLX";
+    case LAYOUT_MIXED:    return "mixed";
+    default:              return "undecided";
+  }
 }
 
 // 起動の理由を状態ページ用の短い名前へ。**数字のまま出さない**——列挙の値は
@@ -945,18 +1197,21 @@ static const char* resetReasonName(esp_reset_reason_t r){
 // 送ったときの起動 ID を名乗らないと、ホストは別の流れのパケットとして読む。
 static int formatHead(char *head, size_t size, const char *bid, const Sensor &s, size_t n,
                       uint32_t seq0, int64_t tFirstMs, uint32_t overflow){
+  const SensorKind &k = *s.kind;
   return snprintf(head, size,
-    "{\"v\":2,\"mac\":\"%s\",\"bid\":\"%s\",\"sid\":\"%s\",\"st\":\"MPU6050\","
-    "\"ch\":[\"HN1\",\"HN2\",\"HN3\"],\"ug\":%.4f,\"fs\":%d,\"hz\":%d,"
+    "{\"v\":2,\"mac\":\"%s\",\"bid\":\"%s\",\"sid\":\"%s\",\"st\":\"%s\","
+    "\"ch\":[%s],\"ug\":%.4f,\"fs\":%d,\"hz\":%d,"
     // `"ack":1` は「届いたら返事をくれ」。ホストは求めた基板にだけ返す（→ `checkAck`）。
     "\"t\":%lld,\"q\":%lu,\"c\":%u,\"o\":%lu,\"ack\":1}\n",
-    g_macFlat, bid, s.sid, UG_PER_LSB, 2 << AFS_SEL, SAMPLE_HZ,
+    g_macFlat, bid, s.sid, k.name, k.ch, k.ugPerLsb, k.fsG, k.hz,
     (long long)tFirstMs, (unsigned long)seq0, (unsigned)n, (unsigned long)overflow);
 }
 
-// サンプル 1 行（`x,y,z\n`）を書く。共有する理由は `formatHead` と同じ。
-static int formatLine(char *line, size_t size, const int16_t *xyz){
-  return snprintf(line, size, "%d,%d,%d\n", xyz[0], xyz[1], xyz[2]);
+// サンプル 1 行（`x,y,z\n`、2 軸なら `x,y\n`）を書く。共有する理由は `formatHead` と同じ。
+// **値の数は `ch` と揃える**（受け手は 1 行の値の数が `ch` の長さと違えばパケットごと読まない）。
+static int formatLine(char *line, size_t size, const int16_t *v, uint8_t axes){
+  if (axes == 2) return snprintf(line, size, "%d,%d\n", v[0], v[1]);
+  return snprintf(line, size, "%d,%d,%d\n", v[0], v[1], v[2]);
 }
 
 // 送ったまとまりを輪へ残す。**いちばん古い区画から上書きする。**
@@ -971,7 +1226,7 @@ static void backlogPut(const Sensor &s, const int16_t *v, size_t n, uint32_t seq
   b.sensor = (uint8_t)(&s - g_sensors);
   b.n = (uint8_t)n;
   b.flashed = 0;
-  memcpy(b.v, v, n * 3 * sizeof(int16_t));
+  memcpy(b.v, v, n * s.kind->axes * sizeof(int16_t));
   g_backlogTotal++;
   if (g_backlogUsed < BACKLOG_SLOTS) g_backlogUsed++;
 }
@@ -983,7 +1238,7 @@ static const BacklogSlot& backlogAt(size_t k){
 
 // まとまりが通し番号の範囲 [from, to) に掛かるか。
 //
-// **差を符号付きで見る。** 通し番号は 100 Hz で進み、約 497 日で 32 bit を一周する。
+// **差を符号付きで見る。** 通し番号は 100 Hz（IIS2ICLX は 104 Hz）で進み、約 480〜497 日で 32 bit を一周する。
 // 大小をそのまま比べると、一周した瞬間に範囲の判定が逆さまになる。
 static bool backlogOverlaps(const BacklogSlot &b, uint32_t from, uint32_t to){
   return (int32_t)(b.seq0 + b.n - from) > 0 && (int32_t)(to - b.seq0) > 0;
@@ -1022,30 +1277,50 @@ static bool parseBid(const String &text, uint32_t &out){
 
 // --- フラッシュの輪（→ `FlashSectorHead`・`SPILL_AFTER_MS`） ---
 
-// 1 まとまりの頭のバイト数（センサー・件数・予備 2・`q`・`o`・`t`）。後ろにサンプル × 6 バイト。
+// 1 まとまりの頭のバイト数（センサー・件数・軸数・素子の種類・`q`・`o`・`t`）。後ろにサンプル ×
+// 軸数 × 2 バイト。
+//
+// **軸数と種類は、元は予備（0）だった 2 バイトに置く。** 前の版が書いた記録は 0 のままなので、
+// 0 は「MPU6050・3 軸」と読む —— 区画の目印（`FLASH_MAGIC`）を変えずに済み、焼き直す前に
+// 書き出した分もそのまま取り戻せる。
 static const size_t FLASH_REC_HEAD = 20;
 
-static size_t flashRecordSize(uint8_t n){ return FLASH_REC_HEAD + (size_t)n * 6; }
+static size_t flashRecordSize(uint8_t n, uint8_t axes){ return FLASH_REC_HEAD + (size_t)n * axes * 2; }
 
 static void flashEncode(uint8_t *p, const BacklogSlot &b){
-  p[0] = b.sensor; p[1] = b.n; p[2] = 0; p[3] = 0;
+  const SensorKind &k = *g_sensors[b.sensor].kind;
+  p[0] = b.sensor; p[1] = b.n; p[2] = k.axes; p[3] = k.id;
   memcpy(p + 4, &b.seq0, 4);
   memcpy(p + 8, &b.overflow, 4);
   memcpy(p + 12, &b.tFirstMs, 8);
-  memcpy(p + FLASH_REC_HEAD, b.v, (size_t)b.n * 6);
+  memcpy(p + FLASH_REC_HEAD, b.v, (size_t)b.n * k.axes * 2);
 }
 
-// 1 まとまりを読む。**壊れた区画を信じない** —— 件数・センサーの番号が範囲外なら偽。
-static bool flashDecode(const uint8_t *p, size_t avail, BacklogSlot &b){
+// 1 まとまりを読み、使ったバイト数を `size` へ返す。**壊れた区画を信じない** —— 件数・センサーの
+// 番号が範囲外なら偽。
+//
+// **いまのその番号の素子と種類・軸数が違う記録も偽。** 基板の載せ替え（MPU6050 から IIS2ICLX へ）を
+// またいで残った記録は、いまの `sid` の名で返すと別の素子の値を名乗る。ヘッダ（`formatHead`）は
+// いまの素子から作るので、種類を確かめずに返すと `ch` と 1 行の値の数も食い違う。
+//
+// **この不一致はホストの問い合わせからは届かないはず**の守り。並びが違えば `sid` の名前も違う
+// （`i2c0-68` と `i2c0-6a`）ので、載せ替える前の `sid` で訊かれても `handleBacklog` がその場で 400 を
+// 返す。それでも残すのは、届いてしまったときに別の素子の値を名乗るより、返さないほうが軽いから。
+static bool flashDecode(const uint8_t *p, size_t avail, BacklogSlot &b, size_t &size){
   if (avail < FLASH_REC_HEAD) return false;
   b.sensor = p[0];
   b.n = p[1];
   if (b.n == 0 || b.n > MAX_PER_PACKET || b.sensor >= SENSOR_N) return false;
-  if (avail < flashRecordSize(b.n)) return false;
+  const uint8_t axes = p[2] == 0 ? 3 : p[2];
+  const uint8_t kind = p[3] == 0 ? KIND_MPU6050 : p[3];
+  const SensorKind &k = *g_sensors[b.sensor].kind;
+  if (kind != k.id || axes != k.axes) return false;
+  size = flashRecordSize(b.n, axes);
+  if (avail < size) return false;
   memcpy(&b.seq0, p + 4, 4);
   memcpy(&b.overflow, p + 8, 4);
   memcpy(&b.tFirstMs, p + 12, 8);
-  memcpy(b.v, p + FLASH_REC_HEAD, (size_t)b.n * 6);
+  memcpy(b.v, p + FLASH_REC_HEAD, (size_t)b.n * axes * 2);
   return true;
 }
 
@@ -1073,7 +1348,7 @@ static void pageReset(){
 // 書きかけの区画へ 1 まとまり足す。**入らなければ偽**（呼び出し側が区画を書いてから足し直す）。
 static bool pageAppend(const BacklogSlot &b){
   FlashSectorHead &h = pageHead();
-  const size_t sz = flashRecordSize(b.n);
+  const size_t sz = flashRecordSize(b.n, g_sensors[b.sensor].kind->axes);
   if ((size_t)h.used + sz > FLASH_SECTOR) return false;
   flashEncode(g_flashPage + h.used, b);
   h.used = (uint16_t)(h.used + sz);
@@ -1279,7 +1554,7 @@ static void spillPump(uint32_t nowMs){
       const int64_t since = g_lastAckUnixMs - SPILL_BACKFILL_MS;
       for (size_t k = 0; k < g_backlogUsed; k++) {
         const BacklogSlot &b = backlogAt(k);
-        if (b.tFirstMs + (int64_t)b.n * 1000 / SAMPLE_HZ >= since) break;
+        if (b.tFirstMs + samplesToMs(b.n, g_sensors[b.sensor].kind->hz) >= since) break;
         cursor++;
       }
     }
@@ -1417,9 +1692,10 @@ static size_t collectBacklog(uint32_t bid, uint8_t si, uint32_t from, uint32_t t
       size_t off = sizeof(FlashSectorHead);
       BacklogSlot b;
       for (uint16_t r = 0; r < h.records; r++) {
-        if (!flashDecode(g_flashRead + off, h.used - off, b)) break;
+        size_t sz = 0;
+        if (!flashDecode(g_flashRead + off, h.used - off, b, sz)) break;
         consider(b, (uint16_t)i, (uint16_t)off);
-        off += flashRecordSize(b.n);
+        off += sz;
       }
     }
   }
@@ -1450,7 +1726,8 @@ static bool loadBacklogRef(const BacklogRef &r, BacklogSlot &out, int32_t &cache
   // 並べてから取り出すまでの間に区画は書き換わらない（書くのも読むのも `loop()` だけ）。それでも
   // 目印と範囲は確かめる —— 前提が崩れたとき、別の中身をまとまりとして読まないため。
   if (h.magic != FLASH_MAGIC || h.used > FLASH_SECTOR || r.at >= h.used) return false;
-  return flashDecode(g_flashRead + r.at, h.used - r.at, out) && out.seq0 == r.seq0;
+  size_t sz = 0;
+  return flashDecode(g_flashRead + r.at, h.used - r.at, out, sz) && out.seq0 == r.seq0;
 }
 
 // 送ったまとまりを返す口。`GET /backlog?sid=<センサー>&bid=<起動 ID>&from=<q>&to=<q>`。
@@ -1560,8 +1837,9 @@ static void handleBacklog(){
     const int hl = formatHead(buf, sizeof(buf), bidText, s, b.n, b.seq0, b.tFirstMs, b.overflow);
     if (hl <= 0 || (size_t)hl >= sizeof(buf)) { g_headTrunc++; continue; }
     size_t u = (size_t)hl;
+    const uint8_t axes = s.kind->axes;
     for (size_t i = 0; i < b.n; i++) {
-      const int ll = formatLine(buf + u, sizeof(buf) - u, &b.v[i * 3]);
+      const int ll = formatLine(buf + u, sizeof(buf) - u, &b.v[i * axes], axes);
       if (ll <= 0 || (size_t)ll >= sizeof(buf) - u) break;
       u += (size_t)ll;
     }
@@ -1596,9 +1874,11 @@ static void handleStatus(){
   static char buf[4096];
   size_t u = 0;
   appendf(buf, sizeof(buf), u,
-    "{\"node\":\"%s\",\"mac\":\"%s\",\"boot_id\":\"%s\",\"sensor\":\"MPU6050\","
+    // **`layout` は起動時に決めた素子の並び**（→ `chooseLayout`）。出力頻度と 1 LSB の値は素子の
+    // 種類で違うので、センサーごとの欄（`sensors[]`）に出す。
+    "{\"node\":\"%s\",\"mac\":\"%s\",\"boot_id\":\"%s\",\"layout\":\"%s\","
     "\"uptime_s\":%lu,\"rssi\":%d,\"ip\":\"%s\",\"time_synced\":%s,\"unix\":%ld,"
-    "\"sample_hz\":%d,\"ug_per_lsb\":%.4f,\"head_truncated\":%lu,"
+    "\"head_truncated\":%lu,"
     // **空きメモリを出す。** Wi-Fi が繋がり直すたびにソケットを開き直す作りなので
     // （→ `onWifiUp`）、**放し忘れがあれば繋ぎ直しの回数だけ減っていく**。
     // `udp_armed` と並べて読めば、増える側と減る側を突き合わせられる。
@@ -1609,12 +1889,12 @@ static void handleStatus(){
     // 合わせていない基板が外からは「合っている」としか見えなかった（→ `clockTrusted`）。
     // `sntp_last_sync_unix` は一度も合わせていなければ 0。
     "\"sntp_syncs\":%lu,\"sntp_last_sync_unix\":%lu,",
-    g_node, g_mac, g_bootId,
+    g_node, g_mac, g_bootId, layoutName(g_layout),
     (unsigned long)((millis()-g_bootMs)/1000), WiFi.RSSI(), WiFi.localIP().toString().c_str(),
     // **送るか送らないかを決めている式と同じものを出す。** 別の閾値で書くと、
     // ページが「合っている」と名乗りながら 1 件も送っていない状態が作れる。
     clockTrusted(now) ? "true":"false", (long)now,
-    SAMPLE_HZ, UG_PER_LSB, (unsigned long)g_headTrunc,
+    (unsigned long)g_headTrunc,
     g_wifiUp ? "true":"false", (unsigned long)g_udpArmed, (unsigned long)g_udpArmFail,
     (unsigned long)g_wifiGotIpCount, (unsigned long)ESP.getFreeHeap(),
     (unsigned long)g_sntpSyncs, (unsigned long)g_sntpLastSyncUnix);
@@ -1704,23 +1984,30 @@ static void handleStatus(){
   for (size_t i = 0; i < SENSOR_N; i++) {
     const Sensor &s = g_sensors[i];
     appendf(buf, sizeof(buf), u,
-      "%s{\"sid\":\"%s\",\"ok\":%s,\"who_am_i\":\"0x%02X\",\"seq\":%lu,"
-      "\"packets\":%lu,\"overflow\":%lu,\"i2c_fail\":%lu,\"fail_streak\":%lu,"
+      "%s{\"sid\":\"%s\",\"type\":\"%s\",\"hz\":%d,\"ug_per_lsb\":%.4f,"
+      "\"ok\":%s,\"who_am_i\":\"0x%02X\",\"seq\":%lu,"
+      "\"packets\":%lu,\"overflow\":%lu,\"fifo_peak\":%u,\"bad_tag\":%lu,\"i2c_fail\":%lu,\"fail_streak\":%lu,"
       "\"partial\":%lu,\"partial_streak\":%lu,\"realign\":%lu,\"realign_streak\":%lu,\"unsent\":%lu,"
       "\"pretime\":%lu,\"init_tries\":%lu,\"init_fails\":%u,\"rem_hist\":[",
-      i == 0 ? "" : ",", s.sid, s.ok ? "true":"false", s.who,
+      i == 0 ? "" : ",", s.sid, s.kind->name, s.kind->hz, s.kind->ugPerLsb,
+      s.ok ? "true":"false", s.who,
       (unsigned long)s.seq, (unsigned long)s.sent, (unsigned long)s.overflow,
+      (unsigned)s.fifoPeak, (unsigned long)s.badTag,
       (unsigned long)s.i2cFail, (unsigned long)s.failStreak,
       (unsigned long)s.partial, (unsigned long)s.partialStreak,
       (unsigned long)s.realign, (unsigned long)s.realignStreak,
       (unsigned long)s.unsent, (unsigned long)s.pretime,
       (unsigned long)s.initTries, (unsigned)s.initFails);
-    // 端数の内訳。**先頭が端数 1 バイト**で、末尾が 5 バイト。
+    // 端数の内訳。**先頭が端数 1 バイト**で、末尾が 5 バイト（MPU6050 だけ。IIS2ICLX は全部 0）。
     for (size_t r = 0; r < BPS - 1; r++) {
       appendf(buf, sizeof(buf), u, "%s%lu", r == 0 ? "" : ",", (unsigned long)s.remHist[r]);
     }
-    appendf(buf, sizeof(buf), u, "],\"last\":[%d,%d,%d]}",
-      s.last[0], s.last[1], s.last[2]);
+    // 直近のサンプル。**値の数は素子の軸数と揃える**（2 軸なら 2 つ）。
+    if (s.kind->axes == 2) {
+      appendf(buf, sizeof(buf), u, "],\"last\":[%d,%d]}", s.last[0], s.last[1]);
+    } else {
+      appendf(buf, sizeof(buf), u, "],\"last\":[%d,%d,%d]}", s.last[0], s.last[1], s.last[2]);
+    }
   }
   appendf(buf, sizeof(buf), u, "]}");
   // **切り詰めた JSON を返さない。** 読み手は壊れた中身を「センサーが無い」と
@@ -2013,6 +2300,9 @@ void setup(){
   g_scanN[0] = scanBus(Wire,  g_scan[0], sizeof(g_scan[0]), g_scanCut[0]);
   g_scanN[1] = scanBus(Wire1, g_scan[1], sizeof(g_scan[1]), g_scanCut[1]);
 
+  // **初期化より先に、どちらの素子が載っているかを決める**（初期化の手順が素子で違う）。
+  chooseLayout();
+
   for (size_t i = 0; i < SENSOR_N; i++) sensorInit(g_sensors[i]);
 
   WiFi.mode(WIFI_STA);
@@ -2058,10 +2348,11 @@ void setup(){
     Serial.printf("# i2c%d begun=%d scan: %u found (%s)%s\n",
                   b, g_busOk[b], (unsigned)g_scanN[b], g_scan[b], g_scanCut[b] ? " …切れ" : "");
   }
+  Serial.printf("# layout %s\n", layoutName(g_layout));
   for (size_t i = 0; i < SENSOR_N; i++) {
     const Sensor &s = g_sensors[i];
-    Serial.printf("# sensor %s ok=%d who=0x%02X initFails=%u\n",
-                  s.sid, s.ok, s.who, (unsigned)s.initFails);
+    Serial.printf("# sensor %s %s ok=%d who=0x%02X initFails=%u\n",
+                  s.sid, s.kind->name, s.ok, s.who, (unsigned)s.initFails);
   }
 
   // **Wi-Fi が繋がるのを待たない。** 待って諦める形だと、諦めた回の起動では
@@ -2109,7 +2400,7 @@ static void sendChunk(Sensor &s, const int16_t *v, size_t n, uint32_t seq0, int6
   udp.write((const uint8_t*)head, hl);
   for (size_t i = 0; i < n; i++) {
     char line[32];
-    const int ll = formatLine(line, sizeof(line), &v[i*3]);
+    const int ll = formatLine(line, sizeof(line), &v[i * s.kind->axes], s.kind->axes);
     udp.write((const uint8_t*)line, ll);
   }
   if (udp.endPacket()) {
@@ -2483,22 +2774,24 @@ static void checkAck(uint32_t nowMs){
 
 static void packetBegin(Packet &p, Sensor &s, int64_t tFirstMs){
   p.s = &s; p.n = 0; p.seq0 = s.seq; p.tFirstMs = tFirstMs;
+  p.tBaseMs = tFirstMs; p.done = 0;
 }
 
 // 溜まっている分を送って空にする。**0 件なら何もしない**ので、何度呼んでも構わない。
 static void packetFlush(Packet &p){
   if (p.n == 0) return;
   sendChunk(*p.s, p.v, p.n, p.seq0, p.tFirstMs);
-  // 次のパケットの先頭は、いま送った分だけ後ろへ進む。
-  p.tFirstMs += (int64_t)p.n * 1000 / SAMPLE_HZ;
+  // 次のパケットの先頭は、吸い出した 1 回ぶんの先頭から数え直す（`Packet::tBaseMs` の項）。
+  p.done += p.n;
+  p.tFirstMs = p.tBaseMs + samplesToMs((int64_t)p.done, p.s->kind->hz);
   p.seq0 = p.s->seq;
   p.n = 0;
 }
 
-static void packetAdd(Packet &p, int16_t x, int16_t y, int16_t z){
-  p.v[p.n*3+0] = p.s->last[0] = x;
-  p.v[p.n*3+1] = p.s->last[1] = y;
-  p.v[p.n*3+2] = p.s->last[2] = z;
+// 1 サンプル（素子の軸数ぶんの値）を積む。
+static void packetAdd(Packet &p, const int16_t *vals){
+  const uint8_t axes = p.s->kind->axes;
+  for (uint8_t a = 0; a < axes; a++) p.v[p.n * axes + a] = p.s->last[a] = vals[a];
   p.n++; p.s->seq++;
   if (p.n == MAX_PER_PACKET) packetFlush(p);
 }
@@ -2522,15 +2815,76 @@ static bool readFifoInto(Packet &p, size_t want){
     const uint8_t xh=s.wire->read(), xl=s.wire->read();
     const uint8_t yh=s.wire->read(), yl=s.wire->read();
     const uint8_t zh=s.wire->read(), zl=s.wire->read();
-    packetAdd(p, (int16_t)(((uint16_t)xh<<8)|xl),
-                 (int16_t)(((uint16_t)yh<<8)|yl),
-                 (int16_t)(((uint16_t)zh<<8)|zl));
+    const int16_t xyz[3] = { (int16_t)(((uint16_t)xh<<8)|xl),
+                             (int16_t)(((uint16_t)yh<<8)|yl),
+                             (int16_t)(((uint16_t)zh<<8)|zl) };
+    packetAdd(p, xyz);
   }
   return note(s, true);
 }
 
-static void drainSensor(Sensor &s){
-  if (!s.ok) return;
+// `n` サンプルぶんの時間（ミリ秒）を四捨五入で。**104 Hz は 1 サンプルの間隔がミリ秒で割り切れない**
+// ので、切り捨てると名乗る時刻が系統的に早く（半サンプルの補正では 0.8 ms）ずれる。100 Hz では
+// 割り切れるので、切り捨てていた頃と同じ値になる（MPU6050 の名乗る時刻は変わらない）。
+static int64_t samplesToMs(int64_t n, int hz){ return (n * 1000 + hz / 2) / hz; }
+
+// 吸い出した時点を基準に、先頭サンプルの時刻を逆算する（半サンプル引く理由は `mpuDrain` の項）。
+static int64_t firstSampleMs(uint16_t total, int hz){
+  struct timeval tv; gettimeofday(&tv, nullptr);
+  const int64_t nowMs = (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+  return nowMs - samplesToMs(total - 1, hz) - (500 + hz / 2) / hz;
+}
+
+// IIS2ICLX の FIFO から吸い出す。**1 語（タグ＋X・Y・使わない Z）ずつ取り出す。**
+//
+// MPU6050 と違い件数は語の単位で、語の途中で件数を掴むことは無いので端数は出ない。代わりに
+// 確かめるのは 2 つ —— あふれ（古い語を上書きした＝標本が抜けた）と、加速度以外のタグ
+// （積ませていない種類の語が出た＝FIFO の中身を信じられない）。どちらも FIFO ごと作り直して
+// `o` を進める（`dropFifo` の項）。
+//
+// **1 語ずつ読むのは、続けて読んだときにアドレスが 0x7E から 0x78 へ戻るかを確かめていない
+// ため**（ドライバも 1 語ずつ読んでいる）。1 回の吸い出しは 3 個で約 90 語・90 取引で、
+// 400 kHz のバスなら数十ミリ秒に収まる見込み（実機では測っていない）。
+static void iisDrain(Sensor &s){
+  uint8_t st[2] = {0, 0};
+  if (!rN(s, IIS_FIFO_STATUS1, st, 2)) return;   // 失敗は note() が数えている
+  if (st[1] & (IIS_FIFO_OVR_IA | IIS_OVER_RUN_LATCHED)) {
+    s.ovrStreak++;
+    dropFifo(s);
+    Serial.printf("# OVERFLOW %s n=%lu streak=%lu\n", s.sid, (unsigned long)s.overflow,
+                  (unsigned long)s.ovrStreak);
+    return;
+  }
+  s.ovrStreak = 0;
+  const uint16_t words = (uint16_t)st[0] | ((uint16_t)(st[1] & 0x03) << 8);
+  if (words == 0) return;
+  if (words > s.fifoPeak) s.fifoPeak = words;
+
+  static Packet p;   // センサーをまたいで共有する理由は `mpuDrain` の項
+  packetBegin(p, s, firstSampleMs(words, s.kind->hz));
+
+  bool aborted = false;
+  bool foreign = false;
+  for (uint16_t w = 0; w < words; w++) {
+    uint8_t raw[IIS_FIFO_WORD];
+    if (!rN(s, IIS_FIFO_DATA_OUT_TAG, raw, IIS_FIFO_WORD)) { aborted = true; break; }
+    if ((raw[0] >> 3) != IIS_TAG_XL) { foreign = true; break; }
+    // 下位バイトが先（リトルエンディアン）。
+    const int16_t xy[2] = { (int16_t)((uint16_t)raw[1] | ((uint16_t)raw[2] << 8)),
+                            (int16_t)((uint16_t)raw[3] | ((uint16_t)raw[4] << 8)) };
+    packetAdd(p, xy);
+  }
+
+  // **出口はここだけ**（`mpuDrain` と同じ）。読めた分は必ず送り、そのうえで諦めたぶんを捨てて数える。
+  packetFlush(p);
+  if (foreign) {
+    s.badTag++;
+    Serial.printf("# BADTAG %s n=%lu\n", s.sid, (unsigned long)s.badTag);
+  }
+  if (aborted || foreign) dropFifo(s);
+}
+
+static void mpuDrain(Sensor &s){
 
   uint8_t st = 0;
   if (!r8(s, R_INT_STATUS, st)) return;   // 失敗は note() が数えている
@@ -2592,13 +2946,13 @@ static void drainSensor(Sensor &s){
   // **最新のサンプルは「たった今」ではない。** FIFO の中の最新サンプルは、前回の
   // サンプリングの瞬間から今までのどこかで採られている——一様に見れば平均して
   // 半サンプル分だけ前。引かないと、名乗る時刻が系統的に半サンプル分だけ遅れる。
-  struct timeval tv; gettimeofday(&tv, nullptr);
-  const int64_t nowMs = (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+  // 計算は `firstSampleMs`（IIS2ICLX と共有）。
   //
   // **ここへ来るのは端数が無かった周期だけ**なので、補正は常に半サンプル。端数がある
   // 周期は上で抜けており、「いま書かれている最中のサンプル」を抱えたまま読むことは無い。
   const uint16_t total = cnt / BPS;
-  const int64_t tFirstMs = nowMs - (int64_t)((total - 1) * 1000 / SAMPLE_HZ) - (500 / SAMPLE_HZ);
+  if (total > s.fifoPeak) s.fifoPeak = total;
+  const int64_t tFirstMs = firstSampleMs(total, s.kind->hz);
 
   // **センサーをまたいで共有される。** `loop()` が 3 個を順に、しかも `sendChunk` が
   // 送り終えてから戻る形で回しているので競合しない（`packetBegin` が毎回すべての
@@ -2621,6 +2975,11 @@ static void drainSensor(Sensor &s){
   if (aborted) dropFifo(s);
 }
 
+static void drainSensor(Sensor &s){
+  if (!s.ok) return;
+  if (s.kind->id == KIND_IIS2ICLX) iisDrain(s); else mpuDrain(s);
+}
+
 // 続けて失敗しているセンサーの `ok` を下ろす。**下ろすのは見捨てるためではなく、
 // 初期化をやり直す機会を作るため。** 下ろさないと `drainSensor` が失敗し続ける
 // だけで、設定が飛んだセンサーは電源を入れ直すまで戻らない。
@@ -2637,6 +2996,11 @@ static void demoteStuck(){
       s.ok = false;
       Serial.printf("# sensor %s を降格（FIFO を連続 %lu 回作り直しても端数が残る）\n",
                     s.sid, (unsigned long)s.realignStreak);
+    } else if (s.kind->id == KIND_IIS2ICLX && s.ovrStreak >= IIS_OVR_STREAK_TO_DEMOTE) {
+      // 理由は `IIS_OVR_STREAK_TO_DEMOTE` の項。`failStreak` にも `realignStreak` にも積まれない。
+      s.ok = false;
+      Serial.printf("# sensor %s を降格（あふれが連続 %lu 回。旗が下りていない疑い）\n",
+                    s.sid, (unsigned long)s.ovrStreak);
     }
   }
 }
@@ -2647,6 +3011,13 @@ static void demoteStuck(){
 // そのあいだ OTA も状態ページも応答しない。順繰りに当てれば、3 個死んでいても
 // 1 個あたり 30 秒で必ず番が回る。
 static void retryStuck(){
+  // **起動時にどちらの素子も答えなかった基板は、ここで決め直す**（→ `chooseLayout`）。どの素子も
+  // 初期化できていない＝この起動ではまだ 1 件も送っていないので、並びを写し替えても通し番号の
+  // 続いた流れが別の素子を名乗ることは無い。
+  if (g_layout == LAYOUT_UNDECIDED) {
+    chooseLayout();
+    if (g_layout != LAYOUT_UNDECIDED) Serial.printf("# layout %s に決めた\n", layoutName(g_layout));
+  }
   static size_t next = 0;
   for (size_t k = 0; k < SENSOR_N; k++) {
     Sensor &s = g_sensors[next];
@@ -2666,6 +3037,7 @@ static void retryStuck(){
       s.overflow++;
       s.failStreak = 0;
       s.realignStreak = 0;
+      s.ovrStreak = 0;
       Serial.printf("# sensor %s 復帰（%lu 回目の初期化・o=%lu）\n",
                     s.sid, (unsigned long)s.initTries, (unsigned long)s.overflow);
     }
