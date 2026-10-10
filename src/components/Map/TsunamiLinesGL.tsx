@@ -8,20 +8,18 @@ import { ringToLngLat } from './gl/geojson'
 import { addOrderedLayer } from './gl/layerOrder'
 import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
 import { twoLinePopupHtml } from './gl/popupHtml'
+import { createTsunamiBlink, TSUNAMI_LINE_OPACITY_ON, type TsunamiBlink } from './gl/tsunamiBlink'
 
 // 津波予報区の海岸線を等級ごとに色分けして描画する MapLibre 版（Leaflet の tsunami-lines 相当）。
 // 等級1件=MultiLineString feature 1件にまとめ、色・太さを feature プロパティに前計算して
-// paint 式で読む（太さは iconScale 連動）。発報中は line-opacity をパルスさせて点滅を再現。
+// paint 式で読む（太さは iconScale 連動）。発報中は line-opacity を切り替えて点滅させる
+// （切り替えるのは点く・消える瞬間だけ。理由は `gl/tsunamiBlink.ts`）。
 // クリック時は bbox tolerance で当たり判定し、区域名＋等級ラベルのポップアップを出す。
 
 const SRC = 'tsunami-lines'
 const LYR = 'tsunami-lines'
 // 線クリックの当たり判定許容（px）。旧 Leaflet の Canvas ヒットレンダラー tolerance:8 に揃える。
 const HIT_TOL_PX = 8
-// 点滅周期。Leaflet の tsunami-blink（2.5s step-end）に合わせる。
-const BLINK_PERIOD_MS = 2500
-// サイクル内で点灯している割合（0〜80% は点灯・80〜100% は消灯）。step-end 相当のハード切替。
-const BLINK_ON_RATIO = 0.8
 
 const EMPTY_FC: FeatureCollection<MultiLineString> = { type: 'FeatureCollection', features: [] }
 
@@ -46,12 +44,10 @@ function buildFC(lines: TsunamiLine[], iconScale: number): FeatureCollection<Mul
 export function TsunamiLinesGL({ lines, iconScale, visible }: Props) {
   const map = useMapGL()
   const popupRef = useRef<PopupHandle | null>(null)
-  const rafRef = useRef<number | null>(null)
+  const blinkRef = useRef<TsunamiBlink | null>(null)
   const addedRef = useRef(false)
-  // pulse() から最新の visible を読むための ref。常時マウント化した後もこのループ自体は
-  // アンマウントまで回り続けるため、非表示中に setPaintProperty を呼ばないようここで止める
-  // （setPaintProperty は値が変わらなくても内部で triggerRepaint するため、素通しだと
-  // 非表示タブでも毎フレームのフル repaint を強制し続けてしまう）。
+  // 点滅を作る effect（依存は map だけ）から、作った時点の visible を読むための ref。
+  // 以後の切り替えは下の表示切替の effect が点滅へ伝える。
   const visibleRef = useRef(visible)
   visibleRef.current = visible
 
@@ -66,7 +62,7 @@ export function TsunamiLinesGL({ lines, iconScale, visible }: Props) {
       paint: {
         'line-color': ['get', 'color'],
         'line-width': ['get', 'width'],
-        'line-opacity': 0.9,
+        'line-opacity': TSUNAMI_LINE_OPACITY_ON,
         // トランジションを無効化。既定(約300ms)のままだと setPaintProperty のたびに
         // 補間され、オン(0.9)↔オフ(0) の切替が中間の透明度を経てフェードしてしまう。
         // duration:0 で瞬時に切り替え、はっきりした点滅にする。
@@ -80,23 +76,27 @@ export function TsunamiLinesGL({ lines, iconScale, visible }: Props) {
       buildClickHtml: (f) =>
         twoLinePopupHtml(String(f.properties?.name ?? ''), String(f.properties?.label ?? '津波予報')),
     })
-    // 点滅（Leaflet の tsunami-blink CSS を忠実再現）: 2.5s 周期で 0〜80% は不透明(0.9)・
-    // 80〜100% は消灯(0) のハード切替（step-end 相当）。滑らかな脈動ではなくフラッシュ点滅。
-    const start = performance.now()
-    const pulse = () => {
-      if (!map.getLayer(LYR)) return
-      if (visibleRef.current) {
-        const t = ((performance.now() - start) % BLINK_PERIOD_MS) / BLINK_PERIOD_MS
-        const opacity = t < BLINK_ON_RATIO ? 0.9 : 0
-        map.setPaintProperty(LYR, 'line-opacity', opacity)
-      }
-      rafRef.current = requestAnimationFrame(pulse)
+    // 点滅（Leaflet の tsunami-blink CSS を再現）: 2.5s 周期で前 8 割は不透明・残り 2 割は消灯の
+    // ハード切替（step-end 相当）。**海岸線が見えていない間は止める** —— 止めないと、津波が
+    // 無いときも切り替えのたびに地図を描き直す。
+    const blink = createTsunamiBlink((opacity) => {
+      if (!map.getLayer(LYR)) return false
+      map.setPaintProperty(LYR, 'line-opacity', opacity)
+      return true
+    })
+    blink.setActive(visibleRef.current)
+    blinkRef.current = blink
+    // 隠れていたタブ（PWA のウィンドウ）が前面へ戻ったら位相を合わせ直す。隠れている間は
+    // タイマーが間引かれ、戻った時点で次の切り替わりの予約が数十秒先に残っていることがある。
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') blink.resync()
     }
-    rafRef.current = requestAnimationFrame(pulse)
+    document.addEventListener('visibilitychange', onVisibilityChange)
     addedRef.current = true
     return () => {
-      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current)
-      rafRef.current = null
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      blink.dispose()
+      blinkRef.current = null
       popupRef.current?.remove()
       popupRef.current = null
       if (map.getLayer(LYR)) map.removeLayer(LYR)
@@ -113,6 +113,9 @@ export function TsunamiLinesGL({ lines, iconScale, visible }: Props) {
 
   // 表示切替（津波警報の発表/全解除用）。
   useEffect(() => {
+    // **点滅への通知はレイヤーの有無と切り離す。** レイヤーが一時的に引けない間（WebGL の
+    // コンテキストロスト中など）に表示が変わっても、点滅の状態だけは追随させておく。
+    blinkRef.current?.setActive(visible)
     if (!map || !map.getLayer(LYR)) return
     map.setLayoutProperty(LYR, 'visibility', visible ? 'visible' : 'none')
   }, [map, visible])

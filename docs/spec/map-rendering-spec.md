@@ -1213,9 +1213,24 @@ Yahoo リアルタイム震度は 1 秒毎に更新される。以下のレイ�
 - 過去に `App.tsx` の `Array.from(activeEEWs.values())` を毎レンダー生成していて fps 17→55 の劣化を起こした事故あり
 
 ### rAF の停止
-- `KyoshinMaxEffectGL`・`TsunamiLinesGL`（点滅）・`PsWaveGL` は `requestAnimationFrame` を使う
-- 停止条件（`activeEEWs.length === 0` 等）で `cancelAnimationFrame` を呼ぶ
-- コンポーネント unmount 時にも cleanup が必要
+- `KyoshinMaxEffectGL` は `requestAnimationFrame` を使う（`PsWaveGL` は rAF を使わず、カメラの移動とデータの更新のときだけ `triggerRepaint` する）
+- 停止条件（`KyoshinMaxEffectGL` なら波紋が無くなったとき）では次の rAF を予約しない
+- コンポーネント unmount 時にも cleanup（`cancelAnimationFrame`）が必要
+
+### 点滅の駆動
+- **再描画を要求するのは、見た目が変わる瞬間だけにする。** 点滅を rAF で回して毎フレーム再描画を
+  要求すると、点滅が続く間ずっと毎フレーム（画面のリフレッシュレートぶん）地図全体を描き直す。
+  次の切り替わりまでタイマーで待つ
+  - 津波の海岸線（`gl/tsunamiBlink.ts`）: 不透明度を `setPaintProperty` で当てる。**`setPaintProperty` は
+    値が同じでも地図全体を描き直す**ので、値が変わる瞬間だけ呼ぶ。隠れていたタブが前面へ戻ったら
+    位相を合わせ直す（隠れたタブのタイマーはブラウザが間引くため）
+  - 震源（`gl/depthPointLayer.ts` の `createBlinkScheduler`）: 明暗はシェーダーが時刻から決め、
+    切り替わりの瞬間だけ `triggerRepaint` する（§16「点滅は「明・暗の 2 値」と「全点共通の位相」で作る」）
+- 実測（2026-10-10）: 津波の海岸線を rAF で回していたとき、Surface Go 2 で DMDSS 版を表示しているだけで
+  GPU 52%・CPU 26%（アプリを閉じると GPU ほぼ 0・CPU 2%）。津波の海岸線は全モードで描かれるので、
+  発表中はどのタブでもこの負荷が続いていた。開発機の Playwright（Chromium・DMDSS 版・津波の発表中・
+  地図は操作しない）では地図の `render` イベントが 10 秒で 1633 回（この環境の rAF は毎秒約 170 回）、
+  タイマーへ移した後は 28 回（うち点滅が 8 回、残りは強震モニタの毎秒更新など）
 
 ### カスタムレイヤーの GL リソース
 - `KyoshinSubThresholdGL` は **FBO 二層合成**で「同レベルドットの重畳を非加算合成」を実現
@@ -1630,6 +1645,7 @@ MapLibre v6 の `_contextRestored` は `setStyle(..., {diff:false})` を呼ん�
   - `tsunamiObsBarStyle.ts` — 観測棒の段と色。描画と凡例で共有する（§20）
   - `tsunamiArrivalMarker.ts` — 津波の到達確認マーカーの寸法計算と共有カードへの描き直し
   - `tsunamiMissingMarker.ts` — 津波の欠測マーカーの寸法計算と共有カードへの描き直し
+  - `tsunamiBlink.ts` — 津波の海岸線の点滅（点く・消える瞬間だけ不透明度を当てる。§9「点滅の駆動」）
   - `captureMap.ts` — 地図キャンバスの写し取り（[`share-card-spec.md`](share-card-spec.md)）
   - `fontStack.ts` — グリフスタック設定
   - `intensityIcons.ts` / `lpgmIcons.ts` / `kyoshinDetectedIcons.ts` — 事前ラスタライズアイコン
@@ -1963,6 +1979,8 @@ MapLibre はカスタムレイヤーが何を描いたかを知らないため�
 - 点滅と不透明度はシェーダーで作る。CSS アニメーションから移した（下記）
 
 ### 点滅は「明・暗の 2 値」と「全点共通の位相」で作る
+
+（再描画を切り替わりの瞬間だけに絞る規約は、津波の海岸線と共通。§9「点滅の駆動」）
 
 EEW の震源は点滅する。値は 2 組（確定は 1 ↔ 0.1、仮定は 0.9 ↔ 0.45）で、点ごとの不透明度と
 **掛け合わさる**。片方だけ動かすと点滅の谷で消えるため、掛け算は 1 箇所に閉じている
@@ -3486,3 +3504,6 @@ canvas source へ視野ぶんだけ焼いていた頃は、2 つの限界があ�
   切り詰める計算は以前から収まりの判定（`mapContainsBounds`）の中にだけ書かれていたので、これを
   関数（`clampPaddingToPane`）に切り出し、寄せる側も通すようにした。あわせて、寸法が 0 のときに寄せを捨てずに保留するようにした ——
   見送るだけだと、呼び出し側が「寄せた」印を先に立てるため地震カードの寄せなどが二度と走らない
+- 2026-10-10: §9 に「点滅の駆動」を足し、津波の海岸線の点滅を毎フレームの `setPaintProperty` から
+  切り替わりの瞬間だけのタイマーへ移した（`gl/tsunamiBlink.ts`。実測は同節）。あわせて §9「rAF の停止」を
+  実装に合わせて直した
