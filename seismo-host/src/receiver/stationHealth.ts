@@ -9,8 +9,10 @@ import type {
   FusedWaveChunk,
   SensorMemberRef,
   SensorPairDiff,
+  SensorResidual,
   StationIntensityReading,
 } from './sensorFusion'
+import type { Vec3 } from './stationConfigTypes'
 
 /** 覚えていられる観測点の数。**`SensorFusion` のグループ数を超えることはない。** */
 const MAX_STATIONS_DEFAULT = 64
@@ -67,6 +69,45 @@ export function pairDiffStrength(diff: SensorPairDiff): StationPairDiff {
   return { a: diff.memberA, b: diff.memberB, rmsGal, sampleCount }
 }
 
+/**
+ * センサー 1 台ぶんのずれの強さ（`SensorResidual` を軸ごとの RMS へ）。
+ *
+ * **2 軸のセンサーも同じ形で出す。** 対の差分（{@link StationPairDiff}）は 3 軸どうしにしか
+ * 立たないので、2 軸の台がおかしいかはここでしか見えない。
+ */
+export interface StationSensorResidual {
+  readonly member: SensorMemberRef
+  /** 軸の名前（センサーが名乗るもの）。`axes` と同じ並び。 */
+  readonly channels: readonly string[]
+  /**
+   * 軸ごと。`direction` はその軸が地面で測る向き。`rmsGal` は**出せた目盛りだけ**で計算し、
+   * 1 つも無ければ null（{@link StationPairDiff.rmsGal} と同じく 0 で埋めない）。
+   */
+  readonly axes: readonly {
+    readonly direction: Vec3
+    readonly rmsGal: number | null
+    readonly sampleCount: number
+  }[]
+}
+
+/** ずれ 1 台ぶんの強さを出す。**null の目盛りは混ぜない**（{@link pairDiffStrength} と同じ理由）。 */
+export function residualStrength(residual: SensorResidual): StationSensorResidual {
+  return {
+    member: residual.member,
+    channels: residual.channels,
+    axes: residual.axes.map((axis) => {
+      let sum = 0
+      let n = 0
+      for (const v of axis.residualGal) {
+        if (v === null) continue
+        sum += v * v
+        n++
+      }
+      return { direction: axis.direction, rmsGal: n > 0 ? Math.sqrt(sum / n) : null, sampleCount: n }
+    }),
+  }
+}
+
 /** 観測点 1 つの様子。 */
 export interface StationHealth {
   readonly stationId: string
@@ -86,6 +127,16 @@ export interface StationHealth {
   readonly lastIntensity: number | null
   /** その震度が代表する時刻。基板が名乗る時間軸。 */
   readonly lastReadingAtMs: number | null
+  /**
+   * 最後に震度が出た時刻。**受け手の時計で測る**（`lastPacketMs` と同じ時計）。
+   * まだ 1 つも出ていなければ null。
+   *
+   * **震度の欄の古さはこれで測る。** `lastPacketMs` は合成波形が出るたびにも動くので、
+   * 3 方向のうち解けない向きがあって震度だけが止まった観測点（2 軸のセンサーが混ざると
+   * 起きる）でも動き続ける —— それで測ると、最後の震度が平常の色のまま居座る。
+   * `lastReadingAtMs` は基板が名乗る時間軸なので、受け手の時計と引き比べられない。
+   */
+  readonly lastReadingReceivedMs: number | null
   /**
    * 合成の計測震度を出せない理由。出せているなら null。
    *
@@ -143,6 +194,13 @@ export interface StationHealth {
    * **どの値を「おかしい」とするかの判定は持たない**（閾値が未設計。#370 の範囲外）。
    */
   readonly pairDiffs: readonly StationPairDiff[]
+  /**
+   * センサーごとのずれの強さ（§7・#688）。**最新のまとまりだけ。** 自分を除いたほかのセンサーで
+   * 解いた揺れと比べるので、重みの大きい台がおかしくなっても値が突出する（`SensorResidual`）。
+   *
+   * **どの値を「おかしい」とするかの判定は持たない**（`pairDiffs` と同じ）。
+   */
+  readonly residuals: readonly StationSensorResidual[]
 }
 
 export interface StationHealthBookOptions {
@@ -156,6 +214,7 @@ interface Entry {
   lastPacketMs: number
   lastIntensity: number | null
   lastReadingAtMs: number | null
+  lastReadingReceivedMs: number | null
   lastSkipReason: string | null
   closeFailures: number
   lastCloseFailure: string | null
@@ -163,6 +222,7 @@ interface Entry {
   lastMemberCountMax: number | null
   uncoveredFusions: number
   pairDiffs: readonly StationPairDiff[]
+  residuals: readonly StationSensorResidual[]
 }
 
 /**
@@ -197,6 +257,8 @@ export class StationHealthBook {
     // 値を上書きしないのは、直前まで出ていた値を消さないため（`sensorHealth.ts` と同じ）。
     if (reading.intensity !== null) entry.lastIntensity = reading.intensity
     entry.lastReadingAtMs = reading.atMs
+    // `touch` が同じ回に読んだ時計をそのまま使う（読み直すと `lastPacketMs` とずれる）。
+    entry.lastReadingReceivedMs = entry.lastPacketMs
     // **震度が出た＝出せない理由はもう無い。**
     entry.lastSkipReason = null
   }
@@ -266,6 +328,19 @@ export class StationHealthBook {
       .map(pairDiffStrength)
   }
 
+  /**
+   * センサーごとのずれが出た（#688）。**強さへ要約して覚える。**
+   *
+   * **空でも書き換え、観測点は引数で受け、渡された観測点のぶんだけ採る** —— 理由はどれも
+   * {@link notePairDiffs} と同じ（センサーを無効化して顔ぶれが縮んだとき、消えた台のずれを
+   * 指したまま固まらないように）。
+   */
+  noteResiduals(stationId: string, residuals: readonly SensorResidual[]): void {
+    this.touch(stationId).residuals = residuals
+      .filter((r) => r.stationId === stationId)
+      .map(residualStrength)
+  }
+
   /** 合成の流し込みの締めくくりに失敗した。 */
   noteCloseFailure(stationId: string, detail: string): void {
     const entry = this.touch(stationId)
@@ -296,6 +371,7 @@ export class StationHealthBook {
         lastPacketMs: e.lastPacketMs,
         lastIntensity: e.lastIntensity,
         lastReadingAtMs: e.lastReadingAtMs,
+        lastReadingReceivedMs: e.lastReadingReceivedMs,
         lastSkipReason: e.lastSkipReason,
         closeFailures: e.closeFailures,
         lastCloseFailure: e.lastCloseFailure,
@@ -303,6 +379,7 @@ export class StationHealthBook {
         lastMemberCountMax: e.lastMemberCountMax,
         uncoveredFusions: e.uncoveredFusions,
         pairDiffs: e.pairDiffs,
+        residuals: e.residuals,
       }))
   }
 
@@ -333,6 +410,7 @@ export class StationHealthBook {
       lastPacketMs: this.now(),
       lastIntensity: null,
       lastReadingAtMs: null,
+      lastReadingReceivedMs: null,
       lastSkipReason: null,
       closeFailures: 0,
       lastCloseFailure: null,
@@ -340,6 +418,7 @@ export class StationHealthBook {
       lastMemberCountMax: null,
       uncoveredFusions: 0,
       pairDiffs: [],
+      residuals: [],
     }
     this.entries.set(stationId, created)
     return created

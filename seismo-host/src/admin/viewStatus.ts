@@ -37,6 +37,13 @@ interface StatusReportView {
     readonly lastIntensity: number | null
     /** 震度そのものを出せない理由。出せているなら null（#373 で読むようになった）。 */
     readonly lastSkipReason: string | null
+    /** 最後に受け取ったパケットの軸の本数。まだ受け取っていなければ null。 */
+    readonly axisCount: number | null
+    /**
+     * 設定の軸の本数と届いた本数が違い、値を捨てているならその 2 つ（`receiver/sensorHealth.ts`）。
+     * **版の古いホストには欄が無い**ので、無ければ食い違っていないと読む。
+     */
+    readonly axisMismatch?: { readonly configuredAxes: number; readonly receivedAxes: number } | null
     readonly enabled: boolean
     readonly calibrationConfigured: boolean
     readonly station: { readonly displayName: string } | null
@@ -45,6 +52,11 @@ interface StatusReportView {
     readonly stationId: string
     readonly lastPacketMs: number | null
     readonly lastIntensity: number | null
+    /**
+     * 最後に震度が出た時刻（ホストの時計）。まだ出ていなければ null。
+     * **震度の欄の古さはこれで測る**（`stationIntensityStale`）。
+     */
+    readonly lastReadingReceivedMs: number | null
     /** 合成の計測震度を出せない理由。出せているなら null（同上）。 */
     readonly lastSkipReason: string | null
     /** 最後に合成したまとまりで実際に混ざった本数（#315）。 */
@@ -56,6 +68,15 @@ interface StatusReportView {
       readonly b: { readonly boardKey: string; readonly sensorId: string }
       readonly rmsGal: readonly (number | null)[]
       readonly sampleCount: readonly number[]
+    }[]
+    /**
+     * センサーごとのずれの強さ（#688）。**版の古いホストは持たない**ので、読むときは配列かを確かめる
+     * （{@link worstResidual}）。
+     */
+    readonly residuals?: readonly {
+      readonly member: { readonly boardKey: string; readonly sensorId: string }
+      readonly channels: readonly string[]
+      readonly axes: readonly { readonly rmsGal: number | null }[]
     }[]
   }[]
   /** 生データ（miniSEED）の記録の健全性（`receiver/mseedRecorder.ts` の `MseedHealth` のうち画面に出す欄）。 */
@@ -249,6 +270,46 @@ export function memberCell(min: unknown, max: unknown): string {
   return `${lo}〜${hi} 本`
 }
 
+type ResidualView = NonNullable<StatusReportView['stationIntensities'][number]['residuals']>[number]
+
+/**
+ * いちばん大きいずれ（#688）。センサーと軸の組で 1 つ。無ければ null。
+ *
+ * **並べない・平均しない**理由は {@link worstPairDiff} と同じ（おかしい台があれば必ず最大に現れる。
+ * 軸ごとに見るのは、感度のずれが軸ごとに現れるため）。
+ *
+ * **配列でなければ無いものとして扱う。** `/status` は無検証のキャストで読んでいて、版の古いホストは
+ * この欄を持たない —— `undefined` のまま回すと行ごと例外で落ちる。
+ */
+export function worstResidual(
+  residuals: unknown,
+): { readonly residual: ResidualView; readonly axis: number; readonly rmsGal: number } | null {
+  if (!Array.isArray(residuals)) return null
+  let best: { residual: ResidualView; axis: number; rmsGal: number } | null = null
+  for (const residual of residuals as readonly ResidualView[]) {
+    if (!Array.isArray(residual?.axes)) continue
+    if (typeof residual.member?.boardKey !== 'string' || typeof residual.member.sensorId !== 'string') continue
+    residual.axes.forEach((axis, j) => {
+      const rms = readFinite(axis?.rmsGal)
+      // **出せなかった軸（null）は候補にしない**（{@link worstPairDiff} と同じ）。
+      if (rms === null) return
+      if (best === null || rms > best.rmsGal) best = { residual, axis: j, rmsGal: rms }
+    })
+  }
+  return best
+}
+
+/** ずれの欄。**いちばん大きいセンサーと軸だけ**を出す。 */
+function residualCell(residuals: unknown): string {
+  const worst = worstResidual(residuals)
+  if (worst === null) return '—'
+  const member = `${escapeHtml(worst.residual.member.boardKey)}/${escapeHtml(worst.residual.member.sensorId)}`
+  // **軸の名前はセンサーが名乗るもの**（無認証の UDP 由来）なので `escapeHtml` を通す。
+  const channels = Array.isArray(worst.residual.channels) ? worst.residual.channels : []
+  const axisName = typeof channels[worst.axis] === 'string' ? channels[worst.axis]! : `${worst.axis + 1}`
+  return `${worst.rmsGal.toFixed(2)} gal <span class="muted">${member}・${escapeHtml(axisName)}</span>`
+}
+
 /** 差分の欄。**いちばん離れている対だけ**を出す。 */
 function pairDiffCell(pairs: readonly PairDiffView[]): string {
   const worst = worstPairDiff(pairs)
@@ -299,6 +360,18 @@ function isIntensityStale(nowMs: number, atMs: number | null, skipReason: unknow
 }
 
 /**
+ * 観測点の震度の欄が古いか。**受信の時刻ではなく、震度が出た時刻（ホストの時計）で測る**
+ * —— 受信の時刻では震度だけ止まった観測点を見落とす理由は `receiver/stationHealth.ts` の
+ * `lastReadingReceivedMs`。センサーの行は受信の時刻のままでよい（あちらは震度が止まれば理由が立つ）。
+ *
+ * **欄が無ければ古いと見る**（版がずれたとき。`undefined` を数として引くと「新しい」に化ける）。
+ */
+function stationIntensityStale(nowMs: number, s: StationView): boolean {
+  const at: unknown = s.lastReadingReceivedMs
+  return isIntensityStale(nowMs, typeof at === 'number' ? at : null, s.lastSkipReason)
+}
+
+/**
  * センサー 1 個ぶんの行。
  *
  * **運用者が入力した値（基板の鍵・センサーの名前・観測点の表示名）を埋め込む**ので
@@ -306,15 +379,49 @@ function isIntensityStale(nowMs: number, atMs: number | null, skipReason: unknow
  * 途絶しても赤くしない（`receiver/statusReport.ts` が毎回いまの設定から引き直す）。
  */
 export function sensorRowHtml(nowMs: number, s: SensorView): string {
+  const mismatch = readAxisMismatch(s.axisMismatch)
   return `
           <tr>
             <td>${escapeHtml(s.station?.displayName ?? '未割当')}</td>
             <td>${escapeHtml(s.boardKey)} / ${escapeHtml(s.sensorId)}</td>
             <td>${receptionBadgeHtml(nowMs, s.lastPacketMs)} ${ago(nowMs, s.lastPacketMs)}</td>
-            <td${staleAttr(isIntensityStale(nowMs, s.lastPacketMs, s.lastSkipReason))}>${s.lastIntensity !== null ? s.lastIntensity.toFixed(2) : '—'}</td>
+            ${sensorIntensityCellHtml(nowMs, s, mismatch !== null)}
             <td>${s.enabled ? '有効' : '無効'}</td>
-            <td>${s.calibrationConfigured ? '設定あり' : '既定値のまま'}</td>
+            ${
+              mismatch !== null
+                ? `<td${STALE_ATTR}>軸の本数が違う（設定 ${mismatch.configuredAxes} 本・届いたのは ${mismatch.receivedAxes} 本）</td>`
+                : `<td>${s.calibrationConfigured ? '設定あり' : '既定値のまま'}</td>`
+            }
           </tr>`
+}
+
+/**
+ * センサーの震度の欄。
+ *
+ * - **軸の本数が設定と食い違って値を捨てている**なら赤い「—」（何も出していない。2026-10-09 ユーザー承認）
+ * - **2 軸のセンサー**は「2 軸」を灰色で（震度を出さないのが正しい状態で、異常ではない。同日承認）。
+ *   見分けは「軸が 2 本で、出せない理由が軸の本数（`axis-count`）」—— 理由が別なら本物の異常なので赤くする
+ * - それ以外は値（古ければ赤）
+ */
+function sensorIntensityCellHtml(nowMs: number, s: SensorView, mismatched: boolean): string {
+  if (mismatched) return `<td${STALE_ATTR}>—</td>`
+  if (s.axisCount === 2 && s.lastSkipReason === 'axis-count') return '<td class="muted">2 軸</td>'
+  return `<td${staleAttr(isIntensityStale(nowMs, s.lastPacketMs, s.lastSkipReason))}>${
+    s.lastIntensity !== null ? s.lastIntensity.toFixed(2) : '—'
+  }</td>`
+}
+
+/**
+ * `/status` の `axisMismatch` を読む。**数として読めなければ食い違っていないと読む**
+ * （`/status` は無検証で読んでいるので、欄が無い・形が違う版のホストでも行を壊さない）。
+ */
+function readAxisMismatch(value: unknown): { configuredAxes: number; receivedAxes: number } | null {
+  if (typeof value !== 'object' || value === null) return null
+  const v = value as Record<string, unknown>
+  const configuredAxes = v.configuredAxes
+  const receivedAxes = v.receivedAxes
+  if (!Number.isInteger(configuredAxes) || !Number.isInteger(receivedAxes)) return null
+  return { configuredAxes: configuredAxes as number, receivedAxes: receivedAxes as number }
 }
 
 /**
@@ -323,7 +430,7 @@ export function sensorRowHtml(nowMs: number, s: SensorView): string {
  * **3 つの値は同じ回に更新されるとは限らない。** 混ざった本数と差分は合成波形が
  * 出た回に、震度は震度が出た回に書き換わる（`main.ts` の `deliverStationFusion`）
  * ——**波形は出ているが震度だけ出せない**状態がありうるので、震度の欄だけは
- * `lastSkipReason` も見る（`isIntensityStale`）。届かなくなったときは 3 つとも古い。
+ * 震度が出た時刻と `lastSkipReason` で測る（`stationIntensityStale`）。届かなくなったときは 3 つとも古い。
  */
 export function stationRowHtml(nowMs: number, s: StationView): string {
   const stale = staleAttr(isStale(nowMs, s.lastPacketMs))
@@ -331,9 +438,10 @@ export function stationRowHtml(nowMs: number, s: StationView): string {
           <tr>
             <td>${escapeHtml(s.stationId)}</td>
             <td>${receptionBadgeHtml(nowMs, s.lastPacketMs)} ${ago(nowMs, s.lastPacketMs)}</td>
-            <td${staleAttr(isIntensityStale(nowMs, s.lastPacketMs, s.lastSkipReason))}>${s.lastIntensity !== null ? s.lastIntensity.toFixed(2) : '—'}</td>
+            <td${staleAttr(stationIntensityStale(nowMs, s))}>${s.lastIntensity !== null ? s.lastIntensity.toFixed(2) : '—'}</td>
             <td${stale}>${memberCell(s.lastMemberCountMin, s.lastMemberCountMax)}</td>
             <td${stale}>${pairDiffCell(s.pairDiffs)}</td>
+            <td${stale}>${residualCell(s.residuals)}</td>
           </tr>`
 }
 
@@ -437,8 +545,8 @@ export async function initStatusView(container: HTMLElement, signal: AbortSignal
                ことと、特定の対だけ差分が大きいことは、どちらも据え付けを疑う手掛かり
                （#362・#315）。震度だけでは、値が高いときに「本当に揺れた」のか
                「顔ぶれの入れ替わりで段差が乗った」のかを見分けられない。 -->
-          <thead><tr><th>観測点</th><th>受信</th><th>計測震度相当</th><th>混ざった本数</th><th>差分の最大（対）</th></tr></thead>
-          <tbody>${stationRows.length > 0 ? stationRows : '<tr><td colspan="5" class="muted">該当なし（2 台以上を割り当てた観測点のみ）</td></tr>'}</tbody>
+          <thead><tr><th>観測点</th><th>受信</th><th>計測震度相当</th><th>混ざった本数</th><th>差分の最大（対）</th><th>ずれの最大（軸）</th></tr></thead>
+          <tbody>${stationRows.length > 0 ? stationRows : '<tr><td colspan="6" class="muted">該当なし（2 台以上を割り当てた観測点のみ）</td></tr>'}</tbody>
         </table>
       </section>
       <section class="panel">

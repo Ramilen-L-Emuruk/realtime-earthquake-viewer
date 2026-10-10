@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import type { FusedWaveChunk, SensorPairDiff } from './sensorFusion'
-import { StationHealthBook, pairDiffStrength } from './stationHealth'
+import type { FusedWaveChunk, SensorPairDiff, SensorResidual } from './sensorFusion'
+import { StationHealthBook, pairDiffStrength, residualStrength } from './stationHealth'
 
 /** センサー対 1 組ぶんの差分。 */
 function pairDiff(overrides: Partial<SensorPairDiff> = {}): SensorPairDiff {
@@ -20,6 +20,39 @@ function pairDiff(overrides: Partial<SensorPairDiff> = {}): SensorPairDiff {
     ...overrides,
   }
 }
+
+/** センサー 1 台ぶんのずれ（#688）。2 軸の台の形。 */
+function residual(overrides: Partial<SensorResidual> = {}): SensorResidual {
+  return {
+    stationId: 'garage',
+    member: { boardKey: 'mac:cc', sensorId: 'i2c0-6a' },
+    firstSampleIndex: 0,
+    firstSampleMs: 1_000,
+    msPerSample: 10,
+    channels: ['HN1', 'HN2'],
+    axes: [
+      { direction: [1, 0, 0], residualGal: [3, null, 4] },
+      { direction: [0, 0, 1], residualGal: [null, null] },
+    ],
+    ...overrides,
+  }
+}
+
+describe('residualStrength', () => {
+  it('正: 軸ごとに、出せた目盛りだけで RMS を出す（null は混ぜない）', () => {
+    const s = residualStrength(residual())
+    expect(s.channels).toEqual(['HN1', 'HN2'])
+    expect(s.axes[0]!.direction).toEqual([1, 0, 0])
+    expect(s.axes[0]!.rmsGal).toBeCloseTo(Math.sqrt(12.5), 10)
+    expect(s.axes[0]!.sampleCount).toBe(2)
+  })
+
+  it('安全弁: 1 つも出せなかった軸は 0 ではなく null', () => {
+    const s = residualStrength(residual())
+    expect(s.axes[1]!.rmsGal).toBeNull()
+    expect(s.axes[1]!.sampleCount).toBe(0)
+  })
+})
 
 /** 合成波形 1 まとまり。`memberCount` 以外はこの帳面が読まない。 */
 function fused(memberCount: readonly number[], stationId = 'garage'): FusedWaveChunk {
@@ -118,6 +151,18 @@ describe('StationHealthBook', () => {
     expect(book.snapshot()[0].pairDiffs).toEqual([])
   })
 
+  it('正: センサーごとのずれの強さを覚え、空が来たら消す（#688）', () => {
+    const book = new StationHealthBook()
+    book.noteResiduals('garage', [residual(), residual({ stationId: 'study' })])
+    const s = book.snapshot()[0]
+    expect(s.residuals).toHaveLength(1)
+    expect(s.residuals[0]!.member.sensorId).toBe('i2c0-6a')
+
+    // **空でも書き換える**（差分と同じ。顔ぶれが縮んだとき、消えた台を指したまま固まらない）。
+    book.noteResiduals('garage', [])
+    expect(book.snapshot()[0].residuals).toEqual([])
+  })
+
   it('安全弁: 観測点が混ざった一覧でも、渡された観測点のぶんだけ採る', () => {
     // `SensorFusion.ingest()` は 1 観測点ぶんしか返さないが、型はそれを保証しない。
     const book = new StationHealthBook()
@@ -138,6 +183,42 @@ describe('StationHealthBook', () => {
     expect(s.stationId).toBe('garage')
     expect(s.lastIntensity).toBe(2.5)
     expect(s.lastReadingAtMs).toBe(1_000)
+  })
+
+  it('正: 震度が出た時刻を受け手の時計で覚え、合成波形だけが出た回には動かさない', () => {
+    // **震度の欄の古さはこの時刻で測る**（`viewStatus.ts` の `stationIntensityStale`）。3 方向のうち
+    // 解けない向きがあると、合成は波形だけを出し続けて震度は止まる —— そのとき受信の時刻
+    // （`lastPacketMs`）は動き続けるので、あちらでは止まったことが見えない。
+    const c = clock()
+    const book = new StationHealthBook({ now: c.now })
+    book.noteReading({ stationId: 'garage', atMs: 1_000, intensity: 2.5 })
+    const readAt = c.now()
+    c.advance(90_000)
+    book.noteWave(fused([2, 2, 2]), true)
+
+    const s = book.snapshot()[0]
+    expect(s.lastReadingReceivedMs).toBe(readAt)
+    expect(s.lastPacketMs).toBe(readAt + 90_000)
+  })
+
+  it('対照: 震度が出るたびに受け手の時刻も進む（基板が名乗る時刻ではない）', () => {
+    const c = clock()
+    const book = new StationHealthBook({ now: c.now })
+    book.noteReading({ stationId: 'garage', atMs: 1_000, intensity: 2.5 })
+    c.advance(1_000)
+    // 基板の時刻が巻き戻っていても、受け手の時刻はそれに引きずられない。
+    book.noteReading({ stationId: 'garage', atMs: 500, intensity: 2.4 })
+
+    const s = book.snapshot()[0]
+    expect(s.lastReadingReceivedMs).toBe(c.now())
+    expect(s.lastReadingReceivedMs).toBe(s.lastPacketMs)
+  })
+
+  it('安全弁: まだ震度が 1 つも出ていない観測点は null（波形だけ出ていても埋めない）', () => {
+    const book = new StationHealthBook()
+    book.noteWave(fused([2, 2, 2]), true)
+
+    expect(book.snapshot()[0].lastReadingReceivedMs).toBeNull()
   })
 
   it('震度が出せなかった回でも、直前まで出ていた値を消さない', () => {

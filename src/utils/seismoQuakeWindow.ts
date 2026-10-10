@@ -378,7 +378,11 @@ export function measureNoiseBand(base: TimedColumns, zeroMs: number): NoiseBand 
     const mid = base.fromMs + (i + 0.5) * span
     if (mid < fromMs || mid >= zeroMs) return
     picked.push({ second: Math.floor((mid - zeroMs) / SECOND_MS), min: col.min, max: col.max })
-    for (let a = 0; a < 3; a += 1) centers[a].push((col.min[a] + col.max[a]) / 2)
+    // **値の無い成分（`NaN`）は混ぜない。** 観測点の合成が解けなかった成分は `NaN` で届く —— 混ぜると中央値が壊れる。
+    for (let a = 0; a < 3; a += 1) {
+      const center = (col.min[a] + col.max[a]) / 2
+      if (Number.isFinite(center)) centers[a].push(center)
+    }
   })
   if (picked.length === 0) return null
   const center = [median(centers[0]), median(centers[1]), median(centers[2])] as const

@@ -93,6 +93,9 @@ export function isSettled(base: TimedColumns, windowMs: number, quietGal: number
     const col = base.columns[i]
     // **値の無い列は静穏と見なさない。** 届いていないだけで、揺れていないことの証明ではない。
     if (col === null) return false
+    // **値の無い成分（`NaN`）は判断に入れない**（観測点の合成が解けなかった成分）。解けた成分で収まりを見る ——
+    // 欠けた成分を「揺れている」へ倒すと、上を解けない観測点のカードは打ち切りの上限まで伸び続ける。
+    // `Math.abs(NaN) >= quietGal` は偽なので、比べるだけでそうなる。
     for (let a = 0; a < 3; a += 1) {
       if (Math.abs(col.min[a]) >= quietGal || Math.abs(col.max[a]) >= quietGal) return false
     }
@@ -132,11 +135,9 @@ export function appendWaveWindow(params: {
   const added = new Map<number, { min: [number, number, number]; max: [number, number, number]; members: number }>()
 
   for (let i = 0; i < count; i += 1) {
-    const ew = win.gal[0][i]
-    const ns = win.gal[1][i]
-    const ud = win.gal[2][i]
-    // **1 成分でも読めなければ、そのサンプルは無かったことにする**（`waveColumns.ts` と同じ）。
-    if (!Number.isFinite(ew) || !Number.isFinite(ns) || !Number.isFinite(ud)) continue
+    const values = [win.gal[0][i], win.gal[1][i], win.gal[2][i]] as const
+    // **成分ごとに読む**（`waveColumns.ts` と同じ）。3 成分とも読めないサンプルだけを無かったことにする。
+    if (!values.some((v) => Number.isFinite(v))) continue
 
     const t = win.firstSampleMs + i * win.msPerSample
     const c = Math.floor((t - base.fromMs) / span)
@@ -145,15 +146,17 @@ export function appendWaveWindow(params: {
     const m = win.memberCount[i]
     const cur = added.get(c)
     if (cur === undefined) {
-      added.set(c, { min: [ew, ns, ud], max: [ew, ns, ud], members: m })
+      // 読めない成分は `NaN` のまま置く（下の比較は `NaN` を必ず上書きする形にしてある）。
+      added.set(c, { min: [values[0], values[1], values[2]], max: [values[0], values[1], values[2]], members: m })
       continue
     }
-    if (ew < cur.min[0]) cur.min[0] = ew
-    if (ew > cur.max[0]) cur.max[0] = ew
-    if (ns < cur.min[1]) cur.min[1] = ns
-    if (ns > cur.max[1]) cur.max[1] = ns
-    if (ud < cur.min[2]) cur.min[2] = ud
-    if (ud > cur.max[2]) cur.max[2] = ud
+    for (let a = 0; a < 3; a += 1) {
+      const v = values[a]!
+      if (!Number.isFinite(v)) continue
+      // **`NaN` の端は必ず置き換える**（`v < NaN` は偽なので、比べるだけだと最初の欠けが居座る）。
+      if (!Number.isFinite(cur.min[a]!) || v < cur.min[a]!) cur.min[a] = v
+      if (!Number.isFinite(cur.max[a]!) || v > cur.max[a]!) cur.max[a] = v
+    }
     // **いちばん少ない本数を採る**（裏付けが落ちた瞬間を見落とさない）。
     if (m < cur.members) cur.members = m
   }

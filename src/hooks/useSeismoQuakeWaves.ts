@@ -990,7 +990,8 @@ export function useSeismoQuakeWaves(params: {
           if (result.intensity.measured === null) {
             log.debug(
               `[seismo] 地震の区間の計測震度を出せなかった（${job.stationId}）: ${result.intensity.measuredUnavailable}` +
-                `・途切れ ${result.intensity.gapCount} か所`,
+                `・途切れ ${result.intensity.gapCount} か所` +
+                `・測る向きが足りず解けなかったまとまり ${result.intensity.unsolvedChunkCount}`,
             )
           }
           publishRef.current()

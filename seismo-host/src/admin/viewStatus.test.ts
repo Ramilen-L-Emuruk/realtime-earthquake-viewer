@@ -13,6 +13,7 @@ import {
   sensorRowHtml,
   stationRowHtml,
   worstPairDiff,
+  worstResidual,
 } from './viewStatus'
 
 const MSEED_QUIET = {
@@ -116,15 +117,70 @@ describe('worstPairDiff', () => {
   })
 })
 
+describe('worstResidual（#688）', () => {
+  function residual(sensorId: string, rms: readonly (number | null)[], channels = ['HN1', 'HN2']) {
+    return {
+      member: { boardKey: 'mac:cc', sensorId },
+      channels,
+      axes: rms.map((rmsGal) => ({ rmsGal })),
+    }
+  }
+
+  it('正: センサーと軸をまたいでいちばん大きいずれを採る', () => {
+    const worst = worstResidual([residual('a', [1, 2]), residual('b', [0.5, 3])])
+    expect(worst?.residual.member.sensorId).toBe('b')
+    expect(worst?.axis).toBe(1)
+    expect(worst?.rmsGal).toBe(3)
+  })
+
+  it('対照: 出せなかった軸（null）は候補にしない', () => {
+    expect(worstResidual([residual('a', [null, 2])])?.rmsGal).toBe(2)
+  })
+
+  it('安全弁: 欄が無い（版の古いホスト）・配列でない・全部 null なら null（行を落とさない）', () => {
+    expect(worstResidual(undefined)).toBeNull()
+    expect(worstResidual('x')).toBeNull()
+    expect(worstResidual([residual('a', [null, null])])).toBeNull()
+    expect(worstResidual([{ channels: [], axes: [{ rmsGal: 9 }] }])).toBeNull()
+  })
+
+  it('正: 欄には値とセンサー・軸の名前を出し、無ければ「—」', () => {
+    const html = stationRowHtml(NOW, { ...station(NOW - 1000), residuals: [residual('i2c0-6a', [0.1, 0.42])] })
+    expect(html).toContain('0.42 gal <span class="muted">mac:cc/i2c0-6a・HN2</span>')
+    const none = stationRowHtml(NOW, { ...station(NOW - 1000), residuals: [] })
+    expect(none.match(/<td>—<\/td>/g)?.length ?? 0).toBeGreaterThanOrEqual(1)
+  })
+
+  it('安全弁: 基板とセンサーの名前も escapeHtml を通す（無認証の UDP 由来）', () => {
+    const r = { member: { boardKey: '<i>b</i>', sensorId: '<script>s</script>' }, channels: ['HN1'], axes: [{ rmsGal: 1 }] }
+    const html = stationRowHtml(NOW, { ...station(NOW - 1000), residuals: [r] })
+    expect(html).not.toContain('<script>')
+    expect(html).not.toContain('<i>b</i>')
+    expect(html).toContain('&lt;script&gt;s&lt;/script&gt;')
+  })
+
+  it('安全弁: 軸の名前は escapeHtml を通す（無認証の UDP 由来）', () => {
+    const html = stationRowHtml(NOW, { ...station(NOW - 1000), residuals: [residual('a', [1], ['<b>x</b>'])] })
+    expect(html).not.toContain('<b>x</b>')
+    expect(html).toContain('&lt;b&gt;x&lt;/b&gt;')
+  })
+})
+
 /** 画面を組み立てた時刻（`/status` の `generatedAtMs`）。 */
 const NOW = 1_800_000_000_000
 
 /** 観測点 1 つぶん（`/status` から読む形）。 */
-function station(lastPacketMs: number | null, lastSkipReason: string | null = null) {
+function station(
+  lastPacketMs: number | null,
+  lastSkipReason: string | null = null,
+  // 震度が毎秒出ている間は、受信の時刻と同じ回に動く。
+  lastReadingReceivedMs: number | null = lastPacketMs,
+) {
   return {
     stationId: 'station-1',
     lastPacketMs,
     lastIntensity: 1.23,
+    lastReadingReceivedMs,
     lastSkipReason,
     lastMemberCountMin: 8,
     lastMemberCountMax: 9,
@@ -140,6 +196,7 @@ function sensor(lastPacketMs: number | null, lastSkipReason: string | null = nul
     lastPacketMs,
     lastIntensity: 0.45,
     lastSkipReason,
+    axisCount: 3,
     enabled: true,
     calibrationConfigured: true,
     station: { displayName: '自宅' },
@@ -147,13 +204,13 @@ function sensor(lastPacketMs: number | null, lastSkipReason: string | null = nul
 }
 
 describe('stationRowHtml', () => {
-  it('正: 途絶したら震度・混ざった本数・差分の 3 欄を赤くする（#373）', () => {
+  it('正: 途絶したら震度・混ざった本数・差分・ずれの 4 欄を赤くする（#373・#688）', () => {
     // **合成の帳面は設定を変えても作り直さない**ので、管理コンソールで消した観測点の
-    // 行はホストを入れ直すまで残る。3 欄はどれも「最後に合成できたときの値」なので、
-    // 1 つだけ赤くすると残りが今の姿だと読めてしまう。
+    // 行はホストを入れ直すまで残る。4 欄はどれも「最後に合成できたときの値」なので、
+    // 1 つだけ赤くすると残りが今の姿だと読めてしまう。2026-10-09 にずれの欄を足して 3 → 4。
     const html = stationRowHtml(NOW, station(NOW - STALE_AFTER_MS - 1))
 
-    expect(html.match(/stale-value/g)?.length).toBe(3)
+    expect(html.match(/stale-value/g)?.length).toBe(4)
   })
 
   it('対照: 受信中の行には印を付けない（境界のちょうどは受信中）', () => {
@@ -175,6 +232,28 @@ describe('stationRowHtml', () => {
 
     expect(html).toContain('<td class="stale-value">1.23</td>')
     expect(html.match(/stale-value/g)?.length).toBe(1)
+  })
+
+  it('正: 波形は届いていても震度が止まって 60 秒を過ぎたら、理由が無くても震度の欄だけ赤くする', () => {
+    // 3 方向のうち解けない向きがあると、合成は解ける成分の波形だけを出し続けて震度は止まる。
+    // 例外ではないので `lastSkipReason` は立たない —— 受信の時刻で測っていた間は、最後の震度が
+    // 平常の色のまま居座っていた（2026-10-10 に使い捨てのホストで再現）。
+    const html = stationRowHtml(NOW, station(NOW - 1000, null, NOW - STALE_AFTER_MS - 1))
+
+    expect(html).toContain('<td class="stale-value">1.23</td>')
+    expect(html.match(/stale-value/g)?.length).toBe(1)
+  })
+
+  it('対照: 震度が止まってもちょうど 60 秒までは赤くしない（受信の欄と同じ境界）', () => {
+    expect(stationRowHtml(NOW, station(NOW - 1000, null, NOW - STALE_AFTER_MS))).not.toContain('stale-value')
+  })
+
+  it('安全弁: 震度を受け取った時刻の欄が無い（版のずれ）ときは古いと見る', () => {
+    // 数として引くと `NOW - undefined` は NaN で、「60 秒を超えた」が偽になる —— 止まった
+    // 震度が平常の色に戻る。分からないときは古い側へ倒す。
+    const row = { ...station(NOW - 1000), lastReadingReceivedMs: undefined } as unknown as ReturnType<typeof station>
+
+    expect(stationRowHtml(NOW, row)).toContain('<td class="stale-value">1.23</td>')
   })
 
   it('安全弁: 欄が無い（undefined）ときは理由が立っていないものとして扱う', () => {
@@ -213,6 +292,38 @@ describe('sensorRowHtml', () => {
     // センサー側の `lastSkipReason` も観測点と同じ意味（軸数が違う・流し込みを作れない）。
     // **パケットは届くのに震度が出ない**状態が何日続いてもここが唯一の手掛かりになる。
     expect(sensorRowHtml(NOW, sensor(NOW - 1000, 'axis-mismatch'))).toContain('<td class="stale-value">0.45</td>')
+  })
+
+  it('正: 2 軸のセンサーは震度の欄に「2 軸」を灰色で出す（震度を出さないのが正しい状態）', () => {
+    const html = sensorRowHtml(NOW, { ...sensor(NOW - 1000, 'axis-count'), axisCount: 2, lastIntensity: null })
+    expect(html).toContain('<td class="muted">2 軸</td>')
+    expect(html).not.toContain('stale-value')
+  })
+
+  it('対照: 3 軸で軸の本数を理由に震度が出ていなければ、異常として赤くする', () => {
+    const html = sensorRowHtml(NOW, { ...sensor(NOW - 1000, 'axis-count'), axisCount: 3 })
+    expect(html).not.toContain('2 軸')
+    expect(html).toContain('<td class="stale-value">0.45</td>')
+  })
+
+  it('対照: 2 軸でも、出せない理由が軸の本数以外なら赤くする（本物の異常を灰色で隠さない）', () => {
+    const html = sensorRowHtml(NOW, { ...sensor(NOW - 1000, 'axis-mismatch'), axisCount: 2 })
+    expect(html).not.toContain('2 軸')
+    expect(html).toContain('stale-value')
+  })
+
+  it('正: 軸の本数が設定と違えば、校正の欄に理由を赤で出し、震度は赤い「—」にする', () => {
+    const html = sensorRowHtml(NOW, { ...sensor(NOW - 1000), axisMismatch: { configuredAxes: 3, receivedAxes: 2 } })
+    expect(html).toContain('<td class="stale-value">軸の本数が違う（設定 3 本・届いたのは 2 本）</td>')
+    expect(html).toContain('<td class="stale-value">—</td>')
+    expect(html).not.toContain('設定あり')
+  })
+
+  it('安全弁: 食い違いの欄が崩れていれば（版の違うホスト）、食い違っていないと読む', () => {
+    const broken = { ...sensor(NOW - 1000), axisMismatch: { configuredAxes: '3', receivedAxes: 2 } } as unknown as ReturnType<typeof sensor>
+    const html = sensorRowHtml(NOW, broken)
+    expect(html).toContain('<td>設定あり</td>')
+    expect(html).not.toContain('軸の本数が違う')
   })
 
   it('安全弁: 設定そのものの欄（有効・校正）は古くならないので赤くしない', () => {

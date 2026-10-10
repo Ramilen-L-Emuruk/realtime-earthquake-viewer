@@ -6,14 +6,15 @@ import type { AdminAuthConfig } from './adminAuth'
 import type { IntensityReading, WaveChunk } from './intensityPipeline'
 import { PacketTally } from './packetTally'
 import { ReadingHub } from './readingHub'
-import type { FusedWaveChunk, SensorPairDiff, StationIntensityReading } from './sensorFusion'
-import { EMPTY_STATION_CONFIG, StationDirectory } from './stationConfig'
+import type { FusedWaveChunk, SensorPairDiff, SensorResidual, StationIntensityReading } from './sensorFusion'
+import { EMPTY_STATION_CONFIG, IDENTITY_MATRIX, StationDirectory } from './stationConfig'
 import type { StationConfig } from './stationConfig'
 import { buildStatusReport } from './statusReport'
 import type { StatusReport, WaveArchiveStatus } from './statusReport'
 import {
   buildWaveResponse,
   parseDiffParams,
+  parseResidualParams,
   parseEventQuery,
   parseQuakeIntensityQuery,
   parseWaveParam,
@@ -64,6 +65,7 @@ function report(hub: ReadingHub): StatusReport {
       unjudged: 0,
       restlessWindows: 0,
       restarts: 0,
+      axisReshapes: 0,
       evictions: 0,
     },
     segments: [],
@@ -152,7 +154,12 @@ const WAVE: WaveChunk = {
   firstSampleMs: 1_700_000_000_000,
   msPerSample: 10,
   timebaseNominalReason: null,
-  gal: [[1.5], [2.5], [980]],
+  ground: [[1.5], [2.5], [980]],
+  axes: [
+    { direction: [1, 0, 0], gal: [1.5] },
+    { direction: [0, 1, 0], gal: [2.5] },
+    { direction: [0, 0, 1], gal: [980] },
+  ],
 }
 
 const STATION_WAVE: FusedWaveChunk = {
@@ -474,6 +481,34 @@ describe('parseDiffParams（#372）', () => {
   })
 })
 
+describe('parseResidualParams（#688）', () => {
+  const FULL = { residualStation: 'garage', residualBoard: 'mac:aabbccddeeff', residualSensor: 'i2c0-6a' }
+  function query(values: Record<string, string>): URLSearchParams {
+    return new URLSearchParams(values)
+  }
+
+  it('正: 3 欄そろえば 1 台を指す（基板の書き方は設定と同じ形へ揃える・空白は落とす）', () => {
+    expect(parseResidualParams(query({ ...FULL, residualBoard: 'mac:AABBCCDDEEFF', residualSensor: ' i2c0-6a ' }))).toEqual({
+      want: { stationId: 'garage', member: { boardKey: 'mac:aabbccddeeff', sensorId: 'i2c0-6a' } },
+      problem: null,
+      problemKind: null,
+    })
+  })
+
+  it('対照: 何も書いていなければ頼んでいない（理由も立てない）', () => {
+    expect(parseResidualParams(query({ wave: '1' }))).toEqual({ want: null, problem: null, problemKind: null })
+  })
+
+  it('安全弁: 半端・空・長すぎ・基板の書き方違いは、ずれなしで理由を返す', () => {
+    expect(parseResidualParams(query({ residualStation: 'garage' })).problemKind).toBe('missing-fields')
+    expect(parseResidualParams(query({ ...FULL, residualSensor: '  ' })).problemKind).toBe('empty-field')
+    expect(parseResidualParams(query({ ...FULL, residualStation: 'x'.repeat(65) })).problemKind).toBe('too-long')
+    const bad = parseResidualParams(query({ ...FULL, residualBoard: 'aabbccddeeff' }))
+    expect(bad.problemKind).toBe('bad-board-key')
+    expect(bad.want).toBeNull()
+  })
+})
+
 describe('startStatusServer', () => {
   it('/status は組み立てた中身をそのまま返し、横断の許しを付ける', async () => {
     const hub = new ReadingHub()
@@ -563,6 +598,38 @@ describe('startStatusServer', () => {
     expect(got[0].data).toEqual(PAIR_DIFF)
   })
 
+  const RESIDUAL: SensorResidual = {
+    stationId: 'garage',
+    member: { boardKey: 'mac:aabbccddeeff', sensorId: 'i2c0-6a' },
+    firstSampleIndex: 0,
+    firstSampleMs: 1_700_000_000_000,
+    msPerSample: 10,
+    channels: ['HN1', 'HN2'],
+    axes: [
+      { direction: [1, 0, 0], residualGal: [0.1] },
+      { direction: [0, 0.6, 0.8], residualGal: [null] },
+    ],
+  }
+
+  it('正: 3 欄で頼んだ 1 台のずれは station-residual として届く（#688）', async () => {
+    const hub = new ReadingHub()
+    const base = await start(hub)
+
+    const got = await readEvents(
+      base,
+      '/stream?residualStation=garage&residualBoard=mac:aabbccddeeff&residualSensor=i2c0-6a',
+      1,
+      () => {
+        hub.publish({ kind: 'station-residual', residual: RESIDUAL })
+      },
+    )
+
+    expect(got).toHaveLength(1)
+    expect(got[0].name).toBe('station-residual')
+    // 測る向き・軸の名前・null（出せなかった目盛り）まで潰れずに届くこと。
+    expect(got[0].data).toEqual(RESIDUAL)
+  })
+
   it('対照: 差分は ?wave=1 だけの相手へは出ない（#372）', async () => {
     const hub = new ReadingHub()
     const base = await start(hub)
@@ -577,6 +644,19 @@ describe('startStatusServer', () => {
     expect(got.map((e) => e.name)).toEqual(['wave'])
   })
 
+  it('対照: ずれは頼んでいない相手（?wave=1 だけ）へは出ない（#688）', async () => {
+    // **配る相手の選り分けを HTTP の口から通しで見る。** 振り分け自体は `readingHub.test.ts` が
+    // 見ているが、ここ（クエリの読み取り → 購読の登録）が崩れても向こうは通る。
+    const hub = new ReadingHub()
+    const base = await start(hub)
+
+    const got = await readEvents(base, '/stream?wave=1', 1, () => {
+      hub.publish({ kind: 'station-residual', residual: RESIDUAL })
+      hub.publish({ kind: 'wave', wave: WAVE })
+    })
+    expect(got.map((e) => e.name)).toEqual(['wave'])
+  })
+
   it('?wave=1 を付けると波形も付く', async () => {
     const hub = new ReadingHub()
     const base = await start(hub)
@@ -587,7 +667,39 @@ describe('startStatusServer', () => {
     })
 
     expect(got.map((e) => e.name)).toEqual(['wave', 'reading'])
-    expect((got[0].data as WaveChunk).gal[2]).toEqual([980])
+    const data = got[0].data as Record<string, unknown>
+    expect(data.gal).toEqual([[1.5], [2.5], [980]])
+    // 3 軸なら軸ごとの値は地面の 3 成分と同じ情報なので載せない（通信量が倍になる）。
+    expect(data).not.toHaveProperty('axes')
+    expect(data).not.toHaveProperty('ground')
+    expect(data.channels).toEqual(['HN1', 'HN2', 'HN3'])
+  })
+
+  it('正: 2 軸のセンサーの波形は gal を null にし、測る向きと軸ごとの値を載せる', async () => {
+    const hub = new ReadingHub()
+    const base = await start(hub)
+    const twoAxis: WaveChunk = {
+      ...WAVE,
+      channels: ['HN1', 'HN2'],
+      ground: null,
+      axes: [
+        { direction: [0.866, 0.5, 0], gal: [1.25] },
+        { direction: [-0.5, 0.866, 0], gal: [-0.75] },
+      ],
+    }
+
+    const got = await readEvents(base, '/stream?wave=1', 1, () => {
+      hub.publish({ kind: 'wave', wave: twoAxis })
+    })
+
+    const data = got[0].data as Record<string, unknown>
+    expect(data.gal).toBeNull()
+    expect(data.axes).toEqual([
+      { direction: [0.866, 0.5, 0], gal: [1.25] },
+      { direction: [-0.5, 0.866, 0], gal: [-0.75] },
+    ])
+    expect(data.channels).toEqual(['HN1', 'HN2'])
+    expect(data).not.toHaveProperty('ground')
   })
 
   it('正: 観測点ぶんの合成波形も、?wave=1 で専用の名前で押し出す（#315）', async () => {
@@ -1176,13 +1288,13 @@ describe('/api/*', () => {
     })
   })
 
-  it('正: GET /api/rest-windows はセンサーごとの静止窓と、いまの静止の始まりを返す', async () => {
+  it('正: GET /api/rest-windows はセンサーごとの静止窓（始まりと終わり）と、いまの静止の始まりを返す', async () => {
     const sensors = [
       {
         boardKey: 'mac:aa' as const,
         sensorId: 'i2c0-68',
         stillSinceMs: 0,
-        windows: [{ atMs: 1, streamKey: 'k', sampleCount: 3000, meanGal: [1, 2, 980] as const, sdGal: [1, 1, 1.5] as const }],
+        windows: [{ fromMs: 0, atMs: 1, streamKey: 'k', sampleCount: 3000, meanGal: [1, 2, 980] as const, sdGal: [1, 1, 1.5] as const }],
       },
     ]
     const base = await startAuthed(new ReadingHub(), {}, undefined, undefined, () => sensors)
@@ -1425,7 +1537,7 @@ describe('/api/*', () => {
     it('安全弁: 基板が割り当て済みの観測点は 409 で拒む', async () => {
       const ops = makeStationConfigOps({
         stations: [{ stationId: 'study', ...STATION_BODY }],
-        boards: [{ boardKey: BOARD_KEY, stationId: 'study', sensors: [] }],
+        boards: [{ boardKey: BOARD_KEY, stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] }],
       })
       const base = await startAuthed(new ReadingHub(), {}, undefined, ops)
       const res = await fetch(`${base}/api/stations/study`, {
@@ -1478,7 +1590,7 @@ describe('/api/*', () => {
         body: JSON.stringify({ stationId: 'study', sensors: [] }),
       })
       expect(res.status).toBe(200)
-      expect(ops.get().boards).toEqual([{ boardKey: BOARD_KEY, stationId: 'study', sensors: [] }])
+      expect(ops.get().boards).toEqual([{ boardKey: BOARD_KEY, stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] }])
     })
 
     it('安全弁: ボディに別の boardKey が入っていても無視し、URL パスの値だけが使われる', async () => {
@@ -1495,7 +1607,7 @@ describe('/api/*', () => {
       })
       expect(res.status).toBe(200)
       // **`mac:eeeeeeeeeeee` という別の基板が作られていない。** URL の値だけが残る。
-      expect(ops.get().boards).toEqual([{ boardKey: BOARD_KEY, stationId: 'study', sensors: [] }])
+      expect(ops.get().boards).toEqual([{ boardKey: BOARD_KEY, stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] }])
     })
 
     it('対照: 存在しない stationId を指す基板は 400（参照整合性）', async () => {
@@ -1516,7 +1628,7 @@ describe('/api/*', () => {
     it('正: DELETE /api/boards/:boardKey で割当を外す（観測点自体は残る）', async () => {
       const ops = makeStationConfigOps({
         stations: [{ stationId: 'study', ...STATION_BODY }],
-        boards: [{ boardKey: BOARD_KEY, stationId: 'study', sensors: [] }],
+        boards: [{ boardKey: BOARD_KEY, stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] }],
       })
       const base = await startAuthed(new ReadingHub(), {}, undefined, ops)
       const res = await fetch(`${base}/api/boards/${encodeURIComponent(BOARD_KEY)}`, {

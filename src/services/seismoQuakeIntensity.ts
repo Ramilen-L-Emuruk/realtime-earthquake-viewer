@@ -58,6 +58,11 @@ export interface QuakeIntensity {
   /** 値が壊れていて捨てたまとまりの数。**途切れのうち「届いたが壊れていた」分。** */
   readonly invalidChunkCount: number
   /**
+   * 観測点の合成が解けなかった成分を含んでいたので捨てたまとまりの数。**壊れた値とは別**（有効な
+   * センサーの測る向きが 3 方向へ散っていない間に出る）。この欄を返す前のホストでは 0。
+   */
+  readonly unsolvedChunkCount: number
+  /**
    * ホストが申告した読み込みの欠け（`GET /waves` と同じ欄）。**震度は出ても記録へ残す** ——
    * 計算結果からは、ディスクの不調で読めなかったのか、もともと届いていなかったのかが分からない。
    */
@@ -146,6 +151,7 @@ export function readQuakeIntensity(parsed: unknown): { value: QuakeIntensity } |
       measuredUnavailable,
       gapCount: count(root.gapCount),
       invalidChunkCount: count(root.invalidChunkCount),
+      unsolvedChunkCount: count(root.unsolvedChunkCount),
       filesMissing: count(root.filesMissing),
       filesFailed: count(root.filesFailed),
       skippedBytes: count(root.skippedBytes),

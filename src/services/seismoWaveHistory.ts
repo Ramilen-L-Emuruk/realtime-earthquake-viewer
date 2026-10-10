@@ -140,13 +140,26 @@ export function buildWaveHistoryRange(originMs: number): WaveHistoryRange | null
   return { fromMs, toMs }
 }
 
-/** 3 成分の端として読む。**成分の数が 3 でない・数として読めないものは通さない。** */
+/**
+ * 3 成分の端として読む。**成分の数が 3 でない・数として読めないものは通さない。**
+ *
+ * **`null` の成分は「その列にその成分の値が無い」として `NaN` にする。** 観測点の合成は、測る向きが
+ * 3 方向へ散っていない間、解けない成分だけを欠けにする（`seismo-host/src/receiver/sensorFusion.ts`・
+ * 2026-10-09 ユーザー承認）。1 成分の欠けで応答ごと捨てると、上が解けないだけで地震カードの波形が消える。
+ */
 function readTriple(value: unknown): readonly [number, number, number] | null {
   if (!Array.isArray(value) || value.length !== 3) return null
-  for (const n of value) {
+  const out: [number, number, number] = [0, 0, 0]
+  for (let a = 0; a < 3; a += 1) {
+    const n: unknown = value[a]
+    if (n === null) {
+      out[a] = Number.NaN
+      continue
+    }
     if (typeof n !== 'number' || !Number.isFinite(n)) return null
+    out[a] = n
   }
-  return [value[0] as number, value[1] as number, value[2] as number]
+  return out
 }
 
 /** 数として読めるものだけ通す。読めなければ `fallback`。 */

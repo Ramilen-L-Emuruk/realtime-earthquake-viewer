@@ -13,6 +13,11 @@
 // 上向き軸は 980 gal 付近が定常値（`WaveAxisStats` のコメント）。重ねて形を比べたい相手
 // どうしで定常値が違うため、**中心はセンサーごと・縦の幅は軸ごとに共通**にしている。
 //
+// **X・Y・Z の段へ描くのは東・北・上へ解けた波形だけ。** 2 軸のセンサーは 3 成分を解けず、
+// 軸の向きも東・北・上に揃っているとは限らない（基板の方角しだいで斜めを向く）。同じ段へ
+// 重ねると斜めに測った値を東や北の値として読ませるので、**センサーごとに段を足し、測る向きの
+// まま描く**（凡例に向きを成分で出す。2026-10-09 ユーザー承認）。
+//
 // **`boardKey`・`sensorId`・観測点名を HTML へ差し込むときは `escapeHtml` を通す。**
 // 前 2 つは無認証の UDP パケット由来、観測点名は運用者の自由入力（`viewStatus.ts` 冒頭が
 // 言う事情と同じ）。通し忘れると、トークンを持たない攻撃者が UDP パケット 1 個で
@@ -21,10 +26,18 @@
 import { ago, escapeHtml, qs, receptionBadgeHtml } from './dom'
 import { readFinite, readNonEmptyString } from './readJson'
 import { WaveStore, keyOf } from './waveBuffer'
-import type { WaveChunkView, WaveSourceKey, WaveWindow } from './waveBuffer'
-import { colorForIndex, formatClock, formatGal, needsTenths, niceHalfSpanGal, timeTicks } from './wavePlot'
+import type { WaveAxisStats, WaveBuffer, WaveChunkView, WaveColumn, WaveSourceKey, WaveWindow } from './waveBuffer'
+import {
+  colorForIndex,
+  formatClock,
+  formatDirection,
+  formatGal,
+  needsTenths,
+  niceHalfSpanGal,
+  timeTicks,
+} from './wavePlot'
 import { openWaveStream } from './waveStream'
-import type { PairSelection, WaveStreamState } from './waveStream'
+import type { PairSelection, ResidualSelection, WaveStreamState } from './waveStream'
 
 /** 見る時間の幅。**上限は溜め場所の長さ（`waveBuffer.ts` の既定 5 分）に合わせる。** */
 const SPAN_CHOICES: readonly { readonly ms: number; readonly label: string }[] = [
@@ -42,7 +55,7 @@ const DEFAULT_SPAN_MS = 30_000
  * 軸の名前。
  *
  * **校正を通した後の値は共通座標（X＝東・Y＝北・Z＝上の右手系）。** ただし
- * 取り付けの向き（`rotation`）を設定していないセンサーでは、軸はセンサーの
+ * 基板の向き（`orientation`）と軸の向きを設定していないセンサーでは、軸はセンサーの
  * 取り付けのままで、方角の意味を持たない —— そのことは添え書きで伝える。
  */
 const AXIS_LABELS: readonly string[] = ['X 軸（東が ＋）', 'Y 軸（北が ＋）', 'Z 軸（上が ＋）']
@@ -72,6 +85,14 @@ const TIME_AXIS_HEIGHT = 16
 /** 端からこれより内側なら、時刻の目盛りを中央揃えで置く（外側は内へ寄せる）。 */
 const TIME_LABEL_MARGIN = 28
 
+/** 段に描く線 1 本。 */
+interface PlotTrace {
+  readonly color: string
+  readonly columns: readonly (WaveColumn | null)[]
+  /** 窓にサンプルが 1 つも無ければ null（その線は描かない）。 */
+  readonly stats: WaveAxisStats | null
+}
+
 /** センサー 1 本の、機材としての様子（`/status` から引く）。 */
 interface SensorLabel {
   readonly boardKey: string
@@ -96,12 +117,17 @@ interface StatusView {
    * 「頼んだのに何も来ない」経路が消える。**
    */
   readonly pairs: readonly PairSelection[]
+  /**
+   * ずれを見られるセンサーの一覧（#688）。**`pairs` と同じく `/status` から選ばせる**
+   * （`stationIntensities[].residuals` は合成が実際にずれを出している台）。
+   */
+  readonly residuals: readonly ResidualSelection[]
 }
 
 /** `/status` から、この画面で使う欄だけを読む。 */
 export function readStatus(value: unknown): StatusView {
   if (typeof value !== 'object' || value === null)
-    return { generatedAtMs: null, sensors: [], stream: null, pairs: [] }
+    return { generatedAtMs: null, sensors: [], stream: null, pairs: [], residuals: [] }
   const v = value as Record<string, unknown>
   const sensors: SensorLabel[] = []
   if (Array.isArray(v.sensors)) {
@@ -129,6 +155,7 @@ export function readStatus(value: unknown): StatusView {
     sensors,
     stream: subscribers === null ? null : { open: subscribers, limit: readFinite(streamRaw?.limit) },
     pairs: readPairs(v.stationIntensities),
+    residuals: readResidualMembers(v.stationIntensities),
   }
 }
 
@@ -168,6 +195,28 @@ function readPairs(value: unknown): readonly PairSelection[] {
   return out
 }
 
+/**
+ * `/status` の `stationIntensities[].residuals` から、ずれを見られる台を並べる（#688）。
+ * **読めない要素は飛ばす**（{@link readPairs} と同じ理由）。版の古いホストはこの欄を持たない（空になる）。
+ */
+function readResidualMembers(value: unknown): readonly ResidualSelection[] {
+  if (!Array.isArray(value)) return []
+  const out: ResidualSelection[] = []
+  for (const rawStation of value) {
+    if (typeof rawStation !== 'object' || rawStation === null) continue
+    const station = rawStation as Record<string, unknown>
+    const stationId = readNonEmptyString(station.stationId)
+    if (stationId === null || !Array.isArray(station.residuals)) continue
+    for (const rawResidual of station.residuals) {
+      if (typeof rawResidual !== 'object' || rawResidual === null) continue
+      const member = readMember((rawResidual as Record<string, unknown>).member)
+      if (member === null) continue
+      out.push({ stationId, boardKey: member.boardKey, sensorId: member.sensorId })
+    }
+  }
+  return out
+}
+
 function readMember(value: unknown): { boardKey: string; sensorId: string } | null {
   if (typeof value !== 'object' || value === null) return null
   const v = value as Record<string, unknown>
@@ -185,6 +234,11 @@ function readMember(value: unknown): { boardKey: string; sensorId: string } | nu
  * 分からないと据え付けの判断に使えない。
  */
 function displayNameOf(source: WaveSourceKey, labels: readonly SensorLabel[]): string {
+  if (source.kind === 'residual') {
+    // **ずれも基板とセンサーの名前で出す**（差分と同じ理由）。段の見出しと同じ文言
+    // （2026-10-09 ユーザー承認）なので、センサーの一覧の行も同じ名前で並ぶ。
+    return `${source.boardKey} / ${source.sensorId}（ずれ・測る向きのまま）`
+  }
   if (source.kind === 'pair') {
     // **差分は基板とセンサーの名前で出す。** 観測点の名前で出すと合成の行と
     // 見分けが付かないが、**この行だけ別の量**（`d = (a − b) / 2`）なので、
@@ -203,6 +257,15 @@ function displayNameOf(source: WaveSourceKey, labels: readonly SensorLabel[]): s
   const station = found?.stationName
   const raw = `${source.boardKey} / ${source.sensorId}`
   return station === null || station === undefined ? raw : `${station}（${raw}）`
+}
+
+/**
+ * 測る向きのまま描く段の見出し。**2 軸のセンサーとずれで違う**（どちらも 2026-10-09 ユーザー承認の文言）。
+ * ずれは `displayNameOf` が見出しの形まで持つので、そのまま使う。
+ */
+function ownPanelTitleOf(source: WaveSourceKey, labels: readonly SensorLabel[]): string {
+  const name = displayNameOf(source, labels)
+  return source.kind === 'residual' ? name : `${name}（2 軸・測る向きのまま）`
 }
 
 /**
@@ -291,6 +354,7 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
         差分は 2 台の値の差（両方の半分）で、センサー単独や合成とは別の量。
         縦の幅は軸ごとに共通なので、揺れている間は絶対値の波形に重ねるとほぼ平らに見える。
         差分だけを選べば、縦の幅が差分に合う。
+        ずれは、そのセンサーを除いたほかのセンサーで解いた揺れを、そのセンサーが測る向きへ写して、測った値から引いたもの（半分にはしない）。
       </p>
     </section>
     <div class="wave-plots">
@@ -304,6 +368,7 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
           <canvas class="wave-canvas"></canvas>
         </section>`,
       ).join('')}
+      <div class="wave-own-axes"></div>
     </div>
   `
 
@@ -342,12 +407,19 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
   let sensorListSignature = ''
   /** 差分を見たい 1 組（#372）。選んでいなければ null。 */
   let diffSelection: PairSelection | null = null
-  /** 選んでから届いた差分の件数。**0 のまま続くのが「来ていない」の印。** */
-  let diffChunks = 0
+  /**
+   * 選んでから届いたまとまりの件数（組の差分・ずれのどちらか、選んでいるほう）。**0 のまま続くのが
+   * 「来ていない」の印。** 選べるのは 1 つだけなので 1 つの数で足りる（選び直すと 0 から数え直す）。
+   */
+  let selectionChunks = 0
   /** 組の選択肢の署名。**変わったときだけ作り直す**（選んでいる指の下で入れ替えない）。 */
   let diffListSignature = ''
   /** 差分を見られる組の一覧（`/status` から引く）。 */
   let pairs: readonly PairSelection[] = []
+  /** ずれを見たい 1 台（#688）。選んでいなければ null。**組（`diffSelection`）と同時には選ばない。** */
+  let residualSelection: ResidualSelection | null = null
+  /** ずれを見られる台の一覧（`/status` から引く）。 */
+  let residualCandidates: readonly ResidualSelection[] = []
   /**
    * いま見ている窓に、時刻の当てはめが倒れた区間が入っているか。
    *
@@ -395,6 +467,7 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
       statusGeneratedAtMs = status.generatedAtMs
       stream = status.stream
       pairs = status.pairs
+      residualCandidates = status.residuals
       errorEl.textContent = ''
       markDirty()
       renderHeader()
@@ -538,7 +611,7 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
       .join('')
   }
 
-  // ---- 差分の組の選び方（#372）----
+  // ---- 差分の組・ずれの台の選び方（#372・#688）----
 
   /** 選択欄の値。**`keyOf` と同じ形**なので、組を指す文字列が 2 通りにならない。 */
   const pairKeyOf = (p: PairSelection): string =>
@@ -554,14 +627,31 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
   const pairLabelOf = (p: PairSelection): string =>
     `${p.stationId}: ${p.boardKeyA} / ${p.sensorIdA} − ${p.boardKeyB} / ${p.sensorIdB}`
 
+  /** ずれの台の溜め場所の鍵（選択欄の値と同じ）。 */
+  const residualSourceOf = (r: ResidualSelection): WaveSourceKey => ({
+    kind: 'residual',
+    stationId: r.stationId,
+    boardKey: r.boardKey,
+    sensorId: r.sensorId,
+  })
+  const residualKeyOf = (r: ResidualSelection): string => keyOf(residualSourceOf(r))
+
+  /** ずれの選択肢の名前（2026-10-09 ユーザー承認の文言）。 */
+  const residualLabelOf = (r: ResidualSelection): string => `${r.boardKey} / ${r.sensorId} − ほかのセンサーの合成（ずれ）`
+
+  /** いま選んでいるものの鍵。選んでいなければ空文字（「選ばない」の値）。 */
+  const currentChoiceKey = (): string =>
+    diffSelection !== null ? pairKeyOf(diffSelection) : residualSelection !== null ? residualKeyOf(residualSelection) : ''
+
   /**
-   * 組の選択肢を並べる。
+   * 組とずれの台の選択肢を並べる。
    *
    * **既定は「選ばない」。** 選ぶと購読の中身が変わる（繋ぎ直す）ので、
    * 勝手に 1 組を流し始めない —— 実機は全ペアで 36 組・毎秒 240 KB（実測） ある。
+   * **組とずれは同じ欄で 1 つだけ選ぶ**（同時に流すと段が増えて、どちらを見ているか読めない）。
    */
   const renderDiffList = (): void => {
-    const signature = pairs.map(pairKeyOf).join('\u0000')
+    const signature = [...pairs.map(pairKeyOf), '\u0001', ...residualCandidates.map(residualKeyOf)].join('\u0000')
     if (signature === diffListSignature) return
     diffListSignature = signature
 
@@ -573,59 +663,78 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
         `<option value="${escapeHtml(pairKeyOf(p))}">${escapeHtml(pairLabelOf(p))}</option>`,
       )
     }
+    for (const r of residualCandidates) {
+      options.push(`<option value="${escapeHtml(residualKeyOf(r))}">${escapeHtml(residualLabelOf(r))}</option>`)
+    }
     diffEl.innerHTML = options.join('')
-    // **選んでいた組が一覧から消えていたら「選ばない」へ戻す。** 設定が変わって
-    // その組が無くなった場合で、黙って選択が残ると「選んでいるのに来ない」になる。
-    const current = diffSelection === null ? '' : pairKeyOf(diffSelection)
-    if (current !== '' && !pairs.some((p) => pairKeyOf(p) === current)) {
-      selectPair(null)
+    // **選んでいたものが一覧から消えていたら「選ばない」へ戻す。** 設定が変わって
+    // その組・台が無くなった場合で、黙って選択が残ると「選んでいるのに来ない」になる。
+    const current = currentChoiceKey()
+    const stillListed =
+      pairs.some((p) => pairKeyOf(p) === current) || residualCandidates.some((r) => residualKeyOf(r) === current)
+    if (current !== '' && !stillListed) {
+      selectChoice(null)
       return
     }
     diffEl.value = current
   }
 
-  /** 差分の様子を 1 行で出す。**届いていないことを黙らない。** */
+  /** 差分・ずれの様子を 1 行で出す。**届いていないことを黙らない。** */
   const renderDiffNote = (): void => {
-    if (diffSelection === null) {
+    if (diffSelection === null && residualSelection === null) {
       diffNoteEl.textContent = ''
       return
     }
-    if (diffChunks === 0) {
-      // **「まだ来ていない」を出す。** 設定が変わってその組が無くなった場合の症状は
-      // 1 件も届かないことだけなので、黙ると繋がっていないのと見分けが付かない。
-      diffNoteEl.textContent = 'この組の差分はまだ 1 件も届いていない（合成が作っていないか、設定が変わった可能性）'
+    // **「まだ来ていない」を出す。** 設定が変わってその組・台が無くなった場合の症状は
+    // 1 件も届かないことだけなので、黙ると繋がっていないのと見分けが付かない。
+    if (residualSelection !== null) {
+      // 文言は 2026-10-09 ユーザー承認。
+      diffNoteEl.textContent =
+        selectionChunks === 0
+          ? 'このセンサーのずれはまだ 1 件も届いていない（合成が作っていないか、設定が変わった可能性）'
+          : `このセンサーのずれを ${selectionChunks} まとまり受け取っている`
       return
     }
-    diffNoteEl.textContent = `この組の差分を ${diffChunks} まとまり受け取っている`
+    diffNoteEl.textContent =
+      selectionChunks === 0
+        ? 'この組の差分はまだ 1 件も届いていない（合成が作っていないか、設定が変わった可能性）'
+        : `この組の差分を ${selectionChunks} まとまり受け取っている`
   }
 
   /**
-   * 見る組を切り替える。**押し出しを繋ぎ直す。**
+   * 見る組・台を切り替える。**押し出しを繋ぎ直す。**
    *
-   * **前の組の溜め場所を落とす。** 溜め場所は 32 本までで、実機は全ペア 36 組 ——
+   * **前に選んでいたものの溜め場所を落とす。** 溜め場所は 32 本までで、実機は全ペア 36 組 ——
    * 落とさずに切り替え続けると、**ある時点から新しい組が上限で断られる**
    * （`WaveStore.remove` の説明を見ること）。
    */
-  const selectPair = (next: PairSelection | null): void => {
-    const before = diffSelection
+  const selectChoice = (
+    next: { readonly kind: 'pair'; readonly pair: PairSelection } | { readonly kind: 'residual'; readonly residual: ResidualSelection } | null,
+  ): void => {
+    const before: WaveSourceKey | null =
+      diffSelection !== null
+        ? {
+            kind: 'pair',
+            stationId: diffSelection.stationId,
+            boardKeyA: diffSelection.boardKeyA,
+            sensorIdA: diffSelection.sensorIdA,
+            boardKeyB: diffSelection.boardKeyB,
+            sensorIdB: diffSelection.sensorIdB,
+          }
+        : residualSelection !== null
+          ? residualSourceOf(residualSelection)
+          : null
     if (before !== null) {
-      const key = pairKeyOf(before)
-      store.remove({
-        kind: 'pair',
-        stationId: before.stationId,
-        boardKeyA: before.boardKeyA,
-        sensorIdA: before.sensorIdA,
-        boardKeyB: before.boardKeyB,
-        sensorIdB: before.sensorIdB,
-      })
-      shown.delete(key)
+      store.remove(before)
+      shown.delete(keyOf(before))
       // **一覧の署名を崩して作り直させる。** 溜め場所から消えたので、
       // センサーの一覧に残った行を掃除する必要がある。
       sensorListSignature = ''
     }
-    diffSelection = next
-    diffChunks = 0
-    diffEl.value = next === null ? '' : pairKeyOf(next)
+    diffSelection = next?.kind === 'pair' ? next.pair : null
+    residualSelection = next?.kind === 'residual' ? next.residual : null
+    selectionChunks = 0
+    diffEl.value = currentChoiceKey()
     renderDiffNote()
     renderSensorList()
     markDirty()
@@ -634,7 +743,17 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
 
   diffEl.addEventListener('change', () => {
     const value = diffEl.value
-    selectPair(value === '' ? null : (pairs.find((p) => pairKeyOf(p) === value) ?? null))
+    if (value === '') {
+      selectChoice(null)
+      return
+    }
+    const pair = pairs.find((p) => pairKeyOf(p) === value)
+    if (pair !== undefined) {
+      selectChoice({ kind: 'pair', pair })
+      return
+    }
+    const residual = residualCandidates.find((r) => residualKeyOf(r) === value)
+    selectChoice(residual === undefined ? null : { kind: 'residual', residual })
   })
 
   sensorsEl.addEventListener('change', (event) => {
@@ -694,10 +813,18 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
 
   // ---- 絵 ----
 
+  /** X・Y・Z の段（東・北・上へ解けた波形）。2 軸のセンサーの段はこの後で足す（`renderOwnAxes`）。 */
   const canvases = [...container.querySelectorAll<HTMLCanvasElement>('.wave-canvas')]
   const rangeLabels = [...container.querySelectorAll<HTMLElement>('.wave-axis-range')]
+  const ownAxesEl = qs(container, '.wave-own-axes')
 
-  for (const canvas of canvases) {
+  /**
+   * 絵の上での操作（ホイールで見る幅・引いて時間を送る）を付ける。
+   *
+   * **段を足したら必ずこれを通す。** 2 軸のセンサーの段だけ操作が効かないと、そこを触ったとき
+   * だけページが動く（ホイールの既定の動き）。
+   */
+  const attachPlotControls = (canvas: HTMLCanvasElement): void => {
     canvas.addEventListener(
       'wheel',
       (event) => {
@@ -743,6 +870,178 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
     canvas.addEventListener('pointerup', endDrag)
     canvas.addEventListener('pointercancel', endDrag)
   }
+  for (const canvas of canvases) attachPlotControls(canvas)
+
+  /** 2 軸のセンサーの段。鍵（`keyOf`）ごと。 */
+  let ownPanels = new Map<string, { readonly canvas: HTMLCanvasElement; readonly rangeLabel: HTMLElement }>()
+  let ownSignature = ''
+
+  /**
+   * 2 軸のセンサーの段を並べる。**顔ぶれ・名前・向きが変わったときだけ作り直す**
+   * （毎フレーム作り直すと、引いている最中の canvas が入れ替わる）。
+   */
+  const renderOwnAxes = (buffers: readonly { readonly buffer: WaveBuffer; readonly key: string }[]): void => {
+    const signature = buffers
+      .map(({ buffer, key }) =>
+        [
+          key,
+          displayNameOf(buffer.source, labels),
+          (buffer.axisNames ?? []).join('\u0001'),
+          (buffer.directions ?? []).map(formatDirection).join('\u0001'),
+        ].join('\u0002'),
+      )
+      .join('\u0000')
+    if (signature === ownSignature) return
+    ownSignature = signature
+
+    ownAxesEl.innerHTML = buffers
+      .map(({ buffer, key }) => {
+        const names = buffer.axisNames ?? []
+        const directions = buffer.directions ?? []
+        // **軸の名前は基板が名乗るもの（無認証の UDP パケット由来）なので `escapeHtml` を通す。**
+        const legend = directions
+          .map(
+            (direction, j) =>
+              `<div><span class="wave-swatch" style="background: ${colorForIndex(j)}"></span> ${escapeHtml(
+                names[j] ?? '',
+              )} の向き: ${formatDirection(direction)}</div>`,
+          )
+          .join('')
+        return `
+        <section class="panel wave-axis wave-own" data-key="${escapeHtml(key)}">
+          <div class="row" style="align-items: baseline; justify-content: space-between">
+            <h3 style="margin: 0">${escapeHtml(ownPanelTitleOf(buffer.source, labels))}</h3>
+            <span class="wave-own-range muted"></span>
+          </div>
+          <div class="wave-own-legend muted">${legend}</div>
+          <canvas class="wave-canvas wave-own-canvas"></canvas>
+        </section>`
+      })
+      .join('')
+
+    const next = new Map<string, { readonly canvas: HTMLCanvasElement; readonly rangeLabel: HTMLElement }>()
+    for (const section of ownAxesEl.querySelectorAll<HTMLElement>('.wave-own')) {
+      const key = section.dataset.key
+      const canvas = section.querySelector<HTMLCanvasElement>('.wave-own-canvas')
+      const rangeLabel = section.querySelector<HTMLElement>('.wave-own-range')
+      if (key === undefined || canvas === null || rangeLabel === null) continue
+      attachPlotControls(canvas)
+      next.set(key, { canvas, rangeLabel })
+    }
+    ownPanels = next
+  }
+
+  /**
+   * 1 枚の段に線を何本か描く。**X・Y・Z の段と 2 軸のセンサーの段で同じものを使う**
+   * （目盛り・枠・切れ目の扱いを 2 通りに書くと、片方だけ直したときに見え方が食い違う）。
+   *
+   * 縦の幅は段の中で共通、**中心は線ごと**（その線の平均）。
+   */
+  const drawPlot = (
+    canvas: HTMLCanvasElement,
+    rangeLabel: HTMLElement,
+    traces: readonly PlotTrace[],
+    window: { readonly fromMs: number; readonly toMs: number } | null,
+    fixed: number | null,
+    dpr: number,
+    describeRange: (halfSpan: number, centers: readonly number[]) => string,
+  ): void => {
+    const width = Math.max(1, Math.floor(canvas.clientWidth))
+    const height = Math.max(40, Math.floor(canvas.clientHeight))
+    if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
+      canvas.width = Math.round(width * dpr)
+      canvas.height = Math.round(height * dpr)
+    }
+    const ctx = canvas.getContext('2d')
+    if (ctx === null) return
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.clearRect(0, 0, width, height)
+
+    const plotHeight = height - TIME_AXIS_HEIGHT
+    const mid = plotHeight / 2
+    const usable = mid - PLOT_PADDING_Y
+    const ink = globalThis.getComputedStyle(canvas).color
+
+    // 枠と中心線。
+    ctx.strokeStyle = 'rgba(128, 128, 128, 0.45)'
+    ctx.lineWidth = 1
+    ctx.strokeRect(0.5, 0.5, width - 1, plotHeight - 1)
+    ctx.beginPath()
+    ctx.moveTo(0, mid)
+    ctx.lineTo(width, mid)
+    ctx.stroke()
+
+    let deviation = 0
+    for (const t of traces) {
+      if (t.stats !== null && t.stats.maxDeviationGal > deviation) deviation = t.stats.maxDeviationGal
+    }
+    const halfSpan = fixed !== null && Number.isFinite(fixed) && fixed > 0 ? fixed : niceHalfSpanGal(deviation)
+    const centers = traces.map((t) => t.stats?.meanGal).filter((v): v is number => v !== undefined)
+    rangeLabel.textContent = describeRange(halfSpan, centers)
+
+    if (window === null) {
+      ctx.fillStyle = ink
+      ctx.font = '12px system-ui, sans-serif'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText('波形を待っている', width / 2, mid)
+      return
+    }
+
+    // 時刻の目盛り。
+    const tenths = needsTenths(spanMs)
+    ctx.fillStyle = ink
+    ctx.font = '10px system-ui, sans-serif'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'top'
+    ctx.strokeStyle = 'rgba(128, 128, 128, 0.25)'
+    for (const at of timeTicks(window.fromMs, window.toMs, 6)) {
+      const x = ((at - window.fromMs) / spanMs) * width
+      ctx.beginPath()
+      ctx.moveTo(x, 0)
+      ctx.lineTo(x, plotHeight)
+      ctx.stroke()
+      // **端の目盛りは内側へ寄せる。** 中央揃えのままだと、いちばん左の時刻が
+      // 半分だけ枠の外へ出て読めない（`14:35:35` が `35:35` に見えた）。
+      ctx.textAlign = x < TIME_LABEL_MARGIN ? 'left' : x > width - TIME_LABEL_MARGIN ? 'right' : 'center'
+      ctx.fillText(formatClock(at, tenths), x, plotHeight + 2)
+    }
+
+    // 波形。
+    ctx.lineWidth = 1
+    for (const t of traces) {
+      if (t.stats === null) continue
+      const center = t.stats.meanGal
+      const yOf = (gal: number): number =>
+        mid - Math.max(-usable, Math.min(usable, ((gal - center) / halfSpan) * usable))
+
+      ctx.strokeStyle = t.color
+      ctx.beginPath()
+      let started = false
+      const columns = t.columns
+      for (let c = 0; c < columns.length; c++) {
+        const column = columns[c]
+        if (column === null) {
+          // 値の無い列は繋がない。**繋ぐと、届いていない時間帯が斜めの線になる。**
+          started = false
+          continue
+        }
+        // **列の位置は列数で割って幅へ写す。** 列数を 1 枚目の canvas の幅から
+        // 決めて段どうしで共有しているので、**幅が揃っている保証は無い** ——
+        // `c + 0.5` をそのまま x にすると、揃わなくなった日に波形と時刻の
+        // 目盛りが段ごとに黙ってずれる。
+        const x = ((c + 0.5) / columns.length) * width
+        if (!started || column.gapBefore) {
+          ctx.moveTo(x, yOf(column.minGal))
+          started = true
+        } else {
+          ctx.lineTo(x, yOf(column.minGal))
+        }
+        ctx.lineTo(x, yOf(column.maxGal))
+      }
+      ctx.stroke()
+    }
+  }
 
   const draw = (): void => {
     const buffers = store.buffersInOrder()
@@ -773,117 +1072,37 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
     renderSensorList()
     renderSeek()
 
+    // **X・Y・Z の段は東・北・上へ解けた波形だけ**（このファイルの冒頭）。
+    const groundShown = shownBuffers.filter((s) => s.buffer.directions === null)
     for (let axis = 0; axis < canvases.length; axis++) {
-      const canvas = canvases[axis]
-      const width = Math.max(1, Math.floor(canvas.clientWidth))
-      const height = Math.max(40, Math.floor(canvas.clientHeight))
-      if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
-        canvas.width = Math.round(width * dpr)
-        canvas.height = Math.round(height * dpr)
-      }
-      const ctx = canvas.getContext('2d')
-      if (ctx === null) continue
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-      ctx.clearRect(0, 0, width, height)
-
-      const plotHeight = height - TIME_AXIS_HEIGHT
-      const mid = plotHeight / 2
-      const usable = mid - PLOT_PADDING_Y
-      const ink = globalThis.getComputedStyle(canvas).color
-
-      // 枠と中心線。
-      ctx.strokeStyle = 'rgba(128, 128, 128, 0.45)'
-      ctx.lineWidth = 1
-      ctx.strokeRect(0.5, 0.5, width - 1, plotHeight - 1)
-      ctx.beginPath()
-      ctx.moveTo(0, mid)
-      ctx.lineTo(width, mid)
-      ctx.stroke()
-
-      // 縦の幅は軸ごとに共通。**中心はセンサーごと**（重力の乗り方が違う）。
-      let deviation = 0
-      for (const s of shownBuffers) {
-        const stats = windows.get(s.key)?.stats[axis]
-        if (stats !== undefined && stats !== null && stats.maxDeviationGal > deviation) {
-          deviation = stats.maxDeviationGal
-        }
-      }
-      const halfSpan = fixed !== null && Number.isFinite(fixed) && fixed > 0 ? fixed : niceHalfSpanGal(deviation)
+      const traces: PlotTrace[] = groundShown.map((s) => {
+        const w = windows.get(s.key)
+        return { color: s.color, columns: w?.axes[axis] ?? [], stats: w?.stats[axis] ?? null }
+      })
       // **中心の値は絵の中に描かない。** センサーごとに中心が違うので、重ねた本数ぶん
       // 数字が並ぶ —— 9 本では左上で潰れて 1 つも読めなかった（実機で確認）。
       // 1 本に絞ったときだけ数字を出し、複数なら中心の決め方だけを伝える。
-      const centers = shownBuffers
-        .map((s) => windows.get(s.key)?.stats[axis]?.meanGal)
-        .filter((v): v is number => v !== undefined && v !== null)
-      rangeLabels[axis].textContent =
+      drawPlot(canvases[axis]!, rangeLabels[axis]!, traces, window, fixed, dpr, (halfSpan, centers) =>
         centers.length === 1
-          ? `中心 ${formatGal(centers[0])} gal ／ ±${formatGal(halfSpan)} gal`
-          : `±${formatGal(halfSpan)} gal（中心は各センサーの平均）`
+          ? `中心 ${formatGal(centers[0]!)} gal ／ ±${formatGal(halfSpan)} gal`
+          : `±${formatGal(halfSpan)} gal（中心は各センサーの平均）`,
+      )
+    }
 
-      if (window !== null) {
-        // 時刻の目盛り。
-        const tenths = needsTenths(spanMs)
-        ctx.fillStyle = ink
-        ctx.font = '10px system-ui, sans-serif'
-        ctx.textAlign = 'center'
-        ctx.textBaseline = 'top'
-        ctx.strokeStyle = 'rgba(128, 128, 128, 0.25)'
-        for (const at of timeTicks(window.fromMs, window.toMs, 6)) {
-          const x = ((at - window.fromMs) / spanMs) * width
-          ctx.beginPath()
-          ctx.moveTo(x, 0)
-          ctx.lineTo(x, plotHeight)
-          ctx.stroke()
-          // **端の目盛りは内側へ寄せる。** 中央揃えのままだと、いちばん左の時刻が
-          // 半分だけ枠の外へ出て読めない（`14:35:35` が `35:35` に見えた）。
-          ctx.textAlign =
-            x < TIME_LABEL_MARGIN ? 'left' : x > width - TIME_LABEL_MARGIN ? 'right' : 'center'
-          ctx.fillText(formatClock(at, tenths), x, plotHeight + 2)
-        }
-
-        // 波形。
-        ctx.lineWidth = 1
-        for (const s of shownBuffers) {
-          const w = windows.get(s.key)
-          const stats = w?.stats[axis]
-          if (w === undefined || stats === undefined || stats === null) continue
-          const center = stats.meanGal
-          const yOf = (gal: number): number =>
-            mid - Math.max(-usable, Math.min(usable, ((gal - center) / halfSpan) * usable))
-
-          ctx.strokeStyle = s.color
-          ctx.beginPath()
-          let started = false
-          const columns = w.axes[axis]
-          for (let c = 0; c < columns.length; c++) {
-            const column = columns[c]
-            if (column === null) {
-              // 値の無い列は繋がない。**繋ぐと、届いていない時間帯が斜めの線になる。**
-              started = false
-              continue
-            }
-            // **列の位置は列数で割って幅へ写す。** 列数を 1 枚目の canvas の幅から
-            // 決めて 3 軸で共有しているので、**幅が揃っている保証は無い** ——
-            // `c + 0.5` をそのまま x にすると、揃わなくなった日に波形と時刻の
-            // 目盛りが軸ごとに黙ってずれる。
-            const x = ((c + 0.5) / columns.length) * width
-            if (!started || column.gapBefore) {
-              ctx.moveTo(x, yOf(column.minGal))
-              started = true
-            } else {
-              ctx.lineTo(x, yOf(column.minGal))
-            }
-            ctx.lineTo(x, yOf(column.maxGal))
-          }
-          ctx.stroke()
-        }
-      } else {
-        ctx.fillStyle = ink
-        ctx.font = '12px system-ui, sans-serif'
-        ctx.textAlign = 'center'
-        ctx.textBaseline = 'middle'
-        ctx.fillText('波形を待っている', width / 2, mid)
-      }
+    // **2 軸のセンサーは 1 本ずつ自分の段へ。** 線の色は軸ごと（凡例の色と同じ）。
+    const ownShown = shownBuffers.filter((s) => s.buffer.directions !== null)
+    renderOwnAxes(ownShown)
+    for (const s of ownShown) {
+      const panel = ownPanels.get(s.key)
+      if (panel === undefined) continue
+      const w = windows.get(s.key)
+      const axisCount = s.buffer.directions?.length ?? 0
+      const traces: PlotTrace[] = Array.from({ length: axisCount }, (_, j) => ({
+        color: colorForIndex(j),
+        columns: w?.axes[j] ?? [],
+        stats: w?.stats[j] ?? null,
+      }))
+      drawPlot(panel.canvas, panel.rangeLabel, traces, window, fixed, dpr, (halfSpan) => `±${formatGal(halfSpan)} gal`)
     }
   }
 
@@ -910,7 +1129,7 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
       // **観測点の合成は先着枠を使わず必ず出す。** この画面で合成を見る目的は
       // 「平均した 1 本が単体より静かか」の確認（#362 の効果）なので、
       // センサー 9 本の枠に埋もれて既定で非表示だと開いた意味が無い。
-      if (chunk.source.kind === 'station' || chunk.source.kind === 'pair') {
+      if (chunk.source.kind === 'station' || chunk.source.kind === 'pair' || chunk.source.kind === 'residual') {
         // **差分も先着枠を使わず必ず出す。** 届いたのは運用者が選んだからで
         // （頼まない限り 1 件も来ない）、枠に埋もれて見えないと選んだ意味が無い。
         shown.add(key)
@@ -948,6 +1167,7 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
     openWaveStream({
       wave: true,
       diff: diffSelection,
+      residual: residualSelection,
       signal: ac.signal,
       onState: (next) => {
         state = next
@@ -961,7 +1181,12 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
         // **溜め場所へ入ったものだけ数える。** 断られた分まで数えると、添え書きが
         // 「受け取っている」と言いながら行が 1 つも出ない形になる —— 上限に達したことは
         // 別の警告に出るが、**離れた場所にあって文言も結び付かない。**
-        if (takeChunk(chunk)) diffChunks++
+        if (takeChunk(chunk)) selectionChunks++
+        renderDiffNote()
+      },
+      // **ずれも同じ溜め場所へ**（鍵が `'residual'` を名乗る）。数え方は差分と同じ。
+      onResidual: (chunk) => {
+        if (takeChunk(chunk)) selectionChunks++
         renderDiffNote()
       },
       onUnreadable: (count, detail) => {

@@ -295,16 +295,22 @@
       /* **`1fr` ではなく `minmax(0, 1fr)`。** `1fr` の最小幅はコンテンツ基準で、
          `input` の既定の size（20 文字ぶん）より縮まない —— 3 列が枠を突き抜ける
          （実測で 320px の grid にセル 196px × 3）。 */
-      .vec3-row {
+      /* 軸ごとの校正: 見出し 1 列＋向き 3 列＋ゼロ点 1 列。 */
+      .axis-grid {
         display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 0.5rem;
-      }
-      .vec3-row label {
+        grid-template-columns: auto repeat(4, minmax(0, 1fr));
+        gap: 0.4rem 0.5rem;
+        align-items: center;
+        margin-top: 0.3rem;
         font-size: 0.75rem;
       }
-      /* **幅を絞らない。** 同じ 3 列のオフセット・感度が幅いっぱいなので、
-         ここだけ狭いと揃わない。 */
+      .axis-grid input {
+        text-align: right;
+      }
+      .axis-label {
+        white-space: nowrap;
+      }
+      /* **幅を絞らない。** 軸ごとの欄が幅いっぱいなので、ここだけ狭いと揃わない。 */
       .mat3-grid {
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));

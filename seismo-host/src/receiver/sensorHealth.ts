@@ -12,6 +12,7 @@
 // 永久に残る。**
 
 import type { BoardKey } from '../protocol/types'
+import type { AxisMismatch } from './intensityPipeline'
 
 /**
  * 覚えていられるセンサーの数。
@@ -36,6 +37,14 @@ export interface SensorHealth {
   readonly lastPacketMs: number
   /** 最後に見た流れ。再起動すると変わる。 */
   readonly streamKey: string
+  /**
+   * 最後に届いたパケットの軸の本数。**まだパケットが届いていなければ `null`。**
+   *
+   * **設定ではなく届いた事実。** 管理コンソールが「登録」でカードを作るとき、この本数で
+   * 欄を作る —— 2 軸のセンサー（IIS2ICLX）に 3 軸のカードを作って保存すると、軸の本数が
+   * 食い違ってパケットを捨て続ける（`stationConfig.ts` の `resolveSensor`）。
+   */
+  readonly axisCount: number | null
   /**
    * 最後に**震度を出せた**区間。まだ 1 つも出ていなければ null。
    *
@@ -67,6 +76,16 @@ export interface SensorHealth {
    * 続いても、原因を知る手立てが無くなる。
    */
   readonly lastSkipReason: string | null
+  /**
+   * 設定の軸の本数と届いたパケットの本数が違い、**値を捨てている**なら、その 2 つ。ほかは null。
+   *
+   * **`lastSkipReason` とは別の事実。** あちらは「受け取ったが震度を出せない」で、こちらは
+   * 「受け取る手前で落としている」——震度も波形も静止窓も、このセンサーからは何も出ない。
+   * それでも受信の時刻は動き続けるので、これが無いと画面では正常にしか見えない。
+   *
+   * **いちばん新しいパケットで決める。** 設定を直せば次のパケットで消える。
+   */
+  readonly axisMismatch: AxisMismatch | null
 }
 
 export interface SensorHealthBookOptions {
@@ -80,6 +99,7 @@ interface Entry {
   readonly sensorId: string
   lastPacketMs: number
   streamKey: string
+  axisCount: number | null
   segmentId: number | null
   lastIntensity: number | null
   lastReadingAtMs: number | null
@@ -93,6 +113,7 @@ interface Entry {
    */
   skipStreamKey: string | null
   skipSegmentId: number | null
+  axisMismatch: AxisMismatch | null
 }
 
 /** 覚えの鍵。**起動 ID を含めない。** */
@@ -117,10 +138,13 @@ export class SensorHealthBook {
     readonly boardKey: BoardKey
     readonly sensorId: string
     readonly streamKey: string
+    /** パケットの軸の本数（`packet.channels.length`）。 */
+    readonly axisCount: number
   }): void {
     const entry = this.touch(input.boardKey, input.sensorId)
     entry.lastPacketMs = this.now()
     entry.streamKey = input.streamKey
+    entry.axisCount = input.axisCount
   }
 
   /** 震度が 1 つ出た。 */
@@ -195,6 +219,19 @@ export class SensorHealthBook {
     entry.skipSegmentId = input.segmentId
   }
 
+  /**
+   * パケットを通した結果、軸の本数の食い違いで落としたか。**パケットごとに呼ぶ**
+   * （食い違っていない回は `null` を渡して消す）。
+   */
+  noteAxisMismatch(input: {
+    readonly boardKey: BoardKey
+    readonly sensorId: string
+    readonly mismatch: AxisMismatch | null
+  }): void {
+    const entry = this.touch(input.boardKey, input.sensorId)
+    entry.axisMismatch = input.mismatch
+  }
+
   /** 上限で押し出した数。 */
   get evictions(): number {
     return this.evictedCount
@@ -213,11 +250,13 @@ export class SensorHealthBook {
         sensorId: e.sensorId,
         lastPacketMs: e.lastPacketMs,
         streamKey: e.streamKey,
+        axisCount: e.axisCount,
         segmentId: e.segmentId,
         lastIntensity: e.lastIntensity,
         lastReadingAtMs: e.lastReadingAtMs,
         lastNominalReason: e.lastNominalReason,
         lastSkipReason: e.lastSkipReason,
+        axisMismatch: e.axisMismatch,
       }))
       .sort((a, b) => b.lastPacketMs - a.lastPacketMs)
   }
@@ -245,6 +284,7 @@ export class SensorHealthBook {
       sensorId,
       lastPacketMs: this.now(),
       streamKey: '',
+      axisCount: null,
       segmentId: null,
       lastIntensity: null,
       lastReadingAtMs: null,
@@ -252,6 +292,7 @@ export class SensorHealthBook {
       lastSkipReason: null,
       skipStreamKey: null,
       skipSegmentId: null,
+      axisMismatch: null,
     }
     this.entries.set(key, created)
     return created

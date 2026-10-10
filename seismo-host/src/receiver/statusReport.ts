@@ -224,7 +224,7 @@ export interface SensorStatus extends Omit<SensorHealth, 'lastPacketMs'> {
    */
   readonly calibrationConfigured: boolean
   /**
-   * このセンサーが有効か（`stations.resolveSensor(...).enabled`）。
+   * このセンサーが有効か（`stations.isSensorEnabled(...)`）。
    *
    * **`calibrationConfigured` とは別の問い。** あちらは「設定に書いたか」、こちらは
    * 「読み取りへ反映されるか」——設定が無くても既定値（`enabled: true`）で動き続けるので、
@@ -243,9 +243,10 @@ export interface SensorStatus extends Omit<SensorHealth, 'lastPacketMs'> {
  * `SensorStatus` と同じ理由で、出せない時刻・震度を `0` で埋めない。
  */
 export interface StationIntensityStatus
-  extends Omit<StationHealth, 'lastPacketMs' | 'lastReadingAtMs' | 'lastIntensity'> {
+  extends Omit<StationHealth, 'lastPacketMs' | 'lastReadingAtMs' | 'lastReadingReceivedMs' | 'lastIntensity'> {
   readonly lastPacketMs: number | null
   readonly lastReadingAtMs: number | null
+  readonly lastReadingReceivedMs: number | null
   readonly lastIntensity: number | null
 }
 
@@ -458,13 +459,14 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     lastIntensity: finiteValue(s.lastIntensity),
     station: input.stations.resolve(s.boardKey),
     calibrationConfigured: input.stations.hasSensorCalibration(s.boardKey, s.sensorId),
-    enabled: input.stations.resolveSensor(s.boardKey, s.sensorId).enabled,
+    enabled: input.stations.isSensorEnabled(s.boardKey, s.sensorId),
   }))
 
   const stationIntensities: StationIntensityStatus[] = input.stationIntensities.map((s) => ({
     ...s,
     lastPacketMs: finite(s.lastPacketMs),
     lastReadingAtMs: finite(s.lastReadingAtMs),
+    lastReadingReceivedMs: finite(s.lastReadingReceivedMs),
     lastIntensity: finiteValue(s.lastIntensity),
   }))
 

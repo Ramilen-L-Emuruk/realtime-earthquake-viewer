@@ -128,10 +128,22 @@ describe('readWaveHistory', () => {
     expect(read).toEqual({ detail: '列の min / max を読めない' })
   })
 
-  it('列の成分が数として読めなければ、その応答ごと捨てる', () => {
+  it('正（2026-10-09 に覆した）: 列の成分が null なら、その成分だけ値が無い列として読む', () => {
+    // 観測点の合成は、解けない成分だけを欠けにする（2026-10-09 ユーザー承認）。以前は null を
+    // 「数として読めない」として応答ごと捨てていた —— 上が解けないだけで地震カードの波形が消えていた。
     const read = readWaveHistory({
       ...RESPONSE,
-      columns: [{ min: [0, 0, null], max: [1, 1, 1], minMembers: 3 }],
+      columns: [{ min: [0, 0, null], max: [1, 1, null], minMembers: 3 }],
+    })
+    if (!('value' in read)) throw new Error('読めるはず')
+    expect(read.value.columns[0]?.min[0]).toBe(0)
+    expect(read.value.columns[0]?.min[2]).toBeNaN()
+  })
+
+  it('対照: 列の成分が数でも null でもなければ、その応答ごと捨てる', () => {
+    const read = readWaveHistory({
+      ...RESPONSE,
+      columns: [{ min: [0, 0, 'x'], max: [1, 1, 1], minMembers: 3 }],
     })
     expect(read).toEqual({ detail: '列の min / max を読めない' })
   })

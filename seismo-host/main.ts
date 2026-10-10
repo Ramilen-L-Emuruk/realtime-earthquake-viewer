@@ -60,12 +60,13 @@ import { RecordChannelIndex } from './src/receiver/waveRecordChannels'
 import { handleRecordsRequest } from './src/receiver/waveRecordsApi'
 import { WaveSummaryKeeper } from './src/receiver/waveSummaryKeeper'
 import { SummaryWorkerRunner } from './src/receiver/waveSummaryWorkerRunner'
-import { SensorFusion } from './src/receiver/sensorFusion'
+import { SensorFusion, findUnderdeterminedStations } from './src/receiver/sensorFusion'
 import type {
   FusedWaveChunk,
   FusionOutcome,
   SensorFusionClosing,
   SensorPairDiff,
+  SensorResidual,
   StationCloseFailure,
   StationIntensityReading,
 } from './src/receiver/sensorFusion'
@@ -666,6 +667,29 @@ export function buildStationGroupingWarning(ungroupedStationIds: readonly string
   ]
 }
 
+/**
+ * 「有効なセンサーの測る向きが 3 方向へ散っておらず、合成で解けない向きがある」観測点を知らせる
+ * （`sensorFusion.ts` の `findUnderdeterminedStations`）。**起動時・設定を変えたとき・定期要約で出す。**
+ *
+ * **届いた波形からは気づけない形を、設定の時点で知らせる。** 水平の 2 軸の台だけを割り当てた観測点は、
+ * 東・北の波形は出るが上が欠け、震度は一度も出ない —— センサーはどれも生きているように見える
+ * （2026-10-09 ユーザー承認の文面）。
+ */
+export function buildStationDirectionWarning(underdeterminedStationIds: readonly string[]): readonly RawWarning[] {
+  if (underdeterminedStationIds.length === 0) return []
+  return [
+    {
+      level: 'warn',
+      kind: 'station-directions',
+      // 観測点の集合が変わったら出し直す（`buildStationGroupingWarning` と同じ理由で `JSON.stringify`）。
+      detail: JSON.stringify([...underdeterminedStationIds].sort()),
+      line:
+        `[station] 観測点 ${underdeterminedStationIds.join('・')} は有効なセンサーの測る向きが 3 方向へ散っていないので、` +
+        '合成で解けない向きがある（上下や別の向きを測るセンサーを足すか、向きの設定を確かめること）',
+    },
+  ]
+}
+
 /** 割り当てた基板・センサーの「黙っている」を窓から窓へ持ち越した結果。 */
 export interface AssignedSilenceReport {
   readonly warnings: readonly RawWarning[]
@@ -1038,6 +1062,15 @@ export interface StationFusionSinks {
    */
   readonly publishPairDiffs: (diffs: readonly SensorPairDiff[]) => void
   /**
+   * センサーごとのずれを覚える（#688）。**観測点を一緒に渡し、空も伝える**（`notePairDiffs` と同じ理由）。
+   */
+  readonly noteResiduals: (stationId: string, residuals: readonly SensorResidual[]) => void
+  /**
+   * センサーごとのずれを**配る**（#688）。**省略できない。** 全センサーぶんを渡し、誰へ配るかは
+   * 押し出しのハブが決める（`readingHub.ts` の `ResidualWant`。`publishPairDiffs` と同じ分担）。
+   */
+  readonly publishResiduals: (residuals: readonly SensorResidual[]) => void
+  /**
    * 合成した波形そのものを配る（#315）。**省略できない。**
    *
    * 渡し忘れても震度は流れ続けるので、症状は「波形だけが画面に出ない」——
@@ -1079,6 +1112,8 @@ export function deliverStationFusion(to: StationFusionSinks, fusion: FusionOutco
   to.noteWave(fusion.fusedWave, fusion.allMembersCovered)
   to.notePairDiffs(fusion.fusedWave.stationId, fusion.pairDiffs)
   to.publishPairDiffs(fusion.pairDiffs)
+  to.noteResiduals(fusion.fusedWave.stationId, fusion.residuals)
+  to.publishResiduals(fusion.residuals)
   to.publishWave(fusion.fusedWave)
   to.noteSkip(fusion.fusedWave.stationId, fusion.intensitySkipReason)
   // **異常が続いている間は毎回呼ぶ。正常なら状態が変わった回にだけ呼ぶ。**
@@ -1105,6 +1140,8 @@ export interface FusionCounts {
   readonly futureSamples: number
   readonly discardedSamples: number
   readonly unusableIntensities: number
+  /** 3 方向へ散っておらず解けなかった目盛り（`SensorFusion.unsolvedPoints`）。 */
+  readonly unsolvedPoints: number
 }
 
 export const ZERO_FUSION_COUNTS: FusionCounts = {
@@ -1112,6 +1149,7 @@ export const ZERO_FUSION_COUNTS: FusionCounts = {
   futureSamples: 0,
   discardedSamples: 0,
   unusableIntensities: 0,
+  unsolvedPoints: 0,
 }
 
 /** いまの部品の累計を読む。**欄を足したら、ここと `addFusionCounts` の両方へ足す**（型が漏れを止める）。 */
@@ -1121,6 +1159,7 @@ export function fusionCountsOf(fusion: SensorFusion): FusionCounts {
     futureSamples: fusion.futureSamples,
     discardedSamples: fusion.discardedSamples,
     unusableIntensities: fusion.unusableIntensities,
+    unsolvedPoints: fusion.unsolvedPoints,
   }
 }
 
@@ -1137,6 +1176,7 @@ export function addFusionCounts(carried: FusionCounts, current: FusionCounts): F
     futureSamples: carried.futureSamples + current.futureSamples,
     discardedSamples: carried.discardedSamples + current.discardedSamples,
     unusableIntensities: carried.unusableIntensities + current.unusableIntensities,
+    unsolvedPoints: carried.unsolvedPoints + current.unsolvedPoints,
   }
 }
 
@@ -1245,6 +1285,8 @@ export interface ApplyStationConfigDeps extends FusionClosingSinks {
    */
   readonly forgetRemovedDetectors: () => void
   readonly setUngroupedMultiBoardStations: (ids: readonly string[]) => void
+  /** 合成で解けない向きがある観測点（`findUnderdeterminedStations`）を差し替える。 */
+  readonly setUnderdeterminedStations: (ids: readonly string[]) => void
   readonly setWarning: (warning: string | null) => void
 }
 
@@ -1310,6 +1352,7 @@ export function applyStationConfigCore(deps: ApplyStationConfigDeps, newConfig: 
   const groupedStationIds = deps.rebuildSensorFusion(newConfig)
   deps.forgetRemovedDetectors()
   deps.setUngroupedMultiBoardStations(findUngroupedMultiBoardStations(newConfig, groupedStationIds))
+  deps.setUnderdeterminedStations(findUnderdeterminedStations(newConfig))
   // **保存できた時点で `parseStationConfig` を通過済み。** 書き込みハンドラが渡す
   // `newConfig` は常にパース済みの正しい形なので、読み直して警告の有無を
   // 確かめ直す必要は無い。
@@ -1479,6 +1522,7 @@ const GRAVITY_LABELS: Record<GravityCount, string> = {
   restlessWindows: '静止しているのに震度が高い窓',
   unjudged: '静止しておらず倍率を診られなかった窓',
   restarts: '基板の起動が変わり、診断の窓を捨てた',
+  axisReshapes: 'センサーの軸の本数が変わり、覚えた静止窓を捨てた',
   evictions: '自己診断の枠を捨てた',
 }
 
@@ -1773,6 +1817,8 @@ async function main(): Promise<void> {
   )
   // 文面はここでも直書きしない（理由は上のコメントと同じ）。
   for (const w of buildStationGroupingWarning(ungroupedMultiBoardStations)) console.warn(w.line)
+  let underdeterminedStations: readonly string[] = findUnderdeterminedStations(stationConfigLoad.config)
+  for (const w of buildStationDirectionWarning(underdeterminedStations)) console.warn(w.line)
   const tally = new PacketTally()
   const rateLimit = new SourceRateLimit()
   // **基板へ「届いた」と返す**（`src/receiver/ackReplier.ts`）。止めるのは診断のときだけ ——
@@ -2084,6 +2130,11 @@ async function main(): Promise<void> {
     publishPairDiffs: (diffs) => {
       for (const d of diffs) hub.publish({ kind: 'station-diff', diff: d })
     },
+    noteResiduals: (stationId, residuals) => stationHealth.noteResiduals(stationId, residuals),
+    // **頼んだ 1 台だけへ行く**（選り分けは `readingHub.ts` の `WAVE_TIER` の `'residual'`）。
+    publishResiduals: (residuals) => {
+      for (const r of residuals) hub.publish({ kind: 'station-residual', residual: r })
+    },
     // **波形を欲しがっている相手だけへ行く**（選り分けは `readingHub.ts` の `WAVE_TIER`）。
     //
     // **残すのも同じ 1 本の流れから。** 別の場所で拾う形にすると、押し出しには
@@ -2178,6 +2229,11 @@ async function main(): Promise<void> {
         setUngroupedMultiBoardStations: (ids) => {
           ungroupedMultiBoardStations = ids
         },
+        setUnderdeterminedStations: (ids) => {
+          underdeterminedStations = ids
+          // **変えた時点で 1 回出す。** 定期要約まで待つと、保存した直後に気づけない。
+          for (const w of buildStationDirectionWarning(ids)) emit(w.level, w.kind, w.detail, w.line)
+        },
         setWarning: (warning) => {
           stationConfigWarning = warning
         },
@@ -2270,9 +2326,16 @@ async function main(): Promise<void> {
       }
       // **誰の声かが判るのはここから。** 読み取りに失敗した回は基板が判らないので覚えない。
       const current = streamKeyOf(read.packet)
-      health.notePacket({ boardKey: board, sensorId: read.packet.sensorId, streamKey: current })
+      health.notePacket({
+        boardKey: board,
+        sensorId: read.packet.sensorId,
+        streamKey: current,
+        axisCount: read.packet.channels.length,
+      })
       boardClocks.note(board, receivedAtMs, read.packet)
       const outcome = pipeline.handlePacket(read.packet)
+      // **毎回書く**（食い違っていない回は null で消す）。設定を直せば次のパケットで消える。
+      health.noteAxisMismatch({ boardKey: board, sensorId: read.packet.sensorId, mismatch: outcome.axisMismatch })
 
       // **波形は震度より先に押し出す。** 震度は刻み（1 秒）の位置まで届いた回にしか出ない
       // ので、順を入れ替えると受け手の画面で波形だけが遅れて見える。
@@ -2366,7 +2429,7 @@ async function main(): Promise<void> {
           boardKey: outcome.wave.boardKey,
           sensorId: outcome.wave.sensorId,
           streamKey: outcome.wave.streamKey,
-          gal: outcome.wave.gal,
+          gal: outcome.wave.ground,
           uncalibratedGal: outcome.uncalibratedGal,
         })
         if (verdict !== null) {
@@ -2623,6 +2686,9 @@ async function main(): Promise<void> {
       fusionFuture: delta('fusionFuture', '観測点の合成で受け取った時刻より先を名乗って混ぜなかったサンプル', fusionNow.futureSamples),
       fusionDiscarded: delta('fusionDiscarded', '観測点の合成で抱えたまま混ぜずに捨てたサンプル', fusionNow.discardedSamples),
       fusionUnusable: delta('fusionUnusable', '数として出せなかった観測点の計測震度', fusionNow.unusableIntensities),
+      // **解けなかった目盛りはここでしか数えない**（2026-10-09 ユーザー承認の文面）。センサーの故障で
+      // 上を測る台が止まると、設定の警告は出ないまま震度だけが止まる。
+      fusionUnsolved: delta('fusionUnsolved', '観測点の合成で測る向きが足りず解けなかった目盛り', fusionNow.unsolvedPoints),
       sensorEvicted: delta('sensorEvicted', 'センサーの生存の枠を捨てた', health.evictions),
       boardClockEvicted: delta(
         'boardClockEvicted',
@@ -2731,6 +2797,9 @@ async function main(): Promise<void> {
     for (const w of buildBacklogBookWarning(backlogBookLoad.problem)) emit(w.level, w.kind, w.detail, w.line)
     for (const w of buildBacklogUnsettledWarning(fetched.unsettledWriteSinceMs, now)) emit(w.level, w.kind, w.detail, w.line)
     for (const w of buildStationGroupingWarning(ungroupedMultiBoardStations)) {
+      emit(w.level, w.kind, w.detail, w.line)
+    }
+    for (const w of buildStationDirectionWarning(underdeterminedStations)) {
       emit(w.level, w.kind, w.detail, w.line)
     }
     // **時計が合わないまま居座っている区間も、ここでしか気づけない**

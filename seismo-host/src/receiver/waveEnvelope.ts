@@ -11,14 +11,18 @@
 //
 // **値を持たない列は持たないまま返す**（`null`）。描く側はそこで線を切る —— 埋めると、
 // 届いていない区間が「静かだった区間」に化ける。
+//
+// **成分ごとに見る。** 観測点の合成は、測る向きが 3 方向へ散っていない間、解けない成分
+// （水平の台だけのときの上）だけを NaN にして残りを出す（`sensorFusion.ts`・2026-10-09 ユーザー承認）。
+// その列の上下端は解けた成分だけで取り、解けなかった成分は NaN のまま返す（JSON では `null`）。
 
 import type { ArchivedWaveChunk } from './waveArchive'
 
 /** 列 1 つぶん。**値を持たない列は `null`** なので、ここに「無い」状態は無い。 */
 export interface WaveEnvelopeColumn {
-  /** 3 成分それぞれの下端（gal）。 */
+  /** 3 成分それぞれの下端（gal）。**その成分の値が列に 1 つも無ければ NaN**（JSON では `null`）。 */
   readonly min: readonly [number, number, number]
-  /** 3 成分それぞれの上端（gal）。 */
+  /** 3 成分それぞれの上端（gal）。**その成分の値が列に 1 つも無ければ NaN**（JSON では `null`）。 */
   readonly max: readonly [number, number, number]
   /**
    * その列に効いたセンサーの最小本数。
@@ -85,17 +89,18 @@ export function buildWaveEnvelope(params: {
     new Float64Array(columnCount),
   ]
   const members = new Float64Array(columnCount)
+  /** 列にサンプルが 1 つでも入ったか（本数を数える起点）。 */
   const filled = new Uint8Array(columnCount)
+  /** 成分ごとに、列へ値が入ったか。 */
+  const filledAxis = [new Uint8Array(columnCount), new Uint8Array(columnCount), new Uint8Array(columnCount)]
 
   for (const chunk of chunks) {
     const count = chunk.gal[0].length
     for (let i = 0; i < count; i += 1) {
-      const ew = chunk.gal[0][i]
-      const ns = chunk.gal[1][i]
-      const ud = chunk.gal[2][i]
-      // **1 成分でも読めなければ、そのサンプルは無かったことにする。** 届かなかった
-      // 区間は 3 成分そろって読めない形で入る。
-      if (!Number.isFinite(ew) || !Number.isFinite(ns) || !Number.isFinite(ud)) continue
+      // **成分ごとに読む。** 解けなかった成分（NaN）だけを飛ばし、解けた成分は列へ入れる。
+      // 3 成分とも読めないサンプル（届かなかった区間）は無かったことにする。
+      const values = [chunk.gal[0][i]!, chunk.gal[1][i]!, chunk.gal[2][i]!]
+      if (!values.some((v) => Number.isFinite(v))) continue
 
       const t = chunk.firstSampleMs + i * chunk.msPerSample
       if (t < fromMs || t > toMs) continue
@@ -106,21 +111,21 @@ export function buildWaveEnvelope(params: {
       const m = chunk.memberCount[i]
       if (filled[c] === 0) {
         filled[c] = 1
-        mins[0][c] = ew
-        maxs[0][c] = ew
-        mins[1][c] = ns
-        maxs[1][c] = ns
-        mins[2][c] = ud
-        maxs[2][c] = ud
         members[c] = m
-      } else {
-        if (ew < mins[0][c]) mins[0][c] = ew
-        if (ew > maxs[0][c]) maxs[0][c] = ew
-        if (ns < mins[1][c]) mins[1][c] = ns
-        if (ns > maxs[1][c]) maxs[1][c] = ns
-        if (ud < mins[2][c]) mins[2][c] = ud
-        if (ud > maxs[2][c]) maxs[2][c] = ud
-        if (m < members[c]) members[c] = m
+      } else if (m < members[c]) {
+        members[c] = m
+      }
+      for (let a = 0; a < 3; a += 1) {
+        const v = values[a]!
+        if (!Number.isFinite(v)) continue
+        if (filledAxis[a]![c] === 0) {
+          filledAxis[a]![c] = 1
+          mins[a]![c] = v
+          maxs[a]![c] = v
+        } else {
+          if (v < mins[a]![c]!) mins[a]![c] = v
+          if (v > maxs[a]![c]!) maxs[a]![c] = v
+        }
       }
     }
   }
@@ -134,16 +139,18 @@ export function buildWaveEnvelope(params: {
       continue
     }
     hasAnyValue = true
+    const end = (arrays: Float64Array[], a: number): number => (filledAxis[a]![c] === 1 ? arrays[a]![c]! : Number.NaN)
     for (let a = 0; a < 3; a += 1) {
-      const lo = Math.abs(mins[a][c])
-      const hi = Math.abs(maxs[a][c])
+      if (filledAxis[a]![c] === 0) continue
+      const lo = Math.abs(mins[a]![c]!)
+      const hi = Math.abs(maxs[a]![c]!)
       if (lo > peakGal) peakGal = lo
       if (hi > peakGal) peakGal = hi
     }
     columns.push({
-      min: [mins[0][c], mins[1][c], mins[2][c]],
-      max: [maxs[0][c], maxs[1][c], maxs[2][c]],
-      minMembers: members[c],
+      min: [end(mins, 0), end(mins, 1), end(mins, 2)],
+      max: [end(maxs, 0), end(maxs, 1), end(maxs, 2)],
+      minMembers: members[c]!,
     })
   }
 

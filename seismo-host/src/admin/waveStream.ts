@@ -64,6 +64,15 @@ export interface PairSelection {
 }
 
 /**
+ * ずれの波形を見たいセンサー 1 台（#688）。**`/status` の `residuals` から選ばせる**（{@link PairSelection} と同じ理由）。
+ */
+export interface ResidualSelection {
+  readonly stationId: string
+  readonly boardKey: string
+  readonly sensorId: string
+}
+
+/**
  * `EventSource` のうち、ここで使うところだけ。
  *
  * **テストで差し替えるために絞っている。** 走るのは Node（`vitest.config.ts` の
@@ -88,6 +97,11 @@ export interface WaveStreamOptions {
    * 組を変えるときは**繋ぎ直す**（クエリが変わるため）。
    */
   readonly diff: PairSelection | null
+  /**
+   * ずれの波形を見たい 1 台（要らなければ null）。**省略できない**（`diff` と同じ理由）。
+   * 変えるときは繋ぎ直す。
+   */
+  readonly residual: ResidualSelection | null
   /** これが落ちたら閉じる。**タブを離れたら必ず閉じること**（同時購読は 8 本まで）。 */
   readonly signal: AbortSignal
   readonly onWave?: (chunk: WaveChunkView) => void
@@ -106,6 +120,11 @@ export interface WaveStreamOptions {
    * 足し戻す相手（重力）が打ち消し合っている。
    */
   readonly onPairDiff?: (chunk: WaveChunkView) => void
+  /**
+   * センサーのずれの波形（#688）。**`residual` で頼んだ 1 台だけ流れてくる。** 直流を足し戻さない
+   * （差分と同じく、重力を落とした後の値どうしの差）。測る向き（`directions`）を必ず持つ。
+   */
+  readonly onResidual?: (chunk: WaveChunkView) => void
   readonly onReading?: (reading: SensorReadingView) => void
   /**
    * 検出した揺れの記録 1 版（`shake-event`）。**購読の種類によらず流れてくる**
@@ -151,22 +170,48 @@ export function readWaveChunk(value: unknown): WaveChunkView | null {
   // 窓の切り出しが 1 列へ潰れる。
   if (msPerSample <= 0) return null
 
-  if (!Array.isArray(v.gal) || v.gal.length !== 3) return null
-  const x = readFiniteArray(v.gal[0])
-  const y = readFiniteArray(v.gal[1])
-  const z = readFiniteArray(v.gal[2])
-  if (x === null || y === null || z === null) return null
-
-  return {
+  const common = {
     source: { kind: 'sensor', boardKey, sensorId },
     streamKey,
     segmentId,
     firstSampleMs,
     msPerSample,
     timebaseNominalReason: readNonEmptyString(v.timebaseNominalReason),
-    gal: [x, y, z],
     memberCount: null,
+  } as const
+
+  // **地面の 3 成分を解けるセンサーは `gal` に東・北・上の 3 本が来る**（`statusServer.ts` の
+  // `toWireSensorWave`）。
+  if (Array.isArray(v.gal)) {
+    if (v.gal.length !== 3) return null
+    const x = readFiniteArray(v.gal[0])
+    const y = readFiniteArray(v.gal[1])
+    const z = readFiniteArray(v.gal[2])
+    if (x === null || y === null || z === null) return null
+    return { ...common, gal: [x, y, z], directions: null, axisNames: null }
   }
+
+  // **解けない（2 軸の）センサーは `gal` が null で、軸ごとの値が `axes` に来る。** 軸の名前
+  // （`channels`）と本数が揃っていなければ通さない —— 凡例が別の軸の向きを名乗ることになる。
+  if (v.gal !== null || !Array.isArray(v.axes) || !Array.isArray(v.channels)) return null
+  // **2・3 本だけを通す**（ホストが軸ごとの値を作るのは校正の形を持つ本数だけ）。
+  if (v.axes.length < 2 || v.axes.length > 3 || v.axes.length !== v.channels.length) return null
+  const gal: (readonly number[])[] = []
+  const directions: [number, number, number][] = []
+  const axisNames: string[] = []
+  for (let j = 0; j < v.axes.length; j++) {
+    const rawAxis: unknown = v.axes[j]
+    if (typeof rawAxis !== 'object' || rawAxis === null) return null
+    const axis = rawAxis as Record<string, unknown>
+    const values = readFiniteArray(axis.gal)
+    const direction = readFiniteArray(axis.direction)
+    const name = readNonEmptyString(v.channels[j])
+    if (values === null || direction === null || direction.length !== 3 || name === null) return null
+    gal.push(values)
+    directions.push([direction[0]!, direction[1]!, direction[2]!])
+    axisNames.push(name)
+  }
+  return { ...common, gal, directions, axisNames }
 }
 
 /**
@@ -197,8 +242,11 @@ export function readStationWaveChunk(value: unknown): WaveChunkView | null {
   if (!Array.isArray(v.dcGal) || v.dcGal.length !== 3) return null
   const restored: number[][] = []
   for (let axis = 0; axis < 3; axis++) {
-    const wave = readFiniteArray(v.gal[axis])
-    const dc = readFiniteArray(v.dcGal[axis])
+    // **成分ごとの欠け（`null`）は通す。** 観測点の合成は、測る向きが 3 方向へ散っていない間、
+    // 解けない成分だけを NaN（JSON では `null`）にして残りを出す（`sensorFusion.ts`・2026-10-09
+    // ユーザー承認）。1 つでも欠けた並びを捨てると、上が解けないだけで水平の線まで消える。
+    const wave = readFiniteArrayWithGaps(v.gal[axis])
+    const dc = readFiniteArrayWithGaps(v.dcGal[axis])
     if (wave === null || dc === null) return null
     // **長さが揃っていなければ通さない。** 短いほうに合わせると、足し戻せた分と
     // 足し戻せなかった分が同じ 1 本の中に混ざる。
@@ -229,6 +277,8 @@ export function readStationWaveChunk(value: unknown): WaveChunkView | null {
     // 上で組んであるので、当てはめの状態に当たるものが無い。
     timebaseNominalReason: null,
     gal: [restored[0], restored[1], restored[2]],
+    directions: null,
+    axisNames: null,
     memberCount,
   }
 }
@@ -285,6 +335,61 @@ export function readPairDiffChunk(value: unknown): WaveChunkView | null {
     msPerSample,
     timebaseNominalReason: null,
     gal: [x, y, z],
+    directions: null,
+    axisNames: null,
+    memberCount: null,
+  }
+}
+
+/**
+ * センサー 1 台ぶんのずれ 1 チャンクとして読めるか（`SensorResidual`・#688）。
+ *
+ * **`null` のサンプルは `NaN` へ移す**（{@link readPairDiffChunk} と同じ。0 は「ずれていない」に見える）。
+ * **軸は 2・3 本だけ通し、軸の名前と本数・長さが揃っていなければ通さない**（{@link readWaveChunk} と同じ理由）。
+ */
+export function readResidualChunk(value: unknown): WaveChunkView | null {
+  if (typeof value !== 'object' || value === null) return null
+  const v = value as Record<string, unknown>
+
+  const stationId = readNonEmptyString(v.stationId)
+  const member = readMemberRef(v.member)
+  if (stationId === null || member === null) return null
+
+  const firstSampleMs = readFinite(v.firstSampleMs)
+  const msPerSample = readFinite(v.msPerSample)
+  if (firstSampleMs === null || msPerSample === null) return null
+  if (msPerSample <= 0) return null
+
+  if (!Array.isArray(v.axes) || !Array.isArray(v.channels)) return null
+  if (v.axes.length < 2 || v.axes.length > 3 || v.axes.length !== v.channels.length) return null
+  const gal: (readonly number[])[] = []
+  const directions: [number, number, number][] = []
+  const axisNames: string[] = []
+  for (let j = 0; j < v.axes.length; j++) {
+    const rawAxis: unknown = v.axes[j]
+    if (typeof rawAxis !== 'object' || rawAxis === null) return null
+    const axis = rawAxis as Record<string, unknown>
+    const values = readFiniteArrayWithGaps(axis.residualGal)
+    const direction = readFiniteArray(axis.direction)
+    const name = readNonEmptyString(v.channels[j])
+    if (values === null || direction === null || direction.length !== 3 || name === null) return null
+    if (gal.length > 0 && values.length !== gal[0]!.length) return null
+    gal.push(values)
+    directions.push([direction[0]!, direction[1]!, direction[2]!])
+    axisNames.push(name)
+  }
+
+  return {
+    source: { kind: 'residual', stationId, boardKey: member.boardKey, sensorId: member.sensorId },
+    // 区間の識別子を持たないのは合成・差分と同じ（連続性は時刻の隔たりで見る）。
+    streamKey: null,
+    segmentId: null,
+    firstSampleMs,
+    msPerSample,
+    timebaseNominalReason: null,
+    gal,
+    directions,
+    axisNames,
     memberCount: null,
   }
 }
@@ -324,7 +429,7 @@ export function readSensorReading(value: unknown): SensorReadingView | null {
  * 別の組と同じ鍵になりうる（ホスト側 `statusServer.ts` の `DIFF_PARAMS` と同じ判断）。
  * **欄を分ければ、値ごとに独立に符号化されるので連結そのものが起きない。**
  */
-export function streamUrl(wave: boolean, diff: PairSelection | null): string {
+export function streamUrl(wave: boolean, diff: PairSelection | null, residual: ResidualSelection | null): string {
   const params = new URLSearchParams()
   if (wave) params.set('wave', '1')
   if (diff !== null) {
@@ -333,6 +438,11 @@ export function streamUrl(wave: boolean, diff: PairSelection | null): string {
     params.set('diffSensorA', diff.sensorIdA)
     params.set('diffBoardB', diff.boardKeyB)
     params.set('diffSensorB', diff.sensorIdB)
+  }
+  if (residual !== null) {
+    params.set('residualStation', residual.stationId)
+    params.set('residualBoard', residual.boardKey)
+    params.set('residualSensor', residual.sensorId)
   }
   const query = params.toString()
   return query.length === 0 ? '/stream' : `/stream?${query}`
@@ -343,7 +453,7 @@ export function openWaveStream(options: WaveStreamOptions): void {
   if (options.signal.aborted) return
 
   const create = options.create ?? defaultCreate
-  const source = create(streamUrl(options.wave, options.diff))
+  const source = create(streamUrl(options.wave, options.diff, options.residual))
 
   let state: WaveStreamState = 'connecting'
   options.onState(state)
@@ -416,6 +526,7 @@ export function openWaveStream(options: WaveStreamOptions): void {
   listen('wave', readWaveChunk, options.onWave)
   listen('station-wave', readStationWaveChunk, options.onStationWave)
   listen('station-diff', readPairDiffChunk, options.onPairDiff)
+  listen('station-residual', readResidualChunk, options.onResidual)
   listen('reading', readSensorReading, options.onReading)
   listen('shake-event', readShakeRecord, options.onShakeEvent)
 }

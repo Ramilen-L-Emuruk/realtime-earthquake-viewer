@@ -56,9 +56,27 @@ describe('buildWaveEnvelope', () => {
     expect(got.hasAnyValue).toBe(true)
   })
 
-  it('1 成分でも読めないサンプルは数えない', () => {
+  it('正（2026-10-09 に覆した）: 1 成分だけ読めないサンプルは、読めた成分だけを列へ入れる', () => {
+    // 観測点の合成が、解けない成分だけを NaN にして残りを出すようになった（2026-10-09 ユーザー承認）。
+    // 以前は 1 成分でも読めなければサンプルごと捨てていた。
     const got = buildWaveEnvelope({
-      chunks: [chunk({ ns: [Number.NaN], ew: [5], ud: [5] })],
+      chunks: [chunk({ ns: [Number.NaN], ew: [5], ud: [-3] })],
+      fromMs: T0,
+      toMs: T0 + 100,
+      columnCount: 1,
+    })
+    // `chunk()` は 1 番目の成分へ `ns` を入れる（読めない成分）。
+    expect(got.columns[0]?.max[1]).toBe(5)
+    expect(got.columns[0]?.min[2]).toBe(-3)
+    expect(got.columns[0]?.min[0]).toBeNaN()
+    expect(got.columns[0]?.max[0]).toBeNaN()
+    expect(got.hasAnyValue).toBe(true)
+    expect(got.peakGal).toBe(5)
+  })
+
+  it('対照: 3 成分とも読めないサンプルだけの列は、列ごと値を持たない', () => {
+    const got = buildWaveEnvelope({
+      chunks: [chunk({ ns: [Number.NaN], ew: [Number.NaN], ud: [Number.NaN] })],
       fromMs: T0,
       toMs: T0 + 100,
       columnCount: 1,
@@ -66,6 +84,16 @@ describe('buildWaveEnvelope', () => {
     expect(got.columns[0]).toBeNull()
     expect(got.hasAnyValue).toBe(false)
     expect(got.peakGal).toBe(0)
+  })
+
+  it('安全弁: 読めない成分が JSON では null になる（受け手が「無い」と読める形）', () => {
+    const got = buildWaveEnvelope({
+      chunks: [chunk({ ns: [Number.NaN], ew: [5], ud: [5] })],
+      fromMs: T0,
+      toMs: T0 + 100,
+      columnCount: 1,
+    })
+    expect(JSON.parse(JSON.stringify(got.columns[0])).min).toEqual([null, 5, 5])
   })
 
   it('範囲の右端のサンプルも最後の列へ入れる', () => {

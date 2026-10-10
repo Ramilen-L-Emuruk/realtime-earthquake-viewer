@@ -1,29 +1,39 @@
-// センサー1個分の校正値フォーム（カード）。文字列⇔`SensorEntry` の変換と、
-// カードの HTML 生成・DOM 読み取りをここへ集約する。`viewBoards.ts` からは
-// 分離し、変換ロジック（DOM 非依存）だけを取り出してユニットテストしやすくする。
+// センサー1個分の校正値フォーム（カード）と、基板の向きの欄。文字列⇔`SensorEntry`・基板の向きの
+// 変換と、HTML 生成・DOM 読み取りをここへ集約する。`viewBoards.ts` からは分離し、変換ロジック
+// （DOM 非依存）だけを取り出してユニットテストしやすくする。
+//
+// **校正の形は `stationConfigTypes.ts` の冒頭。** センサーは軸ごとに「基板の座標で測る向き
+// （長さが倍率）」と「ゼロ点」を持ち、地面に対する向き（鉛直・方角）は基板に 1 つだけ持つ。
 
 import { restWindowProblem, tiltDegFromUp } from './calibrationSuggest'
 import type { SensorRestWindow } from './detectedBoards'
 import { ago, escapeHtml, qs } from './dom'
+import { axesAreIndependent } from '../receiver/calibration'
+import { isProperRotation } from '../receiver/matrix3'
 import {
-  DEFAULT_SENSOR_CALIBRATION,
+  defaultAxes,
+  IDENTITY_MATRIX,
+  type AxisCalibration,
+  type AxisCount,
   type Mat3,
   type SensorEntry,
   type Vec3,
 } from '../receiver/stationConfigTypes'
 
+type Vec3Strings = readonly [string, string, string]
+
+/** 軸 1 本ぶんの入力欄の生の文字列。 */
+export interface AxisFormValues {
+  readonly vector: Vec3Strings
+  readonly offset: string
+}
+
 /** フォームの各入力欄の生の文字列値。数値へ変換する前の状態。 */
 export interface SensorFormValues {
   readonly sensorId: string
   readonly enabled: boolean
-  readonly offset: readonly [string, string, string]
-  readonly sensitivity: readonly [string, string, string]
-  /** 行優先（row-major）。`[r0c0, r0c1, r0c2, r1c0, ...]`。 */
-  readonly rotation: readonly [
-    string, string, string,
-    string, string, string,
-    string, string, string,
-  ]
+  /** 軸ごとの欄。**本数がそのセンサーの軸の本数**（2 か 3）。 */
+  readonly axes: readonly AxisFormValues[]
   /** 空文字列なら「未設定（null）」を表す。 */
   readonly noiseDensity: string
 }
@@ -32,37 +42,24 @@ export type ParseSensorFormResult =
   | { readonly ok: true; readonly sensor: SensorEntry }
   | { readonly ok: false; readonly error: string }
 
-function vec3ToStrings(v: Vec3): readonly [string, string, string] {
+function vec3ToStrings(v: Vec3): Vec3Strings {
   return [String(v[0]), String(v[1]), String(v[2])]
 }
 
-function mat3ToStrings(m: Mat3): SensorFormValues['rotation'] {
-  return [
-    String(m[0][0]), String(m[0][1]), String(m[0][2]),
-    String(m[1][0]), String(m[1][1]), String(m[1][2]),
-    String(m[2][0]), String(m[2][1]), String(m[2][2]),
-  ]
+function axesToStrings(axes: readonly AxisCalibration[]): AxisFormValues[] {
+  return axes.map((a) => ({ vector: vec3ToStrings(a.vector), offset: String(a.offset) }))
 }
 
-/** 新規追加センサーの既定値（`DEFAULT_SENSOR_CALIBRATION` を文字列化しただけ）。 */
-export function emptySensorFormValues(): SensorFormValues {
-  return {
-    sensorId: '',
-    enabled: DEFAULT_SENSOR_CALIBRATION.enabled,
-    offset: vec3ToStrings(DEFAULT_SENSOR_CALIBRATION.offset),
-    sensitivity: vec3ToStrings(DEFAULT_SENSOR_CALIBRATION.sensitivity),
-    rotation: mat3ToStrings(DEFAULT_SENSOR_CALIBRATION.rotation),
-    noiseDensity: '',
-  }
+/** 新規追加センサーの既定値（補正なしの軸を文字列化しただけ）。 */
+export function emptySensorFormValues(axisCount: AxisCount = 3): SensorFormValues {
+  return { sensorId: '', enabled: true, axes: axesToStrings(defaultAxes(axisCount)), noiseDensity: '' }
 }
 
 export function sensorToFormValues(sensor: SensorEntry): SensorFormValues {
   return {
     sensorId: sensor.sensorId,
     enabled: sensor.enabled,
-    offset: vec3ToStrings(sensor.offset),
-    sensitivity: vec3ToStrings(sensor.sensitivity),
-    rotation: mat3ToStrings(sensor.rotation),
+    axes: axesToStrings(sensor.axes),
     noiseDensity: sensor.noiseDensity === null ? '' : String(sensor.noiseDensity),
   }
 }
@@ -76,55 +73,43 @@ function parseFiniteNumber(text: string, fieldLabel: string): number | { readonl
   return value
 }
 
-function parseVec3(
-  values: readonly [string, string, string],
-  fieldLabel: string,
-): Vec3 | { readonly error: string } {
-  const x = parseFiniteNumber(values[0], fieldLabel)
-  if (typeof x !== 'number') return x
-  const y = parseFiniteNumber(values[1], fieldLabel)
-  if (typeof y !== 'number') return y
-  const z = parseFiniteNumber(values[2], fieldLabel)
-  if (typeof z !== 'number') return z
-  return [x, y, z]
-}
-
-function parseMat3(values: SensorFormValues['rotation']): Mat3 | { readonly error: string } {
-  const n: number[] = []
+function parseVec3(values: Vec3Strings, fieldLabel: string): Vec3 | { readonly error: string } {
+  const out: number[] = []
   for (const v of values) {
-    const parsed = parseFiniteNumber(v, '回転行列')
+    const parsed = parseFiniteNumber(v, fieldLabel)
     if (typeof parsed !== 'number') return parsed
-    n.push(parsed)
+    out.push(parsed)
   }
-  return [
-    [n[0], n[1], n[2]],
-    [n[3], n[4], n[5]],
-    [n[6], n[7], n[8]],
-  ]
+  return [out[0]!, out[1]!, out[2]!]
 }
 
 /**
- * フォームの生文字列を `SensorEntry` へ変換する。**検証は最小限**——`sensitivity`
- * は「必ず正」（`stationConfigTypes.ts` の `SensorCalibration` コメント参照。
- * 0 や負は軸を殺す・反転するので `enabled` と役割が重複する）だけを弾く。
- * `offset`・`rotation` の値そのものの妥当性（実際に取り付けた向きと合っているか）
- * はサーバー側もここも検証できない——運用者が実測して入れる値なので。
+ * フォームの生文字列を `SensorEntry` へ変換する。**検証はホストと同じ線まで** —— 軸の本数（2 か 3）と、
+ * 測る向きが解ける形か（3 本なら 1 つの面に寄っていない・2 本なら平行でない）。保存して初めて
+ * 「不正」と言われるより、ここで言うほうが早い。向きの値そのものの妥当性（実際に取り付けた
+ * 向きと合っているか）はどちらも検証できない —— 運用者が実測して入れる値なので。
  */
 export function parseSensorFormValues(values: SensorFormValues): ParseSensorFormResult {
   const sensorId = values.sensorId.trim()
   if (sensorId.length === 0) return { ok: false, error: 'センサー ID を入力すること' }
-
-  const offset = parseVec3(values.offset, 'オフセット')
-  if ('error' in offset) return { ok: false, error: offset.error }
-
-  const sensitivity = parseVec3(values.sensitivity, '感度')
-  if ('error' in sensitivity) return { ok: false, error: sensitivity.error }
-  if (sensitivity.some((v) => v <= 0)) {
-    return { ok: false, error: '感度は正の値にすること' }
+  if (values.axes.length !== 2 && values.axes.length !== 3) {
+    return { ok: false, error: `軸の欄が ${values.axes.length} 本ある（2 か 3）` }
   }
 
-  const rotation = parseMat3(values.rotation)
-  if ('error' in rotation) return { ok: false, error: rotation.error }
+  const axes: AxisCalibration[] = []
+  for (const [i, a] of values.axes.entries()) {
+    const vector = parseVec3(a.vector, `軸 ${i + 1} の向き`)
+    if ('error' in vector) return { ok: false, error: vector.error }
+    const offset = parseFiniteNumber(a.offset, `軸 ${i + 1} のゼロ点`)
+    if (typeof offset !== 'number') return { ok: false, error: offset.error }
+    axes.push({ vector, offset })
+  }
+  if (!axesAreIndependent(axes.map((a) => a.vector))) {
+    return {
+      ok: false,
+      error: axes.length === 3 ? '3 本の軸の向きが 1 つの面に寄っていて解けない' : '2 本の軸の向きが平行で解けない',
+    }
+  }
 
   let noiseDensity: number | null = null
   if (values.noiseDensity.trim().length > 0) {
@@ -134,37 +119,28 @@ export function parseSensorFormValues(values: SensorFormValues): ParseSensorForm
     noiseDensity = parsed
   }
 
-  return {
-    ok: true,
-    sensor: { sensorId, enabled: values.enabled, offset, sensitivity, rotation, noiseDensity },
-  }
+  return { ok: true, sensor: { sensorId, enabled: values.enabled, axes, noiseDensity } }
 }
 
-const VEC3_AXIS_LABELS = ['X', 'Y', 'Z'] as const
-
-function vec3RowHtml(namePrefix: string, values: readonly [string, string, string]): string {
-  return `
-    <div class="vec3-row">
-      ${VEC3_AXIS_LABELS.map(
-        (axis, i) => `
-          <label>${axis}
-            <input class="${namePrefix}" data-axis="${i}" type="number" step="any" value="${escapeHtml(values[i])}" />
-          </label>`,
-      ).join('')}
-    </div>`
-}
-
-function mat3GridHtml(values: SensorFormValues['rotation']): string {
-  const cells: string[] = []
-  for (let row = 0; row < 3; row++) {
-    for (let col = 0; col < 3; col++) {
-      const i = row * 3 + col
-      cells.push(
-        `<input class="s-rotation" data-row="${row}" data-col="${col}" type="number" step="any" value="${escapeHtml(values[i])}" />`,
-      )
-    }
-  }
-  return `<div class="mat3-grid">${cells.join('')}</div>`
+/** 軸ごとの欄。**行の数が軸の本数**（読み取りもこの行を数える）。 */
+function axesGridHtml(axes: readonly AxisFormValues[]): string {
+  // **左上の角は `.muted` にしない。** `.muted:empty` は場所を取らない（`index.html`）ので、空の
+  // 見出しが消えて以降のセルが 1 つずつ前へずれ、行の名前が右端の列へ回る。
+  const head = `<span></span>${['向き X', '向き Y', '向き Z', 'ゼロ点（gal）'].map((h) => `<span class="muted">${h}</span>`).join('')}`
+  const rows = axes
+    .map(
+      (a, axis) => `
+        <span class="axis-label">軸 ${axis + 1}</span>
+        ${a.vector
+          .map(
+            (v, comp) =>
+              `<input class="s-axis-vector" data-axis="${axis}" data-comp="${comp}" type="number" step="any" value="${escapeHtml(v)}" />`,
+          )
+          .join('')}
+        <input class="s-axis-offset" data-axis="${axis}" type="number" step="any" value="${escapeHtml(a.offset)}" />`,
+    )
+    .join('')
+  return `<div class="axis-grid">${head}${rows}</div>`
 }
 
 /**
@@ -179,6 +155,7 @@ function mat3GridHtml(values: SensorFormValues['rotation']): string {
  * おく運用が潰れる。
  */
 export const SENSOR_ID_DATALIST_ID = 'detected-sensor-ids'
+
 
 /** センサー 1 個ぶんのカード HTML。**値は必ず `escapeHtml` を通す**——`sensorId` は運用者の自由入力。 */
 export function renderSensorCardHtml(values: SensorFormValues): string {
@@ -198,43 +175,15 @@ export function renderSensorCardHtml(values: SensorFormValues): string {
       <!-- **単位は gal（cm/s²）。** \`calibration.ts\` が \`gal - offset\` の形で、換算済みの
            gal 値から直接引く。m/s² と書くと運用者が 100 倍ずれた値を入れ、保存時の検証
            （数値として読めるかしか見ない）も素通りする。 -->
-      <div class="muted" style="font-size: 0.8rem; margin-top: 0.3rem;">オフセット（gal）</div>
-      ${vec3RowHtml('s-offset', values.offset)}
-      <div class="muted" style="font-size: 0.8rem; margin-top: 0.5rem;">感度（倍率・正）</div>
-      ${vec3RowHtml('s-sensitivity', values.sensitivity)}
-      <!-- **6 面法はオフセット・感度のすぐ下に置く。** 結果を入れる先がこの 2 欄なので、
-           離すと何が書き換わったのか追えない。詳細設定へ畳むと、面の揃い具合が見えない。
-           中身（揃った面・押せない理由・結果）は viewBoards が埋める。 -->
-      <div class="s-sixface" style="font-size: 0.8rem; margin-top: 0.5rem;">
-        <div class="muted">6 面で測る：基板を各軸の上向き・下向きの 6 方向へ置き、それぞれ 1 分以上動かさない。直近 30 分の静止した時間から計算する</div>
-        <div class="s-sixface-faces" style="margin-top: 0.2rem;"></div>
-        <div class="row" style="align-items: center; margin-top: 0.2rem;">
-          <button type="button" class="apply-sixface" style="flex: 0 0 auto;" disabled>6 面の結果を入れる</button>
-          <span class="muted s-sixface-why"></span>
-        </div>
-        <div class="muted s-sixface-result"></div>
-      </div>
+      <div class="muted" style="font-size: 0.8rem; margin-top: 0.3rem;">軸ごとの校正（基板の座標）</div>
+      <div class="muted" style="font-size: 0.75rem;">向き：その軸が基板のどの向きを測るか。長さが倍率（1 gal の揺れで何 gal 読むか）</div>
+      <div class="muted" style="font-size: 0.75rem;">ゼロ点：揺れていないときに読む値</div>
+      ${axesGridHtml(values.axes)}
       <!-- **静止窓の診断は畳まない。** 傾いて付いているという事実は、詳細設定を
            開いた人にしか見えないと気づかれない。中身は viewBoards が埋める。 -->
       <div class="muted s-rest-note" style="font-size: 0.8rem; margin-top: 0.5rem;"></div>
       <details>
         <summary>詳細設定</summary>
-        <div class="muted" style="font-size: 0.8rem; margin-bottom: 0.3rem;">回転行列（取り付け向きの補正）</div>
-        ${mat3GridHtml(values.rotation)}
-        <!-- **方角は手で入れる。** 重力は鉛直まわりの回転について何も語らないので、
-             自動では決まらない（REQUIREMENTS.md §16）。空のままなら水平面は回さない。
-             **「向いている」ではなく「向ける」。** 入れるのは向かせたい方角で、実際に
-             回るのはいまの向きとの差だけ —— 同じ値を入れ直しても動かない。
-             **「X 軸」と呼ぶ。** センサーの 1 本目の軸のことで、このカードの
-             オフセット・感度の X 欄と同じもの —— 画面の中で辿れる名前にする
-             （回転行列のグリッドには行や列の見出しが無い）。 -->
-        <div class="row" style="margin-top: 0.6rem;">
-          <label style="flex: 1">X 軸を向ける方角（度・任意）
-            <input class="s-heading" type="number" step="any" placeholder="北=0・東=90・南=180・西=270" />
-          </label>
-          <button type="button" class="suggest-tilt" style="align-self: end; height: 2.1rem;" disabled>鉛直を合わせる</button>
-        </div>
-        <div class="muted s-tilt-result" style="font-size: 0.8rem;"></div>
         <label style="margin-top: 0.6rem;">ノイズ密度（µg/√Hz・任意）
           <input class="s-noiseDensity" type="number" step="any" min="0" value="${escapeHtml(values.noiseDensity)}" />
         </label>
@@ -269,7 +218,7 @@ function gal(value: number | null): string {
  */
 export function restWindowNote(window: SensorRestWindow | null, nowMs: number | null): string {
   // **この一行は、保存済みの設定で見たホストの診断**（`/status` の判定）。「鉛直を合わせる」が
-  // 押せるかどうかは別の材料（校正前の静止窓）で決まる（`viewBoards.ts` の `refreshTiltPanels`）。
+  // 押せるかどうかは別の材料（校正前の静止窓）で決まる（`viewBoards.ts` の `refreshTiltPanel`）。
   if (window === null) return restWindowProblem(null) ?? ''
   // **経過の基準が無ければ黙って受け手の時計へ倒さない**（`detectedBoards.ts` の
   // `generatedAtMs`）。時刻だけを省く。
@@ -296,31 +245,26 @@ export function restWindowNote(window: SensorRestWindow | null, nowMs: number | 
   return `${tiltText}（重力 ${gal(window.meanGal)}・ばらつき ${gal(window.sdGal)}${when}）${restless}`
 }
 
-/**
- * カードの回転行列の 9 マスへ値を書き込む。
- *
- * **`readSensorCardValues` と対になる。** 読むほうと同じセレクタをここでも使う ——
- * 片方だけ変えると、提案した値が黙ってどこにも入らない。
- */
-export function writeSensorCardRotation(card: ParentNode, rotation: Mat3): void {
-  for (let row = 0; row < 3; row++) {
-    for (let col = 0; col < 3; col++) {
-      qs<HTMLInputElement>(card, `.s-rotation[data-row="${row}"][data-col="${col}"]`).value = String(
-        rotation[row][col],
-      )
-    }
-  }
+/** カードの軸ごとの欄の本数（行の数）。 */
+function axisCountOf(card: ParentNode): number {
+  return card.querySelectorAll('.s-axis-offset').length
 }
 
-/** カードのオフセット・感度の欄を書き換える（6 面法の結果を入れる）。**保存はしない。** */
-export function writeSensorCardOffsetSensitivity(
-  card: ParentNode,
-  offset: readonly [string, string, string],
-  sensitivity: readonly [string, string, string],
-): void {
-  for (let axis = 0; axis < 3; axis++) {
-    qs<HTMLInputElement>(card, `.s-offset[data-axis="${axis}"]`).value = offset[axis]!
-    qs<HTMLInputElement>(card, `.s-sensitivity[data-axis="${axis}"]`).value = sensitivity[axis]!
+/**
+ * カードの軸ごとの欄を書き換える（6 面法の結果を入れる）。**保存はしない。**
+ *
+ * **`readSensorCardValues` と対になる。** 読むほうと同じセレクタをここでも使う ——
+ * 片方だけ変えると、提案した値が黙ってどこにも入らない。本数が欄と違えば投げる。
+ */
+export function writeSensorCardAxes(card: ParentNode, axes: readonly AxisFormValues[]): void {
+  if (axes.length !== axisCountOf(card)) {
+    throw new Error(`軸の欄 ${axisCountOf(card)} 本へ ${axes.length} 本ぶんを書こうとした`)
+  }
+  for (const [axis, a] of axes.entries()) {
+    for (let comp = 0; comp < 3; comp++) {
+      qs<HTMLInputElement>(card, `.s-axis-vector[data-axis="${axis}"][data-comp="${comp}"]`).value = a.vector[comp]!
+    }
+    qs<HTMLInputElement>(card, `.s-axis-offset[data-axis="${axis}"]`).value = a.offset
   }
 }
 
@@ -334,27 +278,120 @@ export function writeSensorCardOffsetSensitivity(
  * 無言で保存されてしまう——`enabled: false` はそのセンサーを震度計算から
  * 丸ごと除外し、`noiseDensity` の欠落は複数センサー合成の重み（1 台でも欠ければ単純平均）に影響する
  * ため、どちらも気づけないまま挙動が変わるのは避ける（敵対的レビューで検出）。
+ * **軸の本数はゼロ点の欄の数で決める**（向きの欄は軸ごとに `qs()` で 3 つとも読む）。
  */
 export function readSensorCardValues(card: ParentNode): SensorFormValues {
   const text = (selector: string): string => qs<HTMLInputElement>(card, selector).value
-  const vec3 = (namePrefix: string): readonly [string, string, string] => {
-    const at = (axis: number): string => qs<HTMLInputElement>(card, `.${namePrefix}[data-axis="${axis}"]`).value
-    return [at(0), at(1), at(2)]
+  const axes: AxisFormValues[] = []
+  for (let axis = 0; axis < axisCountOf(card); axis++) {
+    const comp = (c: number): string => text(`.s-axis-vector[data-axis="${axis}"][data-comp="${c}"]`)
+    axes.push({ vector: [comp(0), comp(1), comp(2)], offset: text(`.s-axis-offset[data-axis="${axis}"]`) })
   }
-  const rotationAt = (row: number, col: number): string =>
-    qs<HTMLInputElement>(card, `.s-rotation[data-row="${row}"][data-col="${col}"]`).value
-  const rotation: SensorFormValues['rotation'] = [
-    rotationAt(0, 0), rotationAt(0, 1), rotationAt(0, 2),
-    rotationAt(1, 0), rotationAt(1, 1), rotationAt(1, 2),
-    rotationAt(2, 0), rotationAt(2, 1), rotationAt(2, 2),
-  ]
-
   return {
     sensorId: text('.s-sensorId'),
     enabled: qs<HTMLInputElement>(card, '.s-enabled').checked,
-    offset: vec3('s-offset'),
-    sensitivity: vec3('s-sensitivity'),
-    rotation,
+    axes,
     noiseDensity: text('.s-noiseDensity'),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 基板の向き
+
+/** 基板の向きの欄（3x3）の生の文字列。**行優先**（`[r0c0, r0c1, r0c2, r1c0, ...]`）。 */
+export type OrientationFormValues = readonly [
+  string, string, string,
+  string, string, string,
+  string, string, string,
+]
+
+export function orientationToFormValues(m: Mat3 = IDENTITY_MATRIX): OrientationFormValues {
+  return [
+    String(m[0][0]), String(m[0][1]), String(m[0][2]),
+    String(m[1][0]), String(m[1][1]), String(m[1][2]),
+    String(m[2][0]), String(m[2][1]), String(m[2][2]),
+  ]
+}
+
+/** 基板の向きの欄を読む。**純粋な回転でなければ理由を返す**（ホストの検証と同じ線）。 */
+export function parseOrientationFormValues(values: OrientationFormValues): Mat3 | { readonly error: string } {
+  const n: number[] = []
+  for (const v of values) {
+    const parsed = parseFiniteNumber(v, '基板の向き')
+    if (typeof parsed !== 'number') return parsed
+    n.push(parsed)
+  }
+  const m: Mat3 = [
+    [n[0]!, n[1]!, n[2]!],
+    [n[3]!, n[4]!, n[5]!],
+    [n[6]!, n[7]!, n[8]!],
+  ]
+  if (!isProperRotation(m)) return { error: '基板の向きが純粋な回転になっていない（列の長さ 1・互いに直交・右手系）' }
+  return m
+}
+
+/**
+ * 基板の向きの欄の HTML。**方角と「鉛直を合わせる」を上に、3x3 は詳細設定へ畳む**
+ * （手で入れる値ではなく、ボタンが入れる値なので）。結果と押せない理由は `viewBoards` が埋める。
+ */
+export function renderOrientationHtml(values: OrientationFormValues): string {
+  const cells: string[] = []
+  for (let row = 0; row < 3; row++) {
+    for (let col = 0; col < 3; col++) {
+      cells.push(
+        `<input class="b-orientation" data-row="${row}" data-col="${col}" type="number" step="any" value="${escapeHtml(values[row * 3 + col]!)}" />`,
+      )
+    }
+  }
+  return `
+    <div class="board-orientation">
+      <h3>基板の向き</h3>
+      <!-- **6 面法は基板に 1 つ**（2026-10-10 ユーザー承認。前はセンサーカードごとにあった）。基板に載った
+           全部のセンサーの軸を一緒に解き、結果は各カードの軸の欄へ入る。**鉛直合わせより先に置く** ——
+           ゼロ点を入れる前に出した傾きはずれを抱え込む。文言は 2026-10-10 ユーザー承認。中身（揃い具合・
+           押せない理由・結果）は viewBoards が埋める。 -->
+      <div class="b-sixface" style="font-size: 0.8rem; margin-bottom: 0.6rem;">
+        <div>6 面で測る（基板に載った全部のセンサー）</div>
+        <div class="muted">基板を X・Y・Z の上向き・下向きの 6 方向へ置き、それぞれ 1 分以上動かさない。姿勢が足りなければ、斜めにも置く。X・Y は 1 個目のセンサーの 1 本目・2 本目の軸。直近 30 分の静止した時間から計算する</div>
+        <div class="b-sixface-faces" style="margin-top: 0.2rem;"></div>
+        <div class="row" style="align-items: center; margin-top: 0.2rem;">
+          <button type="button" class="apply-sixface" style="flex: 0 0 auto;" disabled>6 面の結果を入れる</button>
+          <span class="muted b-sixface-why"></span>
+        </div>
+        <div class="muted b-sixface-result"></div>
+      </div>
+      <!-- **方角は手で入れる。** 重力は鉛直まわりの回転について何も語らないので、
+           自動では決まらない（REQUIREMENTS.md §16）。空のままなら水平面は回さない。
+           **「向いている」ではなく「向ける」。** 入れるのは向かせたい方角で、実際に
+           回るのはいまの向きとの差だけ —— 同じ値を入れ直しても動かない。
+           **「X 軸」は基板の X 軸**（センサーの軸ごとの向きを測る座標と同じ）。 -->
+      <div class="row">
+        <label style="flex: 1">X 軸を向ける方角（度・任意）
+          <input class="b-heading" type="number" step="any" placeholder="北=0・東=90・南=180・西=270" />
+        </label>
+        <button type="button" class="suggest-tilt" style="align-self: end; height: 2.1rem;" disabled>鉛直を合わせる</button>
+      </div>
+      <div class="muted b-tilt-result" style="font-size: 0.8rem;"></div>
+      <details>
+        <summary>詳細設定</summary>
+        <div class="muted" style="font-size: 0.8rem; margin-bottom: 0.3rem;">基板の向き（列が基板の X・Y・Z 軸。東・北・上の成分）</div>
+        <div class="mat3-grid">${cells.join('')}</div>
+      </details>
+    </div>`
+}
+
+/** 基板の向きの欄を読む。**`renderOrientationHtml` と同じセレクタ。** */
+export function readOrientationValues(root: ParentNode): OrientationFormValues {
+  const at = (row: number, col: number): string =>
+    qs<HTMLInputElement>(root, `.b-orientation[data-row="${row}"][data-col="${col}"]`).value
+  return [at(0, 0), at(0, 1), at(0, 2), at(1, 0), at(1, 1), at(1, 2), at(2, 0), at(2, 1), at(2, 2)]
+}
+
+/** 基板の向きの欄へ書き込む（「鉛直を合わせる」の結果）。**保存はしない。** */
+export function writeOrientationValues(root: ParentNode, m: Mat3): void {
+  for (let row = 0; row < 3; row++) {
+    for (let col = 0; col < 3; col++) {
+      qs<HTMLInputElement>(root, `.b-orientation[data-row="${row}"][data-col="${col}"]`).value = String(m[row]![col])
+    }
   }
 }

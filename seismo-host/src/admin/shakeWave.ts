@@ -57,11 +57,17 @@ export interface EnvelopeView {
   readonly partial: boolean
 }
 
+/**
+ * 3 成分の端を読む。**`null` の成分は「その列にその成分の値が無い」として NaN にする** ——
+ * 観測点の合成は、測る向きが 3 方向へ散っていない間、解けない成分だけを欠けにする
+ * （`sensorFusion.ts`・2026-10-09 ユーザー承認）。**`null` 以外の読めない値は形が違うとして通さない。**
+ */
 function readTriple(value: unknown): readonly [number, number, number] | null {
   if (!Array.isArray(value) || value.length !== 3) return null
-  const a = readFinite(value[0])
-  const b = readFinite(value[1])
-  const c = readFinite(value[2])
+  const read = (x: unknown): number | null => (x === null ? Number.NaN : readFinite(x))
+  const a = read(value[0])
+  const b = read(value[1])
+  const c = read(value[2])
   return a === null || b === null || c === null ? null : [a, b, c]
 }
 

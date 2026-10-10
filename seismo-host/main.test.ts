@@ -25,6 +25,7 @@ import {
   deliverStationFusion,
   buildRawWarnings,
   buildStationConfigWarning,
+  buildStationDirectionWarning,
   buildStationGroupingWarning,
   buildTimebaseEpochWarning,
   buildWindowSummary,
@@ -53,12 +54,13 @@ import { STALE_AFTER_MS } from './src/receiver/assignedReception'
 import { CLOCK_OFFSET_WARN_MS } from './src/receiver/boardClockVerdict'
 import type { GravityVerdict } from './src/receiver/gravityCheck'
 import type { IntensityReading } from './src/receiver/intensityPipeline'
-import { EMPTY_STATION_CONFIG } from './src/receiver/stationConfig'
+import { EMPTY_STATION_CONFIG, IDENTITY_MATRIX } from './src/receiver/stationConfig'
 import type { StationConfig } from './src/receiver/stationConfig'
 import { PacketTally } from './src/receiver/packetTally'
 import type {
   FusedWaveChunk,
   FusionOutcome,
+  SensorResidual,
   StationCloseFailure,
   StationIntensityReading,
 } from './src/receiver/sensorFusion'
@@ -369,6 +371,29 @@ describe('buildStationGroupingWarning', () => {
     const a = buildStationGroupingWarning(['study'])
     const b = buildStationGroupingWarning(['study', 'garage'])
     expect(a[0]?.detail).not.toBe(b[0]?.detail)
+  })
+})
+
+describe('buildStationDirectionWarning（2026-10-09 ユーザー承認の文面）', () => {
+  it('対照: 解けない向きがある観測点が無ければ何も出さない', () => {
+    expect(buildStationDirectionWarning([])).toEqual([])
+  })
+
+  it('正: 観測点を挙げ、足すものと確かめるものを書いた warn を 1 件出す', () => {
+    const out = buildStationDirectionWarning(['study'])
+    expect(out).toHaveLength(1)
+    expect(out[0]?.level).toBe('warn')
+    expect(out[0]?.kind).toBe('station-directions')
+    expect(out[0]?.line).toBe(
+      '[station] 観測点 study は有効なセンサーの測る向きが 3 方向へ散っていないので、合成で解けない向きがある' +
+        '（上下や別の向きを測るセンサーを足すか、向きの設定を確かめること）',
+    )
+  })
+
+  it('安全弁: 観測点の集合が変われば鍵（detail）も変わる', () => {
+    expect(buildStationDirectionWarning(['study'])[0]?.detail).not.toBe(
+      buildStationDirectionWarning(['study', 'garage'])[0]?.detail,
+    )
   })
 })
 
@@ -738,9 +763,9 @@ describe('findUngroupedMultiBoardStations', () => {
       { stationId: 'garage', displayName: '車庫', lat: 35.7, lon: 139.8 },
     ],
     boards: [
-      { boardKey: 'mac:aaaaaaaaaaaa', stationId: 'study', sensors: [] },
-      { boardKey: 'mac:bbbbbbbbbbbb', stationId: 'study', sensors: [] },
-      { boardKey: 'mac:cccccccccccc', stationId: 'garage', sensors: [] },
+      { boardKey: 'mac:aaaaaaaaaaaa', stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] },
+      { boardKey: 'mac:bbbbbbbbbbbb', stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] },
+      { boardKey: 'mac:cccccccccccc', stationId: 'garage', orientation: IDENTITY_MATRIX, sensors: [] },
     ],
   }
 
@@ -771,7 +796,7 @@ describe('buildClosingLines', () => {
     unusableIntensities: 0,
     sensorEvictions: 0,
     stationEvictions: 0,
-    gravity: { mismatches: 0, unjudged: 0, restlessWindows: 0, restarts: 0, evictions: 0 },
+    gravity: { mismatches: 0, unjudged: 0, restlessWindows: 0, restarts: 0, axisReshapes: 0, evictions: 0 },
     // 締めくくりの後に読む値なので、開いたままの本は 0 が正常。
     mseed: {
       recordsWritten: 120,
@@ -911,13 +936,14 @@ describe('buildClosingLines', () => {
     expect(
       buildClosingLines({
         ...quiet,
-        gravity: { mismatches: 1, unjudged: 2, restlessWindows: 3, restarts: 4, evictions: 5 },
+        gravity: { mismatches: 1, unjudged: 2, restlessWindows: 3, restarts: 4, axisReshapes: 6, evictions: 5 },
       }),
     ).toEqual([
       { level: 'log', line: '  換算の倍率が合わない窓=1' },
       { level: 'log', line: '  静止しているのに震度が高い窓=3' },
       { level: 'log', line: '  静止しておらず倍率を診られなかった窓=2' },
       { level: 'log', line: '  基板の起動が変わり、診断の窓を捨てた=4' },
+      { level: 'log', line: '  センサーの軸の本数が変わり、覚えた静止窓を捨てた=6' },
       { level: 'log', line: '  自己診断の枠を捨てた=5' },
     ])
   })
@@ -1158,7 +1184,13 @@ describe('deliverReading', () => {
 })
 
 describe('addFusionCounts（合成の数え上げを作り直しをまたいで持ち越す）', () => {
-  const counts = (n: number) => ({ lateSamples: n, futureSamples: n + 1, discardedSamples: n + 2, unusableIntensities: n + 3 })
+  const counts = (n: number) => ({
+    lateSamples: n,
+    futureSamples: n + 1,
+    discardedSamples: n + 2,
+    unusableIntensities: n + 3,
+    unsolvedPoints: n + 4,
+  })
 
   it('正: 持ち越した累計に、いまの部品の累計を欄ごとに足す', () => {
     expect(addFusionCounts(counts(10), counts(1))).toEqual({
@@ -1166,6 +1198,7 @@ describe('addFusionCounts（合成の数え上げを作り直しをまたいで�
       futureSamples: 13,
       discardedSamples: 15,
       unusableIntensities: 17,
+      unsolvedPoints: 19,
     })
   })
 
@@ -1191,6 +1224,7 @@ describe('addFusionCounts（合成の数え上げを作り直しをまたいで�
       futureSamples: fusion.futureSamples,
       discardedSamples: fusion.discardedSamples,
       unusableIntensities: fusion.unusableIntensities,
+      unsolvedPoints: fusion.unsolvedPoints,
     })
   })
 })
@@ -1218,6 +1252,7 @@ describe('deliverStationFusion', () => {
     return {
       fusedWave: FUSED_WAVE,
       pairDiffs: [],
+      residuals: [],
       readings: [],
       intensitySkipReason: null,
       closeFailure: null,
@@ -1241,6 +1276,8 @@ describe('deliverStationFusion', () => {
         noteWave: () => order.push('noteWave'),
         notePairDiffs: () => order.push('notePairDiffs'),
         publishPairDiffs: () => order.push('publishPairDiffs'),
+        noteResiduals: () => order.push('noteResiduals'),
+        publishResiduals: () => order.push('publishResiduals'),
         publishWave: () => order.push('publishWave'),
         reportCloseFailure: () => order.push('reportCloseFailure'),
         noteSkip: () => order.push('noteSkip'),
@@ -1260,6 +1297,8 @@ describe('deliverStationFusion', () => {
       'noteWave',
       'notePairDiffs',
       'publishPairDiffs',
+      'noteResiduals',
+      'publishResiduals',
       'publishWave',
       'noteSkip',
       'logSegment',
@@ -1275,6 +1314,8 @@ describe('deliverStationFusion', () => {
         noteWave: () => order.push('noteWave'),
         notePairDiffs: () => order.push('notePairDiffs'),
         publishPairDiffs: () => order.push('publishPairDiffs'),
+        noteResiduals: () => order.push('noteResiduals'),
+        publishResiduals: () => order.push('publishResiduals'),
         publishWave: () => order.push('publishWave'),
         reportCloseFailure: () => order.push('reportCloseFailure'),
         noteSkip: () => order.push('noteSkip'),
@@ -1289,7 +1330,7 @@ describe('deliverStationFusion', () => {
     // readings が空でも、必ず `noteSkip` でいまの状態（この場合は
     // intensitySkipReason: null ＝ 正常）を確定させる。
     // `intensityStateChanged` を渡していない（既定 false）ので `logSegment` は呼ばない。
-    expect(order).toEqual(['reportCloseFailure', 'noteWave', 'notePairDiffs', 'publishPairDiffs', 'publishWave', 'noteSkip'])
+    expect(order).toEqual(['reportCloseFailure', 'noteWave', 'notePairDiffs', 'publishPairDiffs', 'noteResiduals', 'publishResiduals', 'publishWave', 'noteSkip'])
   })
 
   it('正: 顔ぶれが揃ったかを帳面へそのまま渡す（#374）', () => {
@@ -1303,6 +1344,8 @@ describe('deliverStationFusion', () => {
       noteWave: (_w: FusedWaveChunk, c: boolean) => covered.push(c),
       notePairDiffs: () => {},
       publishPairDiffs: () => {},
+      noteResiduals: () => {},
+      publishResiduals: () => {},
       publishWave: () => {},
       reportCloseFailure: () => {},
       noteSkip: () => {},
@@ -1312,6 +1355,43 @@ describe('deliverStationFusion', () => {
     deliverStationFusion(sinks, fusion({ fusedWave: FUSED_WAVE, allMembersCovered: true }))
 
     expect(covered).toEqual([false, true])
+  })
+
+  it('正: ずれは観測点つきで覚える口へ、全センサーぶんを配る口へ渡す（空でも覚える口は呼ぶ・#688）', () => {
+    const noted: { stationId: string; count: number }[] = []
+    const published: number[] = []
+    const sinks = {
+      noteReading: () => {},
+      publish: () => {},
+      noteWave: () => {},
+      notePairDiffs: () => {},
+      publishPairDiffs: () => {},
+      noteResiduals: (stationId: string, residuals: readonly SensorResidual[]) =>
+        noted.push({ stationId, count: residuals.length }),
+      publishResiduals: (residuals: readonly SensorResidual[]) => published.push(residuals.length),
+      publishWave: () => {},
+      reportCloseFailure: () => {},
+      noteSkip: () => {},
+      logSegment: () => {},
+    }
+    const residual: SensorResidual = {
+      stationId: 'garage',
+      member: { boardKey: 'mac:aa', sensorId: 's0' },
+      firstSampleIndex: 0,
+      firstSampleMs: 1_000,
+      msPerSample: 10,
+      channels: ['HN1', 'HN2'],
+      axes: [{ direction: [1, 0, 0], residualGal: [0.5] }],
+    }
+    deliverStationFusion(sinks, fusion({ residuals: [residual, { ...residual, member: { boardKey: 'mac:bb', sensorId: 's0' } }] }))
+    // **空でも覚える口へ渡す。** 顔ぶれが縮んだとき、消えた台のずれを指したまま固まらないように。
+    deliverStationFusion(sinks, fusion({ residuals: [] }))
+
+    expect(noted).toEqual([
+      { stationId: 'garage', count: 2 },
+      { stationId: 'garage', count: 0 },
+    ])
+    expect(published).toEqual([2, 0])
   })
 
   it('状態が変わっていない回（intensityStateChanged が false）では logSegment を呼ばない', () => {
@@ -1326,6 +1406,8 @@ describe('deliverStationFusion', () => {
         noteWave: () => calls.push('noteWave'),
         notePairDiffs: () => calls.push('notePairDiffs'),
         publishPairDiffs: () => calls.push('publishPairDiffs'),
+        noteResiduals: () => calls.push('noteResiduals'),
+        publishResiduals: () => calls.push('publishResiduals'),
         publishWave: () => calls.push('publishWave'),
         reportCloseFailure: () => calls.push('reportCloseFailure'),
         noteSkip: () => calls.push('noteSkip'),
@@ -1334,7 +1416,7 @@ describe('deliverStationFusion', () => {
       fusion({ fusedWave: FUSED_WAVE, readings: [STATION_READING] }),
     )
 
-    expect(calls).toEqual(['noteReading', 'publish', 'noteWave', 'notePairDiffs', 'publishPairDiffs', 'publishWave', 'noteSkip'])
+    expect(calls).toEqual(['noteReading', 'publish', 'noteWave', 'notePairDiffs', 'publishPairDiffs', 'noteResiduals', 'publishResiduals', 'publishWave', 'noteSkip'])
   })
 
   it('異常が続く間（intensityStateChanged が false でも）は毎回 logSegment を呼ぶ', () => {
@@ -1352,6 +1434,8 @@ describe('deliverStationFusion', () => {
         noteWave: () => calls.push('noteWave'),
         notePairDiffs: () => calls.push('notePairDiffs'),
         publishPairDiffs: () => calls.push('publishPairDiffs'),
+        noteResiduals: () => calls.push('noteResiduals'),
+        publishResiduals: () => calls.push('publishResiduals'),
         publishWave: () => calls.push('publishWave'),
         reportCloseFailure: () => calls.push('reportCloseFailure'),
         noteSkip: () => calls.push('noteSkip'),
@@ -1364,7 +1448,7 @@ describe('deliverStationFusion', () => {
       }),
     )
 
-    expect(calls).toEqual(['noteWave', 'notePairDiffs', 'publishPairDiffs', 'publishWave', 'noteSkip', 'logSegment'])
+    expect(calls).toEqual(['noteWave', 'notePairDiffs', 'publishPairDiffs', 'noteResiduals', 'publishResiduals', 'publishWave', 'noteSkip', 'logSegment'])
   })
 
   it('正: 合成した波形をそのまま配る（#315）', () => {
@@ -1376,6 +1460,8 @@ describe('deliverStationFusion', () => {
         noteWave: () => {},
         notePairDiffs: () => {},
         publishPairDiffs: () => {},
+        noteResiduals: () => {},
+        publishResiduals: () => {},
         publishWave: (w) => got.push(w),
         reportCloseFailure: () => {},
         noteSkip: () => {},
@@ -1402,6 +1488,8 @@ describe('deliverStationFusion', () => {
         noteWave: () => got.push('noteWave'),
         notePairDiffs: () => got.push('notePairDiffs'),
         publishPairDiffs: () => got.push('publishPairDiffs'),
+        noteResiduals: () => got.push('noteResiduals'),
+        publishResiduals: () => got.push('publishResiduals'),
         publishWave: () => got.push('publishWave'),
         reportCloseFailure: () => got.push('reportCloseFailure'),
         noteSkip: () => got.push('noteSkip'),
@@ -1430,6 +1518,7 @@ const DRAINED: FusionOutcome = {
     axisMemberCount: [[1], [1], [1]],
   },
   pairDiffs: [],
+  residuals: [],
   readings: [],
   intensitySkipReason: null,
   closeFailure: null,
@@ -1471,6 +1560,7 @@ describe('applyStationConfigCore', () => {
       },
       forgetRemovedDetectors: () => calls.push('forgetRemovedDetectors'),
       setUngroupedMultiBoardStations: () => calls.push('setUngroupedMultiBoardStations'),
+      setUnderdeterminedStations: () => calls.push('setUnderdeterminedStations'),
       setWarning: () => calls.push('setWarning'),
       ...overrides,
     }
@@ -1494,6 +1584,7 @@ describe('applyStationConfigCore', () => {
       'rebuildSensorFusion',
       'forgetRemovedDetectors',
       'setUngroupedMultiBoardStations',
+      'setUnderdeterminedStations',
       'setWarning',
     ])
   })
@@ -1560,6 +1651,7 @@ describe('applyStationConfigCore', () => {
       'rebuildSensorFusion',
       'forgetRemovedDetectors',
       'setUngroupedMultiBoardStations',
+      'setUnderdeterminedStations',
       'setWarning',
     ])
   })
@@ -1600,6 +1692,7 @@ describe('applyStationConfigCore', () => {
       'rebuildSensorFusion',
       'forgetRemovedDetectors',
       'setUngroupedMultiBoardStations',
+      'setUnderdeterminedStations',
       'setWarning',
     ])
   })
@@ -1621,7 +1714,13 @@ describe('applyStationConfigCore', () => {
 
     expect(calls).toContain('reportDeliveryFailure')
     expect(calls).not.toContain('onCloseFailure')
-    expect(calls.slice(-4)).toEqual(['rebuildSensorFusion', 'forgetRemovedDetectors', 'setUngroupedMultiBoardStations', 'setWarning'])
+    expect(calls.slice(-5)).toEqual([
+      'rebuildSensorFusion',
+      'forgetRemovedDetectors',
+      'setUngroupedMultiBoardStations',
+      'setUnderdeterminedStations',
+      'setWarning',
+    ])
   })
 
   it('安全弁: 報せる口そのものが投げても新しい合成は作られ、その失敗は onCloseFailure へ出る', () => {
@@ -1643,7 +1742,13 @@ describe('applyStationConfigCore', () => {
     applyStationConfigCore(d, NEW_CONFIG)
 
     expect(calls).toContain('onCloseFailure')
-    expect(calls.slice(-4)).toEqual(['rebuildSensorFusion', 'forgetRemovedDetectors', 'setUngroupedMultiBoardStations', 'setWarning'])
+    expect(calls.slice(-5)).toEqual([
+      'rebuildSensorFusion',
+      'forgetRemovedDetectors',
+      'setUngroupedMultiBoardStations',
+      'setUnderdeterminedStations',
+      'setWarning',
+    ])
   })
 
   it('正: setUngroupedMultiBoardStations には findUngroupedMultiBoardStations の結果を渡す', () => {
@@ -1653,8 +1758,8 @@ describe('applyStationConfigCore', () => {
     const config: StationConfig = {
       stations: [{ stationId: 'study', displayName: '書斎', lat: 35.6, lon: 139.7 }],
       boards: [
-        { boardKey: 'mac:aaaaaaaaaaaa', stationId: 'study', sensors: [] },
-        { boardKey: 'mac:bbbbbbbbbbbb', stationId: 'study', sensors: [] },
+        { boardKey: 'mac:aaaaaaaaaaaa', stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] },
+        { boardKey: 'mac:bbbbbbbbbbbb', stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] },
       ],
     }
     let received: readonly string[] | null = null
@@ -1662,6 +1767,34 @@ describe('applyStationConfigCore', () => {
     const d = deps(calls, {
       rebuildSensorFusion: () => [],
       setUngroupedMultiBoardStations: (ids) => {
+        received = ids
+      },
+    })
+    applyStationConfigCore(d, config)
+
+    expect(received).toEqual(['study'])
+  })
+
+  it('正: setUnderdeterminedStations には findUnderdeterminedStations の結果を渡す（水平の 2 軸の台だけ）', () => {
+    const flat = (sensorId: string) => ({
+      sensorId,
+      enabled: true,
+      noiseDensity: null,
+      axes: [
+        { vector: [1, 0, 0] as const, offset: 0 },
+        { vector: [0, 1, 0] as const, offset: 0 },
+      ],
+    })
+    const config: StationConfig = {
+      stations: [{ stationId: 'study', displayName: '書斎', lat: 35.6, lon: 139.7 }],
+      boards: [
+        { boardKey: 'mac:aaaaaaaaaaaa', stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [flat('a')] },
+        { boardKey: 'mac:bbbbbbbbbbbb', stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [flat('b')] },
+      ],
+    }
+    let received: readonly string[] | null = null
+    const d = deps([], {
+      setUnderdeterminedStations: (ids) => {
         received = ids
       },
     })

@@ -238,6 +238,7 @@ async function answerRecords(route: string, params: URLSearchParams, deps: Recor
         measuredUnavailable: result.measuredUnavailable,
         gapCount: result.gapCount,
         invalidChunkCount: result.invalidChunkCount,
+        unsolvedChunkCount: result.unsolvedChunkCount,
         filesRead: read.filesRead,
         filesMissing: read.filesMissing,
         filesFailed: read.filesFailed,

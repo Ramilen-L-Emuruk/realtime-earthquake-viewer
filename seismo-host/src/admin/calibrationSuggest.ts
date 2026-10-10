@@ -1,11 +1,14 @@
-// 静止した基板が測った重力から、取り付けの向きを直す回転行列を作る（REQUIREMENTS.md §16）。
+// 静止した基板が測った重力から、基板の向き（`BoardEntry.orientation`）を作る（REQUIREMENTS.md §16）。
 //
 // **重力から決まるのは傾きの 2 軸だけ。** 鉛直まわりの回転＝方角について、重力は何も
 // 語らない（どちらを向けて置いても重力ベクトルは同じ）。だからここは 2 つを分けて扱う:
 //
 // 1. **鉛直合わせ** —— 測った重力ベクトルを真上へ向ける最小の回転。自動で出る
-// 2. **方角合わせ** —— 基板の 1 本目の軸（画面では「X 軸」）をどちらへ向けたいかを人が入れる。
-//    入れなければ何もしない
+// 2. **方角合わせ** —— 基板の X 軸をどちらへ向けたいかを人が入れる。入れなければ何もしない
+//
+// **向きは基板に 1 つだけ持つ。** 同じ基板に載ったセンサーは後から向きが変わらないので、
+// センサーごとの取り付けの向きは各軸の測る向き（基板の座標）が持ち、ここが決めるのは
+// 基板と地面の間の回転だけ。
 //
 // **共通座標は ENU（X＝東・Y＝北・Z＝上）の右手系とする。** 要件 §16 は「地理的な XYZ」
 // としか書いておらず軸の割り当てを定めていないので、ここで決める。**Z が上向き正である
@@ -16,22 +19,25 @@
 // （`sqrt(x²+y²+z²)`）で、回転しても長さは変わらないため。効くのは軸ごとの波形・
 // センサー間の差分（§7）・P/S 判定（§6）。
 //
-// **提案するのは「いまの設定を置き換える値」。** 入力の重力は `calibration.ts` が
-// `rotation` を適用した**後**の値なので、追加の回転をいまの `rotation` へ左から掛ける。
+// **提案するのは「いまの基板の向きを置き換える値」。** 入力の重力はいまの基板の向き
+// （`orientation`）を掛けた**後**の値なので、追加の回転をいまの向きへ左から掛ける。
 // 何度押しても収束する（2 回目は傾きが 0 に近いので、ほぼ何も足さない）。
 
 import type { RestScaleView, SensorRestWindow } from './detectedBoards'
 import { GAL_PER_G } from '../intensity/units'
+import { resolveCalibration } from '../receiver/calibration'
+import { FUSION_MIN_DIRECTION_INFO } from '../receiver/directionInfo'
+import { invert3, minEigenvalueSym3, multiplyMatVec3 } from '../receiver/matrix3'
 import { SCALE_RATIO_MAX } from '../receiver/gravityCheck'
-import type { Mat3, Vec3 } from '../receiver/stationConfigTypes'
+import { IDENTITY_MATRIX, type Mat3, type SensorCalibration, type Vec3 } from '../receiver/stationConfigTypes'
 
 /**
  * 提案に載せる小数の桁。
  *
  * **画面の入力欄へそのまま入る値なので、読める桁で切る。** 6 桁は角度にして
  * 10⁻⁴ 度ぶんの分解能があり、**基板を水平に置ける精度（良くて 0.1 度）より
- * 4 桁細かい**。丸めで直交性はわずかに崩れるが、§16 はもともと `rotation` に
- * 直交性を求めていない。
+ * 4 桁細かい**。丸めで直交性は 10⁻⁶ ほど崩れるが、設定の検証が受ける幅
+ * （`matrix3.ts` の `isProperRotation`・10⁻³）には十分収まる。
  */
 const DIGITS = 6
 
@@ -59,7 +65,7 @@ const MIN_MAGNITUDE_GAL = 9.8
 /** 提案できたもの。 */
 export interface TiltSuggestion {
   readonly ok: true
-  /** 設定へ書き込む新しい回転。**いまの `rotation` を置き換える値。** */
+  /** 設定へ書き込む新しい基板の向き。**いまの `orientation` を置き換える値。** */
   readonly rotation: Mat3
   /** いまの設定で、測った重力が真上からどれだけ傾いていたか（度）。 */
   readonly tiltDeg: number
@@ -80,12 +86,12 @@ export interface TiltRefusal {
 }
 
 export interface TiltSuggestInput {
-  /** 静止した窓で測った重力ベクトル（gal）。**校正を適用した後の値。** */
+  /** 静止した窓で測った重力ベクトル（gal）。**いまの基板の向きを掛けた後の値**（地面の座標）。 */
   readonly gravity: Vec3
-  /** いま設定されている回転。 */
+  /** いま設定されている基板の向き。 */
   readonly rotation: Mat3
   /**
-   * 基板の 1 本目の軸に**向けたい**方位（度・真北から時計回り。東＝90）。
+   * 基板の X 軸に**向けたい**方位（度・真北から時計回り。東＝90）。
    *
    * **「いまどちらを向いているか」ではなく「どちらを向かせたいか」。** 同じ値を
    * 何度渡しても結果は変わらない（2 回目以降は差が 0 なので回らない）——
@@ -195,8 +201,8 @@ const SCALE_PROBLEM: Record<RestScaleView, string | null> = {
  * その静止窓から取り付けの向きを提案してよいか。**駄目なら理由、よければ `null`。**
  *
  * **倍率が狂っている窓では提案しない。** 重力の大きさが違うだけで向きは読めるが、
- * そこで「回せば直る」形の提案を出すと、**換算の狂いを回転行列へ塗り込む**ことになる
- * —— 直すべきは `sensitivity` か、その手前のファームの申告。
+ * そこで「回せば直る」形の提案を出すと、**換算の狂いを基板の向きへ塗り込む**ことになる
+ * —— 直すべきは軸の向きの長さ（倍率）か、その手前のファームの申告。
  *
  * **`restless`（静止しているのに震度が高い）では止めない。** あれは震度を出す側の
  * 配線の話で、重力の向きとは独立。画面には別に出す。
@@ -216,18 +222,47 @@ export function restWindowProblem(
 /** いまの置き方で静止した窓が無いときの理由（「鉛直を合わせる」を押せない）。 */
 export const NO_STILL_WINDOW = 'いまの置き方で静止した窓がまだ無い（置いてから 1 分ほど動かさずに待つこと）'
 
-/** `gravityForTilt` へ渡す、そのセンサーの静止窓（`GET /api/rest-windows` の 1 要素）。 */
+/** `boardGravityForTilt` へ渡す、そのセンサーの静止窓（`GET /api/rest-windows` の 1 要素）。 */
 export interface TiltSource {
   /** いまの置き方で静止し始めた時刻（ホストの時計）。いま静止していなければ `null`。 */
   readonly stillSinceMs: number | null
-  readonly windows: readonly { readonly atMs: number; readonly meanGal: Vec3; readonly sampleCount: number }[]
+  /** `meanGal` の本数はそのセンサーの軸の本数（2 軸のセンサーなら 2 本）。 */
+  readonly windows: readonly { readonly atMs: number; readonly meanGal: readonly number[]; readonly sampleCount: number }[]
 }
 
-/** 「鉛直を合わせる」が掛ける校正。**カードにいま入っている値**（保存済みとは限らない）。 */
-export interface TiltCalibration {
-  readonly offset: Vec3
-  readonly sensitivity: Vec3
-  readonly rotation: Mat3
+/**
+ * いまの置き方で静止しているセンサーの軸だけでは重力の 3 成分を解けないときの理由（「鉛直を合わせる」を
+ * 押せない）。文言は 2026-10-10 ユーザー承認。
+ */
+export const NO_STILL_SPREAD = 'いまの置き方で静止しているセンサーの軸が 3 方向へ散っていない'
+
+/**
+ * カードの軸の本数が、ホストから届いている静止窓の値の本数と合わないときの理由（6 面法・「鉛直を合わせる」）。
+ * **カードの本数を打ち間違えたときに出る**（ホストの窓の本数はパケットの本数で決まる）。分からない本数は `—`。
+ * 文言は 2026-10-10 ユーザー承認。
+ */
+export function axisCountMismatchProblem(sensorId: string, cardAxes: number | null, gotAxes: number | null): string {
+  const count = (n: number | null): string => (n === null ? '—' : String(n))
+  return `センサー ${sensorId} のカードの軸の本数（${count(cardAxes)} 本）が、届いている値の本数（${count(gotAxes)} 本）と合わない`
+}
+
+/** 「鉛直を合わせる」が使う、基板に載ったセンサー 1 個。**校正値はカードにいま入っている値**（保存済みとは限らない）。 */
+export interface TiltMember {
+  /** 理由の文に出すセンサー ID（カードの ID）。 */
+  readonly sensorId: string
+  readonly source: TiltSource | null
+  readonly sensor: SensorCalibration
+}
+
+/**
+ * {@link boardGravityForTilt} が断るときの形。
+ *
+ * **`lacksMaterial` は「置き方・カードの本数のせいで、押す前から解けないと分かる」理由**（いまの置き方で
+ * 静止していない・軸が 3 方向へ散っていない・本数がカードと合わない）。画面はこれでボタンを押せなくする。
+ * ほかの理由（軸の向きが解けない形・倍率が合わない）は押したときに出す。
+ */
+export interface BoardGravityRefusal extends TiltRefusal {
+  readonly lacksMaterial: boolean
 }
 
 /**
@@ -239,53 +274,97 @@ export interface TiltCalibration {
  */
 export function stillMeanGal(
   source: TiltSource | null,
-): { readonly ok: true; readonly meanGal: Vec3 } | TiltRefusal {
+): { readonly ok: true; readonly meanGal: readonly number[] } | TiltRefusal {
   if (source === null || source.stillSinceMs === null) return { ok: false, reason: NO_STILL_WINDOW }
   const since = source.stillSinceMs
   let weight = 0
-  const sum: [number, number, number] = [0, 0, 0]
+  let sum: number[] | null = null
   for (const w of source.windows) {
     if (w.atMs <= since) continue
+    sum ??= new Array<number>(w.meanGal.length).fill(0)
+    // **本数の違う窓は混ぜない**（ホストは本数が変わると覚えた窓を捨てるので、本来は起きない）。
+    if (w.meanGal.length !== sum.length) return { ok: false, reason: NO_STILL_WINDOW }
     weight += w.sampleCount
-    for (let i = 0; i < 3; i++) sum[i] += w.meanGal[i] * w.sampleCount
+    for (let i = 0; i < sum.length; i++) sum[i]! += w.meanGal[i]! * w.sampleCount
   }
-  if (weight === 0) return { ok: false, reason: NO_STILL_WINDOW }
-  return { ok: true, meanGal: [sum[0] / weight, sum[1] / weight, sum[2] / weight] }
+  if (sum === null || weight === 0) return { ok: false, reason: NO_STILL_WINDOW }
+  return { ok: true, meanGal: sum.map((v) => v / weight) }
 }
 
 /**
- * いまの置き方の重力を、カードの校正を通した後の座標で出す。**投げない。**
+ * いまの置き方の重力を、基板の座標で出す。**投げない。**
+ *
+ * **基板に載ったセンサーのうち、いまの置き方で静止しているものの全部の軸から、最小二乗で一緒に
+ * 解く**（`Σ hᵀ(m − o − h·g)²` を最小にする `g`）。同じ基板のセンサーは同じ向きで揺れるので、
+ * どの軸も同じ重力を測っていて、まとめれば 1 個ぶんのずれに引きずられない。**2 軸のセンサーも
+ * 入れる**（2026-10-10 に変えた。1 個では重力の 3 成分が決まらなくても、ほかの軸と一緒なら解ける
+ * —— IIS2ICLX だけの基板はこれでしか合わせられない）。軸の向きが 3 方向へ散っていなければ
+ * （観測点の合成と同じ基準。`directionInfo.ts`）押せない。**3 軸のセンサー 1 個だけなら、
+ * その 3 軸を解いた答えと同じ**（式と未知数が同じ数）。
  *
  * **材料は校正前の静止窓。** ホストが校正を通した後の値（`/status` の判定）を使うと、
- * その窓を閉じた時点の設定で測った値をいまのカードの回転へ重ねることになり、
- * 保存の前後や続けて押したときに回転が二重に掛かる。校正前の値にカードの値を
+ * その窓を閉じた時点の設定で測った値をいまのカードの値へ重ねることになり、
+ * 保存の前後や続けて押したときに補正が二重に掛かる。校正前の値にカードの値を
  * その場で掛ければ、何回押しても・いつ保存しても同じ答えになる。
  */
-export function gravityForTilt(
-  source: TiltSource | null,
-  calibration: TiltCalibration,
-): { readonly ok: true; readonly gravity: Vec3 } | TiltRefusal {
-  const still = stillMeanGal(source)
-  if (!still.ok) return still
-  const raw = still.meanGal
-  const { offset, sensitivity, rotation } = calibration
-  // `calibration.ts` の `applyCalibration` と同じ順（バイアス除去 → 感度 → 座標変換）。
-  const s: Vec3 = [
-    (raw[0] - offset[0]) * sensitivity[0],
-    (raw[1] - offset[1]) * sensitivity[1],
-    (raw[2] - offset[2]) * sensitivity[2],
+export function boardGravityForTilt(members: readonly TiltMember[]): { readonly ok: true; readonly gravity: Vec3 } | BoardGravityRefusal {
+  const normal: [number, number, number][] = [
+    [0, 0, 0],
+    [0, 0, 0],
+    [0, 0, 0],
   ]
-  const gravity: Vec3 = [
-    rotation[0][0] * s[0] + rotation[0][1] * s[1] + rotation[0][2] * s[2],
-    rotation[1][0] * s[0] + rotation[1][1] * s[1] + rotation[1][2] * s[2],
-    rotation[2][0] * s[0] + rotation[2][1] * s[1] + rotation[2][2] * s[2],
+  const rhs: [number, number, number] = [0, 0, 0]
+  /** 向きだけで作った `Σ û ûᵀ`（散らばりの判定。観測点の合成と同じ物差し）。 */
+  const spread: [number, number, number][] = [
+    [0, 0, 0],
+    [0, 0, 0],
+    [0, 0, 0],
   ]
-  if (!readable(gravity)) return { ok: false, reason: '重力の値が数として読めない' }
+  /** 材料に入ったセンサーの数。0 なら「軸が散っていない」ではなく「静止した窓が無い」と言う。 */
+  let used = 0
+  /** 静止しているのに本数がカードと合わなかった最初のセンサー。材料が 0 のときの理由にする。 */
+  let mismatch: string | null = null
+  for (const m of members) {
+    const still = stillMeanGal(m.source)
+    if (!still.ok) continue
+    // **本数がカードと合わない窓は使わない**（カードの本数を打ち間違えると起きる）。
+    if (still.meanGal.length !== m.sensor.axes.length) {
+      mismatch ??= axisCountMismatchProblem(m.sensorId, m.sensor.axes.length, still.meanGal.length)
+      continue
+    }
+    used++
+    // 基板の向きを単位行列として読むと、軸の向きは基板の座標のまま（`calibration.ts`）。解ける形かも
+    // ここで確かめる（3 本が 1 つの面に寄っている・2 本が平行なら null）。
+    const resolved = resolveCalibration(IDENTITY_MATRIX, m.sensor)
+    if (resolved === null) return { ok: false, reason: '軸の向きが解けない形になっている', lacksMaterial: false }
+    resolved.axes.forEach((a, j) => {
+      const h = a.vector
+      const d = still.meanGal[j]! - a.offset
+      const len = magnitude(h)
+      for (let i = 0; i < 3; i++) {
+        rhs[i] += h[i] * d
+        for (let k = 0; k < 3; k++) {
+          normal[i]![k]! += h[i] * h[k]
+          if (len > 0) spread[i]![k]! += (h[i] * h[k]) / (len * len)
+        }
+      }
+    })
+  }
+  // **どのセンサーも静止していなければ、そう言う。** 軸の散り具合の話にすると、置いて待てば済むのに
+  // 基板を回して向きを足そうとさせる。静止しているのに本数が合わなかったなら、そちらが原因。
+  if (used === 0) return { ok: false, reason: mismatch ?? NO_STILL_WINDOW, lacksMaterial: true }
+  if (!(minEigenvalueSym3(spread as unknown as Mat3) >= FUSION_MIN_DIRECTION_INFO)) {
+    return { ok: false, reason: NO_STILL_SPREAD, lacksMaterial: true }
+  }
+  const inv = invert3(normal as unknown as Mat3)
+  if (inv === null) return { ok: false, reason: NO_STILL_SPREAD, lacksMaterial: true }
+  const gravity = multiplyMatVec3(inv, rhs)
+  if (!readable(gravity)) return { ok: false, reason: '重力の値が数として読めない', lacksMaterial: false }
   // **倍率が狂ったままの値で向きを出さない**（`restWindowProblem` と同じ判断・同じ幅）。
-  // 狂いを回転行列へ塗り込むことになる。直すべきはカードの感度か、その手前の換算。
+  // 狂いを基板の向きへ塗り込むことになる。直すべきは軸の向きの長さ（倍率）か、その手前の換算。
   const mag = magnitude(gravity)
   if (mag < GAL_PER_G / SCALE_RATIO_MAX || mag > GAL_PER_G * SCALE_RATIO_MAX) {
-    return { ok: false, reason: SCALE_MISMATCH }
+    return { ok: false, reason: SCALE_MISMATCH, lacksMaterial: false }
   }
   return { ok: true, gravity }
 }
@@ -343,7 +422,7 @@ const EAST: Vec3 = [1, 0, 0]
 export function suggestRotation(input: TiltSuggestInput): TiltSuggestion | TiltRefusal {
   const { gravity, rotation, headingDeg } = input
   if (!readable(gravity)) return { ok: false, reason: '重力の値が数として読めない' }
-  if (!rotation.every(readable)) return { ok: false, reason: 'いまの回転行列が数として読めない' }
+  if (!rotation.every(readable)) return { ok: false, reason: 'いまの基板の向きが数として読めない' }
   if (headingDeg !== null && !Number.isFinite(headingDeg)) {
     return { ok: false, reason: '方角が数として読めない' }
   }
@@ -392,7 +471,7 @@ export function suggestRotation(input: TiltSuggestInput): TiltSuggestion | TiltR
     if (horizontal < DEGENERATE) {
       return {
         ok: false,
-        // **画面へ出る文なので「X 軸」と呼ぶ**（カードのオフセット・感度の X と同じ軸）。
+        // **画面へ出る文なので「X 軸」と呼ぶ**（基板の X 軸。軸ごとの表の「向き X」と同じ）。
         reason: 'X 軸が真上か真下を向いていて、方角を決められない',
       }
     }

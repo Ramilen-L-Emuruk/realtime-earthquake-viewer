@@ -202,7 +202,8 @@ export function paintWaveColumns(
       // **値の無い列で線を切る。** `NaN` をそのまま渡しても Canvas 2D の `lineTo` は
       // 何もしない（no-op）ので、前後の有効な点が 1 本に結ばれてしまう ——
       // つまり欠測を分けて持った意味が描画で消える。
-      if (!col.hasValue) {
+      // **その成分だけ値が無い列でも切る**（観測点の合成が解けなかった成分は `NaN`）。
+      if (!col.hasValue || !Number.isFinite(col.min[a]) || !Number.isFinite(col.max[a])) {
         started = false
         continue
       }

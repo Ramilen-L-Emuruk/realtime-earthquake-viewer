@@ -188,20 +188,55 @@ describe('computeQuakeIntensity', () => {
       measuredUnavailable: 'no-data',
       gapCount: 0,
       invalidChunkCount: 0,
+      unsolvedChunkCount: 0,
     })
   })
 
-  it('有限でない値が混じったら、そこで区切る（計算器を壊さない）', () => {
+  // 対照（2026-10-09 に壊れた値の見本を NaN から Infinity へ替えた）: NaN は解けなかった成分の印に
+  // なったので、壊れた値は ±Infinity で作る。
+  it('壊れた値（±Infinity）が混じったら、そこで区切って壊れたまとまりとして数える（計算器を壊さない）', () => {
     const w = wave(0, 150, quiet)
     const chunks = chunksOf(T0, w)
     const bad = chunks.findIndex((c) => c.firstSampleMs >= T0 + 120_000)
     const g = chunks[bad].gal[0].slice()
-    g[5] = NaN
+    g[5] = Infinity
     chunks[bad] = { ...chunks[bad], gal: [g, chunks[bad].gal[1], chunks[bad].gal[2]] }
     const r = computeQuakeIntensity({ chunks, fromMs: T0 + 60_000, toMs: T0 + 150_000 })
     expect(r.measuredUnavailable).toBe('gap')
     expect(r.maxRealtime).not.toBeNull()
     // 「届かなかった」と見分けられるよう、捨てた数を返す
     expect(r.invalidChunkCount).toBe(1)
+    expect(r.unsolvedChunkCount).toBe(0)
+  })
+
+  // 正（2026-10-09）: 観測点の合成は、測る向きが 3 方向へ散っていない間、解けない成分だけを NaN に
+  // して出す（2026-10-09 ユーザー承認）。震度は 3 成分が要るので同じく区切るが、壊れたとは数えない。
+  it('解けなかった成分（NaN）を含むまとまりは区切り、壊れたまとまりとは分けて数える', () => {
+    const w = wave(0, 150, quiet)
+    const chunks = chunksOf(T0, w)
+    const from = chunks.findIndex((c) => c.firstSampleMs >= T0 + 120_000)
+    for (const i of [from, from + 1, from + 2]) {
+      const up = Float32Array.from(chunks[i].gal[2], () => NaN)
+      chunks[i] = { ...chunks[i], gal: [chunks[i].gal[0], chunks[i].gal[1], up] }
+    }
+    const r = computeQuakeIntensity({ chunks, fromMs: T0 + 60_000, toMs: T0 + 150_000 })
+    expect(r.measuredUnavailable).toBe('gap')
+    expect(r.maxRealtime).not.toBeNull()
+    expect(r.unsolvedChunkCount).toBe(3)
+    expect(r.invalidChunkCount).toBe(0)
+  })
+
+  // 安全弁: NaN と Infinity が同じまとまりにあれば、壊れた側として数える（解けないだけと見なさない）。
+  it('NaN と Infinity が混ざったまとまりは壊れたまとまりとして数える', () => {
+    const w = wave(0, 150, quiet)
+    const chunks = chunksOf(T0, w)
+    const bad = chunks.findIndex((c) => c.firstSampleMs >= T0 + 120_000)
+    const up = Float32Array.from(chunks[bad].gal[2], () => NaN)
+    const g = chunks[bad].gal[0].slice()
+    g[3] = -Infinity
+    chunks[bad] = { ...chunks[bad], gal: [g, chunks[bad].gal[1], up] }
+    const r = computeQuakeIntensity({ chunks, fromMs: T0 + 60_000, toMs: T0 + 150_000 })
+    expect(r.invalidChunkCount).toBe(1)
+    expect(r.unsolvedChunkCount).toBe(0)
   })
 })

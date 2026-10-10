@@ -160,7 +160,7 @@ describe('foldQuakeWaveColumns', () => {
 
 describe('formatQuakeIntensityParts', () => {
   const span = { fromMs: 1000, toMs: 91_000 }
-  const base = { ...span, maxRealtime: 2.34, maxRealtimeAtMs: null, realtimeSeries: [], measured: 1.87, measuredUnavailable: null, gapCount: 0, invalidChunkCount: 0, filesMissing: 0, filesFailed: 0, skippedBytes: 0, truncated: false }
+  const base = { ...span, maxRealtime: 2.34, maxRealtimeAtMs: null, realtimeSeries: [], measured: 1.87, measuredUnavailable: null, gapCount: 0, invalidChunkCount: 0, unsolvedChunkCount: 0, filesMissing: 0, filesFailed: 0, skippedBytes: 0, truncated: false }
   const text = (parts: ReturnType<typeof formatQuakeIntensityParts>) => parts?.map((p) => `${p.label} ${p.value}`).join(' ') ?? null
 
   // 正: 短い名前と値だけ。階級は添えない（2026-10-05 のユーザー判断）。正式な名前はホバー用に持つ。

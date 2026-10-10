@@ -39,11 +39,12 @@ import type { SensorRestWindows } from './gravityCheck'
 import { COLUMNS_MAX, decimalInt } from './httpQuery'
 import { computeQuakeIntensity, QUAKE_INTENSITY_LEAD_MS } from './quakeIntensity'
 import type { QuakeIntensityResult } from './quakeIntensity'
-import type { HubMessage, PairWant, ReadingHub, WaveWant } from './readingHub'
+import type { HubMessage, PairWant, ReadingHub, ResidualWant, WaveWant } from './readingHub'
 import { describeFailure, normalizeBoardKey, parseStationConfig } from './stationConfig'
 import type { StationConfig } from './stationConfig'
 import type { StatusReport } from './statusReport'
 import type { ArchivedWaveChunk, WaveRangeResult } from './waveArchive'
+import type { WaveChunk } from './intensityPipeline'
 import { buildWaveEnvelope } from './waveEnvelope'
 import { EVENT_PAGE_LIMIT_MAX } from '../detection/shakeEventStore'
 import type { EventRangeParams, EventRangeResult } from '../detection/shakeEventStore'
@@ -201,6 +202,58 @@ export function parseDiffParams(params: URLSearchParams): DiffRequest {
     problem: null,
     problemKind: null,
   }
+}
+
+/**
+ * ずれの波形を頼むときに書く欄（#688）。**3 つそろって初めて 1 台を指す。** 区切り文字で
+ * 連結しない理由・長さの上限は差分（{@link DIFF_PARAMS}・{@link DIFF_VALUE_MAX_LEN}）と同じ。
+ */
+const RESIDUAL_PARAMS = ['residualStation', 'residualBoard', 'residualSensor'] as const
+
+/** `?residual*=` を読んだ結果。欄の意味は {@link DiffRequest} と同じ。 */
+export interface ResidualRequest {
+  readonly want: ResidualWant | null
+  readonly problem: string | null
+  readonly problemKind: ResidualProblemKind | null
+}
+
+/** ずれの指定を読めなかった理由の種別。**4 つで有界**（{@link DiffProblemKind} と同じ使い方）。 */
+export type ResidualProblemKind = 'missing-fields' | 'empty-field' | 'too-long' | 'bad-board-key'
+
+/**
+ * `?residual*=` の 3 欄から、ずれの波形を頼んでいる 1 台を読む。
+ * **半端でも接続は断らず、前後の空白は落とす**（{@link parseDiffParams} と同じ扱い）。
+ */
+export function parseResidualParams(params: URLSearchParams): ResidualRequest {
+  const present = RESIDUAL_PARAMS.filter((name) => params.get(name) !== null)
+  if (present.length === 0) return { want: null, problem: null, problemKind: null }
+  if (present.length < RESIDUAL_PARAMS.length) {
+    const missing = RESIDUAL_PARAMS.filter((name) => params.get(name) === null)
+    return { want: null, problem: `欄が足りない（${missing.join(' ')}）`, problemKind: 'missing-fields' }
+  }
+  const values = RESIDUAL_PARAMS.map((name) => (params.get(name) ?? '').trim())
+  const emptyAt = values.findIndex((v) => v.length === 0)
+  if (emptyAt >= 0) {
+    return { want: null, problem: `空の欄がある（${RESIDUAL_PARAMS[emptyAt]}）`, problemKind: 'empty-field' }
+  }
+  const longAt = values.findIndex((v) => v.length > DIFF_VALUE_MAX_LEN)
+  if (longAt >= 0) {
+    return {
+      want: null,
+      problem: `欄が長すぎる（${RESIDUAL_PARAMS[longAt]}・上限 ${DIFF_VALUE_MAX_LEN}）`,
+      problemKind: 'too-long',
+    }
+  }
+  const [stationId, rawBoard, sensorId] = values
+  const boardKey = normalizeBoardKey(rawBoard!)
+  if (boardKey === null) {
+    return {
+      want: null,
+      problem: '基板の書き方が違う（residualBoard・mac: か name: で始める）',
+      problemKind: 'bad-board-key',
+    }
+  }
+  return { want: { stationId: stationId!, member: { boardKey, sensorId: sensorId! } }, problem: null, problemKind: null }
 }
 
 /**
@@ -420,6 +473,7 @@ export function buildQuakeIntensityResponse(
     measuredUnavailable: result.measuredUnavailable,
     gapCount: result.gapCount,
     invalidChunkCount: result.invalidChunkCount,
+    unsolvedChunkCount: result.unsolvedChunkCount,
     filesRead: read.filesRead,
     filesMissing: read.filesMissing,
     filesFailed: read.filesFailed,
@@ -600,6 +654,24 @@ export interface StatusServer {
   close(): Promise<void>
 }
 
+/**
+ * センサー単独の波形 1 まとまりを押し出す形にする。
+ *
+ * **地面の 3 成分（`ground`）を解けるセンサーは `gal` に 3 成分だけを載せ、軸ごとの値は送らない。**
+ * 3 軸なら同じ情報なので、両方送ると通信量が倍になる。**解けない（2 軸の）センサーは `gal` を
+ * `null` にし、軸ごとの値（`axes`: 地面で見た測る向きとその向きの gal）を載せる。** 管理コンソールは
+ * どちらが来たかで、X・Y・Z の段へ描くか、測る向きのまま別の段へ描くかを決める。
+ *
+ * **区間の位置（`firstSampleIndex`）と軸の名前（`channels`）も載せる。** `axes` の並びは
+ * `channels` と同じ。
+ */
+function toWireSensorWave(wave: WaveChunk): Record<string, unknown> {
+  const { ground, axes, ...rest } = wave
+  return ground !== null
+    ? { ...rest, gal: ground }
+    : { ...rest, gal: null, axes: axes.map((a) => ({ direction: a.direction, gal: a.gal })) }
+}
+
 /** SSE の 1 件。 */
 function sseEvent(name: string, data: unknown): string {
   return `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`
@@ -619,13 +691,15 @@ function encode(message: HubMessage): string {
     case 'reading':
       return sseEvent('reading', message.reading)
     case 'wave':
-      return sseEvent('wave', message.wave)
+      return sseEvent('wave', toWireSensorWave(message.wave))
     case 'station-reading':
       return sseEvent('station-reading', message.reading)
     case 'station-wave':
       return sseEvent('station-wave', message.wave)
     case 'station-diff':
       return sseEvent('station-diff', message.diff)
+    case 'station-residual':
+      return sseEvent('station-residual', message.residual)
     case 'shake-event':
       return sseEvent('shake-event', message.event)
     case 'station-wave-revised':
@@ -1210,6 +1284,7 @@ export async function startStatusServer(options: StatusServerOptions): Promise<S
     res: ServerResponse,
     wantsWave: WaveWant,
     wantsDiff: PairWant | null,
+    wantsResidual: ResidualWant | null,
   ): void => {
     applyCors(res)
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
@@ -1223,6 +1298,7 @@ export async function startStatusServer(options: StatusServerOptions): Promise<S
     const subscription = hub.subscribe({
       wave: wantsWave,
       diff: wantsDiff,
+      residual: wantsResidual,
       deliver: (message) => {
         // **書く前に詰まりを見る。** 書いてから「詰まっている」と申告すると、
         // こちらは捨てたつもりでいるのに向こうの待ち行列だけが伸び続ける
@@ -1405,7 +1481,17 @@ export async function startStatusServer(options: StatusServerOptions): Promise<S
             `[sse] ?diff= を読めないので差分なしで繋ぐ: ${diff.problem}`,
           )
         }
-        handleStream(req, res, parseWaveParam(waveParam), diff.want)
+        const residual = parseResidualParams(url.searchParams)
+        if (residual.problem !== null) {
+          // 合言葉の作り方は差分と同じ（種別は 4 つで有界・渡された値は入れない）。
+          log(
+            'warn',
+            'sse',
+            `bad-residual-param/${residual.problemKind}`,
+            `[sse] ?residual= を読めないのでずれなしで繋ぐ: ${residual.problem}`,
+          )
+        }
+        handleStream(req, res, parseWaveParam(waveParam), diff.want, residual.want)
         return
       }
       if (url.pathname === '/waves') {

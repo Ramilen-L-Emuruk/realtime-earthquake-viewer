@@ -26,6 +26,11 @@ export interface DetectedSensorView {
   readonly boardKey: string
   readonly sensorId: string
   readonly lastPacketMs: number | null
+  /**
+   * 最後に届いたパケットの軸の本数（`sensorHealth.ts` の `axisCount`）。
+   * **欄の無い古いホスト・読めない値は `null`**（呼ぶ側は 3 軸として扱う）。
+   */
+  readonly axisCount?: unknown
 }
 
 /** 声を聞いている基板 1 枚ぶん。 */
@@ -33,6 +38,13 @@ export interface DetectedBoard {
   readonly boardKey: string
   /** その基板が名乗っているセンサー ID。**現れた順**（＝音沙汰の新しい順）。 */
   readonly sensorIds: readonly string[]
+  /**
+   * センサー ID ごとの、届いたパケットの軸の本数（2 か 3）。**分からないセンサーは載らない。**
+   *
+   * **「登録」でカードを作るときの軸の本数。** 設定ではなく届いた事実なので、2 軸のセンサーに
+   * 3 軸のカードを作って軸数を食い違わせることが無い。
+   */
+  readonly axisCounts: Readonly<Record<string, 2 | 3>>
   /**
    * その基板のいずれかのセンサーから最後に届いた時刻。
    *
@@ -53,15 +65,19 @@ export interface DetectedBoard {
 export function groupDetectedBoards(
   sensors: readonly DetectedSensorView[],
 ): readonly DetectedBoard[] {
-  const byKey = new Map<string, { sensorIds: string[]; lastPacketMs: number | null }>()
+  const byKey = new Map<string, { sensorIds: string[]; axisCounts: Record<string, 2 | 3>; lastPacketMs: number | null }>()
   for (const s of sensors) {
     // **空の基板 Key・センサー ID は候補にしない。** 設定側は空文字を弾く
     // （`stationConfig.ts` の `nonEmptyString`）ので、選べても保存できない。
     if (s.boardKey.length === 0 || s.sensorId.length === 0) continue
     const found = byKey.get(s.boardKey)
-    const entry = found ?? { sensorIds: [], lastPacketMs: null }
+    const entry = found ?? { sensorIds: [], axisCounts: {}, lastPacketMs: null }
     if (found === undefined) byKey.set(s.boardKey, entry)
-    if (!entry.sensorIds.includes(s.sensorId)) entry.sensorIds.push(s.sensorId)
+    if (!entry.sensorIds.includes(s.sensorId)) {
+      entry.sensorIds.push(s.sensorId)
+      // **2・3 以外は載せない**（その本数のカードは作れない。呼ぶ側は既定の 3 軸で作る）。
+      if (s.axisCount === 2 || s.axisCount === 3) entry.axisCounts[s.sensorId] = s.axisCount
+    }
     if (s.lastPacketMs !== null && (entry.lastPacketMs === null || s.lastPacketMs > entry.lastPacketMs)) {
       entry.lastPacketMs = s.lastPacketMs
     }
@@ -69,6 +85,7 @@ export function groupDetectedBoards(
   return [...byKey].map(([boardKey, v]) => ({
     boardKey,
     sensorIds: v.sensorIds,
+    axisCounts: v.axisCounts,
     lastPacketMs: v.lastPacketMs,
   }))
 }

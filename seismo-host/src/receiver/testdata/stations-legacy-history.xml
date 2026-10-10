@@ -1,0 +1,609 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FDSNStationXML xmlns="http://www.fdsn.org/xml/station/1" xmlns:seismo="urn:realtime-earthquake-viewer:seismo-host" schemaVersion="1.2">
+  <Source>seismo-host</Source>
+  <Created>2026-10-03T03:42:21.698Z</Created>
+  <Network code="XX">
+    <Station code="00000003" startDate="2026-10-03T03:40:21.698Z" endDate="2026-10-03T03:42:21.698Z">
+      <seismo:Board>mac:020000000003</seismo:Board>
+      <seismo:StationId>station-1</seismo:StationId>
+      <Latitude>35.6</Latitude>
+      <Longitude>139.7</Longitude>
+      <Elevation>0</Elevation>
+      <Site><Name>書斎</Name></Site>
+      <Channel code="HN1" locationCode="I2C0-68" startDate="2026-10-03T03:40:21.698Z" endDate="2026-10-03T03:42:21.698Z">
+        <seismo:Sensor>i2c0-68</seismo:Sensor>
+        <seismo:Enabled>true</seismo:Enabled>
+        <seismo:Rotation e="0.999844" n="-0.000312" u="-0.017659"/>
+        <seismo:Sensitivity>1.0064</seismo:Sensitivity>
+        <Latitude>35.6</Latitude>
+        <Longitude>139.7</Longitude>
+        <Elevation>0</Elevation>
+        <Depth>0</Depth>
+        <Azimuth>90.00741170219202</Azimuth>
+        <Dip>1.011969396745514</Dip>
+        <Type>CONTINUOUS</Type>
+        <Response>
+          <InstrumentPolynomial>
+            <InputUnits><Name>cm/s**2</Name><Description>ground acceleration along the channel direction</Description></InputUnits>
+            <OutputUnits><Name>cm/s**2</Name><Description>sensor acceleration before calibration</Description></OutputUnits>
+            <ApproximationType>MACLAURIN</ApproximationType>
+            <FrequencyLowerBound>0</FrequencyLowerBound>
+            <FrequencyUpperBound>0</FrequencyUpperBound>
+            <ApproximationLowerBound>0</ApproximationLowerBound>
+            <ApproximationUpperBound>0</ApproximationUpperBound>
+            <MaximumError>0</MaximumError>
+            <Coefficient number="0">-18.668719333438517</Coefficient>
+            <Coefficient number="1">1.0063999640667665</Coefficient>
+          </InstrumentPolynomial>
+          <Stage number="1"><StageGain><Value>1.0000000357047245</Value><Frequency>1</Frequency></StageGain></Stage>
+          <Stage number="2"><StageGain><Value>0.9936406995230525</Value><Frequency>1</Frequency></StageGain></Stage>
+          <Stage number="3">
+            <Polynomial>
+              <InputUnits><Name>cm/s**2</Name></InputUnits>
+              <OutputUnits><Name>cm/s**2</Name></OutputUnits>
+              <ApproximationType>MACLAURIN</ApproximationType>
+              <FrequencyLowerBound>0</FrequencyLowerBound>
+              <FrequencyUpperBound>0</FrequencyUpperBound>
+              <ApproximationLowerBound>0</ApproximationLowerBound>
+              <ApproximationUpperBound>0</ApproximationUpperBound>
+              <MaximumError>0</MaximumError>
+              <Coefficient number="0">-18.55</Coefficient>
+              <Coefficient number="1">1</Coefficient>
+            </Polynomial>
+          </Stage>
+        </Response>
+      </Channel>
+      <Channel code="HN2" locationCode="I2C0-68" startDate="2026-10-03T03:40:21.698Z" endDate="2026-10-03T03:41:21.698Z">
+        <seismo:Sensor>i2c0-68</seismo:Sensor>
+        <seismo:Enabled>true</seismo:Enabled>
+        <seismo:Rotation e="-0.000312" n="0.999688" u="-0.024984"/>
+        <seismo:Sensitivity>0.9987</seismo:Sensitivity>
+        <Latitude>35.6</Latitude>
+        <Longitude>139.7</Longitude>
+        <Elevation>0</Elevation>
+        <Depth>0</Depth>
+        <Azimuth>359.99258713801134</Azimuth>
+        <Dip>1.4317189556550176</Dip>
+        <Type>CONTINUOUS</Type>
+        <Response>
+          <InstrumentPolynomial>
+            <InputUnits><Name>cm/s**2</Name><Description>ground acceleration along the channel direction</Description></InputUnits>
+            <OutputUnits><Name>cm/s**2</Name><Description>sensor acceleration before calibration</Description></OutputUnits>
+            <ApproximationType>MACLAURIN</ApproximationType>
+            <FrequencyLowerBound>0</FrequencyLowerBound>
+            <FrequencyUpperBound>0</FrequencyUpperBound>
+            <ApproximationLowerBound>0</ApproximationLowerBound>
+            <ApproximationUpperBound>0</ApproximationUpperBound>
+            <MaximumError>0</MaximumError>
+            <Coefficient number="0">-2.2470754062443428</Coefficient>
+            <Coefficient number="1">0.9987001805530412</Coefficient>
+          </InstrumentPolynomial>
+          <Stage number="1"><StageGain><Value>0.9999998192119669</Value><Frequency>1</Frequency></StageGain></Stage>
+          <Stage number="2"><StageGain><Value>1.0013016921998599</Value><Frequency>1</Frequency></StageGain></Stage>
+          <Stage number="3">
+            <Polynomial>
+              <InputUnits><Name>cm/s**2</Name></InputUnits>
+              <OutputUnits><Name>cm/s**2</Name></OutputUnits>
+              <ApproximationType>MACLAURIN</ApproximationType>
+              <FrequencyLowerBound>0</FrequencyLowerBound>
+              <FrequencyUpperBound>0</FrequencyUpperBound>
+              <ApproximationLowerBound>0</ApproximationLowerBound>
+              <ApproximationUpperBound>0</ApproximationUpperBound>
+              <MaximumError>0</MaximumError>
+              <Coefficient number="0">-2.25</Coefficient>
+              <Coefficient number="1">1</Coefficient>
+            </Polynomial>
+          </Stage>
+        </Response>
+      </Channel>
+      <Channel code="HN2" locationCode="I2C0-68" startDate="2026-10-03T03:41:21.698Z" endDate="2026-10-03T03:42:21.698Z">
+        <seismo:Sensor>i2c0-68</seismo:Sensor>
+        <seismo:Enabled>true</seismo:Enabled>
+        <seismo:Rotation e="-0.000312" n="0.999688" u="-0.024984"/>
+        <seismo:Sensitivity>0.95</seismo:Sensitivity>
+        <Latitude>35.6</Latitude>
+        <Longitude>139.7</Longitude>
+        <Elevation>0</Elevation>
+        <Depth>0</Depth>
+        <Azimuth>359.99258713801134</Azimuth>
+        <Dip>1.4317189556550176</Dip>
+        <Type>CONTINUOUS</Type>
+        <Response>
+          <InstrumentPolynomial>
+            <InputUnits><Name>cm/s**2</Name><Description>ground acceleration along the channel direction</Description></InputUnits>
+            <OutputUnits><Name>cm/s**2</Name><Description>sensor acceleration before calibration</Description></OutputUnits>
+            <ApproximationType>MACLAURIN</ApproximationType>
+            <FrequencyLowerBound>0</FrequencyLowerBound>
+            <FrequencyUpperBound>0</FrequencyUpperBound>
+            <ApproximationLowerBound>0</ApproximationLowerBound>
+            <ApproximationUpperBound>0</ApproximationUpperBound>
+            <MaximumError>0</MaximumError>
+            <Coefficient number="0">-2.137500386434491</Coefficient>
+            <Coefficient number="1">0.9500001717486626</Coefficient>
+          </InstrumentPolynomial>
+          <Stage number="1"><StageGain><Value>0.9999998192119669</Value><Frequency>1</Frequency></StageGain></Stage>
+          <Stage number="2"><StageGain><Value>1.0526315789473684</Value><Frequency>1</Frequency></StageGain></Stage>
+          <Stage number="3">
+            <Polynomial>
+              <InputUnits><Name>cm/s**2</Name></InputUnits>
+              <OutputUnits><Name>cm/s**2</Name></OutputUnits>
+              <ApproximationType>MACLAURIN</ApproximationType>
+              <FrequencyLowerBound>0</FrequencyLowerBound>
+              <FrequencyUpperBound>0</FrequencyUpperBound>
+              <ApproximationLowerBound>0</ApproximationLowerBound>
+              <ApproximationUpperBound>0</ApproximationUpperBound>
+              <MaximumError>0</MaximumError>
+              <Coefficient number="0">-2.25</Coefficient>
+              <Coefficient number="1">1</Coefficient>
+            </Polynomial>
+          </Stage>
+        </Response>
+      </Channel>
+      <Channel code="HN3" locationCode="I2C0-68" startDate="2026-10-03T03:40:21.698Z" endDate="2026-10-03T03:42:21.698Z">
+        <seismo:Sensor>i2c0-68</seismo:Sensor>
+        <seismo:Enabled>true</seismo:Enabled>
+        <seismo:Rotation e="0.017659" n="0.024984" u="0.999532"/>
+        <seismo:Sensitivity>0.99363</seismo:Sensitivity>
+        <Latitude>35.6</Latitude>
+        <Longitude>139.7</Longitude>
+        <Elevation>0</Elevation>
+        <Depth>0</Depth>
+        <Azimuth>35.25489438909363</Azimuth>
+        <Dip>-88.24662387301633</Dip>
+        <Type>CONTINUOUS</Type>
+        <Response>
+          <InstrumentPolynomial>
+            <InputUnits><Name>cm/s**2</Name><Description>ground acceleration along the channel direction</Description></InputUnits>
+            <OutputUnits><Name>cm/s**2</Name><Description>sensor acceleration before calibration</Description></OutputUnits>
+            <ApproximationType>MACLAURIN</ApproximationType>
+            <FrequencyLowerBound>0</FrequencyLowerBound>
+            <FrequencyUpperBound>0</FrequencyUpperBound>
+            <ApproximationLowerBound>0</ApproximationLowerBound>
+            <ApproximationUpperBound>0</ApproximationUpperBound>
+            <MaximumError>0</MaximumError>
+            <Coefficient number="0">-233.99989536770215</Coefficient>
+            <Coefficient number="1">0.993630128949903</Coefficient>
+          </InstrumentPolynomial>
+          <Stage number="1"><StageGain><Value>0.9999998702234372</Value><Frequency>1</Frequency></StageGain></Stage>
+          <Stage number="2"><StageGain><Value>1.0064108370318932</Value><Frequency>1</Frequency></StageGain></Stage>
+          <Stage number="3">
+            <Polynomial>
+              <InputUnits><Name>cm/s**2</Name></InputUnits>
+              <OutputUnits><Name>cm/s**2</Name></OutputUnits>
+              <ApproximationType>MACLAURIN</ApproximationType>
+              <FrequencyLowerBound>0</FrequencyLowerBound>
+              <FrequencyUpperBound>0</FrequencyUpperBound>
+              <ApproximationLowerBound>0</ApproximationLowerBound>
+              <ApproximationUpperBound>0</ApproximationUpperBound>
+              <MaximumError>0</MaximumError>
+              <Coefficient number="0">-235.5</Coefficient>
+              <Coefficient number="1">1</Coefficient>
+            </Polynomial>
+          </Stage>
+        </Response>
+      </Channel>
+      <Channel code="HN1" locationCode="I2C0-69" startDate="2026-10-03T03:40:21.698Z" endDate="2026-10-03T03:42:21.698Z">
+        <seismo:Sensor>i2c0-69</seismo:Sensor>
+        <seismo:Enabled>true</seismo:Enabled>
+        <seismo:NoiseDensity unit="ug/sqrt(Hz)">400</seismo:NoiseDensity>
+        <seismo:Rotation e="1.2" n="0.05" u="0"/>
+        <seismo:Sensitivity>1.0064</seismo:Sensitivity>
+        <Latitude>35.6</Latitude>
+        <Longitude>139.7</Longitude>
+        <Elevation>0</Elevation>
+        <Depth>0</Depth>
+        <Azimuth>95.98059952476346</Azimuth>
+        <Dip>-1.08527841282239</Dip>
+        <Type>CONTINUOUS</Type>
+        <Response>
+          <InstrumentPolynomial>
+            <InputUnits><Name>cm/s**2</Name><Description>ground acceleration along the channel direction</Description></InputUnits>
+            <OutputUnits><Name>cm/s**2</Name><Description>sensor acceleration before calibration</Description></OutputUnits>
+            <ApproximationType>MACLAURIN</ApproximationType>
+            <FrequencyLowerBound>0</FrequencyLowerBound>
+            <FrequencyUpperBound>0</FrequencyUpperBound>
+            <ApproximationLowerBound>0</ApproximationLowerBound>
+            <ApproximationUpperBound>0</ApproximationUpperBound>
+            <MaximumError>0</MaximumError>
+            <Coefficient number="0">-22.179296871066974</Coefficient>
+            <Coefficient number="1">1.1956494270116966</Coefficient>
+          </InstrumentPolynomial>
+          <Stage number="1"><StageGain><Value>0.8417182974070498</Value><Frequency>1</Frequency></StageGain></Stage>
+          <Stage number="2"><StageGain><Value>0.9936406995230525</Value><Frequency>1</Frequency></StageGain></Stage>
+          <Stage number="3">
+            <Polynomial>
+              <InputUnits><Name>cm/s**2</Name></InputUnits>
+              <OutputUnits><Name>cm/s**2</Name></OutputUnits>
+              <ApproximationType>MACLAURIN</ApproximationType>
+              <FrequencyLowerBound>0</FrequencyLowerBound>
+              <FrequencyUpperBound>0</FrequencyUpperBound>
+              <ApproximationLowerBound>0</ApproximationLowerBound>
+              <ApproximationUpperBound>0</ApproximationUpperBound>
+              <MaximumError>0</MaximumError>
+              <Coefficient number="0">-18.55</Coefficient>
+              <Coefficient number="1">1</Coefficient>
+            </Polynomial>
+          </Stage>
+        </Response>
+      </Channel>
+      <Channel code="HN2" locationCode="I2C0-69" startDate="2026-10-03T03:40:21.698Z" endDate="2026-10-03T03:42:21.698Z">
+        <seismo:Sensor>i2c0-69</seismo:Sensor>
+        <seismo:Enabled>true</seismo:Enabled>
+        <seismo:NoiseDensity unit="ug/sqrt(Hz)">400</seismo:NoiseDensity>
+        <seismo:Rotation e="0.1" n="0.9" u="-0.3"/>
+        <seismo:Sensitivity>0.9987</seismo:Sensitivity>
+        <Latitude>35.6</Latitude>
+        <Longitude>139.7</Longitude>
+        <Elevation>0</Elevation>
+        <Depth>0</Depth>
+        <Azimuth>357.6140559696112</Azimuth>
+        <Dip>10.29610408578565</Dip>
+        <Type>CONTINUOUS</Type>
+        <Response>
+          <InstrumentPolynomial>
+            <InputUnits><Name>cm/s**2</Name><Description>ground acceleration along the channel direction</Description></InputUnits>
+            <OutputUnits><Name>cm/s**2</Name><Description>sensor acceleration before calibration</Description></OutputUnits>
+            <ApproximationType>MACLAURIN</ApproximationType>
+            <FrequencyLowerBound>0</FrequencyLowerBound>
+            <FrequencyUpperBound>0</FrequencyUpperBound>
+            <ApproximationLowerBound>0</ApproximationLowerBound>
+            <ApproximationUpperBound>0</ApproximationUpperBound>
+            <MaximumError>0</MaximumError>
+            <Coefficient number="0">-2.0993621329092726</Coefficient>
+            <Coefficient number="1">0.9330498368485656</Coefficient>
+          </InstrumentPolynomial>
+          <Stage number="1"><StageGain><Value>1.0703608323572211</Value><Frequency>1</Frequency></StageGain></Stage>
+          <Stage number="2"><StageGain><Value>1.0013016921998599</Value><Frequency>1</Frequency></StageGain></Stage>
+          <Stage number="3">
+            <Polynomial>
+              <InputUnits><Name>cm/s**2</Name></InputUnits>
+              <OutputUnits><Name>cm/s**2</Name></OutputUnits>
+              <ApproximationType>MACLAURIN</ApproximationType>
+              <FrequencyLowerBound>0</FrequencyLowerBound>
+              <FrequencyUpperBound>0</FrequencyUpperBound>
+              <ApproximationLowerBound>0</ApproximationLowerBound>
+              <ApproximationUpperBound>0</ApproximationUpperBound>
+              <MaximumError>0</MaximumError>
+              <Coefficient number="0">-2.25</Coefficient>
+              <Coefficient number="1">1</Coefficient>
+            </Polynomial>
+          </Stage>
+        </Response>
+      </Channel>
+      <Channel code="HN3" locationCode="I2C0-69" startDate="2026-10-03T03:40:21.698Z" endDate="2026-10-03T03:42:21.698Z">
+        <seismo:Sensor>i2c0-69</seismo:Sensor>
+        <seismo:Enabled>true</seismo:Enabled>
+        <seismo:NoiseDensity unit="ug/sqrt(Hz)">400</seismo:NoiseDensity>
+        <seismo:Rotation e="0" n="0.2" u="1.1"/>
+        <seismo:Sensitivity>0.99363</seismo:Sensitivity>
+        <Latitude>35.6</Latitude>
+        <Longitude>139.7</Longitude>
+        <Elevation>0</Elevation>
+        <Depth>0</Depth>
+        <Azimuth>357.6140559696112</Azimuth>
+        <Dip>-71.47017239056058</Dip>
+        <Type>CONTINUOUS</Type>
+        <Response>
+          <InstrumentPolynomial>
+            <InputUnits><Name>cm/s**2</Name><Description>ground acceleration along the channel direction</Description></InputUnits>
+            <OutputUnits><Name>cm/s**2</Name><Description>sensor acceleration before calibration</Description></OutputUnits>
+            <ApproximationType>MACLAURIN</ApproximationType>
+            <FrequencyLowerBound>0</FrequencyLowerBound>
+            <FrequencyUpperBound>0</FrequencyUpperBound>
+            <ApproximationLowerBound>0</ApproximationLowerBound>
+            <ApproximationUpperBound>0</ApproximationUpperBound>
+            <MaximumError>0</MaximumError>
+            <Coefficient number="0">-258.91587434554185</Coefficient>
+            <Coefficient number="1">1.0994304643122796</Coefficient>
+          </InstrumentPolynomial>
+          <Stage number="1"><StageGain><Value>0.9037679346292624</Value><Frequency>1</Frequency></StageGain></Stage>
+          <Stage number="2"><StageGain><Value>1.0064108370318932</Value><Frequency>1</Frequency></StageGain></Stage>
+          <Stage number="3">
+            <Polynomial>
+              <InputUnits><Name>cm/s**2</Name></InputUnits>
+              <OutputUnits><Name>cm/s**2</Name></OutputUnits>
+              <ApproximationType>MACLAURIN</ApproximationType>
+              <FrequencyLowerBound>0</FrequencyLowerBound>
+              <FrequencyUpperBound>0</FrequencyUpperBound>
+              <ApproximationLowerBound>0</ApproximationLowerBound>
+              <ApproximationUpperBound>0</ApproximationUpperBound>
+              <MaximumError>0</MaximumError>
+              <Coefficient number="0">-235.5</Coefficient>
+              <Coefficient number="1">1</Coefficient>
+            </Polynomial>
+          </Stage>
+        </Response>
+      </Channel>
+    </Station>
+    <Station code="00000003" startDate="2026-10-03T03:42:21.698Z">
+      <seismo:Board>mac:020000000003</seismo:Board>
+      <seismo:StationId>station-1</seismo:StationId>
+      <Latitude>36</Latitude>
+      <Longitude>139.7</Longitude>
+      <Elevation>0</Elevation>
+      <Site><Name>書斎</Name></Site>
+      <Channel code="HN1" locationCode="I2C0-68" startDate="2026-10-03T03:42:21.698Z">
+        <seismo:Sensor>i2c0-68</seismo:Sensor>
+        <seismo:Enabled>true</seismo:Enabled>
+        <seismo:Rotation e="0.999844" n="-0.000312" u="-0.017659"/>
+        <seismo:Sensitivity>1.0064</seismo:Sensitivity>
+        <Latitude>36</Latitude>
+        <Longitude>139.7</Longitude>
+        <Elevation>0</Elevation>
+        <Depth>0</Depth>
+        <Azimuth>90.00741170219202</Azimuth>
+        <Dip>1.011969396745514</Dip>
+        <Type>CONTINUOUS</Type>
+        <Response>
+          <InstrumentPolynomial>
+            <InputUnits><Name>cm/s**2</Name><Description>ground acceleration along the channel direction</Description></InputUnits>
+            <OutputUnits><Name>cm/s**2</Name><Description>sensor acceleration before calibration</Description></OutputUnits>
+            <ApproximationType>MACLAURIN</ApproximationType>
+            <FrequencyLowerBound>0</FrequencyLowerBound>
+            <FrequencyUpperBound>0</FrequencyUpperBound>
+            <ApproximationLowerBound>0</ApproximationLowerBound>
+            <ApproximationUpperBound>0</ApproximationUpperBound>
+            <MaximumError>0</MaximumError>
+            <Coefficient number="0">-18.668719333438517</Coefficient>
+            <Coefficient number="1">1.0063999640667665</Coefficient>
+          </InstrumentPolynomial>
+          <Stage number="1"><StageGain><Value>1.0000000357047245</Value><Frequency>1</Frequency></StageGain></Stage>
+          <Stage number="2"><StageGain><Value>0.9936406995230525</Value><Frequency>1</Frequency></StageGain></Stage>
+          <Stage number="3">
+            <Polynomial>
+              <InputUnits><Name>cm/s**2</Name></InputUnits>
+              <OutputUnits><Name>cm/s**2</Name></OutputUnits>
+              <ApproximationType>MACLAURIN</ApproximationType>
+              <FrequencyLowerBound>0</FrequencyLowerBound>
+              <FrequencyUpperBound>0</FrequencyUpperBound>
+              <ApproximationLowerBound>0</ApproximationLowerBound>
+              <ApproximationUpperBound>0</ApproximationUpperBound>
+              <MaximumError>0</MaximumError>
+              <Coefficient number="0">-18.55</Coefficient>
+              <Coefficient number="1">1</Coefficient>
+            </Polynomial>
+          </Stage>
+        </Response>
+      </Channel>
+      <Channel code="HN2" locationCode="I2C0-68" startDate="2026-10-03T03:42:21.698Z">
+        <seismo:Sensor>i2c0-68</seismo:Sensor>
+        <seismo:Enabled>true</seismo:Enabled>
+        <seismo:Rotation e="-0.000312" n="0.999688" u="-0.024984"/>
+        <seismo:Sensitivity>0.95</seismo:Sensitivity>
+        <Latitude>36</Latitude>
+        <Longitude>139.7</Longitude>
+        <Elevation>0</Elevation>
+        <Depth>0</Depth>
+        <Azimuth>359.99258713801134</Azimuth>
+        <Dip>1.4317189556550176</Dip>
+        <Type>CONTINUOUS</Type>
+        <Response>
+          <InstrumentPolynomial>
+            <InputUnits><Name>cm/s**2</Name><Description>ground acceleration along the channel direction</Description></InputUnits>
+            <OutputUnits><Name>cm/s**2</Name><Description>sensor acceleration before calibration</Description></OutputUnits>
+            <ApproximationType>MACLAURIN</ApproximationType>
+            <FrequencyLowerBound>0</FrequencyLowerBound>
+            <FrequencyUpperBound>0</FrequencyUpperBound>
+            <ApproximationLowerBound>0</ApproximationLowerBound>
+            <ApproximationUpperBound>0</ApproximationUpperBound>
+            <MaximumError>0</MaximumError>
+            <Coefficient number="0">-2.137500386434491</Coefficient>
+            <Coefficient number="1">0.9500001717486626</Coefficient>
+          </InstrumentPolynomial>
+          <Stage number="1"><StageGain><Value>0.9999998192119669</Value><Frequency>1</Frequency></StageGain></Stage>
+          <Stage number="2"><StageGain><Value>1.0526315789473684</Value><Frequency>1</Frequency></StageGain></Stage>
+          <Stage number="3">
+            <Polynomial>
+              <InputUnits><Name>cm/s**2</Name></InputUnits>
+              <OutputUnits><Name>cm/s**2</Name></OutputUnits>
+              <ApproximationType>MACLAURIN</ApproximationType>
+              <FrequencyLowerBound>0</FrequencyLowerBound>
+              <FrequencyUpperBound>0</FrequencyUpperBound>
+              <ApproximationLowerBound>0</ApproximationLowerBound>
+              <ApproximationUpperBound>0</ApproximationUpperBound>
+              <MaximumError>0</MaximumError>
+              <Coefficient number="0">-2.25</Coefficient>
+              <Coefficient number="1">1</Coefficient>
+            </Polynomial>
+          </Stage>
+        </Response>
+      </Channel>
+      <Channel code="HN3" locationCode="I2C0-68" startDate="2026-10-03T03:42:21.698Z">
+        <seismo:Sensor>i2c0-68</seismo:Sensor>
+        <seismo:Enabled>true</seismo:Enabled>
+        <seismo:Rotation e="0.017659" n="0.024984" u="0.999532"/>
+        <seismo:Sensitivity>0.99363</seismo:Sensitivity>
+        <Latitude>36</Latitude>
+        <Longitude>139.7</Longitude>
+        <Elevation>0</Elevation>
+        <Depth>0</Depth>
+        <Azimuth>35.25489438909363</Azimuth>
+        <Dip>-88.24662387301633</Dip>
+        <Type>CONTINUOUS</Type>
+        <Response>
+          <InstrumentPolynomial>
+            <InputUnits><Name>cm/s**2</Name><Description>ground acceleration along the channel direction</Description></InputUnits>
+            <OutputUnits><Name>cm/s**2</Name><Description>sensor acceleration before calibration</Description></OutputUnits>
+            <ApproximationType>MACLAURIN</ApproximationType>
+            <FrequencyLowerBound>0</FrequencyLowerBound>
+            <FrequencyUpperBound>0</FrequencyUpperBound>
+            <ApproximationLowerBound>0</ApproximationLowerBound>
+            <ApproximationUpperBound>0</ApproximationUpperBound>
+            <MaximumError>0</MaximumError>
+            <Coefficient number="0">-233.99989536770215</Coefficient>
+            <Coefficient number="1">0.993630128949903</Coefficient>
+          </InstrumentPolynomial>
+          <Stage number="1"><StageGain><Value>0.9999998702234372</Value><Frequency>1</Frequency></StageGain></Stage>
+          <Stage number="2"><StageGain><Value>1.0064108370318932</Value><Frequency>1</Frequency></StageGain></Stage>
+          <Stage number="3">
+            <Polynomial>
+              <InputUnits><Name>cm/s**2</Name></InputUnits>
+              <OutputUnits><Name>cm/s**2</Name></OutputUnits>
+              <ApproximationType>MACLAURIN</ApproximationType>
+              <FrequencyLowerBound>0</FrequencyLowerBound>
+              <FrequencyUpperBound>0</FrequencyUpperBound>
+              <ApproximationLowerBound>0</ApproximationLowerBound>
+              <ApproximationUpperBound>0</ApproximationUpperBound>
+              <MaximumError>0</MaximumError>
+              <Coefficient number="0">-235.5</Coefficient>
+              <Coefficient number="1">1</Coefficient>
+            </Polynomial>
+          </Stage>
+        </Response>
+      </Channel>
+      <Channel code="HN1" locationCode="I2C0-69" startDate="2026-10-03T03:42:21.698Z">
+        <seismo:Sensor>i2c0-69</seismo:Sensor>
+        <seismo:Enabled>true</seismo:Enabled>
+        <seismo:NoiseDensity unit="ug/sqrt(Hz)">400</seismo:NoiseDensity>
+        <seismo:Rotation e="1.2" n="0.05" u="0"/>
+        <seismo:Sensitivity>1.0064</seismo:Sensitivity>
+        <Latitude>36</Latitude>
+        <Longitude>139.7</Longitude>
+        <Elevation>0</Elevation>
+        <Depth>0</Depth>
+        <Azimuth>95.98059952476346</Azimuth>
+        <Dip>-1.08527841282239</Dip>
+        <Type>CONTINUOUS</Type>
+        <Response>
+          <InstrumentPolynomial>
+            <InputUnits><Name>cm/s**2</Name><Description>ground acceleration along the channel direction</Description></InputUnits>
+            <OutputUnits><Name>cm/s**2</Name><Description>sensor acceleration before calibration</Description></OutputUnits>
+            <ApproximationType>MACLAURIN</ApproximationType>
+            <FrequencyLowerBound>0</FrequencyLowerBound>
+            <FrequencyUpperBound>0</FrequencyUpperBound>
+            <ApproximationLowerBound>0</ApproximationLowerBound>
+            <ApproximationUpperBound>0</ApproximationUpperBound>
+            <MaximumError>0</MaximumError>
+            <Coefficient number="0">-22.179296871066974</Coefficient>
+            <Coefficient number="1">1.1956494270116966</Coefficient>
+          </InstrumentPolynomial>
+          <Stage number="1"><StageGain><Value>0.8417182974070498</Value><Frequency>1</Frequency></StageGain></Stage>
+          <Stage number="2"><StageGain><Value>0.9936406995230525</Value><Frequency>1</Frequency></StageGain></Stage>
+          <Stage number="3">
+            <Polynomial>
+              <InputUnits><Name>cm/s**2</Name></InputUnits>
+              <OutputUnits><Name>cm/s**2</Name></OutputUnits>
+              <ApproximationType>MACLAURIN</ApproximationType>
+              <FrequencyLowerBound>0</FrequencyLowerBound>
+              <FrequencyUpperBound>0</FrequencyUpperBound>
+              <ApproximationLowerBound>0</ApproximationLowerBound>
+              <ApproximationUpperBound>0</ApproximationUpperBound>
+              <MaximumError>0</MaximumError>
+              <Coefficient number="0">-18.55</Coefficient>
+              <Coefficient number="1">1</Coefficient>
+            </Polynomial>
+          </Stage>
+        </Response>
+      </Channel>
+      <Channel code="HN2" locationCode="I2C0-69" startDate="2026-10-03T03:42:21.698Z">
+        <seismo:Sensor>i2c0-69</seismo:Sensor>
+        <seismo:Enabled>true</seismo:Enabled>
+        <seismo:NoiseDensity unit="ug/sqrt(Hz)">400</seismo:NoiseDensity>
+        <seismo:Rotation e="0.1" n="0.9" u="-0.3"/>
+        <seismo:Sensitivity>0.9987</seismo:Sensitivity>
+        <Latitude>36</Latitude>
+        <Longitude>139.7</Longitude>
+        <Elevation>0</Elevation>
+        <Depth>0</Depth>
+        <Azimuth>357.6140559696112</Azimuth>
+        <Dip>10.29610408578565</Dip>
+        <Type>CONTINUOUS</Type>
+        <Response>
+          <InstrumentPolynomial>
+            <InputUnits><Name>cm/s**2</Name><Description>ground acceleration along the channel direction</Description></InputUnits>
+            <OutputUnits><Name>cm/s**2</Name><Description>sensor acceleration before calibration</Description></OutputUnits>
+            <ApproximationType>MACLAURIN</ApproximationType>
+            <FrequencyLowerBound>0</FrequencyLowerBound>
+            <FrequencyUpperBound>0</FrequencyUpperBound>
+            <ApproximationLowerBound>0</ApproximationLowerBound>
+            <ApproximationUpperBound>0</ApproximationUpperBound>
+            <MaximumError>0</MaximumError>
+            <Coefficient number="0">-2.0993621329092726</Coefficient>
+            <Coefficient number="1">0.9330498368485656</Coefficient>
+          </InstrumentPolynomial>
+          <Stage number="1"><StageGain><Value>1.0703608323572211</Value><Frequency>1</Frequency></StageGain></Stage>
+          <Stage number="2"><StageGain><Value>1.0013016921998599</Value><Frequency>1</Frequency></StageGain></Stage>
+          <Stage number="3">
+            <Polynomial>
+              <InputUnits><Name>cm/s**2</Name></InputUnits>
+              <OutputUnits><Name>cm/s**2</Name></OutputUnits>
+              <ApproximationType>MACLAURIN</ApproximationType>
+              <FrequencyLowerBound>0</FrequencyLowerBound>
+              <FrequencyUpperBound>0</FrequencyUpperBound>
+              <ApproximationLowerBound>0</ApproximationLowerBound>
+              <ApproximationUpperBound>0</ApproximationUpperBound>
+              <MaximumError>0</MaximumError>
+              <Coefficient number="0">-2.25</Coefficient>
+              <Coefficient number="1">1</Coefficient>
+            </Polynomial>
+          </Stage>
+        </Response>
+      </Channel>
+      <Channel code="HN3" locationCode="I2C0-69" startDate="2026-10-03T03:42:21.698Z">
+        <seismo:Sensor>i2c0-69</seismo:Sensor>
+        <seismo:Enabled>true</seismo:Enabled>
+        <seismo:NoiseDensity unit="ug/sqrt(Hz)">400</seismo:NoiseDensity>
+        <seismo:Rotation e="0" n="0.2" u="1.1"/>
+        <seismo:Sensitivity>0.99363</seismo:Sensitivity>
+        <Latitude>36</Latitude>
+        <Longitude>139.7</Longitude>
+        <Elevation>0</Elevation>
+        <Depth>0</Depth>
+        <Azimuth>357.6140559696112</Azimuth>
+        <Dip>-71.47017239056058</Dip>
+        <Type>CONTINUOUS</Type>
+        <Response>
+          <InstrumentPolynomial>
+            <InputUnits><Name>cm/s**2</Name><Description>ground acceleration along the channel direction</Description></InputUnits>
+            <OutputUnits><Name>cm/s**2</Name><Description>sensor acceleration before calibration</Description></OutputUnits>
+            <ApproximationType>MACLAURIN</ApproximationType>
+            <FrequencyLowerBound>0</FrequencyLowerBound>
+            <FrequencyUpperBound>0</FrequencyUpperBound>
+            <ApproximationLowerBound>0</ApproximationLowerBound>
+            <ApproximationUpperBound>0</ApproximationUpperBound>
+            <MaximumError>0</MaximumError>
+            <Coefficient number="0">-258.91587434554185</Coefficient>
+            <Coefficient number="1">1.0994304643122796</Coefficient>
+          </InstrumentPolynomial>
+          <Stage number="1"><StageGain><Value>0.9037679346292624</Value><Frequency>1</Frequency></StageGain></Stage>
+          <Stage number="2"><StageGain><Value>1.0064108370318932</Value><Frequency>1</Frequency></StageGain></Stage>
+          <Stage number="3">
+            <Polynomial>
+              <InputUnits><Name>cm/s**2</Name></InputUnits>
+              <OutputUnits><Name>cm/s**2</Name></OutputUnits>
+              <ApproximationType>MACLAURIN</ApproximationType>
+              <FrequencyLowerBound>0</FrequencyLowerBound>
+              <FrequencyUpperBound>0</FrequencyUpperBound>
+              <ApproximationLowerBound>0</ApproximationLowerBound>
+              <ApproximationUpperBound>0</ApproximationUpperBound>
+              <MaximumError>0</MaximumError>
+              <Coefficient number="0">-235.5</Coefficient>
+              <Coefficient number="1">1</Coefficient>
+            </Polynomial>
+          </Stage>
+        </Response>
+      </Channel>
+    </Station>
+  </Network>
+  <seismo:Revision at="2026-10-03T03:40:21.698Z" reason="startup">
+    <seismo:Station id="station-1" lat="35.6" lon="139.7">書斎</seismo:Station>
+    <seismo:Board key="mac:020000000003">
+      <seismo:Sensor id="i2c0-68"/>
+      <seismo:Sensor id="i2c0-69"/>
+    </seismo:Board>
+  </seismo:Revision>
+  <seismo:Revision at="2026-10-03T03:41:21.698Z" reason="changed">
+    <seismo:Station id="station-1" lat="35.6" lon="139.7">書斎</seismo:Station>
+    <seismo:Board key="mac:020000000003">
+      <seismo:Sensor id="i2c0-68"/>
+      <seismo:Sensor id="i2c0-69"/>
+    </seismo:Board>
+  </seismo:Revision>
+  <seismo:Revision at="2026-10-03T03:42:21.698Z" reason="changed">
+    <seismo:Station id="station-1" lat="36" lon="139.7">書斎</seismo:Station>
+    <seismo:Board key="mac:020000000003">
+      <seismo:Sensor id="i2c0-68"/>
+      <seismo:Sensor id="i2c0-69"/>
+    </seismo:Board>
+  </seismo:Revision>
+</FDSNStationXML>

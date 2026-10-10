@@ -7,6 +7,7 @@ import { PacketTally } from './packetTally'
 import { ReadingHub } from './readingHub'
 import type { SensorHealth } from './sensorHealth'
 import { StationDirectory } from './stationConfig'
+import { IDENTITY_MATRIX, defaultAxes } from './stationConfigTypes'
 import type { StationHealth } from './stationHealth'
 import { buildStatusReport } from './statusReport'
 import type { StatusReportInput, WaveArchiveStatus } from './statusReport'
@@ -40,6 +41,7 @@ const EMPTY_GRAVITY = {
   unjudged: 0,
   restlessWindows: 0,
   restarts: 0,
+  axisReshapes: 0,
   evictions: 0,
 } as const
 
@@ -140,11 +142,13 @@ function sensor(overrides: Partial<SensorHealth> = {}): SensorHealth {
     sensorId: 's0',
     lastPacketMs: NOW - 300,
     streamKey: 'mac:aa|s0|boot1',
+    axisCount: 3,
     segmentId: 7,
     lastIntensity: 1.25,
     lastReadingAtMs: NOW - 2_000,
     lastNominalReason: null,
     lastSkipReason: null,
+    axisMismatch: null,
     ...overrides,
   }
 }
@@ -155,6 +159,7 @@ function station(overrides: Partial<StationHealth> = {}): StationHealth {
     lastPacketMs: NOW - 300,
     lastIntensity: 2.1,
     lastReadingAtMs: NOW - 2_000,
+    lastReadingReceivedMs: NOW - 300,
     lastSkipReason: null,
     closeFailures: 0,
     lastCloseFailure: null,
@@ -164,6 +169,7 @@ function station(overrides: Partial<StationHealth> = {}): StationHealth {
     // 顔ぶれが揃わないまま切り上げた回数（#374）。0 が正常。
     uncoveredFusions: 0,
     pairDiffs: [],
+    residuals: [],
     ...overrides,
   }
 }
@@ -397,6 +403,13 @@ describe('buildStatusReport', () => {
     expect(report.unreadableIntensityValues).toBe(1)
   })
 
+  it('観測点の震度を受け取った時刻（受け手の時計）も、時刻の番人を通る', () => {
+    const report = buildStatusReport(input({ stationIntensities: [station({ lastReadingReceivedMs: Number.NaN })] }))
+
+    expect(report.stationIntensities[0].lastReadingReceivedMs).toBeNull()
+    expect(report.unreadableTimes).toBe(1)
+  })
+
   it('数として出せなかった震度の件数を、時刻とは別の数として出す', () => {
     const report = buildStatusReport(input({ unusableIntensities: 4 }))
 
@@ -416,7 +429,7 @@ describe('buildStatusReport', () => {
   it('正: 設定にある基板は、観測点（座標込み）を出す', () => {
     const stations = new StationDirectory({
       stations: [{ stationId: 'study', displayName: '書斎', lat: 35.6, lon: 139.7 }],
-      boards: [{ boardKey: 'mac:aa', stationId: 'study', sensors: [] }],
+      boards: [{ boardKey: 'mac:aa', stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] }],
     })
     const report = buildStatusReport(input({ stations }))
 
@@ -441,17 +454,12 @@ describe('buildStatusReport', () => {
         {
           boardKey: 'mac:aa',
           stationId: 'study',
+          orientation: IDENTITY_MATRIX,
           sensors: [
             {
               sensorId: 's0',
               enabled: true,
-              rotation: [
-                [1, 0, 0],
-                [0, 1, 0],
-                [0, 0, 1],
-              ],
-              offset: [0, 0, 0],
-              sensitivity: [1, 1, 1],
+              axes: defaultAxes(3),
               noiseDensity: null,
             },
           ],
@@ -469,7 +477,7 @@ describe('buildStatusReport', () => {
       // **基板は観測点に割り当てているが、センサーの校正値は 1 件も書いていない。**
       // `station` は付くが `calibrationConfigured` は別の問い —— 「どこに置いたか」を
       // 知っていることと「校正値を書いたか」は無関係な事実なので混ぜない。
-      boards: [{ boardKey: 'mac:aa', stationId: 'study', sensors: [] }],
+      boards: [{ boardKey: 'mac:aa', stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] }],
     })
     const report = buildStatusReport(input({ stations }))
 
@@ -484,17 +492,12 @@ describe('buildStatusReport', () => {
         {
           boardKey: 'mac:aa',
           stationId: 'study',
+          orientation: IDENTITY_MATRIX,
           sensors: [
             {
               sensorId: 's0',
               enabled: false,
-              rotation: [
-                [1, 0, 0],
-                [0, 1, 0],
-                [0, 0, 1],
-              ],
-              offset: [0, 0, 0],
-              sensitivity: [1, 1, 1],
+              axes: defaultAxes(3),
               noiseDensity: null,
             },
           ],
@@ -517,17 +520,12 @@ describe('buildStatusReport', () => {
         {
           boardKey: 'mac:aa',
           stationId: 'study',
+          orientation: IDENTITY_MATRIX,
           sensors: [
             {
               sensorId: 's0',
               enabled: true,
-              rotation: [
-                [1, 0, 0],
-                [0, 1, 0],
-                [0, 0, 1],
-              ],
-              offset: [0, 0, 0],
-              sensitivity: [1, 1, 1],
+              axes: defaultAxes(3),
               noiseDensity: null,
             },
           ],
@@ -567,8 +565,8 @@ describe('buildStatusReport', () => {
 
   it('押し出しの具合を出す', () => {
     const hub = new ReadingHub({ maxSubscribers: 1 })
-    hub.subscribe({ wave: 'all', diff: null, deliver: () => true, onDetach: () => {} })
-    hub.subscribe({ wave: 'none', diff: null, deliver: () => true, onDetach: () => {} })
+    hub.subscribe({ wave: 'all', diff: null, residual: null, deliver: () => true, onDetach: () => {} })
+    hub.subscribe({ wave: 'none', diff: null, residual: null, deliver: () => true, onDetach: () => {} })
 
     const report = buildStatusReport(input({ hub: hub.snapshot() }))
 
@@ -598,6 +596,7 @@ describe('buildStatusReport', () => {
       unjudged: 9,
       restlessWindows: 1,
       restarts: 4,
+      axisReshapes: 0,
       evictions: 2,
     }
 

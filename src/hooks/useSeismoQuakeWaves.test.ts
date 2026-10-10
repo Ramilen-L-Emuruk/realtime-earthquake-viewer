@@ -724,6 +724,7 @@ describe('震度を訊く（#494 段3）', () => {
         measuredUnavailable: null,
         gapCount: 0,
         invalidChunkCount: 0,
+        unsolvedChunkCount: 0,
         filesMissing: 0,
         filesFailed: 0,
         skippedBytes: 0,

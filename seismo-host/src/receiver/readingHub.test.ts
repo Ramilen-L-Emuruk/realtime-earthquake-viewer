@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 
 import type { IntensityReading, WaveChunk } from './intensityPipeline'
 import { ReadingHub } from './readingHub'
-import type { DetachReason, HubMessage, PairWant, Subscription, WaveWant } from './readingHub'
-import type { SensorMemberRef, SensorPairDiff } from './sensorFusion'
+import type { DetachReason, HubMessage, PairWant, ResidualWant, Subscription, WaveWant } from './readingHub'
+import type { SensorMemberRef, SensorPairDiff, SensorResidual } from './sensorFusion'
 
 /** 差し替えられる時計。 */
 function clock(start = 0): { now: () => number; advance: (ms: number) => void } {
@@ -41,7 +41,12 @@ function wave(overrides: Partial<WaveChunk> = {}): WaveChunk {
     firstSampleMs: 1_700_000_000_000,
     msPerSample: 10,
     timebaseNominalReason: null,
-    gal: [[1], [2], [3]],
+    ground: [[1], [2], [3]],
+    axes: [
+      { direction: [1, 0, 0], gal: [1] },
+      { direction: [0, 1, 0], gal: [2] },
+      { direction: [0, 0, 1], gal: [3] },
+    ],
     ...overrides,
   }
 }
@@ -94,8 +99,31 @@ const DIFF_OTHER_STATION: HubMessage = {
 }
 const WANT_AB: PairWant = { stationId: 'garage', a: MEMBER_A, b: MEMBER_B }
 
+/** センサー 1 台ぶんのずれ（#688）。 */
+function residualOf(member: SensorMemberRef, stationId = 'garage'): SensorResidual {
+  return {
+    stationId,
+    member,
+    firstSampleIndex: 0,
+    firstSampleMs: 1_000,
+    msPerSample: 10,
+    channels: ['HN1', 'HN2'],
+    axes: [
+      { direction: [1, 0, 0], residualGal: [0.1] },
+      { direction: [0, 0, 1], residualGal: [null] },
+    ],
+  }
+}
+
+const RESIDUAL_A: HubMessage = { kind: 'station-residual', residual: residualOf(MEMBER_A) }
+const RESIDUAL_B: HubMessage = { kind: 'station-residual', residual: residualOf(MEMBER_B) }
+const RESIDUAL_A_OTHER_STATION: HubMessage = { kind: 'station-residual', residual: residualOf(MEMBER_A, 'attic') }
+const WANT_RESIDUAL_A: ResidualWant = { stationId: 'garage', member: MEMBER_A }
+
 /** 受け取る相手。`take` を偽にすると詰まったふりをする。 */
-function sink(options: { wave?: WaveWant; diff?: PairWant | null; take?: boolean } = {}) {
+function sink(
+  options: { wave?: WaveWant; diff?: PairWant | null; residual?: ResidualWant | null; take?: boolean } = {},
+) {
   const got: HubMessage[] = []
   const detached: DetachReason[] = []
   const self = {
@@ -104,11 +132,13 @@ function sink(options: { wave?: WaveWant; diff?: PairWant | null; take?: boolean
     take: options.take ?? true,
     wave: options.wave ?? 'none',
     diff: options.diff ?? null,
+    residual: options.residual ?? null,
     subscription: null as Subscription | null,
     attach(hub: ReadingHub): Subscription | null {
       const s = hub.subscribe({
         wave: self.wave,
         diff: self.diff,
+        residual: self.residual,
         deliver: (m) => {
           if (!self.take) return false
           got.push(m)
@@ -364,6 +394,47 @@ describe('ReadingHub', () => {
     expect(hub.snapshot().subscribers[0].diff).toEqual(WANT_AB)
   })
 
+  // センサーごとのずれ（#688）。**差分と同じく、梯子ではなく顔ぶれで配る。**
+  it('正: 頼んだ 1 台のずれを配る（波形を頼んでいなくても）', () => {
+    const hub = new ReadingHub()
+    const watcher = sink({ wave: 'none', residual: WANT_RESIDUAL_A })
+    watcher.attach(hub)
+
+    hub.publish(RESIDUAL_A)
+    hub.publish(WAVE)
+
+    expect(watcher.got).toEqual([RESIDUAL_A])
+  })
+
+  it('対照: 別の台・別の観測点のずれは配らない', () => {
+    const hub = new ReadingHub()
+    const watcher = sink({ wave: 'all', residual: WANT_RESIDUAL_A })
+    watcher.attach(hub)
+
+    hub.publish(RESIDUAL_B)
+    hub.publish(RESIDUAL_A_OTHER_STATION)
+
+    expect(watcher.got).toEqual([])
+  })
+
+  it("対照: ずれを頼んでいない相手へは、'all' でも差分を頼んでいても配らない", () => {
+    const hub = new ReadingHub()
+    const full = sink({ wave: 'all', diff: WANT_AB })
+    full.attach(hub)
+
+    hub.publish(RESIDUAL_A)
+    hub.publish(DIFF_AB)
+
+    expect(full.got).toEqual([DIFF_AB])
+  })
+
+  it('頼んだ 1 台を状態の口へ出す', () => {
+    const hub = new ReadingHub()
+    sink({ wave: 'all', residual: WANT_RESIDUAL_A }).attach(hub)
+
+    expect(hub.snapshot().subscribers[0].residual).toEqual(WANT_RESIDUAL_A)
+  })
+
   it('上限に達したら新しいほうを断り、断った数を覚える', () => {
     const hub = new ReadingHub({ maxSubscribers: 2 })
     expect(sink().attach(hub)).not.toBeNull()
@@ -457,6 +528,7 @@ describe('ReadingHub', () => {
     const broken = hub.subscribe({
       wave: 'none',
       diff: null,
+      residual: null,
       deliver: () => {
         throw new Error('壊れた受け手')
       },
@@ -484,6 +556,7 @@ describe('ReadingHub', () => {
     const subA: Subscription | null = hub.subscribe({
       wave: 'none',
       diff: null,
+      residual: null,
       deliver: (m) => {
         a.got.push(m)
         subA?.close()
@@ -507,6 +580,7 @@ describe('ReadingHub', () => {
     const rude = hub.subscribe({
       wave: 'none',
       diff: null,
+      residual: null,
       deliver: () => false,
       onDetach: () => {
         throw new Error('報せが壊れた')

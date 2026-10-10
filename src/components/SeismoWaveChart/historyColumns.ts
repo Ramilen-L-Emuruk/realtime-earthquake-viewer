@@ -68,8 +68,10 @@ export function foldHistoryColumns(params: {
         max = [col.max[0], col.max[1], col.max[2]]
       } else {
         for (let a = 0; a < 3; a += 1) {
-          if (col.min[a] < min[a]) min[a] = col.min[a]
-          if (col.max[a] > max[a]) max[a] = col.max[a]
+          // **その成分の値が無い列（`NaN`）は飛ばし、`NaN` の端は必ず置き換える** —— 観測点の合成が
+          // 解けなかった成分は `NaN` で届く。比べるだけだと、最初に拾った `NaN` が居座る。
+          if (Number.isFinite(col.min[a]) && (!Number.isFinite(min[a]) || col.min[a] < min[a])) min[a] = col.min[a]
+          if (Number.isFinite(col.max[a]) && (!Number.isFinite(max[a]) || col.max[a] > max[a])) max[a] = col.max[a]
         }
       }
       // **いちばん少ない本数を採る。** 裏付けが 1 本まで落ちた瞬間がその範囲に

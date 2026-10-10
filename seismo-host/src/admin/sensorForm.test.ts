@@ -6,28 +6,48 @@
 
 import { describe, expect, it } from 'vitest'
 import {
-  DEFAULT_SENSOR_CALIBRATION,
+  defaultSensorCalibration,
+  IDENTITY_MATRIX,
   type SensorEntry,
 } from '../receiver/stationConfigTypes'
 import type { SensorRestWindow } from './detectedBoards'
 import {
   emptySensorFormValues,
+  orientationToFormValues,
   parseHeadingText,
+  parseOrientationFormValues,
   parseSensorFormValues,
+  readOrientationValues,
   readSensorCardValues,
+  renderOrientationHtml,
   renderSensorCardHtml,
   restWindowNote,
   sensorToFormValues,
+  writeOrientationValues,
+  writeSensorCardAxes,
   type SensorFormValues,
 } from './sensorForm'
 
 const VALID_VALUES: SensorFormValues = {
   sensorId: 'accel-0',
   enabled: true,
-  offset: ['0.1', '-0.2', '0.3'],
-  sensitivity: ['1', '1', '1'],
-  rotation: ['1', '0', '0', '0', '1', '0', '0', '0', '1'],
+  axes: [
+    { vector: ['1', '0', '0'], offset: '0.1' },
+    { vector: ['0', '1', '0'], offset: '-0.2' },
+    { vector: ['0', '0', '1'], offset: '0.3' },
+  ],
   noiseDensity: '80',
+}
+
+/** 立てて付けた 2 軸（基板の X と Z を測る）。 */
+const TWO_AXIS_VALUES: SensorFormValues = {
+  sensorId: 'i2c0-6a',
+  enabled: true,
+  axes: [
+    { vector: ['1.0021', '0.0034', '-0.0012'], offset: '4.5' },
+    { vector: ['0.0008', '-0.0017', '0.9968'], offset: '-12.25' },
+  ],
+  noiseDensity: '',
 }
 
 describe('parseSensorFormValues', () => {
@@ -38,15 +58,19 @@ describe('parseSensorFormValues', () => {
     expect(result.sensor).toEqual<SensorEntry>({
       sensorId: 'accel-0',
       enabled: true,
-      offset: [0.1, -0.2, 0.3],
-      sensitivity: [1, 1, 1],
-      rotation: [
-        [1, 0, 0],
-        [0, 1, 0],
-        [0, 0, 1],
+      axes: [
+        { vector: [1, 0, 0], offset: 0.1 },
+        { vector: [0, 1, 0], offset: -0.2 },
+        { vector: [0, 0, 1], offset: 0.3 },
       ],
       noiseDensity: 80,
     })
+  })
+
+  it('2 軸のセンサーも読める（軸の本数は欄の本数）', () => {
+    const result = parseSensorFormValues(TWO_AXIS_VALUES)
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.sensor.axes).toHaveLength(2)
   })
 
   it('noiseDensity が空文字列なら null になる', () => {
@@ -60,35 +84,54 @@ describe('parseSensorFormValues', () => {
     expect(result.ok).toBe(false)
   })
 
-  it('感度が 0 ならエラーにする（0 や負は軸を殺す・反転するので enabled と役割が重複する）', () => {
-    const result = parseSensorFormValues({ ...VALID_VALUES, sensitivity: ['0', '1', '1'] })
+  it('3 本の向きが 1 つの面に寄っていればエラーにする（その向きの揺れを解けない）', () => {
+    const result = parseSensorFormValues({
+      ...VALID_VALUES,
+      axes: [VALID_VALUES.axes[0]!, VALID_VALUES.axes[1]!, { vector: ['1', '1', '0'], offset: '0' }],
+    })
     expect(result.ok).toBe(false)
-    if (!result.ok) expect(result.error).toContain('感度')
+    if (!result.ok) expect(result.error).toContain('1 つの面')
   })
 
-  it('感度が負の値ならエラーにする', () => {
-    const result = parseSensorFormValues({ ...VALID_VALUES, sensitivity: ['1', '-1', '1'] })
+  it('2 本の向きが平行ならエラーにする', () => {
+    const result = parseSensorFormValues({
+      ...TWO_AXIS_VALUES,
+      // 軸 1 を −2 倍した向き（逆向きでも平行は平行）。
+      axes: [TWO_AXIS_VALUES.axes[0]!, { vector: ['-2.0042', '-0.0068', '0.0024'], offset: '0' }],
+    })
     expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toContain('平行')
   })
 
-  it('オフセットは負の値でもエラーにしない（静止時のゼロ点のずれは正負どちらもありうる）', () => {
-    const result = parseSensorFormValues({ ...VALID_VALUES, offset: ['-5', '-5', '-5'] })
+  it('向きが逆（負の長さに当たる）でもエラーにしない（裏返して付けた軸を書ける）', () => {
+    const result = parseSensorFormValues({
+      ...VALID_VALUES,
+      axes: [{ vector: ['-1', '0', '0'], offset: '0' }, VALID_VALUES.axes[1]!, VALID_VALUES.axes[2]!],
+    })
     expect(result.ok).toBe(true)
   })
 
-  it('数値として読めない文字列はエラーにする', () => {
-    const result = parseSensorFormValues({ ...VALID_VALUES, offset: ['abc', '0', '0'] })
-    expect(result.ok).toBe(false)
-    if (!result.ok) expect(result.error).toContain('オフセット')
-  })
-
-  it('回転行列に数値として読めない文字列があればエラーにする', () => {
+  it('ゼロ点は負の値でもエラーにしない（静止時のゼロ点のずれは正負どちらもありうる）', () => {
     const result = parseSensorFormValues({
       ...VALID_VALUES,
-      rotation: ['1', '0', '0', '0', 'x', '0', '0', '0', '1'],
+      axes: VALID_VALUES.axes.map((a) => ({ ...a, offset: '-5' })),
     })
-    expect(result.ok).toBe(false)
-    if (!result.ok) expect(result.error).toContain('回転行列')
+    expect(result.ok).toBe(true)
+  })
+
+  it('数値として読めない文字列はエラーにする（どの軸のどの欄かが分かる）', () => {
+    const offset = parseSensorFormValues({
+      ...VALID_VALUES,
+      axes: [VALID_VALUES.axes[0]!, { ...VALID_VALUES.axes[1]!, offset: 'abc' }, VALID_VALUES.axes[2]!],
+    })
+    expect(offset.ok).toBe(false)
+    if (!offset.ok) expect(offset.error).toContain('軸 2 のゼロ点')
+    const vector = parseSensorFormValues({
+      ...VALID_VALUES,
+      axes: [{ vector: ['1', 'x', '0'], offset: '0' }, VALID_VALUES.axes[1]!, VALID_VALUES.axes[2]!],
+    })
+    expect(vector.ok).toBe(false)
+    if (!vector.ok) expect(vector.error).toContain('軸 1 の向き')
   })
 
   it('ノイズ密度が負ならエラーにする', () => {
@@ -102,12 +145,10 @@ describe('sensorToFormValues / emptySensorFormValues', () => {
     const sensor: SensorEntry = {
       sensorId: 'accel-1',
       enabled: false,
-      offset: [1, 2, 3],
-      sensitivity: [1.5, 2.5, 3.5],
-      rotation: [
-        [0, 1, 0],
-        [1, 0, 0],
-        [0, 0, -1],
+      axes: [
+        { vector: [0, 0.66, 0], offset: 1 },
+        { vector: [0.4, 0, 0], offset: 2 },
+        { vector: [0, 0, -0.2857142857142857], offset: 3 },
       ],
       noiseDensity: 42,
     }
@@ -120,20 +161,21 @@ describe('sensorToFormValues / emptySensorFormValues', () => {
   it('noiseDensity が null のセンサーは空文字列になる', () => {
     const values = sensorToFormValues({
       sensorId: 'accel-2',
-      ...DEFAULT_SENSOR_CALIBRATION,
+      ...defaultSensorCalibration(3),
     })
     expect(values.noiseDensity).toBe('')
   })
 
-  it('emptySensorFormValues は DEFAULT_SENSOR_CALIBRATION を文字列化したものと一致する', () => {
-    const result = parseSensorFormValues({ ...emptySensorFormValues(), sensorId: 'new-sensor' })
-    expect(result.ok).toBe(true)
-    if (result.ok) {
-      expect(result.sensor.enabled).toBe(DEFAULT_SENSOR_CALIBRATION.enabled)
-      expect(result.sensor.rotation).toEqual(DEFAULT_SENSOR_CALIBRATION.rotation)
-      expect(result.sensor.offset).toEqual(DEFAULT_SENSOR_CALIBRATION.offset)
-      expect(result.sensor.sensitivity).toEqual(DEFAULT_SENSOR_CALIBRATION.sensitivity)
-      expect(result.sensor.noiseDensity).toBeNull()
+  it('emptySensorFormValues は補正なしの軸を文字列化したものと一致する（3 軸・2 軸）', () => {
+    for (const count of [3, 2] as const) {
+      const result = parseSensorFormValues({ ...emptySensorFormValues(count), sensorId: 'new-sensor' })
+      expect(result.ok).toBe(true)
+      if (result.ok) {
+        const want = defaultSensorCalibration(count)
+        expect(result.sensor.enabled).toBe(want.enabled)
+        expect(result.sensor.axes).toEqual(want.axes)
+        expect(result.sensor.noiseDensity).toBeNull()
+      }
     }
   })
 })
@@ -146,8 +188,37 @@ describe('renderSensorCardHtml / readSensorCardValues', () => {
   }
 
   it('renderSensorCardHtml で作ったカードを readSensorCardValues で読むと元の値に一致する', () => {
+    expect(readSensorCardValues(mountCard(VALID_VALUES))).toEqual(VALID_VALUES)
+    expect(readSensorCardValues(mountCard(TWO_AXIS_VALUES))).toEqual(TWO_AXIS_VALUES)
+  })
+
+  it('2 軸のセンサーは軸の欄が 2 行だけ描かれる', () => {
+    const container = mountCard(TWO_AXIS_VALUES)
+    expect(container.querySelectorAll('.s-axis-offset')).toHaveLength(2)
+    expect(container.querySelectorAll('.s-axis-vector')).toHaveLength(6)
+  })
+
+  // 2026-10-10 に覆した: 6 面法は基板の欄に 1 つだけ置く（全部のセンサーの軸を一緒に解く）。
+  it('6 面法の欄はセンサーカードに出さない（3 軸・2 軸とも。基板の欄にある）', () => {
+    expect(mountCard(VALID_VALUES).querySelector('.s-sixface')).toBeNull()
+    expect(mountCard(TWO_AXIS_VALUES).querySelector('.s-sixface')).toBeNull()
+  })
+
+  // **回帰:** 左上の空の見出しを `.muted` にしていて、`.muted:empty` が場所を取らないため
+  // 以降のセルが 1 つずつ前へずれ、「軸 1」が見出しの行の右端に出ていた（画面で見つけた）。
+  it('軸の欄は 1 行 5 セルで並び、各行の先頭が「軸 N」になる（空のセルを .muted にしない）', () => {
+    const cells = Array.from(mountCard(VALID_VALUES).querySelector('.axis-grid')?.children ?? [])
+    expect(cells).toHaveLength(5 * 4)
+    expect(cells.filter((c) => c.classList.contains('muted') && c.textContent === '')).toHaveLength(0)
+    expect([5, 10, 15].map((i) => cells[i]?.textContent)).toEqual(['軸 1', '軸 2', '軸 3'])
+  })
+
+  it('writeSensorCardAxes は読むのと同じ欄へ書く（本数が違えば投げる）', () => {
     const container = mountCard(VALID_VALUES)
-    expect(readSensorCardValues(container)).toEqual(VALID_VALUES)
+    const next = VALID_VALUES.axes.map((a, i) => ({ vector: a.vector, offset: String(10 + i) }))
+    writeSensorCardAxes(container, next)
+    expect(readSensorCardValues(container).axes).toEqual(next)
+    expect(() => writeSensorCardAxes(container, next.slice(0, 2))).toThrow()
   })
 
   it('sensorId に含まれる HTML 特殊文字がタグとして解釈されない（XSS対策）', () => {
@@ -162,6 +233,52 @@ describe('renderSensorCardHtml / readSensorCardValues', () => {
     const container = mountCard({ ...VALID_VALUES, enabled: false })
     const checkbox = container.querySelector<HTMLInputElement>('.s-enabled')
     expect(checkbox?.checked).toBe(false)
+  })
+})
+
+describe('基板の向きの欄', () => {
+  const YAW90 = [
+    [0, -1, 0],
+    [1, 0, 0],
+    [0, 0, 1],
+  ] as const
+
+  it('描いた欄を読むと元の値に一致し、書き込んだ値も同じ欄から読める', () => {
+    const container = document.createElement('div')
+    container.innerHTML = renderOrientationHtml(orientationToFormValues())
+    expect(parseOrientationFormValues(readOrientationValues(container))).toEqual(IDENTITY_MATRIX)
+    writeOrientationValues(container, YAW90)
+    expect(parseOrientationFormValues(readOrientationValues(container))).toEqual(YAW90)
+  })
+
+  // 正（2026-10-10）: 6 面法は基板の欄に 1 つ。ゼロ点を入れる前に出した傾きはずれを抱え込むので、
+  // 「鉛直を合わせる」より前に置く。
+  it('基板の欄に 6 面法を 1 つ、「鉛直を合わせる」より前に置く', () => {
+    const container = document.createElement('div')
+    container.innerHTML = renderOrientationHtml(orientationToFormValues())
+    expect(container.querySelectorAll('.b-sixface .apply-sixface')).toHaveLength(1)
+    const sixFace = container.querySelector('.b-sixface')
+    const tilt = container.querySelector('.suggest-tilt')
+    if (sixFace === null || tilt === null) throw new Error('欄が無い')
+    expect(sixFace.compareDocumentPosition(tilt) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('純粋な回転でなければ理由を返す（倍率を含む・鏡映・数でない）', () => {
+    const scaled = orientationToFormValues([
+      [2, 0, 0],
+      [0, 1, 0],
+      [0, 0, 1],
+    ])
+    expect('error' in (parseOrientationFormValues(scaled) as object)).toBe(true)
+    const mirrored = orientationToFormValues([
+      [-1, 0, 0],
+      [0, 1, 0],
+      [0, 0, 1],
+    ])
+    expect('error' in (parseOrientationFormValues(mirrored) as object)).toBe(true)
+    const broken = [...orientationToFormValues()] as string[]
+    broken[4] = 'x'
+    expect('error' in (parseOrientationFormValues(broken as unknown as ReturnType<typeof orientationToFormValues>) as object)).toBe(true)
   })
 })
 

@@ -54,6 +54,7 @@ describe('readQuakeIntensity', () => {
         measuredUnavailable: null,
         gapCount: 0,
         invalidChunkCount: 0,
+        unsolvedChunkCount: 0,
         filesMissing: 0,
         filesFailed: 0,
         skippedBytes: 0,
@@ -84,6 +85,12 @@ describe('readQuakeIntensity', () => {
   it('読み込みの欠けと壊れていたまとまりの数を読む', () => {
     const r = readQuakeIntensity({ ...RESPONSE, filesFailed: 1, skippedBytes: 32, truncated: true, invalidChunkCount: 2 })
     expect('value' in r && r.value).toMatchObject({ filesFailed: 1, skippedBytes: 32, truncated: true, invalidChunkCount: 2 })
+  })
+
+  // 正（2026-10-09）: 解けなかった成分で捨てたまとまりの数を、壊れたまとまりと分けて読む。
+  it('解けなかった成分で捨てたまとまりの数を読む', () => {
+    const r = readQuakeIntensity({ ...RESPONSE, unsolvedChunkCount: 4 })
+    expect('value' in r && r.value).toMatchObject({ unsolvedChunkCount: 4, invalidChunkCount: 0 })
   })
 
   // 対照: 推移を返す前のホストでも、最大と計測震度は読める。

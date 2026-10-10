@@ -4,6 +4,7 @@ import {
   SENSOR_COLORS,
   colorForIndex,
   formatClock,
+  formatDirection,
   formatGal,
   needsTenths,
   niceHalfSpanGal,
@@ -96,6 +97,21 @@ describe('formatGal', () => {
   it('値が無いときは印を出す（0 と書かない）', () => {
     expect(formatGal(null)).toBe('—')
     expect(formatGal(Number.NaN)).toBe('—')
+  })
+})
+
+describe('formatDirection', () => {
+  it('正: 東・北・上の成分を小数第 2 位で、符号つきで出す', () => {
+    expect(formatDirection([0.866, 0.5, 0])).toBe('東 +0.87・北 +0.50・上 0.00')
+    expect(formatDirection([-0.5, 0.866, -1])).toBe('東 -0.50・北 +0.87・上 -1.00')
+  })
+
+  it('対照: 丸めて 0 になる値には符号を付けない（-0.00 にしない）', () => {
+    expect(formatDirection([-0.004, 0.004, -0])).toBe('東 0.00・北 0.00・上 0.00')
+  })
+
+  it('安全弁: 数でない成分は「—」にする', () => {
+    expect(formatDirection([Number.NaN, 1, 0])).toBe('東 —・北 +1.00・上 0.00')
   })
 })
 
