@@ -1453,6 +1453,24 @@ describe('/api/*', () => {
       expect(body.stations[0]).toEqual({ stationId: 'study', displayName: '車庫', lat: 35.7, lon: 139.8 })
     })
 
+    it('正: 置き換えても観測点の並びは動かない（末尾へ付け直さない）', async () => {
+      const ops = makeStationConfigOps({
+        stations: [
+          { stationId: 'study', ...STATION_BODY },
+          { stationId: 'garage', ...STATION_BODY },
+        ],
+        boards: [],
+      })
+      const base = await startAuthed(new ReadingHub(), {}, undefined, ops)
+      const res = await fetch(`${base}/api/stations/study`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${TOKEN}`, Origin: ORIGIN, 'Content-Type': 'application/json' },
+        body: JSON.stringify(STATION_BODY),
+      })
+      expect(res.status).toBe(200)
+      expect(ops.get().stations.map((s) => s.stationId)).toEqual(['study', 'garage'])
+    })
+
     // **敵対的レビューで発見**（HIGH/CRITICAL）: オブジェクトリテラルのスプレッド順序を
     // 誤ると、ボディに紛れ込んだ stationId が URL パスの値を上書きしてしまい、
     // 「URL パスを正とする」という docstring の約束が壊れる。
@@ -1591,6 +1609,64 @@ describe('/api/*', () => {
       })
       expect(res.status).toBe(200)
       expect(ops.get().boards).toEqual([{ boardKey: BOARD_KEY, stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] }])
+    })
+
+    // **以前は保存した基板を末尾へ付け直していた**（一覧が保存のたびに入れ替わり、合成の
+    // メンバーの並びも動いた。#713）。
+    it('正: 既にある基板を保存しても、設定の中の位置は動かない', async () => {
+      const second = 'mac:bbbbbbbbbbbb' as const
+      const ops = makeStationConfigOps({
+        stations: [{ stationId: 'study', ...STATION_BODY }],
+        boards: [
+          { boardKey: BOARD_KEY, stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] },
+          { boardKey: second, stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] },
+        ],
+      })
+      const base = await startAuthed(new ReadingHub(), {}, undefined, ops)
+      const res = await fetch(`${base}/api/boards/${encodeURIComponent(BOARD_KEY)}`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${TOKEN}`, Origin: ORIGIN, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stationId: 'study', sensors: [] }),
+      })
+      expect(res.status).toBe(200)
+      expect(ops.get().boards.map((b) => b.boardKey)).toEqual([BOARD_KEY, second])
+    })
+
+    it('対照: 新しい基板は末尾へ足す', async () => {
+      const second = 'mac:bbbbbbbbbbbb' as const
+      const ops = makeStationConfigOps({
+        stations: [{ stationId: 'study', ...STATION_BODY }],
+        boards: [{ boardKey: second, stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] }],
+      })
+      const base = await startAuthed(new ReadingHub(), {}, undefined, ops)
+      await fetch(`${base}/api/boards/${encodeURIComponent(BOARD_KEY)}`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${TOKEN}`, Origin: ORIGIN, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stationId: 'study', sensors: [] }),
+      })
+      expect(ops.get().boards.map((b) => b.boardKey)).toEqual([second, BOARD_KEY])
+    })
+
+    // 付け直していた頃は一致する要素を全部除いていたので、重複は保存で解消されていた。
+    // 最初の 1 件だけを置き換えると 2 件目が残り、重複の検査で保存が永久に通らなくなる。
+    it('安全弁: 同じ基板が 2 件紛れ込んでいても、保存すれば最初の位置へ 1 件に畳む', async () => {
+      const second = 'mac:bbbbbbbbbbbb' as const
+      const ops = makeStationConfigOps({
+        stations: [{ stationId: 'study', ...STATION_BODY }],
+        boards: [
+          { boardKey: BOARD_KEY, stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] },
+          { boardKey: second, stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] },
+          { boardKey: BOARD_KEY, stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] },
+        ],
+      })
+      const base = await startAuthed(new ReadingHub(), {}, undefined, ops)
+      const res = await fetch(`${base}/api/boards/${encodeURIComponent(BOARD_KEY)}`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${TOKEN}`, Origin: ORIGIN, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stationId: 'study', sensors: [] }),
+      })
+      expect(res.status).toBe(200)
+      expect(ops.get().boards.map((b) => b.boardKey)).toEqual([BOARD_KEY, second])
     })
 
     it('安全弁: ボディに別の boardKey が入っていても無視し、URL パスの値だけが使われる', async () => {

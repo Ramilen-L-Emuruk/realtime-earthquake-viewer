@@ -98,12 +98,23 @@ describe('mergeBoardRows', () => {
     expect(rows[0].registered).not.toBeNull()
   })
 
-  it('並びは「届いている順 → 届いていない登録済み」', () => {
+  // **覆した: 以前は「届いている順 → 届いていない登録済み」。** 届いている順は受信のたびに
+  // 入れ替わるので、設定の順を先に、未登録で届いている基板をその後ろへ置く（#713）。
+  it('正: 並びは「登録済み（設定の順）→ 未登録で届いている基板」', () => {
     const rows = mergeBoardRows(
-      [detected('mac:z'), detected('mac:a')],
-      [board('mac:a'), board('mac:m')],
+      [detected('mac:z'), detected('mac:a'), detected('mac:b')],
+      [board('mac:m'), board('mac:a')],
     )
-    expect(rows.map((r) => r.boardKey)).toEqual(['mac:z', 'mac:a', 'mac:m'])
+    expect(rows.map((r) => r.boardKey)).toEqual(['mac:m', 'mac:a', 'mac:z', 'mac:b'])
+    expect(rows[0].detected).toBeNull()
+    expect(rows[1].detected).not.toBeNull()
+  })
+
+  it('対照: 届いている順が変わっても登録済みの並びは変わらない', () => {
+    const boards = [board('mac:m'), board('mac:a')]
+    const one = mergeBoardRows([detected('mac:a'), detected('mac:m')], boards)
+    const two = mergeBoardRows([detected('mac:m'), detected('mac:a')], boards)
+    expect(one.map((r) => r.boardKey)).toEqual(two.map((r) => r.boardKey))
   })
 
   it('どちらも空なら空', () => {
@@ -319,20 +330,21 @@ describe('認識済みの基板からの登録', () => {
     const rows = container.querySelectorAll<HTMLElement>('.boards-table tbody tr')
     const keys = [...rows].map((r) => r.dataset.boardKey)
 
-    // 認識 3 枚のうち 2 枚（A・未登録の C）＋ 声の届いていない登録済み B。
-    expect(keys).toEqual(['mac:cccccccccccc', BOARD_A.boardKey, BOARD_B.boardKey])
+    // 登録済みの A・B（設定の順）→ 未登録で届いている C。受信の新しさでは並べない（#713）。
+    expect(keys).toEqual([BOARD_A.boardKey, BOARD_B.boardKey, 'mac:cccccccccccc'])
     expect(new Set(keys).size).toBe(keys.length)
   })
 
   it('設定に無い基板にだけ「登録」ボタンを出し、登録済みには編集・削除を出す', async () => {
     const container = await mount()
-    const rows = container.querySelectorAll<HTMLElement>('.boards-table tbody tr')
+    const unregistered = container.querySelector<HTMLElement>('tr[data-board-key="mac:cccccccccccc"]')!
+    const registered = container.querySelector<HTMLElement>(`tr[data-board-key="${BOARD_A.boardKey}"]`)!
 
-    expect(rows[0].querySelector('.register-board')).not.toBeNull()
-    expect(rows[0].querySelector('.edit-board')).toBeNull()
-    expect(rows[1].querySelector('.register-board')).toBeNull()
-    expect(rows[1].querySelector('.edit-board')).not.toBeNull()
-    expect(rows[1].textContent).toContain(STATION.displayName)
+    expect(unregistered.querySelector('.register-board')).not.toBeNull()
+    expect(unregistered.querySelector('.edit-board')).toBeNull()
+    expect(registered.querySelector('.register-board')).toBeNull()
+    expect(registered.querySelector('.edit-board')).not.toBeNull()
+    expect(registered.textContent).toContain(STATION.displayName)
   })
 
   // **「登録したのに届いていない」が読めること。** 分けていた頃は、声の一覧に
@@ -368,9 +380,10 @@ describe('認識済みの基板からの登録', () => {
     const container = await mount()
     container.querySelector<HTMLButtonElement>('.register-board')?.click()
 
+    // カードはセンサー ID の順（`i2c0-68` → `i2c0-6a`）。
     const cards = container.querySelectorAll<HTMLElement>('.sensor-card')
-    expect(cards[0].querySelectorAll('.s-axis-offset')).toHaveLength(2)
-    expect(cards[1].querySelectorAll('.s-axis-offset')).toHaveLength(3)
+    expect(cards[0].querySelectorAll('.s-axis-offset')).toHaveLength(3)
+    expect(cards[1].querySelectorAll('.s-axis-offset')).toHaveLength(2)
     // 2 軸のカードがあっても、欄の描き直しを「壊れた」と数えない。
     expect(container.querySelector('.boards-error')?.textContent).toBe('')
   })
@@ -419,7 +432,7 @@ describe('認識済みの基板からの登録', () => {
     const options = Array.from(
       container.querySelectorAll<HTMLOptionElement>('#detected-board-keys option'),
     ).map((o) => o.value)
-    expect(options).toEqual(['mac:cccccccccccc', BOARD_A.boardKey])
+    expect(options).toEqual([BOARD_A.boardKey, 'mac:cccccccccccc'])
   })
 
   // **候補は「いまフォームに入っている基板」のものだけ。** 全基板ぶんを混ぜると、
@@ -896,7 +909,8 @@ describe('基板の傾きを合わせる', () => {
       [0, 1, 0],
       [0, 0, 1],
     ])
-    expect(headingInput(container).value).toBe('')
+    // **覆した: 以前は空欄へ戻した。** いまはその基板の方角（単位行列なので X 軸は東＝90）を入れる（#713）。
+    expect(headingInput(container).value).toBe('90')
     expect(container.querySelector('.board-orientation .b-tilt-result')?.textContent).toBe('')
   })
 
@@ -1105,5 +1119,103 @@ describe('6 面で測る（基板の欄）', () => {
     expect(container.querySelector('.boards-error')?.textContent).toBe(
       '1 枚のセンサーカードと基板の向きの欄で取り付けの診断を出せない。画面を再読込すること',
     )
+  })
+})
+
+/**
+ * 方角の欄（#713）。**以前は保存すると空に戻り、方角だけ入れて保存しても黙って捨てていた。**
+ * いまの方角を欄に入れておき、手で変えたときだけ保存で当てる（2026-10-10 ユーザー承認）。
+ */
+describe('方角の欄（いまの方角を出し、保存でも効かせる）', () => {
+  /** 東・北・上の座標で、X 軸を北（方角 0）へ向けた基板の向き。 */
+  const NORTH: BoardEntry['orientation'] = [
+    [0, -1, 0],
+    [1, 0, 0],
+    [0, 0, 1],
+  ]
+  let puts: unknown[] = []
+
+  beforeEach(() => {
+    puts = []
+    setStoredToken('t')
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (path: unknown, init?: RequestInit) => {
+        if (typeof path === 'string' && path.startsWith('/api/boards/') && init?.method === 'PUT') {
+          puts.push(JSON.parse(String(init.body)))
+          return { ok: true, status: 200, json: async () => ({}) }
+        }
+        if (path === '/api/boards') {
+          return { ok: true, status: 200, json: async () => ({ boards: [{ ...BOARD_A, orientation: NORTH }] }) }
+        }
+        if (path === '/api/stations') return { ok: true, status: 200, json: async () => ({ stations: [STATION] }) }
+        if (path === '/status') {
+          return { ok: true, status: 200, json: async () => ({ generatedAtMs: 10_000, sensors: [], gravity: { verdicts: [] } }) }
+        }
+        if (path === '/api/rest-windows') return { ok: true, status: 200, json: async () => ({ sensors: [] }) }
+        throw new Error(`unexpected fetch path: ${String(path)}`)
+      }),
+    )
+  })
+  afterEach(() => {
+    clearStoredToken()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  async function openBoardA(): Promise<HTMLElement> {
+    const container = document.createElement('div')
+    await initBoardsView(container, new AbortController().signal)
+    container.querySelector<HTMLButtonElement>('.edit-board')?.click()
+    return container
+  }
+  const headingInput = (c: HTMLElement): HTMLInputElement => c.querySelector<HTMLInputElement>('.b-heading')!
+  const submit = async (c: HTMLElement): Promise<void> => {
+    c.querySelector<HTMLFormElement>('.board-form')!.dispatchEvent(new Event('submit', { cancelable: true }))
+    await vi.waitFor(() => expect(puts).toHaveLength(1))
+  }
+  const sentOrientation = (): number[][] => (puts[0] as { orientation: number[][] }).orientation
+
+  it('正: 保存済みの基板を開くと、いまの方角が欄に入っている', async () => {
+    const container = await openBoardA()
+    expect(headingInput(container).value).toBe('0')
+  })
+
+  it('正: 方角だけ変えて保存すると、その方角へ向けた向きを送る', async () => {
+    const container = await openBoardA()
+    headingInput(container).value = '90'
+    await submit(container)
+    // X 軸（第 1 列）が東を向く。
+    const m = sentOrientation()
+    expect(m[0]![0]).toBeCloseTo(1, 5)
+    expect(m[1]![0]).toBeCloseTo(0, 5)
+  })
+
+  it('正: 表示名を入れて保存すると、名前も送る（空でも送る。PUT は全置換なので消せるように）', async () => {
+    const container = await openBoardA()
+    expect(container.querySelector<HTMLInputElement>('[name=displayName]')?.value).toBe('')
+    container.querySelector<HTMLInputElement>('[name=displayName]')!.value = '北の壁'
+    await submit(container)
+    expect((puts[0] as { displayName: string }).displayName).toBe('北の壁')
+  })
+
+  it('対照: 方角を変えずに保存すると、向きはそのまま送る', async () => {
+    const container = await openBoardA()
+    await submit(container)
+    expect(sentOrientation()).toEqual(NORTH)
+  })
+
+  it('安全弁: 3x3 を手で直したら方角の欄が追随し、保存で元の方角へ回し戻さない', async () => {
+    const container = await openBoardA()
+    // X 軸を東へ向けた単位行列へ手で書き換える。
+    const cells = container.querySelectorAll<HTMLInputElement>('.b-orientation')
+    const identity = [1, 0, 0, 0, 1, 0, 0, 0, 1]
+    cells.forEach((cell, i) => {
+      cell.value = String(identity[i])
+      cell.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    expect(headingInput(container).value).toBe('90')
+    await submit(container)
+    expect(sentOrientation()).toEqual(IDENTITY_MATRIX)
   })
 })

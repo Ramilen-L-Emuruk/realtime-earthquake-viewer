@@ -30,7 +30,13 @@ export type {
   StationConfig,
 } from './stationConfigTypes'
 export { defaultSensorCalibration, EMPTY_STATION_CONFIG, IDENTITY_MATRIX } from './stationConfigTypes'
-import { defaultAxes, defaultSensorCalibration, EMPTY_STATION_CONFIG, IDENTITY_MATRIX } from './stationConfigTypes'
+import {
+  BOARD_DISPLAY_NAME_MAX,
+  defaultAxes,
+  defaultSensorCalibration,
+  EMPTY_STATION_CONFIG,
+  IDENTITY_MATRIX,
+} from './stationConfigTypes'
 import type {
   AxisCalibration,
   BoardEntry,
@@ -381,7 +387,25 @@ export function parseStationConfig(raw: unknown): StationConfigParseResult {
     const parsedSensors = parseSensors(entry.sensors, i)
     if (!parsedSensors.ok) return parsedSensors
 
-    boards.push({ boardKey, stationId, orientation, sensors: parsedSensors.sensors })
+    // **表示名は任意。** 無い・空文字・空白だけなら付けていない扱い（欄ごと持たない）。
+    // 文字列以外・長すぎるものは書き間違いとして弾く —— 黙って捨てると、付けたつもりの名前が消える。
+    const rawName = entry.displayName
+    let displayName: string | undefined
+    if (rawName !== undefined && rawName !== null) {
+      const trimmed = typeof rawName === 'string' ? rawName.trim() : null
+      if (trimmed === null || trimmed.length > BOARD_DISPLAY_NAME_MAX) {
+        return { ok: false, failure: { reason: 'board-field-invalid', index: i, field: 'displayName', value: rawName } }
+      }
+      if (trimmed.length > 0) displayName = trimmed
+    }
+
+    boards.push({
+      boardKey,
+      ...(displayName === undefined ? {} : { displayName }),
+      stationId,
+      orientation,
+      sensors: parsedSensors.sensors,
+    })
   }
 
   return { ok: true, config: { stations: parsedStations.stations, boards } }
@@ -446,6 +470,7 @@ export type SensorResolution =
 /** `boardKey`・`(boardKey, sensorId)` から観測点・校正値を引く。 */
 export class StationDirectory {
   private readonly boardToStation = new Map<BoardKey, StationInfo>()
+  private readonly boardNames = new Map<BoardKey, string>()
   private readonly boardOrientation = new Map<BoardKey, Mat3>()
   private readonly sensorCalibration = new Map<string, SensorCalibration>()
   /** 基板の向きを掛け終えた形。**作るのは 1 回だけ**（パケットごとに逆行列を解かない）。 */
@@ -480,6 +505,7 @@ export class StationDirectory {
         continue
       }
       this.boardToStation.set(board.boardKey, station)
+      if (board.displayName !== undefined) this.boardNames.set(board.boardKey, board.displayName)
       this.boardOrientation.set(board.boardKey, board.orientation)
       for (const sensor of board.sensors) {
         // **`sensorId` を持たせない。** `SensorEntry` は識別のためだけに `sensorId` を
@@ -512,6 +538,11 @@ export class StationDirectory {
   /** 基板がどの観測点に置かれているか。設定に無ければ `null`（未割当）。 */
   resolve(boardKey: BoardKey): StationInfo | null {
     return this.boardToStation.get(boardKey) ?? null
+  }
+
+  /** 基板の表示名。設定に無い・名前を付けていない基板は `null`。 */
+  boardNameOf(boardKey: BoardKey): string | null {
+    return this.boardNames.get(boardKey) ?? null
   }
 
   /**

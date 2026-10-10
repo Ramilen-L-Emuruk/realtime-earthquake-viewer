@@ -8,23 +8,28 @@ import { describe, expect, it } from 'vitest'
 import {
   defaultSensorCalibration,
   IDENTITY_MATRIX,
+  type Mat3,
   type SensorEntry,
 } from '../receiver/stationConfigTypes'
 import type { SensorRestWindow } from './detectedBoards'
 import {
   emptySensorFormValues,
+  headingTextFor,
   orientationToFormValues,
   parseHeadingText,
   parseOrientationFormValues,
   parseSensorFormValues,
+  readHeadingChange,
   readOrientationValues,
   readSensorCardValues,
   renderOrientationHtml,
   renderSensorCardHtml,
   restWindowNote,
   sensorToFormValues,
+  writeHeadingFromOrientation,
   writeOrientationValues,
   writeSensorCardAxes,
+  type OrientationFormValues,
   type SensorFormValues,
 } from './sensorForm'
 
@@ -299,6 +304,72 @@ describe('parseHeadingText', () => {
   it('数として読めなければ理由を返す', () => {
     const got = parseHeadingText('きた')
     expect(typeof got === 'object' && got !== null && 'error' in got).toBe(true)
+  })
+})
+
+/** X 軸が方角 `deg` を向き、Z 軸が真上の向き（3x3 の欄の並び＝行ごと）。 */
+function headingValues(deg: number): OrientationFormValues {
+  const s = Math.sin((deg * Math.PI) / 180)
+  const c = Math.cos((deg * Math.PI) / 180)
+  // 列が基板の X・Y・Z 軸（東・北・上の成分）。X=(s,c,0)・Y=Z×X=(−c,s,0)・Z=(0,0,1)。
+  return [String(s), String(-c), '0', String(c), String(s), '0', '0', '0', '1']
+}
+
+describe('headingTextFor', () => {
+  it('正: X 軸の向いている方角を、小数 1 桁・`.0` 無しで出す', () => {
+    expect(headingTextFor(headingValues(297))).toBe('297')
+    expect(headingTextFor(headingValues(45.25))).toBe('45.3')
+  })
+
+  it('安全弁: 360 へ丸まる方角は 0 と出す（360 と 0 が別の値に見えないように）', () => {
+    expect(headingTextFor(headingValues(359.96))).toBe('0')
+  })
+
+  it('対照: 360 の手前で丸まらない方角はそのまま', () => {
+    expect(headingTextFor(headingValues(359.94))).toBe('359.9')
+  })
+
+  it('安全弁: X 軸が真上を向く・欄が読めないなら空', () => {
+    expect(headingTextFor(['0', '0', '1', '0', '1', '0', '-1', '0', '0'])).toBe('')
+    expect(headingTextFor(['x', '0', '0', '0', '1', '0', '0', '0', '1'])).toBe('')
+  })
+})
+
+describe('readHeadingChange / writeHeadingFromOrientation', () => {
+  const mount = (deg: number): HTMLElement => {
+    const root = document.createElement('div')
+    root.innerHTML = renderOrientationHtml(headingValues(deg))
+    return root
+  }
+  const heading = (root: HTMLElement): HTMLInputElement => root.querySelector<HTMLInputElement>('.b-heading')!
+
+  it('対照: 入れておいた値のまま（前後の空白だけ違っても）なら null（保存で回さない）', () => {
+    const root = mount(120)
+    expect(heading(root).value).toBe('120')
+    expect(readHeadingChange(root)).toBeNull()
+    heading(root).value = ' 120 '
+    expect(readHeadingChange(root)).toBeNull()
+  })
+
+  it('正: 手で変えたら、その方角を返す', () => {
+    const root = mount(120)
+    heading(root).value = '200'
+    expect(readHeadingChange(root)).toBe(200)
+  })
+
+  // 欄は `type="number"` なので、読めない文字は値が空になる（読めない文字の判定は `parseHeadingText` 側）。
+  it('安全弁: 空欄にしたら回さない（入れておいた値と違っても null）', () => {
+    const root = mount(120)
+    heading(root).value = ''
+    expect(readHeadingChange(root)).toBeNull()
+  })
+
+  it('正: 3x3 を書き換えた後に入れ直すと、欄と入れておいた値の両方が新しい方角になる', () => {
+    const root = mount(120)
+    writeOrientationValues(root, parseOrientationFormValues(headingValues(30)) as Mat3)
+    writeHeadingFromOrientation(root)
+    expect(heading(root).value).toBe('30')
+    expect(readHeadingChange(root)).toBeNull()
   })
 })
 

@@ -6,9 +6,11 @@ import { defaultSensorCalibration, IDENTITY_MATRIX } from '../receiver/stationCo
 import type { Mat3, SensorCalibration, Vec3 } from '../receiver/stationConfigTypes'
 import {
   boardGravityForTilt,
+  headingOfRotation,
   multiplyMat3,
   NO_STILL_SPREAD,
   NO_STILL_WINDOW,
+  rotateToHeading,
   stillMeanGal,
   suggestRotation,
 } from './calibrationSuggest'
@@ -256,6 +258,88 @@ describe('suggestRotation', () => {
     for (const row of got.rotation) {
       for (const v of row) expect(Object.is(v, -0)).toBe(false)
     }
+  })
+})
+
+/** 鉛直まわりに回しただけの基板の向き（X 軸が方角 `deg` を向く）。 */
+function headingMatrix(deg: number): Mat3 {
+  const r = (deg * Math.PI) / 180
+  // 第 1 列（X 軸）= (sin, cos, 0)、第 2 列（Y 軸）= (−cos, sin, 0)・第 3 列 = 上。
+  return [
+    [Math.sin(r), -Math.cos(r), 0],
+    [Math.cos(r), Math.sin(r), 0],
+    [0, 0, 1],
+  ]
+}
+
+describe('headingOfRotation（保存した基板の向きから方角を読み戻す）', () => {
+  it('正: X 軸が向いている方角を北から時計回りで返す', () => {
+    expect(headingOfRotation(headingMatrix(297))).toBeCloseTo(297, 6)
+    expect(headingOfRotation(headingMatrix(207))).toBeCloseTo(207, 6)
+    expect(headingOfRotation(IDENTITY_MATRIX)).toBeCloseTo(90, 6) // X が東
+  })
+
+  it('正: 傾いていても水平面へ写した向きで読む', () => {
+    // X 軸を上へ 20° 起こしても、水平に写した方位は変わらない。
+    const tilt = (20 * Math.PI) / 180
+    const raised: Mat3 = multiplyMat3(headingMatrix(30), [
+      [Math.cos(tilt), 0, -Math.sin(tilt)],
+      [0, 1, 0],
+      [Math.sin(tilt), 0, Math.cos(tilt)],
+    ])
+    expect(headingOfRotation(raised)).toBeCloseTo(30, 6)
+  })
+
+  it('安全弁: X 軸が真上を向いていれば方角は無い（null）', () => {
+    const xUp: Mat3 = [
+      [0, 0, 1],
+      [0, 1, 0],
+      [1, 0, 0],
+    ]
+    expect(headingOfRotation(xUp)).toBeNull()
+  })
+})
+
+describe('rotateToHeading（保存のときに方角だけ当てる）', () => {
+  it('正: 指定した方角へ X 軸を向ける', () => {
+    const got = rotateToHeading(headingMatrix(335), 297)
+    expect(got.ok).toBe(true)
+    if (!got.ok) return
+    expect(headingOfRotation(got.rotation)).toBeCloseTo(297, 4)
+  })
+
+  it('対照: いまと同じ方角なら向きは変わらない（同じ値で保存し直しても回らない）', () => {
+    const before = headingMatrix(297)
+    const got = rotateToHeading(before, 297)
+    expect(got.ok).toBe(true)
+    if (!got.ok) return
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) expect(got.rotation[i]![j]).toBeCloseTo(before[i]![j]!, 5)
+  })
+
+  it('安全弁: 鉛直（上の列）は触らない', () => {
+    const tilt = (10 * Math.PI) / 180
+    const tilted: Mat3 = multiplyMat3(headingMatrix(100), [
+      [1, 0, 0],
+      [0, Math.cos(tilt), -Math.sin(tilt)],
+      [0, Math.sin(tilt), Math.cos(tilt)],
+    ])
+    const got = rotateToHeading(tilted, 250)
+    expect(got.ok).toBe(true)
+    if (!got.ok) return
+    // 各軸の上成分（3 行目）は鉛直まわりの回転で変わらない。
+    for (let j = 0; j < 3; j++) expect(got.rotation[2]![j]).toBeCloseTo(tilted[2]![j]!, 5)
+  })
+
+  it('安全弁: X 軸が真上なら断る', () => {
+    const got = rotateToHeading(
+      [
+        [0, 0, 1],
+        [0, 1, 0],
+        [1, 0, 0],
+      ],
+      90,
+    )
+    expect(got.ok).toBe(false)
   })
 })
 

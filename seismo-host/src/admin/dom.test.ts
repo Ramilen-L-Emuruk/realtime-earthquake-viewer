@@ -1,5 +1,20 @@
 import { describe, expect, it } from 'vitest'
-import { escapeHtml, formatNumber } from './dom'
+import { boardLabelHtml, escapeHtml, formatNumber } from './dom'
+
+describe('boardLabelHtml', () => {
+  it('正: 表示名があれば名前を出し、基板 Key はホバーへ回す', () => {
+    expect(boardLabelHtml('mac:aabbccddeeff', '北の壁')).toBe('<span title="mac:aabbccddeeff">北の壁</span>')
+  })
+
+  it('対照: 表示名が無ければ基板 Key をそのまま出す', () => {
+    expect(boardLabelHtml('mac:aabbccddeeff', null)).toBe('mac:aabbccddeeff')
+    expect(boardLabelHtml('mac:aabbccddeeff', '')).toBe('mac:aabbccddeeff')
+  })
+
+  it('安全弁: 名前も基板 Key もエスケープする', () => {
+    expect(boardLabelHtml('mac:"x"', '<b>')).toBe('<span title="mac:&quot;x&quot;">&lt;b&gt;</span>')
+  })
+})
 
 describe('escapeHtml', () => {
   it('5 種の特殊文字をすべてエスケープする', () => {

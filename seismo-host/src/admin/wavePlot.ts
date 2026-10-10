@@ -42,6 +42,34 @@ export function colorForIndex(index: number): string {
 }
 
 /**
+ * 波形 1 本ごとの色。**最初に色を訊かれた時点で決め、外すまで変えない。**
+ *
+ * **行の位置から色を決めない。** 一覧は種類と鍵の順に並べてある（`WaveStore.buffersInOrder`）
+ * ので、合成やほかの基板が後から届くと、その前後の行が 1 つずつずれる。位置で色を決めると、
+ * **見ている最中に、触っていない線の色が一斉に入れ替わる。**
+ *
+ * 新しい鍵には、いま使っていない番号のうち最も小さいものを当てる。外した鍵の番号は次の鍵が使う。
+ */
+export class ColorSlots {
+  private readonly slots = new Map<string, number>()
+
+  colorOf(key: string): string {
+    let slot = this.slots.get(key)
+    if (slot === undefined) {
+      const used = new Set(this.slots.values())
+      slot = 0
+      while (used.has(slot)) slot++
+      this.slots.set(key, slot)
+    }
+    return colorForIndex(slot)
+  }
+
+  release(key: string): void {
+    this.slots.delete(key)
+  }
+}
+
+/**
  * 縦の半幅を、切りのいい値へ上向きに丸める。
  *
  * **上向きに丸める。** 下向きだと、いちばん大きい山が枠の外へ出る。

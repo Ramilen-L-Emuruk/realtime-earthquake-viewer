@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  ColorSlots,
   SENSOR_COLORS,
   colorForIndex,
   formatClock,
@@ -131,5 +132,33 @@ describe('colorForIndex', () => {
 
   it('負の添字でも色を返す（安全弁）', () => {
     expect(SENSOR_COLORS).toContain(colorForIndex(-1))
+  })
+})
+
+describe('ColorSlots', () => {
+  it('正: 一度決めた色は、後から別の鍵が来ても変わらない', () => {
+    // 一覧は鍵の順に並ぶので、後から届いた合成（先頭に来る）が位置をずらす。色はずらさない。
+    const slots = new ColorSlots()
+    const sensorA = slots.colorOf('s:a')
+    const sensorB = slots.colorOf('s:b')
+    slots.colorOf('t:station')
+    expect(slots.colorOf('s:a')).toBe(sensorA)
+    expect(slots.colorOf('s:b')).toBe(sensorB)
+  })
+
+  it('対照: 鍵が違えば、色数の範囲では別の色になる', () => {
+    const slots = new ColorSlots()
+    const colors = SENSOR_COLORS.map((_, i) => slots.colorOf(`k${i}`))
+    expect(new Set(colors).size).toBe(SENSOR_COLORS.length)
+  })
+
+  it('安全弁: 外した鍵の色は次の鍵へ回り、残った鍵の色は動かない', () => {
+    const slots = new ColorSlots()
+    slots.colorOf('a')
+    const b = slots.colorOf('b')
+    const c = slots.colorOf('c')
+    slots.release('b')
+    expect(slots.colorOf('d')).toBe(b)
+    expect(slots.colorOf('c')).toBe(c)
   })
 })

@@ -124,6 +124,30 @@ describe('書いて読み戻す', () => {
     expect(configAt(doc, T0)).toEqual(c)
   })
 
+  it('正: 基板の表示名が、記号を含めてそのまま戻る（#713）', () => {
+    const base = config([sensor('i2c0-68')])
+    const c: StationConfig = { ...base, boards: [{ ...base.boards[0]!, displayName: '壁際 "A" <1>&' }] }
+    const doc = roundTrip(applyStationConfig(EMPTY_STATION_HISTORY, c, T0, 'startup'))
+    expect(configAt(doc, T0)).toEqual(c)
+  })
+
+  it('対照: 名前を付けていない基板は、名前の欄ごと無いまま戻る', () => {
+    const c = config([sensor('i2c0-68')])
+    const xml = writeStationXml(applyStationConfig(EMPTY_STATION_HISTORY, c, T0, 'startup'), T0)
+    expect(xml).not.toContain(' name="')
+    expect(configAt(readStationXml(xml), T0).boards[0]).not.toHaveProperty('displayName')
+  })
+
+  it('安全弁: 名前だけ変えても期間は切らない（校正値の期間が分かれない）', () => {
+    const base = config([sensor('i2c0-68')])
+    const named: StationConfig = { ...base, boards: [{ ...base.boards[0]!, displayName: '北の壁' }] }
+    const first = applyStationConfig(EMPTY_STATION_HISTORY, base, T0, 'startup')
+    const second = applyStationConfig(first, named, T1, 'changed')
+    expect(second.boards).toEqual(first.boards)
+    expect(configAt(second, T1).boards[0]?.displayName).toBe('北の壁')
+    expect(configAt(second, T0).boards[0]).not.toHaveProperty('displayName')
+  })
+
   it('2 軸のセンサーは HN1・HN2 の 2 本だけを書く', () => {
     const xml = writeStationXml(applyStationConfig(EMPTY_STATION_HISTORY, config([twoAxis('i2c0-6a')]), T0, 'startup'), T0)
     expect([...xml.matchAll(/<Channel code="(HN\d)"/g)].map((m) => m[1])).toEqual(['HN1', 'HN2'])

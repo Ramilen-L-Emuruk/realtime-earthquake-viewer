@@ -460,6 +460,38 @@ describe('parseStationConfig', () => {
     })
   })
 
+  it('正: 基板の表示名は前後の空白を落として持つ（#713）', () => {
+    const raw = validRaw()
+    boardOf(raw).displayName = '  北の壁  '
+    const parsed = parseStationConfig(raw)
+    expect(parsed.ok && parsed.config.boards[0]?.displayName).toBe('北の壁')
+  })
+
+  it.each([
+    ['欄が無い', undefined],
+    ['null', null],
+    ['空文字', ''],
+    ['空白だけ', '   '],
+  ])('対照: 表示名が%sなら、付けていない扱い（欄ごと持たない）', (_, value) => {
+    const raw = validRaw()
+    boardOf(raw).displayName = value
+    const parsed = parseStationConfig(raw)
+    expect(parsed.ok).toBe(true)
+    if (parsed.ok) expect(parsed.config.boards[0]).not.toHaveProperty('displayName')
+  })
+
+  it.each([
+    ['文字列でない', 12],
+    ['長すぎる', 'あ'.repeat(41)],
+  ])('安全弁: 表示名が%sなら弾く（付けたつもりの名前を黙って捨てない）', (_, value) => {
+    const raw = validRaw()
+    boardOf(raw).displayName = value
+    expect(parseStationConfig(raw)).toEqual({
+      ok: false,
+      failure: { reason: 'board-field-invalid', index: 0, field: 'displayName', value },
+    })
+  })
+
   it('安全弁: 小数 6 桁へ丸めた回転（管理コンソールの提案）は通す', () => {
     const raw = validRaw()
     boardOf(raw).orientation = [

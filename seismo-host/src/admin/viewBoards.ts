@@ -9,21 +9,22 @@
 
 import { apiFetch, ApiError, describeAdminAuthFailure, getStoredToken } from './api'
 import { fitBoardSixFace, type BoardFitSensor } from './boardSixFace'
-import { boardGravityForTilt, suggestRotation } from './calibrationSuggest'
+import { boardGravityForTilt, rotateToHeading, suggestRotation } from './calibrationSuggest'
 import { fetchDetectedBoards, type DetectedBoard, type SensorRestWindow } from './detectedBoards'
-import { ago, escapeHtml, qs, receptionBadgeHtml } from './dom'
+import { ago, boardLabelHtml, escapeHtml, qs, receptionBadgeHtml } from './dom'
 import {
   emptySensorFormValues,
   orientationToFormValues,
-  parseHeadingText,
   parseOrientationFormValues,
   parseSensorFormValues,
+  readHeadingChange,
   readOrientationValues,
   readSensorCardValues,
   renderOrientationHtml,
   renderSensorCardHtml,
   restWindowNote,
   sensorToFormValues,
+  writeHeadingFromOrientation,
   writeOrientationValues,
   writeSensorCardAxes,
   SENSOR_ID_DATALIST_ID,
@@ -39,6 +40,7 @@ import {
 } from './sixFacePanel'
 import { multiplyMatVec3 } from '../receiver/matrix3'
 import type { AxisCount, BoardEntry, SensorEntry, StationInfo } from '../receiver/stationConfigTypes'
+import { BOARD_DISPLAY_NAME_MAX } from '../receiver/stationConfigTypes'
 
 /** 基板 Key の入力候補（`<datalist>`）の id。中身は `/status` が声を聞いている基板。 */
 const BOARD_KEY_DATALIST_ID = 'detected-board-keys'
@@ -78,26 +80,24 @@ export interface BoardRow {
  * 二度並ぶ。しかも**いちばん知りたい状態がどちらからも読めない**——「登録したのに
  * 声が届いていない」は、声の一覧には現れず、設定の一覧は受信の様子を持たない。
  *
- * **並びは「届いている順 → 届いていない登録済み」。** 前半は `/status` の順
- * （音沙汰の新しい順・`sensorHealth.ts` の `snapshot`）をそのまま使う。
+ * **並びは「登録済み（設定の順）→ 未登録で届いている基板（基板 Key の順）」。** どちらも
+ * 受信の様子では動かない——以前は前半を `/status` の音沙汰の新しい順にしていて、読み直す
+ * たびに行が入れ替わっていた。設定の順はホストが保存しても動かさない
+ * （`statusServer.ts` の `replaceInPlace`）。
  */
 export function mergeBoardRows(
   detected: readonly DetectedBoard[],
   boards: readonly BoardEntry[],
 ): readonly BoardRow[] {
-  const rows: BoardRow[] = []
-  const heard = new Set<string>()
+  const rows: BoardRow[] = boards.map((b) => ({
+    boardKey: b.boardKey,
+    detected: detected.find((d) => d.boardKey === b.boardKey) ?? null,
+    registered: b,
+  }))
+  const registered = new Set<string>(boards.map((b) => b.boardKey))
   for (const d of detected) {
-    heard.add(d.boardKey)
-    rows.push({
-      boardKey: d.boardKey,
-      detected: d,
-      registered: boards.find((b) => b.boardKey === d.boardKey) ?? null,
-    })
-  }
-  for (const b of boards) {
-    if (heard.has(b.boardKey)) continue
-    rows.push({ boardKey: b.boardKey, detected: null, registered: b })
+    if (registered.has(d.boardKey)) continue
+    rows.push({ boardKey: d.boardKey, detected: d, registered: null })
   }
   return rows
 }
@@ -143,7 +143,7 @@ function renderBoardsTable(
           : '<button type="button" class="register-board">登録</button>'
       return `
         <tr data-board-key="${escapeHtml(row.boardKey)}">
-          <td>${escapeHtml(row.boardKey)}</td>
+          <td>${boardLabelHtml(row.boardKey, row.registered?.displayName ?? null)}</td>
           <td>${escapeHtml(sensors)}</td>
           <td>${reception}</td>
           <td>${station}</td>
@@ -194,6 +194,7 @@ function fillForm(container: HTMLElement, board: BoardEntry | null): void {
   const keyInput = qs<HTMLInputElement>(container, '[name=boardKey]')
   const select = qs<HTMLSelectElement>(container, '[name=stationId]')
   keyInput.value = board?.boardKey ?? ''
+  qs<HTMLInputElement>(container, '[name=displayName]').value = board?.displayName ?? ''
   // **既存の基板を編集するときは boardKey を固定する。** 観測点と同じ理由
   // （URL パスの値が正）。
   keyInput.readOnly = board !== null
@@ -202,7 +203,7 @@ function fillForm(container: HTMLElement, board: BoardEntry | null): void {
   qs(container, '.boardKey-label').textContent = board !== null ? '基板 Key（変更不可）' : '基板 Key'
   if (board !== null) select.value = board.stationId
   // **基板の向きも基板ごとに入れ替える。** 残すと前に見ていた基板の向きで保存する。
-  // 方角の欄と前の結果も空へ戻す（別の基板へ向けた方角を持ち越さない）。
+  // 方角の欄はその基板のいまの方角で入れ直し、前の結果は空へ戻す（別の基板へ向けた方角を持ち越さない）。
   qs(container, '.board-orientation-slot').innerHTML = renderOrientationHtml(orientationToFormValues(board?.orientation))
   renderSensorCards(container, board?.sensors ?? [])
 }
@@ -233,7 +234,7 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
       <h2>基板</h2>
       <p class="muted boards-note"></p>
       <table class="boards-table">
-        <thead><tr><th>基板 Key</th><th>センサー</th><th>受信</th><th>観測点</th><th></th></tr></thead>
+        <thead><tr><th>基板</th><th>センサー</th><th>受信</th><th>観測点</th><th></th></tr></thead>
         <tbody></tbody>
       </table>
     </section>
@@ -243,6 +244,7 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
         <!-- **ラベルの初期値はここに置く。** 初回マウントでは fillForm を通らない
              （reload しか呼ばない）ので、空にすると新規登録の画面でラベルごと消える。 -->
         <label><span class="boardKey-label">基板 Key</span><input name="boardKey" list="${BOARD_KEY_DATALIST_ID}" placeholder="mac:aabbccddeeff" required /></label>
+        <label>表示名（任意）<input name="displayName" maxlength="${BOARD_DISPLAY_NAME_MAX}" /></label>
         <label>観測点<select name="stationId" required></select></label>
         <div class="board-orientation-slot">${renderOrientationHtml(orientationToFormValues())}</div>
         <h3>センサー</h3>
@@ -581,6 +583,12 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
     // **センサー ID を打ち換えたら、そのカードの診断も引き直す。** 引き直さないと、
     // 前に入っていた ID の判定が別のセンサーのカードに残る。
     if (target.classList.contains('s-sensorId')) refreshTiltPanels()
+    // **3x3 を手で直したら、方角の欄も追随させる**——ただし方角を手で変えていない間だけ。
+    // 追随させないと、欄が直す前の方角のまま残り、見た目と保存される向きが食い違う。
+    if (target.classList.contains('b-orientation')) {
+      const panel = target.closest<HTMLElement>('.board-orientation')
+      if (panel !== null && readHeadingChange(panel) === null) writeHeadingFromOrientation(panel)
+    }
   })
   form.addEventListener('submit', (e) => {
     e.preventDefault()
@@ -608,14 +616,37 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
           return
         }
         // **基板の向きも毎回送る。** `PUT` は全置換なので、送らなければ単位行列へ戻る。
-        const orientation = parseOrientationFormValues(readOrientationValues(container))
-        if ('error' in orientation) {
-          renderError(container, orientation.error)
+        const parsedOrientation = parseOrientationFormValues(readOrientationValues(container))
+        if ('error' in parsedOrientation) {
+          renderError(container, parsedOrientation.error)
           return
+        }
+        // **方角だけ変えて保存したときも効かせる**（2026-10-10 ユーザー承認）。以前は「鉛直を
+        // 合わせる」を押さないと方角を読まず、欄に入れても黙って捨てていた。手で変えていなければ
+        // 何もしない（`readHeadingChange`）ので、「鉛直を合わせる」の後の保存で二重に回さない。
+        const headingChange = readHeadingChange(container)
+        if (headingChange !== null && typeof headingChange !== 'number') {
+          renderError(container, headingChange.error)
+          return
+        }
+        let orientation = parsedOrientation
+        if (headingChange !== null) {
+          const turned = rotateToHeading(parsedOrientation, headingChange)
+          if (!turned.ok) {
+            renderError(container, turned.reason)
+            return
+          }
+          orientation = turned.rotation
         }
         await apiFetch(`/api/boards/${encodeURIComponent(boardKey)}`, {
           method: 'PUT',
-          body: JSON.stringify({ stationId, orientation, sensors }),
+          // **表示名は空でも送る**（ホストは空を「付けていない」と読む）。送らなければ消せない —— `PUT` は全置換。
+          body: JSON.stringify({
+            displayName: qs<HTMLInputElement>(container, '[name=displayName]').value,
+            stationId,
+            orientation,
+            sensors,
+          }),
         })
         if (signal.aborted) return
         switchForm(null)
@@ -738,7 +769,9 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
           note(orientation.error)
           return
         }
-        const heading = parseHeadingText(qs<HTMLInputElement>(panel, '.b-heading').value)
+        // **欄にはいまの方角が入っているので、手で変えたときだけ方角として渡す**（保存と同じ判定。
+        // `readHeadingChange`）。変えていなければ従来どおり「方角は変えていない」。
+        const heading = readHeadingChange(panel)
         if (heading !== null && typeof heading !== 'number') {
           note(heading.error)
           return
@@ -763,6 +796,8 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
         // のに印が立っていない」を作らない（`register-board` と同じ手当て）。
         formDirty = true
         writeOrientationValues(panel, got.rotation)
+        // 方角の欄も新しい向きから入れ直す（保存のとき二重に回さないため。`readHeadingChange`）。
+        writeHeadingFromOrientation(panel)
         // **「ぶんも回した」と書かない。** 実際に回すのはいまの向きとの差だけで、
         // 入れた値そのものではない（同じ値をもう一度入れれば何も回らない）。
         const heads = heading === null ? '方角は変えていない' : `X 軸を方角 ${heading}° へ向けた`

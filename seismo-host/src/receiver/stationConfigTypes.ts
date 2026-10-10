@@ -86,8 +86,21 @@ export interface SensorEntry extends SensorCalibration {
   readonly sensorId: string
 }
 
+/**
+ * 基板の表示名の長さの上限（文字数）。一覧の 1 列に収まる長さ。
+ * **管理コンソールの入力欄（`maxlength`）も同じ値を読む**（ここが単一情報源）。
+ */
+export const BOARD_DISPLAY_NAME_MAX = 40
+
 export interface BoardEntry {
   readonly boardKey: BoardKey
+  /**
+   * 画面で基板を呼ぶ名前（任意）。**名前を付けていなければ欄ごと無い**（空文字は持たない）。
+   *
+   * 運用者が見分けるためだけの札で、処理（合成・保存のチャンネル名・局コード）には使わない ——
+   * 局コードは基板 Key から作る（`mseed3StationCode`）ので、名前を変えても記録の名前は変わらない。
+   */
+  readonly displayName?: string
   readonly stationId: string
   /**
    * 基板の向き。`a_地面 = orientation × a_基板` で、**列が基板の X・Y・Z 軸の向き**（東・北・上）。

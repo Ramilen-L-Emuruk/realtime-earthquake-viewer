@@ -521,8 +521,7 @@ export interface WaveStoreOptions {
 /**
  * 波形ごとの溜め場所をまとめて持つ。
  *
- * **初めて届いた順に並べる。** 名前で並べ替えると、基板を足したときに既存の行が
- * 入れ替わって見比べにくい。
+ * **並びは `buffersInOrder` が決める**（種類と鍵の順）。
  *
  * **センサー単独と観測点の合成を同じ入れ物で持つ。** 鍵（`WaveSourceKey`）が
  * 種別を持つので混ざらず、上限・並び・時間の範囲をひととおり書くだけで済む。
@@ -571,9 +570,19 @@ export class WaveStore {
     buffer.push(chunk)
   }
 
-  /** 届いた順に並んだ溜め場所。 */
+  /**
+   * 表示の順に並んだ溜め場所。**合成 → センサー → 差分 → ずれ、その中は鍵の順。**
+   *
+   * **届いた順にしない。** 届く順は開くたびに変わるので、行の並びが開き直すたびに
+   * 入れ替わっていた。
+   *
+   * **線の色をこの位置から決めない。** 後から届いた行が前へ割り込むと位置がずれるので、
+   * 色は鍵ごとに覚えておく（`wavePlot.ts` の `ColorSlots`）。
+   */
   buffersInOrder(): readonly WaveBuffer[] {
-    return [...this.buffers.values()]
+    return [...this.buffers.entries()]
+      .sort(([ka, a], [kb, b]) => SOURCE_RANK[a.source.kind] - SOURCE_RANK[b.source.kind] || (ka < kb ? -1 : ka > kb ? 1 : 0))
+      .map(([, buffer]) => buffer)
   }
 
   get(key: WaveSourceKey): WaveBuffer | null {
@@ -625,6 +634,9 @@ export class WaveStore {
  * **画面側（`viewWaves.ts`）も同じものを使う。** 同じ規則を 2 箇所に書くと、片方だけ
  * 直したときに「表示の選択が別の波形へ当たる」形で静かに食い違う。
  */
+/** 表示の順で、種類ごとの並び（`WaveStore.buffersInOrder`）。 */
+const SOURCE_RANK: Readonly<Record<WaveSourceKey['kind'], number>> = { station: 0, sensor: 1, pair: 2, residual: 3 }
+
 export function keyOf(key: WaveSourceKey): string {
   if (key.kind === 'station') return `t:${key.stationId}`
   if (key.kind === 'residual') {

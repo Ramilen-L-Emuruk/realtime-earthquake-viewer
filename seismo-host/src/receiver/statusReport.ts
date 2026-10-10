@@ -214,6 +214,8 @@ export interface SensorStatus extends Omit<SensorHealth, 'lastPacketMs'> {
   readonly lastPacketMs: number | null
   /** どこへ置いたか。設定に無ければ `null`（未割当）。 */
   readonly station: StationInfo | null
+  /** 基板の表示名（`BoardEntry.displayName`）。設定に無い・名前を付けていなければ `null`。 */
+  readonly boardName: string | null
   /**
    * このセンサーに校正値の設定（`stationConfig.ts` の `sensors[]`）があるか。
    *
@@ -458,6 +460,7 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     lastReadingAtMs: finite(s.lastReadingAtMs),
     lastIntensity: finiteValue(s.lastIntensity),
     station: input.stations.resolve(s.boardKey),
+    boardName: input.stations.boardNameOf(s.boardKey),
     calibrationConfigured: input.stations.hasSensorCalibration(s.boardKey, s.sensorId),
     enabled: input.stations.isSensorEnabled(s.boardKey, s.sensorId),
   }))

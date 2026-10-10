@@ -28,6 +28,7 @@ import { readFinite, readNonEmptyString } from './readJson'
 import { WaveStore, keyOf } from './waveBuffer'
 import type { WaveAxisStats, WaveBuffer, WaveChunkView, WaveColumn, WaveSourceKey, WaveWindow } from './waveBuffer'
 import {
+  ColorSlots,
   colorForIndex,
   formatClock,
   formatDirection,
@@ -100,6 +101,8 @@ interface SensorLabel {
   /** 割り当てた観測点の識別子。未割当なら null。**合成の行の名前をここから引く。** */
   readonly stationId: string | null
   readonly stationName: string | null
+  /** 基板の表示名（`/status` の `boardName`）。付けていなければ・古いホストなら null。 */
+  readonly boardName: string | null
   readonly lastPacketMs: number | null
   readonly calibrationConfigured: boolean
 }
@@ -143,6 +146,7 @@ export function readStatus(value: unknown): StatusView {
         sensorId,
         stationId: station === null ? null : readNonEmptyString(station.stationId),
         stationName: station === null ? null : readNonEmptyString(station.displayName),
+        boardName: readNonEmptyString(s.boardName),
         lastPacketMs: readFinite(s.lastPacketMs),
         calibrationConfigured: s.calibrationConfigured === true,
       })
@@ -255,7 +259,8 @@ function displayNameOf(source: WaveSourceKey, labels: readonly SensorLabel[]): s
   }
   const found = labels.find((l) => l.boardKey === source.boardKey && l.sensorId === source.sensorId)
   const station = found?.stationName
-  const raw = `${source.boardKey} / ${source.sensorId}`
+  // **基板は表示名があれば名前で呼ぶ**（#713）。無ければ基板 Key のまま。
+  const raw = `${found?.boardName ?? source.boardKey} / ${source.sensorId}`
   return station === null || station === undefined ? raw : `${station}（${raw}）`
 }
 
@@ -385,6 +390,8 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
   const diffNoteEl = qs(container, '.wave-diff-note')
 
   const store = new WaveStore()
+  /** 波形 1 本ごとの線の色（`ColorSlots` を見ること）。一覧の見本と線で同じものを引く。 */
+  const colors = new ColorSlots()
   /** 表示するセンサー。 */
   const shown = new Set<string>()
   /**
@@ -569,7 +576,7 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
     }
 
     sensorsEl.innerHTML = buffers
-      .map((buffer, index) => {
+      .map((buffer) => {
         const key = keyOf(buffer.source)
         // **受信バッジと校正の印はセンサー単独だけ。** 合成の行はセンサーではないので、
         // どの基板から届いたか・向きを直したかという問いが当てはまらない
@@ -601,7 +608,7 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
             <input type="checkbox" class="wave-sensor-check" data-key="${escapeHtml(key)}" ${
               shown.has(key) ? 'checked' : ''
             } />
-            <span class="wave-swatch" style="background: ${colorForIndex(index)}"></span>
+            <span class="wave-swatch" style="background: ${colors.colorOf(key)}"></span>
             <span>${escapeHtml(displayNameOf(buffer.source, labels))}</span>
             ${members}
             ${reception}
@@ -727,6 +734,7 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
     if (before !== null) {
       store.remove(before)
       shown.delete(keyOf(before))
+      colors.release(keyOf(before))
       // **一覧の署名を崩して作り直させる。** 溜め場所から消えたので、
       // センサーの一覧に残った行を掃除する必要がある。
       sensorListSignature = ''
@@ -1048,7 +1056,10 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
     const window = windowRange()
 
     const shownBuffers = buffers
-      .map((buffer, index) => ({ buffer, color: colorForIndex(index), key: keyOf(buffer.source) }))
+      .map((buffer) => {
+        const key = keyOf(buffer.source)
+        return { buffer, color: colors.colorOf(key), key }
+      })
       .filter((s) => shown.has(s.key))
 
     const dpr = globalThis.devicePixelRatio > 0 ? globalThis.devicePixelRatio : 1

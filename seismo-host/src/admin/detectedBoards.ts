@@ -36,7 +36,7 @@ export interface DetectedSensorView {
 /** 声を聞いている基板 1 枚ぶん。 */
 export interface DetectedBoard {
   readonly boardKey: string
-  /** その基板が名乗っているセンサー ID。**現れた順**（＝音沙汰の新しい順）。 */
+  /** その基板が名乗っているセンサー ID。**ID の順**（`groupDetectedBoards` のコメント）。 */
   readonly sensorIds: readonly string[]
   /**
    * センサー ID ごとの、届いたパケットの軸の本数（2 か 3）。**分からないセンサーは載らない。**
@@ -58,9 +58,10 @@ export interface DetectedBoard {
 /**
  * センサー単位の一覧を基板単位へ畳む。
  *
- * **並びは入力のまま。** `/status` の `sensors[]` は音沙汰の新しい順で返る
- * （`sensorHealth.ts` の `snapshot`）ので、いま生きている基板が上へ来る。
- * ここで並べ替えると、その順序が失われる。
+ * **基板は基板 Key の順、センサーは ID の順に並べる。** `/status` の `sensors[]` は
+ * 音沙汰の新しい順で返る（`sensorHealth.ts` の `snapshot`）。その順のまま使うと、
+ * 全部が送り続けている間は受信のわずかな前後で読み直すたびに入れ替わる——一覧の行も、
+ * 「登録」で作るカードの順（1 個目が基板の座標の基準になる）も、開くたびに変わっていた。
  */
 export function groupDetectedBoards(
   sensors: readonly DetectedSensorView[],
@@ -82,12 +83,22 @@ export function groupDetectedBoards(
       entry.lastPacketMs = s.lastPacketMs
     }
   }
-  return [...byKey].map(([boardKey, v]) => ({
-    boardKey,
-    sensorIds: v.sensorIds,
-    axisCounts: v.axisCounts,
-    lastPacketMs: v.lastPacketMs,
-  }))
+  return [...byKey]
+    .sort(([a], [b]) => compareCodeUnits(a, b))
+    .map(([boardKey, v]) => ({
+      boardKey,
+      sensorIds: [...v.sensorIds].sort(compareCodeUnits),
+      axisCounts: v.axisCounts,
+      lastPacketMs: v.lastPacketMs,
+    }))
+}
+
+/**
+ * 文字コードの順で比べる。**`localeCompare` を使わない**——並びが端末の言語設定で
+ * 変わると、同じホストを別の端末で開いたときに一覧の順が違って見える。
+ */
+export function compareCodeUnits(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0
 }
 
 /**

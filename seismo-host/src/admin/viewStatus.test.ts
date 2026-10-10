@@ -326,6 +326,22 @@ describe('sensorRowHtml', () => {
     expect(html).not.toContain('軸の本数が違う')
   })
 
+  it('正: 基板に表示名があれば名前を出し、基板 Key はホバーへ回す', () => {
+    const html = sensorRowHtml(NOW, { ...sensor(NOW - 1000), boardName: '北の壁' })
+    expect(html).toContain('<td><span title="mac:aa">北の壁</span> / s0</td>')
+  })
+
+  it('対照: 表示名が null なら基板 Key をそのまま出す', () => {
+    expect(sensorRowHtml(NOW, { ...sensor(NOW - 1000), boardName: null })).toContain('<td>mac:aa / s0</td>')
+  })
+
+  it('安全弁: 欄の無い版のホスト・形の崩れた値でも、基板 Key で出す', () => {
+    // `sensor()` は `boardName` を持たない（欄を足す前のホストの応答と同じ形）。
+    expect(sensorRowHtml(NOW, sensor(NOW - 1000))).toContain('<td>mac:aa / s0</td>')
+    const broken = { ...sensor(NOW - 1000), boardName: 7 } as unknown as ReturnType<typeof sensor>
+    expect(sensorRowHtml(NOW, broken)).toContain('<td>mac:aa / s0</td>')
+  })
+
   it('安全弁: 設定そのものの欄（有効・校正）は古くならないので赤くしない', () => {
     // あの 2 つは `/status` を組み立てる時点の設定から引いている（`statusReport.ts`）。
     // 届かなくなっても古くならないので、赤くすると「設定が壊れた」と読める。

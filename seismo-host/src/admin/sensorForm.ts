@@ -5,7 +5,7 @@
 // **校正の形は `stationConfigTypes.ts` の冒頭。** センサーは軸ごとに「基板の座標で測る向き
 // （長さが倍率）」と「ゼロ点」を持ち、地面に対する向き（鉛直・方角）は基板に 1 つだけ持つ。
 
-import { restWindowProblem, tiltDegFromUp } from './calibrationSuggest'
+import { headingOfRotation, restWindowProblem, tiltDegFromUp } from './calibrationSuggest'
 import type { SensorRestWindow } from './detectedBoards'
 import { ago, escapeHtml, qs } from './dom'
 import { axesAreIndependent } from '../receiver/calibration'
@@ -335,6 +335,7 @@ export function parseOrientationFormValues(values: OrientationFormValues): Mat3 
  * （手で入れる値ではなく、ボタンが入れる値なので）。結果と押せない理由は `viewBoards` が埋める。
  */
 export function renderOrientationHtml(values: OrientationFormValues): string {
+  const heading = headingTextFor(values)
   const cells: string[] = []
   for (let row = 0; row < 3; row++) {
     for (let col = 0; col < 3; col++) {
@@ -364,10 +365,13 @@ export function renderOrientationHtml(values: OrientationFormValues): string {
            自動では決まらない（REQUIREMENTS.md §16）。空のままなら水平面は回さない。
            **「向いている」ではなく「向ける」。** 入れるのは向かせたい方角で、実際に
            回るのはいまの向きとの差だけ —— 同じ値を入れ直しても動かない。
-           **「X 軸」は基板の X 軸**（センサーの軸ごとの向きを測る座標と同じ）。 -->
+           **「X 軸」は基板の X 軸**（センサーの軸ごとの向きを測る座標と同じ）。
+           **欄にはいまの方角を入れておく**（基板の向きから読み戻した値。headingTextFor）。
+           data-initial は入れておいた値で、保存のときこれと違えば方角を当て直す
+           （readHeadingChange）。 -->
       <div class="row">
         <label style="flex: 1">X 軸を向ける方角（度・任意）
-          <input class="b-heading" type="number" step="any" placeholder="北=0・東=90・南=180・西=270" />
+          <input class="b-heading" type="number" step="any" placeholder="北=0・東=90・南=180・西=270" value="${escapeHtml(heading)}" data-initial="${escapeHtml(heading)}" />
         </label>
         <button type="button" class="suggest-tilt" style="align-self: end; height: 2.1rem;" disabled>鉛直を合わせる</button>
       </div>
@@ -378,6 +382,43 @@ export function renderOrientationHtml(values: OrientationFormValues): string {
         <div class="mat3-grid">${cells.join('')}</div>
       </details>
     </div>`
+}
+
+/**
+ * 基板の向きの欄から、いまの方角を欄に入れる文字列にする。**読めなければ空**（欄は空のまま）。
+ *
+ * 小数 1 桁で丸め、`.0` は付けない（297 と入れた基板は `297` と出る）。360 へ丸まったら 0。
+ */
+export function headingTextFor(values: OrientationFormValues): string {
+  const m = parseOrientationFormValues(values)
+  if ('error' in m) return ''
+  const deg = headingOfRotation(m)
+  if (deg === null) return ''
+  const rounded = Math.round(deg * 10) / 10
+  return String(rounded >= 360 ? 0 : rounded)
+}
+
+/**
+ * 方角の欄を、いまの基板の向きから入れ直す（「鉛直を合わせる」の後・3x3 を手で直した後）。
+ * **入れ直した値を `data-initial` にも写す** —— 保存のとき「手で変えたか」をこれと比べる。
+ */
+export function writeHeadingFromOrientation(root: ParentNode): void {
+  const input = qs<HTMLInputElement>(root, '.b-heading')
+  const text = headingTextFor(readOrientationValues(root))
+  input.value = text
+  input.dataset.initial = text
+}
+
+/**
+ * 保存のときに当てる方角。**手で変えていなければ `null`**（入れておいた値のまま・空欄）。
+ *
+ * **入れておいた値と比べる。** 比べずに毎回当てると、3x3 を手で直した後の保存で
+ * 欄に残った古い方角へ黙って回し戻す。空欄も「触らない」（`parseHeadingText`）。
+ */
+export function readHeadingChange(root: ParentNode): number | null | { readonly error: string } {
+  const input = qs<HTMLInputElement>(root, '.b-heading')
+  if (input.value.trim() === (input.dataset.initial ?? '').trim()) return null
+  return parseHeadingText(input.value)
 }
 
 /** 基板の向きの欄を読む。**`renderOrientationHtml` と同じセレクタ。** */

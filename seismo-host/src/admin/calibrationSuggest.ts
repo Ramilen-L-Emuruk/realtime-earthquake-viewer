@@ -455,36 +455,78 @@ export function suggestRotation(input: TiltSuggestInput): TiltSuggestion | TiltR
 
   // **鉛直を合わせてから方角を回す。** 順序が逆だと、傾いたままの座標で
   // 上向き軸のつもりの回転を掛けることになり、鉛直も方角もずれる。
-  let added = tilt
+  let afterTilt = multiplyMat3(tilt, rotation)
   if (headingDeg !== null) {
-    // **方角は「いまどちらを向いているか」との差だけ回す。**
-    //
-    // ここを `headingDeg` だけから作った絶対の回転にすると、**同じ値をもう一度
-    // 入れて押しただけで方角が壊れる** —— 傾きのほうは測った重力から作るので
-    // 2 回目は `tilt` が単位行列になって収束するが、方角は重力から分からない
-    // ぶん自分では収まらず、押すたびに同じ角を足し続ける（敵対的レビューが
-    // 実測で再現した。真の方角 30 度の板を 2 回続けて合わせると 330 度になる）。
-    const afterTilt = multiplyMat3(tilt, rotation)
-    // 1 本目の軸が、鉛直を直した後の共通座標でどこを向くか（行列の第 1 列）。
-    const x0: Vec3 = [afterTilt[0][0], afterTilt[1][0], afterTilt[2][0]]
-    const horizontal = Math.hypot(x0[0], x0[1])
-    if (horizontal < DEGENERATE) {
-      return {
-        ok: false,
-        // **画面へ出る文なので「X 軸」と呼ぶ**（基板の X 軸。軸ごとの表の「向き X」と同じ）。
-        reason: 'X 軸が真上か真下を向いていて、方角を決められない',
-      }
-    }
-    // **方位は北から時計回り**（東＝90 度）。共通座標は X が東・Y が北なので、
-    // 東成分と北成分をこの順で `atan2` へ渡すとそのまま方位になる。
-    const bearing = Math.atan2(x0[0], x0[1])
-    added = multiplyMat3(rotationAroundUp(bearing - (headingDeg * Math.PI) / 180), tilt)
+    const turned = turnToHeading(afterTilt, headingDeg)
+    if (!turned.ok) return turned
+    afterTilt = turned.rotation
   }
 
   return {
     ok: true,
-    rotation: roundMat3(multiplyMat3(added, rotation)),
+    rotation: roundMat3(afterTilt),
     tiltDeg: roundDeg((rad * 180) / Math.PI),
     upsideDown,
   }
+}
+
+/** X 軸が鉛直に近すぎて方角を決められないときの理由。 */
+const HEADING_UNDEFINED_REASON = 'X 軸が真上か真下を向いていて、方角を決められない'
+
+/** 基板の X 軸（行列の第 1 列）の、水平面での方位（ラジアン）。**鉛直に近ければ `null`。** */
+function bearingOfX(rotation: Mat3): number | null {
+  const x0: Vec3 = [rotation[0][0], rotation[1][0], rotation[2][0]]
+  if (Math.hypot(x0[0], x0[1]) < DEGENERATE) return null
+  // **方位は北から時計回り**（東＝90 度）。共通座標は X が東・Y が北なので、
+  // 東成分と北成分をこの順で `atan2` へ渡すとそのまま方位になる。
+  return Math.atan2(x0[0], x0[1])
+}
+
+/**
+ * いまの基板の向きで、X 軸が向いている方角（度・北から時計回り・0 以上 360 未満）。
+ * **X 軸が真上・真下に近ければ `null`。**
+ *
+ * **方角は値として保存していない。** 入れた方角は基板の向き（行列）に溶け込むだけなので、
+ * 保存した後に「何度を入れたか」を見せるには、ここで行列から読み戻すしかない。
+ */
+export function headingOfRotation(rotation: Mat3): number | null {
+  if (!rotation.every(readable)) return null
+  const bearing = bearingOfX(rotation)
+  if (bearing === null) return null
+  const deg = (bearing * 180) / Math.PI
+  return ((deg % 360) + 360) % 360
+}
+
+/**
+ * 鉛直軸まわりに回して、X 軸を方角 `headingDeg` へ向ける。**鉛直（重力に対する傾き）は触らない。**
+ *
+ * **「いまどちらを向いているか」との差だけ回す。** `headingDeg` だけから作った絶対の回転に
+ * すると、**同じ値をもう一度入れただけで方角が壊れる** —— 傾きは測った重力から作るので
+ * 2 回目は単位行列になって収束するが、方角は重力から分からないぶん自分では収まらず、
+ * 押すたびに同じ角を足し続ける（敵対的レビューが実測で再現した。真の方角 30 度の板を
+ * 2 回続けて合わせると 330 度になる）。
+ *
+ * 丸めは呼ぶ側に任せる（`suggestRotation` は傾きと合わせて 1 回だけ丸める）。
+ */
+function turnToHeading(rotation: Mat3, headingDeg: number): { readonly ok: true; readonly rotation: Mat3 } | TiltRefusal {
+  const bearing = bearingOfX(rotation)
+  // **画面へ出る文なので「X 軸」と呼ぶ**（基板の X 軸。軸ごとの表の「向き X」と同じ）。
+  if (bearing === null) return { ok: false, reason: HEADING_UNDEFINED_REASON }
+  return { ok: true, rotation: multiplyMat3(rotationAroundUp(bearing - (headingDeg * Math.PI) / 180), rotation) }
+}
+
+/**
+ * 保存のときに方角を当てる（「鉛直を合わせる」を押さずに方角だけ変えた場合）。**投げない。**
+ *
+ * **結果は丸める**（`suggestRotation` と同じ桁）。設定ファイルに長い小数を残さない。
+ */
+export function rotateToHeading(
+  rotation: Mat3,
+  headingDeg: number,
+): { readonly ok: true; readonly rotation: Mat3 } | TiltRefusal {
+  if (!rotation.every(readable)) return { ok: false, reason: 'いまの基板の向きが数として読めない' }
+  if (!Number.isFinite(headingDeg)) return { ok: false, reason: '方角が数として読めない' }
+  const turned = turnToHeading(rotation, headingDeg)
+  if (!turned.ok) return turned
+  return { ok: true, rotation: roundMat3(turned.rotation) }
 }

@@ -249,6 +249,17 @@ describe('readStatus', () => {
     expect(readStatus({ stationIntensities: [{ stationId: 'garage', pairDiffs: [] }] }).residuals).toEqual([])
   })
 
+  it('正: 基板の表示名を読む', () => {
+    const status = readStatus(statusJson({ sensors: [{ boardKey: 'b', sensorId: 's', boardName: '北の壁' }] }))
+    expect(status.sensors[0].boardName).toBe('北の壁')
+  })
+
+  it('安全弁: 欄の無い版のホスト・空文字・形の崩れた値は null に倒す', () => {
+    expect(readStatus(statusJson({ sensors: [{ boardKey: 'b', sensorId: 's' }] })).sensors[0].boardName).toBeNull()
+    expect(readStatus(statusJson({ sensors: [{ boardKey: 'b', sensorId: 's', boardName: '' }] })).sensors[0].boardName).toBeNull()
+    expect(readStatus(statusJson({ sensors: [{ boardKey: 'b', sensorId: 's', boardName: 7 }] })).sensors[0].boardName).toBeNull()
+  })
+
   it('形が違っても落ちない', () => {
     expect(readStatus(null).sensors).toEqual([])
     expect(readStatus({ sensors: 'x', stream: 7 }).stream).toBeNull()

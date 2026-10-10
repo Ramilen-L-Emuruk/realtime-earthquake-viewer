@@ -447,7 +447,8 @@ describe('WaveBuffer — 2 軸のセンサー（測る向きのまま）', () =>
 })
 
 describe('WaveStore', () => {
-  it('センサーごとに分け、届いた順に並べる', () => {
+  // **覆した: 以前は届いた順。** 開くたびに行と線の色が入れ替わるので、鍵の順に固定する（#713）。
+  it('センサーごとに分け、届いた順によらず鍵の順に並べる', () => {
     const store = new WaveStore()
     store.push(chunk({ boardKey: 'b2', sensorId: 's1' }))
     store.push(chunk({ boardKey: 'b1', sensorId: 's1' }))
@@ -458,8 +459,15 @@ describe('WaveStore', () => {
       buffers.map((b) =>
         b.source.kind === 'sensor' ? `${b.source.boardKey}/${b.source.sensorId}` : b.source.stationId,
       ),
-    ).toEqual(['b2/s1', 'b1/s1'])
-    expect(buffers[0].chunkCount).toBe(2)
+    ).toEqual(['b1/s1', 'b2/s1'])
+    expect(buffers[1].chunkCount).toBe(2)
+  })
+
+  it('観測点の合成はセンサーより前に並ぶ', () => {
+    const store = new WaveStore()
+    store.push(chunk({ boardKey: 'a', sensorId: 's1' }))
+    store.push({ ...chunk({ boardKey: 'a', sensorId: 's1' }), source: { kind: 'station', stationId: 'zz' } })
+    expect(store.buffersInOrder().map((b) => b.source.kind)).toEqual(['station', 'sensor'])
   })
 
   it('境目の違う名前を別のセンサーとして扱う（安全弁）', () => {

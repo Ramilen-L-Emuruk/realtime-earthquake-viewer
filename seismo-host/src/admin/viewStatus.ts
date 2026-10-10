@@ -12,7 +12,7 @@
 // 攻撃者が UDP パケット 1 個で管理コンソールのトークンを盗めるストアド XSS になる
 // （#313 段 C 敵対的レビューで検出）。
 
-import { ago, escapeHtml, isStale, qs, receptionBadgeHtml } from './dom'
+import { ago, boardLabelHtml, escapeHtml, isStale, qs, receptionBadgeHtml } from './dom'
 import { describeSilence } from '../receiver/assignedReception'
 import { CLOCK_OFFSET_WARN_MS, warnableClockOffset } from '../receiver/boardClockVerdict'
 import type { BoardClockOffset } from '../receiver/boardClockVerdict'
@@ -47,6 +47,8 @@ interface StatusReportView {
     readonly enabled: boolean
     readonly calibrationConfigured: boolean
     readonly station: { readonly displayName: string } | null
+    /** 基板の表示名。**版の古いホストには欄が無い**ので、無ければ名前なしと読む。 */
+    readonly boardName?: string | null
   }[]
   readonly stationIntensities: readonly {
     readonly stationId: string
@@ -383,7 +385,7 @@ export function sensorRowHtml(nowMs: number, s: SensorView): string {
   return `
           <tr>
             <td>${escapeHtml(s.station?.displayName ?? '未割当')}</td>
-            <td>${escapeHtml(s.boardKey)} / ${escapeHtml(s.sensorId)}</td>
+            <td>${boardLabelHtml(s.boardKey, typeof s.boardName === 'string' ? s.boardName : null)} / ${escapeHtml(s.sensorId)}</td>
             <td>${receptionBadgeHtml(nowMs, s.lastPacketMs)} ${ago(nowMs, s.lastPacketMs)}</td>
             ${sensorIntensityCellHtml(nowMs, s, mismatch !== null)}
             <td>${s.enabled ? '有効' : '無効'}</td>

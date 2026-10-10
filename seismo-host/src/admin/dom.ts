@@ -27,6 +27,15 @@ export function escapeHtml(value: string): string {
 }
 
 /** `null` を空欄で出す。**`0` を空欄と混同しない**——`??` ではなく明示の分岐。 */
+/**
+ * 基板の呼び名（HTML）。**表示名があれば名前を出し、基板 Key はホバー（`title`）へ回す。**
+ * 名前を付けていなければ基板 Key をそのまま出す（2026-10-10 ユーザー承認）。
+ */
+export function boardLabelHtml(boardKey: string, displayName: string | null): string {
+  if (displayName === null || displayName.length === 0) return escapeHtml(boardKey)
+  return `<span title="${escapeHtml(boardKey)}">${escapeHtml(displayName)}</span>`
+}
+
 export function formatNumber(value: number | null): string {
   return value === null ? '' : String(value)
 }
