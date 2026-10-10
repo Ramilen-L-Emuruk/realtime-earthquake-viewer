@@ -42,7 +42,14 @@ export interface RecordChannelView {
   readonly lastHourMs: number
   readonly hours: number
   readonly sensor: string | null
-  readonly board: { readonly boardKey: string; readonly sensorId: string; readonly stationId: string; readonly stationName: string | null } | null
+  readonly board: {
+    readonly boardKey: string
+    /** 基板の表示名。付けていなければ・欄の無い版のホストなら null。 */
+    readonly boardName: string | null
+    readonly sensorId: string
+    readonly stationId: string
+    readonly stationName: string | null
+  } | null
   readonly station: { readonly stationId: string; readonly displayName: string } | null
 }
 
@@ -61,7 +68,10 @@ function readBoard(v: unknown): RecordChannelView['board'] | undefined {
   if (boardKey === null || sensorId === null || stationId === null) return undefined
   const stationName = o.stationName === null ? null : readNonEmptyString(o.stationName)
   if (stationName === null && o.stationName !== null) return undefined
-  return { boardKey, sensorId, stationId, stationName }
+  // **欄が無いのは版の古いホスト**（名前を付ける前）なので、付けていないのと同じに読む。
+  const boardName = o.boardName === undefined || o.boardName === null ? null : readNonEmptyString(o.boardName)
+  if (boardName === null && o.boardName !== undefined && o.boardName !== null) return undefined
+  return { boardKey, boardName, sensorId, stationId, stationName }
 }
 
 function readStation(v: unknown): RecordChannelView['station'] | undefined {
@@ -112,6 +122,8 @@ export interface RecordGroup {
   readonly key: string
   readonly kind: 'raw' | 'station'
   readonly label: string
+  /** 選ぶ欄でホバーに出すもの（基板を表示名で名乗ったときの基板 Key）。無ければ null。 */
+  readonly hint: string | null
   readonly axes: readonly RecordAxis[]
   /** 合成波形の札（震度の推移を引くのに使う）。生データは null。 */
   readonly stationKey: string | null
@@ -146,7 +158,12 @@ function groupLabel(first: RecordChannelView, stationKey: string | null): string
   if (first.kind === 'station') return first.station !== null ? first.station.displayName : `外した観測点（札 ${stationKey ?? ''}）`
   const b = first.board
   if (b === null) return `割り当ての無いセンサー（${first.sensor ?? first.id}）`
-  return `${b.stationName ?? b.stationId} ／ 基板 ${b.boardKey} のセンサー ${b.sensorId}`
+  return `${b.stationName ?? b.stationId} ／ 基板 ${b.boardName ?? b.boardKey} のセンサー ${b.sensorId}`
+}
+
+/** 選ぶ欄でホバーに出すもの。**名前で名乗った生データだけ、基板 Key を添える**（稼働状況・波形タブと同じ作法）。 */
+function groupHint(first: RecordChannelView): string | null {
+  return first.kind === 'raw' && first.board !== null && first.board.boardName !== null ? first.board.boardKey : null
 }
 
 /**
@@ -209,6 +226,7 @@ export function groupChannels(channels: readonly RecordChannelView[]): RecordGro
       key,
       kind: first.kind,
       label: groupLabel(first, b.stationKey),
+      hint: groupHint(first),
       axes,
       stationKey: b.stationKey,
       stationId,

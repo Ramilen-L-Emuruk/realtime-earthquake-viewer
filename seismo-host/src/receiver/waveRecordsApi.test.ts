@@ -268,7 +268,13 @@ describe('channels', () => {
     const got = await handleRecordsRequest('channels', q({}), deps, OPEN)
     const body = got.body as { channels: Array<{ id: string; board: unknown }> }
     const raw = body.channels.find((c) => c.id === mseed3SourceId(board, 'S1', 'HN1'))!
-    expect(raw.board).toEqual({ boardKey: board, sensorId: 'S1', stationId: STATION, stationName: '自宅' })
+    expect(raw.board).toEqual({ boardKey: board, boardName: null, sensorId: 'S1', stationId: STATION, stationName: '自宅' })
+
+    // 基板に表示名を付けていれば、それも添える。
+    config = { ...config, boards: [{ ...config.boards[0]!, displayName: '北の壁' }] }
+    const named = await handleRecordsRequest('channels', q({}), deps, OPEN)
+    const namedRaw = (named.body as { channels: Array<{ id: string; board: unknown }> }).channels.find((c) => c.id === mseed3SourceId(board, 'S1', 'HN1'))!
+    expect(namedRaw.board).toMatchObject({ boardKey: board, boardName: '北の壁' })
   })
 
   it('読めない要約は数えて一覧から外す', async () => {

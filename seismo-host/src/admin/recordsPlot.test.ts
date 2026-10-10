@@ -75,8 +75,8 @@ describe('groupChannels', () => {
     const groups = groupChannels([
       ch({ id: 'station/home/X', kind: 'station', station: { stationId: 'home', displayName: '自宅' } }),
       ch({ id: 'station/old/X', kind: 'station' }),
-      ch({ id: 'FDSN:XX_A1_S1_H_N_1', kind: 'raw', sensor: 'FDSN:XX_A1_S1', board: { boardKey: 'b1', sensorId: 'S1', stationId: 'home', stationName: '自宅' } }),
-      ch({ id: 'FDSN:XX_B2_S1_H_N_1', kind: 'raw', sensor: 'FDSN:XX_B2_S1', board: { boardKey: 'b2', sensorId: 'S1', stationId: 'home', stationName: '自宅' } }),
+      ch({ id: 'FDSN:XX_A1_S1_H_N_1', kind: 'raw', sensor: 'FDSN:XX_A1_S1', board: { boardKey: 'b1', boardName: null, sensorId: 'S1', stationId: 'home', stationName: '自宅' } }),
+      ch({ id: 'FDSN:XX_B2_S1_H_N_1', kind: 'raw', sensor: 'FDSN:XX_B2_S1', board: { boardKey: 'b2', boardName: null, sensorId: 'S1', stationId: 'home', stationName: '自宅' } }),
       ch({ id: 'FDSN:XX_C3_S1_H_N_1', kind: 'raw', sensor: 'FDSN:XX_C3_S1' }),
     ])
     const by = (label: string) => groups.find((g) => g.label === label)!
@@ -89,13 +89,27 @@ describe('groupChannels', () => {
 
   it('割り当てのある生データは「観測点名 ／ 基板 … のセンサー …」と名乗る（観測点が設定に無ければ ID）', () => {
     const [named] = groupChannels([
-      ch({ id: 'FDSN:XX_A1_S1_H_N_1', kind: 'raw', sensor: 'FDSN:XX_A1_S1', board: { boardKey: 'b1', sensorId: 'S1', stationId: 'home', stationName: '自宅' } }),
+      ch({ id: 'FDSN:XX_A1_S1_H_N_1', kind: 'raw', sensor: 'FDSN:XX_A1_S1', board: { boardKey: 'b1', boardName: null, sensorId: 'S1', stationId: 'home', stationName: '自宅' } }),
     ])
     expect(named!.label).toBe('自宅 ／ 基板 b1 のセンサー S1')
     const [unnamed] = groupChannels([
-      ch({ id: 'FDSN:XX_A1_S1_H_N_1', kind: 'raw', sensor: 'FDSN:XX_A1_S1', board: { boardKey: 'b1', sensorId: 'S1', stationId: 'home', stationName: null } }),
+      ch({ id: 'FDSN:XX_A1_S1_H_N_1', kind: 'raw', sensor: 'FDSN:XX_A1_S1', board: { boardKey: 'b1', boardName: null, sensorId: 'S1', stationId: 'home', stationName: null } }),
     ])
     expect(unnamed!.label).toBe('home ／ 基板 b1 のセンサー S1')
+    expect(unnamed!.hint).toBeNull()
+  })
+
+  it('正: 基板に表示名があれば名前で名乗り、基板 Key はホバー（hint）へ回す', () => {
+    const [g] = groupChannels([
+      ch({ id: 'FDSN:XX_A1_S1_H_N_1', kind: 'raw', sensor: 'FDSN:XX_A1_S1', board: { boardKey: 'b1', boardName: '北の壁', sensorId: 'S1', stationId: 'home', stationName: '自宅' } }),
+    ])
+    expect(g!.label).toBe('自宅 ／ 基板 北の壁 のセンサー S1')
+    expect(g!.hint).toBe('b1')
+  })
+
+  it('対照: 合成波形には hint を付けない（基板ではないので）', () => {
+    const [g] = groupChannels([ch({ id: 'station/home/X', kind: 'station', station: { stationId: 'home', displayName: '自宅' } })])
+    expect(g!.hint).toBeNull()
   })
 
   it('記録がある期間は最後の時の終わりまで', () => {
@@ -111,6 +125,14 @@ describe('readChannelList', () => {
     expect(readChannelList({ channels: [good, { ...good, kind: 'other' }], unreadable: 0 })).toBeNull()
     expect(readChannelList({ channels: [{ ...good, board: { boardKey: 'b' } }], unreadable: 0 })).toBeNull()
     expect(readChannelList({ channels: [good] })).toBeNull()
+  })
+
+  it('基板の表示名: 欄の無い版のホストは名前なしと読み、形の崩れた名前は応答ごと読めない', () => {
+    const base = { id: 'FDSN:XX_A1_S1_H_N_1', kind: 'raw', firstHourMs: H0, lastHourMs: H0, hours: 1, sensor: 'FDSN:XX_A1_S1', station: null }
+    const board = { boardKey: 'b1', sensorId: 'S1', stationId: 'home', stationName: '自宅' }
+    expect(readChannelList({ channels: [{ ...base, board }], unreadable: 0 })?.channels[0]?.board?.boardName).toBeNull()
+    expect(readChannelList({ channels: [{ ...base, board: { ...board, boardName: '北の壁' } }], unreadable: 0 })?.channels[0]?.board?.boardName).toBe('北の壁')
+    expect(readChannelList({ channels: [{ ...base, board: { ...board, boardName: 7 } }], unreadable: 0 })).toBeNull()
   })
 })
 

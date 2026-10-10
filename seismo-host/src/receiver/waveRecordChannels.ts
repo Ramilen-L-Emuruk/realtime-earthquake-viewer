@@ -37,9 +37,11 @@ export interface RecordChannel {
   /**
    * 生データ: いまの設定でこのセンサーを持つ基板とセンサー。設定に無ければ `null`。
    * `stationName` は割り当て先の観測点の表示名（観測点が設定に無ければ `null`）。
+   * `boardName` は基板の表示名（付けていなければ `null`）。
    */
   readonly board: {
     readonly boardKey: string
+    readonly boardName: string | null
     readonly sensorId: string
     readonly stationId: string
     readonly stationName: string | null
@@ -142,6 +144,7 @@ export class RecordChannelIndex {
         if (sid === null) continue
         sensorOwners.set(sensorOfSourceId(sid), {
           boardKey: b.boardKey,
+          boardName: b.displayName ?? null,
           sensorId: s.sensorId,
           stationId: b.stationId,
           stationName: stationNames.get(b.stationId) ?? null,

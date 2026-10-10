@@ -1787,7 +1787,8 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     }
     const stations = groups.filter((g) => g.kind === 'station')
     const raws = groups.filter((g) => g.kind === 'raw')
-    const option = (g: RecordGroup): string => `<option value="${escapeHtml(g.key)}">${escapeHtml(g.label)}</option>`
+    const option = (g: RecordGroup): string =>
+      `<option value="${escapeHtml(g.key)}"${g.hint === null ? '' : ` title="${escapeHtml(g.hint)}"`}>${escapeHtml(g.label)}</option>`
     groupEl.innerHTML =
       (stations.length > 0 ? `<optgroup label="観測点の合成波形">${stations.map(option).join('')}</optgroup>` : '') +
       (raws.length > 0 ? `<optgroup label="センサーの生データ">${raws.map(option).join('')}</optgroup>` : '')
