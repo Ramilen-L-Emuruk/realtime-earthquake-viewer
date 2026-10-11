@@ -143,6 +143,27 @@ export class StationStore {
   }
 
   /**
+   * 設定の中身が変わった時刻（記録の `effectiveMs`・古い順）。**起動の記録のように中身が変わらない記録は
+   * 含めない**（{@link configThrough} と同じ見方）。依頼された作り直しを、変わった位置で割るのに使う
+   * （`rewaveScheduler.ts` の `planRequestedRewave`）。ファイルを読めていない・履歴が通らなければ `null`。投げない。
+   */
+  changeTimes(): number[] | null {
+    if (this.doc === null) return null
+    try {
+      const out: number[] = []
+      let prev: string | null = null
+      for (const r of this.doc.revisions) {
+        const key = JSON.stringify(configAt(this.doc, r.effectiveMs))
+        if (prev !== null && key !== prev) out.push(r.effectiveMs)
+        prev = key
+      }
+      return out
+    } catch {
+      return null
+    }
+  }
+
+  /**
    * その時点の設定を記録として足し、ファイルへ書く。**投げる** —— 管理コンソールの保存は、
    * 書けなかったことを失敗として返さねばならない（黙って諦めると「保存したはずなのに次の起動で
    * 消えている」という一番気づきにくい壊れ方をする）。起動の記録は呼び出し側が受け止める。

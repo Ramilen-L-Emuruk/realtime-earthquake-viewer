@@ -13,6 +13,10 @@
 // **区間の中（助走を含む）で設定が変わっていたら作り直さない** —— 1 本の部品で 2 つの設定は流せない。
 // 起動の記録は設定を変えないので、ホストの再起動をまたいだ区間も作り直せる。
 //
+// **依頼された作り直しだけは、ノイズ密度をいまの設定から重ねられる**（`job.noiseDensity === 'current'`・
+// {@link withCurrentNoiseDensity}）。重ねるのはノイズ密度（合成の重み）だけで、軸の向き・ゼロ点・基板の向き・
+// 有効かどうかは当時のまま。**設定の履歴は書き換えない** —— 当時未設定だったという記録は事実として残す。
+//
 // **投げない。** 作り直しは本筋の脇役なので、ここが失敗しても受信は止めない。理由を数えて外へ出す。
 
 import type { StoredPacket } from './mseedPacketReader'
@@ -54,6 +58,12 @@ export type RewaveEvent =
       readonly rawIssues: number
       /** 同じまとまりが 2 度入っていて 1 度だけ流した数（再起動をまたいだ取り戻しで起きる）。 */
       readonly duplicates: number
+      /**
+       * 作り直しに使った設定で、観測点の有効なセンサーのうちノイズ密度が未設定のものの数（{@link countUnsetNoiseDensity}）。
+       * **1 以上なら合成は全員同じ重みで組まれている。** ノイズ密度をいまの設定から重ねた作り直しでこれが残るのは、
+       * いまの設定にも値が無いか、いまの設定に無いセンサー（当時の値のまま）が混ざったとき。
+       */
+      readonly unsetNoiseDensity: number
     }
   | { readonly kind: 'skipped'; readonly job: RewaveJob; readonly reason: RewaveSkipReason; readonly detail: string }
 
@@ -64,6 +74,8 @@ export interface RewaveRunnerDeps {
    * いれば `'changed'`、履歴を読めていなければ `null`。
    */
   readonly configThrough: (fromMs: number, toMs: number) => StationConfig | 'changed' | null
+  /** いまの設定。ノイズ密度をいまの設定から重ねる作り直し（`noiseDensity: 'current'`）が読む。 */
+  readonly currentConfig: () => StationConfig
   readonly flush: () => Promise<boolean>
   /**
    * `atMs` を含む時の生データの本を読む。**無ければ null**（その時は記録されていない）。
@@ -78,8 +90,23 @@ export interface RewaveRunnerDeps {
 }
 
 export interface RewaveSnapshot {
-  /** 作り直しを待っている観測点の数。 */
+  /** 作り直しを待っている観測点の数（取り戻した区間の分）。 */
   readonly waiting: number
+  /** 依頼された作り直し（`POST /api/rewave`）のうち、まだ回していない件数。**0 になったら次の依頼を受ける。** */
+  readonly requestedWaiting: number
+  /**
+   * 依頼された作り直しだけの通算（下の `jobs`・`skipped` はこれも含む全体）。**依頼が空振りしていないかはここで見る** ——
+   * 全体の数は取り戻しの作り直しと混ざる。ホストを起動し直すと 0 から数え直す。
+   */
+  readonly requested: {
+    /**
+     * 作り直して控えへ足した件数。**一部を書けなかった 1 件（`write-failed`）はここにも `skipped` にも入る**
+     * （全体の `jobs`・`skipped` と同じ数え方）。
+     */
+    readonly jobs: number
+    /** 理由ごとの、作り直さなかった件数。**0 の理由は載せない。** */
+    readonly skipped: Partial<Record<RewaveSkipReason, number>>
+  }
   /** いま作り直している最中か。 */
   readonly running: boolean
   /** 作り直して控えへ足した件数。 */
@@ -94,6 +121,57 @@ export interface RewaveSnapshot {
 
 const HOUR_MS = 60 * 60 * 1000
 
+/**
+ * 当時の設定へ、いまの設定のノイズ密度だけを重ねる。**純関数。**
+ *
+ * センサーは「基板 × センサー」で突き合わせる。**いまの設定に無いセンサーは当時の値のまま**
+ * （外した基板・センサーの重みを推し量らない）。
+ */
+export function withCurrentNoiseDensity(historical: StationConfig, current: StationConfig): StationConfig {
+  const now = new Map<string, number | null>()
+  for (const b of current.boards) for (const s of b.sensors) now.set(`${b.boardKey}\u0000${s.sensorId}`, s.noiseDensity)
+  return {
+    stations: historical.stations,
+    boards: historical.boards.map((b) => ({
+      ...b,
+      sensors: b.sensors.map((s) => {
+        const key = `${b.boardKey}\u0000${s.sensorId}`
+        return now.has(key) ? { ...s, noiseDensity: now.get(key) ?? null } : s
+      }),
+    })),
+  }
+}
+
+/**
+ * 1 件を作り直すのに読む生データの範囲（助走と後ろの余白を足した半開区間 `[fromMs, toMs)`）と、
+ * その間ずっと同じ設定だったかを照合する閉区間 `[fromMs, toMs − 1]`。**純関数。**
+ *
+ * **照合は閉区間で渡す**（`StationStore.configThrough` は両端を含む）。読む範囲の終わり（`toMs`）ちょうどに
+ * 効き始めた設定は、読むサンプルには掛からない —— ここで 1 ミリ秒引かないと、依頼の区切り
+ * （`rewaveScheduler.ts` の `planRequestedRewave`。設定変更の時刻 − 後ろの余白で終わる）の最後の 1 件が、
+ * 必ず「区間の中で設定が変わった」として飛ぶ。
+ */
+export function rewaveConfigWindow(job: Pick<RewaveJob, 'fromMs' | 'toMs'>): {
+  readonly readFromMs: number
+  readonly readToMs: number
+  readonly checkFromMs: number
+  readonly checkToMs: number
+} {
+  const readFromMs = job.fromMs - REWAVE_LEAD_MS
+  const readToMs = job.toMs + REWAVE_TAIL_MS
+  return { readFromMs, readToMs, checkFromMs: readFromMs, checkToMs: readToMs - 1 }
+}
+
+/** 観測点のセンサーのうち、ノイズ密度が未設定のものの数。**1 台でもあれば合成は全員同じ重みに倒れる**（`sensorFusion.ts`）。 */
+export function countUnsetNoiseDensity(config: StationConfig, stationId: string): number {
+  let n = 0
+  for (const b of config.boards) {
+    if (b.stationId !== stationId) continue
+    for (const s of b.sensors) if (s.enabled && s.noiseDensity === null) n += 1
+  }
+  return n
+}
+
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
@@ -106,6 +184,8 @@ export class RewaveRunner {
   private chunks = 0
   private rawIssues = 0
   private readonly skipped = new Map<RewaveSkipReason, number>()
+  private requestedJobs = 0
+  private readonly requestedSkipped = new Map<RewaveSkipReason, number>()
 
   constructor(deps: RewaveRunnerDeps) {
     this.deps = deps
@@ -136,8 +216,12 @@ export class RewaveRunner {
   snapshot(): RewaveSnapshot {
     const skipped: Partial<Record<RewaveSkipReason, number>> = {}
     for (const [reason, n] of this.skipped) if (n > 0) skipped[reason] = n
+    const requestedSkipped: Partial<Record<RewaveSkipReason, number>> = {}
+    for (const [reason, n] of this.requestedSkipped) if (n > 0) requestedSkipped[reason] = n
     return {
       waiting: this.deps.scheduler.waiting,
+      requestedWaiting: this.deps.scheduler.requestedWaiting,
+      requested: { jobs: this.requestedJobs, skipped: requestedSkipped },
       running: this.running !== null,
       jobs: this.jobs,
       chunks: this.chunks,
@@ -150,9 +234,10 @@ export class RewaveRunner {
   private async run(job: RewaveJob): Promise<void> {
     const startedMs = this.deps.now()
     try {
-      const fromMs = job.fromMs - REWAVE_LEAD_MS
-      const toMs = job.toMs + REWAVE_TAIL_MS
-      const config = this.deps.configThrough(fromMs, toMs)
+      const window = rewaveConfigWindow(job)
+      const fromMs = window.readFromMs
+      const toMs = window.readToMs
+      const config = this.deps.configThrough(window.checkFromMs, window.checkToMs)
       if (config === 'changed') {
         this.skip(job, 'config-changed', '区間の中で観測点の設定が変わった')
         return
@@ -190,8 +275,9 @@ export class RewaveRunner {
         this.skip(job, 'no-raw', failures.length > 0 ? failures.join(' / ') : '区間の時の本が無い')
         return
       }
+      const used = job.noiseDensity === 'current' ? withCurrentNoiseDensity(config, this.deps.currentConfig()) : config
       const out = await rewaveStation(
-        { stationId: job.stationId, fromMs: job.fromMs, toMs: job.toMs, packets, config },
+        { stationId: job.stationId, fromMs: job.fromMs, toMs: job.toMs, packets, config: used },
         this.deps.pause,
       )
       if (out.chunks.length === 0) {
@@ -202,6 +288,7 @@ export class RewaveRunner {
       this.jobs += 1
       this.chunks += written.written
       this.rawIssues += rawIssues
+      if (job.origin === 'requested') this.requestedJobs += 1
       if (written.lost + written.bad > 0) {
         this.skip(job, 'write-failed', `書けなかった ${written.lost}・形にできなかった ${written.bad}`)
         return
@@ -214,6 +301,7 @@ export class RewaveRunner {
         elapsedMs: this.deps.now() - startedMs,
         rawIssues,
         duplicates: out.duplicates,
+        unsetNoiseDensity: countUnsetNoiseDensity(used, job.stationId),
       })
     } catch (error) {
       this.skip(job, 'internal', messageOf(error))
@@ -222,6 +310,7 @@ export class RewaveRunner {
 
   private skip(job: RewaveJob, reason: RewaveSkipReason, detail: string): void {
     this.count(reason)
+    if (job.origin === 'requested') this.requestedSkipped.set(reason, (this.requestedSkipped.get(reason) ?? 0) + 1)
     try {
       this.deps.onEvent({ kind: 'skipped', job, reason, detail })
     } catch {

@@ -3,7 +3,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { rewaveConfigWindow } from './rewaveRunner'
+import { planRequestedRewave } from './rewaveScheduler'
 import type { StationConfig } from './stationConfigTypes'
+import { REWAVE_LEAD_MS, REWAVE_TAIL_MS } from './stationRewave'
 import { loadStationHistory, STATION_CONFIG_FILE, StationStore } from './stationStore'
 import { configAt } from './stationXml'
 
@@ -123,6 +126,58 @@ describe('StationStore', () => {
       const store = new StationStore({ path })
       store.open()
       expect(store.configThrough(0, 1_000)).toBeNull()
+      expect(store.changeTimes()).toBeNull()
+    })
+
+    it('changeTimes: 中身が変わった記録の時刻だけを古い順に返す（起動の記録・同じ中身の保存は含めない）', () => {
+      const store = storeWith([
+        [1_000, CONFIG_A, 'startup'],
+        [2_000, CONFIG_A, 'startup'],
+        [3_000, CONFIG_B, 'changed'],
+        [4_000, CONFIG_B, 'changed'],
+        [5_000, CONFIG_A, 'changed'],
+      ])
+      expect(store.changeTimes()).toEqual([3_000, 5_000])
+    })
+
+    describe('依頼の区切り（planRequestedRewave）と照合の窓（rewaveConfigWindow）の噛み合わせ', () => {
+      // 設定を 3 回変えた履歴。区切りの境目は変更の時刻 ± 助走・余白で決まる。
+      const CHANGES = [10 * 60_000, 20 * 60_000, 30 * 60_000]
+      function plannedStore(): { store: StationStore; spans: readonly { fromMs: number; toMs: number }[] } {
+        const store = storeWith([
+          [0, CONFIG_A, 'startup'],
+          [CHANGES[0]!, CONFIG_B, 'changed'],
+          [CHANGES[1]!, CONFIG_A, 'changed'],
+          [CHANGES[2]!, CONFIG_B, 'changed'],
+        ])
+        const plan = planRequestedRewave({
+          fromMs: 2 * 60_000,
+          toMs: 40 * 60_000,
+          changeTimes: store.changeTimes() ?? [],
+          leadMs: REWAVE_LEAD_MS,
+          tailMs: REWAVE_TAIL_MS,
+          maxSpanMs: 3 * 60_000,
+        })
+        return { store, spans: plan.spans }
+      }
+
+      it('正: 区切った区間はどれも、作り直しの係が照合する窓で「設定が変わった」にならない（変更の直前の 1 件も）', () => {
+        const { store, spans } = plannedStore()
+        expect(spans.length).toBeGreaterThan(0)
+        for (const s of spans) {
+          const w = rewaveConfigWindow(s)
+          expect(store.configThrough(w.checkFromMs, w.checkToMs), `${s.fromMs}〜${s.toMs}`).not.toBe('changed')
+        }
+        // 変更の直前で終わる区間が実際にある（ここを通らなければ正の確かめになっていない）。
+        for (const c of CHANGES) expect(spans.some((s) => s.toMs === c - REWAVE_TAIL_MS)).toBe(true)
+      })
+
+      it('対照: 読む範囲の終わりまでを含めて照合すると、変更の直前の区間が「設定が変わった」になる（1 ミリ秒引く理由）', () => {
+        const { store, spans } = plannedStore()
+        const last = spans.find((s) => s.toMs === CHANGES[0]! - REWAVE_TAIL_MS)!
+        const w = rewaveConfigWindow(last)
+        expect(store.configThrough(w.readFromMs, w.readToMs)).toBe('changed')
+      })
     })
   })
 

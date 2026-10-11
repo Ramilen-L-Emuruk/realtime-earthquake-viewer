@@ -93,7 +93,8 @@ import { BacklogFetcher, fetchBacklog } from './src/receiver/backlogFetcher'
 import type { BacklogEvent } from './src/receiver/backlogFetcher'
 import { RewaveRunner } from './src/receiver/rewaveRunner'
 import type { RewaveEvent, RewaveSkipReason } from './src/receiver/rewaveRunner'
-import { RewaveScheduler } from './src/receiver/rewaveScheduler'
+import { RewaveScheduler, planRequestedRewave } from './src/receiver/rewaveScheduler'
+import { REWAVE_LEAD_MS, REWAVE_TAIL_MS } from './src/receiver/stationRewave'
 import type { RewaveSchedulerOptions } from './src/receiver/rewaveScheduler'
 import { streamKeyOf } from './src/timebase/segmenter'
 import { QuakeFeed } from './src/detection/quakeFeed'
@@ -249,22 +250,29 @@ export function buildRewaveEventLine(event: RewaveEvent): {
 } {
   const { job } = event
   const span = `${jstClock(job.fromMs)}〜${jstClock(job.toMs)}`
+  // **依頼の分は行の頭で名乗り、間引きの枠も分ける。** 何千件と回る依頼の warn が、取り戻しの分の枠を食い潰さないように。
+  const what = job.origin === 'requested' ? `依頼された作り直し（ノイズ密度は${job.noiseDensity === 'current' ? 'いまの設定' : '当時の設定'}）で ` : ''
   if (event.kind === 'rewaved') {
+    // **ノイズ密度をいまの設定から重ねたのに未設定が残っていたら warn。** 合成は全員同じ重みで組まれている
+    // ——依頼の意図（設定した値で重みを付ける）が外れている。
+    const unweighted = job.noiseDensity === 'current' && event.unsetNoiseDensity > 0
     // **生データに壊れがあれば warn。** 作り直した分にもその欠けが残っている。
     const notes = [
       ...(event.rawIssues > 0 ? [`生データの壊れ ${event.rawIssues}`] : []),
       ...(event.duplicates > 0 ? [`重複して捨てたまとまり ${event.duplicates}`] : []),
+      ...(unweighted ? [`ノイズ密度が未設定のセンサー ${event.unsetNoiseDensity}（重みは全員同じ）`] : []),
     ]
+    const warn = event.rawIssues > 0 || unweighted
     return {
-      level: event.rawIssues > 0 ? 'warn' : 'log',
-      detail: `${job.stationId}|rewaved${event.rawIssues > 0 ? '|raw-issues' : ''}`,
-      line: `[rewave] ${job.stationId} の ${span} の合成波形を作り直した（${[`${event.chunks} まとまり`, `${event.elapsedMs} ms`, ...notes].join('・')}）`,
+      level: warn ? 'warn' : 'log',
+      detail: `${job.stationId}|${job.origin}|rewaved${event.rawIssues > 0 ? '|raw-issues' : ''}${unweighted ? '|unweighted' : ''}`,
+      line: `[rewave] ${what}${job.stationId} の ${span} の合成波形を作り直した（${[`${event.chunks} まとまり`, `${event.elapsedMs} ms`, ...notes].join('・')}）`,
     }
   }
   return {
     level: 'warn',
-    detail: `${job.stationId}|${event.reason}`,
-    line: `[rewave] ${job.stationId} の ${span} の合成波形を作り直さなかった（${REWAVE_SKIP_TEXT[event.reason]}: ${event.detail}）`,
+    detail: `${job.stationId}|${job.origin}|${event.reason}`,
+    line: `[rewave] ${what}${job.stationId} の ${span} の合成波形を作り直さなかった（${REWAVE_SKIP_TEXT[event.reason]}: ${event.detail}）`,
   }
 }
 
@@ -1989,6 +1997,8 @@ async function main(): Promise<void> {
     scheduler: rewaveScheduler,
     // **区間の当時の設定を履歴から引く**（`stationStore.ts`）。いまの設定で過去の区間を作らない。
     configThrough: (fromMs, toMs) => stationStore.configThrough(fromMs, toMs),
+    // **依頼された作り直し（`noiseDensity: 'current'`）だけが読む**（ノイズ密度だけを重ねる。`rewaveRunner.ts`）。
+    currentConfig: () => currentStationConfig,
     flush: () => mseedRecorder.flushForRead(),
     readHour: async (atMs) => {
       const path = mseedFilePath(rawDir, atMs)
@@ -2545,6 +2555,24 @@ async function main(): Promise<void> {
     // 6 面法の材料（センサーごとの静止窓・校正前の値）。
     readRestWindows: () => gravity.restWindows(),
     requestShutdown: () => requestShutdownFromApi?.() ?? 'not-ready',
+    // 範囲を指定した合成波形の作り直し（`POST /api/rewave`）。**設定変更の位置で割ってから**作り直しの係へ積む
+    // （`rewaveScheduler.ts` の `planRequestedRewave`）。区切りの幅は取り戻しの作り直しと同じ。
+    requestRewave: (request) => {
+      if (!currentStationConfig.stations.some((s) => s.stationId === request.stationId)) return { kind: 'unknown-station' }
+      const changeTimes = stationStore.changeTimes()
+      if (changeTimes === null) return { kind: 'config-unknown' }
+      const plan = planRequestedRewave({
+        fromMs: request.fromMs,
+        toMs: request.toMs,
+        changeTimes,
+        leadMs: REWAVE_LEAD_MS,
+        tailMs: REWAVE_TAIL_MS,
+        maxSpanMs: REWAVE_SCHEDULER_OPTIONS.maxSpanMs,
+      })
+      if (plan.spans.length === 0) return { kind: 'nothing-to-do', skippedMs: plan.skippedMs }
+      if (!rewaveScheduler.request(request.stationId, plan.spans, request.noiseDensity)) return { kind: 'busy' }
+      return { kind: 'accepted', jobs: plan.spans.length, skippedMs: plan.skippedMs }
+    },
     adminConsole,
     // 過ぎた合成波形の読み返し（#357）。置き場所は保存と同じ `waveDir`。
     readWaves: (params) => readWaveRange({ dir: waveDir, ...params }),
@@ -2755,6 +2783,15 @@ async function main(): Promise<void> {
       ...REWAVE_SKIP_REASONS.map((reason) =>
         delta(`rewaveSkipped:${reason}`, `合成波形を作り直さなかった（${REWAVE_SKIP_TEXT[reason]}）`, rewave.skipped[reason] ?? 0),
       ),
+      // 依頼された作り直しだけの内訳（上の数はこれも含む）。依頼が空振りしていないかはこちらで見る。
+      delta('rewaveRequestedJobs', '依頼された作り直しのうち作り直した', rewave.requested.jobs),
+      ...REWAVE_SKIP_REASONS.map((reason) =>
+        delta(
+          `rewaveRequestedSkipped:${reason}`,
+          `依頼された作り直しのうち作り直さなかった（${REWAVE_SKIP_TEXT[reason]}）`,
+          rewave.requested.skipped[reason] ?? 0,
+        ),
+      ),
     ]
     const now = Date.now()
     // **まだ動いていることを印へ残す**（`hostLifeMark.ts`）。待たない —— 書き込みが詰まっても
@@ -2850,6 +2887,11 @@ async function main(): Promise<void> {
       console.error(`[backlog] 締めくくりで取り戻しを止められなかった（${error instanceof Error ? error.message : String(error)}）`)
     }
     // **作り直しも、生データと控えを締める前に止める**（作り直している最中の 1 件は待つ）。
+    // 依頼された作り直しの残りはメモリにしか無いので、ここで消える —— 消えたことを残す（送り直すかは依頼した側が決める）。
+    const requestedLeft = rewaveRunner.snapshot().requestedWaiting
+    if (requestedLeft > 0) {
+      console.warn(`[rewave] 依頼された作り直しのうち ${requestedLeft} 件を回さずに止める（もう一度依頼すれば作り直す）`)
+    }
     try {
       await rewaveRunner.stop()
     } catch (error) {
