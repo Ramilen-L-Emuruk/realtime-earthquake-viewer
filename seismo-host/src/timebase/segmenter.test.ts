@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { SensorPacket } from '../protocol/types'
+import { IncrementalLineFit } from './lineFit'
 import { Segmenter, sampleTimeMs } from './segmenter'
 
 /** 実際の記録と同じ起点。時刻が大きい状態で当てはめが効くことも併せて見る。 */
@@ -81,6 +82,55 @@ describe('Segmenter', () => {
       expect(tb.residualRmsMs).toBeCloseTo(0, 6)
       // 位置から時刻を引ける。
       expect(sampleTimeMs(tb, 100)).toBeCloseTo(BASE_MS + 1000, 6)
+    })
+
+    describe('発振器の速さが変わっても、いまの時刻を外さない（2026-10-11 の実機）', () => {
+      /**
+       * 8 時間ぶんを流す。前半は 9.53 ms 間隔、後半の 2 時間で 200 ppm だけ縮む
+       * （IIS2ICLX が一晩で動いた幅）。番号は続いているので区間は 1 本のまま。
+       */
+      function feedDrifting(seg: Segmenter) {
+        const hz = 104
+        let t = BASE_MS
+        let last = seg.accept(pkt({ firstSeq: 0, sampleRateHz: hz, firstSampleMs: t }))
+        const total = 8 * 3600 * hz
+        for (let seq = PER_PACKET; seq < total; seq += PER_PACKET) {
+          const ms = seq < total * 0.75 ? 9.53 : 9.53 * (1 - 200e-6 * Math.min(1, (seq - total * 0.75) / (total * 0.25)))
+          t += ms * PER_PACKET
+          last = seg.accept(pkt({ firstSeq: seq, sampleRateHz: hz, firstSampleMs: t }))
+        }
+        return { last, lastMs: t }
+      }
+
+      it('正: 最後のパケットの時刻を、名乗った時刻から 5 ms 以内で出す', () => {
+        const { last, lastMs } = feedDrifting(new Segmenter())
+        expect(last.ok).toBe(true)
+        if (!last.ok) return
+        expect(last.segment.meta.segmentId).toBe(1)
+        expect(Math.abs(sampleTimeMs(last.segment.timebase, last.firstSampleIndex) - lastMs)).toBeLessThan(5)
+      })
+
+      it('対照: 区間全体を同じ重みで通すと、同じ流れで数百 ms ずれる', () => {
+        // 直す前の作り（全アンカーを同じ重み）を、同じアンカーで再現して比べる。
+        const plain = new IncrementalLineFit(Number.POSITIVE_INFINITY)
+        const seg = new Segmenter()
+        const hz = 104
+        let t = BASE_MS
+        const total = 8 * 3600 * hz
+        let lastIndex = 0
+        for (let seq = 0; seq < total; seq += PER_PACKET) {
+          if (seq > 0) {
+            const ms = seq < total * 0.75 ? 9.53 : 9.53 * (1 - 200e-6 * Math.min(1, (seq - total * 0.75) / (total * 0.25)))
+            t += ms * PER_PACKET
+          }
+          const r = seg.accept(pkt({ firstSeq: seq, sampleRateHz: hz, firstSampleMs: t }))
+          if (!r.ok) throw new Error('受理されなかった')
+          plain.add(r.firstSampleIndex, t)
+          lastIndex = r.firstSampleIndex
+        }
+        const fit = plain.result()
+        expect(Math.abs(fit.intercept + fit.slope * lastIndex - t)).toBeGreaterThan(300)
+      })
     })
 
     it('アンカーが 1 つなら公称値へ倒し、理由を残す', () => {

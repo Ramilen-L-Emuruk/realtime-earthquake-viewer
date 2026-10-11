@@ -541,6 +541,58 @@ export interface StationConfigOps {
  */
 export type ShutdownRequestResult = 'accepted' | 'already-closing' | 'not-ready'
 
+/** 合成波形の作り直しの依頼（`POST /api/rewave`）。 */
+export interface RewaveRequest {
+  readonly stationId: string
+  /** 作り直す区間 `[fromMs, toMs)`（unix ミリ秒）。 */
+  readonly fromMs: number
+  readonly toMs: number
+  /** ノイズ密度をどこから取るか（`rewaveScheduler.ts` の `RewaveNoiseDensitySource`）。**省略させない。** */
+  readonly noiseDensity: 'historical' | 'current'
+}
+
+/**
+ * 作り直しの依頼への答え。
+ *
+ * - `accepted` —— 積んだ。`jobs` は区切った件数（1 以上）、`skippedMs` は設定変更の前後で作り直せない長さ。
+ *   **積んだだけで、作り直せたとは限らない** —— 生データが無い等で飛んだ分は `/status` の
+ *   `rewave.requested.skipped` に理由ごとに出る
+ * - `nothing-to-do` —— 範囲が全部、設定変更の前後に入っていて作り直せる区間が無い（積まない）
+ * - `busy` —— 前の依頼がまだ残っている（積まない。`/status` の `rewave.requestedWaiting` が 0 になってから送る）
+ * - `unknown-station` —— いまの設定に無い観測点
+ * - `config-unknown` —— 設定の履歴を読めていない（当時の設定が分からないので作らない）
+ */
+export type RewaveRequestResult =
+  | { readonly kind: 'accepted'; readonly jobs: number; readonly skippedMs: number }
+  | { readonly kind: 'nothing-to-do'; readonly skippedMs: number }
+  | { readonly kind: 'busy' }
+  | { readonly kind: 'unknown-station' }
+  | { readonly kind: 'config-unknown' }
+
+/** 1 度に依頼できる長さの上限。**打ち間違いで何か月ぶんも積まないため**（31 日で 3 分ずつ約 15,000 件）。 */
+export const REWAVE_REQUEST_MAX_MS = 31 * 24 * 60 * 60 * 1000
+
+/**
+ * `POST /api/rewave` の本文を読む。**純関数。** 未来の区間（まだ届いていない）と、上限より長い区間は断る。
+ */
+export function parseRewaveRequest(
+  body: unknown,
+  nowMs: number,
+): { readonly ok: true; readonly request: RewaveRequest } | { readonly ok: false; readonly error: string } {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return { ok: false, error: 'body-not-object' }
+  const b = body as Record<string, unknown>
+  if (typeof b.stationId !== 'string' || b.stationId.length === 0) return { ok: false, error: 'station-required' }
+  const fromMs = b.fromMs
+  const toMs = b.toMs
+  if (typeof fromMs !== 'number' || typeof toMs !== 'number' || !Number.isInteger(fromMs) || !Number.isInteger(toMs) || toMs <= fromMs) {
+    return { ok: false, error: 'bad-range' }
+  }
+  if (toMs > nowMs) return { ok: false, error: 'range-in-future' }
+  if (toMs - fromMs > REWAVE_REQUEST_MAX_MS) return { ok: false, error: 'range-too-wide' }
+  if (b.noiseDensity !== 'historical' && b.noiseDensity !== 'current') return { ok: false, error: 'noise-density-required' }
+  return { ok: true, request: { stationId: b.stationId, fromMs, toMs, noiseDensity: b.noiseDensity } }
+}
+
 export interface StatusServerOptions {
   readonly port: number
   readonly address?: string
@@ -598,6 +650,11 @@ export interface StatusServerOptions {
    * 答えが届かない。
    */
   readonly requestShutdown: () => ShutdownRequestResult
+  /**
+   * 合成波形の作り直しを依頼されたときに呼ぶ（`POST /api/rewave`）。**積むだけで、作り直しはホストの
+   * 作り直しの係（`rewaveRunner.ts`）が受信へ順番を譲りながら 1 件ずつ回す**（この口は待たない）。
+   */
+  readonly requestRewave: (request: RewaveRequest) => RewaveRequestResult
   /**
    * 管理コンソール本体（#313 段 C）。`GET /admin`・`GET /admin/app.js` で配る。
    *
@@ -836,6 +893,7 @@ type AdminRoute =
   | { readonly kind: 'board'; readonly boardKey: string }
   | { readonly kind: 'rest-windows' }
   | { readonly kind: 'shutdown' }
+  | { readonly kind: 'rewave' }
   /** `/api/records/` の後ろ（`channels`・`envelope` など。解くのは `waveRecordsApi.ts`）。 */
   | { readonly kind: 'records'; readonly route: string }
 
@@ -859,6 +917,7 @@ function parseAdminRoute(pathname: string): AdminRoute | null {
   }
   if (pathname === '/api/rest-windows') return { kind: 'rest-windows' }
   if (pathname === '/api/shutdown') return { kind: 'shutdown' }
+  if (pathname === '/api/rewave') return { kind: 'rewave' }
   if (pathname.startsWith('/api/records/')) {
     const route = pathname.slice('/api/records/'.length)
     return route.length > 0 ? { kind: 'records', route } : null
@@ -1121,6 +1180,7 @@ async function handleAdmin(
   stationConfig: StationConfigOps,
   readRestWindows: () => readonly SensorRestWindows[],
   requestShutdown: () => ShutdownRequestResult,
+  requestRewave: StatusServerOptions['requestRewave'],
   records: StatusServerOptions['records'],
 ): Promise<void> {
   applyAdminCors(req, res, adminAuth.allowedOrigins)
@@ -1204,6 +1264,49 @@ async function handleAdmin(
     // **誰が止めたかを残す。** 落ちた記録（「終了の記録を残さずに止まっていた」）と
     // 見分けるのはこの行と、締めくくりの最後の「正常に終了した」。
     if (result === 'accepted') log('warn', 'admin', 'shutdown', '[admin] 止める合図を受けた（POST /api/shutdown）。締めくくりを始める')
+    return
+  }
+  if (route.kind === 'rewave') {
+    if (req.method !== 'POST') {
+      sendAdminJson(res, 405, { error: 'method-not-allowed' })
+      return
+    }
+    const read = await readAdminBody(req)
+    if (!read.ok) {
+      sendAdminJson(res, 400, { error: read.reason })
+      return
+    }
+    const parsed = parseRewaveRequest(read.body, Date.now())
+    if (!parsed.ok) {
+      sendAdminJson(res, 400, { error: parsed.error })
+      return
+    }
+    const result = requestRewave(parsed.request)
+    if (result.kind === 'busy') {
+      sendAdminJson(res, 409, { error: 'rewave-busy' })
+      return
+    }
+    if (result.kind === 'unknown-station') {
+      sendAdminJson(res, 404, { error: 'unknown-station' })
+      return
+    }
+    if (result.kind === 'config-unknown') {
+      sendAdminJson(res, 503, { error: 'config-unknown' })
+      return
+    }
+    if (result.kind === 'nothing-to-do') {
+      // **202 で返さない。** 積んだように見えると、依頼者は何も作り直されないことに気づけない。
+      sendAdminJson(res, 200, { status: 'nothing-to-do', jobs: 0, skippedMs: result.skippedMs })
+      return
+    }
+    sendAdminJson(res, 202, { status: 'queued', jobs: result.jobs, skippedMs: result.skippedMs })
+    const r = parsed.request
+    log(
+      'log',
+      'admin',
+      'rewave',
+      `[admin] 合成波形の作り直しを受けた（${r.stationId}・${new Date(r.fromMs).toISOString()}〜${new Date(r.toMs).toISOString()}・ノイズ密度 ${r.noiseDensity === 'current' ? 'いまの設定' : '当時の設定'}・${result.jobs} 件・作り直せない長さ ${Math.round(result.skippedMs / 1000)} 秒）`,
+    )
     return
   }
   if (route.kind === 'records') {
@@ -1415,6 +1518,7 @@ export async function startStatusServer(options: StatusServerOptions): Promise<S
           options.stationConfig,
           options.readRestWindows,
           options.requestShutdown,
+          options.requestRewave,
           options.records,
         ).catch((error: unknown) => {
           const detail = error instanceof Error ? error.message : String(error)
