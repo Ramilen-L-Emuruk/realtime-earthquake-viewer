@@ -96,8 +96,13 @@ const SMOOTH_SECONDS = 3
  * 平常時のノイズの下限（gal）。**中央値がこれを下回ったらこの値で測る。**
  *
  * 記録の欠けや丸めでノイズが 0 近くに測れると、倍率の閾値が 0 へ潰れて何でも揺れに見える。
+ *
+ * **実際のノイズより十分に下に置く。** 縮んだ測り値を受け止めるための値で、ふだんの判定に効いては
+ * いけない。IIS2ICLX を観測点の合成へ入れてから、1 秒ごとの振れの最大の中央値は成分ごとに
+ * 0.16〜0.24 gal まで下がった（2026-10-11・10/11 の 7 時刻の実測。入れる前の 10/9 は 0.76〜1.41 gal）。
+ * 以前の 0.2 gal はこれに掛かり、揺れ始めの閾値とノイズの帯を実際より広げていた。
  */
-export const NOISE_FLOOR_GAL = 0.2
+export const NOISE_FLOOR_GAL = 0.05
 
 /** ノイズを測る区間の長さ（ms）。**読み返しが発生の 30 秒前から取るのに合わせる。** */
 export const NOISE_SPAN_MS = 30 * SECOND_MS
@@ -368,6 +373,45 @@ export interface NoiseBand {
  * @param base 読み返し＋継ぎ足しの列（**切り出す前**。0 の手前を含むもの）
  */
 export function measureNoiseBand(base: TimedColumns, zeroMs: number): NoiseBand | null {
+  const quiet = quietPeaksBeforeZero(base, zeroMs)
+  if (quiet === null) return null
+  const { center, peaks } = quiet
+  // **足りなければ測らない**（推測で幅を置かない）。3 成分のどれか 1 つでも欠ければ帯を作らない。
+  if (peaks.some((m) => m.size < NOISE_MIN_SECONDS)) return null
+  const widthOf = (a: number): number => Math.max(median([...peaks[a].values()]) * NOISE_WIDTH_RATIO, NOISE_FLOOR_GAL)
+  return { center, width: [widthOf(0), widthOf(1), widthOf(2)] }
+}
+
+/**
+ * 0 の手前 30 秒の**静かさの物差し**（gal）。**測れなければ `null`。**
+ *
+ * 成分ごとに「1 秒ごとの、中心からの振れの最大」の中央値を取り（{@link measureNoiseBand} と同じ測り方）、
+ * **3 成分のうち最大**を返す。縦の幅の下限はこれに倍率を掛けて決める（→ `seismoQuietScale.ts`）。
+ *
+ * **値の無い成分は外して測る**（{@link measureNoiseBand} と違い、3 成分が揃うことを求めない）。上を解けない
+ * 観測点でも、水平の 2 成分で静かさは測れる —— 揃うまで待つと、その観測点の絵は下限が決まらず
+ * 決め打ちの値へ戻る。**1 成分も測れなければ `null`。**
+ */
+export function measureQuietLevel(base: TimedColumns, zeroMs: number): number | null {
+  const quiet = quietPeaksBeforeZero(base, zeroMs)
+  if (quiet === null) return null
+  let level: number | null = null
+  for (const m of quiet.peaks) {
+    if (m.size < NOISE_MIN_SECONDS) continue
+    const v = median([...m.values()])
+    if (level === null || v > level) level = v
+  }
+  return level
+}
+
+/**
+ * 0 の手前 30 秒から、成分ごとの中心と「1 秒ごとの、中心からの振れの最大」を集める。
+ * **列が 1 つも無ければ `null`。**
+ */
+function quietPeaksBeforeZero(
+  base: TimedColumns,
+  zeroMs: number,
+): { readonly center: readonly [number, number, number]; readonly peaks: readonly Map<number, number>[] } | null {
   const span = base.columnSpanMs
   if (!(span > 0) || !Number.isFinite(zeroMs)) return null
   const fromMs = zeroMs - NOISE_SPAN_MS
@@ -394,8 +438,5 @@ export function measureNoiseBand(base: TimedColumns, zeroMs: number): NoiseBand 
       peaks[a].set(p.second, Math.max(peaks[a].get(p.second) ?? 0, v))
     }
   }
-  // **足りなければ測らない**（推測で幅を置かない）。3 成分のどれか 1 つでも欠ければ帯を作らない。
-  if (peaks.some((m) => m.size < NOISE_MIN_SECONDS)) return null
-  const widthOf = (a: number): number => Math.max(median([...peaks[a].values()]) * NOISE_WIDTH_RATIO, NOISE_FLOOR_GAL)
-  return { center, width: [widthOf(0), widthOf(1), widthOf(2)] }
+  return { center, peaks }
 }

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import type { NoiseBand } from '../../utils/seismoQuakeWindow'
-import { emphasizeColumns, MIN_EMPHASIZED_SCALE_GAL } from './emphasizeColumns'
+import { emphasizeColumns, emphasizedScaleFloorGal } from './emphasizeColumns'
 import type { PaintableColumns } from './paintWave'
 import type { WaveColumn } from './waveColumns'
 
@@ -37,10 +37,25 @@ describe('emphasizeColumns', () => {
   })
 
   // 安全弁: 少しだけ超えたノイズの尖りを枠いっぱいに伸ばさない。
-  test('残りが小さくても縦は最低 0.5 gal 取る', () => {
+  test('残りが小さくても縦は帯の幅（成分のうち最大）の 1/4 を取る', () => {
     const r = emphasizeColumns({ folded: folded([col([-1.4, 0, 0], [1.4, 0, 0])]), noise })
-    expect(r.scaleGal).toBe(MIN_EMPHASIZED_SCALE_GAL)
+    expect(emphasizedScaleFloorGal(noise)).toBeCloseTo(0.5)
+    expect(r.scaleGal).toBeCloseTo(0.5)
     expect(r.scaleLabel).toBe('±1.3〜±1.8 gal')
+  })
+
+  // 正: 静かな観測点（帯が狭い）では、縦の最小も同じ比で小さくなる。
+  test('帯が狭ければ縦の最小も小さくなる（IIS2ICLX を入れた後の帯）', () => {
+    const quiet: NoiseBand = { center: [0, 0, 0], width: [0.26, 0.3, 0.25] }
+    const r = emphasizeColumns({ folded: folded([col([-0.31, 0, 0], [0.31, 0, 0])]), noise: quiet })
+    expect(r.scaleGal).toBeCloseTo(0.075)
+  })
+
+  // 対照: 帯を大きく超えた揺れは、縦の最小ではなく残った量で縦が決まる。
+  test('残りが縦の最小を超えれば、残りで縦を決める', () => {
+    const quiet: NoiseBand = { center: [0, 0, 0], width: [0.26, 0.3, 0.25] }
+    const r = emphasizeColumns({ folded: folded([col([-1.26, 0, 0], [1.26, 0, 0])]), noise: quiet })
+    expect(r.scaleGal).toBeCloseTo(1.0)
   })
 
   test('どの成分も超えていなければ、いちばん近かった成分の幅を出す', () => {

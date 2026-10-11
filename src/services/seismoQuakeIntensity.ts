@@ -53,6 +53,11 @@ export interface QuakeIntensity {
   /** 計測震度。出せなければ `null`（理由は `measuredUnavailable`）。 */
   readonly measured: number | null
   readonly measuredUnavailable: MeasuredUnavailable | null
+  /**
+   * 「普段」の計測震度 —— 直前 1 時間にある同じ長さの区間の計測震度の中央値。**出せなければ `null`**
+   * （測れた区間が足りない・この欄を返す前のホスト）。「計測」がいつもより上がっているかを比べる相手。
+   */
+  readonly usualMeasured: number | null
   /** 区間の中にあった途切れの数。 */
   readonly gapCount: number
   /** 値が壊れていて捨てたまとまりの数。**途切れのうち「届いたが壊れていた」分。** */
@@ -139,6 +144,9 @@ export function readQuakeIntensity(parsed: unknown): { value: QuakeIntensity } |
       ? (reason as MeasuredUnavailable)
       : 'unknown'
   }
+  // **欄が無いのは古いホスト**（`null` と同じ扱い）。欄があって数でなければ壊れた応答として弾く。
+  const usualMeasured = root.usualMeasured === undefined ? null : finiteOrNull(root.usualMeasured)
+  if (usualMeasured === undefined) return { detail: '普段の計測震度を読めない' }
   const count = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
   return {
     value: {
@@ -149,6 +157,7 @@ export function readQuakeIntensity(parsed: unknown): { value: QuakeIntensity } |
       realtimeSeries,
       measured,
       measuredUnavailable,
+      usualMeasured,
       gapCount: count(root.gapCount),
       invalidChunkCount: count(root.invalidChunkCount),
       unsolvedChunkCount: count(root.unsolvedChunkCount),

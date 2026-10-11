@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AdminAuthConfig } from './adminAuth'
 import type { IntensityReading, WaveChunk } from './intensityPipeline'
 import { PacketTally } from './packetTally'
+import { USUAL_WAIT_MS } from './quakeIntensity'
 import { ReadingHub } from './readingHub'
 import type { FusedWaveChunk, SensorPairDiff, SensorResidual, StationIntensityReading } from './sensorFusion'
 import { EMPTY_STATION_CONFIG, IDENTITY_MATRIX, StationDirectory } from './stationConfig'
@@ -2102,15 +2103,17 @@ describe('GET /quake-intensity（#494 段3）', () => {
   })
 
   it('判定の窓の分だけ手前から読み、2 つの値と読めた量を返す', async () => {
-    let asked: { fromMs: number; toMs: number } | null = null
+    const asked: { fromMs: number; toMs: number }[] = []
     const base = await startWithWaves(async (params) => {
-      asked = { fromMs: params.fromMs, toMs: params.toMs }
+      asked.push({ fromMs: params.fromMs, toMs: params.toMs })
       return result([quietChunk(T0 - 60_000, 180)])
     })
     const res = await fetch(`${base}/quake-intensity?station=s1&from=${T0}&to=${T0 + 100_000}`)
     expect(res.status).toBe(200)
     expect(res.headers.get('access-control-allow-origin')).toBe('*')
-    expect(asked).toEqual({ fromMs: T0 - 60_000, toMs: T0 + 100_000 })
+    // 1 本目が地震の区間。2 本目は「普段」のための直前 1 時間（地震の区間の手前で止める）
+    expect(asked[0]).toEqual({ fromMs: T0 - 60_000, toMs: T0 + 100_000 })
+    expect(asked[1].toMs).toBe(T0)
     const body = (await res.json()) as Record<string, unknown>
     expect(typeof body.maxRealtime).toBe('number')
     expect(typeof body.measured).toBe('number')
@@ -2118,6 +2121,137 @@ describe('GET /quake-intensity（#494 段3）', () => {
     expect(body.gapCount).toBe(0)
     expect(body.filesRead).toBe(1)
     expect(body.stationKnown).toBe(false)
+    // 直前 1 時間の記録がほとんど無い（3 区間に満たない）ので、普段は出せない
+    expect(body.usualMeasured).toBeNull()
+  })
+
+  describe('普段の計測震度', () => {
+    /** 地震の区間には 0.5 gal、直前 1 時間には同じ静穏を 1 時間ぶん返す。呼ばれた範囲を控える。 */
+    function hourOfQuiet(asked: { fromMs: number; toMs: number }[]): NonNullable<StatusServerOptions['readWaves']> {
+      return async (params) => {
+        asked.push({ fromMs: params.fromMs, toMs: params.toMs })
+        if (params.toMs === T0) return result([quietChunk(params.fromMs, Math.ceil((T0 - params.fromMs) / 1000))])
+        return result([quietChunk(T0 - 60_000, 180)])
+      }
+    }
+
+    it('正: 直前 1 時間に記録があれば普段の値と、使えた区間の数を返す', async () => {
+      const asked: { fromMs: number; toMs: number }[] = []
+      const base = await startWithWaves(hourOfQuiet(asked))
+      const res = await fetch(`${base}/quake-intensity?station=s1&from=${T0}&to=${T0 + 100_000}`)
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as Record<string, unknown>
+      expect(typeof body.usualMeasured).toBe('number')
+      expect(body.usualWindowCount).toBe(6)
+      expect(body.usualUsedCount).toBe(6)
+      // 同じ静穏なので、地震の区間の計測震度とほぼ同じ値になる
+      expect(Math.abs((body.usualMeasured as number) - (body.measured as number))).toBeLessThan(0.2)
+    })
+
+    it('同じ区間を訊き直されたら、直前 1 時間は読み直さない', async () => {
+      const asked: { fromMs: number; toMs: number }[] = []
+      const base = await startWithWaves(hourOfQuiet(asked))
+      const url = `${base}/quake-intensity?station=s1&from=${T0}&to=${T0 + 100_000}`
+      const first = (await (await fetch(url)).json()) as Record<string, unknown>
+      const second = (await (await fetch(url)).json()) as Record<string, unknown>
+      expect(second.usualMeasured).toBe(first.usualMeasured)
+      // 1 回目は地震の区間と直前 1 時間の 2 本、2 回目は地震の区間の 1 本だけ
+      expect(asked.filter((a) => a.toMs === T0)).toHaveLength(1)
+      expect(asked).toHaveLength(3)
+    })
+
+    it('同じ区間を同時に 2 本訊かれても、直前 1 時間は 1 回しか読まない', async () => {
+      const asked: { fromMs: number; toMs: number }[] = []
+      const inner = hourOfQuiet(asked)
+      // 直前 1 時間の読み返しを、2 本目の問い合わせが着くまで止めておく
+      let release: () => void = () => {}
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      let usualCalls = 0
+      const base = await startWithWaves(async (params) => {
+        if (params.toMs === T0) {
+          usualCalls += 1
+          await gate
+        }
+        return inner(params)
+      })
+      const url = `${base}/quake-intensity?station=s1&from=${T0}&to=${T0 + 100_000}`
+      const both = Promise.all([fetch(url), fetch(url)])
+      // 2 本とも地震の区間を読み終え、1 本目の「普段」が門で止まるまで待つ
+      await vi.waitFor(() => {
+        expect(asked.filter((a) => a.toMs !== T0)).toHaveLength(2)
+        expect(usualCalls).toBe(1)
+      })
+      // 2 本目が「普段」の入口へ着くだけの間を置く（合流しなければ、ここで 2 回目の読み返しが始まる）
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      release()
+      const bodies = (await Promise.all((await both).map((r) => r.json()))) as Record<string, unknown>[]
+      expect(bodies[0].usualMeasured).toBe(bodies[1].usualMeasured)
+      expect(typeof bodies[0].usualMeasured).toBe('number')
+      expect(usualCalls).toBe(1)
+    })
+
+    // 安全弁: 「普段」が遅い・固まったときに「最大」「計測」を道連れにしない。
+    it(
+      '安全弁: 直前 1 時間の読み返しが返ってこなくても、上限を過ぎたら普段なしで本体を返す',
+      async () => {
+        const lines: string[] = []
+        const base = await startWithWaves(
+          async (params) => {
+            if (params.toMs === T0) return new Promise<never>(() => {})
+            return result([quietChunk(T0 - 60_000, 180)])
+          },
+          (_level, kind, _detail, line) => lines.push(`${kind} ${line}`),
+        )
+        const t0 = Date.now()
+        const res = await fetch(`${base}/quake-intensity?station=s1&from=${T0}&to=${T0 + 100_000}`)
+        expect(res.status).toBe(200)
+        const body = (await res.json()) as Record<string, unknown>
+        expect(typeof body.measured).toBe('number')
+        expect(body.usualMeasured).toBeNull()
+        expect(Date.now() - t0).toBeGreaterThanOrEqual(USUAL_WAIT_MS - 100)
+        expect(lines.some((l) => l.startsWith('quake-intensity-usual-slow'))).toBe(true)
+      },
+      USUAL_WAIT_MS + 10_000,
+    )
+
+    it('安全弁: 普段の計算で例外が出ても、本体は 200 で返し、読み返しの失敗と分けて error で残す', async () => {
+      const entries: { level: string; kind: string }[] = []
+      const base = await startWithWaves(
+        async (params) => {
+          // 壊れたまとまり（undefined）を混ぜて、計算の側で投げさせる
+          if (params.toMs === T0) return result([undefined as unknown as ArchivedWaveChunk])
+          return result([quietChunk(T0 - 60_000, 180)])
+        },
+        (level, kind) => entries.push({ level, kind }),
+      )
+      const res = await fetch(`${base}/quake-intensity?station=s1&from=${T0}&to=${T0 + 100_000}`)
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as Record<string, unknown>
+      expect(typeof body.measured).toBe('number')
+      expect(body.usualMeasured).toBeNull()
+      expect(entries).toContainEqual({ level: 'error', kind: 'quake-intensity-usual-compute' })
+      expect(entries.some((e) => e.kind === 'quake-intensity-usual')).toBe(false)
+    })
+
+    it('安全弁: 直前 1 時間の読み返しが投げても、地震の区間の値は 200 で返し 1 行残す', async () => {
+      const lines: string[] = []
+      const base = await startWithWaves(
+        async (params) => {
+          if (params.toMs === T0) throw new Error('古い記録が読めない')
+          return result([quietChunk(T0 - 60_000, 180)])
+        },
+        (_level, _kind, _detail, line) => lines.push(line),
+      )
+      const res = await fetch(`${base}/quake-intensity?station=s1&from=${T0}&to=${T0 + 100_000}`)
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as Record<string, unknown>
+      expect(typeof body.measured).toBe('number')
+      expect(body.usualMeasured).toBeNull()
+      expect(body.usualUsedCount).toBe(0)
+      expect(lines.some((l) => l.includes('古い記録が読めない'))).toBe(true)
+    })
   })
 
   it('記録が無ければ値を null にして理由を返す（500 にしない）', async () => {

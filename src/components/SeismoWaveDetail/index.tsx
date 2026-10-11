@@ -24,15 +24,16 @@ import { createPortal } from 'react-dom'
 import type { SeismoQuakeWave } from '../../hooks/useSeismoQuakeWaves'
 import { fetchSeismoWaveSamples, SAMPLES_SPAN_MAX_MS } from '../../services/seismoWaveSamples'
 import { createLogThrottle, log } from '../../utils/logger'
-import { columnsSpan, measureNoiseBand, selectQuakeWindow } from '../../utils/seismoQuakeWindow'
+import { columnsSpan, measureNoiseBand, measureQuietLevel, selectQuakeWindow } from '../../utils/seismoQuakeWindow'
+import { emphasizedFloorGal, quietScaledGal } from '../../utils/seismoQuietScale'
 import { trimTrailingGap } from '../../utils/seismoWaveColumns'
 import { axisZeroLabel, buildArrivalMarksForRange, formatQuakeIntensityParts, QuakeIntensityLine } from '../EarthquakeTab/QuakeSeismoWave'
-import { emphasizeColumns, MIN_EMPHASIZED_SCALE_GAL } from '../SeismoWaveChart/emphasizeColumns'
+import { emphasizeColumns, emphasizedScaleFloorGal } from '../SeismoWaveChart/emphasizeColumns'
 import { foldHistoryColumns } from '../SeismoWaveChart/historyColumns'
 import { AXIS_COLORS, AXIS_LABELS, paintWaveColumns, type PaintableColumns, type WaveMark } from '../SeismoWaveChart/paintWave'
 import { buildTimeTicks } from '../SeismoWaveChart/timeTicks'
 import { ToggleChip } from '../SeismoWaveChart/WaveAxisToggles'
-import { formatEmphasizedScaleGal, formatScaleGal } from '../SeismoWaveChart/waveLabels'
+import { formatEmphasizedScaleGal, formatGal, formatScaleGal } from '../SeismoWaveChart/waveLabels'
 import {
   clampView,
   columnsRange,
@@ -60,14 +61,6 @@ import {
   type SampleSeries,
 } from './sampleSeries'
 
-/**
- * 縦の振れ幅の下限（gal）。**カードの 10 gal より低くする。**
- *
- * カードは「一覧で見て、揺れたかどうか」を見せるために静穏時の振れ（実測 1.6 gal ほど）を
- * 小さく抑えている。こちらは寄せて読むための窓なので、小さな揺れも段の高さいっぱいに出す。
- * 0 にはしない —— 値がほぼ平らな区間で分母が 0 に寄り、ノイズが段いっぱいに広がる。
- */
-const DETAIL_MIN_SCALE_GAL = 2
 
 /**
  * 合成の段の線の色。**3 成分（緑・赤紫・黄）とも、P/S（水色・朱）・最大の線（白）とも別の淡い灰青。**
@@ -307,6 +300,14 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
     return band
   }, [emphasized, wave.columns, wave.axisZero.ms, wave.stationId])
 
+  // **縦の下限**（強調しないとき）。0 の手前の静かさから決める（`utils/seismoQuietScale.ts` の `detail`）。
+  // カードより低い倍率にする —— カードは「一覧で見て、揺れたかどうか」を見せるために静かなときの振れを
+  // 小さく抑え、こちらは寄せて読むための窓なので小さな揺れも段の高さいっぱいに出す。
+  const detailFloorGal = useMemo(
+    () => quietScaledGal('detail', measureQuietLevel(wave.columns, wave.axisZero.ms)),
+    [wave.columns, wave.axisZero.ms],
+  )
+
   useEffect(() => {
     const displayRange = { fromMs: displayFromMs, toMs: displayToMs }
     const span = displayToMs - displayFromMs
@@ -343,7 +344,7 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
             : maxAbsInRange(samples.series, view, (a, v) => v - noise.center[a]).map((m, a) => m - noise.width[a])
         let best = -1
         for (const a of visibleIdx) if (Number.isFinite(maxes[a]) && (best < 0 || maxes[a] > maxes[best])) best = a
-        const floor = noise !== null ? MIN_EMPHASIZED_SCALE_GAL : DETAIL_MIN_SCALE_GAL
+        const floor = noise !== null ? emphasizedScaleFloorGal(noise) : detailFloorGal
         const scaleGal = Math.max(floor, best < 0 ? 0 : maxes[best])
         for (const a of visibleIdx) {
           const canvas = laneRefs.current[a]
@@ -375,13 +376,13 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
         const cc = compositeRef.current
         if (cc !== null && composite !== null) {
           const peakInView = peakInRange(samples.series, composite.magnitude, view)
-          // 強調なら底を引いた残り（0 未満は 0）を描く。縦も残りの最大で決める（下限は成分の強調と同じ 0.5 gal）。
+          // 強調なら底を引いた残り（0 未満は 0）を描く。縦も残りの最大で決める（下限は成分の強調と同じく、底の 1/4）。
           const cf = compositeFloor
           const mapComposite = cf === null ? (v: number) => v : (v: number) => Math.max(0, v - cf)
           const compositeScale =
             cf === null
-              ? Math.max(DETAIL_MIN_SCALE_GAL, peakInView?.value ?? 0)
-              : Math.max(MIN_EMPHASIZED_SCALE_GAL, (peakInView?.value ?? 0) - cf)
+              ? Math.max(detailFloorGal, peakInView?.value ?? 0)
+              : Math.max(emphasizedFloorGal(cf), (peakInView?.value ?? 0) - cf)
           const ok = paintSampleLane(cc, {
             color: COMPOSITE_COLOR,
             baseline: 'bottom',
@@ -404,7 +405,7 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
           if (!ok) throttledNoContext(() => log.error('[seismo] 詳細の窓の波形を描く 2D コンテキストを取れなかった'))
           // 縦の表示: 強調なら「底〜上端」（成分の「±幅〜±上端」と同じ読み方）、そうでなければ「0〜上端」。
           setCompositeScaleText(
-            cf === null ? `0〜${compositeScale.toFixed(1)} gal` : `${cf.toFixed(1)}〜${(cf + compositeScale).toFixed(1)} gal`,
+            cf === null ? `0〜${formatGal(compositeScale)} gal` : `${formatGal(cf)}〜${formatGal(cf + compositeScale)} gal`,
           )
         }
         // 縦の表示はカードと同じ書式（強調なら「±幅〜±上端」、いちばん振れた成分の幅）。
@@ -419,7 +420,7 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
           const folded = foldHistoryColumns({
             source: columnsShown.columns,
             columnCount,
-            minScaleGal: DETAIL_MIN_SCALE_GAL,
+            minScaleGal: detailFloorGal,
             visibleAxes: axes,
           })
           return noise === null ? folded : emphasizeColumns({ folded, noise, visibleAxes: axes })
@@ -466,7 +467,7 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
     // `visibleIdx` は `axes` から作るので `axes` で足りる。`view` は `useSamples` のときだけ使い、
     // そのとき `displayFromMs`/`displayToMs` が `view` と一致する。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [useSamples, samples, columnsShown, displayFromMs, displayToMs, axes, noise, peaks, composite, compositePeak, compositeFloor, axisAverages, intensity, wave.arrival, wave.axisZero, wave.interrupted])
+  }, [useSamples, samples, columnsShown, displayFromMs, displayToMs, axes, noise, detailFloorGal, peaks, composite, compositePeak, compositeFloor, axisAverages, intensity, wave.arrival, wave.axisZero, wave.interrupted])
 
   // ---- 操作 ----
   const zoomBy = useCallback(
@@ -601,7 +602,7 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
               <div className="flex gap-2 text-[11px] leading-none" style={{ color: COMPOSITE_COLOR }}>
                 <span>合成</span>
                 {compositePeak !== null && (
-                  <span className="tabular-nums text-secondary">最大 {compositePeak.value.toFixed(1)} gal</span>
+                  <span className="tabular-nums text-secondary">最大 {formatGal(compositePeak.value)} gal</span>
                 )}
                 <span className="ml-auto font-mono tabular-nums text-secondary">{compositeScaleText ?? '—'}</span>
               </div>
@@ -614,7 +615,7 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
                 <div className="flex gap-2 text-[11px] leading-none" style={{ color: AXIS_COLORS[a] }}>
                   <span>{AXIS_LABELS[a]}</span>
                   {peaks[a] !== null && (
-                    <span className="tabular-nums text-secondary">最大 {(peaks[a] as AxisPeak).gal.toFixed(1)} gal</span>
+                    <span className="tabular-nums text-secondary">最大 {formatGal((peaks[a] as AxisPeak).gal)} gal</span>
                   )}
                   {/* 縦の範囲は**段ごとの見出しの右端**（合成の段と同じ位置）。3 成分は縦を共通にしているので、
                       どの段にも同じ値が並ぶ。 */}

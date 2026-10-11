@@ -28,6 +28,7 @@ import { parseJstTimeMs, type OriginSeconds } from '../utils/quakeOriginSeconds'
 import {
   columnsSpan,
   computeReachBand,
+  measureQuietLevel,
   MINUTE_MS,
   selectQuakeWindow,
   type ReachBand,
@@ -42,6 +43,7 @@ import {
   trimAfter,
   type TimedColumns,
 } from '../utils/seismoWaveColumns'
+import { quietScaledGal } from '../utils/seismoQuietScale'
 import { judgeSilence } from '../utils/seismoSilence'
 import { WAVE_TRIGGER_MIN_SCALE } from '../utils/seismoWaveTrigger'
 import { WAVE_STALE_MS } from './useSeismoStation'
@@ -77,21 +79,23 @@ const APPEND_INTERVAL_MS = 300
 const SETTLE_WINDOW_MS = 60_000
 
 /**
- * 静穏と見なす振幅（gal）。
+ * 静穏と見なす振幅（gal）を、その地震の 0 の手前の静かさから決める。
  *
- * **実機の静穏時の最大は 1.61 gal**（2026-09-29・12 秒 1203 サンプルの実測。→
- * `SeismoWaveChart` の `MIN_SCALE_GAL`）。**その倍弱**に取って、ノイズで「まだ揺れて
- * いる」と誤判定しないようにする。
+ * **決め打ちにしない**（`utils/seismoQuietScale.ts` の `settle`）。以前は MPU6050 だけだった頃の
+ * 静穏時の最大（1.61 gal）の倍弱の 3 gal を置いていた。IIS2ICLX を合成へ入れると静かさが 1/7 ほどに
+ * 下がり、3 gal のままでは弱い地震の揺れの最中でも「収まった」と判定していた。
+ * 0 の手前を測れなければ決め打ちだった値（3 gal）を使う。
  */
-const QUIET_GAL = 3
+function quietGalFor(columns: TimedColumns, zeroMs: number): number {
+  return quietScaledGal('settle', measureQuietLevel(columns, zeroMs))
+}
 
 /**
  * 「収まった」の判定を始めるまでの猶予（ms）。**発生から 90 秒。**
  *
- * **弱い地震は、振幅では「揺れているか」を判定できない。** この観測点の静穏時の最大は
- * **1.61 gal**（2026-09-29・12 秒 1203 サンプルの実測）で、弱い揺れの加速度はその同じ桁に
- * 入ってくる。{@link QUIET_GAL} を下げてもノイズと区別が付かないだけなので、**揺れの
- * 強さに関わらずこの時間までは繋ぎ足す**（弱い地震は数十秒で終わるのでこれで足りる）。
+ * **弱い地震は、振幅では「揺れているか」を判定できない。** 弱い揺れの加速度は静穏時のノイズと
+ * 同じ桁に入ってくるので、静穏の閾値（{@link quietGalFor}）を下げてもノイズと区別が付かないだけ。
+ * **揺れの強さに関わらずこの時間までは繋ぎ足す**（弱い地震は数十秒で終わるのでこれで足りる）。
  *
  * **震度の階級から加速度の範囲を引くことはしない。** 計測震度は加速度だけで決まらない
  * （周期と継続時間も効く）ので、階級を加速度の帯として書くと出どころの無い数字になる。
@@ -753,7 +757,7 @@ export function useSeismoQuakeWaves(params: {
           pushLive &&
           !(
             atMs > target.originMs + MIN_GROW_MS &&
-            isSettled(entry.columns, SETTLE_WINDOW_MS, QUIET_GAL)
+            isSettled(entry.columns, SETTLE_WINDOW_MS, quietGalFor(entry.columns, target.originMs))
           )
         if (growing) {
           const next = appendWaveWindow({

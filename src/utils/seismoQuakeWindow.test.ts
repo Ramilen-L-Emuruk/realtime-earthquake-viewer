@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest'
 import {
   computeReachBand,
   measureNoiseBand,
+  measureQuietLevel,
   NOISE_FLOOR_GAL,
   NOISE_WIDTH_RATIO,
   ONSET_RATIO,
@@ -244,5 +245,26 @@ describe('measureNoiseBand', () => {
       c === null ? c : { ...c, min: [c.min[0], c.min[1], NaN] as const, max: [c.max[0], c.max[1], NaN] as const },
     )
     expect(measureNoiseBand({ ...base, columns }, ZERO_MS)).toBeNull()
+  })
+})
+
+describe('measureQuietLevel', () => {
+  // 正: 0 の手前 30 秒の「1 秒ごとの振れの最大」の中央値を、3 成分のうち最大で返す。
+  test('3 成分のうち最も振れた成分の中央値を返す', () => {
+    expect(measureQuietLevel(makeColumns(-30, 60, (s) => (s >= 0 ? 10 : 0.3)), ZERO_MS)).toBeCloseTo(0.3)
+  })
+
+  // 正: 上を解けない観測点（1 成分が値なし）でも、残りの成分で測る。帯（measureNoiseBand）は作らない。
+  test('値の無い成分があっても、残りの成分で測る', () => {
+    const columns = []
+    for (let t = -30_000; t < 0; t += SPAN) columns.push({ min: [-0.3, -0.2, NaN] as const, max: [0.3, 0.2, NaN] as const, minMembers: 3 })
+    const base: TimedColumns = { fromMs: ZERO_MS - 30_000, columnSpanMs: SPAN, columns }
+    expect(measureQuietLevel(base, ZERO_MS)).toBeCloseTo(0.3)
+    expect(measureNoiseBand(base, ZERO_MS)).toBeNull()
+  })
+
+  // 安全弁: 推測で物差しを置かない。
+  test('手前の記録が 10 秒に満たなければ null', () => {
+    expect(measureQuietLevel(makeColumns(-9, 60, () => 1), ZERO_MS)).toBeNull()
   })
 })

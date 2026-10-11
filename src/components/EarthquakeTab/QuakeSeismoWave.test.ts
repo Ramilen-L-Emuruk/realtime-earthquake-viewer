@@ -116,7 +116,7 @@ describe('foldQuakeWaveColumns', () => {
     expect(r.columns.scaleLabel).toBe('±1.5〜±5.0 gal')
   })
 
-  // 対照: 強調しなければ従来どおり（下限 10 gal）。
+  // 対照: 強調しなければ潰さない。縦の下限は 0 の手前の静かさ（1 秒ごとの振れ 1 gal）の 7.5 倍。
   it('強調しなければ潰さない', () => {
     const base = quake()
     const r = foldQuakeWaveColumns({
@@ -129,6 +129,39 @@ describe('foldQuakeWaveColumns', () => {
     })
     expect(r.noiseMissing).toBe(false)
     expect(r.columns.scaleLabel).toBeUndefined()
+    expect(r.columns.scaleGal).toBeCloseTo(7.5)
+  })
+
+  // 正: 静かな観測点（0 の手前が ±0.2 gal）では、縦の下限も同じ比で下がり、±0.5 gal の揺れが枠の半分を超えて出る。
+  it('0 の手前が静かなら縦の下限も下がる', () => {
+    const cols = []
+    for (let t = FROM_MS; t < ZERO + 60_000; t += SPAN) {
+      const v = t < ZERO ? 0.2 : 0.5
+      cols.push({ min: [-v, -v, -v] as const, max: [v, v, v] as const, minMembers: 3 })
+    }
+    const base: TimedColumns = { fromMs: FROM_MS, columnSpanMs: SPAN, columns: cols }
+    const r = foldQuakeWaveColumns({
+      base,
+      trimmed: trimmedOf(base),
+      zeroMs: ZERO,
+      emphasized: false,
+      visibleAxes: ALL,
+      columnCount: 10,
+    })
+    expect(r.columns.scaleGal).toBeCloseTo(1.5)
+  })
+
+  // 安全弁: 0 の手前が無くて静かさを測れなければ、決め打ちだった 10 gal へ倒す（ノイズを枠いっぱいに広げない）。
+  it('0 の手前が無ければ縦の下限は 10 gal', () => {
+    const trimmed = trimmedOf(quake())
+    const r = foldQuakeWaveColumns({
+      base: trimmed,
+      trimmed,
+      zeroMs: ZERO,
+      emphasized: false,
+      visibleAxes: ALL,
+      columnCount: 10,
+    })
     expect(r.columns.scaleGal).toBe(10)
   })
 
@@ -160,7 +193,7 @@ describe('foldQuakeWaveColumns', () => {
 
 describe('formatQuakeIntensityParts', () => {
   const span = { fromMs: 1000, toMs: 91_000 }
-  const base = { ...span, maxRealtime: 2.34, maxRealtimeAtMs: null, realtimeSeries: [], measured: 1.87, measuredUnavailable: null, gapCount: 0, invalidChunkCount: 0, unsolvedChunkCount: 0, filesMissing: 0, filesFailed: 0, skippedBytes: 0, truncated: false }
+  const base = { ...span, maxRealtime: 2.34, maxRealtimeAtMs: null, realtimeSeries: [], measured: 1.87, measuredUnavailable: null, usualMeasured: null, gapCount: 0, invalidChunkCount: 0, unsolvedChunkCount: 0, filesMissing: 0, filesFailed: 0, skippedBytes: 0, truncated: false }
   const text = (parts: ReturnType<typeof formatQuakeIntensityParts>) => parts?.map((p) => `${p.label} ${p.value}`).join(' ') ?? null
 
   // 正: 短い名前と値だけ。階級は添えない（2026-10-05 のユーザー判断）。正式な名前はホバー用に持つ。
@@ -170,6 +203,13 @@ describe('formatQuakeIntensityParts', () => {
     // 気象庁の手順（第 3 位を四捨五入・第 2 位を切り捨て）で「1.8」。
     expect(text(parts)).toBe('最大 2.3 計測 1.8')
     expect(parts?.map((p) => p.title)).toEqual(['最大リアルタイム震度', '計測震度'])
+  })
+
+  // 正: 「普段」があれば計測の横に並べる（2026-10-11 ユーザー承認）。
+  it('普段の計測震度があれば計測の横に並べる', () => {
+    const parts = formatQuakeIntensityParts({ ...base, usualMeasured: -1.27 }, span)
+    expect(text(parts)).toBe('最大 2.3 計測 1.8 普段 -1.2')
+    expect(parts?.[2].title).toBe('直前 1 時間の同じ長さの区間の計測震度（中央値）')
   })
 
   it('計測震度が出なければ最大だけ', () => {

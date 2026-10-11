@@ -2,7 +2,14 @@ import { describe, expect, it } from 'vitest'
 
 import { calcSeismicIntensity } from '../../../src/utils/knet/seismicIntensity'
 import { computeRealtimeIntensityTimeSeries } from '../../../src/utils/knet/realtimeIntensity'
-import { computeQuakeIntensity, QUAKE_INTENSITY_LEAD_MS } from './quakeIntensity'
+import {
+  computeQuakeIntensity,
+  computeUsualMeasured,
+  QUAKE_INTENSITY_LEAD_MS,
+  USUAL_SPAN_MS,
+  USUAL_WINDOW_COUNT,
+  usualWindows,
+} from './quakeIntensity'
 import type { ArchivedWaveChunk } from './waveArchive'
 
 const T0 = Date.parse('2026-10-03T13:25:00+09:00')
@@ -238,5 +245,77 @@ describe('computeQuakeIntensity', () => {
     const r = computeQuakeIntensity({ chunks, fromMs: T0 + 60_000, toMs: T0 + 150_000 })
     expect(r.invalidChunkCount).toBe(1)
     expect(r.unsolvedChunkCount).toBe(0)
+  })
+})
+
+describe('usualWindows', () => {
+  // 正: 同じ長さの区間を手前 1 時間へ 6 つ。最後の区間は地震の区間の頭で終わる。
+  it('同じ長さで手前 1 時間に並べ、最後は地震の区間の頭で終わる', () => {
+    const fromMs = T0 + USUAL_SPAN_MS
+    const ws = usualWindows(fromMs, fromMs + 180_000)
+    expect(ws).toHaveLength(USUAL_WINDOW_COUNT)
+    for (const w of ws) expect(w.toMs - w.fromMs).toBe(180_000)
+    expect(ws[0].fromMs).toBe(fromMs - USUAL_SPAN_MS)
+    expect(ws[ws.length - 1].toMs).toBe(fromMs)
+  })
+
+  // 対照: 10 分（上限）ならちょうど 1 時間を敷き詰める（重ならない）。
+  it('10 分の区間なら 1 時間を隙間なく敷き詰める', () => {
+    const fromMs = T0 + USUAL_SPAN_MS
+    const ws = usualWindows(fromMs, fromMs + 600_000)
+    for (let k = 1; k < ws.length; k += 1) expect(ws[k].fromMs).toBe(ws[k - 1].toMs)
+  })
+
+  it('長さが 0 以下なら区間を作らない', () => {
+    expect(usualWindows(T0, T0)).toEqual([])
+  })
+})
+
+describe('computeUsualMeasured', () => {
+  const LEN = 60_000
+  const fromMs = T0 + USUAL_SPAN_MS
+  const toMs = fromMs + LEN
+  /** 「普段」の各区間だけに波形を置く（`amps[k]` が k 番目の区間の振幅）。区間の間は記録が無い。 */
+  function chunksForWindows(amps: readonly (number | null)[]): ArchivedWaveChunk[] {
+    const out: ArchivedWaveChunk[] = []
+    usualWindows(fromMs, toMs).forEach((w, k) => {
+      const a = amps[k]
+      if (a === null) return
+      out.push(...chunksOf(w.fromMs, wave(0, LEN / 1000, () => a)))
+    })
+    return out
+  }
+  const noYield = async (): Promise<void> => {}
+  const quietMeasured = (): number => {
+    const w = wave(0, LEN / 1000, () => 0.5).map((axis) => axis.map((v) => Math.fround(v)))
+    return calcSeismicIntensity(w[0], w[1], w[2], 100)!
+  }
+
+  // 正: 1 区間だけ揺れていても、中央値なので静かなときの値が出る。
+  it('揺れた区間が 1 つ混ざっても、静かなときの値を返す', async () => {
+    const r = await computeUsualMeasured({ chunks: chunksForWindows([0.5, 0.5, 40, 0.5, 0.5, 0.5]), fromMs, toMs, onWindow: noYield })
+    expect(r.usualUsedCount).toBe(6)
+    expect(r.usualWindowCount).toBe(6)
+    expect(r.usualMeasured).toBeCloseTo(quietMeasured(), 6)
+  })
+
+  // 安全弁: 測れた区間が 3 つに満たなければ「普段」を名乗らない。
+  it('測れた区間が 2 つなら出さない', async () => {
+    const r = await computeUsualMeasured({ chunks: chunksForWindows([0.5, null, null, null, 0.5, null]), fromMs, toMs, onWindow: noYield })
+    expect(r.usualUsedCount).toBe(2)
+    expect(r.usualMeasured).toBeNull()
+  })
+
+  // 対照: 3 つあれば出す（記録の無い区間は数えない）。
+  it('測れた区間が 3 つあれば出す', async () => {
+    const r = await computeUsualMeasured({ chunks: chunksForWindows([0.5, null, 0.5, null, 0.5, null]), fromMs, toMs, onWindow: noYield })
+    expect(r.usualUsedCount).toBe(3)
+    expect(r.usualMeasured).toBeCloseTo(quietMeasured(), 6)
+  })
+
+  it('区間ごとに 1 回、順番を譲る', async () => {
+    let yields = 0
+    await computeUsualMeasured({ chunks: [], fromMs, toMs, onWindow: async () => void (yields += 1) })
+    expect(yields).toBe(USUAL_WINDOW_COUNT)
   })
 })
