@@ -354,7 +354,9 @@ export function renderOrientationHtml(values: OrientationFormValues): string {
       <div class="b-sixface" style="font-size: 0.8rem; margin-bottom: 0.6rem;">
         <div>6 面で測る（基板に載った全部のセンサー）</div>
         <div class="muted">基板を X・Y・Z の上向き・下向きの 6 方向へ置き、それぞれ 1 分以上動かさない。姿勢が足りなければ、斜めにも置く。X・Y は 1 個目のセンサーの 1 本目・2 本目の軸。直近 30 分の静止した時間から計算する</div>
+        <!-- 進み具合は解く条件の順に 4 行、その下に「いまの置き方:」の秒読み（2026-10-10 ユーザー承認）。 -->
         <div class="b-sixface-faces" style="margin-top: 0.2rem;"></div>
+        <div class="b-sixface-placement" style="margin-top: 0.2rem;"></div>
         <div class="row" style="align-items: center; margin-top: 0.2rem;">
           <button type="button" class="apply-sixface" style="flex: 0 0 auto;" disabled>6 面の結果を入れる</button>
           <span class="muted b-sixface-why"></span>

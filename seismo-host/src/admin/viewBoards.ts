@@ -8,7 +8,7 @@
 // 保存時は表示中の全カードと基板の向きを読み直して丸ごと送る。
 
 import { apiFetch, ApiError, describeAdminAuthFailure, getStoredToken } from './api'
-import { fitBoardSixFace, type BoardFitSensor } from './boardSixFace'
+import { boardSixFaceProgress, fitBoardSixFace, type BoardFitSensor, type CurrentPlacement } from './boardSixFace'
 import { boardGravityForTilt, rotateToHeading, suggestRotation } from './calibrationSuggest'
 import { fetchDetectedBoards, type DetectedBoard, type SensorRestWindow } from './detectedBoards'
 import { ago, boardLabelHtml, escapeHtml, qs, receptionBadgeHtml } from './dom'
@@ -31,11 +31,13 @@ import {
 } from './sensorForm'
 import {
   cardPanelFailureMessage,
-  describeFaces,
+  describePlacement,
+  describeProgress,
   parseRestWindowsBody,
   restWindowsFetchProblem,
   sixFaceApplied,
   sixFaceProblem,
+  type RestWindowsSnapshot,
   type SensorFitWindows,
 } from './sixFacePanel'
 import { multiplyMatVec3 } from '../receiver/matrix3'
@@ -277,6 +279,15 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
   /** 6 面法の材料（`GET /api/rest-windows`）。取れていなければ `null` で、理由は下。 */
   let currentFitWindows: readonly SensorFitWindows[] | null = null
   let fitWindowsProblem: string | null = null
+  /**
+   * 6 面法の秒読みに使うホストの時計（応答の `nowMs`・`windowMs` と、受け取ったときのこちらの時計）。
+   * **前の版のホスト・取れていないときは `null`**（秒読みの行を出さない）。
+   */
+  let currentFitClock: { readonly hostNowMs: number; readonly windowMs: number; readonly receivedAtMs: number } | null = null
+  /** いまの置き方の行を毎秒描き直すための、最後に解いた進み具合（`refreshBoardSixFace`）。 */
+  let lastPlacement: CurrentPlacement = 'not-counted'
+  /** 最後に `GET /api/rest-windows` を投げた時刻（こちらの時計）。秒読みが 0 になったときの取り直しの間引きに使う。 */
+  let lastFitWindowsRequestMs = 0
   /** 「鉛直を合わせる」を押して、ホストの返事を待っているか（ボタンは基板に 1 つ）。 */
   let tiltInFlight = false
 
@@ -354,16 +365,60 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
     const panel = qs(container, '.board-orientation .b-sixface')
     const input = boardFitInput()
     let problem: string | null
+    const progressEl = qs(panel, '.b-sixface-faces')
     if ('error' in input) {
-      qs(panel, '.b-sixface-faces').textContent = ''
+      progressEl.replaceChildren()
+      lastPlacement = 'not-counted'
       problem = input.error
     } else {
       const result = fitBoardSixFace(input.sensors)
-      qs(panel, '.b-sixface-faces').textContent = describeFaces(result.faces, result.poseCount, result.minPoses)
+      const progress = boardSixFaceProgress(
+        input.sensors,
+        input.sensors.map((s) => findFitSource(currentFitWindows, s.sensorId)?.stillSinceMs ?? null),
+      )
+      // **1 行ずつ要素にする**（`textContent` で入れるので、ホストから来た文字が HTML として読まれない）。
+      progressEl.replaceChildren(
+        ...(progress === null ? [] : describeProgress(progress)).map((line) => {
+          const div = document.createElement('div')
+          div.textContent = line
+          return div
+        }),
+      )
+      lastPlacement = progress?.current ?? 'not-counted'
       problem = fitWindowsProblem ?? sixFaceProblem(result)
     }
     qs<HTMLButtonElement>(panel, '.apply-sixface').disabled = problem !== null
     qs(panel, '.b-sixface-why').textContent = problem ?? ''
+    refreshPlacement()
+  }
+
+  /**
+   * 「いまの置き方:」の行だけを描き直す。**毎秒呼ぶ**（秒読み）。進み具合は 10 秒ごとの取り直しで
+   * 決めたもの（`lastPlacement`）を使い、ここでは解き直さない。**投げうる**（`qs()`）。
+   *
+   * **秒読みが 0 になったら取り直す**（10 秒ごとの取り直しを待つと、数えたのが最大 10 秒遅れて見える）。
+   * 返事の遅いホストへ毎秒重ねないよう、前に投げてから 3 秒は投げない。
+   */
+  const refreshPlacement = (): void => {
+    const el = qs(container, '.board-orientation .b-sixface-placement')
+    const input = boardFitInput()
+    if ('error' in input || currentFitWindows === null || currentFitClock === null) {
+      el.textContent = ''
+      return
+    }
+    const clock = currentFitClock
+    const hostNowMs = clock.hostNowMs + (Date.now() - clock.receivedAtMs)
+    const line = describePlacement(
+      lastPlacement,
+      input.sensors.map((s) => ({ sensorId: s.sensorId, source: findFitSource(currentFitWindows, s.sensorId) })),
+      { nowMs: hostNowMs, sampledAtMs: clock.hostNowMs, windowMs: clock.windowMs },
+    )
+    el.textContent = line?.text ?? ''
+    if (line !== null && line.due && Date.now() - lastFitWindowsRequestMs >= 3_000) {
+      // 投げる前に刻む。トークンが無くて `loadFitWindows` が投げずに戻ったときも、毎秒呼び直さない。
+      lastFitWindowsRequestMs = Date.now()
+      void loadFitWindows()
+    }
   }
 
   /**
@@ -396,19 +451,27 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
     readonly problem: string | null
   } | null> => {
     const seq = ++fitWindowsRequested
-    let sensors: readonly SensorFitWindows[] | null = null
+    lastFitWindowsRequestMs = Date.now()
+    let snapshot: RestWindowsSnapshot | null = null
     let problem: string | null = null
     try {
-      sensors = parseRestWindowsBody(await apiFetch<unknown>('/api/rest-windows', { signal: restWindowsSignal() }))
-      if (sensors === null) problem = restWindowsFetchProblem('応答の形が違う')
+      snapshot = parseRestWindowsBody(await apiFetch<unknown>('/api/rest-windows', { signal: restWindowsSignal() }))
+      if (snapshot === null) problem = restWindowsFetchProblem('応答の形が違う')
     } catch (error) {
       problem = restWindowsFetchProblem(describeFetchFailure(error))
     }
     if (signal.aborted) return null
+    const sensors = snapshot?.sensors ?? null
     if (seq > fitWindowsApplied) {
       fitWindowsApplied = seq
       currentFitWindows = sensors
       fitWindowsProblem = problem
+      // **ホストの時計は、受け取った時点のこちらの時計と組で覚える**（秒読みは、その差を足してホストの
+      // いまを出す。画面とホストの時計は合っているとは限らない）。
+      currentFitClock =
+        snapshot !== null && snapshot.nowMs !== null && snapshot.windowMs !== null
+          ? { hostNowMs: snapshot.nowMs, windowMs: snapshot.windowMs, receivedAtMs: Date.now() }
+          : null
     }
     return { sensors, problem }
   }
@@ -889,7 +952,23 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
   // 既に鳴り終わった abort を拾えず、見えない画面で取り直しが続く。
   if (signal.aborted) return
   const poll = setInterval(() => void loadFitWindows(), 10_000)
-  signal.addEventListener('abort', () => clearInterval(poll), { once: true })
+  // **秒読みは毎秒描き直す**（取り直しは 10 秒ごと。解き直しはせず、いまの置き方の行だけ）。
+  // 描き直しが投げても次の秒は続ける（欄が見つからないのは画面の作り直しの途中など）。
+  const tick = setInterval(() => {
+    try {
+      refreshPlacement()
+    } catch (error) {
+      console.warn('[admin] 6 面法の秒読みを描き直せない', error)
+    }
+  }, 1_000)
+  signal.addEventListener(
+    'abort',
+    () => {
+      clearInterval(poll)
+      clearInterval(tick)
+    },
+    { once: true },
+  )
 }
 
 /** `GET /api/boards`・`GET /api/stations` の失敗理由を日本語化する（`describeSaveFailure` の GET 専用版）。 */

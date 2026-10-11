@@ -36,6 +36,7 @@
 
 import { GAL_PER_G } from '../intensity/units'
 import type { BoardKey } from '../protocol/types'
+import { REST_GAP_MS } from './restGap'
 import type { Vec3 } from './stationConfigTypes'
 import { REALTIME_JUDGE_WINDOW_SEC } from '../../../src/utils/knet/realtimeIntensity'
 
@@ -113,6 +114,7 @@ const REST_SD_GAL = 5
  * 長くすると温度の変化（実機で数日に 10〜17 gal）がゼロ点に乗った窓まで混ざる。
  */
 const REST_WINDOW_KEEP_MS = 30 * 60_000
+
 
 /**
  * 1 センサーあたりに覚える静止窓の上限。
@@ -285,7 +287,42 @@ export interface SensorRestWindows {
    * この時刻より後に閉じた窓だけが、いまの置き方の値。
    */
   readonly stillSinceMs: number | null
+  /**
+   * 溜めかけの窓（まだ閉じていない）。**波形が途絶えている・まだ何も受けていないなら `null`。**
+   *
+   * 基板の 6 面法の秒読みが使う（2026-10-10 ユーザー承認）。いまの置き方が 1 姿勢として数えられるのは、
+   * この窓が静止のまま閉じたとき —— 始まりに窓の長さを足した時刻。
+   */
+  readonly pending: PendingRestWindow | null
   readonly windows: readonly RestWindow[]
+}
+
+/** 溜めかけの窓の様子（`SensorRestWindows.pending`）。 */
+export interface PendingRestWindow {
+  /** 窓を始めた時刻（受け手の時計）。 */
+  readonly fromMs: number
+  readonly sampleCount: number
+  /**
+   * ここまで溜めた分で、軸がどれも静止と言えるか。**判定に足るだけ溜まっていなければ `null`**
+   * （閉じた窓を覚えるときと同じ下限・同じ閾値）。`false` なら、この窓は静止として覚えられない。
+   */
+  readonly still: boolean | null
+  /**
+   * この窓の途中で波形が途切れた（`REST_GAP_MS`）。**立っていれば、静止のまま閉じても静止窓として
+   * 覚えない** —— いまの置き方が数えられるのは次の窓が閉じたとき。
+   */
+  readonly voided: boolean
+}
+
+/**
+ * `GET /api/rest-windows` の応答。**時刻はホストの時計。** 画面は `nowMs` と自分の時計の差で、
+ * 溜めかけの窓が閉じるまでの秒を刻む（画面の時計とホストの時計は合っているとは限らない）。
+ */
+export interface RestWindowsReport {
+  readonly nowMs: number
+  /** 窓の長さ（ms）。 */
+  readonly windowMs: number
+  readonly sensors: readonly SensorRestWindows[]
 }
 
 /**
@@ -374,6 +411,13 @@ interface Entry {
    * 動かされたかどうかを確かめようがない。
    */
   stillSinceMs: number | null
+  /** 最後に波形を受けた時刻（受け手の時計）。まだ受けていなければ `null`。 */
+  lastWaveAtMs: number | null
+  /**
+   * 溜めかけの窓の途中で、波形が {@link REST_GAP_MS} より長く途切れたか。**立っていれば、その窓は
+   * 静止窓として覚えない**（倍率の診断には使う —— 途切れても届いた値そのものは本物）。
+   */
+  restGap: boolean
 }
 
 /** 覚えの鍵。**起動 ID を含めない**（`sensorHealth.ts` と同じ理由）。 */
@@ -462,6 +506,11 @@ export class GravityCheckBook {
     readonly uncalibratedGal: readonly (readonly number[])[]
   }): GravityVerdict | null {
     const entry = this.touch(input.boardKey, input.sensorId)
+    const nowMs = this.now()
+    // **途切れを見るのは窓を締める前。** 途切れた後の最初のパケットが、途切れる前のサンプルだけで
+    // 溜めた窓を締める —— その窓こそ印を付けたい窓。
+    if (entry.lastWaveAtMs !== null && nowMs - entry.lastWaveAtMs > REST_GAP_MS) entry.restGap = true
+    entry.lastWaveAtMs = nowMs
 
     let verdict: GravityVerdict | null = null
     if (entry.streamKey !== input.streamKey) {
@@ -556,22 +605,46 @@ export class GravityCheckBook {
   /**
    * センサーごとの静止窓（6 面法と「鉛直を合わせる」の材料）。**30 分より古いものは落としてから返す。**
    *
-   * 窓が 1 つも無いセンサーは出さない。並びは覚えの順（いちばん長く音沙汰の無いものから）。
+   * 閉じた窓も溜めかけの窓も無いセンサーは出さない（**置いた直後の、窓がまだ 1 つも閉じていない
+   * センサーは出す** —— 6 面法の秒読みはそこから始まる）。並びは覚えの順（いちばん長く音沙汰の
+   * 無いものから）。
    */
-  restWindows(): readonly SensorRestWindows[] {
+  restWindows(): RestWindowsReport {
     const now = this.now()
-    const out: SensorRestWindows[] = []
+    const sensors: SensorRestWindows[] = []
     for (const e of this.entries.values()) {
       pruneRestWindows(e.restWindows, now)
-      if (e.restWindows.length === 0) continue
-      out.push({
+      const pending = this.pendingOf(e, now)
+      if (e.restWindows.length === 0 && pending === null) continue
+      sensors.push({
         boardKey: e.boardKey,
         sensorId: e.sensorId,
-        stillSinceMs: this.stillSince(e, now),
+        stillSinceMs: this.stillSince(e, pending),
+        pending,
         windows: [...e.restWindows],
       })
     }
-    return out
+    return { nowMs: now, windowMs: this.windowMs, sensors }
+  }
+
+  /**
+   * 溜めかけの窓の様子。**波形が途絶えている・まだ何も受けていないなら `null`。**
+   *
+   * **途絶えの見方は窓 2 つぶん。** 窓は次のパケットが来たときにしか閉じないので、届かない間は
+   * 溜めかけの窓が古いまま残り、最後の静止が「いまも続いている」ように見える。
+   */
+  private pendingOf(e: Entry, now: number): PendingRestWindow | null {
+    if (e.axisCount === 0) return null
+    if (now - e.windowStartMs > this.windowMs * 2) return null
+    let still: boolean | null = null
+    if (e.count >= this.minSamples) {
+      still = true
+      for (let i = 0; i < e.axisCount; i++) {
+        const { sd } = meanAndSd(e.sumRawAxis[i]!, e.sumSqRawAxis[i]!, e.count)
+        if (!Number.isFinite(sd) || sd >= REST_SD_GAL) still = false
+      }
+    }
+    return { fromMs: e.windowStartMs, sampleCount: e.count, still, voided: e.restGap }
   }
 
   /**
@@ -580,20 +653,12 @@ export class GravityCheckBook {
    * 閉じた窓の連なり（`Entry.stillSinceMs`）だけでは足りない —— 最後の窓を閉じた後に
    * 基板を動かしても、次の窓が閉じるまで最大 30 秒は連なりが途切れない。だから
    * **溜めかけの窓も軸ごとに見る。** 判定に足るだけ溜まっていて 1 軸でも揺れていれば、
-   * もう前の置き方ではない。
-   *
-   * **波形が途絶えていても `null`。** 窓は次のパケットが来たときにしか閉じないので、
-   * 届かない間は溜めかけの窓が古いまま残り、最後の静止が「いまも続いている」ように見える。
+   * もう前の置き方ではない。波形が途絶えていても `null`（`pendingOf` が `null` を返す）。
    */
-  private stillSince(e: Entry, now: number): number | null {
+  private stillSince(e: Entry, pending: PendingRestWindow | null): number | null {
     if (e.stillSinceMs === null) return null
-    if (now - e.windowStartMs > this.windowMs * 2) return null
-    if (e.count >= this.minSamples) {
-      for (let i = 0; i < e.axisCount; i++) {
-        const { sd } = meanAndSd(e.sumRawAxis[i]!, e.sumSqRawAxis[i]!, e.count)
-        if (!Number.isFinite(sd) || sd >= REST_SD_GAL) return null
-      }
-    }
+    // **途切れた窓の途中も `null`。** 途切れている間に置き換えられたかは確かめようがない。
+    if (pending === null || pending.still === false || pending.voided) return null
     return e.stillSinceMs
   }
 
@@ -756,7 +821,9 @@ export class GravityCheckBook {
     const axis = entry.sumRawAxis.map((sum, i) => meanAndSd(sum, entry.sumSqRawAxis[i]!, entry.count))
     const meanGal = axis.map((a) => a.mean)
     const sdGal = axis.map((a) => a.sd)
+    // **途切れた窓は静止と言えない**（`REST_GAP_MS`）。途切れている間に動かされたかは確かめようがない。
     const still =
+      !entry.restGap &&
       entry.axisCount > 0 &&
       entry.count >= this.minSamples &&
       meanGal.every(Number.isFinite) &&
@@ -798,6 +865,7 @@ export class GravityCheckBook {
     entry.sumSqRawAxis.fill(0)
     // `restWindows` は戻さない —— 窓をまたいで覚えておくためのもの。
     entry.maxIntensity = null
+    entry.restGap = false
   }
 
   private touch(boardKey: BoardKey, sensorId: string): Entry {
@@ -837,6 +905,8 @@ export class GravityCheckBook {
       last: null,
       restWindows: [],
       stillSinceMs: null,
+      lastWaveAtMs: null,
+      restGap: false,
     }
     this.entries.set(key, created)
     return created

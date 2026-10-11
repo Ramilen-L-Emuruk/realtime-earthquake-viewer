@@ -35,7 +35,7 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import type { AdminConsoleAssets } from './adminConsoleAssets'
 import { checkAdminAuth } from './adminAuth'
 import type { AdminAuthConfig, AdminAuthFailure } from './adminAuth'
-import type { SensorRestWindows } from './gravityCheck'
+import type { RestWindowsReport } from './gravityCheck'
 import { COLUMNS_MAX, decimalInt } from './httpQuery'
 import { computeQuakeIntensity, QUAKE_INTENSITY_LEAD_MS } from './quakeIntensity'
 import type { QuakeIntensityResult } from './quakeIntensity'
@@ -585,7 +585,7 @@ export interface StatusServerOptions {
    * **`/api/*` の側に置く。** 校正前の生の値は運用者が校正するためのもので、誰でも読める
    * `/status` に並べる理由が無い（9 センサー × 60 窓で `/status` が数十 KB 膨らむ）。
    */
-  readonly readRestWindows: () => readonly SensorRestWindows[]
+  readonly readRestWindows: () => RestWindowsReport
   /**
    * 止める合図（`POST /api/shutdown`）を受けたときに呼ぶ。
    *
@@ -1136,7 +1136,7 @@ async function handleAdmin(
   adminAuth: AdminAuthConfig,
   log: (level: LogLevel, kind: string, detail: string, line: string) => void,
   stationConfig: StationConfigOps,
-  readRestWindows: () => readonly SensorRestWindows[],
+  readRestWindows: () => RestWindowsReport,
   requestShutdown: () => ShutdownRequestResult,
   records: StatusServerOptions['records'],
 ): Promise<void> {
@@ -1201,7 +1201,7 @@ async function handleAdmin(
       sendAdminJson(res, 405, { error: 'method-not-allowed' })
       return
     }
-    sendAdminJson(res, 200, { sensors: readRestWindows() })
+    sendAdminJson(res, 200, readRestWindows())
     return
   }
   if (route.kind === 'shutdown') {

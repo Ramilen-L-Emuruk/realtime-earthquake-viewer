@@ -1049,7 +1049,7 @@ describe('6 面で測る（基板の欄）', () => {
   it('正: 揃えばボタンが押せ、押すと全部のカードの軸の欄へ入る', async () => {
     const container = await mountWith(NINE)
     const panel = panelOf(container)
-    expect(panel.querySelector('.b-sixface-faces')?.textContent).toBe('＋X ✓　−X ✓　＋Y ✓　−Y ✓　＋Z ✓　−Z ✓　姿勢 9／9')
+    expect(panel.querySelector('.b-sixface-faces')?.textContent).toBe('① 同時に静止　✓② 6 面　＋X ✓　−X ✓　＋Y ✓　−Y ✓　＋Z ✓　−Z ✓③ 向き　9／9④ 斜めの散らばり　✓')
     const button = panel.querySelector<HTMLButtonElement>('.apply-sixface')
     expect(button?.disabled).toBe(false)
 
@@ -1067,6 +1067,34 @@ describe('6 面で測る（基板の欄）', () => {
     expect(offset(1, 1)).toBe('-30.00')
     expect(vector(1, 0)).toEqual(['1.010101', '0.000000', '0.000000'])
     expect(panel.querySelector('.b-sixface-result')?.textContent).toContain('全部のセンサーの軸の向き・倍率・ゼロ点を入れた（姿勢 9・残差')
+  })
+
+  // 秒読み（2026-10-10 ユーザー承認）。最後の姿勢（9 番目）の窓は 480〜510 秒。
+  describe('いまの置き方の行', () => {
+    const withClock = (stillSinceMs: number | null) => ({
+      ok: true,
+      body: {
+        nowMs: 520_000,
+        windowMs: 30_000,
+        sensors: NINE.body.sensors.map((s) => ({ ...s, stillSinceMs, pending: { fromMs: 513_000, sampleCount: 700, still: true, voided: false } })),
+      },
+    })
+    const placementOf = (container: HTMLElement) => panelOf(container).querySelector('.b-sixface-placement')?.textContent
+
+    it('正: いま静止していて窓がまだ閉じていなければ、閉じるまでの秒を出す', async () => {
+      const container = await mountWith(withClock(null))
+      expect(placementOf(container)).toBe('いまの置き方: このまま動かさなければ、あと 23 秒で 1 姿勢として数える')
+    })
+
+    it('正: いまの置き方がもう数えられていれば、新しい向きとして数えたと出す', async () => {
+      const container = await mountWith(withClock(480_000))
+      expect(placementOf(container)).toBe('いまの置き方: 数えた。次の向きへ置き換えてよい')
+    })
+
+    it('安全弁: 前の版のホスト（時刻の欄が無い）なら行を出さない', async () => {
+      const container = await mountWith(NINE)
+      expect(placementOf(container)).toBe('')
+    })
   })
 
   it('対照: ほかのセンサーと同時に静止した窓が無いセンサーがあれば押せず、その名前が理由に出る', async () => {

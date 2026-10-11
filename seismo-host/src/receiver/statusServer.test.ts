@@ -186,6 +186,7 @@ afterEach(async () => {
 
 /** 既定は `/api/*` を丸ごと無効化する設定（トークン未設定）。 */
 const NO_ADMIN_AUTH: AdminAuthConfig = { token: null, allowedHosts: [], allowedOrigins: [] }
+const NO_REST_WINDOWS = { nowMs: 0, windowMs: 30_000, sensors: [] }
 
 /**
  * テスト用の管理コンソールアセット。**`buildAdminConsoleAssets()` を呼ばない**——
@@ -231,7 +232,7 @@ async function start(
     heartbeatMs,
     adminAuth: adminAuth ?? NO_ADMIN_AUTH,
     stationConfig: stationConfig ?? makeStationConfigOps(),
-    readRestWindows: readRestWindows ?? (() => []),
+    readRestWindows: readRestWindows ?? (() => NO_REST_WINDOWS),
     // 止める合図を試すテストは `startAuthed` を使う（`/api/*` は認証が要る）。
     requestShutdown: () => 'not-ready',
     // **`null` を明示的に渡したいテストがあるので `??` は使わない。** `??` だと
@@ -1083,7 +1084,7 @@ describe('/api/*', () => {
     overrides: Partial<AdminAuthConfig> = {},
     log?: StatusServerOptions['log'],
     stationConfig?: StatusServerOptions['stationConfig'],
-    readRestWindows: StatusServerOptions['readRestWindows'] = () => [],
+    readRestWindows: StatusServerOptions['readRestWindows'] = () => NO_REST_WINDOWS,
     requestShutdown: StatusServerOptions['requestShutdown'] = () => 'not-ready',
     records: StatusServerOptions['records'] = null,
   ): Promise<string> {
@@ -1288,21 +1289,26 @@ describe('/api/*', () => {
     })
   })
 
-  it('正: GET /api/rest-windows はセンサーごとの静止窓（始まりと終わり）と、いまの静止の始まりを返す', async () => {
-    const sensors = [
-      {
-        boardKey: 'mac:aa' as const,
-        sensorId: 'i2c0-68',
-        stillSinceMs: 0,
-        windows: [{ fromMs: 0, atMs: 1, streamKey: 'k', sampleCount: 3000, meanGal: [1, 2, 980] as const, sdGal: [1, 1, 1.5] as const }],
-      },
-    ]
-    const base = await startAuthed(new ReadingHub(), {}, undefined, undefined, () => sensors)
+  it('正: GET /api/rest-windows はホストの時刻・窓の長さと、センサーごとの静止窓・いまの静止の始まり・溜めかけの窓を返す', async () => {
+    const report = {
+      nowMs: 40_000,
+      windowMs: 30_000,
+      sensors: [
+        {
+          boardKey: 'mac:aa' as const,
+          sensorId: 'i2c0-68',
+          stillSinceMs: 0,
+          pending: { fromMs: 30_000, sampleCount: 1000, still: true, voided: false },
+          windows: [{ fromMs: 0, atMs: 1, streamKey: 'k', sampleCount: 3000, meanGal: [1, 2, 980] as const, sdGal: [1, 1, 1.5] as const }],
+        },
+      ],
+    }
+    const base = await startAuthed(new ReadingHub(), {}, undefined, undefined, () => report)
     const res = await fetch(`${base}/api/rest-windows`, {
       headers: { Authorization: `Bearer ${TOKEN}`, Origin: ORIGIN },
     })
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ sensors })
+    expect(await res.json()).toEqual(report)
   })
 
   it('安全弁: /api/rest-windows も認証を通す（トークン無しは 401）', async () => {

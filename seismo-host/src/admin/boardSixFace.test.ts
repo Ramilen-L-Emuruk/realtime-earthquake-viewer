@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { GAL_PER_G } from '../intensity/units'
-import { directionsSpread, fitBoardSixFace, fitBoardSixFaceWith, minPosesFor } from './boardSixFace'
+import { boardSixFaceProgress, directionsSpread, fitBoardSixFace, fitBoardSixFaceWith, minPosesFor } from './boardSixFace'
 import type { BoardFitSensor, BoardFitWindow } from './boardSixFace'
 import type { AxisCalibration, Vec3 } from '../receiver/stationConfigTypes'
 
@@ -184,11 +184,13 @@ describe('fitBoardSixFace', () => {
     expect(r.minPoses).toBe(9)
   })
 
-  it('安全弁: 9 姿勢あっても、斜めの置き方が同じ面の中に偏っていれば解けないとして断る', () => {
+  // 2026-10-10 に覆した（前は `degenerate`）: 向きの偏りは「違う向きに斜めに置けば直る」ので、解けなかった
+  // のと分けて言う（ユーザー承認）。
+  it('安全弁: 9 姿勢あっても、斜めの置き方が同じ面の中に偏っていれば、向きが偏っているとして断る', () => {
     const r = fitBoardSixFace(iisBoard([...SIX, [1, 1, 0.02], [1, -1, 0.01], [-1, 1, 0.02]]))
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.reason).toBe('degenerate')
+    expect(r.reason).toBe('directions-biased')
     expect(r.poseCount).toBe(9)
   })
 
@@ -452,5 +454,75 @@ describe('fitBoardSixFace', () => {
     const r = fitBoardSixFace([board[0]!, board[1]!, mixed])
     if (!r.ok) throw new Error(`拒まれた: ${r.reason}`)
     r.sensors.forEach((s, i) => expectAxes(s.axes, IIS[i]!))
+  })
+})
+
+// 進み具合は解く条件と同じ順に並べる（2026-10-10 ユーザー承認）: ① 同時に静止 → ② 6 面 → ③ 向きの数 → ④ 散らばり。
+describe('boardSixFaceProgress（6 面法の進み具合）', () => {
+  /** k 番目の姿勢で静止し始めた時刻（センサーごと。`windowsFor` の窓の区切りのずれと同じ）。 */
+  const stillAt = (board: readonly BoardFitSensor[], k: number) => board.map((_, i) => T0 + k * 150_000 + i * 10_000)
+  const NINE = [...SIX, ...OBLIQUE.slice(0, 3)]
+
+  it('正: 6 面と斜め 3 回が揃えば、あと 0 姿勢・散らばりも足りる', () => {
+    const board = iisBoard(NINE)
+    expect(boardSixFaceProgress(board, stillAt(board, 8))).toEqual({
+      commonPose: true,
+      faces: { '+x': true, '-x': true, '+y': true, '-y': true, '+z': true, '-z': true },
+      poseCount: 9,
+      minPoses: 9,
+      spreadOk: true,
+      remainingPoses: 0,
+      current: 'counted-new',
+    })
+  })
+
+  it('対照: 6 面だけなら、あと 3 姿勢で散らばりは足りない', () => {
+    const p = boardSixFaceProgress(iisBoard(SIX), [null, null, null])
+    expect(p).toMatchObject({ commonPose: true, poseCount: 6, spreadOk: false, remainingPoses: 3 })
+  })
+
+  it('対照: 数が足りていても、欠けた面の数だけは要る', () => {
+    // ＋X〜＋Z の 5 面と、−Z に掛からない斜め 4 回（9 姿勢）。
+    const p = boardSixFaceProgress(mpuBoard([...SIX.slice(0, 5), [1, 1, 0.02], [0.03, 1, 1], [-1, 1, 1], [1, -1, 0.02]]), [null])
+    expect(p).toMatchObject({ poseCount: 9, remainingPoses: 1 })
+    expect(p?.faces['-z']).toBe(false)
+  })
+
+  it('安全弁: 数も面も足りていて散らばりだけ足りなければ、あと 1 姿勢', () => {
+    const p = boardSixFaceProgress(iisBoard([...SIX, [1, 1, 0.02], [1, -1, 0.01], [-1, 1, 0.02]]), [null, null, null])
+    expect(p).toMatchObject({ poseCount: 9, spreadOk: false, remainingPoses: 1 })
+  })
+
+  it('安全弁: 同時に静止した置き方が無ければ ① を外し、要る姿勢の数をそのまま残す', () => {
+    const board = iisBoard(NINE).map((s, i) => (i === 2 ? { ...s, windows: [] } : s))
+    expect(boardSixFaceProgress(board, [null, null, null])).toMatchObject({
+      commonPose: false,
+      poseCount: 0,
+      minPoses: 9,
+      remainingPoses: 9,
+      current: 'not-counted',
+    })
+  })
+
+  it('正: いまの置き方を、測った向きと同じ面へ置き直したなら counted-same（姿勢は増えない）', () => {
+    const board = iisBoard([...NINE, SIX[0]!])
+    const p = boardSixFaceProgress(board, stillAt(board, 9))
+    expect(p).toMatchObject({ poseCount: 9, current: 'counted-same' })
+  })
+
+  it('対照: どれかのセンサーがいま静止していなければ not-counted', () => {
+    const board = iisBoard(NINE)
+    const still = stillAt(board, 8)
+    expect(boardSixFaceProgress(board, [still[0]!, null, still[2]!])?.current).toBe('not-counted')
+  })
+
+  it('対照: 静止し始めてから窓がまだ閉じていなければ not-counted', () => {
+    const board = iisBoard(NINE)
+    expect(boardSixFaceProgress(board, stillAt(board, 9))?.current).toBe('not-counted')
+  })
+
+  it('安全弁: 姿勢を組み立てる前に断る理由（窓の始まりが無い）があれば null', () => {
+    const board = mpuBoard(NINE).map((s) => ({ ...s, windows: s.windows.map((w) => ({ ...w, fromMs: null })) }))
+    expect(boardSixFaceProgress(board, [null])).toBeNull()
   })
 })

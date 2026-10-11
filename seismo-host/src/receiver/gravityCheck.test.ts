@@ -643,10 +643,31 @@ function constGal(
   return out
 }
 
+type Tri = readonly [readonly number[], readonly number[], readonly number[]]
+
+/**
+ * 1 窓（30 秒）ぶんの値を、3 秒おきの 10 回に分けて流す。**実機と同じく途切れずに届く形**
+ * （1 回で流して 30 秒進めると、静止窓の覚えでは「波形が途切れた窓」になる。`REST_GAP_MS`）。
+ * `cut` は軸ごとの列から、その回の分を切り出す。
+ */
+function spread(
+  advance: (ms: number) => void,
+  n: number,
+  send: (cut: (cols: readonly (readonly number[])[]) => number[][]) => void,
+): void {
+  const parts = 10
+  for (let k = 0; k < parts; k++) {
+    const from = Math.floor((k * n) / parts)
+    const to = Math.floor(((k + 1) * n) / parts)
+    send((cols) => cols.map((c) => c.slice(from, to)))
+    advance(30_000 / parts)
+  }
+}
+
 describe('静止窓の覚え（6 面法の材料）', () => {
   const ID = { sensorId: 'six', streamKey: 'six|boot1' }
 
-  /** 同じセンサーへ、1 窓ぶん流してから時計を進める。 */
+  /** 同じセンサーへ、1 窓ぶんを途切れずに流し（`spread`）、時計を窓の終わりまで進める。 */
   function feed(
     b: GravityCheckBook,
     advance: (ms: number) => void,
@@ -654,12 +675,11 @@ describe('静止窓の覚え（6 面法の材料）', () => {
     uncalibratedGal = gal,
     over: { streamKey?: string } = {},
   ): void {
-    wave(b, gal, { ...ID, ...over, uncalibratedGal })
-    advance(30_000)
+    spread(advance, gal[0].length, (cut) => wave(b, cut(gal) as unknown as Tri, { ...ID, ...over, uncalibratedGal: cut(uncalibratedGal) as unknown as Tri }))
   }
 
   function windowsOf(b: GravityCheckBook) {
-    return b.restWindows().find((s) => s.sensorId === ID.sensorId)?.windows ?? []
+    return b.restWindows().sensors.find((s) => s.sensorId === ID.sensorId)?.windows ?? []
   }
 
   it('正: 静止して閉じた窓は、校正前の軸ごとの平均とばらつきで覚える', () => {
@@ -717,7 +737,7 @@ describe('静止窓の覚え（6 面法の材料）', () => {
     const moving = constGal(300, [0, 0, GAL_PER_G], { axis: 0, gal: 20 })
 
     function stillOf(b: GravityCheckBook): number | null | undefined {
-      return b.restWindows().find((s) => s.sensorId === ID.sensorId)?.stillSinceMs
+      return b.restWindows().sensors.find((s) => s.sensorId === ID.sensorId)?.stillSinceMs
     }
 
     it('正: 静止した窓が続く間は、最初の窓の始まりを返す', () => {
@@ -772,6 +792,124 @@ describe('静止窓の覚え（6 面法の材料）', () => {
     })
   })
 
+  // 6 面法の秒読みの材料（2026-10-10 ユーザー承認）。いまの置き方が 1 姿勢として数えられるのは、溜めかけの
+  // 窓が静止のまま閉じたとき —— 画面はその始まりとホストの時刻から残りの秒を出す。
+  describe('溜めかけの窓（pending・6 面法の秒読みの材料）', () => {
+    const T0 = 1_700_000_000_000
+    const still = constGal(300, [0, 0, GAL_PER_G])
+    const moving = constGal(300, [0, 0, GAL_PER_G], { axis: 0, gal: 20 })
+
+    function sensorOf(b: GravityCheckBook) {
+      return b.restWindows().sensors.find((s) => s.sensorId === ID.sensorId)
+    }
+
+    it('正: 応答はホストの時刻と窓の長さを持ち、窓がまだ 1 つも閉じていないセンサーも溜めかけの窓とともに出す', () => {
+      const { b, advance } = book()
+      wave(b, still, ID)
+      advance(12_000)
+      const report = b.restWindows()
+      expect(report.nowMs).toBe(T0 + 12_000)
+      expect(report.windowMs).toBe(30_000)
+      expect(sensorOf(b)).toEqual({
+        boardKey: BOARD,
+        sensorId: ID.sensorId,
+        stillSinceMs: null,
+        pending: { fromMs: T0, sampleCount: 300, still: true, voided: false },
+        windows: [],
+      })
+    })
+
+    it('対照: 溜めかけの窓で 1 軸でも揺れていれば still は false', () => {
+      const { b } = book()
+      wave(b, moving, ID)
+      expect(sensorOf(b)?.pending?.still).toBe(false)
+    })
+
+    it('対照: 判定に足るだけ溜まっていなければ still は null', () => {
+      const { b } = book()
+      wave(b, constGal(10, [0, 0, GAL_PER_G]), ID)
+      expect(sensorOf(b)?.pending).toEqual({ fromMs: T0, sampleCount: 10, still: null, voided: false })
+    })
+
+    it('正: 窓を閉じたら、溜めかけの窓は閉じた時刻から始まり直す', () => {
+      const { b, advance } = book()
+      feed(b, advance, still)
+      wave(b, still, ID)
+      expect(sensorOf(b)?.pending?.fromMs).toBe(T0 + 30_000)
+    })
+
+    it('安全弁: 波形が窓 2 つぶん途絶えたら溜めかけの窓は null、閉じた窓も無ければセンサーごと出さない', () => {
+      const { b, advance } = book()
+      wave(b, still, ID)
+      advance(60_000)
+      expect(sensorOf(b)?.pending).not.toBeNull()
+      advance(1)
+      expect(sensorOf(b)).toBeUndefined()
+    })
+
+    // 2026-10-10: 送るのを 75 秒止めて再開すると、途切れる前のサンプルだけの窓が静止として閉じ、
+    // 再開した直後から「数えた」になった（その間に置き換えた向きが前の置き方と 1 つに繋がる）。
+    it('正: 波形が 5 秒より長く途切れた窓は静止窓として覚えず、静止の続きもそこで切る', () => {
+      const { b, advance } = book()
+      feed(b, advance, still)
+      // 1 つ目を閉じ、2 つ目を溜め始める。**判定に足るだけ溜める**（足りないと、途切れと関係なく
+      // 静止と言えずに落ちるので、このテストが穴を捕まえない）。
+      wave(b, still, ID)
+      advance(75_000)
+      wave(b, still, ID) // 再開。途切れた 2 つ目の窓がここで閉じる
+      const s = sensorOf(b)
+      expect(s?.windows).toHaveLength(1)
+      expect(s?.stillSinceMs).toBeNull()
+      expect(s?.pending).toMatchObject({ fromMs: T0 + 105_000, voided: false })
+    })
+
+    it('対照: 5 秒ちょうどの間なら途切れとみなさず、続けて静止した窓として覚える', () => {
+      const { b, advance } = book()
+      feed(b, advance, still)
+      for (let k = 0; k < 6; k++) {
+        wave(b, constGal(50, [0, 0, GAL_PER_G]), ID)
+        advance(5_000)
+      }
+      wave(b, still, ID)
+      const s = sensorOf(b)
+      expect(s?.windows.map((w) => [w.fromMs, w.atMs])).toEqual([
+        [T0, T0 + 30_000],
+        [T0 + 30_000, T0 + 60_000],
+      ])
+      expect(s?.stillSinceMs).toBe(T0)
+    })
+
+    it('正: 窓の途中で途切れたら、溜めかけの窓に印を付け、いまの静止の始まりを null にする', () => {
+      const { b, advance } = book()
+      feed(b, advance, still)
+      wave(b, still, ID)
+      advance(6_000)
+      wave(b, still, ID)
+      const s = sensorOf(b)
+      expect(s?.pending).toMatchObject({ fromMs: T0 + 30_000, still: true, voided: true })
+      expect(s?.stillSinceMs).toBeNull()
+    })
+
+    it('安全弁: 途切れても倍率の判定は出す（届いた値そのものは本物）', () => {
+      const { b, advance } = book()
+      wave(b, still, ID)
+      advance(30_000)
+      expect(wave(b, still, ID)?.scale).toBe('ok')
+      expect(sensorOf(b)?.windows).toEqual([])
+    })
+
+    it('安全弁: 途絶えても閉じた窓が残っていれば、センサーは出し、溜めかけの窓だけ null', () => {
+      const { b, advance } = book()
+      feed(b, advance, still)
+      wave(b, still, ID)
+      advance(60_001)
+      const s = sensorOf(b)
+      expect(s?.windows).toHaveLength(1)
+      expect(s?.pending).toBeNull()
+      expect(s?.stillSinceMs).toBeNull()
+    })
+  })
+
   it('安全弁: 合成の長さは静かでも、1 軸が振れている窓は覚えない（回している最中の窓）', () => {
     // 合成の長さは向きを変えても変わらないので、ゆっくり回している窓は合成では静止に見える。
     // 2 つの向きが混ざった平均を 6 面法へ渡さないため、軸ごとのばらつきで落とす。
@@ -814,8 +952,8 @@ describe('静止窓の覚え（6 面法の材料）', () => {
     const { b, advance } = book()
     feed(b, advance, constGal(300, [0, 0, GAL_PER_G]))
     wave(b, restGal(300), ID) // 1 つ目を閉じる
-    wave(b, restGal(300), { ...ID, streamKey: 'six|boot2' }) // 起動し直し（溜めかけは捨てる）
-    advance(30_000)
+    // 起動し直し（溜めかけは捨てる）。新しい流れで 1 窓ぶん流して閉じる。
+    feed(b, advance, restGal(300), restGal(300), { streamKey: 'six|boot2' })
     wave(b, restGal(300), { ...ID, streamKey: 'six|boot2' })
     const ws = windowsOf(b)
     expect(ws.map((w) => w.streamKey)).toEqual(['six|boot1', 'six|boot2'])
@@ -864,13 +1002,12 @@ describe('2 軸のセンサー（地面の 3 成分を解けない）', () => {
   }
 
   function windowsOf(b: GravityCheckBook) {
-    return b.restWindows().find((s) => s.sensorId === ID.sensorId)?.windows ?? []
+    return b.restWindows().sensors.find((s) => s.sensorId === ID.sensorId)?.windows ?? []
   }
 
   it('正: 静止して閉じた窓は 2 本の軸の平均とばらつきで覚え、倍率の判定は出さない', () => {
     const { b, advance } = book()
-    expect(note2(b, twoAxis(300, [12, -980]))).toBeNull()
-    advance(30_000)
+    spread(advance, 300, (cut) => expect(note2(b, cut(twoAxis(300, [12, -980])))).toBeNull())
     // 窓を閉じる引き金。**判定は出ない**（倍率の診断は地面の 3 成分が要る）。
     expect(note2(b, twoAxis(300, [12, -980]))).toBeNull()
 
@@ -885,8 +1022,7 @@ describe('2 軸のセンサー（地面の 3 成分を解けない）', () => {
 
   it('対照: 2 軸でも、揺れていた窓は覚えない', () => {
     const { b, advance } = book()
-    note2(b, twoAxis(300, [12, -980], 20))
-    advance(30_000)
+    spread(advance, 300, (cut) => note2(b, cut(twoAxis(300, [12, -980], 20))))
     note2(b, twoAxis(300, [12, -980]))
     expect(windowsOf(b)).toEqual([])
   })
@@ -894,8 +1030,7 @@ describe('2 軸のセンサー（地面の 3 成分を解けない）', () => {
   it('安全弁: 同じセンサーの軸の本数が変わったら、覚えた窓を捨てる（混ぜると 6 面法が壊れる）', () => {
     const { b, advance } = book()
     const three = constGal(300, [0, 0, GAL_PER_G])
-    b.noteWave({ ...ID, gal: three, uncalibratedGal: three })
-    advance(30_000)
+    spread(advance, 300, (cut) => b.noteWave({ ...ID, gal: cut(three) as unknown as Tri, uncalibratedGal: cut(three) }))
     b.noteWave({ ...ID, gal: three, uncalibratedGal: three }) // 3 軸の窓が 1 つ閉じる
     expect(windowsOf(b)).toHaveLength(1)
 
@@ -903,7 +1038,7 @@ describe('2 軸のセンサー（地面の 3 成分を解けない）', () => {
     expect(windowsOf(b)).toEqual([])
     // **捨てたことを数える**（黙って 0 へ戻ると「まだ揃っていない」だけに見える）。
     expect(b.snapshot().axisReshapes).toBe(1)
-    advance(30_000)
+    spread(advance, 300, (cut) => note2(b, cut(twoAxis(300, [12, -980]))))
     note2(b, twoAxis(300, [12, -980]))
     const ws = windowsOf(b)
     expect(ws).toHaveLength(1)
