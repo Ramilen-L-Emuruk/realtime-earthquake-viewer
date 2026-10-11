@@ -5,6 +5,8 @@ import {
   assignedBoardsOf,
   assignedSilenceWarnings,
   boardClockWarnings,
+  boardIntensitiesOf,
+  boardIntensityRowHtml,
   boardClocksOf,
   countLive,
   memberCell,
@@ -457,5 +459,97 @@ describe('assignedSilenceWarnings', () => {
     expect(line).not.toContain('<img>')
     expect(line).toContain('&lt;img&gt;')
     expect(line).toContain('&quot;x&quot;')
+  })
+})
+
+/** 基板 1 枚ぶん（`/status` から読む形）。 */
+function boardRow(over: Partial<Parameters<typeof boardIntensityRowHtml>[1]> = {}) {
+  return {
+    boardKey: 'mac:aa',
+    boardName: null,
+    stationId: 'station-1',
+    stationName: '自宅',
+    source: 'fused',
+    lastPacketMs: NOW - 1000,
+    lastIntensity: 0.42,
+    lastReadingReceivedMs: NOW - 1000,
+    lastSkipReason: null,
+    lastMemberCountMin: 3,
+    lastMemberCountMax: 3,
+    ...over,
+  }
+}
+
+describe('boardIntensityRowHtml（#713-1）', () => {
+  it('正: 合成した基板は値と混ざった本数（3 本、揺れていれば 2〜3 本）を出す', () => {
+    const html = boardIntensityRowHtml(NOW, boardRow())
+    expect(html).toContain('0.42')
+    expect(html).toContain('<td>3 本</td>')
+    expect(boardIntensityRowHtml(NOW, boardRow({ lastMemberCountMin: 2 }))).toContain('<td>2〜3 本</td>')
+    expect(html).toContain('自宅')
+    expect(html).not.toContain('stale-value')
+  })
+
+  it('正: センサー 1 個の基板は単独の値と「1 本（センサー単独）」を出す（2026-10-11 ユーザー承認）', () => {
+    const html = boardIntensityRowHtml(
+      NOW,
+      boardRow({ source: 'single', lastIntensity: 0.31, lastMemberCountMin: null, lastMemberCountMax: null }),
+    )
+    expect(html).toContain('0.31')
+    expect(html).toContain('1 本（センサー単独）')
+  })
+
+  it('対照: 2 軸のセンサー 1 個だけなら「2 軸」を灰色で出す（赤くしない）', () => {
+    const html = boardIntensityRowHtml(NOW, boardRow({ source: 'two-axis', lastIntensity: null }))
+    expect(html).toContain('<td class="muted">2 軸</td>')
+    expect(html).not.toContain('stale-value')
+  })
+
+  it('対照: 有効なセンサーが無い基板は、震度を赤い「—」にする', () => {
+    const html = boardIntensityRowHtml(NOW, boardRow({ source: 'no-sensor', lastIntensity: null }))
+    expect(html).toContain('<td class="stale-value">—</td>')
+  })
+
+  it('正: 震度が止まって 60 秒を過ぎたら、震度の欄を赤くする（観測点の行と同じ測り方）', () => {
+    const html = boardIntensityRowHtml(NOW, boardRow({ lastReadingReceivedMs: NOW - STALE_AFTER_MS - 1 }))
+    expect(html.match(/stale-value/g)?.length).toBe(1)
+  })
+
+  it('正: 途絶したら震度と混ざった本数の 2 欄を赤くする', () => {
+    const at = NOW - STALE_AFTER_MS - 1
+    const html = boardIntensityRowHtml(NOW, boardRow({ lastPacketMs: at, lastReadingReceivedMs: at }))
+    expect(html.match(/stale-value/g)?.length).toBe(2)
+  })
+
+  it('安全弁: 基板の名前と観測点の名前は escapeHtml を通す（運用者の入力）', () => {
+    const html = boardIntensityRowHtml(NOW, boardRow({ boardName: '<img>', stationName: '"x"' }))
+    expect(html).not.toContain('<img>')
+    expect(html).toContain('&lt;img&gt;')
+    expect(html).toContain('&quot;x&quot;')
+  })
+
+  it('安全弁: 欄の無い（版の古い）ホストでは空の一覧として扱う', () => {
+    expect(boardIntensitiesOf({})).toEqual([])
+    expect(boardIntensitiesOf({ boardIntensities: [boardRow()] })).toHaveLength(1)
+  })
+
+  it('安全弁: 形の崩れた行（null）は落とし、残りは出す', () => {
+    const rows = boardIntensitiesOf({ boardIntensities: [null, boardRow()] as never })
+    expect(rows).toHaveLength(1)
+  })
+
+  it('安全弁: 文字列の欄・時刻の欄が欠けていても投げず、「—」と「途絶」で出す', () => {
+    const broken = {
+      source: 'fused',
+      lastIntensity: 0.42,
+      lastMemberCountMin: 3,
+      lastMemberCountMax: 3,
+    } as unknown as Parameters<typeof boardIntensityRowHtml>[1]
+    let html = ''
+    expect(() => (html = boardIntensityRowHtml(NOW, broken))).not.toThrow()
+    expect(html).not.toContain('undefined')
+    expect(html).not.toContain('NaN')
+    expect(html).toContain('途絶')
+    expect(html).toContain('<td>—</td>')
   })
 })

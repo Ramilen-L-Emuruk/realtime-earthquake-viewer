@@ -59,6 +59,7 @@ function report(hub: ReadingHub): StatusReport {
     boardClocks: { boards: [], evictions: 0 },
     stationEvictions: 0,
     stationIntensities: [],
+    boardIntensities: [],
     gravity: {
       verdicts: [],
       mismatches: 0,

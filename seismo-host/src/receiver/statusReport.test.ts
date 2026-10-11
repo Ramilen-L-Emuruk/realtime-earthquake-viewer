@@ -199,6 +199,7 @@ function input(overrides: Partial<StatusReportInput> = {}): StatusReportInput {
     boardClocks: { boards: [], evictions: 0 },
     stationEvictions: 0,
     stationIntensities: [],
+    boardIntensities: [],
     gravity: EMPTY_GRAVITY,
     segments: [segment()],
     unusableIntensities: 0,
@@ -399,6 +400,32 @@ describe('buildStatusReport', () => {
 
     expect(report.stationIntensities[0].lastReadingAtMs).toBeNull()
     expect(report.stationIntensities[0].lastIntensity).toBeNull()
+    expect(report.unreadableTimes).toBe(1)
+    expect(report.unreadableIntensityValues).toBe(1)
+  })
+
+  it('基板ごとの震度も、観測点と同じ番人（時刻・震度を別の数へ入れる）を通る', () => {
+    const report = buildStatusReport(
+      input({
+        boardIntensities: [
+          {
+            boardKey: 'mac:aaaaaaaaaaaa',
+            boardName: null,
+            stationId: 'home',
+            stationName: '自宅',
+            source: 'fused',
+            lastPacketMs: Number.NaN,
+            lastIntensity: Number.POSITIVE_INFINITY,
+            lastReadingReceivedMs: 1000,
+            lastSkipReason: null,
+            lastMemberCountMin: 3,
+            lastMemberCountMax: 3,
+          },
+        ],
+      }),
+    )
+
+    expect(report.boardIntensities[0]).toMatchObject({ lastPacketMs: null, lastIntensity: null, lastReadingReceivedMs: 1000 })
     expect(report.unreadableTimes).toBe(1)
     expect(report.unreadableIntensityValues).toBe(1)
   })

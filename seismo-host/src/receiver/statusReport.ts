@@ -17,6 +17,7 @@ import type { AckSnapshot } from './ackReplier'
 import type { AssignedBoardReception } from './assignedReception'
 import type { BacklogFetcherSnapshot } from './backlogFetcher'
 import type { BoardClockSnapshot } from './boardClock'
+import type { BoardIntensity } from './boardIntensity'
 import type { GravityCheckSnapshot, GravityVerdict } from './gravityCheck'
 import type { LoopStallSnapshot } from './loopStall'
 import type { RecvBufferOutcome } from './udpReceiver'
@@ -131,6 +132,13 @@ export interface StatusReportInput {
    * 失敗のいずれかを返した観測点だけを覚える）。
    */
   readonly stationIntensities: readonly StationHealth[]
+  /**
+   * 基板 1 枚ぶんの計測震度相当（`boardIntensity.ts`）。**設定の基板の並びのまま。**
+   *
+   * **`stationIntensities` へ混ぜない。** あちらは観測点に置いた全センサーの合成で、記録・押し出し・
+   * 地震検出が使う値。こちらは見せるためだけの値（同じ観測点の基板どうしを見比べる）。
+   */
+  readonly boardIntensities: readonly BoardIntensity[]
   /**
    * 基板がどこに置かれているか（観測点）を引く帳面。
    *
@@ -291,6 +299,11 @@ export interface StatusReport {
    * 観測点にしか現れない）。
    */
   readonly stationIntensities: readonly StationIntensityStatus[]
+  /**
+   * 基板 1 枚ぶんの計測震度相当。**設定の基板の並びのまま**、まだ値の無い基板も含む。
+   * `source` が値の出どころ（`boardIntensity.ts` の `BoardIntensitySource`）。
+   */
+  readonly boardIntensities: readonly BoardIntensity[]
   readonly segments: readonly SegmentStatus[]
   /**
    * 数として出せなかった計測震度を見た回数。
@@ -473,6 +486,13 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     lastIntensity: finiteValue(s.lastIntensity),
   }))
 
+  const boardIntensities: BoardIntensity[] = input.boardIntensities.map((b) => ({
+    ...b,
+    lastPacketMs: finite(b.lastPacketMs),
+    lastReadingReceivedMs: finite(b.lastReadingReceivedMs),
+    lastIntensity: finiteValue(b.lastIntensity),
+  }))
+
   // **有限であることは `gravityCheck.ts` の `settle` が保証する** —— 平均・ばらつき・震度は
   // あそこで確かめたうえで、読めなければ `null` と `'unreadable'` に倒れている。
   // 確かめ直していないのは判定した時刻だけなので、そこだけ通す。
@@ -527,6 +547,7 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     sensorEvictions: input.sensorEvictions,
     stationEvictions: input.stationEvictions,
     stationIntensities,
+    boardIntensities,
     segments,
     unusableIntensities: input.unusableIntensities,
     gravity,
