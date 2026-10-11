@@ -12,6 +12,7 @@ import {
   FINE_RANGE_MAX_MS,
   GAL_PER_UG,
   SPECTROGRAM_SAMPLES_MIN_COLUMN_MS,
+  SPECTROGRAM_SAMPLES_RANGE_MAX_MS,
   chooseEnvelopeSource,
   columnMsFor,
   hoursToOpen,
@@ -24,6 +25,7 @@ import {
   readSpectrum,
   readSummaryEnvelope,
   samplesToColumns,
+  shareInFlight,
   type RecordDirs,
 } from './waveRecords'
 import type { SummaryLevel } from './waveSummary'
@@ -295,6 +297,130 @@ describe('readSamples', () => {
       [H0 + 20, 'live', [3]],
     ])
   })
+
+  it('合成波形の続いているまとまりは 1 本に繋ぐ（実機は 0.3 秒ずつなので 12 時間で 14 万本になる）', async () => {
+    await writeWaveHour(H0, [[H0, [1, 2, 3]], [H0 + 30, [4, 5]]], false)
+    const ref = parseChannelId(`station/${KEY}/X`)!
+    const got = await readSamples({ dirs, signal: OPEN, ref, fromMs: H0, toMs: H0 + 50, unit: 'gal' })
+    expect(got.runs.map((r) => [r.firstSampleMs, r.origin, Array.from(r.values)])).toEqual([[H0, 'live', [1, 2, 3, 4, 5]]])
+  })
+
+  it('対照: 間が空いたまとまりは繋がない', async () => {
+    await writeWaveHour(H0, [[H0, [1, 2, 3]], [H0 + 50, [4, 5]]], false)
+    const ref = parseChannelId(`station/${KEY}/X`)!
+    const got = await readSamples({ dirs, signal: OPEN, ref, fromMs: H0, toMs: H0 + 70, unit: 'gal' })
+    expect(got.runs.map((r) => [r.firstSampleMs, Array.from(r.values)])).toEqual([
+      [H0, [1, 2, 3]],
+      [H0 + 50, [4, 5]],
+    ])
+  })
+})
+
+describe('shareInFlight', () => {
+  function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
+    let resolve!: (v: T) => void
+    const promise = new Promise<T>((r) => {
+      resolve = r
+    })
+    return { promise, resolve }
+  }
+
+  it('同じ鍵の読みが走っている間は、後から来た要求も同じ読みを待つ（3 軸で 1 回）', async () => {
+    const map = new Map()
+    const d = deferred<string>()
+    let started = 0
+    const start = (): Promise<string> => {
+      started += 1
+      return d.promise
+    }
+    const a = shareInFlight(map, 'k', start, OPEN)
+    const b = shareInFlight(map, 'k', start, OPEN)
+    const c = shareInFlight(map, 'k', start, OPEN)
+    d.resolve('done')
+    expect(await Promise.all([a, b, c])).toEqual(['done', 'done', 'done'])
+    expect(started).toBe(1)
+  })
+
+  it('対照: 読み終えた後の要求は読み直す（控えにはしない）・鍵が違えば別に読む', async () => {
+    const map = new Map()
+    let started = 0
+    const start = async (): Promise<number> => {
+      started += 1
+      return started
+    }
+    expect(await shareInFlight(map, 'k', start, OPEN)).toBe(1)
+    expect(await shareInFlight(map, 'k', start, OPEN)).toBe(2)
+    expect(await shareInFlight(map, 'other', start, OPEN)).toBe(3)
+    expect(map.size).toBe(0)
+  })
+
+  it('読みが例外で終わったら、待っている全員に同じ例外が届き、次の要求は読み直す', async () => {
+    const map = new Map()
+    const boom = new Error('読めない')
+    let started = 0
+    let fail: (e: unknown) => void = () => {}
+    const start = (): Promise<string> => {
+      started += 1
+      return new Promise<string>((_, reject) => {
+        fail = reject
+      })
+    }
+    const a = shareInFlight(map, 'k', start, OPEN)
+    const b = shareInFlight(map, 'k', start, OPEN)
+    fail(boom)
+    await expect(a).rejects.toBe(boom)
+    await expect(b).rejects.toBe(boom)
+    expect(map.size).toBe(0)
+    const c = shareInFlight(map, 'k', start, OPEN)
+    fail(boom)
+    await expect(c).rejects.toBe(boom)
+    expect(started).toBe(2)
+  })
+
+  it('安全弁: 中断で降りた要求には、呼び出し側の中断の理由がそのまま届く（HTTP の口が 499 と見分ける）', async () => {
+    const map = new Map()
+    const one = new AbortController()
+    const a = shareInFlight(map, 'k', () => new Promise<string>(() => {}), one.signal)
+    one.abort()
+    await expect(a).rejects.toBe(one.signal.reason)
+  })
+
+  it('安全弁: 1 人が降りても読みは止めず、全員が降りたときだけ読みへ中断を伝える', async () => {
+    const map = new Map()
+    const d = deferred<string>()
+    let inner: AbortSignal | null = null
+    const start = (signal: AbortSignal): Promise<string> => {
+      inner = signal
+      return d.promise
+    }
+    const one = new AbortController()
+    const two = new AbortController()
+    const a = shareInFlight(map, 'k', start, one.signal)
+    const b = shareInFlight(map, 'k', start, two.signal)
+    one.abort()
+    await expect(a).rejects.toThrow()
+    expect(inner!.aborted).toBe(false)
+    d.resolve('done')
+    expect(await b).toBe('done')
+
+    // 全員が降りた読みは止め、次の要求は新しく読む
+    const d2 = deferred<string>()
+    let inner2: AbortSignal | null = null
+    const three = new AbortController()
+    const c = shareInFlight(
+      map,
+      'k',
+      (signal) => {
+        inner2 = signal
+        return d2.promise
+      },
+      three.signal,
+    )
+    three.abort()
+    await expect(c).rejects.toThrow()
+    expect(inner2!.aborted).toBe(true)
+    expect(map.size).toBe(0)
+  })
 })
 
 describe('readReception', () => {
@@ -376,7 +502,7 @@ describe('readSpectrogram', () => {
     expect(got.hours?.pending).toBe(1)
   })
 
-  it('10 分以内は生のサンプルから約 6 秒ごとの列で作り、範囲の前後を区間の半分ずつ余分に読む', async () => {
+  it('短い範囲は生のサンプルから 1 秒ごとの列で作り、範囲の前後を区間の半分ずつ余分に読む', async () => {
     // 12:00:00〜12:01:00 の 60 秒ぶん
     const values = Array.from({ length: 6000 }, (_, i) => Math.sin((2 * Math.PI * 5 * i) / 100))
     await writeWaveHour(H0, [[H0, values]])
@@ -384,15 +510,40 @@ describe('readSpectrogram', () => {
     const got = await readSpectrogram({ dirs, signal: OPEN,ref, fromMs: H0 + 30_000, toMs: H0 + 90_000, columns: 1000, unit: 'gal' })
     expect(got.source).toBe('samples')
     expect(got.columnMs).toBe(SPECTROGRAM_SAMPLES_MIN_COLUMN_MS)
+    expect(SPECTROGRAM_SAMPLES_MIN_COLUMN_MS).toBe(1000)
     expect(got.firstColumnMs).toBe(H0 + 30_000)
-    expect(got.segments).toHaveLength(10)
+    expect(got.segments).toHaveLength(60)
     expect(got.irregularHours).toEqual([])
     expect(got.hours).toBeNull()
-    // 前を余分に読むので、頭の列（30〜36 秒）にも区間が入る。余分に読まなければ 4 本、読めば 5 本
-    expect(got.segments[0]).toBeGreaterThan(0)
-    expect(got.segments.reduce((a, b) => a + b, 0)).toBe(5)
-    // 記録の無い 60 秒より後の列は 0
-    expect(got.segments.slice(5).every((s) => s === 0)).toBe(true)
+    // 前を 6 秒余分に読む（24 秒から）ので、頭の列（30〜31 秒）にも区間が入る。余分に読まなければ
+    // 区間の中心は 35.12 秒からになり、頭の 5 列が空く
+    expect(got.segments.slice(0, 25).every((s) => s === 1)).toBe(true)
+    // 区間の中心が届かない 55 秒より後の列は 0
+    expect(got.segments.slice(25).every((s) => s === 0)).toBe(true)
+  })
+
+  it('10 分を超えても、1 分の列では画面の幅に足りなければ生のサンプルから作る', async () => {
+    const ref = parseChannelId(`station/${KEY}/X`)!
+    // 30 分を 900 列 → 2 秒の列（1 分の列なら 30 列しか無い）
+    const got = await readSpectrogram({ dirs, signal: OPEN,ref, fromMs: H0, toMs: H0 + 30 * 60_000, columns: 900, unit: 'gal' })
+    expect(got.source).toBe('samples')
+    expect(got.columnMs).toBe(2000)
+  })
+
+  it('1 分の列で画面の幅に足りるなら、生のサンプルは読まない', async () => {
+    const ref = parseChannelId(`station/${KEY}/X`)!
+    // 3 時間を 100 列 → 1 列 108 秒（1 分の列で足りる）
+    const got = await readSpectrogram({ dirs, signal: OPEN,ref, fromMs: H0, toMs: H0 + 3 * HOUR, columns: 100, unit: 'gal' })
+    expect(got.source).toBe('minutes')
+  })
+
+  it('12 時間を超えたら、列が足りなくても生のサンプルは読まない（読む重さの上限）', async () => {
+    const ref = parseChannelId(`station/${KEY}/X`)!
+    const at12 = await readSpectrogram({ dirs, signal: OPEN,ref, fromMs: H0, toMs: H0 + SPECTROGRAM_SAMPLES_RANGE_MAX_MS, columns: 4096, unit: 'gal' })
+    expect(at12.source).toBe('samples')
+    const over = await readSpectrogram({ dirs, signal: OPEN,ref, fromMs: H0, toMs: H0 + SPECTROGRAM_SAMPLES_RANGE_MAX_MS + 60_000, columns: 4096, unit: 'gal' })
+    expect(over.source).toBe('minutes')
+    expect(SPECTROGRAM_SAMPLES_RANGE_MAX_MS).toBe(12 * HOUR)
   })
 
   it('10 分以内でも、画面の幅が狭ければ列は 1 秒単位で広がる', async () => {

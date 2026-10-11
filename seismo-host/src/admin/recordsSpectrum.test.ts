@@ -26,8 +26,11 @@ import {
   readSpectrumData,
   secondRms,
   spectrogramHeader,
+  spectrogramDbAt,
+  spectrogramPixels,
   spectrogramReadout,
   spectrogramTitle,
+  type SpectrogramData,
   spectrumHeader,
   spectrumReadout,
   yOfHz,
@@ -133,6 +136,28 @@ describe('readSpectrogramData', () => {
     expect(readSpectrogramData({ ...body, power: [[1, 2], [3]] })).toBeNull()
     expect(readSpectrogramData({ ...body, segments: [1] })).toBeNull()
   })
+
+  it('周波数の境目が 0 以下なら読まない（対数で描くので、通すと絵が黙って全部透明になる）', () => {
+    expect(readSpectrogramData({ ...body, binEdgesHz: [0, ...EDGES.slice(1)] })).toBeNull()
+    expect(readSpectrogramData({ ...body, binEdgesHz: [-1, ...EDGES.slice(1)] })).toBeNull()
+    // 対照: 正の境目は読む
+    expect(readSpectrogramData(body)).not.toBeNull()
+  })
+
+  it('1 分ごとの PSD から作ったときは、時の数えをそのまま読む', () => {
+    expect(readSpectrogramData(body)!.hours).toEqual({ ok: 1, stale: 0, pending: 1, failed: 0, absent: 0 })
+  })
+
+  it('生のサンプルから作ったときは、読んだ元のファイルの数えを時の数えへ直して読む（状態の行の「読めない時」に足すため）', () => {
+    const got = readSpectrogramData({ ...body, source: 'samples', hours: null, irregularHours: [], files: { read: 10, missing: 1, failed: 2 } })!
+    expect(got.hours).toEqual({ ok: 10, stale: 0, pending: 0, failed: 2, absent: 1 })
+  })
+
+  it('作り方に合う数えが無ければ読まない（黙って「読めない時は無い」にしない）', () => {
+    expect(readSpectrogramData({ ...body, hours: null })).toBeNull()
+    expect(readSpectrogramData({ ...body, source: 'samples', hours: null, files: null })).toBeNull()
+    expect(readSpectrogramData({ ...body, source: 'samples', hours: null, files: { read: 1, missing: 0 } })).toBeNull()
+  })
 })
 
 describe('binAt', () => {
@@ -205,6 +230,99 @@ describe('colorOfDb', () => {
 
   it('値が無ければ null（その升は描かない）', () => {
     expect(colorOfDb(Number.NaN, { lo: -150, hi: -90 })).toBeNull()
+  })
+})
+
+describe('spectrogramPixels', () => {
+  // 区画 2 つ（0.1〜50 Hz を対数で半分ずつ）・列 2 本（1 秒ずつ）。カウントの単位なので dB = 10 log10(値)
+  const EDGES2 = [0.1, 0.1 * Math.sqrt(500), 50]
+  const gram = (power: number[][]): SpectrogramData => ({
+    source: 'samples',
+    unit: 'count',
+    binEdgesHz: EDGES2,
+    columnMs: 1000,
+    firstColumnMs: 0,
+    segments: power.map(() => 1),
+    power,
+    irregularHours: [],
+    problems: { skippedBytes: 0, badRecords: 0, unscaledHours: 0 },
+    hours: { ok: 1, stale: 0, pending: 0, failed: 0, absent: 0 },
+  })
+  const DBR = { lo: 0, hi: 20 }
+  // 画素 x の中心の時刻は −25 + 50x ミリ秒 → x = 10 が列 0 の中心（500 ms）、x = 30 が列 1 の中心、x = 20 がその間
+  const R = { fromMs: -25, toMs: 1975 }
+  const W = 40
+  // 高さ 42 → 画素 y の中心は y + 0.5。区画 1（上）の中心は y = 10、区画 0（下）の中心は y = 31
+  const H = 42
+  const at = (data: Uint8ClampedArray, x: number, y: number): number[] => Array.from(data.slice((y * W + x) * 4, (y * W + x) * 4 + 4))
+  const rgba = (db: number): number[] => [...colorOfDb(db, DBR)!, 255]
+
+  it('列と区画の中心の画素は、その升の値の色のまま', () => {
+    const px = spectrogramPixels(gram([[1, 10], [100, 100]]), DBR, R, W, H)
+    expect(at(px, 10, 10)).toEqual(rgba(10))
+    expect(at(px, 10, 31)).toEqual(rgba(0))
+    expect(at(px, 30, 10)).toEqual(rgba(20))
+  })
+
+  it('列の中心の間は dB で補ってから色を引く（色どうしを混ぜると凡例に無い色になる）', () => {
+    const px = spectrogramPixels(gram([[1, 1], [100, 100]]), DBR, R, W, H)
+    // 0 dB と 20 dB のちょうど間 → 10 dB の色。両端の色を RGB で平均した色（[161, 116, 61]）ではない
+    expect(at(px, 20, 10)).toEqual(rgba(10))
+    expect(at(px, 20, 10).slice(0, 3)).not.toEqual([161, 116, 61])
+  })
+
+  it('区画の中心の間も、周波数の対数で補う', () => {
+    const px = spectrogramPixels(gram([[1, 100], [1, 100]]), DBR, R, W, H)
+    // y = 20 の中心（20.5）は、縦の位置で区画 0 の中心から 0.5238… の所
+    const frac = (1 - 20.5 / H - 0.25) / 0.5
+    expect(at(px, 10, 20)).toEqual(rgba(20 * frac))
+  })
+
+  it('測れない升は混ぜない: その升の画素は透明、隣の画素は測れた升だけで補う', () => {
+    const px = spectrogramPixels(gram([[1, 1], [Number.NaN, Number.NaN]]), DBR, R, W, H)
+    // 列 1 に入る画素（x ≥ 20）は透明
+    expect(at(px, 25, 10)[3]).toBe(0)
+    expect(at(px, 20, 10)[3]).toBe(0)
+    // 列 0 の中心より右（列 1 の方へ寄った所）も、列 0 の値だけで塗る
+    expect(at(px, 15, 10)).toEqual(rgba(0))
+  })
+
+  it('列の無い時刻は透明で、端の列の外側半分は端の列の値のまま', () => {
+    const px = spectrogramPixels(gram([[1, 1], [100, 100]]), DBR, { fromMs: -1025, toMs: 2975 }, W, H)
+    // 画素 x の中心の時刻は −1025 + 100(x + 0.5) → x = 9 は −75 ms（列の前）、x = 10 は 25 ms（列 0 の中心より前）
+    expect(at(px, 9, 10)[3]).toBe(0)
+    expect(at(px, 10, 10)).toEqual(rgba(0))
+    // x = 29 は 1925 ms（列 1 の中心より後）、x = 30 は 2025 ms（列の後）
+    expect(at(px, 29, 10)).toEqual(rgba(20))
+    expect(at(px, 30, 10)[3]).toBe(0)
+  })
+
+  describe('spectrogramDbAt（指した所の値）', () => {
+    it('どの画素でも、絵の色はその位置の値の色と一致し、値が無い所だけ透明', () => {
+      const g = gram([[1, 10], [Number.NaN, 100]])
+      const px = spectrogramPixels(g, DBR, R, W, H)
+      for (let x = 0; x < W; x += 1) {
+        for (let y = 0; y < H; y += 1) {
+          const db = spectrogramDbAt(g, R.fromMs + ((x + 0.5) / W) * (R.toMs - R.fromMs), hzOfY(y + 0.5, H))
+          if (Number.isNaN(db)) expect(at(px, x, y)[3]).toBe(0)
+          else expect(at(px, x, y)).toEqual(rgba(db))
+        }
+      }
+    })
+
+    it('列の境目では、真下の升の値ではなく補った値を返す', () => {
+      // 1000 ms は列 1 の頭。升のままなら 20 dB、補えば列 0 と列 1 の中心のちょうど間で 10 dB
+      expect(spectrogramDbAt(gram([[1, 1], [100, 100]]), 1000, 0.1 * Math.sqrt(500) * 2)).toBeCloseTo(10, 9)
+    })
+
+    it('升の中心では升の値のまま、列・区画の外は値なし', () => {
+      const g = gram([[1, 10], [100, 100]])
+      const upperCenter = Math.sqrt(0.1 * Math.sqrt(500) * 50)
+      expect(spectrogramDbAt(g, 500, upperCenter)).toBeCloseTo(10, 9)
+      expect(spectrogramDbAt(g, -1, upperCenter)).toBeNaN()
+      expect(spectrogramDbAt(g, 2000, upperCenter)).toBeNaN()
+      expect(spectrogramDbAt(g, 500, 60)).toBeNaN()
+    })
   })
 })
 

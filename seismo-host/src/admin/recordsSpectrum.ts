@@ -14,8 +14,10 @@ import {
   durationLabel,
   readIrregularHours,
   readProblems,
+  readTally,
   readUnit,
   unitText,
+  type HourTallyView,
   type IrregularHourView,
   type ReadProblemsView,
   type SampleRunView,
@@ -132,7 +134,8 @@ export interface SpectrumData {
 
 function readEdges(v: unknown): readonly number[] | null {
   const edges = readFiniteArray(v)
-  if (edges === null || edges.length < 2) return null
+  // 周波数は対数で描く・補うので、0 以下の境目は形が違う扱い（log10 が -Infinity になり、絵が黙って全部透明になる）。
+  if (edges === null || edges.length < 2 || !(edges[0]! > 0)) return null
   for (let i = 1; i < edges.length; i += 1) if (!(edges[i]! > edges[i - 1]!)) return null
   return edges
 }
@@ -164,6 +167,25 @@ export interface SpectrogramData {
   readonly power: readonly (readonly number[])[]
   readonly irregularHours: readonly IrregularHourView[]
   readonly problems: ReadProblemsView
+  /**
+   * 開いた時の数え（波形の段と同じ形。状態の行の「読めない時が N」に足す）。`minutes` は応答の `hours`、
+   * `samples` は応答の `files`（読んだ・無い・読めない元のファイルの数）を時の数えへ直したもの。
+   */
+  readonly hours: HourTallyView | null
+}
+
+/**
+ * 生のサンプルから作ったときの、読んだ元のファイルの数え（`read`・`missing`・`failed`）を時の数えへ直す。
+ * 元のファイルは 1 時間に 1 本なので、そのまま時の数になる。形が違えば null。
+ */
+function filesAsTally(v: unknown): HourTallyView | null {
+  if (typeof v !== 'object' || v === null) return null
+  const o = v as Record<string, unknown>
+  const read = readFinite(o.read)
+  const missing = readFinite(o.missing)
+  const failed = readFinite(o.failed)
+  if (read === null || missing === null || failed === null) return null
+  return { ok: read, stale: 0, pending: 0, failed, absent: missing }
 }
 
 /** `spectrogram` の応答を読む。**1 か所でも形が違えば null。** */
@@ -180,13 +202,16 @@ export function readSpectrogramData(value: unknown): SpectrogramData | null {
   const problems = readProblems(v.problems)
   if (source === null || unit === null || binEdgesHz === null || columnMs === null || columnMs <= 0 || firstColumnMs === null) return null
   if (segments === null || irregularHours === null || problems === null || !Array.isArray(v.power) || v.power.length !== segments.length) return null
+  // 数えは作り方ごとに片方だけ載る（もう片方は null）。載るはずの方の形が違えば読まない。
+  const hours = source === 'minutes' ? readTally(v.hours) : filesAsTally(v.files)
+  if (hours === null) return null
   const power: (readonly number[])[] = []
   for (const row of v.power) {
     const r = readFiniteArrayWithGaps(row)
     if (r === null || r.length !== binEdgesHz.length - 1) return null
     power.push(r)
   }
-  return { source, unit, binEdgesHz, columnMs, firstColumnMs, segments, power, irregularHours, problems }
+  return { source, unit, binEdgesHz, columnMs, firstColumnMs, segments, power, irregularHours, problems, hours }
 }
 
 // ---- 周波数の軸と色 ------------------------------------------------------------------------
@@ -302,14 +327,176 @@ export function colorScaleCss(): string {
 
 /** dB を色へ。範囲の外は端の色に留める。値が無ければ null（その升は描かない）。 */
 export function colorOfDb(db: number, range: DbRange): [number, number, number] | null {
-  if (!Number.isFinite(db)) return null
+  const out = new Uint8ClampedArray(4)
+  return writeColorOfDb(out, 0, db, range) ? [out[0]!, out[1]!, out[2]!] : null
+}
+
+/**
+ * {@link colorOfDb} を配列を作らずに `out[i..i+3]` へ書く（不透明）。値が無ければ書かずに false。
+ * 絵は画素ごとに引くので、1 画素ごとに配列を作らない。
+ */
+function writeColorOfDb(out: Uint8ClampedArray, i: number, db: number, range: DbRange): boolean {
+  if (!Number.isFinite(db)) return false
   const t = Math.min(1, Math.max(0, (db - range.lo) / (range.hi - range.lo)))
   const pos = t * (COLOR_STOPS.length - 1)
-  const i = Math.min(COLOR_STOPS.length - 2, Math.floor(pos))
-  const f = pos - i
-  const a = COLOR_STOPS[i]!
-  const b = COLOR_STOPS[i + 1]!
-  return [Math.round(a[0] + (b[0] - a[0]) * f), Math.round(a[1] + (b[1] - a[1]) * f), Math.round(a[2] + (b[2] - a[2]) * f)]
+  const s = Math.min(COLOR_STOPS.length - 2, Math.floor(pos))
+  const f = pos - s
+  const a = COLOR_STOPS[s]!
+  const b = COLOR_STOPS[s + 1]!
+  out[i] = Math.round(a[0] + (b[0] - a[0]) * f)
+  out[i + 1] = Math.round(a[1] + (b[1] - a[1]) * f)
+  out[i + 2] = Math.round(a[2] + (b[2] - a[2]) * f)
+  out[i + 3] = 255
+  return true
+}
+
+/*
+ * スペクトログラムの升の間の補い方。**絵（`spectrogramPixels`）と指した所の値（`spectrogramDbAt`）は同じ道具を
+ * 通す** —— 別々に書くと、色と読み取りの数字が食い違う。
+ *
+ * - **升の間を dB で補ってから色を引く**（色どうしを混ぜると、凡例の帯に無い色が出る）。横は列の中心どうし、
+ *   縦は区画の中心どうし（周波数の対数で）を双線形に補う。区画の中心は境目の幾何平均
+ * - **その位置の真下の升が測れていなければ値なし**（欠けの境目をぼかさない）。補う相手に測れない升があれば、
+ *   測れた升の重みだけで割り直す
+ * - 列の無い時刻・区画の無い周波数は値なし。端の列・区画の外側半分は、端の値のまま
+ */
+
+/** 補う材料（dB に直した升と、区画の中心の対数）。 */
+interface SpectrogramGrid {
+  readonly columns: number
+  readonly bins: number
+  /** `[列 * bins + 区画]`。測れていない升は NaN。 */
+  readonly db: Float64Array
+  readonly logCenters: Float64Array
+}
+
+/** 材料ごとに 1 度だけ作る（指した所の値を出すたびに作り直さない）。 */
+const grids = new WeakMap<SpectrogramData, SpectrogramGrid | null>()
+
+function gridOf(g: SpectrogramData): SpectrogramGrid | null {
+  const known = grids.get(g)
+  if (known !== undefined) return known
+  const columns = g.power.length
+  const bins = g.binEdgesHz.length - 1
+  let grid: SpectrogramGrid | null = null
+  if (columns > 0 && bins > 0) {
+    const db = new Float64Array(columns * bins)
+    for (let j = 0; j < columns; j += 1) {
+      const row = g.power[j]!
+      for (let b = 0; b < bins; b += 1) db[j * bins + b] = psdToDb(row[b]!, g.unit)
+    }
+    const logCenters = new Float64Array(bins)
+    for (let b = 0; b < bins; b += 1) logCenters[b] = (Math.log10(g.binEdgesHz[b]!) + Math.log10(g.binEdgesHz[b + 1]!)) / 2
+    grid = { columns, bins, db, logCenters }
+  }
+  grids.set(g, grid)
+  return grid
+}
+
+/** 1 つの向きでの補い方（真下の升と、補う 2 本と 2 本目の重み）。端の外は端の 1 本に留める。 */
+interface Blend {
+  readonly near: number
+  readonly lo: number
+  readonly hi: number
+  readonly t: number
+}
+
+function blendAt(near: number, pos: number, count: number): Blend {
+  const lo = Math.floor(pos)
+  if (lo < 0) return { near, lo: 0, hi: 0, t: 0 }
+  if (lo >= count - 1) return { near, lo: count - 1, hi: count - 1, t: 0 }
+  return { near, lo, hi: lo + 1, t: pos - lo }
+}
+
+/** 時刻の向き。列の無い時刻なら null。 */
+function columnBlend(g: SpectrogramData, grid: SpectrogramGrid, atMs: number): Blend | null {
+  const pos = (atMs - g.firstColumnMs) / g.columnMs
+  const near = Math.floor(pos)
+  if (!(near >= 0 && near < grid.columns)) return null
+  return blendAt(near, pos - 0.5, grid.columns)
+}
+
+/** 周波数の向き。区画の無い周波数なら null。 */
+function binBlend(g: SpectrogramData, grid: SpectrogramGrid, hz: number): Blend | null {
+  const near = binAt(g.binEdgesHz, hz)
+  if (near < 0) return null
+  const c = grid.logCenters
+  const last = grid.bins - 1
+  const lhz = Math.log10(hz)
+  let pos: number
+  if (lhz <= c[0]!) pos = -1
+  else if (lhz >= c[last]!) pos = grid.bins
+  else {
+    let b = 0
+    while (b < last - 1 && lhz >= c[b + 1]!) b += 1
+    pos = b + (lhz - c[b]!) / (c[b + 1]! - c[b]!)
+  }
+  return blendAt(near, pos, grid.bins)
+}
+
+/** 補った dB。真下の升が測れていない・補う相手が全部測れていないなら NaN。 */
+function blendedDb(grid: SpectrogramGrid, col: Blend, row: Blend): number {
+  const { db, bins } = grid
+  if (!Number.isFinite(db[col.near * bins + row.near]!)) return Number.NaN
+  let acc = 0
+  let wsum = 0
+  const w00 = (1 - col.t) * (1 - row.t)
+  const w10 = col.t * (1 - row.t)
+  const w01 = (1 - col.t) * row.t
+  const w11 = col.t * row.t
+  const v00 = db[col.lo * bins + row.lo]!
+  const v10 = db[col.hi * bins + row.lo]!
+  const v01 = db[col.lo * bins + row.hi]!
+  const v11 = db[col.hi * bins + row.hi]!
+  if (w00 > 0 && Number.isFinite(v00)) {
+    acc += v00 * w00
+    wsum += w00
+  }
+  if (w10 > 0 && Number.isFinite(v10)) {
+    acc += v10 * w10
+    wsum += w10
+  }
+  if (w01 > 0 && Number.isFinite(v01)) {
+    acc += v01 * w01
+    wsum += w01
+  }
+  if (w11 > 0 && Number.isFinite(v11)) {
+    acc += v11 * w11
+    wsum += w11
+  }
+  return wsum > 0 ? acc / wsum : Number.NaN
+}
+
+/** 指した所（時刻・周波数）の、絵と同じ補い方の dB。値が無ければ NaN。 */
+export function spectrogramDbAt(g: SpectrogramData, atMs: number, hz: number): number {
+  const grid = gridOf(g)
+  if (grid === null) return Number.NaN
+  const col = columnBlend(g, grid, atMs)
+  const row = binBlend(g, grid, hz)
+  return col === null || row === null ? Number.NaN : blendedDb(grid, col, row)
+}
+
+/**
+ * スペクトログラムの絵（`width` × `height` 画素の RGBA。行は上から）。補い方は上の注記。値の無い画素は透明。
+ * 時刻は `r` で画素へ割り付けるので、取り直す前（寄せている最中）の材料も、いまの時間軸の位置へ描かれる。
+ */
+export function spectrogramPixels(g: SpectrogramData, dbr: DbRange, r: TimeRange, width: number, height: number): Uint8ClampedArray<ArrayBuffer> {
+  const out = new Uint8ClampedArray(Math.max(0, width * height * 4))
+  const grid = gridOf(g)
+  if (grid === null || width <= 0 || height <= 0 || !(r.toMs > r.fromMs)) return out
+  const rows: (Blend | null)[] = []
+  for (let y = 0; y < height; y += 1) rows.push(binBlend(g, grid, hzOfY(y + 0.5, height)))
+  const span = r.toMs - r.fromMs
+  for (let x = 0; x < width; x += 1) {
+    const col = columnBlend(g, grid, r.fromMs + ((x + 0.5) / width) * span)
+    if (col === null) continue
+    for (let y = 0; y < height; y += 1) {
+      const row = rows[y]!
+      if (row === null) continue
+      writeColorOfDb(out, (y * width + x) * 4, blendedDb(grid, col, row), dbr)
+    }
+  }
+  return out
 }
 
 // ---- ノイズ水準 ----------------------------------------------------------------------------

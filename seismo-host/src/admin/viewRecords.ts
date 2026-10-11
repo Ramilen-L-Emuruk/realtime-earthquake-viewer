@@ -67,7 +67,6 @@ import {
   SPECTRUM_EMPTY_TEXT,
   SPECTRUM_TITLE,
   binAt,
-  colorOfDb,
   colorScaleCss,
   dbExtent,
   dbRange,
@@ -83,7 +82,9 @@ import {
   readSpectrogramData,
   readSpectrumData,
   secondRms,
+  spectrogramDbAt,
   spectrogramHeader,
+  spectrogramPixels,
   spectrogramReadout,
   spectrogramTitle,
   spectrumHeader,
@@ -248,6 +249,8 @@ interface AxisData {
 interface FreqState {
   readonly groupKey: string
   readonly unit: 'gal' | 'native'
+  /** 取ったときの範囲。**状態行の数えに混ぜるのは、いまの範囲と同じときだけ**（前の範囲の数えを名乗らない）。 */
+  readonly fetched: TimeRange
   readonly spectrograms: ReadonlyMap<string, SpectrogramData>
   readonly spectra: ReadonlyMap<string, SpectrumData>
 }
@@ -621,42 +624,34 @@ function drawNoise(
 }
 
 /**
- * スペクトログラムの色を塗った絵の控え。**指した所の値を出すたびに描き直すので、升（1 段に最大 4 万個）を
- * 毎回塗らない** —— 材料・物差し・範囲・大きさが同じなら控えた絵を貼る。
+ * スペクトログラムの絵の控え。**指した所の値を出すたびに描き直すので、絵を毎回作らない** —— 材料・物差し・
+ * 範囲・大きさが同じなら控えた絵を貼る。
  */
 const spectrogramImages = new WeakMap<SpectrogramData, { readonly key: string; readonly image: HTMLCanvasElement }>()
 
+/**
+ * スペクトログラムを描く。絵は `spectrogramPixels`（升の間を dB で補う）で**画面の画素の細かさ**に作り、
+ * 引き伸ばさずに貼る（引き伸ばすと色どうしが混ざり、凡例の帯に無い色が出る）。
+ * **取り直す前（寄せている最中）も、前の材料をいまの時間軸の位置へ描く**（上の波形と時刻を揃える。
+ * 2026-10-12 ユーザー承認）。
+ */
 function drawSpectrogram(ctx: CanvasRenderingContext2D, g: SpectrogramData, dbr: { readonly lo: number; readonly hi: number }, r: TimeRange, width: number, height: number): void {
-  const dpr = globalThis.devicePixelRatio > 0 ? globalThis.devicePixelRatio : 1
-  const key = `${dbr.lo}|${dbr.hi}|${r.fromMs}|${r.toMs}|${width}|${height}|${dpr}`
+  // 描き先の Canvas の画素の数（`prepareCanvas` が画素比を掛けて合わせてある）。
+  const w = Math.max(1, ctx.canvas.width)
+  const h = Math.max(1, ctx.canvas.height)
+  const key = `${dbr.lo}|${dbr.hi}|${r.fromMs}|${r.toMs}|${w}|${h}`
   let cached = spectrogramImages.get(g)
   if (cached === undefined || cached.key !== key) {
     const image = document.createElement('canvas')
-    image.width = Math.round(width * dpr)
-    image.height = Math.round(height * dpr)
+    image.width = w
+    image.height = h
     const ic = image.getContext('2d')
     if (ic === null) return
-    ic.setTransform(dpr, 0, 0, dpr, 0, 0)
-    for (let j = 0; j < g.power.length; j += 1) {
-      const from = g.firstColumnMs + j * g.columnMs
-      const to = from + g.columnMs
-      if (to <= r.fromMs || from >= r.toMs) continue
-      const x0 = xOf(from, r, width)
-      const x1 = Math.max(x0 + 1, xOf(to, r, width))
-      const row = g.power[j]!
-      for (let b = 0; b < row.length; b += 1) {
-        const c = colorOfDb(psdToDb(row[b]!, g.unit), dbr)
-        if (c === null) continue
-        const top = yOfHz(Math.min(g.binEdgesHz[b + 1]!, FREQ_MAX_HZ), height)
-        const bottom = yOfHz(Math.max(g.binEdgesHz[b]!, FREQ_MIN_HZ), height)
-        ic.fillStyle = `rgb(${c[0]}, ${c[1]}, ${c[2]})`
-        // 升の境目に隙間が出ないよう、縦を半画素ぶん重ねる。
-        ic.fillRect(x0, top, x1 - x0, bottom - top + 0.5)
-      }
-    }
+    ic.putImageData(new ImageData(spectrogramPixels(g, dbr, r, w, h), w, h), 0, 0)
     cached = { key, image }
     spectrogramImages.set(g, cached)
   }
+  ctx.imageSmoothingEnabled = false
   ctx.drawImage(cached.image, 0, 0, width, height)
   // 要約がまだ無い時（作り終えると出る）。
   drawHatch(
@@ -1280,9 +1275,20 @@ export async function initRecordsView(container: HTMLElement, ctx: TabContext): 
     if (freqFailure !== null) notes.push(fetchFailureText(freqFailure))
     if (data !== null) {
       if (axisData.length > 0 && peaks.every((p) => p === null)) notes.push(EMPTY_RANGE_TEXT)
-      const problems = problemsNote(maxTally(axisData.map((a) => a.hours)))
+    }
+    // 読めない時・換算できない時は、波形とスペクトログラムを合わせて数える。**スペクトログラムは 12 時間まで
+    // 生のサンプルから作る**（波形は 10 分を超えると要約から）ので、生データだけが読めない時は周波数の段だけが
+    // 空く —— 波形の数えだけを見ると、その理由がどこにも出ない。寄せている最中（取り直す前）の材料は前の範囲の
+    // ものなので数えに混ぜない。
+    const gramsForRange = f !== null && f.fetched.fromMs === range.fromMs && f.fetched.toMs === range.toMs ? f : null
+    const gramsShown =
+      gramsForRange === null
+        ? []
+        : axes.map((a) => gramsForRange.spectrograms.get(a.id) ?? null).filter((g): g is SpectrogramData => g !== null)
+    if (data !== null || gramsShown.length > 0) {
+      const problems = problemsNote(maxTally([...axisData.map((a) => a.hours), ...gramsShown.map((g) => g.hours)]))
       if (problems !== null) notes.push(problems)
-      const unscaled = unscaledNote(Math.max(0, ...axisData.map((a) => a.unscaledHours)))
+      const unscaled = unscaledNote(Math.max(0, ...axisData.map((a) => a.unscaledHours), ...gramsShown.map((g) => g.problems.unscaledHours)))
       if (unscaled !== null) notes.push(unscaled)
     }
     noteEl.textContent = notes.join('　')
@@ -1334,13 +1340,10 @@ export async function initRecordsView(container: HTMLElement, ctx: TabContext): 
       }
       if (hoverSpectrogramY !== null) {
         const hz = hzOfY(hoverSpectrogramY, SPECTROGRAM_HEIGHT)
+        // 絵と同じ補い方で読む（升の値をそのまま出すと、指した所の色と数字が食い違う）。
         const items = axes.map((a, i) => {
           const g = grams[i] ?? null
-          if (g === null) return { short: a.short, db: Number.NaN }
-          const j = Math.floor((at - g.firstColumnMs) / g.columnMs)
-          const b = binAt(g.binEdgesHz, hz)
-          const p = b < 0 ? undefined : g.power[j]?.[b]
-          return { short: a.short, db: p === undefined ? Number.NaN : psdToDb(p, g.unit) }
+          return { short: a.short, db: g === null ? Number.NaN : spectrogramDbAt(g, at, hz) }
         })
         const line = spectrogramReadout(hz, items)
         if (line !== null) lines.push(line)
@@ -1614,6 +1617,7 @@ export async function initRecordsView(container: HTMLElement, ctx: TabContext): 
       freq = {
         groupKey: g.key,
         unit: u,
+        fetched: r,
         spectrograms: new Map(results.map((x) => [x.id, x.gram])),
         spectra: new Map(results.map((x) => [x.id, x.spectrum])),
       }

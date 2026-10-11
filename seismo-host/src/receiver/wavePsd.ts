@@ -34,6 +34,11 @@ export const PSD_BIN_EDGES_HZ: readonly number[] = Array.from(
 
 /** 1 分。区間はその中心の時刻が入る分へ数える。 */
 const MINUTE_MS = 60_000
+/**
+ * まとまりの継ぎ目の許容のうち、長さに比例する分の上限。生データの 5 秒のレコードでは 1% が 50 ms で、これに
+ * 掛からない。本物の欠け（パケット 1 つぶん・約 0.3 秒）より十分小さく取る。
+ */
+const SLACK_SCALE_MAX_MS = 100
 
 /** 周期 Hann 窓と、その二乗和（PSD の換算に使う）。 */
 const WINDOW = Float64Array.from({ length: PSD_NFFT }, (_, n) => 0.5 * (1 - Math.cos((2 * Math.PI * n) / PSD_NFFT)))
@@ -197,13 +202,20 @@ export interface ColumnPsd {
  * 同じ数え方で、列の幅だけが違う）。中心が範囲の外にある区間は使わない。投げない。
  *
  * 区間（約 10 秒）は列より長いことがあり、そのときは列の外のサンプルも使う。範囲の端の列まで区間を作るには、
- * 呼び出し側が範囲の前後に区間の半分ずつ余分に読んで渡す。**列の幅は区間を進める幅（{@link PSD_HOP} 点）
- * より広くする** —— 狭いと区間の入らない列が出る。
+ * 呼び出し側が範囲の前後に区間の半分ずつ余分に読んで渡す。
+ *
+ * **区間を進める幅は、列の幅を超えない**（{@link PSD_HOP} 点と、列の幅に入るサンプル数の小さいほう。1 点より
+ * 縮めない）。進める幅が列より広いと、区間の中心が 1 つも入らない列が縞のように出る。縮めても 1 本の区間の
+ * 長さ（約 10 秒）は変わらないので、細かくなるのは列の刻みだけで、1 列が見ている長さは約 10 秒のまま。
  */
 export function columnPsd(chunks: readonly PsdChunk[], fromMs: number, toMs: number, columnMs: number): ColumnPsd {
   const firstColumn = Math.floor(fromMs / columnMs)
   const count = Math.max(0, Math.floor((toMs - 1) / columnMs) - firstColumn + 1)
-  const sums = accumulateSegments(chunks, (_startMs, centerMs) => (centerMs >= fromMs && centerMs < toMs ? Math.floor(centerMs / columnMs) : null))
+  const sums = accumulateSegments(
+    chunks,
+    (_startMs, centerMs) => (centerMs >= fromMs && centerMs < toMs ? Math.floor(centerMs / columnMs) : null),
+    (msPerSample) => Math.max(1, Math.min(PSD_HOP, Math.floor(columnMs / msPerSample))),
+  )
   const segments = new Array<number>(count).fill(0)
   const power = Array.from({ length: count }, () => new Float64Array(PSD_BIN_COUNT).fill(Number.NaN))
   for (const [column, byRebin] of sums) {
@@ -220,7 +232,8 @@ type RebinSums = Map<Rebin, { acc: Float64Array; segments: number }>
 
 /**
  * まとまりを繋いで区間に切り、区間ごとに `keyOf` が返す鍵へ積む。`keyOf` が `null` を返した区間は使わない。
- * 鍵は区間の先頭・中心・末尾（末尾の次のサンプル）の時刻から決める。
+ * 鍵は区間の先頭・中心・末尾（末尾の次のサンプル）の時刻から決める。区間を進める点数は `hopOf`（走の刻みを
+ * 受け取る）が決め、渡さなければ {@link PSD_HOP}（半分重ね）。
  *
  * まとまりは時刻で並べ直し、**先頭が前の末尾の次のサンプルの近くにあり、刻みが同じ（1% 以内）
  * なら繋ぐ**。それ以外（欠け・重なり・刻みの変化）で切る。
@@ -228,6 +241,7 @@ type RebinSums = Map<Rebin, { acc: Float64Array; segments: number }>
 function accumulateSegments(
   chunks: readonly PsdChunk[],
   keyOf: (startMs: number, centerMs: number, endMs: number) => number | null,
+  hopOf: (msPerSample: number) => number = () => PSD_HOP,
 ): Map<number, RebinSums> {
   const sorted = chunks
     .filter((c) => Number.isFinite(c.firstSampleMs) && Number.isFinite(c.msPerSample) && c.msPerSample > 0 && c.values.length > 0)
@@ -251,7 +265,8 @@ function accumulateSegments(
     const fs = 1000 / ms
     const rebin = rebinFor(fs)
     const start = run[0]!.firstSampleMs
-    for (let from = 0; from + PSD_NFFT <= total; from += PSD_HOP) {
+    const hop = hopOf(ms)
+    for (let from = 0; from + PSD_NFFT <= total; from += hop) {
       const key = keyOf(start + from * ms, start + (from + PSD_NFFT / 2) * ms, start + (from + PSD_NFFT) * ms)
       if (key === null) continue
       // **値が有限でない区間は使わない**（FFT が全部の線を NaN にする）。
@@ -298,7 +313,9 @@ function accumulateSegments(
     // 見積もると 8 ms ずれ、刻みの半分（5 ms）だけでは継ぎ目の多くを欠けと取り違える
     // （評価台の 1 時間で、1 分あたりの区間が本来の 11 から 6 へ減っていた）。本物の欠けはパケット
     // 1 つぶん（約 0.3 秒）以上なので、この許容では詰めない。
-    slack = c.msPerSample / 2 + c.values.length * c.msPerSample * 0.01
+    // **長さに比例する分には上限（SLACK_SCALE_MAX_MS）を置く** —— 合成波形の 0.3 秒のまとまりを繋いだ長い走り
+    // （数十秒〜数時間）では、1% が数秒〜数十秒になり、0.3 秒の欠けを繋いでしまう。
+    slack = c.msPerSample / 2 + Math.min(SLACK_SCALE_MAX_MS, c.values.length * c.msPerSample * 0.01)
   }
   flush(run)
   return sums

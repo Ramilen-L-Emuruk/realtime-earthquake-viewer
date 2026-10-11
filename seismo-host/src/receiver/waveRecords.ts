@@ -1,7 +1,8 @@
 // 保存した波形を範囲で読み返す（管理コンソールの「波形の記録」の材料・`/api/records/*`）。
 //
 // **重い読みは前もって作った要約（`waveSummary.ts`）で済ませる。** 何日・何週を俯瞰するとき、
-// 生データを解くと 1 時間あたり 0.6 秒かかる。要約なら画面の列数と開く時の数だけで決まる。
+// 生データを解くと時のファイルの数だけ重くなる（1 チャンネルだけ選んで読んでも 1 時間 約 0.05 秒・
+// 12 時間で 0.67 秒。ホストの実機・2026-10-12）。要約なら画面の列数と開く時の数だけで決まる。
 //
 // **チャンネルの名乗り**は要約と同じ（`waveSummarySources.ts`）。
 // - 生データ: miniSEED の識別子（`FDSN:XX_<局>_<センサー>_H_N_<向き>`）
@@ -22,7 +23,7 @@ import { jstHour, jstHourStartMs } from './jstTime'
 import { mseed3SourceId } from './mseed3Record'
 import { readMseed3RecordsMatching } from './mseed3Reader'
 import { RECORD_SPAN_MAX_MS, laneOfRecord } from './mseedPacketReader'
-import { readWaveRangeByToken, waveFileNameOfToken } from './waveArchive'
+import { readWaveRangeByToken, waveFileNameOfToken, type ArchivedWaveChunk, type WaveRangeResult } from './waveArchive'
 import { PSD_BIN_COUNT, PSD_BIN_EDGES_HZ, columnPsd, intervalPsd } from './wavePsd'
 import {
   SUMMARY_COARSE_MS,
@@ -543,8 +544,13 @@ function trimRun(
   const first = Math.max(0, Math.ceil((fromMs - firstSampleMs) / msPerSample))
   const end = Math.min(values.length, Math.ceil((toMs - firstSampleMs) / msPerSample))
   if (end <= first) return null
-  const out = new Float64Array(end - first)
-  for (let i = 0; i < out.length; i += 1) out[i] = values[first + i]! * scale
+  // **倍率が 1 の Float64Array は写さずに切るだけ**（合成波形を繋いだ 1 本は、12 時間で 1 軸 35 MB ある）。
+  let out: Float64Array
+  if (scale === 1 && values instanceof Float64Array) out = values.subarray(first, end)
+  else {
+    out = new Float64Array(end - first)
+    for (let i = 0; i < out.length; i += 1) out[i] = values[first + i]! * scale
+  }
   return { firstSampleMs: firstSampleMs + first * msPerSample, msPerSample, values: out, origin, timeQuestionable }
 }
 
@@ -630,6 +636,107 @@ async function readRawSamples(
   return { unit: unitLabelOf(ref, unit), runs, files, problems: { skippedBytes, badRecords, unscaledHours } }
 }
 
+/** {@link shareInFlight} が抱える、走っている読み 1 つ。 */
+export interface InFlight<T> {
+  readonly promise: Promise<T>
+  readonly controller: AbortController
+  waiting: number
+}
+
+/**
+ * 同じ鍵の読みが走っている間は、後から来た要求も同じ読みを待たせる。**読み終えたら外す**（控えにはしない ——
+ * 書き足された分が次の要求から見えなくなる）。
+ *
+ * **中断は、待っている全員が降りたときだけ読みへ伝える。** 1 人が打ち切っても残りの要求の読みは止めない。
+ * 全員が降りた読みは外すので、次の要求は新しく読む（止めた読みには乗らない）。
+ */
+export async function shareInFlight<T>(
+  map: Map<string, InFlight<T>>,
+  key: string,
+  start: (signal: AbortSignal) => Promise<T>,
+  signal: AbortSignal,
+): Promise<T> {
+  signal.throwIfAborted()
+  let entry = map.get(key)
+  if (entry === undefined) {
+    const controller = new AbortController()
+    const created: InFlight<T> = { promise: start(controller.signal), controller, waiting: 0 }
+    map.set(key, created)
+    const release = (): void => {
+      if (map.get(key) === created) map.delete(key)
+    }
+    created.promise.then(release, release)
+    entry = created
+  }
+  const shared = entry
+  shared.waiting += 1
+  let onAbort: (() => void) | null = null
+  try {
+    return await new Promise<T>((resolve, reject) => {
+      onAbort = () => reject(signal.reason)
+      signal.addEventListener('abort', onAbort, { once: true })
+      shared.promise.then(resolve, reject)
+    })
+  } finally {
+    if (onAbort !== null) signal.removeEventListener('abort', onAbort)
+    shared.waiting -= 1
+    if (shared.waiting === 0 && signal.aborted) {
+      shared.controller.abort()
+      if (map.get(key) === shared) map.delete(key)
+    }
+  }
+}
+
+/**
+ * 走っている合成波形の読み。**画面は観測点の 3 軸を同時に要求し、合成波形のファイルは 3 軸を一緒に持つ**ので、
+ * 別々に読むと同じファイルを 3 回解く（実機で 12 時間ぶん 1 回 1.0〜1.25 秒。ホストの実機・2026-10-12）。
+ */
+const stationReads = new Map<string, InFlight<WaveRangeResult>>()
+
+/**
+ * 続いているまとまりを 1 本に繋ぐ（刻みと作り直しの印が同じで、次の頭が前の末尾の次の刻みから半刻み以内）。
+ * 合成波形は 0.3 秒ずつのまとまりで書くので、繋がないと 12 時間で 14 万本の並びになり、PSD がそのぶん重い。
+ * ずれの判定は繋いだ 1 本の頭から測るので、繋いだ後の時刻のずれは半刻みを超えない。
+ */
+function joinContinuousChunks(
+  chunks: readonly ArchivedWaveChunk[],
+  axis: 0 | 1 | 2,
+): { readonly firstSampleMs: number; readonly msPerSample: number; readonly values: Float64Array; readonly revised: boolean }[] {
+  const out: { firstSampleMs: number; msPerSample: number; values: Float64Array; revised: boolean }[] = []
+  let parts: ArrayLike<number>[] = []
+  let head: ArchivedWaveChunk | null = null
+  let count = 0
+  const flush = (): void => {
+    if (head === null) return
+    const values = new Float64Array(count)
+    let o = 0
+    for (const p of parts) for (let i = 0; i < p.length; i += 1) values[o++] = p[i]!
+    out.push({ firstSampleMs: head.firstSampleMs, msPerSample: head.msPerSample, values, revised: head.revised })
+    head = null
+    parts = []
+    count = 0
+  }
+  for (const c of chunks) {
+    const values = c.gal[axis]
+    if (
+      head !== null &&
+      c.msPerSample === head.msPerSample &&
+      c.revised === head.revised &&
+      Math.abs(head.firstSampleMs + count * head.msPerSample - c.firstSampleMs) <= head.msPerSample / 2
+    ) {
+      parts.push(values)
+      count += values.length
+      continue
+    }
+    flush()
+    head = c
+    parts = [values]
+    count = values.length
+  }
+  flush()
+  return out
+}
+
 async function readStationSamples(
   dirs: RecordDirs,
   ref: Extract<ChannelRef, { kind: 'station' }>,
@@ -637,12 +744,17 @@ async function readStationSamples(
   toMs: number,
   signal: AbortSignal,
 ): Promise<SamplesResult> {
-  const read = await readWaveRangeByToken({ dir: dirs.waveDir, stationKey: ref.stationKey, fromMs, toMs })
-  // 10 分までなので開くのは 1〜2 時ぶん。読み終えてから確かめれば足りる（解いた後の組み立てを省く）。
+  // スペクトログラムは 12 時間まで読むので、時のファイルごとに中断を確かめる（読み手の中で）。
+  const read = await shareInFlight(
+    stationReads,
+    `${dirs.waveDir}\n${ref.stationKey}\n${fromMs}\n${toMs}`,
+    (shared) => readWaveRangeByToken({ dir: dirs.waveDir, stationKey: ref.stationKey, fromMs, toMs, signal: shared }),
+    signal,
+  )
   signal.throwIfAborted()
   const runs: SampleRun[] = []
-  for (const c of read.chunks) {
-    const run = trimRun(c.firstSampleMs, c.msPerSample, c.gal[ref.axis], 1, fromMs, toMs, c.revised ? 'revised' : 'live', false)
+  for (const c of joinContinuousChunks(read.chunks, ref.axis)) {
+    const run = trimRun(c.firstSampleMs, c.msPerSample, c.values, 1, fromMs, toMs, c.revised ? 'revised' : 'live', false)
     if (run !== null) runs.push(run)
   }
   return {
@@ -654,7 +766,8 @@ async function readStationSamples(
 }
 
 /**
- * 範囲 `[fromMs, toMs)` の生のサンプルを読む。範囲の広さは呼び出し側が {@link SAMPLES_RANGE_MAX_MS} 以内に抑えること。
+ * 範囲 `[fromMs, toMs)` の生のサンプルを読む。範囲の広さは呼び出し側が {@link SAMPLES_RANGE_MAX_MS} 以内に抑えること
+ * （スペクトログラムだけは、返すのが列ごとの PSD で応答が小さいので、{@link SPECTROGRAM_SAMPLES_RANGE_MAX_MS} まで読む）。
  * 投げるのは `signal` が中断されたときだけ。
  */
 export async function readSamples(params: {
@@ -903,17 +1016,35 @@ export interface SpectrogramResult {
 }
 
 /**
- * 生のサンプルから作るときの列の幅の下限。**区間（約 10 秒）を進める幅（約 5 秒）より広くする** ——
- * 狭いと区間の入らない列が縞のように出る（`columnPsd`）。1 秒の整数倍に揃える。
+ * 生のサンプルから作るときの列の幅の下限（1 秒の整数倍に揃える）。列が区間の送り（約 5 秒）より細いときは、
+ * `columnPsd` が送りを列の幅まで縮めるので、区間の入らない列は出ない。
  */
-export const SPECTROGRAM_SAMPLES_MIN_COLUMN_MS = 6000
+export const SPECTROGRAM_SAMPLES_MIN_COLUMN_MS = 1000
+/**
+ * 生のサンプルから作る範囲の上限。**読む重さで決めた**: ホストの実機（2026-10-12）で 12 時間ぶんを測ると、
+ * センサー 1 本の生データは 1 軸 1.0 秒（時のファイル 13 本を読んで区間 8445 本）で、画面が 3 軸を取るので約 3 秒。
+ * 観測点の合成波形は 3 軸を同時に取って 4.8〜4.9 秒（読みは 3 軸で 1 回にまとまる。残りは軸ごとの PSD）。
+ * これより広ければ 1 分ごとの PSD でも 1 列 1 分で 720 列以上取れ、画面の幅（約 900 列）に近いので、細かさの段差は
+ * ほとんど見えない。
+ */
+export const SPECTROGRAM_SAMPLES_RANGE_MAX_MS = 12 * 3_600_000
 /** 生のサンプルから作るとき、範囲の前後に余分に読む幅（区間の半分 ＝ 公称 100 Hz で 5.12 秒を覆う）。 */
 const SPECTROGRAM_SAMPLES_PAD_MS = 6000
 
 /**
- * 列ごとのスペクトル。**{@link SAMPLES_RANGE_MAX_MS} 以内なら生のサンプルから**、約 10 秒の区間を中心の時刻が
- * 入る列へ積む（列は 6 秒以上）。範囲の端の列まで区間を作るため、前後を区間の半分ずつ余分に読む。
- * それより広ければ前もって作った 1 分ごとの PSD を列へ束ねる（列の幅は 1 分の整数倍。列の中の分は、
+ * 列ごとのスペクトルをどちらから作るか。**{@link SPECTROGRAM_SAMPLES_RANGE_MAX_MS} 以内で、1 分の列では画面の幅に
+ * 足りない（生のサンプルから作る列が 1 分より細い）ときだけ生のサンプルから**。1 分の列で足りるなら、前もって作った
+ * 1 分ごとの PSD で済ませる（生データを読まない）。
+ */
+export function spectrogramSource(fromMs: number, toMs: number, columns: number): 'samples' | 'minutes' {
+  if (toMs - fromMs > SPECTROGRAM_SAMPLES_RANGE_MAX_MS) return 'minutes'
+  return columnMsFor(fromMs, toMs, columns, 1000) < SUMMARY_COARSE_MS ? 'samples' : 'minutes'
+}
+
+/**
+ * 列ごとのスペクトル。{@link spectrogramSource} が `samples` なら**生のサンプルから**、約 10 秒の区間を中心の時刻が
+ * 入る列へ積む（列は 1 秒以上）。範囲の端の列まで区間を作るため、前後を区間の半分ずつ余分に読む。
+ * `minutes` なら前もって作った 1 分ごとの PSD を列へ束ねる（列の幅は 1 分の整数倍。列の中の分は、
  * 区間の数で重みを付けて平均する）。投げるのは `signal` が中断されたときだけ。
  */
 export async function readSpectrogram(params: {
@@ -926,7 +1057,7 @@ export async function readSpectrogram(params: {
   readonly signal: AbortSignal
 }): Promise<SpectrogramResult> {
   const { dirs, ref, fromMs, toMs, columns, unit, signal } = params
-  if (toMs - fromMs <= SAMPLES_RANGE_MAX_MS) {
+  if (spectrogramSource(fromMs, toMs, columns) === 'samples') {
     const columnMs = Math.max(SPECTROGRAM_SAMPLES_MIN_COLUMN_MS, columnMsFor(fromMs, toMs, columns, 1000))
     const samples = await readSamples({
       dirs,
@@ -936,6 +1067,9 @@ export async function readSpectrogram(params: {
       unit,
       signal,
     })
+    // **計算の前にもう一度確かめる。** 区間の計算（12 時間で 1 軸 約 0.4 秒）は途中で譲らないので、打ち切られた
+    // 取得のぶんを走らせない。
+    signal.throwIfAborted()
     const psd = columnPsd(samples.runs, fromMs, toMs, columnMs)
     return {
       source: 'samples',

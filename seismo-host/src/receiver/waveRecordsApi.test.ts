@@ -169,7 +169,8 @@ describe('handleRecordsRequest の中身', () => {
     expect(fine.status).toBe(200)
     const fb = JSON.parse(JSON.stringify(fine.body)) as { source: string; columnMs: number; irregularHours: unknown[]; hours: unknown; files: unknown }
     expect(fb.source).toBe('samples')
-    expect(fb.columnMs).toBe(6000)
+    // 60 秒を 100 列 → 列の下限の 1 秒（以前の下限は 6 秒だった）
+    expect(fb.columnMs).toBe(1000)
     expect(fb.irregularHours).toEqual([])
     expect(fb.hours).toBeNull()
     expect(fb.files).not.toBeNull()

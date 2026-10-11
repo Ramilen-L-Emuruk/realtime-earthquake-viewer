@@ -12,7 +12,7 @@
 // | `envelope` | `channel`・`from`・`to`・`columns`・`unit` | 列ごとの本数・最小・最大・平均・標準偏差・ノイズ |
 // | `samples` | `channel`・`from`・`to`・`unit` | 生のサンプル（{@link SAMPLES_RANGE_MAX_MS} まで） |
 // | `spectrum` | `channel`・`from`・`to`・`unit` | 区間のスペクトル |
-// | `spectrogram` | `channel`・`from`・`to`・`columns`・`unit` | 列ごとのスペクトル（10 分以内は生のサンプルから 6 秒以上の列で、それより広ければ 1 分ごとの PSD から） |
+// | `spectrogram` | `channel`・`from`・`to`・`columns`・`unit` | 列ごとのスペクトル（12 時間以内で 1 分の列では幅に足りなければ生のサンプルから 1 秒以上の列で、それ以外は 1 分ごとの PSD から） |
 // | `reception` | `from`・`to`・`sensor`（任意） | 受信の記録の帯と読めなかったパケット |
 // | `composite` | `group`（センサーか `station/<札>`）・`from`・`to`・`columns`・`unit` | 2 軸以上の組ごとの、列ごとの合成の大きさの最大（要約から。`waveRecordsDerived.ts`） |
 // | `intensity` | `station`（観測点の札）・`from`・`to`・`columns`（10 分を超えるとき） | 10 分以内は刻みごとのリアルタイム震度と計測震度をその場で、それより広ければ要約から列ごとの最大と範囲の計測震度 |
@@ -245,6 +245,8 @@ async function answerRecords(route: string, params: URLSearchParams, deps: Recor
       stationKey: station,
       fromMs: range.fromMs - QUAKE_INTENSITY_LEAD_MS,
       toMs: range.toMs,
+      // 10 分以内の読みなので、途中で打ち切らない（上の「読み手は投げない」の約束を保つ）。
+      signal: null,
     })
     const result = computeQuakeIntensity({ chunks: read.chunks, fromMs: range.fromMs, toMs: range.toMs })
     return {

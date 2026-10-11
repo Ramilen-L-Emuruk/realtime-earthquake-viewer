@@ -347,21 +347,26 @@ export async function readWaveRange(params: {
   readonly toMs: number
 }): Promise<WaveRangeResult> {
   const { stationId, ...rest } = params
-  return readWaveRangeByToken({ ...rest, stationKey: stationFileToken(stationId) })
+  // 読み返しの口（`/waves`）は 1 回の読みが短いので、途中で打ち切らない。
+  return readWaveRangeByToken({ ...rest, stationKey: stationFileToken(stationId), signal: null })
 }
 
 /**
  * {@link readWaveRange} を、観測点の識別子ではなくファイル名の札（{@link stationFileToken}）で引く形。
  * **札から識別子へは戻せない**ので、ファイルの名前から観測点を知る読み手（管理コンソールの
  * 「波形の記録」）はこちらを使う —— 設定から外した観測点の記録も読める。
+ *
+ * `signal` を渡すと、**時のファイルを 1 本読むごとに**中断を確かめ、中断されていれば投げる（スペクトログラムは
+ * 12 時間ぶん読むので、読み終えてから確かめると打ち切った取得が最後まで走る）。`null` なら投げない。
  */
 export async function readWaveRangeByToken(params: {
   readonly dir: string
   readonly stationKey: string
   readonly fromMs: number
   readonly toMs: number
+  readonly signal: AbortSignal | null
 }): Promise<WaveRangeResult> {
-  const { dir, stationKey, fromMs, toMs } = params
+  const { dir, stationKey, fromMs, toMs, signal } = params
   const chunks: ArchivedWaveChunk[] = []
   let filesRead = 0
   let filesMissing = 0
@@ -378,6 +383,7 @@ export async function readWaveRangeByToken(params: {
     const at = startHour - HOUR_MS + i * HOUR_MS
     if (at > toMs) break
     if (i === MAX_FILES_PER_READ - 1 && at + HOUR_MS <= toMs) truncated = true
+    signal?.throwIfAborted()
     const hourKey = jstHour(at)
     if (hourKey === null) continue
     let buf: Buffer
