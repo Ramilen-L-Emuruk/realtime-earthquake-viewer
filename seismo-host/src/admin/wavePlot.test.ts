@@ -30,13 +30,19 @@ describe('niceHalfSpanGal', () => {
   it('揺れていない窓でも下限より狭くしない（安全弁）', () => {
     // **静かなことと揺れていることを絵で見分けられるように。** 0 へ潰すと、
     // ノイズが画面いっぱいに描かれる。
-    expect(niceHalfSpanGal(0)).toBe(1)
-    expect(niceHalfSpanGal(0.0001)).toBe(1)
+    expect(niceHalfSpanGal(0)).toBe(0.2)
+    expect(niceHalfSpanGal(0.0001)).toBe(0.2)
+  })
+
+  // 正: IIS2ICLX を入れた合成の静かなときの振れ（0.3 gal 前後）は、1 gal へ潰さず 0.5 gal の枠に収める。
+  it('1 gal より小さい振れも切りのいい値で描く', () => {
+    expect(niceHalfSpanGal(0.3)).toBeCloseTo(0.5)
+    expect(niceHalfSpanGal(0.8)).toBe(1)
   })
 
   it('数として読めない値でも下限へ倒す', () => {
-    expect(niceHalfSpanGal(Number.NaN)).toBe(1)
-    expect(niceHalfSpanGal(Number.POSITIVE_INFINITY)).toBe(1)
+    expect(niceHalfSpanGal(Number.NaN)).toBe(0.2)
+    expect(niceHalfSpanGal(Number.POSITIVE_INFINITY)).toBe(0.2)
   })
 })
 

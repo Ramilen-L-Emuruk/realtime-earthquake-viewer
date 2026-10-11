@@ -24,10 +24,17 @@ export function formatEmphasizedScaleGal(widthGal: number, topGal: number): stri
   return `±${formatGal(widthGal)}〜±${formatGal(topGal)} gal`
 }
 
-/** 桁を値の大きさで変える（10 以上は整数・未満は小数 1 桁）。 */
-function formatGal(gal: number): string {
+/**
+ * 桁を値の大きさで変える（10 以上は整数・1 以上は小数 1 桁・1 未満は小数 2 桁）。
+ *
+ * **1 未満を 2 桁にするのは、縦の下限を静かさから決めるようにしたため**（`utils/seismoQuietScale.ts`）。
+ * 静かな観測点では縦が 0.1〜0.5 gal の幅に入り、小数 1 桁では強調の「±幅〜±上端」が
+ * `±0.3〜±0.3 gal` のように同じ数字で並んで、何を表しているか読めなくなる。
+ */
+export function formatGal(gal: number): string {
   const abs = Math.abs(gal)
-  return abs >= 10 ? String(Math.round(abs)) : abs.toFixed(1)
+  if (abs >= 10) return String(Math.round(abs))
+  return abs >= 1 ? abs.toFixed(1) : abs.toFixed(2)
 }
 
 /**

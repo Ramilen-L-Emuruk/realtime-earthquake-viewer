@@ -16,6 +16,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { WAVE_RETAIN_SEC, type SeismoStationState, type SeismoStations } from '../../hooks/useSeismoStation'
 import type { SeismoWaveWindow } from '../../utils/seismoWaveBuffer'
+import { measureWindowQuietLevel, QuietLevelMemory, quietScaledGal } from '../../utils/seismoQuietScale'
 import { buildWaveColumns } from './waveColumns'
 import { formatWaveTally } from './waveLabels'
 import { readWaveAxes } from '../../hooks/useSeismoWaveAxes'
@@ -35,28 +36,12 @@ import { WaveAxisToggles } from './WaveAxisToggles'
 const STALE_LABEL = '波形 途絶'
 
 /**
- * 縦の振れ幅の下限（gal）。
+ * 静かさを測り直す間隔（データの時刻で ms）。**1 秒。**
  *
- * **実機の静穏時から決めた値**（2026-09-29・12 秒 1203 サンプルの実測）——
- *
- * | 成分 | 最大 | p99 | RMS |
- * |---|---|---|---|
- * | 東西 | 1.50 | 0.84 | 0.32 gal |
- * | 南北 | 1.22 | 0.84 | 0.34 gal |
- * | 上下 | **1.61** | **1.24** | **0.49 gal** |
- *
- * **素の自動にすると平常時のノイズが画面いっぱいに広がり、揺れているようにしか
- * 見えなくなる**（下限 2 gal で試したときは最大が画面の 8 割まで振れた）。この値なら
- * 静穏時の最大が中心から 16%（画面全体の 3 割）に収まり、静かなことが一目で分かる。
- *
- * **これ以上下げない。** 上下動のノイズが上がってきたら、下げるのではなく
- * 設置か校正（#367）を疑うところ。
- *
- * **震度1 の揺れは、この絵では静穏時と見分けられない** —— 震度1 の加速度は
- * 静穏時のノイズと同じ桁にいる。波形で見分けたいのは震度2 以上（2 gal 以上）で、
- * それなら中心から 2 割以上に振れる。震度1 かどうかは左上の計測震度が受け持つ。
+ * 描き直しは 0.3 秒ごとだが、測るのは 30 秒ぶんの中央値なので、0.3 秒ごとに測っても値はほとんど
+ * 動かない。3 成分 × 3000 サンプルを並べ替えるので、描くたびに測る理由が無い。
  */
-const MIN_SCALE_GAL = 10
+const QUIET_MEASURE_INTERVAL_MS = 1000
 
 /** 横軸の幅（ms）。**抱えている長さと揃える** —— ずれると絵の左端の意味が狂う。 */
 const SPAN_MS = WAVE_RETAIN_SEC * 1000
@@ -106,13 +91,32 @@ function StationWave({ station, readWave }: { station: SeismoStationState; readW
   useEffect(() => {
     let raf = 0
     let lastAt = -Infinity
+    // **静かさは観測点ごとに覚える**（`QuietLevelMemory`）。観測点が替わったら覚え直す。
+    let quietStationId: string | null = null
+    let quiet = new QuietLevelMemory()
+    let lastMeasuredMs = -Infinity
     const tick = (now: number): void => {
       raf = requestAnimationFrame(tick)
       if (now - lastAt < MIN_REDRAW_MS) return
       lastAt = now
       const canvas = canvasRef.current
       if (canvas === null) return
-      const next = drawWave(canvas, readWaveRef.current(stationIdRef.current), staleRef.current)
+      const stationId = stationIdRef.current
+      const win = readWaveRef.current(stationId)
+      if (stationId !== quietStationId) {
+        quietStationId = stationId
+        quiet = new QuietLevelMemory()
+        lastMeasuredMs = -Infinity
+      }
+      if (win !== null && win.gal[0].length > 0) {
+        const endMs = win.firstSampleMs + win.gal[0].length * win.msPerSample
+        // 時刻が戻った（再接続で窓が作り直された等）ときも測り直す。
+        if (endMs - lastMeasuredMs >= QUIET_MEASURE_INTERVAL_MS || endMs < lastMeasuredMs) {
+          lastMeasuredMs = endMs
+          quiet.observe(endMs, measureWindowQuietLevel(win))
+        }
+      }
+      const next = drawWave(canvas, win, staleRef.current, quietScaledGal('card', quiet.current()))
       // **同じ文字列なら state を差し替えない。** 揺れている間は毎回変わりうるが、
       // 丸めた表示が動かない限り再描画する意味が無い。
       if (next !== scaleTextRef.current) {
@@ -162,6 +166,7 @@ function drawWave(
   canvas: HTMLCanvasElement,
   win: SeismoWaveWindow | null,
   stale: boolean,
+  minScaleGal: number,
 ): string | null {
   // **描くたびに読み直す。** 押した向きは次のフレームで効く（この関数は毎秒 10 回
   // 呼ばれるので、購読して描き直しを促す必要が無い）。
@@ -175,7 +180,7 @@ function drawWave(
             window: win,
             columnCount,
             spanMs: SPAN_MS,
-            minScaleGal: MIN_SCALE_GAL,
+            minScaleGal,
             visibleAxes,
           }),
     stale,

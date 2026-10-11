@@ -216,12 +216,22 @@ export function computeQuakeIntensity(params: {
   const inside = runs.filter((r) => r.t[r.t.length - 1] >= fromMs && r.t[0] <= toMs)
   const gapCount = Math.max(0, inside.length - 1)
   const base = { maxRealtime, maxRealtimeAtMs, realtimeSeries, gapCount, invalidChunkCount, unsolvedChunkCount }
-  if (inside.length === 0) return { ...base, measured: null, measuredUnavailable: 'no-data' }
-  if (inside.length > 1) return { ...base, measured: null, measuredUnavailable: 'gap' }
+  return { ...base, ...measuredForRange(runs, fromMs, toMs) }
+}
+
+/** 区間 `[fromMs, toMs]` の計測震度。**区間の中で途切れていれば出さない**（{@link computeQuakeIntensity} の説明）。 */
+function measuredForRange(
+  runs: readonly Run[],
+  fromMs: number,
+  toMs: number,
+): { readonly measured: number | null; readonly measuredUnavailable: MeasuredUnavailable | null } {
+  const inside = runs.filter((r) => r.t[r.t.length - 1] >= fromMs && r.t[0] <= toMs)
+  if (inside.length === 0) return { measured: null, measuredUnavailable: 'no-data' }
+  if (inside.length > 1) return { measured: null, measuredUnavailable: 'gap' }
 
   const run = inside[0]
   if (run.t[0] > fromMs + COVER_TOLERANCE_MS || run.t[run.t.length - 1] < toMs - COVER_TOLERANCE_MS) {
-    return { ...base, measured: null, measuredUnavailable: 'not-covered' }
+    return { measured: null, measuredUnavailable: 'not-covered' }
   }
   const cut: [number[], number[], number[]] = [[], [], []]
   for (let i = 0; i < run.t.length; i++) {
@@ -231,7 +241,101 @@ export function computeQuakeIntensity(params: {
     cut[2].push(run.v[2][i])
   }
   const measured = calcSeismicIntensity(cut[0], cut[1], cut[2], 1000 / run.msPerSample)
-  return measured === null
-    ? { ...base, measured: null, measuredUnavailable: 'no-value' }
-    : { ...base, measured, measuredUnavailable: null }
+  return measured === null ? { measured: null, measuredUnavailable: 'no-value' } : { measured, measuredUnavailable: null }
+}
+
+/**
+ * 「普段」を測る範囲（ms）。**地震の区間の手前 1 時間。**
+ *
+ * 地震カードの「計測」だけを見ても、その値がいつもより上がっているのかが分からない
+ * （静かなときでも計測震度は 0 にならず、観測点ごとに決まった値に落ち着く）。比べる相手として、
+ * 直前 1 時間の同じ長さの区間の計測震度を出す（2026-10-11 ユーザー承認）。
+ */
+export const USUAL_SPAN_MS = 60 * 60_000
+
+/**
+ * 「普段」を測る区間の数。**6 つ。**
+ *
+ * 計測震度は区間の長さで値が変わる（長いほど強い一瞬を拾いやすい）ので、地震の区間と**同じ長さ**の
+ * 区間で測る。1 つだけだと、そこに別の揺れや人の作業（6 面法で基板を動かす等）が入ったとき
+ * 外れるので、手前 1 時間へ散らして測り、**中央値**を取る。区間が 10 分（上限）ならちょうど
+ * 1 時間を敷き詰める。
+ */
+export const USUAL_WINDOW_COUNT = 6
+
+/**
+ * 中央値を出すのに要る区間の数。**半分（3 つ）。** 測れた区間がそれより少なければ「普段」は出さない
+ * —— 1〜2 区間の値を「普段」と名乗ると、たまたま静かだった・揺れていた区間がそのまま出る。
+ */
+export const USUAL_MIN_WINDOWS = 3
+
+/**
+ * 「普段」を待つ上限（ms）。**5 秒。** 計算は 10 分の区間で 1 秒ほど（{@link computeUsualMeasured}）なので
+ * ふだんは間に合う。アプリは 15 秒で問い合わせを諦めるので、そこへ「最大」「計測」を道連れにしない余白を取る。
+ */
+export const USUAL_WAIT_MS = 5_000
+
+/**
+ * 「普段」を測る区間の並び（古い順）。**最後の区間は地震の区間の頭で終わる。**
+ *
+ * 区間の長さは地震の区間と同じ。手前 1 時間（{@link USUAL_SPAN_MS}）の中へ等間隔に置く。
+ */
+export function usualWindows(fromMs: number, toMs: number): readonly { readonly fromMs: number; readonly toMs: number }[] {
+  const lengthMs = toMs - fromMs
+  if (!(lengthMs > 0) || !Number.isFinite(fromMs)) return []
+  const firstFrom = fromMs - USUAL_SPAN_MS
+  const step = Math.max(0, (USUAL_SPAN_MS - lengthMs) / (USUAL_WINDOW_COUNT - 1))
+  const out: { fromMs: number; toMs: number }[] = []
+  for (let k = 0; k < USUAL_WINDOW_COUNT; k += 1) {
+    const start = Math.round(firstFrom + k * step)
+    out.push({ fromMs: start, toMs: start + lengthMs })
+  }
+  return out
+}
+
+/** 「普段」の計測震度。 */
+export interface UsualMeasuredResult {
+  /** 測れた区間の計測震度の中央値。**測れた区間が {@link USUAL_MIN_WINDOWS} に満たなければ `null`。** */
+  readonly usualMeasured: number | null
+  /** 測ろうとした区間の数。 */
+  readonly usualWindowCount: number
+  /** そのうち計測震度を出せた区間の数（途切れた・記録の無い区間は数えない）。 */
+  readonly usualUsedCount: number
+}
+
+/**
+ * 「普段」の計測震度を出す。`chunks` は {@link usualWindows} の最初の区間の頭から地震の区間の頭までを読んだもの。
+ *
+ * **1 区間ずつ `onWindow` で順番を譲る**（呼び出し側が受信のイベントループを止めないため）。区間 1 つの
+ * 計算は地震の区間の「計測」1 本と同じ重さ（作業 PC の実測で 3 分ぶん 0.07 秒・10 分ぶん 0.19 秒）なので、
+ * 1 回に止める長さは「計測」を出すときより延びない。6 区間を続けて回すと 10 分ぶんで 1 秒ほど止まる。
+ *
+ * **値が有限でない区間は数えない。** 中央値に `NaN` が混ざると結果も `NaN` になり、JSON では `null` に
+ * 化けるのに控えには「測れた値」として残る。
+ */
+export async function computeUsualMeasured(params: {
+  readonly chunks: readonly ArchivedWaveChunk[]
+  readonly fromMs: number
+  readonly toMs: number
+  readonly onWindow: () => Promise<void>
+}): Promise<UsualMeasuredResult> {
+  const windows = usualWindows(params.fromMs, params.toMs)
+  const { runs } = splitRuns(params.chunks)
+  const values: number[] = []
+  for (const w of windows) {
+    await params.onWindow()
+    const r = measuredForRange(runs, w.fromMs, w.toMs)
+    if (r.measured !== null && Number.isFinite(r.measured)) values.push(r.measured)
+  }
+  return {
+    usualMeasured: values.length >= USUAL_MIN_WINDOWS ? median(values) : null,
+    usualWindowCount: windows.length,
+    usualUsedCount: values.length,
+  }
+}
+
+function median(xs: readonly number[]): number {
+  const sorted = [...xs].sort((a, b) => a - b)
+  const mid = sorted.length >> 1
+  return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
 }

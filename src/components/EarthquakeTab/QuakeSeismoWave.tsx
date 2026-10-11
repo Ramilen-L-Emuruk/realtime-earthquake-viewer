@@ -18,7 +18,8 @@ import type { QuakeIntensity } from '../../services/seismoQuakeIntensity'
 import { formatTime } from '../../utils/formatters'
 import { log } from '../../utils/logger'
 import { formatMeasured } from '../../utils/measuredIntensityRounding'
-import { columnsSpan, measureNoiseBand, selectQuakeWindow, type WaveAxisZero } from '../../utils/seismoQuakeWindow'
+import { columnsSpan, measureNoiseBand, measureQuietLevel, selectQuakeWindow, type WaveAxisZero } from '../../utils/seismoQuakeWindow'
+import { quietScaledGal } from '../../utils/seismoQuietScale'
 import type { TimedColumns } from '../../utils/seismoWaveColumns'
 import { P_WAVE_COLOR, S_WAVE_COLOR } from '../Map/gl/psWaveStyle'
 import { emphasizeColumns } from '../SeismoWaveChart/emphasizeColumns'
@@ -86,14 +87,6 @@ class DetailBoundary extends Component<{ stationId: string; onClose: () => void;
   }
 }
 
-/**
- * 縦の振れ幅の下限（gal）。**地図の下端の絵と同じ値**（`SeismoWaveChart` の
- * `MIN_SCALE_GAL`）。**揃えないと、同じ揺れが場所によって違う大きさに見える。**
- *
- * **強調して描くときは効かない**（→ `emphasizeColumns.ts`）。潰した後の縦は残った量に合わせ、
- * 下限は別に持つ（`MIN_EMPHASIZED_SCALE_GAL`）。
- */
-const MIN_SCALE_GAL = 10
 
 /**
  * 到達の線の見た目。**地図の予報円と同じ配色・同じ線種を使う**（`gl/psWaveStyle.ts`）——
@@ -156,7 +149,11 @@ export function axisZeroLabel(zero: WaveAxisZero): string {
  * 畳み、`noiseMissing` を立てて返す —— 推測の幅で潰すと揺れまで消えうるうえ、絵は従来の描き方に
  * 戻るだけなので、呼び出し側が記録へ残さないと「強調が効いていない」ことに誰も気づけない。
  *
- * @param base 読み返し＋継ぎ足しの列。**ノイズはこちらで測る**（切り出した後には 0 の手前が残っていない）
+ * **縦の下限は 0 の手前の静かさから決める**（`utils/seismoQuietScale.ts` の `card`。地図の下端の絵と
+ * 同じ倍率）。**揃えないと、同じ揺れが場所によって違う大きさに見える。** 強調して描くときは、
+ * 潰した後の縦を残った量に合わせ、下限はノイズの帯から別に決める（→ `emphasizeColumns.ts`）。
+ *
+ * @param base 読み返し＋継ぎ足しの列。**ノイズと静かさはこちらで測る**（切り出した後には 0 の手前が残っていない）
  * @param trimmed 揺れに合わせて切り出した列（描くのはこちら）
  */
 export function foldQuakeWaveColumns(params: {
@@ -171,7 +168,7 @@ export function foldQuakeWaveColumns(params: {
   const folded = foldHistoryColumns({
     source: trimmed.columns,
     columnCount,
-    minScaleGal: MIN_SCALE_GAL,
+    minScaleGal: quietScaledGal('card', measureQuietLevel(base, zeroMs)),
     visibleAxes,
   })
   if (!emphasized) return { columns: folded, noiseMissing: false }
@@ -210,6 +207,9 @@ export function formatQuakeIntensityParts(
   const parts = [
     part('最大', '最大リアルタイム震度', intensity.maxRealtime),
     part('計測', '計測震度', intensity.measured),
+    // **比べる相手**（2026-10-11 ユーザー承認）。計測震度は静かなときも 0 にならず観測点ごとの値に
+    // 落ち着くので、「計測」だけでは上がっているのか分からない。
+    part('普段', '直前 1 時間の同じ長さの区間の計測震度（中央値）', intensity.usualMeasured),
   ].filter((p): p is QuakeIntensityPart => p !== null)
   return parts.length === 0 ? null : parts
 }

@@ -18,9 +18,10 @@
 // `sensorFusion.ts` の冒頭）の上で作るので、作り直したまとまりの境目と目盛りは、ライブのものと同じ
 // 時刻に立つ（以前は駆動役の区間の当てはめが刻みを決めていて、作り直すと継ぎ目が最大 ±5 ms ずれた）。
 //
-// **値はわずかに動きうる。** センサーごとの時間軸は区間の頭からの全アンカーで直線を当てはめる
-// （`../timebase/segmenter.ts`）。ライブの区間は何時間も続いた当てはめ、作り直しは
-// {@link REWAVE_LEAD_MS} からの当てはめなので傾きがわずかに違い、目盛りの時刻へ補間する値もその分ずれる。
+// **値はわずかに動きうる。** センサーごとの時間軸は直近 5 分を重く見て直線を当てはめる
+// （`../timebase/segmenter.ts` の `TIMEBASE_FORGET_SEC`）。ライブの区間は 5 分ぶん（サンプル数に換算して減らす）の重みが溜まった当てはめ、
+// 作り直しは {@link REWAVE_LEAD_MS} 前から当てはめ始めるので直線がわずかに違い、目盛りの時刻へ補間する値も
+// その分ずれる。
 
 import { IntensityPipeline } from './intensityPipeline'
 import type { StoredPacket } from './mseedPacketReader'

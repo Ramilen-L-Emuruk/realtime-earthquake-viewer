@@ -37,8 +37,8 @@ import { checkAdminAuth } from './adminAuth'
 import type { AdminAuthConfig, AdminAuthFailure } from './adminAuth'
 import type { RestWindowsReport } from './gravityCheck'
 import { COLUMNS_MAX, decimalInt } from './httpQuery'
-import { computeQuakeIntensity, QUAKE_INTENSITY_LEAD_MS } from './quakeIntensity'
-import type { QuakeIntensityResult } from './quakeIntensity'
+import { computeQuakeIntensity, computeUsualMeasured, QUAKE_INTENSITY_LEAD_MS, USUAL_WAIT_MS, usualWindows } from './quakeIntensity'
+import type { QuakeIntensityResult, UsualMeasuredResult } from './quakeIntensity'
 import type { HubMessage, PairWant, ReadingHub, ResidualWant, WaveWant } from './readingHub'
 import { describeFailure, normalizeBoardKey, parseStationConfig } from './stationConfig'
 import type { StationConfig } from './stationConfig'
@@ -460,6 +460,7 @@ export function buildQuakeIntensityResponse(
   read: WaveRangeResult,
   result: QuakeIntensityResult,
   stationKnown: boolean,
+  usual: UsualMeasuredResult,
 ): Record<string, unknown> {
   return {
     stationId: query.stationId,
@@ -471,6 +472,9 @@ export function buildQuakeIntensityResponse(
     realtimeSeries: result.realtimeSeries,
     measured: result.measured,
     measuredUnavailable: result.measuredUnavailable,
+    usualMeasured: usual.usualMeasured,
+    usualWindowCount: usual.usualWindowCount,
+    usualUsedCount: usual.usualUsedCount,
     gapCount: result.gapCount,
     invalidChunkCount: result.invalidChunkCount,
     unsolvedChunkCount: result.unsolvedChunkCount,
@@ -541,6 +545,58 @@ export interface StationConfigOps {
  */
 export type ShutdownRequestResult = 'accepted' | 'already-closing' | 'not-ready'
 
+/** 合成波形の作り直しの依頼（`POST /api/rewave`）。 */
+export interface RewaveRequest {
+  readonly stationId: string
+  /** 作り直す区間 `[fromMs, toMs)`（unix ミリ秒）。 */
+  readonly fromMs: number
+  readonly toMs: number
+  /** ノイズ密度をどこから取るか（`rewaveScheduler.ts` の `RewaveNoiseDensitySource`）。**省略させない。** */
+  readonly noiseDensity: 'historical' | 'current'
+}
+
+/**
+ * 作り直しの依頼への答え。
+ *
+ * - `accepted` —— 積んだ。`jobs` は区切った件数（1 以上）、`skippedMs` は設定変更の前後で作り直せない長さ。
+ *   **積んだだけで、作り直せたとは限らない** —— 生データが無い等で飛んだ分は `/status` の
+ *   `rewave.requested.skipped` に理由ごとに出る
+ * - `nothing-to-do` —— 範囲が全部、設定変更の前後に入っていて作り直せる区間が無い（積まない）
+ * - `busy` —— 前の依頼がまだ残っている（積まない。`/status` の `rewave.requestedWaiting` が 0 になってから送る）
+ * - `unknown-station` —— いまの設定に無い観測点
+ * - `config-unknown` —— 設定の履歴を読めていない（当時の設定が分からないので作らない）
+ */
+export type RewaveRequestResult =
+  | { readonly kind: 'accepted'; readonly jobs: number; readonly skippedMs: number }
+  | { readonly kind: 'nothing-to-do'; readonly skippedMs: number }
+  | { readonly kind: 'busy' }
+  | { readonly kind: 'unknown-station' }
+  | { readonly kind: 'config-unknown' }
+
+/** 1 度に依頼できる長さの上限。**打ち間違いで何か月ぶんも積まないため**（31 日で 3 分ずつ約 15,000 件）。 */
+export const REWAVE_REQUEST_MAX_MS = 31 * 24 * 60 * 60 * 1000
+
+/**
+ * `POST /api/rewave` の本文を読む。**純関数。** 未来の区間（まだ届いていない）と、上限より長い区間は断る。
+ */
+export function parseRewaveRequest(
+  body: unknown,
+  nowMs: number,
+): { readonly ok: true; readonly request: RewaveRequest } | { readonly ok: false; readonly error: string } {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return { ok: false, error: 'body-not-object' }
+  const b = body as Record<string, unknown>
+  if (typeof b.stationId !== 'string' || b.stationId.length === 0) return { ok: false, error: 'station-required' }
+  const fromMs = b.fromMs
+  const toMs = b.toMs
+  if (typeof fromMs !== 'number' || typeof toMs !== 'number' || !Number.isInteger(fromMs) || !Number.isInteger(toMs) || toMs <= fromMs) {
+    return { ok: false, error: 'bad-range' }
+  }
+  if (toMs > nowMs) return { ok: false, error: 'range-in-future' }
+  if (toMs - fromMs > REWAVE_REQUEST_MAX_MS) return { ok: false, error: 'range-too-wide' }
+  if (b.noiseDensity !== 'historical' && b.noiseDensity !== 'current') return { ok: false, error: 'noise-density-required' }
+  return { ok: true, request: { stationId: b.stationId, fromMs, toMs, noiseDensity: b.noiseDensity } }
+}
+
 export interface StatusServerOptions {
   readonly port: number
   readonly address?: string
@@ -598,6 +654,11 @@ export interface StatusServerOptions {
    * 答えが届かない。
    */
   readonly requestShutdown: () => ShutdownRequestResult
+  /**
+   * 合成波形の作り直しを依頼されたときに呼ぶ（`POST /api/rewave`）。**積むだけで、作り直しはホストの
+   * 作り直しの係（`rewaveRunner.ts`）が受信へ順番を譲りながら 1 件ずつ回す**（この口は待たない）。
+   */
+  readonly requestRewave: (request: RewaveRequest) => RewaveRequestResult
   /**
    * 管理コンソール本体（#313 段 C）。`GET /admin`・`GET /admin/app.js` で配る。
    *
@@ -836,6 +897,7 @@ type AdminRoute =
   | { readonly kind: 'board'; readonly boardKey: string }
   | { readonly kind: 'rest-windows' }
   | { readonly kind: 'shutdown' }
+  | { readonly kind: 'rewave' }
   /** `/api/records/` の後ろ（`channels`・`envelope` など。解くのは `waveRecordsApi.ts`）。 */
   | { readonly kind: 'records'; readonly route: string }
 
@@ -859,6 +921,7 @@ function parseAdminRoute(pathname: string): AdminRoute | null {
   }
   if (pathname === '/api/rest-windows') return { kind: 'rest-windows' }
   if (pathname === '/api/shutdown') return { kind: 'shutdown' }
+  if (pathname === '/api/rewave') return { kind: 'rewave' }
   if (pathname.startsWith('/api/records/')) {
     const route = pathname.slice('/api/records/'.length)
     return route.length > 0 ? { kind: 'records', route } : null
@@ -1138,6 +1201,7 @@ async function handleAdmin(
   stationConfig: StationConfigOps,
   readRestWindows: () => RestWindowsReport,
   requestShutdown: () => ShutdownRequestResult,
+  requestRewave: StatusServerOptions['requestRewave'],
   records: StatusServerOptions['records'],
 ): Promise<void> {
   applyAdminCors(req, res, adminAuth.allowedOrigins)
@@ -1221,6 +1285,49 @@ async function handleAdmin(
     // **誰が止めたかを残す。** 落ちた記録（「終了の記録を残さずに止まっていた」）と
     // 見分けるのはこの行と、締めくくりの最後の「正常に終了した」。
     if (result === 'accepted') log('warn', 'admin', 'shutdown', '[admin] 止める合図を受けた（POST /api/shutdown）。締めくくりを始める')
+    return
+  }
+  if (route.kind === 'rewave') {
+    if (req.method !== 'POST') {
+      sendAdminJson(res, 405, { error: 'method-not-allowed' })
+      return
+    }
+    const read = await readAdminBody(req)
+    if (!read.ok) {
+      sendAdminJson(res, 400, { error: read.reason })
+      return
+    }
+    const parsed = parseRewaveRequest(read.body, Date.now())
+    if (!parsed.ok) {
+      sendAdminJson(res, 400, { error: parsed.error })
+      return
+    }
+    const result = requestRewave(parsed.request)
+    if (result.kind === 'busy') {
+      sendAdminJson(res, 409, { error: 'rewave-busy' })
+      return
+    }
+    if (result.kind === 'unknown-station') {
+      sendAdminJson(res, 404, { error: 'unknown-station' })
+      return
+    }
+    if (result.kind === 'config-unknown') {
+      sendAdminJson(res, 503, { error: 'config-unknown' })
+      return
+    }
+    if (result.kind === 'nothing-to-do') {
+      // **202 で返さない。** 積んだように見えると、依頼者は何も作り直されないことに気づけない。
+      sendAdminJson(res, 200, { status: 'nothing-to-do', jobs: 0, skippedMs: result.skippedMs })
+      return
+    }
+    sendAdminJson(res, 202, { status: 'queued', jobs: result.jobs, skippedMs: result.skippedMs })
+    const r = parsed.request
+    log(
+      'log',
+      'admin',
+      'rewave',
+      `[admin] 合成波形の作り直しを受けた（${r.stationId}・${new Date(r.fromMs).toISOString()}〜${new Date(r.toMs).toISOString()}・ノイズ密度 ${r.noiseDensity === 'current' ? 'いまの設定' : '当時の設定'}・${result.jobs} 件・作り直せない長さ ${Math.round(result.skippedMs / 1000)} 秒）`,
+    )
     return
   }
   if (route.kind === 'records') {
@@ -1405,6 +1512,107 @@ export async function startStatusServer(options: StatusServerOptions): Promise<S
     })
   }
 
+  // **「普段」の計測震度の控え。** 過ぎた 1 時間の値なので、同じ区間を訊き直されても変わらない
+  // （地震カードは開くたび・描き直すたびに訊いてくる）。1 時間ぶんを読み直すのを避ける。
+  // 作り直し（rewave）で控えの中身が変わることはあるが、6 区間の中央値はほとんど動かない。
+  const usualCache = new Map<string, UsualMeasuredResult>()
+  const USUAL_CACHE_MAX = 64
+  // **同じ区間の計算は 1 本にまとめる。** カードを続けて開く・描き直しで同時に訊かれたとき、
+  // 1 時間ぶんの読み返しを並べて走らせない。
+  const usualInFlight = new Map<string, Promise<UsualMeasuredResult>>()
+  /**
+   * 「普段」の計測震度を出す。**出せなくても地震の区間の値は返す**（ここで投げると 500 になり、
+   * 「最大」「計測」まで出なくなる）。
+   *
+   * **読み返しの失敗と計算の失敗は記録を分ける。** 前者は記録が読めないだけ（warn）、後者はこちらの
+   * 誤り（error・stack つき）—— 1 つにまとめると、計算の誤りが「普段が出ないだけ」に見えて追えない。
+   */
+  const computeUsualFor = async (
+    readWaves: NonNullable<StatusServerOptions['readWaves']>,
+    query: Extract<QuakeIntensityQuery, { ok: true }>,
+    key: string,
+  ): Promise<UsualMeasuredResult> => {
+    const empty: UsualMeasuredResult = { usualMeasured: null, usualWindowCount: 0, usualUsedCount: 0 }
+    const windows = usualWindows(query.fromMs, query.toMs)
+    if (windows.length === 0) return empty
+    let read: WaveRangeResult
+    try {
+      read = await readWaves({ stationId: query.stationId, fromMs: windows[0].fromMs, toMs: query.fromMs })
+    } catch (error) {
+      log(
+        'warn',
+        'quake-intensity-usual',
+        forLog(query.stationId),
+        `[quake-intensity] 普段の計測震度を出せなかった（記録を読めない）: ${error instanceof Error ? error.message : String(error)}`,
+      )
+      return empty
+    }
+    try {
+      const usual = await computeUsualMeasured({
+        chunks: read.chunks,
+        fromMs: query.fromMs,
+        toMs: query.toMs,
+        // **1 区間ずつ受信へ順番を譲る**（`computeUsualMeasured` の説明）。
+        onWindow: () => new Promise((resolve) => setImmediate(resolve)),
+      })
+      // **測れなかった結果は控えない。** 記録が後から書かれる（取り戻し・作り直し）と測れるようになる。
+      // 6 区間のうち 3〜5 区間で出せた結果は控える —— 後から残りが測れても中央値はほとんど動かず、
+      // 欠けたまま毎回 1 時間ぶんを読み直すほうが重い。
+      if (usual.usualMeasured !== null) {
+        if (usualCache.size >= USUAL_CACHE_MAX) {
+          const oldest = usualCache.keys().next().value
+          if (oldest !== undefined) usualCache.delete(oldest)
+        }
+        usualCache.set(key, usual)
+      }
+      return usual
+    } catch (error) {
+      log(
+        'error',
+        'quake-intensity-usual-compute',
+        forLog(query.stationId),
+        `[quake-intensity] 普段の計測震度の計算で例外: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`,
+      )
+      return empty
+    }
+  }
+  /**
+   * **「普段」は {@link USUAL_WAIT_MS} だけ待つ。** 間に合わなければこの応答は「普段」なしで返す ——
+   * 地震の区間の「最大」「計測」は「普段」を待って返すので、待ち続けると遅いだけの「普段」がそれらまで
+   * 道連れにする（アプリは 15 秒で諦める）。計算は裏で続き、出せれば控えに入るので次に訊かれたときに出る。
+   * 読み返しが固まっても、合流した要求がそこで一緒に固まらない。
+   */
+  const usualMeasuredFor = async (query: Extract<QuakeIntensityQuery, { ok: true }>): Promise<UsualMeasuredResult> => {
+    const empty: UsualMeasuredResult = { usualMeasured: null, usualWindowCount: 0, usualUsedCount: 0 }
+    const readWaves = options.readWaves
+    if (readWaves === null) return empty
+    const key = `${query.stationId}|${query.fromMs}|${query.toMs}`
+    const hit = usualCache.get(key)
+    if (hit !== undefined) return hit
+    let running = usualInFlight.get(key)
+    if (running === undefined) {
+      running = computeUsualFor(readWaves, query, key).finally(() => usualInFlight.delete(key))
+      usualInFlight.set(key, running)
+    }
+    let timer: NodeJS.Timeout | undefined
+    const late = new Promise<UsualMeasuredResult>((resolve) => {
+      timer = setTimeout(() => {
+        log(
+          'warn',
+          'quake-intensity-usual-slow',
+          forLog(query.stationId),
+          `[quake-intensity] 普段の計測震度が ${USUAL_WAIT_MS / 1000} 秒で出なかった（この応答は普段なしで返し、計算は続ける）`,
+        )
+        resolve(empty)
+      }, USUAL_WAIT_MS)
+    })
+    try {
+      return await Promise.race([running, late])
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
   const server: Server = createServer((req, res) => {
     // **投げさせない。** ここで投げると Node が既定でプロセスごと落とす ——
     // 状態を見に来ただけの相手の打ち間違いで、受信そのものが止まる。
@@ -1432,6 +1640,7 @@ export async function startStatusServer(options: StatusServerOptions): Promise<S
           options.stationConfig,
           options.readRestWindows,
           options.requestShutdown,
+          options.requestRewave,
           options.records,
         ).catch((error: unknown) => {
           const detail = error instanceof Error ? error.message : String(error)
@@ -1606,9 +1815,10 @@ export async function startStatusServer(options: StatusServerOptions): Promise<S
             fromMs: query.fromMs - QUAKE_INTENSITY_LEAD_MS,
             toMs: query.toMs,
           })
-          .then((read) => {
+          .then(async (read) => {
             const result = computeQuakeIntensity({ chunks: read.chunks, fromMs: query.fromMs, toMs: query.toMs })
-            sendJson(res, 200, buildQuakeIntensityResponse(query, read, result, stationKnown))
+            const usual = await usualMeasuredFor(query)
+            sendJson(res, 200, buildQuakeIntensityResponse(query, read, result, stationKnown, usual))
           })
           .catch((error: unknown) => {
             // `/waves` と同じく、記録の口は `log()` で包んだものを使う（`.catch()` の中で投げると

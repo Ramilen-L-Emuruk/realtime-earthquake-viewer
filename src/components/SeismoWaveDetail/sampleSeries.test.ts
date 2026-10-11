@@ -223,9 +223,9 @@ describe('signedMovingAverages', () => {
 describe('measureMagnitudeFloor', () => {
   const ZERO = T0 + 30_000
   /** 0 の手前 30 秒、100 Hz。各秒の最大が `peak(秒)` になる。 */
-  function quiet(seconds: number, peak: (sec: number) => number): SampleSeries {
+  function quiet(seconds: number, peak: (sec: number) => number, base = 0.1): SampleSeries {
     const values: number[] = []
-    for (let i = 0; i < seconds * 100; i += 1) values.push(i % 100 === 50 ? peak(Math.floor(i / 100)) : 0.1)
+    for (let i = 0; i < seconds * 100; i += 1) values.push(i % 100 === 50 ? peak(Math.floor(i / 100)) : base)
     const start = ZERO - seconds * 1000
     const a = Float32Array.from(values)
     return buildSampleSeries([
@@ -244,9 +244,16 @@ describe('measureMagnitudeFloor', () => {
     expect(measureMagnitudeFloor(s, vectorMagnitude(s, [true, true, true]), ZERO)).toBeCloseTo(3, 5)
   })
 
-  it('下限は 0.2 gal', () => {
-    const s = quiet(30, () => 0.05)
-    expect(measureMagnitudeFloor(s, vectorMagnitude(s, [true, true, true]), ZERO)).toBeCloseTo(0.2, 5)
+  // 安全弁: 0 近くに縮んだ測り値は下限（0.05 gal）で受け止める。
+  it('下限は 0.05 gal', () => {
+    const s = quiet(30, () => 0.01, 0.01)
+    expect(measureMagnitudeFloor(s, vectorMagnitude(s, [true, true, true]), ZERO)).toBeCloseTo(0.05, 5)
+  })
+
+  // 対照: IIS2ICLX を入れた後の静かさ（0.15 gal 前後）は下限に掛からず、そのまま 1.5 倍される。
+  it('静かな観測点の底は下限に掛からない', () => {
+    const s = quiet(30, () => 0.15)
+    expect(measureMagnitudeFloor(s, vectorMagnitude(s, [true, true, true]), ZERO)).toBeCloseTo(0.225, 5)
   })
 
   // 対照: ちょうど 10 秒あれば測る。

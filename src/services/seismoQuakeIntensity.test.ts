@@ -52,6 +52,7 @@ describe('readQuakeIntensity', () => {
         realtimeSeries: RESPONSE.realtimeSeries,
         measured: 1.87,
         measuredUnavailable: null,
+        usualMeasured: null,
         gapCount: 0,
         invalidChunkCount: 0,
         unsolvedChunkCount: 0,
@@ -61,6 +62,25 @@ describe('readQuakeIntensity', () => {
         truncated: false,
       },
     })
+  })
+
+  // 正: 「普段」の計測震度を読む。
+  it('普段の計測震度を読む', () => {
+    const r = readQuakeIntensity({ ...RESPONSE, usualMeasured: -1.27, usualWindowCount: 6, usualUsedCount: 6 })
+    expect('value' in r && r.value.usualMeasured).toBe(-1.27)
+  })
+
+  // 対照: 欄が無い（古いホスト）・null（測れなかった）は出さない扱い。
+  it('普段の欄が無い・null なら null', () => {
+    const r1 = readQuakeIntensity(RESPONSE)
+    expect('value' in r1 && r1.value.usualMeasured).toBeNull()
+    const r2 = readQuakeIntensity({ ...RESPONSE, usualMeasured: null })
+    expect('value' in r2 && r2.value.usualMeasured).toBeNull()
+  })
+
+  // 安全弁: 欄があって数でなければ、壊れた応答として弾く（「出せなかった」と取り違えない）。
+  it('普段の欄が数でなければ読めない', () => {
+    expect(readQuakeIntensity({ ...RESPONSE, usualMeasured: 'x' })).toEqual({ detail: '普段の計測震度を読めない' })
   })
 
   it('計測震度が出なければ理由を読む', () => {

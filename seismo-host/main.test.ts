@@ -634,27 +634,53 @@ describe('buildBacklogEventLine', () => {
 describe('buildRewaveEventLine', () => {
   /** 2026-10-06 21:44:00 JST。 */
   const AT = Date.UTC(2026, 9, 6, 12, 44, 0)
-  const JOB = { stationId: 'station-1', fromMs: AT, toMs: AT + 65_000 }
+  const JOB = { stationId: 'station-1', fromMs: AT, toMs: AT + 65_000, noiseDensity: 'historical' as const, origin: 'backlog' as const }
+  const REQUESTED = { ...JOB, noiseDensity: 'current' as const, origin: 'requested' as const }
+  const DONE = { kind: 'rewaved' as const, chunks: 14, fed: 690, elapsedMs: 812, rawIssues: 0, duplicates: 0, unsetNoiseDensity: 0 }
 
   it('作り直せた分は log で、区間を日本時間で書き、間引きの鍵は観測点ごと', () => {
-    const out = buildRewaveEventLine({ kind: 'rewaved', job: JOB, chunks: 14, fed: 690, elapsedMs: 812, rawIssues: 0, duplicates: 0 })
+    const out = buildRewaveEventLine({ ...DONE, job: JOB })
     expect(out.level).toBe('log')
-    expect(out.detail).toBe('station-1|rewaved')
+    expect(out.detail).toBe('station-1|backlog|rewaved')
     expect(out.line).toBe('[rewave] station-1 の 21:44:00〜21:45:05 の合成波形を作り直した（14 まとまり・812 ms）')
   })
 
   it('読んだ生データに壊れがあれば warn で、壊れと重複の数を添える（別の鍵で間引く）', () => {
-    const out = buildRewaveEventLine({ kind: 'rewaved', job: JOB, chunks: 14, fed: 690, elapsedMs: 812, rawIssues: 2, duplicates: 3 })
+    const out = buildRewaveEventLine({ ...DONE, job: JOB, rawIssues: 2, duplicates: 3 })
     expect(out.level).toBe('warn')
-    expect(out.detail).toBe('station-1|rewaved|raw-issues')
+    expect(out.detail).toBe('station-1|backlog|rewaved|raw-issues')
     expect(out.line).toContain('14 まとまり・812 ms・生データの壊れ 2・重複して捨てたまとまり 3')
   })
 
   it('作り直さなかった分は warn で、理由ごとに間引く', () => {
     const out = buildRewaveEventLine({ kind: 'skipped', job: JOB, reason: 'no-raw', detail: '区間の時の本が無い' })
     expect(out.level).toBe('warn')
-    expect(out.detail).toBe('station-1|no-raw')
+    expect(out.detail).toBe('station-1|backlog|no-raw')
     expect(out.line).toContain('区間の生データが無い: 区間の時の本が無い')
+  })
+
+  it('依頼された分は行の頭で名乗り（ノイズ密度の出どころも）、取り戻しの分と別の鍵で間引く', () => {
+    const done = buildRewaveEventLine({ ...DONE, job: REQUESTED })
+    expect(done.level).toBe('log')
+    expect(done.detail).toBe('station-1|requested|rewaved')
+    expect(done.line).toBe(
+      '[rewave] 依頼された作り直し（ノイズ密度はいまの設定）で station-1 の 21:44:00〜21:45:05 の合成波形を作り直した（14 まとまり・812 ms）',
+    )
+    const skipped = buildRewaveEventLine({ kind: 'skipped', job: REQUESTED, reason: 'no-raw', detail: 'x' })
+    expect(skipped.detail).toBe('station-1|requested|no-raw')
+  })
+
+  it('正: ノイズ密度をいまの設定から重ねたのに未設定が残っていれば warn で数を添える', () => {
+    const out = buildRewaveEventLine({ ...DONE, job: REQUESTED, unsetNoiseDensity: 2 })
+    expect(out.level).toBe('warn')
+    expect(out.detail).toBe('station-1|requested|rewaved|unweighted')
+    expect(out.line).toContain('ノイズ密度が未設定のセンサー 2（重みは全員同じ）')
+  })
+
+  it('対照: 当時の設定のまま作る分は、未設定が残っていても warn にしない（当時の合成どおり）', () => {
+    const out = buildRewaveEventLine({ ...DONE, job: JOB, unsetNoiseDensity: 2 })
+    expect(out.level).toBe('log')
+    expect(out.line).not.toContain('未設定')
   })
 })
 

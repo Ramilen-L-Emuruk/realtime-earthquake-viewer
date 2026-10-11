@@ -191,7 +191,7 @@ function input(overrides: Partial<StatusReportInput> = {}): StatusReportInput {
       requests: 3, recoveredPackets: 2, failures: { network: 1 }, badPackets: 0, foreignPackets: 0, unsavedPackets: 0, skippedPackets: 0,
       unsettledWriteSinceMs: null,
     },
-    rewave: { waiting: 0, running: false, jobs: 0, chunks: 0, rawIssues: 0, skipped: {} },
+    rewave: { waiting: 0, requestedWaiting: 0, requested: { jobs: 0, skipped: {} }, running: false, jobs: 0, chunks: 0, rawIssues: 0, skipped: {} },
     http: { address: '0.0.0.0', port: 50506 },
     tally: tally.snapshotTotal(),
     sensors: [sensor()],

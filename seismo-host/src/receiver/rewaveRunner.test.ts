@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { MseedRecorder } from './mseedRecorder'
 import { mseedFilePath } from './mseedStore'
 import type { RewaveEvent } from './rewaveRunner'
-import { RewaveRunner } from './rewaveRunner'
+import { RewaveRunner, withCurrentNoiseDensity } from './rewaveRunner'
 import { RewaveScheduler } from './rewaveScheduler'
 import type { FusedWaveChunk } from './sensorFusion'
 import type { StationConfig } from './stationConfig'
@@ -66,8 +66,9 @@ async function writeRaw(): Promise<MseedRecorder> {
   return recorder
 }
 
-function harness(recorder: MseedRecorder, over: { config?: StationConfig | 'changed' | null; flushOk?: boolean } = {}) {
+function harness(recorder: MseedRecorder, over: { config?: StationConfig | 'changed' | null; flushOk?: boolean; current?: StationConfig } = {}) {
   const seen: Array<[number, number]> = []
+  let currentAsked = 0
   const scheduler = new RewaveScheduler({ padMs: 0, settleMs: 0, maxWaitMs: 10_000, maxSpanMs: 180_000 })
   const written: FusedWaveChunk[] = []
   const events: RewaveEvent[] = []
@@ -76,6 +77,10 @@ function harness(recorder: MseedRecorder, over: { config?: StationConfig | 'chan
     configThrough: (fromMs, toMs) => {
       seen.push([fromMs, toMs])
       return over.config === undefined ? config() : over.config
+    },
+    currentConfig: () => {
+      currentAsked += 1
+      return over.current ?? config()
     },
     flush: async () => (over.flushOk === false ? false : recorder.flushForRead()),
     readHour: async (at) => {
@@ -94,8 +99,51 @@ function harness(recorder: MseedRecorder, over: { config?: StationConfig | 'chan
     pause: () => Promise.resolve(),
     onEvent: (e) => events.push(e),
   })
-  return { scheduler, runner, written, events, seen }
+  return { scheduler, runner, written, events, seen, currentAsked: () => currentAsked }
 }
+
+describe('withCurrentNoiseDensity', () => {
+  function withNoise(nd: (mac: string) => number | null): StationConfig {
+    const base = config()
+    return {
+      ...base,
+      boards: base.boards.map((b) => ({ ...b, sensors: b.sensors.map((s) => ({ ...s, noiseDensity: nd(b.boardKey) })) })),
+    }
+  }
+
+  it('正: ノイズ密度だけをいまの設定から取る（当時は未設定でも）', () => {
+    const historical = withNoise(() => null)
+    const current = withNoise((mac) => (mac.endsWith('01') ? 15 : 270))
+    const out = withCurrentNoiseDensity(historical, current)
+    expect(out.boards.map((b) => b.sensors[0]!.noiseDensity)).toEqual([15, 270, 270])
+  })
+
+  it('対照: ノイズ密度以外（軸の向き・ゼロ点・有効かどうか・基板の向き）は当時のまま', () => {
+    const historical = withNoise(() => null)
+    const altered: StationConfig = {
+      ...historical,
+      boards: historical.boards.map((b) => ({
+        ...b,
+        orientation: [[0, 1, 0], [-1, 0, 0], [0, 0, 1]],
+        sensors: b.sensors.map((s) => ({ ...s, enabled: false, axes: defaultAxes(2), noiseDensity: 15 })),
+      })),
+    }
+    const out = withCurrentNoiseDensity(historical, altered)
+    for (let i = 0; i < out.boards.length; i++) {
+      expect(out.boards[i]!.orientation).toBe(historical.boards[i]!.orientation)
+      expect(out.boards[i]!.sensors[0]!.axes).toBe(historical.boards[i]!.sensors[0]!.axes)
+      expect(out.boards[i]!.sensors[0]!.enabled).toBe(true)
+      expect(out.boards[i]!.sensors[0]!.noiseDensity).toBe(15)
+    }
+  })
+
+  it('安全弁: いまの設定に無いセンサーは当時の値のまま（外した台の重みを推し量らない）', () => {
+    const historical = withNoise(() => 99)
+    const current: StationConfig = { ...config(), boards: config().boards.slice(0, 1).map((b) => ({ ...b, sensors: b.sensors.map((s) => ({ ...s, noiseDensity: 15 })) })) }
+    const out = withCurrentNoiseDensity(historical, current)
+    expect(out.boards.map((b) => b.sensors[0]!.noiseDensity)).toEqual([15, 99, 99])
+  })
+})
 
 describe('RewaveRunner', () => {
   const FROM = T0 + 60_000
@@ -117,8 +165,8 @@ describe('RewaveRunner', () => {
     expect(inWindow.length).toBeGreaterThan(250)
     expect(inWindow.every((m) => m === 3)).toBe(true)
     expect(h.runner.snapshot()).toMatchObject({ jobs: 1, skipped: {}, running: false, waiting: 0, rawIssues: 0 })
-    // 設定は助走から後ろの余白までを通して訊く。
-    expect(h.seen).toEqual([[FROM - REWAVE_LEAD_MS, TO + REWAVE_TAIL_MS]])
+    // 設定は助走から後ろの余白までを通して訊く（読む範囲は半開区間なので、照合はその終わりの 1 ミリ秒手前まで）。
+    expect(h.seen).toEqual([[FROM - REWAVE_LEAD_MS, TO + REWAVE_TAIL_MS - 1]])
     await recorder.close()
   })
 
@@ -162,6 +210,73 @@ describe('RewaveRunner', () => {
     h.runner.tick()
     await h.runner.stop()
     expect(h.runner.snapshot().skipped).toEqual({ 'no-raw': 1 })
+    await recorder.close()
+  })
+
+  it('正: 依頼された作り直し（noiseDensity: current）は、いまの設定を読んで重ねる', async () => {
+    const recorder = await writeRaw()
+    const h = harness(recorder)
+    expect(h.scheduler.request('station-1', [{ fromMs: FROM, toMs: TO }], 'current')).toBe(true)
+    h.runner.tick()
+    await h.runner.stop()
+    expect(h.events.map((e) => e.kind)).toEqual(['rewaved'])
+    expect(h.currentAsked()).toBe(1)
+    // いまの設定も未設定のまま（config() は全員 null）なので、未設定の数が載る。
+    expect(h.events[0]).toMatchObject({ kind: 'rewaved', unsetNoiseDensity: 3, job: { origin: 'requested' } })
+    // 依頼の分は別にも数える。
+    expect(h.runner.snapshot()).toMatchObject({ jobs: 1, requested: { jobs: 1, skipped: {} } })
+    await recorder.close()
+  })
+
+  it('正: いまの設定に全員のノイズ密度があれば、重ねた作り直しに未設定は残らない', async () => {
+    const recorder = await writeRaw()
+    const base = config()
+    const current: StationConfig = {
+      ...base,
+      boards: base.boards.map((b) => ({ ...b, sensors: b.sensors.map((s) => ({ ...s, noiseDensity: 270 })) })),
+    }
+    const h = harness(recorder, { current })
+    h.scheduler.request('station-1', [{ fromMs: FROM, toMs: TO }], 'current')
+    h.runner.tick()
+    await h.runner.stop()
+    expect(h.events[0]).toMatchObject({ kind: 'rewaved', unsetNoiseDensity: 0 })
+    await recorder.close()
+  })
+
+  it('対照: 取り戻した区間の作り直しは、いまの設定を読まない（当時の設定だけで組む）', async () => {
+    const recorder = await writeRaw()
+    const h = harness(recorder)
+    h.scheduler.note('station-1', FROM, TO, T0)
+    h.runner.tick()
+    await h.runner.stop()
+    expect(h.events.map((e) => e.kind)).toEqual(['rewaved'])
+    expect(h.currentAsked()).toBe(0)
+    // 取り戻しの分は依頼の数へ混ぜない。
+    expect(h.runner.snapshot()).toMatchObject({ jobs: 1, requested: { jobs: 0, skipped: {} } })
+    await recorder.close()
+  })
+
+  it('安全弁: 依頼の分が飛んだら、依頼の分の理由ごとの数にも載る', async () => {
+    const recorder = await writeRaw()
+    const h = harness(recorder)
+    const day = 24 * 3_600_000
+    h.scheduler.request('station-1', [{ fromMs: FROM + day, toMs: TO + day }], 'current')
+    h.runner.tick()
+    await h.runner.stop()
+    expect(h.runner.snapshot().skipped).toEqual({ 'no-raw': 1 })
+    expect(h.runner.snapshot().requested).toEqual({ jobs: 0, skipped: { 'no-raw': 1 } })
+    await recorder.close()
+  })
+
+  it('対照: 取り戻しの分が飛んでも、依頼の分の数には載らない', async () => {
+    const recorder = await writeRaw()
+    const h = harness(recorder)
+    const day = 24 * 3_600_000
+    h.scheduler.note('station-1', FROM + day, TO + day, T0)
+    h.runner.tick()
+    await h.runner.stop()
+    expect(h.runner.snapshot().skipped).toEqual({ 'no-raw': 1 })
+    expect(h.runner.snapshot().requested).toEqual({ jobs: 0, skipped: {} })
     await recorder.close()
   })
 
