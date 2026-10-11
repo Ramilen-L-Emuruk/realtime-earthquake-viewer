@@ -525,12 +525,33 @@ export function readSamplesData(value: unknown): SamplesData | null {
   return { unit, runs, problems }
 }
 
-export interface IntensityData {
-  readonly series: readonly { readonly atMs: number; readonly value: number | null }[]
-  readonly maxRealtime: number | null
-  readonly maxRealtimeAtMs: number | null
-  readonly measured: number | null
-}
+/**
+ * 震度の推移。**10 分以内はその場で計算した 1 秒ごとの点**（`series`）、**それより広ければ要約から作った列**
+ * （`columns`。列ごとのリアルタイム震度の最大）。
+ */
+export type IntensityData =
+  | {
+      readonly kind: 'series'
+      readonly series: readonly { readonly atMs: number; readonly value: number | null }[]
+      readonly maxRealtime: number | null
+      readonly maxRealtimeAtMs: number | null
+      readonly measured: number | null
+    }
+  | {
+      readonly kind: 'columns'
+      readonly source: 'coarse' | 'fine'
+      readonly columnMs: number
+      readonly firstColumnMs: number
+      /** 値の無い列は NaN。 */
+      readonly realtime: readonly number[]
+      readonly maxRealtime: number | null
+      /** いちばん大きかったまとまりの頭の時刻（そのまとまりの幅のどこか）。 */
+      readonly maxRealtimeAtMs: number | null
+      /** そのまとまりの幅（1 秒か 1 分）。 */
+      readonly maxRealtimeBucketMs: number | null
+      readonly measured: number | null
+      readonly irregularHours: readonly IrregularHourView[]
+    }
 
 function finiteOrNull(v: unknown): number | null | undefined {
   if (v === null) return null
@@ -538,14 +559,36 @@ function finiteOrNull(v: unknown): number | null | undefined {
   return n === null ? undefined : n
 }
 
-/** `intensity` の応答を読む。 */
+/** `intensity` の応答を読む（**`source` が `coarse`・`fine` なら要約から作った列**）。 */
 export function readIntensityData(value: unknown): IntensityData | null {
   if (typeof value !== 'object' || value === null) return null
   const v = value as Record<string, unknown>
   const maxRealtime = finiteOrNull(v.maxRealtime)
   const maxRealtimeAtMs = finiteOrNull(v.maxRealtimeAtMs)
   const measured = finiteOrNull(v.measured)
-  if (maxRealtime === undefined || maxRealtimeAtMs === undefined || measured === undefined || !Array.isArray(v.realtimeSeries)) return null
+  if (maxRealtime === undefined || maxRealtimeAtMs === undefined || measured === undefined) return null
+  if (v.source === 'coarse' || v.source === 'fine') {
+    const columnMs = readFinite(v.columnMs)
+    const firstColumnMs = readFinite(v.firstColumnMs)
+    const realtime = readFiniteArrayWithGaps(v.realtime)
+    const maxRealtimeBucketMs = finiteOrNull(v.maxRealtimeBucketMs)
+    const irregularHours = readIrregularHours(v.irregularHours)
+    if (columnMs === null || columnMs <= 0 || firstColumnMs === null || realtime === null) return null
+    if (maxRealtimeBucketMs === undefined || irregularHours === null) return null
+    return {
+      kind: 'columns',
+      source: v.source,
+      columnMs,
+      firstColumnMs,
+      realtime,
+      maxRealtime,
+      maxRealtimeAtMs,
+      maxRealtimeBucketMs,
+      measured,
+      irregularHours,
+    }
+  }
+  if (!Array.isArray(v.realtimeSeries)) return null
   const series: { atMs: number; value: number | null }[] = []
   for (const p of v.realtimeSeries) {
     if (typeof p !== 'object' || p === null) return null
@@ -555,7 +598,90 @@ export function readIntensityData(value: unknown): IntensityData | null {
     if (atMs === null || pv === undefined) return null
     series.push({ atMs, value: pv })
   }
-  return { series, maxRealtime, maxRealtimeAtMs, measured }
+  return { kind: 'series', series, maxRealtime, maxRealtimeAtMs, measured }
+}
+
+/** 合成の大きさの組 1 つ（要約から作った列）。本数が 0 の列の最大は NaN。 */
+export interface CompositeSubsetView {
+  /** 組の軸のチャンネル（識別子の順）。 */
+  readonly channels: readonly string[]
+  readonly n: readonly number[]
+  readonly max: readonly number[]
+}
+
+/** `composite` の応答（10 分を超える幅の合成の段の材料）。 */
+export interface CompositeData {
+  readonly source: 'coarse' | 'fine'
+  readonly unit: ValueUnit
+  readonly columnMs: number
+  readonly firstColumnMs: number
+  readonly subsets: readonly CompositeSubsetView[]
+  readonly irregularHours: readonly IrregularHourView[]
+  readonly unscaledHours: number
+}
+
+/** `composite` の応答を読む。**1 か所でも形が違えば null。** */
+export function readCompositeData(value: unknown): CompositeData | null {
+  if (typeof value !== 'object' || value === null) return null
+  const v = value as Record<string, unknown>
+  const source = v.source === 'coarse' || v.source === 'fine' ? v.source : null
+  const unit = readUnit(v.unit)
+  const columnMs = readFinite(v.columnMs)
+  const firstColumnMs = readFinite(v.firstColumnMs)
+  const unscaledHours = readFinite(v.unscaledHours)
+  const irregularHours = readIrregularHours(v.irregularHours)
+  if (source === null || unit === null || columnMs === null || columnMs <= 0 || firstColumnMs === null) return null
+  if (unscaledHours === null || irregularHours === null || !Array.isArray(v.subsets)) return null
+  const subsets: CompositeSubsetView[] = []
+  for (const x of v.subsets) {
+    if (typeof x !== 'object' || x === null) return null
+    const o = x as Record<string, unknown>
+    if (!Array.isArray(o.channels) || !o.channels.every((c) => typeof c === 'string')) return null
+    const n = readFiniteArray(o.n)
+    const max = readFiniteArrayWithGaps(o.max)
+    if (n === null || max === null || n.length !== max.length) return null
+    subsets.push({ channels: o.channels as string[], n, max })
+  }
+  return { source, unit, columnMs, firstColumnMs, subsets, irregularHours, unscaledHours }
+}
+
+/** 範囲を覆う、値の無い列（欠けを塗るためだけに使う。どの列も本数 0）。 */
+export function emptyColumnsTrace(columnMs: number, firstColumnMs: number, r: TimeRange): AxisTrace {
+  const count = columnMs > 0 ? Math.max(0, Math.floor((r.toMs - 1 - firstColumnMs) / columnMs) + 1) : 0
+  const nan = new Array<number>(count).fill(Number.NaN)
+  return { kind: 'columns', columnMs, firstColumnMs, n: new Array<number>(count).fill(0), min: nan, max: nan, mean: nan }
+}
+
+/**
+ * 10 分を超える幅の合成の段の列（**下端 0・上端は列の最大**の塗りになる形）。見えている軸が 2 本以上なら
+ * その組の要約、1 本なら軸の列から（範囲の平均 `center` からの隔たりの大きいほう）。作れなければ null。
+ */
+export function compositeColumnsTrace(
+  composite: CompositeData | null,
+  visible: readonly { readonly id: string; readonly trace: AxisTrace; readonly center: number }[],
+): AxisTrace | null {
+  if (visible.length === 1) {
+    const { trace, center } = visible[0]!
+    if (trace.kind !== 'columns' || !Number.isFinite(center)) return null
+    const max = trace.n.map((n, j) =>
+      n > 0 ? Math.max(Math.abs(trace.max[j]! - center), Math.abs(center - trace.min[j]!)) : Number.NaN,
+    )
+    const min = max.map((m) => (Number.isFinite(m) ? 0 : Number.NaN))
+    return { kind: 'columns', columnMs: trace.columnMs, firstColumnMs: trace.firstColumnMs, n: trace.n, min, max, mean: max }
+  }
+  if (composite === null || visible.length < 2) return null
+  const want = visible.map((a) => a.id).sort().join(',')
+  const subset = composite.subsets.find((x) => [...x.channels].sort().join(',') === want)
+  if (subset === undefined) return null
+  return {
+    kind: 'columns',
+    columnMs: composite.columnMs,
+    firstColumnMs: composite.firstColumnMs,
+    n: subset.n,
+    min: subset.max.map((m) => (Number.isFinite(m) ? 0 : Number.NaN)),
+    max: subset.max,
+    mean: subset.max,
+  }
 }
 
 // ---- 軸ごとのなぞり --------------------------------------------------------------------------
@@ -864,13 +990,19 @@ function timeForSpan(atMs: number, spanMs: number, digits: 0 | 1 | 2): string {
   return spanMs > DAY_MS ? formatDateMinute(atMs) : formatClockDigits(atMs, digits)
 }
 
+/**
+ * 要約から引いた時刻（まとまりの幅のどこか）の書き方。1 日を超える範囲は日付と分、1 分以上のまとまりは分まで、
+ * それより細かければ秒まで、いずれも「ごろ」を付ける。
+ */
+export function approximateWhen(atMs: number, spanMs: number, bucketMs: number | null): string {
+  if (spanMs > DAY_MS) return `${formatDateMinute(atMs)} ごろ`
+  if (bucketMs !== null && bucketMs >= MINUTE_MS) return `${formatClockDigits(atMs, 0).slice(0, 5)} ごろ`
+  return `${formatClockDigits(atMs, 0)} ごろ`
+}
+
 /** 段の見出しの最大（`最大 12.3 gal（12:03:04.25）`・要約からなら `最大 12.3 gal（12:03 ごろ）`）。 */
 export function peakLabel(p: TracePeak, unit: ValueUnit, spanMs: number, columnMs: number | null): string {
-  let when: string
-  if (!p.approximate) when = timeForSpan(p.atMs, spanMs, 2)
-  else if (spanMs > DAY_MS) when = `${formatDateMinute(p.atMs)} ごろ`
-  else if (columnMs !== null && columnMs >= MINUTE_MS) when = `${formatClockDigits(p.atMs, 0).slice(0, 5)} ごろ`
-  else when = `${formatClockDigits(p.atMs, 0)} ごろ`
+  const when = p.approximate ? approximateWhen(p.atMs, spanMs, columnMs) : timeForSpan(p.atMs, spanMs, 2)
   return `最大 ${formatValue(p.deviation)} ${unitText(unit)}（${when}）`
 }
 
@@ -904,9 +1036,7 @@ export const TOKEN_MISSING_TEXT = '管理トークンを設定すると読める
  * 2026-10-08 ユーザー承認）。
  */
 export const COMPOSITE_TITLE = '合成'
-export const COMPOSITE_TOO_WIDE_TEXT = '合成は 10 分以内まで寄せると出る'
 export const INTENSITY_TITLE = 'リアルタイム震度の推移'
-export const INTENSITY_TOO_WIDE_TEXT = '震度の推移は 10 分以内まで寄せると出る'
 export const INTENSITY_STATION_ONLY_TEXT = '震度の推移は観測点の合成波形にだけ出る'
 export const GAP_NONE_LEGEND = '斜線: 記録が無い'
 export const GAP_PENDING_LEGEND = '灰色の斜線: 要約がまだ無い（作り終えると出る）'
@@ -920,10 +1050,19 @@ export function fetchFailureText(reason: string): string {
 /**
  * 震度の段の見出し（`最大 1.2（12:03:06） 計測 0.8`）。**最大と計測の間は常に半角空白**（2026-10-08 ユーザー承認）
  * —— 値が無いと `最大 —計測 —` と詰まって読めなかった。
+ *
+ * **要約から作った列なら、時刻は「ごろ」**（`最大 1.2（12:03 ごろ） 計測 0.85`。時刻の書き方は軸の段の
+ * {@link approximateWhen} と同じ。2026-10-11 ユーザー承認）。`spanMs` は見ている範囲の広さ。
  */
-export function intensityHeader(d: IntensityData): string {
+export function intensityHeader(d: IntensityData, spanMs: number): string {
   const max = d.maxRealtime === null ? '—' : formatMeasured(d.maxRealtime)
-  const at = d.maxRealtime !== null && d.maxRealtimeAtMs !== null ? `（${formatClockDigits(d.maxRealtimeAtMs, 0)}）` : ''
+  let at = ''
+  if (d.maxRealtime !== null && d.maxRealtimeAtMs !== null) {
+    at =
+      d.kind === 'series'
+        ? `（${formatClockDigits(d.maxRealtimeAtMs, 0)}）`
+        : `（${approximateWhen(d.maxRealtimeAtMs, spanMs, d.maxRealtimeBucketMs)}）`
+  }
   const measured = d.measured === null ? '—' : formatMeasured(d.measured)
   return `最大 ${max}${at} 計測 ${measured}`
 }

@@ -98,13 +98,11 @@ import { EVENTS_PAGE_LIMIT, readShakeRange, type ShakeRecordView, type ShakeVerd
 import {
   COLUMNS_MAX,
   COMPOSITE_TITLE,
-  COMPOSITE_TOO_WIDE_TEXT,
   EMPTY_RANGE_TEXT,
   GAP_NONE_LEGEND,
   GAP_PENDING_LEGEND,
   INTENSITY_STATION_ONLY_TEXT,
   INTENSITY_TITLE,
-  INTENSITY_TOO_WIDE_TEXT,
   OVERVIEW_CAPTION,
   SAMPLES_RANGE_MAX_MS,
   SPAN_CHOICES,
@@ -112,7 +110,9 @@ import {
   boundsOf,
   clampRange,
   centerAt,
+  compositeColumnsTrace,
   compositeRuns,
+  emptyColumnsTrace,
   fetchFailureText,
   fullSpanMs,
   groupChannels,
@@ -126,6 +126,7 @@ import {
   problemsNote,
   readChannelList,
   readEnvelopeData,
+  readCompositeData,
   readIntensityData,
   readSamplesData,
   readoutText,
@@ -150,6 +151,7 @@ import {
   type EnvelopeData,
   type GapSpan,
   type HourTallyView,
+  type CompositeData,
   type IntensityData,
   type IrregularHourView,
   type RecordGroup,
@@ -257,6 +259,8 @@ interface Loaded {
   /** 軸の id ごと。 */
   readonly axes: ReadonlyMap<string, AxisData>
   readonly intensity: IntensityData | null
+  /** 10 分を超える幅の合成（要約から）。10 分以内は軸のサンプルから合成するので null。 */
+  readonly composite: CompositeData | null
 }
 
 /**
@@ -906,9 +910,7 @@ export async function initRecordsView(container: HTMLElement, ctx: TabContext): 
 
   const rowsShape = (): string => {
     if (group === null) return ''
-    const samples = range.toMs - range.fromMs <= SAMPLES_RANGE_MAX_MS
-    const intensity = group.kind !== 'station' ? 'raw' : samples ? 'yes' : 'wide'
-    return `${group.key}|${samples}|${intensity}|${visibleAxes().map((a) => a.id).join(',')}`
+    return `${group.key}|${visibleAxes().map((a) => a.id).join(',')}`
   }
   let builtShape = ''
 
@@ -918,7 +920,6 @@ export async function initRecordsView(container: HTMLElement, ctx: TabContext): 
       rowsEl.innerHTML = ''
       return
     }
-    const samples = range.toMs - range.fromMs <= SAMPLES_RANGE_MAX_MS
     const header = (title: string, cls: string): string => `
       <div class="row" style="justify-content: space-between; align-items: baseline; margin-top: 0.5rem">
         <strong>${escapeHtml(title)}</strong>
@@ -926,9 +927,8 @@ export async function initRecordsView(container: HTMLElement, ctx: TabContext): 
       </div>`
     // 印の段は見出しを持たない（列の名前は段の中に書く）。
     let html = `<canvas class="wave-canvas records-canvas records-marks" style="height: ${MARKS_HEIGHT}px; margin-top: 0.5rem"></canvas>`
-    html += samples
-      ? `${header(COMPOSITE_TITLE, 'records-composite-peak')}<canvas class="wave-canvas records-canvas records-composite" style="height: ${COMPOSITE_HEIGHT}px"></canvas>`
-      : `<p class="muted" style="margin: 0.5rem 0 0">${COMPOSITE_TOO_WIDE_TEXT}</p>`
+    // 合成と震度の推移は**どの幅でも出す**（10 分を超えたら要約から。2026-10-10・2026-10-11 ユーザー承認）。
+    html += `${header(COMPOSITE_TITLE, 'records-composite-peak')}<canvas class="wave-canvas records-canvas records-composite" style="height: ${COMPOSITE_HEIGHT}px"></canvas>`
     for (const a of visibleAxes()) {
       html += `
         <div class="row" style="justify-content: space-between; align-items: baseline; margin-top: 0.5rem">
@@ -938,7 +938,6 @@ export async function initRecordsView(container: HTMLElement, ctx: TabContext): 
         <canvas class="wave-canvas records-canvas records-axis" data-axis-id="${escapeHtml(a.id)}" style="height: ${AXIS_HEIGHT}px"></canvas>`
     }
     if (group.kind !== 'station') html += `<p class="muted" style="margin: 0.5rem 0 0">${INTENSITY_STATION_ONLY_TEXT}</p>`
-    else if (!samples) html += `<p class="muted" style="margin: 0.5rem 0 0">${INTENSITY_TOO_WIDE_TEXT}</p>`
     else html += `${header(INTENSITY_TITLE, 'records-intensity-header')}<canvas class="wave-canvas records-canvas records-intensity" style="height: ${INTENSITY_HEIGHT}px"></canvas>`
     // ノイズ水準の推移（見えている軸を 1 枚に重ねる）。
     html += `
@@ -1065,10 +1064,32 @@ export async function initRecordsView(container: HTMLElement, ctx: TabContext): 
     const compositeCanvas = rowsEl.querySelector<HTMLCanvasElement>('canvas.records-composite')
     if (compositeCanvas !== null) {
       const peakEl = rowsEl.querySelector<HTMLElement>('.records-composite-peak')
-      const runs = traces.every((t) => t !== null) ? compositeRuns(traces.map((t) => t!.trace), centers) : null
-      const trace: AxisTrace | null = runs === null ? null : { kind: 'samples', runs }
+      // 10 分以内は軸のサンプルから、それより広ければ要約の列から（見えている軸が 1 本なら軸の列から）。
+      let trace: AxisTrace | null = null
+      let compositeUnit: ValueUnit = valueUnit
+      let compositeColumnMs: number | null = null
+      let compositeIrregular: readonly IrregularHourView[] = []
+      /** 欠けを塗る列。**合成が作れなくても塗る**（要約がまだ無いだけで真っ白にしない。震度の段と揃える）。 */
+      let gapTrace: AxisTrace | null = null
+      if (traces.length > 0 && traces.every((t) => t !== null && t.trace.kind === 'samples')) {
+        const runs = compositeRuns(traces.map((t) => t!.trace), centers)
+        trace = runs === null ? null : { kind: 'samples', runs }
+      } else if (traces.length > 0 && traces.every((t) => t !== null)) {
+        const visible = axes.map((a, i) => ({ id: a.id, trace: traces[i]!.trace, center: centers[i]! }))
+        trace = compositeColumnsTrace(data?.composite ?? null, visible)
+        if (trace !== null && trace.kind === 'columns') compositeColumnMs = trace.columnMs
+        if (axes.length === 1) {
+          compositeIrregular = traces[0]!.irregular
+          gapTrace = trace ?? traces[0]!.trace
+        } else if (data?.composite != null) {
+          compositeUnit = data.composite.unit
+          compositeIrregular = data.composite.irregularHours
+          // 見えている軸の組が範囲のどの時の要約にも無い（作り終えていない・記録が無い）ときは、空の列で塗る。
+          gapTrace = trace ?? emptyColumnsTrace(data.composite.columnMs, data.composite.firstColumnMs, range)
+        }
+      }
       const p = trace === null ? null : tracePeak(trace, range, 0)
-      if (peakEl !== null) peakEl.textContent = p === null ? '' : peakLabel(p, valueUnit, span, null)
+      if (peakEl !== null) peakEl.textContent = p === null ? '' : peakLabel(p, compositeUnit, span, compositeColumnMs)
       const prepared = prepareCanvas(compositeCanvas, COMPOSITE_HEIGHT)
       if (prepared !== null) {
         const { ctx, width, height } = prepared
@@ -1076,8 +1097,12 @@ export async function initRecordsView(container: HTMLElement, ctx: TabContext): 
         ctx.strokeRect(0.5, 0.5, width - 1, height - 1)
         drawTicks(ctx, range, width, height, false, ink)
         drawArrivals(ctx, quakes, range, width, height)
+        // 要約がまだ無い時（作り終えると出る）・記録が無い時。
+        if (gapTrace !== null && gapTrace.kind === 'columns' && data !== null) {
+          drawHatch(ctx, traceGaps(gapTrace, range, data.fetched, compositeIrregular), range, width, height)
+        }
         if (trace !== null && p !== null) {
-          // **下端を 0 に、上端をこの範囲の最大の少し上に**（合成は 0 以上）。
+          // **下端を 0 に、上端をこの範囲の最大の少し上に**（合成は 0 以上。列なら 0〜最大の塗りになる）。
           const top = Math.max(p.deviation, 1e-9) * 1.1
           const yOf = (v: number): number => height - PLOT_PADDING_Y - Math.min(1, v / top) * (height - 2 * PLOT_PADDING_Y)
           drawTrace(ctx, trace, range, width, yOf, COMPOSITE_COLOR)
@@ -1090,7 +1115,7 @@ export async function initRecordsView(container: HTMLElement, ctx: TabContext): 
     if (intensityCanvas !== null) {
       const headerEl = rowsEl.querySelector<HTMLElement>('.records-intensity-header')
       const d = data?.intensity ?? null
-      if (headerEl !== null) headerEl.textContent = d === null ? '' : intensityHeader(d)
+      if (headerEl !== null) headerEl.textContent = d === null ? '' : intensityHeader(d, span)
       const prepared = prepareCanvas(intensityCanvas, INTENSITY_HEIGHT)
       if (prepared !== null) {
         const { ctx, width, height } = prepared
@@ -1098,7 +1123,28 @@ export async function initRecordsView(container: HTMLElement, ctx: TabContext): 
         ctx.strokeRect(0.5, 0.5, width - 1, height - 1)
         drawTicks(ctx, range, width, height, false, ink)
         drawArrivals(ctx, quakes, range, width, height)
-        const values = d === null ? [] : d.series.flatMap((s) => (s.value === null ? [] : [s.value]))
+        // 10 分を超える幅は要約の列（列ごとの最大を線で結ぶ）。
+        const points: { atMs: number; value: number | null }[] =
+          d === null
+            ? []
+            : d.kind === 'series'
+              ? [...d.series]
+              : d.realtime.map((v, j) => ({ atMs: d.firstColumnMs + (j + 0.5) * d.columnMs, value: Number.isFinite(v) ? v : null }))
+        // 列の間隔より空いたら線を切る（点のときは刻みの 1 秒）。
+        const joinMs = d !== null && d.kind === 'columns' ? d.columnMs * 1.5 : 1500
+        if (d !== null && d.kind === 'columns' && data !== null) {
+          const gapTrace: AxisTrace = {
+            kind: 'columns',
+            columnMs: d.columnMs,
+            firstColumnMs: d.firstColumnMs,
+            n: d.realtime.map((v) => (Number.isFinite(v) ? 1 : 0)),
+            min: d.realtime,
+            max: d.realtime,
+            mean: d.realtime,
+          }
+          drawHatch(ctx, traceGaps(gapTrace, range, data.fetched, d.irregularHours), range, width, height)
+        }
+        const values = points.flatMap((s) => (s.value === null ? [] : [s.value]))
         if (d !== null && values.length > 0) {
           const lo = Math.floor(Math.min(...values) - 0.1)
           const hi = Math.max(lo + 1, Math.ceil(Math.max(...values) + 0.1))
@@ -1120,13 +1166,13 @@ export async function initRecordsView(container: HTMLElement, ctx: TabContext): 
           ctx.lineWidth = 1.5
           ctx.beginPath()
           let prevAt = Number.NaN
-          for (const s of d.series) {
+          for (const s of points) {
             if (s.value === null) {
               prevAt = Number.NaN
               continue
             }
             const x = xOf(s.atMs, range, width)
-            if (Number.isNaN(prevAt) || s.atMs - prevAt > 1500) ctx.moveTo(x, yOf(s.value))
+            if (Number.isNaN(prevAt) || s.atMs - prevAt > joinMs) ctx.moveTo(x, yOf(s.value))
             else ctx.lineTo(x, yOf(s.value))
             prevAt = s.atMs
           }
@@ -1375,17 +1421,37 @@ export async function initRecordsView(container: HTMLElement, ctx: TabContext): 
           ]
         }),
       )
+      // **震度と合成は取れなくても軸の段は描く**（取れなかった理由は同じ行に出す）。400 日まで読む口なので、
+      // 軸の段より失敗しやすい —— 道連れにすると、取れている波形まで消える。
+      let partFailure: string | null = null
+      const optional = async <T>(fetchOne: () => Promise<T | null>): Promise<T | null> => {
+        try {
+          const got = await fetchOne()
+          if (got === null) throw new Error('応答の形が違う')
+          return got
+        } catch (error) {
+          if (isAbort(error) || controller.signal.aborted || signal.aborted) throw error
+          partFailure ??= failureReason(error)
+          return null
+        }
+      }
       let intensity: IntensityData | null = null
-      if (g.kind === 'station' && g.stationKey !== null && plan.kind === 'samples') {
-        const body = await apiFetch<unknown>(recordsUrl('intensity', { station: g.stationKey, from: r.fromMs, to: r.toMs }), { signal: controller.signal })
-        intensity = readIntensityData(body)
-        if (intensity === null) throw new Error('応答の形が違う')
+      if (g.kind === 'station' && g.stationKey !== null) {
+        const query: Record<string, string | number> = { station: g.stationKey, from: r.fromMs, to: r.toMs }
+        if (plan.kind === 'envelope') query.columns = plan.columns
+        intensity = await optional(async () => readIntensityData(await apiFetch<unknown>(recordsUrl('intensity', query), { signal: controller.signal })))
+      }
+      // 10 分を超える幅の合成は要約から（**軸の組すべて**を 1 回で取る。軸を隠しても取り直さない）。
+      let composite: CompositeData | null = null
+      if (plan.kind === 'envelope') {
+        const url = recordsUrl('composite', { group: g.key, from: r.fromMs, to: r.toMs, columns: plan.columns, unit: u })
+        composite = await optional(async () => readCompositeData(await apiFetch<unknown>(url, { signal: controller.signal })))
       }
       if (controller.signal.aborted || signal.aborted) return
       const map = new Map<string, AxisData>()
       for (const [id, d] of axes) if (d !== null) map.set(id, d)
-      loaded = { groupKey: g.key, unit: u, fetched: r, axes: map, intensity }
-      failure = null
+      loaded = { groupKey: g.key, unit: u, fetched: r, axes: map, intensity, composite }
+      failure = partFailure
     } catch (error) {
       if (isAbort(error) || controller.signal.aborted || signal.aborted) return
       failure = failureReason(error)

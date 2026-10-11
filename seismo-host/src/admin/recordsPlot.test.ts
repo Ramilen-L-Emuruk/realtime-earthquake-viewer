@@ -6,7 +6,9 @@ import {
   SAMPLES_RANGE_MAX_MS,
   centerAt,
   clampRange,
+  compositeColumnsTrace,
   compositeRuns,
+  emptyColumnsTrace,
   durationLabel,
   fullSpanMs,
   groupChannels,
@@ -20,6 +22,7 @@ import {
   problemsNote,
   readChannelList,
   readEnvelopeData,
+  readCompositeData,
   readIntensityData,
   readSamplesData,
   readoutText,
@@ -259,8 +262,48 @@ describe('応答を読む', () => {
 
   it('震度の推移の値の無い刻みは null のまま', () => {
     const d = readIntensityData({ maxRealtime: 1.23, maxRealtimeAtMs: H0, measured: null, realtimeSeries: [{ atMs: H0, value: null }] })!
-    expect(d.series[0]!.value).toBeNull()
+    expect(d.kind === 'series' && d.series[0]!.value).toBeNull()
     expect(readIntensityData({ maxRealtime: 'x', maxRealtimeAtMs: H0, measured: null, realtimeSeries: [] })).toBeNull()
+  })
+
+  it('10 分を超える幅の震度は要約から作った列として読む（値の無い列は NaN）', () => {
+    const body = {
+      source: 'coarse',
+      columnMs: 60_000,
+      firstColumnMs: H0,
+      realtime: [1.2, null],
+      maxRealtime: 1.2,
+      maxRealtimeAtMs: H0,
+      maxRealtimeBucketMs: 60_000,
+      measured: 0.84,
+      irregularHours: [{ hourStartMs: H0, state: 'pending' }],
+    }
+    const d = readIntensityData(body)!
+    expect(d.kind).toBe('columns')
+    if (d.kind !== 'columns') return
+    expect(d.realtime[0]).toBe(1.2)
+    expect(Number.isNaN(d.realtime[1]!)).toBe(true)
+    expect(d.irregularHours).toEqual([{ hourStartMs: H0, state: 'pending' }])
+    expect(readIntensityData({ ...body, realtime: 'x' })).toBeNull()
+    expect(readIntensityData({ ...body, maxRealtimeBucketMs: 'x' })).toBeNull()
+  })
+
+  it('合成の要約の応答を読み、形が違えば null', () => {
+    const body = {
+      source: 'fine',
+      unit: 'count',
+      columnMs: 1000,
+      firstColumnMs: H0,
+      subsets: [{ channels: ['a', 'b'], n: [3, 0], max: [2, null] }],
+      irregularHours: [],
+      unscaledHours: 1,
+    }
+    const c = readCompositeData(body)!
+    expect(c.unit).toBe('count')
+    expect(c.subsets[0]!.channels).toEqual(['a', 'b'])
+    expect(Number.isNaN(c.subsets[0]!.max[1]!)).toBe(true)
+    expect(readCompositeData({ ...body, subsets: [{ channels: ['a'], n: [1], max: [1, 2] }] })).toBeNull()
+    expect(readCompositeData({ ...body, source: 'samples' })).toBeNull()
   })
 })
 
@@ -385,6 +428,47 @@ describe('traceValueAt と合成', () => {
     // 列（要約）からは作らない
     expect(compositeRuns([columnsTrace([1], [0], [1], [0])], [0])).toBeNull()
   })
+
+  it('10 分を超える幅の合成: 見えている軸の組の要約を、0〜最大の塗りの列にする', () => {
+    const composite = readCompositeData({
+      source: 'coarse',
+      unit: 'gal',
+      columnMs: 60_000,
+      firstColumnMs: H0,
+      subsets: [
+        { channels: ['x', 'y'], n: [3, 0], max: [5, null] },
+        { channels: ['x', 'y', 'z'], n: [3, 0], max: [7, null] },
+      ],
+      irregularHours: [],
+      unscaledHours: 0,
+    })!
+    const axis = columnsTrace([3, 0], [-1, Number.NaN], [1, Number.NaN], [0, Number.NaN])
+    const got = compositeColumnsTrace(composite, [
+      { id: 'y', trace: axis, center: 0 },
+      { id: 'x', trace: axis, center: 0 },
+    ])!
+    expect(got.kind).toBe('columns')
+    if (got.kind !== 'columns') return
+    expect(got.max[0]).toBe(5)
+    expect(got.min[0]).toBe(0)
+    expect(Number.isNaN(got.min[1]!)).toBe(true)
+    // 組が要約に無ければ作らない（見えている軸と違う組で代えない）
+    expect(compositeColumnsTrace(composite, [{ id: 'x', trace: axis, center: 0 }, { id: 'w', trace: axis, center: 0 }])).toBeNull()
+  })
+
+  it('要約に組が無いときも、範囲を覆う空の列で欠けを塗れる（合成の段を真っ白にしない）', () => {
+    const t = emptyColumnsTrace(60_000, H0, { fromMs: H0 + 30_000, toMs: H0 + 3 * 60_000 })
+    expect(t.kind === 'columns' && t.n).toEqual([0, 0, 0])
+    expect(traceGaps(t, { fromMs: H0, toMs: H0 + 3 * 60_000 }, { fromMs: H0, toMs: H0 + 3 * 60_000 }, [{ hourStartMs: H0, state: 'pending' }])[0]!.kind).toBe('pending')
+  })
+
+  it('10 分を超える幅の合成: 見えている軸が 1 本なら、その軸の列の範囲の平均からの隔たり', () => {
+    const axis = columnsTrace([3, 0], [-1, Number.NaN], [4, Number.NaN], [0, Number.NaN])
+    const got = compositeColumnsTrace(null, [{ id: 'x', trace: axis, center: 1 }])!
+    expect(got.kind === 'columns' && got.max[0]).toBe(3)
+    expect(got.kind === 'columns' && Number.isNaN(got.max[1]!)).toBe(true)
+    expect(compositeColumnsTrace(null, [{ id: 'x', trace: axis, center: Number.NaN }])).toBeNull()
+  })
 })
 
 describe('overviewSpread', () => {
@@ -424,10 +508,32 @@ describe('文言', () => {
 
   it('震度の段の見出し', () => {
     const at = new Date(2026, 9, 7, 12, 3, 6).getTime()
-    expect(intensityHeader({ series: [], maxRealtime: 1.23, maxRealtimeAtMs: at, measured: 0.84 })).toBe('最大 1.2（12:03:06） 計測 0.8')
-    expect(intensityHeader({ series: [], maxRealtime: null, maxRealtimeAtMs: null, measured: null })).toBe('最大 — 計測 —')
+    const series = (maxRealtime: number | null, maxRealtimeAtMs: number | null, measured: number | null) =>
+      ({ kind: 'series', series: [], maxRealtime, maxRealtimeAtMs, measured }) as const
+    expect(intensityHeader(series(1.23, at, 0.84), 600_000)).toBe('最大 1.2（12:03:06） 計測 0.8')
+    expect(intensityHeader(series(null, null, null), 600_000)).toBe('最大 — 計測 —')
     // PWA と同じ数字を出す（気象庁の手順。四捨五入なら 1.3・0.9 になる）。
-    expect(intensityHeader({ series: [], maxRealtime: 1.26, maxRealtimeAtMs: null, measured: 0.86 })).toBe('最大 1.2 計測 0.8')
+    expect(intensityHeader(series(1.26, null, 0.86), 600_000)).toBe('最大 1.2 計測 0.8')
+  })
+
+  it('震度の段の見出し（要約から作った列）: 時刻は軸の段の「最大」と同じ「ごろ」の書き方', () => {
+    const at = new Date(2026, 9, 7, 12, 3, 4).getTime()
+    const columns = (bucketMs: number) =>
+      ({
+        kind: 'columns',
+        source: 'coarse',
+        columnMs: 60_000,
+        firstColumnMs: at,
+        realtime: [],
+        maxRealtime: 1.23,
+        maxRealtimeAtMs: at,
+        maxRealtimeBucketMs: bucketMs,
+        measured: 0.86,
+        irregularHours: [],
+      }) as const
+    expect(intensityHeader(columns(1000), HOUR)).toBe('最大 1.2（12:03:04 ごろ） 計測 0.8')
+    expect(intensityHeader(columns(60_000), HOUR)).toBe('最大 1.2（12:03 ごろ） 計測 0.8')
+    expect(intensityHeader(columns(60_000), 3 * 24 * HOUR)).toBe('最大 1.2（10/07 12:03 ごろ） 計測 0.8')
   })
 
   it('指した所の値（負号は −）', () => {

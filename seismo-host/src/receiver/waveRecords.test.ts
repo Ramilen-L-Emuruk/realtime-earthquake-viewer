@@ -27,7 +27,7 @@ import {
   type RecordDirs,
 } from './waveRecords'
 import type { SummaryLevel } from './waveSummary'
-import { buildSummaryFile, rawSummaryPath, waveSummaryPath } from './waveSummaryFiles'
+import { buildSummaryFile, prevWaveSourcePath, rawSummaryPath, waveSummaryPath } from './waveSummaryFiles'
 
 /** 取り消されない要求（見に来た側が繋がったまま）。 */
 const OPEN = new AbortController().signal
@@ -80,6 +80,7 @@ async function writeWaveHour(hourStartMs: number, chunks: Array<[number, number[
       hourKey,
       hourStartMs,
       stationKey: KEY,
+      prevSourcePath: prevWaveSourcePath(dirs.waveDir, KEY, hourStartMs),
     })
     expect(result.ok).toBe(true)
   }
@@ -309,6 +310,7 @@ describe('readReception', () => {
       hourKey: hourKeyOf(H0),
       hourStartMs: H0,
       stationKey: null,
+      prevSourcePath: null,
     })
     // 次の時は元のファイルだけある（要約を作る係が追いついていない）
     writeRawHour(H0 + HOUR, [[H0 + HOUR, [1], 'live']])
@@ -459,6 +461,7 @@ describe('readSummaryEnvelope', () => {
       hourKey: hourKeyOf(H0),
       hourStartMs: H0,
       stationKey: null,
+      prevSourcePath: null,
     })
     const ref = parseChannelId(mseed3SourceId(BOARD, 'S1', 'HNZ')!)!
     const gal = await readSummaryEnvelope({ dirs, signal: OPEN,ref, source: 'fine', fromMs: H0, toMs: H0 + 1000, columns: 1, unit: 'gal' })

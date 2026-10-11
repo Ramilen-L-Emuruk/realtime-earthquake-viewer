@@ -4,12 +4,10 @@ import {
   SUMMARY_COARSE_MS,
   SUMMARY_FINE_MS,
   SUMMARY_PARTS,
-  SUMMARY_PEEK_BYTES,
   SummaryBuilder,
   decodeSummaryPart,
   decodeSummaryPartWhere,
   encodeSummaryPart,
-  peekSummarySourceBytes,
   type SummaryChannel,
 } from './waveSummary'
 
@@ -286,17 +284,6 @@ describe('encodeSummaryPart / decodeSummaryPart', () => {
 
     expect(decodeSummaryPart(buf.subarray(0, buf.length - 1))).toBeNull()
     expect(decodeSummaryPart(Buffer.alloc(0))).toBeNull()
-  })
-
-  it('頭だけ覗けば、要約が控えている元のファイルの大きさが分かる（どの部分でも）', () => {
-    const b = builder()
-    b.declare('A', { unit: 'gal', ugPerLsb: null })
-    b.add('A', HOUR_START, 10, [1])
-    const file = b.build(4242)
-    for (const part of SUMMARY_PARTS) {
-      expect(peekSummarySourceBytes(encodeSummaryPart(file, part).subarray(0, SUMMARY_PEEK_BYTES))).toBe(4242)
-    }
-    expect(peekSummarySourceBytes(Buffer.alloc(SUMMARY_PEEK_BYTES))).toBeNull()
   })
 
   it('末尾に余計なバイトがあるファイルも読まない（書きかけの上書きを取り違えない）', () => {

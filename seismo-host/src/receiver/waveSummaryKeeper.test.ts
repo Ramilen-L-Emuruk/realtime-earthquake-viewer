@@ -16,6 +16,7 @@ function job(hourStartMs: number, kind: 'raw' | 'wave' = 'raw'): SummaryJob {
     hourKey,
     hourStartMs,
     stationKey: kind === 'wave' ? 'home-abc' : null,
+    prevSourcePath: kind === 'wave' ? `src/wave-${new Date(hourStartMs - HOUR_MS + 9 * HOUR_MS).toISOString().slice(0, 13)}` : null,
   }
 }
 
@@ -23,6 +24,8 @@ function harness(params: {
   jobs: SummaryJob[]
   sizes: Map<string, number>
   summarized?: Map<string, number>
+  /** 要約が控えている前の時の大きさ（無ければ前の時を控えていない）。 */
+  summarizedPrev?: Map<string, number>
   nowMs: number
   fail?: Set<string>
   maxJobsPerTick?: number
@@ -51,7 +54,10 @@ function harness(params: {
       if (params.sizeThrows?.has(p)) throw new Error('EBUSY')
       return params.sizes.get(p) ?? null
     },
-    summarizedBytes: async (p) => params.summarized?.get(p) ?? null,
+    summarizedSources: async (p) => {
+      const bytes = params.summarized?.get(p)
+      return bytes === undefined ? null : { sourceBytes: bytes, prevSourceBytes: params.summarizedPrev?.get(p) ?? null }
+    },
     listSummaries: async () => ({ summaries: params.summaries ?? [], errors: params.summaryListErrors ?? [] }),
     removeSummary: async (files) => {
       const owner = params.summaries?.find((s) => s.files === files)
@@ -65,6 +71,7 @@ function harness(params: {
       return {
         ok: true,
         sourceBytes: params.sizes.get(j.sourcePath)!,
+        prevSourceBytes: j.prevSourcePath === null ? null : (params.sizes.get(j.prevSourcePath) ?? null),
         summaryBytes: 1,
         channels: 1,
         problems: { skippedBytes: 0, badRecords: 0 },
@@ -117,6 +124,46 @@ describe('WaveSummaryKeeper', () => {
     h.advance(60_000)
     await h.keeper.tick()
     expect(h.ran).toHaveLength(2)
+  })
+
+  it('合成波形は前の時のファイルが後から伸びても作り直す（震度を前の時の末尾から通すため）', async () => {
+    const jobs = [job(H12 - 5 * HOUR_MS, 'wave')]
+    const prev = jobs[0]!.prevSourcePath!
+    const sizes = new Map([
+      [jobs[0]!.sourcePath, 100],
+      [prev, 40],
+    ])
+    const h = harness({
+      jobs,
+      sizes,
+      summarized: new Map([[jobs[0]!.summaryPath, 100]]),
+      summarizedPrev: new Map([[jobs[0]!.summaryPath, 40]]),
+      nowMs: H12 + 60_000,
+    })
+    // 対照: どちらも同じ大きさなら作らない
+    await h.keeper.tick()
+    expect(h.ran).toEqual([])
+    sizes.set(prev, 55)
+    h.advance(60_000)
+    await h.keeper.tick()
+    expect(h.ran).toHaveLength(1)
+    expect(h.keeper.snapshot()).toMatchObject({ upToDate: 1, pending: 0 })
+    // 安全弁: 作り直した後は前の時の新しい大きさで最新と見なす
+    h.advance(60_000)
+    await h.keeper.tick()
+    expect(h.ran).toHaveLength(1)
+  })
+
+  it('前の時のファイルが無いまま作った要約は、前の時が現れたら作り直す', async () => {
+    const jobs = [job(H12 - 5 * HOUR_MS, 'wave')]
+    const sizes = new Map([[jobs[0]!.sourcePath, 100]])
+    const h = harness({ jobs, sizes, summarized: new Map([[jobs[0]!.summaryPath, 100]]), nowMs: H12 + 60_000 })
+    await h.keeper.tick()
+    expect(h.ran).toEqual([])
+    sizes.set(jobs[0]!.prevSourcePath!, 10)
+    h.advance(60_000)
+    await h.keeper.tick()
+    expect(h.ran).toHaveLength(1)
   })
 
   it('元のファイルが一覧から消えたら控えを捨てる（戻ってきたら要約を読み直す）', async () => {
@@ -252,11 +299,11 @@ describe('WaveSummaryKeeper', () => {
       now: () => now,
       list: async () => ({ jobs: [current], errors: [] }),
       sizeOf: async (p) => sizes.get(p) ?? null,
-      summarizedBytes: async () => null,
+      summarizedSources: async () => null,
       // 実際の置き場所を読ませない（作業ディレクトリの sum/ に触れない）
       listSummaries: async () => ({ summaries: [], errors: [] }),
       // 作り終えたのは 90 バイトの時点まで（読んでいる間に伸びた）
-      run: async () => ({ ok: true, sourceBytes: 90, summaryBytes: 1, channels: 1, problems: { skippedBytes: 0, badRecords: 0 }, outOfWindowSamples: 0, ms: 1 }),
+      run: async () => ({ ok: true, prevSourceBytes: null, sourceBytes: 90, summaryBytes: 1, channels: 1, problems: { skippedBytes: 0, badRecords: 0 }, outOfWindowSamples: 0, ms: 1 }),
     })
     await keeper.tick()
     expect(keeper.snapshot()).toMatchObject({ built: 1, upToDate: 0, pending: 1 })
@@ -293,13 +340,13 @@ describe('WaveSummaryKeeper', () => {
       now: () => H12 + 60_000,
       list: async () => ({ jobs: [j], errors: [] }),
       sizeOf: async () => 100,
-      summarizedBytes: async () => null,
+      summarizedSources: async () => null,
       // 実際の置き場所を読ませない（読みが挟まると run へ入る時刻がずれ、作業ディレクトリの sum/ にも触れる）
       listSummaries: async () => ({ summaries: [], errors: [] }),
       run: () =>
         new Promise((resolve) => {
           calls += 1
-          release = () => resolve({ ok: true, sourceBytes: 100, summaryBytes: 1, channels: 1, problems: { skippedBytes: 0, badRecords: 0 }, outOfWindowSamples: 0, ms: 1 })
+          release = () => resolve({ ok: true, prevSourceBytes: null, sourceBytes: 100, summaryBytes: 1, channels: 1, problems: { skippedBytes: 0, badRecords: 0 }, outOfWindowSamples: 0, ms: 1 })
           entered()
         }),
     })
@@ -453,7 +500,7 @@ describe('WaveSummaryKeeper — 元のファイルが無くなった要約を捨
       now: () => H12 + 10 * 60_000,
       list: async () => ({ jobs: [j], errors: [] }),
       sizeOf: async () => 100,
-      summarizedBytes: async () => null,
+      summarizedSources: async () => null,
       listSummaries: async () => {
         throw new Error('EIO')
       },
@@ -462,7 +509,7 @@ describe('WaveSummaryKeeper — 元のファイルが無くなった要約を捨
       },
       run: async (x): Promise<SummaryJobResult> => {
         ran.push(x.hourKey)
-        return { ok: true, sourceBytes: 100, summaryBytes: 1, channels: 1, problems: { skippedBytes: 0, badRecords: 0 }, outOfWindowSamples: 0, ms: 1 }
+        return { ok: true, prevSourceBytes: null, sourceBytes: 100, summaryBytes: 1, channels: 1, problems: { skippedBytes: 0, badRecords: 0 }, outOfWindowSamples: 0, ms: 1 }
       },
     })
     await keeper.tick()

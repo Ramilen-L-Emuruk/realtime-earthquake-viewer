@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { COLUMNS_MAX as SCREEN_COLUMNS_MAX, RANGE_MAX_MS as SCREEN_RANGE_MAX_MS, SAMPLES_RANGE_MAX_MS as SCREEN_SAMPLES_RANGE_MAX_MS } from '../admin/recordsPlot'
+import { applyJmaFilter, calcSeismicIntensity } from '../../../src/utils/knet/seismicIntensity'
 import { buildMseed3Record, mseed3SourceId } from './mseed3Record'
 import { RECORD_QUAKES_RANGE_MAX_MS, RecordQuakes } from './recordQuakes'
 import type { FusedWaveChunk } from './sensorFusion'
@@ -21,7 +22,7 @@ import {
   type RecordsApiDeps,
 } from './waveRecordsApi'
 import { SAMPLES_RANGE_MAX_MS, type RecordDirs } from './waveRecords'
-import { buildSummaryFile, rawSummaryPath, waveSummaryPath } from './waveSummaryFiles'
+import { buildSummaryFile, prevWaveSourcePath, rawSummaryPath, waveSummaryPath } from './waveSummaryFiles'
 
 /** 取り消されない要求（見に来た側が繋がったまま）。 */
 const OPEN = new AbortController().signal
@@ -71,6 +72,7 @@ async function writeWaveHour(key: string, hourStartMs: number, values: number[])
     hourKey,
     hourStartMs,
     stationKey: key,
+    prevSourcePath: prevWaveSourcePath(dirs.waveDir, key, hourStartMs),
   })
   expect(result.ok).toBe(true)
 }
@@ -193,15 +195,18 @@ describe('intensity', () => {
     expect(body.measured).not.toBeNull()
   })
 
-  it('札の形でないもの・10 分を超える範囲は弾く', async () => {
+  it('札の形でないもの・10 分を超えて列の数が無いもの・広すぎる範囲は弾く', async () => {
     expect(await handleRecordsRequest('intensity', q({ station: '../x', from: H0, to: H0 + 1000 }), deps, OPEN)).toEqual({
       status: 400,
       body: { error: 'bad-station' },
     })
     expect(await handleRecordsRequest('intensity', q({ station: KEY, from: H0, to: H0 + SAMPLES_RANGE_MAX_MS + 1 }), deps, OPEN)).toEqual({
       status: 400,
-      body: { error: 'range-too-wide' },
+      body: { error: 'bad-columns' },
     })
+    expect(
+      await handleRecordsRequest('intensity', q({ station: KEY, from: H0, to: H0 + RECORDS_RANGE_MAX_MS + 1, columns: 10 }), deps, OPEN),
+    ).toEqual({ status: 400, body: { error: 'range-too-wide' } })
   })
 
   it('記録が無ければ値は null で、読んだファイルの数を添える', async () => {
@@ -262,7 +267,7 @@ describe('channels', () => {
       block: encodeSteim2(Int32Array.from({ length: 50 }, () => 100), 7),
     })
     writeFileSync(sourcePath, wave)
-    await buildSummaryFile({ kind: 'raw', sourcePath, summaryPath: rawSummaryPath(dirs.summaryDir, hourKey), hourKey, hourStartMs: H0, stationKey: null })
+    await buildSummaryFile({ kind: 'raw', sourcePath, summaryPath: rawSummaryPath(dirs.summaryDir, hourKey), hourKey, hourStartMs: H0, stationKey: null, prevSourcePath: null })
     const unit = { enabled: true, axes: defaultAxes(3), noiseDensity: null }
     config = { ...config, boards: [{ boardKey: board, stationId: STATION, orientation: IDENTITY_MATRIX, sensors: [{ sensorId: 'S1', ...unit }] }] }
     const got = await handleRecordsRequest('channels', q({}), deps, OPEN)
@@ -342,5 +347,107 @@ describe('画面（src/admin/recordsPlot.ts）が頼む上限', () => {
     expect(SCREEN_RANGE_MAX_MS).toBe(RECORDS_RANGE_MAX_MS)
     expect(SCREEN_COLUMNS_MAX).toBe(RECORDS_COLUMNS_MAX)
     expect(SCREEN_SAMPLES_RANGE_MAX_MS).toBe(SAMPLES_RANGE_MAX_MS)
+  })
+})
+
+describe('composite・intensity（10 分を超える幅は要約から）', () => {
+  const RATE = 100
+  /** 3 分ぶんの揺れ（100 Hz）。3 軸とも同じ値。 */
+  const shaking = Array.from({ length: 3 * 60 * RATE }, (_, i) => 30 * Math.sin(i / 3) * Math.exp(-i / 9000))
+
+  it('合成は 2 軸以上の組ごとに列の最大を返す（各軸からその分の平均を引いて √Σ²）', async () => {
+    await writeWaveHour(KEY, H0, [1, 2, 3])
+    const got = await handleRecordsRequest('composite', q({ group: `station/${KEY}`, from: H0, to: H0 + HOUR, columns: 60 }), deps, OPEN)
+    expect(got.status).toBe(200)
+    const body = got.body as {
+      group: string
+      source: string
+      unit: string
+      columnMs: number
+      subsets: { channels: string[]; n: number[]; max: (number | null)[] }[]
+      hours: { ok: number }
+    }
+    expect(body.group).toBe(`station/${KEY}`)
+    expect(body.source).toBe('coarse')
+    expect(body.unit).toBe('gal')
+    expect(body.columnMs).toBe(60_000)
+    expect(body.subsets.map((x) => x.channels.length).sort()).toEqual([2, 2, 2, 3])
+    const all = body.subsets.find((x) => x.channels.length === 3)!
+    expect(all.n[0]).toBe(3)
+    // 平均 2 からの隔たりが 1 の点で √3。
+    expect(all.max[0]).toBeCloseTo(Math.sqrt(3), 5)
+    expect(all.max[1]).toBeNull()
+    expect(body.hours.ok).toBeGreaterThan(0)
+  })
+
+  it('要約がまだ無い時を、合成の口でも頭の時刻つきで返す', async () => {
+    mkdirSync(dirs.waveDir, { recursive: true })
+    const chunk = {
+      stationId: STATION,
+      firstSampleIndex: 0,
+      firstSampleMs: H0,
+      msPerSample: 10,
+      gal: [[1], [1], [1]],
+      dcGal: [[0], [0], [980]],
+      memberCount: [3],
+    } as unknown as FusedWaveChunk
+    writeFileSync(join(dirs.waveDir, `wave-${KEY}-${hourKeyOf(H0)}.bin`), encodeWaveChunk(chunk, false)!)
+    const got = await handleRecordsRequest('composite', q({ group: `station/${KEY}`, from: H0, to: H0 + HOUR, columns: 60 }), deps, OPEN)
+    expect((got.body as { irregularHours: unknown }).irregularHours).toEqual([{ hourStartMs: H0, state: 'pending' }])
+  })
+
+  it('前の時だけが伸びたら、震度は古い時に数え、合成は数えない（合成は前の時を読まない）', async () => {
+    await writeWaveHour(KEY, H0 - HOUR, [1, 2])
+    await writeWaveHour(KEY, H0, shaking)
+    await writeWaveHour(KEY, H0 - HOUR, [1, 2, 3, 4])
+    const composite = await handleRecordsRequest('composite', q({ group: `station/${KEY}`, from: H0, to: H0 + HOUR, columns: 60 }), deps, OPEN)
+    expect((composite.body as { irregularHours: unknown }).irregularHours).toEqual([])
+    const intensity = await handleRecordsRequest('intensity', q({ station: KEY, from: H0, to: H0 + HOUR, columns: 60 }), deps, OPEN)
+    expect((intensity.body as { irregularHours: unknown }).irregularHours).toEqual([{ hourStartMs: H0, state: 'stale' }])
+  })
+
+  it('記録の名乗りの形でなければ弾く（軸まで名乗ったチャンネル・置き場所の外）', async () => {
+    for (const group of [`station/${KEY}/X`, 'station/../x', mseed3SourceId('mac:02000000a1b2', 'S1', 'HNZ')!]) {
+      expect(await handleRecordsRequest('composite', q({ group, from: H0, to: H0 + HOUR, columns: 60 }), deps, OPEN)).toEqual({
+        status: 400,
+        body: { error: 'bad-group' },
+      })
+    }
+  })
+
+  it('震度: 範囲に丸ごと入る分の上位を合わせた計測震度が、記録全体を一度に計算した値と一致する', async () => {
+    await writeWaveHour(KEY, H0, shaking)
+    const got = await handleRecordsRequest('intensity', q({ station: KEY, from: H0, to: H0 + 30 * 60_000, columns: 30 }), deps, OPEN)
+    expect(got.status).toBe(200)
+    const body = got.body as { source: string; realtime: (number | null)[]; maxRealtime: number | null; maxRealtimeBucketMs: number; measured: number | null }
+    expect(body.source).toBe('coarse')
+    expect(body.realtime[0]).not.toBeNull()
+    expect(body.realtime[5]).toBeNull()
+    expect(body.maxRealtime).toBe(Math.max(...body.realtime.filter((v): v is number => v !== null)))
+    expect(body.maxRealtimeBucketMs).toBe(60_000)
+    // 値は f32 で持つので、その丸めの分だけずれる。
+    expect(body.measured).toBeCloseTo(calcSeismicIntensity(shaking, shaking, shaking, RATE)!, 5)
+  })
+
+  it('震度: 範囲の頭が分の途中なら、その分は 1 秒の段の範囲に丸ごと入る秒だけを合わせる', async () => {
+    await writeWaveHour(KEY, H0, shaking)
+    const from = H0 + 30_000
+    const got = await handleRecordsRequest('intensity', q({ station: KEY, from, to: H0 + 20 * 60_000, columns: 20 }), deps, OPEN)
+    const body = got.body as { measured: number | null }
+    // 記録全体へフィルターを掛け、範囲に入るサンプルだけで 0.3 秒の値を取る。
+    const f = applyJmaFilter(shaking, RATE)
+    const a = f.map((v) => Math.sqrt(3) * Math.abs(v)).filter((_, i) => H0 + i * 10 >= from)
+    a.sort((x, y) => y - x)
+    expect(body.measured).toBeCloseTo(2 * Math.log10(a[29]!) + 0.94, 5)
+  })
+
+  it('震度: 1 秒の段で描く幅は、その段の列と 1 秒ごとの最大の時刻を返す', async () => {
+    await writeWaveHour(KEY, H0, shaking)
+    const got = await handleRecordsRequest('intensity', q({ station: KEY, from: H0, to: H0 + 20 * 60_000, columns: 1200 }), deps, OPEN)
+    const body = got.body as { source: string; columnMs: number; maxRealtimeBucketMs: number; measured: number | null }
+    expect(body.source).toBe('fine')
+    expect(body.columnMs).toBe(1000)
+    expect(body.maxRealtimeBucketMs).toBe(1000)
+    expect(body.measured).toBeCloseTo(calcSeismicIntensity(shaking, shaking, shaking, RATE)!, 5)
   })
 })

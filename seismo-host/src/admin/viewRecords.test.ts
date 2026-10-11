@@ -45,6 +45,48 @@ function envelope(): Record<string, unknown> {
   }
 }
 
+/** 10 分を超える幅の合成と震度（要約から）の応答。 */
+function derived(url: string): { status: number; body: unknown } | null {
+  const hours = { ok: 1, stale: 0, pending: 0, failed: 0, absent: 0 }
+  if (url.startsWith('/api/records/composite')) {
+    const group = new URLSearchParams(url.split('?')[1]).get('group')!
+    const axes = CHANNELS.channels.filter((c) => String(c.id).startsWith(`${group}/`) || c.sensor === group).map((c) => String(c.id))
+    return {
+      status: 200,
+      body: {
+        group,
+        source: 'coarse',
+        unit: 'gal',
+        columnMs: 60_000,
+        firstColumnMs: H0,
+        subsets: axes.length >= 2 ? [{ channels: axes, n: [5], max: [2] }] : [],
+        hours,
+        irregularHours: [],
+        unscaledHours: 0,
+      },
+    }
+  }
+  if (url.startsWith('/api/records/intensity') && new URLSearchParams(url.split('?')[1]).has('columns')) {
+    return {
+      status: 200,
+      body: {
+        station: 'home',
+        source: 'coarse',
+        columnMs: 60_000,
+        firstColumnMs: H0,
+        realtime: [1.2],
+        maxRealtime: 1.2,
+        maxRealtimeAtMs: H0 + 3 * 60_000,
+        maxRealtimeBucketMs: 60_000,
+        measured: 0.86,
+        hours,
+        irregularHours: [],
+      },
+    }
+  }
+  return null
+}
+
 let requested: string[] = []
 let respond: (url: string) => { status: number; body: unknown }
 
@@ -61,7 +103,7 @@ beforeEach(() => {
     vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
       requested.push(url)
-      const r = respond(url)
+      const r = derived(url) !== null && respond(url).status === 404 ? derived(url)! : respond(url)
       return new Response(JSON.stringify(r.body), { status: r.status, headers: { 'Content-Type': 'application/json' } })
     }),
   )
@@ -99,9 +141,14 @@ describe('initRecordsView', () => {
     const envelopes = requested.filter((u) => u.startsWith('/api/records/envelope'))
     const views = envelopes.filter((u) => u.includes(`from=${H0}`) && u.includes(`to=${H0 + HOUR}`))
     expect(views.map((u) => new URLSearchParams(u.split('?')[1]).get('channel'))).toEqual(['station/home/X', 'station/home/Y', 'station/home/Z'])
-    // 範囲が 10 分を超えるので、合成と震度の段は文言だけ
-    expect(root.textContent).toContain('合成は 10 分以内まで寄せると出る')
-    expect(root.textContent).toContain('震度の推移は 10 分以内まで寄せると出る')
+    // 範囲が 10 分を超えても、合成と震度の推移を要約から取って出す（記録の組すべてを 1 回で取る）
+    const composite = requested.filter((u) => u.startsWith('/api/records/composite'))
+    expect(composite.map((u) => new URLSearchParams(u.split('?')[1]).get('group'))).toContain('station/home')
+    const intensity = requested.find((u) => u.startsWith('/api/records/intensity') && u.includes(`to=${H0 + HOUR}`))!
+    expect(new URLSearchParams(intensity.split('?')[1]).get('columns')).not.toBeNull()
+    expect(root.querySelector('canvas.records-composite')).not.toBeNull()
+    expect(root.querySelector('.records-intensity-header')!.textContent).toBe('最大 1.2（12:03 ごろ） 計測 0.8')
+    expect(root.textContent).not.toContain('10 分以内まで寄せると出る')
     // 要約の不調の行
     expect(root.querySelector('.records-note')!.textContent).toContain('要約がまだ無い時が 2')
   })
@@ -147,6 +194,22 @@ describe('initRecordsView', () => {
     await initRecordsView(root, memoryTabContext(new AbortController().signal, 'records'))
     await settle()
     expect(root.querySelector('.records-note')!.textContent).toContain('波形の記録を取得できていない（range-too-wide）')
+  })
+
+  it('震度の推移だけ取れなくても、軸の段と合成は描き、理由を添えて書く', async () => {
+    respond = (url) => {
+      if (url.startsWith('/api/records/channels')) return { status: 200, body: CHANNELS }
+      if (url.startsWith('/api/records/envelope')) return { status: 200, body: envelope() }
+      if (url.startsWith('/api/records/intensity')) return { status: 400, body: { error: 'range-too-wide' } }
+      return { status: 404, body: { error: 'not-found' } }
+    }
+    const root = document.createElement('div')
+    await initRecordsView(root, memoryTabContext(new AbortController().signal, 'records'))
+    await settle()
+    const note = root.querySelector('.records-note')!.textContent!
+    expect(note).toContain('波形の記録を取得できていない（range-too-wide）')
+    // 軸の段の応答を読めていれば、その要約の不調の行も出る（捨てていれば出ない）
+    expect(note).toContain('要約がまだ無い時が 2')
   })
 
   it('軸の段は消せるが、最後の 1 本は消さない', async () => {

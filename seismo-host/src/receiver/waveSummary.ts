@@ -205,6 +205,19 @@ export class SummaryBuilder {
     }
   }
 
+  /** サンプルを受け入れる窓（時の頭〜時の終わり＋はみ出し）。 */
+  get sampleWindow(): { readonly fromMs: number; readonly toMs: number } {
+    return { fromMs: this.fromMs, toMs: this.toMs }
+  }
+
+  /**
+   * そのチャンネルの、時の中に先頭があるまとまり（足した順・写さない）。PSD と合成の要約
+   * （`waveSummaryDerived.ts`）が使う。**窓の外のサンプルも含む**ので、使う側が {@link sampleWindow} で切る。
+   */
+  chunksOf(id: string): readonly PsdChunk[] {
+    return this.acc.get(id)?.chunks ?? []
+  }
+
   /** 締める。`sourceBytes` は要約を作った元のファイルの大きさ。 */
   build(sourceBytes: number, sourceProblems: SourceProblems = NO_PROBLEMS): SummaryFile {
     const channels: SummaryChannel[] = []
@@ -347,9 +360,12 @@ const HEADER_BYTES = 4 + 4 + 8 + 8 + 8 + 8 + 8 + 4 + 4
 /** 要約を分けて書く部分。 */
 export type SummaryPart = 'fine' | 'coarse' | 'psd'
 const PART_CODES: Record<SummaryPart, number> = { fine: 1, coarse: 2, psd: 3 }
-/** 書く順。**作り直すかは最後に書く部分の頭で決める**（途中で落ちたら、その部分が古いまま残るので作り直しになる）。 */
+/**
+ * 書く順。**作り直すかはここでは決めない** —— この後ろに合成と震度の部分（`waveSummaryDerived.ts`）を書き、
+ * その最後の部分の頭で決める（`waveSummaryFiles.ts` の `summarizedSources`）。途中で落ちたら最後の部分が
+ * 古いまま残るので、作り直しになる。
+ */
 export const SUMMARY_PARTS: readonly SummaryPart[] = ['fine', 'coarse', 'psd']
-export const SUMMARY_LAST_PART: SummaryPart = 'psd'
 
 /** 1 部分だけを読んだもの。 */
 export interface SummaryPartChannel {
@@ -494,20 +510,6 @@ function writeLevel(buf: Buffer, at: number, level: SummaryLevel): number {
     }
   }
   return p
-}
-
-/** 作り直すか決めるために、頭だけ読む長さ。 */
-export const SUMMARY_PEEK_BYTES = 16
-
-/**
- * 頭だけを見て、要約が控えている元のファイルの大きさを返す。目印・版が合わなければ `null`
- * （作り直せばよい）。**本体を読まずに済ませるためにある** —— 作り直すかの判断は毎分全部の要約に掛かる。
- */
-export function peekSummarySourceBytes(head: Buffer): number | null {
-  if (head.length < SUMMARY_PEEK_BYTES) return null
-  if (head.readUInt32LE(0) !== MAGIC || head.readUInt8(4) !== FORMAT_VERSION) return null
-  const bytes = head.readDoubleLE(8)
-  return Number.isFinite(bytes) ? bytes : null
 }
 
 /**

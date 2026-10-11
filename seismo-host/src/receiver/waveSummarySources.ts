@@ -8,8 +8,10 @@
 import { MSEED3_HOST_LOG_SOURCE_ID, mseed3SourceId } from './mseed3Record'
 import { readMseed3Records } from './mseed3Reader'
 import { summarizeReception, type ReceptionSummary } from './receptionSummary'
+import { QUAKE_INTENSITY_LEAD_MS } from './quakeIntensity'
 import { decodeWaveFile, resolveRevisions } from './waveArchive'
 import { SummaryBuilder, type SummaryFile } from './waveSummary'
+import { compositeGroupsOf, stationIntensityOf, type DerivedSummary } from './waveSummaryDerived'
 
 const HOUR_MS = 3_600_000
 const ENCODING_TEXT = 0
@@ -73,7 +75,7 @@ export function summarizeMseedHour(buf: Uint8Array, hourStartMs: number): Summar
 export function summarizeMseedHourWithReception(
   buf: Uint8Array,
   hourStartMs: number,
-): { readonly file: SummaryFile; readonly reception: ReceptionSummary } {
+): { readonly file: SummaryFile; readonly derived: DerivedSummary; readonly reception: ReceptionSummary } {
   const read = readMseed3Records(buf)
   const builder = new SummaryBuilder({ fromMs: hourStartMs, toMs: hourStartMs + HOUR_MS })
   for (const r of read.records) {
@@ -94,7 +96,14 @@ export function summarizeMseedHourWithReception(
     skippedBytes: read.skippedBytes,
     badRecords: read.crcFailures + read.decodeFailures,
   })
-  return { file, reception: summarizeReception(read.records, buf.length) }
+  // **生データの合成は前の時を読まない**（中心はその分の平均で、助走の要る計算が無い）。
+  const derived: DerivedSummary = {
+    sourceBytes: buf.length,
+    prevSourceBytes: null,
+    composites: compositeGroupsOf(file, (id) => builder.chunksOf(id), builder.sampleWindow),
+    intensity: null,
+  }
+  return { file, derived, reception: summarizeReception(read.records, buf.length) }
 }
 
 /**
@@ -105,12 +114,36 @@ export function summarizeMseedHourWithReception(
  * 跨いだまとまりとの重なりは見ない（まとまりは 0.3 秒ほどなので、跨ぐのは境目の 1 まとまりだけ）。
  */
 export function summarizeWaveHour(buf: Buffer, stationKey: string, hourStartMs: number): SummaryFile {
+  return summarizeWaveHourWithDerived(buf, stationKey, hourStartMs, null).file
+}
+
+/**
+ * {@link summarizeWaveHour} と同じ読み込みで、要約の 4 つ目の部分（合成と震度・`waveSummaryDerived.ts`）も作る。
+ * `prevBuf` は前の時の合成波形のファイル（無ければ `null`）—— **震度は前の時の末尾
+ * （{@link QUAKE_INTENSITY_LEAD_MS}）から通す**。投げない。
+ */
+export function summarizeWaveHourWithDerived(
+  buf: Buffer,
+  stationKey: string,
+  hourStartMs: number,
+  prevBuf: Buffer | null,
+): { readonly file: SummaryFile; readonly derived: DerivedSummary } {
   const decoded = decodeWaveFile(buf, Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY)
   const builder = new SummaryBuilder({ fromMs: hourStartMs, toMs: hourStartMs + HOUR_MS })
   const ids = [stationWaveChannelId(stationKey, 0), stationWaveChannelId(stationKey, 1), stationWaveChannelId(stationKey, 2)]
   for (const id of ids) builder.declare(id, { unit: 'gal', ugPerLsb: null })
-  for (const c of resolveRevisions(decoded.chunks)) {
+  const own = resolveRevisions(decoded.chunks)
+  for (const c of own) {
     for (let a = 0; a < 3; a += 1) builder.add(ids[a]!, c.firstSampleMs, c.msPerSample, c.gal[a]!)
   }
-  return builder.build(buf.length, { skippedBytes: decoded.skippedBytes, badRecords: 0 })
+  const file = builder.build(buf.length, { skippedBytes: decoded.skippedBytes, badRecords: 0 })
+  const lead =
+    prevBuf === null ? [] : resolveRevisions(decodeWaveFile(prevBuf, hourStartMs - QUAKE_INTENSITY_LEAD_MS, Number.POSITIVE_INFINITY).chunks)
+  const derived: DerivedSummary = {
+    sourceBytes: buf.length,
+    prevSourceBytes: prevBuf === null ? null : prevBuf.length,
+    composites: compositeGroupsOf(file, (id) => builder.chunksOf(id), builder.sampleWindow),
+    intensity: stationIntensityOf({ own, lead, window: builder.sampleWindow }),
+  }
+  return { file, derived }
 }

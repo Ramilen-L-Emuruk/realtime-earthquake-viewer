@@ -1,5 +1,6 @@
 // 要約（`waveSummary.ts`）を最新に保つ係。一定の間隔で元のファイルを数え上げ、要約が控えている大きさと
-// 元のファイルの大きさが違うもの（まだ無い・後から伸びた）を作り直す。
+// 元のファイルの大きさが違うもの（まだ無い・後から伸びた）を作り直す。**合成波形は前の時のファイルの
+// 大きさも比べる**（震度を前の時の末尾から通すので、前の時が後から伸びたらこの時も作り直す）。
 //
 // **作るのは呼び出し側が渡す `run`（ふつうは別スレッド・`waveSummaryWorkerRunner.ts`）。** この係は
 // 「どれをいつ作るか」だけを決める —— 決め方をテストで固定でき、重い処理は受信のイベントループに乗らない。
@@ -27,8 +28,9 @@ import {
   listSummaryJobs,
   removeSummaryFiles,
   sourceSizeOf,
-  summarizedSourceBytes,
+  summarizedSources,
   type ListResult,
+  type SummarizedSources,
   type SummaryJob,
   type SummaryJobResult,
   type SummaryListResult,
@@ -50,7 +52,7 @@ export interface WaveSummaryKeeperOptions {
   /** 差し替えられるのはテストのため。 */
   readonly list?: (dirs: { rawDir: string; waveDir: string; summaryDir: string }) => Promise<ListResult>
   readonly sizeOf?: (path: string) => Promise<number | null>
-  readonly summarizedBytes?: (summaryPath: string) => Promise<number | null>
+  readonly summarizedSources?: (summaryPath: string) => Promise<SummarizedSources | null>
   readonly listSummaries?: (summaryDir: string) => Promise<SummaryListResult>
   readonly removeSummary?: (files: readonly string[]) => Promise<void>
   /** 元の無い要約を捨てたとき・捨てられなかったときの 1 行。 */
@@ -92,11 +94,11 @@ export class WaveSummaryKeeper {
   private readonly now: () => number
   private readonly list: NonNullable<WaveSummaryKeeperOptions['list']>
   private readonly sizeOf: NonNullable<WaveSummaryKeeperOptions['sizeOf']>
-  private readonly summarizedBytes: NonNullable<WaveSummaryKeeperOptions['summarizedBytes']>
+  private readonly summarizedSources: NonNullable<WaveSummaryKeeperOptions['summarizedSources']>
   private readonly listSummaries: NonNullable<WaveSummaryKeeperOptions['listSummaries']>
   private readonly removeSummary: NonNullable<WaveSummaryKeeperOptions['removeSummary']>
   /** 要約が控えている元のファイルの大きさ（読んだもの・作ったもの）。`null` は「要約が無い」。 */
-  private readonly known = new Map<string, number | null>()
+  private readonly known = new Map<string, SummarizedSources | null>()
   private readonly builtAt = new Map<string, number>()
   private readonly retryAt = new Map<string, number>()
   private running = false
@@ -119,7 +121,7 @@ export class WaveSummaryKeeper {
     this.now = options.now ?? Date.now
     this.list = options.list ?? listSummaryJobs
     this.sizeOf = options.sizeOf ?? sourceSizeOf
-    this.summarizedBytes = options.summarizedBytes ?? summarizedSourceBytes
+    this.summarizedSources = options.summarizedSources ?? summarizedSources
     this.listSummaries = options.listSummaries ?? listSummaryFiles
     this.removeSummary = options.removeSummary ?? removeSummaryFiles
   }
@@ -184,7 +186,7 @@ export class WaveSummaryKeeper {
 
     const nowMs = this.now()
     const currentHour = jstHourStartMs(nowMs)
-    const stale: { job: SummaryJob; size: number }[] = []
+    const stale: { job: SummaryJob; size: number; prevSize: number | null }[] = []
     const seen = new Set<string>()
     let upToDate = 0
     let sources = 0
@@ -201,14 +203,24 @@ export class WaveSummaryKeeper {
       // 数え上げた後に消えた（人が消した）。
       if (size === null) continue
       seen.add(job.summaryPath)
+      let prevSize: number | null = null
+      if (job.prevSourcePath !== null) {
+        try {
+          prevSize = await this.sizeOf(job.prevSourcePath)
+        } catch (error) {
+          this.scanErrors += 1
+          this.lastError = `${job.prevSourcePath} の大きさを読めず: ${messageOf(error)}`
+          continue
+        }
+      }
       sources += 1
       let known = this.known.get(job.summaryPath)
       if (known === undefined) {
-        known = await this.summarizedBytes(job.summaryPath)
+        known = await this.summarizedSources(job.summaryPath)
         this.known.set(job.summaryPath, known)
       }
-      if (known === size) upToDate += 1
-      else stale.push({ job, size })
+      if (known !== null && known.sourceBytes === size && known.prevSourceBytes === prevSize) upToDate += 1
+      else stale.push({ job, size, prevSize })
     }
 
     // **元のファイルが消えた分の控えは捨てる**（人が古い生データを消すと、控えだけが動いている間ずっと残る）。
@@ -231,7 +243,7 @@ export class WaveSummaryKeeper {
     due.sort((a, b) => b.job.hourStartMs - a.job.hourStartMs)
 
     let done = 0
-    for (const { job, size } of due.slice(0, this.opts.maxJobsPerTick ?? MAX_JOBS_PER_TICK_DEFAULT)) {
+    for (const { job, size, prevSize } of due.slice(0, this.opts.maxJobsPerTick ?? MAX_JOBS_PER_TICK_DEFAULT)) {
       let result: SummaryJobResult
       try {
         result = await this.opts.run(job)
@@ -239,14 +251,14 @@ export class WaveSummaryKeeper {
         result = { ok: false, error: messageOf(error) }
       }
       if (result.ok) {
-        this.known.set(job.summaryPath, result.sourceBytes)
+        this.known.set(job.summaryPath, { sourceBytes: result.sourceBytes, prevSourceBytes: result.prevSourceBytes })
         this.builtAt.set(job.summaryPath, this.now())
         this.retryAt.delete(job.summaryPath)
         this.built += 1
         this.lastBuiltHour = job.hourKey
         this.lastBuildMs = result.ms
-        // **作っている間に元のファイルが伸びていれば、まだ最新ではない**（次の見回りで作り直す）。
-        if (result.sourceBytes === size) done += 1
+        // **作っている間に元のファイル（前の時を含む）が伸びていれば、まだ最新ではない**（次の見回りで作り直す）。
+        if (result.sourceBytes === size && result.prevSourceBytes === prevSize) done += 1
       } else {
         this.failed += 1
         this.lastError = `${job.sourcePath} の要約を作れず: ${result.error}`

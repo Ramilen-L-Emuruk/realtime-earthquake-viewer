@@ -12,11 +12,13 @@ const JOB: SummaryJob = {
   hourKey: '2026-10-07T12',
   hourStartMs: 0,
   stationKey: null,
+  prevSourcePath: null,
 }
 
 const OK: SummaryJobResult = {
   ok: true,
   sourceBytes: 10,
+  prevSourceBytes: null,
   summaryBytes: 1,
   channels: 1,
   problems: { skippedBytes: 0, badRecords: 0 },
