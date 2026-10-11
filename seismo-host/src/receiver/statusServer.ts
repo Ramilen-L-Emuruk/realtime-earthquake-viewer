@@ -37,8 +37,8 @@ import { checkAdminAuth } from './adminAuth'
 import type { AdminAuthConfig, AdminAuthFailure } from './adminAuth'
 import type { SensorRestWindows } from './gravityCheck'
 import { COLUMNS_MAX, decimalInt } from './httpQuery'
-import { computeQuakeIntensity, QUAKE_INTENSITY_LEAD_MS } from './quakeIntensity'
-import type { QuakeIntensityResult } from './quakeIntensity'
+import { computeQuakeIntensity, computeUsualMeasured, QUAKE_INTENSITY_LEAD_MS, USUAL_WAIT_MS, usualWindows } from './quakeIntensity'
+import type { QuakeIntensityResult, UsualMeasuredResult } from './quakeIntensity'
 import type { HubMessage, PairWant, ReadingHub, ResidualWant, WaveWant } from './readingHub'
 import { describeFailure, normalizeBoardKey, parseStationConfig } from './stationConfig'
 import type { StationConfig } from './stationConfig'
@@ -460,6 +460,7 @@ export function buildQuakeIntensityResponse(
   read: WaveRangeResult,
   result: QuakeIntensityResult,
   stationKnown: boolean,
+  usual: UsualMeasuredResult,
 ): Record<string, unknown> {
   return {
     stationId: query.stationId,
@@ -471,6 +472,9 @@ export function buildQuakeIntensityResponse(
     realtimeSeries: result.realtimeSeries,
     measured: result.measured,
     measuredUnavailable: result.measuredUnavailable,
+    usualMeasured: usual.usualMeasured,
+    usualWindowCount: usual.usualWindowCount,
+    usualUsedCount: usual.usualUsedCount,
     gapCount: result.gapCount,
     invalidChunkCount: result.invalidChunkCount,
     unsolvedChunkCount: result.unsolvedChunkCount,
@@ -1491,6 +1495,107 @@ export async function startStatusServer(options: StatusServerOptions): Promise<S
     })
   }
 
+  // **「普段」の計測震度の控え。** 過ぎた 1 時間の値なので、同じ区間を訊き直されても変わらない
+  // （地震カードは開くたび・描き直すたびに訊いてくる）。1 時間ぶんを読み直すのを避ける。
+  // 作り直し（rewave）で控えの中身が変わることはあるが、6 区間の中央値はほとんど動かない。
+  const usualCache = new Map<string, UsualMeasuredResult>()
+  const USUAL_CACHE_MAX = 64
+  // **同じ区間の計算は 1 本にまとめる。** カードを続けて開く・描き直しで同時に訊かれたとき、
+  // 1 時間ぶんの読み返しを並べて走らせない。
+  const usualInFlight = new Map<string, Promise<UsualMeasuredResult>>()
+  /**
+   * 「普段」の計測震度を出す。**出せなくても地震の区間の値は返す**（ここで投げると 500 になり、
+   * 「最大」「計測」まで出なくなる）。
+   *
+   * **読み返しの失敗と計算の失敗は記録を分ける。** 前者は記録が読めないだけ（warn）、後者はこちらの
+   * 誤り（error・stack つき）—— 1 つにまとめると、計算の誤りが「普段が出ないだけ」に見えて追えない。
+   */
+  const computeUsualFor = async (
+    readWaves: NonNullable<StatusServerOptions['readWaves']>,
+    query: Extract<QuakeIntensityQuery, { ok: true }>,
+    key: string,
+  ): Promise<UsualMeasuredResult> => {
+    const empty: UsualMeasuredResult = { usualMeasured: null, usualWindowCount: 0, usualUsedCount: 0 }
+    const windows = usualWindows(query.fromMs, query.toMs)
+    if (windows.length === 0) return empty
+    let read: WaveRangeResult
+    try {
+      read = await readWaves({ stationId: query.stationId, fromMs: windows[0].fromMs, toMs: query.fromMs })
+    } catch (error) {
+      log(
+        'warn',
+        'quake-intensity-usual',
+        forLog(query.stationId),
+        `[quake-intensity] 普段の計測震度を出せなかった（記録を読めない）: ${error instanceof Error ? error.message : String(error)}`,
+      )
+      return empty
+    }
+    try {
+      const usual = await computeUsualMeasured({
+        chunks: read.chunks,
+        fromMs: query.fromMs,
+        toMs: query.toMs,
+        // **1 区間ずつ受信へ順番を譲る**（`computeUsualMeasured` の説明）。
+        onWindow: () => new Promise((resolve) => setImmediate(resolve)),
+      })
+      // **測れなかった結果は控えない。** 記録が後から書かれる（取り戻し・作り直し）と測れるようになる。
+      // 6 区間のうち 3〜5 区間で出せた結果は控える —— 後から残りが測れても中央値はほとんど動かず、
+      // 欠けたまま毎回 1 時間ぶんを読み直すほうが重い。
+      if (usual.usualMeasured !== null) {
+        if (usualCache.size >= USUAL_CACHE_MAX) {
+          const oldest = usualCache.keys().next().value
+          if (oldest !== undefined) usualCache.delete(oldest)
+        }
+        usualCache.set(key, usual)
+      }
+      return usual
+    } catch (error) {
+      log(
+        'error',
+        'quake-intensity-usual-compute',
+        forLog(query.stationId),
+        `[quake-intensity] 普段の計測震度の計算で例外: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`,
+      )
+      return empty
+    }
+  }
+  /**
+   * **「普段」は {@link USUAL_WAIT_MS} だけ待つ。** 間に合わなければこの応答は「普段」なしで返す ——
+   * 地震の区間の「最大」「計測」は「普段」を待って返すので、待ち続けると遅いだけの「普段」がそれらまで
+   * 道連れにする（アプリは 15 秒で諦める）。計算は裏で続き、出せれば控えに入るので次に訊かれたときに出る。
+   * 読み返しが固まっても、合流した要求がそこで一緒に固まらない。
+   */
+  const usualMeasuredFor = async (query: Extract<QuakeIntensityQuery, { ok: true }>): Promise<UsualMeasuredResult> => {
+    const empty: UsualMeasuredResult = { usualMeasured: null, usualWindowCount: 0, usualUsedCount: 0 }
+    const readWaves = options.readWaves
+    if (readWaves === null) return empty
+    const key = `${query.stationId}|${query.fromMs}|${query.toMs}`
+    const hit = usualCache.get(key)
+    if (hit !== undefined) return hit
+    let running = usualInFlight.get(key)
+    if (running === undefined) {
+      running = computeUsualFor(readWaves, query, key).finally(() => usualInFlight.delete(key))
+      usualInFlight.set(key, running)
+    }
+    let timer: NodeJS.Timeout | undefined
+    const late = new Promise<UsualMeasuredResult>((resolve) => {
+      timer = setTimeout(() => {
+        log(
+          'warn',
+          'quake-intensity-usual-slow',
+          forLog(query.stationId),
+          `[quake-intensity] 普段の計測震度が ${USUAL_WAIT_MS / 1000} 秒で出なかった（この応答は普段なしで返し、計算は続ける）`,
+        )
+        resolve(empty)
+      }, USUAL_WAIT_MS)
+    })
+    try {
+      return await Promise.race([running, late])
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
   const server: Server = createServer((req, res) => {
     // **投げさせない。** ここで投げると Node が既定でプロセスごと落とす ——
     // 状態を見に来ただけの相手の打ち間違いで、受信そのものが止まる。
@@ -1693,9 +1798,10 @@ export async function startStatusServer(options: StatusServerOptions): Promise<S
             fromMs: query.fromMs - QUAKE_INTENSITY_LEAD_MS,
             toMs: query.toMs,
           })
-          .then((read) => {
+          .then(async (read) => {
             const result = computeQuakeIntensity({ chunks: read.chunks, fromMs: query.fromMs, toMs: query.toMs })
-            sendJson(res, 200, buildQuakeIntensityResponse(query, read, result, stationKnown))
+            const usual = await usualMeasuredFor(query)
+            sendJson(res, 200, buildQuakeIntensityResponse(query, read, result, stationKnown, usual))
           })
           .catch((error: unknown) => {
             // `/waves` と同じく、記録の口は `log()` で包んだものを使う（`.catch()` の中で投げると

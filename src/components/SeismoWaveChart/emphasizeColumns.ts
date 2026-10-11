@@ -12,18 +12,22 @@
 // 「下端の最小・上端の最大」を取ってから潰しても、潰してから取っても同じ値になる。
 
 import type { NoiseBand } from '../../utils/seismoQuakeWindow'
+import { emphasizedFloorGal } from '../../utils/seismoQuietScale'
 import type { PaintableColumns } from './paintWave'
 import type { WaveColumn } from './waveColumns'
 import { formatEmphasizedScaleGal } from './waveLabels'
 
 /**
- * 潰した後の縦の最小（gal）。**0.5 gal。**
+ * 潰した後の縦の最小（gal）。**ノイズの帯の幅（成分のうち最大）の 1/4**（→ `emphasizedFloorGal`）。
  *
- * 残った最大値でそのまま縦を伸ばすと、地震の無い窓に残るノイズの尖り（実測で最大 0.52 gal。
- * 18 窓中 2 窓が 0.3 gal を超えた）が枠いっぱいに描かれて揺れに見える。震度2〜3 の地震は
- * 8 件のうち 7 件で 0.4〜1.3 gal 残ったので、この値ならそれらは枠の 8 割以上の高さに出る。
+ * 残った最大値でそのまま縦を伸ばすと、地震の無い窓に残るノイズの尖りが枠いっぱいに描かれて
+ * 揺れに見える。MPU6050 だけだった頃に 0.5 gal と決めた（地震の無い 18 窓の尖りが最大 0.52 gal、
+ * 震度2〜3 の 8 件のうち 7 件で 0.4〜1.3 gal 残った）。その頃の帯の幅は約 2 gal で、0.5 gal は
+ * その 1/4 に当たる。**静かさが変わっても同じ見た目になるよう、帯の幅に比例させた。**
  */
-export const MIN_EMPHASIZED_SCALE_GAL = 0.5
+export function emphasizedScaleFloorGal(noise: NoiseBand): number {
+  return emphasizedFloorGal(Math.max(...noise.width.filter((w) => Number.isFinite(w))))
+}
 
 /**
  * 中心からの距離のうち、幅を超えた分だけを残す（符号は保つ）。
@@ -86,7 +90,7 @@ export function emphasizeColumns(params: {
   }
   // **振れの測れる向きが無ければ潰さずに返す**（値はあるのに全部非有限、という壊れ方）。
   if (best < 0) return folded
-  const scaleGal = Math.max(MIN_EMPHASIZED_SCALE_GAL, excess[best])
+  const scaleGal = Math.max(emphasizedScaleFloorGal(noise), excess[best])
   const width = noise.width[best]
   return {
     columns,

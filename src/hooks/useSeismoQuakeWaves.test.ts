@@ -722,6 +722,7 @@ describe('震度を訊く（#494 段3）', () => {
         realtimeSeries: [],
         measured: 1.9,
         measuredUnavailable: null,
+        usualMeasured: null,
         gapCount: 0,
         invalidChunkCount: 0,
         unsolvedChunkCount: 0,
