@@ -79,13 +79,34 @@ function heatRadiusExpr(iconScale: number): ExpressionSpecification {
 }
 
 interface Props {
-  points: HeatPoint[]
+  /** 描く点。**`null` は「出す点が無い」**（ヒートマップを出さない設定・まだ取れていない）。 */
+  points: readonly HeatPoint[] | null
   /** 地図アイコンの倍率（設定値）。震度マーカー等と揃えて拡散半径を拡縮する。 */
   iconScale: number
   visible: boolean
 }
 
-function buildFC(points: HeatPoint[]): FeatureCollection<Point> {
+/**
+ * 前回流し込んだ点と同じとみなせるか。同じなら `setData` を呼ばない。
+ *
+ * **`setData` は中身が同じでも地図全体を描き直させる**（ソースの `data` イベント経由で再描画が
+ * 要求される）。親は毎秒（自作地震計の波形を繋いでいれば 0.3 秒ごと）描き直されるので、
+ * 参照が変わるたびに流し込むと、ヒートマップを出していなくても毎秒数回のフル再描画になる
+ * （実測は docs/spec/map-rendering-spec.md §9「setData churn 対策」）。
+ *
+ * 比べるのは参照と「どちらも空か」だけ。中身を 1 点ずつ比べると、点が多いとき
+ * 比べる手間が流し込みの節約を食う。点がある間は親が `useMemo` で参照を保っている。
+ */
+export function isSameHeatData(
+  prev: readonly HeatPoint[] | null | undefined,
+  next: readonly HeatPoint[] | null,
+): boolean {
+  if (prev === undefined) return false
+  if (prev === next) return true
+  return (prev?.length ?? 0) === 0 && (next?.length ?? 0) === 0
+}
+
+function buildFC(points: readonly HeatPoint[]): FeatureCollection<Point> {
   const features: Feature<Point>[] = points.map((p) => ({
     type: 'Feature',
     properties: {
@@ -140,6 +161,8 @@ export function QuakeHeatmapGL({ points, iconScale, visible }: Props) {
   // （クロージャが握った初期値のままだと、構築前に倍率を変えた場合に旧値で組まれる）。
   const iconScaleRef = useRef(iconScale)
   iconScaleRef.current = iconScale
+  // 最後に流し込んだ点。`undefined` は「まだ何も流し込んでいない」（ソースを作り直した直後も含む）。
+  const lastPointsRef = useRef<readonly HeatPoint[] | null | undefined>(undefined)
 
   useEffect(() => {
     if (!map) return
@@ -204,6 +227,8 @@ export function QuakeHeatmapGL({ points, iconScale, visible }: Props) {
       if (map.getLayer(LYR)) map.removeLayer(LYR)
       if (map.getSource(SRC)) map.removeSource(SRC)
       addedRef.current = false
+      // ソースを外したので、次に作ったソースへは必ず流し込み直す。
+      lastPointsRef.current = undefined
     }
   }, [map])
 
@@ -215,8 +240,11 @@ export function QuakeHeatmapGL({ points, iconScale, visible }: Props) {
 
   useEffect(() => {
     if (!map || !addedRef.current) return
+    if (isSameHeatData(lastPointsRef.current, points)) return
     const src = map.getSource(SRC) as GeoJSONSource | undefined
-    src?.setData(buildFC(points))
+    if (!src) return
+    src.setData(buildFC(points ?? []))
+    lastPointsRef.current = points
   }, [map, points])
 
   // 表示切替（津波モードとの往復用）。

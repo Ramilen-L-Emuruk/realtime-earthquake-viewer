@@ -610,7 +610,7 @@ export function JapanMapGL({
               （条件付きレンダリングで addSource/removeSource を繰り返すと、非同期タイル化待ちの間
               タブ切替直後の数フレームが空白になるフリッカーの原因になるため）。 */}
           <QuakeHeatmapGL
-            points={heatPoints ?? []}
+            points={heatPoints ?? null}
             iconScale={iconScale}
             visible={(mode === 'quake' || mode === 'kyoshin') && !!heatPoints && heatPoints.length > 0}
           />

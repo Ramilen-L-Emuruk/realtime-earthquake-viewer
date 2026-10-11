@@ -808,7 +808,11 @@ archive API から取得して確認）:
 
 - 等級ごとの色・線幅は `src/utils/tsunamiStyle.ts` で定義
 - 大津波警報（紫）・警報（赤）・注意報（橙）・予報（シアン）で色分け
-- 点滅アニメーション: `requestAnimationFrame` で `line-opacity` を周期変化
+- 点滅アニメーション: 2.5 秒周期で前 8 割は不透明度 0.9、残り 2 割は 0。フェードせず即座に切り替える（値は
+  [`Map/gl/tsunamiBlink.ts`](../../src/components/Map/gl/tsunamiBlink.ts) の `TSUNAMI_BLINK_PERIOD_MS` ほか）。
+  **`line-opacity` を当てるのは点く・消える瞬間だけ**で、海岸線が見えていない間は止める。隠れていた
+  タブが前面へ戻ったら位相を合わせ直す。毎フレーム当てない理由は
+  [`map-rendering-spec.md`](map-rendering-spec.md) §9「点滅の駆動」
 - MapLibre の paint プロパティは既定で 300ms トランジションが付くため、`line-opacity-transition:
   { duration: 0 }` を明示的に設定して点滅の途切れを防ぐ
 
@@ -2383,3 +2387,6 @@ EEW の発表状況は判定に入れない（下記「優先度ルール」参�
   またいで割れる）、日付は常に添える（「更新」と同じ整形を通して桁を揃える）。語順は「語 → 値」で、
   **「更新」の行もこれに揃えて反転させた**（「観測 ◯◯ 時点」は語で挟んで文になっているので触らない）。
   解除表示中は出さず、standard 版はこの値そのものが来ない。バナーの伸びは実測 0〜12px
+- 2026-10-10: §7「描画（`TsunamiLinesGL`）」の点滅を、毎フレーム `line-opacity` を当てる形から、
+  点く・消える瞬間だけ当てる形へ変えた。周期・点灯の割合・切り替えの見た目は同じ（理由と実測は
+  [`map-rendering-spec.md`](map-rendering-spec.md) §9「点滅の駆動」）
