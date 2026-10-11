@@ -17,6 +17,7 @@ import { describeSilence } from '../receiver/assignedReception'
 import { CLOCK_OFFSET_WARN_MS, warnableClockOffset } from '../receiver/boardClockVerdict'
 import type { BoardClockOffset } from '../receiver/boardClockVerdict'
 import { readFinite } from './readJson'
+import type { TabContext } from './tabState'
 
 /**
  * `GET /status` の形。**`statusReport.ts` の `StatusReport` を丸ごと再定義しない。**
@@ -457,7 +458,9 @@ export function countLive(nowMs: number, rows: readonly { readonly lastPacketMs:
   return rows.filter((r) => !isStale(nowMs, r.lastPacketMs)).length
 }
 
-export async function initStatusView(container: HTMLElement, signal: AbortSignal): Promise<void> {
+/** 稼働状況タブは選択も表示の好みも持たない（読むだけの画面）。使うのは打ち切りの合図だけ。 */
+export async function initStatusView(container: HTMLElement, ctx: TabContext): Promise<void> {
+  const { signal } = ctx
   container.innerHTML = `
     <div class="status-error"></div>
     <div class="status-body muted">読み込み中…</div>

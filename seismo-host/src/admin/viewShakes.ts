@@ -42,6 +42,8 @@ import { detailMarkers, detailNote, detailTicks, detailWindow, readEnvelope, wav
 import type { EnvelopeView } from './shakeWave'
 import { openWaveStream } from './waveStream'
 import { formatGal, niceHalfSpanGal } from './wavePlot'
+import type { TabContext } from './tabState'
+import { readShakesPrefs, writeShakesPrefs } from './viewPrefs'
 
 /**
  * 期間の選択肢（日。2026-10-07 ユーザー承認）。**既定は 7 日。** これより長い期間・過ぎた期間は
@@ -63,7 +65,13 @@ const TIME_AXIS_HEIGHT = 16
 const PLOT_PADDING_Y = 6
 const TIME_LABEL_MARGIN = 28
 
-export async function initShakesView(container: HTMLElement, signal: AbortSignal): Promise<void> {
+/** URL の `#` に載せる選択のキー（開いている揺れの記録の id）。 */
+const SELECTED_SHAKE_KEY = 'shake'
+
+export async function initShakesView(container: HTMLElement, ctx: TabContext): Promise<void> {
+  const { signal } = ctx
+  // **期間と「生活振動らしいものを隠す」は前回のまま開く**（表示の好み。`tabState.ts`）。
+  const prefs = readShakesPrefs(ctx.prefs.load(), PERIOD_DAYS)
   container.innerHTML = `
     <section class="panel">
       <h2>見張りの状態</h2>
@@ -125,9 +133,23 @@ export async function initShakesView(container: HTMLElement, signal: AbortSignal
   /**
    * 選んでいる期間。**ボタンなら直近の日数**（右端はホストの時計で動く）、**日付の指定なら固定の範囲**。
    */
-  let period: { readonly kind: 'days'; readonly days: number } | { readonly kind: 'dates'; readonly range: TimeRange } = {
-    kind: 'days',
-    days: DEFAULT_PERIOD_DAYS,
+  let period: { readonly kind: 'days'; readonly days: number } | { readonly kind: 'dates'; readonly range: TimeRange } =
+    prefs.period === null
+      ? { kind: 'days', days: DEFAULT_PERIOD_DAYS }
+      : prefs.period.kind === 'days'
+        ? { kind: 'days', days: prefs.period.days }
+        : { kind: 'dates', range: { fromMs: prefs.period.fromMs, toMs: prefs.period.toMs } }
+  hideLocalEl.checked = prefs.hideLocal
+  const savePrefs = (): void => {
+    ctx.prefs.save(
+      writeShakesPrefs({
+        period:
+          period.kind === 'days'
+            ? { kind: 'days', days: period.days }
+            : { kind: 'dates', fromMs: period.range.fromMs, toMs: period.range.toMs },
+        hideLocal: hideLocalEl.checked,
+      }),
+    )
   }
   let list: readonly ShakeRecordView[] = []
   /** 読み返しの起点（ホストの時計）。**直近の日数の期間の左端はこれから測る。** */
@@ -159,6 +181,12 @@ export async function initShakesView(container: HTMLElement, signal: AbortSignal
   /** 波形の読み返しの世代（押し直し・閉じるで古い応答を捨てる）。 */
   let detailController: AbortController | null = null
   let detailEnvelope: { readonly record: ShakeRecordView; readonly envelope: EnvelopeView } | null = null
+  /**
+   * 開き直す記録の id（前に開いていたもの。無ければ `null`）。**期間全体を読めたときに 1 度だけ判定する** ——
+   * 読めていない空の一覧で判定すると、トークンの失効や通信の途切れだけで選択を消す。
+   * 読み進めた古いページは読み直さない（2026-10-11 ユーザー承認）ので、いま見えている範囲に無ければ閉じた形にする。
+   */
+  let pendingReopenId = ctx.selection.get(SELECTED_SHAKE_KEY)
 
   /** 一覧に見せる範囲。直近の日数なら右端を開けておく（押し出しで新しい揺れが入る）。 */
   const shownRange = (): TimeRange =>
@@ -302,6 +330,19 @@ export async function initShakesView(container: HTMLElement, signal: AbortSignal
       loadState = nextLoadState(loadState, kind, message)
     }
     renderRows()
+    if (kind === 'full' && loadState.periodLoaded) reopenPending()
+  }
+
+  /** 開いていた記録を開き直す（`pendingReopenId`）。期間全体を読めた後にだけ呼ぶ。 */
+  const reopenPending = (): void => {
+    if (pendingReopenId === null) return
+    const id = pendingReopenId
+    pendingReopenId = null
+    const reopen = list.find((r) => r.id === id)
+    const visible =
+      reopen !== undefined && visibleShakes([reopen], { ...shownRange(), hideLocal: hideLocalEl.checked }).length > 0
+    if (reopen !== undefined && visible) void openDetail(reopen)
+    else ctx.selection.set({ [SELECTED_SHAKE_KEY]: null })
   }
 
   /** 期間全体を読む（`fullInFlight` で、同じ世代の 2 本目を出させない）。 */
@@ -497,12 +538,14 @@ export async function initShakesView(container: HTMLElement, signal: AbortSignal
 
   /** 詳細の欄を閉じた状態へ戻す（一覧は描き直さない）。 */
   const resetDetail = (): void => {
+    pendingReopenId = null
     detailController?.abort()
     detailController = null
     detailEnvelope = null
     selectedId = null
     detailEl.hidden = true
     detailEl.innerHTML = ''
+    ctx.selection.set({ [SELECTED_SHAKE_KEY]: null })
   }
 
   const closeDetail = (): void => {
@@ -511,12 +554,14 @@ export async function initShakesView(container: HTMLElement, signal: AbortSignal
   }
 
   const openDetail = async (record: ShakeRecordView): Promise<void> => {
+    pendingReopenId = null
     detailController?.abort()
     const controller = new AbortController()
     detailController = controller
     // **この区間の取得が終われば（押し直し・閉じる）見張りも外す** —— 行を押すたびに溜まらない。
     signal.addEventListener('abort', () => controller.abort(), { once: true, signal: controller.signal })
     selectedId = record.id
+    ctx.selection.set({ [SELECTED_SHAKE_KEY]: record.id })
     detailEnvelope = null
     renderRows()
 
@@ -572,6 +617,7 @@ export async function initShakesView(container: HTMLElement, signal: AbortSignal
     button.addEventListener('click', () => {
       const days = Number(button.dataset.days)
       period = { kind: 'days', days }
+      savePrefs()
       pressPeriodButton(button)
       // **日付の欄は読み込みが終わってから埋める** —— 基準の時刻は読み込みの中でホストの時計へ合わせ直すので、
       // 先に埋めると問い合わせた範囲とずれる。その間に別の期間を選んでいたら埋めない。
@@ -586,13 +632,17 @@ export async function initShakesView(container: HTMLElement, signal: AbortSignal
     const range = jstDayRange(fromDateEl.value, toDateEl.value)
     if (range === null) return
     period = { kind: 'dates', range }
+    savePrefs()
     // 日付で選んだら、どの日数のボタンも押していない見た目にする。
     pressPeriodButton(null)
     void loadEvents()
   })
   moreButtonEl.addEventListener('click', () => void loadOlder())
   // **隠す指定はホストへ渡して読み直す** —— 画面で隠すだけだと、区切られた 500 件の大半が隠れて数行しか残らないことがある。
-  hideLocalEl.addEventListener('change', () => void loadEvents())
+  hideLocalEl.addEventListener('change', () => {
+    savePrefs()
+    void loadEvents()
+  })
   rowsEl.addEventListener('click', (e) => {
     const row = (e.target as HTMLElement).closest<HTMLElement>('tr.shake-row')
     if (row === null) return
@@ -628,9 +678,22 @@ export async function initShakesView(container: HTMLElement, signal: AbortSignal
     },
   })
 
+  // 覚えていた期間をボタンの見た目へ映す（日付で選んでいれば、どのボタンも押していない見た目）。
+  pressPeriodButton(
+    period.kind === 'days' ? container.querySelector(`.period-buttons button[data-days="${period.days}"]`) : null,
+  )
+  // **開いていた記録は、期間全体を読めてから開き直す**（`reopenPending`）。読む前の一覧は空なので、
+  // 先に選ぶと「一覧から消えた」と見なされて閉じる（`renderRows`）。
   await loadEvents()
   if (signal.aborted) return
-  prefillDates(DEFAULT_PERIOD_DAYS)
+  if (period.kind === 'days') {
+    prefillDates(period.days)
+  } else {
+    // 日付で選んだ期間は、その日付を欄へ戻す（終わりは翌日 0 時なので 1 ミリ秒手前の日）。
+    fromDateEl.value = jstDateOf(period.range.fromMs)
+    toDateEl.value = jstDateOf(period.range.toMs - 1)
+    syncApply()
+  }
   const timer = window.setInterval(() => void refreshRecent(), RELOAD_MS)
   signal.addEventListener('abort', () => window.clearInterval(timer), { once: true })
 }

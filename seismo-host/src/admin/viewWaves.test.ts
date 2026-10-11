@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { initWavesView, readStatus } from './viewWaves'
 import type { WaveChunkView } from './waveBuffer'
 import type { WaveStreamOptions } from './waveStream'
+import { memoryTabContext } from './tabState'
 
 let captured: WaveStreamOptions | null = null
 
@@ -197,7 +198,7 @@ async function mount(body: Record<string, unknown> | Error = statusJson()): Prom
   mockStatus(body)
   const container = document.createElement('div')
   document.body.append(container)
-  await initWavesView(container, controller.signal)
+  await initWavesView(container, memoryTabContext(controller.signal, 'waves'))
   return container
 }
 
@@ -854,5 +855,142 @@ describe('initWavesView', () => {
     await letItDraw()
 
     expect(container.querySelector('.wave-received')?.textContent).toBe(before)
+  })
+})
+
+/** 見る幅・縦の幅・チェックを前回のまま開く（2026-10-10 ユーザー承認）。 */
+describe('波形タブの表示の好みを保つ', () => {
+  async function mountWith(prefs: unknown): Promise<{ container: HTMLElement; ctx: ReturnType<typeof memoryTabContext> }> {
+    mockStatus(statusJson())
+    const ctx = memoryTabContext(controller.signal, 'waves', { prefs })
+    const container = document.createElement('div')
+    document.body.append(container)
+    await initWavesView(container, ctx)
+    return { container, ctx }
+  }
+
+  it('見る幅と縦の幅を戻す（選択肢に無い値は既定のまま）', async () => {
+    const { container } = await mountWith({ spanMs: 60_000, scale: '10' })
+    expect(container.querySelector<HTMLSelectElement>('.wave-span')!.value).toBe('60000')
+    expect(container.querySelector<HTMLSelectElement>('.wave-scale')!.value).toBe('10')
+
+    const { container: c2 } = await mountWith({ spanMs: 12_345, scale: 'x' })
+    expect(c2.querySelector<HTMLSelectElement>('.wave-span')!.value).toBe('30000')
+    expect(c2.querySelector<HTMLSelectElement>('.wave-scale')!.value).toBe('auto')
+  })
+
+  it('幅を選び直すと覚える', async () => {
+    const { container, ctx } = await mountWith(null)
+    const span = container.querySelector<HTMLSelectElement>('.wave-span')!
+    span.value = '5000'
+    span.dispatchEvent(new Event('change'))
+    expect(ctx.prefs.load()).toMatchObject({ spanMs: 5_000 })
+  })
+
+  // **合成は届けば必ず出す既定**（#362）なので、外したことを覚えていないと開き直すたびに出し直す。
+  it('正: 外した合成は、開き直して届いても外したまま', async () => {
+    const { container } = await mountWith({ sensors: [['t:station-1', false]] })
+    captured?.onStationWave?.(stationChunk())
+    await letItDraw()
+    const check = container.querySelector<HTMLInputElement>('.wave-sensor-check[data-key="t:station-1"]')
+    expect(check?.checked).toBe(false)
+  })
+
+  it('対照: 覚えていない合成は、届いたら出す（既定のまま）', async () => {
+    const { container } = await mountWith(null)
+    captured?.onStationWave?.(stationChunk())
+    await letItDraw()
+    expect(container.querySelector<HTMLInputElement>('.wave-sensor-check[data-key="t:station-1"]')?.checked).toBe(true)
+  })
+
+  it('チェックを外すと覚える', async () => {
+    const { container, ctx } = await mountWith(null)
+    captured?.onStationWave?.(stationChunk())
+    await letItDraw()
+    const check = container.querySelector<HTMLInputElement>('.wave-sensor-check[data-key="t:station-1"]')!
+    check.checked = false
+    check.dispatchEvent(new Event('change', { bubbles: true }))
+    expect(ctx.prefs.load()).toMatchObject({ sensors: [['t:station-1', false]] })
+  })
+})
+
+/** 前に選んでいた差分の組を開き直す（2026-10-10 ユーザー承認）。 */
+describe('波形タブの差分の選択を保つ', () => {
+  async function pairKey(): Promise<string> {
+    const container = await mount()
+    return container.querySelector<HTMLSelectElement>('.wave-diff')!.options[1].value
+  }
+
+  async function mountWithSelection(
+    diff: string,
+    bodies: readonly Record<string, unknown>[],
+  ): Promise<{ container: HTMLElement; ctx: ReturnType<typeof memoryTabContext>; tick: () => Promise<void> }> {
+    let calls = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const body = bodies[Math.min(calls, bodies.length - 1)]
+        calls += 1
+        return { ok: true, json: async () => body } as unknown as Response
+      }),
+    )
+    // `/status` の読み直し（15 秒ごと）を手で回せるように控える。
+    let reload: (() => void) | null = null
+    const original = globalThis.setInterval
+    vi.spyOn(globalThis, 'setInterval').mockImplementation(((fn: () => void, ms?: number) => {
+      if (ms === 15_000) reload = fn
+      return original(fn, ms)
+    }) as typeof setInterval)
+    const ctx = memoryTabContext(controller.signal, 'waves', { selection: { diff } })
+    const container = document.createElement('div')
+    document.body.append(container)
+    await initWavesView(container, ctx)
+    const tick = async (): Promise<void> => {
+      reload?.()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+    return { container, ctx, tick }
+  }
+
+  it('正: 覚えていた組を、一覧が届いてから当てる', async () => {
+    const key = await pairKey()
+    const { container, ctx } = await mountWithSelection(key, [statusJson()])
+    expect(container.querySelector<HTMLSelectElement>('.wave-diff')!.value).toBe(key)
+    expect(captured?.diff).toMatchObject({ boardKeyA: 'board-1', boardKeyB: 'board-2' })
+    expect(ctx.selection.get('diff')).toBe(key)
+  })
+
+  // **起動し直した直後のホストは、組の一覧を空で返す**（合成が回ってから埋まる）。
+  // そこで「一覧に無い」と決めると、読み直しただけで選択が消える。
+  it('安全弁: 一覧がまだ空なら消さずに待ち、組が届いた回に当てる', async () => {
+    const key = await pairKey()
+    const { container, ctx, tick } = await mountWithSelection(key, [
+      statusJson({ stationIntensities: [] }),
+      statusJson(),
+    ])
+    expect(ctx.selection.get('diff')).toBe(key)
+    expect(captured?.diff ?? null).toBeNull()
+
+    await tick()
+
+    expect(container.querySelector<HTMLSelectElement>('.wave-diff')!.value).toBe(key)
+    expect(captured?.diff).toMatchObject({ boardKeyA: 'board-1', boardKeyB: 'board-2' })
+    expect(ctx.selection.get('diff')).toBe(key)
+  })
+
+  it('対照: 待っている間に選び直したら、覚えていた組はもう当てない', async () => {
+    const key = await pairKey()
+    const { container, ctx, tick } = await mountWithSelection(key, [
+      statusJson({ stationIntensities: [] }),
+      statusJson(),
+    ])
+    const select = container.querySelector<HTMLSelectElement>('.wave-diff')!
+    select.value = ''
+    select.dispatchEvent(new Event('change'))
+
+    await tick()
+
+    expect(select.value).toBe('')
+    expect(ctx.selection.get('diff')).toBeNull()
   })
 })

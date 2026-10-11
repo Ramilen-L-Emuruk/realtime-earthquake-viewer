@@ -110,6 +110,7 @@ import {
   SPAN_CHOICES,
   TOKEN_MISSING_TEXT,
   boundsOf,
+  clampRange,
   centerAt,
   compositeRuns,
   fetchFailureText,
@@ -155,6 +156,13 @@ import {
   type TimeRange,
   type ValueUnit,
 } from './recordsPlot'
+import type { TabContext } from './tabState'
+import { applyHiddenAxes, readRangeSelection, readRecordsPrefs, rememberHiddenAxes, writeRecordsPrefs } from './viewPrefs'
+
+/** URL の `#` に載せる選択のキー（見ている記録と、見ている時間の範囲。範囲は絶対時刻のミリ秒）。 */
+const SELECTED_GROUP_KEY = 'group'
+const RANGE_FROM_KEY = 'from'
+const RANGE_TO_KEY = 'to'
 
 /** 操作が止まってから取り直すまで。 */
 const RELOAD_DEBOUNCE_MS = 150
@@ -761,7 +769,8 @@ function drawSpectrum(
   drawHoverLine(ctx, hoverX, plotHeight)
 }
 
-export async function initRecordsView(container: HTMLElement, signal: AbortSignal): Promise<void> {
+export async function initRecordsView(container: HTMLElement, ctx: TabContext): Promise<void> {
+  const { signal } = ctx
   container.innerHTML = `
     <section class="panel">
       <div class="row" style="align-items: center; flex-wrap: wrap; gap: 0.6rem">
@@ -843,6 +852,15 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
 
   let groups: RecordGroup[] = []
   let group: RecordGroup | null = null
+  // **単位と隠した軸は前回のまま開く**（表示の好み。`tabState.ts`）。
+  const prefs = readRecordsPrefs(ctx.prefs.load())
+  /** 生データの記録で運用者が選んだ単位。合成の記録は gal しか無いので、これを当てるのは生データのときだけ。 */
+  let rawUnit: 'gal' | 'native' = prefs.unit
+  /** 記録ごとの隠した軸（運用者が押した結果）。 */
+  const hiddenByGroup = new Map(prefs.hidden)
+  const savePrefs = (): void => {
+    ctx.prefs.save(writeRecordsPrefs({ unit: rawUnit, hidden: hiddenByGroup }))
+  }
   let unit: 'gal' | 'native' = 'gal'
   let bounds: TimeRange = { fromMs: 0, toMs: 1 }
   let range: TimeRange = { fromMs: 0, toMs: 1 }
@@ -1551,16 +1569,28 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     }, RELOAD_DEBOUNCE_MS)
   }
 
+  /** 見ている範囲を URL へ載せる（`app.ts` が書き込みを間引く。ドラッグのたびに呼んでよい）。 */
+  const rememberRange = (): void => {
+    ctx.selection.set({ [RANGE_FROM_KEY]: String(Math.round(range.fromMs)), [RANGE_TO_KEY]: String(Math.round(range.toMs)) })
+  }
+
   const setRange = (next: TimeRange): void => {
     range = next
     atEl.value = toLocalInput((range.fromMs + range.toMs) / 2)
+    rememberRange()
     draw()
     scheduleLoad()
   }
 
   // ---- 記録を選ぶ ----
 
-  const selectGroup = (key: string): void => {
+  /**
+   * 記録を選ぶ。**範囲・隠した軸・単位はここで決め直す**（記録ごとに期間も軸も違う）。
+   *
+   * `restoredRange` は開き直したとき URL から読んだ範囲。**記録の期間へ収めてから当てる**
+   * （覚えた後に古い記録が消えて期間が縮んでいることがある）。無ければ新しい側の既定の幅。
+   */
+  const selectGroup = (key: string, restoredRange: TimeRange | null): void => {
     // 範囲を動かした直後の取り直しの予約は捨てる（下で新しい記録をすぐ取るので、残すと同じ取得が 2 回走る）。
     if (reloadTimer !== null) {
       clearTimeout(reloadTimer)
@@ -1579,17 +1609,31 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     if (group === null) {
       bodyEl.hidden = true
       periodEl.textContent = ''
+      ctx.selection.set({ [SELECTED_GROUP_KEY]: null, [RANGE_FROM_KEY]: null, [RANGE_TO_KEY]: null })
       return
     }
-    if (group.kind === 'station') unit = 'gal'
+    // **単位の切り替えは生データのときだけ出す**（合成は gal しか無い）。生データでは前に選んだ単位へ戻す。
+    unit = group.kind === 'raw' ? rawUnit : 'gal'
     unitEl.hidden = group.kind !== 'raw'
     for (const b of unitEl.querySelectorAll<HTMLButtonElement>('button[data-unit]')) b.setAttribute('aria-pressed', String(b.dataset.unit === unit))
     periodEl.textContent = periodText(group)
     bounds = boundsOf(group)
-    range = withSpan({ fromMs: bounds.toMs - INITIAL_SPAN_MS, toMs: bounds.toMs }, INITIAL_SPAN_MS, bounds)
+    range =
+      restoredRange !== null
+        ? clampRange(restoredRange, bounds)
+        : withSpan({ fromMs: bounds.toMs - INITIAL_SPAN_MS, toMs: bounds.toMs }, INITIAL_SPAN_MS, bounds)
+    hidden = applyHiddenAxes(
+      hiddenByGroup.get(group.key),
+      group.axes.map((a) => a.id),
+    )
     axesEl.innerHTML = group.axes
-      .map((a) => `<button type="button" data-axis-id="${escapeHtml(a.id)}" aria-pressed="true">${escapeHtml(a.label)}</button>`)
+      .map(
+        (a) =>
+          `<button type="button" data-axis-id="${escapeHtml(a.id)}" aria-pressed="${!hidden.has(a.id)}">${escapeHtml(a.label)}</button>`,
+      )
       .join('')
+    ctx.selection.set({ [SELECTED_GROUP_KEY]: group.key })
+    rememberRange()
     bodyEl.hidden = false
     buildRows()
     atEl.value = toLocalInput((range.fromMs + range.toMs) / 2)
@@ -1600,7 +1644,7 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     void loadFreq()
   }
 
-  groupEl.addEventListener('change', () => selectGroup(groupEl.value), { signal })
+  groupEl.addEventListener('change', () => selectGroup(groupEl.value, null), { signal })
 
   unitEl.addEventListener(
     'click',
@@ -1610,6 +1654,10 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
       const next = b.dataset.unit === 'native' ? 'native' : 'gal'
       if (next === unit) return
       unit = next
+      if (group.kind === 'raw') {
+        rawUnit = next
+        savePrefs()
+      }
       for (const x of unitEl.querySelectorAll<HTMLButtonElement>('button[data-unit]')) x.setAttribute('aria-pressed', String(x.dataset.unit === unit))
       loaded = null
       void load()
@@ -1651,6 +1699,8 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
       if (hidden.has(id)) hidden.delete(id)
       else hidden.add(id)
       b.setAttribute('aria-pressed', String(!hidden.has(id)))
+      rememberHiddenAxes(hiddenByGroup, group.key, [...hidden])
+      savePrefs()
       draw()
     },
     { signal },
@@ -1708,6 +1758,7 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
         const span = drag.startRange.toMs - drag.startRange.fromMs
         range = shiftBy(drag.startRange, -((e.clientX - drag.startX) / drag.width) * span, bounds)
         atEl.value = toLocalInput((range.fromMs + range.toMs) / 2)
+        rememberRange()
         hoverX = null
         draw()
         scheduleLoad()
@@ -1792,7 +1843,16 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     groupEl.innerHTML =
       (stations.length > 0 ? `<optgroup label="観測点の合成波形">${stations.map(option).join('')}</optgroup>` : '') +
       (raws.length > 0 ? `<optgroup label="センサーの生データ">${raws.map(option).join('')}</optgroup>` : '')
-    selectGroup(groups[0]!.key)
+    // **前に見ていた記録と範囲を開き直す。** 記録が一覧に無ければ（消えた・URL を書き換えた）先頭へ戻し、
+    // そのときは範囲も当てない（別の記録の範囲なので）。
+    const wanted = ctx.selection.get(SELECTED_GROUP_KEY)
+    const restoring = wanted !== null && groups.some((g) => g.key === wanted)
+    const key = restoring ? wanted : groups[0]!.key
+    groupEl.value = key
+    selectGroup(
+      key,
+      restoring ? readRangeSelection(ctx.selection.get(RANGE_FROM_KEY), ctx.selection.get(RANGE_TO_KEY)) : null,
+    )
   } catch (error) {
     if (isAbort(error) || signal.aborted) return
     listNoteEl.textContent = fetchFailureText(failureReason(error))

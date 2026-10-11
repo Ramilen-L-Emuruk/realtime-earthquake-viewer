@@ -11,7 +11,7 @@ import { apiFetch, ApiError, describeAdminAuthFailure, getStoredToken } from './
 import { boardSixFaceProgress, fitBoardSixFace, type BoardFitSensor, type CurrentPlacement } from './boardSixFace'
 import { boardGravityForTilt, rotateToHeading, suggestRotation } from './calibrationSuggest'
 import { fetchDetectedBoards, type DetectedBoard, type SensorRestWindow } from './detectedBoards'
-import { ago, boardLabelHtml, escapeHtml, qs, receptionBadgeHtml } from './dom'
+import { ago, boardLabelHtml, confirmDiscardUnsaved, escapeHtml, qs, receptionBadgeHtml } from './dom'
 import {
   emptySensorFormValues,
   orientationToFormValues,
@@ -40,12 +40,17 @@ import {
   type RestWindowsSnapshot,
   type SensorFitWindows,
 } from './sixFacePanel'
+import type { TabContext } from './tabState'
 import { multiplyMatVec3 } from '../receiver/matrix3'
 import type { AxisCount, BoardEntry, SensorEntry, StationInfo } from '../receiver/stationConfigTypes'
 import { BOARD_DISPLAY_NAME_MAX } from '../receiver/stationConfigTypes'
 
 /** 基板 Key の入力候補（`<datalist>`）の id。中身は `/status` が声を聞いている基板。 */
 const BOARD_KEY_DATALIST_ID = 'detected-board-keys'
+
+/** URL の `#` に載せる選択のキー。編集中の基板（登録済み）と、登録しかけの基板（届いている）。 */
+const SELECTED_BOARD_KEY = 'board'
+const REGISTERING_BOARD_KEY = 'register'
 
 /**
  * `GET /api/rest-windows` の時間切れ。10 秒ごとの取り直しより長く取る（短いと、遅いだけの
@@ -226,7 +231,8 @@ export function readAllSensors(container: HTMLElement): readonly SensorEntry[] |
   return sensors
 }
 
-export async function initBoardsView(container: HTMLElement, signal: AbortSignal): Promise<void> {
+export async function initBoardsView(container: HTMLElement, ctx: TabContext): Promise<void> {
+  const { signal } = ctx
   container.innerHTML = `
     <div class="boards-error"></div>
     <!-- **表は 1 つ。** 声が届いている基板と設定にある基板を分けて並べると、
@@ -273,6 +279,11 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
   let currentBoards: readonly BoardEntry[] = []
   let currentStations: readonly StationInfo[] = []
   let currentDetected: readonly DetectedBoard[] = []
+  /**
+   * `currentDetected` が `/status` から取れた一覧か（取れなければ空のまま）。**登録しかけていた基板を
+   * 開き直すかの判断に使う** —— 取れていない空を「声が途絶えた」と取り違えると、覚えていた選択を消す。
+   */
+  let detectedLoaded = false
   let currentRestWindows: readonly SensorRestWindow[] = []
   /** 経過を測る基準（`/status` の `generatedAtMs`）。取れていなければ `null`。 */
   let currentGeneratedAtMs: number | null = null
@@ -297,11 +308,10 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
   // （`delete-board`）には `window.confirm` があるのに、こちらには無かった
   // （敵対的レビューで検出）。
   let formDirty = false
+  // **タブ移動・リロードの前にも訊く**（`app.ts`）。同じタブの中で別の基板を開くときと同じ印を見る。
+  ctx.setUnsavedProbe(() => formDirty)
 
-  const confirmDiscardIfDirty = (): boolean => {
-    if (!formDirty) return true
-    return window.confirm('編集中の内容を破棄する？')
-  }
+  const confirmDiscardIfDirty = (): boolean => !formDirty || confirmDiscardUnsaved()
 
   /**
    * センサー ID の候補を、いまフォームに入っている基板のものへ差し替える。
@@ -565,6 +575,31 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
     refreshSensorIdOptions()
     refreshTiltPanels()
     formDirty = false
+    ctx.selection.set({ [SELECTED_BOARD_KEY]: board?.boardKey ?? null, [REGISTERING_BOARD_KEY]: null })
+  }
+
+  /**
+   * 声の届いている基板を、そのままフォームへ移す。基板 Key と、その基板が
+   * 実際に名乗っているセンサー ID のカードを既定値で並べる——ここが手打ちを
+   * 無くす本体で、候補（`<datalist>`）は後から打ち換えるときの受け皿。
+   *
+   * **フォームを触る前に dirty を立てる。** ここは状態を何段も書き換える
+   * 同期の経路で、途中で投げると「一部だけ埋まったのに未保存の印が立って
+   * いない」状態が残る——直後に別の基板の編集を押しても確認が出ず、
+   * この経路自身が防ごうとしている「無警告で消える」をやってしまう。
+   */
+  const openRegisterForm = (detected: DetectedBoard): void => {
+    formDirty = true
+    switchForm(null)
+    // **`switchForm` は中で印を落とす**ので、続きを書き換える前に立て直す。
+    formDirty = true
+    qs<HTMLInputElement>(container, '[name=boardKey]').value = detected.boardKey
+    renderSensorCardsForDetected(container, detected)
+    refreshSensorIdOptions()
+    refreshTiltPanels()
+    // **登録の形も選択として覚える。** 基板 Key の欄が空かどうかでは新規の形と見分けられない
+    // （どちらも Key を書き換えられる）。
+    ctx.selection.set({ [REGISTERING_BOARD_KEY]: detected.boardKey })
   }
 
   // **`signal.aborted` を確認してから DOM を書く。** 理由は `viewStations.ts` と同じ。
@@ -595,6 +630,7 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
       currentBoards = boardsBody.boards
       currentStations = stationsBody.stations
       currentDetected = detected.snapshot?.boards ?? []
+      detectedLoaded = detected.snapshot !== null
       currentRestWindows = detected.snapshot?.restWindows ?? []
       currentGeneratedAtMs = detected.snapshot?.generatedAtMs ?? null
       fillStationOptions(container, currentStations)
@@ -885,26 +921,12 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
     const boardKey = row.dataset.boardKey ?? ''
     const board = currentBoards.find((b) => b.boardKey === boardKey) ?? null
 
-    // **声の届いている基板を、そのままフォームへ移す。** 基板 Key と、その基板が
-    // 実際に名乗っているセンサー ID のカードを既定値で並べる——ここが手打ちを
-    // 無くす本体で、候補（`<datalist>`）は後から打ち換えるときの受け皿。
     if (target.classList.contains('register-board')) {
       const detected = currentDetected.find((d) => d.boardKey === boardKey)
       if (detected === undefined) return
       if (!confirmDiscardIfDirty()) return
       try {
-        // **フォームを触る前に dirty を立てる。** ここは状態を何段も書き換える
-        // 同期の経路で、途中で投げると「一部だけ埋まったのに未保存の印が立って
-        // いない」状態が残る——直後に別の基板の編集を押しても確認が出ず、
-        // このハンドラ自身が防ごうとしている「無警告で消える」をやってしまう。
-        formDirty = true
-        switchForm(null)
-        // **`switchForm` は中で印を落とす**ので、続きを書き換える前に立て直す。
-        formDirty = true
-        qs<HTMLInputElement>(container, '[name=boardKey]').value = detected.boardKey
-        renderSensorCardsForDetected(container, detected)
-        refreshSensorIdOptions()
-        refreshTiltPanels()
+        openRegisterForm(detected)
         // **jsdom には `scrollIntoView` が無い**ので、あれば呼ぶ形にする。
         qs(container, '.board-form').scrollIntoView?.({ behavior: 'smooth', block: 'start' })
         renderError(container, '')
@@ -940,8 +962,40 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
     }
   })
 
+  /**
+   * 前に開いていたフォームを開き直す（編集なら基板、登録なら届いている基板）。
+   *
+   * **中身はホストの値で作り直し、入力の途中は戻さない**（2026-10-10 ユーザー承認）。
+   * 相手が一覧に無ければ（消された・声が途絶えた・URL を書き換えた）新規の形にする ——
+   * 残すと、無い基板の Key で開いたまま保存して作り直すことになる。
+   *
+   * - **登録しかけていた基板が、その間に登録済みになっていたら編集で開く。** 登録の形（既定の校正値）で
+   *   開いたまま保存すると、`PUT` は全置換なので、登録済みの校正値と向きを既定値で上書きする
+   * - **一覧を取れていなければ選択に触らない**（呼び出し元と、`detectedLoaded`）。取れていない空を
+   *   「一覧に無い」と取り違えると、トークンの失効や通信の途切れだけで何を開いていたかが失われる
+   */
+  const restoreSelectedForm = (): void => {
+    const editing = ctx.selection.get(SELECTED_BOARD_KEY)
+    const registering = ctx.selection.get(REGISTERING_BOARD_KEY)
+    const wanted = editing ?? registering
+    const board = wanted === null ? undefined : currentBoards.find((b) => b.boardKey === wanted)
+    if (board !== undefined) {
+      switchForm(board)
+      return
+    }
+    const detected = registering === null ? undefined : currentDetected.find((d) => d.boardKey === registering)
+    if (detected !== undefined) {
+      openRegisterForm(detected)
+      return
+    }
+    if (editing === null && registering !== null && !detectedLoaded) return
+    if (editing !== null || registering !== null) switchForm(null)
+  }
+
   const initial = await reload()
-  if (!initial.ok) renderError(container, initial.reason)
+  if (signal.aborted) return
+  if (initial.ok) restoreSelectedForm()
+  else renderError(container, initial.reason)
 
   // **6 面法の材料だけは開いている間ずっと取り直す。** 基板を置き換えるたびに ✓ が
   // 増えていくのを見ながら進める作業で、画面を読み込み直させると編集中のフォームが消える。

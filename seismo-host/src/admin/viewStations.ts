@@ -1,14 +1,18 @@
 // 観測点タブ（`/api/stations` の一覧・作成・更新・削除）。
 
 import { apiFetch, ApiError, describeAdminAuthFailure } from './api'
-import { escapeHtml, formatNumber, qs } from './dom'
+import { confirmDiscardUnsaved, escapeHtml, formatNumber, qs } from './dom'
 import {
   checkGeolocationAvailability,
   describeAccuracy,
   describeGeolocationError,
   roundCoord,
 } from './geolocation'
+import type { TabContext } from './tabState'
 import type { StationInfo } from '../receiver/stationConfigTypes'
+
+/** URL の `#` に載せる選択のキー（編集中の観測点 ID）。 */
+const SELECTED_STATION_KEY = 'station'
 
 const STATION_ID_PREFIX = 'station-'
 
@@ -78,7 +82,8 @@ function fillForm(container: HTMLElement, station: StationInfo | null): void {
   lonInput.value = station !== null ? String(station.lon) : ''
 }
 
-export async function initStationsView(container: HTMLElement, signal: AbortSignal): Promise<void> {
+export async function initStationsView(container: HTMLElement, ctx: TabContext): Promise<void> {
+  const { signal } = ctx
   container.innerHTML = `
     <div class="stations-error"></div>
     <section class="panel">
@@ -130,11 +135,10 @@ export async function initStationsView(container: HTMLElement, signal: AbortSign
    * （敵対的レビューで、両タブの非対称として検出）。
    */
   let formDirty = false
+  // **タブ移動・リロードの前にも訊く**（`app.ts`）。同じタブの中で別の行を開くときと同じ印を見る。
+  ctx.setUnsavedProbe(() => formDirty)
 
-  const confirmDiscardIfDirty = (): boolean => {
-    if (!formDirty) return true
-    return window.confirm('編集中の内容を破棄する？')
-  }
+  const confirmDiscardIfDirty = (): boolean => !formDirty || confirmDiscardUnsaved()
 
   const switchForm = (station: StationInfo | null): void => {
     fillForm(container, station)
@@ -144,6 +148,7 @@ export async function initStationsView(container: HTMLElement, signal: AbortSign
       )
     }
     formDirty = false
+    ctx.selection.set({ [SELECTED_STATION_KEY]: station?.stationId ?? null })
   }
 
   // **`signal.aborted` を確認してから DOM を書く。** タブが切り替わった後に
@@ -302,10 +307,20 @@ export async function initStationsView(container: HTMLElement, signal: AbortSign
   })
 
   const initial = await reload()
-  // **初回マウントでも ID を提案する。** ここは `fillForm` を通らない経路なので、
-  // 呼ばないと「最初に開いた画面だけ空欄」という一貫しない挙動になる。
-  switchForm(null)
-  if (!initial.ok) renderError(container, initial.reason)
+  if (signal.aborted) return
+  // **一覧を取れなかったときは、覚えていた選択に触らない。** 一覧が空のままなので、
+  // 「一覧に無い」と取り違えて選択を消すと、トークンの失効や通信の途切れだけで
+  // 何を編集していたかが失われる（次に開いたとき、取れれば開き直す）。
+  if (!initial.ok) {
+    renderError(container, initial.reason)
+    return
+  }
+  // **前に編集していた観測点を開き直す。** 中身はホストの値で、入力の途中は戻さない
+  // （2026-10-10 ユーザー承認）。一覧に無ければ（消された・URL を書き換えた）新規の形にする。
+  // **初回マウントでも ID を提案する**（`switchForm(null)`）。ここは `fillForm` を通らない
+  // 経路なので、呼ばないと「最初に開いた画面だけ空欄」という一貫しない挙動になる。
+  const selectedId = ctx.selection.get(SELECTED_STATION_KEY)
+  switchForm(current.find((s) => s.stationId === selectedId) ?? null)
 }
 
 /** `GET /api/stations` の失敗理由を日本語化する（`describeSaveFailure` の GET 専用版）。 */

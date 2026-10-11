@@ -26,7 +26,17 @@ export function escapeHtml(value: string): string {
     .replaceAll("'", '&#39;')
 }
 
-/** `null` を空欄で出す。**`0` を空欄と混同しない**——`??` ではなく明示の分岐。 */
+/**
+ * 保存していない入力を捨ててよいかを訊く。**押されたら `true`。**
+ *
+ * **文はここ 1 か所に置く。** 観測点・基板のフォームで別の行を開くときと、タブを移るときが
+ * 同じ文を使う。タブ移動の確認は既存の文をそのまま使い、PWA とホストの文言をまとめて
+ * 見直すときに直す（2026-10-11 ユーザー承認）。
+ */
+export function confirmDiscardUnsaved(): boolean {
+  return window.confirm('編集中の内容を破棄する？')
+}
+
 /**
  * 基板の呼び名（HTML）。**表示名があれば名前を出し、基板 Key はホバー（`title`）へ回す。**
  * 名前を付けていなければ基板 Key をそのまま出す（2026-10-10 ユーザー承認）。
@@ -36,6 +46,7 @@ export function boardLabelHtml(boardKey: string, displayName: string | null): st
   return `<span title="${escapeHtml(boardKey)}">${escapeHtml(displayName)}</span>`
 }
 
+/** `null` を空欄で出す。**`0` を空欄と混同しない**——`??` ではなく明示の分岐。 */
 export function formatNumber(value: number | null): string {
   return value === null ? '' : String(value)
 }

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { TOKEN_STORAGE_KEY } from './api'
 import { initRecordsView } from './viewRecords'
+import { memoryTabContext } from './tabState'
 
 const H0 = new Date(2026, 9, 7, 12, 0, 0).getTime()
 const HOUR = 3_600_000
@@ -79,14 +80,14 @@ describe('initRecordsView', () => {
   it('トークンが無ければ何も取りに行かず、そう書く', async () => {
     localStorage.clear()
     const root = document.createElement('div')
-    await initRecordsView(root, new AbortController().signal)
+    await initRecordsView(root, memoryTabContext(new AbortController().signal, 'records'))
     expect(requested).toEqual([])
     expect(root.querySelector('.records-list-note')!.textContent).toBe('管理トークンを設定すると読める')
   })
 
   it('一覧を記録に束ねて選ぶ欄へ並べ（名前はエスケープ）、1 本目の新しい側 1 時間を列で取りに行く', async () => {
     const root = document.createElement('div')
-    await initRecordsView(root, new AbortController().signal)
+    await initRecordsView(root, memoryTabContext(new AbortController().signal, 'records'))
     await settle()
     const select = root.querySelector<HTMLSelectElement>('.records-group')!
     expect([...select.querySelectorAll('optgroup')].map((g) => g.label)).toEqual(['観測点の合成波形', 'センサーの生データ'])
@@ -121,7 +122,7 @@ describe('initRecordsView', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     try {
       const root = document.createElement('div')
-      await initRecordsView(root, new AbortController().signal)
+      await initRecordsView(root, memoryTabContext(new AbortController().signal, 'records'))
       await settle()
       requested = []
       root.querySelector<HTMLButtonElement>('button[data-span-index="5"]')!.click()
@@ -143,14 +144,14 @@ describe('initRecordsView', () => {
       return { status: 400, body: { error: 'range-too-wide' } }
     }
     const root = document.createElement('div')
-    await initRecordsView(root, new AbortController().signal)
+    await initRecordsView(root, memoryTabContext(new AbortController().signal, 'records'))
     await settle()
     expect(root.querySelector('.records-note')!.textContent).toContain('波形の記録を取得できていない（range-too-wide）')
   })
 
   it('軸の段は消せるが、最後の 1 本は消さない', async () => {
     const root = document.createElement('div')
-    await initRecordsView(root, new AbortController().signal)
+    await initRecordsView(root, memoryTabContext(new AbortController().signal, 'records'))
     await settle()
     const buttons = [...root.querySelectorAll<HTMLButtonElement>('.records-axes button')]
     expect(buttons.map((b) => b.textContent)).toEqual(['X 軸（東が ＋）', 'Y 軸（北が ＋）', 'Z 軸（上が ＋）'])
@@ -188,7 +189,7 @@ describe('initRecordsView', () => {
       return { status: 404, body: { error: 'not-found' } }
     }
     const root = document.createElement('div')
-    await initRecordsView(root, new AbortController().signal)
+    await initRecordsView(root, memoryTabContext(new AbortController().signal, 'records'))
     await settle()
     const quakes = requested.find((u) => u.startsWith('/api/records/quakes'))!
     expect(new URLSearchParams(quakes.split('?')[1]).get('station')).toBe('home')
@@ -223,7 +224,7 @@ describe('initRecordsView', () => {
       return { status: 404, body: { error: 'not-found' } }
     }
     const root = document.createElement('div')
-    await initRecordsView(root, new AbortController().signal)
+    await initRecordsView(root, memoryTabContext(new AbortController().signal, 'records'))
     await settle()
     const select = root.querySelector<HTMLSelectElement>('.records-group')!
     select.value = 'FDSN:XX_A1_S1'
@@ -265,7 +266,7 @@ describe('initRecordsView', () => {
       return { status: 404, body: { error: 'not-found' } }
     }
     const root = document.createElement('div')
-    await initRecordsView(root, new AbortController().signal)
+    await initRecordsView(root, memoryTabContext(new AbortController().signal, 'records'))
     await settle()
     const grams = requested.filter((u) => u.startsWith('/api/records/spectrogram'))
     const spectra = requested.filter((u) => u.startsWith('/api/records/spectrum'))
@@ -283,7 +284,7 @@ describe('initRecordsView', () => {
 
   it('生データを選ぶと単位の切り替えが出て、生の値を選ぶと native で取り直す', async () => {
     const root = document.createElement('div')
-    await initRecordsView(root, new AbortController().signal)
+    await initRecordsView(root, memoryTabContext(new AbortController().signal, 'records'))
     await settle()
     const select = root.querySelector<HTMLSelectElement>('.records-group')!
     select.value = 'FDSN:XX_A1_S1'
@@ -296,5 +297,120 @@ describe('initRecordsView', () => {
     await settle()
     expect(requested.length).toBeGreaterThan(0)
     expect(requested.every((u) => u.includes('unit=native'))).toBe(true)
+  })
+})
+
+/** リロード・タブ移動で、見ていた記録と範囲・単位・隠した軸を保つ（2026-10-10・2026-10-11 ユーザー承認）。 */
+describe('波形の記録タブの状態を保つ', () => {
+  const RAW = 'FDSN:XX_A1_S1'
+
+  const envelopeRanges = (): string[] =>
+    requested
+      .filter((u) => u.startsWith('/api/records/envelope'))
+      .map((u) => {
+        const q = new URLSearchParams(u.split('?')[1])
+        return `${q.get('from')}-${q.get('to')}`
+      })
+
+  it('見ていた記録と範囲を URL の選択から開き直す（範囲は絶対時刻）', async () => {
+    const from = H0 - 30 * 60_000
+    const to = H0
+    const ctx = memoryTabContext(new AbortController().signal, 'records', {
+      selection: { group: RAW, from: String(from), to: String(to) },
+    })
+    const root = document.createElement('div')
+    await initRecordsView(root, ctx)
+    await settle()
+    expect(root.querySelector<HTMLSelectElement>('.records-group')!.value).toBe(RAW)
+    expect(envelopeRanges()).toContain(`${from}-${to}`)
+  })
+
+  it('範囲を動かすと選択にも載る', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const ctx = memoryTabContext(new AbortController().signal, 'records')
+      const root = document.createElement('div')
+      await initRecordsView(root, ctx)
+      await settle()
+      expect(ctx.selection.get('group')).toBe('station/home')
+      root.querySelector<HTMLButtonElement>('button[data-span-index="5"]')!.click()
+      const from = Number(ctx.selection.get('from'))
+      const to = Number(ctx.selection.get('to'))
+      expect(to - from).toBe(10 * 60_000)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // **覚えた後に記録が消える・URL を書き換えることがある。** 消えた記録のまま開くと本体が隠れて何も出ない。
+  it('一覧に無い記録は先頭へ戻し、そのときは覚えていた範囲も当てない', async () => {
+    const ctx = memoryTabContext(new AbortController().signal, 'records', {
+      selection: { group: 'gone', from: String(H0 - 5_000), to: String(H0) },
+    })
+    const root = document.createElement('div')
+    await initRecordsView(root, ctx)
+    await settle()
+    expect(root.querySelector<HTMLSelectElement>('.records-group')!.value).toBe('station/home')
+    expect(ctx.selection.get('group')).toBe('station/home')
+    expect(envelopeRanges()).toContain(`${H0}-${H0 + HOUR}`)
+  })
+
+  it('期間の外の範囲は記録の期間へ収めて当てる', async () => {
+    const ctx = memoryTabContext(new AbortController().signal, 'records', {
+      selection: { group: 'station/home', from: String(H0 - 100 * HOUR), to: String(H0 - 100 * HOUR + 60_000) },
+    })
+    const root = document.createElement('div')
+    await initRecordsView(root, ctx)
+    await settle()
+    const from = Number(ctx.selection.get('from'))
+    expect(from).toBeGreaterThanOrEqual(H0 - 2 * HOUR)
+    expect(Number(ctx.selection.get('to')) - from).toBe(60_000)
+  })
+
+  it('隠した軸を記録ごとに覚え、開き直すと隠したまま出す', async () => {
+    const first = memoryTabContext(new AbortController().signal, 'records')
+    const root = document.createElement('div')
+    await initRecordsView(root, first)
+    await settle()
+    root.querySelector<HTMLButtonElement>('.records-axes button')!.click()
+    const saved = first.prefs.load()
+
+    const again = memoryTabContext(new AbortController().signal, 'records', { prefs: saved })
+    const root2 = document.createElement('div')
+    await initRecordsView(root2, again)
+    await settle()
+    const pressed = [...root2.querySelectorAll<HTMLButtonElement>('.records-axes button')].map((b) => b.getAttribute('aria-pressed'))
+    expect(pressed).toEqual(['false', 'true', 'true'])
+  })
+
+  // 安全弁: 覚えていた軸がいまの記録に全部当たると、段が 1 つも無くなる。
+  it('覚えていた隠し方で全部隠れるなら、全部出す', async () => {
+    const ctx = memoryTabContext(new AbortController().signal, 'records', {
+      prefs: { unit: 'gal', hidden: [['station/home', ['station/home/X', 'station/home/Y', 'station/home/Z']]] },
+    })
+    const root = document.createElement('div')
+    await initRecordsView(root, ctx)
+    await settle()
+    const pressed = [...root.querySelectorAll<HTMLButtonElement>('.records-axes button')].map((b) => b.getAttribute('aria-pressed'))
+    expect(pressed).toEqual(['true', 'true', 'true'])
+  })
+
+  it('生データの単位は覚え、合成の記録には当てない（合成は gal しか無い）', async () => {
+    const ctx = memoryTabContext(new AbortController().signal, 'records', {
+      selection: { group: RAW },
+      prefs: { unit: 'native', hidden: [] },
+    })
+    const root = document.createElement('div')
+    await initRecordsView(root, ctx)
+    await settle()
+    const pressedUnit = (): string | undefined =>
+      root.querySelector<HTMLButtonElement>('.records-unit button[aria-pressed="true"]')?.dataset.unit
+    expect(pressedUnit()).toBe('native')
+
+    const select = root.querySelector<HTMLSelectElement>('.records-group')!
+    select.value = 'station/home'
+    select.dispatchEvent(new Event('change'))
+    expect(root.querySelector<HTMLElement>('.records-unit')!.hidden).toBe(true)
+    expect(pressedUnit()).toBe('gal')
   })
 })

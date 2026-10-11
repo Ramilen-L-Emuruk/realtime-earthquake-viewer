@@ -39,6 +39,11 @@ import {
 } from './wavePlot'
 import { openWaveStream } from './waveStream'
 import type { PairSelection, ResidualSelection, WaveStreamState } from './waveStream'
+import type { TabContext } from './tabState'
+import { readWavesPrefs, rememberSensorChoice, writeWavesPrefs } from './viewPrefs'
+
+/** URL の `#` に載せる選択のキー（差分を見る組・ずれを見る台。選択肢の値をそのまま載せる）。 */
+const SELECTED_DIFF_KEY = 'diff'
 
 /** 見る時間の幅。**上限は溜め場所の長さ（`waveBuffer.ts` の既定 5 分）に合わせる。** */
 const SPAN_CHOICES: readonly { readonly ms: number; readonly label: string }[] = [
@@ -303,7 +308,8 @@ const STATE_TEXT: Record<WaveStreamState, string> = {
   closed: '繋げない',
 }
 
-export async function initWavesView(container: HTMLElement, signal: AbortSignal): Promise<void> {
+export async function initWavesView(container: HTMLElement, ctx: TabContext): Promise<void> {
+  const { signal } = ctx
   container.innerHTML = `
     <div class="wave-error error"></div>
     <section class="panel">
@@ -389,6 +395,27 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
   const diffEl = qs<HTMLSelectElement>(container, '.wave-diff')
   const diffNoteEl = qs(container, '.wave-diff-note')
 
+  // **見る幅・縦の幅・チェックは前回のまま開く**（表示の好み。`tabState.ts`）。
+  // **「最新に追従」と遡った位置は戻さない**（2026-10-11 ユーザー承認）—— 溜め場所は開くたびに
+  // 空から始まるので、前の位置を戻しても指す先が無い。
+  const prefs = readWavesPrefs(
+    ctx.prefs.load(),
+    SPAN_CHOICES.map((c) => c.ms),
+    [...scaleEl.options].map((o) => o.value),
+  )
+  if (prefs.spanMs !== null) spanEl.value = String(prefs.spanMs)
+  if (prefs.scale !== null) scaleEl.value = prefs.scale
+  /** センサーごとに、運用者が付けた・外したチェック。届いたときの既定より優先する。 */
+  const sensorChoices = new Map(prefs.sensors)
+  const savePrefs = (): void => {
+    ctx.prefs.save(writeWavesPrefs({ spanMs, scale: scaleEl.value, sensors: sensorChoices }))
+  }
+  /**
+   * 前に選んでいた差分の組・ずれの台。**選択肢は `/status` の一覧が届いてから作る**ので、
+   * それまで当てずに持っておく（先に当てると「一覧に無い」と見なして消える）。
+   */
+  let pendingDiffChoice = ctx.selection.get(SELECTED_DIFF_KEY)
+
   const store = new WaveStore()
   /** 波形 1 本ごとの線の色（`ColorSlots` を見ること）。一覧の見本と線で同じものを引く。 */
   const colors = new ColorSlots()
@@ -408,7 +435,7 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
   let state: WaveStreamState = 'connecting'
   let unreadable = 0
   let lastUnreadableDetail = ''
-  let spanMs = DEFAULT_SPAN_MS
+  let spanMs = prefs.spanMs ?? DEFAULT_SPAN_MS
   /** 追従を外しているときの右端。追従中は `null`。 */
   let viewEndMs: number | null = null
   let sensorListSignature = ''
@@ -480,6 +507,7 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
       renderHeader()
       renderSensorList()
       renderDiffList()
+      restorePendingDiffChoice()
     } catch (error) {
       if (signal.aborted) return
       // **波形そのものは別の口から来る。** 名前が引けないだけなら、波形の表示は続ける。
@@ -743,14 +771,15 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
     residualSelection = next?.kind === 'residual' ? next.residual : null
     selectionChunks = 0
     diffEl.value = currentChoiceKey()
+    ctx.selection.set({ [SELECTED_DIFF_KEY]: currentChoiceKey() || null })
     renderDiffNote()
     renderSensorList()
     markDirty()
     connect()
   }
 
-  diffEl.addEventListener('change', () => {
-    const value = diffEl.value
+  /** 選択肢の値（`currentChoiceKey` と同じ形）から選ぶ。一覧に無ければ「選ばない」。 */
+  const selectChoiceByKey = (value: string): void => {
     if (value === '') {
       selectChoice(null)
       return
@@ -762,7 +791,34 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
     }
     const residual = residualCandidates.find((r) => residualKeyOf(r) === value)
     selectChoice(residual === undefined ? null : { kind: 'residual', residual })
+  }
+
+  diffEl.addEventListener('change', () => {
+    // 選び直したら、前に覚えていた選択はもう当てない。
+    pendingDiffChoice = null
+    selectChoiceByKey(diffEl.value)
   })
+
+  /**
+   * 前に選んでいた組・台を当てる（`/status` の一覧が届くたびに、当たるまで）。
+   *
+   * **一覧に無いあいだは消さずに待つ。** 組と台の一覧は合成が実際に回ってから埋まるので、ホストを
+   * 起動し直した直後は空で届く —— そこで「一覧に無い」と見なして URL から外すと、読み直しただけで
+   * 選択が失われる。待っている間は「選ばない」の表示のまま、選び直せばこの覚えは捨てる。
+   */
+  function restorePendingDiffChoice(): void {
+    if (pendingDiffChoice === null) return
+    const value = pendingDiffChoice
+    if (value === currentChoiceKey()) {
+      pendingDiffChoice = null
+      return
+    }
+    const available =
+      pairs.some((p) => pairKeyOf(p) === value) || residualCandidates.some((r) => residualKeyOf(r) === value)
+    if (!available) return
+    pendingDiffChoice = null
+    selectChoiceByKey(value)
+  }
 
   sensorsEl.addEventListener('change', (event) => {
     const target = event.target
@@ -771,6 +827,8 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
     if (key === undefined) return
     if (target.checked) shown.add(key)
     else shown.delete(key)
+    rememberSensorChoice(sensorChoices, key, target.checked)
+    savePrefs()
     markDirty()
   })
 
@@ -794,9 +852,13 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
   spanEl.addEventListener('change', () => {
     const next = Number(spanEl.value)
     if (Number.isFinite(next) && next > 0) spanMs = next
+    savePrefs()
     markDirty()
   })
-  scaleEl.addEventListener('change', markDirty)
+  scaleEl.addEventListener('change', () => {
+    savePrefs()
+    markDirty()
+  })
   followEl.addEventListener('change', () => {
     // **追従を戻すときは右端を手放す。** 持ったままだと、追従に戻しても
     // その位置に張り付く。
@@ -848,6 +910,7 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
         const next = Math.min(SPAN_CHOICES.length - 1, Math.max(0, from + (event.deltaY > 0 ? 1 : -1)))
         spanMs = SPAN_CHOICES[next].ms
         spanEl.value = String(spanMs)
+        savePrefs()
         if (range !== null) stopFollowing(range.toMs)
         markDirty()
       },
@@ -1136,7 +1199,16 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
     const key = keyOf(chunk.source)
     const known = store.get(chunk.source) !== null
     store.push(chunk)
-    if (!known && store.get(chunk.source) !== null) {
+    // **差分・ずれには当てない。** あれは運用者が選んだときにだけ届くので、前に外したチェックで隠すと
+    // 選んだのに見えない。
+    const remembered =
+      known || chunk.source.kind === 'pair' || chunk.source.kind === 'residual' ? undefined : sensorChoices.get(key)
+    if (!known && store.get(chunk.source) !== null && remembered !== undefined) {
+      // **運用者が前に付けた・外したチェックを、既定より先に当てる。** 合成は届けば必ず出す既定なので、
+      // 「外した」を覚えていないと、開き直すたびに出し直してしまう。
+      if (remembered) shown.add(key)
+      if (chunk.source.kind === 'sensor') seenSensors++
+    } else if (!known && store.get(chunk.source) !== null) {
       // **観測点の合成は先着枠を使わず必ず出す。** この画面で合成を見る目的は
       // 「平均した 1 本が単体より静かか」の確認（#362 の効果）なので、
       // センサー 9 本の枠に埋もれて既定で非表示だと開いた意味が無い。

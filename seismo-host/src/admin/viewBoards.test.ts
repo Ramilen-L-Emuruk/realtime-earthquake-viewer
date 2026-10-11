@@ -13,6 +13,7 @@ import { initBoardsView, mergeBoardRows, readAllSensors } from './viewBoards'
 import type { DetectedBoard } from './detectedBoards'
 import { IDENTITY_MATRIX } from '../receiver/stationConfigTypes'
 import type { BoardEntry, StationInfo } from '../receiver/stationConfigTypes'
+import { memoryTabContext } from './tabState'
 
 /** `.sensor-cards` 直下にセンサーカードを並べたコンテナを作る（`viewBoards.ts` の DOM 構造を模す）。 */
 function containerWithCards(cardsHtml: string): HTMLElement {
@@ -174,6 +175,7 @@ const REST_WINDOWS = [
 function stubApiFetch(
   options: {
     readonly statusFails?: boolean
+    readonly boardsFails?: boolean
     readonly restWindows?: { readonly ok: boolean; readonly body: unknown }
     readonly statusSensors?: readonly unknown[]
   } = {},
@@ -186,6 +188,7 @@ function stubApiFetch(
         return { ok: r.ok, status: r.ok ? 200 : 500, json: async () => r.body }
       }
       if (path === '/api/boards') {
+        if (options.boardsFails === true) return { ok: false, status: 503, json: async () => ({}) }
         return { ok: true, status: 200, json: async () => ({ boards: [BOARD_A, BOARD_B] }) }
       }
       if (path === '/api/stations') {
@@ -224,7 +227,7 @@ describe('initBoardsView の未保存確認', () => {
   async function mountEditingBoardA(): Promise<HTMLElement> {
     const container = document.createElement('div')
     const controller = new AbortController()
-    await initBoardsView(container, controller.signal)
+    await initBoardsView(container, memoryTabContext(controller.signal, 'boards'))
     const editButtons = container.querySelectorAll<HTMLButtonElement>('.edit-board')
     editButtons[0].click()
     return container
@@ -270,7 +273,7 @@ describe('initBoardsView の未保存確認', () => {
   // 入力必須。文言を静的テキストで固定していたため実挙動と食い違っていた（レビューで検出）。
   it('新規登録では「変更不可」と表示しない（入力必須なので嘘になる）', async () => {
     const container = document.createElement('div')
-    await initBoardsView(container, new AbortController().signal)
+    await initBoardsView(container, memoryTabContext(new AbortController().signal, 'boards'))
 
     expect(container.querySelector('.boardKey-label')?.textContent).toBe('基板 Key')
     expect(container.querySelector<HTMLInputElement>('[name=boardKey]')?.readOnly).toBe(false)
@@ -319,7 +322,7 @@ describe('認識済みの基板からの登録', () => {
 
   async function mount(): Promise<HTMLElement> {
     const container = document.createElement('div')
-    await initBoardsView(container, new AbortController().signal)
+    await initBoardsView(container, memoryTabContext(new AbortController().signal, 'boards'))
     return container
   }
 
@@ -527,7 +530,7 @@ describe('基板の傾きを合わせる', () => {
   async function mountRegistering(): Promise<HTMLElement> {
     const container = document.createElement('div')
     mounted = new AbortController()
-    await initBoardsView(container, mounted.signal)
+    await initBoardsView(container, memoryTabContext(mounted.signal, 'boards'))
     container.querySelector<HTMLButtonElement>('.register-board')?.click()
     return container
   }
@@ -952,7 +955,7 @@ describe('基板の傾きを合わせる', () => {
   it('静止窓の無いセンサーでは、待てば出ることが分かる文言になる', async () => {
     const container = document.createElement('div')
     mounted = new AbortController()
-    await initBoardsView(container, mounted.signal)
+    await initBoardsView(container, memoryTabContext(mounted.signal, 'boards'))
     // BOARD_A（登録済み・センサー未登録）を編集し、空のカードを 1 枚足す。
     container.querySelectorAll<HTMLButtonElement>('.edit-board')[0].click()
     container.querySelector<HTMLButtonElement>('.add-sensor')?.click()
@@ -1014,7 +1017,7 @@ describe('6 面で測る（基板の欄）', () => {
     stubApiFetch({ restWindows })
     const container = document.createElement('div')
     mounted = new AbortController()
-    await initBoardsView(container, mounted.signal)
+    await initBoardsView(container, memoryTabContext(mounted.signal, 'boards'))
     container.querySelector<HTMLButtonElement>('.register-board')?.click()
     return container
   }
@@ -1193,7 +1196,7 @@ describe('方角の欄（いまの方角を出し、保存でも効かせる）'
 
   async function openBoardA(): Promise<HTMLElement> {
     const container = document.createElement('div')
-    await initBoardsView(container, new AbortController().signal)
+    await initBoardsView(container, memoryTabContext(new AbortController().signal, 'boards'))
     container.querySelector<HTMLButtonElement>('.edit-board')?.click()
     return container
   }
@@ -1245,5 +1248,101 @@ describe('方角の欄（いまの方角を出し、保存でも効かせる）'
     expect(headingInput(container).value).toBe('90')
     await submit(container)
     expect(sentOrientation()).toEqual(IDENTITY_MATRIX)
+  })
+})
+
+/** リロード・タブ移動で、開いていたフォーム（編集・登録）を開き直す（2026-10-10 ユーザー承認）。 */
+describe('基板タブの選択を保つ', () => {
+  beforeEach(() => {
+    stubApiFetch()
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  const UNREGISTERED = 'mac:cccccccccccc'
+
+  async function mount(selection: Record<string, string> = {}) {
+    const ctx = memoryTabContext(new AbortController().signal, 'boards', { selection })
+    const container = document.createElement('div')
+    await initBoardsView(container, ctx)
+    return { ctx, container }
+  }
+
+  const keyInput = (c: HTMLElement): HTMLInputElement => {
+    const el = c.querySelector<HTMLInputElement>('[name=boardKey]')
+    if (el === null) throw new Error('基板 Key の欄が無い')
+    return el
+  }
+
+  it('編集を押すと編集中の基板が、登録を押すと登録しかけの基板が選択に載る（どちらか一方）', async () => {
+    const { ctx, container } = await mount()
+    container.querySelectorAll<HTMLButtonElement>('.edit-board')[0].click()
+    expect(ctx.selection.get('board')).toBe(BOARD_A.boardKey)
+    expect(ctx.selection.get('register')).toBeNull()
+
+    container.querySelector<HTMLButtonElement>('.register-board')?.click()
+    expect(ctx.selection.get('register')).toBe(UNREGISTERED)
+    expect(ctx.selection.get('board')).toBeNull()
+
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    container.querySelector<HTMLButtonElement>('.reset-form')?.click()
+    expect(ctx.selection.get('register')).toBeNull()
+  })
+
+  it('覚えていた基板の編集を、ホストの値で開き直す（開き直しただけでは未保存にならない）', async () => {
+    const { ctx, container } = await mount({ board: BOARD_A.boardKey })
+    expect(keyInput(container).value).toBe(BOARD_A.boardKey)
+    expect(keyInput(container).readOnly).toBe(true)
+    expect(ctx.unsaved()).toBe(false)
+  })
+
+  // **新規の形と見分ける。** どちらも基板 Key を書き換えられるので、欄の形からは区別できない。
+  it('覚えていた登録を、届いている基板のセンサーで開き直す', async () => {
+    const { ctx, container } = await mount({ register: UNREGISTERED })
+    expect(keyInput(container).value).toBe(UNREGISTERED)
+    expect(keyInput(container).readOnly).toBe(false)
+    expect(container.querySelectorAll('.sensor-card').length).toBeGreaterThan(0)
+    expect(ctx.selection.get('register')).toBe(UNREGISTERED)
+  })
+
+  // **無い基板の Key で開いたまま保存させない。** `PUT` は upsert なので、消えた基板を作り直す。
+  it('一覧に無い基板は新規の形に戻し、選択からも外す', async () => {
+    const { ctx, container } = await mount({ board: 'mac:gone', register: 'mac:gone2' })
+    expect(keyInput(container).value).toBe('')
+    expect(keyInput(container).readOnly).toBe(false)
+    expect(ctx.selection.get('board')).toBeNull()
+    expect(ctx.selection.get('register')).toBeNull()
+  })
+
+  // **登録の形のまま保存させない。** `PUT` は全置換なので、登録済みの校正値と向きを既定値で上書きする。
+  it('登録しかけていた基板が登録済みになっていたら、編集で開き直す', async () => {
+    const { ctx, container } = await mount({ register: BOARD_A.boardKey })
+    expect(keyInput(container).value).toBe(BOARD_A.boardKey)
+    expect(keyInput(container).readOnly).toBe(true)
+    expect(ctx.selection.get('board')).toBe(BOARD_A.boardKey)
+    expect(ctx.selection.get('register')).toBeNull()
+  })
+
+  // **取れていない空を「一覧に無い」と取り違えない。** トークンの失効や通信の途切れだけで、
+  // 何を開いていたかが失われる。
+  it('一覧を取れなかったときは、覚えていた選択に触らない', async () => {
+    stubApiFetch({ boardsFails: true })
+    const { ctx } = await mount({ board: BOARD_A.boardKey })
+    expect(ctx.selection.get('board')).toBe(BOARD_A.boardKey)
+  })
+
+  it('受信の様子（/status）だけ取れなかったときも、登録しかけの基板を選択に残す', async () => {
+    stubApiFetch({ statusFails: true })
+    const { ctx } = await mount({ register: UNREGISTERED })
+    expect(ctx.selection.get('register')).toBe(UNREGISTERED)
+  })
+
+  it('センサーを足した途中は「保存していない」と答える', async () => {
+    const { ctx, container } = await mount({ board: BOARD_A.boardKey })
+    expect(ctx.unsaved()).toBe(false)
+    container.querySelector<HTMLButtonElement>('.add-sensor')?.click()
+    expect(ctx.unsaved()).toBe(true)
   })
 })
