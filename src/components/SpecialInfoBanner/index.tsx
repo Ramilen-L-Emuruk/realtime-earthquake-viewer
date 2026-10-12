@@ -137,12 +137,22 @@ export function SpecialInfoBanner({
     // **自分では絶対配置しない。** 地図の下端へ積む枠は呼び出し側（`App`）が持っており、
     // この帯と凡例（`MapLegend`）が同じ縦並びに入る。帯が出れば凡例が押し上がる。
     // 自前で `absolute bottom-0` を持つと凡例の上に重なって隠す。
-    <div className="w-full pointer-events-none">
+    // `flex-col`: 呼び出し側の縦並びが地図の高さで縮めたとき、下のスクロール領域まで縮みが
+    // 届くようにする。これが無いと中身の高さで止まり、地図の上へはみ出す。
+    // **縮むのは 2.5rem（帯の見出し 1 行ぶん）まで。** 0 まで縮めると、地図がごく低いときに
+    // 南海トラフ臨時情報が記録も印も残さずに消える（はみ出していた頃より気づきにくい）。
+    // 下限は値で書く —— 何も書かない（`auto`）と縦並びの子は中身の高さで止まり、縮まない。
+    // 帯が 1 枚も無ければこのコンポーネント自体が何も描かないので、下限も場所を取らない。
+    <div className="w-full min-h-[2.5rem] flex flex-col pointer-events-none">
       {/* max-h で高さが制約されるためこの要素自身がスクロール領域になる。overflow-y だけを auto に
           すると overflow-x も auto に格上げされ横スクロールしてしまうため、明示的に塞ぐ。
+          **上限は 2 つ掛かる。** 画面の 40%（`max-h-[40dvh]`。地図が高くても帯が地図を覆いすぎ
+          ないため）と、呼び出し側の縦並びが地図の高さから決める残り（`min-h-0` で縮む）。
+          前者だけでは地図が低いときに地図の上へはみ出す（→ docs/spec/architecture-spec.md §4）。
+          南海トラフ臨時情報は先頭なので、縮んでもスクロールの先頭に残る。
           単位は vh ではなく dvh。vh は iOS の PWA だとビューポートではなく画面全体の高さを指すため。
           SAFE_BOTTOM の last: がここの直接の子を数えるので、バナー以外をこの中に足さないこと。 */}
-      <div className="pointer-events-auto max-h-[40dvh] overflow-y-auto overflow-x-hidden overscroll-x-none">
+      <div className="pointer-events-auto min-h-0 max-h-[40dvh] overflow-y-auto overflow-x-hidden overscroll-x-none">
         {/* 南海トラフの 2 枚（臨時情報とその解説情報）を隣り合わせる。臨時情報の発表期間中は
             解説情報が毎日届いて両方が同時に出るため、間に別の事象（後発地震＝北海道・三陸沖）を
             挟むと同じ事象の話が分断されて読みにくい。重さの順よりこちらを優先する。 */}

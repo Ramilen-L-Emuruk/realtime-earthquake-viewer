@@ -6,12 +6,12 @@ import { quakeEventKey } from '../../utils/quakeMerge'
 import { groupAreasForCardDisplay, tsunamiAreaGradeChanges, TSUNAMI_GRADE_LIFTED, matchesArea, observationBadges, observationHeightText, observationArrivalFallbackText, observationMaxHeightTimeText, estimationBadges, estimationHeightText, forecastHeightImportantBadge, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, isTsunamiGradeRaised, sourceEarthquakeTime, tsunamiAreaKey, evacuationActionLine, fallbackEvacuationAction, type ObsUpdateMark, type ObsUpdateField } from '../../utils/tsunami'
 import { TSUNAMI_MISSING_COLOR as MISSING_COLOR } from '../../utils/tsunamiStyle'
 import { UPDATE_MARK_COLOR } from '../../utils/updateMark'
-import { mapChunksToRefs, planFollowScroll, hasFollowContext, type FollowRect, type SpeechFollowSession, type SpeechRef } from '../../utils/ttsFollow'
+import { mapChunksToRefs, planFollowScroll, followViewHasRoom, hasFollowContext, type FollowRect, type SpeechFollowSession, type SpeechRef } from '../../utils/ttsFollow'
 import { getSpeechClock } from '../../utils/voicevox'
 import { INTERACTION_HOLD_SEC } from '../Map/gl/camera'
 import { log } from '../../utils/logger'
 import { useTsunamiObsCoords } from '../../hooks/useTsunamiObsCoords'
-import { commentsOverlayMaxHeight, canShowCommentsOverlay } from './overlayHeight'
+import { commentsOverlayMaxHeight, canShowCommentsOverlay, isBannerSticky } from './overlayHeight'
 import { useTsunamiZones } from '../../hooks/useTsunamiZones'
 import { ringsBoundsIndex, EMPTY_BOUNDS_INDEX } from '../../utils/subregions'
 import type { LatLng } from '../../utils/stationCoords'
@@ -324,7 +324,8 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
           DMDSS 版の dev サーバーで設定タブの「変化の小さい続報テスト」を流し、
           `Element.prototype.scrollTo` を差し替えて送り先を記録する。**送り先は「区域見出しの
           上端 − 余白 24px − バナーの高さ」**になる（バナーは sticky で、追従は
-          `viewTop = containerRect.top + bannerHeight` を見る。実測で約 190px あった）。
+          `viewTop = containerRect.top + stickyBannerHeight` を見る。実測で約 190px あった。
+          パネルを縮めて貼り付けを外している間はバナーの高さを引かない → `isBannerSticky`）。
           前置きが効いていなければ、同じ式が観測点の行の上端に一致する。 */}
       <div ref={el => {
         for (const obs of observations) registerSpeechAnchor(speechRowKeys({ kind: 'station', name: obs.name }), el)
@@ -849,8 +850,10 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
     setCommentsOpen(false)
   }, [commentsKey, prevCommentsKey, setCommentsOpen])
 
-  // sticky バナーの実高さを測り、自動スクロール先の scroll-margin-top に反映する
-  // （バナーは発令中/解除・地震カードリンクの有無で行数が変わり高さが可変のため固定値では合わない）
+  // バナーの実高さを測る。使い道は 2 つ。
+  //   - 読み上げの追従と受信時の寄せが視野から引く高さ（貼り付けている間だけ）
+  //   - 貼り付けるかどうかの判定（`isBannerSticky`）
+  // 発令中/解除・地震カードリンクの有無で行数が変わるので、固定値では合わない。
   // 「津波情報なし」表示から実データ表示への切替でバナー要素自体が生成し直されるため、
   // useRef + 空配列 useEffect ではなく callback ref で mount のたびに監視し直す
   const bannerObserverRef = useRef<ResizeObserver | null>(null)
@@ -901,6 +904,11 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
   // 面の高さの上限と、そもそも開かせてよいかの判断（→ `overlayHeight.ts`）。
   // **寸法の判断はコンポーネントの外に置く** —— ここに書くとテストで押さえられない。
   const commentsMaxHeight = commentsOverlayMaxHeight(panelHeight, bannerHeight)
+  // バナーを貼り付けるか（→ `isBannerSticky`）。パネルを縮めてバナーが居場所を食いすぎるときは
+  // 貼り付けをやめ、行と一緒に流す。**追従と受信時の寄せが視野から引くのは、貼り付けている間の
+  // 高さだけ** —— 流しているバナーはスクロールで上へ抜けるので、視野を削らない。
+  const bannerSticky = isBannerSticky(panelHeight, bannerHeight)
+  const stickyBannerHeight = bannerSticky ? bannerHeight : 0
   // **出す場所が無いときも入口にしない。** パネルを縮めるとバナーだけで埋まり、面は
   // 高さ 0 になる。開くと矢印が ▶→▼ に変わるだけで中身は 1 行も見えず、理由も出ない。
   const canOpenComments = hasCommentsToShow && !isCancelledDisplay && canShowCommentsOverlay(commentsMaxHeight)
@@ -993,6 +1001,8 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
     resolvedAny: boolean
     /** 区域・観測点を指すチャンクが一度でもあったか（診断用。無ければ引けなくて当然） */
     sawRowRef: boolean
+    /** 視野の高さが無くて追従を見送ったことを記録したか（読み上げ 1 本につき 1 回だけ残す） */
+    warnedNoRoom: boolean
   } | null>(null)
 
   /**
@@ -1009,7 +1019,7 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
     if (!session || !isVisible || userScrollHold) return
 
     // **進み具合はセッション単位で持つ（effect のローカルにしない）。** この effect は
-    // `isVisible` / `userScrollHold` / `bannerHeight` の変化でも作り直される。ローカルに
+    // `isVisible` / `userScrollHold` / `stickyBannerHeight` の変化でも作り直される。ローカルに
     // 置くと、読み上げの途中で手を触れたりバナーの高さが変わったりするたびに「一度出した箇所」の
     // 記憶が消え、消したはずの往復スクロールが戻ってくる。
     if (followProgressRef.current?.token !== session.token) {
@@ -1019,6 +1029,7 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
         targetScrollTop: null,
         resolvedAny: false,
         sawRowRef: false,
+        warnedNoRoom: false,
       }
     }
     const progress = followProgressRef.current
@@ -1147,10 +1158,33 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
       // 食い違って一度も引けない読み上げでも、無条件に印を立てると受信時スクロール
       // （変更区域へ寄せるフォールバック）まで道連れで止まり、画面が一切動かなくなる。
       if (currentRects.length === 0) return
-      followHandledAtRef.current = Date.now()
 
+      const viewTop = containerRect.top + stickyBannerHeight
+      // **動けないことを黙らせない。** `planFollowScroll` はこのとき `null` を返すが、「もう
+      // 見えている」ときと見分けが付かない。読み上げ 1 本につき 1 回だけ残す。
+      //
+      // **動けないうちは受け持ったことにもしない**（上の「行を引けないうち」と同じ理由）。
+      // 印を立てると受信時の寄せが道連れで止まる —— あちらは余白を引かずに測るので、
+      // こちらが動けない狭さでも動けることがある。
+      if (!followViewHasRoom(viewTop, containerRect.bottom)) {
+        // 進み具合を戻す —— 戻さないと、パネルを広げて視野が戻っても、このチャンクは
+        // 「もう扱った」ことになって追い直さない（次のチャンクまで待つ）。
+        // 戻すと毎フレームこの判定を通るが、矩形を数個測るだけで記録は 1 回に絞ってある。
+        progress.lastIndex = -1
+        // パネルを畳んでいる（高さ 0）のは利用者の操作で、異常ではないので記録しない。
+        if (!progress.warnedNoRoom && containerRect.height > 0) {
+          progress.warnedNoRoom = true
+          log.warn('[tsunami] 読み上げの追従を見送り（視野の高さが無い）', {
+            panel: Math.round(containerRect.height),
+            banner: Math.round(bannerHeight),
+            sticky: stickyBannerHeight > 0,
+          })
+        }
+        return
+      }
+      followHandledAtRef.current = Date.now()
       const next = planFollowScroll({
-        viewTop: containerRect.top + bannerHeight,
+        viewTop,
         viewBottom: containerRect.bottom,
         currentRects,
         contextRects: rectsFor(currentRefs, offset, contextElementFor),
@@ -1166,7 +1200,7 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
 
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
-  }, [speechSession, isVisible, userScrollHold, bannerHeight])
+  }, [speechSession, isVisible, userScrollHold, stickyBannerHeight, bannerHeight])
 
   // 読み上げが終わったところで、追従が仕事をできたかを振り返る。
   //
@@ -1238,9 +1272,20 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
       if (changedEls.length === 0) return
 
       const containerRect = container.getBoundingClientRect()
-      const viewTop = containerRect.top + bannerHeight
+      const viewTop = containerRect.top + stickyBannerHeight
       const viewBottom = containerRect.bottom
       const availableHeight = viewBottom - viewTop
+      // 視野が無ければ寄せない。下の「収まらないときは先頭の行を上端へ」が、視野の外（パネルの
+      // 下端より下）へ合わせにいってしまう。
+      if (availableHeight <= 0) {
+        // パネルを畳んでいる（高さ 0）ときは利用者の操作なので記録しない
+        if (containerRect.height > 0) log.warn('[tsunami] 受信時の寄せを見送り（視野の高さが無い）', {
+          panel: Math.round(containerRect.height),
+          banner: Math.round(bannerHeight),
+          sticky: stickyBannerHeight > 0,
+        })
+        return
+      }
 
       const tops = changedEls.map(el => el.getBoundingClientRect().top)
       const bottoms = changedEls.map(el => el.getBoundingClientRect().bottom)
@@ -1289,7 +1334,7 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
     run()
   // focusedDistrict.ts を依存にすることで同一区域の再フォーカスも発火する
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusedDistrict?.ts, bannerHeight, speechFollowEnabled])
+  }, [focusedDistrict?.ts, stickyBannerHeight, bannerHeight, speechFollowEnabled])
 
   if (active.length === 0) {
     return (
@@ -1350,7 +1395,9 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
   return (
     <div ref={setContainerRef} className="h-full overflow-y-auto overflow-x-hidden overscroll-x-none">
       {/* 発令中 / 解除バナー（sticky で常時表示）。対応する地震カードがある場合のみクリック可能。 */}
-      <div ref={bannerRef} className="sticky top-0 z-10 px-3 pt-3 relative">
+      {/* 貼り付けるのはパネルに行の居場所が残るときだけ（→ `isBannerSticky`）。外すときも
+          `relative` は残す —— 開いた付加文の面がこの要素を基準に重なる。 */}
+      <div ref={bannerRef} className={`${bannerSticky ? 'sticky top-0 ' : ''}z-10 px-3 pt-3 relative`}>
         <div
           role={linkedQuake ? 'button' : undefined}
           tabIndex={linkedQuake ? 0 : undefined}
@@ -1413,9 +1460,9 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
                 （→ CLAUDE.md「利用者へ出す語を気象庁の表現と揃える」）。採れる条件は
                 `evacuationActionLine`。
 
-                **この行が付加文への入口を兼ねる。** バナーは sticky なので、行を足すとその分だけ
-                区域一覧の居場所が減る —— バナーは既にパネルの半分以上を使っている（実測値は
-                docs/spec/tsunami-spec.md §9）。だから増やさず、既にある行に役目を持たせる。
+                **この行が付加文への入口を兼ねる。** バナーは行の居場所が残る間は sticky なので、
+                行を足すとその分だけ区域一覧の居場所が減り、貼り付けが外れる境目も早まる —— 縦の短い
+                画面ではバナーだけでパネルの半分以上を使う（実測値は docs/spec/tsunami-spec.md §9）。だから増やさず、既にある行に役目を持たせる。
 
                 **操作要素が入れ子になる**（外側のバナーも地震カードへ移動できる）。支援技術には
                 正しく伝わらないが、外へ出すと上の行数の問題に戻る。既知の限界として仕様書 §9 に
