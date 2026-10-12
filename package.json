@@ -31,7 +31,9 @@
     "seismo-host": "tsx seismo-host/main.ts",
     "build-third-party-licenses": "node scripts/build-third-party-licenses.mjs",
     "check-personal-info": "tsx scripts/check-personal-info.ts",
-    "install-git-hooks": "tsx scripts/install-git-hooks.ts"
+    "install-git-hooks": "tsx scripts/install-git-hooks.ts",
+    "list-ui-strings": "tsx scripts/list-ui-strings.ts",
+    "find-locale-strings": "tsx scripts/find-locale-strings.ts"
   },
   "dependencies": {
     "fflate": "^0.8.3",

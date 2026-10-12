@@ -59,6 +59,12 @@
     "scripts/lib/personalInfo.ts",
     "scripts/lib/personalInfo.test.ts",
     "scripts/check-personal-info.ts",
-    "scripts/install-git-hooks.ts"
+    "scripts/install-git-hooks.ts",
+    "scripts/lib/uiStrings.ts",
+    "scripts/uiStrings.test.ts",
+    "scripts/list-ui-strings.ts",
+    "scripts/lib/localeStrings.ts",
+    "scripts/localeStrings.test.ts",
+    "scripts/find-locale-strings.ts"
   ]
 }
