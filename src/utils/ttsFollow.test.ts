@@ -14,6 +14,7 @@ import {
   TELEGRAM_TEXT_OPEN_TARGET_KINDS,
   telegramTextSubject,
   planFollowScroll,
+  followViewHasRoom,
   hasFollowTarget,
   hasFollowContext,
   hasUnreceivedFollowTarget,
@@ -169,6 +170,31 @@ describe('mapChunksToRefs', () => {
   it('全文に無いチャンクを渡されても取り違えずに空を返す', () => {
     const segments = [seg('岩手県', area('岩手県', '210')), plain('に大津波警報。')]
     expect(mapChunksToRefs(segments, ['まったく別の文。'])).toEqual([[]])
+  })
+})
+
+// 追従が動ける視野の高さがあるか。偽のとき `planFollowScroll` は null を返し、呼び出し側が記録する
+// （津波の貼り付きバナーがパネルを埋めて、追従が黙って止まっていた）。
+describe('followViewHasRoom', () => {
+  // 正: 視野がマイナス（バナー 182px > パネル 180px）。
+  it('視野の高さが無ければ偽', () => {
+    expect(followViewHasRoom(100 + 182, 100 + 180)).toBe(false)
+  })
+  // 対照: 上の余白（24px）を引いても残る視野があれば真。
+  it('余白を引いても残れば真', () => {
+    expect(followViewHasRoom(0, 25)).toBe(true)
+  })
+  // 安全弁: 余白ぶんしか無い視野は動けないので偽（送り先が余白を取るため）。
+  it('余白ぶんしか無ければ偽', () => {
+    expect(followViewHasRoom(0, 24)).toBe(false)
+  })
+  // planFollowScroll と同じ判定を使っていること（片方だけ変えると記録と挙動がずれる）。
+  it('偽のとき planFollowScroll は動かさない', () => {
+    expect(planFollowScroll({
+      viewTop: 0, viewBottom: 24,
+      currentRects: [{ top: 500, bottom: 520 }], upcomingRects: [],
+      currentScrollTop: 0, maxScrollTop: 1000,
+    })).toBeNull()
   })
 })
 

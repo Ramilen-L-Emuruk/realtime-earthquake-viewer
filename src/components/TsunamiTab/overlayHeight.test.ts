@@ -4,7 +4,33 @@ import {
   canShowCommentsOverlay,
   COMMENTS_OVERLAY_GAP,
   COMMENTS_MIN_HEIGHT,
+  isBannerSticky,
+  BANNER_STICKY_MIN_ROOM_PX,
 } from './overlayHeight'
+
+// バナーを貼り付けるか（→ docs/spec/tsunami-spec.md §9「スクロールの自動制御」）。
+// 実測（DMDSS 版・大津波警報テスト）はバナー 182px。パネルは画面と比率で決まる。
+describe('isBannerSticky', () => {
+  // 正: 比率 0.2 の実測（パネル 128px）。貼ればパネルが埋まり、行に一度も届かない。
+  it('行の居場所が残らないなら貼り付けない', () => {
+    expect(isBannerSticky(128, 182)).toBe(false)
+    expect(isBannerSticky(182 + BANNER_STICKY_MIN_ROOM_PX - 1, 182)).toBe(false)
+  })
+
+  // 対照: 境界ちょうどからは貼る。既定の比率の実測（縦 640px でパネル 288px・縦 844px で 380px）は
+  // どちらも従来どおり貼り付く —— 割合（半分）で切っていた頃は 288px の側が外れていた。
+  it('行の居場所が残るなら貼り付ける', () => {
+    expect(isBannerSticky(182 + BANNER_STICKY_MIN_ROOM_PX, 182)).toBe(true)
+    expect(isBannerSticky(288, 182)).toBe(true)
+    expect(isBannerSticky(380, 182)).toBe(true)
+  })
+
+  // 安全弁: 測る前（0）は貼る側へ倒す。表示直後の数フレームだけ貼り付けが外れて見えないように。
+  it('まだ測れていなければ貼り付ける', () => {
+    expect(isBannerSticky(0, 182)).toBe(true)
+    expect(isBannerSticky(180, 0)).toBe(true)
+  })
+})
 
 // バナーから開く付加文の面の高さ（→ docs/spec/tsunami-spec.md §9）。
 //
