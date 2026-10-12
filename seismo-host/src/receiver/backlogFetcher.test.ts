@@ -1,7 +1,14 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { BacklogBook, type StreamRef, streamKey } from './backlogBook'
 import { type BacklogEvent, BacklogFetcher, type BacklogHttpResponse, splitBacklogPackets } from './backlogFetcher'
+
+// `start()` で回し始めるテストは偽のタイマーで時を進める（実時間で待つと、並列実行でワーカーが
+// 止まったときに待ちが足りなくなる）。戻すのはここ —— テスト本体の `finally` では、固まって
+// 打ち切られたときに届かず、偽のタイマーが後続のテストへ漏れる。
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 const S: StreamRef = { boardKey: 'mac:020000000001', bootId: '34b6e78f', sensorId: 'i2c0-68' }
 const KEY = streamKey(S)
@@ -475,11 +482,12 @@ describe('BacklogFetcher', () => {
         throw new Error('EPIPE')
       },
     })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     fetcher.start()
     // 1 回目が投げても、次の回が張られて 2 回目を訊きに行く（失敗の待ちを越えるよう時計を進める）。
-    await new Promise((r) => setTimeout(r, 20))
+    await vi.advanceTimersByTimeAsync(100)
     clock.now += 120_000
-    await new Promise((r) => setTimeout(r, 20))
+    await vi.advanceTimersByTimeAsync(100)
     await fetcher.stop()
     expect(calls).toBeGreaterThanOrEqual(2)
     expect(fetcher.snapshot().failures.internal).toBeGreaterThanOrEqual(1)
@@ -589,8 +597,10 @@ describe('BacklogFetcher（近い欠けをまとめて訊く・基板ごとに�
       timeoutMs: 3_000, spacingMs: 1, idleMs: 1,
       onEvent: () => {},
     })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     fetcher.start()
-    await new Promise((r) => setTimeout(r, 50))
+    // A の時間切れ（3 秒）よりずっと短い間だけ進める。
+    await vi.advanceTimersByTimeAsync(100)
     // A は答えないまま。B の欠けは 2 つとも取り戻している。
     expect(book.overlapsGap(streamKey(S2), 0, 3_000)).toBe(false)
     expect(book.overlapsGap(KEY, 0, 3_000)).toBe(true)
@@ -651,8 +661,9 @@ describe('BacklogFetcher（近い欠けをまとめて訊く・基板ごとに�
       timeoutMs: 3_000, spacingMs: 1, idleMs: 1,
       onEvent: () => {},
     })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     fetcher.start()
-    await new Promise((r) => setTimeout(r, 30))
+    await vi.advanceTimersByTimeAsync(100)
     await fetcher.stop()
     expect(fetcher.snapshot().failures.internal).toBe(1)
     expect(urls.length).toBeGreaterThanOrEqual(1)
