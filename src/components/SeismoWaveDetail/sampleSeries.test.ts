@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { WaveSampleChunk } from '../../services/seismoWaveSamples'
 import type { SampleSeries } from './sampleSeries'
 import {
+  bandCoversSamples,
   buildSampleSeries,
   emphasizeValue,
   laneGeometry,
@@ -81,6 +82,26 @@ describe('emphasizeValue', () => {
   // 安全弁: 欠測を本物の 0 に化けさせない。
   it('非有限は非有限のまま', () => {
     expect(Number.isNaN(emphasizeValue(Number.NaN, 0, 1))).toBe(true)
+  })
+
+  // #698: 生のサンプルで描くときも、列と同じ規則で強調の可否を決める。
+  it('bandCoversSamples: 帯の無い成分に値があれば強調しない（消した向きと値の無い成分は数えない）', () => {
+    const noUd = { center: [0, 0, Number.NaN] as const, width: [1, 1, Number.NaN] as const }
+    const withUd = buildSampleSeries([chunk(T0, [1, 2, 3])])
+    // 対照: 上（成分 2）に値がある → 強調しない。
+    expect(bandCoversSamples(noUd, withUd, [true, true, true])).toBe(false)
+    // 安全弁: 上を消していれば数えない。
+    expect(bandCoversSamples(noUd, withUd, [true, true, false])).toBe(true)
+    // 正: 上がずっと NaN（上を解けない観測点）なら、東・北で強調してよい。
+    const c = chunk(T0, [1, 2, 3])
+    const noUdSeries = buildSampleSeries([{ ...c, gal: [c.gal[0], c.gal[1], Float32Array.from([NaN, NaN, NaN])] }])
+    expect(bandCoversSamples(noUd, noUdSeries, [true, true, true])).toBe(true)
+  })
+
+  // 安全弁（#698）: 帯の無い成分（幅が NaN）を 0 へ化けさせない（比較がすべて偽になる）。
+  it('幅が NaN なら値があっても NaN（描かない）', () => {
+    expect(Number.isNaN(emphasizeValue(5, Number.NaN, Number.NaN))).toBe(true)
+    expect(Number.isNaN(emphasizeValue(5, 0, Number.NaN))).toBe(true)
   })
 })
 

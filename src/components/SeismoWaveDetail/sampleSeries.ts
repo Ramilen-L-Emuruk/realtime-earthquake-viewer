@@ -100,13 +100,27 @@ export function visibleIndexRange(series: SampleSeries, range: ViewRange): { sta
 /**
  * 値の変換（強調）。**平常時のノイズの内側を 0 にし、外側は幅だけ寄せる**（符号は保つ。
  * `emphasizeColumns.ts` の `shrink` と同じ）。非有限は非有限のまま返す。
+ * **帯の無い成分（幅が `NaN`）は描かない**（`NaN` を返す。比較がすべて偽になって 0 に化けるのを防ぐ）。
  */
 export function emphasizeValue(value: number, center: number, width: number): number {
   const d = value - center
-  if (!Number.isFinite(d)) return d
+  if (!Number.isFinite(d) || !Number.isFinite(width)) return Number.NaN
   if (d > width) return d - width
   if (d < -width) return d + width
   return 0
+}
+
+/**
+ * その帯で生のサンプルを強調してよいか。**帯の無い成分（幅が `NaN`）が値を持っていれば `false`。**
+ * 列の側の判定（`utils/seismoQuakeWindow.ts` の `bandCoversDrawn`）と同じ規則。消した向きは数えない。
+ */
+export function bandCoversSamples(noise: NoiseBand, series: SampleSeries, visibleAxes: readonly boolean[]): boolean {
+  for (let a = 0; a < 3; a += 1) {
+    if (visibleAxes[a] === false || Number.isFinite(noise.width[a])) continue
+    const v = series.v[a]
+    for (let i = 0; i < series.length; i += 1) if (Number.isFinite(v[i])) return false
+  }
+  return true
 }
 
 /** 成分ごとの値の変換。強調しないなら素通し。 */
