@@ -94,7 +94,10 @@ interface TelegramListItem {
    * 実データで確認済み（→ `bufrTelegramAssembly.ts`）。
    */
   head: { type: string; time: string; test: boolean; designation?: string | null }
-  /** ミリ秒精度の受信時刻。アーカイブ経路がファイル名から取っている値と同じもの。 */
+  /**
+   * ミリ秒精度の受信時刻。アーカイブ経路がファイル名の 17 桁から取っている値と同じものと
+   * 見なして、窓の判定と再生時刻を揃えている（両者を同じ電文で突き合わせたことはない）。
+   */
   receivedTime: string
   url: string
 }
@@ -438,12 +441,73 @@ async function listTelegrams(
 type TelegramVerdict = 'include' | 'exclude' | 'malformed'
 
 /**
+ * 一覧の各電文を**受信した時刻**。窓の判定と再生時刻の両方がこの値を使う
+ * （アーカイブ経路の `manifestEntryTime` / `manifestEntryTimes` と同じ規則）。
+ *
+ * **窓を発表時刻（`head.time`）で切ってはいけない。** 発表時刻は分に丸められ、配信は数十秒
+ * 遅れるので、再生開始時刻がその間に入った電文が初期状態に混ざる（→ `dmdataReplay.ts` の
+ * `manifestEntryTime`）。
+ *
+ * **分割された二進電文は、最後の断片を受信した時刻で 1 通として決める。** 断片ごとに判定すると
+ * T をまたいだ断片の列が初期状態と本編へ割れてどちらでも揃わない。再生時刻も、本体の取得が
+ * いちばん遅く終わった断片（並行取得の順で変わる）ではなくこの値に揃える。
+ *
+ * **二進電文だけは発表時刻も読めなければ null にする。** 断片を束ねる鍵（`fragmentKey`）が
+ * 発表時刻でできているので、読めないまま通すと鍵が縮退して別の電文の断片どうしが結合される。
+ * XML の電文は発表時刻を窓にも鍵にも使わないので、受信時刻さえ読めれば通す。
+ * JSON 版（`originalId` 付き）は取り込まないので、最後の断片の集計にも入れない。
+ *
+ * @returns 窓に当てられない電文は null（呼び出し側が取りこぼしに数える）
+ */
+function liveEntryTimes(items: readonly TelegramListItem[]): Map<TelegramListItem, Date | null> {
+  const times = new Map<TelegramListItem, Date | null>()
+  const latestByFragment = new Map<string, number>()
+  for (const item of items) {
+    const ms = Date.parse(typeof item?.receivedTime === 'string' ? item.receivedTime : '')
+    const binary = !!item?.head && isBinaryTelegramType(item.head.type)
+    const headReadable = typeof item?.head?.time === 'string' && Number.isFinite(Date.parse(item.head.time))
+    const time = Number.isFinite(ms) && (!binary || headReadable) ? new Date(ms) : null
+    times.set(item, time)
+    if (time === null || !binary || item.originalId) continue
+    const key = fragmentKey(item.head.type, 'RJTD', item.head.time)
+    latestByFragment.set(key, Math.max(latestByFragment.get(key) ?? -Infinity, ms))
+  }
+  for (const [item, time] of times) {
+    if (time === null || !item?.head || !isBinaryTelegramType(item.head.type) || item.originalId) continue
+    const latest = latestByFragment.get(fragmentKey(item.head.type, 'RJTD', item.head.time))
+    if (latest !== undefined && latest !== time.getTime()) times.set(item, new Date(latest))
+  }
+  return times
+}
+
+/**
+ * `malformed` を取りこぼしとして数えるのは、その電文で初めてのときだけか。
+ *
+ * **二進電文の断片は 1 通にまとめて数える**（アーカイブ経路の `countedBinaryKeys` と同じ）。
+ * 分割は最大 24 断片あり、発表時刻が読めなければ全断片が同時に `malformed` になるので、
+ * 断片ごとに数えると 1 通の障害が断片の数だけ膨らむ。発表時刻が文字列でなければ鍵が縮退して
+ * 別の電文どうしが 1 件に寄るので、その場合は電文 id で 1 件ずつ数える
+ * （アーカイブ経路の `isFirstTimeMiss` と同じ）。
+ */
+function isFirstMalformed(item: TelegramListItem, seen: Set<string>): boolean {
+  if (!item?.head || !isBinaryTelegramType(item.head.type)) return true
+  const key = typeof item.head.time === 'string'
+    ? fragmentKey(item.head.type, 'RJTD', item.head.time)
+    : `id:${String(item.id)}`
+  if (seen.has(key)) return false
+  seen.add(key)
+  return true
+}
+
+/**
  * 一覧の 1 件を取り込むべきか判定する。
  *
+ * @param time その電文の受信時刻（`liveEntryTimes`）。窓の判定に使う
  * @param days 当日経路が担当する JST 日付
  */
 function classifyTelegram(
   item: TelegramListItem,
+  time: Date | null,
   fromTime: Date,
   toTime: Date,
   days: ReadonlySet<string>,
@@ -459,21 +523,23 @@ function classifyTelegram(
   // 同じ電文が XML 版と JSON 版の 2 エントリで一覧に載る。採るのは XML 版（originalId 無し）。
   // ここで版を選ばないと同じ電文を二重に取り込む。
   if (item.originalId) return 'exclude'
-  // 担当日の判定は受信時刻で行う（アーカイブが日をまとめる基準と同じ）。
-  const received = new Date(item.receivedTime)
-  if (Number.isNaN(received.getTime())) {
-    log.warn(`[replay] receivedTime が不正な電文をスキップ id=${item.id} time=${String(item.receivedTime)}`)
+  // 担当日の判定はその断片自身の受信時刻で行う（アーカイブが日をまとめる基準と同じ）。
+  // **取りこぼしの判定より先に置く。** 一覧は担当日の 1 日前から取るので、受信時刻は読めて
+  // 発表時刻だけが壊れた二進電文が前日ぶんにも混ざる。先に `malformed` を返すと、前日と当日の
+  // 両方の呼び出しで同じ 1 通を数えてしまう。
+  const receivedMs = Date.parse(typeof item.receivedTime === 'string' ? item.receivedTime : '')
+  if (Number.isFinite(receivedMs) && !days.has(toJstDateStr(new Date(receivedMs)))) return 'exclude'
+  if (time === null) {
+    log.warn(
+      `[replay] 窓に当てられない電文をスキップ id=${item.id} type=${headType}`
+      + ` receivedTime=${String(item.receivedTime)} head.time=${String(item.head.time)}`
+      + `（受信時刻が読めない。二進電文は発表時刻も要る → liveEntryTimes）`,
+    )
     return 'malformed'
   }
-  if (!days.has(toJstDateStr(received))) return 'exclude'
-  // 窓の判定は head.time で行う（アーカイブ経路と揃える。ここを受信時刻に変えると、
-  // 同じ電文が取得元によって入ったり入らなかったりする）。
-  const headTime = new Date(typeof item.head.time === 'string' ? item.head.time : NaN)
-  if (Number.isNaN(headTime.getTime())) {
-    log.warn(`[replay] head.time が不正な電文をスキップ id=${item.id} time=${String(item.head.time)}`)
-    return 'malformed'
-  }
-  return headTime >= fromTime && headTime < toTime ? 'include' : 'exclude'
+  // 窓の判定も受信時刻で行う（アーカイブ経路と揃える。片方だけ変えると、同じ電文が
+  // 取得元によって入ったり入らなかったりする）。
+  return time >= fromTime && time < toTime ? 'include' : 'exclude'
 }
 
 /**
@@ -770,9 +836,14 @@ export async function fetchLiveReplayEntries(
   let rateLimitedTelegrams = 0
   // EEW は /v2/gd/eew から来るが、XML 版を指す形へ組み替えてあるので同じ判定に掛けられる。
   const targets: TelegramListItem[] = []
-  for (const item of [...telegramList, ...eew.items]) {
-    const verdict = classifyTelegram(item, fromTime, toTime, daySet, includeTest)
-    if (verdict === 'malformed') scanSkipCounter.add(skipDayOf(item.receivedTime))
+  const listed = [...telegramList, ...eew.items]
+  const times = liveEntryTimes(listed)
+  const malformedSeen = new Set<string>()
+  for (const item of listed) {
+    const verdict = classifyTelegram(item, times.get(item) ?? null, fromTime, toTime, daySet, includeTest)
+    if (verdict === 'malformed') {
+      if (isFirstMalformed(item, malformedSeen)) scanSkipCounter.add(skipDayOf(item.receivedTime))
+    }
     else if (verdict === 'include') targets.push(item)
   }
 
@@ -801,7 +872,8 @@ export async function fetchLiveReplayEntries(
           log.info(`[replay] 二進電文の試験報を流しません id=${item.id} type=${headType}`)
           return
         }
-        entries.push({ payload: binPayload, replayTime: new Date(item.receivedTime) })
+        // 再生時刻は窓の判定と同じ値（最後の断片の受信時刻 → `liveEntryTimes`）
+        entries.push({ payload: binPayload, replayTime: times.get(item) ?? new Date(item.receivedTime) })
         return
       }
       const payload = buildXmlPayload(headType, await fetchBody(item.url, apiKey))
@@ -810,8 +882,8 @@ export async function fetchLiveReplayEntries(
         skipCounter.add(skipDayOf(item.receivedTime))
         return
       }
-      // 受信時刻はミリ秒精度。アーカイブ経路がファイル名の 17 桁から取っている値と同じもので、
-      // 発表時刻（分単位）より細かいため、報が連続する EEW でも順序と間隔が保たれる。
+      // 再生時刻は窓の判定と同じ受信時刻（ミリ秒精度。アーカイブ経路がファイル名の 17 桁から
+      // 取っている値と同じもので、報が連続する EEW でも順序と間隔が保たれる）。
       entries.push({ payload, replayTime: new Date(item.receivedTime) })
     } catch (e) {
       // **429 の窓で見送った分は取りこぼしに数えない。** 待てば取れるものを恒久的な喪失として
@@ -864,7 +936,7 @@ export async function fetchLiveReplayEntries(
  *
  * @param apiKey DMDATA の APIキー
  * @param day 対象の JST 日付（YYYY-MM-DD）
- * @param before この時刻より後に発表された電文は採らない（＝再生開始時刻）
+ * @param before この時刻より後に受信した電文は採らない（＝再生開始時刻）
  * @returns 統合前の生の地震電文と取りこぼし件数
  * @throws 一覧 API が失敗した場合
  */
@@ -884,11 +956,9 @@ export async function fetchLiveQuakeTelegrams(
   const daySet = new Set([day])
   const { from: utcFrom, to: utcTo } = utcRangeForJstDates([day])
   // 下限は日の始まりより 1 日ぶん手前に置く。担当日の切り出しは `daySet`（受信時刻の JST 日）が
-  // 行うため、ここでの下限は「日をまたいで受信された電文」を落とさないための余裕でよい。
-  //
-  // 日の始まりちょうどに置くと、**発表が前日の深夜・受信が日付をまたいだ電文**が両側から漏れる。
-  // 前日ぶんの呼び出しでは受信日が違うので弾かれ、当日ぶんの呼び出しでは発表が下限より前だと
-  // 弾かれる（前日・当日がともにアーカイブ未生成のときに起きる）。
+  // 行うため、ここでの下限は余裕でよい。窓も受信時刻で判定するので、担当日に受信した電文が
+  // 下限で落ちることは無い（発表時刻で判定していた頃は、発表が前日の深夜・受信が日付をまたいだ
+  // 電文を落とさないためにこの余裕が要った）。
   const windowFrom = new Date(Date.parse(`${day}T00:00:00Z`) - JST_OFFSET_MS - DAY_MS)
   // アーカイブ経路の履歴復元は `entryTime > before` を捨てる（`before` ちょうどは残す）。
   // 窓判定は上限を含まないため、1ms 足して同じ範囲にする。
@@ -900,6 +970,8 @@ export async function fetchLiveQuakeTelegrams(
   /** 429 の窓で見送った電文の数。**取りこぼしとは別に数える**（待てば取れる）。 */
   let rateLimitedTelegrams = 0
   const targets: TelegramListItem[] = []
+  const times = liveEntryTimes(list)
+  const malformedSeen = new Set<string>()
   for (const item of list) {
     const type = item.head?.type
     // 地震カードのほかに、帯と長周期（`HISTORY_EXTRA_TYPES`）も拾う。初期状態（24 時間）では
@@ -907,12 +979,13 @@ export async function fetchLiveQuakeTelegrams(
     // 津波もここで拾う。アーカイブ側と揃える —— 当日ぶんだけ落ちると、
     // 発表中の津波が「アーカイブのある日に出たものだけ」になる。
     if (!QUAKE_TYPES.has(type) && !HISTORY_EXTRA_TYPES.has(type) && !TSUNAMI_TYPES.has(type)) continue
-    const verdict = classifyTelegram(item, windowFrom, until, daySet, includeTest)
+    const verdict = classifyTelegram(item, times.get(item) ?? null, windowFrom, until, daySet, includeTest)
     // **この関数は 1 日ぶんを担当するので `day` で数える**（`skipDayOf` は複数日を担当する
     // `fetchLiveReplayEntries` 用）。`malformed` は受信時刻が読めないときにも成立するので、
     // そちらから導くと**担当日が分かっているのに `UNKNOWN_SKIP_DAY` へ落ちる**。
-    if (verdict === 'malformed') skipCounter.add(day)
-    else if (verdict === 'include') targets.push(item)
+    if (verdict === 'malformed') {
+      if (isFirstMalformed(item, malformedSeen)) skipCounter.add(day)
+    } else if (verdict === 'include') targets.push(item)
   }
 
   const quakes: JMAQuake[] = []
@@ -935,7 +1008,8 @@ export async function fetchLiveQuakeTelegrams(
           log.info(`[replay] 履歴用の二進電文の試験報を取り込みません id=${item.id} type=${item.head.type}`)
           return
         }
-        extras.push({ payload: binPayload, replayTime: new Date(item.head.time), silent: true })
+        // 受信時刻を入れる（窓の判定と同じ値。畳み込みの比較はアーカイブ経路も受信時刻）
+        extras.push({ payload: binPayload, replayTime: times.get(item) ?? new Date(item.receivedTime), silent: true })
         return
       }
       const payload = buildXmlPayload(item.head.type, await fetchBody(item.url, apiKey))
@@ -945,8 +1019,10 @@ export async function fetchLiveQuakeTelegrams(
           skipCounter.add(day)
           return
         }
-        // 発表時刻を入れておく（呼び出し側が種別ごとに最新 1 通へ畳むときの比較に使う）。
-        extras.push({ payload, replayTime: new Date(item.head.time), silent: true })
+        // 受信時刻を入れておく（呼び出し側が種別ごとに最新 1 通へ畳むときの比較に使う）。
+        // **発表時刻を入れない** —— アーカイブ経路の畳み込みは受信時刻で比べるので、軸が揃わない。
+        // 発表時刻は分に丸められるので同じ分の続報が同点になり、読めなければ NaN で畳み込みが固まる。
+        extras.push({ payload, replayTime: times.get(item) ?? new Date(item.receivedTime), silent: true })
         return
       }
       if (TSUNAMI_TYPES.has(item.head.type)) {
