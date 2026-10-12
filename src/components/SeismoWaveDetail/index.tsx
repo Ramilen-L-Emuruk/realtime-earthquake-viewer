@@ -27,6 +27,7 @@ import { createLogThrottle, log } from '../../utils/logger'
 import { columnsSpan, measureNoiseBand, measureQuietLevel, selectQuakeWindow } from '../../utils/seismoQuakeWindow'
 import { emphasizedFloorGal, quietScaledGal } from '../../utils/seismoQuietScale'
 import { trimTrailingGap } from '../../utils/seismoWaveColumns'
+import { MEAN_LINE_WINDOW_MS } from '../../utils/waveMeanLines'
 import { axisZeroLabel, buildArrivalMarksForRange, formatQuakeIntensityParts, QuakeIntensityLine } from '../EarthquakeTab/QuakeSeismoWave'
 import { emphasizeColumns, emphasizedScaleFloorGal } from '../SeismoWaveChart/emphasizeColumns'
 import { foldHistoryColumns } from '../SeismoWaveChart/historyColumns'
@@ -71,10 +72,10 @@ const COMPOSITE_COLOR = '#94a3b8'
 const COMPOSITE_SMOOTH_COLOR = '#f1f5f9'
 
 /**
- * 合成を均す幅（ms）。**各時刻の前後 0.5 秒ずつ・計 1 秒**（2026-10-05 のユーザー判断）。
- * 小さな地震の S 波の山（数秒）は形が残り、ノイズのギザギザは消える。
+ * 合成を均す幅（ms）。**各時刻の前後 0.5 秒ずつ・計 1 秒**（2026-10-05 のユーザー判断）。値は管理コンソールと共有する
+ * （`utils/waveMeanLines.ts`）。
  */
-const COMPOSITE_SMOOTH_MS = 1_000
+const COMPOSITE_SMOOTH_MS = MEAN_LINE_WINDOW_MS
 
 /**
  * 成分の段に重ねる「正側・負側の平均の線」の色。**成分の色の明るい版**（緑・赤紫・黄の 200 番台）。

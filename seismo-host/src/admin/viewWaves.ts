@@ -26,13 +26,14 @@
 import { ago, escapeHtml, qs, receptionBadgeHtml } from './dom'
 import { readFinite, readNonEmptyString } from './readJson'
 import { WaveStore, keyOf } from './waveBuffer'
-import type { WaveAxisStats, WaveBuffer, WaveChunkView, WaveColumn, WaveSourceKey, WaveWindow } from './waveBuffer'
+import type { WaveAxisStats, WaveBuffer, WaveChunkView, WaveColumn, WaveMeanLines, WaveSourceKey, WaveWindow } from './waveBuffer'
 import {
   ColorSlots,
   colorForIndex,
   formatClock,
   formatDirection,
   formatGal,
+  lighterColor,
   needsTenths,
   niceHalfSpanGal,
   timeTicks,
@@ -41,6 +42,7 @@ import { openWaveStream } from './waveStream'
 import type { PairSelection, ResidualSelection, WaveStreamState } from './waveStream'
 import type { TabContext } from './tabState'
 import { readWavesPrefs, rememberSensorChoice, writeWavesPrefs } from './viewPrefs'
+import { MEAN_LINE_WINDOW_MS } from '../../../src/utils/waveMeanLines'
 
 /** URL の `#` に載せる選択のキー（差分を見る組・ずれを見る台。選択肢の値をそのまま載せる）。 */
 const SELECTED_DIFF_KEY = 'diff'
@@ -97,6 +99,11 @@ interface PlotTrace {
   readonly columns: readonly (WaveColumn | null)[]
   /** 窓にサンプルが 1 つも無ければ null（その線は描かない）。 */
   readonly stats: WaveAxisStats | null
+  /**
+   * 正側・負側の平均の線（前後 1 秒。PWA の詳細の窓と同じ計算）。**表示中の線すべてに引く**
+   * （2026-10-12 ユーザー承認）。窓にサンプルが無ければ null。
+   */
+  readonly meanLines: WaveMeanLines | null
 }
 
 /** センサー 1 本の、機材としての様子（`/status` から引く）。 */
@@ -1079,17 +1086,16 @@ export async function initWavesView(container: HTMLElement, ctx: TabContext): Pr
     }
 
     // 波形。
-    ctx.lineWidth = 1
-    for (const t of traces) {
-      if (t.stats === null) continue
-      const center = t.stats.meanGal
-      const yOf = (gal: number): number =>
-        mid - Math.max(-usable, Math.min(usable, ((gal - center) / halfSpan) * usable))
-
-      ctx.strokeStyle = t.color
+    const strokeColumns = (
+      columns: readonly (WaveColumn | null)[],
+      yOf: (gal: number) => number,
+      color: string,
+      lineWidth: number,
+    ): void => {
+      ctx.strokeStyle = color
+      ctx.lineWidth = lineWidth
       ctx.beginPath()
       let started = false
-      const columns = t.columns
       for (let c = 0; c < columns.length; c++) {
         const column = columns[c]
         if (column === null) {
@@ -1112,6 +1118,24 @@ export async function initWavesView(container: HTMLElement, ctx: TabContext): Pr
       }
       ctx.stroke()
     }
+    /** 縦の位置。**中心は線ごと**（その線の平均）。 */
+    const yAround =
+      (center: number) =>
+      (gal: number): number =>
+        mid - Math.max(-usable, Math.min(usable, ((gal - center) / halfSpan) * usable))
+    for (const t of traces) {
+      if (t.stats === null) continue
+      strokeColumns(t.columns, yAround(t.stats.meanGal), t.color, 1)
+    }
+    // **平均の線は全部の線の後ろから重ねる**（先に描くと、後に描いた別のセンサーの帯に埋もれる）。
+    // 色は元の線を明るくした色、太さは 2 倍（PWA の詳細の窓と同じ考え方。2026-10-12 ユーザー承認）。
+    for (const t of traces) {
+      if (t.stats === null || t.meanLines === null) continue
+      const yOf = yAround(t.stats.meanGal)
+      const color = lighterColor(t.color)
+      strokeColumns(t.meanLines.pos, yOf, color, 2)
+      strokeColumns(t.meanLines.neg, yOf, color, 2)
+    }
   }
 
   const draw = (): void => {
@@ -1132,9 +1156,14 @@ export async function initWavesView(container: HTMLElement, ctx: TabContext): Pr
     // 軸ごとに呼ぶと同じ走査を 3 度することになる。
     const columnCount = Math.max(1, Math.floor(canvases[0]?.clientWidth ?? 0))
     const windows = new Map<string, WaveWindow>()
+    const meanLines = new Map<string, readonly (WaveMeanLines | null)[]>()
     if (window !== null) {
       for (const s of shownBuffers) {
-        windows.set(s.key, s.buffer.readWindow(window.fromMs, window.toMs, columnCount))
+        const w = s.buffer.readWindow(window.fromMs, window.toMs, columnCount)
+        windows.set(s.key, w)
+        // **正負は段の中心（その窓の平均）で分ける**（値には重力が乗っている。`readMeanLines` を見ること）。
+        const centers = w.stats.map((st) => st?.meanGal ?? Number.NaN)
+        meanLines.set(s.key, s.buffer.readMeanLines(window.fromMs, window.toMs, columnCount, centers, MEAN_LINE_WINDOW_MS))
       }
     }
 
@@ -1151,7 +1180,12 @@ export async function initWavesView(container: HTMLElement, ctx: TabContext): Pr
     for (let axis = 0; axis < canvases.length; axis++) {
       const traces: PlotTrace[] = groundShown.map((s) => {
         const w = windows.get(s.key)
-        return { color: s.color, columns: w?.axes[axis] ?? [], stats: w?.stats[axis] ?? null }
+        return {
+          color: s.color,
+          columns: w?.axes[axis] ?? [],
+          stats: w?.stats[axis] ?? null,
+          meanLines: meanLines.get(s.key)?.[axis] ?? null,
+        }
       })
       // **中心の値は絵の中に描かない。** センサーごとに中心が違うので、重ねた本数ぶん
       // 数字が並ぶ —— 9 本では左上で潰れて 1 つも読めなかった（実機で確認）。
@@ -1175,6 +1209,7 @@ export async function initWavesView(container: HTMLElement, ctx: TabContext): Pr
         color: colorForIndex(j),
         columns: w?.axes[j] ?? [],
         stats: w?.stats[j] ?? null,
+        meanLines: meanLines.get(s.key)?.[j] ?? null,
       }))
       drawPlot(panel.canvas, panel.rangeLabel, traces, window, fixed, dpr, (halfSpan) => `±${formatGal(halfSpan)} gal`)
     }

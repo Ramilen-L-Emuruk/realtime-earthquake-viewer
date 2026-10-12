@@ -7,6 +7,7 @@ import {
   formatClock,
   formatDirection,
   formatGal,
+  lighterColor,
   needsTenths,
   niceHalfSpanGal,
   timeTicks,
@@ -166,5 +167,26 @@ describe('ColorSlots', () => {
     slots.release('b')
     expect(slots.colorOf('d')).toBe(b)
     expect(slots.colorOf('c')).toBe(c)
+  })
+})
+
+describe('lighterColor', () => {
+  it('白へ 6 割寄せた不透明な色にする（平均の線を元の線の上で見分けるため）', () => {
+    expect(lighterColor('#000000')).toBe('rgb(153, 153, 153)')
+    expect(lighterColor('#2563a8')).toBe('rgb(168, 193, 220)')
+  })
+
+  it('rgba も読み、透かしは捨てる', () => {
+    expect(lighterColor('rgba(37, 99, 168, 0.95)')).toBe('rgb(168, 193, 220)')
+  })
+
+  it('読めない色はそのまま返す（線は元の色で描かれる）', () => {
+    expect(lighterColor('currentColor')).toBe('currentColor')
+  })
+})
+
+describe('lighterColor（使っている色）', () => {
+  it('重ねるセンサーの色はすべて読めて、元の色とは別の色になる（読めないと平均の線が元の線と同じ色で塗りつぶす）', () => {
+    for (const c of SENSOR_COLORS) expect(lighterColor(c)).not.toBe(c)
   })
 })

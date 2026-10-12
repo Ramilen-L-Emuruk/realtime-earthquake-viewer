@@ -13,6 +13,7 @@
 
 import { readFinite, readFiniteArray, readFiniteArrayWithGaps, readNonEmptyString } from './readJson'
 import { formatMeasured } from '../../../src/utils/measuredIntensityRounding'
+import { movingAverage, signedMovingAverages } from '../../../src/utils/waveMeanLines'
 import { formatGal, niceHalfSpanGal } from './wavePlot'
 
 const SECOND_MS = 1000
@@ -942,6 +943,122 @@ export function compositeRuns(traces: readonly AxisTrace[], centers: readonly nu
     // 届き方は 1 本目の軸のものを引き継ぐ（合成の段には届き方の線を引かない。`recordsMarks.ts` の `originUnderline`）。
     return { firstSampleMs: run.firstSampleMs, msPerSample: run.msPerSample, values, origin: run.origin, timeQuestionable: run.timeQuestionable }
   })
+}
+
+// ---- 平均の線 -------------------------------------------------------------------------------
+
+/**
+ * 走りを時刻の順に 1 本の並びへ繋ぐ（平均の線の材料）。**合成波形の走りは 0.3 秒ずつに割れて届く** ので、
+ * 走りごとに平均すると窓（1 秒）が走りの長さで切られる。繋いでから平均し、元の走りの形へ戻す。
+ *
+ * **頭の時刻の順に繋ぐ**（平均は時刻が小さい順に並んでいることを当てにしている）。`offsets[i]` は元の `i` 番目の
+ * 走りの先頭が、繋いだ並びの何番目か（`splitLikeRuns` が元の形へ戻すのに使う）。
+ */
+function joinRuns(runs: readonly SampleRunView[]): {
+  readonly t: Float64Array
+  readonly v: Float64Array
+  readonly length: number
+  readonly offsets: readonly number[]
+} {
+  const order = runs.map((_, i) => i).sort((x, y) => runs[x]!.firstSampleMs - runs[y]!.firstSampleMs)
+  let n = 0
+  for (const run of runs) n += run.values.length
+  const t = new Float64Array(n)
+  const v = new Float64Array(n)
+  /** 元の走り `i` の先頭が、繋いだ並びの何番目か。 */
+  const offsets = new Array<number>(runs.length).fill(0)
+  let k = 0
+  for (const i of order) {
+    const run = runs[i]!
+    offsets[i] = k
+    for (let j = 0; j < run.values.length; j++) {
+      t[k] = run.firstSampleMs + j * run.msPerSample
+      v[k] = run.values[j]!
+      k++
+    }
+  }
+  return { t, v, length: n, offsets }
+}
+
+/** 繋いだ並びの値を、元の走りの形（頭の時刻・刻み・本数・届き方・並び）へ戻す。`offset` を足して戻す。 */
+function splitLikeRuns(runs: readonly SampleRunView[], offsets: readonly number[], values: Float32Array, offset: number): SampleRunView[] {
+  return runs.map((run, i) => {
+    const from = offsets[i]!
+    const out = new Array<number>(run.values.length)
+    for (let j = 0; j < run.values.length; j++) out[j] = values[from + j]! + offset
+    return { ...run, values: out }
+  })
+}
+
+/**
+ * 生のサンプルを取りに行く範囲。**見ている範囲の前後に平均の幅の半分ずつ足す** —— 平均の線は各点の前後
+ * `windowMs / 2` を使うので、見ている範囲ちょうどしか取らないと両端だけ片側の窓で平均される。
+ * **生のサンプルの上限（{@link SAMPLES_RANGE_MAX_MS}）を超えない分だけ**広げる（ホストが上限を超える範囲を断る）。
+ * 上限ちょうどの範囲では広げられず、両端の `windowMs / 2` は片側の窓のまま（10 分の幅の 0.1% に満たない）。
+ *
+ * **余白は整数のミリ秒で、上限から 1 ms 残す。** 取りに行くときは端を四捨五入して URL へ載せ（`recordsUrl`）、
+ * ホストは上限を 1 ms でも越えた範囲を断る。断られると**平均の線のために元の波形まで出なくなる**ので、上限ちょうどまで
+ * 詰めず、浮動小数の誤差と丸めが重なっても越えない側に寄せておく（失うのは端の 1 ms だけ）。
+ */
+export function samplesFetchRange(r: TimeRange, windowMs: number): TimeRange {
+  const room = Math.floor((SAMPLES_RANGE_MAX_MS - (r.toMs - r.fromMs) - 1) / 2)
+  const margin = Math.max(0, Math.min(Math.floor(windowMs / 2), room))
+  return { fromMs: r.fromMs - margin, toMs: r.toMs + margin }
+}
+
+/**
+ * 合成の段の控えを使い回してよいか。**軸のなぞり（取り直すと別の物になる）と中心がすべて同じとき**だけ。
+ * 中心は `Object.is` で比べる（NaN どうしを同じと見なす。`===` だと毎回作り直す）。
+ *
+ * **範囲を動かしている最中（`moving`。止まったら取り直す）は中心を見ない。** 中心は見ている範囲の平均なので、
+ * ドラッグのたびに動き、そのたびに 10 分ぶんを作り直すことになる。止まれば取り直してなぞりごと変わるので、
+ * 動かしている間だけ前の材料を使う（他の段と同じく、前に取った材料をいまの時間軸の位置へ描く）。
+ *
+ * **なぞりは作ったあと書き換えない前提**（`AxisTrace` は読み取ったものをそのまま持つ）。書き足す形にするなら、
+ * ここの鍵に版を足すこと。
+ */
+export function sameCompositeInputs(
+  prev: { readonly traces: readonly AxisTrace[]; readonly centers: readonly number[] } | null,
+  traces: readonly AxisTrace[],
+  centers: readonly number[],
+  moving: boolean,
+): boolean {
+  if (prev === null || prev.traces.length !== traces.length || prev.centers.length !== centers.length) return false
+  return prev.traces.every((t, k) => t === traces[k] && (moving || Object.is(prev.centers[k], centers[k])))
+}
+
+/**
+ * 同じなぞりで作った軸の平均の線を使い回してよいか（`sameCompositeInputs` と同じ考え方）。**範囲を動かしている
+ * 最中は中心が違っても使い回し、止まった後は中心が同じときだけ。**
+ */
+export function meanLinesStillUsable(cachedCenter: number, center: number, moving: boolean): boolean {
+  return moving || Object.is(cachedCenter, center)
+}
+
+/**
+ * 軸の段に重ねる「正側・負側の平均の線」（前後 `windowMs`。PWA の詳細の窓と同じ計算・`utils/waveMeanLines.ts`）。
+ *
+ * **正負は段の中心（`traceCenter`）で分ける。** 生データの値には重力が乗っていて、上の軸は 980 gal 付近にいる ——
+ * 0 で分けると、上の軸には正側の線しか出ない。返す値は中心の高さへ戻してあるので、軸と同じ `yOf` で描ける。
+ *
+ * **サンプルで描くときだけ作る**（列の上下の端からは、同じ時刻の値の平均が取れない）。中心が無ければ作らない。
+ */
+export function meanLineTraces(trace: AxisTrace, center: number, windowMs: number): { readonly pos: AxisTrace; readonly neg: AxisTrace } | null {
+  if (trace.kind !== 'samples' || !Number.isFinite(center)) return null
+  const joined = joinRuns(trace.runs)
+  const centered = joined.v.map((x) => x - center)
+  const { pos, neg } = signedMovingAverages(joined, centered, windowMs)
+  return {
+    pos: { kind: 'samples', runs: splitLikeRuns(trace.runs, joined.offsets, pos, center) },
+    neg: { kind: 'samples', runs: splitLikeRuns(trace.runs, joined.offsets, neg, center) },
+  }
+}
+
+/** 合成の段に重ねる「前後を均した線」（前後 `windowMs`。PWA と同じ計算）。**サンプルで描くときだけ作る。** */
+export function smoothedTrace(trace: AxisTrace, windowMs: number): AxisTrace | null {
+  if (trace.kind !== 'samples') return null
+  const joined = joinRuns(trace.runs)
+  return { kind: 'samples', runs: splitLikeRuns(trace.runs, joined.offsets, movingAverage(joined, joined.v, windowMs), 0) }
 }
 
 /** 全体の帯の列: 列ごとに、軸のうち振れ幅（最大 − 最小）がいちばん大きいもの。値の無い列は NaN。 */

@@ -17,6 +17,8 @@
 // 文字種の検証も無い（`viewStatus.ts` 冒頭が言う事情と同じ）。名前を変えながら投げ続けられると
 // 溜め場所が際限なく増えるので、受け付ける本数を区切って**断った数を画面へ出せる形にする**。
 
+import { signedMovingAverages } from '../../../src/utils/waveMeanLines'
+
 /**
  * 1 チャンクぶんの波形。
  *
@@ -127,6 +129,12 @@ export interface WaveColumn {
   readonly maxGal: number
   /** この列の手前に切れ目があるか。**前の列と線で繋がない印。** */
   readonly gapBefore: boolean
+}
+
+/** 軸 1 本の、正側・負側の平均の線を列へ畳んだもの（`WaveBuffer.readMeanLines`）。 */
+export interface WaveMeanLines {
+  readonly pos: readonly (WaveColumn | null)[]
+  readonly neg: readonly (WaveColumn | null)[]
 }
 
 /**
@@ -468,6 +476,127 @@ export class WaveBuffer {
     })
 
     return { axes, timebaseNominal: nominal, stats }
+  }
+
+  /**
+   * 正側・負側の平均の線（前後 `windowMs`。PWA の詳細の窓と同じ計算・`utils/waveMeanLines.ts`）を、
+   * `readWindow` と同じ列へ畳む。
+   *
+   * **正負は軸ごとの `centers`（段の中心＝その窓の平均。`readWindow` の `meanGal`）で分ける。** 値には重力が
+   * 乗っているので、0 で分けると上の軸には正側の線しかできない。返す上下の端は中心の高さへ戻してある。
+   *
+   * **窓の前後 `windowMs / 2` のサンプルも平均に入れる**（窓の端の列だけ片側の半分で平均すると、端で線が振れる）。
+   * **中心が有限でない軸は null**（その窓にサンプルが無い）。値の無いサンプルの後ろの列には切れ目の印を立てる
+   * （`readWindow` と同じ）。
+   */
+  readMeanLines(
+    fromMs: number,
+    toMs: number,
+    columnCount: number,
+    centers: readonly number[],
+    windowMs: number,
+  ): readonly (WaveMeanLines | null)[] {
+    const axisCount = this.axes === 0 ? 3 : this.axes
+    const out = new Array<WaveMeanLines | null>(axisCount).fill(null)
+    if (columnCount <= 0 || !(toMs > fromMs) || this.count === 0) return out
+    const lo = fromMs - windowMs / 2
+    const hi = toMs + windowMs / 2
+
+    // 範囲に掛かるサンプルを時刻の順に並べる（チャンクは時刻順に溜まっている）。**中心の無い軸は詰めない。**
+    // チャンクの中で範囲に入る添字は刻みから決まるので、1 点ずつ判定せずに数える（100 ms ごとに描き直すので軽く保つ）。
+    const axesToDo: number[] = []
+    for (let axis = 0; axis < axisCount; axis++) if (Number.isFinite(centers[axis])) axesToDo.push(axis)
+    if (axesToDo.length === 0) return out
+    const firstIn = (chunk: StoredChunk, edge: number): number =>
+      Math.min(chunk.count, Math.max(0, Math.ceil((edge - chunk.startMs) / chunk.msPerSample)))
+    let n = 0
+    for (let c = 0; c < this.count; c++) {
+      const chunk = this.chunks[(this.head + c) % this.capacity]
+      if (chunk === null || endMsOf(chunk) <= lo || chunk.startMs >= hi) continue
+      n += firstIn(chunk, hi) - firstIn(chunk, lo)
+    }
+    const t = new Float64Array(n)
+    const gap = new Uint8Array(n)
+    const values = axesToDo.map(() => new Float64Array(n))
+    let k = 0
+    for (let c = 0; c < this.count; c++) {
+      const chunk = this.chunks[(this.head + c) % this.capacity]
+      if (chunk === null || endMsOf(chunk) <= lo || chunk.startMs >= hi) continue
+      const i0 = firstIn(chunk, lo)
+      const i1 = firstIn(chunk, hi)
+      for (let i = i0; i < i1; i++) {
+        t[k] = chunk.startMs + i * chunk.msPerSample
+        gap[k] = chunk.gapBefore && i === 0 ? 1 : 0
+        for (let a = 0; a < axesToDo.length; a++) {
+          const axis = axesToDo[a]!
+          values[a]![k] = chunk.gal[axis]![i]! - centers[axis]!
+        }
+        k++
+      }
+    }
+
+    const span = toMs - fromMs
+    // 列の位置は軸によらないので、1 度だけ求める（範囲の外は -1）。
+    const colOf = new Int32Array(n)
+    for (let j = 0; j < n; j++) {
+      const atMs = t[j]!
+      colOf[j] = atMs < fromMs || atMs >= toMs ? -1 : Math.min(columnCount - 1, Math.floor(((atMs - fromMs) / span) * columnCount))
+    }
+    // 列ごとの上下の端は型付き配列で溜め、最後に 1 度だけ列の形へ直す（1 点ごとに作り直さない）。正側と負側は同じ 1 周で畳む。
+    const pMin = new Float64Array(columnCount)
+    const pMax = new Float64Array(columnCount)
+    const nMin = new Float64Array(columnCount)
+    const nMax = new Float64Array(columnCount)
+    const colGap = new Uint8Array(columnCount)
+    const colHas = new Uint8Array(columnCount)
+    for (let a = 0; a < axesToDo.length; a++) {
+      const axis = axesToDo[a]!
+      const center = centers[axis]!
+      const { pos, neg } = signedMovingAverages({ t, length: n }, values[a]!, windowMs)
+      colHas.fill(0)
+      colGap.fill(0)
+      let missing = false
+      for (let j = 0; j < n; j++) {
+        const col = colOf[j]!
+        if (col < 0) continue
+        // pos と neg は同じ点で NaN になる（元の値が無い点）
+        const p = pos[j]!
+        if (Number.isNaN(p)) {
+          missing = true
+          continue
+        }
+        const q = neg[j]!
+        const brokeHere = gap[j] === 1 || missing
+        missing = false
+        if (colHas[col] === 0) {
+          colHas[col] = 1
+          pMin[col] = p
+          pMax[col] = p
+          nMin[col] = q
+          nMax[col] = q
+        } else {
+          if (p < pMin[col]!) pMin[col] = p
+          if (p > pMax[col]!) pMax[col] = p
+          if (q < nMin[col]!) nMin[col] = q
+          if (q > nMax[col]!) nMax[col] = q
+        }
+        if (brokeHere) colGap[col] = 1
+      }
+      const posCols = new Array<WaveColumn | null>(columnCount)
+      const negCols = new Array<WaveColumn | null>(columnCount)
+      for (let col = 0; col < columnCount; col++) {
+        if (colHas[col] === 0) {
+          posCols[col] = null
+          negCols[col] = null
+          continue
+        }
+        const g = colGap[col] === 1
+        posCols[col] = { minGal: pMin[col]! + center, maxGal: pMax[col]! + center, gapBefore: g }
+        negCols[col] = { minGal: nMin[col]! + center, maxGal: nMax[col]! + center, gapBefore: g }
+      }
+      out[axis] = { pos: posCols, neg: negCols }
+    }
+    return out
   }
 
   private isGap(chunk: WaveChunkView): boolean {

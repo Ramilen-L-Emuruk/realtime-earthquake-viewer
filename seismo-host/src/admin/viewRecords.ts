@@ -113,6 +113,11 @@ import {
   centerAt,
   compositeColumnsTrace,
   compositeRuns,
+  meanLineTraces,
+  meanLinesStillUsable,
+  sameCompositeInputs,
+  samplesFetchRange,
+  smoothedTrace,
   emptyColumnsTrace,
   fetchFailureText,
   fullSpanMs,
@@ -161,6 +166,8 @@ import {
 } from './recordsPlot'
 import type { TabContext } from './tabState'
 import { applyHiddenAxes, readRangeSelection, readRecordsPrefs, rememberHiddenAxes, writeRecordsPrefs } from './viewPrefs'
+import { lighterColor } from './wavePlot'
+import { MEAN_LINE_WINDOW_MS } from '../../../src/utils/waveMeanLines'
 
 /** URL の `#` に載せる選択のキー（見ている記録と、見ている時間の範囲。範囲は絶対時刻のミリ秒）。 */
 const SELECTED_GROUP_KEY = 'group'
@@ -183,6 +190,9 @@ const PLOT_PADDING_Y = 6
 const TIME_LABEL_MARGIN = 36
 const WAVE_COLOR = 'rgba(37, 99, 168, 0.95)'
 const COMPOSITE_COLOR = 'rgba(123, 63, 160, 0.95)'
+/** 平均の線の色。**元の線の色を明るくしたもの**（`lighterColor`）。 */
+const MEAN_LINE_COLOR = lighterColor(WAVE_COLOR)
+const COMPOSITE_MEAN_LINE_COLOR = lighterColor(COMPOSITE_COLOR)
 const INTENSITY_COLOR = 'rgba(179, 38, 30, 0.9)'
 /** 欠けの斜線。**凡例（`index.html` の `.records-hatch-*`）と同じ色。** */
 const HATCH_NONE = 'rgba(179, 38, 30, 0.35)'
@@ -425,6 +435,56 @@ function drawTrace(ctx: CanvasRenderingContext2D, trace: AxisTrace, r: TimeRange
     started = true
   }
   ctx.stroke()
+}
+
+/**
+ * 平均の線（軸の正側・負側、合成の均した線）を重ねる。**元の線を明るくした色・2 倍の太さ**（PWA の詳細の窓と
+ * 同じ考え方。2026-10-12 ユーザー承認）。点は打たない（打つのは元の線だけ）。
+ */
+function drawMeanLine(ctx: CanvasRenderingContext2D, trace: AxisTrace, r: TimeRange, width: number, yOf: (v: number) => number, color: string): void {
+  const plan = pixelPlan(trace, r, width)
+  ctx.strokeStyle = color
+  ctx.lineWidth = 2
+  ctx.beginPath()
+  if (plan.mode === 'line') {
+    for (const s of plan.segments) {
+      s.xs.forEach((x, i) => {
+        if (i === 0) ctx.moveTo(x, yOf(s.vs[i]!))
+        else ctx.lineTo(x, yOf(s.vs[i]!))
+      })
+    }
+  } else {
+    let started = false
+    for (let x = 0; x < plan.lo.length; x++) {
+      const lo = plan.lo[x]!
+      const hi = plan.hi[x]!
+      if (Number.isNaN(lo) || Number.isNaN(hi)) {
+        started = false
+        continue
+      }
+      if (!started) ctx.moveTo(x + 0.5, yOf(lo))
+      else ctx.lineTo(x + 0.5, yOf(lo))
+      ctx.lineTo(x + 0.5, yOf(hi))
+      started = true
+    }
+  }
+  ctx.stroke()
+  ctx.lineWidth = 1
+}
+
+/**
+ * 軸の平均の線の控え。**指した所を動かすたびに描き直す**ので、そのたびに 10 分ぶんのサンプルを平均し直さない。
+ * 鍵はなぞり（取り直すと別のものになる）と中心（範囲を動かすと変わる）。**範囲を動かしている最中（`moving`）は
+ * 中心が違っても使い回す**（`meanLinesStillUsable`。10 分の幅のドラッグで 1 フレームに軸 1 本あたり約 2 ms かかっていた）。
+ */
+const meanLineCache = new WeakMap<AxisTrace, { readonly center: number; readonly lines: ReturnType<typeof meanLineTraces> }>()
+
+function cachedMeanLines(trace: AxisTrace, center: number, moving: boolean): ReturnType<typeof meanLineTraces> {
+  const hit = meanLineCache.get(trace)
+  if (hit !== undefined && meanLinesStillUsable(hit.center, center, moving)) return hit.lines
+  const lines = meanLineTraces(trace, center, MEAN_LINE_WINDOW_MS)
+  meanLineCache.set(trace, { center, lines })
+  return lines
 }
 
 /** 気象庁の P・S を段に重ねる。**秒まで分かれば破線、幅があれば薄い帯**（`arrivalMark`）。 */
@@ -876,6 +936,13 @@ export async function initRecordsView(container: HTMLElement, ctx: TabContext): 
   let reloadTimer: ReturnType<typeof setTimeout> | null = null
   let failure: string | null = null
   let hoverX: number | null = null
+  /** 合成の段の控え（`draw` の中を見ること）。 */
+  let compositeCache: {
+    readonly traces: readonly AxisTrace[]
+    readonly centers: readonly number[]
+    readonly trace: AxisTrace | null
+    readonly smooth: AxisTrace | null
+  } | null = null
   /** スペクトログラムの段を指しているときだけ、その段の中の縦の位置（周波数の読み取りに使う）。 */
   let hoverSpectrogramY: number | null = null
   /** 範囲のスペクトルの枠を指しているときの横の位置。 */
@@ -1001,6 +1068,8 @@ export async function initRecordsView(container: HTMLElement, ctx: TabContext): 
     const span = range.toMs - range.fromMs
     const traces = axes.map((a) => data?.axes.get(a.id) ?? null)
     const centers = traces.map((t) => (t === null ? Number.NaN : traceCenter(t.trace, range)))
+    /** 範囲を動かしている最中か（止まったら取り直す。`scheduleLoad`）。平均の線と合成は、その間だけ前の材料を使う。 */
+    const moving = reloadTimer !== null
     const peaks = traces.map((t, i) => (t === null ? null : tracePeak(t.trace, range, centers[i]!)))
     const halfSpan = sharedHalfSpan(peaks)
     const valueUnit: ValueUnit = traces.find((t) => t !== null)?.unit ?? 'gal'
@@ -1044,6 +1113,12 @@ export async function initRecordsView(container: HTMLElement, ctx: TabContext): 
         const c = Number.isFinite(centers[i]!) ? centers[i]! : 0
         const yOf = (v: number): number => mid - Math.max(-usable, Math.min(usable, ((v - c) / halfSpan) * usable))
         drawTrace(ctx, axis.trace, range, width, yOf, WAVE_COLOR)
+        // 正側・負側の平均の線（生のサンプルで描くときだけ。正負は段の中心で分ける）。
+        const lines = Number.isFinite(centers[i]!) ? cachedMeanLines(axis.trace, centers[i]!, moving) : null
+        if (lines !== null) {
+          drawMeanLine(ctx, lines.pos, range, width, yOf, MEAN_LINE_COLOR)
+          drawMeanLine(ctx, lines.neg, range, width, yOf, MEAN_LINE_COLOR)
+        }
         drawUnderline(ctx, axis.trace, range, width, plotHeight)
       }
       if (hoverX !== null) {
@@ -1066,10 +1141,21 @@ export async function initRecordsView(container: HTMLElement, ctx: TabContext): 
       let compositeIrregular: readonly IrregularHourView[] = []
       /** 欠けを塗る列。**合成が作れなくても塗る**（要約がまだ無いだけで真っ白にしない。震度の段と揃える）。 */
       let gapTrace: AxisTrace | null = null
+      /** 合成の均した線（生のサンプルで描くときだけ）。 */
+      let smooth: AxisTrace | null = null
       if (traces.length > 0 && traces.every((t) => t !== null && t.trace.kind === 'samples')) {
-        const runs = compositeRuns(traces.map((t) => t!.trace), centers)
-        trace = runs === null ? null : { kind: 'samples', runs }
+        // **指した所を動かすたびに作り直さない**（軸の平均の線の控えと同じ理由）。軸のなぞりと中心が同じなら使い回す。
+        const axisTraces = traces.map((t) => t!.trace)
+        if (!sameCompositeInputs(compositeCache, axisTraces, centers, moving)) {
+          const runs = compositeRuns(axisTraces, centers)
+          const built: AxisTrace | null = runs === null ? null : { kind: 'samples', runs }
+          compositeCache = { traces: axisTraces, centers, trace: built, smooth: built === null ? null : smoothedTrace(built, MEAN_LINE_WINDOW_MS) }
+        }
+        trace = compositeCache!.trace
+        smooth = compositeCache!.smooth
       } else if (traces.length > 0 && traces.every((t) => t !== null)) {
+        // 列で描く幅へ移った。10 分ぶんのサンプルの控えは手放す
+        compositeCache = null
         const visible = axes.map((a, i) => ({ id: a.id, trace: traces[i]!.trace, center: centers[i]! }))
         trace = compositeColumnsTrace(data?.composite ?? null, visible)
         if (trace !== null && trace.kind === 'columns') compositeColumnMs = trace.columnMs
@@ -1101,6 +1187,7 @@ export async function initRecordsView(container: HTMLElement, ctx: TabContext): 
           const top = Math.max(p.deviation, 1e-9) * 1.1
           const yOf = (v: number): number => height - PLOT_PADDING_Y - Math.min(1, v / top) * (height - 2 * PLOT_PADDING_Y)
           drawTrace(ctx, trace, range, width, yOf, COMPOSITE_COLOR)
+          if (smooth !== null) drawMeanLine(ctx, smooth, range, width, yOf, COMPOSITE_MEAN_LINE_COLOR)
         }
       }
     }
@@ -1386,7 +1473,9 @@ export async function initRecordsView(container: HTMLElement, ctx: TabContext): 
       const axes = await Promise.all(
         g.axes.map(async (a): Promise<[string, AxisData | null]> => {
           if (plan.kind === 'samples') {
-            const body = await apiFetch<unknown>(recordsUrl('samples', { channel: a.id, from: r.fromMs, to: r.toMs, unit: u }), { signal: controller.signal })
+            // 前後を少し広く取る（平均の線が両端でも前後 0.5 秒を使えるように。`samplesFetchRange`）
+            const wide = samplesFetchRange(r, MEAN_LINE_WINDOW_MS)
+            const body = await apiFetch<unknown>(recordsUrl('samples', { channel: a.id, from: wide.fromMs, to: wide.toMs, unit: u }), { signal: controller.signal })
             const s = readSamplesData(body)
             if (s === null) throw new Error('応答の形が違う')
             return [
@@ -1633,6 +1722,9 @@ export async function initRecordsView(container: HTMLElement, ctx: TabContext): 
     if (reloadTimer !== null) clearTimeout(reloadTimer)
     reloadTimer = setTimeout(() => {
       reloadTimer = null
+      // 止まった時点で 1 度描き直す（動かしている間に使い回した平均の線と合成を、いまの中心で作り直す。
+      // 取り直しは通信を挟むので、終わるまで待つと古い中心のまま残る）。
+      draw()
       void load()
       loadMarks()
       void loadFreq()
@@ -1669,6 +1761,7 @@ export async function initRecordsView(container: HTMLElement, ctx: TabContext): 
     group = groups.find((g) => g.key === key) ?? null
     hidden = new Set()
     loaded = null
+    compositeCache = null
     overview = null
     marks = null
     marksController?.abort()
