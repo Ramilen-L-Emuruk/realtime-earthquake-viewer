@@ -27,9 +27,14 @@ function book(options: Partial<BacklogBookOptions> = {}): BacklogBook {
   return new BacklogBook({ ...OPTIONS, ...options })
 }
 
-/** 1 まとまり 30 サンプルで、`seq` から並べて届ける。 */
-function feed(b: BacklogBook, stream: StreamRef, seqs: number[], atMs: number): void {
-  for (const firstSeq of seqs) b.notePacket({ stream, firstSeq, count: 30, address: ADDR, atMs })
+/**
+ * 1 まとまり 30 サンプルで、`seq` から並べて届ける。100 Hz で、先頭サンプルの時刻は `t0 + seq × 10 ms`。
+ * **再起動を扱わないテストは `t0` を 0 のままでよい**（新しい起動の時刻が前の起動より前になり、再起動の欠けは作られない）。
+ */
+function feed(b: BacklogBook, stream: StreamRef, seqs: number[], atMs: number, t0 = 0): void {
+  for (const firstSeq of seqs) {
+    b.notePacket({ stream, firstSeq, count: 30, address: ADDR, atMs, firstSampleMs: t0 + firstSeq * 10, sampleRateHz: 100 })
+  }
 }
 
 describe('BacklogBook', () => {
@@ -76,11 +81,12 @@ describe('BacklogBook', () => {
     expect(b.snapshot().pendingGaps).toBe(0)
   })
 
-  it('安全弁: 起動 ID が違えば別の流れ。再起動で番号が 0 へ戻っても欠けにしない', () => {
+  it('安全弁: 起動 ID が違えば別の流れ。再起動で番号が 0 へ戻っても、新しい起動の側に欠けは作らない', () => {
     const b = book()
     feed(b, S, [0, 30, 60], 1_000)
     feed(b, { ...S, bootId: 'deadbeef' }, [0, 30], 2_000)
-    expect(b.snapshot().pendingGaps).toBe(0)
+    // 抜けた分は前の起動の流れの「再起動の欠け」になる（下の describe）。新しい起動の番号には何も載らない。
+    expect(b.toJSON().gaps.map((g) => [g.bootId, g.rebootSpan])).toEqual([[S.bootId, true]])
   })
 
   it('安全弁: センサーが違えば別の流れ', () => {
@@ -221,7 +227,7 @@ describe('BacklogBook', () => {
   it('最新の送り元のアドレスで取りに行く（DHCP で変わっても追う）', () => {
     const b = book()
     feed(b, S, [0, 60], 1_000)
-    b.notePacket({ stream: S, firstSeq: 90, count: 30, address: '192.0.2.170', atMs: 1_100 })
+    b.notePacket({ stream: S, firstSeq: 90, count: 30, address: '192.0.2.170', atMs: 1_100, firstSampleMs: 900, sampleRateHz: 100 })
     expect(b.nextDue(10_000)).toMatchObject({ address: '192.0.2.170' })
   })
 
@@ -246,13 +252,14 @@ describe('BacklogBook', () => {
       expect(after.snapshot().pendingGaps).toBe(0)
     })
 
-    it('安全弁: 基板も再起動していたら（起動 ID が違えば）前の番号から欠けを作らない', () => {
+    it('安全弁: 基板も再起動していたら（起動 ID が違えば）、新しい起動の番号に前の番号からの欠けを作らない', () => {
       const before = book()
       feed(before, S, [0, 30], 1_000)
       const after = book()
       after.restore(before.toJSON(), 5_000)
       feed(after, { ...S, bootId: 'deadbeef' }, [0], 6_000)
-      expect(after.snapshot().pendingGaps).toBe(0)
+      // 抜けは前の起動の番号の続き（60 から）に、再起動の欠けとして載る。
+      expect(after.toJSON().gaps.map((g) => [g.bootId, g.from, g.rebootSpan])).toEqual([[S.bootId, 60, true]])
     })
 
     it('取りに行く前の欠けも持ち越す', () => {
@@ -267,6 +274,7 @@ describe('BacklogBook', () => {
 
     it('形の合わない中身は読まない', () => {
       expect(parseBacklogBookState('not json')).toBeNull()
+      expect(parseBacklogBookState('{"version":3,"streams":[],"gaps":[],"boots":[]}')).toBeNull()
       expect(parseBacklogBookState('{"version":2,"streams":[],"gaps":[]}')).toBeNull()
       expect(parseBacklogBookState('{"version":1,"streams":[{"boardKey":"mac:x"}],"gaps":[]}')).toBeNull()
       expect(parseBacklogBookState('{"version":1,"streams":[],"gaps":[{"from":"a"}]}')).toBeNull()
@@ -286,7 +294,7 @@ describe('BacklogBook', () => {
   it('正: 同じ基板・センサーの新しい起動が来たら、欠けの無い前の起動は片付ける', () => {
     const b = book()
     feed(b, S, [0, 30], 0)
-    feed(b, { ...S, bootId: 'ffff0000' }, [0], 1_000)
+    feed(b, { ...S, bootId: 'ffff0000' }, [0], 0)
     expect(b.toJSON().streams.map((s) => s.bootId)).toEqual(['ffff0000'])
   })
 
@@ -295,7 +303,7 @@ describe('BacklogBook', () => {
     feed(b, S, [0], 0)
     feed(b, { ...S, sensorId: 'i2c0-69' }, [0], 0)
     feed(b, { ...S, boardKey: 'mac:ffffffffffff' }, [0], 0)
-    feed(b, { ...S, bootId: 'ffff0000' }, [0], 1_000)
+    feed(b, { ...S, bootId: 'ffff0000' }, [0], 0)
     const left = b.toJSON().streams.map((s) => `${s.boardKey}|${s.bootId}|${s.sensorId}`).sort()
     expect(left).toEqual([
       `mac:020000000001|34b6e78f|i2c0-69`,
@@ -307,7 +315,7 @@ describe('BacklogBook', () => {
   it('安全弁: 欠けが残っている前の起動の流れは片付けない（基板のフラッシュから取りに行く）', () => {
     const b = book()
     feed(b, S, [0, 90], 0)
-    feed(b, { ...S, bootId: 'ffff0000' }, [0], 1_000)
+    feed(b, { ...S, bootId: 'ffff0000' }, [0], 0)
     expect(b.toJSON().streams.map((s) => s.bootId).sort()).toEqual(['34b6e78f', 'ffff0000'])
     expect(b.nextDue(10_000)).toMatchObject({ key: KEY, from: 30, to: 90 })
   })
@@ -319,7 +327,8 @@ describe('BacklogBook', () => {
     after.restore(before.toJSON(), 5_000)
     feed(after, { ...S, bootId: 'ffff0000' }, [0], 6_000)
     expect(after.toJSON().streams.map((s) => s.bootId)).toEqual(['ffff0000'])
-    expect(after.snapshot().pendingGaps).toBe(0)
+    // 持ち越した番号からの普通の欠けは作らない。抜けは再起動の欠けにだけ載る。
+    expect(after.toJSON().gaps.every((g) => g.rebootSpan)).toBe(true)
   })
 
   describe('pendingGapStarts（返事へ載せる「欠けがある」）', () => {
@@ -382,6 +391,239 @@ describe('BacklogBook', () => {
       expect(b.pendingGapStarts(S.boardKey, S.bootId, OPTIONS.giveUpAfterMs)).toHaveLength(1)
       expect(b.pendingGapStarts(S.boardKey, S.bootId, OPTIONS.giveUpAfterMs + 1)).toEqual([])
       expect(b.snapshot().pendingGaps).toBe(1)
+    })
+  })
+
+  describe('基板の再起動をまたぐ欠け（時刻で測る）', () => {
+    // 前の起動は [0, 90) を受け、最後のサンプルの次の時刻は T + 900 ms。
+    const T = 1_790_000_000_000
+    const NEW: StreamRef = { ...S, bootId: 'ffff0000' }
+
+    function rebooted(b: BacklogBook, gapMs: number, newAtMs: number, firstSeq = 0) {
+      feed(b, S, [0, 30, 60], 1_000, T)
+      return b.notePacket({
+        stream: NEW, firstSeq, count: 30, address: ADDR, atMs: newAtMs, firstSampleMs: T + 900 + gapMs, sampleRateHz: 100,
+      })
+    }
+
+    it('正: 前の起動の最後から新しい起動の最初までを、前の起動の番号の続きとして欠けにする', () => {
+      const b = book()
+      const note = rebooted(b, 10_000, 11_000)
+      expect(note).toEqual({
+        boardKey: S.boardKey, sensorId: S.sensorId, previousBootId: S.bootId, bootId: 'ffff0000', spanSamples: 1_000,
+        timedBy: 'board',
+      })
+      expect(b.snapshot()).toMatchObject({ pendingGaps: 1, pendingSamples: 1_000, rebootsSeen: 1, rebootsUnmeasured: 0 })
+      expect(b.nextDue(20_000)).toMatchObject({ key: KEY, stream: S, from: 90, to: 1_090 })
+    })
+
+    it('正: 基板が持っていなかった分は「再起動の前後」に数える（rebooted・not-held・unsupported のどれでも）', () => {
+      for (const reason of ['rebooted', 'not-held', 'unsupported'] as const) {
+        const b = book()
+        rebooted(b, 10_000, 11_000)
+        expect(b.recovered(KEY, 90, 150)).toBe(60)
+        expect(b.unrecoverable(KEY, 150, 1_090, reason)).toBe(940)
+        expect(b.snapshot()).toMatchObject({
+          pendingGaps: 0, recoveredSamples: 60, unrecoverableSamples: { 'reboot-span': 940 },
+        })
+      }
+    })
+
+    it('対照: 再起動の欠けでない欠けは、同じ答えでもその理由のまま数える', () => {
+      const b = book()
+      feed(b, S, [0, 90], 1_000, T)
+      b.unrecoverable(KEY, 30, 90, 'rebooted')
+      expect(b.snapshot().unrecoverableSamples).toEqual({ rebooted: 60 })
+    })
+
+    it('対照: 諦め（gave-up）は再起動の欠けでも諦めとして数える（答えが無かったのは別の話）', () => {
+      const b = book({ giveUpAfterMs: 60_000 })
+      rebooted(b, 10_000, 11_000)
+      expect(b.nextDue(11_000 + 60_001)).toBeNull()
+      expect(b.snapshot().unrecoverableSamples).toEqual({ 'gave-up': 1_000 })
+    })
+
+    it('対照: すぐに立ち上がって抜けが半サンプル未満なら、再起動は数えるが欠けは作らない', () => {
+      const b = book()
+      expect(rebooted(b, 4, 1_100)?.spanSamples).toBe(0)
+      expect(b.snapshot()).toMatchObject({ pendingGaps: 0, rebootsSeen: 1, rebootsUnmeasured: 0 })
+    })
+
+    it('安全弁: 新しい起動の時刻が前の起動の終わりより戻っていたら、基板の時刻を信じずホストが受けた時刻で測る（時計が合う前の値を名乗る古いファーム）', () => {
+      const b = book()
+      // ホストが受けた時刻の差は 10 秒（1_000 → 11_000）。
+      expect(rebooted(b, -5_000, 11_000)).toMatchObject({ spanSamples: 1_000, timedBy: 'host' })
+      expect(b.snapshot()).toMatchObject({ pendingGaps: 1, rebootsSeen: 1, rebootsHostTimed: 1, rebootsUnmeasured: 0 })
+      expect(b.nextDue(20_000)).toMatchObject({ key: KEY, from: 90, to: 1_090 })
+    })
+
+    it('安全弁: ホストが受けた時刻の差より 10 秒を超えて長い抜けは、ホストが受けた時刻で測る（基板の時計が跳んだ）', () => {
+      const b = book()
+      // 受けた時刻の差は 10 秒なのに、基板の時刻では 1 時間空いている。
+      expect(rebooted(b, 3_600_000, 11_000)).toMatchObject({ spanSamples: 1_000, timedBy: 'host' })
+      // 境目: 差 10 秒 + 余裕 10 秒までは基板の時刻で測る。
+      const ok = book()
+      expect(rebooted(ok, 20_000, 11_000)).toMatchObject({ spanSamples: 2_000, timedBy: 'board' })
+      expect(ok.snapshot().rebootsHostTimed).toBe(0)
+    })
+
+    it('安全弁: 新しい起動を見た後に遅れて届いた前の起動のパケットは、再起動にせず欠けを埋める', () => {
+      const b = book()
+      rebooted(b, 10_000, 11_000)
+      feed(b, NEW, [30], 11_100, T + 900 + 10_000)
+      // 前の起動の最後のまとまり（[90, 120)）が遅れて届いた。
+      expect(b.notePacket({
+        stream: S, firstSeq: 90, count: 30, address: ADDR, atMs: 11_200, firstSampleMs: T + 900, sampleRateHz: 100,
+      })).toBeNull()
+      // 次の新しい起動のパケットで、前の起動へ戻ったと取り違えて 2 度目の再起動にしない。
+      feed(b, NEW, [60], 11_300, T + 900 + 10_000)
+      expect(b.snapshot()).toMatchObject({ rebootsSeen: 1, pendingSamples: 970 })
+      expect(b.nextDue(20_000)).toMatchObject({ key: KEY, from: 120, to: 1_090 })
+    })
+
+    it('正: ホストの再起動をまたいでも（帳面を書き出して読み戻しても）基板の再起動を見つける', () => {
+      const before = book()
+      feed(before, S, [0, 30, 60], 1_000, T)
+      const state = parseBacklogBookState(JSON.stringify(before.toJSON()))
+      expect(state).not.toBeNull()
+      const after = book()
+      after.restore(state!, 5_000)
+      after.notePacket({
+        stream: NEW, firstSeq: 0, count: 30, address: ADDR, atMs: 11_000, firstSampleMs: T + 900 + 10_000, sampleRateHz: 100,
+      })
+      expect(after.nextDue(20_000)).toMatchObject({ key: KEY, from: 90, to: 1_090 })
+      // 再起動の欠けであることも持ち越す。
+      const again = book()
+      again.restore(parseBacklogBookState(JSON.stringify(after.toJSON()))!, 12_000)
+      again.unrecoverable(KEY, 90, 1_090, 'not-held')
+      expect(again.snapshot().unrecoverableSamples).toEqual({ 'reboot-span': 1_000 })
+    })
+
+    it('版 1 の帳面も読む（再起動の欠けは無く、最後の起動は分からないので最初の再起動は見つけない）', () => {
+      const v1 = '{"version":1,"streams":[],"gaps":[{"boardKey":"mac:x","bootId":"b","sensorId":"s","address":"a",' +
+        '"from":0,"to":30,"foundAtMs":0}]}'
+      expect(parseBacklogBookState(v1)).toEqual({
+        version: 2, streams: [], boots: [],
+        gaps: [{ boardKey: 'mac:x', bootId: 'b', sensorId: 's', address: 'a', from: 0, to: 30, foundAtMs: 0, rebootSpan: false }],
+      })
+      expect(parseBacklogBookState(v1.replace('"version":1', '"version":2'))).toBeNull()
+    })
+
+    it('安全弁: 時刻が読めなくても再起動は見つけ、ホストが受けた時刻で測る', () => {
+      const b = book()
+      feed(b, S, [0, 30, 60], 1_000, T)
+      expect(b.notePacket({
+        stream: NEW, firstSeq: 0, count: 30, address: ADDR, atMs: 11_000, firstSampleMs: Number.NaN, sampleRateHz: 100,
+      })).toMatchObject({ spanSamples: 1_000, timedBy: 'host' })
+      expect(b.snapshot()).toMatchObject({ rebootsSeen: 1, rebootsHostTimed: 1, pendingSamples: 1_000 })
+    })
+
+    it('安全弁: 周波数が読めなければ長さは測らないが、再起動したことは数える（黙って落とさない）', () => {
+      const b = book()
+      feed(b, S, [0, 30, 60], 1_000, T)
+      expect(b.notePacket({
+        stream: NEW, firstSeq: 0, count: 30, address: ADDR, atMs: 11_000, firstSampleMs: T + 10_900, sampleRateHz: 0,
+      })).toMatchObject({ spanSamples: null, timedBy: null })
+      expect(b.snapshot()).toMatchObject({ rebootsSeen: 1, rebootsUnmeasured: 1, pendingGaps: 0 })
+    })
+
+    it('安全弁: 遅れて届いた前の起動のパケットが番号を飛ばしていても、再起動の欠けと重なる普通の欠けを作らない', () => {
+      const b = book()
+      rebooted(b, 10_000, 11_000)
+      // 前の起動の [90, 120) は届かず、[120, 150) だけが遅れて届いた。
+      b.notePacket({ stream: S, firstSeq: 120, count: 30, address: ADDR, atMs: 11_200, firstSampleMs: T + 1_200, sampleRateHz: 100 })
+      // 再起動の欠け [90, 1_090) から 30 が外れただけ。同じサンプルを 2 つの欠けが持たない。
+      expect(b.snapshot()).toMatchObject({ pendingSamples: 970 })
+      expect(b.recovered(KEY, 90, 120)).toBe(30)
+      expect(b.snapshot().recoveredSamples).toBe(30)
+    })
+
+    it('安全弁: 遅れて届いた前の起動のパケットで、今の起動の流れを片付けない（今の起動の抜けを見逃さない）', () => {
+      const b = book()
+      // 抜けの長さ 0 で再起動（前の起動の流れは片付く）。
+      rebooted(b, 0, 1_000)
+      // 前の起動のパケットが遅れて 1 つ届く。
+      b.notePacket({ stream: S, firstSeq: 90, count: 30, address: ADDR, atMs: 1_100, firstSampleMs: T + 900, sampleRateHz: 100 })
+      // 今の起動で [30, 60) が抜ける。
+      feed(b, NEW, [60], 1_200, T + 900)
+      expect(b.nextDue(10_000)).toMatchObject({ stream: NEW, from: 30, to: 60 })
+    })
+
+    it('安全弁: 遅れて届いた前の起動のパケットへの返事には「欠けがある」を載せない（返事を読むのは今の起動の基板）', () => {
+      const b = book()
+      rebooted(b, 10_000, 11_000)
+      expect(b.pendingGapStarts(S.boardKey, S.bootId, 11_000)).toEqual([])
+    })
+
+    it('安全弁: 帳面が版 1 で前の起動の時刻を知らなくても、持ち越した前の起動があれば再起動したことは数える', () => {
+      const v1 = JSON.stringify({
+        version: 1, gaps: [],
+        streams: [{ boardKey: S.boardKey, bootId: S.bootId, sensorId: S.sensorId, nextSeq: 90, address: ADDR }],
+      })
+      const b = book()
+      b.restore(parseBacklogBookState(v1)!, 5_000)
+      expect(b.notePacket({
+        stream: NEW, firstSeq: 0, count: 30, address: ADDR, atMs: 11_000, firstSampleMs: T + 10_900, sampleRateHz: 100,
+      })).toMatchObject({ previousBootId: S.bootId, spanSamples: null, timedBy: null })
+      expect(b.snapshot()).toMatchObject({ rebootsSeen: 1, rebootsUnmeasured: 1 })
+      // 持ち越した起動のパケットが遅れて届いても、戻る向きの再起動にしない。
+      expect(b.notePacket({
+        stream: S, firstSeq: 90, count: 30, address: ADDR, atMs: 11_050, firstSampleMs: T + 900, sampleRateHz: 100,
+      })).toBeNull()
+      expect(b.snapshot()).toMatchObject({ rebootsSeen: 1, pendingGaps: 0 })
+      // 次の再起動からは測れる。
+      feed(b, NEW, [30], 11_100, T + 10_900)
+      expect(b.notePacket({
+        stream: { ...S, bootId: 'eeee0000' }, firstSeq: 0, count: 30, address: ADDR, atMs: 21_200,
+        firstSampleMs: T + 21_500, sampleRateHz: 100,
+      })).toMatchObject({ timedBy: 'board', spanSamples: 1_000 })
+    })
+
+    it('安全弁: 同じ起動の中で時計が戻されても、番号が進んだパケットの時刻で終わりを測る', () => {
+      const b = book()
+      feed(b, S, [0, 30], 1_000, T)
+      // 時計が 5 秒戻された（番号は続いている）。
+      b.notePacket({ stream: S, firstSeq: 60, count: 30, address: ADDR, atMs: 1_300, firstSampleMs: T - 5_000, sampleRateHz: 100 })
+      // 終わりは T − 5 000 + 300 ms。そこから 3 秒後に新しい起動。
+      expect(b.notePacket({
+        stream: NEW, firstSeq: 0, count: 30, address: ADDR, atMs: 4_300, firstSampleMs: T - 5_000 + 300 + 3_000, sampleRateHz: 100,
+      })).toMatchObject({ timedBy: 'board', spanSamples: 300 })
+    })
+
+    it('対照: 抜けが 2^30 サンプルを超えたら、超えた分は取りに行かずに「再起動の前後」へ数える', () => {
+      const b = book()
+      const day = 24 * 60 * 60_000
+      // 150 日止まっていた（ホストが受けた時刻の差も同じだけ）。
+      const note = rebooted(b, 150 * day, 1_000 + 150 * day)
+      expect(note?.spanSamples).toBe(150 * day / 10)
+      expect(b.snapshot().pendingSamples).toBe(0x4000_0000)
+      expect(b.snapshot().unrecoverableSamples).toEqual({ 'reboot-span': 150 * day / 10 - 0x4000_0000 })
+    })
+
+    it('対照: 欠けの数が上限を超えて再起動の欠けが捨てられたら、捨てたとして数える', () => {
+      const b = book({ maxGaps: 1 })
+      rebooted(b, 10_000, 11_000)
+      // 今の起動で 1 つ欠けると、いちばん古い（再起動の）欠けが捨てられる。
+      feed(b, NEW, [60], 11_100, T + 10_900)
+      expect(b.snapshot().unrecoverableSamples).toEqual({ 'too-many': 1_000 })
+    })
+
+
+    it('安全弁: 前の起動の欠けも、取りに行く先を新しい送り元へ寄せる（再起動で DHCP の割り当てが変わる）', () => {
+      const b = book()
+      feed(b, S, [0, 30, 60], 1_000, T)
+      b.notePacket({
+        stream: NEW, firstSeq: 0, count: 30, address: '192.0.2.170', atMs: 11_000, firstSampleMs: T + 10_900, sampleRateHz: 100,
+      })
+      expect(b.nextDue(20_000)).toMatchObject({ key: KEY, address: '192.0.2.170' })
+    })
+
+    it('対照: 別のセンサー・別の基板の起動とは混ぜない', () => {
+      const b = book()
+      feed(b, S, [0, 30, 60], 1_000, T)
+      feed(b, { ...NEW, sensorId: 'i2c0-69' }, [0], 11_000, T + 10_900)
+      feed(b, { ...NEW, boardKey: 'mac:ffffffffffff' }, [0], 11_000, T + 10_900)
+      expect(b.snapshot()).toMatchObject({ rebootsSeen: 0, pendingGaps: 0 })
     })
   })
 })

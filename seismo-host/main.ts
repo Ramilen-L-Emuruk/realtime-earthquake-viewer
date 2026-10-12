@@ -195,6 +195,7 @@ const UNRECOVERABLE_TEXT: Record<UnrecoverableReason, string> = {
   unsupported: '基板に取り戻しの口が無い（取り戻しより古いファーム）',
   'gave-up': '何度訊いても答えが無かった',
   'too-many': '欠けが多すぎて古いものから捨てた',
+  'reboot-span': '基板の再起動の前後で受けられず、基板も持っていなかった',
 }
 
 /** 取り戻せなかった理由の全部。**`UNRECOVERABLE_TEXT` から引く** —— 型が全部の理由を書かせる。 */
@@ -2310,13 +2311,36 @@ async function main(): Promise<void> {
       // `notePacket` は投げない（数と範囲を覚えるだけ）。**返事より先に置く** ——
       // このパケットで見つかった欠けを、この回の返事の `gap=` へ載せるため。
       if (board.startsWith('mac:') && read.packet.bootId !== '') {
-        backlogBook.notePacket({
+        const reboot = backlogBook.notePacket({
           stream: { boardKey: board, bootId: read.packet.bootId, sensorId: read.packet.sensorId },
           firstSeq: read.packet.firstSeq,
           count: read.packet.samples.length,
           address: from.address,
           atMs: receivedAtMs,
+          firstSampleMs: read.packet.firstSampleMs,
+          sampleRateHz: read.packet.sampleRateHz,
         })
+        // **基板の再起動を見つけたら 1 行。** 測れなかったとき（その分の欠けはどこにも数えていない）と、
+        // 基板の時刻が使えずホストの時刻で測ったときは `warn`。**間引きの種類を分ける** —— 同じ種類だと、
+        // 同じ基板が再起動を繰り返したとき、先に出た普通の行が後の警告を間隔のあいだ抑えてしまう。
+        if (reboot !== null) {
+          const who = `${reboot.boardKey}|${reboot.sensorId}`
+          const head = `[backlog] ${who} 基板が再起動した（起動 ${reboot.previousBootId} → ${reboot.bootId}）。`
+          if (reboot.spanSamples === null) {
+            emit('warn', 'backlog-reboot-unmeasured', who, `${head}抜けた長さを測れず、どこにも数えていない`)
+          } else if (reboot.timedBy === 'host') {
+            emit(
+              'warn', 'backlog-reboot-host-timed', who,
+              `${head}基板の時刻が使えず、ホストが受けた時刻で測って ${reboot.spanSamples} サンプル抜けた` +
+                '（前の起動の末尾は基板へ取りに行く）',
+            )
+          } else {
+            emit(
+              'log', 'backlog-reboot', who,
+              `${head}前後で ${reboot.spanSamples} サンプル抜けた（前の起動の末尾は基板へ取りに行く）`,
+            )
+          }
+        }
       }
       // **返事は読み取れた直後に返す。** 基板が知りたいのは「届いて読めたか」で、
       // 震度が出たか・区間がどう切れたかではない（それは基板が直せることではない）。
@@ -2760,6 +2784,19 @@ async function main(): Promise<void> {
       // まとめて訊いた答えに入っていた受信済みのまとまり。取り戻した数に比べて多すぎるなら、
       // まとめる長さが欠けの散らばり方に合っていない。
       backlogSkipped: delta('backlogSkipped', '取りに行った答えのうち受信済みで書かなかったまとまり', fetched.skippedPackets),
+      // 基板の再起動はセンサーごとに数える（3 センサーの基板が 1 回再起動すれば 3）。抜けた長さは
+      // 取り戻した分と `backlogLost:reboot-span` に分かれて入る。測れなかった分はどこにも入らない。
+      backlogReboots: delta('backlogReboots', '基板の再起動を見つけた（センサーごと）', fetched.rebootsSeen),
+      backlogRebootsHostTimed: delta(
+        'backlogRebootsHostTimed',
+        '基板の再起動の前後で基板の時刻が使えず、ホストが受けた時刻で長さを測った（センサーごと）',
+        fetched.rebootsHostTimed,
+      ),
+      backlogRebootsUnmeasured: delta(
+        'backlogRebootsUnmeasured',
+        '基板の再起動で抜けた長さを測れなかった（センサーごと・どこにも数えていない）',
+        fetched.rebootsUnmeasured,
+      ),
     }
     // **取り戻せなかった分は理由ごとに出す** —— 再起動・上書き・古いファーム・諦め・捨てたで手当てが違う。
     // 欄は `UNRECOVERABLE_TEXT` の鍵から引く（理由を足せば黙って付いてくる）。
