@@ -34,10 +34,12 @@ export function emphasizedScaleFloorGal(noise: NoiseBand): number {
  *
  * **非有限の値は非有限のまま返す。** 0 へ落とすと「欠測」が「ノイズの内側（本物の 0）」に化けて
  * 描かれる（観測点の合成が解けなかった成分は、値を持つ列でもその成分だけ `NaN` で届く）。
+ * **帯の無い成分（幅が `NaN`）も描かない** —— 比較がすべて偽になり、下の 3 行は 0 を返してしまう。
+ * 呼び手は `utils/seismoQuakeWindow.ts` の `bandCoversDrawn` で、帯の無い成分が値を持たないことを確かめてから潰す。
  */
 function shrink(value: number, center: number, width: number): number {
   const d = value - center
-  if (!Number.isFinite(d)) return d
+  if (!Number.isFinite(d) || !Number.isFinite(width)) return Number.NaN
   if (d > width) return d - width
   if (d < -width) return d + width
   return 0

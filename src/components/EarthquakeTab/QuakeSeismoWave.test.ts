@@ -111,7 +111,7 @@ describe('foldQuakeWaveColumns', () => {
       visibleAxes: ALL,
       columnCount: 10,
     })
-    expect(r.noiseMissing).toBe(false)
+    expect(r.noiseMissing).toBeNull()
     // 幅は 1 × 1.5 = 1.5、残りは 5 − 1.5 = 3.5
     expect(r.columns.scaleLabel).toBe('±1.5〜±5.0 gal')
   })
@@ -127,7 +127,7 @@ describe('foldQuakeWaveColumns', () => {
       visibleAxes: ALL,
       columnCount: 10,
     })
-    expect(r.noiseMissing).toBe(false)
+    expect(r.noiseMissing).toBeNull()
     expect(r.columns.scaleLabel).toBeUndefined()
     expect(r.columns.scaleGal).toBeCloseTo(7.5)
   })
@@ -176,7 +176,33 @@ describe('foldQuakeWaveColumns', () => {
       visibleAxes: ALL,
       columnCount: 10,
     })
-    expect(r.noiseMissing).toBe(true)
+    expect(r.noiseMissing).toBe('unmeasured')
+    expect(r.columns.scaleLabel).toBeUndefined()
+  })
+
+  /** 上が `upMissing(t)` の間だけ解けない列（観測点の合成が上を出さない形）。 */
+  function withUpMissing(base: TimedColumns, upMissing: (t: number) => boolean): TimedColumns {
+    const columns = base.columns.map((c, i) => {
+      if (c === null || !upMissing(base.fromMs + i * SPAN)) return c
+      return { ...c, min: [c.min[0], c.min[1], NaN] as const, max: [c.max[0], c.max[1], NaN] as const }
+    })
+    return { ...base, columns }
+  }
+
+  // 正（#698・2026-10-12 ユーザー承認）: 上をずっと解けない観測点でも、東・北で強調する。
+  it('上がずっと解けなくても、東・北で強調する', () => {
+    const base = withUpMissing(quake(), () => true)
+    const r = foldQuakeWaveColumns({ base, trimmed: trimmedOf(base), zeroMs: ZERO, emphasized: true, visibleAxes: ALL, columnCount: 10 })
+    expect(r.noiseMissing).toBeNull()
+    expect(r.columns.scaleLabel).toBe('±1.5〜±5.0 gal')
+    expect(r.columns.columns.some((c) => c.hasValue && Number.isFinite(c.max[2]))).toBe(false)
+  })
+
+  // 対照: 上の帯は作れなかったのに、描く範囲では上に値がある —— 潰さない絵へ戻す（上を消さないため）。
+  it('上の帯が無いのに描く範囲で上に値があれば、強調しない', () => {
+    const base = withUpMissing(quake(), (t) => t < ZERO)
+    const r = foldQuakeWaveColumns({ base, trimmed: trimmedOf(base), zeroMs: ZERO, emphasized: true, visibleAxes: ALL, columnCount: 10 })
+    expect(r.noiseMissing).toBe('uncovered')
     expect(r.columns.scaleLabel).toBeUndefined()
   })
 

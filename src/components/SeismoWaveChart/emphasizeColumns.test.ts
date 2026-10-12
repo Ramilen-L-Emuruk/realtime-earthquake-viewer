@@ -105,4 +105,16 @@ describe('emphasizeColumns（非有限の値）', () => {
     expect(r.columns[0].max[0]).toBeNaN()
     expect(r.columns[0].max[1]).toBeCloseTo(1.6)
   })
+
+  // 安全弁（#698）: 帯の無い成分（幅が NaN）は、値があっても 0 に潰さない。比較がすべて偽になって
+  // 「ノイズの内側」へ化けると、揺れが平らな線に見える。
+  test('帯の無い成分は描かず、縦の分母にも表示にも数えない', () => {
+    const noUd: NoiseBand = { center: [0, 0, NaN], width: [1, 1, NaN] }
+    const r = emphasizeColumns({ folded: folded([col([-3, -2, -50], [3, 2, 50])]), noise: noUd })
+    expect(r.columns[0].max[2]).toBeNaN()
+    expect(r.columns[0].max[0]).toBeCloseTo(2)
+    // 縦は東の残り（2）で決まり、上の 50 には引きずられない。表示も東の幅。
+    expect(r.scaleGal).toBeCloseTo(2)
+    expect(r.scaleLabel).toContain('±1')
+  })
 })

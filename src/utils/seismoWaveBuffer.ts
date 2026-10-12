@@ -28,6 +28,16 @@
 // 作り直したら、そこを `/waves` から取って**穴の位置へだけ**書く。そのために各サンプルの時刻を
 // 一緒に持つ —— 上に書いた理由で、位置から「起点 ＋ 刻み × 位置」で時刻を逆算すると、刻みの揺らぎが
 // 60 秒で 1〜2 サンプルぶんのずれに積もる。
+//
+// **穴は成分ごとに持つ**（#696）。観測点の合成は、測る向きが 3 方向へ散っていない間、解けない成分
+// （主に上）だけを `NaN` にして残りを出す（`seismo-host/src/receiver/sensorFusion.ts`・2026-10-09
+// ユーザー承認）。1 つの成分だけで穴を見ると、上だけ欠けた区間は後から解けても埋め直されない。
+// 3 成分そろって読めることを求めると、**上をずっと解けない観測点では 1 サンプルも埋まらず**、
+// 手前の継ぎ足しも全部が穴になる（取り戻した値も上は `NaN` なので）。
+//
+// **欠測（{@link SeismoWaveTally.gapSamples}）は「サンプルが丸ごと届かなかった」数のまま。** 解けなかった
+// 成分は届いてはいる —— 数えると、上を解けない観測点の絵に「欠測」の数字がずっと増え続ける。
+// 数えた穴は 1 成分でも埋まれば引く（{@link SeismoWaveTally.gapSamples}）。
 
 /**
  * 刻み（`msPerSample`）が変わったと見なす比率。
@@ -120,10 +130,15 @@ export type SeismoWavePushResult =
  */
 export interface SeismoWaveTally {
   /**
-   * 届かなかったサンプルのうち、埋まらなかったものの累計。
+   * 届かなかったサンプル（3 成分とも値が無い）のうち、埋まらなかったものの累計。
    *
    * **埋めた分（{@link SeismoWaveBuffer.fill}）はここから引く**（2026-10-07 ユーザー承認）。
    * 引かないと、穴の無い絵に「欠測」の数字が並ぶ。埋まらないまま窓の外へ流れた穴は残る。
+   * 1 成分でも埋まれば、そのサンプルは届いたものとして引く。
+   *
+   * **一部の成分だけ解けなかったサンプルは数えない**（ヘッダの「穴は成分ごとに持つ」）。
+   * **押し出しで 3 成分とも `NaN` のまま届いたサンプルも数えない**（届いてはいる）。数えるのは、
+   * 届かなかった間に置いた穴と、継ぎ足しで控えにも値が無かったサンプルだけ。引くのも、そのとき数えた分だけ。
    */
   readonly gapSamples: number
   /** 起点から作り直した回数。 */
@@ -148,6 +163,12 @@ interface WaveSlots {
    * 穴を埋めるとき（{@link SeismoWaveBuffer.fill}）に、取り戻した値の時刻と突き合わせるために持つ。
    */
   readonly timeMs: Float64Array
+  /**
+   * 欠測に数えたサンプルの印（1 = 数えた）。**埋めたときに引くのは、この印の付いたサンプルだけ。**
+   * 押し出しで 3 成分とも `NaN` のまま届いたサンプルは数えていない（ヘッダ）ので、「3 成分とも無い」だけで
+   * 引くと、それが埋まった分だけ別の穴の計上が消える。
+   */
+  readonly counted: Uint8Array
   /** 抱えるサンプル数。 */
   readonly capacity: number
 }
@@ -322,14 +343,17 @@ export class SeismoWaveBuffer {
   }
 
   /**
-   * 取り戻した値で穴を埋める。**埋めたサンプル数を返す。**
+   * 取り戻した値で穴を埋める。**1 成分でも埋めたサンプルの数を返す。**
    *
-   * **穴（届かなかったところ）へだけ書く。** 届いた値は、取り戻した値が重なっていても上書きしない
+   * **穴（値の無い成分）へだけ書く。** 届いた値は、取り戻した値が重なっていても上書きしない
    * —— 同じ時刻の値は作り直しでも変わらないはずで、入れ替えても得るものが無い（境目のずれ
-   * （実機で ±5 ms）のぶん、かえって絵が動く）。
+   * （実機で ±5 ms）のぶん、かえって絵が動く）。**成分ごとに見る**（ヘッダの「穴は成分ごとに持つ」）。
    *
    * **時刻で突き合わせる。** 穴ごとに、取り戻した値のうち時刻が最も近いサンプルを採り、
-   * 半サンプルを超えて離れていれば採らない。読めない値（`NaN`）のサンプルでは埋めない。
+   * 半サンプルを超えて離れていれば採らない。取り戻した値の読めない成分（`NaN`）では埋めない。
+   *
+   * **本数は減らさない**（多いほうを採る）。上だけ埋めたサンプルで取り戻した側の本数が少なければ、
+   * 届いていた東・北の裏付けを少なく見せることになる。
    *
    * @param chunks 時刻の昇順でなくてもよい。
    */
@@ -345,9 +369,10 @@ export class SeismoWaveBuffer {
     let filled = 0
     let at = 0
     const start = this.oldestSlot(slots)
+    let arrived = 0
     for (let i = 0; i < this.count; i += 1) {
       const slot = (start + i) % slots.capacity
-      if (!Number.isNaN(slots.gal[0][slot])) continue
+      if (!hasHole(slots, slot)) continue
       const t = slots.timeMs[slot]
       // **穴の時刻は昇順に並ぶ**ので、まとまりの指し先は戻さなくてよい。
       while (at < usable.length - 1 && endMs(usable[at]) + usable[at].msPerSample / 2 < t) at += 1
@@ -355,25 +380,35 @@ export class SeismoWaveBuffer {
       const j = Math.round((t - c.firstSampleMs) / c.msPerSample)
       if (j < 0 || j >= c.gal[0].length) continue
       if (Math.abs(c.firstSampleMs + j * c.msPerSample - t) > c.msPerSample / 2) continue
-      const ew = c.gal[0][j]
-      const ns = c.gal[1][j]
-      const ud = c.gal[2][j]
-      if (!Number.isFinite(ew) || !Number.isFinite(ns) || !Number.isFinite(ud)) continue
-      slots.gal[0][slot] = ew
-      slots.gal[1][slot] = ns
-      slots.gal[2][slot] = ud
-      slots.memberCount[slot] = c.memberCount[j]
+      let wrote = false
+      for (let a = 0; a < 3; a += 1) {
+        if (!Number.isNaN(slots.gal[a][slot])) continue
+        const v = c.gal[a][j]
+        if (!Number.isFinite(v)) continue
+        slots.gal[a][slot] = v
+        wrote = true
+      }
+      if (!wrote) continue
+      slots.memberCount[slot] = Math.max(slots.memberCount[slot], c.memberCount[j])
       filled += 1
+      // **欠測に数えたサンプルだけ引く**（{@link WaveSlots.counted}）。
+      if (slots.counted[slot] === 1) {
+        slots.counted[slot] = 0
+        arrived += 1
+      }
     }
-    this.gapSamples -= filled
+    this.gapSamples -= arrived
     return filled
   }
 
   /**
-   * `[fromMs, toMs)` に時刻のある穴を覆う範囲。**穴が無ければ `null`。**
+   * `[fromMs, toMs)` に時刻のある穴（どれか 1 成分でも値が無いサンプル）を覆う範囲。**穴が無ければ `null`。**
    *
    * 取り戻した区間の知らせを受けたとき、取りに行くかどうかと、どこを取るかを決めるのに使う。
    * 返す範囲も半開区間で、終わりは最後の穴の 1 サンプル先（そのまま `/waves` の `to` へ渡せる）。
+   *
+   * **上をずっと解けない観測点では、知らせのたびに上の穴を見て取りに行く。** ホストがその区間を
+   * 作り直したと言っている以上、上が解けたかはこちらから見分けられない（知らせ 1 件につき 1 回）。
    */
   holesIn(fromMs: number, toMs: number): SeismoWaveHoleSpan | null {
     const slots = this.slots
@@ -383,7 +418,7 @@ export class SeismoWaveBuffer {
     const start = this.oldestSlot(slots)
     for (let i = 0; i < this.count; i += 1) {
       const slot = (start + i) % slots.capacity
-      if (!Number.isNaN(slots.gal[0][slot])) continue
+      if (!hasHole(slots, slot)) continue
       const t = slots.timeMs[slot]
       if (t < fromMs || t >= toMs) continue
       first ??= t
@@ -427,8 +462,10 @@ export class SeismoWaveBuffer {
    * - **刻みが違えば採らない**（{@link push} が作り直すのと同じ許容幅）。時間軸が混ざる。許容幅の内で
    *   違う刻みは入れ物の刻みへ取り込まない —— 描く側は窓全体を最新の刻みで等間隔に引くので、
    *   {@link push} で届いた古い区間と同じ近似になる（実機の刻みの揺らぎは 0.16%）
-   * - **間が空いていれば穴として置き、欠測に数える**（読めない値のサンプルも同じ）。後から
+   * - **間が空いていれば穴として置き、欠測に数える**（3 成分とも読めないサンプルも同じ）。後から
    *   {@link fill} で埋まれば引かれる。数えないと、埋めたときに欠測が負へ落ちる
+   * - **読める成分だけでも置く**（ヘッダの「穴は成分ごとに持つ」）。上を解けない観測点では取り戻した値も
+   *   上が `NaN` なので、3 成分そろうことを求めると手前が全部穴になる。継ぎ足した数にも数える
    *
    * @param chunks 時刻の昇順でなくてもよい。
    */
@@ -452,7 +489,7 @@ export class SeismoWaveBuffer {
 
     let placed = 0
     let cursorMs = oldestMs
-    const put = (ew: number, ns: number, ud: number, members: number, t: number): boolean => {
+    const put = (ew: number, ns: number, ud: number, members: number, t: number, counted: boolean): boolean => {
       if (this.count >= slots.capacity) return false
       const slot = (this.oldestSlot(slots) - 1 + slots.capacity) % slots.capacity
       slots.gal[0][slot] = ew
@@ -460,6 +497,7 @@ export class SeismoWaveBuffer {
       slots.gal[2][slot] = ud
       slots.memberCount[slot] = members
       slots.timeMs[slot] = t
+      slots.counted[slot] = counted ? 1 : 0
       this.count += 1
       this.firstMs = t
       cursorMs = t
@@ -476,13 +514,14 @@ export class SeismoWaveBuffer {
       const step = (cursorMs - s.t) / (missing + 1)
       const fromMs = cursorMs
       for (let k = 1; k <= missing; k += 1) {
-        if (!put(NaN, NaN, NaN, 0, fromMs - k * step)) return placed
+        if (!put(NaN, NaN, NaN, 0, fromMs - k * step, true)) return placed
         this.gapSamples += 1
       }
-      const readable = Number.isFinite(s.ew) && Number.isFinite(s.ns) && Number.isFinite(s.ud)
-      if (!put(readable ? s.ew : NaN, readable ? s.ns : NaN, readable ? s.ud : NaN, readable ? s.members : 0, s.t)) {
-        return placed
-      }
+      const ew = Number.isFinite(s.ew) ? s.ew : NaN
+      const ns = Number.isFinite(s.ns) ? s.ns : NaN
+      const ud = Number.isFinite(s.ud) ? s.ud : NaN
+      const readable = !Number.isNaN(ew) || !Number.isNaN(ns) || !Number.isNaN(ud)
+      if (!put(ew, ns, ud, readable ? s.members : 0, s.t, !readable)) return placed
       if (readable) placed += 1
       else this.gapSamples += 1
     }
@@ -515,6 +554,7 @@ export class SeismoWaveBuffer {
       gal: [new Float32Array(capacity), new Float32Array(capacity), new Float32Array(capacity)],
       memberCount: new Float32Array(capacity),
       timeMs: new Float64Array(capacity),
+      counted: new Uint8Array(capacity),
       capacity,
     }
     this.slots = slots
@@ -544,7 +584,7 @@ export class SeismoWaveBuffer {
     // **穴の時刻は、前後の届いた値の間へ均して置く**（後で埋めるときの突き合わせに使う）。
     // 刻みを固定して積むと、隙間の測り方（丸め）のぶんだけ次の届いた値とずれる。
     const step = (nextMs - this.lastMs) / (missing + 1)
-    for (let i = 1; i <= missing; i += 1) this.writeSample(slots, NaN, NaN, NaN, 0, this.lastMs + i * step)
+    for (let i = 1; i <= missing; i += 1) this.writeSample(slots, NaN, NaN, NaN, 0, this.lastMs + i * step, true)
   }
 
   /** まとまりの `from` 番目から末尾までを置く。 */
@@ -558,6 +598,7 @@ export class SeismoWaveBuffer {
         chunk.gal[2][i],
         chunk.memberCount[i],
         chunk.firstSampleMs + i * chunk.msPerSample,
+        false,
       )
     }
     // **末尾の時刻は、まとまり自身が名乗る値から引く。** 置いた数から積み上げると、
@@ -573,12 +614,14 @@ export class SeismoWaveBuffer {
     ud: number,
     members: number,
     timeMs: number,
+    counted: boolean,
   ): void {
     slots.gal[0][this.writeAt] = ew
     slots.gal[1][this.writeAt] = ns
     slots.gal[2][this.writeAt] = ud
     slots.memberCount[this.writeAt] = members
     slots.timeMs[this.writeAt] = timeMs
+    slots.counted[this.writeAt] = counted ? 1 : 0
     this.writeAt = (this.writeAt + 1) % slots.capacity
     if (this.count < slots.capacity) {
       this.count += 1
@@ -588,6 +631,12 @@ export class SeismoWaveBuffer {
     }
   }
 }
+
+/** そのサンプルに値の無い成分があるか（埋める対象か）。 */
+function hasHole(slots: WaveSlots, slot: number): boolean {
+  return Number.isNaN(slots.gal[0][slot]) || Number.isNaN(slots.gal[1][slot]) || Number.isNaN(slots.gal[2][slot])
+}
+
 
 /** まとまりの最後のサンプルの時刻。 */
 function endMs(chunk: SeismoWaveFillChunk): number {
