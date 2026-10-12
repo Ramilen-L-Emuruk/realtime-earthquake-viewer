@@ -8,6 +8,8 @@
 // **途絶えているときだけは出どころを名乗らない**（空文字）。値が無いのに「合成」と
 // 書くと止まっていることが伝わらず、震度欄の `—` と食い違って見える。
 // 止まっていることは**行の色**が示す（`index.tsx`）。
+//
+// **震度を出さず波形だけ届く観測点は「波形のみ」と名乗る**（灰色のまま。赤は途絶のため）。
 
 import type { SeismoStationState } from '../../hooks/useSeismoStation'
 import { intensityGradeColor, measuredIntensityToGrade } from '../../utils/measuredIntensity'
@@ -59,6 +61,12 @@ function sourceText(source: SeismoStationState['source'], hasValue: boolean): st
     // 途絶えていることは行を赤くして示す（`SeismoOverlay/index.tsx`。更新時刻の帯が
     // 止まったときと同じ作法で、`MapUpdateTime` に揃えてある）。
     return ''
+  }
+  if (source.kind === 'wave-only') {
+    // **震度は出ていないが、波形は届いている**（上を解けない観測点）。灰色のまま、何が届いているかを
+    // 名乗る（2026-10-12 ユーザー承認）。何も書かないと、起動直後の「震度をまだ出せない」行と
+    // 見分けが付かない。
+    return '波形のみ'
   }
   // **1 本しか無いことは言い切る。** 「単独 1本の最大」は最大と呼べる相手がいない。
   if (source.sensorCount <= 1) return '単独（裏付けなし）'

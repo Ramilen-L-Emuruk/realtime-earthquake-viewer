@@ -340,18 +340,57 @@ describe('useSeismoStation', () => {
     expect(h.result.current.stations[0].intensity).toBe(0.5)
   })
 
-  it('安全弁: 震度が一度も届いていない観測点は、行を作らない', async () => {
+  it('安全弁: 震度も波形も一度も届いていない観測点は、行を作らない', async () => {
     // **購読を始めた直後は必ずこの形を通る。** ここで行を作ると、繋いだ瞬間に
     // 全部の観測点が「値が来ていない」と名乗り、警告が常態になって意味を失う。
-    // 波形だけが届く状態は通常起きないが、起きたときに「震度不明の行」を作らない。
     const h = renderHook(() => useSeismoStation({ ...options, wave: 'station' }))
     await settleDirectory()
-    deliver(stationWave('home', 1000))
-    await tick()
-    expect(h.result.current.stations).toEqual([])
-
     await tick(6000)
     expect(h.result.current.stations).toEqual([])
+  })
+
+  // **震度を出さず波形だけ届く観測点**（上を解けない観測点）。以前は行を作らず、帯にも下部の波形にも
+  // 出なかった（#708 で覆した・2026-10-12 ユーザー承認）。
+  describe('波形だけ届く観測点', () => {
+    it('正: 「波形のみ」の行を作り、途絶としては扱わない', async () => {
+      const h = renderHook(() => useSeismoStation({ ...options, wave: 'station' }))
+      await settleDirectory()
+      deliver(stationWave('home', 1000))
+      await tick()
+      expect(h.result.current.stations).toHaveLength(1)
+      expect(h.result.current.stations[0].source).toEqual({ kind: 'wave-only' })
+      expect(h.result.current.stations[0].intensity).toBeNull()
+      expect(h.result.current.stations[0].waveSampleCount).toBe(3)
+
+      // 波形が届き続ける限り、5 秒を過ぎても「波形のみ」のまま。
+      for (let i = 1; i <= 12; i += 1) {
+        deliver(stationWave('home', 1000 + i * 30))
+        await tick()
+      }
+      expect(h.result.current.stations[0].source).toEqual({ kind: 'wave-only' })
+    })
+
+    it('正: 波形も止まったら、ほかの観測点と同じ途絶になる', async () => {
+      const h = renderHook(() => useSeismoStation({ ...options, wave: 'station' }))
+      await settleDirectory()
+      deliver(stationWave('home', 1000))
+      await tick()
+      await tick(6000)
+      expect(h.result.current.stations[0].source).toEqual({ kind: 'silent' })
+      expect(h.result.current.stations[0].waveStale).toBe(true)
+    })
+
+    // 対照（#707 の判断を保つ）: 震度が一度でも届いた観測点は、波形が流れていても震度が止まれば途絶。
+    it('対照: 震度が一度届いた観測点は、波形が流れていても「波形のみ」へ落とさない', async () => {
+      const h = renderHook(() => useSeismoStation({ ...options, wave: 'station' }))
+      await settleDirectory()
+      deliver(stationReading('home', 0.25))
+      for (let i = 0; i < 12; i += 1) {
+        deliver(stationWave('home', 1000 + i * 30))
+        await tick()
+      }
+      expect(h.result.current.stations[0].source).toEqual({ kind: 'silent' })
+    })
   })
 
   it('安全弁: 止まったセンサーの値は、最大値の選抜から外れる', async () => {

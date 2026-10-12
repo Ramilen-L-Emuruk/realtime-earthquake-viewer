@@ -14,6 +14,11 @@
 //     —— 消すと「揺れていない」と見分けが付かなくなる（→ `utils/seismoSilence.ts`）。
 //     **一度も届いていない観測点はここへ来ない**（そちらは行を作らない）
 //
+// **震度が一度も届かず、波形だけ届く観測点もある**（`'wave-only'`）。3 方向のうち解けない向きが
+// ある観測点（水平の 2 軸のセンサーだけで上下を測れない等）では、ホストは解ける成分の合成波形だけを
+// 出して震度を出さない（`seismo-host/src/receiver/sensorFusion.ts`）。帯にも下部の波形にも出す
+// （2026-10-12 ユーザー承認）。波形も止まれば、ほかの観測点と同じ途絶になる。
+//
 // **どちらを採るかは「合成が実際に届いたか」で決める。設定は見ない。** ホストの
 // 設定を根拠にすると、設定と実際が食い違ったとき（センサーが落ちた・帳面に
 // 古い観測点が残っている）判断ごと狂う。届いているものだけを信じる。
@@ -146,8 +151,20 @@ export type SeismoIntensitySource =
    *
    * **一度も届いていない観測点はここへ来ない**（そちらは行を作らない）。購読を始めた
    * 直後に全部の行が「値が来ていない」と名乗ると、警告が常態になって意味を失う。
+   *
+   * **波形だけ届いていた観測点（{@link SeismoIntensitySource} の `'wave-only'`）が、波形も
+   * 届かなくなったときもここ。** 届いていたものが途絶えたことに変わりは無い。
    */
   | { readonly kind: 'silent' }
+  /**
+   * **震度は一度も届いていないが、波形は届いている。** 上を解けない観測点は、ホストが合成波形
+   * （解ける成分だけ）を出して震度を出さない。
+   *
+   * **途絶とは分ける**（赤くしない）。届くはずのものが止まったのではなく、最初から出ていない ——
+   * 赤くすると常に「値が来ていない」と名乗り続け、警告が常態になる（2026-10-12 ユーザー承認）。
+   * **震度が一度でも届いた観測点はここへ来ない**（震度が止まれば `'silent'`。#707 の判断）。
+   */
+  | { readonly kind: 'wave-only' }
 
 /** 観測点 1 つの、いまの姿。 */
 export interface SeismoStationState {
@@ -190,7 +207,7 @@ export interface SeismoStationState {
 }
 
 export interface SeismoStations {
-  /** 震度が届いている観測点。**表示名の順。** */
+  /** 震度か波形が届いている観測点（途絶えたものも含む）。**表示名の順。** */
   readonly stations: readonly SeismoStationState[]
   /** 繋がり具合。**無効・URL 不正のときは `null`。** */
   readonly stream: SeismoStreamState | null
@@ -593,32 +610,53 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
           }
         }
         if (count === 0) {
-          // **ここは 2 つの意味を持つので、必ず分ける。**
+          // **ここは 3 つの意味を持つので、必ず分ける。**
           //
-          //   - **一度も震度が届いていない** → 並べない。「震度不明の行」は作らない。
-          //     **購読を始めた直後も必ずここを通る**。**波形だけが届いている観測点も
-          //     ここで落ちる** —— 3 方向のうち解けない向きがある観測点（水平の 2 軸の
-          //     センサーだけで上下を測れない等）は、ホストが解ける成分の合成波形だけを出して
-          //     震度を出さないので、帯にも下部の波形にも出ない。どう見せるかは未決
-          //     （ユーザー判断待ち）
+          //   - **震度も波形も一度も届いていない** → 並べない。「震度不明の行」は作らない。
+          //     **購読を始めた直後も必ずここを通る**
+          //   - **震度は一度も届いていないが、波形は届いている** → `'wave-only'` で並べる
+          //     （3 方向のうち解けない向きがある観測点。2026-10-12 ユーザー承認）。波形も
+          //     止まれば下の途絶へ合流する
           //   - **届いていたのに途絶えた** → **残す。** 消すと「揺れていない」と
           //     見分けが付かなくなる（→ `SeismoIntensitySource` の `'silent'`）
           //
           // **帳面からは消さない** —— 波形の入れ物を捨てると、震度が戻ったときに
           // 絵が 60 秒ぶん巻き戻る。
-          const silence = judgeSilence({
+          const readingSilence = judgeSilence({
             lastReceivedAt: entry.readingReceivedAt,
             now,
             staleMs: READING_STALE_MS,
           })
+          // **震度が一度も届いていなければ、波形で決める。** 震度が一度でも届いた観測点は
+          // 波形が流れていても途絶として扱う（震度が止まったこと自体が知らせるべき事実・#707）。
+          const silence =
+            readingSilence.kind === 'never'
+              ? judgeSilence({ lastReceivedAt: entry.waveReceivedAt, now, staleMs: WAVE_STALE_MS })
+              : readingSilence
+          if (readingSilence.kind === 'never' && silence.kind === 'flowing') {
+            next.push({
+              stationId,
+              displayName: directory.displayName(stationId),
+              intensity: null,
+              atMs: null,
+              source: { kind: 'wave-only' },
+              waveSampleCount,
+              waveStale,
+              waveTally,
+            })
+            continue
+          }
           if (silence.kind !== 'silent') continue
           // **どれだけ途絶えているかは記録にしか出ない**（画面は色だけで長さを語らない）。
           // 瞬断と本物の途絶を事後に分ける手掛かりがここにしか無いので、観測点ごとに
           // 間引いて残す。
           throttledSilentReading(stationId, () =>
             log.warn(
-              `[seismo] 観測点の震度が途絶えた（${stationId}）: ` +
-                `${Math.round(silence.forMs / 1000)} 秒前から届いていない`,
+              readingSilence.kind === 'never'
+                ? `[seismo] 波形だけ届いていた観測点の波形が途絶えた（${stationId}）: ` +
+                    `${Math.round(silence.forMs / 1000)} 秒前から届いていない（震度は一度も届いていない）`
+                : `[seismo] 観測点の震度が途絶えた（${stationId}）: ` +
+                    `${Math.round(silence.forMs / 1000)} 秒前から届いていない`,
             ),
           )
           next.push({
