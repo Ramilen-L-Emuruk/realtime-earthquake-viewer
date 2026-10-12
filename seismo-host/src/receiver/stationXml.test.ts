@@ -163,6 +163,45 @@ describe('書いて読み戻す', () => {
     expect(configAt(doc, T0)).toEqual(c)
   })
 
+  it('拡張は改名後の名前空間で書き、改名前の名前空間で書かれたものも同じ値で読む', () => {
+    // 実機の設定と、改名（2026-10-12）までに追記した履歴は改名前の名前空間で書かれている。
+    // 受け付けないと、拡張の要素（基板の鍵・ノイズ密度など）が「無い」になって読めない。
+    const c = config([sensor('i2c0-68', { noiseDensity: 270 }), twoAxis('i2c1-6a')], 35.6, BOARD_A, YAW30)
+    const xml = writeStationXml(applyStationConfig(EMPTY_STATION_HISTORY, c, T0, 'startup'), T0)
+    expect(xml).toContain('xmlns:seismo="urn:yuremado:seismo-host"')
+    expect(xml).not.toContain('realtime-earthquake-viewer')
+    const legacy = xml.replace('xmlns:seismo="urn:yuremado:seismo-host"', 'xmlns:seismo="urn:realtime-earthquake-viewer:seismo-host"')
+    expect(legacy).not.toBe(xml)
+    expect(readStationXml(legacy)).toEqual(readStationXml(xml))
+    expect(configAt(readStationXml(legacy), T0)).toEqual(c)
+  })
+
+  it('改名前の名前空間は、接頭辞が違っても・既定の名前空間で宣言されていても読む（照合は URI で行う）', () => {
+    const c = config([sensor('i2c0-68', { noiseDensity: 270 })], 35.6, BOARD_A, YAW30)
+    const xml = writeStationXml(applyStationConfig(EMPTY_STATION_HISTORY, c, T0, 'startup'), T0)
+    const legacyUri = 'urn:realtime-earthquake-viewer:seismo-host'
+    // 接頭辞を s に替える（宣言と全要素の接頭辞を一緒に替える）。
+    const otherPrefix = xml.replace('xmlns:seismo="urn:yuremado:seismo-host"', `xmlns:s="${legacyUri}"`).replace(/(<\/?)seismo:/g, '$1s:')
+    expect(otherPrefix).not.toContain('seismo:')
+    expect(configAt(readStationXml(otherPrefix), T0)).toEqual(c)
+    // 拡張の要素の 1 つ（Orientation）だけ、接頭辞を外して既定の名前空間で宣言し直す。
+    const defaultNs = xml
+      .replace('<seismo:Orientation>', `<Orientation xmlns="${legacyUri}">`)
+      .replace('</seismo:Orientation>', '</Orientation>')
+      .replace('<seismo:X ', '<X ')
+      .replace('<seismo:Y ', '<Y ')
+      .replace('<seismo:Z ', '<Z ')
+    expect(defaultNs).toContain(`<Orientation xmlns="${legacyUri}">`)
+    expect(defaultNs).not.toContain('seismo:Orientation')
+    expect(configAt(readStationXml(defaultNs), T0)).toEqual(c)
+  })
+
+  it('知らない名前空間の拡張は読まない（改名前の名前だけを付け替える）', () => {
+    const xml = writeStationXml(applyStationConfig(EMPTY_STATION_HISTORY, config([sensor('i2c0-68')]), T0, 'startup'), T0)
+    const other = xml.replace('xmlns:seismo="urn:yuremado:seismo-host"', 'xmlns:seismo="urn:example:other"')
+    expect(() => readStationXml(other)).toThrow(StationXmlError)
+  })
+
   it('雛形（config/stations.example.xml）が読めて、設定の検証も通る', () => {
     const parsed = parseStationConfig(currentConfig(readStationXml(fixture('../../config/stations.example.xml'))))
     expect(parsed.ok).toBe(true)
