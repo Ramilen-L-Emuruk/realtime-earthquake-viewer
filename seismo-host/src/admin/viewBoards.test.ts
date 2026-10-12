@@ -14,6 +14,24 @@ import type { DetectedBoard } from './detectedBoards'
 import { IDENTITY_MATRIX } from '../receiver/stationConfigTypes'
 import type { BoardEntry, StationInfo } from '../receiver/stationConfigTypes'
 import { memoryTabContext } from './tabState'
+import { confirmDialog } from './confirmDialog'
+
+// **確認の窓は答えを決め打ちにする。** 窓そのものの振る舞いは `confirmDialog.test.ts` で見る。
+vi.mock('./confirmDialog', () => ({ confirmDialog: vi.fn() }))
+const confirmMock = vi.mocked(confirmDialog)
+
+/**
+ * 確認の窓の答えが画面へ届くまで待つ（窓は `Promise` で答える）。
+ * 段数に頼らないよう、マクロタスクを 1 つ挟む（その間にマイクロタスクは全部捌ける）。
+ */
+async function settleConfirm(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
+beforeEach(() => {
+  confirmMock.mockReset()
+  confirmMock.mockResolvedValue(false)
+})
 
 /** `.sensor-cards` 直下にセンサーカードを並べたコンテナを作る（`viewBoards.ts` の DOM 構造を模す）。 */
 function containerWithCards(cardsHtml: string): HTMLElement {
@@ -236,21 +254,26 @@ describe('initBoardsView の未保存確認', () => {
   it('センサーカードを追加した状態で別の基板の編集を押すと確認を求める', async () => {
     const container = await mountEditingBoardA()
     container.querySelector<HTMLButtonElement>('.add-sensor')?.click()
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
 
     const editButtons = container.querySelectorAll<HTMLButtonElement>('.edit-board')
     editButtons[1].click()
 
-    expect(confirmSpy).toHaveBeenCalledOnce()
+    expect(confirmMock).toHaveBeenCalledOnce()
+    // 文面は 2026-10-12 ユーザー承認（`dom.ts` の `confirmDiscardUnsaved`）
+    expect(confirmMock).toHaveBeenCalledWith(document, {
+      title: '編集中の内容を破棄しますか？',
+      body: '保存していない変更は失われます。',
+      confirmLabel: '破棄する',
+    })
   })
 
   it('確認をキャンセルすると、編集中の内容（追加したセンサーカード）が残る', async () => {
     const container = await mountEditingBoardA()
     container.querySelector<HTMLButtonElement>('.add-sensor')?.click()
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
 
     const editButtons = container.querySelectorAll<HTMLButtonElement>('.edit-board')
     editButtons[1].click()
+    await settleConfirm()
 
     expect(container.querySelectorAll('.sensor-card')).toHaveLength(1)
     expect(container.querySelector<HTMLInputElement>('[name=boardKey]')?.value).toBe(BOARD_A.boardKey)
@@ -259,10 +282,11 @@ describe('initBoardsView の未保存確認', () => {
   it('確認を承認すると、別の基板へ切り替わる（未保存の内容は破棄される）', async () => {
     const container = await mountEditingBoardA()
     container.querySelector<HTMLButtonElement>('.add-sensor')?.click()
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    confirmMock.mockResolvedValue(true)
 
     const editButtons = container.querySelectorAll<HTMLButtonElement>('.edit-board')
     editButtons[1].click()
+    await settleConfirm()
 
     expect(container.querySelector<HTMLInputElement>('[name=boardKey]')?.value).toBe(BOARD_B.boardKey)
     expect(container.querySelectorAll('.sensor-card')).toHaveLength(0)
@@ -296,12 +320,11 @@ describe('initBoardsView の未保存確認', () => {
 
   it('未編集（dirty でない）状態で別の基板の編集を押しても確認を求めない', async () => {
     const container = await mountEditingBoardA()
-    const confirmSpy = vi.spyOn(window, 'confirm')
 
     const editButtons = container.querySelectorAll<HTMLButtonElement>('.edit-board')
     editButtons[1].click()
 
-    expect(confirmSpy).not.toHaveBeenCalled()
+    expect(confirmMock).not.toHaveBeenCalled()
     expect(container.querySelector<HTMLInputElement>('[name=boardKey]')?.value).toBe(BOARD_B.boardKey)
   })
 })
@@ -414,11 +437,11 @@ describe('認識済みの基板からの登録', () => {
   it('「登録」で入れた内容は未保存として扱う（別の基板へ移るとき確認を求める）', async () => {
     const container = await mount()
     container.querySelector<HTMLButtonElement>('.register-board')?.click()
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
 
     container.querySelectorAll<HTMLButtonElement>('.edit-board')[0].click()
+    await settleConfirm()
 
-    expect(confirmSpy).toHaveBeenCalledOnce()
+    expect(confirmMock).toHaveBeenCalledOnce()
     expect(container.querySelector<HTMLInputElement>('[name=boardKey]')?.value).toBe('mac:cccccccccccc')
   })
 
@@ -834,10 +857,11 @@ describe('基板の傾きを合わせる', () => {
     tiltButton(container).click()
 
     // 登録フォーム（未保存）から基板 A の編集へ切り替える。確認には「破棄する」と答える。
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    confirmMock.mockResolvedValue(true)
     container.querySelectorAll<HTMLButtonElement>('.edit-board')[0]?.click()
+    await settleConfirm()
     expect(container.contains(panel)).toBe(false)
-    confirm.mockClear()
+    confirmMock.mockClear()
     release()
     await new Promise((resolve) => setTimeout(resolve, 0))
     await new Promise((resolve) => setTimeout(resolve, 0))
@@ -851,7 +875,7 @@ describe('基板の傾きを合わせる', () => {
     ])
     // 返事の後も、新しいフォームに未保存の印は立っていない（切り替えで確認が出ない）。
     container.querySelector<HTMLButtonElement>('.reset-form')?.click()
-    expect(confirm).not.toHaveBeenCalled()
+    expect(confirmMock).not.toHaveBeenCalled()
   })
 
   it('安全弁: 押したときに取得できなければ書き換えず、取得できないことを出す', async () => {
@@ -904,8 +928,9 @@ describe('基板の傾きを合わせる', () => {
     await pressTilt(container)
     expect(orientationOf(container)[0]).not.toEqual([1, 0, 0])
 
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    confirmMock.mockResolvedValue(true)
     container.querySelectorAll<HTMLButtonElement>('.edit-board')[0]?.click()
+    await settleConfirm()
 
     expect(orientationOf(container)).toEqual([
       [1, 0, 0],
@@ -1286,8 +1311,9 @@ describe('基板タブの選択を保つ', () => {
     expect(ctx.selection.get('register')).toBe(UNREGISTERED)
     expect(ctx.selection.get('board')).toBeNull()
 
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    confirmMock.mockResolvedValue(true)
     container.querySelector<HTMLButtonElement>('.reset-form')?.click()
+    await settleConfirm()
     expect(ctx.selection.get('register')).toBeNull()
   })
 

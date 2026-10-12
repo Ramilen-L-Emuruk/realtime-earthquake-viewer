@@ -1,6 +1,7 @@
 // 各タブが共通で使う小さなヘルパー（DOM の取得と、画面へ出す値の整形）。
 
 import { STALE_AFTER_MS } from '../receiver/assignedReception'
+import { confirmDialog } from './confirmDialog'
 
 /**
  * 最後に声を聞いてから「途絶」と見なすまで。**値はホストの警告と共有する**
@@ -27,14 +28,17 @@ export function escapeHtml(value: string): string {
 }
 
 /**
- * 保存していない入力を捨ててよいかを訊く。**押されたら `true`。**
+ * 保存していない入力を捨ててよいかを訊く。**「破棄する」が押されたら `true`。**
  *
  * **文はここ 1 か所に置く。** 観測点・基板のフォームで別の行を開くときと、タブを移るときが
- * 同じ文を使う。タブ移動の確認は既存の文をそのまま使い、PWA とホストの文言をまとめて
- * 見直すときに直す（2026-10-11 ユーザー承認）。
+ * 同じ文を使う（文面は 2026-10-12 ユーザー承認）。
  */
-export function confirmDiscardUnsaved(): boolean {
-  return window.confirm('編集中の内容を破棄する？')
+export function confirmDiscardUnsaved(): Promise<boolean> {
+  return confirmDialog(document, {
+    title: '編集中の内容を破棄しますか？',
+    body: '保存していない変更は失われます。',
+    confirmLabel: '破棄する',
+  })
 }
 
 /**

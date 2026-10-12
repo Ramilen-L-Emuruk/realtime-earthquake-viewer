@@ -11,6 +11,7 @@ import { apiFetch, ApiError, describeAdminAuthFailure, getStoredToken } from './
 import { boardSixFaceProgress, fitBoardSixFace, type BoardFitSensor, type CurrentPlacement } from './boardSixFace'
 import { boardGravityForTilt, rotateToHeading, suggestRotation } from './calibrationSuggest'
 import { fetchDetectedBoards, type DetectedBoard, type SensorRestWindow } from './detectedBoards'
+import { confirmDialog } from './confirmDialog'
 import { ago, boardLabelHtml, confirmDiscardUnsaved, escapeHtml, qs, receptionBadgeHtml } from './dom'
 import {
   emptySensorFormValues,
@@ -305,13 +306,24 @@ export async function initBoardsView(container: HTMLElement, ctx: TabContext): P
   // **編集中の未保存内容を、確認なしで破棄しない。** センサーカードの追加・削除・
   // 数値変更中に別の基板の「編集」を押すと、`fillForm` が `.sensor-cards` を
   // 丸ごと差し替えるため、それまでの入力が黙って消える——削除ボタン
-  // （`delete-board`）には `window.confirm` があるのに、こちらには無かった
-  // （敵対的レビューで検出）。
+  // （`delete-board`）には確認があるのに、こちらには無かった（敵対的レビューで検出）。
   let formDirty = false
   // **タブ移動・リロードの前にも訊く**（`app.ts`）。同じタブの中で別の基板を開くときと同じ印を見る。
   ctx.setUnsavedProbe(() => formDirty)
 
-  const confirmDiscardIfDirty = (): boolean => !formDirty || confirmDiscardUnsaved()
+  /**
+   * 保存していない入力が無ければその場で `then` を走らせ、あれば確認の窓で「破棄する」が
+   * 押されたときだけ走らせる。**窓は非同期**なので、答えを待つ間にタブが替わっていたら走らせない。
+   */
+  const whenDiscardAllowed = (then: () => void): void => {
+    if (!formDirty) {
+      then()
+      return
+    }
+    void confirmDiscardUnsaved().then((ok) => {
+      if (ok && !signal.aborted) then()
+    })
+  }
 
   /**
    * センサー ID の候補を、いまフォームに入っている基板のものへ差し替える。
@@ -760,8 +772,7 @@ export async function initBoardsView(container: HTMLElement, ctx: TabContext): P
   })
 
   qs(container, '.reset-form').addEventListener('click', () => {
-    if (!confirmDiscardIfDirty()) return
-    switchForm(null)
+    whenDiscardAllowed(() => switchForm(null))
   })
 
   qs(container, '.sensor-cards').addEventListener('click', (e) => {
@@ -921,33 +932,45 @@ export async function initBoardsView(container: HTMLElement, ctx: TabContext): P
     const boardKey = row.dataset.boardKey ?? ''
     const board = currentBoards.find((b) => b.boardKey === boardKey) ?? null
 
+    // **確認の窓は非同期。** 答えを待つ間に一覧が描き直されうるので、開く相手は答えの後に
+    // いまの一覧から引き直す（消えていたら開かない）。
     if (target.classList.contains('register-board')) {
-      const detected = currentDetected.find((d) => d.boardKey === boardKey)
-      if (detected === undefined) return
-      if (!confirmDiscardIfDirty()) return
-      try {
-        openRegisterForm(detected)
-        // **jsdom には `scrollIntoView` が無い**ので、あれば呼ぶ形にする。
-        qs(container, '.board-form').scrollIntoView?.({ behavior: 'smooth', block: 'start' })
-        renderError(container, '')
-      } catch (error) {
-        // **押しても何も起きない形にしない。** `qs()` は見つからなければ投げる
-        // （`dom.ts`）ので、DOM の組み立てとセレクタがずれた日に、ここが無言で
-        // 止まる（同じ穴を保存ボタンで一度踏んでいる。#313 段 C-5 2巡目）。
-        renderError(container, describeSaveFailure(error))
-      }
+      if (!currentDetected.some((d) => d.boardKey === boardKey)) return
+      whenDiscardAllowed(() => {
+        const detected = currentDetected.find((d) => d.boardKey === boardKey)
+        if (detected === undefined) return
+        try {
+          openRegisterForm(detected)
+          // **jsdom には `scrollIntoView` が無い**ので、あれば呼ぶ形にする。
+          qs(container, '.board-form').scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+          renderError(container, '')
+        } catch (error) {
+          // **押しても何も起きない形にしない。** `qs()` は見つからなければ投げる
+          // （`dom.ts`）ので、DOM の組み立てとセレクタがずれた日に、ここが無言で
+          // 止まる（同じ穴を保存ボタンで一度踏んでいる。#313 段 C-5 2巡目）。
+          renderError(container, describeSaveFailure(error))
+        }
+      })
       return
     }
     if (target.classList.contains('edit-board') && board !== null) {
-      if (!confirmDiscardIfDirty()) return
-      switchForm(board)
+      whenDiscardAllowed(() => {
+        const latest = currentBoards.find((b) => b.boardKey === boardKey)
+        if (latest !== undefined) switchForm(latest)
+      })
       return
     }
     if (target.classList.contains('delete-board')) {
       void (async () => {
         // **「観測点は残る」を省かない。** 1 基板 1 観測点の構成では、基板の削除が
-        // 観測点ごと消すように読める（実際は割当と校正値だけ消える）。
-        if (!window.confirm(`基板「${boardKey}」の割当・校正値を削除する？（観測点は残る）`)) return
+        // 観測点ごと消すように読める（実際は割当と校正値だけ消える）。文面は 2026-10-12 ユーザー承認。
+        const name = board?.displayName != null && board.displayName.length > 0 ? board.displayName : boardKey
+        const ok = await confirmDialog(document, {
+          title: `基板「${name}」を削除しますか？`,
+          body: '割り当てと校正値が消えます。観測点は残ります。',
+          confirmLabel: '削除する',
+        })
+        if (!ok || signal.aborted) return
         try {
           await apiFetch(`/api/boards/${encodeURIComponent(boardKey)}`, { method: 'DELETE' })
           if (signal.aborted) return

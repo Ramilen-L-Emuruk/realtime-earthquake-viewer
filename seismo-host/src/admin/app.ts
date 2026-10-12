@@ -10,6 +10,8 @@
 import { clearStoredToken, getStoredToken, onTokenCleared, setStoredToken } from './api'
 import { confirmDiscardUnsaved, qs } from './dom'
 import { TabStates, formatHash, parseHash, type TabContext, type TabKey } from './tabState'
+import { installTips, tipHtml } from './tip'
+import { dismissConfirmDialog } from './confirmDialog'
 import { initBoardsView } from './viewBoards'
 import { initRecordsView } from './viewRecords'
 import { initShakesView } from './viewShakes'
@@ -43,10 +45,15 @@ const URL_WRITE_DELAY_MS = 300
 function renderShell(root: HTMLElement): void {
   root.innerHTML = `
     <section class="token-box panel">
-      <label>
-        <span>管理トークン</span>
-        <input type="password" class="token-input" autocomplete="off" placeholder="未設定" />
-      </label>
+      <!-- **説明の付いたラベルを <label> の中に入れない。** 押すと吹き出しを固定する前に入力欄へ
+           フォーカスが移る（<label> の働き）。欄とは aria-labelledby で結ぶ。 -->
+      <div class="label-like" data-tip-row>
+        <span id="token-label">${tipHtml(
+          '管理トークン',
+          '観測点と基板の編集に使います。ホストの SEISMO_ADMIN_TOKEN と同じ値を入れてください。',
+        )}</span>
+        <input type="password" class="token-input" autocomplete="off" placeholder="未設定" aria-labelledby="token-label" />
+      </div>
       <div class="row">
         <button type="button" class="token-save" style="flex: 0 0 auto">保存</button>
         <button type="button" class="token-clear" style="flex: 0 0 auto">消去</button>
@@ -61,7 +68,7 @@ function renderShell(root: HTMLElement): void {
 function updateTokenStatus(root: HTMLElement): void {
   const statusEl = qs(root, '.token-status')
   const token = getStoredToken()
-  statusEl.textContent = token !== null ? '設定済み' : '未設定（観測点・基板は編集できない）'
+  statusEl.textContent = token !== null ? '設定済み' : '未設定'
 }
 
 const tabStates = new TabStates(sessionStorage, localStorage)
@@ -115,11 +122,20 @@ function activeTabHasUnsaved(): boolean {
 }
 
 /** 離れてよいか。保存していない入力があるときだけ訊く。 */
-function confirmLeave(): boolean {
-  return !activeTabHasUnsaved() || confirmDiscardUnsaved()
+async function confirmLeave(): Promise<boolean> {
+  return !activeTabHasUnsaved() || (await confirmDiscardUnsaved())
 }
 
+/**
+ * `popstate` で出した確認の窓の通し番号。**答えが返ったとき、まだ最後の問いかを確かめる。**
+ * 窓を出している間にもう一度「戻る」「進む」が押されると、前の問いは「キャンセル」で閉じる
+ * （`confirmDialog.ts`）。その答えでアドレスを書き戻すと、新しい問いの行き先を潰す。
+ */
+let popSeq = 0
+
 async function mountTab(root: HTMLElement, key: TabKey): Promise<void> {
+  // 前のタブの確認の窓を残さない（`dismissConfirmDialog` の理由）
+  dismissConfirmDialog()
   activeTab?.controller.abort()
   const controller = new AbortController()
   const signal = controller.signal
@@ -167,6 +183,8 @@ function renderTabs(root: HTMLElement, onSelect: (key: TabKey) => void): void {
 
 async function main(): Promise<void> {
   const root = qs<HTMLElement>(document, '#app')
+  // 画面を閉じるまで外さない（管理コンソールは 1 ページなので、外す契機が無い）
+  installTips(document)
   renderShell(root)
   updateTokenStatus(root)
 
@@ -195,30 +213,56 @@ async function main(): Promise<void> {
   // 積まない（`flushUrl` は置き換え）——観測点を 1 つ選ぶたびに「戻る」が 1 回増えると、
   // 前のタブへ戻るまでに何度も押すことになる。
   renderTabs(root, (key) => {
-    if (!confirmLeave()) return
-    flushUrl()
-    if (activeTab?.key !== key) history.pushState(null, '', formatHash(key, tabStates.selectionOf(key)))
-    void mountTab(root, key)
+    void (async () => {
+      // **答えを待つ間に別のタブへ移っていたら何もしない。** 窓は後ろの画面を覆うが、
+      // 「戻る」は押せる。
+      const from = activeTab
+      if (!(await confirmLeave()) || activeTab !== from) return
+      flushUrl()
+      if (activeTab?.key !== key) history.pushState(null, '', formatHash(key, tabStates.selectionOf(key)))
+      void mountTab(root, key)
+    })()
   })
 
-  window.addEventListener('popstate', () => {
-    const parsed = parseHash(location.hash) ?? { tab: DEFAULT_TAB, selection: {} }
-    if (activeTab !== null) {
-      const current = formatHash(activeTab.key, tabStates.selectionOf(activeTab.key))
-      if (formatHash(parsed.tab, parsed.selection) === current) return
-      // **断られたら URL を戻す。** 履歴はもう 1 つ戻っているので、何もしないと画面と
-      // アドレスが食い違ったまま残る。
-      if (!confirmLeave()) {
-        history.pushState(null, '', current)
-        return
-      }
-    }
+  const followPopState = (parsed: NonNullable<ReturnType<typeof parseHash>>): void => {
     if (urlWriteTimer !== null) {
       clearTimeout(urlWriteTimer)
       urlWriteTimer = null
     }
     tabStates.replaceSelection(parsed.tab, parsed.selection)
     void mountTab(root, parsed.tab)
+  }
+
+  window.addEventListener('popstate', () => {
+    const parsed = parseHash(location.hash) ?? { tab: DEFAULT_TAB, selection: {} }
+    const seq = ++popSeq
+    if (activeTab !== null) {
+      const current = formatHash(activeTab.key, tabStates.selectionOf(activeTab.key))
+      if (formatHash(parsed.tab, parsed.selection) === current) return
+      if (activeTabHasUnsaved()) {
+        // **答えを待つ間、アドレスは行き先のまま置く。** 「破棄する」ならその行き先へ直接移る。
+        // 先に元へ書き戻して `history.back()` で移り直す形は、「進む」・複数段の移動・アドレス欄の
+        // 書き換えで 1 つ前へ着いてしまう（行き先が「1 つ前」とは限らない）。
+        // 待つ間に URL の書き込みが走ると、行き先の項目を元のタブで上書きするので止めておく。
+        if (urlWriteTimer !== null) {
+          clearTimeout(urlWriteTimer)
+          urlWriteTimer = null
+        }
+        const from = activeTab
+        void confirmDiscardUnsaved().then((ok) => {
+          if (seq !== popSeq || activeTab !== from) return
+          if (ok) {
+            followPopState(parsed)
+            return
+          }
+          // **断られたら URL を戻す。** 履歴はもう行き先へ動いているので、何もしないと画面と
+          // アドレスが食い違ったまま残る。答えを待つ間に選択が変わっていてもよいよう、いま組む。
+          history.pushState(null, '', formatHash(from.key, tabStates.selectionOf(from.key)))
+        })
+        return
+      }
+    }
+    followPopState(parsed)
   })
 
   // **リロード・ページを閉じる前に確かめる。** 文面はブラウザが決める（こちらからは書けない）。

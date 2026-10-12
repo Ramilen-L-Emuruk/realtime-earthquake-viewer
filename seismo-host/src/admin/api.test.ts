@@ -5,8 +5,13 @@ import { describe, expect, it } from 'vitest'
 import { ApiError, describeAdminAuthFailure } from './api'
 
 describe('describeAdminAuthFailure', () => {
-  it('invalid-token を「トークンが違う」の文言へ変える', () => {
-    expect(describeAdminAuthFailure('invalid-token')).toBe('トークンが違う')
+  // 文面は 2026-10-12 ユーザー承認（「管理トークン」と、欄の見出しと同じ語で呼ぶ）
+  it('invalid-token を「管理トークンが違う」の文言へ変える', () => {
+    expect(describeAdminAuthFailure('invalid-token')).toBe('管理トークンが違う')
+  })
+
+  it('not-configured は、直す場所がホストだと分かる文言にし、環境変数の名前を残す', () => {
+    expect(describeAdminAuthFailure('not-configured')).toBe('ホストに管理トークンが設定されていない（SEISMO_ADMIN_TOKEN）')
   })
 
   it('host-not-allowed を SEISMO_ADMIN_ALLOWED_HOSTS への言及付きの文言へ変える', () => {

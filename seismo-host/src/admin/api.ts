@@ -104,13 +104,13 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
 export function describeAdminAuthFailure(reason: string): string | null {
   switch (reason) {
     case 'not-configured':
-      // **「入力では直らない」を省かない。** 他の理由は上部の欄で解決するが、
-      // これだけはサーバー側の設定を直さないと `/api/*` が丸ごと無効なまま。
-      return 'サーバー側のトークンが未設定（SEISMO_ADMIN_TOKEN）。/api/* 全体が無効'
+      // **「ホストに」を省かない。** 他の理由は上部の欄で解決するが、これだけはホストの設定を
+      // 直さないと `/api/*` が丸ごと無効なまま。環境変数の名前は直す手掛かりなので残す。
+      return 'ホストに管理トークンが設定されていない（SEISMO_ADMIN_TOKEN）'
     case 'missing-authorization':
-      return 'トークン未設定（上部の欄に入力すること）'
+      return '管理トークンが未入力'
     case 'invalid-token':
-      return 'トークンが違う'
+      return '管理トークンが違う'
     case 'host-not-allowed':
       return 'このアドレスは未許可（SEISMO_ADMIN_ALLOWED_HOSTS）'
     case 'origin-not-allowed':

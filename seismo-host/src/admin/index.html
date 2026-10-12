@@ -103,11 +103,17 @@
         gap: 0.85rem;
         margin-block: 0.75rem;
       }
-      label {
+      /* `.label-like` は説明の付いたラベル（`tip.ts`）を持つ欄。<label> に入れると押したとき
+         入力欄へフォーカスが移るので、見た目だけ <label> と揃える。 */
+      label,
+      .label-like {
         display: grid;
         gap: 0.3rem;
         font-size: 0.85rem;
         font-weight: 500;
+      }
+      .label-like > span {
+        justify-self: start;
       }
       label code {
         font-weight: 400;
@@ -192,6 +198,75 @@
       }
       .danger {
         color: var(--danger);
+      }
+      /* **説明の付いたラベル**（`tip.ts`）。押せる要素だがボタンに見せず、文字の下の点線だけで示す
+         （PWA の `DescriptionTip` と同じ見せ方）。border-bottom では幅いっぱいに線が伸びるので
+         text-decoration を使う。 */
+      button.tip {
+        padding: 0;
+        border: none;
+        background: none;
+        font: inherit;
+        color: inherit;
+        white-space: inherit;
+        text-align: inherit;
+        cursor: help;
+        text-decoration: underline dotted color-mix(in srgb, currentColor 55%, transparent);
+        text-underline-offset: 0.25em;
+      }
+      button.tip:hover {
+        background: none;
+      }
+      /* **確認の窓**（`confirmDialog.ts`）。後ろの画面を薄く覆い、押せないようにする。 */
+      .confirm-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 60;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 1rem;
+        background: color-mix(in srgb, black 35%, transparent);
+      }
+      .confirm-dialog {
+        max-width: 28rem;
+        width: 100%;
+        padding: 1.1rem 1.25rem 1rem;
+        border: 1px solid var(--border-strong);
+        border-radius: 10px;
+        background: canvas;
+        color: canvastext;
+        box-shadow: 0 8px 28px color-mix(in srgb, black 35%, transparent);
+      }
+      .confirm-title {
+        margin: 0 0 0.4rem;
+        font-weight: 600;
+      }
+      .confirm-body {
+        margin: 0;
+        font-size: 0.9rem;
+      }
+      .confirm-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 0.6rem;
+        margin-top: 1rem;
+      }
+      /* 吹き出し。背景を透かさない（下の表と文字が重なって読めなくなる）ので canvas を使う。
+         マウスを遮らない——行の下に出るぶん次の行に重なり、覆った操作が押せなくなるため。 */
+      .tip-bubble {
+        position: fixed;
+        z-index: 50;
+        padding: 0.4rem 0.65rem;
+        border: 1px solid var(--border-strong);
+        border-radius: 6px;
+        background: canvas;
+        color: canvastext;
+        font-size: 0.8rem;
+        line-height: 1.5;
+        box-shadow: 0 4px 14px color-mix(in srgb, black 30%, transparent);
+        pointer-events: none;
+        white-space: pre-line;
       }
       /* **古くなった値。** 受信欄の「途絶」の札と同じ色にする（`--danger`）——
          別の色にすると、同じ 1 つの事実（この数字はもう信じられない）が行の中で 2 色に割れる。
