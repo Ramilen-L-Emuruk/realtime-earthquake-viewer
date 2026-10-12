@@ -8,7 +8,7 @@
 // **組み立てる HTML へ差し込む値は例外なく `escapeHtml` を通す。** 記録の `id` と `stationId` には
 // 運用者が管理コンソールで自由に付けた観測点の ID が入り、震央の名前は外の配信（P2PQuake）から来る。
 
-import { formatBaseline, jstClock, SILENT_AFTER_MS, triggerStateWord } from '../detection/detectionWording'
+import { formatBaseline, jstClock, SHAKE_CLASS_WORDS, SILENT_AFTER_MS, triggerStateWord } from '../detection/detectionWording'
 import {
   EVENT_PAGE_LIMIT_MAX,
   monthsBetween,
@@ -23,11 +23,11 @@ import { formatMeasured } from '../../../src/utils/measuredIntensityRounding'
 import { formatGal } from './wavePlot'
 
 /** 判定（`detection/shakeEvent.ts` の `ShakeVerdict`）。 */
-export type ShakeVerdictView = 'quake' | 'pending' | 'quake-like' | 'local-like' | 'unchecked'
+export type ShakeVerdictView = 'quake' | 'pending' | 'quake-like' | 'local-like' | 'unclassified' | 'unchecked'
 
 /**
- * 判定の呼び名（2026-10-06 ユーザー承認）。README の「判定は 5 段」の表の意味を短く言い換えたもの
- * （`quake-like`・`local-like` は README の分類の呼び名そのまま）。
+ * 判定の呼び名（2026-10-06 ユーザー承認。`unclassified` は 2026-10-12 ユーザー承認）。README の判定の表の
+ * 意味を短く言い換えたもの（揺れ方の分類から来る 3 つは分類の呼び名そのまま・`SHAKE_CLASS_WORDS`）。
  *
  * **知らない判定は読まない**（`readShakeRecord`）。ホストが段を足したとき、ここに無い値を
  * 近い名前へ寄せて出すと、意味の違う判定が黙って別の言葉で並ぶ。
@@ -35,8 +35,9 @@ export type ShakeVerdictView = 'quake' | 'pending' | 'quake-like' | 'local-like'
 export const VERDICT_LABELS: Readonly<Record<ShakeVerdictView, string>> = {
   quake: '地震',
   pending: '照合待ち',
-  'quake-like': '地震らしい',
-  'local-like': '生活振動らしい',
+  'quake-like': SHAKE_CLASS_WORDS['quake-like'],
+  'local-like': SHAKE_CLASS_WORDS['local-like'],
+  unclassified: SHAKE_CLASS_WORDS.unclassified,
   unchecked: '照合できず',
 }
 
@@ -64,7 +65,8 @@ export interface ShakeRecordView {
   readonly endMs: number
   readonly sMs: number | null
   readonly pMs: number | null
-  readonly peakAccelGal: number
+  /** 上下動を測れなかった揺れ（判定できず）では null。 */
+  readonly peakAccelGal: number | null
   readonly maxIntensity: number | null
   readonly peakRatio: number
   readonly verdict: ShakeVerdictView
@@ -104,7 +106,7 @@ export function readShakeRecord(value: unknown): ShakeRecordView | null {
   const rev = readFinite(value.rev)
   const startMs = readFinite(value.startMs)
   const endMs = readFinite(value.endMs)
-  const peakAccelGal = readFinite(value.peakAccelGal)
+  const peakAccelGal = nullableFinite(value.peakAccelGal)
   const peakRatio = readFinite(value.peakRatio)
   const sMs = nullableFinite(value.sMs)
   const pMs = nullableFinite(value.pMs)
@@ -117,7 +119,7 @@ export function readShakeRecord(value: unknown): ShakeRecordView | null {
     startMs === null ||
     endMs === null ||
     endMs < startMs ||
-    peakAccelGal === null ||
+    peakAccelGal === undefined ||
     peakRatio === null ||
     sMs === undefined ||
     pMs === undefined ||
@@ -490,7 +492,7 @@ export function shakeRowHtml(r: ShakeRecordView, selected: boolean): string {
     `<td>${formatShakeStart(r.startMs)}</td>` +
     `<td>${lengthSec} 秒</td>` +
     `<td><span class="badge verdict-${r.verdict}">${VERDICT_LABELS[r.verdict]}</span></td>` +
-    `<td>${formatGal(r.peakAccelGal)} gal</td>` +
+    `<td>${r.peakAccelGal === null ? '—' : `${formatGal(r.peakAccelGal)} gal`}</td>` +
     `<td>${intensity}</td>` +
     `<td>${r.peakRatio.toFixed(1)} 倍</td>` +
     `<td>${s}</td>` +
