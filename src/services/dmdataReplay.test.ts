@@ -143,15 +143,30 @@ function quakeBody(hypocenterName: string): string {
 </Report>`
 }
 
-/** tar 内のファイル名の既定。実アーカイブと同じく受信時刻を 17 桁で含む形にする。 */
-const defaultFileName = (id: string) => `${id}_20260810120500000_0.xml`
+/**
+ * tar 内のファイル名の既定。実アーカイブと同じく受信時刻を **UTC の** 17 桁で含む形にする
+ * （2024-01-01 の実アーカイブで確かめた: 発表 14:13:00Z の VXSE51 が `…_20240101141347027_…`）。
+ *
+ * **目録の発表時刻を渡したら、その時刻から作る。** 窓は受信時刻（このファイル名）で切るので、
+ * 発表時刻と無関係な値を入れると、発表時刻で窓を考えて書いたテストが別の窓に落ちる。
+ * 受信時刻を発表時刻と同じにしてあるのは、窓の境界を発表時刻で書いた既存のテストを
+ * そのまま成り立たせるため（実配信の遅れを再現したいテストは第 2 引数で明示する）。
+ */
+const defaultFileName = (id: string, time?: string) => `${id}_${receivedStamp(time)}_0.xml`
+
+/** ISO 時刻 → ファイル名の 17 桁（UTC）。読めない時刻は既定（2026-08-10 12:05 JST）にする。 */
+function receivedStamp(time = '2026-08-10T12:05:00+09:00'): string {
+  const ms = Date.parse(time)
+  if (!Number.isFinite(ms)) return '20260810030500000'
+  return new Date(ms).toISOString().replace(/[-:TZ.]/g, '')
+}
 
 /**
  * 二進電文（IXAC41）の本体ファイル名。**実アーカイブでは `.bin` で入る**ので、
  * テストの目録も tar もこれで揃える（拡張子を問わず `filename` だけで引くため、
  * 揃っていなくても素通りしてしまう）。
  */
-const binFileName = (id: string, ms = '20260810120600000') => `${id}_${ms}_0.bin`
+const binFileName = (id: string, ms = '20260810030600000') => `${id}_${ms}_0.bin`
 
 /**
  * manifest 1 件分。
@@ -162,7 +177,7 @@ const binFileName = (id: string, ms = '20260810120600000') => `${id}_${ms}_0.bin
  */
 function manifestEntry(
   id: string, type = 'VXSE53', time = '2026-08-10T12:05:00+09:00', designation?: string | null,
-  filename = defaultFileName(id),
+  filename = defaultFileName(id, time),
 ) {
   return {
     id, classification: 'telegram.earthquake', filename,
@@ -179,7 +194,7 @@ function manifestEntry(
 function manifestTestEntry(
   id: string, type = 'VXSE53', time = '2026-08-10T12:06:00+09:00',
   // 既定の発表時刻（12:06）に合わせる。`defaultFileName` は 12:05 固定なので借りない
-  filename = `${id}_20260810120600000_0.xml`,
+  filename = `${id}_20260810030600000_0.xml`,
 ) {
   return {
     id, classification: 'telegram.earthquake', filename,
@@ -191,10 +206,10 @@ const FROM = new Date('2026-08-10T00:00:00+09:00')
 const TO = new Date('2026-08-11T00:00:00+09:00')
 
 /** archive リスト API と各アーカイブ URL の応答を組み立てる。 */
-function mockArchives(archives: Array<{ url: string; gz: Uint8Array | 'error' }>) {
+function mockArchives(archives: Array<{ url: string; gz: Uint8Array | 'error'; date?: string }>) {
   const items = archives.map((a, i) => ({
     classification: 'telegram.earthquake',
-    date: `2026-08-1${i}`,
+    date: a.date ?? `2026-08-1${i}`,
     url: a.url,
   }))
   return vi.fn(async (input: string) => {
@@ -353,7 +368,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
   it('正常なアーカイブから電文を取り込む', async () => {
     const gz = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('1234567abc')]) },
-      { name: '1234567abc_20260810120500000_0.xml', content: quakeBody('岩手県沖') },
+      { name: '1234567abc_20260810030500000_0.xml', content: quakeBody('岩手県沖') },
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
@@ -372,8 +387,8 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
           name: 'telegrams.json',
           content: JSON.stringify([manifestEntry('1234567abc'), manifestTestEntry('7654321def')]),
         },
-        { name: '1234567abc_20260810120500000_0.xml', content: quakeBody('岩手県沖') },
-        { name: '7654321def_20260810120600000_0.xml', content: quakeBody('日本海中部') },
+        { name: '1234567abc_20260810030500000_0.xml', content: quakeBody('岩手県沖') },
+        { name: '7654321def_20260810030600000_0.xml', content: quakeBody('日本海中部') },
       ])
     }
 
@@ -403,8 +418,8 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
           name: 'telegrams.json',
           content: JSON.stringify([manifestEntry('1234567abc'), manifestTestEntry('7654321def')]),
         },
-        { name: '1234567abc_20260810120500000_0.xml', content: quakeBody('岩手県沖') },
-        { name: '7654321def_20260810120600000_0.xml', content: quakeBody('日本海中部') },
+        { name: '1234567abc_20260810030500000_0.xml', content: quakeBody('岩手県沖') },
+        { name: '7654321def_20260810030600000_0.xml', content: quakeBody('日本海中部') },
       ])
       globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
       const withTest = await fetchDmdataQuakeHistory('key', TO, 7, true, null)
@@ -420,7 +435,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
           // VXSE56 は「扱わないと決めた種別」（→ data-sources-spec.md §2）
           content: JSON.stringify([manifestTestEntry('7654321def', 'VXSE56')]),
         },
-        { name: '7654321def_20260810120600000_0.xml', content: quakeBody('日本海中部') },
+        { name: '7654321def_20260810030600000_0.xml', content: quakeBody('日本海中部') },
       ])
       globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
       const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, true, null)
@@ -441,7 +456,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
           manifestEntry('ddddddd4'),                                  // 正常
         ]),
       },
-      { name: 'aaaaaaa1_20260810120500000_0.xml', content: '<Report><壊れた' },
+      { name: 'aaaaaaa1_20260810030500000_0.xml', content: '<Report><壊れた' },
       { name: defaultFileName('ddddddd4'), content: quakeBody('石廊崎沖') },
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
@@ -488,11 +503,11 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
         name: 'telegrams.json',
         content: JSON.stringify([
           manifestEntry('bin0002', 'IXAC41', BIN_TIME, null, binFileName('bin0002')),
-          manifestEntry('bin0003', 'IXAC41', BIN_TIME, 'RRA', binFileName('bin0003', '20260810120600100')),
+          manifestEntry('bin0003', 'IXAC41', BIN_TIME, 'RRA', binFileName('bin0003', '20260810030600100')),
         ]),
       },
       { name: binFileName('bin0002'), content: bin.slice(0, cut) },
-      { name: binFileName('bin0003', '20260810120600100'), content: bin.slice(cut) },
+      { name: binFileName('bin0003', '20260810030600100'), content: bin.slice(cut) },
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
@@ -500,6 +515,67 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     expect(skippedTotal(skippedByDay)).toBe(0)
     expect(entries).toHaveLength(1)
     expect(entries[0].payload.kind).toBe('estimatedIntensity')
+    // 再生時刻は最後の断片の受信時刻（→ `manifestEntryTimes`）
+    expect(entries[0].replayTime.toISOString()).toBe('2026-08-10T03:06:00.100Z')
+  })
+
+  // 窓は受信時刻で切る（#501）が、**分割された断片は最後の断片の時刻で 1 通として決める。**
+  // 断片ごとに切ると、T をまたいだ列が初期状態と本編へ割れてどちらでも揃わない。
+  describe('断片の列が窓の境目をまたぐとき', () => {
+    // 1 断片目 03:06:00.000Z・2 断片目 03:06:00.100Z の間
+    const T = new Date('2026-08-10T03:06:00.050Z')
+    async function fetchAround(from: Date, to: Date) {
+      const bin = buildSampleTelegram()
+      const cut = 32
+      const gz = await makeTarGz([
+        {
+          name: 'telegrams.json',
+          content: JSON.stringify([
+            manifestEntry('bin0012', 'IXAC41', BIN_TIME, null, binFileName('bin0012')),
+            manifestEntry('bin0013', 'IXAC41', BIN_TIME, 'RRA', binFileName('bin0013', '20260810030600100')),
+          ]),
+        },
+        { name: binFileName('bin0012'), content: bin.slice(0, cut) },
+        { name: binFileName('bin0013', '20260810030600100'), content: bin.slice(cut) },
+      ])
+      globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
+      return fetchDmdataReplayEvents('key', from, to, false, null)
+    }
+
+    it('正: 最後の断片が T より後なら、まとめて本編に入る', async () => {
+      const main = await fetchAround(T, TO)
+      expect(main.entries).toHaveLength(1)
+      expect(skippedTotal(main.skippedByDay)).toBe(0)
+    })
+
+    it('対照: 初期状態には 1 断片も入らない（揃わない断片を取りこぼしに数えない）', async () => {
+      const pre = await fetchAround(FROM, T)
+      expect(pre.entries).toHaveLength(0)
+      expect(skippedTotal(pre.skippedByDay)).toBe(0)
+    })
+
+    // 断片を束ねる鍵は発表時刻なので、読めなければ受信時刻があっても窓に当てない。
+    // 取りこぼしは断片の数ではなく電文 1 通として数える。
+    it('安全弁: 発表時刻が読めない二進電文は、断片が 2 つでも 1 通の取りこぼしに数える', async () => {
+      const bin = buildSampleTelegram()
+      const gz = await makeTarGz([
+        {
+          name: 'telegrams.json',
+          content: JSON.stringify([
+            manifestEntry('bin0014', 'IXAC41', 'not-a-date', null, binFileName('bin0014')),
+            manifestEntry('bin0015', 'IXAC41', 'not-a-date', 'RRA', binFileName('bin0015', '20260810030600100')),
+          ]),
+        },
+        { name: binFileName('bin0014'), content: bin.slice(0, 32) },
+        { name: binFileName('bin0015', '20260810030600100'), content: bin.slice(32) },
+      ])
+      globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
+
+      const result = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+
+      expect(result.entries).toHaveLength(0)
+      expect(skippedTotal(result.skippedByDay)).toBe(1)
+    })
   })
 
   // 正: **IXAC40（1km メッシュ）を実配信の形で取り込む。**
@@ -518,14 +594,14 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
       {
         name: 'telegrams.json',
         content: JSON.stringify([
-          manifestEntry('bin0100', 'IXAC40', BIN_TIME, 'PAA', 'bin0100_20260810120600000_0.bin'),
-          manifestEntry('bin0101', 'IXAC40', BIN_TIME, 'PAB', 'bin0101_20260810120600100_0.bin'),
-          manifestEntry('bin0102', 'IXAC40', BIN_TIME, 'PZC', 'bin0102_20260810120600200_0.bin'),
+          manifestEntry('bin0100', 'IXAC40', BIN_TIME, 'PAA', 'bin0100_20260810030600000_0.bin'),
+          manifestEntry('bin0101', 'IXAC40', BIN_TIME, 'PAB', 'bin0101_20260810030600100_0.bin'),
+          manifestEntry('bin0102', 'IXAC40', BIN_TIME, 'PZC', 'bin0102_20260810030600200_0.bin'),
         ]),
       },
-      { name: 'bin0100_20260810120600000_0.bin', content: withWmoHeading('PAA', bin.slice(0, a)) },
-      { name: 'bin0101_20260810120600100_0.bin', content: withWmoHeading('PAB', bin.slice(a, b)) },
-      { name: 'bin0102_20260810120600200_0.bin', content: withWmoHeading('PZC', bin.slice(b)) },
+      { name: 'bin0100_20260810030600000_0.bin', content: withWmoHeading('PAA', bin.slice(0, a)) },
+      { name: 'bin0101_20260810030600100_0.bin', content: withWmoHeading('PAB', bin.slice(a, b)) },
+      { name: 'bin0102_20260810030600200_0.bin', content: withWmoHeading('PZC', bin.slice(b)) },
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
@@ -586,7 +662,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
         name: 'telegrams.json',
         content: JSON.stringify([
           manifestEntry('bin0006', 'IXAC41', BIN_TIME, null, binFileName('bin0006')),
-          manifestEntry('bin0007', 'IXAC41', BIN_TIME, 'RRA', binFileName('bin0007', '20260810120600100')),
+          manifestEntry('bin0007', 'IXAC41', BIN_TIME, 'RRA', binFileName('bin0007', '20260810030600100')),
         ]),
       },
       { name: binFileName('bin0006'), content: bin.slice(0, 32) },   // RRA の本体が無い
@@ -605,7 +681,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
         name: 'telegrams.json',
         content: JSON.stringify([
           manifestEntry('bin0008', 'IXAC41', BIN_TIME, null, binFileName('bin0008')),
-          manifestEntry('bin0009', 'IXAC41', BIN_TIME, 'RRA', binFileName('bin0009', '20260810120600100')),
+          manifestEntry('bin0009', 'IXAC41', BIN_TIME, 'RRA', binFileName('bin0009', '20260810030600100')),
         ]),
       },
       // どちらの本体も入っていない
@@ -624,7 +700,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
         name: 'telegrams.json',
         content: JSON.stringify([
           manifestEntry('bin0010', 'IXAC41', BIN_TIME, null, binFileName('bin0010')),
-          manifestEntry('bin0011', 'IXAC41', '2026-08-10T12:20:00+09:00', null, binFileName('bin0011', '20260810122000000')),
+          manifestEntry('bin0011', 'IXAC41', '2026-08-10T12:20:00+09:00', null, binFileName('bin0011', '20260810032000000')),
         ]),
       },
     ])
@@ -637,7 +713,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
   it('一部のアーカイブが失敗した件数を戻り値で返す', async () => {
     const good = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('eeeeeee5')]) },
-      { name: 'eeeeeee5_20260810120500000_0.xml', content: quakeBody('房総沖') },
+      { name: 'eeeeeee5_20260810030500000_0.xml', content: quakeBody('房総沖') },
     ])
     globalThis.fetch = mockArchives([
       { url: 'https://x/broken', gz: 'error' },
@@ -658,7 +734,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     const noManifest = await makeTarGz([{ name: 'body.json', content: quakeBody('無関係') }])
     const good = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('ggggggg7')]) },
-      { name: 'ggggggg7_20260810120500000_0.xml', content: quakeBody('駿河湾') },
+      { name: 'ggggggg7_20260810030500000_0.xml', content: quakeBody('駿河湾') },
     ])
     globalThis.fetch = mockArchives([
       { url: 'https://x/nomanifest', gz: noManifest },
@@ -675,7 +751,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     const brokenManifest = await makeTarGz([{ name: 'telegrams.json', content: '[[[壊れた' }])
     const good = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('hhhhhhh8')]) },
-      { name: 'hhhhhhh8_20260810120500000_0.xml', content: quakeBody('相模湾') },
+      { name: 'hhhhhhh8_20260810030500000_0.xml', content: quakeBody('相模湾') },
     ])
     globalThis.fetch = mockArchives([
       { url: 'https://x/brokenmanifest', gz: brokenManifest },
@@ -752,7 +828,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
   it('目録の範囲は窓の JST 日から導く（左端は 1 日手前）', async () => {
     const gz = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('aaaaaaa1')]) },
-      { name: 'aaaaaaa1_20260810120500000_0.xml', content: quakeBody('岩手県沖') },
+      { name: 'aaaaaaa1_20260810030500000_0.xml', content: quakeBody('岩手県沖') },
     ])
     const fn = mockArchivesWithLive([{ date: '2026-08-10', url: 'https://x/d10', gz }], 'empty')
     globalThis.fetch = fn as unknown as typeof fetch
@@ -770,7 +846,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
   it('目録の取得は limit を明示して渡す', async () => {
     const gz = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('aaaaaaa1')]) },
-      { name: 'aaaaaaa1_20260810120500000_0.xml', content: quakeBody('岩手県沖') },
+      { name: 'aaaaaaa1_20260810030500000_0.xml', content: quakeBody('岩手県沖') },
     ])
     const fn = mockArchivesWithLive([{ date: '2026-08-10', url: 'https://x/d10', gz }], 'empty')
     globalThis.fetch = fn as unknown as typeof fetch
@@ -792,7 +868,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
   it('アーカイブ本体の URL には limit を付けない', async () => {
     const gz = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('aaaaaaa1')]) },
-      { name: 'aaaaaaa1_20260810120500000_0.xml', content: quakeBody('岩手県沖') },
+      { name: 'aaaaaaa1_20260810030500000_0.xml', content: quakeBody('岩手県沖') },
     ])
     const fn = mockArchivesWithLive([{ date: '2026-08-10', url: 'https://x/d10', gz }], 'empty')
     globalThis.fetch = fn as unknown as typeof fetch
@@ -841,11 +917,11 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
   it('窓の外の日のアーカイブ本体は落とさない', async () => {
     const inside = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('aaaaaaa1')]) },
-      { name: 'aaaaaaa1_20260810120500000_0.xml', content: quakeBody('岩手県沖') },
+      { name: 'aaaaaaa1_20260810030500000_0.xml', content: quakeBody('岩手県沖') },
     ])
     const outside = await makeTarGz([
-      { name: 'telegrams.json', content: JSON.stringify([manifestEntry('bbbbbbb2', 'VXSE53', '2026-08-08T12:05:00+09:00', null, 'bbbbbbb2_20260808120500000_0.xml')]) },
-      { name: 'bbbbbbb2_20260808120500000_0.xml', content: quakeBody('宮城県沖') },
+      { name: 'telegrams.json', content: JSON.stringify([manifestEntry('bbbbbbb2', 'VXSE53', '2026-08-08T12:05:00+09:00', null, 'bbbbbbb2_20260808030500000_0.xml')]) },
+      { name: 'bbbbbbb2_20260808030500000_0.xml', content: quakeBody('宮城県沖') },
     ])
     const fn = mockArchivesWithLive([
       // 窓は JST 8/10 の 1 日。8/08 は窓の外（前日より前）
@@ -866,7 +942,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
   it('翌日のアーカイブ本体は落とす（前日は落とさない）', async () => {
     const day = async (id: string, pub: string) => makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry(id, 'VXSE53', pub)]) },
-      { name: `${id}_20260810120500000_0.xml`, content: quakeBody('岩手県沖') },
+      { name: `${id}_20260810030500000_0.xml`, content: quakeBody('岩手県沖') },
     ])
     const fn = mockArchivesWithLive([
       { date: '2026-08-09', url: 'https://x/d09', gz: await day('aaaaaaa1', '2026-08-09T12:05:00+09:00') },
@@ -893,7 +969,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
   it('読めなかったアーカイブは URL で返す（呼び出し元が重複を除けるように）', async () => {
     const good = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('iiiiiii9')]) },
-      { name: 'iiiiiii9_20260810120500000_0.xml', content: quakeBody('若狭湾') },
+      { name: 'iiiiiii9_20260810030500000_0.xml', content: quakeBody('若狭湾') },
     ])
     globalThis.fetch = mockArchives([
       { url: 'https://x/broken', gz: 'error' },
@@ -909,7 +985,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
   it('すべて正常なら skipped も failedArchives も 0', async () => {
     const gz = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('fffffff6')]) },
-      { name: 'fffffff6_20260810120500000_0.xml', content: quakeBody('伊豆大島近海') },
+      { name: 'fffffff6_20260810030500000_0.xml', content: quakeBody('伊豆大島近海') },
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
@@ -923,7 +999,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
   it('破損した電文が 1 通あっても、他の電文は取り込まれる（全滅しない）', async () => {
     const gz = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('aaaaaaa1'), manifestEntry('bbbbbbb2')]) },
-      { name: 'aaaaaaa1_20260810120500000_0.xml', content: '<Report><これは XML ではない' },
+      { name: 'aaaaaaa1_20260810030500000_0.xml', content: '<Report><これは XML ではない' },
       { name: defaultFileName('bbbbbbb2'), content: quakeBody('宮城県沖') },
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
@@ -943,7 +1019,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     const broken = await makeTarGz([{ name: 'body.json', content: quakeBody('無関係') }])
     const good = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('ccccccc3')]) },
-      { name: 'ccccccc3_20260810120500000_0.xml', content: quakeBody('福島県沖') },
+      { name: 'ccccccc3_20260810030500000_0.xml', content: quakeBody('福島県沖') },
     ])
     globalThis.fetch = mockArchives([
       { url: 'https://x/broken', gz: broken },
@@ -960,7 +1036,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     const broken = await makeTarGz([{ name: 'telegrams.json', content: '[[[壊れた目録' }])
     const good = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('ddddddd4')]) },
-      { name: 'ddddddd4_20260810120500000_0.xml', content: quakeBody('三陸沖') },
+      { name: 'ddddddd4_20260810030500000_0.xml', content: quakeBody('三陸沖') },
     ])
     globalThis.fetch = mockArchives([
       { url: 'https://x/broken', gz: broken },
@@ -986,45 +1062,41 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     expect(warns.join('\n')).toMatch(/本体が見つからず/)
   })
 
-  // かつては目録の時刻が読めないだけで落としていた（純粋な損失）。アーカイブ経路は本体が
-  // 既に手元にあるので、**追加リクエスト 0 で**ファイル名の受信時刻から救える。
-  it('正: 目録の発表時刻が読めなくても、本体のファイル名の受信時刻で救う', async () => {
+  // 窓も再生時刻も目録の `filename` の受信時刻で決めるので、発表時刻が読めなくても落とさない
+  // （本体を落とす前に決まる → `manifestEntryTime`）。
+  it('正: 目録の発表時刻が読めなくても、filename の受信時刻で取り込む', async () => {
     const gz = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('fffffff6', 'VXSE53', 'not-a-date')]) },
-      { name: 'fffffff6_20260810120500000_0.xml', content: quakeBody('日向灘') },
+      { name: 'fffffff6_20260810030500000_0.xml', content: quakeBody('日向灘') },
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
     const result = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
 
-    expect(result.entries).toHaveLength(1)
-    // 救えたものを取りこぼしに数えない
+    expect(result.entries.map(e => e.replayTime.toISOString())).toEqual(['2026-08-10T03:05:00.000Z'])
     expect(skippedTotal(result.skippedByDay)).toBe(0)
-    // 補ったことは残す（目録が壊れている事実は消えていない）
-    expect(warns.join('\n')).toMatch(/ファイル名から補った/)
   })
 
   // new Date(null) は Invalid Date ではなく 1970-01-01 を返す。数値チェックだけだと
   // すり抜けて、直後の「範囲外なら continue」に古い電文として無言で吸収される。
   //
-  // **この電文には本体が無い**（`nulltime` に対応する .xml/.bin がアーカイブに入っていない）ので、
-  // ファイル名からの補いも効かない ＝ 対照として「どちらも読めなければ落とす」を押さえている。
+  // **filename に受信時刻が入っていない**ので、発表時刻の代わりも無い ＝ 対照として
+  // 「どちらも読めなければ落とす」を押さえている。
   //
   // **`originalId` は持たせない。** あれは JSON 版の印（値は元の XML エントリの id を指すので、
   // 自分自身の id と同じにはならない）で、持たせると正常な重複排除で落ちてしまい
   // 「時刻が読めないから落ちた」ことを確かめられない。
-  it('対照: 発表時刻も受信時刻も読めなければスキップする（1970年に化けさせない）', async () => {
+  it('対照: 受信時刻も発表時刻も読めなければスキップする（1970年に化けさせない）', async () => {
     const gz = await makeTarGz([
       {
         name: 'telegrams.json',
         content: JSON.stringify([
-          // **`filename` は持たせる。** 無いと「目録が filename を持たない」側で落ち、
-          // ここで確かめたい「本体が tar に無い」経路を通らない
-          { id: 'nulltime', classification: 'telegram.earthquake', filename: defaultFileName('nulltime'), head: { type: 'VXSE53', time: null, test: false } },
+          { id: 'nulltime', classification: 'telegram.earthquake', filename: 'nulltime.xml', head: { type: 'VXSE53', time: null, test: false } },
           manifestEntry('jjjjjjj0'),
         ]),
       },
-      { name: 'jjjjjjj0_20260810120500000_0.xml', content: quakeBody('種子島近海') },
+      { name: 'nulltime.xml', content: quakeBody('種子島近海') },
+      { name: 'jjjjjjj0_20260810030500000_0.xml', content: quakeBody('種子島近海') },
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
@@ -1032,9 +1104,83 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
 
     expect(result.entries).toHaveLength(1)
     expect(skippedTotal(result.skippedByDay)).toBe(1)
-    // **この経路の電文は本体読み取りへ進まない**（時刻が決まらない時点で落ちる）ので、
-    // 目録の形が変わったのかアーカイブの部分破損かは、ここで添える理由にしか残らない
-    expect(warns.join('\n')).toMatch(/発表時刻も受信時刻も読めない.*アーカイブに入っていない/)
+    // 目録の形が変わったのかを切り分けられるよう、読めなかった値を記録へ添える
+    expect(warns.join('\n')).toMatch(/窓に当てられない電文をスキップ.*filename=nulltime\.xml time=null/)
+  })
+
+  // `Date.UTC` は月 13 を翌年 1 月へ繰り上げて受け取る。そのまま使うと壊れた数字が
+  // 「正しそうな別の時刻」になって窓に入るので、組み立て直して一致しなければ発表時刻へ戻す。
+  it('安全弁: ファイル名の日時が繰り上がる値（月 13）なら、発表時刻へ戻して記録を 1 度だけ残す', async () => {
+    const entry = manifestEntry('rollov01', 'VXSE53', '2026-08-10T12:05:00+09:00', null, 'rollov01_20261310030500000_0.xml')
+    const gz = await makeTarGz([
+      { name: 'telegrams.json', content: JSON.stringify([entry]) },
+      { name: 'rollov01_20261310030500000_0.xml', content: quakeBody('日向灘') },
+    ])
+    globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
+
+    const result = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+
+    expect(result.entries.map(e => e.replayTime.toISOString())).toEqual(['2026-08-10T03:05:00.000Z'])
+    expect(warns.filter(w => w.includes('発表時刻で窓に当てる id=rollov01'))).toHaveLength(1)
+  })
+
+  // **窓は受信時刻で切る**（#501）。発表時刻は分に丸められ、配信は数十秒遅れるので、
+  // 再生開始時刻がその間に入った電文は「初期状態」ではなく「本編」に入らなければならない。
+  // 実例は 2024-01-01 の VXSE51 の取消（発表 23:13・受信 23:13:47）。
+  describe('窓の境界は受信時刻で決める（#501）', () => {
+    // 発表 23:13:00 JST・受信 23:13:47.027 JST（実アーカイブの値）
+    const CANCEL = manifestEntry('cancel01', 'VXSE51', '2024-01-01T23:13:00+09:00', null, 'cancel01_20240101141347027_0.xml')
+    const T = new Date('2024-01-01T23:13:30+09:00')
+
+    async function cancelArchive() {
+      return makeTarGz([
+        { name: 'telegrams.json', content: JSON.stringify([CANCEL]) },
+        { name: 'cancel01_20240101141347027_0.xml', content: quakeBody('石川県能登地方') },
+      ])
+    }
+
+    it('正: 発表が T より前でも、受信が T より後なら初期状態に入れない', async () => {
+      const gz = await cancelArchive()
+      globalThis.fetch = mockArchives([{ url: 'https://x/a', gz, date: '2024-01-01' }]) as unknown as typeof fetch
+
+      const pre = await fetchDmdataReplayEvents('key', new Date(T.getTime() - 24 * 3600_000), T, false, null)
+
+      expect(pre.entries).toHaveLength(0)
+    })
+
+    it('正: 同じ電文は本編に入り、受信した時刻に再生される', async () => {
+      const gz = await cancelArchive()
+      globalThis.fetch = mockArchives([{ url: 'https://x/a', gz, date: '2024-01-01' }]) as unknown as typeof fetch
+
+      const main = await fetchDmdataReplayEvents('key', T, new Date(T.getTime() + 3600_000), false, null)
+
+      expect(main.entries.map(e => e.replayTime.toISOString())).toEqual(['2024-01-01T14:13:47.027Z'])
+    })
+
+    it('対照: 受信も T より前なら初期状態に入る', async () => {
+      const gz = await cancelArchive()
+      globalThis.fetch = mockArchives([{ url: 'https://x/a', gz, date: '2024-01-01' }]) as unknown as typeof fetch
+      const after = new Date('2024-01-01T23:14:00+09:00')
+
+      const pre = await fetchDmdataReplayEvents('key', new Date(after.getTime() - 24 * 3600_000), after, false, null)
+      const main = await fetchDmdataReplayEvents('key', after, new Date(after.getTime() + 3600_000), false, null)
+
+      expect(pre.entries).toHaveLength(1)
+      expect(main.entries).toHaveLength(0)
+    })
+
+    it('安全弁: filename に受信時刻が無ければ発表時刻で窓に当てる', async () => {
+      const gz = await makeTarGz([
+        { name: 'telegrams.json', content: JSON.stringify([{ ...CANCEL, filename: 'cancel01.xml' }]) },
+        { name: 'cancel01.xml', content: quakeBody('石川県能登地方') },
+      ])
+      globalThis.fetch = mockArchives([{ url: 'https://x/a', gz, date: '2024-01-01' }]) as unknown as typeof fetch
+
+      const pre = await fetchDmdataReplayEvents('key', new Date(T.getTime() - 24 * 3600_000), T, false, null)
+
+      expect(pre.entries.map(e => e.replayTime.toISOString())).toEqual(['2024-01-01T14:13:00.000Z'])
+    })
   })
 
   it('対象外の種別は警告を出さない（正常運転でログを埋めない）', async () => {
@@ -1063,13 +1209,13 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
         name: 'telegrams.json',
         content: JSON.stringify([
           { id: xmlId, classification: 'telegram.earthquake', filename: defaultFileName(xmlId), head: { type: 'VXSE53', time: '2026-08-10T12:05:00+09:00', test: false } },
-          { id: jsonId, originalId: xmlId, classification: 'telegram.earthquake', filename: `${jsonId}_20260810120500000_0.json`, head: { type: 'VXSE53', time: '2026-08-10T12:05:00+09:00', test: false } },
+          { id: jsonId, originalId: xmlId, classification: 'telegram.earthquake', filename: `${jsonId}_20260810030500000_0.json`, head: { type: 'VXSE53', time: '2026-08-10T12:05:00+09:00', test: false } },
         ]),
       },
       { name: defaultFileName(xmlId), content: quakeBody('石狩地方中部') },
       // 拡張子も実アーカイブどおり分ける。**本体は `filename` だけで引くので拡張子では絞らない** ——
       // JSON 版を落としているのは `originalId` の判定で、その除外が効いていることを見る。
-      { name: `${jsonId}_20260810120500000_0.json`, content: '{"_originalId":"x"}' },
+      { name: `${jsonId}_20260810030500000_0.json`, content: '{"_originalId":"x"}' },
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
@@ -1093,7 +1239,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
   it('一部のアーカイブが取得失敗しても、残りのアーカイブの電文は取り込まれる', async () => {
     const good = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('8888888h')]) },
-      { name: '8888888h_20260810120500000_0.xml', content: quakeBody('十勝沖') },
+      { name: '8888888h_20260810030500000_0.xml', content: quakeBody('十勝沖') },
     ])
     globalThis.fetch = mockArchives([
       { url: 'https://x/broken', gz: 'error' },
@@ -1123,7 +1269,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
 
     const good = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('6666666k')]) },
-      { name: '6666666k_20260810120500000_0.xml', content: quakeBody('遠州灘') },
+      { name: '6666666k_20260810030500000_0.xml', content: quakeBody('遠州灘') },
     ])
     globalThis.fetch = mockArchives([
       { url: 'https://x/brokentar', gz: brokenGz },
@@ -1141,7 +1287,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     // 「本体が見つからない」警告が実運用で出続ける。
     const xmlId = 'vvvv111x'
     const jsonId = 'vvvv222j'
-    const jsonFile = `${jsonId}_20260810120500000_0.json`
+    const jsonFile = `${jsonId}_20260810030500000_0.json`
     const gz = await makeTarGz([
       {
         name: 'telegrams.json',
@@ -1169,7 +1315,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
           manifestEntry('5555555m'),
         ]),
       },
-      { name: '5555555m_20260810120500000_0.xml', content: quakeBody('紀伊水道') },
+      { name: '5555555m_20260810030500000_0.xml', content: quakeBody('紀伊水道') },
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
@@ -1194,7 +1340,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
           manifestEntry('5555555m'),
         ]),
       },
-      { name: '5555555m_20260810120500000_0.xml', content: quakeBody('紀伊水道') },
+      { name: '5555555m_20260810030500000_0.xml', content: quakeBody('紀伊水道') },
     ])
 
     it('対照: 同じ日を読み直しても二度は数えない', async () => {
@@ -1272,7 +1418,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     // 1 回目は 500、2 回目は成功する fetch を用意する
     const good = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('7777777g')]) },
-      { name: '7777777g_20260810120500000_0.xml', content: quakeBody('浦河沖') },
+      { name: '7777777g_20260810030500000_0.xml', content: quakeBody('浦河沖') },
     ])
     let attempt = 0
     globalThis.fetch = vi.fn(async (input: string) => {
@@ -1384,7 +1530,7 @@ describe('fetchDmdataQuakeHistory', () => {
         content: JSON.stringify(telegrams.map(t => manifestEntry(t.id, t.type ?? 'VXSE53', t.time))),
       },
       ...telegrams.map(t => ({
-        name: `${t.id}_20260810120500000_0.xml`,
+        name: defaultFileName(t.id, t.time),
         content: historyBody(t.eventId, t.bodyTime ?? t.time, t.serial),
       })),
     ])
@@ -1422,7 +1568,7 @@ describe('fetchDmdataQuakeHistory', () => {
           }))),
         },
         ...telegrams.map(t => ({
-          name: `${t.id}_20260810120500000_0.xml`,
+          name: defaultFileName(t.id, t.time),
           content: t.brokenBody ? '<Report>' : historyBody(t.eventId, t.time, t.serial),
         })),
       ])
@@ -1591,7 +1737,7 @@ describe('fetchDmdataQuakeHistory', () => {
         ]),
       },
       {
-        name: 'aaaaaaa1_20260810120500000_0.xml',
+        name: defaultFileName('aaaaaaa1', '2026-08-10T09:05:00+09:00'),
         content: historyBody('20260810090000', '2026-08-10T09:05:00+09:00'),
       },
     ])
@@ -2095,8 +2241,8 @@ describe('fetchDmdataQuakeHistory', () => {
           ...counts.map(t => manifestEntry(t.id, 'VXSE60', t.time)),
         ]),
       },
-      ...quakes.map(t => ({ name: `${t.id}_20260810120500000_0.xml`, content: historyBody(t.eventId, t.time) })),
-      ...counts.map(t => ({ name: `${t.id}_20260810120500000_0.xml`, content: countBody(t.eventId, t.time) })),
+      ...quakes.map(t => ({ name: defaultFileName(t.id, t.time), content: historyBody(t.eventId, t.time) })),
+      ...counts.map(t => ({ name: defaultFileName(t.id, t.time), content: countBody(t.eventId, t.time) })),
     ])
   }
 
@@ -2412,13 +2558,13 @@ describe('fetchDmdataQuakeHistory', () => {
     })
   })
 
-  // 目録の発表時刻が読めない電文を、アーカイブ本体のファイル名（17 桁の受信時刻）で救う。
-  // 追加リクエストは 0 件。当日経路には同じ補いを置けない（本体を取る前に判定するため）。
-  describe('目録の発表時刻が読めないとき', () => {
+  // 履歴の窓も、目録の `filename` に埋まった 17 桁の受信時刻で切る（`manifestEntryTime`）。
+  // 発表時刻は読めなくても困らず、読めても窓には使わない（#501）。
+  describe('履歴の窓は受信時刻で切る', () => {
     /**
-     * 目録の時刻だけを壊した 1 日ぶん。
+     * 1 日ぶん。目録の発表時刻と filename の受信時刻を別々に決められる。
      *
-     * @param fileStamp 本体のファイル名に埋める 17 桁（UTC）。受信時刻として読まれる
+     * @param fileStamp filename に埋める 17 桁（UTC）。受信時刻として読まれる
      */
     async function brokenTimeArchive(manifestTime: unknown, fileStamp: string) {
       const fileName = 'ggggggg1_' + fileStamp + '_0.xml'
@@ -2438,7 +2584,7 @@ describe('fetchDmdataQuakeHistory', () => {
       ])
     }
 
-    it('正: 本体のファイル名の受信時刻で救う', async () => {
+    it('正: filename の受信時刻で窓に当てる', async () => {
       // 03:05Z ＝ JST 12:05。指定時刻（JST 13:00）より前なので採る
       const gz = await brokenTimeArchive('not-a-date', '20260810030500000')
       globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
@@ -2449,8 +2595,7 @@ describe('fetchDmdataQuakeHistory', () => {
       expect(skippedTotal(result.skippedByDay)).toBe(0)
     })
 
-    // 受信時刻は発表時刻以降なので、境界では**採らない側**（安全側）へ倒れる。
-    it('安全弁: 救った受信時刻でも窓の判定をする（指定時刻より後なら採らない）', async () => {
+    it('安全弁: 受信時刻が指定時刻より後なら採らない', async () => {
       // 12:05Z ＝ JST 21:05。指定時刻（JST 13:00）より後
       const gz = await brokenTimeArchive('not-a-date', '20260810120500000')
       globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
@@ -2462,25 +2607,21 @@ describe('fetchDmdataQuakeHistory', () => {
       expect(skippedTotal(result.skippedByDay)).toBe(0)
     })
 
-    // 「もっと見る」もリプレイの先読みも同じ日を何度も走査するので、控えないと押した回数だけ
-    // 同じ行が並び、他の異常が埋もれる。**黙らせるのではなく、2 度目は控えから返す。**
-    it('安全弁: 同じ電文について警告を繰り返さない', async () => {
-      const warns: string[] = []
-      vi.spyOn(console, 'warn').mockImplementation((...a: unknown[]) => { warns.push(a.join(' ')) })
-      const gz = await brokenTimeArchive('not-a-date', '20260810030500000')
+    // **#501**: 発表時刻は指定時刻より前でも、受信がまだなら履歴に入れない
+    // （入れると、まだ届いていない取消で、取り消される前のカードが消える）
+    it('正: 発表時刻が指定時刻より前でも、受信が後なら採らない', async () => {
+      // 発表 JST 12:59（目録）・受信 JST 13:00:40（filename）。指定時刻 JST 13:00
+      const gz = await brokenTimeArchive('2026-08-10T12:59:00+09:00', '20260810040040000')
       globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
-      const before = new Date('2026-08-10T13:00:00+09:00')
 
-      await fetchDmdataQuakeHistory('key', before, 7, false, null)
-      await fetchDmdataQuakeHistory('key', before, 14, false, null)
+      const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T13:00:00+09:00'), 7, false, null)
 
-      const filled = warns.filter(w => w.includes('ファイル名から補った'))
-      expect(filled).toHaveLength(1)
+      expect(result.quakes).toHaveLength(0)
     })
 
     // `new Date(null)` は Invalid Date ではなく 1970-01-01 を返す。素通しさせると
     // 窓の判定に「ただの古い電文」として無言で吸収される。
-    it('対照: 本体が見つからなければ落として取りこぼしに数える', async () => {
+    it('対照: 受信時刻も発表時刻も読めなければ落として取りこぼしに数える', async () => {
       const gz = await makeTarGz([
         {
           name: 'telegrams.json',
@@ -2488,14 +2629,12 @@ describe('fetchDmdataQuakeHistory', () => {
             {
               id: 'hhhhhhh1',
               classification: 'telegram.earthquake',
-              // **目録は名乗っているが tar に無い**形。`filename` を落とすと別の経路
-              // （目録の形が変わった側）で落ちてしまい、ここで見たい形にならない
-              filename: 'hhhhhhh1_20260810030500000_0.xml',
+              // filename に 17 桁の受信時刻が入っていない形
+              filename: 'hhhhhhh1.xml',
               head: { type: 'VXSE53', time: null, test: false },
             },
           ]),
         },
-        // 目録が名乗る名前が tar に無い
         {
           name: 'zzzzzzz9_20260810030500000_0.xml',
           content: historyBody('20260810030000', '2026-08-10T12:05:00+09:00'),
@@ -2510,11 +2649,11 @@ describe('fetchDmdataQuakeHistory', () => {
       expect(result.quakes).toHaveLength(0)
       expect(skippedTotal(result.skippedByDay)).toBe(1)
       // 履歴側でも理由を添える（この経路も本体読み取りへは進まない）
-      expect(warns.join('\n')).toMatch(/履歴用電文の発表時刻も受信時刻も読めない.*アーカイブに入っていない/)
+      expect(warns.join('\n')).toMatch(/履歴用電文を窓に当てられない.*filename=hhhhhhh1\.xml time=null/)
     })
 
     // 本体を読む 3 経路のうち、履歴だけは `parseHistoryTelegram` から `bodyMissReason` を呼ぶ。
-    // 上のテストは発表時刻も読めない形なので別経路（`manifestTimeMissReason`）を通る。
+    // 上のテストは時刻が読めない形なので、本体を読む前に落ちる（`manifestTimeMissDetail`）。
     it('安全弁: 発表時刻は読めるが本体が無い履歴用電文にも、理由を添える', async () => {
       const gz = await makeTarGz([
         {
@@ -2552,11 +2691,11 @@ describe('fetchDmdataQuakeHistory', () => {
           name: 'telegrams.json',
           content: JSON.stringify([
             manifestEntry('hbin0001', 'IXAC41', BIN_TIME, null, binFileName('hbin0001')),
-            manifestEntry('hbin0002', 'IXAC41', BIN_TIME, 'RRA', binFileName('hbin0002', '20260810120600100')),
+            manifestEntry('hbin0002', 'IXAC41', BIN_TIME, 'RRA', binFileName('hbin0002', '20260810030600100')),
           ]),
         },
         { name: binFileName('hbin0001'), content: bin.slice(0, cut) },
-        ...(second ? [{ name: binFileName('hbin0002', '20260810120600100'), content: second }] : []),
+        ...(second ? [{ name: binFileName('hbin0002', '20260810030600100'), content: second }] : []),
       ])
     }
 
@@ -2843,7 +2982,7 @@ describe('アーカイブ本体の控えは開始をまたいで残る', () => {
   function archiveGz(): Promise<Uint8Array> {
     return makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('1234567abc')]) },
-      { name: '1234567abc_20260810120500000_0.xml', content: quakeBody('岩手県沖') },
+      { name: '1234567abc_20260810030500000_0.xml', content: quakeBody('岩手県沖') },
     ])
   }
 
@@ -3037,7 +3176,7 @@ describe('本体は目録の filename で引く', () => {
   // `VXSE53_RJTD_<17 桁>_<id の先頭 7 桁>.xml` の形だが、それは配信元の都合にすぎず、
   // 目録が名乗る名前と一致することだけが保証されている。
   it('正: id がファイル名に現れなくても引ける', async () => {
-    const name = 'VXSE53_RJTD_20260810120500000_nomatch.xml'
+    const name = 'VXSE53_RJTD_20260810030500000_nomatch.xml'
     const gz = await makeTarGz([
       {
         name: 'telegrams.json',
@@ -3086,7 +3225,7 @@ describe('本体は目録の filename で引く', () => {
       {
         name: 'telegrams.json',
         content: JSON.stringify([
-          manifestEntry('kkkkkkk1', 'VXSE53', undefined, null, 'kkkkkkk1_20260810120500999_0.xml'),
+          manifestEntry('kkkkkkk1', 'VXSE53', undefined, null, 'kkkkkkk1_20260810030500999_0.xml'),
         ]),
       },
       // 目録が名乗っているのは上の名前で、これは別物

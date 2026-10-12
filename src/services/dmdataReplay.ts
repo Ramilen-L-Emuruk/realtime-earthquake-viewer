@@ -155,14 +155,24 @@ function liveSourceId(date: string): string {
 
 // ファイル名に埋め込まれた17桁タイムスタンプ（YYYYMMDDHHMMSSmmm）を UTC の Date に変換する。
 // pressDateTime は秒単位で切り捨てられているため、こちらがミリ秒精度の正確な受信時刻となる。
+//
+// **組み立て直した日時が元の数字と一致しなければ null を返す。** `Date.UTC` は範囲外の値を
+// 繰り上げて受け取る（月 13 は翌年 1 月・61 秒は次の分）ので、壊れた数字でも別の正しそうな
+// 時刻になり、窓の判定へそのまま入ってしまう。null なら呼び出し側が発表時刻へ戻す。
 function parseMsFromFileName(fileName: string): Date | null {
   const m = fileName.match(/_(\d{17})_/)
   if (!m) return null
   const ts = m[1]
-  return new Date(Date.UTC(
+  const parts = [
     +ts.slice(0, 4), +ts.slice(4, 6) - 1, +ts.slice(6, 8),
     +ts.slice(8, 10), +ts.slice(10, 12), +ts.slice(12, 14), +ts.slice(14, 17),
-  ))
+  ] as const
+  const date = new Date(Date.UTC(...parts))
+  const back = [
+    date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(),
+    date.getUTCHours(), date.getUTCMinutes(), date.getUTCSeconds(), date.getUTCMilliseconds(),
+  ]
+  return back.every((v, i) => v === parts[i]) ? date : null
 }
 
 interface ArchiveItem {
@@ -398,20 +408,6 @@ type ParsedTelegram =
 const parsedTelegramCache = new Map<string, ParsedTelegram>()
 
 /**
- * 目録の発表時刻を**本体のファイル名から補ったとき**の結果。鍵は目録エントリの id。
- *
- * **補えたものだけを控える。** 目録の時刻が読める通常の経路は控えない（`new Date()` 1 回で済む）。
- *
- * **控える目的は、同じ電文について同じ警告を繰り返さないこと。** 「もっと見る」もリプレイの
- * 先読みも同じ日を何度も走査するので、控えないと押した回数だけ同じ行が並び、他の異常が埋もれる。
- * **黙らせるのではなく、二度目は「もう解けている」として警告の手前で返す** —— 補えなかった
- * ときは控えないので、そちらの記録と取りこぼしの数え方は変わらない。
- *
- * 捨てるのは `clearParseCachesForTest()` だけ（理由はそちら）。
- */
-const manifestFallbackTimeCache = new Map<string, Date>()
-
-/**
  * リプレイ本編（`fetchDmdataReplayEvents`）で、JST 日ごとにこれまで報告した取りこぼしの件数。
  *
  * **同じ日を何度も読むから要る。** 本編は初期状態（24 時間）・本編（1 時間）・毎時の先読みで
@@ -460,7 +456,7 @@ export function clearReplayCache(): void {
 export function clearParseCachesForTest(): void {
   manifestCache.clear()
   parsedTelegramCache.clear()
-  manifestFallbackTimeCache.clear()
+  announcedFallbackNoted.clear()
 }
 
 /**
@@ -483,22 +479,6 @@ function bodyMissReason(entry: ManifestEntry): string {
 }
 
 /**
- * 発表時刻も受信時刻も読めなかった理由（`resolveManifestTime` が `null` を返したとき）。
- *
- * **`bodyMissReason` をそのまま使えない。** あちらは「本体を引けなかった」ことが確定した
- * 文脈の関数で、本体が手元にある場合まで「アーカイブに入っていない」と書いてしまう。
- * ここは**本体を引けたが時刻が読めなかった**場合と分ける必要がある。
- *
- * **この経路の電文は本体読み取りへ進まない。** 呼び出し側は時刻が決まらない時点で
- * `continue` するので、理由をここで添えないと「目録の形が変わった」と
- * 「アーカイブ側の欠落」を切り分ける手掛かりがどこにも残らない。
- */
-function manifestTimeMissReason(entry: ManifestEntry, files: Map<string, Uint8Array>): string {
-  const name = findBodyFileName(entry, files)
-  return name ? `本体（${name}）のファイル名に受信時刻が入っていない` : bodyMissReason(entry)
-}
-
-/**
  * アーカイブの中から、その目録エントリの本体ファイル名を返す。
  *
  * **目録が名乗る `filename` をそのまま引く。** かつては id の先頭 7 桁を部分一致で探して
@@ -512,8 +492,7 @@ function manifestTimeMissReason(entry: ManifestEntry, files: Map<string, Uint8Ar
  * （`.txt` の WEPA60 など）も混ざるが、扱う種別の外なので計画の段（`isReplayTarget` /
  * `planHistoryEntries`）で落ち、ここへ来ない。
  *
- * **引けなかった理由は呼び出し側が記録へ添える**（本体を読む 3 経路は `bodyMissReason`、
- * 発表時刻を補う経路は `manifestTimeMissReason`）。黙って undefined を返すだけだと、
+ * **引けなかった理由は呼び出し側が記録へ添える**（`bodyMissReason`）。黙って undefined を返すだけだと、
  * 目録の形が変わったのか、その本体だけアーカイブに入っていないのかが読み手に伝わらない。
  *
  * @returns 目録が名乗らない・その名前が tar に無いときは undefined
@@ -526,57 +505,112 @@ function findBodyFileName(entry: ManifestEntry, files: Map<string, Uint8Array>):
 }
 
 /**
- * その電文の発表時刻のうち、**本体を落とさずに決まる分**だけを返す。
+ * その電文を**受信した時刻**。窓の判定（本編・初期状態・履歴）と再生時刻の両方がこの 1 つを使う。
  *
- * 見るのは目録が名乗る値と、前に本体から補って控えた値（`manifestFallbackTimeCache`）の 2 つ。
- * **`null` は「読めなかった」ではなく「本体が要る」** —— 呼び出し側は本体を落としてから
- * `resolveManifestTime` へ渡す。
+ * **目録の `filename` に埋まった 17 桁を読む**（本体を落とさずに決まる）。読めなければ目録の
+ * 発表時刻（`head.time`）へ戻す。どちらも読めなければ null（呼び出し側が記録して取りこぼしに数える）。
+ *
+ * **窓を発表時刻で切ってはいけない。** 発表時刻は分に丸められ、配信は発表から 8〜59 秒遅れる
+ * （→ `data-sources-spec.md` §2）。発表時刻で切ると、再生開始時刻がその間に入った電文は
+ * 初期状態（`[T−24h, T)`）に入るのに、再生時刻は T より後になる —— **まだ届いていない取消が
+ * 窓の手前で効き**、取り消される前のカードが初期状態から消えて、取消も本編に出ない
+ * （2024-01-01 23:13:30 から始めたとき、23:13:47 に届く VXSE51 の取消で実際に起きた）。
+ * **窓と再生時刻が同じ値を見ていれば**、初期状態に入るのは T より前に画面に出ていた電文だけになる。
+ *
+ * 当日経路は一覧の `receivedTime` で同じ判定をする（`dmdataReplayLive.ts` の `classifyTelegram`）。
  *
  * 文字列であることを先に確かめるのは、`new Date(null)` が Invalid Date ではなく 1970-01-01 を
  * 返すため。数値チェックだけだと null がすり抜け、直後の窓の判定に「ただの古い電文」として
  * 無言で吸収されてしまう（undefined は Invalid Date になる）。
  */
-function manifestTimeWithoutBody(entry: ManifestEntry): Date | null {
+function manifestEntryTime(entry: ManifestEntry): Date | null {
+  const received = typeof entry.filename === 'string' ? parseMsFromFileName(entry.filename) : null
+  if (received && !Number.isNaN(received.getTime())) return received
   const announced = new Date(typeof entry.head?.time === 'string' ? entry.head.time : NaN)
-  if (!Number.isNaN(announced.getTime())) return announced
-  // 2 度目以降は控えから返す（警告の手前で返るので同じ行が並ばない）
-  const cached = typeof entry.id === 'string' ? manifestFallbackTimeCache.get(entry.id) : undefined
-  return cached ?? null
+  if (Number.isNaN(announced.getTime())) return null
+  noteAnnouncedFallback(entry)
+  return announced
 }
 
 /**
- * その電文が「いつのものか」。目録が名乗る発表時刻を使い、**読めなければ本体のファイル名に
- * 埋め込まれた受信時刻で補う。**
+ * 受信時刻が読めず発表時刻へ戻した電文の id。記録を電文ごとに 1 度へ絞るためだけに持つ。
  *
- * 本体を見ない分は `manifestTimeWithoutBody` が持つ（目録の値と、前に補って控えた値）。
- * **本体が要るかどうかの判定はそちらを使う** —— この関数は本体を受け取ってから呼ぶ。
- *
- * **ファイル名で補うのは代理値ではない。** 窓が問うのは「その時刻に存在したか」で、電文は
- * 受信して初めて画面に出る。受信時刻は発表時刻以降なので、境界では採らない側（安全側）へ倒れる。
- * リプレイ本編は正常時もこの値を再生時刻に使っている（秒で切り捨てられた発表時刻より精度が高い）。
- *
- * **当日経路（`classifyTelegram`）には同じ補いを置けない。** あちらは本体を取る前に判定するので、
- * 補うにはリクエストが増える。**救える側だけ救う**（→ `data-sources-spec.md` §2）。
- *
- * **拡張子を問わず補える。** 目録の `filename` をそのまま引くので、XML でも二進でも平文でも
- * 同じ 1 本で足りる（`findBodyFileName`）。
- *
- * @returns どちらも読めなければ null
+ * **戻すこと自体は黙らせない。** 発表時刻で窓を切ると #501 の食い違い（まだ届いていない電文が
+ * 初期状態に入る）がその電文で戻るので、起きたことは残す。一方で同じ目録は本編・初期状態・
+ * 履歴の取得で何度も読まれるので、毎回書くと同じ行が積もる。
  */
-function resolveManifestTime(entry: ManifestEntry, files: Map<string, Uint8Array>): Date | null {
-  const withoutBody = manifestTimeWithoutBody(entry)
-  if (withoutBody) return withoutBody
-  const bodyName = findBodyFileName(entry, files)
-  const received = bodyName ? parseMsFromFileName(bodyName) : null
-  if (received && !Number.isNaN(received.getTime())) {
-    log.warn(
-      '[replay] 目録の発表時刻が読めないため本体のファイル名から補った'
-      + ` id=${String(entry.id)} time=${String(entry.head?.time)} → ${received.toISOString()}`,
-    )
-    if (typeof entry.id === 'string') manifestFallbackTimeCache.set(entry.id, received)
-    return received
+const announcedFallbackNoted = new Set<string>()
+const ANNOUNCED_FALLBACK_NOTE_MAX = 500
+
+function noteAnnouncedFallback(entry: ManifestEntry): void {
+  const id = typeof entry.id === 'string'
+    ? entry.id
+    : `${String(entry.filename)}|${String(entry.head?.type)}|${String(entry.head?.time)}`
+  if (announcedFallbackNoted.has(id)) return
+  if (announcedFallbackNoted.size >= ANNOUNCED_FALLBACK_NOTE_MAX) announcedFallbackNoted.clear()
+  announcedFallbackNoted.add(id)
+  log.warn(`[replay] 受信時刻が読めないため発表時刻で窓に当てる id=${id} type=${String(entry.head?.type)}（${manifestTimeMissDetail(entry)}）`)
+}
+
+/**
+ * 目録の全エントリについて `manifestEntryTime` を引く。**分割された二進電文は、断片ごとではなく
+ * 最後の断片を受信した時刻で 1 通として決める。**
+ *
+ * 断片はそれぞれ受信時刻を持つので、断片ごとに窓を判定すると、断片の列が T をまたいだとき
+ * 一部が初期状態・残りが本編へ割れて**どちらの取得でも揃わず**、その分布が丸ごと消える
+ * （発表時刻で切っていた頃は全断片が同じ値で、割れることはなかった）。電文が画面に出るのは
+ * 全断片が揃った時点なので、最後の断片の時刻が「受信した時刻」にあたる。
+ *
+ * **見えるのは 1 日ぶんの目録の中だけ。** 断片の列が日付の境目（またはアーカイブと当日経路の
+ * 担当の境目）をまたぐと、それぞれの側で別の「最後」になる。発表時刻で切っていた頃も同じ形で
+ * 割れていたので新しい回帰ではないが、この関数の前提はその場合に成り立たない。
+ *
+ * **二進電文は発表時刻も読めなければ null にする。** 断片を束ねる鍵が発表時刻なので、読めない
+ * まま束ねると別の電文の断片と同じ鍵（`…:undefined` など）へ寄ってしまう。JSON 版
+ * （`originalId` を持つもの）は束ねる対象から外す —— 本編では採らないので、混ぜると
+ * XML 版の断片の時刻を引っ張りうる。
+ */
+function manifestEntryTimes(manifest: readonly ManifestEntry[]): Map<ManifestEntry, Date | null> {
+  const times = new Map<ManifestEntry, Date | null>()
+  const latestByFragment = new Map<string, number>()
+  for (const entry of manifest) {
+    if (!entry?.head) continue
+    const binary = isBinaryTelegramType(entry.head.type)
+    const headTimeReadable = typeof entry.head.time === 'string' && !Number.isNaN(Date.parse(entry.head.time))
+    const time = binary && !headTimeReadable ? null : manifestEntryTime(entry)
+    times.set(entry, time)
+    if (time === null || !binary || entry.originalId) continue
+    const key = fragmentKey(entry.head.type, 'RJTD', entry.head.time)
+    latestByFragment.set(key, Math.max(latestByFragment.get(key) ?? -Infinity, time.getTime()))
   }
-  return null
+  for (const [entry, time] of times) {
+    if (time === null || !isBinaryTelegramType(entry.head.type) || entry.originalId) continue
+    const latest = latestByFragment.get(fragmentKey(entry.head.type, 'RJTD', entry.head.time))
+    if (latest !== undefined && latest !== time.getTime()) times.set(entry, new Date(latest))
+  }
+  return times
+}
+
+/**
+ * 窓に当てられなかった電文を取りこぼしとして数えるのは、その電文で初めてのときだけか。
+ *
+ * 二進電文の断片は 1 通にまとめて数える（分割は最大 24 断片あり、断片ごとに数えると 1 通の障害が
+ * 断片の数だけ膨らむ）。**発表時刻が文字列でなければ束ねる鍵が `…:undefined` へ縮退し、別々の
+ * 壊れた電文が 1 件に寄る**ので、その場合は電文 id で 1 件ずつ数える（数えすぎの側へ倒す）。
+ */
+function isFirstTimeMiss(entry: ManifestEntry, counted: Set<string>): boolean {
+  if (!isBinaryTelegramType(entry.head.type)) return true
+  const key = typeof entry.head.time === 'string'
+    ? fragmentKey(entry.head.type, 'RJTD', entry.head.time)
+    : `id:${String(entry.id)}`
+  if (counted.has(key)) return false
+  counted.add(key)
+  return true
+}
+
+/** 時刻が読めなかった電文の記録に添える値。目録の形が変わったかを切り分ける手掛かり。 */
+function manifestTimeMissDetail(entry: ManifestEntry): string {
+  return `filename=${String(entry.filename)} time=${String(entry.head?.time)}`
 }
 
 /**
@@ -686,8 +720,8 @@ async function listArchives(
  *
  * **配列を共有するだけでは足りない。** 「取り込む対象か」（窓・種別・打ち切り）は `include` に
  * 載せ、消費のループはその値を使う —— 同じ条件を再計算すると、境界（`<` と `<=` の別など）を
- * 片方だけ動かしたときに黙ってずれる。時刻を本体から補った場合だけ `include` が未定になるので、
- * そこは**計画が使ったのと同じ述語**（`isReplayTarget` / `isHistoryTarget`）で決め直す。
+ * 片方だけ動かしたときに黙ってずれる。時刻（`manifestEntryTime`）も計画で 1 度だけ決め、
+ * 窓の判定と再生時刻の両方がその値を使う。
  *
  * ## ダウンロードの位置は動かさない
  *
@@ -697,13 +731,13 @@ async function listArchives(
  */
 interface ManifestPlan {
   entry: ManifestEntry
-  /** 本体を読まずに決まった発表時刻。`null` は「本体のファイル名から補うしかない」。 */
-  time: Date | null
   /**
-   * 取り込む対象か（窓・種別・打ち切り）。**`time` が `null` のときは未定**（`null`）——
-   * 本体から時刻を補ってから、計画と同じ述語で決め直す。
+   * その電文を受信した時刻（`manifestEntryTime`）。`null` は受信時刻も発表時刻も読めなかった電文で、
+   * 消費側が記録して取りこぼしに数える（本体を読んでも同じ値しか得られないので落とさない）。
    */
-  include: boolean | null
+  time: Date | null
+  /** 取り込む対象か（窓・種別・打ち切り）。`time` が `null` なら常に false。 */
+  include: boolean
   /** この 1 件を読み切るのに本体が要るか。 */
   needsBody: boolean
 }
@@ -726,6 +760,7 @@ function planReplayEntries(
   opts: { includeTest: boolean; fromTime: Date; toTime: Date },
 ): ReplayPlan[] {
   const plans: ReplayPlan[] = []
+  const times = manifestEntryTimes(manifest)
   for (const entry of manifest) {
     if (!entry?.head) {
       plans.push({ kind: 'malformed', entry, needsBody: false })
@@ -733,11 +768,9 @@ function planReplayEntries(
     }
     if (!opts.includeTest && entry.head.test) continue
     if (entry.originalId) continue
-    const time = manifestTimeWithoutBody(entry)
-    // 時刻が決まらないなら、補うために本体が要る（`resolveManifestTime`）。
-    // **対象かどうかは時刻が決まるまで判らない**ので `include` は未定のまま。
+    const time = times.get(entry) ?? null
     if (time === null) {
-      plans.push({ kind: 'entry', entry, time: null, include: null, needsBody: true })
+      plans.push({ kind: 'entry', entry, time: null, include: false, needsBody: false })
       continue
     }
     const include = isReplayTarget(entry, time, opts.fromTime, opts.toTime)
@@ -751,6 +784,8 @@ function planReplayEntries(
  *
  * **計画（`planReplayEntries`）と消費のループで同じ述語を使う。** 窓の境界（左は含む・右は
  * 含まない）と種別の集合を 2 箇所に書くと、片方だけ動かしたときに黙ってずれる。
+ *
+ * `time` は受信時刻（`manifestEntryTime`）。発表時刻を渡さないこと（理由はそちら）。
  */
 function isReplayTarget(entry: ManifestEntry, time: Date, fromTime: Date, toTime: Date): boolean {
   return time >= fromTime && time < toTime && HANDLED_TYPES.has(entry.head.type)
@@ -959,30 +994,18 @@ export async function fetchDmdataReplayEvents(
         const { entry } = plan
 
         // 時刻が読めない電文をそのまま通すと replayTime が Invalid Date になり、
-        // 再生キューの並べ替え・発火判定が静かに破綻する。**目録の発表時刻が読めなくても
-        // 本体のファイル名から補う**（`resolveManifestTime`）。どちらも読めなければ弾く。
-        let entryTime = plan.time
-        let include = plan.include
-        // 読めなかったときの理由。**この経路は本体読み取りへ進まない**ので、ここで添えないと
-        // 切り分けの手掛かりが残らない（`manifestTimeMissReason`）
-        let timeMissReason = ''
+        // 再生キューの並べ替え・発火判定が静かに破綻する。受信時刻（ファイル名）も
+        // 発表時刻も読めなければ弾く（`manifestEntryTime`）。
+        const entryTime = plan.time
+        // 二進電文は発表時刻が読めなければここへ来る（断片を束ねられない → `manifestEntryTimes`）。
         if (entryTime === null) {
-          if (files === undefined) {
-            warnBodyNotDownloaded(entry, item.date, '発表時刻の補い')
-            planMismatchCount++
-            scanSkips.add(item.date)
-            continue
-          }
-          entryTime = resolveManifestTime(entry, files)
-          // 補えたので、**計画が使ったのと同じ述語**で対象かを決め直す
-          if (entryTime !== null) include = isReplayTarget(entry, entryTime, fromTime, toTime)
-          else timeMissReason = manifestTimeMissReason(entry, files)
-        }
-        if (entryTime === null) {
-          log.warn(`[replay] 発表時刻も受信時刻も読めない電文をスキップ id=${entry.id} time=${String(entry.head.time)}（${timeMissReason}）`)
+          // 断片ごとではなく電文ごとに 1 度だけ記録して数える（`isFirstTimeMiss`）
+          if (!isFirstTimeMiss(entry, countedBinaryKeys)) continue
+          log.warn(`[replay] 窓に当てられない電文をスキップ id=${entry.id} type=${String(entry.head.type)} date=${item.date}（${manifestTimeMissDetail(entry)}）`)
           scanSkips.add(item.date)
           continue
         }
+        const include = plan.include
         // 窓の外と、この実装が扱わない種別はここで落とす（どちらも通常運転で起きるので
         // 黙って捨てる。先に絞らないと、対象外の電文が大量に警告を出して本当の異常が埋もれる）。
         if (!include) continue
@@ -1030,8 +1053,8 @@ export async function fetchDmdataReplayEvents(
               continue
             }
             if (binPayload) {
-              const replayTime = (binName ? parseMsFromFileName(binName) : null) ?? entryTime
-              entries.push({ payload: binPayload, replayTime })
+              // 再生時刻は窓の判定と同じ値（最後の断片を受信した時刻 → `planReplayEntries`）
+              entries.push({ payload: binPayload, replayTime: entryTime })
             } else {
               log.warn(`[replay] 二進電文の読み取りに失敗しスキップ id=${entry.id} type=${headType}`)
               windowSkips.add(item.date)
@@ -1049,11 +1072,9 @@ export async function fetchDmdataReplayEvents(
 
           const payload = buildXmlPayload(headType, dec.decode(bodyBytes))
           if (payload) {
-            // ファイル名の 17 桁タイムスタンプ（YYYYMMDDHHMMSSmmm）はミリ秒精度の実受信時刻。
-            // 発表時刻は秒単位で切り捨てられているため、ファイル名から ms を優先的に取得する
-            // （報が連続する EEW で順序と間隔を保つのに要る）。
-            const replayTime = (xmlFileName ? parseMsFromFileName(xmlFileName) : null) ?? entryTime
-            entries.push({ payload, replayTime })
+            // 再生時刻は窓の判定と同じ値（ファイル名の 17 桁＝ミリ秒精度の受信時刻 →
+            // `manifestEntryTime`）。報が連続する EEW で順序と間隔を保つのにもミリ秒が要る。
+            entries.push({ payload, replayTime: entryTime })
           } else {
             log.warn(`[replay] 電文のパースに失敗しスキップ id=${entry.id} type=${headType}`)
             windowSkips.add(item.date)
@@ -1570,8 +1591,10 @@ type HistoryPlan =
   | ({ kind: 'entry'; want: HistoryWant } & ManifestPlan)
 
 /**
- * 履歴の取得で、その電文を取り込む対象か。**再生開始時刻より後に発表された電文は、その時点で
- * まだ存在しない**（アーカイブは日単位なので、当日ぶんにはこれが必ず混ざる）。
+ * 履歴の取得で、その電文を取り込む対象か。**再生開始時刻より後に受信した電文は、その時点で
+ * まだ画面に出ていない**（アーカイブは日単位なので、当日ぶんにはこれが必ず混ざる）。
+ * `time` は受信時刻（`manifestEntryTime`）—— 発表時刻で切ると、まだ届いていない取消が
+ * 履歴に混ざる（理由は `manifestEntryTime`）。
  *
  * **計画（`planHistoryEntries`）と消費のループで同じ述語を使う** —— 境界（`before` ちょうどは
  * 採る）を 2 箇所に書くと、片方だけ動かしたときに黙ってずれる。
@@ -1585,6 +1608,7 @@ function planHistoryEntries(
   opts: { includeTest: boolean; before: Date },
 ): HistoryPlan[] {
   const plans: HistoryPlan[] = []
+  const times = manifestEntryTimes(manifest)
   for (const entry of manifest) {
     if (!entry?.head) {
       plans.push({ kind: 'malformed', entry, needsBody: false })
@@ -1601,11 +1625,9 @@ function planHistoryEntries(
     // 二進電文は補完の種別（`HISTORY_EXTRA_TYPES`）に入っているが、読み方だけが違う。
     const want: HistoryWant =
       isBinaryTelegramType(entry.head.type) ? 'binary' : isExtra ? 'extra' : isTsunami ? 'tsunami' : 'quake'
-    const time = manifestTimeWithoutBody(entry)
-    // 時刻が決まらないなら、補うために本体が要る（`resolveManifestTime`）。
-    // **対象かどうかは時刻が決まるまで判らない**ので `include` は未定のまま。
+    const time = times.get(entry) ?? null
     if (time === null) {
-      plans.push({ kind: 'entry', entry, want, time: null, include: null, needsBody: true })
+      plans.push({ kind: 'entry', entry, want, time: null, include: false, needsBody: false })
       continue
     }
     const include = isHistoryTarget(time, opts.before)
@@ -1750,7 +1772,7 @@ async function readStraddlingQuakes(
   // 目録の見出し（`head`）ごと壊れたエントリは種別すら読めないので、ここへ含める
   let unattributable = manifest.filter(entry => !entry?.head).length
   const take = (entry: ManifestEntry, labeled: boolean) => {
-    const time = manifestTimeWithoutBody(entry) ?? (files ? resolveManifestTime(entry, files) : null)
+    const time = manifestEntryTime(entry)
     if (time === null) {
       if (labeled) skipped++
       else unattributable++
@@ -1797,7 +1819,7 @@ async function readStraddlingQuakes(
  * （`manifestCache`）と電文のパース結果（`parsedTelegramCache`）を控えているのはその名残で、
  * カーソル方式では初回ロードとリプレイ復元が重なる場面にしか効かない。
  *
- * @param before この時刻より後に発表された電文は採らない（＝窓の上端。カーソル）
+ * @param before この時刻より後に受信した電文は採らない（＝窓の上端。カーソル）
  * @param maxDays この窓で読む日数（→ `HISTORY_WINDOW_DAYS`）。**遡れる範囲の上限ではない**
  */
 export async function fetchDmdataQuakeHistory(
@@ -2191,29 +2213,15 @@ export async function fetchDmdataQuakeHistory(
         continue
       }
       const { entry } = plan
-      // 目録の発表時刻が読めなければ本体のファイル名から補う（`resolveManifestTime`）。
-      let entryTime = plan.time
-      let include = plan.include
-      // 本編と同じ理由で、読めなかった理由をここで添える（`manifestTimeMissReason`）
-      let timeMissReason = ''
+      const entryTime = plan.time
       if (entryTime === null) {
-        if (files === undefined) {
-          warnBodyNotDownloaded(entry, item.date, '発表時刻の補い')
-          planMismatch++
-          skipCounter.add(item.date)
-          continue
-        }
-        entryTime = resolveManifestTime(entry, files)
-        // 補えたので、**計画が使ったのと同じ述語**で対象かを決め直す
-        if (entryTime !== null) include = isHistoryTarget(entryTime, before)
-        else timeMissReason = manifestTimeMissReason(entry, files)
-      }
-      if (entryTime === null) {
-        log.warn(`[replay] 履歴用電文の発表時刻も受信時刻も読めないためスキップ id=${entry.id}（${timeMissReason}）`)
+        // 断片ごとではなく電文ごとに 1 度だけ記録して数える（本編と同じ）
+        if (!isFirstTimeMiss(entry, countedBinaryKeys)) continue
+        log.warn(`[replay] 履歴用電文を窓に当てられないためスキップ id=${entry.id} type=${String(entry.head.type)} date=${item.date}（${manifestTimeMissDetail(entry)}）`)
         skipCounter.add(item.date)
         continue
       }
-      if (!include) continue
+      if (!plan.include) continue
 
       try {
         if (plan.want === 'binary') {

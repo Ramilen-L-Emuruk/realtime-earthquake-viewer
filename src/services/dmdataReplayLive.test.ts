@@ -7,7 +7,7 @@
 //   - **日付の基準**: アーカイブは JST 日、電文一覧は UTC の半開区間。取り違えると丸一日ずれる
 //   - **担当日の排他**: アーカイブが持つ日を当日経路が二重に取らないこと
 //   - **版の選択**: 同じ電文が XML 版と JSON 版で一覧に載るため、種別ごとに片方だけ拾うこと
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { muteConsoleError } from '../test-utils/muteConsoleError'
 import { buildSampleTelegram } from '../test-utils/bufrBuild'
 import {
@@ -503,6 +503,39 @@ describe('fetchLiveReplayEntries', () => {
     expect(skippedTotal(result.skippedByDay)).toBe(0)
     expect(result.entries).toHaveLength(1)
     expect(result.entries[0].payload.kind).toBe('estimatedIntensity')
+    // 再生時刻は最後の断片の受信時刻（本体の取得が終わった順に左右されない → `liveEntryTimes`）
+    expect(result.entries[0].replayTime.toISOString()).toBe('2026-08-23T02:05:03.000Z')
+  })
+
+  // 窓は受信時刻で切る（#501）が、**分割された断片は最後の断片の時刻で 1 通として決める。**
+  // 断片ごとに切ると、T をまたいだ列が初期状態と本編へ割れてどちらでも揃わない。
+  describe('断片の列が窓の境目をまたぐとき', () => {
+    const T = new Date('2026-08-23T02:05:02.500Z')
+    async function fetchAround(from: Date, to: Date) {
+      const bin = buildSampleTelegram()
+      const cut = 32
+      const { fn } = mockLive({
+        list: [
+          { id: 'ix2', type: 'IXAC41', headTime: '2026-08-23T02:05:00Z', receivedTime: '2026-08-23T02:05:02.000Z', url: 'https://b/ix2', designation: null },
+          { id: 'ix3', type: 'IXAC41', headTime: '2026-08-23T02:05:00Z', receivedTime: '2026-08-23T02:05:03.000Z', url: 'https://b/ix3', designation: 'RRA' },
+        ],
+        binaries: { 'https://b/ix2': bin.slice(0, cut), 'https://b/ix3': bin.slice(cut) },
+      })
+      globalThis.fetch = fn as unknown as typeof fetch
+      return fetchLiveReplayEntries('key', from, to, DAYS, false, null)
+    }
+
+    it('正: 最後の断片が T より後なら、まとめて本編に入る', async () => {
+      const main = await fetchAround(T, TO)
+      expect(main.entries).toHaveLength(1)
+      expect(skippedTotal(main.skippedByDay)).toBe(0)
+    })
+
+    it('対照: 初期状態には 1 断片も入らない（揃わない断片を取りこぼしに数えない）', async () => {
+      const pre = await fetchAround(FROM, T)
+      expect(pre.entries).toHaveLength(0)
+      expect(skippedTotal(pre.skippedByDay)).toBe(0)
+    })
   })
 
   // 安全弁: **揃わなかった断片を取りこぼしに数える。** この入れ物は取得 1 回きりで
@@ -655,10 +688,12 @@ describe('fetchLiveReplayEntries', () => {
   })
 
   it('窓の外の電文と、担当日でない電文を落とす', async () => {
+    // 窓の始まりを日の途中へ置く（担当日の中で「窓より前」を作るため）
+    const from = new Date('2026-08-23T01:00:00Z')
     const { fn } = mockLive({
       list: [
-        // 窓より前（head.time が FROM 未満）
-        { id: 'a', type: 'VXSE53', headTime: '2026-08-22T14:00:00Z', receivedTime: '2026-08-23T02:00:00.000Z', url: 'https://b/a' },
+        // 窓より前（受信が窓の始まり未満。窓は受信時刻で切る → `liveEntryTimes`）
+        { id: 'a', type: 'VXSE53', headTime: '2026-08-23T00:59:00Z', receivedTime: '2026-08-23T00:59:59.000Z', url: 'https://b/a' },
         // 担当日でない（受信が JST 8/24）
         { id: 'b', type: 'VXSE53', headTime: '2026-08-23T02:00:00Z', receivedTime: '2026-08-23T15:00:00.000Z', url: 'https://b/b' },
         // テスト電文
@@ -671,7 +706,7 @@ describe('fetchLiveReplayEntries', () => {
     })
     globalThis.fetch = fn as unknown as typeof fetch
 
-    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, null)
+    const result = await fetchLiveReplayEntries('key', from, TO, DAYS, false, null)
 
     expect(result.entries).toHaveLength(0)
     // 落としたのは「対象外」であって取りこぼしではない
@@ -867,10 +902,9 @@ describe('fetchLiveReplayEntries', () => {
 
   // アーカイブ経路は同じ状況を取りこぼしとして数える。ここだけ「対象外」に混ぜると
   // UI の取りこぼし通知に出ず、静かな時間帯と区別が付かなくなる。
-  it('時刻が壊れた電文は取りこぼしとして数える', async () => {
+  it('受信時刻が壊れた電文は取りこぼしとして数える', async () => {
     const { fn } = mockLive({
       list: [
-        { id: 'bad1', type: 'VXSE53', headTime: 'not-a-date', receivedTime: '2026-08-23T02:00:00.000Z', url: 'https://b/bad1' },
         { id: 'bad2', type: 'VXSE53', headTime: '2026-08-23T02:00:00Z', receivedTime: 'not-a-date', url: 'https://b/bad2' },
       ],
       bodies: {},
@@ -881,8 +915,24 @@ describe('fetchLiveReplayEntries', () => {
 
     expect(result.entries).toHaveLength(0)
     // 時刻が読めない電文は窓に当てられないので `scanSkippedByDay` 側
-    expect(skippedTotal(result.scanSkippedByDay)).toBe(2)
+    expect(skippedTotal(result.scanSkippedByDay)).toBe(1)
     expect(skippedTotal(result.skippedByDay)).toBe(0)
+  })
+
+  // 窓も再生時刻も受信時刻で決めるので、発表時刻が読めなくても取り込める（アーカイブ経路と同じ）
+  it('対照: 発表時刻だけが壊れた電文は、受信時刻で窓に当てて取り込む', async () => {
+    const { fn } = mockLive({
+      list: [
+        { id: 'bad1', type: 'VXSE53', headTime: 'not-a-date', receivedTime: '2026-08-23T02:00:00.000Z', url: 'https://b/bad1' },
+      ],
+      bodies: { 'https://b/bad1': quakeBody('20260823110000', '2026-08-23T11:00:00+09:00') },
+    })
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, null)
+
+    expect(result.entries.map(e => e.replayTime.toISOString())).toEqual(['2026-08-23T02:00:00.000Z'])
+    expect(skippedTotal(result.scanSkippedByDay)).toBe(0)
   })
 
   // 2 本の一覧は互いに隔離する。片方の一時障害でもう片方の成果まで捨てると、
@@ -1240,6 +1290,45 @@ describe('fetchLiveQuakeTelegrams', () => {
     expect(skippedTotal(result.skippedByDay)).toBe(0)
     expect(result.extras.map(e => e.payload.kind)).toEqual(['estimatedIntensity'])
     expect(result.extras[0].silent).toBe(true)
+    // 補完の新旧も窓と同じ受信時刻で比べる（最後の断片。発表時刻 02:05:00 ではない）
+    expect(result.extras[0].replayTime.toISOString()).toBe('2026-08-23T02:05:03.000Z')
+  })
+
+  // 安全弁: 断片を束ねる鍵は発表時刻なので、読めなければ受信時刻があっても採らない。
+  // 取りこぼしは断片ごとではなく 1 通として数える（アーカイブ経路と同じ）。
+  it('発表時刻が読めない推計震度分布図は、断片が 2 つでも 1 通の取りこぼしに数える', async () => {
+    const bin = buildSampleTelegram()
+    const { fn } = mockLive({
+      list: [
+        { id: 'hx8', type: 'IXAC41', headTime: 'not-a-date', receivedTime: '2026-08-23T02:05:02.000Z', url: 'https://b/hx8', designation: null },
+        { id: 'hx9', type: 'IXAC41', headTime: 'not-a-date', receivedTime: '2026-08-23T02:05:03.000Z', url: 'https://b/hx9', designation: 'RRA' },
+      ],
+      binaries: { 'https://b/hx8': bin.slice(0, 32), 'https://b/hx9': bin.slice(32) },
+    })
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    const result = await fetchLiveQuakeTelegrams('key', '2026-08-23', new Date('2026-08-23T03:00:00Z'), false, null)
+
+    expect(result.extras).toHaveLength(0)
+    expect(skippedTotal(result.skippedByDay)).toBe(1)
+  })
+
+  // 対照: 担当日の外（前日に受信）なら、発表時刻が壊れていても数えない。一覧は担当日の 1 日前から
+  // 取るので、ここで数えると前日ぶんの呼び出しと二重になる。
+  it('担当日の外に受信した壊れた推計震度分布図は、取りこぼしに数えない', async () => {
+    const bin = buildSampleTelegram()
+    const { fn } = mockLive({
+      list: [
+        { id: 'hx10', type: 'IXAC41', headTime: 'not-a-date', receivedTime: '2026-08-22T02:05:02.000Z', url: 'https://b/hx10', designation: null },
+      ],
+      binaries: { 'https://b/hx10': bin },
+    })
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    const result = await fetchLiveQuakeTelegrams('key', '2026-08-23', new Date('2026-08-23T03:00:00Z'), false, null)
+
+    expect(result.extras).toHaveLength(0)
+    expect(skippedTotal(result.skippedByDay)).toBe(0)
   })
 
   // 対照: 試験報は取り込まない（非 XML 電文は一覧の `test` で弾けないので本文で判定する）。
