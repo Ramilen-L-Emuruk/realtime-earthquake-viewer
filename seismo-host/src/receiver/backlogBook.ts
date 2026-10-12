@@ -17,6 +17,15 @@
 //
 // **番号は 32 bit で一周する**（100 Hz で約 497 日）。大小をそのまま比べず、差を符号付き
 // 32 bit で取る。範囲は「起点からの長さ」で扱い、一周をまたいでも壊れないようにしてある。
+//
+// **基板の再起動をまたぐ欠けは、番号ではなく時刻で測る。** 再起動すると起動 ID が変わり番号は 0 へ
+// 戻るので、番号の抜けとしては現れない。前の起動で最後に受けたサンプルの次の時刻から、新しい起動で
+// 最初に受けたサンプルの時刻までを公称間隔で割り、その長さを**前の起動の流れの欠け**として載せる
+// （`noteBoot`。前の起動の末尾・立ち上がるまで・時計が合うまで送らなかった分がまとめて入る）。
+// 前の起動の末尾は、返事が途絶えてから再起動した基板ならフラッシュに残っているので取りに行く。
+// 基板が持っていなかった残りは「再起動の前後」（`reboot-span`）として数える。
+// 2026-10-06 23:19 JST に基板 3 枚の電源を約 10 秒抜いたとき、これが無かったので
+// 取り戻せなかった分にも何も載らなかった。
 
 /** どの流れか。**起動 ID まで含めて 1 本** —— 基板が再起動すると番号は 0 へ戻る。 */
 export interface StreamRef {
@@ -41,6 +50,30 @@ export type UnrecoverableReason =
   | 'gave-up'
   /** 欠けの数が上限を超えたので、古いものから捨てた。 */
   | 'too-many'
+  /**
+   * 基板の再起動の前後で受けられず、基板も持っていなかった（前の起動の末尾〜新しい起動の最初のサンプル）。
+   * **再起動の欠け（`noteBoot`）だけがこの理由になる** —— 基板の答えが `rebooted`・`not-held`・
+   * `unsupported` のどれでも、ここへ寄せる（その長さの大半は、基板がそもそも測っていなかった時間なので、
+   * 答えの違いで分けても手当ては変わらない）。
+   */
+  | 'reboot-span'
+
+/** 再起動の欠けで、`reboot-span` へ寄せる答え。**諦め（`gave-up`）と捨てた（`too-many`）は寄せない**（手当てが違う）。 */
+const REBOOT_SPAN_ABSORBS: ReadonlySet<UnrecoverableReason> = new Set(['rebooted', 'not-held', 'unsupported'])
+
+/**
+ * 再起動の欠けを測るとき、基板とホストの時計の食い違いとして許す幅。**これを超えて長いなら基板の時刻を
+ * 信用せず、ホストが受けた時刻の差で測る**（`rebootsHostTimed`）。欠けの長さは、ホストが前の起動の最後と新しい起動の最初を受けた時刻の差より
+ * 長くなりえない（その差に、最後のパケットが届くまでの遅れと時計のずれが乗るだけ）。基板の時計は
+ * SNTP で合わせてあり、ずれを警告する閾値（`CLOCK_OFFSET_WARN_MS`）は 0.1 秒。10 秒はその十分外側。
+ */
+const REBOOT_CLOCK_SLACK_MS = 10_000
+
+/** 再起動の欠けとして載せる長さの上限（`noteBoot`）。2^30 サンプル。 */
+const MAX_REBOOT_SPAN_SAMPLES = 0x4000_0000
+
+/** 前に使っていた起動 ID を、基板 × センサーごとにいくつ覚えるか（遅れて届いた前の起動のパケットを見分けるため）。 */
+const RETIRED_BOOTS_KEPT = 8
 
 /** 取りに行く 1 件。`[from, to)` が欠けている。 */
 export interface Gap {
@@ -107,11 +140,36 @@ export interface BacklogSnapshot {
   readonly recoveredSamples: number
   /** 理由ごとの取り戻せなかったサンプル数。**0 の理由は載せない。** */
   readonly unrecoverableSamples: Partial<Record<UnrecoverableReason, number>>
+  /** 見つけた基板の再起動の数（センサーごとに 1。3 センサーの基板が 1 回再起動すれば 3）。 */
+  readonly rebootsSeen: number
+  /**
+   * そのうち、基板の時刻が使えず、ホストが受けた時刻で長さを測った数（時刻が読めない・戻った・跳んだ）。
+   * 欠けは作って取りに行く（長さはサンプル数十個ぶん粗い）。
+   */
+  readonly rebootsHostTimed: number
+  /**
+   * そのうち、長さを測れなかった数（周波数が読めない・前の起動の最後を知らない）。
+   * **この分の欠けはどこにも数えていない。**
+   */
+  readonly rebootsUnmeasured: number
+}
+
+/** 基板が再起動したことを見つけた（`notePacket` が返す）。呼び出し側がログに出す。 */
+export interface RebootNote {
+  readonly boardKey: string
+  readonly sensorId: string
+  readonly previousBootId: string
+  readonly bootId: string
+  /** 前の起動の末尾から新しい起動の最初のサンプルまでのサンプル数。**測れなければ null。** */
+  readonly spanSamples: number | null
+  /** 何の時刻で測ったか（`noteBoot`）。測れなければ null。 */
+  readonly timedBy: 'board' | 'host' | null
 }
 
 /** 書き出す形。**版を持たせる** —— 形を変えたときに古いものを読み違えないため。 */
 export interface BacklogBookState {
-  readonly version: 1
+  /** 2 で `gaps[].rebootSpan` と `boots` を足した。1 も読む（再起動の欠けは無く、最後の起動は分からない）。 */
+  readonly version: 2
   readonly streams: ReadonlyArray<{
     readonly boardKey: string
     readonly bootId: string
@@ -127,6 +185,19 @@ export interface BacklogBookState {
     readonly from: number
     readonly to: number
     readonly foundAtMs: number
+    /** 再起動の欠け（`noteBoot`）か。 */
+    readonly rebootSpan: boolean
+  }>
+  /** 基板 × センサーごとの最後の起動（`BootState`）。 */
+  readonly boots: ReadonlyArray<{
+    readonly boardKey: string
+    readonly sensorId: string
+    readonly bootId: string
+    readonly nextSeq: number
+    /** 基板の時刻が読めなかったら null。 */
+    readonly endMs: number | null
+    readonly atMs: number
+    readonly retired: readonly string[]
   }>
 }
 
@@ -163,6 +234,30 @@ interface GapState {
   /** `holdMs` を過ぎてから失敗した回数。倍々の待ちはこれで数える。 */
   lateAttempts: number
   nextTryMs: number
+  /** 再起動の欠け（`noteBoot`）か。取り戻せなかった理由の数え方が変わる（`REBOOT_SPAN_ABSORBS`）。 */
+  readonly rebootSpan: boolean
+}
+
+/**
+ * 基板 × センサーの、いちばん新しい起動。**流れ（`streams`）とは別に持つ** —— あちらは前の起動を
+ * 片付けるので（`supersede`）、新しい起動が来た時点で前の起動がどこまで届いていたかを引けない。
+ */
+interface BootState {
+  readonly boardKey: string
+  readonly sensorId: string
+  bootId: string
+  /** 受けた番号の次。前の起動の末尾の欠けはここから始まる。 */
+  nextSeq: number
+  /** 最後に受けたサンプルの次の時刻（基板の時計、unix ミリ秒）。読めなかったら null。 */
+  endMs: number | null
+  /** `endMs` を進めたパケットを受けた時刻（ホストの時計）。 */
+  atMs: number
+  /** 前に使っていた起動 ID。新しい順。 */
+  retired: string[]
+}
+
+function bootMapKey(boardKey: string, sensorId: string): string {
+  return `${boardKey}|${sensorId}`
 }
 
 function isSeq(v: unknown): v is number {
@@ -173,7 +268,11 @@ function isText(v: unknown): v is string {
   return typeof v === 'string' && v.length > 0
 }
 
-/** 書き出した中身を読む。**形が合わなければ null**（欠けた欄を 0 で埋めない）。 */
+function isTime(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v)
+}
+
+/** 書き出した中身を読む。**形が合わなければ null**（欠けた欄を 0 で埋めない）。版 1 は版 2 の形へ読み替える。 */
 export function parseBacklogBookState(text: string): BacklogBookState | null {
   let value: unknown
   try {
@@ -183,7 +282,9 @@ export function parseBacklogBookState(text: string): BacklogBookState | null {
   }
   if (typeof value !== 'object' || value === null) return null
   const o = value as Record<string, unknown>
-  if (o.version !== 1 || !Array.isArray(o.streams) || !Array.isArray(o.gaps)) return null
+  if ((o.version !== 1 && o.version !== 2) || !Array.isArray(o.streams) || !Array.isArray(o.gaps)) return null
+  const v2 = o.version === 2
+  if (v2 && !Array.isArray(o.boots)) return null
   const streams: BacklogBookState['streams'][number][] = []
   for (const s of o.streams as unknown[]) {
     if (typeof s !== 'object' || s === null) return null
@@ -199,16 +300,31 @@ export function parseBacklogBookState(text: string): BacklogBookState | null {
     const r = g as Record<string, unknown>
     if (
       !isText(r.boardKey) || !isText(r.bootId) || !isText(r.sensorId) || !isText(r.address) ||
-      !isSeq(r.from) || !isSeq(r.to) || typeof r.foundAtMs !== 'number' || !Number.isFinite(r.foundAtMs)
+      !isSeq(r.from) || !isSeq(r.to) || !isTime(r.foundAtMs) || (v2 && typeof r.rebootSpan !== 'boolean')
     ) {
       return null
     }
     gaps.push({
       boardKey: r.boardKey, bootId: r.bootId, sensorId: r.sensorId, address: r.address,
-      from: r.from, to: r.to, foundAtMs: r.foundAtMs,
+      from: r.from, to: r.to, foundAtMs: r.foundAtMs, rebootSpan: v2 ? (r.rebootSpan as boolean) : false,
     })
   }
-  return { version: 1, streams, gaps }
+  const boots: BacklogBookState['boots'][number][] = []
+  for (const b of v2 ? (o.boots as unknown[]) : []) {
+    if (typeof b !== 'object' || b === null) return null
+    const r = b as Record<string, unknown>
+    if (
+      !isText(r.boardKey) || !isText(r.sensorId) || !isText(r.bootId) || !isSeq(r.nextSeq) ||
+      (r.endMs !== null && !isTime(r.endMs)) || !isTime(r.atMs) || !Array.isArray(r.retired) || !r.retired.every(isText)
+    ) {
+      return null
+    }
+    boots.push({
+      boardKey: r.boardKey, sensorId: r.sensorId, bootId: r.bootId, nextSeq: r.nextSeq,
+      endMs: r.endMs as number | null, atMs: r.atMs, retired: r.retired as string[],
+    })
+  }
+  return { version: 2, streams, gaps, boots }
 }
 
 export class BacklogBook {
@@ -226,6 +342,11 @@ export class BacklogBook {
   private gaps: GapState[] = []
   private recoveredCount = 0
   private readonly lost = new Map<UnrecoverableReason, number>()
+  /** 基板 × センサーごとの最後の起動（`bootMapKey`）。 */
+  private readonly boots = new Map<string, BootState>()
+  private rebootsSeen = 0
+  private rebootsHostTimed = 0
+  private rebootsUnmeasured = 0
 
   constructor(options: BacklogBookOptions) {
     this.options = options
@@ -233,6 +354,7 @@ export class BacklogBook {
 
   /**
    * 受けたパケットを 1 つ記録する。**読み取りに通ったものだけ渡すこと。**
+   * 基板の再起動を見つけたら、その知らせを返す（それ以外は null）。
    *
    * **投げない。** 受信の口（`main.ts`）はこれを基板への返事より先に呼ぶ（このパケットで見つかった
    * 欠けを同じ回の返事の `gap=` に載せるため）。ここで投げると返事が出ず、基板はホストの不具合を
@@ -244,11 +366,28 @@ export class BacklogBook {
     readonly count: number
     readonly address: string
     readonly atMs: number
-  }): void {
+    /** 先頭サンプルの時刻（基板の時計）。再起動をまたぐ欠けの長さを測るのに使う。 */
+    readonly firstSampleMs: number
+    readonly sampleRateHz: number
+  }): RebootNote | null {
     const { stream, firstSeq, count, address, atMs } = input
-    if (!isSeq(firstSeq) || !Number.isInteger(count) || count <= 0) return
+    if (!isSeq(firstSeq) || !Number.isInteger(count) || count <= 0) return null
     const key = streamKey(stream)
     const end = seqAdd(firstSeq, count)
+    // **前の起動のパケットが遅れて届いたら、欠けを埋めるだけにする。** 流れとしては扱わない ——
+    // 扱うと、前の起動の流れを作り直したついでに今の起動の流れを片付け（`supersede`）、次の今の起動の
+    // パケットでまた逆が起きて、そのたびに今の起動の番号の抜けを見逃す。前の起動の次の番号より先の分は
+    // 再起動の欠けに入っているので、ここで普通の欠けを足すと同じサンプルを 2 つの欠けが持つ。
+    if (this.isRetired(stream.boardKey, stream.sensorId, stream.bootId)) {
+      this.subtract(key, firstSeq, count, () => {})
+      return null
+    }
+    // **先に再起動を見る。** 再起動の欠けを前の起動の流れへ載せておくと、下の `supersede` がその流れを
+    // 片付けずに残す（取りに行く係は、欠けの流れからは送り元を引かないので、残すこと自体は要らないが害も無い）。
+    const reboot = this.noteBoot(input, end)
+    // 同じ基板の欠けは、取りに行く先も最新の送り元へ寄せる。**前の起動の欠けも**（再起動で DHCP の
+    // 割り当てが変わっても、取りに行く先は同じ基板）。
+    for (const g of this.gaps) if (g.stream.boardKey === stream.boardKey) g.address = address
     let st = this.streams.get(key)
     if (st === undefined) {
       this.supersede(stream)
@@ -259,22 +398,135 @@ export class BacklogBook {
       }
       st = { stream, nextSeq: end, address }
       this.streams.set(key, st)
-      return
+      return reboot
     }
     st.address = address
-    // 同じ流れの欠けは、取りに行く先も最新の送り元へ寄せる。
-    for (const g of this.gaps) if (g.key === key) g.address = address
     const d = seqDiff(firstSeq, st.nextSeq)
     if (d > 0) {
       this.addGap(key, stream, address, st.nextSeq, firstSeq, atMs)
       st.nextSeq = end
     } else if (d < 0) {
       // **遅れて届いた・重ねて届いた。** 欠けていた分なら埋まる。次の番号は戻さない。
-      this.subtract(key, firstSeq, count)
+      this.subtract(key, firstSeq, count, () => {})
       if (seqDiff(end, st.nextSeq) > 0) st.nextSeq = end
     } else {
       st.nextSeq = end
     }
+    return reboot
+  }
+
+  /** その基板 × センサーで、もう前の起動になった起動 ID か。 */
+  private isRetired(boardKey: string, sensorId: string, bootId: string): boolean {
+    return this.boots.get(bootMapKey(boardKey, sensorId))?.retired.includes(bootId) ?? false
+  }
+
+  /**
+   * 基板 × センサーの最後の起動を進め、**別の起動が来たら再起動として前の起動の末尾を欠けにする。**
+   * 遅れて届いた前の起動のパケット（`retired`）は、呼ぶ前に弾いてある。
+   *
+   * 長さの測り方は 2 通り（`RebootNote.timedBy`）。
+   * - **基板の時刻**（`board`）: `新しい起動の先頭サンプルの時刻 − 前の起動で最後に受けたサンプルの次の時刻` を
+   *   公称間隔で割る。前の起動の番号は、最後に受けた番号の次から数える（前の起動がその後に測って
+   *   送れなかった分は、その番号の続きにある）
+   * - **ホストが受けた時刻**（`host`）: 基板の時刻が使えないとき —— 読めない、前の起動の終わりより半サンプル
+   *   を超えて戻った（時計が合う前の値を名乗る古いファーム）、ホストが受けた時刻の差より
+   *   `REBOOT_CLOCK_SLACK_MS` を超えて長い（時計が跳んだ）。**数えないで済ませると、前の起動の末尾を
+   *   取りに行かず、損失にも載らない**。受けた時刻の差には届くまでの遅れの差が乗るが、
+   *   それはサンプル数十個ぶんで済む
+   * - **測れない**（`null`）: 周波数が読めない、または前の起動の最後を知らない（帳面が版 1・読めなかった。
+   *   持ち越した前の起動の番号はあるが、時刻が無い）。欠けは作らず `rebootsUnmeasured` に数える
+   *
+   * **ホストも止まっていた間に基板が再起動したときは、ホストが止まっていた時間も入る**（持ち越した
+   * 最後の起動から測るため）。その間に基板が送った分は、基板がフラッシュに書いていれば取り戻せる。
+   */
+  private noteBoot(
+    input: {
+      readonly stream: StreamRef
+      readonly count: number
+      readonly address: string
+      readonly atMs: number
+      readonly firstSampleMs: number
+      readonly sampleRateHz: number
+    },
+    end: number,
+  ): RebootNote | null {
+    const { stream, count, address, atMs, firstSampleMs, sampleRateHz } = input
+    const rateOk = isTime(sampleRateHz) && sampleRateHz > 0
+    const intervalMs = rateOk ? 1000 / sampleRateHz : null
+    const endMs = intervalMs !== null && isTime(firstSampleMs) ? firstSampleMs + count * intervalMs : null
+    const mapKey = bootMapKey(stream.boardKey, stream.sensorId)
+    const cur = this.boots.get(mapKey)
+    const fresh = (retired: string[]): BootState => ({
+      boardKey: stream.boardKey, sensorId: stream.sensorId, bootId: stream.bootId, nextSeq: end, endMs, atMs, retired,
+    })
+    if (cur === undefined) {
+      // **前の起動の最後は知らないが、持ち越した番号はある**（帳面が版 1 だった）。再起動したことだけは数える。
+      // その起動は前の起動として覚える —— 覚えないと、遅れて届いたそのパケットを「戻る向きの再起動」と取り違える。
+      const carriedBoots = this.carriedBootsOf(stream)
+      this.boots.set(mapKey, fresh(carriedBoots.slice(0, RETIRED_BOOTS_KEPT)))
+      const carriedBoot = carriedBoots[0]
+      if (carriedBoot === undefined) return null
+      this.rebootsSeen += 1
+      this.rebootsUnmeasured += 1
+      return {
+        boardKey: stream.boardKey, sensorId: stream.sensorId, previousBootId: carriedBoot, bootId: stream.bootId,
+        spanSamples: null, timedBy: null,
+      }
+    }
+    if (cur.bootId === stream.bootId) {
+      // **番号が進んだパケットの時刻で更新する**（大きい方を取らない）。同じ起動の中で時計が戻されると、
+      // 大きい方を取った終わりの時刻は先へ置き去りになり、次の再起動を基板の時刻で測れなくなる。
+      if (seqDiff(end, cur.nextSeq) > 0) {
+        cur.nextSeq = end
+        cur.endMs = endMs
+        cur.atMs = atMs
+      }
+      return null
+    }
+
+    this.rebootsSeen += 1
+    let spanSamples: number | null = null
+    let timedBy: RebootNote['timedBy'] = null
+    if (intervalMs !== null) {
+      const hostSpanMs = Math.max(0, atMs - cur.atMs)
+      const boardSpanMs = isTime(firstSampleMs) && cur.endMs !== null ? firstSampleMs - cur.endMs : null
+      const boardOk = boardSpanMs !== null && boardSpanMs >= -intervalMs / 2 && boardSpanMs <= hostSpanMs + REBOOT_CLOCK_SLACK_MS
+      timedBy = boardOk ? 'board' : 'host'
+      spanSamples = Math.max(0, Math.round((boardOk ? boardSpanMs : hostSpanMs) / intervalMs))
+      if (!boardOk) this.rebootsHostTimed += 1
+      // 番号の差は符号付き 32 bit で扱うので、欠けの長さは半周より短く切る。超えた分（100 Hz で約 124 日より先）は
+      // 基板がフラッシュに持っているはずもないので、取りに行かずにそのまま数える。
+      const len = Math.min(spanSamples, MAX_REBOOT_SPAN_SAMPLES)
+      this.count('reboot-span', spanSamples - len)
+      if (len > 0) {
+        const prev: StreamRef = { boardKey: stream.boardKey, bootId: cur.bootId, sensorId: stream.sensorId }
+        this.pushGap({
+          key: streamKey(prev), stream: prev, address, from: cur.nextSeq, len,
+          foundAtMs: atMs, attempts: 0, lateAttempts: 0, nextTryMs: atMs + this.options.settleMs, rebootSpan: true,
+        })
+      }
+    } else {
+      this.rebootsUnmeasured += 1
+    }
+    this.boots.set(mapKey, fresh([cur.bootId, ...cur.retired.filter((b) => b !== cur.bootId)].slice(0, RETIRED_BOOTS_KEPT)))
+    return {
+      boardKey: stream.boardKey, sensorId: stream.sensorId, previousBootId: cur.bootId, bootId: stream.bootId,
+      spanSamples, timedBy,
+    }
+  }
+
+  /**
+   * 持ち越した流れ（`carried`）のうち、同じ基板 × センサーの別の起動 ID の全部。**番号の大きい順**
+   * （いちばん先まで受けていたものを、再起動の知らせの「前の起動」に使う）。普通は 1 つしか無い。
+   */
+  private carriedBootsOf(stream: StreamRef): string[] {
+    const found: { bootId: string; nextSeq: number }[] = []
+    for (const c of this.carried.values()) {
+      if (c.stream.boardKey === stream.boardKey && c.stream.sensorId === stream.sensorId && c.stream.bootId !== stream.bootId) {
+        found.push({ bootId: c.stream.bootId, nextSeq: c.nextSeq })
+      }
+    }
+    return found.sort((a, b) => b.nextSeq - a.nextSeq).map((f) => f.bootId)
   }
 
   /**
@@ -341,6 +593,11 @@ export class BacklogBook {
    * ここでは帳面を動かさない —— 返事のたびに呼ぶ口で状態を変えると、数え方が呼ぶ頻度に引きずられる。
    */
   pendingGapStarts(boardKey: string, bootId: string, nowMs: number): readonly GapStart[] {
+    // **前の起動のパケットへの返事には載せない。** 返事を読むのはいまの起動の基板で、前の起動の番号を
+    // いまの起動の番号として読み、無関係な位置から書き出しを始める。
+    for (const b of this.boots.values()) {
+      if (b.boardKey === boardKey && b.retired.includes(bootId)) return []
+    }
     const oldest = new Map<string, number>()
     for (const g of this.gaps) {
       if (g.stream.boardKey !== boardKey || g.stream.bootId !== bootId) continue
@@ -362,16 +619,19 @@ export class BacklogBook {
 
   /** `[from, to)` を取り戻した。**欠けていた分だけ**数えて返す。 */
   recovered(key: string, from: number, to: number): number {
-    const n = this.subtract(key, from, seqLen(from, to))
+    const n = this.subtract(key, from, seqLen(from, to), () => {})
     this.recoveredCount += n
     return n
   }
 
-  /** `[from, to)` はもう取り戻せない。欠けていた分だけ数えて返す。 */
+  /**
+   * `[from, to)` はもう取り戻せない。欠けていた分だけ数えて返す。
+   * **再起動の欠けに掛かる分は、基板が持っていなかったという答えなら `reboot-span` に数える**（`REBOOT_SPAN_ABSORBS`）。
+   */
   unrecoverable(key: string, from: number, to: number, reason: UnrecoverableReason): number {
-    const n = this.subtract(key, from, seqLen(from, to))
-    this.count(reason, n)
-    return n
+    return this.subtract(key, from, seqLen(from, to), (g, n) => {
+      this.count(g.rebootSpan && REBOOT_SPAN_ABSORBS.has(reason) ? 'reboot-span' : reason, n)
+    })
   }
 
   /**
@@ -412,6 +672,9 @@ export class BacklogBook {
       pendingSamples,
       recoveredSamples: this.recoveredCount,
       unrecoverableSamples,
+      rebootsSeen: this.rebootsSeen,
+      rebootsHostTimed: this.rebootsHostTimed,
+      rebootsUnmeasured: this.rebootsUnmeasured,
     }
   }
 
@@ -428,8 +691,16 @@ export class BacklogBook {
     }
     const gaps = this.gaps.map((g) => ({
       ...g.stream, address: g.address, from: g.from, to: seqAdd(g.from, g.len), foundAtMs: g.foundAtMs,
+      rebootSpan: g.rebootSpan,
     }))
-    return { version: 1, streams, gaps }
+    const boots: BacklogBookState['boots'][number][] = []
+    for (const b of this.boots.values()) {
+      boots.push({
+        boardKey: b.boardKey, sensorId: b.sensorId, bootId: b.bootId, nextSeq: b.nextSeq, endMs: b.endMs, atMs: b.atMs,
+        retired: [...b.retired],
+      })
+    }
+    return { version: 2, streams, gaps, boots }
   }
 
   /**
@@ -450,6 +721,15 @@ export class BacklogBook {
       this.pushGap({
         key: streamKey(stream), stream, address: g.address, from: g.from, len,
         foundAtMs: g.foundAtMs, attempts: 0, lateAttempts: 0, nextTryMs: nowMs + this.options.settleMs,
+        rebootSpan: g.rebootSpan,
+      })
+    }
+    // **最後の起動も持ち越す。** 止まっている間に基板が再起動していたら、最初のパケットで見つける
+    // （その長さには、ホストが止まっていた時間も入る。`noteBoot`）。
+    for (const b of state.boots) {
+      this.boots.set(bootMapKey(b.boardKey, b.sensorId), {
+        boardKey: b.boardKey, sensorId: b.sensorId, bootId: b.bootId, nextSeq: b.nextSeq, endMs: b.endMs, atMs: b.atMs,
+        retired: [...b.retired],
       })
     }
   }
@@ -459,6 +739,7 @@ export class BacklogBook {
     if (len === 0) return
     this.pushGap({
       key, stream, address, from, len, foundAtMs: atMs, attempts: 0, lateAttempts: 0, nextTryMs: atMs + this.options.settleMs,
+      rebootSpan: false,
     })
   }
 
@@ -479,9 +760,15 @@ export class BacklogBook {
     return s < g.len && s + len > 0
   }
 
-  /** `[from, from+len)` を欠けから外し、**外したサンプル数**を返す。欠けは最大 2 つに割れる。 */
-  private subtract(key: string, from: number, len: number): number {
+  /**
+   * `[from, from+len)` を欠けから外し、**外したサンプル数**を返す。欠けは最大 2 つに割れる。
+   * `onRemoved` は欠けごとに外した数を受ける（再起動の欠けだけ数え方を変えるため）。
+   *
+   * **掛かる欠けが無ければ配列を作り直さない** —— 受けたパケットごとに呼ぶ（`notePacket`）。
+   */
+  private subtract(key: string, from: number, len: number, onRemoved: (g: GapState, n: number) => void): number {
     if (len <= 0) return 0
+    if (!this.gaps.some((g) => g.key === key && this.overlaps(g, from, len))) return 0
     let removed = 0
     const next: GapState[] = []
     for (const g of this.gaps) {
@@ -492,6 +779,7 @@ export class BacklogBook {
       const s = Math.max(0, seqDiff(from, g.from))
       const e = Math.min(g.len, seqDiff(from, g.from) + len)
       removed += e - s
+      onRemoved(g, e - s)
       if (s > 0) next.push({ ...g, len: s })
       if (e < g.len) next.push({ ...g, from: seqAdd(g.from, e), len: g.len - e })
     }

@@ -74,7 +74,7 @@ function harness(
 
 /** `[30, 90)` が欠けた状態を作り、取りに行ける時刻まで進める。 */
 function withGap(h: Harness): void {
-  for (const q of [0, 90]) h.book.notePacket({ stream: S, firstSeq: q, count: 30, address: ADDR, atMs: 0 })
+  for (const q of [0, 90]) h.book.notePacket({ stream: S, firstSeq: q, count: 30, address: ADDR, atMs: 0, firstSampleMs: 0, sampleRateHz: 100 })
   h.clock.now = 10_000
 }
 
@@ -289,7 +289,7 @@ describe('BacklogFetcher', () => {
 
   it('対照: 欠けが無ければ何も訊かない', async () => {
     const h = harness(async () => response(200, ''))
-    h.book.notePacket({ stream: S, firstSeq: 0, count: 30, address: ADDR, atMs: 0 })
+    h.book.notePacket({ stream: S, firstSeq: 0, count: 30, address: ADDR, atMs: 0, firstSampleMs: 0, sampleRateHz: 100 })
     h.clock.now = 10_000
     expect(await h.fetcher.step()).toBe(false)
     expect(h.urls).toEqual([])
@@ -422,7 +422,7 @@ describe('BacklogFetcher', () => {
     const h = harness(async () =>
       response(200, packet(0, 60), { 'X-Backlog-Have': '0-120', 'X-Backlog-More': '0', 'X-Backlog-Next': '60' }),
     )
-    for (const q of [0, 60]) h.book.notePacket({ stream: S, firstSeq: q, count: 30, address: ADDR, atMs: 0 })
+    for (const q of [0, 60]) h.book.notePacket({ stream: S, firstSeq: q, count: 30, address: ADDR, atMs: 0, firstSampleMs: 0, sampleRateHz: 100 })
     h.clock.now = 10_000
     await h.fetcher.step()
     expect(h.written).toHaveLength(1)
@@ -437,7 +437,7 @@ describe('BacklogFetcher', () => {
       settleMs: 2_000, holdMs: 25_000, retryUrgentMs: 1_000, retryBaseMs: 5_000, retryMaxMs: 60_000, giveUpAfterMs: 20 * 60_000,
       maxGaps: 100, maxSpanSamples: 900,
     })
-    for (const q of [0, 90]) book.notePacket({ stream: S, firstSeq: q, count: 30, address: ADDR, atMs: 0 })
+    for (const q of [0, 90]) book.notePacket({ stream: S, firstSeq: q, count: 30, address: ADDR, atMs: 0, firstSampleMs: 0, sampleRateHz: 100 })
     const fetcher = new BacklogFetcher({
       book,
       get: async () => response(200, packet(60), { 'X-Backlog-Have': '60-500', 'X-Backlog-More': '0', 'X-Backlog-Next': '90' }),
@@ -460,7 +460,7 @@ describe('BacklogFetcher', () => {
       settleMs: 2_000, holdMs: 25_000, retryUrgentMs: 1_000, retryBaseMs: 5_000, retryMaxMs: 60_000, giveUpAfterMs: 20 * 60_000,
       maxGaps: 100, maxSpanSamples: 900,
     })
-    for (const q of [0, 90]) book.notePacket({ stream: S, firstSeq: q, count: 30, address: ADDR, atMs: 0 })
+    for (const q of [0, 90]) book.notePacket({ stream: S, firstSeq: q, count: 30, address: ADDR, atMs: 0, firstSampleMs: 0, sampleRateHz: 100 })
     let calls = 0
     const fetcher = new BacklogFetcher({
       book,
@@ -501,7 +501,7 @@ describe('BacklogFetcher（近い欠けをまとめて訊く・基板ごとに�
         'X-Backlog-Have': '0-500', 'X-Backlog-More': '0', 'X-Backlog-Next': '120',
       }),
     )
-    for (const q of [0, 60, 120]) h.book.notePacket({ stream: S, firstSeq: q, count: 30, address: ADDR, atMs: 0 })
+    for (const q of [0, 60, 120]) h.book.notePacket({ stream: S, firstSeq: q, count: 30, address: ADDR, atMs: 0, firstSampleMs: 0, sampleRateHz: 100 })
     h.clock.now = 10_000
     await h.fetcher.step()
     expect(h.urls).toEqual([`http://${ADDR}/backlog?sid=i2c0-68&bid=34b6e78f&from=30&to=120`])
@@ -518,7 +518,7 @@ describe('BacklogFetcher（近い欠けをまとめて訊く・基板ごとに�
     const h = harness(async () =>
       response(200, packet(30) + packet(60), { 'X-Backlog-Have': '0-500', 'X-Backlog-More': '0', 'X-Backlog-Next': '120' }),
     )
-    for (const q of [0, 60, 120]) h.book.notePacket({ stream: S, firstSeq: q, count: 30, address: ADDR, atMs: 0 })
+    for (const q of [0, 60, 120]) h.book.notePacket({ stream: S, firstSeq: q, count: 30, address: ADDR, atMs: 0, firstSampleMs: 0, sampleRateHz: 100 })
     h.clock.now = 10_000
     await h.fetcher.step()
     expect(h.fetcher.snapshot().unrecoverableSamples).toEqual({ 'not-held': 30 })
@@ -535,7 +535,7 @@ describe('BacklogFetcher（近い欠けをまとめて訊く・基板ごとに�
       return response(200, packet2(30), { 'X-Backlog-Have': '0-500', 'X-Backlog-More': '0', 'X-Backlog-Next': '60' })
     })
     withGap(h)
-    for (const q of [0, 60]) h.book.notePacket({ stream: S2, firstSeq: q, count: 30, address: ADDR2, atMs: 0 })
+    for (const q of [0, 60]) h.book.notePacket({ stream: S2, firstSeq: q, count: 30, address: ADDR2, atMs: 0, firstSampleMs: 0, sampleRateHz: 100 })
     const a = h.fetcher.step()
     // A が答えを待っている間に、B の分を訊きに行ける。
     expect(await h.fetcher.step()).toBe(true)
@@ -554,7 +554,7 @@ describe('BacklogFetcher（近い欠けをまとめて訊く・基板ごとに�
     // 同じ基板の別のセンサーにも欠けを作る。
     withGap(h)
     const other: StreamRef = { ...S, sensorId: 'i2c0-69' }
-    for (const q of [0, 60]) h.book.notePacket({ stream: other, firstSeq: q, count: 30, address: ADDR, atMs: 0 })
+    for (const q of [0, 60]) h.book.notePacket({ stream: other, firstSeq: q, count: 30, address: ADDR, atMs: 0, firstSampleMs: 0, sampleRateHz: 100 })
     const first = h.fetcher.step()
     expect(await h.fetcher.step()).toBe(false)
     expect(h.urls).toHaveLength(1)
@@ -570,9 +570,9 @@ describe('BacklogFetcher（近い欠けをまとめて訊く・基板ごとに�
       settleMs: 2_000, holdMs: 25_000, retryUrgentMs: 1_000, retryBaseMs: 5_000, retryMaxMs: 60_000,
       giveUpAfterMs: 20 * 60_000, maxGaps: 100, maxSpanSamples: 900,
     })
-    for (const q of [0, 90]) book.notePacket({ stream: S, firstSeq: q, count: 30, address: ADDR, atMs: 0 })
+    for (const q of [0, 90]) book.notePacket({ stream: S, firstSeq: q, count: 30, address: ADDR, atMs: 0, firstSampleMs: 0, sampleRateHz: 100 })
     // B に、まとめて訊ける長さを超えて離れた欠けを 2 つ作る（2 回訊かないと取り戻せない）。
-    for (const q of [0, 60, 2_000, 2_060]) book.notePacket({ stream: S2, firstSeq: q, count: 30, address: ADDR2, atMs: 0 })
+    for (const q of [0, 60, 2_000, 2_060]) book.notePacket({ stream: S2, firstSeq: q, count: 30, address: ADDR2, atMs: 0, firstSampleMs: 0, sampleRateHz: 100 })
     const fetcher = new BacklogFetcher({
       book,
       get: async (url) => {
@@ -609,7 +609,7 @@ describe('BacklogFetcher（近い欠けをまとめて訊く・基板ごとに�
       20,
     )
     withGap(h)
-    for (const q of [0, 60]) h.book.notePacket({ stream: S2, firstSeq: q, count: 30, address: ADDR2, atMs: 0 })
+    for (const q of [0, 60]) h.book.notePacket({ stream: S2, firstSeq: q, count: 30, address: ADDR2, atMs: 0, firstSampleMs: 0, sampleRateHz: 100 })
     await Promise.all([h.fetcher.step(), h.fetcher.step()])
     expect(finishers).toHaveLength(2)
     expect(h.fetcher.snapshot().unsettledWriteSinceMs).toBe(10_000)
@@ -631,7 +631,7 @@ describe('BacklogFetcher（近い欠けをまとめて訊く・基板ごとに�
       settleMs: 2_000, holdMs: 25_000, retryUrgentMs: 1_000, retryBaseMs: 5_000, retryMaxMs: 60_000,
       giveUpAfterMs: 20 * 60_000, maxGaps: 100, maxSpanSamples: 900,
     })
-    for (const q of [0, 90]) book.notePacket({ stream: S, firstSeq: q, count: 30, address: ADDR, atMs: 0 })
+    for (const q of [0, 90]) book.notePacket({ stream: S, firstSeq: q, count: 30, address: ADDR, atMs: 0, firstSampleMs: 0, sampleRateHz: 100 })
     const original = book.nextDueWhere.bind(book)
     let calls = 0
     book.nextDueWhere = (now, accept) => {
@@ -657,5 +657,39 @@ describe('BacklogFetcher（近い欠けをまとめて訊く・基板ごとに�
     expect(fetcher.snapshot().failures.internal).toBe(1)
     expect(urls.length).toBeGreaterThanOrEqual(1)
     expect(book.snapshot().pendingGaps).toBe(0)
+  })
+})
+
+describe('BacklogFetcher（基板の再起動をまたぐ欠け）', () => {
+  const T = 1_790_941_894_294
+  const NEW: StreamRef = { ...S, bootId: 'ffff0000' }
+
+  /** 前の起動の [0, 90) を受けたあと、3 秒（300 サンプル）抜けて新しい起動が来た。 */
+  function withReboot(h: Harness): void {
+    for (const q of [0, 30, 60]) {
+      h.book.notePacket({ stream: S, firstSeq: q, count: 30, address: ADDR, atMs: 1_000, firstSampleMs: T + q * 10, sampleRateHz: 100 })
+    }
+    h.book.notePacket({ stream: NEW, firstSeq: 0, count: 30, address: ADDR, atMs: 4_000, firstSampleMs: T + 900 + 3_000, sampleRateHz: 100 })
+    h.clock.now = 10_000
+  }
+
+  it('正: 前の起動の末尾をフラッシュから取り戻し、基板が持っていなかった残りを「再起動の前後」に数える', async () => {
+    const h = harness(async () => response(200, packet(90) + packet(120), {
+      'X-Backlog-Have': '0-150', 'X-Backlog-More': '0', 'X-Backlog-Next': '150',
+    }))
+    withReboot(h)
+    await h.fetcher.step()
+    expect(h.urls).toEqual([`http://${ADDR}/backlog?sid=i2c0-68&bid=34b6e78f&from=90&to=390`])
+    expect(h.written).toHaveLength(2)
+    const snap = h.fetcher.snapshot()
+    expect(snap).toMatchObject({ recoveredSamples: 60, pendingGaps: 0, rebootsSeen: 1 })
+    expect(snap.unrecoverableSamples).toEqual({ 'reboot-span': 240 })
+  })
+
+  it('正: 前の起動の分がどこにも無ければ（410）、まるごと「再起動の前後」に数える', async () => {
+    const h = harness(async () => response(410, 'other boot\n'))
+    withReboot(h)
+    await h.fetcher.step()
+    expect(h.fetcher.snapshot().unrecoverableSamples).toEqual({ 'reboot-span': 300 })
   })
 })
