@@ -27,9 +27,10 @@ import type { RestScaleView, SensorRestWindow } from './detectedBoards'
 import { GAL_PER_G } from '../intensity/units'
 import { resolveCalibration } from '../receiver/calibration'
 import { FUSION_MIN_DIRECTION_INFO } from '../receiver/directionInfo'
-import { invert3, minEigenvalueSym3, multiplyMatVec3 } from '../receiver/matrix3'
+import { minEigenvalueSym3 } from '../receiver/matrix3'
 import { SCALE_RATIO_MAX } from '../receiver/gravityCheck'
 import { IDENTITY_MATRIX, type Mat3, type SensorCalibration, type Vec3 } from '../receiver/stationConfigTypes'
+import { solveGravity, type GravityReading } from './gravityLeastSquares'
 
 /**
  * 提案に載せる小数の桁。
@@ -308,12 +309,8 @@ export function stillMeanGal(
  * その場で掛ければ、何回押しても・いつ保存しても同じ答えになる。
  */
 export function boardGravityForTilt(members: readonly TiltMember[]): { readonly ok: true; readonly gravity: Vec3 } | BoardGravityRefusal {
-  const normal: [number, number, number][] = [
-    [0, 0, 0],
-    [0, 0, 0],
-    [0, 0, 0],
-  ]
-  const rhs: [number, number, number] = [0, 0, 0]
+  /** 材料に入った全部の軸。解くのは `gravityLeastSquares.ts`（6 面法の姿勢ごとの重力と同じ解き方）。 */
+  const readings: GravityReading[] = []
   /** 向きだけで作った `Σ û ûᵀ`（散らばりの判定。観測点の合成と同じ物差し）。 */
   const spread: [number, number, number][] = [
     [0, 0, 0],
@@ -339,14 +336,11 @@ export function boardGravityForTilt(members: readonly TiltMember[]): { readonly 
     if (resolved === null) return { ok: false, reason: '軸の向きが解けない形になっている', lacksMaterial: false }
     resolved.axes.forEach((a, j) => {
       const h = a.vector
-      const d = still.meanGal[j]! - a.offset
+      readings.push({ vector: h, offset: a.offset, value: still.meanGal[j]! })
       const len = magnitude(h)
+      if (!(len > 0)) return
       for (let i = 0; i < 3; i++) {
-        rhs[i] += h[i] * d
-        for (let k = 0; k < 3; k++) {
-          normal[i]![k]! += h[i] * h[k]
-          if (len > 0) spread[i]![k]! += (h[i] * h[k]) / (len * len)
-        }
+        for (let k = 0; k < 3; k++) spread[i]![k]! += (h[i] * h[k]) / (len * len)
       }
     })
   }
@@ -356,9 +350,12 @@ export function boardGravityForTilt(members: readonly TiltMember[]): { readonly 
   if (!(minEigenvalueSym3(spread as unknown as Mat3) >= FUSION_MIN_DIRECTION_INFO)) {
     return { ok: false, reason: NO_STILL_SPREAD, lacksMaterial: true }
   }
-  const inv = invert3(normal as unknown as Mat3)
-  if (inv === null) return { ok: false, reason: NO_STILL_SPREAD, lacksMaterial: true }
-  const gravity = multiplyMatVec3(inv, rhs)
+  const gravity = solveGravity(readings)
+  // **向きの散り具合は上で確かめてある**ので、ここで解けないのは軸の長さ（倍率）が 10⁶ 倍ほど食い違う
+  // ときだけ（散り具合は向きだけで測るので長さに気づかない）。倍率の入力の誤りなので、倍率の問題として断る。
+  // 逆行列で解いていた頃は、その軸の読みが 0 付近なら答えが出ていた（読みが 1 g 前後なら桁外れの重力に
+  // なって下の確かめで弾かれていた）。どちらにしても、桁を誤った倍率で向きを出す値打ちは無い。
+  if (gravity === null) return { ok: false, reason: SCALE_MISMATCH, lacksMaterial: false }
   if (!readable(gravity)) return { ok: false, reason: '重力の値が数として読めない', lacksMaterial: false }
   // **倍率が狂ったままの値で向きを出さない**（`restWindowProblem` と同じ判断・同じ幅）。
   // 狂いを基板の向きへ塗り込むことになる。直すべきは軸の向きの長さ（倍率）か、その手前の換算。
