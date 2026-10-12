@@ -1,7 +1,7 @@
 // P2PQuake の地震情報（code 551）を、照合用の地震（`ReferenceQuake`）へ読み替える。
 //
 // **読むのは震源と発生時刻だけ。** 照合（`quakeMatch.ts`）に要るのはそれだけで、震度の
-// 一覧などは地震ビューアー本体（PWA）が持つ。ここで型を広げると、PWA の読み取り
+// 一覧などは揺れ窓本体（PWA）が持つ。ここで型を広げると、PWA の読み取り
 // （`src/services/p2pquake.ts`）と二重に持つことになる。
 //
 // **値の形は公式の OpenAPI に合わせる**（`epsp-specifications/json-api-v2.yaml`）。

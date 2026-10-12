@@ -1,7 +1,7 @@
 {
-  "name": "realtime-earthquake-viewer",
+  "name": "yuremado",
   "private": true,
-  "version": "5.46.0",
+  "version": "5.47.0",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業するときの手順とルール。
+yuremado（揺れ窓）で作業するときの手順とルール。
 
 ## ユーザーに見せる文はすべて日本語で書く
 
@@ -20,7 +20,7 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
 
 - React 18 + TypeScript + Vite 6 製の PWA。MapLibre GL JS（WebGL）地図で地震情報・緊急地震速報・津波情報・リアルタイム震度を表示する。
 - データ: DMDATA.JP API（WebSocket + REST）／ Yahoo リアルタイム震度（強震モニタ・HTTPS JSON）（DMDSS 版）、P2PQuake API v2（標準版）。
-- GitHub Pages（サブパス配信 `/realtime-earthquake-viewer/`）へ GitHub Actions で自動デプロイ。
+- GitHub Pages（サブパス配信 `/yuremado/`）へ GitHub Actions で自動デプロイ。
 
 ## ビルドバリアントと URL（重要）
 
@@ -28,11 +28,11 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
 
 | バリアント | dev 起動コマンド | ビルド出力 | 配信パス（URL） |
 |---|---|---|---|
-| standard | `npm run dev` | `dist/` | `/realtime-earthquake-viewer/` |
-| DMDSS | `npm run dev:dmdss` | `dist-dmdss/` | `/realtime-earthquake-viewer/dmdss/` |
+| standard | `npm run dev` | `dist/` | `/yuremado/` |
+| DMDSS | `npm run dev:dmdss` | `dist-dmdss/` | `/yuremado/dmdss/` |
 
 - **DMDSS 版の検証時は `npm run dev:dmdss` で起動し、必ず `/dmdss/` サブパスにアクセスすること**
-  - dev URL 例: `http://localhost:5173/realtime-earthquake-viewer/dmdss/`（ポートはフォールバックで変わる）
+  - dev URL 例: `http://localhost:5173/yuremado/dmdss/`（ポートはフォールバックで変わる）
 - `npm run dev`（standard 版）では DMDSS 設定セクションが表示されず、P2PQuake 接続になる
 - Windows で `cross-env` が動かない場合は PowerShell から `$env:VITE_VARIANT="dmdss"; npx vite` で代替起動する
 
@@ -430,8 +430,8 @@ fi
     - **症状は「1 件の時間切れ」ではなく「そのファイルのほぼ全件が落ちる」形で出る**（後続のテストが `h.current` を null で掴んで連鎖する）。実測で 117 件中 102 件が巻き添えになった。件数の多さに驚いて実装の不具合を疑う前に、落ちた 1 件目が時間切れかどうかを見ること。**並列実行のときだけ起きる**ので、そのファイルを単独で回すと通ってしまう（実測: 1 件目だけが単体実行 118ms・全体実行 907ms。同じファイルの他のテストは 3ms 前後）
   - **多数のファイルをテスト本体で直列に読まないこと。** `readFileSync` を 1 件ずつ回すと待ちが件数だけ積み上がる。**並列実行のときだけ既定の 5 秒を超え、単独で回すと通る**——ここは上の項と同じだが、原因も手当ても違う（上は 1 件目にモジュール解決が乗る話で、こちらはファイル I/O そのもの。`fs/promises` の `readFile` を `Promise.all` でまとめて投げる）。**症状の出方も違う**——テストが 1 件しか無いファイルでは上の項が言う「全件が落ちる」形にはならず、単発の時間切れとして出る。実例は 2 つ——[`scripts/noRawControlChars.test.ts`](scripts/noRawControlChars.test.ts)（`src` / `scripts` / `docs` 配下を走査。全バイトを `Set.has` で判定していた分も 256 要素の表引きへ変えた）と、[`scripts/specRequirementCount.test.ts`](scripts/specRequirementCount.test.ts)（`src` 配下だけで、走査量はあちらの半分以下）。**量が少ないほうも同じ形で落ちた**ので、件数の少なさを理由に自分を対象外と判断しないこと。**件数・バイト数・実測値は各テストのコメントが持つ**——走査対象は増え続けるので、ここへ写すと古くなる。**余裕を測るなら `npm test` 全件のなかでの所要を見る**（走査部分だけを単体で測った値は他ワーカーとの競合が乗らないぶん桁ひとつ小さく出ることがあり、根拠にならない）。
 - **アプリ起動（デフォルト: DMDSS 版）**: **特にバリアントの指定がない場合は `npm run dev:dmdss` を使用する**。
-  - DMDSS 版 URL: `http://localhost:5173/realtime-earthquake-viewer/dmdss/`
-  - standard 版が明示的に必要な場合のみ `npm run dev` → `http://localhost:5173/realtime-earthquake-viewer/`
+  - DMDSS 版 URL: `http://localhost:5173/yuremado/dmdss/`
+  - standard 版が明示的に必要な場合のみ `npm run dev` → `http://localhost:5173/yuremado/`
   - （5173 が使用中なら 5174 等にフォールバックするため、起動ログで実ポートを確認する）
     - **確認は出力ファイルを `Read` して行う。** 起動の戻り値に出力ファイルのパスが返るので、そこに出る Vite の `Local:   http://localhost:5178/...` を読む。**走っている最中でも読める。** ここを飛ばすと、ずれた先のポートが分からないまま接続先を当てずっぽうで探すことになる
   - **必ず `run_in_background: true` でバックグラウンドタスクとして起動する**（ユーザー指示）。フォアグラウンドで起動するとプロセスが応答を返さずハングするため。
@@ -461,7 +461,7 @@ fi
   - **`.claude/` 配下は dev サーバーの監視対象から外してある**（`scripts/dev-watch-ignore.ts` の `isInsideClaudeDir`）。効くのは**メインリポジトリ直下で起動したとき**で、並行して動く別セッションがワークツリー（`.claude/worktrees/`）のファイルを触ってもこちらのページがリロードされない。**この除外を glob（`**/.claude/**`）で書き直さないこと** —— 今度はワークツリー内で起動したときに HMR が丸ごと死ぬ（理由はそのファイルのコメント）。
 - `__APP_VERSION__` はビルド時に `vite.config.ts` の `define` が `package.json` の `version` から注入する定数のため、dev サーバーは `package.json` の `version` を変更したあと**再起動しないと新しい値を反映しない**（HMR では拾えない）。
 - **本番ビルド確認（大きめの変更時は必須）**: `npm run build` でビルドが通ることを確認するだけでなく、**`npm run preview`（本番ビルドのサブパス配信）を起動し Playwright MCP でブラウザ確認まで行う**。
-  - preview URL: standard は `http://localhost:4173/realtime-earthquake-viewer/`／DMDSS は `npm run build:dmdss` → `npm run preview:dmdss`。
+  - preview URL: standard は `http://localhost:4173/yuremado/`／DMDSS は `npm run build:dmdss` → `npm run preview:dmdss`。
   - **preview は PWA の Service Worker が前回のビルドをキャッシュから配信する。** リビルドしてリロードしても古いバンドルが動き続けるため、**「確認したつもり」で通ってしまう**。確認の前に必ずキャッシュを捨てること（`registration.unregister()` ＋ `caches.delete()` を実行してからリロード）。読み込まれた実体が期待どおりかは、`dist/index.html` が参照するバンドル名と、ブラウザの `document.querySelectorAll('script[src]')` を突き合わせて確かめる。
     ```js
     // Playwright の browser_evaluate で実行する
@@ -491,7 +491,7 @@ fi
 0. **端末のブラウザを丸ごと再起動する。** Edge は起動ブーストで裏に常駐し、アプリのウィンドウを閉じても本体が残る（更新も当たらない）。再起動を挟まないと、修正の前後ではなくブラウザの状態を比べることになる
 1. **公開版（端末で普段表示しているもの）の設定タブで「設定の書き出し」をしておく**（API キーは含まれない）。終わったら公開版は閉じる（負荷が混ざるため）
 2. **修正前と修正後を同じ経路で立てる。** 修正前は `main` から計測用のワークツリーを切る（`worktree/chore/<name>`。測り終えたら `git worktree remove` → `git branch -d` で片付ける）。新しく切ったワークツリーには `node_modules` が無いので `npm ci` してから、両方のワークツリーでそれぞれ `npm run build:dmdss` → `npm run preview:dmdss -- --host` を `run_in_background: true` で起動する（ポートが重なるので順に立てるか、片方に `--port` を付ける。実際の URL は起動ログの `Network:` 行で確かめる。起動したサーバーを控え、終わったら止めるのは上記の規約どおり）。**preview には API キーが自動では入らない**（自動投入は dev サーバーだけの機能）ので、端末側で設定タブから入れる
-3. 端末で `http://<ビルドしている PC の LAN の IP>:<ポート>/realtime-earthquake-viewer/dmdss/` を開き、1 のファイルを「設定の読み込み」で入れ、API キーを入れる（オリジンごとに設定は別に保存される）。修正前と修正後で、開き方（ウィンドウの大きさ・タブ）も揃える
+3. 端末で `http://<ビルドしている PC の LAN の IP>:<ポート>/yuremado/dmdss/` を開き、1 のファイルを「設定の読み込み」で入れ、API キーを入れる（オリジンごとに設定は別に保存される）。修正前と修正後で、開き方（ウィンドウの大きさ・タブ）も揃える
 4. **測る指標**: Windows の性能カウンタで、ブラウザのプロセスの `\GPU Engine(*engtype_3D)\Utilization Percentage` をプロセスごとに合計したものと、`\Processor Information(_Total)\% Processor Utility`（端末全体の CPU）。開いて 30 秒ほど落ち着かせてから、5 秒間隔で 60〜120 秒の平均を取る。修正前と修正後で測る長さを揃え、結果（値・平均した長さ・測定を繰り返した回数）はコミットメッセージに残す。1 回きりの値は、ぶれの大きさが分からないことも書き添える
 
 **基準を公開版で代えると、条件が 2 つ混ざる。** 公開版は `https://` で Service Worker が働くが、LAN の `http://` は安全な接続ではないので Service Worker が登録されない。安全な接続でないページでは `crypto.subtle` も使えないので、到達予想キーの検証も働かない。手間を省いて公開版と比べたなら、この違いを結果に書き添えること。
@@ -1051,7 +1051,7 @@ README は「一般利用者・フォーカー・貢献者への導線」であ�
 - **依存関係を宣言する**。`TaskUpdate` の `addBlockedBy` / `addBlocks` で「A が終わるまで B は着手できない」を表すと、`TaskList` が blocked として返す。順序を取り違えない
 - 状態は `pending` → `in_progress` → `completed`。**着手時に `in_progress`、完了時に `completed`**。部分的にしか終わっていないものを `completed` にしない（テストが落ちている・実装が途中・必要なファイルが見つからない、のいずれでも完了ではない）
 - **単一で些末な作業には使わない**（`TaskCreate` 自身がそう定めている）。目安は段・フェーズに分かれるか、3 ステップ以上か
-- **どのリストを見るかは [`.claude/settings.json`](.claude/settings.json) の `CLAUDE_CODE_TASK_LIST_ID` で決まる。** このファイルはコミットされているので、メインの checkout でもワークツリーでも、セッションは同じ 1 本のリストを見る（中身は端末の `~/.claude/tasks/<ID>/` に置かれる）
+- **どのリストを見るかは [`.claude/settings.json`](.claude/settings.json) の `CLAUDE_CODE_TASK_LIST_ID` で決まる。** このファイルはコミットされているので、メインの checkout でもワークツリーでも、セッションは同じ 1 本のリストを見る（中身は端末の `~/.claude/tasks/<ID>/` に置かれる）。**ID はリポジトリ名とは別物で、改名（2026-10-12）の後も `realtime-earthquake-viewer` のまま** —— 変えると、それまでのタスクが見えない空のリストへ切り替わる
   - **`.claude/settings.local.json` には同じ変数を置かない。** あちらが優先されるので、片方だけ書き換えるとメインの checkout だけ別のリストを見るようになり、それに気づく手掛かりも無い
   - **指定が読まれるのはセッションを始めるときだけ。** 途中で作業ディレクトリを移しても切り替わらない（実測）。直すにはセッションを始め直す
   - **`TaskList` の番号が #1 から始まっていたら、共有のリストではなく、そのセッション専用の空のリストを見ている。** 作業を始める前に、セッションを始めたディレクトリに `.claude/settings.json` があるかを確かめる。この指定がコミットされる前に切ったワークツリーには無く、`git merge main` で入る

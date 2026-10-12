@@ -63,7 +63,7 @@ function recordFor(pid: number, port: number): DevServerRecord {
   return {
     pid,
     port,
-    url: `http://localhost:${port}/realtime-earthquake-viewer/dmdss/`,
+    url: `http://localhost:${port}/yuremado/dmdss/`,
     startedAt: new Date().toISOString(),
     sessionId: 'test-session',
   }
@@ -206,7 +206,7 @@ describe('writeRecord / clearRecord', () => {
 describe('formatAlreadyRunning', () => {
   it('URL と止め方の両方を出す（次の行動が決まるように）', () => {
     const message = formatAlreadyRunning('dmdss', recordFor(1234, 5178))
-    expect(message).toContain('http://localhost:5178/realtime-earthquake-viewer/dmdss/')
+    expect(message).toContain('http://localhost:5178/yuremado/dmdss/')
     expect(message).toContain('Stop-Process -Id 1234')
   })
 

@@ -1,6 +1,6 @@
 # プライバシーポリシー
 
-リアルタイム地震ビューアー（以下「本アプリ」）が扱う情報について説明します。
+揺れ窓（以下「本アプリ」）が扱う情報について説明します。
 
 本アプリには**通常版**と**DM-D.S.S 版**（DMDATA.JP という配信サービスと直接つなぐ版）の 2 種類が
 あります。以下で版を指定している項目は、その版をお使いの場合だけ当てはまります。
@@ -124,5 +124,5 @@ IP アドレス・ブラウザの種類などが伝わります。各サービ�
 
 ## 10. お問い合わせ
 
-[GitHub の Issues](https://github.com/Ramilen-L-Emuruk/realtime-earthquake-viewer/issues)
+[GitHub の Issues](https://github.com/Ramilen-L-Emuruk/yuremado/issues)
 へお願いします。

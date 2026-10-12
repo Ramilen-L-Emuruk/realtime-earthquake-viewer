@@ -167,7 +167,7 @@ def kana(text):
 - ブラウザで**実際に合成へ渡る本文**を見る。dev サーバー（DMDSS 版）を起動して Playwright の `browser_evaluate` で:
 
 ```js
-const mod = await import('/realtime-earthquake-viewer/dmdss/src/utils/voicevox.ts')
+const mod = await import('/yuremado/dmdss/src/utils/voicevox.ts')
 const sent = []
 const orig = window.fetch
 window.fetch = (...a) => {

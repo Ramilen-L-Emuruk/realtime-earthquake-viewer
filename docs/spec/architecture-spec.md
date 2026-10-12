@@ -90,8 +90,8 @@ React 18 + TypeScript + Vite 6 で作られた PWA（Progressive Web App）。�
 
 | バリアント | dev 起動 | ビルド出力 | 配信パス | 主データソース |
 |---|---|---|---|---|
-| standard | `npm run dev` | `dist/` | `/realtime-earthquake-viewer/` | P2PQuake + Yahoo |
-| DMDSS | `npm run dev:dmdss` | `dist-dmdss/` | `/realtime-earthquake-viewer/dmdss/` | DMDATA + Yahoo |
+| standard | `npm run dev` | `dist/` | `/yuremado/` | P2PQuake + Yahoo |
+| DMDSS | `npm run dev:dmdss` | `dist-dmdss/` | `/yuremado/dmdss/` | DMDATA + Yahoo |
 
 `vite.config.ts` の `define`・`base`・`build.outDir`・`manifest.name` が `VITE_VARIANT` によって切り替わる。
 コード側は `src/utils/env.ts` に定義された `isDmdss`（単一情報源）を各ファイルから import して参照する。
@@ -448,7 +448,7 @@ memo を効かせるには props が参照安定である必要があるため�
 各ディレクトリ配下の詳細は個別仕様書と実装コードに委ねる。ここでは初見開発者向けに「何がどこにあるか」を俯瞰する:
 
 ```
-realtime-earthquake-viewer/
+yuremado/
 ├── src/
 │   ├── App.tsx                # レイアウトの中枢
 │   ├── main.tsx               # Vite エントリポイント（React root）
