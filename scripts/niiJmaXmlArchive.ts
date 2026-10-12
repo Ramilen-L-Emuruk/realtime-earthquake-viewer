@@ -44,7 +44,7 @@ const BACKOFF_BASE_MS = 2000
  * User-Agentが原因だという確証は無い。**確証が無いからこそ、素性を名乗る側に倒す** ——
  * 相手が自動取得を識別できる形にしておく。
  */
-const USER_AGENT = 'realtime-earthquake-viewer/archive-builder (+https://github.com/Ramilen-L-Emuruk/realtime-earthquake-viewer)'
+const USER_AGENT = 'yuremado/archive-builder (+https://github.com/Ramilen-L-Emuruk/yuremado)'
 
 export interface NiiTelegramListItem {
   id: string

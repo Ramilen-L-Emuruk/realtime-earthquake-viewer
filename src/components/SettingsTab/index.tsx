@@ -2108,12 +2108,12 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
             第三者ライセンスだけは配信物に含まれる（`public/`）ので同一サイト内で開く。 */}
         <CreditRow label="規約">
           <span className="text-xs text-secondary">
-            <a href="https://github.com/Ramilen-L-Emuruk/realtime-earthquake-viewer/blob/main/docs/terms-of-service.md"
+            <a href="https://github.com/Ramilen-L-Emuruk/yuremado/blob/main/docs/terms-of-service.md"
               target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300">
               利用規約
             </a>
             <span className="mx-1">/</span>
-            <a href="https://github.com/Ramilen-L-Emuruk/realtime-earthquake-viewer/blob/main/docs/privacy-policy.md"
+            <a href="https://github.com/Ramilen-L-Emuruk/yuremado/blob/main/docs/privacy-policy.md"
               target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300">
               プライバシーポリシー
             </a>

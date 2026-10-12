@@ -13,7 +13,7 @@ import { formatFileStamp } from './formatters'
 
 /** 書き出したファイルの中身。 */
 export interface SettingsFile {
-  app: 'realtime-earthquake-viewer'
+  app: typeof SETTINGS_FILE_APP
   kind: 'settings'
   version: 1
   /** どちらのビルドで書き出したか。読み込み側で食い違いを知らせるために持つ。 */
@@ -24,6 +24,14 @@ export interface SettingsFile {
 export type SettingsVariant = 'dmdss' | 'standard'
 
 export const SETTINGS_FILE_VERSION = 1
+
+/** 書き出したファイルの `app`。このアプリのものかを見分ける印。 */
+export const SETTINGS_FILE_APP = 'yuremado'
+/**
+ * 名称を変える前（2026-10-12 より前）に書き出したファイルの `app`。**読むときだけ受け付ける。**
+ * 弾くと、作り置きしてある設定ファイルが「このアプリの設定ファイルではありません」で読めなくなる。
+ */
+export const LEGACY_SETTINGS_FILE_APP = 'realtime-earthquake-viewer'
 
 /**
  * 書き出す中身を組み立てる。
@@ -38,7 +46,7 @@ export const SETTINGS_FILE_VERSION = 1
  */
 export function buildSettingsFile(settings: AppSettings, variant: SettingsVariant, now = new Date()): SettingsFile {
   return {
-    app: 'realtime-earthquake-viewer',
+    app: SETTINGS_FILE_APP,
     kind: 'settings',
     version: SETTINGS_FILE_VERSION,
     variant,
@@ -86,8 +94,8 @@ export type ParseResult =
  */
 export function parseSettingsFile(raw: unknown, current: AppSettings): ParseResult {
   if (raw == null || typeof raw !== 'object') return { ok: false, error: '設定ファイルとして読めません（中身がありません）' }
-  const o = raw as Partial<SettingsFile>
-  if (o.app !== 'realtime-earthquake-viewer') return { ok: false, error: 'このアプリの設定ファイルではありません' }
+  const o = raw as Omit<Partial<SettingsFile>, 'app'> & { app?: unknown }
+  if (o.app !== SETTINGS_FILE_APP && o.app !== LEGACY_SETTINGS_FILE_APP) return { ok: false, error: 'このアプリの設定ファイルではありません' }
   // `kind` は将来ほかの書き出し（設定以外）を足したときの取り違え防止。いまのところ設定しか無い。
   if (o.kind !== 'settings') return { ok: false, error: 'このアプリのファイルですが、設定ではありません' }
   // 形式の番号が無いものと、この版より新しいものを分ける。**同じ文面にしない** ——

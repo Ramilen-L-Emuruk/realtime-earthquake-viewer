@@ -242,7 +242,7 @@ describe('取得はキャッシュして二度取らない', () => {
     await fetchDayListing('20160414')
 
     const init = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]![1] as { headers: Record<string, string> }
-    expect(init.headers['user-agent']).toMatch(/realtime-earthquake-viewer/)
+    expect(init.headers['user-agent']).toMatch(/yuremado/)
     // **ブラウザを騙らない。** 相手から見て何が叩いているか分かる形にしておく
     expect(init.headers['user-agent']).not.toMatch(/Mozilla/)
   })

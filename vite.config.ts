@@ -19,23 +19,23 @@ const pkg = JSON.parse(
 
 // DMDSS版は /dmdss/ サブパスに配信。base が異なるため SW スコープも自動で分離される。
 const base = isDmdss
-  ? '/realtime-earthquake-viewer/dmdss/'
-  : '/realtime-earthquake-viewer/'
+  ? '/yuremado/dmdss/'
+  : '/yuremado/'
 
 // SEC-4/manifest の DMDSS 版文言の単一情報源。以前は transformIndexHtml と manifest の
 // 2 箇所に同一リテラルがハードコードされて DRY 違反だった。
 const APP_STRINGS = {
   standard: {
-    title: 'リアルタイム地震ビューアー',
-    shortName: '地震ビューアー',
+    title: '揺れ窓',
+    shortName: '揺れ窓',
     description: '気象庁の地震情報・緊急地震速報・津波情報をリアルタイムに表示します。',
-    appleTitle: '地震ビューアー',
+    appleTitle: '揺れ窓',
   },
   dmdss: {
-    title: 'リアルタイム地震ビューアー (DM-D.S.S)',
-    shortName: '地震ビューアー DM-D.S.S',
+    title: '揺れ窓 (DM-D.S.S)',
+    shortName: '揺れ窓 DM-D.S.S',
     description: 'DMDATA.JP (Project DM-D.S.S) で地震情報・緊急地震速報・津波情報をリアルタイムに表示します。',
-    appleTitle: '地震ビューアー DM-D.S.S',
+    appleTitle: '揺れ窓 DM-D.S.S',
   },
 } as const
 
@@ -206,15 +206,15 @@ export default defineConfig(configEnv => ({
         // 検査スクリプトと同じ値を見るため。片方だけ書き換えると検査がすり抜ける）。
         globPatterns: [...PRECACHE_GLOB_PATTERNS],
         maximumFileSizeToCacheInBytes: PRECACHE_MAX_FILE_BYTES,
-        // SEC-3: standard 版の scope が /realtime-earthquake-viewer/ で DMDSS 版の /dmdss/
+        // SEC-3: standard 版の scope が /yuremado/ で DMDSS 版の /dmdss/
         // サブパスも包含するため、両バリアントを同一オリジンで訪れると standard の SW が
         // DMDSS 版のナビゲーションリクエストを横取りしうる。standard 版のみ /dmdss/ を
         // ナビゲーションフォールバックの対象外にする（DMDSS 版は自分自身のパスなので影響なし）。
-        // 末尾スラッシュ有り無し両対応: `/realtime-earthquake-viewer/dmdss`（手打ちで末尾スラッシュ抜け）
-        // でも `/realtime-earthquake-viewer/dmdss/`（正規パス）でもマッチさせる。
+        // 末尾スラッシュ有り無し両対応: `/yuremado/dmdss`（手打ちで末尾スラッシュ抜け）
+        // でも `/yuremado/dmdss/`（正規パス）でもマッチさせる。
         navigateFallbackDenylist: isDmdss
           ? []
-          : [/^\/realtime-earthquake-viewer\/dmdss(\/|$)/],
+          : [/^\/yuremado\/dmdss(\/|$)/],
         // **ここへ追記するときは、URL を正規表現リテラルで書くことに注意。**
         // ソース上は `https:\/\/...` とエスケープされるため、`https://` を素の文字列として
         // 探す走査には掛からない（外部への通信経路を数え上げる調査で実際に取りこぼした）。

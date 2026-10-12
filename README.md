@@ -1,11 +1,11 @@
-# リアルタイム地震ビューアー
+# 揺れ窓
 
-気象庁の地震情報・緊急地震速報・津波情報・リアルタイム震度を表示する PWA アプリです。
+揺れ窓（ゆれまど）は、気象庁の地震情報・緊急地震速報・津波情報・リアルタイム震度を地図に表示する PWA アプリです。
 React + TypeScript + MapLibre GL JS で構築されています。
 [kotoho7/scratch-realtime-earthquake-viewer-page](https://github.com/kotoho7/scratch-realtime-earthquake-viewer-page) を参考にしています。
 
-**通常版（P2PQuake）**: https://ramilen-l-emuruk.github.io/realtime-earthquake-viewer/
-**DM-D.S.S 版（DMDATA.JP）**: https://ramilen-l-emuruk.github.io/realtime-earthquake-viewer/dmdss/
+**通常版（P2PQuake）**: https://ramilen-l-emuruk.github.io/yuremado/
+**DM-D.S.S 版（DMDATA.JP）**: https://ramilen-l-emuruk.github.io/yuremado/dmdss/
 
 > 「DM-D.S.S」は DMDATA.JP のサービス名。以下のドキュメントとコード（`VITE_VARIANT=dmdss`）では表記を短縮して **DMDSS** と記載する。
 
@@ -35,8 +35,8 @@ standard 版と DM-D.S.S 版の 2 種類のビルドを同一リポジトリか�
 
 | バリアント | dev 起動 | データソース | 配信パス |
 |---|---|---|---|
-| 通常版 | `npm run dev` | P2PQuake + Yahoo 強震モニタ | `/realtime-earthquake-viewer/` |
-| DM-D.S.S 版 | `npm run dev:dmdss` | DMDATA.JP + Yahoo 強震モニタ | `/realtime-earthquake-viewer/dmdss/` |
+| 通常版 | `npm run dev` | P2PQuake + Yahoo 強震モニタ | `/yuremado/` |
+| DM-D.S.S 版 | `npm run dev:dmdss` | DMDATA.JP + Yahoo 強震モニタ | `/yuremado/dmdss/` |
 
 バリアント別の有効機能マトリクスは [`docs/spec/architecture-spec.md`](docs/spec/architecture-spec.md) 参照。
 

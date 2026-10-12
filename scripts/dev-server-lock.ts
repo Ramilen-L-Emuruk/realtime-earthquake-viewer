@@ -274,7 +274,7 @@ export function formatAlreadyRunning(variant: string, record: DevServerRecord): 
  */
 export function devServerLockPlugin(options: {
   variant: string
-  /** サブパス（`/realtime-earthquake-viewer/dmdss/` など）。案内の URL に使う。 */
+  /** サブパス（`/yuremado/dmdss/` など）。案内の URL に使う。 */
   base: string
   /** 記録の置き場所。Vite の `root`（= その作業ディレクトリ）。 */
   root: string

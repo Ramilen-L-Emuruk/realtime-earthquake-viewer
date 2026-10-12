@@ -217,7 +217,7 @@ describe('ReadingHub', () => {
     expect(hub.snapshot().subscribers[0].dropped).toBe(1)
   })
 
-  // 波形の粒度（#261 段 0）。地震ビューアーの PWA は観測点の合成 1 本だけを見るので、
+  // 波形の粒度（#261 段 0）。揺れ窓の PWA は観測点の合成 1 本だけを見るので、
   // センサー単独の波形（実測で毎秒およそ 65 KB）を押し付けない口が要る。
   it("正: 'station' を望んだ相手へは、観測点の合成波形を配る", () => {
     const hub = new ReadingHub()

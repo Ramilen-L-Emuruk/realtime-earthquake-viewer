@@ -3,7 +3,7 @@
  *
  * 使い方 A（開発機・手動）:
  *   1. `npm run dev:dmdss` を起動し、ブラウザで
- *      http://localhost:5173/realtime-earthquake-viewer/dmdss/ を開く
+ *      http://localhost:5173/yuremado/dmdss/ を開く
  *      （リアルタイムモニタ表示＝地図モード kyoshin・観測点ロード完了を確認しておく）
  *   2. このファイルの内容を DevTools コンソール（または Playwright の evaluate）へ貼り付けて実行する
  *   3. `await window.__measureKyoshinStatic(15000)` の返り値 JSON を記録する
@@ -11,7 +11,7 @@
  *
  * 使い方 B（実機・自動計測＋証跡の自動送信。vite-plugin-perf-report.ts とセット）:
  *   1. 開発機で `npm run dev:dmdss -- --host` を起動し、実機のブラウザで
- *      http://<開発機のIP>:5173/realtime-earthquake-viewer/dmdss/ を開く
+ *      http://<開発機のIP>:5173/yuremado/dmdss/ を開く
  *   2. DevTools コンソールで次の 1 行を実行する（label は結果ファイル名に入る識別子）:
  *      document.head.appendChild(Object.assign(document.createElement('script'),
  *        { src: '/__perf-script?auto=1&duration=15000&label=surface-go2-after' }))
