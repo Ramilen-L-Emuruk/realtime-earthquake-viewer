@@ -53,7 +53,7 @@ import { useEarthquakes, MAX_HISTORY_RETAINED } from './hooks/useEarthquakes'
 import { useFetchThrottled } from './hooks/useFetchThrottled'
 import { useTestScenarios } from './hooks/useTestScenarios'
 import { useSettings } from './hooks/useSettings'
-import { useAlertTitle } from './hooks/useAlertTitle'
+import { useAlertTitle, resolveAlertTitle } from './hooks/useAlertTitle'
 import { useLiveEventHandler, ttsRegionOptions } from './hooks/useLiveEventHandler'
 import { useSpeechPrefetch } from './hooks/useSpeechPrefetch'
 import { useUnreceivedSpeechFollow } from './hooks/useUnreceivedSpeechFollow'
@@ -87,7 +87,7 @@ import {
   decideUnreceivedSpeechOpen, shouldCloseOverlayOnSelection, type UnreceivedOpenResult,
   quakeOverlayChangeLog,
 } from './utils/quakeOverlay'
-import { tsunamiOverallGrade } from './utils/tsunami'
+import { findEndedTsunami, isTsunamiForecastOnly, tsunamiOverallGrade } from './utils/tsunami'
 import { playCountdownBeep, unlockAudio, setSoundVolume, setKeepAliveEnabled } from './utils/alertSound'
 import { loadTtsPhraseBreakDict } from './utils/ttsPhraseBreakDict'
 import { loadTtsStationReadings } from './utils/ttsStationReadings'
@@ -1255,15 +1255,25 @@ export function App() {
 
   // 情報更新時にウィンドウタイトルを変更し、平常時は既定タイトルに戻す。
   // 優先順位: 警報タイトル > アップデートカウントダウン > デフォルトタイトル
+  // 津波の発表中は、名乗り（予報だけか）をいまの津波から決める（`resolveAlertTitle`）。
+  // **解除の表示だけが残る描画では直前の値を使う。** 解除の描画では、タイトルが終わりの語へ替わる（App の
+  // 解除の検出の effect）より先に津波が解除の表示だけになるので、そのまま判定すると予報だけの津波が 1 描画
+  // だけ「津波警報・注意報 発表中」と名乗る。それ以外（発表中がある・画面に何も無い）はそのまま判定する ——
+  // 何も無いのに直前の「予報だけ」を引きずると、軽いほうへ名乗る値が残る。
+  const tsunamiForecastOnlyRef = useRef(false)
+  const onlyCancelledShown = tsunamis.length > 0 && tsunamis.every(t => t.cancelled || !!t.cancelledAt)
+  if (!onlyCancelledShown) tsunamiForecastOnlyRef.current = isTsunamiForecastOnly(tsunamis)
+  const tsunamiForecastOnly = tsunamiForecastOnlyRef.current
+  const alertTitleText = resolveAlertTitle(title.alertTitle, tsunamiForecastOnly)
   useEffect(() => {
-    if (title.alertTitle) {
-      document.title = title.alertTitle
+    if (alertTitleText) {
+      document.title = alertTitleText
     } else if (updateCountdown !== null) {
       document.title = `${updateCountdown}秒後に再起動します — ${DEFAULT_TITLE}`
     } else {
       document.title = DEFAULT_TITLE
     }
-  }, [title.alertTitle, updateCountdown])
+  }, [alertTitleText, updateCountdown])
 
   // SW アップデート検知: sw-updated イベントを受け取りカウントダウンを開始する
   useEffect(() => {
@@ -1451,17 +1461,28 @@ export function App() {
   }, [activeEEWsNoCancelled, tsunamiActive, settings.tsunamiPriorityDefault, settings.tsunamiTitleTemporary])
 
   // 津波解除検出: true→false の遷移でタイマーをキャンセルし優先度ロジックを即時適用
+  //
+  // **終わったことをタイトルへ出すのもここ**（「津波予報 失効」など。2026-10-12 ユーザー承認）。画面で
+  // 発表中として出ていた津波が、画面の上で解除・取消・失効の表示へ変わったときだけ出す（`findEndedTsunami`）。
+  // 受信処理ではなくここで決めるのは、どの津波に向いた解除かを画面の更新が既に決めているから（理由は
+  // `findEndedTsunami`）。遷移は津波ごとに 1 度しか起きないので、重ねて届いた解除で出し直すこともない。
   const prevTsunamiActiveRef = useRef(false)
   useEffect(() => {
     if (!prevTsunamiActiveRef.current && tsunamiActive) {
       log.info(`[tsunami] 発表検出 grade=${tsunamiGrade}`)
     } else if (prevTsunamiActiveRef.current && !tsunamiActive) {
-      log.info('[tsunami] 解除検出 (tsunamiActive: true→false)')
-      title.endTsunamiTitleWindow()
-      title.applyPriority({ tsunami: false })
+      const ended = findEndedTsunami(tsunamis)
+      if (ended) {
+        log.info(`[tsunami] 解除検出 (tsunamiActive: true→false) 終わりの語を出す cancelReason=${ended.cancelReason ?? 'なし'}`)
+        title.showTsunamiEndTitle(ended.cancelReason)
+      } else {
+        log.info('[tsunami] 解除検出 (tsunamiActive: true→false) 解除の表示を経ずに消えたため終わりの語は出さない')
+        title.endTsunamiTitleWindow()
+        title.applyPriority({ tsunami: false })
+      }
     }
     prevTsunamiActiveRef.current = tsunamiActive
-  }, [tsunamiActive, tsunamiGrade])
+  }, [tsunamiActive, tsunamiGrade, tsunamis])
 
   // アイドル復帰で戻すデフォルトタブ。津波優先トグル ON かつ津波発表中なら
   // 津波情報、それ以外は設定のデフォルトタブ（宣言はコンポーネント冒頭・代入はここ）。

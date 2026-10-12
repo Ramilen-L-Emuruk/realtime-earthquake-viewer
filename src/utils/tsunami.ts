@@ -65,6 +65,47 @@ export function tsunamiOverallGrade(tsunamis: JMATsunami[]): 'MajorWarning' | 'W
 }
 
 /**
+ * 画面で発表中として出ていた津波が、画面の上で解除・取消・失効の表示へ変わったか。変わっていればその津波を返す。
+ * ウィンドウタイトルに終わったことを出す（「津波予報 失効」など。2026-10-12 ユーザー承認）判定に使う。
+ *
+ * 呼ぶのは「直前の描画で発表中の津波があった」ときだけ（App の解除の検出が tsunamiActive の true→false で
+ * 呼ぶ）。起動時の取り直しで初めから解除の表示として入った津波は、この遷移を通らないので出さない。
+ * **受信した解除がどの津波に向いていたかは見ない** ——
+ * それは画面の更新（`useEarthquakes` の津波の分岐。`isCancelForCurrentTsunami`）が既に決めていて、表示中の
+ * カードへ `cancelledAt` を付けるのはそちらが「表示中の津波の解除」と認めたときだけ。受信処理の記憶から
+ * 推し量り直すと、記憶と画面が食い違う形（同じ tick に捌けた・起動時の取り直しで画面へ黙って入った）で、
+ * 続いている津波の最中に「解除」と名乗る。
+ *
+ * **津波の `id` でも照合しない。** 続報の取り込み（`mergeTsunamiReports`）は `id` を続報のものへ書き換えるので、
+ * 続報と解除が同じ描画に畳まれると直前の描画の `id` と食い違う。画面の津波は 1 枠なので、「さっきまで発表中
+ * だった」「いまは発表中が無く解除の表示がある」が揃えば、それがさっきの津波の終わり。
+ */
+export function findEndedTsunami(tsunamis: JMATsunami[]): JMATsunami | undefined {
+  if (tsunamis.some(t => !t.cancelled && !t.cancelledAt)) return undefined
+  return tsunamis.find(t => !!t.cancelledAt)
+}
+
+/**
+ * 発表中の津波が津波予報（若干の海面変動）だけか。ウィンドウタイトルの名乗りに使う
+ * （`resolveAlertTitle`。2026-10-12 ユーザー承認）。
+ *
+ * 警報・注意報が 1 区域でもあれば偽。**等級の読めない区域（`Unknown`）が 1 つでも混じれば偽** ——
+ * その区域が警報かもしれないので予報と言い切らず、従来の「津波警報・注意報 発表中」に倒す。
+ * 区域を持たない報（観測情報だけの続報）は名乗りを決める材料にしない。解除済み（解除表示中を含む）は数えない。
+ */
+export function isTsunamiForecastOnly(tsunamis: JMATsunami[]): boolean {
+  let forecast = false
+  for (const t of tsunamis) {
+    if (t.cancelled || t.cancelledAt) continue
+    for (const area of t.areas) {
+      if (area.grade !== 'Forecast') return false
+      forecast = true
+    }
+  }
+  return forecast
+}
+
+/**
  * 解除電文が「いま表示している津波」に向けたものかを判定する。
  *
  * 津波は 1 件スロットで持つため、**別イベントの遅延到達した解除で進行中の津波を消してはいけない**。

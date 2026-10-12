@@ -376,7 +376,7 @@
 | 解除（既定） | 「津波警報等は全て解除されました。」 |
 | 失効（`expired`） | 「津波予報は失効時刻を過ぎました。」 |
 
-**失効の述語は画面（`TsunamiTab` の `CANCEL_REASON_LABEL`）と同じにする。** 語の決め方と画面側の
+**失効の述語は画面（`utils/tsunamiCancelLabel.ts` の `CANCEL_REASON_LABEL`）と同じにする。** 語の決め方と画面側の
 文言は [`tsunami-spec.md`](tsunami-spec.md) §3 の cancelReason 表が持つ。
 
 ### 4-7. 津波の等級を伝える述語が 2 通りある（規則を明記して §5 へ移した）

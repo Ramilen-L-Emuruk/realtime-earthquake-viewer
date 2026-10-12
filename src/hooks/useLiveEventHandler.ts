@@ -3027,8 +3027,6 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           : event.cancelReason === 'expired' ? 'expired' : 'lifted',
         grade: null, telegram: currentReplayTelegram(),
       })
-      // 「津波解除検出」effect はレンダー後の非同期発火のため、受信直後の即時反映用にここでもタイマーをリセットする。
-      // EEW の発表状況はここでは見ない（新規発報側と対称）。
       // 音・TTS・タブ切替は eventId 単位で 1 回だけ発火する（TSU-1/3/4 経路で同一 eventId の
       // expired が複数キューに積まれても 2 回目以降を握り潰す）。
       // ページリロード後の初回解除は Set に無いため正常に発火する（HIGH-1 対応: 「未追跡」と
@@ -3048,8 +3046,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         log.info('[tab] tsunami を要求 (津波情報取消・読み上げ無効)')
         setActiveTabNonRealtime('tsunami')
       }
-      title.endTsunamiTitleWindow()
-      title.applyPriority()
+      // **ウィンドウタイトルにはここで触れない。** 終わったことをタイトルへ出すのも、発表中の表示を閉じるのも、
+      // App の解除の検出（`findEndedTsunami`）が画面の状態だけを見て行う。この解除が表示中の津波に向いているかは
+      // 画面の更新（`useEarthquakes` の津波の分岐）が決めるので、ここで受信処理の記憶から推し量り直すと、
+      // 記憶と画面が食い違う形で続いている津波のタイトルを閉じたり「解除」と名乗ったりする。
       // 津波解除・取消・失効の通知音（AUD-6）。cancelReason の 3 種を区別せず単一音で伝える。
       // TTS は eewCancel と同じく音の後ろへずらして音響重複を避ける。
       //
@@ -3290,7 +3290,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       const eewTitle = `${eewKindLabel(titleLevel)} ${event.earthquake.hypocenter.name}` +
         (scale > 0 ? ` 最大震度${getIntensityLabelWithApproxAbove(scale, scaleOrAbove)}予想` : '') +
         (newCount > 1 ? ` 他${newCount - 1}件` : '')
-      title.setTitle(eewTitle)
+      title.setOngoingTitle(eewTitle)
       title.scheduleTitleRevert('eew')
 
       // VOICEVOX: 2フェーズ読み上げ

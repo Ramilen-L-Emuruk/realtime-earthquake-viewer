@@ -14,7 +14,7 @@
 // 1 文で言い切る形なので、文としては別物であることが正しい（`tts-sentence-inventory.md`
 // §4-6）。共有するのは**述語の核になる語**だけ。
 import { describe, it, expect } from 'vitest'
-import { CANCEL_REASON_LABEL } from './index'
+import { CANCEL_REASON_LABEL } from '../../utils/tsunamiCancelLabel'
 import { tsunamiCancelToText } from '../../utils/ttsText'
 import type { JMATsunami } from '../../types/earthquake'
 

@@ -47,7 +47,8 @@
 | `retracted`（取消） | `InfoType === '取消'` | `dmdataParser.ts` の InfoType 判定 | 「取り消されました」 |
 | `expired`（期限切れ） | `validDateTime` の満了 | `useEarthquakes.ts` がタイマー予約 | 「失効」 |
 
-**表示文言の単一情報源**: `src/components/TsunamiTab/index.tsx` の `CANCEL_REASON_LABEL`（3 経路 + undefined フォールバック）。
+**表示文言の単一情報源**: `src/utils/tsunamiCancelLabel.ts` の `CANCEL_REASON_LABEL`（3 経路 + undefined フォールバック）。
+津波タブの解除表示と、ウィンドウタイトルの終わりの語（[`audio-tts-spec.md`](audio-tts-spec.md) §5）が同じ表を引く。
 新しい cancelReason を追加する場合はここと型定義（`src/types/earthquake.ts`）を同時に更新する。
 
 **失効の語は電文の要素名へ揃えてある。** 気象庁は `ValidDateTime` を「失効時刻」と呼ぶので、画面
@@ -2036,8 +2037,9 @@ EEW の発表状況は判定に入れない（下記「優先度ルール」参�
   新規発報・レベルアップ・誤報取消が張った 15 秒だけ（詳細は
   [`audio-tts-spec.md`](audio-tts-spec.md) §6「自動タブ切替の優先順位」）
 - 解除・取消・失効も同様にタブを奪う。**タブ切替・解除音・読み上げ**は `alreadySpoken`
-  （eventId 単位の重複抑止）を条件とし、**タイトルの `endTsunamiTitleWindow()` と状態リセット**
-  （観測バッジ・保持していた最大波高・スクロール位置）は無条件に実行する
+  （eventId 単位の重複抑止）を条件とし、**状態リセット**（観測バッジ・保持していた最大波高・スクロール位置）は
+  無条件に実行する。ウィンドウタイトルは受信処理では触らず、画面の表示が解除へ変わったときに App が決める
+  （[`audio-tts-spec.md`](audio-tts-spec.md) §5「津波の終わりの語」）
 - ただし操作も情報の更新も途切れると、自動復帰（設定の「自動復帰までの時間」= `idleRevertSec`。
   [`settings-pwa-spec.md`](settings-pwa-spec.md) §2）が働く。これはタブの種類を問わない共通の
   仕組みで、EEW 発報中・揺れ検知中であれば realtime タブを維持する（tsunami タブも例外ではなく、
@@ -2053,7 +2055,8 @@ EEW の発表状況は判定に入れない（下記「優先度ルール」参�
 - `src/utils/tsunamiStyle.ts` — 等級ごとの色・線幅定義
 - `src/hooks/useEarthquakes.ts` — 状態管理（tsunami ケース）
 - `src/hooks/useTsunamiLayerData.ts` — 描画データ生成
-- `src/components/TsunamiTab/index.tsx` — カード表示・`CANCEL_REASON_LABEL`
+- `src/components/TsunamiTab/index.tsx` — カード表示
+- `src/utils/tsunamiCancelLabel.ts` — 解除・取消・失効の文言（`CANCEL_REASON_LABEL`。カードとウィンドウタイトルが共有）
 - `src/components/Map/TsunamiLinesGL.tsx` — 海岸線描画
 - `src/components/Map/TsunamiObsBarsGL.tsx` — 観測バー描画
 - `src/components/Map/TsunamiArrivalMarkersGL.tsx` — 到達確認マーカー描画
@@ -2419,3 +2422,5 @@ EEW の発表状況は判定に入れない（下記「優先度ルール」参�
 - 2026-10-12: §9「スクロールの自動制御」に、バナーを貼り付ける条件（貼り付けたあと行の居場所が 100px 以上残るとき）を追加した。
   上下分割の比率を縮めると貼り付けたバナーがパネルを埋め、行に届かず、読み上げの追従も記録を
   残さずに止まっていた。あわせて、視野が無くて追従・受信時の寄せが動けないときに記録を残すようにした
+- 2026-10-12: §3 の解除・取消・失効の文言の置き場所を `src/utils/tsunamiCancelLabel.ts` へ移した。
+  ウィンドウタイトルも同じ語で終わりを伝えるようになったため（[`audio-tts-spec.md`](audio-tts-spec.md) §5）

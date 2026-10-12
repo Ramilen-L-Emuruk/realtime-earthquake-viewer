@@ -47,7 +47,7 @@ function makeDeps(over: Partial<KyoshinAlertsDeps> = {}): KyoshinAlertsDeps {
     stalled: false,
     // 通知も対象にするため notifyMinScale は 0（通知する）。
     settings: { soundEnabled: true, notifyMinScale: 0, notifyDetection: true } as unknown as AppSettings,
-    title: { setTitle: vi.fn(), applyPriority: vi.fn() } as unknown as AlertTitleApi,
+    title: { setTitle: vi.fn(), setOngoingTitle: vi.fn(), applyPriority: vi.fn() } as unknown as AlertTitleApi,
     activeEEWsRef: { current: new Map<string, EEWAlert>() },
     defaultTabRef: { current: 'earthquake' as TabId },
     setActiveTab: vi.fn(),
@@ -86,18 +86,18 @@ describe('useKyoshinAlerts: 判らなくなったあとの復帰で鳴らし直�
 
   it('[正] 鳴らさない場合でも画面は戻す（タブとタイトル）', () => {
     const setActiveTab = vi.fn()
-    const title = { setTitle: vi.fn(), applyPriority: vi.fn() } as unknown as AlertTitleApi
+    const title = { setTitle: vi.fn(), setOngoingTitle: vi.fn(), applyPriority: vi.fn() } as unknown as AlertTitleApi
     const { rerender } = renderHook((p: KyoshinAlertsDeps) => useKyoshinAlerts(p), {
       initialProps: makeDeps({ ...DETECTING, setActiveTab, title }),
     })
     vi.mocked(setActiveTab).mockClear()
-    vi.mocked(title.setTitle).mockClear()
+    vi.mocked(title.setOngoingTitle).mockClear()
 
     rerender(makeDeps({ ...lost(true), setActiveTab, title }))
     rerender(makeDeps({ ...DETECTING, setActiveTab, title }))
 
     expect(setActiveTab).toHaveBeenCalledWith('realtime')
-    expect(title.setTitle).toHaveBeenCalledWith('揺れ検知')
+    expect(title.setOngoingTitle).toHaveBeenCalledWith('揺れ検知')
   })
 
   it('[対照] 揺れが収まって消えたあとの再検知では鳴らす（別の地震かもしれない）', () => {

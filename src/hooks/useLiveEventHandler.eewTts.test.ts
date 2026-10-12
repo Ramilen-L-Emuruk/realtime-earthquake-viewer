@@ -237,6 +237,7 @@ function setup(
   const title = {
     alertTitle: null,
     setTitle: vi.fn(),
+    setOngoingTitle: vi.fn(),
     applyPriority: vi.fn(),
     scheduleTitleRevert: vi.fn(),
     clearTitleTimer: vi.fn(),

@@ -44,7 +44,7 @@ function makeDeps(over: Partial<KyoshinAlertsDeps> = {}): KyoshinAlertsDeps {
     dataTime: '',
     stalled: false,
     settings: { soundEnabled: true, notifyMinScale: 0, notifyDetection: true } as unknown as AppSettings,
-    title: { setTitle: vi.fn(), applyPriority: vi.fn() } as unknown as AlertTitleApi,
+    title: { setTitle: vi.fn(), setOngoingTitle: vi.fn(), applyPriority: vi.fn() } as unknown as AlertTitleApi,
     activeEEWsRef: { current: new Map<string, EEWAlert>() },
     defaultTabRef: { current: 'earthquake' as TabId },
     setActiveTab: vi.fn(),
