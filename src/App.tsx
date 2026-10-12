@@ -111,8 +111,8 @@ const EMPTY_LEGEND_BLOCKS: LegendBlock[] = []
 // 平常時のウィンドウタイトル（index.html の <title> と一致させる）。
 // AutoHotKey 等が、情報更新時のタイトル変化を検知してイベントを発火できるようにする。
 const DEFAULT_TITLE = isDmdss
-  ? 'リアルタイム地震ビューアー (DM-D.S.S)'
-  : 'リアルタイム地震ビューアー'
+  ? '揺れ窓 (DM-D.S.S)'
+  : '揺れ窓'
 
 // siteConfigId 切替直後に kyoshin.sites / kyoshin.indices の siteConfigId が揃うまで
 // 下流へ渡す代替として使う空配列（毎レンダー新規生成しないようモジュール定数で共有）。

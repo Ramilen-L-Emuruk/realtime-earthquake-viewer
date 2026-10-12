@@ -738,7 +738,7 @@ describe('startStatusServer', () => {
     expect(got[0].name).toBe('station-reading')
   })
 
-  // 波形の粒度（#261 段 0）。地震ビューアーの PWA は合成 1 本だけを見るので、
+  // 波形の粒度（#261 段 0）。揺れ窓の PWA は合成 1 本だけを見るので、
   // センサー単独の波形（実測で毎秒およそ 65 KB）が付いてこない口が要る。
   it('正: ?wave=station は観測点の合成波形を押し出す（#261 段 0）', async () => {
     const hub = new ReadingHub()

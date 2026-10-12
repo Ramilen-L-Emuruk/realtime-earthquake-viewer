@@ -304,7 +304,7 @@ function main() {
   const entries = [...bundledPackages()].map(([name, dir]) => collect(name, dir))
 
   const body = [
-    'このファイルは、リアルタイム地震ビューアーが同梱している第三者ソフトウェアの',
+    'このファイルは、揺れ窓が同梱している第三者ソフトウェアの',
     'ライセンス全文です。scripts/build-third-party-licenses.mjs が package.json の',
     'dependencies とその依存先から自動生成しています（手で編集しないでください）。',
     '',

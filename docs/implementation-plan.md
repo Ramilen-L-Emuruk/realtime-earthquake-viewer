@@ -1098,7 +1098,7 @@ MapLibre の globe 投影へ切り替えた（[map-rendering-spec.md](spec/map-r
 - **段 4（受信層）で決まったこと**: 受信口は UDP 50505。生データは削除しない（保持の判断を受け手が持たない。形は下記「保存形式で決まったこと」）。状態の口（`GET /status`・JSON・運用者向け）と押し出しの口（`GET /stream`・SSE・PWA 向け）を分けて持つ。送信元はアドレスごとのパケット速度の上限で制限する——名前や MAC の許可制にはしない（詐称した相手を止める役に立たない）。詳細は [`seismo-host/README.md`](../seismo-host/README.md) を参照
 - **観測点の設定で決まったこと**: 識別子は「基板（MAC・不変）」と「観測点（設置場所・ホストの設定）」を分けて持つ。ホスト側の設定ファイル（`seismo-host/config/stations.xml`。FDSN StationXML で、設定とその履歴を兼ねる）で `boardKey → 観測点` を任意に割り当て、無くても震度算出・受信は止まらない。**複数台の統合の前提**（同じ観測点に複数の基板を割り当てられる）。実装状況は上記「作るものの全体像」の項を参照（§7）。詳細・設計根拠は [`seismo-host/README.md`](../seismo-host/README.md)「観測点・基板・センサー校正の設定」を参照
 
-- **観測結果と機材の管理は別の場所に置く**: 観測結果（家がどう揺れたか・波形・計測震度相当）は地震ビューアーへ、機材の管理（センサー一覧・版数・OTA・校正・閾値・保存設定・パケットロス）はビューアーの外へ。**宛先が違う**ため。詳細・設計根拠は [`seismo-host/REQUIREMENTS.md`](../seismo-host/REQUIREMENTS.md) §10 を参照
+- **観測結果と機材の管理は別の場所に置く**: 観測結果（家がどう揺れたか・波形・計測震度相当）は揺れ窓へ、機材の管理（センサー一覧・版数・OTA・校正・閾値・保存設定・パケットロス）は揺れ窓の外へ。**宛先が違う**ため。詳細・設計根拠は [`seismo-host/REQUIREMENTS.md`](../seismo-host/REQUIREMENTS.md) §10 を参照
 
 - **保存形式で決まったこと**: 生データは過去の時刻へ頭出しできる必要がある。**保存形式は miniSEED 3（FDSN＝International Federation of Digital Seismograph Networks が策定した地震波形データの標準フォーマット）を採用した**（2026-09-27 決定）。観測点の設定は対になる **FDSN StationXML**（`seismo-host/config/stations.xml`）で持ち、当時の観測点と校正値もそこから引く。**時刻索引はファイル名で持つ** —— 日本時間の 1 時間ごとに分ける。**Steim2 の符号化器・復号器・CRC-32C は自前で書いた**（`seisplotjs` は Steim2 を復号するだけで符号化器を持たない）。正しさは出どころの違う復号器（`seisplotjs-seedcodec`・開発用の依存）で確かめている。詳細は [`seismo-host/README.md`](../seismo-host/README.md)「生のパケットを miniSEED 3 で時間ごとに残す」、要件としての位置づけは [`seismo-host/REQUIREMENTS.md`](../seismo-host/REQUIREMENTS.md) §9 を参照
 

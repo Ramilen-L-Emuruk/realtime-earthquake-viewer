@@ -325,11 +325,14 @@ README・CLAUDE.md にも明記されている運用。開発時は入力欄に�
 ファイルの形:
 
 ```jsonc
-{ "app": "realtime-earthquake-viewer", "kind": "settings", "version": 1,
+{ "app": "yuremado", "kind": "settings", "version": 1,
   "variant": "dmdss",            // どちらのビルドで書き出したか
   "exportedAt": "2026-09-15T...",
   "settings": { /* AppSettings 全項目 */ } }
 ```
+
+`app` は名称を変える前（2026-10-12 より前）は `"realtime-earthquake-viewer"` だった。**読み込みは
+どちらも受け付ける**（作り置きの設定ファイルを読めなくしないため）。書き出しは新しい名前だけ。
 
 ### API キーは書き出しに含めない
 
@@ -530,18 +533,18 @@ dev の注入値を保存対象から外す（`stripDevApiKey`）が、それだ
 
 ### バリアント別の設定（`vite.config.ts`）
 
-- **base path**: `/realtime-earthquake-viewer/`（標準）または `/realtime-earthquake-viewer/dmdss/`
+- **base path**: `/yuremado/`（標準）または `/yuremado/dmdss/`
 - **outDir**: `dist/` または `dist-dmdss/`
 - **manifest.name / short_name / description**: バリアントで切り替え
 - **manifest.icons**: `public/icons/` には `icon.svg` のみ実在する。SEC-5 で manifest エントリを SVG 単一（`sizes: 'any', purpose: 'any maskable'`）に統合済み。以前は `icon-192.png` / `icon-512.png` を参照していたが実 PNG が無く 404 になっていた。iOS の `apple-touch-icon` は仕様上 PNG 前提で SVG 対応は未確定のため、ホーム画面追加時のアイコン表示は実機検証が必要（未実施・残課題）
 
 ### Service Worker のスコープ
 
-配信パスの違い（`/realtime-earthquake-viewer/` vs `/dmdss/`）で SW スコープが自然に分離される。
+配信パスの違い（`/yuremado/` vs `/dmdss/`）で SW スコープが自然に分離される。
 
 **SEC-3 対応（2026-08-14）**: standard 版を先に開いた端末で DMDSS 版へ初回アクセスした際に
 standard の NavigationRoute が横取りする問題への対策として、standard 版の workbox に
-`navigateFallbackDenylist: [/^\/realtime-earthquake-viewer\/dmdss(\/|$)/]` を追加済み。
+`navigateFallbackDenylist: [/^\/yuremado\/dmdss(\/|$)/]` を追加済み。
 末尾スラッシュ有り無しの両方を許容する正規表現で `/dmdss` と `/dmdss/` の両方をカバーする。
 DMDSS 版はこの denylist を空配列にする（自分自身のパスなので影響なし）。
 
@@ -2569,3 +2572,6 @@ Playwright / Chrome DevTools でボタン発火後の DOM 状態を確認した�
   発表時刻（分に丸めてある）で決めていたため、2024-01-01 23:13:30 から始めると 23:13:47 に届く取消が初期状態に入り、
   取り消される前のカードが消えて取消も出なかった。あわせて、窓に当てる時刻が読めなかった電文の記録には
 目録の `filename` と `head.time` を添えることを書いた（撤去した「ファイル名から発表時刻を補う経路」の説明と差し替え）
+- 2026-10-12: アプリの名称を「揺れ窓」（リポジトリ名 yuremado）へ変えたのにあわせ、配信パスを `/yuremado/`・
+  `/yuremado/dmdss/` に、設定ファイルの `app` を `"yuremado"` にした。名称を変える前に書き出した設定ファイル
+  （`app` が `"realtime-earthquake-viewer"`）も読み込める（§4.5）

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildSettingsFile, parseSettingsFile, settingsFileName, SETTINGS_FILE_VERSION } from './settingsIo'
+import { buildSettingsFile, LEGACY_SETTINGS_FILE_APP, parseSettingsFile, settingsFileName, SETTINGS_FILE_VERSION } from './settingsIo'
 import { DEFAULTS, type AppSettings } from '../hooks/useSettings'
 
 const withKey = (key: string): AppSettings => ({ ...DEFAULTS, dmdataApiKey: key })
@@ -8,7 +8,7 @@ describe('設定の書き出し', () => {
   it('正: 設定がそのまま入る', () => {
     const settings: AppSettings = { ...DEFAULTS, soundVolume: 0.42, uiScale: 1.5 }
     const file = buildSettingsFile(settings, 'dmdss')
-    expect(file.app).toBe('realtime-earthquake-viewer')
+    expect(file.app).toBe('yuremado')
     expect(file.kind).toBe('settings')
     expect(file.version).toBe(SETTINGS_FILE_VERSION)
     expect(file.variant).toBe('dmdss')
@@ -93,7 +93,7 @@ describe('設定の読み込み', () => {
   it('対照: 項目が欠けているだけなら「読めなかった」に数えない', () => {
     // 項目が増える前に書き出したファイルには新しい項目が無いのが当たり前で、欠損補完は失敗ではない。
     const r = parseSettingsFile({
-      app: 'realtime-earthquake-viewer', kind: 'settings', version: 1, variant: 'dmdss',
+      app: 'yuremado', kind: 'settings', version: 1, variant: 'dmdss',
       settings: { soundVolume: 0.5 },
     }, DEFAULTS)
     expect(r.ok).toBe(true)
@@ -174,6 +174,14 @@ describe('設定の読み込み', () => {
     expect(r.variant).toBe('standard')
   })
 
+  it('正: リポジトリを改名する前に書き出したファイル（app が旧名）も読める', () => {
+    // 作り置きの設定ファイルが、改名（2026-10-12）を境に読めなくならないこと。
+    const old = { ...buildSettingsFile({ ...DEFAULTS, soundVolume: 0.42 }, 'dmdss'), app: LEGACY_SETTINGS_FILE_APP }
+    const r = parseSettingsFile(old, DEFAULTS)
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.settings.soundVolume).toBe(0.42)
+  })
+
   it('対照: 別のアプリのファイルは受け付けない', () => {
     const r = parseSettingsFile({ app: 'something-else', kind: 'settings', version: 1, settings: {} }, DEFAULTS)
     expect(r.ok).toBe(false)
@@ -181,7 +189,7 @@ describe('設定の読み込み', () => {
 
   it('対照: 同じアプリでも種類が違えば受け付けない', () => {
     // いまのところ書き出しは設定しか無いので、この分岐は将来ほかの種類を足したときの保険。
-    const r = parseSettingsFile({ app: 'realtime-earthquake-viewer', kind: 'something-else', version: 1, settings: {} }, DEFAULTS)
+    const r = parseSettingsFile({ app: 'yuremado', kind: 'something-else', version: 1, settings: {} }, DEFAULTS)
     expect(r.ok).toBe(false)
   })
 
@@ -207,7 +215,7 @@ describe('設定の読み込み', () => {
   })
 
   it('対照: settings が無いファイルは受け付けない', () => {
-    const r = parseSettingsFile({ app: 'realtime-earthquake-viewer', kind: 'settings', version: 1 }, DEFAULTS)
+    const r = parseSettingsFile({ app: 'yuremado', kind: 'settings', version: 1 }, DEFAULTS)
     expect(r.ok).toBe(false)
   })
 

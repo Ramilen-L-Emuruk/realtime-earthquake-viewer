@@ -1,6 +1,6 @@
 # 利用規約
 
-リアルタイム地震ビューアー（以下「本アプリ」）をご利用いただく前に、この規約をお読みください。
+揺れ窓（以下「本アプリ」）をご利用いただく前に、この規約をお読みください。
 本アプリを利用された時点で、この規約に同意いただいたものとみなします。
 
 最終改訂: 2026年9月25日
@@ -90,5 +90,5 @@
 ## 11. お問い合わせ
 
 不具合の報告・ご要望は
-[GitHub の Issues](https://github.com/Ramilen-L-Emuruk/realtime-earthquake-viewer/issues)
+[GitHub の Issues](https://github.com/Ramilen-L-Emuruk/yuremado/issues)
 へお願いします。

@@ -67,14 +67,14 @@ describe('attributionLine', () => {
 // 受け取った人が設定画面に突き当たる。共有には誰でも開ける standard 版を載せる。
 describe('standardAppUrl', () => {
   it('standard 版の配信パスはそのまま使う', () => {
-    expect(standardAppUrl('https://example.test', '/realtime-earthquake-viewer/')).toBe(
-      'https://example.test/realtime-earthquake-viewer/',
+    expect(standardAppUrl('https://example.test', '/yuremado/')).toBe(
+      'https://example.test/yuremado/',
     )
   })
 
   it('DMDSS 版から共有しても standard 版の URL にする', () => {
-    expect(standardAppUrl('https://example.test', '/realtime-earthquake-viewer/dmdss/')).toBe(
-      'https://example.test/realtime-earthquake-viewer/',
+    expect(standardAppUrl('https://example.test', '/yuremado/dmdss/')).toBe(
+      'https://example.test/yuremado/',
     )
   })
 
@@ -90,8 +90,8 @@ describe('standardAppUrl', () => {
   // 安全弁。配信パスの書き方を決めているのは vite.config.ts の一存で、末尾スラッシュを落とす
   // 変更が入りうる。そのとき本文の URL が黙って DMDSS 版へ戻らないこと。
   it('末尾スラッシュが無い配信パスでも落とす', () => {
-    expect(standardAppUrl('https://example.test', '/realtime-earthquake-viewer/dmdss')).toBe(
-      'https://example.test/realtime-earthquake-viewer/',
+    expect(standardAppUrl('https://example.test', '/yuremado/dmdss')).toBe(
+      'https://example.test/yuremado/',
     )
   })
 })

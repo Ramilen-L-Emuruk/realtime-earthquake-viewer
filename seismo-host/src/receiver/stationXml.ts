@@ -60,7 +60,13 @@ import { childOf, childrenOf, escapeXml, parseXml, type XmlElement } from './xml
 
 export const STATION_XML_NS = 'http://www.fdsn.org/xml/station/1'
 /** 拡張の要素の名前空間。**どこにも登録していない、このホストだけの名前。** */
-export const SEISMO_NS = 'urn:realtime-earthquake-viewer:seismo-host'
+export const SEISMO_NS = 'urn:yuremado:seismo-host'
+/**
+ * 名称を変える前（2026-10-12 より前）の拡張の名前空間。**読むときだけ受け付ける**。
+ * 実機の設定と、それまでに追記した設定の履歴はこの名前で書かれている。照合は名前空間まで見るので、
+ * 受け付けないと拡張の要素（基板の鍵・ノイズ密度など）を「無い」として読み落とす。書くのは `SEISMO_NS`。
+ */
+export const LEGACY_SEISMO_NS = 'urn:realtime-earthquake-viewer:seismo-host'
 
 const NETWORK = 'XX'
 /** 倍率を書く周波数。**加速度計の応答は平坦**なので、どこで書いても同じ値になる。 */
@@ -600,6 +606,19 @@ export function writeStationXml(doc: StationHistoryDoc, createdMs: number): stri
 // ---------------------------------------------------------------------------
 // 読み戻し
 
+/**
+ * 改名前の名前空間（`LEGACY_SEISMO_NS`）の要素を `SEISMO_NS` へ付け替えた木を返す。読み手はこの後
+ * `SEISMO_NS` だけで照合する —— 照合する箇所ごとに 2 つの名前を並べると、1 箇所の書き忘れで
+ * その要素だけが黙って読み落とされる。
+ */
+function withCurrentSeismoNs(el: XmlElement): XmlElement {
+  return {
+    ...el,
+    ns: el.ns === LEGACY_SEISMO_NS ? SEISMO_NS : el.ns,
+    children: el.children.map(withCurrentSeismoNs),
+  }
+}
+
 function need(el: XmlElement, ns: string, local: string, where: string): XmlElement {
   const c = childOf(el, ns, local)
   if (c === null) throw new StationXmlError(`${where} に ${local} が無い`)
@@ -884,7 +903,7 @@ function checkRevisions(doc: StationHistoryDoc): void {
  * 前の形のチャンネルは今の形へ写して返す（冒頭「前の形を読む」）。
  */
 export function readStationXml(source: string): StationHistoryDoc {
-  const root = parseXml(source)
+  const root = withCurrentSeismoNs(parseXml(source))
   if (root.ns !== STATION_XML_NS || root.local !== 'FDSNStationXML') {
     throw new StationXmlError('FDSNStationXML ではない')
   }
