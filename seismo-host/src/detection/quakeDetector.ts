@@ -15,11 +15,11 @@ import { SHAKE_ENVELOPE_DEFAULT, classifyShake, shakeRatios } from './eventClass
 import type { ShakeClass, ShakeEnvelope, ShakeRatios } from './eventClassifier'
 import { PHASE_PICK_CONFIG_DEFAULT, horizontalEnvelope, pickPhases } from './phasePicker'
 import type { PhasePicks } from './phasePicker'
-import { TRIGGER_CONFIG_DEFAULT, TriggerDetector, featureBandIndex } from './quakeTrigger'
+import { TRIGGER_CONFIG_DEFAULT, TriggerDetector, VERTICAL_RESUME_SETTLE_MS, featureBandIndex } from './quakeTrigger'
 import type { TriggerConfig, TriggerEvent, TriggerHealth, TriggerInput, TriggerPeak } from './quakeTrigger'
 
 /** 検出器の版。記録に残し、後から「どの判定で出した区間か」を辿れるようにする。 */
-export const DETECTOR_VERSION = 1
+export const DETECTOR_VERSION = 2
 
 /** P/S を拾う窓: 引き金の何ミリ秒前から。 */
 const PHASE_WINDOW_BEFORE_MS = 45_000
@@ -43,9 +43,10 @@ export const P_BAND_HZ: readonly [number, number] = [2, 8]
  * - `picked` — 窓を作って拾った（拾えたかどうかは `phases` の中身）
  * - `no-data` — 窓へ置ける波形が 1 つも無い。**異常ではない**。起動直後で引き金より前が短いだけなら、
  *   置けた分で拾う（`picked`。S を探す範囲が足りなければ中身が null になる）
- * - `broken` — S を探す範囲（とその手前の SNR の窓）に、波形の途切れ・非有限値が掛かっていた。
+ * - `broken` — S を探す範囲（とその手前の SNR の窓）に、波形の途切れ・水平の非有限値が掛かっていた。
  *   **拾わない** —— 途切れの前後を詰めて繋ぐと時刻がずれ、非有限値はフィルタの状態を以後ずっと壊す。
- *   どちらも S の時刻を誤らせ、照合の「どちらの地震が近いか」まで狂わせる
+ *   どちらも S の時刻を誤らせ、照合の「どちらの地震が近いか」まで狂わせる。**上（z）だけの非有限値では
+ *   窓を切らない** —— S は水平だけで拾う。P は上を測れた位置だけで拾う（`PhasePicks.pVerticalMissing`）
  */
 export type PhaseWindowResult =
   | { readonly kind: 'picked'; readonly phases: PhasePicks }
@@ -112,7 +113,7 @@ function windowSamples(chunks: readonly TriggerInput[], headMs: number, toMs: nu
  * **サンプルは時刻から割り出した位置へ置く**（届いた順に詰めない）。継ぎ目の小さなずれ
  * （`PHASE_GAP_TOLERANCE_SAMPLES` 以下）は位置で吸収する。
  *
- * **それより大きな途切れ・非有限値があれば、その後ろから窓を始め直す**（起動直後で波形が
+ * **それより大きな途切れ・水平の非有限値があれば、その後ろから窓を始め直す**（起動直後で波形が
  * 短いときと同じ扱い）。P を探す範囲は短くなるが、S を探す範囲が丸ごと残っていれば拾える ——
  * 引き金は 1 秒までの途切れを 1 つの区間として扱うので、窓のどこかに途切れが 1 つあるだけで
  * 拾うのをやめると、普通に起きるパケットの欠けで S/P を失う。始め直した窓が S を探す範囲
@@ -126,7 +127,8 @@ export function phaseWindowFrom(
   const fromMs = onMs - PHASE_WINDOW_BEFORE_MS
   const toMs = onMs + PHASE_WINDOW_AFTER_MS
   const samples = windowSamples(chunks, fromMs - PHASE_FILTER_SETTLE_MS, toMs)
-  // 最後の途切れ・非有限値を探し、その後ろを窓の材料にする。
+  // 最後の途切れ・水平の非有限値を探し、その後ろを窓の材料にする。**上だけの非有限値では切らない**
+  // （観測点の合成は、測る向きが 3 方向へ散っていない間、上だけを NaN で出す。S は水平だけで拾える）。
   let begin = 0
   let problem: 'gap' | 'non-finite' | null = null
   for (let j = 0; j < samples.length; j++) {
@@ -135,7 +137,7 @@ export function phaseWindowFrom(
       begin = j
       problem = 'gap'
     }
-    if (!Number.isFinite(s.x) || !Number.isFinite(s.y) || !Number.isFinite(s.z)) {
+    if (!Number.isFinite(s.x) || !Number.isFinite(s.y)) {
       begin = j + 1
       problem = 'non-finite'
     }
@@ -152,34 +154,53 @@ export function phaseWindowFrom(
   const n = Math.round((toMs - startMs) / dt)
   if (n <= 0) return { kind: 'no-data' }
 
-  // 始め直した位置からフィルタを回し、時刻の位置へ置く（この先に途切れ・非有限値は無い）。
+  // 始め直した位置からフィルタを回し、時刻の位置へ置く（この先に途切れ・水平の非有限値は無い）。
   const fs = 1000 / dt
   const fx = new BandPass(triggerBandHz[0], triggerBandHz[1], fs)
   const fy = new BandPass(triggerBandHz[0], triggerBandHz[1], fs)
-  const fz = new BandPass(P_BAND_HZ[0], P_BAND_HZ[1], fs)
+  // 上は欠けたら捨て、戻ったら作り直す（NaN を通すと以後ずっと NaN・欠けの前後を繋ぐと飛んだ値を拾う）。
+  // 作り直してから `VERTICAL_RESUME_SETTLE_MS` の間は落ち着いていないので、測れなかった位置と同じに扱う
+  // （引き金の特徴量も同じ長さだけ上を数えない）。
+  let fz: BandPass | null = null
+  let fzFromMs = 0
   const xs = new Float64Array(n).fill(Number.NaN)
   const ys = new Float64Array(n).fill(Number.NaN)
   const zs = new Float64Array(n).fill(Number.NaN)
+  /** その位置へサンプルを置いたか（継ぎ目の穴と、上を測れなかった位置を分けるため）。 */
+  const written = new Uint8Array(n)
   let lastK = -1
   for (let j = begin; j < samples.length; j++) {
     const s = samples[j]
     const hx = fx.step(s.x)
     const hy = fy.step(s.y)
-    const vz = fz.step(s.z)
+    let vz = Number.NaN
+    if (Number.isFinite(s.z)) {
+      if (fz === null) {
+        fz = new BandPass(P_BAND_HZ[0], P_BAND_HZ[1], fs)
+        fzFromMs = s.t
+      }
+      const v = fz.step(s.z)
+      // 窓の頭で作ったものは、窓の起点が既に `PHASE_FILTER_MIN_SETTLE_MS` 後ろへずらしてある
+      if (s.t - fzFromMs >= VERTICAL_RESUME_SETTLE_MS) vz = v
+    } else {
+      fz = null
+    }
     const k = Math.round((s.t - startMs) / dt)
     if (k < 0 || k >= n) continue
     xs[k] = hx
     ys[k] = hy
     zs[k] = vz
+    written[k] = 1
     if (k > lastK) lastK = k
   }
   if (lastK < 0) return { kind: 'no-data' }
   // 継ぎ目のずれで空いた 1〜2 サンプルは直前の値で埋める（先頭が空いていれば最初の値で）。
+  // **埋めるのは置かなかった位置だけ** —— 上を測れなかった位置（NaN）は NaN のまま渡す。
   const used = lastK + 1
+  let first = 0
+  while (first < used && written[first] === 0) first++
   for (const a of [xs, ys, zs]) {
-    let first = 0
-    while (first < used && Number.isNaN(a[first])) first++
-    for (let k = 0; k < used; k++) if (Number.isNaN(a[k])) a[k] = k < first ? a[first] : a[k - 1]
+    for (let k = 0; k < used; k++) if (written[k] === 0) a[k] = k < first ? a[first] : a[k - 1]
   }
   const phases = pickPhases(
     { startMs, msPerSample: dt, horizontal: horizontalEnvelope(xs.subarray(0, used), ys.subarray(0, used)), vertical: zs.subarray(0, used) },

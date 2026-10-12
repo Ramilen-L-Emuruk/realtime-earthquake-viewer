@@ -35,10 +35,12 @@ function shake(onMs: number, shakeClass: 'quake-like' | 'local-like' = 'quake-li
       peakVectorGal: 3.1,
       bandRmsH: [0.2, 0.3, 0.8, 0.45, 0.3],
       bandRmsZ: [0, 0, 0.3, 0, 0],
+      samples: 900,
+      verticalSamples: 900,
     },
     shakeClass,
     ratios: { verticalRatio: 0.38, bandRatios: [0.25, 0.38, 1, 0.56, 0.38] },
-    phases: { s: { atMs: onMs - 1000, snr: 3.8 }, p: null, pSnrTried: 1.1 },
+    phases: { s: { atMs: onMs - 1000, snr: 3.8 }, p: null, pSnrTried: 1.1, pVerticalMissing: false },
     phaseWindow: 'picked',
   }
 }

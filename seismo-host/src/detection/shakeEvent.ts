@@ -14,6 +14,7 @@
 // （数分遅れる）。照合の結果が出たら、同じ `id` で `rev` を 1 つ進めた版を作り、
 // 保存側（`shakeEventStore.ts`）がその揺れの記録を新しい版へ置き換える。
 
+import type { ShakeClass } from './eventClassifier'
 import type { DetectedShake, PhaseWindowState } from './quakeDetector'
 import type { ArrivalWindow } from './quakeMatch'
 import type { P2pReferenceQuake } from './p2pQuake'
@@ -25,9 +26,11 @@ import type { P2pReferenceQuake } from './p2pQuake'
  * - `pending` — 照合を待っている（揺れが閉じてから `MATCH_DEADLINE_MS` まで）
  * - `quake-like` — 照合できなかったが、揺れ方は地震の枠に収まる（地震かもしれない揺れ）
  * - `local-like` — 照合できず、揺れ方も枠の外（生活振動らしい揺れ）
+ * - `unclassified` — 照合できず、区間のあいだ上下動を測れなかったので揺れ方も判定していない
+ *   （2026-10-12 ユーザー承認。`ShakeClass` の `unclassified`）
  * - `unchecked` — 照合の期限までの間に地震情報の受信が途切れていて、合わなかったとは言えない
  */
-export type ShakeVerdict = 'quake' | 'pending' | 'quake-like' | 'local-like' | 'unchecked'
+export type ShakeVerdict = 'quake' | 'pending' | 'quake-like' | 'local-like' | 'unclassified' | 'unchecked'
 
 /** 照合が合った気象庁の地震。 */
 export interface MatchedQuake {
@@ -71,6 +74,11 @@ export interface ShakeEventRecord {
   readonly pMs: number | null
   /** P を拾おうとした点の SNR。拾えなかったときも試した値があれば残す。 */
   readonly pSnr: number | null
+  /**
+   * P を探す範囲で上下動を測れておらず、P を拾わなかった（`PhasePicks.pVerticalMissing`）。
+   * 版 1 の検出器（`detectorVersion` 1）の記録には無い。
+   */
+  readonly pVerticalMissing?: boolean
   readonly sMinusPSec: number | null
   /**
    * P/S を拾う窓をどう扱ったか（`PhaseWindowState`）。`picked` 以外は拾っていない ——
@@ -78,8 +86,11 @@ export interface ShakeEventRecord {
    */
   readonly phaseWindow: PhaseWindowState
 
-  /** 最大加速度（3 成分の合成・gal。直流は合成の段で落としてある）。 */
-  readonly peakAccelGal: number
+  /**
+   * 最大加速度（3 成分の合成・gal。直流は合成の段で落としてある）。区間の全サンプルで
+   * 上下動を測れたときだけ出し、一部でも欠ければ null（2026-10-12 ユーザー承認）。
+   */
+  readonly peakAccelGal: number | null
   readonly peakHorizontalGal: number
   /** 区間の中の最大の計測震度相当（観測点の合成から）。届いていなければ null。 */
   readonly maxIntensity: number | null
@@ -89,7 +100,13 @@ export interface ShakeEventRecord {
   /** 揺れ方の比（`eventClassifier.ts`）。 */
   readonly verticalRatio: number | null
   readonly bandRatios: readonly number[] | null
-  readonly shakeClass: 'quake-like' | 'local-like'
+  readonly shakeClass: ShakeClass
+  /**
+   * 区間のサンプル数と、そのうち上下動も測れた数（観測点の合成は、測る向きが 3 方向へ散っていない間、
+   * 上だけを出せない）。版 1 の検出器の記録には無い（その頃は上を出せないサンプルごと飛ばしていた）。
+   */
+  readonly samples?: number
+  readonly verticalSamples?: number
 
   /** 観測点の設定でこの観測点に割り当てられていたセンサー（有効なもの）。 */
   readonly sensors: readonly ShakeSensorRef[]
@@ -130,6 +147,7 @@ export function initialRecord(params: {
     sSnr: s?.snr ?? null,
     pMs: p?.atMs ?? null,
     pSnr: p?.snr ?? shake.phases?.pSnrTried ?? null,
+    pVerticalMissing: shake.phases?.pVerticalMissing ?? false,
     sMinusPSec: s !== null && p !== null ? (s.atMs - p.atMs) / 1000 : null,
     phaseWindow: shake.phaseWindow,
     peakAccelGal: t.peakVectorGal,
@@ -140,6 +158,8 @@ export function initialRecord(params: {
     verticalRatio: shake.ratios?.verticalRatio ?? null,
     bandRatios: shake.ratios?.bandRatios ?? null,
     shakeClass: shake.shakeClass,
+    samples: t.samples,
+    verticalSamples: t.verticalSamples,
     sensors: params.sensors,
     spatialConsistency: 'not-evaluated',
     verdict: 'pending',

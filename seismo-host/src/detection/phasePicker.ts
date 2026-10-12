@@ -103,7 +103,10 @@ export interface PhaseWindow {
   readonly msPerSample: number
   /** S 用（水平動）。 */
   readonly horizontal: ArrayLike<number>
-  /** P 用（上下動）。 */
+  /**
+   * P 用（上下動）。**測れていない位置は NaN**（観測点の合成が上だけを出せなかった間と、そこから戻って
+   * フィルタが落ち着くまで）。P を探す範囲に 1 つでも掛かれば P は拾わない。
+   */
   readonly vertical: ArrayLike<number>
 }
 
@@ -118,6 +121,11 @@ export interface PhasePicks {
   readonly p: PhasePick | null
   /** 拾った点の SNR（拾えなかったときも、試した点の値があれば残す。§9 の P 波 SNR）。 */
   readonly pSnrTried: number | null
+  /**
+   * P を探す範囲（と SNR を測る前後）で上下動を測れておらず、P を拾わなかった。P が null でも
+   * 「拾ったが弱かった」のか「上が無くて拾わなかった」のかをここで分ける。
+   */
+  readonly pVerticalMissing: boolean
 }
 
 /**
@@ -142,16 +150,22 @@ export function pickPhases(
   const sFrom = clamp(idx(triggerMs - cfg.sSearchBeforeSec * 1000))
   const sTo = clamp(idx(triggerMs + cfg.sSearchAfterSec * 1000))
   const sAt = aicPick(w.horizontal, sFrom, sTo)
-  if (sAt === null) return { s: null, p: null, pSnrTried: null }
+  if (sAt === null) return { s: null, p: null, pSnrTried: null, pVerticalMissing: false }
   const sSnr = onsetSnr(w.horizontal, sAt, Math.round(cfg.snrBeforeSec * fs), Math.round(cfg.snrAfterSec * fs))
   const s = sSnr !== null && sSnr >= cfg.sMinSnr ? { atMs: w.startMs + sAt * w.msPerSample, snr: sSnr } : null
-  if (s === null) return { s: null, p: null, pSnrTried: null }
+  if (s === null) return { s: null, p: null, pSnrTried: null, pVerticalMissing: false }
 
   const pFrom = clamp(sAt - Math.round(cfg.pSearchMaxLeadSec * fs))
   const pTo = clamp(sAt - Math.round(cfg.pSearchMinLeadSec * fs))
+  // AIC も SNR も NaN を 1 つ含むと値が壊れる。SNR を測る前後まで含めて上が揃っていなければ拾わない。
+  const checkFrom = clamp(pFrom - Math.round(cfg.snrBeforeSec * fs))
+  const checkTo = clamp(pTo + Math.round(cfg.snrAfterSec * fs))
+  for (let i = checkFrom; i < checkTo; i++) {
+    if (!Number.isFinite(w.vertical[i])) return { s, p: null, pSnrTried: null, pVerticalMissing: true }
+  }
   const pAt = aicPick(w.vertical, pFrom, pTo)
-  if (pAt === null) return { s, p: null, pSnrTried: null }
+  if (pAt === null) return { s, p: null, pSnrTried: null, pVerticalMissing: false }
   const pSnr = onsetSnr(w.vertical, pAt, Math.round(cfg.snrBeforeSec * fs), Math.round(cfg.snrAfterSec * fs))
   const p = pSnr !== null && pSnr >= cfg.pMinSnr ? { atMs: w.startMs + pAt * w.msPerSample, snr: pSnr } : null
-  return { s, p, pSnrTried: pSnr }
+  return { s, p, pSnrTried: pSnr, pVerticalMissing: false }
 }

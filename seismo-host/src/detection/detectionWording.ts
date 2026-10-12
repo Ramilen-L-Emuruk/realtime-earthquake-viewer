@@ -7,6 +7,17 @@
 // ブラウザでも読むので、Node 専用のものを持ち込まない。
 
 import { JST_OFFSET_MS } from '../receiver/jstTime'
+import type { ShakeClass } from './eventClassifier'
+
+/**
+ * 揺れ方の分類の呼び名（`quake-like`・`local-like` は 2026-10-06、`unclassified` は 2026-10-12 ユーザー承認）。
+ * 管理コンソールの判定の呼び名（`admin/shakeHistory.ts` の `VERDICT_LABELS`）も同じ語をここから引く。
+ */
+export const SHAKE_CLASS_WORDS: Readonly<Record<ShakeClass, string>> = {
+  'quake-like': '地震らしい',
+  'local-like': '生活振動らしい',
+  unclassified: '判定できず',
+}
 
 /**
  * 検出器が最後にサンプルを使えてから（ホストの時計で）これだけ経っていたら「波形が届いていない」と

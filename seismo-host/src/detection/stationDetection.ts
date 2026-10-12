@@ -19,7 +19,7 @@ import type { P2pReferenceQuake } from './p2pQuake'
 import { DETECTOR_VERSION, QuakeDetector } from './quakeDetector'
 import type { DetectedShake } from './quakeDetector'
 import type { QuakeFeedStatus } from './quakeFeed'
-import { formatBaseline, jstClock, SILENT_AFTER_MS, triggerStateWord } from './detectionWording'
+import { formatBaseline, jstClock, SHAKE_CLASS_WORDS, SILENT_AFTER_MS, triggerStateWord } from './detectionWording'
 import { emptyTriggerHealth } from './quakeTrigger'
 import type { TriggerHealth, TriggerPeak } from './quakeTrigger'
 import { ShakeEventBook } from './shakeEventBook'
@@ -378,7 +378,10 @@ export class StationDetection {
         'log',
         rec.id,
         `[detect] ${stationId} 揺れ ${new Date(rec.startMs).toISOString()} 平常時の ${rec.peakRatio.toFixed(1)} 倍・` +
-          `${rec.shakeClass === 'quake-like' ? '地震らしい' : '生活振動らしい'}・${rec.verdict === 'quake' ? `地震と一致（${rec.matchedQuake?.name ?? ''}）` : '照合待ち'}`,
+          `${SHAKE_CLASS_WORDS[rec.shakeClass]}` +
+          // 上（上下動）を一部でも測れなかった区間だけ、測れたサンプル数を添える
+          `${rec.verticalSamples !== undefined && rec.samples !== undefined && rec.verticalSamples < rec.samples ? `（上 ${rec.verticalSamples}/${rec.samples}）` : ''}・` +
+          `${rec.verdict === 'quake' ? `地震と一致（${rec.matchedQuake?.name ?? ''}）` : '照合待ち'}`,
       )
     } catch (error) {
       this.fail('record', `[detect] ${stationId} の揺れを記録できず: ${messageOf(error)}`)
