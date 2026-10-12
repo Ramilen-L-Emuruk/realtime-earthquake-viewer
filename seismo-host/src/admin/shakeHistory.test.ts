@@ -100,6 +100,14 @@ describe('readShakeRecord — ホストの記録を読む', () => {
     expect(r.matchedQuake).toEqual({ name: '千葉県北西部', magnitude: null, depthKm: null, maxScale: null, distanceKm: 61.2 })
   })
 
+  it('正: 上下動を測れなかった揺れ（判定できず・最大加速度 null）も読む', () => {
+    expect(rec({ verdict: 'unclassified', peakAccelGal: null })).toMatchObject({ verdict: 'unclassified', peakAccelGal: null })
+  })
+
+  it('安全弁: 最大加速度が数でも null でもなければ読まない', () => {
+    expect(readShakeRecord(wire({ peakAccelGal: '3.4' }))).toBeNull()
+  })
+
   it('安全弁: 判定が知らない値なら読まない（呼び名の無い判定を黙って別の名前で出さない）', () => {
     expect(readShakeRecord(wire({ verdict: 'maybe' }))).toBeNull()
   })
@@ -415,20 +423,26 @@ describe('visibleShakes — 期間と絞り込み', () => {
     expect(v.map((r) => r.id)).toEqual(['quake'])
   })
 
-  it('安全弁: 隠すのは生活振動らしいものだけ（照合できず・地震らしいは隠さない）', () => {
-    const more = [...list, rec({ id: 'unchecked', verdict: 'unchecked' }), rec({ id: 'like', verdict: 'quake-like' })]
+  it('安全弁: 隠すのは生活振動らしいものだけ（照合できず・地震らしい・判定できずは隠さない）', () => {
+    const more = [
+      ...list,
+      rec({ id: 'unchecked', verdict: 'unchecked' }),
+      rec({ id: 'like', verdict: 'quake-like' }),
+      rec({ id: 'unclassified', verdict: 'unclassified' }),
+    ]
     const v = visibleShakes(more, { fromMs: T0 - HOUR, toMs: T0 + 1, hideLocal: true })
-    expect(v.map((r) => r.id).sort()).toEqual(['like', 'quake', 'unchecked'])
+    expect(v.map((r) => r.id).sort()).toEqual(['like', 'quake', 'unchecked', 'unclassified'])
   })
 })
 
 describe('見せ方', () => {
-  it('判定の呼び名は README の表と同じ 5 つ', () => {
+  it('判定の呼び名は README の表と同じ 6 つ（判定できずは 2026-10-12 ユーザー承認）', () => {
     expect(VERDICT_LABELS).toEqual({
       quake: '地震',
       pending: '照合待ち',
       'quake-like': '地震らしい',
       'local-like': '生活振動らしい',
+      unclassified: '判定できず',
       unchecked: '照合できず',
     })
   })
@@ -472,6 +486,13 @@ describe('見せ方', () => {
     const html = shakeRowHtml(rec({ maxIntensity: 1.26 }), false)
     expect(html).toContain('<td>1.2</td>')
     expect(html).not.toContain('1.3')
+  })
+
+  it('正: 上下動を測れなかった揺れは、判定を「判定できず」・最大加速度を「—」で出す', () => {
+    const html = shakeRowHtml(rec({ verdict: 'unclassified', peakAccelGal: null }), false)
+    expect(html).toContain('判定できず')
+    expect(html).toContain('verdict-unclassified')
+    expect(html).not.toContain('gal')
   })
 
   it('対照: 拾えなかった S・届かなかった震度は「—」（0 と書かない）', () => {

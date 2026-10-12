@@ -20,6 +20,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { travelTimeSec } from '../../src/utils/travelTime'
+import { SHAKE_CLASS_WORDS } from '../src/detection/detectionWording'
 import { parseP2pQuakeList } from '../src/detection/p2pQuake'
 import { QuakeDetector } from '../src/detection/quakeDetector'
 import type { DetectedShake } from '../src/detection/quakeDetector'
@@ -53,16 +54,18 @@ function describe(s: DetectedShake): string {
   const r = s.ratios
   const ratio = (i: number): string => (r === null ? '-' : fmt(r.bandRatios[i]))
   return [
-    s.shakeClass === 'quake-like' ? '地震らしい' : '生活振動らしい',
+    SHAKE_CLASS_WORDS[s.shakeClass],
     `len ${fmt((e.offMs - e.onMs) / 1000, 1).padStart(5)}s`,
     `ratio ${fmt(e.peakRatio, 1).padStart(5)}`,
     `peakH ${fmt(e.peakHorizontalGal).padStart(6)}gal`,
-    `Z/H ${r === null ? '-' : fmt(r.verticalRatio)}`,
+    `Z/H ${r === null || r.verticalRatio === null ? '-' : fmt(r.verticalRatio)}`,
     `0.5-2/H ${ratio(0)}`,
     `2-5/H ${ratio(1)}`,
     `10-20/H ${ratio(3)}`,
     `20-45/H ${ratio(4)}`,
     e.end === 'quiet' ? '' : `[${e.end}]`,
+    // 上を測れなかったサンプルがある区間だけ足す（揃っている記録では行が変わらないように）
+    ...(e.verticalSamples < e.samples ? [`上 ${e.verticalSamples}/${e.samples}`] : []),
   ].join('  ')
 }
 
@@ -103,7 +106,7 @@ function main(): void {
     .map((q) => ({ q, w: arrivalWindow(q, at) }))
     .filter(({ w }) => w.distanceKm <= radiusKm)
 
-  const total = { shakes: 0, matched: 0, quakeLike: 0, localLike: 0, matchedLocalLike: 0 }
+  const total = { shakes: 0, matched: 0, quakeLike: 0, localLike: 0, unclassified: 0, matchedLocalLike: 0, matchedUnclassified: 0 }
   for (const day of days) {
     const cachePath = join(cacheDir, `${stationId}-${day}.bin`)
     if (!existsSync(cachePath)) {
@@ -131,10 +134,14 @@ function main(): void {
     total.quakeLike += unmatched.filter((s) => s.shakeClass === 'quake-like').length
     total.localLike += unmatched.filter((s) => s.shakeClass === 'local-like').length
     total.matchedLocalLike += matched.filter((s) => s.shakeClass === 'local-like').length
+    total.unclassified += unmatched.filter((s) => s.shakeClass === 'unclassified').length
+    total.matchedUnclassified += matched.filter((s) => s.shakeClass === 'unclassified').length
+    const dayUnclassified = unmatched.filter((s) => s.shakeClass === 'unclassified').length
     console.log(
       `== ${day}: 揺れ ${inDay.length} 件（地震と一致 ${matched.length}・一致しない ${unmatched.length}` +
         `＝地震らしい ${unmatched.filter((s) => s.shakeClass === 'quake-like').length}／生活振動らしい ` +
-        `${unmatched.filter((s) => s.shakeClass === 'local-like').length}）・サンプル ${samples}・` +
+        `${unmatched.filter((s) => s.shakeClass === 'local-like').length}` +
+        `${dayUnclassified > 0 ? `／判定できず ${dayUnclassified}` : ''}）・サンプル ${samples}・` +
         `作り直し ${detector.resets} 回・捨てたまとまり ${detector.droppedChunks}・P/S の窓が途切れて拾わず ${detector.phaseWindowsBroken}・P/S の失敗 ${detector.phaseFailures}`,
     )
     for (const { q, w } of dayLabels) {
@@ -154,8 +161,10 @@ function main(): void {
     }
   }
   console.log(
-    `計: 揺れ ${total.shakes} 件・地震と一致 ${total.matched} 件（うち「生活振動らしい」に分けた ${total.matchedLocalLike}）・` +
-      `一致しない ${total.shakes - total.matched} 件（地震らしい ${total.quakeLike}／生活振動らしい ${total.localLike}）`,
+    `計: 揺れ ${total.shakes} 件・地震と一致 ${total.matched} 件（うち「生活振動らしい」に分けた ${total.matchedLocalLike}` +
+      `${total.matchedUnclassified > 0 ? `・判定できず ${total.matchedUnclassified}` : ''}）・` +
+      `一致しない ${total.shakes - total.matched} 件（地震らしい ${total.quakeLike}／生活振動らしい ${total.localLike}` +
+      `${total.unclassified > 0 ? `／判定できず ${total.unclassified}` : ''}）`,
   )
 }
 

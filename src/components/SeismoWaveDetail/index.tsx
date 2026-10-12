@@ -24,7 +24,7 @@ import { createPortal } from 'react-dom'
 import type { SeismoQuakeWave } from '../../hooks/useSeismoQuakeWaves'
 import { fetchSeismoWaveSamples, SAMPLES_SPAN_MAX_MS } from '../../services/seismoWaveSamples'
 import { createLogThrottle, log } from '../../utils/logger'
-import { columnsSpan, measureNoiseBand, measureQuietLevel, selectQuakeWindow } from '../../utils/seismoQuakeWindow'
+import { bandCoversDrawn, columnsSpan, measureNoiseBand, measureQuietLevel, selectQuakeWindow } from '../../utils/seismoQuakeWindow'
 import { emphasizedFloorGal, quietScaledGal } from '../../utils/seismoQuietScale'
 import { trimTrailingGap } from '../../utils/seismoWaveColumns'
 import { MEAN_LINE_WINDOW_MS } from '../../utils/waveMeanLines'
@@ -49,6 +49,7 @@ import {
 import { paintIntensitySeries } from './paintIntensity'
 import { paintSampleLane } from './paintSampleLane'
 import {
+  bandCoversSamples,
   buildSampleSeries,
   laneGeometry,
   maxAbsInRange,
@@ -290,16 +291,34 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
   const visibleIdx = [0, 1, 2].filter((a) => axes[a] !== false)
 
   // **強調に使うノイズの帯**（0 の手前 30 秒から。カードと同じ測り方）。測れなければ潰さない。
+  // **帯は成分ごとに欠けうる**（上を解けない観測点）。帯の無い成分が値を持つときは潰さない
+  // （カードと同じ判定 `bandCoversDrawn`・2026-10-12 ユーザー承認）。
+  //
+  // **見えている範囲では判定しない。** 寄せ・送りのたびに強調の有無と縦が入れ替わるうえ、生のサンプルで描く
+  // ときに列の判定とずれる（列では上が無いのに生のサンプルには有る、で上が黙って消える）。読み返した列の全体と、
+  // 取ってある生のサンプルの全体で一度だけ決める。
+  // **生のサンプルを取り直すと、判定も変わりうる**（取る範囲が寄せ・送りで動く）。変わるのは、上が窓の一部だけで
+  // 解けている観測点で、取り直した範囲にその一部が入ったり外れたりしたときだけ。上がずっと解けない観測点
+  // （この判定の本来の相手）では変わらない。列だけで決めると、生のサンプルにある上を黙って消すので、こちらを採る。
   const noise = useMemo(() => {
     if (!emphasized) return null
-    const band = measureNoiseBand(wave.columns, wave.axisZero.ms)
+    const measured = measureNoiseBand(wave.columns, wave.axisZero.ms)
+    const covers =
+      measured !== null &&
+      bandCoversDrawn(measured, wave.columns, axes) &&
+      (samples === null || bandCoversSamples(measured, samples.series, axes))
+    const band = covers ? measured : null
     if (band === null && !loggedNoNoiseRef.current) {
       // **測れなかったことは記録へ残す**（絵は潰さない描き方に戻るだけで、画面からは見分けが付かない）。
       loggedNoNoiseRef.current = true
-      log.debug(`[seismo] 詳細の窓で強調できなかった（${wave.stationId}）: 0 の手前の記録が足りずノイズを測れない`)
+      log.debug(
+        measured === null
+          ? `[seismo] 詳細の窓で強調できなかった（${wave.stationId}）: 0 の手前の記録が足りずノイズを測れない`
+          : `[seismo] 詳細の窓で強調できなかった（${wave.stationId}）: 0 の手前で測れなかった成分に値がある`,
+      )
     }
     return band
-  }, [emphasized, wave.columns, wave.axisZero.ms, wave.stationId])
+  }, [emphasized, wave.columns, wave.axisZero.ms, wave.stationId, samples, axes])
 
   // **縦の下限**（強調しないとき）。0 の手前の静かさから決める（`utils/seismoQuietScale.ts` の `detail`）。
   // カードより低い倍率にする —— カードは「一覧で見て、揺れたかどうか」を見せるために静かなときの振れを

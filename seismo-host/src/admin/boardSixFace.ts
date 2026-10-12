@@ -43,6 +43,7 @@
 import { GAL_PER_G } from '../intensity/units'
 import { FUSION_MIN_DIRECTION_INFO } from '../receiver/directionInfo'
 import { minEigenvalueSym3 } from '../receiver/matrix3'
+import { solveGravity, solveLinear } from './gravityLeastSquares'
 import type { AxisCalibration, Mat3, Vec3 } from '../receiver/stationConfigTypes'
 
 /** 当てはめに使う静止窓 1 つ（`GET /api/rest-windows` の窓）。 */
@@ -230,36 +231,6 @@ function cross(a: readonly number[], b: readonly number[]): V3 {
   return [a[1]! * b[2]! - a[2]! * b[1]!, a[2]! * b[0]! - a[0]! * b[2]!, a[0]! * b[1]! - a[1]! * b[0]!]
 }
 
-/**
- * n×n の連立方程式を部分ピボットつきの消去法で解く。**ピボットが対角の最大の `1e-12` 倍に届かなければ
- * 解けないとして null**（向きの散り方が足りない・未知数が式で決まらない）。
- */
-function solveLinear(a: number[][], b: number[]): number[] | null {
-  const n = b.length
-  const m = a.map((row, i) => [...row, b[i]!])
-  let maxDiag = 0
-  for (let i = 0; i < n; i++) maxDiag = Math.max(maxDiag, Math.abs(a[i]![i]!))
-  const tiny = maxDiag * 1e-12
-  for (let col = 0; col < n; col++) {
-    let pivot = col
-    for (let r = col + 1; r < n; r++) if (Math.abs(m[r]![col]!) > Math.abs(m[pivot]![col]!)) pivot = r
-    if (!(Math.abs(m[pivot]![col]!) > tiny)) return null
-    ;[m[col], m[pivot]] = [m[pivot]!, m[col]!]
-    for (let r = col + 1; r < n; r++) {
-      const f = m[r]![col]! / m[col]![col]!
-      if (f === 0) continue
-      for (let k = col; k <= n; k++) m[r]![k]! -= f * m[col]![k]!
-    }
-  }
-  const x = new Array<number>(n).fill(0)
-  for (let i = n - 1; i >= 0; i--) {
-    let s = m[i]![n]!
-    for (let k = i + 1; k < n; k++) s -= m[i]![k]! * x[k]!
-    x[i] = s / m[i]![i]!
-  }
-  return x.every(Number.isFinite) ? x : null
-}
-
 interface Run {
   readonly fromMs: number
   readonly atMs: number
@@ -313,22 +284,12 @@ function priorInFrame(sensors: readonly BoardFitSensor[]): { axes: { vector: V3;
   return { axes }
 }
 
-/** 軸の向きとゼロ点が分かっているとき、ある姿勢で読んだ値から重力の向き（単位）を最小二乗で出す。 */
+/**
+ * 軸の向きとゼロ点が分かっているとき、ある姿勢で読んだ値から重力の向き（単位）を最小二乗で出す。
+ * **解き方は「鉛直を合わせる」と共有する**（`gravityLeastSquares.ts`）。
+ */
 function poseDirection(h: readonly V3[], o: readonly number[], m: readonly number[]): V3 | null {
-  const n: number[][] = [
-    [0, 0, 0],
-    [0, 0, 0],
-    [0, 0, 0],
-  ]
-  const b = [0, 0, 0]
-  h.forEach((v, j) => {
-    const d = m[j]! - o[j]!
-    for (let i = 0; i < 3; i++) {
-      b[i]! += v[i]! * d
-      for (let k = 0; k < 3; k++) n[i]![k]! += v[i]! * v[k]!
-    }
-  })
-  const g = solveLinear(n, b)
+  const g = solveGravity(h.map((v, j) => ({ vector: v, offset: o[j]!, value: m[j]! })))
   if (g === null) return null
   const len = norm(g)
   return len > 0 ? scale(g, 1 / len) : null

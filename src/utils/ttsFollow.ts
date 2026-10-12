@@ -585,6 +585,16 @@ const MIN_DELTA_PX = 1
  */
 const FOLLOW_TOP_MARGIN_PX = 24
 
+/**
+ * 追従が動ける視野の高さがあるか。**偽なら `planFollowScroll` は何もせず `null` を返す。**
+ *
+ * 呼び出し側が「動かなかった」理由を記録できるように、判定を外へ出してある。`null` は
+ * 「もう見えている」ときにも返るので、戻り値だけでは止まったことと見分けが付かない。
+ */
+export function followViewHasRoom(viewTop: number, viewBottom: number): boolean {
+  return viewBottom - viewTop - FOLLOW_TOP_MARGIN_PX > 0
+}
+
 /** 矩形が視野に収まっているか。 */
 function isInside(rect: FollowRect, viewTop: number, viewBottom: number): boolean {
   return rect.top >= viewTop && rect.bottom <= viewBottom
@@ -625,8 +635,8 @@ export function planFollowScroll(input: FollowScrollInput): number | null {
 
   // **余白を除いた高さで収まりを測る。** 送り先は上に余白を残す（`FOLLOW_TOP_MARGIN_PX`）ので、
   // 余白抜きの高さで「収まる」と判断すると、範囲の下端がその余白ぶん視野の外へはみ出す。
+  if (!followViewHasRoom(viewTop, viewBottom)) return null
   const availableHeight = viewBottom - viewTop - FOLLOW_TOP_MARGIN_PX
-  if (availableHeight <= 0) return null
 
   // 送り先が余白を取る分、収まりの判定もその位置を基準にする（判定と送り先を揃える）
   if (currentRects.every(r => isInside(r, viewTop + FOLLOW_TOP_MARGIN_PX, viewBottom))) return null

@@ -217,6 +217,7 @@ const VERDICT_BAND: Readonly<Record<ShakeVerdictView, string>> = {
   'quake-like': 'rgba(37, 99, 168, 0.4)',
   pending: 'rgba(128, 128, 128, 0.35)',
   'local-like': 'rgba(128, 128, 128, 0.35)',
+  unclassified: 'rgba(128, 128, 128, 0.35)',
   unchecked: 'rgba(128, 128, 128, 0.35)',
 }
 /** 範囲の頭より前に始まった揺れも拾う幅（揺れの記録は始まりの時刻で引くので）。 */

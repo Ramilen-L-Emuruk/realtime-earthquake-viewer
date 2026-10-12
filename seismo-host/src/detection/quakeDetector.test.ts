@@ -124,6 +124,51 @@ describe('QuakeDetector', () => {
     expect(det.phaseWindowsBroken).toBe(1)
   })
 
+  /** 上（z）だけを `[fromSec, toSec)` の間 NaN にする（観測点の合成が上を解けない間の形）。 */
+  function withoutZ(fromSec: number, toSec: number): TriggerInput[] {
+    return quakeLike(160, 100).map((c) => {
+      const z = Array.from(c.gal[2], (v, i) => {
+        const sec = (c.firstSampleMs + i * DT - T0) / 1000
+        return sec >= fromSec && sec < toSec ? Number.NaN : v
+      })
+      return { ...c, gal: [c.gal[0], c.gal[1], z] }
+    })
+  }
+
+  it('正（2026-10-12）: 上がずっと解けない間も揺れを切り出し、S を拾い、揺れ方は「判定しない」にする', () => {
+    const { det, out } = run(withoutZ(0, 160))
+    expect(out).toHaveLength(1)
+    expect(out[0].shakeClass).toBe('unclassified')
+    expect(out[0].phaseWindow).toBe('picked')
+    expect(Math.abs(out[0].phases!.s!.atMs - (T0 + 100_000))).toBeLessThan(500)
+    // P は上が無いので拾わない（拾わなかった理由を残す）
+    expect(out[0].phases!.p).toBeNull()
+    expect(out[0].phases!.pVerticalMissing).toBe(true)
+    expect(out[0].trigger.verticalSamples).toBe(0)
+    expect(det.phaseWindowsBroken).toBe(0)
+  })
+
+  it('安全弁: P を探す範囲で上が一瞬でも欠けたら P は拾わない（S は拾う・窓は切らない）', () => {
+    const { det, out } = run(withoutZ(85, 85.5))
+    expect(out[0].phaseWindow).toBe('picked')
+    expect(out[0].phases!.s).not.toBeNull()
+    expect(out[0].phases!.pVerticalMissing).toBe(true)
+    // 区間（揺れ）の間は上が揃っているので、揺れ方はいつもどおり判定する
+    expect(out[0].shakeClass).toBe('quake-like')
+    expect(det.phaseWindowsBroken).toBe(0)
+  })
+
+  it('対照: P を探す範囲より前に上が欠けて戻っていれば、P を探す範囲の上はそのまま使う', () => {
+    const { out } = run(withoutZ(50, 60))
+    expect(out[0].phaseWindow).toBe('picked')
+    expect(out[0].phases!.pVerticalMissing).toBe(false)
+  })
+
+  it('対照: 上が揃っていれば P を探す範囲を「上が無い」とはしない', () => {
+    const { out } = run(quakeLike(160, 100))
+    expect(out[0].phases!.pVerticalMissing).toBe(false)
+  })
+
   it('対照: 窓の終わり（引き金の 10 秒後）をまたぐまとまりの、窓の外にだけある非有限値では止めない', () => {
     // 窓の終わり T0+110000 をまたぐのは T0+109800 から始まるまとまり。その 25 番目（T0+110050）を壊す。
     const chunks = quakeLike(160, 100)

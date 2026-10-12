@@ -558,4 +558,24 @@ describe('「鉛直を合わせる」の材料（校正前の静止窓 → カ�
     // 対照: 3 分の 1 の手前なら出す。
     expect(boardGravityForTilt([{ sensorId: 'accel-0', source: still([0, 0, G]), sensor: withZLength(1 / 0.34) }]).ok).toBe(true)
   })
+
+  it('安全弁: 1 本だけ桁違いに短い軸は、向きが散っていても倍率の問題として断る（解けないことを散り方のせいにしない）', () => {
+    // 向きだけで測る散り具合は通るが、正規方程式は Z を決められない（`gravityLeastSquares.ts`）。
+    const tinyZ: SensorCalibration = {
+      ...UNIT3,
+      axes: [
+        { vector: [1, 0, 0], offset: 0 },
+        { vector: [0, 1, 0], offset: 0 },
+        { vector: [0, 0, 1e-7], offset: 0 },
+      ],
+    }
+    const refused = {
+      ok: false,
+      reason: '換算の倍率が合っていない。先にそちらを確かめること',
+      lacksMaterial: false,
+    }
+    expect(boardGravityForTilt([{ sensorId: 'accel-0', source: still([0, 0, G]), sensor: tinyZ }])).toEqual(refused)
+    // 横置きで短い軸の読みが 0 でも断る（大きさの確かめでは弾けない形。解けないこと自体で断っている）。
+    expect(boardGravityForTilt([{ sensorId: 'accel-0', source: still([G, 0, 0]), sensor: tinyZ }])).toEqual(refused)
+  })
 })

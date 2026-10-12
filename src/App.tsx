@@ -2347,27 +2347,44 @@ export function App() {
                 <ShareCardButton state={shareCard.state} onClick={() => shareCard.share()} />
               </div>
             )}
-            {actionChecklist.state && (
-              <ActionChecklist
-                reason={actionChecklist.state.reason}
-                scale={actionChecklist.state.scale}
-                scoped={actionChecklist.state.scoped}
-                collapsed={actionChecklist.collapsed}
-                onDismiss={actionChecklist.dismiss}
-                onRestore={actionChecklist.restore}
-              />
-            )}
-            {/* 地図の下端へ重ねる枠。上から凡例・特別情報バナーの順で、
-                **下のものが増えれば上のものが押し上がる**（別に絶対配置すると、下端全幅の
-                バナーに隠れる）。
+            {/* 地図に重ねる縦並び。上端に行動チェックリスト、下端に凡例・特別情報バナー。
+                **地図の高さを 1 本の縦並びで分け合う**（足りないときは中身が縮み、それぞれの中で
+                スクロールする）。上と下を別々に絶対配置して画面の高さ（`dvh`）で上限を掛けると、
+                地図が低いときに下端の束が地図の上へはみ出す。仕組み・下限・既知の限界は
+                docs/spec/architecture-spec.md §4「地図の上に重ねる帯は、地図の高さを 1 本の縦並びで分け合う」。
                 z は左上の情報ブロックと同じ理由で高く取る。
 
                 **自作地震計の波形はここに入れない。** 地図の外（この器の下）へ置く ——
                 重ねると自動フィットで画に入れたものが隠れるため（2026-09-29 のユーザー指摘。
                 理由はこの div を含む器のコメント）。 */}
-            <div className="absolute bottom-0 left-0 right-0 z-[99999] pointer-events-none flex flex-col items-start">
-              {settings.showMapLegend && (
-                <MapLegend blocks={legendBlocks} collapsed={legendCollapsed} onToggle={toggleLegend} compact={mapAreaShort} />
+            {/* **子はすべてこの縦並びの直下に並べる**（中間の枠を作らない）。枠を挟むと、その枠の
+                下限を子の下限の合計に合わせ続けなければならず、子が空でも高さを取る。
+                下限は各コンポーネントが自分の外枠に値で書く（`min-height` を書かない子は中身の高さで
+                止まって縮まず、`min-h-0` の子は見出しまで潰れる）。 */}
+            <div className="absolute inset-0 z-[99999] pointer-events-none flex flex-col">
+              {actionChecklist.state && (
+                <ActionChecklist
+                  reason={actionChecklist.state.reason}
+                  scale={actionChecklist.state.scale}
+                  scoped={actionChecklist.state.scoped}
+                  collapsed={actionChecklist.collapsed}
+                  onDismiss={actionChecklist.dismiss}
+                  onRestore={actionChecklist.restore}
+                />
+              )}
+              {/* 伸びる空白。上端のチェックリストと下端の凡例・帯を両端へ分ける（`mt-auto` を
+                  凡例と帯のどちらに付けるかを出し分けずに済む）。縮むときは 0 まで縮む。 */}
+              <div className="flex-1 min-h-0" />
+              {settings.showMapLegend && legendBlocks.length > 0 && (
+                // `shrink-[8]`: 凡例を優先して縮める（特別情報の帯より軽い。縮みは高さに比例して
+                // 配られるので、帯も少しは縮む）。
+                // `pt-[0.6rem]`: 凡例の見出しは当たり判定を枠の外へ広げている（`MapLegend` の
+                // `hit`。畳んだ狭い画面で上へ最大 0.55rem）。包みがスクロール領域なのでその縁で
+                // 切られ、指で押せる範囲が縮む —— 余白で逃がす（`pointer-events-none` なので地図の操作は妨げない）。
+                // 包みは凡例が描くものを持つときだけ出す（`MapLegend` は空なら何も描かないが、包みの余白は残る）。
+                <div className="min-h-0 pt-[0.6rem] shrink-[8] overflow-y-auto overflow-x-hidden overscroll-x-none flex flex-col items-start">
+                  <MapLegend blocks={legendBlocks} collapsed={legendCollapsed} onToggle={toggleLegend} compact={mapAreaShort} />
+                </div>
               )}
               <SpecialInfoBanner nankai={nankai} nankaiCommentary={nankaiCommentary} kohatsu={kohatsu} quakeNotice={quakeNotice} earthquakeCount={earthquakeCount} speakingTelegramTextSubject={speakingTelegramTextSubject} />
             </div>

@@ -27,6 +27,13 @@ export type ShakeClass =
   | 'quake-like'
   /** 枠の外（生活振動らしい揺れ）。 */
   | 'local-like'
+  /**
+   * 区間のあいだ上下動を一部でも測れず、枠に当てられなかった（2026-10-12 ユーザー承認）。
+   * 枠は上下動の比で生活振動を多く弾いているので（評価台の 6 日で、上下動の条件だけで枠の外へ
+   * 出たものが約 16 件）、水平だけで決めると「地震らしい」へ寄る。測っていないものを
+   * 「生活振動らしい」とも言わない。
+   */
+  | 'unclassified'
 
 /** 基準の帯の水平動に対する比の枠。 */
 export interface ShakeEnvelope {
@@ -47,7 +54,8 @@ export const SHAKE_ENVELOPE_DEFAULT: ShakeEnvelope = {
 
 /** 区間の揺れ方の比（記録に残す特徴量）。 */
 export interface ShakeRatios {
-  readonly verticalRatio: number
+  /** 区間の全サンプルで上下動を測れていなければ null。 */
+  readonly verticalRatio: number | null
   /** 水平動の各帯域 ÷ 基準の帯。`FEATURE_BANDS` の並び。 */
   readonly bandRatios: readonly number[]
 }
@@ -55,16 +63,21 @@ export interface ShakeRatios {
 /**
  * 基準の帯 `referenceBandHz` に対する比。基準の帯が 0・非有限、または特徴量の帯に無ければ null。
  */
+type ShakeFeatures = Pick<TriggerEvent, 'bandRmsH' | 'bandRmsZ' | 'samples' | 'verticalSamples'>
+
 export function shakeRatios(
-  event: Pick<TriggerEvent, 'bandRmsH' | 'bandRmsZ'>,
+  event: ShakeFeatures,
   referenceBandHz: readonly [number, number] = SHAKE_ENVELOPE_DEFAULT.referenceBandHz,
 ): ShakeRatios | null {
   const at = featureBandIndex(referenceBandHz)
   if (at < 0) return null
   const ref = event.bandRmsH[at]
   if (!(ref > 0) || !Number.isFinite(ref)) return null
+  // **上下動の比は、区間の全サンプルで上を測れたときだけ出す**（2026-10-12 ユーザー承認）。一部だけで
+  // 取ると、上が戻った後の数サンプルで比が決まり、揺れのどの部分を比べたのか分からなくなる。
+  const verticalRatio = event.samples > 0 && event.verticalSamples === event.samples ? event.bandRmsZ[at] / ref : null
   return {
-    verticalRatio: event.bandRmsZ[at] / ref,
+    verticalRatio,
     bandRatios: event.bandRmsH.map((v) => v / ref),
   }
 }
@@ -72,13 +85,13 @@ export function shakeRatios(
 /**
  * 揺れ方を枠に当てる。比を出せない（基準の帯が 0・非有限）なら `local-like` に倒す ——
  * 基準の帯で揺れていない区間は、地震の S 波が集まる帯で揺れていないので地震らしいとは言えない。
+ * 上下動を一部でも測れていなければ `unclassified`（基準の帯の判定が先 —— 水平が揺れていない
+ * 区間は、上を測れていても地震らしいとは言えない）。
  */
-export function classifyShake(
-  event: Pick<TriggerEvent, 'bandRmsH' | 'bandRmsZ'>,
-  envelope: ShakeEnvelope = SHAKE_ENVELOPE_DEFAULT,
-): ShakeClass {
+export function classifyShake(event: ShakeFeatures, envelope: ShakeEnvelope = SHAKE_ENVELOPE_DEFAULT): ShakeClass {
   const r = shakeRatios(event, envelope.referenceBandHz)
   if (r === null) return 'local-like'
+  if (r.verticalRatio === null) return 'unclassified'
   const [vLo, vHi] = envelope.verticalRatio
   if (!(r.verticalRatio >= vLo && r.verticalRatio <= vHi)) return 'local-like'
   for (let i = 0; i < r.bandRatios.length; i++) {

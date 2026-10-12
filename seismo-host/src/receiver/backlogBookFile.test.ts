@@ -17,11 +17,15 @@ afterEach(() => {
 })
 
 const STATE: BacklogBookState = {
-  version: 1,
+  version: 2,
   streams: [{ boardKey: 'mac:020000000001', bootId: '34b6e78f', sensorId: 'i2c0-68', nextSeq: 120, address: '192.0.2.41' }],
   gaps: [{
     boardKey: 'mac:020000000001', bootId: '34b6e78f', sensorId: 'i2c0-68', address: '192.0.2.41',
-    from: 30, to: 90, foundAtMs: 1_000,
+    from: 30, to: 90, foundAtMs: 1_000, rebootSpan: false,
+  }],
+  boots: [{
+    boardKey: 'mac:020000000001', sensorId: 'i2c0-68', bootId: '34b6e78f', nextSeq: 120,
+    endMs: 1_700_000_001_200, atMs: 1_700_000_001_300, retired: ['0badf00d'],
   }],
 }
 

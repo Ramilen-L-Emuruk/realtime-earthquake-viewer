@@ -90,11 +90,27 @@ export interface TriggerEvent {
   readonly peakBandGal: number
   /** 帯域で絞らない水平動（2 成分の合成）の絶対値の最大（gal。直流は合成の段で落としてある）。 */
   readonly peakHorizontalGal: number
-  /** 同じく 3 成分の合成の最大（gal）。 */
-  readonly peakVectorGal: number
+  /**
+   * 同じく 3 成分の合成の最大（gal）。**区間の全サンプルで上を測れたときだけ出し、一部でも欠ければ null**
+   * （2026-10-12 ユーザー承認）。上を測れたサンプルだけで取ると、上が戻る前の水平のピークが抜けて
+   * `peakHorizontalGal` を下回りうる —— 3 成分の最大がそれより小さいのは矛盾する。
+   */
+  readonly peakVectorGal: number | null
   /** 区間の中の帯域ごとの RMS（gal）。`FEATURE_BANDS` と同じ並び。 */
   readonly bandRmsH: readonly number[]
+  /**
+   * 上下動の帯域ごとの RMS（gal）。上を測れたサンプルだけで取る（評価台で見るため。揺れ方の判定は
+   * `verticalSamples === samples` のときだけこれを使う）。1 サンプルも無ければ全部 NaN
+   * （0 にすると「上下動がまったく無い揺れ」と区別が付かない）。
+   */
   readonly bandRmsZ: readonly number[]
+  /** 区間のサンプル数（水平を測れたもの）。 */
+  readonly samples: number
+  /**
+   * そのうち上も測れたサンプル数。観測点の合成は、測る向きが 3 方向へ散っていない間、上だけを NaN で出す。
+   * 上が戻った直後の `VERTICAL_RESUME_SETTLE_MS` は数えない。
+   */
+  readonly verticalSamples: number
 }
 
 /** `TriggerDetector` へ渡すまとまり（`FusedWaveChunk` の必要な欄だけ）。 */
@@ -168,6 +184,13 @@ export function emptyTriggerHealth(cfg: TriggerConfig = TRIGGER_CONFIG_DEFAULT):
   }
 }
 
+/**
+ * 上（z）が欠けて戻ったあと、上の帯域フィルタを作り直してから特徴量へ数え始めるまでの長さ（ミリ秒）。
+ * 作り直した直後は立ち上がりの過渡が乗る。P/S の窓（`quakeDetector.ts`）も同じ長さだけ上を使わない ——
+ * 片方だけ過渡を混ぜると、同じ区間の上下動を引き金と窓とで違う値で見ることになる。
+ */
+export const VERTICAL_RESUME_SETTLE_MS = 5_000
+
 /** 比の最大を何分ぶん覚えるか（24 時間）。 */
 const PEAK_MINUTES = 24 * 60
 const MINUTE_MS = 60_000
@@ -176,7 +199,12 @@ interface Filters {
   readonly sampleHz: number
   readonly trigger: [BandPass, BandPass]
   readonly featureH: [BandPass, BandPass][]
-  readonly featureZ: BandPass[]
+  /** 上が途切れて戻るたびに作り直す（NaN を 1 つでも通すと以後ずっと NaN になる・飛んだ値を繋がない）。 */
+  featureZ: BandPass[]
+  /** 直前のサンプルで上を測れていたか。 */
+  zLive: boolean
+  /** 上のフィルタを途中で作り直したとき、特徴量へ数え始める時刻（それまでは過渡）。 */
+  zSettledFromMs: number
 }
 
 interface OpenEvent {
@@ -186,10 +214,15 @@ interface OpenEvent {
   baselineGal: number
   peakBandGal: number
   peakHorizontalGal: number
-  peakVectorGal: number
+  peakVectorGal: number | null
   sumsqH: number[]
   sumsqZ: number[]
   samples: number
+  verticalSamples: number
+}
+
+function makeFeatureZ(sampleHz: number): BandPass[] {
+  return FEATURE_BANDS.map(([l, h]) => new BandPass(l, h, sampleHz))
 }
 
 function makeFilters(cfg: TriggerConfig, sampleHz: number): Filters {
@@ -198,7 +231,10 @@ function makeFilters(cfg: TriggerConfig, sampleHz: number): Filters {
     sampleHz,
     trigger: [new BandPass(lo, hi, sampleHz), new BandPass(lo, hi, sampleHz)],
     featureH: FEATURE_BANDS.map(([l, h]) => [new BandPass(l, h, sampleHz), new BandPass(l, h, sampleHz)]),
-    featureZ: FEATURE_BANDS.map(([l, h]) => new BandPass(l, h, sampleHz)),
+    featureZ: makeFeatureZ(sampleHz),
+    zLive: true,
+    // 作り直し（起動・途切れ）の直後は水平も同じく新品で、助走（warmupSec）の間は区間を開かない
+    zSettledFromMs: Number.NEGATIVE_INFINITY,
   }
 }
 
@@ -278,7 +314,18 @@ export class TriggerDetector {
       const x = chunk.gal[0][i]
       const y = chunk.gal[1][i]
       const z = chunk.gal[2][i]
-      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue
+      // **引き金は水平 2 成分だけで作るので、上が欠けても止めない。** 観測点の合成は、測る向きが
+      // 3 方向へ散っていない間（上を測る台がまとめて止まった等）、上だけを NaN で出す。上の特徴量だけを
+      // 見送り、区間には上を測れたサンプル数を残す。
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue
+      const hasZ = Number.isFinite(z)
+      if (hasZ && !f.zLive) {
+        f.featureZ = makeFeatureZ(f.sampleHz)
+        f.zSettledFromMs = t + VERTICAL_RESUME_SETTLE_MS
+      }
+      f.zLive = hasZ
+      // フィルタは回すが、作り直した直後の過渡は特徴量へ数えない
+      const zCounted = hasZ && t >= f.zSettledFromMs
       const bx = f.trigger[0].step(x)
       const by = f.trigger[1].step(y)
       const energy = bx * bx + by * by
@@ -288,8 +335,10 @@ export class TriggerDetector {
         const hx = f.featureH[b][0].step(x)
         const hy = f.featureH[b][1].step(y)
         fh.push(hx * hx + hy * hy)
-        const vz = f.featureZ[b].step(z)
-        fz.push(vz * vz)
+        if (hasZ) {
+          const vz = f.featureZ[b].step(z)
+          fz.push(vz * vz)
+        }
       }
 
       this.sta += aSta * (energy - this.sta)
@@ -312,10 +361,11 @@ export class TriggerDetector {
             baselineGal: Math.sqrt(this.lta),
             peakBandGal: 0,
             peakHorizontalGal: 0,
-            peakVectorGal: 0,
+            peakVectorGal: null,
             sumsqH: FEATURE_BANDS.map(() => 0),
             sumsqZ: FEATURE_BANDS.map(() => 0),
             samples: 0,
+            verticalSamples: 0,
           }
         }
       }
@@ -324,12 +374,13 @@ export class TriggerDetector {
         ev.peakRatio = Math.max(ev.peakRatio, ratio)
         ev.peakBandGal = Math.max(ev.peakBandGal, Math.sqrt(this.sta))
         ev.peakHorizontalGal = Math.max(ev.peakHorizontalGal, Math.hypot(x, y))
-        ev.peakVectorGal = Math.max(ev.peakVectorGal, Math.hypot(x, y, z))
-        for (let b = 0; b < FEATURE_BANDS.length; b++) {
-          ev.sumsqH[b] += fh[b]
-          ev.sumsqZ[b] += fz[b]
-        }
+        for (let b = 0; b < FEATURE_BANDS.length; b++) ev.sumsqH[b] += fh[b]
         ev.samples++
+        if (zCounted) {
+          ev.peakVectorGal = Math.max(ev.peakVectorGal ?? 0, Math.hypot(x, y, z))
+          for (let b = 0; b < FEATURE_BANDS.length; b++) ev.sumsqZ[b] += fz[b]
+          ev.verticalSamples++
+        }
         if (ratio < this.cfg.offRatio) {
           if (ev.quietSinceMs === null) ev.quietSinceMs = t
           if (t - ev.quietSinceMs >= this.cfg.holdSec * 1000) out.push(this.close(ev.quietSinceMs, 'quiet'))
@@ -419,6 +470,7 @@ export class TriggerDetector {
     const ev = this.open!
     this.open = null
     const n = Math.max(1, ev.samples)
+    const nz = ev.verticalSamples
     return {
       onMs: ev.onMs,
       offMs,
@@ -427,9 +479,11 @@ export class TriggerDetector {
       baselineGal: ev.baselineGal,
       peakBandGal: ev.peakBandGal,
       peakHorizontalGal: ev.peakHorizontalGal,
-      peakVectorGal: ev.peakVectorGal,
+      peakVectorGal: nz === ev.samples ? ev.peakVectorGal : null,
       bandRmsH: ev.sumsqH.map((s) => Math.sqrt(s / n)),
-      bandRmsZ: ev.sumsqZ.map((s) => Math.sqrt(s / n)),
+      bandRmsZ: ev.sumsqZ.map((s) => (nz > 0 ? Math.sqrt(s / nz) : Number.NaN)),
+      samples: ev.samples,
+      verticalSamples: nz,
     }
   }
 }

@@ -107,6 +107,15 @@ describe('seismoOverlayRows', () => {
     it('合成は震度を出せていなくても文言が変わらない（本数を持たないため）', () => {
       expect(seismoOverlayRows([station(null, { kind: 'station' })])[0].sourceText).toBe('合成')
     })
+
+    // #708（2026-10-12 ユーザー承認）: 震度を出さず波形だけ届く観測点。灰色のまま何が届いているかを名乗る。
+    it('波形だけ届く観測点は「波形のみ」と名乗り、赤くしない', () => {
+      const row = seismoOverlayRows([station(null, { kind: 'wave-only' })])[0]
+      expect(row.sourceText).toBe('波形のみ')
+      expect(row.silent).toBe(false)
+      expect(row.gradeLabel).toBeNull()
+      expect(row.valueText).toBeNull()
+    })
   })
 
   describe('値が途絶えたとき', () => {

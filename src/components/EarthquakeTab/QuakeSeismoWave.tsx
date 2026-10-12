@@ -18,7 +18,14 @@ import type { QuakeIntensity } from '../../services/seismoQuakeIntensity'
 import { formatTime } from '../../utils/formatters'
 import { log } from '../../utils/logger'
 import { formatMeasured } from '../../utils/measuredIntensityRounding'
-import { columnsSpan, measureNoiseBand, measureQuietLevel, selectQuakeWindow, type WaveAxisZero } from '../../utils/seismoQuakeWindow'
+import {
+  bandCoversDrawn,
+  columnsSpan,
+  measureNoiseBand,
+  measureQuietLevel,
+  selectQuakeWindow,
+  type WaveAxisZero,
+} from '../../utils/seismoQuakeWindow'
 import { quietScaledGal } from '../../utils/seismoQuietScale'
 import type { TimedColumns } from '../../utils/seismoWaveColumns'
 import { P_WAVE_COLOR, S_WAVE_COLOR } from '../Map/gl/psWaveStyle'
@@ -143,11 +150,27 @@ export function axisZeroLabel(zero: WaveAxisZero): string {
 }
 
 /**
+ * 強調できなかった理由。**強調できた・強調しないなら `null`。**
+ *
+ * - `unmeasured`: 0 の手前の記録が足りず、どの成分も帯を測れなかった
+ * - `uncovered`: 帯を測れなかった成分（上を解けない観測点の上など）が、描く列で値を持つ
+ */
+export type QuakeNoiseMissing = 'unmeasured' | 'uncovered' | null
+
+/** 強調できなかった理由の記録の文面。 */
+const NOISE_MISSING_TEXT: Record<Exclude<QuakeNoiseMissing, null>, string> = {
+  unmeasured: '0 の手前の記録が足りずノイズを測れない',
+  uncovered: '0 の手前で測れなかった成分に値がある',
+}
+
+/**
  * 地震カードの波形を、描く列へ畳む（強調するならノイズを潰す）。
  *
  * **強調はノイズを測れたときだけ。** 測れなければ（0 の手前の記録が足りない）潰さずに今までどおり
  * 畳み、`noiseMissing` を立てて返す —— 推測の幅で潰すと揺れまで消えうるうえ、絵は従来の描き方に
  * 戻るだけなので、呼び出し側が記録へ残さないと「強調が効いていない」ことに誰も気づけない。
+ * **帯は成分ごとに測る**（上を解けない観測点では上だけ帯が無い）。帯の無い成分が描く列で値を持たなければ、
+ * 残りの成分で強調する（`bandCoversDrawn`・2026-10-12 ユーザー承認）。
  *
  * **縦の下限は 0 の手前の静かさから決める**（`utils/seismoQuietScale.ts` の `card`。地図の下端の絵と
  * 同じ倍率）。**揃えないと、同じ揺れが場所によって違う大きさに見える。** 強調して描くときは、
@@ -163,7 +186,7 @@ export function foldQuakeWaveColumns(params: {
   readonly emphasized: boolean
   readonly visibleAxes: readonly boolean[]
   readonly columnCount: number
-}): { readonly columns: PaintableColumns; readonly noiseMissing: boolean } {
+}): { readonly columns: PaintableColumns; readonly noiseMissing: QuakeNoiseMissing } {
   const { base, trimmed, zeroMs, emphasized, visibleAxes, columnCount } = params
   const folded = foldHistoryColumns({
     source: trimmed.columns,
@@ -171,10 +194,12 @@ export function foldQuakeWaveColumns(params: {
     minScaleGal: quietScaledGal('card', measureQuietLevel(base, zeroMs)),
     visibleAxes,
   })
-  if (!emphasized) return { columns: folded, noiseMissing: false }
+  if (!emphasized) return { columns: folded, noiseMissing: null }
   const noise = measureNoiseBand(base, zeroMs)
-  if (noise === null) return { columns: folded, noiseMissing: true }
-  return { columns: emphasizeColumns({ folded, noise, visibleAxes }), noiseMissing: false }
+  // **帯は成分ごとに欠けうる**（上を解けない観測点）。帯の無い成分が描く列で値を持つときだけ、強調をやめる。
+  if (noise === null) return { columns: folded, noiseMissing: 'unmeasured' }
+  if (!bandCoversDrawn(noise, trimmed, visibleAxes)) return { columns: folded, noiseMissing: 'uncovered' }
+  return { columns: emphasizeColumns({ folded, noise, visibleAxes }), noiseMissing: null }
 }
 
 /** 震度の行の 1 項目。**画面には短い名前と値だけ**を出し、正式な名前はホバーで見せる。 */
@@ -314,12 +339,12 @@ function HistoryWave({ wave, quakeLabel }: { wave: SeismoQuakeWave; quakeLabel: 
             })
             // **測れなかったことは記録へ残す。** 絵は従来の描き方（±N gal）に戻るだけで、
             // 画面からは「強調が効いていない」と見分けが付かない。
-            if (noiseMissing) {
+            if (noiseMissing !== null) {
               const key = `${wave.stationId}@${wave.axisZero.ms}`
               if (loggedNoNoiseRef.current !== key) {
                 loggedNoNoiseRef.current = key
                 log.debug(
-                  `[seismo] 地震カードの波形を強調できなかった（${wave.stationId}）: 0 の手前の記録が足りずノイズを測れない`,
+                  `[seismo] 地震カードの波形を強調できなかった（${wave.stationId}）: ${NOISE_MISSING_TEXT[noiseMissing]}`,
                 )
               }
             }

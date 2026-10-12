@@ -189,7 +189,7 @@ function input(overrides: Partial<StatusReportInput> = {}): StatusReportInput {
     backlog: {
       pendingGaps: 1, pendingSamples: 30, recoveredSamples: 60, unrecoverableSamples: { 'not-held': 30 },
       requests: 3, recoveredPackets: 2, failures: { network: 1 }, badPackets: 0, foreignPackets: 0, unsavedPackets: 0, skippedPackets: 0,
-      unsettledWriteSinceMs: null,
+      unsettledWriteSinceMs: null, rebootsSeen: 3, rebootsHostTimed: 0, rebootsUnmeasured: 0,
     },
     rewave: { waiting: 0, requestedWaiting: 0, requested: { jobs: 0, skipped: {} }, running: false, jobs: 0, chunks: 0, rawIssues: 0, skipped: {} },
     http: { address: '0.0.0.0', port: 50506 },

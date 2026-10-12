@@ -61,6 +61,18 @@ function signal(totalSec: number, bursts: readonly Burst[], noise = 0.5, seed = 
   return chunks
 }
 
+/** 成分 `axis` を `[fromSec, toSec)` の間だけ NaN にする（観測点の合成が解けない成分を NaN で出す形）。 */
+function maskAxis(chunks: readonly TriggerInput[], axis: 0 | 1 | 2, fromSec: number, toSec: number): TriggerInput[] {
+  return chunks.map((c) => {
+    const gal = [Array.from(c.gal[0]), Array.from(c.gal[1]), Array.from(c.gal[2])] as [number[], number[], number[]]
+    for (let i = 0; i < gal[axis].length; i++) {
+      const sec = (c.firstSampleMs + i * c.msPerSample - T0) / 1000
+      if (sec >= fromSec && sec < toSec) gal[axis][i] = Number.NaN
+    }
+    return { ...c, gal }
+  })
+}
+
 function run(chunks: readonly TriggerInput[], det = new TriggerDetector()): TriggerEvent[] {
   const out: TriggerEvent[] = []
   for (const c of chunks) out.push(...det.push(c))
@@ -94,6 +106,52 @@ describe('TriggerDetector', () => {
     const events = run(chunks)
     expect(events).toHaveLength(1)
     expect(Number.isFinite(events[0]!.peakRatio)).toBe(true)
+  })
+
+  it('正: 上だけが解けない間も、水平 2 成分で引き金を引き、水平の特徴量は上があるときと同じ値になる', () => {
+    const bursts = [{ startSec: 100, durationSec: 6, hz: 7, amplitude: 1.5, zAmplitude: 0.7 }]
+    const whole = run(signal(150, bursts))
+    const noZ = run(maskAxis(signal(150, bursts), 2, 0, 150))
+    expect(noZ).toHaveLength(1)
+    expect(noZ[0]!.onMs).toBe(whole[0]!.onMs)
+    expect(noZ[0]!.offMs).toBe(whole[0]!.offMs)
+    expect(noZ[0]!.peakRatio).toBeCloseTo(whole[0]!.peakRatio, 9)
+    expect(noZ[0]!.bandRmsH).toEqual(whole[0]!.bandRmsH)
+    expect(noZ[0]!.peakHorizontalGal).toBe(whole[0]!.peakHorizontalGal)
+    // 上を 1 サンプルも測れていないことが区間に残る（上の特徴量・3 成分の最大は出さない）
+    expect(noZ[0]!.verticalSamples).toBe(0)
+    expect(noZ[0]!.samples).toBe(whole[0]!.samples)
+    expect(noZ[0]!.bandRmsZ.every((v) => Number.isNaN(v))).toBe(true)
+    expect(noZ[0]!.peakVectorGal).toBeNull()
+  })
+
+  it('対照: 水平の 1 成分が欠けたサンプルは今までどおり飛ばす（揺れていても引き金を引かない）', () => {
+    const chunks = maskAxis(signal(150, [{ startSec: 100, durationSec: 6, hz: 7, amplitude: 1.5 }]), 0, 0, 150)
+    expect(run(chunks)).toHaveLength(0)
+  })
+
+  it('安全弁: 上が揃っていれば、上を全サンプルで数え、3 成分の最大を出す', () => {
+    const ev = run(signal(150, [{ startSec: 100, durationSec: 6, hz: 7, amplitude: 1.5, zAmplitude: 0.7 }]))[0]!
+    expect(ev.verticalSamples).toBe(ev.samples)
+    expect(ev.peakVectorGal).not.toBeNull()
+    expect(ev.peakVectorGal!).toBeGreaterThanOrEqual(ev.peakHorizontalGal)
+  })
+
+  it('正（2026-10-12）: 区間の途中で上が欠けたら、3 成分の最大は出さない（水平の最大を下回る値を出さない）', () => {
+    const bursts = [{ startSec: 100, durationSec: 6, hz: 7, amplitude: 1.5, zAmplitude: 0.7 }]
+    const ev = run(maskAxis(signal(150, bursts), 2, 0, 103))[0]!
+    expect(ev.verticalSamples).toBeGreaterThan(0)
+    expect(ev.verticalSamples).toBeLessThan(ev.samples)
+    expect(ev.peakVectorGal).toBeNull()
+  })
+
+  it('安全弁: 上が戻った直後の 5 秒（フィルタの立ち上がり）は上を数えない', () => {
+    const bursts = [{ startSec: 100, durationSec: 20, hz: 7, amplitude: 1.5, zAmplitude: 0.7 }]
+    // 区間の途中 105 秒で上が戻る。数え始めは 110 秒から
+    const ev = run(maskAxis(signal(150, bursts), 2, 0, 105))[0]!
+    // 区間の頭から 110 秒まで（欠けの 5 秒と、戻ってからの 5 秒）は上を数えない
+    expect(ev.onMs - T0).toBeLessThan(105_000)
+    expect(ev.verticalSamples).toBe(ev.samples - Math.round((110_000 - (ev.onMs - T0)) / DT))
   })
 
   it('対照: 平常時の 2 倍に届かない揺れでは切り出さない', () => {

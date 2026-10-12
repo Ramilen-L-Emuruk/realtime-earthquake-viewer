@@ -4,10 +4,14 @@ import { classifyShake, shakeRatios } from './eventClassifier'
 
 /** 評価台の出力（5〜10 Hz の水平動に対する比）から区間を組み立てる。 */
 function event(zh: number, lo: number, mid: number, hi: number, vhi: number, ref = 0.8) {
-  return {
-    bandRmsH: [lo * ref, mid * ref, ref, hi * ref, vhi * ref],
-    bandRmsZ: [0, 0, zh * ref, 0, 0],
-  }
+  const bandRmsH = [lo * ref, mid * ref, ref, hi * ref, vhi * ref]
+  // 上が揃っている区間（上下動の比の分母は水平の特徴量と同じ値・上を測れたサンプル数は全数）
+  return { bandRmsH, bandRmsZ: [0, 0, zh * ref, 0, 0], samples: 600, verticalSamples: 600 }
+}
+
+/** 上を 1 サンプルも測れなかった区間（`TriggerDetector` が出す形）。 */
+function withoutVertical(e: ReturnType<typeof event>) {
+  return { ...e, bandRmsZ: e.bandRmsZ.map(() => Number.NaN), verticalSamples: 0 }
 }
 
 // 実機の記録（2026-09-28〜10-03）で気象庁の地震と一致した 6 件の揺れ方。
@@ -52,8 +56,32 @@ describe('classifyShake', () => {
   })
 
   it('安全弁: 引き金の帯が 0・非有限なら比を出さず生活振動らしい側へ倒す', () => {
-    expect(shakeRatios({ bandRmsH: [1, 1, 0, 1, 1], bandRmsZ: [0, 0, 1, 0, 0] })).toBeNull()
-    expect(classifyShake({ bandRmsH: [1, 1, Number.NaN, 1, 1], bandRmsZ: [0, 0, 1, 0, 0] })).toBe('local-like')
+    const flat = { bandRmsZ: [0, 0, 1, 0, 0], samples: 600, verticalSamples: 600 }
+    expect(shakeRatios({ ...flat, bandRmsH: [1, 1, 0, 1, 1] })).toBeNull()
+    expect(classifyShake({ ...flat, bandRmsH: [1, 1, Number.NaN, 1, 1] })).toBe('local-like')
     expect(classifyShake(event(Number.NaN, 0.2, 0.4, 0.6, 0.5))).toBe('local-like')
+  })
+
+  it.each(Object.entries(QUAKES))('正（2026-10-12）: 上を測れなかった区間は、一致した地震 %s の揺れ方でも判定しない', (_, e) => {
+    expect(classifyShake(withoutVertical(e))).toBe('unclassified')
+    const r = shakeRatios(withoutVertical(e))
+    expect(r?.verticalRatio).toBeNull()
+    // 水平の帯の比は上が無くても出す（記録に残る）
+    expect(r?.bandRatios).toEqual(shakeRatios(e)?.bandRatios)
+  })
+
+  it('対照: 上を測れなかった区間でも、基準の帯で揺れていなければ生活振動らしい（判定しないより先に弾く）', () => {
+    const e = withoutVertical(event(0.43, 0.23, 0.36, 0.5, 0.43))
+    expect(classifyShake({ ...e, bandRmsH: e.bandRmsH.map((v, i) => (i === 2 ? 0 : v)) })).toBe('local-like')
+  })
+
+  it('正（2026-10-12）: 上を一部しか測れなかった区間も判定しない（少ないサンプルで比を決めない）', () => {
+    const e = event(0.43, 0.23, 0.36, 0.5, 0.43)
+    expect(classifyShake({ ...e, verticalSamples: 599 })).toBe('unclassified')
+    expect(shakeRatios({ ...e, verticalSamples: 599 })?.verticalRatio).toBeNull()
+  })
+
+  it('対照: 上が全サンプル揃っていれば判定する', () => {
+    expect(classifyShake(event(0.43, 0.23, 0.36, 0.5, 0.43))).toBe('quake-like')
   })
 })
