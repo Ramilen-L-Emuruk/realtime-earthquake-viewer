@@ -317,7 +317,8 @@ export interface StatusReport {
   /**
    * 生データ（miniSEED 3）の記録。**`lostRecords` と `writeErrors` が 0、`recordsWritten` と
    * `packetsLogged` が増え続けていれば正常。** `cuts` は波形のレコードを切った理由ごとの本数で、
-   * ふだんはほぼすべて `full`。
+   * ふだんは `full` がいちばん多い。IIS2ICLX を繋いでいると `time-drift` も増えるが異常ではない
+   * （README「レコードの切り方」）。
    */
   readonly mseed: MseedHealth
   /** 観測点の設定の履歴。**`writeFailures` が 0 なら、変えた設定はすべて残っている。** */
