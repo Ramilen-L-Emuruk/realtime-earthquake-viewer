@@ -1,11 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import {
-  bandCoversDrawn,
   computeReachBand,
-  measureNoiseBand,
   measureQuietLevel,
-  NOISE_FLOOR_GAL,
-  NOISE_WIDTH_RATIO,
   ONSET_RATIO,
   selectQuakeWindow,
   type WaveAxisZero,
@@ -23,7 +19,7 @@ function makeColumns(fromSec: number, toSec: number, swingAt: (sec: number) => n
   const columns = []
   for (let t = fromSec * 1000; t < toSec * 1000; t += SPAN) {
     const v = swingAt(Math.floor(t / 1000))
-    columns.push(v === null ? null : { min: [-v, -0.1, -0.1] as const, max: [v, 0.1, 0.1] as const, minMembers: 3 })
+    columns.push(v === null ? null : { min: [-v, -0.1, -0.1] as const, max: [v, 0.1, 0.1] as const, minMembers: 3, magMin: NaN, magMax: NaN })
   }
   return { fromMs: ZERO_MS + fromSec * 1000, columnSpanMs: SPAN, columns }
 }
@@ -156,160 +152,18 @@ describe('selectQuakeWindow', () => {
   })
 })
 
-describe('measureNoiseBand', () => {
-  /** 成分ごとに振れの大きさを変えた列（東西 v・南北 v・上下 1.5v）。 */
-  function axisColumns(
-    fromSec: number,
-    toSec: number,
-    swingAt: (sec: number) => number | null,
-    offset = 0,
-  ): TimedColumns {
-    const columns = []
-    for (let t = fromSec * 1000; t < toSec * 1000; t += SPAN) {
-      const v = swingAt(Math.floor(t / 1000))
-      columns.push(
-        v === null
-          ? null
-          : {
-              min: [offset - v, offset - v, offset - 1.5 * v] as const,
-              max: [offset + v, offset + v, offset + 1.5 * v] as const,
-              minMembers: 3,
-            },
-      )
-    }
-    return { fromMs: ZERO_MS + fromSec * 1000, columnSpanMs: SPAN, columns }
-  }
-
-  test('成分ごとに、1 秒ごとの振れの最大の中央値 × 倍率', () => {
-    const band = measureNoiseBand(axisColumns(-30, 60, () => 1), ZERO_MS)!
-    expect(band.width[0]).toBeCloseTo(NOISE_WIDTH_RATIO)
-    expect(band.width[1]).toBeCloseTo(NOISE_WIDTH_RATIO)
-    expect(band.width[2]).toBeCloseTo(1.5 * NOISE_WIDTH_RATIO)
-    expect(band.center).toEqual([0, 0, 0])
-  })
-
-  test('0 より後（揺れ）は測らない', () => {
-    const band = measureNoiseBand(axisColumns(-30, 60, (s) => (s >= 0 ? 10 : 1)), ZERO_MS)!
-    expect(band.width[0]).toBeCloseTo(NOISE_WIDTH_RATIO)
-  })
-
-  test('直流のずれは中心として測り、幅はそこから測る', () => {
-    const band = measureNoiseBand(axisColumns(-30, 0, () => 1, 0.4), ZERO_MS)!
-    expect(band.center[0]).toBeCloseTo(0.4)
-    expect(band.width[0]).toBeCloseTo(NOISE_WIDTH_RATIO)
-  })
-
-  // 安全弁: 前の地震の揺れの残りで幅を膨らませない。
-  test('手前 30 秒のうち 10 秒が強くても、中央値なので幅は膨らまない', () => {
-    const band = measureNoiseBand(axisColumns(-30, 0, (s) => (s < -20 ? 6 : 1)), ZERO_MS)!
-    expect(band.width[0]).toBeCloseTo(NOISE_WIDTH_RATIO)
-  })
-
-  test('幅には下限がある', () => {
-    const band = measureNoiseBand(axisColumns(-30, 0, () => 0.01), ZERO_MS)!
-    expect(band.width[0]).toBe(NOISE_FLOOR_GAL)
-  })
-
-  // 安全弁: 推測で幅を置かない。
-  test('手前の記録が 10 秒に満たなければ測らない', () => {
-    expect(measureNoiseBand(axisColumns(-9, 60, () => 1), ZERO_MS)).toBeNull()
-    expect(measureNoiseBand(axisColumns(-30, 60, (s) => (s < -9 ? null : 1)), ZERO_MS)).toBeNull()
-  })
-
-  // 対照: ちょうど 10 秒あれば測る。
-  test('手前の記録が 10 秒あれば測る', () => {
-    expect(measureNoiseBand(axisColumns(-10, 60, () => 1), ZERO_MS)).not.toBeNull()
-  })
-
-  /** 上下だけ値が無い（NaN）列。観測点の合成が上を解けない間の形。 */
-  function upMissing(base: TimedColumns, fromSec: number): TimedColumns {
-    const columns = base.columns.map((c, i) => {
-      if (c === null) return c
-      const sec = fromSec + Math.floor((i * SPAN) / 1000)
-      return sec < -20 ? c : { ...c, min: [c.min[0], c.min[1], NaN] as const, max: [c.max[0], c.max[1], NaN] as const }
-    })
-    return { ...base, columns }
-  }
-
-  // 正（2026-10-09）: 上下の値が一部だけ欠けても、中心の中央値は値のある分だけで取る（NaN で壊れない）。
-  test('上下の値が一部欠けても、残った値で上下の帯を測る', () => {
-    const band = measureNoiseBand(upMissing(axisColumns(-30, 60, () => 1), -30), ZERO_MS)!
-    expect(band.width[0]).toBeCloseTo(NOISE_WIDTH_RATIO)
-    expect(band.center[2]).toBe(0)
-    expect(band.width[2]).toBeCloseTo(1.5 * NOISE_WIDTH_RATIO)
-  })
-
-  /** 上下がずっと値なし（観測点の合成が上を解けない観測点）。 */
-  function upAlwaysMissing(base: TimedColumns): TimedColumns {
-    const columns = base.columns.map((c) =>
-      c === null ? c : { ...c, min: [c.min[0], c.min[1], NaN] as const, max: [c.max[0], c.max[1], NaN] as const },
-    )
-    return { ...base, columns }
-  }
-
-  // 正（#698 で覆した・2026-10-12 ユーザー承認）: 以前は 1 成分でも足りなければ帯ごと作らず、
-  // 上を解けない観測点では東・北の強調も使えなかった。**帯は成分ごとに作る。**
-  test('上下の値が手前の窓でずっと無くても、東・北の帯は作る（上は NaN）', () => {
-    const band = measureNoiseBand(upAlwaysMissing(axisColumns(-30, 60, () => 1)), ZERO_MS)!
-    expect(band.width[0]).toBeCloseTo(NOISE_WIDTH_RATIO)
-    expect(band.width[1]).toBeCloseTo(NOISE_WIDTH_RATIO)
-    expect(Number.isNaN(band.width[2])).toBe(true)
-  })
-
-  // 安全弁: 推測で幅を置かない —— どの成分も足りなければ帯を作らない。
-  test('どの成分も手前の記録が足りなければ帯を作らない', () => {
-    const base = upAlwaysMissing(axisColumns(-30, 60, (s) => (s < -9 ? null : 1)))
-    expect(measureNoiseBand(base, ZERO_MS)).toBeNull()
-  })
-})
-
-describe('bandCoversDrawn', () => {
-  /** 東・北・上とも振れる列。上を NaN にしたいときは `udMissing`。 */
-  function drawn(udMissing: boolean): TimedColumns {
-    const ud = udMissing ? NaN : 1
-    return {
-      fromMs: ZERO_MS,
-      columnSpanMs: SPAN,
-      columns: [{ min: [-1, -1, -ud] as const, max: [1, 1, ud] as const, minMembers: 3 }, null],
-    }
-  }
-  const allBand = { center: [0, 0, 0] as const, width: [1, 1, 1] as const }
-  const noUdBand = { center: [0, 0, NaN] as const, width: [1, 1, NaN] as const }
-
-  // 正: 帯の無い成分（上）が、描く範囲でも値を持たない —— 東・北で強調してよい。
-  test('帯の無い成分が描く範囲に値を持たなければ、強調に使える', () => {
-    expect(bandCoversDrawn(noUdBand, drawn(true), [true, true, true])).toBe(true)
-  })
-
-  // 対照: 帯の無い成分が描く範囲で値を持つ —— 強調をやめて潰さない絵へ戻す（2026-10-12 ユーザー承認）。
-  test('帯の無い成分が描く範囲に値を持てば、強調に使わない', () => {
-    expect(bandCoversDrawn(noUdBand, drawn(false), [true, true, true])).toBe(false)
-  })
-
-  // 安全弁: 消した向きは数えない（描かないので、その向きの帯が無くても困らない）。
-  test('帯の無い成分を消していれば、値を持っていても強調に使える', () => {
-    expect(bandCoversDrawn(noUdBand, drawn(false), [true, true, false])).toBe(true)
-  })
-
-  test('3 成分とも帯があれば、そのまま使える', () => {
-    expect(bandCoversDrawn(allBand, drawn(false), [true, true, true])).toBe(true)
-  })
-})
-
 describe('measureQuietLevel', () => {
   // 正: 0 の手前 30 秒の「1 秒ごとの振れの最大」の中央値を、3 成分のうち最大で返す。
   test('3 成分のうち最も振れた成分の中央値を返す', () => {
     expect(measureQuietLevel(makeColumns(-30, 60, (s) => (s >= 0 ? 10 : 0.3)), ZERO_MS)).toBeCloseTo(0.3)
   })
 
-  // 正: 上を解けない観測点（1 成分が値なし）でも、残りの成分で測る。帯（measureNoiseBand）も
-  // 残りの成分で作る（#698 で覆した。以前は帯を作らなかった）。
+  // 正: 上を解けない観測点（1 成分が値なし）でも、残りの成分で測る。
   test('値の無い成分があっても、残りの成分で測る', () => {
     const columns = []
-    for (let t = -30_000; t < 0; t += SPAN) columns.push({ min: [-0.3, -0.2, NaN] as const, max: [0.3, 0.2, NaN] as const, minMembers: 3 })
+    for (let t = -30_000; t < 0; t += SPAN) columns.push({ min: [-0.3, -0.2, NaN] as const, max: [0.3, 0.2, NaN] as const, minMembers: 3, magMin: NaN, magMax: NaN })
     const base: TimedColumns = { fromMs: ZERO_MS - 30_000, columnSpanMs: SPAN, columns }
     expect(measureQuietLevel(base, ZERO_MS)).toBeCloseTo(0.3)
-    expect(Number.isNaN(measureNoiseBand(base, ZERO_MS)?.width[2])).toBe(true)
   })
 
   // 安全弁: 推測で物差しを置かない。

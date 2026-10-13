@@ -340,85 +340,12 @@ export function columnsSpan(columns: TimedColumns): { readonly fromMs: number; r
 }
 
 /**
- * ノイズの幅の倍率（平常時の 1 秒ごとの振れの最大の中央値に対して）。**1.5 倍。**
- *
- * **実波形で決めた値**（2026-10-04・自宅の観測点。{@link ONSET_RATIO} と同じ 21 地震と 18 窓）。
- * 1.5 倍の内側を潰すと、震度2〜3 の地震は 8 件のうち 7 件で 0.4〜1.3 gal が残り（残る 1 件は
- * 0.02 gal でほぼ平ら）、地震の無い窓は大半が 0.2 gal 以下に収まった（最大 0.52 gal）。
- * 1.3 倍では地震の無い窓に 0.8 gal 残るものがあり、1.8 倍では震度2 の 6 件のうち 4 件で
- * 残りが 0.3 gal 以下になった（地震の無い窓の尖りと同じ桁）。
- */
-export const NOISE_WIDTH_RATIO = 1.5
-
-/**
- * 平常時のノイズの帯（東・北・上の順）。
- *
- * **成分ごとに欠けうる。** 手前の記録が足りなかった成分は、中心も半幅も `NaN`（観測点の合成が上を
- * 解けない観測点では上がそうなる）。**その成分を潰す前に {@link bandCoversDrawn} で確かめること** ——
- * 幅が `NaN` のまま潰すと、比較がすべて偽になって値が 0（ノイズの内側）へ化ける。
- */
-export interface NoiseBand {
-  /** 帯の中心（gal）。**合成波形は直流を引いてあるので、ふつうは 0 近く。** 測れなかった成分は `NaN`。 */
-  readonly center: readonly [number, number, number]
-  /** 帯の半幅（gal）。**中心からこの幅の内側をノイズとみなす。** 測れなかった成分は `NaN`。 */
-  readonly width: readonly [number, number, number]
-}
-
-/**
- * 0 の手前 30 秒から、平常時のノイズの帯を成分ごとに測る。**どの成分も測れなければ `null`。**
- *
- * - 中心: 列の中点（`(min + max) / 2`）の中央値。**引ききれない直流のずれを拾う**
- * - 半幅: 1 秒ごとに「中心からの振れの最大」を取り、その中央値の {@link NOISE_WIDTH_RATIO} 倍
- *   （下限 {@link NOISE_FLOOR_GAL}）
- *
- * **成分ごとに測る。** 上下動のノイズは水平動の約 1.45 倍ある（同じ実測）。1 つの幅で潰すと、
- * 水平動の揺れが半分ほど削られる。
- *
- * **足りない成分だけ `NaN` にする**（推測で幅を置かない）。以前は 1 成分でも足りなければ帯ごと
- * 作らず、上を解けない観測点では東・北の強調も使えなかった（#698・2026-10-12 ユーザー承認で改めた）。
- *
- * **中央値で測る**のは揺れ始めの判定と同じ理由 ——直前の地震の揺れの残りで幅を膨らませない。
- *
- * @param base 読み返し＋継ぎ足しの列（**切り出す前**。0 の手前を含むもの）
- */
-export function measureNoiseBand(base: TimedColumns, zeroMs: number): NoiseBand | null {
-  const quiet = quietPeaksBeforeZero(base, zeroMs)
-  if (quiet === null) return null
-  const { center, peaks } = quiet
-  const measured = (a: number): boolean => peaks[a].size >= NOISE_MIN_SECONDS
-  if (![0, 1, 2].some(measured)) return null
-  const widthOf = (a: number): number =>
-    measured(a) ? Math.max(median([...peaks[a].values()]) * NOISE_WIDTH_RATIO, NOISE_FLOOR_GAL) : Number.NaN
-  const centerOf = (a: number): number => (measured(a) ? center[a] : Number.NaN)
-  return { center: [centerOf(0), centerOf(1), centerOf(2)], width: [widthOf(0), widthOf(1), widthOf(2)] }
-}
-
-/**
- * その帯で、描く列を強調してよいか。**帯の無い成分が描く列の中で値を持っていれば `false`。**
- *
- * `false` なら呼び手は今までどおり潰さない絵へ戻す（2026-10-12 ユーザー承認）—— 帯の無い成分だけを
- * 消すと揺れが絵から黙って消え、素のまま描くと 1 つの枠に縦の物差しが 2 つ混ざる。**値を持たない成分
- * （ずっと解けない上）は数えない** —— 描くものが無いので、残りの成分で強調してよい。
- *
- * @param drawn 描く列（カードなら揺れに合わせて切り出した後、詳細の窓なら見えている範囲）
- * @param visibleAxes 描く向き。**消した向きは数えない**
- */
-export function bandCoversDrawn(noise: NoiseBand, drawn: TimedColumns, visibleAxes: readonly boolean[]): boolean {
-  for (let a = 0; a < 3; a += 1) {
-    if (visibleAxes[a] === false || Number.isFinite(noise.width[a])) continue
-    const hasValue = drawn.columns.some((c) => c !== null && (Number.isFinite(c.min[a]) || Number.isFinite(c.max[a])))
-    if (hasValue) return false
-  }
-  return true
-}
-
-/**
  * 0 の手前 30 秒の**静かさの物差し**（gal）。**測れなければ `null`。**
  *
- * 成分ごとに「1 秒ごとの、中心からの振れの最大」の中央値を取り（{@link measureNoiseBand} と同じ測り方）、
+ * 成分ごとに「1 秒ごとの、中心からの振れの最大」の中央値を取り、
  * **3 成分のうち最大**を返す。縦の幅の下限はこれに倍率を掛けて決める（→ `seismoQuietScale.ts`）。
  *
- * **値の無い成分は外して測る**（{@link measureNoiseBand} と同じ扱い）。上を解けない観測点でも、
+ * **値の無い成分は外して測る**。上を解けない観測点でも、
  * 水平の 2 成分で静かさは測れる —— 揃うまで待つと、その観測点の絵は下限が決まらず決め打ちの値へ戻る。
  * **1 成分も測れなければ `null`。**
  */

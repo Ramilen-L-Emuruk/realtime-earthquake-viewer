@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SeismoWaveWindow } from './seismoWaveBuffer'
 import {
-  emphasizedFloorGal,
   LIVE_QUIET_MEMORY_MS,
   measureWindowQuietLevel,
   QUIET_LEVEL_MIN_GAL,
@@ -22,17 +21,24 @@ function windowOf(seconds: number, amp: readonly [number, number, number], first
 }
 
 describe('quietScaledGal', () => {
-  // 正: IIS2ICLX を入れる前の物差し（1.32 gal）なら、決め打ちだった値とほぼ同じになる。
-  it('入れる前の静かさなら、以前の決め打ちの値に戻る', () => {
-    expect(quietScaledGal('card', 1.32)).toBeCloseTo(9.9, 1)
+  // 正: IIS2ICLX を入れる前の物差し（1.32 gal）なら、詳細の窓と収まりは決め打ちだった値とほぼ同じになる。
+  // カードは 2026-10-13 に倍率を 7.5 から 3 へ下げた（ユーザー承認）ので、決め打ちだった 10 gal には戻らない。
+  it('入れる前の静かさなら、詳細の窓と収まりは以前の決め打ちの値に戻る', () => {
+    expect(quietScaledGal('card', 1.32)).toBeCloseTo(3.96, 2)
     expect(quietScaledGal('detail', 1.32)).toBeCloseTo(1.98, 2)
     expect(quietScaledGal('settle', 1.32)).toBeCloseTo(3.04, 2)
   })
 
   // 正: 入れた後の物差し（0.19 gal）なら、同じ比で小さくなる。
   it('静かになった分だけ下限も下がる', () => {
-    expect(quietScaledGal('card', 0.19)).toBeCloseTo(1.425, 3)
+    expect(quietScaledGal('card', 0.19)).toBeCloseTo(0.57, 3)
     expect(quietScaledGal('detail', 0.19)).toBeCloseTo(0.285, 3)
+  })
+
+  // 対照（2026-10-13）: カードは詳細の窓より高く置く（3 成分を重ねる・合成の 1 本で見るので、
+  // 静かなときのノイズを枠いっぱいに広げない）。
+  it('カードの下限は詳細の窓より高い', () => {
+    expect(quietScaledGal('card', 0.19)).toBeGreaterThan(quietScaledGal('detail', 0.19))
   })
 
   // 安全弁: 測れなかったら決め打ちだった値（ノイズを枠いっぱいに広げない側）へ倒す。
@@ -43,21 +49,7 @@ describe('quietScaledGal', () => {
 
   // 安全弁: 0 近くに縮んだ測り値で、下限が 0 へ潰れない。
   it('物差しが 0 でも下限は 0 にならない', () => {
-    expect(quietScaledGal('card', 0)).toBeCloseTo(7.5 * QUIET_LEVEL_MIN_GAL)
-  })
-})
-
-describe('emphasizedFloorGal', () => {
-  it('帯の幅の 1/4', () => {
-    expect(emphasizedFloorGal(2)).toBeCloseTo(0.5)
-    expect(emphasizedFloorGal(0.3)).toBeCloseTo(0.075)
-  })
-
-  // 安全弁: 帯の幅が下限に張り付いても、1/4 にして 0.01 gal 台へは落とさない。
-  it('帯が狭くても・読めなくても、物差しの下限を下回らない', () => {
-    expect(emphasizedFloorGal(QUIET_LEVEL_MIN_GAL)).toBeCloseTo(QUIET_LEVEL_MIN_GAL)
-    expect(emphasizedFloorGal(0.1)).toBeCloseTo(QUIET_LEVEL_MIN_GAL)
-    expect(emphasizedFloorGal(Number.NaN)).toBeCloseTo(QUIET_LEVEL_MIN_GAL)
+    expect(quietScaledGal('card', 0)).toBeCloseTo(3 * QUIET_LEVEL_MIN_GAL)
   })
 })
 

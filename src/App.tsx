@@ -68,6 +68,7 @@ import { useTelegramTextSpeechFollow } from './hooks/useTelegramTextSpeechFollow
 import { deriveKyoshinView } from './utils/kyoshinDetectionView'
 import { filterSubThresholdIndices } from './utils/kyoshinSubThresholdFilter'
 import { useSWaveCountdown } from './hooks/useSWaveCountdown'
+import { pickSeismoArrivalEew } from './utils/countdownEew'
 import { useArrivalTokenCheck } from './hooks/useArrivalToken'
 import { usePsWaveCalc } from './hooks/usePsWaveCalc'
 import { useQuakeHeatmap } from './hooks/useQuakeHeatmap'
@@ -1987,6 +1988,15 @@ export function App() {
   const arrivalTokenStatus = useArrivalTokenCheck(settings.arrivalToken)
   const allowOwnArrivalCalc = arrivalTokenStatus.valid
   const swaveArrival = useSWaveCountdown(psWave, eewsForMap, home, hasActiveEEW, allowOwnArrivalCalc)
+  // 地図の下端の自作地震計の波形へ P/S の到達線を引く相手。**カウントダウンと同じ選び方**（`utils/countdownEew.ts`。
+  // 2026-10-13 ユーザー指示）で、**自前の走時計算を使ってよい端末だけ**（同日ユーザー承認。観測点という特定の地点への
+  // 到達を、推定途中の震源から自前で解くため —— `docs/forecast-computation-audit.md`）。
+  // `psWave` は 100ms ごとに新しい配列になるが、選ばれる速報の参照は続報が来るまで変わらない
+  // （波形の側は速報の参照が変わったときだけ走時を解き直す）。
+  const seismoArrivalEew = pickSeismoArrivalEew({ allowOwnArrivalCalc, psWave, eews: eewsForMap })
+  const toggleSeismoWaveExpanded = useCallback(() => {
+    updateSetting('seismoWaveExpanded', !settings.seismoWaveExpanded)
+  }, [settings.seismoWaveExpanded, updateSetting])
 
   // 地震後の行動チェックリスト。EEW・強震モニタ・地震情報の 3 経路で発火する（詳細は
   // useActionChecklist）。観測点座標は他の利用箇所と同じキャッシュを共有するため、ここで
@@ -2412,7 +2422,14 @@ export function App() {
           </div>
           {/* 自作地震計の合成波形。**地図の外**（→ すぐ上の器のコメント）。 */}
           {showSeismoWave && (
-            <SeismoWaveChart stations={seismo.stations} readWave={seismo.readWave} />
+            <SeismoWaveChart
+              stations={seismo.stations}
+              readWave={seismo.readWave}
+              collapsedView={settings.seismoWaveCollapsedView}
+              expanded={settings.seismoWaveExpanded}
+              onToggleExpanded={toggleSeismoWaveExpanded}
+              arrivalEew={seismoArrivalEew}
+            />
           )}
         </div>
 
@@ -2467,6 +2484,7 @@ export function App() {
                 onFocusMap={focusMapTarget}
                 speakingTelegramTextSubject={speakingTelegramTextSubject}
                 seismoWaves={seismoQuakeWaves}
+                seismoWaveView={settings.seismoWaveCollapsedView}
               />
             </ErrorBoundary>
           </div>

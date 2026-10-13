@@ -85,7 +85,8 @@ function stationWave(stationId: string, firstSampleMs: number): SeismoMessage {
  */
 const STATUS = {
   sensors: [
-    { boardKey: 'mac:aa', sensorId: 'i2c0-68', station: { stationId: 'home', displayName: '自宅' } },
+    // 座標はどこの家でもない丸めた値（地図の下端の波形へ P/S の線を引くのに使う）。
+    { boardKey: 'mac:aa', sensorId: 'i2c0-68', station: { stationId: 'home', displayName: '自宅', lat: 35, lon: 135 } },
     { boardKey: 'mac:aa', sensorId: 'i2c0-69', station: { stationId: 'home', displayName: '自宅' } },
     { boardKey: 'mac:cc', sensorId: 'i2c0-68', station: { stationId: 'home', displayName: '自宅' } },
     { boardKey: 'mac:zz', sensorId: 'i2c0-68', station: null },
@@ -133,6 +134,9 @@ describe('useSeismoStation', () => {
       {
         stationId: 'home',
         displayName: '自宅',
+        // **観測点の座標が状態へ届く**（ホストの設定から引く）。
+        lat: 35,
+        lon: 135,
         intensity: 0.25,
         atMs: 2000,
         source: { kind: 'station' },

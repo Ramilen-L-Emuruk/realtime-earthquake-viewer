@@ -1,19 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
 import type { WaveSampleChunk } from '../../services/seismoWaveSamples'
-import type { SampleSeries } from './sampleSeries'
 import {
-  bandCoversSamples,
   buildSampleSeries,
-  emphasizeValue,
   laneGeometry,
   maxAbsInRange,
-  measureMagnitudeFloor,
   movingAverage,
   peakInRange,
   seriesRange,
   signedMovingAverages,
-  valueTransform,
   vectorMagnitude,
   visibleIndexRange,
 } from './sampleSeries'
@@ -72,50 +67,17 @@ describe('visibleIndexRange', () => {
   })
 })
 
-describe('emphasizeValue', () => {
-  it('幅の内側は 0、外側は幅だけ寄せる（符号は保つ）', () => {
-    expect(emphasizeValue(0.5, 0, 1)).toBe(0)
-    expect(emphasizeValue(3, 0, 1)).toBe(2)
-    expect(emphasizeValue(-3, 0, 1)).toBe(-2)
-  })
-
-  // 安全弁: 欠測を本物の 0 に化けさせない。
-  it('非有限は非有限のまま', () => {
-    expect(Number.isNaN(emphasizeValue(Number.NaN, 0, 1))).toBe(true)
-  })
-
-  // #698: 生のサンプルで描くときも、列と同じ規則で強調の可否を決める。
-  it('bandCoversSamples: 帯の無い成分に値があれば強調しない（消した向きと値の無い成分は数えない）', () => {
-    const noUd = { center: [0, 0, Number.NaN] as const, width: [1, 1, Number.NaN] as const }
-    const withUd = buildSampleSeries([chunk(T0, [1, 2, 3])])
-    // 対照: 上（成分 2）に値がある → 強調しない。
-    expect(bandCoversSamples(noUd, withUd, [true, true, true])).toBe(false)
-    // 安全弁: 上を消していれば数えない。
-    expect(bandCoversSamples(noUd, withUd, [true, true, false])).toBe(true)
-    // 正: 上がずっと NaN（上を解けない観測点）なら、東・北で強調してよい。
-    const c = chunk(T0, [1, 2, 3])
-    const noUdSeries = buildSampleSeries([{ ...c, gal: [c.gal[0], c.gal[1], Float32Array.from([NaN, NaN, NaN])] }])
-    expect(bandCoversSamples(noUd, noUdSeries, [true, true, true])).toBe(true)
-  })
-
-  // 安全弁（#698）: 帯の無い成分（幅が NaN）を 0 へ化けさせない（比較がすべて偽になる）。
-  it('幅が NaN なら値があっても NaN（描かない）', () => {
-    expect(Number.isNaN(emphasizeValue(5, Number.NaN, Number.NaN))).toBe(true)
-    expect(Number.isNaN(emphasizeValue(5, 0, Number.NaN))).toBe(true)
-  })
-})
-
 describe('maxAbsInRange', () => {
   it('範囲の中の成分ごとの最大（変換後）', () => {
     const s = buildSampleSeries([chunk(T0, [1, -8, 2, 20])])
-    const t = valueTransform(null)
+    const t = (_a: number, v: number): number => v
     expect(maxAbsInRange(s, { fromMs: T0, toMs: T0 + 20 }, t)).toEqual([8, 4, 0])
   })
 })
 
 describe('laneGeometry', () => {
   const s = buildSampleSeries([chunk(T0, Array.from({ length: 1000 }, (_, i) => Math.sin(i / 5)))])
-  const transform = valueTransform(null)
+  const transform = (_a: number, v: number): number => v
 
   // 正: 寄せて 1 ピクセルの点が少なければ、点そのものを結ぶ（波の形が出る）。
   it('点が少なければ点を返す', () => {
@@ -281,54 +243,5 @@ describe('signedMovingAverages', () => {
     expect(Number.isNaN(pos[1])).toBe(true)
     expect(Number.isNaN(neg[1])).toBe(true)
     expect(pos[0]).toBe(2)
-  })
-})
-
-describe('measureMagnitudeFloor', () => {
-  const ZERO = T0 + 30_000
-  /** 0 の手前 30 秒、100 Hz。各秒の最大が `peak(秒)` になる。 */
-  function quiet(seconds: number, peak: (sec: number) => number, base = 0.1): SampleSeries {
-    const values: number[] = []
-    for (let i = 0; i < seconds * 100; i += 1) values.push(i % 100 === 50 ? peak(Math.floor(i / 100)) : base)
-    const start = ZERO - seconds * 1000
-    const a = Float32Array.from(values)
-    return buildSampleSeries([
-      {
-        firstSampleMs: start,
-        msPerSample: 10,
-        gal: [a, new Float32Array(a.length), new Float32Array(a.length)],
-        memberCount: new Float32Array(a.length).fill(3),
-      },
-    ])
-  }
-
-  it('1 秒ごとの最大の中央値の 1.5 倍', () => {
-    const s = quiet(30, (sec) => (sec % 2 === 0 ? 1 : 3))
-    // 中央値は (1 + 3) / 2 = 2 → 3
-    expect(measureMagnitudeFloor(s, vectorMagnitude(s, [true, true, true]), ZERO)).toBeCloseTo(3, 5)
-  })
-
-  // 安全弁: 0 近くに縮んだ測り値は下限（0.05 gal）で受け止める。
-  it('下限は 0.05 gal', () => {
-    const s = quiet(30, () => 0.01, 0.01)
-    expect(measureMagnitudeFloor(s, vectorMagnitude(s, [true, true, true]), ZERO)).toBeCloseTo(0.05, 5)
-  })
-
-  // 対照: IIS2ICLX を入れた後の静かさ（0.15 gal 前後）は下限に掛からず、そのまま 1.5 倍される。
-  it('静かな観測点の底は下限に掛からない', () => {
-    const s = quiet(30, () => 0.15)
-    expect(measureMagnitudeFloor(s, vectorMagnitude(s, [true, true, true]), ZERO)).toBeCloseTo(0.225, 5)
-  })
-
-  // 対照: ちょうど 10 秒あれば測る。
-  it('値のある 1 秒がちょうど 10 なら測る', () => {
-    const s = quiet(10, () => 1)
-    expect(measureMagnitudeFloor(s, vectorMagnitude(s, [true, true, true]), ZERO)).toBeCloseTo(1.5, 5)
-  })
-
-  // 安全弁: 足りなければ測らない（推測で底を置かない）。
-  it('値のある 1 秒が 10 に満たなければ null', () => {
-    const s = quiet(9, () => 1)
-    expect(measureMagnitudeFloor(s, vectorMagnitude(s, [true, true, true]), ZERO)).toBeNull()
   })
 })

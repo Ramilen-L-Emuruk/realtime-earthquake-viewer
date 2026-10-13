@@ -85,6 +85,7 @@ async function renderTab(opts: {
       onFocusMap={() => {}}
       speakingTelegramTextSubject={null}
       seismoWaves={new Map()}
+      seismoWaveView="composite"
     />,
   )
   // 観測点を持たない空の一覧（`earthquakes: []`）ではカードが 1 枚も描かれず、

@@ -147,6 +147,42 @@ describe('buildWaveEnvelope', () => {
     expect(got.columnSpanMs).toBe(100)
   })
 
+  // 正: 合成の大きさは同じ瞬間の 3 成分から出す。
+  it('合成の上下は、サンプルごとのベクトルの大きさから取る', () => {
+    // 1 点目は東西だけ 3・2 点目は北だけ 4。**成分ごとの端どうしで解くと √(3²+4²)=5 になる**が、
+    // 同じ瞬間にそろって振れたことは無いので、正しい最大は 4。
+    const got = buildWaveEnvelope({
+      chunks: [chunk({ ns: [3, 0], ew: [0, 4], ud: [0, 0] })],
+      fromMs: T0,
+      toMs: T0 + 10,
+      columnCount: 1,
+    })
+    expect(got.columns[0]?.magMax).toBe(4)
+    expect(got.columns[0]?.magMin).toBe(3)
+  })
+
+  // 対照: 解けなかった成分（NaN）は合成に数えず、残りの成分で出す。
+  it('解けなかった成分は合成に数えない', () => {
+    const got = buildWaveEnvelope({
+      chunks: [chunk({ ns: [3], ew: [4], ud: [Number.NaN] })],
+      fromMs: T0,
+      toMs: T0 + 10,
+      columnCount: 1,
+    })
+    expect(got.columns[0]?.magMax).toBe(5)
+  })
+
+  // 安全弁: 値の無い列は合成も持たない（列ごと null のまま）。
+  it('値の無い列は合成も持たない', () => {
+    const got = buildWaveEnvelope({
+      chunks: [chunk({ ns: [1] })],
+      fromMs: T0,
+      toMs: T0 + 100,
+      columnCount: 4,
+    })
+    expect(got.columns[3]).toBeNull()
+  })
+
   it('幅が無い・列が無い問い合わせでは何も作らない', () => {
     expect(buildWaveEnvelope({ chunks: [], fromMs: T0, toMs: T0, columnCount: 3 }).columns).toHaveLength(0)
     expect(buildWaveEnvelope({ chunks: [], fromMs: T0, toMs: T0 + 100, columnCount: 0 }).columns).toHaveLength(0)

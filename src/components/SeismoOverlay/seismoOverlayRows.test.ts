@@ -13,6 +13,8 @@ function station(
   return {
     stationId: 'station-1',
     displayName: '自宅',
+    lat: null,
+    lon: null,
     intensity,
     atMs: 1_700_000_000_000,
     source,

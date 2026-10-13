@@ -96,6 +96,12 @@ describe('computeWaveArrival', () => {
   it('発生時刻が読めなければ線を引かない', () => {
     expect(computeWaveArrival({ originMs: NaN, hypocenter: hypo(), ...HOME })).toBeNull()
   })
+
+  // 安全弁: 観測点の座標が緯度・経度の範囲の外（ホストの設定の書き損じ）なら線を引かない。
+  it('観測点の座標が範囲の外なら線を引かない', () => {
+    expect(computeWaveArrival({ originMs: ORIGIN_MS, hypocenter: hypo(), stationLat: 135, stationLon: 35 })).toBeNull()
+    expect(computeWaveArrival({ originMs: ORIGIN_MS, hypocenter: hypo(), stationLat: 35, stationLon: 200 })).toBeNull()
+  })
 })
 
 describe('computeHypocentralDistanceKm', () => {

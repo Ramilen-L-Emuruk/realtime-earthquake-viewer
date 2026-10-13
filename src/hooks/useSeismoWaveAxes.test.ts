@@ -24,6 +24,25 @@ describe('useSeismoWaveAxes', () => {
     expect(readWaveAxes()).toEqual([true, true, true])
   })
 
+  // 正（2026-10-13）: 残り 1 つになった向きは消えない。
+  it('最後の 1 つは消せない', () => {
+    toggleWaveAxis(0)
+    toggleWaveAxis(1)
+    const before = readWaveAxes()
+    toggleWaveAxis(2)
+    expect(readWaveAxes()).toEqual([false, false, true])
+    expect(readWaveAxes()).toBe(before)
+  })
+
+  // 対照: 2 つ残っていれば消せる・消えた向きは戻せる。
+  it('2 つ以上残っていれば消せて、消えた向きは戻せる', () => {
+    toggleWaveAxis(0)
+    expect(readWaveAxes()).toEqual([false, true, true])
+    toggleWaveAxis(1)
+    toggleWaveAxis(0)
+    expect(readWaveAxes()).toEqual([true, false, true])
+  })
+
   it('範囲の外は黙って捨てる', () => {
     // **対照。** 配線の誤りで例外にしない（絵の凡例を押しただけで画面が落ちる）。
     const before = readWaveAxes()

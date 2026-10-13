@@ -1,0 +1,66 @@
+// カウントダウンと地図の下端の波形の P/S 線が、同じ緊急地震速報を相手にすることを固定する。
+
+import { describe, expect, it } from 'vitest'
+
+import type { PsWaveCircle } from '../services/kyoshin'
+import type { EEWAlert } from '../types/earthquake'
+import { pickCountdownCircle, pickCountdownEew, pickSeismoArrivalEew } from './countdownEew'
+
+function circle(eventId: string, sRadius: number): PsWaveCircle {
+  return { eventId, lat: 37, lng: 137, pRadius: sRadius * 1.7, sRadius, depth: 10, magnitude: 6 }
+}
+
+/** 引き当てに使う欄だけを持つ速報。 */
+function eew(id: string, eventId?: string): EEWAlert {
+  return { id, issue: eventId === undefined ? undefined : { eventId } } as unknown as EEWAlert
+}
+
+describe('pickCountdownCircle', () => {
+  // 正: S 波の波面がいちばん外側にある円を選ぶ（カウントダウンが元から採っていた選び方）。
+  it('S 波の半径がいちばん大きい円を選ぶ', () => {
+    expect(pickCountdownCircle([circle('a', 10), circle('b', 40), circle('c', 20)])?.eventId).toBe('b')
+  })
+
+  // 安全弁: 円が無ければ選ばない。
+  it('円が無ければ null', () => {
+    expect(pickCountdownCircle([])).toBeNull()
+  })
+})
+
+describe('pickCountdownEew', () => {
+  // 正: 円の eventId（`issue.eventId ?? id`）で速報を引き当てる。
+  it('円を作った速報を eventId で引き当てる', () => {
+    const eews = [eew('t1', '20260101000000'), eew('t2', '20260101000100')]
+    expect(pickCountdownEew([circle('20260101000100', 30)], eews)?.id).toBe('t2')
+  })
+
+  // 対照: `issue` が無ければ id で引く（`computeEewCircle` と同じ式）。
+  it('issue が無ければ id で引く', () => {
+    expect(pickCountdownEew([circle('t9', 30)], [eew('t9')])?.id).toBe('t9')
+  })
+
+  // 安全弁: 引き当てられない（円を作った速報が一覧から消えた）なら null。別の速報を代わりに返さない。
+  it('引き当てられなければ null', () => {
+    expect(pickCountdownEew([circle('gone', 30)], [eew('t1', 'other')])).toBeNull()
+  })
+})
+
+describe('pickSeismoArrivalEew', () => {
+  const psWave = [circle('20260101000100', 30)]
+  const eews = [eew('t2', '20260101000100')]
+
+  // 正: 自前の走時計算を使ってよい端末なら、カウントダウンと同じ速報を返す。
+  it('トークン端末ならカウントダウンと同じ速報', () => {
+    expect(pickSeismoArrivalEew({ allowOwnArrivalCalc: true, psWave, eews })?.id).toBe('t2')
+  })
+
+  // 安全弁（気象業務法の線引き）: トークンが無ければ、速報が出ていても線を引く相手を返さない。
+  it('トークンが無ければ null', () => {
+    expect(pickSeismoArrivalEew({ allowOwnArrivalCalc: false, psWave, eews })).toBeNull()
+  })
+
+  // 対照: トークン端末でも速報が無ければ null。
+  it('円が無ければ null', () => {
+    expect(pickSeismoArrivalEew({ allowOwnArrivalCalc: true, psWave: [], eews })).toBeNull()
+  })
+})

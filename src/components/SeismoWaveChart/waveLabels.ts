@@ -14,22 +14,11 @@ export function formatScaleGal(scaleGal: number): string {
 }
 
 /**
- * 強調して描いたときの縦の表示（`±W〜±T gal`）。**W は潰したノイズの幅、T は縦の上端。**
- *
- * 潰した量が数字で見えるようにする（2026-10-03 のユーザー判断）。縦は W から T までしか
- * 描いていないので、上端だけを出すと「0 から T まで」と読まれる。
- */
-export function formatEmphasizedScaleGal(widthGal: number, topGal: number): string {
-  if (!Number.isFinite(widthGal) || !Number.isFinite(topGal)) return '—'
-  return `±${formatGal(widthGal)}〜±${formatGal(topGal)} gal`
-}
-
-/**
  * 桁を値の大きさで変える（10 以上は整数・1 以上は小数 1 桁・1 未満は小数 2 桁）。
  *
  * **1 未満を 2 桁にするのは、縦の下限を静かさから決めるようにしたため**（`utils/seismoQuietScale.ts`）。
- * 静かな観測点では縦が 0.1〜0.5 gal の幅に入り、小数 1 桁では強調の「±幅〜±上端」が
- * `±0.3〜±0.3 gal` のように同じ数字で並んで、何を表しているか読めなくなる。
+ * 静かな観測点では縦が 0.1〜0.5 gal の幅に入り、小数 1 桁では `±0.3 gal` と `±0.2 gal` の
+ * 違いのような小さな差が丸めで消える。
  */
 export function formatGal(gal: number): string {
   const abs = Math.abs(gal)

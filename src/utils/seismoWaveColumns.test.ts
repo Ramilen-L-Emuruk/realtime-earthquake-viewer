@@ -9,6 +9,7 @@ import type { WaveHistoryColumn } from '../services/seismoWaveHistory'
 import type { SeismoWaveWindow } from './seismoWaveBuffer'
 import {
   appendWaveWindow,
+  compositeCoverage,
   isSettled,
   lastFilledIndex,
   revisedColumnSpan,
@@ -16,10 +17,12 @@ import {
   trimAfter,
   trimTrailingGap,
   type TimedColumns,
+  vectorMagnitudeOf,
+  vectorMagnitudeOf3,
 } from './seismoWaveColumns'
 
 function col(v: number, members = 9): WaveHistoryColumn {
-  return { min: [-v, -v, -v], max: [v, v, v], minMembers: members }
+  return { min: [-v, -v, -v], max: [v, v, v], minMembers: members, magMin: NaN, magMax: NaN }
 }
 
 /** 1 サンプル 10 ms の窓を作る。 */
@@ -149,7 +152,7 @@ describe('isSettled', () => {
   // 正（2026-10-09）: 観測点の合成は解けない成分だけを NaN にして出す（2026-10-09 ユーザー承認）。
   // 欠けた成分を「揺れている」へ倒すと、上を解けない観測点のカードは打ち切りの上限まで伸び続ける。
   it('値の無い成分（NaN）は判断に入れず、解けた成分が静かなら収まったと見なす', () => {
-    const upMissing = (v: number): WaveHistoryColumn => ({ min: [-v, -v, NaN], max: [v, v, NaN], minMembers: 2 })
+    const upMissing = (v: number): WaveHistoryColumn => ({ min: [-v, -v, NaN], max: [v, v, NaN], minMembers: 2, magMin: NaN, magMax: NaN })
     const columns = new Array(10).fill(null).map(() => upMissing(1))
     expect(isSettled({ fromMs: 1000, columnSpanMs: 100, columns }, 500, 3)).toBe(true)
   })
@@ -158,7 +161,7 @@ describe('isSettled', () => {
   it('値の無い成分があっても、解けた成分が揺れていれば収まっていない', () => {
     const columns = new Array(10)
       .fill(null)
-      .map((): WaveHistoryColumn => ({ min: [-20, -1, NaN], max: [20, 1, NaN], minMembers: 2 }))
+      .map((): WaveHistoryColumn => ({ min: [-20, -1, NaN], max: [20, 1, NaN], minMembers: 2, magMin: NaN, magMax: NaN }))
     expect(isSettled({ fromMs: 1000, columnSpanMs: 100, columns }, 500, 3)).toBe(false)
   })
 })
@@ -294,5 +297,69 @@ describe('spliceRevisedColumns', () => {
 
   it('正: 何も変わらなければ同じ参照を返す', () => {
     expect(spliceRevisedColumns(BASE, { fromMs: 1200, columnSpanMs: 100, columns: [null, null] })).toBe(BASE)
+  })
+})
+
+describe('appendWaveWindow の合成', () => {
+  // 正: 押し出しで継ぎ足す列にも、サンプルごとに出した合成を入れる（ホストと同じ数え方）。
+  it('サンプルごとのベクトルの大きさで合成を入れる', () => {
+    const w: SeismoWaveWindow = {
+      firstSampleMs: 1200,
+      msPerSample: 10,
+      gal: [Float32Array.from([3, 0]), Float32Array.from([0, 4]), Float32Array.from([0, 0])],
+      memberCount: Float32Array.from([2, 2]),
+    }
+    const out = appendWaveWindow({ base: BASE, window: w, limitMs: 2000 })
+    expect(out.columns[2]?.magMin).toBe(3)
+    expect(out.columns[2]?.magMax).toBe(4)
+  })
+})
+
+describe('vectorMagnitudeOf', () => {
+  it('解けた成分だけで大きさを出す', () => {
+    expect(vectorMagnitudeOf([3, 4, NaN])).toBe(5)
+  })
+
+  // 安全弁: 1 成分も解けていなければ NaN（0 にしない。0 は「揺れていない」と読める）。
+  it('1 成分も解けていなければ NaN', () => {
+    expect(vectorMagnitudeOf([NaN, NaN, NaN])).toBeNaN()
+  })
+})
+
+describe('vectorMagnitudeOf3', () => {
+  // 正: vectorMagnitudeOf と同じ数え方（解けた成分だけ）。
+  it('使う成分のうち解けたものだけで大きさを出す', () => {
+    expect(vectorMagnitudeOf3(3, 4, NaN, [true, true, true])).toBe(5)
+  })
+
+  // 対照: 使わない成分は値があっても数えない（向きを消したら合成からも外す）。
+  it('使わない成分は数えない', () => {
+    expect(vectorMagnitudeOf3(3, 4, 12, [true, true, false])).toBe(5)
+  })
+
+  // 安全弁: 数える成分が 1 つも解けていなければ NaN。
+  it('数える成分が解けていなければ NaN', () => {
+    expect(vectorMagnitudeOf3(NaN, 4, 12, [true, false, false])).toBeNaN()
+  })
+})
+
+describe('compositeCoverage', () => {
+  function withMag(v: number): WaveHistoryColumn {
+    return { ...col(v), magMin: 0, magMax: v }
+  }
+
+  // 正: 値のある列がすべて合成を持てば complete（値の無い列は数えない）。
+  it('値のある列がすべて合成を持てば complete', () => {
+    expect(compositeCoverage([withMag(1), null, withMag(2)])).toEqual({ valued: 2, withComposite: 2, complete: true })
+  })
+
+  // 対照: 古いホストの列（合成なし）と継ぎ足した列が混ざれば complete ではない —— 合成の線が途中から出る絵にしない。
+  it('1 列でも合成が欠ければ complete ではない', () => {
+    expect(compositeCoverage([col(1), withMag(2)])).toEqual({ valued: 2, withComposite: 1, complete: false })
+  })
+
+  // 安全弁: 片方の端だけ有限な列は合成を持つと数えない。
+  it('端の片方だけ有限なら合成を持つと数えない', () => {
+    expect(compositeCoverage([{ ...col(1), magMin: NaN, magMax: 1 }]).complete).toBe(false)
   })
 })

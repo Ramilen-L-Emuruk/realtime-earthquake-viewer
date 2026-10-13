@@ -172,6 +172,12 @@ export interface SeismoStationState {
   /** 引けた表示名。**引けていなければ識別子そのまま。** */
   readonly displayName: string
   /**
+   * 観測点の緯度・経度（ホストの設定から引く）。**引けていない・ホストが持っていなければ `null`。**
+   * 地図の下端の波形へ P/S の到達線を引くのに使う。
+   */
+  readonly lat: number | null
+  readonly lon: number | null
+  /**
    * 計測震度相当。**出せないなら `null`。**
    *
    * 「揺れていない」を意味する値ではないので 0 として扱わないこと
@@ -295,6 +301,8 @@ function sameStates(
     if (
       x.stationId !== y.stationId ||
       x.displayName !== y.displayName ||
+      x.lat !== y.lat ||
+      x.lon !== y.lon ||
       x.intensity !== y.intensity ||
       x.atMs !== y.atMs ||
       x.source.kind !== y.source.kind ||
@@ -579,6 +587,7 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
           next.push({
             stationId,
             displayName: directory.displayName(stationId),
+            ...directory.location(stationId),
             intensity: entry.station.intensity,
             atMs: entry.station.atMs,
             source: { kind: 'station' },
@@ -637,6 +646,7 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
             next.push({
               stationId,
               displayName: directory.displayName(stationId),
+              ...directory.location(stationId),
               intensity: null,
               atMs: null,
               source: { kind: 'wave-only' },
@@ -662,6 +672,7 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
           next.push({
             stationId,
             displayName: directory.displayName(stationId),
+            ...directory.location(stationId),
             intensity: null,
             atMs: null,
             source: { kind: 'silent' },
@@ -674,6 +685,7 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
         next.push({
           stationId,
           displayName: directory.displayName(stationId),
+          ...directory.location(stationId),
           intensity: best,
           atMs: bestAtMs,
           source: { kind: 'sensor', sensorCount: count },

@@ -5,7 +5,7 @@
 // 切れる）、**静穏時に縦が伸びきらないこと**（下限）。
 
 import { describe, it, expect } from 'vitest'
-import { buildWaveColumns } from './waveColumns'
+import { buildWaveColumns, buildWaveMeanLines } from './waveColumns'
 import type { SeismoWaveWindow } from '../../utils/seismoWaveBuffer'
 
 const MS = 10
@@ -218,5 +218,58 @@ describe('buildWaveColumns', () => {
       const r = buildWaveColumns({ window: win([]), columnCount: 4, spanMs: 100, minScaleGal: 3 })
       expect(r.columns).toHaveLength(0)
     })
+  })
+})
+
+describe('buildWaveColumns の合成', () => {
+  // 正: 合成はサンプルごとのベクトルの大きさから取る。成分ごとの端どうしからは作らない。
+  it('別々の瞬間に振れた成分を足し合わせない', () => {
+    // 1 点目は東西だけ 3、2 点目は南北だけ 4。端どうしなら 5 になるが、正しくは 4。
+    const r = buildWaveColumns({ window: win([3, 0], [0, 4]), columnCount: 1, spanMs: fullSpan(2), minScaleGal: 0.1 })
+    expect(r.columns[0].magMax).toBe(4)
+    expect(r.columns[0].magMin).toBe(3)
+  })
+
+  // 対照: 同じ瞬間なら合わせた大きさになる。
+  it('同じ瞬間に振れた成分は合わせた大きさ', () => {
+    const r = buildWaveColumns({ window: win([3], [4]), columnCount: 1, spanMs: 10, minScaleGal: 0.1 })
+    expect(r.columns[0].magMax).toBe(5)
+  })
+
+  // 安全弁: 消した向きは合成にも数えない（詳細の窓の合成と同じ）。解けなかった成分（NaN）も数えない。
+  it('消した向きと解けなかった成分は合成に数えない', () => {
+    const hidden = buildWaveColumns({
+      window: win([3], [4], [12]),
+      columnCount: 1,
+      spanMs: 10,
+      minScaleGal: 0.1,
+      visibleAxes: [true, true, false],
+    })
+    expect(hidden.columns[0].magMax).toBe(5)
+    const unsolved = buildWaveColumns({ window: win([3], [4], [NaN]), columnCount: 1, spanMs: 10, minScaleGal: 0.1 })
+    expect(unsolved.columns[0].magMax).toBe(5)
+  })
+})
+
+describe('buildWaveMeanLines', () => {
+  // 正: 正側・負側を分けて平均する（そのまま平均すると 0 に潰れる）。
+  it('成分ごとに正側と負側の平均を出す', () => {
+    const m = buildWaveMeanLines({ window: win([2, -2, 2, -2]), columnCount: 1, spanMs: fullSpan(4) })
+    expect(m.axes[0].pos[0]).toBeCloseTo(2)
+    expect(m.axes[0].neg[0]).toBeCloseTo(-2)
+  })
+
+  // 対照: 合成の均した線は大きさの平均（0 に潰れない）。
+  it('合成を均した線は大きさを平均する', () => {
+    const m = buildWaveMeanLines({ window: win([2, -2, 2, -2]), columnCount: 1, spanMs: fullSpan(4) })
+    expect(m.compositeSmooth[0]).toBeCloseTo(2)
+  })
+
+  // 安全弁: 値の無い列は NaN（描く側はそこで線を切る）。届いていない区間を 0 にしない。
+  it('値の無い列は NaN', () => {
+    const m = buildWaveMeanLines({ window: win([NaN, NaN, 1], [NaN, NaN, 0], [NaN, NaN, 0]), columnCount: 3, spanMs: fullSpan(3) })
+    expect(m.axes[0].pos[0]).toBeNaN()
+    expect(m.compositeSmooth[0]).toBeNaN()
+    expect(m.axes[0].pos[2]).toBeCloseTo(1)
   })
 })

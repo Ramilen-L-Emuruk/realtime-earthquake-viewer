@@ -1,14 +1,13 @@
-// 有感の地震について、自作地震計の観測点へ P 波・S 波が届いた時刻を出す。
+// 自作地震計の観測点へ P 波・S 波が届いた時刻を出す。呼び手は 2 つあり、材料が違う
+// （棚卸しは [`docs/forecast-computation-audit.md`](../../docs/forecast-computation-audit.md) の 7 と 10）。
 //
-// **これは「予報」ではない。** 気象業務法が許可を要するとする予報は「将来の現象の予想」で、
-// ここで解いているのは**既に発表された地震情報**（震源・深さ・発生時刻が確定した後の電文）に
-// 対して、**既に過ぎた到達時刻**を後から求めるもの。波形の絵へ目盛りを引くための解析であって、
-// これから起きることを言っていない（2026-09-30 のユーザー判断）。
-// 棚卸しは [`docs/forecast-computation-audit.md`](../../docs/forecast-computation-audit.md)。
-//
-// **構造的な歯止めもある。** 絵は「値のある最後の列」で切ってあるので
-// （`seismoQuakeWindow.ts` の `selectQuakeWindow` が最初に `trimTrailingGap` を通す）、まだ来ていない時刻の区間はそもそも
-// 描かれない —— 線を引ける範囲は必ず過去にある。
+// - **地震カード・詳細の窓（棚卸しの 7）**: **既に発表された地震情報**（震源・深さ・発生時刻が確定した後の電文）に
+//   対して、**既に過ぎた到達時刻**を後から求める。波形の絵へ目盛りを引くための解析であって、これから起きることを
+//   言っていない（2026-09-30 のユーザー判断）。絵は「値のある最後の列」で切ってあるので
+//   （`seismoQuakeWindow.ts` の `selectQuakeWindow` が最初に `trimTrailingGap` を通す）、線を引ける範囲は必ず過去にある
+// - **地図の下端の波形（棚卸しの 11）**: **発表中の緊急地震速報**（震源は推定途中）から解く。**到達予想キーが有効な端末だけ**
+//   （`countdownEew.ts` の `pickSeismoArrivalEew` が門。2026-10-13 ユーザー承認）。歯止めは「右端＝最後に届いたサンプル」
+//   で、まだ来ていない時刻の線は範囲の外に落ちて描かれない —— 線は到達時刻を過ぎてから現れる
 //
 // **走時は JMA2001 走時表から引く**（`travelTime.ts`）。予報円・主要動の到達予測と同じ表で、
 // ここだけ別の速度モデルを持たない —— 持てば、同じ地震について画面の 2 箇所が別の根拠で
@@ -51,7 +50,7 @@ export function computeWaveArrival(params: {
   // 早い時刻へ線を引く（`usePsWaveCalc` が予報円で弾いているのと同じ理由）。
   if (!hasDepth(hypocenter.depth)) return null
   if (stationLat === null || stationLon === null) return null
-  if (!hasKnownEpicenter(stationLat, stationLon)) return null
+  if (!isStationCoordinate(stationLat, stationLon)) return null
 
   // **震央距離（地表の弧長）で渡す。** 表がその形で作られているので、弦への換算
   // （`hypocentralDistanceKm`）は通さない ——通すと球の補正が二重に掛かる。
@@ -79,8 +78,16 @@ export function computeHypocentralDistanceKm(params: {
   if (!hasKnownEpicenter(hypocenter.latitude, hypocenter.longitude)) return null
   if (!hasDepth(hypocenter.depth)) return null
   if (stationLat === null || stationLon === null) return null
-  if (!hasKnownEpicenter(stationLat, stationLon)) return null
+  if (!isStationCoordinate(stationLat, stationLon)) return null
   const surfaceKm = haversineKm(hypocenter.latitude, hypocenter.longitude, stationLat, stationLon)
   const km = hypocentralDistanceKm(surfaceKm, hypocenter.depth)
   return Number.isFinite(km) ? km : null
+}
+
+/**
+ * 観測点の座標として使えるか。**緯度・経度の取りうる範囲まで見る**（`hasKnownEpicenter` は有限性と
+ * センチネル `-200` しか見ない）。ホストの設定の書き損じで範囲外の値が来たとき、根拠のない線を引かない。
+ */
+function isStationCoordinate(lat: number, lon: number): boolean {
+  return hasKnownEpicenter(lat, lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180
 }

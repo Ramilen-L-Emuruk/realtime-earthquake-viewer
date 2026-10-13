@@ -17,6 +17,8 @@ const NO_VALUE: WaveColumn = {
   min: [NaN, NaN, NaN],
   max: [NaN, NaN, NaN],
   minMembers: 0,
+  magMin: NaN,
+  magMax: NaN,
 }
 
 /**
@@ -59,6 +61,8 @@ export function foldHistoryColumns(params: {
     let min: [number, number, number] | null = null
     let max: [number, number, number] | null = null
     let members = Number.POSITIVE_INFINITY
+    let magMin = NaN
+    let magMax = NaN
 
     for (let i = lo; i < hi; i += 1) {
       const col = source[i]
@@ -77,6 +81,12 @@ export function foldHistoryColumns(params: {
       // **いちばん少ない本数を採る。** 裏付けが 1 本まで落ちた瞬間がその範囲に
       // あれば、その列は「裏付けが無い」として示す（見落とす方が重い）。
       if (col.minMembers < members) members = col.minMembers
+      // 合成も同じく「下端の最小・上端の最大」で畳む。**`NaN` の端は必ず置き換える。**
+      // **合成は `visibleAxes` を反映しない（できない）** —— ホストが 3 成分すべてから出した値を受け取るだけなので、
+      // 向きを消しても合成からは外れない。押し出しの窓から作る列（`waveColumns.ts`）は消した向きを外すので、
+      // 向きの切替を持つ窓でこれを使うなら、合成の扱いを先に決めること（地震カードは向きを固定で描く）。
+      if (Number.isFinite(col.magMin) && (!Number.isFinite(magMin) || col.magMin < magMin)) magMin = col.magMin
+      if (Number.isFinite(col.magMax) && (!Number.isFinite(magMax) || col.magMax > magMax)) magMax = col.magMax
     }
 
     if (min === null || max === null) {
@@ -98,6 +108,8 @@ export function foldHistoryColumns(params: {
       min,
       max,
       minMembers: Number.isFinite(members) ? members : 0,
+      magMin,
+      magMax,
     })
   }
 

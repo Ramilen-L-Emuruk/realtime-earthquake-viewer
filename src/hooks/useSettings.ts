@@ -9,6 +9,9 @@ import { TELEGRAM_TEXT_BLOCK_KEYS, TELEGRAM_BOILERPLATE_KEYS, TELEGRAM_BOILERPLA
 // 同じ理由（依存の向き）で、波形グラフの出し方の定義も utils 側に置いてある。
 import type { SeismoWaveMode } from '../utils/seismoWaveTrigger'
 
+/** 波形を展開していないときに出すもの（→ {@link AppSettings.seismoWaveCollapsedView}）。 */
+export type SeismoWaveCollapsedView = 'composite' | 'overlay'
+
 export type { TtsUnreceivedDetail, TelegramTextBlockKey, TelegramTextBlocks }
 export { TELEGRAM_TEXT_BLOCK_KEYS, TELEGRAM_BOILERPLATE_KEYS }
 
@@ -155,6 +158,18 @@ export interface AppSettings {
    * {@link SeismoWaveMode}。合成波形は毎秒 15 KB あるので既定は `'off'`。
    */
   seismoWave: SeismoWaveMode
+  /**
+   * 波形を展開していないときに出すもの（地図の下端の波形と地震カードの波形の両方。2026-10-13 ユーザー承認）。
+   *
+   * - `'composite'`: 合成（3 成分のベクトルの大きさ）を 1 本
+   * - `'overlay'`: 3 成分を重ねる
+   */
+  seismoWaveCollapsedView: SeismoWaveCollapsedView
+  /**
+   * 地図の下端の波形を展開しているか（合成＋東西・南北・上下の段）。**押した状態をリロードしても保つ**
+   * （向きの切り替えと違い、見せ方の好みなので残す）。
+   */
+  seismoWaveExpanded: boolean
   panelRatio: number             // 縦積みレイアウト（スマホ縦など）でのパネル高さ比率（0.2〜0.8）
 }
 
@@ -255,6 +270,8 @@ export const DEFAULTS: AppSettings = {
   seismoHostUrl: '',
   // 波形は既定で受け取らない（合成波形は毎秒 15 KB ある）。
   seismoWave: 'off',
+  seismoWaveCollapsedView: 'composite',
+  seismoWaveExpanded: false,
   panelRatio: 0.45,
 }
 
@@ -281,6 +298,10 @@ function ensureMapLegendCollapse(value: unknown, fallback: MapLegendCollapseSett
 
 function ensureSeismoWave(value: unknown, fallback: SeismoWaveMode): SeismoWaveMode {
   return value === 'off' || value === 'auto' || value === 'always' ? value : fallback
+}
+
+function ensureSeismoWaveCollapsedView(value: unknown, fallback: SeismoWaveCollapsedView): SeismoWaveCollapsedView {
+  return value === 'composite' || value === 'overlay' ? value : fallback
 }
 
 function ensureUnreceivedDetail(value: unknown, fallback: TtsUnreceivedDetail): TtsUnreceivedDetail {
@@ -404,6 +425,8 @@ export function sanitize(partial: Partial<AppSettings>): AppSettings {
     // 形の判定は使う側（`isValidSeismoHostUrl`）の仕事。
     seismoHostUrl: ensureString(partial.seismoHostUrl, DEFAULTS.seismoHostUrl),
     seismoWave: ensureSeismoWave(partial.seismoWave, DEFAULTS.seismoWave),
+    seismoWaveCollapsedView: ensureSeismoWaveCollapsedView(partial.seismoWaveCollapsedView, DEFAULTS.seismoWaveCollapsedView),
+    seismoWaveExpanded: ensureBool(partial.seismoWaveExpanded, DEFAULTS.seismoWaveExpanded),
     panelRatio: clampNumber(partial.panelRatio, PANEL_RATIO_MIN, PANEL_RATIO_MAX, DEFAULTS.panelRatio),
   }
 }

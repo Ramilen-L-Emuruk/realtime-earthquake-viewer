@@ -16,6 +16,8 @@
 // （`seismoWaveBuffer.ts` のヘッダが避けたいと書いている「そこだけ時間の縮んだ絵」）。
 
 import type { SeismoWaveWindow } from '../../utils/seismoWaveBuffer'
+import { vectorMagnitudeOf3 } from '../../utils/seismoWaveColumns'
+import { movingAverage, signedMovingAverages, MEAN_LINE_WINDOW_MS } from '../../utils/waveMeanLines'
 
 /** 画面の 1 列ぶん。 */
 export interface WaveColumn {
@@ -40,6 +42,13 @@ export interface WaveColumn {
    * 1 以下のところは合成の裏付けが無い（1 台だけの値）。
    */
   readonly minMembers: number
+  /**
+   * 合成（ベクトルの大きさ）の下端と上端（gal）。**サンプルごとに出してから列の端を取る**（成分ごとの端からは
+   * 作れない —— 別々の瞬間の最大を組み合わせると実際より大きく出る）。**作れないときは `NaN`**
+   * （値を持たない列・合成を返さない古いホストから読み返した列）。
+   */
+  readonly magMin: number
+  readonly magMax: number
 }
 
 export interface WaveColumns {
@@ -60,6 +69,8 @@ const NO_VALUE: WaveColumn = {
   min: [NaN, NaN, NaN],
   max: [NaN, NaN, NaN],
   minMembers: 0,
+  magMin: NaN,
+  magMax: NaN,
 }
 
 /**
@@ -94,6 +105,10 @@ export function buildWaveColumns(params: {
   const mins = [new Float32Array(columnCount), new Float32Array(columnCount), new Float32Array(columnCount)]
   const maxs = [new Float32Array(columnCount), new Float32Array(columnCount), new Float32Array(columnCount)]
   const members = new Float32Array(columnCount)
+  const magMins = new Float32Array(columnCount)
+  const magMaxs = new Float32Array(columnCount)
+  /** 合成に数える向き（消した向きは合成からも外す —— 詳細の窓の合成と同じ）。 */
+  const magAxes = magAxesOf(visibleAxes)
   /** 列にサンプルが 1 つでも入ったか（本数を数える起点）。 */
   const filled = new Uint8Array(columnCount)
   /** 成分ごとに、列へ値が入ったか。 */
@@ -102,11 +117,15 @@ export function buildWaveColumns(params: {
   const lastMs = win.firstSampleMs + (count - 1) * win.msPerSample
   const leftMs = lastMs - spanMs
 
+  /** 1 サンプルの 3 成分。**使い回す**（サンプルごとに配列を作らない）。 */
+  const values = [0, 0, 0]
   for (let i = 0; i < count; i += 1) {
-    const values = [win.gal[0][i], win.gal[1][i], win.gal[2][i]]
+    values[0] = win.gal[0][i]
+    values[1] = win.gal[1][i]
+    values[2] = win.gal[2][i]
     // **成分ごとに読む。** 届かなかった区間は 3 成分そろって `NaN` で入るのでそこで落ちる。
     // 1 成分だけ `NaN`（観測点の合成が解けなかった成分）なら、残りの成分は列へ入れる。
-    if (!values.some((v) => Number.isFinite(v))) continue
+    if (!Number.isFinite(values[0]) && !Number.isFinite(values[1]) && !Number.isFinite(values[2])) continue
 
     const t = win.firstSampleMs + i * win.msPerSample
     // **右端を含める。** 素直に割ると最後のサンプルだけが `columnCount` 番目
@@ -116,13 +135,21 @@ export function buildWaveColumns(params: {
     if (c < 0) continue
 
     const m = win.memberCount[i]
+    const mag = vectorMagnitudeOf3(values[0], values[1], values[2], magAxes)
     if (filled[c] === 0) {
       filled[c] = 1
       members[c] = m
-    } else if (m < members[c]) {
+      magMins[c] = mag
+      magMaxs[c] = mag
+    } else {
       // **いちばん少ない本数を採る。** 裏付けが 1 本まで落ちた瞬間が列の中に
       // あれば、その列は「裏付けが無い」として示す（見落とす方が重い）。
-      members[c] = m
+      if (m < members[c]) members[c] = m
+      // **`NaN` の端は必ず置き換える**（`v < NaN` は偽なので、比べるだけだと最初の欠けが居座る）。
+      if (Number.isFinite(mag)) {
+        if (!Number.isFinite(magMins[c]) || mag < magMins[c]) magMins[c] = mag
+        if (!Number.isFinite(magMaxs[c]) || mag > magMaxs[c]) magMaxs[c] = mag
+      }
     }
     for (let a = 0; a < 3; a += 1) {
       const v = values[a]
@@ -162,8 +189,78 @@ export function buildWaveColumns(params: {
       min: [end(mins, 0), end(mins, 1), end(mins, 2)],
       max: [end(maxs, 0), end(maxs, 1), end(maxs, 2)],
       minMembers: members[c],
+      magMin: magMins[c],
+      magMax: magMaxs[c],
     })
   }
 
   return { columns, scaleGal: Math.max(minScaleGal, peak), hasAnyValue }
+}
+
+/** 列ごとの平均の線（{@link buildWaveMeanLines}）。**値の無い列は `NaN`**（描く側はそこで線を切る）。 */
+export interface WaveMeanLines {
+  /** 成分ごとの正側・負側の平均（東西・南北・上下の順）。 */
+  readonly axes: readonly { readonly pos: Float32Array; readonly neg: Float32Array }[]
+  /** 合成を前後 1 秒で均した線。 */
+  readonly compositeSmooth: Float32Array
+}
+
+/**
+ * 抱えている窓から、列ごとの平均の線を作る（地図の下端の波形を展開したときに重ねる）。
+ *
+ * **計算は詳細の窓・管理コンソールと共有する**（`utils/waveMeanLines.ts`。前後 1 秒）。サンプルごとに出した平均を、
+ * 列ごとに平均して 1 点にする —— 1 秒で均した線は列（60 秒を画面幅で割った 0.1 秒ほど）の中でほとんど動かない。
+ *
+ * **合成は見えている向きだけで出す**（{@link buildWaveColumns} と同じ）。
+ */
+export function buildWaveMeanLines(params: {
+  window: SeismoWaveWindow
+  columnCount: number
+  spanMs: number
+  visibleAxes?: readonly boolean[]
+}): WaveMeanLines {
+  const { window: win, columnCount, spanMs, visibleAxes } = params
+  const n = win.gal[0].length
+  const empty = (): Float32Array => new Float32Array(Math.max(0, columnCount)).fill(NaN)
+  if (columnCount <= 0 || !(spanMs > 0) || n === 0) {
+    return { axes: [0, 1, 2].map(() => ({ pos: empty(), neg: empty() })), compositeSmooth: empty() }
+  }
+  const t = new Float64Array(n)
+  for (let i = 0; i < n; i += 1) t[i] = win.firstSampleMs + i * win.msPerSample
+  const series = { t, length: n }
+  const magAxes = magAxesOf(visibleAxes)
+  const mag = new Float32Array(n)
+  for (let i = 0; i < n; i += 1) mag[i] = vectorMagnitudeOf3(win.gal[0][i], win.gal[1][i], win.gal[2][i], magAxes)
+
+  const lastMs = t[n - 1]
+  const leftMs = lastMs - spanMs
+  const columnOf = (i: number): number => Math.min(columnCount - 1, Math.floor(((t[i] - leftMs) / spanMs) * columnCount))
+  /** サンプルごとの値を、列ごとの平均へ落とす。 */
+  const toColumns = (values: ArrayLike<number>): Float32Array => {
+    const sum = new Float64Array(columnCount)
+    const cnt = new Uint32Array(columnCount)
+    for (let i = 0; i < n; i += 1) {
+      const v = values[i]
+      if (!Number.isFinite(v)) continue
+      const c = columnOf(i)
+      if (c < 0) continue
+      sum[c] += v
+      cnt[c] += 1
+    }
+    const out = new Float32Array(columnCount)
+    for (let c = 0; c < columnCount; c += 1) out[c] = cnt[c] === 0 ? NaN : sum[c] / cnt[c]
+    return out
+  }
+  return {
+    axes: [0, 1, 2].map((a) => {
+      const { pos, neg } = signedMovingAverages(series, win.gal[a], MEAN_LINE_WINDOW_MS)
+      return { pos: toColumns(pos), neg: toColumns(neg) }
+    }),
+    compositeSmooth: toColumns(movingAverage(series, mag, MEAN_LINE_WINDOW_MS)),
+  }
+}
+
+/** 合成に数える向き。**消した向きは合成からも外す**（詳細の窓の合成と同じ）。 */
+function magAxesOf(visibleAxes: readonly boolean[] | undefined): [boolean, boolean, boolean] {
+  return [0, 1, 2].map((a) => visibleAxes === undefined || visibleAxes[a] !== false) as [boolean, boolean, boolean]
 }
