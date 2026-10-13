@@ -61,6 +61,20 @@ export function calcFeltRadiusKm(mjma: number, depth: number, targetIntensity = 
 }
 
 /**
+ * 司・翠川式を前向きに解き、震央距離 `epicentralKm` の地点の計測震度を予測する。
+ *
+ * **{@link calcFeltRadiusKm} と同じ式・同じ前処理**（Mw の下限 3.0・断層半長・断層最短距離の下限 3 km）。
+ * あちらは震度から距離を逆に引き、こちらは距離から震度を引く。工学的基盤上の値で地盤の増幅は
+ * 入れない（あちらがバッファ 1.5 倍で補っている分は、使う側が余裕として持つ）。
+ */
+export function predictMeasuredIntensity(mjma: number, depth: number, epicentralKm: number): number {
+  const mw = mjmaToMw(Math.max(mjma, 3.0))
+  const faultHalfLen = 10 ** (0.5 * mw - 1.85)
+  const X = Math.max(hypocentralDistanceKm(epicentralKm, depth) - faultHalfLen, 3)
+  return 2.68 + 1.72 * Math.log10(calcPGV600(X, mw, depth))
+}
+
+/**
  * EEW最終報の発震時刻から何秒後に自動解除するかを返す。
  * 司・翠川(1999)の有感半径(×1.5バッファ)にS波が到達するまでの時間 + 30秒。
  */

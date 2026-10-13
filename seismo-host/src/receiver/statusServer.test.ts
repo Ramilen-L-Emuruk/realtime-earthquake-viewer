@@ -138,6 +138,7 @@ function report(hub: ReadingHub): StatusReport {
     stationConfigWarning: null,
     ungroupedMultiBoardStations: [],
     assignedBoards: [],
+    usualIntensities: [],
   })
 }
 

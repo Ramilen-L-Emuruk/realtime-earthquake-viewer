@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, renderHook, waitFor } from '@testing-library/react'
 
 import { NO_SCOPE, type NearbyScope } from '../utils/actionChecklistTrigger'
+import type { ReachStation } from '../utils/seismoQuakeReach'
 import { quakeEventKey } from '../utils/quakeMerge'
 import { computeWaveArrival } from '../utils/seismoWaveArrival'
 import type { OriginSeconds } from '../utils/quakeOriginSeconds'
@@ -38,7 +39,7 @@ vi.mock('../services/seismoWaveHistory', async (importOriginal) => ({
 
 // **トップレベルで一度読む。** テスト本体で初めて解決すると、その待ちが 1 件目の
 // 所要時間に乗って並列実行のときだけ時間切れになる（CLAUDE.md「検証」）。
-const { pickTargets, useSeismoQuakeWaves, judgeWaveInterrupted } = await import(
+const { pickTargets, rememberPicks, useSeismoQuakeWaves, judgeWaveInterrupted } = await import(
   './useSeismoQuakeWaves'
 )
 
@@ -93,45 +94,168 @@ function okStatus() {
     stations: [{ stationId: 'station-1', displayName: '自宅', lat: 35.5, lon: 139.8 }],
     sensorCount: 1,
     sensors: [],
+    usualIntensities: new Map<string, number>(),
   }
+}
+
+/**
+ * 観測点の読み取り（`/status`）を反映させる。**読んでから対象を選ぶまでに描き直しを 1 回挟む** ——
+ * `act()` は中の状態更新を最後にまとめて反映するので、同じ `act()` の中では対象がまだ空のまま進む。
+ */
+async function settleStations(): Promise<void> {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0)
+  })
 }
 
 afterEach(() => {
   vi.clearAllMocks()
 })
 
-describe('pickTargets', () => {
-  it('半径内で閾値に達した地震を選ぶ', () => {
-    const q = quake('a', '2026/09/29 22:00:00', 40, [
-      { pref: '', addr: '自宅の隣', isArea: false, scale: 30 },
-    ] as JMAQuake['points'])
-    expect(pickTargets([q], HOME, new Map())).toHaveLength(1)
+/** 前に選んだ組が無い。 */
+const NO_KEPT: ReadonlyMap<string, readonly string[]> = new Map()
+
+/** 判定に使う観測点（架空の座標。テストの地震の震源＝東京湾の近く）。 */
+const NEAR: ReachStation = { stationId: 'station-1', lat: 35.5, lon: 139.8, usualMeasured: -1.3 }
+/** 東京湾から 1000 km 以上離れた観測点。 */
+const FAR: ReachStation = { stationId: 'station-far', lat: 26.2, lon: 127.7, usualMeasured: -1.3 }
+
+/** 震源が判らない地震（震源が決まる前の震度速報の形）。 */
+function unknownHypocenter(q: JMAQuake): JMAQuake {
+  return {
+    ...q,
+    earthquake: { ...q.earthquake, hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: -1 } },
+  } as JMAQuake
+}
+
+describe('rememberPicks', () => {
+  const q = quake('a', '2026/09/29 22:00:00', 30, [] as JMAQuake['points'])
+  const key = quakeEventKey(q)
+  const targetsOf = (stationIds: readonly string[]) =>
+    pickTargets([q], NO_SCOPE, new Map(), [NEAR, FAR, { ...NEAR, stationId: 'np', lat: null, lon: null }], NO_KEPT)
+      .map((t) => ({ ...t, stationIds }))
+
+  // 正: 普段が読めた観測点で選んだ組を覚える。
+  it('普段が読めた観測点で選んだ組を覚える', () => {
+    expect(rememberPicks(new Map(), targetsOf(['station-1']), [NEAR], new Set([key])).get(key)).toEqual(['station-1'])
   })
 
-  it('半径内が揺れていない地震は選ばない', () => {
-    // **対照。** 電文の点は引けるが、自宅の周りは載っていない＝震度1未満。
+  // 対照: 普段が読めない観測点（下限なし）で選んだ組は覚えない。
+  it('普段が読めない観測点で選んだ組は覚えない', () => {
+    const nullUsual = { ...NEAR, usualMeasured: null }
+    expect(rememberPicks(new Map(), targetsOf(['station-1']), [nullUsual], new Set([key])).has(key)).toBe(false)
+  })
+
+  // 座標の無い観測点は近所の震度で決まり、普段に左右されないので覚える。
+  it('座標の無い観測点で選んだ組は覚える', () => {
+    const noPos = { ...NEAR, stationId: 'np', lat: null, lon: null, usualMeasured: null }
+    expect(rememberPicks(new Map(), targetsOf(['np']), [noPos], new Set([key])).get(key)).toEqual(['np'])
+  })
+
+  // 安全弁: 前に覚えた組は、今回選ばれなくても残す。取消（一覧から消えた）分だけ落とす。
+  it('前に覚えた組は残し、一覧から消えた地震の分だけ落とす', () => {
+    const prev = new Map([[key, ['station-1']], ['gone', ['station-1']]])
+    const next = rememberPicks(prev, [], [NEAR], new Set([key]))
+    expect(next.get(key)).toEqual(['station-1'])
+    expect(next.has('gone')).toBe(false)
+  })
+
+  it('観測点を読めていなければ何も足さない', () => {
+    expect(rememberPicks(new Map(), targetsOf(['station-1']), null, new Set([key])).size).toBe(0)
+  })
+})
+
+describe('pickTargets', () => {
+  // 正: 自作地震計の場所での予測計測震度が普段 − 0.5 を上回れば選ぶ（2026-10-13 ユーザー承認）。
+  it('自作地震計まで揺れが届くと見込める地震を選ぶ', () => {
+    const q = quake('a', '2026/09/29 22:00:00', 10, [] as JMAQuake['points'])
+    expect(pickTargets([q], NO_SCOPE, new Map(), [NEAR], NO_KEPT)).toMatchObject([{ stationIds: ['station-1'] }])
+  })
+
+  // 正: 気象庁の近所の観測点が揺れていなくても、届くと見込めれば選ぶ（自作地震計は震度 1 未満まで測れる）。
+  it('近所の気象庁の観測点が震度 1 に届かなくても選ぶ', () => {
     const q = quake('a', '2026/09/29 22:00:00', 40, [
       { pref: '', addr: '遠くの観測点', isArea: false, scale: 40 },
     ] as JMAQuake['points'])
-    expect(pickTargets([q], HOME, new Map())).toHaveLength(0)
+    expect(pickTargets([q], HOME, new Map(), [NEAR], NO_KEPT)).toHaveLength(1)
   })
 
-  it('地点を持たない端末では全国の最大震度で判定する', () => {
+  // 対照: 全国の最大震度が大きくても、届かないと見込める地震は選ばない。
+  it('遠い観測点へは届かない地震を選ばない', () => {
+    const q = quake('a', '2026/09/29 22:00:00', 40, [] as JMAQuake['points'])
+    const small = { ...q, earthquake: { ...q.earthquake, hypocenter: { ...q.earthquake.hypocenter, magnitude: 4.0 } } } as JMAQuake
+    expect(pickTargets([small], NO_SCOPE, new Map(), [FAR], NO_KEPT)).toHaveLength(0)
+  })
+
+  // 安全弁: 普段の計測震度が読めない間は下限を置かない。
+  it('普段が読めなければ下限を置かずに選ぶ', () => {
+    const q = quake('a', '2026/09/29 22:00:00', 40, [] as JMAQuake['points'])
+    const small = { ...q, earthquake: { ...q.earthquake, hypocenter: { ...q.earthquake.hypocenter, magnitude: 4.0 } } } as JMAQuake
+    expect(pickTargets([small], NO_SCOPE, new Map(), [{ ...FAR, usualMeasured: null }], NO_KEPT)).toHaveLength(1)
+  })
+
+  it('観測点ごとに取りに行く先を絞る', () => {
+    const q = quake('a', '2026/09/29 22:00:00', 40, [] as JMAQuake['points'])
+    const small = { ...q, earthquake: { ...q.earthquake, hypocenter: { ...q.earthquake.hypocenter, magnitude: 4.0 } } } as JMAQuake
+    expect(pickTargets([small], NO_SCOPE, new Map(), [NEAR, FAR], NO_KEPT)).toMatchObject([{ stationIds: ['station-1'] }])
+  })
+
+  // 安全弁: 前に選んだ組は、普段が変わって届かない見込みになっても外さない（出ていた波形を消さない）。
+  it('前に選んだ地震と観測点は外さない', () => {
+    const q = quake('a', '2026/09/29 22:00:00', 40, [] as JMAQuake['points'])
+    const small = { ...q, earthquake: { ...q.earthquake, hypocenter: { ...q.earthquake.hypocenter, magnitude: 4.0 } } } as JMAQuake
+    const kept = new Map([[quakeEventKey(small), ['station-far']]])
+    expect(pickTargets([small], NO_SCOPE, new Map(), [NEAR, FAR], kept)).toMatchObject([{ stationIds: ['station-1', 'station-far'] }])
+    // 対照: ホストに無い観測点は持ち越さない。
+    expect(pickTargets([small], NO_SCOPE, new Map(), [FAR].map((s) => ({ ...s, stationId: 'other' })), kept)).toHaveLength(0)
+  })
+
+  it('観測点を知るまでは選ばない', () => {
+    const q = quake('a', '2026/09/29 22:00:00', 40, [] as JMAQuake['points'])
+    expect(pickTargets([q], NO_SCOPE, new Map(), null, NO_KEPT)).toHaveLength(0)
+    expect(pickTargets([q], NO_SCOPE, new Map(), [], NO_KEPT)).toHaveLength(0)
+  })
+
+  // 安全弁: 予測できない地震（震源が判らない）は、気象庁の近所の震度で判定する。
+  describe('震源が判らない地震は気象庁の観測で判定する', () => {
+    it('半径内で閾値に達していれば選ぶ', () => {
+      const q = unknownHypocenter(quake('a', '2026/09/29 22:00:00', 40, [
+        { pref: '', addr: '自宅の隣', isArea: false, scale: 30 },
+      ] as JMAQuake['points']))
+      expect(pickTargets([q], HOME, new Map(), [NEAR], NO_KEPT)).toMatchObject([{ stationIds: ['station-1'] }])
+    })
+
+    it('半径内が揺れていなければ選ばない', () => {
+      // **対照。** 電文の点は引けるが、自宅の周りは載っていない＝震度1未満。
+      const q = unknownHypocenter(quake('a', '2026/09/29 22:00:00', 40, [
+        { pref: '', addr: '遠くの観測点', isArea: false, scale: 40 },
+      ] as JMAQuake['points']))
+      expect(pickTargets([q], HOME, new Map(), [NEAR], NO_KEPT)).toHaveLength(0)
+    })
+
+    it('地点を持たない端末では全国の最大震度で判定する', () => {
+      const q = unknownHypocenter(quake('a', '2026/09/29 22:00:00', 30, [] as JMAQuake['points']))
+      expect(pickTargets([q], NO_SCOPE, new Map(), [NEAR], NO_KEPT)).toHaveLength(1)
+    })
+  })
+
+  it('座標を持たない観測点は気象庁の観測で判定する', () => {
     const q = quake('a', '2026/09/29 22:00:00', 30, [] as JMAQuake['points'])
-    expect(pickTargets([q], NO_SCOPE, new Map())).toHaveLength(1)
+    const noPos = { ...NEAR, stationId: 'station-2', lat: null, lon: null }
+    expect(pickTargets([q], NO_SCOPE, new Map(), [NEAR, noPos], NO_KEPT)).toMatchObject([{ stationIds: ['station-1', 'station-2'] }])
   })
 
   it('時刻として読めない地震は選ばない', () => {
     const q = quake('a', 'こわれた時刻', 40, [] as JMAQuake['points'])
-    expect(pickTargets([q], NO_SCOPE, new Map())).toHaveLength(0)
+    expect(pickTargets([q], NO_SCOPE, new Map(), [NEAR], NO_KEPT)).toHaveLength(0)
   })
 
   it('件数の上限は置かず、新しい順に並べる', () => {
-    // **上限を外した**（2026-09-30 のユーザー判断）—— 有感の地震は 7 日でせいぜい数件。
+    // **上限を外した**（2026-09-30 のユーザー判断）。
     const quakes = Array.from({ length: 8 }, (_, i) =>
       quake(`q${i}`, `2026/09/2${i} 10:00:00`, 30, [] as JMAQuake['points']),
     )
-    const picked = pickTargets(quakes, NO_SCOPE, new Map())
+    const picked = pickTargets(quakes, NO_SCOPE, new Map(), [NEAR], NO_KEPT)
     expect(picked).toHaveLength(8)
     // 新しい順（渡した並びに依存しない）。
     for (let i = 1; i < picked.length; i += 1) {
@@ -144,16 +268,29 @@ describe('pickTargets', () => {
     // **重なる区間が 2 枚のカードに出るのを防ぐ**（2026-09-30 のユーザー判断・C 案）。
     const older = quake('a', '2026/09/29 22:00:00', 30, [] as JMAQuake['points'])
     const newer = quake('b', '2026/09/29 22:10:00', 30, [] as JMAQuake['points'])
-    const picked = pickTargets([older, newer], NO_SCOPE, new Map())
+    const picked = pickTargets([older, newer], NO_SCOPE, new Map(), [NEAR], NO_KEPT)
     expect(picked[0].cutoffMs).toBe(Infinity)
     expect(picked[1].cutoffMs).toBe(new Date('2026/09/29 22:10:00').getTime())
+  })
+
+  // 対照: 届かない地震は打ち切りの材料にしない（遠くの地震で近くの地震の窓を切らない）。
+  it('選ばなかった地震では窓を切らない', () => {
+    const near = quake('a', '2026/09/29 22:00:00', 30, [] as JMAQuake['points'])
+    const farQ = quake('b', '2026/09/29 22:01:00', 30, [] as JMAQuake['points'])
+    const far = {
+      ...farQ,
+      earthquake: { ...farQ.earthquake, hypocenter: { ...farQ.earthquake.hypocenter, latitude: 43.0, longitude: 145.0, magnitude: 3.0 } },
+    } as JMAQuake
+    const picked = pickTargets([near, far], NO_SCOPE, new Map(), [NEAR], NO_KEPT)
+    expect(picked).toHaveLength(1)
+    expect(picked[0].cutoffMs).toBe(Infinity)
   })
 
   it('同じ分に起きた地震では、窓が潰れないよう下限を確保する', () => {
     // **同時刻の 2 つの揺れは、そもそも切り分けられない。** ここだけ重なりを許す。
     const a = quake('a', '2026/09/29 22:00:00', 30, [] as JMAQuake['points'])
     const b = quake('b', '2026/09/29 22:00:00', 30, [] as JMAQuake['points'])
-    const picked = pickTargets([a, b], NO_SCOPE, new Map())
+    const picked = pickTargets([a, b], NO_SCOPE, new Map(), [NEAR], NO_KEPT)
     const origin = new Date('2026/09/29 22:00:00').getTime()
     expect(picked[1].cutoffMs).toBe(origin + 30_000)
   })
@@ -187,6 +324,138 @@ describe('useSeismoQuakeWaves', () => {
       }),
     )
   }
+
+  // 対照: 自作地震計まで揺れが届かないと見込める地震は、取りに行かない（2026-10-13 ユーザー承認）。
+  it('届かないと見込める地震の波形は取りに行かない', async () => {
+    const far = {
+      ...SECONDS_QUAKE,
+      earthquake: {
+        ...SECONDS_QUAKE.earthquake,
+        hypocenter: { ...SECONDS_QUAKE.earthquake.hypocenter, latitude: 43.0, longitude: 145.0, magnitude: 3.0 },
+      },
+    } as JMAQuake
+    fetchSeismoStatus.mockResolvedValue({ ...okStatus(), usualIntensities: new Map([['station-1', -1.3]]) })
+    fetchSeismoWaveHistory.mockResolvedValue(history())
+    renderHook(() =>
+      useSeismoQuakeWaves({
+        enabled: true,
+        baseUrl: 'http://host:50506',
+        quakes: [far],
+        scope: NO_SCOPE,
+        readWave: () => null,
+        replayOffsetMs: null,
+        originSeconds: SECONDS,
+        subscribeWaveRevised: NO_REVISED,
+      }),
+    )
+    // 観測点は読む（届くかを決める材料）が、波形は取りに行かない。
+    await waitFor(() => expect(fetchSeismoStatus).toHaveBeenCalledTimes(1))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(fetchSeismoWaveHistory).not.toHaveBeenCalled()
+  })
+
+  // 安全弁: 普段が読めた状態で出した波形は、普段が測り直されて届かない見込みになっても消さない。
+  it('普段が変わって届かない見込みになっても、出した波形は残す', async () => {
+    const q = SECONDS_QUAKE
+    fetchSeismoStatus.mockResolvedValue({ ...okStatus(), usualIntensities: new Map([['station-1', -1.3]]) })
+    fetchSeismoWaveHistory.mockResolvedValue(history())
+    const props = {
+      enabled: true,
+      baseUrl: 'http://host:50506',
+      quakes: [q],
+      scope: NO_SCOPE,
+      readWave: () => null,
+      replayOffsetMs: null,
+      originSeconds: SECONDS,
+      subscribeWaveRevised: NO_REVISED,
+    }
+    const { result, rerender } = renderHook((p: typeof props) => useSeismoQuakeWaves(p), { initialProps: props })
+    await waitFor(() => expect(result.current.has(quakeEventKey(q))).toBe(true))
+    // 普段がずっと高く測り直され、この地震は届かない見込みになる。地震が増えて観測点を読み直す。
+    fetchSeismoStatus.mockResolvedValue({ ...okStatus(), usualIntensities: new Map([['station-1', 6]]) })
+    const next = quake('b', '2026/09/29 23:00:00', 30, [] as JMAQuake['points'])
+    const nextNear = {
+      ...next,
+      earthquake: { ...next.earthquake, hypocenter: { ...next.earthquake.hypocenter, magnitude: 8.0 } },
+    } as JMAQuake
+    rerender({ ...props, quakes: [nextNear, q] })
+    await waitFor(() => expect(fetchSeismoStatus).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(result.current.has(quakeEventKey(nextNear))).toBe(true))
+    expect(result.current.has(quakeEventKey(q))).toBe(true)
+  })
+
+  // 安全弁: 普段が読めない間に選び、読めた後も同じ顔ぶれで選ばれた波形は、そこで覚えて残す
+  // （選ぶ顔ぶれが変わらないので、覚える処理が観測点の読み直しで走らないと取りこぼす）。
+  it('普段が読めてから同じ顔ぶれで選ばれた波形は、普段が上がっても残す', async () => {
+    const q = SECONDS_QUAKE
+    // 観測点を読み直す種にするだけの地震。震源が判らず震度1にも届かないので、どの段でも選ばれない
+    // （選ばれると targetKey が動き、穴を通らずに覚えてしまう）。
+    const older = (id: string, time: string): JMAQuake => unknownHypocenter(quake(id, time, 0, [] as JMAQuake['points']))
+    fetchSeismoStatus.mockResolvedValue(okStatus())
+    fetchSeismoWaveHistory.mockResolvedValue(history())
+    const props = {
+      enabled: true,
+      baseUrl: 'http://host:50506',
+      quakes: [q],
+      scope: NO_SCOPE,
+      readWave: () => null,
+      replayOffsetMs: null,
+      originSeconds: SECONDS,
+      subscribeWaveRevised: NO_REVISED,
+    }
+    const { result, rerender } = renderHook((p: typeof props) => useSeismoQuakeWaves(p), { initialProps: props })
+    await waitFor(() => expect(result.current.has(quakeEventKey(q))).toBe(true))
+    // 普段が読めるようになる。足した古い遠い地震は届かないので、選ぶ顔ぶれ（と targetKey）は変わらない。
+    fetchSeismoStatus.mockResolvedValue({ ...okStatus(), usualIntensities: new Map([['station-1', -1.3]]) })
+    const a = older('x1', '2026/09/28 10:00:00')
+    rerender({ ...props, quakes: [q, a] })
+    await waitFor(() => expect(fetchSeismoStatus).toHaveBeenCalledTimes(2))
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+    // 普段がずっと高く測り直され、この地震は届かない見込みになる。
+    fetchSeismoStatus.mockResolvedValue({ ...okStatus(), usualIntensities: new Map([['station-1', 6]]) })
+    const b = older('x2', '2026/09/28 09:00:00')
+    rerender({ ...props, quakes: [q, a, b] })
+    await waitFor(() => expect(fetchSeismoStatus).toHaveBeenCalledTimes(3))
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+    expect(result.current.has(quakeEventKey(q))).toBe(true)
+  })
+
+  // 対照: 普段が読めない間（下限なし）に選んだ遠い地震は、普段が読めたら外れる（持ち越さない）。
+  it('普段が読めない間に選んだ地震は、普段が読めたら外す', async () => {
+    const far = {
+      ...SECONDS_QUAKE,
+      earthquake: {
+        ...SECONDS_QUAKE.earthquake,
+        hypocenter: { ...SECONDS_QUAKE.earthquake.hypocenter, latitude: 43.0, longitude: 145.0, magnitude: 3.0 },
+      },
+    } as JMAQuake
+    // 普段が読めない間は下限を置かないので、遠い地震も選ばれる。
+    fetchSeismoStatus.mockResolvedValue(okStatus())
+    fetchSeismoWaveHistory.mockResolvedValue(history())
+    const props = {
+      enabled: true,
+      baseUrl: 'http://host:50506',
+      quakes: [far],
+      scope: NO_SCOPE,
+      readWave: () => null,
+      replayOffsetMs: null,
+      originSeconds: SECONDS,
+      subscribeWaveRevised: NO_REVISED,
+    }
+    const { result, rerender } = renderHook((p: typeof props) => useSeismoQuakeWaves(p), { initialProps: props })
+    await waitFor(() => expect(result.current.has(quakeEventKey(far))).toBe(true))
+    // 普段が読めるようになり、遠い地震は届かない見込みになる。地震が増えて観測点を読み直す。
+    fetchSeismoStatus.mockResolvedValue({ ...okStatus(), usualIntensities: new Map([['station-1', -1.3]]) })
+    const next = quake('b', '2026/09/29 23:00:00', 30, [] as JMAQuake['points'])
+    rerender({ ...props, quakes: [next, far] })
+    await waitFor(() => expect(fetchSeismoStatus).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(result.current.has(quakeEventKey(next))).toBe(true))
+    expect(result.current.has(quakeEventKey(far))).toBe(false)
+  })
 
   it('取れた波形を地震の鍵で引ける', async () => {
     fetchSeismoStatus.mockResolvedValue(okStatus())
@@ -403,7 +672,9 @@ describe('useSeismoQuakeWaves', () => {
         .mockResolvedValueOnce({ kind: 'unreachable', detail: 'Failed to fetch' })
         .mockResolvedValue(history())
       const { result } = setup()
-      await vi.advanceTimersByTimeAsync(10)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
       expect(fetchSeismoWaveHistory).toHaveBeenCalledTimes(1)
       expect(result.current.size).toBe(0)
 
@@ -428,9 +699,13 @@ describe('useSeismoQuakeWaves', () => {
       fetchSeismoStatus.mockResolvedValue(okStatus())
       fetchSeismoWaveHistory.mockResolvedValue({ kind: 'unreachable', detail: 'Failed to fetch' })
       setup()
-      await vi.advanceTimersByTimeAsync(10)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
       expect(fetchSeismoWaveHistory).toHaveBeenCalledTimes(1)
-      await vi.advanceTimersByTimeAsync(60_000)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000)
+      })
       expect(fetchSeismoWaveHistory).toHaveBeenCalledTimes(1)
     } finally {
       vi.useRealTimers()
@@ -446,9 +721,13 @@ describe('useSeismoQuakeWaves', () => {
     try {
       fetchSeismoStatus.mockResolvedValue({ kind: 'unreachable', detail: 'Failed to fetch' })
       setup()
-      await vi.advanceTimersByTimeAsync(10)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
       expect(fetchSeismoStatus).toHaveBeenCalledTimes(1)
-      await vi.advanceTimersByTimeAsync(60_000)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000)
+      })
       expect(fetchSeismoStatus).toHaveBeenCalledTimes(1)
     } finally {
       vi.useRealTimers()
@@ -462,9 +741,13 @@ describe('useSeismoQuakeWaves', () => {
     try {
       fetchSeismoStatus.mockResolvedValue({ kind: 'unreachable', detail: 'Failed to fetch' })
       setup()
-      await vi.advanceTimersByTimeAsync(10)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
       expect(fetchSeismoStatus).toHaveBeenCalledTimes(1)
-      await vi.advanceTimersByTimeAsync(30_000)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000)
+      })
       expect(fetchSeismoStatus).toHaveBeenCalledTimes(2)
     } finally {
       vi.useRealTimers()
@@ -482,9 +765,13 @@ describe('useSeismoQuakeWaves', () => {
     try {
       fetchSeismoStatus.mockResolvedValue({ ...okStatus(), stations: [], sensorCount: 0 })
       setup()
-      await vi.advanceTimersByTimeAsync(10)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
       expect(fetchSeismoStatus).toHaveBeenCalledTimes(1)
-      await vi.advanceTimersByTimeAsync(30_000)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000)
+      })
       expect(fetchSeismoStatus).toHaveBeenCalledTimes(2)
     } finally {
       vi.useRealTimers()
@@ -499,9 +786,13 @@ describe('useSeismoQuakeWaves', () => {
     try {
       fetchSeismoStatus.mockResolvedValue({ ...okStatus(), stations: [], sensorCount: 0 })
       setup()
-      await vi.advanceTimersByTimeAsync(10)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
       expect(fetchSeismoStatus).toHaveBeenCalledTimes(1)
-      await vi.advanceTimersByTimeAsync(60_000)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000)
+      })
       expect(fetchSeismoStatus).toHaveBeenCalledTimes(1)
     } finally {
       vi.useRealTimers()
@@ -517,7 +808,9 @@ describe('useSeismoQuakeWaves', () => {
       fetchSeismoStatus.mockResolvedValue({ ...okStatus(), stations: [], sensorCount: 0 })
       fetchSeismoWaveHistory.mockResolvedValue(history())
       setup()
-      await vi.advanceTimersByTimeAsync(10)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
       expect(fetchSeismoWaveHistory).not.toHaveBeenCalled()
     } finally {
       vi.useRealTimers()
@@ -531,9 +824,13 @@ describe('useSeismoQuakeWaves', () => {
       fetchSeismoStatus.mockResolvedValue(okStatus())
       fetchSeismoWaveHistory.mockResolvedValue({ kind: 'bad-request', detail: '範囲が広すぎる' })
       setup()
-      await vi.advanceTimersByTimeAsync(10)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
       expect(fetchSeismoWaveHistory).toHaveBeenCalledTimes(1)
-      await vi.advanceTimersByTimeAsync(60_000)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000)
+      })
       expect(fetchSeismoWaveHistory).toHaveBeenCalledTimes(1)
     } finally {
       vi.useRealTimers()
@@ -763,6 +1060,7 @@ describe('震度を訊く（#494 段3）', () => {
       fetchSeismoWaveHistory.mockResolvedValue(history())
       fetchSeismoQuakeIntensity.mockResolvedValueOnce(intensityOk())
       const { result } = render()
+      await settleStations()
       await act(async () => {
         await vi.advanceTimersByTimeAsync(1000)
       })
@@ -800,6 +1098,7 @@ describe('震度を訊く（#494 段3）', () => {
       fetchSeismoStatus.mockResolvedValue(okStatus())
       fetchSeismoWaveHistory.mockResolvedValue(history())
       render(-3600_000)
+      await settleStations()
       await act(async () => {
         await vi.advanceTimersByTimeAsync(1000)
       })
@@ -817,6 +1116,7 @@ describe('震度を訊く（#494 段3）', () => {
       fetchSeismoStatus.mockResolvedValue(okStatus())
       fetchSeismoWaveHistory.mockResolvedValue(history())
       const { rerender } = render()
+      await settleStations()
       await act(async () => {
         await vi.advanceTimersByTimeAsync(1000)
       })
@@ -861,6 +1161,7 @@ describe('震度を訊けなかったときの取り直し（#494 段3）', () =
       fetchSeismoQuakeIntensity.mockResolvedValueOnce(unreachable)
       // 再生中＝伸ばさないので、発生の 5 秒後でもすぐ訊く（発生から 30 分以内＝取り直す対象）
       renderReplay('2026/09/29 22:00:05', -3600_000)
+      await settleStations()
       await act(async () => {
         await vi.advanceTimersByTimeAsync(1000)
       })
@@ -880,6 +1181,7 @@ describe('震度を訊けなかったときの取り直し（#494 段3）', () =
     try {
       fetchSeismoQuakeIntensity.mockResolvedValueOnce(unreachable)
       renderReplay('2026/09/29 22:00:05', -3600_000)
+      await settleStations()
       await act(async () => {
         await vi.advanceTimersByTimeAsync(20_000)
       })
@@ -895,6 +1197,7 @@ describe('震度を訊けなかったときの取り直し（#494 段3）', () =
     try {
       fetchSeismoQuakeIntensity.mockResolvedValue(unreachable)
       renderReplay('2026/09/29 23:00:00', null)
+      await settleStations()
       await act(async () => {
         await vi.advanceTimersByTimeAsync(1000)
       })

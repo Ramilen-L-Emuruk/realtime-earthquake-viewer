@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { eewEpicenterRankLabel, eewMagnitudeRankLabel, eewMagnitudePointsLabel, isEewHypocenterSettled, eewForecastChangeText, calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, calcEEWCancelTime, calcFeltRadiusKm, diffHypoInfoEvents, computeSingleEEWLevel, computeDisplayEEWLevel, computeEverSpecialWarningEventIds, eewMaxLpgmClass, eewMaxScale, eewMaxScaleInfo, isForecastScaleHigher, eewNoForecastReason, canPresentLpgmClass, eewSerial, selectEEWSoundType, eewPhase2ScaleStabilityMs, EEW_PHASE2_STABILITY_SMALL_MS, EEW_PHASE2_STABILITY_LARGE_MS, isEewAreaArrived, selectActiveEews, isUnannouncedHypocenter, EEW_HYPOCENTER_RESTATE_KM, mergeEewAreaArrival, NO_EEW_AREA_ARRIVAL, eewArrivalEtaSecFromMs, type HypoInfoPendingMissing, type AnnouncedHypocenter } from './eew'
+import { eewEpicenterRankLabel, eewMagnitudeRankLabel, eewMagnitudePointsLabel, isEewHypocenterSettled, eewForecastChangeText, calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, calcEEWCancelTime, calcFeltRadiusKm, predictMeasuredIntensity, diffHypoInfoEvents, computeSingleEEWLevel, computeDisplayEEWLevel, computeEverSpecialWarningEventIds, eewMaxLpgmClass, eewMaxScale, eewMaxScaleInfo, isForecastScaleHigher, eewNoForecastReason, canPresentLpgmClass, eewSerial, selectEEWSoundType, eewPhase2ScaleStabilityMs, EEW_PHASE2_STABILITY_SMALL_MS, EEW_PHASE2_STABILITY_LARGE_MS, isEewAreaArrived, selectActiveEews, isUnannouncedHypocenter, EEW_HYPOCENTER_RESTATE_KM, mergeEewAreaArrival, NO_EEW_AREA_ARRIVAL, eewArrivalEtaSecFromMs, type HypoInfoPendingMissing, type AnnouncedHypocenter } from './eew'
 import type { YahooHypoInfoItem } from '../services/kyoshin'
 import type { EEWAlert, EEWRegion, IntensityScale, LpgmClass } from '../types/earthquake'
 
@@ -625,6 +625,26 @@ describe('eewMaxLpgmClass', () => {
       areas: [{ pref: 'A県', name: 'A地域', scaleFrom: 30, scaleTo: 40, kindCode: '10', arrivalTime: null, lgIntTo: 3 }],
     })
     expect(eewMaxLpgmClass(eew)).toBe(3)
+  })
+})
+
+describe('predictMeasuredIntensity: 司・翠川式を前向きに解く', () => {
+  // 正: 有感半径の逆算と同じ式なので、バッファを外した半径の地点でちょうど震度 1.0 になる。
+  it('calcFeltRadiusKm と同じ式（バッファを外した半径で 1.0）', () => {
+    for (const [m, d] of [[3.0, 10], [5.0, 30], [7.0, 10], [6.0, 300]] as const) {
+      const radius = calcFeltRadiusKm(m, d) / 1.5
+      expect(predictMeasuredIntensity(m, d, radius)).toBeCloseTo(1.0, 2)
+    }
+  })
+
+  it('遠いほど小さく、規模が大きいほど大きい', () => {
+    expect(predictMeasuredIntensity(4.0, 10, 50)).toBeGreaterThan(predictMeasuredIntensity(4.0, 10, 100))
+    expect(predictMeasuredIntensity(5.0, 10, 100)).toBeGreaterThan(predictMeasuredIntensity(4.0, 10, 100))
+  })
+
+  // 安全弁: Mw の下限（3.0）は逆算と同じく効く —— M2.5 と M3.0 で同じ値を返す。
+  it('規模の下限は逆算と揃える', () => {
+    expect(predictMeasuredIntensity(2.5, 10, 80)).toBe(predictMeasuredIntensity(3.0, 10, 80))
   })
 })
 

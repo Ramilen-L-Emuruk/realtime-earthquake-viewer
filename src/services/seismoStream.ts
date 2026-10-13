@@ -280,6 +280,12 @@ export type SeismoHostCheck =
       readonly sensorCount: number
       /** センサーごとの割り当て。**素性を読めなかったものは並ばない。** */
       readonly sensors: readonly SeismoSensorInfo[]
+      /**
+       * 観測点ごとの普段の計測震度（ホストの `usualIntensities`）。**読めない観測点は載らない**
+       * —— 古いホスト・記録が足りない・測り直しが {@link USUAL_INTENSITY_STALE_MS} を超えて止まっている。
+       * 地震カードへ自作地震計の波形を出すかの下限に使う（`utils/seismoQuakeReach.ts`）。
+       */
+      readonly usualIntensities: ReadonlyMap<string, number>
     }
   /** 応答が返らなかった（落ちている・経路が無い・混在コンテンツで止められた）。 */
   | { readonly kind: 'unreachable'; readonly detail: string }
@@ -894,7 +900,51 @@ export async function fetchSeismoStatus(
     })
   }
 
-  return { kind: 'ok', stations: [...stations.values()], sensorCount: root.sensors.length, sensors }
+  return {
+    kind: 'ok',
+    stations: [...stations.values()],
+    sensorCount: root.sensors.length,
+    sensors,
+    usualIntensities: readUsualIntensities(root),
+  }
+}
+
+/**
+ * 普段の計測震度を古いとみなすまでの時間（ms）。**30 分。** ホストは 10 分ごとに測り直す
+ * （`seismo-host` の `USUAL_STATUS_REFRESH_MS`）ので、3 回続けて測れていなければ捨てる。
+ *
+ * **古さはホストの時計どうしで比べる**（`generatedAtMs` − `computedAtMs`）。こちらの時計と比べると、
+ * 端末とホストの時計のずれがそのまま古さに乗る。
+ */
+export const USUAL_INTENSITY_STALE_MS = 30 * 60_000
+
+/**
+ * `/status` の `usualIntensities` を読む。**読めないものは載せない**（載らない観測点は下限を置かない）。
+ *
+ * **古いホストはこの欄を持たない。** そのときは空で返し、波形は下限なしで出る側へ倒れる。
+ */
+function readUsualIntensities(root: Record<string, unknown>): ReadonlyMap<string, number> {
+  const out = new Map<string, number>()
+  const generatedAtMs = readFinite(root.generatedAtMs)
+  if (generatedAtMs === null) return out
+  const stale: string[] = []
+  for (const raw of arr(root.usualIntensities)) {
+    const u = obj(raw)
+    const stationId = str(u.stationId)
+    const value = readFinite(u.usualMeasured)
+    const computedAtMs = readFinite(u.computedAtMs)
+    if (stationId === '' || value === null || computedAtMs === null) continue
+    if (generatedAtMs - computedAtMs > USUAL_INTENSITY_STALE_MS) {
+      stale.push(stationId)
+      continue
+    }
+    out.set(stationId, value)
+  }
+  // **古くて捨てた値は記録へ残す**（ホストの測り直しが止まっている印）。黙って捨てると、下限が
+  // 外れて遠い地震まで波形を取りに行っても、画面は正常に見えるので誰も気づけない。
+  // 値が無いだけ（古いホスト・記録が足りない）はホストの側が記録している。
+  if (stale.length > 0) log.warn(`[seismo] 普段の計測震度が古いので使わない（測り直しが止まっている可能性）: ${stale.join(', ')}`)
+  return out
 }
 
 /**

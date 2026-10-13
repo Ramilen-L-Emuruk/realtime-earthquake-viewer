@@ -215,6 +215,7 @@ function input(overrides: Partial<StatusReportInput> = {}): StatusReportInput {
     stationConfigWarning: null,
     ungroupedMultiBoardStations: [],
     assignedBoards: [],
+    usualIntensities: [],
     ...overrides,
   }
 }
@@ -281,6 +282,28 @@ describe('buildStatusReport', () => {
     // **まだ測れていない（null）は壊れた値ではない。** 数えるのは非有限の 3 つだけ。
     expect(report.boardClocks.boards[2]?.offsetMs).toBeNull()
     expect(report.unreadableTimes).toBe(3)
+  })
+
+  it('観測点ごとの普段の計測震度を通し、壊れた値と時刻は null へ倒して数える', () => {
+    const report = buildStatusReport(
+      input({
+        usualIntensities: [
+          { stationId: 'station-1', usualMeasured: -1.21, usualWindowCount: 6, usualUsedCount: 6, windowMs: 270_000, computedAtMs: NOW - 60_000 },
+          { stationId: 'station-2', usualMeasured: Number.NaN, usualWindowCount: 6, usualUsedCount: 4, windowMs: 270_000, computedAtMs: Number.NaN },
+          { stationId: 'station-3', usualMeasured: null, usualWindowCount: 0, usualUsedCount: 0, windowMs: 270_000, computedAtMs: null },
+        ],
+      }),
+    )
+    const round = JSON.parse(JSON.stringify(report))
+    expect(round.usualIntensities[0]).toEqual({
+      stationId: 'station-1', usualMeasured: -1.21, usualWindowCount: 6, usualUsedCount: 6, windowMs: 270_000, computedAtMs: NOW - 60_000,
+    })
+    expect(round.usualIntensities[1].usualMeasured).toBeNull()
+    expect(round.usualIntensities[1].computedAtMs).toBeNull()
+    // **まだ測っていない（null）は壊れた値ではない。**
+    expect(round.usualIntensities[2].usualMeasured).toBeNull()
+    expect(report.unreadableIntensityValues).toBe(1)
+    expect(report.unreadableTimes).toBe(1)
   })
 
   it('基板への返事の数をそのまま通す（返せていないことが基板の側からは見えないため）', () => {
