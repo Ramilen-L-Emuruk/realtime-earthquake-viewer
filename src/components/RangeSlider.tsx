@@ -58,10 +58,10 @@ export const RangeSlider = memo(function RangeSlider({
   return (
     <div className="relative h-6 w-full select-none">
       {/* 溝 */}
-      <div className="absolute top-1/2 left-0 right-0 h-1 -translate-y-1/2 rounded bg-border" />
+      <div className="absolute top-1/2 left-0 right-0 h-1 -translate-y-1/2 rounded-sm bg-border" />
       {/* 選んでいる範囲 */}
       <div
-        className="absolute top-1/2 h-1 -translate-y-1/2 rounded bg-blue-500"
+        className="absolute top-1/2 h-1 -translate-y-1/2 rounded-sm bg-blue-500"
         style={{ left: `${left}%`, right: `${100 - right}%` }}
       />
       <input

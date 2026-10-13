@@ -64,7 +64,7 @@ npm run preview
 
 - **フレームワーク**: React 18 + TypeScript
 - **ビルドツール**: Vite 6
-- **スタイル**: Tailwind CSS（ダークテーマ）
+- **スタイル**: Tailwind CSS v4（ダークテーマ）。対応ブラウザは Safari 16.4（iOS / iPadOS 16.4）・Chrome / Edge 111・Firefox 128 以降
 - **地図**: MapLibre GL JS v6（WebGL 描画）
 - **PWA**: vite-plugin-pwa + Workbox
 - **音声合成**: VOICEVOX（任意・ローカル HTTP API 経由）

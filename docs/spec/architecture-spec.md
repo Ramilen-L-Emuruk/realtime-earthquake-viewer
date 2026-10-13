@@ -146,7 +146,7 @@ App が直接持つのは「1 秒毎更新」（強震モニタ・`kyoshinIndice
 スマートフォンの横画面（例 844×390）が「幅は足りないが高さが極端に低い」状態になり、
 上下に積んだパネルが画面高を占有して地図が見えなくなるため。
 
-判定に使うブレークポイントは `tailwind.config.js` の `theme.extend.screens` が単一情報源:
+判定に使うブレークポイントは `src/index.css` の `@custom-variant` が単一情報源:
 
 | 名前 | 条件 | 効果 |
 |---|---|---|
@@ -154,7 +154,7 @@ App が直接持つのは「1 秒毎更新」（強震モニタ・`kyoshinIndice
 | `sideNarrow` | 横向き・高さ 600px 以下・幅 1023px 以下 | 左右分割のうち狭い画面。パネル幅を絞る（`w-panel-narrow`＝22rem。PC は `w-panel`＝26rem） |
 | `roomy` | 幅 640px 以上 **かつ** 高さ 601px 以上 | カードの文字・余白をゆったり表示。**未満は圧縮表示**になる |
 
-パネル幅の実体は `tailwind.config.js` の `theme.extend.width`（`panel` / `panel-narrow`）で、
+パネル幅の実体は `src/index.css` の `@utility`（`w-panel` / `w-panel-narrow`）で、
 いずれも `min(22rem または 26rem, calc(100dvw - 4rem))` の形をとる
 （単位が `vw` ではなく `dvw` である理由は本節の「画面いっぱいへの広がりとセーフエリア」規則 3 を参照）。
 
@@ -323,7 +323,7 @@ iPhone・iPad で画面端の見え方が崩れたときは、まずこの節を
 （実測: `100vh`＝874px に対しビューポートは 812px）。レイアウトの寸法計算に使うと数 % ずれるため
 `dvh` を使う。`dvw` については**幅方向で同じずれは観測されていない**（実測でも画面幅とビューポート幅は
 一致した）が、規則を「ビューポート単位は d 付きを使う」の一本にするため揃えている。
-適用箇所は `App.tsx` のルート、`SpecialInfoBanner` の最大高、`tailwind.config.js` のパネル幅の 3 つ。
+適用箇所は `App.tsx` のルート、`SpecialInfoBanner` の最大高、`src/index.css` のパネル幅の 3 つ。
 
 **規則 4: ステータスバーは `black`（不透明）にする**
 
@@ -648,3 +648,6 @@ Redux 等のグローバルストアは使わず、React のフック（`useStat
   行動チェックリストと下端の凡例・特別情報バナーを別々に絶対配置し、それぞれ画面の高さで上限を
   掛けていたため、地図が低いとバナーの束が地図の上へはみ出して南海トラフ臨時情報が見えなくなり、
   チェックリストとも重なっていた
+- 2026-10-13: Tailwind CSS を v4 へ上げた。§4「画面サイズ別のレイアウト」の分岐（`side` / `sideNarrow` / `roomy`）と
+  パネル幅の定義を `tailwind.config.js` から `src/index.css`（`@custom-variant` / `@utility`）へ移した。
+  これに伴い対応ブラウザの下限が Safari 16.4・Chrome / Edge 111・Firefox 128 に上がった（2026-10-13 ユーザー承認）

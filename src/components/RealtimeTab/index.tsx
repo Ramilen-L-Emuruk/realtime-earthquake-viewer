@@ -475,7 +475,7 @@ function EEWCard({ eew, visible, speaking, activeLpgmEventId, onToggleLpgm, onDe
             流している（`services/dmdata.ts`）ので、印が無いと画面では区別がつかない。 */}
         {eew.operationStatus && (
           <span
-            className="ml-2 px-1.5 py-0.5 rounded font-bold"
+            className="ml-2 px-1.5 py-0.5 rounded-sm font-bold"
             style={{ backgroundColor: '#1f2937', color: '#fcd34d', border: '1px solid #d97706' }}
           >
             {eew.operationStatus}報
@@ -721,13 +721,13 @@ function EEWCard({ eew, visible, speaking, activeLpgmEventId, onToggleLpgm, onDe
             <div className="flex flex-col gap-0.5 text-xs">
               {warningPrefs.length > 0 && (
                 <div className="flex items-start gap-1 flex-wrap">
-                  <span className="text-red-300 font-bold flex-shrink-0">警報:</span>
+                  <span className="text-red-300 font-bold shrink-0">警報:</span>
                   <span className="text-secondary">{warningPrefs.join(' / ')}</span>
                 </div>
               )}
               {forecastPrefs.length > 0 && (
                 <div className="flex items-start gap-1 flex-wrap">
-                  <span className="text-yellow-300 flex-shrink-0">予報:</span>
+                  <span className="text-yellow-300 shrink-0">予報:</span>
                   <span className="text-secondary">{forecastPrefs.join(' / ')}</span>
                 </div>
               )}
@@ -764,7 +764,7 @@ function EEWCard({ eew, visible, speaking, activeLpgmEventId, onToggleLpgm, onDe
               {/* 内訳。**「未到達」は気象庁コード表 12 の語幹**（→ docs/spec/eew-spec.md §4）。
                   後ろに語を足さないのは、コード表の写しが手元で「未到達と予測／予想／推測」に
                   割れていて一次資料で確定できていないため。 */}
-              <span className="flex-shrink-0 tabular-nums">
+              <span className="shrink-0 tabular-nums">
                 到達済み {arrivedCount} ／ 未到達 {areasWithArrival.length - arrivedCount}
               </span>
             </div>
@@ -799,7 +799,7 @@ function EEWCard({ eew, visible, speaking, activeLpgmEventId, onToggleLpgm, onDe
                         文字色は背景から選ぶ（`readableTextColor`）。上限が定まらない予想は
                         「程度以上」の語を補う（→ `getIntensityLabelWithApproxAbove`）。 */}
                     <span
-                      className="flex-shrink-0 rounded text-center leading-4 whitespace-nowrap"
+                      className="shrink-0 rounded-sm text-center leading-4 whitespace-nowrap"
                       style={{
                         minWidth: ARRIVAL_BADGE_MIN_WIDTH,
                         padding: '0 0.125rem',
@@ -816,7 +816,7 @@ function EEWCard({ eew, visible, speaking, activeLpgmEventId, onToggleLpgm, onDe
                     {kind === 'arrived' ? (
                       // 気象庁の語は「既に主要動到達と推測」。**断定しない** —— 到達したかどうかは
                       // 気象庁の推測であって、観測した事実ではない。
-                      <span className="text-secondary flex-shrink-0">到達済み</span>
+                      <span className="text-secondary shrink-0">到達済み</span>
                     ) : kind === 'plum' ? (
                       // PLUM 法は周辺の観測点で実際に観測された揺れから震度を出す手法で、走時を
                       // 計算しない。**電文の時刻は到達の予測ではない**ので出さない。
@@ -829,7 +829,7 @@ function EEWCard({ eew, visible, speaking, activeLpgmEventId, onToggleLpgm, onDe
                       // 切れる（実測: パネル幅 359px の左右分割で「秋田県沿岸北部」が「秋田県…」になった）。
                       // 列の最小幅を広げる手もあるが、2 列を保てなくなり 56 件で 896px へ伸びる。
                       // 何の時刻かは見出し（「主要動の到達（予測）」）が与えている。
-                      <span className="text-secondary flex-shrink-0">時刻不明</span>
+                      <span className="text-secondary shrink-0">時刻不明</span>
                     ) : (
                       // **残り秒数で出す。** 以前は電文の時刻をそのまま（16:53:47）出していたが、
                       // 揺れが来るまで何秒かを読み手に引き算させることになる。同じカードの
@@ -841,7 +841,7 @@ function EEWCard({ eew, visible, speaking, activeLpgmEventId, onToggleLpgm, onDe
                       // **時刻を読めなかった区域を「まもなく」に混ぜない**（`etaSec` が `null`）。
                       // 差し迫っていることと、値が壊れていることは別の事実。
                       <span
-                        className="font-mono flex-shrink-0 tabular-nums"
+                        className="font-mono shrink-0 tabular-nums"
                         style={{ color: etaSec !== null && etaSec <= ARRIVAL_SOON_SEC ? '#fca5a5' : '#ffffff' }}
                       >
                         {etaSec === null ? '不明' : etaSec > 0 ? `${etaSec}秒` : 'まもなく'}
@@ -882,20 +882,20 @@ function EEWCard({ eew, visible, speaking, activeLpgmEventId, onToggleLpgm, onDe
             />
             {epicenterRankText && (
               <div className="flex items-start gap-2">
-                <span className="flex-shrink-0">{depthRankDiffers ? '震央' : '震源'}</span>
-                <span className="text-white break-words">{epicenterRankText}</span>
+                <span className="shrink-0">{depthRankDiffers ? '震央' : '震源'}</span>
+                <span className="text-white wrap-break-word">{epicenterRankText}</span>
               </div>
             )}
             {depthRankText && depthRankDiffers && (
               <div className="flex items-start gap-2">
-                <span className="flex-shrink-0">深さ</span>
-                <span className="text-white break-words">{depthRankText}</span>
+                <span className="shrink-0">深さ</span>
+                <span className="text-white wrap-break-word">{depthRankText}</span>
               </div>
             )}
             {(magnitudeRankText || magnitudePointsText) && (
               <div className="flex items-start gap-2">
-                <span className="flex-shrink-0">Ｍ</span>
-                <span className="text-white break-words">
+                <span className="shrink-0">Ｍ</span>
+                <span className="text-white wrap-break-word">
                   {[magnitudeRankText, magnitudePointsText].filter(Boolean).join('・')}
                 </span>
               </div>
@@ -933,7 +933,7 @@ function SWaveArrivalCard({ arrival }: { arrival: SWaveArrival }) {
     <div className="bg-card rounded-lg p-2 border-2 roomy:p-3" style={{ borderColor }}>
       <div className="flex items-center gap-2 mb-1">
         <span
-          className="inline-block w-2 h-2 rounded-full flex-shrink-0"
+          className="inline-block w-2 h-2 rounded-full shrink-0"
           style={{ backgroundColor: borderColor }}
         />
         <span className="text-xs font-bold" style={{ color: borderColor }}>
@@ -1016,7 +1016,7 @@ function KyoshinGateDetail({ events }: { events: DetectionEvent[] }) {
           {[...events].sort((a, b) => a.id.localeCompare(b.id, 'en', { numeric: true })).map((e, i) => {
             const notes = gateNotes(e)
             return (
-              <div key={e.id} className="rounded p-2" style={{ background: 'rgba(255,255,255,0.05)' }}>
+              <div key={e.id} className="rounded-sm p-2" style={{ background: 'rgba(255,255,255,0.05)' }}>
                 {events.length >= 2 && (
                   <div className="text-xs text-secondary mb-1">{`地域 ${i + 1}（${V2_TIER[e.confidence].label}）`}</div>
                 )}
@@ -1187,7 +1187,7 @@ function KyoshinDetectionSummary({ events, points, visible }: {
           反応が収まっている間（settled）はチップ・見出しの色を灰へ置き換えて本文と印象を揃える。 */}
       <div className="flex items-center gap-2 px-3 py-1.5" style={{ borderBottom: `1px solid ${frameBorder}55` }}>
         <span
-          className="text-xs font-bold px-1.5 py-0.5 rounded flex-shrink-0"
+          className="text-xs font-bold px-1.5 py-0.5 rounded-sm shrink-0"
           style={{ backgroundColor: settled ? SETTLED_CHIP_BG : tier.border, color: '#fff' }}
         >
           {tier.label}
@@ -1202,7 +1202,7 @@ function KyoshinDetectionSummary({ events, points, visible }: {
       </div>
       <div className="flex gap-2 p-2 roomy:gap-3 roomy:p-3">
         {/* 推定最大震度 */}
-        <div className="flex flex-col items-center justify-center flex-shrink-0" style={{ minWidth: '4.25rem' }}>
+        <div className="flex flex-col items-center justify-center shrink-0" style={{ minWidth: '4.25rem' }}>
           <span className="text-xs text-secondary">推定最大震度</span>
           <span className="font-black leading-none text-white text-[2.25rem] roomy:text-[3rem]" style={{ textShadow: `0 0 12px ${maxColor}` }}>
             {maxLabel ?? '—'}
@@ -1214,7 +1214,7 @@ function KyoshinDetectionSummary({ events, points, visible }: {
             <div className="flex flex-col gap-1">
               {groups.map(g => (
                 <div key={g.label} className="flex items-center gap-2">
-                  <span className="w-6 text-center text-xs font-bold rounded flex-shrink-0" style={{ backgroundColor: g.color, color: readableTextColor(g.color) }}>
+                  <span className="w-6 text-center text-xs font-bold rounded-sm shrink-0" style={{ backgroundColor: g.color, color: readableTextColor(g.color) }}>
                     {g.label}
                   </span>
                   <div className="flex-1 h-2 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.08)' }}>
@@ -1225,8 +1225,8 @@ function KyoshinDetectionSummary({ events, points, visible }: {
                       4 桁に届く。2rem では「1520点」が収まらず、CJK の「点」は直前で改行できてしまうため
                       「1520」と「点」に割れて行の高さが倍になる。`whitespace-nowrap` だけでは箱幅は
                       指定値のままで文字が溢れる（伸びる方向に min-content は効かない）ため、幅も一段
-                      広げる。`flex-shrink-0` は縮まないことを明示する保険。 */}
-                  <span className="text-xs text-white w-10 text-right whitespace-nowrap flex-shrink-0">{g.count}点</span>
+                      広げる。`shrink-0` は縮まないことを明示する保険。 */}
+                  <span className="text-xs text-white w-10 text-right whitespace-nowrap shrink-0">{g.count}点</span>
                 </div>
               ))}
             </div>

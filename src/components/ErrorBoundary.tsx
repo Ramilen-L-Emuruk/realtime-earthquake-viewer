@@ -126,7 +126,7 @@ export class ErrorBoundary extends Component<Props, State> {
 
     // 地図・タブはどちらも `absolute inset-0` の器に収まるので、同じ形で覆える。
     // **z を持たせない。** 地図の左上の情報ブロック（更新時刻・取得状況・描画状況）と
-    // 行動チェックリスト・特別情報バナーは `z-[99999]` で前に出るため、地図が落ちても隠れない。
+    // 行動チェックリスト・特別情報バナーは `z-99999` で前に出るため、地図が落ちても隠れない。
     const canRetry = this.state.retries < MAX_RETRIES
     return (
       <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-app/95 p-4 text-center text-white">

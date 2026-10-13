@@ -2326,11 +2326,11 @@ export function App() {
             {/* 地図左上。観測している値（自作地震計の観測点ごとの震度）を置く。
                 **アプリの状態（更新時刻・取得状況・描画の不調）とは左右で分ける** ——
                 混ぜると、異常表示が伸びたときに観測値がそのぶん押し下がる。
-                z-[99999]: 区域集約震度バッジ（QuakeRegionFillGL）は el.style.zIndex = scale*1000 で、
+                z-99999: 区域集約震度バッジ（QuakeRegionFillGL）は el.style.zIndex = scale*1000 で、
                 scale は JMA 震度階級の数値コード（震度7 = 70）まであるため最大 70000 まで積む。
                 それより確実に高い値にして常に最前面に出す。 */}
             <div
-              className="absolute z-[99999] pointer-events-none flex flex-col items-start gap-1"
+              className="absolute z-99999 pointer-events-none flex flex-col items-start gap-1"
               style={{
                 top: 'max(0.5rem, env(safe-area-inset-top, 0px))',
                 left: 'max(0.5rem, env(safe-area-inset-left, 0px))',
@@ -2345,7 +2345,7 @@ export function App() {
                 **下端の帯（凡例・特別情報バナー）とは重ならない** —— あちらは全幅の絶対配置で、
                 下側へ置いたものは押し上げてもらえずに重なる。z は左上と同じ理由で高く取る。 */}
             <div
-              className="absolute z-[99999] pointer-events-none flex flex-col items-end gap-1"
+              className="absolute z-99999 pointer-events-none flex flex-col items-end gap-1"
               style={{
                 top: 'max(0.5rem, env(safe-area-inset-top, 0px))',
                 right: 'max(0.5rem, env(safe-area-inset-right, 0px))',
@@ -2359,7 +2359,7 @@ export function App() {
             {/* 地図右下。表示中の地図を画像にするボタン。左上の情報ブロックと同じ理由で z を高く取る。 */}
             {shareCard.ready && (
               <div
-                className="absolute z-[99999] flex flex-col items-end gap-1"
+                className="absolute z-99999 flex flex-col items-end gap-1"
                 style={{
                   bottom: 'max(0.5rem, env(safe-area-inset-bottom, 0px))',
                   right: 'max(0.5rem, env(safe-area-inset-right, 0px))',
@@ -2382,7 +2382,7 @@ export function App() {
                 下限を子の下限の合計に合わせ続けなければならず、子が空でも高さを取る。
                 下限は各コンポーネントが自分の外枠に値で書く（`min-height` を書かない子は中身の高さで
                 止まって縮まず、`min-h-0` の子は見出しまで潰れる）。 */}
-            <div className="absolute inset-0 z-[99999] pointer-events-none flex flex-col">
+            <div className="absolute inset-0 z-99999 pointer-events-none flex flex-col">
               {actionChecklist.state && (
                 <ActionChecklist
                   reason={actionChecklist.state.reason}
@@ -2397,13 +2397,13 @@ export function App() {
                   凡例と帯のどちらに付けるかを出し分けずに済む）。縮むときは 0 まで縮む。 */}
               <div className="flex-1 min-h-0" />
               {settings.showMapLegend && legendBlocks.length > 0 && (
-                // `shrink-[8]`: 凡例を優先して縮める（特別情報の帯より軽い。縮みは高さに比例して
+                // `shrink-8`: 凡例を優先して縮める（特別情報の帯より軽い。縮みは高さに比例して
                 // 配られるので、帯も少しは縮む）。
                 // `pt-[0.6rem]`: 凡例の見出しは当たり判定を枠の外へ広げている（`MapLegend` の
                 // `hit`。畳んだ狭い画面で上へ最大 0.55rem）。包みがスクロール領域なのでその縁で
                 // 切られ、指で押せる範囲が縮む —— 余白で逃がす（`pointer-events-none` なので地図の操作は妨げない）。
                 // 包みは凡例が描くものを持つときだけ出す（`MapLegend` は空なら何も描かないが、包みの余白は残る）。
-                <div className="min-h-0 pt-[0.6rem] shrink-[8] overflow-y-auto overflow-x-hidden overscroll-x-none flex flex-col items-start">
+                <div className="min-h-0 pt-[0.6rem] shrink-8 overflow-y-auto overflow-x-hidden overscroll-x-none flex flex-col items-start">
                   <MapLegend blocks={legendBlocks} collapsed={legendCollapsed} onToggle={toggleLegend} compact={mapAreaShort} />
                 </div>
               )}
@@ -2429,10 +2429,10 @@ export function App() {
             折りたたみ時は縦積みなら高さ（--panel-ratio=0）、左右分割なら幅が 0 になり地図が全画面になる。
             各タブを absolute で重ねて visibility で切り替えることで、スクロール位置をタブごとに独立管理する。
             折りたたみを含め display:none（hidden クラス）を使わないのは、scrollTop がリセットされるため。
-            左右分割時の幅は `w-panel` / `w-panel-narrow`（tailwind.config.js で定義）。24rem/20rem から
+            左右分割時の幅は `w-panel` / `w-panel-narrow`（src/index.css で定義）。24rem/20rem から
             2rem ずつ広げてある。地震カードの震度バッジを正方形（従来 80px 幅 → カード高さと同じ
             約 112px）にした分、本文カラムが痩せないようにするため。 */}
-        <div className={`flex-shrink-0 h-[calc(var(--panel-ratio)*100%)] overflow-hidden side:h-auto side:flex-none border-border relative ${
+        <div className={`shrink-0 h-[calc(var(--panel-ratio)*100%)] overflow-hidden side:h-auto side:flex-none border-border relative ${
           panelCollapsed ? 'side:w-0 side:border-l-0' : 'side:w-panel sideNarrow:w-panel-narrow side:border-l'
         }`}>
           <div className={`${TAB_SCROLLER_CLASS}${activeTab !== 'earthquake' ? ' invisible pointer-events-none' : ''}`}>

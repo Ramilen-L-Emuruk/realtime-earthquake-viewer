@@ -18,11 +18,11 @@ interface Props {
 
 /** 帯 1 本ぶんの見た目。**周りの帯（`MapUpdateTime` ほか）と揃える。** */
 const ROW_CLASS =
-  'bg-black/80 rounded text-sm px-2 py-0.5 roomy:text-xl roomy:px-2.5 roomy:py-1' +
+  'bg-black/80 rounded-sm text-sm px-2 py-0.5 roomy:text-xl roomy:px-2.5 roomy:py-1' +
   ' pointer-events-none flex items-center gap-1.5 roomy:gap-2'
 
 /** 震度バッジ。**行の高さを変えない**よう `leading-none` で詰める。 */
-const BADGE_CLASS = 'font-bold leading-none rounded px-1.5 py-1 min-w-[1.25rem] text-center'
+const BADGE_CLASS = 'font-bold leading-none rounded-sm px-1.5 py-1 min-w-5 text-center'
 
 export function SeismoOverlay({ stations }: Props) {
   const rows = seismoOverlayRows(stations)
@@ -64,7 +64,7 @@ export function SeismoOverlay({ stations }: Props) {
             {/* **観測点名だけ幅を切る。** 名前は利用者が管理コンソールで自由に付けるので、
                 長いものを入れると右上（更新時刻）と横で当たる —— どちらも絶対配置で
                 押し合わないため、重なると両方読めなくなる。 */}
-            <span className={`${tone} truncate max-w-[8rem] roomy:max-w-[14rem]`}>
+            <span className={`${tone} truncate max-w-32 roomy:max-w-56`}>
               {row.displayName}
             </span>
             <span className={`font-mono ${tone} tabular-nums`}>{row.valueText ?? '—'}</span>

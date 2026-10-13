@@ -79,7 +79,7 @@ const WRAPPER_CLASS = 'pt-12 px-2 flex flex-col items-center'
  * 畳んだボタンは縮ませない（`shrink-0`）ので要らない —— 付けるとボタンの下に透明な空白が残り、
  * 下端の帯の縮みしろを奪う。
  */
-const OPEN_MIN_HEIGHT_CLASS = 'min-h-[5.5rem]'
+const OPEN_MIN_HEIGHT_CLASS = 'min-h-22'
 
 /**
  * 震度の見せ方。**強震モニタ経路だけ指標名を添える。**
@@ -124,7 +124,7 @@ const SCALE_WIDTH_PLAIN = 'inline-block text-center min-w-[4em]'
 
 function CloseIcon() {
   return (
-    <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       <path d="M18 6L6 18M6 6l12 12" strokeLinecap="round" />
     </svg>
   )
@@ -133,7 +133,7 @@ function CloseIcon() {
 function ChevronIcon({ open }: { open: boolean }) {
   return (
     <svg
-      className={`w-4 h-4 flex-shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
+      className={`w-4 h-4 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
       viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
     >
       <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
@@ -144,7 +144,7 @@ function ChevronIcon({ open }: { open: boolean }) {
 /** 畳んだボタンの目印。チェックの付いた紙で「読むもの」だと分かるようにする。 */
 function ChecklistIcon() {
   return (
-    <svg className="w-3.5 h-3.5 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2" strokeLinecap="round" />
       <rect x="9" y="3" width="6" height="4" rx="1" />
       <path d="M9 14l2 2 4-4" strokeLinecap="round" strokeLinejoin="round" />
@@ -187,7 +187,7 @@ export function ActionChecklist({ reason, scale, scoped, collapsed, onDismiss, o
           {/* 判定の根拠（全国基準か周辺基準か）はここに書かない。揺れた直後に読むのは行動だけで、
               仕組みの説明は要らない。その説明は設定タブの「出す最低震度」の項目に置いてある。 */}
           <div className="min-w-0 flex-1 flex items-center gap-2 flex-wrap">
-            <span className={`text-xs font-bold text-white px-1.5 py-0.5 rounded bg-red-500 flex-shrink-0 ${SCALE_WIDTH_BADGE}`}>
+            <span className={`text-xs font-bold text-white px-1.5 py-0.5 rounded-sm bg-red-500 shrink-0 ${SCALE_WIDTH_BADGE}`}>
               <ScaleText reason={reason} label={label} />
             </span>
             <span className="text-white text-sm font-bold leading-tight">
@@ -195,7 +195,7 @@ export function ActionChecklist({ reason, scale, scoped, collapsed, onDismiss, o
             </span>
           </div>
           <button
-            className="text-white/70 hover:text-white p-1 -m-1 flex-shrink-0"
+            className="text-white/70 hover:text-white p-1 -m-1 shrink-0"
             onClick={onDismiss}
             aria-label="チェックリストを閉じる"
           >
@@ -206,7 +206,7 @@ export function ActionChecklist({ reason, scale, scoped, collapsed, onDismiss, o
         <ol className="px-3 pb-1 space-y-1.5">
           {shown.map((item, i) => (
             <li key={item.text} className="flex gap-2">
-              <span className="text-red-300 text-sm font-bold flex-shrink-0 tabular-nums">{i + 1}.</span>
+              <span className="text-red-300 text-sm font-bold shrink-0 tabular-nums">{i + 1}.</span>
               <div className="min-w-0">
                 <p className="text-white text-sm font-bold leading-tight">{item.text}</p>
                 {item.detail && open && (

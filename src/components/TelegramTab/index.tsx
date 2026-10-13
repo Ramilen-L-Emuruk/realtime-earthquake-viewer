@@ -219,27 +219,27 @@ export const TelegramTab = memo(function TelegramTab({ telegramLog, onClear }: P
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border flex-shrink-0">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
         <span className="text-sm font-medium text-white">
           電文ログ
           <span className="ml-2 text-xs text-secondary">({filtered.length} / {telegramLog.length})</span>
         </span>
         <button
           onClick={onClear}
-          className="text-xs text-secondary hover:text-white transition-colors px-2 py-1 rounded hover:bg-white/5"
+          className="text-xs text-secondary hover:text-white transition-colors px-2 py-1 rounded-sm hover:bg-white/5"
         >
           クリア
         </button>
       </div>
 
-      <div className="flex gap-2 px-4 py-2 border-b border-border flex-shrink-0">
+      <div className="flex gap-2 px-4 py-2 border-b border-border shrink-0">
         {/* standard 版は P2PQuake のみを受信するためソースフィルタは意味を持たない（唯一の選択肢が P2PQuake になる）。
             DMDSS 版のみ dmdss/p2pquake の共存があり、フィルタとして機能する。 */}
         {isDmdss && (
           <select
             value={sourceFilter}
             onChange={e => setSourceFilter(e.target.value as SourceFilter)}
-            className="flex-1 text-xs bg-card border border-border rounded px-2 py-1 text-secondary focus:text-white focus:outline-none"
+            className="flex-1 text-xs bg-card border border-border rounded-sm px-2 py-1 text-secondary focus:text-white focus:outline-hidden"
           >
             <option value="all">全ソース</option>
             <option value="dmdss">DMDSS</option>
@@ -249,7 +249,7 @@ export const TelegramTab = memo(function TelegramTab({ telegramLog, onClear }: P
         <select
           value={kindFilter}
           onChange={e => setKindFilter(e.target.value as KindFilter)}
-          className="flex-1 text-xs bg-card border border-border rounded px-2 py-1 text-secondary focus:text-white focus:outline-none"
+          className="flex-1 text-xs bg-card border border-border rounded-sm px-2 py-1 text-secondary focus:text-white focus:outline-hidden"
         >
           <option value="all">全種別</option>
           <option value="eew">EEW</option>
@@ -262,24 +262,24 @@ export const TelegramTab = memo(function TelegramTab({ telegramLog, onClear }: P
       </div>
 
       {selectedIds.size > 0 && (
-        <div className="flex items-center justify-between px-4 py-2 border-b border-border flex-shrink-0 bg-white/5">
+        <div className="flex items-center justify-between px-4 py-2 border-b border-border shrink-0 bg-white/5">
           <span className="text-xs text-white">{selectedIds.size}件選択中</span>
           <div className="flex gap-1">
             <button
               onClick={handleDownloadSelected}
-              className="text-xs text-white bg-white/15 hover:bg-white/25 transition-colors px-3 py-1 rounded"
+              className="text-xs text-white bg-white/15 hover:bg-white/25 transition-colors px-3 py-1 rounded-sm"
             >
               JSON
             </button>
             <button
               onClick={handleDownloadZip}
-              className="text-xs text-white bg-white/15 hover:bg-white/25 transition-colors px-3 py-1 rounded"
+              className="text-xs text-white bg-white/15 hover:bg-white/25 transition-colors px-3 py-1 rounded-sm"
             >
               ZIP
             </button>
             <button
               onClick={clearSelection}
-              className="text-xs text-secondary hover:text-white transition-colors px-2 py-1 rounded hover:bg-white/5"
+              className="text-xs text-secondary hover:text-white transition-colors px-2 py-1 rounded-sm hover:bg-white/5"
             >
               選択解除
             </button>
@@ -287,7 +287,7 @@ export const TelegramTab = memo(function TelegramTab({ telegramLog, onClear }: P
         </div>
       )}
 
-      {/* ここが実際のスクロール領域（ヘッダーは flex-shrink-0 で固定）。overflow-y だけを auto に
+      {/* ここが実際のスクロール領域（ヘッダーは shrink-0 で固定）。overflow-y だけを auto に
           すると overflow-x も auto に格上げされ横スクロールしてしまうため、App.tsx の
           TAB_SCROLLER_CLASS と同じ指定で塞ぐ（祖先の指定は子の overflow 計算に効かない）。 */}
       <div className="flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none">
@@ -321,7 +321,7 @@ export const TelegramTab = memo(function TelegramTab({ telegramLog, onClear }: P
                   <li key={entry.id} className={`border-b border-border last:border-b-0 ${isSelected ? 'bg-white/5' : ''}`}>
                     <div className="flex items-start">
                       <label
-                        className="flex items-center px-3 py-3 cursor-pointer flex-shrink-0"
+                        className="flex items-center px-3 py-3 cursor-pointer shrink-0"
                         onClick={e => e.stopPropagation()}
                       >
                         <input
@@ -337,12 +337,12 @@ export const TelegramTab = memo(function TelegramTab({ telegramLog, onClear }: P
                           className="w-full text-left px-2 py-2 hover:bg-white/5 transition-colors"
                         >
                           <div className="flex items-center gap-2 min-w-0">
-                            <span className={`text-xs font-mono flex-shrink-0 w-3 ${badge.className}`}>{badge.label}</span>
+                            <span className={`text-xs font-mono shrink-0 w-3 ${badge.className}`}>{badge.label}</span>
                             {/* 日時として読めなければ語を出す。空欄にすると列が詰まって
                                 隣の値が時刻の位置に見える。 */}
-                            <span className="text-xs text-secondary font-mono flex-shrink-0">{formatTime(entry.receivedAt) ?? '時刻不明'}</span>
-                            <span className="text-xs font-mono bg-white/10 rounded px-1 flex-shrink-0 text-secondary">{sourceLabel}</span>
-                            <span className="text-xs font-mono text-white flex-shrink-0">{entry.headType}</span>
+                            <span className="text-xs text-secondary font-mono shrink-0">{formatTime(entry.receivedAt) ?? '時刻不明'}</span>
+                            <span className="text-xs font-mono bg-white/10 rounded-sm px-1 shrink-0 text-secondary">{sourceLabel}</span>
+                            <span className="text-xs font-mono text-white shrink-0">{entry.headType}</span>
                             <span className="text-xs text-secondary truncate">
                               {entry.isTest ? '訓練' : (kindLabel ? `${kindLabel} · ` : '') + typeLabel}
                             </span>
@@ -357,18 +357,18 @@ export const TelegramTab = memo(function TelegramTab({ telegramLog, onClear }: P
                             <div className="flex justify-end gap-1 mb-1">
                               <button
                                 onClick={e => { e.stopPropagation(); handleDownload(entry) }}
-                                className="text-xs text-secondary hover:text-white transition-colors px-2 py-0.5 rounded hover:bg-white/5"
+                                className="text-xs text-secondary hover:text-white transition-colors px-2 py-0.5 rounded-sm hover:bg-white/5"
                               >
                                 ダウンロード
                               </button>
                               <button
                                 onClick={e => { e.stopPropagation(); handleCopy(entry) }}
-                                className="text-xs text-secondary hover:text-white transition-colors px-2 py-0.5 rounded hover:bg-white/5"
+                                className="text-xs text-secondary hover:text-white transition-colors px-2 py-0.5 rounded-sm hover:bg-white/5"
                               >
                                 {copied === entry.id ? 'コピー済み' : 'コピー'}
                               </button>
                             </div>
-                            <pre className="text-xs font-mono text-secondary bg-black/30 rounded p-2 overflow-x-auto max-h-96 whitespace-pre-wrap break-all">
+                            <pre className="text-xs font-mono text-secondary bg-black/30 rounded-sm p-2 overflow-x-auto max-h-96 whitespace-pre-wrap break-all">
                               {formatEntryForView(entry)}
                             </pre>
                           </div>

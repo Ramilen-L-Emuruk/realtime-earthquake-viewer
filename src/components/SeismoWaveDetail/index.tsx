@@ -553,7 +553,7 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
 
   const content = (
     <div
-      className="fixed inset-0 z-[100000] flex items-center justify-center bg-black/60 p-2 sm:p-6"
+      className="fixed inset-0 z-100000 flex items-center justify-center bg-black/60 p-2 sm:p-6"
       // **ここで止める。** ポータルでもイベントはカード（`<button>`）まで伝わる。
       onClick={(e) => {
         e.stopPropagation()
@@ -586,7 +586,7 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
             ref={closeRef}
             type="button"
             onClick={onClose}
-            className="rounded px-2 py-0.5 text-lg leading-none text-secondary hover:bg-white/10 hover:text-white"
+            className="rounded-sm px-2 py-0.5 text-lg leading-none text-secondary hover:bg-white/10 hover:text-white"
             aria-label="閉じる"
           >
             ×
@@ -670,7 +670,7 @@ function ZoomButton({ label, onClick, children }: { label: string; onClick: () =
       type="button"
       aria-label={label}
       onClick={onClick}
-      className="min-w-[2rem] rounded border border-border px-1.5 py-0.5 text-secondary hover:bg-white/10 hover:text-white"
+      className="min-w-8 rounded-sm border border-border px-1.5 py-0.5 text-secondary hover:bg-white/10 hover:text-white"
     >
       {children}
     </button>
