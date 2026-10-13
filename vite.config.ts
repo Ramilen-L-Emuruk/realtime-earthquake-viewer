@@ -9,6 +9,7 @@ import { isInsideClaudeDir } from './scripts/dev-watch-ignore'
 import { devServerLockPlugin } from './scripts/dev-server-lock'
 import { outDirForVariant } from './scripts/buildOutDir'
 import { PRECACHE_GLOB_PATTERNS, PRECACHE_MAX_FILE_BYTES } from './scripts/precacheBudget'
+import { cleanupOutdatedCachesForVariant } from './scripts/precacheCleanup'
 
 const variant = process.env.VITE_VARIANT ?? 'standard'
 const isDmdss = variant === 'dmdss'
@@ -215,6 +216,9 @@ export default defineConfig(configEnv => ({
         navigateFallbackDenylist: isDmdss
           ? []
           : [/^\/yuremado\/dmdss(\/|$)/],
+        // standard 版のスコープが DMDSS 版のスコープを包むせいで、古いキャッシュの片付けも
+        // DMDSS 版の事前キャッシュを巻き込む。standard 版だけ切る（理由と失うものは scripts/precacheCleanup.ts）。
+        cleanupOutdatedCaches: cleanupOutdatedCachesForVariant(variant),
         // **ここへ追記するときは、URL を正規表現リテラルで書くことに注意。**
         // ソース上は `https:\/\/...` とエスケープされるため、`https://` を素の文字列として
         // 探す走査には掛からない（外部への通信経路を数え上げる調査で実際に取りこぼした）。

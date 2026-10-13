@@ -555,11 +555,23 @@ standard の NavigationRoute が横取りする問題への対策として、sta
 末尾スラッシュ有り無しの両方を許容する正規表現で `/dmdss` と `/dmdss/` の両方をカバーする。
 DMDSS 版はこの denylist を空配列にする（自分自身のパスなので影響なし）。
 
+**standard 版は古いキャッシュの片付け（`cleanupOutdatedCaches`）を切っている。** 片付けは
+名前に自分のスコープを含むキャッシュを消すので、standard 版で走らせると、スコープが包んでいる
+DMDSS 版の事前キャッシュまで、standard 版の Service Worker が更新されるたびに消してしまう。
+消えた分は DMDSS 版の Service Worker が次に更新されるまで戻らず、その間は DMDSS 版をオフラインで開けない
+（同じブラウザで両方の版を開いている端末だけに起きる）。片付けを切っても、standard 版の古いファイルは
+別の処理で消えるので溜まらない。
+
+判定は [`scripts/precacheCleanup.ts`](../../scripts/precacheCleanup.ts) の 1 箇所にある。消える仕組み・戻らない理由・
+切って失うもの（とそれを補う後始末）は、そのファイルの冒頭に書いた。standard 版で片付けが戻っていないことは
+[`scripts/precacheCleanup.test.ts`](../../scripts/precacheCleanup.test.ts) が固定する（戻しても型チェックもビルドも通り、
+症状は両方の版を開いた端末のオフライン起動にしか出ないため）。
+
 ### キャッシュポリシー
 
 - 静的リソース（JS/CSS/HTML/フォント SDF PBF/画像）は precache
 - DMDATA / P2PQuake / Yahoo エンドポイントはランタイムキャッシュ対象外（キー付きレスポンスを残さない）
-- `cleanupOutdatedCaches()` で古いバージョンのキャッシュを削除
+- `cleanupOutdatedCaches()` で古いバージョンのキャッシュを削除（**DMDSS 版だけ**。理由は上の「Service Worker のスコープ」）
 - 1 ファイルあたりの上限は 2MiB を明示（超過するとビルドが失敗する。黙って precache から外れることはない）
 
 #### 上限の手前で止める
@@ -2599,3 +2611,5 @@ Playwright / Chrome DevTools でボタン発火後の DOM 状態を確認した�
   次の手順は丁寧形の 1 文）にした。§5.5 の形にそろえた文を 4 本書き足した。同じ見直しで、設定タブの外では
   地震カードのホバーの説明・震源カタログの注・リアルタイムタブの説明（常時表示からホバーへ）・到達カウントダウンの
   場所の名前（「ご自宅付近」→「ホーム地点」）・津波の失効の文（[`tsunami-spec.md`](tsunami-spec.md) §3）を直した
+- 2026-10-14: standard 版の Service Worker の更新が DMDSS 版の事前キャッシュを消していたので、standard 版だけ
+  古いキャッシュの片付けを切った（§5「Service Worker のスコープ」）
