@@ -121,6 +121,14 @@ export interface ShakeEventRecord {
   readonly matchedQuake: MatchedQuake | null
 }
 
+/**
+ * 揺れの記録の id。観測点と、引き金を引いたサンプルの時刻で決まる。**版を書く前に「既にあるか」を
+ * 確かめる側（`stationDetection.ts` の起動時の流し込み）も同じ形で引くので、ここ 1 か所で作る。**
+ */
+export function shakeEventId(stationId: string, onMs: number): string {
+  return `${stationId}-${onMs.toFixed(0)}`
+}
+
 /** 揺れが閉じた時点の記録（版 1・照合待ち）を作る。 */
 export function initialRecord(params: {
   readonly shake: DetectedShake
@@ -135,7 +143,7 @@ export function initialRecord(params: {
   const s = shake.phases?.s ?? null
   const p = shake.phases?.p ?? null
   return {
-    id: `${params.stationId}-${t.onMs.toFixed(0)}`,
+    id: shakeEventId(params.stationId, t.onMs),
     rev: 1,
     writtenAtMs: params.nowMs,
     stationId: params.stationId,

@@ -286,6 +286,11 @@ export class QuakeDetector {
     return this.trigger.peakBetween(fromMs, toMs)
   }
 
+  /** 別の引き金が覚えている 1 分ごとの最大を重ねる（`TriggerDetector.mergePeaksFrom`）。 */
+  mergePeaksFrom(other: TriggerDetector): void {
+    this.trigger.mergePeaksFrom(other)
+  }
+
   push(chunk: TriggerInput): DetectedShake[] {
     // 刻みの読めないまとまりは残さない（引き金も捨てて数える。窓の位置の計算を壊さないため）。
     if (usableStep(chunk)) this.kept.push(chunk)

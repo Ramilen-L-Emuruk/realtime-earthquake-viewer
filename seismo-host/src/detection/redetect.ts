@@ -22,11 +22,10 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { STEP_SEC_DEFAULT } from '../../../src/utils/knet/intensityCommon'
-import { IntensityStream } from '../intensity/intensityStream'
-import { normalizeIntensity } from '../receiver/intensityPipeline'
 import { jstHour, jstHourStartMs } from '../receiver/jstTime'
 import { decodeWaveFile, resolveRevisions, waveFileName } from '../receiver/waveArchive'
 import type { ArchivedWaveChunk } from '../receiver/waveArchive'
+import { ChunkIntensity } from './chunkIntensity'
 import type { P2pReferenceQuake } from './p2pQuake'
 import { DETECTOR_VERSION, QuakeDetector } from './quakeDetector'
 import type { DetectedShake } from './quakeDetector'
@@ -216,31 +215,17 @@ export async function* archiveChunks(params: {
   }
 }
 
-/** 計測震度相当の流し込みを続けてよい、前のまとまりの末尾からのずれ（刻みに対する割合）。 */
-const CONTINUOUS_TOLERANCE = 0.5
-/** 刻みが変わったとみなす割合。 */
-const RATE_TOLERANCE = 0.05
-
-interface IntensityRun {
-  readonly stream: IntensityStream
-  readonly msPerSample: number
-  /** 流し込んだサンプルの数（次のまとまりの位置）。 */
-  pushed: number
-  /** 次に来るはずのサンプルの時刻。 */
-  nextMs: number
-}
-
 export class Redetector {
   private readonly opts: RedetectorOptions
   private readonly detector = new QuakeDetector()
   private readonly book: ShakeEventBook
   /** 流している波形の時刻（帳面の時計）。 */
   private clockMs = Number.NEGATIVE_INFINITY
-  private run: IntensityRun | null = null
+  /** 計測震度相当の組み立て直し（`chunkIntensity.ts`）。帳面へ覚えさせる。 */
+  private readonly intensity: ChunkIntensity
   private shakes = 0
   private beforeRange = 0
   private saveFailures = 0
-  private intensityFailures = 0
   private failures = 0
   private lastFailure: string | null = null
   private readonly skipped = new Set<string>()
@@ -258,6 +243,10 @@ export class Redetector {
       now: () => this.clockMs,
       detectorVersion: DETECTOR_VERSION,
     })
+    this.intensity = new ChunkIntensity({
+      stepSec: options.stepSec ?? STEP_SEC_DEFAULT,
+      onPoint: (atMs, intensity) => this.book.noteStationReading(options.stationId, atMs, intensity),
+    })
     this.guard('照合の準備', () => {
       for (const q of options.quakes) this.book.addQuake(q)
     })
@@ -270,7 +259,7 @@ export class Redetector {
     const endMs = chunk.firstSampleMs + n * chunk.msPerSample
     if (endMs > this.clockMs) this.clockMs = endMs
     // **計測震度相当を先に覚える** —— 揺れを記録するとき、その区間の最大を引くので。
-    this.noteIntensity(chunk)
+    this.intensity.push(chunk)
     const closed = this.guard('検出', () => this.detector.push(chunk)) ?? []
     for (const shake of closed) this.record(shake)
     this.guard('照合の期限', () => this.book.tick())
@@ -294,7 +283,7 @@ export class Redetector {
       verdicts,
       resets: this.detector.resets,
       droppedChunks: this.detector.droppedChunks,
-      intensityFailures: this.intensityFailures,
+      intensityFailures: this.intensity.failures,
       failures: this.failures,
       lastFailure: this.lastFailure,
     }
@@ -333,50 +322,5 @@ export class Redetector {
     } else {
       this.saveFailures++
     }
-  }
-
-  /**
-   * 合成波形から計測震度相当を出して帳面へ覚えさせる（`sensorFusion.ts` と同じ部品・同じ時刻の戻し方）。
-   * **途切れたら流し込みを作り直す** —— 位置を詰めて繋ぐと、届いていない時間を挟んだ窓で値を出す。
-   */
-  private noteIntensity(chunk: RedetectChunk): void {
-    let run = this.run
-    const continuous =
-      run !== null &&
-      Math.abs(chunk.msPerSample - run.msPerSample) <= run.msPerSample * RATE_TOLERANCE &&
-      Math.abs(chunk.firstSampleMs - run.nextMs) <= run.msPerSample * CONTINUOUS_TOLERANCE
-    if (!continuous) {
-      try {
-        run = {
-          stream: new IntensityStream({ sampleRateHz: 1000 / chunk.msPerSample, stepSec: this.opts.stepSec ?? STEP_SEC_DEFAULT }),
-          msPerSample: chunk.msPerSample,
-          pushed: 0,
-          nextMs: chunk.firstSampleMs,
-        }
-      } catch {
-        // 作れないのは刻みがおかしいときだけ。その区間の計測震度相当は出さない（検出は続ける）。
-        this.intensityFailures++
-        this.run = null
-        return
-      }
-      this.run = run
-    }
-    if (run === null) return
-    const n = chunk.gal[0].length
-    const firstIndex = run.pushed
-    try {
-      const points = run.stream.push(firstIndex, Array.from(chunk.gal[0]), Array.from(chunk.gal[1]), Array.from(chunk.gal[2]))
-      for (const p of points) {
-        const intensity = normalizeIntensity(p.intensity).value
-        const atMs = chunk.firstSampleMs + (p.endSampleIndex - firstIndex) * chunk.msPerSample
-        this.book.noteStationReading(this.opts.stationId, atMs, intensity)
-      }
-    } catch {
-      this.intensityFailures++
-      this.run = null
-      return
-    }
-    run.pushed += n
-    run.nextMs = chunk.firstSampleMs + n * chunk.msPerSample
   }
 }

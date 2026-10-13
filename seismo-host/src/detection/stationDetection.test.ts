@@ -3,8 +3,9 @@ import { describe, expect, it } from 'vitest'
 import type { FusedWaveChunk } from '../receiver/sensorFusion'
 import type { StationConfig } from '../receiver/stationConfig'
 import type { P2pReferenceQuake } from './p2pQuake'
+import { TriggerDetector } from './quakeTrigger'
 import type { ShakeEventRecord } from './shakeEvent'
-import { StationDetection, emitDetectionHourly, formatDetectionHourly, sensorsOf } from './stationDetection'
+import { StationDetection, WARM_BUFFER_MAX_MS, emitDetectionHourly, formatDetectionHourly, sensorsOf } from './stationDetection'
 import type { StationTriggerStatus } from './stationDetection'
 
 const FS = 100
@@ -77,12 +78,13 @@ function waves(totalSec: number, stationId = 'station-1'): FusedWaveChunk[] {
   return out
 }
 
-function setup(config: StationConfig = CONFIG) {
+function setup(config: StationConfig = CONFIG, opts: { hold?: boolean; existing?: ReadonlySet<string> } = {}) {
   let now = T0
   let current = config
   const saved: ShakeEventRecord[] = []
   const published: ShakeEventRecord[] = []
   const logs: { level: string; key: string; line: string }[] = []
+  const existing = opts.existing ?? new Set<string>()
   const detection = new StationDetection({
     save: (r) => saved.push(r),
     publish: (r) => published.push(r),
@@ -92,6 +94,8 @@ function setup(config: StationConfig = CONFIG) {
     config: () => current,
     now: () => now,
     log: (level, key, line) => logs.push({ level, key, line }),
+    exists: (rec) => existing.has(rec.id),
+    holdNewStations: opts.hold ?? false,
   })
   return {
     detection,
@@ -195,6 +199,8 @@ describe('StationDetection', () => {
       config: () => CONFIG,
       now: () => T0,
       log: (_l, _k, line) => logs.push(line),
+      exists: () => false,
+      holdNewStations: false,
     })
     expect(() => {
       for (const w of waves(170)) detection.pushStationWave(w)
@@ -365,6 +371,7 @@ describe('formatDetectionHourly — 数の見せ方', () => {
     onRatio: 2.5,
     peak24h: { ratio: 1.59, atMs: T0 },
     peakWindowFromMs: T0,
+    warmStart: null,
   }
 
   it('平らな値しか来ていなければ、平常時の揺れを「0 gal」と出す（0.00 と丸めて紛れさせない）', () => {
@@ -418,5 +425,134 @@ describe('emitDetectionHourly — 1 時間の行を出し、起点を進めて�
     expect(ok).toBe(false)
     expect(out).toEqual([])
     expect(errors).toEqual(['boom'])
+  })
+})
+
+describe('StationDetection — 起動時は待たせ、控えから流してから溜めたライブへ繋ぐ（#617）', () => {
+  const at = (sec: number): number => T0 + sec * 1000
+  const ALL = waves(300)
+  /** 前のプロセスが控えへ残した分（`[fromSec, toSec)`）。 */
+  const archived = (fromSec: number, toSec: number): FusedWaveChunk[] =>
+    ALL.filter((c) => c.firstSampleMs >= at(fromSec) && c.firstSampleMs < at(toSec))
+  /** 起動してから届くライブの分（`toSec` から）。 */
+  const liveFrom = (sec: number): FusedWaveChunk[] => ALL.filter((c) => c.firstSampleMs >= at(sec))
+
+  function pushLive(t: ReturnType<typeof setup>, chunks: readonly FusedWaveChunk[]): void {
+    for (const w of chunks) {
+      t.setNow(w.firstSampleMs)
+      t.detection.pushStationWave(w)
+    }
+  }
+
+  /** 起動時の流し込みを一通り回す（境 `boundarySec`・控えの `tailFromSec` から）。 */
+  function warm(t: ReturnType<typeof setup>, boundarySec: number, tailFromSec: number): void {
+    expect(t.detection.beginWarm('station-1')).toBe(true)
+    t.detection.setRecordFloor('station-1', at(boundarySec))
+    for (const c of archived(tailFromSec, boundarySec)) expect(t.detection.pushWarmChunk('station-1', c)).toBe(true)
+    expect(t.detection.finishWarm('station-1', { kind: 'warm', hoursFailed: 0, hoursTruncated: 0, longestGapMs: 0 })).toBe(true)
+  }
+
+  const warmStatus = (t: ReturnType<typeof setup>) => t.detection.snapshot().triggers.find((s) => s.stationId === 'station-1')!.warmStart
+
+  it('待っている間は、ライブを検出へ渡さずに溜める（観測点ごとに、最初の波形が届いた時から）', () => {
+    const t = setup(CONFIG, { hold: true })
+    const live = liveFrom(100).slice(0, 50)
+    pushLive(t, live)
+    // pushLive はホストの時計をまとまりの時刻へ合わせてから渡す
+    const first = live[0].firstSampleMs
+    expect(t.detection.heldStations()).toEqual([{ stationId: 'station-1', heldSinceMs: first, firstSampleMs: first }])
+    const s = t.detection.snapshot().triggers[0]
+    expect(s.lastSampleMs).toBeNull()
+    expect(s.warmStart).toMatchObject({ phase: 'holding', heldChunks: 50, outcome: null })
+  })
+
+  it('正: 前の 70 秒を控えから流してから繋げば、起動の 40 秒後の揺れを記録する', () => {
+    const t = setup(CONFIG, { hold: true })
+    pushLive(t, liveFrom(100))
+    expect(t.saved).toHaveLength(0)
+    warm(t, 100, 30)
+    expect(t.saved).toHaveLength(1)
+    expect(t.saved[0].startMs).toBeGreaterThanOrEqual(at(S_AT_SEC))
+    expect(t.published).toEqual(t.saved)
+    expect(warmStatus(t)).toMatchObject({ phase: 'live', heldChunks: 0, recordFromMs: at(100), outcome: { kind: 'warm', hoursFailed: 0, hoursTruncated: 0, longestGapMs: 0 }, replayedChunks: archived(30, 100).length })
+    // 溜めていた分を流し終えたら、そのあとのライブは直に流れる
+    expect(t.detection.heldStations()).toEqual([])
+  })
+
+  it('対照: 待たせずに空から始めると、同じ揺れは助走（60 秒）の中で記録されない', () => {
+    const t = setup(CONFIG, { hold: false })
+    pushLive(t, liveFrom(100))
+    expect(t.saved).toHaveLength(0)
+    expect(warmStatus(t)).toBeNull()
+  })
+
+  it('安全弁: 境より前に始まった揺れは、ライブへ繋いだ後に閉じても記録しない（前のプロセスの受け持ち）', () => {
+    const t = setup(CONFIG, { hold: true })
+    pushLive(t, liveFrom(143))
+    warm(t, 143, 30)
+    expect(t.saved).toHaveLength(0)
+    expect(warmStatus(t)).toMatchObject({ skippedBeforeBoundary: 1, skippedExisting: 0 })
+  })
+
+  it('安全弁: 同じ id の記録が既にあれば、版を書かず押し出しもしない（#618 と同じ）', () => {
+    const first = setup(CONFIG, { hold: true })
+    pushLive(first, liveFrom(100))
+    warm(first, 100, 30)
+    const id = first.saved[0].id
+    const t = setup(CONFIG, { hold: true, existing: new Set([id]) })
+    pushLive(t, liveFrom(100))
+    warm(t, 100, 30)
+    expect(t.saved).toHaveLength(0)
+    expect(t.published).toHaveLength(0)
+    expect(warmStatus(t)).toMatchObject({ skippedBeforeBoundary: 0, skippedExisting: 1 })
+    expect(t.detection.snapshot().shakes).toBe(0)
+  })
+
+  it('安全弁: 溜めた分が上限を超えたら、待つのをやめて空から流す（あとから来た流し込みは受けない）', () => {
+    const t = setup(CONFIG, { hold: true })
+    const n = Math.ceil(WARM_BUFFER_MAX_MS / (30 * DT)) + 2
+    const long: FusedWaveChunk[] = []
+    for (let i = 0; i < n; i++) long.push({ ...ALL[i % 600], firstSampleMs: T0 + i * 30 * DT, firstSampleIndex: i * 30 })
+    pushLive(t, long)
+    expect(warmStatus(t)).toMatchObject({ phase: 'live', heldChunks: 0, outcome: { kind: 'cold', reason: 'buffer-full' } })
+    expect(t.detection.snapshot().triggers[0].lastSampleMs).not.toBeNull()
+    expect(t.logs.some((l) => l.level === 'warn' && l.line.includes('station-1'))).toBe(true)
+    expect(t.detection.beginWarm('station-1')).toBe(false)
+    expect(t.detection.pushWarmChunk('station-1', ALL[0])).toBe(false)
+    expect(t.detection.finishWarm('station-1', { kind: 'warm', hoursFailed: 0, hoursTruncated: 0, longestGapMs: 0 })).toBe(false)
+  })
+
+  it('流し込み中に打ち切られたら（控えを読めない等）、溜めた分をそのまま流して空から始める', () => {
+    const t = setup(CONFIG, { hold: true })
+    pushLive(t, liveFrom(100))
+    expect(t.detection.beginWarm('station-1')).toBe(true)
+    expect(t.detection.finishWarm('station-1', { kind: 'cold', reason: 'read-failed', detail: 'EIO' })).toBe(true)
+    expect(t.saved).toHaveLength(0)
+    expect(warmStatus(t)).toMatchObject({ phase: 'live', outcome: { kind: 'cold', reason: 'read-failed', detail: 'EIO' } })
+    expect(t.detection.snapshot().triggers[0].lastSampleMs).not.toBeNull()
+  })
+
+  it('24 時間の最大: 裏で流した引き金の最大を重ね、範囲の頭もそこまで戻す', () => {
+    const t = setup(CONFIG, { hold: true })
+    pushLive(t, liveFrom(100))
+    warm(t, 100, 30)
+    const past = new TriggerDetector()
+    for (const c of ALL) past.push({ ...c, firstSampleMs: c.firstSampleMs - 2 * 3_600_000 })
+    expect(t.detection.mergePeaks('station-1', past, true)).toBe(true)
+    const s = t.detection.snapshot().triggers[0]
+    expect(s.peakWindowFromMs).toBe(T0 - 2 * 3_600_000)
+    expect(s.warmStart).toMatchObject({ peaks: 'restored' })
+    expect(t.detection.mergePeaks('station-x', past, true)).toBe(false)
+    // 一部の時を読めなかったときは partial
+    expect(t.detection.mergePeaks('station-1', past, false)).toBe(true)
+    expect(t.detection.snapshot().triggers[0].warmStart).toMatchObject({ peaks: 'partial' })
+  })
+
+  it('終了の締めくくりでは、溜めていた分も検出へ流してから閉じる', () => {
+    const t = setup(CONFIG, { hold: true })
+    pushLive(t, liveFrom(100).slice(0, 20))
+    t.detection.flushAll()
+    expect(warmStatus(t)).toMatchObject({ phase: 'live', heldChunks: 0, outcome: { kind: 'cold', reason: 'stopped' } })
+    expect(t.detection.snapshot().triggers[0].lastSampleMs).not.toBeNull()
   })
 })
