@@ -228,12 +228,23 @@ function gal(value: number | null): string {
 }
 
 /**
- * センサーカードへ出す、静止窓の一行。**判定が無くても必ず何か出す。**
+ * センサーカードへ出す、静止窓の一行。**3 軸なら判定が無くても必ず何か出す。**
  *
  * **「まだ出ていない」と「出たが使えない」を書き分ける。** 混ぜると、待てば出るのか
  * 何か直さないと出ないのかが読めない。
+ *
+ * **ホストが 2 軸として扱うセンサーなら何も出さない**（2026-10-13 ユーザー承認）。ホストは 2 軸の
+ * センサーに判定を作らない（`gravityCheck.ts` の `settle`）ので、「まだ無い」と言うと待っても出ない
+ * ものを待たせる。傾きは基板の「鉛直を合わせる」で扱う。`hostAxisCount` はホストがそのセンサーを
+ * 何軸として扱っているか（保存済みの設定、無ければ届いているパケットの本数。`viewBoards.ts` の
+ * `findHostAxisCount`）で、分からなければ `null`。
  */
-export function restWindowNote(window: SensorRestWindow | null, nowMs: number | null): string {
+export function restWindowNote(
+  window: SensorRestWindow | null,
+  nowMs: number | null,
+  hostAxisCount: number | null,
+): string {
+  if (hostAxisCount === 2) return ''
   // **この一行は、保存済みの設定で見たホストの診断**（`/status` の判定）。「鉛直を合わせる」が
   // 押せるかどうかは別の材料（校正前の静止窓）で決まる（`viewBoards.ts` の `refreshTiltPanel`）。
   if (window === null) return restWindowProblem(null) ?? ''

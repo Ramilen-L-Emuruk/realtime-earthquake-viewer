@@ -347,6 +347,20 @@ export async function initBoardsView(container: HTMLElement, ctx: TabContext): P
     )
   }
 
+  /**
+   * いまフォームに入っている基板の、そのセンサーを**ホストが何軸として扱っているか**。分からなければ `null`。
+   *
+   * 保存済みの設定にあればその本数、無ければ届いているパケットの本数（ホストは設定に無いセンサーへ
+   * 届いた本数で既定の校正を作る。`stationConfig.ts` の `resolveSensor`）。**カードの欄の本数は使わない**
+   * —— 保存するまでホストはそちらを見ない。
+   */
+  const findHostAxisCount = (sensorId: string): number | null => {
+    const boardKey = qs<HTMLInputElement>(container, '[name=boardKey]').value.trim()
+    const saved = currentBoards.find((b) => b.boardKey === boardKey)?.sensors.find((s) => s.sensorId === sensorId)
+    if (saved !== undefined) return saved.axes.length
+    return currentDetected.find((d) => d.boardKey === boardKey)?.axisCounts[sensorId] ?? null
+  }
+
   /** いまフォームに入っている基板の、そのセンサーの静止窓。無ければ `null`。 */
   const findFitSource = (
     sensors: readonly SensorFitWindows[] | null,
@@ -532,7 +546,7 @@ export async function initBoardsView(container: HTMLElement, ctx: TabContext): P
       try {
         const sensorId = qs<HTMLInputElement>(card, '.s-sensorId').value.trim()
         const window = findRestWindow(sensorId)
-        qs(card, '.s-rest-note').textContent = restWindowNote(window, currentGeneratedAtMs)
+        qs(card, '.s-rest-note').textContent = restWindowNote(window, currentGeneratedAtMs, findHostAxisCount(sensorId))
       } catch (error) {
         brokenCards += 1
         console.warn('[admin] センサーカードの取り付け診断を描き直せない', error)
@@ -545,8 +559,8 @@ export async function initBoardsView(container: HTMLElement, ctx: TabContext): P
       //
       // **読めないカードが 1 枚でもあれば押せない**（押したときも全部のカードを読むので、飛ばして判じると
       // 押せるのに押すと断られる。2026-10-10 ユーザー承認）。押せなくするのは、そのほかに置き方・カードの
-      // 本数のせいで解けないと分かるとき（`lacksMaterial`）だけで、ほかの理由（軸の向きが解けない形・
-      // 倍率が合わない）は押したときに出す。
+      // 値のせいで解けないと分かるとき（`lacksMaterial`）だけで、倍率が合わないといった解いてみるまで
+      // 分からない理由は押したときに出す。軸の向きが解けない形は、その手前の `readAllSensors` が断る。
       const sensors = readAllSensors(container)
       const still =
         'error' in sensors

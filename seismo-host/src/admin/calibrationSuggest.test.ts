@@ -544,7 +544,9 @@ describe('「鉛直を合わせる」の材料（校正前の静止窓 → カ�
     expect(got.ok && got.gravity).toEqual([0, 0, 980])
   })
 
-  it('安全弁: 軸の向きが 1 つの面に寄っていて解けないなら、向きを出さない', () => {
+  // 文言と扱いは 2026-10-13 ユーザー承認。**画面からは届かない**（カードの検証 `parseSensorFormValues` が
+  // 同じ判定で先に断る）が、どのセンサーかを言い、押す前から分かる理由として押せなくする。
+  it('安全弁: 軸の向きが 1 つの面に寄っていて解けないなら、向きを出さず、どのセンサーかを言う', () => {
     const flat: SensorCalibration = {
       ...UNIT3,
       axes: [
@@ -555,9 +557,15 @@ describe('「鉛直を合わせる」の材料（校正前の静止窓 → カ�
     }
     expect(boardGravityForTilt([{ sensorId: 'accel-0', source: still([0, 0, G]), sensor: flat }])).toEqual({
       ok: false,
-      reason: '軸の向きが解けない形になっている',
-      lacksMaterial: false,
+      reason: 'センサー accel-0 の軸の向きが解けない形になっている',
+      lacksMaterial: true,
     })
+    // 対照: 解けないカードが静止していなければ材料に入らないので、ほかのカードで解く。
+    const got = boardGravityForTilt([
+      { sensorId: 'accel-0', source: still([0, 0, 980]), sensor: UNIT3 },
+      { sensorId: 'accel-1', source: null, sensor: flat },
+    ])
+    expect(got.ok && got.gravity).toEqual([0, 0, 980])
   })
 
   it('安全弁: 軸の向きの長さ（倍率）が狂っていて重力の大きさが 1 g から 3 倍以上離れたら、向きを出さない', () => {

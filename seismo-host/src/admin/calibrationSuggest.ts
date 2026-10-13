@@ -261,9 +261,14 @@ export interface TiltMember {
 /**
  * {@link boardGravityForTilt} が断るときの形。
  *
- * **`lacksMaterial` は「置き方・カードの本数のせいで、押す前から解けないと分かる」理由**（いまの置き方で
- * 静止していない・軸が 3 方向へ散っていない・本数がカードと合わない）。画面はこれでボタンを押せなくする。
- * ほかの理由（軸の向きが解けない形・倍率が合わない）は押したときに出す。
+ * **`lacksMaterial` は「置き方・カードの値のせいで、押す前から解けないと分かる」理由**（いまの置き方で
+ * 静止していない・軸が 3 方向へ散っていない・本数がカードと合わない・軸の向きが解けない形）。画面は
+ * これでボタンを押せなくする。倍率が合わない・重力が数として読めないは、解いてみるまで分からないので
+ * 押したときに出す。
+ *
+ * **軸の向きが解けない形は、画面からは届かない。** 押せるかの判定も押したときも、先にカードの検証
+ * （`sensorForm.ts` の `parseSensorFormValues`）が同じ判定（`axesAreIndependent`）で断る。ここで
+ * 断るのは、ほかの経路から呼ばれたときの備え。
  */
 export interface BoardGravityRefusal extends TiltRefusal {
   readonly lacksMaterial: boolean
@@ -334,9 +339,12 @@ export function boardGravityForTilt(members: readonly TiltMember[]): { readonly 
     }
     used++
     // 基板の向きを単位行列として読むと、軸の向きは基板の座標のまま（`calibration.ts`）。解ける形かも
-    // ここで確かめる（3 本が 1 つの面に寄っている・2 本が平行なら null）。
+    // ここで確かめる（3 本が 1 つの面に寄っている・2 本が平行なら null）。カードの値だけで決まるので
+    // 押す前から分かる（`lacksMaterial`）。どのカードかを言う（文言は 2026-10-13 ユーザー承認）。
     const resolved = resolveCalibration(IDENTITY_MATRIX, m.sensor)
-    if (resolved === null) return { ok: false, reason: '軸の向きが解けない形になっている', lacksMaterial: false }
+    if (resolved === null) {
+      return { ok: false, reason: `センサー ${m.sensorId} の軸の向きが解けない形になっている`, lacksMaterial: true }
+    }
     resolved.axes.forEach((a, j) => {
       const h = a.vector
       readings.push({ vector: h, offset: a.offset, value: still.meanGal[j]! })
