@@ -17,7 +17,7 @@ const T0 = 1_790_000_000_000
 const BOUNDS = { fromMs: T0, toMs: T0 + 270_000 }
 
 function col(v: number): WaveHistoryColumn {
-  return { min: [-v, -v / 2, -v / 4], max: [v, v / 2, v / 4], minMembers: 3, magMin: NaN, magMax: NaN }
+  return { min: [-v, -v / 2, -v / 4], max: [v, v / 2, v / 4], minMembers: 3, magMin: NaN, magMax: NaN, magSum: NaN, magCount: 0 }
 }
 
 function columns(n: number, spanMs: number, value: (i: number) => number | null = () => 1): TimedColumns {

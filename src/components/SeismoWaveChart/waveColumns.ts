@@ -218,8 +218,13 @@ export function buildWaveMeanLines(params: {
   columnCount: number
   spanMs: number
   visibleAxes?: readonly boolean[]
+  /**
+   * 成分の正側・負側の平均も作るか。**作らなければ `axes` はすべて `NaN`。** 畳んだ合成は合成の均した線しか使わないので、
+   * 0.3 秒ごとに 3 成分ぶんの移動平均を回さずに済ませる（常時表示の端末の負荷）。
+   */
+  includeAxes: boolean
 }): WaveMeanLines {
-  const { window: win, columnCount, spanMs, visibleAxes } = params
+  const { window: win, columnCount, spanMs, visibleAxes, includeAxes } = params
   const n = win.gal[0].length
   const empty = (): Float32Array => new Float32Array(Math.max(0, columnCount)).fill(NaN)
   if (columnCount <= 0 || !(spanMs > 0) || n === 0) {
@@ -253,6 +258,7 @@ export function buildWaveMeanLines(params: {
   }
   return {
     axes: [0, 1, 2].map((a) => {
+      if (!includeAxes) return { pos: empty(), neg: empty() }
       const { pos, neg } = signedMovingAverages(series, win.gal[a], MEAN_LINE_WINDOW_MS)
       return { pos: toColumns(pos), neg: toColumns(neg) }
     }),

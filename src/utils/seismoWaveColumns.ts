@@ -58,6 +58,81 @@ export function compositeCoverage(columns: readonly (WaveHistoryColumn | null)[]
 }
 
 /**
+ * 合成を前後 `windowMs` の幅で均した線を、**列ごとに 1 点**で返す（値の無い列は `NaN`）。地震カードの合成に重ねる。
+ *
+ * **列の和と数をまとめて割る**（`magSum`・`magCount`）。列の中心が `windowMs / 2` 以内に入る列を数える ——
+ * サンプルで均す `utils/waveMeanLines.ts` の `movingAverage` と同じ幅で、窓の端が列 1 つぶん（カードでは 0.2 秒ほど）
+ * 粗いだけの違い。
+ *
+ * **値のある列のうち 1 列でも材料を持たなければ `null`**（{@link compositeCoverage} と同じ考え方）。材料を返さない古い
+ * ホストの列と、押し出しで継ぎ足した列（必ず持つ）が混ざると、線が継ぎ足した区間にだけ現れて読み返した区間が
+ * 空いて見える —— 揺れの輪郭がそこで途切れたように読める。
+ */
+export function smoothCompositeColumns(base: TimedColumns, windowMs: number): Float32Array | null {
+  const n = base.columns.length
+  const span = base.columnSpanMs
+  if (n === 0 || !(span > 0) || !(windowMs > 0)) return null
+  // 列の和と数の累積（`prefix[i]` は 0〜i-1 列の合計）。
+  const sumPrefix = new Float64Array(n + 1)
+  const cntPrefix = new Float64Array(n + 1)
+  for (let i = 0; i < n; i += 1) {
+    const c = base.columns[i]
+    let s = 0
+    let k = 0
+    if (c !== null) {
+      if (!(c.magCount > 0) || !Number.isFinite(c.magSum)) return null
+      s = c.magSum
+      k = c.magCount
+    }
+    sumPrefix[i + 1] = sumPrefix[i] + s
+    cntPrefix[i + 1] = cntPrefix[i] + k
+  }
+  /** 中心から何列先までを窓に入れるか。 */
+  const reach = Math.floor(windowMs / 2 / span + 1e-9)
+  const out = new Float32Array(n)
+  for (let i = 0; i < n; i += 1) {
+    // **元の列に値が無ければ `NaN`** —— 途切れで線を切る扱いを均した線でも保つ（`movingAverage` と同じ）。
+    if (base.columns[i] === null) {
+      out[i] = Number.NaN
+      continue
+    }
+    const lo = Math.max(0, i - reach)
+    const hi = Math.min(n, i + reach + 1)
+    const cnt = cntPrefix[hi] - cntPrefix[lo]
+    out[i] = cnt > 0 ? (sumPrefix[hi] - sumPrefix[lo]) / cnt : Number.NaN
+  }
+  return out
+}
+
+/**
+ * 切り出した列（`part`）に沿って、均した線を返す。**均すのは切り出す前の列（`base`）で行う** —— 切り出した後で均すと、
+ * 範囲の端の列が窓の外側（値はある）を取り込めず、端だけ生の値に寄る。
+ *
+ * `part` が `base` の列の境目に揃っていないとき（刻みが違う・起点がずれている・範囲の外）は、`part` だけで均す
+ * （端が粗くなるだけで、別の時刻の値を描くことはない）。
+ *
+ * **前提: 列の刻みが窓の半分（0.5 秒）より細かいこと。** 刻みがそれ以上だと前後の列が窓に入らず、列ごとの平均になる
+ * （地震カードは 4.5 分を 1200 列で、刻みは 0.2 秒ほど）。
+ */
+export function smoothCompositeWithin(base: TimedColumns, part: TimedColumns, windowMs: number): Float32Array | null {
+  const span = base.columnSpanMs
+  const offset = span > 0 ? (part.fromMs - base.fromMs) / span : Number.NaN
+  const first = Math.round(offset)
+  const aligned =
+    Math.abs(part.columnSpanMs - span) <= 1e-6 &&
+    Math.abs(offset - first) <= 1e-6 &&
+    first >= 0 &&
+    first + part.columns.length <= base.columns.length
+  if (!aligned) return smoothCompositeColumns(part, windowMs)
+  // **材料の有無は切り出した範囲で決める**（範囲の外に古い列が残っていても、見えている区間で線を引けるように）。
+  const inner = smoothCompositeColumns(part, windowMs)
+  if (inner === null) return null
+  // 範囲の外に材料の無い列があれば、外側を借りずに切り出した列で均した線を使う（端が粗くなるだけ）。
+  const whole = smoothCompositeColumns(base, windowMs)
+  return whole === null ? inner : whole.slice(first, first + part.columns.length)
+}
+
+/**
  * 値を持つ最後の列までで切る。
  *
  * **空の区間を描かない**（2026-09-30 のユーザー指摘「終端はそれに合わせてカットしてほしい。
@@ -160,7 +235,15 @@ export function appendWaveWindow(params: {
   // 追加ぶんの集計。**列の番号で引ける疎な入れ物**（届いていない時間帯は空のまま）。
   const added = new Map<
     number,
-    { min: [number, number, number]; max: [number, number, number]; members: number; magMin: number; magMax: number }
+    {
+      min: [number, number, number]
+      max: [number, number, number]
+      members: number
+      magMin: number
+      magMax: number
+      magSum: number
+      magCount: number
+    }
   >()
 
   for (let i = 0; i < count; i += 1) {
@@ -184,9 +267,13 @@ export function appendWaveWindow(params: {
         members: m,
         magMin: mag,
         magMax: mag,
+        magSum: mag,
+        magCount: 1,
       })
       continue
     }
+    cur.magSum += mag
+    cur.magCount += 1
     if (mag < cur.magMin) cur.magMin = mag
     if (mag > cur.magMax) cur.magMax = mag
     for (let a = 0; a < 3; a += 1) {
@@ -210,7 +297,15 @@ export function appendWaveWindow(params: {
     next.push(
       a === undefined
         ? null
-        : { min: a.min, max: a.max, minMembers: a.members, magMin: a.magMin, magMax: a.magMax },
+        : {
+            min: a.min,
+            max: a.max,
+            minMembers: a.members,
+            magMin: a.magMin,
+            magMax: a.magMax,
+            magSum: a.magSum,
+            magCount: a.magCount,
+          },
     )
   }
   return { ...base, columns: next }

@@ -7,10 +7,10 @@
 import { describe, expect, it } from 'vitest'
 
 import type { WaveHistoryColumn } from '../../services/seismoWaveHistory'
-import { foldHistoryColumns } from './historyColumns'
+import { foldHistoryColumns, foldHistoryLine } from './historyColumns'
 
 function col(lo: number, hi: number, members = 9): WaveHistoryColumn {
-  return { min: [lo, lo, lo], max: [hi, hi, hi], minMembers: members, magMin: NaN, magMax: NaN }
+  return { min: [lo, lo, lo], max: [hi, hi, hi], minMembers: members, magMin: NaN, magMax: NaN, magSum: NaN, magCount: 0 }
 }
 
 describe('foldHistoryColumns', () => {
@@ -36,7 +36,7 @@ describe('foldHistoryColumns', () => {
   it('正（2026-10-09）: 1 成分だけ値の無い列（NaN）を挟んでも、その成分の端は後の列から採る', () => {
     // 観測点の合成は、解けない成分だけを NaN にして残りを出す（2026-10-09 ユーザー承認）。
     // **最初に拾った NaN が居座らない**ことを見る（`x < NaN` は偽なので、比べるだけだと更新されない）。
-    const partial: WaveHistoryColumn = { min: [-1, -1, NaN], max: [1, 1, NaN], minMembers: 2, magMin: NaN, magMax: NaN }
+    const partial: WaveHistoryColumn = { min: [-1, -1, NaN], max: [1, 1, NaN], minMembers: 2, magMin: NaN, magMax: NaN, magSum: NaN, magCount: 0 }
     const source = [partial, col(-4, 4)]
     const { columns, scaleGal } = foldHistoryColumns({ source, columnCount: 1, minScaleGal: 1 })
     expect(columns[0].min[2]).toBe(-4)
@@ -46,7 +46,7 @@ describe('foldHistoryColumns', () => {
   })
 
   it('対照: 畳んだ範囲でその成分が 1 つも無ければ、その成分だけ NaN（列は値を持つ）', () => {
-    const partial: WaveHistoryColumn = { min: [-1, -1, NaN], max: [1, 1, NaN], minMembers: 2, magMin: NaN, magMax: NaN }
+    const partial: WaveHistoryColumn = { min: [-1, -1, NaN], max: [1, 1, NaN], minMembers: 2, magMin: NaN, magMax: NaN, magSum: NaN, magCount: 0 }
     const { columns } = foldHistoryColumns({ source: [partial, partial], columnCount: 1, minScaleGal: 1 })
     expect(columns[0].hasValue).toBe(true)
     expect(columns[0].max[2]).toBeNaN()
@@ -110,6 +110,8 @@ describe('foldHistoryColumns', () => {
       minMembers: 9,
       magMin: NaN,
       magMax: NaN,
+      magSum: NaN,
+      magCount: 0,
     }
 
     it('消した向きは振れ幅の分母から外す', () => {
@@ -166,5 +168,24 @@ describe('foldHistoryColumns の合成', () => {
     const { columns } = foldHistoryColumns({ source: [col(-1, 1), mag(2, 4)], columnCount: 1, minScaleGal: 1 })
     expect(columns[0].magMin).toBe(2)
     expect(columns[0].magMax).toBe(4)
+  })
+})
+
+describe('foldHistoryLine', () => {
+  // 正: 縮めるときは範囲の平均を取る（線は 1 点なので端を取らない）。
+  it('縮めるときは平均', () => {
+    expect(Array.from(foldHistoryLine([1, 3, 5, 7], 2))).toEqual([2, 6])
+  })
+
+  // 対照: 広げるときは同じ元の列を引く（{@link foldHistoryColumns} と同じ割り付け）。
+  it('広げるときは元の列を引き伸ばす', () => {
+    expect(Array.from(foldHistoryLine([1, 3], 4))).toEqual([1, 1, 3, 3])
+  })
+
+  // 安全弁: 値の無い元の列だけの範囲は NaN（線を切る）。混ざっていれば値のある分だけで平均する。
+  it('値の無い範囲は NaN', () => {
+    const out = foldHistoryLine([NaN, NaN, 4, NaN], 2)
+    expect(out[0]).toBeNaN()
+    expect(out[1]).toBe(4)
   })
 })

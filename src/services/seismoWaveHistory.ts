@@ -62,6 +62,14 @@ export interface WaveHistoryColumn {
    */
   readonly magMin: number
   readonly magMax: number
+  /**
+   * 合成の和（gal）と、足したサンプルの数。**合成を前後 1 秒で均した線を引く材料**（隣り合う列の和と数を
+   * まとめて割る）。ホストがサンプルを持っているのでそちらで足す。
+   *
+   * **古いホストは返さないので `magSum` は `NaN`・`magCount` は 0。** 描く側は均した線を引かない。
+   */
+  readonly magSum: number
+  readonly magCount: number
 }
 
 /** 読み返した区間。 */
@@ -203,12 +211,18 @@ export function readWaveHistory(parsed: unknown): { value: WaveHistory } | { det
     const magMin = finiteOr(col.magMin, Number.NaN)
     const magMax = finiteOr(col.magMax, Number.NaN)
     const hasMag = Number.isFinite(magMin) && Number.isFinite(magMax)
+    // **和と数もそろって読む。** 数が正の整数でなければ、和があっても持たないものとして扱う（0 で割らない）。
+    const magSum = finiteOr(col.magSum, Number.NaN)
+    const magCount = finiteOr(col.magCount, 0)
+    const hasMean = Number.isFinite(magSum) && Number.isInteger(magCount) && magCount > 0
     columns.push({
       min,
       max,
       minMembers: finiteOr(col.minMembers, 0),
       magMin: hasMag ? magMin : Number.NaN,
       magMax: hasMag ? magMax : Number.NaN,
+      magSum: hasMean ? magSum : Number.NaN,
+      magCount: hasMean ? magCount : 0,
     })
   }
 

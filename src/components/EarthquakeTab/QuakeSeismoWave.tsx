@@ -21,10 +21,17 @@ import { log } from '../../utils/logger'
 import { formatMeasured } from '../../utils/measuredIntensityRounding'
 import { columnsSpan, measureQuietLevel, selectQuakeWindow, type WaveAxisZero } from '../../utils/seismoQuakeWindow'
 import { quietScaledGal } from '../../utils/seismoQuietScale'
-import { compositeCoverage, type TimedColumns } from '../../utils/seismoWaveColumns'
+import { compositeCoverage, smoothCompositeWithin, type TimedColumns } from '../../utils/seismoWaveColumns'
+import { MEAN_LINE_WINDOW_MS } from '../../utils/waveMeanLines'
 import { buildArrivalMarksForRange } from '../SeismoWaveChart/arrivalMarks'
-import { foldHistoryColumns } from '../SeismoWaveChart/historyColumns'
-import { paintCompositeColumns, paintWaveColumns, type PaintableColumns, type WaveMark } from '../SeismoWaveChart/paintWave'
+import { foldHistoryColumns, foldHistoryLine } from '../SeismoWaveChart/historyColumns'
+import {
+  COMPOSITE_SMOOTH_COLOR,
+  paintCompositeColumns,
+  paintWaveColumns,
+  type PaintableColumns,
+  type WaveMark,
+} from '../SeismoWaveChart/paintWave'
 import { buildTimeTicks } from '../SeismoWaveChart/timeTicks'
 
 /**
@@ -249,6 +256,8 @@ function HistoryWave({ wave, quakeLabel, view }: { wave: SeismoQuakeWave; quakeL
   const loggedUntrimmedRef = useRef<string | null>(null)
   // 「合成を選んでいるがホストが合成を返さなかった」を記録へ残した観測点。間引きは上と同じ理由。
   const loggedNoMagRef = useRef<string | null>(null)
+  // 「均した線の材料が無い」を記録へ残した観測点。間引きは上と同じ理由。
+  const loggedNoMeanRef = useRef<string | null>(null)
   // **震度の行。** 描く区間はここでも同じ関数で切り出し、震度を訊いた区間と突き合わせる
   // （訊く側は `useSeismoQuakeWaves`。区間の物差しは `columnsSpan`）。
   const intensityParts = useMemo(() => {
@@ -305,11 +314,28 @@ function HistoryWave({ wave, quakeLabel, view }: { wave: SeismoQuakeWave; quakeL
         // 3 成分を重ねた絵へ戻し、記録へ残す —— 画面からは「合成を選んだのに 3 本出ている」としか見えない。
         const coverage = compositeCoverage(trimmed.columns)
         if (coverage.complete) {
+          // **線が 1 本だけなので、前後 1 秒で均した線を重ねる**（2026-10-13 ユーザー承認。地図の下端の合成の段と
+          // 同じ見せ方）。材料（列の和と数）を返さない古いホストの列では引かない ——記録へ残す。
+          const smooth = smoothCompositeWithin(wave.columns, trimmed, MEAN_LINE_WINDOW_MS)
+          // **鍵は観測点と地震の組**（範囲を切れなかった記録と同じ粒度）。観測点だけにすると、同じ観測点の別の地震で
+          // 欠けても残らない。
+          const noMeanKey = `${wave.stationId}@${wave.axisZero.ms}`
+          if (smooth === null && loggedNoMeanRef.current !== noMeanKey) {
+            loggedNoMeanRef.current = noMeanKey
+            const withMean = trimmed.columns.filter((c) => c !== null && c.magCount > 0 && Number.isFinite(c.magSum)).length
+            log.debug(
+              `[seismo] 地震カードの波形に均した線を引けなかった（${wave.stationId}）: 値のある ${coverage.valued} 列のうち材料（合成の和と数）を持つのは ${withMean} 列。合成だけを描く`,
+            )
+          }
           setScaleText(
             paintCompositeColumns(canvas, build, wave.interrupted, {
               minScaleGal: quakeMinScaleGal(wave.columns, wave.axisZero.ms),
               marks,
               ticks,
+              overlays:
+                smooth === null
+                  ? undefined
+                  : (count) => [{ values: foldHistoryLine(smooth, count), color: COMPOSITE_SMOOTH_COLOR }],
             }),
           )
           return
