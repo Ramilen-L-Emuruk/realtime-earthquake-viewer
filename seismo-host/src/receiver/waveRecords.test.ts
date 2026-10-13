@@ -8,10 +8,12 @@ import { buildMseed3Record, buildMseed3TextRecord, mseed3LogSourceId, mseed3Sour
 import type { FusedWaveChunk } from './sensorFusion'
 import { encodeSteim2 } from './steim2'
 import { encodeWaveChunk } from './waveArchive'
+import { segmentHalfSpanMs } from './wavePsd'
 import {
   FINE_RANGE_MAX_MS,
   GAL_PER_UG,
   SPECTROGRAM_SAMPLES_MIN_COLUMN_MS,
+  SPECTROGRAM_SAMPLES_PAD_MS,
   SPECTROGRAM_SAMPLES_RANGE_MAX_MS,
   chooseEnvelopeSource,
   columnMsFor,
@@ -229,7 +231,12 @@ describe('samplesToColumns', () => {
 const HNZ = mseed3SourceId(BOARD, 'S1', 'HNZ')!
 
 /** 生データの時のファイルを書く。`records` は [先頭の時刻, 値, 届き方の印]。`ug` が null なら受信の記録を書かない。 */
-function writeRawHour(hourStartMs: number, records: Array<[number, number[], 'live' | 'backlog']>, ug: number | null = 61.0352): string {
+function writeRawHour(
+  hourStartMs: number,
+  records: Array<[number, number[], 'live' | 'backlog']>,
+  ug: number | null = 61.0352,
+  sampleRateHz = 100,
+): string {
   const hourKey = hourKeyOf(hourStartMs)
   mkdirSync(join(dirs.rawDir, hourKey.slice(0, 10)), { recursive: true })
   const path = join(dirs.rawDir, hourKey.slice(0, 10), `raw-${hourKey}.mseed3`)
@@ -248,7 +255,7 @@ function writeRawHour(hourStartMs: number, records: Array<[number, number[], 'li
       buildMseed3Record({
         sourceId: HNZ,
         startMs,
-        sampleRateHz: 100,
+        sampleRateHz,
         block: encodeSteim2(Int32Array.from(values), 7),
         extraHeaders: JSON.stringify({ Seismo: { b: 'boot', q: i * 1000, ...(lane === 'backlog' ? { r: 1 } : {}) } }),
       }),
@@ -544,6 +551,43 @@ describe('readSpectrogram', () => {
     const over = await readSpectrogram({ dirs, signal: OPEN,ref, fromMs: H0, toMs: H0 + SPECTROGRAM_SAMPLES_RANGE_MAX_MS + 60_000, columns: 4096, unit: 'gal' })
     expect(over.source).toBe('minutes')
     expect(SPECTROGRAM_SAMPLES_RANGE_MAX_MS).toBe(12 * HOUR)
+  })
+
+  it('#743 正: 刻みが遅く区間の半分が 6 秒を超えても、読んだ刻みから余白を求めて読み直し、頭の列まで区間を入れる', async () => {
+    // 40 Hz（区間の半分 12.8 秒）を 5 分ぶん。12:01〜12:02 を 1 秒の列で頼む。6 秒しか余分に読まないと、
+    // 区間の中心は 12:01:06.8 からになり、頭の 7 列が空く
+    const records: Array<[number, number[], 'live']> = []
+    for (let k = 0; k < 60; k += 1) {
+      records.push([H0 + k * 5000, Array.from({ length: 200 }, (_, i) => Math.round(100 * Math.sin((2 * Math.PI * 3 * (k * 200 + i)) / 40))), 'live'])
+    }
+    writeRawHour(H0, records, 61.0352, 40)
+    const ref = parseChannelId(HNZ)!
+    const got = await readSpectrogram({ dirs, signal: OPEN, ref, fromMs: H0 + 60_000, toMs: H0 + 120_000, columns: 60, unit: 'gal' })
+    expect(got.source).toBe('samples')
+    expect(got.segments).toHaveLength(60)
+    expect(got.segments.every((s) => s === 1)).toBe(true)
+  })
+
+  it('#743 対照: いまの基板の刻み（100 Hz）なら最初の 6 秒の余白で足り、頭の列まで区間が入る', async () => {
+    const records: Array<[number, number[], 'live']> = []
+    // 1 レコード 512 バイトに収まるよう、2.5 秒（250 点）ずつに分ける
+    for (let k = 0; k < 120; k += 1) {
+      records.push([H0 + k * 2500, Array.from({ length: 250 }, (_, i) => Math.round(100 * Math.sin((2 * Math.PI * 3 * (k * 250 + i)) / 100))), 'live'])
+    }
+    writeRawHour(H0, records, 61.0352, 100)
+    const ref = parseChannelId(HNZ)!
+    const got = await readSpectrogram({ dirs, signal: OPEN, ref, fromMs: H0 + 60_000, toMs: H0 + 120_000, columns: 60, unit: 'gal' })
+    expect(got.segments.every((s) => s === 1)).toBe(true)
+    expect(segmentHalfSpanMs(10)).toBeLessThan(SPECTROGRAM_SAMPLES_PAD_MS)
+  })
+
+  it('#745 安全弁: 生のサンプルから作る計算の途中で中断されたら投げる', async () => {
+    const values = Array.from({ length: 6000 }, (_, i) => Math.sin(i / 3))
+    await writeWaveHour(H0, [[H0, values]])
+    const ref = parseChannelId(`station/${KEY}/X`)!
+    const ac = new AbortController()
+    ac.abort()
+    await expect(readSpectrogram({ dirs, signal: ac.signal, ref, fromMs: H0, toMs: H0 + 60_000, columns: 60, unit: 'gal' })).rejects.toThrow()
   })
 
   it('10 分以内でも、画面の幅が狭ければ列は 1 秒単位で広がる', async () => {

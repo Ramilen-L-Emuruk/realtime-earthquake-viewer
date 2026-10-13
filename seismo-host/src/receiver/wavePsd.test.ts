@@ -1,6 +1,18 @@
 import { describe, expect, it } from 'vitest'
 
-import { PSD_BIN_COUNT, PSD_BIN_EDGES_HZ, PSD_HOP, PSD_NFFT, columnPsd, intervalPsd, minutePsd, welchPsd } from './wavePsd'
+import {
+  PSD_BIN_COUNT,
+  PSD_BIN_EDGES_HZ,
+  PSD_HOP,
+  PSD_NFFT,
+  type PsdChunk,
+  columnPsd,
+  columnPsdAsync,
+  intervalPsd,
+  minutePsd,
+  segmentHalfSpanMs,
+  welchPsd,
+} from './wavePsd'
 
 const T0 = Date.parse('2026-10-07T03:00:00.000Z')
 const FS = 100
@@ -184,6 +196,13 @@ describe('intervalPsd', () => {
     expect(integrate(got.power) / 2).toBeLessThan(1.1)
   })
 
+  it('範囲の頭が刻みの途中にあっても、半サンプルの丸めで端の区間を落とさない', () => {
+    // 範囲の頭を 4 ms（刻み 10 ms の半分未満）ずらす。区間の頭のサンプルは範囲の頭より 4 ms 手前に来る
+    const x = sine(6000, 5, 1)
+    const got = intervalPsd(chunks(x, T0, 500), T0 + 4, T0 + 60_000)
+    expect(got.segments).toBe(Math.floor((6000 - PSD_NFFT) / PSD_HOP) + 1)
+  })
+
   it('範囲の端からはみ出す区間は使わない', () => {
     const x = sine(6000, 5, 1)
     // 範囲は先頭から 2 区間ぶん（1024 + 512 点）。3 本目の区間は末尾がはみ出す。
@@ -204,14 +223,16 @@ describe('intervalPsd', () => {
 })
 
 describe('columnPsd', () => {
-  it('区間を中心の時刻が入る列へ積み、範囲の外に中心がある区間は使わない', () => {
-    // 60 秒ぶん。区間の中心は 5.12・10.24・…・51.2 秒（10 本）
+  it('列ごとに中心を等間隔に置いて区間を積み、範囲の外に中心がある区間は使わない（以前は送り 5.12 秒任せで列ごとに 1〜2 本とばらついた）', () => {
+    // 60 秒ぶん・6 秒の列。送り（5.12 秒）を超えないよう、1 列を 2 つに分けて 1.5・4.5 秒目に中心を置く。
+    // 区間（約 10 秒）が収まる中心は 5.12〜54.88 秒なので、12〜54 秒の 7 列に 2 本ずつ
     const x = sine(6000, 5, 2)
     const got = columnPsd(chunks(x, T0, 500), T0 + 12_000, T0 + 72_000, 6000)
     expect(got.firstColumn).toBe((T0 + 12_000) / 6000)
     expect(got.segments).toHaveLength(10)
-    // 中心が 12 秒より前の 2 本（5.12・10.24 秒）は使わない
-    expect(got.segments.reduce((a, b) => a + b, 0)).toBe(Math.floor((6000 - PSD_NFFT) / PSD_HOP) + 1 - 2)
+    expect(got.segments.slice(0, 7)).toEqual([2, 2, 2, 2, 2, 2, 2])
+    // 12 秒より前（範囲の外）の中心は使わない。54 秒以降は区間が記録の外へはみ出す
+    expect(got.segments.slice(7)).toEqual([0, 0, 0])
     // 記録の無い末尾の列（66 秒以降）は区間 0・NaN
     expect(got.segments[9]).toBe(0)
     expect(Array.from(got.power[9]!).every((v) => Number.isNaN(v))).toBe(true)
@@ -299,5 +320,154 @@ describe('columnPsd', () => {
     const got = columnPsd(chunks(x, T0, 512), T0, T0 + 20_480, 5)
     // 送り 1 サンプル ＝ 区間の数は (2048 − 1024) / 1 + 1
     expect(got.segments.reduce((a, b) => a + b, 0)).toBe(2048 - PSD_NFFT + 1)
+  })
+})
+
+/**
+ * 名乗る刻み（10 ms）と実際の刻みがずれた長い走り。5 秒（500 点）のレコードを、実際の刻み `realMs` で並べる。
+ * レコードの頭の時刻は実時刻（ホストが時間軸の当てはめで付ける）。`jitterMs` は継ぎ目ごとに頭を ± に揺らす幅。
+ */
+function driftingRecords(x: Float64Array, realMs: number, jitterMs = 0): PsdChunk[] {
+  const out: PsdChunk[] = []
+  for (let i = 0; i * 500 < x.length; i += 1) {
+    const jitter = i === 0 ? 0 : i % 2 === 0 ? jitterMs : -jitterMs
+    out.push({ firstSampleMs: T0 + i * 500 * realMs + jitter, msPerSample: MS, values: x.subarray(i * 500, Math.min(x.length, (i + 1) * 500)) })
+  }
+  return out
+}
+
+/** 実時刻 `[fromS, toS)` 秒に当たるサンプルへ、振幅の大きい 10 Hz を足す。 */
+function burstAt(x: Float64Array, realMs: number, fromS: number, toS: number): void {
+  for (let i = 0; i < x.length; i += 1) {
+    const t = (i * realMs) / 1000
+    if (t >= fromS && t < toS) x[i] = x[i]! + 50 * Math.sin((2 * Math.PI * 10 * t))
+  }
+}
+
+describe('区間を置く時刻は実時刻（#742）', () => {
+  // 実際の刻み 10.04 ms（99.6 Hz。実機の MPU6050 で 99.585 Hz を測った）。2 時間の走りで、名乗る刻みで数えた添字の
+  // 時刻は実時刻より約 29 秒手前へずれる。
+  const REAL_MS = 10.04
+  const N = 720_000
+
+  it('正: 長い走りでも、区間は実時刻の分へ入る（名乗る刻みで数えると 1 つ前の分へずれていた）', () => {
+    const r = seeded(11)
+    const x = Float64Array.from({ length: N }, () => 0.1 * gaussian(r))
+    // 実時刻 7085〜7115 秒（T0 から 118 分目 ＝ 7080〜7140 秒の中）に揺れを置く。名乗る刻みで数えると
+    // 7056〜7086 秒に見え、117 分目（7020〜7080 秒）へ入ってしまう。
+    burstAt(x, REAL_MS, 7085, 7115)
+    const got = minutePsd(driftingRecords(x, REAL_MS))!
+    const minute = (k: number): number => T0 / 60_000 + k - got.firstMinute
+    const at10 = (k: number): number => got.power[minute(k) * PSD_BIN_COUNT + binOf(10)]!
+    expect(at10(118) / at10(110)).toBeGreaterThan(100)
+    expect(at10(117) / at10(110)).toBeLessThan(3)
+  })
+
+  it('正: スペクトログラムの列も実時刻で割り付ける', () => {
+    const r = seeded(12)
+    const x = Float64Array.from({ length: N }, () => 0.1 * gaussian(r))
+    burstAt(x, REAL_MS, 7085, 7115)
+    const got = columnPsd(driftingRecords(x, REAL_MS), T0 + 7000_000, T0 + 7200_000, 10_000)
+    const col = (s: number): number => (T0 + s * 1000) / 10_000 - got.firstColumn
+    const at10 = (s: number): number => got.power[col(s)]![binOf(10)]!
+    // 7090〜7100 秒の列は揺れの真ん中、7050〜7060 秒の列（名乗る刻みならここに揺れが見えた）は静か
+    expect(at10(7090) / at10(7180)).toBeGreaterThan(100)
+    expect(at10(7050) / at10(7180)).toBeLessThan(3)
+  })
+
+  it('安全弁: 実際の刻みが名乗りより遅く、継ぎ目が ±10 ms 揺れても、1 秒の列は 1 本も空かない', () => {
+    // 10 分。区間の中心が届かない頭と末尾の 6 秒ずつを除けば、どの列にも区間が入る。送りを名乗りの刻み
+    // （100 点 ＝ 1000 ms）で数えると、実時刻では 1005 ms ＋継ぎ目の揺れになり、ときどき列を飛び越す。
+    // 揺れは繋ぎの許容（約 55 ms）に収まる幅にする（実際の刻みの遅れで継ぎ目ごとに 25 ms 後ろへずれる）。
+    const x = sine(60_000, 5, 1)
+    const got = columnPsd(driftingRecords(x, 10.05, 10), T0 + 6000, T0 + 594_000, 1000)
+    expect(got.segments.every((s) => s > 0)).toBe(true)
+  })
+
+  it('安全弁: 範囲の頭・末尾が列の境目に揃っていなくても、端の列は範囲に入る部分へ中心を置いて空けない', () => {
+    // 60 秒ぶん・10 秒の列。範囲は 18.5〜41.5 秒。列を 2 つに分けて置く中心（12.5・17.5 秒、42.5・47.5 秒）は、
+    // 頭の列（10〜20 秒）も末尾の列（40〜50 秒）も両方とも範囲の外に来る
+    const x = sine(6000, 5, 1)
+    const got = columnPsd(chunks(x, T0, 500), T0 + 18_500, T0 + 41_500, 10_000)
+    expect(got.segments).toHaveLength(4)
+    expect(got.segments.every((s) => s > 0)).toBe(true)
+  })
+
+  it('対照: 名乗りと実際の刻みが同じ短い走りでは、1 分の区間の数は半分重ねの Welch と同じ', () => {
+    const x = sine(6000, 5, 1)
+    expect(minutePsd(chunks(x, T0, 500))!.segments[0]).toBe(welchPsd(x, FS).segments)
+  })
+
+  it('対照: 1 分の列のスペクトログラムは 1 分ごとの PSD と同じ区間で作る（生データ⇔1 分 PSD の境目で段差を作らない）', () => {
+    const r = seeded(13)
+    const x = Float64Array.from({ length: 36_000 }, () => gaussian(r))
+    const cs = driftingRecords(x, REAL_MS)
+    const minutes = minutePsd(cs)!
+    const columns = columnPsd(cs, T0, T0 + 360_000, 60_000)
+    for (let j = 0; j < columns.segments.length; j += 1) {
+      const i = columns.firstColumn + j - minutes.firstMinute
+      expect(columns.segments[j]).toBe(minutes.segments[i])
+      for (let b = binOf(1); b < binOf(40); b += 1) {
+        expect(columns.power[j]![b]).toBeCloseTo(minutes.power[i * PSD_BIN_COUNT + b]!, 6)
+      }
+    }
+  })
+})
+
+describe('columnPsdAsync（#745）', () => {
+  it('同期の columnPsd と同じ結果を返し、計算の途中で譲る', async () => {
+    const x = sine(60_000, 5, 1)
+    const cs = chunks(x, T0, 500)
+    let pauses = 0
+    const got = await columnPsdAsync(cs, T0, T0 + 600_000, 1000, {
+      signal: new AbortController().signal,
+      sliceMs: 0,
+      pause: async () => {
+        pauses += 1
+      },
+    })
+    const sync = columnPsd(cs, T0, T0 + 600_000, 1000)
+    expect(got.segments).toEqual(sync.segments)
+    expect(got.power.map((p) => Array.from(p))).toEqual(sync.power.map((p) => Array.from(p)))
+    expect(pauses).toBeGreaterThan(100)
+  })
+
+  it('譲っている間に中断されたら投げる（打ち切られた要求の計算を続けない）', async () => {
+    const x = sine(60_000, 5, 1)
+    const ac = new AbortController()
+    let pauses = 0
+    await expect(
+      columnPsdAsync(chunks(x, T0, 500), T0, T0 + 600_000, 1000, {
+        signal: ac.signal,
+        sliceMs: 0,
+        pause: async () => {
+          pauses += 1
+          if (pauses === 3) ac.abort()
+        },
+      }),
+    ).rejects.toThrow()
+    expect(pauses).toBe(3)
+  })
+
+  it('対照: 時間の予算内なら譲らない', async () => {
+    const x = sine(6000, 5, 1)
+    let pauses = 0
+    await columnPsdAsync(chunks(x, T0, 500), T0, T0 + 60_000, 1000, {
+      signal: new AbortController().signal,
+      sliceMs: 60_000,
+      pause: async () => {
+        pauses += 1
+      },
+    })
+    expect(pauses).toBe(0)
+  })
+})
+
+describe('segmentHalfSpanMs（#743）', () => {
+  it('区間の半分（512 点）を刻みから求め、名乗りと実際の刻みの差（1%）を見込む', () => {
+    expect(segmentHalfSpanMs(10)).toBeGreaterThanOrEqual(5120)
+    expect(segmentHalfSpanMs(10)).toBeLessThan(5200)
+    expect(segmentHalfSpanMs(1000 / 104)).toBeLessThan(segmentHalfSpanMs(10))
+    expect(segmentHalfSpanMs(20)).toBeGreaterThanOrEqual(10_240)
   })
 })

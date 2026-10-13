@@ -281,6 +281,27 @@ describe('encodeDerivedPart / decodeDerivedPart', () => {
     expect(got.intensity).toBeNull()
   })
 
+  it('#742 正: 版 1 で書いた要約は、作り直すかの判定では「無い」と見なす（1 分 PSD を新しい区間の置き方で作り直させる）', () => {
+    const v1 = Buffer.from(encodeDerivedPart(sample(), 'derived-coarse'))
+    v1.writeUInt8(1, 4)
+    expect(peekDerivedHead(v1)).toBeNull()
+  })
+
+  it('#742 対照: 版 1 の要約も、作り直すまでの間は読める（画面の合成と震度の推移を空けない）', () => {
+    const v1 = Buffer.from(encodeDerivedPart(sample(), 'derived-coarse'))
+    v1.writeUInt8(1, 4)
+    expect(decodeDerivedPart(v1, () => true)).not.toBeNull()
+    // 書くのは新しい版。作り直した要約は判定を通る
+    expect(peekDerivedHead(encodeDerivedPart(sample(), 'derived-coarse'))).not.toBeNull()
+  })
+
+  it('安全弁: 知らない版（先の版）は読まない', () => {
+    const v9 = Buffer.from(encodeDerivedPart(sample(), 'derived-coarse'))
+    v9.writeUInt8(9, 4)
+    expect(peekDerivedHead(v9)).toBeNull()
+    expect(decodeDerivedPart(v9, () => true)).toBeNull()
+  })
+
   it('安全弁: 途中で切れた・目印が違う部分は読まない', () => {
     const buf = encodeDerivedPart(sample(), 'derived-fine')
     expect(decodeDerivedPart(buf.subarray(0, buf.length - 3), () => true)).toBeNull()
