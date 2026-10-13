@@ -6,7 +6,10 @@
 //
 // 置き場所の振り分けと理由は `tabState.ts` の冒頭。
 
-/** 波形タブ。センサーごとのチェックは「付けた」「外した」の両方を覚える。 */
+/**
+ * 波形タブ。センサーごとのチェックは「付けた」「外した」の両方を覚える。運用者が付け外ししたものだけでなく、
+ * 既定で決めたものも覚える（`viewWaves.ts` の `takeChunk`）。
+ */
 export interface WavesPrefs {
   readonly spanMs: number | null
   readonly scale: string | null
@@ -18,7 +21,7 @@ export interface WavesPrefs {
  * 覚えておくセンサーのチェックの数の上限。
  *
  * **鍵は差分の組・ずれの台まで含むので、選び直すたびに増える。** 上限で古いものから捨てる ——
- * 捨てたものは次に届いたとき既定の扱いに戻るだけで、表示が壊れるわけではない。
+ * 捨てたものは次に届いたとき既定の扱い（先着で決まる）に戻り、その結果をまた覚える。表示が壊れるわけではない。
  */
 export const MAX_REMEMBERED_SENSORS = 200
 
