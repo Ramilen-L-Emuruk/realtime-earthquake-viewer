@@ -20,10 +20,12 @@
 //
 // **基板の再起動をまたぐ欠けは、番号ではなく時刻で測る。** 再起動すると起動 ID が変わり番号は 0 へ
 // 戻るので、番号の抜けとしては現れない。前の起動で最後に受けたサンプルの次の時刻から、新しい起動で
-// 最初に受けたサンプルの時刻までを公称間隔で割り、その長さを**前の起動の流れの欠け**として載せる
-// （`noteBoot`。前の起動の末尾・立ち上がるまで・時計が合うまで送らなかった分がまとめて入る）。
-// 前の起動の末尾は、返事が途絶えてから再起動した基板ならフラッシュに残っているので取りに行く。
-// 基板が持っていなかった残りは「再起動の前後」（`reboot-span`）として数える。
+// 最初に受けたサンプルの時刻までを公称間隔で割る（`noteBoot`。前の起動の末尾・立ち上がるまで・
+// 新しい起動の頭がまとめて入る）。**そのうち最後の部分は新しい起動の番号 `[0, 最初に受けた番号)` が持つ**ので、
+// そこは新しい起動の流れの欠けにし（`noteBootHead`）、残りを**前の起動の流れの欠け**として載せる。
+// 前の起動の末尾は、返事が途絶えてから再起動した基板ならフラッシュに残っている。新しい起動の頭は、時計が
+// 合った後の分なら輪に残っている（合う前の分は残さない）。どちらも取りに行き、基板が持っていなかった
+// 残りは「再起動の前後」（`reboot-span`）として数える。
 // 2026-10-06 23:19 JST に基板 3 枚の電源を約 10 秒抜いたとき、これが無かったので
 // 取り戻せなかった分にも何も載らなかった。
 
@@ -51,8 +53,8 @@ export type UnrecoverableReason =
   /** 欠けの数が上限を超えたので、古いものから捨てた。 */
   | 'too-many'
   /**
-   * 基板の再起動の前後で受けられず、基板も持っていなかった（前の起動の末尾〜新しい起動の最初のサンプル）。
-   * **再起動の欠け（`noteBoot`）だけがこの理由になる** —— 基板の答えが `rebooted`・`not-held`・
+   * 基板の再起動の前後で受けられず、基板も持っていなかった（前の起動の末尾〜新しい起動の最初に受けたパケット）。
+   * **再起動の欠け（`noteBoot`・`noteBootHead`）でだけ、基板の答えをこの理由へ寄せる** —— 基板の答えが `rebooted`・`not-held`・
    * `unsupported` のどれでも、ここへ寄せる（その長さの大半は、基板がそもそも測っていなかった時間なので、
    * 答えの違いで分けても手当ては変わらない）。
    */
@@ -149,7 +151,7 @@ export interface BacklogSnapshot {
   readonly rebootsHostTimed: number
   /**
    * そのうち、長さを測れなかった数（周波数が読めない・前の起動の最後を知らない）。
-   * **この分の欠けはどこにも数えていない。**
+   * **前の起動の末尾の欠けはどこにも数えていない**（新しい起動の頭は、前の起動の最後を覚えていれば番号で載せる）。
    */
   readonly rebootsUnmeasured: number
 }
@@ -160,10 +162,18 @@ export interface RebootNote {
   readonly sensorId: string
   readonly previousBootId: string
   readonly bootId: string
-  /** 前の起動の末尾から新しい起動の最初のサンプルまでのサンプル数。**測れなければ null。** */
+  /**
+   * 前の起動の末尾から新しい起動の最初に受けたサンプルまでのサンプル数。**測れなければ null。**
+   * 新しい起動の頭（`[0, 最初に受けた番号)`）を含んだ合計で、欠けとしては前の起動と新しい起動に分けて載る。
+   */
   readonly spanSamples: number | null
   /** 何の時刻で測ったか（`noteBoot`）。測れなければ null。 */
   readonly timedBy: 'board' | 'host' | null
+  /**
+   * 新しい起動の頭として欠けに載せたサンプル数（`noteBootHead`）。**載せなかったら 0**（番号 0 から届いた・
+   * 前の起動の最後を覚えていない）。ログが「頭は取りに行く」と言ってよいかをこれで決める。
+   */
+  readonly headSamples: number
 }
 
 /** 書き出す形。**版を持たせる** —— 形を変えたときに古いものを読み違えないため。 */
@@ -384,7 +394,7 @@ export class BacklogBook {
     }
     // **先に再起動を見る。** 再起動の欠けを前の起動の流れへ載せておくと、下の `supersede` がその流れを
     // 片付けずに残す（取りに行く係は、欠けの流れからは送り元を引かないので、残すこと自体は要らないが害も無い）。
-    const reboot = this.noteBoot(input, end)
+    const reboot = this.noteBoot(input, firstSeq, end)
     // 同じ基板の欠けは、取りに行く先も最新の送り元へ寄せる。**前の起動の欠けも**（再起動で DHCP の
     // 割り当てが変わっても、取りに行く先は同じ基板）。
     for (const g of this.gaps) if (g.stream.boardKey === stream.boardKey) g.address = address
@@ -434,7 +444,10 @@ export class BacklogBook {
    *   取りに行かず、損失にも載らない**。受けた時刻の差には届くまでの遅れの差が乗るが、
    *   それはサンプル数十個ぶんで済む
    * - **測れない**（`null`）: 周波数が読めない、または前の起動の最後を知らない（帳面が版 1・読めなかった。
-   *   持ち越した前の起動の番号はあるが、時刻が無い）。欠けは作らず `rebootsUnmeasured` に数える
+   *   持ち越した前の起動の番号はあるが、時刻が無い）。前の起動の欠けは作らず `rebootsUnmeasured` に数える
+   *
+   * 測った長さのうち、新しい起動の頭（`firstSeq` サンプル）は新しい起動の欠けとして載せ（`noteBootHead`）、
+   * 前の起動の欠けからは引く。頭は周波数が読めなくても番号で分かるので、前の起動の最後を覚えていれば必ず載せる。
    *
    * **ホストも止まっていた間に基板が再起動したときは、ホストが止まっていた時間も入る**（持ち越した
    * 最後の起動から測るため）。その間に基板が送った分は、基板がフラッシュに書いていれば取り戻せる。
@@ -448,6 +461,7 @@ export class BacklogBook {
       readonly firstSampleMs: number
       readonly sampleRateHz: number
     },
+    firstSeq: number,
     end: number,
   ): RebootNote | null {
     const { stream, count, address, atMs, firstSampleMs, sampleRateHz } = input
@@ -470,7 +484,7 @@ export class BacklogBook {
       this.rebootsUnmeasured += 1
       return {
         boardKey: stream.boardKey, sensorId: stream.sensorId, previousBootId: carriedBoot, bootId: stream.bootId,
-        spanSamples: null, timedBy: null,
+        spanSamples: null, timedBy: null, headSamples: 0,
       }
     }
     if (cur.bootId === stream.bootId) {
@@ -494,10 +508,14 @@ export class BacklogBook {
       timedBy = boardOk ? 'board' : 'host'
       spanSamples = Math.max(0, Math.round((boardOk ? boardSpanMs : hostSpanMs) / intervalMs))
       if (!boardOk) this.rebootsHostTimed += 1
+      // **抜けの終わりの `firstSeq` サンプルは新しい起動の番号が持つ**（下の頭の欠け）。前の起動の番号の続きに
+      // 載せるのは残りだけ —— 両方に載せると同じ時間を 2 度数える。時計の食い違いで抜けが頭より短く測れたら、
+      // 前の起動の側を 0 にする（頭は番号で数えたので確か）。
+      const rest = Math.max(0, spanSamples - firstSeq)
       // 番号の差は符号付き 32 bit で扱うので、欠けの長さは半周より短く切る。超えた分（100 Hz で約 124 日より先）は
       // 基板がフラッシュに持っているはずもないので、取りに行かずにそのまま数える。
-      const len = Math.min(spanSamples, MAX_REBOOT_SPAN_SAMPLES)
-      this.count('reboot-span', spanSamples - len)
+      const len = Math.min(rest, MAX_REBOOT_SPAN_SAMPLES)
+      this.count('reboot-span', rest - len)
       if (len > 0) {
         const prev: StreamRef = { boardKey: stream.boardKey, bootId: cur.bootId, sensorId: stream.sensorId }
         this.pushGap({
@@ -508,11 +526,46 @@ export class BacklogBook {
     } else {
       this.rebootsUnmeasured += 1
     }
+    const headSamples = this.noteBootHead(stream, address, firstSeq, atMs)
     this.boots.set(mapKey, fresh([cur.bootId, ...cur.retired.filter((b) => b !== cur.bootId)].slice(0, RETIRED_BOOTS_KEPT)))
     return {
       boardKey: stream.boardKey, sensorId: stream.sensorId, previousBootId: cur.bootId, bootId: stream.bootId,
-      spanSamples, timedBy,
+      spanSamples, timedBy, headSamples,
     }
+  }
+
+  /**
+   * 再起動を見つけたとき、**新しい起動の頭 `[0, firstSeq)` を新しい起動の欠けにする。**
+   *
+   * 基板は時計が合う前から番号を進め、合う前の分は輪に残さない（ファームの `sendChunk`）。合った後の分は
+   * Wi-Fi が繋がっていなくても輪に残すので、届かなかった分は取り戻せる。合う前の分は、基板が名乗る
+   * 「抱えている範囲」（`X-Backlog-Have`）より古いので、1 回訊けば「もう抱えていない」で片付く。
+   * 再起動の欠けとして載せる（`rebootSpan`）ので、基板が持っていなかった分は今までどおり `reboot-span` に入る。
+   *
+   * **前の起動の最後（番号と時刻・`boots`）を覚えているときだけ呼ぶ。** 覚えていない基板（ホストを初めて起動した・帳面が版 1）の途中から
+   * 受け始めたときに頭を欠けにすると、動き続けている基板の何日分もの番号を欠けとして抱える。
+   *
+   * 長さの上限を超えたら**新しいほうの端を残す**（基板の輪に残っているのは新しい分）。前の起動の欠けは
+   * 古いほうの端（再起動の直前）を残すので、向きが逆になる。
+   *
+   * **頭はいまの起動の欠けなので、返事の `gap=` に番号 0 から載る**（`pendingGapStarts`）。基板は指された
+   * 番号を含む区画がもう輪に無ければ輪のいちばん古い区画からフラッシュへ書き出す（ファームの `gapCursor`）。
+   * 頭が片付くまで（普通は 1 回訊けば済む）、時計が合った後の頭を輪の上書きから守る向きに効く。再起動の
+   * たびに輪 1 周ぶんを書くことになるが、再起動は稀なので摩耗は気にしない。
+   *
+   * ホストが止まっている間に基板が再起動し、そのまま長く動いていたら、頭は何日分にもなりうる。取りに行けば
+   * 基板が抱えている範囲より古い分は 1 回で「もう抱えていない」になり、`reboot-span` に入る（この変更の前も、
+   * 同じサンプルは前の起動の欠けとして `reboot-span` に入っていた）。
+   */
+  private noteBootHead(stream: StreamRef, address: string, firstSeq: number, atMs: number): number {
+    const len = Math.min(firstSeq, MAX_REBOOT_SPAN_SAMPLES)
+    this.count('reboot-span', firstSeq - len)
+    if (len === 0) return 0
+    this.pushGap({
+      key: streamKey(stream), stream, address, from: firstSeq - len, len,
+      foundAtMs: atMs, attempts: 0, lateAttempts: 0, nextTryMs: atMs + this.options.settleMs, rebootSpan: true,
+    })
+    return len
   }
 
   /**
