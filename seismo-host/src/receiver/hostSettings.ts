@@ -15,7 +15,7 @@
 // そのときは画面からは変えられない（`locked`）。
 
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from 'node:fs'
-import { dirname, isAbsolute, join, resolve, sep } from 'node:path'
+import { dirname, isAbsolute, join, posix, win32 } from 'node:path'
 
 export const HOST_SETTINGS_FILE = 'host-settings.json'
 
@@ -137,10 +137,20 @@ export function resolveStorage(input: {
   }
 }
 
+/**
+ * 比べるときのパスの作法は `platform` のものを使う（実行している OS のものではない）。
+ * **区切り・絶対パスの判定・解決を実行環境の `node:path` に任せると、`platform` を渡しても半分しか効かない** ——
+ * Linux の CI で Windows のパスを渡すと絶対パスと見なされず、比べる前に弾かれる。
+ */
+function pathFor(platform: NodeJS.Platform): typeof posix {
+  return platform === 'win32' ? win32 : posix
+}
+
 /** Windows ではパスの大文字・小文字を区別しない。比べる前に揃える。 */
 function normalizeForCompare(path: string, platform: NodeJS.Platform): string {
+  const { resolve, sep } = pathFor(platform)
   const r = resolve(path)
-  const trimmed = r.length > 1 && (r.endsWith('/') || r.endsWith('\\')) ? r.slice(0, -1) : r
+  const trimmed = r.length > 1 && r.endsWith(sep) ? r.slice(0, -1) : r
   return platform === 'win32' ? trimmed.toLowerCase() : trimmed
 }
 
@@ -152,8 +162,9 @@ export function samePath(a: string, b: string, platform: NodeJS.Platform = proce
 export function isInside(inner: string, outer: string, platform: NodeJS.Platform = process.platform): boolean {
   const i = normalizeForCompare(inner, platform)
   const o = normalizeForCompare(outer, platform)
+  const { sep } = pathFor(platform)
   const prefix = o.endsWith(sep) ? o : o + sep
-  return i.startsWith(platform === 'win32' ? prefix.toLowerCase() : prefix)
+  return i.startsWith(prefix)
 }
 
 /** 保存先として受け付けられない理由。受け付けられるなら `null`。**ディスクに触らない部分だけ。** */
@@ -162,7 +173,7 @@ export function storageRootProblem(
   current: string,
   platform: NodeJS.Platform = process.platform,
 ): StorageRootProblem | null {
-  if (candidate.trim() === '' || !isAbsolute(candidate)) return 'not-absolute'
+  if (candidate.trim() === '' || !pathFor(platform).isAbsolute(candidate)) return 'not-absolute'
   if (samePath(candidate, current, platform)) return 'same'
   if (isInside(candidate, current, platform) || isInside(current, candidate, platform)) return 'nested'
   return null
