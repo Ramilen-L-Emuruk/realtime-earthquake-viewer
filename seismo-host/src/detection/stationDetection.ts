@@ -21,9 +21,10 @@ import type { DetectedShake } from './quakeDetector'
 import type { QuakeFeedStatus } from './quakeFeed'
 import { formatBaseline, jstClock, SHAKE_CLASS_WORDS, SILENT_AFTER_MS, triggerStateWord } from './detectionWording'
 import { emptyTriggerHealth } from './quakeTrigger'
-import type { TriggerHealth, TriggerPeak } from './quakeTrigger'
-import { ShakeEventBook } from './shakeEventBook'
+import type { TriggerDetector, TriggerHealth, TriggerInput, TriggerPeak } from './quakeTrigger'
+import { shakeEventId } from './shakeEvent'
 import type { ShakeEventRecord, ShakeSensorRef } from './shakeEvent'
+import { ShakeEventBook } from './shakeEventBook'
 
 /** 状態の口（`/status`）へ出す検出の健全性。 */
 export interface DetectionStatus {
@@ -63,6 +64,71 @@ export interface DetectionStatus {
   readonly triggers: readonly StationTriggerStatus[]
 }
 
+/**
+ * 起動時の流し込みの結末（#617）。
+ *
+ * - `warm` —— 控えから前のプロセスの末尾と作り直した欠けを流し、溜めたライブへ繋いだ
+ * - `cold` —— 流せず、溜めた分をそのまま空の検出器へ流した（今までと同じ助走から始まる）
+ */
+export type WarmStartOutcome =
+  | {
+      readonly kind: 'warm'
+      /** 控えの末尾を流す間に、開けなかった時の数（その時の分は流せていない）。 */
+      readonly hoursFailed: number
+      /** 同じく、途中で打ち切って読んだ時の数（いま書いている時は数えない）。 */
+      readonly hoursTruncated: number
+      /**
+       * 流した控えの中と、最後に流したまとまりから溜めたライブの最初のサンプルまでで、いちばん長い途切れ（ミリ秒）。
+       * 引き金は 1 秒を超える途切れで作り直す（`quakeTrigger.ts` の `maxGapMs`）ので、これが 1 秒を超えていれば、
+       * 見張りはどこかで助走からやり直している（止めていた間を取り戻せなかった等）。
+       */
+      readonly longestGapMs: number
+    }
+  | { readonly kind: 'cold'; readonly reason: WarmColdReason; readonly detail: string | null }
+
+/**
+ * 流せなかった理由。
+ *
+ * - `no-archive` —— 控えの 24 時間に、前のプロセスが残したライブの分が無い
+ * - `read-failed` —— 控えを読めなかった
+ * - `buffer-full` —— 溜めた分が {@link WARM_BUFFER_MAX_MS} を超えた（流し込みが返ってこない等）
+ * - `stopped` —— 流し込みの前にホストを止めた
+ * - `failed` —— 流し込みの途中で例外を受け止めた
+ * - `timed-out` —— 流し込みが時間内に終わらなかった（`warmStart.ts` の `WARM_JOB_TIMEOUT_MS`）
+ */
+export type WarmColdReason = 'no-archive' | 'read-failed' | 'buffer-full' | 'stopped' | 'failed' | 'timed-out'
+
+/** 起動時の流し込みの様子（観測点ごと。`/status` の `detection.triggers[].warmStart`）。 */
+export interface WarmStartStatus {
+  /** `holding` = 待っている／`replaying` = 控えから流している／`live` = ライブを直に流している。 */
+  readonly phase: 'holding' | 'replaying' | 'live'
+  /** 待ち始めた時刻（ホストの時計。その観測点の最初の波形が届いた時）。 */
+  readonly heldSinceMs: number
+  /** いま溜めているまとまりの数。 */
+  readonly heldChunks: number
+  /** 控えから流したまとまりの数。 */
+  readonly replayedChunks: number
+  /** これより前に始まった揺れは記録しない（前のプロセスの最後のサンプルの時刻・データの時刻）。無ければ null。 */
+  readonly recordFromMs: number | null
+  /** 結末。流し終える前は null。 */
+  readonly outcome: WarmStartOutcome | null
+  /**
+   * 比の 24 時間の最大を控えから戻したか。`pending` = まだ／`restored` = 戻した／`partial` = 開けなかった・
+   * 途中で打ち切った時を除いて戻した／`failed` = 戻せなかった／`skipped` = 戻さない（流し込みが `cold` で終わった等）。
+   */
+  readonly peaks: 'pending' | 'restored' | 'partial' | 'failed' | 'skipped'
+  /** 境より前に始まったので記録しなかった揺れの数。 */
+  readonly skippedBeforeBoundary: number
+  /** 同じ id の記録が既にあったので書かなかった揺れの数。 */
+  readonly skippedExisting: number
+}
+
+/**
+ * 起動時の流し込みを待つ間に溜めてよい長さ（データの時刻・ミリ秒）。待ちは 60 秒で解き、流し込みは数百ミリ秒で
+ * 済むので、ここへ届くのは流し込みが返ってこないときだけ。超えたら待つのをやめて空から流す。
+ */
+export const WARM_BUFFER_MAX_MS = 10 * 60_000
+
 /** 観測点 1 つぶんの引き金の状態。 */
 export interface StationTriggerStatus extends TriggerHealth {
   readonly stationId: string
@@ -79,6 +145,8 @@ export interface StationTriggerStatus extends TriggerHealth {
    * **波形は届いているのに使えていない**形を、「届いていない」と見分ける手がかり。
    */
   readonly droppedChunks: number
+  /** 起動時の流し込みの様子。待たせない構成（`holdNewStations: false`）・波形がまだ届いていなければ null。 */
+  readonly warmStart: WarmStartStatus | null
 }
 
 /** 1 時間に 1 度の行（`StationDetection.hourlyLines`）。 */
@@ -166,6 +234,29 @@ export interface StationDetectionOptions {
    * 失敗も 1 つの原因が他の原因の初回の行を抑える。
    */
   readonly log: (level: 'log' | 'warn' | 'error', key: string, line: string) => void
+  /**
+   * その揺れの記録が既にあるか（`shakeEventStore.ts` の置き場所にファイルがあるか）。あれば版を書かない ——
+   * 起動時の流し込みで、前のプロセスが書いた記録（照合の結果を含む）を版 1 で上書きしないため（#618 と同じ）。
+   */
+  readonly exists: (rec: Pick<ShakeEventRecord, 'id' | 'startMs'>) => boolean
+  /**
+   * 観測点の最初の波形が届いたら、検出へ渡さずに溜めて待つか（#617）。待ちを解くのは呼び出し側
+   * （`warmStart.ts`）で、{@link StationDetection.beginWarm} から {@link StationDetection.finishWarm} までで控えを流す。
+   */
+  readonly holdNewStations: boolean
+}
+
+interface WarmEntry {
+  phase: WarmStartStatus['phase']
+  readonly heldSinceMs: number
+  readonly firstSampleMs: number
+  buffer: FusedWaveChunk[]
+  replayedChunks: number
+  recordFromMs: number | null
+  outcome: WarmStartOutcome | null
+  peaks: WarmStartStatus['peaks']
+  skippedBeforeBoundary: number
+  skippedExisting: number
 }
 
 /** 数え上げ 1 つぶん（毎分の要約・終了時の累計へ出す）。 */
@@ -224,6 +315,8 @@ export class StationDetection {
   private retired = { resets: 0, droppedChunks: 0, phaseWindowsBroken: 0, phaseFailures: 0 }
   /** 観測点ごとに、検出器が最後にサンプルを使えた時刻（ホストの時計。`StationTriggerStatus.lastFedAtMs`）。 */
   private readonly fedAt = new Map<string, number>()
+  /** 起動時の流し込みの様子（観測点ごと。`holdNewStations` のときだけ作る）。 */
+  private readonly warm = new Map<string, WarmEntry>()
 
   constructor(options: StationDetectionOptions) {
     this.opts = options
@@ -240,26 +333,149 @@ export class StationDetection {
     })
   }
 
-  /** 合成波形を 1 まとまり渡す。閉じた揺れがあれば記録する。 */
+  /**
+   * ライブの合成波形を 1 まとまり渡す。閉じた揺れがあれば記録する。
+   *
+   * **起動時の流し込みを待っている観測点は、検出へ渡さずに溜める**（`holdNewStations`）。溜めた分は
+   * {@link finishWarm} で控えの分の後ろへ流す。
+   */
   pushStationWave(w: FusedWaveChunk): void {
-    let detector = this.detectors.get(w.stationId)
+    let warm = this.warm.get(w.stationId)
+    if (warm === undefined && this.opts.holdNewStations) {
+      warm = {
+        phase: 'holding',
+        heldSinceMs: this.opts.now(),
+        firstSampleMs: w.firstSampleMs,
+        buffer: [],
+        replayedChunks: 0,
+        recordFromMs: null,
+        outcome: null,
+        peaks: 'pending',
+        skippedBeforeBoundary: 0,
+        skippedExisting: 0,
+      }
+      this.warm.set(w.stationId, warm)
+    }
+    if (warm !== undefined && warm.phase !== 'live') {
+      warm.buffer.push(w)
+      const first = warm.buffer[0]
+      if (w.firstSampleMs + w.gal[0].length * w.msPerSample - first.firstSampleMs > WARM_BUFFER_MAX_MS) {
+        this.opts.log(
+          'warn',
+          `warm-cold:${w.stationId}`,
+          `[detect] ${w.stationId} 起動時の流し込みが ${WARM_BUFFER_MAX_MS / 60_000} 分経っても終わらないので、待つのをやめて空から始める`,
+        )
+        this.goLive(w.stationId, warm, { kind: 'cold', reason: 'buffer-full', detail: null })
+      }
+      return
+    }
+    this.feed(w.stationId, w)
+  }
+
+  /** 起動時の流し込みを待っている観測点（`warmStart.ts` が待ちを解くかを決める）。 */
+  heldStations(): { stationId: string; heldSinceMs: number; firstSampleMs: number }[] {
+    const out: { stationId: string; heldSinceMs: number; firstSampleMs: number }[] = []
+    for (const [stationId, w] of this.warm) {
+      if (w.phase === 'holding') out.push({ stationId, heldSinceMs: w.heldSinceMs, firstSampleMs: w.firstSampleMs })
+    }
+    return out
+  }
+
+  /** 待ちを解いて、控えから流し始める。待っていなければ false。 */
+  beginWarm(stationId: string): boolean {
+    const w = this.warm.get(stationId)
+    if (w === undefined || w.phase !== 'holding') return false
+    w.phase = 'replaying'
+    return true
+  }
+
+  /**
+   * これより前に始まった揺れを記録しない（前のプロセスの最後のサンプルの時刻）。**ライブへ繋いだ後も効く** ——
+   * 境の前に始まった揺れが、溜めたライブを流している最中に閉じることがある。
+   */
+  setRecordFloor(stationId: string, fromMs: number): void {
+    const w = this.warm.get(stationId)
+    if (w !== undefined && w.phase === 'replaying') w.recordFromMs = fromMs
+  }
+
+  /** 控えのまとまりを 1 つ流す（時刻順に）。流し込み中でなければ（打ち切られていれば）false。 */
+  pushWarmChunk(stationId: string, chunk: TriggerInput): boolean {
+    const w = this.warm.get(stationId)
+    if (w === undefined || w.phase !== 'replaying') return false
+    w.replayedChunks++
+    this.feed(stationId, chunk)
+    return true
+  }
+
+  /**
+   * 控えから組み立て直した計測震度相当を覚える（境より後に始まった揺れの最大計測震度相当のため）。
+   * 流し込み中でなければ何もしない。
+   */
+  noteWarmIntensity(stationId: string, atMs: number, intensity: number | null): void {
+    const w = this.warm.get(stationId)
+    if (w === undefined || w.phase !== 'replaying') return
+    try {
+      this.book.noteStationReading(stationId, atMs, intensity)
+    } catch (error) {
+      this.fail('reading', `[detect] ${stationId} の計測震度相当を覚えられず: ${messageOf(error)}`)
+    }
+  }
+
+  /** 流し込みを終え、溜めたライブを流して直に流す形へ移る。流し込み中でなければ false。 */
+  finishWarm(stationId: string, outcome: WarmStartOutcome): boolean {
+    const w = this.warm.get(stationId)
+    if (w === undefined || w.phase !== 'replaying') return false
+    this.goLive(stationId, w, outcome)
+    return true
+  }
+
+  /**
+   * 裏で控えの 24 時間ぶんを流した引き金から、比の 1 分ごとの最大を重ねる（`TriggerDetector.mergePeaksFrom`）。
+   * その観測点の検出器が無ければ false。
+   */
+  mergePeaks(stationId: string, from: TriggerDetector, complete: boolean): boolean {
+    const d = this.detectors.get(stationId)
+    if (d === undefined) return false
+    d.mergePeaksFrom(from)
+    const w = this.warm.get(stationId)
+    if (w !== undefined) w.peaks = complete ? 'restored' : 'partial'
+    return true
+  }
+
+  /** 比の 24 時間の最大を戻せなかった・戻さないことを残す。 */
+  notePeaks(stationId: string, peaks: 'failed' | 'skipped'): void {
+    const w = this.warm.get(stationId)
+    if (w !== undefined) w.peaks = peaks
+  }
+
+  private goLive(stationId: string, w: WarmEntry, outcome: WarmStartOutcome): void {
+    w.phase = 'live'
+    w.outcome = outcome
+    if (outcome.kind === 'cold') w.peaks = 'skipped'
+    const held = w.buffer
+    w.buffer = []
+    for (const c of held) this.feed(stationId, c)
+  }
+
+  private feed(stationId: string, chunk: TriggerInput): void {
+    let detector = this.detectors.get(stationId)
     if (detector === undefined) {
       detector = new QuakeDetector()
-      this.detectors.set(w.stationId, detector)
+      this.detectors.set(stationId, detector)
     }
     const before = detector.lastSampleAtMs
     let closed: DetectedShake[]
     try {
-      closed = detector.push(w)
+      closed = detector.push(chunk)
     } catch (error) {
-      this.fail('detect', `[detect] ${w.stationId} の検出に失敗: ${messageOf(error)}`)
+      this.fail('detect', `[detect] ${stationId} の検出に失敗: ${messageOf(error)}`)
       return
     } finally {
       // **使えたときだけ進める**（届いたかではなく）。刻みが読めず捨てたまとまりで進めると、
       // 検出が止まっているのに「届いている」に見える。
-      if (detector.lastSampleAtMs !== before) this.fedAt.set(w.stationId, this.opts.now())
+      if (detector.lastSampleAtMs !== before) this.fedAt.set(stationId, this.opts.now())
     }
-    for (const shake of closed) this.record(w.stationId, shake)
+    for (const shake of closed) this.record(stationId, shake)
   }
 
   noteStationReading(r: StationIntensityReading): void {
@@ -303,10 +519,19 @@ export class StationDetection {
       this.detectors.delete(stationId)
       this.fedAt.delete(stationId)
     }
+    for (const stationId of [...this.warm.keys()]) {
+      if (!known.has(stationId)) this.warm.delete(stationId)
+    }
   }
 
-  /** 終了の前に、開いている揺れを閉じて記録する。 */
+  /**
+   * 終了の前に、開いている揺れを閉じて記録する。**流し込みを待っている観測点は、溜めた分を先に流す**
+   * （空の検出器へ。数え上げと「最後に使えた時刻」を、届いた分と食い違わせないため）。
+   */
   flushAll(): void {
+    for (const [stationId, w] of this.warm) {
+      if (w.phase !== 'live') this.goLive(stationId, w, { kind: 'cold', reason: 'stopped', detail: null })
+    }
     for (const [stationId, detector] of this.detectors) {
       for (const shake of detector.flush()) this.record(stationId, shake)
     }
@@ -360,6 +585,23 @@ export class StationDetection {
       ...(d?.health() ?? emptyTriggerHealth()),
       lastFedAtMs: this.fedAt.get(stationId) ?? null,
       droppedChunks: d?.droppedChunks ?? 0,
+      warmStart: this.warmStatus(stationId),
+    }
+  }
+
+  private warmStatus(stationId: string): WarmStartStatus | null {
+    const w = this.warm.get(stationId)
+    if (w === undefined) return null
+    return {
+      phase: w.phase,
+      heldSinceMs: w.heldSinceMs,
+      heldChunks: w.buffer.length,
+      replayedChunks: w.replayedChunks,
+      recordFromMs: w.recordFromMs,
+      outcome: w.outcome,
+      peaks: w.peaks,
+      skippedBeforeBoundary: w.skippedBeforeBoundary,
+      skippedExisting: w.skippedExisting,
     }
   }
 
@@ -371,7 +613,19 @@ export class StationDetection {
   }
 
   private record(stationId: string, shake: DetectedShake): void {
+    const w = this.warm.get(stationId)
+    const onMs = shake.trigger.onMs
+    // **境より前に始まった揺れは記録しない**（前のプロセスが見ていた区間。取りこぼしは `redetect.ts` が起こす）。
+    if (w !== undefined && w.recordFromMs !== null && onMs < w.recordFromMs) {
+      w.skippedBeforeBoundary++
+      return
+    }
     try {
+      // **同じ id の記録が既にあれば書かない**（#618 と同じ）。版 1 で上書きすると、照合の結果を失う。
+      if (this.opts.exists({ id: shakeEventId(stationId, onMs), startMs: onMs })) {
+        if (w !== undefined) w.skippedExisting++
+        return
+      }
       const rec = this.book.addShake(stationId, shake, sensorsOf(this.opts.config(), stationId))
       this.shakes++
       this.opts.log(

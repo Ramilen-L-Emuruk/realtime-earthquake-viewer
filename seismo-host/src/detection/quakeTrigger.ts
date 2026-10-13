@@ -263,6 +263,11 @@ export class TriggerDetector {
   private readonly peakRatio = new Float64Array(PEAK_MINUTES)
   private readonly peakAtMs = new Float64Array(PEAK_MINUTES)
   /**
+   * 比の最大が見ている範囲の頭の候補（`TriggerHealth.peakWindowFromMs`）。ふだんは最初のサンプルの時刻で、
+   * 別の引き金の最大を重ねたら（{@link mergePeaksFrom}）その最初のサンプルまで戻る。
+   */
+  private peakCoverFromMs: number | null = null
+  /**
    * 捨てたまとまりの数。刻みが読めないものと、刻みが粗すぎて帯域フィルタを組めないもの
    * （特徴量の最上の帯 20〜45 Hz はサンプリングが 90 Hz を超えないと組めない）。
    */
@@ -349,6 +354,7 @@ export class TriggerDetector {
       const ratio = this.ltaReady && this.lta > 0 ? Math.sqrt(this.sta / this.lta) : 0
       this.ratio = ratio
       if (this.firstSampleMs === null) this.firstSampleMs = t
+      if (this.peakCoverFromMs === null || t < this.peakCoverFromMs) this.peakCoverFromMs = t
       this.lastSampleMs = t
       if (this.ltaReady) this.notePeak(t, ratio)
 
@@ -414,7 +420,7 @@ export class TriggerDetector {
       // 輪が覚えている 1440 分ぶん（最後のサンプルの分を含む）。
       const headMs = (Math.floor(last / MINUTE_MS) - (PEAK_MINUTES - 1)) * MINUTE_MS
       // 最後のサンプルを越えさせない（時計が最初のサンプルより前へ戻ると、頭が終わりを追い越す）。
-      windowFrom = Math.min(last, Math.max(headMs, this.firstSampleMs ?? headMs))
+      windowFrom = Math.min(last, Math.max(headMs, this.peakCoverFromMs ?? headMs))
       peak = this.peakBetween(headMs, last)
     }
     return {
@@ -445,6 +451,34 @@ export class TriggerDetector {
       if (best === null || this.peakRatio[i] > best.ratio) best = { ratio: this.peakRatio[i], atMs: this.peakAtMs[i] }
     }
     return best
+  }
+
+  /**
+   * 別の引き金（`other`）が覚えている 1 分ごとの最大を、この引き金の輪へ重ねる（#617）。起動時に控えの
+   * 24 時間ぶんを裏で流した引き金から、比の 24 時間の最大を戻すため。
+   *
+   * - 同じ分なら大きいほうを採る（重ねる順に依らない）
+   * - **この引き金がその枠を新しい分で埋めていれば、古い分で上書きしない**（輪の同じ枠には 24 時間ずれた分が落ちる）
+   * - 最大の輪のほかは触らない —— 平常時の強さ・助走・開いている区間は、この引き金が流したサンプルだけで決まる
+   */
+  mergePeaksFrom(other: TriggerDetector): void {
+    for (let i = 0; i < PEAK_MINUTES; i++) {
+      const m = other.peakMinute[i]
+      if (Number.isNaN(m)) continue
+      const own = this.peakMinute[i]
+      if (own === m) {
+        if (other.peakRatio[i] > this.peakRatio[i]) {
+          this.peakRatio[i] = other.peakRatio[i]
+          this.peakAtMs[i] = other.peakAtMs[i]
+        }
+      } else if (Number.isNaN(own) || own < m) {
+        this.peakMinute[i] = m
+        this.peakRatio[i] = other.peakRatio[i]
+        this.peakAtMs[i] = other.peakAtMs[i]
+      }
+    }
+    const from = other.peakCoverFromMs
+    if (from !== null && (this.peakCoverFromMs === null || from < this.peakCoverFromMs)) this.peakCoverFromMs = from
   }
 
   private notePeak(t: number, ratio: number): void {

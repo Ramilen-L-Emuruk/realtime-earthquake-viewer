@@ -399,3 +399,63 @@ describe('TriggerDetector.health — 静かだっただけか、止まってい�
     expect(watched).toEqual(plain)
   })
 })
+
+describe('TriggerDetector.mergePeaksFrom — 起動時に、控えから流した 24 時間の最大を重ねる（#617）', () => {
+  const HOUR = 3_600_000
+
+  it('正: 別の引き金が見た揺れの最大が、重ねた先の 24 時間の最大に現れる', () => {
+    const past = new TriggerDetector()
+    run(signal(200, [{ startSec: 130, durationSec: 6, hz: 7, amplitude: 1.5 }]), past)
+    const live = new TriggerDetector()
+    run(shifted(signal(150, [], 0.5, 2), HOUR), live)
+    expect(live.health().peak24h!.ratio).toBeLessThan(TRIGGER_CONFIG_DEFAULT.onRatio)
+    live.mergePeaksFrom(past)
+    const h = live.health()
+    expect(h.peak24h!.ratio).toBeGreaterThan(3)
+    expect(h.peak24h!.atMs - T0).toBeGreaterThanOrEqual(130_000)
+    // 見ている範囲の頭も、重ねた分の最初のサンプルまで戻る
+    expect(h.peakWindowFromMs).toBe(past.health().firstSampleMs)
+  })
+
+  it('対照: 同じ分なら大きいほうを採り、重ねた先のほうが大きければ残す', () => {
+    const quiet = new TriggerDetector()
+    run(signal(200, [], 0.5, 3), quiet)
+    const shaken = new TriggerDetector()
+    run(signal(200, [{ startSec: 130, durationSec: 6, hz: 7, amplitude: 1.5 }]), shaken)
+    const before = shaken.peakBetween(T0 + 120_000, T0 + 179_000)!
+    shaken.mergePeaksFrom(quiet)
+    expect(shaken.peakBetween(T0 + 120_000, T0 + 179_000)).toEqual(before)
+  })
+
+  it('安全弁: 重ねた先が既に新しい分で埋めた枠は、古い分で上書きしない', () => {
+    // 24 時間と 1 分ずれた 2 つは、輪の同じ枠に落ちる
+    const old = new TriggerDetector()
+    run(signal(200, [{ startSec: 130, durationSec: 6, hz: 7, amplitude: 1.5 }]), old)
+    const live = new TriggerDetector()
+    run(shifted(signal(200, [], 0.5, 2), 24 * HOUR), live)
+    const own = live.peakBetween(T0 + 24 * HOUR + 120_000, T0 + 24 * HOUR + 179_000)!
+    live.mergePeaksFrom(old)
+    expect(live.peakBetween(T0 + 24 * HOUR + 120_000, T0 + 24 * HOUR + 179_000)).toEqual(own)
+    expect(live.peakBetween(T0, T0 + 200_000)).toBeNull()
+  })
+
+  it('安全弁: 重ねても、平常時の強さ・引き金の状態・切り出す区間は変わらない', () => {
+    const past = new TriggerDetector()
+    run(signal(200, [{ startSec: 130, durationSec: 6, hz: 7, amplitude: 1.5 }]), past)
+    const chunks = shifted(signal(200, [{ startSec: 150, durationSec: 6, hz: 7, amplitude: 1.5 }], 0.5, 4), HOUR)
+    const plain = run(chunks)
+    const live = new TriggerDetector()
+    const merged: TriggerEvent[] = []
+    for (const [i, c] of chunks.entries()) {
+      if (i === 100) {
+        const h0 = live.health()
+        live.mergePeaksFrom(past)
+        const h1 = live.health()
+        expect({ ...h1, peak24h: null, peakWindowFromMs: null }).toEqual({ ...h0, peak24h: null, peakWindowFromMs: null })
+      }
+      merged.push(...live.push(c))
+    }
+    merged.push(...live.flush())
+    expect(merged).toEqual(plain)
+  })
+})

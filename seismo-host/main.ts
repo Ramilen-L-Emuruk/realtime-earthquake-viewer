@@ -24,6 +24,7 @@
 // 起動:
 //   npm run seismo-host
 //   SEISMO_UDP_PORT=50505 SEISMO_UDP_ADDRESS=0.0.0.0 npm run seismo-host
+import { statSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -99,9 +100,11 @@ import { REWAVE_LEAD_MS, REWAVE_TAIL_MS } from './src/receiver/stationRewave'
 import type { RewaveSchedulerOptions } from './src/receiver/rewaveScheduler'
 import { streamKeyOf } from './src/timebase/segmenter'
 import { QuakeFeed } from './src/detection/quakeFeed'
-import { ShakeEventStore, readEventRange } from './src/detection/shakeEventStore'
+import { archiveHourReader } from './src/detection/redetect'
+import { ShakeEventStore, eventFilePath, readEventRange } from './src/detection/shakeEventStore'
 import { StationDetection, detectionCountEntries, emitDetectionHourly } from './src/detection/stationDetection'
 import type { DetectionStatus } from './src/detection/stationDetection'
+import { WarmStarter } from './src/detection/warmStart'
 
 /** 記録係の原型（`capture.mjs`）と同じ口。基板の送り先もこの値。 */
 const DEFAULT_PORT = 50505
@@ -1926,6 +1929,12 @@ async function main(): Promise<void> {
     // **鍵は揺れごとに分ける**（`key`）。間引きは鍵ごとなので、1 つにすると 2 件目からの
     // 揺れの行が黙って抑えられる。
     log: (level, key, line) => emit(level, 'detect', key, line),
+    // **起動時は観測点ごとに検出を待たせ、控えから流してから繋ぐ**（#617・`warmStart.ts`）。
+    // 前のプロセスが書いた記録（照合の結果を含む）は版 1 で上書きしない。
+    // **「無い」と言うのは ENOENT のときだけ**（`throwIfNoEntry: false`）。ほかの失敗は投げ、検出の側が
+    // 「揺れを記録できず」として数えて残す —— `existsSync` は失敗も「無い」に化けさせ、照合済みの記録を上書きする。
+    exists: (rec) => statSync(eventFilePath(eventDir, rec), { throwIfNoEntry: false }) !== undefined,
+    holdNewStations: true,
   })
   onQuake = (q) => detection.addQuake(q)
   // **受信の開始は `emit` を作った後**（下の `startStatusServer` の手前）。ここで始めると、
@@ -2565,6 +2574,22 @@ async function main(): Promise<void> {
   if (quakeFeed === null) console.warn('[quake-feed] 地震情報を受け取らない設定（SEISMO_QUAKE_FEED=0）。揺れはすべて照合できずに終わる')
   // 照合の期限を見る（揺れが閉じてから 15 分）。30 秒ごとで足りる。
   const detectionTimer = setInterval(() => detection.tick(), 30_000)
+  // **起動時の流し込み**（#617・`warmStart.ts`）。待ちを解くのは、取り戻し待ちの欠け・作り直し待ち・
+  // 作り直し中がどれも無くなったとき（最長 60 秒）。止まっていた間の合成波形は作り直しが控えへ足すので、
+  // それを待ってから控えを読む。**欠けの数は全観測点を合わせて見る**（帳面は観測点ごとに分けて数えない）。
+  const warmStarter = new WarmStarter({
+    detection,
+    readHour: (stationId) => archiveHourReader(waveDir, stationId),
+    settled: () => {
+      const backlog = backlogFetcher.snapshot()
+      const rewave = rewaveRunner.snapshot()
+      return backlog.pendingGaps === 0 && rewave.waiting === 0 && !rewave.running
+    },
+    now: Date.now,
+    pause: () => new Promise((resolve) => setImmediate(resolve)),
+    log: (level, key, line) => emit(level, 'detect', key, line),
+  })
+  const warmTimer = setInterval(() => warmStarter.tick(), 1_000)
   // 引き金が生きているかを 1 時間に 1 行残す（`StationDetection.hourlyLines`）。揺れの記録が
   // 0 件のまま続くとき、静かだっただけか止まっているかを後から遡って見分けるため。
   // **投げない** —— タイマーの中の例外は受信ごとホストを落とす。
@@ -2928,6 +2953,7 @@ async function main(): Promise<void> {
     clearInterval(mseedTimer)
     clearInterval(rewaveTimer)
     clearInterval(detectionTimer)
+    clearInterval(warmTimer)
     clearInterval(detectionHourlyTimer)
     console.log(`[udp] ${signal} を受けたので締めます`)
     // **ここから `closeHostCore` までの段も投げさせない。** 投げると締めくくりの本体
@@ -2955,6 +2981,13 @@ async function main(): Promise<void> {
       await rewaveRunner.stop()
     } catch (error) {
       console.error(`[rewave] 締めくくりで作り直しを止められなかった（${error instanceof Error ? error.message : String(error)}）`)
+    }
+    // **起動時の流し込みも、控えを締める前に止める**（流している最中の 1 件は次の区切りで降りる）。
+    // 待っていた観測点の溜めた分は、締めくくりの `flushAll` が検出へ流す。
+    try {
+      await warmStarter.stop()
+    } catch (error) {
+      console.error(`[detect] 締めくくりで起動時の流し込みを止められなかった（${error instanceof Error ? error.message : String(error)}）`)
     }
     // **要約は待たずに止める。** 作りかけの 1 件は一時ファイルのまま残り、次の起動で作り直される
     // （要約は元のファイルからいつでも作り直せるので、締めくくりを遅らせてまで書き終える理由が無い）。
