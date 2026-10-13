@@ -416,7 +416,10 @@ export async function initWavesView(container: HTMLElement, ctx: TabContext): Pr
   )
   if (prefs.spanMs !== null) spanEl.value = String(prefs.spanMs)
   if (prefs.scale !== null) scaleEl.value = prefs.scale
-  /** センサーごとに、運用者が付けた・外したチェック。届いたときの既定より優先する。 */
+  /**
+   * センサーごとの、前回の画面のチェック。運用者が付けた・外したものと、既定で決めたものの両方。
+   * 届いたときの既定より優先する。
+   */
   const sensorChoices = new Map(prefs.sensors)
   const savePrefs = (): void => {
     ctx.prefs.save(writeWavesPrefs({ spanMs, scale: scaleEl.value, sensors: sensorChoices }))
@@ -1242,8 +1245,8 @@ export async function initWavesView(container: HTMLElement, ctx: TabContext): Pr
     const remembered =
       known || chunk.source.kind === 'pair' || chunk.source.kind === 'residual' ? undefined : sensorChoices.get(key)
     if (!known && store.get(chunk.source) !== null && remembered !== undefined) {
-      // **運用者が前に付けた・外したチェックを、既定より先に当てる。** 合成は届けば必ず出す既定なので、
-      // 「外した」を覚えていないと、開き直すたびに出し直してしまう。
+      // **前回の画面のチェック（運用者が付け外ししたものも、既定で決めたものも）を、既定より先に当てる。**
+      // 合成は届けば必ず出す既定なので、「外した」を覚えていないと、開き直すたびに出し直してしまう。
       if (remembered) shown.add(key)
       if (chunk.source.kind === 'sensor') seenSensors++
     } else if (!known && store.get(chunk.source) !== null) {
@@ -1259,6 +1262,15 @@ export async function initWavesView(container: HTMLElement, ctx: TabContext): Pr
         // 描かれない画面では確認にならないが、全部重ねると読めない（上の定数）。
         if (seenSensors < DEFAULT_SHOWN_SENSORS) shown.add(key)
         seenSensors++
+      }
+      // **既定で決めた印も覚える**（2026-10-13 ユーザー承認）。既定は先着で決まり、届く順は開くたびに
+      // 違う —— 覚えないと、触っていないセンサーが開き直すたびに入れ替わり「前回のまま」にならない。
+      // 差分・ずれは覚えない（上の `remembered` と同じ理由）。
+      // **表示していたセンサーが止まった・外れても、残りを自動では繰り上げない**（2026-10-13 ユーザー承認）
+      // —— 見ていたものが勝手に変わらないことを、先着の 3 本を保つことより優先する。
+      if (chunk.source.kind === 'sensor' || chunk.source.kind === 'station') {
+        rememberSensorChoice(sensorChoices, key, shown.has(key))
+        savePrefs()
       }
     }
     markDirty()

@@ -933,6 +933,67 @@ describe('波形タブの表示の好みを保つ', () => {
     check.dispatchEvent(new Event('change', { bubbles: true }))
     expect(ctx.prefs.load()).toMatchObject({ sensors: [['t:station-1', false]] })
   })
+
+  // **触っていないセンサーも前回のまま開く**（2026-10-13 ユーザー承認）。既定の印は先着で決まるので、
+  // 覚えていないと届く順が変わるたびに出るセンサーが入れ替わる（実機で読み込み直すたびに変わっていた）。
+  const SENSORS = ['s0', 's1', 's2', 's3'] as const
+  const shownSensors = (container: HTMLElement): string[] =>
+    [...container.querySelectorAll<HTMLInputElement>('.wave-sensor-check')]
+      .filter((c) => c.checked)
+      .map((c) => c.dataset.key!)
+      .sort()
+
+  it('正: 触らずに開き直すと、届く順が変わっても前回と同じセンサーが出る', async () => {
+    const first = await mountWith(null)
+    for (const sensorId of SENSORS) captured?.onWave?.(chunk({ sensorId }))
+    await letItDraw()
+    const before = shownSensors(first.container)
+    expect(before).toHaveLength(3)
+
+    const { container } = await mountWith(first.ctx.prefs.load())
+    for (const sensorId of [...SENSORS].reverse()) captured?.onWave?.(chunk({ sensorId }))
+    await letItDraw()
+    expect(shownSensors(container)).toEqual(before)
+  })
+
+  it('対照: 何も覚えていなければ、届いた順の先着で出す（既定のまま）', async () => {
+    const { container } = await mountWith(null)
+    for (const sensorId of [...SENSORS].reverse()) captured?.onWave?.(chunk({ sensorId }))
+    await letItDraw()
+    const keys = [...container.querySelectorAll<HTMLInputElement>('.wave-sensor-check')]
+    const s0 = keys.find((c) => c.dataset.key?.endsWith('s0'))
+    expect(s0?.checked).toBe(false)
+    expect(shownSensors(container)).toHaveLength(3)
+  })
+
+  it('正: 合成の既定（届けば出す）も覚える', async () => {
+    const { ctx } = await mountWith(null)
+    captured?.onStationWave?.(stationChunk())
+    await letItDraw()
+    expect(ctx.prefs.load()).toMatchObject({ sensors: [['t:station-1', true]] })
+  })
+
+  // **溜め場所の上限（32 本）で断られた出どころは、画面に行が無い。** 覚えると、行の無いものを
+  // 「外した」として残し、上限が空いて届いたときに出ない。
+  it('安全弁: 溜め場所の上限で断られたセンサーは覚えない', async () => {
+    const { ctx } = await mountWith(null)
+    for (let i = 0; i < 40; i++) captured?.onWave?.(chunk({ sensorId: `s${i}` }))
+    await letItDraw()
+    const saved = (ctx.prefs.load() as { sensors?: [string, boolean][] } | null)?.sensors ?? []
+    expect(saved).toHaveLength(32)
+    expect(saved.some(([k]) => k.endsWith('s39'))).toBe(false)
+  })
+
+  // **差分・ずれは覚えない。** 運用者が選んだときにだけ届くので、覚えると選び直すたびに帳面が膨らむうえ、
+  // 前に外した印で、選んだのに見えない形になる。
+  it('安全弁: 差分の組は覚えない', async () => {
+    const { ctx } = await mountWith(null)
+    captured?.onWave?.(chunk())
+    captured?.onPairDiff?.(pairChunk())
+    await letItDraw()
+    const saved = (ctx.prefs.load() as { sensors?: [string, boolean][] } | null)?.sensors ?? []
+    expect(saved.map(([k]) => k[0])).toEqual(['s'])
+  })
 })
 
 /** 前に選んでいた差分の組を開き直す（2026-10-10 ユーザー承認）。 */
