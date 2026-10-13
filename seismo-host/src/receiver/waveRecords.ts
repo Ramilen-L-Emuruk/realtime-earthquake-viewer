@@ -24,7 +24,7 @@ import { mseed3SourceId } from './mseed3Record'
 import { readMseed3RecordsMatching } from './mseed3Reader'
 import { RECORD_SPAN_MAX_MS, laneOfRecord } from './mseedPacketReader'
 import { readWaveRangeByToken, waveFileNameOfToken, type ArchivedWaveChunk, type WaveRangeResult } from './waveArchive'
-import { PSD_BIN_COUNT, PSD_BIN_EDGES_HZ, columnPsd, intervalPsd } from './wavePsd'
+import { PSD_BIN_COUNT, PSD_BIN_EDGES_HZ, columnPsdAsync, intervalPsd, segmentHalfSpanMs } from './wavePsd'
 import {
   SUMMARY_COARSE_MS,
   SUMMARY_FINE_MS,
@@ -1016,8 +1016,9 @@ export interface SpectrogramResult {
 }
 
 /**
- * 生のサンプルから作るときの列の幅の下限（1 秒の整数倍に揃える）。列が区間の送り（約 5 秒）より細いときは、
- * `columnPsd` が送りを列の幅まで縮めるので、区間の入らない列は出ない。
+ * 生のサンプルから作るときの列の幅の下限（1 秒の整数倍に揃える）。区間の中心は列ごとに等間隔に置くので
+ * （`columnPsd`）、列が区間の送り（約 5 秒）より細くても 1 列に 1 本入る。1 秒は刻み（約 10 ms）より十分粗いので、
+ * 同じサンプルを中心にする列が重なって空くことも無い。
  */
 export const SPECTROGRAM_SAMPLES_MIN_COLUMN_MS = 1000
 /**
@@ -1028,8 +1029,12 @@ export const SPECTROGRAM_SAMPLES_MIN_COLUMN_MS = 1000
  * ほとんど見えない。
  */
 export const SPECTROGRAM_SAMPLES_RANGE_MAX_MS = 12 * 3_600_000
-/** 生のサンプルから作るとき、範囲の前後に余分に読む幅（区間の半分 ＝ 公称 100 Hz で 5.12 秒を覆う）。 */
-const SPECTROGRAM_SAMPLES_PAD_MS = 6000
+/**
+ * 生のサンプルから作るとき、範囲の前後に**まず**余分に読む幅。区間の半分（{@link segmentHalfSpanMs}）を覆えば足り、
+ * 6 秒なら約 86 Hz 以上の刻み（いまの基板は 100 Hz・104 Hz）を覆う。読んだ走りの刻みで足りなければ読み直す
+ * （#743。{@link readSpectrogram}）。
+ */
+export const SPECTROGRAM_SAMPLES_PAD_MS = 6000
 
 /**
  * 列ごとのスペクトルをどちらから作るか。**{@link SPECTROGRAM_SAMPLES_RANGE_MAX_MS} 以内で、1 分の列では画面の幅に
@@ -1059,18 +1064,16 @@ export async function readSpectrogram(params: {
   const { dirs, ref, fromMs, toMs, columns, unit, signal } = params
   if (spectrogramSource(fromMs, toMs, columns) === 'samples') {
     const columnMs = Math.max(SPECTROGRAM_SAMPLES_MIN_COLUMN_MS, columnMsFor(fromMs, toMs, columns, 1000))
-    const samples = await readSamples({
-      dirs,
-      ref,
-      fromMs: fromMs - SPECTROGRAM_SAMPLES_PAD_MS,
-      toMs: toMs + SPECTROGRAM_SAMPLES_PAD_MS,
-      unit,
-      signal,
-    })
-    // **計算の前にもう一度確かめる。** 区間の計算（12 時間で 1 軸 約 0.4 秒）は途中で譲らないので、打ち切られた
-    // 取得のぶんを走らせない。
-    signal.throwIfAborted()
-    const psd = columnPsd(samples.runs, fromMs, toMs, columnMs)
+    const read = (padMs: number): Promise<SamplesResult> =>
+      readSamples({ dirs, ref, fromMs: fromMs - padMs, toMs: toMs + padMs, unit, signal })
+    let samples = await read(SPECTROGRAM_SAMPLES_PAD_MS)
+    // **余白は読んだ走りの刻みから確かめる**（#743）。足りなければ（85 Hz 未満の刻み）、要る幅で読み直す。
+    // 端だけを読み足すと同じ時のファイルを 2 度開き、読めなかったファイルの数えが重なるので、丸ごと読み直す。
+    // 走りは 12 時間で 1 万本を超える（実測）ので、引数へ広げずに畳む。
+    const needMs = samples.runs.reduce((m, r) => Math.max(m, segmentHalfSpanMs(r.msPerSample)), 0)
+    if (needMs > SPECTROGRAM_SAMPLES_PAD_MS) samples = await read(Math.ceil(needMs))
+    // **計算は譲りながら進める**（#745。12 時間ぶんを同期で計算すると 1 軸 1〜1.6 秒止まる）。中断されたら投げる。
+    const psd = await columnPsdAsync(samples.runs, fromMs, toMs, columnMs, { signal })
     return {
       source: 'samples',
       unit: samples.unit,

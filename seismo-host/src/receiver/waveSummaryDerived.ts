@@ -468,7 +468,17 @@ export const DERIVED_PARTS: readonly DerivedPart[] = ['derived-fine', 'derived-c
 export const DERIVED_LAST_PART: DerivedPart = 'derived-coarse'
 
 const MAGIC = 0x4d555357
-const FORMAT_VERSION = 1
+/**
+ * 書く版。**この部分の形は版 1 と同じで、版は「要約の組をいつの作り方で作ったか」の印も兼ねる** ——
+ * 作り直すかはこの部分（最後に書く部分）の頭で決めるので（{@link peekDerivedHead}）、ここを上げると
+ * 見回りの係が要約の組を順に作り直す。
+ *
+ * - 2: 1 分ごとの PSD の区間を時刻の格子に置き、サンプルを実時刻から引く形にした（#742。2026-10-13 ユーザー承認）。
+ *   版 1 の組は、長い時の後ろほど区間を実際とずれた分へ数えていた（向きは刻みの速い遅いで変わる。1 時間の終わりで IIS2ICLX は最大約 33 秒・MPU6050 は約 6 秒）。
+ */
+const FORMAT_VERSION = 2
+/** 読める版。形が同じなので版 1 も読み、作り直すまでの間も画面を空けない。 */
+const READABLE_VERSIONS: ReadonlySet<number> = new Set([1, 2])
 const UNIT_CODES = { count: 0, gal: 1 } as const
 const HEAD_BYTES = 24
 /** 作り直すか決めるために、頭だけ読む長さ。 */
@@ -582,7 +592,10 @@ export function encodeDerivedPart(d: DerivedSummary, part: DerivedPart): Buffer 
   return w.done()
 }
 
-/** 頭だけを見て、控えている元のファイルの大きさと前の時の大きさを返す。目印・版・部分が違えば `null`。 */
+/**
+ * 頭だけを見て、控えている元のファイルの大きさと前の時の大きさを返す。目印・版・部分が違えば `null`。
+ * **版はいま書く版だけを通す**（古い版は読めても `null` ＝ 作り直させる）。
+ */
 export function peekDerivedHead(head: Buffer): { readonly sourceBytes: number; readonly prevSourceBytes: number | null } | null {
   if (head.length < HEAD_BYTES) return null
   if (head.readUInt32LE(0) !== MAGIC || head.readUInt8(4) !== FORMAT_VERSION) return null
@@ -685,7 +698,7 @@ export function decodeDerivedPart(
 ): DerivedPartFile | null {
   try {
     const r = new Reader(buf)
-    if (r.u32() !== MAGIC || r.u8() !== FORMAT_VERSION) return null
+    if (r.u32() !== MAGIC || !READABLE_VERSIONS.has(r.u8())) return null
     const code = r.u8()
     const part = DERIVED_PARTS.find((p) => DERIVED_PART_CODES[p] === code)
     if (part === undefined) return null
