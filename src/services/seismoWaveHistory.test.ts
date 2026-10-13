@@ -35,7 +35,7 @@ const RESPONSE = {
   truncated: false,
   columnSpanMs: 350,
   columns: [
-    { min: [-1.29892, -0.51962, -0.97282], max: [0.98729, 0.53547, 0.96435], minMembers: 9 },
+    { min: [-1.29892, -0.51962, -0.97282], max: [0.98729, 0.53547, 0.96435], minMembers: 9, magMin: 0.1, magMax: 1.6 },
     null,
     { min: [-0.5, -0.4, -0.3], max: [0.5, 0.4, 0.3], minMembers: 1 },
   ],
@@ -85,6 +85,22 @@ describe('readWaveHistory', () => {
     expect(h.columns[0]?.minMembers).toBe(9)
     expect(h.hasAnyValue).toBe(true)
     expect(h.peakGal).toBeCloseTo(2.11908)
+  })
+
+  // 正: ホストが返す合成の上下（サンプルごとに出して列の端を取ったもの）を読む。
+  it('合成の上下を読む', () => {
+    const read = readWaveHistory(RESPONSE)
+    if (!('value' in read)) throw new Error('読めない')
+    expect(read.value.columns[0]?.magMin).toBe(0.1)
+    expect(read.value.columns[0]?.magMax).toBe(1.6)
+  })
+
+  // 安全弁: 合成を返さない古いホストの列は NaN にする（応答ごと捨てない —— 3 成分の絵は描ける）。
+  it('合成の欄が無い列は NaN として読む', () => {
+    const read = readWaveHistory(RESPONSE)
+    if (!('value' in read)) throw new Error('読めない')
+    expect(read.value.columns[2]?.magMax).toBeNaN()
+    expect(read.value.columns[2]?.min).toEqual([-0.5, -0.4, -0.3])
   })
 
   it('値を持たない列は null のまま残す', () => {

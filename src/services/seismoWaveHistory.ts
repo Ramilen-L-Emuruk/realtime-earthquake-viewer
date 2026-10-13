@@ -54,6 +54,14 @@ export interface WaveHistoryColumn {
   readonly max: readonly [number, number, number]
   /** その列に効いたセンサーの最小本数。1 以下なら合成の裏付けが無い。 */
   readonly minMembers: number
+  /**
+   * 合成（3 成分のベクトルの大きさ）の下端と上端（gal）。**ホストがサンプルごとに出して列の端を取ったもの。**
+   * 成分ごとの端からは作れない（別々の瞬間の最大を組み合わせると実際より大きく出る）。
+   *
+   * **古いホストは返さないので `NaN`。** 描く側は合成を描かず、3 成分を重ねた絵へ戻す。
+   */
+  readonly magMin: number
+  readonly magMax: number
 }
 
 /** 読み返した区間。 */
@@ -191,7 +199,17 @@ export function readWaveHistory(parsed: unknown): { value: WaveHistory } | { det
     const min = readTriple(col.min)
     const max = readTriple(col.max)
     if (min === null || max === null) return { detail: '列の min / max を読めない' }
-    columns.push({ min, max, minMembers: finiteOr(col.minMembers, 0) })
+    // **合成の上下はそろって読む。** 片方だけ読めた列は合成を持たないものとして扱う（古いホストは両方とも返さない）。
+    const magMin = finiteOr(col.magMin, Number.NaN)
+    const magMax = finiteOr(col.magMax, Number.NaN)
+    const hasMag = Number.isFinite(magMin) && Number.isFinite(magMax)
+    columns.push({
+      min,
+      max,
+      minMembers: finiteOr(col.minMembers, 0),
+      magMin: hasMag ? magMin : Number.NaN,
+      magMax: hasMag ? magMax : Number.NaN,
+    })
   }
 
   return {

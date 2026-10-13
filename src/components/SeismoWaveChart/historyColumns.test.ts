@@ -10,7 +10,7 @@ import type { WaveHistoryColumn } from '../../services/seismoWaveHistory'
 import { foldHistoryColumns } from './historyColumns'
 
 function col(lo: number, hi: number, members = 9): WaveHistoryColumn {
-  return { min: [lo, lo, lo], max: [hi, hi, hi], minMembers: members }
+  return { min: [lo, lo, lo], max: [hi, hi, hi], minMembers: members, magMin: NaN, magMax: NaN }
 }
 
 describe('foldHistoryColumns', () => {
@@ -36,7 +36,7 @@ describe('foldHistoryColumns', () => {
   it('正（2026-10-09）: 1 成分だけ値の無い列（NaN）を挟んでも、その成分の端は後の列から採る', () => {
     // 観測点の合成は、解けない成分だけを NaN にして残りを出す（2026-10-09 ユーザー承認）。
     // **最初に拾った NaN が居座らない**ことを見る（`x < NaN` は偽なので、比べるだけだと更新されない）。
-    const partial: WaveHistoryColumn = { min: [-1, -1, NaN], max: [1, 1, NaN], minMembers: 2 }
+    const partial: WaveHistoryColumn = { min: [-1, -1, NaN], max: [1, 1, NaN], minMembers: 2, magMin: NaN, magMax: NaN }
     const source = [partial, col(-4, 4)]
     const { columns, scaleGal } = foldHistoryColumns({ source, columnCount: 1, minScaleGal: 1 })
     expect(columns[0].min[2]).toBe(-4)
@@ -46,7 +46,7 @@ describe('foldHistoryColumns', () => {
   })
 
   it('対照: 畳んだ範囲でその成分が 1 つも無ければ、その成分だけ NaN（列は値を持つ）', () => {
-    const partial: WaveHistoryColumn = { min: [-1, -1, NaN], max: [1, 1, NaN], minMembers: 2 }
+    const partial: WaveHistoryColumn = { min: [-1, -1, NaN], max: [1, 1, NaN], minMembers: 2, magMin: NaN, magMax: NaN }
     const { columns } = foldHistoryColumns({ source: [partial, partial], columnCount: 1, minScaleGal: 1 })
     expect(columns[0].hasValue).toBe(true)
     expect(columns[0].max[2]).toBeNaN()
@@ -108,6 +108,8 @@ describe('foldHistoryColumns', () => {
       min: [-5, -5, -80],
       max: [5, 5, 80],
       minMembers: 9,
+      magMin: NaN,
+      magMax: NaN,
     }
 
     it('消した向きは振れ幅の分母から外す', () => {
@@ -140,5 +142,29 @@ describe('foldHistoryColumns', () => {
       expect(got.hasAnyValue).toBe(true)
       expect(got.scaleGal).toBe(10)
     })
+  })
+})
+
+describe('foldHistoryColumns の合成', () => {
+  const mag = (lo: number, hi: number): WaveHistoryColumn => ({ ...col(-1, 1), magMin: lo, magMax: hi })
+
+  // 正: 合成も「下端の最小・上端の最大」で畳む。
+  it('合成を下端の最小・上端の最大で畳む', () => {
+    const { columns } = foldHistoryColumns({ source: [mag(1, 3), mag(0.5, 7)], columnCount: 1, minScaleGal: 1 })
+    expect(columns[0].magMin).toBe(0.5)
+    expect(columns[0].magMax).toBe(7)
+  })
+
+  // 対照: 合成を返さない古いホストの列（NaN）は NaN のまま。描く側が 3 成分の絵へ戻す。
+  it('合成の無い列は NaN のまま', () => {
+    const { columns } = foldHistoryColumns({ source: [col(-1, 1)], columnCount: 1, minScaleGal: 1 })
+    expect(columns[0].magMax).toBeNaN()
+  })
+
+  // 安全弁: 合成のある列と無い列が混ざっても、NaN の端が居座らない。
+  it('NaN の端は値のある列で置き換える', () => {
+    const { columns } = foldHistoryColumns({ source: [col(-1, 1), mag(2, 4)], columnCount: 1, minScaleGal: 1 })
+    expect(columns[0].magMin).toBe(2)
+    expect(columns[0].magMax).toBe(4)
   })
 })

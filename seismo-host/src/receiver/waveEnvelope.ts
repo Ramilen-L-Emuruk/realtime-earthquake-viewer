@@ -32,6 +32,15 @@ export interface WaveEnvelopeColumn {
    * （見落とすほうが重い）。
    */
   readonly minMembers: number
+  /**
+   * 合成（3 成分のベクトルの大きさ）の下端と上端（gal）。**解けた成分だけで、サンプルごとに出してから**列の
+   * 下端・上端を取る（2026-10-13 ユーザー承認。PWA の地震カードが合成を描くため）。
+   *
+   * **成分ごとの端どうしからは出せない。** 別々の瞬間の最大を組み合わせることになり、実際より大きく出る ——
+   * だから受け手（PWA）では作れず、サンプルを持っているここで出す。
+   */
+  readonly magMin: number
+  readonly magMax: number
 }
 
 export interface WaveEnvelope {
@@ -88,6 +97,8 @@ export function buildWaveEnvelope(params: {
     new Float64Array(columnCount),
     new Float64Array(columnCount),
   ]
+  const magMins = new Float64Array(columnCount)
+  const magMaxs = new Float64Array(columnCount)
   const members = new Float64Array(columnCount)
   /** 列にサンプルが 1 つでも入ったか（本数を数える起点）。 */
   const filled = new Uint8Array(columnCount)
@@ -108,12 +119,19 @@ export function buildWaveEnvelope(params: {
       // 落ちて、いちばん新しい値が絵から消える。
       const c = Math.min(columnCount - 1, Math.floor(((t - fromMs) / span) * columnCount))
 
+      let sq = 0
+      for (const v of values) if (Number.isFinite(v)) sq += v * v
+      const mag = Math.sqrt(sq)
       const m = chunk.memberCount[i]
       if (filled[c] === 0) {
         filled[c] = 1
         members[c] = m
-      } else if (m < members[c]) {
-        members[c] = m
+        magMins[c] = mag
+        magMaxs[c] = mag
+      } else {
+        if (m < members[c]!) members[c] = m
+        if (mag < magMins[c]!) magMins[c] = mag
+        if (mag > magMaxs[c]!) magMaxs[c] = mag
       }
       for (let a = 0; a < 3; a += 1) {
         const v = values[a]!
@@ -151,6 +169,8 @@ export function buildWaveEnvelope(params: {
       min: [end(mins, 0), end(mins, 1), end(mins, 2)],
       max: [end(maxs, 0), end(maxs, 1), end(maxs, 2)],
       minMembers: members[c]!,
+      magMin: magMins[c]!,
+      magMax: magMaxs[c]!,
     })
   }
 

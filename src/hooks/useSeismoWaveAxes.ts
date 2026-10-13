@@ -24,9 +24,15 @@ function emit(): void {
   for (const listener of listeners) listener()
 }
 
-/** その向きの表示を反転する。**範囲の外は黙って捨てる**（配線の誤りで例外にしない）。 */
+/**
+ * その向きの表示を反転する。**範囲の外は黙って捨てる**（配線の誤りで例外にしない）。
+ *
+ * **最後の 1 つは消せない**（2026-10-13 ユーザー承認）。全部消すと合成も成分の段も空になり、
+ * 「静かで揺れていない」絵と見分けが付かない。
+ */
 export function toggleWaveAxis(index: number): void {
   if (!Number.isInteger(index) || index < 0 || index >= AXIS_COUNT) return
+  if (axes[index] && axes.filter(Boolean).length <= 1) return
   axes = axes.map((visible, i) => (i === index ? !visible : visible))
   emit()
 }

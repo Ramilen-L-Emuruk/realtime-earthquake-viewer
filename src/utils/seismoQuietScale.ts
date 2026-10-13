@@ -19,20 +19,24 @@ import type { SeismoWaveWindow } from './seismoWaveBuffer'
 export const QUIET_LEVEL_MIN_GAL = 0.05
 
 /**
- * 物差しに掛ける倍率。**IIS2ICLX を入れる前の見た目から逆算した値。**
+ * 物差しに掛ける倍率。
  *
- * 入れる前（2026-10-09・7 時刻の実測）の物差しは 1.32 gal で、そのときの決め打ちの値を
- * これで割った。入れた後（2026-10-11・同じ 7 時刻）は 0.19 gal なので、下限はおよそ
- * カード・下端 1.4 gal／詳細 0.3 gal／収まり 0.44 gal になる。
+ * もとは IIS2ICLX を入れる前の見た目から逆算した値（入れる前の 2026-10-09・7 時刻の実測で物差しは 1.32 gal、
+ * そのときの決め打ちの値をこれで割った）。入れた後（2026-10-11・同じ 7 時刻）は 0.19 gal。
  *
- * | 用途 | 決め打ちだった値 | 倍率 |
+ * **カード・下端は 7.5 から 3 へ下げた**（2026-10-13 ユーザー承認「ほかのところに比べて最小幅が大きすぎない？」。
+ * 7.5 だと詳細の窓の 5 倍・管理コンソールの固定 0.2 gal の 7 倍あり、小さな揺れが平らにしか見えなかった）。
+ * 3 成分を重ねる・合成の 1 本で見る絵なので、詳細の窓（段に分けて見る）の 1.5 までは下げない ——
+ * 静かなときのノイズが枠いっぱいに広がると、揺れているように見える。
+ *
+ * | 用途 | 倍率 | いまの物差し（0.19 gal）での下限 |
  * |---|---|---|
- * | 地震カード・地図の下端の波形の縦 | 10 gal | 7.5 |
- * | 詳細の窓の縦 | 2 gal | 1.5 |
- * | カードの繋ぎ足しを止める「収まった」 | 3 gal | 2.3 |
+ * | 地震カード・地図の下端の波形（畳んだとき）の縦 | 3 | 約 0.6 gal |
+ * | 詳細の窓・地図の下端の波形（展開したとき）の縦 | 1.5 | 約 0.3 gal |
+ * | カードの繋ぎ足しを止める「収まった」 | 2.3 | 約 0.44 gal |
  */
 export const QUIET_SCALE_RATIO = {
-  card: 7.5,
+  card: 3,
   detail: 1.5,
   settle: 2.3,
 } as const
@@ -55,25 +59,6 @@ export type QuietScaleUse = keyof typeof QUIET_SCALE_RATIO
 export function quietScaledGal(use: QuietScaleUse, quietLevelGal: number | null): number {
   if (quietLevelGal === null || !Number.isFinite(quietLevelGal)) return QUIET_SCALE_FALLBACK_GAL[use]
   return QUIET_SCALE_RATIO[use] * Math.max(quietLevelGal, QUIET_LEVEL_MIN_GAL)
-}
-
-/**
- * 強調して描くときの縦の最小を、ノイズの帯の幅の何倍にするか。**0.25 倍。**
- *
- * 潰した後に残るのは「帯を超えた分」なので、物差しは帯の幅のほうが素直。入れる前の帯の幅
- * （成分のうち最大）は約 2 gal で、決め打ちだった 0.5 gal はその 1/4 に当たる。
- */
-export const EMPHASIZED_FLOOR_PER_WIDTH = 0.25
-
-/**
- * 強調して描くときの縦の最小（gal）。`widthGal` はノイズの帯の幅（成分のうち最大）。
- *
- * **{@link QUIET_LEVEL_MIN_GAL} を下回らせない。** 帯の幅が下限に張り付いたとき 1/4 にすると 0.01 gal 台になり、
- * 帯をわずかに超えただけの尖りが枠いっぱいに描かれて、揺れているように見える。
- */
-export function emphasizedFloorGal(widthGal: number): number {
-  const w = Number.isFinite(widthGal) ? Math.max(widthGal, QUIET_LEVEL_MIN_GAL) : QUIET_LEVEL_MIN_GAL
-  return Math.max(EMPHASIZED_FLOOR_PER_WIDTH * w, QUIET_LEVEL_MIN_GAL)
 }
 
 /** 地図の下端の波形で静かさを測る長さ（ms）。**地震カードの 0 の手前と同じ 30 秒。** */

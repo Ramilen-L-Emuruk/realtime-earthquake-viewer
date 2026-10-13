@@ -4,6 +4,7 @@ import { EarthquakeCard } from './EarthquakeCard'
 import { LoadMoreButton } from './LoadMoreButton'
 import { extractQuakeEventId, quakeEventKey } from '../../utils/quakeMerge'
 import type { SeismoQuakeWave } from '../../hooks/useSeismoQuakeWaves'
+import type { SeismoWaveCollapsedView } from '../../hooks/useSettings'
 import { lpgmMarkKey, type QuakeCardMarks } from '../../utils/quakeUpdateMark'
 import { estimatedIntensityFor } from '../../utils/estimatedIntensity'
 import type { LatLng } from '../../utils/stationCoords'
@@ -84,6 +85,8 @@ interface Props {
    * 同じ分に起きた別の地震で片方のカードへ他方の波形が出る。
    */
   seismoWaves: ReadonlyMap<string, readonly SeismoQuakeWave[]>
+  /** 波形を畳んでいるときに出すもの（設定「波形の表示」。地図の下端の波形と共有）。 */
+  seismoWaveView: SeismoWaveCollapsedView
 }
 
 /**
@@ -189,7 +192,7 @@ function useQuakeCardScroll(
 // 地震情報タブの右パネル。地震カードの一覧を表示し、クリックで地図表示対象を選択する。
 // 地図そのものは App が常時表示する。
 // React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
-export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selectedId, speakingKey, followSpeech, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, watchLoadMoreThrottle, error, historyLoss, loadMoreFailed, fetchThrottled, lpgmByEventId, updateMarks, activeLpgmEventId, onToggleLpgm, estimatedIntensities, distributionQuakeKey, onToggleDistribution, unreceivedQuakeKey, onToggleUnreceived, onFocusMap, speakingTelegramTextSubject, seismoWaves }: Props) {
+export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selectedId, speakingKey, followSpeech, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, watchLoadMoreThrottle, error, historyLoss, loadMoreFailed, fetchThrottled, lpgmByEventId, updateMarks, activeLpgmEventId, onToggleLpgm, estimatedIntensities, distributionQuakeKey, onToggleDistribution, unreceivedQuakeKey, onToggleUnreceived, onFocusMap, speakingTelegramTextSubject, seismoWaves, seismoWaveView }: Props) {
   // **早期 return より前に置く**（フックの数を回ごとに変えないため）。一覧が無い回は寄せずに持ち越す。
   const listRef = useRef<HTMLDivElement>(null)
   useQuakeCardScroll(listRef, quakeCardScrollTarget({ earthquakes, selectedKey: selectedId, speakingKey, followSpeech }))
@@ -275,6 +278,7 @@ export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selected
           onFocusMap={onFocusMap}
           speakingTelegramTextSubject={speakingTelegramTextSubject}
           seismoWaves={seismoWaves.get(quakeEventKey(quake))}
+          seismoWaveView={seismoWaveView}
         />
       ))}
       {hasMore && (

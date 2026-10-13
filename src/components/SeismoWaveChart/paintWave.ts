@@ -10,7 +10,7 @@
 
 import { createLogThrottle, log } from '../../utils/logger'
 import type { WaveColumn } from './waveColumns'
-import { formatScaleGal } from './waveLabels'
+import { formatGal, formatScaleGal } from './waveLabels'
 import type { TimeTick } from './timeTicks'
 
 /**
@@ -36,6 +36,26 @@ export const AXIS_COLORS = ['#4ade80', '#e879f9', '#facc15'] as const
 export const AXIS_LABELS = ['東西', '南北', '上下'] as const
 
 /**
+ * 成分の段に重ねる「正側・負側の平均の線」の色。**成分の色の明るい版**（緑・赤紫・黄の 200 番台）。
+ * 元の線（成分の色）の上に太く描くので、同じ色だと見分けられない。詳細の窓と地図の下端の波形が共有する。
+ */
+export const AXIS_AVERAGE_COLORS = ['#bbf7d0', '#f5d0fe', '#fef08a'] as const
+
+/**
+ * 合成（3 成分のベクトルの大きさ）の線の色。**3 成分（緑・赤紫・黄）とも、P/S（水色・朱）・最大の線（白）とも別の淡い灰青。**
+ */
+export const COMPOSITE_COLOR = '#94a3b8'
+
+/** 合成に重ねる「前後を均した線」の色。元の線（灰青）より明るい白に近い色。 */
+export const COMPOSITE_SMOOTH_COLOR = '#f1f5f9'
+
+/** 波形の上に重ねる線（平均の線など）。**列ごとに 1 点。値の無い列は `NaN`**（そこで線を切る）。 */
+export interface WaveOverlay {
+  readonly values: ArrayLike<number>
+  readonly color: string
+}
+
+/**
  * 2D コンテキストを取れなかったことの記録を間引く枠。
  *
  * **観測点ごとに分けない。** これはブラウザ側の事情なので、どの観測点で起きても
@@ -48,11 +68,6 @@ export interface PaintableColumns {
   readonly columns: readonly WaveColumn[]
   readonly scaleGal: number
   readonly hasAnyValue: boolean
-  /**
-   * 縦の表示。**渡さなければ `scaleGal` から作る**（`±N gal`）。強調して描いたときは
-   * 縦が 0 からではないので、作った側が文字列まで決める（→ `emphasizeColumns.ts`）。
-   */
-  readonly scaleLabel?: string
 }
 
 /**
@@ -96,6 +111,11 @@ export interface PaintOptions {
    * 幅を知っているのはここだけ（列数と同じ理由）。
    */
   readonly ticks?: (widthCssPx: number) => readonly TimeTick[]
+  /**
+   * 波形の上に重ねる線（成分の正側・負側の平均の線）。**列数を受け取って線を返す関数で渡す**（列数を知っているのはここだけ）。
+   * 縦の物差しは波形と同じ。渡さなければ何も重ねない。
+   */
+  readonly overlays?: (columnCount: number) => readonly WaveOverlay[]
 }
 
 /**
@@ -131,7 +151,7 @@ export function paintWaveColumns(
   stale: boolean,
   options: PaintOptions = {},
 ): string | null {
-  const { marks = [], visibleAxes, ticks: buildTicks } = options
+  const { marks = [], visibleAxes, ticks: buildTicks, overlays } = options
   const ctx = canvas.getContext('2d')
   // **取れなかったことは記録へ残す。** 黙って戻ると、画面からは「まだ何も届いて
   // いない」のと区別が付かない —— 描けなかったのか届いていないのかを切り分ける
@@ -222,9 +242,145 @@ export function paintWaveColumns(
   }
   ctx.globalAlpha = 1
 
+  // **重ねる線は太く・はっきり。** 元の線の上に描く（詳細の窓の段と同じ見せ方）。
+  for (const overlay of overlays?.(w) ?? []) {
+    strokeOverlay(ctx, overlay, (v) => mid - (v / scaleGal) * half, dpr * 2, stale ? 0.3 : 1)
+  }
+
   paintMarks(ctx, marks, w, plotH, dpr)
 
-  return built.scaleLabel ?? formatScaleGal(scaleGal)
+  return formatScaleGal(scaleGal)
+}
+
+/** 合成を描くときの任意の指定。 */
+export interface CompositePaintOptions {
+  /** 縦の下限（gal）。**0 から上端までの長さ**（合成は大きさなので 0 が下端）。 */
+  readonly minScaleGal: number
+  readonly marks?: readonly WaveMark[]
+  readonly ticks?: (widthCssPx: number) => readonly TimeTick[]
+  /** 重ねる線（合成を前後 1 秒で均した線）。縦の物差しは合成と同じ。 */
+  readonly overlays?: (columnCount: number) => readonly WaveOverlay[]
+}
+
+/**
+ * 列の合成（`magMin`〜`magMax`）を、下端を 0 にして 1 本描き、縦の表示（`0〜N gal`）を返す。**描けなければ `null`。**
+ *
+ * **合成を 1 本も持たない列ばかりなら `null`**（合成を返さない古いホストから読み返した列）。呼び出し側は
+ * 3 成分を重ねた絵（{@link paintWaveColumns}）へ戻す —— 何も描かない絵にすると、届いているのに空に見える。
+ */
+export function paintCompositeColumns(
+  canvas: HTMLCanvasElement,
+  build: (columnCount: number) => { readonly columns: readonly WaveColumn[]; readonly hasAnyValue: boolean } | null,
+  stale: boolean,
+  options: CompositePaintOptions,
+): string | null {
+  const { minScaleGal, marks = [], ticks: buildTicks, overlays } = options
+  const ctx = canvas.getContext('2d')
+  if (ctx === null) {
+    throttledNoContext(() => log.error('[seismo] 波形を描く 2D コンテキストを取れなかった'))
+    return null
+  }
+  const dpr = window.devicePixelRatio || 1
+  const w = Math.max(1, Math.round(canvas.clientWidth * dpr))
+  const h = Math.max(1, Math.round(canvas.clientHeight * dpr))
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w
+    canvas.height = h
+  }
+  ctx.clearRect(0, 0, w, h)
+  const ticks = buildTicks?.(canvas.clientWidth) ?? []
+  const axisH = buildTicks !== undefined ? Math.round(AXIS_BAND_PX * dpr) : 0
+  const plotH = Math.max(1, h - axisH)
+  paintTicks(ctx, ticks, w, plotH, h, dpr)
+  // 0 の線（下端）。線の太さぶん内側へ（切れないように）。
+  const zeroY = plotH - dpr
+  ctx.strokeStyle = 'rgba(255,255,255,0.18)'
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.moveTo(0, Math.round(zeroY) + 0.5)
+  ctx.lineTo(w, Math.round(zeroY) + 0.5)
+  ctx.stroke()
+
+  const built = build(w)
+  if (built === null || !built.hasAnyValue) return null
+  const { columns } = built
+  let peak = 0
+  let hasMag = false
+  for (const col of columns) {
+    if (!col.hasValue || !Number.isFinite(col.magMax)) continue
+    hasMag = true
+    if (col.magMax > peak) peak = col.magMax
+  }
+  if (!hasMag) return null
+  const scaleGal = Math.max(minScaleGal, peak)
+  if (!(scaleGal > 0)) return null
+
+  // 裏付けが 1 本しか無い区間を薄く敷く（{@link paintWaveColumns} と同じ）。
+  ctx.fillStyle = 'rgba(255,255,255,0.08)'
+  for (let c = 0; c < columns.length; c += 1) {
+    const col = columns[c]
+    if (col.hasValue && col.minMembers <= 1) ctx.fillRect(c, 0, 1, plotH)
+  }
+
+  const reach = Math.max(1, plotH - dpr * 2)
+  const yOf = (v: number): number => zeroY - (v / scaleGal) * reach
+  ctx.globalAlpha = stale ? 0.25 : 0.85
+  ctx.lineWidth = dpr
+  ctx.strokeStyle = COMPOSITE_COLOR
+  ctx.beginPath()
+  let started = false
+  for (let c = 0; c < columns.length; c += 1) {
+    const col = columns[c]
+    // **値の無い列で線を切る**（{@link paintWaveColumns} と同じ理由）。
+    if (!col.hasValue || !Number.isFinite(col.magMin) || !Number.isFinite(col.magMax)) {
+      started = false
+      continue
+    }
+    const x = c + 0.5
+    if (started) ctx.lineTo(x, yOf(col.magMax))
+    else {
+      ctx.moveTo(x, yOf(col.magMax))
+      started = true
+    }
+    ctx.lineTo(x, yOf(col.magMin))
+  }
+  ctx.stroke()
+  ctx.globalAlpha = 1
+
+  for (const overlay of overlays?.(w) ?? []) strokeOverlay(ctx, overlay, yOf, dpr * 2, stale ? 0.3 : 1)
+
+  paintMarks(ctx, marks, w, plotH, dpr)
+  return `0〜${formatGal(scaleGal)} gal`
+}
+
+/** 重ねる線を 1 本引く。**値の無い列で線を切る**（`lineTo` に NaN を渡しても何もしないので、自分で切る）。 */
+function strokeOverlay(
+  ctx: CanvasRenderingContext2D,
+  overlay: WaveOverlay,
+  yOf: (v: number) => number,
+  lineWidth: number,
+  alpha: number,
+): void {
+  ctx.globalAlpha = alpha
+  ctx.lineWidth = lineWidth
+  ctx.strokeStyle = overlay.color
+  ctx.beginPath()
+  let started = false
+  for (let c = 0; c < overlay.values.length; c += 1) {
+    const v = overlay.values[c]
+    if (!Number.isFinite(v)) {
+      started = false
+      continue
+    }
+    const x = c + 0.5
+    if (started) ctx.lineTo(x, yOf(v))
+    else {
+      ctx.moveTo(x, yOf(v))
+      started = true
+    }
+  }
+  ctx.stroke()
+  ctx.globalAlpha = 1
 }
 
 /**

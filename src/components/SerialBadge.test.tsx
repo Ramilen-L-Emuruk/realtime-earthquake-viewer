@@ -93,6 +93,7 @@ const renderQuake = async (quake: JMAQuake, selected = true) => {
       onFocusMap={() => {}}
       speakingTelegramTextSubject={null}
       seismoWaves={new Map()}
+      seismoWaveView="composite"
     />,
   )
   await flushDataEffects()

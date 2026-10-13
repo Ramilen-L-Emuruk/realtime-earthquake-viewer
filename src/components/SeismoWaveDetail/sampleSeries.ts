@@ -3,10 +3,8 @@
 // - 取ったまとまりを時刻順に 1 本へ繋ぐ（重なりは捨て、途切れには欠測を挟んで線を切る）
 // - 見えている範囲のサンプルを二分探索で切り出す
 // - 寄せ具合に応じて「1 ピクセルごとの上下の端（包絡）」か「点そのもの」を返す
-// - 強調（平常時のノイズの内側を潰す）を値へ当てる
 
 import type { WaveSampleChunk } from '../../services/seismoWaveSamples'
-import { NOISE_FLOOR_GAL, NOISE_MIN_SECONDS, NOISE_SPAN_MS, NOISE_WIDTH_RATIO, type NoiseBand } from '../../utils/seismoQuakeWindow'
 import type { ViewRange } from './detailView'
 
 /** 時刻順に繋いだサンプル。**欠測と途切れは `NaN`**（そこで線を切る）。 */
@@ -98,38 +96,6 @@ export function visibleIndexRange(series: SampleSeries, range: ViewRange): { sta
 }
 
 /**
- * 値の変換（強調）。**平常時のノイズの内側を 0 にし、外側は幅だけ寄せる**（符号は保つ。
- * `emphasizeColumns.ts` の `shrink` と同じ）。非有限は非有限のまま返す。
- * **帯の無い成分（幅が `NaN`）は描かない**（`NaN` を返す。比較がすべて偽になって 0 に化けるのを防ぐ）。
- */
-export function emphasizeValue(value: number, center: number, width: number): number {
-  const d = value - center
-  if (!Number.isFinite(d) || !Number.isFinite(width)) return Number.NaN
-  if (d > width) return d - width
-  if (d < -width) return d + width
-  return 0
-}
-
-/**
- * その帯で生のサンプルを強調してよいか。**帯の無い成分（幅が `NaN`）が値を持っていれば `false`。**
- * 列の側の判定（`utils/seismoQuakeWindow.ts` の `bandCoversDrawn`）と同じ規則。消した向きは数えない。
- */
-export function bandCoversSamples(noise: NoiseBand, series: SampleSeries, visibleAxes: readonly boolean[]): boolean {
-  for (let a = 0; a < 3; a += 1) {
-    if (visibleAxes[a] === false || Number.isFinite(noise.width[a])) continue
-    const v = series.v[a]
-    for (let i = 0; i < series.length; i += 1) if (Number.isFinite(v[i])) return false
-  }
-  return true
-}
-
-/** 成分ごとの値の変換。強調しないなら素通し。 */
-export function valueTransform(noise: NoiseBand | null): (axis: number, value: number) => number {
-  if (noise === null) return (_axis, value) => value
-  return (axis, value) => emphasizeValue(value, noise.center[axis], noise.width[axis])
-}
-
-/**
  * 範囲の中の、成分ごとの振れの最大（変換後の絶対値）。**値の無い成分は `-Infinity`。**
  * 縦の物差しを決めるのに使う。
  */
@@ -164,7 +130,7 @@ export type LaneGeometry =
  * 1 本の値の並びの描き方を作る（成分 1 つ、または 合成）。
  *
  * @param values `series.t` と同じ添字で並んだ値（成分なら `series.v[a]`）
- * @param map 描く前に値へ当てる変換（強調など）。素のままなら恒等
+ * @param map 描く前に値へ当てる変換。素のままなら恒等
  */
 export function laneGeometry(params: {
   readonly series: SampleSeries
@@ -229,31 +195,6 @@ export function vectorMagnitude(series: SampleSeries, axes: readonly boolean[]):
  * （`utils/waveMeanLines.ts`）。`SampleSeries` はそのまま渡せる。
  */
 export { movingAverage, signedMovingAverages } from '../../utils/waveMeanLines'
-
-/**
- * 合成の大きさの平常時の底（gal）。**成分の強調と同じ測り方**（`measureNoiseBand`）—— 0 の手前 30 秒で 1 秒ごとの
- * 最大を取り、その中央値の 1.5 倍（下限 0.2 gal）。合成は大きさなので中心は取らず、0 から測る。
- *
- * **値のある 1 秒が 10 に満たなければ `null`**（推測で底を置かない。成分と同じ）。
- */
-export function measureMagnitudeFloor(series: SampleSeries, magnitude: Float32Array, zeroMs: number): number | null {
-  if (!Number.isFinite(zeroMs)) return null
-  const fromMs = zeroMs - NOISE_SPAN_MS
-  const peaks = new Map<number, number>()
-  const lo = lowerBound(series.t, series.length, fromMs)
-  const hi = lowerBound(series.t, series.length, zeroMs)
-  for (let i = lo; i < hi; i += 1) {
-    const v = magnitude[i]
-    if (!Number.isFinite(v)) continue
-    const sec = Math.floor((series.t[i] - zeroMs) / 1000)
-    peaks.set(sec, Math.max(peaks.get(sec) ?? 0, v))
-  }
-  if (peaks.size < NOISE_MIN_SECONDS) return null
-  const sorted = [...peaks.values()].sort((a, b) => a - b)
-  const mid = sorted.length >> 1
-  const median = sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
-  return Math.max(median * NOISE_WIDTH_RATIO, NOISE_FLOOR_GAL)
-}
 
 /** 範囲の中の値の最大と、その時刻（最初に達した点）。**値が 1 つも無ければ `null`。** */
 export function peakInRange(

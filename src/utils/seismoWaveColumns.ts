@@ -32,6 +32,32 @@ export function lastFilledIndex(columns: readonly (WaveHistoryColumn | null)[]):
 }
 
 /**
+ * 列の束が合成（`magMin`/`magMax`）を持っているか。**値のある列がすべて持っているときだけ `complete`。**
+ *
+ * **1 列でも欠けていれば合成で描かない。** 合成を返さない古いホストの列と、押し出しで継ぎ足した列
+ * （こちらは必ず合成を持つ）が混ざると、合成の線は継ぎ足した区間にだけ現れ、読み返した区間は
+ * 値が届いているのに空いて見える —— 揺れていないように読める。3 成分を重ねた絵へ戻すほうがよい。
+ */
+export interface CompositeCoverage {
+  /** 値のある列（`null` でない列）の数。 */
+  readonly valued: number
+  /** そのうち合成を持つ列の数。 */
+  readonly withComposite: number
+  readonly complete: boolean
+}
+
+export function compositeCoverage(columns: readonly (WaveHistoryColumn | null)[]): CompositeCoverage {
+  let valued = 0
+  let withComposite = 0
+  for (const c of columns) {
+    if (c === null) continue
+    valued += 1
+    if (Number.isFinite(c.magMin) && Number.isFinite(c.magMax)) withComposite += 1
+  }
+  return { valued, withComposite, complete: withComposite === valued }
+}
+
+/**
  * 値を持つ最後の列までで切る。
  *
  * **空の区間を描かない**（2026-09-30 のユーザー指摘「終端はそれに合わせてカットしてほしい。
@@ -132,7 +158,10 @@ export function appendWaveWindow(params: {
   if (startIndex > maxIndex) return base
 
   // 追加ぶんの集計。**列の番号で引ける疎な入れ物**（届いていない時間帯は空のまま）。
-  const added = new Map<number, { min: [number, number, number]; max: [number, number, number]; members: number }>()
+  const added = new Map<
+    number,
+    { min: [number, number, number]; max: [number, number, number]; members: number; magMin: number; magMax: number }
+  >()
 
   for (let i = 0; i < count; i += 1) {
     const values = [win.gal[0][i], win.gal[1][i], win.gal[2][i]] as const
@@ -144,12 +173,22 @@ export function appendWaveWindow(params: {
     if (c < startIndex || c > maxIndex) continue
 
     const m = win.memberCount[i]
+    // **合成はサンプルごとに出す**（ホストの `waveEnvelope.ts` と同じ。解けた成分だけで）。
+    const mag = vectorMagnitudeOf(values)
     const cur = added.get(c)
     if (cur === undefined) {
       // 読めない成分は `NaN` のまま置く（下の比較は `NaN` を必ず上書きする形にしてある）。
-      added.set(c, { min: [values[0], values[1], values[2]], max: [values[0], values[1], values[2]], members: m })
+      added.set(c, {
+        min: [values[0], values[1], values[2]],
+        max: [values[0], values[1], values[2]],
+        members: m,
+        magMin: mag,
+        magMax: mag,
+      })
       continue
     }
+    if (mag < cur.magMin) cur.magMin = mag
+    if (mag > cur.magMax) cur.magMax = mag
     for (let a = 0; a < 3; a += 1) {
       const v = values[a]!
       if (!Number.isFinite(v)) continue
@@ -168,7 +207,11 @@ export function appendWaveWindow(params: {
   for (let c = startIndex; c <= highest; c += 1) {
     const a = added.get(c)
     // **間が空いたら空のまま置く。** 詰めると、そこだけ時間の縮んだ絵になる。
-    next.push(a === undefined ? null : { min: a.min, max: a.max, minMembers: a.members })
+    next.push(
+      a === undefined
+        ? null
+        : { min: a.min, max: a.max, minMembers: a.members, magMin: a.magMin, magMax: a.magMax },
+    )
   }
   return { ...base, columns: next }
 }
@@ -230,4 +273,38 @@ export function spliceRevisedColumns(
     next[at] = col
   }
   return next === null ? base : { ...base, columns: next }
+}
+
+/**
+ * 1 サンプルの合成（ベクトルの大きさ）。**解けた成分（有限）だけで出す。** 1 つも解けていなければ `NaN`。
+ *
+ * ホスト（`seismo-host/src/receiver/waveEnvelope.ts`）と同じ数え方 —— 読み返した列と押し出しで継ぎ足した列が
+ * 同じ絵の中で並ぶので、数え方がずれると継ぎ目で合成の大きさが跳ぶ。
+ */
+export function vectorMagnitudeOf(values: readonly number[]): number {
+  let sq = 0
+  let any = false
+  for (const v of values) {
+    if (!Number.isFinite(v)) continue
+    sq += v * v
+    any = true
+  }
+  return any ? Math.sqrt(sq) : Number.NaN
+}
+
+/**
+ * 3 成分のうち `use` が真の成分だけで出す合成。**{@link vectorMagnitudeOf} と同じ数え方**で、
+ * 配列を作らない —— 描き直しのたびに 6000 サンプルぶん回すので、サンプルごとの小さな配列が積み上がる。
+ */
+export function vectorMagnitudeOf3(
+  x: number,
+  y: number,
+  z: number,
+  use: readonly [boolean, boolean, boolean],
+): number {
+  const vx = use[0] && Number.isFinite(x)
+  const vy = use[1] && Number.isFinite(y)
+  const vz = use[2] && Number.isFinite(z)
+  if (!vx && !vy && !vz) return Number.NaN
+  return Math.sqrt((vx ? x * x : 0) + (vy ? y * y : 0) + (vz ? z * z : 0))
 }

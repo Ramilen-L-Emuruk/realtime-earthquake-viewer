@@ -1363,6 +1363,18 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
                 <option value="always">常に表示</option>
               </select>
             </Row>
+            {/* 地図の下端の波形と地震カードの波形の両方に効く（2026-10-13 ユーザー承認）。展開すると
+                合成＋3 成分になるので、ここで選ぶのは畳んでいるときだけ。 */}
+            <Row label="波形の表示" description="波形を展開していないときに表示するものです">
+              <select
+                value={settings.seismoWaveCollapsedView}
+                onChange={e => onUpdate('seismoWaveCollapsedView', e.target.value as AppSettings['seismoWaveCollapsedView'])}
+                className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
+              >
+                <option value="composite">合成</option>
+                <option value="overlay">3成分を重ねる</option>
+              </select>
+            </Row>
           </>
         )}
       </Section>

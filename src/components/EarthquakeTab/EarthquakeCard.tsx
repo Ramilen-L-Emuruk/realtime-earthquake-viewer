@@ -41,6 +41,7 @@ import { ringsBoundsIndex, EMPTY_BOUNDS_INDEX, type RingsBounds } from '../../ut
 import { groupUnreceivedPointNames, type UnreceivedPointGroup } from './unreceivedPointNames'
 import { QuakeSeismoWave } from './QuakeSeismoWave'
 import type { SeismoQuakeWave } from '../../hooks/useSeismoQuakeWaves'
+import type { SeismoWaveCollapsedView } from '../../hooks/useSettings'
 
 /**
  * 区域の行より下にある行の鍵をすべて集める。**親の行へ印を上げるために要る**
@@ -451,6 +452,8 @@ interface Props {
    * 決めてあるので（2026-09-29 のユーザー判断）、載せるものが無い＝枠ごと出ない。
    */
   seismoWaves?: readonly SeismoQuakeWave[]
+  /** 波形を畳んでいるときに出すもの（設定「波形の表示」）。 */
+  seismoWaveView: SeismoWaveCollapsedView
 }
 
 /**
@@ -539,7 +542,7 @@ export const EarthquakeCard = memo(function EarthquakeCard({
   quake, isLatest, isSelected, onSelect, lpgm, activeLpgmEventId, onToggleLpgm,
   estimatedIntensity = null, distributionActive = false, onToggleDistribution,
   unreceivedActive = false, onToggleUnreceived, onFocusMap, speakingTelegramTextSubject,
-  marks, lpgmMarks, seismoWaves,
+  marks, lpgmMarks, seismoWaves, seismoWaveView,
 }: Props) {
   /** このカードの地震を指す鍵。**親へ返すときに使う。** */
   const eventKey = quakeEventKey(quake)
@@ -1550,6 +1553,7 @@ export const EarthquakeCard = memo(function EarthquakeCard({
               **記録が無ければ枠ごと出ない** —— 渡ってくるのは載せるものがあるときだけ。 */}
           <QuakeSeismoWave
             waves={seismoWaves ?? []}
+            view={seismoWaveView}
             quakeLabel={`${formatQuakeTime(earthquake.time) ?? '発生時刻不明'} ${hasLocation ? hypocenter.name : '震源調査中'}`}
           />
         </div>

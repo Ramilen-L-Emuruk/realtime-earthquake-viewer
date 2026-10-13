@@ -137,6 +137,7 @@ function renderCard(
       onFocusMap={onFocusMap}
       speakingTelegramTextSubject={null}
       seismoWaves={new Map()}
+      seismoWaveView="composite"
     />,
   )
 }

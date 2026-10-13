@@ -8,8 +8,9 @@
 //   取り直す作りから替えた）。**届くまでと、取れなかったときはカードの列で描く**
 // - P/S の到達線、成分ごとの最大加速度とその時刻、震度の推移（ホストが出した 1 秒ごとの値）、震源距離
 //
-// **向きと強調はカードと共有しない**（2026-10-05 のユーザー判断）。窓の中だけで持ち、
-// 既定は 3 成分すべて・強調なし —— 詳しく見るための窓なので、潰さない絵から始める。
+// **向きはカードと共有しない**（2026-10-05 のユーザー判断）。窓の中だけで持ち、既定は 3 成分すべて。
+//
+// **ノイズの帯を潰す「強調」は持たない**（2026-10-13 ユーザー指示「強調はやめてほしい。実態が見えないので」）。
 //
 // **S−P 時間は出さない**（同日のユーザー判断）。観測から P 波を自動で読むと、ノイズに
 // 埋もれた初動で誤った秒数をもっともらしく出してしまう。距離は震源と観測点の座標から出す。
@@ -24,17 +25,25 @@ import { createPortal } from 'react-dom'
 import type { SeismoQuakeWave } from '../../hooks/useSeismoQuakeWaves'
 import { fetchSeismoWaveSamples, SAMPLES_SPAN_MAX_MS } from '../../services/seismoWaveSamples'
 import { createLogThrottle, log } from '../../utils/logger'
-import { bandCoversDrawn, columnsSpan, measureNoiseBand, measureQuietLevel, selectQuakeWindow } from '../../utils/seismoQuakeWindow'
-import { emphasizedFloorGal, quietScaledGal } from '../../utils/seismoQuietScale'
+import { columnsSpan, measureQuietLevel, selectQuakeWindow } from '../../utils/seismoQuakeWindow'
+import { quietScaledGal } from '../../utils/seismoQuietScale'
 import { trimTrailingGap } from '../../utils/seismoWaveColumns'
 import { MEAN_LINE_WINDOW_MS } from '../../utils/waveMeanLines'
 import { axisZeroLabel, buildArrivalMarksForRange, formatQuakeIntensityParts, QuakeIntensityLine } from '../EarthquakeTab/QuakeSeismoWave'
-import { emphasizeColumns, emphasizedScaleFloorGal } from '../SeismoWaveChart/emphasizeColumns'
 import { foldHistoryColumns } from '../SeismoWaveChart/historyColumns'
-import { AXIS_COLORS, AXIS_LABELS, paintWaveColumns, type PaintableColumns, type WaveMark } from '../SeismoWaveChart/paintWave'
+import {
+  AXIS_AVERAGE_COLORS,
+  AXIS_COLORS,
+  AXIS_LABELS,
+  COMPOSITE_COLOR,
+  COMPOSITE_SMOOTH_COLOR,
+  paintWaveColumns,
+  type PaintableColumns,
+  type WaveMark,
+} from '../SeismoWaveChart/paintWave'
 import { buildTimeTicks } from '../SeismoWaveChart/timeTicks'
 import { ToggleChip } from '../SeismoWaveChart/WaveAxisToggles'
-import { formatEmphasizedScaleGal, formatGal, formatScaleGal } from '../SeismoWaveChart/waveLabels'
+import { formatGal, formatScaleGal } from '../SeismoWaveChart/waveLabels'
 import {
   clampView,
   columnsRange,
@@ -49,40 +58,23 @@ import {
 import { paintIntensitySeries } from './paintIntensity'
 import { paintSampleLane } from './paintSampleLane'
 import {
-  bandCoversSamples,
   buildSampleSeries,
   laneGeometry,
   maxAbsInRange,
-  measureMagnitudeFloor,
   movingAverage,
   peakInRange,
   signedMovingAverages,
   seriesRange,
-  valueTransform,
   vectorMagnitude,
   type SampleSeries,
 } from './sampleSeries'
 
 
 /**
- * 合成の段の線の色。**3 成分（緑・赤紫・黄）とも、P/S（水色・朱）・最大の線（白）とも別の淡い灰青。**
- */
-const COMPOSITE_COLOR = '#94a3b8'
-
-/** 合成に重ねる「前後を均した線」の色。元の線（灰青）より明るい白に近い色。 */
-const COMPOSITE_SMOOTH_COLOR = '#f1f5f9'
-
-/**
  * 合成を均す幅（ms）。**各時刻の前後 0.5 秒ずつ・計 1 秒**（2026-10-05 のユーザー判断）。値は管理コンソールと共有する
  * （`utils/waveMeanLines.ts`）。
  */
 const COMPOSITE_SMOOTH_MS = MEAN_LINE_WINDOW_MS
-
-/**
- * 成分の段に重ねる「正側・負側の平均の線」の色。**成分の色の明るい版**（緑・赤紫・黄の 200 番台）。
- * 元の線（成分の色）の上に太く描くので、同じ色だと見分けられない。
- */
-const AXIS_AVERAGE_COLORS = ['#bbf7d0', '#f5d0fe', '#fef08a'] as const
 
 /** 震度の推移で、線を切る刻みの飛び（ms）。刻みは 1 秒なので 1.5 秒。 */
 const SERIES_GAP_MS = 1_500
@@ -121,7 +113,6 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
   const [axes, setAxes] = useState<readonly boolean[]>([true, true, true])
   const onCloseRef = useRef(onClose)
   onCloseRef.current = onClose
-  const [emphasized, setEmphasized] = useState(false)
   // **生のサンプル。** 届くまで・取れなかったときは `null`（カードの列で描く）。
   const [samples, setSamples] = useState<{ series: SampleSeries; range: ViewRange } | null>(null)
 
@@ -168,29 +159,11 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
     const magnitude = vectorMagnitude(samples.series, axes)
     return { magnitude, smooth: movingAverage(samples.series, magnitude, COMPOSITE_SMOOTH_MS) }
   }, [samples, axes])
-  // **成分の正側・負側の平均の線**（前後 1 秒。合成の均した線と同じ幅）。**強調している間は出さない**
-  // （2026-10-05 のユーザー判断）—— 平均は振れの頂点よりずっと内側を通り、強調で潰す幅（1 秒ごとの最大から決める）を
-  // 弱い揺れでは超えない。有感地震の 1 件の実測で、東西の正側平均の最大 1.00 gal に対し潰す幅は 1.32 gal
-  // （南北 0.78 / 1.35、上下 0.60 / 2.04、合成 1.39 / 2.21）。潰すと線が一度も現れない。
-  //
-  // **消すのは実際に潰したときだけ**（強調を押しても幅を測れず潰さない絵に戻ったときは出す）。判定は描くときに
-  // `noise`・`compositeFloor` で行い、ここでは届いたサンプルから常に作っておく（届いたときに 1 回だけ）。
+  // **成分の正側・負側の平均の線**（前後 1 秒。合成の均した線と同じ幅）。届いたサンプルから 1 回だけ作る。
   const axisAverages = useMemo(() => {
     if (samples === null) return null
     return [0, 1, 2].map((a) => signedMovingAverages(samples.series, samples.series.v[a], COMPOSITE_SMOOTH_MS))
   }, [samples])
-  // **合成の強調は窓の「強調」に連動**（2026-10-05 のユーザー判断）。発生前 30 秒の合成から平常時の底を測り、
-  // それより上に出た分だけを描く。測れなければ潰さない（成分と同じ）。
-  const loggedNoFloorRef = useRef(false)
-  const compositeFloor = useMemo(() => {
-    if (!emphasized || samples === null || composite === null) return null
-    const f = measureMagnitudeFloor(samples.series, composite.magnitude, wave.axisZero.ms)
-    if (f === null && !loggedNoFloorRef.current) {
-      loggedNoFloorRef.current = true
-      log.debug(`[seismo] 詳細の窓で合成を強調できなかった（${wave.stationId}）: 0 の手前のサンプルが足りず底を測れない`)
-    }
-    return f
-  }, [emphasized, samples, composite, wave.axisZero.ms, wave.stationId])
   const compositePeak = useMemo(
     () => (samples === null || composite === null || quakeSpan === null ? null : peakInRange(samples.series, composite.magnitude, quakeSpan)),
     [samples, composite, quakeSpan],
@@ -286,41 +259,10 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
   const intensityRef = useRef<HTMLCanvasElement | null>(null)
   const plotRef = useRef<HTMLDivElement | null>(null)
   const [scaleText, setScaleText] = useState<string | null>(null)
-  const loggedNoNoiseRef = useRef(false)
 
   const visibleIdx = [0, 1, 2].filter((a) => axes[a] !== false)
 
-  // **強調に使うノイズの帯**（0 の手前 30 秒から。カードと同じ測り方）。測れなければ潰さない。
-  // **帯は成分ごとに欠けうる**（上を解けない観測点）。帯の無い成分が値を持つときは潰さない
-  // （カードと同じ判定 `bandCoversDrawn`・2026-10-12 ユーザー承認）。
-  //
-  // **見えている範囲では判定しない。** 寄せ・送りのたびに強調の有無と縦が入れ替わるうえ、生のサンプルで描く
-  // ときに列の判定とずれる（列では上が無いのに生のサンプルには有る、で上が黙って消える）。読み返した列の全体と、
-  // 取ってある生のサンプルの全体で一度だけ決める。
-  // **生のサンプルを取り直すと、判定も変わりうる**（取る範囲が寄せ・送りで動く）。変わるのは、上が窓の一部だけで
-  // 解けている観測点で、取り直した範囲にその一部が入ったり外れたりしたときだけ。上がずっと解けない観測点
-  // （この判定の本来の相手）では変わらない。列だけで決めると、生のサンプルにある上を黙って消すので、こちらを採る。
-  const noise = useMemo(() => {
-    if (!emphasized) return null
-    const measured = measureNoiseBand(wave.columns, wave.axisZero.ms)
-    const covers =
-      measured !== null &&
-      bandCoversDrawn(measured, wave.columns, axes) &&
-      (samples === null || bandCoversSamples(measured, samples.series, axes))
-    const band = covers ? measured : null
-    if (band === null && !loggedNoNoiseRef.current) {
-      // **測れなかったことは記録へ残す**（絵は潰さない描き方に戻るだけで、画面からは見分けが付かない）。
-      loggedNoNoiseRef.current = true
-      log.debug(
-        measured === null
-          ? `[seismo] 詳細の窓で強調できなかった（${wave.stationId}）: 0 の手前の記録が足りずノイズを測れない`
-          : `[seismo] 詳細の窓で強調できなかった（${wave.stationId}）: 0 の手前で測れなかった成分に値がある`,
-      )
-    }
-    return band
-  }, [emphasized, wave.columns, wave.axisZero.ms, wave.stationId, samples, axes])
-
-  // **縦の下限**（強調しないとき）。0 の手前の静かさから決める（`utils/seismoQuietScale.ts` の `detail`）。
+  // **縦の下限**。0 の手前の静かさから決める（`utils/seismoQuietScale.ts` の `detail`）。
   // カードより低い倍率にする —— カードは「一覧で見て、揺れたかどうか」を見せるために静かなときの振れを
   // 小さく抑え、こちらは寄せて読むための窓なので小さな揺れも段の高さいっぱいに出す。
   const detailFloorGal = useMemo(
@@ -354,18 +296,12 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
     const paint = (): void => {
       if (useSamples && samples !== null) {
         // ---- 生のサンプルで描く ----
-        const transform = valueTransform(noise)
-        // 成分ごとの振れ。**強調なら「中心からの振れの最大 − 幅」（負なら幅の内側）**で比べる ——
-        // 潰した後の値（内側は 0）で比べると、静かな区間ではどの成分も 0 で並び、カードの列の
-        // 描き方（`emphasizeColumns`。超えるのにいちばん近い成分を採る）と違う成分の幅を名乗る。
-        const maxes: number[] =
-          noise === null
-            ? maxAbsInRange(samples.series, view, transform)
-            : maxAbsInRange(samples.series, view, (a, v) => v - noise.center[a]).map((m, a) => m - noise.width[a])
+        const identity = (_a: number, v: number): number => v
+        // 成分ごとの振れ。3 段の縦は見えている成分のいちばん大きい振れで揃える。
+        const maxes: number[] = maxAbsInRange(samples.series, view, identity)
         let best = -1
         for (const a of visibleIdx) if (Number.isFinite(maxes[a]) && (best < 0 || maxes[a] > maxes[best])) best = a
-        const floor = noise !== null ? emphasizedScaleFloorGal(noise) : detailFloorGal
-        const scaleGal = Math.max(floor, best < 0 ? 0 : maxes[best])
+        const scaleGal = Math.max(detailFloorGal, best < 0 ? 0 : maxes[best])
         for (const a of visibleIdx) {
           const canvas = laneRefs.current[a]
           if (canvas === null) continue
@@ -373,9 +309,9 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
             color: AXIS_COLORS[a],
             baseline: 'center',
             geometry: (widthPx) =>
-              laneGeometry({ series: samples.series, values: samples.series.v[a], range: view, widthPx, map: (v) => transform(a, v) }),
+              laneGeometry({ series: samples.series, values: samples.series.v[a], range: view, widthPx, map: (v) => v }),
             overlays:
-              axisAverages === null || noise !== null
+              axisAverages === null
                 ? []
                 : (['pos', 'neg'] as const).map((side) => ({
                     color: AXIS_AVERAGE_COLORS[a],
@@ -391,60 +327,41 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
         }
         // ---- 合成の段（一番上） ----
         // **縦は合成の段だけで持つ**（合成は成分より大きいので、3 段と共有すると成分の段が縮む）。
-        // **強調は窓の「強調」に連動する**（2026-10-05 のユーザー判断）。強調なら平常時の底より上に出た分だけを描く。
-        // 強調していなければ、前後 1 秒で均した線を太く重ね、揺れの強さの増え方・収まり方を読めるようにする。
+        // 前後 1 秒で均した線を太く重ね、揺れの強さの増え方・収まり方を読めるようにする。
         const cc = compositeRef.current
         if (cc !== null && composite !== null) {
           const peakInView = peakInRange(samples.series, composite.magnitude, view)
-          // 強調なら底を引いた残り（0 未満は 0）を描く。縦も残りの最大で決める（下限は成分の強調と同じく、底の 1/4）。
-          const cf = compositeFloor
-          const mapComposite = cf === null ? (v: number) => v : (v: number) => Math.max(0, v - cf)
-          const compositeScale =
-            cf === null
-              ? Math.max(detailFloorGal, peakInView?.value ?? 0)
-              : Math.max(emphasizedFloorGal(cf), (peakInView?.value ?? 0) - cf)
+          const compositeScale = Math.max(detailFloorGal, peakInView?.value ?? 0)
           const ok = paintSampleLane(cc, {
             color: COMPOSITE_COLOR,
             baseline: 'bottom',
             geometry: (widthPx) =>
-              laneGeometry({ series: samples.series, values: composite.magnitude, range: view, widthPx, map: mapComposite }),
-            // 均した線は強調している間は出さない（成分の平均の線と同じ理由）。
-            overlays: cf !== null
-              ? []
-              : [
-                  {
-                    color: COMPOSITE_SMOOTH_COLOR,
-                    geometry: (widthPx: number) =>
-                      laneGeometry({ series: samples.series, values: composite.smooth, range: view, widthPx, map: (v) => v }),
-                  },
-                ],
+              laneGeometry({ series: samples.series, values: composite.magnitude, range: view, widthPx, map: (v) => v }),
+            overlays: [
+              {
+                color: COMPOSITE_SMOOTH_COLOR,
+                geometry: (widthPx: number) =>
+                  laneGeometry({ series: samples.series, values: composite.smooth, range: view, widthPx, map: (v) => v }),
+              },
+            ],
             scaleGal: compositeScale,
             stale: wave.interrupted,
             marks: [...arrivalMarks, ...peakMarkAt(compositePeak?.atMs)],
           })
           if (!ok) throttledNoContext(() => log.error('[seismo] 詳細の窓の波形を描く 2D コンテキストを取れなかった'))
-          // 縦の表示: 強調なら「底〜上端」（成分の「±幅〜±上端」と同じ読み方）、そうでなければ「0〜上端」。
-          setCompositeScaleText(
-            cf === null ? `0〜${formatGal(compositeScale)} gal` : `${formatGal(cf)}〜${formatGal(cf + compositeScale)} gal`,
-          )
+          setCompositeScaleText(`0〜${formatGal(compositeScale)} gal`)
         }
-        // 縦の表示はカードと同じ書式（強調なら「±幅〜±上端」、いちばん振れた成分の幅）。
-        setScaleText(
-          noise !== null && best >= 0
-            ? formatEmphasizedScaleGal(noise.width[best], noise.width[best] + scaleGal)
-            : formatScaleGal(scaleGal),
-        )
+        // 縦の表示はカードと同じ書式。
+        setScaleText(formatScaleGal(scaleGal))
       } else {
         // ---- カードの列で描く（サンプルが届くまで・取れなかったとき・覆っていない範囲） ----
-        const build = (columnCount: number): PaintableColumns => {
-          const folded = foldHistoryColumns({
+        const build = (columnCount: number): PaintableColumns =>
+          foldHistoryColumns({
             source: columnsShown.columns,
             columnCount,
             minScaleGal: detailFloorGal,
             visibleAxes: axes,
           })
-          return noise === null ? folded : emphasizeColumns({ folded, noise, visibleAxes: axes })
-        }
         let text: string | null = null
         for (const a of visibleIdx) {
           const canvas = laneRefs.current[a]
@@ -487,7 +404,7 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
     // `visibleIdx` は `axes` から作るので `axes` で足りる。`view` は `useSamples` のときだけ使い、
     // そのとき `displayFromMs`/`displayToMs` が `view` と一致する。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [useSamples, samples, columnsShown, displayFromMs, displayToMs, axes, noise, detailFloorGal, peaks, composite, compositePeak, compositeFloor, axisAverages, intensity, wave.arrival, wave.axisZero, wave.interrupted])
+  }, [useSamples, samples, columnsShown, displayFromMs, displayToMs, axes, detailFloorGal, peaks, composite, compositePeak, axisAverages, intensity, wave.arrival, wave.axisZero, wave.interrupted])
 
   // ---- 操作 ----
   const zoomBy = useCallback(
@@ -599,9 +516,6 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
               {label}
             </ToggleChip>
           ))}
-          <ToggleChip on={emphasized} color="rgba(255,255,255,0.85)" onToggle={() => setEmphasized((v) => !v)}>
-            強調
-          </ToggleChip>
           <span className="ml-auto flex items-center gap-1">
             <ZoomButton label="拡大" onClick={() => zoomBy(1 / 2)}>＋</ZoomButton>
             <ZoomButton label="縮小" onClick={() => zoomBy(2)}>−</ZoomButton>

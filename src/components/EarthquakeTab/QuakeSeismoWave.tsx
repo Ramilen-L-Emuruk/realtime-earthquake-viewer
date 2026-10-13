@@ -14,24 +14,17 @@
 import { Component, lazy, Suspense, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 
 import type { SeismoQuakeWave } from '../../hooks/useSeismoQuakeWaves'
+import type { SeismoWaveCollapsedView } from '../../hooks/useSettings'
 import type { QuakeIntensity } from '../../services/seismoQuakeIntensity'
 import { formatTime } from '../../utils/formatters'
 import { log } from '../../utils/logger'
 import { formatMeasured } from '../../utils/measuredIntensityRounding'
-import {
-  bandCoversDrawn,
-  columnsSpan,
-  measureNoiseBand,
-  measureQuietLevel,
-  selectQuakeWindow,
-  type WaveAxisZero,
-} from '../../utils/seismoQuakeWindow'
+import { columnsSpan, measureQuietLevel, selectQuakeWindow, type WaveAxisZero } from '../../utils/seismoQuakeWindow'
 import { quietScaledGal } from '../../utils/seismoQuietScale'
-import type { TimedColumns } from '../../utils/seismoWaveColumns'
-import { P_WAVE_COLOR, S_WAVE_COLOR } from '../Map/gl/psWaveStyle'
-import { emphasizeColumns } from '../SeismoWaveChart/emphasizeColumns'
+import { compositeCoverage, type TimedColumns } from '../../utils/seismoWaveColumns'
+import { buildArrivalMarksForRange } from '../SeismoWaveChart/arrivalMarks'
 import { foldHistoryColumns } from '../SeismoWaveChart/historyColumns'
-import { paintWaveColumns, type PaintableColumns, type WaveMark } from '../SeismoWaveChart/paintWave'
+import { paintCompositeColumns, paintWaveColumns, type PaintableColumns, type WaveMark } from '../SeismoWaveChart/paintWave'
 import { buildTimeTicks } from '../SeismoWaveChart/timeTicks'
 
 /**
@@ -96,14 +89,6 @@ class DetailBoundary extends Component<{ stationId: string; onClose: () => void;
 
 
 /**
- * 到達の線の見た目。**地図の予報円と同じ配色・同じ線種を使う**（`gl/psWaveStyle.ts`）——
- * 同じ画面で同じものを指すのに色が違うと、別の量に見える。**P が破線・S が実線**なのも
- * あちらに揃えたもの。
- */
-const P_MARK = { color: P_WAVE_COLOR, dashed: true } as const
-const S_MARK = { color: S_WAVE_COLOR, dashed: false } as const
-
-/**
  * 到達時刻を、絵の横位置（左端 0・右端 1）へ落とす。
  *
  * **落とす相手は末尾を切った後の列。** 切る前の窓で割ると、まだ来ていない時刻ぶんだけ
@@ -119,23 +104,8 @@ export function buildArrivalMarks(
   )
 }
 
-/**
- * 到達時刻を、絵の横位置へ落とす（範囲で受ける版）。**詳細の窓は生のサンプルで描くとき列を持たない**
- * ので、絵の左端と右端の時刻で受ける。`buildArrivalMarks` もこれを通す（線の見た目を 1 箇所で決める）。
- */
-export function buildArrivalMarksForRange(
-  range: { readonly fromMs: number; readonly toMs: number },
-  arrival: { pMs: number; sMs: number } | null,
-): WaveMark[] {
-  if (arrival === null) return []
-  const spanMs = range.toMs - range.fromMs
-  if (!(spanMs > 0)) return []
-  const ratioOf = (atMs: number): number => (atMs - range.fromMs) / spanMs
-  return [
-    { ratio: ratioOf(arrival.pMs), label: 'P', ...P_MARK },
-    { ratio: ratioOf(arrival.sMs), label: 'S', ...S_MARK },
-  ]
-}
+/** 範囲で受ける版は共通の部品にある（地図の下端の波形も使う）。詳細の窓はここから引く。 */
+export { buildArrivalMarksForRange }
 
 /**
  * 時間軸の 0 に書く名前。
@@ -150,56 +120,36 @@ export function axisZeroLabel(zero: WaveAxisZero): string {
 }
 
 /**
- * 強調できなかった理由。**強調できた・強調しないなら `null`。**
+ * 地震カードの波形を、描く列へ畳む。
  *
- * - `unmeasured`: 0 の手前の記録が足りず、どの成分も帯を測れなかった
- * - `uncovered`: 帯を測れなかった成分（上を解けない観測点の上など）が、描く列で値を持つ
- */
-export type QuakeNoiseMissing = 'unmeasured' | 'uncovered' | null
-
-/** 強調できなかった理由の記録の文面。 */
-const NOISE_MISSING_TEXT: Record<Exclude<QuakeNoiseMissing, null>, string> = {
-  unmeasured: '0 の手前の記録が足りずノイズを測れない',
-  uncovered: '0 の手前で測れなかった成分に値がある',
-}
-
-/**
- * 地震カードの波形を、描く列へ畳む（強調するならノイズを潰す）。
+ * **潰さない。** 以前はノイズの帯の内側を潰して描いていた（強調）が、実態が見えないのでやめた
+ * （2026-10-13 ユーザー指示「強調はやめてほしい」）。
  *
- * **強調はノイズを測れたときだけ。** 測れなければ（0 の手前の記録が足りない）潰さずに今までどおり
- * 畳み、`noiseMissing` を立てて返す —— 推測の幅で潰すと揺れまで消えうるうえ、絵は従来の描き方に
- * 戻るだけなので、呼び出し側が記録へ残さないと「強調が効いていない」ことに誰も気づけない。
- * **帯は成分ごとに測る**（上を解けない観測点では上だけ帯が無い）。帯の無い成分が描く列で値を持たなければ、
- * 残りの成分で強調する（`bandCoversDrawn`・2026-10-12 ユーザー承認）。
+ * **縦の下限は 0 の手前の静かさから決める**（`utils/seismoQuietScale.ts` の `card`。地図の下端の絵を
+ * 畳んだときと同じ倍率）。**揃えないと、同じ揺れが場所によって違う大きさに見える。**
  *
- * **縦の下限は 0 の手前の静かさから決める**（`utils/seismoQuietScale.ts` の `card`。地図の下端の絵と
- * 同じ倍率）。**揃えないと、同じ揺れが場所によって違う大きさに見える。** 強調して描くときは、
- * 潰した後の縦を残った量に合わせ、下限はノイズの帯から別に決める（→ `emphasizeColumns.ts`）。
- *
- * @param base 読み返し＋継ぎ足しの列。**ノイズと静かさはこちらで測る**（切り出した後には 0 の手前が残っていない）
+ * @param base 読み返し＋継ぎ足しの列。**静かさはこちらで測る**（切り出した後には 0 の手前が残っていない）
  * @param trimmed 揺れに合わせて切り出した列（描くのはこちら）
  */
 export function foldQuakeWaveColumns(params: {
   readonly base: TimedColumns
   readonly trimmed: TimedColumns
   readonly zeroMs: number
-  readonly emphasized: boolean
   readonly visibleAxes: readonly boolean[]
   readonly columnCount: number
-}): { readonly columns: PaintableColumns; readonly noiseMissing: QuakeNoiseMissing } {
-  const { base, trimmed, zeroMs, emphasized, visibleAxes, columnCount } = params
-  const folded = foldHistoryColumns({
+}): PaintableColumns {
+  const { base, trimmed, zeroMs, visibleAxes, columnCount } = params
+  return foldHistoryColumns({
     source: trimmed.columns,
     columnCount,
-    minScaleGal: quietScaledGal('card', measureQuietLevel(base, zeroMs)),
+    minScaleGal: quakeMinScaleGal(base, zeroMs),
     visibleAxes,
   })
-  if (!emphasized) return { columns: folded, noiseMissing: null }
-  const noise = measureNoiseBand(base, zeroMs)
-  // **帯は成分ごとに欠けうる**（上を解けない観測点）。帯の無い成分が描く列で値を持つときだけ、強調をやめる。
-  if (noise === null) return { columns: folded, noiseMissing: 'unmeasured' }
-  if (!bandCoversDrawn(noise, trimmed, visibleAxes)) return { columns: folded, noiseMissing: 'uncovered' }
-  return { columns: emphasizeColumns({ folded, noise, visibleAxes }), noiseMissing: null }
+}
+
+/** カードの縦の下限（gal）。3 成分を重ねるときも合成のときも同じ値を使う。 */
+function quakeMinScaleGal(base: TimedColumns, zeroMs: number): number {
+  return quietScaledGal('card', measureQuietLevel(base, zeroMs))
 }
 
 /** 震度の行の 1 項目。**画面には短い名前と値だけ**を出し、正式な名前はホバーで見せる。 */
@@ -253,31 +203,34 @@ export function QuakeIntensityLine({ parts, className }: { parts: readonly Quake
 }
 
 /**
- * カードの絵は**向きを全部出し、強調して描く**（強調の既定は 2026-10-03 のユーザー判断）。**切り替えは
- * カードに置かない** —— 見出しの行が二段に折れて邪魔になる。向きを消す・潜らせずに見るのは詳細の窓で
- * する（2026-10-05 のユーザー判断）。
+ * カードの絵は**向きを全部出す。** 切り替えはカードに置かない —— 見出しの行が二段に折れて邪魔になる。
+ * 向きを消して見るのは詳細の窓でする（2026-10-05 のユーザー判断）。
  */
-const CARD_EMPHASIZED = true
 const CARD_VISIBLE_AXES: readonly boolean[] = [true, true, true]
 
 interface Props {
   waves: readonly SeismoQuakeWave[]
   /** 詳細の窓の見出しに出す地震の名前（時刻と震源）。 */
   quakeLabel: string
+  /**
+   * 合成を出すか 3 成分を重ねるか（設定「波形の表示」。地図の下端の波形を畳んだときと共有・2026-10-13 ユーザー承認）。
+   * **合成を返さない古いホストから読み返した列では、合成を選んでいても 3 成分を重ねて描く。**
+   */
+  view: SeismoWaveCollapsedView
 }
 
-export function QuakeSeismoWave({ waves, quakeLabel }: Props) {
+export function QuakeSeismoWave({ waves, quakeLabel, view }: Props) {
   if (waves.length === 0) return null
   return (
     <div className="mt-2 flex flex-col gap-1">
       {waves.map((wave) => (
-        <HistoryWave key={wave.stationId} wave={wave} quakeLabel={quakeLabel} />
+        <HistoryWave key={wave.stationId} wave={wave} quakeLabel={quakeLabel} view={view} />
       ))}
     </div>
   )
 }
 
-function HistoryWave({ wave, quakeLabel }: { wave: SeismoQuakeWave; quakeLabel: string }) {
+function HistoryWave({ wave, quakeLabel, view }: { wave: SeismoQuakeWave; quakeLabel: string; view: SeismoWaveCollapsedView }) {
   const detailId = useId()
   const detailOpen = useSyncExternalStore(subscribeOpenDetail, readOpenDetail, readOpenDetail) === detailId
   const setDetailOpen = (open: boolean): void => {
@@ -294,8 +247,8 @@ function HistoryWave({ wave, quakeLabel }: { wave: SeismoQuakeWave; quakeLabel: 
   // 「範囲を切れなかった」を記録へ残した組。**同じ理由は 1 回だけ** —— 描き直しは列が伸びるたび
   // （0.3 秒ごと）に走るので、間引かないと同じ行で埋まる。
   const loggedUntrimmedRef = useRef<string | null>(null)
-  // 「強調しようとしたがノイズを測れなかった」を記録へ残した組。間引きは上と同じ理由。
-  const loggedNoNoiseRef = useRef<string | null>(null)
+  // 「合成を選んでいるがホストが合成を返さなかった」を記録へ残した観測点。間引きは上と同じ理由。
+  const loggedNoMagRef = useRef<string | null>(null)
   // **震度の行。** 描く区間はここでも同じ関数で切り出し、震度を訊いた区間と突き合わせる
   // （訊く側は `useSeismoQuakeWaves`。区間の物差しは `columnsSpan`）。
   const intensityParts = useMemo(() => {
@@ -325,51 +278,51 @@ function HistoryWave({ wave, quakeLabel }: { wave: SeismoQuakeWave; quakeLabel: 
       }
       const spanMs = trimmed.columns.length * trimmed.columnSpanMs
       const zeroLabel = axisZeroLabel(wave.axisZero)
-      setScaleText(
-        paintWaveColumns(
-          canvas,
-          (columnCount) => {
-            const { columns, noiseMissing } = foldQuakeWaveColumns({
-              base: wave.columns,
-              trimmed,
-              zeroMs: wave.axisZero.ms,
-              emphasized: CARD_EMPHASIZED,
-              visibleAxes: CARD_VISIBLE_AXES,
-              columnCount,
-            })
-            // **測れなかったことは記録へ残す。** 絵は従来の描き方（±N gal）に戻るだけで、
-            // 画面からは「強調が効いていない」と見分けが付かない。
-            if (noiseMissing !== null) {
-              const key = `${wave.stationId}@${wave.axisZero.ms}`
-              if (loggedNoNoiseRef.current !== key) {
-                loggedNoNoiseRef.current = key
-                log.debug(
-                  `[seismo] 地震カードの波形を強調できなかった（${wave.stationId}）: ${NOISE_MISSING_TEXT[noiseMissing]}`,
-                )
-              }
-            }
-            return columns
-          },
-          // **途切れたら濃さを落とす。** 列は時間で薄れないので、渡さないと
-          // 止まった絵が「いま静かに揺れている」ように見え続ける
-          // （→ `useSeismoQuakeWaves` の `interrupted`）。**`waveStale` を素通しで
-          // 代わりにはできない** —— あちらはライブ接続の生死なので、過去に完結した
-          // 7 日ぶんのカードまで薄くなる。
-          wave.interrupted,
-          {
-            marks: buildArrivalMarks(trimmed, wave.arrival),
-            visibleAxes: CARD_VISIBLE_AXES,
-            ticks: (widthPx) =>
-              buildTimeTicks({
-                fromMs: trimmed.fromMs,
-                toMs: trimmed.fromMs + spanMs,
-                zeroMs: wave.axisZero.ms,
-                zeroLabel,
-                widthPx,
-              }),
-          },
-        ),
-      )
+      const ticks = (widthPx: number) =>
+        buildTimeTicks({
+          fromMs: trimmed.fromMs,
+          toMs: trimmed.fromMs + spanMs,
+          zeroMs: wave.axisZero.ms,
+          zeroLabel,
+          widthPx,
+        })
+      const marks = buildArrivalMarks(trimmed, wave.arrival)
+      const build = (columnCount: number) =>
+        foldQuakeWaveColumns({
+          base: wave.columns,
+          trimmed,
+          zeroMs: wave.axisZero.ms,
+          visibleAxes: CARD_VISIBLE_AXES,
+          columnCount,
+        })
+      // **途切れたら濃さを落とす。** 列は時間で薄れないので、渡さないと
+      // 止まった絵が「いま静かに揺れている」ように見え続ける
+      // （→ `useSeismoQuakeWaves` の `interrupted`）。**`waveStale` を素通しで
+      // 代わりにはできない** —— あちらはライブ接続の生死なので、過去に完結した
+      // 7 日ぶんのカードまで薄くなる。
+      if (view === 'composite') {
+        // **値のある列がすべて合成を持つときだけ合成で描く**（`compositeCoverage`）。1 列でも欠けていれば
+        // 3 成分を重ねた絵へ戻し、記録へ残す —— 画面からは「合成を選んだのに 3 本出ている」としか見えない。
+        const coverage = compositeCoverage(trimmed.columns)
+        if (coverage.complete) {
+          setScaleText(
+            paintCompositeColumns(canvas, build, wave.interrupted, {
+              minScaleGal: quakeMinScaleGal(wave.columns, wave.axisZero.ms),
+              marks,
+              ticks,
+            }),
+          )
+          return
+        }
+        const logKey = `${wave.stationId}:${coverage.withComposite === 0 ? 'none' : 'partial'}`
+        if (loggedNoMagRef.current !== logKey) {
+          loggedNoMagRef.current = logKey
+          log.debug(
+            `[seismo] 地震カードの波形に合成の無い列がある（${wave.stationId}）: 値のある ${coverage.valued} 列のうち合成は ${coverage.withComposite} 列。3 成分を重ねて描く`,
+          )
+        }
+      }
+      setScaleText(paintWaveColumns(canvas, build, wave.interrupted, { marks, visibleAxes: CARD_VISIBLE_AXES, ticks }))
     }
     paint()
     // **幅が変わったら描き直す。** カードは畳んだり開いたりするので、最初に描いた
@@ -384,8 +337,8 @@ function HistoryWave({ wave, quakeLabel }: { wave: SeismoQuakeWave; quakeLabel: 
     // これが無いと濃さを落とす契機がどこにも無い。
     //
     // **時間軸の 0 と時間帯も入れる。** 秒が後から取れると列は変わらないまま 0 だけが動く。
-    // 0 が動けばノイズを測る区間も動く。
-  }, [wave.columns, wave.arrival, wave.axisZero, wave.reach, wave.interrupted])
+    // 0 が動けば静かさを測る区間も動く。**表示の設定も入れる**（合成と 3 成分の切り替え）。
+  }, [wave.columns, wave.arrival, wave.axisZero, wave.reach, wave.interrupted, view])
 
   return (
     <div className="rounded bg-black/30 px-2 py-1">

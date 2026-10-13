@@ -102,6 +102,7 @@ const renderTab = async (lpgm: JMALpgm) => {
     onFocusMap={() => {}}
     speakingTelegramTextSubject={null}
     seismoWaves={new Map()}
+    seismoWaveView="composite"
   />
   )
   await flushDataEffects()
@@ -137,6 +138,7 @@ const tabWith = (subject: string | null, lpgm: JMALpgm = makeLpgm()) => (
     onFocusMap={() => {}}
     speakingTelegramTextSubject={subject}
     seismoWaves={new Map()}
+    seismoWaveView="composite"
   />
 )
 const renderSpeaking = async (subject: string | null, lpgm: JMALpgm = makeLpgm()) => {

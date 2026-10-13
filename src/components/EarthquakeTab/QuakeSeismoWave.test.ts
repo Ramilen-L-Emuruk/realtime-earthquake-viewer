@@ -89,7 +89,7 @@ describe('foldQuakeWaveColumns', () => {
     for (let t = FROM_MS; t < ZERO + 60_000; t += SPAN) {
       const v = t < ZERO ? 1 : 5
       const u = t < ZERO ? 1 : upAfter
-      cols.push({ min: [-v, -v, -u] as const, max: [v, v, u] as const, minMembers: 3 })
+      cols.push({ min: [-v, -v, -u] as const, max: [v, v, u] as const, minMembers: 3, magMin: NaN, magMax: NaN })
     }
     return { fromMs: FROM_MS, columnSpanMs: SPAN, columns: cols }
   }
@@ -100,120 +100,53 @@ describe('foldQuakeWaveColumns', () => {
   }
   const ALL = [true, true, true] as const
 
-  // 正: ノイズは切り出す前の列で測り、潰した表示になる。
-  it('強調するなら、切り出す前の列でノイズを測って潰す', () => {
+  // 正（2026-10-13 に覆した）: 潰さない（強調をやめた）。縦は揺れの上端そのまま。
+  it('ノイズを潰さず、揺れの上端をそのまま縦にする', () => {
     const base = quake()
-    const r = foldQuakeWaveColumns({
-      base,
-      trimmed: trimmedOf(base),
-      zeroMs: ZERO,
-      emphasized: true,
-      visibleAxes: ALL,
-      columnCount: 10,
-    })
-    expect(r.noiseMissing).toBeNull()
-    // 幅は 1 × 1.5 = 1.5、残りは 5 − 1.5 = 3.5
-    expect(r.columns.scaleLabel).toBe('±1.5〜±5.0 gal')
+    const r = foldQuakeWaveColumns({ base, trimmed: trimmedOf(base), zeroMs: ZERO, visibleAxes: ALL, columnCount: 10 })
+    // 下限は 1 × 3 = 3 gal、揺れは 5 gal なので 5。
+    expect(r.scaleGal).toBeCloseTo(5)
+    // 0 の後の列は ±5 のまま（潰していれば ±3.5 になる）。
+    expect(r.columns.every((c) => !c.hasValue || c.max[0] === 5)).toBe(true)
   })
 
-  // 対照: 強調しなければ潰さない。縦の下限は 0 の手前の静かさ（1 秒ごとの振れ 1 gal）の 7.5 倍。
-  it('強調しなければ潰さない', () => {
-    const base = quake()
-    const r = foldQuakeWaveColumns({
-      base,
-      trimmed: trimmedOf(base),
-      zeroMs: ZERO,
-      emphasized: false,
-      visibleAxes: ALL,
-      columnCount: 10,
-    })
-    expect(r.noiseMissing).toBeNull()
-    expect(r.columns.scaleLabel).toBeUndefined()
-    expect(r.columns.scaleGal).toBeCloseTo(7.5)
+  // 正（2026-10-13 に覆した）: 縦の下限は 0 の手前の静かさ（1 秒ごとの振れ 1 gal）の 3 倍（以前は 7.5 倍）。
+  it('縦の下限は 0 の手前の静かさの 3 倍', () => {
+    const cols = []
+    for (let t = FROM_MS; t < ZERO + 60_000; t += SPAN) {
+      const v = t < ZERO ? 1 : 2
+      cols.push({ min: [-v, -v, -v] as const, max: [v, v, v] as const, minMembers: 3, magMin: NaN, magMax: NaN })
+    }
+    const base: TimedColumns = { fromMs: FROM_MS, columnSpanMs: SPAN, columns: cols }
+    const r = foldQuakeWaveColumns({ base, trimmed: trimmedOf(base), zeroMs: ZERO, visibleAxes: ALL, columnCount: 10 })
+    expect(r.scaleGal).toBeCloseTo(3)
   })
 
-  // 正: 静かな観測点（0 の手前が ±0.2 gal）では、縦の下限も同じ比で下がり、±0.5 gal の揺れが枠の半分を超えて出る。
+  // 対照: 静かな観測点（0 の手前が ±0.2 gal）では、縦の下限も同じ比で下がる。
   it('0 の手前が静かなら縦の下限も下がる', () => {
     const cols = []
     for (let t = FROM_MS; t < ZERO + 60_000; t += SPAN) {
       const v = t < ZERO ? 0.2 : 0.5
-      cols.push({ min: [-v, -v, -v] as const, max: [v, v, v] as const, minMembers: 3 })
+      cols.push({ min: [-v, -v, -v] as const, max: [v, v, v] as const, minMembers: 3, magMin: NaN, magMax: NaN })
     }
     const base: TimedColumns = { fromMs: FROM_MS, columnSpanMs: SPAN, columns: cols }
-    const r = foldQuakeWaveColumns({
-      base,
-      trimmed: trimmedOf(base),
-      zeroMs: ZERO,
-      emphasized: false,
-      visibleAxes: ALL,
-      columnCount: 10,
-    })
-    expect(r.columns.scaleGal).toBeCloseTo(1.5)
+    const r = foldQuakeWaveColumns({ base, trimmed: trimmedOf(base), zeroMs: ZERO, visibleAxes: ALL, columnCount: 10 })
+    expect(r.scaleGal).toBeCloseTo(0.6)
   })
 
   // 安全弁: 0 の手前が無くて静かさを測れなければ、決め打ちだった 10 gal へ倒す（ノイズを枠いっぱいに広げない）。
   it('0 の手前が無ければ縦の下限は 10 gal', () => {
     const trimmed = trimmedOf(quake())
-    const r = foldQuakeWaveColumns({
-      base: trimmed,
-      trimmed,
-      zeroMs: ZERO,
-      emphasized: false,
-      visibleAxes: ALL,
-      columnCount: 10,
-    })
-    expect(r.columns.scaleGal).toBe(10)
+    const r = foldQuakeWaveColumns({ base: trimmed, trimmed, zeroMs: ZERO, visibleAxes: ALL, columnCount: 10 })
+    expect(r.scaleGal).toBe(10)
   })
 
-  // 安全弁: 0 の手前が無ければ潰さず、測れなかったことを返す（呼び出し側が記録へ残す）。
-  it('0 の手前の記録が無ければ潰さず、測れなかったことを返す', () => {
-    const trimmed = trimmedOf(quake())
-    const r = foldQuakeWaveColumns({
-      base: trimmed,
-      trimmed,
-      zeroMs: ZERO,
-      emphasized: true,
-      visibleAxes: ALL,
-      columnCount: 10,
-    })
-    expect(r.noiseMissing).toBe('unmeasured')
-    expect(r.columns.scaleLabel).toBeUndefined()
-  })
-
-  /** 上が `upMissing(t)` の間だけ解けない列（観測点の合成が上を出さない形）。 */
-  function withUpMissing(base: TimedColumns, upMissing: (t: number) => boolean): TimedColumns {
-    const columns = base.columns.map((c, i) => {
-      if (c === null || !upMissing(base.fromMs + i * SPAN)) return c
-      return { ...c, min: [c.min[0], c.min[1], NaN] as const, max: [c.max[0], c.max[1], NaN] as const }
-    })
-    return { ...base, columns }
-  }
-
-  // 正（#698・2026-10-12 ユーザー承認）: 上をずっと解けない観測点でも、東・北で強調する。
-  it('上がずっと解けなくても、東・北で強調する', () => {
-    const base = withUpMissing(quake(), () => true)
-    const r = foldQuakeWaveColumns({ base, trimmed: trimmedOf(base), zeroMs: ZERO, emphasized: true, visibleAxes: ALL, columnCount: 10 })
-    expect(r.noiseMissing).toBeNull()
-    expect(r.columns.scaleLabel).toBe('±1.5〜±5.0 gal')
-    expect(r.columns.columns.some((c) => c.hasValue && Number.isFinite(c.max[2]))).toBe(false)
-  })
-
-  // 対照: 上の帯は作れなかったのに、描く範囲では上に値がある —— 潰さない絵へ戻す（上を消さないため）。
-  it('上の帯が無いのに描く範囲で上に値があれば、強調しない', () => {
-    const base = withUpMissing(quake(), (t) => t < ZERO)
-    const r = foldQuakeWaveColumns({ base, trimmed: trimmedOf(base), zeroMs: ZERO, emphasized: true, visibleAxes: ALL, columnCount: 10 })
-    expect(r.noiseMissing).toBe('uncovered')
-    expect(r.columns.scaleLabel).toBeUndefined()
-  })
-
-  it('消した向きは強調の表示にも数えない', () => {
+  it('消した向きは縦に数えない', () => {
     // 上下だけ 0 から後に ±9 gal。消さなければ上下が上端を決める。
     const base = quake(9)
-    const args = { base, trimmed: trimmedOf(base), zeroMs: ZERO, emphasized: true, columnCount: 10 }
-    expect(foldQuakeWaveColumns({ ...args, visibleAxes: ALL }).columns.scaleLabel).toBe('±1.5〜±9.0 gal')
-    expect(foldQuakeWaveColumns({ ...args, visibleAxes: [true, true, false] }).columns.scaleLabel).toBe(
-      '±1.5〜±5.0 gal',
-    )
+    const args = { base, trimmed: trimmedOf(base), zeroMs: ZERO, columnCount: 10 }
+    expect(foldQuakeWaveColumns({ ...args, visibleAxes: ALL }).scaleGal).toBeCloseTo(9)
+    expect(foldQuakeWaveColumns({ ...args, visibleAxes: [true, true, false] }).scaleGal).toBeCloseTo(5)
   })
 })
 

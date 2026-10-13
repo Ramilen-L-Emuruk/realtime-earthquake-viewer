@@ -945,6 +945,16 @@ export class SeismoHostDirectory {
     return this.names.get(stationId)?.displayName ?? stationId
   }
 
+  /**
+   * 引けた座標。**引けていない・ホストが座標を持っていなければ両方 `null`。**
+   *
+   * 地図の下端の波形へ緊急地震速報の P/S 線を引くのに使う（座標が無ければ線を引かない）。
+   */
+  location(stationId: string): { readonly lat: number | null; readonly lon: number | null } {
+    const info = this.names.get(stationId)
+    return { lat: info?.lat ?? null, lon: info?.lon ?? null }
+  }
+
   get stations(): readonly SeismoStationInfo[] {
     return [...this.names.values()]
   }

@@ -81,6 +81,7 @@ const renderTab = async (quake: JMAQuake, opts: { unreceivedOpen?: boolean } = {
     onFocusMap={() => {}}
     speakingTelegramTextSubject={null}
     seismoWaves={new Map()}
+    seismoWaveView="composite"
   />
   )
   await flushDataEffects()
@@ -147,6 +148,7 @@ describe('未入電トグル', () => {
         onFocusMap={() => {}}
         speakingTelegramTextSubject={null}
         seismoWaves={new Map()}
+        seismoWaveView="composite"
       />,
     )
     expect(screen.queryByText('震度4')).toBeNull()

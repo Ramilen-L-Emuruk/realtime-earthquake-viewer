@@ -6,6 +6,7 @@ import { calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, S_WAVE_FALLBACK_KM_PE
 import { hasKnownEpicenter, haversineKm } from '../utils/geo'
 import { serverNow } from '../utils/clock'
 import { log } from '../utils/logger'
+import { pickCountdownCircle } from '../utils/countdownEew'
 import { useHomeAreaArrival } from './useHomeAreaArrival'
 
 /**
@@ -105,9 +106,8 @@ export function useSWaveCountdown(
     }
 
     // 最も波面が外側にある円。距離の表示にだけ使う経路もあるので先に取る。
-    const circle = psWave.length > 0
-      ? psWave.reduce((best, c) => (c.sRadius > best.sRadius ? c : best), psWave[0])
-      : null
+    // **選び方は波形の P/S 線と共有する**（`utils/countdownEew.ts`）。
+    const circle = pickCountdownCircle(psWave)
     // **距離は円の有無に依存させない。** これは震源の緯度経度だけで決まる観測事実で、
     // 深さとは関係が無い。**深さが判らない報では予報円を出さない**（`computeEewCircle`。
     // → `docs/spec/eew-spec.md` §6）ので、円から震源を拾う形のままだと**位置は判っているのに
