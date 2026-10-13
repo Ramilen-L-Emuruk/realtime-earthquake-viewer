@@ -6,7 +6,14 @@ import {
   SAMPLES_RANGE_MAX_MS,
   centerAt,
   clampRange,
+  compositeColumnsTrace,
   compositeRuns,
+  meanLineTraces,
+  meanLinesStillUsable,
+  sameCompositeInputs,
+  samplesFetchRange,
+  smoothedTrace,
+  emptyColumnsTrace,
   durationLabel,
   fullSpanMs,
   groupChannels,
@@ -20,6 +27,7 @@ import {
   problemsNote,
   readChannelList,
   readEnvelopeData,
+  readCompositeData,
   readIntensityData,
   readSamplesData,
   readoutText,
@@ -75,8 +83,8 @@ describe('groupChannels', () => {
     const groups = groupChannels([
       ch({ id: 'station/home/X', kind: 'station', station: { stationId: 'home', displayName: '自宅' } }),
       ch({ id: 'station/old/X', kind: 'station' }),
-      ch({ id: 'FDSN:XX_A1_S1_H_N_1', kind: 'raw', sensor: 'FDSN:XX_A1_S1', board: { boardKey: 'b1', sensorId: 'S1', stationId: 'home', stationName: '自宅' } }),
-      ch({ id: 'FDSN:XX_B2_S1_H_N_1', kind: 'raw', sensor: 'FDSN:XX_B2_S1', board: { boardKey: 'b2', sensorId: 'S1', stationId: 'home', stationName: '自宅' } }),
+      ch({ id: 'FDSN:XX_A1_S1_H_N_1', kind: 'raw', sensor: 'FDSN:XX_A1_S1', board: { boardKey: 'b1', boardName: null, sensorId: 'S1', stationId: 'home', stationName: '自宅' } }),
+      ch({ id: 'FDSN:XX_B2_S1_H_N_1', kind: 'raw', sensor: 'FDSN:XX_B2_S1', board: { boardKey: 'b2', boardName: null, sensorId: 'S1', stationId: 'home', stationName: '自宅' } }),
       ch({ id: 'FDSN:XX_C3_S1_H_N_1', kind: 'raw', sensor: 'FDSN:XX_C3_S1' }),
     ])
     const by = (label: string) => groups.find((g) => g.label === label)!
@@ -89,13 +97,27 @@ describe('groupChannels', () => {
 
   it('割り当てのある生データは「観測点名 ／ 基板 … のセンサー …」と名乗る（観測点が設定に無ければ ID）', () => {
     const [named] = groupChannels([
-      ch({ id: 'FDSN:XX_A1_S1_H_N_1', kind: 'raw', sensor: 'FDSN:XX_A1_S1', board: { boardKey: 'b1', sensorId: 'S1', stationId: 'home', stationName: '自宅' } }),
+      ch({ id: 'FDSN:XX_A1_S1_H_N_1', kind: 'raw', sensor: 'FDSN:XX_A1_S1', board: { boardKey: 'b1', boardName: null, sensorId: 'S1', stationId: 'home', stationName: '自宅' } }),
     ])
     expect(named!.label).toBe('自宅 ／ 基板 b1 のセンサー S1')
     const [unnamed] = groupChannels([
-      ch({ id: 'FDSN:XX_A1_S1_H_N_1', kind: 'raw', sensor: 'FDSN:XX_A1_S1', board: { boardKey: 'b1', sensorId: 'S1', stationId: 'home', stationName: null } }),
+      ch({ id: 'FDSN:XX_A1_S1_H_N_1', kind: 'raw', sensor: 'FDSN:XX_A1_S1', board: { boardKey: 'b1', boardName: null, sensorId: 'S1', stationId: 'home', stationName: null } }),
     ])
     expect(unnamed!.label).toBe('home ／ 基板 b1 のセンサー S1')
+    expect(unnamed!.hint).toBeNull()
+  })
+
+  it('正: 基板に表示名があれば名前で名乗り、基板 Key はホバー（hint）へ回す', () => {
+    const [g] = groupChannels([
+      ch({ id: 'FDSN:XX_A1_S1_H_N_1', kind: 'raw', sensor: 'FDSN:XX_A1_S1', board: { boardKey: 'b1', boardName: '北の壁', sensorId: 'S1', stationId: 'home', stationName: '自宅' } }),
+    ])
+    expect(g!.label).toBe('自宅 ／ 基板 北の壁 のセンサー S1')
+    expect(g!.hint).toBe('b1')
+  })
+
+  it('対照: 合成波形には hint を付けない（基板ではないので）', () => {
+    const [g] = groupChannels([ch({ id: 'station/home/X', kind: 'station', station: { stationId: 'home', displayName: '自宅' } })])
+    expect(g!.hint).toBeNull()
   })
 
   it('記録がある期間は最後の時の終わりまで', () => {
@@ -111,6 +133,14 @@ describe('readChannelList', () => {
     expect(readChannelList({ channels: [good, { ...good, kind: 'other' }], unreadable: 0 })).toBeNull()
     expect(readChannelList({ channels: [{ ...good, board: { boardKey: 'b' } }], unreadable: 0 })).toBeNull()
     expect(readChannelList({ channels: [good] })).toBeNull()
+  })
+
+  it('基板の表示名: 欄の無い版のホストは名前なしと読み、形の崩れた名前は応答ごと読めない', () => {
+    const base = { id: 'FDSN:XX_A1_S1_H_N_1', kind: 'raw', firstHourMs: H0, lastHourMs: H0, hours: 1, sensor: 'FDSN:XX_A1_S1', station: null }
+    const board = { boardKey: 'b1', sensorId: 'S1', stationId: 'home', stationName: '自宅' }
+    expect(readChannelList({ channels: [{ ...base, board }], unreadable: 0 })?.channels[0]?.board?.boardName).toBeNull()
+    expect(readChannelList({ channels: [{ ...base, board: { ...board, boardName: '北の壁' } }], unreadable: 0 })?.channels[0]?.board?.boardName).toBe('北の壁')
+    expect(readChannelList({ channels: [{ ...base, board: { ...board, boardName: 7 } }], unreadable: 0 })).toBeNull()
   })
 })
 
@@ -237,8 +267,48 @@ describe('応答を読む', () => {
 
   it('震度の推移の値の無い刻みは null のまま', () => {
     const d = readIntensityData({ maxRealtime: 1.23, maxRealtimeAtMs: H0, measured: null, realtimeSeries: [{ atMs: H0, value: null }] })!
-    expect(d.series[0]!.value).toBeNull()
+    expect(d.kind === 'series' && d.series[0]!.value).toBeNull()
     expect(readIntensityData({ maxRealtime: 'x', maxRealtimeAtMs: H0, measured: null, realtimeSeries: [] })).toBeNull()
+  })
+
+  it('10 分を超える幅の震度は要約から作った列として読む（値の無い列は NaN）', () => {
+    const body = {
+      source: 'coarse',
+      columnMs: 60_000,
+      firstColumnMs: H0,
+      realtime: [1.2, null],
+      maxRealtime: 1.2,
+      maxRealtimeAtMs: H0,
+      maxRealtimeBucketMs: 60_000,
+      measured: 0.84,
+      irregularHours: [{ hourStartMs: H0, state: 'pending' }],
+    }
+    const d = readIntensityData(body)!
+    expect(d.kind).toBe('columns')
+    if (d.kind !== 'columns') return
+    expect(d.realtime[0]).toBe(1.2)
+    expect(Number.isNaN(d.realtime[1]!)).toBe(true)
+    expect(d.irregularHours).toEqual([{ hourStartMs: H0, state: 'pending' }])
+    expect(readIntensityData({ ...body, realtime: 'x' })).toBeNull()
+    expect(readIntensityData({ ...body, maxRealtimeBucketMs: 'x' })).toBeNull()
+  })
+
+  it('合成の要約の応答を読み、形が違えば null', () => {
+    const body = {
+      source: 'fine',
+      unit: 'count',
+      columnMs: 1000,
+      firstColumnMs: H0,
+      subsets: [{ channels: ['a', 'b'], n: [3, 0], max: [2, null] }],
+      irregularHours: [],
+      unscaledHours: 1,
+    }
+    const c = readCompositeData(body)!
+    expect(c.unit).toBe('count')
+    expect(c.subsets[0]!.channels).toEqual(['a', 'b'])
+    expect(Number.isNaN(c.subsets[0]!.max[1]!)).toBe(true)
+    expect(readCompositeData({ ...body, subsets: [{ channels: ['a'], n: [1], max: [1, 2] }] })).toBeNull()
+    expect(readCompositeData({ ...body, source: 'samples' })).toBeNull()
   })
 })
 
@@ -363,6 +433,47 @@ describe('traceValueAt と合成', () => {
     // 列（要約）からは作らない
     expect(compositeRuns([columnsTrace([1], [0], [1], [0])], [0])).toBeNull()
   })
+
+  it('10 分を超える幅の合成: 見えている軸の組の要約を、0〜最大の塗りの列にする', () => {
+    const composite = readCompositeData({
+      source: 'coarse',
+      unit: 'gal',
+      columnMs: 60_000,
+      firstColumnMs: H0,
+      subsets: [
+        { channels: ['x', 'y'], n: [3, 0], max: [5, null] },
+        { channels: ['x', 'y', 'z'], n: [3, 0], max: [7, null] },
+      ],
+      irregularHours: [],
+      unscaledHours: 0,
+    })!
+    const axis = columnsTrace([3, 0], [-1, Number.NaN], [1, Number.NaN], [0, Number.NaN])
+    const got = compositeColumnsTrace(composite, [
+      { id: 'y', trace: axis, center: 0 },
+      { id: 'x', trace: axis, center: 0 },
+    ])!
+    expect(got.kind).toBe('columns')
+    if (got.kind !== 'columns') return
+    expect(got.max[0]).toBe(5)
+    expect(got.min[0]).toBe(0)
+    expect(Number.isNaN(got.min[1]!)).toBe(true)
+    // 組が要約に無ければ作らない（見えている軸と違う組で代えない）
+    expect(compositeColumnsTrace(composite, [{ id: 'x', trace: axis, center: 0 }, { id: 'w', trace: axis, center: 0 }])).toBeNull()
+  })
+
+  it('要約に組が無いときも、範囲を覆う空の列で欠けを塗れる（合成の段を真っ白にしない）', () => {
+    const t = emptyColumnsTrace(60_000, H0, { fromMs: H0 + 30_000, toMs: H0 + 3 * 60_000 })
+    expect(t.kind === 'columns' && t.n).toEqual([0, 0, 0])
+    expect(traceGaps(t, { fromMs: H0, toMs: H0 + 3 * 60_000 }, { fromMs: H0, toMs: H0 + 3 * 60_000 }, [{ hourStartMs: H0, state: 'pending' }])[0]!.kind).toBe('pending')
+  })
+
+  it('10 分を超える幅の合成: 見えている軸が 1 本なら、その軸の列の範囲の平均からの隔たり', () => {
+    const axis = columnsTrace([3, 0], [-1, Number.NaN], [4, Number.NaN], [0, Number.NaN])
+    const got = compositeColumnsTrace(null, [{ id: 'x', trace: axis, center: 1 }])!
+    expect(got.kind === 'columns' && got.max[0]).toBe(3)
+    expect(got.kind === 'columns' && Number.isNaN(got.max[1]!)).toBe(true)
+    expect(compositeColumnsTrace(null, [{ id: 'x', trace: axis, center: Number.NaN }])).toBeNull()
+  })
 })
 
 describe('overviewSpread', () => {
@@ -396,16 +507,38 @@ describe('文言', () => {
   it('要約の不調はどれも 0 なら出さない', () => {
     expect(problemsNote({ ok: 3, stale: 0, pending: 0, failed: 0, absent: 2 })).toBeNull()
     expect(problemsNote({ ok: 0, stale: 1, pending: 3, failed: 0, absent: 0 })).toBe(
-      '要約がまだ無い時が 3、作ったあとで元の記録が伸びた時が 1（末尾が欠けているかもしれない）、読めない時が 0',
+      '要約がまだ無い: 3 時間・要約の後に記録が増えた: 1 時間・読めない要約: 0 時間',
     )
   })
 
   it('震度の段の見出し', () => {
     const at = new Date(2026, 9, 7, 12, 3, 6).getTime()
-    expect(intensityHeader({ series: [], maxRealtime: 1.23, maxRealtimeAtMs: at, measured: 0.84 })).toBe('最大 1.2（12:03:06） 計測 0.8')
-    expect(intensityHeader({ series: [], maxRealtime: null, maxRealtimeAtMs: null, measured: null })).toBe('最大 — 計測 —')
+    const series = (maxRealtime: number | null, maxRealtimeAtMs: number | null, measured: number | null) =>
+      ({ kind: 'series', series: [], maxRealtime, maxRealtimeAtMs, measured }) as const
+    expect(intensityHeader(series(1.23, at, 0.84), 600_000)).toBe('最大 1.2（12:03:06） 計測 0.8')
+    expect(intensityHeader(series(null, null, null), 600_000)).toBe('最大 — 計測 —')
     // PWA と同じ数字を出す（気象庁の手順。四捨五入なら 1.3・0.9 になる）。
-    expect(intensityHeader({ series: [], maxRealtime: 1.26, maxRealtimeAtMs: null, measured: 0.86 })).toBe('最大 1.2 計測 0.8')
+    expect(intensityHeader(series(1.26, null, 0.86), 600_000)).toBe('最大 1.2 計測 0.8')
+  })
+
+  it('震度の段の見出し（要約から作った列）: 時刻は軸の段の「最大」と同じ「ごろ」の書き方', () => {
+    const at = new Date(2026, 9, 7, 12, 3, 4).getTime()
+    const columns = (bucketMs: number) =>
+      ({
+        kind: 'columns',
+        source: 'coarse',
+        columnMs: 60_000,
+        firstColumnMs: at,
+        realtime: [],
+        maxRealtime: 1.23,
+        maxRealtimeAtMs: at,
+        maxRealtimeBucketMs: bucketMs,
+        measured: 0.86,
+        irregularHours: [],
+      }) as const
+    expect(intensityHeader(columns(1000), HOUR)).toBe('最大 1.2（12:03:04 ごろ） 計測 0.8')
+    expect(intensityHeader(columns(60_000), HOUR)).toBe('最大 1.2（12:03 ごろ） 計測 0.8')
+    expect(intensityHeader(columns(60_000), 3 * 24 * HOUR)).toBe('最大 1.2（10/07 12:03 ごろ） 計測 0.8')
   })
 
   it('指した所の値（負号は −）', () => {
@@ -443,5 +576,147 @@ describe('recordTicks', () => {
     const h = recordTicks({ fromMs: new Date(2026, 9, 7, 22, 0).getTime(), toMs: new Date(2026, 9, 8, 4, 0).getTime() }, 6)
     expect(h.map((x) => x.label)).toContain('10/08')
     expect(h.map((x) => x.label)).toContain('23:00')
+  })
+})
+
+/**
+ * 前後 `half` 点（両端を含む）のうち、中心より上・下の値の平均を中心から見て返す。**定義どおりに素朴に数えた参照。**
+ * その側の値が無ければ 0。
+ */
+function naiveSignedMeans(values: readonly number[], center: number, i: number, half: number): { pos: number; neg: number } {
+  let pos = 0
+  let posCnt = 0
+  let neg = 0
+  let negCnt = 0
+  for (let k = Math.max(0, i - half); k <= Math.min(values.length - 1, i + half); k++) {
+    const d = values[k]! - center
+    if (d > 0) {
+      pos += d
+      posCnt += 1
+    } else if (d < 0) {
+      neg += d
+      negCnt += 1
+    }
+  }
+  return { pos: posCnt === 0 ? 0 : pos / posCnt, neg: negCnt === 0 ? 0 : neg / negCnt }
+}
+
+describe('平均の線（生のサンプルで描くときだけ）', () => {
+  /**
+   * 中心 980・振幅 10・2 Hz の正弦波（100 Hz で 10 秒）。正側の平均はおよそ 2A/π ≈ 6.37。
+   * **位相を半サンプルずらして、0 ちょうどに乗る点を作らない** —— 乗せると浮動小数の誤差（±1e-13）で
+   * その点が正側か負側の 1 点に数えられ、平均が 1 点ぶん揺れる。
+   */
+  const sine = (): number[] => Array.from({ length: 1000 }, (_, i) => 980 + 10 * Math.sin((2 * Math.PI * 2 * (i + 0.5)) / 100))
+  const runsOf = (t: AxisTrace): readonly { readonly firstSampleMs: number; readonly values: readonly number[] }[] =>
+    t.kind === 'samples' ? t.runs : []
+
+  it('正負は段の中心で分け、中心から見た平均を中心の高さへ戻して返す', () => {
+    const v = sine()
+    const got = meanLineTraces(samplesTrace([[H0, v]]), 980, 1000)!
+    const pos = runsOf(got.pos)[0]!.values
+    const neg = runsOf(got.neg)[0]!.values
+    // 前後 0.5 秒＝前後 50 点
+    const want = naiveSignedMeans(v, 980, 500, 50)
+    expect(pos[500]! - 980).toBeCloseTo(want.pos, 4)
+    expect(neg[500]! - 980).toBeCloseTo(want.neg, 4)
+    // 2 本はほぼ対称に、振幅 10 の正弦波の正側の平均（2A/π）の近くを通る
+    expect(Math.abs(pos[500]! - 980 - 20 / Math.PI)).toBeLessThan(0.3)
+    expect(Math.abs(980 - neg[500]! - 20 / Math.PI)).toBeLessThan(0.3)
+  })
+
+  it('0.3 秒ずつに割れた走りでも、1 本の走りと同じ値になる（平均は走りの継ぎ目をまたぐ）', () => {
+    const v = sine()
+    const whole = meanLineTraces(samplesTrace([[H0, v]]), 980, 1000)!
+    const pieces: Array<[number, number[]]> = []
+    for (let i = 0; i < v.length; i += 30) pieces.push([H0 + i * 10, v.slice(i, i + 30)])
+    const split = meanLineTraces(samplesTrace(pieces), 980, 1000)!
+    const flat = (t: AxisTrace): number[] => runsOf(t).flatMap((r) => [...r.values])
+    expect(flat(split.pos)).toEqual(flat(whole.pos))
+    expect(flat(split.neg)).toEqual(flat(whole.neg))
+    // 走りの形（頭の時刻・本数）は元のまま
+    expect(runsOf(split.pos).map((r) => r.firstSampleMs)).toEqual(pieces.map(([at]) => at))
+  })
+
+  it('値の無いサンプルは平均の線でも NaN のまま（そこで線を切る）', () => {
+    const v = sine()
+    v[300] = Number.NaN
+    const got = meanLineTraces(samplesTrace([[H0, v]]), 980, 1000)!
+    expect(Number.isNaN(runsOf(got.pos)[0]!.values[300]!)).toBe(true)
+    expect(Number.isNaN(runsOf(got.neg)[0]!.values[300]!)).toBe(true)
+    expect(Number.isFinite(runsOf(got.pos)[0]!.values[301]!)).toBe(true)
+  })
+
+  it('対照: 列（要約）からは作らない。中心が無いときも作らない', () => {
+    expect(meanLineTraces(columnsTrace([1], [0], [1], [0.5]), 0.5, 1000)).toBeNull()
+    expect(meanLineTraces(samplesTrace([[H0, sine()]]), Number.NaN, 1000)).toBeNull()
+  })
+
+  it('合成の均した線: 前後 1 秒の平均。列からは作らない', () => {
+    const v = Array.from({ length: 300 }, (_, i) => (i % 2 === 0 ? 2 : 4))
+    const got = smoothedTrace(samplesTrace([[H0, v]]), 1000)!
+    expect(runsOf(got)[0]!.values[150]).toBeCloseTo(3, 1)
+    expect(smoothedTrace(columnsTrace([1], [0], [1], [0.5]), 1000)).toBeNull()
+  })
+})
+
+describe('平均の線の材料の取り方', () => {
+  it('走りが時刻の順に並んでいなくても、時刻の順に繋いで平均する（元の並びへ戻して返す）', () => {
+    // 5 秒〜は振幅 10、0〜1 秒は振幅 0（中心ちょうど）。順を入れ替えて渡す
+    const late = Array.from({ length: 100 }, (_, i) => 980 + 10 * Math.sin((2 * Math.PI * 2 * i) / 100))
+    const early = Array.from({ length: 100 }, () => 980)
+    const got = meanLineTraces(samplesTrace([[H0 + 5000, late], [H0, early]]), 980, 1000)!
+    const runs = got.pos.kind === 'samples' ? got.pos.runs : []
+    expect(runs[0]!.firstSampleMs).toBe(H0 + 5000)
+    // 早い走りの平均に、遅い走りの値が混ざらない（正側の値が無いので 0 → 中心の高さ）
+    expect(runs[1]!.values[50]).toBe(980)
+  })
+
+  it('取る範囲は前後に平均の幅の半分ずつ広げる。生のサンプルの上限（10 分）を超えない分だけ', () => {
+    expect(samplesFetchRange({ fromMs: H0, toMs: H0 + 60_000 }, 1000)).toEqual({ fromMs: H0 - 500, toMs: H0 + 60_500 })
+    // 上限ちょうどの範囲は広げられない
+    expect(samplesFetchRange({ fromMs: H0, toMs: H0 + SAMPLES_RANGE_MAX_MS }, 1000)).toEqual({ fromMs: H0, toMs: H0 + SAMPLES_RANGE_MAX_MS })
+    // 上限の手前 400 ms なら、整数のミリ秒で 1 ms 残して 199 ms ずつ（URL へ載せるときの丸めで上限を越えない）
+    expect(samplesFetchRange({ fromMs: H0, toMs: H0 + SAMPLES_RANGE_MAX_MS - 400 }, 1000)).toEqual({ fromMs: H0 - 199, toMs: H0 + SAMPLES_RANGE_MAX_MS - 201 })
+  })
+
+  it('安全弁: 範囲の端が小数でも、URL へ載せる丸め（四捨五入）の後の幅が生のサンプルの上限を越えない', () => {
+    for (const span of [SAMPLES_RANGE_MAX_MS - 0.5, SAMPLES_RANGE_MAX_MS - 1, SAMPLES_RANGE_MAX_MS - 2.5, SAMPLES_RANGE_MAX_MS - 401.3, 60_000.7]) {
+      for (const from of [H0, H0 + 0.5, H0 + 0.49, H0 + 0.51]) {
+        const wide = samplesFetchRange({ fromMs: from, toMs: from + span }, 1000)
+        // 取りに行くときと同じ組み立て（`recordsUrl`）を通した値で測る
+        const q = new URLSearchParams(recordsUrl('samples', { channel: 'c', from: wide.fromMs, to: wide.toMs, unit: 'gal' }).split('?')[1])
+        expect(Number(q.get('to')) - Number(q.get('from'))).toBeLessThanOrEqual(SAMPLES_RANGE_MAX_MS)
+        // 広げるだけで、見ている範囲を削らない
+        expect(wide.fromMs).toBeLessThanOrEqual(from)
+        expect(wide.toMs).toBeGreaterThanOrEqual(from + span)
+      }
+    }
+  })
+
+  it('合成の控えは、軸のなぞりと中心がすべて同じときだけ使い回す（中心が NaN どうしも同じと見なす）', () => {
+    const a = samplesTrace([[H0, [1]]])
+    const b = samplesTrace([[H0, [2]]])
+    expect(sameCompositeInputs({ traces: [a, b], centers: [0, 1] }, [a, b], [0, 1], false)).toBe(true)
+    expect(sameCompositeInputs({ traces: [a, b], centers: [0, Number.NaN] }, [a, b], [0, Number.NaN], false)).toBe(true)
+    // 対照: 取り直した（別のなぞり）・中心が動いた・軸の数が変わった・まだ無い
+    expect(sameCompositeInputs({ traces: [a, b], centers: [0, 1] }, [a, samplesTrace([[H0, [2]]])], [0, 1], false)).toBe(false)
+    expect(sameCompositeInputs({ traces: [a, b], centers: [0, 1] }, [a, b], [0, 2], false)).toBe(false)
+    expect(sameCompositeInputs({ traces: [a, b], centers: [0, 1] }, [a], [0], false)).toBe(false)
+    expect(sameCompositeInputs(null, [a], [0], false)).toBe(false)
+  })
+
+  it('範囲を動かしている最中（取り直す前）は、中心が動いても同じなぞりの控えを使い回す', () => {
+    const a = samplesTrace([[H0, [1]]])
+    const b = samplesTrace([[H0, [2]]])
+    expect(sameCompositeInputs({ traces: [a, b], centers: [0, 1] }, [a, b], [0, 2], true)).toBe(true)
+    expect(meanLinesStillUsable(980, 980.4, true)).toBe(true)
+    // 対照: 止まった後は中心が違えば作り直す
+    expect(meanLinesStillUsable(980, 980.4, false)).toBe(false)
+    expect(meanLinesStillUsable(980, 980, false)).toBe(true)
+    // 安全弁: 動かしている最中でも、取り直した（別のなぞり）・軸の数が変わった・まだ無いときは使い回さない
+    expect(sameCompositeInputs({ traces: [a, b], centers: [0, 1] }, [a, samplesTrace([[H0, [2]]])], [0, 1], true)).toBe(false)
+    expect(sameCompositeInputs({ traces: [a, b], centers: [0, 1] }, [a], [0], true)).toBe(false)
+    expect(sameCompositeInputs(null, [a], [0], true)).toBe(false)
   })
 })

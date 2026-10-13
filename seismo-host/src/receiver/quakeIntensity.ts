@@ -100,7 +100,7 @@ export interface RealtimePoint {
 }
 
 /** 途切れずに続いている波形 1 本。 */
-interface Run {
+export interface Run {
   readonly msPerSample: number
   readonly t: number[]
   readonly v: [number[], number[], number[]]
@@ -135,7 +135,7 @@ function classifyChunk(c: ArchivedWaveChunk): 'ok' | 'unsolved' | 'invalid' {
  * 以後ずっと NaN を出す（`RealtimeIntensityCalculator.push` は投げて止める）。捨てた数は
  * 壊れた値（`invalid`）と解けなかった成分（`unsolved`）で分けて返す（{@link classifyChunk}）。
  */
-function splitRuns(chunks: readonly ArchivedWaveChunk[]): { runs: Run[]; invalid: number; unsolved: number } {
+export function splitRuns(chunks: readonly ArchivedWaveChunk[]): { runs: Run[]; invalid: number; unsolved: number } {
   const runs: Run[] = []
   let invalid = 0
   let unsolved = 0
@@ -168,6 +168,30 @@ function splitRuns(chunks: readonly ArchivedWaveChunk[]): { runs: Run[]; invalid
   return { runs: runs.filter((r) => r.t.length > 0), invalid, unsolved }
 }
 
+/**
+ * 途切れずに続いた波形ごとに計算器を作り直して通し、刻み（1 秒）ごとのリアルタイム震度を返す。
+ * **返すのは刻みの最後のサンプルの時刻が `[fromMs, toMs]` に入るものだけ**（手前は窓を埋めるための助走）。
+ *
+ * 要約（`waveSummaryDerived.ts`）も同じ関数で作る —— 画面の 10 分以内（この口）と広い幅（要約）で
+ * 計算の作りを分けると、同じ揺れの推移が幅によって違って見える。
+ */
+export function realtimeSeriesOfRuns(runs: readonly Run[], fromMs: number, toMs: number): RealtimePoint[] {
+  const out: RealtimePoint[] = []
+  for (const run of runs) {
+    const rateHz = 1000 / run.msPerSample
+    const calc = new RealtimeIntensityCalculator(rateHz)
+    const step = stepSamplesForSeconds(STEP_SEC_DEFAULT, rateHz)
+    for (let i = 0; i < run.t.length; i++) {
+      calc.push(run.v[0][i], run.v[1][i], run.v[2][i])
+      if ((i + 1) % step !== 0) continue
+      const at = run.t[i]
+      if (at < fromMs || at > toMs) continue
+      out.push({ atMs: at, value: calc.intensity() })
+    }
+  }
+  return out
+}
+
 /** 区間 `[fromMs, toMs]` の震度を出す。`chunks` は `fromMs - QUAKE_INTENSITY_LEAD_MS` から読んだもの。 */
 export function computeQuakeIntensity(params: {
   readonly chunks: readonly ArchivedWaveChunk[]
@@ -178,24 +202,13 @@ export function computeQuakeIntensity(params: {
   const { runs, invalid: invalidChunkCount, unsolved: unsolvedChunkCount } = splitRuns(params.chunks)
 
   // 最大リアルタイム震度: 途切れごとに計算器を作り直し、区間の中の刻みだけを見る。
+  const realtimeSeries = realtimeSeriesOfRuns(runs, fromMs, toMs)
   let maxRealtime: number | null = null
   let maxRealtimeAtMs: number | null = null
-  const realtimeSeries: RealtimePoint[] = []
-  for (const run of runs) {
-    const rateHz = 1000 / run.msPerSample
-    const calc = new RealtimeIntensityCalculator(rateHz)
-    const step = stepSamplesForSeconds(STEP_SEC_DEFAULT, rateHz)
-    for (let i = 0; i < run.t.length; i++) {
-      calc.push(run.v[0][i], run.v[1][i], run.v[2][i])
-      if ((i + 1) % step !== 0) continue
-      const at = run.t[i]
-      if (at < fromMs || at > toMs) continue
-      const value = calc.intensity()
-      realtimeSeries.push({ atMs: at, value })
-      if (value !== null && (maxRealtime === null || value > maxRealtime)) {
-        maxRealtime = value
-        maxRealtimeAtMs = at
-      }
+  for (const p of realtimeSeries) {
+    if (p.value !== null && (maxRealtime === null || p.value > maxRealtime)) {
+      maxRealtime = p.value
+      maxRealtimeAtMs = p.atMs
     }
   }
 

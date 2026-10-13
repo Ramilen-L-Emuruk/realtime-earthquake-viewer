@@ -50,8 +50,10 @@ describe('roundCoord', () => {
 })
 
 describe('describeGeolocationError', () => {
-  it('拒否されたことと、設定を見る先を伝える', () => {
-    expect(describeGeolocationError({ code: 1 })).toContain('ブラウザの設定')
+  // **覆した: 以前は「ブラウザの設定を確認すること」まで書いていた。** 指示を外し、Chrome の
+  // 「位置情報へのアクセスは許可されていません」に語を揃えた（2026-10-12 ユーザー承認）。
+  it('拒否されたことを Chrome と同じ語で伝える', () => {
+    expect(describeGeolocationError({ code: 1 })).toBe('位置情報へのアクセスが許可されていない')
   })
 
   it('特定できない・時間切れを言い分ける', () => {

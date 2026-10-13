@@ -117,6 +117,13 @@ export interface BoardEpoch {
 /** 記録の中の基板 1 枚と、そのセンサーの並び。 */
 export interface RevisionBoard {
   readonly boardKey: BoardKey
+  /**
+   * 基板の表示名（`BoardEntry.displayName`）。**付けていなければ欄ごと無い。**
+   *
+   * **記録の側に持つ**（期間の側ではない）。名前は観測の値ではなく画面の札なので、
+   * 変えても Station の期間を切らない —— 切ると、名前を直しただけで校正値の期間が分かれる。
+   */
+  readonly displayName?: string
   readonly sensorIds: readonly string[]
 }
 
@@ -376,7 +383,11 @@ export function applyStationConfig(
     effectiveMs: t,
     reason,
     stations: config.stations.map((s) => ({ ...s })),
-    boards: config.boards.map((b) => ({ boardKey: b.boardKey, sensorIds: b.sensors.map((s) => s.sensorId) })),
+    boards: config.boards.map((b) => ({
+      boardKey: b.boardKey,
+      ...(b.displayName === undefined ? {} : { displayName: b.displayName }),
+      sensorIds: b.sensors.map((s) => s.sensorId),
+    })),
   }
   return { boards, revisions: [...doc.revisions, revision] }
 }
@@ -436,7 +447,13 @@ export function configAt(doc: StationHistoryDoc, atMs: number): StationConfig {
     )
     const stray = activeChannels.find((c) => !listed.sensorIds.includes(c.sensorId))
     if (stray !== undefined) throw new StationXmlError(`${where} に載っていないセンサー ${stray.sensorId} の期間が効いている`)
-    boards.push({ boardKey: epoch.boardKey, stationId: station.stationId, orientation: epoch.orientation, sensors })
+    boards.push({
+      boardKey: epoch.boardKey,
+      ...(listed.displayName === undefined ? {} : { displayName: listed.displayName }),
+      stationId: station.stationId,
+      orientation: epoch.orientation,
+      sensors,
+    })
   }
   const strayBoard = activeBoards.find((b) => !revision.boards.some((x) => x.boardKey === b.boardKey))
   if (strayBoard !== undefined) throw new StationXmlError(`${where} に載っていない基板 ${strayBoard.boardKey} の期間が効いている`)
@@ -536,11 +553,12 @@ function writeRevision(lines: string[], r: HistoryRevision): void {
     )
   }
   for (const b of r.boards) {
+    const name = b.displayName === undefined ? '' : ` name="${escapeXml(b.displayName)}"`
     if (b.sensorIds.length === 0) {
-      lines.push(`    <seismo:Board key="${escapeXml(b.boardKey)}"/>`)
+      lines.push(`    <seismo:Board key="${escapeXml(b.boardKey)}"${name}/>`)
       continue
     }
-    lines.push(`    <seismo:Board key="${escapeXml(b.boardKey)}">`)
+    lines.push(`    <seismo:Board key="${escapeXml(b.boardKey)}"${name}>`)
     for (const id of b.sensorIds) lines.push(`      <seismo:Sensor id="${escapeXml(id)}"/>`)
     lines.push('    </seismo:Board>')
   }
@@ -822,6 +840,11 @@ function readRevision(r: XmlElement): HistoryRevision {
   })
   const boards = childrenOf(r, SEISMO_NS, 'Board').map((b) => ({
     boardKey: boardKeyOf((b.attrs.get('key') ?? '').trim(), where),
+    // 名前の欄が無い・空なら付けていない（書く側は空の名前を書かない）。
+    ...(() => {
+      const name = (b.attrs.get('name') ?? '').trim()
+      return name === '' ? {} : { displayName: name }
+    })(),
     sensorIds: childrenOf(b, SEISMO_NS, 'Sensor').map((s) => {
       const id = (s.attrs.get('id') ?? '').trim()
       if (mseed3LocationCode(id) === null) throw new StationXmlError(`${where} のセンサー ID が読めない: ${id}`)

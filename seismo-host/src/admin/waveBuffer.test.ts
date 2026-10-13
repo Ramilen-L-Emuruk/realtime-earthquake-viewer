@@ -447,7 +447,8 @@ describe('WaveBuffer — 2 軸のセンサー（測る向きのまま）', () =>
 })
 
 describe('WaveStore', () => {
-  it('センサーごとに分け、届いた順に並べる', () => {
+  // **覆した: 以前は届いた順。** 開くたびに行と線の色が入れ替わるので、鍵の順に固定する（#713）。
+  it('センサーごとに分け、届いた順によらず鍵の順に並べる', () => {
     const store = new WaveStore()
     store.push(chunk({ boardKey: 'b2', sensorId: 's1' }))
     store.push(chunk({ boardKey: 'b1', sensorId: 's1' }))
@@ -458,8 +459,15 @@ describe('WaveStore', () => {
       buffers.map((b) =>
         b.source.kind === 'sensor' ? `${b.source.boardKey}/${b.source.sensorId}` : b.source.stationId,
       ),
-    ).toEqual(['b2/s1', 'b1/s1'])
-    expect(buffers[0].chunkCount).toBe(2)
+    ).toEqual(['b1/s1', 'b2/s1'])
+    expect(buffers[1].chunkCount).toBe(2)
+  })
+
+  it('観測点の合成はセンサーより前に並ぶ', () => {
+    const store = new WaveStore()
+    store.push(chunk({ boardKey: 'a', sensorId: 's1' }))
+    store.push({ ...chunk({ boardKey: 'a', sensorId: 's1' }), source: { kind: 'station', stationId: 'zz' } })
+    expect(store.buffersInOrder().map((b) => b.source.kind)).toEqual(['station', 'sensor'])
   })
 
   it('境目の違う名前を別のセンサーとして扱う（安全弁）', () => {
@@ -685,5 +693,121 @@ describe('keyOf — ずれ（#688）', () => {
     const left = keyOf({ kind: 'residual', stationId: 'g', boardKey: 'b', sensorId: '1:s' })
     const right = keyOf({ kind: 'residual', stationId: 'g', boardKey: 'b1', sensorId: 's' })
     expect(left).not.toBe(right)
+  })
+})
+
+describe('平均の線（readMeanLines）', () => {
+  /** 100 Hz・`seconds` 秒ぶんを実機と同じ 30 サンプルずつのまとまりで積む。値は時刻（ms）から決める。 */
+  const fill = (seconds: number, valueAt: (ms: number) => number, gapAtMs: number | null = null): WaveBuffer => {
+    const buffer = new WaveBuffer({ kind: 'sensor', boardKey: 'board-1', sensorId: 'accel-0' })
+    for (let start = 0; start < seconds * 1000; start += SAMPLES * MS_PER_SAMPLE) {
+      const values = Array.from({ length: SAMPLES }, (_, i) => {
+        const ms = start + i * MS_PER_SAMPLE
+        return gapAtMs !== null && ms >= gapAtMs && ms < gapAtMs + 100 ? Number.NaN : valueAt(ms)
+      })
+      buffer.push(chunk({ firstSampleMs: start, gal: [values, values, values] }))
+    }
+    return buffer
+  }
+  /**
+   * 中心 980・振幅 10・2 Hz。正側の平均はおよそ 2A/π ≈ 6.37。**位相を半サンプル（5 ms）ずらして 0 ちょうどに乗る点を
+   * 作らない** —— 乗せると浮動小数の誤差でその点が正側か負側の 1 点に数えられ、平均が 1 点ぶん揺れる。
+   */
+  const sine = (ms: number): number => 980 + 10 * Math.sin(2 * Math.PI * 2 * ((ms + 5) / 1000))
+  /** 時刻 `ms` の前後 0.5 秒（両端を含む）の、中心より上・下の値の平均を中心から見て。**定義どおりに素朴に数えた参照。** */
+  const naiveSignedMeans = (valueAt: (ms: number) => number, ms: number): { pos: number; neg: number } => {
+    let pos = 0
+    let posCnt = 0
+    let neg = 0
+    let negCnt = 0
+    for (let at = ms - 500; at <= ms + 500; at += MS_PER_SAMPLE) {
+      // 抱えるときに Float32 へ詰め直すので、参照も同じ丸めを通す
+      const d = Math.fround(valueAt(at)) - 980
+      if (d > 0) {
+        pos += d
+        posCnt += 1
+      } else if (d < 0) {
+        neg += d
+        negCnt += 1
+      }
+    }
+    return { pos: posCnt === 0 ? 0 : pos / posCnt, neg: negCnt === 0 ? 0 : neg / negCnt }
+  }
+
+  it('正負は渡した中心で分け、列ごとの上下の端を中心の高さで返す', () => {
+    const lines = fill(10, sine).readMeanLines(2000, 8000, 60, [980, 980, 980], 1000)
+    // 6 秒を 60 列 → 列 30 は 5.00〜5.09 秒の 10 点
+    const refs = Array.from({ length: 10 }, (_, k) => naiveSignedMeans(sine, 5000 + k * MS_PER_SAMPLE))
+    const pos = lines[0]!.pos[30]!
+    const neg = lines[0]!.neg[30]!
+    expect(pos.minGal - 980).toBeCloseTo(Math.min(...refs.map((r) => r.pos)), 3)
+    expect(pos.maxGal - 980).toBeCloseTo(Math.max(...refs.map((r) => r.pos)), 3)
+    expect(neg.minGal - 980).toBeCloseTo(Math.min(...refs.map((r) => r.neg)), 3)
+    expect(neg.maxGal - 980).toBeCloseTo(Math.max(...refs.map((r) => r.neg)), 3)
+    // 2 本はほぼ対称に、振幅 10 の正弦波の正側の平均（2A/π）の近くを通る
+    expect(Math.abs(pos.maxGal - 980 - 20 / Math.PI)).toBeLessThan(0.3)
+    expect(Math.abs(980 - neg.minGal - 20 / Math.PI)).toBeLessThan(0.3)
+  })
+
+  it('窓の左端の列も、窓の手前のサンプルまで含めて平均する（前後 0.5 秒を窓の外まで見る）', () => {
+    // 5 秒より前は振幅 50、後ろは振幅 10。窓は 5 秒から。
+    const step = (ms: number): number => 980 + (ms < 5000 ? 50 : 10) * Math.sin(2 * Math.PI * 2 * (ms / 1000))
+    const lines = fill(10, step).readMeanLines(5000, 9000, 40, [980, 980, 980], 1000)
+    const edge = lines[0]!.pos[0]!.maxGal - 980
+    const inner = lines[0]!.pos[20]!.maxGal - 980
+    expect(edge).toBeGreaterThan(inner * 2)
+  })
+
+  it('窓の右端の列も、窓の後ろのサンプルまで含めて平均する', () => {
+    // 5 秒より後ろは振幅 50、前は振幅 10。窓は 5 秒まで。
+    const step = (ms: number): number => 980 + (ms >= 5000 ? 50 : 10) * Math.sin(2 * Math.PI * 2 * (ms / 1000))
+    const lines = fill(10, step).readMeanLines(1000, 5000, 40, [980, 980, 980], 1000)
+    const edge = lines[0]!.pos[39]!.maxGal - 980
+    const inner = lines[0]!.pos[20]!.maxGal - 980
+    expect(edge).toBeGreaterThan(inner * 2)
+  })
+
+  it('readWindow と同じ列に載る（値のある列が一致する）', () => {
+    const buffer = fill(10, sine, 5000)
+    const w = buffer.readWindow(2000, 8000, 60)
+    const lines = buffer.readMeanLines(2000, 8000, 60, w.stats.map((st) => st?.meanGal ?? Number.NaN), 1000)
+    expect(lines[0]!.pos.map((c) => c !== null)).toEqual(w.axes[0]!.map((c) => c !== null))
+    expect(lines[0]!.pos.map((c) => c?.gapBefore ?? false)).toEqual(w.axes[0]!.map((c) => c?.gapBefore ?? false))
+  })
+
+  it('チャンクの切れ目（区間が変わった）の後ろの列にも切れ目の印を立てる', () => {
+    const buffer = new WaveBuffer({ kind: 'sensor', boardKey: 'board-1', sensorId: 'accel-0' })
+    for (let start = 0; start < 6000; start += SAMPLES * MS_PER_SAMPLE) {
+      const values = Array.from({ length: SAMPLES }, (_, i) => sine(start + i * MS_PER_SAMPLE))
+      buffer.push(chunk({ firstSampleMs: start, segmentId: start < 3000 ? 1 : 2, gal: [values, values, values] }))
+    }
+    const lines = buffer.readMeanLines(0, 6000, 60, [980, 980, 980], 1000)
+    expect(lines[0]!.pos[30]!.gapBefore).toBe(true)
+    expect(lines[0]!.pos[29]!.gapBefore).toBe(false)
+  })
+
+  it('2 軸のセンサーでは 2 本ぶん作る', () => {
+    const buffer = new WaveBuffer({ kind: 'sensor', boardKey: 'board-1', sensorId: 'accel-0' })
+    for (let start = 0; start < 3000; start += SAMPLES * MS_PER_SAMPLE) {
+      const values = Array.from({ length: SAMPLES }, (_, i) => sine(start + i * MS_PER_SAMPLE))
+      buffer.push(chunk({ firstSampleMs: start, gal: [values, values], directions: [[1, 0, 0], [0, 1, 0]], axisNames: ['HN1', 'HN2'] }))
+    }
+    const lines = buffer.readMeanLines(0, 3000, 30, [980, 980], 1000)
+    expect(lines).toHaveLength(2)
+    expect(lines.every((l) => l !== null)).toBe(true)
+  })
+
+  it('対照: 中心が無い軸は作らない（その軸にサンプルが無い）', () => {
+    const lines = fill(10, sine).readMeanLines(2000, 8000, 60, [980, Number.NaN, 980], 1000)
+    expect(lines[0]).not.toBeNull()
+    expect(lines[1]).toBeNull()
+  })
+
+  it('安全弁: 値の無いサンプルの後ろの列には切れ目の印を立てる（前後を線で繋がない）', () => {
+    const lines = fill(10, sine, 5000).readMeanLines(4000, 6000, 20, [980, 980, 980], 1000)
+    // 5.0〜5.1 秒が値無し。その列は空で、次の列に切れ目の印
+    expect(lines[0]!.pos[10]).toBeNull()
+    expect(lines[0]!.pos[11]!.gapBefore).toBe(true)
+    expect(lines[0]!.pos[12]!.gapBefore).toBe(false)
   })
 })

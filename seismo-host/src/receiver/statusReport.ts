@@ -17,6 +17,7 @@ import type { AckSnapshot } from './ackReplier'
 import type { AssignedBoardReception } from './assignedReception'
 import type { BacklogFetcherSnapshot } from './backlogFetcher'
 import type { BoardClockSnapshot } from './boardClock'
+import type { BoardIntensity } from './boardIntensity'
 import type { GravityCheckSnapshot, GravityVerdict } from './gravityCheck'
 import type { LoopStallSnapshot } from './loopStall'
 import type { RecvBufferOutcome } from './udpReceiver'
@@ -132,6 +133,13 @@ export interface StatusReportInput {
    */
   readonly stationIntensities: readonly StationHealth[]
   /**
+   * 基板 1 枚ぶんの計測震度相当（`boardIntensity.ts`）。**設定の基板の並びのまま。**
+   *
+   * **`stationIntensities` へ混ぜない。** あちらは観測点に置いた全センサーの合成で、記録・押し出し・
+   * 地震検出が使う値。こちらは見せるためだけの値（同じ観測点の基板どうしを見比べる）。
+   */
+  readonly boardIntensities: readonly BoardIntensity[]
+  /**
    * 基板がどこに置かれているか（観測点）を引く帳面。
    *
    * **割り当ては任意。** 設定に無い基板は `station: null` のまま出す ——
@@ -214,6 +222,8 @@ export interface SensorStatus extends Omit<SensorHealth, 'lastPacketMs'> {
   readonly lastPacketMs: number | null
   /** どこへ置いたか。設定に無ければ `null`（未割当）。 */
   readonly station: StationInfo | null
+  /** 基板の表示名（`BoardEntry.displayName`）。設定に無い・名前を付けていなければ `null`。 */
+  readonly boardName: string | null
   /**
    * このセンサーに校正値の設定（`stationConfig.ts` の `sensors[]`）があるか。
    *
@@ -289,6 +299,11 @@ export interface StatusReport {
    * 観測点にしか現れない）。
    */
   readonly stationIntensities: readonly StationIntensityStatus[]
+  /**
+   * 基板 1 枚ぶんの計測震度相当。**設定の基板の並びのまま**、まだ値の無い基板も含む。
+   * `source` が値の出どころ（`boardIntensity.ts` の `BoardIntensitySource`）。
+   */
+  readonly boardIntensities: readonly BoardIntensity[]
   readonly segments: readonly SegmentStatus[]
   /**
    * 数として出せなかった計測震度を見た回数。
@@ -459,6 +474,7 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     lastReadingAtMs: finite(s.lastReadingAtMs),
     lastIntensity: finiteValue(s.lastIntensity),
     station: input.stations.resolve(s.boardKey),
+    boardName: input.stations.boardNameOf(s.boardKey),
     calibrationConfigured: input.stations.hasSensorCalibration(s.boardKey, s.sensorId),
     enabled: input.stations.isSensorEnabled(s.boardKey, s.sensorId),
   }))
@@ -469,6 +485,13 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     lastReadingAtMs: finite(s.lastReadingAtMs),
     lastReadingReceivedMs: finite(s.lastReadingReceivedMs),
     lastIntensity: finiteValue(s.lastIntensity),
+  }))
+
+  const boardIntensities: BoardIntensity[] = input.boardIntensities.map((b) => ({
+    ...b,
+    lastPacketMs: finite(b.lastPacketMs),
+    lastReadingReceivedMs: finite(b.lastReadingReceivedMs),
+    lastIntensity: finiteValue(b.lastIntensity),
   }))
 
   // **有限であることは `gravityCheck.ts` の `settle` が保証する** —— 平均・ばらつき・震度は
@@ -525,6 +548,7 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     sensorEvictions: input.sensorEvictions,
     stationEvictions: input.stationEvictions,
     stationIntensities,
+    boardIntensities,
     segments,
     unusableIntensities: input.unusableIntensities,
     gravity,

@@ -71,6 +71,7 @@ import type {
   StationIntensityReading,
 } from './src/receiver/sensorFusion'
 import { SensorHealthBook } from './src/receiver/sensorHealth'
+import { BoardFusion, buildBoardIntensities } from './src/receiver/boardIntensity'
 import { StationDirectory, stationsWithMultipleBoards } from './src/receiver/stationConfig'
 import type { StationConfig } from './src/receiver/stationConfig'
 import { StationHealthBook } from './src/receiver/stationHealth'
@@ -1959,6 +1960,14 @@ async function main(): Promise<void> {
     else console.log(text)
   }
 
+  // **基板ごとの震度**（管理コンソールの稼働状況。`src/receiver/boardIntensity.ts`）。観測点の合成とは
+  // 別の系統で、値は `/status` へ出すだけ —— 押し出し・保存・地震検出には渡さない。
+  // 作り直しは観測点の合成と同じ契機（`applyStationConfig` の `rebuildSensorFusion`）。
+  const boardFusion = new BoardFusion(currentStationConfig, {
+    onError: (where, detail) =>
+      emit('error', 'board-fusion', where, `[board-fusion] 基板ごとの合成に失敗（${where}）: ${shorten(detail)}`),
+  })
+
   // **取り戻した区間の合成波形は、あとで生データから作り直す**（`rewaveScheduler.ts`・`rewaveRunner.ts`）。
   // 取り戻した分そのものはライブの合成へ混ぜない（下の取り戻しの口の理由）ので、控えへ戻すにはこの経路しかない。
   const rewaveScheduler = new RewaveScheduler(REWAVE_SCHEDULER_OPTIONS)
@@ -2233,6 +2242,8 @@ async function main(): Promise<void> {
           // **作り直す前に持ち越す。** 古い部品はこの後の参照を失うので、ここが数を読む最後の機会。
           fusionCarried = fusionTotals()
           sensorFusion = new SensorFusion(config)
+          // 基板ごとの合成も同じ設定で作り直す（締めてから。投げない）。
+          boardFusion.rebuild(config)
           return sensorFusion.groupedStationIds
         },
         // `setCurrentConfig` が先に走っているので、`detection` は新しい設定を見る。
@@ -2470,6 +2481,10 @@ async function main(): Promise<void> {
           for (const w of buildGravityWarnings(verdict)) emit(w.level, w.kind, w.detail, w.line)
         }
       }
+
+      // **基板ごとの震度（見せるためだけの値）も、本筋を出し切ってから**（上の自己診断と同じ理由）。
+      // 観測点の合成へ渡したのと同じまとまりを渡す。`BoardFusion` はどの口も投げない。
+      if (outcome.wave !== null) boardFusion.ingest(outcome.wave, receivedAtMs)
     },
   })
 
@@ -2636,6 +2651,7 @@ async function main(): Promise<void> {
         boardClocks: boardClocks.snapshot(),
         stationEvictions: stationHealth.evictions,
         stationIntensities: stationHealth.snapshot(),
+        boardIntensities: buildBoardIntensities(currentStationConfig, boardFusion.snapshot(), health.snapshot()),
         gravity: gravity.snapshot(),
         segments: pipeline.openSegments(),
         unusableIntensities: pipeline.unusableIntensities,

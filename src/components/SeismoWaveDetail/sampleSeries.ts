@@ -225,89 +225,10 @@ export function vectorMagnitude(series: SampleSeries, axes: readonly boolean[]):
 }
 
 /**
- * 前後 `windowMs` の幅（各時刻を中心に）で値を平均した並び。**揺れの強さの輪郭**を見せるために使う。
- *
- * - 窓の中の値の無い点は数えない（平均は値のある点だけで取る）
- * - **元が `NaN` の点は `NaN` のまま** —— 途切れで線を切る扱いを均した線でも保つ
- *
- * 和と個数の累積から引くので、点の数に比例する手間で済む。
+ * 平均の線（合成の均した線・成分の正側／負側の平均の線）。**計算はホストの管理コンソールと共有する**
+ * （`utils/waveMeanLines.ts`）。`SampleSeries` はそのまま渡せる。
  */
-export function movingAverage(series: SampleSeries, values: Float32Array, windowMs: number): Float32Array {
-  const n = series.length
-  const sum = new Float64Array(n + 1)
-  const cnt = new Uint32Array(n + 1)
-  for (let i = 0; i < n; i += 1) {
-    const v = values[i]
-    const ok = Number.isFinite(v)
-    sum[i + 1] = sum[i] + (ok ? v : 0)
-    cnt[i + 1] = cnt[i] + (ok ? 1 : 0)
-  }
-  const half = windowMs / 2
-  const out = new Float32Array(n)
-  let lo = 0
-  let hi = 0
-  for (let i = 0; i < n; i += 1) {
-    const t = series.t[i]
-    while (lo < n && series.t[lo] < t - half) lo += 1
-    while (hi < n && series.t[hi] <= t + half) hi += 1
-    const c = cnt[hi] - cnt[lo]
-    out[i] = !Number.isFinite(values[i]) || c === 0 ? Number.NaN : (sum[hi] - sum[lo]) / c
-  }
-  return out
-}
-
-/**
- * 前後 `windowMs` の幅で、**正側に振れた値の平均と負側に振れた値の平均を別々に**出す（2026-10-05 のユーザー判断）。
- *
- * 成分は ＋ と − に行き来するので、値をそのまま平均すると 0 付近に潰れて揺れの大きさが消える。正側・負側に
- * 分けて平均すれば、ふつうの揺れでは 2 本がほぼ対称に並び、**片側に偏った動き（一方向のパルスや傾き）だけ
- * 2 本の高さが食い違う**。線は振れの頂点ではなく平均なので、山の頂点よりかなり内側を通る。
- *
- * - 0 ちょうどの値はどちらにも数えない。窓の中にその側の値が 1 つも無ければ 0
- * - **元が `NaN` の点は `NaN` のまま**（途切れで線を切る）
- *
- * @returns `pos` は 0 以上、`neg` は 0 以下
- */
-export function signedMovingAverages(
-  series: SampleSeries,
-  values: Float32Array,
-  windowMs: number,
-): { readonly pos: Float32Array; readonly neg: Float32Array } {
-  const n = series.length
-  const posSum = new Float64Array(n + 1)
-  const posCnt = new Uint32Array(n + 1)
-  const negSum = new Float64Array(n + 1)
-  const negCnt = new Uint32Array(n + 1)
-  for (let i = 0; i < n; i += 1) {
-    const v = values[i]
-    const p = Number.isFinite(v) && v > 0
-    const q = Number.isFinite(v) && v < 0
-    posSum[i + 1] = posSum[i] + (p ? v : 0)
-    posCnt[i + 1] = posCnt[i] + (p ? 1 : 0)
-    negSum[i + 1] = negSum[i] + (q ? v : 0)
-    negCnt[i + 1] = negCnt[i] + (q ? 1 : 0)
-  }
-  const half = windowMs / 2
-  const pos = new Float32Array(n)
-  const neg = new Float32Array(n)
-  let lo = 0
-  let hi = 0
-  for (let i = 0; i < n; i += 1) {
-    const t = series.t[i]
-    while (lo < n && series.t[lo] < t - half) lo += 1
-    while (hi < n && series.t[hi] <= t + half) hi += 1
-    if (!Number.isFinite(values[i])) {
-      pos[i] = Number.NaN
-      neg[i] = Number.NaN
-      continue
-    }
-    const pc = posCnt[hi] - posCnt[lo]
-    const nc = negCnt[hi] - negCnt[lo]
-    pos[i] = pc === 0 ? 0 : (posSum[hi] - posSum[lo]) / pc
-    neg[i] = nc === 0 ? 0 : (negSum[hi] - negSum[lo]) / nc
-  }
-  return { pos, neg }
-}
+export { movingAverage, signedMovingAverages } from '../../utils/waveMeanLines'
 
 /**
  * 合成の大きさの平常時の底（gal）。**成分の強調と同じ測り方**（`measureNoiseBand`）—— 0 の手前 30 秒で 1 秒ごとの

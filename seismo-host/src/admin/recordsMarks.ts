@@ -281,11 +281,11 @@ export function shakesAt(events: readonly ShakeRecordView[], atMs: number, tolMs
   return events.filter((e) => atMs >= e.startMs - tolMs && atMs <= e.endMs + tolMs)
 }
 
-/** `受信: 基板から取り戻した分・時刻が疑わしい分`。何も掛からなければ null。 */
+/** `受信: 基板から再送信された分・時刻が疑わしい分`。何も掛からなければ null。 */
 export function receptionAt(lane: ReceptionLane, atMs: number, tolMs: number): string | null {
   const hit = (spans: readonly Span[]): boolean => spans.some((s) => atMs >= s.fromMs - tolMs && atMs <= s.toMs + tolMs)
   const parts: string[] = []
-  if (hit(lane.backlog)) parts.push('基板から取り戻した分')
+  if (hit(lane.backlog)) parts.push('基板から再送信された分')
   if (hit(lane.late)) parts.push('遅れて届いた分')
   if (hit(lane.questionable)) parts.push('時刻が疑わしい分')
   if (lane.unreadableAtMs.some((t) => Math.abs(t - atMs) <= tolMs)) parts.push('読めなかったパケット')
@@ -297,25 +297,27 @@ export function receptionAt(lane: ReceptionLane, atMs: number, tolMs: number): s
 export const LANE_RECEPTION_TITLE = '受信'
 export const LANE_QUAKE_TITLE = '気象庁'
 export const LANE_SHAKE_TITLE = '揺れの記録'
-export const RECEPTION_LEGEND = '受信: 橙 = 基板から取り戻した分・紫 = 遅れて届いた分・赤 = 時刻が疑わしい分・縦線 = 読めなかったパケット'
+export const RECEPTION_LEGEND = '受信: 橙 = 基板から再送信された分・紫 = 遅れて届いた分・赤 = 時刻が疑わしい分・縦線 = 読めなかったパケット'
+/** 観測点の合成波形を見ているときだけ、受信の凡例の後ろへ足す（凡例と同じくホバーで出す。2026-10-13 ユーザー承認）。 */
 export const RECEPTION_STATION_NOTE = '受信の帯は、いまこの観測点に割り当てている基板のもの'
 export const RECEPTION_STATION_GONE_TEXT = 'この観測点はいまの設定に無いので、受信の帯は出せない'
 export const RECEPTION_TRUNCATED_TEXT = '読めなかったパケットが多く、古いほうから 2000 件だけ印を付けている'
-export const UNDERLINE_LEGEND = '波形の下の線: 橙 = 取り戻した分・紫 = 遅れて届いた分・緑 = 取り戻した分から作り直した分・赤 = 時刻が疑わしい分'
-export const QUAKE_LEGEND = '気象庁: ▼ = 発生時刻・破線 = この観測点に P・S が届く時刻（JMA2001 走時表）・帯 = 発生時刻が分までしか分からず、届く時刻に幅がある'
+export const UNDERLINE_LEGEND =
+  '波形の下の線: 橙 = 再送信された分・紫 = 遅れて届いた分・緑 = 再送信された分から作り直した分・赤 = 時刻が疑わしい分'
+export const QUAKE_LEGEND = '気象庁: ▼ = 発生時刻・破線 = この観測点に P・S が届く時刻（JMA2001 走時表）・帯 = 発生時刻が分までしか分からず、届く時刻に幅があるもの'
 export const QUAKE_UNLOCATED_TEXT = 'このセンサーの基板は観測点に割り当てていないので、P・S の線は引けない'
 export const QUAKE_TOO_WIDE_TEXT = '気象庁の地震は 7 日以内まで寄せると出る'
-export const QUAKE_LOADING_TEXT = '気象庁の地震一覧を取得している'
+export const QUAKE_LOADING_TEXT = '気象庁の地震一覧を取得中…'
 export const QUAKE_OFF_TEXT = '気象庁の地震一覧を取らない設定になっている'
 export const SHAKE_LEGEND = '揺れの記録: 帯 = 揺れの区間（色は判定）・△ = 拾った P・S'
 export const SHAKE_TRUNCATED_TEXT = '揺れの記録が多く、新しい 500 件だけ印を付けている'
 
 export function receptionPendingNote(hours: number): string | null {
-  return hours > 0 ? `受信の記録の要約がまだ無い時が ${hours}（作り終えると出る）` : null
+  return hours > 0 ? `受信の記録の要約がまだ無い: ${hours} 時間` : null
 }
 
 export function quakeFailureText(reason: string): string {
-  return `気象庁の地震一覧を取得できていない（${reason}）`
+  return `気象庁の地震一覧を取得できていない: ${reason}`
 }
 
 function monthDay(d: string): string {
@@ -328,7 +330,7 @@ function monthDay(d: string): string {
  */
 export function quakeFailedDaysText(days: readonly string[], problem: string | null): string {
   const dates = days.map(monthDay).join('・')
-  return `地震一覧を取れていない日がある（${problem === null ? dates : `${dates}。${problem}`}）`
+  return `地震一覧を取得できていない日がある: ${problem === null ? dates : `${dates}。${problem}`}`
 }
 
 /**
@@ -338,9 +340,9 @@ export function quakeFailedDaysText(days: readonly string[], problem: string | n
  */
 export function refineFailedDaysText(days: QuakesView['refineFailedDays']): string | null {
   const parts: string[] = []
-  if (days.hypocenter.length > 0) parts.push(`震源リスト: ${days.hypocenter.map(monthDay).join('・')}`)
-  if (days.eew.length > 0) parts.push(`緊急地震速報: ${days.eew.map(monthDay).join('・')}`)
-  return parts.length === 0 ? null : `発生時刻を秒まで寄せる材料を取れていない日がある（${parts.join('・')}）`
+  if (days.hypocenter.length > 0) parts.push(`震源リスト ${days.hypocenter.map(monthDay).join('・')}`)
+  if (days.eew.length > 0) parts.push(`緊急地震速報 ${days.eew.map(monthDay).join('・')}`)
+  return parts.length === 0 ? null : `発生時刻の秒を取得できていない日がある: ${parts.join('／')}`
 }
 
 /** `読めなかった揺れの記録が 3 件ある`。**0 なら null**（2026-10-08 ユーザー承認）。 */

@@ -62,6 +62,7 @@ function report(hub: ReadingHub): StatusReport {
     boardClocks: { boards: [], evictions: 0 },
     stationEvictions: 0,
     stationIntensities: [],
+    boardIntensities: [],
     gravity: {
       verdicts: [],
       mismatches: 0,
@@ -189,6 +190,7 @@ afterEach(async () => {
 
 /** 既定は `/api/*` を丸ごと無効化する設定（トークン未設定）。 */
 const NO_ADMIN_AUTH: AdminAuthConfig = { token: null, allowedHosts: [], allowedOrigins: [] }
+const NO_REST_WINDOWS = { nowMs: 0, windowMs: 30_000, sensors: [] }
 
 /**
  * テスト用の管理コンソールアセット。**`buildAdminConsoleAssets()` を呼ばない**——
@@ -234,7 +236,7 @@ async function start(
     heartbeatMs,
     adminAuth: adminAuth ?? NO_ADMIN_AUTH,
     stationConfig: stationConfig ?? makeStationConfigOps(),
-    readRestWindows: readRestWindows ?? (() => []),
+    readRestWindows: readRestWindows ?? (() => NO_REST_WINDOWS),
     // 止める合図を試すテストは `startAuthed` を使う（`/api/*` は認証が要る）。
     requestShutdown: () => 'not-ready',
     // 作り直しの依頼を試すテストは `startAuthed` を使う（`/api/*` は認証が要る）。
@@ -1088,7 +1090,7 @@ describe('/api/*', () => {
     overrides: Partial<AdminAuthConfig> = {},
     log?: StatusServerOptions['log'],
     stationConfig?: StatusServerOptions['stationConfig'],
-    readRestWindows: StatusServerOptions['readRestWindows'] = () => [],
+    readRestWindows: StatusServerOptions['readRestWindows'] = () => NO_REST_WINDOWS,
     requestShutdown: StatusServerOptions['requestShutdown'] = () => 'not-ready',
     records: StatusServerOptions['records'] = null,
     requestRewave: StatusServerOptions['requestRewave'] = () => ({ kind: 'busy' }),
@@ -1369,21 +1371,26 @@ describe('/api/*', () => {
     })
   })
 
-  it('正: GET /api/rest-windows はセンサーごとの静止窓（始まりと終わり）と、いまの静止の始まりを返す', async () => {
-    const sensors = [
-      {
-        boardKey: 'mac:aa' as const,
-        sensorId: 'i2c0-68',
-        stillSinceMs: 0,
-        windows: [{ fromMs: 0, atMs: 1, streamKey: 'k', sampleCount: 3000, meanGal: [1, 2, 980] as const, sdGal: [1, 1, 1.5] as const }],
-      },
-    ]
-    const base = await startAuthed(new ReadingHub(), {}, undefined, undefined, () => sensors)
+  it('正: GET /api/rest-windows はホストの時刻・窓の長さと、センサーごとの静止窓・いまの静止の始まり・溜めかけの窓を返す', async () => {
+    const report = {
+      nowMs: 40_000,
+      windowMs: 30_000,
+      sensors: [
+        {
+          boardKey: 'mac:aa' as const,
+          sensorId: 'i2c0-68',
+          stillSinceMs: 0,
+          pending: { fromMs: 30_000, sampleCount: 1000, still: true, voided: false },
+          windows: [{ fromMs: 0, atMs: 1, streamKey: 'k', sampleCount: 3000, meanGal: [1, 2, 980] as const, sdGal: [1, 1, 1.5] as const }],
+        },
+      ],
+    }
+    const base = await startAuthed(new ReadingHub(), {}, undefined, undefined, () => report)
     const res = await fetch(`${base}/api/rest-windows`, {
       headers: { Authorization: `Bearer ${TOKEN}`, Origin: ORIGIN },
     })
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ sensors })
+    expect(await res.json()).toEqual(report)
   })
 
   it('安全弁: /api/rest-windows も認証を通す（トークン無しは 401）', async () => {
@@ -1534,6 +1541,24 @@ describe('/api/*', () => {
       expect(body.stations[0]).toEqual({ stationId: 'study', displayName: '車庫', lat: 35.7, lon: 139.8 })
     })
 
+    it('正: 置き換えても観測点の並びは動かない（末尾へ付け直さない）', async () => {
+      const ops = makeStationConfigOps({
+        stations: [
+          { stationId: 'study', ...STATION_BODY },
+          { stationId: 'garage', ...STATION_BODY },
+        ],
+        boards: [],
+      })
+      const base = await startAuthed(new ReadingHub(), {}, undefined, ops)
+      const res = await fetch(`${base}/api/stations/study`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${TOKEN}`, Origin: ORIGIN, 'Content-Type': 'application/json' },
+        body: JSON.stringify(STATION_BODY),
+      })
+      expect(res.status).toBe(200)
+      expect(ops.get().stations.map((s) => s.stationId)).toEqual(['study', 'garage'])
+    })
+
     // **敵対的レビューで発見**（HIGH/CRITICAL）: オブジェクトリテラルのスプレッド順序を
     // 誤ると、ボディに紛れ込んだ stationId が URL パスの値を上書きしてしまい、
     // 「URL パスを正とする」という docstring の約束が壊れる。
@@ -1672,6 +1697,64 @@ describe('/api/*', () => {
       })
       expect(res.status).toBe(200)
       expect(ops.get().boards).toEqual([{ boardKey: BOARD_KEY, stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] }])
+    })
+
+    // **以前は保存した基板を末尾へ付け直していた**（一覧が保存のたびに入れ替わり、合成の
+    // メンバーの並びも動いた。#713）。
+    it('正: 既にある基板を保存しても、設定の中の位置は動かない', async () => {
+      const second = 'mac:bbbbbbbbbbbb' as const
+      const ops = makeStationConfigOps({
+        stations: [{ stationId: 'study', ...STATION_BODY }],
+        boards: [
+          { boardKey: BOARD_KEY, stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] },
+          { boardKey: second, stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] },
+        ],
+      })
+      const base = await startAuthed(new ReadingHub(), {}, undefined, ops)
+      const res = await fetch(`${base}/api/boards/${encodeURIComponent(BOARD_KEY)}`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${TOKEN}`, Origin: ORIGIN, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stationId: 'study', sensors: [] }),
+      })
+      expect(res.status).toBe(200)
+      expect(ops.get().boards.map((b) => b.boardKey)).toEqual([BOARD_KEY, second])
+    })
+
+    it('対照: 新しい基板は末尾へ足す', async () => {
+      const second = 'mac:bbbbbbbbbbbb' as const
+      const ops = makeStationConfigOps({
+        stations: [{ stationId: 'study', ...STATION_BODY }],
+        boards: [{ boardKey: second, stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] }],
+      })
+      const base = await startAuthed(new ReadingHub(), {}, undefined, ops)
+      await fetch(`${base}/api/boards/${encodeURIComponent(BOARD_KEY)}`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${TOKEN}`, Origin: ORIGIN, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stationId: 'study', sensors: [] }),
+      })
+      expect(ops.get().boards.map((b) => b.boardKey)).toEqual([second, BOARD_KEY])
+    })
+
+    // 付け直していた頃は一致する要素を全部除いていたので、重複は保存で解消されていた。
+    // 最初の 1 件だけを置き換えると 2 件目が残り、重複の検査で保存が永久に通らなくなる。
+    it('安全弁: 同じ基板が 2 件紛れ込んでいても、保存すれば最初の位置へ 1 件に畳む', async () => {
+      const second = 'mac:bbbbbbbbbbbb' as const
+      const ops = makeStationConfigOps({
+        stations: [{ stationId: 'study', ...STATION_BODY }],
+        boards: [
+          { boardKey: BOARD_KEY, stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] },
+          { boardKey: second, stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] },
+          { boardKey: BOARD_KEY, stationId: 'study', orientation: IDENTITY_MATRIX, sensors: [] },
+        ],
+      })
+      const base = await startAuthed(new ReadingHub(), {}, undefined, ops)
+      const res = await fetch(`${base}/api/boards/${encodeURIComponent(BOARD_KEY)}`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${TOKEN}`, Origin: ORIGIN, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stationId: 'study', sensors: [] }),
+      })
+      expect(res.status).toBe(200)
+      expect(ops.get().boards.map((b) => b.boardKey)).toEqual([BOARD_KEY, second])
     })
 
     it('安全弁: ボディに別の boardKey が入っていても無視し、URL パスの値だけが使われる', async () => {

@@ -12,11 +12,12 @@
 // 攻撃者が UDP パケット 1 個で管理コンソールのトークンを盗めるストアド XSS になる
 // （#313 段 C 敵対的レビューで検出）。
 
-import { ago, escapeHtml, isStale, qs, receptionBadgeHtml } from './dom'
+import { ago, boardLabelHtml, escapeHtml, isStale, qs, receptionBadgeHtml } from './dom'
 import { describeSilence } from '../receiver/assignedReception'
-import { CLOCK_OFFSET_WARN_MS, warnableClockOffset } from '../receiver/boardClockVerdict'
+import { warnableClockOffset } from '../receiver/boardClockVerdict'
 import type { BoardClockOffset } from '../receiver/boardClockVerdict'
-import { readFinite } from './readJson'
+import { readFinite, readNonEmptyString } from './readJson'
+import type { TabContext } from './tabState'
 
 /**
  * `GET /status` の形。**`statusReport.ts` の `StatusReport` を丸ごと再定義しない。**
@@ -47,6 +48,8 @@ interface StatusReportView {
     readonly enabled: boolean
     readonly calibrationConfigured: boolean
     readonly station: { readonly displayName: string } | null
+    /** 基板の表示名。**版の古いホストには欄が無い**ので、無ければ名前なしと読む。 */
+    readonly boardName?: string | null
   }[]
   readonly stationIntensities: readonly {
     readonly stationId: string
@@ -79,6 +82,11 @@ interface StatusReportView {
       readonly axes: readonly { readonly rmsGal: number | null }[]
     }[]
   }[]
+  /**
+   * 基板 1 枚ぶんの計測震度相当（`receiver/boardIntensity.ts`）。**設定の基板の並びのまま。**
+   * **版の古いホストは返さない**ので、読む側で配列であることを確かめる（{@link boardIntensitiesOf}）。
+   */
+  readonly boardIntensities?: readonly BoardIntensityView[]
   /** 生データ（miniSEED）の記録の健全性（`receiver/mseedRecorder.ts` の `MseedHealth` のうち画面に出す欄）。 */
   readonly mseed: {
     readonly writeErrors: number
@@ -100,6 +108,29 @@ interface StatusReportView {
    * **古いホストは返さない**ので、読む側で配列であることを確かめる（`boardClocksOf`）。
    */
   readonly boardClocks?: { readonly boards: readonly BoardClockOffset[] }
+}
+
+/** 基板 1 枚ぶんの行（`receiver/boardIntensity.ts` の `BoardIntensity` のうち画面に出す欄）。 */
+interface BoardIntensityView {
+  readonly boardKey: string
+  readonly boardName: string | null
+  readonly stationId: string
+  readonly stationName: string | null
+  /** `fused`・`single`・`two-axis`・`no-sensor`（`BoardIntensitySource`）。 */
+  readonly source: string
+  readonly lastPacketMs: number | null
+  readonly lastIntensity: number | null
+  readonly lastReadingReceivedMs: number | null
+  readonly lastSkipReason: string | null
+  readonly lastMemberCountMin: number | null
+  readonly lastMemberCountMax: number | null
+}
+
+/** 基板ごとの震度の一覧。**配列でなければ空として扱う**（`assignedBoardsOf` と同じ理由）。 */
+export function boardIntensitiesOf(status: Pick<StatusReportView, 'boardIntensities'>): readonly BoardIntensityView[] {
+  if (!Array.isArray(status.boardIntensities)) return []
+  // **形の崩れた要素は落とす**（`null` の行で `.source` を読むと、タブ全体が描けなくなる）。
+  return status.boardIntensities.filter((b): b is BoardIntensityView => typeof b === 'object' && b !== null)
 }
 
 /**
@@ -130,8 +161,7 @@ export function boardClockWarnings(nowMs: number, boards: readonly BoardClockOff
   }
   if (names.length === 0) return []
   return [
-    `時計がホストとずれている基板: ${names.join('、')}` +
-      `（${CLOCK_OFFSET_WARN_MS} ms を超えると、観測点の合成がその基板を欠きはじめる）`,
+    `時計がホストとずれている基板: ${names.join('、')}`,
   ]
 }
 
@@ -192,8 +222,7 @@ export function assignedSilenceWarnings(nowMs: number, boards: readonly Assigned
     )
   if (silentSensors.length > 0) {
     out.push(
-      `基板は届いているが、sensors[] に書いたセンサーが届いていない: ${silentSensors.join('、')}` +
-        '（sensorId の書き間違いでもこう見える）',
+      `基板は届いているが、登録したセンサーが届いていない: ${silentSensors.join('、')}`,
     )
   }
   return out
@@ -227,8 +256,8 @@ export function mseedWarnings(m: StatusReportView['mseed']): readonly string[] {
 /** 「生データの保存」欄の 1 行（数だけなのでエスケープは要らない）。 */
 export function mseedSummary(m: StatusReportView['mseed']): string {
   return (
-    `書き込みエラー: ${m.writeErrors} 件 / 失った記録: ${m.lostRecords} 本 / ` +
-    `書けたレコード: ${m.recordsWritten} 本 / 中身ごと残した読めないパケット: ${m.unreadableWritten} 件`
+    `書き込みエラー: ${m.writeErrors} 件 / 失ったレコード: ${m.lostRecords} 本 / ` +
+    `書けたレコード: ${m.recordsWritten} 本 / 読めないまま保存したパケット: ${m.unreadableWritten} 件`
   )
 }
 
@@ -383,7 +412,7 @@ export function sensorRowHtml(nowMs: number, s: SensorView): string {
   return `
           <tr>
             <td>${escapeHtml(s.station?.displayName ?? '未割当')}</td>
-            <td>${escapeHtml(s.boardKey)} / ${escapeHtml(s.sensorId)}</td>
+            <td>${boardLabelHtml(s.boardKey, typeof s.boardName === 'string' ? s.boardName : null)} / ${escapeHtml(s.sensorId)}</td>
             <td>${receptionBadgeHtml(nowMs, s.lastPacketMs)} ${ago(nowMs, s.lastPacketMs)}</td>
             ${sensorIntensityCellHtml(nowMs, s, mismatch !== null)}
             <td>${s.enabled ? '有効' : '無効'}</td>
@@ -446,6 +475,51 @@ export function stationRowHtml(nowMs: number, s: StationView): string {
 }
 
 /**
+ * 基板 1 枚ぶんの行（「基板ごとの震度」。#713-1）。
+ *
+ * **値の欄は出どころ（`source`）で出し分ける**（2026-10-11 ユーザー承認）。
+ * - `fused`: 基板ごとの合成の値と混ざった本数（`3 本`、揺れていれば `2〜3 本`）
+ * - `single`: センサー単独の値。本数の欄は「1 本（センサー単独）」
+ * - `two-axis`: 震度は灰色の「2 軸」（センサーの表と同じ。震度を出さないのが正しい状態）
+ * - `no-sensor`・それ以外: 震度を出せないので赤い「—」
+ *
+ * **古さの測り方は観測点の行と同じ**（震度が出た時刻と `lastSkipReason`。`stationIntensityStale`）。
+ * センサー単独の行は、ホストが「センサーが届いた時刻」を震度の時刻として入れてくる
+ * （`receiver/boardIntensity.ts` の `lastReadingReceivedMs`）ので、センサーの表と同じ測り方になる。
+ */
+export function boardIntensityRowHtml(nowMs: number, b: BoardIntensityView): string {
+  // **文字列の欄は型を確かめてから使う**（`/status` は無検証で読んでいて、版の違うホストでは欠けうる。
+  // 欠けた値を `escapeHtml` へ渡すと例外で稼働状況タブ全体が描けなくなる）。読めなければ「—」。
+  const boardKey = readNonEmptyString(b.boardKey)
+  const boardName = readNonEmptyString(b.boardName)
+  const station = readNonEmptyString(b.stationName) ?? readNonEmptyString(b.stationId)
+  const lastPacketMs = readFinite(b.lastPacketMs)
+  return `
+          <tr>
+            <td>${boardKey !== null ? boardLabelHtml(boardKey, boardName) : '—'}</td>
+            <td>${station !== null ? escapeHtml(station) : '—'}</td>
+            <td>${receptionBadgeHtml(nowMs, lastPacketMs)} ${ago(nowMs, lastPacketMs)}</td>
+            ${boardIntensityCellHtml(nowMs, b)}
+            ${boardMemberCellHtml(nowMs, b, lastPacketMs)}
+          </tr>`
+}
+
+function boardIntensityCellHtml(nowMs: number, b: BoardIntensityView): string {
+  if (b.source === 'two-axis') return '<td class="muted">2 軸</td>'
+  if (b.source !== 'fused' && b.source !== 'single') return `<td${STALE_ATTR}>—</td>`
+  const stale = isIntensityStale(nowMs, readFinite(b.lastReadingReceivedMs), b.lastSkipReason)
+  const value = readFinite(b.lastIntensity)
+  return `<td${staleAttr(stale)}>${value !== null ? value.toFixed(2) : '—'}</td>`
+}
+
+function boardMemberCellHtml(nowMs: number, b: BoardIntensityView, lastPacketMs: number | null): string {
+  if (b.source === 'single') return '<td>1 本（センサー単独）</td>'
+  if (b.source !== 'fused') return '<td>—</td>'
+  // 書き方は観測点の表と揃える（`memberCell`。「本」を付けるのは 2026-10-11 ユーザー承認）。
+  return `<td${staleAttr(isStale(nowMs, lastPacketMs))}>${memberCell(b.lastMemberCountMin, b.lastMemberCountMax)}</td>`
+}
+
+/**
  * まだ声が届いている行の数。**要約カードの「N / 全体」の左側。**
  *
  * **センサーと観測点の両方が通る。** 同じ物差し（`isStale`）で数えないと、片方の
@@ -455,7 +529,9 @@ export function countLive(nowMs: number, rows: readonly { readonly lastPacketMs:
   return rows.filter((r) => !isStale(nowMs, r.lastPacketMs)).length
 }
 
-export async function initStatusView(container: HTMLElement, signal: AbortSignal): Promise<void> {
+/** 稼働状況タブは選択も表示の好みも持たない（読むだけの画面）。使うのは打ち切りの合図だけ。 */
+export async function initStatusView(container: HTMLElement, ctx: TabContext): Promise<void> {
+  const { signal } = ctx
   container.innerHTML = `
     <div class="status-error"></div>
     <div class="status-body muted">読み込み中…</div>
@@ -471,6 +547,10 @@ export async function initStatusView(container: HTMLElement, signal: AbortSignal
 
     const stationRows = status.stationIntensities.map((s) => stationRowHtml(now, s)).join('')
 
+    const boardRows = boardIntensitiesOf(status)
+      .map((b) => boardIntensityRowHtml(now, b))
+      .join('')
+
     // **警告文は `describeFailure`（サーバー側）が組み立てる際、運用者が入力した
     // 生の値（`JSON.stringify(f.value)`）を埋め込むことがある。** `stationId`
     // （`ungroupedMultiBoardStations`）も同様に運用者由来。どちらもエスケープが
@@ -481,7 +561,7 @@ export async function initStatusView(container: HTMLElement, signal: AbortSignal
     }
     if (status.ungroupedMultiBoardStations.length > 0) {
       warnings.push(
-        `複数基板だが合成グループが組めていない観測点: ${escapeHtml(status.ungroupedMultiBoardStations.join('、'))}`,
+        `基板を複数割り当てたが、合成できていない観測点: ${escapeHtml(status.ungroupedMultiBoardStations.join('、'))}`,
       )
     }
     warnings.push(...mseedWarnings(status.mseed))
@@ -535,6 +615,15 @@ export async function initStatusView(container: HTMLElement, signal: AbortSignal
         </table>
       </section>
       <section class="panel">
+        <!-- **センサー → 基板 → 観測点の細かい順に並べる**（2026-10-11 ユーザー承認）。同じ観測点に
+             置いた基板どうしで値が離れていれば、据え付けかセンサーを疑う手掛かりになる。 -->
+        <h2>基板ごとの震度</h2>
+        <table>
+          <thead><tr><th>基板</th><th>観測点</th><th>受信</th><th>計測震度相当</th><th>混ざった本数</th></tr></thead>
+          <tbody>${boardRows.length > 0 ? boardRows : '<tr><td colspan="5" class="muted">観測点に割り当てた基板がありません</td></tr>'}</tbody>
+        </table>
+      </section>
+      <section class="panel">
         <!-- **「複数センサー合成」を見出しから外さない。** \`stationIntensities\` は
              2 台以上を割り当てた観測点にしか現れない（\`statusReport.ts\`）。見出しを
              「観測点ごとの震度」と一般化すると、センサー 1 台の構成では正常に動いて
@@ -546,7 +635,7 @@ export async function initStatusView(container: HTMLElement, signal: AbortSignal
                （#362・#315）。震度だけでは、値が高いときに「本当に揺れた」のか
                「顔ぶれの入れ替わりで段差が乗った」のかを見分けられない。 -->
           <thead><tr><th>観測点</th><th>受信</th><th>計測震度相当</th><th>混ざった本数</th><th>差分の最大（対）</th><th>ずれの最大（軸）</th></tr></thead>
-          <tbody>${stationRows.length > 0 ? stationRows : '<tr><td colspan="6" class="muted">該当なし（2 台以上を割り当てた観測点のみ）</td></tr>'}</tbody>
+          <tbody>${stationRows.length > 0 ? stationRows : '<tr><td colspan="6" class="muted">2 台以上を割り当てた観測点がありません</td></tr>'}</tbody>
         </table>
       </section>
       <section class="panel">

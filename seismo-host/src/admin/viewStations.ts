@@ -1,14 +1,20 @@
 // 観測点タブ（`/api/stations` の一覧・作成・更新・削除）。
 
 import { apiFetch, ApiError, describeAdminAuthFailure } from './api'
-import { escapeHtml, formatNumber, qs } from './dom'
+import { confirmDialog } from './confirmDialog'
+import { confirmDiscardUnsaved, escapeHtml, formatNumber, qs } from './dom'
 import {
   checkGeolocationAvailability,
   describeAccuracy,
   describeGeolocationError,
   roundCoord,
 } from './geolocation'
+import type { TabContext } from './tabState'
+import { lockableLabelHtml } from './tip'
 import type { StationInfo } from '../receiver/stationConfigTypes'
+
+/** URL の `#` に載せる選択のキー（編集中の観測点 ID）。 */
+const SELECTED_STATION_KEY = 'station'
 
 const STATION_ID_PREFIX = 'station-'
 
@@ -70,15 +76,14 @@ function fillForm(container: HTMLElement, station: StationInfo | null): void {
   // （README.md「`/api/stations`・`/api/boards`」）、ここを書き換えても別の
   // stationId として upsert されるだけで、元の行は残ったまま増える。
   idInput.readOnly = station !== null
-  // **「変更不可」はそれが本当のときだけ出す。** 新規登録では入力必須なので、
-  // 固定の文言にすると初めて登録する運用者へ嘘をつくことになる。
-  qs(container, '.stationId-label').textContent = station !== null ? '観測点 ID（変更不可）' : '観測点 ID'
+  qs(container, '.stationId-label').innerHTML = lockableLabelHtml('観測点 ID', station !== null)
   nameInput.value = station?.displayName ?? ''
   latInput.value = station !== null ? String(station.lat) : ''
   lonInput.value = station !== null ? String(station.lon) : ''
 }
 
-export async function initStationsView(container: HTMLElement, signal: AbortSignal): Promise<void> {
+export async function initStationsView(container: HTMLElement, ctx: TabContext): Promise<void> {
+  const { signal } = ctx
   container.innerHTML = `
     <div class="stations-error"></div>
     <section class="panel">
@@ -93,7 +98,9 @@ export async function initStationsView(container: HTMLElement, signal: AbortSign
       <form class="station-form">
         <!-- **ラベルの初期値はここに置く。** 初回マウントでは fillForm を通らない
              （reload しか呼ばない）ので、空にすると新規登録の画面でラベルごと消える。 -->
-        <label><span class="stationId-label">観測点 ID</span><input name="stationId" required /></label>
+        <!-- **<label> にしない。** 編集のときはラベルに説明が付く（lockableLabelHtml）。説明の付いた
+             ラベルを <label> に入れると、押したとき吹き出しより先に入力欄へフォーカスが移る。 -->
+        <div class="label-like" data-tip-row><span class="stationId-label" id="stationId-label">観測点 ID</span><input name="stationId" required aria-labelledby="stationId-label" /></div>
         <label>表示名<input name="displayName" required /></label>
         <div class="row">
           <label>緯度<input name="lat" type="number" step="any" required /></label>
@@ -105,7 +112,7 @@ export async function initStationsView(container: HTMLElement, signal: AbortSign
         </div>
         <div class="row">
           <button type="submit">保存</button>
-          <button type="button" class="reset-form">新規登録へ</button>
+          <button type="button" class="reset-form">新規</button>
         </div>
       </form>
     </section>
@@ -130,10 +137,21 @@ export async function initStationsView(container: HTMLElement, signal: AbortSign
    * （敵対的レビューで、両タブの非対称として検出）。
    */
   let formDirty = false
+  // **タブ移動・リロードの前にも訊く**（`app.ts`）。同じタブの中で別の行を開くときと同じ印を見る。
+  ctx.setUnsavedProbe(() => formDirty)
 
-  const confirmDiscardIfDirty = (): boolean => {
-    if (!formDirty) return true
-    return window.confirm('編集中の内容を破棄する？')
+  /**
+   * 保存していない入力が無ければその場で `then` を走らせ、あれば確認の窓で「破棄する」が
+   * 押されたときだけ走らせる（基板タブの `whenDiscardAllowed` と同じ形）。
+   */
+  const whenDiscardAllowed = (then: () => void): void => {
+    if (!formDirty) {
+      then()
+      return
+    }
+    void confirmDiscardUnsaved().then((ok) => {
+      if (ok && !signal.aborted) then()
+    })
   }
 
   const switchForm = (station: StationInfo | null): void => {
@@ -144,6 +162,7 @@ export async function initStationsView(container: HTMLElement, signal: AbortSign
       )
     }
     formDirty = false
+    ctx.selection.set({ [SELECTED_STATION_KEY]: station?.stationId ?? null })
   }
 
   // **`signal.aborted` を確認してから DOM を書く。** タブが切り替わった後に
@@ -191,7 +210,7 @@ export async function initStationsView(container: HTMLElement, signal: AbortSign
       const lat = Number(qs<HTMLInputElement>(container, '[name=lat]').value)
       const lon = Number(qs<HTMLInputElement>(container, '[name=lon]').value)
       if (stationId.length === 0) {
-        renderError(container, '観測点 ID を入力すること')
+        renderError(container, '観測点 ID を入力してください')
         return
       }
       try {
@@ -205,7 +224,7 @@ export async function initStationsView(container: HTMLElement, signal: AbortSign
         // まま次の候補を選び、同じ値をもう一度勧めることになる。
         switchForm(null)
         if (reloaded.ok) renderError(container, '')
-        else renderError(container, `保存済み。一覧の再取得に失敗（${reloaded.reason}）。再読込すること`)
+        else renderError(container, `保存済み。一覧を読み込めない: ${reloaded.reason}`)
       } catch (error) {
         if (signal.aborted) return
         renderError(container, describeSaveFailure(error))
@@ -214,8 +233,7 @@ export async function initStationsView(container: HTMLElement, signal: AbortSign
   })
 
   qs(container, '.reset-form').addEventListener('click', () => {
-    if (!confirmDiscardIfDirty()) return
-    switchForm(null)
+    whenDiscardAllowed(() => switchForm(null))
   })
 
   // **使えない接続では、押す前に理由を出しておく。** `navigator.geolocation` は
@@ -237,7 +255,7 @@ export async function initStationsView(container: HTMLElement, signal: AbortSign
       // `getCurrentPosition` がその場で投げる実装があり、そのときは
       // どちらのコールバックも呼ばれない——`checkGeolocationAvailability`
       // の 2 点（secure context・API の有無）では先に弾けない。
-      locationNote.textContent = `現在地を取得できない（${error instanceof Error ? error.message : String(error)}）`
+      locationNote.textContent = `現在地を取得できない: ${error instanceof Error ? error.message : String(error)}`
     }
   })
 
@@ -251,12 +269,12 @@ export async function initStationsView(container: HTMLElement, signal: AbortSign
           // **入れた座標は未保存の変更。** `input` イベントを経由しないので、
           // ここで印を立てないと別の行の編集へ移るとき確認なしで消える。
           formDirty = true
-          locationNote.textContent = `現在地を入れた（${describeAccuracy(position.coords.accuracy)}）`
+          locationNote.textContent = `現在地を入れた。${describeAccuracy(position.coords.accuracy)}`
         } catch (error) {
           // **非同期の中の例外は誰も受け取らない。** 握りつぶすと「取得中…」の
           // ままになり、運用者には固まったようにしか見えない（`dom.ts` の `qs`
           // は見つからなければ投げる）。
-          locationNote.textContent = `座標を入れられない（${error instanceof Error ? error.message : String(error)}）`
+          locationNote.textContent = `座標を入れられない: ${error instanceof Error ? error.message : String(error)}`
         }
       },
       (error) => {
@@ -277,13 +295,23 @@ export async function initStationsView(container: HTMLElement, signal: AbortSign
     const station = current.find((s) => s.stationId === stationId) ?? null
 
     if (target.classList.contains('edit-station') && station !== null) {
-      if (!confirmDiscardIfDirty()) return
-      switchForm(station)
+      // **答えを待つ間に一覧が描き直されうる**（確認の窓は非同期）。開く相手は答えの後に
+      // いまの一覧から引き直し、消えていたら開かない。
+      whenDiscardAllowed(() => {
+        const latest = current.find((s) => s.stationId === stationId)
+        if (latest !== undefined) switchForm(latest)
+      })
       return
     }
     if (target.classList.contains('delete-station')) {
       void (async () => {
-        if (!window.confirm(`観測点「${stationId}」を削除する？`)) return
+        const name = station !== null && station.displayName.length > 0 ? station.displayName : stationId
+        const ok = await confirmDialog(document, {
+          title: `観測点「${name}」を削除しますか？`,
+          body: null,
+          confirmLabel: '削除する',
+        })
+        if (!ok || signal.aborted) return
         try {
           await apiFetch(`/api/stations/${encodeURIComponent(stationId)}`, { method: 'DELETE' })
           if (signal.aborted) return
@@ -292,7 +320,7 @@ export async function initStationsView(container: HTMLElement, signal: AbortSign
           // ID が残るので、新規登録の状態へ戻しておく。
           switchForm(null)
           if (reloaded.ok) renderError(container, '')
-          else renderError(container, `削除済み。一覧の再取得に失敗（${reloaded.reason}）。再読込すること`)
+          else renderError(container, `削除済み。一覧を読み込めない: ${reloaded.reason}`)
         } catch (error) {
           if (signal.aborted) return
           renderError(container, describeSaveFailure(error))
@@ -302,10 +330,20 @@ export async function initStationsView(container: HTMLElement, signal: AbortSign
   })
 
   const initial = await reload()
-  // **初回マウントでも ID を提案する。** ここは `fillForm` を通らない経路なので、
-  // 呼ばないと「最初に開いた画面だけ空欄」という一貫しない挙動になる。
-  switchForm(null)
-  if (!initial.ok) renderError(container, initial.reason)
+  if (signal.aborted) return
+  // **一覧を取れなかったときは、覚えていた選択に触らない。** 一覧が空のままなので、
+  // 「一覧に無い」と取り違えて選択を消すと、トークンの失効や通信の途切れだけで
+  // 何を編集していたかが失われる（次に開いたとき、取れれば開き直す）。
+  if (!initial.ok) {
+    renderError(container, initial.reason)
+    return
+  }
+  // **前に編集していた観測点を開き直す。** 中身はホストの値で、入力の途中は戻さない
+  // （2026-10-10 ユーザー承認）。一覧に無ければ（消された・URL を書き換えた）新規の形にする。
+  // **初回マウントでも ID を提案する**（`switchForm(null)`）。ここは `fillForm` を通らない
+  // 経路なので、呼ばないと「最初に開いた画面だけ空欄」という一貫しない挙動になる。
+  const selectedId = ctx.selection.get(SELECTED_STATION_KEY)
+  switchForm(current.find((s) => s.stationId === selectedId) ?? null)
 }
 
 /** `GET /api/stations` の失敗理由を日本語化する（`describeSaveFailure` の GET 専用版）。 */
@@ -319,10 +357,10 @@ function describeFetchFailure(error: unknown): string {
 
 function describeSaveFailure(error: unknown): string {
   if (error instanceof ApiError && error.status === 409) {
-    return '基板が割り当て済み（先に基板側の割当を外すこと）'
+    return '基板が割り当てられているので削除できない'
   }
   if (error instanceof ApiError && error.status === 400) {
-    return `入力が不正: ${error.message}`
+    return `入力が無効: ${error.message}`
   }
   return describeFetchFailure(error)
 }

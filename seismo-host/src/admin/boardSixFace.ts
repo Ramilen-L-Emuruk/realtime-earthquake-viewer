@@ -113,6 +113,11 @@ export type BoardSixFaceRefusalReason =
   | 'missing-faces'
   /** 姿勢が足りない。 */
   | 'too-few-poses'
+  /**
+   * 数は足りているが、置いた向きが偏っていて解が定まらない（`directionsSpread`）。**`degenerate` と分ける**
+   * —— こちらは違う向きに斜めに置けば直る（2026-10-10 ユーザー承認）。
+   */
+  | 'directions-biased'
   /** 解が定まらない（解けない・収束しない・右手系の向きが食い違う）。 */
   | 'degenerate'
   /** 出た値が個体差として説明できない幅にある。 */
@@ -537,11 +542,30 @@ export function fitBoardSixFace(sensors: readonly BoardFitSensor[]): BoardSixFac
   return fitBoardSixFaceWith(sensors, DEFAULT_LIMITS)
 }
 
-/** {@link fitBoardSixFace} の手間の上限を渡せる形（テスト用）。 */
-export function fitBoardSixFaceWith(
-  sensors: readonly BoardFitSensor[],
-  limits: BoardFitLimits,
-): BoardSixFaceFit | BoardSixFaceRefusal {
+/** 窓から組み立てた姿勢（当てはめと進み具合が同じものを見る）。 */
+interface BoardPoses {
+  readonly axisCount: number
+  readonly minPoses: number
+  readonly priorH: readonly V3[]
+  readonly priorO: readonly number[]
+  /** 姿勢ごとの校正前の値（g 単位・軸を並べたもの）。 */
+  readonly m: readonly (readonly number[])[]
+  /** 姿勢ごとの区間（`m` と同じ並び）。 */
+  readonly intervals: readonly Run[]
+  /** 姿勢ごとの重力の向き（カードの向きで見たもの。`m` と同じ並び）。 */
+  readonly startG: readonly V3[]
+  readonly faces: FaceCoverage
+  /** 向きの違う置き方の数。 */
+  readonly poseCount: number
+  /** 置いた向きが偏っていないか（`directionsSpread`）。 */
+  readonly spreadOk: boolean
+}
+
+/**
+ * 窓から姿勢を組み立てる。**組み立てる前に断る理由があれば、その断り**（軸の本数・窓の始まり・
+ * カードの向き・同時に静止した置き方が無い・姿勢の値から向きが解けない）。
+ */
+function buildPoses(sensors: readonly BoardFitSensor[]): BoardPoses | BoardSixFaceRefusal {
   const axisCount = sensors.reduce((n, s) => n + s.prior.length, 0)
   const minPoses = minPosesFor(axisCount)
 
@@ -602,7 +626,7 @@ export function fitBoardSixFaceWith(
       const len = inside[0]!.meanGal.length
       for (let k = 0; k < len; k++) values.push(inside.reduce((acc, w) => acc + w.meanGal[k]! * w.sampleCount, 0) / n / GAL_PER_G)
     }
-    return [{ values, weight }]
+    return [{ values, weight, interval: iv }]
   })
   if (raw.length === 0) return refusal('no-common-pose', { minPoses, sensorId: sensors[sensors.length - 1]?.sensorId ?? null })
 
@@ -630,12 +654,34 @@ export function fitBoardSixFaceWith(
     '+z': has(2, 1),
     '-z': has(2, -1),
   }
-  const poseCount = distinct.length
+  return {
+    axisCount,
+    minPoses,
+    priorH,
+    priorO,
+    m,
+    intervals: raw.map((p) => p.interval),
+    startG,
+    faces,
+    poseCount: distinct.length,
+    // **数が足りても、斜めの置き方が同じ向きに偏っていれば解は定まらない。** 同じ向きの区間を重ねて数えると
+    // 散り具合が水増しされるので、向きの違う置き方だけで見る。
+    spreadOk: directionsSpread(distinct) >= DIRECTION_SPREAD_MIN,
+  }
+}
+
+/** {@link fitBoardSixFace} の手間の上限を渡せる形（テスト用）。 */
+export function fitBoardSixFaceWith(
+  sensors: readonly BoardFitSensor[],
+  limits: BoardFitLimits,
+): BoardSixFaceFit | BoardSixFaceRefusal {
+  const poses = buildPoses(sensors)
+  if ('ok' in poses) return poses
+  const { axisCount, minPoses, priorH, priorO, m, startG, faces, poseCount } = poses
+  // **解く条件の順に断る**（画面の進み具合も同じ順に並べる。`boardSixFaceProgress`）。
   if (!FACE_ORDER.every((f) => faces[f])) return refusal('missing-faces', { minPoses, faces, poseCount })
   if (poseCount < minPoses) return refusal('too-few-poses', { minPoses, faces, poseCount })
-  // **数が足りても、斜めの置き方が同じ向きに偏っていれば解は定まらない。** 同じ向きの区間を重ねて数えると
-  // 散り具合が水増しされるので、向きの違う置き方だけで見る。
-  if (!(directionsSpread(distinct) >= DIRECTION_SPREAD_MIN)) return refusal('degenerate', { minPoses, faces, poseCount })
+  if (!poses.spreadOk) return refusal('directions-biased', { minPoses, faces, poseCount })
 
   const start: Solution = {
     h: priorH.map((v, j) => {
@@ -643,7 +689,7 @@ export function fitBoardSixFaceWith(
       return [0, 1, 2].map((c) => (free.includes(c) ? v[c]! : 0)) as V3
     }),
     o: [...priorO],
-    g: startG,
+    g: [...startG],
   }
   warmUp(start, m, limits.warmupRounds)
   let solved = refine(start, m, limits.lmMaxRounds)
@@ -697,4 +743,90 @@ export function fitBoardSixFaceWith(
     return { sensorId: s.sensorId, axes }
   })
   return { ok: true, sensors: out, faces, poseCount, minPoses, maxResidualGal }
+}
+
+/**
+ * いまの置き方が数えられているか。
+ *
+ * - `not-counted`: まだ（どれかのセンサーがいま静止していない・静止してから窓が閉じていない）
+ * - `counted-new`: 数えた。これまでの置き方と違う向き（姿勢が 1 つ増えた）
+ * - `counted-same`: 数えたが、これまでに測った向きと同じ（姿勢は増えない）
+ */
+export type CurrentPlacement = 'not-counted' | 'counted-new' | 'counted-same'
+
+/**
+ * 6 面法の進み具合（2026-10-10 ユーザー承認）。**解く条件と同じ順に並べる** —— ① 全部のセンサーが
+ * 同時に静止 → ② 6 面 → ③ 向きの数 → ④ 斜めの散らばり。
+ */
+export interface BoardSixFaceProgress {
+  /** ① 全部のセンサーが同じ時間に静止した置き方があるか。 */
+  readonly commonPose: boolean
+  /** ② */
+  readonly faces: FaceCoverage
+  /** ③ 向きの違う置き方の数と、要る数。 */
+  readonly poseCount: number
+  readonly minPoses: number
+  /** ④ 置いた向きが偏っていないか。 */
+  readonly spreadOk: boolean
+  /**
+   * あと何姿勢要るか（**最低限の数**）。足りない姿勢の数・欠けている面の数・（数も面も足りていて散らばりが
+   * 足りないときの）1 の、いちばん大きい値。軸が足りず解けないなら無限大。
+   */
+  readonly remainingPoses: number
+  readonly current: CurrentPlacement
+}
+
+/**
+ * 6 面法の進み具合を出す。**投げない。** 姿勢を組み立てる前に断る理由（軸の本数・窓の始まり・カードの
+ * 向き・姿勢の値から向きが解けない）があれば `null` —— その理由はボタンの横に出る（`sixFaceProblem`）。
+ *
+ * `stillSinceMs` は**センサーの並びと同じ並び**で、いまの置き方で静止し始めた時刻（いま静止していなければ
+ * `null`）。いまの置き方が数えられているか（`current`）を決めるのに使う。
+ */
+export function boardSixFaceProgress(
+  sensors: readonly BoardFitSensor[],
+  stillSinceMs: readonly (number | null)[],
+): BoardSixFaceProgress | null {
+  const poses = buildPoses(sensors)
+  if ('ok' in poses) {
+    if (poses.reason !== 'no-common-pose') return null
+    return {
+      commonPose: false,
+      faces: NO_FACES,
+      poseCount: 0,
+      minPoses: poses.minPoses,
+      spreadOk: false,
+      remainingPoses: poses.minPoses,
+      current: 'not-counted',
+    }
+  }
+  const missingFaces = FACE_ORDER.filter((f) => !poses.faces[f]).length
+  const lacksSpread = !poses.spreadOk && poses.poseCount >= poses.minPoses && missingFaces === 0 ? 1 : 0
+  return {
+    commonPose: true,
+    faces: poses.faces,
+    poseCount: poses.poseCount,
+    minPoses: poses.minPoses,
+    spreadOk: poses.spreadOk,
+    remainingPoses: Math.max(poses.minPoses - poses.poseCount, missingFaces, lacksSpread),
+    current: currentPlacement(poses, stillSinceMs, sensors.length),
+  }
+}
+
+/**
+ * いまの置き方が数えられているか。**全部のセンサーがいま静止していて**、その静止が始まった後に終わる
+ * 姿勢（区間）があれば数えられている。同じ向きかどうかは、**その姿勢を除いても向きの数が減らないか**で
+ * 決める（数えるときの向きのまとめ方 `distinctDirections` と同じ物差し）。
+ */
+function currentPlacement(poses: BoardPoses, stillSinceMs: readonly (number | null)[], sensorCount: number): CurrentPlacement {
+  if (stillSinceMs.length !== sensorCount || sensorCount === 0) return 'not-counted'
+  let since = Number.NEGATIVE_INFINITY
+  for (const s of stillSinceMs) {
+    if (s === null) return 'not-counted'
+    since = Math.max(since, s)
+  }
+  const isCurrent = poses.intervals.map((iv) => iv.atMs > since)
+  if (!isCurrent.some(Boolean)) return 'not-counted'
+  const others = poses.startG.filter((_, i) => !isCurrent[i])
+  return distinctDirections(others).length < poses.poseCount ? 'counted-new' : 'counted-same'
 }

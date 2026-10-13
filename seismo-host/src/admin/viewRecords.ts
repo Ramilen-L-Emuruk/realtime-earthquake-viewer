@@ -17,6 +17,7 @@
 
 import { ApiError, apiFetch, describeAdminAuthFailure, getStoredToken } from './api'
 import { escapeHtml, qs } from './dom'
+import { tipHtml } from './tip'
 import {
   LANE_QUAKE_TITLE,
   LANE_RECEPTION_TITLE,
@@ -62,12 +63,11 @@ import {
   FREQ_MIN_HZ,
   NHNM,
   NLNM,
-  NOISE_MODEL_LEGEND,
+  NOISE_MODEL_TIP,
   NOISE_TITLE,
   SPECTRUM_EMPTY_TEXT,
   SPECTRUM_TITLE,
   binAt,
-  colorOfDb,
   colorScaleCss,
   dbExtent,
   dbRange,
@@ -83,7 +83,9 @@ import {
   readSpectrogramData,
   readSpectrumData,
   secondRms,
+  spectrogramDbAt,
   spectrogramHeader,
+  spectrogramPixels,
   spectrogramReadout,
   spectrogramTitle,
   spectrumHeader,
@@ -98,20 +100,27 @@ import { EVENTS_PAGE_LIMIT, readShakeRange, type ShakeRecordView, type ShakeVerd
 import {
   COLUMNS_MAX,
   COMPOSITE_TITLE,
-  COMPOSITE_TOO_WIDE_TEXT,
   EMPTY_RANGE_TEXT,
   GAP_NONE_LEGEND,
   GAP_PENDING_LEGEND,
   INTENSITY_STATION_ONLY_TEXT,
   INTENSITY_TITLE,
-  INTENSITY_TOO_WIDE_TEXT,
   OVERVIEW_CAPTION,
+  OVERVIEW_TIP,
   SAMPLES_RANGE_MAX_MS,
   SPAN_CHOICES,
   TOKEN_MISSING_TEXT,
   boundsOf,
+  clampRange,
   centerAt,
+  compositeColumnsTrace,
   compositeRuns,
+  meanLineTraces,
+  meanLinesStillUsable,
+  sameCompositeInputs,
+  samplesFetchRange,
+  smoothedTrace,
+  emptyColumnsTrace,
   fetchFailureText,
   fullSpanMs,
   groupChannels,
@@ -125,6 +134,7 @@ import {
   problemsNote,
   readChannelList,
   readEnvelopeData,
+  readCompositeData,
   readIntensityData,
   readSamplesData,
   readoutText,
@@ -149,12 +159,22 @@ import {
   type EnvelopeData,
   type GapSpan,
   type HourTallyView,
+  type CompositeData,
   type IntensityData,
   type IrregularHourView,
   type RecordGroup,
   type TimeRange,
   type ValueUnit,
 } from './recordsPlot'
+import type { TabContext } from './tabState'
+import { applyHiddenAxes, readRangeSelection, readRecordsPrefs, rememberHiddenAxes, writeRecordsPrefs } from './viewPrefs'
+import { lighterColor } from './wavePlot'
+import { MEAN_LINE_WINDOW_MS } from '../../../src/utils/waveMeanLines'
+
+/** URL の `#` に載せる選択のキー（見ている記録と、見ている時間の範囲。範囲は絶対時刻のミリ秒）。 */
+const SELECTED_GROUP_KEY = 'group'
+const RANGE_FROM_KEY = 'from'
+const RANGE_TO_KEY = 'to'
 
 /** 操作が止まってから取り直すまで。 */
 const RELOAD_DEBOUNCE_MS = 150
@@ -172,6 +192,9 @@ const PLOT_PADDING_Y = 6
 const TIME_LABEL_MARGIN = 36
 const WAVE_COLOR = 'rgba(37, 99, 168, 0.95)'
 const COMPOSITE_COLOR = 'rgba(123, 63, 160, 0.95)'
+/** 平均の線の色。**元の線の色を明るくしたもの**（`lighterColor`）。 */
+const MEAN_LINE_COLOR = lighterColor(WAVE_COLOR)
+const COMPOSITE_MEAN_LINE_COLOR = lighterColor(COMPOSITE_COLOR)
 const INTENSITY_COLOR = 'rgba(179, 38, 30, 0.9)'
 /** 欠けの斜線。**凡例（`index.html` の `.records-hatch-*`）と同じ色。** */
 const HATCH_NONE = 'rgba(179, 38, 30, 0.35)'
@@ -239,6 +262,8 @@ interface AxisData {
 interface FreqState {
   readonly groupKey: string
   readonly unit: 'gal' | 'native'
+  /** 取ったときの範囲。**状態行の数えに混ぜるのは、いまの範囲と同じときだけ**（前の範囲の数えを名乗らない）。 */
+  readonly fetched: TimeRange
   readonly spectrograms: ReadonlyMap<string, SpectrogramData>
   readonly spectra: ReadonlyMap<string, SpectrumData>
 }
@@ -250,6 +275,8 @@ interface Loaded {
   /** 軸の id ごと。 */
   readonly axes: ReadonlyMap<string, AxisData>
   readonly intensity: IntensityData | null
+  /** 10 分を超える幅の合成（要約から）。10 分以内は軸のサンプルから合成するので null。 */
+  readonly composite: CompositeData | null
 }
 
 /**
@@ -411,6 +438,56 @@ function drawTrace(ctx: CanvasRenderingContext2D, trace: AxisTrace, r: TimeRange
     started = true
   }
   ctx.stroke()
+}
+
+/**
+ * 平均の線（軸の正側・負側、合成の均した線）を重ねる。**元の線を明るくした色・2 倍の太さ**（PWA の詳細の窓と
+ * 同じ考え方。2026-10-12 ユーザー承認）。点は打たない（打つのは元の線だけ）。
+ */
+function drawMeanLine(ctx: CanvasRenderingContext2D, trace: AxisTrace, r: TimeRange, width: number, yOf: (v: number) => number, color: string): void {
+  const plan = pixelPlan(trace, r, width)
+  ctx.strokeStyle = color
+  ctx.lineWidth = 2
+  ctx.beginPath()
+  if (plan.mode === 'line') {
+    for (const s of plan.segments) {
+      s.xs.forEach((x, i) => {
+        if (i === 0) ctx.moveTo(x, yOf(s.vs[i]!))
+        else ctx.lineTo(x, yOf(s.vs[i]!))
+      })
+    }
+  } else {
+    let started = false
+    for (let x = 0; x < plan.lo.length; x++) {
+      const lo = plan.lo[x]!
+      const hi = plan.hi[x]!
+      if (Number.isNaN(lo) || Number.isNaN(hi)) {
+        started = false
+        continue
+      }
+      if (!started) ctx.moveTo(x + 0.5, yOf(lo))
+      else ctx.lineTo(x + 0.5, yOf(lo))
+      ctx.lineTo(x + 0.5, yOf(hi))
+      started = true
+    }
+  }
+  ctx.stroke()
+  ctx.lineWidth = 1
+}
+
+/**
+ * 軸の平均の線の控え。**指した所を動かすたびに描き直す**ので、そのたびに 10 分ぶんのサンプルを平均し直さない。
+ * 鍵はなぞり（取り直すと別のものになる）と中心（範囲を動かすと変わる）。**範囲を動かしている最中（`moving`）は
+ * 中心が違っても使い回す**（`meanLinesStillUsable`。10 分の幅のドラッグで 1 フレームに軸 1 本あたり約 2 ms かかっていた）。
+ */
+const meanLineCache = new WeakMap<AxisTrace, { readonly center: number; readonly lines: ReturnType<typeof meanLineTraces> }>()
+
+function cachedMeanLines(trace: AxisTrace, center: number, moving: boolean): ReturnType<typeof meanLineTraces> {
+  const hit = meanLineCache.get(trace)
+  if (hit !== undefined && meanLinesStillUsable(hit.center, center, moving)) return hit.lines
+  const lines = meanLineTraces(trace, center, MEAN_LINE_WINDOW_MS)
+  meanLineCache.set(trace, { center, lines })
+  return lines
 }
 
 /** 気象庁の P・S を段に重ねる。**秒まで分かれば破線、幅があれば薄い帯**（`arrivalMark`）。 */
@@ -610,42 +687,34 @@ function drawNoise(
 }
 
 /**
- * スペクトログラムの色を塗った絵の控え。**指した所の値を出すたびに描き直すので、升（1 段に最大 4 万個）を
- * 毎回塗らない** —— 材料・物差し・範囲・大きさが同じなら控えた絵を貼る。
+ * スペクトログラムの絵の控え。**指した所の値を出すたびに描き直すので、絵を毎回作らない** —— 材料・物差し・
+ * 範囲・大きさが同じなら控えた絵を貼る。
  */
 const spectrogramImages = new WeakMap<SpectrogramData, { readonly key: string; readonly image: HTMLCanvasElement }>()
 
+/**
+ * スペクトログラムを描く。絵は `spectrogramPixels`（升の間を dB で補う）で**画面の画素の細かさ**に作り、
+ * 引き伸ばさずに貼る（引き伸ばすと色どうしが混ざり、凡例の帯に無い色が出る）。
+ * **取り直す前（寄せている最中）も、前の材料をいまの時間軸の位置へ描く**（上の波形と時刻を揃える。
+ * 2026-10-12 ユーザー承認）。
+ */
 function drawSpectrogram(ctx: CanvasRenderingContext2D, g: SpectrogramData, dbr: { readonly lo: number; readonly hi: number }, r: TimeRange, width: number, height: number): void {
-  const dpr = globalThis.devicePixelRatio > 0 ? globalThis.devicePixelRatio : 1
-  const key = `${dbr.lo}|${dbr.hi}|${r.fromMs}|${r.toMs}|${width}|${height}|${dpr}`
+  // 描き先の Canvas の画素の数（`prepareCanvas` が画素比を掛けて合わせてある）。
+  const w = Math.max(1, ctx.canvas.width)
+  const h = Math.max(1, ctx.canvas.height)
+  const key = `${dbr.lo}|${dbr.hi}|${r.fromMs}|${r.toMs}|${w}|${h}`
   let cached = spectrogramImages.get(g)
   if (cached === undefined || cached.key !== key) {
     const image = document.createElement('canvas')
-    image.width = Math.round(width * dpr)
-    image.height = Math.round(height * dpr)
+    image.width = w
+    image.height = h
     const ic = image.getContext('2d')
     if (ic === null) return
-    ic.setTransform(dpr, 0, 0, dpr, 0, 0)
-    for (let j = 0; j < g.power.length; j += 1) {
-      const from = g.firstColumnMs + j * g.columnMs
-      const to = from + g.columnMs
-      if (to <= r.fromMs || from >= r.toMs) continue
-      const x0 = xOf(from, r, width)
-      const x1 = Math.max(x0 + 1, xOf(to, r, width))
-      const row = g.power[j]!
-      for (let b = 0; b < row.length; b += 1) {
-        const c = colorOfDb(psdToDb(row[b]!, g.unit), dbr)
-        if (c === null) continue
-        const top = yOfHz(Math.min(g.binEdgesHz[b + 1]!, FREQ_MAX_HZ), height)
-        const bottom = yOfHz(Math.max(g.binEdgesHz[b]!, FREQ_MIN_HZ), height)
-        ic.fillStyle = `rgb(${c[0]}, ${c[1]}, ${c[2]})`
-        // 升の境目に隙間が出ないよう、縦を半画素ぶん重ねる。
-        ic.fillRect(x0, top, x1 - x0, bottom - top + 0.5)
-      }
-    }
+    ic.putImageData(new ImageData(spectrogramPixels(g, dbr, r, w, h), w, h), 0, 0)
     cached = { key, image }
     spectrogramImages.set(g, cached)
   }
+  ctx.imageSmoothingEnabled = false
   ctx.drawImage(cached.image, 0, 0, width, height)
   // 要約がまだ無い時（作り終えると出る）。
   drawHatch(
@@ -762,7 +831,8 @@ function drawSpectrum(
   drawHoverLine(ctx, hoverX, plotHeight)
 }
 
-export async function initRecordsView(container: HTMLElement, signal: AbortSignal): Promise<void> {
+export async function initRecordsView(container: HTMLElement, ctx: TabContext): Promise<void> {
+  const { signal } = ctx
   container.innerHTML = `
     <section class="panel">
       <div class="row" style="align-items: center; flex-wrap: wrap; gap: 0.6rem">
@@ -783,7 +853,7 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
       <p class="records-list-note error"></p>
     </section>
     <section class="panel records-body" hidden>
-      <p class="muted" style="margin: 0 0 0.3rem">${OVERVIEW_CAPTION}</p>
+      <p class="muted" style="margin: 0 0 0.3rem">${tipHtml(OVERVIEW_CAPTION, OVERVIEW_TIP)}</p>
       <canvas class="wave-canvas records-overview" style="height: ${OVERVIEW_HEIGHT}px; cursor: pointer"></canvas>
       <div class="row" style="align-items: center; flex-wrap: wrap; gap: 0.6rem; margin: 0.6rem 0">
         <div class="period-buttons records-spans" role="group">
@@ -805,7 +875,7 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
       <!-- 範囲のスペクトルは横が周波数なので、時刻の段（寄せる・送る操作の対象）の外に置く。 -->
       <div class="records-spectrum-frame" style="margin-top: 0.8rem">
         <div class="row" style="justify-content: space-between; align-items: baseline">
-          <strong>${SPECTRUM_TITLE}</strong>
+          <strong class="records-spectrum-title">${escapeHtml(SPECTRUM_TITLE)}</strong>
           <span class="muted records-spectrum-header"></span>
         </div>
         <canvas class="wave-canvas records-spectrum" style="height: ${SPECTRUM_HEIGHT}px"></canvas>
@@ -840,10 +910,20 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
   const spectrumEl = qs<HTMLCanvasElement>(container, 'canvas.records-spectrum')
   const spectrumHeaderEl = qs(container, '.records-spectrum-header')
   const spectrumLegendEl = qs(container, '.records-spectrum-legend')
+  const spectrumTitleEl = qs(container, '.records-spectrum-title')
   const spectrumReadoutEl = qs(container, '.records-spectrum-readout')
 
   let groups: RecordGroup[] = []
   let group: RecordGroup | null = null
+  // **単位と隠した軸は前回のまま開く**（表示の好み。`tabState.ts`）。
+  const prefs = readRecordsPrefs(ctx.prefs.load())
+  /** 生データの記録で運用者が選んだ単位。合成の記録は gal しか無いので、これを当てるのは生データのときだけ。 */
+  let rawUnit: 'gal' | 'native' = prefs.unit
+  /** 記録ごとの隠した軸（運用者が押した結果）。 */
+  const hiddenByGroup = new Map(prefs.hidden)
+  const savePrefs = (): void => {
+    ctx.prefs.save(writeRecordsPrefs({ unit: rawUnit, hidden: hiddenByGroup }))
+  }
   let unit: 'gal' | 'native' = 'gal'
   let bounds: TimeRange = { fromMs: 0, toMs: 1 }
   let range: TimeRange = { fromMs: 0, toMs: 1 }
@@ -860,6 +940,13 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
   let reloadTimer: ReturnType<typeof setTimeout> | null = null
   let failure: string | null = null
   let hoverX: number | null = null
+  /** 合成の段の控え（`draw` の中を見ること）。 */
+  let compositeCache: {
+    readonly traces: readonly AxisTrace[]
+    readonly centers: readonly number[]
+    readonly trace: AxisTrace | null
+    readonly smooth: AxisTrace | null
+  } | null = null
   /** スペクトログラムの段を指しているときだけ、その段の中の縦の位置（周波数の読み取りに使う）。 */
   let hoverSpectrogramY: number | null = null
   /** 範囲のスペクトルの枠を指しているときの横の位置。 */
@@ -889,9 +976,7 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
 
   const rowsShape = (): string => {
     if (group === null) return ''
-    const samples = range.toMs - range.fromMs <= SAMPLES_RANGE_MAX_MS
-    const intensity = group.kind !== 'station' ? 'raw' : samples ? 'yes' : 'wide'
-    return `${group.key}|${samples}|${intensity}|${visibleAxes().map((a) => a.id).join(',')}`
+    return `${group.key}|${visibleAxes().map((a) => a.id).join(',')}`
   }
   let builtShape = ''
 
@@ -901,7 +986,6 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
       rowsEl.innerHTML = ''
       return
     }
-    const samples = range.toMs - range.fromMs <= SAMPLES_RANGE_MAX_MS
     const header = (title: string, cls: string): string => `
       <div class="row" style="justify-content: space-between; align-items: baseline; margin-top: 0.5rem">
         <strong>${escapeHtml(title)}</strong>
@@ -909,9 +993,8 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
       </div>`
     // 印の段は見出しを持たない（列の名前は段の中に書く）。
     let html = `<canvas class="wave-canvas records-canvas records-marks" style="height: ${MARKS_HEIGHT}px; margin-top: 0.5rem"></canvas>`
-    html += samples
-      ? `${header(COMPOSITE_TITLE, 'records-composite-peak')}<canvas class="wave-canvas records-canvas records-composite" style="height: ${COMPOSITE_HEIGHT}px"></canvas>`
-      : `<p class="muted" style="margin: 0.5rem 0 0">${COMPOSITE_TOO_WIDE_TEXT}</p>`
+    // 合成と震度の推移は**どの幅でも出す**（10 分を超えたら要約から。2026-10-10・2026-10-11 ユーザー承認）。
+    html += `${header(COMPOSITE_TITLE, 'records-composite-peak')}<canvas class="wave-canvas records-canvas records-composite" style="height: ${COMPOSITE_HEIGHT}px"></canvas>`
     for (const a of visibleAxes()) {
       html += `
         <div class="row" style="justify-content: space-between; align-items: baseline; margin-top: 0.5rem">
@@ -921,7 +1004,6 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
         <canvas class="wave-canvas records-canvas records-axis" data-axis-id="${escapeHtml(a.id)}" style="height: ${AXIS_HEIGHT}px"></canvas>`
     }
     if (group.kind !== 'station') html += `<p class="muted" style="margin: 0.5rem 0 0">${INTENSITY_STATION_ONLY_TEXT}</p>`
-    else if (!samples) html += `<p class="muted" style="margin: 0.5rem 0 0">${INTENSITY_TOO_WIDE_TEXT}</p>`
     else html += `${header(INTENSITY_TITLE, 'records-intensity-header')}<canvas class="wave-canvas records-canvas records-intensity" style="height: ${INTENSITY_HEIGHT}px"></canvas>`
     // ノイズ水準の推移（見えている軸を 1 枚に重ねる）。
     html += `
@@ -990,6 +1072,8 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     const span = range.toMs - range.fromMs
     const traces = axes.map((a) => data?.axes.get(a.id) ?? null)
     const centers = traces.map((t) => (t === null ? Number.NaN : traceCenter(t.trace, range)))
+    /** 範囲を動かしている最中か（止まったら取り直す。`scheduleLoad`）。平均の線と合成は、その間だけ前の材料を使う。 */
+    const moving = reloadTimer !== null
     const peaks = traces.map((t, i) => (t === null ? null : tracePeak(t.trace, range, centers[i]!)))
     const halfSpan = sharedHalfSpan(peaks)
     const valueUnit: ValueUnit = traces.find((t) => t !== null)?.unit ?? 'gal'
@@ -1033,6 +1117,12 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
         const c = Number.isFinite(centers[i]!) ? centers[i]! : 0
         const yOf = (v: number): number => mid - Math.max(-usable, Math.min(usable, ((v - c) / halfSpan) * usable))
         drawTrace(ctx, axis.trace, range, width, yOf, WAVE_COLOR)
+        // 正側・負側の平均の線（生のサンプルで描くときだけ。正負は段の中心で分ける）。
+        const lines = Number.isFinite(centers[i]!) ? cachedMeanLines(axis.trace, centers[i]!, moving) : null
+        if (lines !== null) {
+          drawMeanLine(ctx, lines.pos, range, width, yOf, MEAN_LINE_COLOR)
+          drawMeanLine(ctx, lines.neg, range, width, yOf, MEAN_LINE_COLOR)
+        }
         drawUnderline(ctx, axis.trace, range, width, plotHeight)
       }
       if (hoverX !== null) {
@@ -1048,10 +1138,43 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     const compositeCanvas = rowsEl.querySelector<HTMLCanvasElement>('canvas.records-composite')
     if (compositeCanvas !== null) {
       const peakEl = rowsEl.querySelector<HTMLElement>('.records-composite-peak')
-      const runs = traces.every((t) => t !== null) ? compositeRuns(traces.map((t) => t!.trace), centers) : null
-      const trace: AxisTrace | null = runs === null ? null : { kind: 'samples', runs }
+      // 10 分以内は軸のサンプルから、それより広ければ要約の列から（見えている軸が 1 本なら軸の列から）。
+      let trace: AxisTrace | null = null
+      let compositeUnit: ValueUnit = valueUnit
+      let compositeColumnMs: number | null = null
+      let compositeIrregular: readonly IrregularHourView[] = []
+      /** 欠けを塗る列。**合成が作れなくても塗る**（要約がまだ無いだけで真っ白にしない。震度の段と揃える）。 */
+      let gapTrace: AxisTrace | null = null
+      /** 合成の均した線（生のサンプルで描くときだけ）。 */
+      let smooth: AxisTrace | null = null
+      if (traces.length > 0 && traces.every((t) => t !== null && t.trace.kind === 'samples')) {
+        // **指した所を動かすたびに作り直さない**（軸の平均の線の控えと同じ理由）。軸のなぞりと中心が同じなら使い回す。
+        const axisTraces = traces.map((t) => t!.trace)
+        if (!sameCompositeInputs(compositeCache, axisTraces, centers, moving)) {
+          const runs = compositeRuns(axisTraces, centers)
+          const built: AxisTrace | null = runs === null ? null : { kind: 'samples', runs }
+          compositeCache = { traces: axisTraces, centers, trace: built, smooth: built === null ? null : smoothedTrace(built, MEAN_LINE_WINDOW_MS) }
+        }
+        trace = compositeCache!.trace
+        smooth = compositeCache!.smooth
+      } else if (traces.length > 0 && traces.every((t) => t !== null)) {
+        // 列で描く幅へ移った。10 分ぶんのサンプルの控えは手放す
+        compositeCache = null
+        const visible = axes.map((a, i) => ({ id: a.id, trace: traces[i]!.trace, center: centers[i]! }))
+        trace = compositeColumnsTrace(data?.composite ?? null, visible)
+        if (trace !== null && trace.kind === 'columns') compositeColumnMs = trace.columnMs
+        if (axes.length === 1) {
+          compositeIrregular = traces[0]!.irregular
+          gapTrace = trace ?? traces[0]!.trace
+        } else if (data?.composite != null) {
+          compositeUnit = data.composite.unit
+          compositeIrregular = data.composite.irregularHours
+          // 見えている軸の組が範囲のどの時の要約にも無い（作り終えていない・記録が無い）ときは、空の列で塗る。
+          gapTrace = trace ?? emptyColumnsTrace(data.composite.columnMs, data.composite.firstColumnMs, range)
+        }
+      }
       const p = trace === null ? null : tracePeak(trace, range, 0)
-      if (peakEl !== null) peakEl.textContent = p === null ? '' : peakLabel(p, valueUnit, span, null)
+      if (peakEl !== null) peakEl.textContent = p === null ? '' : peakLabel(p, compositeUnit, span, compositeColumnMs)
       const prepared = prepareCanvas(compositeCanvas, COMPOSITE_HEIGHT)
       if (prepared !== null) {
         const { ctx, width, height } = prepared
@@ -1059,11 +1182,16 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
         ctx.strokeRect(0.5, 0.5, width - 1, height - 1)
         drawTicks(ctx, range, width, height, false, ink)
         drawArrivals(ctx, quakes, range, width, height)
+        // 要約がまだ無い時（作り終えると出る）・記録が無い時。
+        if (gapTrace !== null && gapTrace.kind === 'columns' && data !== null) {
+          drawHatch(ctx, traceGaps(gapTrace, range, data.fetched, compositeIrregular), range, width, height)
+        }
         if (trace !== null && p !== null) {
-          // **下端を 0 に、上端をこの範囲の最大の少し上に**（合成は 0 以上）。
+          // **下端を 0 に、上端をこの範囲の最大の少し上に**（合成は 0 以上。列なら 0〜最大の塗りになる）。
           const top = Math.max(p.deviation, 1e-9) * 1.1
           const yOf = (v: number): number => height - PLOT_PADDING_Y - Math.min(1, v / top) * (height - 2 * PLOT_PADDING_Y)
           drawTrace(ctx, trace, range, width, yOf, COMPOSITE_COLOR)
+          if (smooth !== null) drawMeanLine(ctx, smooth, range, width, yOf, COMPOSITE_MEAN_LINE_COLOR)
         }
       }
     }
@@ -1073,7 +1201,7 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     if (intensityCanvas !== null) {
       const headerEl = rowsEl.querySelector<HTMLElement>('.records-intensity-header')
       const d = data?.intensity ?? null
-      if (headerEl !== null) headerEl.textContent = d === null ? '' : intensityHeader(d)
+      if (headerEl !== null) headerEl.textContent = d === null ? '' : intensityHeader(d, span)
       const prepared = prepareCanvas(intensityCanvas, INTENSITY_HEIGHT)
       if (prepared !== null) {
         const { ctx, width, height } = prepared
@@ -1081,7 +1209,28 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
         ctx.strokeRect(0.5, 0.5, width - 1, height - 1)
         drawTicks(ctx, range, width, height, false, ink)
         drawArrivals(ctx, quakes, range, width, height)
-        const values = d === null ? [] : d.series.flatMap((s) => (s.value === null ? [] : [s.value]))
+        // 10 分を超える幅は要約の列（列ごとの最大を線で結ぶ）。
+        const points: { atMs: number; value: number | null }[] =
+          d === null
+            ? []
+            : d.kind === 'series'
+              ? [...d.series]
+              : d.realtime.map((v, j) => ({ atMs: d.firstColumnMs + (j + 0.5) * d.columnMs, value: Number.isFinite(v) ? v : null }))
+        // 列の間隔より空いたら線を切る（点のときは刻みの 1 秒）。
+        const joinMs = d !== null && d.kind === 'columns' ? d.columnMs * 1.5 : 1500
+        if (d !== null && d.kind === 'columns' && data !== null) {
+          const gapTrace: AxisTrace = {
+            kind: 'columns',
+            columnMs: d.columnMs,
+            firstColumnMs: d.firstColumnMs,
+            n: d.realtime.map((v) => (Number.isFinite(v) ? 1 : 0)),
+            min: d.realtime,
+            max: d.realtime,
+            mean: d.realtime,
+          }
+          drawHatch(ctx, traceGaps(gapTrace, range, data.fetched, d.irregularHours), range, width, height)
+        }
+        const values = points.flatMap((s) => (s.value === null ? [] : [s.value]))
         if (d !== null && values.length > 0) {
           const lo = Math.floor(Math.min(...values) - 0.1)
           const hi = Math.max(lo + 1, Math.ceil(Math.max(...values) + 0.1))
@@ -1103,13 +1252,13 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
           ctx.lineWidth = 1.5
           ctx.beginPath()
           let prevAt = Number.NaN
-          for (const s of d.series) {
+          for (const s of points) {
             if (s.value === null) {
               prevAt = Number.NaN
               continue
             }
             const x = xOf(s.atMs, range, width)
-            if (Number.isNaN(prevAt) || s.atMs - prevAt > 1500) ctx.moveTo(x, yOf(s.value))
+            if (Number.isNaN(prevAt) || s.atMs - prevAt > joinMs) ctx.moveTo(x, yOf(s.value))
             else ctx.lineTo(x, yOf(s.value))
             prevAt = s.atMs
           }
@@ -1178,9 +1327,9 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     spectrumHeaderEl.textContent =
       firstSpectrum === null ? '' : firstSpectrum.segments === 0 ? SPECTRUM_EMPTY_TEXT : spectrumHeader(firstSpectrum.segments, firstSpectrum.source)
     const spectrumUnit: ValueUnit = firstSpectrum?.unit ?? valueUnit
-    const legendLines = [axisColorLegend()]
-    if (spectrumUnit === 'gal') legendLines.push(escapeHtml(NOISE_MODEL_LEGEND))
-    spectrumLegendEl.innerHTML = legendLines.join('\n')
+    spectrumLegendEl.innerHTML = axisColorLegend()
+    // **破線の説明は破線を描くときだけ添える**（雑音のモデルは gal でしか描かない）。固定の説明なのでホバーで出す。
+    spectrumTitleEl.innerHTML = spectrumUnit === 'gal' ? tipHtml(SPECTRUM_TITLE, NOISE_MODEL_TIP) : escapeHtml(SPECTRUM_TITLE)
     {
       const prepared = prepareCanvas(spectrumEl, SPECTRUM_HEIGHT)
       if (prepared !== null) {
@@ -1217,19 +1366,34 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     if (freqFailure !== null) notes.push(fetchFailureText(freqFailure))
     if (data !== null) {
       if (axisData.length > 0 && peaks.every((p) => p === null)) notes.push(EMPTY_RANGE_TEXT)
-      const problems = problemsNote(maxTally(axisData.map((a) => a.hours)))
+    }
+    // 読めない時・換算できない時は、波形とスペクトログラムを合わせて数える。**スペクトログラムは 12 時間まで
+    // 生のサンプルから作る**（波形は 10 分を超えると要約から）ので、生データだけが読めない時は周波数の段だけが
+    // 空く —— 波形の数えだけを見ると、その理由がどこにも出ない。寄せている最中（取り直す前）の材料は前の範囲の
+    // ものなので数えに混ぜない。
+    const gramsForRange = f !== null && f.fetched.fromMs === range.fromMs && f.fetched.toMs === range.toMs ? f : null
+    const gramsShown =
+      gramsForRange === null
+        ? []
+        : axes.map((a) => gramsForRange.spectrograms.get(a.id) ?? null).filter((g): g is SpectrogramData => g !== null)
+    if (data !== null || gramsShown.length > 0) {
+      const problems = problemsNote(maxTally([...axisData.map((a) => a.hours), ...gramsShown.map((g) => g.hours)]))
       if (problems !== null) notes.push(problems)
-      const unscaled = unscaledNote(Math.max(0, ...axisData.map((a) => a.unscaledHours)))
+      const unscaled = unscaledNote(Math.max(0, ...axisData.map((a) => a.unscaledHours), ...gramsShown.map((g) => g.problems.unscaledHours)))
       if (unscaled !== null) notes.push(unscaled)
     }
     noteEl.textContent = notes.join('　')
 
     // 印の段の凡例と注。
-    const legend = [RECEPTION_LEGEND, QUAKE_LEGEND, SHAKE_LEGEND]
+    // **凡例は固定の説明なのでホバーで出す**（2026-10-13 ユーザー承認）。受信の帯がどの基板のものかは、
+    // 観測点の合成波形を見ているときだけ受信の行へ足す（センサーの生データでは基板が 1 枚に決まっている）。
+    const receptionLegend =
+      group.kind === 'station' && group.stationId !== null ? `${RECEPTION_LEGEND}。${RECEPTION_STATION_NOTE}` : RECEPTION_LEGEND
+    const legend = [receptionLegend, QUAKE_LEGEND, SHAKE_LEGEND]
     if (span <= SAMPLES_RANGE_MAX_MS) legend.push(UNDERLINE_LEGEND)
-    marksLegendEl.textContent = legend.join('\n')
+    marksLegendEl.innerHTML = tipHtml('凡例', legend.join('\n'))
     const marksNotes: string[] = []
-    if (group.kind === 'station') marksNotes.push(group.stationId === null ? RECEPTION_STATION_GONE_TEXT : RECEPTION_STATION_NOTE)
+    if (group.kind === 'station' && group.stationId === null) marksNotes.push(RECEPTION_STATION_GONE_TEXT)
     if (m !== null) {
       const pending = receptionPendingNote(m.receptionPending)
       if (pending !== null) marksNotes.push(pending)
@@ -1271,13 +1435,10 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
       }
       if (hoverSpectrogramY !== null) {
         const hz = hzOfY(hoverSpectrogramY, SPECTROGRAM_HEIGHT)
+        // 絵と同じ補い方で読む（升の値をそのまま出すと、指した所の色と数字が食い違う）。
         const items = axes.map((a, i) => {
           const g = grams[i] ?? null
-          if (g === null) return { short: a.short, db: Number.NaN }
-          const j = Math.floor((at - g.firstColumnMs) / g.columnMs)
-          const b = binAt(g.binEdgesHz, hz)
-          const p = b < 0 ? undefined : g.power[j]?.[b]
-          return { short: a.short, db: p === undefined ? Number.NaN : psdToDb(p, g.unit) }
+          return { short: a.short, db: g === null ? Number.NaN : spectrogramDbAt(g, at, hz) }
         })
         const line = spectrogramReadout(hz, items)
         if (line !== null) lines.push(line)
@@ -1320,7 +1481,9 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
       const axes = await Promise.all(
         g.axes.map(async (a): Promise<[string, AxisData | null]> => {
           if (plan.kind === 'samples') {
-            const body = await apiFetch<unknown>(recordsUrl('samples', { channel: a.id, from: r.fromMs, to: r.toMs, unit: u }), { signal: controller.signal })
+            // 前後を少し広く取る（平均の線が両端でも前後 0.5 秒を使えるように。`samplesFetchRange`）
+            const wide = samplesFetchRange(r, MEAN_LINE_WINDOW_MS)
+            const body = await apiFetch<unknown>(recordsUrl('samples', { channel: a.id, from: wide.fromMs, to: wide.toMs, unit: u }), { signal: controller.signal })
             const s = readSamplesData(body)
             if (s === null) throw new Error('応答の形が違う')
             return [
@@ -1358,17 +1521,37 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
           ]
         }),
       )
+      // **震度と合成は取れなくても軸の段は描く**（取れなかった理由は同じ行に出す）。400 日まで読む口なので、
+      // 軸の段より失敗しやすい —— 道連れにすると、取れている波形まで消える。
+      let partFailure: string | null = null
+      const optional = async <T>(fetchOne: () => Promise<T | null>): Promise<T | null> => {
+        try {
+          const got = await fetchOne()
+          if (got === null) throw new Error('応答の形が違う')
+          return got
+        } catch (error) {
+          if (isAbort(error) || controller.signal.aborted || signal.aborted) throw error
+          partFailure ??= failureReason(error)
+          return null
+        }
+      }
       let intensity: IntensityData | null = null
-      if (g.kind === 'station' && g.stationKey !== null && plan.kind === 'samples') {
-        const body = await apiFetch<unknown>(recordsUrl('intensity', { station: g.stationKey, from: r.fromMs, to: r.toMs }), { signal: controller.signal })
-        intensity = readIntensityData(body)
-        if (intensity === null) throw new Error('応答の形が違う')
+      if (g.kind === 'station' && g.stationKey !== null) {
+        const query: Record<string, string | number> = { station: g.stationKey, from: r.fromMs, to: r.toMs }
+        if (plan.kind === 'envelope') query.columns = plan.columns
+        intensity = await optional(async () => readIntensityData(await apiFetch<unknown>(recordsUrl('intensity', query), { signal: controller.signal })))
+      }
+      // 10 分を超える幅の合成は要約から（**軸の組すべて**を 1 回で取る。軸を隠しても取り直さない）。
+      let composite: CompositeData | null = null
+      if (plan.kind === 'envelope') {
+        const url = recordsUrl('composite', { group: g.key, from: r.fromMs, to: r.toMs, columns: plan.columns, unit: u })
+        composite = await optional(async () => readCompositeData(await apiFetch<unknown>(url, { signal: controller.signal })))
       }
       if (controller.signal.aborted || signal.aborted) return
       const map = new Map<string, AxisData>()
       for (const [id, d] of axes) if (d !== null) map.set(id, d)
-      loaded = { groupKey: g.key, unit: u, fetched: r, axes: map, intensity }
-      failure = null
+      loaded = { groupKey: g.key, unit: u, fetched: r, axes: map, intensity, composite }
+      failure = partFailure
     } catch (error) {
       if (isAbort(error) || controller.signal.aborted || signal.aborted) return
       failure = failureReason(error)
@@ -1531,6 +1714,7 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
       freq = {
         groupKey: g.key,
         unit: u,
+        fetched: r,
         spectrograms: new Map(results.map((x) => [x.id, x.gram])),
         spectra: new Map(results.map((x) => [x.id, x.spectrum])),
       }
@@ -1546,22 +1730,37 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     if (reloadTimer !== null) clearTimeout(reloadTimer)
     reloadTimer = setTimeout(() => {
       reloadTimer = null
+      // 止まった時点で 1 度描き直す（動かしている間に使い回した平均の線と合成を、いまの中心で作り直す。
+      // 取り直しは通信を挟むので、終わるまで待つと古い中心のまま残る）。
+      draw()
       void load()
       loadMarks()
       void loadFreq()
     }, RELOAD_DEBOUNCE_MS)
   }
 
+  /** 見ている範囲を URL へ載せる（`app.ts` が書き込みを間引く。ドラッグのたびに呼んでよい）。 */
+  const rememberRange = (): void => {
+    ctx.selection.set({ [RANGE_FROM_KEY]: String(Math.round(range.fromMs)), [RANGE_TO_KEY]: String(Math.round(range.toMs)) })
+  }
+
   const setRange = (next: TimeRange): void => {
     range = next
     atEl.value = toLocalInput((range.fromMs + range.toMs) / 2)
+    rememberRange()
     draw()
     scheduleLoad()
   }
 
   // ---- 記録を選ぶ ----
 
-  const selectGroup = (key: string): void => {
+  /**
+   * 記録を選ぶ。**範囲・隠した軸・単位はここで決め直す**（記録ごとに期間も軸も違う）。
+   *
+   * `restoredRange` は開き直したとき URL から読んだ範囲。**記録の期間へ収めてから当てる**
+   * （覚えた後に古い記録が消えて期間が縮んでいることがある）。無ければ新しい側の既定の幅。
+   */
+  const selectGroup = (key: string, restoredRange: TimeRange | null): void => {
     // 範囲を動かした直後の取り直しの予約は捨てる（下で新しい記録をすぐ取るので、残すと同じ取得が 2 回走る）。
     if (reloadTimer !== null) {
       clearTimeout(reloadTimer)
@@ -1570,6 +1769,7 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     group = groups.find((g) => g.key === key) ?? null
     hidden = new Set()
     loaded = null
+    compositeCache = null
     overview = null
     marks = null
     marksController?.abort()
@@ -1580,17 +1780,31 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     if (group === null) {
       bodyEl.hidden = true
       periodEl.textContent = ''
+      ctx.selection.set({ [SELECTED_GROUP_KEY]: null, [RANGE_FROM_KEY]: null, [RANGE_TO_KEY]: null })
       return
     }
-    if (group.kind === 'station') unit = 'gal'
+    // **単位の切り替えは生データのときだけ出す**（合成は gal しか無い）。生データでは前に選んだ単位へ戻す。
+    unit = group.kind === 'raw' ? rawUnit : 'gal'
     unitEl.hidden = group.kind !== 'raw'
     for (const b of unitEl.querySelectorAll<HTMLButtonElement>('button[data-unit]')) b.setAttribute('aria-pressed', String(b.dataset.unit === unit))
     periodEl.textContent = periodText(group)
     bounds = boundsOf(group)
-    range = withSpan({ fromMs: bounds.toMs - INITIAL_SPAN_MS, toMs: bounds.toMs }, INITIAL_SPAN_MS, bounds)
+    range =
+      restoredRange !== null
+        ? clampRange(restoredRange, bounds)
+        : withSpan({ fromMs: bounds.toMs - INITIAL_SPAN_MS, toMs: bounds.toMs }, INITIAL_SPAN_MS, bounds)
+    hidden = applyHiddenAxes(
+      hiddenByGroup.get(group.key),
+      group.axes.map((a) => a.id),
+    )
     axesEl.innerHTML = group.axes
-      .map((a) => `<button type="button" data-axis-id="${escapeHtml(a.id)}" aria-pressed="true">${escapeHtml(a.label)}</button>`)
+      .map(
+        (a) =>
+          `<button type="button" data-axis-id="${escapeHtml(a.id)}" aria-pressed="${!hidden.has(a.id)}">${escapeHtml(a.label)}</button>`,
+      )
       .join('')
+    ctx.selection.set({ [SELECTED_GROUP_KEY]: group.key })
+    rememberRange()
     bodyEl.hidden = false
     buildRows()
     atEl.value = toLocalInput((range.fromMs + range.toMs) / 2)
@@ -1601,7 +1815,7 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     void loadFreq()
   }
 
-  groupEl.addEventListener('change', () => selectGroup(groupEl.value), { signal })
+  groupEl.addEventListener('change', () => selectGroup(groupEl.value, null), { signal })
 
   unitEl.addEventListener(
     'click',
@@ -1611,6 +1825,10 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
       const next = b.dataset.unit === 'native' ? 'native' : 'gal'
       if (next === unit) return
       unit = next
+      if (group.kind === 'raw') {
+        rawUnit = next
+        savePrefs()
+      }
       for (const x of unitEl.querySelectorAll<HTMLButtonElement>('button[data-unit]')) x.setAttribute('aria-pressed', String(x.dataset.unit === unit))
       loaded = null
       void load()
@@ -1652,6 +1870,8 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
       if (hidden.has(id)) hidden.delete(id)
       else hidden.add(id)
       b.setAttribute('aria-pressed', String(!hidden.has(id)))
+      rememberHiddenAxes(hiddenByGroup, group.key, [...hidden])
+      savePrefs()
       draw()
     },
     { signal },
@@ -1709,6 +1929,7 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
         const span = drag.startRange.toMs - drag.startRange.fromMs
         range = shiftBy(drag.startRange, -((e.clientX - drag.startX) / drag.width) * span, bounds)
         atEl.value = toLocalInput((range.fromMs + range.toMs) / 2)
+        rememberRange()
         hoverX = null
         draw()
         scheduleLoad()
@@ -1783,16 +2004,28 @@ export async function initRecordsView(container: HTMLElement, signal: AbortSigna
     groups = groupChannels(list.channels)
     listNoteEl.textContent = unreadableListNote(list.unreadable) ?? ''
     if (groups.length === 0) {
-      periodEl.textContent = EMPTY_RANGE_TEXT
+      // **読めない要約があるなら「記録は無い」と言わない**（記録はあるのに一覧へ出せていないだけ。
+      // そのことは上の行が伝える。2026-10-13 ユーザー承認）。
+      periodEl.textContent = list.unreadable > 0 ? '' : EMPTY_RANGE_TEXT
       return
     }
     const stations = groups.filter((g) => g.kind === 'station')
     const raws = groups.filter((g) => g.kind === 'raw')
-    const option = (g: RecordGroup): string => `<option value="${escapeHtml(g.key)}">${escapeHtml(g.label)}</option>`
+    const option = (g: RecordGroup): string =>
+      `<option value="${escapeHtml(g.key)}"${g.hint === null ? '' : ` title="${escapeHtml(g.hint)}"`}>${escapeHtml(g.label)}</option>`
     groupEl.innerHTML =
       (stations.length > 0 ? `<optgroup label="観測点の合成波形">${stations.map(option).join('')}</optgroup>` : '') +
       (raws.length > 0 ? `<optgroup label="センサーの生データ">${raws.map(option).join('')}</optgroup>` : '')
-    selectGroup(groups[0]!.key)
+    // **前に見ていた記録と範囲を開き直す。** 記録が一覧に無ければ（消えた・URL を書き換えた）先頭へ戻し、
+    // そのときは範囲も当てない（別の記録の範囲なので）。
+    const wanted = ctx.selection.get(SELECTED_GROUP_KEY)
+    const restoring = wanted !== null && groups.some((g) => g.key === wanted)
+    const key = restoring ? wanted : groups[0]!.key
+    groupEl.value = key
+    selectGroup(
+      key,
+      restoring ? readRangeSelection(ctx.selection.get(RANGE_FROM_KEY), ctx.selection.get(RANGE_TO_KEY)) : null,
+    )
   } catch (error) {
     if (isAbort(error) || signal.aborted) return
     listNoteEl.textContent = fetchFailureText(failureReason(error))

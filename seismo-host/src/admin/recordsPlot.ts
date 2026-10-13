@@ -13,6 +13,7 @@
 
 import { readFinite, readFiniteArray, readFiniteArrayWithGaps, readNonEmptyString } from './readJson'
 import { formatMeasured } from '../../../src/utils/measuredIntensityRounding'
+import { movingAverage, signedMovingAverages } from '../../../src/utils/waveMeanLines'
 import { formatGal, niceHalfSpanGal } from './wavePlot'
 
 const SECOND_MS = 1000
@@ -42,7 +43,14 @@ export interface RecordChannelView {
   readonly lastHourMs: number
   readonly hours: number
   readonly sensor: string | null
-  readonly board: { readonly boardKey: string; readonly sensorId: string; readonly stationId: string; readonly stationName: string | null } | null
+  readonly board: {
+    readonly boardKey: string
+    /** 基板の表示名。付けていなければ・欄の無い版のホストなら null。 */
+    readonly boardName: string | null
+    readonly sensorId: string
+    readonly stationId: string
+    readonly stationName: string | null
+  } | null
   readonly station: { readonly stationId: string; readonly displayName: string } | null
 }
 
@@ -61,7 +69,10 @@ function readBoard(v: unknown): RecordChannelView['board'] | undefined {
   if (boardKey === null || sensorId === null || stationId === null) return undefined
   const stationName = o.stationName === null ? null : readNonEmptyString(o.stationName)
   if (stationName === null && o.stationName !== null) return undefined
-  return { boardKey, sensorId, stationId, stationName }
+  // **欄が無いのは版の古いホスト**（名前を付ける前）なので、付けていないのと同じに読む。
+  const boardName = o.boardName === undefined || o.boardName === null ? null : readNonEmptyString(o.boardName)
+  if (boardName === null && o.boardName !== undefined && o.boardName !== null) return undefined
+  return { boardKey, boardName, sensorId, stationId, stationName }
 }
 
 function readStation(v: unknown): RecordChannelView['station'] | undefined {
@@ -112,6 +123,8 @@ export interface RecordGroup {
   readonly key: string
   readonly kind: 'raw' | 'station'
   readonly label: string
+  /** 選ぶ欄でホバーに出すもの（基板を表示名で名乗ったときの基板 Key）。無ければ null。 */
+  readonly hint: string | null
   readonly axes: readonly RecordAxis[]
   /** 合成波形の札（震度の推移を引くのに使う）。生データは null。 */
   readonly stationKey: string | null
@@ -146,7 +159,12 @@ function groupLabel(first: RecordChannelView, stationKey: string | null): string
   if (first.kind === 'station') return first.station !== null ? first.station.displayName : `外した観測点（札 ${stationKey ?? ''}）`
   const b = first.board
   if (b === null) return `割り当ての無いセンサー（${first.sensor ?? first.id}）`
-  return `${b.stationName ?? b.stationId} ／ 基板 ${b.boardKey} のセンサー ${b.sensorId}`
+  return `${b.stationName ?? b.stationId} ／ 基板 ${b.boardName ?? b.boardKey} のセンサー ${b.sensorId}`
+}
+
+/** 選ぶ欄でホバーに出すもの。**名前で名乗った生データだけ、基板 Key を添える**（稼働状況・波形タブと同じ作法）。 */
+function groupHint(first: RecordChannelView): string | null {
+  return first.kind === 'raw' && first.board !== null && first.board.boardName !== null ? first.board.boardKey : null
 }
 
 /**
@@ -209,6 +227,7 @@ export function groupChannels(channels: readonly RecordChannelView[]): RecordGro
       key,
       kind: first.kind,
       label: groupLabel(first, b.stationKey),
+      hint: groupHint(first),
       axes,
       stationKey: b.stationKey,
       stationId,
@@ -507,12 +526,33 @@ export function readSamplesData(value: unknown): SamplesData | null {
   return { unit, runs, problems }
 }
 
-export interface IntensityData {
-  readonly series: readonly { readonly atMs: number; readonly value: number | null }[]
-  readonly maxRealtime: number | null
-  readonly maxRealtimeAtMs: number | null
-  readonly measured: number | null
-}
+/**
+ * 震度の推移。**10 分以内はその場で計算した 1 秒ごとの点**（`series`）、**それより広ければ要約から作った列**
+ * （`columns`。列ごとのリアルタイム震度の最大）。
+ */
+export type IntensityData =
+  | {
+      readonly kind: 'series'
+      readonly series: readonly { readonly atMs: number; readonly value: number | null }[]
+      readonly maxRealtime: number | null
+      readonly maxRealtimeAtMs: number | null
+      readonly measured: number | null
+    }
+  | {
+      readonly kind: 'columns'
+      readonly source: 'coarse' | 'fine'
+      readonly columnMs: number
+      readonly firstColumnMs: number
+      /** 値の無い列は NaN。 */
+      readonly realtime: readonly number[]
+      readonly maxRealtime: number | null
+      /** いちばん大きかったまとまりの頭の時刻（そのまとまりの幅のどこか）。 */
+      readonly maxRealtimeAtMs: number | null
+      /** そのまとまりの幅（1 秒か 1 分）。 */
+      readonly maxRealtimeBucketMs: number | null
+      readonly measured: number | null
+      readonly irregularHours: readonly IrregularHourView[]
+    }
 
 function finiteOrNull(v: unknown): number | null | undefined {
   if (v === null) return null
@@ -520,14 +560,36 @@ function finiteOrNull(v: unknown): number | null | undefined {
   return n === null ? undefined : n
 }
 
-/** `intensity` の応答を読む。 */
+/** `intensity` の応答を読む（**`source` が `coarse`・`fine` なら要約から作った列**）。 */
 export function readIntensityData(value: unknown): IntensityData | null {
   if (typeof value !== 'object' || value === null) return null
   const v = value as Record<string, unknown>
   const maxRealtime = finiteOrNull(v.maxRealtime)
   const maxRealtimeAtMs = finiteOrNull(v.maxRealtimeAtMs)
   const measured = finiteOrNull(v.measured)
-  if (maxRealtime === undefined || maxRealtimeAtMs === undefined || measured === undefined || !Array.isArray(v.realtimeSeries)) return null
+  if (maxRealtime === undefined || maxRealtimeAtMs === undefined || measured === undefined) return null
+  if (v.source === 'coarse' || v.source === 'fine') {
+    const columnMs = readFinite(v.columnMs)
+    const firstColumnMs = readFinite(v.firstColumnMs)
+    const realtime = readFiniteArrayWithGaps(v.realtime)
+    const maxRealtimeBucketMs = finiteOrNull(v.maxRealtimeBucketMs)
+    const irregularHours = readIrregularHours(v.irregularHours)
+    if (columnMs === null || columnMs <= 0 || firstColumnMs === null || realtime === null) return null
+    if (maxRealtimeBucketMs === undefined || irregularHours === null) return null
+    return {
+      kind: 'columns',
+      source: v.source,
+      columnMs,
+      firstColumnMs,
+      realtime,
+      maxRealtime,
+      maxRealtimeAtMs,
+      maxRealtimeBucketMs,
+      measured,
+      irregularHours,
+    }
+  }
+  if (!Array.isArray(v.realtimeSeries)) return null
   const series: { atMs: number; value: number | null }[] = []
   for (const p of v.realtimeSeries) {
     if (typeof p !== 'object' || p === null) return null
@@ -537,7 +599,90 @@ export function readIntensityData(value: unknown): IntensityData | null {
     if (atMs === null || pv === undefined) return null
     series.push({ atMs, value: pv })
   }
-  return { series, maxRealtime, maxRealtimeAtMs, measured }
+  return { kind: 'series', series, maxRealtime, maxRealtimeAtMs, measured }
+}
+
+/** 合成の大きさの組 1 つ（要約から作った列）。本数が 0 の列の最大は NaN。 */
+export interface CompositeSubsetView {
+  /** 組の軸のチャンネル（識別子の順）。 */
+  readonly channels: readonly string[]
+  readonly n: readonly number[]
+  readonly max: readonly number[]
+}
+
+/** `composite` の応答（10 分を超える幅の合成の段の材料）。 */
+export interface CompositeData {
+  readonly source: 'coarse' | 'fine'
+  readonly unit: ValueUnit
+  readonly columnMs: number
+  readonly firstColumnMs: number
+  readonly subsets: readonly CompositeSubsetView[]
+  readonly irregularHours: readonly IrregularHourView[]
+  readonly unscaledHours: number
+}
+
+/** `composite` の応答を読む。**1 か所でも形が違えば null。** */
+export function readCompositeData(value: unknown): CompositeData | null {
+  if (typeof value !== 'object' || value === null) return null
+  const v = value as Record<string, unknown>
+  const source = v.source === 'coarse' || v.source === 'fine' ? v.source : null
+  const unit = readUnit(v.unit)
+  const columnMs = readFinite(v.columnMs)
+  const firstColumnMs = readFinite(v.firstColumnMs)
+  const unscaledHours = readFinite(v.unscaledHours)
+  const irregularHours = readIrregularHours(v.irregularHours)
+  if (source === null || unit === null || columnMs === null || columnMs <= 0 || firstColumnMs === null) return null
+  if (unscaledHours === null || irregularHours === null || !Array.isArray(v.subsets)) return null
+  const subsets: CompositeSubsetView[] = []
+  for (const x of v.subsets) {
+    if (typeof x !== 'object' || x === null) return null
+    const o = x as Record<string, unknown>
+    if (!Array.isArray(o.channels) || !o.channels.every((c) => typeof c === 'string')) return null
+    const n = readFiniteArray(o.n)
+    const max = readFiniteArrayWithGaps(o.max)
+    if (n === null || max === null || n.length !== max.length) return null
+    subsets.push({ channels: o.channels as string[], n, max })
+  }
+  return { source, unit, columnMs, firstColumnMs, subsets, irregularHours, unscaledHours }
+}
+
+/** 範囲を覆う、値の無い列（欠けを塗るためだけに使う。どの列も本数 0）。 */
+export function emptyColumnsTrace(columnMs: number, firstColumnMs: number, r: TimeRange): AxisTrace {
+  const count = columnMs > 0 ? Math.max(0, Math.floor((r.toMs - 1 - firstColumnMs) / columnMs) + 1) : 0
+  const nan = new Array<number>(count).fill(Number.NaN)
+  return { kind: 'columns', columnMs, firstColumnMs, n: new Array<number>(count).fill(0), min: nan, max: nan, mean: nan }
+}
+
+/**
+ * 10 分を超える幅の合成の段の列（**下端 0・上端は列の最大**の塗りになる形）。見えている軸が 2 本以上なら
+ * その組の要約、1 本なら軸の列から（範囲の平均 `center` からの隔たりの大きいほう）。作れなければ null。
+ */
+export function compositeColumnsTrace(
+  composite: CompositeData | null,
+  visible: readonly { readonly id: string; readonly trace: AxisTrace; readonly center: number }[],
+): AxisTrace | null {
+  if (visible.length === 1) {
+    const { trace, center } = visible[0]!
+    if (trace.kind !== 'columns' || !Number.isFinite(center)) return null
+    const max = trace.n.map((n, j) =>
+      n > 0 ? Math.max(Math.abs(trace.max[j]! - center), Math.abs(center - trace.min[j]!)) : Number.NaN,
+    )
+    const min = max.map((m) => (Number.isFinite(m) ? 0 : Number.NaN))
+    return { kind: 'columns', columnMs: trace.columnMs, firstColumnMs: trace.firstColumnMs, n: trace.n, min, max, mean: max }
+  }
+  if (composite === null || visible.length < 2) return null
+  const want = visible.map((a) => a.id).sort().join(',')
+  const subset = composite.subsets.find((x) => [...x.channels].sort().join(',') === want)
+  if (subset === undefined) return null
+  return {
+    kind: 'columns',
+    columnMs: composite.columnMs,
+    firstColumnMs: composite.firstColumnMs,
+    n: subset.n,
+    min: subset.max.map((m) => (Number.isFinite(m) ? 0 : Number.NaN)),
+    max: subset.max,
+    mean: subset.max,
+  }
 }
 
 // ---- 軸ごとのなぞり --------------------------------------------------------------------------
@@ -800,6 +945,122 @@ export function compositeRuns(traces: readonly AxisTrace[], centers: readonly nu
   })
 }
 
+// ---- 平均の線 -------------------------------------------------------------------------------
+
+/**
+ * 走りを時刻の順に 1 本の並びへ繋ぐ（平均の線の材料）。**合成波形の走りは 0.3 秒ずつに割れて届く** ので、
+ * 走りごとに平均すると窓（1 秒）が走りの長さで切られる。繋いでから平均し、元の走りの形へ戻す。
+ *
+ * **頭の時刻の順に繋ぐ**（平均は時刻が小さい順に並んでいることを当てにしている）。`offsets[i]` は元の `i` 番目の
+ * 走りの先頭が、繋いだ並びの何番目か（`splitLikeRuns` が元の形へ戻すのに使う）。
+ */
+function joinRuns(runs: readonly SampleRunView[]): {
+  readonly t: Float64Array
+  readonly v: Float64Array
+  readonly length: number
+  readonly offsets: readonly number[]
+} {
+  const order = runs.map((_, i) => i).sort((x, y) => runs[x]!.firstSampleMs - runs[y]!.firstSampleMs)
+  let n = 0
+  for (const run of runs) n += run.values.length
+  const t = new Float64Array(n)
+  const v = new Float64Array(n)
+  /** 元の走り `i` の先頭が、繋いだ並びの何番目か。 */
+  const offsets = new Array<number>(runs.length).fill(0)
+  let k = 0
+  for (const i of order) {
+    const run = runs[i]!
+    offsets[i] = k
+    for (let j = 0; j < run.values.length; j++) {
+      t[k] = run.firstSampleMs + j * run.msPerSample
+      v[k] = run.values[j]!
+      k++
+    }
+  }
+  return { t, v, length: n, offsets }
+}
+
+/** 繋いだ並びの値を、元の走りの形（頭の時刻・刻み・本数・届き方・並び）へ戻す。`offset` を足して戻す。 */
+function splitLikeRuns(runs: readonly SampleRunView[], offsets: readonly number[], values: Float32Array, offset: number): SampleRunView[] {
+  return runs.map((run, i) => {
+    const from = offsets[i]!
+    const out = new Array<number>(run.values.length)
+    for (let j = 0; j < run.values.length; j++) out[j] = values[from + j]! + offset
+    return { ...run, values: out }
+  })
+}
+
+/**
+ * 生のサンプルを取りに行く範囲。**見ている範囲の前後に平均の幅の半分ずつ足す** —— 平均の線は各点の前後
+ * `windowMs / 2` を使うので、見ている範囲ちょうどしか取らないと両端だけ片側の窓で平均される。
+ * **生のサンプルの上限（{@link SAMPLES_RANGE_MAX_MS}）を超えない分だけ**広げる（ホストが上限を超える範囲を断る）。
+ * 上限ちょうどの範囲では広げられず、両端の `windowMs / 2` は片側の窓のまま（10 分の幅の 0.1% に満たない）。
+ *
+ * **余白は整数のミリ秒で、上限から 1 ms 残す。** 取りに行くときは端を四捨五入して URL へ載せ（`recordsUrl`）、
+ * ホストは上限を 1 ms でも越えた範囲を断る。断られると**平均の線のために元の波形まで出なくなる**ので、上限ちょうどまで
+ * 詰めず、浮動小数の誤差と丸めが重なっても越えない側に寄せておく（失うのは端の 1 ms だけ）。
+ */
+export function samplesFetchRange(r: TimeRange, windowMs: number): TimeRange {
+  const room = Math.floor((SAMPLES_RANGE_MAX_MS - (r.toMs - r.fromMs) - 1) / 2)
+  const margin = Math.max(0, Math.min(Math.floor(windowMs / 2), room))
+  return { fromMs: r.fromMs - margin, toMs: r.toMs + margin }
+}
+
+/**
+ * 合成の段の控えを使い回してよいか。**軸のなぞり（取り直すと別の物になる）と中心がすべて同じとき**だけ。
+ * 中心は `Object.is` で比べる（NaN どうしを同じと見なす。`===` だと毎回作り直す）。
+ *
+ * **範囲を動かしている最中（`moving`。止まったら取り直す）は中心を見ない。** 中心は見ている範囲の平均なので、
+ * ドラッグのたびに動き、そのたびに 10 分ぶんを作り直すことになる。止まれば取り直してなぞりごと変わるので、
+ * 動かしている間だけ前の材料を使う（他の段と同じく、前に取った材料をいまの時間軸の位置へ描く）。
+ *
+ * **なぞりは作ったあと書き換えない前提**（`AxisTrace` は読み取ったものをそのまま持つ）。書き足す形にするなら、
+ * ここの鍵に版を足すこと。
+ */
+export function sameCompositeInputs(
+  prev: { readonly traces: readonly AxisTrace[]; readonly centers: readonly number[] } | null,
+  traces: readonly AxisTrace[],
+  centers: readonly number[],
+  moving: boolean,
+): boolean {
+  if (prev === null || prev.traces.length !== traces.length || prev.centers.length !== centers.length) return false
+  return prev.traces.every((t, k) => t === traces[k] && (moving || Object.is(prev.centers[k], centers[k])))
+}
+
+/**
+ * 同じなぞりで作った軸の平均の線を使い回してよいか（`sameCompositeInputs` と同じ考え方）。**範囲を動かしている
+ * 最中は中心が違っても使い回し、止まった後は中心が同じときだけ。**
+ */
+export function meanLinesStillUsable(cachedCenter: number, center: number, moving: boolean): boolean {
+  return moving || Object.is(cachedCenter, center)
+}
+
+/**
+ * 軸の段に重ねる「正側・負側の平均の線」（前後 `windowMs`。PWA の詳細の窓と同じ計算・`utils/waveMeanLines.ts`）。
+ *
+ * **正負は段の中心（`traceCenter`）で分ける。** 生データの値には重力が乗っていて、上の軸は 980 gal 付近にいる ——
+ * 0 で分けると、上の軸には正側の線しか出ない。返す値は中心の高さへ戻してあるので、軸と同じ `yOf` で描ける。
+ *
+ * **サンプルで描くときだけ作る**（列の上下の端からは、同じ時刻の値の平均が取れない）。中心が無ければ作らない。
+ */
+export function meanLineTraces(trace: AxisTrace, center: number, windowMs: number): { readonly pos: AxisTrace; readonly neg: AxisTrace } | null {
+  if (trace.kind !== 'samples' || !Number.isFinite(center)) return null
+  const joined = joinRuns(trace.runs)
+  const centered = joined.v.map((x) => x - center)
+  const { pos, neg } = signedMovingAverages(joined, centered, windowMs)
+  return {
+    pos: { kind: 'samples', runs: splitLikeRuns(trace.runs, joined.offsets, pos, center) },
+    neg: { kind: 'samples', runs: splitLikeRuns(trace.runs, joined.offsets, neg, center) },
+  }
+}
+
+/** 合成の段に重ねる「前後を均した線」（前後 `windowMs`。PWA と同じ計算）。**サンプルで描くときだけ作る。** */
+export function smoothedTrace(trace: AxisTrace, windowMs: number): AxisTrace | null {
+  if (trace.kind !== 'samples') return null
+  const joined = joinRuns(trace.runs)
+  return { kind: 'samples', runs: splitLikeRuns(trace.runs, joined.offsets, movingAverage(joined, joined.v, windowMs), 0) }
+}
+
 /** 全体の帯の列: 列ごとに、軸のうち振れ幅（最大 − 最小）がいちばん大きいもの。値の無い列は NaN。 */
 export function overviewSpread(envelopes: readonly EnvelopeData[]): { readonly firstColumnMs: number; readonly columnMs: number; readonly spread: number[] } | null {
   if (envelopes.length === 0) return null
@@ -846,13 +1107,19 @@ function timeForSpan(atMs: number, spanMs: number, digits: 0 | 1 | 2): string {
   return spanMs > DAY_MS ? formatDateMinute(atMs) : formatClockDigits(atMs, digits)
 }
 
+/**
+ * 要約から引いた時刻（まとまりの幅のどこか）の書き方。1 日を超える範囲は日付と分、1 分以上のまとまりは分まで、
+ * それより細かければ秒まで、いずれも「ごろ」を付ける。
+ */
+export function approximateWhen(atMs: number, spanMs: number, bucketMs: number | null): string {
+  if (spanMs > DAY_MS) return `${formatDateMinute(atMs)} ごろ`
+  if (bucketMs !== null && bucketMs >= MINUTE_MS) return `${formatClockDigits(atMs, 0).slice(0, 5)} ごろ`
+  return `${formatClockDigits(atMs, 0)} ごろ`
+}
+
 /** 段の見出しの最大（`最大 12.3 gal（12:03:04.25）`・要約からなら `最大 12.3 gal（12:03 ごろ）`）。 */
 export function peakLabel(p: TracePeak, unit: ValueUnit, spanMs: number, columnMs: number | null): string {
-  let when: string
-  if (!p.approximate) when = timeForSpan(p.atMs, spanMs, 2)
-  else if (spanMs > DAY_MS) when = `${formatDateMinute(p.atMs)} ごろ`
-  else if (columnMs !== null && columnMs >= MINUTE_MS) when = `${formatClockDigits(p.atMs, 0).slice(0, 5)} ごろ`
-  else when = `${formatClockDigits(p.atMs, 0)} ごろ`
+  const when = p.approximate ? approximateWhen(p.atMs, spanMs, columnMs) : timeForSpan(p.atMs, spanMs, 2)
   return `最大 ${formatValue(p.deviation)} ${unitText(unit)}（${when}）`
 }
 
@@ -866,46 +1133,55 @@ export function sourceNote(source: 'coarse' | 'fine' | 'samples' | 'raw-samples'
 /** 要約の不調の行。**どれも 0 なら null。** */
 export function problemsNote(t: HourTallyView | null): string | null {
   if (t === null || t.pending + t.stale + t.failed === 0) return null
-  return `要約がまだ無い時が ${t.pending}、作ったあとで元の記録が伸びた時が ${t.stale}（末尾が欠けているかもしれない）、読めない時が ${t.failed}`
+  return `要約がまだ無い: ${t.pending} 時間・要約の後に記録が増えた: ${t.stale} 時間・読めない要約: ${t.failed} 時間`
 }
 
 /** 換算できない時の行。**0 なら null。** */
 export function unscaledNote(hours: number): string | null {
-  return hours > 0 ? `換算の係数が判らない時が ${hours} あり、そこは描いていない（生の値に切り替えると出る）` : null
+  return hours > 0 ? `換算の係数が分からない ${hours} 時間は描いていない` : null
 }
 
-/** 一覧から漏れているかもしれない行。**0 なら null。** */
+/** 一覧から漏れている記録がある、という行。**0 なら null。**（文面は 2026-10-13 ユーザー承認） */
 export function unreadableListNote(n: number): string | null {
-  return n > 0 ? `読めない要約が ${n} 件あり、一覧から漏れているかもしれない` : null
+  return n > 0 ? `読めない要約が ${n} 件ある。一覧に出ていない記録がある` : null
 }
 
-export const EMPTY_RANGE_TEXT = 'この範囲に記録は無い'
-export const TOKEN_MISSING_TEXT = '管理トークンを設定すると読める'
+export const EMPTY_RANGE_TEXT = 'この範囲に記録はありません'
+export const TOKEN_MISSING_TEXT = '管理トークンを入力してください'
 /**
  * 合成の段の見出し。**見えている軸だけで合成する**ので軸の数を名乗らない（PWA の詳細の窓と同じ。
  * 2026-10-08 ユーザー承認）。
  */
 export const COMPOSITE_TITLE = '合成'
-export const COMPOSITE_TOO_WIDE_TEXT = '合成は 10 分以内まで寄せると出る'
 export const INTENSITY_TITLE = 'リアルタイム震度の推移'
-export const INTENSITY_TOO_WIDE_TEXT = '震度の推移は 10 分以内まで寄せると出る'
 export const INTENSITY_STATION_ONLY_TEXT = '震度の推移は観測点の合成波形にだけ出る'
 export const GAP_NONE_LEGEND = '斜線: 記録が無い'
-export const GAP_PENDING_LEGEND = '灰色の斜線: 要約がまだ無い（作り終えると出る）'
-export const OVERVIEW_CAPTION = '全体（振れ幅がいちばん大きい軸）。押すとその時刻へ寄る'
+export const GAP_PENDING_LEGEND = '灰色の斜線: 要約がまだ無い'
+export const OVERVIEW_CAPTION = '全体'
+/** 「全体」のホバーの説明（2026-10-13 ユーザー承認）。 */
+export const OVERVIEW_TIP = '振れ幅がいちばん大きい軸を描いています。押すと、その時刻へ寄ります。'
 
 /** 取れなかったときの行。 */
 export function fetchFailureText(reason: string): string {
-  return `波形の記録を取得できていない（${reason}）`
+  return `波形の記録を取得できていない: ${reason}`
 }
 
 /**
  * 震度の段の見出し（`最大 1.2（12:03:06） 計測 0.8`）。**最大と計測の間は常に半角空白**（2026-10-08 ユーザー承認）
  * —— 値が無いと `最大 —計測 —` と詰まって読めなかった。
+ *
+ * **要約から作った列なら、時刻は「ごろ」**（`最大 1.2（12:03 ごろ） 計測 0.85`。時刻の書き方は軸の段の
+ * {@link approximateWhen} と同じ。2026-10-11 ユーザー承認）。`spanMs` は見ている範囲の広さ。
  */
-export function intensityHeader(d: IntensityData): string {
+export function intensityHeader(d: IntensityData, spanMs: number): string {
   const max = d.maxRealtime === null ? '—' : formatMeasured(d.maxRealtime)
-  const at = d.maxRealtime !== null && d.maxRealtimeAtMs !== null ? `（${formatClockDigits(d.maxRealtimeAtMs, 0)}）` : ''
+  let at = ''
+  if (d.maxRealtime !== null && d.maxRealtimeAtMs !== null) {
+    at =
+      d.kind === 'series'
+        ? `（${formatClockDigits(d.maxRealtimeAtMs, 0)}）`
+        : `（${approximateWhen(d.maxRealtimeAtMs, spanMs, d.maxRealtimeBucketMs)}）`
+  }
   const measured = d.measured === null ? '—' : formatMeasured(d.measured)
   return `最大 ${max}${at} 計測 ${measured}`
 }

@@ -5,7 +5,14 @@ import type { FusedWaveChunk } from './sensorFusion'
 import { encodeSteim2 } from './steim2'
 import { encodeWaveChunk } from './waveArchive'
 import { SUMMARY_FINE_MS, type SummaryChannel } from './waveSummary'
-import { stationWaveChannelId, summarizeMseedHour, summarizeWaveHour } from './waveSummarySources'
+import { sensorOfSourceId } from './receptionSummary'
+import {
+  stationWaveChannelId,
+  summarizeMseedHour,
+  summarizeMseedHourWithReception,
+  summarizeWaveHour,
+  summarizeWaveHourWithDerived,
+} from './waveSummarySources'
 
 const HOUR_START = Date.parse('2026-10-07T03:00:00.000Z')
 const BOARD = 'mac:02000000a1b2'
@@ -148,5 +155,42 @@ describe('summarizeWaveHour', () => {
 
   it('観測点の識別子に区切り文字が入っていても、向きまで読み戻せる', () => {
     expect(stationWaveChannelId('a/b', 2)).toBe('station/a/b/Z')
+  })
+})
+
+describe('要約の 4 つ目の部分（合成と震度）', () => {
+  it('合成波形は観測点の 3 軸の組すべての合成と震度を持ち、前の時の大きさを控える', () => {
+    const second = (first: number): Buffer =>
+      encodeWaveChunk(fused({ firstSampleMs: first, ns: new Array(100).fill(0).map((_, i) => Math.sin(i)), ew: new Array(100).fill(1), ud: new Array(100).fill(0) }), false)!
+    const prev = Buffer.concat(Array.from({ length: 60 }, (_, s) => second(HOUR_START - 60_000 + s * 1000)))
+    const buf = Buffer.concat(Array.from({ length: 5 }, (_, s) => second(HOUR_START + s * 1000)))
+    const { file, derived } = summarizeWaveHourWithDerived(buf, 'home', HOUR_START, prev)
+    expect(file.sourceBytes).toBe(buf.length)
+    expect(derived.sourceBytes).toBe(buf.length)
+    expect(derived.prevSourceBytes).toBe(prev.length)
+    expect(derived.composites.map((g) => g.key)).toEqual(['station/home'])
+    expect(derived.composites[0]!.subsets).toHaveLength(4)
+    expect(derived.intensity?.realtimeFine?.firstBucket).toBe(HOUR_START / SUMMARY_FINE_MS)
+    expect(derived.intensity?.measuredFine?.k).toBe(30)
+  })
+
+  it('前の時が無ければ、前の時の大きさを持たない', () => {
+    const buf = encodeWaveChunk(fused({ firstSampleMs: HOUR_START, ns: [1, 2, 3] }), false)!
+    expect(summarizeWaveHourWithDerived(buf, 'home', HOUR_START, null).derived.prevSourceBytes).toBeNull()
+  })
+
+  it('生データはセンサーごとの合成だけを持つ（震度は持たない）', () => {
+    const buf = concat([
+      logRecord(HOUR_START, { board: BOARD, sensor: SENSOR, channels: ['HNX', 'HNZ'], ugPerLsb: 61.0352 }),
+      waveRecord('HNX', HOUR_START, [0, 5, 0, 0]),
+      waveRecord('HNZ', HOUR_START, [16384, 16384, 16384, 16384]),
+    ])
+    const { derived } = summarizeMseedHourWithReception(buf, HOUR_START)
+    expect(derived.prevSourceBytes).toBeNull()
+    expect(derived.intensity).toBeNull()
+    const [g] = derived.composites
+    expect(g!.key).toBe(sensorOfSourceId(mseed3SourceId(BOARD, SENSOR, 'HNX')!))
+    expect(g!.ugPerLsb).toBe(61.0352)
+    expect(g!.subsets[0]!.fine.max[0]).toBeCloseTo(3.75, 4)
   })
 })

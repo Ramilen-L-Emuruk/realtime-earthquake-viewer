@@ -24,20 +24,29 @@
 // 管理コンソールのトークンを盗めるストアド XSS になる。
 
 import { ago, escapeHtml, qs, receptionBadgeHtml } from './dom'
+import { tipHtml } from './tip'
 import { readFinite, readNonEmptyString } from './readJson'
 import { WaveStore, keyOf } from './waveBuffer'
-import type { WaveAxisStats, WaveBuffer, WaveChunkView, WaveColumn, WaveSourceKey, WaveWindow } from './waveBuffer'
+import type { WaveAxisStats, WaveBuffer, WaveChunkView, WaveColumn, WaveMeanLines, WaveSourceKey, WaveWindow } from './waveBuffer'
 import {
+  ColorSlots,
   colorForIndex,
   formatClock,
   formatDirection,
   formatGal,
+  lighterColor,
   needsTenths,
   niceHalfSpanGal,
   timeTicks,
 } from './wavePlot'
 import { openWaveStream } from './waveStream'
 import type { PairSelection, ResidualSelection, WaveStreamState } from './waveStream'
+import type { TabContext } from './tabState'
+import { readWavesPrefs, rememberSensorChoice, writeWavesPrefs } from './viewPrefs'
+import { MEAN_LINE_WINDOW_MS } from '../../../src/utils/waveMeanLines'
+
+/** URL の `#` に載せる選択のキー（差分を見る組・ずれを見る台。選択肢の値をそのまま載せる）。 */
+const SELECTED_DIFF_KEY = 'diff'
 
 /** 見る時間の幅。**上限は溜め場所の長さ（`waveBuffer.ts` の既定 5 分）に合わせる。** */
 const SPAN_CHOICES: readonly { readonly ms: number; readonly label: string }[] = [
@@ -50,6 +59,19 @@ const SPAN_CHOICES: readonly { readonly ms: number; readonly label: string }[] =
 ]
 
 const DEFAULT_SPAN_MS = 30_000
+
+/**
+ * 波形タブのホバーの説明。**固定の説明なので常には出さない**（`docs/ui-wording-procedure.md` §2）。
+ * 文面は 2026-10-13 ユーザー承認。
+ */
+const WAVE_SPAN_TIP = 'この画面を開いてから受け取った波形を、最大 5 分まで表示できます。'
+const UNORIENTED_TIP = '取り付けの向きを設定していないので、軸はセンサーの向きのままです。東・北・上を表しません。'
+const PAIR_DIFF_TIP =
+  '差分は、2 台の値の差の半分です。センサー単独や合成とは別の量です。' +
+  '縦の幅は軸ごとに共通なので、揺れている間にほかの波形と重ねると、ほぼ平らに見えます。' +
+  '差分だけを選ぶと、縦の幅が差分に合います。' +
+  'ずれは、そのセンサーを除いたほかのセンサーで解いた揺れを、そのセンサーが測る向きへ写し、測った値から引いたものです。' +
+  '半分にはしません。'
 
 /**
  * 軸の名前。
@@ -91,6 +113,11 @@ interface PlotTrace {
   readonly columns: readonly (WaveColumn | null)[]
   /** 窓にサンプルが 1 つも無ければ null（その線は描かない）。 */
   readonly stats: WaveAxisStats | null
+  /**
+   * 正側・負側の平均の線（前後 1 秒。PWA の詳細の窓と同じ計算）。**表示中の線すべてに引く**
+   * （2026-10-12 ユーザー承認）。窓にサンプルが無ければ null。
+   */
+  readonly meanLines: WaveMeanLines | null
 }
 
 /** センサー 1 本の、機材としての様子（`/status` から引く）。 */
@@ -100,6 +127,8 @@ interface SensorLabel {
   /** 割り当てた観測点の識別子。未割当なら null。**合成の行の名前をここから引く。** */
   readonly stationId: string | null
   readonly stationName: string | null
+  /** 基板の表示名（`/status` の `boardName`）。付けていなければ・古いホストなら null。 */
+  readonly boardName: string | null
   readonly lastPacketMs: number | null
   readonly calibrationConfigured: boolean
 }
@@ -143,6 +172,7 @@ export function readStatus(value: unknown): StatusView {
         sensorId,
         stationId: station === null ? null : readNonEmptyString(station.stationId),
         stationName: station === null ? null : readNonEmptyString(station.displayName),
+        boardName: readNonEmptyString(s.boardName),
         lastPacketMs: readFinite(s.lastPacketMs),
         calibrationConfigured: s.calibrationConfigured === true,
       })
@@ -255,7 +285,8 @@ function displayNameOf(source: WaveSourceKey, labels: readonly SensorLabel[]): s
   }
   const found = labels.find((l) => l.boardKey === source.boardKey && l.sensorId === source.sensorId)
   const station = found?.stationName
-  const raw = `${source.boardKey} / ${source.sensorId}`
+  // **基板は表示名があれば名前で呼ぶ**（#713）。無ければ基板 Key のまま。
+  const raw = `${found?.boardName ?? source.boardKey} / ${source.sensorId}`
   return station === null || station === undefined ? raw : `${station}（${raw}）`
 }
 
@@ -294,11 +325,12 @@ function memberBadgeHtml(range: { readonly min: number; readonly max: number } |
 const STATE_TEXT: Record<WaveStreamState, string> = {
   connecting: '接続中',
   open: '受信中',
-  reconnecting: '切断（繋ぎ直している）',
-  closed: '繋げない',
+  reconnecting: '再接続中',
+  closed: '接続できない',
 }
 
-export async function initWavesView(container: HTMLElement, signal: AbortSignal): Promise<void> {
+export async function initWavesView(container: HTMLElement, ctx: TabContext): Promise<void> {
+  const { signal } = ctx
   container.innerHTML = `
     <div class="wave-error error"></div>
     <section class="panel">
@@ -308,18 +340,20 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
       </div>
       <p class="wave-warn muted"></p>
       <div class="wave-controls">
-        <label>
-          <span>見る幅</span>
-          <select class="wave-span">
+        <!-- **<label> にしない。** 説明の付いたラベルを <label> に入れると、押したとき吹き出しより先に
+             選択欄へフォーカスが移る（管理トークンの欄と同じ。app.ts）。 -->
+        <div class="label-like" data-tip-row>
+          <span id="wave-span-label">${tipHtml('見る幅', WAVE_SPAN_TIP)}</span>
+          <select class="wave-span" aria-labelledby="wave-span-label">
             ${SPAN_CHOICES.map(
               (c) => `<option value="${c.ms}" ${c.ms === DEFAULT_SPAN_MS ? 'selected' : ''}>${c.label}</option>`,
             ).join('')}
           </select>
-        </label>
+        </div>
         <label>
           <span>縦の幅</span>
           <select class="wave-scale">
-            <option value="auto" selected>自動（揺れに合わせる）</option>
+            <option value="auto" selected>自動</option>
             <option value="1">±1 gal</option>
             <option value="10">±10 gal</option>
             <option value="100">±100 gal</option>
@@ -332,30 +366,18 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
         </label>
       </div>
       <input type="range" class="wave-seek" min="0" max="1000" value="1000" disabled />
-      <p class="muted">
-        遡れるのは、この画面を開いてから受け取った分（最大 5 分）だけ。
-      </p>
     </section>
     <section class="panel">
       <h2>センサー</h2>
       <div class="wave-sensors"></div>
-      <p class="muted">
-        取り付けの向きを設定していないセンサーでは、軸はセンサーの取り付けのままで方角の意味を持たない。
-      </p>
     </section>
     <section class="panel">
-      <h2>センサー対の差分</h2>
+      <h2>${tipHtml('センサー対の差分', PAIR_DIFF_TIP)}</h2>
       <label>
         <span>見る組</span>
         <select class="wave-diff"></select>
       </label>
       <p class="wave-diff-note muted"></p>
-      <p class="muted">
-        差分は 2 台の値の差（両方の半分）で、センサー単独や合成とは別の量。
-        縦の幅は軸ごとに共通なので、揺れている間は絶対値の波形に重ねるとほぼ平らに見える。
-        差分だけを選べば、縦の幅が差分に合う。
-        ずれは、そのセンサーを除いたほかのセンサーで解いた揺れを、そのセンサーが測る向きへ写して、測った値から引いたもの（半分にはしない）。
-      </p>
     </section>
     <div class="wave-plots">
       ${AXIS_LABELS.map(
@@ -384,7 +406,30 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
   const diffEl = qs<HTMLSelectElement>(container, '.wave-diff')
   const diffNoteEl = qs(container, '.wave-diff-note')
 
+  // **見る幅・縦の幅・チェックは前回のまま開く**（表示の好み。`tabState.ts`）。
+  // **「最新に追従」と遡った位置は戻さない**（2026-10-11 ユーザー承認）—— 溜め場所は開くたびに
+  // 空から始まるので、前の位置を戻しても指す先が無い。
+  const prefs = readWavesPrefs(
+    ctx.prefs.load(),
+    SPAN_CHOICES.map((c) => c.ms),
+    [...scaleEl.options].map((o) => o.value),
+  )
+  if (prefs.spanMs !== null) spanEl.value = String(prefs.spanMs)
+  if (prefs.scale !== null) scaleEl.value = prefs.scale
+  /** センサーごとに、運用者が付けた・外したチェック。届いたときの既定より優先する。 */
+  const sensorChoices = new Map(prefs.sensors)
+  const savePrefs = (): void => {
+    ctx.prefs.save(writeWavesPrefs({ spanMs, scale: scaleEl.value, sensors: sensorChoices }))
+  }
+  /**
+   * 前に選んでいた差分の組・ずれの台。**選択肢は `/status` の一覧が届いてから作る**ので、
+   * それまで当てずに持っておく（先に当てると「一覧に無い」と見なして消える）。
+   */
+  let pendingDiffChoice = ctx.selection.get(SELECTED_DIFF_KEY)
+
   const store = new WaveStore()
+  /** 波形 1 本ごとの線の色（`ColorSlots` を見ること）。一覧の見本と線で同じものを引く。 */
+  const colors = new ColorSlots()
   /** 表示するセンサー。 */
   const shown = new Set<string>()
   /**
@@ -401,7 +446,7 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
   let state: WaveStreamState = 'connecting'
   let unreadable = 0
   let lastUnreadableDetail = ''
-  let spanMs = DEFAULT_SPAN_MS
+  let spanMs = prefs.spanMs ?? DEFAULT_SPAN_MS
   /** 追従を外しているときの右端。追従中は `null`。 */
   let viewEndMs: number | null = null
   let sensorListSignature = ''
@@ -473,6 +518,7 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
       renderHeader()
       renderSensorList()
       renderDiffList()
+      restorePendingDiffChoice()
     } catch (error) {
       if (signal.aborted) return
       // **波形そのものは別の口から来る。** 名前が引けないだけなら、波形の表示は続ける。
@@ -518,15 +564,14 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
       const full = stream !== null && stream.limit !== null && stream.open >= stream.limit
       warnings.push(
         full
-          ? `押し出しの枠が埋まっている（${stream?.open} / ${stream?.limit}）。他のタブや端末を閉じてから画面を再読込すること`
-          : 'ホストの押し出しの口へ繋げない。ホストが動いていることを確かめて画面を再読込すること',
+          ? `ホストへの接続が上限に達している: ${stream?.open} / ${stream?.limit}。ほかのタブや端末を閉じてから、画面を再読み込みしてください`
+          : 'ホストに接続できない。画面を再読み込みしてください',
       )
     }
     if (unreadable > 0) {
-      // **行動で締める。** 他の警告と体裁を揃える —— 生の理由だけ出しても、
-      // 運用者には次に何をすればよいか分からない（`detail` はコンソールへ出す）。
+      // 画面には件数だけを出し、生の理由（`detail`）はコンソールへ出す。
       warnings.push(
-        `読めない波形が ${unreadable} 件届いた。ホストと管理コンソールの版が食い違っている疑いがあるので、開発者へ伝えること`,
+        `読めない波形が ${unreadable} 件届いた`,
       )
       console.warn('[admin] 読めない押し出し:', lastUnreadableDetail)
     }
@@ -537,16 +582,16 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
       // **溜めた分が消えたことは必ず出す。** 黙っていると「開いた直後で溜まりが
       // 少ない」のと区別が付かない。
       warnings.push(
-        `時刻が巻き戻ったため、溜めていた波形を ${store.rewindCount} 回捨てた（基板の入れ替えか時計の飛び）`,
+        `時刻が巻き戻ったため、溜めていた波形を ${store.rewindCount} 回捨てた`,
       )
     }
     if (store.droppedByCountLimit > 0) {
       warnings.push(
-        `届く刻みが細かく、保持できる件数の上限に達した（${store.droppedByCountLimit} 件を落とした）。遡れる長さが 5 分より短くなる`,
+        `保持できる件数の上限に達し、${store.droppedByCountLimit} 件を捨てた。表示できるのは 5 分より短い`,
       )
     }
     if (timebaseNominal) {
-      warnings.push('時刻の当てはめが公称値へ倒れている区間が含まれる（波形の形は正しいが、時刻の根拠は弱い）')
+      warnings.push('時刻を当てはめられず、決めた間隔で並べた区間がある')
     }
     setWarnings(warnings)
   }
@@ -569,7 +614,7 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
     }
 
     sensorsEl.innerHTML = buffers
-      .map((buffer, index) => {
+      .map((buffer) => {
         const key = keyOf(buffer.source)
         // **受信バッジと校正の印はセンサー単独だけ。** 合成の行はセンサーではないので、
         // どの基板から届いたか・向きを直したかという問いが当てはまらない
@@ -588,7 +633,7 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
         // 「向き未設定」と出すと、**校正済みのセンサーを未設定だと誤って伝える**。
         // 隣の受信バッジも同じときは何も言わない形にしてある。
         const calibration =
-          label === undefined ? '' : label.calibrationConfigured ? '' : '<span class="muted">向き未設定</span>'
+          label === undefined ? '' : label.calibrationConfigured ? '' : `<span class="muted">${tipHtml('向き未設定', UNORIENTED_TIP)}</span>`
         const reception =
           statusGeneratedAtMs === null || label === undefined
             ? ''
@@ -601,7 +646,7 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
             <input type="checkbox" class="wave-sensor-check" data-key="${escapeHtml(key)}" ${
               shown.has(key) ? 'checked' : ''
             } />
-            <span class="wave-swatch" style="background: ${colorForIndex(index)}"></span>
+            <span class="wave-swatch" style="background: ${colors.colorOf(key)}"></span>
             <span>${escapeHtml(displayNameOf(buffer.source, labels))}</span>
             ${members}
             ${reception}
@@ -688,16 +733,16 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
     // **「まだ来ていない」を出す。** 設定が変わってその組・台が無くなった場合の症状は
     // 1 件も届かないことだけなので、黙ると繋がっていないのと見分けが付かない。
     if (residualSelection !== null) {
-      // 文言は 2026-10-09 ユーザー承認。
+      // 文言は 2026-10-09 ユーザー承認（括弧の補足は 2026-10-13 に外した。同日承認）。
       diffNoteEl.textContent =
         selectionChunks === 0
-          ? 'このセンサーのずれはまだ 1 件も届いていない（合成が作っていないか、設定が変わった可能性）'
+          ? 'このセンサーのずれはまだ 1 件も届いていない'
           : `このセンサーのずれを ${selectionChunks} まとまり受け取っている`
       return
     }
     diffNoteEl.textContent =
       selectionChunks === 0
-        ? 'この組の差分はまだ 1 件も届いていない（合成が作っていないか、設定が変わった可能性）'
+        ? 'この組の差分はまだ 1 件も届いていない'
         : `この組の差分を ${selectionChunks} まとまり受け取っている`
   }
 
@@ -727,6 +772,7 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
     if (before !== null) {
       store.remove(before)
       shown.delete(keyOf(before))
+      colors.release(keyOf(before))
       // **一覧の署名を崩して作り直させる。** 溜め場所から消えたので、
       // センサーの一覧に残った行を掃除する必要がある。
       sensorListSignature = ''
@@ -735,14 +781,15 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
     residualSelection = next?.kind === 'residual' ? next.residual : null
     selectionChunks = 0
     diffEl.value = currentChoiceKey()
+    ctx.selection.set({ [SELECTED_DIFF_KEY]: currentChoiceKey() || null })
     renderDiffNote()
     renderSensorList()
     markDirty()
     connect()
   }
 
-  diffEl.addEventListener('change', () => {
-    const value = diffEl.value
+  /** 選択肢の値（`currentChoiceKey` と同じ形）から選ぶ。一覧に無ければ「選ばない」。 */
+  const selectChoiceByKey = (value: string): void => {
     if (value === '') {
       selectChoice(null)
       return
@@ -754,7 +801,34 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
     }
     const residual = residualCandidates.find((r) => residualKeyOf(r) === value)
     selectChoice(residual === undefined ? null : { kind: 'residual', residual })
+  }
+
+  diffEl.addEventListener('change', () => {
+    // 選び直したら、前に覚えていた選択はもう当てない。
+    pendingDiffChoice = null
+    selectChoiceByKey(diffEl.value)
   })
+
+  /**
+   * 前に選んでいた組・台を当てる（`/status` の一覧が届くたびに、当たるまで）。
+   *
+   * **一覧に無いあいだは消さずに待つ。** 組と台の一覧は合成が実際に回ってから埋まるので、ホストを
+   * 起動し直した直後は空で届く —— そこで「一覧に無い」と見なして URL から外すと、読み直しただけで
+   * 選択が失われる。待っている間は「選ばない」の表示のまま、選び直せばこの覚えは捨てる。
+   */
+  function restorePendingDiffChoice(): void {
+    if (pendingDiffChoice === null) return
+    const value = pendingDiffChoice
+    if (value === currentChoiceKey()) {
+      pendingDiffChoice = null
+      return
+    }
+    const available =
+      pairs.some((p) => pairKeyOf(p) === value) || residualCandidates.some((r) => residualKeyOf(r) === value)
+    if (!available) return
+    pendingDiffChoice = null
+    selectChoiceByKey(value)
+  }
 
   sensorsEl.addEventListener('change', (event) => {
     const target = event.target
@@ -763,6 +837,8 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
     if (key === undefined) return
     if (target.checked) shown.add(key)
     else shown.delete(key)
+    rememberSensorChoice(sensorChoices, key, target.checked)
+    savePrefs()
     markDirty()
   })
 
@@ -786,9 +862,13 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
   spanEl.addEventListener('change', () => {
     const next = Number(spanEl.value)
     if (Number.isFinite(next) && next > 0) spanMs = next
+    savePrefs()
     markDirty()
   })
-  scaleEl.addEventListener('change', markDirty)
+  scaleEl.addEventListener('change', () => {
+    savePrefs()
+    markDirty()
+  })
   followEl.addEventListener('change', () => {
     // **追従を戻すときは右端を手放す。** 持ったままだと、追従に戻しても
     // その位置に張り付く。
@@ -840,6 +920,7 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
         const next = Math.min(SPAN_CHOICES.length - 1, Math.max(0, from + (event.deltaY > 0 ? 1 : -1)))
         spanMs = SPAN_CHOICES[next].ms
         spanEl.value = String(spanMs)
+        savePrefs()
         if (range !== null) stopFollowing(range.toMs)
         markDirty()
       },
@@ -1008,17 +1089,16 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
     }
 
     // 波形。
-    ctx.lineWidth = 1
-    for (const t of traces) {
-      if (t.stats === null) continue
-      const center = t.stats.meanGal
-      const yOf = (gal: number): number =>
-        mid - Math.max(-usable, Math.min(usable, ((gal - center) / halfSpan) * usable))
-
-      ctx.strokeStyle = t.color
+    const strokeColumns = (
+      columns: readonly (WaveColumn | null)[],
+      yOf: (gal: number) => number,
+      color: string,
+      lineWidth: number,
+    ): void => {
+      ctx.strokeStyle = color
+      ctx.lineWidth = lineWidth
       ctx.beginPath()
       let started = false
-      const columns = t.columns
       for (let c = 0; c < columns.length; c++) {
         const column = columns[c]
         if (column === null) {
@@ -1041,6 +1121,24 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
       }
       ctx.stroke()
     }
+    /** 縦の位置。**中心は線ごと**（その線の平均）。 */
+    const yAround =
+      (center: number) =>
+      (gal: number): number =>
+        mid - Math.max(-usable, Math.min(usable, ((gal - center) / halfSpan) * usable))
+    for (const t of traces) {
+      if (t.stats === null) continue
+      strokeColumns(t.columns, yAround(t.stats.meanGal), t.color, 1)
+    }
+    // **平均の線は全部の線の後ろから重ねる**（先に描くと、後に描いた別のセンサーの帯に埋もれる）。
+    // 色は元の線を明るくした色、太さは 2 倍（PWA の詳細の窓と同じ考え方。2026-10-12 ユーザー承認）。
+    for (const t of traces) {
+      if (t.stats === null || t.meanLines === null) continue
+      const yOf = yAround(t.stats.meanGal)
+      const color = lighterColor(t.color)
+      strokeColumns(t.meanLines.pos, yOf, color, 2)
+      strokeColumns(t.meanLines.neg, yOf, color, 2)
+    }
   }
 
   const draw = (): void => {
@@ -1048,7 +1146,10 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
     const window = windowRange()
 
     const shownBuffers = buffers
-      .map((buffer, index) => ({ buffer, color: colorForIndex(index), key: keyOf(buffer.source) }))
+      .map((buffer) => {
+        const key = keyOf(buffer.source)
+        return { buffer, color: colors.colorOf(key), key }
+      })
       .filter((s) => shown.has(s.key))
 
     const dpr = globalThis.devicePixelRatio > 0 ? globalThis.devicePixelRatio : 1
@@ -1058,9 +1159,14 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
     // 軸ごとに呼ぶと同じ走査を 3 度することになる。
     const columnCount = Math.max(1, Math.floor(canvases[0]?.clientWidth ?? 0))
     const windows = new Map<string, WaveWindow>()
+    const meanLines = new Map<string, readonly (WaveMeanLines | null)[]>()
     if (window !== null) {
       for (const s of shownBuffers) {
-        windows.set(s.key, s.buffer.readWindow(window.fromMs, window.toMs, columnCount))
+        const w = s.buffer.readWindow(window.fromMs, window.toMs, columnCount)
+        windows.set(s.key, w)
+        // **正負は段の中心（その窓の平均）で分ける**（値には重力が乗っている。`readMeanLines` を見ること）。
+        const centers = w.stats.map((st) => st?.meanGal ?? Number.NaN)
+        meanLines.set(s.key, s.buffer.readMeanLines(window.fromMs, window.toMs, columnCount, centers, MEAN_LINE_WINDOW_MS))
       }
     }
 
@@ -1077,7 +1183,12 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
     for (let axis = 0; axis < canvases.length; axis++) {
       const traces: PlotTrace[] = groundShown.map((s) => {
         const w = windows.get(s.key)
-        return { color: s.color, columns: w?.axes[axis] ?? [], stats: w?.stats[axis] ?? null }
+        return {
+          color: s.color,
+          columns: w?.axes[axis] ?? [],
+          stats: w?.stats[axis] ?? null,
+          meanLines: meanLines.get(s.key)?.[axis] ?? null,
+        }
       })
       // **中心の値は絵の中に描かない。** センサーごとに中心が違うので、重ねた本数ぶん
       // 数字が並ぶ —— 9 本では左上で潰れて 1 つも読めなかった（実機で確認）。
@@ -1101,6 +1212,7 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
         color: colorForIndex(j),
         columns: w?.axes[j] ?? [],
         stats: w?.stats[j] ?? null,
+        meanLines: meanLines.get(s.key)?.[j] ?? null,
       }))
       drawPlot(panel.canvas, panel.rangeLabel, traces, window, fixed, dpr, (halfSpan) => `±${formatGal(halfSpan)} gal`)
     }
@@ -1125,7 +1237,16 @@ export async function initWavesView(container: HTMLElement, signal: AbortSignal)
     const key = keyOf(chunk.source)
     const known = store.get(chunk.source) !== null
     store.push(chunk)
-    if (!known && store.get(chunk.source) !== null) {
+    // **差分・ずれには当てない。** あれは運用者が選んだときにだけ届くので、前に外したチェックで隠すと
+    // 選んだのに見えない。
+    const remembered =
+      known || chunk.source.kind === 'pair' || chunk.source.kind === 'residual' ? undefined : sensorChoices.get(key)
+    if (!known && store.get(chunk.source) !== null && remembered !== undefined) {
+      // **運用者が前に付けた・外したチェックを、既定より先に当てる。** 合成は届けば必ず出す既定なので、
+      // 「外した」を覚えていないと、開き直すたびに出し直してしまう。
+      if (remembered) shown.add(key)
+      if (chunk.source.kind === 'sensor') seenSensors++
+    } else if (!known && store.get(chunk.source) !== null) {
       // **観測点の合成は先着枠を使わず必ず出す。** この画面で合成を見る目的は
       // 「平均した 1 本が単体より静かか」の確認（#362 の効果）なので、
       // センサー 9 本の枠に埋もれて既定で非表示だと開いた意味が無い。

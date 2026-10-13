@@ -6,9 +6,12 @@ import { defaultSensorCalibration, IDENTITY_MATRIX } from '../receiver/stationCo
 import type { Mat3, SensorCalibration, Vec3 } from '../receiver/stationConfigTypes'
 import {
   boardGravityForTilt,
+  headingOfRotation,
   multiplyMat3,
   NO_STILL_SPREAD,
   NO_STILL_WINDOW,
+  restWindowProblem,
+  rotateToHeading,
   stillMeanGal,
   suggestRotation,
 } from './calibrationSuggest'
@@ -225,7 +228,8 @@ describe('suggestRotation', () => {
     })
 
     expect(got.ok).toBe(false)
-    if (!got.ok) expect(got.reason).toContain('倍率')
+    // 確かめ方（換算の倍率）は書かない（2026-10-12 ユーザー承認。状態の一言だけを出す）
+    if (!got.ok) expect(got.reason).toBe('重力が小さすぎて向きを出せない')
   })
 
   it('数として読めない入力では提案しない', () => {
@@ -256,6 +260,106 @@ describe('suggestRotation', () => {
     for (const row of got.rotation) {
       for (const v of row) expect(Object.is(v, -0)).toBe(false)
     }
+  })
+})
+
+/** 鉛直まわりに回しただけの基板の向き（X 軸が方角 `deg` を向く）。 */
+function headingMatrix(deg: number): Mat3 {
+  const r = (deg * Math.PI) / 180
+  // 第 1 列（X 軸）= (sin, cos, 0)、第 2 列（Y 軸）= (−cos, sin, 0)・第 3 列 = 上。
+  return [
+    [Math.sin(r), -Math.cos(r), 0],
+    [Math.cos(r), Math.sin(r), 0],
+    [0, 0, 1],
+  ]
+}
+
+describe('headingOfRotation（保存した基板の向きから方角を読み戻す）', () => {
+  it('正: X 軸が向いている方角を北から時計回りで返す', () => {
+    expect(headingOfRotation(headingMatrix(297))).toBeCloseTo(297, 6)
+    expect(headingOfRotation(headingMatrix(207))).toBeCloseTo(207, 6)
+    expect(headingOfRotation(IDENTITY_MATRIX)).toBeCloseTo(90, 6) // X が東
+  })
+
+  it('正: 傾いていても水平面へ写した向きで読む', () => {
+    // X 軸を上へ 20° 起こしても、水平に写した方位は変わらない。
+    const tilt = (20 * Math.PI) / 180
+    const raised: Mat3 = multiplyMat3(headingMatrix(30), [
+      [Math.cos(tilt), 0, -Math.sin(tilt)],
+      [0, 1, 0],
+      [Math.sin(tilt), 0, Math.cos(tilt)],
+    ])
+    expect(headingOfRotation(raised)).toBeCloseTo(30, 6)
+  })
+
+  it('安全弁: X 軸が真上を向いていれば方角は無い（null）', () => {
+    const xUp: Mat3 = [
+      [0, 0, 1],
+      [0, 1, 0],
+      [1, 0, 0],
+    ]
+    expect(headingOfRotation(xUp)).toBeNull()
+  })
+})
+
+describe('rotateToHeading（保存のときに方角だけ当てる）', () => {
+  it('正: 指定した方角へ X 軸を向ける', () => {
+    const got = rotateToHeading(headingMatrix(335), 297)
+    expect(got.ok).toBe(true)
+    if (!got.ok) return
+    expect(headingOfRotation(got.rotation)).toBeCloseTo(297, 4)
+  })
+
+  it('対照: いまと同じ方角なら向きは変わらない（同じ値で保存し直しても回らない）', () => {
+    const before = headingMatrix(297)
+    const got = rotateToHeading(before, 297)
+    expect(got.ok).toBe(true)
+    if (!got.ok) return
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) expect(got.rotation[i]![j]).toBeCloseTo(before[i]![j]!, 5)
+  })
+
+  it('安全弁: 鉛直（上の列）は触らない', () => {
+    const tilt = (10 * Math.PI) / 180
+    const tilted: Mat3 = multiplyMat3(headingMatrix(100), [
+      [1, 0, 0],
+      [0, Math.cos(tilt), -Math.sin(tilt)],
+      [0, Math.sin(tilt), Math.cos(tilt)],
+    ])
+    const got = rotateToHeading(tilted, 250)
+    expect(got.ok).toBe(true)
+    if (!got.ok) return
+    // 各軸の上成分（3 行目）は鉛直まわりの回転で変わらない。
+    for (let j = 0; j < 3; j++) expect(got.rotation[2]![j]).toBeCloseTo(tilted[2]![j]!, 5)
+  })
+
+  it('安全弁: X 軸が真上なら断る', () => {
+    const got = rotateToHeading(
+      [
+        [0, 0, 1],
+        [0, 1, 0],
+        [1, 0, 0],
+      ],
+      90,
+    )
+    expect(got.ok).toBe(false)
+  })
+})
+
+describe('restWindowProblem（向きを提案できない理由）', () => {
+  // 待てば押せるようになるものには待つ長さを添える（2026-10-13 ユーザー承認）
+  it('正: 判定がまだ無い・波形が足りない・揺れている間は、待つ長さを言う', () => {
+    expect(restWindowProblem(null)).toBe('静止窓の判定がまだ無い。波形が 30 秒ぶん届くまで待ってください')
+    expect(restWindowProblem({ scale: 'too-few-samples', axisMeanGal: null })).toBe('波形が足りない。30 秒ぶん届くまで待ってください')
+    expect(restWindowProblem({ scale: 'not-at-rest', axisMeanGal: null })).toBe('揺れている間は合わせられない。静止してから 30 秒待ってください')
+  })
+
+  it('対照: 待っても直らない理由には待つ長さを添えない', () => {
+    expect(restWindowProblem({ scale: 'too-small', axisMeanGal: null })).toBe('換算の倍率が合っていない')
+    expect(restWindowProblem({ scale: 'unknown', axisMeanGal: null })).toBe('判定の種類を解釈できない')
+  })
+
+  it('正: いまの置き方で静止した窓が無いときは、置いてから待つ長さを言う', () => {
+    expect(NO_STILL_WINDOW).toBe('いまの置き方で静止した窓がまだ無い。置いてから 1 分ほど動かさないでください')
   })
 })
 
@@ -468,7 +572,7 @@ describe('「鉛直を合わせる」の材料（校正前の静止窓 → カ�
     })
     expect(boardGravityForTilt([{ sensorId: 'accel-0', source: still([0, 0, G]), sensor: withZLength(1 / 0.3) }])).toEqual({
       ok: false,
-      reason: '換算の倍率が合っていない。先にそちらを確かめること',
+      reason: '換算の倍率が合っていない',
       lacksMaterial: false,
     })
     // 対照: 3 分の 1 の手前なら出す。
@@ -487,7 +591,7 @@ describe('「鉛直を合わせる」の材料（校正前の静止窓 → カ�
     }
     const refused = {
       ok: false,
-      reason: '換算の倍率が合っていない。先にそちらを確かめること',
+      reason: '換算の倍率が合っていない',
       lacksMaterial: false,
     }
     expect(boardGravityForTilt([{ sensorId: 'accel-0', source: still([0, 0, G]), sensor: tinyZ }])).toEqual(refused)

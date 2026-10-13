@@ -55,6 +55,7 @@ yuremado（揺れ窓）で作業するときの手順とルール。
    - **直し方を提案するなら、設計として正しいものを出す**（下記「直し方の提案は、設計として正しいものを出す」）。触る範囲が大きくなることを理由に、筋の悪い案を勧めない
    - **ユーザーが決めていないことを、決まったことにしない**（下記「決めていないことを既決にしない」）。選択の意思が読み取れない答えは了承ではなく、利用者に見える判断を「意図的に外している」と書くなら承認した日付を添える
    - **いま動いているモデルが作業に合っているかを見る**（下記「モデルの昇格・降格を提案する」）
+   - **利用者に届く文言（画面・ホバー・確認の窓・通知・読み上げ・自作地震計のホストの管理コンソール）を足す・変えるなら、文面はここで [`docs/ui-wording-procedure.md`](docs/ui-wording-procedure.md) の手順で用意して諮る**（実装しながら決めない。レビューの指摘から足す場合に限らない —— 2026-10-12 ユーザー承認）。棚卸しの道具・語の出どころの探し方・記録の書式はそちら
 2. **ワークツリー作成**（修正・機能追加時はワークツリーを作成してから作業する。ブランチ名は必ず `worktree/<type>/<name>` 形式にする: `worktree/fix/〇〇`・`worktree/feat/〇〇`・`worktree/refactor/〇〇`・`worktree/docs/〇〇`・`worktree/chore/〇〇` など）
    - `worktree/` という接頭辞は**作業中**であることを表す。完了時に手順 11 で `ready/` へ付け替える
    - **作成前に必ず `git pull`（メインの checkout 側で）し、その時点の最新 `main` から派生させる。** ローカルの `main` が `origin/main` に遅れたまま気づかずワークツリーを切ると、大きく後退した地点から作業を始めることになり、後で `origin/main` へ作り直す手戻りが生じる（過去に実際に発生）
@@ -747,6 +748,8 @@ window.fetch = async (input, init) => {
 
 ### 指摘への対応が利用者向けの文言を足すなら、実装の前に確認を取る
 
+> 諮る文面をどう用意するか（棚卸し・語の出どころ・避ける形・記録）は [`docs/ui-wording-procedure.md`](docs/ui-wording-procedure.md)。いつ諮るか・例外・「足さない」の扱いは、この節が正。
+
 **レビューの指摘に応えるために、画面へ出す文言を新しく足す・既存の文面を変えるときは、実装する前にユーザーへ諮る。**
 対象は利用者の目に触れるテキスト全般 —— カードや設定画面の説明文・注記、通知の文面、
 エラーや警告の表示、データファイルの利用者向けフィールド（`description` 等）。
@@ -1261,6 +1264,8 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | `npm run build-third-party-licenses` | 同梱する第三者ソフトウェアのライセンス全文（`public/third-party-licenses.txt`）の再生成。**API キー不要・通信なし**（`node_modules` から集める）。**対象は直接の依存だけでなく、そこから辿れる推移的な依存も含む**（実測 32 件。`react-dom` が引く `scheduler`、`maplibre-gl` が引く `@mapbox/*` も配布物へ入る。**うち `@types/geojson` は型定義だけで実行時コードを持たない**が、`maplibre-gl` が `dependencies` に宣言しているので閉包へ入る —— 載せすぎは害にならないので除外していない）。あわせて **`vite-plugin-pwa` が Service Worker へ注入する Workbox** も載せる（devDependencies なので依存グラフでは辿れない。ビルド成果物を見て確かめたものだけを足すこと）。**依存を足し引きしたら実行する** —— MIT も BSD-3-Clause も著作権表示とライセンス文を配布物に含めることを条件としているのに、足りなくても型チェックもビルドも通り画面にも出ない。上流が LICENSE ファイルを配っていない依存だけは代替の文面をスクリプト側に持つ（現在は `murmurhash-js` の 1 件）。**全件が載っていることは [`scripts/thirdPartyLicenses.test.ts`](scripts/thirdPartyLicenses.test.ts) が `npm test` で検査する** |
 | `npm run check-personal-info -- <--range 範囲 \| --all \| --text ファイル…>` | 公開する内容に個人情報が無いかを確かめる。**push の前には pre-push フックが自動で走らせる**ので、手で回すのは git の外の文章（PR の本文など）を出す前と、履歴全体を見直すとき（`--all`。数分かかる）。**メインの checkout に照合ファイル（`.claude/personal-info.txt`）が無いと止まる**（終了コード 2）。依存を足して作者の連絡先が載ったら許可リストへ理由つきで足す。詳細は上記「公開する前に個人情報が無いことを確かめる」 |
 | `npm run install-git-hooks` | 上の検査を push の前に走らせるフックを入れる。**clone した端末ごとに 1 回**（フックは git の管理外なので clone では入らない）。中継だけを置き、本体（`scripts/git-hooks/pre-push`）が見つからなければ push を止める |
+| `npm run list-ui-strings -- [--out <TSV>] <パス…>` | 日本語を含む文字列を、`.ts`・`.tsx`・`.html` の構文から一覧にする（コメントは拾わない・HTML はタグを外して地の文と、日本語を含む属性の値だけ）。文言を見直す前の棚卸しに使う。拾えない形（英語だけの文言・JSON）と使い方は [`docs/ui-wording-procedure.md`](docs/ui-wording-procedure.md)「1. 棚卸しは機械で取る」 |
+| `npm run find-locale-strings -- <言語ファイル> <語…>` | ほかのアプリ（Chrome の `ja.pak`・VS Code の日本語パック）の画面の文言を、手元の言語ファイルから探す。言語ファイルの場所は同じ手順書の「3. 語の出どころを探す」 |
 | `node scripts/build-tsunami-zones.mjs` | 津波予報区 海岸線データ（`public/data/tsunami-zones.json`）の再生成 |
 | `node scripts/build-tsunami-obs-coords.mjs` | 津波観測点の座標（`public/data/tsunami-obs-coords.json`）の再生成。**API キー不要**。**電文は観測点の座標を持たない**ので、名前から引くこの表が無いと観測棒も到達確認の印も地図に出ない。**名前から座標へ直接引ける表はどこにも無い** —— 気象庁の名前（「岩手沖６０ｋｍＡ」）と運用機関側の施設名（「三陸沖１」）は別の体系なので、気象庁の観測点図を仲立ちにして図上の位置から施設へ突き合わせる（取得元 5 つ・仕組みと限界は [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §6「津波観測点の座標」）。**観測点が新設されたら実行する**。全 459 点に座標が付いたか・取得元ごとの件数・同じ場所の二重割り当て・防災科学技術研究所の座標との照合・名前が示す距離との釣り合い・既知 9 点との一致を検査し、合わなければ exit 1 で止まる |
 | `node scripts/build-prefectures.mjs` | 都道府県境界データ（`public/data/prefectures.json`）の再生成（ベースマップ用） |

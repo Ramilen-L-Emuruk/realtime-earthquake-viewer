@@ -7,6 +7,25 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { initStationsView, nextStationId } from './viewStations'
 import type { StationInfo } from '../receiver/stationConfigTypes'
+import { memoryTabContext } from './tabState'
+import { confirmDialog } from './confirmDialog'
+
+// **確認の窓は答えを決め打ちにする。** 窓そのものの振る舞いは `confirmDialog.test.ts` で見る。
+vi.mock('./confirmDialog', () => ({ confirmDialog: vi.fn() }))
+const confirmMock = vi.mocked(confirmDialog)
+
+/**
+ * 確認の窓の答えが画面へ届くまで待つ（窓は `Promise` で答える）。
+ * 段数に頼らないよう、マクロタスクを 1 つ挟む（その間にマイクロタスクは全部捌ける）。
+ */
+async function settleConfirm(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
+beforeEach(() => {
+  confirmMock.mockReset()
+  confirmMock.mockResolvedValue(false)
+})
 
 describe('nextStationId', () => {
   it('1 件も無ければ station-1', () => {
@@ -55,6 +74,9 @@ function stubApiFetch(
       if (typeof path === 'string' && path.startsWith('/api/stations/') && init?.method === 'PUT') {
         return { ok: true, status: 204, json: async () => ({}) }
       }
+      if (typeof path === 'string' && path.startsWith('/api/stations/') && init?.method === 'DELETE') {
+        return { ok: true, status: 204, json: async () => ({}) }
+      }
       throw new Error(`unexpected fetch path: ${String(path)}`)
     }),
   )
@@ -62,9 +84,61 @@ function stubApiFetch(
 
 async function mount(): Promise<HTMLElement> {
   const container = document.createElement('div')
-  await initStationsView(container, new AbortController().signal)
+  await initStationsView(container, memoryTabContext(new AbortController().signal, 'stations'))
   return container
 }
+
+/** 投げた DELETE の数（`fetch` の差し替えから数える）。 */
+function deleteCalls(): number {
+  const calls = vi.mocked(fetch).mock.calls as unknown as [unknown, { readonly method?: string } | undefined][]
+  return calls.filter(([, init]) => init?.method === 'DELETE').length
+}
+
+describe('観測点の削除の確認', () => {
+  beforeEach(() => {
+    stubApiFetch()
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('承認した文面で訊く（表示名で呼ぶ・ボタンは「削除する」）', async () => {
+    const container = await mount()
+    container.querySelector<HTMLButtonElement>('.delete-station')?.click()
+    expect(confirmMock).toHaveBeenCalledWith(document, {
+      title: '観測点「書斎」を削除しますか？',
+      body: null,
+      confirmLabel: '削除する',
+    })
+  })
+
+  it('正: 「削除する」なら DELETE を投げる', async () => {
+    const container = await mount()
+    confirmMock.mockResolvedValue(true)
+    container.querySelector<HTMLButtonElement>('.delete-station')?.click()
+    await vi.waitFor(() => expect(deleteCalls()).toBe(1))
+  })
+
+  it('安全弁: キャンセルなら DELETE を投げない（window.confirm からの置き換えで守りを外さない）', async () => {
+    const container = await mount()
+    container.querySelector<HTMLButtonElement>('.delete-station')?.click()
+    await settleConfirm()
+    expect(deleteCalls()).toBe(0)
+  })
+
+  it('安全弁: 答えを待つ間にタブを離れたら、「削除する」でも投げない', async () => {
+    const controller = new AbortController()
+    const container = document.createElement('div')
+    await initStationsView(container, memoryTabContext(controller.signal, 'stations'))
+    let answer: (ok: boolean) => void = () => {}
+    confirmMock.mockImplementation(() => new Promise<boolean>((resolve) => (answer = resolve)))
+    container.querySelector<HTMLButtonElement>('.delete-station')?.click()
+    controller.abort()
+    answer(true)
+    await settleConfirm()
+    expect(deleteCalls()).toBe(0)
+  })
+})
 
 const stationIdValue = (c: HTMLElement): string =>
   c.querySelector<HTMLInputElement>('[name=stationId]')?.value ?? ''
@@ -87,7 +161,7 @@ describe('観測点 ID の自動生成', () => {
     expect(stationIdValue(container)).toBe('station-1')
   })
 
-  it('「新規登録へ」で戻すと、また空いている ID が入る', async () => {
+  it('「新規」で戻すと、また空いている ID が入る', async () => {
     stubApiFetch()
     const container = await mount()
     container.querySelector<HTMLButtonElement>('.edit-station')?.click()
@@ -125,7 +199,7 @@ describe('観測点 ID の自動生成', () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
 
     expect(stationIdValue(container)).toBe('')
-    expect(container.querySelector('.stations-error')?.textContent).toContain('再取得に失敗')
+    expect(container.querySelector('.stations-error')?.textContent).toContain('一覧を読み込めない')
   })
 })
 
@@ -145,21 +219,18 @@ describe('観測点タブの未保存確認', () => {
     if (name === null) throw new Error('表示名の入力欄が無い')
     name.value = '入力途中'
     name.dispatchEvent(new Event('input', { bubbles: true }))
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
-
     container.querySelector<HTMLButtonElement>('.edit-station')?.click()
+    await settleConfirm()
 
-    expect(confirmSpy).toHaveBeenCalledOnce()
+    expect(confirmMock).toHaveBeenCalledOnce()
     expect(container.querySelector<HTMLInputElement>('[name=displayName]')?.value).toBe('入力途中')
   })
 
   it('未編集なら確認を求めない', async () => {
     const container = await mount()
-    const confirmSpy = vi.spyOn(window, 'confirm')
-
     container.querySelector<HTMLButtonElement>('.edit-station')?.click()
 
-    expect(confirmSpy).not.toHaveBeenCalled()
+    expect(confirmMock).not.toHaveBeenCalled()
     expect(stationIdValue(container)).toBe('station-1')
   })
 })
@@ -212,5 +283,93 @@ describe('現在地から座標を入れる', () => {
 
     expect(container.querySelector<HTMLButtonElement>('.use-current-location')?.disabled).toBe(true)
     expect(container.querySelector('.location-note')?.textContent).toContain('HTTPS か localhost')
+  })
+})
+
+/** リロード・タブ移動で、編集していた観測点を開き直す（2026-10-10 ユーザー承認）。 */
+describe('観測点タブの選択を保つ', () => {
+  beforeEach(() => {
+    stubApiFetch()
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('編集を押すと選択に載り、「新規」で戻すと外れる', async () => {
+    const ctx = memoryTabContext(new AbortController().signal, 'stations')
+    const container = document.createElement('div')
+    await initStationsView(container, ctx)
+    container.querySelector<HTMLButtonElement>('.edit-station')?.click()
+    expect(ctx.selection.get('station')).toBe('station-1')
+    container.querySelector<HTMLButtonElement>('.reset-form')?.click()
+    expect(ctx.selection.get('station')).toBeNull()
+  })
+
+  // **「変更できない」は、それが本当のときだけ示す。** ラベルの文字はいつも「観測点 ID」で、
+  // 編集のときだけホバーの説明が付く（2026-10-12 ユーザー承認）。
+  it('編集のときだけ、ID のラベルに「登録した後は変更できません。」を付ける', async () => {
+    const ctx = memoryTabContext(new AbortController().signal, 'stations')
+    const container = document.createElement('div')
+    await initStationsView(container, ctx)
+    const lockTip = (): string | null =>
+      container.querySelector<HTMLElement>('.stationId-label button.tip')?.dataset.tip ?? null
+    expect(container.querySelector('.stationId-label')?.textContent).toBe('観測点 ID')
+    expect(lockTip()).toBeNull()
+
+    container.querySelector<HTMLButtonElement>('.edit-station')?.click()
+    expect(container.querySelector('.stationId-label')?.textContent).toBe('観測点 ID')
+    expect(lockTip()).toBe('登録した後は変更できません。')
+
+    container.querySelector<HTMLButtonElement>('.reset-form')?.click()
+    expect(lockTip()).toBeNull()
+  })
+
+  it('覚えていた観測点をホストの値で開き直す', async () => {
+    const ctx = memoryTabContext(new AbortController().signal, 'stations', { selection: { station: 'station-1' } })
+    const container = document.createElement('div')
+    await initStationsView(container, ctx)
+    expect(stationIdValue(container)).toBe('station-1')
+    expect(container.querySelector<HTMLInputElement>('[name=stationId]')?.readOnly).toBe(true)
+    expect(container.querySelector<HTMLInputElement>('[name=displayName]')?.value).toBe('書斎')
+    // 開き直しただけでは未保存にならない
+    expect(ctx.unsaved()).toBe(false)
+  })
+
+  // **消えた観測点を固定の ID で開いたままにしない。** `PUT` は upsert なので、そのまま保存すると作り直してしまう。
+  it('一覧に無い観測点は新規の形に戻し、選択からも外す', async () => {
+    const ctx = memoryTabContext(new AbortController().signal, 'stations', { selection: { station: 'gone' } })
+    const container = document.createElement('div')
+    await initStationsView(container, ctx)
+    expect(stationIdValue(container)).toBe('station-2')
+    expect(container.querySelector<HTMLInputElement>('[name=stationId]')?.readOnly).toBe(false)
+    expect(ctx.selection.get('station')).toBeNull()
+  })
+
+  // **取れていない空を「一覧に無い」と取り違えない。** トークンの失効や通信の途切れだけで、
+  // 何を編集していたかが失われる。
+  it('一覧を取れなかったときは、覚えていた選択に触らない', async () => {
+    stubApiFetch({ listFails: true })
+    const ctx = memoryTabContext(new AbortController().signal, 'stations', { selection: { station: 'station-1' } })
+    const container = document.createElement('div')
+    await initStationsView(container, ctx)
+    expect(ctx.selection.get('station')).toBe('station-1')
+    expect(container.querySelector('.stations-error')?.textContent).not.toBe('')
+  })
+
+  it('入力の途中は「保存していない」と答え、破棄して新規へ戻すと答えを戻す', async () => {
+    const ctx = memoryTabContext(new AbortController().signal, 'stations')
+    const container = document.createElement('div')
+    await initStationsView(container, ctx)
+    expect(ctx.unsaved()).toBe(false)
+    const name = container.querySelector<HTMLInputElement>('[name=displayName]')
+    if (name === null) throw new Error('表示名の入力欄が無い')
+    name.value = '入力途中'
+    name.dispatchEvent(new Event('input', { bubbles: true }))
+    expect(ctx.unsaved()).toBe(true)
+    confirmMock.mockResolvedValue(true)
+    container.querySelector<HTMLButtonElement>('.reset-form')?.click()
+    await settleConfirm()
+    expect(ctx.unsaved()).toBe(false)
   })
 })

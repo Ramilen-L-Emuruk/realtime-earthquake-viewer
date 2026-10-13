@@ -5,9 +5,10 @@
 // **校正の形は `stationConfigTypes.ts` の冒頭。** センサーは軸ごとに「基板の座標で測る向き
 // （長さが倍率）」と「ゼロ点」を持ち、地面に対する向き（鉛直・方角）は基板に 1 つだけ持つ。
 
-import { restWindowProblem, tiltDegFromUp } from './calibrationSuggest'
+import { headingOfRotation, restWindowProblem, tiltDegFromUp } from './calibrationSuggest'
 import type { SensorRestWindow } from './detectedBoards'
 import { ago, escapeHtml, qs } from './dom'
+import { tipHtml } from './tip'
 import { axesAreIndependent } from '../receiver/calibration'
 import { isProperRotation } from '../receiver/matrix3'
 import {
@@ -91,9 +92,9 @@ function parseVec3(values: Vec3Strings, fieldLabel: string): Vec3 | { readonly e
  */
 export function parseSensorFormValues(values: SensorFormValues): ParseSensorFormResult {
   const sensorId = values.sensorId.trim()
-  if (sensorId.length === 0) return { ok: false, error: 'センサー ID を入力すること' }
+  if (sensorId.length === 0) return { ok: false, error: 'センサー ID を入力してください' }
   if (values.axes.length !== 2 && values.axes.length !== 3) {
-    return { ok: false, error: `軸の欄が ${values.axes.length} 本ある（2 か 3）` }
+    return { ok: false, error: `軸の欄の本数が無効: ${values.axes.length} 本` }
   }
 
   const axes: AxisCalibration[] = []
@@ -115,18 +116,36 @@ export function parseSensorFormValues(values: SensorFormValues): ParseSensorForm
   if (values.noiseDensity.trim().length > 0) {
     const parsed = parseFiniteNumber(values.noiseDensity, 'ノイズ密度')
     if (typeof parsed !== 'number') return { ok: false, error: parsed.error }
-    if (parsed < 0) return { ok: false, error: 'ノイズ密度は 0 以上にすること' }
+    if (parsed < 0) return { ok: false, error: 'ノイズ密度は 0 以上にしてください' }
     noiseDensity = parsed
   }
 
   return { ok: true, sensor: { sensorId, enabled: values.enabled, axes, noiseDensity } }
 }
 
+/**
+ * 校正の欄のホバーの説明。**固定の説明なので常には出さない**（`docs/ui-wording-procedure.md` §2）。
+ * 文面は 2026-10-12 ユーザー承認。
+ */
+const AXIS_CALIBRATION_TIP =
+  '向きは、その軸が基板の X・Y・Z のどの向きを測るかです。長さは倍率で、1 gal の揺れを何 gal と読むかです。'
+const ZERO_OFFSET_TIP = '揺れていないときに読む値です。'
+/** 6 面法の見出しのホバーの説明（文面は 2026-10-12 ユーザー承認）。 */
+const SIX_FACE_TIP =
+  '基板に載った全部のセンサーをまとめて測ります。' +
+  '基板を X・Y・Z の上向き・下向きの 6 方向へ置き、それぞれ 1 分以上動かさないでください。' +
+  '姿勢が足りなければ、斜めにも置いてください。' +
+  'X・Y は 1 個目のセンサーの 1 本目・2 本目の軸です。' +
+  '直近 30 分の静止した時間から計算します。'
+
 /** 軸ごとの欄。**行の数が軸の本数**（読み取りもこの行を数える）。 */
 function axesGridHtml(axes: readonly AxisFormValues[]): string {
   // **左上の角は `.muted` にしない。** `.muted:empty` は場所を取らない（`index.html`）ので、空の
   // 見出しが消えて以降のセルが 1 つずつ前へずれ、行の名前が右端の列へ回る。
-  const head = `<span></span>${['向き X', '向き Y', '向き Z', 'ゼロ点（gal）'].map((h) => `<span class="muted">${h}</span>`).join('')}`
+  // **ゼロ点の列名だけ説明を添える**（固定の説明はホバーで出す。文面は 2026-10-12 ユーザー承認）。
+  const labels = ['向き X', '向き Y', '向き Z'].map(escapeHtml)
+  labels.push(tipHtml('ゼロ点（gal）', ZERO_OFFSET_TIP))
+  const head = `<span></span>${labels.map((h) => `<span class="muted">${h}</span>`).join('')}`
   const rows = axes
     .map(
       (a, axis) => `
@@ -175,9 +194,7 @@ export function renderSensorCardHtml(values: SensorFormValues): string {
       <!-- **単位は gal（cm/s²）。** \`calibration.ts\` が \`gal - offset\` の形で、換算済みの
            gal 値から直接引く。m/s² と書くと運用者が 100 倍ずれた値を入れ、保存時の検証
            （数値として読めるかしか見ない）も素通りする。 -->
-      <div class="muted" style="font-size: 0.8rem; margin-top: 0.3rem;">軸ごとの校正（基板の座標）</div>
-      <div class="muted" style="font-size: 0.75rem;">向き：その軸が基板のどの向きを測るか。長さが倍率（1 gal の揺れで何 gal 読むか）</div>
-      <div class="muted" style="font-size: 0.75rem;">ゼロ点：揺れていないときに読む値</div>
+      <div class="muted" style="font-size: 0.8rem; margin-top: 0.3rem;">${tipHtml('軸ごとの校正', AXIS_CALIBRATION_TIP)}</div>
       ${axesGridHtml(values.axes)}
       <!-- **静止窓の診断は畳まない。** 傾いて付いているという事実は、詳細設定を
            開いた人にしか見えないと気づかれない。中身は viewBoards が埋める。 -->
@@ -224,7 +241,7 @@ export function restWindowNote(window: SensorRestWindow | null, nowMs: number | 
   // `generatedAtMs`）。時刻だけを省く。
   const when = nowMs === null ? '' : `・${ago(nowMs, window.atMs)}`
   const restless = window.restless
-    ? '／静止しているのに計測震度が高い（震度を出す側の配線を確かめること）'
+    ? '／静止しているのに計測震度が高い'
     : ''
 
   const problem = restWindowProblem(window)
@@ -326,7 +343,7 @@ export function parseOrientationFormValues(values: OrientationFormValues): Mat3 
     [n[3]!, n[4]!, n[5]!],
     [n[6]!, n[7]!, n[8]!],
   ]
-  if (!isProperRotation(m)) return { error: '基板の向きが純粋な回転になっていない（列の長さ 1・互いに直交・右手系）' }
+  if (!isProperRotation(m)) return { error: '基板の向きが純粋な回転になっていない' }
   return m
 }
 
@@ -335,6 +352,7 @@ export function parseOrientationFormValues(values: OrientationFormValues): Mat3 
  * （手で入れる値ではなく、ボタンが入れる値なので）。結果と押せない理由は `viewBoards` が埋める。
  */
 export function renderOrientationHtml(values: OrientationFormValues): string {
+  const heading = headingTextFor(values)
   const cells: string[] = []
   for (let row = 0; row < 3; row++) {
     for (let col = 0; col < 3; col++) {
@@ -348,12 +366,13 @@ export function renderOrientationHtml(values: OrientationFormValues): string {
       <h3>基板の向き</h3>
       <!-- **6 面法は基板に 1 つ**（2026-10-10 ユーザー承認。前はセンサーカードごとにあった）。基板に載った
            全部のセンサーの軸を一緒に解き、結果は各カードの軸の欄へ入る。**鉛直合わせより先に置く** ——
-           ゼロ点を入れる前に出した傾きはずれを抱え込む。文言は 2026-10-10 ユーザー承認。中身（揃い具合・
+           ゼロ点を入れる前に出した傾きはずれを抱え込む。手順の説明は見出しのホバー（2026-10-12 ユーザー承認）。中身（揃い具合・
            押せない理由・結果）は viewBoards が埋める。 -->
       <div class="b-sixface" style="font-size: 0.8rem; margin-bottom: 0.6rem;">
-        <div>6 面で測る（基板に載った全部のセンサー）</div>
-        <div class="muted">基板を X・Y・Z の上向き・下向きの 6 方向へ置き、それぞれ 1 分以上動かさない。姿勢が足りなければ、斜めにも置く。X・Y は 1 個目のセンサーの 1 本目・2 本目の軸。直近 30 分の静止した時間から計算する</div>
+        <div>${tipHtml('6 面で測る', SIX_FACE_TIP)}</div>
+        <!-- 進み具合は解く条件の順に 4 行、その下に「いまの置き方:」の秒読み（2026-10-10 ユーザー承認）。 -->
         <div class="b-sixface-faces" style="margin-top: 0.2rem;"></div>
+        <div class="b-sixface-placement" style="margin-top: 0.2rem;"></div>
         <div class="row" style="align-items: center; margin-top: 0.2rem;">
           <button type="button" class="apply-sixface" style="flex: 0 0 auto;" disabled>6 面の結果を入れる</button>
           <span class="muted b-sixface-why"></span>
@@ -364,10 +383,13 @@ export function renderOrientationHtml(values: OrientationFormValues): string {
            自動では決まらない（REQUIREMENTS.md §16）。空のままなら水平面は回さない。
            **「向いている」ではなく「向ける」。** 入れるのは向かせたい方角で、実際に
            回るのはいまの向きとの差だけ —— 同じ値を入れ直しても動かない。
-           **「X 軸」は基板の X 軸**（センサーの軸ごとの向きを測る座標と同じ）。 -->
+           **「X 軸」は基板の X 軸**（センサーの軸ごとの向きを測る座標と同じ）。
+           **欄にはいまの方角を入れておく**（基板の向きから読み戻した値。headingTextFor）。
+           data-initial は入れておいた値で、保存のときこれと違えば方角を当て直す
+           （readHeadingChange）。 -->
       <div class="row">
         <label style="flex: 1">X 軸を向ける方角（度・任意）
-          <input class="b-heading" type="number" step="any" placeholder="北=0・東=90・南=180・西=270" />
+          <input class="b-heading" type="number" step="any" placeholder="北=0・東=90・南=180・西=270" value="${escapeHtml(heading)}" data-initial="${escapeHtml(heading)}" />
         </label>
         <button type="button" class="suggest-tilt" style="align-self: end; height: 2.1rem;" disabled>鉛直を合わせる</button>
       </div>
@@ -378,6 +400,43 @@ export function renderOrientationHtml(values: OrientationFormValues): string {
         <div class="mat3-grid">${cells.join('')}</div>
       </details>
     </div>`
+}
+
+/**
+ * 基板の向きの欄から、いまの方角を欄に入れる文字列にする。**読めなければ空**（欄は空のまま）。
+ *
+ * 小数 1 桁で丸め、`.0` は付けない（297 と入れた基板は `297` と出る）。360 へ丸まったら 0。
+ */
+export function headingTextFor(values: OrientationFormValues): string {
+  const m = parseOrientationFormValues(values)
+  if ('error' in m) return ''
+  const deg = headingOfRotation(m)
+  if (deg === null) return ''
+  const rounded = Math.round(deg * 10) / 10
+  return String(rounded >= 360 ? 0 : rounded)
+}
+
+/**
+ * 方角の欄を、いまの基板の向きから入れ直す（「鉛直を合わせる」の後・3x3 を手で直した後）。
+ * **入れ直した値を `data-initial` にも写す** —— 保存のとき「手で変えたか」をこれと比べる。
+ */
+export function writeHeadingFromOrientation(root: ParentNode): void {
+  const input = qs<HTMLInputElement>(root, '.b-heading')
+  const text = headingTextFor(readOrientationValues(root))
+  input.value = text
+  input.dataset.initial = text
+}
+
+/**
+ * 保存のときに当てる方角。**手で変えていなければ `null`**（入れておいた値のまま・空欄）。
+ *
+ * **入れておいた値と比べる。** 比べずに毎回当てると、3x3 を手で直した後の保存で
+ * 欄に残った古い方角へ黙って回し戻す。空欄も「触らない」（`parseHeadingText`）。
+ */
+export function readHeadingChange(root: ParentNode): number | null | { readonly error: string } {
+  const input = qs<HTMLInputElement>(root, '.b-heading')
+  if (input.value.trim() === (input.dataset.initial ?? '').trim()) return null
+  return parseHeadingText(input.value)
 }
 
 /** 基板の向きの欄を読む。**`renderOrientationHtml` と同じセレクタ。** */

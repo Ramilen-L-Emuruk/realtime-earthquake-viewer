@@ -8,40 +8,52 @@
 // 保存時は表示中の全カードと基板の向きを読み直して丸ごと送る。
 
 import { apiFetch, ApiError, describeAdminAuthFailure, getStoredToken } from './api'
-import { fitBoardSixFace, type BoardFitSensor } from './boardSixFace'
-import { boardGravityForTilt, suggestRotation } from './calibrationSuggest'
+import { boardSixFaceProgress, fitBoardSixFace, type BoardFitSensor, type CurrentPlacement } from './boardSixFace'
+import { boardGravityForTilt, rotateToHeading, suggestRotation } from './calibrationSuggest'
 import { fetchDetectedBoards, type DetectedBoard, type SensorRestWindow } from './detectedBoards'
-import { ago, escapeHtml, qs, receptionBadgeHtml } from './dom'
+import { confirmDialog } from './confirmDialog'
+import { ago, boardLabelHtml, confirmDiscardUnsaved, escapeHtml, qs, receptionBadgeHtml } from './dom'
+import { lockableLabelHtml } from './tip'
 import {
   emptySensorFormValues,
   orientationToFormValues,
-  parseHeadingText,
   parseOrientationFormValues,
   parseSensorFormValues,
+  readHeadingChange,
   readOrientationValues,
   readSensorCardValues,
   renderOrientationHtml,
   renderSensorCardHtml,
   restWindowNote,
   sensorToFormValues,
+  writeHeadingFromOrientation,
   writeOrientationValues,
   writeSensorCardAxes,
   SENSOR_ID_DATALIST_ID,
 } from './sensorForm'
 import {
   cardPanelFailureMessage,
-  describeFaces,
+  describePlacement,
+  describeProgress,
   parseRestWindowsBody,
   restWindowsFetchProblem,
+  SIX_FACE_DEGENERATE,
   sixFaceApplied,
   sixFaceProblem,
+  type RestWindowsSnapshot,
   type SensorFitWindows,
 } from './sixFacePanel'
+import type { TabContext } from './tabState'
 import { multiplyMatVec3 } from '../receiver/matrix3'
 import type { AxisCount, BoardEntry, SensorEntry, StationInfo } from '../receiver/stationConfigTypes'
+import { BOARD_DISPLAY_NAME_MAX } from '../receiver/stationConfigTypes'
 
 /** 基板 Key の入力候補（`<datalist>`）の id。中身は `/status` が声を聞いている基板。 */
 const BOARD_KEY_DATALIST_ID = 'detected-board-keys'
+
+/** URL の `#` に載せる選択のキー。編集中の基板（登録済み）と、登録しかけの基板（届いている）。 */
+const SELECTED_BOARD_KEY = 'board'
+const REGISTERING_BOARD_KEY = 'register'
 
 /**
  * `GET /api/rest-windows` の時間切れ。10 秒ごとの取り直しより長く取る（短いと、遅いだけの
@@ -78,26 +90,24 @@ export interface BoardRow {
  * 二度並ぶ。しかも**いちばん知りたい状態がどちらからも読めない**——「登録したのに
  * 声が届いていない」は、声の一覧には現れず、設定の一覧は受信の様子を持たない。
  *
- * **並びは「届いている順 → 届いていない登録済み」。** 前半は `/status` の順
- * （音沙汰の新しい順・`sensorHealth.ts` の `snapshot`）をそのまま使う。
+ * **並びは「登録済み（設定の順）→ 未登録で届いている基板（基板 Key の順）」。** どちらも
+ * 受信の様子では動かない——以前は前半を `/status` の音沙汰の新しい順にしていて、読み直す
+ * たびに行が入れ替わっていた。設定の順はホストが保存しても動かさない
+ * （`statusServer.ts` の `replaceInPlace`）。
  */
 export function mergeBoardRows(
   detected: readonly DetectedBoard[],
   boards: readonly BoardEntry[],
 ): readonly BoardRow[] {
-  const rows: BoardRow[] = []
-  const heard = new Set<string>()
+  const rows: BoardRow[] = boards.map((b) => ({
+    boardKey: b.boardKey,
+    detected: detected.find((d) => d.boardKey === b.boardKey) ?? null,
+    registered: b,
+  }))
+  const registered = new Set<string>(boards.map((b) => b.boardKey))
   for (const d of detected) {
-    heard.add(d.boardKey)
-    rows.push({
-      boardKey: d.boardKey,
-      detected: d,
-      registered: boards.find((b) => b.boardKey === d.boardKey) ?? null,
-    })
-  }
-  for (const b of boards) {
-    if (heard.has(b.boardKey)) continue
-    rows.push({ boardKey: b.boardKey, detected: null, registered: b })
+    if (registered.has(d.boardKey)) continue
+    rows.push({ boardKey: d.boardKey, detected: d, registered: null })
   }
   return rows
 }
@@ -112,7 +122,7 @@ function renderBoardsTable(
   const tbody = qs(container, '.boards-table tbody')
   if (rows.length === 0) {
     tbody.innerHTML =
-      '<tr><td colspan="5" class="muted">まだ 1 枚も無い（基板から届けば、ここに出る）</td></tr>'
+      '<tr><td colspan="5" class="muted">基板がありません</td></tr>'
     return
   }
   const stationName = (id: string): string => stations.find((s) => s.stationId === id)?.displayName ?? id
@@ -143,7 +153,7 @@ function renderBoardsTable(
           : '<button type="button" class="register-board">登録</button>'
       return `
         <tr data-board-key="${escapeHtml(row.boardKey)}">
-          <td>${escapeHtml(row.boardKey)}</td>
+          <td>${boardLabelHtml(row.boardKey, row.registered?.displayName ?? null)}</td>
           <td>${escapeHtml(sensors)}</td>
           <td>${reception}</td>
           <td>${station}</td>
@@ -194,15 +204,14 @@ function fillForm(container: HTMLElement, board: BoardEntry | null): void {
   const keyInput = qs<HTMLInputElement>(container, '[name=boardKey]')
   const select = qs<HTMLSelectElement>(container, '[name=stationId]')
   keyInput.value = board?.boardKey ?? ''
+  qs<HTMLInputElement>(container, '[name=displayName]').value = board?.displayName ?? ''
   // **既存の基板を編集するときは boardKey を固定する。** 観測点と同じ理由
   // （URL パスの値が正）。
   keyInput.readOnly = board !== null
-  // **「変更不可」はそれが本当のときだけ出す。** 新規登録では入力必須なので、
-  // 固定の文言にすると初めて登録する運用者へ嘘をつくことになる。
-  qs(container, '.boardKey-label').textContent = board !== null ? '基板 Key（変更不可）' : '基板 Key'
+  qs(container, '.boardKey-label').innerHTML = lockableLabelHtml('基板 Key', board !== null)
   if (board !== null) select.value = board.stationId
   // **基板の向きも基板ごとに入れ替える。** 残すと前に見ていた基板の向きで保存する。
-  // 方角の欄と前の結果も空へ戻す（別の基板へ向けた方角を持ち越さない）。
+  // 方角の欄はその基板のいまの方角で入れ直し、前の結果は空へ戻す（別の基板へ向けた方角を持ち越さない）。
   qs(container, '.board-orientation-slot').innerHTML = renderOrientationHtml(orientationToFormValues(board?.orientation))
   renderSensorCards(container, board?.sensors ?? [])
 }
@@ -223,7 +232,8 @@ export function readAllSensors(container: HTMLElement): readonly SensorEntry[] |
   return sensors
 }
 
-export async function initBoardsView(container: HTMLElement, signal: AbortSignal): Promise<void> {
+export async function initBoardsView(container: HTMLElement, ctx: TabContext): Promise<void> {
+  const { signal } = ctx
   container.innerHTML = `
     <div class="boards-error"></div>
     <!-- **表は 1 つ。** 声が届いている基板と設定にある基板を分けて並べると、
@@ -233,7 +243,7 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
       <h2>基板</h2>
       <p class="muted boards-note"></p>
       <table class="boards-table">
-        <thead><tr><th>基板 Key</th><th>センサー</th><th>受信</th><th>観測点</th><th></th></tr></thead>
+        <thead><tr><th>基板</th><th>センサー</th><th>受信</th><th>観測点</th><th></th></tr></thead>
         <tbody></tbody>
       </table>
     </section>
@@ -242,7 +252,9 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
       <form class="board-form">
         <!-- **ラベルの初期値はここに置く。** 初回マウントでは fillForm を通らない
              （reload しか呼ばない）ので、空にすると新規登録の画面でラベルごと消える。 -->
-        <label><span class="boardKey-label">基板 Key</span><input name="boardKey" list="${BOARD_KEY_DATALIST_ID}" placeholder="mac:aabbccddeeff" required /></label>
+        <!-- **<label> にしない。** 観測点タブの ID 欄と同じ理由（lockableLabelHtml）。 -->
+        <div class="label-like" data-tip-row><span class="boardKey-label" id="boardKey-label">基板 Key</span><input name="boardKey" list="${BOARD_KEY_DATALIST_ID}" placeholder="mac:aabbccddeeff" required aria-labelledby="boardKey-label" /></div>
+        <label>表示名（任意）<input name="displayName" maxlength="${BOARD_DISPLAY_NAME_MAX}" /></label>
         <label>観測点<select name="stationId" required></select></label>
         <div class="board-orientation-slot">${renderOrientationHtml(orientationToFormValues())}</div>
         <h3>センサー</h3>
@@ -255,7 +267,7 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
         </div>
         <div class="row">
           <button type="submit">保存</button>
-          <button type="button" class="reset-form">新規登録へ</button>
+          <button type="button" class="reset-form">新規</button>
         </div>
       </form>
     </section>
@@ -269,25 +281,49 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
   let currentBoards: readonly BoardEntry[] = []
   let currentStations: readonly StationInfo[] = []
   let currentDetected: readonly DetectedBoard[] = []
+  /**
+   * `currentDetected` が `/status` から取れた一覧か（取れなければ空のまま）。**登録しかけていた基板を
+   * 開き直すかの判断に使う** —— 取れていない空を「声が途絶えた」と取り違えると、覚えていた選択を消す。
+   */
+  let detectedLoaded = false
   let currentRestWindows: readonly SensorRestWindow[] = []
   /** 経過を測る基準（`/status` の `generatedAtMs`）。取れていなければ `null`。 */
   let currentGeneratedAtMs: number | null = null
   /** 6 面法の材料（`GET /api/rest-windows`）。取れていなければ `null` で、理由は下。 */
   let currentFitWindows: readonly SensorFitWindows[] | null = null
   let fitWindowsProblem: string | null = null
+  /**
+   * 6 面法の秒読みに使うホストの時計（応答の `nowMs`・`windowMs` と、受け取ったときのこちらの時計）。
+   * **前の版のホスト・取れていないときは `null`**（秒読みの行を出さない）。
+   */
+  let currentFitClock: { readonly hostNowMs: number; readonly windowMs: number; readonly receivedAtMs: number } | null = null
+  /** いまの置き方の行を毎秒描き直すための、最後に解いた進み具合（`refreshBoardSixFace`）。 */
+  let lastPlacement: CurrentPlacement = 'not-counted'
+  /** 最後に `GET /api/rest-windows` を投げた時刻（こちらの時計）。秒読みが 0 になったときの取り直しの間引きに使う。 */
+  let lastFitWindowsRequestMs = 0
   /** 「鉛直を合わせる」を押して、ホストの返事を待っているか（ボタンは基板に 1 つ）。 */
   let tiltInFlight = false
 
   // **編集中の未保存内容を、確認なしで破棄しない。** センサーカードの追加・削除・
   // 数値変更中に別の基板の「編集」を押すと、`fillForm` が `.sensor-cards` を
   // 丸ごと差し替えるため、それまでの入力が黙って消える——削除ボタン
-  // （`delete-board`）には `window.confirm` があるのに、こちらには無かった
-  // （敵対的レビューで検出）。
+  // （`delete-board`）には確認があるのに、こちらには無かった（敵対的レビューで検出）。
   let formDirty = false
+  // **タブ移動・リロードの前にも訊く**（`app.ts`）。同じタブの中で別の基板を開くときと同じ印を見る。
+  ctx.setUnsavedProbe(() => formDirty)
 
-  const confirmDiscardIfDirty = (): boolean => {
-    if (!formDirty) return true
-    return window.confirm('編集中の内容を破棄する？')
+  /**
+   * 保存していない入力が無ければその場で `then` を走らせ、あれば確認の窓で「破棄する」が
+   * 押されたときだけ走らせる。**窓は非同期**なので、答えを待つ間にタブが替わっていたら走らせない。
+   */
+  const whenDiscardAllowed = (then: () => void): void => {
+    if (!formDirty) {
+      then()
+      return
+    }
+    void confirmDiscardUnsaved().then((ok) => {
+      if (ok && !signal.aborted) then()
+    })
   }
 
   /**
@@ -352,16 +388,60 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
     const panel = qs(container, '.board-orientation .b-sixface')
     const input = boardFitInput()
     let problem: string | null
+    const progressEl = qs(panel, '.b-sixface-faces')
     if ('error' in input) {
-      qs(panel, '.b-sixface-faces').textContent = ''
+      progressEl.replaceChildren()
+      lastPlacement = 'not-counted'
       problem = input.error
     } else {
       const result = fitBoardSixFace(input.sensors)
-      qs(panel, '.b-sixface-faces').textContent = describeFaces(result.faces, result.poseCount, result.minPoses)
+      const progress = boardSixFaceProgress(
+        input.sensors,
+        input.sensors.map((s) => findFitSource(currentFitWindows, s.sensorId)?.stillSinceMs ?? null),
+      )
+      // **1 行ずつ要素にする**（`textContent` で入れるので、ホストから来た文字が HTML として読まれない）。
+      progressEl.replaceChildren(
+        ...(progress === null ? [] : describeProgress(progress)).map((line) => {
+          const div = document.createElement('div')
+          div.textContent = line
+          return div
+        }),
+      )
+      lastPlacement = progress?.current ?? 'not-counted'
       problem = fitWindowsProblem ?? sixFaceProblem(result)
     }
     qs<HTMLButtonElement>(panel, '.apply-sixface').disabled = problem !== null
     qs(panel, '.b-sixface-why').textContent = problem ?? ''
+    refreshPlacement()
+  }
+
+  /**
+   * 「いまの置き方:」の行だけを描き直す。**毎秒呼ぶ**（秒読み）。進み具合は 10 秒ごとの取り直しで
+   * 決めたもの（`lastPlacement`）を使い、ここでは解き直さない。**投げうる**（`qs()`）。
+   *
+   * **秒読みが 0 になったら取り直す**（10 秒ごとの取り直しを待つと、数えたのが最大 10 秒遅れて見える）。
+   * 返事の遅いホストへ毎秒重ねないよう、前に投げてから 3 秒は投げない。
+   */
+  const refreshPlacement = (): void => {
+    const el = qs(container, '.board-orientation .b-sixface-placement')
+    const input = boardFitInput()
+    if ('error' in input || currentFitWindows === null || currentFitClock === null) {
+      el.textContent = ''
+      return
+    }
+    const clock = currentFitClock
+    const hostNowMs = clock.hostNowMs + (Date.now() - clock.receivedAtMs)
+    const line = describePlacement(
+      lastPlacement,
+      input.sensors.map((s) => ({ sensorId: s.sensorId, source: findFitSource(currentFitWindows, s.sensorId) })),
+      { nowMs: hostNowMs, sampledAtMs: clock.hostNowMs, windowMs: clock.windowMs },
+    )
+    el.textContent = line?.text ?? ''
+    if (line !== null && line.due && Date.now() - lastFitWindowsRequestMs >= 3_000) {
+      // 投げる前に刻む。トークンが無くて `loadFitWindows` が投げずに戻ったときも、毎秒呼び直さない。
+      lastFitWindowsRequestMs = Date.now()
+      void loadFitWindows()
+    }
   }
 
   /**
@@ -394,19 +474,27 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
     readonly problem: string | null
   } | null> => {
     const seq = ++fitWindowsRequested
-    let sensors: readonly SensorFitWindows[] | null = null
+    lastFitWindowsRequestMs = Date.now()
+    let snapshot: RestWindowsSnapshot | null = null
     let problem: string | null = null
     try {
-      sensors = parseRestWindowsBody(await apiFetch<unknown>('/api/rest-windows', { signal: restWindowsSignal() }))
-      if (sensors === null) problem = restWindowsFetchProblem('応答の形が違う')
+      snapshot = parseRestWindowsBody(await apiFetch<unknown>('/api/rest-windows', { signal: restWindowsSignal() }))
+      if (snapshot === null) problem = restWindowsFetchProblem('応答の形が違う')
     } catch (error) {
       problem = restWindowsFetchProblem(describeFetchFailure(error))
     }
     if (signal.aborted) return null
+    const sensors = snapshot?.sensors ?? null
     if (seq > fitWindowsApplied) {
       fitWindowsApplied = seq
       currentFitWindows = sensors
       fitWindowsProblem = problem
+      // **ホストの時計は、受け取った時点のこちらの時計と組で覚える**（秒読みは、その差を足してホストの
+      // いまを出す。画面とホストの時計は合っているとは限らない）。
+      currentFitClock =
+        snapshot !== null && snapshot.nowMs !== null && snapshot.windowMs !== null
+          ? { hostNowMs: snapshot.nowMs, windowMs: snapshot.windowMs, receivedAtMs: Date.now() }
+          : null
     }
     return { sensors, problem }
   }
@@ -475,7 +563,7 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
       // **押した後の問い合わせ中は押せないままにする。** ここは 10 秒ごとの取り直しからも
       // 呼ばれるので、印を見ないと待っている間に押せる状態へ戻り、2 回ぶん書き込む。
       button.disabled = problem !== null || tiltInFlight
-      button.title = problem ?? '静止時の重力から、基板の傾きを打ち消す向きを入れる（保存するまで効かない）'
+      button.title = problem ?? '静止時の重力から、基板の傾きを打ち消す向きを入れます。保存するまで効きません。'
     } catch (error) {
       boardPanelBroken = true
       console.warn('[admin] 基板の向きの欄を描き直せない', error)
@@ -500,6 +588,31 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
     refreshSensorIdOptions()
     refreshTiltPanels()
     formDirty = false
+    ctx.selection.set({ [SELECTED_BOARD_KEY]: board?.boardKey ?? null, [REGISTERING_BOARD_KEY]: null })
+  }
+
+  /**
+   * 声の届いている基板を、そのままフォームへ移す。基板 Key と、その基板が
+   * 実際に名乗っているセンサー ID のカードを既定値で並べる——ここが手打ちを
+   * 無くす本体で、候補（`<datalist>`）は後から打ち換えるときの受け皿。
+   *
+   * **フォームを触る前に dirty を立てる。** ここは状態を何段も書き換える
+   * 同期の経路で、途中で投げると「一部だけ埋まったのに未保存の印が立って
+   * いない」状態が残る——直後に別の基板の編集を押しても確認が出ず、
+   * この経路自身が防ごうとしている「無警告で消える」をやってしまう。
+   */
+  const openRegisterForm = (detected: DetectedBoard): void => {
+    formDirty = true
+    switchForm(null)
+    // **`switchForm` は中で印を落とす**ので、続きを書き換える前に立て直す。
+    formDirty = true
+    qs<HTMLInputElement>(container, '[name=boardKey]').value = detected.boardKey
+    renderSensorCardsForDetected(container, detected)
+    refreshSensorIdOptions()
+    refreshTiltPanels()
+    // **登録の形も選択として覚える。** 基板 Key の欄が空かどうかでは新規の形と見分けられない
+    // （どちらも Key を書き換えられる）。
+    ctx.selection.set({ [REGISTERING_BOARD_KEY]: detected.boardKey })
   }
 
   // **`signal.aborted` を確認してから DOM を書く。** 理由は `viewStations.ts` と同じ。
@@ -530,6 +643,7 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
       currentBoards = boardsBody.boards
       currentStations = stationsBody.stations
       currentDetected = detected.snapshot?.boards ?? []
+      detectedLoaded = detected.snapshot !== null
       currentRestWindows = detected.snapshot?.restWindows ?? []
       currentGeneratedAtMs = detected.snapshot?.generatedAtMs ?? null
       fillStationOptions(container, currentStations)
@@ -543,7 +657,7 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
       qs(container, '.boards-note').textContent =
         detected.failure === null
           ? ''
-          : `受信の様子を取得できない（${detected.failure}）。基板 Key は手で入力すること`
+          : `受信の様子を取得できない: ${detected.failure}。基板 Key を入力してください`
       qs(container, `#${BOARD_KEY_DATALIST_ID}`).innerHTML = optionsHtml(
         currentDetected.map((d) => d.boardKey),
       )
@@ -581,6 +695,12 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
     // **センサー ID を打ち換えたら、そのカードの診断も引き直す。** 引き直さないと、
     // 前に入っていた ID の判定が別のセンサーのカードに残る。
     if (target.classList.contains('s-sensorId')) refreshTiltPanels()
+    // **3x3 を手で直したら、方角の欄も追随させる**——ただし方角を手で変えていない間だけ。
+    // 追随させないと、欄が直す前の方角のまま残り、見た目と保存される向きが食い違う。
+    if (target.classList.contains('b-orientation')) {
+      const panel = target.closest<HTMLElement>('.board-orientation')
+      if (panel !== null && readHeadingChange(panel) === null) writeHeadingFromOrientation(panel)
+    }
   })
   form.addEventListener('submit', (e) => {
     e.preventDefault()
@@ -588,11 +708,11 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
       const boardKey = qs<HTMLInputElement>(container, '[name=boardKey]').value.trim()
       const stationId = qs<HTMLSelectElement>(container, '[name=stationId]').value
       if (boardKey.length === 0) {
-        renderError(container, '基板 Key を入力すること')
+        renderError(container, '基板 Key を入力してください')
         return
       }
       if (currentStations.length === 0) {
-        renderError(container, '先に観測点を登録すること')
+        renderError(container, '先に観測点を登録してください')
         return
       }
       try {
@@ -608,20 +728,43 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
           return
         }
         // **基板の向きも毎回送る。** `PUT` は全置換なので、送らなければ単位行列へ戻る。
-        const orientation = parseOrientationFormValues(readOrientationValues(container))
-        if ('error' in orientation) {
-          renderError(container, orientation.error)
+        const parsedOrientation = parseOrientationFormValues(readOrientationValues(container))
+        if ('error' in parsedOrientation) {
+          renderError(container, parsedOrientation.error)
           return
+        }
+        // **方角だけ変えて保存したときも効かせる**（2026-10-10 ユーザー承認）。以前は「鉛直を
+        // 合わせる」を押さないと方角を読まず、欄に入れても黙って捨てていた。手で変えていなければ
+        // 何もしない（`readHeadingChange`）ので、「鉛直を合わせる」の後の保存で二重に回さない。
+        const headingChange = readHeadingChange(container)
+        if (headingChange !== null && typeof headingChange !== 'number') {
+          renderError(container, headingChange.error)
+          return
+        }
+        let orientation = parsedOrientation
+        if (headingChange !== null) {
+          const turned = rotateToHeading(parsedOrientation, headingChange)
+          if (!turned.ok) {
+            renderError(container, turned.reason)
+            return
+          }
+          orientation = turned.rotation
         }
         await apiFetch(`/api/boards/${encodeURIComponent(boardKey)}`, {
           method: 'PUT',
-          body: JSON.stringify({ stationId, orientation, sensors }),
+          // **表示名は空でも送る**（ホストは空を「付けていない」と読む）。送らなければ消せない —— `PUT` は全置換。
+          body: JSON.stringify({
+            displayName: qs<HTMLInputElement>(container, '[name=displayName]').value,
+            stationId,
+            orientation,
+            sensors,
+          }),
         })
         if (signal.aborted) return
         switchForm(null)
         const reloaded = await reload()
         if (reloaded.ok) renderError(container, '')
-        else renderError(container, `保存済み。一覧の再取得に失敗（${reloaded.reason}）。再読込すること`)
+        else renderError(container, `保存済み。一覧を読み込めない: ${reloaded.reason}`)
       } catch (error) {
         if (signal.aborted) return
         renderError(container, describeSaveFailure(error))
@@ -630,8 +773,7 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
   })
 
   qs(container, '.reset-form').addEventListener('click', () => {
-    if (!confirmDiscardIfDirty()) return
-    switchForm(null)
+    whenDiscardAllowed(() => switchForm(null))
   })
 
   qs(container, '.sensor-cards').addEventListener('click', (e) => {
@@ -667,7 +809,7 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
       const result = fitBoardSixFace(input.sensors)
       const problem = fitWindowsProblem ?? sixFaceProblem(result)
       if (problem !== null || !result.ok) {
-        note(problem ?? '計算できなかった（解が定まらない。置き直して測り直すこと）')
+        note(problem ?? SIX_FACE_DEGENERATE)
         return
       }
       const applied = sixFaceApplied(result)
@@ -738,7 +880,9 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
           note(orientation.error)
           return
         }
-        const heading = parseHeadingText(qs<HTMLInputElement>(panel, '.b-heading').value)
+        // **欄にはいまの方角が入っているので、手で変えたときだけ方角として渡す**（保存と同じ判定。
+        // `readHeadingChange`）。変えていなければ従来どおり「方角は変えていない」。
+        const heading = readHeadingChange(panel)
         if (heading !== null && typeof heading !== 'number') {
           note(heading.error)
           return
@@ -763,11 +907,13 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
         // のに印が立っていない」を作らない（`register-board` と同じ手当て）。
         formDirty = true
         writeOrientationValues(panel, got.rotation)
+        // 方角の欄も新しい向きから入れ直す（保存のとき二重に回さないため。`readHeadingChange`）。
+        writeHeadingFromOrientation(panel)
         // **「ぶんも回した」と書かない。** 実際に回すのはいまの向きとの差だけで、
         // 入れた値そのものではない（同じ値をもう一度入れれば何も回らない）。
         const heads = heading === null ? '方角は変えていない' : `X 軸を方角 ${heading}° へ向けた`
-        const flip = got.upsideDown ? '／上下逆さまに付いている（方角も見直すこと）' : ''
-        note(`傾き ${got.tiltDeg}° を打ち消す向きを入れた（${heads}）。保存するまで効かない${flip}`)
+        const flip = got.upsideDown ? '／上下逆さまに付いている' : ''
+        note(`傾き ${got.tiltDeg}° を打ち消す向きを入れた。${heads}。保存するまで効かない${flip}`)
       } catch (error) {
         // `qs()` は見つからなければ投げる（`dom.ts`）。無言で止めない。
         note(describeSaveFailure(error))
@@ -787,53 +933,51 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
     const boardKey = row.dataset.boardKey ?? ''
     const board = currentBoards.find((b) => b.boardKey === boardKey) ?? null
 
-    // **声の届いている基板を、そのままフォームへ移す。** 基板 Key と、その基板が
-    // 実際に名乗っているセンサー ID のカードを既定値で並べる——ここが手打ちを
-    // 無くす本体で、候補（`<datalist>`）は後から打ち換えるときの受け皿。
+    // **確認の窓は非同期。** 答えを待つ間に一覧が描き直されうるので、開く相手は答えの後に
+    // いまの一覧から引き直す（消えていたら開かない）。
     if (target.classList.contains('register-board')) {
-      const detected = currentDetected.find((d) => d.boardKey === boardKey)
-      if (detected === undefined) return
-      if (!confirmDiscardIfDirty()) return
-      try {
-        // **フォームを触る前に dirty を立てる。** ここは状態を何段も書き換える
-        // 同期の経路で、途中で投げると「一部だけ埋まったのに未保存の印が立って
-        // いない」状態が残る——直後に別の基板の編集を押しても確認が出ず、
-        // このハンドラ自身が防ごうとしている「無警告で消える」をやってしまう。
-        formDirty = true
-        switchForm(null)
-        // **`switchForm` は中で印を落とす**ので、続きを書き換える前に立て直す。
-        formDirty = true
-        qs<HTMLInputElement>(container, '[name=boardKey]').value = detected.boardKey
-        renderSensorCardsForDetected(container, detected)
-        refreshSensorIdOptions()
-        refreshTiltPanels()
-        // **jsdom には `scrollIntoView` が無い**ので、あれば呼ぶ形にする。
-        qs(container, '.board-form').scrollIntoView?.({ behavior: 'smooth', block: 'start' })
-        renderError(container, '')
-      } catch (error) {
-        // **押しても何も起きない形にしない。** `qs()` は見つからなければ投げる
-        // （`dom.ts`）ので、DOM の組み立てとセレクタがずれた日に、ここが無言で
-        // 止まる（同じ穴を保存ボタンで一度踏んでいる。#313 段 C-5 2巡目）。
-        renderError(container, describeSaveFailure(error))
-      }
+      if (!currentDetected.some((d) => d.boardKey === boardKey)) return
+      whenDiscardAllowed(() => {
+        const detected = currentDetected.find((d) => d.boardKey === boardKey)
+        if (detected === undefined) return
+        try {
+          openRegisterForm(detected)
+          // **jsdom には `scrollIntoView` が無い**ので、あれば呼ぶ形にする。
+          qs(container, '.board-form').scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+          renderError(container, '')
+        } catch (error) {
+          // **押しても何も起きない形にしない。** `qs()` は見つからなければ投げる
+          // （`dom.ts`）ので、DOM の組み立てとセレクタがずれた日に、ここが無言で
+          // 止まる（同じ穴を保存ボタンで一度踏んでいる。#313 段 C-5 2巡目）。
+          renderError(container, describeSaveFailure(error))
+        }
+      })
       return
     }
     if (target.classList.contains('edit-board') && board !== null) {
-      if (!confirmDiscardIfDirty()) return
-      switchForm(board)
+      whenDiscardAllowed(() => {
+        const latest = currentBoards.find((b) => b.boardKey === boardKey)
+        if (latest !== undefined) switchForm(latest)
+      })
       return
     }
     if (target.classList.contains('delete-board')) {
       void (async () => {
         // **「観測点は残る」を省かない。** 1 基板 1 観測点の構成では、基板の削除が
-        // 観測点ごと消すように読める（実際は割当と校正値だけ消える）。
-        if (!window.confirm(`基板「${boardKey}」の割当・校正値を削除する？（観測点は残る）`)) return
+        // 観測点ごと消すように読める（実際は割当と校正値だけ消える）。文面は 2026-10-12 ユーザー承認。
+        const name = board?.displayName != null && board.displayName.length > 0 ? board.displayName : boardKey
+        const ok = await confirmDialog(document, {
+          title: `基板「${name}」を削除しますか？`,
+          body: '割り当てと校正値が消えます。観測点は残ります。',
+          confirmLabel: '削除する',
+        })
+        if (!ok || signal.aborted) return
         try {
           await apiFetch(`/api/boards/${encodeURIComponent(boardKey)}`, { method: 'DELETE' })
           if (signal.aborted) return
           const reloaded = await reload()
           if (reloaded.ok) renderError(container, '')
-          else renderError(container, `削除済み。一覧の再取得に失敗（${reloaded.reason}）。再読込すること`)
+          else renderError(container, `削除済み。一覧を読み込めない: ${reloaded.reason}`)
         } catch (error) {
           if (signal.aborted) return
           renderError(container, describeSaveFailure(error))
@@ -842,8 +986,40 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
     }
   })
 
+  /**
+   * 前に開いていたフォームを開き直す（編集なら基板、登録なら届いている基板）。
+   *
+   * **中身はホストの値で作り直し、入力の途中は戻さない**（2026-10-10 ユーザー承認）。
+   * 相手が一覧に無ければ（消された・声が途絶えた・URL を書き換えた）新規の形にする ——
+   * 残すと、無い基板の Key で開いたまま保存して作り直すことになる。
+   *
+   * - **登録しかけていた基板が、その間に登録済みになっていたら編集で開く。** 登録の形（既定の校正値）で
+   *   開いたまま保存すると、`PUT` は全置換なので、登録済みの校正値と向きを既定値で上書きする
+   * - **一覧を取れていなければ選択に触らない**（呼び出し元と、`detectedLoaded`）。取れていない空を
+   *   「一覧に無い」と取り違えると、トークンの失効や通信の途切れだけで何を開いていたかが失われる
+   */
+  const restoreSelectedForm = (): void => {
+    const editing = ctx.selection.get(SELECTED_BOARD_KEY)
+    const registering = ctx.selection.get(REGISTERING_BOARD_KEY)
+    const wanted = editing ?? registering
+    const board = wanted === null ? undefined : currentBoards.find((b) => b.boardKey === wanted)
+    if (board !== undefined) {
+      switchForm(board)
+      return
+    }
+    const detected = registering === null ? undefined : currentDetected.find((d) => d.boardKey === registering)
+    if (detected !== undefined) {
+      openRegisterForm(detected)
+      return
+    }
+    if (editing === null && registering !== null && !detectedLoaded) return
+    if (editing !== null || registering !== null) switchForm(null)
+  }
+
   const initial = await reload()
-  if (!initial.ok) renderError(container, initial.reason)
+  if (signal.aborted) return
+  if (initial.ok) restoreSelectedForm()
+  else renderError(container, initial.reason)
 
   // **6 面法の材料だけは開いている間ずっと取り直す。** 基板を置き換えるたびに ✓ が
   // 増えていくのを見ながら進める作業で、画面を読み込み直させると編集中のフォームが消える。
@@ -854,7 +1030,23 @@ export async function initBoardsView(container: HTMLElement, signal: AbortSignal
   // 既に鳴り終わった abort を拾えず、見えない画面で取り直しが続く。
   if (signal.aborted) return
   const poll = setInterval(() => void loadFitWindows(), 10_000)
-  signal.addEventListener('abort', () => clearInterval(poll), { once: true })
+  // **秒読みは毎秒描き直す**（取り直しは 10 秒ごと。解き直しはせず、いまの置き方の行だけ）。
+  // 描き直しが投げても次の秒は続ける（欄が見つからないのは画面の作り直しの途中など）。
+  const tick = setInterval(() => {
+    try {
+      refreshPlacement()
+    } catch (error) {
+      console.warn('[admin] 6 面法の秒読みを描き直せない', error)
+    }
+  }, 1_000)
+  signal.addEventListener(
+    'abort',
+    () => {
+      clearInterval(poll)
+      clearInterval(tick)
+    },
+    { once: true },
+  )
 }
 
 /** `GET /api/boards`・`GET /api/stations` の失敗理由を日本語化する（`describeSaveFailure` の GET 専用版）。 */
@@ -868,7 +1060,7 @@ function describeFetchFailure(error: unknown): string {
 
 function describeSaveFailure(error: unknown): string {
   if (error instanceof ApiError && error.status === 400) {
-    return `入力が不正: ${error.message}`
+    return `入力が無効: ${error.message}`
   }
   return describeFetchFailure(error)
 }

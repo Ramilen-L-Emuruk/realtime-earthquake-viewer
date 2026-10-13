@@ -159,7 +159,7 @@ describe('カーソルの読み取り', () => {
 
   it('受信は指した所に掛かる種類だけを並べる', () => {
     const lane = { backlog: [{ fromMs: H0, toMs: H0 + 5000 }], late: [], questionable: [{ fromMs: H0 + 3000, toMs: H0 + 4000 }], unreadableAtMs: [H0 + 9000] }
-    expect(receptionAt(lane, H0 + 3500, 0)).toBe('受信: 基板から取り戻した分・時刻が疑わしい分')
+    expect(receptionAt(lane, H0 + 3500, 0)).toBe('受信: 基板から再送信された分・時刻が疑わしい分')
     expect(receptionAt(lane, H0 + 9000, 100)).toBe('受信: 読めなかったパケット')
     expect(receptionAt(lane, H0 + 7000, 0)).toBeNull()
   })
@@ -167,19 +167,19 @@ describe('カーソルの読み取り', () => {
 
 describe('文言', () => {
   it('取れなかった日・要約の無い時', () => {
-    expect(quakeFailedDaysText(['2026-10-03', '2026-10-04'], 'P2PQuake: HTTP 503')).toBe('地震一覧を取れていない日がある（10/03・10/04。P2PQuake: HTTP 503）')
+    expect(quakeFailedDaysText(['2026-10-03', '2026-10-04'], 'P2PQuake: HTTP 503')).toBe('地震一覧を取得できていない日がある: 10/03・10/04。P2PQuake: HTTP 503')
     // 理由が分からなければ日付だけ
-    expect(quakeFailedDaysText(['2026-10-03'], null)).toBe('地震一覧を取れていない日がある（10/03）')
-    expect(receptionPendingNote(3)).toBe('受信の記録の要約がまだ無い時が 3（作り終えると出る）')
+    expect(quakeFailedDaysText(['2026-10-03'], null)).toBe('地震一覧を取得できていない日がある: 10/03')
+    expect(receptionPendingNote(3)).toBe('受信の記録の要約がまだ無い: 3 時間')
     expect(receptionPendingNote(0)).toBeNull()
   })
 
   it('秒の材料を取れなかった日は出どころ別に並べ、無ければ出さない', () => {
     expect(refineFailedDaysText({ hypocenter: ['2026-10-03'], eew: ['2026-10-04'] })).toBe(
-      '発生時刻を秒まで寄せる材料を取れていない日がある（震源リスト: 10/03・緊急地震速報: 10/04）',
+      '発生時刻の秒を取得できていない日がある: 震源リスト 10/03／緊急地震速報 10/04',
     )
     expect(refineFailedDaysText({ hypocenter: [], eew: ['2026-10-04', '2026-10-05'] })).toBe(
-      '発生時刻を秒まで寄せる材料を取れていない日がある（緊急地震速報: 10/04・10/05）',
+      '発生時刻の秒を取得できていない日がある: 緊急地震速報 10/04・10/05',
     )
     expect(refineFailedDaysText({ hypocenter: [], eew: [] })).toBeNull()
   })

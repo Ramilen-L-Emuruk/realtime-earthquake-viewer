@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { initWavesView, readStatus } from './viewWaves'
 import type { WaveChunkView } from './waveBuffer'
 import type { WaveStreamOptions } from './waveStream'
+import { memoryTabContext } from './tabState'
 
 let captured: WaveStreamOptions | null = null
 
@@ -197,7 +198,7 @@ async function mount(body: Record<string, unknown> | Error = statusJson()): Prom
   mockStatus(body)
   const container = document.createElement('div')
   document.body.append(container)
-  await initWavesView(container, controller.signal)
+  await initWavesView(container, memoryTabContext(controller.signal, 'waves'))
   return container
 }
 
@@ -247,6 +248,17 @@ describe('readStatus', () => {
 
   it('対照: 欄の無い版のホストでは、ずれの一覧は空', () => {
     expect(readStatus({ stationIntensities: [{ stationId: 'garage', pairDiffs: [] }] }).residuals).toEqual([])
+  })
+
+  it('正: 基板の表示名を読む', () => {
+    const status = readStatus(statusJson({ sensors: [{ boardKey: 'b', sensorId: 's', boardName: '北の壁' }] }))
+    expect(status.sensors[0].boardName).toBe('北の壁')
+  })
+
+  it('安全弁: 欄の無い版のホスト・空文字・形の崩れた値は null に倒す', () => {
+    expect(readStatus(statusJson({ sensors: [{ boardKey: 'b', sensorId: 's' }] })).sensors[0].boardName).toBeNull()
+    expect(readStatus(statusJson({ sensors: [{ boardKey: 'b', sensorId: 's', boardName: '' }] })).sensors[0].boardName).toBeNull()
+    expect(readStatus(statusJson({ sensors: [{ boardKey: 'b', sensorId: 's', boardName: 7 }] })).sensors[0].boardName).toBeNull()
   })
 
   it('形が違っても落ちない', () => {
@@ -420,7 +432,7 @@ describe('initWavesView', () => {
     expect(captured?.residual).toEqual({ stationId: 'station-1', boardKey: 'board-3', sensorId: 'i2c0-6a' })
     // **数え直す。** 前の組の件数を引き継ぐと、ずれが届いていないのに「受け取っている」と出る。
     expect(container.querySelector('.wave-diff-note')?.textContent).toBe(
-      'このセンサーのずれはまだ 1 件も届いていない（合成が作っていないか、設定が変わった可能性）',
+      'このセンサーのずれはまだ 1 件も届いていない',
     )
 
     select.value = select.options[1]!.value
@@ -450,7 +462,7 @@ describe('initWavesView', () => {
     expect(captured?.residual).toEqual({ stationId: 'station-1', boardKey: 'board-3', sensorId: 'i2c0-6a' })
     expect(captured?.diff).toBeNull()
     expect(container.querySelector('.wave-diff-note')?.textContent).toBe(
-      'このセンサーのずれはまだ 1 件も届いていない（合成が作っていないか、設定が変わった可能性）',
+      'このセンサーのずれはまだ 1 件も届いていない',
     )
 
     const axis = Array.from({ length: 30 }, (_, i) => (i === 29 ? Number.NaN : Math.sin(i) * 0.05))
@@ -688,17 +700,15 @@ describe('initWavesView', () => {
     expect(container.querySelector('.wave-sensors')?.textContent).toContain('board-1 / accel-0')
   })
 
-  it('読めない波形が届いたら件数と、取るべき行動を出す', async () => {
-    // **生の診断文字列は画面へ出さない。** 他の警告は必ず行動で締めているのに、
-    // これだけ `SyntaxError` の文言が末尾に付くだけでは、運用者に次の一手が無い
-    // （理由はコンソールへ出す）。
+  it('読めない波形が届いたら件数だけを出す（2026-10-13 ユーザー承認の文言）', async () => {
+    // **生の診断文字列は画面へ出さない**（理由はコンソールへ出す）。版の食い違いの疑いや
+    // 次の一手は書かない —— 状態の一言にすると決めた（docs/ui-wording-procedure.md §5）。
     const container = await mount()
     captured?.onUnreadable?.(3, 'wave: 形が合わない')
     await letItDraw()
 
     const warn = container.querySelector('.wave-warn')?.textContent ?? ''
-    expect(warn).toContain('3 件')
-    expect(warn).toContain('開発者へ伝えること')
+    expect(warn).toBe('読めない波形が 3 件届いた')
     expect(warn).not.toContain('形が合わない')
   })
 
@@ -709,7 +719,9 @@ describe('initWavesView', () => {
     captured?.onState('closed')
     await letItDraw()
 
-    expect(container.querySelector('.wave-warn')?.textContent).toContain('枠が埋まっている')
+    expect(container.querySelector('.wave-warn')?.textContent).toBe(
+      'ホストへの接続が上限に達している: 8 / 8。ほかのタブや端末を閉じてから、画面を再読み込みしてください',
+    )
   })
 
   it('繋げないが枠に空きがあるなら、ホスト側を疑う文にする（対照）', async () => {
@@ -718,8 +730,7 @@ describe('initWavesView', () => {
     await letItDraw()
 
     const warn = container.querySelector('.wave-warn')?.textContent ?? ''
-    expect(warn).toContain('繋げない')
-    expect(warn).not.toContain('枠が埋まっている')
+    expect(warn).toBe('ホストに接続できない。画面を再読み込みしてください')
   })
 
   it('時刻の当てはめが倒れた区間が窓にあれば、そう出す', async () => {
@@ -727,7 +738,7 @@ describe('initWavesView', () => {
     captured?.onWave?.(chunk({ timebaseNominalReason: 'too-few-points' }))
     await letItDraw()
 
-    expect(container.querySelector('.wave-warn')?.textContent).toContain('時刻の当てはめ')
+    expect(container.querySelector('.wave-warn')?.textContent).toBe('時刻を当てはめられず、決めた間隔で並べた区間がある')
   })
 
   it('機材の名前が取れなくても、波形の表示は続ける', async () => {
@@ -809,6 +820,7 @@ describe('initWavesView', () => {
     await letItDraw()
 
     expect(container.querySelector('.wave-sensors')?.textContent).not.toContain('向き未設定')
+    expect(container.querySelector('.wave-sensors button.tip')).toBeNull()
   })
 
   it('校正を設定していないと分かっているセンサーには出す（対照）', async () => {
@@ -829,6 +841,27 @@ describe('initWavesView', () => {
     await letItDraw()
 
     expect(container.querySelector('.wave-sensors')?.textContent).toContain('向き未設定')
+    // 意味の説明はホバーで出す（2026-10-13 ユーザー承認）
+    expect(container.querySelector<HTMLElement>('.wave-sensors button.tip')?.dataset.tip).toBe(
+      '取り付けの向きを設定していないので、軸はセンサーの向きのままです。東・北・上を表しません。',
+    )
+  })
+
+  it('正: 「見る幅」と「センサー対の差分」の説明はホバーで出し、常時の段落は置かない（2026-10-13 ユーザー承認）', async () => {
+    const container = await mount()
+
+    // **ラベルを取ってから中を探す。** `mount()` は画面を document に残すので、前のテストの画面と同じ id が
+    // 何個も並ぶ。jsdom は `#id 子孫` を document で最初の 1 個に解決するので、この画面からは何も拾えない。
+    const spanLabel = container.querySelector('#wave-span-label')
+    expect(spanLabel?.querySelector<HTMLElement>('button.tip')?.dataset.tip).toBe(
+      'この画面を開いてから受け取った波形を、最大 5 分まで表示できます。',
+    )
+    expect(container.querySelector('.wave-span')?.getAttribute('aria-labelledby')).toBe('wave-span-label')
+    // 吹き出しは欄の行の下に出す（行の印が無いとラベルの真下に出て、選択欄を覆う）
+    expect(spanLabel?.closest('[data-tip-row]')).not.toBeNull()
+    const diffHeading = [...container.querySelectorAll('h2')].find((h) => h.textContent === 'センサー対の差分')
+    expect(diffHeading?.querySelector<HTMLElement>('button.tip')?.dataset.tip).toContain('差分は、2 台の値の差の半分です。')
+    expect(container.textContent).not.toContain('遡れるのは')
   })
 
   it('打ち切られたら描き直しをやめる（安全弁）', async () => {
@@ -843,5 +876,142 @@ describe('initWavesView', () => {
     await letItDraw()
 
     expect(container.querySelector('.wave-received')?.textContent).toBe(before)
+  })
+})
+
+/** 見る幅・縦の幅・チェックを前回のまま開く（2026-10-10 ユーザー承認）。 */
+describe('波形タブの表示の好みを保つ', () => {
+  async function mountWith(prefs: unknown): Promise<{ container: HTMLElement; ctx: ReturnType<typeof memoryTabContext> }> {
+    mockStatus(statusJson())
+    const ctx = memoryTabContext(controller.signal, 'waves', { prefs })
+    const container = document.createElement('div')
+    document.body.append(container)
+    await initWavesView(container, ctx)
+    return { container, ctx }
+  }
+
+  it('見る幅と縦の幅を戻す（選択肢に無い値は既定のまま）', async () => {
+    const { container } = await mountWith({ spanMs: 60_000, scale: '10' })
+    expect(container.querySelector<HTMLSelectElement>('.wave-span')!.value).toBe('60000')
+    expect(container.querySelector<HTMLSelectElement>('.wave-scale')!.value).toBe('10')
+
+    const { container: c2 } = await mountWith({ spanMs: 12_345, scale: 'x' })
+    expect(c2.querySelector<HTMLSelectElement>('.wave-span')!.value).toBe('30000')
+    expect(c2.querySelector<HTMLSelectElement>('.wave-scale')!.value).toBe('auto')
+  })
+
+  it('幅を選び直すと覚える', async () => {
+    const { container, ctx } = await mountWith(null)
+    const span = container.querySelector<HTMLSelectElement>('.wave-span')!
+    span.value = '5000'
+    span.dispatchEvent(new Event('change'))
+    expect(ctx.prefs.load()).toMatchObject({ spanMs: 5_000 })
+  })
+
+  // **合成は届けば必ず出す既定**（#362）なので、外したことを覚えていないと開き直すたびに出し直す。
+  it('正: 外した合成は、開き直して届いても外したまま', async () => {
+    const { container } = await mountWith({ sensors: [['t:station-1', false]] })
+    captured?.onStationWave?.(stationChunk())
+    await letItDraw()
+    const check = container.querySelector<HTMLInputElement>('.wave-sensor-check[data-key="t:station-1"]')
+    expect(check?.checked).toBe(false)
+  })
+
+  it('対照: 覚えていない合成は、届いたら出す（既定のまま）', async () => {
+    const { container } = await mountWith(null)
+    captured?.onStationWave?.(stationChunk())
+    await letItDraw()
+    expect(container.querySelector<HTMLInputElement>('.wave-sensor-check[data-key="t:station-1"]')?.checked).toBe(true)
+  })
+
+  it('チェックを外すと覚える', async () => {
+    const { container, ctx } = await mountWith(null)
+    captured?.onStationWave?.(stationChunk())
+    await letItDraw()
+    const check = container.querySelector<HTMLInputElement>('.wave-sensor-check[data-key="t:station-1"]')!
+    check.checked = false
+    check.dispatchEvent(new Event('change', { bubbles: true }))
+    expect(ctx.prefs.load()).toMatchObject({ sensors: [['t:station-1', false]] })
+  })
+})
+
+/** 前に選んでいた差分の組を開き直す（2026-10-10 ユーザー承認）。 */
+describe('波形タブの差分の選択を保つ', () => {
+  async function pairKey(): Promise<string> {
+    const container = await mount()
+    return container.querySelector<HTMLSelectElement>('.wave-diff')!.options[1].value
+  }
+
+  async function mountWithSelection(
+    diff: string,
+    bodies: readonly Record<string, unknown>[],
+  ): Promise<{ container: HTMLElement; ctx: ReturnType<typeof memoryTabContext>; tick: () => Promise<void> }> {
+    let calls = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const body = bodies[Math.min(calls, bodies.length - 1)]
+        calls += 1
+        return { ok: true, json: async () => body } as unknown as Response
+      }),
+    )
+    // `/status` の読み直し（15 秒ごと）を手で回せるように控える。
+    let reload: (() => void) | null = null
+    const original = globalThis.setInterval
+    vi.spyOn(globalThis, 'setInterval').mockImplementation(((fn: () => void, ms?: number) => {
+      if (ms === 15_000) reload = fn
+      return original(fn, ms)
+    }) as typeof setInterval)
+    const ctx = memoryTabContext(controller.signal, 'waves', { selection: { diff } })
+    const container = document.createElement('div')
+    document.body.append(container)
+    await initWavesView(container, ctx)
+    const tick = async (): Promise<void> => {
+      reload?.()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+    return { container, ctx, tick }
+  }
+
+  it('正: 覚えていた組を、一覧が届いてから当てる', async () => {
+    const key = await pairKey()
+    const { container, ctx } = await mountWithSelection(key, [statusJson()])
+    expect(container.querySelector<HTMLSelectElement>('.wave-diff')!.value).toBe(key)
+    expect(captured?.diff).toMatchObject({ boardKeyA: 'board-1', boardKeyB: 'board-2' })
+    expect(ctx.selection.get('diff')).toBe(key)
+  })
+
+  // **起動し直した直後のホストは、組の一覧を空で返す**（合成が回ってから埋まる）。
+  // そこで「一覧に無い」と決めると、読み直しただけで選択が消える。
+  it('安全弁: 一覧がまだ空なら消さずに待ち、組が届いた回に当てる', async () => {
+    const key = await pairKey()
+    const { container, ctx, tick } = await mountWithSelection(key, [
+      statusJson({ stationIntensities: [] }),
+      statusJson(),
+    ])
+    expect(ctx.selection.get('diff')).toBe(key)
+    expect(captured?.diff ?? null).toBeNull()
+
+    await tick()
+
+    expect(container.querySelector<HTMLSelectElement>('.wave-diff')!.value).toBe(key)
+    expect(captured?.diff).toMatchObject({ boardKeyA: 'board-1', boardKeyB: 'board-2' })
+    expect(ctx.selection.get('diff')).toBe(key)
+  })
+
+  it('対照: 待っている間に選び直したら、覚えていた組はもう当てない', async () => {
+    const key = await pairKey()
+    const { container, ctx, tick } = await mountWithSelection(key, [
+      statusJson({ stationIntensities: [] }),
+      statusJson(),
+    ])
+    const select = container.querySelector<HTMLSelectElement>('.wave-diff')!
+    select.value = ''
+    select.dispatchEvent(new Event('change'))
+
+    await tick()
+
+    expect(select.value).toBe('')
+    expect(ctx.selection.get('diff')).toBeNull()
   })
 })

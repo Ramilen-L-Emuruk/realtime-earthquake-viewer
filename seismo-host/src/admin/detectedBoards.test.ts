@@ -32,11 +32,24 @@ describe('groupDetectedBoards', () => {
     expect(result[1]).toMatchObject({ boardKey: 'mac:bbb', sensorIds: ['accel-0'] })
   })
 
-  // **並びは `/status` のまま**（音沙汰の新しい順・`sensorHealth.ts` の `snapshot`）。
-  // ここで並べ替えると、いま生きている基板が上へ来る順序が失われる。
-  it('入力の並びを保つ（音沙汰の新しい順が候補の並びになる）', () => {
-    const result = groupDetectedBoards([sensor('mac:zzz', 'a'), sensor('mac:aaa', 'a')])
-    expect(result.map((d) => d.boardKey)).toEqual(['mac:zzz', 'mac:aaa'])
+  // **覆した: 以前は `/status` の順（音沙汰の新しい順）のままにしていた。** 全部が送り続けて
+  // いると読み直すたびに入れ替わるので、基板 Key とセンサー ID の順に固定する（#713）。
+  it('正: 受信の順によらず、基板は Key の順・センサーは ID の順に並ぶ', () => {
+    const result = groupDetectedBoards([
+      sensor('mac:zzz', 'b'),
+      sensor('mac:aaa', 'i2c1'),
+      sensor('mac:zzz', 'a'),
+      sensor('mac:aaa', 'i2c0'),
+    ])
+    expect(result.map((d) => d.boardKey)).toEqual(['mac:aaa', 'mac:zzz'])
+    expect(result[0].sensorIds).toEqual(['i2c0', 'i2c1'])
+    expect(result[1].sensorIds).toEqual(['a', 'b'])
+  })
+
+  it('対照: 受信の順を入れ替えても同じ並びになる', () => {
+    const a = groupDetectedBoards([sensor('mac:b', 'y'), sensor('mac:a', 'x'), sensor('mac:b', 'x')])
+    const b = groupDetectedBoards([sensor('mac:b', 'x'), sensor('mac:a', 'x'), sensor('mac:b', 'y')])
+    expect(a).toEqual(b)
   })
 
   // **カードの軸の本数は届いた事実で決める**（`viewBoards.ts` の「登録」）。
@@ -56,7 +69,7 @@ describe('groupDetectedBoards', () => {
       { ...sensor('mac:aaa', 'none'), axisCount: null },
     ])
     expect(result[0].axisCounts).toEqual({})
-    expect(result[0].sensorIds).toEqual(['old', 'odd', 'text', 'none'])
+    expect(result[0].sensorIds).toEqual(['none', 'odd', 'old', 'text'])
   })
 
   it('同じセンサー ID が二度現れても候補は 1 つ', () => {

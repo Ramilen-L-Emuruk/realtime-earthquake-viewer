@@ -23,7 +23,7 @@ export function checkGeolocationAvailability(scope: GeolocationScope): Geolocati
   if (!scope.isSecureContext) {
     // **「HTTPS か localhost」まで書く。** 「使えない」だけだと、運用者は
     // ブラウザの権限設定を疑って時間を使う（原因はアクセスした URL のほう）。
-    return { ok: false, reason: '位置情報は HTTPS か localhost でしか使えない（手で入力すること）' }
+    return { ok: false, reason: '位置情報は HTTPS か localhost でしか使えない' }
   }
   return { ok: true }
 }
@@ -42,7 +42,8 @@ export function roundCoord(value: number): number {
 export function describeGeolocationError(error: { readonly code: number }): string {
   switch (error.code) {
     case 1:
-      return '位置情報の利用を許可されていない（ブラウザの設定を確認すること）'
+      // 語は Chrome の「位置情報へのアクセスは許可されていません」に合わせる（2026-10-12 ユーザー承認）
+      return '位置情報へのアクセスが許可されていない'
     case 2:
       return '現在地を特定できない'
     case 3:

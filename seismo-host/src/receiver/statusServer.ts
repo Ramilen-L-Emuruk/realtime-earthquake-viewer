@@ -35,7 +35,7 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import type { AdminConsoleAssets } from './adminConsoleAssets'
 import { checkAdminAuth } from './adminAuth'
 import type { AdminAuthConfig, AdminAuthFailure } from './adminAuth'
-import type { SensorRestWindows } from './gravityCheck'
+import type { RestWindowsReport } from './gravityCheck'
 import { COLUMNS_MAX, decimalInt } from './httpQuery'
 import { computeQuakeIntensity, computeUsualMeasured, QUAKE_INTENSITY_LEAD_MS, USUAL_WAIT_MS, usualWindows } from './quakeIntensity'
 import type { QuakeIntensityResult, UsualMeasuredResult } from './quakeIntensity'
@@ -641,7 +641,7 @@ export interface StatusServerOptions {
    * **`/api/*` の側に置く。** 校正前の生の値は運用者が校正するためのもので、誰でも読める
    * `/status` に並べる理由が無い（9 センサー × 60 窓で `/status` が数十 KB 膨らむ）。
    */
-  readonly readRestWindows: () => readonly SensorRestWindows[]
+  readonly readRestWindows: () => RestWindowsReport
   /**
    * 止める合図（`POST /api/shutdown`）を受けたときに呼ぶ。
    *
@@ -993,6 +993,25 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 }
 
 /**
+ * 同じ鍵の要素を**その位置のまま**差し替え、無ければ末尾へ足す。
+ *
+ * **保存のたびに末尾へ付け直さない。** 設定の並びは画面の一覧の順であり、観測点の合成に
+ * 入る基板の順でもある（`sensorFusion.ts` の `buildGroups` は `config.boards` の順に
+ * メンバーを組む）。末尾へ付け直すと、値を何も変えていない保存でも一覧が入れ替わり、
+ * 再起動後もその順のまま残っていた。
+ *
+ * **同じ鍵が 2 件以上あれば、最初の位置へ 1 件に畳む。** 付け直していた頃は一致する要素を
+ * 全部除いてから足していたので、重複が紛れ込んでも保存のたびに解消されていた。最初の 1 件
+ * だけを置き換えると 2 件目以降が残り、次の `parseStationConfig` が重複で弾くので、
+ * 以後そのホストでは保存が通らなくなる。
+ */
+function replaceInPlace<T>(list: readonly T[], isTarget: (item: T) => boolean, next: unknown): unknown[] {
+  const index = list.findIndex(isTarget)
+  if (index < 0) return [...list, next]
+  return list.flatMap((item, i) => (i === index ? [next] : isTarget(item) ? [] : [item]))
+}
+
+/**
  * `/api/stations/:stationId` の PUT。**upsert**（無ければ作る・あれば置き換える）。
  *
  * **`stationId` はボディでなく URL パスを正とする。** ボディに別の `stationId` が
@@ -1015,7 +1034,6 @@ async function handlePutStation(
   }
 
   const current = stationConfig.get()
-  const others = current.stations.filter((s) => s.stationId !== stationId)
   // **`unknown` のまま `parseStationConfig` へ渡す。** `bodyResult.body` はまだ検証前の
   // 入力なので、ここへ `StationConfig` の型注釈を付けると「検証済みのふり」をした値を
   // 作ることになる——実際の検証は次の `parseStationConfig` が担う。
@@ -1024,7 +1042,7 @@ async function handlePutStation(
   // 先に置くとボディに紛れ込んだ `stationId` で上書きされる——URL パスを正とする
   // という上のコメントの約束が、まさにこの並び順ひとつで壊れる（敵対的レビューで発見）。
   const candidate: unknown = {
-    stations: [...others, { ...bodyResult.body, stationId }],
+    stations: replaceInPlace(current.stations, (s) => s.stationId === stationId, { ...bodyResult.body, stationId }),
     boards: current.boards,
   }
 
@@ -1105,13 +1123,12 @@ async function handlePutBoard(
   }
 
   const current = stationConfig.get()
-  const others = current.boards.filter((b) => b.boardKey !== boardKey)
   // **`unknown` のまま渡す理由・`boardKey` をスプレッドの後に置く理由は
   // `handlePutStation` と同じ。** `sensors` の既定値（`[]`）はボディより**先**に置く——
   // ボディが `sensors` を持っていればそちらを優先し、無ければ空配列へ倒す。
   const candidate: unknown = {
     stations: current.stations,
-    boards: [...others, { sensors: [], ...bodyResult.body, boardKey }],
+    boards: replaceInPlace(current.boards, (b) => b.boardKey === boardKey, { sensors: [], ...bodyResult.body, boardKey }),
   }
 
   const parsed = parseStationConfig(candidate)
@@ -1182,7 +1199,7 @@ async function handleAdmin(
   adminAuth: AdminAuthConfig,
   log: (level: LogLevel, kind: string, detail: string, line: string) => void,
   stationConfig: StationConfigOps,
-  readRestWindows: () => readonly SensorRestWindows[],
+  readRestWindows: () => RestWindowsReport,
   requestShutdown: () => ShutdownRequestResult,
   requestRewave: StatusServerOptions['requestRewave'],
   records: StatusServerOptions['records'],
@@ -1248,7 +1265,7 @@ async function handleAdmin(
       sendAdminJson(res, 405, { error: 'method-not-allowed' })
       return
     }
-    sendAdminJson(res, 200, { sensors: readRestWindows() })
+    sendAdminJson(res, 200, readRestWindows())
     return
   }
   if (route.kind === 'shutdown') {

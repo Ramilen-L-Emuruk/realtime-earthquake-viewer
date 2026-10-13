@@ -12,9 +12,10 @@
 // | `envelope` | `channel`・`from`・`to`・`columns`・`unit` | 列ごとの本数・最小・最大・平均・標準偏差・ノイズ |
 // | `samples` | `channel`・`from`・`to`・`unit` | 生のサンプル（{@link SAMPLES_RANGE_MAX_MS} まで） |
 // | `spectrum` | `channel`・`from`・`to`・`unit` | 区間のスペクトル |
-// | `spectrogram` | `channel`・`from`・`to`・`columns`・`unit` | 列ごとのスペクトル（10 分以内は生のサンプルから 6 秒以上の列で、それより広ければ 1 分ごとの PSD から） |
+// | `spectrogram` | `channel`・`from`・`to`・`columns`・`unit` | 列ごとのスペクトル（12 時間以内で 1 分の列では幅に足りなければ生のサンプルから 1 秒以上の列で、それ以外は 1 分ごとの PSD から） |
 // | `reception` | `from`・`to`・`sensor`（任意） | 受信の記録の帯と読めなかったパケット |
-// | `intensity` | `station`（観測点の札）・`from`・`to` | 刻みごとのリアルタイム震度と計測震度（{@link SAMPLES_RANGE_MAX_MS} まで） |
+// | `composite` | `group`（センサーか `station/<札>`）・`from`・`to`・`columns`・`unit` | 2 軸以上の組ごとの、列ごとの合成の大きさの最大（要約から。`waveRecordsDerived.ts`） |
+// | `intensity` | `station`（観測点の札）・`from`・`to`・`columns`（10 分を超えるとき） | 10 分以内は刻みごとのリアルタイム震度と計測震度をその場で、それより広ければ要約から列ごとの最大と範囲の計測震度 |
 // | `quakes` | `from`・`to`・`station`（観測点 ID・任意） | 気象庁の地震と、その観測点へ P・S が届く時刻（`recordQuakes.ts`。7 日まで） |
 //
 // `from`・`to` は unix ミリ秒（`to` は含まない）。`unit` は `gal`（既定。カウントを換算する）か `native`。
@@ -29,6 +30,7 @@ import { RECORD_QUAKES_RANGE_MAX_MS, type RecordQuakes } from './recordQuakes'
 import type { StationConfig } from './stationConfigTypes'
 import { readWaveRangeByToken } from './waveArchive'
 import type { RecordChannelIndex } from './waveRecordChannels'
+import { parseGroupId, readCompositeEnvelope, readIntensitySummary } from './waveRecordsDerived'
 import {
   SAMPLES_RANGE_MAX_MS,
   chooseEnvelopeSource,
@@ -212,23 +214,46 @@ async function answerRecords(route: string, params: URLSearchParams, deps: Recor
       },
     }
   }
+  if (route === 'composite') {
+    const raw = params.get('group')
+    const group = raw === null ? null : parseGroupId(raw)
+    if (group === null) return bad('bad-group')
+    const unit = readUnit(params)
+    if (!unit.ok) return bad(unit.error)
+    const range = readRange(params, RECORDS_RANGE_MAX_MS)
+    if (!range.ok) return bad(range.error)
+    const columns = readColumns(params)
+    if (!columns.ok) return bad(columns.error)
+    const got = await readCompositeEnvelope({ dirs, group, fromMs: range.fromMs, toMs: range.toMs, columns: columns.columns, unit: unit.unit, signal })
+    return { status: 200, body: { group: group.key, ...got } }
+  }
   if (route === 'intensity') {
     const station = params.get('station')
     if (station === null || !STATION_KEY_RE.test(station)) return bad('bad-station')
-    const range = readRange(params, SAMPLES_RANGE_MAX_MS)
+    const range = readRange(params, RECORDS_RANGE_MAX_MS)
     if (!range.ok) return bad(range.error)
+    // **10 分を超えたら要約から**（その場で計算すると 1 日で約 1 分かかり、受信と同じスレッドを塞ぐ）。
+    if (range.toMs - range.fromMs > SAMPLES_RANGE_MAX_MS) {
+      const columns = readColumns(params)
+      if (!columns.ok) return bad(columns.error)
+      const got = await readIntensitySummary({ dirs, stationKey: station, fromMs: range.fromMs, toMs: range.toMs, columns: columns.columns, signal })
+      return { status: 200, body: { station, fromMs: range.fromMs, toMs: range.toMs, ...got } }
+    }
     // **判定の窓の分だけ手前から読む**（`QUAKE_INTENSITY_LEAD_MS` の説明）。読み手は投げない。
     const read = await readWaveRangeByToken({
       dir: dirs.waveDir,
       stationKey: station,
       fromMs: range.fromMs - QUAKE_INTENSITY_LEAD_MS,
       toMs: range.toMs,
+      // 10 分以内の読みなので、途中で打ち切らない（上の「読み手は投げない」の約束を保つ）。
+      signal: null,
     })
     const result = computeQuakeIntensity({ chunks: read.chunks, fromMs: range.fromMs, toMs: range.toMs })
     return {
       status: 200,
       body: {
         station,
+        source: 'samples',
         fromMs: range.fromMs,
         toMs: range.toMs,
         maxRealtime: result.maxRealtime,

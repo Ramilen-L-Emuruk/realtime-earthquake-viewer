@@ -10,6 +10,7 @@ import { decodeReceptionSummary } from './receptionSummary'
 import { encodeSteim2 } from './steim2'
 import { encodeWaveChunk } from './waveArchive'
 import { decodeSummaryPart } from './waveSummary'
+import { decodeDerivedPart } from './waveSummaryDerived'
 import {
   buildSummaryFile,
   hourStartOf,
@@ -18,7 +19,8 @@ import {
   removeSummaryFiles,
   rawSummaryPath,
   receptionSummaryPath,
-  summarizedSourceBytes,
+  summarizedSources,
+  prevWaveSourcePath,
   summaryPartPath,
   waveSummaryPath,
 } from './waveSummaryFiles'
@@ -95,11 +97,14 @@ describe('listSummaryJobs', () => {
     expect(listed.errors).toEqual([])
     expect(listed.jobs).toHaveLength(2)
     const raw = listed.jobs.find((j) => j.kind === 'raw')!
-    expect(raw).toMatchObject({ hourKey: HOUR_KEY, hourStartMs: HOUR_START, stationKey: null })
+    expect(raw).toMatchObject({ hourKey: HOUR_KEY, hourStartMs: HOUR_START, stationKey: null, prevSourcePath: null })
     expect(raw.summaryPath).toBe(rawSummaryPath(summaryDir, HOUR_KEY))
     const wave = listed.jobs.find((j) => j.kind === 'wave')!
     expect(wave).toMatchObject({ hourKey: HOUR_KEY, stationKey: 'home-0123456789ab' })
     expect(wave.summaryPath).toBe(waveSummaryPath(summaryDir, 'home-0123456789ab', HOUR_KEY))
+    // 合成波形は前の時のファイルの場所も持つ（震度を前の時の末尾から通す）。
+    expect(wave.prevSourcePath).toBe(join(waveDir, 'wave-home-0123456789ab-2026-10-07T11.bin'))
+    expect(prevWaveSourcePath(waveDir, 'home-0123456789ab', HOUR_START)).toBe(wave.prevSourcePath)
   })
 
   it('置き場所がまだ無いのは異常ではない（0 件・誤りなし）', async () => {
@@ -116,7 +121,7 @@ describe('buildSummaryFile', () => {
     writeFileSync(sourcePath, bytes)
     const summaryPath = rawSummaryPath(summaryDir, HOUR_KEY)
 
-    const result = await buildSummaryFile({ kind: 'raw', sourcePath, summaryPath, hourKey: HOUR_KEY, hourStartMs: HOUR_START, stationKey: null })
+    const result = await buildSummaryFile({ kind: 'raw', sourcePath, summaryPath, hourKey: HOUR_KEY, hourStartMs: HOUR_START, stationKey: null, prevSourcePath: null })
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.sourceBytes).toBe(bytes.length)
@@ -126,16 +131,18 @@ describe('buildSummaryFile', () => {
     expect(decoded).not.toBeNull()
     expect(decoded!.part).toBe('coarse')
     expect(decoded!.channels[0]!.ugPerLsb).toBe(61.0352)
-    // 3 部分と受信の記録の要約が並び、一時ファイルは残らない
+    // 5 部分と受信の記録の要約が並び、一時ファイルは残らない
     expect(readdirSync(join(summaryDir, 'raw', '2026-10-07')).sort()).toEqual([
       `raw-${HOUR_KEY}.coarse.wsum`,
+      `raw-${HOUR_KEY}.derived-coarse.wsum`,
+      `raw-${HOUR_KEY}.derived-fine.wsum`,
       `raw-${HOUR_KEY}.fine.wsum`,
       `raw-${HOUR_KEY}.psd.wsum`,
       `raw-${HOUR_KEY}.reception.json`,
     ])
     const reception = decodeReceptionSummary(readFileSync(receptionSummaryPath(summaryPath), 'utf8'))
     expect(reception?.sourceBytes).toBe(bytes.length)
-    expect(await summarizedSourceBytes(summaryPath)).toBe(bytes.length)
+    expect(await summarizedSources(summaryPath)).toEqual({ sourceBytes: bytes.length, prevSourceBytes: null })
   })
 
   it('合成波形の時のファイルから要約を作る（チャンネルは観測点の札で名乗る）', async () => {
@@ -150,6 +157,7 @@ describe('buildSummaryFile', () => {
       hourKey: HOUR_KEY,
       hourStartMs: HOUR_START,
       stationKey: 'home-0123456789ab',
+      prevSourcePath: join(waveDir, 'wave-home-0123456789ab-2026-10-07T11.bin'),
     })
     expect(result.ok).toBe(true)
     const decoded = decodeSummaryPart(readFileSync(summaryPartPath(summaryPath, 'fine')))!
@@ -158,6 +166,31 @@ describe('buildSummaryFile', () => {
       'station/home-0123456789ab/Y',
       'station/home-0123456789ab/Z',
     ])
+    // 前の時のファイルが無いのは異常ではない（前の時の大きさを持たずに作る）。
+    if (result.ok) expect(result.prevSourceBytes).toBeNull()
+    const derived = decodeDerivedPart(readFileSync(summaryPartPath(summaryPath, 'derived-coarse')), () => true)!
+    expect(derived.groups.map((g) => g.key)).toEqual(['station/home-0123456789ab'])
+  })
+
+  it('合成波形は前の時のファイルの大きさを控える（前の時が伸びたら作り直すため）', async () => {
+    mkdirSync(waveDir, { recursive: true })
+    const prevPath = join(waveDir, 'wave-home-0123456789ab-2026-10-07T11.bin')
+    const prev = Buffer.concat([waveHourBytes(), waveHourBytes()])
+    writeFileSync(prevPath, prev)
+    const sourcePath = join(waveDir, `wave-home-0123456789ab-${HOUR_KEY}.bin`)
+    writeFileSync(sourcePath, waveHourBytes())
+    const summaryPath = waveSummaryPath(summaryDir, 'home-0123456789ab', HOUR_KEY)
+    const result = await buildSummaryFile({
+      kind: 'wave',
+      sourcePath,
+      summaryPath,
+      hourKey: HOUR_KEY,
+      hourStartMs: HOUR_START,
+      stationKey: 'home-0123456789ab',
+      prevSourcePath: prevPath,
+    })
+    expect(result.ok && result.prevSourceBytes).toBe(prev.length)
+    expect(await summarizedSources(summaryPath)).toEqual({ sourceBytes: waveHourBytes().length, prevSourceBytes: prev.length })
   })
 
   it('元のファイルが無ければ ok: false で返し、投げない・何も残さない', async () => {
@@ -169,31 +202,32 @@ describe('buildSummaryFile', () => {
       hourKey: HOUR_KEY,
       hourStartMs: HOUR_START,
       stationKey: null,
+      prevSourcePath: null,
     })
     expect(result.ok).toBe(false)
-    expect(await summarizedSourceBytes(summaryPath)).toBeNull()
+    expect(await summarizedSources(summaryPath)).toBeNull()
   })
 })
 
-describe('summarizedSourceBytes', () => {
+describe('summarizedSources', () => {
   it('要約でないファイル・短いファイルは null（作り直せばよい）', async () => {
     mkdirSync(summaryDir, { recursive: true })
     const base = join(summaryDir, 'x')
-    writeFileSync(summaryPartPath(base, 'psd'), 'not a summary at all')
-    expect(await summarizedSourceBytes(base)).toBeNull()
-    writeFileSync(summaryPartPath(base, 'psd'), Buffer.alloc(3))
-    expect(await summarizedSourceBytes(base)).toBeNull()
+    writeFileSync(summaryPartPath(base, 'derived-coarse'), 'not a summary at all')
+    expect(await summarizedSources(base)).toBeNull()
+    writeFileSync(summaryPartPath(base, 'derived-coarse'), Buffer.alloc(3))
+    expect(await summarizedSources(base)).toBeNull()
   })
 
-  it('最後に書く部分（PSD）が無ければ、他の部分があっても作り直しになる', async () => {
+  it('最後に書く部分（合成と震度の 1 分）が無ければ、他の部分があっても作り直しになる（足す前に作った要約もこれで作り直す）', async () => {
     mkdirSync(join(rawDir, '2026-10-07'), { recursive: true })
     const sourcePath = join(rawDir, '2026-10-07', `raw-${HOUR_KEY}.mseed3`)
     writeFileSync(sourcePath, rawHourBytes())
     const summaryPath = rawSummaryPath(summaryDir, HOUR_KEY)
-    await buildSummaryFile({ kind: 'raw', sourcePath, summaryPath, hourKey: HOUR_KEY, hourStartMs: HOUR_START, stationKey: null })
-    // 途中で落ちて PSD を書けなかった跡（1 秒・1 分の部分は新しい）
-    rmSync(summaryPartPath(summaryPath, 'psd'))
-    expect(await summarizedSourceBytes(summaryPath)).toBeNull()
+    await buildSummaryFile({ kind: 'raw', sourcePath, summaryPath, hourKey: HOUR_KEY, hourStartMs: HOUR_START, stationKey: null, prevSourcePath: null })
+    // 途中で落ちて最後の部分を書けなかった跡（他の部分は新しい）。合成と震度の部分を足す前の要約も同じ形になる。
+    rmSync(summaryPartPath(summaryPath, 'derived-coarse'))
+    expect(await summarizedSources(summaryPath)).toBeNull()
   })
 })
 
@@ -206,9 +240,9 @@ describe('listSummaryFiles', () => {
   it('要約の置き場所を、元の名前ごとに部分と受信の記録をまとめて返す（書きかけの一時ファイルも含める）', async () => {
     const raw = rawSummaryPath(summaryDir, HOUR_KEY)
     const wave = waveSummaryPath(summaryDir, 'home-abc', HOUR_KEY)
-    for (const part of ['fine', 'coarse', 'psd'] as const) touch(summaryPartPath(raw, part))
+    for (const part of ['fine', 'coarse', 'psd', 'derived-fine', 'derived-coarse'] as const) touch(summaryPartPath(raw, part))
     touch(receptionSummaryPath(raw))
-    touch(`${summaryPartPath(raw, 'psd')}.tmp`)
+    touch(`${summaryPartPath(raw, 'derived-coarse')}.tmp`)
     for (const part of ['fine', 'coarse', 'psd'] as const) touch(summaryPartPath(wave, part))
 
     const listed = await listSummaryFiles(summaryDir)
@@ -216,7 +250,7 @@ describe('listSummaryFiles', () => {
     const byPath = new Map(listed.summaries.map((s) => [s.summaryPath, s]))
     expect([...byPath.keys()].sort()).toEqual([raw, wave].sort())
     expect(byPath.get(raw)!.kind).toBe('raw')
-    expect(byPath.get(raw)!.files).toHaveLength(5)
+    expect(byPath.get(raw)!.files).toHaveLength(7)
     expect(byPath.get(wave)!.kind).toBe('wave')
     expect(byPath.get(wave)!.files).toHaveLength(3)
   })

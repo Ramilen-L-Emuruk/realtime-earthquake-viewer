@@ -7,9 +7,13 @@
 // <要約の置き場所>/wave/wave-<札>-<日>T<時>.<部分>.wsum    ← <合成波形>/wave-<札>-<日>T<時>.bin
 // ```
 //
-// 部分は `fine`（1 秒ごとの段）・`coarse`（1 分ごとの段）・`psd`（1 分ごとの PSD）の 3 本
-// （分ける理由は `waveSummary.ts` の書き出しの節）。`SummaryJob.summaryPath` は部分を除いた名前の元。
+// 部分は `fine`（1 秒ごとの段）・`coarse`（1 分ごとの段）・`psd`（1 分ごとの PSD）と、合成と震度の
+// `derived-fine`・`derived-coarse`（`waveSummaryDerived.ts`）の 5 本（分ける理由は `waveSummary.ts` の
+// 書き出しの節）。`SummaryJob.summaryPath` は部分を除いた名前の元。
 // 生データの時だけ、受信の記録の要約（`<名前の元>.reception.json`・`receptionSummary.ts`）も置く。
+//
+// **合成波形の要約は前の時のファイルも読む**（震度を前の時の末尾から通すため）。前の時が後から伸びたら
+// この時も作り直すので、作ったときの前の時の大きさを最後に書く部分の頭に控える。
 //
 // **合成波形は観測点の札（`stationFileToken`）で引く。** 札から観測点の識別子へは戻せない
 // （均して指紋を足した名前なので）。読み返す側は識別子から札を作って引く。
@@ -20,17 +24,26 @@
 import { mkdir, readdir, readFile, rename, stat, unlink, writeFile, open } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
+import { jstHour } from './jstTime'
+import { waveFileNameOfToken } from './waveArchive'
+import { SUMMARY_PARTS, encodeSummaryPart, type SourceProblems, type SummaryPart } from './waveSummary'
 import {
-  SUMMARY_LAST_PART,
-  SUMMARY_PARTS,
-  SUMMARY_PEEK_BYTES,
-  encodeSummaryPart,
-  peekSummarySourceBytes,
-  type SourceProblems,
-  type SummaryPart,
-} from './waveSummary'
+  DERIVED_LAST_PART,
+  DERIVED_PARTS,
+  DERIVED_PEEK_BYTES,
+  encodeDerivedPart,
+  peekDerivedHead,
+  type DerivedPart,
+} from './waveSummaryDerived'
 import { encodeReceptionSummary } from './receptionSummary'
-import { summarizeMseedHourWithReception, summarizeWaveHour } from './waveSummarySources'
+import { summarizeMseedHourWithReception, summarizeWaveHourWithDerived } from './waveSummarySources'
+
+const HOUR_MS = 3_600_000
+
+/** 要約のファイルの部分（軸の段・PSD と、合成と震度）。 */
+export type SummaryFilePart = SummaryPart | DerivedPart
+/** 書く順。**最後の部分（`DERIVED_LAST_PART`）の頭で作り直すかを決める。** */
+export const SUMMARY_FILE_PARTS: readonly SummaryFilePart[] = [...SUMMARY_PARTS, ...DERIVED_PARTS]
 
 const RAW_FILE_RE = /^raw-(\d{4}-\d{2}-\d{2}T\d{2})\.mseed3$/
 const WAVE_FILE_RE = /^wave-(.+)-(\d{4}-\d{2}-\d{2}T\d{2})\.bin$/
@@ -46,6 +59,8 @@ export interface SummaryJob {
   readonly hourStartMs: number
   /** 合成波形なら観測点の札。生データは `null`。 */
   readonly stationKey: string | null
+  /** 合成波形なら前の時の元のファイルの場所（震度の助走）。生データは `null`（前の時を読まない）。 */
+  readonly prevSourcePath: string | null
 }
 
 export type SummaryJobResult =
@@ -53,6 +68,8 @@ export type SummaryJobResult =
       readonly ok: true
       /** 要約を作ったときに読んだ元のファイルの大きさ。 */
       readonly sourceBytes: number
+      /** そのときの前の時の元のファイルの大きさ。前の時を読まない・無かったなら `null`。 */
+      readonly prevSourceBytes: number | null
       readonly summaryBytes: number
       readonly channels: number
       readonly problems: SourceProblems
@@ -77,8 +94,14 @@ export function waveSummaryPath(summaryDir: string, stationKey: string, hourKey:
   return join(summaryDir, 'wave', `wave-${stationKey}-${hourKey}`)
 }
 
+/** 合成波形の時の、前の時の元のファイルの場所。時を読めなければ `null`。 */
+export function prevWaveSourcePath(waveDir: string, stationKey: string, hourStartMs: number): string | null {
+  const prevKey = jstHour(hourStartMs - HOUR_MS)
+  return prevKey === null ? null : join(waveDir, waveFileNameOfToken(stationKey, prevKey))
+}
+
 /** 名前の元に部分を付けた、実際のファイルの場所。 */
-export function summaryPartPath(summaryBase: string, part: SummaryPart): string {
+export function summaryPartPath(summaryBase: string, part: SummaryFilePart): string {
   return `${summaryBase}.${part}.wsum`
 }
 
@@ -140,6 +163,7 @@ export async function listSummaryJobs(dirs: {
         hourKey,
         hourStartMs,
         stationKey: null,
+        prevSourcePath: null,
       })
     }
   }
@@ -164,6 +188,7 @@ export async function listSummaryJobs(dirs: {
       hourKey,
       hourStartMs,
       stationKey,
+      prevSourcePath: prevWaveSourcePath(dirs.waveDir, stationKey, hourStartMs),
     })
   }
   return { jobs, errors }
@@ -184,7 +209,7 @@ export interface SummaryListResult {
 }
 
 const SUMMARY_SUFFIX_RE = new RegExp(
-  `\\.(?:(?:${SUMMARY_PARTS.join('|')})\\.wsum|reception\\.json)(?:\\.tmp)?$`,
+  `\\.(?:(?:${SUMMARY_FILE_PARTS.join('|')})\\.wsum|reception\\.json)(?:\\.tmp)?$`,
 )
 const WAVE_SUMMARY_BASE_RE = /^wave-.+-\d{4}-\d{2}-\d{2}T\d{2}$/
 
@@ -260,26 +285,45 @@ export async function sourceSizeOf(path: string): Promise<number | null> {
   }
 }
 
+/** 要約が控えている、作ったときの元のファイルと前の時のファイルの大きさ。 */
+export interface SummarizedSources {
+  readonly sourceBytes: number
+  /** 前の時を読まない（生データ）・作ったとき前の時が無かったなら `null`。 */
+  readonly prevSourceBytes: number | null
+}
+
 /**
  * 要約が控えている元のファイルの大きさ（**最後に書く部分**の頭だけ読む）。要約が無い・読めない・形が
  * 違うなら `null`（作り直せばよい）。最後に書く部分で見るのは、途中の部分を書いたところで落ちたとき、
- * 最後の部分が古いまま残って作り直しになるため。
+ * 最後の部分が古いまま残って作り直しになるため。**合成と震度の部分を足す前に作った要約は、最後の部分が
+ * 無いので `null` になる**（版を上げずに、見回りの係が順に作り直す。2026-10-11 ユーザー承認）。
  */
-export async function summarizedSourceBytes(summaryBase: string): Promise<number | null> {
+export async function summarizedSources(summaryBase: string): Promise<SummarizedSources | null> {
   let handle
   try {
-    handle = await open(summaryPartPath(summaryBase, SUMMARY_LAST_PART), 'r')
+    handle = await open(summaryPartPath(summaryBase, DERIVED_LAST_PART), 'r')
   } catch {
     return null
   }
   try {
-    const head = Buffer.alloc(SUMMARY_PEEK_BYTES)
-    const { bytesRead } = await handle.read(head, 0, SUMMARY_PEEK_BYTES, 0)
-    return peekSummarySourceBytes(head.subarray(0, bytesRead))
+    const head = Buffer.alloc(DERIVED_PEEK_BYTES)
+    const { bytesRead } = await handle.read(head, 0, DERIVED_PEEK_BYTES, 0)
+    return peekDerivedHead(head.subarray(0, bytesRead))
   } catch {
     return null
   } finally {
     await handle.close().catch(() => undefined)
+  }
+}
+
+/** 前の時のファイルを読む。**無いのは異常ではない**（`null`）。それ以外の読み損ねは投げる。 */
+async function readPrevSource(path: string | null): Promise<Buffer | null> {
+  if (path === null) return null
+  try {
+    return await readFile(path)
+  } catch (error) {
+    if (isMissing(error)) return null
+    throw error
   }
 }
 
@@ -292,38 +336,36 @@ export async function summarizedSourceBytes(summaryBase: string): Promise<number
 export async function buildSummaryFile(job: SummaryJob): Promise<SummaryJobResult> {
   const started = performance.now()
   let tmp: string | null = null
+  const put = async (path: string, encoded: Buffer | string): Promise<number> => {
+    tmp = `${path}.tmp`
+    await writeFile(tmp, encoded)
+    await rename(tmp, path)
+    tmp = null
+    return Buffer.byteLength(encoded)
+  }
   try {
     const buf = await readFile(job.sourcePath)
     const built =
       job.kind === 'raw'
         ? summarizeMseedHourWithReception(buf, job.hourStartMs)
-        : { file: summarizeWaveHour(buf, job.stationKey ?? '', job.hourStartMs), reception: null }
-    const file = built.file
+        : {
+            ...summarizeWaveHourWithDerived(buf, job.stationKey ?? '', job.hourStartMs, await readPrevSource(job.prevSourcePath)),
+            reception: null,
+          }
+    const { file, derived } = built
     await mkdir(dirname(job.summaryPath), { recursive: true })
     let summaryBytes = 0
-    // **受信の記録の要約は PSD より先に置く**（作り直すかは PSD の頭で決めるので、ここで落ちても作り直しになる）。
+    // **受信の記録の要約は最後の部分より先に置く**（作り直すかは最後の部分の頭で決めるので、ここで落ちても作り直しになる）。
     if (built.reception !== null) {
-      const encoded = encodeReceptionSummary(built.reception)
-      const path = receptionSummaryPath(job.summaryPath)
-      tmp = `${path}.tmp`
-      await writeFile(tmp, encoded)
-      await rename(tmp, path)
-      tmp = null
-      summaryBytes += Buffer.byteLength(encoded)
+      summaryBytes += await put(receptionSummaryPath(job.summaryPath), encodeReceptionSummary(built.reception))
     }
-    // **最後に書く部分（`SUMMARY_LAST_PART`）を最後に置き換える。** 作り直すかはその頭で決める。
-    for (const part of SUMMARY_PARTS) {
-      const encoded = encodeSummaryPart(file, part)
-      const path = summaryPartPath(job.summaryPath, part)
-      tmp = `${path}.tmp`
-      await writeFile(tmp, encoded)
-      await rename(tmp, path)
-      tmp = null
-      summaryBytes += encoded.length
-    }
+    for (const part of SUMMARY_PARTS) summaryBytes += await put(summaryPartPath(job.summaryPath, part), encodeSummaryPart(file, part))
+    // **最後に書く部分（`DERIVED_LAST_PART`）を最後に置き換える。** 作り直すかはその頭で決める。
+    for (const part of DERIVED_PARTS) summaryBytes += await put(summaryPartPath(job.summaryPath, part), encodeDerivedPart(derived, part))
     return {
       ok: true,
       sourceBytes: file.sourceBytes,
+      prevSourceBytes: derived.prevSourceBytes,
       summaryBytes,
       channels: file.channels.length,
       problems: file.sourceProblems,

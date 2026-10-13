@@ -221,10 +221,83 @@ describe('columnPsd', () => {
     expect(integrate(got.power[0]!) / 2).toBeLessThan(1.1)
   })
 
-  it('列の幅が区間の進め方より細いと、区間の入らない列が出る（細くしすぎない理由）', () => {
+  it('列が区間の送り（約 5 秒）より細ければ、送りを列の幅まで縮めて、記録のある列を 1 本も空けない（以前は空いていた）', () => {
+    // 60 秒ぶん・1 秒の列。区間（約 10 秒）の中心が届くのは 5.12〜54.88 秒
     const x = sine(6000, 5, 1)
     const got = columnPsd(chunks(x, T0, 500), T0, T0 + 60_000, 1000)
-    expect(got.segments.filter((s) => s > 0).length).toBe(Math.floor((6000 - PSD_NFFT) / PSD_HOP) + 1)
-    expect(got.segments.filter((s) => s === 0).length).toBeGreaterThan(0)
+    expect(got.segments).toHaveLength(60)
+    expect(got.segments.slice(6, 54).every((s) => s > 0)).toBe(true)
+    // 区間の中心が届かない頭と末尾の列は 0（余分に読むのは呼び出し側の役目）
+    expect(got.segments.slice(0, 5).every((s) => s === 0)).toBe(true)
+    expect(got.segments.slice(55).every((s) => s === 0)).toBe(true)
+    // 送りを縮めても、1 本の区間の PSD は変わらない（積分すると分散に戻る）
+    expect(integrate(got.power[30]!) / 0.5).toBeGreaterThan(0.9)
+    expect(integrate(got.power[30]!) / 0.5).toBeLessThan(1.1)
+  })
+
+  it('列が送りより広ければ、送りは半分重ねのまま（区間の数は Welch と同じ）', () => {
+    const x = sine(6000, 5, 1)
+    const got = columnPsd(chunks(x, T0, 500), T0, T0 + 60_000, 30_000)
+    expect(got.segments.reduce((a, b) => a + b, 0)).toBe(Math.floor((6000 - PSD_NFFT) / PSD_HOP) + 1)
+  })
+
+  it('長く繋いだ走りの後ろの 0.3 秒の欠けも欠けとして扱い、またぐ区間を使わない（継ぎ目の許容は長さに比例させきらない）', () => {
+    // 合成波形を繋いだ形: 120 秒の走り、0.3 秒（1 まとまりぶん）欠けて、次の 120 秒の走り
+    const a = sine(12_000, 5, 1)
+    const b = sine(12_000, 5, 1)
+    const got = columnPsd(
+      [
+        { firstSampleMs: T0, msPerSample: MS, values: a },
+        { firstSampleMs: T0 + 120_300, msPerSample: MS, values: b },
+      ],
+      T0,
+      T0 + 240_300,
+      1000,
+    )
+    // 欠けをまたぐ区間（約 10 秒）の中心が入る列は空く
+    expect(got.segments[120]).toBe(0)
+    expect(got.segments.slice(116, 124).every((s) => s === 0)).toBe(true)
+    // 欠けから離れた列は埋まる
+    expect(got.segments[60]).toBeGreaterThan(0)
+    expect(got.segments[180]).toBeGreaterThan(0)
+  })
+
+  it('長い走りの継ぎ目の許容は約 0.1 秒で頭打ち: 60 ms の隙間は繋ぎ、150 ms の隙間は繋がない', () => {
+    const across = (gapMs: number): number[] => {
+      const got = columnPsd(
+        [
+          { firstSampleMs: T0, msPerSample: MS, values: sine(12_000, 5, 1) },
+          { firstSampleMs: T0 + 120_000 + gapMs, msPerSample: MS, values: sine(12_000, 5, 1) },
+        ],
+        T0,
+        T0 + 240_000 + gapMs,
+        1000,
+      )
+      return got.segments.slice(116, 124)
+    }
+    expect(across(60).every((s) => s > 0)).toBe(true)
+    expect(across(150).every((s) => s === 0)).toBe(true)
+  })
+
+  it('対照: 欠けの無い長い走りどうしは継ぎ目をまたいで区間を使う', () => {
+    const a = sine(12_000, 5, 1)
+    const b = sine(12_000, 5, 1)
+    const got = columnPsd(
+      [
+        { firstSampleMs: T0, msPerSample: MS, values: a },
+        { firstSampleMs: T0 + 120_000, msPerSample: MS, values: b },
+      ],
+      T0,
+      T0 + 240_000,
+      1000,
+    )
+    expect(got.segments.slice(116, 124).every((s) => s > 0)).toBe(true)
+  })
+
+  it('列の幅が刻みより細くても、送りは 1 サンプルより縮めない', () => {
+    const x = sine(2048, 5, 1)
+    const got = columnPsd(chunks(x, T0, 512), T0, T0 + 20_480, 5)
+    // 送り 1 サンプル ＝ 区間の数は (2048 − 1024) / 1 + 1
+    expect(got.segments.reduce((a, b) => a + b, 0)).toBe(2048 - PSD_NFFT + 1)
   })
 })

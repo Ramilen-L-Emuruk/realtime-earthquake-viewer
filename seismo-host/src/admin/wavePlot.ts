@@ -48,6 +48,52 @@ export function colorForIndex(index: number): string {
   return SENSOR_COLORS[at]
 }
 
+/** 平均の線の色を作るとき、白へ寄せる割合。 */
+const MEAN_LINE_LIGHTEN = 0.6
+
+/**
+ * 平均の線の色。**元の線の色を白へ寄せた不透明な色**（2026-10-12 ユーザー承認。PWA の詳細の窓が成分の色の
+ * 明るい版で重ねるのと同じ考え方）。元の線の上に太く描くので、同じ色だと塗りつぶされた帯の中で見分けられない。
+ *
+ * `#rrggbb` と `rgb(…)`・`rgba(…)` を読む（透かしは捨てる）。**読めない色はそのまま返す** —— 線は元の色で描かれる。
+ */
+export function lighterColor(color: string): string {
+  const hex = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(color)
+  const fn = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*[\d.]+\s*)?\)$/i.exec(color)
+  const rgb = hex !== null ? hex.slice(1, 4).map((h) => parseInt(h, 16)) : fn !== null ? fn.slice(1, 4).map(Number) : null
+  if (rgb === null || rgb.some((c) => !(c >= 0 && c <= 255))) return color
+  const [r, g, b] = rgb.map((c) => Math.round(c + (255 - c) * MEAN_LINE_LIGHTEN))
+  return `rgb(${r}, ${g}, ${b})`
+}
+
+/**
+ * 波形 1 本ごとの色。**最初に色を訊かれた時点で決め、外すまで変えない。**
+ *
+ * **行の位置から色を決めない。** 一覧は種類と鍵の順に並べてある（`WaveStore.buffersInOrder`）
+ * ので、合成やほかの基板が後から届くと、その前後の行が 1 つずつずれる。位置で色を決めると、
+ * **見ている最中に、触っていない線の色が一斉に入れ替わる。**
+ *
+ * 新しい鍵には、いま使っていない番号のうち最も小さいものを当てる。外した鍵の番号は次の鍵が使う。
+ */
+export class ColorSlots {
+  private readonly slots = new Map<string, number>()
+
+  colorOf(key: string): string {
+    let slot = this.slots.get(key)
+    if (slot === undefined) {
+      const used = new Set(this.slots.values())
+      slot = 0
+      while (used.has(slot)) slot++
+      this.slots.set(key, slot)
+    }
+    return colorForIndex(slot)
+  }
+
+  release(key: string): void {
+    this.slots.delete(key)
+  }
+}
+
 /**
  * 縦の半幅を、切りのいい値へ上向きに丸める。
  *
