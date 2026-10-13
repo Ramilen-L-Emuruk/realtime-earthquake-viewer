@@ -50,13 +50,7 @@ export function foldHistoryColumns(params: {
   let hasAnyValue = false
 
   for (let c = 0; c < columnCount; c += 1) {
-    const lo = Math.min(source.length - 1, Math.floor((c * source.length) / columnCount))
-    // **最低 1 つは見る。** 素直に `ceil` だけにすると、画面のほうが広いときに
-    // `lo === hi` の空区間ができて列が丸ごと落ちる。
-    const hi = Math.min(
-      source.length,
-      Math.max(lo + 1, Math.ceil(((c + 1) * source.length) / columnCount)),
-    )
+    const { lo, hi } = sourceRangeOf(c, source.length, columnCount)
 
     let min: [number, number, number] | null = null
     let max: [number, number, number] | null = null
@@ -114,4 +108,37 @@ export function foldHistoryColumns(params: {
   }
 
   return { columns, scaleGal: Math.max(minScaleGal, peak), hasAnyValue }
+}
+
+/**
+ * 読み返した列に沿った線（`utils/seismoWaveColumns.ts` の `smoothCompositeColumns` が返す、元の列ごとに 1 点の値）を、
+ * `columnCount` 列へ畳む。**{@link foldHistoryColumns} と同じ列の割り付けを使う**（ずらすと、線が波形と横にずれる）。
+ *
+ * 畳むのは平均（線は上下の端ではなく 1 点なので、端を取る必要が無い）。値の無い列だけの範囲は `NaN`（線を切る）。
+ */
+export function foldHistoryLine(values: ArrayLike<number>, columnCount: number): Float32Array {
+  const out = new Float32Array(Math.max(0, columnCount)).fill(Number.NaN)
+  if (columnCount <= 0 || values.length === 0) return out
+  for (let c = 0; c < columnCount; c += 1) {
+    const { lo, hi } = sourceRangeOf(c, values.length, columnCount)
+    let sum = 0
+    let cnt = 0
+    for (let i = lo; i < hi; i += 1) {
+      const v = values[i]
+      if (!Number.isFinite(v)) continue
+      sum += v
+      cnt += 1
+    }
+    if (cnt > 0) out[c] = sum / cnt
+  }
+  return out
+}
+
+/** 出力の列 `c` が引く元の列の範囲 `[lo, hi)`。 */
+function sourceRangeOf(c: number, sourceLength: number, columnCount: number): { lo: number; hi: number } {
+  const lo = Math.min(sourceLength - 1, Math.floor((c * sourceLength) / columnCount))
+  // **最低 1 つは見る。** 素直に `ceil` だけにすると、画面のほうが広いときに
+  // `lo === hi` の空区間ができて列が丸ごと落ちる。
+  const hi = Math.min(sourceLength, Math.max(lo + 1, Math.ceil(((c + 1) * sourceLength) / columnCount)))
+  return { lo, hi }
 }

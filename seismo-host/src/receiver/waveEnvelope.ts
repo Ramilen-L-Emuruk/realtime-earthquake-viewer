@@ -41,6 +41,15 @@ export interface WaveEnvelopeColumn {
    */
   readonly magMin: number
   readonly magMax: number
+  /**
+   * 合成の和（gal）と、足したサンプルの数。**受け手が前後 1 秒で均した線を引くための材料**（2026-10-13 ユーザー承認。
+   * PWA の地震カードの合成に重ねる）。
+   *
+   * **平均ではなく和と数で渡す。** 受け手は隣り合う列をまとめて均すので、列の平均どうしを平均すると
+   * サンプルの少ない列（まとまりの継ぎ目）が重く数えられる。和と数なら、まとめた結果がサンプルで均したものと揃う。
+   */
+  readonly magSum: number
+  readonly magCount: number
 }
 
 export interface WaveEnvelope {
@@ -99,6 +108,8 @@ export function buildWaveEnvelope(params: {
   ]
   const magMins = new Float64Array(columnCount)
   const magMaxs = new Float64Array(columnCount)
+  const magSums = new Float64Array(columnCount)
+  const magCounts = new Uint32Array(columnCount)
   const members = new Float64Array(columnCount)
   /** 列にサンプルが 1 つでも入ったか（本数を数える起点）。 */
   const filled = new Uint8Array(columnCount)
@@ -123,6 +134,8 @@ export function buildWaveEnvelope(params: {
       for (const v of values) if (Number.isFinite(v)) sq += v * v
       const mag = Math.sqrt(sq)
       const m = chunk.memberCount[i]
+      magSums[c] += mag
+      magCounts[c] += 1
       if (filled[c] === 0) {
         filled[c] = 1
         members[c] = m
@@ -171,6 +184,8 @@ export function buildWaveEnvelope(params: {
       minMembers: members[c]!,
       magMin: magMins[c]!,
       magMax: magMaxs[c]!,
+      magSum: magSums[c]!,
+      magCount: magCounts[c]!,
     })
   }
 

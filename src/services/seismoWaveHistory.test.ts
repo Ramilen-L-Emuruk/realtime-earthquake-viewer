@@ -35,7 +35,15 @@ const RESPONSE = {
   truncated: false,
   columnSpanMs: 350,
   columns: [
-    { min: [-1.29892, -0.51962, -0.97282], max: [0.98729, 0.53547, 0.96435], minMembers: 9, magMin: 0.1, magMax: 1.6 },
+    {
+      min: [-1.29892, -0.51962, -0.97282],
+      max: [0.98729, 0.53547, 0.96435],
+      minMembers: 9,
+      magMin: 0.1,
+      magMax: 1.6,
+      magSum: 21.7,
+      magCount: 35,
+    },
     null,
     { min: [-0.5, -0.4, -0.3], max: [0.5, 0.4, 0.3], minMembers: 1 },
   ],
@@ -101,6 +109,35 @@ describe('readWaveHistory', () => {
     if (!('value' in read)) throw new Error('読めない')
     expect(read.value.columns[2]?.magMax).toBeNaN()
     expect(read.value.columns[2]?.min).toEqual([-0.5, -0.4, -0.3])
+  })
+
+  // 正: 均した線の材料（合成の和と数）を読む。
+  it('合成の和と数を読む', () => {
+    const read = readWaveHistory(RESPONSE)
+    if (!('value' in read)) throw new Error('読めない')
+    expect(read.value.columns[0]?.magSum).toBe(21.7)
+    expect(read.value.columns[0]?.magCount).toBe(35)
+  })
+
+  // 対照: 材料を返さない古いホストの列は「持たない」（和は NaN・数は 0）。
+  it('和と数の欄が無い列は持たないものとして読む', () => {
+    const read = readWaveHistory(RESPONSE)
+    if (!('value' in read)) throw new Error('読めない')
+    expect(read.value.columns[2]?.magSum).toBeNaN()
+    expect(read.value.columns[2]?.magCount).toBe(0)
+  })
+
+  // 安全弁: 数が正の整数でなければ、和があっても持たない（0 や端数で割らない）。
+  it('数が 0・端数・負なら和も捨てる', () => {
+    for (const magCount of [0, 2.5, -3]) {
+      const read = readWaveHistory({
+        ...RESPONSE,
+        columns: [{ min: [0, 0, 0], max: [1, 1, 1], minMembers: 3, magMin: 0, magMax: 1, magSum: 4, magCount }],
+      })
+      if (!('value' in read)) throw new Error('読めない')
+      expect(read.value.columns[0]?.magSum).toBeNaN()
+      expect(read.value.columns[0]?.magCount).toBe(0)
+    }
   })
 
   it('値を持たない列は null のまま残す', () => {
