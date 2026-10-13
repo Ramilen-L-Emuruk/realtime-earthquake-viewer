@@ -217,7 +217,7 @@ export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selected
       <div className="flex items-center justify-center h-full">
         <div className="text-center">
           <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-          <p className="text-secondary text-sm">データを取得中...</p>
+          <p className="text-secondary text-sm">データを取得中…</p>
         </div>
       </div>
     )
@@ -227,7 +227,7 @@ export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selected
     return (
       <div className="flex items-center justify-center h-full p-4">
         <div className="text-center">
-          <p className="text-red-400 text-sm mb-2">データの取得に失敗しました</p>
+          <p className="text-red-400 text-sm mb-2">データの取得に失敗</p>
           <p className="text-secondary text-xs">{error}</p>
         </div>
       </div>

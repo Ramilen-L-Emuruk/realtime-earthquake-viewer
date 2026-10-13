@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { seismoStatusLine, SEISMO_STATUS_TONE_CLASS } from './seismoStatusLine'
+import { seismoStatusLine, SEISMO_STATUS_TONE_CLASS, type SeismoUiStatus } from './seismoStatusLine'
 
 describe('seismoStatusLine', () => {
   it('正: 繋がったら観測点とセンサーの本数を出す', () => {
@@ -35,11 +35,11 @@ describe('seismoStatusLine', () => {
   })
 
   it('正: 観測点が 0 件のときは別の文にする', () => {
-    // **「接続できました（観測点 0・センサー 0）」では成功か異常か判らない。**
-    // ホストは動いているが設定がまだ、という状態なので次にすることを書く。
+    // **「接続済み: 観測点 0・センサー 0」では成功か異常か判らない。**
+    // ホストは動いているが設定がまだ、という状態なので、それを名指しする。
     const line = seismoStatusLine({ kind: 'ok', stations: [], sensorCount: 0 })
     expect(line.tone).toBe('ok')
-    expect(line.text).toContain('まだ設定されていません')
+    expect(line.text).toContain('観測点は未設定')
     expect(line.text).not.toContain('観測点 0')
   })
 
@@ -49,14 +49,27 @@ describe('seismoStatusLine', () => {
     expect(line.tone).toBe('problem')
   })
 
-  it('対照: 括弧の中へ確認事項を 2 つ詰めない', () => {
+  it('対照: 確認事項を 2 つ詰めない', () => {
     // ホーム画面から開く前提は、この行の上にある常時表示の但し書きが受け持つ。
-    // 両方に書くと狭いパネルで折り返して何本出ているか読めなくなる
-    // （`settings-pwa-spec.md` §5.5「通知の文の形」）。
+    // 両方に書くと狭いパネルで折り返して読みにくくなる。
     const line = seismoStatusLine({ kind: 'unreachable', detail: 'Failed to fetch' })
     expect(line.text).not.toContain('ホーム画面')
-    // 括弧は 1 組だけ。
-    expect(line.text.match(/（/g)).toHaveLength(1)
+  })
+
+  it('対照: どの状態の文にも括弧の補足を付けない', () => {
+    // 管理コンソールと同じ形（状態は言い切り・内訳は「: X」・次の手順は丁寧形の 1 文）へ
+    // 揃えた（2026-10-13 ユーザー承認）。括弧の補足へ戻すと、片方だけ形が変わる。
+    const all: SeismoUiStatus[] = [
+      { kind: 'no-url' },
+      { kind: 'invalid' },
+      { kind: 'checking' },
+      { kind: 'ok', stations: [], sensorCount: 0 },
+      { kind: 'ok', stations: [{ stationId: 'a', displayName: 'A', lat: 35, lon: 139 }], sensorCount: 3 },
+      { kind: 'unreachable', detail: 'Failed to fetch' },
+      { kind: 'http-error', status: 503 },
+      { kind: 'unreadable', detail: 'x' },
+    ]
+    for (const s of all) expect(seismoStatusLine(s).text).not.toMatch(/[（(]/)
   })
 
   it('安全弁: 失敗の詳細を画面へ出さない', () => {

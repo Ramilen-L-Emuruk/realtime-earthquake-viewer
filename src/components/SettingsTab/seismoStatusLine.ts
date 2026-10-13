@@ -6,9 +6,9 @@
 // 分からない —— トグルを持つ形にした代償はここで払う（`useSettings.ts` の
 // `seismoEnabled` の説明）。
 //
-// **文の形は `{状態}（{行動または内訳}）`。** 主節は言い切りで、括弧の中に
-// 何をすればよいか（または内訳）を入れる（`docs/spec/settings-pwa-spec.md`
-// §5.5「通知の文の形」）。狭いパネルで折り返しても何本出ているか読める。
+// **文の形は自作地震計のホストの管理コンソールと揃える**（2026-10-13 ユーザー承認）。
+// 状態は言い切り、内訳は「: X」、次にすることは丁寧形の 1 文で続ける
+// （「応答がない。ホストが起動しているか確かめてください」）。括弧は使わない。
 
 import type { SeismoHostCheck } from '../../services/seismoStream'
 
@@ -51,34 +51,33 @@ export function seismoStatusLine(status: SeismoUiStatus): SeismoStatusLine {
     case 'disabled':
       return { text: '—', tone: 'muted' }
     case 'no-url':
-      return { text: 'URLが未入力です（ホストのURLを入力）', tone: 'muted' }
+      return { text: 'ホストのURLを入力してください', tone: 'muted' }
     case 'invalid':
-      return { text: 'URLの形式が正しくありません（http:// または https:// から入力）', tone: 'problem' }
+      return { text: 'URLの形式が正しくない。http:// または https:// から入力してください', tone: 'problem' }
     case 'checking':
-      return { text: '確認中...', tone: 'muted' }
+      return { text: '確認中…', tone: 'muted' }
     case 'ok':
-      // **0 件のときは別の文にする。** 「接続できました（観測点 0・センサー 0）」は、
+      // **0 件のときは別の文にする。** 「接続済み: 観測点 0・センサー 0」は、
       // 文字だけ見ると成功か異常か判らない —— ホストは動いているが観測点の設定が
-      // まだ、という状態なので、次にすることを書く。
+      // まだ、という状態なので、それを名指しする。
       if (status.stations.length === 0) {
-        return { text: '接続できました（観測点はまだ設定されていません）', tone: 'ok' }
+        return { text: '接続済み: 観測点は未設定', tone: 'ok' }
       }
       // **観測点とセンサーの本数を出す。** 「繋がった」だけでは、繋いだ先が
       // 自分の意図したホストかを確かめられない。
       return {
-        text: `接続できました（観測点 ${status.stations.length}・センサー ${status.sensorCount}）`,
+        text: `接続済み: 観測点 ${status.stations.length}・センサー ${status.sensorCount}`,
         tone: 'ok',
       }
     case 'unreachable':
-      // **括弧の中は 1 つに絞る。** ホーム画面から開く前提は、この行の上にある
+      // **確かめることは 1 つに絞る。** ホーム画面から開く前提は、この行の上にある
       // 常時表示の但し書き（「要：ホーム画面に追加してから開く」）が受け持つ ——
-      // 両方に書くと括弧の中が 2 つの確認事項で膨らみ、狭いパネルで折り返して
-      // 何本出ているか読めなくなる（`settings-pwa-spec.md` §5.5「通知の文の形」）。
-      return { text: '応答がありません（ホストが起動しているか確認）', tone: 'problem' }
+      // 両方に書くと確認事項が 2 つに膨らみ、狭いパネルで折り返して読みにくくなる。
+      return { text: '応答がない。ホストが起動しているか確かめてください', tone: 'problem' }
     case 'http-error':
-      return { text: `応答がエラーでした（HTTP ${status.status}）`, tone: 'problem' }
+      return { text: `応答がエラー: HTTP ${status.status}`, tone: 'problem' }
     case 'unreadable':
-      return { text: '応答を読めませんでした（別のサーバーが応答している可能性）', tone: 'problem' }
+      return { text: '応答を読めない。URLが地震計のホストを指しているか確かめてください', tone: 'problem' }
   }
 }
 

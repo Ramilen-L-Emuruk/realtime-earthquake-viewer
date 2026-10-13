@@ -353,8 +353,8 @@ export const CatalogTab = memo(function CatalogTab({
                 1 件も出ていない状態が「少し欠けている」と読める。 */}
             {error
               ?? (missingYears.length >= requestedYears
-                ? `${formatMissingYears(missingYears)} 年を取得できませんでした。この期間の地震は 1 件も出ていません。`
-                : `${formatMissingYears(missingYears)} 年を取得できませんでした。件数はそのぶん少なく出ています。`)}
+                ? `${formatMissingYears(missingYears)} 年を取得できず（この期間の地震は 1 件も出ていません）`
+                : `${formatMissingYears(missingYears)} 年を取得できず（件数はそのぶん少なく出ています）`)}
           </p>
           <button
             onClick={onRetry}
@@ -367,8 +367,8 @@ export const CatalogTab = memo(function CatalogTab({
 
       {completeness?.belowComplete && (
         <p className="text-xs text-yellow-400 px-1 mb-3">
-          {oldestYearOf(filter)} 年からの期間で取りこぼしが無いのは M {completeness.completeMin.toFixed(1)} 以上です。
-          それより小さい地震は古い年ほど記録に残っておらず、少なく見えます。
+          {oldestYearOf(filter)} 年まで遡ると、記録が揃うのは M {completeness.completeMin.toFixed(1)} 以上です。
+          それより小さい地震は少なく見えます。
         </p>
       )}
 

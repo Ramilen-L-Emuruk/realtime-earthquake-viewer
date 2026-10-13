@@ -1254,8 +1254,8 @@ export const EarthquakeCard = memo(function EarthquakeCard({
               onClick={(e) => { e.stopPropagation(); onToggleDistribution?.(eventKey) }}
               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); onToggleDistribution?.(eventKey) } }}
               title={distributionState === 'official'
-                ? '気象庁が地盤の揺れやすさまで考慮して推計した震度の分布'
-                : '観測点の震度をこのアプリが補間した目安。気象庁の推計とは精度が違う'}
+                ? '気象庁が地盤の揺れやすさまで考慮して推計した震度の分布です'
+                : '観測点の震度をこのアプリが補間した目安です。気象庁の推計とは精度が違います'}
               className={`w-full rounded-lg py-1 px-3 flex items-center justify-between gap-2 border transition-colors cursor-pointer hover:opacity-80 roomy:py-2 roomy:px-4 ${
                 distributionActive
                   ? 'bg-blue-900/40 border-blue-500 outline-solid outline-2 outline-offset-2 outline-blue-500'
@@ -1284,7 +1284,7 @@ export const EarthquakeCard = memo(function EarthquakeCard({
               aria-pressed={unreceivedActive}
               onClick={(e) => { e.stopPropagation(); onToggleUnreceived?.(eventKey) }}
               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); onToggleUnreceived?.(eventKey) } }}
-              title="気象庁が震度5弱以上と推定しているのに、震度が届いていない地点。押すと一覧と地図に出る"
+              title="気象庁が震度5弱以上と推定しているのに、震度が届いていない地点です。押すと一覧と地図に出します"
               className={`w-full rounded-lg py-1 px-3 flex items-center justify-between gap-2 border transition-colors cursor-pointer hover:opacity-80 roomy:py-2 roomy:px-4 ${
                 unreceivedActive
                   ? 'bg-gray-500/25 border-gray-400 outline-solid outline-2 outline-offset-2 outline-gray-400'

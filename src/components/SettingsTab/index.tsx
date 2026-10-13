@@ -158,7 +158,7 @@ function SettingsIoRow({ settings, onReplace }: {
       setNotice(isDmdss ? '書き出しました（APIキーは含まれていません）' : '書き出しました')
     } catch (e) {
       // 黙って飲み込むと、押しても何も起きない理由が利用者に分からない
-      setError(`書き出しに失敗しました（${e instanceof Error ? e.message : String(e)}）`)
+      setError(`書き出しに失敗しました: ${e instanceof Error ? e.message : String(e)}`)
     }
   }, [settings, variant])
 
@@ -176,7 +176,7 @@ function SettingsIoRow({ settings, onReplace }: {
       // 文面は原因を絞れないが、記録には残す。構文の誤り・読み取りの失敗・
       // 文字コードの異常が同じ文言になるため、これが無いと原因を追えない。
       log.warn('[settings] 設定ファイルを読めませんでした', err)
-      setError('このファイルは読み取れませんでした（設定ファイルではないようです）')
+      setError('設定ファイルとして読み取れませんでした')
       return
     }
     const result = parseSettingsFile(raw, settings)
@@ -238,7 +238,7 @@ function DiagnosticLogRow() {
   const [error, setError] = useState<string | null>(null)
   const refresh = useCallback(() => {
     void countRecords().then(setCount)
-    if (hasStorageError()) setError('この端末では記録を保存できません（プライベートモード・容量不足など）')
+    if (hasStorageError()) setError('この端末では記録を保存できません。プライベートモードでは保存できないことがあります')
   }, [])
   // 記録が増減したら読み直す。設定タブは常時マウントされたまま CSS で隠れるだけなので、
   // 一定間隔で問い合わせる作りにすると、開いていない間も IndexedDB を叩き続けることになる
@@ -272,7 +272,7 @@ function DiagnosticLogRow() {
       URL.revokeObjectURL(url)
     } catch (e) {
       // 失敗を黙って飲み込むと、押しても何も起きない理由が利用者に分からない
-      setError(`書き出しに失敗しました（${e instanceof Error ? e.message : String(e)}）`)
+      setError(`書き出しに失敗しました: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
       setBusy(false)
     }
@@ -345,7 +345,7 @@ function KyoshinImportRow({ historicalArchives }: { historicalArchives: Historic
         disabled={busy}
         className="px-3 py-1.5 rounded-sm text-xs bg-panel border border-border text-white disabled:opacity-40"
       >
-        {importing ? '取り込み中...' : 'ZIPを選択'}
+        {importing ? '取り込み中…' : 'ZIPを選択'}
       </button>
       {summaries.length > 0 && (
         <div className="flex flex-col gap-1.5 items-end">
@@ -357,7 +357,7 @@ function KyoshinImportRow({ historicalArchives }: { historicalArchives: Historic
                 disabled={busy}
                 className="px-2 py-1 rounded-sm text-xs bg-panel border border-border text-secondary disabled:opacity-40"
               >
-                {deletingArchiveId === s.archiveId ? '削除中...' : '削除'}
+                {deletingArchiveId === s.archiveId ? '削除中…' : '削除'}
               </button>
             </div>
           ))}
@@ -365,7 +365,7 @@ function KyoshinImportRow({ historicalArchives }: { historicalArchives: Historic
       )}
       {storageError && (
         <span className="text-xs text-red-400 text-right">
-          読み込み済みのデータをうまく読み出せていません（一覧に出ていない地震があるかもしれません）
+          読み込んだデータの一部を読み出せていません。一覧に出ていない地震があるかもしれません
         </span>
       )}
       {deleteError && <span className="text-xs text-red-400 text-right">{deleteError}</span>}
@@ -1083,7 +1083,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
     fetchSeismoStatus(debouncedSeismoUrl)
       .then(result => { if (!cancelled) setSeismoStatus(result) })
       // **投げさせない。** `fetchSeismoStatus` は理由を戻り値で返す契約だが、
-      // ここで漏れると設定タブが「確認中...」のまま固まる。
+      // ここで漏れると設定タブが「確認中…」のまま固まる。
       .catch((error: unknown) => {
         log.warn('[seismo] 接続確認が失敗した', error)
         if (!cancelled) setSeismoStatus({ kind: 'unreachable', detail: 'check-threw' })
@@ -1148,7 +1148,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
               )}
             </div>
           </Row>
-          <Row label="試験報を受信（検証用）" description="試験報・訓練報を受信します（VXSE42は疎通確認のみ・VXSE45は表示されます）">
+          <Row label="試験報を受信（検証用）" description="試験報・訓練報も受信します。緊急地震速報の配信テストは接続の確認だけに使い、画面には出しません">
             <Toggle
               checked={settings.dmdataTestDelivery}
               onChange={v => onUpdate('dmdataTestDelivery', v)}
@@ -1178,7 +1178,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
             ))}
           </select>
         </Row>
-        <Row label="地図アイコンの倍率" description="地図上の震度マーカー等の大きさを変更します（UI 倍率とは独立）">
+        <Row label="地図アイコンの倍率" description="地図上の震度マーカーなどの大きさを変更します。UI 倍率とは別に効きます">
           <select
             value={settings.mapIconScale}
             onChange={e => onUpdate('mapIconScale', Number(e.target.value))}
@@ -1191,7 +1191,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
         </Row>
         <Row
           label="震源の深さの強調"
-          description="地図を傾けたとき、震源をどれだけ深く見せるかの倍率です（水平方向は常に実際の縮尺）"
+          description="地図を傾けたとき、震源をどれだけ深く見せるかの倍率です。水平方向は実際の縮尺のままです"
         >
           <select
             value={settings.hypocenterDepthScale}
@@ -1218,7 +1218,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
           />
         </Row>
         {settings.showDayNight && (
-          <Row label="夜側の濃さ" description="夜の側をどれだけ暗くするかを調整します（暗くなるのは陸地と海底地形だけで、県境や震度は読めたまま残ります）">
+          <Row label="夜側の濃さ" description="夜の側をどれだけ暗くするかを調整します。暗くなるのは陸地と海底地形だけです">
             <div className="flex items-center gap-2">
               <span className="text-xs text-secondary w-8 text-right">
                 {Math.round(settings.dayNightOpacity * 100)}%
@@ -1248,7 +1248,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
           />
         </Row>
         {settings.showActiveFaults && (
-          <Row label="活断層線の濃さ" description="活断層線の不透明度を調整します（濃くするほど目立ちます）">
+          <Row label="活断層線の濃さ" description="活断層線の濃さを調整します">
             <div className="flex items-center gap-2">
               <span className="text-xs text-secondary w-8 text-right">
                 {Math.round(settings.activeFaultOpacity * 100)}%
@@ -1265,7 +1265,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
             </div>
           </Row>
         )}
-        <Row label="地震活動ヒートマップを表示" description="地震情報・リアルタイムタブの地図に直近1ヶ月の地震活動をヒートマップで表示します（初回表示時にAPIから取得）">
+        <Row label="地震活動ヒートマップを表示" description="地震情報・リアルタイムタブの地図に直近1ヶ月の地震活動をヒートマップで表示します">
           <Toggle
             checked={settings.showQuakeHeatmap}
             onChange={v => onUpdate('showQuakeHeatmap', v)}
@@ -1287,7 +1287,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
         />
         <Row
           label="到達予想キー"
-          description="お持ちの方のみ（配布は限定的です）。入力すると、地域ごとの発表値ではなくホーム地点そのものへの到達予想を表示します"
+          description="入力すると、地域ごとの発表値ではなく、ホーム地点そのものへの到達予想を表示します。キーは限られた方にだけ配布しています"
         >
           <ArrivalTokenField
             value={settings.arrivalToken}
@@ -1298,7 +1298,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
       </Section>
 
       {/* 前提条件は hint に置いて常時見せる。VOICEVOX の「要：VOICEVOXアプリ起動」と
-          同じ判断で、吹き出しに隠すと有効にしたとき「応答がありません」だけが見えて、
+          同じ判断で、吹き出しに隠すと有効にしたとき「応答がない」だけが見えて、
           何を直せばよいか分からなくなる（iOS 実機では通常の Safari タブから繋がらない。
           seismo-host/REQUIREMENTS.md §13）。
           **「PWA」と書かない。** 利用者向けの文言でこの語を使っているのはここだけで、
@@ -1336,7 +1336,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
                     : SEISMO_STATUS_TONE_CLASS[seismoStatusText.tone]
                 }`}
               >
-                {isSeismoCheckPending ? '確認中...' : seismoStatusText.text}
+                {isSeismoCheckPending ? '確認中…' : seismoStatusText.text}
               </span>
             </Row>
             {seismoStatus.kind === 'ok' && seismoStatus.stations.length > 0 && (
@@ -1423,7 +1423,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
       </Section>
 
       <Section title="動作設定">
-        <Row label="定期自動リロード" description="毎日午前5時に画面を再起動してメモリを解放します（地震・津波・緊急地震速報の発表中は延期）">
+        <Row label="定期自動リロード" description="毎日午前5時に画面を再起動してメモリを解放します。地震・津波・緊急地震速報の発表中は延期します">
           <Toggle
             checked={settings.periodicReloadHours > 0}
             onChange={v => onUpdate('periodicReloadHours', v ? 1 : 0)}
@@ -1442,7 +1442,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
           />
         </Row>
         {(settings.soundEnabled || settings.voicevoxEnabled) && (
-          <Row label="音量" description="通知音・読み上げ（下記 VOICEVOX を含む）共通の音量">
+          <Row label="音量" description="通知音と読み上げに共通の音量です">
             <div className="flex items-center gap-2">
               <span className="text-xs text-secondary w-8 text-right">
                 {Math.round(settings.soundVolume * 100)}%
@@ -1497,10 +1497,10 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
                 : voicevoxStatus === 'unavailable' || voicevoxStatus === 'invalid' ? 'text-red-400'
                 : 'text-secondary'
               }`}>
-                {isVoicevoxCheckPending || voicevoxStatus === 'checking' ? '確認中...'
+                {isVoicevoxCheckPending || voicevoxStatus === 'checking' ? '確認中…'
                   : voicevoxStatus === 'available' ? '起動中'
                   : voicevoxStatus === 'unavailable' ? '起動していません'
-                  : voicevoxStatus === 'invalid' ? 'URLが不正'
+                  : voicevoxStatus === 'invalid' ? 'URLが無効'
                   : '—'}
               </span>
             </Row>
@@ -1522,7 +1522,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
                 <Row label="テスト読み上げ" description="">
                   {/* 通信先はデバウンス後の URL。ここに並ぶ話者は「確認が済んだ URL」から取ったもので、
                       選べる話者と鳴らす相手が食い違わないよう揃える。生の値を使うと、URL を書き換えている
-                      最中（接続状態が「確認中...」の間）に押したとき、入力途中の未検証の宛先へ投げて
+                      最中（接続状態が「確認中…」の間）に押したとき、入力途中の未検証の宛先へ投げて
                       黙って無音に終わる。 */}
                   {/* 読ませる文は `voicevoxPreviewTexts` が実運用と同じ関数から組む。ここに
                       文字列を書くと、緊急地震速報の文型を変えたとき試聴だけ古い形で残る。 */}
@@ -1541,7 +1541,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
         {isDmdss && (
           <Row
             label="解説情報の音・読み上げ"
-            description="南海トラフ地震関連解説情報（平常時も毎月届く）の通知音と読み上げを行います"
+            description="南海トラフ地震関連解説情報の通知音と読み上げを行います。この情報は平常時も毎月届きます"
           >
             <Toggle
               checked={settings.nankaiCommentaryAlerts}
@@ -1586,13 +1586,13 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
               </div>
             </Row>
             {/* ── 種別トグル: テスト系と同じ 揺れ検知 → EEW → 津波 の順 ── */}
-            <Row label="揺れ検知通知" description="強震モニタで揺れを検知したときに通知（推定値・頻度高め）">
+            <Row label="揺れ検知通知" description="強震モニタで揺れを検知したときに通知します。推定値のため、通知は多めになります">
               <Toggle checked={settings.notifyDetection} onChange={v => onUpdate('notifyDetection', v)} />
             </Row>
-            <Row label="緊急地震速報の通知" description="緊急地震速報の発報・昇格時に通知（重複送信しない）">
+            <Row label="緊急地震速報の通知" description="緊急地震速報が出たときと、警報・特別警報へ上がったときに通知します">
               <Toggle checked={settings.notifyEEW} onChange={v => onUpdate('notifyEEW', v)} />
             </Row>
-            <Row label="津波通知" description="津波注意報以上が発表されたときに通知">
+            <Row label="津波通知" description="津波注意報以上が発表されたときに通知します">
               <Toggle checked={settings.notifyTsunami} onChange={v => onUpdate('notifyTsunami', v)} />
             </Row>
           </>
@@ -1607,7 +1607,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
           通知設定・テスト機能と同じカテゴリ順（地震情報 → 津波情報 → 緊急地震速報）。 */}
       {settings.voicevoxEnabled && (
         <Section title="読み上げ設定">
-          <Row label="読み上げ震度階数" description="最大震度に加えて何階級下まで地域名を読み上げるか（0 = 最大震度のみ）">
+          <Row label="読み上げ震度階数" description="最大震度から何階級下まで、地域名を読み上げるかです">
             <select
               value={settings.ttsIntensityLevels}
               onChange={e => onUpdate('ttsIntensityLevels', Number(e.target.value))}
@@ -1622,7 +1622,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
               ))}
             </select>
           </Row>
-          <Row label="必ず読み上げる震度" description="階数の設定を超えても、この震度以上の階級は地域名を読み上げます（長周期地震動には適用されません）">
+          <Row label="必ず読み上げる震度" description="階数の設定を超えても、この震度以上の階級は地域名を読み上げます。長周期地震動には効きません">
             <div className="flex items-center gap-2">
               <IntensityBadge scale={settings.ttsAlwaysReadScale} />
               <ScaleSelect
@@ -1632,7 +1632,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
               />
             </div>
           </Row>
-          <Row label="読み上げ最大地域数" description="1階級あたりに読み上げる地域名の上限（0 = 無制限）">
+          <Row label="読み上げ最大地域数" description="1階級あたりに読み上げる地域名の上限です">
             <select
               value={settings.ttsMaxRegions}
               onChange={e => onUpdate('ttsMaxRegions', Number(e.target.value))}
@@ -1720,7 +1720,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
 
       <Section title="通知音テスト">
         <div className="px-4 py-2 bg-blue-900/30 border-b border-blue-700/40">
-          <p className="text-blue-300 text-xs">クリックで各通知音を試聴できます（設定の通知音 ON/OFF に関わらず鳴ります）</p>
+          <p className="text-blue-300 text-xs">押すと各通知音を試聴できます。通知音を切っていても鳴ります</p>
         </div>
         {/* ── 揺れ検知（候補 → 初回 → 更新の順） ── */}
         <Row label="揺れ検知（候補）" description="マリンバ単発 F#5（確定前の予兆通知・控えめ）">
@@ -1793,10 +1793,10 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
         <Row label="大津波警報" description="sawtooth 220→620Hz 上昇スイープ × 5回（一気に駆け上がり、一瞬で戻る）">
           <TestButton color="red" onClick={() => { unlockAudio(); playAlertSound('tsunamiMajor') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="津波情報更新（グレード不変）" description="純音2音 F#4→C#5（穏やかな通知）">
+        <Row label="津波情報更新（等級はそのまま）" description="純音2音 F#4→C#5（穏やかな通知）">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('tsunamiUpdate') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="津波解除・取消・期限切れ" description="純音 G4→C4 の終止形（3 つの理由を単一音で伝える）">
+        <Row label="津波解除・取消・失効" description="純音 G4→C4 の終止形（3 つの理由を単一音で伝える）">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('tsunamiCancel') }}>▶ 試聴</TestButton>
         </Row>
         {/* ── 臨時情報・関連解説情報・後発地震 ── */}
@@ -1992,7 +1992,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
             <Row
               key={s.id}
               label={s.label}
-              description={failed ? `${s.description}（取得に失敗しました。再度押すとリトライします）` : s.description}
+              description={failed ? `${s.description} 取得に失敗しました。もう一度押すと取り直します` : s.description}
             >
               <TestButton
                 color={failed ? 'red' : SCENARIO_CATEGORY_COLOR[s.category]}
@@ -2052,7 +2052,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
               disabled={!kyoshinInputDateTime || replayIsFetching || historicalArchivesLoading}
               className="text-xs bg-blue-700 hover:bg-blue-600 disabled:opacity-40 text-white px-3 py-1.5 rounded-sm transition-colors"
             >
-              {replayIsFetching ? '取得中...' : historicalArchivesLoading ? '準備中...' : '確定'}
+              {replayIsFetching ? '取得中…' : historicalArchivesLoading ? '準備中…' : '確定'}
             </button>
           </div>
         </Row>
@@ -2203,7 +2203,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
             気象庁 予報区等 GIS データ（境界・海岸線） / 気象庁 震源カタログ「地震月報」「震源リスト」 / GEBCO・NOAA NCEI（海底地形） / 産総研 活断層データベース / PB2002 (Bird, 2003)（プレート境界）
           </span>
         </CreditRow>
-        <Row label="サーバー時刻オフセット" description="Yahoo 強震モニタ経由でサーバー時刻に較正した際の壁時計との差分（診断用）。「未較正」は Yahoo 到達不能などで較正が動いていないことを示す">
+        <Row label="サーバー時刻オフセット" description="端末の時計と、サーバーから得た時刻の差です。診断用です。「未較正」は、まだサーバーの時刻を得られていない状態です">
           <ServerClockOffsetDisplay />
         </Row>
       </Section>

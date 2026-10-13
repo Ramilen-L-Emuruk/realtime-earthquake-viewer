@@ -159,7 +159,7 @@ describe('履歴の一部が取れなかったときの帯', () => {
       historyLoss: addTelegramLoss(createEmptyTelegramLoss(), skips(1), ['https://x/a']),
     })
 
-    expect(screen.getByText('データの取得に失敗しました')).toBeTruthy()
+    expect(screen.getByText('データの取得に失敗')).toBeTruthy()
     expect(screen.queryByText(/取り込めず（再読み込み/)).toBeNull()
   })
 })

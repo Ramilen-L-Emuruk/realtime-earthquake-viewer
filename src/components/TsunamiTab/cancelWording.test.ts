@@ -27,7 +27,9 @@ import type { JMATsunami } from '../../types/earthquake'
 const SHARED_TERM: Record<NonNullable<JMATsunami['cancelReason']>, string> = {
   lifted: '解除',
   retracted: '取り消され',
-  expired: '失効時刻',
+  // 2026-10-13 に「失効時刻を過ぎました」から「失効しました」へ縮めた（ユーザー承認）。
+  // 述語ごと押さえて、片方だけ旧い言い回しへ戻るのを落とす。
+  expired: '失効しました',
 }
 
 describe('津波の終わり方は画面と声で同じ語を使う', () => {

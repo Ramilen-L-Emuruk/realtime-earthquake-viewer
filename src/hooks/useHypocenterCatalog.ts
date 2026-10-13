@@ -95,7 +95,7 @@ export function useHypocenterCatalog(
         // 痕跡が一つも残らない。画面へ出すのは打ち切られていないときだけ。
         log.error('[useHypocenterCatalog] 索引を取得できませんでした', err)
         if (cancelled) return
-        setError('震源カタログを取得できませんでした')
+        setError('震源カタログを取得できず')
         setLoading(false)
       })
     return () => {

@@ -825,7 +825,7 @@ export async function fetchSeismoStatus(
   // {@link STATIONS_RETRY_MIN_MS}）だけ。
   //
   // **5 秒に 1 回の側でも間引かない。** その頻度で出るのは台帳が引けない間だけで、
-  // そのとき機能は止まっている（設定タブには「応答がありません」が出る）——
+  // そのとき機能は止まっている（設定タブには「応答がない」が出る）——
   // **止まっていることと、止まり続けていることを区別できる記録が要る。**
   // 間引くと「回復したのか、間引かれているのか」が読めなくなる。
   const fail = <T extends SeismoHostCheck>(result: T, why: string): T => {

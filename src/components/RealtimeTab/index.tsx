@@ -927,7 +927,7 @@ function SWaveArrivalCard({ arrival }: { arrival: SWaveArrival }) {
   const borderColor = arrival.arrived ? '#ef4444' : '#f97316'
   const scopeLabel = arrival.source === 'telegram' && arrival.areaName
     ? arrival.areaName
-    : 'ご自宅付近'
+    : 'ホーム地点'
   // 余白のみ圧縮する。カウントダウンの数字は緊急度が高く、一目で読めることが要るため縮めない。
   return (
     <div className="bg-card rounded-lg p-2 border-2 roomy:p-3" style={{ borderColor }}>
@@ -1051,7 +1051,7 @@ function KyoshinGateDetail({ events }: { events: DetectionEvent[] }) {
               こちらは判定が使う「床を明確に超えて継続中 or 直近に立ち上がった」点を数える。
               同じ画面に 2 つの点数が並ぶので、違うことは言っておく */}
           <p className="text-xs text-secondary">
-            ※判定は 1 秒ごとに行います。「揺れ継続中の点」は判定に使う数え方で、上の観測点数とは基準が異なります
+            ※「揺れ継続中の点」は、上の観測点数と数え方が異なります
           </p>
         </div>
       )}
@@ -1289,11 +1289,13 @@ export const RealtimeTab = memo(function RealtimeTab({ eews, kyoshinV2Detections
       {/* 情報セクション（説明・凡例・出典）*/}
       <div className="flex flex-col gap-3">
         <div>
-          <h2 className="text-white font-bold text-sm mb-1">リアルタイム震度モニタ</h2>
-          <p className="text-secondary text-xs leading-relaxed">
-            各観測点のリアルタイム震度を地図に表示します。1秒ごとに更新されます。
-            緊急地震速報の発報時は予報円（青=P波 / 赤=S波）も表示します。
-          </p>
+          {/* 固定の説明なので常時は出さず、見出しのホバーで出す（2026-10-13 ユーザー承認）。 */}
+          <h2 className="font-bold mb-1">
+            <DescriptionTip
+              label="リアルタイム震度モニタ"
+              description="各観測点のリアルタイム震度を地図に表示します。1秒ごとに更新されます。緊急地震速報の発報時は予報円も表示します。青が P 波、赤が S 波です。"
+            />
+          </h2>
         </div>
 
         {/* 震度スケールの凡例は地図側（`MapLegend`）へ一本化した。同じものを画面に 2 つ置かない。 */}
