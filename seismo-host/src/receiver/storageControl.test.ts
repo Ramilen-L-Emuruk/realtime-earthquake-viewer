@@ -195,10 +195,11 @@ describe('StorageControl.setPending', () => {
   })
 
   it('安全弁: 文字列で違って見えても、実体が同じ・入れ子なら受け付けない（短い名前・ジャンクション）', async () => {
-    const alias = 'Z:\\alias-of-current'
+    // 別名は実行している OS で絶対パスに見えるものにする（`Z:\…` は Linux の CI で相対パスとして先に弾かれる）
+    const alias = join(tmpdir(), 'alias-of-current')
     const canonical = async (p: string) => (p === alias ? DEFAULT_ROOT : p)
     expect(await control({ canonical }).c.setPending(alias)).toMatchObject({ ok: false, problem: 'same' })
-    const inner = 'Z:\\alias-inside'
+    const inner = join(tmpdir(), 'alias-inside')
     const canonicalInner = async (p: string) => (p === inner ? join(DEFAULT_ROOT, 'sub') : p)
     expect(await control({ canonical: canonicalInner }).c.setPending(inner)).toMatchObject({ ok: false, problem: 'nested' })
     // 対照: 実体も別なら受け付ける

@@ -99,6 +99,15 @@ describe('storageRootProblem', () => {
   it('今と同じ場所を弾く（Windows では大文字・小文字と末尾の区切りを無視する）', () => {
     expect(storageRootProblem('C:\\Data\\Seismo\\', 'c:\\data\\seismo', 'win32')).toBe('same')
   })
+  it('対照: Windows 以外では大文字・小文字を区別し、末尾の区切りだけを無視する', () => {
+    expect(storageRootProblem('/data/seismo/', '/data/seismo', 'linux')).toBe('same')
+    expect(storageRootProblem('/Data/Seismo', '/data/seismo', 'linux')).toBeNull()
+  })
+  it('安全弁: 渡した platform の作法で比べる（実行している OS の作法を混ぜない）', () => {
+    // Windows のパスは Linux の作法では絶対パスでない。CI（Linux）と手元（Windows）で結果を揃える
+    expect(storageRootProblem('C:\\Data\\Seismo\\sub', 'c:\\data\\seismo', 'win32')).toBe('nested')
+    expect(storageRootProblem('C:\\Data\\Seismo', '/data/seismo', 'linux')).toBe('not-absolute')
+  })
   it('入れ子を両方向とも弾く', () => {
     expect(storageRootProblem(join(DEFAULT_ROOT, 'sub'), DEFAULT_ROOT)).toBe('nested')
     expect(storageRootProblem(tmpdir(), DEFAULT_ROOT)).toBe('nested')
