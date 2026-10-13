@@ -35,9 +35,16 @@ export interface HostSettings {
   readonly dataRoot: string | null
   /** 次の起動で使う保存先。`null` は変更なし。 */
   readonly pendingDataRoot: string | null
+  /**
+   * 保存先を選んだ時点の保存先（絶対パス）。次の起動では**ここから複製する**（2026-10-13 ユーザー承認）。
+   * 既定の保存先はプログラムの置き場所から決まるので、変更を待たせたままプログラムのフォルダを移すと、
+   * 起動した時の「今の保存先」は移した先の空のフォルダになる。選んだ時の場所を覚えておけば、元のデータの
+   * ある場所から複製できる。v5.49.0 までの設定には無い（`null` なら起動した時の保存先から複製する）。
+   */
+  readonly pendingFrom: string | null
 }
 
-export const EMPTY_HOST_SETTINGS: HostSettings = { dataRoot: null, pendingDataRoot: null }
+export const EMPTY_HOST_SETTINGS: HostSettings = { dataRoot: null, pendingDataRoot: null, pendingFrom: null }
 
 export interface StorageDirs {
   readonly raw: string
@@ -52,7 +59,10 @@ export interface ResolvedStorage {
   /** 保存先の親フォルダ。環境変数で決めたときは `null`（4 つが同じ親にあるとは限らない）。 */
   readonly root: string | null
   readonly dirs: StorageDirs
-  /** この起動で保存先が変わった。前の親フォルダ（複製元）。変わっていなければ `null`。 */
+  /**
+   * この起動で保存先が変わった。複製元の親フォルダ（保存先を選んだ時の場所。覚えていなければ起動した時の
+   * 保存先）。変わっていなければ `null`。
+   */
   readonly movedFrom: string | null
   /** 書き戻す設定。**昇格させたときだけ** `null` 以外。 */
   readonly nextSettings: HostSettings | null
@@ -111,8 +121,8 @@ export function resolveStorage(input: {
       source: 'settings',
       root,
       dirs: dirsUnder(root),
-      movedFrom: current,
-      nextSettings: { dataRoot: root, pendingDataRoot: null },
+      movedFrom: settings.pendingFrom ?? current,
+      nextSettings: { dataRoot: root, pendingDataRoot: null, pendingFrom: null },
       pendingIgnored: null,
     }
   }
@@ -123,7 +133,7 @@ export function resolveStorage(input: {
       root: current,
       dirs: dirsUnder(current),
       movedFrom: null,
-      nextSettings: { dataRoot: settings.dataRoot, pendingDataRoot: null },
+      nextSettings: { dataRoot: settings.dataRoot, pendingDataRoot: null, pendingFrom: null },
       pendingIgnored: null,
     }
   }
@@ -209,8 +219,9 @@ export function parseHostSettings(text: string): HostSettings | null {
     v === undefined || v === null ? null : typeof v === 'string' && isAbsolute(v) ? v : undefined
   const dataRoot = pathOrNull(o.dataRoot)
   const pendingDataRoot = pathOrNull(o.pendingDataRoot)
-  if (dataRoot === undefined || pendingDataRoot === undefined) return null
-  return { dataRoot, pendingDataRoot }
+  const pendingFrom = pathOrNull(o.pendingFrom)
+  if (dataRoot === undefined || pendingDataRoot === undefined || pendingFrom === undefined) return null
+  return { dataRoot, pendingDataRoot, pendingFrom }
 }
 
 /**

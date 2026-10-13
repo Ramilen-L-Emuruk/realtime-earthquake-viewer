@@ -45,6 +45,8 @@ export async function openStorageAtStartup(input: {
   readonly write: (path: string, settings: HostSettings) => void
   /** 別名を解いた実体のパス（`storageMigration.ts` の `canonicalPath`）。 */
   readonly canonical: (path: string) => Promise<string>
+  /** 複製元のフォルダがあるか。 */
+  readonly exists: (path: string) => Promise<boolean>
 }): Promise<StorageStartup> {
   const { env, settings, defaultRoot } = input
   const resolved = resolveStorage({ env, settings, defaultRoot })
@@ -63,6 +65,16 @@ export async function openStorageAtStartup(input: {
           settings,
           problem: `移す先（${resolved.root}）が今の保存先（${resolved.movedFrom}）と同じ場所か入れ子なので、移さなかった`,
         }
+      }
+    } catch (error) {
+      return { resolved: stay(), settings, problem: messageOf(error) }
+    }
+    // **複製元が無ければ移さない。** 選んだ時の場所（`pendingFrom`）のドライブが外れている・フォルダを
+    // 動かした間に移すと、複製が 1 本も運べないまま新しい保存先へ書き始める。待っている変更は残すので、
+    // 戻せば次の起動で移る。
+    try {
+      if (!(await input.exists(resolved.movedFrom))) {
+        return { resolved: stay(), settings, problem: `前の保存先（${resolved.movedFrom}）が見つからないので、移さなかった` }
       }
     } catch (error) {
       return { resolved: stay(), settings, problem: messageOf(error) }
@@ -155,9 +167,13 @@ export type SetPendingResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly problem: StorageRootProblem; readonly detail?: string }
 
-export type PurgeResult =
-  | { readonly ok: true; readonly files: number; readonly bytes: number; readonly kept: number }
-  | { readonly ok: false; readonly reason: 'not-copied' | 'busy' | 'failed'; readonly detail?: string }
+/** 受け付けたら `ok: true`（消すのは裏で。結果と進み具合は `get()` の `migration` に出る）。 */
+export type PurgeResult = { readonly ok: true } | { readonly ok: false; readonly reason: 'not-copied' | 'busy' }
+
+/** `not-missing` は、前の保存先が見えている・複製中でない（やめる理由が無い）。 */
+export type AbandonResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: 'not-missing' | 'failed'; readonly detail?: string }
 
 export interface StorageOps {
   get(): StorageReport
@@ -165,6 +181,8 @@ export interface StorageOps {
   setPending(root: string | null): Promise<SetPendingResult>
   /** 古い場所を消す（承認されたとき）。 */
   purgeOld(): Promise<PurgeResult>
+  /** 複製をやめる（前の保存先が見つからない間に承認されたとき）。 */
+  abandonMigration(): Promise<AbandonResult>
 }
 
 export interface StorageControlOptions {
@@ -214,6 +232,7 @@ export class StorageControl implements StorageOps {
   private readonly opts: StorageControlOptions
   private settings: HostSettings
   private purging = false
+  private purgeTask: Promise<void> = Promise.resolve()
 
   constructor(options: StorageControlOptions) {
     this.opts = options
@@ -239,7 +258,7 @@ export class StorageControl implements StorageOps {
     if (this.opts.resolved.source === 'env') return { ok: false, problem: 'locked' }
     if (root === null) {
       try {
-        this.write({ ...this.settings, pendingDataRoot: null })
+        this.write({ ...this.settings, pendingDataRoot: null, pendingFrom: null })
       } catch (error) {
         return { ok: false, problem: 'not-writable', detail: `設定ファイルを書けず: ${messageOf(error)}` }
       }
@@ -276,29 +295,53 @@ export class StorageControl implements StorageOps {
       if (free < needed) return { ok: false, problem: 'not-enough-space', detail: `${needed}/${free}` }
     }
     try {
-      this.write({ ...this.settings, pendingDataRoot: root })
+      // **いまの保存先も一緒に書く**（`HostSettings.pendingFrom`）。次の起動はここから複製する。
+      this.write({ ...this.settings, pendingDataRoot: root, pendingFrom: this.opts.currentRoot })
     } catch (error) {
       return { ok: false, problem: 'not-writable', detail: `設定ファイルを書けず: ${messageOf(error)}` }
     }
     return { ok: true }
   }
 
+  /**
+   * 前の保存先を消し始める。**消し終わるのを待たずに返す** —— 消す前に複製先を 1 本ずつ読み直すので、
+   * 量によっては何時間もかかり、HTTP の応答の中では終わらない（速さの上限は `storageMigration.ts`）。
+   * 進み具合と結果は `get()` の `migration`（`purgeProgress`・`purged`）で見る。
+   */
   async purgeOld(): Promise<PurgeResult> {
     if (this.purging) return { ok: false, reason: 'busy' }
     // 途中で止まった削除（`purging`）は続きから消し直せる（`StorageMigration.purge`）。
     if (this.opts.migration.snapshot()?.purgeable == null) return { ok: false, reason: 'not-copied' }
     this.purging = true
+    this.purgeTask = this.opts.migration
+      .purge()
+      .then(
+        // 消した分を使用量へすぐ映す（次の定期の数え直しを待たない）。投げない作り（`count`）。
+        () => void this.opts.usage.count(),
+        // 裏で投げても受信ごと落とさない。理由はログへ残し、次の承認は受け付ける。
+        (error: unknown) => this.opts.log(`[storage] 前の保存先を消せず: ${messageOf(error)}`),
+      )
+      .finally(() => {
+        this.purging = false
+      })
+      // 最後の受け皿。上の受け止めそのものが投げても、未処理の拒否としてプロセスを落とさない。
+      .catch((error: unknown) => console.error(`[storage] 前の保存先の削除の後始末で失敗: ${messageOf(error)}`))
+    return { ok: true }
+  }
+
+  /** 複製をやめる（前の保存先が見つからない間だけ。`StorageMigration.abandon`）。 */
+  async abandonMigration(): Promise<AbandonResult> {
     try {
-      const r = await this.opts.migration.purge()
-      // 消した分を使用量へすぐ映す（次の定期の数え直しを待たない）。投げない作り（`count`）。
-      void this.opts.usage.count()
-      return { ok: true, ...r }
+      return (await this.opts.migration.abandon()) ? { ok: true } : { ok: false, reason: 'not-missing' }
     } catch (error) {
-      this.opts.log(`[storage] 前の保存先を消せず: ${messageOf(error)}`)
+      this.opts.log(`[storage] 複製をやめられず: ${messageOf(error)}`)
       return { ok: false, reason: 'failed', detail: messageOf(error) }
-    } finally {
-      this.purging = false
     }
+  }
+
+  /** 裏の削除が終わるまで待つ（テストのため。消していなければすぐ返る）。 */
+  async purgeSettled(): Promise<void> {
+    await this.purgeTask
   }
 
   private write(next: HostSettings): void {

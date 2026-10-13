@@ -8,6 +8,7 @@ import { apiFetch, ApiError, describeAdminAuthFailure } from './api'
 import { confirmDialog } from './confirmDialog'
 import { escapeHtml, qs } from './dom'
 import {
+  abandonConfirmBody,
   KIND_LABELS,
   KIND_ORDER,
   daysLeftText,
@@ -109,9 +110,19 @@ export function migrationHtml(m: MigrationView): string {
     if (m.blockedBySpace !== null) {
       lines.push(`<p class="error">${spaceShortText(m.blockedBySpace.neededBytes, m.blockedBySpace.freeBytes)}</p>`)
     }
+    // 前の保存先が見つからない間だけ、複製をやめられる（2026-10-13 ユーザー承認）。理由は警告の欄に出る。
+    if (m.sourceMissing === true) {
+      lines.push('<div class="row"><button type="button" class="abandon-migration danger" style="flex: 0 0 auto">複製をやめる</button></div>')
+    }
   } else if (m.state === 'purging' && m.purgeable === null) {
-    // いま消している最中（途中で止まった削除は `purgeable` を持ち、承認し直せる）。
-    lines.push('<div class="row"><span class="nowrap">削除中</span></div>')
+    // いま消している最中（途中で止まった削除は `purgeable` を持ち、承認し直せる）。進み具合は
+    // 「済んだ件数 / この回に試す件数」（2026-10-13 ユーザー承認）。
+    const p = m.purgeProgress ?? null
+    lines.push(
+      p === null
+        ? '<div class="row"><span class="nowrap">削除中</span></div>'
+        : `<div class="row"><span class="nowrap">削除中</span><span>${formatCount(p.doneFiles)} / ${formatCount(p.totalFiles)} 件</span></div>`,
+    )
   } else {
     lines.push(
       `<div class="row"><span class="nowrap">複製済み</span><span>${formatCount(m.doneFiles)} 件・${formatBytes(m.doneBytes)}</span></div>`,
@@ -261,6 +272,30 @@ export async function initStorageView(container: HTMLElement, ctx: TabContext): 
       if (!(target instanceof HTMLElement)) return
       if (target.classList.contains('storage-cancel')) {
         void setPending(null)
+        return
+      }
+      if (target.classList.contains('abandon-migration')) {
+        const m = last?.migration
+        if (m === null || m === undefined || m.sourceMissing !== true) return
+        void (async () => {
+          const ok = await confirmDialog(document, {
+            title: '前の保存先からの複製をやめますか？',
+            body: abandonConfirmBody(m.from),
+            confirmLabel: 'やめる',
+          })
+          if (!ok || signal.aborted) return
+          ;(target as HTMLButtonElement).disabled = true
+          purgeErrorEl.textContent = ''
+          try {
+            await apiFetch('/api/storage/abandon-migration', { method: 'POST', signal })
+          } catch (error) {
+            // 断られた（前の保存先が見えるようになった）ときは、取り直した画面にボタンが出ないことで分かる。
+            if (!signal.aborted && !(error instanceof ApiError && error.status === 409)) {
+              purgeErrorEl.textContent = describeFailure(error)
+            }
+          }
+          if (!signal.aborted) await reload()
+        })()
         return
       }
       if (target.classList.contains('purge-old')) {
