@@ -230,7 +230,7 @@ function StationWave({
   return (
     <div className="w-full bg-black/70 px-2 py-1">
       <div className="flex items-center gap-2 text-[10px] roomy:text-xs leading-none mb-1">
-        <span className="text-white truncate max-w-[8rem] roomy:max-w-[14rem]">{station.displayName}</span>
+        <span className="text-white truncate max-w-32 roomy:max-w-56">{station.displayName}</span>
         <WaveAxisToggles />
         {/* **途絶はいちばん右へ寄せず、数え上げと同じ列に並べる。** 起きていることの
             種類が違うだけで、どちらも「この絵をそのまま信じてよいか」の手掛かり。 */}

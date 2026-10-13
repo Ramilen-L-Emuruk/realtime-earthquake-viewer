@@ -43,7 +43,7 @@ const COUNT_DISMISSED_KEY = 'earthquake-count-dismissed'
 
 function NankaiIcon() {
   return (
-    <svg className="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <svg className="w-5 h-5 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
         d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
     </svg>
@@ -52,7 +52,7 @@ function NankaiIcon() {
 
 function CommentaryIcon() {
   return (
-    <svg className="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <svg className="w-5 h-5 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
         d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
     </svg>
@@ -71,7 +71,7 @@ function CloseIcon() {
 // 他の 3 枚が使う警告・文書・情報のいずれとも重ならない形にする。
 function NoticeIcon() {
   return (
-    <svg className="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <svg className="w-5 h-5 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
         d="M11 5.882V19.24a1.76 1.76 0 01-3.417.592l-2.147-6.15M18 13a3 3 0 100-6M5.436 13.683A4.001 4.001 0 017 6h1.832c4.1 0 7.625-1.234 9.168-3v14c-1.543-1.766-5.067-3-9.168-3H7a3.988 3.988 0 01-1.564-.317z" />
     </svg>
@@ -81,7 +81,7 @@ function NoticeIcon() {
 // 地震回数の印。棒グラフ（数を数えている情報であることを形で示す）。
 function CountIcon() {
   return (
-    <svg className="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <svg className="w-5 h-5 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
         d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
     </svg>
@@ -90,7 +90,7 @@ function CountIcon() {
 
 function KohatsuIcon() {
   return (
-    <svg className="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <svg className="w-5 h-5 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
         d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
     </svg>
@@ -121,7 +121,7 @@ function formatExpire(isoTime: string): string {
 // side: … 左右分割時だけ地図が画面全高を占めてバナーが画面下端に接する。縦積み時は地図の下に
 //   つまみ・パネル・ナビが続くので下端には届かず、余白を入れると地図の中に不要な隙間ができる
 //   （env() は要素の位置に関わらず値を返すため条件が要る）。
-const SAFE_BOTTOM = 'side:last:[padding-bottom:env(safe-area-inset-bottom,0px)]'
+const SAFE_BOTTOM = 'side:last:pb-[env(safe-area-inset-bottom,0px)]'
 
 export function SpecialInfoBanner({
   nankai, nankaiCommentary, kohatsu, quakeNotice, earthquakeCount, speakingTelegramTextSubject,
@@ -143,7 +143,7 @@ export function SpecialInfoBanner({
     // 南海トラフ臨時情報が記録も印も残さずに消える（はみ出していた頃より気づきにくい）。
     // 下限は値で書く —— 何も書かない（`auto`）と縦並びの子は中身の高さで止まり、縮まない。
     // 帯が 1 枚も無ければこのコンポーネント自体が何も描かないので、下限も場所を取らない。
-    <div className="w-full min-h-[2.5rem] flex flex-col pointer-events-none">
+    <div className="w-full min-h-10 flex flex-col pointer-events-none">
       {/* max-h で高さが制約されるためこの要素自身がスクロール領域になる。overflow-y だけを auto に
           すると overflow-x も auto に格上げされ横スクロールしてしまうため、明示的に塞ぐ。
           **上限は 2 つ掛かる。** 画面の 40%（`max-h-[40dvh]`。地図が高くても帯が地図を覆いすぎ
@@ -227,7 +227,7 @@ function EarthquakeInfoDetail({ info, footer }: {
 function ChevronIcon({ open }: { open: boolean }) {
   return (
     <svg
-      className={`w-4 h-4 flex-shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
+      className={`w-4 h-4 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
       fill="none" viewBox="0 0 24 24" stroke="currentColor"
     >
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
@@ -250,7 +250,7 @@ function OperationStatusBadge({ status }: { status?: TelegramOperationStatus }) 
   if (!status) return null
   return (
     <span
-      className="text-xs font-bold px-1.5 py-0.5 rounded flex-shrink-0"
+      className="text-xs font-bold px-1.5 py-0.5 rounded-sm shrink-0"
       style={{ backgroundColor: '#1f2937', color: '#fcd34d', border: '1px solid #d97706' }}
     >
       {status}報
@@ -271,7 +271,7 @@ function NankaiBanner({ nankai, speaking }: { nankai: JMANankai; speaking: boole
       >
         <NankaiIcon />
         <div className="min-w-0 flex-1 flex items-center gap-2 flex-wrap">
-          <span className={`text-xs font-bold text-white px-1.5 py-0.5 rounded ${badge}`}>
+          <span className={`text-xs font-bold text-white px-1.5 py-0.5 rounded-sm ${badge}`}>
             {nankai.kindName}
           </span>
           <OperationStatusBadge status={nankai.operationStatus} />
@@ -371,7 +371,7 @@ function CommentaryBanner({ commentary, speaking }: { commentary: JMANankaiComme
         >
           <CommentaryIcon />
           <div className="min-w-0 flex-1 flex items-center gap-2 flex-wrap">
-            <span className="text-xs font-bold text-white px-1.5 py-0.5 rounded bg-teal-500 flex-shrink-0">
+            <span className="text-xs font-bold text-white px-1.5 py-0.5 rounded-sm bg-teal-500 shrink-0">
               {commentary.serialName}
             </span>
             <OperationStatusBadge status={commentary.operationStatus} />
@@ -380,7 +380,7 @@ function CommentaryBanner({ commentary, speaking }: { commentary: JMANankaiComme
           <ChevronIcon open={open} />
         </button>
         <button
-          className="flex-shrink-0 p-1 text-white/70 hover:text-white"
+          className="shrink-0 p-1 text-white/70 hover:text-white"
           onClick={dismiss}
           aria-label="解説情報を閉じる"
         >
@@ -445,7 +445,7 @@ function NoticeBanner({ notice }: { notice: JMAQuakeNotice }) {
         >
           <NoticeIcon />
           <div className="min-w-0 flex-1 flex items-center gap-2 flex-wrap">
-            <span className="text-xs font-bold text-white px-1.5 py-0.5 rounded bg-slate-500 flex-shrink-0">
+            <span className="text-xs font-bold text-white px-1.5 py-0.5 rounded-sm bg-slate-500 shrink-0">
               お知らせ
             </span>
             <OperationStatusBadge status={notice.operationStatus} />
@@ -454,7 +454,7 @@ function NoticeBanner({ notice }: { notice: JMAQuakeNotice }) {
           <ChevronIcon open={open} />
         </button>
         <button
-          className="flex-shrink-0 p-1 text-white/70 hover:text-white"
+          className="shrink-0 p-1 text-white/70 hover:text-white"
           onClick={dismiss}
           aria-label="お知らせを閉じる"
         >
@@ -519,7 +519,7 @@ function EarthquakeCountBanner({ count, speaking }: { count: JMAEarthquakeCount;
         >
           <CountIcon />
           <div className="min-w-0 flex-1 flex items-center gap-2 flex-wrap">
-            <span className="text-xs font-bold text-white px-1.5 py-0.5 rounded bg-cyan-600 flex-shrink-0">
+            <span className="text-xs font-bold text-white px-1.5 py-0.5 rounded-sm bg-cyan-600 shrink-0">
               地震回数
             </span>
             <OperationStatusBadge status={count.operationStatus} />
@@ -532,7 +532,7 @@ function EarthquakeCountBanner({ count, speaking }: { count: JMAEarthquakeCount;
           <ChevronIcon open={open} />
         </button>
         <button
-          className="flex-shrink-0 p-1 text-white/70 hover:text-white"
+          className="shrink-0 p-1 text-white/70 hover:text-white"
           onClick={dismiss}
           aria-label="地震回数を閉じる"
         >

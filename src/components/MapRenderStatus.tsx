@@ -21,7 +21,7 @@ export function MapRenderStatus() {
   if (health.broken.length === 0 && health.uninteractive.length === 0) return null
 
   return (
-    <div className="bg-black/80 rounded text-xs px-2 py-0.5 roomy:text-lg roomy:px-2.5 roomy:py-1 text-amber-300">
+    <div className="bg-black/80 rounded-sm text-xs px-2 py-0.5 roomy:text-lg roomy:px-2.5 roomy:py-1 text-amber-300">
       {/* 文の形（言い切り・名前を主語に置く・この帯だけ括弧を使わない）の規約と理由は
           `docs/spec/settings-pwa-spec.md` §5.5「通知の文の形」。 */}
       {health.broken.length > 0 && (

@@ -6,7 +6,7 @@ const ICON_PROPS = {
   viewBox: '0 0 24 24',
   // サイズは rem 指定（22px 相当）。width/height 属性の数値は px 固定で UI 倍率の外に出てしまい、
   // 倍率を上げてもナビのアイコンだけ元の大きさのまま取り残される。
-  className: 'w-[1.375rem] h-[1.375rem]',
+  className: 'w-5.5 h-5.5',
   fill: 'none',
   stroke: 'currentColor',
   strokeWidth: 2,
@@ -106,7 +106,7 @@ interface Props {
 export const IconNav = memo(function IconNav({ activeTab, onTabChange, panelCollapsed, tsunamiGrade, eewLevel }: Props) {
   return (
     <nav
-      className="flex flex-row side:flex-col items-center justify-center side:justify-start gap-1 p-1.5 bg-panel border-t side:border-t-0 side:border-l border-border flex-shrink-0"
+      className="flex flex-row side:flex-col items-center justify-center side:justify-start gap-1 p-1.5 bg-panel border-t side:border-t-0 side:border-l border-border shrink-0"
       // ナビは縦積み時は画面下端、左右分割時は画面右端に接するため、両方の safe-area を確保する
       // （横向き時の inset-bottom / 縦向き時の inset-right はいずれも 0 になるので相互に干渉しない）。
       // 上端は確保しない。左右分割時のナビは右端の上詰めだが、ステータスバーは不透明（black）で

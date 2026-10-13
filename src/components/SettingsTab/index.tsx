@@ -213,10 +213,10 @@ function SettingsIoRow({ settings, onReplace }: {
     <div className="flex flex-col items-end gap-1">
       <input ref={inputRef} type="file" accept=".json,application/json" onChange={e => { void handleFile(e) }} className="hidden" />
       <div className="flex items-center gap-2">
-        <button onClick={download} className="px-3 py-1.5 rounded text-xs bg-panel border border-border text-white">
+        <button onClick={download} className="px-3 py-1.5 rounded-sm text-xs bg-panel border border-border text-white">
           書き出す
         </button>
-        <button onClick={() => inputRef.current?.click()} className="px-3 py-1.5 rounded text-xs bg-panel border border-border text-white">
+        <button onClick={() => inputRef.current?.click()} className="px-3 py-1.5 rounded-sm text-xs bg-panel border border-border text-white">
           読み込む
         </button>
       </div>
@@ -295,14 +295,14 @@ function DiagnosticLogRow() {
         <button
           onClick={() => { void download() }}
           disabled={busy || !count}
-          className="px-3 py-1.5 rounded text-xs bg-panel border border-border text-white disabled:opacity-40"
+          className="px-3 py-1.5 rounded-sm text-xs bg-panel border border-border text-white disabled:opacity-40"
         >
           書き出す
         </button>
         <button
           onClick={() => { void clear() }}
           disabled={busy || !count}
-          className="px-3 py-1.5 rounded text-xs bg-panel border border-border text-secondary disabled:opacity-40"
+          className="px-3 py-1.5 rounded-sm text-xs bg-panel border border-border text-secondary disabled:opacity-40"
         >
           消去
         </button>
@@ -343,7 +343,7 @@ function KyoshinImportRow({ historicalArchives }: { historicalArchives: Historic
       <button
         onClick={() => inputRef.current?.click()}
         disabled={busy}
-        className="px-3 py-1.5 rounded text-xs bg-panel border border-border text-white disabled:opacity-40"
+        className="px-3 py-1.5 rounded-sm text-xs bg-panel border border-border text-white disabled:opacity-40"
       >
         {importing ? '取り込み中...' : 'ZIPを選択'}
       </button>
@@ -355,7 +355,7 @@ function KyoshinImportRow({ historicalArchives }: { historicalArchives: Historic
               <button
                 onClick={() => { void deleteArchive(s.archiveId) }}
                 disabled={busy}
-                className="px-2 py-1 rounded text-xs bg-panel border border-border text-secondary disabled:opacity-40"
+                className="px-2 py-1 rounded-sm text-xs bg-panel border border-border text-secondary disabled:opacity-40"
               >
                 {deletingArchiveId === s.archiveId ? '削除中...' : '削除'}
               </button>
@@ -658,7 +658,7 @@ function Row({ label, description, hint, children }: {
           切り取られる（データ出典の一行がこれに当たった。その行は現在 CreditRow へ移している）。
           max-width なら shrink とは別の制約として効くので、幅を譲らせたくない select や
           入力欄はそのままに、超過分だけ折り返せる。 */}
-      <div className="flex-shrink-0 ml-auto max-w-full">{children}</div>
+      <div className="shrink-0 ml-auto max-w-full">{children}</div>
     </div>
   )
 }
@@ -674,7 +674,7 @@ function Row({ label, description, hint, children }: {
  * 説明であって、この長さに合わせた設計ではない**——値がどれだけ伸びても下記の折り返しで吸う。
  *
  * 値は折り返せるテキスト（出典・リンク）に限るため、幅が足りないときは 2 段に落とすのではなく
- * 右側で折り返させる（`min-w-0`）。ラベル側は潰さない（`flex-shrink-0`）。
+ * 右側で折り返させる（`min-w-0`）。ラベル側は潰さない（`shrink-0`）。
  *
  * 値側に `grow` が要る。付けないと値の枠が中身の最大幅ちょうどで確定し、1px 未満の
  * 端数で折り返してしまう（余白は残っているのに 2 行になる）。余った幅を吸わせて回避する。
@@ -687,7 +687,7 @@ function CreditRow({ label, children }: { label: string; children: React.ReactNo
     // 出ないが、後から説明を足したときに基準が行全体になるよう先に付けておく（付け忘れると
     // ラベル 1 個分の矩形が基準になり、値を覆わないための設計が効かなくなる）。
     <div data-settings-row className="flex items-baseline gap-x-4 px-4 py-3">
-      <p className="text-white text-sm flex-shrink-0">{label}</p>
+      <p className="text-white text-sm shrink-0">{label}</p>
       <div className="min-w-0 grow text-right">{children}</div>
     </div>
   )
@@ -711,7 +711,7 @@ function ScaleSelect({ value, onChange, noneLabel = 'すべて表示', includeNo
     <select
       value={value}
       onChange={e => onChange(Number(e.target.value))}
-      className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
+      className="bg-panel border border-border text-white text-xs rounded-sm px-2 py-1.5 focus:outline-hidden focus:border-blue-500"
     >
       {includeNone && <option value={-1}>{noneLabel}</option>}
       {SCALE_OPTIONS.map(s => (
@@ -726,7 +726,7 @@ function IntensityBadge({ scale }: { scale: number }) {
   const fill = getIntensityColor(scale)
   return (
     <span
-      className="inline-block text-xs font-bold px-1.5 py-0.5 rounded"
+      className="inline-block text-xs font-bold px-1.5 py-0.5 rounded-sm"
       style={{ backgroundColor: fill, color: readableTextColor(fill) }}
     >
       震度{getIntensityLabel(scale)}
@@ -737,8 +737,9 @@ function IntensityBadge({ scale }: { scale: number }) {
 type ButtonColor = 'red' | 'orange' | 'yellow' | 'purple' | 'blue' | 'green' | 'teal'
 
 // 白文字（text-white）を載せるため、通常時・ホバー時とも WCAG AA（4.5:1）を満たす濃さにする。
-// orange / yellow / green は従来の色だとホバー時に 3.56 / 1.92 / 3.30 まで落ちていたため、
-// 一段ずつ暗い側へずらした（従来の通常時の色がホバー時の色に来る形）。最小は yellow のホバー 4.92。
+// orange / yellow / green は従来の色（Tailwind v3 の値で測った比）だとホバー時に 3.56 / 1.92 / 3.30 まで落ちていたため、
+// 一段ずつ暗い側へずらした（従来の通常時の色がホバー時の色に来る形）。比は Tailwind v4 の色
+// （oklch）で測った値で、最小は red のホバー 4.76。
 const BUTTON_CLASSES: Record<ButtonColor, string> = {
   red:    'bg-red-700 hover:bg-red-600',
   orange: 'bg-orange-800 hover:bg-orange-700',
@@ -813,7 +814,7 @@ function IntensityPlayButton({ scale, kyoshinIndex }: { scale: number; kyoshinIn
     <button
       onClick={handle}
       title={`震度${getIntensityLabel(scale)} の更新音を試聴`}
-      className={`text-xs font-bold px-2 py-1 rounded transition-opacity ${active ? 'opacity-40' : 'hover:opacity-75'}`}
+      className={`text-xs font-bold px-2 py-1 rounded-sm transition-opacity ${active ? 'opacity-40' : 'hover:opacity-75'}`}
       style={{ backgroundColor: fill, color: readableTextColor(fill) }}
     >
       {getIntensityLabel(scale)}
@@ -864,7 +865,7 @@ function NotificationPermissionButton() {
   return (
     <button
       onClick={request}
-      className="text-xs bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded transition-colors"
+      className="text-xs bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded-sm transition-colors"
     >
       通知を許可する
     </button>
@@ -942,14 +943,14 @@ function HomeLocationSection({
           <button
             onClick={handleGetLocation}
             disabled={loading}
-            className="text-xs bg-blue-700 hover:bg-blue-600 disabled:opacity-40 text-white px-3 py-1.5 rounded transition-colors"
+            className="text-xs bg-blue-700 hover:bg-blue-600 disabled:opacity-40 text-white px-3 py-1.5 rounded-sm transition-colors"
           >
             {loading ? '取得中…' : '現在地を取得'}
           </button>
           {isSet && (
             <button
               onClick={handleClear}
-              className="text-xs bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded transition-colors"
+              className="text-xs bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded-sm transition-colors"
             >
               クリア
             </button>
@@ -1001,7 +1002,7 @@ function ArrivalTokenField(
         placeholder="未設定"
         autoComplete="off"
         spellCheck={false}
-        className={`bg-panel border text-white text-xs rounded px-2 py-1.5 w-56 font-mono focus:outline-none ${
+        className={`bg-panel border text-white text-xs rounded px-2 py-1.5 w-56 font-mono focus:outline-hidden ${
           line?.tone === 'problem'
             ? 'border-red-500 focus:border-red-500'
             : 'border-border focus:border-blue-500'
@@ -1138,7 +1139,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
                 onChange={e => onUpdate('dmdataApiKey', e.target.value)}
                 placeholder="APIキーを入力"
                 autoComplete="off"
-                className={`bg-panel border text-white text-xs rounded px-2 py-1.5 focus:outline-none w-48 ${
+                className={`bg-panel border text-white text-xs rounded px-2 py-1.5 focus:outline-hidden w-48 ${
                   isApiKeyInvalid ? 'border-red-500 focus:border-red-500' : 'border-border focus:border-blue-500'
                 }`}
               />
@@ -1170,7 +1171,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
           <select
             value={settings.uiScale}
             onChange={e => onUpdate('uiScale', Number(e.target.value))}
-            className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
+            className="bg-panel border border-border text-white text-xs rounded-sm px-2 py-1.5 focus:outline-hidden focus:border-blue-500"
           >
             {[0.5, 0.6, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.75, 3].map(s => (
               <option key={s} value={s}>{Math.round(s * 100)}%</option>
@@ -1181,7 +1182,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
           <select
             value={settings.mapIconScale}
             onChange={e => onUpdate('mapIconScale', Number(e.target.value))}
-            className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
+            className="bg-panel border border-border text-white text-xs rounded-sm px-2 py-1.5 focus:outline-hidden focus:border-blue-500"
           >
             {[0.5, 0.6, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.75, 3].map(s => (
               <option key={s} value={s}>{Math.round(s * 100)}%</option>
@@ -1195,7 +1196,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
           <select
             value={settings.hypocenterDepthScale}
             onChange={e => onUpdate('hypocenterDepthScale', Number(e.target.value))}
-            className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
+            className="bg-panel border border-border text-white text-xs rounded-sm px-2 py-1.5 focus:outline-hidden focus:border-blue-500"
           >
             {[1, 2, 3, 5, 8, 12, 20].map(s => (
               <option key={s} value={s}>{s === 1 ? '実際の深さ' : `${s} 倍`}</option>
@@ -1356,7 +1357,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
               <select
                 value={settings.seismoWave}
                 onChange={e => onUpdate('seismoWave', e.target.value as AppSettings['seismoWave'])}
-                className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
+                className="bg-panel border border-border text-white text-xs rounded-sm px-2 py-1.5 focus:outline-hidden focus:border-blue-500"
               >
                 <option value="off">表示しない</option>
                 <option value="auto">揺れたときだけ</option>
@@ -1384,7 +1385,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
           <select
             value={settings.defaultTab}
             onChange={e => onUpdate('defaultTab', e.target.value as AppSettings['defaultTab'])}
-            className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
+            className="bg-panel border border-border text-white text-xs rounded-sm px-2 py-1.5 focus:outline-hidden focus:border-blue-500"
           >
             <option value="earthquake">地震情報</option>
             <option value="realtime">リアルタイム</option>
@@ -1406,7 +1407,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
           <select
             value={settings.idleRevertSec}
             onChange={e => onUpdate('idleRevertSec', Number(e.target.value))}
-            className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
+            className="bg-panel border border-border text-white text-xs rounded-sm px-2 py-1.5 focus:outline-hidden focus:border-blue-500"
           >
             <option value={0}>無効</option>
             <option value={15}>15秒</option>
@@ -1509,7 +1510,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
                   <select
                     value={settings.voicevoxSpeakerId}
                     onChange={e => onUpdate('voicevoxSpeakerId', Number(e.target.value))}
-                    className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
+                    className="bg-input border border-border rounded-sm px-2 py-1 text-xs text-white"
                   >
                     {voicevoxSpeakers.flatMap(spk =>
                       spk.styles.map(st => (
@@ -1610,7 +1611,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
             <select
               value={settings.ttsIntensityLevels}
               onChange={e => onUpdate('ttsIntensityLevels', Number(e.target.value))}
-              className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
+              className="bg-input border border-border rounded-sm px-2 py-1 text-xs text-white"
             >
               {/* 最後の選択肢は「すべての階級」。値は階級の段数から導く（数を直接書くと、
                   階級が増減したときに選択肢だけが古い段数のまま残る）。 */}
@@ -1635,7 +1636,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
             <select
               value={settings.ttsMaxRegions}
               onChange={e => onUpdate('ttsMaxRegions', Number(e.target.value))}
-              className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
+              className="bg-input border border-border rounded-sm px-2 py-1 text-xs text-white"
             >
               {[0, 3, 5, 10, 15, 20].map(n => (
                 <option key={n} value={n}>{n === 0 ? '無制限' : `${n}地域`}</option>
@@ -1647,7 +1648,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
               <select
                 value={settings.ttsRegionTolerance}
                 onChange={e => onUpdate('ttsRegionTolerance', Number(e.target.value))}
-                className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
+                className="bg-input border border-border rounded-sm px-2 py-1 text-xs text-white"
               >
                 {[0, 1, 2, 3, 5].map(n => (
                   <option key={n} value={n}>{n === 0 ? '許容しない' : `+${n}地域まで`}</option>
@@ -1665,7 +1666,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
             <select
               value={settings.ttsUnreceivedDetail}
               onChange={e => onUpdate('ttsUnreceivedDetail', e.target.value as TtsUnreceivedDetail)}
-              className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
+              className="bg-input border border-border rounded-sm px-2 py-1 text-xs text-white"
             >
               <option value="stations">地点名</option>
               <option value="areas">区域名</option>
@@ -1676,7 +1677,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
             <select
               value={settings.ttsMaxObservationPoints}
               onChange={e => onUpdate('ttsMaxObservationPoints', Number(e.target.value))}
-              className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
+              className="bg-input border border-border rounded-sm px-2 py-1 text-xs text-white"
             >
               {[0, 1, 3, 5, 10, 15, 20].map(n => (
                 <option key={n} value={n}>{n === 0 ? '無制限' : `${n}地点`}</option>
@@ -2029,7 +2030,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
                   <button
                     onClick={() => onStartReplay(new Date(new Date(a.firstEventTime).getTime() - 60_000))}
                     disabled={replayIsFetching || historicalArchivesLoading}
-                    className="text-xs bg-blue-700 hover:bg-blue-600 disabled:opacity-40 text-white px-2 py-1 rounded transition-colors whitespace-nowrap"
+                    className="text-xs bg-blue-700 hover:bg-blue-600 disabled:opacity-40 text-white px-2 py-1 rounded-sm transition-colors whitespace-nowrap"
                   >
                     再生
                   </button>
@@ -2044,12 +2045,12 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
               type="datetime-local"
               value={kyoshinInputDateTime}
               onChange={e => onSetKyoshinInputDateTime(e.target.value)}
-              className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
+              className="bg-panel border border-border text-white text-xs rounded-sm px-2 py-1.5 focus:outline-hidden focus:border-blue-500"
             />
             <button
               onClick={handleTimeConfirm}
               disabled={!kyoshinInputDateTime || replayIsFetching || historicalArchivesLoading}
-              className="text-xs bg-blue-700 hover:bg-blue-600 disabled:opacity-40 text-white px-3 py-1.5 rounded transition-colors"
+              className="text-xs bg-blue-700 hover:bg-blue-600 disabled:opacity-40 text-white px-3 py-1.5 rounded-sm transition-colors"
             >
               {replayIsFetching ? '取得中...' : historicalArchivesLoading ? '準備中...' : '確定'}
             </button>
@@ -2069,7 +2070,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
               <span className="text-xs text-green-400">{replayStartLabel} から</span>
               <button
                 onClick={onStopReplay}
-                className="text-xs bg-gray-600 hover:bg-gray-500 text-white px-3 py-1.5 rounded transition-colors"
+                className="text-xs bg-gray-600 hover:bg-gray-500 text-white px-3 py-1.5 rounded-sm transition-colors"
               >
                 リセット
               </button>
@@ -2216,7 +2217,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
               return (
                 <div key={scale} className="flex items-center gap-1.5">
                   <span
-                    className="w-6 h-6 rounded flex items-center justify-center text-xs font-bold"
+                    className="w-6 h-6 rounded-sm flex items-center justify-center text-xs font-bold"
                     style={{ backgroundColor: fill, color: readableTextColor(fill) }}
                   >
                     {label}

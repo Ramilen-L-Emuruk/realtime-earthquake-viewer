@@ -357,7 +357,7 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
           )}
         </div>
         {arrivalBadge && (
-          <span className="flex-shrink-0 text-xs font-bold px-2 py-1 rounded border"
+          <span className="shrink-0 text-xs font-bold px-2 py-1 rounded-sm border"
             style={{ color: '#f87171', backgroundColor: 'rgba(239,68,68,0.15)', borderColor: '#ef4444' }}>
             {arrivalBadge}
           </span>
@@ -443,7 +443,7 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
                       {observationBadges(obs).map(label => (
                         <span
                           key={label}
-                          className="text-xs font-bold px-1.5 py-0.5 rounded"
+                          className="text-xs font-bold px-1.5 py-0.5 rounded-sm"
                           style={label === '欠測'
                             ? { background: `${MISSING_COLOR}26`, color: MISSING_COLOR }
                             : { background: `${style.cardBorder}30`, color: style.heightColor }}
@@ -469,11 +469,11 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
                       等級の色で塗るのは同じ事実の繰り返しで、動いた項目に文字色を当てる余地も
                       失っていた（→ `docs/spec/tsunami-spec.md` §9）。 */}
                   {obs.height ? (
-                    <span className="font-bold flex-shrink-0" style={{ fontSize: '1.25rem', color: fieldColor('height') ?? '#ffffff' }}>
+                    <span className="font-bold shrink-0" style={{ fontSize: '1.25rem', color: fieldColor('height') ?? '#ffffff' }}>
                       {observationHeightText(obs)}
                     </span>
                   ) : observationHeightText(obs) && (
-                    <span className="flex-shrink-0" style={{ fontSize: '0.8125rem', color: '#9ca3af' }}>{observationHeightText(obs)}</span>
+                    <span className="shrink-0" style={{ fontSize: '0.8125rem', color: '#9ca3af' }}>{observationHeightText(obs)}</span>
                   )}
                 </div>
               </div>
@@ -493,10 +493,10 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
               stHighTideHm ? `満潮 ${stHighTideHm}` : '',
             ].filter(Boolean)
             return (
-              <div key={i} className="px-3 py-2 rounded" style={{ border: '1px solid rgba(255,255,255,0.09)', background: 'rgba(255,255,255,0.03)' }}>
+              <div key={i} className="px-3 py-2 rounded-sm" style={{ border: '1px solid rgba(255,255,255,0.09)', background: 'rgba(255,255,255,0.03)' }}>
                 <div className="flex items-baseline gap-2 flex-wrap">
                   <span className="font-semibold" style={{ fontSize: '0.8125rem', color: '#d1d5db' }}>{st.name}</span>
-                  <span className="text-xs font-bold px-1.5 py-0.5 rounded" style={{ background: 'rgba(255,255,255,0.08)', color: '#9ca3af' }}>予測</span>
+                  <span className="text-xs font-bold px-1.5 py-0.5 rounded-sm" style={{ background: 'rgba(255,255,255,0.08)', color: '#9ca3af' }}>予測</span>
                 </div>
                 {timeTexts.length > 0 && (
                   <div className="mt-1" style={{ fontSize: '0.6875rem', color: '#9ca3af' }}>
@@ -556,7 +556,7 @@ function TsunamiObservationRow({ obs, onObservationClick, canFocusObs, registerS
           {observationBadges(obs).filter(label => label !== '到達確認').map(label => (
             <span
               key={label}
-              className="text-xs font-bold px-1.5 py-0.5 rounded"
+              className="text-xs font-bold px-1.5 py-0.5 rounded-sm"
               style={label === '欠測'
                 ? { background: `${MISSING_COLOR}26`, color: MISSING_COLOR }
                 : { background: 'rgba(255,255,255,0.08)', color: '#9ca3af' }}
@@ -589,7 +589,7 @@ function TsunamiObservationRow({ obs, onObservationClick, canFocusObs, registerS
       </div>
       {observationHeightText(obs) && (
         <span
-          className={fieldColor('height') ? 'flex-shrink-0' : 'text-secondary flex-shrink-0'}
+          className={fieldColor('height') ? 'shrink-0' : 'text-secondary shrink-0'}
           style={{ fontSize: '1rem', ...(fieldColor('height') ? { color: fieldColor('height'), fontWeight: 600 } : {}) }}
         >
           {observationHeightText(obs)}
@@ -1402,7 +1402,7 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
                     印が無いと、訓練の大津波警報が本物と同じ顔で出る。 */}
                 {active[0]?.operationStatus && (
                   <span
-                    className="px-1.5 py-0.5 rounded flex-shrink-0"
+                    className="px-1.5 py-0.5 rounded-sm shrink-0"
                     style={{ fontSize: '0.6875rem', backgroundColor: '#1f2937', color: '#fcd34d', border: '1px solid #d97706' }}
                   >
                     {active[0].operationStatus}報
@@ -1410,7 +1410,7 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
                 )}
               </div>
               {(latestUpdatedText || observationAsOf || expiryText) && (
-                <div className="text-right flex-shrink-0" style={{ fontSize: '0.6875rem', color: isCancelledDisplay ? '#6b7280' : topStyle.arrivalColor, opacity: 0.8 }}>
+                <div className="text-right shrink-0" style={{ fontSize: '0.6875rem', color: isCancelledDisplay ? '#6b7280' : topStyle.arrivalColor, opacity: 0.8 }}>
                   {/* 発表時刻が日時として読めなければこの行だけ落とす。観測時点の行は残す —— 2 つは
                       別の事実で、片方が読めないことをもう片方を隠す理由にしない。 */}
                   {/* **語を先に置く。** 下の失効時刻と対で読ませるため、日時を持つ行は
@@ -1473,7 +1473,7 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
                     違う行動を指示することになる。 */}
                 {isCancelledDisplay ? cancelInfo.desc : bannerActionLine ?? fallbackEvacuationAction(topGrade)}
               </span>
-              {canOpenComments && <span className="flex-shrink-0" style={{ fontSize: '0.625rem', opacity: 0.8 }}>{commentsOpen ? '▼' : '▶'}</span>}
+              {canOpenComments && <span className="shrink-0" style={{ fontSize: '0.625rem', opacity: 0.8 }}>{commentsOpen ? '▼' : '▶'}</span>}
             </div>
             {/* 電文が名乗る情報名（`Head/Title`）。**上の等級表示とは別物** —— あちらはアプリが
                 区域の等級から組み立てた見出しで、こちらは気象庁がその報に付けた名前。
@@ -1618,13 +1618,13 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
                           <span className="flex items-center gap-2 flex-wrap min-w-0">
                             <span className="text-white text-[0.9375rem] truncate">{est.name}</span>
                             {estimationBadges(est).map(label => (
-                              <span key={label} className="text-xs font-bold px-1.5 py-0.5 rounded"
+                              <span key={label} className="text-xs font-bold px-1.5 py-0.5 rounded-sm"
                                 style={{ background: 'rgba(29,78,216,0.3)', color: '#93c5fd' }}>
                                 {label}
                               </span>
                             ))}
                           </span>
-                          <span className="flex-shrink-0 text-right" style={{ fontSize: '0.8125rem', color: '#93c5fd' }}>
+                          <span className="shrink-0 text-right" style={{ fontSize: '0.8125rem', color: '#93c5fd' }}>
                             {/* 数値が無ければ、無い理由（電文の「推定中」）を出す。 */}
                             {estimationHeightText(est) && <span className="font-bold">{estimationHeightText(est)}</span>}
                             {/* 日時として読めない時刻は句ごと落とす（「到達予想」だけが残ると、

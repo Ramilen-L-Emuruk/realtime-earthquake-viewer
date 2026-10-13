@@ -33,7 +33,7 @@ export function ShareCardButton({ state, onClick }: ShareCardButtonProps) {
       disabled={state === 'working'}
       aria-label={label}
       title={label}
-      className={`flex h-9 w-9 items-center justify-center rounded-md border bg-slate-900/80 backdrop-blur-sm transition-colors hover:bg-slate-800/90 disabled:opacity-60 ${TONES[state]}`}
+      className={`flex h-9 w-9 items-center justify-center rounded-md border bg-slate-900/80 backdrop-blur-xs transition-colors hover:bg-slate-800/90 disabled:opacity-60 ${TONES[state]}`}
     >
       <StateIcon state={state} className="h-5 w-5" />
     </button>

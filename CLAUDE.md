@@ -1292,7 +1292,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 ## 構成メモ
 
 - `src/App.tsx`: レイアウトの中枢。地図常時表示＋アイコンナビでパネル内容を切替。地図内容・更新時刻・通知音・自動タブ切替・EEW 連携の制御もここ。
-- レイアウトは画面の向き・高さで切り替わる（左右分割／上下分割）。分岐条件は `tailwind.config.js` の `screens`（`side` / `sideNarrow` / `roomy`）が単一情報源。上下分割時は境界のつまみで比率変更・折りたたみができる（`PanelResizeHandle`）。詳細は [`docs/spec/architecture-spec.md`](docs/spec/architecture-spec.md) の「画面サイズ別のレイアウト」。
+- レイアウトは画面の向き・高さで切り替わる（左右分割／上下分割）。分岐条件は `src/index.css` の `@custom-variant`（`side` / `sideNarrow` / `roomy`）が単一情報源。上下分割時は境界のつまみで比率変更・折りたたみができる（`PanelResizeHandle`）。詳細は [`docs/spec/architecture-spec.md`](docs/spec/architecture-spec.md) の「画面サイズ別のレイアウト」。
 - 地図は MapLibre GL JS（`JapanMapGL`）に一本化。`MapView` が App と地図実装の間の薄いラッパー。旧 Leaflet 版 JapanMap とエンジン切替フラグは F7 で撤去済み。
 - 地図のモード（`JapanMapGL` の `mode`）: `quake`（地震）／`tsunami`（津波海岸線）／`kyoshin`（リアルタイム震度・予報円）／`catalog`（長期震源カタログの点群）。
 - 生成データ（`public/data/*.json`）は座標が大きいため遅延読込（初回利用時に一度だけ fetch しキャッシュ）。  

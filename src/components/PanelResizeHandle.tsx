@@ -130,7 +130,7 @@ export const PanelResizeHandle = memo(function PanelResizeHandle({
       onKeyDown={handleKeyDown}
       // touch-none（touch-action: none）でブラウザのスクロール・ズームジェスチャーより
       // ドラッグを優先する。これがないとタッチ操作でポインタイベントが途中で奪われる。
-      className="side:hidden flex-shrink-0 h-5 flex items-center justify-center bg-panel border-t border-border cursor-row-resize touch-none select-none focus:outline-none focus-visible:ring-1 focus-visible:ring-white/40"
+      className="side:hidden shrink-0 h-5 flex items-center justify-center bg-panel border-t border-border cursor-row-resize touch-none select-none focus:outline-hidden focus-visible:ring-1 focus-visible:ring-white/40"
     >
       <div
         className={`rounded-full transition-all ${collapsed ? 'w-14 h-1.5 bg-white/50' : 'w-10 h-1 bg-white/25'}`}

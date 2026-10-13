@@ -126,7 +126,7 @@ export function DescriptionTip({ label, description }: Props) {
         type="button"
         // 説明を持つ行だけ点線下線を出す。border-b では <button> の幅いっぱいに線が伸びて
         // 文字より長く残るため、テキストに追従する text-decoration を使う。
-        className="text-white text-sm text-left underline decoration-dotted decoration-secondary/60 underline-offset-4 cursor-help focus:outline-none focus-visible:ring-1 focus-visible:ring-blue-500 rounded"
+        className="text-white text-sm text-left underline decoration-dotted decoration-secondary/60 underline-offset-4 cursor-help focus:outline-hidden focus-visible:ring-1 focus-visible:ring-blue-500 rounded-sm"
         // 紐づけは aria-describedby だけでよい（WAI-ARIA の tooltip パターン）。
         // aria-expanded は disclosure 系の属性で、読み上げが「展開」と「説明」を二重に伝える。
         aria-describedby={open ? tipId : undefined}

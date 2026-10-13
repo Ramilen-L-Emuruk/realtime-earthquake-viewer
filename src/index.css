@@ -1,6 +1,91 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* 読み込む範囲は index.html と src だけに絞る。v4 は既定でリポジトリ全体（ドキュメントや
+   ホスト側のコードなど）を読み、そこのコード例の語までクラス名として拾って不要な CSS を出す。 */
+@import 'tailwindcss' source(none);
+@source '../index.html';
+@source '.';
+
+/* レイアウト分岐用のカスタムバリアント。既定の sm/md/lg/xl/2xl はそのまま残る。
+   幅だけで分岐するとスマホ横画面（例 844x390）が「幅は足りないが高さが極端に低い」
+   状態になり、縦積みのままではパネルが画面高を食い尽くして地図が消える。
+   そのため向き・高さも判定に含める。
+   3 つともブロックの形で書く。1 行の形（`@custom-variant x (@media …);`）では Tailwind が
+   カンマで条件を切り分けるので、side の「または」が割れて後半の条件が黙って落ちる。 */
+
+/* side: 地図とパネルを左右に並べる条件。
+   ・幅 1024px 以上（従来の lg 相当。PC・タブレット横）
+   ・または 横向きかつ高さ 600px 以下（スマホ横・小型タブレット横）
+   これ未満は縦積み（地図が上・パネルが下）で、パネル高さは --panel-ratio で可変。 */
+@custom-variant side {
+  @media (min-width: 1024px), (orientation: landscape) and (max-height: 600px) {
+    @slot;
+  }
+}
+/* sideNarrow: 左右分割のうち幅が狭い側（スマホ横など）。パネル幅を狭くして地図を優先する。
+   カスタムバリアントは宣言した順にユーティリティが出力されるため、side より後に置いて
+   side: の指定を上書きできるようにしている（順序を入れ替えると効かなくなる）。 */
+@custom-variant sideNarrow {
+  @media (orientation: landscape) and (max-height: 600px) and (max-width: 1023px) {
+    @slot;
+  }
+}
+/* roomy: カード内の文字・余白をゆったり表示できる条件（幅と高さの両方に余裕がある）。
+   これ未満（＝スマホ縦・スマホ横）では圧縮表示にして、各地の震度や警報対象地域が
+   スクロールせずに見えるようにする。モバイルファーストで書くため「既定=圧縮 /
+   roomy:=従来サイズ」の向きで指定する。 */
+@custom-variant roomy {
+  @media (min-width: 640px) and (min-height: 601px) {
+    @slot;
+  }
+}
+
+/* 左右分割時の情報パネル幅（App.tsx が side:/sideNarrow: で使う）。
+   素の 26rem/22rem ではなく画面幅から上限を掛けているのは、UI 倍率（uiScale）が
+   ルートの font-size を変える設計のため。倍率を上げると rem 指定のパネルもアイコンナビも
+   一緒に伸びるが、左右分割の下限幅（1024px）は CSS px で固定されているので、
+   高倍率ではパネル＋ナビの合計が画面幅を超えてナビが画面外へ押し出される。
+   差し引く 4rem はアイコンナビの実測幅（約 3.5rem）に余白を見た値。
+   単位は vw ではなく dvw。ビューポート単位は d 付きに揃える規約による
+   （docs/spec/architecture-spec.md「画面いっぱいへの広がりとセーフエリア」規則 3）。 */
+@utility w-panel {
+  width: min(26rem, calc(100dvw - 4rem));
+}
+@utility w-panel-narrow {
+  width: min(22rem, calc(100dvw - 4rem));
+}
+
+@theme {
+  --color-app: #0a0c10;
+  --color-panel: #12151a;
+  --color-card: #1a1d26;
+  --color-border: #2a2d38;
+  --color-secondary: #94a3b8;
+}
+
+/* v4 で枠線の既定色が currentcolor に変わったので、v3 の既定（gray-200）へ戻す。
+   色を指定せずに `border` だけを付けている要素がこれに頼っている。外すなら、そうした要素へ
+   色のユーティリティを足してから。 */
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentcolor);
+  }
+
+  /* v4 はボタンのカーソルを既定（矢印）に戻したので、v3 と同じく指の形にする。
+     `cursor-pointer` を付けていないボタンがこれに頼っている。 */
+  button:not(:disabled),
+  [role='button']:not(:disabled) {
+    cursor: pointer;
+  }
+
+  /* v4 は placeholder を文字色の半透明にしたので、v3 の既定（gray-400）に戻す。 */
+  input::placeholder,
+  textarea::placeholder {
+    color: #9ca3af;
+  }
+}
 
 :root {
   color-scheme: dark;

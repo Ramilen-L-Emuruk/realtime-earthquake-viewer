@@ -136,11 +136,11 @@ function RangeRow({
 }
 
 const SELECT_CLASS =
-  'bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500'
+  'bg-panel border border-border text-white text-xs rounded-sm px-2 py-1.5 focus:outline-hidden focus:border-blue-500'
 
 // 日付ピッカー。**`color-scheme` を暗い側へ寄せる**——ブラウザが描くカレンダーのアイコンと
 // ポップアップは配色をここから決めるため、指定しないと暗い背景の上に明るい部品が乗る。
-const DATE_INPUT_CLASS = `${SELECT_CLASS} [color-scheme:dark]`
+const DATE_INPUT_CLASS = `${SELECT_CLASS} scheme-dark`
 
 export const CatalogTab = memo(function CatalogTab({
   index,
@@ -358,7 +358,7 @@ export const CatalogTab = memo(function CatalogTab({
           </p>
           <button
             onClick={onRetry}
-            className="text-xs text-white bg-panel border border-border rounded px-2 py-1 hover:border-blue-500"
+            className="text-xs text-white bg-panel border border-border rounded-sm px-2 py-1 hover:border-blue-500"
           >
             再試行
           </button>

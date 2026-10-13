@@ -47,13 +47,13 @@ interface Metrics {
 const REGULAR: Metrics = {
   title: 'text-[0.5625rem] leading-[1.1]',
   label: 'text-[0.625rem] leading-none',
-  cell: 'min-w-[0.6rem] px-[0.25rem] py-[0.15rem] text-[0.625rem]',
-  gap: 'mt-[0.25rem]',
+  cell: 'min-w-[0.6rem] px-1 py-[0.15rem] text-[0.625rem]',
+  gap: 'mt-1',
   pad: 'px-[0.4rem] py-[0.3rem]',
-  mark: { line: 'h-[3px] w-[0.75rem]', dot: 'h-[0.6rem] w-[0.6rem]', bar: 'h-[0.7rem] w-[0.25rem]' },
+  mark: { line: 'h-[3px] w-3', dot: 'h-[0.6rem] w-[0.6rem]', bar: 'h-[0.7rem] w-1' },
   hit: {
-    collapsed: "relative after:absolute after:inset-x-0 after:-inset-y-[0.4rem] after:content-['']",
-    heading: "relative after:absolute after:inset-x-0 after:-inset-y-[0.25rem] after:content-['']",
+    collapsed: "relative after:absolute after:inset-x-0 after:inset-y-[-0.4rem] after:content-['']",
+    heading: "relative after:absolute after:inset-x-0 after:-inset-y-1 after:content-['']",
   },
 }
 
@@ -62,12 +62,12 @@ const COMPACT: Metrics = {
   label: 'text-[0.5625rem] leading-none',
   cell: 'min-w-[0.55rem] px-[0.2rem] py-[0.1rem] text-[0.5625rem]',
   gap: 'mt-[0.2rem]',
-  pad: 'px-[0.35rem] py-[0.25rem]',
-  mark: { line: 'h-[2px] w-[0.65rem]', dot: 'h-[0.5rem] w-[0.5rem]', bar: 'h-[0.6rem] w-[0.2rem]' },
+  pad: 'px-[0.35rem] py-1',
+  mark: { line: 'h-[2px] w-[0.65rem]', dot: 'h-2 w-2', bar: 'h-[0.6rem] w-[0.2rem]' },
   // 畳んだ状態は指で開くもの。狭い画面ほど的を広げる（見た目の詰めは保ったまま）。
   hit: {
-    collapsed: "relative after:absolute after:inset-x-0 after:-inset-y-[0.55rem] after:content-['']",
-    heading: "relative after:absolute after:inset-x-0 after:-inset-y-[0.3rem] after:content-['']",
+    collapsed: "relative after:absolute after:inset-x-0 after:inset-y-[-0.55rem] after:content-['']",
+    heading: "relative after:absolute after:inset-x-0 after:inset-y-[-0.3rem] after:content-['']",
   },
 }
 
@@ -91,7 +91,7 @@ function ScaleCells({ cells, m }: { cells: { label: string; color: string }[]; m
 /** 色見本の形。地図での描き方に合わせる（線・丸・縦棒）。寸法は `Metrics` から採る。 */
 function ChipMark({ chip, m }: { chip: LegendChip; m: Metrics }) {
   if (chip.shape === 'line') {
-    return <i className={`inline-block rounded-sm ${m.mark.line}`} style={{ backgroundColor: chip.color }} />
+    return <i className={`inline-block rounded-xs ${m.mark.line}`} style={{ backgroundColor: chip.color }} />
   }
   if (chip.shape === 'bar') {
     // 観測棒は縦に立てるので、凡例でも縦長にする（丸印と混ざらないため）。
@@ -116,7 +116,7 @@ function Chips({ chips, m, labels = true }: { chips: LegendChip[]; m: Metrics; l
   return (
     <div
       className={`flex items-center text-white ${m.label} ${
-        labels ? 'flex-wrap gap-x-[0.4rem] gap-y-[0.15rem]' : 'gap-x-[0.25rem]'
+        labels ? 'flex-wrap gap-x-[0.4rem] gap-y-[0.15rem]' : 'gap-x-1'
       }`}
     >
       {chips.map((chip) => (
@@ -150,7 +150,7 @@ function Ramp({
   const gradient = `linear-gradient(to right, ${stops.map((s) => `${s.color} ${(s.at * 100).toFixed(1)}%`).join(', ')})`
   return (
     <div style={{ width }}>
-      <div className="h-[0.4rem] rounded-sm" style={{ background: gradient }} />
+      <div className="h-[0.4rem] rounded-xs" style={{ background: gradient }} />
       {ticks.length > 0 && (
         <div className={`relative mt-[0.1rem] h-[0.6rem] text-white/70 ${m.title}`}>
           {ticks.map((tick) => (

@@ -341,9 +341,9 @@ function HistoryWave({ wave, quakeLabel, view }: { wave: SeismoQuakeWave; quakeL
   }, [wave.columns, wave.arrival, wave.axisZero, wave.reach, wave.interrupted, view])
 
   return (
-    <div className="rounded bg-black/30 px-2 py-1">
+    <div className="rounded-sm bg-black/30 px-2 py-1">
       <div className="flex items-center gap-2 text-[10px] roomy:text-xs leading-none mb-1">
-        <span className="text-white truncate max-w-[8rem] roomy:max-w-[14rem]">
+        <span className="text-white truncate max-w-32 roomy:max-w-56">
           {wave.displayName}
         </span>
         {/* **震度は観測点名と同じ行へ置く**（行を増やさない。2026-10-05 のユーザー判断）。 */}

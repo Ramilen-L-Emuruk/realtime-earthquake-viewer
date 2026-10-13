@@ -159,7 +159,7 @@ function IntensityRow({ label, scale, unreceived, unreceivedIsOwn, hasUnreceived
           置くと右端を揃えるためにいちばん長い「未入電あり」ぶんの枠を全行で空けることになり、
           狭い画面では印を持たない行まで地名が折り返す（実測: 幅 320px で 47 行中 7 行）。
           震度の隣なら、なぜ「以上」なのかをその値の真横で言うことにもなる。 */}
-      <span className={`flex items-center flex-shrink-0 gap-1.5 whitespace-nowrap${depth === 0 ? ' font-bold' : ''}`}>
+      <span className={`flex items-center shrink-0 gap-1.5 whitespace-nowrap${depth === 0 ? ' font-bold' : ''}`}>
         <span style={{ color: getIntensityColor(scale) }}>
           {/* 未入電は「5弱以上」。観測値と同じ顔で出すと、実際にはもっと強い可能性があることが
               伝わらない。EEW の「上限を定めない予想震度」と同じ語を同じヘルパーで付ける。 */}
@@ -228,14 +228,14 @@ function IntensityRow({ label, scale, unreceived, unreceivedIsOwn, hasUnreceived
           </span>
         </span>
         <span
-          className="flex-shrink-0 w-[1em] text-center"
+          className="shrink-0 w-[1em] text-center"
           style={{ color: depth === 0 ? '#ffffff' : '#d1d5db' }}
           title={nonJma ? NON_JMA_MARK_TITLE : undefined}
         >
           {nonJma ? NON_JMA_MARK : ''}
         </span>
         <span
-          className="ml-1.5 flex-shrink-0 w-[1em] text-center text-[0.75rem] roomy:text-[0.875rem]"
+          className="ml-1.5 shrink-0 w-[1em] text-center text-[0.75rem] roomy:text-[0.875rem]"
           style={{ color: '#9ca3af' }}
         >
           {canExpand ? (isOpen ? '▾' : '▸') : ''}
@@ -300,7 +300,7 @@ function LpgmRow({ label, lgInt, int, nonJma, depth, expandKey, expanded, onTogg
     >
       {/* 階級と、その範囲の最大震度を左に置く。**震度一覧と同じ並べ方**（値についての情報は
           左、地名は右で揃える）。地名の側へ置くと、付いている行だけ地名が左へ押される。 */}
-      <span className={`flex items-baseline flex-shrink-0 gap-1.5 whitespace-nowrap${depth === 0 ? ' font-bold' : ''}`}>
+      <span className={`flex items-baseline shrink-0 gap-1.5 whitespace-nowrap${depth === 0 ? ' font-bold' : ''}`}>
         <span style={{ color: getLpgmClassColor(lgInt) }}>
           長周期 {getLpgmClassLabel(lgInt)}
         </span>
@@ -336,14 +336,14 @@ function LpgmRow({ label, lgInt, int, nonJma, depth, expandKey, expanded, onTogg
           </span>
         </span>
         <span
-          className="flex-shrink-0 w-[1em] text-center"
+          className="shrink-0 w-[1em] text-center"
           style={{ color: depth === 0 ? '#ffffff' : '#d1d5db' }}
           title={nonJma ? NON_JMA_MARK_TITLE : undefined}
         >
           {nonJma ? NON_JMA_MARK : ''}
         </span>
         <span
-          className="ml-1.5 flex-shrink-0 w-[1em] text-center text-[0.75rem] roomy:text-[0.875rem]"
+          className="ml-1.5 shrink-0 w-[1em] text-center text-[0.75rem] roomy:text-[0.875rem]"
           style={{ color: '#9ca3af' }}
         >
           {canExpand ? (isOpen ? '▾' : '▸') : ''}
@@ -973,7 +973,7 @@ export const EarthquakeCard = memo(function EarthquakeCard({
           {/* 電文が自分で名乗っている運用種別（`Control/Status`）。訓練・試験のときだけ出す。
               **本物と見分けられるようにする** —— 検証用に受信した試験報もカードへ流している。 */}
           {quake.operationStatus && (
-            <span className="ml-2 px-1.5 py-0.5 rounded" style={{ backgroundColor: '#1f2937', color: '#fcd34d', border: '1px solid #d97706' }}>
+            <span className="ml-2 px-1.5 py-0.5 rounded-sm" style={{ backgroundColor: '#1f2937', color: '#fcd34d', border: '1px solid #d97706' }}>
               {quake.operationStatus}報
             </span>
           )}
@@ -1124,7 +1124,7 @@ export const EarthquakeCard = memo(function EarthquakeCard({
               {formatQuakeTime(earthquake.time) ?? '発生時刻不明'}
             </span>
             {issue.correct !== 'なし' && (
-              <span className="text-xs bg-yellow-900 text-yellow-300 px-1.5 py-0.5 rounded font-medium flex-shrink-0">
+              <span className="text-xs bg-yellow-900 text-yellow-300 px-1.5 py-0.5 rounded-sm font-medium shrink-0">
                 {formatCorrectType(issue.correct)}
               </span>
             )}
@@ -1135,7 +1135,7 @@ export const EarthquakeCard = memo(function EarthquakeCard({
           {/* **印は名前を出しているときだけ。** 座標を読めない報では名前の代わりに固定文言
               「震源調査中」が出るので、そこへ印を当てると**文言そのものが新しくなった**ように
               読める（借りた震源で名前はあるのに座標が無い形が実際に起こりうる）。 */}
-          <div className="font-bold text-white leading-tight text-[1.375rem] roomy:text-[1.875rem] rounded">
+          <div className="font-bold text-white leading-tight text-[1.375rem] roomy:text-[1.875rem] rounded-sm">
             {hasLocation ? hypocenter.name : '震源調査中'}
             {/* **「震源調査中」には印を付けない。** 借りた原因地震に震央地名はあるのに座標を
                 読めなかった形（`readHypocenterAreaDetail` が座標を落とす経路）では、名前を出せず
@@ -1258,7 +1258,7 @@ export const EarthquakeCard = memo(function EarthquakeCard({
                 : '観測点の震度をこのアプリが補間した目安。気象庁の推計とは精度が違う'}
               className={`w-full rounded-lg py-1 px-3 flex items-center justify-between gap-2 border transition-colors cursor-pointer hover:opacity-80 roomy:py-2 roomy:px-4 ${
                 distributionActive
-                  ? 'bg-blue-900/40 border-blue-500 outline outline-2 outline-offset-2 outline-blue-500'
+                  ? 'bg-blue-900/40 border-blue-500 outline-solid outline-2 outline-offset-2 outline-blue-500'
                   : 'bg-panel border-border'
               }`}
             >
@@ -1287,7 +1287,7 @@ export const EarthquakeCard = memo(function EarthquakeCard({
               title="気象庁が震度5弱以上と推定しているのに、震度が届いていない地点。押すと一覧と地図に出る"
               className={`w-full rounded-lg py-1 px-3 flex items-center justify-between gap-2 border transition-colors cursor-pointer hover:opacity-80 roomy:py-2 roomy:px-4 ${
                 unreceivedActive
-                  ? 'bg-gray-500/25 border-gray-400 outline outline-2 outline-offset-2 outline-gray-400'
+                  ? 'bg-gray-500/25 border-gray-400 outline-solid outline-2 outline-offset-2 outline-gray-400'
                   : 'bg-panel border-border'
               }`}
             >
@@ -1314,7 +1314,7 @@ export const EarthquakeCard = memo(function EarthquakeCard({
                     return (
                     <div
                       key={topKey}
-                      className="rounded"
+                      className="rounded-sm"
                       style={{ backgroundColor: idx % 2 === 0 ? 'rgba(255,255,255,0.03)' : 'transparent' }}
                     >
                       <LpgmRow
@@ -1405,7 +1405,7 @@ export const EarthquakeCard = memo(function EarthquakeCard({
                   {unreceivedPoints.groups.map((group, idx) => (
                     <div
                       key={group.pref || `unknown-pref-${idx}`}
-                      className="rounded px-2 py-1"
+                      className="rounded-sm px-2 py-1"
                       style={{ backgroundColor: idx % 2 === 0 ? 'rgba(255,255,255,0.03)' : 'transparent' }}
                     >
                       {/* 県を引けなかった点は見出しを出さずに並べる（名前は出す）。所属が
@@ -1457,7 +1457,7 @@ export const EarthquakeCard = memo(function EarthquakeCard({
                 {prefGroups.map((prefRow, idx) => (
                   <div
                     key={prefRow.pref}
-                    className="rounded"
+                    className="rounded-sm"
                     style={{ backgroundColor: idx % 2 === 0 ? 'rgba(255,255,255,0.03)' : 'transparent' }}
                   >
                     <IntensityRow
@@ -1591,7 +1591,7 @@ export const EarthquakeCard = memo(function EarthquakeCard({
             ここでは使えない。
             寸法を固定した結果、右カラムが何行になってもバッジは正方形のまま保たれる。 */}
         <div
-          className="flex-shrink-0 self-center w-28 h-28 rounded-lg flex flex-col items-center justify-center px-1"
+          className="shrink-0 self-center w-28 h-28 rounded-lg flex flex-col items-center justify-center px-1"
           style={{
             backgroundColor: getIntensityBgColor(maxScale),
             border: `2px solid ${getIntensityColor(maxScale)}`,
@@ -1636,17 +1636,17 @@ export const EarthquakeCard = memo(function EarthquakeCard({
               選んでいる（震度バッジは寸法固定なので正方形は崩れない）。 */}
           <div className="flex items-center gap-2 mb-1.5 flex-wrap">
             {/* 畳んだ表示。開いた表示（上）と同じ語を出す。 */}
-            <span className="text-base text-secondary flex-shrink-0">{formatQuakeTime(earthquake.time) ?? '発生時刻不明'}</span>
-            <span className={`text-xs px-1.5 py-0.5 rounded min-w-0 truncate ${issueTypeBadgeClass(issue.type)}`}>
+            <span className="text-base text-secondary shrink-0">{formatQuakeTime(earthquake.time) ?? '発生時刻不明'}</span>
+            <span className={`text-xs px-1.5 py-0.5 rounded-sm min-w-0 truncate ${issueTypeBadgeClass(issue.type)}`}>
               <QuakeReportHeading reports={quake.reports} fallback={issue.type} />
             </span>
             {quake.operationStatus && (
-              <span className="text-xs px-1.5 py-0.5 rounded font-bold flex-shrink-0" style={{ backgroundColor: '#1f2937', color: '#fcd34d', border: '1px solid #d97706' }}>
+              <span className="text-xs px-1.5 py-0.5 rounded-sm font-bold shrink-0" style={{ backgroundColor: '#1f2937', color: '#fcd34d', border: '1px solid #d97706' }}>
                 {quake.operationStatus}報
               </span>
             )}
             {issue.correct !== 'なし' && (
-              <span className="text-xs bg-yellow-900 text-yellow-300 px-1.5 py-0.5 rounded font-medium flex-shrink-0">
+              <span className="text-xs bg-yellow-900 text-yellow-300 px-1.5 py-0.5 rounded-sm font-medium shrink-0">
                 {formatCorrectType(issue.correct)}
               </span>
             )}
@@ -1659,12 +1659,12 @@ export const EarthquakeCard = memo(function EarthquakeCard({
                 <span>深さ</span>
                 <span className="text-white font-medium">{formatDepth(hypocenter.depth)}</span>
                 <span
-                  className="inline-block w-1.5 h-3.5 rounded-sm flex-shrink-0"
+                  className="inline-block w-1.5 h-3.5 rounded-xs shrink-0"
                   style={{ backgroundColor: getDepthColor(hypocenter.depth) }}
                 />
                 <span className="text-white font-medium">{formatMagnitudeWithCondition(hypocenter.magnitude, hypocenter.magnitudeCondition)}</span>
                 <span
-                  className="inline-block w-1.5 h-3.5 rounded-sm flex-shrink-0"
+                  className="inline-block w-1.5 h-3.5 rounded-xs shrink-0"
                   style={{ backgroundColor: getMagnitudeColor(hypocenter.magnitude) }}
                 />
               </span>
