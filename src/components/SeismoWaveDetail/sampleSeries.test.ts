@@ -180,6 +180,49 @@ describe('vectorMagnitude（選んだ成分だけ）', () => {
   })
 })
 
+describe('vectorMagnitude（並び全体で値の無い成分）', () => {
+  // 上が解けない観測点（ホストが上だけ null を送る）。上を選んでいても段が空にならないように
+  // （2026-10-13 ユーザー承認）。
+  function withoutVertical(values: number[]): WaveSampleChunk {
+    const c = chunk(T0, values)
+    c.gal[2].fill(Number.NaN)
+    return c
+  }
+
+  // 正: 並び全体で 1 点も値の無い成分は外し、残りの成分で合成する。
+  it('上が 1 点も無ければ、上を選んでいても水平 2 成分の合成', () => {
+    const m = vectorMagnitude(buildSampleSeries([withoutVertical([2, -4])]), [true, true, true])
+    expect(m[0]).toBeCloseTo(Math.sqrt(4 + 1), 5)
+    expect(m[1]).toBeCloseTo(Math.sqrt(16 + 4), 5)
+  })
+
+  // 対照: 一部でも値があれば外さない（点ごとに何成分の合成かを変えない）。欠けた点は描かない。
+  it('上が一部の点にあれば外さず、欠けた点は NaN', () => {
+    const c = chunk(T0, [1, 1, 1])
+    c.gal[2][0] = 2
+    c.gal[2][1] = Number.NaN
+    c.gal[2][2] = Number.NaN
+    const m = vectorMagnitude(buildSampleSeries([c]), [true, true, true])
+    expect(m[0]).toBeCloseTo(Math.sqrt(1 + 0.25 + 4), 5)
+    expect(Number.isNaN(m[1])).toBe(true)
+    expect(Number.isNaN(m[2])).toBe(true)
+  })
+
+  // 安全弁: 外した後も、残した成分の欠け（途切れ）は NaN のまま。
+  it('上を外しても、途切れは NaN のまま', () => {
+    const s = buildSampleSeries([withoutVertical([1]), { ...withoutVertical([1]), firstSampleMs: T0 + 200 }])
+    const m = vectorMagnitude(s, [true, true, true])
+    expect(m[0]).toBeCloseTo(Math.sqrt(1.25), 5)
+    expect(Number.isNaN(m[1])).toBe(true)
+  })
+
+  // 安全弁: 選んだ成分がどれも値を持たなければ、全点 NaN（0 に化けない）。
+  it('選んだ成分がすべて値を持たなければ NaN', () => {
+    const m = vectorMagnitude(buildSampleSeries([withoutVertical([1, 2])]), [false, false, true])
+    expect(Array.from(m).every((v) => Number.isNaN(v))).toBe(true)
+  })
+})
+
 describe('movingAverage', () => {
   it('各時刻の前後の幅で平均する', () => {
     // 10 ms 刻み、幅 20 ms（前後 10 ms）

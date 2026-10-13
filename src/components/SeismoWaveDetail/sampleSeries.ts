@@ -208,11 +208,16 @@ export function laneGeometry(params: {
  * **向きの切り替えで消した成分は含めない**（2026-10-05 のユーザー判断。1 つだけ選べばその成分の振れの絶対値）。
  * ホストが返すサンプルは直流を引いた変動分なので、そのまま足せる。
  *
+ * **並び全体で 1 点も値の無い成分も含めない**（2026-10-13 ユーザー承認）。上下が解けない観測点ではホストが上下だけ
+ * `null` を送るので、含めると上下を選んでいる限り全点が `NaN` になり段が空になる。**外すかは並び全体で 1 度だけ
+ * 決める** —— 点ごとに決めると、上下が途中で解けた・欠けた境目で何成分の合成かが変わり、振れが急に小さく
+ * 見える。一部でも値のある成分は含めたまま、欠けた点を `NaN` にする。
+ *
  * @param axes 成分ごとに含めるか（東西・南北・上下）
  */
 export function vectorMagnitude(series: SampleSeries, axes: readonly boolean[]): Float32Array {
   const out = new Float32Array(series.length)
-  const use = [0, 1, 2].filter((a) => axes[a] !== false)
+  const use = [0, 1, 2].filter((a) => axes[a] !== false && hasAnyValue(series.v[a], series.length))
   for (let i = 0; i < series.length; i += 1) {
     let sum = 0
     for (const a of use) {
@@ -222,6 +227,11 @@ export function vectorMagnitude(series: SampleSeries, axes: readonly boolean[]):
     out[i] = use.length === 0 ? Number.NaN : Math.sqrt(sum)
   }
   return out
+}
+
+function hasAnyValue(values: Float32Array, length: number): boolean {
+  for (let i = 0; i < length; i += 1) if (Number.isFinite(values[i])) return true
+  return false
 }
 
 /**
