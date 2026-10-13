@@ -52,6 +52,10 @@ export interface MigrationView {
   readonly blockedBySpace: { readonly neededBytes: number; readonly freeBytes: number } | null
   readonly lastError: string | null
   readonly purgeable: { readonly files: number; readonly bytes: number } | null
+  /** 複製の途中で前の保存先が見つからない（「複製をやめる」を出す）。v5.49.0 までのホストは送らない。 */
+  readonly sourceMissing?: boolean
+  /** いま消している最中の進み具合。v5.49.0 までのホストは送らない。 */
+  readonly purgeProgress?: { readonly doneFiles: number; readonly totalFiles: number } | null
   readonly purged: { readonly files: number; readonly bytes: number; readonly kept: number } | null
 }
 
@@ -153,6 +157,10 @@ export function storageWarnings(brief: StorageBriefView): readonly string[] {
   if (brief.migration?.state === 'copying' && brief.migration.lastError !== null) {
     out.push(`前の保存先からの複製に失敗した: ${escapeHtml(brief.migration.lastError)}`)
   }
+  // 削除は裏で走るので、消せなかった理由はここでしか画面に届かない（2026-10-13 ユーザー承認）。
+  if (brief.migration?.state === 'purging' && brief.migration.lastError !== null) {
+    out.push(`前の保存先から削除できなかった: ${escapeHtml(brief.migration.lastError)}`)
+  }
   if (brief.journalProblem !== null) out.push(`複製の記録を読めない: ${escapeHtml(brief.journalProblem)}`)
   if (brief.startupProblem !== null) out.push(`保存先を移せなかった: ${escapeHtml(brief.startupProblem)}`)
   if (brief.lastError !== null) out.push(`容量を測れない: ${escapeHtml(brief.lastError)}`)
@@ -171,6 +179,11 @@ export function purgeProblemText(reason: string, detail: string | null): string 
     default:
       return reason
   }
+}
+
+/** 複製をやめる確認の窓の本文（2026-10-13 ユーザー承認）。 */
+export function abandonConfirmBody(from: string): string {
+  return `${from} からの複製をやめます。まだ複製していない分は前の保存先に残り、この画面からは削除できなくなります。`
 }
 
 /** 保存先の確認の窓の本文。 */

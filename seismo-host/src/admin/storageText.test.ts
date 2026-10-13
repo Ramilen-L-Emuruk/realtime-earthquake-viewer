@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  abandonConfirmBody,
   daysLeftText,
   formatBytes,
   purgeConfirmBody,
@@ -73,8 +74,22 @@ describe('storageWarnings', () => {
     ])
   })
 
-  it('複製の失敗は複製している間だけ出す（削除のときの残したものは複製の欄の件数で伝える）', () => {
+  it('対照: 済んだ後の理由は出さない', () => {
     expect(storageWarnings({ ...base, migration: { state: 'done', blockedBySpace: false, lastError: 'z' } })).toEqual([])
+  })
+
+  it('正: 削除の途中の失敗は「削除できなかった」として出す（裏で消すので画面に届く口はここだけ。2026-10-13 ユーザー承認の文面）', () => {
+    expect(
+      storageWarnings({ ...base, migration: { state: 'purging', blockedBySpace: false, lastError: '前の保存先で 2 件を消さずに残した<x>' } }),
+    ).toEqual(['前の保存先から削除できなかった: 前の保存先で 2 件を消さずに残した&lt;x&gt;'])
+  })
+})
+
+describe('複製をやめる（2026-10-13 ユーザー承認の文面）', () => {
+  it('確認の窓の本文', () => {
+    expect(abandonConfirmBody('D:\\seismo\\data')).toBe(
+      'D:\\seismo\\data からの複製をやめます。まだ複製していない分は前の保存先に残り、この画面からは削除できなくなります。',
+    )
   })
 })
 
@@ -105,8 +120,29 @@ describe('確認の窓と複製の欄', () => {
     blockedBySpace: null,
     lastError: null,
     purgeable: null,
+    purgeProgress: null,
     purged: null,
   }
+
+  it('正: 消している最中は、済んだ件数 / この回に試す件数を出す（2026-10-13 ユーザー承認の文面）', () => {
+    const html = migrationHtml({ ...m, state: 'purging', purgeProgress: { doneFiles: 1234, totalFiles: 5678 } })
+    expect(html).toContain('<span class="nowrap">削除中</span><span>1,234 / 5,678 件</span>')
+    expect(html).not.toContain('purge-old')
+  })
+
+  it('対照: 進み具合が無ければ「削除中」だけを出す', () => {
+    const html = migrationHtml({ ...m, state: 'purging' })
+    expect(html).toContain('<div class="row"><span class="nowrap">削除中</span></div>')
+  })
+
+  it('正: 前の保存先が見つからない間だけ「複製をやめる」を出す', () => {
+    expect(migrationHtml({ ...m, state: 'copying', sourceMissing: true })).toContain('>複製をやめる</button>')
+  })
+
+  it('対照: 前の保存先が見えていれば出さない（送らない古いホストでも出さない）', () => {
+    expect(migrationHtml({ ...m, state: 'copying', sourceMissing: false })).not.toContain('abandon-migration')
+    expect(migrationHtml({ ...m, state: 'copying' })).not.toContain('abandon-migration')
+  })
 
   it('複製中は進み具合を出し、削除のボタンは出さない', () => {
     const html = migrationHtml({ ...m, state: 'copying' })

@@ -33,19 +33,30 @@ describe('resolveStorage', () => {
   it('待っている変更は昇格させ、前の親フォルダを複製元として返す', () => {
     const r = resolveStorage({
       env: {},
-      settings: { dataRoot: null, pendingDataRoot: OTHER },
+      settings: { dataRoot: null, pendingDataRoot: OTHER, pendingFrom: null },
       defaultRoot: DEFAULT_ROOT,
     })
     expect(r.source).toBe('settings')
     expect(r.dirs).toEqual(dirsUnder(OTHER))
     expect(r.movedFrom).toBe(DEFAULT_ROOT)
-    expect(r.nextSettings).toEqual({ dataRoot: OTHER, pendingDataRoot: null })
+    expect(r.nextSettings).toEqual({ dataRoot: OTHER, pendingDataRoot: null, pendingFrom: null })
+  })
+
+  it('正: 保存先を選んだ時の場所（pendingFrom）があれば、それを複製元にする（既定の保存先がプログラムと一緒に動いても）', () => {
+    const r = resolveStorage({
+      env: {},
+      settings: { dataRoot: null, pendingDataRoot: OTHER, pendingFrom: THIRD },
+      defaultRoot: DEFAULT_ROOT,
+    })
+    expect(r.movedFrom).toBe(THIRD)
+    expect(r.dirs).toEqual(dirsUnder(OTHER))
+    expect(r.nextSettings).toEqual({ dataRoot: OTHER, pendingDataRoot: null, pendingFrom: null })
   })
 
   it('2 度目の移動では、設定の保存先が複製元になる', () => {
     const r = resolveStorage({
       env: {},
-      settings: { dataRoot: OTHER, pendingDataRoot: THIRD },
+      settings: { dataRoot: OTHER, pendingDataRoot: THIRD, pendingFrom: null },
       defaultRoot: DEFAULT_ROOT,
     })
     expect(r.movedFrom).toBe(OTHER)
@@ -55,17 +66,17 @@ describe('resolveStorage', () => {
   it('対照: 待ちが今と同じ場所なら移さず、待ちだけ片付ける', () => {
     const r = resolveStorage({
       env: {},
-      settings: { dataRoot: OTHER, pendingDataRoot: OTHER },
+      settings: { dataRoot: OTHER, pendingDataRoot: OTHER, pendingFrom: null },
       defaultRoot: DEFAULT_ROOT,
     })
     expect(r.movedFrom).toBeNull()
-    expect(r.nextSettings).toEqual({ dataRoot: OTHER, pendingDataRoot: null })
+    expect(r.nextSettings).toEqual({ dataRoot: OTHER, pendingDataRoot: null, pendingFrom: null })
   })
 
   it('安全弁: 環境変数が 1 つでもあれば待っている変更は効かないと返し、足りない種類はいまの保存先に置いたまま（既定へ戻さない）', () => {
     const r = resolveStorage({
       env: { SEISMO_RAW_DIR: join(THIRD, 'r') },
-      settings: { dataRoot: OTHER, pendingDataRoot: THIRD },
+      settings: { dataRoot: OTHER, pendingDataRoot: THIRD, pendingFrom: null },
       defaultRoot: DEFAULT_ROOT,
     })
     expect(r.source).toBe('env')
@@ -131,8 +142,8 @@ describe('設定ファイル', () => {
   it('書いて読み戻せる', () => {
     dir = mkdtempSync(join(tmpdir(), 'host-settings-'))
     const path = join(dir, 'config', 'host-settings.json')
-    writeHostSettings(path, { dataRoot: OTHER, pendingDataRoot: null })
-    expect(readHostSettings(path)).toEqual({ dataRoot: OTHER, pendingDataRoot: null })
+    writeHostSettings(path, { dataRoot: OTHER, pendingDataRoot: null, pendingFrom: null })
+    expect(readHostSettings(path)).toEqual({ dataRoot: OTHER, pendingDataRoot: null, pendingFrom: null })
   })
 
   it('無ければ空の設定', () => {
@@ -153,5 +164,14 @@ describe('設定ファイル', () => {
   it('相対パスの保存先は読み取りで弾く', () => {
     expect(parseHostSettings('{"dataRoot":"data"}')).toBeNull()
     expect(parseHostSettings('{"dataRoot":null}')).toEqual(EMPTY_HOST_SETTINGS)
+    expect(parseHostSettings('{"pendingFrom":"data"}')).toBeNull()
+  })
+
+  it('v5.49.0 までの設定（pendingFrom が無い）は、選んだ時の場所が無いものとして読む', () => {
+    expect(parseHostSettings(JSON.stringify({ dataRoot: null, pendingDataRoot: OTHER }))).toEqual({
+      dataRoot: null,
+      pendingDataRoot: OTHER,
+      pendingFrom: null,
+    })
   })
 })

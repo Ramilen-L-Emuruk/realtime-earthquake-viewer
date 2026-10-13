@@ -661,7 +661,8 @@ export interface StatusServerOptions {
    */
   readonly requestRewave: (request: RewaveRequest) => RewaveRequestResult
   /**
-   * 保存先と容量（`GET`/`PUT /api/storage`・`POST /api/storage/purge-old`）。実体は `storageControl.ts`。
+   * 保存先と容量（`GET`/`PUT /api/storage`・`POST /api/storage/purge-old`・`POST /api/storage/abandon-migration`）。
+   * 実体は `storageControl.ts`。
    * **`/status` ではなく `/api/*` の側に置く** —— 保存先のパスは運用者だけが見ればよい。
    */
   readonly storage: StorageOps
@@ -906,6 +907,7 @@ type AdminRoute =
   | { readonly kind: 'rewave' }
   | { readonly kind: 'storage' }
   | { readonly kind: 'storage-purge-old' }
+  | { readonly kind: 'storage-abandon-migration' }
   /** `/api/records/` の後ろ（`channels`・`envelope` など。解くのは `waveRecordsApi.ts`）。 */
   | { readonly kind: 'records'; readonly route: string }
 
@@ -932,6 +934,7 @@ function parseAdminRoute(pathname: string): AdminRoute | null {
   if (pathname === '/api/rewave') return { kind: 'rewave' }
   if (pathname === '/api/storage') return { kind: 'storage' }
   if (pathname === '/api/storage/purge-old') return { kind: 'storage-purge-old' }
+  if (pathname === '/api/storage/abandon-migration') return { kind: 'storage-abandon-migration' }
   if (pathname.startsWith('/api/records/')) {
     const route = pathname.slice('/api/records/'.length)
     return route.length > 0 ? { kind: 'records', route } : null
@@ -1403,11 +1406,26 @@ async function handleAdmin(
     log('warn', 'admin', 'storage-purge', '[admin] 古い保存先を消す合図を受けた（POST /api/storage/purge-old）')
     const result = await storage.purgeOld()
     if (!result.ok) {
-      const status = result.reason === 'failed' ? 500 : 409
-      sendAdminJson(res, status, { error: result.reason, detail: result.detail ?? null })
+      sendAdminJson(res, 409, { error: result.reason, detail: null })
       return
     }
-    sendAdminJson(res, 200, { files: result.files, bytes: result.bytes, kept: result.kept })
+    // **受け付けただけで返す**（消すのは裏で。何時間もかかりうる）。進み具合は GET /api/storage で見る。
+    sendAdminJson(res, 202, { started: true })
+    return
+  }
+  if (route.kind === 'storage-abandon-migration') {
+    // POST だけ（開いただけで複製をやめない）。前の保存先が見つからない間だけ受け付ける（`StorageMigration.abandon`）。
+    if (req.method !== 'POST') {
+      sendAdminJson(res, 405, { error: 'method-not-allowed' })
+      return
+    }
+    log('warn', 'admin', 'storage-abandon', '[admin] 前の保存先からの複製をやめる合図を受けた（POST /api/storage/abandon-migration）')
+    const result = await storage.abandonMigration()
+    if (!result.ok) {
+      sendAdminJson(res, result.reason === 'failed' ? 500 : 409, { error: result.reason, detail: result.detail ?? null })
+      return
+    }
+    sendAdminJson(res, 200, { abandoned: true })
     return
   }
   if (route.kind === 'records') {

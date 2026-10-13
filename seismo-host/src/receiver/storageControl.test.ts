@@ -18,11 +18,12 @@ describe('openStorageAtStartup', () => {
     const order: string[] = []
     const r = await openStorageAtStartup({
       env: {},
-      settings: { dataRoot: null, pendingDataRoot: NEW_ROOT },
+      settings: { dataRoot: null, pendingDataRoot: NEW_ROOT, pendingFrom: null },
       settingsPath: 'host-settings.json',
       defaultRoot: DEFAULT_ROOT,
       nowMs: 1,
       canonical: async (p) => p,
+      exists: async () => true,
       begin: async (to, from) => {
         order.push(`begin ${to} <- ${from}`)
       },
@@ -32,13 +33,13 @@ describe('openStorageAtStartup', () => {
     })
     expect(order).toEqual([`begin ${NEW_ROOT} <- ${DEFAULT_ROOT}`, `write ${NEW_ROOT}`])
     expect(r.resolved.dirs).toEqual(dirsUnder(NEW_ROOT))
-    expect(r.settings).toEqual({ dataRoot: NEW_ROOT, pendingDataRoot: null })
+    expect(r.settings).toEqual({ dataRoot: NEW_ROOT, pendingDataRoot: null, pendingFrom: null })
     expect(r.problem).toBeNull()
   })
 
   it('安全弁: 帳面を始められなければ移さず、前の場所のまま動き、待っている変更は残す', async () => {
     let wrote = false
-    const settings: HostSettings = { dataRoot: null, pendingDataRoot: NEW_ROOT }
+    const settings: HostSettings = { dataRoot: null, pendingDataRoot: NEW_ROOT, pendingFrom: null }
     const r = await openStorageAtStartup({
       env: {},
       settings,
@@ -46,6 +47,7 @@ describe('openStorageAtStartup', () => {
       defaultRoot: DEFAULT_ROOT,
       nowMs: 1,
       canonical: async (p) => p,
+      exists: async () => true,
       begin: async () => {
         throw new Error('別の場所からの帳面が残っている')
       },
@@ -64,7 +66,7 @@ describe('openStorageAtStartup', () => {
     const alias = 'Z:\alias-of-default'
     let began = false
     let wrote = false
-    const settings: HostSettings = { dataRoot: null, pendingDataRoot: alias }
+    const settings: HostSettings = { dataRoot: null, pendingDataRoot: alias, pendingFrom: null }
     const r = await openStorageAtStartup({
       env: {},
       settings,
@@ -72,6 +74,7 @@ describe('openStorageAtStartup', () => {
       defaultRoot: DEFAULT_ROOT,
       nowMs: 1,
       canonical: async (p) => (p === alias ? DEFAULT_ROOT : p),
+      exists: async () => true,
       begin: async () => {
         began = true
       },
@@ -86,6 +89,56 @@ describe('openStorageAtStartup', () => {
     expect(r.problem).toMatch(/同じ場所か入れ子/)
   })
 
+  it('正: 保存先を選んだ時の場所（pendingFrom）から複製する（プログラムを移して既定の保存先が変わっても）', async () => {
+    const chosenFrom = join(tmpdir(), 'ctl-old-default')
+    const began: string[] = []
+    const r = await openStorageAtStartup({
+      env: {},
+      settings: { dataRoot: null, pendingDataRoot: NEW_ROOT, pendingFrom: chosenFrom },
+      settingsPath: 'host-settings.json',
+      defaultRoot: DEFAULT_ROOT,
+      nowMs: 1,
+      canonical: async (p) => p,
+      exists: async () => true,
+      begin: async (to, from) => {
+        began.push(`${to} <- ${from}`)
+      },
+      write: () => {},
+    })
+    expect(began).toEqual([`${NEW_ROOT} <- ${chosenFrom}`])
+    expect(r.resolved.movedFrom).toBe(chosenFrom)
+    expect(r.settings).toEqual({ dataRoot: NEW_ROOT, pendingDataRoot: null, pendingFrom: null })
+    expect(r.problem).toBeNull()
+  })
+
+  it('安全弁: 前の保存先が見つからなければ移さず、帳面も作らず、待っている変更は残す', async () => {
+    const chosenFrom = join(tmpdir(), 'ctl-old-default')
+    let began = false
+    let wrote = false
+    const settings: HostSettings = { dataRoot: null, pendingDataRoot: NEW_ROOT, pendingFrom: chosenFrom }
+    const r = await openStorageAtStartup({
+      env: {},
+      settings,
+      settingsPath: 'host-settings.json',
+      defaultRoot: DEFAULT_ROOT,
+      nowMs: 1,
+      canonical: async (p) => p,
+      exists: async (p) => p !== chosenFrom,
+      begin: async () => {
+        began = true
+      },
+      write: () => {
+        wrote = true
+      },
+    })
+    expect(began).toBe(false)
+    expect(wrote).toBe(false)
+    expect(r.resolved.dirs).toEqual(dirsUnder(DEFAULT_ROOT))
+    expect(r.resolved.movedFrom).toBeNull()
+    expect(r.settings).toEqual(settings)
+    expect(r.problem).toBe(`前の保存先（${chosenFrom}）が見つからないので、移さなかった`)
+  })
+
   it('対照: 変更が無ければ何も書かない', async () => {
     let calls = 0
     await openStorageAtStartup({
@@ -95,6 +148,7 @@ describe('openStorageAtStartup', () => {
       defaultRoot: DEFAULT_ROOT,
       nowMs: 1,
       canonical: async (p) => p,
+      exists: async () => true,
       begin: async () => {
         calls += 1
       },
@@ -116,6 +170,7 @@ function migration(state: 'copying' | 'copied' | null): StorageMigration {
     snapshot: () => (state === null ? null : { state, purgeable: state === 'copied' ? { files: 1, bytes: 2 } : null }),
     blocksNewMove: () => state === 'copying',
     purge: async () => ({ files: 1, bytes: 2, kept: 0 }),
+    abandon: async () => state === 'copying',
   } as unknown as StorageMigration
 }
 
@@ -153,10 +208,10 @@ function control(opts: {
 }
 
 describe('StorageControl.setPending', () => {
-  it('正: 受け付けたら次の起動で使う保存先として書く（今の保存先は変えない）', async () => {
+  it('正: 受け付けたら次の起動で使う保存先と、いまの保存先（複製元）を書く（今の保存先は変えない）', async () => {
     const { c, written } = control({})
     expect(await c.setPending(NEW_ROOT)).toEqual({ ok: true })
-    expect(written).toEqual([{ dataRoot: null, pendingDataRoot: NEW_ROOT }])
+    expect(written).toEqual([{ dataRoot: null, pendingDataRoot: NEW_ROOT, pendingFrom: DEFAULT_ROOT }])
     expect(c.get().pendingRoot).toBe(NEW_ROOT)
     expect(c.get().dirs).toEqual(dirsUnder(DEFAULT_ROOT))
   })
@@ -215,7 +270,7 @@ describe('StorageControl.setPending', () => {
     const { c, written } = control({})
     await c.setPending(NEW_ROOT)
     expect(await c.setPending(null)).toEqual({ ok: true })
-    expect(written.at(-1)).toEqual({ dataRoot: null, pendingDataRoot: null })
+    expect(written.at(-1)).toEqual({ dataRoot: null, pendingDataRoot: null, pendingFrom: null })
   })
 })
 
@@ -224,8 +279,64 @@ describe('StorageControl.purgeOld', () => {
     expect(await control({ migration: migration('copying') }).c.purgeOld()).toEqual({ ok: false, reason: 'not-copied' })
     expect(await control({}).c.purgeOld()).toEqual({ ok: false, reason: 'not-copied' })
   })
-  it('正: 複製が済んでいれば消す', async () => {
-    expect(await control({ migration: migration('copied') }).c.purgeOld()).toEqual({ ok: true, files: 1, bytes: 2, kept: 0 })
+  it('正: 複製が済んでいれば、消し終わるのを待たずに受け付けて裏で消す', async () => {
+    let finish: () => void = () => {}
+    let started = 0
+    const m = {
+      ...migration('copied'),
+      purge: () => {
+        started += 1
+        return new Promise<{ files: number; bytes: number; kept: number }>((resolve) => {
+          finish = () => resolve({ files: 1, bytes: 2, kept: 0 })
+        })
+      },
+    } as unknown as StorageMigration
+    let counted = 0
+    const usage = { ...usageWith(null), count: async () => void (counted += 1) } as unknown as StorageUsage
+    const { c } = control({ migration: m, usage })
+    expect(await c.purgeOld()).toEqual({ ok: true })
+    expect(started).toBe(1)
+    // 対照: 消している最中の 2 度目は断る（裏の削除を重ねない）
+    expect(await c.purgeOld()).toEqual({ ok: false, reason: 'busy' })
+    finish()
+    await c.purgeSettled()
+    // 消し終えたら使用量を数え直す
+    expect(counted).toBe(1)
+  })
+
+  it('安全弁: 裏の削除が投げても受信ごと落とさず、ログに残して次の承認を受け付ける', async () => {
+    const m = {
+      ...migration('copied'),
+      purge: async () => {
+        throw new Error('EBUSY')
+      },
+    } as unknown as StorageMigration
+    const { c, logs } = control({ migration: m })
+    expect(await c.purgeOld()).toEqual({ ok: true })
+    await c.purgeSettled()
+    expect(logs.some((l) => l.includes('EBUSY'))).toBe(true)
+    expect(await c.purgeOld()).toEqual({ ok: true })
+    await c.purgeSettled()
+  })
+})
+
+describe('StorageControl.abandonMigration', () => {
+  it('正: 係が受け付ければやめる', async () => {
+    expect(await control({ migration: migration('copying') }).c.abandonMigration()).toEqual({ ok: true })
+  })
+  it('対照: 係が断れば not-missing', async () => {
+    expect(await control({ migration: migration('copied') }).c.abandonMigration()).toEqual({ ok: false, reason: 'not-missing' })
+  })
+  it('安全弁: 係が投げても落とさず、理由をログへ残す', async () => {
+    const m = {
+      ...migration('copying'),
+      abandon: async () => {
+        throw new Error('EACCES')
+      },
+    } as unknown as StorageMigration
+    const { c, logs } = control({ migration: m })
+    expect(await c.abandonMigration()).toMatchObject({ ok: false, reason: 'failed', detail: 'EACCES' })
+    expect(logs.some((l) => l.includes('EACCES'))).toBe(true)
   })
 })
 

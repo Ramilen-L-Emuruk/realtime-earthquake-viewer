@@ -56,7 +56,7 @@ import type { MseedHealth } from './src/receiver/mseedRecorder'
 import { STATION_CONFIG_FILE, StationStore } from './src/receiver/stationStore'
 import { HOST_SETTINGS_FILE, readHostSettings, writeHostSettings } from './src/receiver/hostSettings'
 import { StorageControl, openStorageAtStartup, storageBrief } from './src/receiver/storageControl'
-import { StorageMigration, beginMigration, canonicalPath } from './src/receiver/storageMigration'
+import { StorageMigration, beginMigration, canonicalPath, exists as pathExists } from './src/receiver/storageMigration'
 import { StorageUsage } from './src/receiver/storageUsage'
 import { ReadingHub } from './src/receiver/readingHub'
 import { WaveArchive, readWaveRange } from './src/receiver/waveArchive'
@@ -1794,9 +1794,11 @@ async function main(): Promise<void> {
     settingsPath: hostSettingsPath,
     defaultRoot: defaultDataRoot(),
     nowMs: Date.now(),
-    begin: beginMigration,
+    begin: (to, from, nowMs) =>
+      beginMigration(to, from, nowMs, { platform: process.platform, log: (line) => console.warn(line) }),
     write: writeHostSettings,
     canonical: canonicalPath,
+    exists: pathExists,
   })
   if (storageStartup.problem !== null) {
     console.error(`[storage] 保存先を移せず、前の場所のまま動く: ${storageStartup.problem}`)

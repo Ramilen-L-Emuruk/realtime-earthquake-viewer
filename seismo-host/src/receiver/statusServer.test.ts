@@ -36,6 +36,7 @@ const NO_STORAGE: StatusServerOptions['storage'] = {
   },
   setPending: async () => ({ ok: false, problem: 'locked' }),
   purgeOld: async () => ({ ok: false, reason: 'not-copied' }),
+  abandonMigration: async () => ({ ok: false, reason: 'not-missing' }),
 }
 
 const WAVE_ARCHIVE: WaveArchiveStatus = {
@@ -1227,7 +1228,7 @@ describe('/api/*', () => {
   describe('保存先（/api/storage）', () => {
     const authed = { Authorization: `Bearer ${TOKEN}`, Origin: ORIGIN }
     function fakeStorage(overrides: Partial<StatusServerOptions['storage']> = {}) {
-      const calls = { set: [] as (string | null)[], purge: 0 }
+      const calls = { set: [] as (string | null)[], purge: 0, abandon: 0 }
       const ops: StatusServerOptions['storage'] = {
         get: () => ({ source: 'default' }) as unknown as ReturnType<StatusServerOptions['storage']['get']>,
         setPending: async (root) => {
@@ -1236,7 +1237,11 @@ describe('/api/*', () => {
         },
         purgeOld: async () => {
           calls.purge += 1
-          return { ok: true, files: 3, bytes: 30, kept: 0 }
+          return { ok: true }
+        },
+        abandonMigration: async () => {
+          calls.abandon += 1
+          return { ok: true }
         },
         ...overrides,
       }
@@ -1303,8 +1308,9 @@ describe('/api/*', () => {
       expect((await fetch(`${base}/api/storage/purge-old`, { headers: authed })).status).toBe(405)
       expect(calls.purge).toBe(0)
       const res = await fetch(`${base}/api/storage/purge-old`, { method: 'POST', headers: authed })
-      expect(res.status).toBe(200)
-      expect(await res.json()).toEqual({ files: 3, bytes: 30, kept: 0 })
+      // 消し終わるのを待たずに受け付ける（何時間もかかりうる。進み具合は GET /api/storage で見る）
+      expect(res.status).toBe(202)
+      expect(await res.json()).toEqual({ started: true })
       expect(calls.purge).toBe(1)
     })
 
@@ -1314,6 +1320,25 @@ describe('/api/*', () => {
       const res = await fetch(`${base}/api/storage/purge-old`, { method: 'POST', headers: { Origin: ORIGIN } })
       expect(res.status).toBe(401)
       expect(calls.purge).toBe(0)
+    })
+
+    it('複製をやめるのは認証つきの POST だけ（GET・トークン無しではやめない）', async () => {
+      const { ops, calls } = fakeStorage()
+      const base = await start(ops)
+      expect((await fetch(`${base}/api/storage/abandon-migration`, { headers: authed })).status).toBe(405)
+      expect((await fetch(`${base}/api/storage/abandon-migration`, { method: 'POST', headers: { Origin: ORIGIN } })).status).toBe(401)
+      expect(calls.abandon).toBe(0)
+      const res = await fetch(`${base}/api/storage/abandon-migration`, { method: 'POST', headers: authed })
+      expect(res.status).toBe(200)
+      expect(calls.abandon).toBe(1)
+    })
+
+    it('対照: やめる理由が無ければ 409 で断る', async () => {
+      const { ops } = fakeStorage({ abandonMigration: async () => ({ ok: false, reason: 'not-missing' }) })
+      const base = await start(ops)
+      const res = await fetch(`${base}/api/storage/abandon-migration`, { method: 'POST', headers: authed })
+      expect(res.status).toBe(409)
+      expect(await res.json()).toMatchObject({ error: 'not-missing' })
     })
   })
 
