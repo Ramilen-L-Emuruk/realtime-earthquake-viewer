@@ -196,6 +196,8 @@ function stubApiFetch(
     readonly boardsFails?: boolean
     readonly restWindows?: { readonly ok: boolean; readonly body: unknown }
     readonly statusSensors?: readonly unknown[]
+    /** `/api/boards` が返す保存済みの基板。省けば `BOARD_A`・`BOARD_B`。 */
+    readonly boards?: readonly BoardEntry[]
   } = {},
 ): void {
   vi.stubGlobal(
@@ -207,7 +209,7 @@ function stubApiFetch(
       }
       if (path === '/api/boards') {
         if (options.boardsFails === true) return { ok: false, status: 503, json: async () => ({}) }
-        return { ok: true, status: 200, json: async () => ({ boards: [BOARD_A, BOARD_B] }) }
+        return { ok: true, status: 200, json: async () => ({ boards: options.boards ?? [BOARD_A, BOARD_B] }) }
       }
       if (path === '/api/stations') {
         return { ok: true, status: 200, json: async () => ({ stations: [STATION] }) }
@@ -996,6 +998,45 @@ describe('基板の傾きを合わせる', () => {
     const card = cardAt(container, 0)
     expect(card.querySelector('.s-rest-note')?.textContent).toContain('まだ無い')
     expect(tiltButton(container).disabled).toBe(true)
+  })
+
+  // 正（2026-10-13 ユーザー承認）: ホストは 2 軸のセンサーに判定を作らないので、保存済みの設定が 2 軸の
+  // カードでは何も出さない。対照: 同じ基板の 3 軸のカードは、判定が無ければ待てば出ると言う。
+  it('保存済みの設定が 2 軸のカードでは静止窓の注記を出さず、3 軸のカードでは出す', async () => {
+    const axis = (vector: [number, number, number]) => ({ vector, offset: 0 })
+    const board: BoardEntry = {
+      ...BOARD_A,
+      sensors: [
+        { sensorId: 'iis-0', enabled: true, noiseDensity: null, axes: [axis([1, 0, 0]), axis([0, 1, 0])] },
+        { sensorId: 'mpu-0', enabled: true, noiseDensity: null, axes: [axis([1, 0, 0]), axis([0, 1, 0]), axis([0, 0, 1])] },
+      ],
+    }
+    stubApiFetch({ restWindows, boards: [board, BOARD_B] })
+    const container = document.createElement('div')
+    mounted = new AbortController()
+    await initBoardsView(container, memoryTabContext(mounted.signal, 'boards'))
+    container.querySelectorAll<HTMLButtonElement>('.edit-board')[0].click()
+
+    expect(cardAt(container, 0).querySelector('.s-rest-note')?.textContent).toBe('')
+    expect(cardAt(container, 1).querySelector('.s-rest-note')?.textContent).toContain('まだ無い')
+  })
+
+  // 正: 設定に無いセンサーは、ホストが届いた本数で既定の校正を作る（`stationConfig.ts` の `resolveSensor`）。
+  // 2 軸で届いているなら保存の前から判定は作られないので、登録フォームでも何も出さない。
+  // 対照: 同じ基板の 3 軸で届くセンサーは、判定が無ければ待てば出ると言う。
+  it('設定に無いセンサーは届いている軸の本数で決め、2 軸なら静止窓の注記を出さない', async () => {
+    stubApiFetch({
+      restWindows,
+      statusSensors: [
+        { boardKey: 'mac:cccccccccccc', sensorId: 'i2c0-6a', lastPacketMs: 9_000, axisCount: 2 },
+        { boardKey: 'mac:cccccccccccc', sensorId: 'i2c0-68', lastPacketMs: 9_000, axisCount: 3 },
+      ],
+    })
+    const container = await mountRegistering()
+
+    // カードはセンサー ID の順（`i2c0-68` → `i2c0-6a`）。
+    expect(cardAt(container, 0).querySelector('.s-rest-note')?.textContent).toContain('まだ無い')
+    expect(cardAt(container, 1).querySelector('.s-rest-note')?.textContent).toBe('')
   })
 })
 

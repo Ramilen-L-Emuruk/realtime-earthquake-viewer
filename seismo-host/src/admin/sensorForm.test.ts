@@ -402,32 +402,50 @@ describe('restWindowNote', () => {
   // **「まだ出ていない」と「出たが使えない」を書き分ける。** 混ぜると、待てば
   // 出るのか何か直さないと出ないのかが読めない。
   it('判定がまだ無いときは、待てば出ることが分かる', () => {
-    expect(restWindowNote(null, 10_000)).toContain('まだ無い')
+    expect(restWindowNote(null, 10_000, 3)).toContain('まだ無い')
+  })
+
+  // 正（2026-10-13 ユーザー承認）: ホストは 2 軸のセンサーに判定を作らない（`gravityCheck.ts` の
+  // `settle`）。「待てば出る」と言い続けないよう、2 軸のカードでは何も出さない。
+  it('正: ホストが 2 軸として扱うセンサーなら、判定が無くても何も出さない', () => {
+    expect(restWindowNote(null, 10_000, 2)).toBe('')
+  })
+
+  // 対照: ホストが何軸として扱うか分からない（設定に無く、まだ届いてもいない）センサーは、
+  // ホストがいずれ判定を作りうるので待たせる。
+  it('対照: 何軸か分からないセンサーでは、判定が無ければ待てば出ると言う', () => {
+    expect(restWindowNote(null, 10_000, null)).toContain('まだ無い')
+  })
+
+  // 安全弁: 保存した直後に 3 軸から 2 軸へ替えると、ホストが次のパケットで判定を捨てるまで
+  // （`gravityCheck.ts` の `reshape`）前の判定が `/status` に残る。2 軸なら前の判定の傾きは出さない。
+  it('安全弁: ホストが 2 軸として扱うセンサーなら、残っている判定があっても傾きを出さない', () => {
+    expect(restWindowNote(window, 10_000, 2)).toBe('')
   })
 
   it('静止した窓では傾きと重力を出す', () => {
-    const note = restWindowNote(window, 10_000)
+    const note = restWindowNote(window, 10_000, 3)
     expect(note).toContain('取り付けの傾き 15°')
     expect(note).toContain('980.7 gal')
   })
 
   it('提案できない窓では、その理由を出す', () => {
-    expect(restWindowNote({ ...window, scale: 'not-at-rest' }, 10_000)).toContain(
+    expect(restWindowNote({ ...window, scale: 'not-at-rest' }, 10_000, 3)).toContain(
       '揺れている間は合わせられない。静止してから 30 秒待ってください',
     )
-    expect(restWindowNote({ ...window, scale: 'too-small' }, 10_000)).toContain('換算の倍率')
+    expect(restWindowNote({ ...window, scale: 'too-small' }, 10_000, 3)).toContain('換算の倍率')
   })
 
   // **経過の基準が無ければ黙って受け手の時計へ倒さない**（端末の時計がずれて
   // いるだけで「10 分前」と出る）。時刻だけを省く。
   it('基準の時刻が無ければ経過を書かない', () => {
-    const note = restWindowNote(window, null)
+    const note = restWindowNote(window, null, 3)
     expect(note).toContain('取り付けの傾き 15°')
     expect(note).not.toContain('前')
   })
 
   // **倍率の話とは別の異常。** どちらも起きうるので、片方で上書きしない。
   it('静止しているのに震度が高い窓では、その旨も添える', () => {
-    expect(restWindowNote({ ...window, restless: true }, 10_000)).toContain('計測震度が高い')
+    expect(restWindowNote({ ...window, restless: true }, 10_000, 3)).toContain('計測震度が高い')
   })
 })
