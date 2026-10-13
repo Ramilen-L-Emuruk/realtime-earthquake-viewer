@@ -411,7 +411,7 @@ describe('BacklogBook', () => {
       const note = rebooted(b, 10_000, 11_000)
       expect(note).toEqual({
         boardKey: S.boardKey, sensorId: S.sensorId, previousBootId: S.bootId, bootId: 'ffff0000', spanSamples: 1_000,
-        timedBy: 'board',
+        timedBy: 'board', headSamples: 0,
       })
       expect(b.snapshot()).toMatchObject({ pendingGaps: 1, pendingSamples: 1_000, rebootsSeen: 1, rebootsUnmeasured: 0 })
       expect(b.nextDue(20_000)).toMatchObject({ key: KEY, stream: S, from: 90, to: 1_090 })
@@ -624,6 +624,115 @@ describe('BacklogBook', () => {
       feed(b, { ...NEW, sensorId: 'i2c0-69' }, [0], 11_000, T + 10_900)
       feed(b, { ...NEW, boardKey: 'mac:ffffffffffff' }, [0], 11_000, T + 10_900)
       expect(b.snapshot()).toMatchObject({ rebootsSeen: 0, pendingGaps: 0 })
+    })
+
+    describe('新しい起動の頭（番号 0 〜 最初に届いたパケット）', () => {
+      const NEW_KEY = streamKey(NEW)
+
+      it('正: 新しい起動の [0, firstSeq) を新しい起動の欠けにし、前の起動の欠けからその分を引く（二重に数えない）', () => {
+        const b = book()
+        // 抜けは 1 000 サンプル。そのうち最後の 300 は新しい起動の番号 [0, 300) が持つ。
+        const note = rebooted(b, 10_000, 11_000, 300)
+        expect(note).toMatchObject({ spanSamples: 1_000, timedBy: 'board', headSamples: 300 })
+        expect(b.snapshot()).toMatchObject({ pendingGaps: 2, pendingSamples: 1_000 })
+        expect(b.nextDue(20_000)).toMatchObject({ key: KEY, stream: S, from: 90, to: 790 })
+        b.unrecoverable(KEY, 90, 790, 'not-held')
+        expect(b.nextDue(20_000)).toMatchObject({ key: NEW_KEY, stream: NEW, from: 0, to: 300 })
+      })
+
+      it('正: 頭は今の起動の欠けなので、返事の「欠けがある」に番号 0 から載る（基板が輪から書き出し始める）', () => {
+        const b = book()
+        rebooted(b, 10_000, 11_000, 300)
+        expect(b.pendingGapStarts(NEW.boardKey, NEW.bootId, 11_000)).toEqual([{ sensorId: S.sensorId, from: 0 }])
+      })
+
+      it('正: 基板が持っていなかった頭（時計が合う前）は「再起動の前後」に数える', () => {
+        const b = book()
+        rebooted(b, 10_000, 11_000, 300)
+        expect(b.recovered(NEW_KEY, 200, 300)).toBe(100)
+        expect(b.unrecoverable(NEW_KEY, 0, 200, 'not-held')).toBe(200)
+        expect(b.snapshot().unrecoverableSamples).toEqual({ 'reboot-span': 200 })
+      })
+
+      it('正: 遅れて届いた頭のパケットは、頭の欠けを埋める', () => {
+        const b = book()
+        rebooted(b, 10_000, 11_000, 60)
+        feed(b, NEW, [0, 30], 11_100, T + 900 + 10_000 - 600)
+        expect(b.snapshot()).toMatchObject({ pendingGaps: 1, pendingSamples: 940 })
+      })
+
+      it('対照: 頭も、諦め（gave-up）は「再起動の前後」へ寄せず諦めとして数える', () => {
+        const b = book({ giveUpAfterMs: 60_000 })
+        rebooted(b, 10_000, 11_000, 300)
+        expect(b.nextDue(11_000 + 60_001)).toBeNull()
+        expect(b.snapshot().unrecoverableSamples).toEqual({ 'gave-up': 1_000 })
+      })
+
+      it('対照: 新しい起動が番号 0 から届いたら、頭の欠けは作らない', () => {
+        const b = book()
+        rebooted(b, 10_000, 11_000, 0)
+        expect(b.snapshot()).toMatchObject({ pendingGaps: 1, pendingSamples: 1_000 })
+      })
+
+      it('対照: 頭が抜けの長さより長ければ（時計の食い違い）、前の起動の欠けは 0 にし、頭はそのまま取りに行く', () => {
+        const b = book()
+        // 抜けは時刻で 100 サンプルなのに、番号では 300 進んでいた。
+        rebooted(b, 1_000, 11_000, 300)
+        expect(b.snapshot()).toMatchObject({ pendingGaps: 1, pendingSamples: 300 })
+        expect(b.nextDue(20_000)).toMatchObject({ key: NEW_KEY, from: 0, to: 300 })
+      })
+
+      it('安全弁: 前の起動を知らない基板（ホストを初めて起動した）の途中から受け始めても、頭を欠けにしない', () => {
+        const b = book()
+        feed(b, NEW, [3_000_000], 1_000, T)
+        expect(b.snapshot()).toMatchObject({ pendingGaps: 0, rebootsSeen: 0 })
+      })
+
+      it('安全弁: 帳面が版 1 で前の起動の時刻を知らないときも、頭を欠けにしない（どこまで遡るか分からない）', () => {
+        const v1 = JSON.stringify({
+          version: 1, gaps: [],
+          streams: [{ boardKey: S.boardKey, bootId: S.bootId, sensorId: S.sensorId, nextSeq: 90, address: ADDR }],
+        })
+        const b = book()
+        b.restore(parseBacklogBookState(v1)!, 5_000)
+        // ログはこの値で「頭は取りに行く」を言うか決める（main.ts の backlog-reboot-unmeasured）。
+        expect(b.notePacket({
+          stream: NEW, firstSeq: 300, count: 30, address: ADDR, atMs: 11_000, firstSampleMs: T + 10_900, sampleRateHz: 100,
+        })).toMatchObject({ spanSamples: null, headSamples: 0 })
+        expect(b.snapshot()).toMatchObject({ rebootsSeen: 1, rebootsUnmeasured: 1, pendingGaps: 0 })
+      })
+
+      it('安全弁: 周波数が読めず長さを測れなくても、番号で分かる頭は取りに行く', () => {
+        const b = book()
+        feed(b, S, [0, 30, 60], 1_000, T)
+        expect(b.notePacket({
+          stream: NEW, firstSeq: 300, count: 30, address: ADDR, atMs: 11_000, firstSampleMs: T + 10_900, sampleRateHz: 0,
+        })).toMatchObject({ spanSamples: null, headSamples: 300 })
+        expect(b.snapshot()).toMatchObject({ rebootsUnmeasured: 1, pendingGaps: 1, pendingSamples: 300 })
+        expect(b.nextDue(20_000)).toMatchObject({ key: NEW_KEY, from: 0, to: 300 })
+      })
+
+      it('安全弁: 頭が 2^30 サンプルを超えたら、新しいほうの端だけを取りに行き、超えた分は「再起動の前後」へ数える', () => {
+        const b = book()
+        const day = 24 * 60 * 60_000
+        const firstSeq = 0x4000_0000 + 500
+        // 150 日止まっていた間に、基板は再起動して 2^30 + 500 サンプル測っていた。
+        expect(rebooted(b, 150 * day, 1_000 + 150 * day, firstSeq)?.headSamples).toBe(0x4000_0000)
+        const span = 150 * day / 10
+        // 前の起動の欠けは span − firstSeq（2^30 未満）、頭は 2^30。
+        expect(b.snapshot().pendingSamples).toBe(span - firstSeq + 0x4000_0000)
+        expect(b.snapshot().unrecoverableSamples).toEqual({ 'reboot-span': 500 })
+        expect(b.pendingGapStarts(NEW.boardKey, NEW.bootId, 1_000 + 150 * day)).toEqual([{ sensorId: S.sensorId, from: 500 }])
+      })
+
+      it('安全弁: 頭の欠けも帳面を書き出して読み戻せる（再起動の欠けとして）', () => {
+        const b = book()
+        rebooted(b, 10_000, 11_000, 300)
+        const again = book()
+        again.restore(parseBacklogBookState(JSON.stringify(b.toJSON()))!, 12_000)
+        again.unrecoverable(NEW_KEY, 0, 300, 'rebooted')
+        expect(again.snapshot().unrecoverableSamples).toEqual({ 'reboot-span': 300 })
+      })
     })
   })
 })

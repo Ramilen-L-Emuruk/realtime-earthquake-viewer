@@ -703,4 +703,33 @@ describe('BacklogFetcher（基板の再起動をまたぐ欠け）', () => {
     await h.fetcher.step()
     expect(h.fetcher.snapshot().unrecoverableSamples).toEqual({ 'reboot-span': 300 })
   })
+
+  it('正: 新しい起動の頭は輪にある分だけ取り戻し、時計が合う前の分は 1 回で諦める（空振りし続けない）', async () => {
+    // 新しい起動は [0, 60) を時計が合う前に測って輪に残さず、[60, 120) は輪に残したが届かなかった。
+    const h = harness(async (url) => {
+      if (url.includes('bid=34b6e78f')) return response(410, 'other boot\n')
+      return response(200, packet(60, 30, { bid: NEW.bootId }) + packet(90, 30, { bid: NEW.bootId }), {
+        'X-Backlog-Have': '60-150', 'X-Backlog-More': '0', 'X-Backlog-Next': '120',
+      })
+    })
+    for (const q of [0, 30, 60]) {
+      h.book.notePacket({ stream: S, firstSeq: q, count: 30, address: ADDR, atMs: 1_000, firstSampleMs: T + q * 10, sampleRateHz: 100 })
+    }
+    h.book.notePacket({ stream: NEW, firstSeq: 120, count: 30, address: ADDR, atMs: 4_000, firstSampleMs: T + 900 + 3_000, sampleRateHz: 100 })
+    h.clock.now = 10_000
+    await h.fetcher.step()
+    await h.fetcher.step()
+    expect(h.urls).toEqual([
+      `http://${ADDR}/backlog?sid=i2c0-68&bid=34b6e78f&from=90&to=270`,
+      `http://${ADDR}/backlog?sid=i2c0-68&bid=ffff0000&from=0&to=120`,
+    ])
+    expect(h.written.map((w) => w.payload)).toEqual([packet(60, 30, { bid: NEW.bootId }), packet(90, 30, { bid: NEW.bootId })])
+    const snap = h.fetcher.snapshot()
+    // 抜けは 300 サンプル。前の起動の 180 と頭の 120 に分かれ、頭のうち 60 を取り戻した。
+    expect(snap).toMatchObject({ recoveredSamples: 60, pendingGaps: 0, rebootsSeen: 1 })
+    expect(snap.unrecoverableSamples).toEqual({ 'reboot-span': 240 })
+    h.clock.now = 10 * 60_000
+    await h.fetcher.step()
+    expect(h.urls).toHaveLength(2)
+  })
 })

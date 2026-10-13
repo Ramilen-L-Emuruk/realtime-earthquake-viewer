@@ -2331,24 +2331,29 @@ async function main(): Promise<void> {
           firstSampleMs: read.packet.firstSampleMs,
           sampleRateHz: read.packet.sampleRateHz,
         })
-        // **基板の再起動を見つけたら 1 行。** 測れなかったとき（その分の欠けはどこにも数えていない）と、
+        // **基板の再起動を見つけたら 1 行。** 測れなかったとき（前の起動の末尾の欠けはどこにも数えていない）と、
         // 基板の時刻が使えずホストの時刻で測ったときは `warn`。**間引きの種類を分ける** —— 同じ種類だと、
         // 同じ基板が再起動を繰り返したとき、先に出た普通の行が後の警告を間隔のあいだ抑えてしまう。
         if (reboot !== null) {
           const who = `${reboot.boardKey}|${reboot.sensorId}`
           const head = `[backlog] ${who} 基板が再起動した（起動 ${reboot.previousBootId} → ${reboot.bootId}）。`
           if (reboot.spanSamples === null) {
-            emit('warn', 'backlog-reboot-unmeasured', who, `${head}抜けた長さを測れず、どこにも数えていない`)
+            emit(
+              'warn', 'backlog-reboot-unmeasured', who,
+              // 頭を欠けにしなかった（旧版の帳面から移った直後）なら、取りに行くとは言わない。
+              `${head}抜けた長さを測れず、前の起動の末尾はどこにも数えていない` +
+                (reboot.headSamples > 0 ? '（新しい起動の頭は基板へ取りに行く）' : ''),
+            )
           } else if (reboot.timedBy === 'host') {
             emit(
               'warn', 'backlog-reboot-host-timed', who,
               `${head}基板の時刻が使えず、ホストが受けた時刻で測って ${reboot.spanSamples} サンプル抜けた` +
-                '（前の起動の末尾は基板へ取りに行く）',
+                '（前の起動の末尾と新しい起動の頭は基板へ取りに行く）',
             )
           } else {
             emit(
               'log', 'backlog-reboot', who,
-              `${head}前後で ${reboot.spanSamples} サンプル抜けた（前の起動の末尾は基板へ取りに行く）`,
+              `${head}前後で ${reboot.spanSamples} サンプル抜けた（前の起動の末尾と新しい起動の頭は基板へ取りに行く）`,
             )
           }
         }
@@ -2801,7 +2806,8 @@ async function main(): Promise<void> {
       // まとめる長さが欠けの散らばり方に合っていない。
       backlogSkipped: delta('backlogSkipped', '取りに行った答えのうち受信済みで書かなかったまとまり', fetched.skippedPackets),
       // 基板の再起動はセンサーごとに数える（3 センサーの基板が 1 回再起動すれば 3）。抜けた長さは
-      // 取り戻した分と `backlogLost:reboot-span` に分かれて入る。測れなかった分はどこにも入らない。
+      // 取り戻した分と `backlogLost:reboot-span` に分かれて入る。測れなかったときの前の起動の末尾は
+      // どこにも入らない（前の起動の最後を覚えていれば、新しい起動の頭は測れなくても欠けとして入る）。
       backlogReboots: delta('backlogReboots', '基板の再起動を見つけた（センサーごと）', fetched.rebootsSeen),
       backlogRebootsHostTimed: delta(
         'backlogRebootsHostTimed',
@@ -2810,7 +2816,7 @@ async function main(): Promise<void> {
       ),
       backlogRebootsUnmeasured: delta(
         'backlogRebootsUnmeasured',
-        '基板の再起動で抜けた長さを測れなかった（センサーごと・どこにも数えていない）',
+        '基板の再起動で抜けた長さを測れなかった（センサーごと・前の起動の末尾はどこにも数えていない）',
         fetched.rebootsUnmeasured,
       ),
     }
