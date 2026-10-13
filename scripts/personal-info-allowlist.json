@@ -23,7 +23,8 @@
     { "path": "seismo-host/src/receiver/stationXml.ts", "value": "el.local", "reason": "XML 要素の名前空間を除いた名前（プロパティの参照）。機器名ではない。この 4 件のファイルは作業中の worktree/feat/seismo-mseed-only にしかまだ無いので、出すときに式が変わっていないか確かめる" },
     { "path": "seismo-host/src/receiver/stationXml.ts", "value": "root.local", "reason": "同上" },
     { "path": "seismo-host/src/receiver/xmlLite.ts", "value": "c.local", "reason": "同上" },
-    { "path": "seismo-host/src/receiver/xmlLite.test.ts", "value": "root.local", "reason": "同上" }
+    { "path": "seismo-host/src/receiver/xmlLite.test.ts", "value": "root.local", "reason": "同上" },
+    { "path": "seismo-host/src/admin/tabState.ts", "value": "this.local", "reason": "localStorage を指すフィールドの参照（プロパティの参照）。機器名ではない" }
   ],
   "identityEmails": [
     { "pattern": "^\\d+\\+Ramilen-L-Emuruk@users\\.noreply\\.github\\.com$", "reason": "GitHub の noreply（このリポジトリの持ち主）" },
