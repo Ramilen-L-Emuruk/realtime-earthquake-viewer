@@ -43,6 +43,7 @@ import type { HubMessage, PairWant, ReadingHub, ResidualWant, WaveWant } from '.
 import { describeFailure, normalizeBoardKey, parseStationConfig } from './stationConfig'
 import type { StationConfig } from './stationConfig'
 import type { StatusReport } from './statusReport'
+import type { StorageOps } from './storageControl'
 import type { ArchivedWaveChunk, WaveRangeResult } from './waveArchive'
 import type { WaveChunk } from './intensityPipeline'
 import { buildWaveEnvelope } from './waveEnvelope'
@@ -660,6 +661,11 @@ export interface StatusServerOptions {
    */
   readonly requestRewave: (request: RewaveRequest) => RewaveRequestResult
   /**
+   * 保存先と容量（`GET`/`PUT /api/storage`・`POST /api/storage/purge-old`）。実体は `storageControl.ts`。
+   * **`/status` ではなく `/api/*` の側に置く** —— 保存先のパスは運用者だけが見ればよい。
+   */
+  readonly storage: StorageOps
+  /**
    * 管理コンソール本体（#313 段 C）。`GET /admin`・`GET /admin/app.js` で配る。
    *
    * **`/api/*` とは別の経路。** ここは静的ファイルを返すだけで認証を持たない
@@ -898,6 +904,8 @@ type AdminRoute =
   | { readonly kind: 'rest-windows' }
   | { readonly kind: 'shutdown' }
   | { readonly kind: 'rewave' }
+  | { readonly kind: 'storage' }
+  | { readonly kind: 'storage-purge-old' }
   /** `/api/records/` の後ろ（`channels`・`envelope` など。解くのは `waveRecordsApi.ts`）。 */
   | { readonly kind: 'records'; readonly route: string }
 
@@ -922,6 +930,8 @@ function parseAdminRoute(pathname: string): AdminRoute | null {
   if (pathname === '/api/rest-windows') return { kind: 'rest-windows' }
   if (pathname === '/api/shutdown') return { kind: 'shutdown' }
   if (pathname === '/api/rewave') return { kind: 'rewave' }
+  if (pathname === '/api/storage') return { kind: 'storage' }
+  if (pathname === '/api/storage/purge-old') return { kind: 'storage-purge-old' }
   if (pathname.startsWith('/api/records/')) {
     const route = pathname.slice('/api/records/'.length)
     return route.length > 0 ? { kind: 'records', route } : null
@@ -1017,6 +1027,55 @@ function replaceInPlace<T>(list: readonly T[], isTarget: (item: T) => boolean, n
  * **`stationId` はボディでなく URL パスを正とする。** ボディに別の `stationId` が
  * 入っていても無視する——URL が指す資源を書き換えるという REST の前提に合わせる。
  */
+/**
+ * `GET`/`PUT /api/storage`。PUT の本文は `{ "pendingDataRoot": "<絶対パス>" | null }`
+ * （`null` は待っている変更の取り消し）。**受け付けても、効くのは次の起動から**（`hostSettings.ts`）。
+ */
+async function handleStorage(
+  req: IncomingMessage,
+  res: ServerResponse,
+  storage: StorageOps,
+  log: (level: LogLevel, kind: string, detail: string, line: string) => void,
+): Promise<void> {
+  if (req.method === 'GET') {
+    sendAdminJson(res, 200, storage.get())
+    return
+  }
+  if (req.method !== 'PUT') {
+    sendAdminJson(res, 405, { error: 'method-not-allowed' })
+    return
+  }
+  const read = await readAdminBody(req)
+  if (!read.ok) {
+    sendAdminJson(res, 400, { error: read.reason })
+    return
+  }
+  const body = read.body
+  const root =
+    typeof body === 'object' && body !== null && 'pendingDataRoot' in body
+      ? (body as { pendingDataRoot: unknown }).pendingDataRoot
+      : undefined
+  if (root !== null && typeof root !== 'string') {
+    sendAdminJson(res, 400, { error: 'invalid-body' })
+    return
+  }
+  const result = await storage.setPending(root)
+  if (!result.ok) {
+    const status = result.problem === 'locked' || result.problem === 'migrating' ? 409 : 400
+    sendAdminJson(res, status, { error: result.problem, detail: result.detail ?? null })
+    return
+  }
+  sendAdminJson(res, 200, storage.get())
+  log(
+    'warn',
+    'admin',
+    'storage',
+    root === null
+      ? '[admin] 次の起動で使う保存先の変更を取り消した'
+      : `[admin] 次の起動で使う保存先を ${root} にした（再起動するまでは今の場所へ書く）`,
+  )
+}
+
 async function handlePutStation(
   req: IncomingMessage,
   res: ServerResponse,
@@ -1203,6 +1262,7 @@ async function handleAdmin(
   requestShutdown: () => ShutdownRequestResult,
   requestRewave: StatusServerOptions['requestRewave'],
   records: StatusServerOptions['records'],
+  storage: StorageOps,
 ): Promise<void> {
   applyAdminCors(req, res, adminAuth.allowedOrigins)
 
@@ -1328,6 +1388,26 @@ async function handleAdmin(
       'rewave',
       `[admin] 合成波形の作り直しを受けた（${r.stationId}・${new Date(r.fromMs).toISOString()}〜${new Date(r.toMs).toISOString()}・ノイズ密度 ${r.noiseDensity === 'current' ? 'いまの設定' : '当時の設定'}・${result.jobs} 件・作り直せない長さ ${Math.round(result.skippedMs / 1000)} 秒）`,
     )
+    return
+  }
+  if (route.kind === 'storage') {
+    await handleStorage(req, res, storage, log)
+    return
+  }
+  if (route.kind === 'storage-purge-old') {
+    // **POST だけ**（止める合図と同じ理由。開いただけで古い場所が消えてはならない）。
+    if (req.method !== 'POST') {
+      sendAdminJson(res, 405, { error: 'method-not-allowed' })
+      return
+    }
+    log('warn', 'admin', 'storage-purge', '[admin] 古い保存先を消す合図を受けた（POST /api/storage/purge-old）')
+    const result = await storage.purgeOld()
+    if (!result.ok) {
+      const status = result.reason === 'failed' ? 500 : 409
+      sendAdminJson(res, status, { error: result.reason, detail: result.detail ?? null })
+      return
+    }
+    sendAdminJson(res, 200, { files: result.files, bytes: result.bytes, kept: result.kept })
     return
   }
   if (route.kind === 'records') {
@@ -1642,6 +1722,7 @@ export async function startStatusServer(options: StatusServerOptions): Promise<S
           options.requestShutdown,
           options.requestRewave,
           options.records,
+          options.storage,
         ).catch((error: unknown) => {
           const detail = error instanceof Error ? error.message : String(error)
           log('error', 'admin', 'handler', `[admin] /api/* の処理に失敗: ${detail}`)

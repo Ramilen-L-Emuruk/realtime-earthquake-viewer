@@ -17,6 +17,7 @@ import { initRecordsView } from './viewRecords'
 import { initShakesView } from './viewShakes'
 import { initStationsView } from './viewStations'
 import { initStatusView } from './viewStatus'
+import { initStorageView } from './viewStorage'
 import { initWavesView } from './viewWaves'
 
 const TABS: readonly { readonly key: TabKey; readonly label: string }[] = [
@@ -27,6 +28,8 @@ const TABS: readonly { readonly key: TabKey; readonly label: string }[] = [
   { key: 'shakes', label: '揺れの記録' },
   // 2026-10-07 ユーザー承認（揺れの記録の右）。
   { key: 'records', label: '波形の記録' },
+  // 2026-10-13 ユーザー承認（波形の記録の右）。
+  { key: 'storage', label: '保存先' },
 ]
 
 /** 開いたまま何も指していないときのタブ。 */
@@ -166,6 +169,7 @@ async function mountTab(root: HTMLElement, key: TabKey): Promise<void> {
   else if (key === 'waves') await initWavesView(content, ctx)
   else if (key === 'shakes') await initShakesView(content, ctx)
   else if (key === 'records') await initRecordsView(content, ctx)
+  else if (key === 'storage') await initStorageView(content, ctx)
   else await initStatusView(content, ctx)
 }
 
