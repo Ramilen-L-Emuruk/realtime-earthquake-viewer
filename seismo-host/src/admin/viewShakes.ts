@@ -212,7 +212,7 @@ export async function initShakesView(container: HTMLElement, ctx: TabContext): P
       shown.length > 0
         ? shown.map((r) => shakeRowHtml(r, r.id === selectedId)).join('')
         : loadFailed === null
-          ? '<tr><td colspan="9" class="muted">この期間に記録した揺れは無い</td></tr>'
+          ? '<tr><td colspan="9" class="muted">この期間に記録した揺れはありません</td></tr>'
           : ''
     rowsEl.innerHTML = failedRow + body
     if (selectedId !== null) {
@@ -249,7 +249,7 @@ export async function initShakesView(container: HTMLElement, ctx: TabContext): P
     // **黙って空にしない。** この画面はホスト自身が配るので、欄を持たない古いホストという形は起きない
     // —— 欄が無いのは応答の形が壊れているときだけ。取れなかったときと同じく、そう書く。
     if (triggers === null || typeof generated !== 'number') {
-      healthEl.innerHTML = '<div class="error">状態を取得できていない（応答の形が違う）</div>'
+      healthEl.innerHTML = '<div class="error">状態を取得できていない: 応答の形が違う</div>'
       return
     }
     const lines = triggers.items.map((t) => {
@@ -261,8 +261,8 @@ export async function initShakesView(container: HTMLElement, ctx: TabContext): P
     if (triggers.malformedCount > 0) {
       lines.push(
         triggers.items.length === 0
-          ? '<div class="error">状態を取得できていない（応答の形が違う）</div>'
-          : `<div class="error">一部の観測点の状態を取得できていない（${triggers.malformedCount} 件・応答の形が違う）</div>`,
+          ? '<div class="error">状態を取得できていない: 応答の形が違う</div>'
+          : `<div class="error">一部の観測点の状態を取得できていない: ${triggers.malformedCount} 件・応答の形が違う</div>`,
       )
     }
     healthEl.innerHTML = lines.join('')
@@ -280,7 +280,7 @@ export async function initShakesView(container: HTMLElement, ctx: TabContext): P
     } catch (error) {
       if (signal.aborted) return null
       // **古い見張りの行を残さない。** 取れていない間に「見張り中」を出し続けると、止まっていても気づけない。
-      healthEl.textContent = `状態を取得できていない（${error instanceof Error ? error.message : String(error)}）`
+      healthEl.textContent = `状態を取得できていない: ${error instanceof Error ? error.message : String(error)}`
       return null
     }
   }
@@ -326,7 +326,7 @@ export async function initShakesView(container: HTMLElement, ctx: TabContext): P
       syncDetailRecord()
     } catch (error) {
       if (signal.aborted || generation !== loadGeneration) return
-      const message = `揺れの記録を取得できていない（${error instanceof Error ? error.message : String(error)}）`
+      const message = `揺れの記録を取得できていない: ${error instanceof Error ? error.message : String(error)}`
       loadState = nextLoadState(loadState, kind, message)
     }
     renderRows()
@@ -601,7 +601,7 @@ export async function initShakesView(container: HTMLElement, ctx: TabContext): P
       drawDetail()
     } catch (error) {
       if (controller.signal.aborted) return
-      noteEl2.textContent = `波形を取得できていない（${error instanceof Error ? error.message : String(error)}）`
+      noteEl2.textContent = `波形を取得できていない: ${error instanceof Error ? error.message : String(error)}`
       noteEl2.className = 'shake-detail-note error'
     }
   }

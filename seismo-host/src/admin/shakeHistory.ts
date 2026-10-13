@@ -585,9 +585,9 @@ const PEAK_WINDOW_SLACK_MS = 60_000
  */
 export function triggerLine(t: TriggerView, nowMs: number): { readonly warn: boolean; readonly text: string } {
   const head = `${escapeHtml(t.stationId)}：`
-  if (t.lastFedAtMs === null) return { warn: true, text: `${head}波形が届いていない（起動から一度も）` }
+  if (t.lastFedAtMs === null) return { warn: true, text: `${head}波形が一度も届いていない` }
   if (nowMs - t.lastFedAtMs >= SILENT_AFTER_MS) {
-    return { warn: true, text: `${head}波形が届いていない（最後は ${jstClock(t.lastFedAtMs, nowMs)}）` }
+    return { warn: true, text: `${head}${jstClock(t.lastFedAtMs, nowMs)} から波形が届いていない` }
   }
   const covers24h =
     t.peakWindowFromMs === null ||

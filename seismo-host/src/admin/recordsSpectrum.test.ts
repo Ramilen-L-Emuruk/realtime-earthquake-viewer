@@ -4,7 +4,7 @@ import type { SampleRunView } from './recordsPlot'
 import {
   NHNM,
   NLNM,
-  NOISE_MODEL_LEGEND,
+  NOISE_MODEL_TIP,
   NOISE_TITLE,
   SPECTRUM_EMPTY_TEXT,
   SPECTRUM_TITLE,
@@ -397,7 +397,7 @@ describe('文言', () => {
     expect(spectrumHeader(58, 'samples')).toBe('約 10 秒の区間 58 本の平均（生のサンプルから）')
     expect(spectrumHeader(1200, 'minutes')).toBe('約 10 秒の区間 1200 本の平均（1 分ごとの PSD から）')
     expect(SPECTRUM_EMPTY_TEXT).toBe('この範囲には約 10 秒続いた記録が無く、スペクトルを出せない')
-    expect(NOISE_MODEL_LEGEND).toBe('破線: Peterson の低ノイズ・高ノイズのモデル（NLNM・NHNM）')
+    expect(NOISE_MODEL_TIP).toBe('破線は Peterson の低ノイズ・高ノイズのモデル（NLNM・NHNM）です。')
   })
 
   it('指した所の値。値の無い軸は並べない', () => {

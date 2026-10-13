@@ -13,6 +13,7 @@ import { boardGravityForTilt, rotateToHeading, suggestRotation } from './calibra
 import { fetchDetectedBoards, type DetectedBoard, type SensorRestWindow } from './detectedBoards'
 import { confirmDialog } from './confirmDialog'
 import { ago, boardLabelHtml, confirmDiscardUnsaved, escapeHtml, qs, receptionBadgeHtml } from './dom'
+import { lockableLabelHtml } from './tip'
 import {
   emptySensorFormValues,
   orientationToFormValues,
@@ -36,6 +37,7 @@ import {
   describeProgress,
   parseRestWindowsBody,
   restWindowsFetchProblem,
+  SIX_FACE_DEGENERATE,
   sixFaceApplied,
   sixFaceProblem,
   type RestWindowsSnapshot,
@@ -120,7 +122,7 @@ function renderBoardsTable(
   const tbody = qs(container, '.boards-table tbody')
   if (rows.length === 0) {
     tbody.innerHTML =
-      '<tr><td colspan="5" class="muted">まだ 1 枚も無い（基板から届けば、ここに出る）</td></tr>'
+      '<tr><td colspan="5" class="muted">基板がありません</td></tr>'
     return
   }
   const stationName = (id: string): string => stations.find((s) => s.stationId === id)?.displayName ?? id
@@ -206,9 +208,7 @@ function fillForm(container: HTMLElement, board: BoardEntry | null): void {
   // **既存の基板を編集するときは boardKey を固定する。** 観測点と同じ理由
   // （URL パスの値が正）。
   keyInput.readOnly = board !== null
-  // **「変更不可」はそれが本当のときだけ出す。** 新規登録では入力必須なので、
-  // 固定の文言にすると初めて登録する運用者へ嘘をつくことになる。
-  qs(container, '.boardKey-label').textContent = board !== null ? '基板 Key（変更不可）' : '基板 Key'
+  qs(container, '.boardKey-label').innerHTML = lockableLabelHtml('基板 Key', board !== null)
   if (board !== null) select.value = board.stationId
   // **基板の向きも基板ごとに入れ替える。** 残すと前に見ていた基板の向きで保存する。
   // 方角の欄はその基板のいまの方角で入れ直し、前の結果は空へ戻す（別の基板へ向けた方角を持ち越さない）。
@@ -252,7 +252,8 @@ export async function initBoardsView(container: HTMLElement, ctx: TabContext): P
       <form class="board-form">
         <!-- **ラベルの初期値はここに置く。** 初回マウントでは fillForm を通らない
              （reload しか呼ばない）ので、空にすると新規登録の画面でラベルごと消える。 -->
-        <label><span class="boardKey-label">基板 Key</span><input name="boardKey" list="${BOARD_KEY_DATALIST_ID}" placeholder="mac:aabbccddeeff" required /></label>
+        <!-- **<label> にしない。** 観測点タブの ID 欄と同じ理由（lockableLabelHtml）。 -->
+        <div class="label-like" data-tip-row><span class="boardKey-label" id="boardKey-label">基板 Key</span><input name="boardKey" list="${BOARD_KEY_DATALIST_ID}" placeholder="mac:aabbccddeeff" required aria-labelledby="boardKey-label" /></div>
         <label>表示名（任意）<input name="displayName" maxlength="${BOARD_DISPLAY_NAME_MAX}" /></label>
         <label>観測点<select name="stationId" required></select></label>
         <div class="board-orientation-slot">${renderOrientationHtml(orientationToFormValues())}</div>
@@ -266,7 +267,7 @@ export async function initBoardsView(container: HTMLElement, ctx: TabContext): P
         </div>
         <div class="row">
           <button type="submit">保存</button>
-          <button type="button" class="reset-form">新規登録へ</button>
+          <button type="button" class="reset-form">新規</button>
         </div>
       </form>
     </section>
@@ -562,7 +563,7 @@ export async function initBoardsView(container: HTMLElement, ctx: TabContext): P
       // **押した後の問い合わせ中は押せないままにする。** ここは 10 秒ごとの取り直しからも
       // 呼ばれるので、印を見ないと待っている間に押せる状態へ戻り、2 回ぶん書き込む。
       button.disabled = problem !== null || tiltInFlight
-      button.title = problem ?? '静止時の重力から、基板の傾きを打ち消す向きを入れる（保存するまで効かない）'
+      button.title = problem ?? '静止時の重力から、基板の傾きを打ち消す向きを入れます。保存するまで効きません。'
     } catch (error) {
       boardPanelBroken = true
       console.warn('[admin] 基板の向きの欄を描き直せない', error)
@@ -656,7 +657,7 @@ export async function initBoardsView(container: HTMLElement, ctx: TabContext): P
       qs(container, '.boards-note').textContent =
         detected.failure === null
           ? ''
-          : `受信の様子を取得できない（${detected.failure}）。基板 Key は手で入力すること`
+          : `受信の様子を取得できない: ${detected.failure}。基板 Key を入力してください`
       qs(container, `#${BOARD_KEY_DATALIST_ID}`).innerHTML = optionsHtml(
         currentDetected.map((d) => d.boardKey),
       )
@@ -707,11 +708,11 @@ export async function initBoardsView(container: HTMLElement, ctx: TabContext): P
       const boardKey = qs<HTMLInputElement>(container, '[name=boardKey]').value.trim()
       const stationId = qs<HTMLSelectElement>(container, '[name=stationId]').value
       if (boardKey.length === 0) {
-        renderError(container, '基板 Key を入力すること')
+        renderError(container, '基板 Key を入力してください')
         return
       }
       if (currentStations.length === 0) {
-        renderError(container, '先に観測点を登録すること')
+        renderError(container, '先に観測点を登録してください')
         return
       }
       try {
@@ -763,7 +764,7 @@ export async function initBoardsView(container: HTMLElement, ctx: TabContext): P
         switchForm(null)
         const reloaded = await reload()
         if (reloaded.ok) renderError(container, '')
-        else renderError(container, `保存済み。一覧の再取得に失敗（${reloaded.reason}）。再読込すること`)
+        else renderError(container, `保存済み。一覧を読み込めない: ${reloaded.reason}`)
       } catch (error) {
         if (signal.aborted) return
         renderError(container, describeSaveFailure(error))
@@ -808,7 +809,7 @@ export async function initBoardsView(container: HTMLElement, ctx: TabContext): P
       const result = fitBoardSixFace(input.sensors)
       const problem = fitWindowsProblem ?? sixFaceProblem(result)
       if (problem !== null || !result.ok) {
-        note(problem ?? '計算できなかった（解が定まらない。置き直して測り直すこと）')
+        note(problem ?? SIX_FACE_DEGENERATE)
         return
       }
       const applied = sixFaceApplied(result)
@@ -911,8 +912,8 @@ export async function initBoardsView(container: HTMLElement, ctx: TabContext): P
         // **「ぶんも回した」と書かない。** 実際に回すのはいまの向きとの差だけで、
         // 入れた値そのものではない（同じ値をもう一度入れれば何も回らない）。
         const heads = heading === null ? '方角は変えていない' : `X 軸を方角 ${heading}° へ向けた`
-        const flip = got.upsideDown ? '／上下逆さまに付いている（方角も見直すこと）' : ''
-        note(`傾き ${got.tiltDeg}° を打ち消す向きを入れた（${heads}）。保存するまで効かない${flip}`)
+        const flip = got.upsideDown ? '／上下逆さまに付いている' : ''
+        note(`傾き ${got.tiltDeg}° を打ち消す向きを入れた。${heads}。保存するまで効かない${flip}`)
       } catch (error) {
         // `qs()` は見つからなければ投げる（`dom.ts`）。無言で止めない。
         note(describeSaveFailure(error))
@@ -976,7 +977,7 @@ export async function initBoardsView(container: HTMLElement, ctx: TabContext): P
           if (signal.aborted) return
           const reloaded = await reload()
           if (reloaded.ok) renderError(container, '')
-          else renderError(container, `削除済み。一覧の再取得に失敗（${reloaded.reason}）。再読込すること`)
+          else renderError(container, `削除済み。一覧を読み込めない: ${reloaded.reason}`)
         } catch (error) {
           if (signal.aborted) return
           renderError(container, describeSaveFailure(error))
@@ -1059,7 +1060,7 @@ function describeFetchFailure(error: unknown): string {
 
 function describeSaveFailure(error: unknown): string {
   if (error instanceof ApiError && error.status === 400) {
-    return `入力が不正: ${error.message}`
+    return `入力が無効: ${error.message}`
   }
   return describeFetchFailure(error)
 }

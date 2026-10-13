@@ -124,7 +124,7 @@ describe('initRecordsView', () => {
     const root = document.createElement('div')
     await initRecordsView(root, memoryTabContext(new AbortController().signal, 'records'))
     expect(requested).toEqual([])
-    expect(root.querySelector('.records-list-note')!.textContent).toBe('管理トークンを設定すると読める')
+    expect(root.querySelector('.records-list-note')!.textContent).toBe('管理トークンを入力してください')
   })
 
   it('一覧を記録に束ねて選ぶ欄へ並べ（名前はエスケープ）、1 本目の新しい側 1 時間を列で取りに行く', async () => {
@@ -134,7 +134,7 @@ describe('initRecordsView', () => {
     const select = root.querySelector<HTMLSelectElement>('.records-group')!
     expect([...select.querySelectorAll('optgroup')].map((g) => g.label)).toEqual(['観測点の合成波形', 'センサーの生データ'])
     expect(select.innerHTML).toContain('&lt;自宅&gt;')
-    expect(root.querySelector('.records-list-note')!.textContent).toBe('読めない要約が 1 件あり、一覧から漏れているかもしれない')
+    expect(root.querySelector('.records-list-note')!.textContent).toBe('読めない要約が 1 件ある。一覧に出ていない記録がある')
     expect(root.querySelector('.records-period')!.textContent).toContain('（3 時間ぶん）')
     // 合成波形には単位の切り替えが無い
     expect(root.querySelector<HTMLElement>('.records-unit')!.hidden).toBe(true)
@@ -148,9 +148,12 @@ describe('initRecordsView', () => {
     expect(new URLSearchParams(intensity.split('?')[1]).get('columns')).not.toBeNull()
     expect(root.querySelector('canvas.records-composite')).not.toBeNull()
     expect(root.querySelector('.records-intensity-header')!.textContent).toBe('最大 1.2（12:03 ごろ） 計測 0.8')
+    // 「全体」の描き方はホバーで出す（2026-10-13 ユーザー承認）
+    const overviewTip = [...root.querySelectorAll<HTMLElement>('button.tip')].find((b) => b.textContent === '全体')
+    expect(overviewTip?.dataset.tip).toBe('振れ幅がいちばん大きい軸を描いています。押すと、その時刻へ寄ります。')
     expect(root.textContent).not.toContain('10 分以内まで寄せると出る')
     // 要約の不調の行
-    expect(root.querySelector('.records-note')!.textContent).toContain('要約がまだ無い時が 2')
+    expect(root.querySelector('.records-note')!.textContent).toContain('要約がまだ無い: 2 時間')
   })
 
   it('10 分の幅を押すと、軸ごとの生のサンプルと震度の推移を取りに行く', async () => {
@@ -180,6 +183,8 @@ describe('initRecordsView', () => {
       expect(new URLSearchParams(intensity.split('?')[1]).get('station')).toBe('home')
       expect(root.querySelector('.records-intensity-header')!.textContent).toMatch(/^最大 1\.2（\d\d:\d\d:\d\d） 計測 0\.8$/)
       expect(root.querySelector('.records-source')!.textContent).toBe('生のサンプルから描いている')
+      // 10 分以内なら、凡例に波形の下の線の説明も入る（10 分を超える側の対照は「印の段」のテスト）
+      expect(root.querySelector<HTMLElement>('.records-marks-legend button.tip')!.dataset.tip).toContain('波形の下の線')
     } finally {
       vi.useRealTimers()
     }
@@ -193,7 +198,7 @@ describe('initRecordsView', () => {
     const root = document.createElement('div')
     await initRecordsView(root, memoryTabContext(new AbortController().signal, 'records'))
     await settle()
-    expect(root.querySelector('.records-note')!.textContent).toContain('波形の記録を取得できていない（range-too-wide）')
+    expect(root.querySelector('.records-note')!.textContent).toContain('波形の記録を取得できていない: range-too-wide')
   })
 
   it('震度の推移だけ取れなくても、軸の段と合成は描き、理由を添えて書く', async () => {
@@ -207,9 +212,9 @@ describe('initRecordsView', () => {
     await initRecordsView(root, memoryTabContext(new AbortController().signal, 'records'))
     await settle()
     const note = root.querySelector('.records-note')!.textContent!
-    expect(note).toContain('波形の記録を取得できていない（range-too-wide）')
+    expect(note).toContain('波形の記録を取得できていない: range-too-wide')
     // 軸の段の応答を読めていれば、その要約の不調の行も出る（捨てていれば出ない）
-    expect(note).toContain('要約がまだ無い時が 2')
+    expect(note).toContain('要約がまだ無い: 2 時間')
   })
 
   it('軸の段は消せるが、最後の 1 本は消さない', async () => {
@@ -260,15 +265,18 @@ describe('initRecordsView', () => {
     expect(new URLSearchParams(events.split('?')[1]).get('station')).toBe('home')
     expect(requested.some((u) => u.startsWith('/api/records/reception'))).toBe(true)
     const note = root.querySelector('.records-marks-note')!.textContent!
-    expect(note).toContain('受信の帯は、いまこの観測点に割り当てている基板のもの')
-    expect(note).toContain('受信の記録の要約がまだ無い時が 3（作り終えると出る）')
-    expect(note).toContain('地震一覧を取れていない日がある（10/06。P2PQuake: HTTP 503）')
-    expect(note).toContain('発生時刻を秒まで寄せる材料を取れていない日がある（震源リスト: 10/05）')
+    // **受信の帯がどの基板のものかは、凡例のホバーの説明へ移した**（2026-10-13 ユーザー承認）。
+    const legendTip = root.querySelector<HTMLElement>('.records-marks-legend button.tip')!.dataset.tip!
+    expect(legendTip).toContain('受信の帯は、いまこの観測点に割り当てている基板のもの')
+    expect(note).not.toContain('受信の帯は')
+    expect(note).toContain('受信の記録の要約がまだ無い: 3 時間')
+    expect(note).toContain('地震一覧を取得できていない日がある: 10/06。P2PQuake: HTTP 503')
+    expect(note).toContain('発生時刻の秒を取得できていない日がある: 震源リスト 10/05')
     expect(note).toContain('揺れの記録が多く、新しい 500 件だけ印を付けている')
     // 形の違う記録 1 件と、ホストが読めなかったファイル 1 本
     expect(note).toContain('読めなかった揺れの記録が 2 件ある')
     // 1 時間の範囲は 10 分を超えるので、波形の下の線の凡例は出さない
-    expect(root.querySelector('.records-marks-legend')!.textContent).not.toContain('波形の下の線')
+    expect(root.querySelector<HTMLElement>('.records-marks-legend button.tip')!.dataset.tip).not.toContain('波形の下の線')
   })
 
   it('印の段: 割り当ての無いセンサーは揺れの記録を取らず、P・S を引けないと書く', async () => {
@@ -298,6 +306,25 @@ describe('initRecordsView', () => {
     const quakes = requested.find((u) => u.startsWith('/api/records/quakes'))!
     expect(new URLSearchParams(quakes.split('?')[1]).get('station')).toBeNull()
     expect(root.querySelector('.records-marks-note')!.textContent).toContain('このセンサーの基板は観測点に割り当てていないので、P・S の線は引けない')
+    // 対照: センサーの生データでは、受信の帯がどの基板のものかを凡例へ足さない（基板は 1 枚に決まっている）
+    expect(root.querySelector<HTMLElement>('.records-marks-legend button.tip')!.dataset.tip).not.toContain('受信の帯は')
+  })
+
+  it('対照: いまの設定に無い観測点の記録では、受信の帯の注を凡例へ足さず、帯を出せないと書く', async () => {
+    const gone = {
+      channels: ['X', 'Y', 'Z'].map((a) => channel(`station/gone/${a}`, 'station', { station: null })),
+      unreadable: 0,
+    }
+    respond = (url) => {
+      if (url.startsWith('/api/records/channels')) return { status: 200, body: gone }
+      if (url.startsWith('/api/records/envelope')) return { status: 200, body: envelope() }
+      return { status: 404, body: { error: 'not-found' } }
+    }
+    const root = document.createElement('div')
+    await initRecordsView(root, memoryTabContext(new AbortController().signal, 'records'))
+    await settle()
+    expect(root.querySelector('.records-marks-note')!.textContent).toContain('この観測点はいまの設定に無いので、受信の帯は出せない')
+    expect(root.querySelector<HTMLElement>('.records-marks-legend button.tip')!.dataset.tip).not.toContain('受信の帯は')
   })
 
   it('周波数: 軸ごとにスペクトログラムと範囲のスペクトルを取り、見出しと色の物差しを書く', async () => {
@@ -340,9 +367,74 @@ describe('initRecordsView', () => {
     // 1e-4・1e-5 gal²/Hz は −80・−90 dB（0 dB = 1 (m/s²)²/Hz）
     expect(root.querySelector('.records-db-scale')!.textContent).toBe('色: −90〜−80 dB（0 dB = 1 (m/s²)²/Hz）')
     expect(root.querySelector('.records-spectrum-header')!.textContent).toBe('約 10 秒の区間 660 本の平均（1 分ごとの PSD から）')
-    expect(root.querySelector('.records-spectrum-legend')!.textContent).toContain('破線: Peterson の低ノイズ・高ノイズのモデル（NLNM・NHNM）')
+    // 破線の説明は見出しのホバーへ移した（gal のときだけ。2026-10-13 ユーザー承認）。
+    expect(root.querySelector<HTMLElement>('.records-spectrum-title button.tip')!.dataset.tip).toBe(
+      '破線は Peterson の低ノイズ・高ノイズのモデル（NLNM・NHNM）です。',
+    )
+    expect(root.querySelector('.records-spectrum-legend')!.textContent).not.toContain('Peterson')
     // ノイズの段は要約の noiseStd（0.5 gal）から
     expect(root.querySelector('.records-noise-header')!.textContent).toBe('1 秒より速い揺れの RMS（縦は対数）　0.50〜0.50 gal')
+  })
+
+  // 一覧が空でも、読めない要約があるなら「記録はありません」と言わない（2026-10-13 ユーザー承認）
+  it('正: 要約が全部読めず一覧が空なら、「記録はありません」を出さず、読めない件数だけを出す', async () => {
+    respond = (url) => {
+      if (url.startsWith('/api/records/channels')) return { status: 200, body: { channels: [], unreadable: 2 } }
+      return { status: 404, body: { error: 'not-found' } }
+    }
+    const root = document.createElement('div')
+    await initRecordsView(root, memoryTabContext(new AbortController().signal, 'records'))
+    await settle()
+    expect(root.querySelector('.records-list-note')!.textContent).toBe('読めない要約が 2 件ある。一覧に出ていない記録がある')
+    expect(root.textContent).not.toContain('この範囲に記録はありません')
+  })
+
+  it('対照: 読めない要約も無く一覧が空なら、「記録はありません」を出す', async () => {
+    respond = (url) => {
+      if (url.startsWith('/api/records/channels')) return { status: 200, body: { channels: [], unreadable: 0 } }
+      return { status: 404, body: { error: 'not-found' } }
+    }
+    const root = document.createElement('div')
+    await initRecordsView(root, memoryTabContext(new AbortController().signal, 'records'))
+    await settle()
+    expect(root.textContent).toContain('この範囲に記録はありません')
+  })
+
+  it('対照: スペクトルが gal でなければ、見出しに破線の説明（ホバー）を付けない', async () => {
+    const problems = { skippedBytes: 0, badRecords: 0, unscaledHours: 0 }
+    respond = (url) => {
+      if (url.startsWith('/api/records/channels')) return { status: 200, body: CHANNELS }
+      if (url.startsWith('/api/records/envelope')) return { status: 200, body: envelope() }
+      if (url.startsWith('/api/records/spectrogram')) {
+        return {
+          status: 200,
+          body: {
+            source: 'minutes',
+            unit: 'count',
+            binEdgesHz: [0.1, 1, 10, 50],
+            columnMs: 60_000,
+            firstColumnMs: H0,
+            segments: [11],
+            power: [[1e-4, 1e-5, null]],
+            hours: { ok: 1, stale: 0, pending: 0, failed: 0, absent: 0 },
+            irregularHours: [],
+            files: null,
+            problems,
+          },
+        }
+      }
+      if (url.startsWith('/api/records/spectrum')) {
+        return { status: 200, body: { source: 'minutes', unit: 'count', binEdgesHz: [0.1, 1, 10, 50], power: [1e-4, 1e-5, null], segments: 660, problems } }
+      }
+      return { status: 404, body: { error: 'not-found' } }
+    }
+    const root = document.createElement('div')
+    await initRecordsView(root, memoryTabContext(new AbortController().signal, 'records'))
+    await settle()
+    // スペクトルが画面へ渡ったこと（見出しが出る）を先に確かめる。渡っていなければ対照にならない
+    expect(root.querySelector('.records-spectrum-header')!.textContent).toBe('約 10 秒の区間 660 本の平均（1 分ごとの PSD から）')
+    expect(root.querySelector('.records-spectrum-title button.tip')).toBeNull()
+    expect(root.querySelector('.records-spectrum-title')!.textContent).toBe('いま映している範囲のスペクトル')
   })
 
   it('生データを選ぶと単位の切り替えが出て、生の値を選ぶと native で取り直す', async () => {

@@ -207,7 +207,7 @@ describe('StationStore', () => {
     writeFileSync(path, outOfRange)
     const opened = new StationStore({ path, now: () => 2 }).open()
     expect(opened.config).toEqual(CONFIG_B)
-    expect(opened.warning).toMatch(/lat が不正: 200/)
+    expect(opened.warning).toMatch(/lat が無効: 200/)
   })
 
   it('いまの設定が通っても、過去の記録の設定が通らなければ読めないとする（評価台は過去の設定を使う）', () => {
@@ -220,10 +220,10 @@ describe('StationStore', () => {
     // 緯度は過去の記録（と閉じた期間）にしか無い。いまの設定（CONFIG_B）は空で、検証を通る。
     const outOfRange = readFileSync(path, 'utf8').replaceAll('35.6', '200')
     writeFileSync(path, outOfRange)
-    expect(() => loadStationHistory(path)).toThrow(/記録の設定が通らない: .*lat が不正: 200/)
+    expect(() => loadStationHistory(path)).toThrow(/記録の設定が通らない: .*lat が無効: 200/)
     const opened = new StationStore({ path, now: () => 3 }).open()
     expect(opened.config).toEqual(CONFIG_B)
-    expect(opened.warning).toMatch(/lat が不正: 200/)
+    expect(opened.warning).toMatch(/lat が無効: 200/)
   })
 
   it('書けなければ投げて数える（保存の失敗を呼び出し側へ返す）', () => {

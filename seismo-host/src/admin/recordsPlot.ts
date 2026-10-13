@@ -1133,21 +1133,21 @@ export function sourceNote(source: 'coarse' | 'fine' | 'samples' | 'raw-samples'
 /** 要約の不調の行。**どれも 0 なら null。** */
 export function problemsNote(t: HourTallyView | null): string | null {
   if (t === null || t.pending + t.stale + t.failed === 0) return null
-  return `要約がまだ無い時が ${t.pending}、作ったあとで元の記録が伸びた時が ${t.stale}（末尾が欠けているかもしれない）、読めない時が ${t.failed}`
+  return `要約がまだ無い: ${t.pending} 時間・要約の後に記録が増えた: ${t.stale} 時間・読めない要約: ${t.failed} 時間`
 }
 
 /** 換算できない時の行。**0 なら null。** */
 export function unscaledNote(hours: number): string | null {
-  return hours > 0 ? `換算の係数が判らない時が ${hours} あり、そこは描いていない（生の値に切り替えると出る）` : null
+  return hours > 0 ? `換算の係数が分からない ${hours} 時間は描いていない` : null
 }
 
-/** 一覧から漏れているかもしれない行。**0 なら null。** */
+/** 一覧から漏れている記録がある、という行。**0 なら null。**（文面は 2026-10-13 ユーザー承認） */
 export function unreadableListNote(n: number): string | null {
-  return n > 0 ? `読めない要約が ${n} 件あり、一覧から漏れているかもしれない` : null
+  return n > 0 ? `読めない要約が ${n} 件ある。一覧に出ていない記録がある` : null
 }
 
-export const EMPTY_RANGE_TEXT = 'この範囲に記録は無い'
-export const TOKEN_MISSING_TEXT = '管理トークンを設定すると読める'
+export const EMPTY_RANGE_TEXT = 'この範囲に記録はありません'
+export const TOKEN_MISSING_TEXT = '管理トークンを入力してください'
 /**
  * 合成の段の見出し。**見えている軸だけで合成する**ので軸の数を名乗らない（PWA の詳細の窓と同じ。
  * 2026-10-08 ユーザー承認）。
@@ -1156,12 +1156,14 @@ export const COMPOSITE_TITLE = '合成'
 export const INTENSITY_TITLE = 'リアルタイム震度の推移'
 export const INTENSITY_STATION_ONLY_TEXT = '震度の推移は観測点の合成波形にだけ出る'
 export const GAP_NONE_LEGEND = '斜線: 記録が無い'
-export const GAP_PENDING_LEGEND = '灰色の斜線: 要約がまだ無い（作り終えると出る）'
-export const OVERVIEW_CAPTION = '全体（振れ幅がいちばん大きい軸）。押すとその時刻へ寄る'
+export const GAP_PENDING_LEGEND = '灰色の斜線: 要約がまだ無い'
+export const OVERVIEW_CAPTION = '全体'
+/** 「全体」のホバーの説明（2026-10-13 ユーザー承認）。 */
+export const OVERVIEW_TIP = '振れ幅がいちばん大きい軸を描いています。押すと、その時刻へ寄ります。'
 
 /** 取れなかったときの行。 */
 export function fetchFailureText(reason: string): string {
-  return `波形の記録を取得できていない（${reason}）`
+  return `波形の記録を取得できていない: ${reason}`
 }
 
 /**

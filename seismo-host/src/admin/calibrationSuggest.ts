@@ -185,17 +185,20 @@ function roundMat3(m: Mat3): Mat3 {
 }
 
 /** 倍率が狂っていて向きを出せないときの理由。 */
-const SCALE_MISMATCH = '換算の倍率が合っていない。先にそちらを確かめること'
+const SCALE_MISMATCH = '換算の倍率が合っていない'
 
-/** `scale` ごとに、向きを提案できない理由。**提案してよければ `null`。** */
+/**
+ * `scale` ごとに、向きを提案できない理由。**提案してよければ `null`。**
+ * 待てば押せるようになるものには待つ長さを添える（2026-10-13 ユーザー承認）。
+ */
 const SCALE_PROBLEM: Record<RestScaleView, string | null> = {
   ok: null,
-  'not-at-rest': '揺れている間は合わせられない（静止してから 30 秒待つこと）',
+  'not-at-rest': '揺れている間は合わせられない。静止してから 30 秒待ってください',
   'too-small': SCALE_MISMATCH,
   'too-large': SCALE_MISMATCH,
-  unreadable: '静止窓の値が読めていない（次の窓でも直らなければ基板を入れ直すこと）',
-  'too-few-samples': '波形が足りない（30 秒ぶん届くと判定が出る）',
-  unknown: '判定の種類を解釈できない（ホストと管理コンソールの版が食い違う疑い）',
+  unreadable: '静止窓の値が読めていない',
+  'too-few-samples': '波形が足りない。30 秒ぶん届くまで待ってください',
+  unknown: '判定の種類を解釈できない',
 }
 
 /**
@@ -211,17 +214,17 @@ const SCALE_PROBLEM: Record<RestScaleView, string | null> = {
 export function restWindowProblem(
   window: Pick<SensorRestWindow, 'scale' | 'axisMeanGal'> | null,
 ): string | null {
-  if (window === null) return '静止窓の判定がまだ無い（波形が 30 秒ぶん届くと出る）'
+  if (window === null) return '静止窓の判定がまだ無い。波形が 30 秒ぶん届くまで待ってください'
   const byScale = SCALE_PROBLEM[window.scale]
   if (byScale !== null) return byScale
   // **`scale` が `ok` でも軸ごとの値が無いことはある。** 判定を出すホストのほうが
   // 古ければ、この欄だけ応答に載らない。
-  if (window.axisMeanGal === null) return '軸ごとの重力が出ていない（ホストの版が古い疑い）'
+  if (window.axisMeanGal === null) return '軸ごとの重力が出ていない'
   return null
 }
 
 /** いまの置き方で静止した窓が無いときの理由（「鉛直を合わせる」を押せない）。 */
-export const NO_STILL_WINDOW = 'いまの置き方で静止した窓がまだ無い（置いてから 1 分ほど動かさずに待つこと）'
+export const NO_STILL_WINDOW = 'いまの置き方で静止した窓がまだ無い。置いてから 1 分ほど動かさないでください'
 
 /** `boardGravityForTilt` へ渡す、そのセンサーの静止窓（`GET /api/rest-windows` の 1 要素）。 */
 export interface TiltSource {
@@ -426,7 +429,7 @@ export function suggestRotation(input: TiltSuggestInput): TiltSuggestion | TiltR
 
   const mag = magnitude(gravity)
   if (mag < MIN_MAGNITUDE_GAL) {
-    return { ok: false, reason: '重力が小さすぎて向きを出せない（換算の倍率を先に確かめること）' }
+    return { ok: false, reason: '重力が小さすぎて向きを出せない' }
   }
 
   const u: Vec3 = [gravity[0] / mag, gravity[1] / mag, gravity[2] / mag]

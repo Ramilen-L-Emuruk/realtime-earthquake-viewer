@@ -14,7 +14,7 @@
 
 import { ago, boardLabelHtml, escapeHtml, isStale, qs, receptionBadgeHtml } from './dom'
 import { describeSilence } from '../receiver/assignedReception'
-import { CLOCK_OFFSET_WARN_MS, warnableClockOffset } from '../receiver/boardClockVerdict'
+import { warnableClockOffset } from '../receiver/boardClockVerdict'
 import type { BoardClockOffset } from '../receiver/boardClockVerdict'
 import { readFinite, readNonEmptyString } from './readJson'
 import type { TabContext } from './tabState'
@@ -161,8 +161,7 @@ export function boardClockWarnings(nowMs: number, boards: readonly BoardClockOff
   }
   if (names.length === 0) return []
   return [
-    `時計がホストとずれている基板: ${names.join('、')}` +
-      `（${CLOCK_OFFSET_WARN_MS} ms を超えると、観測点の合成がその基板を欠きはじめる）`,
+    `時計がホストとずれている基板: ${names.join('、')}`,
   ]
 }
 
@@ -223,8 +222,7 @@ export function assignedSilenceWarnings(nowMs: number, boards: readonly Assigned
     )
   if (silentSensors.length > 0) {
     out.push(
-      `基板は届いているが、sensors[] に書いたセンサーが届いていない: ${silentSensors.join('、')}` +
-        '（sensorId の書き間違いでもこう見える）',
+      `基板は届いているが、登録したセンサーが届いていない: ${silentSensors.join('、')}`,
     )
   }
   return out
@@ -258,8 +256,8 @@ export function mseedWarnings(m: StatusReportView['mseed']): readonly string[] {
 /** 「生データの保存」欄の 1 行（数だけなのでエスケープは要らない）。 */
 export function mseedSummary(m: StatusReportView['mseed']): string {
   return (
-    `書き込みエラー: ${m.writeErrors} 件 / 失った記録: ${m.lostRecords} 本 / ` +
-    `書けたレコード: ${m.recordsWritten} 本 / 中身ごと残した読めないパケット: ${m.unreadableWritten} 件`
+    `書き込みエラー: ${m.writeErrors} 件 / 失ったレコード: ${m.lostRecords} 本 / ` +
+    `書けたレコード: ${m.recordsWritten} 本 / 読めないまま保存したパケット: ${m.unreadableWritten} 件`
   )
 }
 
@@ -563,7 +561,7 @@ export async function initStatusView(container: HTMLElement, ctx: TabContext): P
     }
     if (status.ungroupedMultiBoardStations.length > 0) {
       warnings.push(
-        `複数基板だが合成グループが組めていない観測点: ${escapeHtml(status.ungroupedMultiBoardStations.join('、'))}`,
+        `基板を複数割り当てたが、合成できていない観測点: ${escapeHtml(status.ungroupedMultiBoardStations.join('、'))}`,
       )
     }
     warnings.push(...mseedWarnings(status.mseed))
@@ -622,7 +620,7 @@ export async function initStatusView(container: HTMLElement, ctx: TabContext): P
         <h2>基板ごとの震度</h2>
         <table>
           <thead><tr><th>基板</th><th>観測点</th><th>受信</th><th>計測震度相当</th><th>混ざった本数</th></tr></thead>
-          <tbody>${boardRows.length > 0 ? boardRows : '<tr><td colspan="5" class="muted">該当なし（観測点に割り当てた基板のみ）</td></tr>'}</tbody>
+          <tbody>${boardRows.length > 0 ? boardRows : '<tr><td colspan="5" class="muted">観測点に割り当てた基板がありません</td></tr>'}</tbody>
         </table>
       </section>
       <section class="panel">
@@ -637,7 +635,7 @@ export async function initStatusView(container: HTMLElement, ctx: TabContext): P
                （#362・#315）。震度だけでは、値が高いときに「本当に揺れた」のか
                「顔ぶれの入れ替わりで段差が乗った」のかを見分けられない。 -->
           <thead><tr><th>観測点</th><th>受信</th><th>計測震度相当</th><th>混ざった本数</th><th>差分の最大（対）</th><th>ずれの最大（軸）</th></tr></thead>
-          <tbody>${stationRows.length > 0 ? stationRows : '<tr><td colspan="6" class="muted">該当なし（2 台以上を割り当てた観測点のみ）</td></tr>'}</tbody>
+          <tbody>${stationRows.length > 0 ? stationRows : '<tr><td colspan="6" class="muted">2 台以上を割り当てた観測点がありません</td></tr>'}</tbody>
         </table>
       </section>
       <section class="panel">

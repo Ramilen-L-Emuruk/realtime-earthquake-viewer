@@ -17,6 +17,7 @@
 
 import { ApiError, apiFetch, describeAdminAuthFailure, getStoredToken } from './api'
 import { escapeHtml, qs } from './dom'
+import { tipHtml } from './tip'
 import {
   LANE_QUAKE_TITLE,
   LANE_RECEPTION_TITLE,
@@ -62,7 +63,7 @@ import {
   FREQ_MIN_HZ,
   NHNM,
   NLNM,
-  NOISE_MODEL_LEGEND,
+  NOISE_MODEL_TIP,
   NOISE_TITLE,
   SPECTRUM_EMPTY_TEXT,
   SPECTRUM_TITLE,
@@ -105,6 +106,7 @@ import {
   INTENSITY_STATION_ONLY_TEXT,
   INTENSITY_TITLE,
   OVERVIEW_CAPTION,
+  OVERVIEW_TIP,
   SAMPLES_RANGE_MAX_MS,
   SPAN_CHOICES,
   TOKEN_MISSING_TEXT,
@@ -851,7 +853,7 @@ export async function initRecordsView(container: HTMLElement, ctx: TabContext): 
       <p class="records-list-note error"></p>
     </section>
     <section class="panel records-body" hidden>
-      <p class="muted" style="margin: 0 0 0.3rem">${OVERVIEW_CAPTION}</p>
+      <p class="muted" style="margin: 0 0 0.3rem">${tipHtml(OVERVIEW_CAPTION, OVERVIEW_TIP)}</p>
       <canvas class="wave-canvas records-overview" style="height: ${OVERVIEW_HEIGHT}px; cursor: pointer"></canvas>
       <div class="row" style="align-items: center; flex-wrap: wrap; gap: 0.6rem; margin: 0.6rem 0">
         <div class="period-buttons records-spans" role="group">
@@ -873,7 +875,7 @@ export async function initRecordsView(container: HTMLElement, ctx: TabContext): 
       <!-- 範囲のスペクトルは横が周波数なので、時刻の段（寄せる・送る操作の対象）の外に置く。 -->
       <div class="records-spectrum-frame" style="margin-top: 0.8rem">
         <div class="row" style="justify-content: space-between; align-items: baseline">
-          <strong>${SPECTRUM_TITLE}</strong>
+          <strong class="records-spectrum-title">${escapeHtml(SPECTRUM_TITLE)}</strong>
           <span class="muted records-spectrum-header"></span>
         </div>
         <canvas class="wave-canvas records-spectrum" style="height: ${SPECTRUM_HEIGHT}px"></canvas>
@@ -908,6 +910,7 @@ export async function initRecordsView(container: HTMLElement, ctx: TabContext): 
   const spectrumEl = qs<HTMLCanvasElement>(container, 'canvas.records-spectrum')
   const spectrumHeaderEl = qs(container, '.records-spectrum-header')
   const spectrumLegendEl = qs(container, '.records-spectrum-legend')
+  const spectrumTitleEl = qs(container, '.records-spectrum-title')
   const spectrumReadoutEl = qs(container, '.records-spectrum-readout')
 
   let groups: RecordGroup[] = []
@@ -1324,9 +1327,9 @@ export async function initRecordsView(container: HTMLElement, ctx: TabContext): 
     spectrumHeaderEl.textContent =
       firstSpectrum === null ? '' : firstSpectrum.segments === 0 ? SPECTRUM_EMPTY_TEXT : spectrumHeader(firstSpectrum.segments, firstSpectrum.source)
     const spectrumUnit: ValueUnit = firstSpectrum?.unit ?? valueUnit
-    const legendLines = [axisColorLegend()]
-    if (spectrumUnit === 'gal') legendLines.push(escapeHtml(NOISE_MODEL_LEGEND))
-    spectrumLegendEl.innerHTML = legendLines.join('\n')
+    spectrumLegendEl.innerHTML = axisColorLegend()
+    // **破線の説明は破線を描くときだけ添える**（雑音のモデルは gal でしか描かない）。固定の説明なのでホバーで出す。
+    spectrumTitleEl.innerHTML = spectrumUnit === 'gal' ? tipHtml(SPECTRUM_TITLE, NOISE_MODEL_TIP) : escapeHtml(SPECTRUM_TITLE)
     {
       const prepared = prepareCanvas(spectrumEl, SPECTRUM_HEIGHT)
       if (prepared !== null) {
@@ -1382,11 +1385,15 @@ export async function initRecordsView(container: HTMLElement, ctx: TabContext): 
     noteEl.textContent = notes.join('　')
 
     // 印の段の凡例と注。
-    const legend = [RECEPTION_LEGEND, QUAKE_LEGEND, SHAKE_LEGEND]
+    // **凡例は固定の説明なのでホバーで出す**（2026-10-13 ユーザー承認）。受信の帯がどの基板のものかは、
+    // 観測点の合成波形を見ているときだけ受信の行へ足す（センサーの生データでは基板が 1 枚に決まっている）。
+    const receptionLegend =
+      group.kind === 'station' && group.stationId !== null ? `${RECEPTION_LEGEND}。${RECEPTION_STATION_NOTE}` : RECEPTION_LEGEND
+    const legend = [receptionLegend, QUAKE_LEGEND, SHAKE_LEGEND]
     if (span <= SAMPLES_RANGE_MAX_MS) legend.push(UNDERLINE_LEGEND)
-    marksLegendEl.textContent = legend.join('\n')
+    marksLegendEl.innerHTML = tipHtml('凡例', legend.join('\n'))
     const marksNotes: string[] = []
-    if (group.kind === 'station') marksNotes.push(group.stationId === null ? RECEPTION_STATION_GONE_TEXT : RECEPTION_STATION_NOTE)
+    if (group.kind === 'station' && group.stationId === null) marksNotes.push(RECEPTION_STATION_GONE_TEXT)
     if (m !== null) {
       const pending = receptionPendingNote(m.receptionPending)
       if (pending !== null) marksNotes.push(pending)
@@ -1997,7 +2004,9 @@ export async function initRecordsView(container: HTMLElement, ctx: TabContext): 
     groups = groupChannels(list.channels)
     listNoteEl.textContent = unreadableListNote(list.unreadable) ?? ''
     if (groups.length === 0) {
-      periodEl.textContent = EMPTY_RANGE_TEXT
+      // **読めない要約があるなら「記録は無い」と言わない**（記録はあるのに一覧へ出せていないだけ。
+      // そのことは上の行が伝える。2026-10-13 ユーザー承認）。
+      periodEl.textContent = list.unreadable > 0 ? '' : EMPTY_RANGE_TEXT
       return
     }
     const stations = groups.filter((g) => g.kind === 'station')

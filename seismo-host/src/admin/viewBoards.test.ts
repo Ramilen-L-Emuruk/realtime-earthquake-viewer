@@ -292,29 +292,36 @@ describe('initBoardsView の未保存確認', () => {
     expect(container.querySelectorAll('.sensor-card')).toHaveLength(0)
   })
 
-  // **「変更不可」を新規登録でも出すと嘘になる。** `boardKey` が読み取り専用になるのは
+  // **「変更できない」は、それが本当のときだけ示す。** `boardKey` が読み取り専用になるのは
   // 既存の編集中だけで（`fillForm` の `keyInput.readOnly = board !== null`）、新規登録では
-  // 入力必須。文言を静的テキストで固定していたため実挙動と食い違っていた（レビューで検出）。
-  it('新規登録では「変更不可」と表示しない（入力必須なので嘘になる）', async () => {
+  // 入力必須。ラベルの文字はいつも「基板 Key」で、編集のときだけホバーの説明が付く
+  // （2026-10-12 ユーザー承認）。
+  const lockTip = (container: HTMLElement): string | null =>
+    container.querySelector<HTMLElement>('.boardKey-label button.tip')?.dataset.tip ?? null
+
+  it('新規登録ではラベルに説明を付けない（入力必須なので嘘になる）', async () => {
     const container = document.createElement('div')
     await initBoardsView(container, memoryTabContext(new AbortController().signal, 'boards'))
 
     expect(container.querySelector('.boardKey-label')?.textContent).toBe('基板 Key')
+    expect(lockTip(container)).toBeNull()
     expect(container.querySelector<HTMLInputElement>('[name=boardKey]')?.readOnly).toBe(false)
   })
 
-  it('既存の基板を編集するときだけ「変更不可」と表示する', async () => {
+  it('既存の基板を編集するときだけ、ラベルに「登録した後は変更できません。」を付ける', async () => {
     const container = await mountEditingBoardA()
 
-    expect(container.querySelector('.boardKey-label')?.textContent).toBe('基板 Key（変更不可）')
+    expect(container.querySelector('.boardKey-label')?.textContent).toBe('基板 Key')
+    expect(lockTip(container)).toBe('登録した後は変更できません。')
     expect(container.querySelector<HTMLInputElement>('[name=boardKey]')?.readOnly).toBe(true)
   })
 
-  it('「新規登録へ」で戻すと「変更不可」の表示も外れる', async () => {
+  it('「新規」で戻すと説明も外れる', async () => {
     const container = await mountEditingBoardA()
     container.querySelector<HTMLButtonElement>('.reset-form')?.click()
 
     expect(container.querySelector('.boardKey-label')?.textContent).toBe('基板 Key')
+    expect(lockTip(container)).toBeNull()
     expect(container.querySelector<HTMLInputElement>('[name=boardKey]')?.readOnly).toBe(false)
   })
 
@@ -445,12 +452,13 @@ describe('認識済みの基板からの登録', () => {
     expect(container.querySelector<HTMLInputElement>('[name=boardKey]')?.value).toBe('mac:cccccccccccc')
   })
 
-  it('新規登録なので基板 Key は入力できるまま（「変更不可」にしない）', async () => {
+  it('新規登録なので基板 Key は入力できるまま（説明を付けない）', async () => {
     const container = await mount()
     container.querySelector<HTMLButtonElement>('.register-board')?.click()
 
     expect(container.querySelector<HTMLInputElement>('[name=boardKey]')?.readOnly).toBe(false)
     expect(container.querySelector('.boardKey-label')?.textContent).toBe('基板 Key')
+    expect(container.querySelector('.boardKey-label button.tip')).toBeNull()
   })
 
   it('基板 Key の候補に、認識済みの基板が並ぶ', async () => {
@@ -488,7 +496,7 @@ describe('認識済みの基板からの登録', () => {
 
     expect(container.querySelectorAll('.boards-table tbody tr')).toHaveLength(2)
     expect(container.querySelector('.boards-error')?.textContent).toBe('')
-    expect(container.querySelector('.boards-note')?.textContent).toContain('手で入力すること')
+    expect(container.querySelector('.boards-note')?.textContent).toMatch(/^受信の様子を取得できない: .+。基板 Key を入力してください$/)
     expect(container.querySelectorAll('#detected-board-keys option')).toHaveLength(0)
   })
 })
@@ -621,7 +629,7 @@ describe('基板の傾きを合わせる', () => {
 
     const button = tiltButton(container)
     expect(button.disabled).toBe(true)
-    expect(button.title).toBe('いまの置き方で静止した窓がまだ無い（置いてから 1 分ほど動かさずに待つこと）')
+    expect(button.title).toBe('いまの置き方で静止した窓がまだ無い。置いてから 1 分ほど動かさないでください')
   })
 
   // **水平の 2 本の軸だけでは重力の 3 成分は決まらない。**（2 軸のセンサーも材料に数えるが、
@@ -739,7 +747,7 @@ describe('基板の傾きを合わせる', () => {
     // 開いた後で動かした（ホストの静止の始まりが消えた）。
     restWindows.body.sensors[0] = { ...(restWindows.body.sensors[0] as object), stillSinceMs: null }
 
-    expect(await pressTilt(container)).toBe('いまの置き方で静止した窓がまだ無い（置いてから 1 分ほど動かさずに待つこと）')
+    expect(await pressTilt(container)).toBe('いまの置き方で静止した窓がまだ無い。置いてから 1 分ほど動かさないでください')
     expect(orientationOf(container)).toEqual(before)
     // 断った直後に、古い控えで押せる状態へ戻さない。
     expect(tiltButton(container).disabled).toBe(true)
@@ -761,7 +769,7 @@ describe('基板の傾きを合わせる', () => {
       // その後に基板を動かして押す（押した瞬間の答えは「いま静止していない」）。
       restWindows = tiltRestWindows()
       restWindows.body.sensors[0] = { ...(restWindows.body.sensors[0] as object), stillSinceMs: null }
-      expect(await pressTilt(container)).toBe('いまの置き方で静止した窓がまだ無い（置いてから 1 分ほど動かさずに待つこと）')
+      expect(await pressTilt(container)).toBe('いまの置き方で静止した窓がまだ無い。置いてから 1 分ほど動かさないでください')
       expect(button.disabled).toBe(true)
 
       // 先に投げた返事が後から着く。
@@ -786,7 +794,7 @@ describe('基板の傾きを合わせる', () => {
 
     await vi.waitFor(() =>
       expect(container.querySelector('.board-orientation .b-tilt-result')?.textContent).toBe(
-        'いまの置き方で静止した窓がまだ無い（置いてから 1 分ほど動かさずに待つこと）',
+        'いまの置き方で静止した窓がまだ無い。置いてから 1 分ほど動かさないでください',
       ),
     )
     expect(orientationOf(container)).toEqual(before)
@@ -802,7 +810,7 @@ describe('基板の傾きを合わせる', () => {
     const container = await mountRegistering()
     const button = tiltButton(container)
     expect(button.disabled).toBe(true)
-    expect(button.title).toBe('いまの置き方で静止した窓がまだ無い（置いてから 1 分ほど動かさずに待つこと）')
+    expect(button.title).toBe('いまの置き方で静止した窓がまだ無い。置いてから 1 分ほど動かさないでください')
   })
 
   /**
@@ -1074,6 +1082,13 @@ describe('6 面で測る（基板の欄）', () => {
     },
   }
 
+  it('正: 置き方の手順は見出し「6 面で測る」のホバーで出す（2026-10-12 ユーザー承認）', async () => {
+    const container = await mountWith(NINE)
+    const tip = [...panelOf(container).querySelectorAll<HTMLElement>('button.tip')].find((b) => b.textContent === '6 面で測る')
+    expect(tip?.dataset.tip).toContain('それぞれ 1 分以上動かさないでください。')
+    expect(tip?.dataset.tip).toContain('直近 30 分の静止した時間から計算します。')
+  })
+
   it('正: 揃えばボタンが押せ、押すと全部のカードの軸の欄へ入る', async () => {
     const container = await mountWith(NINE)
     const panel = panelOf(container)
@@ -1094,7 +1109,7 @@ describe('6 面で測る（基板の欄）', () => {
     expect(vector(0, 0)).toEqual(['0.980392', '0.000000', '0.000000'])
     expect(offset(1, 1)).toBe('-30.00')
     expect(vector(1, 0)).toEqual(['1.010101', '0.000000', '0.000000'])
-    expect(panel.querySelector('.b-sixface-result')?.textContent).toContain('全部のセンサーの軸の向き・倍率・ゼロ点を入れた（姿勢 9・残差')
+    expect(panel.querySelector('.b-sixface-result')?.textContent).toContain('全部のセンサーの軸の向き・倍率・ゼロ点を入れた。姿勢 9・残差')
   })
 
   // 秒読み（2026-10-10 ユーザー承認）。最後の姿勢（9 番目）の窓は 480〜510 秒。
@@ -1173,7 +1188,7 @@ describe('6 面で測る（基板の欄）', () => {
     other.dispatchEvent(new Event('input', { bubbles: true }))
 
     expect(container.querySelector('.boards-error')?.textContent).toBe(
-      '1 枚のセンサーカードと基板の向きの欄で取り付けの診断を出せない。画面を再読込すること',
+      '1 枚のセンサーカードと基板の向きの欄で取り付けの診断を出せない。画面を再読み込みしてください',
     )
   })
 })

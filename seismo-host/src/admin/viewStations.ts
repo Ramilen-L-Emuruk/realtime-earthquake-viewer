@@ -10,6 +10,7 @@ import {
   roundCoord,
 } from './geolocation'
 import type { TabContext } from './tabState'
+import { lockableLabelHtml } from './tip'
 import type { StationInfo } from '../receiver/stationConfigTypes'
 
 /** URL の `#` に載せる選択のキー（編集中の観測点 ID）。 */
@@ -75,9 +76,7 @@ function fillForm(container: HTMLElement, station: StationInfo | null): void {
   // （README.md「`/api/stations`・`/api/boards`」）、ここを書き換えても別の
   // stationId として upsert されるだけで、元の行は残ったまま増える。
   idInput.readOnly = station !== null
-  // **「変更不可」はそれが本当のときだけ出す。** 新規登録では入力必須なので、
-  // 固定の文言にすると初めて登録する運用者へ嘘をつくことになる。
-  qs(container, '.stationId-label').textContent = station !== null ? '観測点 ID（変更不可）' : '観測点 ID'
+  qs(container, '.stationId-label').innerHTML = lockableLabelHtml('観測点 ID', station !== null)
   nameInput.value = station?.displayName ?? ''
   latInput.value = station !== null ? String(station.lat) : ''
   lonInput.value = station !== null ? String(station.lon) : ''
@@ -99,7 +98,9 @@ export async function initStationsView(container: HTMLElement, ctx: TabContext):
       <form class="station-form">
         <!-- **ラベルの初期値はここに置く。** 初回マウントでは fillForm を通らない
              （reload しか呼ばない）ので、空にすると新規登録の画面でラベルごと消える。 -->
-        <label><span class="stationId-label">観測点 ID</span><input name="stationId" required /></label>
+        <!-- **<label> にしない。** 編集のときはラベルに説明が付く（lockableLabelHtml）。説明の付いた
+             ラベルを <label> に入れると、押したとき吹き出しより先に入力欄へフォーカスが移る。 -->
+        <div class="label-like" data-tip-row><span class="stationId-label" id="stationId-label">観測点 ID</span><input name="stationId" required aria-labelledby="stationId-label" /></div>
         <label>表示名<input name="displayName" required /></label>
         <div class="row">
           <label>緯度<input name="lat" type="number" step="any" required /></label>
@@ -111,7 +112,7 @@ export async function initStationsView(container: HTMLElement, ctx: TabContext):
         </div>
         <div class="row">
           <button type="submit">保存</button>
-          <button type="button" class="reset-form">新規登録へ</button>
+          <button type="button" class="reset-form">新規</button>
         </div>
       </form>
     </section>
@@ -359,7 +360,7 @@ function describeSaveFailure(error: unknown): string {
     return '基板が割り当てられているので削除できない'
   }
   if (error instanceof ApiError && error.status === 400) {
-    return `入力が不正: ${error.message}`
+    return `入力が無効: ${error.message}`
   }
   return describeFetchFailure(error)
 }

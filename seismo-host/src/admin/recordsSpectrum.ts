@@ -563,7 +563,8 @@ export function noiseRange(series: readonly NoiseSeries[]): { readonly min: numb
 export const NOISE_TITLE = 'ノイズ水準の推移'
 export const SPECTRUM_TITLE = 'いま映している範囲のスペクトル'
 export const SPECTRUM_EMPTY_TEXT = 'この範囲には約 10 秒続いた記録が無く、スペクトルを出せない'
-export const NOISE_MODEL_LEGEND = '破線: Peterson の低ノイズ・高ノイズのモデル（NLNM・NHNM）'
+/** 範囲のスペクトルの見出しのホバーの説明（2026-10-13 ユーザー承認）。 */
+export const NOISE_MODEL_TIP = '破線は Peterson の低ノイズ・高ノイズのモデル（NLNM・NHNM）です。'
 
 /** ノイズの値（有効数字 2 桁。静かなときの `0.012` を `0.01` へ潰さない）。 */
 export function formatNoise(v: number): string {

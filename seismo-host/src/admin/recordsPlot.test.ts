@@ -507,7 +507,7 @@ describe('文言', () => {
   it('要約の不調はどれも 0 なら出さない', () => {
     expect(problemsNote({ ok: 3, stale: 0, pending: 0, failed: 0, absent: 2 })).toBeNull()
     expect(problemsNote({ ok: 0, stale: 1, pending: 3, failed: 0, absent: 0 })).toBe(
-      '要約がまだ無い時が 3、作ったあとで元の記録が伸びた時が 1（末尾が欠けているかもしれない）、読めない時が 0',
+      '要約がまだ無い: 3 時間・要約の後に記録が増えた: 1 時間・読めない要約: 0 時間',
     )
   })
 

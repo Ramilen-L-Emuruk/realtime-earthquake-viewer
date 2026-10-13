@@ -427,13 +427,13 @@ export function describeFailure(f: StationConfigParseFailure): string {
     case 'station-not-an-object':
       return `stations[${f.index}] がオブジェクトではない`
     case 'station-field-invalid':
-      return `stations[${f.index}].${f.field} が不正: ${JSON.stringify(f.value)}`
+      return `stations[${f.index}].${f.field} が無効: ${JSON.stringify(f.value)}`
     case 'duplicate-station-id':
       return `stationId が重複している: ${f.stationId}`
     case 'board-not-an-object':
       return `boards[${f.index}] がオブジェクトではない`
     case 'board-field-invalid':
-      return `boards[${f.index}].${f.field} が不正: ${JSON.stringify(f.value)}`
+      return `boards[${f.index}].${f.field} が無効: ${JSON.stringify(f.value)}`
     case 'duplicate-board-key':
       return `boardKey が重複している: ${f.boardKey}`
     case 'unknown-station-id':
@@ -443,7 +443,7 @@ export function describeFailure(f: StationConfigParseFailure): string {
     case 'sensor-not-an-object':
       return `boards[${f.boardIndex}].sensors[${f.sensorIndex}] がオブジェクトではない`
     case 'sensor-field-invalid':
-      return `boards[${f.boardIndex}].sensors[${f.sensorIndex}].${f.field} が不正: ${JSON.stringify(f.value)}`
+      return `boards[${f.boardIndex}].sensors[${f.sensorIndex}].${f.field} が無効: ${JSON.stringify(f.value)}`
     case 'duplicate-sensor-id':
       return `boards[${f.boardIndex}] の中で sensorId が重複している: ${f.sensorId}`
     default:

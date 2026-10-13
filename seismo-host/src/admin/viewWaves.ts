@@ -24,6 +24,7 @@
 // 管理コンソールのトークンを盗めるストアド XSS になる。
 
 import { ago, escapeHtml, qs, receptionBadgeHtml } from './dom'
+import { tipHtml } from './tip'
 import { readFinite, readNonEmptyString } from './readJson'
 import { WaveStore, keyOf } from './waveBuffer'
 import type { WaveAxisStats, WaveBuffer, WaveChunkView, WaveColumn, WaveMeanLines, WaveSourceKey, WaveWindow } from './waveBuffer'
@@ -58,6 +59,19 @@ const SPAN_CHOICES: readonly { readonly ms: number; readonly label: string }[] =
 ]
 
 const DEFAULT_SPAN_MS = 30_000
+
+/**
+ * 波形タブのホバーの説明。**固定の説明なので常には出さない**（`docs/ui-wording-procedure.md` §2）。
+ * 文面は 2026-10-13 ユーザー承認。
+ */
+const WAVE_SPAN_TIP = 'この画面を開いてから受け取った波形を、最大 5 分まで表示できます。'
+const UNORIENTED_TIP = '取り付けの向きを設定していないので、軸はセンサーの向きのままです。東・北・上を表しません。'
+const PAIR_DIFF_TIP =
+  '差分は、2 台の値の差の半分です。センサー単独や合成とは別の量です。' +
+  '縦の幅は軸ごとに共通なので、揺れている間にほかの波形と重ねると、ほぼ平らに見えます。' +
+  '差分だけを選ぶと、縦の幅が差分に合います。' +
+  'ずれは、そのセンサーを除いたほかのセンサーで解いた揺れを、そのセンサーが測る向きへ写し、測った値から引いたものです。' +
+  '半分にはしません。'
 
 /**
  * 軸の名前。
@@ -311,8 +325,8 @@ function memberBadgeHtml(range: { readonly min: number; readonly max: number } |
 const STATE_TEXT: Record<WaveStreamState, string> = {
   connecting: '接続中',
   open: '受信中',
-  reconnecting: '切断（繋ぎ直している）',
-  closed: '繋げない',
+  reconnecting: '再接続中',
+  closed: '接続できない',
 }
 
 export async function initWavesView(container: HTMLElement, ctx: TabContext): Promise<void> {
@@ -326,18 +340,20 @@ export async function initWavesView(container: HTMLElement, ctx: TabContext): Pr
       </div>
       <p class="wave-warn muted"></p>
       <div class="wave-controls">
-        <label>
-          <span>見る幅</span>
-          <select class="wave-span">
+        <!-- **<label> にしない。** 説明の付いたラベルを <label> に入れると、押したとき吹き出しより先に
+             選択欄へフォーカスが移る（管理トークンの欄と同じ。app.ts）。 -->
+        <div class="label-like" data-tip-row>
+          <span id="wave-span-label">${tipHtml('見る幅', WAVE_SPAN_TIP)}</span>
+          <select class="wave-span" aria-labelledby="wave-span-label">
             ${SPAN_CHOICES.map(
               (c) => `<option value="${c.ms}" ${c.ms === DEFAULT_SPAN_MS ? 'selected' : ''}>${c.label}</option>`,
             ).join('')}
           </select>
-        </label>
+        </div>
         <label>
           <span>縦の幅</span>
           <select class="wave-scale">
-            <option value="auto" selected>自動（揺れに合わせる）</option>
+            <option value="auto" selected>自動</option>
             <option value="1">±1 gal</option>
             <option value="10">±10 gal</option>
             <option value="100">±100 gal</option>
@@ -350,30 +366,18 @@ export async function initWavesView(container: HTMLElement, ctx: TabContext): Pr
         </label>
       </div>
       <input type="range" class="wave-seek" min="0" max="1000" value="1000" disabled />
-      <p class="muted">
-        遡れるのは、この画面を開いてから受け取った分（最大 5 分）だけ。
-      </p>
     </section>
     <section class="panel">
       <h2>センサー</h2>
       <div class="wave-sensors"></div>
-      <p class="muted">
-        取り付けの向きを設定していないセンサーでは、軸はセンサーの取り付けのままで方角の意味を持たない。
-      </p>
     </section>
     <section class="panel">
-      <h2>センサー対の差分</h2>
+      <h2>${tipHtml('センサー対の差分', PAIR_DIFF_TIP)}</h2>
       <label>
         <span>見る組</span>
         <select class="wave-diff"></select>
       </label>
       <p class="wave-diff-note muted"></p>
-      <p class="muted">
-        差分は 2 台の値の差（両方の半分）で、センサー単独や合成とは別の量。
-        縦の幅は軸ごとに共通なので、揺れている間は絶対値の波形に重ねるとほぼ平らに見える。
-        差分だけを選べば、縦の幅が差分に合う。
-        ずれは、そのセンサーを除いたほかのセンサーで解いた揺れを、そのセンサーが測る向きへ写して、測った値から引いたもの（半分にはしない）。
-      </p>
     </section>
     <div class="wave-plots">
       ${AXIS_LABELS.map(
@@ -560,15 +564,14 @@ export async function initWavesView(container: HTMLElement, ctx: TabContext): Pr
       const full = stream !== null && stream.limit !== null && stream.open >= stream.limit
       warnings.push(
         full
-          ? `押し出しの枠が埋まっている（${stream?.open} / ${stream?.limit}）。他のタブや端末を閉じてから画面を再読込すること`
-          : 'ホストの押し出しの口へ繋げない。ホストが動いていることを確かめて画面を再読込すること',
+          ? `ホストへの接続が上限に達している: ${stream?.open} / ${stream?.limit}。ほかのタブや端末を閉じてから、画面を再読み込みしてください`
+          : 'ホストに接続できない。画面を再読み込みしてください',
       )
     }
     if (unreadable > 0) {
-      // **行動で締める。** 他の警告と体裁を揃える —— 生の理由だけ出しても、
-      // 運用者には次に何をすればよいか分からない（`detail` はコンソールへ出す）。
+      // 画面には件数だけを出し、生の理由（`detail`）はコンソールへ出す。
       warnings.push(
-        `読めない波形が ${unreadable} 件届いた。ホストと管理コンソールの版が食い違っている疑いがあるので、開発者へ伝えること`,
+        `読めない波形が ${unreadable} 件届いた`,
       )
       console.warn('[admin] 読めない押し出し:', lastUnreadableDetail)
     }
@@ -579,16 +582,16 @@ export async function initWavesView(container: HTMLElement, ctx: TabContext): Pr
       // **溜めた分が消えたことは必ず出す。** 黙っていると「開いた直後で溜まりが
       // 少ない」のと区別が付かない。
       warnings.push(
-        `時刻が巻き戻ったため、溜めていた波形を ${store.rewindCount} 回捨てた（基板の入れ替えか時計の飛び）`,
+        `時刻が巻き戻ったため、溜めていた波形を ${store.rewindCount} 回捨てた`,
       )
     }
     if (store.droppedByCountLimit > 0) {
       warnings.push(
-        `届く刻みが細かく、保持できる件数の上限に達した（${store.droppedByCountLimit} 件を落とした）。遡れる長さが 5 分より短くなる`,
+        `保持できる件数の上限に達し、${store.droppedByCountLimit} 件を捨てた。表示できるのは 5 分より短い`,
       )
     }
     if (timebaseNominal) {
-      warnings.push('時刻の当てはめが公称値へ倒れている区間が含まれる（波形の形は正しいが、時刻の根拠は弱い）')
+      warnings.push('時刻を当てはめられず、決めた間隔で並べた区間がある')
     }
     setWarnings(warnings)
   }
@@ -630,7 +633,7 @@ export async function initWavesView(container: HTMLElement, ctx: TabContext): Pr
         // 「向き未設定」と出すと、**校正済みのセンサーを未設定だと誤って伝える**。
         // 隣の受信バッジも同じときは何も言わない形にしてある。
         const calibration =
-          label === undefined ? '' : label.calibrationConfigured ? '' : '<span class="muted">向き未設定</span>'
+          label === undefined ? '' : label.calibrationConfigured ? '' : `<span class="muted">${tipHtml('向き未設定', UNORIENTED_TIP)}</span>`
         const reception =
           statusGeneratedAtMs === null || label === undefined
             ? ''
@@ -730,16 +733,16 @@ export async function initWavesView(container: HTMLElement, ctx: TabContext): Pr
     // **「まだ来ていない」を出す。** 設定が変わってその組・台が無くなった場合の症状は
     // 1 件も届かないことだけなので、黙ると繋がっていないのと見分けが付かない。
     if (residualSelection !== null) {
-      // 文言は 2026-10-09 ユーザー承認。
+      // 文言は 2026-10-09 ユーザー承認（括弧の補足は 2026-10-13 に外した。同日承認）。
       diffNoteEl.textContent =
         selectionChunks === 0
-          ? 'このセンサーのずれはまだ 1 件も届いていない（合成が作っていないか、設定が変わった可能性）'
+          ? 'このセンサーのずれはまだ 1 件も届いていない'
           : `このセンサーのずれを ${selectionChunks} まとまり受け取っている`
       return
     }
     diffNoteEl.textContent =
       selectionChunks === 0
-        ? 'この組の差分はまだ 1 件も届いていない（合成が作っていないか、設定が変わった可能性）'
+        ? 'この組の差分はまだ 1 件も届いていない'
         : `この組の差分を ${selectionChunks} まとまり受け取っている`
   }
 

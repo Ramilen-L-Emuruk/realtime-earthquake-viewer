@@ -206,7 +206,7 @@ export function describePlacement(
     if (clock.sampledAtMs - pending.fromMs > clock.windowMs + REST_GAP_MS) return say(`センサー ${sensorId} の波形が届いていない`)
   }
   if (current === 'counted-new') return say('数えた。次の向きへ置き換えてよい')
-  if (current === 'counted-same') return say('数えたが、測った向きと同じ（姿勢は増えない）。違う向きへ置くこと')
+  if (current === 'counted-same') return say('数えたが、測った向きと同じ。違う向きへ置いてください')
   let readyAtMs = Number.NEGATIVE_INFINITY
   let latestCloseMs = Number.NEGATIVE_INFINITY
   let moving = false
@@ -251,39 +251,42 @@ function fixed(v: number, digits: number): string {
   return /^-0\.?0*$/.test(s) ? s.slice(1) : s
 }
 
+/** 解が定まらなかったときの理由（押せない理由と、押した後に解けなかったときで同じ文を出す）。 */
+export const SIX_FACE_DEGENERATE = '解が定まらず、計算できなかった。置き直して測り直してください'
+
 /** ボタンを押せない理由。**押せるなら `null`。** */
 export function sixFaceProblem(result: BoardSixFaceFit | BoardSixFaceRefusal): string | null {
   if (result.ok) return null
   switch (result.reason) {
     case 'no-window-start':
-      return '静止窓に始まりの時刻が無い（ホストの版が古い疑い）'
+      return '静止窓に始まりの時刻が無い'
     case 'prior-degenerate':
-      return 'カードの軸の向きが 3 方向へ散っていない（立てて付けたセンサーは、大まかな向きを先に入れること）'
+      return 'カードの軸の向きが 3 方向へ散っていない。立てて付けたセンサーは、大まかな向きを先に入れてください'
     case 'no-common-pose':
       return `センサー ${result.sensorId ?? '—'} が、ほかのセンサーと同時に静止した置き方が無い`
     case 'axis-count-mismatch':
       return axisCountMismatchProblem(result.sensorId ?? '—', result.cardAxisCount, result.windowAxisCount)
     case 'missing-faces': {
       const missing = FACE_ORDER.filter((f) => !result.faces[f]).map((f) => FACE_LABEL[f])
-      return `まだ揃っていない面がある（${missing.join('・')}）`
+      return `まだ揃っていない面がある: ${missing.join('・')}`
     }
     case 'too-few-poses':
-      return `姿勢が足りない（${result.poseCount}／${formatMinPoses(result.minPoses)}）。6 面に加えて、斜めにも置くこと`
+      return `姿勢が足りない: ${result.poseCount}／${formatMinPoses(result.minPoses)}。6 面に加えて、斜めにも置いてください`
     case 'directions-biased':
-      return '斜めの置き方が同じ向きに偏っている。違う向きに斜めに置くこと'
+      return '斜めの置き方が同じ向きに偏っている。違う向きに斜めに置いてください'
     case 'degenerate':
-      return '計算できなかった（解が定まらない。置き直して測り直すこと）'
+      return SIX_FACE_DEGENERATE
     case 'out-of-range':
-      return `出た値が個体差の幅を超えている（倍率 ${SIX_FACE_LIMITS.gainMin}〜${SIX_FACE_LIMITS.gainMax} 倍・ゼロ点 ±${Math.round(SIX_FACE_LIMITS.offsetMaxGal)} gal）`
+      return `出た値が個体差の幅を超えている: 倍率 ${SIX_FACE_LIMITS.gainMin}〜${SIX_FACE_LIMITS.gainMax} 倍・ゼロ点 ±${Math.round(SIX_FACE_LIMITS.offsetMaxGal)} gal`
     case 'residual-too-large':
-      return `姿勢の間で辻褄が合わない（残差 ${result.maxResidualGal === null ? '—' : formatGal(result.maxResidualGal)} gal）。動かしている最中の窓が混ざった疑い`
+      return `姿勢の間で辻褄が合わない: 残差 ${result.maxResidualGal === null ? '—' : formatGal(result.maxResidualGal)} gal`
   }
 }
 
 /**
  * 取り付けの欄（センサーカードの静止窓の様子・基板の向きの欄）を描き直せなかったときの、画面上部へ出す 1 行。
  * どちらも壊れていなければ `null`。**カードと基板の向きの欄は分けて言う**（基板の欄の失敗をカードの枚数へ
- * 足すと、壊れていないカードまで壊れたように読める）。文言は 2026-10-10 ユーザー承認。
+ * 足すと、壊れていないカードまで壊れたように読める）。文言は 2026-10-10 ユーザー承認、語尾は 2026-10-12 に丁寧形へ直した（同日承認）。
  */
 export function cardPanelFailureMessage(brokenCards: number, boardPanelBroken: boolean): string | null {
   const where =
@@ -294,12 +297,12 @@ export function cardPanelFailureMessage(brokenCards: number, boardPanelBroken: b
         : boardPanelBroken
           ? '基板の向きの欄'
           : null
-  return where === null ? null : `${where}で取り付けの診断を出せない。画面を再読込すること`
+  return where === null ? null : `${where}で取り付けの診断を出せない。画面を再読み込みしてください`
 }
 
 /** 静止した窓を取れなかったときの理由。 */
 export function restWindowsFetchProblem(reason: string): string {
-  return `静止した窓を取得できない（${reason}）`
+  return `静止した窓を取得できない: ${reason}`
 }
 
 /**
@@ -322,6 +325,6 @@ export function sixFaceApplied(fit: BoardSixFaceFit): {
   const check = fit.maxResidualGal === null ? '検算なし' : `残差 ${formatGal(fit.maxResidualGal)} gal`
   return {
     sensors,
-    note: `全部のセンサーの軸の向き・倍率・ゼロ点を入れた（姿勢 ${fit.poseCount}・${check}）。保存するまで効かない。保存したら元の場所へ据え直し、「鉛直を合わせる」を押し直すこと`,
+    note: `全部のセンサーの軸の向き・倍率・ゼロ点を入れた。姿勢 ${fit.poseCount}・${check}。保存するまで効かない。保存したら元の場所へ据え直し、「鉛直を合わせる」を押してください`,
   }
 }

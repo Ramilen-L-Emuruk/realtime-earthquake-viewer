@@ -45,7 +45,7 @@ describe('mseedWarnings / mseedSummary', () => {
 
   it('欄の 1 行に 4 つの数を並べる', () => {
     expect(mseedSummary(MSEED_QUIET)).toBe(
-      '書き込みエラー: 0 件 / 失った記録: 0 本 / 書けたレコード: 41235 本 / 中身ごと残した読めないパケット: 3 件',
+      '書き込みエラー: 0 件 / 失ったレコード: 0 本 / 書けたレコード: 41235 本 / 読めないまま保存したパケット: 3 件',
     )
   })
 })
@@ -392,8 +392,7 @@ describe('boardClockWarnings', () => {
 
   it('正: 許容を超えた基板をまとめて 1 行で出す（ホストのログと同じ判定）', () => {
     expect(boardClockWarnings(NOW, [clock('mac:a0b7', 1301), clock('mac:1c8f', -400), clock('mac:3c8a', 40)])).toEqual([
-      '時計がホストとずれている基板: mac:a0b7（1301 ms 遅れ）、mac:1c8f（400 ms 進み）' +
-        '（100 ms を超えると、観測点の合成がその基板を欠きはじめる）',
+      '時計がホストとずれている基板: mac:a0b7（1301 ms 遅れ）、mac:1c8f（400 ms 進み）',
     ])
   })
 

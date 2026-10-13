@@ -432,7 +432,7 @@ describe('initWavesView', () => {
     expect(captured?.residual).toEqual({ stationId: 'station-1', boardKey: 'board-3', sensorId: 'i2c0-6a' })
     // **数え直す。** 前の組の件数を引き継ぐと、ずれが届いていないのに「受け取っている」と出る。
     expect(container.querySelector('.wave-diff-note')?.textContent).toBe(
-      'このセンサーのずれはまだ 1 件も届いていない（合成が作っていないか、設定が変わった可能性）',
+      'このセンサーのずれはまだ 1 件も届いていない',
     )
 
     select.value = select.options[1]!.value
@@ -462,7 +462,7 @@ describe('initWavesView', () => {
     expect(captured?.residual).toEqual({ stationId: 'station-1', boardKey: 'board-3', sensorId: 'i2c0-6a' })
     expect(captured?.diff).toBeNull()
     expect(container.querySelector('.wave-diff-note')?.textContent).toBe(
-      'このセンサーのずれはまだ 1 件も届いていない（合成が作っていないか、設定が変わった可能性）',
+      'このセンサーのずれはまだ 1 件も届いていない',
     )
 
     const axis = Array.from({ length: 30 }, (_, i) => (i === 29 ? Number.NaN : Math.sin(i) * 0.05))
@@ -700,17 +700,15 @@ describe('initWavesView', () => {
     expect(container.querySelector('.wave-sensors')?.textContent).toContain('board-1 / accel-0')
   })
 
-  it('読めない波形が届いたら件数と、取るべき行動を出す', async () => {
-    // **生の診断文字列は画面へ出さない。** 他の警告は必ず行動で締めているのに、
-    // これだけ `SyntaxError` の文言が末尾に付くだけでは、運用者に次の一手が無い
-    // （理由はコンソールへ出す）。
+  it('読めない波形が届いたら件数だけを出す（2026-10-13 ユーザー承認の文言）', async () => {
+    // **生の診断文字列は画面へ出さない**（理由はコンソールへ出す）。版の食い違いの疑いや
+    // 次の一手は書かない —— 状態の一言にすると決めた（docs/ui-wording-procedure.md §5）。
     const container = await mount()
     captured?.onUnreadable?.(3, 'wave: 形が合わない')
     await letItDraw()
 
     const warn = container.querySelector('.wave-warn')?.textContent ?? ''
-    expect(warn).toContain('3 件')
-    expect(warn).toContain('開発者へ伝えること')
+    expect(warn).toBe('読めない波形が 3 件届いた')
     expect(warn).not.toContain('形が合わない')
   })
 
@@ -721,7 +719,9 @@ describe('initWavesView', () => {
     captured?.onState('closed')
     await letItDraw()
 
-    expect(container.querySelector('.wave-warn')?.textContent).toContain('枠が埋まっている')
+    expect(container.querySelector('.wave-warn')?.textContent).toBe(
+      'ホストへの接続が上限に達している: 8 / 8。ほかのタブや端末を閉じてから、画面を再読み込みしてください',
+    )
   })
 
   it('繋げないが枠に空きがあるなら、ホスト側を疑う文にする（対照）', async () => {
@@ -730,8 +730,7 @@ describe('initWavesView', () => {
     await letItDraw()
 
     const warn = container.querySelector('.wave-warn')?.textContent ?? ''
-    expect(warn).toContain('繋げない')
-    expect(warn).not.toContain('枠が埋まっている')
+    expect(warn).toBe('ホストに接続できない。画面を再読み込みしてください')
   })
 
   it('時刻の当てはめが倒れた区間が窓にあれば、そう出す', async () => {
@@ -739,7 +738,7 @@ describe('initWavesView', () => {
     captured?.onWave?.(chunk({ timebaseNominalReason: 'too-few-points' }))
     await letItDraw()
 
-    expect(container.querySelector('.wave-warn')?.textContent).toContain('時刻の当てはめ')
+    expect(container.querySelector('.wave-warn')?.textContent).toBe('時刻を当てはめられず、決めた間隔で並べた区間がある')
   })
 
   it('機材の名前が取れなくても、波形の表示は続ける', async () => {
@@ -821,6 +820,7 @@ describe('initWavesView', () => {
     await letItDraw()
 
     expect(container.querySelector('.wave-sensors')?.textContent).not.toContain('向き未設定')
+    expect(container.querySelector('.wave-sensors button.tip')).toBeNull()
   })
 
   it('校正を設定していないと分かっているセンサーには出す（対照）', async () => {
@@ -841,6 +841,27 @@ describe('initWavesView', () => {
     await letItDraw()
 
     expect(container.querySelector('.wave-sensors')?.textContent).toContain('向き未設定')
+    // 意味の説明はホバーで出す（2026-10-13 ユーザー承認）
+    expect(container.querySelector<HTMLElement>('.wave-sensors button.tip')?.dataset.tip).toBe(
+      '取り付けの向きを設定していないので、軸はセンサーの向きのままです。東・北・上を表しません。',
+    )
+  })
+
+  it('正: 「見る幅」と「センサー対の差分」の説明はホバーで出し、常時の段落は置かない（2026-10-13 ユーザー承認）', async () => {
+    const container = await mount()
+
+    // **ラベルを取ってから中を探す。** `mount()` は画面を document に残すので、前のテストの画面と同じ id が
+    // 何個も並ぶ。jsdom は `#id 子孫` を document で最初の 1 個に解決するので、この画面からは何も拾えない。
+    const spanLabel = container.querySelector('#wave-span-label')
+    expect(spanLabel?.querySelector<HTMLElement>('button.tip')?.dataset.tip).toBe(
+      'この画面を開いてから受け取った波形を、最大 5 分まで表示できます。',
+    )
+    expect(container.querySelector('.wave-span')?.getAttribute('aria-labelledby')).toBe('wave-span-label')
+    // 吹き出しは欄の行の下に出す（行の印が無いとラベルの真下に出て、選択欄を覆う）
+    expect(spanLabel?.closest('[data-tip-row]')).not.toBeNull()
+    const diffHeading = [...container.querySelectorAll('h2')].find((h) => h.textContent === 'センサー対の差分')
+    expect(diffHeading?.querySelector<HTMLElement>('button.tip')?.dataset.tip).toContain('差分は、2 台の値の差の半分です。')
+    expect(container.textContent).not.toContain('遡れるのは')
   })
 
   it('打ち切られたら描き直しをやめる（安全弁）', async () => {

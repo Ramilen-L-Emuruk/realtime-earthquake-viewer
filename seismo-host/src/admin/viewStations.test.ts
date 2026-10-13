@@ -161,7 +161,7 @@ describe('観測点 ID の自動生成', () => {
     expect(stationIdValue(container)).toBe('station-1')
   })
 
-  it('「新規登録へ」で戻すと、また空いている ID が入る', async () => {
+  it('「新規」で戻すと、また空いている ID が入る', async () => {
     stubApiFetch()
     const container = await mount()
     container.querySelector<HTMLButtonElement>('.edit-station')?.click()
@@ -296,7 +296,7 @@ describe('観測点タブの選択を保つ', () => {
     vi.restoreAllMocks()
   })
 
-  it('編集を押すと選択に載り、新規登録へ戻すと外れる', async () => {
+  it('編集を押すと選択に載り、「新規」で戻すと外れる', async () => {
     const ctx = memoryTabContext(new AbortController().signal, 'stations')
     const container = document.createElement('div')
     await initStationsView(container, ctx)
@@ -304,6 +304,25 @@ describe('観測点タブの選択を保つ', () => {
     expect(ctx.selection.get('station')).toBe('station-1')
     container.querySelector<HTMLButtonElement>('.reset-form')?.click()
     expect(ctx.selection.get('station')).toBeNull()
+  })
+
+  // **「変更できない」は、それが本当のときだけ示す。** ラベルの文字はいつも「観測点 ID」で、
+  // 編集のときだけホバーの説明が付く（2026-10-12 ユーザー承認）。
+  it('編集のときだけ、ID のラベルに「登録した後は変更できません。」を付ける', async () => {
+    const ctx = memoryTabContext(new AbortController().signal, 'stations')
+    const container = document.createElement('div')
+    await initStationsView(container, ctx)
+    const lockTip = (): string | null =>
+      container.querySelector<HTMLElement>('.stationId-label button.tip')?.dataset.tip ?? null
+    expect(container.querySelector('.stationId-label')?.textContent).toBe('観測点 ID')
+    expect(lockTip()).toBeNull()
+
+    container.querySelector<HTMLButtonElement>('.edit-station')?.click()
+    expect(container.querySelector('.stationId-label')?.textContent).toBe('観測点 ID')
+    expect(lockTip()).toBe('登録した後は変更できません。')
+
+    container.querySelector<HTMLButtonElement>('.reset-form')?.click()
+    expect(lockTip()).toBeNull()
   })
 
   it('覚えていた観測点をホストの値で開き直す', async () => {

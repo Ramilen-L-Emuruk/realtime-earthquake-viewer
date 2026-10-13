@@ -21,6 +21,17 @@ export function tipHtml(label: string, description: string): string {
   return `<button type="button" class="tip" data-tip="${escapeHtml(description)}">${escapeHtml(label)}</button>`
 }
 
+/** 登録した後は書き換えられない欄（観測点 ID・基板 Key）の説明。文面は 2026-10-12 ユーザー承認。 */
+export const LOCKED_AFTER_REGISTER_TIP = '登録した後は変更できません。'
+
+/**
+ * 登録した後は書き換えられない欄のラベル（HTML）。**ラベルの文字はいつも同じにし、固定のときだけ
+ * 説明を添える。** 新規登録では入力が要るので、説明を出しっぱなしにすると嘘になる。
+ */
+export function lockableLabelHtml(label: string, locked: boolean): string {
+  return locked ? tipHtml(label, LOCKED_AFTER_REGISTER_TIP) : escapeHtml(label)
+}
+
 function tipAnchorOf(target: EventTarget | null): HTMLElement | null {
   if (!(target instanceof Element)) return null
   return target.closest<HTMLElement>('button.tip[data-tip]')

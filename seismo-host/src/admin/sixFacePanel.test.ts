@@ -151,7 +151,7 @@ describe('parseRestWindowsBody', () => {
   })
 })
 
-describe('文言（2026-10-10 ユーザー承認）', () => {
+describe('文言（2026-10-10・2026-10-12 ユーザー承認）', () => {
   const refused = (over: Partial<BoardSixFaceRefusal> & Pick<BoardSixFaceRefusal, 'reason'>): BoardSixFaceRefusal => ({
     ok: false,
     faces: ALL,
@@ -311,7 +311,7 @@ describe('文言（2026-10-10 ユーザー承認）', () => {
       const fresh = one({ fromMs: 90_000, still: true }, 60_000)
       expect(placementText('counted-new', fresh, clock)).toBe('いまの置き方: 数えた。次の向きへ置き換えてよい')
       expect(placementText('counted-same', fresh, clock)).toBe(
-        'いまの置き方: 数えたが、測った向きと同じ（姿勢は増えない）。違う向きへ置くこと',
+        'いまの置き方: 数えたが、測った向きと同じ。違う向きへ置いてください',
       )
     })
 
@@ -338,9 +338,9 @@ describe('文言（2026-10-10 ユーザー承認）', () => {
 
   it('押せない理由（10 通り）', () => {
     expect(sixFaceProblem(refused({ reason: 'directions-biased' }))).toBe(
-      '斜めの置き方が同じ向きに偏っている。違う向きに斜めに置くこと',
+      '斜めの置き方が同じ向きに偏っている。違う向きに斜めに置いてください',
     )
-    expect(sixFaceProblem(refused({ reason: 'missing-faces', faces: SOME }))).toBe('まだ揃っていない面がある（＋Y・−Y・−Z）')
+    expect(sixFaceProblem(refused({ reason: 'missing-faces', faces: SOME }))).toBe('まだ揃っていない面がある: ＋Y・−Y・−Z')
     expect(sixFaceProblem(refused({ reason: 'no-common-pose', sensorId: 's2' }))).toBe(
       'センサー s2 が、ほかのセンサーと同時に静止した置き方が無い',
     )
@@ -348,33 +348,33 @@ describe('文言（2026-10-10 ユーザー承認）', () => {
       'センサー s2 のカードの軸の本数（2 本）が、届いている値の本数（3 本）と合わない',
     )
     expect(sixFaceProblem(refused({ reason: 'prior-degenerate' }))).toBe(
-      'カードの軸の向きが 3 方向へ散っていない（立てて付けたセンサーは、大まかな向きを先に入れること）',
+      'カードの軸の向きが 3 方向へ散っていない。立てて付けたセンサーは、大まかな向きを先に入れてください',
     )
-    expect(sixFaceProblem(refused({ reason: 'no-window-start' }))).toBe('静止窓に始まりの時刻が無い（ホストの版が古い疑い）')
+    expect(sixFaceProblem(refused({ reason: 'no-window-start' }))).toBe('静止窓に始まりの時刻が無い')
     expect(sixFaceProblem(refused({ reason: 'too-few-poses', poseCount: 7, minPoses: 9 }))).toBe(
-      '姿勢が足りない（7／9）。6 面に加えて、斜めにも置くこと',
+      '姿勢が足りない: 7／9。6 面に加えて、斜めにも置いてください',
     )
-    expect(sixFaceProblem(refused({ reason: 'degenerate' }))).toBe('計算できなかった（解が定まらない。置き直して測り直すこと）')
+    expect(sixFaceProblem(refused({ reason: 'degenerate' }))).toBe('解が定まらず、計算できなかった。置き直して測り直してください')
     expect(sixFaceProblem(refused({ reason: 'out-of-range' }))).toBe(
-      '出た値が個体差の幅を超えている（倍率 0.5〜2 倍・ゼロ点 ±490 gal）',
+      '出た値が個体差の幅を超えている: 倍率 0.5〜2 倍・ゼロ点 ±490 gal',
     )
     expect(sixFaceProblem(refused({ reason: 'residual-too-large', maxResidualGal: 23.44 }))).toBe(
-      '姿勢の間で辻褄が合わない（残差 23.4 gal）。動かしている最中の窓が混ざった疑い',
+      '姿勢の間で辻褄が合わない: 残差 23.4 gal',
     )
   })
 
   it('取り付けの欄を描き直せなかった知らせ（あり・無し）', () => {
-    expect(cardPanelFailureMessage(2, false)).toBe('2 枚のセンサーカードで取り付けの診断を出せない。画面を再読込すること')
+    expect(cardPanelFailureMessage(2, false)).toBe('2 枚のセンサーカードで取り付けの診断を出せない。画面を再読み込みしてください')
     // 基板の向きの欄の失敗は、カードの枚数へ足さずに分けて言う（2026-10-10）。
-    expect(cardPanelFailureMessage(0, true)).toBe('基板の向きの欄で取り付けの診断を出せない。画面を再読込すること')
+    expect(cardPanelFailureMessage(0, true)).toBe('基板の向きの欄で取り付けの診断を出せない。画面を再読み込みしてください')
     expect(cardPanelFailureMessage(1, true)).toBe(
-      '1 枚のセンサーカードと基板の向きの欄で取り付けの診断を出せない。画面を再読込すること',
+      '1 枚のセンサーカードと基板の向きの欄で取り付けの診断を出せない。画面を再読み込みしてください',
     )
     expect(cardPanelFailureMessage(0, false)).toBeNull()
   })
 
   it('取得できなかったとき', () => {
-    expect(restWindowsFetchProblem('401')).toBe('静止した窓を取得できない（401）')
+    expect(restWindowsFetchProblem('401')).toBe('静止した窓を取得できない: 401')
   })
 
   const fit = (maxResidualGal: number | null, poseCount: number): BoardSixFaceFit => ({
@@ -412,9 +412,9 @@ describe('文言（2026-10-10 ユーザー承認）', () => {
       ],
     ])
     expect(got.note).toBe(
-      '全部のセンサーの軸の向き・倍率・ゼロ点を入れた（姿勢 10・残差 3.1 gal）。保存するまで効かない。保存したら元の場所へ据え直し、「鉛直を合わせる」を押し直すこと',
+      '全部のセンサーの軸の向き・倍率・ゼロ点を入れた。姿勢 10・残差 3.1 gal。保存するまで効かない。保存したら元の場所へ据え直し、「鉛直を合わせる」を押してください',
     )
-    expect(sixFaceApplied(fit(null, 9)).note).toContain('（姿勢 9・検算なし）')
+    expect(sixFaceApplied(fit(null, 9)).note).toContain('。姿勢 9・検算なし。')
   })
 
   it('安全弁: 丸めて 0 になった負の数は負号を付けずに入れる', () => {

@@ -197,6 +197,18 @@ describe('renderSensorCardHtml / readSensorCardValues', () => {
     expect(readSensorCardValues(mountCard(TWO_AXIS_VALUES))).toEqual(TWO_AXIS_VALUES)
   })
 
+  it('正: 「軸ごとの校正」「ゼロ点（gal）」の意味はホバーで出し、常時の説明文は置かない（2026-10-12 ユーザー承認）', () => {
+    const container = mountCard(VALID_VALUES)
+    const tips = new Map(
+      [...container.querySelectorAll<HTMLElement>('button.tip')].map((b) => [b.textContent, b.dataset.tip]),
+    )
+    expect(tips.get('軸ごとの校正')).toBe(
+      '向きは、その軸が基板の X・Y・Z のどの向きを測るかです。長さは倍率で、1 gal の揺れを何 gal と読むかです。',
+    )
+    expect(tips.get('ゼロ点（gal）')).toBe('揺れていないときに読む値です。')
+    expect(container.textContent).not.toContain('ゼロ点：')
+  })
+
   it('2 軸のセンサーは軸の欄が 2 行だけ描かれる', () => {
     const container = mountCard(TWO_AXIS_VALUES)
     expect(container.querySelectorAll('.s-axis-offset')).toHaveLength(2)
@@ -401,7 +413,7 @@ describe('restWindowNote', () => {
 
   it('提案できない窓では、その理由を出す', () => {
     expect(restWindowNote({ ...window, scale: 'not-at-rest' }, 10_000)).toContain(
-      '揺れている間は合わせられない',
+      '揺れている間は合わせられない。静止してから 30 秒待ってください',
     )
     expect(restWindowNote({ ...window, scale: 'too-small' }, 10_000)).toContain('換算の倍率')
   })

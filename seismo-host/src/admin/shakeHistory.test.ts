@@ -552,14 +552,14 @@ describe('見張りの 1 行', () => {
   it('正: 一度も届いていなければ警告', () => {
     expect(triggerLine({ ...base, lastFedAtMs: null, lastSampleMs: null, peak24h: null, peakWindowFromMs: null }, NOW)).toEqual({
       warn: true,
-      text: 'station-1：波形が届いていない（起動から一度も）',
+      text: 'station-1：波形が一度も届いていない',
     })
   })
 
   it('正: 1 分来ていなければ、最後に届いた時刻を添えて警告（ホストの時計で測る）', () => {
     expect(triggerLine({ ...base, lastFedAtMs: NOW - 60_000 }, NOW)).toEqual({
       warn: true,
-      text: 'station-1：波形が届いていない（最後は 13:25）',
+      text: 'station-1：13:25 から波形が届いていない',
     })
   })
 

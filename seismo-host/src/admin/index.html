@@ -128,6 +128,13 @@
         background: color-mix(in srgb, canvas 100%, transparent);
         color: inherit;
       }
+      /* **書き換えられない欄は灰色にする**（観測点 ID・基板 Key の編集のとき）。見た目が同じだと、
+         打っても入らない理由が分からない。理由はラベルのホバーの説明（lockableLabelHtml）。 */
+      input[readonly] {
+        background: var(--surface-raised);
+        color: color-mix(in srgb, CanvasText 60%, transparent);
+        cursor: default;
+      }
       input:focus-visible,
       select:focus-visible,
       textarea:focus-visible,
@@ -422,7 +429,8 @@
         flex-wrap: wrap;
         margin-block: 0.75rem;
       }
-      .wave-controls > label {
+      .wave-controls > label,
+      .wave-controls > .label-like {
         flex: 0 0 auto;
       }
       /* **チェックボックスは横並びにする。** `label` の既定は縦積み（`display: grid`）で、

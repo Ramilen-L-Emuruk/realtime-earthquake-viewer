@@ -10,6 +10,7 @@ import {
   multiplyMat3,
   NO_STILL_SPREAD,
   NO_STILL_WINDOW,
+  restWindowProblem,
   rotateToHeading,
   stillMeanGal,
   suggestRotation,
@@ -227,7 +228,8 @@ describe('suggestRotation', () => {
     })
 
     expect(got.ok).toBe(false)
-    if (!got.ok) expect(got.reason).toContain('倍率')
+    // 確かめ方（換算の倍率）は書かない（2026-10-12 ユーザー承認。状態の一言だけを出す）
+    if (!got.ok) expect(got.reason).toBe('重力が小さすぎて向きを出せない')
   })
 
   it('数として読めない入力では提案しない', () => {
@@ -340,6 +342,24 @@ describe('rotateToHeading（保存のときに方角だけ当てる）', () => {
       90,
     )
     expect(got.ok).toBe(false)
+  })
+})
+
+describe('restWindowProblem（向きを提案できない理由）', () => {
+  // 待てば押せるようになるものには待つ長さを添える（2026-10-13 ユーザー承認）
+  it('正: 判定がまだ無い・波形が足りない・揺れている間は、待つ長さを言う', () => {
+    expect(restWindowProblem(null)).toBe('静止窓の判定がまだ無い。波形が 30 秒ぶん届くまで待ってください')
+    expect(restWindowProblem({ scale: 'too-few-samples', axisMeanGal: null })).toBe('波形が足りない。30 秒ぶん届くまで待ってください')
+    expect(restWindowProblem({ scale: 'not-at-rest', axisMeanGal: null })).toBe('揺れている間は合わせられない。静止してから 30 秒待ってください')
+  })
+
+  it('対照: 待っても直らない理由には待つ長さを添えない', () => {
+    expect(restWindowProblem({ scale: 'too-small', axisMeanGal: null })).toBe('換算の倍率が合っていない')
+    expect(restWindowProblem({ scale: 'unknown', axisMeanGal: null })).toBe('判定の種類を解釈できない')
+  })
+
+  it('正: いまの置き方で静止した窓が無いときは、置いてから待つ長さを言う', () => {
+    expect(NO_STILL_WINDOW).toBe('いまの置き方で静止した窓がまだ無い。置いてから 1 分ほど動かさないでください')
   })
 })
 
@@ -552,7 +572,7 @@ describe('「鉛直を合わせる」の材料（校正前の静止窓 → カ�
     })
     expect(boardGravityForTilt([{ sensorId: 'accel-0', source: still([0, 0, G]), sensor: withZLength(1 / 0.3) }])).toEqual({
       ok: false,
-      reason: '換算の倍率が合っていない。先にそちらを確かめること',
+      reason: '換算の倍率が合っていない',
       lacksMaterial: false,
     })
     // 対照: 3 分の 1 の手前なら出す。
@@ -571,7 +591,7 @@ describe('「鉛直を合わせる」の材料（校正前の静止窓 → カ�
     }
     const refused = {
       ok: false,
-      reason: '換算の倍率が合っていない。先にそちらを確かめること',
+      reason: '換算の倍率が合っていない',
       lacksMaterial: false,
     }
     expect(boardGravityForTilt([{ sensorId: 'accel-0', source: still([0, 0, G]), sensor: tinyZ }])).toEqual(refused)
