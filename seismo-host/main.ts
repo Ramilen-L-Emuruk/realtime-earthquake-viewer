@@ -24,7 +24,7 @@
 // 起動:
 //   npm run seismo-host
 //   SEISMO_UDP_PORT=50505 SEISMO_UDP_ADDRESS=0.0.0.0 npm run seismo-host
-import { readFile } from 'node:fs/promises'
+import { readFile, statfs } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -53,6 +53,10 @@ import { MseedRecorder } from './src/receiver/mseedRecorder'
 import { mseedFilePath } from './src/receiver/mseedStore'
 import type { MseedHealth } from './src/receiver/mseedRecorder'
 import { STATION_CONFIG_FILE, StationStore } from './src/receiver/stationStore'
+import { HOST_SETTINGS_FILE, readHostSettings, writeHostSettings } from './src/receiver/hostSettings'
+import { StorageControl, openStorageAtStartup, storageBrief } from './src/receiver/storageControl'
+import { StorageMigration, beginMigration, canonicalPath } from './src/receiver/storageMigration'
+import { StorageUsage } from './src/receiver/storageUsage'
 import { ReadingHub } from './src/receiver/readingHub'
 import { WaveArchive, readWaveRange } from './src/receiver/waveArchive'
 import { fetchGet, readDmdataApiKey, RecordQuakes } from './src/receiver/recordQuakes'
@@ -327,46 +331,22 @@ export function buildBacklogEventLine(event: BacklogEvent): {
 }
 
 /**
- * 生データ（miniSEED 3）の既定の置き場所。
+ * 保存先の既定の親フォルダ。この下に `raw/`（生データ・miniSEED 3）・`wave/`（観測点ごとの合成波形）・
+ * `summary/`（要約）・`events/`（揺れの記録）を並べる（`hostSettings.ts` の `dirsUnder`）。
+ * 管理コンソールで別の場所を選べば、次の起動からそちらを使う。
  *
  * **このファイルからの相対で解決する。** 実行時の作業ディレクトリを基準にすると、
  * どこから `npm run seismo-host` を叩いたかで書き出し先が変わる。
  * `.gitignore` 済み —— **このリポジトリは公開されていて、3 台 1 日で 0.35 GB 前後増える。**
- * （内訳は `seismo-host/README.md`「生のパケットを miniSEED 3 で時間ごとに残す」）
+ * （種類ごとの量は `seismo-host/README.md`「保存先を変える・残り容量を見る」）
  */
-function defaultRawDir(): string {
-  return fileURLToPath(new URL('./data/raw/', import.meta.url))
+function defaultDataRoot(): string {
+  return fileURLToPath(new URL('./data/', import.meta.url))
 }
 
-/**
- * 合成波形の既定の置き場所（`defaultRawDir` と同じ理由でこのファイルからの相対）。
- *
- * **生データとは別の場所へ置く。** 生データは基板とセンサーごとの生のカウント値、
- * こちらは観測点ごとの合成波形で、読み返す口（`GET /waves`）もこちらだけを読む。
- *
- * `data/` は `.gitignore` 済み。**1 観測点あたり 1 日 120 MB 前後**増える
- * （3 軸 × 100 Hz × 4 バイト ＋ 効いた本数）。
- */
-function defaultWaveDir(): string {
-  return fileURLToPath(new URL('./data/wave/', import.meta.url))
-}
-
-/**
- * 保存した波形の要約（`src/receiver/waveSummary.ts`）の既定の置き場所（`defaultRawDir` と同じ理由で
- * このファイルからの相対）。`SEISMO_SUMMARY_DIR` で変えられる。`data/` は `.gitignore` 済み。
- * **1 日 55 MB 前後**増える（生データ 27 チャンネルぶんで 2 MB/時・合成波形ぶんで約 0.2 MB/時）。
- * 消しても元のファイルから作り直せる。
- */
-function defaultSummaryDir(): string {
-  return fileURLToPath(new URL('./data/summary/', import.meta.url))
-}
-
-/**
- * 検出した揺れの記録（`src/detection/shakeEventStore.ts`）の既定の置き場所。
- * `SEISMO_EVENT_DIR` で変えられる。`data/` は `.gitignore` 済み。月 1〜2 MB。
- */
-function defaultEventDir(): string {
-  return fileURLToPath(new URL('./data/events/', import.meta.url))
+/** ホストの設定（保存先）の置き場所。観測点の設定と同じ `config/`（`hostSettings.ts` の冒頭）。 */
+function defaultHostSettingsPath(): string {
+  return fileURLToPath(new URL(`./config/${HOST_SETTINGS_FILE}`, import.meta.url))
 }
 
 /**
@@ -1800,7 +1780,56 @@ async function main(): Promise<void> {
       console.error(`[station-history] 観測点の設定へ起動の記録を書けず: ${shorten(messageOf(error))}`)
     }
   }
-  const rawDir = process.env.SEISMO_RAW_DIR ?? defaultRawDir()
+  // **保存先は起動時に 1 回だけ決め、書き手・読み手の全員へ同じ値を渡す**（`hostSettings.ts`）。
+  // 管理コンソールで変えた保存先は、ここで初めて効く（待っている変更の昇格と、複製の帳面の作成）。
+  // **ホストの設定が読めなければ起動しない** —— 前に選んだ保存先と違う場所へ書き始めると、データが 2 か所に割れる。
+  const hostSettingsPath = defaultHostSettingsPath()
+  const storageStartup = await openStorageAtStartup({
+    env: process.env,
+    settings: readHostSettings(hostSettingsPath),
+    settingsPath: hostSettingsPath,
+    defaultRoot: defaultDataRoot(),
+    nowMs: Date.now(),
+    begin: beginMigration,
+    write: writeHostSettings,
+    canonical: canonicalPath,
+  })
+  if (storageStartup.problem !== null) {
+    console.error(`[storage] 保存先を移せず、前の場所のまま動く: ${storageStartup.problem}`)
+  }
+  if (storageStartup.resolved.movedFrom !== null) {
+    console.warn(`[storage] 保存先を ${storageStartup.resolved.movedFrom} から ${storageStartup.resolved.root} へ移した。前の場所の分は裏で複製する`)
+  }
+  if (storageStartup.resolved.pendingIgnored !== null) {
+    console.warn(`[storage] 環境変数で保存先を決めているので、管理コンソールで選んだ ${storageStartup.resolved.pendingIgnored} は使わない`)
+  }
+  const storageDirs = storageStartup.resolved.dirs
+  // 複製の係。帳面が無ければ何もしない（`isCopying()` は偽のまま）。**要約の見回りより先に読み込む** ——
+  // 読み込む前の見回りは「複製中ではない」と見て、元の届いていない要約を捨てる。
+  const storageRoot = storageStartup.resolved.root
+  const storageMigration = new StorageMigration({
+    to: storageRoot ?? defaultDataRoot(),
+    freeBytesOf: async (path) => {
+      const s = await statfs(path)
+      return Number(s.bavail) * Number(s.bsize)
+    },
+    log: (line) => console.log(line),
+  })
+  // **帳面が読めなかったら、要約の「元が無い要約を捨てる」も止めたままにする** —— 複製の途中かどうかが
+  // 分からない回に捨てると、元が届いていないだけの要約まで失う。
+  // 読めなかった理由は管理画面の警告にも出す（`StorageReport.journalProblem`）。
+  let migrationJournalProblem: string | null = null
+  if (storageRoot !== null) {
+    try {
+      await storageMigration.load()
+    } catch (error) {
+      migrationJournalProblem = error instanceof Error ? error.message : String(error)
+      console.error(`[storage] ${migrationJournalProblem}`)
+    }
+  }
+  const migrationJournalUnreadable = migrationJournalProblem !== null
+  const storageUsage = new StorageUsage({ dirs: storageDirs, excludeBytes: () => storageMigration.copiedBytesThisRun() })
+  const rawDir = storageDirs.raw
   // **以下 5 つは `/api/*`（#313 段 B）が書き換える。** 設定を保存・反映するたびに
   // `applyStationConfig`（このスコープの下のほうで定義）がまとめて差し替える——
   // 個別に更新すると、一部だけ新しい設定を見て残りが古いままになる（例えば
@@ -1854,20 +1883,22 @@ async function main(): Promise<void> {
   // 「揺れたときに遡れない」ことへ外から気づく手立てが無い。
   // **読み返しの口も同じ変数を見る。** 2 度解くと、環境変数で移した先を片方だけが
   // 見る形（書いた本を読みにいかない）になりうる。
-  const waveDir = process.env.SEISMO_WAVE_DIR ?? defaultWaveDir()
+  const waveDir = storageDirs.wave
   const waveArchive = new WaveArchive({ dir: waveDir })
 
   // **保存した波形の要約**（管理コンソールで長い期間を俯瞰するため・#621）。生データと合成波形の時の
   // ファイルを 1 分ごとに見回り、要約が古いものを別スレッドで作り直す。**作れなくても受信は止めない**
   // （要約は元のファイルからいつでも作り直せる）。最初の見回りは起動の 30 秒後 —— 起動直後は欠けの
   // 取り戻しと合成の作り直しが重なる。
-  const summaryDir = process.env.SEISMO_SUMMARY_DIR ?? defaultSummaryDir()
+  const summaryDir = storageDirs.summary
   const summaryRunner = new SummaryWorkerRunner()
   const summaryKeeper = new WaveSummaryKeeper({
     rawDir,
     waveDir,
     summaryDir,
     run: (job) => summaryRunner.run(job),
+    // 保存先を移して前の場所の分を複製している間は、元の無い要約を捨てない（`storageMigration.ts` の冒頭）。
+    holdOrphanRemoval: () => storageMigration.isCopying() || migrationJournalUnreadable,
     // 元のファイルが無くなった要約を捨てたとき・捨てられなかったとき。捨てたほうは人が元を消したときにしか
     // 起きない。捨てられなかったほうは消せない限り 1 分ごとに出るが、ファイルを掴まれ続けているという異常
     // なので、黙らせずに出し続ける（`/status` の `scanErrors`・`lastError` と同じ事実）。
@@ -1880,7 +1911,7 @@ async function main(): Promise<void> {
   // **地震検出（REQUIREMENTS.md §6・§9）。** 揺れの記録を残し（`GET /events` も同じ
   // 置き場所を読む）、気象庁の地震情報と照らし合わせる。
   // 配線そのものは `StationDetection` が持つ（自動テストの届く場所に置くため）。
-  const eventDir = process.env.SEISMO_EVENT_DIR ?? defaultEventDir()
+  const eventDir = storageDirs.events
   const eventStore = new ShakeEventStore({ dir: eventDir })
   const quakeFeedEnabled = readQuakeFeedEnabled(process.env.SEISMO_QUAKE_FEED)
   // **`detection` より先に作るが、受け取った地震情報は `detection` へ渡す。** 循環するので
@@ -2582,6 +2613,18 @@ async function main(): Promise<void> {
   // 開けた後で作る**（締めくくりが状態の口を閉じるため）ので、それまでは `not-ready` で断る。
   let requestShutdownFromApi: (() => ShutdownRequestResult) | null = null
 
+  // 保存先と容量の口（`GET`/`PUT /api/storage`）。保存先の変更は設定ファイルへ書くだけで、効くのは次の起動から。
+  const storageControl = new StorageControl({
+    resolved: storageStartup.resolved,
+    startupProblem: storageStartup.problem,
+    journalProblem: migrationJournalProblem,
+    settings: storageStartup.settings,
+    settingsPath: hostSettingsPath,
+    currentRoot: storageRoot ?? defaultDataRoot(),
+    usage: storageUsage,
+    migration: storageMigration,
+    log: (line) => console.error(line),
+  })
   const statusServer = await startStatusServer({
     port: httpPort,
     address: httpAddress,
@@ -2617,6 +2660,7 @@ async function main(): Promise<void> {
     readWaves: (params) => readWaveRange({ dir: waveDir, ...params }),
     // 検出した揺れの読み返し（#312）。置き場所は記録と同じ `eventDir`。
     readEvents: (params) => readEventRange({ dir: eventDir, ...params }),
+    storage: storageControl,
     // 保存した波形の読み返し（#621）。置き場所は要約を作る係と同じ。
     records: (route, params, signal) =>
       handleRecordsRequest(
@@ -2678,6 +2722,7 @@ async function main(): Promise<void> {
         },
         // **部品が返すものをそのまま渡す**（`mseed` と同じ理由）。
         waveSummary: summaryKeeper.snapshot(),
+        storage: storageBrief(storageControl.get()),
         hub: hub.snapshot(),
         acks: acks.snapshot(),
         // **部品が返すものをそのまま渡す**（`mseed` と同じ理由）。
@@ -2694,6 +2739,15 @@ async function main(): Promise<void> {
     `[http] ${httpAddress ?? '0.0.0.0'}:${statusServer.port} で待ち受け中`
     + '（/status は状態・/stream は震度の押し出し。?wave=station で観測点の合成波形・?wave=1 でセンサー単独も）',
   )
+  // **容量の計測と裏の複製は、待ち受けを開けてから始める**（起動直後は欠けの取り戻しと合成の作り直しが重なる）。
+  // 複製は帳面が無ければ何もせずに終わる。投げない作り（`run`）なので、待たずに走らせておく。
+  storageUsage.start()
+  // **複製が終わったら使用量をすぐ数え直す**（次の定期の数え直しは最長 10 分後で、それまで複製前の数字が残る）。
+  // `run` も `count` も投げない作りだが、契約が崩れたときに未処理の拒否で受信ごと落とさないよう受けておく。
+  void storageMigration
+    .run()
+    .then(() => storageUsage.count())
+    .catch((error: unknown) => console.error(`[storage] 複製の係が止まった: ${error instanceof Error ? error.message : String(error)}`))
 
   let quietReported = false
   /** 前の窓で黙っていた割り当て（`buildAssignedSilenceReport`）。戻ったことを言うために持ち越す。 */
@@ -2954,6 +3008,10 @@ async function main(): Promise<void> {
     // （要約は元のファイルからいつでも作り直せるので、締めくくりを遅らせてまで書き終える理由が無い）。
     summaryKeeper.stop()
     await summaryRunner.close()
+    // 複製と容量の計測も止める。複製は 1 本書き終えるたびに止まる合図を見るので、書きかけは一時名のまま残り、
+    // 次の起動で同じファイルから書き直す（帳面は止まる直前に書く）。
+    storageUsage.stop()
+    storageMigration.stop()
 
     // **順序は `closeHostCore` が持つ**（理由もあちらに書いてある）。ここは
     // `main()` のローカル変数を `deps` へ束ねる配線だけ。

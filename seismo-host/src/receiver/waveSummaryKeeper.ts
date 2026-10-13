@@ -57,6 +57,12 @@ export interface WaveSummaryKeeperOptions {
   readonly removeSummary?: (files: readonly string[]) => Promise<void>
   /** 元の無い要約を捨てたとき・捨てられなかったときの 1 行。 */
   readonly log?: (line: string) => void
+  /**
+   * 真を返す間は、元の無い要約を捨てない。**保存先を移して裏で複製している間**（`storageMigration.ts`）——
+   * 要約を元より先に運ぶので、元が届くまでの間に捨てると作り直せない分まで失う。
+   * 必須にしているのは、配線を落としても型で気づけるようにするため（捨てない理由が無いなら `() => false`）。
+   */
+  readonly holdOrphanRemoval: () => boolean
 }
 
 /** 状態の口（`/status`）へ出すもの。 */
@@ -229,7 +235,7 @@ export class WaveSummaryKeeper {
       for (const map of [this.known, this.builtAt, this.retryAt]) {
         for (const path of map.keys()) if (!seen.has(path)) map.delete(path)
       }
-      await this.removeOrphans(listed.jobs, seen)
+      if (!this.opts.holdOrphanRemoval()) await this.removeOrphans(listed.jobs, seen)
     }
 
     const due = stale.filter(({ job }) => {

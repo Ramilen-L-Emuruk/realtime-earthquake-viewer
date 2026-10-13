@@ -25,6 +25,7 @@ import type { TallySnapshot } from './packetTally'
 import type { WaveSummaryKeeperStatus } from './waveSummaryKeeper'
 import type { HubSnapshot } from './readingHub'
 import type { MseedHealth } from './mseedRecorder'
+import type { StorageBrief } from './storageControl'
 import type { RewaveSnapshot } from './rewaveRunner'
 import type { DetectionStatus } from '../detection/stationDetection'
 import type { SensorHealth } from './sensorHealth'
@@ -118,6 +119,8 @@ export interface StatusReportInput {
   readonly waveArchive: WaveArchiveStatus
   /** 保存した波形の要約（`waveSummaryKeeper.ts`）。**部品が返すものをそのまま受け取る。** */
   readonly waveSummary: WaveSummaryKeeperStatus
+  /** 保存先の容量と複製（`storageControl.ts` の `storageBrief`）。**パスは含まない。** */
+  readonly storage: StorageBrief
   /** 地震検出（`../detection/stationDetection.ts`）。**部品が返すものをそのまま受け取る。** */
   readonly detection: DetectionStatus
   readonly hub: HubSnapshot
@@ -348,6 +351,12 @@ export interface StatusReport {
    */
   readonly waveSummary: WaveSummaryKeeperStatus
   /**
+   * 保存先のドライブの空きと、あと何日もつか。**`drives[].warning` が null なら足りている。** `migration` が
+   * null でなければ、保存先を移した後の複製が進んでいる（`state` が `copied` なら古い場所を消せる）。
+   * 保存先のパスは載せない（`GET /api/storage` の側）。
+   */
+  readonly storage: StorageBrief
+  /**
    * 地震検出。**`failures` と `store.writeErrors` が 0 なら、検出した揺れはすべて残っている。**
    * `feed` が null なら気象庁の地震情報を受け取らない設定で、揺れはすべて照合できずに終わる。
    * `feed.openGaps` が空でなければ、その時間帯の揺れは「照合できず」になる。
@@ -557,6 +566,7 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     stationHistory: input.stationHistory,
     waveArchive: input.waveArchive,
     waveSummary: input.waveSummary,
+    storage: input.storage,
     detection: input.detection,
     stream: input.hub,
     acks: input.acks,

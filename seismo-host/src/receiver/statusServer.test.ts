@@ -29,6 +29,15 @@ import type { EventRangeResult } from '../detection/shakeEventStore'
 import type { StatusServer, StatusServerOptions } from './statusServer'
 import type { ArchivedWaveChunk, WaveRangeResult } from './waveArchive'
 
+/** 保存先の口の仮の実体。保存先の口そのものは `storageControl.test.ts` と下の `/api/storage` の節が見る。 */
+const NO_STORAGE: StatusServerOptions['storage'] = {
+  get: () => {
+    throw new Error('呼ばれない')
+  },
+  setPending: async () => ({ ok: false, problem: 'locked' }),
+  purgeOld: async () => ({ ok: false, reason: 'not-copied' }),
+}
+
 const WAVE_ARCHIVE: WaveArchiveStatus = {
   writeErrors: 0,
   lostRecords: 0,
@@ -46,6 +55,7 @@ function report(hub: ReadingHub): StatusReport {
   return buildStatusReport({
     nowMs: 1_700_000_100_000,
     startedAtMs: 1_700_000_000_000,
+    storage: { drives: [], countedAtMs: null, lastError: null, migration: null, startupProblem: null, journalProblem: null },
     udp: { address: '0.0.0.0', port: 50505 },
     udpRecvBuffer: { requestedBytes: 8_388_608, actualBytes: 8_388_608, error: null },
     loopStalls: { thresholdMs: 1000, count: 0, totalMs: 0, longestMs: null, last: null },
@@ -250,6 +260,7 @@ async function start(
     readEvents: readEvents ?? null,
     // 保存した波形の読み返しは `/api/*`（認証つき）なので、試すテストは `startAuthed` を使う。
     records: null,
+    storage: NO_STORAGE,
   })
   running.server = server
   return `http://127.0.0.1:${server.port}`
@@ -1094,6 +1105,7 @@ describe('/api/*', () => {
     requestShutdown: StatusServerOptions['requestShutdown'] = () => 'not-ready',
     records: StatusServerOptions['records'] = null,
     requestRewave: StatusServerOptions['requestRewave'] = () => ({ kind: 'busy' }),
+    storage: StatusServerOptions['storage'] = NO_STORAGE,
   ): Promise<string> {
     const port = await getFreePort()
     const adminAuth: AdminAuthConfig = {
@@ -1117,6 +1129,7 @@ describe('/api/*', () => {
       readWaves: null,
       readEvents: null,
       records,
+      storage,
     })
     running.server = server
     return `http://127.0.0.1:${server.port}`
@@ -1207,6 +1220,99 @@ describe('/api/*', () => {
       expect(bad.status).toBe(400)
       expect(await bad.json()).toEqual({ error: 'noise-density-required' })
       expect(calls).toBe(0)
+    })
+  })
+
+  describe('保存先（/api/storage）', () => {
+    const authed = { Authorization: `Bearer ${TOKEN}`, Origin: ORIGIN }
+    function fakeStorage(overrides: Partial<StatusServerOptions['storage']> = {}) {
+      const calls = { set: [] as (string | null)[], purge: 0 }
+      const ops: StatusServerOptions['storage'] = {
+        get: () => ({ source: 'default' }) as unknown as ReturnType<StatusServerOptions['storage']['get']>,
+        setPending: async (root) => {
+          calls.set.push(root)
+          return { ok: true }
+        },
+        purgeOld: async () => {
+          calls.purge += 1
+          return { ok: true, files: 3, bytes: 30, kept: 0 }
+        },
+        ...overrides,
+      }
+      return { ops, calls }
+    }
+    const start = (ops: StatusServerOptions['storage'], log?: StatusServerOptions['log']) =>
+      startAuthed(new ReadingHub(), {}, log, undefined, undefined, undefined, null, undefined, ops)
+
+    it('GET は今の保存先と容量を返す', async () => {
+      const { ops } = fakeStorage()
+      const base = await start(ops)
+      const res = await fetch(`${base}/api/storage`, { headers: authed })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ source: 'default' })
+    })
+
+    it('正: PUT で次の起動で使う保存先を受け、1 行残す', async () => {
+      const { ops, calls } = fakeStorage()
+      const lines: string[] = []
+      const base = await start(ops, (_l, _k, _d, line) => lines.push(line))
+      const res = await fetch(`${base}/api/storage`, {
+        method: 'PUT',
+        headers: { ...authed, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pendingDataRoot: 'D:\\seismo' }),
+      })
+      expect(res.status).toBe(200)
+      expect(calls.set).toEqual(['D:\\seismo'])
+      expect(lines.some((l) => l.includes('次の起動で使う保存先'))).toBe(true)
+    })
+
+    it('null で待っている変更を取り消せる・形の違う本文は 400', async () => {
+      const { ops, calls } = fakeStorage()
+      const base = await start(ops)
+      const put = (body: unknown) =>
+        fetch(`${base}/api/storage`, { method: 'PUT', headers: { ...authed, 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      expect((await put({ pendingDataRoot: null })).status).toBe(200)
+      expect((await put({ pendingDataRoot: 3 })).status).toBe(400)
+      expect((await put({})).status).toBe(400)
+      expect(calls.set).toEqual([null])
+    })
+
+    it('受け付けられない理由は、複製中・環境変数は 409、それ以外は 400 で返す', async () => {
+      const problems = ['migrating', 'nested'] as const
+      let i = 0
+      const { ops } = fakeStorage({ setPending: async () => ({ ok: false, problem: problems[i++]! }) })
+      const base = await start(ops)
+      const put = () =>
+        fetch(`${base}/api/storage`, {
+          method: 'PUT',
+          headers: { ...authed, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pendingDataRoot: 'D:\\x' }),
+        })
+      const a = await put()
+      expect(a.status).toBe(409)
+      expect(((await a.json()) as { error: string }).error).toBe('migrating')
+      const b = await put()
+      expect(b.status).toBe(400)
+      expect(((await b.json()) as { error: string }).error).toBe('nested')
+    })
+
+    it('古い場所を消すのは POST だけ（GET で開いただけでは消さない）', async () => {
+      const { ops, calls } = fakeStorage()
+      const base = await start(ops)
+      expect((await fetch(`${base}/api/storage/purge-old`, { headers: authed })).status).toBe(405)
+      expect(calls.purge).toBe(0)
+      const res = await fetch(`${base}/api/storage/purge-old`, { method: 'POST', headers: authed })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ files: 3, bytes: 30, kept: 0 })
+      expect(calls.purge).toBe(1)
+    })
+
+    it('安全弁: トークンが無ければ消さない', async () => {
+      const { ops, calls } = fakeStorage()
+      const base = await start(ops)
+      const res = await fetch(`${base}/api/storage/purge-old`, { method: 'POST', headers: { Origin: ORIGIN } })
+      expect(res.status).toBe(401)
+      expect(calls.purge).toBe(0)
     })
   })
 

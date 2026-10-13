@@ -17,6 +17,7 @@ import { describeSilence } from '../receiver/assignedReception'
 import { warnableClockOffset } from '../receiver/boardClockVerdict'
 import type { BoardClockOffset } from '../receiver/boardClockVerdict'
 import { readFinite, readNonEmptyString } from './readJson'
+import { storageWarnings, type StorageBriefView } from './storageText'
 import type { TabContext } from './tabState'
 
 /**
@@ -87,6 +88,11 @@ interface StatusReportView {
    * **版の古いホストは返さない**ので、読む側で配列であることを確かめる（{@link boardIntensitiesOf}）。
    */
   readonly boardIntensities?: readonly BoardIntensityView[]
+  /**
+   * 保存先の容量と複製（`receiver/storageControl.ts` の `StorageBrief`）。
+   * **版の古いホストは返さない**ので、読む側で有無を確かめる。
+   */
+  readonly storage?: StorageBriefView
   /** 生データ（miniSEED）の記録の健全性（`receiver/mseedRecorder.ts` の `MseedHealth` のうち画面に出す欄）。 */
   readonly mseed: {
     readonly writeErrors: number
@@ -565,6 +571,8 @@ export async function initStatusView(container: HTMLElement, ctx: TabContext): P
       )
     }
     warnings.push(...mseedWarnings(status.mseed))
+    // 保存先の容量（文面は保存先タブと共有。`storageText.ts`）。
+    if (status.storage !== undefined) warnings.push(...storageWarnings(status.storage))
     // **組み立て済みの HTML**（中で `escapeHtml` を通している）なので、ここで重ねて通さない。
     const assignedBoards = assignedBoardsOf(status)
     warnings.push(...assignedSilenceWarnings(now, assignedBoards))

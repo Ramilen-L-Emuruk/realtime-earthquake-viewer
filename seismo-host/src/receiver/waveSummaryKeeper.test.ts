@@ -38,6 +38,8 @@ function harness(params: {
   summaryListErrors?: string[]
   /** 捨てようとすると投げる要約（名前の元）。 */
   removeThrows?: Set<string>
+  /** 元の無い要約を捨てるのを止めるか（保存先の複製中）。 */
+  hold?: () => boolean
 }) {
   let now = params.nowMs
   const ran: string[] = []
@@ -47,6 +49,7 @@ function harness(params: {
     rawDir: 'raw',
     waveDir: 'wave',
     summaryDir: 'sum',
+    holdOrphanRemoval: params.hold ?? (() => false),
     now: () => now,
     maxJobsPerTick: params.maxJobsPerTick,
     list: async () => ({ jobs: params.jobs, errors: params.listErrors ?? [] }),
@@ -296,6 +299,7 @@ describe('WaveSummaryKeeper', () => {
       rawDir: 'raw',
       waveDir: 'wave',
       summaryDir: 'sum',
+      holdOrphanRemoval: () => false,
       now: () => now,
       list: async () => ({ jobs: [current], errors: [] }),
       sizeOf: async (p) => sizes.get(p) ?? null,
@@ -315,6 +319,7 @@ describe('WaveSummaryKeeper', () => {
       rawDir: 'raw',
       waveDir: 'wave',
       summaryDir: 'sum',
+      holdOrphanRemoval: () => false,
       list: async () => ({ jobs: [], errors: ['生データの置き場所を読めず: EACCES'] }),
       listSummaries: async () => ({ summaries: [], errors: [] }),
       run: async () => ({ ok: false, error: '呼ばれない' }),
@@ -337,6 +342,7 @@ describe('WaveSummaryKeeper', () => {
       rawDir: 'raw',
       waveDir: 'wave',
       summaryDir: 'sum',
+      holdOrphanRemoval: () => false,
       now: () => H12 + 60_000,
       list: async () => ({ jobs: [j], errors: [] }),
       sizeOf: async () => 100,
@@ -386,6 +392,27 @@ describe('WaveSummaryKeeper — 元のファイルが無くなった要約を捨
     expect(h.removed.sort()).toEqual([...onDisk(goneRaw).files, ...onDisk(goneWave).files].sort())
     expect(h.keeper.snapshot()).toMatchObject({ removed: 2, scanErrors: 0 })
     expect(h.logs).toHaveLength(2)
+  })
+
+  it('保存先を移して複製している間は、元の無い要約を 1 本も捨てない（安全弁）', async () => {
+    // 複製は要約を元より先に運ぶ。元が届く前に捨てると、作り直せない分まで失う。
+    const jobs = [kept, keptWave]
+    let copying = true
+    const h = harness({
+      jobs,
+      sizes: sizesOf(jobs),
+      summarized: upToDate(jobs),
+      nowMs: H12 + 10 * 60_000,
+      summaries: [onDisk(kept), onDisk(keptWave), onDisk(goneRaw), onDisk(goneWave)],
+      hold: () => copying,
+    })
+    await h.keeper.tick()
+    expect(h.removed).toEqual([])
+    expect(h.keeper.snapshot().removed).toBe(0)
+    // 複製が終われば、従来どおり捨てる（止めっぱなしにしない）。
+    copying = false
+    await h.keeper.tick()
+    expect(h.keeper.snapshot().removed).toBe(2)
   })
 
   it('数え上げた後に元が消えた（大きさが無い）要約も捨てる（正）', async () => {
@@ -497,6 +524,7 @@ describe('WaveSummaryKeeper — 元のファイルが無くなった要約を捨
       rawDir: 'raw',
       waveDir: 'wave',
       summaryDir: 'sum',
+      holdOrphanRemoval: () => false,
       now: () => H12 + 10 * 60_000,
       list: async () => ({ jobs: [j], errors: [] }),
       sizeOf: async () => 100,
