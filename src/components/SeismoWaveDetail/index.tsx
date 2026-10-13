@@ -187,7 +187,14 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
     const f = measureMagnitudeFloor(samples.series, composite.magnitude, wave.axisZero.ms)
     if (f === null && !loggedNoFloorRef.current) {
       loggedNoFloorRef.current = true
-      log.debug(`[seismo] 詳細の窓で合成を強調できなかった（${wave.stationId}）: 0 の手前のサンプルが足りず底を測れない`)
+      // **選んだ成分がどれも値を持たないときは合成が全点欠けになる**（上下だけ選んで上下が解けない観測点）。
+      // サンプル不足と取り違えないよう分けて残す。
+      const noValue = !composite.magnitude.some((v) => Number.isFinite(v))
+      log.debug(
+        noValue
+          ? `[seismo] 詳細の窓で合成を強調できなかった（${wave.stationId}）: 選んだ向きに値のある成分が無い`
+          : `[seismo] 詳細の窓で合成を強調できなかった（${wave.stationId}）: 0 の手前のサンプルが足りず底を測れない`,
+      )
     }
     return f
   }, [emphasized, samples, composite, wave.axisZero.ms, wave.stationId])
