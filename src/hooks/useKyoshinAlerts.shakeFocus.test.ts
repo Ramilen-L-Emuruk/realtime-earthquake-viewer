@@ -43,7 +43,7 @@ function makeDeps(over: Partial<KyoshinAlertsDeps> = {}): KyoshinAlertsDeps {
     stalled: false,
     // notifyMinScale は -1（通知しない）。ブラウザ通知はこのテストの対象外。
     settings: { soundEnabled: true, notifyMinScale: -1, notifyDetection: false } as unknown as AppSettings,
-    title: { setTitle: vi.fn(), applyPriority: vi.fn() } as unknown as AlertTitleApi,
+    title: { setTitle: vi.fn(), setOngoingTitle: vi.fn(), applyPriority: vi.fn() } as unknown as AlertTitleApi,
     activeEEWsRef: { current: new Map<string, EEWAlert>() },
     defaultTabRef: { current: 'earthquake' as TabId },
     setActiveTab: vi.fn(),

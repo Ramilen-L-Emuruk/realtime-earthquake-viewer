@@ -618,7 +618,7 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps): { resetForReplay: () 
       shocksBeforeStallRef.current = []
       log.info(`[tab] realtime を要求 (揺れ検知${resumed ? '再開' : '開始'} V3 confirmed)`)
       setActiveTab('realtime')
-      title.setTitle('揺れ検知')
+      title.setOngoingTitle('揺れ検知')
       // 抑えるのは音と通知だけ。画面（タブ・タイトル）は従来どおり、検知が落ちた時点で一度既定へ
       // 戻り、ここで復帰する（結果が空の間まで「揺れ検知」を出し続けると、判っていない状態を
       // 判っているように見せることになる）。
@@ -661,7 +661,7 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps): { resetForReplay: () 
     if (candidate && !prevCandidateRef.current && !confirmed) {
       log.info('[tab] realtime を要求 (揺れの可能性 V3 likely)')
       setActiveTab('realtime')
-      title.setTitle('揺れの可能性')
+      title.setOngoingTitle('揺れの可能性')
       if (settings.soundEnabled) {
         playAlertSound('kyoshinCandidate')
       }

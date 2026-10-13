@@ -5,6 +5,7 @@ import { formatDateTimeMin, formatDepth, formatMagnitudeCondition, formatTimeMin
 import { quakeEventKey } from '../../utils/quakeMerge'
 import { groupAreasForCardDisplay, tsunamiAreaGradeChanges, TSUNAMI_GRADE_LIFTED, matchesArea, observationBadges, observationHeightText, observationArrivalFallbackText, observationMaxHeightTimeText, estimationBadges, estimationHeightText, forecastHeightImportantBadge, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, isTsunamiGradeRaised, sourceEarthquakeTime, tsunamiAreaKey, evacuationActionLine, fallbackEvacuationAction, type ObsUpdateMark, type ObsUpdateField } from '../../utils/tsunami'
 import { TSUNAMI_MISSING_COLOR as MISSING_COLOR } from '../../utils/tsunamiStyle'
+import { CANCEL_REASON_LABEL } from '../../utils/tsunamiCancelLabel'
 import { UPDATE_MARK_COLOR } from '../../utils/updateMark'
 import { mapChunksToRefs, planFollowScroll, followViewHasRoom, hasFollowContext, type FollowRect, type SpeechFollowSession, type SpeechRef } from '../../utils/ttsFollow'
 import { getSpeechClock } from '../../utils/voicevox'
@@ -157,19 +158,6 @@ const GRADE_LABEL: Record<TsunamiGrade, string> = {
 // 等級カードを積む順は読み上げと共有する（`GRADES_IN_CARD_ORDER`）。ここに独自の配列を置くと、
 // 読み上げの並びとカードの並びが片方だけ変わって追従スクロールが往復する。
 const GRADE_ORDER = GRADES_IN_CARD_ORDER
-
-// 解除表示（cancelledAt セット中）の見出し・説明文・オーバーレイ短文を cancelReason ごとに出し分ける。
-// 気象庁の運用上、警報・注意報は「解除」、誤発表は「取消」、予報は解除電文を伴わず失効時刻の到来で
-// 静かに消えるため、それぞれ表現が異なる（Issue #2）。
-//
-// **失効の語は電文の要素名（`ValidDateTime`＝失効時刻）へ揃えてある。** 読み上げ側
-// （`tsunamiCancelToText`）も同じ述語を使う —— 画面と声で語が割れると、同じ出来事を指していることが
-// 伝わらない。
-export const CANCEL_REASON_LABEL: Record<NonNullable<JMATsunami['cancelReason']>, { title: string; desc: string; badge: string }> = {
-  lifted:    { title: '津波情報 解除', badge: '解除', desc: 'この津波情報は解除されました' },
-  retracted: { title: '津波情報 取消', badge: '取消', desc: 'この津波情報は誤って発表されたため取り消されました' },
-  expired:   { title: '津波予報 失効', badge: '失効', desc: 'この津波予報は失効時刻を過ぎました' },
-}
 
 // FocusedDistrict の区域識別子（code/name）を発表区域に紐づける。照合ルールは matchesArea と同じ。
 function districtMatchesArea(district: { code?: string; name?: string }, area: TsunamiArea): boolean {
