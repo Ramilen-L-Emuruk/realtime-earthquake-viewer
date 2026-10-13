@@ -89,7 +89,7 @@ describe('foldQuakeWaveColumns', () => {
     for (let t = FROM_MS; t < ZERO + 60_000; t += SPAN) {
       const v = t < ZERO ? 1 : 5
       const u = t < ZERO ? 1 : upAfter
-      cols.push({ min: [-v, -v, -u] as const, max: [v, v, u] as const, minMembers: 3, magMin: NaN, magMax: NaN })
+      cols.push({ min: [-v, -v, -u] as const, max: [v, v, u] as const, minMembers: 3, magMin: NaN, magMax: NaN, magSum: NaN, magCount: 0 })
     }
     return { fromMs: FROM_MS, columnSpanMs: SPAN, columns: cols }
   }
@@ -115,7 +115,7 @@ describe('foldQuakeWaveColumns', () => {
     const cols = []
     for (let t = FROM_MS; t < ZERO + 60_000; t += SPAN) {
       const v = t < ZERO ? 1 : 2
-      cols.push({ min: [-v, -v, -v] as const, max: [v, v, v] as const, minMembers: 3, magMin: NaN, magMax: NaN })
+      cols.push({ min: [-v, -v, -v] as const, max: [v, v, v] as const, minMembers: 3, magMin: NaN, magMax: NaN, magSum: NaN, magCount: 0 })
     }
     const base: TimedColumns = { fromMs: FROM_MS, columnSpanMs: SPAN, columns: cols }
     const r = foldQuakeWaveColumns({ base, trimmed: trimmedOf(base), zeroMs: ZERO, visibleAxes: ALL, columnCount: 10 })
@@ -127,7 +127,7 @@ describe('foldQuakeWaveColumns', () => {
     const cols = []
     for (let t = FROM_MS; t < ZERO + 60_000; t += SPAN) {
       const v = t < ZERO ? 0.2 : 0.5
-      cols.push({ min: [-v, -v, -v] as const, max: [v, v, v] as const, minMembers: 3, magMin: NaN, magMax: NaN })
+      cols.push({ min: [-v, -v, -v] as const, max: [v, v, v] as const, minMembers: 3, magMin: NaN, magMax: NaN, magSum: NaN, magCount: 0 })
     }
     const base: TimedColumns = { fromMs: FROM_MS, columnSpanMs: SPAN, columns: cols }
     const r = foldQuakeWaveColumns({ base, trimmed: trimmedOf(base), zeroMs: ZERO, visibleAxes: ALL, columnCount: 10 })

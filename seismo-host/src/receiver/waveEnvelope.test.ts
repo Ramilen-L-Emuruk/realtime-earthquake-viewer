@@ -183,6 +183,33 @@ describe('buildWaveEnvelope', () => {
     expect(got.columns[3]).toBeNull()
   })
 
+  // 正: 均した線の材料は、列に入ったサンプルの合成の和と数。
+  it('合成の和と数を列ごとに持つ', () => {
+    const got = buildWaveEnvelope({
+      chunks: [chunk({ ns: [3, 0, 1], ew: [4, 2, 0], ud: [0, 0, 0] })],
+      fromMs: T0,
+      toMs: T0 + 20,
+      columnCount: 1,
+    })
+    expect(got.columns[0]?.magSum).toBeCloseTo(5 + 2 + 1)
+    expect(got.columns[0]?.magCount).toBe(3)
+  })
+
+  // 対照: 3 成分とも読めないサンプル・範囲の外のサンプルは数えない（平均が薄まらない）。
+  it('読めないサンプルと範囲の外のサンプルは和にも数にも入れない', () => {
+    const got = buildWaveEnvelope({
+      chunks: [
+        chunk({ firstSampleMs: T0 - 1_000, ns: [99] }),
+        chunk({ ns: [3, Number.NaN], ew: [4, Number.NaN], ud: [0, Number.NaN] }),
+      ],
+      fromMs: T0,
+      toMs: T0 + 100,
+      columnCount: 1,
+    })
+    expect(got.columns[0]?.magSum).toBe(5)
+    expect(got.columns[0]?.magCount).toBe(1)
+  })
+
   it('幅が無い・列が無い問い合わせでは何も作らない', () => {
     expect(buildWaveEnvelope({ chunks: [], fromMs: T0, toMs: T0, columnCount: 3 }).columns).toHaveLength(0)
     expect(buildWaveEnvelope({ chunks: [], fromMs: T0, toMs: T0 + 100, columnCount: 0 }).columns).toHaveLength(0)

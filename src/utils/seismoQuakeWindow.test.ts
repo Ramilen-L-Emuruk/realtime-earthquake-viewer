@@ -19,7 +19,7 @@ function makeColumns(fromSec: number, toSec: number, swingAt: (sec: number) => n
   const columns = []
   for (let t = fromSec * 1000; t < toSec * 1000; t += SPAN) {
     const v = swingAt(Math.floor(t / 1000))
-    columns.push(v === null ? null : { min: [-v, -0.1, -0.1] as const, max: [v, 0.1, 0.1] as const, minMembers: 3, magMin: NaN, magMax: NaN })
+    columns.push(v === null ? null : { min: [-v, -0.1, -0.1] as const, max: [v, 0.1, 0.1] as const, minMembers: 3, magMin: NaN, magMax: NaN, magSum: NaN, magCount: 0 })
   }
   return { fromMs: ZERO_MS + fromSec * 1000, columnSpanMs: SPAN, columns }
 }
@@ -161,7 +161,7 @@ describe('measureQuietLevel', () => {
   // 正: 上を解けない観測点（1 成分が値なし）でも、残りの成分で測る。
   test('値の無い成分があっても、残りの成分で測る', () => {
     const columns = []
-    for (let t = -30_000; t < 0; t += SPAN) columns.push({ min: [-0.3, -0.2, NaN] as const, max: [0.3, 0.2, NaN] as const, minMembers: 3, magMin: NaN, magMax: NaN })
+    for (let t = -30_000; t < 0; t += SPAN) columns.push({ min: [-0.3, -0.2, NaN] as const, max: [0.3, 0.2, NaN] as const, minMembers: 3, magMin: NaN, magMax: NaN, magSum: NaN, magCount: 0 })
     const base: TimedColumns = { fromMs: ZERO_MS - 30_000, columnSpanMs: SPAN, columns }
     expect(measureQuietLevel(base, ZERO_MS)).toBeCloseTo(0.3)
   })

@@ -254,22 +254,29 @@ describe('buildWaveColumns の合成', () => {
 describe('buildWaveMeanLines', () => {
   // 正: 正側・負側を分けて平均する（そのまま平均すると 0 に潰れる）。
   it('成分ごとに正側と負側の平均を出す', () => {
-    const m = buildWaveMeanLines({ window: win([2, -2, 2, -2]), columnCount: 1, spanMs: fullSpan(4) })
+    const m = buildWaveMeanLines({ window: win([2, -2, 2, -2]), columnCount: 1, spanMs: fullSpan(4), includeAxes: true })
     expect(m.axes[0].pos[0]).toBeCloseTo(2)
     expect(m.axes[0].neg[0]).toBeCloseTo(-2)
   })
 
   // 対照: 合成の均した線は大きさの平均（0 に潰れない）。
   it('合成を均した線は大きさを平均する', () => {
-    const m = buildWaveMeanLines({ window: win([2, -2, 2, -2]), columnCount: 1, spanMs: fullSpan(4) })
+    const m = buildWaveMeanLines({ window: win([2, -2, 2, -2]), columnCount: 1, spanMs: fullSpan(4), includeAxes: true })
     expect(m.compositeSmooth[0]).toBeCloseTo(2)
   })
 
   // 安全弁: 値の無い列は NaN（描く側はそこで線を切る）。届いていない区間を 0 にしない。
   it('値の無い列は NaN', () => {
-    const m = buildWaveMeanLines({ window: win([NaN, NaN, 1], [NaN, NaN, 0], [NaN, NaN, 0]), columnCount: 3, spanMs: fullSpan(3) })
+    const m = buildWaveMeanLines({ window: win([NaN, NaN, 1], [NaN, NaN, 0], [NaN, NaN, 0]), columnCount: 3, spanMs: fullSpan(3), includeAxes: true })
     expect(m.axes[0].pos[0]).toBeNaN()
     expect(m.compositeSmooth[0]).toBeNaN()
     expect(m.axes[0].pos[2]).toBeCloseTo(1)
+  })
+
+  // 対照: 成分の平均を頼まなければ作らない（畳んだ合成は均した線しか使わない）。合成の均した線は作る。
+  it('成分の平均を頼まなければ成分は NaN のまま', () => {
+    const m = buildWaveMeanLines({ window: win([2, -2, 2, -2]), columnCount: 1, spanMs: fullSpan(4), includeAxes: false })
+    expect(m.axes[0].pos[0]).toBeNaN()
+    expect(m.compositeSmooth[0]).toBeCloseTo(2)
   })
 })

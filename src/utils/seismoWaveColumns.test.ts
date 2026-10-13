@@ -13,6 +13,8 @@ import {
   isSettled,
   lastFilledIndex,
   revisedColumnSpan,
+  smoothCompositeColumns,
+  smoothCompositeWithin,
   spliceRevisedColumns,
   trimAfter,
   trimTrailingGap,
@@ -22,7 +24,7 @@ import {
 } from './seismoWaveColumns'
 
 function col(v: number, members = 9): WaveHistoryColumn {
-  return { min: [-v, -v, -v], max: [v, v, v], minMembers: members, magMin: NaN, magMax: NaN }
+  return { min: [-v, -v, -v], max: [v, v, v], minMembers: members, magMin: NaN, magMax: NaN, magSum: NaN, magCount: 0 }
 }
 
 /** 1 サンプル 10 ms の窓を作る。 */
@@ -152,7 +154,7 @@ describe('isSettled', () => {
   // 正（2026-10-09）: 観測点の合成は解けない成分だけを NaN にして出す（2026-10-09 ユーザー承認）。
   // 欠けた成分を「揺れている」へ倒すと、上を解けない観測点のカードは打ち切りの上限まで伸び続ける。
   it('値の無い成分（NaN）は判断に入れず、解けた成分が静かなら収まったと見なす', () => {
-    const upMissing = (v: number): WaveHistoryColumn => ({ min: [-v, -v, NaN], max: [v, v, NaN], minMembers: 2, magMin: NaN, magMax: NaN })
+    const upMissing = (v: number): WaveHistoryColumn => ({ min: [-v, -v, NaN], max: [v, v, NaN], minMembers: 2, magMin: NaN, magMax: NaN, magSum: NaN, magCount: 0 })
     const columns = new Array(10).fill(null).map(() => upMissing(1))
     expect(isSettled({ fromMs: 1000, columnSpanMs: 100, columns }, 500, 3)).toBe(true)
   })
@@ -161,7 +163,7 @@ describe('isSettled', () => {
   it('値の無い成分があっても、解けた成分が揺れていれば収まっていない', () => {
     const columns = new Array(10)
       .fill(null)
-      .map((): WaveHistoryColumn => ({ min: [-20, -1, NaN], max: [20, 1, NaN], minMembers: 2, magMin: NaN, magMax: NaN }))
+      .map((): WaveHistoryColumn => ({ min: [-20, -1, NaN], max: [20, 1, NaN], minMembers: 2, magMin: NaN, magMax: NaN, magSum: NaN, magCount: 0 }))
     expect(isSettled({ fromMs: 1000, columnSpanMs: 100, columns }, 500, 3)).toBe(false)
   })
 })
@@ -312,6 +314,86 @@ describe('appendWaveWindow の合成', () => {
     const out = appendWaveWindow({ base: BASE, window: w, limitMs: 2000 })
     expect(out.columns[2]?.magMin).toBe(3)
     expect(out.columns[2]?.magMax).toBe(4)
+  })
+
+  // 正: 継ぎ足す列にも均した線の材料（合成の和と数）を入れる。入れないと継ぎ足した区間で線が切れる。
+  it('合成の和と数を入れる', () => {
+    const w: SeismoWaveWindow = {
+      firstSampleMs: 1200,
+      msPerSample: 10,
+      gal: [Float32Array.from([3, 0]), Float32Array.from([0, 4]), Float32Array.from([0, 0])],
+      memberCount: Float32Array.from([2, 2]),
+    }
+    const out = appendWaveWindow({ base: BASE, window: w, limitMs: 2000 })
+    expect(out.columns[2]?.magSum).toBe(7)
+    expect(out.columns[2]?.magCount).toBe(2)
+  })
+})
+
+describe('smoothCompositeColumns', () => {
+  /** 合成の和と数を持つ列（1 列にサンプル `n` 個・値はどれも `v`）。 */
+  function meanCol(v: number, n = 10): WaveHistoryColumn {
+    return { ...col(v), magMin: v, magMax: v, magSum: v * n, magCount: n }
+  }
+  /** 1 列 250 ms の束（前後 1 秒の窓なら前後 2 列ずつ入る）。 */
+  function timed(columns: readonly (WaveHistoryColumn | null)[]): TimedColumns {
+    return { fromMs: 0, columnSpanMs: 250, columns }
+  }
+
+  // 正: 中心から前後 0.5 秒の列の和をまとめて数で割る（サンプルで均したのと同じ）。
+  it('前後 0.5 秒の列をまとめて均す', () => {
+    const out = smoothCompositeColumns(timed([meanCol(0), meanCol(0), meanCol(10), meanCol(0), meanCol(0)]), 1000)
+    expect(out).not.toBeNull()
+    // 中央の列は 5 列（両端 2 列ずつ）をまとめる: 100 / 50。
+    expect(out![2]).toBeCloseTo(2)
+    // 端の列は届く範囲だけ（3 列）をまとめる: 100 / 30。
+    expect(out![0]).toBeCloseTo(100 / 30)
+  })
+
+  // 正: サンプルの少ない列は軽く数える（列の平均どうしを平均しない）。
+  it('サンプルの数で重みを付ける', () => {
+    const out = smoothCompositeColumns(timed([meanCol(10, 1), meanCol(0, 9)]), 1000)
+    expect(out![0]).toBeCloseTo(1)
+  })
+
+  // 対照: 値の無い列は NaN（途切れで線を切る）。窓に入っても数には入れない。
+  it('値の無い列は NaN で、周りの平均にも数えない', () => {
+    const out = smoothCompositeColumns(timed([meanCol(4), null, meanCol(4)]), 1000)
+    expect(out![1]).toBeNaN()
+    expect(out![0]).toBeCloseTo(4)
+  })
+
+  // 安全弁: 値のある列のうち 1 列でも材料を持たなければ引かない（読み返した区間だけ線が空いた絵にしない）。
+  it('材料の無い列が混ざれば null', () => {
+    expect(smoothCompositeColumns(timed([meanCol(1), col(1)]), 1000)).toBeNull()
+  })
+
+  // 正: 切り出した範囲の端でも、外側の列を窓へ取り込んで均す。
+  it('切り出す前の列で均してから範囲を取る', () => {
+    const base = timed([meanCol(10), meanCol(10), meanCol(0), meanCol(0), meanCol(0)])
+    const part: TimedColumns = { fromMs: 500, columnSpanMs: 250, columns: base.columns.slice(2) }
+    // 先頭（元の 2 列目）は前の 2 列（値 10）も窓に入る: (10+10+0+0+0)×10 / 50 = 4。
+    expect(smoothCompositeWithin(base, part, 1000)![0]).toBeCloseTo(4)
+  })
+
+  // 対照: 列の境目に揃っていなければ、切り出した列だけで均す（別の時刻の値を描かない）。
+  it('境目に揃わなければ切り出した列で均す', () => {
+    const base = timed([meanCol(10), meanCol(10), meanCol(0), meanCol(0), meanCol(0)])
+    const part: TimedColumns = { fromMs: 510, columnSpanMs: 250, columns: base.columns.slice(2) }
+    expect(smoothCompositeWithin(base, part, 1000)![0]).toBeCloseTo(0)
+  })
+
+  // 安全弁: 範囲の外に材料の無い列があっても、範囲の中が揃っていれば線を引く。範囲の中が欠ければ引かない。
+  it('材料の有無は切り出した範囲で決める', () => {
+    const base = timed([col(1), meanCol(4), meanCol(4)])
+    const part: TimedColumns = { fromMs: 250, columnSpanMs: 250, columns: base.columns.slice(1) }
+    expect(smoothCompositeWithin(base, part, 1000)![0]).toBeCloseTo(4)
+    expect(smoothCompositeWithin(base, { ...part, fromMs: 0, columns: base.columns }, 1000)).toBeNull()
+  })
+
+  it('列が無い・幅が無いなら null', () => {
+    expect(smoothCompositeColumns(timed([]), 1000)).toBeNull()
+    expect(smoothCompositeColumns({ fromMs: 0, columnSpanMs: 0, columns: [meanCol(1)] }, 1000)).toBeNull()
   })
 })
 
