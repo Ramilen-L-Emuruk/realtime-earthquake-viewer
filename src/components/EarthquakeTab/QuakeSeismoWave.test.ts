@@ -168,7 +168,7 @@ describe('formatQuakeIntensityParts', () => {
   it('普段の計測震度があれば計測の横に並べる', () => {
     const parts = formatQuakeIntensityParts({ ...base, usualMeasured: -1.27 }, span)
     expect(text(parts)).toBe('最大 2.3 計測 1.8 普段 -1.2')
-    expect(parts?.[2].title).toBe('直前 1 時間の同じ長さの区間の計測震度（中央値）')
+    expect(parts?.[2].title).toBe('直前 1 時間の、同じ長さの区間の計測震度の中央値です')
   })
 
   it('計測震度が出なければ最大だけ', () => {

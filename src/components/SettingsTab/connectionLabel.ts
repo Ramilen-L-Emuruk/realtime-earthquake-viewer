@@ -29,7 +29,7 @@ export function dmdataConnectionLabel(
     case 'connected':
       return { text: '接続中', className: 'text-green-400 font-medium' }
     case 'connecting':
-      return { text: '接続試行中...', className: 'text-blue-400' }
+      return { text: '接続試行中…', className: 'text-blue-400' }
     case 'replay':
       // 過去再生中はライブ受信を意図的に止めている。「切断」と出すと異常のように見え、
       // 更新しないままだと「接続中」が残って実態と食い違う。
@@ -42,7 +42,7 @@ export function dmdataConnectionLabel(
     case 'disconnected':
     case undefined:
       if (!opts.apiKeySet) return { text: 'APIキー未設定', className: 'text-secondary' }
-      if (opts.apiKeyInvalid) return { text: 'APIキーが不正', className: 'text-red-400' }
+      if (opts.apiKeyInvalid) return { text: 'APIキーが無効', className: 'text-red-400' }
       return { text: '切断', className: 'text-secondary' }
     default: {
       // 網羅検査。`ConnectionStatus` に値を足したらここで型検査が止まる。

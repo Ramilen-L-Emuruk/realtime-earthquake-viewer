@@ -191,7 +191,7 @@ export function formatQuakeIntensityParts(
     part('計測', '計測震度', intensity.measured),
     // **比べる相手**（2026-10-11 ユーザー承認）。計測震度は静かなときも 0 にならず観測点ごとの値に
     // 落ち着くので、「計測」だけでは上がっているのか分からない。
-    part('普段', '直前 1 時間の同じ長さの区間の計測震度（中央値）', intensity.usualMeasured),
+    part('普段', '直前 1 時間の、同じ長さの区間の計測震度の中央値です', intensity.usualMeasured),
   ].filter((p): p is QuakeIntensityPart => p !== null)
   return parts.length === 0 ? null : parts
 }

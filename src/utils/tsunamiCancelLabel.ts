@@ -13,5 +13,5 @@ import type { JMATsunami } from '../types/earthquake'
 export const CANCEL_REASON_LABEL: Record<NonNullable<JMATsunami['cancelReason']>, { title: string; desc: string; badge: string }> = {
   lifted:    { title: '津波情報 解除', badge: '解除', desc: 'この津波情報は解除されました' },
   retracted: { title: '津波情報 取消', badge: '取消', desc: 'この津波情報は誤って発表されたため取り消されました' },
-  expired:   { title: '津波予報 失効', badge: '失効', desc: 'この津波予報は失効時刻を過ぎました' },
+  expired:   { title: '津波予報 失効', badge: '失効', desc: 'この津波予報は失効しました' },
 }

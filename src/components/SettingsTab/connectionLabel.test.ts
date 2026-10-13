@@ -35,14 +35,14 @@ describe('dmdataConnectionLabel', () => {
   // 対照: キーが未設定・不正なときは接続を試みていないので、通信の失敗と区別する
   it('キーの問題は通信の失敗と区別する', () => {
     expect(dmdataConnectionLabel('disconnected', { apiKeySet: false, apiKeyInvalid: false }).text).toBe('APIキー未設定')
-    expect(dmdataConnectionLabel('disconnected', { apiKeySet: true, apiKeyInvalid: true }).text).toBe('APIキーが不正')
+    expect(dmdataConnectionLabel('disconnected', { apiKeySet: true, apiKeyInvalid: true }).text).toBe('APIキーが無効')
     expect(dmdataConnectionLabel(undefined, { apiKeySet: false, apiKeyInvalid: false }).text).toBe('APIキー未設定')
   })
 
   // 対照: 既存の 3 状態を巻き込んでいないこと
   it('接続中・接続試行中・再生中は従来の文言', () => {
     expect(dmdataConnectionLabel('connected', KEY_OK).text).toBe('接続中')
-    expect(dmdataConnectionLabel('connecting', KEY_OK).text).toBe('接続試行中...')
+    expect(dmdataConnectionLabel('connecting', KEY_OK).text).toBe('接続試行中…')
     expect(dmdataConnectionLabel('replay', KEY_OK).text).toContain('再生中')
   })
 
@@ -57,7 +57,7 @@ describe('dmdataConnectionLabel', () => {
   })
 
   // 安全弁: キーの状態は `disconnected` / 未設定のときだけ見る。
-  // 繋がっているのに「APIキーが不正」と出たら、利用者は正しいキーを疑って消しにかかる
+  // 繋がっているのに「APIキーが無効」と出たら、利用者は正しいキーを疑って消しにかかる
   it('接続できている状態ではキーの不正を文言に出さない', () => {
     const invalid = { apiKeySet: true, apiKeyInvalid: true }
     expect(dmdataConnectionLabel('connected', invalid).text).toBe('接続中')

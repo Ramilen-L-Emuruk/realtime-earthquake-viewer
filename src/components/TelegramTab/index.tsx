@@ -293,7 +293,7 @@ export const TelegramTab = memo(function TelegramTab({ telegramLog, onClear }: P
       <div className="flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none">
         {filtered.length === 0 ? (
           <div className="flex items-center justify-center h-32 text-sm text-secondary">
-            {telegramLog.length === 0 ? '電文を待機中...' : 'フィルタ条件に一致なし'}
+            {telegramLog.length === 0 ? '電文を待機中…' : 'フィルタ条件に一致なし'}
           </div>
         ) : (
           <>

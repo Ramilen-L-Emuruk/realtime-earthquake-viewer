@@ -2459,7 +2459,7 @@ export function tsunamiCancelToText(cancelReason: JMATsunami['cancelReason'], ca
     : cancelReason === 'expired'
       // **述語は画面と同じ**（`CANCEL_REASON_LABEL` の `expired`）。語は電文の要素名
       // （`ValidDateTime`＝失効時刻）へ揃えてある。
-      ? '津波予報は失効時刻を過ぎました。'
+      ? '津波予報は失効しました。'
       : '津波警報等は全て解除されました。'
   // 取消しの概要は取消電文にしか入らない。解除・失効では電文に無いので空のまま
   return head + cancelReasonSentence(cancelText)

@@ -501,7 +501,7 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
       // セッションの失敗まで「いまの再生が失敗した」として並ぶ。
       recordReplayEvent({ type: 'fetch', phase: 'error', target: 'main', message: msgOf(e) })
     } finally {
-      // 新しいセッションが進行中なら、その「取得中...」表示を古い側が消してはいけない。
+      // 新しいセッションが進行中なら、その「取得中…」表示を古い側が消してはいけない。
       // **記録も同じ世代の照合を通す。** `fetching()` は古いセッションでは下ろさないので、
       // ここだけ無条件に出すと 2 つの口が食い違う —— 停止して別の日時で開き直した直後に
       // 古い取得が解決すると、まだ取得中なのに「終わった」が並び、外から見ると待ちを
@@ -530,7 +530,7 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
     // 損失は「このセッションで失われた量」なので、停止と同時に数え直す。
     setLoss(createEmptyLoss())
     // 取得中に停止された場合、上で世代を進めたことで取得側の finally は false にしない。
-    // ここで戻さないと「取得中...」のまま確定ボタンが押せなくなる。
+    // ここで戻さないと「取得中…」のまま確定ボタンが押せなくなる。
     setIsFetching(false)
     // 録画ツール向けの記録。ライブへ戻るのでオフセットは無い。
     recordReplayEvent({ type: 'control', action: 'stop', target: null, offset: null })

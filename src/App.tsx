@@ -944,7 +944,7 @@ export function App() {
     estimatedIntensity: simulateEstimatedIntensity,
     notification:      () => {
       if (typeof Notification === 'undefined' || Notification.permission !== 'granted') {
-        alert('先に「通知を許可する」ボタンをクリックしてください。')
+        alert('先に「通知を許可する」を押してください。')
         return
       }
       new Notification('地震情報テスト', {

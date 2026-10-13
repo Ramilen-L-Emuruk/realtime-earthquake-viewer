@@ -2258,7 +2258,7 @@ describe('取消の述語は種別をまたいでそろえる', () => {
   // いるぶん独立した保護にはならない（同じ関数の同じ出力を 2 度見るだけ）。
   it('津波の解除・失効は取消と別の述語のまま', () => {
     expect(tsunamiCancelToText('lifted')).toBe('津波警報等は全て解除されました。')
-    expect(tsunamiCancelToText('expired')).toBe('津波予報は失効時刻を過ぎました。')
+    expect(tsunamiCancelToText('expired')).toBe('津波予報は失効しました。')
   })
 })
 
