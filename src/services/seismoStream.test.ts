@@ -12,6 +12,7 @@ import {
   connectSeismoStream,
   createSseParser,
   fetchSeismoStatus,
+  USUAL_INTENSITY_STALE_MS,
   isValidSeismoHostUrl,
   SeismoHostDirectory,
   type SeismoMessage,
@@ -219,7 +220,35 @@ describe('fetchSeismoStatus', () => {
   it('対照: sensors が空配列なら「繋がったが観測点 0 件」', async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({ sensors: [] })) as unknown as typeof fetch
     const result = await fetchSeismoStatus('http://host:50506', fetchImpl)
-    expect(result).toEqual({ kind: 'ok', stations: [], sensorCount: 0, sensors: [] })
+    expect(result).toEqual({ kind: 'ok', stations: [], sensorCount: 0, sensors: [], usualIntensities: new Map() })
+  })
+
+  it('正: 観測点ごとの普段の計測震度を読み、古いものと読めないものは載せない', async () => {
+    const generatedAtMs = 1_800_000_000_000
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({
+        generatedAtMs,
+        sensors: [],
+        usualIntensities: [
+          { stationId: 'fresh', usualMeasured: -1.3, computedAtMs: generatedAtMs - 10 * 60_000 },
+          // 境目ちょうどは載せる（30 分を超えたら捨てる）。
+          { stationId: 'edge', usualMeasured: -1.1, computedAtMs: generatedAtMs - USUAL_INTENSITY_STALE_MS },
+          { stationId: 'stale', usualMeasured: -1.2, computedAtMs: generatedAtMs - USUAL_INTENSITY_STALE_MS - 1 },
+          { stationId: 'empty', usualMeasured: null, computedAtMs: generatedAtMs },
+          { stationId: 'never', usualMeasured: null, computedAtMs: null },
+        ],
+      }),
+    ) as unknown as typeof fetch
+    const result = await fetchSeismoStatus('http://host:50506', fetchImpl)
+    expect(result.kind).toBe('ok')
+    if (result.kind !== 'ok') return
+    expect([...result.usualIntensities]).toEqual([['fresh', -1.3], ['edge', -1.1]])
+  })
+
+  it('対照: 欄を持たない古いホストでは空（下限を置かない側へ倒れる）', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ generatedAtMs: 1, sensors: [] })) as unknown as typeof fetch
+    const result = await fetchSeismoStatus('http://host:50506', fetchImpl)
+    expect(result.kind === 'ok' && result.usualIntensities.size).toBe(0)
   })
 
   it('正: センサーごとの割り当てを読む（`reading` を観測点へ寄せる材料）', async () => {
@@ -262,7 +291,8 @@ describe('fetchSeismoStatus', () => {
     const result = await fetchSeismoStatus('http://host:50506', fetchImpl)
     expect(result.kind).toBe('ok')
     if (result.kind !== 'ok') return
-    expect(Object.keys(result).sort()).toEqual(['kind', 'sensorCount', 'sensors', 'stations'])
+    // `usualIntensities` は別の欄（普段の計測震度）。古さはホストの時計どうしで測る（`readUsualIntensities`）。
+    expect(Object.keys(result).sort()).toEqual(['kind', 'sensorCount', 'sensors', 'stations', 'usualIntensities'])
   })
 
   it('安全弁: HTTP エラー・到達不能・URL 不正を言い分ける', async () => {

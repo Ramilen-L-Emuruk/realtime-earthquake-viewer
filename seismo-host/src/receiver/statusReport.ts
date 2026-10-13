@@ -30,6 +30,7 @@ import type { DetectionStatus } from '../detection/stationDetection'
 import type { SensorHealth } from './sensorHealth'
 import type { StationDirectory, StationInfo } from './stationConfig'
 import type { StationHealth } from './stationHealth'
+import type { UsualIntensityStatus } from './usualIntensityKeeper'
 
 /**
  * 観測点の設定ファイル（StationXML。`stationStore.ts`）へ書いた様子。
@@ -172,6 +173,8 @@ export interface StatusReportInput {
   readonly assignedBoards: readonly AssignedBoardReception[]
   /** 基板ごとの時計のずれ（`boardClock.ts`）。 */
   readonly boardClocks: BoardClockSnapshot
+  /** 観測点ごとの普段の計測震度（`usualIntensityKeeper.ts`）。 */
+  readonly usualIntensities: readonly UsualIntensityStatus[]
 }
 
 /**
@@ -409,6 +412,14 @@ export interface StatusReport {
    * **`windowEndMs` の古さを見ること** —— 基板が黙ると最後に測った値が残る。
    */
   readonly boardClocks: BoardClockSnapshot
+  /**
+   * 観測点ごとの普段の計測震度（直前 1 時間・`windowMs` の長さの 6 区間の中央値）。**設定の並びのまま。**
+   *
+   * アプリはこれを、地震カードへ自作地震計の波形を出すかの下限に使う（予測計測震度がこれより
+   * 0.5 低い値を上回れば出す）。`usualMeasured` が `null`（記録が足りない・読めない）なら下限を置かない。
+   * **`computedAtMs` の古さを `generatedAtMs` と比べて見ること** —— 測り直しが止まると最後の値が残る。
+   */
+  readonly usualIntensities: readonly UsualIntensityStatus[]
 }
 
 /** `Map` を JSON になる形へ。**出す側と読む側で流儀が分かれないよう 1 箇所に置く。** */
@@ -530,6 +541,13 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     })),
   }
 
+  // 普段の計測震度は震度の値、測った時刻は時刻の欄として数える。
+  const usualIntensities: UsualIntensityStatus[] = input.usualIntensities.map((u) => ({
+    ...u,
+    usualMeasured: finiteValue(u.usualMeasured),
+    computedAtMs: finite(u.computedAtMs),
+  }))
+
   // **経過は秒で丸めて出す。** ミリ秒のままだと読む人が毎回割ることになる。
   // 起動より前の時刻を渡されても負にしない（時計が跳ねたとき「稼働 -3 秒」は読めない）。
   const uptimeSec = Math.max(0, Math.floor((input.nowMs - input.startedAtMs) / 1000))
@@ -566,5 +584,6 @@ export function buildStatusReport(input: StatusReportInput): StatusReport {
     ungroupedMultiBoardStations: input.ungroupedMultiBoardStations,
     assignedBoards,
     boardClocks,
+    usualIntensities,
   }
 }

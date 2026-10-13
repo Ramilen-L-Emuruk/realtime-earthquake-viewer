@@ -1306,6 +1306,26 @@ GET /quake-intensity?station=<観測点ID>&from=<unix ミリ秒>&to=<unix ミリ
 - **直前 1 時間の別の揺れは除かない。** 6 区間のうち 2 つまでなら中央値は動かないが、余震が続いて 3 つ以上に
   掛かると「普段」も上がる
 
+### 観測点ごとの「普段」を `/status` に載せる（`usualIntensities`）
+
+揺れ窓は、地震カードへ自作地震計の波形を出すかを、その地震で観測点に予測される計測震度が
+「普段 − 0.5」を上回るかで決める（→ [`data-sources-spec.md`](../docs/spec/data-sources-spec.md) §4.5
+「有感の地震カードへ、その区間の波形を出す」）。地震ごとに `/quake-intensity` を訊いていては出すかを決める前に
+問い合わせが要るので、比べる相手をホストが先に測っておく（`src/receiver/usualIntensityKeeper.ts`）。
+
+| 欄 | 中身 |
+|---|---|
+| `stationId` | 観測点 ID（設定の並び。外した観測点は出さない） |
+| `usualMeasured`・`usualWindowCount`・`usualUsedCount` | `/quake-intensity` と同じ測り方の「普段」。区間の長さは揺れ窓の地震カードと同じ 4 分 30 秒（`windowMs`）。測れなければ `null` |
+| `computedAtMs` | 測った時刻（ホストの時計）。**まだ測っていなければ `null`** |
+
+- **起動時に 1 回、以後 10 分ごとに測り直す**（`USUAL_STATUS_REFRESH_MS`）。前の回が終わっていなければ重ねない
+- **読めなかったら前の値を残さない**（`null` にする）。止まった値を「いまの普段」と名乗ると、揺れ窓の下限が黙って古いまま効く
+- 揺れ窓は `generatedAtMs − computedAtMs` が 30 分を超えた値を捨て、下限（普段 − 0.5）を置かずに波形を出す側へ倒す
+- **記録へ残すもの** —— 記録を読めなかった（`usual-intensity`・warn）、計算で例外（`usual-intensity-compute`・error）、
+  値があったのに読めなくなった（`usual-intensity-lost`・warn）、測り直しそのものが例外（`usual-intensity-refresh`・error）、
+  前の回が 30 分を過ぎても終わらない（`usual-intensity-stuck`・warn）
+
 ### `/api/*` の認証
 
 **設定の読み書き・履歴・管理操作は、`/status`・`/stream` とは別の守り方をする**

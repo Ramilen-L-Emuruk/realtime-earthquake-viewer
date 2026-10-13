@@ -21,6 +21,7 @@ import { fetchSeismoWaveHistory, buildWaveHistoryRange } from '../services/seism
 import { fetchSeismoStatus, isValidSeismoHostUrl, type SeismoStationWaveRevised } from '../services/seismoStream'
 import { RangeCoalescer } from '../services/seismoWaveRefill'
 import { quakeScaleForScope, type NearbyScope } from '../utils/actionChecklistTrigger'
+import { judgeQuakeReach, type ReachStation } from '../utils/seismoQuakeReach'
 import { serverNow } from '../utils/clock'
 import { log } from '../utils/logger'
 import { quakeEventKey } from '../utils/quakeMerge'
@@ -246,28 +247,84 @@ export interface SeismoWaveTarget {
   readonly arrivalOriginMs: number | null
   /** {@link arrivalOriginMs} の出どころ。**秒が取れなければ `null`。** */
   readonly arrivalOriginSource: OriginSeconds['source'] | null
+  /**
+   * 波形を取りに行く観測点（→ {@link pickTargets}）。**揺れが届いたと見込めた観測点だけ。**
+   * 観測点が 1 つなら、その地震を出すかどうかと同じ意味になる。
+   */
+  readonly stationIds: readonly string[]
+}
+
+/** ホストの観測点 1 つ（`/status` から読んだもの）。届くかの判定と、読み返しの宛先に使う。 */
+interface HostStation extends ReachStation {
+  readonly displayName: string
+}
+
+/** 観測点の並びが同じか（参照を使い回してよいか）。 */
+function sameHostStations(a: readonly HostStation[], b: readonly HostStation[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((s, i) => {
+      const t = b[i]
+      return (
+        s.stationId === t.stationId &&
+        s.displayName === t.displayName &&
+        s.lat === t.lat &&
+        s.lon === t.lon &&
+        s.usualMeasured === t.usualMeasured
+      )
+    })
+  )
+}
+
+/**
+ * その地震の波形を取りに行く観測点。**揺れが届いたと見込めた観測点だけ**（空なら対象にしない）。
+ *
+ * **自作地震計の場所での予測計測震度で決める**（`utils/seismoQuakeReach.ts`。2026-10-13 ユーザー承認）。
+ * 気象庁の近所の観測点の震度では決めない —— 自作地震計は震度 1 に届かない揺れまで測れる。
+ *
+ * **予測できないときだけ、気象庁の近所の震度へ倒す**（震源の判らない震度速報・座標を持たない観測点）。
+ * 予測できないことを「届かない」と読むと、震源が判る前の報で、観測していても出ない。
+ */
+function reachedStationIds(q: JMAQuake, scope: NearbyScope, stations: readonly ReachStation[]): readonly string[] {
+  const reach = judgeQuakeReach(q.earthquake.hypocenter, stations)
+  const observedNearby = (): boolean => quakeScaleForScope(q, scope, WAVE_TRIGGER_MIN_SCALE) !== null
+  if (reach.kind === 'unknown') return observedNearby() ? stations.map((s) => s.stationId) : []
+  if (reach.unknownStationIds.length === 0 || !observedNearby()) return reach.stationIds
+  const take = new Set([...reach.stationIds, ...reach.unknownStationIds])
+  return stations.map((s) => s.stationId).filter((id) => take.has(id))
 }
 
 /**
  * 対象の地震を選ぶ。**新しい順・件数の上限は置かない。**
  *
- * **上限を置かない**（2026-09-30 のユーザー判断）—— 有感の地震は 7 日でせいぜい数件で、
- * 取得は LAN 内の自前のホストへ 1 件 140 ms・直列。歯止めを置くほどの量にならない。
+ * **上限を置かない**（2026-09-30 のユーザー判断）—— 揺れが届いたと見込める地震は 7 日で十数件ほど
+ * （2026-10-10〜13 の実測で 3 日に 7 件）で、取得は LAN 内の自前のホストへ 1 件 140 ms・直列。
+ * 歯止めを置くほどの量にならない。
+ *
+ * **観測点を知るまでは選ばない**（`stations` が `null`）。届くかを決める材料が無く、取りに行く先も無い。
+ *
+ * **`kept` に載った組は外さない**（地震の鍵 → 観測点）。判定は普段の計測震度で決まり、普段は
+ * 10 分ごとに測り直される —— 選び直すたびに外れうると、**出ていた波形がカードから消える**。
+ * 何を載せるか（普段が読めた観測点で選んだ組だけ）は呼び出し側が決める。
+ * 取消（一覧から消えた地震）とホストに無い観測点は外す。
  *
  * **時刻として読めないものは外す**（窓を作れないので取りに行きようがない）。
  *
  * **並べ直す。** 呼び出し側の並びに依存すると、並びを変えた日に打ち切りの順序が
- * 静かに狂う（`cutoffMs` は「1 つ新しい地震」から取る）。
+ * 静かに狂う（`cutoffMs` は「1 つ新しい地震」から取る）。**打ち切りは選んだ地震どうしで決める**
+ * —— 届かない遠くの地震で、近くの地震の窓を切らない。
  */
 export function pickTargets(
   quakes: readonly JMAQuake[],
   scope: NearbyScope,
   originSeconds: ReadonlyMap<string, OriginSeconds>,
+  stations: readonly ReachStation[] | null,
+  kept: ReadonlyMap<string, readonly string[]>,
 ): SeismoWaveTarget[] {
+  if (stations === null || stations.length === 0) return []
   const found: Omit<SeismoWaveTarget, 'cutoffMs'>[] = []
   const seen = new Set<string>()
   for (const q of quakes) {
-    if (quakeScaleForScope(q, scope, WAVE_TRIGGER_MIN_SCALE) === null) continue
     // **時間帯を持たない値（P2PQuake の `2026/10/03 13:26:00`）は日本時間として読む。**
     // 端末の時間帯で読むと、日本国外の端末だけ窓と時間軸の 0 がずれる（ホストの記録は
     // 絶対時刻なので、ずれた分だけ別の区間を取りに行く）。
@@ -275,12 +332,17 @@ export function pickTargets(
     if (!Number.isFinite(originMs)) continue
     const eventKey = quakeEventKey(q)
     if (seen.has(eventKey)) continue
+    const reached = new Set(reachedStationIds(q, scope, stations))
+    for (const id of kept.get(eventKey) ?? []) reached.add(id)
+    const stationIds = stations.map((s) => s.stationId).filter((id) => reached.has(id))
+    if (stationIds.length === 0) continue
     seen.add(eventKey)
     const seconds = originSeconds.get(eventKey)
     found.push({
       eventKey, originMs, hypocenter: q.earthquake.hypocenter,
       arrivalOriginMs: seconds?.originMs ?? null,
       arrivalOriginSource: seconds?.source ?? null,
+      stationIds,
     })
   }
   found.sort((a, b) => b.originMs - a.originMs)
@@ -289,6 +351,34 @@ export function pickTargets(
     // 1 つ新しい地震の発生時刻まで。**同分の別地震で窓が潰れないよう下限を置く。**
     cutoffMs: i === 0 ? Infinity : Math.max(found[i - 1].originMs, t.originMs + MIN_WINDOW_MS),
   }))
+}
+
+/**
+ * 外さない組（{@link pickTargets} の `kept`）を、今回選んだ対象から更新する。
+ *
+ * **普段が読めた観測点で選んだ組だけ足す**（座標が無く近所の震度へ倒した観測点も足す —— そちらは普段で
+ * 決まらない）。普段が読めない間は下限を置かずに選ぶので、そこで選んだ組まで固定すると、ホストの起動直後に
+ * たまたま読んだだけで 7 日ぶんの遠い地震が開き直すまで外れなくなる。
+ *
+ * **前に覚えた組は残す**（和を取る）。一覧から消えた地震（取消）の分だけ落とす。観測点を読めていなければ
+ * 何も足さない。
+ */
+export function rememberPicks(
+  prev: ReadonlyMap<string, readonly string[]>,
+  targets: readonly SeismoWaveTarget[],
+  stations: readonly ReachStation[] | null,
+  listedKeys: ReadonlySet<string>,
+): Map<string, readonly string[]> {
+  const picked = new Map([...prev].filter(([key]) => listedKeys.has(key)))
+  if (stations === null) return picked
+  const firm = new Set(
+    stations.filter((s) => s.usualMeasured !== null || s.lat === null || s.lon === null).map((s) => s.stationId),
+  )
+  for (const t of targets) {
+    const ids = new Set([...(picked.get(t.eventKey) ?? []), ...t.stationIds.filter((id) => firm.has(id))])
+    if (ids.size > 0) picked.set(t.eventKey, [...ids])
+  }
+  return picked
 }
 
 /** その対象の窓（読み返す範囲）。**打ち切りが手前にあればそこで切る。** */
@@ -437,13 +527,71 @@ export function useSeismoQuakeWaves(params: {
   const [waves, setWaves] = useState<ReadonlyMap<string, readonly SeismoQuakeWave[]>>(new Map())
 
   const canFetch = enabled && isValidSeismoHostUrl(baseUrl)
+  // ホストの観測点（座標・普段の計測震度）。**どの地震を出すかを決める材料**（→ {@link pickTargets}）。
+  // **接続先ごとに持つ** —— 別のホストの観測点で選ぶと、選んだ根拠と取りに行く先がずれる。
+  const [hostStations, setHostStations] = useState<{
+    readonly baseUrl: string
+    readonly stations: readonly HostStation[]
+  } | null>(null)
+  const stationsForPick = hostStations !== null && hostStations.baseUrl === baseUrl ? hostStations.stations : null
+  // **前に選んだ組**（→ {@link pickTargets} の `kept`）。**表示する震度の設定・接続先・時間軸が変わったら
+  // 持ち越さない** —— 設定を変えて外したい地震まで残り、別の相手・別の時間軸の判定が混ざる。
+  // 鍵ごと持つので、空にし忘れる経路が無い。
+  const pickKey = `${baseUrl}|${replayOffsetMs ?? 'live'}`
+  const keptRef = useRef<{ scope: NearbyScope; pickKey: string; picked: Map<string, readonly string[]> }>({
+    scope,
+    pickKey,
+    picked: new Map(),
+  })
+  const keptFor = (s: NearbyScope, k: string): ReadonlyMap<string, readonly string[]> | null =>
+    keptRef.current.scope === s && keptRef.current.pickKey === k ? keptRef.current.picked : null
   const targets = useMemo(
-    () => (canFetch ? pickTargets(quakes, scope, originSeconds) : []),
-    [canFetch, quakes, scope, originSeconds],
+    () =>
+      canFetch ? pickTargets(quakes, scope, originSeconds, stationsForPick, keptFor(scope, pickKey) ?? new Map()) : [],
+    // `keptFor` は ref を読むだけ。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [canFetch, quakes, scope, originSeconds, stationsForPick, pickKey],
   )
   // **依存は鍵の並びで持つ。** `targets` は毎レンダー新しい配列になるので、そのまま
   // 依存に置くと電文が 1 通届くたびに取り直しへ入る。
-  const targetKey = targets.map((t) => `${t.eventKey}@${t.originMs}@${t.cutoffMs}`).join(',')
+  const targetKey = targets
+    .map((t) => `${t.eventKey}@${t.originMs}@${t.cutoffMs}#${t.stationIds.join('+')}`)
+    .join(',')
+  // **観測点を読みに行く種。** 時刻を読める地震が 1 件でもあれば `/status` を読む（読めるまで
+  // 対象は選べない）。**地震が増えるたびに読み直す** —— 普段の計測震度は 10 分ごとに変わるので、
+  // 新しい地震はそのときの値で判定したい。
+  const candidateKey = useMemo(
+    () =>
+      canFetch
+        ? quakes
+            .filter((q) => Number.isFinite(parseJstTimeMs(q.earthquake.time)))
+            .map((q) => quakeEventKey(q))
+            .join(',')
+        : '',
+    [canFetch, quakes],
+  )
+  const quakesRef = useRef(quakes)
+  quakesRef.current = quakes
+  /** 座標の無い観測点として最後に記録へ残した顔ぶれ。 */
+  const noPosLoggedRef = useRef('')
+  // 選んだ組を覚える（描き終えてから。描いている途中に ref を書き換えない。決め方は {@link rememberPicks}）。
+  // **依存は `rememberPicks` へ渡す材料そのもの** —— 材料を 1 つでも依存から落とすと、その材料だけが
+  // 変わったときに覚え損なう（観測点を読み直して普段だけが変わったとき、選ぶ顔ぶれは同じなので
+  // 対象の鍵は動かない）。
+  useEffect(() => {
+    keptRef.current = {
+      scope,
+      pickKey,
+      picked: canFetch
+        ? rememberPicks(
+            keptRef.current.scope === scope && keptRef.current.pickKey === pickKey ? keptRef.current.picked : new Map(),
+            targets,
+            stationsForPick,
+            new Set(quakes.map((q) => quakeEventKey(q))),
+          )
+        : new Map(),
+    }
+  }, [canFetch, scope, pickKey, targets, stationsForPick, quakes])
 
   // 取り終えた組。**もう取りに行かないための帳面。**
   const doneRef = useRef(new Set<string>())
@@ -540,47 +688,83 @@ export function useSeismoQuakeWaves(params: {
     setWaves(new Map())
   }, [resetKey])
 
-  // 読み返し（地震 × 観測点について 1 回ずつ。**失敗したら取り直す**）。
+  // 観測点を読む（座標・普段の計測震度。**読めるまで対象は選べない**）。**読めなければ取り直す。**
   useEffect(() => {
-    if (!canFetch || targets.length === 0) return
+    if (!canFetch || candidateKey === '') return
     const ctrl = new AbortController()
     let retryTimer: ReturnType<typeof setTimeout> | undefined
 
-    /** **取り直す値打ちのある対象**（＝発生から {@link GROW_SAFETY_MS} 以内）があるか。 */
-    const hasFreshTarget = (): boolean =>
-      targets.some((t) => serverNow() <= t.originMs + GROW_SAFETY_MS)
+    /** **取り直す値打ちのある地震**（＝発生から {@link GROW_SAFETY_MS} 以内）があるか。 */
+    const hasFreshQuake = (): boolean =>
+      quakesRef.current.some((q) => {
+        const originMs = parseJstTimeMs(q.earthquake.time)
+        return Number.isFinite(originMs) && serverNow() <= originMs + GROW_SAFETY_MS
+      })
 
-    /** 一巡する。**取り直す値打ちのある失敗が残ったか**を返す。 */
-    const sweep = async (): Promise<boolean> => {
+    const run = async (): Promise<void> => {
       const status = await fetchSeismoStatus(baseUrl)
-      if (ctrl.signal.aborted) return false
+      if (ctrl.signal.aborted) return
+      if (status.kind === 'ok' && status.stations.length > 0) {
+        const next: HostStation[] = status.stations.map((s) => ({
+          stationId: s.stationId,
+          displayName: s.displayName,
+          lat: s.lat,
+          lon: s.lon,
+          // **読めない観測点は `null`**（下限を置かずに出す側へ倒す。→ `utils/seismoQuakeReach.ts`）。
+          usualMeasured: status.usualIntensities.get(s.stationId) ?? null,
+        }))
+        // **座標の無い観測点は記録へ残す**（設定の不備）。届くかを予測できず、気象庁の近所の震度へ
+        // 倒れるので、近所が震度 1 に届かない地震では観測していても波形が出ない。同じ顔ぶれでは繰り返さない。
+        const noPos = next.filter((s) => s.lat === null || s.lon === null).map((s) => s.stationId).join(', ')
+        if (noPos !== '' && noPos !== noPosLoggedRef.current) {
+          log.warn(`[seismo] 座標の無い観測点は、揺れが届くかを予測できない: ${noPos}`)
+        }
+        noPosLoggedRef.current = noPos
+        // **中身が同じなら前の参照を使い回す。** 変えると対象を選び直し、鍵が同じでも描き直しが走る。
+        setHostStations((prev) =>
+          prev !== null && prev.baseUrl === baseUrl && sameHostStations(prev.stations, next)
+            ? prev
+            : { baseUrl, stations: next },
+        )
+        return
+      }
       // 理由は `fetchSeismoStatus` が記録へ残している。**取り直すのは新しい地震が
       // あるときだけ** —— 状態の口が一時的に返らないだけなら取り直す値打ちがあるが、
       // ホストが落ちている間、古いカードのために延々と叩き続ける理由は無い。
-      if (status.kind !== 'ok') return hasFreshTarget()
-      const stationList = status.stations.map((s) => ({
-        stationId: s.stationId,
-        displayName: s.displayName,
-        lat: s.lat,
-        lon: s.lon,
-      }))
+      //
       // **観測点が 0 件でも取り直す。** 通信は成功しているので `kind` は `'ok'` だが、
       // **ホストの起動直後は必ずこの形を通る** ——`seismo-host` の `sensorHealth.ts` は
       // 実際にパケットを受けたセンサーしか載せないので、まだ 1 枚も基板が繋ぎ直して
-      // いない間は空で返る。
-      //
-      // **ここで諦めると、次に `targetKey` が変わるまでその地震の波形を取りに行かない**
-      // （この効果の依存は `[canFetch, baseUrl, targetKey]` だけ）。その地震が最後の
-      // 1 件だったら二度と来ない —— **停電はホストの再起動と地震の両方の原因になりうる**
-      // ので、いちばん見たい地震でこれを踏む。
+      // いない間は空で返る。**ここで諦めると、次に地震が増えるまでその地震の波形を
+      // 取りに行かない**（この効果の依存は `[canFetch, baseUrl, candidateKey]` だけ）。
+      // その地震が最後の 1 件だったら二度と来ない —— **停電はホストの再起動と地震の
+      // 両方の原因になりうる**ので、いちばん見たい地震でこれを踏む。
       //
       // **記録も残す。** 同じファイルの他の失敗分岐はすべて理由を記録に残しているのに、
       // ここだけ沈黙していた（2026-09-30 のレビューで見つかった）。
-      if (stationList.length === 0) {
-        log.warn('[seismo] /status は応答したが観測点が 0 件（まだ繋がっていない可能性）')
-        return hasFreshTarget()
-      }
+      if (status.kind === 'ok') log.warn('[seismo] /status は応答したが観測点が 0 件（まだ繋がっていない可能性）')
+      if (!hasFreshQuake()) return
+      retryTimer = setTimeout(() => void run(), RETRY_INTERVAL_MS)
+    }
+    void run()
 
+    return () => {
+      ctrl.abort()
+      if (retryTimer !== undefined) clearTimeout(retryTimer)
+    }
+    // `quakes` は `candidateKey` が同じなら、読みに行く理由も同じ。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canFetch, baseUrl, candidateKey])
+
+  // 読み返し（地震 × 観測点について 1 回ずつ。**失敗したら取り直す**）。
+  useEffect(() => {
+    if (!canFetch || targets.length === 0 || stationsForPick === null) return
+    const stationList = stationsForPick
+    const ctrl = new AbortController()
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
+
+    /** 一巡する。**取り直す値打ちのある失敗が残ったか**を返す。 */
+    const sweep = async (): Promise<boolean> => {
       // **取り直す値打ちのある失敗**（＝古すぎない地震で、一時的な理由で取れなかったもの）。
       let retryable = false
       for (const target of targets) {
@@ -592,6 +776,8 @@ export function useSeismoQuakeWaves(params: {
         const fresh = serverNow() <= target.originMs + GROW_SAFETY_MS
         for (const station of stationList) {
           if (ctrl.signal.aborted) return false
+          // **揺れが届いたと見込めた観測点だけ取りに行く**（→ {@link pickTargets}）。
+          if (!target.stationIds.includes(station.stationId)) continue
           // **地震ごとに数える。** 窓を鍵にすると、同じ分に起きた別の地震で 2 件目が
           // 「取得済み」と見なされ、片方のカードにだけ波形が出ない。
           const key = `${target.eventKey}|${station.stationId}`
@@ -684,7 +870,8 @@ export function useSeismoQuakeWaves(params: {
       ctrl.abort()
       if (retryTimer !== undefined) clearTimeout(retryTimer)
     }
-    // `targets` は `targetKey` が同じなら中身も同じ。
+    // `targets` は `targetKey` が同じなら中身も同じ。観測点が変わっても選ぶ地震と観測点が
+    // 同じなら取り直さない（名前・座標は取った後の帳面に写してある）。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canFetch, baseUrl, targetKey])
 
@@ -1044,6 +1231,15 @@ export function useSeismoQuakeWaves(params: {
     const alive = new Map(targetsRef.current.map((t) => [t.eventKey, t]))
     // **先頭以外は「伸ばす番」ではない**（継ぎ足しの巡回が触るのは先頭だけ）。
     const headKey = targetsRef.current[0]?.eventKey
+    // **対象から外れた地震の「取り終えた」印を捨てる**（鍵は `地震|観測点`）。残すと、また選ばれたとき
+    // （設定を戻した・普段が読めない間に選ばれて外れた地震が届く見込みに変わった）に取りに行かず、波形が出ない。
+    // **帳面とは別に回す** —— 記録が無かった・取れなかった組は帳面を作らずに印だけ付く。
+    // **観測点単位では消さない**（地震が丸ごと外れたときだけ）—— 一部の観測点だけ外れても、出ていた波形は
+    // 出したままにする（迷ったら出す側へ倒す）。
+    for (const doneKey of [...doneRef.current]) {
+      const eventKey = doneKey.slice(0, doneKey.lastIndexOf('|'))
+      if (!alive.has(eventKey)) doneRef.current.delete(doneKey)
+    }
     let changed = false
     for (const [key, entries] of [...bookRef.current]) {
       const target = alive.get(key)

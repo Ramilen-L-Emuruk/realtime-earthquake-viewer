@@ -59,6 +59,7 @@ import { fetchGet, readDmdataApiKey, RecordQuakes } from './src/receiver/recordQ
 import { RecordChannelIndex } from './src/receiver/waveRecordChannels'
 import { handleRecordsRequest } from './src/receiver/waveRecordsApi'
 import { WaveSummaryKeeper } from './src/receiver/waveSummaryKeeper'
+import { UsualIntensityKeeper, USUAL_STATUS_REFRESH_MS } from './src/receiver/usualIntensityKeeper'
 import { SummaryWorkerRunner } from './src/receiver/waveSummaryWorkerRunner'
 import { SensorFusion, findUnderdeterminedStations } from './src/receiver/sensorFusion'
 import type {
@@ -2578,6 +2579,18 @@ async function main(): Promise<void> {
     if (ok) detectionHourlySinceMs = now
   }, DETECTION_HOURLY_INTERVAL_MS)
 
+  // 観測点ごとの普段の計測震度（`/status` の `usualIntensities`）。アプリが地震カードへ波形を出すかの
+  // 下限に使う。**起動直後に 1 回測り、以後 10 分ごと。** 投げない（`refresh` が自分で記録して倒れる）。
+  const usualIntensity = new UsualIntensityKeeper({
+    stationIds: () => currentStationConfig.stations.map((s) => s.stationId),
+    readWaves: (params) => readWaveRange({ dir: waveDir, ...params }),
+    // **区間 1 つごとに受信へ順番を譲る**（`computeUsualMeasured` の説明）。
+    onWindow: () => new Promise((resolve) => setImmediate(resolve)),
+    log: emit,
+  })
+  void usualIntensity.refresh(Date.now())
+  const usualIntensityTimer = setInterval(() => void usualIntensity.refresh(Date.now()), USUAL_STATUS_REFRESH_MS)
+
   // 止める合図（`POST /api/shutdown`）の受け先。**締めくくり（`shutdown`）は状態の口を
   // 開けた後で作る**（締めくくりが状態の口を閉じるため）ので、それまでは `not-ready` で断る。
   let requestShutdownFromApi: (() => ShutdownRequestResult) | null = null
@@ -2686,6 +2699,7 @@ async function main(): Promise<void> {
         stationConfigWarning,
         ungroupedMultiBoardStations,
         assignedBoards: readAssignedReception(nowMs),
+        usualIntensities: usualIntensity.snapshot(),
       })
     },
     log: emit,
@@ -2923,6 +2937,7 @@ async function main(): Promise<void> {
     clearInterval(rewaveTimer)
     clearInterval(detectionTimer)
     clearInterval(detectionHourlyTimer)
+    clearInterval(usualIntensityTimer)
     console.log(`[udp] ${signal} を受けたので締めます`)
     // **ここから `closeHostCore` までの段も投げさせない。** 投げると締めくくりの本体
     // （生データ・miniSEED・波形・揺れの記録の書き出し）へ一度も届かずに終わる ——
