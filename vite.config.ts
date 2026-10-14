@@ -10,6 +10,7 @@ import { devServerLockPlugin } from './scripts/dev-server-lock'
 import { outDirForVariant } from './scripts/buildOutDir'
 import { PRECACHE_GLOB_PATTERNS, PRECACHE_MAX_FILE_BYTES } from './scripts/precacheBudget'
 import { cleanupOutdatedCachesForVariant } from './scripts/precacheCleanup'
+import { offlineDataRuntimeCaching } from './scripts/offlineData'
 
 const variant = process.env.VITE_VARIANT ?? 'standard'
 const isDmdss = variant === 'dmdss'
@@ -234,6 +235,10 @@ export default defineConfig(configEnv => ({
         // 後始末は入れていない。入れるなら Service Worker の `activate` で名指しで
         // `caches.delete('map-tiles')` する形になる。
         runtimeCaching: [
+          // 地図の生成データ 7 本と読み上げ辞書 3 本をオフラインでも使えるよう控える。
+          // 対象のファイル名・規則・キャッシュ名は `scripts/offlineData.ts`（事前キャッシュに
+          // 載せられない理由もそちら）。
+          offlineDataRuntimeCaching(base, variant),
           {
             // **`cache: 'no-store'` の要求は控えに通さない。** 標準版の接続を張り直したときの取り戻し
             // （`fetchHistorySince`）がそれを付ける。NetworkFirst は通信に失敗すると控えを普通の
