@@ -68,7 +68,7 @@ import { useTelegramTextSpeechFollow } from './hooks/useTelegramTextSpeechFollow
 import { deriveKyoshinView } from './utils/kyoshinDetectionView'
 import { filterSubThresholdIndices } from './utils/kyoshinSubThresholdFilter'
 import { useSWaveCountdown } from './hooks/useSWaveCountdown'
-import { pickSeismoArrivalEew } from './utils/countdownEew'
+import { pickCountdownEew } from './utils/countdownEew'
 import { useArrivalTokenCheck } from './hooks/useArrivalToken'
 import { usePsWaveCalc } from './hooks/usePsWaveCalc'
 import { useQuakeHeatmap } from './hooks/useQuakeHeatmap'
@@ -1995,11 +1995,12 @@ export function App() {
   const allowOwnArrivalCalc = arrivalTokenStatus.valid
   const swaveArrival = useSWaveCountdown(psWave, eewsForMap, home, hasActiveEEW, allowOwnArrivalCalc)
   // 地図の下端の自作地震計の波形へ P/S の到達線を引く相手。**カウントダウンと同じ選び方**（`utils/countdownEew.ts`。
-  // 2026-10-13 ユーザー指示）で、**自前の走時計算を使ってよい端末だけ**（同日ユーザー承認。観測点という特定の地点への
-  // 到達を、推定途中の震源から自前で解くため —— `docs/forecast-computation-audit.md`）。
+  // 2026-10-13 ユーザー指示）。**到達予想キーの門は掛けない**（2026-10-14 ユーザー承認）——線は到達時刻を
+  // 過ぎてから描くだけで、これから来る時刻を出さないので予報業務に当たらないと整理した（`docs/forecast-computation-audit.md`
+  // の 11）。歯止めは波形の側の「右端＝最後に届いたサンプル」（`SeismoWaveChart/liveLanes.ts` の `liveArrivalMarks`）。
   // `psWave` は 100ms ごとに新しい配列になるが、選ばれる速報の参照は続報が来るまで変わらない
   // （波形の側は速報の参照が変わったときだけ走時を解き直す）。
-  const seismoArrivalEew = pickSeismoArrivalEew({ allowOwnArrivalCalc, psWave, eews: eewsForMap })
+  const seismoArrivalEew = pickCountdownEew(psWave, eewsForMap)
   const toggleSeismoWaveExpanded = useCallback(() => {
     updateSetting('seismoWaveExpanded', !settings.seismoWaveExpanded)
   }, [settings.seismoWaveExpanded, updateSetting])

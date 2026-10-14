@@ -29,18 +29,3 @@ export function pickCountdownEew(psWave: readonly PsWaveCircle[], eews: readonly
   if (circle === null) return null
   return eews.find((e) => (e.issue?.eventId ?? e.id) === circle.eventId) ?? null
 }
-
-/**
- * 地図の下端の波形へ P/S の到達線を引く相手。**自前の走時計算を使ってよい端末でなければ `null`**
- * （到達予想トークンが有効なとき。気象業務法の線引きの判断は `docs/forecast-computation-audit.md`）。
- *
- * 門をこの関数に置くのは、App の中の式のままだと**外れても型にもテストにも掛からない**から。
- */
-export function pickSeismoArrivalEew(params: {
-  allowOwnArrivalCalc: boolean
-  psWave: readonly PsWaveCircle[]
-  eews: readonly EEWAlert[]
-}): EEWAlert | null {
-  if (!params.allowOwnArrivalCalc) return null
-  return pickCountdownEew(params.psWave, params.eews)
-}

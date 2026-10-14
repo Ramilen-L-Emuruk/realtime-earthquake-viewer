@@ -172,8 +172,12 @@ export function singleVisibleAxis(visibleAxes: readonly boolean[]): number | nul
 /**
  * P/S の到達線を、いまの 60 秒の窓の横位置へ落とす。**右端は最後に届いたサンプル**
  * （`buildWaveColumns` が右端をそこへ固定している）。まだ来ていない時刻は右端の外に落ちて描かれない。
+ *
+ * **この関数の振る舞いが、到達予想キーの門を掛けない根拠になっている**（`docs/forecast-computation-audit.md` の 11）。
+ * これから来る時刻を示す形（右端を最後のサンプルより先へ伸ばす・範囲外の線を端へ張り付ける）へ変えるなら、
+ * その整理をやり直す。
  */
-function liveArrivalMarks(win: SeismoWaveWindow | null, arrival: WaveArrival | null): WaveMark[] {
+export function liveArrivalMarks(win: SeismoWaveWindow | null, arrival: WaveArrival | null): WaveMark[] {
   if (win === null || arrival === null) return []
   const n = win.gal[0].length
   if (n === 0) return []
