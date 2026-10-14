@@ -1,7 +1,7 @@
 {
   "name": "yuremado",
   "private": true,
-  "version": "5.50.2",
+  "version": "5.50.3",
   "type": "module",
   "scripts": {
     "dev": "vite",
