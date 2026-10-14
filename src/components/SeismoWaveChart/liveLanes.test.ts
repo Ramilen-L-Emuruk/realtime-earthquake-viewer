@@ -8,8 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resetWaveAxes, toggleWaveAxis } from '../../hooks/useSeismoWaveAxes'
 import type { SeismoWaveWindow } from '../../utils/seismoWaveBuffer'
 import { quietScaledGal } from '../../utils/seismoQuietScale'
-import { drawLanes, singleVisibleAxis, type Lane } from './liveLanes'
-import { paintCompositeColumns, paintWaveColumns } from './paintWave'
+import { drawLanes, liveArrivalMarks, singleVisibleAxis, type Lane } from './liveLanes'
+import { paintCompositeColumns, paintMarks, paintWaveColumns } from './paintWave'
 import { buildWaveColumns } from './waveColumns'
 
 vi.mock('./paintWave', async (importOriginal) => {
@@ -171,5 +171,93 @@ describe('drawLanes の列の組み立て', () => {
     overlay.mockImplementation((_c, b) => (b(60), '±1.00 gal'))
     run([{ kind: 'composite' }, { kind: 'axis', axis: 0 }], true)
     expect(build).toHaveBeenCalledTimes(2)
+  })
+})
+
+// 地図の下端の P/S 線は到達予想キーの門を掛けずに引く（2026-10-14 ユーザー承認）。予報業務に当たらないとした整理は
+// 「まだ来ていない時刻の線を描かない」ことに拠る（`docs/forecast-computation-audit.md` の 11）ので、その歯止めを
+// 位置の計算（`liveArrivalMarks`）と描く側（`paintMarks`）を通して固定する。
+describe('地図の下端の P/S 線は、まだ来ていない時刻を描かない', () => {
+  const win = windowOf()
+  const lastMs = win.firstSampleMs + (win.gal[0].length - 1) * win.msPerSample
+
+  /** 線とラベルを数えるだけの描画先。 */
+  function recordingCtx() {
+    const labels: string[] = []
+    let strokes = 0
+    const ctx = {
+      font: '',
+      textBaseline: '',
+      strokeStyle: '',
+      fillStyle: '',
+      lineWidth: 0,
+      setLineDash: () => {},
+      beginPath: () => {},
+      moveTo: () => {},
+      lineTo: () => {},
+      stroke: () => {
+        strokes += 1
+      },
+      measureText: () => ({ width: 6 }),
+      fillText: (text: string) => {
+        labels.push(text)
+      },
+    } as unknown as CanvasRenderingContext2D
+    return { ctx, labels, strokes: () => strokes }
+  }
+
+  // 正: 既に過ぎた P は窓の中に落ち、まだ来ていない S は右端の外へ落ちる。
+  it('右端は最後に届いたサンプルで、その後の到達は比が 1 を超える', () => {
+    const marks = liveArrivalMarks(win, { pMs: lastMs - 1_000, sMs: lastMs + 5_000 })
+    const p = marks.find((m) => m.label === 'P')
+    const s = marks.find((m) => m.label === 'S')
+    expect(p?.ratio).toBeGreaterThanOrEqual(0)
+    expect(p?.ratio).toBeLessThanOrEqual(1)
+    expect(s?.ratio).toBeGreaterThan(1)
+  })
+
+  // 正: 描く側は右端の外の線を捨てる（端へ張り付けない）。過ぎた P だけが描かれる。
+  it('まだ来ていない S の線は描かれない', () => {
+    const { ctx, labels, strokes } = recordingCtx()
+    paintMarks(ctx, liveArrivalMarks(win, { pMs: lastMs - 1_000, sMs: lastMs + 5_000 }), 400, 60, 1)
+    expect(labels).toEqual(['P'])
+    expect(strokes()).toBe(1)
+  })
+
+  // 対照: どちらも過ぎていれば 2 本とも描く（捨てる判定が広すぎないこと）。
+  it('どちらも過ぎていれば両方描く', () => {
+    const { ctx, labels } = recordingCtx()
+    paintMarks(ctx, liveArrivalMarks(win, { pMs: lastMs - 1_500, sMs: lastMs - 500 }), 400, 60, 1)
+    expect(labels).toEqual(['P', 'S'])
+  })
+
+  // 安全弁: ちょうど最後のサンプルの時刻は窓の右端（比 1）で、描いてよい過去に含める。その 1 ms 後は描かない
+  // （右端を少しでも先へ伸ばすと、この組が崩れる）。時刻は整数のミリ秒なので、右端の比はちょうど 1 になる。
+  it('最後のサンプルと同じ時刻は右端に描き、その 1 ms 後は描かない', () => {
+    const { ctx, labels } = recordingCtx()
+    paintMarks(ctx, liveArrivalMarks(win, { pMs: lastMs, sMs: lastMs + 1 }), 400, 60, 1)
+    expect(labels).toEqual(['P'])
+  })
+
+  // 正（結線）: drawLanes は位置を端へ寄せずに、そのまま描画関数へ渡す。合成の段と成分の段の両方で見る
+  // （描画関数は差し替えてあるので、渡された比を直に読む）。
+  it('drawLanes はまだ来ていない線を右端へ寄せずに渡す', () => {
+    const lanes: Lane[] = [{ kind: 'composite' }, { kind: 'axis', axis: 0 }]
+    drawLanes({
+      canvases: canvasesFor(lanes),
+      lanes,
+      expanded: true,
+      win,
+      stale: false,
+      quietLevel: 0.2,
+      arrival: { pMs: lastMs - 1_000, sMs: lastMs + 5_000 },
+    })
+    const ratiosOf = (marks: readonly { ratio: number }[] | undefined) => (marks ?? []).map((m) => m.ratio)
+    for (const ratios of [ratiosOf(composite.mock.calls[0][3]?.marks), ratiosOf(overlay.mock.calls[0][3]?.marks)]) {
+      expect(ratios).toHaveLength(2)
+      expect(ratios[0]).toBeGreaterThanOrEqual(0)
+      expect(ratios[0]).toBeLessThanOrEqual(1)
+      expect(ratios[1]).toBeGreaterThan(1)
+    }
   })
 })
