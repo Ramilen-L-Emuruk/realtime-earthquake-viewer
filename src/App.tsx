@@ -97,7 +97,8 @@ import { warmFixedPhrases, isValidVoicevoxUrl, VOICEVOX_URL_DEBOUNCE_MS, isSpeak
 import { EEW_LEAD_PHRASES } from './utils/ttsText'
 import type { EEWAlert, JMAQuake, JMATsunami } from './types/earthquake'
 import { useReplayController, WINDOW_MS as REPLAY_WINDOW_MS, PRE_WINDOW_MS as REPLAY_PRE_WINDOW_MS } from './hooks/useReplayController'
-import { fetchDmdataReplayEvents, fetchDmdataQuakeHistory, clearReplayCache, HISTORY_WINDOW_DAYS } from './services/dmdataReplay'
+import { fetchDmdataReplayEvents, fetchDmdataQuakeHistoryFor, clearReplayCache, HISTORY_WINDOW_DAYS } from './services/dmdataReplay'
+import { PREFERRED_CLASSIFICATIONS } from './services/dmdataClassifications'
 import { fetchP2PReplayEvents, fetchP2PQuakeHistory, clearP2PReplayCache } from './services/p2pquakeReplay'
 import { findCoveringArchiveSync, findArchiveJustEndedSync, fetchLocalArchiveEvents, fetchLocalArchiveQuakeHistory } from './services/localArchiveReplay'
 import { useHistoricalArchiveIndex } from './hooks/useHistoricalArchiveIndex'
@@ -852,7 +853,7 @@ export function App() {
   }, [requestAutoTab, settings.tsunamiPriorityDefault, settings.voicevoxEnabled])
 
   const {
-    earthquakes, tsunamis, activeEEWs, lpgmByEventId, quakeUpdateMarks, nankai, nankaiCommentary, kohatsu, quakeNotice, earthquakeCount, estimatedIntensities, connectionStatus, lastUpdate, isLoading, isLoadingMore, hasMore, error,
+    earthquakes, tsunamis, activeEEWs, lpgmByEventId, quakeUpdateMarks, nankai, nankaiCommentary, kohatsu, quakeNotice, earthquakeCount, estimatedIntensities, connectionStatus, dmdataClassifications, lastUpdate, isLoading, isLoadingMore, hasMore, error,
     historyLoss, loadMoreFailed,
     telegramLog, clearTelegramLog,
     injectEvent, loadMoreEarthquakes,
@@ -1664,12 +1665,14 @@ export function App() {
         // 経路を限っていない**のに、ここへ渡さないと「ライブでは届くが再生では届かない」
         // という、名前から読み取れない食い違いになる。訓練報は年に数回しか流れないので、
         // 再生で拾えないと実電文で確かめる手段が事実上テストボタンだけになる。
-        ? fetchDmdataReplayEvents(settings.dmdataApiKey, from, to, settings.dmdataTestDelivery, signal)
+        // 区分はライブの接続が取り決めたものを使う（再生中はライブを止めているが、値は残っている）。
+        // 一度も繋がっていなければ既定の区分で引く（→ `services/dmdataClassifications.ts`）
+        ? fetchDmdataReplayEvents(settings.dmdataApiKey, from, to, settings.dmdataTestDelivery, dmdataClassifications ?? PREFERRED_CLASSIFICATIONS, signal)
         // standard 版は合図を受け取らない —— 日ごとの取得を本編と初期状態が相乗りするため
         // （→ `p2pquakeReplay.ts` の `fetchAllPages`）
         : fetchP2PReplayEvents(from, to)
     },
-    [settings.dmdataApiKey, settings.dmdataTestDelivery, historicalArchives],
+    [settings.dmdataApiKey, settings.dmdataTestDelivery, historicalArchives, dmdataClassifications],
   )
   const clearReplayCacheForVariant = useCallback(
     () => { if (isDmdss) clearReplayCache(); else clearP2PReplayCache() },
@@ -1692,10 +1695,13 @@ export function App() {
       return isDmdss
         // 履歴（再生開始より前の地震カード）も本編と同じ扱いにする。片方だけ通すと
         // 「再生には訓練報が出るのにカードの一覧には無い」形でずれる。
-        ? fetchDmdataQuakeHistory(settings.dmdataApiKey, before, HISTORY_WINDOW_DAYS, settings.dmdataTestDelivery, signal)
+        ? fetchDmdataQuakeHistoryFor(
+          dmdataClassifications ?? PREFERRED_CLASSIFICATIONS,
+          settings.dmdataApiKey, before, HISTORY_WINDOW_DAYS, settings.dmdataTestDelivery, signal,
+        )
         : fetchP2PQuakeHistory(before, MAX_HISTORY_RETAINED, signal)
     },
-    [settings.dmdataApiKey, settings.dmdataTestDelivery, historicalArchives],
+    [settings.dmdataApiKey, settings.dmdataTestDelivery, historicalArchives, dmdataClassifications],
   )
   /**
    * 行動チェックリストのリセット。**宣言が `useReplayController` より後になる**ため、
@@ -2560,6 +2566,7 @@ export function App() {
                 arrivalTokenStatus={arrivalTokenStatus}
                 onReplaceSettings={replaceSettings}
                 dmdataConnectionStatus={connectionStatus}
+                dmdataClassifications={dmdataClassifications}
                 onTest={testHandlers}
                 kyoshinTimeOffset={replayTimeOffset}
                 kyoshinInputDateTime={kyoshinInputDateTime}

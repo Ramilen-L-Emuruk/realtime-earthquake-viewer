@@ -9,7 +9,8 @@ import { fetchHistory, fetchHistorySince, fetchJmaQuake, P2PQuakeWebSocket } fro
 import { DmdataWebSocket, fetchDmdataActiveEews } from '../services/dmdata'
 // 履歴の取得はリプレイ開始時の復元と実装を共有する（→ `data-sources-spec.md` §2
 // 「大量に取るならアーカイブを使う」）。同じ目的の実装を 2 本持たない。
-import { fetchDmdataQuakeHistory, HISTORY_WINDOW_DAYS } from '../services/dmdataReplay'
+import { fetchDmdataQuakeHistoryFor, HISTORY_WINDOW_DAYS } from '../services/dmdataReplay'
+import { PREFERRED_CLASSIFICATIONS, type DmdataClassification } from '../services/dmdataClassifications'
 import { beginLoadMoreGateTag } from '../services/dmdataRequestGates'
 import {
   type TelegramLoss, createEmptyTelegramLoss, telegramLossFrom, isTelegramLossEmpty,
@@ -653,6 +654,12 @@ export interface EarthquakeState {
    */
   quakeMarkMemory: ReadonlyMap<string, QuakeMarkMemory>
   connectionStatus: ConnectionStatus
+  /**
+   * DMDSS 版で、配信元が受け付けた購読区分（最後に繋がった接続のもの）。まだ繋がっていなければ null。
+   * 設定タブの「受信している区分」と、リプレイが引く区分に使う（→ `services/dmdataClassifications.ts`）。
+   * 標準版では常に null。
+   */
+  dmdataClassifications: readonly DmdataClassification[] | null
   lastUpdate: Date | null
   isLoading: boolean
   isLoadingMore: boolean
@@ -726,6 +733,7 @@ export function useEarthquakes(
     quakeUpdateMarks: new Map(),
     quakeMarkMemory: new Map(),
     connectionStatus: (isDmdss && !isValidDmdataApiKey(dmdataApiKey)) ? 'disconnected' : 'connecting',
+    dmdataClassifications: null,
     lastUpdate: null,
     isLoading: !(isDmdss && !isValidDmdataApiKey(dmdataApiKey)),
     isLoadingMore: false,
@@ -912,6 +920,11 @@ export function useEarthquakes(
   // 「もっと見る」は依存を持たない `useCallback` なので、設定は ref で見る
   const dmdataTestDeliveryRef = useRef(dmdataTestDelivery)
   dmdataTestDeliveryRef.current = dmdataTestDelivery
+  /**
+   * 「もっと見る」が履歴を引くときの区分。接続 effect が、接続の取り決めが済んだ時点で書く
+   * （→ `DmdataWebSocket.classificationsReady`）。取り決め前に押されたら既定の区分で引く。
+   */
+  const dmdataRestClassificationsRef = useRef<readonly DmdataClassification[]>(PREFERRED_CLASSIFICATIONS)
   /**
    * 次に読む窓の上端（→ `HistoryCursor`）。**「もっと見る」のたびに古い方へ進める。**
    *
@@ -2238,7 +2251,18 @@ export function useEarthquakes(
         return
       }
 
-      setState(prev => ({ ...prev, isLoading: true, connectionStatus: 'connecting', error: null }))
+      setState(prev => ({ ...prev, isLoading: true, connectionStatus: 'connecting', error: null, dmdataClassifications: null }))
+
+      // DMDSS WebSocket 接続（dmdataTestDelivery 有効時は試験報・訓練報も受信）。
+      // **作るのは先、繋ぐのは後**（`connect()` は下）。履歴と起動時の復元が、接続の取り決めた区分
+      // （`classificationsReady`）を待ってから取りに行くため —— 一部の区分しか受けられない人に、
+      // 受けられない区分の一覧を引いて断られる取得を出さない（→ `services/dmdataClassifications.ts`）。
+      const ws = new DmdataWebSocket(dmdataApiKey, dmdataTestDelivery)
+      wsRef.current = null
+      const restClassifications = ws.classificationsReady.then((classifications) => {
+        if (!cancelled) dmdataRestClassificationsRef.current = classifications
+        return classifications
+      })
 
       // **取れた分から順に画面へ出す。** 電文本体の取得は配信元の上限に合わせて
       // 6 秒に 1 件へ直列化されるので（→ `services/telegramBody.ts`）、控えが空の初回は
@@ -2276,12 +2300,14 @@ export function useEarthquakes(
       // 中の目録から地震・津波・帯・長周期を全部取り出せる（→ `data-sources-spec.md` §2
       // 「大量に取るならアーカイブを使う」）。
       //
-      // 実装はリプレイ開始時の履歴復元と共有する（`fetchDmdataQuakeHistory`）。同じ目的の
+      // 実装はリプレイ開始時の履歴復元と共有する（`fetchDmdataQuakeHistoryFor`）。同じ目的の
       // 実装を 2 本持つと、片方だけがアーカイブを使う今までの形に戻る。
-      fetchDmdataQuakeHistory(
-        dmdataApiKey, serverDate(), HISTORY_WINDOW_DAYS, dmdataTestDelivery, historyAbort.signal,
-        applyPartialQuakes, () => cancelled,
-      )
+      restClassifications
+        .then((classifications) => (cancelled ? Promise.reject(new Error('cancelled')) : fetchDmdataQuakeHistoryFor(
+          classifications,
+          dmdataApiKey, serverDate(), HISTORY_WINDOW_DAYS, dmdataTestDelivery, historyAbort.signal,
+          applyPartialQuakes, () => cancelled,
+        )))
         .then((history) => {
           if (cancelled) return
           // **「もっと見る」はここの続きから読む。** 初回が読めなければ `null` のままで、
@@ -2472,7 +2498,8 @@ export function useEarthquakes(
       // 警報音は情報を足さずに驚かせるだけ。`silent` を立ててキューへ積むと、状態の更新と
       // 自動解除の予約（`handleEvent` が `calcEEWCancelTime` で積む）は通り、`onLiveEvent`
       // だけが呼ばれない。画面を見せる側はタブ要求として別に出す。
-      void fetchDmdataActiveEews(dmdataApiKey)
+      void restClassifications
+        .then((classifications) => (cancelled ? [] : fetchDmdataActiveEews(dmdataApiKey, classifications)))
         .then(eews => {
           if (cancelled || eews.length === 0) return
           for (const eew of eews) {
@@ -2506,9 +2533,6 @@ export function useEarthquakes(
           log.warn('[data] station-coords 取得失敗（EEW 予想震度の都道府県名が補完されない。読み上げの地域順も気象庁順に並ばない）', err)
         })
 
-      // DMDSS WebSocket 接続（dmdataTestDelivery 有効時は試験報・訓練報も受信）
-      const ws = new DmdataWebSocket(dmdataApiKey, dmdataTestDelivery)
-      wsRef.current = null
       ws.onEvent = (ev) => {
         if (ev.kind === 'lpgm') {
           const lpgm = ev.data
@@ -2579,6 +2603,18 @@ export function useEarthquakes(
       ws.onStatusChange = status =>
         setState(prev => ({ ...prev, connectionStatus: status }))
       ws.onRawMessage = appendTelegramLog
+      ws.onClassifications = (classifications) => {
+        if (cancelled) return
+        // 「もっと見る」は押した時点の最新の区分で引く（最初の取り決めが既定の区分へ倒れた後で、
+        // 再接続が一部の区分だけで通った場合も追随する）
+        dmdataRestClassificationsRef.current = classifications
+        // 再接続のたびに同じ区分で状態を作り直さない（リプレイの取得関数まで作り直される）
+        setState(prev => (
+          prev.dmdataClassifications?.join(',') === classifications.join(',')
+            ? prev
+            : { ...prev, dmdataClassifications: classifications }
+        ))
+      }
       ws.connect()
 
       return () => {
@@ -2816,7 +2852,8 @@ export function useEarthquakes(
         // **押すたびに新しい印を付けて取る**（`beginLoadMoreGateTag`）。ボタンが、この取得が門を
         // 通り終えるまでの残り時間を数える（→ `components/EarthquakeTab/LoadMoreButton.tsx`）。
         // 使い回さないのは、中断された前回の待ちを今回の分として数えないため（理由はその関数）。
-        const history = await fetchDmdataQuakeHistory(
+        const history = await fetchDmdataQuakeHistoryFor(
+          dmdataRestClassificationsRef.current,
           apiKey, before, HISTORY_WINDOW_DAYS, dmdataTestDeliveryRef.current, signal,
           applyPartialMore, stale, beginLoadMoreGateTag(),
         )

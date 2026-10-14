@@ -4,7 +4,7 @@
 // 当日経路 services/dmdataReplayLive.ts）が**共有する**。取得元は違っても「どの種別を扱うか」は
 // 同じで、片方だけ種別を足すと、その電文が経路によって出たり出なかったりする。
 // 実際に二重定義だった頃、ライブだけが VXSE43 を取り込み、予想震度の区域塗りがライブでのみ
-// 削られる不具合が起きた（下記 EEW_TYPES）。
+// 削られる不具合が起きた（下記 EEW_HEAD_TYPES）。
 import {
   parseEEWFromXml, parseEarthquakeFromXml, parseTsunamiFromXml, parseLpgmFromXml,
   parseNankaiFromXml, parseNankaiCommentaryFromXml, parseVyse60FromXml,
@@ -19,22 +19,23 @@ import type { ReplayPayload } from '../types/replay'
 // 別々に持つと片方だけ直したときに一方の経路から電文本体が引けなくなる。
 export const TELEGRAM_DATA_BASE = 'https://data.api.dmdata.jp/v1/'
 
-// DMDATA の購読分類。ライブ（WebSocket）とリプレイ（アーカイブ要求）で共有する。
-// telegram.earthquake は地震・津波の両方を配信する（telegram.tsunami という分類は無い）。
-//
-// VXSE43 だけを含む `eew.warning` は購読しない（理由は下記 EEW_TYPES）。ここを片方の経路でだけ
-// 足すと、同じ電文がライブでは届きリプレイでは届かない——実際にそれが起きた。
-export const CLASSIFICATIONS = ['eew.forecast', 'telegram.earthquake'] as const
+// 購読する区分（`eew.forecast` など）は利用者の契約と鍵の権限で決まるので、ここには置かない
+// （→ `dmdataClassifications.ts`）。ここが持つのは「区分が決まったら、どの種別を読むか」だけ。
 
 export const QUAKE_TYPES = new Set(['VXSE51', 'VXSE52', 'VXSE53', 'VXSE61'])
 export const TSUNAMI_TYPES = new Set(['VTSE41', 'VTSE51', 'VTSE52'])
-// EEW 電文種別: VXSE45（地震動予報）だけ。警報級もこれ 1 つで賄う。
-//
-// VXSE43（警報）を取らないのは、VXSE45 の警報報と同内容の複製が遅れて届き、`eventId` で束ねた
-// EEW を古い内容で上書きして区域塗りを削るため。VXSE44（予報）は廃止予定で VXSE45 の下位互換。
-// 判断の根拠と実害は docs/spec/data-sources-spec.md §2「EEW は VXSE45 だけを受ける」。
-// VXSE42（配信テスト）は震源データを持たず EEW として表示できないため、ライブ側で別途処理する。
-export const EEW_TYPES = new Set(['VXSE45'])
+// EEW 電文種別。**取り込むのは VXSE45（地震動予報）か VXSE43（警報）のどちらか 1 つ**で、
+// どちらにするかは受けている区分で決まる（→ `dmdataClassifications.ts` の `eewHeadTypeFor`）。
+//   - 予報（`eew.forecast`）を受けている → VXSE45 だけ。警報級もこれ 1 つで賄う。VXSE43 を混ぜると、
+//     VXSE45 の警報報と同内容の複製が遅れて届き、`eventId` で束ねた EEW を古い内容で上書きして
+//     区域塗りを削る（判断の根拠と実害は docs/spec/data-sources-spec.md §2「EEW は VXSE45 だけを受ける」）
+//   - 予報が無く警報（`eew.warning`）だけ → VXSE43。上書きする相手の VXSE45 が届かないので、上の理由が当たらない
+// **どちらを取るかは必ず呼び出し側から渡す**（`buildXmlPayload` / `isHandledType` の引数）。既定値を持たせると、
+// 区分を配線し忘れた経路が黙って VXSE45 に倒れ、警報だけの人に緊急地震速報が出なくなる。
+// VXSE44（予報）は廃止予定で VXSE45 の下位互換。VXSE42（配信テスト）は震源データを持たず EEW として
+// 表示できないため、ライブ側で別途処理する。
+export type EewHeadType = 'VXSE45' | 'VXSE43'
+export const EEW_HEAD_TYPES: ReadonlySet<string> = new Set<EewHeadType>(['VXSE45', 'VXSE43'])
 export const LPGM_TYPES = new Set(['VXSE62'])
 // VYSE50=臨時情報（段階あり）、VYSE51/52=関連解説情報（段階なし）。別の型に読むため分ける。
 export const NANKAI_TYPES = new Set(['VYSE50'])
@@ -61,14 +62,23 @@ export function isBinaryTelegramType(headType: string): boolean {
   return ESTIMATED_INTENSITY_TYPES.has(headType)
 }
 
-// リプレイが取り込む電文種別の全体。取得元の目録には対象外の種別も多数含まれるため、
-// まずこれで絞ってから欠落を警告する（絞る前に警告すると、正常動作でログが埋まって
-// 本当の異常が見えなくなる）。
-export const HANDLED_TYPES = new Set([
-  ...QUAKE_TYPES, ...TSUNAMI_TYPES, ...EEW_TYPES, ...LPGM_TYPES,
+// 緊急地震速報を除いて、アプリが取り込む電文種別の全体。取得元の目録には対象外の種別も多数
+// 含まれるため、まずこれで絞ってから欠落を警告する（絞る前に警告すると、正常動作でログが埋まって
+// 本当の異常が見えなくなる）。**緊急地震速報を含めた判定は `isHandledType` を通す。**
+export const NON_EEW_HANDLED_TYPES: ReadonlySet<string> = new Set([
+  ...QUAKE_TYPES, ...TSUNAMI_TYPES, ...LPGM_TYPES,
   ...NANKAI_TYPES, ...COMMENTARY_TYPES, ...KOHATSU_TYPES,
   ...NOTICE_TYPES, ...QUAKE_COUNT_TYPES, ...ESTIMATED_INTENSITY_TYPES,
 ])
+
+/**
+ * その電文種別を取り込むか。
+ *
+ * @param eewHeadType 緊急地震速報として取り込む種別（`eewHeadTypeFor` の結果）。緊急地震速報を受けていなければ null
+ */
+export function isHandledType(headType: string, eewHeadType: EewHeadType | null): boolean {
+  return NON_EEW_HANDLED_TYPES.has(headType) || (eewHeadType !== null && headType === eewHeadType)
+}
 
 /**
  * 地震カードの履歴（最大 7 日）と一緒に復元する種別。
@@ -134,10 +144,13 @@ export function historyExtraKey(payload: ReplayPayload): string | null {
  *
  * @param headType 電文種別
  * @param xml 電文本体の XML
+ * @param eewHeadType 緊急地震速報として取り込む種別（`eewHeadTypeFor` の結果）。緊急地震速報を受けていなければ null
  * @returns 組み立てたペイロード。対象外の種別・パース失敗なら null
  */
-export function buildXmlPayload(headType: string, xml: string): ReplayPayload | null {
-  if (EEW_TYPES.has(headType)) {
+export function buildXmlPayload(headType: string, xml: string, eewHeadType: EewHeadType | null): ReplayPayload | null {
+  if (EEW_HEAD_TYPES.has(headType)) {
+    // 受けている区分で取らないと決めた側（予報があるときの VXSE43 など）は読まない
+    if (headType !== eewHeadType) return null
     const event = parseEEWFromXml(headType, xml)
     return event ? { kind: 'event', event } : null
   }
@@ -174,7 +187,7 @@ export function buildXmlPayload(headType: string, xml: string): ReplayPayload | 
     return count ? { kind: 'earthquakeCount', data: count } : null
   }
   if (isBinaryTelegramType(headType)) {
-    // **二進電文がここへ来たら、その経路がバイナリの受け口を持っていない。** `HANDLED_TYPES`
+    // **二進電文がここへ来たら、その経路がバイナリの受け口を持っていない。** `NON_EEW_HANDLED_TYPES`
     // には入っているので手前の絞り込みは通り抜け、`xml` には壊れた文字列が入っている。
     // 黙って null を返すと「対象外だった」のと見分けが付かないので記録する。
     log.warn(`[dmdata] ${headType} は二進電文です。XML の経路へ流れています（buildBinaryPayload を通すこと）`)

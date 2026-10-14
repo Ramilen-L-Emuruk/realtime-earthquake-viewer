@@ -8,6 +8,7 @@
 //   - **担当日の排他**: アーカイブが持つ日を当日経路が二重に取らないこと
 //   - **版の選択**: 同じ電文が XML 版と JSON 版で一覧に載るため、種別ごとに片方だけ拾うこと
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { PREFERRED_CLASSIFICATIONS } from './dmdataClassifications'
 import { muteConsoleError } from '../test-utils/muteConsoleError'
 import { buildSampleTelegram } from '../test-utils/bufrBuild'
 import {
@@ -324,7 +325,7 @@ describe('一覧のページ送りは上限で打ち切る', () => {
     globalThis.fetch = vi.fn(async () => { throw new DOMException('aborted', 'AbortError') }) as unknown as typeof fetch
 
     await fetchLiveReplayEntries(
-      'key', new Date('2026-08-23T00:00:00Z'), new Date('2026-08-23T03:00:00Z'), ['2026-08-23'], false, caller.signal,
+      'key', new Date('2026-08-23T00:00:00Z'), new Date('2026-08-23T03:00:00Z'), ['2026-08-23'], false, PREFERRED_CLASSIFICATIONS, caller.signal,
     ).catch(() => {})
     expect(errorSpy).not.toHaveBeenCalled()
   })
@@ -421,7 +422,7 @@ describe('fetchLiveReplayEntries', () => {
   it('担当日が無ければ何も要求しない', async () => {
     const { fn } = mockLive({})
     globalThis.fetch = fn as unknown as typeof fetch
-    const result = await fetchLiveReplayEntries('key', FROM, TO, [], false, null)
+    const result = await fetchLiveReplayEntries('key', FROM, TO, [], false, PREFERRED_CLASSIFICATIONS, null)
     expect(result).toEqual({
       entries: [], skippedByDay: new Map(), scanSkippedByDay: new Map(), failedSources: [], rateLimitedTelegrams: 0,
     })
@@ -433,7 +434,7 @@ describe('fetchLiveReplayEntries', () => {
   it('JST 日を覆う UTC 範囲で一覧を要求する', async () => {
     const { fn, urls } = mockLive({})
     globalThis.fetch = fn as unknown as typeof fetch
-    await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, null)
+    await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, PREFERRED_CLASSIFICATIONS, null)
     const decoded = urls.map(u => decodeURIComponent(u))
     expect(decoded.some(u => u.includes('/v2/telegram?') && u.includes('datetime=2026-08-22~2026-08-24'))).toBe(true)
     expect(decoded.some(u => u.includes('/v2/gd/eew?') && u.includes('datetime=2026-08-22~2026-08-24'))).toBe(true)
@@ -452,7 +453,7 @@ describe('fetchLiveReplayEntries', () => {
     })
     globalThis.fetch = fn as unknown as typeof fetch
 
-    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, null)
+    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(result.entries).toHaveLength(1)
     expect(skippedTotal(result.skippedByDay)).toBe(0)
@@ -476,7 +477,7 @@ describe('fetchLiveReplayEntries', () => {
     })
     globalThis.fetch = fn as unknown as typeof fetch
 
-    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, null)
+    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(skippedTotal(result.skippedByDay)).toBe(0)
     expect(result.entries).toHaveLength(1)
@@ -498,7 +499,7 @@ describe('fetchLiveReplayEntries', () => {
     })
     globalThis.fetch = fn as unknown as typeof fetch
 
-    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, null)
+    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(skippedTotal(result.skippedByDay)).toBe(0)
     expect(result.entries).toHaveLength(1)
@@ -522,7 +523,7 @@ describe('fetchLiveReplayEntries', () => {
         binaries: { 'https://b/ix2': bin.slice(0, cut), 'https://b/ix3': bin.slice(cut) },
       })
       globalThis.fetch = fn as unknown as typeof fetch
-      return fetchLiveReplayEntries('key', from, to, DAYS, false, null)
+      return fetchLiveReplayEntries('key', from, to, DAYS, false, PREFERRED_CLASSIFICATIONS, null)
     }
 
     it('正: 最後の断片が T より後なら、まとめて本編に入る', async () => {
@@ -548,7 +549,7 @@ describe('fetchLiveReplayEntries', () => {
     })
     globalThis.fetch = fn as unknown as typeof fetch
 
-    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, null)
+    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(result.entries).toHaveLength(0)
     expect(skippedTotal(result.skippedByDay)).toBe(1)
@@ -568,7 +569,7 @@ describe('fetchLiveReplayEntries', () => {
     })
     globalThis.fetch = fn as unknown as typeof fetch
 
-    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, null)
+    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(result.entries).toHaveLength(0)
     expect(skippedTotal(result.skippedByDay)).toBe(1)
@@ -586,7 +587,7 @@ describe('fetchLiveReplayEntries', () => {
     })
     globalThis.fetch = fn as unknown as typeof fetch
 
-    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, null)
+    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(result.entries).toHaveLength(0)
     expect(skippedTotal(result.skippedByDay)).toBe(1)
@@ -619,7 +620,7 @@ describe('fetchLiveReplayEntries', () => {
     })
     globalThis.fetch = fn as unknown as typeof fetch
 
-    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, null)
+    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, PREFERRED_CLASSIFICATIONS, null)
 
     // 待っている側で 1 件だけ数える
     expect(result.rateLimitedTelegrams).toBe(1)
@@ -647,7 +648,7 @@ describe('fetchLiveReplayEntries', () => {
     })
     globalThis.fetch = fn as unknown as typeof fetch
 
-    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, null)
+    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, PREFERRED_CLASSIFICATIONS, null)
 
     // **合計で 1 件。** 恒久失敗の側だけが数える
     expect(skippedTotal(result.skippedByDay)).toBe(1)
@@ -666,7 +667,7 @@ describe('fetchLiveReplayEntries', () => {
     })
     globalThis.fetch = fn as unknown as typeof fetch
 
-    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, null)
+    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(skippedTotal(result.skippedByDay)).toBe(2)
   })
@@ -681,7 +682,7 @@ describe('fetchLiveReplayEntries', () => {
     })
     globalThis.fetch = fn as unknown as typeof fetch
 
-    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, null)
+    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(result.entries).toHaveLength(1)
     expect(result.entries[0].payload.kind).toBe('kohatsu')
@@ -706,7 +707,7 @@ describe('fetchLiveReplayEntries', () => {
     })
     globalThis.fetch = fn as unknown as typeof fetch
 
-    const result = await fetchLiveReplayEntries('key', from, TO, DAYS, false, null)
+    const result = await fetchLiveReplayEntries('key', from, TO, DAYS, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(result.entries).toHaveLength(0)
     // 落としたのは「対象外」であって取りこぼしではない
@@ -731,7 +732,7 @@ describe('fetchLiveReplayEntries', () => {
     it('既定では一覧に試験報を要求せず、混ざっていても落とす', async () => {
       const { fn, urls } = mockLive(TESTED)
       globalThis.fetch = fn as unknown as typeof fetch
-      const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, null)
+      const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, PREFERRED_CLASSIFICATIONS, null)
       const decoded = urls.map(u => decodeURIComponent(u))
       expect(decoded.some(u => u.includes('/v2/telegram?') && u.includes('test='))).toBe(false)
       expect(result.entries).toHaveLength(1)
@@ -743,7 +744,7 @@ describe('fetchLiveReplayEntries', () => {
     it('設定を入れると一覧に試験報を要求して取り込む', async () => {
       const { fn, urls } = mockLive(TESTED)
       globalThis.fetch = fn as unknown as typeof fetch
-      const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, true, null)
+      const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, true, PREFERRED_CLASSIFICATIONS, null)
       const decoded = urls.map(u => decodeURIComponent(u))
       expect(decoded.some(u => u.includes('/v2/telegram?') && u.includes('test=including'))).toBe(true)
       expect(result.entries).toHaveLength(2)
@@ -759,7 +760,7 @@ describe('fetchLiveReplayEntries', () => {
         ],
       })
       globalThis.fetch = fn as unknown as typeof fetch
-      const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, true, null)
+      const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, true, PREFERRED_CLASSIFICATIONS, null)
       expect(result.entries).toHaveLength(0)
       expect(skippedTotal(result.skippedByDay)).toBe(0)
     })
@@ -774,7 +775,7 @@ describe('fetchLiveReplayEntries', () => {
         bodies: { 'https://b/t2': quakeBody('20260823110000', '2026-08-23T11:00:00+09:00') },
       })
       globalThis.fetch = fn as unknown as typeof fetch
-      const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, true, null)
+      const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, true, PREFERRED_CLASSIFICATIONS, null)
       expect(result.entries).toHaveLength(0)
       expect(skippedTotal(result.skippedByDay)).toBe(0)
     })
@@ -800,7 +801,7 @@ describe('fetchLiveReplayEntries', () => {
     })
     globalThis.fetch = fn as unknown as typeof fetch
 
-    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, null)
+    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(result.entries).toHaveLength(2)
     const severities = result.entries
@@ -829,7 +830,7 @@ describe('fetchLiveReplayEntries', () => {
     })
     globalThis.fetch = fn as unknown as typeof fetch
 
-    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, null)
+    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(result.entries).toHaveLength(1)
     // **窓を見る前に落ちた分**なので `scanSkippedByDay` 側（呼び出し元は両方を合わせて出す）
@@ -852,7 +853,7 @@ describe('fetchLiveReplayEntries', () => {
     })
     globalThis.fetch = fn as unknown as typeof fetch
 
-    await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, null)
+    await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(urls.some(u => u.includes('/v2/gd/eew/'))).toBe(false)
   })
@@ -870,7 +871,7 @@ describe('fetchLiveReplayEntries', () => {
     })
     globalThis.fetch = fn as unknown as typeof fetch
 
-    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, null)
+    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(result.entries).toHaveLength(1)
     expect(skippedTotal(result.skippedByDay)).toBe(1)
@@ -894,7 +895,7 @@ describe('fetchLiveReplayEntries', () => {
       return orig(input)
     }) as unknown as typeof fetch
 
-    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, null)
+    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(skippedTotal(result.skippedByDay)).toBe(0)
     expect(result.failedSources).toEqual(['eew:20260823110000'])
@@ -911,7 +912,7 @@ describe('fetchLiveReplayEntries', () => {
     })
     globalThis.fetch = fn as unknown as typeof fetch
 
-    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, null)
+    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(result.entries).toHaveLength(0)
     // 時刻が読めない電文は窓に当てられないので `scanSkippedByDay` 側
@@ -929,7 +930,7 @@ describe('fetchLiveReplayEntries', () => {
     })
     globalThis.fetch = fn as unknown as typeof fetch
 
-    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, null)
+    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(result.entries.map(e => e.replayTime.toISOString())).toEqual(['2026-08-23T02:00:00.000Z'])
     expect(skippedTotal(result.scanSkippedByDay)).toBe(0)
@@ -946,7 +947,7 @@ describe('fetchLiveReplayEntries', () => {
     })
     globalThis.fetch = fn as unknown as typeof fetch
 
-    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, null)
+    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(result.entries).toHaveLength(1)
     expect(result.failedSources).toEqual(['live-eew:2026-08-23'])
@@ -967,7 +968,7 @@ describe('fetchLiveReplayEntries', () => {
     })
     globalThis.fetch = fn as unknown as typeof fetch
 
-    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, null)
+    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(result.entries).toHaveLength(1)
     expect(result.failedSources).toEqual(['live-telegram:2026-08-23'])
@@ -978,7 +979,7 @@ describe('fetchLiveReplayEntries', () => {
   it('2 本の一覧をすべて引けなければ例外にする', async () => {
     const { fn } = mockLive({ listError: ['telegram', 'eew'] })
     globalThis.fetch = fn as unknown as typeof fetch
-    await expect(fetchLiveReplayEntries('key', FROM, TO, DAYS, false, null)).rejects.toThrow(/一覧をすべて取得できませんでした/)
+    await expect(fetchLiveReplayEntries('key', FROM, TO, DAYS, false, PREFERRED_CLASSIFICATIONS, null)).rejects.toThrow(/一覧をすべて取得できませんでした/)
   })
 })
 
@@ -1114,7 +1115,7 @@ describe('EEW の詳細取得を一斉に投げない', () => {
   }
 
   const run = () => fetchLiveReplayEntries(
-    'key', new Date('2026-08-23T00:00:00Z'), new Date('2026-08-23T03:00:00Z'), ['2026-08-23'], false, null,
+    'key', new Date('2026-08-23T00:00:00Z'), new Date('2026-08-23T03:00:00Z'), ['2026-08-23'], false, PREFERRED_CLASSIFICATIONS, null,
   )
 
   // 正: 間隔を空けて順に投げる。一斉に投げる実装なら隣り合う差は 0ms 付近になる。

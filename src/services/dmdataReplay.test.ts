@@ -10,6 +10,7 @@
 // `fetch` の呼び出し回数。**端末の控えを挟むと 2 回目が必ず 0 回になり、判定そのものを
 // 測れなくなる。** 端末の控えを通した結線は `archivePersistWiring.test.ts` が見る。
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest'
+import { PREFERRED_CLASSIFICATIONS } from './dmdataClassifications'
 import {
   fetchDmdataReplayEvents, fetchDmdataQuakeHistory, clearReplayCache, clearArchiveCacheForTest,
   clearParseCachesForTest, filterPreWindowEvents, isArchiveCacheable, HISTORY_WINDOW_DAYS,
@@ -266,7 +267,7 @@ describe('アーカイブ本体の取得は門を通る', () => {
     }) as unknown as typeof fetch
 
     setDataApiGateIntervalForTest(60)
-    await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(at.length).toBe(2)
     // 門を通らなければ 2 件はほぼ同時（実測 1ms 未満）に飛ぶ。
@@ -333,14 +334,14 @@ describe('アーカイブ本体の取得は門を通る', () => {
       return base(String(input))
     }) as unknown as typeof fetch
 
-    await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
     const afterFirst = bodyFetches
     expect(afterFirst).toBeGreaterThan(0)
 
     // **セッション内の展開結果だけ捨てる。** 控えは開始をまたいで残るのが設計なので、
     // 2 回目は本体を取りに行かない（→ `utils/archiveBodyCache.ts`）
     clearReplayCache()
-    await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(bodyFetches).toBe(afterFirst)
   })
@@ -372,7 +373,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
     expect(entries).toHaveLength(1)
     expect(entries[0].payload.kind).toBe('event')
   })
@@ -397,7 +398,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     // この判定より後段の `HANDLED_TYPES` で落ちる（→ dmdataTelegramPayload.ts）。
     it('既定では試験報を取り込まない', async () => {
       globalThis.fetch = mockArchives([{ url: 'https://x/a', gz: await archiveWithBoth() }]) as unknown as typeof fetch
-      const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+      const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
       expect(entries).toHaveLength(1)
       // 落としたのは「対象外」であって取りこぼしではない
       expect(skippedTotal(skippedByDay)).toBe(0)
@@ -406,7 +407,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     // 正: 設定を入れれば通る。**ここが落ちると、訓練報は実電文では一生画面に出ない。**
     it('設定を入れると試験報も取り込む', async () => {
       globalThis.fetch = mockArchives([{ url: 'https://x/a', gz: await archiveWithBoth() }]) as unknown as typeof fetch
-      const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, true, null)
+      const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, true, PREFERRED_CLASSIFICATIONS, null)
       expect(entries).toHaveLength(2)
     })
 
@@ -438,7 +439,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
         { name: '7654321def_20260810030600000_0.xml', content: quakeBody('日本海中部') },
       ])
       globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
-      const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, true, null)
+      const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, true, PREFERRED_CLASSIFICATIONS, null)
       expect(entries).toHaveLength(0)
     })
   })
@@ -461,7 +462,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const result = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const result = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(result.entries).toHaveLength(1)
     expect(skippedTotal(result.skippedByDay)).toBe(3)
@@ -487,7 +488,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
     expect(skippedTotal(skippedByDay)).toBe(0)
     expect(entries).toHaveLength(1)
     expect(entries[0].payload.kind).toBe('estimatedIntensity')
@@ -511,7 +512,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
     expect(skippedTotal(skippedByDay)).toBe(0)
     expect(entries).toHaveLength(1)
     expect(entries[0].payload.kind).toBe('estimatedIntensity')
@@ -539,7 +540,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
         { name: binFileName('bin0013', '20260810030600100'), content: bin.slice(cut) },
       ])
       globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
-      return fetchDmdataReplayEvents('key', from, to, false, null)
+      return fetchDmdataReplayEvents('key', from, to, false, PREFERRED_CLASSIFICATIONS, null)
     }
 
     it('正: 最後の断片が T より後なら、まとめて本編に入る', async () => {
@@ -571,7 +572,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
       ])
       globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-      const result = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+      const result = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
       expect(result.entries).toHaveLength(0)
       expect(skippedTotal(result.skippedByDay)).toBe(1)
@@ -605,7 +606,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
     expect(skippedTotal(skippedByDay)).toBe(0)
     expect(entries).toHaveLength(1)
     const payload = entries[0].payload
@@ -631,7 +632,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
     expect(entries).toHaveLength(0)
     expect(skippedTotal(skippedByDay)).toBe(1)
     expect(warns.join(' ')).toContain('断片が揃いませんでした')
@@ -644,7 +645,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
     expect(entries).toHaveLength(0)
     expect(skippedTotal(skippedByDay)).toBe(1)
     expect(warns.join(' ')).toContain('二進電文の本体が見つからず')
@@ -669,7 +670,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
     expect(entries).toHaveLength(0)
     expect(skippedTotal(skippedByDay)).toBe(1)
   })
@@ -688,7 +689,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
     expect(entries).toHaveLength(0)
     expect(skippedTotal(skippedByDay)).toBe(1)
   })
@@ -706,7 +707,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const { skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
     expect(skippedTotal(skippedByDay)).toBe(2)
   })
 
@@ -720,7 +721,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
       { url: 'https://x/good', gz: good },
     ]) as unknown as typeof fetch
 
-    const result = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const result = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(result.entries).toHaveLength(1)
     expect(result.failedArchiveUrls).toHaveLength(1)
@@ -741,7 +742,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
       { url: 'https://x/good', gz: good },
     ]) as unknown as typeof fetch
 
-    const result = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const result = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(result.entries).toHaveLength(1)
     expect(result.failedArchiveUrls).toEqual(['https://x/nomanifest'])
@@ -758,7 +759,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
       { url: 'https://x/good', gz: good },
     ]) as unknown as typeof fetch
 
-    const result = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const result = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(result.entries).toHaveLength(1)
     expect(result.failedArchiveUrls).toEqual(['https://x/brokenmanifest'])
@@ -771,7 +772,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
       { url: 'https://x/b', gz: noManifest },
     ]) as unknown as typeof fetch
 
-    await expect(fetchDmdataReplayEvents('key', FROM, TO, false, null)).rejects.toThrow(/すべてを読み取れませんでした/)
+    await expect(fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)).rejects.toThrow(/すべてを読み取れませんでした/)
   })
 
   /**
@@ -815,7 +816,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchivesWithLive([{ date: '2026-08-11', url: 'https://x/d11', gz }], 'error') as unknown as typeof fetch
 
-    const result = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const result = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(result.entries).toHaveLength(1)
     // 読めなかった日は取得元の識別子として数える（無言で消すと「静かな時間帯」と区別が付かない）
@@ -834,7 +835,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     globalThis.fetch = fn as unknown as typeof fetch
 
     // 窓は JST 8/10 00:00〜8/11 00:00（終端は含まない）
-    await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     const listUrl = fn.mock.calls.map(c => c[0]).find(u => u.includes('/v2/archive?'))
     expect(listUrl).toContain('datetime=2026-08-09%7E2026-08-11')
@@ -851,7 +852,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     const fn = mockArchivesWithLive([{ date: '2026-08-10', url: 'https://x/d10', gz }], 'empty')
     globalThis.fetch = fn as unknown as typeof fetch
 
-    await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     const listUrl = fn.mock.calls.map(c => c[0]).find(u => u.includes('/v2/archive?'))
     expect(listUrl).toContain('limit=100')
@@ -873,7 +874,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     const fn = mockArchivesWithLive([{ date: '2026-08-10', url: 'https://x/d10', gz }], 'empty')
     globalThis.fetch = fn as unknown as typeof fetch
 
-    await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     const bodyUrls = fn.mock.calls.map(c => c[0] as string).filter(u => u.startsWith('https://x/'))
     expect(bodyUrls).toEqual(['https://x/d10'])
@@ -902,7 +903,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     })
     globalThis.fetch = fn as unknown as typeof fetch
 
-    await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     const listUrls = fn.mock.calls.map(c => c[0] as string).filter(u => u.includes('/v2/archive?'))
     expect(listUrls.length).toBeGreaterThanOrEqual(2)
@@ -930,7 +931,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ], 'empty')
     globalThis.fetch = fn as unknown as typeof fetch
 
-    const result = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const result = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(result.entries).toHaveLength(1)
     const fetched = fn.mock.calls.map(c => c[0]).filter(u => u.startsWith('https://x/'))
@@ -951,7 +952,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ], 'empty')
     globalThis.fetch = fn as unknown as typeof fetch
 
-    await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     const fetched = fn.mock.calls.map(c => c[0]).filter(u => u.startsWith('https://x/')).sort()
     expect(fetched).toEqual(['https://x/d10', 'https://x/d11'])
@@ -963,7 +964,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
   it('取得元が当日経路だけで、それが読めなければ例外にする', async () => {
     globalThis.fetch = mockArchivesWithLive([], 'error') as unknown as typeof fetch
 
-    await expect(fetchDmdataReplayEvents('key', FROM, TO, false, null)).rejects.toThrow(/すべてを読み取れませんでした/)
+    await expect(fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)).rejects.toThrow(/すべてを読み取れませんでした/)
   })
 
   it('読めなかったアーカイブは URL で返す（呼び出し元が重複を除けるように）', async () => {
@@ -976,7 +977,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
       { url: 'https://x/good', gz: good },
     ]) as unknown as typeof fetch
 
-    const result = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const result = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     // 本編と初期状態が同じアーカイブを読んでも、呼び出し元は URL で重複を除ける
     expect(result.failedArchiveUrls).toEqual(['https://x/broken'])
@@ -989,7 +990,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const result = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const result = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(result.entries).toHaveLength(1)
     expect(skippedTotal(result.skippedByDay)).toBe(0)
@@ -1004,7 +1005,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     // 壊れていない側は取り込めている
     expect(entries).toHaveLength(1)
@@ -1026,7 +1027,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
       { url: 'https://x/good', gz: good },
     ]) as unknown as typeof fetch
 
-    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(entries).toHaveLength(1)
     expect(warns.join('\n')).toMatch(/telegrams\.json/)
@@ -1043,7 +1044,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
       { url: 'https://x/good', gz: good },
     ]) as unknown as typeof fetch
 
-    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(entries).toHaveLength(1)
     expect(errors.join('\n')).toMatch(/telegrams\.json/)
@@ -1056,7 +1057,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(entries).toHaveLength(0)
     expect(warns.join('\n')).toMatch(/本体が見つからず/)
@@ -1071,7 +1072,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const result = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const result = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(result.entries.map(e => e.replayTime.toISOString())).toEqual(['2026-08-10T03:05:00.000Z'])
     expect(skippedTotal(result.skippedByDay)).toBe(0)
@@ -1100,7 +1101,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const result = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const result = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(result.entries).toHaveLength(1)
     expect(skippedTotal(result.skippedByDay)).toBe(1)
@@ -1118,8 +1119,8 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const result = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
-    await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const result = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
+    await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(result.entries.map(e => e.replayTime.toISOString())).toEqual(['2026-08-10T03:05:00.000Z'])
     expect(warns.filter(w => w.includes('発表時刻で窓に当てる id=rollov01'))).toHaveLength(1)
@@ -1144,7 +1145,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
       const gz = await cancelArchive()
       globalThis.fetch = mockArchives([{ url: 'https://x/a', gz, date: '2024-01-01' }]) as unknown as typeof fetch
 
-      const pre = await fetchDmdataReplayEvents('key', new Date(T.getTime() - 24 * 3600_000), T, false, null)
+      const pre = await fetchDmdataReplayEvents('key', new Date(T.getTime() - 24 * 3600_000), T, false, PREFERRED_CLASSIFICATIONS, null)
 
       expect(pre.entries).toHaveLength(0)
     })
@@ -1153,7 +1154,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
       const gz = await cancelArchive()
       globalThis.fetch = mockArchives([{ url: 'https://x/a', gz, date: '2024-01-01' }]) as unknown as typeof fetch
 
-      const main = await fetchDmdataReplayEvents('key', T, new Date(T.getTime() + 3600_000), false, null)
+      const main = await fetchDmdataReplayEvents('key', T, new Date(T.getTime() + 3600_000), false, PREFERRED_CLASSIFICATIONS, null)
 
       expect(main.entries.map(e => e.replayTime.toISOString())).toEqual(['2024-01-01T14:13:47.027Z'])
     })
@@ -1163,8 +1164,8 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
       globalThis.fetch = mockArchives([{ url: 'https://x/a', gz, date: '2024-01-01' }]) as unknown as typeof fetch
       const after = new Date('2024-01-01T23:14:00+09:00')
 
-      const pre = await fetchDmdataReplayEvents('key', new Date(after.getTime() - 24 * 3600_000), after, false, null)
-      const main = await fetchDmdataReplayEvents('key', after, new Date(after.getTime() + 3600_000), false, null)
+      const pre = await fetchDmdataReplayEvents('key', new Date(after.getTime() - 24 * 3600_000), after, false, PREFERRED_CLASSIFICATIONS, null)
+      const main = await fetchDmdataReplayEvents('key', after, new Date(after.getTime() + 3600_000), false, PREFERRED_CLASSIFICATIONS, null)
 
       expect(pre.entries).toHaveLength(1)
       expect(main.entries).toHaveLength(0)
@@ -1177,7 +1178,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
       ])
       globalThis.fetch = mockArchives([{ url: 'https://x/a', gz, date: '2024-01-01' }]) as unknown as typeof fetch
 
-      const pre = await fetchDmdataReplayEvents('key', new Date(T.getTime() - 24 * 3600_000), T, false, null)
+      const pre = await fetchDmdataReplayEvents('key', new Date(T.getTime() - 24 * 3600_000), T, false, PREFERRED_CLASSIFICATIONS, null)
 
       expect(pre.entries.map(e => e.replayTime.toISOString())).toEqual(['2024-01-01T14:13:00.000Z'])
     })
@@ -1192,7 +1193,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(entries).toHaveLength(0)
     expect(warns.join('\n')).not.toMatch(/本体が見つからず/)
@@ -1219,7 +1220,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     // 二重に取り込まれない
     expect(entries).toHaveLength(1)
@@ -1231,7 +1232,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
   it('アーカイブ取得が全滅した場合は例外として伝播する（無言で 0 件にしない）', async () => {
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz: 'error' }]) as unknown as typeof fetch
 
-    await expect(fetchDmdataReplayEvents('key', FROM, TO, false, null)).rejects.toThrow(/Archive fetch failed/)
+    await expect(fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)).rejects.toThrow(/Archive fetch failed/)
   })
 
   // ここが今回の要。1 つのアーカイブの破損で、他のアーカイブから読めた電文まで
@@ -1246,7 +1247,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
       { url: 'https://x/good', gz: good },
     ]) as unknown as typeof fetch
 
-    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(entries).toHaveLength(1)
     expect(errors.join('\n')).toMatch(/アーカイブの取得・展開に失敗/)
@@ -1276,7 +1277,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
       { url: 'https://x/good', gz: good },
     ]) as unknown as typeof fetch
 
-    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(entries).toHaveLength(1)
     expect(errors.join('\n')).toMatch(/アーカイブの取得・展開に失敗/)
@@ -1301,7 +1302,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(warns.join('\n')).not.toMatch(/本体が見つからず/)
   })
@@ -1319,7 +1320,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(entries).toHaveLength(1)
     expect(warns.join('\n')).toMatch(/head を持たない/)
@@ -1346,8 +1347,8 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     it('対照: 同じ日を読み直しても二度は数えない', async () => {
       globalThis.fetch = mockArchives([{ url: 'https://x/a', gz: await archiveWith(1) }]) as unknown as typeof fetch
 
-      const first = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
-      const second = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+      const first = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
+      const second = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
       expect(first.skippedByDay).toEqual(new Map([['2026-08-10', 1]]))
       expect(second.skippedByDay).toEqual(new Map())
@@ -1357,11 +1358,11 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     // ここでは別 URL の目録を返して同じ形を作る（本体の控えは URL を鍵にするため）。
     it('正: 破損が増えたら、増えた分だけ報告する', async () => {
       globalThis.fetch = mockArchives([{ url: 'https://x/a', gz: await archiveWith(1) }]) as unknown as typeof fetch
-      const first = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+      const first = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
       expect(first.skippedByDay).toEqual(new Map([['2026-08-10', 1]]))
 
       globalThis.fetch = mockArchives([{ url: 'https://x/b', gz: await archiveWith(3) }]) as unknown as typeof fetch
-      const second = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+      const second = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
       // **増えた 2 件だけ。** 3 件だと最初の 1 通を二度報告することになる
       expect(second.skippedByDay).toEqual(new Map([['2026-08-10', 2]]))
@@ -1393,8 +1394,8 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
 
       const mid = new Date('2026-08-10T10:00:00+09:00')
       const [pre, main] = await Promise.all([
-        fetchDmdataReplayEvents('key', FROM, mid, false, null),
-        fetchDmdataReplayEvents('key', mid, TO, false, null),
+        fetchDmdataReplayEvents('key', FROM, mid, false, PREFERRED_CLASSIFICATIONS, null),
+        fetchDmdataReplayEvents('key', mid, TO, false, PREFERRED_CLASSIFICATIONS, null),
       ])
 
       const total = skippedTotal(pre.skippedByDay) + skippedTotal(main.skippedByDay)
@@ -1405,9 +1406,9 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     it('安全弁: リプレイの開始（clearReplayCache）では数え直す', async () => {
       globalThis.fetch = mockArchives([{ url: 'https://x/a', gz: await archiveWith(1) }]) as unknown as typeof fetch
 
-      const first = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+      const first = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
       clearReplayCache()
-      const second = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+      const second = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
       expect(first.skippedByDay).toEqual(new Map([['2026-08-10', 1]]))
       expect(second.skippedByDay).toEqual(new Map([['2026-08-10', 1]]))
@@ -1433,9 +1434,9 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
       return { ok: true, arrayBuffer: async () => good as unknown as ArrayBuffer } as unknown as Response
     }) as unknown as typeof fetch
 
-    await expect(fetchDmdataReplayEvents('key', FROM, TO, false, null)).rejects.toThrow()
+    await expect(fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)).rejects.toThrow()
     // clearReplayCache を挟まずに再試行しても、失敗はキャッシュされていないので回復する
-    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
     expect(entries).toHaveLength(1)
   })
 })
@@ -1455,7 +1456,7 @@ describe('APIキーが不正なとき', () => {
     const fetchSpy = vi.fn(async () => { throw new Error('通信してはいけない') })
     globalThis.fetch = fetchSpy as unknown as typeof fetch
 
-    await expect(fetchDmdataReplayEvents('abc123あ', FROM, TO, false, null)).rejects.toThrow(DmdataApiKeyError)
+    await expect(fetchDmdataReplayEvents('abc123あ', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)).rejects.toThrow(DmdataApiKeyError)
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 })
@@ -3000,13 +3001,13 @@ describe('アーカイブ本体の控えは開始をまたいで残る', () => {
     const mock = mockArchives([{ url: URL_A, gz: await archiveGz() }])
     globalThis.fetch = mock as unknown as typeof fetch
 
-    const first = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const first = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
     expect(first.entries).toHaveLength(1)
     expect(bodyFetches(mock)).toBe(1)
 
     // 区間が変わってリプレイを開始し直した、という状況
     clearReplayCache()
-    const second = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const second = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     // 中身は 1 度目と同じだけ取り込めている
     expect(second.entries).toHaveLength(1)
@@ -3018,9 +3019,9 @@ describe('アーカイブ本体の控えは開始をまたいで残る', () => {
     const mock = mockArchives([{ url: URL_A, gz: await archiveGz() }])
     globalThis.fetch = mock as unknown as typeof fetch
 
-    await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
     clearArchiveCacheForTest()
-    const second = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const second = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(second.entries).toHaveLength(1)
     expect(bodyFetches(mock)).toBe(2)
@@ -3032,10 +3033,10 @@ describe('アーカイブ本体の控えは開始をまたいで残る', () => {
     const mock = mockArchives([{ url: URL_A, gz: await archiveGz() }])
     globalThis.fetch = mock as unknown as typeof fetch
 
-    await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
     const afterFirst = listFetches(mock)
     clearReplayCache()
-    await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(listFetches(mock)).toBeGreaterThan(afterFirst)
   })
@@ -3114,13 +3115,13 @@ describe('窓に入る電文が無い日は本体を落とさない', () => {
     const counter = countingFetch(await oneEntryArchive())
 
     // 1 回目は目録のために落とす（窓はその電文を含む）
-    const first = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const first = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
     expect(first.entries).toHaveLength(1)
     expect(counter.bodies).toBe(1)
 
     // 本体の控えだけが落ちた状態で、静かな窓を再生する
     clearArchiveCacheForTest()
-    const quiet = await fetchDmdataReplayEvents('key', QUIET_FROM, QUIET_TO, false, null)
+    const quiet = await fetchDmdataReplayEvents('key', QUIET_FROM, QUIET_TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(quiet.entries).toHaveLength(0)
     expect(counter.bodies).toBe(1)
@@ -3129,11 +3130,11 @@ describe('窓に入る電文が無い日は本体を落とさない', () => {
   it('対照: 窓に入る電文が 1 件でもあれば落とす', async () => {
     const counter = countingFetch(await oneEntryArchive())
 
-    await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
     expect(counter.bodies).toBe(1)
 
     clearArchiveCacheForTest()
-    const again = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const again = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(again.entries).toHaveLength(1)
     expect(counter.bodies).toBe(2)
@@ -3142,7 +3143,7 @@ describe('窓に入る電文が無い日は本体を落とさない', () => {
   it('安全弁: 目録の控えが無ければ、静かな窓でも落とす', async () => {
     const counter = countingFetch(await oneEntryArchive())
 
-    const quiet = await fetchDmdataReplayEvents('key', QUIET_FROM, QUIET_TO, false, null)
+    const quiet = await fetchDmdataReplayEvents('key', QUIET_FROM, QUIET_TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(quiet.entries).toHaveLength(0)
     expect(counter.bodies).toBe(1)
@@ -3186,7 +3187,7 @@ describe('本体は目録の filename で引く', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(entries).toHaveLength(1)
     expect(skippedTotal(skippedByDay)).toBe(0)
@@ -3208,7 +3209,7 @@ describe('本体は目録の filename で引く', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     // 巻き添えにしない
     expect(entries).toHaveLength(1)
@@ -3233,7 +3234,7 @@ describe('本体は目録の filename で引く', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false, null)
+    const { entries, skippedByDay } = await fetchDmdataReplayEvents('key', FROM, TO, false, PREFERRED_CLASSIFICATIONS, null)
 
     expect(entries).toHaveLength(0)
     expect(skippedTotal(skippedByDay)).toBe(1)
