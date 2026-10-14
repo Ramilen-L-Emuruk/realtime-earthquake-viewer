@@ -1694,6 +1694,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 複数の呼び出し元が相乗りする取得（アーカイブ本体・電文本体・標準版の日ごとの控え）に止める合図を渡すと、1 人が止めただけで相乗りしている本編・初期状態・履歴まで巻き添えで落ちる。止めた打ち切りを「取得に失敗」と数えると、再生を止めるたびに本物の障害と見分けの付かない記録が積もる | [`data-sources-spec.md`](docs/spec/data-sources-spec.md) §1「止めたら打ち切る」 |
 | 標準版（P2PQuake）の黙った接続の見張り（`P2P_SILENT_RECONNECT_MS`）を DMDATA と同じ短さにすると、ping の無い配信元は平常でも 6 分半ほど黙るので（実測 386.5 秒）、静かなだけの時間に張り直しを繰り返す。張り直しを `onclose` 待ちにすると、半開きの接続では閉じる知らせが届かずいつまでも張り直さない | [`data-sources-spec.md`](docs/spec/data-sources-spec.md) §3「黙った接続は 15 分で張り直す」 |
 | 標準版で張り直したときの取り戻しの起点を「接続を始めた時刻」にすると、繋がらない試行を繰り返した間の分を落とす。津波を「その接続で見たどの報より新しいか」で比べずに差し替えると、張り直した直後にライブで届いた取消を取り戻した古い発表報が上書きし、終わった津波が甦る | [`data-sources-spec.md`](docs/spec/data-sources-spec.md) §3「張り直したら、切れていた間の分を取り戻す」 |
+| 購読区分の判定（`eewHeadTypeFor`・`isHandledType` の必須引数）をライブ・リプレイ・起動時の復元のどれかで別に持つと、一部の区分しか契約していない人に経路によって届く電文が食い違う。履歴と復元が `classificationsReady` を待たない、または一時的な失敗で既定の区分に決めると、受けていない区分を引いて断られる | [`data-sources-spec.md`](docs/spec/data-sources-spec.md) §2「一部の区分だけ受けられる人」 |
 | 配信元のレート制限（リクエスト数・429）を守る仕組みを崩すと 429 連発・利用制限に触れる | [`data-sources-spec.md`](docs/spec/data-sources-spec.md) §2「リクエスト数を抑える」・§2「429 は「頻度」ではなく「同じ id の取り直し」に返る」 |
 | 取得失敗時の間隔調整・更新停止の通知条件を誤ると、更新停止の見逃しまたは無限リトライになる | [`data-sources-spec.md`](docs/spec/data-sources-spec.md) §4「取得に失敗したら間隔を空ける」・[`settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「再生する時刻は入口で弾く」 |
 | 目録・電文パース結果のキャッシュの鍵を誤ると、誤った電文を使い回す | [`data-sources-spec.md`](docs/spec/data-sources-spec.md) §2「大量に取るならアーカイブを使う」 |
@@ -1866,7 +1867,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 実地震テストシナリオで電文から新しく時刻を読むようにしたら時刻シフトの対象へ足すことを崩すと、フィールドを1つずつ書き並べる形なので足し忘れても型検査もテストも通り、その時刻だけが収録当時の絶対値のまま画面に出る | [`settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6 |
 | テスト時刻設定のバリアント差（standardはP2PQuakeの日付クエリ、DMDSSはDMDATAアーカイブ＋当日ぶんの別経路。EEWはどちらも取得元が異なりstandardでは強震モニタ側の検知に頼る）を崩すと、バリアントごとの取得経路の違いを実機で確認できなくなる | [`settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「テスト時刻設定」 |
 | archiveリプレイの重複排除（目録に載るXML版／JSON版のどちらを採用するか）を崩す、またはアーカイブが全滅したときに強震モニタの再生まで止めると、失敗の封じ込め範囲が崩れる | [`settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「テスト時刻設定」配下 |
-| アーカイブが無い日を埋める当日経路の日付基準（アーカイブはJST日、`/v2/telegram`・`/v2/gd/eew` はUTCの半開区間）を取り違える、またはVXSE43をライブ・当日経路のどちらかで取り込むと、担当日の重複判定が壊れる、または対応するVXSE45の警報報と同一内容の複製が区域塗りを削る | [`settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「当日ぶんの取得元」 |
+| アーカイブが無い日を埋める当日経路の日付基準（アーカイブはJST日、`/v2/telegram`・`/v2/gd/eew` はUTCの半開区間）を取り違える、または予報（`eew.forecast`）を受けている人にVXSE43をライブ・当日経路のどちらかで取り込ませると、担当日の重複判定が壊れる、または対応するVXSE45の警報報と同一内容の複製が区域塗りを削る | [`settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「当日ぶんの取得元」 |
 | リプレイの取りこぼしの分母を取得元の日数ではなくアーカイブの本数で取る、または当日経路の3本の一覧を隔離しないと、取得元が当日経路1本しか無い窓で電文0件のまま「再生中」になる、またはEEW一覧の一時障害で地震・津波も巻き込んで再生ごと止まる | [`settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「取りこぼしの扱い」 |
 | `ConnectionStatus` の `replay` を `disconnected` と混ぜると、再生中なのに地図に切断警告が出る | [`settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「再生中はライブ接続を止める（接続状態の表示）」 |
 | 再生中の予約（EEWの自動解除・津波の失効）を再生時計の「いま」へ潰すと、最終報の直後にEEWが消え猶予が無くなる | [`settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「再生中も予約は発火時刻を待つ」 |

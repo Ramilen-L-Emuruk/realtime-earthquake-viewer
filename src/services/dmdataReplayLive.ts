@@ -25,10 +25,11 @@ import { RateLimitWindowError } from './dmdataRequestGates'
 import type { JMAQuake, JMATsunami } from '../types/earthquake'
 import type { ReplayEntry } from '../types/replay'
 import {
-  HANDLED_TYPES, QUAKE_TYPES, TSUNAMI_TYPES, HISTORY_EXTRA_TYPES, historyExtraKey,
+  isHandledType, QUAKE_TYPES, TSUNAMI_TYPES, HISTORY_EXTRA_TYPES, historyExtraKey,
   buildXmlPayload, isBinaryTelegramType, buildBinaryPayload, TELEGRAM_DATA_BASE,
-  isFilteredBinaryTelegram, type BinaryReplayPayload,
+  isFilteredBinaryTelegram, type BinaryReplayPayload, type EewHeadType,
 } from './dmdataTelegramPayload'
+import { eewHeadTypeFor, hasQuakeTelegrams, type DmdataClassification } from './dmdataClassifications'
 import { waitForApiSlot } from './dmdataRequestGates'
 import { BufrFragmentStore, fragmentKey } from './bufrTelegramAssembly'
 import { createSkipCounter, UNKNOWN_SKIP_DAY } from '../utils/telegramLoss'
@@ -504,6 +505,8 @@ function isFirstMalformed(item: TelegramListItem, seen: Set<string>): boolean {
  *
  * @param time その電文の受信時刻（`liveEntryTimes`）。窓の判定に使う
  * @param days 当日経路が担当する JST 日付
+ * @param eewHeadType 緊急地震速報として取り込む種別（`eewHeadTypeFor`）。`/v2/gd/eew` の詳細は VXSE43 と
+ *   VXSE45 を同じ地震の報として並べて返すので、ここで受けている区分の側だけを残す
  */
 function classifyTelegram(
   item: TelegramListItem,
@@ -512,14 +515,15 @@ function classifyTelegram(
   toTime: Date,
   days: ReadonlySet<string>,
   includeTest: boolean,
+  eewHeadType: EewHeadType | null,
 ): TelegramVerdict {
   // 試験・訓練報は既定で捨てる。設定「試験報を受信（検証用）」を入れたときだけ通す。
   //
   // **ここで防いでいるのは扱う種別の訓練版**（VXSE45・VXSE51〜53 等の `Status` が「訓練」の報）。
-  // 配信テストの VXSE42 はこの判定より後段の `HANDLED_TYPES` で必ず落ちるので、ここの担当ではない。
+  // 配信テストの VXSE42 はこの判定より後段の `isHandledType` で必ず落ちるので、ここの担当ではない。
   if (!item?.head || (!includeTest && item.head.test)) return 'exclude'
   const headType = item.head.type
-  if (!HANDLED_TYPES.has(headType)) return 'exclude'
+  if (!isHandledType(headType, eewHeadType)) return 'exclude'
   // 同じ電文が XML 版と JSON 版の 2 エントリで一覧に載る。採るのは XML 版（originalId 無し）。
   // ここで版を選ばないと同じ電文を二重に取り込む。
   if (item.originalId) return 'exclude'
@@ -555,7 +559,7 @@ function classifyTelegram(
  *
  * **「イベント一覧が訓練 EEW を含むか」は確かめられていない。** 訓練の EEW（VXSE45・VXSE43）を
  * 1 通も観測できていないため。**毎正時の配信テスト（VXSE42）は毎日大量にあるが、代わりの標本には
- * ならない** —— `HANDLED_TYPES` に無いので再生には乗らない。訓練 EEW を観測できたら、この経路で
+ * ならない** —— `isHandledType` が通さないので再生には乗らない。訓練 EEW を観測できたら、この経路で
  * 拾えるかを確かめること。
  *
  * > **アーカイブで EEW を探すときの分類は `eew.forecast`（VXSE42・VXSE45）と
@@ -781,6 +785,11 @@ export async function fetchLiveReplayEntries(
   toTime: Date,
   days: string[],
   includeTest: boolean,
+  /**
+   * 受けている区分（→ `dmdataClassifications.ts`）。**受けていない区分の一覧は引かない** ——
+   * 地震・津波関連が無ければ `/v2/telegram` を、緊急地震速報が無ければ `/v2/gd/eew` を飛ばす。
+   */
+  classifications: readonly DmdataClassification[],
   /** 止める合図。一覧と EEW の詳細の取得を打ち切る（電文本体は相乗りするので打ち切らない）。 */
   signal: AbortSignal | null,
 ): Promise<LiveReplayResult> {
@@ -794,10 +803,16 @@ export async function fetchLiveReplayEntries(
   // 「EEW の一覧がこけただけで今日の地震も津波も出ない」ことになる。しかも取得元が
   // 当日経路 1 本しか無い窓（本編の 1 時間）では、それが全滅と見なされて例外になり、
   // 地震電文が取れていたのに再生ごと止まる。
+  const eewHeadType = eewHeadTypeFor(classifications)
+  const wantsTelegrams = hasQuakeTelegrams(classifications)
+  const wantsEew = eewHeadType !== null
+  const noEew = { items: [] as TelegramListItem[], failedSources: [] as string[], skippedByDay: new Map<string, number>() as ReadonlyMap<string, number> }
   const settled = await Promise.allSettled([
-    listTelegrams(apiKey, utcFrom, utcTo, includeTest, signal),
-    listEewTelegrams(apiKey, utcFrom, utcTo, fromTime, toTime, signal),
+    wantsTelegrams ? listTelegrams(apiKey, utcFrom, utcTo, includeTest, signal) : Promise.resolve([] as TelegramListItem[]),
+    wantsEew ? listEewTelegrams(apiKey, utcFrom, utcTo, fromTime, toTime, signal) : Promise.resolve(noEew),
   ])
+  /** 実際に引いた一覧の本数。全滅の判定の分母（引いていない一覧を「読めた」に数えない）。 */
+  const attemptedLists = (wantsTelegrams ? 1 : 0) + (wantsEew ? 1 : 0)
   // **止められたら、一覧の失敗として記録せずに打ち切りを投げる**（呼び出し元が要らないと決めた結果）
   for (const r of settled) {
     if (r.status === 'rejected' && isAbortedByCaller(r.reason)) throw r.reason
@@ -817,13 +832,10 @@ export async function fetchLiveReplayEntries(
     return fallback
   }
   const telegramList = take(settled[0], 'live-telegram', [] as TelegramListItem[])
-  const eew = take(settled[1], 'live-eew', {
-    items: [] as TelegramListItem[], failedSources: [] as string[],
-    skippedByDay: new Map<string, number>() as ReadonlyMap<string, number>,
-  })
+  const eew = take(settled[1], 'live-eew', noEew)
   // 2 本とも引けなければ、その日ぶんは 1 通も取れていない。呼び出し元が「その日の取得元が
   // 読めなかった」として扱えるよう投げる（部分的に取れた場合と区別が付かなくなるため）。
-  if (failedListCount === settled.length) {
+  if (attemptedLists > 0 && failedListCount === attemptedLists) {
     throw new Error(`Live fetch failed: 当日経路の一覧をすべて取得できませんでした（日=${dayLabel}）`)
   }
 
@@ -840,7 +852,7 @@ export async function fetchLiveReplayEntries(
   const times = liveEntryTimes(listed)
   const malformedSeen = new Set<string>()
   for (const item of listed) {
-    const verdict = classifyTelegram(item, times.get(item) ?? null, fromTime, toTime, daySet, includeTest)
+    const verdict = classifyTelegram(item, times.get(item) ?? null, fromTime, toTime, daySet, includeTest, eewHeadType)
     if (verdict === 'malformed') {
       if (isFirstMalformed(item, malformedSeen)) scanSkipCounter.add(skipDayOf(item.receivedTime))
     }
@@ -876,7 +888,7 @@ export async function fetchLiveReplayEntries(
         entries.push({ payload: binPayload, replayTime: times.get(item) ?? new Date(item.receivedTime) })
         return
       }
-      const payload = buildXmlPayload(headType, await fetchBody(item.url, apiKey))
+      const payload = buildXmlPayload(headType, await fetchBody(item.url, apiKey), eewHeadType)
       if (!payload) {
         log.warn(`[replay] 電文のパースに失敗しスキップ id=${item.id} type=${headType}`)
         skipCounter.add(skipDayOf(item.receivedTime))
@@ -979,7 +991,8 @@ export async function fetchLiveQuakeTelegrams(
     // 津波もここで拾う。アーカイブ側と揃える —— 当日ぶんだけ落ちると、
     // 発表中の津波が「アーカイブのある日に出たものだけ」になる。
     if (!QUAKE_TYPES.has(type) && !HISTORY_EXTRA_TYPES.has(type) && !TSUNAMI_TYPES.has(type)) continue
-    const verdict = classifyTelegram(item, times.get(item) ?? null, windowFrom, until, daySet, includeTest)
+    // 緊急地震速報は上の種別の絞り込みで既に落ちている（履歴は扱わない）ので、取り込む EEW 種別は無し
+    const verdict = classifyTelegram(item, times.get(item) ?? null, windowFrom, until, daySet, includeTest, null)
     // **この関数は 1 日ぶんを担当するので `day` で数える**（`skipDayOf` は複数日を担当する
     // `fetchLiveReplayEntries` 用）。`malformed` は受信時刻が読めないときにも成立するので、
     // そちらから導くと**担当日が分かっているのに `UNKNOWN_SKIP_DAY` へ落ちる**。
@@ -1012,7 +1025,8 @@ export async function fetchLiveQuakeTelegrams(
         extras.push({ payload: binPayload, replayTime: times.get(item) ?? new Date(item.receivedTime), silent: true })
         return
       }
-      const payload = buildXmlPayload(item.head.type, await fetchBody(item.url, apiKey))
+      // 履歴は緊急地震速報を扱わない（`HISTORY_EXTRA_TYPES` に入っていない）ので、取り込む EEW 種別は無し
+      const payload = buildXmlPayload(item.head.type, await fetchBody(item.url, apiKey), null)
       if (HISTORY_EXTRA_TYPES.has(item.head.type)) {
         if (payload === null || historyExtraKey(payload) === null) {
           log.warn(`[replay] 履歴用電文のパースに失敗しスキップ id=${item.id} type=${item.head.type}`)

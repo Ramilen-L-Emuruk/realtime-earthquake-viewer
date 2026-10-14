@@ -18,8 +18,8 @@ import type { AreaPrefIndex } from '../utils/quakePoints'
 import { latestValidDateTime } from '../utils/tsunami'
 import type { ReplayEntry, ReplayPayload, ReplayFetchResult, QuakeHistoryResult } from '../types/replay'
 import {
-  HANDLED_TYPES, QUAKE_TYPES, TSUNAMI_TYPES, HISTORY_EXTRA_TYPES, historyExtraKey,
-  buildXmlPayload, CLASSIFICATIONS, isBinaryTelegramType, buildBinaryPayload,
+  isHandledType, QUAKE_TYPES, TSUNAMI_TYPES, HISTORY_EXTRA_TYPES, historyExtraKey,
+  buildXmlPayload, isBinaryTelegramType, buildBinaryPayload, type EewHeadType,
   isFilteredBinaryTelegram,
 } from './dmdataTelegramPayload'
 import { BufrFragmentStore, fragmentKey } from './bufrTelegramAssembly'
@@ -27,6 +27,7 @@ import {
   clearLiveReplayCache, fetchLiveQuakeTelegrams, fetchLiveReplayEntries, resolveLiveDates,
   archiveDaysForWindow, archiveListRange, toJstDateStr,
 } from './dmdataReplayLive'
+import { eewHeadTypeFor, hasQuakeTelegrams, type DmdataClassification } from './dmdataClassifications'
 import {
   waitForDataApiSlot, waitForApiSlot, rateLimitedUntil, noteRateLimited, noteRateLimitCleared,
   RateLimitWindowError,
@@ -757,7 +758,7 @@ type ReplayPlan =
 
 function planReplayEntries(
   manifest: ManifestEntry[],
-  opts: { includeTest: boolean; fromTime: Date; toTime: Date },
+  opts: { includeTest: boolean; fromTime: Date; toTime: Date; eewHeadType: EewHeadType | null },
 ): ReplayPlan[] {
   const plans: ReplayPlan[] = []
   const times = manifestEntryTimes(manifest)
@@ -773,7 +774,7 @@ function planReplayEntries(
       plans.push({ kind: 'entry', entry, time: null, include: false, needsBody: false })
       continue
     }
-    const include = isReplayTarget(entry, time, opts.fromTime, opts.toTime)
+    const include = isReplayTarget(entry, time, opts.fromTime, opts.toTime, opts.eewHeadType)
     plans.push({ kind: 'entry', entry, time, include, needsBody: include })
   }
   return plans
@@ -787,8 +788,10 @@ function planReplayEntries(
  *
  * `time` は受信時刻（`manifestEntryTime`）。発表時刻を渡さないこと（理由はそちら）。
  */
-function isReplayTarget(entry: ManifestEntry, time: Date, fromTime: Date, toTime: Date): boolean {
-  return time >= fromTime && time < toTime && HANDLED_TYPES.has(entry.head.type)
+function isReplayTarget(
+  entry: ManifestEntry, time: Date, fromTime: Date, toTime: Date, eewHeadType: EewHeadType | null,
+): boolean {
+  return time >= fromTime && time < toTime && isHandledType(entry.head.type, eewHeadType)
 }
 
 /** その日の計画に、本体を要するものが 1 件でもあるか。 */
@@ -820,6 +823,12 @@ export async function fetchDmdataReplayEvents(
   toTime: Date,
   includeTest: boolean,
   /**
+   * 受けている区分（ライブの接続が取り決めたもの。→ `dmdataClassifications.ts`）。**目録はこの区分だけを
+   * 引き**、緊急地震速報は予報なら VXSE45・警報だけなら VXSE43 を取り込む。ライブと同じ区分を使うので、
+   * ライブで届かない電文が再生にだけ出る（またはその逆の）食い違いが起きない。
+   */
+  classifications: readonly DmdataClassification[],
+  /**
    * 止める合図（再生の停止・始め直し）。目録・一覧の取得を打ち切る。
    * **アーカイブと電文の本体は打ち切らない** —— 本編・初期状態・履歴が同じ本体に相乗りするので、
    * 止めた側だけで切ると相乗りした側まで落ちる（取れた分は控えに残る）。
@@ -840,6 +849,7 @@ export async function fetchDmdataReplayEvents(
   //     塞がっていた**
   //
   // 日の決め方と境界の実測は `archiveDaysForWindow` / `archiveListRange`（→ そちら）。
+  const eewHeadType = eewHeadTypeFor(classifications)
   const wantedDays = archiveDaysForWindow(fromTime, toTime)
   const listRange = archiveListRange(wantedDays)
   if (listRange === null) {
@@ -850,7 +860,7 @@ export async function fetchDmdataReplayEvents(
   }
   const items = listRange === null
     ? []
-    : await listArchives(apiKey, listRange.from, listRange.to, CLASSIFICATIONS.join(','), signal, null)
+    : await listArchives(apiKey, listRange.from, listRange.to, classifications.join(','), signal, null)
   // **絞るのはダウンロードだけ。`resolveLiveDates` には絞る前の `items` を渡す**（下の
   // `liveDates`）—— 絞った後を渡すと、窓の外の日を「アーカイブが無い」と誤認して
   // 当日経路が余計に走る。目録の範囲は `wantedDays` を覆うだけなので通常は差が出ないが、
@@ -975,7 +985,7 @@ export async function fetchDmdataReplayEvents(
 
       // 絞り込み（試験報・重複排除・時刻・窓・種別）は計画へ集約してある。
       // **判定と消費で同じ配列を回すこと**が肝（→ `ManifestPlan`）。
-      const plans = planReplayEntries(manifest, { includeTest, fromTime, toTime })
+      const plans = planReplayEntries(manifest, { includeTest, fromTime, toTime, eewHeadType })
       // **窓に 1 件も入らない日は本体を落とさない。** 落としても中身を読まずに捨てるだけで、
       // 静かな 1 時間の窓では毎回それが起きる。
       if (files === undefined && planNeedsBody(plans)) {
@@ -1070,7 +1080,7 @@ export async function fetchDmdataReplayEvents(
             continue
           }
 
-          const payload = buildXmlPayload(headType, dec.decode(bodyBytes))
+          const payload = buildXmlPayload(headType, dec.decode(bodyBytes), eewHeadType)
           if (payload) {
             // 再生時刻は窓の判定と同じ値（ファイル名の 17 桁＝ミリ秒精度の受信時刻 →
             // `manifestEntryTime`）。報が連続する EEW で順序と間隔を保つのにもミリ秒が要る。
@@ -1116,7 +1126,7 @@ export async function fetchDmdataReplayEvents(
   const liveDates = resolveLiveDates(fromTime, toTime, items.map(i => i.date))
   if (liveDates.length > 0) {
     try {
-      const live = await fetchLiveReplayEntries(apiKey, fromTime, toTime, liveDates, includeTest, signal)
+      const live = await fetchLiveReplayEntries(apiKey, fromTime, toTime, liveDates, includeTest, classifications, signal)
       entries.push(...live.entries)
       windowSkips.addAll(live.skippedByDay)
       scanSkips.addAll(live.scanSkippedByDay)
@@ -1671,7 +1681,8 @@ function parseHistoryTelegram(
   const xml = dec.decode(bodyBytes)
   let parsed: ParsedTelegram | null = null
   if (want === 'extra') {
-    const payload = buildXmlPayload(entry.head.type, xml)
+    // 履歴は緊急地震速報を扱わない（`HISTORY_EXTRA_TYPES` に入っていない）ので、取り込む EEW 種別は無し
+    const payload = buildXmlPayload(entry.head.type, xml, null)
     const key = payload ? historyExtraKey(payload) : null
     if (payload && key !== null) parsed = { kind: 'extra', key, payload }
   } else if (want === 'tsunami') {
@@ -1793,6 +1804,31 @@ async function readStraddlingQuakes(
   for (const entry of wanted) take(entry, true)
   for (const entry of unlabeled) take(entry, false)
   return { quakes, skipped, unattributable }
+}
+
+/**
+ * 受けている区分に合わせて履歴を取る。**地震・津波関連（`telegram.earthquake`）を受けていなければ
+ * 取りに行かず、空の履歴を返す。**
+ *
+ * 履歴の目録は `telegram.earthquake` だけを引く。契約の無い区分だけを頼むとアーカイブの一覧は 402 で
+ * 断るので（2026-10-14 実測）、素通しにすると緊急地震速報だけを受けている人の画面に、起動のたびに
+ * 取得の失敗が出る。**呼び出し側（起動時の履歴・もっと見る・リプレイの履歴）はこちらを使うこと。**
+ *
+ * @param classifications 受けている区分（→ `dmdataClassifications.ts`）
+ */
+export function fetchDmdataQuakeHistoryFor(
+  classifications: readonly DmdataClassification[],
+  ...args: Parameters<typeof fetchDmdataQuakeHistory>
+): Promise<QuakeHistoryResult> {
+  if (!hasQuakeTelegrams(classifications)) {
+    // 受けていない区分は画面に出さず、ログにだけ残す（2026-10-14 ユーザー承認）
+    log.info('[history] 地震・津波関連（telegram.earthquake）を受けていないため、地震カードの履歴を取りません')
+    return Promise.resolve({
+      quakes: [], tsunamis: [], hasMore: false, oldestLoadedDay: null, extras: [],
+      skippedByDay: new Map(), failedArchiveUrls: [], rateLimitedSources: [], rateLimitedTelegrams: 0,
+    })
+  }
+  return fetchDmdataQuakeHistory(...args)
 }
 
 /**

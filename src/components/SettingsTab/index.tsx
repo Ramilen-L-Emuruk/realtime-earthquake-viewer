@@ -5,6 +5,7 @@ import { Toggle } from '../Toggle'
 import { TELEGRAM_TEXT_BLOCK_KEYS, TELEGRAM_BOILERPLATE_KEYS, type TelegramTextBlockKey, type TelegramTextBlocks, type TelegramBoilerplateKey, type TelegramBoilerplateReads } from '../../utils/ttsText'
 import type { ConnectionStatus } from '../../types/earthquake'
 import { dmdataConnectionLabel } from './connectionLabel'
+import { classificationLabel, type DmdataClassification } from '../../services/dmdataClassifications'
 import { INTENSITY_SCALE_COUNT, getIntensityLabel, getIntensityColor, INTENSITY_LABELS } from '../../utils/intensity'
 import { readableTextColor } from '../../utils/contrast'
 import { playAlertSound, playCountdownBeep, playKyoshinUpdateSound, unlockAudio } from '../../utils/alertSound'
@@ -91,6 +92,12 @@ interface Props {
   kyoshinInputDateTime: string
   onSetKyoshinInputDateTime: (value: string) => void
   dmdataConnectionStatus?: ConnectionStatus
+  /**
+   * 配信元が受け付けた購読区分（DMDSS 版。まだ繋がっていなければ null）。「受信している区分」の行に出す。
+   * **出すのは繋がっている間だけ**（2026-10-14 ユーザー承認）—— 切れている間に前回の値を出すと、
+   * いま受けているように読める。
+   */
+  dmdataClassifications: readonly DmdataClassification[] | null
   replayIsFetching?: boolean
   /** 直近のリプレイ取得エラー（null = 正常）。ボタン下に赤字で表示する。 */
   replayError?: string | null
@@ -1017,7 +1024,7 @@ function ArrivalTokenField(
   )
 }
 
-export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arrivalTokenStatus, onReplaceSettings, onTest, kyoshinTimeOffset, kyoshinInputDateTime, onSetKyoshinInputDateTime, dmdataConnectionStatus, replayIsFetching, replayError, onStartReplay, onStopReplay, historicalArchives, historicalArchivesLoading, scenarioTest }: Props) {
+export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arrivalTokenStatus, onReplaceSettings, onTest, kyoshinTimeOffset, kyoshinInputDateTime, onSetKyoshinInputDateTime, dmdataConnectionStatus, dmdataClassifications, replayIsFetching, replayError, onStartReplay, onStopReplay, historicalArchives, historicalArchivesLoading, scenarioTest }: Props) {
   const [voicevoxStatus, setVoicevoxStatus] = useState<'idle' | 'checking' | 'available' | 'unavailable' | 'invalid'>('idle')
   const [voicevoxSpeakers, setVoicevoxSpeakers] = useState<VoicevoxSpeaker[]>([])
 
@@ -1129,6 +1136,12 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
               return <span className={`text-xs ${label.className}`}>{label.text}</span>
             })()}
           </Row>
+          {/* 受けていない区分は出さない（ログにだけ残す。2026-10-14 ユーザー承認）。値は DMDATA の購入区分名 */}
+          {dmdataConnectionStatus === 'connected' && dmdataClassifications !== null && (
+            <Row label="受信している区分">
+              <span className="text-xs text-secondary">{classificationLabel(dmdataClassifications)}</span>
+            </Row>
+          )}
           <Row label="APIキー" description="DMDATA.JP のAPIキーを入力してください">
             {/* 不正な文字は入力時に弾かず、入ったことを見せて本人に直させる。入力欄から黙って
                 取り除くと、貼り付けたキーが勝手に変わって「合っているのに繋がらない」状態になる。 */}

@@ -12,8 +12,8 @@ import { serverNow, serverDate } from '../utils/clock'
 import { selectActiveEews, computeEverSpecialWarningEventIds, eewEventKey } from '../utils/eew'
 import { gunzip } from '../utils/gzip'
 import {
-  CLASSIFICATIONS, EEW_TYPES, NANKAI_TYPES, COMMENTARY_TYPES, KOHATSU_TYPES, NOTICE_TYPES,
-  QUAKE_COUNT_TYPES, HANDLED_TYPES, isBinaryTelegramType, buildBinaryPayload, buildXmlPayload,
+  EEW_HEAD_TYPES, type EewHeadType, NANKAI_TYPES, COMMENTARY_TYPES, KOHATSU_TYPES, NOTICE_TYPES,
+  QUAKE_COUNT_TYPES, NON_EEW_HANDLED_TYPES, isBinaryTelegramType, buildBinaryPayload, buildXmlPayload,
   isFilteredBinaryTelegram,
   TELEGRAM_DATA_BASE,
 } from './dmdataTelegramPayload'
@@ -23,17 +23,23 @@ import { authHeader, DmdataApiKeyError, dmdataApiKeyProblem, dmdataApiKeyMessage
 import { fetchJsonOutcome, outcomeJson, API_FETCH_TIMEOUT_MS } from '../utils/fetchWithTimeout'
 import { fetchTelegramText } from './telegramBody'
 import { waitForApiSlot } from './dmdataRequestGates'
+import {
+  negotiateClassifications, eewHeadTypeFor, classificationLabel, PREFERRED_CLASSIFICATIONS,
+  type DmdataClassification,
+} from './dmdataClassifications'
 
 const API_BASE = 'https://api.dmdata.jp/v2'
 // 種別の集合は `dmdataTelegramPayload.ts` が単一情報源。ここで定義し直すと、種別を足したとき
 // ライブ側とリプレイ側が食い違う（同じ電文が経路によって出たり出なかったりする）。
-// VXSE43 の受信は本来起きない。起きるとすれば配信分類の変わり目だが、連続発報で溢れると
-// 他の警告が見えなくなるため間引く（`createLogThrottle` の使い方は utils/logger.ts）。
+// 取り込まないと決めた側の EEW（予報を受けている人の VXSE43）の受信は本来起きない。起きるとすれば
+// 配信分類の変わり目だが、連続発報で溢れると他の警告が見えなくなるため間引く
+// （`createLogThrottle` の使い方は utils/logger.ts）。
 const warnUnsubscribedEew = createLogThrottle(60_000)
 // パーサーへは渡さないが、`handleMessage` の分岐が扱う種別。**本文の復号を種別で絞るときの
 // 例外一覧**で、ここから漏らすとその分岐ごと届かなくなる。復号を種別で絞るのは `handleMessage`。
 //   VXSE42 … 配信テスト。本文は見ないが、疎通確認として記録する
-//   VXSE43 … 購読外。届いたら配信分類の変わり目を疑う警告を上げ、本文を電文ログへ残す
+//   VXSE43 … 予報を受けている人には購読外。届いたら配信分類の変わり目を疑う警告を上げ、本文を電文ログへ残す
+//             （予報が無く警報を受けている人には EEW そのもの。→ `EEW_HEAD_TYPES`）
 //   VXSE44 … 廃止予定の旧 EEW。想定内なので警告は上げず、本文を電文ログへ残す
 const DISPATCHED_WITHOUT_PARSER = new Set(['VXSE42', 'VXSE43', 'VXSE44'])
 
@@ -46,7 +52,7 @@ const DISPATCHED_WITHOUT_PARSER = new Set(['VXSE42', 'VXSE43', 'VXSE44'])
  * IXAC41（推計震度分布図作図用データ）は 1 通が最大 644KB で、震度5弱以上の地震のたびに届く。
  */
 export function needsBodyDecode(headType: string): boolean {
-  return HANDLED_TYPES.has(headType) || DISPATCHED_WITHOUT_PARSER.has(headType)
+  return NON_EEW_HANDLED_TYPES.has(headType) || EEW_HEAD_TYPES.has(headType) || DISPATCHED_WITHOUT_PARSER.has(headType)
 }
 
 const RECONNECT_BASE_MS = 3000
@@ -77,6 +83,12 @@ const RECONNECT_CROWDED_MAX_MS = 300_000
  * （ネットワーク断など）とも待ち方が違うため、文字列ではなく型で見分ける
  * （`ticket: 409` のメッセージ照合は、他の 4xx を足したときに静かに崩れる）。
  */
+/**
+ * 最初の取り決めを待つ上限。409・通信の失敗が続いても、履歴と起動時の復元をいつまでも待たせない。
+ * 起動直後の 409 は自分の古い枠が残っているときに起き、枠を返した次の再接続（3 秒後）で通るのがふつう。
+ */
+const CLASSIFICATIONS_READY_TIMEOUT_MS = 15_000
+
 class SocketCrowdedError extends Error {
   constructor() {
     super('socket-crowded')
@@ -252,7 +264,7 @@ async function tryFetchTicket(
   classifications: readonly string[],
   includeTest: boolean,
   debug: boolean,
-): Promise<{ url: string; status: number; body: unknown }> {
+): Promise<{ status: number; body: unknown }> {
   const testParam = includeTest ? 'including' : 'no'
   if (debug) dlog('socket チケット要求', { classifications, test: testParam })
   // **`api.dmdata.jp` の枠を待つ。** ここは 1 回の接続で 1 度しか叩かないが、門は
@@ -296,15 +308,61 @@ async function tryFetchTicket(
     const e = (body as { error?: { message?: string; code?: number } }).error
     log.warn('[DMDSS] socket チケット取得 失敗', { status: res.status, errorCode: e?.code, errorMessage: e?.message })
   }
-  return { url: (body as { websocket?: { url: string } }).websocket?.url ?? '', status: res.status, body }
+  return { status: res.status, body }
 }
 
-async function fetchTicketUrl(apiKey: string, includeTest: boolean, debug: boolean): Promise<string> {
-  const result = await tryFetchTicket(apiKey, CLASSIFICATIONS, includeTest, debug)
-  if (result.status === 200) return result.url
-  if (result.status === 401 || result.status === 403) throw new Error('auth')
-  if (result.status === 409) throw new SocketCrowdedError()
-  throw new Error(`ticket: ${result.status}`)
+/** チケットの取得に成功したときの結果。 */
+interface TicketResult {
+  url: string
+  /** 配信元が受け付けた区分（Socket Start の応えの `classifications`） */
+  classifications: DmdataClassification[]
+}
+
+/**
+ * チケットを取る。**受けられない区分があれば外して申し込み直す**（→ `negotiateClassifications`）。
+ *
+ * 配信元は、申し込んだ区分のどれか 1 つでも契約・権限が無いと申し込みごと断る（2026-10-14 実測）。
+ * 以前はそのまま失敗にしていたので、**一部の区分しか契約していない人はライブ受信が何も届かなかった**
+ * （402 は再試行を続け、403 は認証エラーで止まる）。
+ *
+ * @param initial 最初に申し込む区分。前の接続で通った区分を渡すと、再接続のたびに投げ直さずに済む
+ * @returns 途中で止められたら null
+ */
+async function fetchTicketUrl(
+  apiKey: string, includeTest: boolean, debug: boolean, initial: readonly DmdataClassification[],
+  isStopped: () => boolean,
+): Promise<TicketResult | null> {
+  const result = await negotiateClassifications(
+    (classifications) => tryFetchTicket(apiKey, classifications, includeTest, debug),
+    initial,
+    isStopped,
+  )
+  if (result.kind === 'stopped') return null
+  if (result.kind === 'ok') {
+    // **受けていない区分は画面に出さず、ログにだけ残す**（2026-10-14 ユーザー承認）。
+    // 鍵を作れる人は自分の購入区分を把握している、という判断。
+    if (result.excluded.length > 0) {
+      log.info('[DMDSS] 受けられない区分を外して接続します', {
+        受信する区分: classificationLabel(result.classifications),
+        外した区分: result.excluded,
+      })
+    }
+    return { url: urlOf(result.attempt.body), classifications: result.classifications }
+  }
+  if (result.kind === 'fatal') {
+    // **再接続しない**（従来の 403 と同じ扱い）。受けられる区分が無い人に、断られる申し込みを
+    // 再接続のたびに投げ続けないため。契約を足した場合はキーを入れ直すかページを開き直す
+    log.error('[DMDSS] 受けられる区分が無いため接続しない', { reason: result.reason })
+    throw new Error('auth')
+  }
+  const status = result.attempt.status
+  if (status === 401 || status === 403) throw new Error('auth')
+  if (status === 409) throw new SocketCrowdedError()
+  throw new Error(`ticket: ${status}`)
+}
+
+function urlOf(body: unknown): string {
+  return (body as { websocket?: { url?: string } } | null)?.websocket?.url ?? ''
 }
 
 /**
@@ -399,10 +457,31 @@ export class DmdataWebSocket {
    * 切れるので、持ち越しても揃わない。
    */
   private readonly bufrFragments = new BufrFragmentStore()
+  /**
+   * 配信元が受け付けた区分（最後に繋がった接続のもの）。まだ繋がっていなければ null。
+   * **再接続はここから申し込む** —— 毎回 `PREFERRED_CLASSIFICATIONS` から始めると、一部の区分しか
+   * 受けられない人は再接続のたびに断られる申し込みを投げ直すことになる。契約を後から足した場合は、
+   * キーを入れ直すかページを開き直すまで広がらない（このインスタンスは作り直されるため）。
+   */
+  private classifications: DmdataClassification[] | null = null
+  /** 緊急地震速報として取り込む種別（`classifications` から決まる）。繋がる前は予報のつもりで読む */
+  private eewHeadType: EewHeadType | null = 'VXSE45'
+  private resolveClassificationsReady: ((c: readonly DmdataClassification[]) => void) | null = null
+  private classificationsTimer: ReturnType<typeof setTimeout> | null = null
+  /**
+   * REST の取得（履歴・起動時の復元）に使う区分。**最初の取り決めが終わった時点で 1 度だけ決まる。**
+   * 繋がれば受け付けられた区分、繋がらなければ（409・通信の失敗・認証エラー）`PREFERRED_CLASSIFICATIONS`。
+   * 後者へ倒すのは、区分が分からないまま取得を止めると、認証エラーの表示など従来の失敗の伝え方まで消えるため。
+   */
+  readonly classificationsReady: Promise<readonly DmdataClassification[]> = new Promise((resolve) => {
+    this.resolveClassificationsReady = resolve
+  })
 
   onEvent: ((ev: DmdataEvent) => void) | null = null
   onStatusChange: ((s: ConnectionStatus) => void) | null = null
   onRawMessage: ((entry: TelegramLogEntry) => void) | null = null
+  /** 配信元が区分を受け付けたとき（繋がるたび）。設定タブの「受信している区分」に使う */
+  onClassifications: ((c: readonly DmdataClassification[]) => void) | null = null
 
   private readonly debug: boolean
 
@@ -414,6 +493,15 @@ export class DmdataWebSocket {
   connect() {
     this.stopped = false
     this.authError = false
+    // 決まらないまま待たせ続けない（理由は `CLASSIFICATIONS_READY_TIMEOUT_MS`）
+    if (this.resolveClassificationsReady !== null && this.classificationsTimer === null) {
+      this.classificationsTimer = setTimeout(() => {
+        this.classificationsTimer = null
+        if (this.resolveClassificationsReady === null) return
+        log.warn(`[DMDSS] 受けられる区分を ${CLASSIFICATIONS_READY_TIMEOUT_MS / 1000} 秒で決められないため、既定の区分で履歴と復元を取ります`)
+        this.settleClassifications(PREFERRED_CLASSIFICATIONS)
+      }, CLASSIFICATIONS_READY_TIMEOUT_MS)
+    }
     if (this.debug) dlog('connect()', { includeTest: this.includeTest })
     this.tryConnect()
   }
@@ -421,10 +509,23 @@ export class DmdataWebSocket {
   private async tryConnect() {
     this.onStatusChange?.('connecting')
     try {
-      const url = await fetchTicketUrl(this.apiKey, this.includeTest, this.debug)
-      if (this.stopped) return
-      this.openWs(url)
+      const ticket = await fetchTicketUrl(
+        this.apiKey, this.includeTest, this.debug, this.classifications ?? PREFERRED_CLASSIFICATIONS, () => this.stopped,
+      )
+      if (ticket === null || this.stopped) return
+      this.settleClassifications(ticket.classifications)
+      this.classifications = ticket.classifications
+      this.eewHeadType = eewHeadTypeFor(ticket.classifications)
+      this.onClassifications?.(ticket.classifications)
+      this.openWs(ticket.url)
     } catch (err) {
+      // **決めてよいのは、この先も繋がらないと分かったときだけ**（認証エラー・受けられる区分が無い・
+      // 鍵の文字が不正。受けられる区分が無いときも `fetchTicketUrl` が `auth` として投げる）。既定の区分へ倒し、履歴の取得が従来どおりの失敗を画面へ出せるようにする。
+      // 409・通信の失敗のような一時的な失敗では決めない —— 決めると、次の再接続で一部の区分だけで
+      // 繋がっても、履歴と復元が既定の区分のまま走る。決まらなければ上限の時間で倒す（`connect`）
+      if ((err instanceof Error && err.message === 'auth') || err instanceof DmdataApiKeyError) {
+        this.settleClassifications(PREFERRED_CLASSIFICATIONS)
+      }
       if (this.stopped) return
       const reason = err instanceof Error ? err.message : String(err)
       // キーの文字が不正な場合は再試行しても直らない。素通しにすると 30 秒間隔の再接続を
@@ -477,6 +578,16 @@ export class DmdataWebSocket {
       if (this.debug) dlog('接続失敗', { reason })
       this.scheduleReconnect()
     }
+  }
+
+  /** `classificationsReady` を決める。2 度目以降は何もしない */
+  private settleClassifications(c: readonly DmdataClassification[]): void {
+    if (this.classificationsTimer !== null) {
+      clearTimeout(this.classificationsTimer)
+      this.classificationsTimer = null
+    }
+    this.resolveClassificationsReady?.(c)
+    this.resolveClassificationsReady = null
   }
 
   private openWs(url: string) {
@@ -729,9 +840,9 @@ export class DmdataWebSocket {
     // バイナリ（BUFR）。**震度5弱以上の地震という、いちばん忙しい瞬間に**、捨てるためだけの
     // 復号が走っていた（そのうえ本文が XML でないので `format` の警告にも落ちていた）。
     //
-    // **落としてよいのは、下の分岐が一切触れない種別だけ。** パーサーへ渡す `HANDLED_TYPES` の
+    // **落としてよいのは、下の分岐が一切触れない種別だけ。** パーサーへ渡す種別の
     // ほかに、本文を電文ログへ残したり警告を上げたりする種別が 3 つある（`DISPATCHED_WITHOUT_PARSER`）。
-    // ここを `HANDLED_TYPES` だけで絞ると、**購読していない VXSE43 が届いたことを知らせる警告まで
+    // ここをパーサーへ渡す種別だけで絞ると、**購読していない VXSE43 が届いたことを知らせる警告まで
     // 黙る** —— 配信分類の変わり目に気づく唯一の経路なので、節約のために消してはならない。
     if (!needsBodyDecode(headType)) {
       if (this.debug) dlog('対象外の電文種別（本文は復号しない）', { headType, format: msg.format })
@@ -811,7 +922,7 @@ export class DmdataWebSocket {
       } else {
         this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'filtered'))
       }
-    } else if (EEW_TYPES.has(headType)) {
+    } else if (headType === this.eewHeadType) {
       const eew = parseEEWFromXml(headType, xml)
       if (!eew) {
         if (this.debug) dlog('EEW パース結果が null', { headType })
@@ -848,11 +959,13 @@ export class DmdataWebSocket {
       } else {
         this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'filtered'))
       }
-    } else if (headType === 'VXSE43') {
-      // VXSE43 は購読していない分類（`eew.warning`）にしか無いので、届いたら配信分類の変わり目を疑う。
+    } else if (EEW_HEAD_TYPES.has(headType)) {
+      // 取り込まないと決めた側の EEW。予報を受けている人の VXSE43 は購読していない区分（`eew.warning`）に
+      // しか無いので、届いたら配信分類の変わり目を疑う（上の分岐が `eewHeadType` で先に拾うので、
+      // 警報だけを受けている人の VXSE43 はここへ来ない）。
       // 取り込まないことと、届いたのに気づけないことは別なので、**debug に依らず**記録する。
       // 連続発報で溢れないよう間引くが、電文ログには毎回残して後から追えるようにする。
-      warnUnsubscribedEew(() => log.warn('[dmdata] 購読していない VXSE43（緊急地震速報・警報）を受信しました。配信分類の変更の可能性があります'))
+      warnUnsubscribedEew(() => log.warn(`[dmdata] 購読していない ${headType}（緊急地震速報）を受信しました。配信分類の変更の可能性があります`))
       this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'filtered'))
     } else if (headType === 'VXSE44') {
       // VXSE44 は購読中の `eew.forecast` に含まれ、予報級 EEW のたびに毎報届く**想定内**の電文。
@@ -861,8 +974,8 @@ export class DmdataWebSocket {
       this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'filtered'))
     } else if (this.debug) {
       // 対象外の種別は復号の手前で落ちるので、ここへ来るのは
-      // 「`HANDLED_TYPES` に入れたのに、この分岐を足し忘れた」ときだけ。
-      dlog('分岐の無い電文種別（HANDLED_TYPES への追加漏れ）', { headType })
+      // 「`NON_EEW_HANDLED_TYPES` に入れたのに、この分岐を足し忘れた」ときだけ。
+      dlog('分岐の無い電文種別（NON_EEW_HANDLED_TYPES への追加漏れ）', { headType })
     }
   }
 
@@ -888,6 +1001,8 @@ export class DmdataWebSocket {
 
   disconnect() {
     this.stopped = true
+    // 待っている側（履歴・起動時の復元）を解く。待つ側は自分の打ち切りの印を見て何もしない
+    this.settleClassifications(PREFERRED_CLASSIFICATIONS)
     // 結合待ちの断片を捨てる。切断を挟むと連なりが切れるので、抱えていても揃わない。
     this.bufrFragments.clear()
     if (this.reconnectTimer !== null) {
@@ -1125,7 +1240,7 @@ const ACTIVE_EEW_MAX_PAGES = 10
  * 1 地震あたり数十リクエストになり、起動が目に見えて遅れる。
  */
 async function fetchLatestEewReport(
-  apiKey: string, headers: Record<string, string>, eventId: string,
+  apiKey: string, headers: Record<string, string>, eventId: string, eewHeadType: EewHeadType,
 ): Promise<EEWAlert | null> {
   // **発表中の件数だけ繰り返し呼ばれる**ので枠を待つ（→ `services/dmdataRequestGates.ts`）。
   await waitForApiSlot()
@@ -1168,9 +1283,9 @@ async function fetchLatestEewReport(
       logRestFailure(`緊急地震速報の電文本体 (${xmlId})`, body.status ?? 0)
       continue
     }
-    const payload = buildXmlPayload(headType, body.xml)
-    // VXSE43 はここで落ちる（`EEW_TYPES` が VXSE45 だけを持つため）。**種別の集合は
-    // `dmdataTelegramPayload.ts` が単一情報源**なので、この場で重ねて弾かない。
+    const payload = buildXmlPayload(headType, body.xml, eewHeadType)
+    // 取り込まないと決めた側（予報を受けている人の VXSE43 など）はここで落ちる（`buildXmlPayload` が
+    // `eewHeadType` で弾く）。**判定は `dmdataTelegramPayload.ts` が持つ**ので、この場で重ねて弾かない。
     if (payload?.kind === 'event' && payload.event.kind === 'eew') return payload.event as EEWAlert
   }
   // **「訓練報だけだった」と「読めなかった」を分ける。** 前者は正常（訓練は復元しない）だが、
@@ -1178,6 +1293,14 @@ async function fetchLatestEewReport(
   // **復元が静かに空振りし続けても気づけない**。どちらも戻り値は同じ `null` になる。
   const telegrams = latest.telegrams ?? []
   const allTest = telegrams.length > 0 && telegrams.every(tg => tg.head?.test)
+  // **受けている側の種別が 1 通も無ければ、読めなかったのではない。** 警報だけを受けている人には、
+  // 予報級だけで終わった地震（VXSE43 が出ない）がこの形になる
+  const hasOwnType = telegrams.some(tg => tg.head?.type === eewHeadType)
+  const hasOtherEewType = telegrams.some(tg => EEW_HEAD_TYPES.has(tg.head?.type ?? '') && tg.head?.type !== eewHeadType)
+  if (!hasOwnType && hasOtherEewType && !allTest) {
+    log.info(`[DMDSS] 発表中の緊急地震速報に ${eewHeadType} の報が無いため復元しません eventId=${eventId}`)
+    return null
+  }
   if (!allTest) {
     log.warn(`[DMDSS] 発表中の緊急地震速報を読み取れませんでした eventId=${eventId}（報 ${telegrams.length} 通）`)
   }
@@ -1193,9 +1316,19 @@ async function fetchLatestEewReport(
  *
  * 取得失敗時は空配列を返すが、失敗した事実はログに残す（「発表なし」と「取得できていない」は
  * どちらも空配列になるため。理由は `fetchDmdataNankai` と同じ）。
+ *
+ * @param classifications 受けている区分（`DmdataWebSocket.classificationsReady`）。緊急地震速報の区分を
+ *   受けていなければ一覧も引かない。予報か警報かで、取り込む電文種別（VXSE45 / VXSE43）が変わる
  */
-export async function fetchDmdataActiveEews(apiKey: string): Promise<EEWAlert[]> {
-  if (!isApiKeyUsable(apiKey, '発表中の緊急地震速報 (VXSE45)')) return []
+export async function fetchDmdataActiveEews(
+  apiKey: string, classifications: readonly DmdataClassification[],
+): Promise<EEWAlert[]> {
+  const eewHeadType = eewHeadTypeFor(classifications)
+  if (eewHeadType === null) {
+    log.info('[DMDSS] 緊急地震速報の区分を受けていないため、発表中の緊急地震速報を復元しません')
+    return []
+  }
+  if (!isApiKeyUsable(apiKey, `発表中の緊急地震速報 (${eewHeadType})`)) return []
   const headers = { Authorization: authHeader(apiKey) }
   const now = serverDate()
   const since = now.getTime() - ACTIVE_EEW_WINDOW_MS
@@ -1263,7 +1396,7 @@ export async function fetchDmdataActiveEews(apiKey: string): Promise<EEWAlert[]>
       // ——JSON の破損・ネットワーク断——がそれを起こす）。複数が同時に発表中の場面こそ
       // この復元が効くところなので、そこで全滅させるのは割に合わない。
       try {
-        const eew = await fetchLatestEewReport(apiKey, headers, ev.eventId)
+        const eew = await fetchLatestEewReport(apiKey, headers, ev.eventId, eewHeadType)
         if (eew) reports.push({ eew, value: eew })
       } catch (err) {
         log.warn(`[DMDSS] 発表中の緊急地震速報の詳細で例外が出たため、この地震だけ諦めます eventId=${ev.eventId}`, err)

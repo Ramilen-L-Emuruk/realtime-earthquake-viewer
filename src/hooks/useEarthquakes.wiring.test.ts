@@ -76,6 +76,9 @@ const { sockets, FakeWebSocket } = vi.hoisted(() => {
     onStatusChange: ((s: string) => void) | null = null
     onRawMessage: ((e: unknown) => void) | null = null
     onReconnected: ((lastReceivedAtMs: number) => void) | null = null
+    onClassifications: ((c: readonly string[]) => void) | null = null
+    // 本物は最初の取り決めが済んだ時点で解決する。ここでは全区分を受けている人として即座に返す
+    readonly classificationsReady = Promise.resolve(['eew.forecast', 'telegram.earthquake'])
     connected = false
     constructor() { sockets.push(this) }
     connect() { this.connected = true }
@@ -138,10 +141,19 @@ vi.mock('../services/dmdata', () => ({
 // `fetchDmdataQuakeHistory`）。地震・津波・帯・長周期がまとめて返る。
 // **こちらは `importOriginal` を混ぜる** —— `HISTORY_WINDOW_DAYS` 等の定数を実物から採るため。
 // 通信するのは `fetchDmdataQuakeHistory` 1 本なので、それを差し替えれば漏れは出ない。
-vi.mock('../services/dmdataReplay', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../services/dmdataReplay')>()),
-  fetchDmdataQuakeHistory: vi.fn(),
-}))
+// フックが呼ぶのは区分の門（`fetchDmdataQuakeHistoryFor`）なので、門の先を差し替えたものへ流す
+// （実物の門は同じモジュールの中の本物を直接呼ぶので、`fetchDmdataQuakeHistory` だけを差し替えても届かない）。
+vi.mock('../services/dmdataReplay', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/dmdataReplay')>()
+  const fetchDmdataQuakeHistory = vi.fn<typeof actual.fetchDmdataQuakeHistory>()
+  return {
+    ...actual,
+    fetchDmdataQuakeHistory,
+    fetchDmdataQuakeHistoryFor: (
+      _classifications: unknown, ...args: Parameters<typeof actual.fetchDmdataQuakeHistory>
+    ) => fetchDmdataQuakeHistory(...args),
+  }
+})
 
 vi.mock('../services/p2pquake', () => ({
   P2PQuakeWebSocket: FakeWebSocket,

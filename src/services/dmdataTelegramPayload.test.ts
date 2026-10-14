@@ -2,16 +2,18 @@
 // 電文の読み取りが XML に一本化されたため、DOMParser を使う jsdom 環境で動かす（既定は node）。
 // アプリが受け取る電文の入口（購読分類・EEW 種別）を固定するテスト。
 //
-// 守りたいのは「VXSE43（緊急地震速報・警報）を取り込まない」こと。取り込むと遅れて届く複製が
-// 新しい VXSE45 を上書きし、地図の区域塗りが削られる（根拠と実害は
-// docs/spec/data-sources-spec.md §2「EEW は VXSE45 だけを受ける」）。
-// この集合はライブ（services/dmdata.ts）とリプレイ（dmdataReplay.ts / dmdataReplayLive.ts）が
+// 守りたいのは「緊急地震速報は VXSE45 か VXSE43 の**どちらか 1 つ**だけを取り込む」こと。
+// 予報（VXSE45）を受けている人が VXSE43（警報）も取り込むと、遅れて届く複製が新しい VXSE45 を
+// 上書きし、地図の区域塗りが削られる（根拠と実害は docs/spec/data-sources-spec.md §2
+// 「EEW は VXSE45 だけを受ける」）。予報が無く警報だけの人は、VXSE43 が唯一の緊急地震速報になる。
+// この判定はライブ（services/dmdata.ts）とリプレイ（dmdataReplay.ts / dmdataReplayLive.ts）が
 // 共有する。かつて二重定義でライブ側だけ VXSE43 を含み、ライブでのみ塗りが削られていた。
 import { describe, it, expect } from 'vitest'
 import {
-  CLASSIFICATIONS, EEW_TYPES, HANDLED_TYPES, buildXmlPayload,
+  isHandledType, buildXmlPayload,
   buildBinaryPayload, isFilteredBinaryTelegram, historyExtraKey,
 } from './dmdataTelegramPayload'
+import { PREFERRED_CLASSIFICATIONS, eewHeadTypeFor } from './dmdataClassifications'
 import { buildSampleTelegram } from '../test-utils/bufrBuild'
 
 // 2024-01-01 能登半島地震の緊急地震速報（地震動予報・警報級）を最小化したもの。
@@ -44,29 +46,41 @@ const EEW_XML = `<?xml version="1.0" encoding="UTF-8"?>
 </Report>`
 
 describe('EEW として扱う電文種別', () => {
-  it('VXSE45（地震動予報）は取り込む', () => {
-    expect(EEW_TYPES.has('VXSE45')).toBe(true)
-    expect(HANDLED_TYPES.has('VXSE45')).toBe(true)
+  it('予報を受けていれば VXSE45 を取り込む', () => {
+    expect(isHandledType('VXSE45', 'VXSE45')).toBe(true)
   })
 
-  // 対照: 取り込まないことがこの修正の本体。含めると新しい予想が古い複製で上書きされる。
-  it('VXSE43（警報）は取り込まない', () => {
-    expect(EEW_TYPES.has('VXSE43')).toBe(false)
-    expect(HANDLED_TYPES.has('VXSE43')).toBe(false)
+  // 対照: この判定の本体。予報を受けている人が VXSE43 も取り込むと、古い複製で上書きされる。
+  it('予報を受けていれば VXSE43（警報）は取り込まない', () => {
+    expect(isHandledType('VXSE43', 'VXSE45')).toBe(false)
+    expect(buildXmlPayload('VXSE43', EEW_XML, 'VXSE45')).toBeNull()
+  })
+
+  // 正: 予報が無く警報だけを受けている人には、VXSE43 が唯一の緊急地震速報。
+  it('警報だけを受けていれば VXSE43 を取り込み、VXSE45 は取り込まない', () => {
+    expect(isHandledType('VXSE43', 'VXSE43')).toBe(true)
+    expect(isHandledType('VXSE45', 'VXSE43')).toBe(false)
+    const payload = buildXmlPayload('VXSE43', EEW_XML, 'VXSE43')
+    expect(payload?.kind === 'event' ? payload.event.kind : null).toBe('eew')
+  })
+
+  // 安全弁: 緊急地震速報を受けていなければ、どちらも取り込まない（地震・津波は従来どおり）。
+  it('緊急地震速報を受けていなければ EEW は取り込まず、地震情報は取り込む', () => {
+    expect(isHandledType('VXSE45', null)).toBe(false)
+    expect(isHandledType('VXSE43', null)).toBe(false)
+    expect(isHandledType('VXSE53', null)).toBe(true)
+    expect(buildXmlPayload('VXSE45', EEW_XML, null)).toBeNull()
   })
 
   // VXSE44（予報）は廃止予定で、同時刻の VXSE45 より区域が少ない（能登本震で 45 対 77）。
-  it('VXSE44（予報・廃止予定）も取り込まない', () => {
-    expect(EEW_TYPES.has('VXSE44')).toBe(false)
-  })
-
-  it('種別が対象外なら電文本体があってもペイロードを作らない', () => {
-    expect(buildXmlPayload('VXSE43', EEW_XML)).toBeNull()
-    expect(buildXmlPayload('VXSE44', EEW_XML)).toBeNull()
+  it('VXSE44（予報・廃止予定）はどの区分でも取り込まない', () => {
+    expect(isHandledType('VXSE44', 'VXSE45')).toBe(false)
+    expect(isHandledType('VXSE44', 'VXSE43')).toBe(false)
+    expect(buildXmlPayload('VXSE44', EEW_XML, 'VXSE45')).toBeNull()
   })
 
   it('VXSE45 はペイロードを作る（区域も落とさない）', () => {
-    const payload = buildXmlPayload('VXSE45', EEW_XML)
+    const payload = buildXmlPayload('VXSE45', EEW_XML, 'VXSE45')
     expect(payload?.kind).toBe('event')
     const event = payload?.kind === 'event' ? payload.event : null
     expect(event?.kind).toBe('eew')
@@ -76,23 +90,22 @@ describe('EEW として扱う電文種別', () => {
   })
 })
 
-// 購読分類は「そもそもどの電文が届くか」を決める最上流。ここが変わると型検査も
+// 最初に申し込む区分は「そもそもどの電文が届くか」を決める最上流。ここが変わると型検査も
 // パーサのテストも素通りしたまま挙動だけが変わるため、集合そのものを固定する。
-describe('購読分類', () => {
-  // 対照: この修正の本体。戻すと能登本震で起きた区域塗りの後退（76→40）が再発する。
-  it('eew.warning（VXSE43 だけを含む分類）を購読しない', () => {
-    expect(CLASSIFICATIONS).not.toContain('eew.warning')
+describe('最初に申し込む区分', () => {
+  // 対照: 戻すと能登本震で起きた区域塗りの後退（76→40）が再発する。
+  it('eew.warning（VXSE43 だけを含む区分）を最初からは申し込まない', () => {
+    expect(PREFERRED_CLASSIFICATIONS).not.toContain('eew.warning')
   })
 
-  it('EEW（eew.forecast）と地震・津波（telegram.earthquake）は購読する', () => {
-    expect(CLASSIFICATIONS).toContain('eew.forecast')
-    expect(CLASSIFICATIONS).toContain('telegram.earthquake')
+  it('EEW（eew.forecast）と地震・津波（telegram.earthquake）を申し込む', () => {
+    expect(PREFERRED_CLASSIFICATIONS).toContain('eew.forecast')
+    expect(PREFERRED_CLASSIFICATIONS).toContain('telegram.earthquake')
   })
 
-  // 安全弁: 分類と種別は別の層で、片方だけ直しても穴が残る。両方が要る。
-  it('分類を絞ったうえで、種別フィルタでも VXSE43 を扱わない', () => {
-    expect(EEW_TYPES.has('VXSE43')).toBe(false)
-    expect(EEW_TYPES.has('VXSE45')).toBe(true)
+  // 安全弁: 区分と種別は別の層で、片方だけ直しても穴が残る。両方が要る。
+  it('既定の区分なら、取り込む EEW 種別は VXSE45', () => {
+    expect(eewHeadTypeFor(PREFERRED_CLASSIFICATIONS)).toBe('VXSE45')
   })
 })
 
@@ -136,7 +149,7 @@ describe('非 XML 電文の試験・訓練配信の抑制', () => {
   // `@ts-expect-error` は「エラーが出なければテストが落ちる」ので、
   // **絞りが外れたらここで気づける**（実行はしないので中身の期待値は書かない）。
   it('XML 電文のペイロードは型で渡せない', () => {
-    const xml = buildXmlPayload('VXSE45', EEW_XML)
+    const xml = buildXmlPayload('VXSE45', EEW_XML, 'VXSE45')
     expect(xml).not.toBeNull()
     // @ts-expect-error 二進電文以外は渡せない（引数は `BinaryReplayPayload`）
     const reject = () => isFilteredBinaryTelegram(xml!, false)
