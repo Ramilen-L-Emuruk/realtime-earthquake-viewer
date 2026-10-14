@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { PsWaveCircle } from '../services/kyoshin'
 import type { EEWAlert } from '../types/earthquake'
-import { pickCountdownCircle, pickCountdownEew, pickSeismoArrivalEew } from './countdownEew'
+import { pickCountdownCircle, pickCountdownEew } from './countdownEew'
 
 function circle(eventId: string, sRadius: number): PsWaveCircle {
   return { eventId, lat: 37, lng: 137, pRadius: sRadius * 1.7, sRadius, depth: 10, magnitude: 6 }
@@ -42,25 +42,5 @@ describe('pickCountdownEew', () => {
   // 安全弁: 引き当てられない（円を作った速報が一覧から消えた）なら null。別の速報を代わりに返さない。
   it('引き当てられなければ null', () => {
     expect(pickCountdownEew([circle('gone', 30)], [eew('t1', 'other')])).toBeNull()
-  })
-})
-
-describe('pickSeismoArrivalEew', () => {
-  const psWave = [circle('20260101000100', 30)]
-  const eews = [eew('t2', '20260101000100')]
-
-  // 正: 自前の走時計算を使ってよい端末なら、カウントダウンと同じ速報を返す。
-  it('トークン端末ならカウントダウンと同じ速報', () => {
-    expect(pickSeismoArrivalEew({ allowOwnArrivalCalc: true, psWave, eews })?.id).toBe('t2')
-  })
-
-  // 安全弁（気象業務法の線引き）: トークンが無ければ、速報が出ていても線を引く相手を返さない。
-  it('トークンが無ければ null', () => {
-    expect(pickSeismoArrivalEew({ allowOwnArrivalCalc: false, psWave, eews })).toBeNull()
-  })
-
-  // 対照: トークン端末でも速報が無ければ null。
-  it('円が無ければ null', () => {
-    expect(pickSeismoArrivalEew({ allowOwnArrivalCalc: true, psWave: [], eews })).toBeNull()
   })
 })

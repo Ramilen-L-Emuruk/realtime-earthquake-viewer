@@ -14,7 +14,7 @@
 // 1 本なので重ねる（2026-10-13 ユーザー承認）。2 本以上を重ねた絵には足さない（線の数が倍になって読めない）。
 //
 // **P 波・S 波の到達線は、渡された緊急地震速報から引く**（`arrivalEew`。どの速報を相手にするかは
-// カウントダウンと同じ選び方で、自前の走時計算を使ってよい端末でだけ渡ってくる —— App 側の判断）。
+// カウントダウンと同じ選び方。到達予想キーの門は掛けない —— `docs/forecast-computation-audit.md` の 11）。
 // 右端は「最後に届いたサンプル」なので、**まだ来ていない時刻の線は範囲の外に落ちて描かれない。**
 //
 // **このファイルが持つのは描画の輪・静かさの測定・段の構成・見出し。** 段の描き分けは `liveLanes.ts` の `drawLanes`、
@@ -82,8 +82,8 @@ interface Props {
   expanded: boolean
   onToggleExpanded: () => void
   /**
-   * P/S の到達線を引く相手の緊急地震速報。**引かないなら `null`**（発表中のものが無い・自前の走時計算を
-   * 使えない端末）。選び方はカウントダウンと同じ（`utils/countdownEew.ts`）。
+   * P/S の到達線を引く相手の緊急地震速報。**引かないなら `null`**（発表中のものが無い）。
+   * 選び方はカウントダウンと同じ（`utils/countdownEew.ts`）。
    */
   arrivalEew: EEWAlert | null
 }
@@ -135,12 +135,13 @@ function StationWave({
     })
   }, [arrivalEew, station.lat, station.lon])
 
-  // **線を引けなかった理由を残す**（速報ごとに 1 回）。トークンの無い端末では `arrivalEew` が `null` で
-  // ここへ来ない（正常系なので記録しない）。画面からは「線が出ない」としか見えない。
+  // **線を引けなかった理由を残す**（地震ごとに 1 回）。発表中の速報が無いときは `arrivalEew` が `null` で
+  // ここへ来ない（正常系なので記録しない）。画面からは「線が出ない」としか見えない。鍵は報ではなく地震
+  // （`issue.eventId`）—— 報の id で数えると、座標の無い観測点では続報のたびに同じ行が出る。
   const loggedNoArrivalRef = useRef<string | null>(null)
   useEffect(() => {
     if (arrivalEew === null || arrival !== null) return
-    const key = `${station.stationId}:${arrivalEew.id}`
+    const key = `${station.stationId}:${arrivalEew.issue?.eventId ?? arrivalEew.id}`
     if (loggedNoArrivalRef.current === key) return
     loggedNoArrivalRef.current = key
     const reason = station.lat === null || station.lon === null ? '観測点の座標がホストの設定に無い' : '速報の発生時刻・震源・深さから解けない'
