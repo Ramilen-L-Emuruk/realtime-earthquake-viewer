@@ -27,8 +27,8 @@ export const WAVE_HISTORY_LEAD_MS = 30_000
  * 地震の発生時刻より後を何 ms 取るか。**4 分。**
  *
  * 遠い地震ほど S 波の到達が遅く、大きい地震ほど揺れが長引く。**到達時刻を自前で
- * 計算して詰めない** —— 気象業務法の線引きに触れうる計算をここへ持ち込む理由が無く
- * （→ `docs/forecast-computation-audit.md`）、固定の窓で足りる。
+ * 計算して詰めない** —— 固定の窓で足りる。自前で解く形へ変えるなら、
+ * `docs/forecast-computation-audit.md` の棚卸しへの追記が要る。
  */
 export const WAVE_HISTORY_TAIL_MS = 240_000
 
