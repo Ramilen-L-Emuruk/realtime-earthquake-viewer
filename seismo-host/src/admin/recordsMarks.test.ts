@@ -151,7 +151,7 @@ describe('カーソルの読み取り', () => {
   })
 
   it('揺れの記録は判定と区間を書く', () => {
-    const e = { id: 'home-1', rev: 1, stationId: 'home', startMs: H0 + 30_000, endMs: H0 + 70_000, sMs: null, pMs: null, peakAccelGal: 3, maxIntensity: null, peakRatio: 4, verdict: 'quake-like', matchedQuake: null } satisfies ShakeRecordView
+    const e = { id: 'home-1', rev: 1, stationId: 'home', stationKey: 'home-0123456789ab', startMs: H0 + 30_000, endMs: H0 + 70_000, sMs: null, pMs: null, peakAccelGal: 3, maxIntensity: null, peakRatio: 4, verdict: 'quake-like', matchedQuake: null } satisfies ShakeRecordView
     expect(shakeReadout(e)).toBe('揺れの記録: 地震らしい 12:00:30〜12:01:10')
     expect(shakesAt([e], H0 + 50_000, 0)).toHaveLength(1)
     expect(shakesAt([e], H0 + 80_000, 0)).toHaveLength(0)

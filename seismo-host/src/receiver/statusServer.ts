@@ -44,11 +44,13 @@ import { describeFailure, normalizeBoardKey, parseStationConfig } from './statio
 import type { StationConfig } from './stationConfig'
 import type { StatusReport } from './statusReport'
 import type { StorageOps } from './storageControl'
+import { stationFileToken } from './waveArchive'
 import type { ArchivedWaveChunk, WaveRangeResult } from './waveArchive'
 import type { WaveChunk } from './intensityPipeline'
 import { buildWaveEnvelope } from './waveEnvelope'
 import { EVENT_PAGE_LIMIT_MAX } from '../detection/shakeEventStore'
 import type { EventRangeParams, EventRangeResult } from '../detection/shakeEventStore'
+import type { ShakeEventRecord } from '../detection/shakeEvent'
 
 /** 繋ぎ直すまでブラウザに待たせる時間。**SSE の `retry:` で伝える。** */
 const RETRY_MS = 3_000
@@ -359,6 +361,19 @@ export function parseEventQuery(params: URLSearchParams): EventQuery {
 }
 
 /**
+ * 揺れの記録に、その観測点の合成波形の札（`stationFileToken`）を添えて送る（`/events` と押し出しの `shake-event`）。
+ * **管理コンソールの「波形の記録で開く」は、これで記録を探す** —— 波形の記録の一覧は要約のファイルから作るので、
+ * 設定から外した・ID を変えた観測点の記録は観測点 ID を持たない。札は ID のハッシュで、ブラウザでは作れない。
+ */
+export function wireShakeEvent(event: ShakeEventRecord): ShakeEventRecord & { readonly stationKey?: string } {
+  // **観測点 ID が文字列でない記録（壊れたファイル）には札を付けずに通す** —— 投げると `/events` が丸ごと 500 になる。
+  // 札の無い記録は、管理コンソールが「読めなかった揺れの記録」として件数に出す（`shakeHistory.ts` の `readShakeRecord`）。
+  const stationId: unknown = event.stationId
+  if (typeof stationId !== 'string') return event
+  return { ...event, stationKey: stationFileToken(stationId) }
+}
+
+/**
  * 読み返した揺れを応答の形へ。**読めなかったファイルを必ず添える** ——
  * 無いと、受け手からは「揺れが無かった」と「記録が壊れていた」が同じ空の配列に見える。
  */
@@ -369,7 +384,7 @@ export function buildEventResponse(query: Extract<EventQuery, { ok: true }>, res
     stationId: query.stationId,
     limit: query.limit,
     hideLocal: query.hideLocal,
-    events: result.events,
+    events: result.events.map(wireShakeEvent),
     unreadableFiles: result.unreadableFiles,
     // **区切ったら、続きを読むための頭を添える** —— 無いと、受け手には「その範囲の全部」と
     // 「新しいほうの一部」が同じ配列に見える。
@@ -769,7 +784,7 @@ function encode(message: HubMessage): string {
     case 'station-residual':
       return sseEvent('station-residual', message.residual)
     case 'shake-event':
-      return sseEvent('shake-event', message.event)
+      return sseEvent('shake-event', wireShakeEvent(message.event))
     case 'station-wave-revised':
       return sseEvent('station-wave-revised', message.revised)
   }

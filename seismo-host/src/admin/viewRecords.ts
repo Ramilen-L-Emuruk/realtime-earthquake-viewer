@@ -50,6 +50,10 @@ import {
   receptionAt,
   receptionLane,
   receptionPendingNote,
+  P_BAND,
+  P_COLOR,
+  S_BAND,
+  S_COLOR,
   shakeReadout,
   shakesAt,
   spanX,
@@ -175,6 +179,19 @@ import { MEAN_LINE_WINDOW_MS } from '../../../src/utils/waveMeanLines'
 const SELECTED_GROUP_KEY = 'group'
 const RANGE_FROM_KEY = 'from'
 const RANGE_TO_KEY = 'to'
+/**
+ * 揺れの記録の「波形の記録で開く」から渡されるキー（`shakeWave.ts` の `recordsSelectionFor`）。記録はホストが添えた
+ * **札**（`station/<札>` の札）で探し、観測点 ID は見つからなかったときに知らせる一行にだけ使う。
+ * **一覧を読みに行く前に、範囲と一緒に受け取って消す** —— 残すと、記録を選び直したあとも開き直すたびにこちらが勝ち、
+ * 一覧が読めなかった回の範囲が、後で別の記録に当たる。
+ */
+const RECORDS_STATION_KEY = 'station'
+const RECORDS_STATION_KEY_KEY = 'stationKey'
+
+/** 渡された観測点の合成波形が一覧に無かったとき（2026-10-15 ユーザー承認）。 */
+export function recordsHandoffMissingText(stationId: string): string {
+  return `観測点 ${stationId} の合成波形は波形の記録に無いので、先頭の記録を開いた`
+}
 
 /** 操作が止まってから取り直すまで。 */
 const RELOAD_DEBOUNCE_MS = 150
@@ -209,10 +226,6 @@ const MARK_COLORS: Readonly<Record<UnderlineKind, string>> = {
   revised: 'rgba(39, 174, 96, 0.9)',
   questionable: 'rgba(192, 57, 43, 0.9)',
 }
-const P_COLOR = 'rgba(37, 99, 168, 0.9)'
-const S_COLOR = 'rgba(179, 38, 30, 0.9)'
-const P_BAND = 'rgba(37, 99, 168, 0.12)'
-const S_BAND = 'rgba(179, 38, 30, 0.12)'
 /** 揺れの記録の帯の色。**揺れの記録タブの判定の色と同じ順**（地震だけ濃く、生活振動らしい・照合できずは灰）。 */
 const VERDICT_BAND: Readonly<Record<ShakeVerdictView, string>> = {
   quake: 'rgba(179, 38, 30, 0.45)',
@@ -851,6 +864,7 @@ export async function initRecordsView(container: HTMLElement, ctx: TabContext): 
       </div>
       <p class="records-period muted"></p>
       <p class="records-list-note error"></p>
+      <p class="records-handoff-note muted" hidden></p>
     </section>
     <section class="panel records-body" hidden>
       <p class="muted" style="margin: 0 0 0.3rem">${tipHtml(OVERVIEW_CAPTION, OVERVIEW_TIP)}</p>
@@ -1990,6 +2004,21 @@ export async function initRecordsView(container: HTMLElement, ctx: TabContext): 
 
   // ---- 一覧を読む ----
 
+  // **揺れの記録から渡された観測点と範囲は、ここで受け取って消す**（`RECORDS_STATION_KEY` の説明）。
+  const handoffKey = ctx.selection.get(RECORDS_STATION_KEY_KEY)
+  const handoff =
+    handoffKey === null
+      ? null
+      : {
+          stationKey: handoffKey,
+          stationId: ctx.selection.get(RECORDS_STATION_KEY) ?? handoffKey,
+          range: readRangeSelection(ctx.selection.get(RANGE_FROM_KEY), ctx.selection.get(RANGE_TO_KEY)),
+        }
+  if (handoff !== null) {
+    ctx.selection.set({ [RECORDS_STATION_KEY]: null, [RECORDS_STATION_KEY_KEY]: null, [RANGE_FROM_KEY]: null, [RANGE_TO_KEY]: null })
+  }
+  const handoffNoteEl = qs(container, '.records-handoff-note')
+
   if (getStoredToken() === null) {
     listNoteEl.textContent = TOKEN_MISSING_TEXT
     return
@@ -2018,6 +2047,17 @@ export async function initRecordsView(container: HTMLElement, ctx: TabContext): 
       (raws.length > 0 ? `<optgroup label="センサーの生データ">${raws.map(option).join('')}</optgroup>` : '')
     // **前に見ていた記録と範囲を開き直す。** 記録が一覧に無ければ（消えた・URL を書き換えた）先頭へ戻し、
     // そのときは範囲も当てない（別の記録の範囲なので）。
+    // 揺れの記録から渡されたら、その札の合成波形を選ぶ。**見つからなければ前の記録へ落とさず**（渡された範囲は
+    // 別の記録のものになる）、先頭を範囲なしで開いて、そのことを一行で知らせる。
+    if (handoff !== null) {
+      const found = groups.find((g) => g.kind === 'station' && g.stationKey === handoff.stationKey)
+      const key = found?.key ?? groups[0]!.key
+      groupEl.value = key
+      handoffNoteEl.textContent = found === undefined ? recordsHandoffMissingText(handoff.stationId) : ''
+      handoffNoteEl.hidden = found !== undefined
+      selectGroup(key, found === undefined ? null : handoff.range)
+      return
+    }
     const wanted = ctx.selection.get(SELECTED_GROUP_KEY)
     const restoring = wanted !== null && groups.some((g) => g.key === wanted)
     const key = restoring ? wanted : groups[0]!.key

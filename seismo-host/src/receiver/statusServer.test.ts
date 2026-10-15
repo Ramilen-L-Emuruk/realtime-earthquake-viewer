@@ -23,10 +23,12 @@ import {
   parseWaveParam,
   parseWaveQuery,
   startStatusServer,
+  wireShakeEvent,
 } from './statusServer'
 import type { ShakeEventRecord } from '../detection/shakeEvent'
 import type { EventRangeResult } from '../detection/shakeEventStore'
 import type { StatusServer, StatusServerOptions } from './statusServer'
+import { stationFileToken } from './waveArchive'
 import type { ArchivedWaveChunk, WaveRangeResult } from './waveArchive'
 
 /** 保存先の口の仮の実体。保存先の口そのものは `storageControl.test.ts` と下の `/api/storage` の節が見る。 */
@@ -583,7 +585,14 @@ describe('startStatusServer', () => {
 
     expect(got).toHaveLength(1)
     expect(got[0].name).toBe('shake-event')
-    expect(got[0].data).toEqual(event)
+    // 管理コンソールの「波形の記録で開く」が記録を探す札を添える（`wireShakeEvent`）。
+    expect(got[0].data).toEqual({ ...event, stationKey: stationFileToken('station-1') })
+  })
+
+  it('安全弁: 観測点 ID が文字列でない記録（壊れたファイル）は札を付けずに通す（投げて /events を丸ごと落とさない）', () => {
+    const broken = { id: 'x', rev: 1, stationId: 3 } as unknown as ShakeEventRecord
+    expect(wireShakeEvent(broken)).toEqual(broken)
+    expect(wireShakeEvent({ ...broken, stationId: 'station-1' }).stationKey).toBe(stationFileToken('station-1'))
   })
 
   // センサー対の差分（#372）。**波形の梯子と直交している**ので、`?wave=` を付けずに
@@ -2190,13 +2199,15 @@ describe('GET /events（#312）', () => {
     const res = await fetch(`${base}/events?from=${T - 1000}&to=${T + 1000}&station=station-1&limit=20&hide=local`)
     expect(res.status).toBe(200)
     const body = (await res.json()) as {
-      events: { stationId: string }[]
+      events: { stationId: string; stationKey: string }[]
       unreadableFiles: string[]
       truncated: boolean
       coveredFromMs: number
       limit: number
     }
     expect(body.events.map((e) => e.stationId)).toEqual(['station-1'])
+    // 押し出しと同じく、合成波形の札を添える（観測点を設定から外しても、波形の記録の記録を引ける）。
+    expect(body.events.map((e) => e.stationKey)).toEqual([stationFileToken('station-1')])
     expect(body.unreadableFiles).toEqual(['2026-10/broken.json'])
     expect(body.truncated).toBe(true)
     expect(body.coveredFromMs).toBe(T - 10)
