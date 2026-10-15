@@ -11,6 +11,11 @@ import type { ViewRange } from './detailView'
 export interface SampleSeries {
   readonly t: Float64Array
   readonly v: readonly [Float32Array, Float32Array, Float32Array]
+  /**
+   * そのサンプルへ効いたセンサーの本数（ホストの `memberCount`）。**途切れに挟んだ欠測は `NaN`。**
+   * 裏付けが 1 本しか無い区間を薄く敷くのに使う（{@link singleMemberColumns}）。
+   */
+  readonly members: Float32Array
   readonly length: number
 }
 
@@ -36,6 +41,7 @@ export function buildSampleSeries(chunks: readonly WaveSampleChunk[]): SampleSer
     new Float32Array(capacity),
     new Float32Array(capacity),
   ]
+  const members = new Float32Array(capacity)
   let n = 0
   let lastMs = Number.NEGATIVE_INFINITY
   let expectedMs = Number.NaN
@@ -52,6 +58,7 @@ export function buildSampleSeries(chunks: readonly WaveSampleChunk[]): SampleSer
         v[0][n] = Number.NaN
         v[1][n] = Number.NaN
         v[2][n] = Number.NaN
+        members[n] = Number.NaN
         n += 1
         gapPending = false
       }
@@ -59,12 +66,18 @@ export function buildSampleSeries(chunks: readonly WaveSampleChunk[]): SampleSer
       v[0][n] = c.gal[0][i]
       v[1][n] = c.gal[1][i]
       v[2][n] = c.gal[2][i]
+      members[n] = c.memberCount[i]
       n += 1
       lastMs = at
     }
     expectedMs = c.firstSampleMs + c.gal[0].length * step
   }
-  return { t: t.subarray(0, n), v: [v[0].subarray(0, n), v[1].subarray(0, n), v[2].subarray(0, n)], length: n }
+  return {
+    t: t.subarray(0, n),
+    v: [v[0].subarray(0, n), v[1].subarray(0, n), v[2].subarray(0, n)],
+    members: members.subarray(0, n),
+    length: n,
+  }
 }
 
 /** 並びが覆う範囲（最初の点〜最後の点）。**点が無ければ `null`。** */
@@ -112,6 +125,44 @@ export function maxAbsInRange(
       const x = Math.abs(transform(a, series.v[a][i]))
       if (Number.isFinite(x) && x > out[a]) out[a] = x
     }
+  }
+  return out
+}
+
+/**
+ * 裏付けが 1 本しか無いサンプルに掛かるピクセル（1 なら掛かる）。**カードの列の「その列でいちばん少ない
+ * 本数が 1 以下」と同じ意味**（`SeismoWaveChart/waveColumns.ts`）—— 値のあるサンプルのうち 1 つでも
+ * 1 本以下なら、そのピクセルは敷く。
+ *
+ * **点ごとに「前の点との中点〜次の点との中点」を覆う。** 点の位置の 1 ピクセルだけを塗ると、寄せて
+ * 点がまばらになったとき帯が櫛の歯になる。途切れに挟んだ欠測（本数 `NaN`）は値が無いので敷かず、
+ * その隣の点も欠測の側へは張り出さない。
+ */
+export function singleMemberColumns(series: SampleSeries, range: ViewRange, widthPx: number): Uint8Array {
+  const w = Math.max(1, Math.floor(widthPx))
+  const out = new Uint8Array(w)
+  const span = range.toMs - range.fromMs
+  if (!(span > 0)) return out
+  const { start, end } = visibleIndexRange(series, range)
+  const xOf = (ms: number): number => ((ms - range.fromMs) / span) * w
+  for (let i = start; i < end; i += 1) {
+    if (!(series.members[i] <= 1)) continue
+    if (!Number.isFinite(series.v[0][i]) && !Number.isFinite(series.v[1][i]) && !Number.isFinite(series.v[2][i])) continue
+    const t = series.t[i]
+    // 隣が無い（端）・隣が途切れに挟んだ欠測なら、その側は反対側と同じ幅だけ取る（点が 1 つなら
+    // 1 ピクセル）。**欠測までの半分を取ると、値の無い時間へ帯が張り出す。**
+    const prevOk = i > 0 && !Number.isNaN(series.members[i - 1])
+    const nextOk = i + 1 < series.length && !Number.isNaN(series.members[i + 1])
+    const rawPrev = prevOk ? (t - series.t[i - 1]) / 2 : null
+    const rawNext = nextOk ? (series.t[i + 1] - t) / 2 : null
+    const prevHalf = rawPrev ?? rawNext ?? 0
+    const nextHalf = rawNext ?? rawPrev ?? 0
+    // **端は四捨五入する。** 切り捨て・切り上げにすると、隣の点との境目が数ミリ秒はみ出しただけで
+    // 隣のピクセルまで丸ごと敷く（引いた絵で帯が 1 ピクセル太る）。点の入るピクセルだけは必ず敷く。
+    const own = Math.floor(xOf(t))
+    const from = Math.max(0, Math.min(own, Math.round(xOf(t - prevHalf))))
+    const to = Math.min(w, Math.max(own + 1, Math.round(xOf(t + nextHalf))))
+    for (let c = from; c < to; c += 1) out[c] = 1
   }
   return out
 }

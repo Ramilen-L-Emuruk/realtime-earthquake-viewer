@@ -59,6 +59,7 @@ import { paintIntensitySeries } from './paintIntensity'
 import { paintSampleLane } from './paintSampleLane'
 import {
   buildSampleSeries,
+  singleMemberColumns,
   laneGeometry,
   maxAbsInRange,
   movingAverage,
@@ -302,6 +303,16 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
         let best = -1
         for (const a of visibleIdx) if (Number.isFinite(maxes[a]) && (best < 0 || maxes[a] > maxes[best])) best = a
         const scaleGal = Math.max(detailFloorGal, best < 0 ? 0 : maxes[best])
+        // 裏付けが 1 本しか無いピクセル。全段で同じなので幅ごとに 1 回だけ数える。
+        const singleCache = new Map<number, Uint8Array>()
+        const singleMember = (widthPx: number): Uint8Array => {
+          let hit = singleCache.get(widthPx)
+          if (hit === undefined) {
+            hit = singleMemberColumns(samples.series, view, widthPx)
+            singleCache.set(widthPx, hit)
+          }
+          return hit
+        }
         for (const a of visibleIdx) {
           const canvas = laneRefs.current[a]
           if (canvas === null) continue
@@ -318,6 +329,7 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
                     geometry: (widthPx: number) =>
                       laneGeometry({ series: samples.series, values: axisAverages[a][side], range: view, widthPx, map: (v) => v }),
                   })),
+            singleMember,
             scaleGal,
             stale: wave.interrupted,
             marks: laneMarks(a, a === visibleIdx[0] && !showComposite),
@@ -344,6 +356,7 @@ export function SeismoWaveDetail({ wave, quakeLabel, onClose }: Props) {
                   laneGeometry({ series: samples.series, values: composite.smooth, range: view, widthPx, map: (v) => v }),
               },
             ],
+            singleMember,
             scaleGal: compositeScale,
             stale: wave.interrupted,
             marks: [...arrivalMarks, ...peakMarkAt(compositePeak?.atMs)],
