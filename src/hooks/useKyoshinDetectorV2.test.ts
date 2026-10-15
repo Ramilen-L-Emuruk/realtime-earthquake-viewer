@@ -199,10 +199,13 @@ describe('useKyoshinDetectorV2: 床は観測点の並びで返す', () => {
     expect(floors[0]).toBeGreaterThan(floors[1])
   })
 
-  it('大きな時刻の飛びの直後に欠測している点は、学習済みでも床を失う', () => {
-    // 不連続リセット（`MAX_DT_GAP_MS` 超えの飛び・スリープ復帰やリプレイの巻き戻し）は ingest() を
-    // 通る。ingest() は欠測点のキーを「以前の学習値があるか」を見ずに落とすため、通常フレームの
-    // 欠測（学習値を引き継ぐ）とは扱いが違う。床の説明が挙げる 2 つ目の原因がこれ。
+  // 以前はこの形で床を失っていた（作り直しの `ingest()` が欠測点のキーを「以前の学習値があるか」を
+  // 見ずに落としていた。通常フレームの欠測は学習値を引き継ぐので、扱いが食い違っていた）。設計書§37 で
+  // 覆したので、途絶明けと作り直しの両方で「残る」ことを固定する
+  it.each([
+    ['途絶明け（作り直さない飛び）', detector.PARAMS.MAX_DT_GAP_MS + 1000],
+    ['作り直す飛び', detector.PARAMS.MAX_RESUME_GAP_MS + 1000],
+  ])('大きな時刻の飛びの直後に欠測している点も、学習済みの床を保つ（%s）', (_label, gapMs) => {
     const startMs = Date.UTC(2026, 0, 1, 0, 0, 0)
     const { result, rerender } = renderHook(
       ({ t, v }: { t: string; v: number[] }) =>
@@ -210,12 +213,12 @@ describe('useKyoshinDetectorV2: 床は観測点の並びで返す', () => {
       { initialProps: { t: new Date(startMs).toISOString(), v: indices } },
     )
     // 3 点目もいったん観測して床を持たせる
-    expect(result.current.floors[2]).not.toBe(0)
+    const before = result.current.floors[2]
+    expect(before).not.toBe(0)
     // 時刻を大きく飛ばし、その回で 3 点目だけ欠測させる
-    const jumped = startMs + detector.PARAMS.MAX_DT_GAP_MS + 1000
-    rerender({ t: new Date(jumped).toISOString(), v: [12, 2, -1] })
-    expect(result.current.floors[2]).toBe(0)
-    // 欠測していない点は学習値を保つ
+    rerender({ t: new Date(startMs + gapMs).toISOString(), v: [12, 2, -1] })
+    expect(result.current.floors[2]).toBe(before)
+    // 欠測していない点も学習値を保つ
     expect(result.current.floors[1]).not.toBe(0)
   })
 
@@ -465,6 +468,41 @@ describe('useKyoshinDetectorV2: 供給が作り直されたら結果を空にす
     expect(result.current.detections).toEqual([])
     expect(result.current.stalled).toBe(false)
     expect(spy).not.toHaveBeenCalled()
+  })
+
+  // 時間軸の切替は、フレームの間隔からは見分けられない（数秒だけ先へ飛ぶ切替は普通の続きに、
+  // 数十秒先へ飛ぶ切替は途絶明けに見える）。検知エンジンの一過性の状態は切替の合図で落とす（設計書§37）
+  it('正: 切替の直後に数秒しか進まない新しい軸でも、旧い軸の検知を引き継がない', () => {
+    const quiet = [2, 2, 2]
+    const shake = [12, 12, 12]
+    const view = renderHook(
+      ({ t, v }: { t: string; v: number[] }) =>
+        useKyoshinDetectorV2(sites, v, t, 'cfg', 'cfg', true, false, SUPPLY_KEY, NO_WARMUP),
+      { initialProps: { t: new Date(startMs).toISOString(), v: quiet } },
+    )
+    let ms = startMs
+    for (let i = 1; i < 5; i++) view.rerender({ t: new Date((ms += 1000)).toISOString(), v: quiet })
+    for (let i = 0; i < 4; i++) view.rerender({ t: new Date((ms += 1000)).toISOString(), v: shake })
+    expect(view.result.current.detections.length).toBeGreaterThan(0)
+
+    view.rerender({ t: '', v: [] })
+    view.rerender({ t: new Date(ms + 2000).toISOString(), v: shake })
+    expect(view.result.current.detections).toEqual([])
+  })
+
+  it('対照: 切替を挟まなければ、同じ 2 秒先のフレームで検知は続く', () => {
+    const quiet = [2, 2, 2]
+    const shake = [12, 12, 12]
+    const view = renderHook(
+      ({ t, v }: { t: string; v: number[] }) =>
+        useKyoshinDetectorV2(sites, v, t, 'cfg', 'cfg', true, false, SUPPLY_KEY, NO_WARMUP),
+      { initialProps: { t: new Date(startMs).toISOString(), v: quiet } },
+    )
+    let ms = startMs
+    for (let i = 1; i < 5; i++) view.rerender({ t: new Date((ms += 1000)).toISOString(), v: quiet })
+    for (let i = 0; i < 4; i++) view.rerender({ t: new Date((ms += 1000)).toISOString(), v: shake })
+    view.rerender({ t: new Date(ms + 2000).toISOString(), v: shake })
+    expect(view.result.current.detections.length).toBeGreaterThan(0)
   })
 
   it('データ時刻が進んでいる間は空にしない', () => {

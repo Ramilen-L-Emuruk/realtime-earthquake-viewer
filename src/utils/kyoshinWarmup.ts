@@ -84,8 +84,10 @@ export function isQuietFrame(indices: readonly number[]): boolean {
 /**
  * 時刻順のフレーム列から、**助走として使える連続した後半**の開始位置を返す。
  *
- * 検知エンジンは `MAX_DT_GAP_MS` を超える間隔が空くと内部状態を作り直す（`step()` の不連続
+ * 検知エンジンは `MAX_RESUME_GAP_MS` を超える間隔が空くと内部状態を作り直す（`step()` の不連続
  * 分岐）。穴より前を食わせても作り直しで捨てられるので、最後の穴より後ろだけを助走にする。
+ * `MAX_DT_GAP_MS` を超えてそれ以内の穴（途絶明け）は、点ごとの履歴だけが空になり検知と床は残るので、
+ * 穴より前も助走として効く（設計書§37）。
  *
  * @param timesMs 各フレームのデータ時刻（ミリ秒・昇順）
  * @returns 助走に使い始めるインデックス。空配列なら 0
@@ -93,7 +95,7 @@ export function isQuietFrame(indices: readonly number[]): boolean {
 export function firstContinuousIndex(timesMs: readonly number[]): number {
   let from = 0
   for (let i = 1; i < timesMs.length; i++) {
-    if (timesMs[i] - timesMs[i - 1] > PARAMS.MAX_DT_GAP_MS) from = i
+    if (timesMs[i] - timesMs[i - 1] > PARAMS.MAX_RESUME_GAP_MS) from = i
   }
   return from
 }

@@ -43,10 +43,16 @@ describe('isQuietFrame: 助走をここまで遡れば十分か', () => {
 })
 
 describe('firstContinuousIndex: 助走に使える連続区間', () => {
-  const GAP = PARAMS.MAX_DT_GAP_MS
+  const GAP = PARAMS.MAX_RESUME_GAP_MS
 
   it('正: 穴が無ければ先頭から使える', () => {
     const t = [0, 1000, 2000, 3000]
+    expect(firstContinuousIndex(t)).toBe(0)
+  })
+
+  it('対照: 途絶明けで済む穴（MAX_DT_GAP_MS 超・MAX_RESUME_GAP_MS 以内）では切らない', () => {
+    // 検知エンジンは点ごとの履歴だけを空にして検知と床を残すので、穴より前も助走として効く（設計書§37）
+    const t = [0, 1000, 1000 + PARAMS.MAX_DT_GAP_MS + 1000, 2000 + PARAMS.MAX_DT_GAP_MS + 1000]
     expect(firstContinuousIndex(t)).toBe(0)
   })
 

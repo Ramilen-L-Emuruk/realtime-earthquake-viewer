@@ -55,6 +55,33 @@ export interface SiteState {
    * イベントのメンバーを「値が下がりきったら外す」判定（`pruneFadedMembers`）に使う。
    */
   lastLevelActiveAtMs: number | null
+  /**
+   * 最後に観測した値。欠測のフレームでは据え置く。孤立点の固着の判定（`lastChangeAtMs`）に使う。
+   * 前の値を知らない（初出・不連続で作り直した直後）ときは null。
+   */
+  lastValue: number | null
+  /**
+   * 値が最後に変わった dataTime(ms)。孤立点の確定を「値が動かないまま続いた」で降ろす判定に使う（§37）。
+   *
+   * **前の値を知らないときは「変わった」として数える。** 知らないことは「動いていない」ことの証拠に
+   * ならないので、固着の時計を始め直す側に倒す（降ろすのが遅れるだけで、鳴らした検知を誤って消さない）。
+   *
+   * **観測していない時間（欠測・途絶）は数えない。** 空白の前後で同じ値だったら、空白の長さだけ時計を
+   * 後ろへずらす。始め直さないのは、欠測を挟みがちな固着点がいつまでも降りなくなるため（§37）。
+   */
+  lastChangeAtMs: number | null
+  /**
+   * 最後に値が届いた dataTime(ms)。欠測のフレームでは据え置く。固着の時計から空白を差し引くのと、
+   * 値が届かないまま居続けるメンバーを見分けるのに使う（§37）。一度も届いていなければ null。
+   */
+  lastObservedAtMs: number | null
+  /**
+   * 最後に値が届いたフレームで、前の値から変わったか（前の値を知らなければ「変わった」）。欠測のフレームでは
+   * 据え置く。値が届かなかった孤立点の印（`DetectionEvent.isolatedSilentKeys`）を外す判定に使う（§37）。
+   * **固着の時計（`lastChangeAtMs`）から推し量らない**——時計は空白の分だけずらすので、ずらした先が
+   * ちょうど今の時刻と重なることがあり、変わっていないのに「変わった」と読めてしまう。
+   */
+  changedOnLastObservation: boolean
 }
 
 /**
@@ -109,6 +136,11 @@ export interface DetectionGates {
   eewActive: boolean
   /** 単点のまま居座って確定を降ろされたか（§33）。降格した場合は確信度が weak になる */
   soloStale: boolean
+  /**
+   * 降ろした理由が「孤立点の値が動かないまま続いた」か（§37）。`soloStale` が立っているときだけ意味を持つ。
+   * 偽なら「周囲へ広がらないまま続いた」（§33）。
+   */
+  soloStaleFlat: boolean
 }
 
 /**
@@ -170,6 +202,38 @@ export interface DetectionEvent {
    * 一方、上限に張り付いた観測点は永久に単点のまま居座る。
    */
   everMultiPoint: boolean
+  /**
+   * メンバー全員が孤立点（`R_KM` 以内に他の観測点が無い）か。毎フレーム評価し直す（§37）。
+   *
+   * 孤立点は隣り合う対をそもそも作れないので、`everMultiPoint` は永久に立たない。§33 の「単点のまま
+   * 猶予を過ぎたら降ろす」をそのまま当てると、**本物の揺れでも確定が `SOLO_CONFIRM_GRACE_MS` で
+   * 降りる**。孤立したイベントには対の代わりに「値が動いているか」で判定する（`isolatedStuckKeys`）。
+   */
+  isolated: boolean
+  /**
+   * 孤立したイベントのメンバーのうち、値が `SOLO_ISOLATED_FLAT_MS` 動かないまま続いた観測点（§37）。
+   * **メンバー全員がここに入ったら確定を降ろす**（`isSoloConfirmStale`）。
+   *
+   * **観測点ごとに一方向で覚える。** 一度入った点は、その後に値が 1 段揺れても外さない（外すと
+   * 固着した点の値のちらつきで確定へ戻り、検知音が鳴り直す）。
+   * **イベント単位の印にしない。** 固着した点のイベントへ、後から本物の揺れの点が加わることがある
+   * （併合の距離の内なら、本物の揺れの立ち上がりが既存の固着イベントへ帰属する）。イベント単位で
+   * 「降ろした」を覚えると、本物の揺れまで二度と確定へ戻らない。点ごとに覚えれば、動いている点が
+   * 加わった時点で「全員が固着」でなくなり、その点が抜ければまた降りる。
+   * 効くのは `isolated` が真のフレームだけで、孤立でなくなれば §33 の判定へ戻る。
+   */
+  isolatedStuckKeys: string[]
+  /**
+   * 孤立したイベントのメンバーのうち、値が `SOLO_ISOLATED_FLAT_MS` を超えて届いていない観測点（§37）。
+   * 届かない点は確定を支えられないので、`isSoloConfirmStale` は固着（`isolatedStuckKeys`）と同じく数える。
+   *
+   * **一方向にしない。** 届かないのは一時の事実で、値が戻れば支え直せる。一方向にすると、長く欠測してから
+   * 本物の揺れで動き出した点まで「支えていない」と数え、残りの点が固着していれば降ろしてしまう。
+   * 状態として持ち越し、付ける・外すの遷移だけを毎フレーム当てる（遷移の条件は `updateEventMetrics`）。
+   * 届かない時間は途絶の空白も含めて数える（空白の間も値は届いていない）。固着の時計が空白を差し引くのは、
+   * あちらが「動いていない」証拠を数えるもので、見ていない間を証拠にしないため
+   */
+  isolatedSilentKeys: string[]
   /** 最後に spread（size ≥ MIN_LIKELY_POINTS）を持った dataTime(ms)。LIKELY_HOLD_MS の likely/faint 保持に使う。未達は 0 */
   lastSpreadAtMs: number
   /**
@@ -308,8 +372,26 @@ export const PARAMS = {
   FLOOR_MIN: 0.0,
   /** 点別床の上限(value)。慢性ノイズ点でも鈍くしすぎない（実地震を潰さない） */
   FLOOR_CAP: 1.5,
-  /** フレーム間隔がこれを超えて飛んだら状態を不連続とみなしリセット */
+  /**
+   * フレーム間隔がこれを超えて飛んだら「途絶明け」とみなし、点ごとの履歴（hist）だけを空にする（§37）。
+   * 検知イベント・点別床・セル慢性活性は残す。履歴を残すと、途絶の前のサンプルが立ち上がりの起点に
+   * 拾われ、途絶の間のゆっくりした変化が偽の立ち上がりに化ける。
+   */
   MAX_DT_GAP_MS: 10_000,
+  /**
+   * 途絶明けとして検知を残す上限(ms)。これを超えて飛んだら（または巻き戻ったら）一過性の状態を
+   * すべて作り直す（学習資産は残す）。§37。
+   *
+   * 残せば、途絶の間に揺れが続いていた地震を「同じ揺れの続き」として扱える（作り直すと、減衰期の
+   * 揺れは立ち上がりが無いので二度と検知されず、立ち上がり途中なら別の地震として検知音が鳴り直す）。
+   * 広げるほど、途絶の間に収まって別の地震が始まった場合まで続きとして飲み込む。
+   *
+   * 60 秒の根拠（設計書§37・2026-10-15 ユーザー承認「60 秒（推奨）」）: 実地震 24 窓で確定した検知の
+   * 途中へ途絶を 1,700 回差し込むと、途絶が 60 秒でも、揺れが続いていた 107 件のうち 101 件を残し、
+   * 揺れが終わっていた例を誤って残したものは 0 件（120 秒まで 0 件）。作り直す扱いでは 88 件が
+   * 30 秒以内に戻らず、19 件は検知音を鳴らし直していた。
+   */
+  MAX_RESUME_GAP_MS: 60_000,
 
   // ---- L2 同期 onset の空間的広がり（連結成分） ----
   /**
@@ -387,6 +469,23 @@ export const PARAMS = {
    * 残る 1 件（55 秒）は設計書§30「残る課題」の富山の単独再検知そのもので、降ろしたい側にあたる。
    */
   SOLO_CONFIRM_GRACE_MS: 20_000,
+  /**
+   * 孤立したイベント（メンバー全員の `R_KM` 以内に他の観測点が無い）の確定を、メンバーの値が
+   * 動かないままこれだけ続いたら降ろす(ms)。§37。
+   *
+   * 孤立点は対を作れないので §33 の判定（`SOLO_CONFIRM_GRACE_MS`）が使えない。代わりに、固着した
+   * 観測点は値が 1 段も動かないことを使う（§36 の実例は 5 時間居座った）。
+   *
+   * **本物の揺れも同じ値に長く留まる。** 強震モニタの値は 0.5 刻みで、ピークの後しばらく同じ段に
+   * 留まる。実地震の窓で値 3.5 以上に達した観測点 1,902 区間を測ると、同じ値が続いた最長は
+   * 中央値 13 秒・上位 1 割 62 秒・最長 88 秒（能登本震）。**この長さより短く置くと、本物の揺れを
+   * 揺れの最中に降ろす**（15 秒なら約半分）。
+   *
+   * 120 秒の根拠（設計書§37・2026-10-15 ユーザー承認「値の判定のまま 120 秒（推奨）」）: 実測の
+   * 最長 88 秒の外側。そのぶん固着した孤立点は `SOLO_CONFIRM_GRACE_MS`(20 秒) ではなくこの長さで
+   * 降りる（居座りは伸びる）。
+   */
+  SOLO_ISOLATED_FLAT_MS: 120_000,
   /**
    * 「単点ではなくなった」とみなす点数。**2 で十分**で、`MIN_CLUSTER`(3) にすると本物を巻き込む
    * （実データでは size 2 止まりの本物が 4 件あり、いずれも能登・福島の大地震の成分）。
@@ -712,7 +811,44 @@ function initSiteState(value: number, t: number): SiteState {
     floorDev: 0,
     triggeredAtMs: null,
     lastLevelActiveAtMs: null,
+    lastValue: value,
+    lastChangeAtMs: t,
+    lastObservedAtMs: t,
+    changedOnLastObservation: true,
   }
+}
+
+/**
+ * 学習資産（点別床）だけを持つ観測点の状態。一過性の値（履歴・立ち上がり・前の値）は持たない。
+ * 永続化からの復元・一過性の状態の作り直し（`resetTransientState`）で使う。
+ */
+function floorOnlySite(floorMean: number, floorDev: number): SiteState {
+  return {
+    hist: [],
+    floorMean,
+    floorDev,
+    triggeredAtMs: null,
+    lastLevelActiveAtMs: null,
+    lastValue: null,
+    lastChangeAtMs: null,
+    lastObservedAtMs: null,
+    changedOnLastObservation: false,
+  }
+}
+
+/**
+ * 値が届いたフレームでの固着の時計（`SiteState.lastChangeAtMs`）。
+ *
+ * 値が変わった・前の値を知らないなら「いま」。同じ値なら据え置くが、前に値を見てから `blankEndMs` までの
+ * 空白（欠測が続いた・途絶した）は観測していないので、その長さだけ後ろへずらす（§37）。
+ * `blankEndMs` は、通常は直前のフレームの時刻（直前まで値が届いていれば空白は 0）、途絶明けは今のフレームの時刻。
+ */
+function nextChangeAtMs(prev: SiteState, value: number, now: number, blankEndMs: number): number {
+  if (prev.lastValue !== value || prev.lastChangeAtMs == null) return now
+  const blankMs = prev.lastObservedAtMs == null ? 0 : Math.max(0, blankEndMs - prev.lastObservedAtMs)
+  // 時刻が正しく進んでいれば和は now を超えない（lastChangeAtMs ≤ lastObservedAtMs・blankEndMs ≤ now）。
+  // min は時刻が壊れたときに時計が未来へ飛ばないための保険
+  return Math.min(now, prev.lastChangeAtMs + blankMs)
 }
 
 /** 履歴に (t,v) を積み、RATE_DT_MS の 2 倍より古いサンプルを捨てる。 */
@@ -855,6 +991,7 @@ export function initGates(): DetectionGates {
     sparse: false,
     eewActive: false,
     soloStale: false,
+    soloStaleFlat: false,
   }
 }
 
@@ -896,9 +1033,31 @@ export function extractLearned(state: DetectorState): LearnedState {
 export function hydrateLearned(state: DetectorState, learned: LearnedState): DetectorState {
   const sites: Record<string, SiteState> = { ...state.sites }
   for (const [k, fd] of Object.entries(learned.floors)) {
-    sites[k] = { hist: [], floorMean: fd[0], floorDev: fd[1], triggeredAtMs: null, lastLevelActiveAtMs: null }
+    sites[k] = floorOnlySite(fd[0], fd[1])
   }
   return { ...state, sites, cellActivity: { ...learned.cellActivity } }
+}
+
+/**
+ * 一過性の状態（検知イベント・点ごとの履歴と立ち上がり）を捨て、学習資産（点別床・セル慢性活性）だけを
+ * 残す。**時間軸が切り替わったときに呼び出し側が明示的に呼ぶ**（§37）。
+ *
+ * `step()` はフレームの間隔から途絶と時間軸の切替を見分けられない。数十秒先へ飛ぶ切替は「途絶明け」
+ * として旧い時間軸の検知を残し、数秒先へ飛ぶ切替は普通の続きとして引き継いでしまう。切替を知っている
+ * のは供給側なので、そちらで落とす。
+ *
+ * 次の `step()` は「前のフレームが無い」ので必ず作り直しの分岐へ入る（`lastDataTimeMs` を -Infinity にする）。
+ */
+export function resetTransientState(state: DetectorState): DetectorState {
+  const sites: Record<string, SiteState> = {}
+  for (const [k, s] of Object.entries(state.sites)) sites[k] = floorOnlySite(s.floorMean, s.floorDev)
+  return {
+    sites,
+    events: [],
+    cellActivity: { ...state.cellActivity },
+    nextEventId: state.nextEventId,
+    lastDataTimeMs: Number.NEGATIVE_INFINITY,
+  }
 }
 
 /** 現フレームの 1 観測点の観測結果（L1〜L2 の途中集計）。 */
@@ -952,15 +1111,22 @@ export function step(
   const dtMs = now - state.lastDataTimeMs
   const m = meta ?? buildStationMeta(frame.sites)
 
-  // 不連続（大きな時刻ジャンプ・巻き戻し・コールドスタート初フレーム）は一過性の状態を
+  // 不連続（長い時刻ジャンプ・巻き戻し・コールドスタート初フレーム）は一過性の状態を
   // 作り直す。ただし学習資産（点別床・セル慢性活性）は引き継ぐ（永続化からの復元を保つ・
   // 数十秒の欠測で床/地域活性を捨てない）。
-  if (dtMs <= 0 || dtMs > PARAMS.MAX_DT_GAP_MS) {
+  if (dtMs <= 0 || dtMs > PARAMS.MAX_RESUME_GAP_MS) {
     const seed = initState(now)
     seed.cellActivity = { ...state.cellActivity }
     const rebuilt = ingest(seed, frame, m, state)
     return { state: rebuilt, detections: [], triggers: [], recentOnsetKeys: [], prunedMembers: 0 }
   }
+  // 途絶明け（§37）。検知イベントは残し、点ごとの履歴だけを空にする。このフレームでは立ち上がりを
+  // 判定できない（履歴の起点が無い）ので新しい検知は生まれず、残したイベントは「メンバーがまだ揺れて
+  // いるか」で生き残りが決まる（`updateEventMetrics` の `size`）。揺れが途絶の間に収まっていれば、
+  // `HOLD_MS` を過ぎているのでこのフレームで消える。
+  // 学習（点別床・セル慢性活性）もこのフレームでは進めない。途絶の間は観測が無く、`dtMs` ぶんの
+  // 重みで 1 サンプルを学習すると、そのサンプルが途絶の全区間を代表したことになる。
+  const resumedAfterGap = dtMs > PARAMS.MAX_DT_GAP_MS
 
   // ---- L1 点トリガー ----
   const sites: Record<string, SiteState> = {}
@@ -993,7 +1159,8 @@ export function step(
       continue
     }
 
-    const hist = [...prev.hist]
+    // 途絶明けは途絶の前の履歴を捨てる（残すと、途絶の前のサンプルが立ち上がりの起点に拾われる）
+    const hist = resumedAfterGap ? [] : [...prev.hist]
     pushHist(hist, now, value)
     const floor = effectiveFloor(prev)
     const levelActive = value >= floor + PARAMS.LEVEL_MARGIN && value >= PARAMS.TRIG_FLOOR
@@ -1007,6 +1174,10 @@ export function step(
       floorDev: prev.floorDev,
       triggeredAtMs: onset ? now : prev.triggeredAtMs,
       lastLevelActiveAtMs: levelActive ? now : prev.lastLevelActiveAtMs,
+      lastValue: value,
+      lastChangeAtMs: nextChangeAtMs(prev, value, now, resumedAfterGap ? now : state.lastDataTimeMs),
+      lastObservedAtMs: now,
+      changedOnLastObservation: prev.lastValue !== value || prev.lastChangeAtMs == null,
     }
     sites[key] = s
     triggeredAt[key] = s.triggeredAtMs
@@ -1077,21 +1248,18 @@ export function step(
   )
 
   // ---- セル慢性活性の学習（特異度の第2軸）----
-  const cellActivity = updateCellActivity(
-    state.cellActivity,
-    confirmedShaking,
-    events,
-    m.cellOf,
-    dtMs,
-  )
+  // 途絶明けのフレームでは学習しない（理由は `resumedAfterGap` の定義）
+  const cellActivity = resumedAfterGap
+    ? { ...state.cellActivity }
+    : updateCellActivity(state.cellActivity, confirmedShaking, events, m.cellOf, dtMs)
 
   // ---- 点別ノイズ床の学習 ----
   // 揺れていない・近傍同時でない「静穏な点」だけで床を更新する（実イベント・群発で床が汚れ鈍化しない）。
   // onset から FLOOR_FREEZE_MS の間は、COINCIDENCE_MS を過ぎて揺れが収まったと判定された直後でも
   // 学習をスキップする（揺れの残響を静穏点のノイズ床として誤学習しないようにする。詳細は FLOOR_FREEZE_MS
-  // のコメント参照）。
+  // のコメント参照）。途絶明けのフレームでは学習しない（理由は `resumedAfterGap` の定義）。
   const coincidentSet = new Set(confirmedShaking)
-  for (const p of points) {
+  for (const p of resumedAfterGap ? [] : points) {
     const s = sites[p.key]
     if (p.levelActive || coincidentSet.has(p.key)) continue // 凍結(揺れ中)
     const trigAt = triggeredAt[p.key]
@@ -1210,6 +1378,7 @@ function associate(
         cellActivity,
         cellOf,
         avail,
+        sites,
         now,
         eewActive,
         comp.length,
@@ -1230,6 +1399,9 @@ function associate(
         everConfirmed: false,
         firstConfirmedAtMs: 0,
         everMultiPoint: false,
+        isolated: false,
+        isolatedStuckKeys: [],
+        isolatedSilentKeys: [],
         lastSpreadAtMs: 0,
         everNeighborRise: false,
         gates: initGates(),
@@ -1243,6 +1415,7 @@ function associate(
         cellActivity,
         cellOf,
         avail,
+        sites,
         now,
         eewActive,
         comp.length,
@@ -1257,7 +1430,7 @@ function associate(
   const survivors: DetectionEvent[] = []
   for (const e of events) {
     if (!updated.has(e.id)) {
-      updateEventMetrics(e, framePoints, cur, triggeredAt, cellActivity, cellOf, avail, now, eewActive, 0)
+      updateEventMetrics(e, framePoints, cur, triggeredAt, cellActivity, cellOf, avail, sites, now, eewActive, 0)
     }
     if (now - e.lastOnsetAtMs <= PARAMS.HOLD_MS) survivors.push(e)
   }
@@ -1319,6 +1492,13 @@ function mergeAdjacentEvents(events: DetectionEvent[], now: number): DetectionEv
     // メンバー（和集合）で評価し直すので、**対が実在すればそこで立つ**。実データ 793 窓でも差分は出ない。
     // 併合したどちらかが周囲の裏付けを持っていれば、1 本化した後も持つ（メンバーは和集合になるため）
     host.everNeighborRise = host.everNeighborRise || e.everNeighborRise
+    // 孤立かどうかはメンバーの和集合で決まる（どちらかが孤立でなければ、1 本化した姿も孤立でない）。
+    // 固着と判定した観測点も和集合にする。印は観測点ごとの事実なので、和集合にしても相手の
+    // 動いている点まで降ろすことはない（降ろすのは「メンバー全員が固着」のときだけ）
+    host.isolated = host.isolated && e.isolated
+    host.isolatedStuckKeys = [...new Set([...host.isolatedStuckKeys, ...e.isolatedStuckKeys])]
+    // 届かない印は観測点ごとの状態なので和集合（併合後も持ち越し、値が変わって届いたフレームで外れる）
+    host.isolatedSilentKeys = [...new Set([...host.isolatedSilentKeys, ...e.isolatedSilentKeys])]
     // 併合した結果に対して単点判定をやり直す（everMultiPoint は論理和・firstConfirmedAtMs は
     // 早いほうへ揃えた後なので、ここで評価すれば 1 本化した姿での判定になる）
     const hostStale = isSoloConfirmStale(host, now)
@@ -1360,6 +1540,7 @@ function mergeAdjacentEvents(events: DetectionEvent[], now: number): DetectionEv
       // cells は和集合になるため、どちらかが慢性活性セルなら 1 本化した後もそう扱う
       chronic: host.gates.chronic || e.gates.chronic,
       soloStale: hostStale,
+      soloStaleFlat: hostStale && host.isolated,
     }
   }
   return hosts
@@ -1396,6 +1577,7 @@ function updateEventMetrics(
   cellActivity: Record<string, number>,
   cellOf: Record<string, string>,
   avail: Record<string, number>,
+  sites: Record<string, SiteState>,
   now: number,
   eewActive: boolean,
   compSize: number,
@@ -1532,6 +1714,38 @@ function updateEventMetrics(
   if (!e.everMultiPoint && size >= PARAMS.SOLO_DECAY_SIZE && hasAdjacentPair(pairLats, pairLngs)) {
     e.everMultiPoint = true
   }
+  // 孤立したイベント（§37）。対を作れないので、値が動いているかで判定する。
+  // 今フレームに値が届いたメンバーごとに、値が最後に変わってから `SOLO_ISOLATED_FLAT_MS` を
+  // 過ぎていれば固着として覚える（欠測・途絶の空白は時計から差し引いてある。`nextChangeAtMs`）。
+  // 値の時刻を知らない点（`lastChangeAtMs` が null）は「いま変わった」として数える。
+  // **値が届いていないメンバーは固着と判定しない**——届いていないことは「動いていない」ことの証拠に
+  // ならない。ただし `SOLO_ISOLATED_FLAT_MS` を超えて届かないメンバーは確定を支えられないので、
+  // 別の欄（`isolatedSilentKeys`）で数える。こちらは一方向にせず、**値が戻って実際に変わったフレームで外す**
+  // （同じ値で戻っただけでは動いている証拠にならない。戻った瞬間に外すと降格→確定→降格を往復し、
+  // 確定の立ち上がりのたびに検知音が鳴り直す）。
+  // この印は状態として持ち、孤立かどうかによらず毎フレーム次の遷移だけを当てる（経緯は設計書§37）:
+  //   付ける … 一度でも値が届いたメンバーで、最後に届いてから `SOLO_ISOLATED_FLAT_MS` を超えた
+  //   外す   … 今フレームに値が届き、前の値から変わった（`changedOnLastObservation`）／メンバーから外れた
+  e.isolated = e.memberKeys.length > 0 && e.memberKeys.every((k) => (avail[k] ?? 0) === 0)
+  const members = new Set(e.memberKeys)
+  const silent = new Set(e.isolatedSilentKeys.filter((k) => members.has(k)))
+  for (const k of e.memberKeys) {
+    const s = sites[k]
+    if (cur.has(k)) {
+      if (s?.changedOnLastObservation !== false) silent.delete(k)
+    } else if (s?.lastObservedAtMs != null && now - s.lastObservedAtMs > PARAMS.SOLO_ISOLATED_FLAT_MS) {
+      silent.add(k)
+    }
+  }
+  if (silent.size !== e.isolatedSilentKeys.length || e.isolatedSilentKeys.some((k) => !silent.has(k))) {
+    e.isolatedSilentKeys = [...silent]
+  }
+  if (e.isolated && e.everConfirmed) {
+    for (const k of e.memberKeys) {
+      if (!cur.has(k) || e.isolatedStuckKeys.includes(k)) continue
+      if (now - (sites[k]?.lastChangeAtMs ?? now) > PARAMS.SOLO_ISOLATED_FLAT_MS) e.isolatedStuckKeys = [...e.isolatedStuckKeys, k]
+    }
+  }
   // 降ろすのは確信度だけで、状態は書き換えない（理由は `isSoloConfirmStale` のコメント）。
   // 一度降りたら `everMultiPoint` が立つまで戻らない（遅れて隣接する点が続けば自力で復帰する）。
   const soloTooLong = isSoloConfirmStale(e, now)
@@ -1586,6 +1800,7 @@ function updateEventMetrics(
     sparse: effectiveConfirmReq < confirmPointsReq,
     eewActive,
     soloStale: soloTooLong,
+    soloStaleFlat: soloTooLong && e.isolated,
   }
 
   // 確定したフレームの内訳を凍結する。判定した値を `e.gates` に組み上げた**後**に行う
@@ -1599,7 +1814,7 @@ function updateEventMetrics(
 }
 
 /**
- * 単点のまま確定が居座っているか（§33）。**確信度を決める箇所すべてでこれを使う。**
+ * 単点のまま確定が居座っているか（§33・孤立点は §37）。**確信度を決める箇所すべてでこれを使う。**
  *
  * `updateEventMetrics` と `mergeAdjacentEvents` の 2 箇所が確信度を書く。片方だけに置くと、
  * 併合が走ったフレームだけ `everConfirmed` から `confirmed` が付け直されて 1 フレーム復活する
@@ -1609,12 +1824,16 @@ function updateEventMetrics(
  * 状態は書き換えない。書き換えると確定条件を満たし直した瞬間に再確定し、猶予の周期で明滅する。
  */
 function isSoloConfirmStale(e: DetectionEvent, now: number): boolean {
-  return (
-    e.everConfirmed &&
-    !e.everMultiPoint &&
-    e.firstConfirmedAtMs > 0 &&
-    now - e.firstConfirmedAtMs > PARAMS.SOLO_CONFIRM_GRACE_MS
-  )
+  if (!e.everConfirmed || e.firstConfirmedAtMs <= 0) return false
+  // 孤立したイベントは対を作れないので、値が動かないまま続いたかで判定する（§37）。
+  // 対の判定へは回さない——回すと本物の揺れでも `SOLO_CONFIRM_GRACE_MS` で降りる
+  if (e.isolated) {
+    return (
+      e.memberKeys.length > 0 &&
+      e.memberKeys.every((k) => e.isolatedStuckKeys.includes(k) || e.isolatedSilentKeys.includes(k))
+    )
+  }
+  return !e.everMultiPoint && now - e.firstConfirmedAtMs > PARAMS.SOLO_CONFIRM_GRACE_MS
 }
 
 /**
@@ -1719,12 +1938,26 @@ function updateCellActivity(
 function ingest(state: DetectorState, frame: Frame, meta: StationMeta, prev?: DetectorState): DetectorState {
   const sites: Record<string, SiteState> = {}
   for (let i = 0; i < frame.values.length; i++) {
-    if (frame.missing?.[i]) continue
     const key = meta.keys[i]
-    const value = indexToValue(frame.values[i])
     const prior = prev?.sites[key]
+    if (frame.missing?.[i]) {
+      // **欠測の点も床は残す**（通常のフレームの KYO-1 と同じ扱い）。ここで落とすと、作り直しの瞬間に
+      // たまたま欠測だった点だけが次に値の届いたフレームで `initSiteState` から学び直しになり、
+      // 慢性ノイズ点の床が既定値へ戻る（§37）
+      if (prior) sites[key] = floorOnlySite(prior.floorMean, prior.floorDev)
+      continue
+    }
+    const value = indexToValue(frame.values[i])
     sites[key] = prior
-      ? { hist: [{ t: frame.dataTimeMs, v: value }], floorMean: prior.floorMean, floorDev: prior.floorDev, triggeredAtMs: null, lastLevelActiveAtMs: null }
+      ? {
+          ...floorOnlySite(prior.floorMean, prior.floorDev),
+          hist: [{ t: frame.dataTimeMs, v: value }],
+          // 作り直した直後なので、固着の時計はここから始める（前の値は別の時間軸のものかもしれない）
+          lastValue: value,
+          lastChangeAtMs: frame.dataTimeMs,
+          lastObservedAtMs: frame.dataTimeMs,
+          changedOnLastObservation: true,
+        }
       : initSiteState(value, frame.dataTimeMs)
   }
   return { ...state, sites, lastDataTimeMs: frame.dataTimeMs }
