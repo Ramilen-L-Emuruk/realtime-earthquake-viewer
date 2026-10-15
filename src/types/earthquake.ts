@@ -1865,6 +1865,15 @@ export interface JMAEstimatedIntensity {
  */
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'replay' | 'crowded'
 
+/**
+ * 電文ログの行が何の電文として読まれたか。電文ログの種別名と絞り込みの選択肢はこの型から
+ * 引く（`components/TelegramTab/labels.ts`）ので、ここへ足すとそちらが型エラーで知らせる。
+ * 電文種別コード（`headType`）の名前は型では縛れないので、`labels.test.ts` が縛る。
+ */
+export type TelegramLogKind =
+  | 'eew' | 'quake' | 'tsunami' | 'lpgm' | 'nankai' | 'nankaiCommentary' | 'kohatsu'
+  | 'quakeNotice' | 'earthquakeCount' | 'estimatedIntensity'
+
 export interface TelegramLogEntry {
   id: string
   receivedAt: Date
@@ -1872,8 +1881,7 @@ export interface TelegramLogEntry {
   headType: string
   isTest: boolean
   status: 'parsed' | 'filtered' | 'error'
-  kind?: 'eew' | 'quake' | 'tsunami' | 'lpgm' | 'nankai' | 'nankaiCommentary' | 'kohatsu'
-    | 'quakeNotice' | 'earthquakeCount' | 'estimatedIntensity'
+  kind?: TelegramLogKind
   rawHead?: unknown
   rawBody: unknown
   errorMessage?: string

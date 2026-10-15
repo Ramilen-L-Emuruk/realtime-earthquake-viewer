@@ -41,7 +41,7 @@ const warnUnsubscribedEew = createLogThrottle(60_000)
 //   VXSE43 … 予報を受けている人には購読外。届いたら配信分類の変わり目を疑う警告を上げ、本文を電文ログへ残す
 //             （予報が無く警報を受けている人には EEW そのもの。→ `EEW_HEAD_TYPES`）
 //   VXSE44 … 廃止予定の旧 EEW。想定内なので警告は上げず、本文を電文ログへ残す
-const DISPATCHED_WITHOUT_PARSER = new Set(['VXSE42', 'VXSE43', 'VXSE44'])
+export const DISPATCHED_WITHOUT_PARSER: ReadonlySet<string> = new Set(['VXSE42', 'VXSE43', 'VXSE44'])
 
 /**
  * その種別の本文を復号する必要があるか。**テストから直接呼べるよう export している**
