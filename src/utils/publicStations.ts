@@ -5,6 +5,7 @@
 // 地震カードは地震の時刻、リプレイ中は再生している時刻（`docs/public-waveform-design.md` §0）。
 
 import { fetchJsonWithTimeout } from './fetchJson'
+import { log } from './logger'
 
 /** 公開観測点で扱う成分（広帯域の 3 成分）。 */
 export type PublicChannelCode = 'BHE' | 'BHN' | 'BHZ'
@@ -100,4 +101,35 @@ export function loadPublicStations(): Promise<PublicStationsFile> {
       })
   }
   return inflight
+}
+
+const listeners = new Set<(file: PublicStationsFile) => void>()
+let checked: Promise<PublicStationsFile> | null = null
+
+/** 照合で表が更新されたら、カードと下部の波形へ同じ表を渡す。 */
+export function subscribePublicStations(listener: (file: PublicStationsFile) => void): () => void {
+  listeners.add(listener)
+  return () => { listeners.delete(listener) }
+}
+
+/** 波形が必要になった最初の1回だけ照合する。失敗しても生成済みの表を保ち、再接続ごとに問い合わせない。 */
+export function checkPublicStations(): Promise<PublicStationsFile> {
+  if (checked === null) {
+    checked = loadPublicStations().then(async baseline => {
+      try {
+        const { fetchPublicStationMetadata } = await import('../services/publicStationMetadata')
+        const next = await fetchPublicStationMetadata(baseline)
+        if (next !== baseline) {
+          cache = next
+          log.info('[public-wave] 観測点情報の更新を検出し、運用期間・場所・名前・感度を更新した')
+          for (const listener of listeners) listener(next)
+        }
+        return next
+      } catch (error) {
+        log.warn('[public-wave] 観測点情報を照合できなかったため生成済みの表を使う', error)
+        return baseline
+      }
+    })
+  }
+  return checked
 }

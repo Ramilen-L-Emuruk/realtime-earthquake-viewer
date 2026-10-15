@@ -106,13 +106,126 @@ export function isTsunamiForecastOnly(tsunamis: JMATsunami[]): boolean {
 }
 
 /**
+ * その津波に寄与している地震の識別番号。
+ *
+ * 電文の `EventID` は番号を半角スペースで並べたもの（電文解説資料 Ⅰ.別02-1）。**状態に載せた津波
+ * （続報を統合したもの）は、組み立てに使った報の番号もすべて含める** —— 統合の結果は最新の報の
+ * `eventId` を名乗るので、それだけを見ると、気象庁がある番号を外した後に古い番号だけの報が遅れて
+ * 届いたとき、同じ津波なのに重ならなくなる。
+ */
+export function tsunamiEventIds(t: Pick<JMATsunami, 'eventId' | 'foldedReports'>): string[] {
+  const ids = new Set<string>()
+  const add = (eventId: string | undefined) => {
+    for (const id of (eventId ?? '').split(/\s+/)) if (id) ids.add(id)
+  }
+  add(t.eventId)
+  for (const r of t.foldedReports ?? []) add(r.eventId)
+  return [...ids]
+}
+
+/**
+ * 2 つの報（または状態に載せた津波）が同じ津波かを判定する。**津波の同一性はここだけで決める。**
+ *
+ * **地震の識別番号が 1 つでも重なり、運用種別（`Control/Status`）が同じなら同じ津波。**
+ *
+ * - 番号の重なりで見るのは、気象庁が別の地震の寄与を受けて同じ警報を切り替えるとき、`EventID` に
+ *   番号を足すため（電文解説資料 Ⅰ.別02-8 出現例６: `A` → `A B`）。文字列の一致で比べると、
+ *   切替えの報を別の津波と取り違え、観測点・付加文・期限・本文を落として新しい発表として鳴らす
+ * - 運用種別を見るのは、気象庁の言う「独立した情報単位」が情報名称・運用種別・地震識別番号の
+ *   組で決まるため（同 Ⅰ.別01-1）。訓練の報を通常の津波へ混ぜない
+ * - **どちらかが番号を持たなければ偽**（同じかどうかを決められない）。番号を持たない経路
+ *   （P2PQuake の 552）の扱いは呼び出し側が決める
+ */
+export function isSameTsunamiEvent(
+  a: Pick<JMATsunami, 'eventId' | 'foldedReports' | 'operationStatus'>,
+  b: Pick<JMATsunami, 'eventId' | 'foldedReports' | 'operationStatus'>,
+): boolean {
+  if ((a.operationStatus ?? null) !== (b.operationStatus ?? null)) return false
+  const aIds = tsunamiEventIds(a)
+  if (aIds.length === 0) return false
+  const bIds = new Set(tsunamiEventIds(b))
+  return aIds.some(id => bIds.has(id))
+}
+
+/**
+ * 津波情報（VTSE51）・沖合の津波観測に関する情報（VTSE52）**だけ**を取り消す報か。
+ *
+ * 取消は「独立した情報単位」（情報名称・運用種別・地震識別番号の組）ごとに届く
+ * （電文解説資料 Ⅰ.別01-1・Ⅰ.別03-1 例１①）。津波警報等（VTSE41）の取消は津波そのものが誤りだった
+ * という意味だが、津波情報の取消は**その種類の報が運んだ値**（観測点・推定など）が誤りだったという
+ * 意味で、警報は生きている。→ 状態は {@link refoldTsunamiWithout} で組み直す
+ *
+ * 種類を持たない報（P2PQuake・種類の欄を読めなかった報）は津波全体の取消として扱う（従来どおり）。
+ */
+export function isPartialTsunamiRetraction(t: Pick<JMATsunami, 'cancelled' | 'cancelReason' | 'headType'>): boolean {
+  return t.cancelled && t.cancelReason === 'retracted' && (t.headType === 'VTSE51' || t.headType === 'VTSE52')
+}
+
+/** 状態に載せた津波を組み立てた報。持っていなければ、その報自身が 1 通だけの組み立て。 */
+function reportsOf(t: JMATsunami): JMATsunami[] {
+  return t.foldedReports ?? [t]
+}
+
+/**
+ * 組み立て途中の津波へ、報を 1 通当てる。**画面へ載せる津波を報から組み立てる規則はここだけ。**
+ *
+ * - 津波情報・沖合の観測だけの取消（{@link isPartialTsunamiRetraction}）は、それより前に届いた
+ *   同じ種類の報を抜いて組み直す
+ * - それ以外の取消・解除は重ねない（値が空なのはその報の内容で、継ぐと解除された区域が復活する。
+ *   津波を消すかどうかは呼び出し側が決める）
+ * - 続報は {@link mergeTsunamiReports} で重ねる
+ */
+export function applyTsunamiReport(acc: JMATsunami | undefined, report: JMATsunami): JMATsunami | undefined {
+  if (isPartialTsunamiRetraction(report)) return acc ? refoldTsunamiWithout(acc, report) ?? undefined : undefined
+  if (report.cancelled) return acc
+  return acc ? mergeTsunamiReports(acc, report) : report
+}
+
+/**
+ * 報を古い順に重ねて、画面へ載せる 1 件を組み立てる（{@link applyTsunamiReport} を畳む）。
+ *
+ * **発表時刻を読めない報は外す。** 並べ替えの比較が NaN になると順序が定まらない。
+ *
+ * @param reports 同じ津波の報。順序は問わない
+ * @returns 重ねる報が 1 通も無ければ undefined
+ */
+export function foldTsunamiReports(reports: readonly JMATsunami[]): JMATsunami | undefined {
+  return reports
+    .filter(r => Number.isFinite(new Date(r.time).getTime()))
+    .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime())
+    .reduce<JMATsunami | undefined>(applyTsunamiReport, undefined)
+}
+
+/**
+ * 表示中の津波から、取消が向いた報を抜いて組み直す（津波情報・沖合の観測だけの取消を受けたとき）。
+ *
+ * 抜くのは**種類が同じで、地震の番号が取消と重なる報**。取消は情報の単位（情報名称と地震の番号）ごとに
+ * 効くので（電文解説資料 Ⅰ.別01-1・Ⅰ.別03-1）、原因の地震が加わって番号が「A」→「A B」と伸びた津波では、同じ
+ * 津波情報でも単位の違う報が混ざりうる。種類だけで抜くと、生きている単位の観測点まで消える。
+ * 取消が番号を持たないとき（番号で照合できない経路）は種類だけで抜く。
+ *
+ * 組み立てに使った報（`foldedReports`）は届いた順に並んでいるので、並べ替えずにそのまま当て直す。
+ *
+ * @returns 組み直した津波。抜いた結果 1 通も残らなければ null（呼び出し側は津波を消す）
+ */
+export function refoldTsunamiWithout(
+  current: JMATsunami,
+  retraction: Pick<JMATsunami, 'headType' | 'eventId' | 'operationStatus'>,
+): JMATsunami | null {
+  const byNumber = tsunamiEventIds(retraction).length > 0
+  return reportsOf(current)
+    .filter(r => r.headType !== retraction.headType || (byNumber && !isSameTsunamiEvent(r, retraction)))
+    .reduce<JMATsunami | undefined>(applyTsunamiReport, undefined) ?? null
+}
+
+/**
  * 解除電文が「いま表示している津波」に向けたものかを判定する。
  *
  * 津波は 1 件スロットで持つため、**別イベントの遅延到達した解除で進行中の津波を消してはいけない**。
  * 判定は 2 段。
  *
- * 1. 双方が `eventId` を持つなら一致で見る（`serial` が違っても同一イベントを解除できるよう、
- *    `id` 全体ではなく `eventId` で照合する）
+ * 1. 双方が `eventId` を持つなら {@link isSameTsunamiEvent}（地震の識別番号の重なり）で見る
+ *    （`serial` が違っても同一イベントを解除できるよう、`id` 全体ではなく番号で照合する）
  * 2. どちらかが欠けていれば同一イベントかは判定できないので、発表時刻の前後だけを見る。
  *    表示中より古い解除は別イベントの遅延到達とみなす（これが無いと A の遅い解除で B が消える）
  *
@@ -129,7 +242,7 @@ export function isCancelForCurrentTsunami(cancel: JMATsunami, current: JMATsunam
   if (!current) return true
   const cancelEventId = cancel.eventId
   const currentEventId = current.eventId
-  if (cancelEventId && currentEventId) return cancelEventId === currentEventId
+  if (cancelEventId && currentEventId) return isSameTsunamiEvent(cancel, current)
   const cancelAt = new Date(cancel.time).getTime()
   const currentAt = new Date(current.time).getTime()
   if (Number.isFinite(cancelAt) && Number.isFinite(currentAt) && cancelAt < currentAt) return false
@@ -145,15 +258,57 @@ export function isCancelForCurrentTsunami(cancel: JMATsunami, current: JMATsunam
  * （渡す先の一覧は `tsunamiCardOrderBasis` の宣言箇所。ここで数え上げないのは、経路が増えたときに
  * 取りこぼすため）。逆も同じで、片方だけ緩めれば黙って食い違う。
  *
- * 引き継ぐのは**双方が同じ `eventId` を持ち、表示中が解除表示に入っていない**ときだけ。
+ * 引き継ぐのは**同じ津波（{@link isSameTsunamiEvent}）で、表示中が解除表示に入っていない**ときだけ。
  *
  * - `eventId` を持たない経路（P2PQuake の 552）は同一性を判定できないので引き継がない。
  *   standard 版で観測点が蓄積されないのはこのため（カードもそう振る舞う）
  * - 解除表示中（`cancelledAt`）のカードは 10 秒で消える。その値を新しい津波へ持ち込まない
  */
 export function isTsunamiContinuation(current: JMATsunami | undefined, next: JMATsunami): boolean {
-  return !!current && !!current.eventId && !!next.eventId
-    && current.eventId === next.eventId && !current.cancelledAt
+  return !!current && isSameTsunamiEvent(current, next) && !current.cancelledAt
+}
+
+/**
+ * 報を 1 通当てたあと、表示中の津波がどうなるか（{@link stepTsunamiState} の答え）。
+ *
+ * - `ignored` … 表示中の津波に当たらない報（別の津波の解除・取消、表示中の津波が無いときの一部取消）。状態を変えない
+ * - `ended` … 表示中の津波が終わる。`reason` は終わり方
+ *   - `cancelled` … 解除・取消・失効（表示中の津波があれば取消表示を経る）
+ *   - `retractedAll` … 一部取消で、組み直す報が残らない
+ *   - `outdated` … 届いた報の有効期限が既に過ぎている
+ * - `live` … 当てたあとの津波。`continued` は前報を引き継いだか
+ */
+export type TsunamiStateStep =
+  | { kind: 'ignored' }
+  | { kind: 'ended'; reason: 'cancelled' | 'retractedAll' | 'outdated' }
+  | { kind: 'live'; tsunami: JMATsunami; continued: boolean }
+
+/**
+ * 表示中の津波 `current` へ報 `report` を当てた結果を決める。**状態の更新（`useEarthquakes` の状態更新）と
+ * 失効予約の積み直しは、この 1 つの答えを使うこと。** 予約を「届いた報」から決めると、状態が報の種類ごとに
+ * 決め直す期限（{@link mergeTsunamiReports}・{@link refoldTsunamiWithout}）と食い違う —— 期限を載せない
+ * 津波警報・注意報（VTSE41）で状態の期限は消えるのに予約だけが残り、注意報の発表中に「失効」する、
+ * 津波情報だけの取消で予約がすべて外れて予報が失効しない、の 2 つが実際に起きた。
+ *
+ * 受信処理（`useLiveEventHandler`）も同じ関数で「受け取った報を当てた津波」を追う。あちらは時計を持たず、
+ * 期限切れは状態更新と失効予約が扱うので、`now` に `null` を渡して期限の判定を飛ばす。
+ */
+export function stepTsunamiState(current: JMATsunami | undefined, report: JMATsunami, now: Date | null): TsunamiStateStep {
+  if (isPartialTsunamiRetraction(report)) {
+    if (!current || current.cancelledAt || !isCancelForCurrentTsunami(report, current)) return { kind: 'ignored' }
+    const refolded = refoldTsunamiWithout(current, report)
+    return refolded ? { kind: 'live', tsunami: refolded, continued: true } : { kind: 'ended', reason: 'retractedAll' }
+  }
+  if (report.cancelled) {
+    if (current && !isCancelForCurrentTsunami(report, current)) return { kind: 'ignored' }
+    return { kind: 'ended', reason: 'cancelled' }
+  }
+  // 有効期限が過去 = 既に失効している（ページの再読込で古い報が流れ直したときなど）
+  if (now && report.validDateTime && new Date(report.validDateTime) <= now) return { kind: 'ended', reason: 'outdated' }
+  if (isTsunamiContinuation(current, report)) {
+    return { kind: 'live', tsunami: mergeTsunamiReports(current!, report), continued: true }
+  }
+  return { kind: 'live', tsunami: report, continued: false }
 }
 
 /**
@@ -254,45 +409,57 @@ function jstDateKey(at: Date): string {
  * 規則を各自で書いており、説明文で戒めるだけだったため、レビュー 3 巡で別々の項目が 3 回漏れた。
  * 何をどう引き継ぐかは {@link mergeTsunamiReports} を見ること。
  *
- * 同一イベントの判定は `eventId`、`eventId` を持たない経路（P2PQuake）では `id` の一致で行う。
+ * 同一イベントの判定は {@link isSameTsunamiEvent}（番号の重なりを辿る。→ {@link sameTsunamiEventReports}）、
+ * `eventId` を持たない経路（P2PQuake）では `id` の一致で行う。
  * 別の津波の値を引き継ぐと、発表中の津波を無関係な期限で消したり、別の津波の本文を出したりする。
  *
  * @param latest 画面へ載せる最新報
  * @param reports 同じ取得結果に含まれる報（`latest` を含んでよい）
  */
 export function withInheritedTsunamiFacts(latest: JMATsunami, reports: JMATsunami[]): JMATsunami {
-  const sameEvent = reports.filter(r => r !== latest
-    && (latest.eventId ? r.eventId === latest.eventId : !r.eventId && r.id === latest.id))
-  // **発表時刻を読めない報は候補から外す。** 並べ替えの比較が NaN になると順序が定まらず、
-  // 「最も新しいもの」を選んだつもりで時刻の読めない報を掴む。期限の側（`latestValidDateTime`）が
-  // 新旧を判定できない報を候補から外すのと同じ扱い。
-  const older = sameEvent
-    .filter(r => Number.isFinite(new Date(r.time).getTime()))
-    .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime())
+  // 取消・解除の報は、その報の内容をそのまま返す（継ぐと解除されたはずの区域が復活する）。
+  // **津波情報・沖合の観測だけの取消は例外** —— 警報は生きているので、その種類の報を抜いて組み直す
+  // （→ `foldTsunamiReports`）。最新の 1 通がその取消でも、画面から津波を消さない。
+  if (latest.cancelled && !isPartialTsunamiRetraction(latest)) return latest
+  const sameEvent = latest.eventId
+    ? sameTsunamiEventReports(latest, reports)
+    : reports.filter(r => r !== latest && !r.eventId && r.id === latest.id)
 
   // **ライブ受信が続報のたびに行っているのと同じことを、古い報から順にやり直す。**
   // 規則を書き写さずに `mergeTsunamiReports` を畳むので、引き継ぐ項目が増えても
-  // ここを直す必要が無い。
-  //
-  // 取消・解除の報には継がない。値が空なのは**その報の内容**であって、運ばないからではない
-  // （継ぐと解除されたはずの区域が復活する）。
-  let merged = latest
-  if (!latest.cancelled && older.length > 0) {
-    let acc: JMATsunami | undefined
-    for (const r of older) {
-      if (r.cancelled) continue
-      acc = acc ? mergeTsunamiReports(acc, r) : r
-    }
-    if (acc) merged = mergeTsunamiReports(acc, latest)
-  }
+  // ここを直す必要が無い。`latest` は時刻によらず最後に重ねる（画面へ載せるのは `latest`）。
+  const merged = applyTsunamiReport(foldTsunamiReports(sameEvent), latest) ?? latest
 
-  // **期限の引き継ぎ自体は畳み込みの中で済んでいる**（`mergeTsunamiReports` が
-  // `latestValidDateTime([current, next])` を段ごとに計算する）。ここに残すのは最後の検分だけ。
+  // **期限の引き継ぎ自体は畳み込みの中で済んでいる**（`mergeTsunamiReports` が段ごとに決める）。
+  // ここに残すのは最後の検分だけ。
   //
   // 読めない期限は落とす。残すと「期限を持つ津波」の顔をしたまま以後の比較がすべて偽へ倒れ、
   // 表示は続くのに失効の予約も積まれない。落とせば standard 版の 24 時間フェイルセーフが働く。
   if (latestValidDateTime([merged])) return merged
   return merged.validDateTime ? { ...merged, validDateTime: undefined } : merged
+}
+
+/**
+ * `latest` と同じ津波の報を `reports` から集める（`latest` は含めない）。
+ *
+ * **番号の重なりを辿って広げる。** `A` → `A B` → `B C` のように番号が入れ替わっていくと、`B C` と `A` は
+ * 直接は重ならないが同じ津波（気象庁は寄与する地震が増えるたびに番号を足し、切替えで同じ警報を
+ * 続ける）。1 段の比較で済ませると、最初の報が持っていた期限や区域が組み立てから落ちる。
+ */
+export function sameTsunamiEventReports(latest: JMATsunami, reports: readonly JMATsunami[]): JMATsunami[] {
+  const group = new Set<JMATsunami>([latest])
+  let grew = true
+  while (grew) {
+    grew = false
+    for (const r of reports) {
+      if (group.has(r)) continue
+      for (const g of group) {
+        if (isSameTsunamiEvent(r, g)) { group.add(r); grew = true; break }
+      }
+    }
+  }
+  group.delete(latest)
+  return reports.filter(r => group.has(r))
 }
 
 /**
@@ -370,8 +537,9 @@ function warnIfCancelStopsEchoing(current: JMATsunami, next: JMATsunami): void {
  * | 解除された区域（`cancelledAreas`） | `areas` と同じ規則。区域を伝えている報が来たら新報が正で、区域を伝えていない報では前報を残す |
  * | 観測点（`observations`） | 観測点ごとに upsert（{@link mergeTsunamiObservations}）。沿岸と沖合は別の集合なので、片方だけの報で上書きしない |
  * | 固定付加文（`warningComments`） | 主題ごとに束ねる（{@link mergeTsunamiWarningComments}） |
- * | 有効期限（`validDateTime`） | 発表時刻が新しく、日時として読めるもの（{@link latestValidDateTime}） |
- * | 本文・観測時点・自由付加文・沿岸への推定 | 新報が持たなければ前報 |
+ * | 有効期限（`validDateTime`）・本文（`bodyText`） | **新報が津波警報等（VTSE41）ならその値**（持たなければ消す）。それ以外の報は期限を発表時刻の新しく読めるもの（{@link latestValidDateTime}）、本文を「新報が持たなければ前報」で決める |
+ * | 観測時点・自由付加文・沿岸への推定 | 新報が持たなければ前報 |
+ * | 組み立てに使った報（`foldedReports`） | 前報までの報に新報を足す（{@link refoldTsunamiWithout} が使う） |
  * | それ以外 | 新報の値（名乗り `infoName` もここ。その報が何を出しているかの表示なので引き継がない） |
  *
  * **新しく引き継ぐ項目を足すときは、この表とここだけを直す。** リプレイの初期状態
@@ -396,8 +564,15 @@ export function mergeTsunamiReports(current: JMATsunami, next: JMATsunami): JMAT
     cancelledAreas: next.areas.length > 0 ? next.cancelledAreas : current.cancelledAreas,
     observations: mergeTsunamiObservations(current.observations, next.observations),
     warningComments: mergeTsunamiWarningComments(current.warningComments, next.warningComments),
-    validDateTime: latestValidDateTime([current, next]),
-    bodyText: next.bodyText ?? current.bodyText,
+    // **期限と本文は津波警報等（VTSE41）が決める。** 気象庁が期限を載せるのは予報だけが発表・残る場合で
+    // （電文解説資料 ValidDateTime）、注意報へ引き上げた VTSE41 は期限を持たない。どの報からでも引き継ぐと
+    // 予報の期限が注意報に残り、**注意報の発表中に「失効」で津波が消える**。逆に津波情報（VTSE51）・沖合の
+    // 観測（VTSE52）は期限を載せないので、そちらが届いても消さない（能登・日向灘の最後の VTSE51 がこの形）。
+    validDateTime: next.headType === 'VTSE41'
+      ? latestValidDateTime([next])
+      : latestValidDateTime([current, next]),
+    bodyText: next.headType === 'VTSE41' ? next.bodyText : (next.bodyText ?? current.bodyText),
+    foldedReports: [...reportsOf(current), ...reportsOf(next)],
     observationDateTime: next.observationDateTime ?? current.observationDateTime,
     freeText: next.freeText ?? current.freeText,
     estimations: next.estimations ?? current.estimations,
@@ -413,7 +588,7 @@ export function mergeTsunamiReports(current: JMATsunami, next: JMATsunami): JMAT
  * true になるのは以下のいずれか:
  *   - `current` 無し
  *   - `current` が取消済み（`cancelled` or 10秒表示中の `cancelledAt`）
- *   - `current.eventId` と `next.eventId` が異なる（別地震の津波）
+ *   - 地震の識別番号が 1 つも重ならない（{@link isSameTsunamiEvent}。別地震の津波）
  *   - `eventId` が両者で欠落する場合は原因地震（`sourceEarthquakes[0]`）の `originTime` で代替判定
  *     （DMDATA XML の Earthquake 要素経由でのみ機能する。P2PQuake API v2 の
  *     生 552 電文には `earthquake` 相当のフィールドが無く `sourceEarthquakes` は
@@ -427,7 +602,7 @@ export function mergeTsunamiReports(current: JMATsunami, next: JMATsunami): JMAT
 export function isTsunamiNewFire(next: JMATsunami, current: JMATsunami | undefined): boolean {
   if (!current) return true
   if (current.cancelled || current.cancelledAt) return true
-  if (current.eventId && next.eventId) return current.eventId !== next.eventId
+  if (current.eventId && next.eventId) return !isSameTsunamiEvent(current, next)
   // 識別子を持たない経路（P2PQuake）のフォールバック。**比べるのは 1 件目だけ。**
   // 複数の地震が原因のとき、2 件目以降は続報で増減しうるので同一性の鍵にならない。
   const currentOrigin = current.sourceEarthquakes?.[0]?.originTime

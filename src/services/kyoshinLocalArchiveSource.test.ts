@@ -19,6 +19,7 @@ import { getMergedKyoshinArchive } from '../utils/kyoshinImportDb'
 import { createLocalKyoshinArchiveSource, clearLocalKyoshinArchiveCache, selectWarmupFrames } from './kyoshinLocalArchiveSource'
 import type { KyoshinFrame } from './kyoshinSource'
 import { WARMUP_BLOCK_SEC, WARMUP_MAX_BLOCKS, WARMUP_QUIET_MAX_POINTS } from '../utils/kyoshinWarmup'
+import { PARAMS } from '../utils/kyoshinDetector'
 import type { LocalKyoshinArchive } from '../types/localKyoshinArchive'
 
 const validArchive: LocalKyoshinArchive = {
@@ -288,11 +289,18 @@ describe('selectWarmupFrames: 助走に使う区間の切り出し', () => {
     expect(picked[0].time.getTime()).toBe(START - (limitSec - 10) * 1000)
   })
 
-  it('安全弁: 検知エンジンが不連続とみなす穴があれば、その後ろだけを使う', () => {
+  it('安全弁: 検知エンジンが状態を作り直す穴（MAX_RESUME_GAP_MS 超）があれば、その後ろだけを使う', () => {
     // 穴より前を食わせても、検知エンジンが状態を作り直して捨てるだけ。
-    const frames = [frame(60, true), frame(59, true), frame(2, true), frame(1, true)]
+    const gapSec = PARAMS.MAX_RESUME_GAP_MS / 1000 + 5
+    const frames = [frame(gapSec + 3, true), frame(gapSec + 2, true), frame(2, true), frame(1, true)]
     const picked = selectWarmupFrames(frames, START)
     expect(picked).toHaveLength(2)
     expect(picked[0].time.getTime()).toBe(START - 2000)
+  })
+
+  it('対照: 途絶明けで済む穴（MAX_RESUME_GAP_MS 以内）では切らない（検知と床が残るので効く）', () => {
+    const gapSec = PARAMS.MAX_DT_GAP_MS / 1000 + 5
+    const frames = [frame(gapSec + 3, true), frame(gapSec + 2, true), frame(2, true), frame(1, true)]
+    expect(selectWarmupFrames(frames, START)).toHaveLength(4)
   })
 })

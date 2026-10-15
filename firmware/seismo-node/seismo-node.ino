@@ -23,9 +23,9 @@
 // 壊れても自分では気づけない——`endPacket()` は成功を返し、HTTP（TCP）は別の経路で
 // 応え続けるので、**外からは健全にしか見えない**（2026-09-30 に 1 枚が 5 日間
 // その状態だった）。そこで ①時計が合う前は送らない ②Wi-Fi が繋がり直すたび
-// 立て直す ③遠隔で再起動できる ④ホストの返事が途絶えたら自分で立て直す、の 4 つを
-// 置いてある。それぞれ `clockTrusted`・`onWifiUp`・`handleRestart`・`checkAck` に
-// 理由を書いた。
+// 立て直す ③遠隔で再起動できる ④ホストの返事が途絶えたら自分で立て直す
+// ⑤Wi-Fi が切れたまま戻らなければ自分で立て直す、の 5 つを置いてある。それぞれ
+// `clockTrusted`・`onWifiUp`・`handleRestart`・`checkAck`・`wifiRescue` に理由を書いた。
 
 #include <Wire.h>
 #include <WiFi.h>
@@ -154,6 +154,29 @@ static const uint32_t SNTP_SYNC_INTERVAL_MS = 15UL * 60UL * 1000UL;
 // 立っていないので、シリアルだけが唯一の診断の手段）。値は当時の 30 秒に合わせてある。
 static const uint32_t NO_WIFI_WARN_MS = 30000;
 
+// Wi-Fi が切れたまま続いたときに自分で立て直す時間（→ `wifiRescue`）。**起動から一度も
+// 繋がらないときも、起動した時刻から同じように数える。**
+//
+// **コアの自動の繋ぎ直し（`setAutoReconnect(true)`）には、繋ぎ直さない形がある。** esp32 コア
+// 3.3.12 の `STA.cpp` は、切断の理由が `_is_staReconnectableReason` の一覧にあるときだけ
+// 繋ぎ直す（`ASSOC_LEAVE`・`AUTH_FAIL` などは一覧に無い）。AP に繋がったまま IP が取れない形
+// （`WL_IDLE_STATUS`）は切断のイベントが来ないので、そもそも繋ぎ直しが始まらない。
+// 2026-10-15 に 1 枚が 9900 秒切れたまま戻らず、電源を入れ直すまで黙っていた（本体は
+// 動き続けていた。返事の途絶による立て直し（`checkAck`）は、Wi-Fi が切れている間は動かない）。
+//
+// - **30 秒待ってから始める。** コアの繋ぎ直しが効く形なら数秒で戻るので、その邪魔をしない
+// - **以後 60 秒ごと。** `reconnectWifi()` の `disconnect()` は、コアが繋いでいる最中の試行を止める
+// - **5 分で再起動する。** フラッシュが抱えられるのは約 11 分（`SPILL_MAX_MS` の項）。5 分なら
+//   再起動・時計合わせ（十数秒）・ホストの取り戻しが 11 分の内に収まる。回数の上限
+//   （`SELF_RESTART_MAX`）は返事の途絶と同じ帳面で数え、上限に達したら繋ぎ直しだけを続ける。
+//   停電から戻るときに AP が長く落ちていると、5・10・15 分に 1 回ずつ再起動して上限に達し、
+//   あとは 60 秒ごとの繋ぎ直しだけになる
+//
+// 値は 2026-10-15 ユーザー承認（「30秒/60秒/5分」）。
+static const uint32_t WIFI_RESCUE_FIRST_MS = 30000;
+static const uint32_t WIFI_RESCUE_EVERY_MS = 60000;
+static const uint32_t WIFI_RESCUE_RESTART_MS = 5UL * 60UL * 1000UL;
+
 // ホストの返事（`seismo-ack <MAC>`）がこの時間来なければ、段を 1 つ上げる（→ `checkAck`）。
 //
 // **計り始めるのは、返事のあとで最初に送れたとき。** Wi-Fi が切れている間や時計が
@@ -188,8 +211,8 @@ static const int64_t  SELF_RESTART_WINDOW_S = 6 * 3600;
 // 固まった時刻で記録が止まり、Wi-Fi に戻れないだけの基板は電源を抜く直前まで書き続ける。
 // 変わったときだけ書く形だと、この 2 つが同じ「古い記録」に化ける。
 //
-// 1 回の記録（`PrevState`・72 バイト）は NVS の項目 5 つ（1 項目 32 バイト。blob のデータの
-// 見出し 1 ＋ 中身 3 ＋ blob の索引 1）。既定の区画（20 KB・使い回すのは 4 ページ・1 ページ
+// 1 回の記録（`PrevState`・84 バイト）は NVS の項目 5 つ（1 項目 32 バイト。blob のデータの
+// 見出し 1 ＋ 中身 3 ＋ blob の索引 1。中身は 96 バイトまで 3 項目に収まる）。既定の区画（20 KB・使い回すのは 4 ページ・1 ページ
 // 126 項目）だと 1 ページに約 25 回ぶん入り、各ページの消去は 60 秒ごとの書き込みで約 100 分に
 // 1 回 —— 消去の寿命（約 10 万回）まで約 19 年。Wi-Fi の設定も同じ区画に置かれ、ページを
 // 詰め直すたびに新しいページへ写し直される（中身は変わらない。写し直しも上の消去の回数に含まれる）。
@@ -682,12 +705,28 @@ struct RestartLedger {
   uint32_t count;        // `firstUnix` から数えた自分での再起動の回数
   int64_t  firstUnix;    // 数え始めた時刻
   uint32_t pending;      // 1 なら「直前の再起動は自分で起こした」
+  uint32_t cause;        // 直前の自分での再起動の理由（`SelfRestartCause`）。`pending` が 1 のときだけ意味を持つ
 };
-static const uint32_t RESTART_LEDGER_MAGIC = 0x5e15ac01;
+// **形を変えたら値を変える。** 前の版の帳面を新しい形で読むと、無い欄を不定の値として読む。
+// 値が違えば `setup` が白紙にする（回数が 0 へ戻るだけで、害は無い）。
+static const uint32_t RESTART_LEDGER_MAGIC = 0x5e15ac02;
 RTC_NOINIT_ATTR static RestartLedger g_restartLedger;
-// この起動が、返事の途絶による自分での再起動から始まったか。**状態ページで確かめるため。**
-// `/restart` でも OTA でも理由は同じ `ESP_RST_SW` になるので、理由だけでは分けられない。
+// 自分で再起動した理由。**状態ページと直前の状態（`PrevState::bootedBySelfRestart`）にこの値で出す。**
+// 0 は「自分で起こした再起動ではない」。
+enum SelfRestartCause : uint8_t { SELF_RESTART_NONE = 0, SELF_RESTART_ACK = 1, SELF_RESTART_WIFI = 2 };
+// この起動が、自分での再起動（返事の途絶か、Wi-Fi が切れたまま）から始まったか。**状態ページで
+// 確かめるため。** `/restart` でも OTA でも理由は同じ `ESP_RST_SW` になるので、理由だけでは分けられない。
 static bool       g_bootedBySelfRestart = false;
+static uint8_t    g_selfRestartCause = SELF_RESTART_NONE;   // 上が真のときの理由
+
+static const char* selfRestartCauseName(uint8_t cause){
+  switch (cause) {
+    case SELF_RESTART_NONE: return "none";
+    case SELF_RESTART_ACK:  return "ack";
+    case SELF_RESTART_WIFI: return "wifi";
+    default:                return "unknown";
+  }
+}
 static esp_reset_reason_t g_resetReason = ESP_RST_UNKNOWN;
 
 // --- 直前の状態（→ `prevSave`・`prevPump`） ---
@@ -716,7 +755,7 @@ struct PrevState {
   uint32_t saves;         // この起動で書いた回数（自分を含む）
   uint8_t  why;           // 書いた理由（`PrevWhy`）
   uint8_t  resetReason;   // その起動の理由（`esp_reset_reason_t`）
-  uint8_t  bootedBySelfRestart;
+  uint8_t  bootedBySelfRestart;  // その起動が自分での再起動から始まったなら、その理由（`SelfRestartCause`）。版 1 では 0/1
   uint8_t  wifiUp;
   uint8_t  ackLevel;
   uint8_t  sensorsOk;     // `ok` が立っていたセンサーの数
@@ -732,10 +771,17 @@ struct PrevState {
   uint32_t restartSkipped;
   uint32_t sntpSyncs;
   uint32_t freeHeap;
+  // ここから版 2（→ `g_wifiOutageReason`）。理由は `wifi_err_reason_t` の値で、0 は「まだ無い」。
+  uint8_t  wifiOutageReason;     // 書いた時点で切れていたなら、その途絶を始めた理由
+  uint8_t  wifiPrevOutageReason; // ひとつ前の途絶を始めた理由
+  uint8_t  wifiLastReason;       // 直近の切断の理由
+  uint8_t  reserved0;
+  uint32_t wifiDisconnects;      // この起動で切断のイベントを受けた回数
+  uint32_t wifiRescues;          // この起動で、切れたままなので自分で繋ぎ直した回数
 };
-static const uint32_t PREV_STATE_VERSION = 1;
+static const uint32_t PREV_STATE_VERSION = 2;
 // 大きさは `PREV_HEARTBEAT_MS` のすり減りの見積もりの前提。**欄を足したらあちらも見直す。**
-static_assert(sizeof(PrevState) == 72, "PrevState size changed: revisit PREV_HEARTBEAT_MS wear estimate");
+static_assert(sizeof(PrevState) == 84, "PrevState size changed: revisit PREV_HEARTBEAT_MS wear estimate");
 // 書いた理由。**状態ページへは名前で出す**（`prevWhyName`）。
 enum PrevWhy : uint8_t { PREV_WHY_HEARTBEAT = 0, PREV_WHY_CHANGE = 1, PREV_WHY_RESTART = 2, PREV_WHY_OTA = 3 };
 
@@ -757,6 +803,34 @@ static bool       g_prevDirty = true;
 static uint32_t   g_wifiDowns = 0;
 static uint32_t   g_wifiDownSinceMs = 0;
 static int16_t    g_lastRssi = 0;
+// 切断のイベントの理由（`wifi_err_reason_t`。0 は「まだ無い」）。**書き手はイベントタスク**
+// （→ `onWifiEvent`）なので `volatile`（`g_wifiGotIpCount` と同じ理由）。
+//
+// **直近の理由だけでは、何で切れたのかが残らない。** 切れている最中に自分やコアが呼ぶ
+// `disconnect()` も `ASSOC_LEAVE` として来るので、繋ぎ直すたびに上書きされる。そこで
+// いまの途絶を始めた理由（`g_wifiOutageReason`）を別に持つ。0 の間に来た最初の理由だけを入れ、
+// 繋がったときに `loop()` が `g_wifiPrevOutageReason` へ写して 0 へ戻す。AP に繋がったまま IP が
+// 取れない形は切断のイベントが来ないので、0 のまま途絶が続く（それ自体が手掛かりになる）。
+static volatile uint8_t  g_wifiLastReason = 0;
+static volatile uint8_t  g_wifiOutageReason = 0;
+static uint8_t           g_wifiPrevOutageReason = 0;
+static volatile uint32_t g_wifiDisconnects = 0;   // 切断のイベントを受けた回数
+// 切れたままの立て直し（`wifiRescue`）が自分で `disconnect()` を呼んだところか。**その切断の知らせ
+// （`ASSOC_LEAVE`）を「途絶を始めた理由」に入れないための印。** AP に繋がったまま IP が取れない形では
+// 切断の知らせが来ないので理由は 0 のまま残り、それ自体が手掛かりになる —— 立て直しが切るたびに
+// `ASSOC_LEAVE` で埋めると、30 秒後にはその手掛かりが消える。立てるのは `loop()`、下ろすのはイベントタスク
+// （知らせを受けたとき）と、繋がったときの `loop()`。
+static volatile bool     g_rescueDisconnecting = false;
+// 切れたままなので自分で繋ぎ直した回数と、最後に繋ぎ直した時刻（→ `wifiRescue`）。
+// 時刻は `g_wifiRescues` が 0 なら無意味。
+static uint32_t   g_wifiRescues = 0;
+static uint32_t   g_lastWifiRescueMs = 0;
+// この途絶で、再起動を上限で飛ばしたか。**`restart_skipped` を途絶ごとに 1 回だけ数えるため** ——
+// 60 秒ごとに数えると、長い途絶ほど数が膨らんで返事の途絶の分と比べられなくなる。
+static bool       g_wifiRestartSkipped = false;
+// 見張り（`loop()`）が「切れた」を見てから、まだ繋がっていないか。**途絶の記録を締めてよいかの印**
+// （→ `loop()` の繋がった側）。起動時は切れているところから始まるので真。
+static bool       g_wifiSeenDown = true;
 
 // --- 送った分の輪（→ `BacklogSlot`・`handleBacklog`） ---
 //
@@ -1870,7 +1944,8 @@ static void handleStatus(){
   time_t now = time(nullptr);
   // **前の起動の記録（`prev`）で約 700 バイト増えたので 4 KB にした。** センサー 3 個の実機で
   // 足す前が約 2050 バイト（2026-10-06）で、足すと 3 KB の手前まで来る。数え上げの桁が
-  // 伸びれば溢れうる（溢れたら下で 500 を返す）。
+  // 伸びれば溢れうる（溢れたら下で 500 を返す）。2026-10-15 の実機（MPU6050 の基板）では約 2800 バイトで、
+  // Wi-Fi の切断の理由（上と `prev` の両方）を足して約 3300 バイトの見込み。
   static char buf[4096];
   size_t u = 0;
   appendf(buf, sizeof(buf), u,
@@ -1914,6 +1989,17 @@ static void handleStatus(){
     (unsigned long)g_ackRearms, (unsigned long)g_ackReconnects, (unsigned long)g_hostProbeFail,
     (unsigned long)selfRestartsInWindow(now), (unsigned long)g_restartSkipped,
     resetReasonName(g_resetReason), g_bootedBySelfRestart ? "true":"false");
+  // Wi-Fi の切断と、切れたままの立て直し（→ `wifiRescue`）。**理由は名前で出す**（`wifiReasonName`）。
+  // `wifi_down_reason` はいま切れている途絶を始めた理由（繋がっていれば "none"）、
+  // `wifi_prev_down_reason` はひとつ前の途絶の理由。切断のイベントが来ない形（IP が取れないまま）では
+  // 切れていても "none" のまま —— それ自体がその形の手掛かりになる。
+  const long wifiDownS = g_wifiUp ? 0L : (long)((millis() - g_wifiDownSinceMs) / 1000);
+  appendf(buf, sizeof(buf), u,
+    "\"self_restart_cause\":\"%s\",\"wifi_down_s\":%ld,\"wifi_down_reason\":\"%s\","
+    "\"wifi_prev_down_reason\":\"%s\",\"wifi_last_reason\":\"%s\",\"wifi_disconnects\":%lu,\"wifi_rescues\":%lu,",
+    selfRestartCauseName(g_selfRestartCause), wifiDownS,
+    wifiReasonName(g_wifiUp ? 0 : g_wifiOutageReason), wifiReasonName(g_wifiPrevOutageReason),
+    wifiReasonName(g_wifiLastReason), (unsigned long)g_wifiDisconnects, (unsigned long)g_wifiRescues);
   // 送った分の輪（→ `handleBacklog`）。**`backlog_oldest_age_s` は空なら -1**（`ack_age_s` と同じ理由）。
   // 抱えている時間の長さは、この値で直接読める（区画数から換算させない）。
   long backlogAge = -1;
@@ -1961,15 +2047,20 @@ static void handleStatus(){
       "\"wifi_up\":%s,\"wifi_down_s\":%lu,\"wifi_downs\":%lu,\"rssi\":%d,"
       "\"ack_level\":%u,\"ack_age_s\":%ld,\"acks\":%lu,\"ack_rearms\":%lu,\"ack_reconnects\":%lu,"
       "\"host_probe_fail\":%lu,\"self_restarts\":%lu,\"restart_skipped\":%lu,"
-      "\"sntp_syncs\":%lu,\"free_heap\":%lu,\"sensors_ok\":%u},",
+      "\"sntp_syncs\":%lu,\"free_heap\":%lu,\"sensors_ok\":%u,"
+      "\"self_restart_cause\":\"%s\",\"wifi_down_reason\":\"%s\",\"wifi_prev_down_reason\":\"%s\","
+      "\"wifi_last_reason\":\"%s\",\"wifi_disconnects\":%lu,\"wifi_rescues\":%lu},",
       (unsigned long)p.bootId, resetReasonName((esp_reset_reason_t)p.resetReason),
-      p.bootedBySelfRestart ? "true":"false", prevWhyName(p.why),
+      p.bootedBySelfRestart != 0 ? "true":"false", prevWhyName(p.why),
       (unsigned long)p.savedUnix, savedAge, (unsigned long)p.uptimeS, (unsigned long)p.saves,
       p.wifiUp ? "true":"false", (unsigned long)p.wifiDownS, (unsigned long)p.wifiDowns, (int)p.rssi,
       (unsigned)p.ackLevel, (long)p.ackAgeS, (unsigned long)p.acks, (unsigned long)p.ackRearms,
       (unsigned long)p.ackReconnects, (unsigned long)p.hostProbeFail, (unsigned long)p.selfRestarts,
       (unsigned long)p.restartSkipped, (unsigned long)p.sntpSyncs, (unsigned long)p.freeHeap,
-      (unsigned)p.sensorsOk);
+      (unsigned)p.sensorsOk,
+      selfRestartCauseName(p.bootedBySelfRestart), wifiReasonName(p.wifiOutageReason),
+      wifiReasonName(p.wifiPrevOutageReason), wifiReasonName(p.wifiLastReason),
+      (unsigned long)p.wifiDisconnects, (unsigned long)p.wifiRescues);
   } else {
     appendf(buf, sizeof(buf), u, "\"prev\":null,");
   }
@@ -2103,18 +2194,40 @@ static void handleRestart(){
 // **ここで立て直しそのものをやらない。** 呼ばれるのは Arduino のイベントタスクで、
 // `loop()` とは別の流れ・別のスタック。そこから `http.begin()` や `udp.begin()` を
 // 叩くのは、同じ持ち物を 2 つの流れから触ることになる。
-static void onWifiEvent(WiFiEvent_t event){
+//
+// **切断の理由も受ける**（→ `g_wifiOutageReason`）。受けるだけで、繋ぎ直しはしない
+// （それは `wifiRescue` が `loop()` の流れで行う）。
+static void onWifiEvent(WiFiEvent_t event, WiFiEventInfo_t info){
   if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
     g_wifiGotIp = true;
     // `++` で書かない。`volatile` への複合代入は C++20 で非推奨（コンパイラが警告する）。
     // 書き手はこのイベントタスクだけなので、読んで足して書く形でも数え落としは起きない。
     g_wifiGotIpCount = g_wifiGotIpCount + 1;
+  } else if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+    uint8_t reason = info.wifi_sta_disconnected.reason;
+    // 0 は「まだ無い」の印に使うので、コアと同じく `UNSPECIFIED`（1）へ読み替える（`STA.cpp` が
+    // 理由 0 を同じ扱いにしている）。
+    if (reason == 0) reason = WIFI_REASON_UNSPECIFIED;
+    g_wifiLastReason = reason;
+    if (g_rescueDisconnecting && reason == WIFI_REASON_ASSOC_LEAVE) {
+      g_rescueDisconnecting = false;   // 立て直しが自分で切った分。途絶の理由には入れない
+    } else if (g_wifiOutageReason == 0) {
+      g_wifiOutageReason = reason;
+    }
+    g_wifiDisconnects = g_wifiDisconnects + 1;
   }
 }
 
-// Wi-Fi を切って繋ぎ直す。**遠隔の口（`handleWifiReconnect`）と返事の途絶（`checkAck`）の
-// 両方がここを通る**——別々に書くと、片方だけ `begin()` を呼び忘れる形が作れてしまう
-// （その形で基板を 1 枚落とした。理由は `handleWifiReconnect` の項）。
+// 切断の理由の名前。**状態ページとシリアルへはこの名前で出す**（番号だけでは調べ直しが要る）。
+// 0 は「まだ無い」。
+static const char* wifiReasonName(uint8_t reason){
+  if (reason == 0) return "none";
+  return WiFi.STA.disconnectReasonName((wifi_err_reason_t)reason);
+}
+
+// Wi-Fi を切って繋ぎ直す。**遠隔の口（`handleWifiReconnect`）・返事の途絶（`checkAck`）・
+// 切れたままの立て直し（`wifiRescue`）がここを通る**——別々に書くと、片方だけ `begin()` を
+// 呼び忘れる形が作れてしまう（その形で基板を 1 枚落とした。理由は `handleWifiReconnect` の項）。
 //
 // **引数を足さないこと。** `WiFi.disconnect(wifioff, eraseap)` の `eraseap` を真に
 // すると保存してある接続先ごと消える。**遠隔で戻す口を作るはずのものが、
@@ -2179,6 +2292,26 @@ static void handleWifiReconnect(){
   reconnectWifi();
 }
 
+// Wi-Fi を切ったまま、繋ぎ直さない口。**切れたままの立て直し（`wifiRescue`）が効くかを試すため。**
+//
+// **`disconnect()` だけを呼ぶ。** 上の口の項にあるとおり、こちらから呼んだ切断は
+// 「意図した切断」（`ASSOC_LEAVE`）として扱われ、コアは繋ぎ直さない —— 2026-10-01 に基板を
+// 1 枚落としたのと同じ形で、**戻せるのは基板自身の立て直しだけ**になる。切れたまま 30 秒で
+// 繋ぎ直し（`WIFI_RESCUE_FIRST_MS`）、それでも戻らなければ 5 分で再起動する。
+//
+// **AP 側で切っても、`/wifi-reconnect` でも試せない。** AP が弾いた切断はコアが繋ぎ直す理由で
+// 来ることが多く、`/wifi-reconnect` は自分で `begin()` を呼ぶ。どちらも、コアが繋ぎ直さない
+// 形を作れない。
+static void handleWifiDrop(){
+  if (!adminAllowed()) return;
+  Serial.println("# /wifi-drop を受けたので Wi-Fi を切る（繋ぎ直しは立て直しに任せる）");
+  http.send(200, "text/plain", "dropping\n");
+  // 猶予の理由は `handleWifiReconnect` の同じ箇所。
+  http.client().flush();
+  delay(200);
+  WiFi.disconnect();
+}
+
 // Wi-Fi が繋がったときに立てるもの。**起動時と、切れて繋がり直したときの両方で通る。**
 //
 // **以前はこれを `setup()` の中へ直に書いていて、起動時に 30 秒待って繋がらなければ
@@ -2240,6 +2373,7 @@ static void onWifiUp(){
   http.on("/", handleStatus);
   http.on("/restart", HTTP_POST, handleRestart);
   http.on("/wifi-reconnect", HTTP_POST, handleWifiReconnect);
+  http.on("/wifi-drop", HTTP_POST, handleWifiDrop);
   // **合言葉を掛けない。** 返すのは UDP で LAN へ流しているのと同じ波形で、
   // 状態ページと同じく読むだけの口（基板の状態を変えない）。
   http.on("/backlog", HTTP_GET, handleBacklog);
@@ -2283,12 +2417,15 @@ void setup(){
     g_restartLedger.count = 0;
     g_restartLedger.firstUnix = 0;
     g_restartLedger.pending = 0;
+    g_restartLedger.cause = SELF_RESTART_NONE;
   }
   // **ソフトウェアの再起動で始まったときだけ「自分で起こした」と読む。** 印を立てて
   // 再起動へ向かう途中で番犬に落とされた（理由が `ESP_RST_SW` ではない）なら、
   // 自分の再起動として数えるのは誤り。
   g_bootedBySelfRestart = g_restartLedger.pending == 1 && g_resetReason == ESP_RST_SW;
+  g_selfRestartCause = g_bootedBySelfRestart ? (uint8_t)g_restartLedger.cause : SELF_RESTART_NONE;
   g_restartLedger.pending = 0;
+  g_restartLedger.cause = SELF_RESTART_NONE;
 
   g_busOk[0] = Wire.begin();
   Wire.setClock(400000);
@@ -2307,11 +2444,14 @@ void setup(){
 
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);          // 省電力で受信が遅れると取りこぼしの原因になる
-  // **予期しない切断（電波が届かない・AP が落ちた）だけを拾う。** こちらから呼んだ
-  // `disconnect()` は「意図した切断」として扱われ、これでは戻らない（→ `handleWifiReconnect`）。
+  // **コアが繋ぎ直すのは、切断の理由が一覧（`STA.cpp` の `_is_staReconnectableReason`）に
+  // あるときだけ。** こちらから呼んだ `disconnect()`（`ASSOC_LEAVE`）や認証の失敗では戻らず
+  // （→ `handleWifiReconnect`）、IP が取れないまま止まる形では切断のイベントすら来ない。
+  // 戻らない形は `wifiRescue` が受け持つ。
   WiFi.setAutoReconnect(true);
   // **`begin()` より前に登録する。** 後だと、繋がるのが速かった回の
-  // `STA_GOT_IP` を取りこぼす（→ `g_wifiGotIp`）。
+  // `STA_GOT_IP` を取りこぼす（→ `g_wifiGotIp`）。切断の理由も同じ受け口で受ける。
+  // 自動の繋ぎ直しが働かない形は、切れたままの立て直し（`wifiRescue`）が受け持つ。
   WiFi.onEvent(onWifiEvent);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 
@@ -2331,16 +2471,20 @@ void setup(){
 
   Serial.printf("\n# %s (%s) booting bid=%s reset=%s%s self_restarts=%lu\n",
                 g_node, g_mac, g_bootId, resetReasonName(g_resetReason),
-                g_bootedBySelfRestart ? "（返事の途絶で自分から）" : "",
+                g_selfRestartCause == SELF_RESTART_ACK ? "（返事の途絶で自分から）"
+                  : g_selfRestartCause == SELF_RESTART_WIFI ? "（Wi-Fi が切れたままで自分から）" : "",
                 (unsigned long)g_restartLedger.count);
   if (g_prevValid) {
     const PrevState &p = g_prev;
     Serial.printf("# 前の起動 bid=%08lx reset=%s 最後の記録=%s uptime=%lus unix=%lu "
-                  "wifi_up=%u down=%lus downs=%lu rssi=%d ack_level=%u ack_age=%lds\n",
+                  "wifi_up=%u down=%lus downs=%lu rssi=%d ack_level=%u ack_age=%lds "
+                  "down_reason=%s last_reason=%s rescues=%lu\n",
                   (unsigned long)p.bootId, resetReasonName((esp_reset_reason_t)p.resetReason),
                   prevWhyName(p.why), (unsigned long)p.uptimeS, (unsigned long)p.savedUnix,
                   (unsigned)p.wifiUp, (unsigned long)p.wifiDownS, (unsigned long)p.wifiDowns,
-                  (int)p.rssi, (unsigned)p.ackLevel, (long)p.ackAgeS);
+                  (int)p.rssi, (unsigned)p.ackLevel, (long)p.ackAgeS,
+                  wifiReasonName(p.wifiOutageReason), wifiReasonName(p.wifiLastReason),
+                  (unsigned long)p.wifiRescues);
   } else {
     Serial.println("# 前の起動の記録は無い");
   }
@@ -2570,8 +2714,12 @@ static bool restartWindowExpired(time_t now){
     && ((int64_t)now - l.firstUnix > SELF_RESTART_WINDOW_S || (int64_t)now < l.firstUnix);
 }
 
+//
+// **時計が合う前は白紙にしない**（`selfRestartsInWindow` と同じ扱い）。Wi-Fi が切れたままの再起動
+// （`wifiRescue`）は、時計が一度も合わない起動でも走る。その時刻で窓を測ると、時計が戻った形を
+// 「窓が過ぎた」と読んで回数を 0 に戻し、上限が効かなくなりうる。合う前は帳面の回数をそのまま使う。
 static bool restartAllowed(time_t now){
-  if (restartWindowExpired(now)) g_restartLedger.count = 0;
+  if (now >= MIN_SYNCED_UNIX && restartWindowExpired(now)) g_restartLedger.count = 0;
   return g_restartLedger.count < SELF_RESTART_MAX;
 }
 
@@ -2606,9 +2754,21 @@ static void prevLoad(){
   if (!g_prefs.isKey("prev")) return;
   // **大きさと版の両方が合ったときだけ信じる。** 大きさだけだと、欄の意味を変えた前の版の
   // 記録を読み違える（→ `PREV_STATE_VERSION`）。
-  if (g_prefs.getBytesLength("prev") != sizeof(PrevState)) return;
+  //
+  // **捨てたときはシリアルに出す。** 状態ページはどちらも `prev: null` なので、「記録が無かった」と
+  // 「形の違う前の版の記録を捨てた」（記録の形を変えたファームへ焼き直した直後）を見分けられない。
+  const size_t len = g_prefs.getBytesLength("prev");
+  if (len != sizeof(PrevState)) {
+    Serial.printf("# 前の起動の記録は形が違うので読まない（%u バイト・いまの形は %u バイト）\n",
+                  (unsigned)len, (unsigned)sizeof(PrevState));
+    return;
+  }
   if (g_prefs.getBytes("prev", &g_prev, sizeof(g_prev)) != sizeof(g_prev)) return;
   g_prevValid = g_prev.version == PREV_STATE_VERSION;
+  if (!g_prevValid) {
+    Serial.printf("# 前の起動の記録は版が違うので読まない（版 %lu・いまは %lu）\n",
+                  (unsigned long)g_prev.version, (unsigned long)PREV_STATE_VERSION);
+  }
 }
 
 // いまの様子を NVS へ書く。**成否に関わらず計時は進める** —— 書けない NVS へ毎周書きに
@@ -2636,7 +2796,7 @@ static void prevSave(uint32_t nowMs, uint8_t why){
   c.saves = g_prevSaves + 1;
   c.why = why;
   c.resetReason = (uint8_t)g_resetReason;
-  c.bootedBySelfRestart = g_bootedBySelfRestart ? 1 : 0;
+  c.bootedBySelfRestart = g_selfRestartCause;
   c.wifiUp = g_wifiUp ? 1 : 0;
   c.ackLevel = g_ackLevel;
   c.sensorsOk = sensorsOk;
@@ -2652,6 +2812,12 @@ static void prevSave(uint32_t nowMs, uint8_t why){
   c.restartSkipped = g_restartSkipped;
   c.sntpSyncs = g_sntpSyncs;
   c.freeHeap = ESP.getFreeHeap();
+  c.wifiOutageReason = g_wifiUp ? 0 : g_wifiOutageReason;
+  c.wifiPrevOutageReason = g_wifiPrevOutageReason;
+  c.wifiLastReason = g_wifiLastReason;
+  c.reserved0 = 0;
+  c.wifiDisconnects = g_wifiDisconnects;
+  c.wifiRescues = g_wifiRescues;
 
   // **かかった時間を測る。** NVS がページを詰め直す回は消去が入り、その間は吸い出しが止まる
   // （待てるのは 1.4 秒まで。→ `HOST_PROBE_TIMEOUT_MS`）。
@@ -2709,6 +2875,8 @@ static void prevPump(uint32_t nowMs){
 // いない基板は自分では戻らない**（起動したばかりならソケットも新しいので、起きにくい形）。
 static void checkAck(uint32_t nowMs){
   // Wi-Fi が切れている間は計らない。繋がり直せば `onWifiUp` が UDP を開き直す。
+  // **切れたまま戻らない形は、ここではなく `wifiRescue` が受け持つ**（2026-10-15 まではどこも
+  // 受け持っておらず、9900 秒切れたままの基板が電源を入れ直すまで戻らなかった）。
   if (!g_wifiUp) { g_ackWaiting = false; return; }
   // 符号無しで引いてよいのは、`g_ackWaitStartMs` を書く `sendChunk` が `loop()` でこれより
   // 後に走るから（同じ周の `nowMs` より新しい値と比べることが無い）。**呼び出し順を入れ替えたら
@@ -2758,18 +2926,80 @@ static void checkAck(uint32_t nowMs){
                       (unsigned long)(SELF_RESTART_WINDOW_S / 3600), (unsigned long)SELF_RESTART_MAX);
         break;
       }
-      RestartLedger &l = g_restartLedger;
-      if (l.count == 0) l.firstUnix = (int64_t)now;
-      l.count++;
-      l.pending = 1;
-      Serial.printf("# 繋ぎ直しても返事が戻らない。再起動する（%lu 回目）\n", (unsigned long)l.count);
-      // **落とす直前に書く。** 次の起動が電源投入で始まることもある（再起動へ向かう途中で
-      // 電源を抜かれた等）ので、帳面（`RTC_NOINIT_ATTR`）だけに頼らない。
-      prevSave(millis(), PREV_WHY_RESTART);
-      delay(100);   // シリアルへ出し切る
-      ESP.restart();
+      Serial.printf("# 繋ぎ直しても返事が戻らない。再起動する（%lu 回目）\n",
+                    (unsigned long)(g_restartLedger.count + 1));
+      selfRestart(SELF_RESTART_ACK, now);
     }
   }
+}
+
+// 自分で再起動する。**返事の途絶（`checkAck`）と Wi-Fi が切れたまま（`wifiRescue`）の両方がここを
+// 通る** —— 帳面の書き方を 2 箇所に持つと、片方だけ数え忘れて上限が効かなくなる。上限の確かめ
+// （`restartAllowed`）は呼ぶ側で済ませておくこと。
+//
+// **`cause` を `SelfRestartCause` で受けない。** 理由は `prevSave` の `why` と同じ（arduino-cli が
+// 足す関数の宣言の位置からは型がまだ見えない）。
+static void selfRestart(uint8_t cause, time_t now){
+  RestartLedger &l = g_restartLedger;
+  if (l.count == 0) l.firstUnix = (int64_t)now;
+  l.count++;
+  l.pending = 1;
+  l.cause = cause;
+  // **落とす直前に書く。** 次の起動が電源投入で始まることもある（再起動へ向かう途中で
+  // 電源を抜かれた等）ので、帳面（`RTC_NOINIT_ATTR`）だけに頼らない。
+  prevSave(millis(), PREV_WHY_RESTART);
+  delay(100);   // シリアルへ出し切る
+  ESP.restart();
+}
+
+// Wi-Fi が切れたまま続いたら、自分で立て直す（時間は `WIFI_RESCUE_FIRST_MS` の項）。**毎周呼ぶ**（`loop()`）。
+//
+// **返事の途絶による立て直し（`checkAck`）とは別に持つ。** あちらは「繋がっているのに届かない」を
+// 見るもので、Wi-Fi が切れている間は計らない。切れたまま戻らない形はこちらが受け持つ。
+// **ホストの生死（`hostReachable`）は見ない** —— Wi-Fi が切れていればホストへは訊けず、切れたままで
+// あること自体が基板の側の不具合なので。
+//
+// 符号無しで引いてよいのは、`g_wifiDownSinceMs` と `g_lastWifiRescueMs` を書くのがどちらも
+// `loop()` の流れで、同じ周の `nowMs` 以前の値だから。
+static void wifiRescue(uint32_t nowMs){
+  if (g_wifiUp) return;
+  const uint32_t downMs = nowMs - g_wifiDownSinceMs;
+  if (downMs < WIFI_RESCUE_FIRST_MS) return;
+
+  // **再起動は繋ぎ直しの間隔の外で見る。** 内側に置くと、5 分を過ぎてから次の繋ぎ直しの番
+  // （30 秒＋60 秒ごと）まで待つので、実際には 5 分半になる。上限で飛ばした後も毎周見るのは、
+  // 数え直しの窓（`SELF_RESTART_WINDOW_S`）が明けたらすぐ再起動できるようにするため。
+  if (downMs >= WIFI_RESCUE_RESTART_MS) {
+    const time_t now = time(nullptr);
+    if (restartAllowed(now)) {
+      Serial.printf("# Wi-Fi が %lu 秒切れたまま（始まりの理由=%s）。再起動する（%lu 回目）\n",
+                    (unsigned long)(downMs / 1000), wifiReasonName(g_wifiOutageReason),
+                    (unsigned long)(g_restartLedger.count + 1));
+      selfRestart(SELF_RESTART_WIFI, now);
+    }
+    if (!g_wifiRestartSkipped) {
+      g_wifiRestartSkipped = true;
+      g_restartSkipped++;
+      g_prevDirty = true;
+      Serial.printf("# Wi-Fi が切れたままだが、再起動は上限（%lu 時間に %lu 回）に達したので飛ばす。繋ぎ直しは続ける\n",
+                    (unsigned long)(SELF_RESTART_WINDOW_S / 3600), (unsigned long)SELF_RESTART_MAX);
+    }
+  }
+
+  // 繋ぎ直しはこの途絶で 1 度目なら即座に、2 度目からは間隔を空ける。前の途絶で繋ぎ直した時刻は
+  // 数えない（`g_lastWifiRescueMs` が今回の途絶より前なら、まだこの途絶では繋ぎ直していない）。
+  if (g_wifiRescues > 0 && (int32_t)(g_lastWifiRescueMs - g_wifiDownSinceMs) >= 0
+      && nowMs - g_lastWifiRescueMs < WIFI_RESCUE_EVERY_MS) return;
+  g_prevDirty = true;
+  g_wifiRescues++;
+  g_lastWifiRescueMs = nowMs;
+  Serial.printf("# Wi-Fi が %lu 秒切れたまま（始まりの理由=%s・直近=%s・状態=%d）。自分で繋ぎ直す（%lu 回目）\n",
+                (unsigned long)(downMs / 1000), wifiReasonName(g_wifiOutageReason),
+                wifiReasonName(g_wifiLastReason), (int)WiFi.status(), (unsigned long)g_wifiRescues);
+  // **変わり目は `loop()` が拾う**（繋がれば `onWifiUp` が UDP を開き直す）。
+  // 自分で切る分の知らせを途絶の理由に入れない（→ `g_rescueDisconnecting`）。
+  g_rescueDisconnecting = true;
+  reconnectWifi();
 }
 
 static void packetBegin(Packet &p, Sensor &s, int64_t tFirstMs){
@@ -3053,19 +3283,57 @@ void loop(){
   // **イベントは「いま持っている見立てを捨てる」ことにだけ使う。** 旗が立っていれば
   // 繋がっていないことにして、下の判定へ立て直しを任せる——立て直す場所を
   // 1 つに保てる（イベント側にも書くと、2 箇所が同じ持ち物を別の流れから触る）。
+  //
+  // **旗で見立てを捨てた周に「繋がっていない」を読んだら、切れた変わり目として扱う**（`wasUp`）。
+  // 見立てを捨てた時点で `g_wifiUp` は偽なので、そのままだと「偽 → 偽」で変わり目が立たず、
+  // 切れた時刻（`g_wifiDownSinceMs`）が前の途絶のまま残る —— 切れたままの立て直し（`wifiRescue`）が
+  // それを「ずっと切れていた」と読み、いきなり再起動まで進む。
+  const bool wasUp = g_wifiUp;
   if (g_wifiGotIp) {
     g_wifiGotIp = false;
     g_wifiUp = false;
   }
   const bool up = WiFi.status() == WL_CONNECTED;
-  if (up != g_wifiUp) {
+  if (up != g_wifiUp || (wasUp && !up)) {
     g_wifiUp = up;
     if (up) {
+      // 途絶を始めた理由はここで締める（→ `g_wifiOutageReason`）。
+      //
+      // **ここへは 2 通りで来る。** 見張りが「切れた」を見てから繋がった場合（`g_wifiSeenDown`）と、
+      // `STA_GOT_IP` の旗で見立てを捨てただけの場合（切れていたのが `loop()` の 1 周より短い明滅か、
+      // 切れた後の繋がり直しに続いて旗が来た）。後者で前の途絶の記録を上書きすると、本当の途絶の
+      // 理由が 0 に化ける。**記録を締めるのは前者か、理由が届いているときだけ。**
+      //
+      // **書き手は `onWifiEvent`（別の流れ）だが、0 へ戻すのはここだけ**。読んでから戻すまでの間に
+      // 来た理由は失われるが、それで失うのは名前 1 つで、繋ぎ直しには効かない。
+      const uint8_t reason = g_wifiOutageReason;
+      g_wifiOutageReason = 0;
+      if (g_wifiSeenDown || reason != 0) {
+        g_wifiPrevOutageReason = reason;
+        if (!g_servicesUp) {
+          // 起動してから最初に繋がった。途中で切断のイベントを受けていれば、その理由が残る。
+          Serial.printf("# 起動から %lu 秒で wifi に繋がった（途中の切断の理由=%s・自分で繋ぎ直した回数=%lu）\n",
+                        (unsigned long)((millis() - g_wifiDownSinceMs) / 1000),
+                        wifiReasonName(reason), (unsigned long)g_wifiRescues);
+        } else if (g_wifiSeenDown) {
+          Serial.printf("# wifi の途絶は %lu 秒（始まりの理由=%s・自分で繋ぎ直した累計=%lu）\n",
+                        (unsigned long)((millis() - g_wifiDownSinceMs) / 1000),
+                        wifiReasonName(reason), (unsigned long)g_wifiRescues);
+        } else {
+          Serial.printf("# wifi が一瞬切れていた（理由=%s）\n", wifiReasonName(reason));
+        }
+      }
+      g_wifiSeenDown = false;
+      g_wifiRestartSkipped = false;
+      // 立て直しが切ったのに知らせが来なかった（AP に繋がっていなかった）ときは、印が残っている。
+      // 残すと、次に本当に `ASSOC_LEAVE` で切れたときの理由を落とす。
+      g_rescueDisconnecting = false;
       onWifiUp();
     } else {
       Serial.println("# wifi down");
       g_wifiDowns++;
       g_wifiDownSinceMs = millis();
+      g_wifiSeenDown = true;
     }
     g_prevDirty = true;
   }
@@ -3092,6 +3360,9 @@ void loop(){
   retryUdpOpen(nowMs);
   readAcks();
   checkAck(nowMs);
+  // Wi-Fi が切れたまま戻らない形はこちら（理由は `WIFI_RESCUE_FIRST_MS`）。**毎周呼ぶ** ——
+  // 間隔は中で数える。起動から一度も繋がらないときも同じ道を通る。
+  wifiRescue(nowMs);
   // 返事の途絶を見てフラッシュへ書き出す（→ `spillPump`）。**毎周呼ぶ** —— 1 周に書く区画は
   // 1 つまでなので、吸い出しの周期に合わせると書き出しが追いつかない。
   spillPump(nowMs);

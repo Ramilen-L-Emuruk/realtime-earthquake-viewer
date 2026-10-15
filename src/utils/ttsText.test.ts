@@ -3,7 +3,7 @@
 // 「日から読む／時分だけ読む」という書式の違いを正規表現で検証する。
 import { describe, it, expect, vi } from 'vitest'
 import { earthquakeCancelToText, tsunamiCancelToText, eewCancelToText, CANCEL_REASON_SPEAK_MAX_CHARS, nankaiToText, earthquakeCountToText,
-  estimatedIntensityToText, earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewAlertToText, eewIntensityText, voicevoxPreviewTexts, lpgmToText, tsunamiToText, tsunamiToSegments, tsunamiDowngradeToText, tsunamiDowngradeToSegments, tsunamiArrivalToText, tsunamiMissingToText, tsunamiObservationUpdateToText, tsunamiAreaGradeChangeToText, tsunamiWarningLevelToText, selectWarningLevelToSpeak, selectObservationUpdatesToSpeak, selectMissingToSpeak, selectArrivalsToSpeak, WARNING_LEVEL_SPEAK_MAX_POINTS, joinWithAlso, telegramTextToSpeak, type TtsSpeechOptions, type QuakeSpokenState } from './ttsText'
+  estimatedIntensityToText, earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewAlertToText, eewIntensityText, voicevoxPreviewTexts, lpgmToText, tsunamiToText, tsunamiToSegments, tsunamiDowngradeToText, tsunamiDowngradeToSegments, tsunamiArrivalToText, tsunamiMissingToText, tsunamiObservationUpdateToText, tsunamiAreaGradeChangeToText, tsunamiWarningLevelToText, selectWarningLevelToSpeak, selectObservationUpdatesToSpeak, selectMissingToSpeak, selectArrivalsToSpeak, WARNING_LEVEL_SPEAK_MAX_POINTS, joinWithAlso, telegramTextToSpeak, type TtsSpeechOptions, type QuakeSpokenState, type TsunamiQuakeSpoken, applyTsunamiSpokenRefs } from './ttsText'
 import { INTENSITY_SCALE_COUNT } from './intensity'
 import { joinSegments, mapChunksToRefs, plain, type SpeechSegment } from './ttsFollow'
 import { splitIntoChunks } from './voicevox'
@@ -3236,13 +3236,18 @@ describe('津波の失効時刻の読み上げ', () => {
       ...over,
     }
   }
+  /** 原因地震が 1 つの津波で、震源と失効時刻を同じ既読へ積む（ライブ受信の組み立てと同じ形）。 */
+  function asTsunamiSpoken(t: JMATsunami, spoken: QuakeSpokenState | undefined): TsunamiQuakeSpoken | undefined {
+    if (!spoken) return undefined
+    return { expiry: spoken, sources: (t.sourceEarthquakes ?? []).map(source => ({ source, spoken, subject: undefined })) }
+  }
   /** 断片を連結して 1 本の文にする（`tsunamiToText` は既読を渡せないので自前で繋ぐ）。 */
   function joined(t: JMATsunami, spoken?: QuakeSpokenState): string {
-    return tsunamiToSegments(t, undefined, spoken).map(s => s.text).join('')
+    return tsunamiToSegments(t, undefined, asTsunamiSpoken(t, spoken)).map(s => s.text).join('')
   }
   /** 断片を「声になった」ものとして既読へ反映する。 */
   function markSpoken(t: JMATsunami, spoken: QuakeSpokenState): void {
-    for (const s of tsunamiToSegments(t, undefined, spoken)) applySpokenRefs(spoken, s.refs ?? [])
+    for (const s of tsunamiToSegments(t, undefined, asTsunamiSpoken(t, spoken))) applySpokenRefs(spoken, s.refs ?? [])
   }
 
   // 正: 同じ日の期限は時刻だけで読む。2024 年能登半島地震の実電文の形。
@@ -3280,7 +3285,7 @@ describe('津波の失効時刻の読み上げ', () => {
   it('本番と同じチャンク分割を通しても、一度声にしたら黙る', () => {
     const spoken = createQuakeSpokenState()
     const t = expiryTsunami({ validDateTime: '2024-01-02T17:00:00+09:00' })
-    const segments = tsunamiToSegments(t, undefined, spoken)
+    const segments = tsunamiToSegments(t, undefined, asTsunamiSpoken(t, spoken))
     const refsByChunk = mapChunksToRefs(segments, splitIntoChunks(joinSegments(segments)))
     // どこかのチャンクに失効時刻の参照が残っていること（混在で捨てられていない）
     expect(refsByChunk.flat().some(r => r.kind === 'quakeFact' && r.fact === 'tsunamiExpiry')).toBe(true)
@@ -3316,7 +3321,7 @@ describe('津波の失効時刻の読み上げ', () => {
 
   /** 降格文の断片を連結する（発表文の `joined` と同じ役目）。 */
   function joinedDowngrade(t: JMATsunami, spoken?: QuakeSpokenState): string {
-    return tsunamiDowngradeToSegments(t, undefined, spoken).map(s => s.text).join('')
+    return tsunamiDowngradeToSegments(t, undefined, asTsunamiSpoken(t, spoken)).map(s => s.text).join('')
   }
 
   // 正: **降格文も失効時刻を語る。** 実電文で期限が付くのは「警報・注意報が解除されて予報だけが
@@ -3331,7 +3336,7 @@ describe('津波の失効時刻の読み上げ', () => {
   it('降格文でも一度声にしたら黙る', () => {
     const spoken = createQuakeSpokenState()
     const t = expiryTsunami({ validDateTime: '2024-01-02T17:00:00+09:00' })
-    for (const s of tsunamiDowngradeToSegments(t, undefined, spoken)) applySpokenRefs(spoken, s.refs ?? [])
+    for (const s of tsunamiDowngradeToSegments(t, undefined, asTsunamiSpoken(t, spoken))) applySpokenRefs(spoken, s.refs ?? [])
     expect(joinedDowngrade(t, spoken)).not.toContain('失効時刻')
   })
 
@@ -3344,5 +3349,63 @@ describe('津波の失効時刻の読み上げ', () => {
     const text = joined(t)
     expect(text).toContain('この地震の震源は')
     expect(text.indexOf('この地震の震源は')).toBeLessThan(text.indexOf('失効時刻'))
+  })
+})
+
+// 原因地震が 2 つ以上ある津波（別の地震が寄与して番号が足された警報。電文解説資料 Ⅰ.別02-8 出現例６）。
+// 2 つ目以降の震源も読む（2026-10-15 ユーザー承認「読む（推奨）」）。既読は地震ごとに積む。
+describe('津波の読み上げ: 原因地震が 2 つ以上あるとき', () => {
+  const NOTO = { hypocenterName: '石川県能登地方', depth: 10, magnitude: 7.6, arrivalTime: '2024-01-01T16:10:00+09:00' }
+  const SADO = { hypocenterName: '佐渡付近', depth: 20, magnitude: 6.1, arrivalTime: '2024-01-01T16:40:00+09:00' }
+  function twoSourceTsunami(): JMATsunami {
+    return {
+      kind: 'tsunami', id: 't', eventId: '20240101161010 20240101164010', time: '2024-01-01T16:45:00+09:00', cancelled: false,
+      issue: { source: '気象庁', time: '2024-01-01T16:45:00+09:00', type: 'Focus' },
+      areas: [{ grade: 'Warning', immediate: false, name: '石川県能登' }],
+      sourceEarthquakes: [NOTO, SADO],
+    }
+  }
+  function spokenFor(t: JMATsunami, a: QuakeSpokenState, b: QuakeSpokenState): TsunamiQuakeSpoken {
+    const [s0, s1] = t.sourceEarthquakes!
+    return { expiry: a, sources: [{ source: s0, spoken: a, subject: 'A' }, { source: s1, spoken: b, subject: 'B' }] }
+  }
+  const text = (t: JMATsunami, sp?: TsunamiQuakeSpoken) => tsunamiToSegments(t, undefined, sp).map(s => s.text).join('')
+
+  // 正: 2 つ目は「また、もう一つの地震の震源は」で読む
+  it('2 つ目以降の震源も読む', () => {
+    const t = twoSourceTsunami()
+    const out = text(t, spokenFor(t, createQuakeSpokenState(), createQuakeSpokenState()))
+    expect(out).toContain('この地震の震源は石川県能登地方')
+    expect(out).toContain('また、もう一つの地震の震源は佐渡付近')
+  })
+
+  // 正: 既読はそれぞれの地震へ積み、読んだら黙る
+  it('既読を地震ごとに積み、次の報では黙る', () => {
+    const t = twoSourceTsunami()
+    const a = createQuakeSpokenState()
+    const b = createQuakeSpokenState()
+    const sp = spokenFor(t, a, b)
+    applyTsunamiSpokenRefs(sp, tsunamiToSegments(t, undefined, sp).flatMap(s => s.refs))
+    expect(a.facts.get('hypocenterName')).toBe('石川県能登地方')
+    expect(b.facts.get('hypocenterName')).toBe('佐渡付近')
+    expect(text(t, sp)).not.toContain('震源は')
+  })
+
+  // 安全弁: 1 つ目を語り済みでも、2 つ目は未読なら 2 つ目だけ読む（片方の既読で両方が黙らない）
+  it('片方だけ語り済みなら、もう片方だけを読む', () => {
+    const t = twoSourceTsunami()
+    const a = createQuakeSpokenState()
+    a.facts.set('hypocenterName', '石川県能登地方'); a.facts.set('depth', '10'); a.facts.set('magnitude', '7.6')
+    const out = text(t, spokenFor(t, a, createQuakeSpokenState()))
+    expect(out).not.toContain('この地震の震源は')
+    expect(out).toContain('また、もう一つの地震の震源は佐渡付近')
+  })
+
+  // 対照: 原因地震が 1 つなら従来どおり「この地震の震源は」だけ
+  it('原因地震が 1 つなら従来どおり', () => {
+    const t = { ...twoSourceTsunami(), eventId: '20240101161010', sourceEarthquakes: [NOTO] }
+    const out = text(t)
+    expect(out).toContain('この地震の震源は石川県能登地方')
+    expect(out).not.toContain('もう一つの地震')
   })
 })

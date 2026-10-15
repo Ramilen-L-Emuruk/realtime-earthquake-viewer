@@ -477,7 +477,7 @@ describe('再生中もキューの予約は発火時刻を待つ', () => {
    * `time` / `originTime` は上書きできる。**解除時刻はこの 2 つから決まる**ので、
    * 読めない値を入れたときの振る舞いをここで作れる（→ 下の「解除時刻を決められないとき」）。
    */
-  function finalEEW(at: Date, override: { time?: string; originTime?: string } = {}): EEWAlert {
+  function finalEEW(at: Date, override: { time?: string; originTime?: string; arrivalTime?: string } = {}): EEWAlert {
     const iso = at.toISOString()
     return {
       kind: 'eew',
@@ -486,7 +486,7 @@ describe('再生中もキューの予約は発火時刻を待つ', () => {
       test: false,
       earthquake: {
         originTime: override.originTime ?? iso,
-        arrivalTime: iso,
+        arrivalTime: override.arrivalTime ?? iso,
         condition: '',
         hypocenter: { name: 'テスト沖', latitude: 35, longitude: 140, depth: 10, magnitude: 4.0 },
       },
@@ -608,7 +608,7 @@ describe('再生中もキューの予約は発火時刻を待つ', () => {
     setReplayOffset(OFFSET_MS)
     const h = setup({ offset: OFFSET_MS })
 
-    act(() => { h.current.injectEvent(finalEEW(serverDate(), { time: '', originTime: '' })) })
+    act(() => { h.current.injectEvent(finalEEW(serverDate(), { time: '', originTime: '', arrivalTime: '' })) })
     expect(h.current.activeEEWs.size).toBe(1)
     expect(err.mock.calls.filter(c => String(c[0]).includes('自動解除を予約できません'))).toHaveLength(1)
 
@@ -812,6 +812,25 @@ describe('EEW 発報テストの報の推移', () => {
     expect(Number.isNaN(firstIssued)).toBe(false)
     expect(secondIssued).toBeGreaterThan(firstIssued)
     expect(second.id).not.toBe(first.id)
+  })
+
+  // 「非常に強い揺れを検知」の第 1 報の印と本文は、続報（仮定震源要素）で持ち越さない。
+  // 続報は報を丸ごと置き換えるので、印が残ると確定へ進んだ後も予報円が出ず本文が居座る。
+  it('強い揺れ検知の第 1 報の印と本文は、続報で消える', async () => {
+    const h = setup()
+
+    await act(async () => { await h.current.simulateEEWStrongShaking() })
+    const first = onlyEEW(h)
+    expect(first.strongShakingOnly).toBe(true)
+    expect(first.strongShakingText).toBeTruthy()
+
+    act(() => { vi.advanceTimersByTime(3_000) })
+    await act(async () => { await h.current.simulateEEWStrongShaking() })
+    const second = onlyEEW(h)
+    expect(second.issue?.serial).toBe('2')
+    expect(second.strongShakingOnly).toBeUndefined()
+    expect(second.strongShakingText).toBeUndefined()
+    expect(second.earthquake.condition).toBe('仮定震源要素')
   })
 
   it('最終報も独立した 1 報として報番号を進める', async () => {
@@ -2525,6 +2544,114 @@ describe('DMDSS 版: 取消の後に届いた報', () => {
 
     act(() => { h.current.injectEvent(震度速報('dmdata-quake-20260101160614-3', '2026-01-01T07:09:00+09:00')) })
     expect(h.current.earthquakes).toHaveLength(0)
+  })
+})
+
+// 失効の予約は「報を当てたあとの津波」の期限で決める（→ `stepTsunamiState`）。届いた報の期限だけを
+// 見ていた頃は、状態が報の種類ごとに決め直す期限と食い違っていた（#836 の敵対的レビューで判明）。
+describe('津波の失効予約は状態と同じ期限で動く', () => {
+  const EVENT_ID = '20240101161010'
+  function report(opts: {
+    id: string; time: string; headType: 'VTSE41' | 'VTSE51'; grade?: 'Forecast' | 'Watch'
+    validDateTime?: string; eventId?: string; cancelled?: boolean
+  }): JMATsunami {
+    return {
+      kind: 'tsunami',
+      id: opts.id,
+      eventId: opts.eventId ?? EVENT_ID,
+      headType: opts.headType,
+      time: opts.time,
+      cancelled: opts.cancelled ?? false,
+      ...(opts.cancelled && { cancelReason: 'retracted' as const }),
+      validDateTime: opts.validDateTime,
+      issue: { source: '気象庁', time: opts.time, type: 'Focus' },
+      areas: opts.cancelled ? [] : [{ grade: opts.grade ?? 'Forecast', immediate: false, name: '石川県能登' }],
+    }
+  }
+  const EXPIRE_AT = '2024-01-02T17:00:00+09:00'
+
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  // 正: 期限を載せない津波注意報（VTSE41）へ引き上がったら、予報のときの期限では失効しない。
+  // 状態は「期限は最新の VTSE41 が決める」で期限を消すのに、予約だけが残って注意報の発表中に
+  // 「失効」していた。
+  it('期限なしの注意報へ引き上がると、予報のときの失効予約は外れる', async () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const h = setup()
+    await h.flush()
+
+    act(() => { h.current.injectEvent(report({ id: 'f', time: '2024-01-02T16:40:00+09:00', headType: 'VTSE41', validDateTime: EXPIRE_AT })) })
+    act(() => { h.current.injectEvent(report({ id: 'w', time: '2024-01-02T16:50:00+09:00', headType: 'VTSE41', grade: 'Watch' })) })
+    act(() => { vi.advanceTimersByTime(15 * 60_000) })
+
+    expect(h.current.tsunamis).toHaveLength(1)
+    expect(h.current.tsunamis[0].cancelledAt).toBeUndefined()
+    expect(h.current.tsunamis[0].validDateTime).toBeUndefined()
+  })
+
+  // 正: 同じ周回に「期限なしの注意報」と「津波情報」が続けて届いても、予報のときの期限では失効しない。
+  // 2 通目を描き直し前の状態（予報）の上で判定すると、1 通目で外した予約を古い期限で積み直していた。
+  it('同じ周回に注意報と津波情報が続けて届いても、予報のときの期限では失効しない', async () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const h = setup()
+    await h.flush()
+
+    act(() => { h.current.injectEvent(report({ id: 'f', time: '2024-01-02T16:40:00+09:00', headType: 'VTSE41', validDateTime: EXPIRE_AT })) })
+    act(() => {
+      h.current.injectEvent(report({ id: 'w', time: '2024-01-02T16:50:00+09:00', headType: 'VTSE41', grade: 'Watch' }))
+      h.current.injectEvent(report({ id: 'i', time: '2024-01-02T16:50:30+09:00', headType: 'VTSE51' }))
+    })
+    act(() => { vi.advanceTimersByTime(15 * 60_000) })
+
+    expect(h.current.tsunamis).toHaveLength(1)
+    expect(h.current.tsunamis[0].cancelledAt).toBeUndefined()
+  })
+
+  // 対照: 期限を持つ予報だけなら期限で失効する（予約そのものを止めていない）。
+  it('期限を持つ予報は期限で失効する', async () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const h = setup()
+    await h.flush()
+
+    act(() => { h.current.injectEvent(report({ id: 'f', time: '2024-01-02T16:40:00+09:00', headType: 'VTSE41', validDateTime: EXPIRE_AT })) })
+    act(() => { vi.advanceTimersByTime(10 * 60_000 + 5_000) })
+
+    expect(h.current.tsunamis[0].cancelReason).toBe('expired')
+  })
+
+  // 正: 津波情報（VTSE51）だけの取消は予報を残すので、予報の期限で失効し続ける。取消を「津波全体の
+  // 取消」と同じに扱っていた頃は、予約がすべて外れて予報が居座った（DMDSS 版は 24 時間の保険も無い）。
+  it('津波情報だけの取消のあとも、予報は期限で失効する', async () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const h = setup()
+    await h.flush()
+
+    act(() => { h.current.injectEvent(report({ id: 'f', time: '2024-01-02T16:40:00+09:00', headType: 'VTSE41', validDateTime: EXPIRE_AT })) })
+    act(() => { h.current.injectEvent(report({ id: 'i', time: '2024-01-02T16:45:00+09:00', headType: 'VTSE51' })) })
+    act(() => { h.current.injectEvent(report({ id: 'r', time: '2024-01-02T16:50:00+09:00', headType: 'VTSE51', cancelled: true })) })
+    act(() => { vi.advanceTimersByTime(100) })
+    expect(h.current.tsunamis[0].cancelledAt).toBeUndefined()
+
+    act(() => { vi.advanceTimersByTime(10 * 60_000 + 5_000 - 100) })
+    expect(h.current.tsunamis[0].cancelReason).toBe('expired')
+  })
+
+  // 安全弁: 表示中の津波に当たらない解除（番号の重ならない別の津波）では、予約に触れない。
+  it('別の津波の解除が届いても、表示中の予報は期限で失効する', async () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const h = setup()
+    await h.flush()
+
+    act(() => { h.current.injectEvent(report({ id: 'f', time: '2024-01-02T16:40:00+09:00', headType: 'VTSE41', validDateTime: EXPIRE_AT })) })
+    act(() => {
+      h.current.injectEvent({ ...report({ id: 'x', time: '2024-01-02T16:50:00+09:00', headType: 'VTSE41', eventId: '20240808164300', cancelled: true }), cancelReason: 'lifted' as const })
+    })
+    act(() => { vi.advanceTimersByTime(100) })
+    expect(h.current.tsunamis[0].cancelledAt).toBeUndefined()
+
+    act(() => { vi.advanceTimersByTime(10 * 60_000 + 5_000 - 100) })
+    expect(h.current.tsunamis[0].cancelReason).toBe('expired')
   })
 })
 

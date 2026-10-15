@@ -80,7 +80,7 @@ import { useDebouncedValue } from './hooks/useDebouncedValue'
 import { getIntensityLabelWithOrAbove } from './utils/intensity'
 import { isMaxScaleUnreceived } from './utils/quakePoints'
 import { formatMagnitudeWithCondition, formatDateTimeLocal } from './utils/formatters'
-import { computeEEWLevel, eewMaxLpgmClass } from './utils/eew'
+import { computeEEWLevel, eewMaxLpgmClass, isProvisionalHypocenter } from './utils/eew'
 import { quakeEventKey, quakeKeyForLpgmEventId, extractQuakeEventId } from './utils/quakeMerge'
 import { canOpenLpgmNotes } from './utils/lpgm'
 import { estimatedIntensityFor, matchEstimatedIntensityArrival } from './utils/estimatedIntensity'
@@ -864,12 +864,13 @@ export function App() {
     telegramLog, clearTelegramLog,
     injectEvent, loadMoreEarthquakes,
     simulateEarthquake, simulateForeignQuake, simulateForeignQuakeHuge,
-    simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWAssumed, simulateEEWDeep, simulateEEWRetraction,
+    simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWAssumed, simulateEEWStrongShaking, simulateEEWDeep, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
     simulateQuakeNotice, simulateEarthquakeCount, simulateEarthquakeCountRetraction, simulateEstimatedIntensity,
     simulateTrainingQuake, simulateUnreceivedQuake, simulateMaxScaleOrAboveQuake, simulateTsunamiGradeChange, simulateTsunamiQuietReports, simulateTsunamiExpiry, simulateQuakeAmendment,
     simulateQuakeReportSequence, simulateQuakeCancel, simulateHypocenterFromTsunami,
+    simulateTsunamiSourceAdded, simulateTsunamiInfoRetraction,
     resetState, loadReplayEvents, peekUpcomingPayloads, restoreQuakeHistory,
   } = useEarthquakes(handleLiveEvent, debouncedApiKey, settings.dmdataTestDelivery, replayTimeOffset, handleStartupRestore)
   earthquakesRef.current = earthquakes
@@ -921,6 +922,7 @@ export function App() {
     eewWarning:        simulateEEWWarning,
     eewForecast:       simulateEEWForecast,
     eewAssumed:        simulateEEWAssumed,
+    eewStrongShaking:  simulateEEWStrongShaking,
     eewDeep:           simulateEEWDeep,
     eewRetraction:     simulateEEWRetraction,
     tsunami:           simulateTsunami,
@@ -948,6 +950,8 @@ export function App() {
     tsunamiGradeChange: simulateTsunamiGradeChange,
     tsunamiQuietReports: isDmdss ? simulateTsunamiQuietReports : undefined,
     tsunamiExpiry: isDmdss ? simulateTsunamiExpiry : undefined,
+    tsunamiSourceAdded: isDmdss ? simulateTsunamiSourceAdded : undefined,
+    tsunamiInfoRetraction: isDmdss ? simulateTsunamiInfoRetraction : undefined,
     estimatedIntensity: simulateEstimatedIntensity,
     notification:      () => {
       if (typeof Notification === 'undefined' || Notification.permission !== 'granted') {
@@ -962,12 +966,13 @@ export function App() {
     },
   }), [
     simulateEarthquake, simulateForeignQuake, simulateForeignQuakeHuge,
-    simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWAssumed, simulateEEWDeep, simulateEEWRetraction,
+    simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWAssumed, simulateEEWStrongShaking, simulateEEWDeep, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
     simulateQuakeNotice, simulateEarthquakeCount, simulateEarthquakeCountRetraction, simulateEstimatedIntensity,
     simulateTrainingQuake, simulateUnreceivedQuake, simulateMaxScaleOrAboveQuake, simulateTsunamiGradeChange, simulateTsunamiQuietReports, simulateTsunamiExpiry, simulateQuakeAmendment,
     simulateQuakeReportSequence, simulateQuakeCancel, simulateHypocenterFromTsunami,
+    simulateTsunamiSourceAdded, simulateTsunamiInfoRetraction,
   ])
   // IconNav の onTabChange。手動選択は必ず即時反映し、以後 TAB_HOLD_MS の間は自動切替に
   // 奪わせない（EEW の新規発報・レベルアップ・誤報取消だけはこれより強い）。
@@ -1210,7 +1215,7 @@ export function App() {
   // 由来の誤 confirmed を EEW 経由で再導入しかねないため区別する。
   // **観測点の数で分けているのではない**——仮定震源要素の定義に観測点数は含まれない（eew-spec.md §5）。
   const hasActiveNonAssumedEEW = useMemo(
-    () => [...activeEEWsNoCancelled.values()].some((eew) => eew.earthquake.condition !== '仮定震源要素'),
+    () => [...activeEEWsNoCancelled.values()].some((eew) => !isProvisionalHypocenter(eew)),
     [activeEEWsNoCancelled],
   )
 
@@ -2224,10 +2229,13 @@ export function App() {
   // 地震カードの発生時刻を秒まで決める（P/S 線の起点。→ hooks/useQuakeOriginSeconds.ts）。
   // **波形を出す設定のときだけ動かす** —— 出さないなら取りに行く理由も、端末に残す理由も無い。
   const quakeOriginSeconds = useQuakeOriginSeconds({
-    // 公開観測点のカードの P/S 線にも使う（公開観測点のカードは設定によらず出すので、常に動かす）
-    enabled: true,
+    // 自作・公開のどちらかの波形カードに使うときだけ、発生秒を取りに行く。
+    enabled: settings.publicWaveEnabled || (settings.seismoEnabled && settings.seismoWave !== 'off'),
     isDmdss,
     apiKey: debouncedApiKey,
+    // ライブでは接続が区分を取り決めるまで待つ。再生中は、一度も繋がっていなければ既定の区分で引く
+    // （リプレイの取得と同じ扱い。→ 上の `fetchDmdataReplayEvents` の呼び出し）。
+    classifications: replayTimeOffset === null ? dmdataClassifications : (dmdataClassifications ?? PREFERRED_CLASSIFICATIONS),
     quakes: filteredEarthquakes,
     activeEEWs,
     replayOffsetMs: replayTimeOffset,

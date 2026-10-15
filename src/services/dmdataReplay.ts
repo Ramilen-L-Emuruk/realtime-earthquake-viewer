@@ -15,7 +15,7 @@ import {
   quakeRetractionOf, QUAKE_ISSUE_PRIORITY, type QuakeRetraction,
 } from '../utils/quakeMerge'
 import type { AreaPrefIndex } from '../utils/quakePoints'
-import { latestValidDateTime } from '../utils/tsunami'
+import { latestValidDateTime, foldTsunamiReports, isPartialTsunamiRetraction, isSameTsunamiEvent } from '../utils/tsunami'
 import type { ReplayEntry, ReplayPayload, ReplayFetchResult, QuakeHistoryResult } from '../types/replay'
 import {
   isHandledType, QUAKE_TYPES, TSUNAMI_TYPES, HISTORY_EXTRA_TYPES, historyExtraKey,
@@ -34,6 +34,7 @@ import {
 } from './dmdataRequestGates'
 import type { GateTag } from '../utils/requestGate'
 import { createSkipCounter, sumSkippedByDay, UNKNOWN_SKIP_DAY } from '../utils/telegramLoss'
+import { fetchDmdataEewEventList, fetchLatestEewReport, type DmdataEewListEvent, type LatestEewReport } from './dmdata'
 
 /**
  * 履歴を 1 回で読む窓の幅（日）。起動時の初回ロードと「もっと見る」1 回ぶんで共通。
@@ -205,14 +206,15 @@ interface ManifestEntry {
    */
   head: { type: string; time: string; test: boolean; designation?: string | null }
   /**
-   * 電文の見出しを配信元が抜き出したもの。**使うのは `head.eventId` だけ**（その電文がどの地震の
-   * ものか。本体を落とさずに分かる）。窓の端で切れた地震を補うときに、その日の目録から
-   * 当の地震の電文だけを選ぶのに使う（→ `readStraddlingQuakes`）。
+   * 電文の見出しを配信元が抜き出したもの。使うのは `head.eventId`（その電文がどの地震の
+   * ものか。本体を落とさずに分かる）と `head.serial`（報番号。文字列で入る）。前者は窓の端で切れた地震を
+   * 補うときに、その日の目録から当の地震の電文だけを選ぶのに使う（→ `readStraddlingQuakes`）。両方を
+   * 緊急地震速報の最終報を選ぶのに使う（→ `pickFinalEewEntries`）。
    *
-   * 実アーカイブ（2026-06-26）では XML 版のエントリに `xmlReport.head.eventId` が入っていた。
-   * **任意にしてある理由は `filename` と同じ。**
+   * 実アーカイブ（2026-06-26）では XML 版のエントリに `xmlReport.head.eventId` が入っていた
+   * （`serial` は 2024-01-03 の控えで確かめた）。**任意にしてある理由は `filename` と同じ。**
    */
-  xmlReport?: { head?: { eventId?: string } }
+  xmlReport?: { head?: { eventId?: string; serial?: string } }
 }
 
 /**
@@ -1241,17 +1243,37 @@ interface TsunamiPreWindowState {
 }
 
 /**
- * 同一の津波イベントに属する報をまとめるキー。
+ * 同一の津波イベントに属する報を束ねる。報ごとに、属する束の鍵を返す。
+ *
+ * **同じ津波かは {@link isSameTsunamiEvent}（地震の識別番号の重なり）で見て、重なりを辿って広げる。**
+ * 気象庁は別の地震が寄与すると同じ警報を切り替えて番号を足す（`A` → `A B`）。文字列で束ねると切替えの
+ * 前後が別の束に割れ、解除済みの津波が再生開始直後に甦りうる（解除は `A B` の束にしか入らない）。
  *
  * `eventId` を持たない電文（P2PQuake の 552。この関数は DMDATA アーカイブだけでなく全バリアントの
- * 初期状態で使われる——呼び出しは `useReplayController` に 1 箇所だけある）は `id` が報ごとに変わる
- * ため、報 1 通ずつが別のグループになる。その経路の扱いは下の `resolveTsunamiPreWindowStates` に書く。
- *
- * 空文字を弾くのは、キーの導出と「識別子を持つか」の判定を同じ述語に揃えるため（`??` だと空文字が
- * 有効な識別子として通り、識別子の無い電文どうしが 1 つの津波として束ねられる）。
+ * 初期状態で使われる——呼び出しは `useReplayController` に 1 箇所だけある）は同じ津波か決められない
+ * ので、報 1 通ずつが別の束になる。その経路の扱いは下の `resolveTsunamiPreWindowStates` に書く。
  */
-function tsunamiGroupKey(tsunami: JMATsunami): string {
-  return tsunami.eventId || tsunami.id
+function groupTsunamiReports(tsunamis: readonly JMATsunami[]): Map<JMATsunami, number> {
+  const groupOf = new Map<JMATsunami, number>()
+  const groups: JMATsunami[][] = []
+  for (const t of tsunamis) {
+    // 重なる束をすべて集めて 1 つに合わせる（後から届いた `A B` が `A` の束と `B` の束を繋ぐ）。
+    const hits = new Set<number>()
+    if (t.eventId) {
+      groups.forEach((members, gi) => {
+        if (members.length > 0 && members.some(m => isSameTsunamiEvent(m, t))) hits.add(gi)
+      })
+    }
+    const [first, ...rest] = [...hits]
+    const target = first ?? groups.push([]) - 1
+    groups[target].push(t)
+    for (const gi of rest) {
+      groups[target].push(...groups[gi])
+      groups[gi] = []
+    }
+  }
+  groups.forEach((members, gi) => { for (const m of members) groupOf.set(m, gi) })
+  return groupOf
 }
 
 /**
@@ -1262,9 +1284,11 @@ function tsunamiGroupKey(tsunami: JMATsunami): string {
  * ひとつは**有効期限**。気象庁は期限が決まった報で一度だけ ValidDateTime を載せ、以後の続報には
  * 載せない（詳細と実データは `utils/tsunami` の `latestValidDateTime`）。報ごとに見ると、期限を
  * 伝えた報だけが「期限切れ」で捨てられ、期限を持たない最後の報が生き残る。予報のみの津波に解除
- * 電文は出ないため、そうなると失効の予約も積まれず永久に画面へ残る。
+ * 電文は出ないため、そうなると失効の予約も積まれず永久に画面へ残る。**期限はライブと同じ規則で
+ * 報を重ねて決める**（`foldTsunamiReports`。期限は最新の津波警報等が決める）。
  *
  * もうひとつは**解除**。解除報を捨てるだけでは、それより前の発表報が残って解除済みの津波が復活する。
+ * **津波情報・沖合の観測だけの取消は解除に数えない**（警報は生きている。→ `isPartialTsunamiRetraction`）。
  *
  * **解除による足切りは `eventId` を持つ電文にしか適用しない。** 識別子が無ければ「どの津波の解除か」
  * を決められず、時刻の前後だけで落とすと、同じ 24 時間に無関係な津波が 2 つあったときに、解除された
@@ -1273,39 +1297,47 @@ function tsunamiGroupKey(tsunami: JMATsunami): string {
  * 読み上げの記憶で共有している）へ委ねる。初期状態でも解除は届くので津波は画面から消える
  * （解除の表示が 10 秒挟まる点だけが「載せない」場合との違い）。
  *
- * 有効期限のほうは識別子の有無で分けない。識別子が無ければ 1 グループ 1 報になり、その報自身の
+ * 有効期限のほうは識別子の有無で分けない。識別子が無ければ 1 束 1 報になり、その報自身の
  * 期限で判定することになる（報単位で見ていた従来と同じ）。
  */
 function resolveTsunamiPreWindowStates(
   entries: ReplayEntry[],
   targetTime: Date,
-): Map<string, TsunamiPreWindowState> {
-  const groups = new Map<string, JMATsunami[]>()
+): (tsunami: JMATsunami) => TsunamiPreWindowState | undefined {
+  const tsunamis: JMATsunami[] = []
   for (const entry of entries) {
     if (entry.payload.kind !== 'event') continue
     const ev = entry.payload.event
     if (ev.kind !== 'tsunami') continue
-    const tsunami = ev as JMATsunami
-    const key = tsunamiGroupKey(tsunami)
-    const group = groups.get(key)
-    if (group) group.push(tsunami)
-    else groups.set(key, [tsunami])
+    tsunamis.push(ev as JMATsunami)
+  }
+  const groupOf = groupTsunamiReports(tsunamis)
+  const groups = new Map<number, JMATsunami[]>()
+  for (const t of tsunamis) {
+    const gi = groupOf.get(t)!
+    const group = groups.get(gi)
+    if (group) group.push(t)
+    else groups.set(gi, [t])
   }
 
-  const states = new Map<string, TsunamiPreWindowState>()
-  for (const [key, reports] of groups) {
+  const states = new Map<number, TsunamiPreWindowState>()
+  for (const [gi, reports] of groups) {
     const identified = !!reports[0].eventId
-    if (identified && reports.some(r => r.cancelled)) {
-      states.set(key, { alive: false })
+    if (identified && reports.some(r => r.cancelled && !isPartialTsunamiRetraction(r))) {
+      states.set(gi, { alive: false })
       continue
     }
-    const validDateTime = latestValidDateTime(reports)
+    const folded = foldTsunamiReports(reports)
+    const validDateTime = folded ? latestValidDateTime([folded]) : latestValidDateTime(reports)
     const expired = validDateTime
       ? new Date(validDateTime).getTime() <= targetTime.getTime()
       : isStaleWithoutValidity(reports, targetTime)
-    states.set(key, { alive: !expired, validDateTime })
+    states.set(gi, { alive: !expired, validDateTime })
   }
-  return states
+  return (tsunami) => {
+    const gi = groupOf.get(tsunami)
+    return gi === undefined ? undefined : states.get(gi)
+  }
 }
 
 /**
@@ -1512,7 +1544,7 @@ export function filterPreWindowEvents(
 
     if (ev.kind === 'tsunami') {
       const tsunami = ev as JMATsunami
-      const state = tsunamiStates.get(tsunamiGroupKey(tsunami))
+      const state = tsunamiStates(tsunami)
       if (!state) {
         // 状態は同じ `entries` から作るので、ここへ来るのは作る側と読む側の入力が食い違ったとき
         // だけ。津波が 1 件も出ない結果は画面上「静かな時間だった」と見分けが付かないので、
@@ -1523,7 +1555,12 @@ export function filterPreWindowEvents(
       if (!state.alive) continue
       // その津波に対して最後に伝えられた期限を、期限を持たない報にも持たせる。補わないと
       // 最後の報で失効の予約が積まれず、期限を過ぎても画面から消えなくなる。
-      if (state.validDateTime && !tsunami.validDateTime) {
+      //
+      // **期限を持つ報の期限も、最後に決まった値へ揃える。** 期限は最新の津波警報等が決めるので
+      // （→ `mergeTsunamiReports`）、予報の後に注意報へ引き上げた津波では最後の期限が「無し」になる。
+      // 予報の報が持っていた古い期限を残すと、その報を受けた瞬間に「期限切れ」で画面から消え、
+      // 続く報が新しい発表として組み直される。
+      if (!tsunami.cancelled && tsunami.validDateTime !== state.validDateTime) {
         result.push({
           ...entry,
           payload: { kind: 'event', event: { ...tsunami, validDateTime: state.validDateTime } },
@@ -2582,4 +2619,286 @@ export async function fetchDmdataQuakeHistory(
     failedArchiveUrls: [...failedArchiveUrls, ...uncovered.map(d => `uncovered:${d}`), ...straddleFailures],
     rateLimitedSources, rateLimitedTelegrams, hasMore, oldestLoadedDay,
   }
+}
+
+/**
+ * 地震ごとの緊急地震速報の最終報（→ {@link fetchDmdataEewOrigins}）。
+ *
+ * **秒まである発生時刻と仮定震源要素の見分けは `eew` が持つ**（`earthquake.originTime`・`earthquake.condition`）。
+ * 呼び出し側は画面で受けた報と同じ関数（`useQuakeOriginSeconds` の `eewOriginsFromActive`）で記録に変える。
+ */
+export interface DmdataEewOriginsResult {
+  /** 地震ごとの最終報（取消の報も含む。`cancelled` が立つ）。 */
+  readonly finals: EEWAlert[]
+  /** 一覧（`/v2/gd/eew`）が取り消されたと伝えた地震 ID。 */
+  readonly canceledIds: string[]
+  /**
+   * 期間を取りきれたか。**偽なら取り直す値打ちがある**（一覧・目録・アーカイブのどれかが読めなかった、
+   * 地震ごとの取得を上限や失敗で打ち切った、止められた）。地震ごとの詳細が「受けている種別の報が無い」と
+   * 答えたのは取りきれた側に数える（警報だけを受けている人の、予報で終わった地震）。
+   */
+  readonly complete: boolean
+}
+
+/**
+ * 地震ごとに詳細と最終報の本文を取る経路の、1 回の呼び出しあたりの上限（地震の数）。1 地震 2 リクエスト。
+ * **アーカイブが全部読めなかった場合も期間の全地震を覆う**ように、直近 8 日（2026-10-07〜15）の実測で期間全体が
+ * 22 地震だったのに余裕を見て置いた（破綻する境界を測った値ではない。群発の最中は超えうる）。超えたら打ち切りを
+ * 記録し、取りきれていないことにする（呼び出し側が取り直す）。
+ */
+const EEW_PER_EVENT_MAX = 50
+/** 地震ごとの取得が続けて失敗したら打ち切る回数（認証切れ・配信の停止の間に件数ぶん撃たない）。 */
+const EEW_PER_EVENT_MAX_CONSECUTIVE_ERRORS = 3
+
+/** 取り込む種別（VXSE45 / VXSE43）が入っているアーカイブの分類。 */
+function eewArchiveClassification(eewHeadType: EewHeadType): string {
+  return eewHeadType === 'VXSE45' ? 'eew.forecast' : 'eew.warning'
+}
+
+/**
+ * 1 日ぶんのアーカイブの目録から、地震ごとに最終報（報番号がいちばん大きい XML 版）を選ぶ。
+ * **本体は開かない**（目録の `xmlReport.head` が地震 ID と報番号を持つ。2024-01-03 の控えで確かめた）。
+ *
+ * 試験の報・JSON 版（`originalId` を持つ）は数えない。受けていない種別は選ばないが、**報番号は数える**
+ * （`maxSerial`。その地震の報がこの日のどこまで目録に載っているかを、一覧の最終報の報番号と比べるため）。
+ * 地震 ID か報番号を名乗らないエントリは採らず、その件数を `unidentified` に返す（目録の書式が変わると
+ * 全件がここへ落ちる。そのときは全地震が地震ごとの経路へ回るので黙って欠けはしないが、呼び出し側が記録する）。
+ */
+function pickFinalEewEntries(
+  manifest: readonly ManifestEntry[], eewHeadType: EewHeadType,
+): { picked: ManifestEntry[]; maxSerial: Map<string, number>; unidentified: number; firstUnidentifiedId: string | null } {
+  const finals = new Map<string, { serial: number; entry: ManifestEntry }>()
+  const maxSerial = new Map<string, number>()
+  let unidentified = 0
+  let firstUnidentifiedId: string | null = null
+  for (const entry of manifest) {
+    if (!entry?.head || entry.head.test || entry.originalId) continue
+    const head: { eventId?: unknown; serial?: unknown } = entry.xmlReport?.head ?? {}
+    const eventId = typeof head.eventId === 'string' && head.eventId !== '' ? head.eventId : null
+    // 空文字は `Number('')` が 0 になって通ってしまうので、文字列の中身で見る。
+    const serial = typeof head.serial === 'string' && head.serial.trim() !== '' ? Number(head.serial) : Number.NaN
+    if (eventId === null || !Number.isFinite(serial)) {
+      unidentified += 1
+      firstUnidentifiedId ??= entry.id ?? null
+      continue
+    }
+    maxSerial.set(eventId, Math.max(maxSerial.get(eventId) ?? -Infinity, serial))
+    if (entry.head.type !== eewHeadType) continue
+    const cur = finals.get(eventId)
+    if (cur === undefined || serial > cur.serial) finals.set(eventId, { serial, entry })
+  }
+  return { picked: [...finals.values()].map(v => v.entry), maxSerial, unidentified, firstUnidentifiedId }
+}
+
+/**
+ * 一覧の 1 地震を、地震ごとに取りに行くか（→ {@link fetchDmdataEewOrigins} の 2）。
+ *
+ * - 取り消された地震は取らない（一覧が伝えている）
+ * - 最終報の時刻が期間の外の地震は取らない（一覧は日付単位で引くので、期間の前後の地震が混じる）。時刻が読めなければ取る
+ * - 警報だけを受けている人は、警報を出していないと一覧が伝える地震を取らない（VXSE43 が無い）
+ * - 読めた目録に、その地震の報が一覧の最終報の報番号まで載っていれば、アーカイブで取りきれている。ただし受けている
+ *   種別の報を選んだのに本文を読めなかった地震は取り直す。**一覧の報番号が読めなければ取りに行く**（目録に載っていた
+ *   だけでは、日をまたいだ地震の途中の報で止まる）
+ *
+ * **警報だけを受けている人の、最終報が警報でない地震は、毎回取りに行く**（目録の警報の報番号が一覧の最終報に届かない）。
+ * 詳細は最新の報に VXSE43 が無いと答え（`none`）、記録は目録の警報の報のまま。1 地震 1 件。件数は数えていない
+ * （既知の制約）。
+ */
+export function needsPerEventFetch(
+  ev: DmdataEewListEvent,
+  ctx: {
+    readonly eewHeadType: EewHeadType
+    readonly seenSerial: ReadonlyMap<string, number>
+    readonly ownTypeChosen: ReadonlySet<string>
+    readonly readEventIds: ReadonlyMap<string, unknown>
+    readonly fromMs: number
+    readonly toMs: number
+  },
+): boolean {
+  if (ev.canceled) return false
+  if (Number.isFinite(ev.lastReportMs) && (ev.lastReportMs < ctx.fromMs || ev.lastReportMs > ctx.toMs)) return false
+  if (ctx.eewHeadType === 'VXSE43' && ev.warning === false) return false
+  const seen = ctx.seenSerial.get(ev.eventId)
+  const archiveReachedFinal = seen !== undefined && Number.isFinite(ev.lastSerial) && seen >= ev.lastSerial
+  if (!archiveReachedFinal) return true
+  return ctx.ownTypeChosen.has(ev.eventId) && !ctx.readEventIds.has(ev.eventId)
+}
+
+/**
+ * 期間内に緊急地震速報が出た地震ごとに、**最終報の本文**を読んで返す（地震カードの P/S 線の秒の出どころ）。
+ *
+ * 地震ごとの一覧と詳細（`/v2/gd/eew`）は `condition` の欄を持たず、仮定震源要素の報か見分けられない
+ * （2026-10-15 に実物で確かめた）ので、本文を読むしかない。**取り方は 2 通り。**
+ *
+ * 1. **アーカイブ**: 日ごとのアーカイブ（`eew.forecast` / `eew.warning`）を 1 日 1 ファイル落とし、目録から地震ごとの
+ *    最終報を選んで本文を読む。地震の数によらず 1 日 1 件で、控え（`archiveCache`・端末）に残るので 2 回目からは
+ *    新しい日の分しか取らない（2026-10-15 に目録を引いた実測で、直近 8 日は 1 日 48〜156 通・8〜29 KB）。日をまたいで
+ *    続報が出た地震は、
+ *    報番号のいちばん大きい報へ畳む
+ * 2. **地震ごと**: アーカイブで**その地震の最終報まで読めなかった**地震だけ、詳細を 1 件と最終報の本文を 1 通取る
+ *    （`fetchLatestEewReport`。本文は控えに残る）。「最終報まで読めた」は、読めた目録に載ったその地震の報番号が
+ *    一覧の最終報の報番号（`serial`）に届いていて、受けている種別の報があれば本文まで読めたこと
+ *    （→ {@link needsPerEventFetch}）。日で分けないので、当日・日をまたいだ続報・受信が翌日にずれた報・本文だけ
+ *    読めなかった報のどれも、ここで最終報を取り直す。上限は {@link EEW_PER_EVENT_MAX}
+ *
+ * 2026-10-15 ユーザー承認（「それで進めて」— アーカイブで 1 日 1 ファイル読み、アーカイブがまだできていない直近の日は
+ * 地震ごとに最終報を取る方針）。2 の「最終報まで読めたか」の判定と上限・取り直しは、承認の後に実装のレビューを受けて足した。
+ *
+ * **失敗しても投げない。** 日・地震ごとに隔離して、読めた分だけ返す。失敗は記録に残し、`complete` を偽にする。
+ *
+ * @param classifications 受けている区分。緊急地震速報の区分が無ければ何も取らない
+ * @param signal 止める合図（呼び出し側が結果を要らなくなったとき）。日・地震の区切りで見る
+ */
+export async function fetchDmdataEewOrigins(
+  apiKey: string,
+  fromTime: Date,
+  toTime: Date,
+  classifications: readonly DmdataClassification[],
+  signal: AbortSignal | null,
+): Promise<DmdataEewOriginsResult> {
+  const finals: EEWAlert[] = []
+  const eewHeadType = eewHeadTypeFor(classifications)
+  if (eewHeadType === null) {
+    log.info('[eew-origin] 緊急地震速報の区分を受けていないため、過去の緊急地震速報を取りません')
+    return { finals, canceledIds: [], complete: true }
+  }
+  if (!(fromTime.getTime() < toTime.getTime())) {
+    log.warn('[eew-origin] 期間が不正なため取りません', { from: fromTime.toISOString(), to: toTime.toISOString() })
+    return { finals, canceledIds: [], complete: true }
+  }
+  const stopped = () => signal?.aborted === true
+
+  // 一覧は 2 の材料と取消の両方に使う（1〜数件）。
+  const list = await fetchDmdataEewEventList(apiKey, fromTime.getTime(), toTime.getTime())
+  const canceledIds = list.events.filter(e => e.canceled).map(e => e.eventId)
+  let complete = list.complete
+
+  // 1. アーカイブ
+  const wantedDays = archiveDaysForWindow(fromTime, toTime)
+  const listRange = archiveListRange(wantedDays)
+  let items: ArchiveItem[] = []
+  if (listRange !== null && !stopped()) {
+    try {
+      items = await listArchives(apiKey, listRange.from, listRange.to, eewArchiveClassification(eewHeadType), null, null)
+    } catch (e) {
+      complete = false
+      log.warn('[eew-origin] アーカイブの目録を引けませんでした（一覧の地震を地震ごとに取ります）', e)
+    }
+  }
+  const targets = items.filter(i => wantedDays.has(i.date))
+  const dec = new TextDecoder()
+  // 地震ごとに報番号のいちばん大きい報へ畳む。**日をまたいで続報が出た地震は、両方の日に最終報の候補が出る**
+  // （日ごとに選ぶので）。後に読んだ日を勝たせると、目録の並び次第で途中の報が残る。
+  const byEvent = new Map<string, { serial: number; eew: EEWAlert }>()
+  /** 読めた目録に載った、地震ごとの最大の報番号（種別を問わない）。 */
+  const seenSerial = new Map<string, number>()
+  /** 受けている種別の報を目録で選んだ地震（本文を読めなかったら、地震ごとに取り直す）。 */
+  const ownTypeChosen = new Set<string>()
+  let readDayCount = 0
+  let failedDays = 0
+  for (const item of targets) {
+    if (stopped()) break
+    let files: Map<string, Uint8Array> | undefined
+    let picked: ManifestEntry[]
+    try {
+      let manifest = manifestCache.get(item.url)
+      if (!manifest) {
+        files = await downloadArchive(item.url, apiKey, item.date, null)
+        const manifestBytes = files.get('telegrams.json')
+        if (!manifestBytes) throw new Error('telegrams.json がありません')
+        manifest = JSON.parse(dec.decode(manifestBytes)) as ManifestEntry[]
+        manifestCache.set(item.url, manifest)
+      }
+      const choice = pickFinalEewEntries(manifest, eewHeadType)
+      picked = choice.picked
+      for (const [eventId, serial] of choice.maxSerial) seenSerial.set(eventId, Math.max(seenSerial.get(eventId) ?? -Infinity, serial))
+      for (const entry of picked) { const id = entry.xmlReport?.head?.eventId; if (id) ownTypeChosen.add(id) }
+      if (choice.unidentified > 0) {
+        log.warn(`[eew-origin] 目録に地震 ID か報番号を読めない報が ${choice.unidentified} 通ありました date=${item.date}`
+          + `（最初の id=${choice.firstUnidentifiedId ?? '不明'}。その報は選びません）`)
+      }
+      if (picked.length > 0 && files === undefined) files = await downloadArchive(item.url, apiKey, item.date, null)
+    } catch (e) {
+      failedDays += 1
+      complete = false
+      log.warn(`[eew-origin] アーカイブを読めませんでした date=${item.date}（その日の地震は地震ごとに取ります）`, e)
+      continue
+    }
+    readDayCount += 1
+    const dayFiles = files
+    // **1 通の読み取りの失敗で、その日の残りの地震を落とさない。**
+    for (const entry of picked) {
+      if (dayFiles === undefined) break
+      try {
+        const name = findBodyFileName(entry, dayFiles)
+        if (name === undefined) {
+          log.warn(`[eew-origin] 最終報の本文がアーカイブにありません date=${item.date} id=${entry.id}（${bodyMissReason(entry)}）`)
+          continue
+        }
+        const payload = buildXmlPayload(entry.head.type, dec.decode(dayFiles.get(name)), eewHeadType)
+        const eew = payload?.kind === 'event' && payload.event.kind === 'eew' ? (payload.event as EEWAlert) : null
+        const eventId = eew?.issue?.eventId
+        if (eew === null || !eventId) {
+          log.warn(`[eew-origin] 最終報を読み取れませんでした date=${item.date} id=${entry.id}`)
+          continue
+        }
+        const serial = Number(entry.xmlReport?.head?.serial)
+        const cur = byEvent.get(eventId)
+        if (cur === undefined || serial > cur.serial) byEvent.set(eventId, { serial, eew })
+      } catch (e) {
+        log.warn(`[eew-origin] 最終報を読み取れませんでした date=${item.date} id=${entry.id}`, e)
+      }
+    }
+  }
+  for (const { eew } of byEvent.values()) finals.push(eew)
+
+  // 2. アーカイブで最終報まで読めなかった地震。
+  // 一覧の報番号が読めない地震は、目録で取りきれたか比べられず地震ごとに取る。配信の書式が変わると全件がこうなるので数を残す。
+  const unknownSerial = list.events.filter(ev => !ev.canceled && !Number.isFinite(ev.lastSerial)).length
+  if (unknownSerial > 0) {
+    log.warn(`[eew-origin] 一覧に報番号を読めない地震が ${unknownSerial} 件ありました（アーカイブで読めたかを比べられないので地震ごとに取ります）`)
+  }
+  const perEvent = list.events.filter(ev => needsPerEventFetch(ev, {
+    eewHeadType, seenSerial, ownTypeChosen, readEventIds: byEvent, fromMs: fromTime.getTime(), toMs: toTime.getTime(),
+  }))
+  const headers = { Authorization: authHeader(apiKey) }
+  let fromLive = 0
+  let tried = 0
+  let consecutiveErrors = 0
+  for (const ev of perEvent) {
+    if (stopped()) break
+    if (tried >= EEW_PER_EVENT_MAX) {
+      complete = false
+      log.warn(`[eew-origin] 地震ごとの取得が上限（${EEW_PER_EVENT_MAX} 地震）に達したため打ち切りました（残り ${perEvent.length - tried} 地震）`)
+      break
+    }
+    tried += 1
+    let found: LatestEewReport
+    try {
+      found = await fetchLatestEewReport(apiKey, headers, ev.eventId, eewHeadType, false)
+    } catch (e) {
+      log.warn(`[eew-origin] 最終報を取れませんでした eventId=${ev.eventId}`, e)
+      found = { kind: 'failed' }
+    }
+    if (found.kind === 'failed') {
+      // 失敗の中身は `fetchLatestEewReport` が記録している。ここは打ち切りの判断だけ。
+      consecutiveErrors += 1
+      complete = false
+      if (consecutiveErrors >= EEW_PER_EVENT_MAX_CONSECUTIVE_ERRORS) {
+        log.warn(`[eew-origin] 地震ごとの取得が ${consecutiveErrors} 回続けて失敗したため打ち切りました（残り ${perEvent.length - tried} 地震）`)
+        break
+      }
+      continue
+    }
+    consecutiveErrors = 0
+    if (found.kind === 'report') { finals.push(found.eew); fromLive += 1 }
+  }
+  if (stopped()) complete = false
+  log.info(
+    `[eew-origin] 過去の緊急地震速報: アーカイブ ${readDayCount} 日（読めなかった ${failedDays} 日）から ${byEvent.size} 地震・`
+    + `地震ごとに ${fromLive} 地震（試した ${tried} 地震）・取消 ${canceledIds.length} 地震`
+    + (list.complete ? '' : '（一覧は途中までしか読めていません）')
+    + (complete ? '' : '（取りきれていません）'),
+  )
+  return { finals, canceledIds, complete }
 }

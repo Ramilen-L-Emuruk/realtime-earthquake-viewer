@@ -15,11 +15,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { EEWAlert } from '../types/earthquake'
 import { hasDepth, hasMagnitude } from '../utils/formatters'
+import { isProvisionalHypocenter } from '../utils/eew'
 import type { DetectedPoint } from '../utils/kyoshinDetectionView'
 import { kyoshinIndexToJma } from '../utils/kyoshinIntensity'
 import { log } from '../utils/logger'
 import type { Mseed2Record } from '../utils/miniseed2'
-import { activeEpochsAt, loadPublicStations, type PublicStationsFile } from '../utils/publicStations'
+import { activeEpochsAt, checkPublicStations, subscribePublicStations, loadPublicStations, type PublicStationsFile, type PublicStationEpoch } from '../utils/publicStations'
 import { splitMseed2Stream } from '../utils/miniseed2Stream'
 import { pushPublicRecord } from '../utils/publicQuakeColumns'
 import { planPublicReplayFetch, PUBLIC_REPLAY_CHUNK_MS, PUBLIC_REPLAY_LEAD_MS, type PublicReplayFetched } from '../utils/publicReplayPlan'
@@ -99,14 +100,14 @@ function selectionSource(eew: EEWAlert | null, detection: { lat: number; lon: nu
   if (eew !== null) {
     const h = eew.earthquake.hypocenter
     if (Number.isFinite(h.latitude) && Number.isFinite(h.longitude)) {
-      // **`condition` を参照する箇所は eew-spec.md §5 に列挙する決まり。**
+      // **仮定震源の判定に連動する箇所は eew-spec.md §5 に列挙する決まり。**
       return {
         kind: 'hypocenter',
         lat: h.latitude,
         lon: h.longitude,
         depthKm: hasDepth(h.depth) ? h.depth : null,
         magnitude: hasMagnitude(h.magnitude) ? h.magnitude : null,
-        assumed: eew.earthquake.condition === '仮定震源要素',
+        assumed: isProvisionalHypocenter(eew),
       }
     }
   }
@@ -153,8 +154,9 @@ export function usePublicWaves(params: {
 
   const [file, setFile] = useState<PublicStationsFile | null>(null)
   useEffect(() => {
-    if (!enabled || file !== null) return
+    if (!enabled) return
     let cancelled = false
+    const unsubscribe = subscribePublicStations(next => { if (!cancelled) setFile(next) })
     loadPublicStations()
       .then((f) => {
         if (!cancelled) setFile(f)
@@ -162,11 +164,12 @@ export function usePublicWaves(params: {
       .catch((e) => log.warn('[public-wave] 公開観測点の表を読めなかった', e))
     return () => {
       cancelled = true
+      unsubscribe()
     }
-  }, [enabled, file])
+  }, [enabled])
 
   // **いまの時刻で運用している観測点**（分の単位で見直せば足りる。運用の区切りは日の単位）。
-  const minute = Math.floor(serverNow() / 60_000)
+  const minute = Math.floor((replayOffsetMs === null ? serverNow() : Date.now() + replayOffsetMs) / 60_000)
   const epochs = useMemo(() => (file === null ? [] : activeEpochsAt(file, minute * 60_000)), [file, minute])
 
   // --- 選び方（揺れの間の記憶） ---
@@ -178,6 +181,15 @@ export function usePublicWaves(params: {
   // **検知も鍵に入れる**（速報が仮定震源要素のときは検知で仮に選ぶので、検知が後から現れたら選び直す）
   const sourceKey = source === null ? '' : JSON.stringify([source, source.kind === 'hypocenter' ? detection : null])
   const [selected, setSelected] = useState<readonly SelectedPublicStation[]>([])
+  // **再生を始めた・止めた・時刻を変えたら、選び方の記憶と余韻を落とす**（別の時間軸の観測点・番号を持ち越さない）
+  const timelineRef = useRef(replayOffsetMs)
+  useEffect(() => {
+    if (timelineRef.current === replayOffsetMs) return
+    timelineRef.current = replayOffsetMs
+    selectionRef.current = EMPTY_PUBLIC_SELECTION
+    setSelected([])
+    setLingering(false)
+  }, [replayOffsetMs])
   useEffect(() => {
     if (source === null || epochs.length === 0) return
     const next = selectPublicStations({ prev: selectionRef.current, epochs, source, detection: source.kind === 'hypocenter' ? detection : null })
@@ -185,7 +197,7 @@ export function usePublicWaves(params: {
     setSelected(next.selected)
     // `source` は `sourceKey` で見る（毎レンダー新しいオブジェクトになるため）。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sourceKey, epochs])
+  }, [sourceKey, epochs, replayOffsetMs])
   useEffect(() => {
     if (shaking) {
       setLingering(true)
@@ -198,21 +210,13 @@ export function usePublicWaves(params: {
       setSelected([])
     }, LINGER_MS)
     return () => clearTimeout(timer)
-  }, [shaking, lingering])
-  // **再生を始めた・止めた・時刻を変えたら、選び方の記憶と余韻を落とす**（別の時間軸の観測点・番号を持ち越さない）
-  const timelineRef = useRef(replayOffsetMs)
-  useEffect(() => {
-    if (timelineRef.current === replayOffsetMs) return
-    timelineRef.current = replayOffsetMs
-    selectionRef.current = EMPTY_PUBLIC_SELECTION
-    setSelected([])
-    setLingering(false)
-  }, [replayOffsetMs])
+  }, [shaking, lingering, replayOffsetMs])
   const visible = enabled && lingering && selected.length > 0
 
   // --- 受信（タブどうしで 1 本） ---
   const buffersRef = useRef(new Map<string, PublicWaveBuffer>())
   const receivedAtRef = useRef(new Map<string, number>())
+  const bufferEpochsRef = useRef(new Map<string, PublicStationEpoch>())
   const epochsRef = useRef(epochs)
   epochsRef.current = epochs
   const [status, setStatus] = useState<PublicLinkStatus>({ kind: 'idle' })
@@ -223,13 +227,24 @@ export function usePublicWaves(params: {
     const epoch = epochsRef.current.find((e) => e.code === rec.station)
     if (epoch === undefined) return
     let buffer = buffersRef.current.get(rec.station)
-    if (buffer === undefined) {
+    if (buffer === undefined || bufferEpochsRef.current.get(rec.station) !== epoch) {
+      bufferEpochsRef.current.set(rec.station, epoch)
       buffer = new PublicWaveBuffer(retainSecRef.current)
       buffersRef.current.set(rec.station, buffer)
     }
     // 置き方は地震カード（保存庫）と同じ 1 か所（`pushPublicRecord`）
     if (pushPublicRecord(buffer, epoch, rec).kind === 'ok') receivedAtRef.current.set(rec.station, performance.now())
   }, [])
+  useEffect(() => {
+    // 換算済みの値へ新しい感度を混ぜない。次のレコードから現在のエポックで組み直す。
+    for (const code of buffersRef.current.keys()) {
+      if (bufferEpochsRef.current.get(code) !== epochs.find(e => e.code === code)) {
+        buffersRef.current.delete(code)
+        receivedAtRef.current.delete(code)
+        bufferEpochsRef.current.delete(code)
+      }
+    }
+  }, [epochs])
   useEffect(() => {
     // 再生中は SeedLink を使わない（下の保存庫の先取り）
     if (!enabled || replaying) return
@@ -249,6 +264,10 @@ export function usePublicWaves(params: {
   }, [enabled, replaying, onRecord])
   const stationCodes = useMemo(() => epochs.map((e) => e.code), [epochs])
   const need = enabled && (visible || alwaysConnected)
+  useEffect(() => {
+    if (need && file !== null) void checkPublicStations()
+  }, [need, file])
+
   useEffect(() => {
     if (replaying) return
     shareRef.current?.setNeed(need, spanSec, stationCodes)
@@ -286,8 +305,8 @@ export function usePublicWaves(params: {
             if (stream.unreadable.length > 0) log.debug(`[public-wave] 再生中の保存庫の応答で読めないレコード ${stream.unreadable.length} 本`)
             for (const rec of stream.records) onRecord(rec)
           } else {
-            // **全観測点が 404 も先へ進まず、間をあけて取り直す**（保存庫が一時的に何を頼んでも 404 を返すことがある。
-            // 2026-10-15 に実測。先へ進むと、その範囲は再生している間ずっと空のまま）
+            // 問い合わせ全体の204/404も不在を確定せず、間を空けて取り直す。
+            // 過去に404から200へ変わる応答が記録されているが、原因は未特定。先へ進むとその範囲を再取得しない。
             retryAtMs = Date.now() + REPLAY_RETRY_MS
             log.warn(`[public-wave] 再生中に保存庫から下部の波形を取れなかった（${res.kind === 'no-data' ? '全観測点が 404' : res.kind}${res.kind === 'http-error' ? ` ${res.status}` : ''}）`)
             return
@@ -310,7 +329,7 @@ export function usePublicWaves(params: {
       receivedAtRef.current.clear()
       setStatus({ kind: 'idle' })
     }
-  }, [enabled, replaying, replayOffsetMs, need, onRecord])
+  }, [enabled, replaying, replayOffsetMs, need, onRecord, file])
 
   // --- 途絶（受け取ってからの経過で測る。§5.3） ---
   const [staleCodes, setStaleCodes] = useState<ReadonlySet<string>>(new Set())

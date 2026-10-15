@@ -3,32 +3,10 @@ import { zipSync } from 'fflate'
 import type { TelegramLogEntry } from '../../types/earthquake'
 import { isDmdss } from '../../utils/env'
 import { formatFileStamp, readDateTime } from '../../utils/formatters'
-
-// VXSE43 は、予報が無く警報だけを受けている人には緊急地震速報そのもの。予報を受けている人には
-// 購読外だが、配信分類が変わって届いた場合に `filtered` として記録する（services/dmdata.ts）。
-const HEAD_TYPE_LABEL: Record<string, string> = {
-  VXSE43: 'EEW警報',
-  VXSE44: 'EEW予報（旧形式）',
-  VXSE45: 'EEW地震動予報',
-  VXSE51: '震度速報',
-  VXSE52: '震源情報',
-  VXSE53: '震源・震度',
-  VXSE61: '顕著な地震の震源要素更新のお知らせ',
-  VTSE41: '津波警報・注意報',
-  VTSE51: '津波観測に関する情報',
-  VTSE52: '沖合の津波観測に関する情報',
-  VXSE62: '長周期',
-  '551': '地震情報',
-  '552': '津波情報',
-  '556': 'EEW',
-}
-
-const KIND_LABEL: Record<string, string> = {
-  eew: 'EEW',
-  quake: '地震',
-  tsunami: '津波',
-  lpgm: '長周期',
-}
+import {
+  KIND_LABEL, KIND_OPTIONS, headTypeLabel, matchesTelegramFilter, readKindFilter, telegramLogKindOf,
+  type KindFilter, type SourceFilter,
+} from './labels'
 
 const STATUS_BADGE: Record<TelegramLogEntry['status'], { label: string; className: string }> = {
   parsed:   { label: '✓', className: 'text-green-400' },
@@ -102,9 +80,6 @@ function triggerDownload(text: string, filename: string) {
   URL.revokeObjectURL(url)
 }
 
-type SourceFilter = 'all' | 'dmdss' | 'p2pquake'
-type KindFilter = 'all' | 'eew' | 'quake' | 'tsunami' | 'lpgm' | 'filtered' | 'error'
-
 interface Props {
   telegramLog: TelegramLogEntry[]
   onClear: () => void
@@ -118,13 +93,7 @@ export const TelegramTab = memo(function TelegramTab({ telegramLog, onClear }: P
   const [copied, setCopied] = useState<string | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
-  const filtered = telegramLog.filter(entry => {
-    if (sourceFilter !== 'all' && entry.source !== sourceFilter) return false
-    if (kindFilter === 'all') return true
-    if (kindFilter === 'filtered') return entry.status === 'filtered'
-    if (kindFilter === 'error') return entry.status === 'error'
-    return entry.kind === kindFilter
-  })
+  const filtered = telegramLog.filter(entry => matchesTelegramFilter(entry, sourceFilter, kindFilter))
 
   const allFilteredSelected = filtered.length > 0 && filtered.every(e => selectedIds.has(e.id))
 
@@ -248,14 +217,13 @@ export const TelegramTab = memo(function TelegramTab({ telegramLog, onClear }: P
         )}
         <select
           value={kindFilter}
-          onChange={e => setKindFilter(e.target.value as KindFilter)}
+          onChange={e => setKindFilter(readKindFilter(e.target.value))}
           className="flex-1 text-xs bg-card border border-border rounded-sm px-2 py-1 text-secondary focus:text-white focus:outline-hidden"
         >
           <option value="all">全種別</option>
-          <option value="eew">EEW</option>
-          <option value="quake">地震</option>
-          <option value="tsunami">津波</option>
-          <option value="lpgm">長周期</option>
+          {KIND_OPTIONS.map(kind => (
+            <option key={kind} value={kind}>{KIND_LABEL[kind]}</option>
+          ))}
           <option value="filtered">スキップ</option>
           <option value="error">エラー</option>
         </select>
@@ -313,8 +281,9 @@ export const TelegramTab = memo(function TelegramTab({ telegramLog, onClear }: P
                 const badge = STATUS_BADGE[entry.status]
                 const isExpanded = expandedId === entry.id
                 const isSelected = selectedIds.has(entry.id)
-                const typeLabel = HEAD_TYPE_LABEL[entry.headType] ?? entry.headType
-                const kindLabel = entry.kind ? KIND_LABEL[entry.kind] : null
+                const typeLabel = headTypeLabel(entry.headType)
+                const kind = telegramLogKindOf(entry)
+                const kindLabel = kind ? KIND_LABEL[kind] : null
                 const sourceLabel = entry.source === 'dmdss' ? 'DM' : 'P2'
 
                 return (

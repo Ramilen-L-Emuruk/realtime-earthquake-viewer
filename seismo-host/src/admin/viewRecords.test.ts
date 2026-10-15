@@ -510,6 +510,83 @@ describe('波形の記録タブの状態を保つ', () => {
     expect(envelopeRanges()).toContain(`${H0}-${H0 + HOUR}`)
   })
 
+  // **揺れの記録の「波形の記録で開く」から来たとき**（2026-10-15 ユーザー承認「進めて」）。記録はホストが添えた札で探す。
+  const handoffNote = (root: HTMLElement): HTMLElement => root.querySelector<HTMLElement>('.records-handoff-note')!
+
+  it('正: 札で渡されたら、その合成波形を選び、渡された範囲を当てる（前の記録の選択より優先）', async () => {
+    const from = H0 - 30 * 60_000
+    const to = H0 - 29 * 60_000
+    const ctx = memoryTabContext(new AbortController().signal, 'records', {
+      selection: { group: RAW, station: 'home', stationKey: 'home', from: String(from), to: String(to) },
+    })
+    const root = document.createElement('div')
+    await initRecordsView(root, ctx)
+    await settle()
+    expect(root.querySelector<HTMLSelectElement>('.records-group')!.value).toBe('station/home')
+    expect(ctx.selection.get('group')).toBe('station/home')
+    expect(ctx.selection.get('from')).toBe(String(from))
+    expect(ctx.selection.get('to')).toBe(String(to))
+    expect(handoffNote(root).hidden).toBe(true)
+  })
+
+  it('正: 観測点 ID が変わっていても（設定から外した・付け替えた）、札が合えばその記録を開く', async () => {
+    const ctx = memoryTabContext(new AbortController().signal, 'records', {
+      selection: { group: RAW, station: 'old-id', stationKey: 'home', from: String(H0 - 60_000), to: String(H0) },
+    })
+    const root = document.createElement('div')
+    await initRecordsView(root, ctx)
+    await settle()
+    expect(root.querySelector<HTMLSelectElement>('.records-group')!.value).toBe('station/home')
+  })
+
+  it('安全弁: 渡された札・観測点 ID は一度使ったら選択から消す（残すと選び直した記録へ毎回勝つ）', async () => {
+    const ctx = memoryTabContext(new AbortController().signal, 'records', {
+      selection: { station: 'home', stationKey: 'home', from: String(H0 - 60_000), to: String(H0) },
+    })
+    const root = document.createElement('div')
+    await initRecordsView(root, ctx)
+    await settle()
+    expect(ctx.selection.get('station')).toBeNull()
+    expect(ctx.selection.get('stationKey')).toBeNull()
+  })
+
+  it('対照: 札が一覧に無ければ先頭を範囲なしで開き、そのことを一行で知らせる', async () => {
+    const ctx = memoryTabContext(new AbortController().signal, 'records', {
+      selection: { group: RAW, station: 'gone', stationKey: 'gone-0123', from: String(H0 - 5_000), to: String(H0) },
+    })
+    const root = document.createElement('div')
+    await initRecordsView(root, ctx)
+    await settle()
+    expect(root.querySelector<HTMLSelectElement>('.records-group')!.value).toBe('station/home')
+    expect(ctx.selection.get('from')).not.toBe(String(H0 - 5_000))
+    expect(handoffNote(root).hidden).toBe(false)
+    expect(handoffNote(root).textContent).toBe('観測点 gone の合成波形は波形の記録に無いので、先頭の記録を開いた')
+  })
+
+  it('安全弁: 一覧が読めなかった回も、渡された札と範囲を消す（後で読めた回に別の記録へ当てない）', async () => {
+    respond = (url) => (url.startsWith('/api/records/channels') ? { status: 503, body: {} } : { status: 404, body: {} })
+    const ctx = memoryTabContext(new AbortController().signal, 'records', {
+      selection: { group: RAW, station: 'home', stationKey: 'home', from: String(H0 - 5_000), to: String(H0) },
+    })
+    const root = document.createElement('div')
+    await initRecordsView(root, ctx)
+    await settle()
+    expect(ctx.selection.get('stationKey')).toBeNull()
+    expect(ctx.selection.get('from')).toBeNull()
+    expect(ctx.selection.get('to')).toBeNull()
+  })
+
+  it('対照: 揺れの記録から来ていなければ、覚えていた範囲は消さない', async () => {
+    respond = (url) => (url.startsWith('/api/records/channels') ? { status: 503, body: {} } : { status: 404, body: {} })
+    const ctx = memoryTabContext(new AbortController().signal, 'records', {
+      selection: { group: RAW, from: String(H0 - 5_000), to: String(H0) },
+    })
+    const root = document.createElement('div')
+    await initRecordsView(root, ctx)
+    await settle()
+    expect(ctx.selection.get('from')).toBe(String(H0 - 5_000))
+  })
+
   it('期間の外の範囲は記録の期間へ収めて当てる', async () => {
     const ctx = memoryTabContext(new AbortController().signal, 'records', {
       selection: { group: 'station/home', from: String(H0 - 100 * HOUR), to: String(H0 - 100 * HOUR + 60_000) },

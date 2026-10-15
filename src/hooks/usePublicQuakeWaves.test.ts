@@ -10,13 +10,17 @@ import type { JMAQuake } from '../types/earthquake'
 import type { PublicStationEpoch, PublicStationsFile } from '../utils/publicStations'
 import { clearPublicWaveDb } from '../utils/publicQuakeWaveDb'
 import { setReplayOffset } from '../utils/clock'
+import { quakeEventKey } from '../utils/quakeMerge'
+import type { OriginSeconds } from '../utils/quakeOriginSeconds'
 
 const archive = vi.hoisted(() => ({ fetch: vi.fn() }))
 vi.mock('../services/publicWaveArchive', () => ({ fetchPublicWaveArchive: archive.fetch }))
 
-const stations = vi.hoisted(() => ({ load: vi.fn() }))
+const stations = vi.hoisted(() => ({ load: vi.fn(), listeners: new Set<(file: PublicStationsFile) => void>() }))
 vi.mock('../utils/publicStations', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../utils/publicStations')>()),
+  checkPublicStations: () => Promise.resolve(null),
+  subscribePublicStations: (listener: (file: PublicStationsFile) => void) => { stations.listeners.add(listener); return () => { stations.listeners.delete(listener) } },
   loadPublicStations: stations.load,
 }))
 
@@ -67,7 +71,7 @@ function quake(id: string, time: string, maxScale: number, lat = 35.5, lon = 139
 function recordsFor(codes: readonly string[]): Uint8Array {
   const parts = codes.flatMap((station) =>
     (['BHE', 'BHN', 'BHZ'] as const).map(
-      (channel) => steim2Record(new Int32Array(200).fill(1000), { station, channel, factor: 20, multiplier: 1 }).bytes,
+      (channel) => steim2Record(Int32Array.from({ length: 200 }, (_, i) => 1000 + i), { station, channel, factor: 20, multiplier: 1 }).bytes,
     ),
   )
   const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0))
@@ -142,6 +146,48 @@ describe('usePublicQuakeWaves', () => {
     expect(archive.fetch).toHaveBeenCalledTimes(1)
   })
 
+  it('取得後に発生秒が判明したら、再取得せず時間軸と到達線を更新する', async () => {
+    archive.fetch.mockResolvedValue({ kind: 'ok', bytes: recordsFor(['AAA', 'BBB']) })
+    const quakes = [quake('q1', TIME, 30)]
+    const key = quakeEventKey(quakes[0])
+    const h = renderHook(({ seconds }: { seconds: ReadonlyMap<string, OriginSeconds> }) =>
+      usePublicQuakeWaves({ enabled: true, quakes, originSeconds: seconds, openedEventKey: null, liveNumbers: null, readLiveRaw, replayOffsetMs: null }),
+      { initialProps: { seconds: NO_SECONDS as ReadonlyMap<string, OriginSeconds> } },
+    )
+    await waitFor(() => expect(h.result.current.get(key)?.length).toBe(2))
+    const before = h.result.current.get(key)![0]
+    expect(before.card.axisZero.kind).toBe('minute')
+    expect(before.card.arrival).toBeNull()
+    const originMs = Date.parse('2026-10-13T11:44:05Z')
+    h.rerender({ seconds: new Map([[key, { originMs, source: 'catalog' as const }]]) })
+    await waitFor(() => expect(h.result.current.get(key)![0].card.axisZero.kind).toBe('origin'))
+    const after = h.result.current.get(key)![0]
+    expect(after.card.axisZero.ms).toBe(originMs)
+    expect(after.card.arrival).not.toBeNull()
+    expect(after.card.reach).not.toEqual(before.card.reach)
+    expect(after.window).toBe(before.window)
+    expect(archive.fetch).toHaveBeenCalledTimes(1)
+    // 秒の出どころだけが変わった場合も反映し、秒が消えたら線を残さない。
+    h.rerender({ seconds: new Map([[key, { originMs, source: 'eew' as const }]]) })
+    await waitFor(() => expect(h.result.current.get(key)![0].card.axisZero).toMatchObject({ kind: 'origin', source: 'eew' }))
+    h.rerender({ seconds: NO_SECONDS })
+    await waitFor(() => expect(h.result.current.get(key)![0].card.axisZero.kind).toBe('minute'))
+    expect(h.result.current.get(key)![0].card.arrival).toBeNull()
+    expect(archive.fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('観測点の感度が更新されたら、取得済みの生バイトで換算し直す', async () => {
+    archive.fetch.mockResolvedValue({ kind: 'ok', bytes: recordsFor(['AAA', 'BBB']) })
+    const h = render([quake('q1', TIME, 30)])
+    await waitFor(() => expect([...h.result.current.values()][0]?.length).toBe(2))
+    const before = [...h.result.current.values()][0][0]
+    const next: PublicStationsFile = { ...FILE, stations: FILE.stations.map(e => ({ ...e, channels: e.channels.map(c => ({ ...c, sensitivity: c.sensitivity * 2 })) })) }
+    await act(async () => { for (const listener of stations.listeners) listener(next) })
+    const after = [...h.result.current.values()][0][0]
+    expect(after.window!.gal[0][0]).toBeCloseTo(before.window!.gal[0][0] / 2, 6)
+    expect(archive.fetch).toHaveBeenCalledTimes(1)
+  })
+
   // 応答に載らなかった観測点は「データが無い」と同じ扱い（カードに出さない）。
   it('応答に載らなかった観測点は出さない', async () => {
     archive.fetch.mockResolvedValue({ kind: 'ok', bytes: recordsFor(['AAA']) })
@@ -192,6 +238,51 @@ describe('usePublicQuakeWaves', () => {
       await new Promise((r) => setTimeout(r, 300))
     })
     expect(h2.result.current.size).toBe(0)
+  })
+
+  it('同じカードのまま再生時刻を戻した瞬間に未来のサンプルを外す', async () => {
+    archive.fetch.mockResolvedValue({ kind: 'ok', bytes: recordsFor(['AAA', 'BBB']) })
+    const quakes = [quake('q1', TIME, 30)]
+    const at = Date.parse('2026-10-13T12:00:00Z')
+    const offset = at - Date.now()
+    setReplayOffset(offset)
+    const h = renderHook(({ offset }: { offset: number }) => usePublicQuakeWaves({ enabled: true, quakes, originSeconds: NO_SECONDS, openedEventKey: null, liveNumbers: null, readLiveRaw, replayOffsetMs: offset }), { initialProps: { offset } })
+    await waitFor(() => expect([...h.result.current.values()][0]?.length).toBe(2))
+    const earlierMs = Date.parse('2026-10-13T11:44:31Z')
+    const earlier = earlierMs - Date.now()
+    // Appは新offsetでレンダーした後、effectで共有時計を更新する。先に時計を書き換えない。
+    h.rerender({ offset: earlier })
+    const w = [...h.result.current.values()][0][0].window!
+    expect(w.firstSampleMs + (w.gal[0].length - 1) * w.msPerSample).toBeLessThanOrEqual(earlierMs + 100)
+    expect(archive.fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('次の地震が後着したら、取得済みの旧波形をその時刻で切り戻す', async () => {
+    archive.fetch.mockResolvedValue({ kind: 'ok', bytes: recordsFor(['AAA', 'BBB']) })
+    const q1 = quake('q1', TIME, 30)
+    const key = quakeEventKey(q1)
+    const h = renderHook(({ quakes }: { quakes: readonly JMAQuake[] }) => usePublicQuakeWaves({ enabled: true, quakes, originSeconds: NO_SECONDS, openedEventKey: null, liveNumbers: null, readLiveRaw, replayOffsetMs: null }), { initialProps: { quakes: [q1] } })
+    await waitFor(() => expect(h.result.current.get(key)?.length).toBe(2))
+    const cutoff = Date.parse('2026-10-13T11:44:30Z')
+    h.rerender({ quakes: [quake('q2', '2026/10/13 20:44:30', 30), q1] })
+    const w = h.result.current.get(key)![0]
+    expect(w.range.toMs).toBe(cutoff)
+    expect(w.window!.firstSampleMs + (w.window!.gal[0].length - 1) * w.window!.msPerSample).toBeLessThanOrEqual(cutoff)
+    expect(w.card.columns.fromMs + w.card.columns.columns.length * w.card.columns.columnSpanMs).toBeLessThanOrEqual(cutoff + w.card.columns.columnSpanMs)
+  })
+
+  it.each([512, 1])('成功応答に壊れたレコード/端数（%iバイト）があっても永続的な不在にしない', async (badLength) => {
+    const good = recordsFor(['AAA'])
+    const damaged = new Uint8Array(good.length + badLength)
+    damaged.set(good)
+    archive.fetch.mockResolvedValue({ kind: 'ok', bytes: damaged })
+    const first = render([quake('q1', TIME, 30)])
+    await waitFor(() => expect([...first.result.current.values()][0]?.length).toBe(1))
+    first.unmount()
+    archive.fetch.mockResolvedValue({ kind: 'ok', bytes: recordsFor(['AAA', 'BBB']) })
+    const second = render([quake('q1', TIME, 30)])
+    await waitFor(() => expect([...second.result.current.values()][0]?.length).toBe(2))
+    expect(archive.fetch).toHaveBeenCalledTimes(2)
   })
 
   // 対照: 使わない間は取りに行かない。

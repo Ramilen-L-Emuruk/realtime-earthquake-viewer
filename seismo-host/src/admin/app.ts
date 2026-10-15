@@ -9,7 +9,7 @@
 
 import { clearStoredToken, getStoredToken, onTokenCleared, setStoredToken } from './api'
 import { confirmDiscardUnsaved, qs } from './dom'
-import { TabStates, formatHash, parseHash, type TabContext, type TabKey } from './tabState'
+import { TabStates, formatHash, parseHash, type Selection, type TabContext, type TabKey } from './tabState'
 import { installTips, tipHtml } from './tip'
 import { dismissConfirmDialog } from './confirmDialog'
 import { initBoardsView } from './viewBoards'
@@ -162,6 +162,9 @@ async function mountTab(root: HTMLElement, key: TabKey): Promise<void> {
     setUnsavedProbe: (probe) => {
       if (!signal.aborted) tab.unsaved = probe
     },
+    openTab: (to, selection) => {
+      if (!signal.aborted) void goToTab(root, to, selection)
+    },
   }
 
   if (key === 'stations') await initStationsView(content, ctx)
@@ -171,6 +174,21 @@ async function mountTab(root: HTMLElement, key: TabKey): Promise<void> {
   else if (key === 'records') await initRecordsView(content, ctx)
   else if (key === 'storage') await initStorageView(content, ctx)
   else await initStatusView(content, ctx)
+}
+
+/**
+ * タブを移る。タブの見出しを押したときと、タブの中から別のタブを開くとき（`TabContext.openTab`）の共通の道。
+ *
+ * **答えを待つ間に別のタブへ移っていたら何もしない。** 窓は後ろの画面を覆うが、「戻る」は押せる。
+ * **選択を渡されたら、行き先のタブの選択をそれで置き換える**（前に覚えていた選択より、いま開きたいものが先）。
+ */
+async function goToTab(root: HTMLElement, key: TabKey, selection?: Selection): Promise<void> {
+  const from = activeTab
+  if (!(await confirmLeave()) || activeTab !== from) return
+  flushUrl()
+  if (selection !== undefined) tabStates.replaceSelection(key, selection)
+  if (activeTab?.key !== key || selection !== undefined) history.pushState(null, '', formatHash(key, tabStates.selectionOf(key)))
+  void mountTab(root, key)
 }
 
 function renderTabs(root: HTMLElement, onSelect: (key: TabKey) => void): void {
@@ -217,15 +235,7 @@ async function main(): Promise<void> {
   // 積まない（`flushUrl` は置き換え）——観測点を 1 つ選ぶたびに「戻る」が 1 回増えると、
   // 前のタブへ戻るまでに何度も押すことになる。
   renderTabs(root, (key) => {
-    void (async () => {
-      // **答えを待つ間に別のタブへ移っていたら何もしない。** 窓は後ろの画面を覆うが、
-      // 「戻る」は押せる。
-      const from = activeTab
-      if (!(await confirmLeave()) || activeTab !== from) return
-      flushUrl()
-      if (activeTab?.key !== key) history.pushState(null, '', formatHash(key, tabStates.selectionOf(key)))
-      void mountTab(root, key)
-    })()
+    void goToTab(root, key)
   })
 
   const followPopState = (parsed: NonNullable<ReturnType<typeof parseHash>>): void => {

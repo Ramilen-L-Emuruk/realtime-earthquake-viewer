@@ -9,6 +9,7 @@ import {
   peakInRange,
   seriesRange,
   signedMovingAverages,
+  singleMemberColumns,
   vectorMagnitude,
   visibleIndexRange,
 } from './sampleSeries'
@@ -243,5 +244,62 @@ describe('signedMovingAverages', () => {
     expect(Number.isNaN(pos[1])).toBe(true)
     expect(Number.isNaN(neg[1])).toBe(true)
     expect(pos[0]).toBe(2)
+  })
+})
+
+describe('singleMemberColumns（裏付けが 1 本しか無い区間の帯）', () => {
+  /** 本数を指定したまとまり（値は 1 で揃える）。 */
+  function withMembers(startMs: number, members: number[]): WaveSampleChunk {
+    const a = Float32Array.from(members.map(() => 1))
+    return { firstSampleMs: startMs, msPerSample: MS, gal: [a, a, a], memberCount: Float32Array.from(members) }
+  }
+
+  // 正: 本数は系列まで運ばれる（以前は繋ぐときに捨てていて、詳細の窓では帯を出せなかった）。
+  it('系列は本数を持ち、途切れに挟んだ欠測は NaN', () => {
+    const s = buildSampleSeries([withMembers(T0, [3, 1]), withMembers(T0 + 200, [2])])
+    expect(Array.from(s.members.subarray(0, 2))).toEqual([3, 1])
+    expect(Number.isNaN(s.members[2])).toBe(true)
+    expect(s.members[3]).toBe(2)
+  })
+
+  // 正: 1 本以下のサンプルが掛かるピクセルだけ敷く（引いた絵: 1 ピクセルに 10 点）。
+  it('引いた絵では、1 本のサンプルが入るピクセルだけを敷く', () => {
+    const members = Array.from({ length: 100 }, (_, i) => (i >= 50 && i < 60 ? 1 : 3))
+    const s = buildSampleSeries([withMembers(T0, members)])
+    const out = singleMemberColumns(s, { fromMs: T0, toMs: T0 + 1000 }, 10)
+    expect(Array.from(out)).toEqual([0, 0, 0, 0, 0, 1, 0, 0, 0, 0])
+  })
+
+  // 正: 寄せて点がまばらでも、帯が櫛の歯にならない（前後の点との中点まで覆う）。
+  it('寄せた絵でも、1 本の点の前後の中点まで切れ目なく敷く', () => {
+    const s = buildSampleSeries([withMembers(T0, [3, 1, 1, 3])])
+    // 1 点あたり 10 ピクセル（10 ms を 10 px）。1 本の点は 10 ms と 20 ms。
+    const out = singleMemberColumns(s, { fromMs: T0, toMs: T0 + 30 }, 30)
+    // 10 ms の点は 5〜15 ms、20 ms の点は 15〜25 ms を覆う。
+    expect(Array.from(out).join('')).toBe('0'.repeat(5) + '1'.repeat(20) + '0'.repeat(5))
+  })
+
+  // 安全弁: 途切れの隣の 1 本の点が、値の無い時間（欠測）へ帯を張り出さない。
+  it('途切れの隣の点は、欠測の側へ帯を張り出さない', () => {
+    // 0・10 ms の 2 点（1 本）と、100・110 ms の 2 点（3 本）。間に欠測が挟まる（55 ms）。
+    const s = buildSampleSeries([withMembers(T0, [1, 1]), withMembers(T0 + 100, [3, 3])])
+    const out = singleMemberColumns(s, { fromMs: T0, toMs: T0 + 110 }, 110)
+    // 10 ms の点は 5〜15 ms まで（欠測の 55 ms 側へは 5 ms だけ）。それより右は敷かない。
+    expect(out.slice(16).every((x) => x === 0)).toBe(true)
+    expect(out[14]).toBe(1)
+  })
+
+  // 対照: 裏付けが 2 本以上なら何も敷かない。
+  it('裏付けが 2 本以上なら敷かない', () => {
+    const s = buildSampleSeries([withMembers(T0, [2, 3, 2, 3])])
+    expect(Array.from(singleMemberColumns(s, { fromMs: T0, toMs: T0 + 30 }, 30)).every((x) => x === 0)).toBe(true)
+  })
+
+  // 安全弁: 値の無いサンプル（3 成分とも欠測）は本数が 1 でも敷かない（カードの列と同じ）。
+  it('値の無いサンプルは本数が 1 でも敷かない', () => {
+    const nan = Float32Array.from([Number.NaN, Number.NaN])
+    const c: WaveSampleChunk = { firstSampleMs: T0, msPerSample: MS, gal: [nan, nan, nan], memberCount: Float32Array.from([1, 1]) }
+    const s = buildSampleSeries([c])
+    expect(Array.from(singleMemberColumns(s, { fromMs: T0, toMs: T0 + 10 }, 10)).every((x) => x === 0)).toBe(true)
   })
 })

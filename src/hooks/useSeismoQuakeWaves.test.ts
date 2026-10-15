@@ -557,7 +557,8 @@ describe('useSeismoQuakeWaves', () => {
       hypocenter: SECONDS_QUAKE.earthquake.hypocenter,
       stationLat: 35.5, stationLon: 139.8,
     })!
-    expect(wave?.reach).toEqual({ fromMs: fromMinute.pMs, toMs: fromMinute.sMs + 60_000 })
+    // 発生は分の頭の 30 秒前〜65 秒後のどこか（カードの時刻は地震発現の分）。
+    expect(wave?.reach).toEqual({ fromMs: fromMinute.pMs - 30_000, toMs: fromMinute.sMs + 65_000 })
   })
 
   it('秒が後から取れたら、時間軸の 0 も発生時刻へ動く', async () => {

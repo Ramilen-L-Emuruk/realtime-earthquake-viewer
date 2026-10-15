@@ -109,7 +109,7 @@ React 18 + TypeScript + Vite 6 で作られた PWA（Progressive Web App）。�
 | 津波の cancelReason 出し分け | × | ○ |
 | 詳細報での区域＋観測点同時表示 | ×（観測点のみ） | ○ |
 | 南海トラフ・後発地震情報 | × | ○ |
-| 電文ログ（TelegramTab） | ×（UI は表示・常に空） | ○ |
+| 電文ログ（TelegramTab） | ○（P2PQuake の受信） | ○（DMDATA の電文） |
 | 震源カタログ（CatalogTab） | ○ | ○ |
 | 実地震テスト再生 | ○ | ○ |
 | VOICEVOX 読み上げ | ○ | ○ |
@@ -440,7 +440,7 @@ memo を効かせるには props が参照安定である必要があるため�
 | EarthquakeTab | `src/components/EarthquakeTab/` | 地震情報カード一覧・選択 |
 | RealtimeTab | `src/components/RealtimeTab/` | EEW カード・S 波カウントダウン・揺れ検知カード |
 | TsunamiTab | `src/components/TsunamiTab/` | 津波警報・注意報・予報・観測情報 |
-| TelegramTab | `src/components/TelegramTab/` | 受信電文ログ（DMDSS 版のみ実データ、standard は空表示） |
+| TelegramTab | `src/components/TelegramTab/` | 受信電文ログ（DMDSS 版は DMDATA の電文、standard は P2PQuake の受信を記録） |
 | SettingsTab | `src/components/SettingsTab/` | 各種設定・テストボタン・実地震テスト再生・API キー入力 |
 
 ## 4.5 トップレベルのディレクトリ構成
@@ -458,7 +458,7 @@ yuremado/
 │   │   ├── EarthquakeTab/     # 地震情報タブ → quake-spec.md
 │   │   ├── RealtimeTab/       # リアルタイム震度タブ（kyoshin モード）
 │   │   ├── TsunamiTab/        # 津波情報タブ → tsunami-spec.md
-│   │   ├── TelegramTab/       # 電文ログタブ（DMDSS 版のみ実データ）
+│   │   ├── TelegramTab/       # 電文ログタブ
 │   │   ├── SettingsTab/       # 設定タブ → settings-pwa-spec.md
 │   │   ├── SpecialInfoBanner/ # 南海トラフ地震臨時情報・同 関連解説情報・後発地震のバナー
 │   │   ├── IconNav.tsx        # タブナビ（右端 or 最下部）
@@ -599,7 +599,7 @@ Redux 等のグローバルストアは使わず、React のフック（`useStat
 ## 8. PWA・Service Worker
 
 `vite-plugin-pwa` + Workbox。バリアントごとに独立した Service Worker がキャッシュを管理する。
-オフラインでも地図・UI は表示できるが、リアルタイム受信はネットワーク接続時のみ動作。
+オフラインでも地図・UI は表示できるが、リアルタイム受信はネットワーク接続時のみ動作。地図の生成データは、一度開いたときの控えから読む（初めて開いた端末では出ない）。
 
 詳細は [`settings-pwa-spec.md`](settings-pwa-spec.md) の PWA 節。
 
@@ -651,3 +651,4 @@ Redux 等のグローバルストアは使わず、React のフック（`useStat
 - 2026-10-13: Tailwind CSS を v4 へ上げた。§4「画面サイズ別のレイアウト」の分岐（`side` / `sideNarrow` / `roomy`）と
   パネル幅の定義を `tailwind.config.js` から `src/index.css`（`@custom-variant` / `@utility`）へ移した。
   これに伴い対応ブラウザの下限が Safari 16.4・Chrome / Edge 111・Firefox 128 に上がった（2026-10-13 ユーザー承認）
+- 2026-10-15: 電文ログの記述を実装に合わせた。標準版も P2PQuake の受信を記録しているのに「常に空」と書いていた（§3 の対応表・§4 と §4.5 の構成）

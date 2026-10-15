@@ -28,7 +28,8 @@ vi.mock('../services/publicWaveArchive', () => ({
 
 vi.mock('../utils/publicStations', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../utils/publicStations')>()
-  return { ...orig, loadPublicStations: () => Promise.resolve(file) }
+  return { ...orig,
+  checkPublicStations: () => Promise.resolve(null), loadPublicStations: () => Promise.resolve(file) }
 })
 
 vi.mock('../services/publicWaveShare', () => ({
@@ -163,6 +164,27 @@ describe('usePublicWaves', () => {
     expect(h.archive[0].range.fromMs).toBeLessThanOrEqual(replayNow - 120_000)
     expect(h.archive[0].range.toMs).toBeGreaterThan(replayNow)
     expect(h.archive[0].stations.length).toBeGreaterThan(0)
+  })
+
+  it('再生時刻を変えても、同じ速報の観測点を新しい時間軸で直ちに選び直す', async () => {
+    const offset = -3 * 3_600_000
+    setReplayOffset(offset)
+    const r = await mount({ ...base, replayOffsetMs: offset, eew })
+    expect(r.result.current.visible).toBe(true)
+    const first = r.result.current.stations.map(s => ({ code: s.code, number: s.number }))
+    const next = offset - 10_000
+    setReplayOffset(next)
+    r.rerender({ ...base, replayOffsetMs: next, eew })
+    await act(async () => {})
+    expect(r.result.current.visible).toBe(true)
+    expect(r.result.current.stations.map(s => ({ code: s.code, number: s.number }))).toEqual(first)
+    expect(h.archive.length).toBeGreaterThan(1)
+    // 材料が消えた別の時間軸には、前の選択・余韻を持ち越さない。
+    setReplayOffset(next - 10_000)
+    r.rerender({ ...base, replayOffsetMs: next - 10_000, eew: null })
+    await act(async () => {})
+    expect(r.result.current.visible).toBe(false)
+    expect(r.result.current.stations).toHaveLength(0)
   })
 
   // 対照: 再生中でも、出していなくて常時接続もオフなら取りに行かない。

@@ -26,7 +26,7 @@ describe('fetchPublicWaveArchive', () => {
     if (r.kind === 'ok') expect(Array.from(r.bytes)).toEqual([1, 2, 3])
   })
 
-  // 204・404 はどちらも「データが無い」（確かかどうかは範囲の古さで呼び出し側が決める）。
+  // 204・404 はどちらも「データが無い」（問い合わせ全体の不在は呼び出し側で再試行し、永続的な不在にはしない）。
   it('204・404 は no-data・それ以外の失敗は状態番号を返す', async () => {
     stub(async () => new Response(null, { status: 404 }))
     expect((await fetchPublicWaveArchive({ stations: ['JMN'], range: RANGE })).kind).toBe('no-data')

@@ -1,61 +1,66 @@
 import { describe, it, expect } from 'vitest'
-import { crossOpacity, EEW_BLINK, buildEpicenterPoints, buildPopupHtml } from './EewEpicentersGL'
+import { crossOpacity, crossShape, EEW_BLINK, buildEpicenterPoints, buildPopupHtml } from './EewEpicentersGL'
 import { alphaPair, blinkPhaseAt, BLINK_PERIOD_MS } from './gl/depthPointLayer'
 import type { EewEpicenter } from '../../hooks/useEewLayerData'
 
-// 仮定震源要素（震源未確定）の×印の見え方は、2 つの値の積で決まる。
-//   1. 点ごとの不透明度 … crossOpacity
-//   2. 点滅の明側・暗側 … EEW_BLINK
-// この 2 つは乗算されるため、片方だけを動かすと「点滅の谷で×印が事実上消える」状態へ静かに
-// 戻る（実効 0.02 まで落ちていたのを直した）。型チェックでは捕まらないので、積の下限と
-// 確定震源との濃さの関係をここで固定する。
-
-/**
- * 「見える」とみなす不透明度の下限。
- *
- * 実測で決めた値ではない。直した不具合の実効値（0.02〜0.035）より十分上で、かつ現行の設計が
- * 満たす値（最小 0.158）より下、という条件で置いた歯止め。0.1〜0.158 の帯は「見えるかどうか
- * 未検証」のまま通ることに注意。
- */
-const VISIBLE_FLOOR = 0.1
-
-const trough = (isAssumed: boolean, fullOpacity: boolean) =>
-  Math.min(...alphaPair({ alpha: crossOpacity(isAssumed, fullOpacity), blink: blinkFor(isAssumed) }))
-const peak = (isAssumed: boolean, fullOpacity: boolean) =>
-  Math.max(...alphaPair({ alpha: crossOpacity(isAssumed, fullOpacity), blink: blinkFor(isAssumed) }))
-const blinkFor = (isAssumed: boolean) => (isAssumed ? EEW_BLINK.assumed : EEW_BLINK.confirmed)
-
-describe('EEW 震源×印の不透明度と点滅の組み合わせ', () => {
-  // 正: 直した不具合そのもの。仮定震源の×印は点滅の谷でも見える濃さを保つ。
-  it('仮定震源の×印は点滅の谷でも消えない（kyoshin・その他モードの両方）', () => {
-    expect(trough(true, true)).toBeGreaterThanOrEqual(VISIBLE_FLOOR)
-    expect(trough(true, false)).toBeGreaterThanOrEqual(VISIBLE_FLOOR)
+// 震源の×印の見分けは**形**で付ける（2026-10-15 ユーザー承認）。
+//   - 仮定震源要素・「非常に強い揺れを検知」の報 … × ＋外周の輪（crossRing）
+//   - 深さだけが判らない報（-1）               … 途切れた ×（crossBroken）
+//   - それ以外（深さ 0 の「ごく浅い」を含む）    … 普通の ×
+// かつては不透明度と点滅の振幅で区別していたが、点滅の谷で仮定の方が濃く見える逆転があったため
+// 濃さは全震源で揃えた。**濃さで区別し直すと逆転が戻る**ので、揃っていることもここで固定する。
+describe('EEW 震源×印の形（crossShape）', () => {
+  // 正: 位置そのものが仮の震源は輪つき。
+  it('仮定震源要素は × ＋外周の輪', () => {
+    expect(crossShape(epicenter({ isAssumed: true }))).toBe('crossRing')
+  })
+  it('「非常に強い揺れを検知」の報も × ＋外周の輪', () => {
+    expect(crossShape(epicenter({ isAssumed: true, strongShakingOnly: true, depth: 10 }))).toBe('crossRing')
+  })
+  // 正: 深さだけが判らない報は途切れた ×。
+  it('深さが判らない報（-1）は途切れた ×', () => {
+    expect(crossShape(epicenter({ depth: -1 }))).toBe('crossBroken')
   })
 
-  // 対照: 濃い側では必ず確定震源の方が濃い（仮定を「控えめに見せる」意図の本体）。
-  // 谷ではどのモードでも逆転する（確定の方が谷が深いため）。それは意図した引き換えなので、
-  // ここで固定するのは濃い側だけ。理由は crossOpacity の説明を参照。
-  it('濃い側では仮定が確定より薄い（kyoshin・その他モードの両方）', () => {
-    expect(peak(true, true)).toBeLessThan(peak(false, true))
-    expect(peak(true, false)).toBeLessThan(peak(false, false))
+  // 対照: 深さ 0 は「ごく浅い」という有効値。不明と同じ形にしない。
+  it('深さ 0（ごく浅い）は普通の ×', () => {
+    expect(crossShape(epicenter({ depth: 0 }))).toBe('cross')
+  })
+  it('深さの読める確定震源は普通の ×', () => {
+    expect(crossShape(epicenter({ depth: 30 }))).toBe('cross')
   })
 
-  // 安全弁: 仮定を見えるようにするために確定側の点滅（1 ↔ 0.1）を緩めていないこと。
-  // ここを触ると「確定は強く明滅する」という区別そのものが失われる。
-  it('確定震源の点滅は 1 と 0.1 のまま', () => {
-    expect(EEW_BLINK.confirmed).toEqual({ high: 1, low: 0.1 })
+  // 安全弁: 仮定震源要素の深さが読めなくても、輪を優先する（位置まで仮であることの方が重い）。
+  it('仮定震源要素で深さも判らないときは輪を優先する', () => {
+    expect(crossShape(epicenter({ isAssumed: true, depth: -1 }))).toBe('crossRing')
   })
 
-  // 安全弁: 確定震源のマーカー不透明度は倍率・下限の対象外。
-  it('確定震源の不透明度は kyoshin で 1・その他モードで 0.4', () => {
-    expect(crossOpacity(false, true)).toBe(1)
-    expect(crossOpacity(false, false)).toBe(0.4)
+  it('点の並びの×へ形が載る', () => {
+    const { points } = buildEpicenterPoints(
+      [epicenter({ id: 'a', isAssumed: true }), epicenter({ id: 'b', depth: -1 }), epicenter({ id: 'c' })],
+      1,
+      true,
+    )
+    expect(points.filter((p) => p.stem).map((p) => p.shape)).toEqual(['crossRing', 'crossBroken', 'cross'])
+  })
+})
+
+describe('EEW 震源×印の濃さと点滅', () => {
+  // 安全弁: 仮定と確定で濃さ・点滅が同じ（区別を濃さへ戻すと谷での逆転が戻る）。
+  it('仮定震源と確定震源で不透明度と点滅が揃っている', () => {
+    for (const fullOpacity of [true, false]) {
+      const [assumed, confirmed] = [true, false].map((isAssumed) =>
+        buildEpicenterPoints([epicenter({ isAssumed })], 1, fullOpacity).points[1],
+      )
+      expect(alphaPair(assumed)).toEqual(alphaPair(confirmed))
+    }
   })
 
-  // 安全弁: 仮定と確定で点滅の振幅そのものが違うこと（区別の 2 本目の軸）。
-  it('仮定の点滅は確定より振幅が浅い', () => {
-    const amplitude = (b: { high: number; low: number }) => b.high - b.low
-    expect(amplitude(EEW_BLINK.assumed)).toBeLessThan(amplitude(EEW_BLINK.confirmed))
+  // 安全弁: 確定震源の点滅（1 ↔ 0.1）と不透明度は変えていない。
+  it('点滅は 1 と 0.1・不透明度は kyoshin で 1・その他モードで 0.4', () => {
+    expect(EEW_BLINK).toEqual({ high: 1, low: 0.1 })
+    expect(crossOpacity(true)).toBe(1)
+    expect(crossOpacity(false)).toBe(0.4)
   })
 })
 
@@ -153,7 +158,7 @@ describe('buildEpicenterPoints', () => {
     const { points } = buildEpicenterPoints([epicenter({ isAssumed: true })], 1, false)
     expect(points[0].alpha).toBe(points[1].alpha)
     expect(points[0].blink).toEqual(points[1].blink)
-    expect(points[0].alpha).toBe(crossOpacity(true, false))
+    expect(points[0].alpha).toBe(crossOpacity(false))
   })
 
   it('アイコン倍率が大きさに掛かる', () => {
@@ -190,6 +195,17 @@ describe('EEW 震源ポップアップの文言', () => {
     expect(html).toContain('地名は最初に揺れを検知した観測点の位置です')
     expect(html).toContain('震源調査中')
     expect(html).not.toContain('6.5')
+  })
+
+  // 「非常に強い揺れを検知」の報は仮定震源要素ではないので語を分ける。地名が観測点の位置である
+  // ことは同じなので但し書きは残す（2026-10-15 ユーザー承認の文面）。
+  it('強い揺れ検知の報では、その語と地名の但し書きを出し、仮定震源要素とは名乗らない', () => {
+    const html = buildPopupHtml(makeEp({ isAssumed: true, strongShakingOnly: true, magnitude: NaN, depth: 10 }))
+    expect(html).toContain('非常に強い揺れを検知（震源未確定）')
+    expect(html).toContain('地名は揺れを検知した観測点の位置です')
+    expect(html).not.toContain('仮定震源要素')
+    expect(html).toContain('震源調査中')
+    expect(html).not.toContain('NaN')
   })
 
   // 対照: 確定震源では但し書きを出さない（出すと確定した震源まで疑わせる）。

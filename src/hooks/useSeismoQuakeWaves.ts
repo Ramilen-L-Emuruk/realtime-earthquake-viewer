@@ -156,7 +156,7 @@ export interface SeismoQuakeWave {
   /**
    * この地震の揺れが届きうる時間帯。**走時が出せなければ `null`**（描く側は範囲を切らない）。
    *
-   * **秒が取れない地震でも出す。** 線は引かないが、分の頭から解いた走時に 60 秒の幅を
+   * **秒が取れない地震でも出す。** 線は引かないが、分の頭から解いた走時に前 30 秒・後 65 秒の幅を
    * 持たせれば、描く範囲を決める材料にはなる。
    */
   readonly reach: ReachBand | null
@@ -647,7 +647,7 @@ export function useSeismoQuakeWaves(params: {
       const next = list.map((e, i) => {
         const axisZero = axisZeroOf(target)
         // **0 から解いた到達。** 秒が取れていれば線にも使う。分の頭から解いた値は線には使わず、
-        // 時間帯（60 秒の幅を持たせたもの）を出すためだけに使う。
+        // 時間帯（前 30 秒・後 65 秒の幅を持たせたもの）を出すためだけに使う。
         const fromZero = computeWaveArrival({
           originMs: axisZero.ms,
           hypocenter: target.hypocenter,

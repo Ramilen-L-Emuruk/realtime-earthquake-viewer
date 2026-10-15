@@ -89,7 +89,7 @@ export function buildDataselectUrl(params: { readonly stations: readonly string[
 
 export type PublicArchiveResult =
   | { readonly kind: 'ok'; readonly bytes: Uint8Array }
-  /** 204・404。範囲が入りきっていれば確かな不在（`isPublicWaveRangeSettled`）。 */
+  /** 204・404。問い合わせ全体の不在応答であり、永続的な不在とは確定しない（呼び出し側で再試行）。 */
   | { readonly kind: 'no-data' }
   | { readonly kind: 'http-error'; readonly status: number }
   | { readonly kind: 'timeout' }

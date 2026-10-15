@@ -185,6 +185,15 @@ export interface SeismoStationState {
    * （ホスト側も同じ約束で `null` を返す）。
    */
   readonly intensity: number | null
+  /**
+   * 普段の計測震度（ホストの `/status` の `usualIntensities`）。**読めなければ `null`**
+   * （→ `SeismoHostDirectory.usualMeasured`）。波形グラフを自動で出すかの物差し
+   * （`utils/seismoWaveTrigger.ts`）。
+   *
+   * **観測点の合成の震度（`source.kind === 'station'`）にだけ付ける。** ホストは普段を観測点の合成波形から
+   * 測るので、合成が届かない間の震度（センサーごとの最大）と比べると、統計の違うものを比べることになる。
+   */
+  readonly usualMeasured: number | null
   /** その値が代表する時刻（ホストの時計）。読めなければ `null`。 */
   readonly atMs: number | null
   readonly source: SeismoIntensitySource
@@ -305,6 +314,7 @@ function sameStates(
       x.lat !== y.lat ||
       x.lon !== y.lon ||
       x.intensity !== y.intensity ||
+      x.usualMeasured !== y.usualMeasured ||
       x.atMs !== y.atMs ||
       x.source.kind !== y.source.kind ||
       x.waveSampleCount !== y.waveSampleCount ||
@@ -465,6 +475,9 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
       // 届いている値がまとめて「古い」へ倒れる。ホストが言う `atMs` も
       // 使わない —— あちらはホストの時計で、こちらとのずれを測る術が無い。
       const receivedAt = performance.now()
+      // **普段の計測震度は、震度が届いている間 10 分おきに読み直す**（ホストが測り直す間隔）。
+      // 叩く頻度は台帳の下限が担うので、毎回呼んでよい。
+      directory.requireUsual()
       switch (message.kind) {
         case 'station-reading': {
           const { stationId, intensity, atMs } = message.reading
@@ -589,6 +602,7 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
             stationId,
             displayName: directory.displayName(stationId),
             ...directory.location(stationId),
+            usualMeasured: directory.usualMeasured(stationId),
             intensity: entry.station.intensity,
             atMs: entry.station.atMs,
             source: { kind: 'station' },
@@ -648,6 +662,8 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
               stationId,
               displayName: directory.displayName(stationId),
               ...directory.location(stationId),
+              // 普段はホストが観測点の合成波形から測った値なので、合成でない震度とは比べない。
+              usualMeasured: null,
               intensity: null,
               atMs: null,
               source: { kind: 'wave-only' },
@@ -674,6 +690,8 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
             stationId,
             displayName: directory.displayName(stationId),
             ...directory.location(stationId),
+            // 普段はホストが観測点の合成波形から測った値なので、合成でない震度とは比べない。
+            usualMeasured: null,
             intensity: null,
             atMs: null,
             source: { kind: 'silent' },
@@ -687,6 +705,8 @@ export function useSeismoStation(options: UseSeismoStationOptions): SeismoStatio
           stationId,
           displayName: directory.displayName(stationId),
           ...directory.location(stationId),
+          // 普段はホストが観測点の合成波形から測った値なので、合成でない震度とは比べない。
+          usualMeasured: null,
           intensity: best,
           atMs: bestAtMs,
           source: { kind: 'sensor', sensorCount: count },

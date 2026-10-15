@@ -61,7 +61,13 @@ function remapAppEvent(event: AppEvent, deltaMs: number, remapId: IdRemapper): A
       }
     }
     case 'tsunami': {
-      const newEventId = remapId(event.eventId)
+      // **番号ごとに付け替える。** 津波の `EventID` は寄与する地震の番号を半角スペースで並べたもの
+      // （→ `JMATsunami.eventId`）。丸ごと 1 つの番号へ置き換えると、`A` と `A B` が重ならない別の
+      // 番号になり、同じ津波の切替えが別の津波として再生される。地震の電文と同じ付け替え表を通すので、
+      // 地震カードとの紐付けも保たれる。
+      const newEventId = event.eventId
+        ? event.eventId.split(/\s+/).filter(Boolean).map(id => remapId(id) ?? id).join(' ')
+        : event.eventId
       return {
         ...event,
         id: replaceEventIdInId(event.id, event.eventId, newEventId),

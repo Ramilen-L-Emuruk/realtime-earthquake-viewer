@@ -3,6 +3,9 @@ import type { MapMode } from '../components/Map/mapTypes'
 import type { EEWAlert, JMAQuake, JMATsunami } from '../types/earthquake'
 import { ATTRIBUTION_SOURCES, EEW_NOTICE } from './shareCard'
 import { buildShareCardContent, type ShareCardContent, type ShareCardContentInput } from './shareCardContent'
+// テスト本体で初めて読むと、並列実行のときだけ解決と変換の待ちが 1 件目の時間に乗って 5 秒を超える。
+// 先頭で読んでおけば待ちはファイル読み込み時へ移る（CLAUDE.md「テスト本体の中で対象モジュールを初めて読まないこと」）。
+import { createTestEEWStrongShaking } from './testData'
 
 function quake(over: { maxScale?: number; magnitude?: number; depth?: number; time?: string } = {}): JMAQuake {
   return {
@@ -263,6 +266,16 @@ describe('buildShareCardContent — 緊急地震速報', () => {
     expect(c.header.subtitle).toContain('日向灘')
   })
 
+  // 「非常に強い揺れを検知」の報も震源は仮。規模（NaN）と発生時刻（無い）を画像へ焼かず、
+  // 予想最大震度は出す。
+  it('強い揺れ検知の報では規模も発生時刻も出さず、予想最大震度は出す', () => {
+    const strong = createTestEEWStrongShaking('s', 1, new Date('2026-01-14T10:41:15Z'))
+    const c = build(input({ mode: 'kyoshin', eews: [strong] }))
+    expect(c.header.subtitle).toContain('北陸地方')
+    expect(c.header.subtitle).not.toMatch(/M|NaN|発生/)
+    expect(c.header.subtitle).toContain('予想最大震度')
+  })
+
   // 対照。震源が確定していれば規模は出す（上のテストが「常に隠す」で通ってしまわないように）。
   it('震源が確定していれば規模を出す', () => {
     const c = build(input({ mode: 'kyoshin', eews: [eew()] }))
@@ -286,6 +299,31 @@ describe('buildShareCardContent — 津波', () => {
   it('等級が無ければ見出しを「津波情報」に落とす', () => {
     const c = build(input({ mode: 'tsunami' }))
     expect(c.header.title).toBe('津波情報')
+  })
+
+  // 原因地震が複数ある津波（EventID に番号が足された形）は全件を並べる（2026-10-15 ユーザー承認「全件を並べる」）。
+  it('原因地震が複数あれば「／」で全件を並べる', () => {
+    const t = {
+      ...tsunami(),
+      sourceEarthquakes: [
+        { hypocenterName: '石川県能登地方', magnitude: 7.6 },
+        { hypocenterName: '佐渡付近', magnitude: 6.1 },
+      ],
+    } as unknown as JMATsunami
+    const c = build(input({ mode: 'tsunami', tsunamis: [t] }))
+    expect(c.header.subtitle).toBe('石川県能登地方　M7.6 ／ 佐渡付近　M6.1　1 区域')
+  })
+
+  // 対照: 1 件なら区切りは入らない。
+  it('原因地震が 1 件なら区切りを入れない', () => {
+    const c = build(input({ mode: 'tsunami', tsunamis: [tsunami()] }))
+    expect(c.header.subtitle).toBe('日向灘　M8.1　1 区域')
+  })
+
+  // 安全弁: 同じ津波の報が並んでも、同じ原因地震を二度書かない。
+  it('複数の報が同じ原因地震を運んでも重ねない', () => {
+    const c = build(input({ mode: 'tsunami', tsunamis: [tsunami(), { ...tsunami(), id: 't2' } as JMATsunami] }))
+    expect(c.header.subtitle).toBe('日向灘　M8.1　1 区域')
   })
 })
 

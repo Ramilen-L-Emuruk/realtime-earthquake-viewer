@@ -10,6 +10,7 @@ import { hasDepth } from '../utils/formatters'
 import { hasKnownEpicenter, haversineKm } from '../utils/geo'
 import { log } from '../utils/logger'
 import { reachRadiusKm } from '../utils/travelTime'
+import { isProvisionalHypocenter } from '../utils/eew'
 import type { ConfirmedShock } from '../utils/kyoshinDetectionView'
 import { PARAMS } from '../utils/kyoshinDetector'
 
@@ -162,9 +163,12 @@ export interface NearestEewInfo {
   depth: number
 }
 
-/** EEW から震源情報を取り出す。震源要素未確定（仮定震源要素）・座標欠損なら null。 */
+/**
+ * EEW から震源情報を取り出す。震源が決まっていない報（仮定震源要素・「非常に強い揺れを検知」の報。
+ * → `isProvisionalHypocenter`）・座標欠損なら null。
+ */
 function extractEewInfo(eew: EEWAlert): NearestEewInfo | null {
-  if (eew.earthquake.condition === '仮定震源要素') return null
+  if (isProvisionalHypocenter(eew)) return null
   const { hypocenter } = eew.earthquake
   // **位置の判定は `hasKnownEpicenter` に通す。** 位置不明のセンチネル `-200` は有限なので
   // `Number.isFinite` をすり抜ける。すり抜けると `isSameEarthquake` が「有効な EEW がある」と
@@ -459,8 +463,8 @@ export function stepAlertRegions(
  * 物差しは `MERGE_EVENT_KM`（イベント重心がこの距離以内なら 1 地震として併合する）。照合しているのが
  * まさに**イベント重心どうし**（`ConfirmedShock` の `lat`/`lng`）なので目的が一致する。同一地震の照合に
  * 使う `REGION_MATCH_KM`(300km) は借りない——あちらは「1 つの地震の揺れが継続監視の中でどこまで
- * 広がりうるか」の物差しで、途絶をまたいだ同一性の判定には広すぎる（`MAX_DT_GAP_MS` の途絶で重心が
- * 動くのは S 波が進む数十 km ぶん）。`isSameEarthquake` そのものも使わない。あちらは経過時間と EEW から
+ * 広がりうるか」の物差しで、途絶をまたいだ同一性の判定には広すぎる（途絶の間に重心が動くのは、その間に
+ * S 波が進むぶん）。`isSameEarthquake` そのものも使わない。あちらは経過時間と EEW から
  * 動的な閾値を作るが、ここへ時刻を持ち込むと窓の起点・時計系統・閉じ忘れの問題が戻る（設計書§35）。
  *
  * export しているのはテストから直接呼ぶため。
@@ -603,8 +607,7 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps): { resetForReplay: () 
    * 握り潰す**（詳細は設計書§35）。
    *
    * 代わりに**復帰した検知が途絶前と同じ場所か**を照合する（`isSameShakeAsBefore`）。印が立って
-   * いるだけでは足りない——途絶が `MAX_DT_GAP_MS` 以内なら検知エンジンは状態を組み直さず通常の経路を
-   * 通るので、復帰フレームで**まったく別の地震**が確定しうる（EEW 発表中や高震度は 1 フレームで確定
+   * いるだけでは足りない——途絶が `MAX_RESUME_GAP_MS` 以内なら検知エンジンは検知を組み直さず残すので、復帰フレームで**まったく別の地震**が確定しうる（EEW 発表中や高震度は 1 フレームで確定
    * する設計のため、強い地震ほど起こりやすい）。
    */
   const lostWhileStalledRef = useRef(false)

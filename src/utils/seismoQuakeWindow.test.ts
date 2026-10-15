@@ -35,16 +35,20 @@ describe('computeReachBand', () => {
     expect(reach).toEqual({ fromMs: ZERO_MS + 12_000, toMs: ZERO_MS + 35_000 })
   })
 
-  test('地震 ID なら前を 10 秒広げる（実際の発生より遅い値なので）', () => {
-    const z: WaveAxisZero = { kind: 'origin', ms: ZERO_MS, source: 'event-id' }
-    expect(computeReachBand(z, { pMs: ZERO_MS + 15_000, sMs: ZERO_MS + 25_000 })?.fromMs).toBe(ZERO_MS + 5_000)
+  test('長期震源カタログなら緊急地震速報と同じ余裕（P の 3 秒前〜S の 10 秒後）', () => {
+    const z: WaveAxisZero = { kind: 'origin', ms: ZERO_MS, source: 'catalog' }
+    expect(computeReachBand(z, { pMs: ZERO_MS + 15_000, sMs: ZERO_MS + 25_000 })).toEqual({
+      fromMs: ZERO_MS + 12_000,
+      toMs: ZERO_MS + 35_000,
+    })
   })
 
-  test('分までしか無ければ、分の頭から解いた P 〜 S ＋ 60 秒', () => {
+  // 発生は分の頭の 30 秒前〜65 秒後のどこか（カードの時刻は地震発現の分で、発生はそれより前へ出うる）。
+  test('分までしか無ければ、分の頭から解いた P − 30 秒 〜 S ＋ 65 秒', () => {
     const z: WaveAxisZero = { kind: 'minute', ms: ZERO_MS }
     expect(computeReachBand(z, { pMs: ZERO_MS + 15_000, sMs: ZERO_MS + 25_000 })).toEqual({
-      fromMs: ZERO_MS + 15_000,
-      toMs: ZERO_MS + 85_000,
+      fromMs: ZERO_MS - 15_000,
+      toMs: ZERO_MS + 90_000,
     })
   })
 
@@ -62,6 +66,17 @@ describe('selectQuakeWindow', () => {
     expect(w.onsetMs).not.toBeNull()
     expect(w.columns.fromMs).toBe(ZERO_MS)
     expect(w.columns.fromMs + w.columns.columns.length * SPAN).toBe(ZERO_MS + 75_000)
+  })
+
+  // 分までしか無い地震では時間帯が 0 の手前へ広がるが、手前の振れ（前の地震の残り）を揺れ始めにしない。
+  test('0 より手前の振れは揺れ始めにしない（分までしか無い地震）', () => {
+    const minute: WaveAxisZero = { kind: 'minute', ms: ZERO_MS }
+    const wide = computeReachBand(minute, { pMs: ZERO_MS + 15_000, sMs: ZERO_MS + 25_000 })!
+    expect(wide.fromMs).toBeLessThan(ZERO_MS)
+    const base = makeColumns(-30, 200, (s) => ((s >= -8 && s < -4) || (s >= 20 && s < 40) ? NOISE * 4 : NOISE))
+    const w = selectQuakeWindow({ noiseFloor: NOISE_FLOOR_GAL, base, zero: minute, reach: wide })
+    expect(w.basis).toBe('onset')
+    expect(w.onsetMs).toBeGreaterThanOrEqual(ZERO_MS + 17_000)
   })
 
   test('揺れが短ければ、時間帯の終わり ＋ 20 秒まで描く', () => {

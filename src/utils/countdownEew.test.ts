@@ -59,6 +59,15 @@ describe('pickPublicWaveEew', () => {
     expect(pickPublicWaveEew(null, [at('old', '2026-10-15T10:00:00+09:00'), at('new', '2026-10-15T10:05:00+09:00')])?.id).toBe('new')
   })
 
+  it('発生時刻の無い強震検知報は発現時刻で新しさを比べる', () => {
+    const old = at('old', '2026-10-15T10:00:00+09:00')
+    const newest = { ...at('strong', ''), strongShakingOnly: true, earthquake: { originTime: '', arrivalTime: '2026-10-15T10:05:00+09:00' } } as unknown as EEWAlert
+    expect(pickPublicWaveEew(null, [old, newest])?.id).toBe('strong')
+    // 発生時刻があれば発現時刻より優先し、読めない報で有効な時刻を押し退けない。
+    const earlier = { ...newest, earthquake: { originTime: '2026-10-15T09:59:00+09:00', arrivalTime: '2026-10-15T10:06:00+09:00' } } as unknown as EEWAlert
+    expect(pickPublicWaveEew(null, [earlier, old, at('unknown', '')])?.id).toBe('old')
+  })
+
   it('速報が無ければ null', () => {
     expect(pickPublicWaveEew(null, [])).toBeNull()
   })

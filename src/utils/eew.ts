@@ -87,6 +87,9 @@ export function calcEEWAutoCancelSec(mjma: number, depth: number): number {
 /**
  * EEWの発震時刻を起点にした自動解除時刻を返す。最終報受信から MIN_CANCEL_SEC 秒の下限保証付き。
  *
+ * **震源時刻が無い・読めないときは地震発現時刻を起点にする**（{@link eewSortTimeMs}。「非常に強い揺れを検知」の
+ * 報は震源時刻を持たない）。
+ *
  * **片方の時刻が読めないときは、読めたほうだけで決める。** 読めない時刻から作った `Date` は
  * Invalid で、それを含む大小比較は**どちらの向きでも偽**になる。素朴に書くと非対称になり、
  * 震源時刻が読めないときは発表時刻基準の値が返るのに、発表時刻が読めないときだけ Invalid が
@@ -98,12 +101,19 @@ export function calcEEWAutoCancelSec(mjma: number, depth: number): number {
  * `services/dmdataReplay.ts` は失効の判定ができない旨を記録して有効側へ倒す）。
  */
 export function calcEEWCancelTime(eew: EEWAlert, reportTime: Date): Date {
-  const mjma = eew.earthquake.hypocenter.magnitude ?? 6.0
+  // **規模が判らない報（`NaN`）は `??` では止まらない。** 素通りすると有感半径が実質 0 になり、
+  // 規模に関係なく「最終報の 60 秒後」で消える（既定値の M6 相当が効いていなかった）。
+  // 規模が「不明」になるのは「非常に強い揺れを検知」の報など（解説資料 Ⅱ.21 1-5）。
+  const rawMagnitude = eew.earthquake.hypocenter.magnitude
+  const mjma = Number.isFinite(rawMagnitude) ? rawMagnitude : 6.0
   // **既定値は `??` では当たらない。** 深さが判らないことはセンチネル `-1` で表すので
   // （`Hypocenter.depth`。`0` は「ごく浅い」という有効値）、`?? 30` は素通りして -1 が
   // そのまま有感半径の計算（`calcPGV600` の深さ項）へ流れ、解除が実際より早まる。
   const depth = hasDepth(eew.earthquake.hypocenter.depth) ? eew.earthquake.hypocenter.depth : 30
-  const originTime = new Date(eew.earthquake.originTime)
+  // **起点は発生時刻。無ければ発現時刻へ落とす**（並べ替えの {@link eewSortTimeMs} と同じ段）。
+  // 規模が「不明」の報は発生時刻も持たないので、ここで落とさないと規模の既定値が効かないまま
+  // 「最終報の 60 秒後」へ張り付く。発現時刻は発生時刻より後なので、解除は早まらない側へずれる。
+  const originTime = new Date(eewSortTimeMs(eew))
   const autoCancelSec = calcEEWAutoCancelSec(mjma, depth)
   const fromOrigin = new Date(originTime.getTime() + autoCancelSec * 1000)
   const minTime = new Date(reportTime.getTime() + MIN_CANCEL_SEC * 1000)
@@ -177,6 +187,57 @@ export function calcArrivalSafetyMarginSec(distanceKm: number): number {
  */
 export function eewEventKey(eew: EEWAlert): string {
   return eew.issue?.eventId ?? eew.id
+}
+
+/**
+ * 震源が決まっていない報か。**震源・規模・深さを数値として使う箇所は、すべてこれを通すこと。**
+ *
+ * 真になる形は 2 つある（どちらも気象庁「地震火山関連 XML 電文解説資料」Ⅱ.21）。
+ *
+ * - **仮定震源要素**（`earthquake.condition`）—— PLUM 法でトリガーした観測点の直下 10km・M1.0 を仮に置いた報
+ * - **非常に強い揺れを検知・最大予測震度のみ**（`strongShakingOnly`）—— 強い揺れを検知した観測点を
+ *   震央とみなし、深さ 10km・規模不明とした報。発生時刻も持たない
+ *
+ * どちらも震央地名は**観測点の所在地**で、震源の推定位置ではない。だから扱い（M・深さを伏せる・
+ * 予報円を描かない・距離を測らない・地図で控えめに描く）を揃える。片方だけを見る判定を残すと、
+ * もう片方の形が確定した震源の顔で出る（実際に「非常に強い揺れを検知」の報がそうなっていた）。
+ *
+ * **予想震度が無い理由の判定（`eewNoForecastReason`）にはこれを使わない。** 「単独点処理のため」と
+ * 言えるのは仮定震源要素に限った対応で、こちらの形には予想震度が必ず載る。
+ */
+export function isProvisionalHypocenter(eew: EEWAlert): boolean {
+  return eew.earthquake.condition === '仮定震源要素' || eew.strongShakingOnly === true
+}
+
+/**
+ * 「どれが新しい地震か」を並べるときの時刻（エポックミリ秒。大きいほど新しい）。
+ *
+ * **発生時刻を先に見て、読めなければ発現時刻へ落とす。** 「非常に強い揺れを検知」の報は発生時刻を
+ * 持たないので（→ {@link isProvisionalHypocenter}）、発生時刻だけで並べると空文字が最小になり、
+ * 他の地震と同時に出ている間ずっと「最も古い地震」として扱われる。発現時刻は 1 回必須の要素
+ * （解説資料 Ⅱ.21 1-3）で、強い揺れを検知した時刻にあたる。
+ *
+ * **文字列のまま辞書順で比べない。** 経路ごとに時刻の書き方が違い（DMDATA は `+09:00`、テスト
+ * データは `Z`）、混ざると前後が入れ替わる。発生時刻と発現時刻は数秒しか違わないので、
+ * 混ぜて並べても地震どうしの前後はまず崩れない。
+ *
+ * どちらも読めなければ `-Infinity`（最も古い扱い）。Yahoo hypoInfo 経路は発現時刻を運ばない。
+ */
+export function eewSortTimeMs(eew: EEWAlert): number {
+  for (const t of [eew.earthquake.originTime, eew.earthquake.arrivalTime]) {
+    if (!t) continue
+    const ms = new Date(t).getTime()
+    if (Number.isFinite(ms)) return ms
+  }
+  return -Infinity
+}
+
+/** 新しい地震が先に来る並べ方（→ {@link eewSortTimeMs}）。`Array.prototype.sort` へそのまま渡す。 */
+export function compareEewNewestFirst(a: EEWAlert, b: EEWAlert): number {
+  const ta = eewSortTimeMs(a)
+  const tb = eewSortTimeMs(b)
+  if (ta === tb) return 0
+  return ta < tb ? 1 : -1
 }
 
 export function eewAreas(eew: EEWAlert): EEWRegion[] {

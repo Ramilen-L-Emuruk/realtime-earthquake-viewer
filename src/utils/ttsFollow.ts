@@ -43,11 +43,20 @@ export type SpeechRef =
   | { kind: 'area'; code?: string; name: string }
   | { kind: 'station'; name: string }
   | { kind: 'quakeRegion'; name: string; scale: number; unreceived?: boolean }
-  | { kind: 'quakeFact'; fact: QuakeFact; value: string }
+  /**
+   * `sourceIndex` は津波の読み上げで**どの原因地震の事実か**を表す（電文の `Earthquake` の並び順）。
+   * 原因地震が 2 つ以上ある津波では、既読をそれぞれの地震の主題へ積む（→ `ttsText.ts` の
+   * `applyTsunamiSpokenRefs`）。地震情報の読み上げでは使わない。
+   */
+  | { kind: 'quakeFact'; fact: QuakeFact; value: string; sourceIndex?: number }
   | { kind: 'quakeObserved'; observed: SpokenObservation }
   | { kind: 'unreceivedNote' }
   | { kind: 'telegramText' }
-  | { kind: 'borrowedHypocenter' }
+  /**
+   * `subject` はその震源の地震カードの主題（`quakeEventKey`）。原因地震が 2 つ以上ある津波では、
+   * 語っている地震ごとに見せるカードが違う。無ければ読み上げのセッションが持つ主題を使う。
+   */
+  | { kind: 'borrowedHypocenter'; subject?: string }
 
 /**
  * `unreceivedNote` は**未入電モードの自動開閉のためだけ**に置いてある印。
@@ -334,6 +343,26 @@ export function borrowedHypocenterChunkRange(
     last = i
   })
   return first < 0 ? null : { first, last }
+}
+
+/**
+ * {@link borrowedHypocenterChunkRange} を、**語っている地震（`subject`）ごと**に分けて返す。
+ *
+ * 原因地震が 2 つ以上ある津波では、1 つ目の地震の震源を語っている間はその地震のカード、2 つ目を
+ * 語っている間はその地震のカードを見せる。並びは読み上げの順（チャンクの若い順）。
+ */
+export function borrowedHypocenterChunkRanges(
+  refsPerChunk: readonly (readonly SpeechRef[])[],
+): { first: number; last: number; subject: string | undefined }[] {
+  const ranges: { first: number; last: number; subject: string | undefined }[] = []
+  refsPerChunk.forEach((refs, i) => {
+    const ref = refs.find((r): r is Extract<SpeechRef, { kind: 'borrowedHypocenter' }> => r.kind === 'borrowedHypocenter')
+    if (!ref) return
+    const last = ranges[ranges.length - 1]
+    if (last && last.subject === ref.subject) last.last = i
+    else ranges.push({ first: i, last: i, subject: ref.subject })
+  })
+  return ranges
 }
 
 /**

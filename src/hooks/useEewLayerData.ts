@@ -3,7 +3,7 @@ import type { EEWAlert } from '../types/earthquake'
 import type { LatLng } from '../utils/stationCoords'
 import { useSubRegions } from './useSubRegions'
 import { ringsBounds, type SubRegion } from '../utils/subregions'
-import { NO_EEW_AREA_ARRIVAL, eewAreas, eewMaxScaleInfo, mergeEewAreaArrival, type EewAreaArrival } from '../utils/eew'
+import { NO_EEW_AREA_ARRIVAL, eewAreas, eewMaxScaleInfo, isProvisionalHypocenter, mergeEewAreaArrival, type EewAreaArrival } from '../utils/eew'
 import { isValidIntensityScale } from '../utils/intensity'
 import { isValidLpgmClass } from '../utils/lpgm'
 import { hasKnownEpicenter, normalizeEpicenterLng } from '../utils/geo'
@@ -56,10 +56,16 @@ export interface EewEpicenter {
   id: string
   position: LatLng
   /**
-   * 仮定震源要素（震源未確定）による未確定の震源か。
+   * 震源が決まっていない報か（仮定震源要素・「非常に強い揺れを検知」の報。→ `isProvisionalHypocenter`）。
    * 確定震源と描き分けるほか、ポップアップでも「震源未確定」の注記に使う。
    */
   isAssumed: boolean
+  /**
+   * 「非常に強い揺れを検知・最大予測震度のみ」の報か（→ `EEWAlert.strongShakingOnly`）。
+   * 描き方は `isAssumed` と同じで、**ポップアップの注記の文言だけを分ける** —— この報の
+   * `Condition` は仮定震源要素ではないので、「仮定震源要素」と書くと電文の事実と食い違う。
+   */
+  strongShakingOnly?: true
   /** 以下はポップアップ表示用（震源名・規模・深さ・第何報・警報種別・予想最大震度）。 */
   name: string
   magnitude: number
@@ -175,7 +181,8 @@ export function useEewLayerData(
           position: [hc.latitude, normalizeEpicenterLng(hc.longitude, JAPAN_CENTER_LNG)],
           // 震源未確定の報は後続報で震源が大きく動く。予報円を出さない・カードで M/深さを
           // 隠すのと同じ扱いを地図の震源にも与えるため、確定/未確定を描画側へ伝える。
-          isAssumed: eew.earthquake.condition === '仮定震源要素',
+          isAssumed: isProvisionalHypocenter(eew),
+          ...(eew.strongShakingOnly && { strongShakingOnly: true as const }),
           name: hc.name,
           magnitude: hc.magnitude,
           depth: hc.depth,

@@ -3,7 +3,7 @@ import type { JMATsunami, TsunamiGrade, TsunamiObservation } from '../types/eart
 import type { LatLng } from '../utils/tsunamiZones'
 import { useTsunamiZones } from './useTsunamiZones'
 import { useTsunamiObsCoords } from './useTsunamiObsCoords'
-import { GRADE_PRIORITY, isObservationMissing, type ObsUpdateMark } from '../utils/tsunami'
+import { GRADE_PRIORITY, isObservationMissing, tsunamiEventIds, type ObsUpdateMark } from '../utils/tsunami'
 import { tsunamiObsBarColor } from '../components/Map/gl/tsunamiObsBarStyle'
 import { log } from '../utils/logger'
 
@@ -227,15 +227,17 @@ export function useTsunamiLayerData(
   )
   const tsunamiSignature = tsunamiLines.map((l) => `${l.name}:${l.grade}`).join(',')
 
-  // 表示中の津波の識別子。**カメラ（`TsunamiFitGL`）が「観測点の差分の基準が別の津波のものに
-  // なっていないか」を確かめるために持つ。** 気象庁は解除を経ずに別の津波へ差し替えることがあり
-  // （`useEarthquakes` の「別 eventId の tsunami で上書き」）、そのとき区域も観測点も丸ごと
-  // 入れ替わるのに signature は非空のまま変わるため、空を経由したかどうかでは見分けられない。
+  // 表示中の津波の地震の識別番号（`tsunamiEventIds` を半角スペースで繋いだもの）。**カメラ（`TsunamiFitGL`）が
+  // 「観測点の差分の基準が別の津波のものになっていないか」を確かめるために持つ。** 番号の重ならない津波が
+  // 解除を経ずに届くと置き換わり（`useEarthquakes` の「番号の重ならない津波で表示中の津波を置き換えます」）、
+  // そのとき区域も観測点も丸ごと入れ替わるのに signature は非空のまま変わるため、空を経由したかどうかでは
+  // 見分けられない。**比べる側は番号の重なりで見る**（`A` → `A B` の切替えは同じ津波）。
   //
   // **識別子が無ければ空文字。** 標準版（P2PQuake）は `eventId` を持たないので常に空になり、
   // 切り替わりを判定しない —— `isTsunamiNewFire` が識別子を取れないときに「保守的に続報扱い」
   // （`utils/tsunami.ts`）へ倒れるのと同じ構えで、あちらが判定できないものをここだけ断定しない。
-  const tsunamiEventId = tsunamis.find((t) => !t.cancelled)?.eventId ?? ''
+  const liveTsunami = tsunamis.find((t) => !t.cancelled)
+  const tsunamiEventId = liveTsunami ? tsunamiEventIds(liveTsunami).join(' ') : ''
 
   return {
     tsunamiLines, observationBars, arrivalMarkers, missingMarkers,

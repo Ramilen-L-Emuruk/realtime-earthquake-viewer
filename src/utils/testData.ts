@@ -1,4 +1,4 @@
-import type { JMAQuake, JMATsunami, EEWAlert, EEWForecastChange, JMANankai, JMANankaiCommentary, JMAKohatsu, EarthquakePoint, IntensityScale, JMALpgm, JMAQuakeCity, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity, JMAEstimatedIntensityGrade, EEWRegion, TsunamiArea, TsunamiGrade, TelegramOperationStatus } from '../types/earthquake'
+import type { JMAQuake, JMATsunami, EEWAlert, EEWForecastChange, JMANankai, JMANankaiCommentary, JMAKohatsu, EarthquakePoint, IntensityScale, JMALpgm, JMAQuakeCity, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity, JMAEstimatedIntensityGrade, EEWRegion, TsunamiArea, TsunamiGrade, TsunamiHeadType, TelegramOperationStatus } from '../types/earthquake'
 import { serverNow, serverDate } from './clock'
 import { extractQuakeEventIdFromId } from './quakeMerge'
 import { log } from './logger'
@@ -1158,6 +1158,62 @@ export function createTestEEWAssumed(withDmdssFields: boolean, eventId?: string,
   }
 }
 
+// 「非常に強い揺れを検知・最大予測震度のみ」の初報 → 続報で仮定震源要素。
+//
+// **2024-06-03 06:31 能登の実電文の形をそのまま写している**（第 1 報 `VXSE45_RJTD_20240602213144019`・
+// 第 2 報 `VXSE45_RJTD_20240602213145108`）。第 1 報は震源を決める前に強い揺れを検知した観測点だけで
+// 出る形で（解説資料 Ⅱ.21）、**発生時刻・仮定震源要素の印・規模・区域のどれも持たない**。震央は検知した
+// 観測点・深さ 10km は仮の値、電文全体の予想震度は「5弱〜over」だけで、本文に観測点の所在地が入る。
+// 第 2 報で仮定震源要素（M1.0・予想震度なし）へ移る。
+//
+// **DMDSS 版でしか届かない形**なので、ボタンも DMDSS 版にだけ出す（P2PQuake / Yahoo はこの区別を運ばない）。
+export function createTestEEWStrongShaking(eventId?: string, serial = 1, baseTime?: Date): EEWAlert {
+  const anchor = baseTime ?? serverDate()
+  const report = serverDate().toISOString()
+  const eid = eventId ?? `test-strong-shaking-${Date.now()}`
+  const isStrongShaking = serial === 1
+  // 実電文: 発現時刻 06:31:42、第 2 報の発生時刻 06:31:41（発現の 1 秒前）
+  const arrival = anchor.toISOString()
+  return {
+    kind: 'eew',
+    id: `test-eew-strong-shaking-${eid}-${serial}`,
+    time: report,
+    test: false,
+    ...(isStrongShaking && {
+      strongShakingOnly: true as const,
+      // 実電文の本文どおり（日時は押した時刻に合わせる。電文は「３日０６時３１分４２秒頃」の形）
+      strongShakingText: `${zenkakuDayTime(anchor)}頃\n石川県珠洲市付近　　　　　最大震度５弱程度以上と推定`,
+    }),
+    earthquake: {
+      // **第 1 報は発生時刻を持たない**（解説資料 Ⅱ.21 1-1）。空文字はパーサーが読めなかったときと同じ値
+      originTime: isStrongShaking ? '' : new Date(anchor.getTime() - 1_000).toISOString(),
+      arrivalTime: arrival,
+      condition: isStrongShaking ? '' : '仮定震源要素',
+      // 第 1 報の震央地名は観測点を含む地方（「北陸地方」）、第 2 報は短縮用震央地名と同じ「富山湾」
+      hypocenter: isStrongShaking
+        ? { name: '北陸地方', latitude: 37.4, longitude: 137.4, depth: 10, magnitude: NaN }
+        : { name: '富山湾', latitude: 37.4, longitude: 137.4, depth: 10, magnitude: 1.0 },
+    },
+    severity: 'Forecast',
+    cancelled: false,
+    // 第 1 報の予想は電文全体の「5弱〜over」だけ。第 2 報は予想震度の要素ごと無い（単独点処理）
+    ...(isStrongShaking ? { forecastMaxScale: 45 as const, forecastMaxScaleOrAbove: true } : {}),
+    // 精度は両報とも実電文どおり（震央 rank 1・規模 rank 8）
+    accuracy: { epicenterRank: 1, epicenterRank2: 1, depthRank: 1, magnitudeRank: 8, magnitudePoints: 1 },
+    reduceName: '富山湾',
+    issue: { eventId: eid, serial: String(serial), time: report },
+    areas: [],
+  }
+}
+
+/** 本文の日時を電文の書式（「３日０６時３１分４２秒」。全角数字・ゼロ詰め・JST）で作る。 */
+function zenkakuDayTime(d: Date): string {
+  const jst = new Date(d.getTime() + 9 * 3_600_000)
+  const two = (n: number) => String(n).padStart(2, '0')
+  const text = `${jst.getUTCDate()}日${two(jst.getUTCHours())}時${two(jst.getUTCMinutes())}分${two(jst.getUTCSeconds())}秒`
+  return text.replace(/[0-9]/g, c => String.fromCharCode(c.charCodeAt(0) + 0xfee0))
+}
+
 // 深発地震（深さ 150km 超）。震源は確定しているが地域別予想が発表されないため、読み上げは
 // 待たずに「深発地震のため、予想震度なし。」と伝える。
 //
@@ -1682,7 +1738,7 @@ export function createTestHypocenterFromTsunami(): (JMAQuake | JMATsunami)[] {
     }
   }
 
-  const tsunami = (step: number, magnitude: number, infoName: string): JMATsunami => {
+  const tsunami = (step: number, magnitude: number, infoName: string, headType: TsunamiHeadType): JMATsunami => {
     const time = at(step)
     return {
       kind: 'tsunami',
@@ -1690,6 +1746,7 @@ export function createTestHypocenterFromTsunami(): (JMAQuake | JMATsunami)[] {
       // **地震側と同じ `eventId` にする。** 借りる条件はこの一致だけで、食い違えば借りない
       // （→ `utils/borrowFromTsunami.ts`）。揃えないとテストが何も確かめない。
       eventId,
+      headType,
       time,
       cancelled: false,
       infoName,
@@ -1717,11 +1774,190 @@ export function createTestHypocenterFromTsunami(): (JMAQuake | JMATsunami)[] {
   return [
     prompt(0, firstPoints),
     // 実電文の名乗りは `Head/Title`。VTSE41 は「津波警報・津波注意報・津波予報」。
-    tsunami(1, 7.4, '津波警報・津波注意報・津波予報'),
+    tsunami(1, 7.4, '津波警報・津波注意報・津波予報', 'VTSE41'),
     prompt(2, areaPoints),
     // 続報は VTSE51「津波情報」。規模だけが上がる。
-    tsunami(3, 7.6, '津波情報'),
+    tsunami(3, 7.6, '津波情報', 'VTSE51'),
   ]
+}
+
+/** 原因地震が加わる津波テストの、電文と電文のあいだ（秒）。 */
+const TEST_TSUNAMI_SOURCE_ADDED_STEP_SEC = 30
+/** 原因地震が加わる津波テストで、最後の報から全解除までの間（秒）。 */
+const TEST_TSUNAMI_SOURCE_ADDED_LIFT_SEC = 60
+
+/**
+ * 津波の原因地震が後から加わる場面のテスト（DMDSS 版のみ）。
+ *
+ * **地震 A の津波警報が出ている間に地震 B が起き、気象庁が B を同じ津波の原因に加えた形。**
+ * 電文の `EventID` は `A` から `A B` へ番号が書き足される（電文解説資料 Ⅰ.別02-8 出現例６）。
+ * 番号の文字列が変わっても**同じ津波の続報**で、アプリは番号の重なりで同じ津波と判定する
+ * （→ `isSameTsunamiEvent`）。この形を通る入口は実機ではここしかない。
+ *
+ * 流す順序:
+ *   0. 地震 A の震源・震度情報（石川県能登地方 M7.6）
+ *   1. 津波警報（`EventID` = A・原因地震 1 件）
+ *   2. 地震 B の震源・震度情報（佐渡付近 M6.1）
+ *   3. 津波警報（`EventID` = `A B`・原因地震 2 件。新潟県上中下越を引き上げ、佐渡を足す）
+ *   4. 全解除（3 の 60 秒後）
+ *
+ * **確かめるもの**: カードが別の津波に入れ替わらないこと／バナーに原因地震が 2 件並び、どちらからも
+ * 地震情報へ移れること（原因地震と地震カードは発現時刻で結ぶ。→ `linkTsunamiSources`）／読み上げが
+ * 2 つ目の震源を「また、もう一つの地震の震源は」で伝えること。
+ *
+ * **地震 B の時刻は A の 1 分後に置く。** 原因地震と地震カードは発現時刻の分で突き合わせるので、
+ * 同じ分に置くと 1 対 1 に決まらず、どちらのリンクも出ない（それは安全側の振る舞いで、ここで
+ * 確かめたい形ではない）。
+ *
+ * **地震 B の震度の点は、地震 A の点のうち新潟県の区域だけを震度4で頭打ちにしたもの**。佐渡付近の
+ * 実電文を持っていないので、震度の分布は近似になる（このテストが確かめるのは津波の側）。
+ */
+export function createTestTsunamiSourceAdded(): (JMAQuake | JMATsunami)[] {
+  const quakeA = createTestEarthquake(true)
+  const baseMs = new Date(quakeA.time).getTime()
+  const at = (step: number) => new Date(baseMs + step * TEST_TSUNAMI_SOURCE_ADDED_STEP_SEC * 1000).toISOString()
+  const idA = quakeA.eventId ?? ''
+
+  const timeB = at(2)
+  const idB = toEventIdTimestamp(new Date(timeB))
+  const pointsB = (quakeA.points as EarthquakePoint[])
+    .filter(p => p.isArea && p.addr.startsWith('新潟県'))
+    .map(({ unreceived: _unreceived, ...p }) => ({ ...p, scale: (p.scale > 40 ? 40 : p.scale) as IntensityScale }))
+  const quakeB: JMAQuake = {
+    ...quakeA,
+    id: `dmdata-quake-${idB}-1`,
+    eventId: idB,
+    time: timeB,
+    issue: { ...quakeA.issue, time: timeB },
+    earthquake: {
+      ...quakeA.earthquake,
+      time: timeB,
+      hypocenter: { name: '佐渡付近', latitude: 38.0, longitude: 138.3, depth: 10, magnitude: 6.1 },
+      maxScale: pointsB.reduce<IntensityScale>((max, p) => (p.scale > max ? p.scale : max), -1),
+    },
+    points: pointsB,
+    cities: undefined,
+    varCommentText: undefined,
+  }
+
+  const sourceA = {
+    hypocenterName: '石川県能登地方', magnitude: 7.6, magnitudeType: 'Mj',
+    originTime: quakeA.earthquake.time, arrivalTime: quakeA.earthquake.time,
+    latitude: 37.5, longitude: 137.2, depth: 16,
+  }
+  const sourceB = {
+    hypocenterName: '佐渡付近', magnitude: 6.1, magnitudeType: 'Mj',
+    originTime: timeB, arrivalTime: timeB,
+    latitude: 38.0, longitude: 138.3, depth: 10,
+  }
+  const warning = (step: number, eventId: string, sources: (typeof sourceA)[], areas: TsunamiArea[]): JMATsunami => {
+    const time = at(step)
+    return {
+      kind: 'tsunami',
+      id: `test-tsunami-source-added-${idA}-${step}`,
+      eventId,
+      headType: 'VTSE41',
+      time,
+      cancelled: false,
+      infoName: '津波警報・津波注意報・津波予報',
+      issue: { source: 'テスト', time, type: 'Focus' },
+      areas,
+      sourceEarthquakes: sources,
+    }
+  }
+  const first = warning(1, idA, [sourceA], [
+    { grade: 'Warning', immediate: true, name: '石川県能登', maxHeight: { description: '3m', value: 3.0 } },
+    { grade: 'Watch', immediate: false, name: '新潟県上中下越', maxHeight: { description: '1m', value: 1.0 } },
+    { grade: 'Watch', immediate: false, name: '富山県', maxHeight: { description: '1m', value: 1.0 } },
+  ])
+  const added = warning(3, `${idA} ${idB}`, [sourceA, sourceB], [
+    { grade: 'Warning', immediate: true, name: '石川県能登', maxHeight: { description: '3m', value: 3.0 } },
+    { grade: 'Warning', immediate: true, name: '新潟県上中下越', maxHeight: { description: '3m', value: 3.0 } },
+    { grade: 'Warning', immediate: true, name: '佐渡', maxHeight: { description: '3m', value: 3.0 } },
+    { grade: 'Watch', immediate: false, name: '富山県', maxHeight: { description: '1m', value: 1.0 } },
+  ])
+  const liftTime = new Date(new Date(added.time).getTime() + TEST_TSUNAMI_SOURCE_ADDED_LIFT_SEC * 1000).toISOString()
+  const lift: JMATsunami = {
+    ...added,
+    id: `${added.id}-lift`,
+    time: liftTime,
+    issue: { ...added.issue, time: liftTime },
+    cancelled: true,
+    cancelReason: 'lifted',
+    areas: [],
+    sourceEarthquakes: undefined,
+  }
+  return [quakeA, first, quakeB, added, lift]
+}
+
+/** 津波情報だけを取り消すテストの各報の時刻（押した時刻からの秒）。 */
+const TEST_TSUNAMI_INFO_RETRACTION_AT_SEC = { info: 20, retraction: 40, lift: 90 } as const
+
+/**
+ * 津波情報（VTSE51）だけが取り消される場面のテスト（DMDSS 版のみ）。
+ *
+ * **取消は情報名称ごとに効く**（電文解説資料 Ⅰ.別03-1）。津波情報を取り消しても津波警報は
+ * 取り消されないので、カードは残り、津波情報が運んだ観測点だけが消える（→ `isPartialTsunamiRetraction`・
+ * `refoldTsunamiWithout`）。読み上げは「津波情報は取り消されました。」とだけ伝え、音は鳴らさない
+ * （2026-10-15 ユーザー承認「読み上げて組み直す（推奨）」）。
+ *
+ * 流す順序:
+ *   1. 津波警報（VTSE41）
+ *   2. 津波情報（VTSE51・観測点つき）… 20 秒後
+ *   3. 津波情報の取消（VTSE51）… 40 秒後
+ *   4. 津波警報の解除（VTSE41）… 90 秒後
+ *
+ * **取消の理由（`cancelText`）は持たせない。** この取消は読み上げも画面も理由を出さないうえ、
+ * 津波情報の取消の実電文を持っていないので、文面を作ると実電文に無い文が混ざる。
+ */
+export function createTestTsunamiInfoRetraction(): JMATsunami[] {
+  const warning: JMATsunami = { ...createTestTsunamiWarning(true), headType: 'VTSE41' }
+  const baseMs = new Date(warning.time).getTime()
+  const at = (sec: number) => new Date(baseMs + sec * 1000).toISOString()
+
+  const infoTime = at(TEST_TSUNAMI_INFO_RETRACTION_AT_SEC.info)
+  const infoMs = new Date(infoTime).getTime()
+  const before = (sec: number) => new Date(infoMs - sec * 1000).toISOString()
+  const info: JMATsunami = {
+    ...warning,
+    id: `${warning.id}-info`,
+    headType: 'VTSE51',
+    time: infoTime,
+    issue: { ...warning.issue, time: infoTime },
+    infoName: '津波情報',
+    // 観測点は区域の中の実在の潮位観測点（青森県太平洋沿岸の八戸港・茨城県の大洗）。
+    // 時刻は発表より前に置く（観測したものしか載らない）。
+    observations: [
+      { name: '八戸港', districtCode: '201', districtName: '青森県太平洋沿岸', height: { value: 0.8, description: '0.8m' }, arrivalTime: before(120), initial: '押し', maxHeightDateTime: before(60) },
+      { name: '大洗', districtCode: '300', districtName: '茨城県', height: { value: 0.5, description: '0.5m' }, arrivalTime: before(90), initial: '引き', maxHeightDateTime: before(30) },
+    ],
+    observationDateTime: before(30),
+  }
+  const retractionTime = at(TEST_TSUNAMI_INFO_RETRACTION_AT_SEC.retraction)
+  const retraction: JMATsunami = {
+    kind: 'tsunami',
+    id: `${warning.id}-info-retraction`,
+    eventId: warning.eventId,
+    headType: 'VTSE51',
+    time: retractionTime,
+    cancelled: true,
+    cancelReason: 'retracted',
+    issue: { ...warning.issue, time: retractionTime },
+    areas: [],
+  }
+  const liftTime = at(TEST_TSUNAMI_INFO_RETRACTION_AT_SEC.lift)
+  const lift: JMATsunami = {
+    kind: 'tsunami',
+    id: `${warning.id}-lift`,
+    eventId: warning.eventId,
+    headType: 'VTSE41',
+    time: liftTime,
+    cancelled: true,
+    cancelReason: 'lifted',
+    issue: { ...warning.issue, time: liftTime },
+    areas: [],
+  }
+  return [warning, info, retraction, lift]
 }
 
 export function createTestTsunamiForecast(withDmdssFields: boolean): JMATsunami {
@@ -1731,6 +1967,8 @@ export function createTestTsunamiForecast(withDmdssFields: boolean): JMATsunami 
     kind: 'tsunami',
     id: `test-tsunami-forecast-${Date.now()}`,
     eventId: withDmdssFields ? toEventIdTimestamp(tsunamiOriginDate(now)) : undefined,
+    // 電文の種類（見出しの種別）。**DMDSS 版でのみ来る**。等級の発表なので VTSE41。
+    ...(withDmdssFields && { headType: 'VTSE41' as const }),
     time: nowIso,
     cancelled: false,
     // 予報は DMDSS の実運用でも明示的な解除電文を伴わず ValidDateTime の期限切れで消えるため、
@@ -1868,6 +2106,7 @@ export function createTestTsunamiHighTide(base: JMATsunami, prev: JMATsunami): J
     time: now,
     issue: { ...prev.issue, time: now },
     infoName: '各地の満潮時刻・津波到達予想時刻に関する情報',
+    headType: 'VTSE51',
     // **見出し文もこの種別のものへ差し替える。** 読み上げの名乗りはここから採るので
     // （→ `tsunamiTideToSegments`）、前報のまま残すと「津波警報を津波注意報に切り替えました」と
     // 名乗ってから満潮時刻の話を始める形になる。文面は 2024-01-01 能登半島地震の実電文。
@@ -1919,6 +2158,8 @@ function asObservationReport(base: JMATsunami, suffix: string): JMATsunami {
     time: now,
     issue: { ...base.issue, time: now },
     infoName: '津波観測に関する情報',
+    // 観測情報は VTSE51（沖合だけを運ぶ報は呼び出し側で VTSE52 へ差し替える）。
+    headType: 'VTSE51',
     // 実電文の見出し文（時刻は観測状況を確定した時刻＝発表の数分前）。
     headline: `${fullWidth(String(target.getDate()))}日${fullWidth(pad2(target.getHours()))}時${fullWidth(pad2(target.getMinutes()))}分現在の、津波の観測値をお知らせします。`,
   }
@@ -1979,6 +2220,7 @@ export function createTestTsunamiOffshoreMaxHeightTimeUpdate(prev: JMATsunami): 
   return {
     ...report,
     infoName: '沖合の津波観測に関する情報',
+    headType: 'VTSE52',
     observations: (prev.observations ?? [])
       .filter(o => o.offshore)
       .map(o => o.height && !o.condition?.observing
@@ -2095,6 +2337,8 @@ export function createTestTsunamiRetraction(withDmdssFields: boolean): JMATsunam
     kind: 'tsunami',
     id: `test-tsunami-retraction-${Date.now()}`,
     eventId: withDmdssFields ? toEventIdTimestamp(tsunamiOriginDate(nowDate)) : undefined,
+    // 電文の種類（見出しの種別）。**DMDSS 版でのみ来る**。等級の発表なので VTSE41。
+    ...(withDmdssFields && { headType: 'VTSE41' as const }),
     time: now,
     cancelled: false,
     issue: { source: 'テスト', time: now, type: 'Focus' },
@@ -2112,6 +2356,8 @@ export function createTestTsunamiWatch(withDmdssFields: boolean): JMATsunami {
     kind: 'tsunami',
     id: `test-tsunami-watch-${Date.now()}`,
     eventId: withDmdssFields ? toEventIdTimestamp(tsunamiOriginDate(nowDate)) : undefined,
+    // 電文の種類（見出しの種別）。**DMDSS 版でのみ来る**。等級の発表なので VTSE41。
+    ...(withDmdssFields && { headType: 'VTSE41' as const }),
     time: now,
     cancelled: false,
     // 電文が名乗る情報名（`Head/Title`）。**DMDSS 版でのみ来る**（P2PQuake の JSON には無い）。
@@ -2133,6 +2379,8 @@ export function createTestTsunamiWarning(withDmdssFields: boolean): JMATsunami {
     kind: 'tsunami',
     id: `test-tsunami-warning-${Date.now()}`,
     eventId: withDmdssFields ? toEventIdTimestamp(tsunamiOriginDate(nowDate)) : undefined,
+    // 電文の種類（見出しの種別）。**DMDSS 版でのみ来る**。等級の発表なので VTSE41。
+    ...(withDmdssFields && { headType: 'VTSE41' as const }),
     time: now,
     cancelled: false,
     // 情報名は**その報が出している等級を並べる**（→ `createTestTsunamiWatch`）。
@@ -2230,7 +2478,15 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
   return {
     kind: 'tsunami',
     id: `test-tsunami-${Date.now()}`,
-    eventId: withDmdssFields ? toEventIdTimestamp(tsunamiOriginDate(now)) : undefined,
+    // **原因地震が 2 つあるので、番号も 2 つ並ぶ**（電文解説資料 Ⅰ.別02-8 出現例６。並びは原因地震と同じ）。
+    // 番号 1 つのまま原因地震を 2 件持たせると、実電文には無い形になる —— どちらの地震の番号かを決められず、
+    // バナーから地震情報へ移る経路も震源の借用も、テストボタンでだけ黙って外れる。
+    eventId: withDmdssFields
+      ? `${toEventIdTimestamp(tsunamiOriginDate(now))} ${toEventIdTimestamp(new Date(now.getTime() - 9 * 60000))}`
+      : undefined,
+    // 種類は VTSE41。このカードは複数の種類をマージした後の状態だが、最後に届いたのが等級の発表
+    // （`infoName` もその名乗り）という形なので、それに揃える（→ 下の `observationDateTime`）。
+    ...(withDmdssFields && { headType: 'VTSE41' as const }),
     time: nowIso,
     cancelled: false,
     // 情報名は**その報が出している等級を並べる**（→ `createTestTsunamiWatch`）。

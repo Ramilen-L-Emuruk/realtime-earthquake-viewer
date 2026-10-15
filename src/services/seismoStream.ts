@@ -95,6 +95,14 @@ const STATIONS_REFETCH_MIN_MS = 60_000
  */
 const STATIONS_RETRY_MIN_MS = 5000
 
+/**
+ * 普段の計測震度を読み直す間隔（ms）。**10 分。**
+ *
+ * ホストが測り直す間隔（`seismo-host` の `USUAL_STATUS_REFRESH_MS`）と同じ。観測点の台帳と違い、
+ * **こちらは設定を書き換えなくても動く値**なので、知らない識別子が来たときだけ読む形では古いまま残る。
+ */
+const USUAL_REFETCH_MS = 10 * 60_000
+
 /** センサー 1 本の計測震度（`event: reading`）。 */
 export interface SeismoSensorReading {
   readonly boardKey: string
@@ -953,9 +961,10 @@ function readUsualIntensities(root: Record<string, unknown>): ReadonlyMap<string
  * **押し出しが名乗るのは識別子だけ。** 観測点の名前も、センサーがどの観測点に
  * 属するかも `/status` にしかないので、押し出しと並べてこれを引く。
  *
- * **繋がったときに 1 回＋知らない識別子が来たら取り直す。** `/status` を定期的に
- * 叩く形にしない —— 観測点やセンサーが増えるのは人が設定を書き換えたときだけで、
- * 押し出しが届いている間ずっと問い合わせる理由が無い。
+ * **繋がったときに 1 回＋知らない識別子が来たら取り直す。** 観測点やセンサーが増えるのは
+ * 人が設定を書き換えたときだけで、押し出しが届いている間ずっと問い合わせる理由が無い。
+ * **例外は普段の計測震度**で、これはホストが 10 分ごとに測り直すので、震度が届いている間は
+ * 10 分おきに読み直す（{@link requireUsual}）。
  *
  * **取り直しに下限を置く。** 震度は毎秒届くので、引けなかった識別子があると
  * 毎秒叩く形になる（{@link STATIONS_REFETCH_MIN_MS}）。
@@ -972,6 +981,14 @@ export class SeismoHostDirectory {
    * そのブラウザが生きている間は震度が出ず、記録にも何も残らない。
    */
   private boards = new Map<string, string | null>()
+  /** 観測点ごとの普段の計測震度（{@link usualMeasured}）。 */
+  private usual: ReadonlyMap<string, number> = new Map()
+  /** {@link usual} を読めた時刻（{@link now} の時計）。**一度も読めていなければ `-Infinity`。** */
+  private usualReadAtMs = -Infinity
+  /** 普段を読みに行った時刻（{@link requireUsual}）。**失敗しても進める**（失敗中に叩き続けない）。 */
+  private usualAttemptAtMs = -Infinity
+  /** 普段を返せていた観測点。**返せなくなったときに 1 回だけ記録へ残す**ため（{@link usualMeasured}）。 */
+  private readonly usualKnown = new Set<string>()
   private lastFetchAtMs = -Infinity
   /** 直前の取り直しが成功したか。**次までの間隔を決める。** */
   private lastFetchOk = false
@@ -1003,6 +1020,45 @@ export class SeismoHostDirectory {
   location(stationId: string): { readonly lat: number | null; readonly lon: number | null } {
     const info = this.names.get(stationId)
     return { lat: info?.lat ?? null, lon: info?.lon ?? null }
+  }
+
+  /**
+   * この観測点の普段の計測震度。**読めていなければ `null`**（古いホスト・記録が足りない・
+   * 古くて捨てた。→ `readUsualIntensities`）。
+   *
+   * **読めてから {@link USUAL_INTENSITY_STALE_MS} を過ぎた値も返さない。** 取り直しが失敗し続けて
+   * いる間に前の値を「いまの普段」として使い続けると、ホストの側で値を捨てたのと同じ形の
+   * 古い物差しが黙って効く。
+   */
+  usualMeasured(stationId: string): number | null {
+    const stale = this.now() - this.usualReadAtMs > USUAL_INTENSITY_STALE_MS
+    const value = stale ? null : (this.usual.get(stationId) ?? null)
+    // **返せていた値が返せなくなったら 1 回だけ残す。** 波形の自動表示はそのまま震度1 の線へ
+    // 倒れるので、画面からは物差しが替わったことが分からない（毎秒呼ばれるので遷移でだけ出す）。
+    if (value !== null) {
+      this.usualKnown.add(stationId)
+    } else if (this.usualKnown.delete(stationId)) {
+      log.warn(
+        `[seismo] 普段の計測震度を使えなくなった（${stationId}・${stale ? '読めてから 30 分を過ぎた' : 'ホストが返さなくなった'}）。` +
+          '波形の自動表示は震度1 以上で見る',
+      )
+    }
+    return value
+  }
+
+  /**
+   * 普段の計測震度が要る。**最後に読めてから {@link USUAL_REFETCH_MS} を過ぎていれば取りに行く。**
+   *
+   * **取りに行くのは 1 分に 1 回まで**（失敗が続く間も）。毎秒呼んでよい。
+   */
+  requireUsual(): void {
+    const now = this.now()
+    if (now - this.usualReadAtMs < USUAL_REFETCH_MS) return
+    // **失敗が続いても 1 分に 1 回まで。** `refresh` の下限は失敗中 5 秒へ縮むので、それに任せると
+    // `/status` だけが壊れている間ずっと 5 秒ごとに叩き、失敗の記録も 5 秒ごとに積む。
+    if (now - this.usualAttemptAtMs < STATIONS_REFETCH_MIN_MS) return
+    this.usualAttemptAtMs = now
+    this.refreshSoon()
   }
 
   get stations(): readonly SeismoStationInfo[] {
@@ -1095,6 +1151,8 @@ export class SeismoHostDirectory {
       }
       this.names = nextNames
       this.boards = nextBoards
+      this.usual = result.usualIntensities
+      this.usualReadAtMs = this.now()
     } finally {
       this.inFlight = false
     }

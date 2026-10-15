@@ -5084,6 +5084,18 @@ describe('電文の運用種別（Status）', () => {
     expect(parseEarthquakeCountFromXml(t(VXSE60_XML))!.operationStatus).toBe('訓練')
   })
 
+  // **津波の全区域解除の分岐にも載っているか。** 津波の同一性は運用種別まで比べるので
+  // （→ `isSameTsunamiEvent`）、解除報だけが持たないと訓練の津波の解除が訓練の津波に当たらない。
+  it('津波の全区域解除でも読む', () => {
+    const allLifted = VTSE41_PARTIAL_LIFT_XML
+      .replace(/<Kind><Name>[^<]*<\/Name><Code>\d+<\/Code><\/Kind>/g, '<Kind><Name>解除</Name><Code>60</Code></Kind>')
+      // この fixture は `Control/Status` を省いているので、訓練の印を足す
+      .replace('<PublishingOffice>気象庁</PublishingOffice>', '<Status>訓練</Status>\n    <PublishingOffice>気象庁</PublishingOffice>')
+    const t = parseTsunamiFromXml('VTSE41', allLifted)!
+    expect(t.cancelReason).toBe('lifted')
+    expect(t.operationStatus).toBe('訓練')
+  })
+
   // 対照: 「通常」ではどの種別も持たせない。
   it('どの種別でも通常なら持たせない', () => {
     expect(parseEarthquakeFromXml('VXSE53', VXSE53_XML)!.operationStatus).toBeUndefined()
@@ -5379,6 +5391,28 @@ describe('津波フィクスチャの観測点名・区域名が実在するこ�
   it('生成データが読めている（前提の確認）', () => {
     expect(obsCoordNames.size).toBeGreaterThan(0)
     expect(zoneNames.size).toBeGreaterThan(0)
+  })
+
+  // 電文の種類（VTSE41/51/52）を報に残す。失効時刻と本文を決めるのは最新の VTSE41 で、
+  // 一部の取消は種類ごとに効くので、続報の畳み直しがこの欄を頼る（→ `mergeTsunamiReports`・
+  // `refoldTsunamiWithout`）。実電文の 4 通それぞれで、渡した種類がそのまま残ることを見る。
+  for (const [label, headType, xml] of fixtures) {
+    it(`${label} は電文の種類（${headType}）を持つ`, () => {
+      expect(parseTsunamiFromXml(headType, xml)!.headType).toBe(headType)
+    })
+  }
+
+  // 取消の分岐にも載っていること。一部の取消（VTSE51 だけ）を見分ける材料はこれしかない。
+  it('取消電文も電文の種類を持つ', () => {
+    const retracted = PARITY_TSUNAMI_XML.replace('<InfoType>発表</InfoType>', '<InfoType>取消</InfoType>')
+    const t = parseTsunamiFromXml('VTSE51', retracted)!
+    expect(t.cancelReason).toBe('retracted')
+    expect(t.headType).toBe('VTSE51')
+  })
+
+  // 安全弁: 津波の種類でない見出しは持たせない（取り違えた種類で畳み直さない）。
+  it('津波の種類でない見出しなら持たせない', () => {
+    expect(parseTsunamiFromXml('VXSE53', PARITY_TSUNAMI_XML)?.headType).toBeUndefined()
   })
 
   for (const [label, headType, xml, expectedPaths] of fixtures) {

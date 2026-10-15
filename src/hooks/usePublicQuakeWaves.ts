@@ -13,7 +13,7 @@ import { isPublicWaveRangeSettled, publicWaveRange, type PublicWaveRange } from 
 import { publicWaveKey, readPublicWave, writePublicWave } from '../utils/publicQuakeWaveDb'
 import { quakeEventKey } from '../utils/quakeMerge'
 import { parseJstTimeMs, type OriginSeconds } from '../utils/quakeOriginSeconds'
-import { activeEpochsAt, loadPublicStations, type PublicStationEpoch, type PublicStationsFile } from '../utils/publicStations'
+import { activeEpochsAt, checkPublicStations, subscribePublicStations, loadPublicStations, type PublicStationEpoch, type PublicStationsFile } from '../utils/publicStations'
 import { candidateCodes, selectPublicStations, type PublicSelectionSource } from '../utils/publicStationSelection'
 import { publicWaveCacheVerdict, PUBLIC_WAVE_MAX_RETRIES, type PublicWaveEntryState } from '../utils/publicWaveStoreLogic'
 import type { SeismoWaveWindow } from '../utils/seismoWaveBuffer'
@@ -27,7 +27,7 @@ import type { SeismoQuakeWave } from './useSeismoQuakeWaves'
  * カードは描くだけ（自作地震計の `useSeismoQuakeWaves` と同じ理由 —— 描画側に置くと、カードを畳んだ間・タブが隠れた間は止まる）。
  *
  * - **新しい地震から順に {@link PREFETCH_QUAKES} 件まで先に取り、端末に控える。それより古いカードは開いたときに取る**（§0）
- * - 範囲は発生の 30 秒前〜4 分後。遠い観測点は S 波の到達まで伸ばす。次の地震の発生で切る（`utils/publicQuakeRange.ts`）
+ * - 範囲はカードの分の頭の 60 秒前〜4 分後。遠い観測点は S 波の到達まで伸ばす。次の地震の発生で切る（`utils/publicQuakeRange.ts`）
  * - 保存庫へ入りきる前に取った分は仮の控えにし、入りきってから 1 回だけ取り直す（§0・§6.2）
  * - **揺れている最中の地震は、下部の波形が SeedLink で受けている分から継ぎ足す**（§0）。番号も下部の波形と揃える（2026-10-15 ユーザー決定）
  * - **再生中も取る**（地震の時刻を指定して保存庫から取るので、いまの値が過去の画面へ混ざらない）。
@@ -110,9 +110,17 @@ export function pickPublicQuakeTargets(quakes: readonly JMAQuake[], originSecond
   return found.map((t, i) => ({ ...t, cutoffMs: i === 0 ? null : Math.max(found[i - 1].originMs, t.originMs + MIN_WINDOW_MS) }))
 }
 
+/** 現在の地震・観測点から取る範囲を決める（取得と、取得後の切り戻しで共用）。 */
+function rangeForStation(target: QuakeTarget, epoch: PublicStationEpoch): PublicWaveRange | null {
+  const arrival = computeWaveArrival({ originMs: target.arrivalOriginMs ?? target.originMs, hypocenter: target.hypocenter, stationLat: epoch.lat, stationLon: epoch.lon })
+  return publicWaveRange({ originMs: target.originMs, cutoffMs: target.cutoffMs, sArrivalMs: arrival?.sMs ?? null })
+}
+
 /** 観測点 × 地震の 1 件ぶん。 */
 interface Slot {
   wave: PublicQuakeWave | null
+  epoch: PublicStationEpoch
+  rawBytes: Uint8Array | null
   /** 取りに行っている・控えを読んでいる最中。 */
   busy: boolean
   /** もう取り直さない（入りきってから取った・確かな不在・取り直しの上限に達した）。 */
@@ -142,8 +150,9 @@ export function usePublicQuakeWaves(params: {
 
   const [file, setFile] = useState<PublicStationsFile | null>(null)
   useEffect(() => {
-    if (!enabled || file !== null) return
+    if (!enabled) return
     let cancelled = false
+    const unsubscribe = subscribePublicStations(next => { if (!cancelled) setFile(next) })
     loadPublicStations()
       .then((f) => {
         if (!cancelled) setFile(f)
@@ -151,10 +160,15 @@ export function usePublicQuakeWaves(params: {
       .catch((e) => log.warn('[public-wave] 公開観測点の表を読めなかった（地震カード）', e))
     return () => {
       cancelled = true
+      unsubscribe()
     }
-  }, [enabled, file])
+  }, [enabled])
 
   const targets = useMemo(() => (enabled ? pickPublicQuakeTargets(quakes, originSeconds) : []), [enabled, quakes, originSeconds])
+  useEffect(() => {
+    if (enabled && file !== null && targets.length > 0) void checkPublicStations()
+  }, [enabled, file, targets.length])
+
 
   // 地震ごとの観測点と番号。**下部の波形に出ている地震は、その番号を引き継ぐ**（地図の印と揃えるため）。
   const liveKey = targets.length > 0 && serverNow() - targets[0].originMs <= LIVE_QUAKE_MS && liveNumbers !== null ? targets[0].eventKey : null
@@ -209,34 +223,17 @@ export function usePublicQuakeWaves(params: {
       const urgent = t.eventKey === openedEventKey
       const jobs: StationJob[] = []
       for (const s of picks.get(t.eventKey)!.stations) {
-        const arrival = computeWaveArrival({
-          originMs: t.arrivalOriginMs ?? t.originMs,
-          hypocenter: t.hypocenter,
-          stationLat: s.epoch.lat,
-          stationLon: s.epoch.lon,
-        })
-        const range = publicWaveRange({ originMs: t.originMs, cutoffMs: t.cutoffMs, sArrivalMs: arrival?.sMs ?? null })
+        const range = rangeForStation(t, s.epoch)
         if (range === null) continue
         const slotKey = `${t.eventKey}|${s.epoch.code}`
         const prev = slotsRef.current.get(slotKey)
         if (prev?.busy) continue
         const extended = prev !== undefined && range.toMs > prev.toMs
-        if (prev?.done && !extended) {
-          // 番号だけ変わった（下部の波形の番号を引き継いだ・外れた）なら描き直すだけ
-          if (prev.wave !== null && prev.wave.number !== s.number) {
-            prev.wave = {
-              ...prev.wave,
-              number: s.number,
-              card: { ...prev.wave.card, displayName: publicStationHeading(s.number, prev.wave.nameJa) },
-            }
-            setVersion((v) => v + 1)
-          }
-          continue
-        }
+        if (prev?.done && !extended) continue
         // 失敗の上限と待ちは、範囲が伸びたときも守る（伸びるたびに取り直すと上限が効かない）
         if (prev !== undefined && prev.failures >= FAILURE_MAX_TRIES) continue
         if (prev !== undefined && Date.now() < prev.retryAtMs) continue
-        const slot: Slot = prev ?? { wave: null, busy: false, done: false, toMs: range.toMs, failures: 0, retryAtMs: 0 }
+        const slot: Slot = prev ?? { wave: null, epoch: s.epoch, rawBytes: null, busy: false, done: false, toMs: range.toMs, failures: 0, retryAtMs: 0 }
         slot.busy = true
         slotsRef.current.set(slotKey, slot)
         jobs.push({ slot, epoch: s.epoch, number: s.number, range })
@@ -267,16 +264,57 @@ export function usePublicQuakeWaves(params: {
   // 直前に出した内容。**変わっていない地震は同じ配列を使い回す**（継ぎ足しの巡回は 1 秒ごとに出し直すので、
   // 毎回作り直すと関わりのない地震のカードまで描き直される）。
   const publishedRef = useRef<ReadonlyMap<string, readonly PublicQuakeWave[]>>(new Map())
+  // 取得の完了とは別に、後から判明した発生秒・震源・番号を現在の材料で組む。
+  // 同じ波形と材料の組では参照を保ち、1秒の再生巡回で関係のないカードを描き直さない。
+  const rebasedRef = useRef(new WeakMap<PublicQuakeWave, { target: QuakeTarget; epoch: PublicStationEpoch; number: number; wave: PublicQuakeWave }>())
   return useMemo(() => {
     const out = new Map<string, readonly PublicQuakeWave[]>()
-    const revealUntilMs = replaying ? serverNow() : null
+    // Appの共有時計はeffectで更新されるため、レンダーでは引数の時間軸を直接使う。
+    const revealUntilMs = replayOffsetMs === null ? null : Date.now() + replayOffsetMs
     let revealing = false
     for (const [eventKey, pick] of picks) {
       const waves: PublicQuakeWave[] = []
       for (const s of pick.stations) {
-        const stored = slotsRef.current.get(`${eventKey}|${s.epoch.code}`)?.wave ?? null
+        const slot = slotsRef.current.get(`${eventKey}|${s.epoch.code}`)
+        const stored = slot?.wave ?? null
         if (stored === null) continue
-        let wave = eventKey === liveKey ? spliceLive(stored, readLiveRaw) : stored
+        let rebased = rebasedRef.current.get(stored)
+        if (rebased === undefined || rebased.target !== pick.target || rebased.epoch !== s.epoch || rebased.number !== s.number) {
+          const range = rangeForStation(pick.target, s.epoch)
+          if (range === null) continue
+          const shortened = range.toMs < stored.range.toMs
+          const metadataChanged = slot!.epoch !== s.epoch
+          const decoded = metadataChanged && slot!.rawBytes !== null ? decodePublicQuakeWave({ bytes: slot!.rawBytes, epoch: s.epoch, range }) : null
+          const sourceWindow = metadataChanged ? decoded?.window ?? null : stored.window
+          const window = shortened && sourceWindow !== null ? clipWindow(sourceWindow, range.toMs) : sourceWindow
+          if (window === null || !hasSamplesFrom(window, pick.target.originMs)) continue
+          const columns = shortened || metadataChanged ? publicQuakeColumns(window, range) : stored.card.columns
+          rebased = {
+            target: pick.target,
+            epoch: s.epoch,
+            number: s.number,
+            wave: {
+              ...stored,
+              nameJa: s.epoch.nameJa,
+              lat: s.epoch.lat,
+              lon: s.epoch.lon,
+              number: s.number,
+              range: shortened ? range : stored.range,
+              window,
+              card: buildCardWave({
+                code: stored.code,
+                heading: publicStationHeading(s.number, s.epoch.nameJa),
+                lat: s.epoch.lat,
+                lon: s.epoch.lon,
+                target: pick.target,
+                columns,
+                window,
+              }),
+            },
+          }
+          rebasedRef.current.set(stored, rebased)
+        }
+        let wave = eventKey === liveKey ? spliceLive(rebased.wave, readLiveRaw) : rebased.wave
         if (revealUntilMs !== null && wave.range.toMs > revealUntilMs) {
           revealing = true
           const cut = revealUpTo(wave, revealUntilMs, pick.target.originMs)
@@ -296,7 +334,7 @@ export function usePublicQuakeWaves(params: {
     return out
     // `version` は取れた知らせ、`liveTick` は継ぎ足し・再生時刻で切る分の巡回
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [picks, liveKey, version, liveTick, readLiveRaw, replaying])
+  }, [picks, liveKey, version, liveTick, readLiveRaw, replaying, replayOffsetMs])
 }
 
 /** 地震 1 件のうち、取る（控えを読む）観測点 1 つぶん。 */
@@ -334,6 +372,11 @@ async function loadQuake(job: {
     }),
   )
   if (signal.aborted) return
+  const failedAttempt = (p: (typeof prepared)[number]) => {
+    p.failed = true
+    p.j.slot.failures += 1
+    p.j.slot.retryAtMs = Date.now() + FAILURE_RETRY_MS
+  }
   const refetch = prepared.filter((p) => p.verdict === 'refetch')
   if (refetch.length > 0) {
     const range: PublicWaveRange = {
@@ -350,16 +393,20 @@ async function loadQuake(job: {
           `[public-wave] 保存庫の応答（${target.eventKey}）で読めないレコード ${grouped.unreadable.length} 本・端数 ${grouped.trailingBytes} バイト`,
         )
       }
-      byStation = grouped.byStation
+      if (grouped.unreadable.length > 0 || grouped.trailingBytes > 0) {
+        // どの観測点のレコードが欠けたか確定できない。読めた分は使うが、正常・不在とも確定保存しない。
+        for (const p of refetch) {
+          failedAttempt(p)
+          p.bytes = grouped.byStation.get(p.j.epoch.code) ?? p.bytes
+        }
+      } else {
+        byStation = grouped.byStation
+      }
     } else {
       // **問い合わせ全体が「データが無い」（404）も失敗に数える。** 2026-10-15 に、保存庫が数分のあいだ
       // 何を頼んでも 404 を返した（同じ範囲が約 10 分後には 200 で返った）。全部が 404 を確かな不在として
       // 控えると、その地震は二度と取りに行かない。応答があって一部の観測点だけ載っていないときは、その観測点を不在にする（下）
-      for (const p of refetch) {
-        p.failed = true
-        p.j.slot.failures += 1
-        p.j.slot.retryAtMs = Date.now() + FAILURE_RETRY_MS
-      }
+      for (const p of refetch) failedAttempt(p)
       log.warn(
         `[public-wave] 保存庫から ${refetch.map((p) => p.j.epoch.code).join(',')} の波形を取れなかった（${res.kind === 'no-data' ? '全観測点が 404' : res.kind}${res.kind === 'http-error' ? ` ${res.status}` : ''}・${refetch[0].j.slot.failures} 回目）`,
       )
@@ -391,10 +438,13 @@ async function loadQuake(job: {
     }
     // 取れなかった回は、前に出していた絵を残す。まだ何も出していなければ、控えにある分（仮の控え）を出す
     if (p.failed) {
-      if (p.j.slot.wave !== null || p.cached?.bytes == null) continue
-      p.bytes = p.cached.bytes
+      if (p.j.slot.wave !== null) continue
+      p.bytes = p.bytes ?? p.cached?.bytes ?? null
+      if (p.bytes === null) continue
     }
     const { epoch, range } = p.j
+    p.j.slot.epoch = epoch
+    p.j.slot.rawBytes = p.bytes
     const decoded = p.bytes === null ? null : decodePublicQuakeWave({ bytes: p.bytes, epoch, range })
     if (decoded !== null && (decoded.unreadable > 0 || decoded.rejected > 0)) {
       log.debug(`[public-wave] ${epoch.code} の控えで読めない ${decoded.unreadable} 本・置かない ${decoded.rejected} 本`)

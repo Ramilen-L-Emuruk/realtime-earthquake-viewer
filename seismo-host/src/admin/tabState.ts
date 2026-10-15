@@ -95,6 +95,11 @@ export interface TabContext {
    * 登録しないと、入力の途中でもタブ移動とリロードが確認なしに捨てる。
    */
   readonly setUnsavedProbe: (probe: () => boolean) => void
+  /**
+   * 別のタブを、選択を渡して開く（揺れの記録 →「波形の記録で開く」）。**タブの見出しを押したのと同じ道を通る** ——
+   * 保存していない入力の確認・アドレスの履歴（「戻る」で戻れる）・選択の置き換えを、ここで別に組まない。
+   */
+  readonly openTab: (key: TabKey, selection: Selection) => void
 }
 
 /** ブラウザの Storage のうち、ここで使う分だけ（テストで置き換えるため）。 */
@@ -219,19 +224,29 @@ export function memoryTabContext(
   signal: AbortSignal,
   tab: TabKey,
   init: { readonly selection?: Selection; readonly prefs?: unknown } = {},
-): TabContext & { readonly unsaved: () => boolean; readonly states: TabStates } {
+): TabContext & {
+  readonly unsaved: () => boolean
+  readonly states: TabStates
+  /** `openTab` で開こうとしたタブ（呼ばれた順）。 */
+  readonly opened: readonly { readonly key: TabKey; readonly selection: Selection }[]
+} {
   const states = new TabStates(memoryStorage(), memoryStorage())
   if (init.selection !== undefined) states.replaceSelection(tab, init.selection)
   const stores = states.storesFor(tab, signal, () => {})
   if (init.prefs !== undefined) stores.prefs.save(init.prefs)
   let probe: () => boolean = () => false
+  const opened: { key: TabKey; selection: Selection }[] = []
   return {
     signal,
     ...stores,
     setUnsavedProbe: (p) => {
       probe = p
     },
+    openTab: (key, selection) => {
+      opened.push({ key, selection })
+    },
     unsaved: () => probe(),
     states,
+    opened,
   }
 }

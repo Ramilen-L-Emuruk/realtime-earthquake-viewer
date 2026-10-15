@@ -5,7 +5,7 @@
 // その値は負にもなる（実機で `-0.04`）。震度0 の帯を通してしまうと絵が消えなくなる。
 
 import { describe, it, expect } from 'vitest'
-import { seismoWaveTriggered } from './seismoWaveTrigger'
+import { SEISMO_WAVE_USUAL_MARGIN, seismoWaveTriggered } from './seismoWaveTrigger'
 import { NO_SCOPE, type NearbyScope } from './actionChecklistTrigger'
 import type { EEWAlert } from '../types/earthquake'
 import type { DetectedPoint } from './kyoshinDetectionView'
@@ -36,7 +36,7 @@ const QUIET = {
   scope: NO_SCOPE,
   eews: [] as readonly EEWAlert[],
   detectedPoints: [] as readonly DetectedPoint[],
-  stations: [] as readonly { intensity: number | null }[],
+  stations: [] as readonly { intensity: number | null; usualMeasured: number | null }[],
 }
 
 describe('seismoWaveTriggered', () => {
@@ -44,31 +44,78 @@ describe('seismoWaveTriggered', () => {
     expect(seismoWaveTriggered(QUIET)).toBe(false)
   })
 
-  describe('自作地震計自身の震度', () => {
+  describe('自作地震計自身の震度（普段が読めないとき）', () => {
     it('震度1 以上なら出す', () => {
-      expect(seismoWaveTriggered({ ...QUIET, stations: [{ intensity: 0.5 }] })).toBe(true)
-      expect(seismoWaveTriggered({ ...QUIET, stations: [{ intensity: 4.2 }] })).toBe(true)
+      expect(seismoWaveTriggered({ ...QUIET, stations: [{ intensity: 0.5, usualMeasured: null }] })).toBe(true)
+      expect(seismoWaveTriggered({ ...QUIET, stations: [{ intensity: 4.2, usualMeasured: null }] })).toBe(true)
     })
 
     // 対照: 震度0 の帯（計測震度 0.5 未満）は平常時そのもの。ここを通すと絵が消えなくなる。
     it('震度0 では出さない', () => {
-      expect(seismoWaveTriggered({ ...QUIET, stations: [{ intensity: 0.49 }] })).toBe(false)
-      expect(seismoWaveTriggered({ ...QUIET, stations: [{ intensity: 0 }] })).toBe(false)
+      expect(seismoWaveTriggered({ ...QUIET, stations: [{ intensity: 0.49, usualMeasured: null }] })).toBe(false)
+      expect(seismoWaveTriggered({ ...QUIET, stations: [{ intensity: 0, usualMeasured: null }] })).toBe(false)
     })
 
     // 静穏時の実機はここにいる（計測震度は 2*log10(a) + 0.94 なので a < 0.34 gal で負）。
     it('負の計測震度でも出さない', () => {
-      expect(seismoWaveTriggered({ ...QUIET, stations: [{ intensity: -0.04 }] })).toBe(false)
+      expect(seismoWaveTriggered({ ...QUIET, stations: [{ intensity: -0.04, usualMeasured: null }] })).toBe(false)
     })
 
     it('震度を出せていない観測点は数えない', () => {
-      expect(seismoWaveTriggered({ ...QUIET, stations: [{ intensity: null }] })).toBe(false)
+      expect(seismoWaveTriggered({ ...QUIET, stations: [{ intensity: null, usualMeasured: null }] })).toBe(false)
     })
 
     it('複数の観測点のうち 1 つでも揺れていれば出す', () => {
       expect(
-        seismoWaveTriggered({ ...QUIET, stations: [{ intensity: -0.1 }, { intensity: 1.2 }] }),
+        seismoWaveTriggered({ ...QUIET, stations: [{ intensity: -0.1, usualMeasured: null }, { intensity: 1.2, usualMeasured: null }] }),
       ).toBe(true)
+    })
+  })
+
+  // 2026-10-15 ユーザー承認の「普段 + 0.5」。値は観測点 1 の実測（普段はおよそ −1.3）。
+  describe('自作地震計自身の震度（普段が読めるとき）', () => {
+    const at = (intensity: number, usualMeasured = -1.3) => ({ ...QUIET, stations: [{ intensity, usualMeasured }] })
+
+    // 正: 震度1 に届かなくても、普段よりはっきり上がれば出す（実測で拾えた M3.6 は普段 +0.66）。
+    it('普段より余裕を超えて上がれば、震度1 に届かなくても出す', () => {
+      expect(seismoWaveTriggered(at(-1.3 + 0.66))).toBe(true)
+    })
+
+    // 対照: 境目ちょうどは出さない（「超えたら」）。普段の揺れの範囲では出さない。
+    it('普段 + 余裕ちょうどまでは出さない', () => {
+      expect(seismoWaveTriggered(at(-1.3 + SEISMO_WAVE_USUAL_MARGIN))).toBe(false)
+      expect(seismoWaveTriggered(at(-1.2))).toBe(false)
+    })
+
+    // 対照: 普段が高い（騒がしい）観測点では、震度1 でも普段の範囲なら出さない。
+    it('普段が高ければ、震度1 でも余裕を超えなければ出さない', () => {
+      expect(seismoWaveTriggered(at(0.6, 0.3))).toBe(false)
+      expect(seismoWaveTriggered(at(0.9, 0.3))).toBe(true)
+    })
+
+    // 正: 普段が高い間（置き場所での作業・余震）でも、震度3 以上は必ず出す（2026-10-15 ユーザー承認）。
+    it('普段が高くても、震度3 以上なら出す', () => {
+      expect(seismoWaveTriggered(at(2.5, 5.5))).toBe(true)
+    })
+
+    // 対照: 震度3 に届かなければ、普段が高い間は出さない（普段 + 余裕の線に従う）。
+    it('普段が高ければ、震度2 では出さない', () => {
+      expect(seismoWaveTriggered(at(2.4, 5.5))).toBe(false)
+    })
+
+    // 安全弁: 普段が読めない観測点は震度1 の線へ戻る（何も出さない形にしない）。
+    it('普段が読めない観測点は震度1 で見る', () => {
+      expect(seismoWaveTriggered({ ...QUIET, stations: [{ intensity: -0.5, usualMeasured: null }] })).toBe(false)
+      expect(seismoWaveTriggered({ ...QUIET, stations: [{ intensity: 0.5, usualMeasured: null }] })).toBe(true)
+    })
+
+    // 安全弁: 普段の値が壊れていても、震度1 の線へ戻る（NaN との比較は常に偽で、黙って出なくなる）。
+    it('普段の値が数でなければ震度1 で見る', () => {
+      expect(seismoWaveTriggered(at(0.5, Number.NaN))).toBe(true)
+    })
+
+    it('震度を出せていない観測点は数えない', () => {
+      expect(seismoWaveTriggered({ ...QUIET, stations: [{ intensity: null, usualMeasured: -1.3 }] })).toBe(false)
     })
   })
 
@@ -120,7 +167,7 @@ describe('seismoWaveTriggered', () => {
       seismoWaveTriggered({
         ...QUIET,
         scope: near,
-        stations: [{ intensity: -0.04 }],
+        stations: [{ intensity: -0.04, usualMeasured: null }],
         detectedPoints: [pt(FAR_KEY, 19)],
         eews: [eew([{ pref: '東京都', name: '東京都23区', scaleFrom: 10, scaleTo: 10 }] as EEWAlert['areas'])],
       }),

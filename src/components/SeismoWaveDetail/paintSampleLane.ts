@@ -4,7 +4,7 @@
 // 濃さは同じ関数・同じ値を使う。違うのは線の作り方だけ —— 寄せて 1 ピクセルに入る点が少なければ
 // **点を時間順に結ぶ**（波の形が出る）。多ければ 1 ピクセルごとの上下の端を縦に塗る（包絡）。
 
-import { AXIS_BAND_PX, paintMarks, paintTicks, type WaveMark } from '../SeismoWaveChart/paintWave'
+import { AXIS_BAND_PX, paintMarks, paintSingleMemberBand, paintTicks, type WaveMark } from '../SeismoWaveChart/paintWave'
 import type { TimeTick } from '../SeismoWaveChart/timeTicks'
 import type { LaneGeometry } from './sampleSeries'
 
@@ -25,6 +25,11 @@ export function paintSampleLane(
      * 元の線より太く・明るく描く。
      */
     readonly overlays: readonly { readonly geometry: (widthPx: number) => LaneGeometry; readonly color: string }[]
+    /**
+     * 裏付けが 1 本しか無いピクセル（1 なら敷く。→ `sampleSeries.ts` の `singleMemberColumns`）。
+     * **幅（デバイスピクセル）を受け取って作る**（{@link geometry} と同じ理由）。
+     */
+    readonly singleMember: (widthPx: number) => Uint8Array
     readonly scaleGal: number
     readonly stale: boolean
     readonly marks: readonly WaveMark[]
@@ -53,6 +58,9 @@ export function paintSampleLane(
   ctx.moveTo(0, Math.round(zeroY) + 0.5)
   ctx.lineTo(w, Math.round(zeroY) + 0.5)
   ctx.stroke()
+
+  const single = params.singleMember(w)
+  paintSingleMemberBand(ctx, Math.min(w, single.length), plotH, (c) => single[c] === 1)
 
   const scale = params.scaleGal
   if (scale > 0) {

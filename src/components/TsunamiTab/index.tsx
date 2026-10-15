@@ -2,8 +2,9 @@ import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useRef, useSta
 import { useAutoOpenWhileSpeaking } from '../../hooks/useAutoOpenWhileSpeaking'
 import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation, TsunamiWarningComment } from '../../types/earthquake'
 import { formatDateTimeMin, formatDepth, formatMagnitudeCondition, formatTimeMin, hasDepth } from '../../utils/formatters'
-import { quakeEventKey } from '../../utils/quakeMerge'
-import { groupAreasForCardDisplay, tsunamiAreaGradeChanges, TSUNAMI_GRADE_LIFTED, matchesArea, observationBadges, observationHeightText, observationArrivalFallbackText, observationMaxHeightTimeText, estimationBadges, estimationHeightText, forecastHeightImportantBadge, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, isTsunamiGradeRaised, sourceEarthquakeTime, tsunamiAreaKey, evacuationActionLine, fallbackEvacuationAction, type ObsUpdateMark, type ObsUpdateField } from '../../utils/tsunami'
+import { quakeEventKey, extractQuakeEventId } from '../../utils/quakeMerge'
+import { linkTsunamiSources } from '../../utils/tsunamiSourceLinks'
+import { groupAreasForCardDisplay, tsunamiAreaGradeChanges, TSUNAMI_GRADE_LIFTED, matchesArea, observationBadges, observationHeightText, observationArrivalFallbackText, observationMaxHeightTimeText, estimationBadges, estimationHeightText, forecastHeightImportantBadge, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, isTsunamiGradeRaised, sourceEarthquakeTime, tsunamiAreaKey, tsunamiEventIds, evacuationActionLine, fallbackEvacuationAction, type ObsUpdateMark, type ObsUpdateField } from '../../utils/tsunami'
 import { TSUNAMI_MISSING_COLOR as MISSING_COLOR } from '../../utils/tsunamiStyle'
 import { CANCEL_REASON_LABEL } from '../../utils/tsunamiCancelLabel'
 import { UPDATE_MARK_COLOR } from '../../utils/updateMark'
@@ -818,7 +819,9 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
   // `id` へ落ちるのは識別子を持たない電文のときだけ。その電文は続報として束ねられない
   // （`isTsunamiContinuation`）ので前報の中身も引き継がず、鍵が報ごとに変わっても
   // 「等級が動いたときだけ閉じる」との食い違いにはならない。
-  const commentsKey = `${active[0]?.eventId ?? active[0]?.id ?? ''}|`
+  // 鍵の番号は**いちばん小さいもの**を使う。番号が足される切替え（`A` → `A B`）でも、番号が入れ替わっていく
+  // 形でも、組み立てに使った報の番号を含むので同じ津波の間は変わらない（→ `tsunamiEventIds`）。
+  const commentsKey = `${(active[0] ? [...tsunamiEventIds(active[0])].sort()[0] : undefined) ?? active[0]?.id ?? ''}|`
     + (active[0]?.areas ?? []).map(a => `${a.code ?? a.name}:${a.grade}`).join(',')
   // **前回値は state で持つ。ref をレンダー中に書き換えない。** React は描いた結果を捨てて
   // 描き直すことがあり、捨てられたレンダーでも ref の書き換えだけは残る。次のレンダーでは
@@ -1372,11 +1375,14 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
   const sourceEarthquake = sourceEarthquakes[0]
 
 
-  // 津波の原因地震に対応する地震カードを eventId で照合する
-  const tsunamiEventId = active[0]?.eventId
-  const linkedQuake = (tsunamiEventId && earthquakes)
-    ? earthquakes.find(q => q.eventId === tsunamiEventId && !q.cancelledAt)
-    : undefined
+  // 原因地震ごとに、対応する地震カードを引く。**結び方は `linkTsunamiSources` だけが決める**
+  // （番号が足された津波は原因地震を 2 つ以上持ち、どれがどの地震かは発現時刻で突き合わせる）。
+  // バナー全体を押したときは、結べた原因地震のうち先頭のカードへ寄せる（従来の 1 件のときと同じ）。
+  const sourceLinks = active[0] && earthquakes ? linkTsunamiSources(active[0], earthquakes) : []
+  const linkedQuakes = sourceLinks.map(link => link.eventId && earthquakes
+    ? earthquakes.find(q => extractQuakeEventId(q) === link.eventId && !q.cancelledAt)
+    : undefined)
+  const linkedQuake = linkedQuakes.find((q): q is JMAQuake => !!q)
 
   // h-full を持つ下記の要素自身がスクロール領域になるため、横スクロールの抑止は
   // App.tsx の TAB_SCROLLER_CLASS ではなくここで行う（祖先の指定は子に効かない）。
@@ -1503,8 +1509,22 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
                     key={i}
                     eq={eq}
                     prefix={i === 0 ? '震源: ' : ''}
-                    link={i === 0 && linkedQuake
-                      ? <span style={{ marginLeft: '0.375rem', fontSize: '0.625rem', opacity: 0.7 }}>▶ 地震情報</span>
+                    link={linkedQuakes[i]
+                      ? (linkedQuakes[i] === linkedQuake
+                        // 先頭の結べた地震はバナー全体が押せるので、印だけを添える（従来の形）。
+                        ? <span style={{ marginLeft: '0.375rem', fontSize: '0.625rem', opacity: 0.7 }}>▶ 地震情報</span>
+                        // 2 つ目以降はその行の印だけがその地震へ寄せる（バナー全体のクリックへ流さない）。
+                        : <span
+                            role="button"
+                            tabIndex={0}
+                            onClick={(e) => { e.stopPropagation(); onEarthquakeLink?.(quakeEventKey(linkedQuakes[i]!)) }}
+                            onKeyDown={(e) => {
+                              if (e.key !== 'Enter' && e.key !== ' ') return
+                              e.stopPropagation()
+                              onEarthquakeLink?.(quakeEventKey(linkedQuakes[i]!))
+                            }}
+                            style={{ marginLeft: '0.375rem', fontSize: '0.625rem', opacity: 0.7, cursor: 'pointer' }}
+                          >▶ 地震情報</span>)
                       : null}
                   />
                 ))}

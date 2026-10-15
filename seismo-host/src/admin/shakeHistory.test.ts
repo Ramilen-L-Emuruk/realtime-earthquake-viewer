@@ -41,6 +41,8 @@ function wire(overrides: Record<string, unknown> = {}): Record<string, unknown> 
     rev: 1,
     writtenAtMs: T0 + 30_000,
     stationId: 'station-1',
+    // ホストが送るときに添える札（`statusServer.ts` の `wireShakeEvent`）。
+    stationKey: 'station-1-0123456789ab',
     detectorVersion: 1,
     startMs: T0,
     endMs: T0 + 12_300,
@@ -92,12 +94,56 @@ describe('readShakeRecord — ホストの記録を読む', () => {
     })
   })
 
+  it('正: ホストが添えた札を読む（「波形の記録で開く」はこれで記録を探す）', () => {
+    expect(rec().stationKey).toBe('station-1-0123456789ab')
+  })
+
+  it('安全弁: 札が無ければ記録ごと読めない（無いまま通すと、波形の記録を開けない行が黙って混ざる）', () => {
+    expect(readShakeRecord(wire({ stationKey: undefined }))).toBeNull()
+    expect(readShakeRecord(wire({ stationKey: '' }))).toBeNull()
+  })
+
   it('正: 照合した地震を読む（規模・深さ・最大震度が無くても読む）', () => {
     const r = rec({
       verdict: 'quake',
       matchedQuake: { name: '千葉県北西部', originMs: T0 - 20_000, magnitude: null, depthKm: null, maxScale: null, distanceKm: 61.2 },
     })
-    expect(r.matchedQuake).toEqual({ name: '千葉県北西部', magnitude: null, depthKm: null, maxScale: null, distanceKm: 61.2 })
+    expect(r.matchedQuake).toEqual({
+      name: '千葉県北西部',
+      originMs: T0 - 20_000,
+      originPrecisionMs: null,
+      magnitude: null,
+      depthKm: null,
+      maxScale: null,
+      distanceKm: 61.2,
+    })
+  })
+
+  it('正: 照合したときの発生時刻と幅を読む（詳細で地震一覧から引き当てる手掛かり）', () => {
+    const r = rec({
+      verdict: 'quake',
+      matchedQuake: { name: '千葉県北西部', originMs: T0 - 60_000, originPrecisionMs: 60_000, magnitude: 4.2, depthKm: 50, maxScale: 30, distanceKm: 61.2 },
+    })
+    expect(r.matchedQuake).toMatchObject({ originMs: T0 - 60_000, originPrecisionMs: 60_000 })
+  })
+
+  it('対照: 発生時刻の欄の無い記録も読む（欄は null）', () => {
+    const r = rec({
+      verdict: 'quake',
+      matchedQuake: { name: '千葉県北西部', magnitude: 4.2, depthKm: 50, maxScale: 30, distanceKm: 61.2 },
+    })
+    expect(r.matchedQuake).toMatchObject({ originMs: null, originPrecisionMs: null })
+  })
+
+  it('安全弁: 発生時刻の欄があるのに数でなければ、形が違うとして読まない', () => {
+    expect(
+      readShakeRecord(
+        wire({
+          verdict: 'quake',
+          matchedQuake: { name: '千葉県北西部', originMs: 'x', magnitude: 4.2, depthKm: 50, maxScale: 30, distanceKm: 61.2 },
+        }),
+      ),
+    ).toBeNull()
   })
 
   it('正: 上下動を測れなかった揺れ（判定できず・最大加速度 null）も読む', () => {

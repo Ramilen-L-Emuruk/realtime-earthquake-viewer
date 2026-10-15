@@ -482,6 +482,9 @@ export interface BorrowedFromTsunami {
 
 export type TsunamiGrade = 'MajorWarning' | 'Warning' | 'Watch' | 'Forecast' | 'Unknown'
 
+/** 津波電文の種類。→ {@link JMATsunami.headType} */
+export type TsunamiHeadType = 'VTSE41' | 'VTSE51' | 'VTSE52'
+
 /**
  * 固定付加文（`Comments/WarningComment`）1 件。→ {@link JMATsunami.warningComments}
  */
@@ -616,7 +619,7 @@ export interface TsunamiSourceEarthquake extends HypocenterAreaDetail {
    * **ただし `originTime` と入れ替えないこと。** 津波の `originTime` は
    * `isTsunamiNewFire`（`utils/tsunami.ts`）が**電文の識別子が両側そろっていないときの
    * 同一性判定**に使っている。中身を差し替えると、続報が別の津波として立つ。
-   * （`isTsunamiContinuation` は `eventId` と `cancelledAt` しか見ておらず、この注意の対象外）
+   * （`isTsunamiContinuation` は `isSameTsunamiEvent`（`EventID` の番号の重なり）と `cancelledAt` しか見ておらず、この注意の対象外）
    */
   arrivalTime?: string
   /**
@@ -790,12 +793,37 @@ export interface JMATsunami {
    * standard 版は P2PQuake の文書 ID。
    */
   id: string
+  /**
+   * 識別情報（`Head/EventID`）。**寄与している地震の識別番号を半角スペースで並べたもの**で、
+   * 番号は 1 つとは限らない（電文解説資料 Ⅰ.別02-1）。気象庁は別の地震が寄与すると同じ警報を
+   * 切り替えて番号を足す（同 Ⅰ.別02-8 出現例６: `A` → `A B`）。
+   *
+   * **文字列のまま比べないこと。** 同じ津波かどうかは `utils/tsunami.ts` の `isSameTsunamiEvent`
+   * （番号が 1 つでも重なり、運用種別が同じ）で見る。番号の取り出しは `tsunamiEventIds`。
+   */
   eventId?: string
   time: string
+  /**
+   * 電文の種類（`VTSE41` 津波警報・注意報・予報／`VTSE51` 津波情報／`VTSE52` 沖合の津波観測に
+   * 関する情報）。DMDATA の XML 経路だけが持つ。P2PQuake（standard 版）とテストデータの一部は持たない。
+   *
+   * **種類で扱いが変わる事実が 2 つある。** 有効期限と本文は津波警報等（VTSE41）が決める
+   * （→ `mergeTsunamiReports`）。取消は種類ごとの単位で届き、VTSE41 の取消だけが津波全体を消す
+   * （→ `isPartialTsunamiRetraction`）。
+   */
+  headType?: TsunamiHeadType
   /**
    * 電文の運用種別（`Control/Status`）。訓練・試験のときだけ入る。→ {@link TelegramOperationStatus}
    */
   operationStatus?: TelegramOperationStatus
+  /**
+   * いま画面に出している津波を組み立てた報（取消・解除の報は含まない）。状態に載せた津波だけが持つ。
+   *
+   * **津波情報（VTSE51）・沖合の観測（VTSE52）だけの取消で、その種類の報を抜いて組み直すために持つ。**
+   * 続報の統合（`mergeTsunamiReports`）は前報の値を取り込んで重ねるので、統合の後からは
+   * どの値がどの種類の報から来たかを取り出せない。→ `refoldTsunamiWithout`
+   */
+  foldedReports?: JMATsunami[]
   cancelled: boolean
   // cancelled=true のときの解除理由。'lifted'=気象庁の正式解除（区域が電文から消える）、
   // 'retracted'=誤って発表した電文の取消（InfoType=取消）、'expired'=ValidDateTime満了によりアプリが自動検出。
@@ -1068,6 +1096,27 @@ export interface EEWAlert {
    * 3 つの電文で扱いを揃える（片方だけ拾うと、同じ事象なのに種別によって理由が出たり出なかったりする）。
    */
   cancelText?: string
+  /**
+   * 「非常に強い揺れを検知・最大予測震度のみ」の報か（気象庁「地震火山関連 XML 電文解説資料」Ⅱ.21）。
+   *
+   * 震源要素を決める前に、強い揺れを検知した観測点だけで出す第 1 報の形。**震央は検知した観測点・
+   * 深さ 10km は仮の値・規模は不明（`NaN`）**で、発生時刻（`OriginTime`）も区域も持たない。
+   * 仮定震源要素（`earthquake.condition`）とは別の形だが、**震源が決まっていない点は同じ**なので、
+   * 画面・地図・予報円の扱いは仮定震源要素に揃える（判定は `utils/eew.ts` の `isProvisionalHypocenter`）。
+   *
+   * 資料はこの形を「緊急地震速報（地震動予報）」と「緊急地震速報（予報）」に限っており、警報には出ない。
+   * DMDSS 版限定（P2PQuake / Yahoo 経路はこの区別を運ばない）。
+   */
+  strongShakingOnly?: true
+  /**
+   * 上の形の報の本文（`Body/Text`）。強い揺れを検知した観測点の所在地が入る
+   * （実電文: 「３日０６時３１分４２秒頃\n石川県珠洲市付近　　　　　最大震度５弱程度以上と推定」）。
+   *
+   * **`cancelText` と同じ要素だが別の中身。** 資料は取消以外でこの要素が出るのを上の形のときだけと
+   * 定めている。アプリが組み立てた文ではないので、カードにはそのまま出す（読み上げには載せない。
+   * 2026-10-15 ユーザー承認）。
+   */
+  strongShakingText?: string
   kind: 'eew'
   id: string
   time: string
@@ -1816,6 +1865,15 @@ export interface JMAEstimatedIntensity {
  */
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'replay' | 'crowded'
 
+/**
+ * 電文ログの行が何の電文として読まれたか。電文ログの種別名と絞り込みの選択肢はこの型から
+ * 引く（`components/TelegramTab/labels.ts`）ので、ここへ足すとそちらが型エラーで知らせる。
+ * 電文種別コード（`headType`）の名前は型では縛れないので、`labels.test.ts` が縛る。
+ */
+export type TelegramLogKind =
+  | 'eew' | 'quake' | 'tsunami' | 'lpgm' | 'nankai' | 'nankaiCommentary' | 'kohatsu'
+  | 'quakeNotice' | 'earthquakeCount' | 'estimatedIntensity'
+
 export interface TelegramLogEntry {
   id: string
   receivedAt: Date
@@ -1823,8 +1881,7 @@ export interface TelegramLogEntry {
   headType: string
   isTest: boolean
   status: 'parsed' | 'filtered' | 'error'
-  kind?: 'eew' | 'quake' | 'tsunami' | 'lpgm' | 'nankai' | 'nankaiCommentary' | 'kohatsu'
-    | 'quakeNotice' | 'earthquakeCount' | 'estimatedIntensity'
+  kind?: TelegramLogKind
   rawHead?: unknown
   rawBody: unknown
   errorMessage?: string

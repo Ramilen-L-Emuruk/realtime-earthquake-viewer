@@ -6,7 +6,7 @@ import { getIntensityColor, getIntensityLabelWithApproxAbove } from '../../utils
 import { formatMagnitude, formatDepth, hasDepth } from '../../utils/formatters'
 import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
 import { addOrderedLayer } from './gl/layerOrder'
-import { createDepthPointLayer, type DepthPoint, type DepthPointLayer } from './gl/depthPointLayer'
+import { createDepthPointLayer, type DepthPoint, type DepthPointLayer, type DepthPointShape } from './gl/depthPointLayer'
 import { badgeHtml, escapeHtml } from './gl/popupHtml'
 import { log } from '../../utils/logger'
 import { reportRenderFailure, clearRenderFailure, clearRenderFailuresFor } from '../../utils/renderHealth'
@@ -17,12 +17,12 @@ import { reportRenderFailure, clearRenderFailure, clearRenderFailuresFor } from 
 // **地震情報の震源と同じ仕組みで、実際の深さへ置く**（gl/depthPointLayer.ts）。地表に×印だけを
 // 置いていた頃は、地震情報の震源だけが深さを持ち EEW は地表という非対称があった。
 //
-// 仮定震源要素（震源未確定）の震源は控えめに描いて確定震源と区別する
-// （予報円を出さない・カードで M/深さを隠すのと同じ扱いを地図にも与える）。
+// 仮定震源要素（震源未確定）と「非常に強い揺れを検知」の報の震源は、**形で**確定震源と区別する
+// （× ＋外周の輪。予報円を出さない・カードで M/深さを隠すのと同じ扱いを地図にも与える）。
 // **深さも採らない**——数値が確定していないため、地表に置く（docs/spec/eew-spec.md §5）。
-// 区別は「不透明度を下げる」だけでなく「点滅の振幅を浅くする」ことでも付ける。
-// 不透明度と点滅は**乗算される**ため、下げるだけでは点滅の谷で消えてしまい
-// 「たまに薄く見える」状態になる（下記の 2 組の定数）。
+// 深さだけが判らない報は**途切れた ×**にする（地表に置くので、形を変えないと「ごく浅い」と
+// 見分けが付かない）。形と、点滅を確定と揃えることは 2026-10-15 ユーザー承認
+// （→ docs/spec/map-rendering-spec.md §16）。
 //
 // クリックで震源名・第何報・M・深さ・予想最大震度・警報種別を出す（地震情報の震源と対）。
 
@@ -38,56 +38,49 @@ const EPICENTER_COLOR: readonly [number, number, number] = [0.62, 0.16, 0.16]
 const EPICENTER_SIZE_PX = 12
 
 /**
- * ×印の点滅（明側・暗側の不透明度）。周期は `BLINK_PERIOD_MS`。
+ * ×印の点滅（明側・暗側の不透明度）。周期は `BLINK_PERIOD_MS`。**全震源で共通。**
  *
- * 仮定震源要素は振幅を浅くする。不透明度と**乗算される**ため、確定と同じ谷（0.1）を使うと
- * 倍率と掛かって事実上消えてしまう。「常に見えるが穏やかに明滅する」質感で確定と区別する。
+ * かつて仮定震源要素は振幅を浅く・不透明度を低くして区別していたが、点滅の谷では仮定の方が
+ * 濃く見える逆転があった。区別を形（`crossShape`）へ移したので、濃さは揃えてある
+ * （2026-10-15 ユーザー承認）。
  */
-export const EEW_BLINK = {
-  confirmed: { high: 1, low: 0.1 },
-  assumed: { high: 0.9, low: 0.45 },
-} as const
+export const EEW_BLINK = { high: 1, low: 0.1 } as const
 
-/**
- * 仮定震源要素の×印の不透明度倍率。確定震源より控えめにするが、点滅
- * （`EEW_BLINK.assumed`・谷 0.45）と乗算されるため下げすぎない。
- * kyoshin モードではこちらが採られる（1 × 0.7）。
- */
-const ASSUMED_OPACITY_RATIO = 0.7
-/**
- * 同・下限。**地震/津波モードでは実質こちらが採用される**（元が 0.4 なので倍率だけだと
- * 0.28 まで落ち、点滅の谷と掛かって 0.13 になる）。このモードでは確定震源との差を
- * 不透明度ではなく点滅の振幅で付ける。
- */
-const ASSUMED_OPACITY_MIN = 0.35
 /** kyoshin モード以外の×印の不透明度。 */
 const DIMMED_OPACITY = 0.4
 
 /**
  * ×印に渡す不透明度。`fullOpacity` は kyoshin モードかどうか（それ以外は半透明）。
  * 点滅（`EEW_BLINK`）と**乗算される**ので、実際の見え方はこの値そのものではない。
- * 積の関係は `EewEpicentersGL.test.ts` が固定している。
- *
- * 仮定震源が確定震源より薄いのは**濃い側だけ**。確定は谷が深いため（1 → 0.1／0.4 → 0.04）、
- * **点滅の谷ではどのモードでも仮定の方が濃くなる**（kyoshin 0.315 対 0.1／他 0.158 対 0.04）。
- * 逆転を消すには、**この 2 軸（不透明度・点滅の振幅）の中では**仮定を「谷で消える」ところまで
- * 戻すしかない。意図した引き換えとして扱っている。線の色や太さで差を付ければ逆転を避けつつ
- * 視認性も保てるが、現状は採っていない（区別は不透明度と点滅だけで付ける方針）。
  */
-export function crossOpacity(isAssumed: boolean, fullOpacity: boolean): number {
-  const base = fullOpacity ? 1 : DIMMED_OPACITY
-  return isAssumed ? Math.max(base * ASSUMED_OPACITY_RATIO, ASSUMED_OPACITY_MIN) : base
+export function crossOpacity(fullOpacity: boolean): number {
+  return fullOpacity ? 1 : DIMMED_OPACITY
 }
 
 /**
- * ×印を地下ではなく**地表**へ置くか。**理由は 2 つあるが、画面での見え方は同じ**（柄が消え、
- * 震央の印もレイヤー側の判定で消える）。
+ * ×印の形。**位置そのものが仮か**を先に見る —— 仮定震源要素は深さも採らないので、深さ不明の
+ * 印を重ねると「位置は確か」と読めてしまう。
+ *
+ * - 仮定震源要素・「非常に強い揺れを検知」の報（`isAssumed`）→ × ＋外周の輪
+ * - 深さだけが判らない報（センチネル `-1`。`hasDepth` で判定）→ 途切れた ×。
+ *   緯度経度は確かなので、仮のように見せない
+ * - それ以外 → 普通の ×（`0` は「ごく浅い」という有効値なのでこちら）
+ */
+export function crossShape(ep: Pick<EewEpicenter, 'isAssumed' | 'depth'>): DepthPointShape {
+  if (ep.isAssumed) return 'crossRing'
+  if (!hasDepth(ep.depth)) return 'crossBroken'
+  return 'cross'
+}
+
+/**
+ * ×印を地下ではなく**地表**へ置くか。**理由は 2 つあり、どちらも柄が消え**、震央の印も
+ * レイヤー側の判定で消える。2 つの見分けと「ごく浅い」との見分けは形で付ける（`crossShape`）。
  *
  * - **仮定震源要素**（震源未確定）—— 震源・M・深さが固定の仮定値。確定していない数値を
  *   立体で断定して見せない（→ `docs/spec/eew-spec.md` §5）
  * - **深さが判らない報** —— センチネル `-1` をそのまま渡すと `elevationMetersFromDepthKm` が
  *   標高 +1000m を返し、**×印が地表より 1km 上へ浮く**（`gl/depthPointLayer.ts`）。
- *   `??` は `-1` に効かないので `hasDepth` で判定する。**仮定震源要素のようには薄くしない** ——
+ *   `??` は `-1` に効かないので `hasDepth` で判定する。**仮定震源要素と同じ形にはしない** ——
  *   あちらは震源の位置そのものが仮だが、こちらは緯度経度が確かで判らないのは深さだけ
  */
 function shouldPlaceAtSurface(ep: EewEpicenter): boolean {
@@ -111,11 +104,10 @@ export function buildEpicenterPoints(
   const points: DepthPoint[] = []
   const owners: EewEpicenter[] = []
   for (const ep of epicenters) {
-    const alpha = crossOpacity(ep.isAssumed, fullOpacity)
-    const blink = ep.isAssumed ? EEW_BLINK.assumed : EEW_BLINK.confirmed
-    // 地表へ置く条件は `shouldPlaceAtSurface`（仮定震源要素・深さ不明）。
-    // **深さ不明は見た目で「ごく浅い」と区別が付かない** —— 吹き出しだけが `formatDepth` で
-    // 「不明」と出す。既知の限界として受け入れている（→ `docs/spec/map-rendering-spec.md` §16）。
+    const alpha = crossOpacity(fullOpacity)
+    const blink = EEW_BLINK
+    // 地表へ置く条件は `shouldPlaceAtSurface`（仮定震源要素・深さ不明）。どちらも柄が消えるので、
+    // 「ごく浅い」との見分けは形（`crossShape`）で付ける。
     const depthKm = shouldPlaceAtSurface(ep) ? 0 : ep.depth
     const [lat, lng] = ep.position
     points.push({
@@ -134,7 +126,7 @@ export function buildEpicenterPoints(
       lng,
       lat,
       depthKm,
-      shape: 'cross',
+      shape: crossShape(ep),
       stem: true,
       color: CROSS_COLOR,
       sizePx: CROSS_SIZE_PX * iconScale,
@@ -161,7 +153,7 @@ export function buildPopupHtml(ep: EewEpicenter): string {
   // 報番号は電文由来。最終報なら第N報より「最終報」の方が状態が伝わる。
   const serialText = ep.isFinal ? '最終報' : ep.serial ? `第${escapeHtml(ep.serial)}報` : ''
   // 仮定震源要素の報は震源が確定していない。数値を鵜呑みにしないよう明示する
-  // （×印を薄く描く判定と同じ isAssumed を使い、判定を二重に持たない）。
+  // （×印の形を輪つきにする判定と同じ isAssumed を使い、判定を二重に持たない）。
   const provisional = ep.isAssumed
   const scaleLabel = getIntensityLabelWithApproxAbove(ep.maxScale, ep.maxScaleOrAbove)
   return (
@@ -186,9 +178,14 @@ export function buildPopupHtml(ep: EewEpicenter): string {
     // 地名まで含めて仮の値であることを言い切る。カードの「（震源未確定）」だけでは
     // 「この地名がおおよその震源」と読めてしまうが、実際は最初に揺れを検知した観測点の所在地で
     // 震源とは無関係（→ docs/spec/eew-spec.md §5）。ポップアップは行数に余裕があるので書ききる。
+    // 「非常に強い揺れを検知」の報は `Condition` が仮定震源要素ではないので、語を分ける
+    // （2026-10-15 ユーザー承認）。どちらも地名が観測点の所在地である点は同じ。
     (provisional
-      ? `<div style="margin-top:4px;font-size:11px;color:#fbbf24">仮定震源要素（震源未確定）<br>` +
-        `<span style="color:#94a3b8">地名は最初に揺れを検知した観測点の位置です</span></div>`
+      ? ep.strongShakingOnly
+        ? `<div style="margin-top:4px;font-size:11px;color:#fbbf24">非常に強い揺れを検知（震源未確定）<br>` +
+          `<span style="color:#94a3b8">地名は揺れを検知した観測点の位置です</span></div>`
+        : `<div style="margin-top:4px;font-size:11px;color:#fbbf24">仮定震源要素（震源未確定）<br>` +
+          `<span style="color:#94a3b8">地名は最初に揺れを検知した観測点の位置です</span></div>`
       : '') +
     `</div>`
   )

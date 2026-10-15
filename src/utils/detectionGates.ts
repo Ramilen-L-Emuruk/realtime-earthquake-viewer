@@ -52,7 +52,9 @@ export function gateShortfall(e: DetectionEvent): string | null {
   // 除いた配列を渡してくるので、**いまのアプリにこの分岐へ届く経路は無い**。
   // weak を含む配列を渡す消費者（診断ログの閲覧画面など）を作ったときに黙って空欄にならないよう
   // 置いてある
-  if (g.soloStale) return '広がりが続かなかったため取り下げ'
+  // 孤立点（周囲に観測点が無い）は対を作れないので、値が動かないまま続いたことで降ろす（設計書§37）。
+  // 文面は 2026-10-15 ユーザー承認
+  if (g.soloStale) return g.soloStaleFlat ? '値が動かないまま続いたため取り下げ' : '広がりが続かなかったため取り下げ'
 
   // 連続フレーム数が進んでいる＝確定の条件を今まさに満たしている。残りフレーム数だけを言う。
   //
@@ -152,6 +154,9 @@ export function gateNotes(e: DetectionEvent): string[] {
   if (g.fastPath) {
     notes.push(`震度${scaleLabel(g.highIntensityReq)}以上の点が揃ったため、点数の条件を免除しています`)
   }
-  if (g.soloStale) notes.push('周囲へ広がらないまま続いたため、確定を取り下げました')
+  // 孤立点の文面は 2026-10-14 ユーザー承認（設計書§37）
+  if (g.soloStale) {
+    notes.push(g.soloStaleFlat ? '値が動かないまま続いたため、確定を取り下げました' : '周囲へ広がらないまま続いたため、確定を取り下げました')
+  }
   return notes
 }

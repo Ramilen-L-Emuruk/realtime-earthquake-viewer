@@ -272,7 +272,7 @@ function HistoryWave({ wave, quakeLabel, view }: { wave: SeismoQuakeWave; quakeL
     if (canvas === null) return
     const paint = (): void => {
       // **揺れに合わせて範囲を切り出してから描く**（→ `utils/seismoQuakeWindow.ts`）。
-      // 取った範囲は発生の 30 秒前から 4 分ぶんあり、そのまま描くと揺れが平らな線に埋もれる。
+      // 取った範囲は分の頭の 60 秒前から 5 分ぶんあり、そのまま描くと揺れが平らな線に埋もれる。
       // 末尾の空（まだ来ていない時刻）もここで落ちる。
       const picked = selectQuakeWindow({ base: wave.columns, zero: wave.axisZero, reach: wave.reach, noiseFloor: wave.unit.onsetNoiseFloor })
       const trimmed = picked.columns

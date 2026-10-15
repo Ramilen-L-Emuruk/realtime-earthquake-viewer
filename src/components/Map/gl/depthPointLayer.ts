@@ -302,11 +302,19 @@ void main() {
   if (a_aux > 0.5 && u_hideAux > 0.5) gl_PointSize = 0.0;
 }`
 
-/** 点の形。震源は × 印、震央は円、といった描き分けに使う。 */
-export type DepthPointShape = 'circle' | 'cross'
+/**
+ * 点の形。震源は × 印、震央は円、といった描き分けに使う。
+ *
+ * - `crossRing`（× ＋外周の輪）—— 震源の位置そのものが仮のもの（仮定震源要素・「非常に強い揺れを検知」の報）
+ * - `crossBroken`（途切れた ×）—— 緯度経度は確かで、深さだけが判らないもの
+ *
+ * 選んだ形は 2026-10-15 ユーザー承認（→ `docs/spec/map-rendering-spec.md` §16）。
+ * **判定（クリック）は形を見ない**（円で拾う）ので、形を足しても当たり判定は変わらない。
+ */
+export type DepthPointShape = 'circle' | 'cross' | 'crossRing' | 'crossBroken'
 
 /** シェーダーへ渡す形の番号。属性で持たせるので、1 レイヤーに混在できる。 */
-const SHAPE_ID: Record<DepthPointShape, number> = { circle: 0, cross: 1 }
+const SHAPE_ID: Record<DepthPointShape, number> = { circle: 0, cross: 1, crossRing: 2, crossBroken: 3 }
 
 const FRAG_SRC = `#version 300 es
 precision highp float;
@@ -324,8 +332,21 @@ void main() {
     // 45 度に傾けた十字（× 印）。
     float arm = min(abs(p.x + p.y), abs(p.x - p.y));
     float w = fwidth(arm);
-    a = 1.0 - smoothstep(0.10 - w, 0.10 + w, arm);
-    a *= 1.0 - smoothstep(0.42, 0.48, length(p));
+    float r = length(p);
+    float solid = 1.0 - smoothstep(0.10 - w, 0.10 + w, arm);
+    if (v_shape < 1.5) {
+      a = solid * (1.0 - smoothstep(0.42, 0.48, r));
+    } else if (v_shape < 2.5) {
+      // × ＋外周の輪（crossRing）。腕を縮めて輪との間を空ける。
+      // 太さのぼかしは半径の勾配で取る（腕の勾配は √2 倍あり、小さい点で輪の外縁が端で切れる）。
+      float wr = fwidth(r);
+      float ring = 1.0 - smoothstep(0.035 - wr, 0.035 + wr, abs(r - 0.42));
+      a = max(solid * (1.0 - smoothstep(0.28, 0.33, r)), ring);
+    } else {
+      // 途切れた ×（crossBroken）。腕の中ほどを切る。
+      float gap = smoothstep(0.17, 0.19, r) * (1.0 - smoothstep(0.28, 0.30, r));
+      a = solid * (1.0 - gap) * (1.0 - smoothstep(0.42, 0.48, r));
+    }
   }
   a *= v_alpha;
   if (a <= 0.0) discard;

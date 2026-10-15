@@ -304,7 +304,15 @@ export const RECEPTION_STATION_GONE_TEXT = 'この観測点はいまの設定に
 export const RECEPTION_TRUNCATED_TEXT = '読めなかったパケットが多く、古いほうから 2000 件だけ印を付けている'
 export const UNDERLINE_LEGEND =
   '波形の下の線: 橙 = 再送信された分・紫 = 遅れて届いた分・緑 = 再送信された分から作り直した分・赤 = 時刻が疑わしい分'
-export const QUAKE_LEGEND = '気象庁: ▼ = 発生時刻・破線 = この観測点に P・S が届く時刻（JMA2001 走時表）・帯 = 発生時刻が分までしか分からず、届く時刻に幅があるもの'
+/**
+ * 気象庁の P・S の色（線と、幅があるときの帯）。**波形の記録タブと揺れの記録の詳細で共有する** ——
+ * 同じ地震の同じ P・S が、タブによって違う色で出ないように。
+ */
+export const P_COLOR = 'rgba(37, 99, 168, 0.9)'
+export const S_COLOR = 'rgba(179, 38, 30, 0.9)'
+export const P_BAND = 'rgba(37, 99, 168, 0.12)'
+export const S_BAND = 'rgba(179, 38, 30, 0.12)'
+export const QUAKE_LEGEND ='気象庁: ▼ = 発生時刻・破線 = この観測点に P・S が届く時刻（JMA2001 走時表）・帯 = 発生時刻が分までしか分からず、届く時刻に幅があるもの'
 export const QUAKE_UNLOCATED_TEXT = 'このセンサーの基板は観測点に割り当てていないので、P・S の線は引けない'
 export const QUAKE_TOO_WIDE_TEXT = '気象庁の地震は 7 日以内まで寄せると出る'
 export const QUAKE_LOADING_TEXT = '気象庁の地震一覧を取得中…'

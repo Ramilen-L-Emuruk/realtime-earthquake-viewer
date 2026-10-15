@@ -5,7 +5,7 @@
 // **カードが立った時点で初動はもう流れ去っている。** こちらは時刻の範囲を指定して
 // 取りに行くので、過ぎた区間を後から引ける。
 //
-// **落とすのはホストの仕事。** 4.5 分ぶんの生の値は 3 軸で 8 万個あるが、描く側が使うのは
+// **落とすのはホストの仕事。** 5 分ぶんの生の値は 3 軸で 9 万個あるが、描く側が使うのは
 // 列ごとの上下だけ。`columns` を渡すと列で返る（実機の実測で 3.5 分・600 列が 138 ms）。
 //
 // **受け取る形はここに書く。** ホスト側の型を `import type` で借りない（理由は
@@ -14,14 +14,19 @@
 import { log } from '../utils/logger'
 import { arr, obj, str } from './parseHelpers'
 import { isValidSeismoHostUrl } from './seismoStream'
+import { QUAKE_MINUTE_LEAD_MS } from '../utils/quakeOriginSeconds'
+import { NOISE_SPAN_MS } from '../utils/seismoQuakeWindow'
 
 /**
- * 地震の発生時刻より手前を何 ms 取るか。**30 秒。**
+ * 地震カードの時刻（分の頭）より手前を何 ms 取るか。**60 秒。**
  *
- * 初動より前の静かなところを少し入れる —— 揺れ始めがどこかを目で取るには、
- * 揺れていない区間との対比が要る。
+ * 初動より前の静かなところを入れる —— 揺れ始めがどこかを目で取るには、揺れていない区間との
+ * 対比が要り、描く範囲の判定も時間軸の 0 の手前 {@link NOISE_SPAN_MS}（30 秒）で平常時のノイズを測る。
+ * **時間軸の 0 は分の頭より前へ出うる**（秒まで取れた発生時刻は分の頭の {@link QUAKE_MINUTE_LEAD_MS}
+ * 前まで。カードの時刻が地震発現の分のため）。その両方を覆う幅にしてある —— 30 秒だけだと、
+ * 発生が分の頭より 20 秒以上前の地震でノイズを測る秒が足りず、描く範囲を切れない。
  */
-export const WAVE_HISTORY_LEAD_MS = 30_000
+export const WAVE_HISTORY_LEAD_MS = NOISE_SPAN_MS + QUAKE_MINUTE_LEAD_MS
 
 /**
  * 地震の発生時刻より後を何 ms 取るか。**4 分。**
@@ -150,7 +155,7 @@ export function buildWaveHistoryRange(originMs: number): WaveHistoryRange | null
   if (!Number.isFinite(originMs)) return null
   const fromMs = Math.floor(originMs - WAVE_HISTORY_LEAD_MS)
   const toMs = Math.floor(originMs + WAVE_HISTORY_TAIL_MS)
-  // **定数を動かしたときの歯止め。** いまの値（4.5 分）では起きないが、伸ばした人が
+  // **定数を動かしたときの歯止め。** いまの値（5 分）では起きないが、伸ばした人が
   // 上限を超えたことに気づく手立てがここしか無い。
   if (toMs - fromMs > HOST_RANGE_MAX_MS) return null
   return { fromMs, toMs }

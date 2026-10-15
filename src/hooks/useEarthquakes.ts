@@ -27,7 +27,7 @@ import { calcEEWCancelTime, eewSerial, eewEventKey, computeSingleEEWLevel } from
 import { recordReplayEvent, type ReplayTelegramSkip } from '../utils/replayEventLog'
 import { replayTelegramFacts, type ReplayTelegramSource } from '../utils/replayTelegramRef'
 import { upsertEstimatedIntensity, isNewEstimatedIntensity, rememberShownEstimatedIntensity } from '../utils/estimatedIntensity'
-import { mergeTsunamiReports, isCancelForCurrentTsunami, isTsunamiContinuation, withInheritedTsunamiFacts } from '../utils/tsunami'
+import { withInheritedTsunamiFacts, isSameTsunamiEvent, stepTsunamiState } from '../utils/tsunami'
 import { log } from '../utils/logger'
 import { serverNow, serverDate } from '../utils/clock'
 
@@ -371,7 +371,7 @@ function enrichEEWPref(eew: EEWAlert, index: ReadonlyMap<string, string> | null)
   return { ...eew, areas }
 }
 
-type TestEEWKind = 'special' | 'warning' | 'forecast' | 'assumed' | 'deep'
+type TestEEWKind = 'special' | 'warning' | 'forecast' | 'assumed' | 'deep' | 'strongShaking'
 // baseTime（**地震発現時刻**の基準）を初報から続報・最終報まで持ち回る
 // （→ `runSimulateEEW` のコメント）。
 type TestEEWEntry = { eventId: string; serial: number; baseTime: Date; finalizeTimer: number }
@@ -848,6 +848,12 @@ export function useEarthquakes(
   // 現在の state を WS コールバック内から参照するための ref
   const stateRef = useRef(state)
   stateRef.current = state
+  /**
+   * 失効予約の土台（DMDSS 版）。直前に報を当てた結果と、そのとき `stateRef` が見せていた津波の組。
+   * `stateRef` がまだ同じ津波を見せていれば（同じ周回に報が続けて届いた）、当てた結果のほうを土台にする。
+   * 理由は失効予約を積む箇所の注記。
+   */
+  const expiryBasisRef = useRef<{ shownAtStep: JMATsunami | undefined; tsunami: JMATsunami | undefined } | null>(null)
   /**
    * **同じティックで受理した地震カードの写し**（同じ地震につき 1 枚）。
    *
@@ -1667,66 +1673,95 @@ export function useEarthquakes(
       }
     }
 
-    // 552（津波）: 期限切れ時刻にキャンセルイベントをキューへ挿入する。
-    // TSU-1: validDateTime を持つ続報だけ「古い予約を消して新しい予約を積み直す」。
-    // TSU-5A: standard 版（P2PQuake）は API 仕様上 validDateTime を持たないため、
-    // 解除電文が届かない例外ケースに備えて 24h 後の自動非表示フェイルセーフを積む。
-    // DMDSS 版で validDateTime が無い電文（VTSE51②/VTSE52 の観測のみ続報）は正規パターンで、
-    // 既存の expired 予約を触らず据え置く（消してから積み直しをしないと、期限切れによる自動失効が
-    // 二度と起きなくなる）。よって purge は「これから insert する場合」または「明示解除電文」の
-    // 場合のみ実行する（DMDSS の観測のみ続報では purge も insert もしない）。
+    // 津波: 期限切れ時刻に失効のイベント（`cancelReason: 'expired'`）をキューへ積む。
+    //
+    // **DMDSS 版は「この報を当てたあとの津波」の期限で決める**（`stepTsunamiState`。状態更新と同じ答え）。
+    // 届いた報の期限だけを見ると、状態が報の種類ごとに決め直す期限と食い違う —— 期限を載せない
+    // 津波警報・注意報（VTSE41）で状態の期限は消えるのに古い予約が残って注意報の発表中に「失効」する、
+    // 津波情報だけの取消で予約がすべて外れて予報が失効しない、の 2 つが起きていた。
+    // 表示中の津波に当たらない報（別の津波の解除など）では予約に触れない。
+    //
+    // **`stateRef` はレンダー待ちで同じティックの間は進まない**（下の EEW の分岐に理由）。同じティックに
+    // 津波の報が同じ周回に続けて届いたときの土台は、下の `expiryBasisRef` の注記。
+    //
+    // TSU-5A: standard 版（P2PQuake）は API 仕様上 validDateTime を持たないため、解除電文が届かない
+    // 例外ケースに備えて 24h 後の自動非表示フェイルセーフを積む（この経路は従来どおり届いた報で決める。
+    // 識別子も種類も無いので、当てたあとの津波を求めても答えが変わらない）。
     if (event.kind === 'tsunami') {
       const tsunami = event as JMATsunami
       const now = getTimeRef.current()
-      let expireTime: Date | null = null
-      if (!tsunami.cancelled) {
-        if (tsunami.validDateTime) {
-          // 日時として読めない期限で予約を積まないこと（`push` も捨てるが、そちらは
-          // 呼び出し規約の違反として `error` に残る。**電文が期限を持たないのは正常** なので、
-          // ここで分けて `warn` に留める。失敗モードは `EventQueue` の注記）。
-          const parsed = new Date(tsunami.validDateTime)
-          if (Number.isFinite(parsed.getTime())) expireTime = parsed
-          else log.warn(`[tsunami] 有効期限を日時として読めないため失効予約を積みません: id=${tsunami.id} validDateTime=${tsunami.validDateTime}`)
-        }
-        if (!expireTime && !isDmdss) {
-          const FAILSAFE_MS = 24 * 60 * 60 * 1000
-          // 初期状態の再現（silent 注入）では、過去に発表された電文をまとめて「いま」流し直す。
-          // 受信時刻を基準にすると、20 時間前に出ていた津波が再生開始からさらに 24 時間残り、
-          // 実際の失効タイミングとずれる。この経路だけは発表時刻を基準にする。
-          const issuedAt = new Date(tsunami.time)
-          const baseMs = isSilentRef.current && Number.isFinite(issuedAt.getTime())
-            ? issuedAt.getTime()
-            : now.getTime()
-          expireTime = new Date(baseMs + FAILSAFE_MS)
+      // 失効の予約を積む（既に過ぎていれば、初期状態の再現に限りその場で失効させる）
+      const pushExpiry = (expireTime: Date, base: JMATsunami) => {
+        // 初期状態の再現では、遡り幅（24 時間）の境目ぶんだけ「発表から 24 時間を過ぎた」
+        // 電文が紛れうる。未来の予約しか積まないと、そういう津波は失効予約を持たないまま
+        // 画面に残り、リプレイ中はライブ更新も止まっているので消す手段が無くなる。
+        // その場で失効させる（silent 注入なので音は鳴らない）。
+        const alreadyExpired = expireTime <= now
+        if (!alreadyExpired || isSilentRef.current) {
+          eventQueueRef.current.push({
+            eventTime: alreadyExpired ? now : expireTime,
+            silent: alreadyExpired ? true : undefined,
+            // 畳んだ報（`foldedReports`）は失効の判定に要らないので持ち回さない。
+            payload: { kind: 'event', event: { ...base, foldedReports: undefined, cancelled: true, cancelReason: 'expired' } as AppEvent },
+          })
         }
       }
-      const shouldModifyQueue = tsunami.cancelled || expireTime !== null
-      if (shouldModifyQueue) {
-        // 津波は「常に 1 件スロット」（tsunami-spec §5・TSU-3）で管理されるため、
-        // expired 予約は最新 1 件だけ残せば充分。P2PQuake 経路は eventId が無く id も続報ごとに
-        // 変わるため、id/eventId 一致条件を課すと古い予約が消えず積み上がる問題があった。
-        // 明示解除電文でも purge するのは、TSU-5A の 24h 予約を解決済み津波に対して発火させないため。
-        eventQueueRef.current.retain(entry => {
-          if (entry.payload.kind !== 'event') return true
-          const ev = entry.payload.event
-          if (ev.kind !== 'tsunami') return true
-          const evAny = ev as JMATsunami
-          return evAny.cancelReason !== 'expired'
-        })
-        if (expireTime) {
-          // 初期状態の再現では、遡り幅（24 時間）の境目ぶんだけ「発表から 24 時間を過ぎた」
-          // 電文が紛れうる。未来の予約しか積まないと、そういう津波は失効予約を持たないまま
-          // 画面に残り、リプレイ中はライブ更新も止まっているので消す手段が無くなる。
-          // その場で失効させる（silent 注入なので音は鳴らない）。
-          const alreadyExpired = expireTime <= now
-          if (!alreadyExpired || isSilentRef.current) {
-            eventQueueRef.current.push({
-              eventTime: alreadyExpired ? now : expireTime,
-              silent: alreadyExpired ? true : undefined,
-              payload: { kind: 'event', event: { ...tsunami, cancelled: true, cancelReason: 'expired' } as AppEvent },
-            })
+      // 津波は「常に 1 件スロット」（tsunami-spec §5・TSU-3）で管理されるため、expired 予約は最新 1 件だけ
+      // 残せば充分。P2PQuake 経路は eventId が無く id も続報ごとに変わるため、id/eventId 一致条件を課すと
+      // 古い予約が消えず積み上がる問題があった。
+      const purgeExpiry = () => eventQueueRef.current.retain(entry => {
+        if (entry.payload.kind !== 'event') return true
+        const ev = entry.payload.event
+        if (ev.kind !== 'tsunami') return true
+        return (ev as JMATsunami).cancelReason !== 'expired'
+      })
+      const parseValid = (t: JMATsunami): Date | null => {
+        if (!t.validDateTime) return null
+        // 日時として読めない期限で予約を積まないこと（`push` も捨てるが、そちらは
+        // 呼び出し規約の違反として `error` に残る。**電文が期限を持たないのは正常** なので、
+        // ここで分けて `warn` に留める。失敗モードは `EventQueue` の注記）。
+        const parsed = new Date(t.validDateTime)
+        if (Number.isFinite(parsed.getTime())) return parsed
+        log.warn(`[tsunami] 有効期限を日時として読めないため失効予約を積みません: id=${t.id} validDateTime=${t.validDateTime}`)
+        return null
+      }
+      if (isDmdss) {
+        // **土台は「この周回で直前に当てた結果」。** `stateRef` は描き直しのたびにしか進まないので、同じ周回に
+        // 2 通目が届くと 1 通目を当てる前の津波のままになる。それを土台にすると、1 通目（期限なしの注意報）で
+        // 外した予約を 2 通目（津波情報）が古い予報の期限で積み直し、注意報の発表中に失効する。
+        // `stateRef` が直前の判定から動いていなければ（＝まだ描き直していない）、自分が当てた結果を使う。
+        // 動いていれば状態更新のほうが新しい（解除表示の片付け・リプレイの初期化を含む）ので、そちらに従う。
+        const shown = stateRef.current.tsunamis[0]
+        const pending = expiryBasisRef.current
+        const base = pending && pending.shownAtStep === shown ? pending.tsunami : shown
+        const step = stepTsunamiState(base, tsunami, now)
+        if (step.kind !== 'ignored') {
+          expiryBasisRef.current = { shownAtStep: shown, tsunami: step.kind === 'live' ? step.tsunami : undefined }
+        }
+        if (step.kind !== 'ignored') {
+          purgeExpiry()
+          const expireTime = step.kind === 'live' ? parseValid(step.tsunami) : null
+          if (step.kind === 'live' && expireTime) pushExpiry(expireTime, step.tsunami)
+        }
+      } else {
+        let expireTime: Date | null = null
+        if (!tsunami.cancelled) {
+          expireTime = parseValid(tsunami)
+          if (!expireTime) {
+            const FAILSAFE_MS = 24 * 60 * 60 * 1000
+            // 初期状態の再現（silent 注入）では、過去に発表された電文をまとめて「いま」流し直す。
+            // 受信時刻を基準にすると、20 時間前に出ていた津波が再生開始からさらに 24 時間残り、
+            // 実際の失効タイミングとずれる。この経路だけは発表時刻を基準にする。
+            const issuedAt = new Date(tsunami.time)
+            const baseMs = isSilentRef.current && Number.isFinite(issuedAt.getTime())
+              ? issuedAt.getTime()
+              : now.getTime()
+            expireTime = new Date(baseMs + FAILSAFE_MS)
           }
         }
+        // 明示解除電文でも purge するのは、TSU-5A の 24h 予約を解決済み津波に対して発火させないため。
+        if (tsunami.cancelled || expireTime) purgeExpiry()
+        if (expireTime) pushExpiry(expireTime, tsunami)
       }
     }
 
@@ -1797,7 +1832,7 @@ export function useEarthquakes(
           // **据え置き（`mergedCard === existing`）の経路は上で抜けている** —— そこで借りると
           // 中身が同じでも参照だけが変わり、「変化なし＝同一参照」の約束が崩れる。
           // 津波が後から届く順序は、下の 'tsunami' 側が拾う。
-          const merged = withBorrowedFromTsunami(mergedCard, prev.tsunamis)
+          const merged = withBorrowedFromTsunami(mergedCard, prev.tsunamis, prev.earthquakes)
           // 統合の結果、暫定 ID で作られたカードが確定 ID を持つカードと重複することがある。
           // 履歴経路（mergeQuakeHistory）と同じ畳み込みをここでも通す（理由は coalesceByEventId）。
           //
@@ -1844,17 +1879,25 @@ export function useEarthquakes(
         }
         case 'tsunami': {
           const tsunami = event as JMATsunami
-          if (tsunami.cancelled) {
-            // 別イベントの遅延到達した解除で、表示中の津波を消さない。判定の中身と理由は
-            // `isCancelForCurrentTsunami`（読み上げ・画面の記憶を落とす側と共有する）。
-            if (prev.tsunamis.length > 0 && !isCancelForCurrentTsunami(tsunami, prev.tsunamis[0])) return prev
+          const current = prev.tsunamis[0]
+          // **報を当てた結果は `stepTsunamiState` が決める**（失効予約の積み直しと同じ答えを使うため。
+          // 片方だけ書き換えると、画面の津波と失効の予約が別の期限で動く）。
+          const step = stepTsunamiState(current, tsunami, now)
+          if (step.kind === 'ignored') return prev
+          if (step.kind === 'ended') {
+            if (step.reason === 'retractedAll') {
+              // 津波情報・沖合の観測だけの取消で、組み立てに使った報がその種類だけだった（警報等を受けていない）。
+              log.warn(`[tsunami] ${tsunami.headType} の取消で組み直す報が残らないため、津波を外します: id=${current?.id}`)
+              return { ...prev, tsunamis: [], lastUpdate: now }
+            }
+            if (step.reason === 'outdated') return { ...prev, tsunamis: [], lastUpdate: now }
             // 解除・取消・期限切れのいずれも同じ10秒表示を経る。表示内容は cancelReason で出し分ける（TsunamiTab側）。
-            if (prev.tsunamis.length > 0 && !prev.tsunamis[0].cancelledAt) {
+            if (current && !current.cancelledAt) {
               // TSU-4: purge 予約に対象 id を持たせ、他イベントが後で置換した場合に誤って
               // 新しいカードを 10 秒前に消してしまうレースを防ぐ。
               eventQueueRef.current.push({
                 eventTime: new Date(now.getTime() + 10_000),
-                payload: { kind: 'purge-cancelled-tsunami', id: prev.tsunamis[0].id },
+                payload: { kind: 'purge-cancelled-tsunami', id: current.id },
                 silent: true,
               })
               // **取消電文から引き継ぐのは 2 つ。** 表示中のカードを土台にするので、
@@ -1863,7 +1906,7 @@ export function useEarthquakes(
               return {
                 ...prev,
                 tsunamis: [{
-                  ...prev.tsunamis[0],
+                  ...current,
                   cancelledAt: now,
                   cancelReason: tsunami.cancelReason,
                   ...(tsunami.cancelText && { cancelText: tsunami.cancelText }),
@@ -1873,44 +1916,25 @@ export function useEarthquakes(
             }
             return { ...prev, tsunamis: [], lastUpdate: now }
           }
-          // ValidDateTime が過去 = すでに有効期限切れ（ページリロード時など）
-          if (tsunami.validDateTime && new Date(tsunami.validDateTime) <= now) {
-            return { ...prev, tsunamis: [], lastUpdate: now }
+          // 番号が 1 つも重ならない津波が、表示中の津波の解除を待たずに届いた。
+          //
+          // **置き換える（2026-10-14 ユーザー承認「置き換える（推奨）」）。** 気象庁は別の地震が寄与すると
+          // 同じ警報を切り替えて番号を足すので（電文解説資料 Ⅰ.別02-8 出現例６）、同じ津波は番号が重なる。
+          // 重ならない報は別の津波として扱い、最新の発表を見せる。置き換えた事実はログから追えるようにする。
+          if (!step.continued && current && current.eventId && tsunami.eventId
+              && !isSameTsunamiEvent(current, tsunami) && !current.cancelledAt) {
+            log.warn(`[tsunami] 番号の重ならない津波で表示中の津波を置き換えます: prev=${current.eventId} next=${tsunami.eventId}`)
           }
-          // 同一イベントの続報: 観測のみ電文（areas=[]）で警報カードが消えないよう前回の areas を維持し、
-          // observations は上書きではなくマージする（区域・観測点ごとに前回値を保持）。
-          const current = prev.tsunamis[0]
-          // 引き継ぎの条件は `isTsunamiContinuation` に集約する（カード順の基準を組み立てる
-          // `tsunamiCardOrderBasis` と同じ述語を使うため。宣言箇所に理由）。
-          const sameEvent = isTsunamiContinuation(current, tsunami)
-          if (sameEvent) {
-            // **引き継ぎの規則は `mergeTsunamiReports` の 1 箇所に置く。** ここへ書き写すと、
-            // 履歴からの復元（`withInheritedTsunamiFacts`）との間で片方だけに項目が足され、
-            // 「ライブ受信では出るのにリロードすると消える」形の欠落が生まれる（実際に
-            // 繰り返し起きた）。何をどう引き継ぐかはあちらの表を見ること。
-            const mergedTsunami = mergeTsunamiReports(current, tsunami)
-            return {
-              ...prev,
-              tsunamis: [mergedTsunami],
-              // 津波が先に震源を伝える順序を拾う（→ `borrowFromTsunamiIntoCards`）。
-              // 続報でも配り直すのは、津波電文の震源が更新されるため（能登では 16:22 に
-              // Ｍ７．４→Ｍ７．６。地震情報が同じ更新を伝えるのは 2 分後の 16:24）。
-              earthquakes: borrowFromTsunamiIntoCards(prev.earthquakes, [mergedTsunami]),
-              lastUpdate: now,
-            }
-          }
-          // TSU-3: 別 eventId の tsunami で既存を上書きするケースを検知したら警告する。
-          // 実装は 1 件スロットのまま（複数同時発表は稀なため型変更はスコープ外）だが、
-          // 上書きが発生した事実がログから追えるようにする。
-          if (current && current.eventId && tsunami.eventId
-              && current.eventId !== tsunami.eventId && !current.cancelledAt) {
-            log.warn(`[tsunami] 別 eventId の tsunami で上書き（複数同時発表・実装は 1 件スロット）: prev=${current.eventId} next=${tsunami.eventId}`)
-          }
+          // 続報の引き継ぎ（観測のみ電文で区域を保つ・観測点のマージ等）は `mergeTsunamiReports` の 1 箇所に
+          // ある（`stepTsunamiState` 経由）。ここへ書き写すと、履歴からの復元（`withInheritedTsunamiFacts`）との
+          // 間で片方だけに項目が足され、「ライブ受信では出るのにリロードすると消える」形の欠落が生まれる。
           return {
             ...prev,
-            tsunamis: [tsunami],
-            // 続報側と同じ理由（→ `borrowFromTsunamiIntoCards`）。
-            earthquakes: borrowFromTsunamiIntoCards(prev.earthquakes, [tsunami]),
+            tsunamis: [step.tsunami],
+            // 津波が先に震源を伝える順序を拾う（→ `borrowFromTsunamiIntoCards`）。続報でも配り直すのは、
+            // 津波電文の震源が更新されるため（能登では 16:22 に Ｍ７．４→Ｍ７．６。地震情報が同じ更新を
+            // 伝えるのは 2 分後の 16:24）。
+            earthquakes: borrowFromTsunamiIntoCards(prev.earthquakes, [step.tsunami]),
             lastUpdate: now,
           }
         }
@@ -3264,6 +3288,34 @@ export function useEarthquakes(
   }, [])
 
   /**
+   * 津波の原因地震が後から加わる場面のテスト（→ `createTestTsunamiSourceAdded`）。
+   *
+   * **受信と同じ経路（イベントキュー）へ時刻つきで積む。** 解除まで含めて積むので待ちを張らずに済み、
+   * リプレイ開始・リセットの `eventQueueRef.current.clear()` でそのまま落ちる。
+   *
+   * **DMDSS 版のみ。** P2PQuake は津波電文の `EventID` も原因地震も配信しない。
+   */
+  const simulateTsunamiSourceAdded = useCallback(async () => {
+    const { createTestTsunamiSourceAdded } = await loadTestData()
+    for (const report of createTestTsunamiSourceAdded()) {
+      eventQueueRef.current.push({ eventTime: new Date(report.time), payload: { kind: 'event', event: report } })
+    }
+  }, [])
+
+  /**
+   * 津波情報（VTSE51）だけが取り消される場面のテスト（→ `createTestTsunamiInfoRetraction`）。
+   *
+   * 積み方は {@link simulateTsunamiSourceAdded} と同じ。**DMDSS 版のみ**（P2PQuake は情報名称ごとの
+   * 取消を配信しない）。
+   */
+  const simulateTsunamiInfoRetraction = useCallback(async () => {
+    const { createTestTsunamiInfoRetraction } = await loadTestData()
+    for (const report of createTestTsunamiInfoRetraction()) {
+      eventQueueRef.current.push({ eventTime: new Date(report.time), payload: { kind: 'event', event: report } })
+    }
+  }, [])
+
+  /**
    * 市町村の未入電を含む地震情報のテスト（日向灘 2022-01-22）。
    *
    * 「地震テスト」（能登本震）では**市町村の未入電が 1 件も出ない** —— 発表条件が
@@ -3362,6 +3414,13 @@ export function useEarthquakes(
   const simulateEEWAssumed = useCallback(async () => {
     const { createTestEEWAssumed } = await loadTestData()
     runSimulateEEW('assumed', (e, s, b) => createTestEEWAssumed(isDmdss, e, s, b), EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent)
+  }, [handleEvent])
+
+  // 「非常に強い揺れを検知」の形は DMDATA 経路でしか届かないので、ボタンも DMDSS 版にだけ出す
+  // （→ `createTestEEWStrongShaking`）。
+  const simulateEEWStrongShaking = useCallback(async () => {
+    const { createTestEEWStrongShaking } = await loadTestData()
+    runSimulateEEW('strongShaking', (e, s, b) => createTestEEWStrongShaking(e, s, b), EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent)
   }, [handleEvent])
 
   const simulateEEWDeep = useCallback(async () => {
@@ -3706,7 +3765,7 @@ export function useEarthquakes(
     simulateEarthquake,
     simulateForeignQuake,
     simulateForeignQuakeHuge,
-    simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWAssumed, simulateEEWDeep, simulateEEWRetraction,
+    simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWAssumed, simulateEEWStrongShaking, simulateEEWDeep, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
     simulateQuakeNotice, simulateEarthquakeCount, simulateEarthquakeCountRetraction, simulateEstimatedIntensity,
@@ -3714,6 +3773,8 @@ export function useEarthquakes(
     simulateQuakeReportSequence,
     simulateQuakeCancel,
     simulateHypocenterFromTsunami,
+    simulateTsunamiSourceAdded,
+    simulateTsunamiInfoRetraction,
     resetState,
     loadReplayEvents,
     peekUpcomingPayloads,
