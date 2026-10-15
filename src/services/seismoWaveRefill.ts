@@ -5,7 +5,7 @@
 // 最中に届いた知らせは範囲をまとめて取り終えてから取り直す」ので、その部分を {@link RangeCoalescer} に置く。
 //
 // **取りに行くのは、知らせの範囲に穴があるときだけ。** ホストは欠けを取り戻したら作り直して知らせてくるが、
-// 下部の波形が抱えているのは直近 60 秒だけ（`hooks/useSeismoStation.ts` の `WAVE_RETAIN_SEC`）。作り直しが
+// 下部の波形が抱えているのは直近 180 秒だけ（`hooks/useSeismoStation.ts` の `WAVE_RETAIN_SEC`）。作り直しが
 // 終わる頃には、穴がもう窓の外へ流れていることがある —— そのときに取りに行っても書く場所が無い。
 
 import type { SeismoStationWaveRevised } from './seismoStream'

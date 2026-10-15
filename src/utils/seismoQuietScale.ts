@@ -114,17 +114,21 @@ export const LIVE_QUIET_MEMORY_MS = 5 * 60_000
  * **時刻はデータの時刻で渡す**（壁時計は使わない）。時刻が覚えている長さより前へ戻ったら（再生の
  * 切り替えなど）、覚えていた値を捨てる —— 別の時間の静かさを混ぜない。
  *
- * **{@link QUIET_LEVEL_MIN_GAL} 未満の値は覚えない**（測れなかったものとして扱う）。値が張り付いた窓
+ * **物差しの下限（`minLevel`）未満の値は覚えない**（測れなかったものとして扱う）。値が張り付いた窓
  * （センサーの固着・同じ値の連続）は 0 を返し、最小を採る作りでは 1 回でその後 5 分間の下限を決めてしまう。
+ * 下限は単位で違う（自作地震計は {@link QUIET_LEVEL_MIN_GAL}、公開観測点は
+ * `components/SeismoWaveChart/waveUnit.ts` の値）ので、作るときに渡す。
  */
 export class QuietLevelMemory {
   private entries: { atMs: number; level: number }[] = []
+
+  constructor(private readonly minLevel: number) {}
 
   observe(atMs: number, level: number | null): void {
     if (!Number.isFinite(atMs)) return
     const last = this.entries[this.entries.length - 1]
     if (last !== undefined && atMs < last.atMs - LIVE_QUIET_MEMORY_MS) this.entries = []
-    if (level !== null && Number.isFinite(level) && level >= QUIET_LEVEL_MIN_GAL) this.entries.push({ atMs, level })
+    if (level !== null && Number.isFinite(level) && level >= this.minLevel) this.entries.push({ atMs, level })
     const from = atMs - LIVE_QUIET_MEMORY_MS
     this.entries = this.entries.filter((e) => e.atMs >= from && e.atMs <= atMs)
   }

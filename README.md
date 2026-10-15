@@ -15,6 +15,7 @@ React + TypeScript + MapLibre GL JS で構築されています。
 - **緊急地震速報（EEW）**: 発報時に予報円・震源・警報区域を表示、気象庁が発表した地域ごとの主要動到達予測をカウントダウン
 - **津波情報**: 大津波警報・警報・注意報・予報を海岸線に色分け、観測情報も併記
 - **リアルタイム震度**: 強震モニタ由来の各地の震度を毎秒更新、震源非依存の揺れ検知エンジン付き
+- **観測点の波形**: 揺れを検知したときや緊急地震速報の発表中に、震源や揺れを検知した地点の周りにある気象庁の広帯域地震計の波形を地図の下に表示し、その観測点を地図に番号つきの印で示す
 - **通知連携**: 種別ごとの通知音・ブラウザ通知・自動タブ切替・ウィンドウタイトル変更（AutoHotKey 等で監視可能）
 - **行動チェックリスト**: 強い揺れを検知したら、直後にとる行動と避難時に持ち出すものを地図の上に表示（地点を登録するとその周辺で判定）
 - **凡例**: いま地図に描かれている色の意味を左下に常時表示（見出しを押すと畳めます。設定で非表示にもできます）
@@ -115,6 +116,7 @@ MIT License（[LICENSE](LICENSE)）。
 **データ・地図・フォントの出典**:
 - 地震情報・緊急地震速報・津波情報: 気象庁 — 配信は通常版が [P2PQuake API v2](https://www.p2pquake.net/)、DM-D.S.S 版が [DMDATA.JP](https://dmdata.jp/)
 - リアルタイム震度: [防災科学技術研究所 強震モニタ](https://www.kmoni.bosai.go.jp/) — 配信は [Yahoo!天気・災害](https://typhoon.yahoo.co.jp/weather/jp/earthquake/kyoshin/) 経由
+- 公開観測点の波形: 気象庁（JP 網）— 配信は [EarthScope](https://www.earthscope.org/)（NSF NGF）経由（[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/deed.ja)）
 - 地図データ: 「気象庁 予報区等 GIS データ（都道府県・地震情報／細分区域・津波予報区）」 — GeoJSON 化: [Ichihai1415/JMA-GIS-GeoJSON](https://github.com/Ichihai1415/JMA-GIS-GeoJSON)（CC BY 4.0）
 - 震央地名: 気象庁「地震情報で用いる震央地名」「多言語辞書データ」 — データ整備: [0Quake/JMA_Region](https://github.com/0Quake/JMA_Region)（CC0 1.0）
 - 震度観測点の座標・読み: 気象庁「震度観測点一覧表」 — データ整備: [iku55 氏による JSON 化](https://gist.github.com/iku55/79005d1896631ad6117bbe327b8162c1)

@@ -20,6 +20,7 @@
  * 表記のまま写したもの。一覧の「GS コード」の列が EarthScope の観測点コードに当たる。
  * 上流に名前の無い観測点が現れたら止まる —— 黙って英字のまま出さない。
  */
+import type { PublicChannel, PublicStationEpoch, PublicStationsFile } from '../src/utils/publicStations'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -118,47 +119,8 @@ const ANCHOR_TOLERANCE_DEG = 0.001
 /** 成分の座標と観測点の座標の許容差（度）。0.0001 度 ≒ 10 m。 */
 const CHANNEL_COORD_TOLERANCE_DEG = 0.0001
 
-export interface PublicChannel {
-  code: ChannelCode
-  /** 上流が名乗る採取率（Hz）。照合用で、描くときはレコードの見出しの値を使う */
-  sampleRate: number
-  /** カウント/(m/s) */
-  sensitivity: number
-  /** 感度を定めた周波数（Hz） */
-  sensitivityFreq: number
-  azimuth: number
-  dip: number
-}
-
-export interface PublicStationEpoch {
-  code: string
-  nameJa: string
-  /** EarthScope の英字の地名 */
-  siteName: string
-  lat: number
-  lon: number
-  /** 標高（m） */
-  elevation: number
-  /** 運用の始め（UTC・秒までの ISO 8601・この時刻を含む） */
-  start: string
-  /**
-   * 運用の終わり（UTC・秒までの ISO 8601・**この時刻を含まない**）。続いているなら null。
-   * 上流は終わりを `23:59:59.9999` のように含む側で書くので、秒へ切り上げて半開区間にしている。
-   * 上流が終わりを小数秒つき（`.9999`）で書く限り、同じ場所の次のエポックの始めと同じ時刻になる。
-   * 重なりは止めるが、エポックの間の穴（宮古島の 2013-03-26〜27 のように実在する）は検査しない
-   */
-  end: string | null
-  channels: PublicChannel[]
-}
-
-export interface PublicStationsFile {
-  source: { station: string; channel: string }
-  /** 上流から取った日（UTC・YYYY-MM-DD） */
-  fetchedOn: string
-  stations: PublicStationEpoch[]
-  /** 波形の成分を持たないので外したエポック（コードと期間） */
-  excluded: { code: string; start: string; end: string | null; reason: string }[]
-}
+// 表の型はアプリと共有する（`src/utils/publicStations.ts`）。ここで別に持つと、生成物と読む側の形が黙ってずれる。
+export type { PublicChannel, PublicStationEpoch, PublicStationsFile } from '../src/utils/publicStations'
 
 type Row = Record<string, string>
 

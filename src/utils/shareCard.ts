@@ -73,6 +73,11 @@ export const ATTRIBUTION_SOURCES = {
   bathymetry: 'GEBCO・NOAA NCEI（Esri のタイルサービス経由）',
   activeFaults: '産総研 活断層データベース',
   plateBoundaries: 'PB2002 (Bird, 2003)',
+  /**
+   * 公開観測点の印（`docs/public-waveform-design.md` §0。2026-10-15 ユーザー承認）。網の運用者は気象庁で、
+   * そちらは上の `jma` が既に挙げている。CC BY 4.0 は運用者と配信した施設の両方を挙げることを求める。
+   */
+  earthScope: 'EarthScope',
 } as const
 
 export interface AttributionParts {

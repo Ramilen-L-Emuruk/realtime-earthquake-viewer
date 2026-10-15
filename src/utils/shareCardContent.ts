@@ -28,6 +28,8 @@ export interface ShareCardContentInput {
   showBathymetry: boolean
   showActiveFaults: boolean
   showPlateBoundaries: boolean
+  /** 公開観測点の三角の印を描いているか（下部に公開観測点の波形を出している間。モードを問わない）。 */
+  showPublicStations: boolean
 }
 
 export interface ShareCardContent {
@@ -55,6 +57,7 @@ export function buildShareCardContent(
     showBathymetry,
     showActiveFaults,
     showPlateBoundaries,
+    showPublicStations,
   }: ShareCardContentInput,
   appUrl: string,
 ): ShareCardContent {
@@ -71,6 +74,9 @@ export function buildShareCardContent(
   const showsOverlayLines = mode === 'quake' || mode === 'kyoshin'
   if (showsOverlayLines && showActiveFaults) derived.push(ATTRIBUTION_SOURCES.activeFaults)
   if (showsOverlayLines && showPlateBoundaries) derived.push(ATTRIBUTION_SOURCES.plateBoundaries)
+  // 公開観測点の印（位置と番号）。座標は EarthScope の観測点の目録から作った表で、加工の側に入る
+  // （`docs/public-waveform-design.md` §0。CC BY 4.0 の「変更を加えた旨」もこの句が担う）。
+  if (showPublicStations) derived.push(ATTRIBUTION_SOURCES.earthScope)
   const notices = [attributionLine({ derived, asIs })]
   if (liveEews.length > 0) notices.unshift(EEW_NOTICE)
 

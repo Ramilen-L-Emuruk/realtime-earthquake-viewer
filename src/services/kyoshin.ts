@@ -634,8 +634,15 @@ function warnIfCalibrationStale(): void {
 export function startClockSync(): () => void {
   let stopped = false
   let timer: ReturnType<typeof setTimeout> | null = null
+  /** いま 1 周期を回している最中か（タブの復帰で取り直すとき、走っている周期と重ねない）。 */
+  let running = false
   const loop = async () => {
-    if (stopped) return
+    if (stopped || running) return
+    running = true
+    if (timer !== null) {
+      clearTimeout(timer)
+      timer = null
+    }
     let outcome: 'calibrated' | 'skipped' | 'failed' = 'failed'
     try {
       outcome = await calibrateFromServerTime(() => stopped)
@@ -653,11 +660,20 @@ export function startClockSync(): () => void {
       }
     }
     if (!stopped) warnIfCalibrationStale()
+    running = false
     if (!stopped) timer = setTimeout(loop, CLOCK_SYNC_INTERVAL_MS)
   }
+  // **タブが戻ったら次の周期を待たずに取り直す。** 戻った時点で較正を捨てる（`utils/clock.ts`）ので、
+  // 次の周期（最長 30 秒）まで端末の時計のまま動く —— その間は下端の波形の P/S の線を引かない（2026-10-15
+  // ユーザー承認。`docs/public-waveform-design.md` §0）ので、待ちを短くする。1 回の復帰で 1 リクエスト。
+  const onVisible = () => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'visible') void loop()
+  }
+  if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisible)
   void loop()
   return () => {
     stopped = true
     if (timer !== null) clearTimeout(timer)
+    if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisible)
   }
 }

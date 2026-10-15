@@ -999,6 +999,14 @@ M1.0** を仮の震源として電文に書く。震央地名もその観測点�
   仮定震源要素かどうかで分ける必要がない。`EewAreaFill` は震源を持たず、`useEewLayerData.test.ts` が
   それを固定している。**以前は震源から走時を解いていて、そのとき仮定震源要素を除外していた**
 - **揺れ検知の基準震源選定** — `src/hooks/useKyoshinAlerts.ts` の `extractEewInfo`
+- **公開観測点を予測計測震度で選ばない** — `src/hooks/usePublicWaves.ts` の `selectionSource` が `assumed` を立て、
+  `src/utils/publicStationSelection.ts` の `candidateCodes` がそれを見て、揺れ検知があればいちばん強い検知点から 150 km の中、
+  無ければ震央（最初に揺れを捉えた観測点の所在地）に近い順に 3 点を選ぶ（[`public-waveform-design.md`](../public-waveform-design.md) §0。
+  規模不明の報も同じ扱い）。仮の M・深さで有感範囲を引くと、根拠のない範囲の観測点を出すことになる。**渡す速報は
+  `src/utils/countdownEew.ts` の `pickPublicWaveEew` が選ぶ** —— 予報円を描いている報があれば P/S 線と同じもの（`pickCountdownEew`）、
+  無ければ発表中の報（取消を外したもの）のうち発生がいちばん新しいもの。予報円は仮定震源要素の報を外す（上の 1 行目）ので、
+  P/S 線の選び方だけに頼ると仮定震源要素の報が観測点選びに届かない。こちらで拾う
+  （[`data-sources-spec.md`](data-sources-spec.md) §4.6「どの観測点を出すか」）
 - **予想震度が出ない理由の判定** — `src/utils/eew.ts` の `eewNoForecastReason`。読み上げの文言
   （`src/utils/ttsText.ts` の `noForecastText`）と、予想震度の確定を待つかどうかの判断
   （`src/hooks/useLiveEventHandler.ts` の第 2 フェーズ）はどちらもこれを通す。分類と待ちの決まりは
@@ -1613,3 +1621,5 @@ DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`）が来た場
 - 2026-10-14: §6「特定地点への到達予想は気象庁の発表値を伝える」に、予想の結果を利用者へ出さない計算と
   到達時刻を過ぎてから線を引く計算は予報業務に当たらないと整理したことを足した（2026-10-14 ユーザー承認。
   内訳は [`forecast-computation-audit.md`](../forecast-computation-audit.md)「予報業務の線引きとの対応」）。
+- 2026-10-15: §5 の連動箇所に、公開観測点の選び方（`usePublicWaves` の `selectionSource`・`publicStationSelection.ts` の
+  `candidateCodes`・`countdownEew.ts` の `pickPublicWaveEew`）を足した。予報円を描かない仮定震源要素の報も観測点選びへ渡す

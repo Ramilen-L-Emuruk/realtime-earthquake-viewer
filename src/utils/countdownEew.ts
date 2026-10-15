@@ -29,3 +29,26 @@ export function pickCountdownEew(psWave: readonly PsWaveCircle[], eews: readonly
   if (circle === null) return null
   return eews.find((e) => (e.issue?.eventId ?? e.id) === circle.eventId) ?? null
 }
+
+/**
+ * 下部の波形に出す公開観測点を選ぶ材料にする緊急地震速報（`hooks/usePublicWaves.ts`）。
+ *
+ * **予報円が引けるならそれと同じ速報を使う**（P/S 線・カウントダウンと別の地震を指さない）。予報円を描かない速報
+ * ——仮定震源要素・深さ不明——だけが出ているときは、**発表中のうち地震の発生がいちばん新しいものを使う**。
+ * そうした報でも観測点を選ぶと決めてあるため（`docs/public-waveform-design.md` §0「震源の要素が欠けるとき」）。
+ * `eews` は取消を外したもの（`App.tsx` の `eewsForMap`）。
+ */
+export function pickPublicWaveEew(countdownEew: EEWAlert | null, eews: readonly EEWAlert[]): EEWAlert | null {
+  if (countdownEew !== null) return countdownEew
+  let best: EEWAlert | null = null
+  let bestMs = -Infinity
+  for (const e of eews) {
+    const ms = new Date(e.earthquake.originTime).getTime()
+    const key = Number.isFinite(ms) ? ms : -Infinity
+    if (best === null || key > bestMs) {
+      best = e
+      bestMs = key
+    }
+  }
+  return best
+}

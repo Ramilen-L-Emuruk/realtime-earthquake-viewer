@@ -11,6 +11,7 @@ import { LabelsGL } from './LabelsGL'
 import { KyoshinSubThresholdGL } from './KyoshinSubThresholdGL'
 import { KyoshinPointsGL } from './KyoshinPointsGL'
 import { KyoshinDetectedPointsGL } from './KyoshinDetectedPointsGL'
+import { PublicStationMarkersGL } from './PublicStationMarkersGL'
 import { KyoshinMaxEffectGL } from './KyoshinMaxEffectGL'
 import { ActiveFaultsGL } from './ActiveFaultsGL'
 import { PlateBoundariesGL } from './PlateBoundariesGL'
@@ -95,6 +96,7 @@ const LEGEND_PRIMARY_BY_MODE: Record<MapMode, LegendKey[]> = {
 
 export function JapanMapGL({
   mode,
+  publicStationMarkers,
   quake,
   lpgm,
   distributionMode = false,
@@ -311,6 +313,7 @@ export function JapanMapGL({
       // 検知点マーカーとして実際に描かれるのは detectedMarkerPoints と unconfirmedPoints の 2 本。
       // detectedPoints（間引き前）と candidatePoints はカメラフィット専用のため含めない。
       mode === 'kyoshin' ? unconfirmedPoints.map((p) => `${p.lat},${p.lng}`).join(';') : '',
+      publicStationMarkers.map((m) => `${m.lat},${m.lon}`).join(';'),
     ]
     return parts.join('|')
   }, [
@@ -324,6 +327,7 @@ export function JapanMapGL({
     kyoshinSites,
     detectedMarkerPoints,
     unconfirmedPoints,
+    publicStationMarkers,
   ])
 
   useEffect(() => {
@@ -701,6 +705,7 @@ export function JapanMapGL({
             visible={mode === 'kyoshin'}
           />
           <KyoshinMaxEffectGL sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} visible={mode === 'kyoshin'} />
+          <PublicStationMarkersGL markers={publicStationMarkers} iconScale={iconScale} visible={publicStationMarkers.length > 0} />
           {/* 長期震源カタログの点群。**常時マウントして visible だけ切り替える**——
               カスタムレイヤーの付け外しはシェーダーの作り直しを伴い、タブを往復するたびに
               数十万点を詰め直すことになる。 */}

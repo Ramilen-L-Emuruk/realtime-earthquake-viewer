@@ -241,11 +241,15 @@ function slice(base: TimedColumns, fromMs: number, toMs: number): TimedColumns {
  *
  * @param base 読み返し＋継ぎ足しの列。**次の地震の発生時刻で既に切ってある**（`trimAfter`）
  * @param reach 届きうる時間帯（{@link computeReachBand}）
+ * @param noiseFloor 平常時のノイズの下限（列の単位で）。自作地震計は {@link NOISE_FLOOR_GAL}、公開観測点は速度の単位の値
+ *   （`components/SeismoWaveChart/waveUnit.ts` の `quietMinLevel`）。**単位の違う列へ gal の下限を当てると、
+ *   静かな広帯域地震計では閾値が実際のノイズより何桁も上に張り付く。**
  */
 export function selectQuakeWindow(params: {
   readonly base: TimedColumns
   readonly zero: WaveAxisZero
   readonly reach: ReachBand | null
+  readonly noiseFloor: number
 }): QuakeWindow {
   const { zero, reach } = params
   // **先に末尾の空を切る。** 要求した窓の右端はまだ来ていない時刻を含むので、どの経路でも
@@ -275,7 +279,7 @@ export function selectQuakeWindow(params: {
     if (v !== null) noiseSamples.push(v)
   }
   if (noiseSamples.length < NOISE_MIN_SECONDS) return untrimmed('no-noise')
-  const threshold = Math.max(median(noiseSamples), NOISE_FLOOR_GAL) * ONSET_RATIO
+  const threshold = Math.max(median(noiseSamples), params.noiseFloor) * ONSET_RATIO
 
   // **揺れ始め。** 届きうる時間帯に掛かる秒だけを見る。
   const reachFirst = Math.floor((reach.fromMs - zero.ms) / SECOND_MS)

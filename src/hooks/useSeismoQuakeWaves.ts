@@ -15,6 +15,7 @@
 // 動かないものになる —— ライブでも再生中でも経路は 1 本。
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { SEISMO_WAVE_UNIT, type WaveUnit } from '../components/SeismoWaveChart/waveUnit'
 
 import { fetchSeismoQuakeIntensity, type QuakeIntensity } from '../services/seismoQuakeIntensity'
 import { fetchSeismoWaveHistory, buildWaveHistoryRange } from '../services/seismoWaveHistory'
@@ -64,7 +65,7 @@ const WAVE_HISTORY_COLUMNS = 1200
  * 継ぎ足しを見に行く間隔（ms）。
  *
  * **押し出しの周期に合わせる**（まとまりは 0.3 秒ごと）。`readWave()` は呼ぶたびに
- * 96 KB を確保するので、それより細かく回しても同じ列を作り直すだけ。
+ * 抱えている 180 秒ぶん（288 KB）を確保するので、それより細かく回しても同じ列を作り直すだけ。
  *
  * **`requestAnimationFrame` は使わない。** あれはタブが隠れると止まる —— 地震が起きたら
  * 地図や別のタブを見るので、**いちばん繋ぎたい時間に止まる**ことになる。
@@ -194,11 +195,26 @@ export interface SeismoQuakeWave {
    */
   readonly distanceKm: number | null
   /**
-   * 波形を読み返した接続先。**詳細の窓が、拡大した範囲を同じホストへ取り直すのに使う。**
-   * 接続先が変わると帳面ごと捨てるので、ここに載っている値と取った列は必ず対になる。
+   * 詳細の窓に描く生のサンプルの出どころ（→ {@link QuakeWaveSamples}）。
    */
-  readonly baseUrl: string
+  readonly samples: QuakeWaveSamples
+  /**
+   * 縦の単位と、静かさから縦の下限を決める物差し。自作地震計は加速度（gal）、公開観測点は速度（μm/s）。
+   * **描く側・揺れ始めを探す側はこれを通す**（gal の値を書かない）。
+   */
+  readonly unit: WaveUnit
 }
+
+/**
+ * 詳細の窓に描く生のサンプルの出どころ。
+ *
+ * - `host`: 自作地震計のホストへ取りに行く。**拡大した範囲を同じホストへ取り直す。** 接続先が変わると
+ *   帳面ごと捨てるので、ここに載っている値と取った列は必ず対になる
+ * - `held`: 手元に持っている（公開観測点。保存庫から取った範囲をまるごと読んである）。取りに行かない
+ */
+export type QuakeWaveSamples =
+  | { readonly kind: 'host'; readonly baseUrl: string }
+  | { readonly kind: 'held'; readonly window: SeismoWaveWindow | null }
 
 /**
  * その観測点の列が**途切れている**か（#423 の形 3）。
@@ -427,7 +443,7 @@ function sameWave(a: SeismoQuakeWave | undefined, b: SeismoQuakeWave): a is Seis
   // **伸ばし終えたか・震度も比べる。** どちらも列が変わらないまま変わる（収まった後に
   // 震度が届く）ので、見落とすと震度の行が画面へ出ない。震度は届くたびに新しい参照になる。
   if (a.complete !== b.complete || a.intensity !== b.intensity) return false
-  if (a.distanceKm !== b.distanceKm || a.baseUrl !== b.baseUrl) return false
+  if (a.distanceKm !== b.distanceKm || !sameSamples(a.samples, b.samples) || a.unit !== b.unit) return false
   // **時間軸の 0 と時間帯も比べる。** 秒が後から取れたとき（過去分の取得は非同期で返る）は
   // 列も線も変わらないまま 0 だけが動くので、ここを見ないと目盛りが分の頭のまま残る。
   if (a.axisZero.kind !== b.axisZero.kind || a.axisZero.ms !== b.axisZero.ms) return false
@@ -437,6 +453,11 @@ function sameWave(a: SeismoQuakeWave | undefined, b: SeismoQuakeWave): a is Seis
   }
   if (a.arrival === null || b.arrival === null) return a.arrival === b.arrival
   return a.arrival.pMs === b.arrival.pMs && a.arrival.sMs === b.arrival.sMs
+}
+
+function sameSamples(a: QuakeWaveSamples, b: QuakeWaveSamples): boolean {
+  if (a.kind === 'host') return b.kind === 'host' && a.baseUrl === b.baseUrl
+  return b.kind === 'held' && a.window === b.window
 }
 
 /**
@@ -505,7 +526,7 @@ export function useSeismoQuakeWaves(params: {
   quakes: readonly JMAQuake[]
   scope: NearbyScope
   /** 押し出しで抱えている窓を読む（→ `useSeismoStation`）。 */
-  readWave: (stationId: string) => SeismoWaveWindow | null
+  readWave: (stationId: string, fromMs: number | null) => SeismoWaveWindow | null
   /**
    * 再生の時刻オフセット（`null` ならライブ）。
    *
@@ -649,7 +670,8 @@ export function useSeismoQuakeWaves(params: {
             stationLat: e.lat,
             stationLon: e.lon,
           }),
-          baseUrl,
+          samples: { kind: 'host', baseUrl },
+          unit: SEISMO_WAVE_UNIT,
         }
         // **観測点ごとに前の姿を使い回す。** 伸びている観測点が 1 つでも、
         // **同じ地震の他の観測点まで作り直すと、変わっていない絵が描き直される**
@@ -949,7 +971,8 @@ export function useSeismoQuakeWaves(params: {
         if (growing) {
           const next = appendWaveWindow({
             base: entry.columns,
-            window: readWaveRef.current(entry.stationId),
+            // 継ぎ足すのは列の続きだけだが、どこから要るかは `appendWaveWindow` が決めるので抱えている全部を渡す。
+            window: readWaveRef.current(entry.stationId, null),
             // **次の地震の手前まで。** 外すと、前の地震のカードへ次の地震の頭が入る。
             limitMs: Math.min(target.originMs + GROW_SAFETY_MS, target.cutoffMs),
           })
@@ -1101,7 +1124,7 @@ export function useSeismoQuakeWaves(params: {
       if (target === undefined) continue
       for (const wave of list) {
         if (!wave.complete) continue
-        const span = columnsSpan(selectQuakeWindow({ base: wave.columns, zero: wave.axisZero, reach: wave.reach }).columns)
+        const span = columnsSpan(selectQuakeWindow({ base: wave.columns, zero: wave.axisZero, reach: wave.reach, noiseFloor: wave.unit.onsetNoiseFloor }).columns)
         if (span === null) continue
         if (wave.intensity !== null && wave.intensity.fromMs === span.fromMs && wave.intensity.toMs === span.toMs) continue
         const askKey = `${eventKey}|${wave.stationId}`

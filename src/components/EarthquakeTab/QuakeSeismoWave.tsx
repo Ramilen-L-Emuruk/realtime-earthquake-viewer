@@ -20,7 +20,6 @@ import { formatTime } from '../../utils/formatters'
 import { log } from '../../utils/logger'
 import { formatMeasured } from '../../utils/measuredIntensityRounding'
 import { columnsSpan, measureQuietLevel, selectQuakeWindow, type WaveAxisZero } from '../../utils/seismoQuakeWindow'
-import { quietScaledGal } from '../../utils/seismoQuietScale'
 import { compositeCoverage, smoothCompositeWithin, type TimedColumns } from '../../utils/seismoWaveColumns'
 import { MEAN_LINE_WINDOW_MS } from '../../utils/waveMeanLines'
 import { buildArrivalMarksForRange } from '../SeismoWaveChart/arrivalMarks'
@@ -33,6 +32,7 @@ import {
   type WaveMark,
 } from '../SeismoWaveChart/paintWave'
 import { buildTimeTicks } from '../SeismoWaveChart/timeTicks'
+import type { WaveUnit } from '../SeismoWaveChart/waveUnit'
 
 /**
  * 詳細の窓。**押されてから読む**（開かない人のほうが多いうえ、こちらからも関数を借りるので、
@@ -137,6 +137,7 @@ export function axisZeroLabel(zero: WaveAxisZero): string {
  *
  * @param base 読み返し＋継ぎ足しの列。**静かさはこちらで測る**（切り出した後には 0 の手前が残っていない）
  * @param trimmed 揺れに合わせて切り出した列（描くのはこちら）
+ * @param unit 列の単位（自作地震計は gal・公開観測点は μm/s）。下限の物差しはこれで決まる
  */
 export function foldQuakeWaveColumns(params: {
   readonly base: TimedColumns
@@ -144,19 +145,20 @@ export function foldQuakeWaveColumns(params: {
   readonly zeroMs: number
   readonly visibleAxes: readonly boolean[]
   readonly columnCount: number
+  readonly unit: WaveUnit
 }): PaintableColumns {
-  const { base, trimmed, zeroMs, visibleAxes, columnCount } = params
+  const { base, trimmed, zeroMs, visibleAxes, columnCount, unit } = params
   return foldHistoryColumns({
     source: trimmed.columns,
     columnCount,
-    minScaleGal: quakeMinScaleGal(base, zeroMs),
+    minScaleGal: quakeMinScale(base, zeroMs, unit),
     visibleAxes,
   })
 }
 
-/** カードの縦の下限（gal）。3 成分を重ねるときも合成のときも同じ値を使う。 */
-function quakeMinScaleGal(base: TimedColumns, zeroMs: number): number {
-  return quietScaledGal('card', measureQuietLevel(base, zeroMs))
+/** カードの縦の下限（列の単位で）。3 成分を重ねるときも合成のときも同じ値を使う。 */
+function quakeMinScale(base: TimedColumns, zeroMs: number, unit: WaveUnit): number {
+  return unit.minScale('card', measureQuietLevel(base, zeroMs))
 }
 
 /** 震度の行の 1 項目。**画面には短い名前と値だけ**を出し、正式な名前はホバーで見せる。 */
@@ -261,9 +263,9 @@ function HistoryWave({ wave, quakeLabel, view }: { wave: SeismoQuakeWave; quakeL
   // **震度の行。** 描く区間はここでも同じ関数で切り出し、震度を訊いた区間と突き合わせる
   // （訊く側は `useSeismoQuakeWaves`。区間の物差しは `columnsSpan`）。
   const intensityParts = useMemo(() => {
-    const picked = selectQuakeWindow({ base: wave.columns, zero: wave.axisZero, reach: wave.reach })
+    const picked = selectQuakeWindow({ base: wave.columns, zero: wave.axisZero, reach: wave.reach, noiseFloor: wave.unit.onsetNoiseFloor })
     return formatQuakeIntensityParts(wave.intensity, columnsSpan(picked.columns))
-  }, [wave.columns, wave.axisZero, wave.reach, wave.intensity])
+  }, [wave.columns, wave.axisZero, wave.reach, wave.intensity, wave.unit])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -272,7 +274,7 @@ function HistoryWave({ wave, quakeLabel, view }: { wave: SeismoQuakeWave; quakeL
       // **揺れに合わせて範囲を切り出してから描く**（→ `utils/seismoQuakeWindow.ts`）。
       // 取った範囲は発生の 30 秒前から 4 分ぶんあり、そのまま描くと揺れが平らな線に埋もれる。
       // 末尾の空（まだ来ていない時刻）もここで落ちる。
-      const picked = selectQuakeWindow({ base: wave.columns, zero: wave.axisZero, reach: wave.reach })
+      const picked = selectQuakeWindow({ base: wave.columns, zero: wave.axisZero, reach: wave.reach, noiseFloor: wave.unit.onsetNoiseFloor })
       const trimmed = picked.columns
       // **切れなかったことは記録へ残す。** 絵は取った範囲のまま出るので、画面からは「切る必要が
       // 無かった」と見分けが付かない（ノイズの測り方や走時の側が壊れても、黙って広い絵に戻るだけ）。
@@ -303,6 +305,7 @@ function HistoryWave({ wave, quakeLabel, view }: { wave: SeismoQuakeWave; quakeL
           zeroMs: wave.axisZero.ms,
           visibleAxes: CARD_VISIBLE_AXES,
           columnCount,
+          unit: wave.unit,
         })
       // **途切れたら濃さを落とす。** 列は時間で薄れないので、渡さないと
       // 止まった絵が「いま静かに揺れている」ように見え続ける
@@ -329,7 +332,8 @@ function HistoryWave({ wave, quakeLabel, view }: { wave: SeismoQuakeWave; quakeL
           }
           setScaleText(
             paintCompositeColumns(canvas, build, wave.interrupted, {
-              minScaleGal: quakeMinScaleGal(wave.columns, wave.axisZero.ms),
+              minScale: quakeMinScale(wave.columns, wave.axisZero.ms, wave.unit),
+              unit: wave.unit.label,
               marks,
               ticks,
               overlays:
@@ -348,7 +352,7 @@ function HistoryWave({ wave, quakeLabel, view }: { wave: SeismoQuakeWave; quakeL
           )
         }
       }
-      setScaleText(paintWaveColumns(canvas, build, wave.interrupted, { marks, visibleAxes: CARD_VISIBLE_AXES, ticks }))
+      setScaleText(paintWaveColumns(canvas, build, wave.interrupted, { marks, visibleAxes: CARD_VISIBLE_AXES, ticks, unit: wave.unit.label }))
     }
     paint()
     // **幅が変わったら描き直す。** カードは畳んだり開いたりするので、最初に描いた
@@ -364,7 +368,7 @@ function HistoryWave({ wave, quakeLabel, view }: { wave: SeismoQuakeWave; quakeL
     //
     // **時間軸の 0 と時間帯も入れる。** 秒が後から取れると列は変わらないまま 0 だけが動く。
     // 0 が動けば静かさを測る区間も動く。**表示の設定も入れる**（合成と 3 成分の切り替え）。
-  }, [wave.columns, wave.arrival, wave.axisZero, wave.reach, wave.interrupted, view])
+  }, [wave.columns, wave.arrival, wave.axisZero, wave.reach, wave.interrupted, wave.unit, view])
 
   return (
     <div className="rounded-sm bg-black/30 px-2 py-1">

@@ -119,6 +119,7 @@ describe('startClockSync の主経路とフォールバック', () => {
     vi.useRealTimers()
     globalThis.fetch = originalFetch
     setReplayOffset(null)
+    vi.unstubAllGlobals()
   })
 
   // ここが今回の主眼。取れている限り Yahoo は撃たない（意図的な 403 を出さない）。
@@ -147,6 +148,56 @@ describe('startClockSync の主経路とフォールバック', () => {
     // EMA（α = 0.2）を通すため 1 回では届かないが、供給されていればサーバー時刻の側へ動く。
     // 絶対値で見ないのは、K がテスト間で持ち越されて初回サンプル扱いにならないことがあるため。
     expect(serverNow() - Date.now()).toBeGreaterThan(before + 500)
+  })
+
+  /** この環境（node）には `document` が無いので、タブの見え方を知らせるだけの偽物を差し込む。 */
+  function stubVisibleDocument(): EventTarget {
+    const doc = Object.assign(new EventTarget(), { visibilityState: 'visible' })
+    vi.stubGlobal('document', doc)
+    return doc
+  }
+
+  // 正（2026-10-15 ユーザー承認）: タブが戻ったら次の周期（30 秒後）を待たずに取り直す。戻った時点で較正を捨てるので、
+  // 待つとその間ずっと端末の時計のまま動き、下端の波形の P/S の線が出ない。
+  it('タブが戻ったらすぐ取り直す', async () => {
+    const doc = stubVisibleDocument()
+    timeMock.mockResolvedValue(sample())
+    stop = startClockSync()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(timeMock).toHaveBeenCalledTimes(1)
+
+    doc.dispatchEvent(new Event('visibilitychange'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(timeMock).toHaveBeenCalledTimes(2)
+  })
+
+  // 安全弁: 取り直しても周期は 1 本のまま（取り直した後の次の周期は、そこから 30 秒後に 1 回だけ）。
+  it('取り直した後も周期は 1 本', async () => {
+    const doc = stubVisibleDocument()
+    timeMock.mockResolvedValue(sample())
+    stop = startClockSync()
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(10_000)
+    doc.dispatchEvent(new Event('visibilitychange'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(timeMock).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(29_000)
+    expect(timeMock).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(timeMock).toHaveBeenCalledTimes(3)
+  })
+
+  // 対照: 止めた後は、タブが戻っても取りに行かない。
+  it('止めた後は取り直さない', async () => {
+    const doc = stubVisibleDocument()
+    timeMock.mockResolvedValue(sample())
+    stop = startClockSync()
+    await vi.advanceTimersByTimeAsync(0)
+    stop()
+    stop = null
+    doc.dispatchEvent(new Event('visibilitychange'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(timeMock).toHaveBeenCalledTimes(1)
   })
 
   // 見送り（別の取得と重なった）は失敗ではない。落とすと、重なっただけで Yahoo の未登録秒を撃つ。
