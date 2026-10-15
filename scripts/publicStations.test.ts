@@ -23,6 +23,16 @@ describe('公開観測点の表', () => {
     expect(current).toEqual([...RING_CODES].sort())
   })
 
+  it('名前は気象庁の観測点一覧の表記のまま（一覧と照らした数点を固定する）', () => {
+    // 一覧（地震・火山月報（カタログ編）の付録「地震観測点」）の「観測点名」。字を取り違えやすいものを選んだ
+    expect(NAMES_JA.JSU).toBe('鹿児島錫山')
+    expect(NAMES_JA.JTU).toBe('対馬上県')
+    expect(NAMES_JA.JTM).toBe('青森天間林')
+    expect(NAMES_JA.JMZ).toBe('南大東島池之沢')
+    expect(NAMES_JA.JKA).toBe(NAMES_JA.ASAJ)
+    expect(NAMES_JA.JCJ).toBe(NAMES_JA.CBIJ)
+  })
+
   it('どのエポックも日本語の名前と 3 成分を持つ', () => {
     for (const s of FILE.stations) {
       expect(s.nameJa, s.code).toBe(NAMES_JA[s.code])

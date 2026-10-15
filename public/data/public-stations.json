@@ -7,7 +7,7 @@
   "stations": [
     {
       "code": "ASAJ",
-      "nameJa": "北海道上川朝日",
+      "nameJa": "上川朝日",
       "siteName": "Kamikawa Asahi",
       "lat": 44.118801,
       "lon": 142.593002,
@@ -43,7 +43,7 @@
     },
     {
       "code": "CBIJ",
-      "nameJa": "東京父島",
+      "nameJa": "父島三日月山",
       "siteName": "Chichijima Island",
       "lat": 27.095699,
       "lon": 142.184494,
@@ -79,7 +79,7 @@
     },
     {
       "code": "JCJ",
-      "nameJa": "東京父島",
+      "nameJa": "父島三日月山",
       "siteName": "Chichijima Island",
       "lat": 27.095699,
       "lon": 142.184494,
@@ -115,7 +115,7 @@
     },
     {
       "code": "JEM",
-      "nameJa": "北海道えりも",
+      "nameJa": "えりも",
       "siteName": "Erimo",
       "lat": 42.018501,
       "lon": 143.153503,
@@ -151,7 +151,7 @@
     },
     {
       "code": "JEW",
-      "nameJa": "北海道恵庭",
+      "nameJa": "恵庭",
       "siteName": "Eniwa",
       "lat": 42.84267,
       "lon": 141.446167,
@@ -223,7 +223,7 @@
     },
     {
       "code": "JHJ2",
-      "nameJa": "東京八丈島",
+      "nameJa": "八丈島三根",
       "siteName": "Hachijojima Island",
       "lat": 33.115299,
       "lon": 139.813797,
@@ -295,7 +295,7 @@
     },
     {
       "code": "JKA",
-      "nameJa": "北海道上川朝日",
+      "nameJa": "上川朝日",
       "siteName": "Kamikawa Asahi",
       "lat": 44.11883,
       "lon": 142.593002,
@@ -403,7 +403,7 @@
     },
     {
       "code": "JMZ",
-      "nameJa": "沖縄南大東島",
+      "nameJa": "南大東島池之沢",
       "siteName": "Minamidaitojima Island",
       "lat": 25.81983,
       "lon": 131.223663,
@@ -511,7 +511,7 @@
     },
     {
       "code": "JSD",
-      "nameJa": "新潟佐渡",
+      "nameJa": "佐渡島銀山",
       "siteName": "Sado",
       "lat": 38.040001,
       "lon": 138.257172,
@@ -583,7 +583,7 @@
     },
     {
       "code": "JSU",
-      "nameJa": "鹿児島鈴山",
+      "nameJa": "鹿児島錫山",
       "siteName": "Kagoshima Suzuyama",
       "lat": 31.509331,
       "lon": 130.452667,
@@ -619,7 +619,7 @@
     },
     {
       "code": "JTM",
-      "nameJa": "青森天間",
+      "nameJa": "青森天間林",
       "siteName": "Aomori Tenma",
       "lat": 40.789501,
       "lon": 141.064667,
@@ -655,7 +655,7 @@
     },
     {
       "code": "JTU",
-      "nameJa": "長崎上県",
+      "nameJa": "対馬上県",
       "siteName": "Tsushima Kamiagata",
       "lat": 34.5275,
       "lon": 129.396332,
@@ -763,7 +763,7 @@
     },
     {
       "code": "YOJ",
-      "nameJa": "沖縄与那国島",
+      "nameJa": "与那国島",
       "siteName": "Yonagunijima Island",
       "lat": 24.467199,
       "lon": 123.011299,

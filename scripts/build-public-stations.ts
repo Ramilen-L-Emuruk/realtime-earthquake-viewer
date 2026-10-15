@@ -14,9 +14,10 @@
  * 取った応答は `.claude/public-stations-cache/` に残し、2 回目以降は読むだけにする。
  * 取り直すときは `--refresh`、投げる先だけ見たいときは `--dry-run`。
  *
- * **日本語の名前は上流に無いので、この中に手で持つ**（`NAMES_JA`）。形は「都道府県＋地名」で、
- * 地名は EarthScope の英字の地名（`SiteName`）を漢字へ戻したもの。裏付けは気象庁の震度観測点
- * （`public/data/station-coords.json`）のうち座標がいちばん近いもので取った（全点 3.2 km 以内）。
+ * **日本語の名前は上流に無いので、この中に手で持つ**（`NAMES_JA`）。名前は気象庁の観測点一覧
+ * （地震・火山月報（カタログ編）の付録「地震観測点」。地方ごとの頁、例:
+ * https://ds.data.jma.go.jp/eqev/data/bulletin/catalog/appendix/stkyushu.html ）の「観測点名」を
+ * 表記のまま写したもの。一覧の「GS コード」の列が EarthScope の観測点コードに当たる。
  * 上流に名前の無い観測点が現れたら止まる —— 黙って英字のまま出さない。
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -38,34 +39,35 @@ const FETCH_TIMEOUT_MS = 30_000
 const FETCH_INTERVAL_MS = 1_000
 
 /**
- * 観測点コード → 日本語の名前（都道府県＋地名）。
- * 同じ場所でコードが替わったもの（`ASAJ`→`JKA`・`CBIJ`→`JCJ`・`JMJ`→`JMJ2`）は同じ名前にする。
+ * 観測点コード → 気象庁の観測点名（一覧の表記のまま。県名が付く点と付かない点がある）。
+ * 気象庁の一覧は `JKA`・`JCJ` を持たず、ほぼ同じ座標（数 m 以内）の `ASAJ`・`CBIJ` の行だけを持つ（コードの付け替え）。
+ * その 2 つは付け替え前の行の名前を使う。`JMJ` と `JMJ2` は別の場所で、名前も違う。
  */
 export const NAMES_JA: Readonly<Record<string, string>> = {
-  ASAJ: '北海道上川朝日',
-  JKA: '北海道上川朝日',
-  JEM: '北海道えりも',
-  JEW: '北海道恵庭',
-  JTM: '青森天間',
+  ASAJ: '上川朝日',
+  JKA: '上川朝日',
+  JEM: 'えりも',
+  JEW: '恵庭',
+  JTM: '青森天間林',
   JMM: '宮城丸森',
   JYT: '茨城八郷',
-  CBIJ: '東京父島',
-  JCJ: '東京父島',
-  JHJ2: '東京八丈島',
-  JSD: '新潟佐渡',
+  CBIJ: '父島三日月山',
+  JCJ: '父島三日月山',
+  JHJ2: '八丈島三根',
+  JSD: '佐渡島銀山',
   JGF: '岐阜黒川',
   JSG: '静岡相良',
   JWT: '京都和知',
   JHS: '広島西城',
   JMN: '高知物部',
   JNU: '大分中津江',
-  JTU: '長崎上県',
-  JSU: '鹿児島鈴山',
-  JMJ: '沖縄宮古島',
-  JMJ2: '沖縄宮古島',
-  JMZ: '沖縄南大東島',
+  JTU: '対馬上県',
+  JSU: '鹿児島錫山',
+  JMJ: '宮古島西仲宗根',
+  JMJ2: '宮古島３',
+  JMZ: '南大東島池之沢',
   JOW: '沖縄国頭',
-  YOJ: '沖縄与那国島',
+  YOJ: '与那国島',
 }
 
 
