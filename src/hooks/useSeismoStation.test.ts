@@ -138,6 +138,8 @@ describe('useSeismoStation', () => {
         lat: 35,
         lon: 135,
         intensity: 0.25,
+        // ホストが普段の計測震度を返していなければ `null`（震度1 の線で見る）。
+        usualMeasured: null,
         atMs: 2000,
         source: { kind: 'station' },
         waveSampleCount: 0,
@@ -148,6 +150,75 @@ describe('useSeismoStation', () => {
         waveTally: { gapSamples: 0, restarts: 0, droppedSamples: 0 },
       },
     ])
+  })
+
+  // 正: ホストの普段の計測震度が観測点の姿まで届く（波形グラフを自動で出す物差し）。
+  it('正: ホストが返した普段の計測震度が観測点の姿に載る', async () => {
+    const generatedAtMs = 1_800_000_000_000
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              ...STATUS,
+              generatedAtMs,
+              usualIntensities: [{ stationId: 'home', usualMeasured: -1.3, computedAtMs: generatedAtMs }],
+            }),
+            { status: 200 },
+          ),
+      ),
+    )
+    const h = renderHook(() => useSeismoStation(options))
+    await settleDirectory()
+    deliver(stationReading('home', 0.25))
+    await tick()
+    expect(h.result.current.stations[0]?.usualMeasured).toBe(-1.3)
+  })
+
+  // 正: 震度が届いている間、普段を 10 分おきに読み直す（ホストが測り直す間隔）。配線を外すと、
+  // 普段が 30 分で使えなくなり、以後ずっと震度1 の線で見ることになる。
+  it('正: 読めてから 10 分を過ぎて震度が届いたら、普段を読み直す', async () => {
+    let nowMs = 1_000_000
+    const now = vi.spyOn(performance, 'now').mockImplementation(() => nowMs)
+    renderHook(() => useSeismoStation(options))
+    await settleDirectory()
+    const fetchMock = vi.mocked(globalThis.fetch)
+    const before = fetchMock.mock.calls.length
+    deliver(stationReading('home', 0.25))
+    await settleDirectory()
+    // 10 分の手前では読み直さない。
+    expect(fetchMock.mock.calls.length).toBe(before)
+    nowMs += 10 * 60_000
+    deliver(stationReading('home', 0.25))
+    await settleDirectory()
+    expect(fetchMock.mock.calls.length).toBe(before + 1)
+    now.mockRestore()
+  })
+
+  // 対照: 合成でない震度（センサー単独）には普段を付けない（統計の違うものを比べない）。
+  it('対照: センサー単独の震度には普段を付けない', async () => {
+    const generatedAtMs = 1_800_000_000_000
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              ...STATUS,
+              generatedAtMs,
+              usualIntensities: [{ stationId: 'home', usualMeasured: -1.3, computedAtMs: generatedAtMs }],
+            }),
+            { status: 200 },
+          ),
+      ),
+    )
+    const h = renderHook(() => useSeismoStation(options))
+    await settleDirectory()
+    deliver(reading('mac:aa', 'i2c0-68', 0.4))
+    await tick()
+    expect(h.result.current.stations[0]?.source.kind).toBe('sensor')
+    expect(h.result.current.stations[0]?.usualMeasured).toBeNull()
   })
 
   it('正: 合成が来ない観測点は、センサー単独の震度から採る（#309 の穴）', async () => {

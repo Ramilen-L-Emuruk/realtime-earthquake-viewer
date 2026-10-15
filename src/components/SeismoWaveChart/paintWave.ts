@@ -195,14 +195,7 @@ export function paintWaveColumns(
   // ので通常は起きないが、0 を渡された場合に黙って壊れるのを避ける）。
   if (!hasAnyValue || !(scaleGal > 0)) return null
 
-  // **裏付けが 1 本しか無い区間を薄く敷く。** 合成を名乗れない区間（1 台だけの
-  // 値）。**警め色は使わない** —— 正常運転でもまとまりの末尾で 1〜3 本欠ける
-  // （#374）ので、色で異常を主張すると嘘になる。
-  ctx.fillStyle = 'rgba(255,255,255,0.08)'
-  for (let c = 0; c < columns.length; c += 1) {
-    const col = columns[c]
-    if (col.hasValue && col.minMembers <= 1) ctx.fillRect(c, 0, 1, plotH)
-  }
+  paintSingleMemberBand(ctx, columns.length, plotH, (c) => columns[c].hasValue && columns[c].minMembers <= 1)
 
   // 上下に線の太さぶんの余白を残す（振り切れた線が枠の外へ出ないように）。
   const half = Math.max(1, mid - dpr)
@@ -315,12 +308,7 @@ export function paintCompositeColumns(
   const scaleGal = Math.max(minScaleGal, peak)
   if (!(scaleGal > 0)) return null
 
-  // 裏付けが 1 本しか無い区間を薄く敷く（{@link paintWaveColumns} と同じ）。
-  ctx.fillStyle = 'rgba(255,255,255,0.08)'
-  for (let c = 0; c < columns.length; c += 1) {
-    const col = columns[c]
-    if (col.hasValue && col.minMembers <= 1) ctx.fillRect(c, 0, 1, plotH)
-  }
+  paintSingleMemberBand(ctx, columns.length, plotH, (c) => columns[c].hasValue && columns[c].minMembers <= 1)
 
   const reach = Math.max(1, plotH - dpr * 2)
   const yOf = (v: number): number => zeroY - (v / scaleGal) * reach
@@ -381,6 +369,25 @@ function strokeOverlay(
   }
   ctx.stroke()
   ctx.globalAlpha = 1
+}
+
+/**
+ * **裏付けが 1 本しか無い区間を薄く敷く。** 合成を名乗れない区間（1 台だけの値）。カード・地図の下端・
+ * 詳細の窓が同じこれを通す（3 箇所で色や判定を書き写すと、片方だけ変えたときに食い違う）。
+ *
+ * **警め色は使わない** —— 正常運転でもまとまりの末尾で 1〜3 本欠ける（#374）ので、色で異常を
+ * 主張すると嘘になる。`marked(c)` が真の列（デバイスピクセル）だけを塗る。
+ */
+export function paintSingleMemberBand(
+  ctx: CanvasRenderingContext2D,
+  columnCount: number,
+  plotH: number,
+  marked: (column: number) => boolean,
+): void {
+  ctx.fillStyle = 'rgba(255,255,255,0.08)'
+  for (let c = 0; c < columnCount; c += 1) {
+    if (marked(c)) ctx.fillRect(c, 0, 1, plotH)
+  }
 }
 
 /**

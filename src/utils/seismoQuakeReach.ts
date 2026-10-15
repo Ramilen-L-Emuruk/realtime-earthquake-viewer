@@ -21,6 +21,9 @@ import type { Hypocenter } from '../types/earthquake'
  *
  * 予測は地盤の増幅を入れない工学的基盤の値で、外れる幅を持つ。実測では、はっきり捉えた地震の予測は
  * 普段より 1 ほど高く、普段そのものを下限にしても拾えるが、外れる側へ半階級ぶん広げる。
+ *
+ * 地図の下端の波形を出す余裕（`utils/seismoWaveTrigger.ts` の `SEISMO_WAVE_USUAL_MARGIN`）とは別物で、
+ * 向きが逆（あちらは実測が普段を上回る余裕）。片方を動かすときにもう片方を合わせない。
  */
 export const USUAL_MARGIN = 0.5
 

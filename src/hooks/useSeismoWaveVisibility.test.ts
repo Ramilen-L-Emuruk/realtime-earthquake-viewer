@@ -8,17 +8,17 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { useSeismoWaveVisibility } from './useSeismoWaveVisibility'
-import type { SeismoWaveMode } from '../utils/seismoWaveTrigger'
+import type { SeismoIntensityLike, SeismoWaveMode } from '../utils/seismoWaveTrigger'
 import { NO_SCOPE } from '../utils/actionChecklistTrigger'
 
 /** 震度1 を出している観測点（`intensity >= 0.5`）。 */
-const SHAKING = [{ intensity: 1.2 }]
+const SHAKING = [{ intensity: 1.2, usualMeasured: null }]
 /** 静穏時の実機（負の計測震度）。 */
-const QUIET = [{ intensity: -0.04 }]
+const QUIET = [{ intensity: -0.04, usualMeasured: null }]
 
-function setup(mode: SeismoWaveMode, stations: readonly { intensity: number | null }[]) {
+function setup(mode: SeismoWaveMode, stations: readonly SeismoIntensityLike[]) {
   return renderHook(
-    (props: { mode: SeismoWaveMode; stations: readonly { intensity: number | null }[] }) =>
+    (props: { mode: SeismoWaveMode; stations: readonly SeismoIntensityLike[] }) =>
       useSeismoWaveVisibility({
         mode: props.mode,
         scope: NO_SCOPE,

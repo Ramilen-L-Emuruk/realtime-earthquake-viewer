@@ -855,6 +855,104 @@ describe('SeismoHostDirectory', () => {
     expect(vi.mocked(fetchImpl).mock.calls.length).toBe(2)
   })
 
+  describe('普段の計測震度', () => {
+    const generatedAtMs = 1_800_000_000_000
+    /** 呼ばれるたびに `values` の次の値を普段として返す（尽きたら最後の値）。`fail` なら 500。 */
+    const statusWithUsual = (values: readonly (number | 'fail')[]): typeof fetch => {
+      let i = 0
+      return vi.fn(async () => {
+        const v = values[Math.min(i, values.length - 1)]
+        i += 1
+        if (v === 'fail') return new Response('', { status: 500 })
+        return jsonResponse({
+          generatedAtMs,
+          sensors: [],
+          usualIntensities: [{ stationId: 'home', usualMeasured: v, computedAtMs: generatedAtMs }],
+        })
+      }) as unknown as typeof fetch
+    }
+
+    it('正: 取り直すと観測点ごとの普段を引ける。知らない観測点は null', async () => {
+      const directory = new SeismoHostDirectory('http://host:50506', statusWithUsual([-1.3]), () => 0)
+      expect(directory.usualMeasured('home')).toBeNull()
+      await directory.refresh()
+      expect(directory.usualMeasured('home')).toBe(-1.3)
+      expect(directory.usualMeasured('office')).toBeNull()
+    })
+
+    // 正: ホストが 10 分ごとに測り直す値なので、知っている識別子だけでも 10 分で読み直す。
+    it('正: 読めてから 10 分を過ぎたら読み直し、値を差し替える', async () => {
+      const fetchImpl = statusWithUsual([-1.3, -0.9])
+      let nowMs = 0
+      const directory = new SeismoHostDirectory('http://host:50506', fetchImpl, () => nowMs)
+      await directory.refresh()
+      nowMs = 10 * 60_000
+      directory.requireUsual()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(vi.mocked(fetchImpl).mock.calls.length).toBe(2)
+      expect(directory.usualMeasured('home')).toBe(-0.9)
+    })
+
+    // 対照: 10 分の手前では毎秒呼ばれても叩かない（震度は毎秒届く）。
+    it('対照: 10 分の手前では叩かない', async () => {
+      const fetchImpl = statusWithUsual([-1.3])
+      let nowMs = 0
+      const directory = new SeismoHostDirectory('http://host:50506', fetchImpl, () => nowMs)
+      await directory.refresh()
+      for (let t = 1000; t < 10 * 60_000; t += 1000) {
+        nowMs = t
+        directory.requireUsual()
+      }
+      await vi.advanceTimersByTimeAsync(0)
+      expect(vi.mocked(fetchImpl).mock.calls.length).toBe(1)
+    })
+
+    // 安全弁: /status だけが失敗し続けても、1 分に 1 回より頻繁には叩かない（失敗中の下限 5 秒に任せない）。
+    it('安全弁: 取り直しが失敗し続けても 1 分に 1 回まで', async () => {
+      const fetchImpl = statusWithUsual([-1.3, 'fail'])
+      let nowMs = 0
+      const directory = new SeismoHostDirectory('http://host:50506', fetchImpl, () => nowMs)
+      await directory.refresh()
+      for (let t = 10 * 60_000; t < 10 * 60_000 + 60_000; t += 1000) {
+        nowMs = t
+        directory.requireUsual()
+        await vi.advanceTimersByTimeAsync(0)
+      }
+      expect(vi.mocked(fetchImpl).mock.calls.length).toBe(2)
+      nowMs = 10 * 60_000 + 60_000
+      directory.requireUsual()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(vi.mocked(fetchImpl).mock.calls.length).toBe(3)
+    })
+
+    // 正: 返せていた普段が返せなくなったら 1 回だけ記録へ残す（毎秒呼ばれても繰り返さない）。
+    it('正: 普段を使えなくなったら 1 回だけ記録へ残す', async () => {
+      const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+      let nowMs = 0
+      const directory = new SeismoHostDirectory('http://host:50506', statusWithUsual([-1.3]), () => nowMs)
+      await directory.refresh()
+      expect(directory.usualMeasured('home')).toBe(-1.3)
+      nowMs = USUAL_INTENSITY_STALE_MS + 1
+      directory.usualMeasured('home')
+      directory.usualMeasured('home')
+      expect(warn.mock.calls.filter((c) => String(c[0]).includes('普段の計測震度を使えなくなった'))).toHaveLength(1)
+      warn.mockRestore()
+    })
+
+    // 安全弁: 取り直しが失敗し続けても、古い値を「いまの普段」として使い続けない。
+    it('安全弁: 読めてから 30 分を過ぎた値は返さない（取り直しが失敗していても）', async () => {
+      const fetchImpl = statusWithUsual([-1.3, 'fail'])
+      let nowMs = 0
+      const directory = new SeismoHostDirectory('http://host:50506', fetchImpl, () => nowMs)
+      await directory.refresh()
+      nowMs = USUAL_INTENSITY_STALE_MS
+      await directory.refresh()
+      expect(directory.usualMeasured('home')).toBe(-1.3)
+      nowMs = USUAL_INTENSITY_STALE_MS + 1
+      expect(directory.usualMeasured('home')).toBeNull()
+    })
+  })
+
   it('安全弁: 既に知っている観測点では問い合わせない', async () => {
     const fetchImpl = statusOnce('自宅')
     const directory = new SeismoHostDirectory('http://host:50506', fetchImpl, () => 0)

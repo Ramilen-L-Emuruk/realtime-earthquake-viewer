@@ -7,8 +7,10 @@
 //
 //   - **EEW の有感範囲** … 揺れる前。いちばん早い
 //   - **強震モニタの検知** … 揺れている最中。直下型では EEW が間に合わない
-//   - **自作地震計自身の震度** … 外部の判定に依存しない。**自分の地震計だけが
-//     捉えた微小な揺れ**もここで拾う
+//   - **自作地震計自身の震度** … 外部の判定に依存しない。**普段の計測震度より
+//     はっきり上がったら出す**（`SEISMO_WAVE_USUAL_MARGIN`）。置き場所の静かさで
+//     線が動くので、静かな場所では震度1 に届かない揺れも拾い、騒がしい場所では
+//     普段の揺れで出っぱなしにならない
 //
 // **閾値に行動チェックリストの設定（`actionChecklistMinScale`）を流用しない。**
 // あちらは「行動を促すべき揺れ」の線引きで、「絵を見たい揺れ」より高いところに
@@ -48,23 +50,66 @@ export type SeismoWaveMode = 'off' | 'auto' | 'always'
 export const WAVE_TRIGGER_MIN_SCALE = 10
 
 /**
+ * 自作地震計の震度が普段の計測震度をどれだけ上回ったら出すか。**0.5。**
+ *
+ * 2026-10-15 ユーザー承認（「＋0.5（推奨）」）。観測点 1 の 2026-10-11〜15（約 4.6 日・
+ * ノイズ密度の設定を入れた後）で測った値で、気象庁の地震 23 件のうち普段より上がったのは
+ * M3.6 の 1 件（普段 +0.66）だけ。これを拾えるのは
+ * 0.5 以下で、そのとき地震以外でも 1 日 2〜3 回ほど出る（0.3 で約 3 回・1.0 で約 1.7 回）。
+ * **基板はまだ仮置きなので、本設置の後に測り直す。**
+ *
+ * 地震カードの `USUAL_MARGIN`（`utils/seismoQuakeReach.ts`）とは別物 —— あちらは予測の下限を
+ * 普段から**下げる**余裕、こちらは実測が普段を**上回る**余裕。同じ 0.5 でも向きが逆なので、
+ * 片方を動かすときにもう片方を合わせない。
+ */
+export const SEISMO_WAVE_USUAL_MARGIN = 0.5
+
+/**
+ * 普段によらず必ず出す震度の階級（`measuredIntensityToGrade` の `rank`）。**震度3。**
+ *
+ * 2026-10-15 ユーザー承認（「震度3 以上は必ず出す」）。普段が高い間（置き場所での作業・余震が
+ * 続く間）は普段 + 余裕の線も上がるので、それだけだと強い揺れでも出ない —— 2026-10-10 の作業中は
+ * 普段が 5.5 まで上がり、震度5 でも出ない状態だった。観測点 1 の 2026-10-11〜15 では、地震以外で
+ * 震度3 に届いたのは 2 回。
+ */
+export const SEISMO_WAVE_ALWAYS_RANK = 3
+
+/**
  * 自作地震計の震度だけを見るための最小の形。
  *
  * **`SeismoStationState` を型として受け取らない。** `utils/` から `hooks/` を
- * 参照する向きを作らないため。ここで要るのは計測震度 1 つだけ。
+ * 参照する向きを作らないため。ここで要るのは計測震度と普段の計測震度だけ。
  */
 export interface SeismoIntensityLike {
   readonly intensity: number | null
+  /**
+   * 普段の計測震度。**読めない・震度と比べられない（観測点の合成でない）なら `null`**
+   * （そのときは震度1 以上で見る）。
+   */
+  readonly usualMeasured: number | null
 }
 
-/** 自作地震計自身が震度1 以上を出しているか。 */
+/**
+ * 自作地震計自身が揺れているか。
+ *
+ * - **震度3 以上なら普段によらず出す**（{@link SEISMO_WAVE_ALWAYS_RANK}）
+ * - それより弱ければ、**普段が読めれば「普段 + {@link SEISMO_WAVE_USUAL_MARGIN} を超えたか」、
+ *   読めなければ「震度1 以上か」。** 普段が読めない間（ホストの起動直後・古いホスト・測り直しが
+ *   止まった）に何も出さない形にすると、その間の揺れを丸ごと見落とす
+ *
+ * **階級の境目を書き写さない。** `0.5` と直に比べる形にすると、階級表を動かしたときにここだけ
+ * 古い境目のまま残る（同じ揺れが画面の場所によって違う階級で出る形の入口）。表は
+ * `measuredIntensity.ts` が単一情報源。
+ */
 function seismoStationShaking(stations: readonly SeismoIntensityLike[]): boolean {
   for (const s of stations) {
-    if (s.intensity === null) continue
-    // **階級の境目を書き写さない。** `0.5` と直に比べる形にすると、階級表を
-    // 動かしたときにここだけ古い境目のまま残る（同じ揺れが画面の場所によって
-    // 違う階級で出る形の入口）。表は `measuredIntensity.ts` が単一情報源。
+    if (s.intensity === null || !Number.isFinite(s.intensity)) continue
     const grade = measuredIntensityToGrade(s.intensity)
+    if (grade !== null && grade.rank >= SEISMO_WAVE_ALWAYS_RANK) return true
+    if (s.usualMeasured !== null && Number.isFinite(s.usualMeasured)) {
+      if (s.intensity > s.usualMeasured + SEISMO_WAVE_USUAL_MARGIN) return true
+      continue
+    }
     if (grade !== null && grade.rank >= 1) return true
   }
   return false
