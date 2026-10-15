@@ -18,17 +18,17 @@ import type { LogLevel } from './statusServer'
 import type { WaveRangeResult } from './waveArchive'
 
 /**
- * 「普段」を測る区間の長さ（ms）。**4 分 30 秒。**
+ * 「普段」を測る区間の長さ（ms）。**5 分。**
  *
  * アプリの地震カードが読み返す区間（`src/services/seismoWaveHistory.ts` の
- * `WAVE_HISTORY_LEAD_MS` 30 秒 ＋ `WAVE_HISTORY_TAIL_MS` 240 秒）と同じ長さ。あちらを動かしたら
+ * `WAVE_HISTORY_LEAD_MS` 60 秒 ＋ `WAVE_HISTORY_TAIL_MS` 240 秒）と同じ長さ。あちらを動かしたら
  * ここも合わせる。
  */
-export const USUAL_STATUS_WINDOW_MS = 270_000
+export const USUAL_STATUS_WINDOW_MS = 300_000
 
 /**
  * 測り直す間隔（ms）。**10 分。** 1 時間の中央値なので、これより細かく測っても値はほとんど動かない。
- * 1 回の重さは観測点 1 つで 4.5 分 × 6 区間（作業 PC で 0.1 秒ほど）。
+ * 1 回の重さは観測点 1 つで 5 分 × 6 区間（作業 PC で 0.1 秒ほど）。
  */
 export const USUAL_STATUS_REFRESH_MS = 10 * 60_000
 

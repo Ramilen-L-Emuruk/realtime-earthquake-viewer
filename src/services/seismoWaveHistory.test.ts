@@ -14,6 +14,8 @@ import {
   WAVE_HISTORY_LEAD_MS,
   WAVE_HISTORY_TAIL_MS,
 } from './seismoWaveHistory'
+import { QUAKE_MINUTE_LEAD_MS } from '../utils/quakeOriginSeconds'
+import { NOISE_SPAN_MS } from '../utils/seismoQuakeWindow'
 
 // 記録に残るかどうかを検証したいので `log` だけ差し替える。本物のままだと
 // テスト実行時に警告が素通しで混ざる。
@@ -71,6 +73,11 @@ describe('buildWaveHistoryRange', () => {
   it('窓はホストの上限（列で 10 分）に収まる', () => {
     // **安全弁。** 定数を伸ばした人がここで気づく。
     expect(WAVE_HISTORY_LEAD_MS + WAVE_HISTORY_TAIL_MS).toBeLessThanOrEqual(10 * 60 * 1000)
+  })
+
+  // 時間軸の 0 は分の頭より最大 30 秒前へ出る。その手前でノイズを 30 秒測れるだけ取る。
+  it('手前の幅は、ノイズを測る幅と発生が分の頭より前へ出る幅の和を覆う', () => {
+    expect(WAVE_HISTORY_LEAD_MS).toBeGreaterThanOrEqual(NOISE_SPAN_MS + QUAKE_MINUTE_LEAD_MS)
   })
 
   it('時刻として読めなければ窓を作らない', () => {

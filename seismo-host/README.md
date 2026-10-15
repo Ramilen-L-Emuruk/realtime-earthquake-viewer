@@ -1335,7 +1335,7 @@ GET /quake-intensity?station=<観測点ID>&from=<unix ミリ秒>&to=<unix ミリ
 | 欄 | 中身 |
 |---|---|
 | `stationId` | 観測点 ID（設定の並び。外した観測点は出さない） |
-| `usualMeasured`・`usualWindowCount`・`usualUsedCount` | `/quake-intensity` と同じ測り方の「普段」。区間の長さは揺れ窓の地震カードと同じ 4 分 30 秒（`windowMs`）。測れなければ `null` |
+| `usualMeasured`・`usualWindowCount`・`usualUsedCount` | `/quake-intensity` と同じ測り方の「普段」。区間の長さは揺れ窓の地震カードと同じ 5 分（`windowMs`）。測れなければ `null` |
 | `computedAtMs` | 測った時刻（ホストの時計）。**まだ測っていなければ `null`** |
 
 - **起動時に 1 回、以後 10 分ごとに測り直す**（`USUAL_STATUS_REFRESH_MS`）。前の回が終わっていなければ重ねない

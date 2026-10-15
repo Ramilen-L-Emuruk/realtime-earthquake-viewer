@@ -177,13 +177,19 @@ function calcintensityToScale(s: string): IntensityScale {
   return scale
 }
 
+/**
+ * Yahoo hypoInfo 由来の EEW の `id` の接頭辞。**この経路の報は仮定震源要素かどうかを運ばない**
+ * （`condition` は常に空）ので、見分けたい側はこの接頭辞で経路を判じる。
+ */
+export const YAHOO_EEW_ID_PREFIX = 'yahoo-eew-'
+
 /** Yahoo hypoInfo の1件を EEWAlert に変換する。 */
 export function hypoInfoItemToEEW(item: YahooHypoInfoItem): EEWAlert {
   const scale = calcintensityToScale(item.calcintensity)
   const scaleNum = scale === -1 ? 0 : scale
   return {
     kind: 'eew',
-    id: `yahoo-eew-${item.reportId}`,
+    id: `${YAHOO_EEW_ID_PREFIX}${item.reportId}`,
     time: item.reportTime,
     test: item.isTraining === 'true',
     earthquake: {
