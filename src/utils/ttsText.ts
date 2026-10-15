@@ -1,4 +1,4 @@
-import type { LiveEvent, EEWAlert, JMAQuake, JMATsunami, JMANankai, JMANankaiCommentary, JMAKohatsu, JMAEarthquakeCount, JMALpgm, IntensityScale, TsunamiGrade, TsunamiArea, EarthquakePoint, DomesticTsunami, TsunamiObservation, Hypocenter } from '../types/earthquake'
+import type { LiveEvent, EEWAlert, JMAQuake, JMATsunami, JMANankai, JMANankaiCommentary, JMAKohatsu, JMAEarthquakeCount, JMALpgm, IntensityScale, TsunamiGrade, TsunamiArea, EarthquakePoint, DomesticTsunami, TsunamiObservation, TsunamiSourceEarthquake, Hypocenter } from '../types/earthquake'
 import { eewNoForecastReason, canPresentLpgmClass, type EewMaxScaleInfo } from './eew'
 import { getIntensityLabel, getIntensityLabelWithApproxAbove } from './intensity'
 import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, hasForecastHeight, compareObservedHeightDesc, overSuffixedHeight, evacuationActionLine, fallbackEvacuationAction, expiryNeedsDate, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, TSUNAMI_GRADE_LIFTED, type TsunamiAreaGradeChange, type TideReportChange } from './tsunami'
@@ -2165,13 +2165,78 @@ function observationsForAreaOrder(
  * **追従用の印（`borrowedHypocenter`）を全断片へ付ける。** 読んでいるあいだ、その地震のカードを
  * 見せるため（→ `ttsFollow.ts`）。震源そのものは `quakeFact` で別に記録される。
  */
+/**
+ * 津波の読み上げが見る既読。**原因地震ごとに、その地震の主題の既読を持つ。**
+ *
+ * 原因地震が 2 つ以上ある津波（別の地震が寄与して番号が足された警報）では、震源の既読はそれぞれの
+ * 地震に積む。1 つにまとめると、片方を語っただけでもう片方まで「伝えた」ことになる。
+ * どの原因地震がどの地震カードに当たるかは `utils/tsunamiSourceLinks.ts` の `linkTsunamiSources` が決める
+ * （組み立ては `useLiveEventHandler`）。
+ */
+export interface TsunamiQuakeSpoken {
+  /** 失効時刻の既読。1 つ目の原因地震の主題に積む（従来の置き場所）。 */
+  expiry: QuakeSpokenState | undefined
+  /** 原因地震ごとの既読（電文の `Earthquake` の並び順）。 */
+  sources: readonly TsunamiSourceSpoken[]
+}
+
+export interface TsunamiSourceSpoken {
+  source: TsunamiSourceEarthquake
+  /** その地震の既読。結べなかった地震や識別子を持たない電文では undefined（毎回読む）。 */
+  spoken: QuakeSpokenState | undefined
+  /** 震源を語っている間に見せるカードの主題（`quakeEventKey`）。カードが無ければ undefined。 */
+  subject: string | undefined
+}
+
+/** 既読を渡されなかったとき（試聴・先読みの合成）は、原因地震を既読なしで並べる。 */
+function tsunamiSourceSpokens(event: JMATsunami, spoken: TsunamiQuakeSpoken | undefined): readonly TsunamiSourceSpoken[] {
+  if (spoken) return spoken.sources
+  return (event.sourceEarthquakes ?? []).map(source => ({ source, spoken: undefined, subject: undefined }))
+}
+
+/**
+ * 津波の読み上げで声になった参照を、それぞれの地震の既読へ積む。
+ *
+ * 原因地震の事実（`sourceIndex` 付き）はその原因地震の既読へ、それ以外（失効時刻）は `expiry` へ。
+ * **地震情報の読み上げは {@link applySpokenRefs} を使う**（こちらは津波専用）。
+ */
+export function applyTsunamiSpokenRefs(spoken: TsunamiQuakeSpoken, refs: readonly SpeechRef[]): void {
+  for (const ref of refs) {
+    if (ref.kind === 'quakeFact' && ref.sourceIndex !== undefined) {
+      const state = spoken.sources[ref.sourceIndex]?.spoken
+      if (state) applySpokenRefs(state, [ref])
+      continue
+    }
+    if (spoken.expiry) applySpokenRefs(spoken.expiry, [ref])
+  }
+}
+
 function sourceHypocenterSegments(
   event: JMATsunami,
-  spoken?: QuakeSpokenState,
+  spoken: TsunamiQuakeSpoken | undefined,
   opts?: TtsSpeechOptions,
 ): SpeechSegment[] {
-  const src = event.sourceEarthquakes?.[0]
-  if (!src?.hypocenterName) return []
+  return tsunamiSourceSpokens(event, spoken).flatMap((entry, index) =>
+    oneSourceHypocenterSegments(entry, index, opts))
+}
+
+/**
+ * 原因地震 1 件の震源を語る文。
+ *
+ * **2 つ目以降は「また、もう一つの地震の震源は」で始める**（2026-10-15 ユーザー承認「読む（推奨）」）。
+ * 気象庁は別の地震が寄与すると同じ警報を切り替えて原因地震を足す（電文解説資料 Ⅰ.別02-8 出現例６）。
+ * 1 つ目と同じ「この地震の震源は」で読むと、どちらの地震の話かが耳で分からない。
+ *
+ * 既読は**その地震の主題**に積む（`sourceIndex` で原因地震を指す → {@link applyTsunamiSpokenRefs}）。
+ */
+function oneSourceHypocenterSegments(
+  entry: TsunamiSourceSpoken,
+  index: number,
+  opts?: TtsSpeechOptions,
+): SpeechSegment[] {
+  const src = entry.source
+  const spoken = entry.spoken
+  if (!src.hypocenterName) return []
   const hypocenter = tsunamiSourceHypocenter(src)
   const tellable = tellableHypocenterFacts(hypocenter, opts)
   // **震源名が無ければ文ごと出さない。** 規模だけを「この地震の震源は、マグニチュードは…」と
@@ -2189,20 +2254,21 @@ function sourceHypocenterSegments(
   // 「等級が動く報と震源の更新が同じ通に重なる」形は実データで確かめていない。重なったときに
   // 更新が声にならないのは承知のうえで、冗長さを避ける側に倒している。
   if (![...tellable].every(fact => spoken?.facts.has(fact))) {
-    const follow: SpeechRef = { kind: 'borrowedHypocenter' }
-    const segments: SpeechSegment[] = [{ text: 'この地震の震源は', refs: [follow] }]
+    const follow: SpeechRef = entry.subject ? { kind: 'borrowedHypocenter', subject: entry.subject } : { kind: 'borrowedHypocenter' }
+    const lead = index === 0 ? 'この地震の震源は' : 'また、もう一つの地震の震源は'
+    const segments: SpeechSegment[] = [{ text: lead, refs: [follow] }]
     segments.push({
       text: hypocenter.name,
-      refs: [{ kind: 'quakeFact', fact: 'hypocenterName', value: hypocenter.name }, follow],
+      refs: [{ kind: 'quakeFact', fact: 'hypocenterName', value: hypocenter.name, sourceIndex: index }, follow],
     })
     if (tellable.has('depth')) {
       segments.push({ text: '、', refs: [follow] })
       segments.push({
         text: depthSourcePhrase(hypocenter.depth),
-        refs: [{ kind: 'quakeFact', fact: 'depth', value: String(hypocenter.depth) }, follow],
+        refs: [{ kind: 'quakeFact', fact: 'depth', value: String(hypocenter.depth), sourceIndex: index }, follow],
       })
     }
-    const magRef: SpeechRef[] = [{ kind: 'quakeFact', fact: 'magnitude', value: magnitudeFactValue(hypocenter) }, follow]
+    const magRef: SpeechRef[] = [{ kind: 'quakeFact', fact: 'magnitude', value: magnitudeFactValue(hypocenter), sourceIndex: index }, follow]
     const numeric = hasMagnitude(hypocenter.magnitude) ? magnitudeText(hypocenter.magnitude) : ''
     if (tellable.has('magnitude') && numeric) {
       segments.push({ text: '、マグニチュードは', refs: [follow] })
@@ -2262,7 +2328,7 @@ function sourceHypocenterSegments(
 function tsunamiExpirySegments(
   event: JMATsunami,
   gradeLabel: string,
-  spoken?: QuakeSpokenState,
+  spoken?: TsunamiQuakeSpoken,
 ): SpeechSegment[] {
   if (event.cancelled || !event.validDateTime) return []
   // 日付を添えるかの判定は画面と共有する（`expiryNeedsDate`）。書式だけがここと画面で違う。
@@ -2271,7 +2337,7 @@ function tsunamiExpirySegments(
     : formatTime(event.validDateTime)
   // 日時として読めない失効時刻はここで落ちる（整形の 2 関数が `null` を返す）。
   if (!value) return []
-  if (spoken?.facts.get('tsunamiExpiry') === value) return []
+  if (spoken?.expiry?.facts.get('tsunamiExpiry') === value) return []
   return [
     plain(`この${gradeLabel}の失効時刻は、`),
     { text: value, refs: [{ kind: 'quakeFact', fact: 'tsunamiExpiry', value }] },
@@ -2282,7 +2348,7 @@ function tsunamiExpirySegments(
 export function tsunamiToSegments(
   event: JMATsunami,
   observationsForOrder?: readonly TsunamiObservation[],
-  quakeSpoken?: QuakeSpokenState,
+  quakeSpoken?: TsunamiQuakeSpoken,
   opts?: TtsSpeechOptions,
 ): SpeechSegment[] {
   const topGrade = GRADE_ORDER.find(g => event.areas.some(a => a.grade === g))
@@ -2350,7 +2416,7 @@ export function tsunamiToText(
 export function tsunamiDowngradeToSegments(
   event: JMATsunami,
   observationsForOrder: readonly TsunamiObservation[] | undefined,
-  quakeSpoken: QuakeSpokenState | undefined,
+  quakeSpoken: TsunamiQuakeSpoken | undefined,
 ): SpeechSegment[] {
   const topGrade = GRADE_ORDER.find(g => event.areas.some(a => a.grade === g))
   if (!topGrade) return [plain(tsunamiCancelToText(event.cancelReason))]
@@ -2463,6 +2529,19 @@ export function tsunamiCancelToText(cancelReason: JMATsunami['cancelReason'], ca
       : '津波警報等は全て解除されました。'
   // 取消しの概要は取消電文にしか入らない。解除・失効では電文に無いので空のまま
   return head + cancelReasonSentence(cancelText)
+}
+
+/**
+ * 津波情報（VTSE51）・沖合の津波観測に関する情報（VTSE52）だけの取消を伝える文。
+ *
+ * **取り消された事実だけを伝え、理由は読まない**（後発地震注意情報の取消と揃える。
+ * 2026-10-15 ユーザー承認「読み上げて組み直す（推奨）」）。警報等は生きているので「津波警報等」とは言わない。
+ * 情報名は電文の正式名（→ `docs/spec/quake-spec.md` §3「「警報等」を「津波警報」と書かない」と同じ考え方）。
+ */
+export function tsunamiPartialRetractionToText(headType: 'VTSE51' | 'VTSE52'): string {
+  return headType === 'VTSE51'
+    ? '津波情報は取り消されました。'
+    : '沖合の津波観測に関する情報は取り消されました。'
 }
 
 /** 観測点を districtName（津波予報区）ごとにまとめる。区域名を持たない観測は単独の項目にする。 */

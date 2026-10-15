@@ -1597,6 +1597,8 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 津波の解除で観測点の記憶を落とす条件 | [`tsunami-spec.md`](docs/spec/tsunami-spec.md) §5「解除電文と表示中の津波の照合」・[`tsunami-spec.md`](docs/spec/tsunami-spec.md) §10「読み上げた観測点の記憶は画面用と分ける」 |
 | 気象庁が書いた文（本文・付加文 2 種）はバナーの行動指示の行から開く | [`tsunami-spec.md`](docs/spec/tsunami-spec.md) §9「気象庁が書いた文は、行動指示の行から開く」 |
 | 続報のマージで前報から引き継ぐもの（規則は `mergeTsunamiReports` の 1 箇所） | [`tsunami-spec.md`](docs/spec/tsunami-spec.md) §5「続報で前報から引き継ぐもの」 |
+| 津波の同一性を `isSameTsunamiEvent` 以外で書き直す（EventID の文字列一致など）と、原因地震の追加で `A` → `A B` と番号が伸びたとき同じ津波を別物と取り違え、カードが入れ替わって観測点・期限を落とす | [`tsunami-spec.md`](docs/spec/tsunami-spec.md) §3「同じ津波の判定」 |
+| 報を 1 通当てた結果（状態更新・DMDSS 版の失効予約・受信処理）を `stepTsunamiState` 以外で決めると、画面と失効予約の期限が食い違い、注意報の発表中に「失効」しうる | [`tsunami-spec.md`](docs/spec/tsunami-spec.md) §3「報を 1 通当てた結果は 1 箇所で決める」 |
 
 ### 緊急地震速報（EEW）
 

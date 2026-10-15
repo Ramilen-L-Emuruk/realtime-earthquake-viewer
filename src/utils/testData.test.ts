@@ -4,7 +4,7 @@ import { isEewArrivedKindCode, isEewPlumKindCode } from './eewKind'
 import { mergeQuakeInto, mergeQuakeHistory } from './quakeMerge'
 import { earthquakeToSegments, createQuakeSpokenState, applySpokenRefs } from './ttsText'
 import { joinSegments } from './ttsFollow'
-import type { JMAQuake } from '../types/earthquake'
+import type { JMAQuake, JMATsunami } from '../types/earthquake'
 import { reportsText } from '../test-utils/quakeReports'
 import {
   createTestEarthquake,
@@ -23,6 +23,8 @@ import {
   createTestTsunamiExpiry,
   createTestTsunamiForecast,
   createTestTsunamiGradeChange,
+  createTestTsunamiInfoRetraction,
+  createTestTsunamiSourceAdded,
   createTestTsunamiWarning,
   createTestTsunamiWatch,
   createTestUnreceivedQuake,
@@ -33,7 +35,8 @@ import notoHonshinQuake from '../data/noto-honshin-2024-quake.json'
 import { extractQuakeEventId } from './quakeMerge'
 import { eewAreas, eewMaxScale, eewNoForecastReason, isEewAreaArrived } from './eew'
 import { extractQuakeEventIdFromId } from './quakeMerge'
-import { isObservationMissing, matchesArea } from './tsunami'
+import { foldTsunamiReports, isObservationMissing, isPartialTsunamiRetraction, isSameTsunamiEvent, matchesArea, refoldTsunamiWithout } from './tsunami'
+import { linkTsunamiSources } from './tsunamiSourceLinks'
 
 // テストデータが「名前で」外部データと突き合わせている箇所を固定する。
 //
@@ -571,13 +574,23 @@ describe('津波テストの識別子は原因地震の発現時刻から作る'
   beforeEach(() => { vi.useFakeTimers({ now: new Date('2026-09-12T12:34:56Z').getTime() }) })
   afterEach(() => { vi.useRealTimers() })
 
-  it('識別子が原因地震の発現時刻と一致する（発表時刻ではない）', () => {
+  // 原因地震が 2 件あるので、番号も 2 つ並ぶ（電文解説資料 Ⅰ.別02-8 出現例６）。番号ごとに、
+  // 同じ位置の原因地震の発現時刻から作る。
+  it('識別子の番号は原因地震ごとの発現時刻と一致する（発表時刻ではない）', () => {
     const tsunami = createTestTsunami(true)
-    const origin = tsunami.sourceEarthquakes?.[0]?.arrivalTime
-    expect(origin).toBeTruthy()
-    expect(tsunami.eventId).toBe(toEventIdTimestamp(new Date(origin!)))
+    const sources = tsunami.sourceEarthquakes ?? []
+    expect(sources).toHaveLength(2)
+    const ids = (tsunami.eventId ?? '').split(' ')
+    expect(ids).toEqual(sources.map(s => toEventIdTimestamp(new Date(s.arrivalTime!))))
     // 発表時刻そのものからは作らない（この 2 つが同じなら上の一致は偶然）
-    expect(tsunami.eventId).not.toBe(toEventIdTimestamp(new Date(tsunami.time)))
+    expect(ids).not.toContain(toEventIdTimestamp(new Date(tsunami.time)))
+  })
+
+  // 対照: 原因地震が 1 件の津波テストは番号も 1 つ。
+  it('原因地震を持たない（1 件の）津波テストの識別子は番号 1 つ', () => {
+    for (const make of [createTestTsunamiWarning, createTestTsunamiWatch, createTestTsunamiForecast]) {
+      expect((make(true).eventId ?? '').split(' ')).toHaveLength(1)
+    }
   })
 
   // 本命の回帰。同じ瞬間に作っても、別々の事象なので識別子は分かれる。
@@ -1561,5 +1574,88 @@ describe('テストデータに報ごとに変わる項目が混ざっていな�
       expect(g.keys.length).toBeGreaterThan(3)
       expect(g.forbidden.length).toBeGreaterThan(0)
     }
+  })
+})
+
+// 津波の同一性を EventID の番号の重なりで判定する形（#836）を、実機で出せる入口。
+// テストボタンのデータが実電文の形から外れると、判定や結び付けの経路をテストボタンでだけ通らない。
+describe('原因地震が加わる津波テスト', () => {
+  beforeEach(() => { vi.useFakeTimers({ now: new Date('2026-09-12T12:34:56Z').getTime() }) })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('番号が「A」から「A B」へ書き足され、同じ津波として扱われる', () => {
+    const [quakeA, first, quakeB, added, lift] = createTestTsunamiSourceAdded() as [JMAQuake, JMATsunami, JMAQuake, JMATsunami, JMATsunami]
+    expect(first.eventId).toBe(quakeA.eventId)
+    expect(added.eventId).toBe(`${quakeA.eventId} ${quakeB.eventId}`)
+    // 正: 書き足された報は前報と同じ津波
+    expect(isSameTsunamiEvent(first, added)).toBe(true)
+    // 解除も同じ津波を指す
+    expect(lift.cancelled).toBe(true)
+    expect(isSameTsunamiEvent(added, lift)).toBe(true)
+  })
+
+  it('2 つの原因地震がそれぞれの地震カードへ 1 対 1 で結び付く', () => {
+    const [quakeA, , quakeB, added] = createTestTsunamiSourceAdded() as [JMAQuake, JMATsunami, JMAQuake, JMATsunami]
+    const links = linkTsunamiSources(added, [quakeA, quakeB])
+    expect(links.map(l => l.eventId)).toEqual([quakeA.eventId, quakeB.eventId])
+  })
+
+  // 安全弁: 2 つの地震を同じ分に置くと 1 対 1 に決まらない。テストボタンの時刻がその形に
+  // 戻っていないことを固定する（戻るとバナーのリンクが 2 つとも出なくなる）。
+  it('2 つの地震の発現時刻は別の分にある', () => {
+    const [quakeA, , quakeB] = createTestTsunamiSourceAdded() as [JMAQuake, JMATsunami, JMAQuake]
+    expect(Math.floor(Date.parse(quakeA.earthquake.time) / 60000))
+      .not.toBe(Math.floor(Date.parse(quakeB.earthquake.time) / 60000))
+  })
+
+  it('電文の時刻は流す順に進む', () => {
+    const times = createTestTsunamiSourceAdded().map(r => Date.parse(r.time))
+    for (let i = 1; i < times.length; i++) expect(times[i]).toBeGreaterThan(times[i - 1])
+  })
+
+  // 大津波警報テストも原因地震を 2 件持つので、同じく 2 つの番号でそれぞれへ結び付く。
+  it('大津波警報テストの 2 つの原因地震も番号で区別できる', () => {
+    const tsunami = createTestTsunami(true)
+    const ids = (tsunami.eventId ?? '').split(' ')
+    expect(ids).toHaveLength(2)
+    expect(new Set(ids).size).toBe(2)
+  })
+})
+
+describe('津波情報だけを取り消すテスト', () => {
+  beforeEach(() => { vi.useFakeTimers({ now: new Date('2026-09-12T12:34:56Z').getTime() }) })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('取消は津波情報（VTSE51）だけを指し、津波警報は残る', () => {
+    const [warning, info, retraction, lift] = createTestTsunamiInfoRetraction()
+    expect(warning.headType).toBe('VTSE41')
+    expect(info.headType).toBe('VTSE51')
+    // 正: 一部の取消として扱われる
+    expect(isPartialTsunamiRetraction(retraction)).toBe(true)
+    // 対照: 最後の解除は津波警報の解除で、一部の取消ではない
+    expect(isPartialTsunamiRetraction(lift)).toBe(false)
+    expect(isSameTsunamiEvent(warning, retraction)).toBe(true)
+
+    const folded = foldTsunamiReports([warning, info])!
+    expect(folded.observations?.length).toBeGreaterThan(0)
+    const refolded = refoldTsunamiWithout(folded, retraction)
+    // 津波情報が運んだ観測点だけが消え、区域は残る
+    expect(refolded).not.toBeNull()
+    expect(refolded!.observations ?? []).toHaveLength(0)
+    expect(refolded!.areas.map(a => a.name)).toEqual(warning.areas.map(a => a.name))
+  })
+
+  it('観測点の時刻は津波情報の発表より前', () => {
+    const [, info] = createTestTsunamiInfoRetraction()
+    for (const o of info.observations ?? []) {
+      if (o.arrivalTime) expect(Date.parse(o.arrivalTime)).toBeLessThan(Date.parse(info.time))
+      if (o.maxHeightDateTime) expect(Date.parse(o.maxHeightDateTime)).toBeLessThan(Date.parse(info.time))
+    }
+  })
+
+  // 実電文に無い文を混ぜない（津波情報の取消の実電文を持っていない）。
+  it('取消は理由の文を持たない', () => {
+    const [, , retraction] = createTestTsunamiInfoRetraction()
+    expect(retraction.cancelText).toBeUndefined()
   })
 })

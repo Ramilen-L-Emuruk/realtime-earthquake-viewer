@@ -61,7 +61,7 @@ function makeTsunami(overrides: Partial<JMATsunami> = {}): JMATsunami {
 describe('borrowHypocenterFromTsunami', () => {
   // 正: 同じ地震の津波が震源を載せていれば借りる。
   it('eventId が一致する津波から震源・規模・深さを借りる', () => {
-    const borrowed = borrowHypocenterFromTsunami(makePrompt(), [makeTsunami()])
+    const borrowed = borrowHypocenterFromTsunami(makePrompt(), [makeTsunami()], [])
     expect(borrowed?.hypocenter.name).toBe('石川県能登地方')
     expect(borrowed?.hypocenter.magnitude).toBe(7.4)
     // **深さ 0 は「ごく浅い」という有効値。** センチネル（-1）へ落とさないこと。
@@ -70,7 +70,7 @@ describe('borrowHypocenterFromTsunami', () => {
   })
 
   it('出どころは等級を名乗らない短い語と、電文の名乗り・発表時刻を持つ', () => {
-    const borrowed = borrowHypocenterFromTsunami(makePrompt(), [makeTsunami()])
+    const borrowed = borrowHypocenterFromTsunami(makePrompt(), [makeTsunami()], [])
     // 「津波警報」と書くと大津波警報の地震で一段軽く見える（→ quake-spec §3）。
     expect(borrowed?.source.shortLabel).toBe('津波情報')
     expect(borrowed?.source.shortLabel).not.toContain('警報')
@@ -88,8 +88,8 @@ describe('borrowHypocenterFromTsunami', () => {
       sourceEarthquakes: [notoSource({ magnitude: 7.6 })],
     })
     // 配列の順序に依存しないこと（到着順は保証されない）。
-    expect(borrowHypocenterFromTsunami(makePrompt(), [first, later])?.hypocenter.magnitude).toBe(7.6)
-    expect(borrowHypocenterFromTsunami(makePrompt(), [later, first])?.hypocenter.magnitude).toBe(7.6)
+    expect(borrowHypocenterFromTsunami(makePrompt(), [first, later], [])?.hypocenter.magnitude).toBe(7.6)
+    expect(borrowHypocenterFromTsunami(makePrompt(), [later, first], [])?.hypocenter.magnitude).toBe(7.6)
   })
 
   // 対照: 結ぶ根拠が無いときは借りない。
@@ -98,12 +98,12 @@ describe('borrowHypocenterFromTsunami', () => {
     // （→ quakeMerge.ts の isHypocenterPending）。区域の重なりという追加の証拠を
     // 津波電文は出せないので、結ばない側へ倒す。
     const other = makeTsunami({ eventId: '20240101161017' })
-    expect(borrowHypocenterFromTsunami(makePrompt(), [other])).toBeNull()
+    expect(borrowHypocenterFromTsunami(makePrompt(), [other], [])).toBeNull()
   })
 
   it('eventId を持たない地震電文（P2PQuake 経路）では借りない', () => {
     const p2p = makePrompt({ id: 'p2p-1' })
-    expect(borrowHypocenterFromTsunami(p2p, [makeTsunami()])).toBeNull()
+    expect(borrowHypocenterFromTsunami(p2p, [makeTsunami()], [])).toBeNull()
   })
 
   it('震源が既に判っている電文には借りない', () => {
@@ -116,12 +116,12 @@ describe('borrowHypocenterFromTsunami', () => {
         domesticTsunami: '警報等',
       },
     })
-    expect(borrowHypocenterFromTsunami(withHypo, [makeTsunami()])).toBeNull()
+    expect(borrowHypocenterFromTsunami(withHypo, [makeTsunami()], [])).toBeNull()
   })
 
   // 安全弁: 取り下げられた内容と、震源を載せていない津波を巻き込まない。
   it('取消された津波からは借りない', () => {
-    expect(borrowHypocenterFromTsunami(makePrompt(), [makeTsunami({ cancelled: true })])).toBeNull()
+    expect(borrowHypocenterFromTsunami(makePrompt(), [makeTsunami({ cancelled: true })], [])).toBeNull()
   })
 
   // 安全弁: 取消の状態更新は**表示中の津波（cancelled: false）を土台に cancelledAt を足す**形なので、
@@ -129,39 +129,39 @@ describe('borrowHypocenterFromTsunami', () => {
   it('誤報取消を表示している津波からは借りない（cancelled は false のまま）', () => {
     const retracted = makeTsunami({ cancelledAt: new Date('2024-01-01T07:20:00Z'), cancelReason: 'retracted' })
     expect(retracted.cancelled).toBe(false)
-    expect(borrowHypocenterFromTsunami(makePrompt(), [retracted])).toBeNull()
+    expect(borrowHypocenterFromTsunami(makePrompt(), [retracted], [])).toBeNull()
   })
 
   // 対照: 解除・失効は借りてよい。津波が引いても、その地震の震源は有効なまま。
   it('解除・失効した津波からは借りる', () => {
     const lifted = makeTsunami({ cancelledAt: new Date('2024-01-01T08:00:00Z'), cancelReason: 'lifted' })
-    expect(borrowHypocenterFromTsunami(makePrompt(), [lifted])?.hypocenter.name).toBe('石川県能登地方')
+    expect(borrowHypocenterFromTsunami(makePrompt(), [lifted], [])?.hypocenter.name).toBe('石川県能登地方')
     const expired = makeTsunami({ cancelledAt: new Date('2024-01-01T08:00:00Z'), cancelReason: 'expired' })
-    expect(borrowHypocenterFromTsunami(makePrompt(), [expired])?.hypocenter.name).toBe('石川県能登地方')
+    expect(borrowHypocenterFromTsunami(makePrompt(), [expired], [])?.hypocenter.name).toBe('石川県能登地方')
   })
 
   it('原因地震を載せていない津波からは借りない', () => {
-    expect(borrowHypocenterFromTsunami(makePrompt(), [makeTsunami({ sourceEarthquakes: undefined })])).toBeNull()
+    expect(borrowHypocenterFromTsunami(makePrompt(), [makeTsunami({ sourceEarthquakes: undefined })], [])).toBeNull()
     const nameless = makeTsunami({ sourceEarthquakes: [notoSource({ hypocenterName: '' })] })
-    expect(borrowHypocenterFromTsunami(makePrompt(), [nameless])).toBeNull()
+    expect(borrowHypocenterFromTsunami(makePrompt(), [nameless], [])).toBeNull()
   })
 
   it('取消された地震電文には借りない', () => {
     // 取消はパーサーが種別を問わず震源名を空で作るため、除かないと「震源未確定」として通る。
     const cancelled = makePrompt({ cancelled: true })
-    expect(borrowHypocenterFromTsunami(cancelled, [makeTsunami()])).toBeNull()
+    expect(borrowHypocenterFromTsunami(cancelled, [makeTsunami()], [])).toBeNull()
   })
 })
 
 describe('withBorrowedHypocenter', () => {
   it('借りられないときは元の参照をそのまま返す', () => {
     const quake = makePrompt()
-    expect(withBorrowedHypocenter(quake, [])).toBe(quake)
+    expect(withBorrowedHypocenter(quake, [], [])).toBe(quake)
   })
 
   it('借りたときは写しを返し、元を書き換えない', () => {
     const quake = makePrompt()
-    const applied = withBorrowedHypocenter(quake, [makeTsunami()])
+    const applied = withBorrowedHypocenter(quake, [makeTsunami()], [])
     expect(applied).not.toBe(quake)
     expect(applied.earthquake.hypocenter.name).toBe('石川県能登地方')
     expect(applied.hypocenterSource?.shortLabel).toBe('津波情報')
@@ -173,49 +173,49 @@ describe('withBorrowedHypocenter', () => {
   // 安全弁: 津波の続報は 1 つの津波で 40 通を超える（能登の実電文）。震源を変えない続報で
   // 毎回新しいカードを作ると、地震一覧全体が無駄に描き直される。
   it('震源が変わらない続報では、元の参照をそのまま返す', () => {
-    const borrowedCard = withBorrowedHypocenter(makePrompt(), [makeTsunami()])
+    const borrowedCard = withBorrowedHypocenter(makePrompt(), [makeTsunami()], [])
     // 同じ震源を載せた別の報（観測情報の続報など）。
     const later = makeTsunami({
       id: 'dmdata-tsunami-20240101161010-2',
       time: '2024-01-01T07:25:00Z',
       infoName: '津波情報',
     })
-    expect(withBorrowedHypocenter(borrowedCard, [later])).toBe(borrowedCard)
+    expect(withBorrowedHypocenter(borrowedCard, [later], [])).toBe(borrowedCard)
   })
 
   it('震源が変わらない続報では、出どころの発表時刻も進めない', () => {
     // 進めると、値が変わっていないのに「この時刻に震源が更新された」ように読める。
-    const borrowedCard = withBorrowedHypocenter(makePrompt(), [makeTsunami()])
+    const borrowedCard = withBorrowedHypocenter(makePrompt(), [makeTsunami()], [])
     const later = makeTsunami({ time: '2024-01-01T07:25:00Z', infoName: '津波情報' })
-    expect(withBorrowedHypocenter(borrowedCard, [later]).hypocenterSource?.reportTime)
+    expect(withBorrowedHypocenter(borrowedCard, [later], []).hypocenterSource?.reportTime)
       .toBe('2024-01-01T07:12:00Z')
-    expect(withBorrowedHypocenter(borrowedCard, [later]).hypocenterSource?.infoName)
+    expect(withBorrowedHypocenter(borrowedCard, [later], []).hypocenterSource?.infoName)
       .toBe('津波警報・津波注意報・津波予報')
   })
 
   it('借りていないカードには出どころを持たせない', () => {
     // 画面はこの有無で注記を出し分ける。常に埋めると自前の震源にまで注記が付く。
     const quake = makePrompt()
-    expect(withBorrowedHypocenter(quake, [makeTsunami({ eventId: 'x' })]).hypocenterSource).toBeUndefined()
+    expect(withBorrowedHypocenter(quake, [makeTsunami({ eventId: 'x' })], []).hypocenterSource).toBeUndefined()
   })
 
   it('津波が先に届いた順序でも、あとから来た地震電文が震源を借りられる', () => {
     // 受信側（useEarthquakes の 'quake'）が通る経路。津波が state に居る状態で震度速報が届く。
-    const applied = withBorrowedHypocenter(makePrompt(), [makeTsunami()])
+    const applied = withBorrowedHypocenter(makePrompt(), [makeTsunami()], [])
     expect(applied.earthquake.hypocenter.name).toBe('石川県能登地方')
   })
 
   // 正: 借りた震源は津波の続報に追随する。実電文では 16:22 に Ｍ７．４→Ｍ７．６と上がり、
   // 地震情報の同じ更新は 16:24 で 2 分遅い。借りた時点で固まると、その 2 分が古い値になる。
   it('借りた震源は、津波の続報で更新される', () => {
-    const borrowedCard = withBorrowedHypocenter(makePrompt(), [makeTsunami()])
+    const borrowedCard = withBorrowedHypocenter(makePrompt(), [makeTsunami()], [])
     expect(borrowedCard.earthquake.hypocenter.magnitude).toBe(7.4)
     const later = makeTsunami({
       time: '2024-01-01T07:22:00Z',
       infoName: '津波情報',
       sourceEarthquakes: [notoSource({ magnitude: 7.6 })],
     })
-    const updated = withBorrowedHypocenter(borrowedCard, [later])
+    const updated = withBorrowedHypocenter(borrowedCard, [later], [])
     expect(updated.earthquake.hypocenter.magnitude).toBe(7.6)
     expect(updated.hypocenterSource?.infoName).toBe('津波情報')
   })
@@ -223,8 +223,8 @@ describe('withBorrowedHypocenter', () => {
   // 安全弁: 借り手が居なくなっても、前に借りた震源と印は保つ。落とすと震源だけが残って
   // 出どころが消え、借り物が自前の震源のように見える。
   it('津波が取り消されても、前に借りた震源と出どころは残す', () => {
-    const borrowedCard = withBorrowedHypocenter(makePrompt(), [makeTsunami()])
-    const kept = withBorrowedHypocenter(borrowedCard, [makeTsunami({ cancelled: true })])
+    const borrowedCard = withBorrowedHypocenter(makePrompt(), [makeTsunami()], [])
+    const kept = withBorrowedHypocenter(borrowedCard, [makeTsunami({ cancelled: true })], [])
     expect(kept).toBe(borrowedCard)
     expect(kept.earthquake.hypocenter.name).toBe('石川県能登地方')
     expect(kept.hypocenterSource?.shortLabel).toBe('津波情報')
@@ -240,7 +240,7 @@ describe('withBorrowedHypocenter', () => {
         hypocenter: { name: '石川県能登地方', latitude: 37.5, longitude: 137.2, depth: 16, magnitude: 7.6 },
       },
     }
-    const next = withBorrowedHypocenter(own, [makeTsunami()])
+    const next = withBorrowedHypocenter(own, [makeTsunami()], [])
     expect(next).toBe(own)
     expect(next.earthquake.hypocenter.depth).toBe(16)
     expect(next.earthquake.hypocenter.magnitude).toBe(7.6)
@@ -333,7 +333,7 @@ describe('withBorrowedFromTsunami', () => {
 
   // 正: 震源と津波区分を同時に借りる（実電文はどちらも 16:12 の 1 通が運んでくる）。
   it('震源と津波区分を両方借り、印もそれぞれ持つ', () => {
-    const applied = withBorrowedFromTsunami(makePrompt(), [warned])
+    const applied = withBorrowedFromTsunami(makePrompt(), [warned], [])
     expect(applied.earthquake.hypocenter.name).toBe('石川県能登地方')
     expect(applied.earthquake.domesticTsunami).toBe('警報等')
     expect(applied.hypocenterSource?.shortLabel).toBe('津波情報')
@@ -342,7 +342,7 @@ describe('withBorrowedFromTsunami', () => {
 
   // 対照: 読み上げ用の関数は区分を借りない（同じ津波の読み上げが等級を語るので二重になる）。
   it('読み上げ用（withBorrowedHypocenter）は津波区分を借りない', () => {
-    const applied = withBorrowedHypocenter(makePrompt(), [warned])
+    const applied = withBorrowedHypocenter(makePrompt(), [warned], [])
     expect(applied.earthquake.hypocenter.name).toBe('石川県能登地方')
     expect(applied.earthquake.domesticTsunami).toBe('調査中')
     expect(applied.domesticTsunamiSource).toBeUndefined()
@@ -350,12 +350,12 @@ describe('withBorrowedFromTsunami', () => {
 
   // 安全弁: 中身が変わらなければ参照を保つ（観測情報の続報のたびに一覧を描き直さない）。
   it('同じ内容の続報では元の参照を返す', () => {
-    const borrowedCard = withBorrowedFromTsunami(makePrompt(), [warned])
+    const borrowedCard = withBorrowedFromTsunami(makePrompt(), [warned], [])
     const later = makeTsunami({
       id: 'dmdata-tsunami-20240101161010-2',
       time: '2024-01-01T07:22:00Z',
       areas: [{ grade: 'MajorWarning', immediate: true, name: '石川県能登' }],
     })
-    expect(withBorrowedFromTsunami(borrowedCard, [later])).toBe(borrowedCard)
+    expect(withBorrowedFromTsunami(borrowedCard, [later], [])).toBe(borrowedCard)
   })
 })

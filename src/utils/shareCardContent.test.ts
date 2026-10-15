@@ -270,6 +270,31 @@ describe('buildShareCardContent — 津波', () => {
     const c = build(input({ mode: 'tsunami' }))
     expect(c.header.title).toBe('津波情報')
   })
+
+  // 原因地震が複数ある津波（EventID に番号が足された形）は全件を並べる（2026-10-15 ユーザー承認「全件を並べる」）。
+  it('原因地震が複数あれば「／」で全件を並べる', () => {
+    const t = {
+      ...tsunami(),
+      sourceEarthquakes: [
+        { hypocenterName: '石川県能登地方', magnitude: 7.6 },
+        { hypocenterName: '佐渡付近', magnitude: 6.1 },
+      ],
+    } as unknown as JMATsunami
+    const c = build(input({ mode: 'tsunami', tsunamis: [t] }))
+    expect(c.header.subtitle).toBe('石川県能登地方　M7.6 ／ 佐渡付近　M6.1　1 区域')
+  })
+
+  // 対照: 1 件なら区切りは入らない。
+  it('原因地震が 1 件なら区切りを入れない', () => {
+    const c = build(input({ mode: 'tsunami', tsunamis: [tsunami()] }))
+    expect(c.header.subtitle).toBe('日向灘　M8.1　1 区域')
+  })
+
+  // 安全弁: 同じ津波の報が並んでも、同じ原因地震を二度書かない。
+  it('複数の報が同じ原因地震を運んでも重ねない', () => {
+    const c = build(input({ mode: 'tsunami', tsunamis: [tsunami(), { ...tsunami(), id: 't2' } as JMATsunami] }))
+    expect(c.header.subtitle).toBe('日向灘　M8.1　1 区域')
+  })
 })
 
 describe('buildShareCardContent — 保存名', () => {
