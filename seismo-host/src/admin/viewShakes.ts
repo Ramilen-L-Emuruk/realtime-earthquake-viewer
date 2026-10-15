@@ -11,6 +11,10 @@
 //   ホストは新しいほうから 500 件で区切るので、続きは「さらに古い記録を読む」で読む（文言も同日承認）。
 //
 // `/events`・`/waves`・`/status`・`/stream` はどれも認証を持たない読み取りの口なので、トークンは付けない。
+// **気象庁の地震一覧（`/api/records/quakes`）だけは認証つき**なので `apiFetch` を通す —— 照合した地震の P・S を
+// 波形の記録と同じ一覧から引き当てるため（2026-10-15 ユーザー承認「進めて」）。トークンが無ければ取得できなかった
+// 一行が出るだけで、波形は描ける。**トークンが失効していたら、`apiFetch` がトークンを消して画面全体へ知らせる**
+// （他のタブで `/api/*` を叩いたときと同じ）。
 
 import { escapeHtml, qs } from './dom'
 import {
@@ -38,8 +42,23 @@ import {
   visibleShakes,
 } from './shakeHistory'
 import type { LoadState, ReadKind, ShakeRecordView, TimeRange, UnreadableBook } from './shakeHistory'
-import { detailMarkers, detailNote, detailTicks, detailWindow, readEnvelope, wavesUrl } from './shakeWave'
+import {
+  DETAIL_BEFORE_MAX_MS,
+  detailMarkers,
+  detailNote,
+  detailTicks,
+  detailWindow,
+  findMatchedQuake,
+  jmaArrivalMarks,
+  jmaArrivalNote,
+  readEnvelope,
+  recordsSelectionFor,
+  wavesUrl,
+} from './shakeWave'
 import type { EnvelopeView } from './shakeWave'
+import { apiFetch } from './api'
+import { P_BAND, P_COLOR, quakeFailureText, readQuakesData, S_BAND, S_COLOR, type QuakeMarkView } from './recordsMarks'
+import { recordsUrl } from './recordsPlot'
 import { openWaveStream } from './waveStream'
 import { formatGal, niceHalfSpanGal } from './wavePlot'
 import type { TabContext } from './tabState'
@@ -64,6 +83,11 @@ const AXIS_LABELS: readonly string[] = ['X 軸（東が ＋）', 'Y 軸（北が
 const TIME_AXIS_HEIGHT = 16
 const PLOT_PADDING_Y = 6
 const TIME_LABEL_MARGIN = 28
+/**
+ * 記録が持つ縦の線（始まり・終わり・拾った S・P）の色。**灰**（2026-10-15 ユーザー承認）——
+ * 気象庁の P・S（青・赤）と並ぶので、記録の線まで赤だと拾った S と気象庁 S が同じ色になる。
+ */
+const RECORD_MARK_COLOR = 'rgba(110, 110, 110, 0.9)'
 
 /** URL の `#` に載せる選択のキー（開いている揺れの記録の id）。 */
 const SELECTED_SHAKE_KEY = 'shake'
@@ -180,7 +204,17 @@ export async function initShakesView(container: HTMLElement, ctx: TabContext): P
   let fullInFlight: number | null = null
   /** 波形の読み返しの世代（押し直し・閉じるで古い応答を捨てる）。 */
   let detailController: AbortController | null = null
-  let detailEnvelope: { readonly record: ShakeRecordView; readonly envelope: EnvelopeView } | null = null
+  /** 開いている区間の記録と波形。**`win` は波形を取った範囲**（描く範囲もこれ。気象庁の P で広げた後のもの）。 */
+  let detailEnvelope: {
+    readonly record: ShakeRecordView
+    readonly envelope: EnvelopeView
+    readonly win: { readonly fromMs: number; readonly toMs: number }
+  } | null = null
+  /**
+   * 開いている記録が照合した地震の、気象庁の P・S（`GET /api/records/quakes` から引き当てたもの）と添える一行。
+   * **照合していない記録・まだ取っていない間は null。** 取りに行くのは詳細を開いたときと、開いた後に照合が済んだとき。
+   */
+  let detailJma: { readonly recordId: string; readonly quake: QuakeMarkView | null; readonly note: string; readonly failed: boolean } | null = null
   /**
    * 開き直す記録の id（前に開いていたもの。無ければ `null`）。**期間全体を読めたときに 1 度だけ判定する** ——
    * 読めていない空の一覧で判定すると、トークンの失効や通信の途切れだけで選択を消す。
@@ -291,6 +325,12 @@ export async function initShakesView(container: HTMLElement, ctx: TabContext): P
     const latest = newerRecord(detailEnvelope.record, list)
     if (latest === detailEnvelope.record) return
     // 波形は同じ区間なので取り直さない（版が進んでも始まり・終わりは変わらない。`shakeEvent.ts` の `withMatch`）。
+    // **開いた後に照合が済んだら、開き直す**（照合待ちのまま開いた記録）。気象庁の P で描く範囲が変わりうるので、
+    // 地震一覧を引くところからやり直す。
+    if (latest.matchedQuake !== null && detailJma === null) {
+      void openDetail(latest)
+      return
+    }
     detailEnvelope = { ...detailEnvelope, record: latest }
     drawDetail()
   }
@@ -430,10 +470,11 @@ export async function initShakesView(container: HTMLElement, ctx: TabContext): P
 
   const drawDetail = (): void => {
     if (detailEnvelope === null) return
-    const { record, envelope } = detailEnvelope
-    const win = detailWindow(record)
+    const { record, envelope, win } = detailEnvelope
     const span = win.toMs - win.fromMs
     const markers = detailMarkers(record, win)
+    const jmaQuake = detailJma !== null && detailJma.recordId === record.id ? detailJma.quake : null
+    const jmaMarks = jmaQuake === null ? [] : jmaArrivalMarks(jmaQuake, win)
     const dpr = globalThis.devicePixelRatio > 0 ? globalThis.devicePixelRatio : 1
     const canvases = [...detailEl.querySelectorAll<HTMLCanvasElement>('canvas.shake-canvas')]
     const rangeLabels = [...detailEl.querySelectorAll<HTMLElement>('.shake-axis-range')]
@@ -510,30 +551,84 @@ export async function initShakesView(container: HTMLElement, ctx: TabContext): P
       })
       ctx.stroke()
 
-      // 縦の線（始まり・終わり・S・P）。名前は一番上の段にだけ書く。
-      // **近い線の名前は段をずらす。** P は始まりの 1 秒足らず後に来ることが多く、同じ高さに
-      // 書くと「始まり」の文字に埋もれて読めない（実際にそうなった）。
-      ctx.setLineDash([4, 3])
-      ctx.strokeStyle = 'rgba(179, 38, 30, 0.85)'
-      ctx.fillStyle = 'rgba(179, 38, 30, 0.95)'
+      // 縦の線。記録が持つもの（始まり・終わり・拾った S・P）は灰の破線、照合した地震から計算した
+      // 気象庁の P・S は波形の記録タブと同じ色（秒まで分かれば破線、幅があれば薄い帯）。
+      // 名前は一番上の段にだけ書く。**近い線の名前は段をずらす。** P は始まりの 1 秒足らず後に
+      // 来ることが多く、同じ高さに書くと「始まり」の文字に埋もれて読めない（実際にそうなった）。
+      const lines: { readonly x0: number; readonly x1: number; readonly label: string; readonly color: string; readonly band: string | null }[] = [
+        ...markers.map((m) => ({ x0: xOf(m.atMs), x1: xOf(m.atMs), label: m.label, color: RECORD_MARK_COLOR, band: null })),
+        ...jmaMarks.map((m) => ({
+          x0: xOf(m.fromMs),
+          x1: xOf(m.toMs),
+          label: m.label,
+          color: m.phase === 'P' ? P_COLOR : S_COLOR,
+          band: m.fromMs === m.toMs ? null : m.phase === 'P' ? P_BAND : S_BAND,
+        })),
+      ].sort((a, b) => a.x0 - b.x0)
       ctx.textAlign = 'left'
       const rowEnds: number[] = []
-      for (const m of [...markers].sort((a, b) => a.atMs - b.atMs)) {
-        const x = xOf(m.atMs)
-        ctx.beginPath()
-        ctx.moveTo(x, 0)
-        ctx.lineTo(x, plotHeight)
-        ctx.stroke()
+      for (const l of lines) {
+        if (l.band !== null) {
+          const x0 = Math.max(0, l.x0)
+          ctx.fillStyle = l.band
+          ctx.fillRect(x0, 0, Math.min(width, l.x1) - x0, plotHeight)
+        } else {
+          ctx.setLineDash([4, 3])
+          ctx.strokeStyle = l.color
+          ctx.beginPath()
+          ctx.moveTo(l.x0, 0)
+          ctx.lineTo(l.x0, plotHeight)
+          ctx.stroke()
+          ctx.setLineDash([])
+        }
         if (axis !== 0) continue
-        const labelX = Math.min(x + 2, width - 30)
-        const labelWidth = ctx.measureText(m.label).width + 4
+        const labelX = Math.min(Math.max(0, l.x0) + 2, width - 50)
+        const labelWidth = ctx.measureText(l.label).width + 4
         let row = rowEnds.findIndex((end) => end <= labelX)
         if (row === -1) row = rowEnds.length
         rowEnds[row] = labelX + labelWidth
-        ctx.fillText(m.label, labelX, 2 + row * 12)
+        ctx.fillStyle = l.color
+        ctx.fillText(l.label, labelX, 2 + row * 12)
       }
-      ctx.setLineDash([])
     }
+  }
+
+  /**
+   * 開いている記録が照合した地震を、波形の記録と同じ地震一覧から引き当てる（`findMatchedQuake`）。
+   * **照合していない記録では何もしない。** 取れても取れなくても添える一行を決めて描き直す。
+   */
+  const loadJma = async (record: ShakeRecordView, detailSignal: AbortSignal): Promise<QuakeMarkView | null> => {
+    const matched = record.matchedQuake
+    if (matched === null) return null
+    // **問い合わせる範囲は、広げうる左端（始まりの 60 秒前）から** —— 描く範囲は引き当てた P で決まるので、
+    // その手前を問い合わせておかないと P が範囲の手前にある地震を取りこぼす。
+    const win = detailWindow(record)
+    const queryFrom = Math.floor(record.startMs - DETAIL_BEFORE_MAX_MS)
+    // **取りに行く前に印を置く** —— 押し出しが同じ記録の版を続けて届けても、二重に取りに行かない。
+    detailJma = { recordId: record.id, quake: null, note: '', failed: false }
+    try {
+      const body = await apiFetch<unknown>(recordsUrl('quakes', { from: queryFrom, to: win.toMs, station: record.stationId }), {
+        signal: detailSignal,
+      })
+      if (detailSignal.aborted) return null
+      const quakes = readQuakesData(body)
+      if (quakes === null) throw new Error('応答の形が違う')
+      const found = quakes.off || !quakes.located ? null : findMatchedQuake(quakes.quakes, matched)
+      detailJma = { recordId: record.id, quake: found, note: jmaArrivalNote(quakes, found), failed: false }
+    } catch (error) {
+      if (detailSignal.aborted) return null
+      detailJma = { recordId: record.id, quake: null, note: quakeFailureText(error instanceof Error ? error.message : String(error)), failed: true }
+    }
+    renderJmaNote()
+    return detailJma.quake
+  }
+
+  /** 気象庁の P・S について添える一行を書き直す。**取れなかったときだけ注意の色。** */
+  const renderJmaNote = (): void => {
+    const el = detailEl.querySelector<HTMLElement>('.shake-detail-jma')
+    if (el === null) return
+    el.textContent = detailJma?.note ?? ''
+    el.className = `shake-detail-jma ${detailJma?.failed === true ? 'error' : 'muted'}`
   }
 
   /** 詳細の欄を閉じた状態へ戻す（一覧は描き直さない）。 */
@@ -542,6 +637,7 @@ export async function initShakesView(container: HTMLElement, ctx: TabContext): P
     detailController?.abort()
     detailController = null
     detailEnvelope = null
+    detailJma = null
     selectedId = null
     detailEl.hidden = true
     detailEl.innerHTML = ''
@@ -569,9 +665,13 @@ export async function initShakesView(container: HTMLElement, ctx: TabContext): P
     detailEl.innerHTML = `
       <div class="row" style="align-items: baseline; justify-content: space-between">
         <h2 style="margin: 0">${formatShakeStart(record.startMs)} からの揺れ（${escapeHtml(record.stationId)}）</h2>
-        <button type="button" class="shake-detail-close" style="flex: 0 0 auto">閉じる</button>
+        <span class="row" style="flex: 0 0 auto; gap: 0.4rem">
+          <button type="button" class="shake-detail-records">波形の記録で開く</button>
+          <button type="button" class="shake-detail-close">閉じる</button>
+        </span>
       </div>
       <p class="shake-detail-note muted"></p>
+      <p class="shake-detail-jma muted"></p>
       ${AXIS_LABELS.map(
         (label) => `
         <div class="row" style="align-items: baseline; justify-content: space-between; margin-top: 0.6rem">
@@ -582,28 +682,66 @@ export async function initShakesView(container: HTMLElement, ctx: TabContext): P
       ).join('')}
     `
     qs(detailEl, '.shake-detail-close').addEventListener('click', closeDetail)
+    // **詳細と同じ範囲で開く**（気象庁の P に合わせて広げた後の範囲。押した時点のもの）。観測点の合成波形を選んだ形で開く。
+    let win = detailWindow(record)
+    qs(detailEl, '.shake-detail-records').addEventListener('click', () => {
+      ctx.openTab('records', recordsSelectionFor(record, win))
+    })
     const noteEl2 = qs(detailEl, '.shake-detail-note')
-
-    const win = detailWindow(record)
     const columns = Math.max(100, Math.floor(qs<HTMLCanvasElement>(detailEl, 'canvas').clientWidth))
-    try {
-      const res = await fetch(wavesUrl(record.stationId, win.fromMs, win.toMs, columns), { signal: controller.signal })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const envelope = readEnvelope(await res.json())
-      if (controller.signal.aborted) return
-      if (envelope === null) throw new Error('応答の形が違う')
-      const note = detailNote(envelope)
-      noteEl2.textContent = note ?? ''
-      // 残っていない・読めなかったは事実の欠けなので、注意の色で出す。
-      noteEl2.className = `shake-detail-note ${note === null ? 'muted' : 'error'}`
-      // **取得している間に進んだ版を拾う** —— その間に届いた押し出しは、まだ開いていない扱いで差し替えられない。
-      detailEnvelope = { record: newerRecord(record, list), envelope }
-      drawDetail()
-    } catch (error) {
-      if (controller.signal.aborted) return
-      noteEl2.textContent = `波形を取得できていない: ${error instanceof Error ? error.message : String(error)}`
-      noteEl2.className = 'shake-detail-note error'
+
+    /** その範囲の波形を取って描く。**取れたら true。** */
+    const loadWaves = async (range: { readonly fromMs: number; readonly toMs: number }): Promise<boolean> => {
+      try {
+        const res = await fetch(wavesUrl(record.stationId, range.fromMs, range.toMs, columns), { signal: controller.signal })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const envelope = readEnvelope(await res.json())
+        if (controller.signal.aborted) return false
+        if (envelope === null) throw new Error('応答の形が違う')
+        const note = detailNote(envelope)
+        noteEl2.textContent = note ?? ''
+        // 残っていない・読めなかったは事実の欠けなので、注意の色で出す。
+        noteEl2.className = `shake-detail-note ${note === null ? 'muted' : 'error'}`
+        // **取得している間に進んだ版を拾う** —— その間に届いた押し出しは、まだ開いていない扱いで差し替えられない。
+        detailEnvelope = { record: newerRecord(record, list), envelope, win: range }
+        drawDetail()
+        return true
+      } catch (error) {
+        if (controller.signal.aborted) return false
+        noteEl2.textContent = `波形を取得できていない: ${error instanceof Error ? error.message : String(error)}`
+        noteEl2.className = 'shake-detail-note error'
+        return false
+      }
     }
+
+    // **波形と気象庁の地震一覧は並べて取る** —— 一覧は上流の地震情報を引くぶん遅いことがあり、待ってから波形を
+    // 取ると、その間は何も描けない。波形は既定の範囲で先に描き、気象庁の P で範囲が広がるときだけ取り直す
+    // （`detailWindow`）。照合していない記録は一覧を引かない。
+    detailJma = null
+    const jmaLoad = loadJma(record, controller.signal)
+    await loadWaves(win)
+    if (controller.signal.aborted) return
+    const jmaQuake = await jmaLoad
+    if (controller.signal.aborted) return
+    const wider = detailWindow(record, jmaQuake)
+    if (wider.fromMs !== win.fromMs || wider.toMs !== win.toMs) {
+      const shown = win
+      win = wider
+      const widened = await loadWaves(win)
+      if (controller.signal.aborted) return
+      // **取り直しに失敗したら、描けている既定の範囲のまま気象庁の線を重ねる**（失敗の一行は `loadWaves` が出す）。
+      // 「波形の記録で開く」も見えている絵の範囲へ戻す。
+      if (!widened && detailEnvelope !== null) {
+        win = shown
+        drawDetail()
+      }
+    } else if (detailEnvelope !== null) {
+      drawDetail()
+    }
+    // **取得している間に照合が済んでいたら、開き直す**（照合待ちのまま開いた記録）。その間は `detailEnvelope` が
+    // 空なので、`syncDetailRecord` はこの版を拾えない。
+    const latest = newerRecord(record, list)
+    if (latest.matchedQuake !== null && detailJma === null) void openDetail(latest)
   }
 
   // ---- 操作 ----

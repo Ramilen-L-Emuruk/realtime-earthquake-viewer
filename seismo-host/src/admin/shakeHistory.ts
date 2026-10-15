@@ -45,9 +45,16 @@ function isVerdict(value: unknown): value is ShakeVerdictView {
   return typeof value === 'string' && Object.hasOwn(VERDICT_LABELS, value)
 }
 
-/** 照合した気象庁の地震（一覧に出す欄だけ）。 */
+/** 照合した気象庁の地震（一覧に出す欄と、詳細で地震一覧から引き当てるための発生時刻）。 */
 export interface MatchedQuakeView {
   readonly name: string
+  /**
+   * 照合したときの発生時刻（ホストの地震情報のまま。分までのことが多い）。**欄の無い記録は null** ——
+   * 詳細で気象庁の P・S を引くときに、地震一覧のどの地震かを決める手掛かりにする（`findMatchedQuake`）。
+   */
+  readonly originMs: number | null
+  /** 発生時刻の幅（ミリ秒）。欄の無い記録は null。 */
+  readonly originPrecisionMs: number | null
   readonly magnitude: number | null
   readonly depthKm: number | null
   /** P2PQuake の形（10・20・…・70）。 */
@@ -61,6 +68,11 @@ export interface ShakeRecordView {
   readonly id: string
   readonly rev: number
   readonly stationId: string
+  /**
+   * その観測点の合成波形の札（ホストが `/events` と押し出しで添える）。**「波形の記録で開く」はこれで記録を探す** ——
+   * 設定から外した・ID を変えた観測点の記録は、波形の記録の一覧で観測点 ID を持たない。
+   */
+  readonly stationKey: string
   readonly startMs: number
   readonly endMs: number
   readonly sMs: number | null
@@ -92,10 +104,21 @@ function readMatchedQuake(value: unknown): MatchedQuakeView | null | undefined {
   const magnitude = nullableFinite(value.magnitude)
   const depthKm = nullableFinite(value.depthKm)
   const maxScale = nullableFinite(value.maxScale)
-  if (name === null || distanceKm === null || magnitude === undefined || depthKm === undefined || maxScale === undefined) {
+  // **欄が無いだけなら null として通す**（詳細で地震一覧から引けないだけで、一覧の行は出せる）。あるのに読めなければ形が違う。
+  const originMs = value.originMs === undefined ? null : readFinite(value.originMs)
+  const originPrecisionMs = value.originPrecisionMs === undefined ? null : readFinite(value.originPrecisionMs)
+  if (
+    name === null ||
+    distanceKm === null ||
+    magnitude === undefined ||
+    depthKm === undefined ||
+    maxScale === undefined ||
+    (value.originMs !== undefined && originMs === null) ||
+    (value.originPrecisionMs !== undefined && originPrecisionMs === null)
+  ) {
     return undefined
   }
-  return { name, magnitude, depthKm, maxScale, distanceKm }
+  return { name, originMs, originPrecisionMs, magnitude, depthKm, maxScale, distanceKm }
 }
 
 /** 記録 1 版を読む。**形が違えば null**（呼び出し側が数える）。 */
@@ -103,6 +126,7 @@ export function readShakeRecord(value: unknown): ShakeRecordView | null {
   if (!isRecord(value)) return null
   const id = readNonEmptyString(value.id)
   const stationId = readNonEmptyString(value.stationId)
+  const stationKey = readNonEmptyString(value.stationKey)
   const rev = readFinite(value.rev)
   const startMs = readFinite(value.startMs)
   const endMs = readFinite(value.endMs)
@@ -115,6 +139,7 @@ export function readShakeRecord(value: unknown): ShakeRecordView | null {
   if (
     id === null ||
     stationId === null ||
+    stationKey === null ||
     rev === null ||
     startMs === null ||
     endMs === null ||
@@ -129,7 +154,7 @@ export function readShakeRecord(value: unknown): ShakeRecordView | null {
   ) {
     return null
   }
-  return { id, rev, stationId, startMs, endMs, sMs, pMs, peakAccelGal, maxIntensity, peakRatio, verdict: value.verdict, matchedQuake }
+  return { id, rev, stationId, stationKey, startMs, endMs, sMs, pMs, peakAccelGal, maxIntensity, peakRatio, verdict: value.verdict, matchedQuake }
 }
 
 /**
@@ -463,7 +488,7 @@ const SCALE_NAMES: Readonly<Record<number, string>> = {
  * 照合した地震を 1 つの文字列に（例「千葉県北西部 M4.2 最大震度3（120 km）」）。
  * **分からない部分は省く**（推し量って埋めない）。HTML へ入れるときは呼び出し側でエスケープする。
  */
-export function formatMatchedQuake(q: MatchedQuakeView): string {
+export function formatMatchedQuake(q: Omit<MatchedQuakeView, 'originMs' | 'originPrecisionMs'>): string {
   return `${formatQuakeName(q)}（${Math.round(q.distanceKm)} km）`
 }
 

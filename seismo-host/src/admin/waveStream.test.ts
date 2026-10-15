@@ -604,6 +604,7 @@ describe('openWaveStream の shake-event（#313）', () => {
     id: 'station-1-1000',
     rev: 2,
     stationId: 'station-1',
+    stationKey: 'station-1-0123456789ab',
     startMs: 1000,
     endMs: 6000,
     sMs: null,
