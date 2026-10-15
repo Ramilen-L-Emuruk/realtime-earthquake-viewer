@@ -48,7 +48,7 @@ describe('SeismoWaveBuffer', () => {
     expect(buffer.push(chunk(1000)).kind).toBe('restarted')
     expect(buffer.push(chunk(1300)).kind).toBe('appended')
 
-    const window = buffer.snapshot()
+    const window = buffer.snapshot(null)
     expect(window).not.toBeNull()
     if (window === null) return
     expect(window.firstSampleMs).toBe(1000)
@@ -71,7 +71,7 @@ describe('SeismoWaveBuffer', () => {
     const result = buffer.push(chunk(1600))
     expect(result).toEqual({ kind: 'gap', missingSamples: 30 })
 
-    const window = buffer.snapshot()
+    const window = buffer.snapshot(null)
     if (window === null) throw new Error('窓が空')
     expect(window.gal[0].length).toBe(90)
     // 飛んだ 30 サンプルは NaN・本数は 0。
@@ -111,7 +111,7 @@ describe('SeismoWaveBuffer', () => {
     // 合成を名乗れない区間（1 台だけ）を段 4 が示せるようにするための値。
     const buffer = new SeismoWaveBuffer(60)
     buffer.push(chunk(1000, { length: 4, members: (i) => (i < 2 ? 9 : 1) }))
-    const window = buffer.snapshot()
+    const window = buffer.snapshot(null)
     if (window === null) throw new Error('窓が空')
     expect([...window.memberCount]).toEqual([9, 9, 1, 1])
   })
@@ -122,7 +122,7 @@ describe('SeismoWaveBuffer', () => {
     // 100 Hz → 50 Hz（サンプリング周波数の設定を変えた）。
     const result = buffer.push(chunk(1300, { msPerSample: 20 }))
     expect(result.kind).toBe('restarted')
-    const window = buffer.snapshot()
+    const window = buffer.snapshot(null)
     if (window === null) throw new Error('窓が空')
     expect(window.msPerSample).toBe(20)
     expect(window.firstSampleMs).toBe(1300)
@@ -140,7 +140,7 @@ describe('SeismoWaveBuffer', () => {
     expect(result.kind).toBe('appended')
     expect(buffer.sampleCount).toBe(60)
     // **取り込んだことを見る。** 取り込まないと誤差が積み上がる（末尾の再現テスト）。
-    expect(buffer.snapshot()?.msPerSample).toBe(10.0174)
+    expect(buffer.snapshot(null)?.msPerSample).toBe(10.0174)
   })
 
   it('正: 一部が既に置いた区間なら、重なりだけ捨てて残りを繋ぐ', () => {
@@ -153,7 +153,7 @@ describe('SeismoWaveBuffer', () => {
     const result = buffer.push(chunk(1200, { length: 30, value: () => 7 }))
     expect(result).toEqual({ kind: 'overlap', droppedSamples: 10 })
     expect(buffer.sampleCount).toBe(50)
-    const window = buffer.snapshot()
+    const window = buffer.snapshot(null)
     if (window === null) throw new Error('窓が空')
     // 重なった部分は最初に置いた値のまま（上書きしない）。
     expect(window.gal[0][25]).toBe(1)
@@ -173,7 +173,7 @@ describe('SeismoWaveBuffer', () => {
     buffer.push(chunk(1000, { length: 30, value: () => 1 }))
     const result = buffer.push(chunk(1000, { length: 30, value: () => 999 }))
     expect(result).toEqual({ kind: 'stale' })
-    const window = buffer.snapshot()
+    const window = buffer.snapshot(null)
     if (window === null) throw new Error('窓が空')
     expect(window.gal[0].length).toBe(30)
     expect([...window.gal[0]].every((v) => v === 1)).toBe(true)
@@ -186,7 +186,7 @@ describe('SeismoWaveBuffer', () => {
       buffer.push(chunk(1000 + i * 300, { value: () => i }))
     }
     expect(buffer.sampleCount).toBe(100)
-    const window = buffer.snapshot()
+    const window = buffer.snapshot(null)
     if (window === null) throw new Error('窓が空')
     // 最後の 100 サンプルだけが残る。
     expect(window.gal[0][99]).toBe(9)
@@ -207,7 +207,7 @@ describe('SeismoWaveBuffer', () => {
     buffer.push(chunk(1_000_000))
     const result = buffer.push(chunk(1000))
     expect(result.kind).toBe('restarted')
-    const window = buffer.snapshot()
+    const window = buffer.snapshot(null)
     if (window === null) throw new Error('窓が空')
     expect(window.firstSampleMs).toBe(1000)
   })
@@ -232,7 +232,7 @@ describe('SeismoWaveBuffer', () => {
 
   it('対照: 1 件も置いていなければ窓は空', () => {
     const buffer = new SeismoWaveBuffer(60)
-    expect(buffer.snapshot()).toBeNull()
+    expect(buffer.snapshot(null)).toBeNull()
     expect(buffer.lastSampleMs).toBeNull()
     expect(buffer.sampleCount).toBe(0)
   })
@@ -242,10 +242,10 @@ describe('SeismoWaveBuffer', () => {
     buffer.push(chunk(1000))
     buffer.push(chunk(1600)) // 隙間を作って数え上げへ乗せる
     buffer.clear()
-    expect(buffer.snapshot()).toBeNull()
+    expect(buffer.snapshot(null)).toBeNull()
     expect(buffer.tally.gapSamples).toBe(30)
     expect(buffer.push(chunk(5000)).kind).toBe('restarted')
-    const window = buffer.snapshot()
+    const window = buffer.snapshot(null)
     if (window === null) throw new Error('窓が空')
     expect(window.firstSampleMs).toBe(5000)
   })
@@ -316,7 +316,7 @@ describe('SeismoWaveBuffer.fill', () => {
     const filled = buffer.fill([chunk(1300, { value: (i) => 100 + i, members: () => 3 })])
 
     expect(filled).toBe(30)
-    const w = buffer.snapshot()
+    const w = buffer.snapshot(null)
     if (w === null) throw new Error('窓が空')
     expect(w.gal[0][30]).toBe(100)
     expect(w.gal[1][59]).toBe(129 * 2)
@@ -333,7 +333,7 @@ describe('SeismoWaveBuffer.fill', () => {
 
     // 埋まるのは穴の 30 だけ。
     expect(filled).toBe(30)
-    const w = buffer.snapshot()
+    const w = buffer.snapshot(null)
     if (w === null) throw new Error('窓が空')
     expect(w.gal[0][0]).toBe(0)
     expect(w.gal[0][29]).toBe(29)
@@ -346,7 +346,7 @@ describe('SeismoWaveBuffer.fill', () => {
     const filled = buffer.fill([chunk(1300, { length: 10 })])
 
     expect(filled).toBe(10)
-    const w = buffer.snapshot()
+    const w = buffer.snapshot(null)
     if (w === null) throw new Error('窓が空')
     expect(Number.isNaN(w.gal[0][40])).toBe(true)
     expect(buffer.tally.gapSamples).toBe(20)
@@ -359,7 +359,7 @@ describe('SeismoWaveBuffer.fill', () => {
     const filled = buffer.fill([chunk(1306)])
 
     expect(filled).toBe(29)
-    const w = buffer.snapshot()
+    const w = buffer.snapshot(null)
     if (w === null) throw new Error('窓が空')
     expect(Number.isNaN(w.gal[0][30])).toBe(true)
     expect(w.gal[0][31]).toBe(0)
@@ -433,7 +433,7 @@ describe('SeismoWaveBuffer — 成分ごとの穴', () => {
     const filled = buffer.fill([chunk(1300, { value: () => -1, ud: (i) => 500 + i })])
 
     expect(filled).toBe(30)
-    const w = buffer.snapshot()
+    const w = buffer.snapshot(null)
     if (w === null) throw new Error('窓が空')
     expect(w.gal[2][30]).toBe(500)
     expect(w.gal[2][59]).toBe(529)
@@ -449,7 +449,7 @@ describe('SeismoWaveBuffer — 成分ごとの穴', () => {
     const filled = buffer.fill([chunk(1300, { value: () => -1, ud: UNSOLVED_UD })])
 
     expect(filled).toBe(0)
-    const w = buffer.snapshot()
+    const w = buffer.snapshot(null)
     if (w === null) throw new Error('窓が空')
     expect(Number.isNaN(w.gal[2][30])).toBe(true)
     expect(w.gal[0][30]).toBe(0)
@@ -467,7 +467,7 @@ describe('SeismoWaveBuffer — 成分ごとの穴', () => {
     const filled = buffer.fill([chunk(1300, { value: (i) => 100 + i, ud: UNSOLVED_UD, members: () => 2 })])
 
     expect(filled).toBe(30)
-    const w = buffer.snapshot()
+    const w = buffer.snapshot(null)
     if (w === null) throw new Error('窓が空')
     expect(w.gal[0][30]).toBe(100)
     expect(w.gal[1][59]).toBe(129 * 2)
@@ -483,7 +483,7 @@ describe('SeismoWaveBuffer — 成分ごとの穴', () => {
     const placed = buffer.prepend([chunk(9700, { value: (i) => 100 + i, ud: UNSOLVED_UD, members: () => 2 })])
 
     expect(placed).toBe(30)
-    const w = buffer.snapshot()
+    const w = buffer.snapshot(null)
     if (w === null) throw new Error('窓が空')
     expect(w.firstSampleMs).toBe(9700)
     expect(w.gal[0][0]).toBe(100)
@@ -545,7 +545,7 @@ describe('SeismoWaveBuffer — 成分ごとの穴', () => {
     buffer.push(chunk(1000, { ud: UNSOLVED_UD, members: () => 3 }))
     buffer.fill([chunk(1000, { members: () => 1 })])
 
-    const w = buffer.snapshot()
+    const w = buffer.snapshot(null)
     if (w === null) throw new Error('窓が空')
     expect(w.gal[2][0]).toBe(0)
     expect(w.memberCount[0]).toBe(3)
@@ -567,7 +567,7 @@ describe('SeismoWaveBuffer.prepend', () => {
     const placed = buffer.prepend([chunk(9700, { value: (i) => 100 + i })])
 
     expect(placed).toBe(30)
-    const w = buffer.snapshot()
+    const w = buffer.snapshot(null)
     if (w === null) throw new Error('窓が空')
     expect(w.firstSampleMs).toBe(9700)
     expect(w.gal[0].length).toBe(60)
@@ -585,7 +585,7 @@ describe('SeismoWaveBuffer.prepend', () => {
     const placed = buffer.prepend([chunk(9850, { value: () => -1 })])
 
     expect(placed).toBe(15)
-    const w = buffer.snapshot()
+    const w = buffer.snapshot(null)
     if (w === null) throw new Error('窓が空')
     expect(w.gal[0][14]).toBe(-1)
     expect(w.gal[0][15]).toBe(0)
@@ -600,7 +600,7 @@ describe('SeismoWaveBuffer.prepend', () => {
 
     expect(placed).toBe(70)
     expect(buffer.freeSamples).toBe(0)
-    const w = buffer.snapshot()
+    const w = buffer.snapshot(null)
     if (w === null) throw new Error('窓が空')
     // 残るのは新しい側の 70（9300〜9990 ms）と元の 30。
     expect(w.firstSampleMs).toBe(9300)
@@ -638,19 +638,55 @@ describe('SeismoWaveBuffer.prepend', () => {
     expect(placed).toBe(0)
     expect(buffer.freeSamples).toBe(70)
     expect(buffer.tally.gapSamples).toBe(0)
-    expect(buffer.snapshot()?.firstSampleMs).toBe(10_000)
+    expect(buffer.snapshot(null)?.firstSampleMs).toBe(10_000)
   })
 
   it('安全弁: 刻みの違う取り戻しは継ぎ足さない（時間軸を混ぜない）', () => {
     const buffer = justStarted()
     expect(buffer.prepend([chunk(9400, { msPerSample: 20 })])).toBe(0)
-    expect(buffer.snapshot()?.firstSampleMs).toBe(10_000)
+    expect(buffer.snapshot(null)?.firstSampleMs).toBe(10_000)
   })
 
   it('安全弁: 何も抱えていなければ継ぎ足さない（起点は届いたまとまりが決める）', () => {
     const buffer = new SeismoWaveBuffer(60)
     expect(buffer.prepend([chunk(9700)])).toBe(0)
     expect(buffer.oldestSampleMs).toBeNull()
-    expect(buffer.snapshot()).toBeNull()
+    expect(buffer.snapshot(null)).toBeNull()
+  })
+})
+
+// 下端の波形は見えている幅（設定の時間幅）より前を写さない。抱える長さは時間幅のいちばん長いもの（180 秒）。
+describe('SeismoWaveBuffer.snapshot の写し始め', () => {
+  function filled(): SeismoWaveBuffer {
+    const buffer = new SeismoWaveBuffer(60)
+    buffer.push(chunk(1000))
+    buffer.push(chunk(1300))
+    return buffer
+  }
+
+  // 正: 写し始めより前のサンプルは写さず、先頭の時刻もそこへ動く。値は同じ時刻のものが並ぶ。
+  it('写し始めより前を写さない', () => {
+    const w = filled().snapshot(1300)
+    expect(w?.firstSampleMs).toBe(1300)
+    expect(w?.gal[0].length).toBe(30)
+    expect(w?.gal[0][0]).toBe(0)
+    expect(w?.gal[1][1]).toBe(2)
+  })
+
+  // 対照: 写し始めが先頭より前（または null）なら全部写す。
+  it('先頭より前・null なら全部', () => {
+    expect(filled().snapshot(0)?.gal[0].length).toBe(60)
+    expect(filled().snapshot(null)?.gal[0].length).toBe(60)
+  })
+
+  // 安全弁: 抱えている末尾より後ろなら null、数でない値は全部写す（黙って空にしない）。
+  it('末尾より後ろは null・数でなければ全部', () => {
+    expect(filled().snapshot(10_000)).toBeNull()
+    expect(filled().snapshot(Number.NaN)?.gal[0].length).toBe(60)
+  })
+
+  // 写し始めがサンプルの間に落ちたら、その次のサンプルから。
+  it('サンプルの間は次のサンプルから', () => {
+    expect(filled().snapshot(1005)?.firstSampleMs).toBe(1010)
   })
 })

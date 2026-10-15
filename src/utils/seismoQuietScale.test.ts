@@ -82,7 +82,7 @@ describe('measureWindowQuietLevel', () => {
 describe('QuietLevelMemory', () => {
   // 正: 揺れの最中に測った大きい値ではなく、直近 5 分でいちばん静かだった値を使う。
   it('直近 5 分の最小を返す', () => {
-    const m = new QuietLevelMemory()
+    const m = new QuietLevelMemory(QUIET_LEVEL_MIN_GAL)
     m.observe(0, 0.2)
     m.observe(60_000, 3.0)
     m.observe(120_000, 5.0)
@@ -91,7 +91,7 @@ describe('QuietLevelMemory', () => {
 
   // 対照: 5 分より古い値は忘れる（揺れが長く続けば、いまの値へ移る）。
   it('5 分より前の値は使わない', () => {
-    const m = new QuietLevelMemory()
+    const m = new QuietLevelMemory(QUIET_LEVEL_MIN_GAL)
     m.observe(0, 0.2)
     m.observe(LIVE_QUIET_MEMORY_MS + 1, 3.0)
     expect(m.current()).toBeCloseTo(3.0)
@@ -99,21 +99,21 @@ describe('QuietLevelMemory', () => {
 
   // 安全弁: 時刻が覚えている長さより前へ戻ったら、別の時間の静かさを混ぜない。
   it('時刻が大きく戻ったら覚えていた値を捨てる', () => {
-    const m = new QuietLevelMemory()
+    const m = new QuietLevelMemory(QUIET_LEVEL_MIN_GAL)
     m.observe(10 * LIVE_QUIET_MEMORY_MS, 0.2)
     m.observe(0, 1.0)
     expect(m.current()).toBeCloseTo(1.0)
   })
 
   it('測れなかった回（null）は覚えない', () => {
-    const m = new QuietLevelMemory()
+    const m = new QuietLevelMemory(QUIET_LEVEL_MIN_GAL)
     m.observe(0, null)
     expect(m.current()).toBeNull()
   })
 
   // 安全弁: 値が張り付いた窓（0）を 1 回測っても、その後 5 分の下限を決めさせない。
   it('物差しの下限未満の値は覚えない', () => {
-    const m = new QuietLevelMemory()
+    const m = new QuietLevelMemory(QUIET_LEVEL_MIN_GAL)
     m.observe(0, 0.2)
     m.observe(1000, 0)
     m.observe(2000, QUIET_LEVEL_MIN_GAL / 2)

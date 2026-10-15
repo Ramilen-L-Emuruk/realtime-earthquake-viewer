@@ -1,7 +1,7 @@
 // 列になった波形を Canvas へ描く。**何を描くかは呼び出し側が決める。**
 //
 // **描画だけをここへ集める。** 波形の出どころは 2 つある ——
-// 押し出し（`useSeismoStation` が抱える直近 60 秒）と、
+// 押し出し（`useSeismoStation` が抱える直近の波形）と、
 // 読み返し（`GET /waves` が返す過去の区間）。**絵の描き方は同じ**なので、
 // 分けて持つと片方だけ直った形（線の切り方・裏付けの敷き方）が生まれる。
 //
@@ -10,7 +10,7 @@
 
 import { createLogThrottle, log } from '../../utils/logger'
 import type { WaveColumn } from './waveColumns'
-import { formatGal, formatScaleGal } from './waveLabels'
+import { formatGal, formatScale } from './waveLabels'
 import type { TimeTick } from './timeTicks'
 
 /**
@@ -74,7 +74,7 @@ export interface PaintableColumns {
  * 絵へ重ねる縦の目盛り（P 波・S 波の到達）。
  *
  * **横位置は時刻ではなく比で渡す。** ここは列しか知らない ——時刻を持ち込むと、
- * 押し出し（直近 60 秒の窓）と読み返し（過去の区間）で別々の時間軸の話が混ざる。
+ * 押し出し（直近の窓）と読み返し（過去の区間）で別々の時間軸の話が混ざる。
  * 比へ落とすのは呼び出し側の仕事。
  */
 export interface WaveMark {
@@ -93,7 +93,7 @@ const MARK_FONT_PX = 9
 export interface PaintOptions {
   /**
    * 重ねる縦の目盛り。**渡さなければ何も重ねない**（地図の下端の絵は渡さない ——
-   * あちらは特定の地震の区間ではなく「いまの 60 秒」なので、引く相手がいない）。
+   * あちらは特定の地震の区間ではなく「いまの窓」なので、引く相手がいない）。
    */
   readonly marks?: readonly WaveMark[]
   /**
@@ -116,6 +116,8 @@ export interface PaintOptions {
    * 縦の物差しは波形と同じ。渡さなければ何も重ねない。
    */
   readonly overlays?: (columnCount: number) => readonly WaveOverlay[]
+  /** 縦の表示に添える単位（自作地震計は `gal`、公開観測点は `μm/s`）。 */
+  readonly unit: string
 }
 
 /**
@@ -143,15 +145,40 @@ const TICK_COLOR = 'rgba(255,255,255,0.55)'
  *   ので、呼び出し側は幅を気にしなくてよい。
  * @param stale 届かなくなっているか。**濃さを落とす** —— 抱えた中身は時間で薄れないので、
  *   このままの濃さで描くと止まった絵が「いま静かに揺れている」ように見え続ける。
- * @param options 重ねる目盛りと、描く向き。省略時は「目盛り無し・3 成分すべて」。
+ * @param options 重ねる目盛り・描く向き・単位。目盛りと向きを省けば「目盛り無し・3 成分すべて」。
  */
 export function paintWaveColumns(
   canvas: HTMLCanvasElement,
   build: (columnCount: number) => PaintableColumns | null,
   stale: boolean,
-  options: PaintOptions = {},
+  options: PaintOptions,
 ): string | null {
-  const { marks = [], visibleAxes, ticks: buildTicks, overlays } = options
+  return paintWaveColumnsAt(canvas, cssSizeOf(canvas), build, stale, options)
+}
+
+/** 絵の大きさ（CSS ピクセル）。 */
+export interface CssSize {
+  readonly width: number
+  readonly height: number
+}
+
+/** 画面に置いた canvas の大きさ。 */
+export function cssSizeOf(canvas: HTMLCanvasElement): CssSize {
+  return { width: canvas.clientWidth, height: canvas.clientHeight }
+}
+
+/**
+ * {@link paintWaveColumns} の大きさを渡す版。**画面に置かない canvas**（地図の下端の波形が裏で組む絵。
+ * `clientWidth` が 0 になる）へ描くときに使う。
+ */
+export function paintWaveColumnsAt(
+  canvas: HTMLCanvasElement,
+  size: CssSize,
+  build: (columnCount: number) => PaintableColumns | null,
+  stale: boolean,
+  options: PaintOptions,
+): string | null {
+  const { marks = [], visibleAxes, ticks: buildTicks, overlays, unit } = options
   const ctx = canvas.getContext('2d')
   // **取れなかったことは記録へ残す。** 黙って戻ると、画面からは「まだ何も届いて
   // いない」のと区別が付かない —— 描けなかったのか届いていないのかを切り分ける
@@ -163,15 +190,15 @@ export function paintWaveColumns(
 
   // **実ピクセルへ合わせる。** CSS の寸法のまま描くと高 DPI の端末で線がぼける。
   const dpr = window.devicePixelRatio || 1
-  const w = Math.max(1, Math.round(canvas.clientWidth * dpr))
-  const h = Math.max(1, Math.round(canvas.clientHeight * dpr))
+  const w = Math.max(1, Math.round(size.width * dpr))
+  const h = Math.max(1, Math.round(size.height * dpr))
   if (canvas.width !== w || canvas.height !== h) {
     canvas.width = w
     canvas.height = h
   }
 
   ctx.clearRect(0, 0, w, h)
-  const ticks = buildTicks?.(canvas.clientWidth) ?? []
+  const ticks = buildTicks?.(size.width) ?? []
   // **波形を描く高さ。** 目盛りがあれば下の帯を除く。
   // **目盛りを頼まれたら、本数に関わらず帯を取る。** 幅が一瞬 0 と測られた描画で目盛りが
   // 0 本になったとき帯を消すと、そのフレームだけ波形の縦位置が動く（canvas の高さは帯込みで固定）。
@@ -242,13 +269,15 @@ export function paintWaveColumns(
 
   paintMarks(ctx, marks, w, plotH, dpr)
 
-  return formatScaleGal(scaleGal)
+  return formatScale(scaleGal, unit)
 }
 
 /** 合成を描くときの任意の指定。 */
 export interface CompositePaintOptions {
-  /** 縦の下限（gal）。**0 から上端までの長さ**（合成は大きさなので 0 が下端）。 */
-  readonly minScaleGal: number
+  /** 縦の下限（{@link CompositePaintOptions.unit} の単位で）。**0 から上端までの長さ**（合成は大きさなので 0 が下端）。 */
+  readonly minScale: number
+  /** 縦の表示に添える単位（{@link PaintOptions.unit} と同じ）。 */
+  readonly unit: string
   readonly marks?: readonly WaveMark[]
   readonly ticks?: (widthCssPx: number) => readonly TimeTick[]
   /** 重ねる線（合成を前後 1 秒で均した線）。縦の物差しは合成と同じ。 */
@@ -256,7 +285,7 @@ export interface CompositePaintOptions {
 }
 
 /**
- * 列の合成（`magMin`〜`magMax`）を、下端を 0 にして 1 本描き、縦の表示（`0〜N gal`）を返す。**描けなければ `null`。**
+ * 列の合成（`magMin`〜`magMax`）を、下端を 0 にして 1 本描き、縦の表示（`0〜N gal` のように単位を添えて）を返す。**描けなければ `null`。**
  *
  * **合成を 1 本も持たない列ばかりなら `null`**（合成を返さない古いホストから読み返した列）。呼び出し側は
  * 3 成分を重ねた絵（{@link paintWaveColumns}）へ戻す —— 何も描かない絵にすると、届いているのに空に見える。
@@ -267,21 +296,32 @@ export function paintCompositeColumns(
   stale: boolean,
   options: CompositePaintOptions,
 ): string | null {
-  const { minScaleGal, marks = [], ticks: buildTicks, overlays } = options
+  return paintCompositeColumnsAt(canvas, cssSizeOf(canvas), build, stale, options)
+}
+
+/** {@link paintCompositeColumns} の大きさを渡す版（{@link paintWaveColumnsAt} と同じ理由）。 */
+export function paintCompositeColumnsAt(
+  canvas: HTMLCanvasElement,
+  size: CssSize,
+  build: (columnCount: number) => { readonly columns: readonly WaveColumn[]; readonly hasAnyValue: boolean } | null,
+  stale: boolean,
+  options: CompositePaintOptions,
+): string | null {
+  const { minScale, unit, marks = [], ticks: buildTicks, overlays } = options
   const ctx = canvas.getContext('2d')
   if (ctx === null) {
     throttledNoContext(() => log.error('[seismo] 波形を描く 2D コンテキストを取れなかった'))
     return null
   }
   const dpr = window.devicePixelRatio || 1
-  const w = Math.max(1, Math.round(canvas.clientWidth * dpr))
-  const h = Math.max(1, Math.round(canvas.clientHeight * dpr))
+  const w = Math.max(1, Math.round(size.width * dpr))
+  const h = Math.max(1, Math.round(size.height * dpr))
   if (canvas.width !== w || canvas.height !== h) {
     canvas.width = w
     canvas.height = h
   }
   ctx.clearRect(0, 0, w, h)
-  const ticks = buildTicks?.(canvas.clientWidth) ?? []
+  const ticks = buildTicks?.(size.width) ?? []
   const axisH = buildTicks !== undefined ? Math.round(AXIS_BAND_PX * dpr) : 0
   const plotH = Math.max(1, h - axisH)
   paintTicks(ctx, ticks, w, plotH, h, dpr)
@@ -305,7 +345,7 @@ export function paintCompositeColumns(
     if (col.magMax > peak) peak = col.magMax
   }
   if (!hasMag) return null
-  const scaleGal = Math.max(minScaleGal, peak)
+  const scaleGal = Math.max(minScale, peak)
   if (!(scaleGal > 0)) return null
 
   paintSingleMemberBand(ctx, columns.length, plotH, (c) => columns[c].hasValue && columns[c].minMembers <= 1)
@@ -338,7 +378,7 @@ export function paintCompositeColumns(
   for (const overlay of overlays?.(w) ?? []) strokeOverlay(ctx, overlay, yOf, dpr * 2, stale ? 0.3 : 1)
 
   paintMarks(ctx, marks, w, plotH, dpr)
-  return `0〜${formatGal(scaleGal)} gal`
+  return `0〜${formatGal(scaleGal)} ${unit}`
 }
 
 /** 重ねる線を 1 本引く。**値の無い列で線を切る**（`lineTo` に NaN を渡しても何もしないので、自分で切る）。 */

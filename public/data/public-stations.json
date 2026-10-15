@@ -1,0 +1,815 @@
+{
+  "source": {
+    "station": "https://service.earthscope.org/fdsnws/station/1/query?net=JP&format=text&nodata=404&level=station",
+    "channel": "https://service.earthscope.org/fdsnws/station/1/query?net=JP&format=text&nodata=404&level=channel&cha=BH?"
+  },
+  "fetchedOn": "2026-10-14",
+  "stations": [
+    {
+      "code": "ASAJ",
+      "nameJa": "上川朝日",
+      "siteName": "Kamikawa Asahi",
+      "lat": 44.118801,
+      "lon": 142.593002,
+      "elevation": 137,
+      "start": "1996-09-24T00:00:00Z",
+      "end": "2013-01-29T00:00:00Z",
+      "channels": [
+        {
+          "code": "BHE",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 90,
+          "dip": 0
+        },
+        {
+          "code": "BHN",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": 0
+        },
+        {
+          "code": "BHZ",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": -90
+        }
+      ]
+    },
+    {
+      "code": "CBIJ",
+      "nameJa": "父島三日月山",
+      "siteName": "Chichijima Island",
+      "lat": 27.095699,
+      "lon": 142.184494,
+      "elevation": 153,
+      "start": "1996-10-07T00:00:00Z",
+      "end": "2013-01-29T00:00:00Z",
+      "channels": [
+        {
+          "code": "BHE",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 90,
+          "dip": 0
+        },
+        {
+          "code": "BHN",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": 0
+        },
+        {
+          "code": "BHZ",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": -90
+        }
+      ]
+    },
+    {
+      "code": "JCJ",
+      "nameJa": "父島三日月山",
+      "siteName": "Chichijima Island",
+      "lat": 27.095699,
+      "lon": 142.184494,
+      "elevation": 145,
+      "start": "2013-01-29T00:00:00Z",
+      "end": null,
+      "channels": [
+        {
+          "code": "BHE",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 90,
+          "dip": 0
+        },
+        {
+          "code": "BHN",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": 0
+        },
+        {
+          "code": "BHZ",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": -90
+        }
+      ]
+    },
+    {
+      "code": "JEM",
+      "nameJa": "えりも",
+      "siteName": "Erimo",
+      "lat": 42.018501,
+      "lon": 143.153503,
+      "elevation": 40,
+      "start": "1996-09-18T00:00:00Z",
+      "end": null,
+      "channels": [
+        {
+          "code": "BHE",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 90,
+          "dip": 0
+        },
+        {
+          "code": "BHN",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": 0
+        },
+        {
+          "code": "BHZ",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": -90
+        }
+      ]
+    },
+    {
+      "code": "JEW",
+      "nameJa": "恵庭",
+      "siteName": "Eniwa",
+      "lat": 42.84267,
+      "lon": 141.446167,
+      "elevation": 185,
+      "start": "1996-09-17T00:00:00Z",
+      "end": null,
+      "channels": [
+        {
+          "code": "BHE",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 90,
+          "dip": 0
+        },
+        {
+          "code": "BHN",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": 0
+        },
+        {
+          "code": "BHZ",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": -90
+        }
+      ]
+    },
+    {
+      "code": "JGF",
+      "nameJa": "岐阜黒川",
+      "siteName": "Gifu Kurokawa",
+      "lat": 35.604,
+      "lon": 137.354172,
+      "elevation": 580,
+      "start": "1996-09-17T00:00:00Z",
+      "end": null,
+      "channels": [
+        {
+          "code": "BHE",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 90,
+          "dip": 0
+        },
+        {
+          "code": "BHN",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": 0
+        },
+        {
+          "code": "BHZ",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": -90
+        }
+      ]
+    },
+    {
+      "code": "JHJ2",
+      "nameJa": "八丈島三根",
+      "siteName": "Hachijojima Island",
+      "lat": 33.115299,
+      "lon": 139.813797,
+      "elevation": 70,
+      "start": "1996-10-07T00:00:00Z",
+      "end": null,
+      "channels": [
+        {
+          "code": "BHE",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 90,
+          "dip": 0
+        },
+        {
+          "code": "BHN",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": 0
+        },
+        {
+          "code": "BHZ",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": -90
+        }
+      ]
+    },
+    {
+      "code": "JHS",
+      "nameJa": "広島西城",
+      "siteName": "Hiroshima Saijyo",
+      "lat": 35.001831,
+      "lon": 133.113663,
+      "elevation": 470,
+      "start": "1996-10-01T00:00:00Z",
+      "end": null,
+      "channels": [
+        {
+          "code": "BHE",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 90,
+          "dip": 0
+        },
+        {
+          "code": "BHN",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": 0
+        },
+        {
+          "code": "BHZ",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": -90
+        }
+      ]
+    },
+    {
+      "code": "JKA",
+      "nameJa": "上川朝日",
+      "siteName": "Kamikawa Asahi",
+      "lat": 44.11883,
+      "lon": 142.593002,
+      "elevation": 220,
+      "start": "2013-01-29T00:00:00Z",
+      "end": null,
+      "channels": [
+        {
+          "code": "BHE",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 90,
+          "dip": 0
+        },
+        {
+          "code": "BHN",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": 0
+        },
+        {
+          "code": "BHZ",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": -90
+        }
+      ]
+    },
+    {
+      "code": "JMM",
+      "nameJa": "宮城丸森",
+      "siteName": "Miyagi Marumori",
+      "lat": 37.868999,
+      "lon": 140.789673,
+      "elevation": 100,
+      "start": "1996-09-24T00:00:00Z",
+      "end": null,
+      "channels": [
+        {
+          "code": "BHE",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 90,
+          "dip": 0
+        },
+        {
+          "code": "BHN",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": 0
+        },
+        {
+          "code": "BHZ",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": -90
+        }
+      ]
+    },
+    {
+      "code": "JMN",
+      "nameJa": "高知物部",
+      "siteName": "Kochi Monobe",
+      "lat": 33.731499,
+      "lon": 133.876328,
+      "elevation": 550,
+      "start": "1996-09-26T00:00:00Z",
+      "end": null,
+      "channels": [
+        {
+          "code": "BHE",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 90,
+          "dip": 0
+        },
+        {
+          "code": "BHN",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": 0
+        },
+        {
+          "code": "BHZ",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": -90
+        }
+      ]
+    },
+    {
+      "code": "JMZ",
+      "nameJa": "南大東島池之沢",
+      "siteName": "Minamidaitojima Island",
+      "lat": 25.81983,
+      "lon": 131.223663,
+      "elevation": 50,
+      "start": "1996-10-24T00:00:00Z",
+      "end": null,
+      "channels": [
+        {
+          "code": "BHE",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 90,
+          "dip": 0
+        },
+        {
+          "code": "BHN",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": 0
+        },
+        {
+          "code": "BHZ",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": -90
+        }
+      ]
+    },
+    {
+      "code": "JNU",
+      "nameJa": "大分中津江",
+      "siteName": "Oita Nakatsue",
+      "lat": 33.125,
+      "lon": 130.876694,
+      "elevation": 540,
+      "start": "1996-10-16T00:00:00Z",
+      "end": null,
+      "channels": [
+        {
+          "code": "BHE",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 90,
+          "dip": 0
+        },
+        {
+          "code": "BHN",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": 0
+        },
+        {
+          "code": "BHZ",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": -90
+        }
+      ]
+    },
+    {
+      "code": "JOW",
+      "nameJa": "沖縄国頭",
+      "siteName": "Okinawa Kunigami",
+      "lat": 26.836,
+      "lon": 128.272507,
+      "elevation": 220,
+      "start": "1996-10-06T00:00:00Z",
+      "end": null,
+      "channels": [
+        {
+          "code": "BHE",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 90,
+          "dip": 0
+        },
+        {
+          "code": "BHN",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": 0
+        },
+        {
+          "code": "BHZ",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": -90
+        }
+      ]
+    },
+    {
+      "code": "JSD",
+      "nameJa": "佐渡島銀山",
+      "siteName": "Sado",
+      "lat": 38.040001,
+      "lon": 138.257172,
+      "elevation": 146,
+      "start": "1996-09-29T00:00:00Z",
+      "end": null,
+      "channels": [
+        {
+          "code": "BHE",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 90,
+          "dip": 0
+        },
+        {
+          "code": "BHN",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": 0
+        },
+        {
+          "code": "BHZ",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": -90
+        }
+      ]
+    },
+    {
+      "code": "JSG",
+      "nameJa": "静岡相良",
+      "siteName": "Shizuoka Sagara",
+      "lat": 34.67767,
+      "lon": 138.182999,
+      "elevation": 107,
+      "start": "1996-09-25T00:00:00Z",
+      "end": null,
+      "channels": [
+        {
+          "code": "BHE",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 90,
+          "dip": 0
+        },
+        {
+          "code": "BHN",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": 0
+        },
+        {
+          "code": "BHZ",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": -90
+        }
+      ]
+    },
+    {
+      "code": "JSU",
+      "nameJa": "鹿児島錫山",
+      "siteName": "Kagoshima Suzuyama",
+      "lat": 31.509331,
+      "lon": 130.452667,
+      "elevation": 400,
+      "start": "1996-09-18T00:00:00Z",
+      "end": null,
+      "channels": [
+        {
+          "code": "BHE",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 90,
+          "dip": 0
+        },
+        {
+          "code": "BHN",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": 0
+        },
+        {
+          "code": "BHZ",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": -90
+        }
+      ]
+    },
+    {
+      "code": "JTM",
+      "nameJa": "青森天間林",
+      "siteName": "Aomori Tenma",
+      "lat": 40.789501,
+      "lon": 141.064667,
+      "elevation": 130,
+      "start": "1996-10-06T00:00:00Z",
+      "end": null,
+      "channels": [
+        {
+          "code": "BHE",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 90,
+          "dip": 0
+        },
+        {
+          "code": "BHN",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": 0
+        },
+        {
+          "code": "BHZ",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": -90
+        }
+      ]
+    },
+    {
+      "code": "JTU",
+      "nameJa": "対馬上県",
+      "siteName": "Tsushima Kamiagata",
+      "lat": 34.5275,
+      "lon": 129.396332,
+      "elevation": 70,
+      "start": "1996-09-26T00:00:00Z",
+      "end": null,
+      "channels": [
+        {
+          "code": "BHE",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 90,
+          "dip": 0
+        },
+        {
+          "code": "BHN",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": 0
+        },
+        {
+          "code": "BHZ",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": -90
+        }
+      ]
+    },
+    {
+      "code": "JWT",
+      "nameJa": "京都和知",
+      "siteName": "Kyoto Wachi",
+      "lat": 35.285671,
+      "lon": 135.398666,
+      "elevation": 172,
+      "start": "1996-09-18T00:00:00Z",
+      "end": null,
+      "channels": [
+        {
+          "code": "BHE",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 90,
+          "dip": 0
+        },
+        {
+          "code": "BHN",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": 0
+        },
+        {
+          "code": "BHZ",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": -90
+        }
+      ]
+    },
+    {
+      "code": "JYT",
+      "nameJa": "茨城八郷",
+      "siteName": "Ibaraki Yasato",
+      "lat": 36.230831,
+      "lon": 140.190674,
+      "elevation": 31,
+      "start": "1996-09-05T00:00:00Z",
+      "end": null,
+      "channels": [
+        {
+          "code": "BHE",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 90,
+          "dip": 0
+        },
+        {
+          "code": "BHN",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": 0
+        },
+        {
+          "code": "BHZ",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": -90
+        }
+      ]
+    },
+    {
+      "code": "YOJ",
+      "nameJa": "与那国島",
+      "siteName": "Yonagunijima Island",
+      "lat": 24.467199,
+      "lon": 123.011299,
+      "elevation": 32,
+      "start": "1996-10-14T00:00:00Z",
+      "end": null,
+      "channels": [
+        {
+          "code": "BHE",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 90,
+          "dip": 0
+        },
+        {
+          "code": "BHN",
+          "sampleRate": 30.113,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": 0
+        },
+        {
+          "code": "BHZ",
+          "sampleRate": 20,
+          "sensitivity": 1000000000,
+          "sensitivityFreq": 8,
+          "azimuth": 0,
+          "dip": -90
+        }
+      ]
+    }
+  ],
+  "excluded": [
+    {
+      "code": "JMJ",
+      "start": "1996-09-24T00:00:00Z",
+      "end": "2013-03-26T00:00:00Z",
+      "reason": "波形の成分（BH?）を持たない"
+    },
+    {
+      "code": "JMJ2",
+      "start": "2013-03-28T00:00:00Z",
+      "end": null,
+      "reason": "波形の成分（BH?）を持たない"
+    }
+  ]
+}

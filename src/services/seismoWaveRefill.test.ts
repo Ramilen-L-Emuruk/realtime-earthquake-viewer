@@ -217,7 +217,7 @@ describe('SeismoWaveRefiller.schedule', () => {
 
       expect(fetchSamples.mock.calls).toEqual([[{ stationId: 'home', fromMs: 9300, toMs: 10_000 }]])
       expect(results).toEqual([{ filled: 0, prepended: 70 }])
-      expect(buffer.snapshot()?.firstSampleMs).toBe(9300)
+      expect(buffer.snapshot(null)?.firstSampleMs).toBe(9300)
     } finally {
       vi.useRealTimers()
     }
@@ -272,7 +272,7 @@ describe('SeismoWaveRefiller.schedule', () => {
       expect(skipped).toEqual(['restarted'])
       expect(results).toEqual([])
       // 作り直した後の入れ物へ、遠い過去の値を穴ごと継ぎ足していない。
-      expect(buffer.snapshot()?.firstSampleMs).toBe(500_000)
+      expect(buffer.snapshot(null)?.firstSampleMs).toBe(500_000)
       expect(buffer.tally.gapSamples).toBe(0)
     } finally {
       vi.useRealTimers()

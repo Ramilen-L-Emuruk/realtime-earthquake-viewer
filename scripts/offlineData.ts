@@ -22,7 +22,7 @@ import type { RuntimeCaching } from 'workbox-build'
 /**
  * 実行時キャッシュで控える生成データ（`public/data/` からの相対パス）。
  *
- * 地図の 7 本（地図の初回表示でまとめて要求するもの）と、読み上げ辞書の 3 本
+ * 地図の 7 本（地図の初回表示でまとめて要求するもの）・公開観測点の表・読み上げ辞書の 3 本
  * （2026-10-14 ユーザー承認「地図 7 本＋読み上げ辞書 3 本」）。
  */
 export const OFFLINE_DATA_FILES = [
@@ -34,6 +34,8 @@ export const OFFLINE_DATA_FILES = [
   'station-coords.json',
   'plate-boundaries.json',
   'tsunami-obs-coords.json',
+  // 公開観測点（端末に控えた波形の名前・感度・運用期間をオフラインでも引く）
+  'public-stations.json',
   // 読み上げ辞書
   'tts-phrase-break-dict.json',
   'tts-station-readings.json',

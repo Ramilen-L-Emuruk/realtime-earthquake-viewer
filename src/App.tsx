@@ -20,10 +20,14 @@ import { useShareCard } from './hooks/useShareCard'
 import { SeismoLinkStatus } from './components/SeismoLinkStatus'
 import { SeismoOverlay } from './components/SeismoOverlay'
 import { useSeismoStation } from './hooks/useSeismoStation'
-import { useSeismoQuakeWaves } from './hooks/useSeismoQuakeWaves'
+import { useSeismoQuakeWaves, type SeismoQuakeWave } from './hooks/useSeismoQuakeWaves'
+import { usePublicQuakeWaves } from './hooks/usePublicQuakeWaves'
+import { mergeQuakeWaves } from './utils/mergeQuakeWaves'
 import { useQuakeOriginSeconds } from './hooks/useQuakeOriginSeconds'
 import { SeismoWaveChart } from './components/SeismoWaveChart'
 import { useSeismoWaveVisibility } from './hooks/useSeismoWaveVisibility'
+import { usePublicWaves } from './hooks/usePublicWaves'
+import type { PublicStationMarker } from './components/Map/PublicStationMarkersGL'
 import { EarthquakeTab } from './components/EarthquakeTab'
 import { RealtimeTab } from './components/RealtimeTab'
 import { useEewSpeakingCard } from './hooks/useEewSpeakingCard'
@@ -68,7 +72,7 @@ import { useTelegramTextSpeechFollow } from './hooks/useTelegramTextSpeechFollow
 import { deriveKyoshinView } from './utils/kyoshinDetectionView'
 import { filterSubThresholdIndices } from './utils/kyoshinSubThresholdFilter'
 import { useSWaveCountdown } from './hooks/useSWaveCountdown'
-import { pickCountdownEew } from './utils/countdownEew'
+import { pickCountdownEew, pickPublicWaveEew } from './utils/countdownEew'
 import { useArrivalTokenCheck } from './hooks/useArrivalToken'
 import { usePsWaveCalc } from './hooks/usePsWaveCalc'
 import { useQuakeHeatmap } from './hooks/useQuakeHeatmap'
@@ -121,6 +125,8 @@ const DEFAULT_TITLE = isDmdss
 // 空配列を freeze せず可変配列として扱っているのは既存 SiteCoords 型定義が可変配列のため。
 const EMPTY_SITES: [number, number][] = []
 const EMPTY_INDICES: number[] = []
+// 公開観測点の波形を出していないときに地図へ渡す空の印（毎回の新しい配列で地図の印を作り直させない）。
+const NO_PUBLIC_STATIONS: readonly PublicStationMarker[] = []
 
 // APIキーの入力が落ち着いたと見なすまでの待ち時間(ms)。手入力の打鍵間隔より長く、
 // 貼り付け後の接続開始が待たされたと感じない程度に短く。
@@ -2002,7 +2008,7 @@ export function App() {
   // 地図の下端の自作地震計の波形へ P/S の到達線を引く相手。**カウントダウンと同じ選び方**（`utils/countdownEew.ts`。
   // 2026-10-13 ユーザー指示）。**到達予想キーの門は掛けない**（2026-10-14 ユーザー承認）——線は到達時刻を
   // 過ぎてから描くだけで、これから来る時刻を出さないので予報業務に当たらないと整理した（`docs/forecast-computation-audit.md`
-  // の 11）。歯止めは波形の側の「右端＝最後に届いたサンプル」（`SeismoWaveChart/liveLanes.ts` の `liveArrivalMarks`）。
+  // の 11）。歯止めは波形の側の「右端＝いま、それより先の線は描かない」（`SeismoWaveChart/liveLanes.ts` の `liveArrivalMarks`）。
   // `psWave` は 100ms ごとに新しい配列になるが、選ばれる速報の参照は続報が来るまで変わらない
   // （波形の側は速報の参照が変わったときだけ走時を解き直す）。
   const seismoArrivalEew = pickCountdownEew(psWave, eewsForMap)
@@ -2183,17 +2189,19 @@ export function App() {
   // 共有カード（表示中の地図を 1 枚の画像にする）。撮影は地図そのものを操作するため実体が要る
   // ——地図の生成時に受け取って持つ。地図へ重ねる UI は App が配置する決まりなので、
   // それを起こすボタンもここに置く。
-  const [mapHandle, setMapHandle] = useState<MapHandle | null>(null)
-  const shareCard = useShareCard(mapHandle, {
-    mode: mapMode,
-    quake: mapQuake,
-    tsunamis,
-    eews: eewsForMap,
-    // 出典に何を挙げるかは「地図に描かれているか」で決まるため、表示の設定をそのまま渡す。
-    showBathymetry: settings.showBathymetry,
-    showActiveFaults: settings.showActiveFaults,
-    showPlateBoundaries: settings.showPlateBoundaries,
-  }, settings.showMapLegend ? legendBlocks : EMPTY_LEGEND_BLOCKS)
+  // 公開観測点（気象庁の広帯域地震計・EarthScope 経由）の下部の波形（→ hooks/usePublicWaves.ts）。
+  //
+  // **再生中は再生時刻の分を保存庫から取る**（`docs/public-waveform-design.md` §0）。
+  const publicWaves = usePublicWaves({
+    // 設定「公開観測点の波形を表示」がオフなら繋がない・取らない（地図の印もこれと地震カードから作るので一緒に消える）
+    enabled: settings.publicWaveEnabled,
+    replayOffsetMs: replayTimeOffset,
+    spanSec: settings.waveSpanSec,
+    alwaysConnected: settings.publicWaveAlwaysConnected,
+    // 予報円を描かない速報（仮定震源要素・深さ不明）でも観測点を選ぶ（→ `pickPublicWaveEew`）。
+    eew: pickPublicWaveEew(seismoArrivalEew, eewsForMap),
+    detectedPoints: kyoshinView.detectedPoints,
+  })
 
   // 自作地震計（`seismo-host/`）の観測点の震度。**設定が切れていれば繋がない。**
   //
@@ -2221,7 +2229,8 @@ export function App() {
   // 地震カードの発生時刻を秒まで決める（P/S 線の起点。→ hooks/useQuakeOriginSeconds.ts）。
   // **波形を出す設定のときだけ動かす** —— 出さないなら取りに行く理由も、端末に残す理由も無い。
   const quakeOriginSeconds = useQuakeOriginSeconds({
-    enabled: settings.seismoEnabled && settings.seismoWave !== 'off',
+    // 自作・公開のどちらかの波形カードに使うときだけ、発生秒を取りに行く。
+    enabled: settings.publicWaveEnabled || (settings.seismoEnabled && settings.seismoWave !== 'off'),
     isDmdss,
     apiKey: debouncedApiKey,
     // ライブでは接続が区分を取り決めるまで待つ。再生中は、一度も繋がっていなければ既定の区分で引く
@@ -2241,6 +2250,54 @@ export function App() {
     originSeconds: quakeOriginSeconds,
     subscribeWaveRevised: seismo.subscribeWaveRevised,
   })
+  // 地震カードに出す公開観測点の波形（→ hooks/usePublicQuakeWaves.ts）。
+  //
+  // **再生中も動かす**（`docs/public-waveform-design.md` §0「リプレイ中は、地震カードに加えて下部の波形も再生時刻の分を出す」）。
+  // 地震の時刻を指定して保存庫から取るので、いまの値が過去の画面へ混ざらない（自作地震計のカードと同じ）。
+  //
+  // **下部の波形に出している地震は、その番号を引き継ぐ**（カードの番号を地図の印と揃える。2026-10-15 ユーザー決定）。
+  const publicLiveNumbers = useMemo(
+    () => (publicWaves.visible ? new Map(publicWaves.stations.map((st) => [st.code, st.number])) : null),
+    [publicWaves.visible, publicWaves.stations],
+  )
+  const publicQuakeWaves = usePublicQuakeWaves({
+    enabled: settings.publicWaveEnabled,
+    quakes: filteredEarthquakes,
+    originSeconds: quakeOriginSeconds,
+    openedEventKey: selectedQuakeId,
+    liveNumbers: publicLiveNumbers,
+    readLiveRaw: publicWaves.readRawWave,
+    replayOffsetMs: replayTimeOffset,
+  })
+  // 自作地震計を先に、続けて公開観測点を番号順に（§6.3）。**変わっていない地震は前の配列を使い回す**（→ utils/mergeQuakeWaves.ts）。
+  const quakeWavesRef = useRef<ReadonlyMap<string, readonly SeismoQuakeWave[]>>(new Map())
+  const quakeWaves = useMemo(() => {
+    const cards = new Map([...publicQuakeWaves].map(([key, list]) => [key, list.map((w) => w.card)]))
+    const merged = mergeQuakeWaves(seismoQuakeWaves, cards, quakeWavesRef.current)
+    quakeWavesRef.current = merged
+    return merged
+  }, [seismoQuakeWaves, publicQuakeWaves])
+  // 地図の公開観測点の印。**下部の波形を出している間はそちらを優先し**、出していなければ開いている地震カードの観測点を出す
+  // （2026-10-15 ユーザー決定）。
+  const openedPublicWaves = selectedQuakeId === null ? undefined : publicQuakeWaves.get(selectedQuakeId)
+  const publicStationMarkers: readonly PublicStationMarker[] = publicWaves.visible
+    ? publicWaves.stations
+    : mapMode === 'quake' && openedPublicWaves !== undefined
+      ? openedPublicWaves
+      : NO_PUBLIC_STATIONS
+  const [mapHandle, setMapHandle] = useState<MapHandle | null>(null)
+  const shareCard = useShareCard(mapHandle, {
+    mode: mapMode,
+    quake: mapQuake,
+    tsunamis,
+    eews: eewsForMap,
+    // 出典に何を挙げるかは「地図に描かれているか」で決まるため、表示の設定をそのまま渡す。
+    showBathymetry: settings.showBathymetry,
+    showActiveFaults: settings.showActiveFaults,
+    showPlateBoundaries: settings.showPlateBoundaries,
+    // 公開観測点の三角は、下部に波形を出している間か、地震カードを開いている間だけ地図に描く（`PublicStationMarkersGL`）。
+    showPublicStations: publicStationMarkers.length > 0,
+  }, settings.showMapLegend ? legendBlocks : EMPTY_LEGEND_BLOCKS)
   // 絵を出すかどうかは受け取るかどうかと別に決める（→ hooks/useSeismoWaveVisibility.ts）。
   //
   // **再生中は明示的に落とす。** 繋いでいないので観測点が 1 つも無く、結果として絵は
@@ -2308,6 +2365,7 @@ export function App() {
             <ErrorBoundary variant="region" label="地図">
               <MapView
                 mode={mapMode}
+                publicStationMarkers={publicStationMarkers}
                 catalogCloud={catalogCloud}
                 catalogColorBy={settledView.colorBy}
                 onLegendSourcesChange={setLegendSources}
@@ -2436,14 +2494,17 @@ export function App() {
             </div>
           </div>
           {/* 自作地震計の合成波形。**地図の外**（→ すぐ上の器のコメント）。 */}
-          {showSeismoWave && (
+          {(showSeismoWave || publicWaves.visible) && (
             <SeismoWaveChart
-              stations={seismo.stations}
+              stations={showSeismoWave ? seismo.stations : []}
               readWave={seismo.readWave}
+              publicWaves={publicWaves.visible ? publicWaves : null}
               collapsedView={settings.seismoWaveCollapsedView}
               expanded={settings.seismoWaveExpanded}
               onToggleExpanded={toggleSeismoWaveExpanded}
               arrivalEew={seismoArrivalEew}
+              spanSec={settings.waveSpanSec}
+              onFocusStation={focusMapTarget}
             />
           )}
         </div>
@@ -2498,7 +2559,7 @@ export function App() {
                 onToggleUnreceived={toggleUnreceived}
                 onFocusMap={focusMapTarget}
                 speakingTelegramTextSubject={speakingTelegramTextSubject}
-                seismoWaves={seismoQuakeWaves}
+                seismoWaves={quakeWaves}
                 seismoWaveView={settings.seismoWaveCollapsedView}
               />
             </ErrorBoundary>

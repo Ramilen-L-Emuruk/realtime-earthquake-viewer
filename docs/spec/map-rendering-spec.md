@@ -1087,7 +1087,7 @@ mode を全 Fit*GL に配って優先度で調停する大規模リファクタ�
 ## 7. mode 別レイヤー一覧
 
 mode は 4 つ（`quake` / `tsunami` / `kyoshin` / `catalog`。§2）。**全モードに出るもの
-（`BaseMapGL`・`DayNightGL`・`LabelsGL`・`TsunamiLinesGL`・`PsWaveGL`・`EewEpicentersGL`）も
+（`BaseMapGL`・`DayNightGL`・`LabelsGL`・`TsunamiLinesGL`・`PsWaveGL`・`EewEpicentersGL`・`PublicStationMarkersGL`）も
 各モードへ重ねて挙げる** —— ここは「そのモードの画面に何が載るか」を読む一覧なので、
 共通のものを別扱いにすると 1 つのモードの全体像が読めなくなる。
 
@@ -1119,6 +1119,7 @@ mode は 4 つ（`quake` / `tsunami` / `kyoshin` / `catalog`。§2）。**全モ
 - `TsunamiLinesGL`（津波海岸線・発報中は全モード）
 - `PsWaveGL`（P/S 波予報円・半透明）
 - `EewEpicentersGL`（EEW 震源×印・半透明）
+- `PublicStationMarkersGL`（公開観測点の三角の印。下部に公開観測点の波形を出している間は全モード共通、出していなければ地震モードで開いた地震カードの観測点。§15「公開観測点の印」）
 - `LabelsGL`（地名ラベル）
 - `ActiveFaultsGL` / `PlateBoundariesGL`（任意）
 
@@ -1132,6 +1133,7 @@ mode は 4 つ（`quake` / `tsunami` / `kyoshin` / `catalog`。§2）。**全モ
   違うので別の印 → [`tsunami-spec.md`](tsunami-spec.md) §8「欠測マーカー」）
 - `PsWaveGL`（P/S 波予報円・半透明）
 - `EewEpicentersGL`（EEW 震源×印・半透明）
+- `PublicStationMarkersGL`（公開観測点の三角の印。下部に公開観測点の波形を出している間は全モード共通、出していなければ地震モードで開いた地震カードの観測点。§15「公開観測点の印」）
 - `LabelsGL`
 
 ### kyoshin モード
@@ -1150,6 +1152,7 @@ mode は 4 つ（`quake` / `tsunami` / `kyoshin` / `catalog`。§2）。**全モ
 - `TsunamiLinesGL`（津波海岸線・発報中は全モード）
 - `PsWaveGL`（P/S 波予報円・カスタムレイヤー・100ms 更新）
 - `EewEpicentersGL`（EEW 震源×印）
+- `PublicStationMarkersGL`（公開観測点の三角の印。下部に公開観測点の波形を出している間は全モード共通、出していなければ地震モードで開いた地震カードの観測点。§15「公開観測点の印」）
 - `ActiveFaultsGL` / `PlateBoundariesGL`（任意）
 - `LabelsGL`
 
@@ -1161,6 +1164,7 @@ mode は 4 つ（`quake` / `tsunami` / `kyoshin` / `catalog`。§2）。**全モ
 - `HypocenterCatalogGL`（長期震源カタログの点群・カスタムレイヤー。深さを持つ点として地下へ描く。
   §16「長期震源カタログの点群」）
 - `EewEpicentersGL`（EEW 震源×印・半透明）
+- `PublicStationMarkersGL`（公開観測点の三角の印。下部に公開観測点の波形を出している間は全モード共通、出していなければ地震モードで開いた地震カードの観測点。§15「公開観測点の印」）
 - `ActiveFaultsGL` / `PlateBoundariesGL`（任意。このモードでも出す理由は §16「長期震源カタログの点群」）
 - `LabelsGL`
 
@@ -1194,7 +1198,7 @@ Yahoo リアルタイム震度は 1 秒毎に更新される。以下のレイ�
 **効果はアイコン画像・文字を描く層（symbol）すべてに及ぶ**。設定を絞れないため、検知点だけを対象に
 することはできない。現時点の対象は `KyoshinDetectedPointsGL`（揺れ検知点ハイライト）・
 `QuakeIntensityPointsGL`（観測点ドット）・`QuakeRegionFillGL`（区域中心震度バッジ）・`LpgmPointsGL` /
-`LpgmRegionFillGL`（長周期）・`LabelsGL`（地名ラベル）の 6 つ。円（`circle`）とカスタムレイヤーは
+`LpgmRegionFillGL`（長周期）・`LabelsGL`（地名ラベル）・`PublicStationMarkersGL`（公開観測点の印）の 7 つ。円（`circle`）とカスタムレイヤーは
 対象外なので、`KyoshinPointsGL` や `KyoshinSubThresholdGL` は元から即時。
 
 これで出入りは一律に即時となり、不透明度が動くのは欠測ホールドの 0.35 とラベルの重なり回避（§5）
@@ -1667,6 +1671,8 @@ MapLibre v6 の `_contextRestored` は `setStyle(..., {diff:false})` を呼ん�
   - `captureMap.ts` — 地図キャンバスの写し取り（[`share-card-spec.md`](share-card-spec.md)）
   - `fontStack.ts` — グリフスタック設定
   - `intensityIcons.ts` / `lpgmIcons.ts` / `kyoshinDetectedIcons.ts` — 事前ラスタライズアイコン
+  - `publicStationIcons.ts` — 公開観測点の三角の印（番号を焼き込んだ事前ラスタライズアイコン・§15「公開観測点の印」）
+- `src/components/Map/PublicStationMarkersGL.tsx` — 公開観測点の印のレイヤー（§15「公開観測点の印」）
 - `src/components/Map/DayNightGL.tsx` — 夜の側。載せる・外す・太陽の位置を進める間隔（§18）
 - `src/utils/solarPosition.ts` — 太陽直下点と太陽高度（§18）
 - `src/utils/solarShading.ts` — 太陽高度から夜の濃さへ。JS と GLSL の 2 つの形で持つ（§18）
@@ -1822,6 +1828,39 @@ MapLibre の並べ替えは 2 通りあるが、**どちらか一方しか使え
 **`gl/kyoshinDetectedIcons.ts` は 4 つとも固定 px のまま**（`CONFIRMED_RING_WIDTH = 4` ほか）。
 固定 px で持っているものは、ベース半径を変えるときに先へ比例化を入れないと見た目が変わる。
 
+
+### 公開観測点の印（`PublicStationMarkersGL`・`gl/publicStationIcons.ts`）
+
+公開観測点（気象庁の広帯域地震計。→ [`data-sources-spec.md`](data-sources-spec.md) §4.6）の波形を出している間、
+その観測点の位置に**番号を焼き込んだ三角**を置く。番号は波形の見出し（「#1 宮城丸森」）と同じで、どの段がどの観測点かを
+地図で示す。形・色・大きさは 2026-10-15 ユーザー承認（[`public-waveform-design.md`](../public-waveform-design.md) §0）。
+
+- **下部に公開観測点の波形を出していればその観測点（地図のモードを問わない）、出していなければ地震モードで開いた地震カードの
+  観測点を出す**（下部を優先。2026-10-15 ユーザー承認。[`public-waveform-design.md`](../public-waveform-design.md) §0）。どちらも無ければ
+  `App.tsx` が空の配列を渡し、印が 0 件ならレイヤーを隠す。緊急地震速報の最中も出す。出すのは観測点の位置で、予想した震度は出さない
+- 地震カードの番号は地図の印と揃う。カードが下部の波形の番号を引き継ぐのは、その地震の候補に入る観測点だけ（番号は元のまま・
+  欠番は許す。→ [`data-sources-spec.md`](data-sources-spec.md) §4.6「地震カードへ出す」）
+- **中身（番号・位置・名前・倍率）が同じ間は、ソースへ流し込み直さない**（親が描き直すたびに新しい配列が来ても、`setData` しない）
+- 設定「公開観測点の波形を表示」がオフなら出さない
+- **焼き方は震度バッジ（`gl/intensityIcons.ts`）に揃える** —— 基準の大きさ（外接円の半径 32 px）で番号ごとに 1 回だけ焼き
+  （1〜32 番）、`icon-size` で縮める。影（黒 0.7・ぼかし 3）・白フチ（0.7）・太字の sans-serif。番号を地図の文字（`text-field`）で
+  重ねないのも同じ理由（CJK フォントの上下の余白で中心がずれる）
+- **頂点が上の正三角形で、番号は重心（＝外接円の中心）に置く。** 字面の中心が `textBaseline = 'middle'` よりわずかに上へ寄るので、
+  半径の 8% だけ下げる。三角は丸より中が狭いので、文字は震度バッジより一段小さい（1 桁は半径の 0.8 倍・2 桁は 0.62 倍）
+- **白フチは内側へ引く**（外へ出すと、印の外形が塗りより大きくなり番号の入る余地が狭く見える）。太さは半径の 4/32 で、震度バッジの
+  既定（2/32）より太い —— 表示の大きさでは 2/32 だと 1 px を割って消える
+- **表示の大きさは外接円の半径 14 px × 地図アイコン倍率**（`DISPLAY_RADIUS_PX`）
+- **塗りはピンク `#f472b6`**（`PUBLIC_STATION_COLOR`）。選んだ基準は 2 つ ——**数字と 4.5:1 以上**（WCAG AA。文字色は
+  `utils/contrast.ts` の `readableTextColor` が白黒の高い方を選び、この塗りでは黒で 7.9:1）と、**暗い陸地（`BaseMapGL` の
+  `LAND_FILL` ＝ `#161b24`）と 3:1 以上**（WCAG の図形の基準。6.5:1）。震度の色（気象庁の配色）・津波の色・P/S 線の色・
+  値の無い印の灰とは**別の系統から選ぶ** —— 震度の色に寄せると、観測点の印が震度の表示に見える
+- **描画順は揺れの点（震度の観測点・検知点・波紋）より前面**（`MAP_LAYER_ORDER` の `'public-stations'`。§3）。点の数が少ないので、
+  隠されると探せない。重なったときは若い番号を手前に置く（`symbol-sort-key`）。`icon-allow-overlap` / `icon-ignore-placement` で
+  MapLibre の衝突判定には参加せず、**地名ラベルの重なり判定（§5）の対象**に入れてある（`labelOverlap.ts` の `OVERLAP_CHECK_LAYER_IDS`）
+- ホバーとクリックで、波形の見出しと同じ「#1 宮城丸森」だけを吹き出しに出す（当たり判定の余裕は 8 px。震度観測点のドットと同じ）
+- **波形の段を押すと地図がその観測点へ寄る**（`SeismoWaveChart` の `onFocusStation` → `App.tsx` の `focusMapTarget`）。自作地震計の段は
+  寄せない（自宅の位置を地図に出さないため。自作地震計の観測点には印も置かない）
+- 共有カードの画像にも写る。そのときの出典は [`share-card-spec.md`](share-card-spec.md) §4
 
 ## 16. 深さを持つ点（地下の描画）
 
@@ -3539,6 +3578,12 @@ canvas source へ視野ぶんだけ焼いていた頃は、2 つの限界があ�
   足した。ヒートマップを出していないのに、親が描き直されるたびに空データを流し込み直していた
   （`QuakeHeatmapGL` に `isSameHeatData` を置いた）。あわせて §9「点滅の駆動」の常時表示用の端末での実測を
   取り下げた（ブラウザの状態の差と区別できていなかった）
+- 2026-10-15: 公開観測点（気象庁の広帯域地震計）の三角の印を足した（`PublicStationMarkersGL`・`gl/publicStationIcons.ts`。
+  §15「公開観測点の印」を新設し、§7 の各モード・§8 の配置フェードの対象・§13 に足した。形・色・大きさは
+  2026-10-15 ユーザー承認）
+- 2026-10-15: 公開観測点の印を、下部に波形を出していなければ地震モードで開いた地震カードの観測点にも出すようにした（下部を優先。
+  2026-10-15 ユーザー承認）。中身が同じ間はソースへ流し込み直さない。設定「公開観測点の波形を表示」がオフなら出さない。
+  §15「公開観測点の印」と §7 の各モードの説明を直した
 - 2026-10-15: §16「EEW の震源も同じ仕組みで置く」で、震源×印を形で見分けるようにした。仮定震源要素と
   「非常に強い揺れを検知」の報は × ＋外周の輪、深さだけが判らない震源は途切れた ×（地震情報の震源も同じ）。
   既知の限界としていた「深さ不明がごく浅いと見分けられない」を解消し、仮定震源要素の点滅・濃さを確定と

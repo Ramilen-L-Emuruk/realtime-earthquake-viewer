@@ -82,7 +82,7 @@ describe('public/data の分類', () => {
     expect(refs.filter(r => !isClassifiedRef(r.ref))).toEqual([])
   })
 
-  it('控える 10 本はすべてアプリから読まれている（読まれないものを控える一覧に残していない）', () => {
+  it('控える生成データはすべてアプリから読まれている（読まれないものを控える一覧に残していない）', () => {
     const refs = new Set(referencedDataPaths().map(r => r.ref))
     expect(OFFLINE_DATA_FILES.filter(f => !refs.has(f))).toEqual([])
   })
@@ -97,7 +97,7 @@ describe('offlineDataUrlPattern', () => {
   const dmdss = offlineDataUrlPattern('/yuremado/dmdss/')
   const origin = 'https://example.github.io'
 
-  it('自分の配信パスの控える 10 本に当たる（正）', () => {
+  it('自分の配信パスの控える生成データに当たる（正）', () => {
     for (const f of OFFLINE_DATA_FILES) {
       expect(standard.test(`${origin}/yuremado/data/${f}`)).toBe(true)
       expect(dmdss.test(`${origin}/yuremado/dmdss/data/${f}`)).toBe(true)

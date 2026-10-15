@@ -73,6 +73,7 @@ const OVERLAP_CHECK_LAYER_IDS = [
   'kyoshin-points',
   'kyoshin-detected',
   'kyoshin-ripple',
+  'public-stations',
 ]
 
 // 日本語ラベル（事前生成グリフのフォント＝ gl/fontStack.ts の JP_FONT_STACK）の推定文字幅・行高比率。

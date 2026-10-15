@@ -74,6 +74,7 @@ function input(over: Partial<ShareCardContentInput> & { mode: MapMode }): ShareC
     showBathymetry: true,
     showActiveFaults: true,
     showPlateBoundaries: true,
+    showPublicStations: false,
     ...over,
   }
 }
@@ -147,6 +148,22 @@ describe('buildShareCardContent — 読めない時刻', () => {
 })
 
 describe('buildShareCardContent — 出典', () => {
+  // 正: 公開観測点の印を描いているなら、EarthScope を「加工して作成」の側に挙げる（どのモードでも描く）。
+  it('公開観測点の印を描いているなら EarthScope を加工の側に挙げる', () => {
+    for (const mode of ['quake', 'kyoshin', 'tsunami'] as const) {
+      const line = build(input({ mode, showPublicStations: true })).notices.join('\n')
+      const derivedPart = line.slice(line.lastIndexOf('／') + 1)
+      expect(derivedPart).toContain(ATTRIBUTION_SOURCES.earthScope)
+      expect(derivedPart).toContain('加工して作成')
+    }
+  })
+
+  // 対照: 描いていなければ挙げない。
+  it('公開観測点の印を描いていなければ EarthScope を挙げない', () => {
+    const line = build(input({ mode: 'kyoshin' })).notices.join('\n')
+    expect(line).not.toContain(ATTRIBUTION_SOURCES.earthScope)
+  })
+
   it('気象庁の出典は常に入る', () => {
     const c = build(input({ mode: 'quake', quake: quake() }))
     const line = c.notices.join('\n')

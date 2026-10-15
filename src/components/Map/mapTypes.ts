@@ -7,6 +7,7 @@ import type { CatalogPointCloud, CatalogColorBy } from '../../utils/hypocenterCa
 import type { ObsUpdateMark } from '../../utils/tsunami'
 import type { MapLegendSources } from '../MapLegend/legendBlocks'
 import type { LatLng } from '../../utils/stationCoords'
+import type { PublicStationMarker } from './PublicStationMarkersGL'
 
 // 地図コンポーネントの契約（Props とモード）の単一情報源。
 // Leaflet 版 JapanMap と MapLibre 版 JapanMapGL、両者を出し分ける MapView が
@@ -61,6 +62,11 @@ export interface MapHandle {
 
 export interface JapanMapProps {
   mode: MapMode
+  /**
+   * 下部の波形に出している公開観測点（番号つき）。出していないときは空の配列を渡す。
+   * **地図のモードを問わず**三角の印を置く（`PublicStationMarkersGL`）。
+   */
+  publicStationMarkers: readonly PublicStationMarker[]
   quake: JMAQuake | null
   tsunamis: JMATsunami[]
   observations?: TsunamiObservation[]

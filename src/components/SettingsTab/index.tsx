@@ -1,3 +1,4 @@
+import { ensureWaveSpanSec, WAVE_SPAN_CHOICES } from '../../utils/waveSpan'
 import { memo, useState, useCallback, useEffect, useRef } from 'react'
 import type { AppSettings, TtsUnreceivedDetail } from '../../hooks/useSettings'
 import { DAY_NIGHT_OPACITY_MIN, DAY_NIGHT_OPACITY_MAX } from '../../hooks/useSettings'
@@ -1370,7 +1371,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
                 `utils/seismoWaveTrigger.ts`）。通信量が増えることは hint で伝える。 */}
             <Row
               label="波形グラフ"
-              description="地図の下端に直近60秒の揺れを表示します"
+              description="地図の下端に直近の揺れを表示します"
               hint="「表示しない」以外は波形を受信し続けます"
             >
               <select
@@ -1397,6 +1398,39 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
             </Row>
           </>
         )}
+      </Section>
+
+      {/* **自作地震計の節の外に置く。** 時間幅は自作地震計と公開観測点の両方に効く（物差しを揃える）。
+          文言は 2026-10-15 ユーザー承認（`docs/public-waveform-design.md` §0「案A」）。通信量は注記で常に見せる
+          ——ホバーに隠すと、繋ぎっぱなしにしてから増えたことに気づけない。 */}
+      <Section title="波形グラフ">
+        {/* 文言は 2026-10-15 ユーザー承認（`docs/public-waveform-design.md` §0「案A」）。オフなら下の常時接続は押せない */}
+        <Row
+          label="公開観測点の波形を表示"
+          description="揺れたとき、近くの公開観測点（気象庁の広帯域地震計）の波形を地図の下端と地震カードに表示します"
+        >
+          <Toggle checked={settings.publicWaveEnabled} onChange={v => onUpdate('publicWaveEnabled', v)} />
+        </Row>
+        <Row label="波形の時間幅" description="地図の下端に表示する長さです">
+          <select
+            value={settings.waveSpanSec}
+            onChange={e => onUpdate('waveSpanSec', ensureWaveSpanSec(Number(e.target.value), settings.waveSpanSec))}
+            className="bg-panel border border-border text-white text-xs rounded-sm px-2 py-1.5 focus:outline-hidden focus:border-blue-500"
+          >
+            {WAVE_SPAN_CHOICES.map(sec => (
+              <option key={sec} value={sec}>{`${sec}秒`}</option>
+            ))}
+          </select>
+        </Row>
+        <Row
+          label="公開観測点に常時接続"
+          description="揺れていないときも接続しておき、揺れ始めから表示します"
+          hint="通信量が増えます（1日に約130MB）"
+        >
+          <fieldset disabled={!settings.publicWaveEnabled} className={settings.publicWaveEnabled ? '' : 'opacity-40'}>
+            <Toggle checked={settings.publicWaveAlwaysConnected} onChange={v => onUpdate('publicWaveAlwaysConnected', v)} />
+          </fieldset>
+        </Row>
       </Section>
 
       <Section title="タブ自動切替設定">
@@ -2203,6 +2237,27 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
             <a href="https://typhoon.yahoo.co.jp/weather/jp/earthquake/kyoshin/" target="_blank" rel="noopener noreferrer"
               className="text-blue-400 hover:text-blue-300">
               Yahoo!天気・災害
+            </a>
+          </span>
+        </CreditRow>
+        {/* 下部の波形に出す公開観測点（気象庁の広帯域地震計・JP 網）。文面は `docs/public-waveform-design.md` §0
+            （2026-10-15 ユーザー承認）。EarthScope は運用者がライセンスを宣言していない網を CC BY 4.0 で配るので、
+            運用者（気象庁）・配信した施設（EarthScope）・ライセンスの 3 つを挙げる（同 §2）。 */}
+        <CreditRow label="公開観測点の波形">
+          <span className="text-xs text-secondary">
+            <a href="https://www.jma.go.jp/" target="_blank" rel="noopener noreferrer"
+              className="text-blue-400 hover:text-blue-300">
+              気象庁
+            </a>
+            （JP 網）・配信{' '}
+            <a href="https://www.earthscope.org/" target="_blank" rel="noopener noreferrer"
+              className="text-blue-400 hover:text-blue-300">
+              EarthScope
+            </a>
+            （NSF NGF）・
+            <a href="https://creativecommons.org/licenses/by/4.0/deed.ja" target="_blank" rel="noopener noreferrer"
+              className="text-blue-400 hover:text-blue-300">
+              CC BY 4.0
             </a>
           </span>
         </CreditRow>

@@ -314,19 +314,30 @@ export class SeismoWaveBuffer {
     return { kind: 'overlap', droppedSamples: overlap }
   }
 
-  /** 抱えているぶんを時刻の昇順に並べて返す。**1 つも無ければ `null`。** */
-  snapshot(): SeismoWaveWindow | null {
+  /**
+   * 抱えているぶんを時刻の昇順に並べて返す。**1 つも無ければ `null`。**
+   *
+   * `fromMs` を渡すと、その時刻より前のサンプルを写さない（`null` なら全部）。**読む側が要る分だけ写す** ——
+   * 抱える長さは時間幅のいちばん長いもの（180 秒）に合わせてあるので、見えている幅が短いときに全部を写すと、
+   * 0.3 秒ごとの読み出しで要らない分まで確保する。
+   */
+  snapshot(fromMs: number | null): SeismoWaveWindow | null {
     const slots = this.slots
     if (slots === null || this.count === 0) return null
 
-    const count = this.count
+    const skip =
+      fromMs === null || !Number.isFinite(fromMs) || fromMs <= this.firstMs
+        ? 0
+        : Math.min(this.count, Math.ceil((fromMs - this.firstMs) / this.msPerSample))
+    const count = this.count - skip
+    if (count <= 0) return null
     const out: [Float32Array, Float32Array, Float32Array] = [
       new Float32Array(count),
       new Float32Array(count),
       new Float32Array(count),
     ]
     const outMembers = new Float32Array(count)
-    const start = this.oldestSlot(slots)
+    const start = this.oldestSlot(slots) + skip
     for (let i = 0; i < count; i += 1) {
       const slot = (start + i) % slots.capacity
       out[0][i] = slots.gal[0][slot]
@@ -335,7 +346,7 @@ export class SeismoWaveBuffer {
       outMembers[i] = slots.memberCount[slot]
     }
     return {
-      firstSampleMs: this.firstMs,
+      firstSampleMs: this.firstMs + skip * this.msPerSample,
       msPerSample: this.msPerSample,
       gal: out,
       memberCount: outMembers,

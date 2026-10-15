@@ -1,11 +1,11 @@
-// 抱えている波形（60 秒 × 100 Hz ＝ 6000 サンプル）を、画面幅の列へ落とす。
+// 抱えている波形（見えている幅ぶん。60 秒 × 100 Hz で 6000 サンプル）を、画面幅の列へ落とす。
 //
 // **点を間引かない。列ごとに上下の端を取る。** 「n 個おきに 1 点」の形にすると、
 // いちばん見たいピークが確率的に消える —— 6000 点を 300 列へ落とすなら 20 点に 1 点
 // しか見ないので、単発の跳ね上がりは 95% の確率で絵に出ない。上下を取って縦棒で
 // 結べば振幅が保たれる（管理コンソールの波形タブと同じ方針）。
 //
-// **時間軸は右端を「最後に届いたサンプル」に固定し、そこから遡って引く。**
+// **時間軸は右端を決め（最後に届いたサンプルか、渡された時刻。`WaveRightEdge`）、そこから遡って引く。**
 // 抱えている量が少ないうち（起動直後）は左が空く。全体を引き伸ばす形にすると、
 // **10 秒ぶんの絵と 60 秒ぶんの絵が見分けられなくなる**（どちらも画面いっぱいに
 // なる）。
@@ -64,6 +64,18 @@ export interface WaveColumns {
   readonly hasAnyValue: boolean
 }
 
+/**
+ * 横軸の右端。**`'last-sample'` は窓の最後のサンプル**、数値はその時刻（ms）。
+ *
+ * 地図の下端の波形は右端を時計の「いま」で進める（滑らかに流すため。`docs/public-waveform-design.md` §5.4）ので、
+ * 最後のサンプルより先の時刻を右端に置く。その間は何も描かない（まだ届いていない）。
+ */
+export type WaveRightEdge = 'last-sample' | number
+
+function rightEdgeMsOf(edge: WaveRightEdge, lastSampleMs: number): number {
+  return edge === 'last-sample' ? lastSampleMs : edge
+}
+
 const NO_VALUE: WaveColumn = {
   hasValue: false,
   min: [NaN, NaN, NaN],
@@ -76,13 +88,14 @@ const NO_VALUE: WaveColumn = {
 /**
  * 窓を列へ落とす。
  *
- * @param spanMs 横軸の幅（ms）。**右端は窓の最後のサンプル。**
+ * @param spanMs 横軸の幅（ms）。右端は {@link WaveRightEdge} で決める。
  * @param minScaleGal 縦の振れ幅の下限（gal）。
  */
 export function buildWaveColumns(params: {
   window: SeismoWaveWindow
   columnCount: number
   spanMs: number
+  rightEdge: WaveRightEdge
   minScaleGal: number
   /**
    * 振れ幅に数える向き（東西・南北・上下の順）。**省略すれば 3 成分すべて。**
@@ -92,7 +105,7 @@ export function buildWaveColumns(params: {
    */
   visibleAxes?: readonly boolean[]
 }): WaveColumns {
-  const { window: win, columnCount, spanMs, minScaleGal, visibleAxes } = params
+  const { window: win, columnCount, spanMs, rightEdge, minScaleGal, visibleAxes } = params
   const count = win.gal[0].length
   // **列が無い・幅が無いなら何も作らない。** 幅ゼロの canvas（畳まれている・
   // まだ測れていない）でここへ来ると、下の除算が `Infinity` になる。
@@ -114,8 +127,8 @@ export function buildWaveColumns(params: {
   /** 成分ごとに、列へ値が入ったか。 */
   const filledAxis = [new Uint8Array(columnCount), new Uint8Array(columnCount), new Uint8Array(columnCount)]
 
-  const lastMs = win.firstSampleMs + (count - 1) * win.msPerSample
-  const leftMs = lastMs - spanMs
+  const rightMs = rightEdgeMsOf(rightEdge, win.firstSampleMs + (count - 1) * win.msPerSample)
+  const leftMs = rightMs - spanMs
 
   /** 1 サンプルの 3 成分。**使い回す**（サンプルごとに配列を作らない）。 */
   const values = [0, 0, 0]
@@ -128,6 +141,8 @@ export function buildWaveColumns(params: {
     if (!Number.isFinite(values[0]) && !Number.isFinite(values[1]) && !Number.isFinite(values[2])) continue
 
     const t = win.firstSampleMs + i * win.msPerSample
+    // **右端より新しいサンプルは描かない。** 列の上限へ寄せると、右端の先の値が右端に積まれる。
+    if (t > rightMs) continue
     // **右端を含める。** 素直に割ると最後のサンプルだけが `columnCount` 番目
     // （範囲外）へ落ちて、いちばん新しい値が絵から消える。
     const c = Math.min(columnCount - 1, Math.floor(((t - leftMs) / spanMs) * columnCount))
@@ -217,6 +232,7 @@ export function buildWaveMeanLines(params: {
   window: SeismoWaveWindow
   columnCount: number
   spanMs: number
+  rightEdge: WaveRightEdge
   visibleAxes?: readonly boolean[]
   /**
    * 成分の正側・負側の平均も作るか。**作らなければ `axes` はすべて `NaN`。** 畳んだ合成は合成の均した線しか使わないので、
@@ -224,7 +240,7 @@ export function buildWaveMeanLines(params: {
    */
   includeAxes: boolean
 }): WaveMeanLines {
-  const { window: win, columnCount, spanMs, visibleAxes, includeAxes } = params
+  const { window: win, columnCount, spanMs, rightEdge, visibleAxes, includeAxes } = params
   const n = win.gal[0].length
   const empty = (): Float32Array => new Float32Array(Math.max(0, columnCount)).fill(NaN)
   if (columnCount <= 0 || !(spanMs > 0) || n === 0) {
@@ -237,9 +253,11 @@ export function buildWaveMeanLines(params: {
   const mag = new Float32Array(n)
   for (let i = 0; i < n; i += 1) mag[i] = vectorMagnitudeOf3(win.gal[0][i], win.gal[1][i], win.gal[2][i], magAxes)
 
-  const lastMs = t[n - 1]
-  const leftMs = lastMs - spanMs
-  const columnOf = (i: number): number => Math.min(columnCount - 1, Math.floor(((t[i] - leftMs) / spanMs) * columnCount))
+  const rightMs = rightEdgeMsOf(rightEdge, t[n - 1])
+  const leftMs = rightMs - spanMs
+  /** 右端より新しいサンプルは `-1`（どの列にも入れない）。 */
+  const columnOf = (i: number): number =>
+    t[i] > rightMs ? -1 : Math.min(columnCount - 1, Math.floor(((t[i] - leftMs) / spanMs) * columnCount))
   /** サンプルごとの値を、列ごとの平均へ落とす。 */
   const toColumns = (values: ArrayLike<number>): Float32Array => {
     const sum = new Float64Array(columnCount)

@@ -517,7 +517,7 @@ describe('useSeismoStation', () => {
     await tick()
 
     expect(h.result.current.stations[0].waveSampleCount).toBe(3)
-    const window = h.result.current.readWave('home')
+    const window = h.result.current.readWave('home', null)
     expect(window).not.toBeNull()
     if (window === null) return
     expect(window.firstSampleMs).toBe(1000)
@@ -605,8 +605,8 @@ describe('useSeismoStation', () => {
     await settleDirectory()
     deliver(stationReading('home', 0.25))
     await tick()
-    expect(h.result.current.readWave('home')).toBeNull()
-    expect(h.result.current.readWave('office')).toBeNull()
+    expect(h.result.current.readWave('home', null)).toBeNull()
+    expect(h.result.current.readWave('office', null)).toBeNull()
   })
 
   it('安全弁: 震度が途切れても波形は捨てない', async () => {
@@ -620,7 +620,7 @@ describe('useSeismoStation', () => {
     await tick(6000)
     // 行そのものは残る（途絶として出す）。**ここで見たいのは入れ物が生きていること。**
     expect(h.result.current.stations[0].source).toEqual({ kind: 'silent' })
-    expect(h.result.current.readWave('home')).not.toBeNull()
+    expect(h.result.current.readWave('home', null)).not.toBeNull()
   })
 
   it('対照: トグルが切れている・URL の形が違うなら繋がない', async () => {
@@ -826,7 +826,7 @@ describe('useSeismoStation: 作り直しの知らせ', () => {
     expect(waves).toHaveLength(1)
     expect(waves[0]).toContain('from=1030')
     expect(waves[0]).toContain('to=1060')
-    const w = h.result.current.readWave('home')
+    const w = h.result.current.readWave('home', null)
     expect(w?.gal[0][3]).toBe(11)
     expect(w?.gal[2][5]).toBe(19)
     expect(h.result.current.stations[0].waveTally.gapSamples).toBe(0)
@@ -845,11 +845,12 @@ describe('useSeismoStation: 作り直しの知らせ', () => {
     await tick(WAVE_REFILL_DELAY_MS)
 
     const waves = urls.filter((u) => u.includes('/waves'))
-    expect(waves).toHaveLength(1)
-    // **長さは入れ物が抱える長さで決まる**（空き 5997 サンプル × 10 ms 手前から）。
+    // **長さは入れ物が抱える長さで決まる**（空き 17997 サンプル × 10 ms 手前から）。ホストは 1 回 2 分までなので
+    // （`SAMPLES_RANGE_MAX_MS`）、抱える長さ（180 秒）ぶんは 2 回に分けて取る（2026-10-15 に時間幅の設定を足して覆した）。
+    expect(waves).toHaveLength(2)
     expect(waves[0]).toContain(`from=${1000 - (WAVE_RETAIN_SEC * 100 - 3) * 10}`)
-    expect(waves[0]).toContain('to=1000')
-    const w = h.result.current.readWave('home')
+    expect(waves[waves.length - 1]).toContain('to=1000')
+    const w = h.result.current.readWave('home', null)
     expect(w?.firstSampleMs).toBe(970)
     expect(w?.gal[0][0]).toBe(11)
     expect(w?.gal[0][3]).toBe(1)
@@ -869,9 +870,10 @@ describe('useSeismoStation: 作り直しの知らせ', () => {
 
     // 起点の作り直し（手前の空き）と穴の予約は、待っている間に 1 回へ束ねる。
     const waves = urls.filter((u) => u.includes('/waves'))
-    expect(waves).toHaveLength(1)
-    expect(waves[0]).toContain('to=1060')
-    expect(h.result.current.readWave('home')?.gal[0][3]).toBe(11)
+    // 抱える長さ（180 秒）ぶんの手前は 2 回に分かれる（ホストは 1 回 2 分まで。上と同じ）。
+    expect(waves).toHaveLength(2)
+    expect(waves[waves.length - 1]).toContain('to=1060')
+    expect(h.result.current.readWave('home', null)?.gal[0][3]).toBe(11)
     expect(h.result.current.stations[0].waveTally.gapSamples).toBe(0)
   })
 
@@ -904,7 +906,7 @@ describe('useSeismoStation: 作り直しの知らせ', () => {
     deliver({ kind: 'station-wave-revised', revised: { stationId: 'home', fromMs: 1000, toMs: 1100 } })
     await tick()
 
-    expect(h.result.current.readWave('home')?.gal[0][3]).toBe(11)
+    expect(h.result.current.readWave('home', null)?.gal[0][3]).toBe(11)
     expect(error).toHaveBeenCalledTimes(1)
   })
 })

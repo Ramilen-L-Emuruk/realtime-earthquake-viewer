@@ -9,8 +9,13 @@ import type { SeismoWaveTally } from '../../utils/seismoWaveBuffer'
  * 動くので小数が要る一方、揺れているときの 3 桁に小数は要らない。
  */
 export function formatScaleGal(scaleGal: number): string {
-  if (!Number.isFinite(scaleGal)) return '—'
-  return `±${formatGal(scaleGal)} gal`
+  return formatScale(scaleGal, 'gal')
+}
+
+/** {@link formatScaleGal} の単位を渡す版（公開観測点は `μm/s`）。刻みの変え方は同じ。 */
+export function formatScale(scale: number, unit: string): string {
+  if (!Number.isFinite(scale)) return '—'
+  return `±${formatGal(scale)} ${unit}`
 }
 
 /**

@@ -8,6 +8,7 @@ import type { TtsUnreceivedDetail, TelegramTextBlockKey, TelegramTextBlocks, Tel
 import { TELEGRAM_TEXT_BLOCK_KEYS, TELEGRAM_BOILERPLATE_KEYS, TELEGRAM_BOILERPLATE_DEFAULT_READS } from '../utils/ttsText'
 // 同じ理由（依存の向き）で、波形グラフの出し方の定義も utils 側に置いてある。
 import type { SeismoWaveMode } from '../utils/seismoWaveTrigger'
+import { DEFAULT_WAVE_SPAN_SEC, ensureWaveSpanSec, type WaveSpanSec } from '../utils/waveSpan'
 
 /** 波形を展開していないときに出すもの（→ {@link AppSettings.seismoWaveCollapsedView}）。 */
 export type SeismoWaveCollapsedView = 'composite' | 'overlay'
@@ -170,6 +171,21 @@ export interface AppSettings {
    * （向きの切り替えと違い、見せ方の好みなので残す）。
    */
   seismoWaveExpanded: boolean
+  /**
+   * 地図の下端の波形の横の幅（秒。60 / 120 / 180）。**自作地震計と公開観測点で揃える**
+   * （`docs/public-waveform-design.md` §0。2026-10-14 ユーザー承認）。
+   */
+  waveSpanSec: WaveSpanSec
+  /**
+   * 公開観測点（気象庁の広帯域地震計・EarthScope 経由）の波形を出すか。**既定はオン。** オフなら地図の下端・地震カード・
+   * 地図の印のどれにも出さず、SeedLink にも保存庫にも取りに行かない（`docs/public-waveform-design.md` §0。2026-10-15 ユーザー承認）。
+   */
+  publicWaveEnabled: boolean
+  /**
+   * 公開観測点（EarthScope の SeedLink）へ揺れていないときも繋いでおくか。**既定はオフ**で、出すときだけ繋ぐ
+   * （同 §0。繋ぎっぱなしは 1 日に約 130 MB）。
+   */
+  publicWaveAlwaysConnected: boolean
   panelRatio: number             // 縦積みレイアウト（スマホ縦など）でのパネル高さ比率（0.2〜0.8）
 }
 
@@ -272,6 +288,9 @@ export const DEFAULTS: AppSettings = {
   seismoWave: 'off',
   seismoWaveCollapsedView: 'composite',
   seismoWaveExpanded: false,
+  waveSpanSec: DEFAULT_WAVE_SPAN_SEC,
+  publicWaveEnabled: true,
+  publicWaveAlwaysConnected: false,
   panelRatio: 0.45,
 }
 
@@ -427,6 +446,9 @@ export function sanitize(partial: Partial<AppSettings>): AppSettings {
     seismoWave: ensureSeismoWave(partial.seismoWave, DEFAULTS.seismoWave),
     seismoWaveCollapsedView: ensureSeismoWaveCollapsedView(partial.seismoWaveCollapsedView, DEFAULTS.seismoWaveCollapsedView),
     seismoWaveExpanded: ensureBool(partial.seismoWaveExpanded, DEFAULTS.seismoWaveExpanded),
+    waveSpanSec: ensureWaveSpanSec(partial.waveSpanSec, DEFAULTS.waveSpanSec),
+    publicWaveEnabled: ensureBool(partial.publicWaveEnabled, DEFAULTS.publicWaveEnabled),
+    publicWaveAlwaysConnected: ensureBool(partial.publicWaveAlwaysConnected, DEFAULTS.publicWaveAlwaysConnected),
     panelRatio: clampNumber(partial.panelRatio, PANEL_RATIO_MIN, PANEL_RATIO_MAX, DEFAULTS.panelRatio),
   }
 }
