@@ -599,7 +599,7 @@ Redux 等のグローバルストアは使わず、React のフック（`useStat
 ## 8. PWA・Service Worker
 
 `vite-plugin-pwa` + Workbox。バリアントごとに独立した Service Worker がキャッシュを管理する。
-オフラインでも地図・UI は表示できるが、リアルタイム受信はネットワーク接続時のみ動作。
+オフラインでも地図・UI は表示できるが、リアルタイム受信はネットワーク接続時のみ動作。地図の生成データは、一度開いたときの控えから読む（初めて開いた端末では出ない）。
 
 詳細は [`settings-pwa-spec.md`](settings-pwa-spec.md) の PWA 節。
 
