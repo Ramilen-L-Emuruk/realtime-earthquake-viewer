@@ -125,8 +125,8 @@ enriched オブジェクトを渡して `useLiveEventHandler` 側の音・通知
 - Yahoo 続報が「新しい報」として `activeEEWs` を丸ごと上書きすると、enrichEEW で入れた `areas` /
   `earthquake.condition` / `earthquake.hypocenter` が揮発する（`case 'eew'` のマージ側では severity だけを
   upgrade only で保持）
-  - `condition` が揮発すると仮定震源要素の判定（§5）が false に戻るため、**地図の震源×印の点滅が
-    「穏やか」と「強い」の間を行き来する**。原因は揮発の側にあり、点滅の出し分けでは直せない
+  - `condition` が揮発すると仮定震源要素の判定（§5）が false に戻るため、**地図の震源×印の形が
+    「× ＋外周の輪」と「普通の ×」の間を行き来する**。原因は揮発の側にあり、形の出し分けでは直せない
 
 ### 電文の名称と表示・読み上げ
 
@@ -1011,13 +1011,9 @@ M1.0** を仮の震源として電文に書く。震央地名もその観測点�
 - **共有カードの見出しで M を出さない** — `src/utils/shareCardContent.ts` の `kyoshinContent`
   （[`share-card-spec.md`](share-card-spec.md) §3）。**画面より強い理由がある**——共有された画像は
   後から訂正できない。予想震度は区域ごとの発表値なので、そちらは隠さない
-- **地図の震源×印を控えめに描く** — `src/hooks/useEewLayerData.ts` で `EewEpicenter.isAssumed` フラグ生成 →
-  `src/components/Map/EewEpicentersGL.tsx` が不透明度（`crossOpacity`）と点滅の振幅（`EEW_BLINK.assumed`・
-  0.9 ↔ 0.45。確定震源は `EEW_BLINK.confirmed` で 1 ↔ 0.1）の両方を弱める。
-  **不透明度だけで弱めない**のは、この 2 つが乗算されるため（[`map-rendering-spec.md`](map-rendering-spec.md)
-  §16）。下げるだけでは点滅の谷で×印が消える。引き換えに、**仮定が確定より薄いのは濃い側だけ**になり、
-  点滅の谷ではどのモードでも仮定の方が濃くなる（確定の方が谷が深いため）。積の下限は
-  `src/components/Map/EewEpicentersGL.test.ts` が固定している
+- **地図の震源×印を形で見分ける（× ＋外周の輪）** — `src/hooks/useEewLayerData.ts` で `EewEpicenter.isAssumed`
+  フラグ生成 → `src/components/Map/EewEpicentersGL.tsx` の `crossShape` が形を選ぶ。**濃さと点滅は確定震源と
+  同じ**（1 ↔ 0.1。濃さで区別しない理由と形の一覧は [`map-rendering-spec.md`](map-rendering-spec.md) §16）
 - **地図の震源に深さを採らない** — 同じく `EewEpicentersGL.tsx`。確定震源は電文の深さへ置くが、
   仮定震源要素は地表（深さ 0）に置く。M・深さを画面から隠すのと同じ扱いで、**採ると確定していない
   数値を立体で断定して見せることになる**。深さ 0 では柄の長さが 0 になり、震央の印もレイヤー側の
@@ -1375,8 +1371,7 @@ DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`）が来た場
 | `FELT_RADIUS_BUFFER` | 1.5 | 司・翠川式の有感半径マージン倍率 |
 | `MAX_FELT_RADIUS_KM` | 2500 | 有感半径の上限（巨大地震での飽和防止） |
 | `UPDATE_INTERVAL_MS` | 100 | P/S 波半径の更新周期（`usePsWaveCalc`） |
-| `ASSUMED_OPACITY_RATIO` | 0.7 | 仮定震源の×印の相対不透明度（kyoshin モードではこちらが採られる） |
-| `ASSUMED_OPACITY_MIN` | 0.35 | 同・絶対下限（地震/津波モードでは実質こちらが採られる） |
+| `EEW_BLINK` | 1 ↔ 0.1 | 震源×印の点滅（明側・暗側の不透明度）。仮定震源要素も同じ値（区別は形で付ける） |
 | `EEW_FINAL_SILENCE_MS` | 10000 | 最終報後の再クリック続報テスト受付時間 |
 | `EEW_RETRACTION_CANCEL_MS` | 10000 | 誤報取消テストの遅延 |
 
@@ -1658,3 +1653,6 @@ DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`）が来た場
   気象庁の本文を出す（読み上げない。2026-10-15 ユーザー承認）。資料の定義と食い違う報（警報・規模が数値など）は
   この形と見なさず記録だけ残す。並べ替えと自動解除は発現時刻へ落とし、
   規模が「不明」の報の自動解除が「最終報から 60 秒」に張り付いていたのを M6.0 相当に直した（§7）。
+- 2026-10-15: §5 の地図の震源×印を、不透明度と点滅の振幅ではなく**形**で見分けるようにした。仮定震源要素と
+  「非常に強い揺れを検知」の報は × ＋外周の輪、深さだけが判らない報は途切れた ×（地震情報の震源も同じ）。
+  濃さと点滅は確定震源と揃え、点滅の谷で仮定の方が濃く見える逆転を無くした（2026-10-15 ユーザー承認）
