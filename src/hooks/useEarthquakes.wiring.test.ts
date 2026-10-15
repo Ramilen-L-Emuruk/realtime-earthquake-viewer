@@ -2528,6 +2528,114 @@ describe('DMDSS 版: 取消の後に届いた報', () => {
   })
 })
 
+// 失効の予約は「報を当てたあとの津波」の期限で決める（→ `stepTsunamiState`）。届いた報の期限だけを
+// 見ていた頃は、状態が報の種類ごとに決め直す期限と食い違っていた（#836 の敵対的レビューで判明）。
+describe('津波の失効予約は状態と同じ期限で動く', () => {
+  const EVENT_ID = '20240101161010'
+  function report(opts: {
+    id: string; time: string; headType: 'VTSE41' | 'VTSE51'; grade?: 'Forecast' | 'Watch'
+    validDateTime?: string; eventId?: string; cancelled?: boolean
+  }): JMATsunami {
+    return {
+      kind: 'tsunami',
+      id: opts.id,
+      eventId: opts.eventId ?? EVENT_ID,
+      headType: opts.headType,
+      time: opts.time,
+      cancelled: opts.cancelled ?? false,
+      ...(opts.cancelled && { cancelReason: 'retracted' as const }),
+      validDateTime: opts.validDateTime,
+      issue: { source: '気象庁', time: opts.time, type: 'Focus' },
+      areas: opts.cancelled ? [] : [{ grade: opts.grade ?? 'Forecast', immediate: false, name: '石川県能登' }],
+    }
+  }
+  const EXPIRE_AT = '2024-01-02T17:00:00+09:00'
+
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  // 正: 期限を載せない津波注意報（VTSE41）へ引き上がったら、予報のときの期限では失効しない。
+  // 状態は「期限は最新の VTSE41 が決める」で期限を消すのに、予約だけが残って注意報の発表中に
+  // 「失効」していた。
+  it('期限なしの注意報へ引き上がると、予報のときの失効予約は外れる', async () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const h = setup()
+    await h.flush()
+
+    act(() => { h.current.injectEvent(report({ id: 'f', time: '2024-01-02T16:40:00+09:00', headType: 'VTSE41', validDateTime: EXPIRE_AT })) })
+    act(() => { h.current.injectEvent(report({ id: 'w', time: '2024-01-02T16:50:00+09:00', headType: 'VTSE41', grade: 'Watch' })) })
+    act(() => { vi.advanceTimersByTime(15 * 60_000) })
+
+    expect(h.current.tsunamis).toHaveLength(1)
+    expect(h.current.tsunamis[0].cancelledAt).toBeUndefined()
+    expect(h.current.tsunamis[0].validDateTime).toBeUndefined()
+  })
+
+  // 正: 同じ周回に「期限なしの注意報」と「津波情報」が続けて届いても、予報のときの期限では失効しない。
+  // 2 通目を描き直し前の状態（予報）の上で判定すると、1 通目で外した予約を古い期限で積み直していた。
+  it('同じ周回に注意報と津波情報が続けて届いても、予報のときの期限では失効しない', async () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const h = setup()
+    await h.flush()
+
+    act(() => { h.current.injectEvent(report({ id: 'f', time: '2024-01-02T16:40:00+09:00', headType: 'VTSE41', validDateTime: EXPIRE_AT })) })
+    act(() => {
+      h.current.injectEvent(report({ id: 'w', time: '2024-01-02T16:50:00+09:00', headType: 'VTSE41', grade: 'Watch' }))
+      h.current.injectEvent(report({ id: 'i', time: '2024-01-02T16:50:30+09:00', headType: 'VTSE51' }))
+    })
+    act(() => { vi.advanceTimersByTime(15 * 60_000) })
+
+    expect(h.current.tsunamis).toHaveLength(1)
+    expect(h.current.tsunamis[0].cancelledAt).toBeUndefined()
+  })
+
+  // 対照: 期限を持つ予報だけなら期限で失効する（予約そのものを止めていない）。
+  it('期限を持つ予報は期限で失効する', async () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const h = setup()
+    await h.flush()
+
+    act(() => { h.current.injectEvent(report({ id: 'f', time: '2024-01-02T16:40:00+09:00', headType: 'VTSE41', validDateTime: EXPIRE_AT })) })
+    act(() => { vi.advanceTimersByTime(10 * 60_000 + 5_000) })
+
+    expect(h.current.tsunamis[0].cancelReason).toBe('expired')
+  })
+
+  // 正: 津波情報（VTSE51）だけの取消は予報を残すので、予報の期限で失効し続ける。取消を「津波全体の
+  // 取消」と同じに扱っていた頃は、予約がすべて外れて予報が居座った（DMDSS 版は 24 時間の保険も無い）。
+  it('津波情報だけの取消のあとも、予報は期限で失効する', async () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const h = setup()
+    await h.flush()
+
+    act(() => { h.current.injectEvent(report({ id: 'f', time: '2024-01-02T16:40:00+09:00', headType: 'VTSE41', validDateTime: EXPIRE_AT })) })
+    act(() => { h.current.injectEvent(report({ id: 'i', time: '2024-01-02T16:45:00+09:00', headType: 'VTSE51' })) })
+    act(() => { h.current.injectEvent(report({ id: 'r', time: '2024-01-02T16:50:00+09:00', headType: 'VTSE51', cancelled: true })) })
+    act(() => { vi.advanceTimersByTime(100) })
+    expect(h.current.tsunamis[0].cancelledAt).toBeUndefined()
+
+    act(() => { vi.advanceTimersByTime(10 * 60_000 + 5_000 - 100) })
+    expect(h.current.tsunamis[0].cancelReason).toBe('expired')
+  })
+
+  // 安全弁: 表示中の津波に当たらない解除（番号の重ならない別の津波）では、予約に触れない。
+  it('別の津波の解除が届いても、表示中の予報は期限で失効する', async () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const h = setup()
+    await h.flush()
+
+    act(() => { h.current.injectEvent(report({ id: 'f', time: '2024-01-02T16:40:00+09:00', headType: 'VTSE41', validDateTime: EXPIRE_AT })) })
+    act(() => {
+      h.current.injectEvent({ ...report({ id: 'x', time: '2024-01-02T16:50:00+09:00', headType: 'VTSE41', eventId: '20240808164300', cancelled: true }), cancelReason: 'lifted' as const })
+    })
+    act(() => { vi.advanceTimersByTime(100) })
+    expect(h.current.tsunamis[0].cancelledAt).toBeUndefined()
+
+    act(() => { vi.advanceTimersByTime(10 * 60_000 + 5_000 - 100) })
+    expect(h.current.tsunamis[0].cancelReason).toBe('expired')
+  })
+})
+
 // 有効期限は報ではなく津波に付く事実として扱う（実データと理由は utils/tsunami の
 // `latestValidDateTime`）。気象庁は期限が決まった報で一度だけ ValidDateTime を載せ、以後の
 // 続報には載せない。報 1 通だけを見ると、最後の報が期限を持たない津波は失効しなくなる。

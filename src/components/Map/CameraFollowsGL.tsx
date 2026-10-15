@@ -1301,13 +1301,15 @@ export function TsunamiFitGL({
     //   あっても空になる（`useTsunamiLayerData` は海岸線を引けない区域の行を作らない）。
     //   どちらでも扱いは同じでよい —— まだ寄り先を持っていない状態なので、基準を作り直して
     //   対象海域から見せる
-    // - **差し替わった**: 気象庁が解除を経ずに別の津波を発表した（`useEarthquakes` の
-    //   「別 eventId の tsunami で上書き」）。**signature は非空のまま変わる**ので、空を経由したか
-    //   だけでは見分けられない。**両方の識別子が取れるときだけ見る** —— 片方でも空なら「別物」と
-    //   言えないので従来どおり差分を取る（標準版は識別子を持たないため常にこちら）
+    // - **差し替わった**: 番号の重ならない津波が解除を経ずに届いた（`useEarthquakes` の
+    //   「番号の重ならない津波で表示中の津波を置き換えます」）。**signature は非空のまま変わる**ので、
+    //   空を経由したかだけでは見分けられない。**番号が 1 つでも重なれば同じ津波**（気象庁は別の地震の
+    //   寄与で番号を足して切り替える。→ `utils/tsunami.ts` の `isSameTsunamiEvent`）。**両方の識別子が
+    //   取れるときだけ見る** —— 片方でも空なら「別物」と言えないので従来どおり差分を取る（標準版は
+    //   識別子を持たないため常にこちら）
     const tsunamiPresent = tsunamiSignature !== ''
     const tsunamiSwitched = tsunamiPresent && !!tsunamiEventId && !!prevEventIdRef.current
-      && tsunamiEventId !== prevEventIdRef.current
+      && !eventIdsOverlap(tsunamiEventId, prevEventIdRef.current)
     const obsBaselineStale = (tsunamiPresent && !prevSeenSigRef.current) || tsunamiSwitched
     prevSeenSigRef.current = tsunamiSignature
     prevEventIdRef.current = tsunamiEventId
@@ -1542,4 +1544,10 @@ export function FocusTargetGL({ focusTarget }: { focusTarget: MapFocusTarget | n
     return () => { map.off('moveend', openPopup) }
   }, [map, focusTarget])
   return null
+}
+
+/** 半角スペースで並んだ地震の識別番号どうしが 1 つでも重なるか（→ `useTsunamiLayerData` の `tsunamiEventId`）。 */
+function eventIdsOverlap(a: string, b: string): boolean {
+  const bIds = new Set(b.split(' ').filter(Boolean))
+  return a.split(' ').some(id => id !== '' && bIds.has(id))
 }

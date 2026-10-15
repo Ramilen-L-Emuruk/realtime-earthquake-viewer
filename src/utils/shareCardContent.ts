@@ -132,11 +132,10 @@ function tsunamiContent(tsunamis: JMATsunami[]): ContentWithoutNotices {
   if (!grade) return { header: { title: '津波情報' }, filenameLabel: 'tsunami' }
   const { text, color } = formatTsunamiGrade(grade)
   const areaCount = new Set(live.flatMap((t) => t.areas.map((a) => a.name))).size
-  // 共有カードは 1 行に収める。原因地震が複数あっても先頭だけを載せる
-  // （画像は訂正できないので、収まらない情報を詰め込まない）。
-  const source = live.find((t) => t.sourceEarthquakes?.length)?.sourceEarthquakes?.[0]
-  const parts: string[] = []
-  if (source) {
+  // 原因地震が複数あれば（EventID に番号が足された津波）全件を「／」で並べる。長いと折り返す
+  // （2026-10-15 ユーザー承認「全件を並べる」）。同じ津波を複数の報が運ぶので、震源名と規模の組で重ねない。
+  const sourceTexts: string[] = []
+  for (const source of live.flatMap((t) => t.sourceEarthquakes ?? [])) {
     // 規模が数値で無いときは説明を出す（「Ｍ８を超える巨大地震」）。落とすと、**最も重大な
     // 地震ほど震源名だけの薄い画像になる**。
     const magnitudeText = source.magnitude != null
@@ -144,8 +143,11 @@ function tsunamiContent(tsunamis: JMATsunami[]): ContentWithoutNotices {
       // 地震側と同じ述語を通す。素通しにすると同じ電文由来の同じ事実が、地震の共有カードでは
       // 半角・津波の共有カードでは全角、と表記が割れる
       : (source.magnitudeCondition ? `　${formatMagnitudeCondition(source.magnitudeCondition)}` : '')
-    parts.push(`${source.hypocenterName}${magnitudeText}`)
+    const text = `${source.hypocenterName}${magnitudeText}`
+    if (!sourceTexts.includes(text)) sourceTexts.push(text)
   }
+  const parts: string[] = []
+  if (sourceTexts.length > 0) parts.push(sourceTexts.join(' ／ '))
   if (areaCount > 0) parts.push(`${areaCount} 区域`)
   const issued = live[0]?.issue.time ?? live[0]?.time
   // 日時として読めない発表時刻は、時刻を持たない電文と同じく欄ごと落とす。

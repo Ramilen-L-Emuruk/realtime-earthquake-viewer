@@ -69,6 +69,10 @@ export interface TestFunctions {
   tsunamiGradeChange?: () => void
   tsunamiQuietReports?: () => void
   tsunamiExpiry?: () => void
+  /** 津波の原因地震が後から加わる（`EventID` の番号が書き足される）。DMDSS 版だけ渡す。 */
+  tsunamiSourceAdded?: () => void
+  /** 津波情報（VTSE51）だけの取消。DMDSS 版だけ渡す。 */
+  tsunamiInfoRetraction?: () => void
   estimatedIntensity?: () => void
   notification: () => void
 }
@@ -1917,6 +1921,11 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
             <TestButton color="orange" onClick={onTest.tsunamiGradeChange}>区域の等級変化テスト</TestButton>
           </Row>
         )}
+        {isDmdss && onTest.tsunamiSourceAdded && (
+          <Row label="津波警報（原因の地震が加わる）" description="30秒おきに4通を流す（震源・震度情報 → 津波警報 → 2つ目の地震の震源・震度情報 → 2つの地震を原因とする津波警報）→ 最後の報の60秒後に全解除。後の地震が津波に加わると、気象庁は同じ津波の続報として地震の番号を書き足す。カードは別の津波に入れ替わらず、バナーに2つの地震が並び、どちらからも地震情報へ移れる。読み上げは2つ目の震源を「また、もう一つの地震の震源は」で伝える">
+            <TestButton color="orange" onClick={onTest.tsunamiSourceAdded}>原因地震の追加テスト</TestButton>
+          </Row>
+        )}
         {isDmdss && onTest.tsunamiQuietReports && (
           <Row label="津波警報・注意報（変化の小さい続報）" description="大津波警報 → 10秒おきに続報を10通（観測値 → 八戸港の波高に「以上」が付く → 最大波の観測時刻だけ更新 → 室蘭港の第1波の到達時刻が訂正される → 沖合の観測点の最大波の観測時刻が更新される → 変化なし → 各地の満潮時刻 → 満潮時刻の更新 → 到達状況の更新 → 変化なし）→ 最後の報の20秒後に全解除。気象庁が続報を出しているのに、等級も観測波高の数値も動かない報がどう伝わるかを確かめる。2通目は潮位計が振り切れて真の波高が読めなくなった報で、数値は 1.8m のまま変わらない。最後の5通（変化なしと満潮時刻）は緊急地震速報や津波警報の読み上げを切らないので、そうした上位の読み上げが続いている間は鳴らずに見送られる。5通目は沖合の観測点だけを載せた報で、カードの沖合の行に更新の印が出るのはここだけ">
             <TestButton color="blue" onClick={onTest.tsunamiQuietReports}>変化の小さい続報テスト</TestButton>
@@ -1925,6 +1934,11 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
         <Row label="津波警報・注意報（取消）" description={`青森・北海道等 – tsunami 音 / 90秒後に${isDmdss ? '誤報として取消' : '解除（standard 版は取消と解除を区別できないため「解除」表示）'}`}>
           <TestButton color="red" onClick={onTest.tsunamiRetraction}>誤報取消テスト</TestButton>
         </Row>
+        {isDmdss && onTest.tsunamiInfoRetraction && (
+          <Row label="津波情報の取消（警報は続く）" description="津波警報 → 20秒後に津波情報（観測点つき）→ さらに20秒後、津波情報だけを取り消す → 90秒後に解除。消えるのは津波情報が運んだ観測点だけで、津波警報の区域は残る。読み上げは「津波情報は取り消されました。」とだけ伝え、音は鳴らない">
+            <TestButton color="red" onClick={onTest.tsunamiInfoRetraction}>津波情報の取消テスト</TestButton>
+          </Row>
+        )}
         {/* ── 臨時情報・関連解説情報・後発地震 ── */}
         {isDmdss && onTest.nankaiChecking && (
           <Row label="南海トラフ地震臨時情報（調査中）" description="バナー表示 + specialInfo 音（バナー消去ボタンなし・再テストで上書き）">

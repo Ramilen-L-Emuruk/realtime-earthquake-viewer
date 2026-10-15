@@ -15,7 +15,7 @@ import {
   quakeRetractionOf, QUAKE_ISSUE_PRIORITY, type QuakeRetraction,
 } from '../utils/quakeMerge'
 import type { AreaPrefIndex } from '../utils/quakePoints'
-import { latestValidDateTime } from '../utils/tsunami'
+import { latestValidDateTime, foldTsunamiReports, isPartialTsunamiRetraction, isSameTsunamiEvent } from '../utils/tsunami'
 import type { ReplayEntry, ReplayPayload, ReplayFetchResult, QuakeHistoryResult } from '../types/replay'
 import {
   isHandledType, QUAKE_TYPES, TSUNAMI_TYPES, HISTORY_EXTRA_TYPES, historyExtraKey,
@@ -1241,17 +1241,37 @@ interface TsunamiPreWindowState {
 }
 
 /**
- * 同一の津波イベントに属する報をまとめるキー。
+ * 同一の津波イベントに属する報を束ねる。報ごとに、属する束の鍵を返す。
+ *
+ * **同じ津波かは {@link isSameTsunamiEvent}（地震の識別番号の重なり）で見て、重なりを辿って広げる。**
+ * 気象庁は別の地震が寄与すると同じ警報を切り替えて番号を足す（`A` → `A B`）。文字列で束ねると切替えの
+ * 前後が別の束に割れ、解除済みの津波が再生開始直後に甦りうる（解除は `A B` の束にしか入らない）。
  *
  * `eventId` を持たない電文（P2PQuake の 552。この関数は DMDATA アーカイブだけでなく全バリアントの
- * 初期状態で使われる——呼び出しは `useReplayController` に 1 箇所だけある）は `id` が報ごとに変わる
- * ため、報 1 通ずつが別のグループになる。その経路の扱いは下の `resolveTsunamiPreWindowStates` に書く。
- *
- * 空文字を弾くのは、キーの導出と「識別子を持つか」の判定を同じ述語に揃えるため（`??` だと空文字が
- * 有効な識別子として通り、識別子の無い電文どうしが 1 つの津波として束ねられる）。
+ * 初期状態で使われる——呼び出しは `useReplayController` に 1 箇所だけある）は同じ津波か決められない
+ * ので、報 1 通ずつが別の束になる。その経路の扱いは下の `resolveTsunamiPreWindowStates` に書く。
  */
-function tsunamiGroupKey(tsunami: JMATsunami): string {
-  return tsunami.eventId || tsunami.id
+function groupTsunamiReports(tsunamis: readonly JMATsunami[]): Map<JMATsunami, number> {
+  const groupOf = new Map<JMATsunami, number>()
+  const groups: JMATsunami[][] = []
+  for (const t of tsunamis) {
+    // 重なる束をすべて集めて 1 つに合わせる（後から届いた `A B` が `A` の束と `B` の束を繋ぐ）。
+    const hits = new Set<number>()
+    if (t.eventId) {
+      groups.forEach((members, gi) => {
+        if (members.length > 0 && members.some(m => isSameTsunamiEvent(m, t))) hits.add(gi)
+      })
+    }
+    const [first, ...rest] = [...hits]
+    const target = first ?? groups.push([]) - 1
+    groups[target].push(t)
+    for (const gi of rest) {
+      groups[target].push(...groups[gi])
+      groups[gi] = []
+    }
+  }
+  groups.forEach((members, gi) => { for (const m of members) groupOf.set(m, gi) })
+  return groupOf
 }
 
 /**
@@ -1262,9 +1282,11 @@ function tsunamiGroupKey(tsunami: JMATsunami): string {
  * ひとつは**有効期限**。気象庁は期限が決まった報で一度だけ ValidDateTime を載せ、以後の続報には
  * 載せない（詳細と実データは `utils/tsunami` の `latestValidDateTime`）。報ごとに見ると、期限を
  * 伝えた報だけが「期限切れ」で捨てられ、期限を持たない最後の報が生き残る。予報のみの津波に解除
- * 電文は出ないため、そうなると失効の予約も積まれず永久に画面へ残る。
+ * 電文は出ないため、そうなると失効の予約も積まれず永久に画面へ残る。**期限はライブと同じ規則で
+ * 報を重ねて決める**（`foldTsunamiReports`。期限は最新の津波警報等が決める）。
  *
  * もうひとつは**解除**。解除報を捨てるだけでは、それより前の発表報が残って解除済みの津波が復活する。
+ * **津波情報・沖合の観測だけの取消は解除に数えない**（警報は生きている。→ `isPartialTsunamiRetraction`）。
  *
  * **解除による足切りは `eventId` を持つ電文にしか適用しない。** 識別子が無ければ「どの津波の解除か」
  * を決められず、時刻の前後だけで落とすと、同じ 24 時間に無関係な津波が 2 つあったときに、解除された
@@ -1273,39 +1295,47 @@ function tsunamiGroupKey(tsunami: JMATsunami): string {
  * 読み上げの記憶で共有している）へ委ねる。初期状態でも解除は届くので津波は画面から消える
  * （解除の表示が 10 秒挟まる点だけが「載せない」場合との違い）。
  *
- * 有効期限のほうは識別子の有無で分けない。識別子が無ければ 1 グループ 1 報になり、その報自身の
+ * 有効期限のほうは識別子の有無で分けない。識別子が無ければ 1 束 1 報になり、その報自身の
  * 期限で判定することになる（報単位で見ていた従来と同じ）。
  */
 function resolveTsunamiPreWindowStates(
   entries: ReplayEntry[],
   targetTime: Date,
-): Map<string, TsunamiPreWindowState> {
-  const groups = new Map<string, JMATsunami[]>()
+): (tsunami: JMATsunami) => TsunamiPreWindowState | undefined {
+  const tsunamis: JMATsunami[] = []
   for (const entry of entries) {
     if (entry.payload.kind !== 'event') continue
     const ev = entry.payload.event
     if (ev.kind !== 'tsunami') continue
-    const tsunami = ev as JMATsunami
-    const key = tsunamiGroupKey(tsunami)
-    const group = groups.get(key)
-    if (group) group.push(tsunami)
-    else groups.set(key, [tsunami])
+    tsunamis.push(ev as JMATsunami)
+  }
+  const groupOf = groupTsunamiReports(tsunamis)
+  const groups = new Map<number, JMATsunami[]>()
+  for (const t of tsunamis) {
+    const gi = groupOf.get(t)!
+    const group = groups.get(gi)
+    if (group) group.push(t)
+    else groups.set(gi, [t])
   }
 
-  const states = new Map<string, TsunamiPreWindowState>()
-  for (const [key, reports] of groups) {
+  const states = new Map<number, TsunamiPreWindowState>()
+  for (const [gi, reports] of groups) {
     const identified = !!reports[0].eventId
-    if (identified && reports.some(r => r.cancelled)) {
-      states.set(key, { alive: false })
+    if (identified && reports.some(r => r.cancelled && !isPartialTsunamiRetraction(r))) {
+      states.set(gi, { alive: false })
       continue
     }
-    const validDateTime = latestValidDateTime(reports)
+    const folded = foldTsunamiReports(reports)
+    const validDateTime = folded ? latestValidDateTime([folded]) : latestValidDateTime(reports)
     const expired = validDateTime
       ? new Date(validDateTime).getTime() <= targetTime.getTime()
       : isStaleWithoutValidity(reports, targetTime)
-    states.set(key, { alive: !expired, validDateTime })
+    states.set(gi, { alive: !expired, validDateTime })
   }
-  return states
+  return (tsunami) => {
+    const gi = groupOf.get(tsunami)
+    return gi === undefined ? undefined : states.get(gi)
+  }
 }
 
 /**
@@ -1512,7 +1542,7 @@ export function filterPreWindowEvents(
 
     if (ev.kind === 'tsunami') {
       const tsunami = ev as JMATsunami
-      const state = tsunamiStates.get(tsunamiGroupKey(tsunami))
+      const state = tsunamiStates(tsunami)
       if (!state) {
         // 状態は同じ `entries` から作るので、ここへ来るのは作る側と読む側の入力が食い違ったとき
         // だけ。津波が 1 件も出ない結果は画面上「静かな時間だった」と見分けが付かないので、
@@ -1523,7 +1553,12 @@ export function filterPreWindowEvents(
       if (!state.alive) continue
       // その津波に対して最後に伝えられた期限を、期限を持たない報にも持たせる。補わないと
       // 最後の報で失効の予約が積まれず、期限を過ぎても画面から消えなくなる。
-      if (state.validDateTime && !tsunami.validDateTime) {
+      //
+      // **期限を持つ報の期限も、最後に決まった値へ揃える。** 期限は最新の津波警報等が決めるので
+      // （→ `mergeTsunamiReports`）、予報の後に注意報へ引き上げた津波では最後の期限が「無し」になる。
+      // 予報の報が持っていた古い期限を残すと、その報を受けた瞬間に「期限切れ」で画面から消え、
+      // 続く報が新しい発表として組み直される。
+      if (!tsunami.cancelled && tsunami.validDateTime !== state.validDateTime) {
         result.push({
           ...entry,
           payload: { kind: 'event', event: { ...tsunami, validDateTime: state.validDateTime } },

@@ -482,6 +482,9 @@ export interface BorrowedFromTsunami {
 
 export type TsunamiGrade = 'MajorWarning' | 'Warning' | 'Watch' | 'Forecast' | 'Unknown'
 
+/** 津波電文の種類。→ {@link JMATsunami.headType} */
+export type TsunamiHeadType = 'VTSE41' | 'VTSE51' | 'VTSE52'
+
 /**
  * 固定付加文（`Comments/WarningComment`）1 件。→ {@link JMATsunami.warningComments}
  */
@@ -616,7 +619,7 @@ export interface TsunamiSourceEarthquake extends HypocenterAreaDetail {
    * **ただし `originTime` と入れ替えないこと。** 津波の `originTime` は
    * `isTsunamiNewFire`（`utils/tsunami.ts`）が**電文の識別子が両側そろっていないときの
    * 同一性判定**に使っている。中身を差し替えると、続報が別の津波として立つ。
-   * （`isTsunamiContinuation` は `eventId` と `cancelledAt` しか見ておらず、この注意の対象外）
+   * （`isTsunamiContinuation` は `isSameTsunamiEvent`（`EventID` の番号の重なり）と `cancelledAt` しか見ておらず、この注意の対象外）
    */
   arrivalTime?: string
   /**
@@ -790,12 +793,37 @@ export interface JMATsunami {
    * standard 版は P2PQuake の文書 ID。
    */
   id: string
+  /**
+   * 識別情報（`Head/EventID`）。**寄与している地震の識別番号を半角スペースで並べたもの**で、
+   * 番号は 1 つとは限らない（電文解説資料 Ⅰ.別02-1）。気象庁は別の地震が寄与すると同じ警報を
+   * 切り替えて番号を足す（同 Ⅰ.別02-8 出現例６: `A` → `A B`）。
+   *
+   * **文字列のまま比べないこと。** 同じ津波かどうかは `utils/tsunami.ts` の `isSameTsunamiEvent`
+   * （番号が 1 つでも重なり、運用種別が同じ）で見る。番号の取り出しは `tsunamiEventIds`。
+   */
   eventId?: string
   time: string
+  /**
+   * 電文の種類（`VTSE41` 津波警報・注意報・予報／`VTSE51` 津波情報／`VTSE52` 沖合の津波観測に
+   * 関する情報）。DMDATA の XML 経路だけが持つ。P2PQuake（standard 版）とテストデータの一部は持たない。
+   *
+   * **種類で扱いが変わる事実が 2 つある。** 有効期限と本文は津波警報等（VTSE41）が決める
+   * （→ `mergeTsunamiReports`）。取消は種類ごとの単位で届き、VTSE41 の取消だけが津波全体を消す
+   * （→ `isPartialTsunamiRetraction`）。
+   */
+  headType?: TsunamiHeadType
   /**
    * 電文の運用種別（`Control/Status`）。訓練・試験のときだけ入る。→ {@link TelegramOperationStatus}
    */
   operationStatus?: TelegramOperationStatus
+  /**
+   * いま画面に出している津波を組み立てた報（取消・解除の報は含まない）。状態に載せた津波だけが持つ。
+   *
+   * **津波情報（VTSE51）・沖合の観測（VTSE52）だけの取消で、その種類の報を抜いて組み直すために持つ。**
+   * 続報の統合（`mergeTsunamiReports`）は前報の値を取り込んで重ねるので、統合の後からは
+   * どの値がどの種類の報から来たかを取り出せない。→ `refoldTsunamiWithout`
+   */
+  foldedReports?: JMATsunami[]
   cancelled: boolean
   // cancelled=true のときの解除理由。'lifted'=気象庁の正式解除（区域が電文から消える）、
   // 'retracted'=誤って発表した電文の取消（InfoType=取消）、'expired'=ValidDateTime満了によりアプリが自動検出。

@@ -99,6 +99,26 @@ function makeTsunamiCancel(): JMATsunami {
   } as unknown as JMATsunami
 }
 
+/**
+ * 同じ津波（`eventId` が同じ）の報。津波警報・注意報（VTSE41）と津波情報（VTSE51）を種類で言い分け、
+ * `cancelled` を渡すと取消・解除の報になる（区域を持たない。実電文の形）。
+ */
+function tsunamiReport(o: {
+  id: string; headType: 'VTSE41' | 'VTSE51'; time: string; cancelled?: 'retracted' | 'lifted'
+}): JMATsunami {
+  return {
+    kind: 'tsunami',
+    id: o.id,
+    eventId: '20260101120000',
+    headType: o.headType,
+    time: o.time,
+    cancelled: o.cancelled !== undefined,
+    ...(o.cancelled && { cancelReason: o.cancelled }),
+    issue: { source: 'JMA', time: o.time, type: 'Focus' },
+    areas: o.cancelled ? [] : [{ grade: 'Warning', immediate: false, name: '石川県能登' }],
+  } as unknown as JMATsunami
+}
+
 function setup(overSettings: Partial<AppSettings> = {}) {
   const settings: AppSettings = {
     ...DEFAULTS,
@@ -205,6 +225,45 @@ describe('録画モードの既読復元', () => {
     await drain()
     expect(mainSpeeches().join('')).toContain('津波')
   })
+  // 正: 窓の手前にあったのが「津波情報だけの取消」なら、窓の中の本物の解除は読む。
+  // 取消を解除と同じ鍵（`eventId`）で既読にしていた頃は、警報の解除が「伝え済み」になって黙った。
+  it('窓の手前で津波情報だけが取り消されても、窓の中の解除は読む', async () => {
+    const { handleLiveEvent, restorePreWindowTracking } = setup({ recordingMode: true })
+    restorePreWindowTracking(preWindow(
+      tsunamiReport({ id: 'w', headType: 'VTSE41', time: '2026-01-01T12:10:00Z' }) as unknown as LiveEvent,
+      tsunamiReport({ id: 'i', headType: 'VTSE51', time: '2026-01-01T12:20:00Z' }) as unknown as LiveEvent,
+      tsunamiReport({ id: 'r', headType: 'VTSE51', time: '2026-01-01T12:30:00Z', cancelled: 'retracted' }) as unknown as LiveEvent,
+    ))
+    handleLiveEvent(tsunamiReport({ id: 'l', headType: 'VTSE41', time: '2026-01-01T13:00:00Z', cancelled: 'lifted' }) as unknown as LiveEvent)
+    await drain()
+    expect(mainSpeeches().join('')).toContain('解除')
+  })
+
+  // 対照: 窓の手前で解除まで伝えていれば、同じ解除は読み直さない（解除の鍵は従来どおり）。
+  it('窓の手前で解除まで伝えていれば、同じ解除は読み直さない', async () => {
+    const { handleLiveEvent, restorePreWindowTracking } = setup({ recordingMode: true })
+    restorePreWindowTracking(preWindow(
+      tsunamiReport({ id: 'w', headType: 'VTSE41', time: '2026-01-01T12:10:00Z' }) as unknown as LiveEvent,
+      tsunamiReport({ id: 'l', headType: 'VTSE41', time: '2026-01-01T13:00:00Z', cancelled: 'lifted' }) as unknown as LiveEvent,
+    ))
+    handleLiveEvent(tsunamiReport({ id: 'l', headType: 'VTSE41', time: '2026-01-01T13:00:00Z', cancelled: 'lifted' }) as unknown as LiveEvent)
+    await drain()
+    expect(mainSpeeches().join('')).not.toContain('解除')
+  })
+
+  // 安全弁: 窓の手前で伝えた津波情報の取消は、窓の中で同じ取消が届いても読み直さない。
+  it('窓の手前で伝えた津波情報の取消は読み直さない', async () => {
+    const { handleLiveEvent, restorePreWindowTracking } = setup({ recordingMode: true })
+    restorePreWindowTracking(preWindow(
+      tsunamiReport({ id: 'w', headType: 'VTSE41', time: '2026-01-01T12:10:00Z' }) as unknown as LiveEvent,
+      tsunamiReport({ id: 'i', headType: 'VTSE51', time: '2026-01-01T12:20:00Z' }) as unknown as LiveEvent,
+      tsunamiReport({ id: 'r', headType: 'VTSE51', time: '2026-01-01T12:30:00Z', cancelled: 'retracted' }) as unknown as LiveEvent,
+    ))
+    handleLiveEvent(tsunamiReport({ id: 'r2', headType: 'VTSE51', time: '2026-01-01T12:30:00Z', cancelled: 'retracted' }) as unknown as LiveEvent)
+    await drain()
+    expect(mainSpeeches().join('')).not.toContain('取り消されました')
+  })
+
   // 安全弁: 窓の手前の 1 件が壊れていても、残りの復元は続く。
   //
   // 投げたまま抜けると呼び出し元の `catch` まで飛び、**「リプレイデータ取得失敗」として
@@ -362,6 +421,51 @@ describe('窓の手前の地震に割り当てる主題', () => {
     const topic = topicFor(first).topic
     expect(topicFor(amended).topic, '訂正報が別の主題になっている').toBe(topic)
     expect(topicFor(next).topic, '訂正後の続報が別の主題になっている').toBe(topic)
+  })
+})
+
+// 津波情報だけの取消（VTSE51）の重複抑止は、同じ取消の配信し直しだけを止める。取消 → 再発表 → 再取消の
+// 2 回目まで黙らせない。
+describe('津波情報だけの取消の読み上げ', () => {
+  const RETRACTED = '津波情報は取り消されました'
+  const count = (text: string) => mainSpeeches().filter(t => t.includes(text)).length
+
+  // 正: 取消のあと津波情報が改めて発表され、また取り消されたら、2 回目も読む。
+  it('再発表のあとの 2 回目の取消も読む', async () => {
+    const { handleLiveEvent } = setup()
+    handleLiveEvent(tsunamiReport({ id: 'w', headType: 'VTSE41', time: '2026-01-01T12:10:00Z' }) as unknown as LiveEvent)
+    handleLiveEvent(tsunamiReport({ id: 'i1', headType: 'VTSE51', time: '2026-01-01T12:20:00Z' }) as unknown as LiveEvent)
+    handleLiveEvent(tsunamiReport({ id: 'r1', headType: 'VTSE51', time: '2026-01-01T12:30:00Z', cancelled: 'retracted' }) as unknown as LiveEvent)
+    await drain()
+    handleLiveEvent(tsunamiReport({ id: 'i2', headType: 'VTSE51', time: '2026-01-01T12:40:00Z' }) as unknown as LiveEvent)
+    handleLiveEvent(tsunamiReport({ id: 'r2', headType: 'VTSE51', time: '2026-01-01T12:50:00Z', cancelled: 'retracted' }) as unknown as LiveEvent)
+    await drain()
+    expect(count(RETRACTED)).toBe(2)
+  })
+
+  // 対照: 同じ取消が続けて届いた（配信し直し）だけなら 1 回しか読まない。
+  it('同じ取消が続けて届いても 1 回だけ読む', async () => {
+    const { handleLiveEvent } = setup()
+    handleLiveEvent(tsunamiReport({ id: 'w', headType: 'VTSE41', time: '2026-01-01T12:10:00Z' }) as unknown as LiveEvent)
+    handleLiveEvent(tsunamiReport({ id: 'i1', headType: 'VTSE51', time: '2026-01-01T12:20:00Z' }) as unknown as LiveEvent)
+    handleLiveEvent(tsunamiReport({ id: 'r1', headType: 'VTSE51', time: '2026-01-01T12:30:00Z', cancelled: 'retracted' }) as unknown as LiveEvent)
+    await drain()
+    handleLiveEvent(tsunamiReport({ id: 'r1b', headType: 'VTSE51', time: '2026-01-01T12:30:00Z', cancelled: 'retracted' }) as unknown as LiveEvent)
+    await drain()
+    expect(count(RETRACTED)).toBe(1)
+  })
+
+  // 安全弁: 津波情報の取消を読んだあとでも、警報の解除は読む（取消と解除の既読を混ぜない）。
+  it('津波情報の取消のあとの警報の解除も読む', async () => {
+    const { handleLiveEvent } = setup()
+    handleLiveEvent(tsunamiReport({ id: 'w', headType: 'VTSE41', time: '2026-01-01T12:10:00Z' }) as unknown as LiveEvent)
+    handleLiveEvent(tsunamiReport({ id: 'i1', headType: 'VTSE51', time: '2026-01-01T12:20:00Z' }) as unknown as LiveEvent)
+    handleLiveEvent(tsunamiReport({ id: 'r1', headType: 'VTSE51', time: '2026-01-01T12:30:00Z', cancelled: 'retracted' }) as unknown as LiveEvent)
+    await drain()
+    handleLiveEvent(tsunamiReport({ id: 'l', headType: 'VTSE41', time: '2026-01-01T13:00:00Z', cancelled: 'lifted' }) as unknown as LiveEvent)
+    await drain()
+    expect(count(RETRACTED)).toBe(1)
+    expect(mainSpeeches().join('')).toContain('解除')
   })
 })
 

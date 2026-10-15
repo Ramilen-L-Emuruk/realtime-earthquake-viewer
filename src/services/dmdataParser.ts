@@ -22,6 +22,7 @@ import type {
   CorrectType,
   TsunamiArea,
   TsunamiGrade,
+  TsunamiHeadType,
   LpgmClass,
   TelegramOperationStatus,
 } from '../types/earthquake'
@@ -1766,7 +1767,7 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
     kind: 'quake',
     id: `dmdata-quake-${eventId}-${serial}`,
     // 空文字は undefined に落とす。
-    // TsunamiTab は q.eventId を直接比較して原因地震カードへのリンクを作るため、
+    // 津波の原因地震と地震カードを結ぶ（`linkTsunamiSources`）のも震源の借用もこの値を見るため、
     // フィールドを落とすと履歴経由のカードがそのリンクに引き当たらない。
     eventId: eventId || undefined,
     ...(telegramKey && { telegramKey }),
@@ -1862,6 +1863,14 @@ function tsunamiWarningCommentKey(headType: string, infoName: string | undefined
  *
  * 判定とは別に、報の `id` にも入れる（報番号が種別ごとに別々に数えられるため。理由は `id` の箇所）。
  */
+function toTsunamiHeadType(headType: string): TsunamiHeadType | undefined {
+  if (headType === 'VTSE41' || headType === 'VTSE51' || headType === 'VTSE52') return headType
+  // 呼び出し側は 3 種類でしか呼ばない。外れたら種類の欄を持たない報として扱う（判定は従来どおり
+  // 「津波全体の取消」「期限はどの報からでも引き継ぐ」へ倒れる）。
+  log.warn(`${TSUNAMI_LOG_PREFIX} 津波電文の種類として読めません: headType=${headType}`)
+  return undefined
+}
+
 export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami | null {
   const doc = parseTelegramXml(xml, TSUNAMI_LOG_PREFIX)
   if (!doc) return null
@@ -1975,13 +1984,15 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
   // 作っている途中で id だけを鍵にしたとき、実電文（2025-07-30 カムチャツカ半島付近の地震の
   // 津波 82 通）で 24 時間より前の報が 1 通も足されなかった。
   const id = `dmdata-tsunami-${eventId ?? ''}-${headType}-${serial}`
+  // 種類は判定にも使う（期限と本文は VTSE41 が決める・取消は種類ごとの単位）。→ `JMATsunami.headType`
+  const tsunamiHeadType = toTsunamiHeadType(headType)
   const cancelled = infoType === '取消'
 
   // InfoType=取消: 誤って発表した電文そのものの取消（誤報取消）
   if (cancelled) {
     // 取消しの概要は上で読んだ本文と同じ要素（`Body/Text`）。
     const cancelText = tsunamiBodyText ?? ''
-    return { kind: 'tsunami', id, eventId, time: reportDateTime, ...(tsunamiOperationStatus && { operationStatus: tsunamiOperationStatus }), cancelled: true, cancelReason: 'retracted', ...(cancelText && { cancelText }), issue: { source, time: reportDateTime, type: 'Focus' }, areas: [] }
+    return { kind: 'tsunami', id, eventId, ...(tsunamiHeadType && { headType: tsunamiHeadType }), time: reportDateTime, ...(tsunamiOperationStatus && { operationStatus: tsunamiOperationStatus }), cancelled: true, cancelReason: 'retracted', ...(cancelText && { cancelText }), issue: { source, time: reportDateTime, type: 'Focus' }, areas: [] }
   }
 
   const forecastEl = xmlQ(doc, 'Forecast')
@@ -2010,7 +2021,7 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
     // 観測）と VTSE51 の観測のみ続報が通る主経路で、まさに観測時点が最も効く形。載せ忘れると
     // 「観測 ◯◯ 時点」が肝心の電文で一度も出ない（続報のマージは `?? current` で前報へ倒れる
     // ため、画面には古い時点が残るか、前報が無ければ何も出ない）。
-    return { kind: 'tsunami', id, eventId, time: reportDateTime, ...(tsunamiOperationStatus && { operationStatus: tsunamiOperationStatus }), cancelled: false, headline, infoName, warningComments, carriesForecastStations, freeText, bodyText: tsunamiBodyText, sourceEarthquakes, issue: { source, time: reportDateTime, type: 'Focus' }, areas: [], observations, observationDateTime, estimations }
+    return { kind: 'tsunami', id, eventId, ...(tsunamiHeadType && { headType: tsunamiHeadType }), time: reportDateTime, ...(tsunamiOperationStatus && { operationStatus: tsunamiOperationStatus }), cancelled: false, headline, infoName, warningComments, carriesForecastStations, freeText, bodyText: tsunamiBodyText, sourceEarthquakes, issue: { source, time: reportDateTime, type: 'Focus' }, areas: [], observations, observationDateTime, estimations }
   }
 
   const allEls = forecastEl!.getElementsByTagName('*')
@@ -2172,14 +2183,14 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
   if (unreadableAreaCount > 0) {
     log.warn(`${TSUNAMI_LOG_PREFIX} Forecast の区域 ${unreadableAreaCount} 件で名前を読めませんでした（うち解除済みと判定できたもの: ${unreadableCancelledCount} 件）`)
   }
-  if (areas.length === 0) return { kind: 'tsunami', id, eventId, time: reportDateTime, cancelled: true, cancelReason: 'lifted', issue: { source, time: reportDateTime, type: 'Focus' }, areas: [] }
+  if (areas.length === 0) return { kind: 'tsunami', id, eventId, ...(tsunamiHeadType && { headType: tsunamiHeadType }), time: reportDateTime, ...(tsunamiOperationStatus && { operationStatus: tsunamiOperationStatus }), cancelled: true, cancelReason: 'lifted', issue: { source, time: reportDateTime, type: 'Focus' }, areas: [] }
   warnUndescribableCancel(undescribableCancel, TSUNAMI_LOG_PREFIX)
   forecastStationTally.warnIfNoneReadable(TSUNAMI_LOG_PREFIX)
 
   // Observation も含む場合（VTSE51①: Forecast + Observation 両方あり）
   const observations = observationEl ? parseTsunamiObservationsFromXml(observationEl, offshore) : undefined
 
-  return { kind: 'tsunami', id, eventId, time: reportDateTime, ...(tsunamiOperationStatus && { operationStatus: tsunamiOperationStatus }), cancelled: false, validDateTime, headline, infoName, warningComments, carriesForecastStations, freeText, bodyText: tsunamiBodyText, sourceEarthquakes, issue: { source, time: reportDateTime, type: 'Focus' }, areas, cancelledAreas: cancelledAreas.length > 0 ? cancelledAreas : undefined, observations: observations && observations.length > 0 ? observations : undefined, observationDateTime, estimations }
+  return { kind: 'tsunami', id, eventId, ...(tsunamiHeadType && { headType: tsunamiHeadType }), time: reportDateTime, ...(tsunamiOperationStatus && { operationStatus: tsunamiOperationStatus }), cancelled: false, validDateTime, headline, infoName, warningComments, carriesForecastStations, freeText, bodyText: tsunamiBodyText, sourceEarthquakes, issue: { source, time: reportDateTime, type: 'Focus' }, areas, cancelledAreas: cancelledAreas.length > 0 ? cancelledAreas : undefined, observations: observations && observations.length > 0 ? observations : undefined, observationDateTime, estimations }
 }
 
 /**

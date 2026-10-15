@@ -1,6 +1,7 @@
 import type { JMAQuake, JMATsunami, Hypocenter, BorrowedFromTsunami, TsunamiSourceEarthquake, DomesticTsunami, TsunamiGrade } from '../types/earthquake'
 import { extractQuakeEventId, isHypocenterPending } from './quakeMerge'
-import { tsunamiMaxGrade } from './tsunami'
+import { tsunamiMaxGrade, tsunamiEventIds } from './tsunami'
+import { linkTsunamiSources } from './tsunamiSourceLinks'
 
 /**
  * 同じ地震の津波電文が伝えている値を、地震カードへ借りる。**震源要素と津波区分の 2 つ**が対象。
@@ -44,15 +45,23 @@ const TSUNAMI_SOURCE_SHORT_LABEL = '津波情報'
  * 取り下げられた震源を別のカードへ持ち込むことになる（既存の震源補完が取消済みカードを
  * 避けているのと同じ向き）。**解除は対象外** —— 津波が引いても、その地震の震源は有効。
  */
-function tsunamiToBorrowFrom(eventId: string, tsunamis: readonly JMATsunami[]): JMATsunami | null {
-  let best: JMATsunami | null = null
+function tsunamiToBorrowFrom(
+  eventId: string,
+  tsunamis: readonly JMATsunami[],
+  quakes: readonly JMAQuake[],
+): { tsunami: JMATsunami; source: TsunamiSourceEarthquake } | null {
+  let best: { tsunami: JMATsunami; source: TsunamiSourceEarthquake } | null = null
   for (const t of tsunamis) {
     if (!isBorrowableTsunami(t, eventId)) continue
-    if (!t.sourceEarthquakes?.[0]?.hypocenterName) continue
+    // **その地震に当たる原因地震だけを借りる。** 別の地震が寄与して番号が足された津波
+    // （`A` → `A B`）は原因地震を 2 つ持つので、先頭を決め打ちすると別の地震の震源を借りる
+    // （→ `linkTsunamiSources`）。
+    const source = linkTsunamiSources(t, quakes).find(link => link.eventId === eventId)?.source
+    if (!source?.hypocenterName) continue
     // **新しい報を採る。** 津波電文の震源は続報で更新される（能登では 16:22 に Ｍ７．４→Ｍ７．６。
     // 地震情報が同じ更新を伝えるのは 16:24 で、2 分遅い）。古い報を掴むと、更新された規模が
     // 地震情報の到着まで反映されない。
-    if (!best || t.time > best.time) best = t
+    if (!best || t.time > best.tsunami.time) best = { tsunami: t, source }
   }
   return best
 }
@@ -98,6 +107,8 @@ export interface BorrowedHypocenter {
 export function borrowHypocenterFromTsunami(
   quake: JMAQuake,
   tsunamis: readonly JMATsunami[],
+  /** 原因地震と地震カードを結ぶ相手（→ `linkTsunamiSources`）。`quake` 自身を含んでいなくてよい。 */
+  quakes: readonly JMAQuake[],
 ): BorrowedHypocenter | null {
   // 対象は「震源が未確定」か「前に借りた震源を持っている」カード。
   //
@@ -108,12 +119,11 @@ export function borrowHypocenterFromTsunami(
   if (!isHypocenterPending(quake) && !quake.hypocenterSource) return null
   const eventId = extractQuakeEventId(quake)
   if (!eventId) return null
-  const tsunami = tsunamiToBorrowFrom(eventId, tsunamis)
-  const src = tsunami?.sourceEarthquakes?.[0]
-  if (!tsunami || !src) return null
+  const found = tsunamiToBorrowFrom(eventId, tsunamis, quakes.includes(quake) ? quakes : [...quakes, quake])
+  if (!found) return null
   return {
-    hypocenter: tsunamiSourceHypocenter(src),
-    source: sourceOf(tsunami),
+    hypocenter: tsunamiSourceHypocenter(found.source),
+    source: sourceOf(found.tsunami),
   }
 }
 
@@ -128,11 +138,12 @@ export function borrowHypocenterFromTsunami(
  * **解除（`lifted`）と失効（`expired`）は借りてよい。** 津波が引いても、その地震に津波警報が
  * 出たことも震源も有効なまま。止めるのは「その報の内容が誤りだった」と気象庁が言った取消だけ。
  *
- * **`eventId` の一致だけを根拠にする。** 理由は {@link tsunamiToBorrowFrom} の注記。
+ * **地震の識別番号の一致だけを根拠にする。** 理由は {@link tsunamiToBorrowFrom} の注記。
  */
 function isBorrowableTsunami(t: JMATsunami, eventId: string): boolean {
   if (t.cancelled || t.cancelReason === 'retracted') return false
-  return !!t.eventId && t.eventId === eventId
+  // 番号は 1 つとは限らない（→ `tsunamiEventIds`）。その地震の番号を含む津波から借りる。
+  return tsunamiEventIds(t).includes(eventId)
 }
 
 /**
@@ -146,8 +157,8 @@ function isBorrowableTsunami(t: JMATsunami, eventId: string): boolean {
  * 震源のように見えてしまう。印を落とすのは自前の震源が入ったときで、それは統合の側の仕事
  * （→ `quakeMerge.ts` の `mergeQuakeInto`）。
  */
-export function withBorrowedHypocenter(quake: JMAQuake, tsunamis: readonly JMATsunami[]): JMAQuake {
-  const borrowed = borrowHypocenterFromTsunami(quake, tsunamis)
+export function withBorrowedHypocenter(quake: JMAQuake, tsunamis: readonly JMATsunami[], quakes: readonly JMAQuake[]): JMAQuake {
+  const borrowed = borrowHypocenterFromTsunami(quake, tsunamis, quakes)
   if (!borrowed) return quake
   // **中身が同じなら元の参照を返す。** 津波の続報は 1 つの津波で 40 通を超える（能登の実電文）。
   // 観測情報や満潮時刻の続報は震源を変えないので、そのたびに新しいカードを作ると
@@ -205,7 +216,7 @@ export function borrowFromTsunamiIntoCards(cards: JMAQuake[], tsunamis: readonly
   let changed = false
   const next = cards.map(card => {
     if (card.cancelledAt) return card
-    const applied = withBorrowedFromTsunami(card, tsunamis)
+    const applied = withBorrowedFromTsunami(card, tsunamis, cards)
     if (applied !== card) changed = true
     return applied
   })
@@ -313,8 +324,8 @@ function sourceOf(tsunami: JMATsunami): BorrowedFromTsunami {
  * 借りない —— 同じ津波の読み上げが既に等級と行動指示を語っているので、地震情報の側でも
  * 区分を言うと二重になる（→ `ttsText.ts`）。
  */
-export function withBorrowedFromTsunami(quake: JMAQuake, tsunamis: readonly JMATsunami[]): JMAQuake {
-  const withHypocenter = withBorrowedHypocenter(quake, tsunamis)
+export function withBorrowedFromTsunami(quake: JMAQuake, tsunamis: readonly JMATsunami[], quakes: readonly JMAQuake[]): JMAQuake {
+  const withHypocenter = withBorrowedHypocenter(quake, tsunamis, quakes)
   const borrowed = borrowDomesticTsunamiFromTsunami(withHypocenter, tsunamis)
   if (!borrowed) return withHypocenter
   // 中身が同じなら参照を変えない（理由は `withBorrowedHypocenter` の注記と同じ ―― 観測情報の

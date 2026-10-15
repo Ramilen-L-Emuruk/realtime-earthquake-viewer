@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { mapChunksToRefs, borrowedHypocenterChunkRange, type SpeechFollowSession, type SpeechRef } from '../utils/ttsFollow'
+import { mapChunksToRefs, borrowedHypocenterChunkRanges, type SpeechFollowSession, type SpeechRef } from '../utils/ttsFollow'
 import { getSpeechClock } from '../utils/voicevox'
 import { log } from '../utils/logger'
 
@@ -49,8 +49,12 @@ export function useBorrowedHypocenterFollow({ session, show }: UseBorrowedHypoce
   // 最新の値を rAF ループから読むための箱（ループを作り直さずに済ませる）。
   const latest = useRef({ show })
   latest.current = { show }
-  /** この読み上げで既に見せたか（同じ範囲で毎フレーム要求を出さないため）。 */
-  const shownRef = useRef(false)
+  /**
+   * この読み上げで既に見せた範囲（範囲の先頭チャンクで覚える）。同じ範囲で毎フレーム要求を出さないため。
+   * **範囲ごとに持つ** —— 原因地震が 2 つ以上ある津波は、地震ごとに別の範囲で別のカードを見せる
+   * （→ `borrowedHypocenterChunkRanges`）。
+   */
+  const shownRef = useRef<Set<number>>(new Set())
   /**
    * このセッションで見つけた食い違い。**セッションの終わりに 1 回だけ記録する。**
    * rAF は毎フレーム回るので、その場で出すと同じ警告が数十行続く。
@@ -66,12 +70,12 @@ export function useBorrowedHypocenterFollow({ session, show }: UseBorrowedHypoce
         log.warn('[quake] 借りた震源の読み上げなのに、それを含むチャンクを 1 つも引けませんでした（読み上げ文の分割と参照の対応がずれている可能性）')
       }
       troubleRef.current = null
-      shownRef.current = false
+      shownRef.current = new Set()
       return
     }
 
     troubleRef.current = null
-    shownRef.current = false
+    shownRef.current = new Set()
     let raf = 0
     let refsPerChunk: SpeechRef[][] | null = null
     let mappedChunks: readonly string[] | null = null
@@ -85,15 +89,13 @@ export function useBorrowedHypocenterFollow({ session, show }: UseBorrowedHypoce
         mappedChunks = session.chunks
         refsPerChunk = mapChunksToRefs(session.segments, session.chunks)
       }
-      const range = borrowedHypocenterChunkRange(refsPerChunk)
-      if (!range) {
+      const ranges = borrowedHypocenterChunkRanges(refsPerChunk)
+      if (ranges.length === 0) {
         // セッションが始まっている＝門は真だったので、ここへ来るのはチャンク化の過程で対応が
         // 取れなかったとき（読み仮名辞書の分割・文の組み立ての変更）。
         troubleRef.current ??= 'noRange'
         return
       }
-      if (shownRef.current) return
-
       const now = getSpeechClock()
       if (now === null) return
       // 鳴り始めた予約のうち最後のものが「いま読んでいるチャンク」
@@ -103,12 +105,18 @@ export function useBorrowedHypocenterFollow({ session, show }: UseBorrowedHypoce
         if (entry.startAt > now) break
         currentIndex = entry.index
       }
-      if (currentIndex < range.first || currentIndex > range.last) return
+      const range = ranges.find(r => currentIndex >= r.first && currentIndex <= r.last)
+      if (!range || shownRef.current.has(range.first)) return
 
       // **一度要求したら、結果によらず二度は出さない。** 見せられなかった（`mismatch`）ときに
       // 毎フレーム試し続けると、そのあいだ他の追従の要求と競り合う。
-      shownRef.current = true
-      const result = callGuarded(() => latest.current.show(session.subject)) ?? 'declined'
+      shownRef.current.add(range.first)
+      // **結べた原因地震があるのに、この範囲だけ結べていないなら見せない。** 主題（`session.subject`）は
+      // 結べた最初の地震なので、それへ倒すと、いま声が語っている別の地震とは違うカードを開く。
+      // どの範囲も結べていない（原因地震が 1 つで主題がそのまま当てはまる）ときだけ主題へ倒す。
+      const subject = range.subject ?? (ranges.some(r => r.subject) ? undefined : session.subject)
+      if (subject === undefined) return
+      const result = callGuarded(() => latest.current.show(subject)) ?? 'declined'
       if (result === 'mismatch') troubleRef.current ??= 'mismatch'
     }
     raf = requestAnimationFrame(tick)
