@@ -8,7 +8,7 @@ import {
   fetchDmdataGdEarthquakes,
   releaseSocket,
   fetchDmdataActiveEews,
-  fetchDmdataCanceledEewIds,
+  fetchDmdataEewEventList,
   DmdataWebSocket,
   decodeTelegramText,
   needsBodyDecode,
@@ -1126,7 +1126,7 @@ describe('fetchDmdataActiveEews の部分失敗', () => {
   })
 })
 
-describe('fetchDmdataCanceledEewIds', () => {
+describe('fetchDmdataEewEventList', () => {
   const KEY = 'valid-key'
   const FROM = Date.parse('2026-09-26T00:00:00Z')
   const TO = Date.parse('2026-10-04T00:00:00Z')
@@ -1150,13 +1150,20 @@ describe('fetchDmdataCanceledEewIds', () => {
     isWarning: false, earthquake: { originTime, arrivalTime: originTime }, ...extra,
   })
 
-  // 一覧の `earthquake` は `condition` を持たないので、発生時刻は使わない（2026-10-15 ユーザー承認）。
-  it('取り消された地震 ID だけを集める（発生時刻は返さない・詳細は引かない）', async () => {
+  // 一覧の `earthquake` は `condition` を持たないので、発生時刻は返さない（最終報の本文から読む）。
+  // 最終報の報番号（`serial`）は返す —— アーカイブで最終報まで読めたかを比べる鍵。
+  it('地震 ID・取消の印・最終報の発表時刻と報番号・警報の印を集める（発生時刻は返さない・詳細は引かない）', async () => {
     const urls = stubPages([[
       item('20261003132605', '2026-10-03T13:26:01+09:00', { isCanceled: true }),
       item('20261003132452', '2026-10-03T13:24:48+09:00'),
     ]])
-    expect(await fetchDmdataCanceledEewIds(KEY, FROM, TO)).toEqual(['20261003132605'])
+    expect(await fetchDmdataEewEventList(KEY, FROM, TO)).toEqual({
+      events: [
+        { eventId: '20261003132605', canceled: true, lastReportMs: Date.parse('2026-10-03T13:26:01+09:00'), lastSerial: 5, warning: false },
+        { eventId: '20261003132452', canceled: false, lastReportMs: Date.parse('2026-10-03T13:24:48+09:00'), lastSerial: 5, warning: false },
+      ],
+      complete: true,
+    })
     expect(urls).toHaveLength(1)
     expect(urls[0]).toContain('/gd/eew?')
     expect(urls[0]).toContain('limit=100')
@@ -1167,33 +1174,33 @@ describe('fetchDmdataCanceledEewIds', () => {
       [item('20261003132605', '2026-10-03T13:26:01+09:00', { isCanceled: true })],
       [item('20261003132452', '2026-10-03T13:24:48+09:00', { isCanceled: true })],
     ])
-    expect(await fetchDmdataCanceledEewIds(KEY, FROM, TO)).toEqual(['20261003132605', '20261003132452'])
+    expect((await fetchDmdataEewEventList(KEY, FROM, TO)).events.map(e => e.eventId)).toEqual(['20261003132605', '20261003132452'])
     expect(urls[1]).toContain('cursorToken=t0')
     expect(urls[1]).toContain('limit=100')
   })
 
   it('平常時は記録を出さない', async () => {
     stubPages([[item('20261003132605', '2026-10-03T13:26:01+09:00')]])
-    await fetchDmdataCanceledEewIds(KEY, FROM, TO)
+    await fetchDmdataEewEventList(KEY, FROM, TO)
     expect(warnings()).toEqual([])
   })
 
   it('ページ上限で打ち切ったら記録する', async () => {
     const pages = Array.from({ length: 8 }, (_, i) => [item(String(20261003000000 + i), '2026-10-03T00:00:00+09:00')])
     const urls = stubPages(pages)
-    await fetchDmdataCanceledEewIds(KEY, FROM, TO)
+    expect((await fetchDmdataEewEventList(KEY, FROM, TO)).complete).toBe(false)
     expect(urls).toHaveLength(5)
     expect(warnings().some(w => w.includes('打ち切りました'))).toBe(true)
   })
 
   it('期間が不正なら取りに行かない', async () => {
     const urls = stubPages([[]])
-    expect(await fetchDmdataCanceledEewIds(KEY, TO, FROM)).toEqual([])
+    expect(await fetchDmdataEewEventList(KEY, TO, FROM)).toEqual({ events: [], complete: false })
     expect(urls).toHaveLength(0)
   })
 
-  it('失敗しても投げず、集めた分を返す', async () => {
+  it('失敗しても投げず、集めた分を返して未完と印す', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 500 }) as unknown as Response))
-    await expect(fetchDmdataCanceledEewIds(KEY, FROM, TO)).resolves.toEqual([])
+    await expect(fetchDmdataEewEventList(KEY, FROM, TO)).resolves.toEqual({ events: [], complete: false })
   })
 })

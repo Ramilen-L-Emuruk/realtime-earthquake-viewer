@@ -6,14 +6,14 @@
 // | 材料 | DMDSS 版 | 標準版 |
 // |---|---|---|
 // | 画面に来た緊急地震速報 | 受信した電文（リプレイの再生区間も同じ経路で流れる） | 強震モニタ（Yahoo）の EEW・P2PQuake の警報 |
-// | 過去 7 日（＋境目の 1 日）ぶんの緊急地震速報 | 使わない（DMDATA の EEW 一覧（`/v2/gd/eew`）からは取消だけを 1 回） | P2PQuake の `/history?codes=556` を 1 回（直近 1 週間・警報だけ） |
+// | 過去 7 日（＋境目の 1 日）ぶんの緊急地震速報 | 地震ごとの最終報の本文（日ごとのアーカイブ・まだ無い日は地震ごとに 1 通。`dmdataReplay.ts` の `fetchDmdataEewOrigins`） | P2PQuake の `/history?codes=556` を 1 回（直近 1 週間・警報だけ） |
 // | 地震 ID（緊急地震速報を結ぶ鍵） | カードの電文が持っている | 気象庁の地震一覧と突き合わせる |
 // | 長期震源カタログ | 同梱の `public/data/hypocenter/`（要る年だけ読む） | 同じ |
 //
 // **仮定震源要素だったかを見分けられるのは、電文の `condition` を持つ経路だけ**（DMDATA の受信電文・
-// P2PQuake）。DMDATA の一覧（`/v2/gd/eew`）は `earthquake` に `condition` の欄を持たない（2026-10-15 に
-// 実物の応答で確かめた）ので、**一覧の発生時刻は使わない**（2026-10-15 ユーザー承認「地震ごとに本文で
-// 確かめる（推奨）」。地震ごとに本文を取って見分ける形を作るまでの間）。強震モニタの緊急地震速報も
+// P2PQuake）。DMDATA の一覧と詳細（`/v2/gd/eew`）は `condition` の欄を持たない（2026-10-15 に実物の応答で
+// 確かめた）ので、**一覧の発生時刻は使わず、最終報の本文から読む**（2026-10-15 ユーザー承認「地震ごとに本文で
+// 確かめる（推奨）」。取り方は同日「それで進めて」— 日ごとのアーカイブを読む）。強震モニタの緊急地震速報も
 // `condition` を持たないが、こちらは「見分けられない」として残し、使う（2026-10-15 ユーザー承認
 // 「仮定震源の報は使わない（推奨）」の説明「標準版の強震モニタ経路は仮定を見分けられないので除けない」）。
 //
@@ -24,7 +24,8 @@
 // 画面に来る経路で残るので、定期的には取らない。カタログは同梱データなので、要る年が変わったときに読む。
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { fetchDmdataCanceledEewIds } from '../services/dmdata'
+import type { DmdataClassification } from '../services/dmdataClassifications'
+import { fetchDmdataEewOrigins } from '../services/dmdataReplay'
 import { YAHOO_EEW_ID_PREFIX } from '../services/kyoshin'
 import { fetchJmaQuakeList, fetchP2PEewOriginTimes } from '../services/quakeOriginSources'
 import { serverNow } from '../utils/clock'
@@ -211,12 +212,20 @@ export function useQuakeOriginSeconds(params: {
   readonly enabled: boolean
   readonly isDmdss: boolean
   readonly apiKey: string
+  /**
+   * 受けている区分（DMDSS 版）。**`null` の間は過去分を取りに行かない** —— 区分が決まる前に既定の区分で引くと、
+   * 一部の区分しか受けていない人のところで受けていない分類を引いて断られる（→ `dmdataClassifications.ts`）。
+   * 標準版では使わない。
+   */
+  readonly classifications: readonly DmdataClassification[] | null
   readonly quakes: readonly JMAQuake[]
   readonly activeEEWs: ReadonlyMap<string, EEWAlert>
   /** リプレイ中の時刻のずれ（ライブなら `null`）。変わったら過去分を取り直す。 */
   readonly replayOffsetMs: number | null
 }): ReadonlyMap<string, OriginSeconds> {
-  const { enabled, isDmdss, apiKey, quakes, activeEEWs, replayOffsetMs } = params
+  const { enabled, isDmdss, apiKey, classifications, quakes, activeEEWs, replayOffsetMs } = params
+  // 依存は中身で持つ（配列の作り直しで取り直さない）。
+  const classificationsKey = classifications === null ? null : [...classifications].sort().join(',')
   const [eewOrigins, setEewOrigins] = useState<Map<string, EewOriginEntry>>(() => (enabled ? loadEewOrigins() : new Map()))
   const [jmaList, setJmaList] = useState<readonly JmaQuakeListEntry[]>([])
   const [catalog, setCatalog] = useState<LoadedCatalog | null>(null)
@@ -239,10 +248,17 @@ export function useQuakeOriginSeconds(params: {
     recordRef.current(stored, [])
   }, [enabled])
 
+  // 画面で取り消しを受けた地震。**過去分の取得結果で戻さない** —— 取得（取り直しを含め最大 3 分）の途中で取消が
+  // 届くと、取得が持っている取消前の報が後から書き込まれ、取り消された地震の線が戻る。画面で同じ地震の有効な報を
+  // 受け直したら外す（リプレイで取消の前へ巻き戻したとき）。
+  const liveCanceledRef = useRef(new Set<string>())
+
   // 画面に来た緊急地震速報を残す（ライブ・リプレイの再生区間の両方）。
   useEffect(() => {
     if (!enabled) return
     const { updates, removals } = eewOriginsFromActive(activeEEWs.values())
+    for (const [id] of updates) liveCanceledRef.current.delete(id)
+    for (const id of removals) liveCanceledRef.current.add(id)
     if (updates.length > 0 || removals.length > 0) recordRef.current(updates, removals)
   }, [enabled, activeEEWs])
 
@@ -250,20 +266,41 @@ export function useQuakeOriginSeconds(params: {
   useEffect(() => {
     if (!enabled) return
     let cancelled = false
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
+    // 結果を要らなくなったら（設定の変更・リプレイの切替・アンマウント）、途中の取得も止める。
+    const abort = new AbortController()
     // **一覧が取消と伝えた地震は、端末の記録からも除く**（画面で先に有効な報として残した値が残らないように）。
     const recordFetched = (found: EewOriginFetch) => {
-      if (found.origins.size > 0 || found.canceled.length > 0) recordRef.current(found.origins, found.canceled)
+      const liveCanceled = liveCanceledRef.current
+      const origins = liveCanceled.size === 0 ? found.origins : new Map([...found.origins].filter(([id]) => !liveCanceled.has(id)))
+      if (origins.size > 0 || found.canceled.length > 0) recordRef.current(origins, found.canceled)
     }
     const anchor = serverNow()
     const agoMs = Date.now() - anchor
     if (isDmdss) {
-      if (apiKey) {
-        // **一覧からは取消だけを使う。** 一覧の発生時刻は仮定震源要素の報か見分けられない
-        // （→ `fetchDmdataCanceledEewIds`。2026-10-15 ユーザー承認「地震ごとに本文で確かめる（推奨）」の、
-        // 見分ける形を作るまでの間は一覧の値を使わない、という部分）。
-        void fetchDmdataCanceledEewIds(apiKey, anchor - EEW_LOOKBACK_MS, anchor).then((canceled) => {
-          if (!cancelled) recordFetched({ origins: new Map(), canceled })
-        })
+      if (apiKey && classificationsKey !== null) {
+        // **地震ごとの最終報の本文から読む。** 画面で受けた報と同じ関数で記録に変える（仮定震源要素の見分け・
+        // 取消・訓練報の扱いを 1 か所に揃える）。一覧が取消と伝えた地震も除く。
+        const cls = classificationsKey === '' ? [] : (classificationsKey.split(',') as DmdataClassification[])
+        // **取りきれなかったら間を置いて取り直す**（長期震源カタログと同じ回数・間隔）。取りきれなかった分は
+        // 「緊急地震速報が無かった」と区別が付かず、取り直さないとリロードまで線が引けない。アーカイブと電文本体は
+        // 控えに残るので、取り直しで飛ぶのは一覧と、読めなかった分だけ。
+        const fetchOnce = (attempt: number) => {
+          void fetchDmdataEewOrigins(apiKey, new Date(anchor - EEW_LOOKBACK_MS), new Date(anchor), cls, abort.signal)
+            .then((found) => {
+              if (cancelled) return
+              const { updates, removals } = eewOriginsFromActive(found.finals)
+              recordFetched({ origins: new Map(updates), canceled: [...removals, ...found.canceledIds] })
+              if (found.complete) return
+              if (attempt >= CATALOG_RETRY_LIMIT) {
+                log.warn(`[eew-origin] 過去の緊急地震速報を ${attempt + 1} 回取って取りきれませんでした（取れた分だけで線を引きます）`)
+                return
+              }
+              retryTimer = setTimeout(() => { if (!cancelled) fetchOnce(attempt + 1) }, CATALOG_RETRY_DELAY_MS)
+            })
+            .catch((err: unknown) => { log.warn('[eew-origin] 過去の緊急地震速報を記録できませんでした', err) })
+        }
+        fetchOnce(0)
       }
     } else {
       if (agoMs < P2P_HISTORY_REACH_MS) {
@@ -279,8 +316,12 @@ export function useQuakeOriginSeconds(params: {
         setJmaList([])
       }
     }
-    return () => { cancelled = true }
-  }, [enabled, isDmdss, apiKey, replayOffsetMs])
+    return () => {
+      cancelled = true
+      abort.abort()
+      if (retryTimer !== undefined) clearTimeout(retryTimer)
+    }
+  }, [enabled, isDmdss, apiKey, classificationsKey, replayOffsetMs])
 
   // 長期震源カタログのうち、要る年を読む。**読めた年は捨てない**（ファイルの控えは
   // `hypocenterCatalog.ts` が持つので、読み直しても通信は出ない）。**年ごとに成否を扱う** —— 1 年の
