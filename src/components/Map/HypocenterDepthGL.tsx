@@ -170,10 +170,13 @@ export function HypocenterDepthGL({ quake, epicenter, prefIntensities, iconScale
     // `elevationMetersFromDepthKm` が標高 +1000m へ写し、×印が地表より 1km 上へ浮く
     // （`gl/depthPointLayer.ts`）。実例は遠地地震で、電文が高さフィールドを省いて
     // `description="…深さ不明"` を添えてくる。確定していない深さを立体で断定しない。
-    const depthKm = hasDepth(quake.earthquake.hypocenter.depth) ? quake.earthquake.hypocenter.depth : 0
+    // 地表へ置くと「ごく浅い」と見分けが付かないので、**形を途切れた × に替える**
+    // （緊急地震速報の震源と同じ。2026-10-15 ユーザー承認 → docs/spec/map-rendering-spec.md §16）。
+    const depthKnown = hasDepth(quake.earthquake.hypocenter.depth)
+    const depthKm = depthKnown ? quake.earthquake.hypocenter.depth : 0
     layerRef.current?.setPoints([
       // 震央（地表）。深さがあることを示す控えめな印で、震源と線で結ぶ。
-      // 深さ 0（ごく浅い・不明）のときは震源と重なるので、見た目は 1 つの × 印になる。
+      // 深さ 0（ごく浅い・不明）のときは震源と重なるので、見た目は 1 つの × 印（不明なら途切れた ×）になる。
       {
         lng: epicenter[1],
         lat: epicenter[0],
@@ -189,7 +192,7 @@ export function HypocenterDepthGL({ quake, epicenter, prefIntensities, iconScale
         lng: epicenter[1],
         lat: epicenter[0],
         depthKm,
-        shape: 'cross',
+        shape: depthKnown ? 'cross' : 'crossBroken',
         color: CROSS_COLOR,
         sizePx: CROSS_SIZE_PX * iconScale,
         stem: true,
