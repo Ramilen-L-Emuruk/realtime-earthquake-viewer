@@ -192,6 +192,17 @@ describe('EEW 震源ポップアップの文言', () => {
     expect(html).not.toContain('6.5')
   })
 
+  // 「非常に強い揺れを検知」の報は仮定震源要素ではないので語を分ける。地名が観測点の位置である
+  // ことは同じなので但し書きは残す（2026-10-15 ユーザー承認の文面）。
+  it('強い揺れ検知の報では、その語と地名の但し書きを出し、仮定震源要素とは名乗らない', () => {
+    const html = buildPopupHtml(makeEp({ isAssumed: true, strongShakingOnly: true, magnitude: NaN, depth: 10 }))
+    expect(html).toContain('非常に強い揺れを検知（震源未確定）')
+    expect(html).toContain('地名は揺れを検知した観測点の位置です')
+    expect(html).not.toContain('仮定震源要素')
+    expect(html).toContain('震源調査中')
+    expect(html).not.toContain('NaN')
+  })
+
   // 対照: 確定震源では但し書きを出さない（出すと確定した震源まで疑わせる）。
   it('確定震源では但し書きを出さず M・深さを見せる', () => {
     const html = buildPopupHtml(makeEp())

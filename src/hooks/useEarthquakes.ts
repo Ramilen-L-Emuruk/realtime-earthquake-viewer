@@ -371,7 +371,7 @@ function enrichEEWPref(eew: EEWAlert, index: ReadonlyMap<string, string> | null)
   return { ...eew, areas }
 }
 
-type TestEEWKind = 'special' | 'warning' | 'forecast' | 'assumed' | 'deep'
+type TestEEWKind = 'special' | 'warning' | 'forecast' | 'assumed' | 'deep' | 'strongShaking'
 // baseTime（**地震発現時刻**の基準）を初報から続報・最終報まで持ち回る
 // （→ `runSimulateEEW` のコメント）。
 type TestEEWEntry = { eventId: string; serial: number; baseTime: Date; finalizeTimer: number }
@@ -3364,6 +3364,13 @@ export function useEarthquakes(
     runSimulateEEW('assumed', (e, s, b) => createTestEEWAssumed(isDmdss, e, s, b), EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent)
   }, [handleEvent])
 
+  // 「非常に強い揺れを検知」の形は DMDATA 経路でしか届かないので、ボタンも DMDSS 版にだけ出す
+  // （→ `createTestEEWStrongShaking`）。
+  const simulateEEWStrongShaking = useCallback(async () => {
+    const { createTestEEWStrongShaking } = await loadTestData()
+    runSimulateEEW('strongShaking', (e, s, b) => createTestEEWStrongShaking(e, s, b), EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent)
+  }, [handleEvent])
+
   const simulateEEWDeep = useCallback(async () => {
     const { createTestEEWDeep } = await loadTestData()
     runSimulateEEW('deep', (e, s, b) => createTestEEWDeep(isDmdss, e, s, b), EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent)
@@ -3706,7 +3713,7 @@ export function useEarthquakes(
     simulateEarthquake,
     simulateForeignQuake,
     simulateForeignQuakeHuge,
-    simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWAssumed, simulateEEWDeep, simulateEEWRetraction,
+    simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWAssumed, simulateEEWStrongShaking, simulateEEWDeep, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
     simulateQuakeNotice, simulateEarthquakeCount, simulateEarthquakeCountRetraction, simulateEstimatedIntensity,

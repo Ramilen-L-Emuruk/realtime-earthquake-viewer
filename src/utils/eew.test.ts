@@ -1124,7 +1124,8 @@ describe('selectActiveEews（その時刻に発表中だった緊急地震速報
     const eew = report({
       isFinal: true,
       time: '壊れた値',
-      earthquake: { ...makeEEW().earthquake, originTime: '壊れた値' },
+      // 震源時刻が読めなければ発現時刻へ落とす（`calcEEWCancelTime`）ので、そちらも壊す
+      earthquake: { ...makeEEW().earthquake, originTime: '壊れた値', arrivalTime: '壊れた値' },
     })
     expect(selectActiveEews(wrap(eew), AFTER, 'test')).toEqual([eew])
   })

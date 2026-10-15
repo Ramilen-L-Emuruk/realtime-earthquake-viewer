@@ -41,6 +41,8 @@ export interface TestFunctions {
   eewWarning: () => void
   eewForecast: () => void
   eewAssumed: () => void
+  /** 「非常に強い揺れを検知」の EEW。DMDSS 版でしか届かない形なので、ボタンも DMDSS 版にだけ出す。 */
+  eewStrongShaking?: () => void
   eewDeep: () => void
   eewRetraction: () => void
   tsunami: () => void
@@ -1838,6 +1840,11 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, arriv
         <Row label="地震動予報" description="震度4程度（予報域） – eewForecast 音 / 10秒以内に再度押すと続報、押さなければ最終報確定→無音で自動解除（数分後）">
           <TestButton color="yellow" onClick={onTest.eewForecast}>予報テスト</TestButton>
         </Row>
+        {isDmdss && onTest.eewStrongShaking && (
+          <Row label="地震動予報（非常に強い揺れを検知）" description="震源を決める前に、強い揺れを検知した観測点だけで出る第1報（北陸地方・最大震度5弱程度以上。2024年6月3日の実電文の形） – eewForecast 音 / M・深さは出さず、気象庁の本文を震源名の下に出す。10秒以内に再度押すと仮定震源要素の続報、押さなければ最終報確定→無音で自動解除（数分後）">
+            <TestButton color="yellow" onClick={onTest.eewStrongShaking}>強い揺れ検知テスト</TestButton>
+          </Row>
+        )}
         <Row label="地震動予報（単独点処理）" description="震源が特定できていない初報（日向灘・気象庁が入れる固定値 M1.0 深さ10km） – eewForecast 音 / 予想震度が載らないため「単独点処理のため、予想震度なし。」を待たずに読み上げ。10秒以内に再度押すと震源確定＋震度5強予想の警報へ格上げ（eew 音）。格上げの伝え方は押すタイミングで変わる（読み上げ中に押すと割り込んで言い直し）。押さなくても最終報が確定震源になるため同じ格上げが起きる→無音で自動解除（数分後）">
           <TestButton color="yellow" onClick={onTest.eewAssumed}>単独点処理テスト</TestButton>
         </Row>

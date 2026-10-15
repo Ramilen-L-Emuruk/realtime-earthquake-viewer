@@ -8,7 +8,7 @@ import type { ShakeFocus, MapFocusTarget } from './mapTypes'
 import type { EEWAlert } from '../../types/earthquake'
 import type { PsWaveCircle } from '../../services/kyoshin'
 import { computeEewCircle } from '../../hooks/usePsWaveCalc'
-import { eewEventKey } from '../../utils/eew'
+import { compareEewNewestFirst, eewEventKey } from '../../utils/eew'
 import { hasKnownEpicenter } from '../../utils/geo'
 import { serverNow } from '../../utils/clock'
 import {
@@ -747,10 +747,10 @@ export function FitToEEWGL({
   // 再計算で 100ms ごとに走るため、素通しにすると 3 秒の抑制中に同じ行が 30 本並ぶ。
   const relocationSkipRef = useRef<string | null>(null)
 
-  // 最新 EEW（originTime 降順）を追従対象とする。
+  // 最新 EEW（発生時刻の降順。発生時刻を持たない報は発現時刻で並べる → `compareEewNewestFirst`）を追従対象とする。
   const latest =
     eews.length > 0
-      ? [...eews].sort((a, b) => b.earthquake.originTime.localeCompare(a.earthquake.originTime))[0]
+      ? [...eews].sort(compareEewNewestFirst)[0]
       : null
 
   // 新規 EEW 受信 → 震源/波円へフィット。解除 → 検知点 or 日本全体へ。

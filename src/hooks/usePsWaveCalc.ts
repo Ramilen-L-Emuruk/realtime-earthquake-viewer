@@ -5,6 +5,7 @@ import { serverNow } from '../utils/clock'
 import { hasDepth } from '../utils/formatters'
 import { hasKnownEpicenter } from '../utils/geo'
 import { reachRadiusKm } from '../utils/travelTime'
+import { isProvisionalHypocenter } from '../utils/eew'
 
 const UPDATE_INTERVAL_MS = 100
 
@@ -33,7 +34,10 @@ export function computeEewCircle(eew: EEWAlert, now: number): PsWaveCircle | nul
   // PLUM 法による予測の報で主要動の到達予測時刻を出さない**（PLUM は震源を使わないため猶予時間を
   // 算出できず、受信端末向けのガイドラインも「まもなく到達」等の表現を推奨している）。予報円は
   // 猶予時間の図示なので、描けば根拠のない秒数を見せることになる。震源名が空の報も同じ扱い。
-  if (!hypocenter.name || eew.earthquake.condition === '仮定震源要素') return null
+  //
+  // **「非常に強い揺れを検知」の報も同じ**（→ `isProvisionalHypocenter`）。震央は検知した観測点で、
+  // 発生時刻も持たない。
+  if (!hypocenter.name || isProvisionalHypocenter(eew)) return null
   // 震源の深さが判らない報でも円を描かない。**`0` は「ごく浅い」という有効値**で、
   // 判らないことは `-1` で表す（`Hypocenter.depth`）。丸めて 0 として扱うと最も浅い地震の
   // 速さで円が広がり、**深い地震ほど「まだ地表へ届いていない」時間帯に円を見せる**
@@ -52,7 +56,10 @@ export function computeEewCircle(eew: EEWAlert, now: number): PsWaveCircle | nul
 
   const originMs = new Date(eew.earthquake.originTime).getTime()
   const t = (now - originMs) / 1000
-  if (t < 0) return null
+  // **`t < 0` と書かない。** 発生時刻が読めないと `t` は NaN で、比較はどちらの向きでも偽になる。
+  // すり抜けると半径 0 の円の対象が作られ、地図には描かれない（半径 > 0 のときだけ描く）一方で、
+  // カウントダウンがそれを拾って「震源から N km」を出していた。
+  if (!(t >= 0)) return null
 
   const depth = hypocenter.depth
 
