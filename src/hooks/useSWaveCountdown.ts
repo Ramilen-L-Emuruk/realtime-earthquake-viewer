@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { EEWAlert } from '../types/earthquake'
 import type { PsWaveCircle } from '../services/kyoshin'
 import { travelTimeSec } from '../utils/travelTime'
-import { calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, S_WAVE_FALLBACK_KM_PER_SEC } from '../utils/eew'
+import { calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, isProvisionalHypocenter, S_WAVE_FALLBACK_KM_PER_SEC } from '../utils/eew'
 import { hasKnownEpicenter, haversineKm } from '../utils/geo'
 import { serverNow } from '../utils/clock'
 import { log } from '../utils/logger'
@@ -52,7 +52,8 @@ const TELEGRAM_TICK_MS = 1000
  * - **取消済み** —— 画面から消えたものの距離を出さない
  * - **位置不明**（センチネル `-200`）—— 判定は `hasKnownEpicenter` を通す。有限なので
  *   `Number.isFinite` ではすり抜ける（→ `docs/spec/quake-spec.md` §5）
- * - **仮定震源要素** —— 地名も座標も「最初に揺れを捉えた観測点の所在地」であって震源ではない
+ * - **震源が決まっていない報**（仮定震源要素・「非常に強い揺れを検知」の報。→ `isProvisionalHypocenter`）
+ *   —— 地名も座標も「揺れを捉えた観測点の所在地」であって震源ではない
  *   （→ `docs/spec/eew-spec.md` §5）。ここまでの距離を「震源から N km」と出したら嘘になる。
  *   **元から距離は出ていなかった** —— 予報円を出さないので円から拾えず null だった。
  *   この受け皿を足したときに巻き込まないよう、同じ条件で外す
@@ -61,7 +62,7 @@ function nearestEpicenterDistanceKm(eews: EEWAlert[], home: { lat: number; lng: 
   let nearest: number | null = null
   for (const eew of eews) {
     if (eew.cancelled || eew.cancelledAt) continue
-    if (eew.earthquake.condition === '仮定震源要素') continue
+    if (isProvisionalHypocenter(eew)) continue
     const { latitude, longitude } = eew.earthquake.hypocenter
     if (!hasKnownEpicenter(latitude, longitude)) continue
     const d = haversineKm(latitude, longitude, home.lat, home.lng)

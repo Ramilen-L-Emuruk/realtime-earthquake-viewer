@@ -477,7 +477,7 @@ describe('再生中もキューの予約は発火時刻を待つ', () => {
    * `time` / `originTime` は上書きできる。**解除時刻はこの 2 つから決まる**ので、
    * 読めない値を入れたときの振る舞いをここで作れる（→ 下の「解除時刻を決められないとき」）。
    */
-  function finalEEW(at: Date, override: { time?: string; originTime?: string } = {}): EEWAlert {
+  function finalEEW(at: Date, override: { time?: string; originTime?: string; arrivalTime?: string } = {}): EEWAlert {
     const iso = at.toISOString()
     return {
       kind: 'eew',
@@ -486,7 +486,7 @@ describe('再生中もキューの予約は発火時刻を待つ', () => {
       test: false,
       earthquake: {
         originTime: override.originTime ?? iso,
-        arrivalTime: iso,
+        arrivalTime: override.arrivalTime ?? iso,
         condition: '',
         hypocenter: { name: 'テスト沖', latitude: 35, longitude: 140, depth: 10, magnitude: 4.0 },
       },
@@ -608,7 +608,7 @@ describe('再生中もキューの予約は発火時刻を待つ', () => {
     setReplayOffset(OFFSET_MS)
     const h = setup({ offset: OFFSET_MS })
 
-    act(() => { h.current.injectEvent(finalEEW(serverDate(), { time: '', originTime: '' })) })
+    act(() => { h.current.injectEvent(finalEEW(serverDate(), { time: '', originTime: '', arrivalTime: '' })) })
     expect(h.current.activeEEWs.size).toBe(1)
     expect(err.mock.calls.filter(c => String(c[0]).includes('自動解除を予約できません'))).toHaveLength(1)
 
@@ -812,6 +812,25 @@ describe('EEW 発報テストの報の推移', () => {
     expect(Number.isNaN(firstIssued)).toBe(false)
     expect(secondIssued).toBeGreaterThan(firstIssued)
     expect(second.id).not.toBe(first.id)
+  })
+
+  // 「非常に強い揺れを検知」の第 1 報の印と本文は、続報（仮定震源要素）で持ち越さない。
+  // 続報は報を丸ごと置き換えるので、印が残ると確定へ進んだ後も予報円が出ず本文が居座る。
+  it('強い揺れ検知の第 1 報の印と本文は、続報で消える', async () => {
+    const h = setup()
+
+    await act(async () => { await h.current.simulateEEWStrongShaking() })
+    const first = onlyEEW(h)
+    expect(first.strongShakingOnly).toBe(true)
+    expect(first.strongShakingText).toBeTruthy()
+
+    act(() => { vi.advanceTimersByTime(3_000) })
+    await act(async () => { await h.current.simulateEEWStrongShaking() })
+    const second = onlyEEW(h)
+    expect(second.issue?.serial).toBe('2')
+    expect(second.strongShakingOnly).toBeUndefined()
+    expect(second.strongShakingText).toBeUndefined()
+    expect(second.earthquake.condition).toBe('仮定震源要素')
   })
 
   it('最終報も独立した 1 報として報番号を進める', async () => {

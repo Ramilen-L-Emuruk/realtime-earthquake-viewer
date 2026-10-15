@@ -1468,6 +1468,9 @@ export async function fetchDmdataEewOriginTimes(
   // どちらも件数が少ないだけに見えるので、読めなかった分は記録に残す。
   let canceled = 0
   let unreadable = 0
+  // 発生時刻を持たない「非常に強い揺れを検知」の報（→ `EEWAlert.strongShakingOnly`）。読めないのではなく
+  // 電文がそもそも持たない形なので、読めなかった行と混ぜて警告しない。
+  let noOrigin = 0
   try {
     for (; pages < EEW_ORIGIN_MAX_PAGES; pages++) {
       const params = new URLSearchParams({ datetime: `${from}~${to}`, limit: '100' })
@@ -1483,6 +1486,8 @@ export async function fetchDmdataEewOriginTimes(
       const json = outcomeJson<{ items?: GdEewListItem[]; nextToken?: string }>(res)
       for (const item of json.items ?? []) {
         if (item.isCanceled === true) { canceled += 1; continue }
+        // 震源の欄はあるのに発生時刻だけが無い行に限る。欄ごと無い行は一覧の形が変わった印なので、読めない行に残す
+        if (typeof item.eventId === 'string' && item.earthquake && !item.earthquake.originTime) { noOrigin += 1; continue }
         const originMs = Date.parse(item.earthquake?.originTime ?? '')
         if (typeof item.eventId === 'string' && Number.isFinite(originMs)) out.set(item.eventId, originMs)
         else unreadable += 1
@@ -1493,6 +1498,9 @@ export async function fetchDmdataEewOriginTimes(
   } catch (err) {
     log.warn(`[DMDSS] 緊急地震速報の発生時刻の取得に失敗（ここまで ${out.size} 件）`, err)
     return out
+  }
+  if (noOrigin > 0) {
+    log.debug(`[DMDSS] 緊急地震速報の発生時刻: 発生時刻の無い報（非常に強い揺れを検知）を ${noOrigin} 件飛ばしました`)
   }
   if (unreadable > 0) {
     log.warn(`[DMDSS] 緊急地震速報の発生時刻: 地震 ID か発生時刻を読めない行を ${unreadable} 件捨てました`

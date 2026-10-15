@@ -1,6 +1,6 @@
 import type { EEWAlert, JMAQuake, JMATsunami } from '../types/earthquake'
 import type { MapMode } from '../components/Map/mapTypes'
-import { computeDisplayEEWLevel, eewKindLabel, eewMaxScale, eewMaxScaleInfo } from './eew'
+import { computeDisplayEEWLevel, eewKindLabel, eewMaxScale, eewMaxScaleInfo, isProvisionalHypocenter } from './eew'
 import { formatDateTime, formatDepth, formatMagnitude, formatMagnitudeCondition, formatMagnitudeWithCondition, formatTsunamiGrade, hasDepth, hasMagnitude } from './formatters'
 import { getIntensityColor, getIntensityLabelWithOrAbove, getIntensityLabelWithApproxAbove, isValidIntensityScale } from './intensity'
 import { isMaxScaleUnreceived } from './quakePoints'
@@ -173,14 +173,17 @@ function kyoshinContent(liveEews: EEWAlert[]): ContentWithoutNotices {
   // 入っているが、それは地震学的に意味を持たない仮の値。画面では隠している（`RealtimeTab`）ので、
   // 画像にも焼かない——共有された画像は後から訂正できない。
   // **`condition` を参照する箇所は eew-spec.md §5 に列挙する決まり。足したらそちらも更新すること。**
-  const assumedHypocenter = eew.earthquake.condition === '仮定震源要素'
+  // 「非常に強い揺れを検知」の報も同じ（→ `isProvisionalHypocenter`）。
+  const assumedHypocenter = isProvisionalHypocenter(eew)
   const parts = [hypocenter.name]
   if (!assumedHypocenter && hasMagnitude(hypocenter.magnitude)) parts.push(formatMagnitude(hypocenter.magnitude))
   if (knownScale) parts.push(`予想最大震度 ${getIntensityLabelWithApproxAbove(info.scale, info.orAbove)}`)
   const serial = eew.issue?.serial
   // 日時として読めない発生時刻は落とすが、**報番号は残す**（別の事実なので巻き込まない）。
   // 両方とも無ければ欄ごと出さない。
-  const originText = formatDateTime(eew.earthquake.originTime)
+  // **値が無いときは整形を呼ばない**（「非常に強い揺れを検知」の報は発生時刻を持たない）。呼ぶと
+  // 「読めない値が来た」として記録され、電文が時刻を持たないことと区別が付かなくなる（`RealtimeTab` と同じ）。
+  const originText = eew.earthquake.originTime ? formatDateTime(eew.earthquake.originTime) : null
   const metaParts = [serial ? `第${serial}報` : '', originText ? `${originText} 発生` : ''].filter(Boolean)
   return {
     header: {

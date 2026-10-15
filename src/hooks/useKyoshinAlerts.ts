@@ -10,6 +10,7 @@ import { hasDepth } from '../utils/formatters'
 import { hasKnownEpicenter, haversineKm } from '../utils/geo'
 import { log } from '../utils/logger'
 import { reachRadiusKm } from '../utils/travelTime'
+import { isProvisionalHypocenter } from '../utils/eew'
 import type { ConfirmedShock } from '../utils/kyoshinDetectionView'
 import { PARAMS } from '../utils/kyoshinDetector'
 
@@ -162,9 +163,12 @@ export interface NearestEewInfo {
   depth: number
 }
 
-/** EEW から震源情報を取り出す。震源要素未確定（仮定震源要素）・座標欠損なら null。 */
+/**
+ * EEW から震源情報を取り出す。震源が決まっていない報（仮定震源要素・「非常に強い揺れを検知」の報。
+ * → `isProvisionalHypocenter`）・座標欠損なら null。
+ */
 function extractEewInfo(eew: EEWAlert): NearestEewInfo | null {
-  if (eew.earthquake.condition === '仮定震源要素') return null
+  if (isProvisionalHypocenter(eew)) return null
   const { hypocenter } = eew.earthquake
   // **位置の判定は `hasKnownEpicenter` に通す。** 位置不明のセンチネル `-200` は有限なので
   // `Number.isFinite` をすり抜ける。すり抜けると `isSameEarthquake` が「有効な EEW がある」と

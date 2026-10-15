@@ -1612,7 +1612,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | EEW の区分呼称（予報級／警報級）の対応表を崩すと、表示・ウィンドウタイトルの呼び方が食い違う（読み上げの呼称は別に持つ） | [`eew-spec.md`](docs/spec/eew-spec.md) §3「電文の名称と表示・読み上げ」・[`audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6 |
 | 種別ヘッダーの報番号表示を地震情報カードと共有する規則を崩すと、片方だけ見た目が変わる | [`eew-spec.md`](docs/spec/eew-spec.md) §3「報番号の見た目は地震情報カードと共有する」 |
 | 上限を定めない予想震度・長周期階級（`over`/`99`）の扱いを崩すと、長周期の予測が NaN で消える、または上限が定まらない変化が安定待ち・既読判定で無音のまま消える | [`data-sources-spec.md`](docs/spec/data-sources-spec.md) §8・[`eew-spec.md`](docs/spec/eew-spec.md) §4「上限を定めない予想の扱い」・[`audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6 |
-| 仮定震源要素で連動して隠す・採らない箇所の一覧を崩すと、震度 3 以上の予想が「予想震度なし」に落ちる | [`eew-spec.md`](docs/spec/eew-spec.md) §5 |
+| 仮の震源（仮定震源要素・「非常に強い揺れを検知」の報）で連動して隠す・採らない箇所の一覧を崩すと、震度 3 以上の予想が「予想震度なし」に落ちる、または観測点の位置を震源として予報円・M・深さを出す | [`eew-spec.md`](docs/spec/eew-spec.md) §5 |
 | EEW P/S 波予報円・仮定震源要素の連動箇所を崩すと、地図の描画が電文の内容と食い違う | [`eew-spec.md`](docs/spec/eew-spec.md) §5-§6 |
 | 走時を JMA2001 走時表から引く仕組み（自前速度モデル禁止・二分探索の逆引き・バンドル分離）を崩すと、電文が名乗る時刻と画面の波面が食い違う、またはビルドが precache 上限超過で落ちる | [`eew-spec.md`](docs/spec/eew-spec.md) §6「走時は JMA2001 走時表から引く」・[`data-sources-spec.md`](docs/spec/data-sources-spec.md) §6「JMA2001 走時表」 |
 | 距離計算を球で解く仕組み（`EARTH_RADIUS_KM` 一本化・`ringVertex` 共有）を崩すと、深発・遠距離で誤差が生じる、または予報円と外接矩形がずれる | [`eew-spec.md`](docs/spec/eew-spec.md) §6 |

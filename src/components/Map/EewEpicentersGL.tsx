@@ -186,9 +186,14 @@ export function buildPopupHtml(ep: EewEpicenter): string {
     // 地名まで含めて仮の値であることを言い切る。カードの「（震源未確定）」だけでは
     // 「この地名がおおよその震源」と読めてしまうが、実際は最初に揺れを検知した観測点の所在地で
     // 震源とは無関係（→ docs/spec/eew-spec.md §5）。ポップアップは行数に余裕があるので書ききる。
+    // 「非常に強い揺れを検知」の報は `Condition` が仮定震源要素ではないので、語を分ける
+    // （2026-10-15 ユーザー承認）。どちらも地名が観測点の所在地である点は同じ。
     (provisional
-      ? `<div style="margin-top:4px;font-size:11px;color:#fbbf24">仮定震源要素（震源未確定）<br>` +
-        `<span style="color:#94a3b8">地名は最初に揺れを検知した観測点の位置です</span></div>`
+      ? ep.strongShakingOnly
+        ? `<div style="margin-top:4px;font-size:11px;color:#fbbf24">非常に強い揺れを検知（震源未確定）<br>` +
+          `<span style="color:#94a3b8">地名は揺れを検知した観測点の位置です</span></div>`
+        : `<div style="margin-top:4px;font-size:11px;color:#fbbf24">仮定震源要素（震源未確定）<br>` +
+          `<span style="color:#94a3b8">地名は最初に揺れを検知した観測点の位置です</span></div>`
       : '') +
     `</div>`
   )

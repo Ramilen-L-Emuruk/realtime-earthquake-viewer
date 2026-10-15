@@ -246,6 +246,17 @@ describe('buildShareCardContent — 緊急地震速報', () => {
     expect(c.header.subtitle).toContain('日向灘')
   })
 
+  // 「非常に強い揺れを検知」の報も震源は仮。規模（NaN）と発生時刻（無い）を画像へ焼かず、
+  // 予想最大震度は出す。
+  it('強い揺れ検知の報では規模も発生時刻も出さず、予想最大震度は出す', async () => {
+    const { createTestEEWStrongShaking } = await import('./testData')
+    const strong = createTestEEWStrongShaking('s', 1, new Date('2026-01-14T10:41:15Z'))
+    const c = build(input({ mode: 'kyoshin', eews: [strong] }))
+    expect(c.header.subtitle).toContain('北陸地方')
+    expect(c.header.subtitle).not.toMatch(/M|NaN|発生/)
+    expect(c.header.subtitle).toContain('予想最大震度')
+  })
+
   // 対照。震源が確定していれば規模は出す（上のテストが「常に隠す」で通ってしまわないように）。
   it('震源が確定していれば規模を出す', () => {
     const c = build(input({ mode: 'kyoshin', eews: [eew()] }))

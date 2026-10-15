@@ -1158,6 +1158,62 @@ export function createTestEEWAssumed(withDmdssFields: boolean, eventId?: string,
   }
 }
 
+// 「非常に強い揺れを検知・最大予測震度のみ」の初報 → 続報で仮定震源要素。
+//
+// **2024-06-03 06:31 能登の実電文の形をそのまま写している**（第 1 報 `VXSE45_RJTD_20240602213144019`・
+// 第 2 報 `VXSE45_RJTD_20240602213145108`）。第 1 報は震源を決める前に強い揺れを検知した観測点だけで
+// 出る形で（解説資料 Ⅱ.21）、**発生時刻・仮定震源要素の印・規模・区域のどれも持たない**。震央は検知した
+// 観測点・深さ 10km は仮の値、電文全体の予想震度は「5弱〜over」だけで、本文に観測点の所在地が入る。
+// 第 2 報で仮定震源要素（M1.0・予想震度なし）へ移る。
+//
+// **DMDSS 版でしか届かない形**なので、ボタンも DMDSS 版にだけ出す（P2PQuake / Yahoo はこの区別を運ばない）。
+export function createTestEEWStrongShaking(eventId?: string, serial = 1, baseTime?: Date): EEWAlert {
+  const anchor = baseTime ?? serverDate()
+  const report = serverDate().toISOString()
+  const eid = eventId ?? `test-strong-shaking-${Date.now()}`
+  const isStrongShaking = serial === 1
+  // 実電文: 発現時刻 06:31:42、第 2 報の発生時刻 06:31:41（発現の 1 秒前）
+  const arrival = anchor.toISOString()
+  return {
+    kind: 'eew',
+    id: `test-eew-strong-shaking-${eid}-${serial}`,
+    time: report,
+    test: false,
+    ...(isStrongShaking && {
+      strongShakingOnly: true as const,
+      // 実電文の本文どおり（日時は押した時刻に合わせる。電文は「３日０６時３１分４２秒頃」の形）
+      strongShakingText: `${zenkakuDayTime(anchor)}頃\n石川県珠洲市付近　　　　　最大震度５弱程度以上と推定`,
+    }),
+    earthquake: {
+      // **第 1 報は発生時刻を持たない**（解説資料 Ⅱ.21 1-1）。空文字はパーサーが読めなかったときと同じ値
+      originTime: isStrongShaking ? '' : new Date(anchor.getTime() - 1_000).toISOString(),
+      arrivalTime: arrival,
+      condition: isStrongShaking ? '' : '仮定震源要素',
+      // 第 1 報の震央地名は観測点を含む地方（「北陸地方」）、第 2 報は短縮用震央地名と同じ「富山湾」
+      hypocenter: isStrongShaking
+        ? { name: '北陸地方', latitude: 37.4, longitude: 137.4, depth: 10, magnitude: NaN }
+        : { name: '富山湾', latitude: 37.4, longitude: 137.4, depth: 10, magnitude: 1.0 },
+    },
+    severity: 'Forecast',
+    cancelled: false,
+    // 第 1 報の予想は電文全体の「5弱〜over」だけ。第 2 報は予想震度の要素ごと無い（単独点処理）
+    ...(isStrongShaking ? { forecastMaxScale: 45 as const, forecastMaxScaleOrAbove: true } : {}),
+    // 精度は両報とも実電文どおり（震央 rank 1・規模 rank 8）
+    accuracy: { epicenterRank: 1, epicenterRank2: 1, depthRank: 1, magnitudeRank: 8, magnitudePoints: 1 },
+    reduceName: '富山湾',
+    issue: { eventId: eid, serial: String(serial), time: report },
+    areas: [],
+  }
+}
+
+/** 本文の日時を電文の書式（「３日０６時３１分４２秒」。全角数字・ゼロ詰め・JST）で作る。 */
+function zenkakuDayTime(d: Date): string {
+  const jst = new Date(d.getTime() + 9 * 3_600_000)
+  const two = (n: number) => String(n).padStart(2, '0')
+  const text = `${jst.getUTCDate()}日${two(jst.getUTCHours())}時${two(jst.getUTCMinutes())}分${two(jst.getUTCSeconds())}秒`
+  return text.replace(/[0-9]/g, c => String.fromCharCode(c.charCodeAt(0) + 0xfee0))
+}
+
 // 深発地震（深さ 150km 超）。震源は確定しているが地域別予想が発表されないため、読み上げは
 // 待たずに「深発地震のため、予想震度なし。」と伝える。
 //

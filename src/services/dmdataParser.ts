@@ -1362,8 +1362,40 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
   }
 
   // 取消しの概要（`Body/Text`）。地震情報・津波情報と同じ扱い（`Comments` は取消電文に出現しない）。
-  const eewCancelBodyEl = isCanceled ? xmlQ(doc, 'Body') : null
-  const eewCancelText = eewCancelBodyEl ? xmlText(xmlChild(eewCancelBodyEl, 'Text')) : ''
+  const eewBodyEl = xmlQ(doc, 'Body')
+  const eewBodyText = eewBodyEl ? xmlText(xmlChild(eewBodyEl, 'Text')) : ''
+  const eewCancelText = isCanceled ? eewBodyText : ''
+  // 「非常に強い揺れを検知・最大予測震度のみ」の報（→ `EEWAlert.strongShakingOnly`）。
+  // **見分けるのは `OriginTime` が無いこと。** 解説資料 Ⅱ.21 1-1 が「この場合、本要素は出現しない」と
+  // 定め、取消以外でこの要素が欠けるのはこの形だけ（取消は `Earthquake` ごと持たないので外す）。
+  // 本文（`Body/Text`）があるかでは見分けない —— 同 3 はこの形のとき出現すると書くが、
+  // 本文が欠けた電文でも震源が仮であることは変わらない。
+  const originTimeEl = eqEl ? xmlChild(eqEl, 'OriginTime') : null
+  const originTimeMissing = !isCanceled && eqEl !== null && !xmlText(originTimeEl)
+  // **この形と見分けると、予報円・カウントダウン・地図の震源・共有カードの規模が外れる。** 確定した
+  // 震源の報を読み損ねてここへ落ちると、警報でも M・深さが消える。そこで資料の定義
+  // （要素ごと出ない・規模は不明・予報と地震動予報だけ）と食い違う報は**この形と見なさず**、記録だけ残す。
+  // 本文の有無は見分けに使わない —— 本文が欠けた電文でも、震源が仮であることは変わらない。
+  const notThisForm: string[] = []
+  if (originTimeMissing) {
+    if (originTimeEl) notThisForm.push('発生時刻の要素はあるが中身が空')
+    if (eewMagnitudeEl && Number.isFinite(parseFloat(xmlText(eewMagnitudeEl)))) notThisForm.push('規模が数値')
+    if (headType === 'VXSE43' || eewWarningRegions.length > 0) notThisForm.push('警報の報')
+  }
+  const strongShakingOnly = originTimeMissing && notThisForm.length === 0
+  const strongShakingText = strongShakingOnly ? eewBodyText : ''
+  if (originTimeMissing && !strongShakingOnly) {
+    log.warn(`${DMDATA_LOG_PREFIX} 緊急地震速報の発生時刻を読めません。「非常に強い揺れを検知」の形とも食い違うので、仮の震源とは扱いません（${notThisForm.join('・')}。予報円は描けません）: EventID=${eventId} 第${serial}報`)
+  } else if (strongShakingOnly && !eewBodyText) {
+    log.warn(`${DMDATA_LOG_PREFIX} 「非常に強い揺れを検知」の緊急地震速報に本文（Body/Text）がありません（仮の震源として扱います）: EventID=${eventId} 第${serial}報`)
+  } else if (strongShakingOnly) {
+    log.debug(`${DMDATA_LOG_PREFIX} 「非常に強い揺れを検知・最大予測震度のみ」の緊急地震速報（震源は仮）: EventID=${eventId} 第${serial}報`)
+  }
+  if (!isCanceled && !strongShakingOnly && eewBodyText) {
+    // 資料はこの要素を取消とこの形にしか置いていない。それ以外で現れたら書式が変わった印なので残す
+    // （読まずに捨てるだけだと、気象庁が伝えた文が画面にも記録にも出ない）。
+    log.warn(`${DMDATA_LOG_PREFIX} 緊急地震速報に想定外の本文（Body/Text）があります（表示しません）: EventID=${eventId} 第${serial}報`)
+  }
 
   // 震央地名まわりの補助情報（`Hypocenter/Area` 配下）。値は電文どおりに持つ。
   // **`LandOrSea` は値域が「内陸」「海域」の 2 つだけ**（解説資料 Ⅱ.21 1-4-1-6）。外れた値は
@@ -1390,6 +1422,8 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
     ...(eewWarningRegions.length > 0 && { warningRegions: eewWarningRegions }),
     ...(eewInfoName && { infoName: eewInfoName }),
     ...(eewCancelText && { cancelText: eewCancelText }),
+    ...(strongShakingOnly && { strongShakingOnly: true as const }),
+    ...(strongShakingText && { strongShakingText }),
     earthquake: {
       // 緊急地震速報は `eventId` で束ねるので、この 2 つは表示・共有カードにしか使わない。
       // 読めない値は捨ててよい（同一性の判定に使う地震情報・津波とは扱いが違う）。

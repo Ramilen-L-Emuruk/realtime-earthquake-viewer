@@ -119,7 +119,7 @@ FAQ の文面から読んだ整理**である。
 自前の計算による予測値が画面に出る。**
 
 > （開発者向けの注記）コード内のコメントに「DMDSS版カウントダウンの安全マージン」という表記があるが
-> （[`eew.ts:119`](../src/utils/eew.ts:119)）、実際の適用範囲はビルドを問わない。
+> （[`eew.ts:160`](../src/utils/eew.ts:160)）、実際の適用範囲はビルドを問わない。
 
 ### 共通の土台: JMA2001 走時表
 
@@ -157,7 +157,7 @@ FAQ の文面から読んだ整理**である。
 [`settings-pwa-spec.md`](spec/settings-pwa-spec.md) §4.7「到達予想キー」。以下はその経路の説明。
 
 - **実装**: [`useSWaveCountdown.ts`](../src/hooks/useSWaveCountdown.ts)
-- **表示**: [`RealtimeTab/index.tsx:562`](../src/components/RealtimeTab/index.tsx:562) `SWaveArrivalCard`
+- **表示**: [`RealtimeTab/index.tsx:939`](../src/components/RealtimeTab/index.tsx:939) `SWaveArrivalCard`
 
 **入力**: 電文の震源（緯度・経度・深さ・発生時刻）と、**利用者が設定した地点の座標**。
 
@@ -166,14 +166,14 @@ FAQ の文面から読んだ整理**である。
 1. 地点と震源の距離を求める
 2. 上記の JMA2001 走時表から走時を引く
 3. **独自の安全マージンを足す** —— 距離 × 0.03 秒/km、上限 4 秒
-   （[`eew.ts:130`](../src/utils/eew.ts:130)）。コード内の注記によれば、この係数は
+   （[`eew.ts:164`](../src/utils/eew.ts:164)）。コード内の注記によれば、この係数は
    **実測 1 件からの外挿**で、物理式の裏付けは無い
 
 **出力**: 「**N** 秒後に到達予想」（1 秒刻み）。到達後は「主要動が到達しています」。
 カード下部に「※推定値。実際の到達時間は異なる場合があります」を添えている。
 
 **S 波がまだ地表に達していない間は、走時モデルすら使わない。** 予報円の半径の伸び方から
-速度そのものを推定する（[`useSWaveCountdown.ts:81`](../src/hooks/useSWaveCountdown.ts:81)）。
+速度そのものを推定する（[`useSWaveCountdown.ts:188`](../src/hooks/useSWaveCountdown.ts:188)）。
 推定できないときの既定値は 4.0 km/s。
 
 > **これは例外的な経路ではない。** 震源の真上へ抜けるのが最短なので、S 波が地表に出るまでには
@@ -181,7 +181,7 @@ FAQ の文面から読んだ整理**である。
 > 深い地震ほど長く続く。逆に、ごく浅い地震ではこの時間がほぼ無くなる。
 
 **表示の有無が 4 に依存する**: 自動解除の前に到達しないと判定された場合、カードごと出さない
-（[`useSWaveCountdown.ts:72`](../src/hooks/useSWaveCountdown.ts:72)）。
+（[`useSWaveCountdown.ts:164`](../src/hooks/useSWaveCountdown.ts:164)）。
 
 ### 2. 区域ポップアップの主要動到達秒数
 
@@ -199,26 +199,30 @@ FAQ の文面から読んだ整理**である。
 > **計算**は 1 と同じ走時モデルで、**安全マージンは足していなかった**。
 
 **表示条件**: 地図が「リアルタイム震度」モードで、かつ長周期地震動の区域塗りが無いときだけ
-（[`JapanMapGL.tsx:596`](../src/components/Map/JapanMapGL.tsx:596)）。長周期地震動の区域がある電文では
+（[`JapanMapGL.tsx:549`](../src/components/Map/JapanMapGL.tsx:549)）。長周期地震動の区域がある電文では
 到達秒数を持たない別の塗りに差し替わる。**1 と違い、常に見えるわけではない。**
 
 **1 との違い**: 粒度が区域であること、**但し書きが無い**こと、値の性質を説明する文言が無いこと。
 
 ### 3. P 波・S 波の予報円
 
-- **実装**: [`usePsWaveCalc.ts:108`](../src/hooks/usePsWaveCalc.ts:108) `computeEewCircle`
+- **実装**: [`usePsWaveCalc.ts:23`](../src/hooks/usePsWaveCalc.ts:23) `computeEewCircle`
 - **描画**: [`PsWaveGL.tsx`](../src/components/Map/PsWaveGL.tsx)
 
 震源を中心に、いま P 波・S 波がどこまで届いているかを円で描く。100ms ごとに更新する。
 
 円の内側（揺れが収まったとみなす範囲）は `calcShakingDurationSec` で決めるが、これは
 コード内で「**司・翠川(1999)等の物理式には基づかない。UI 表現上の目安の固定値**」と
-明記されている（[`eew.ts:85`](../src/utils/eew.ts:85)）。
+明記されている（[`eew.ts:126`](../src/utils/eew.ts:126)）。
 
 **仮定震源要素の報では円を描かない。** 理由がコードに書かれている ——
 気象庁は PLUM 法による予測の報で主要動の到達予測時刻を出さず、受信端末向けのガイドラインも
 「まもなく到達」等の表現を推奨しているため、描けば根拠のない秒数を見せることになる
-（[`usePsWaveCalc.ts:117`](../src/hooks/usePsWaveCalc.ts:117)）。
+（[`usePsWaveCalc.ts:40`](../src/hooks/usePsWaveCalc.ts:40)）。
+**「非常に強い揺れを検知・最大予測震度のみ」の報も同じく描かない**（判定は
+[`eew.ts:205`](../src/utils/eew.ts:205) `isProvisionalHypocenter`）。この報は発生時刻を持たず、
+震央は強い揺れを検知した観測点、深さ 10km は仮の値で、円の中心も起点も決まらない。
+**発生時刻が読めない報も描かない**（同じ関数。読めない時刻から求めた経過秒は数にならない）。
 
 #### この円は画像として外部へ配布されうる
 
@@ -234,8 +238,8 @@ FAQ の文面から読んだ整理**である。
 
 ### 4. 緊急地震速報の自動解除時刻
 
-- **実装**: [`eew.ts:63`](../src/utils/eew.ts:63) `calcEEWAutoCancelSec` /
-  [`eew.ts:70`](../src/utils/eew.ts:70) `calcEEWCancelTime`
+- **実装**: [`eew.ts:81`](../src/utils/eew.ts:81) `calcEEWAutoCancelSec` /
+  [`eew.ts:100`](../src/utils/eew.ts:100) `calcEEWCancelTime`
 
 最終報からどれだけの時間で緊急地震速報の表示を消すかを決める。**予測値そのものは画面に出ない。**
 
@@ -252,14 +256,16 @@ FAQ の文面から読んだ整理**である。
 そこへ S 波が届く時間 + 30 秒を求める（`calcEEWAutoCancelSec`）。
 
 実際の解除時刻は 2 段階で、この値（発生時刻が起点）と「**最終報を受信してから 60 秒**」の
-**遅い方**を採る（`calcEEWCancelTime`）。
+**遅い方**を採る（`calcEEWCancelTime`）。**発生時刻を持たない報**（「非常に強い揺れを検知」の報）は
+地震発現時刻（揺れを検知した時刻）を起点にし、規模が「不明」なら M6.0 として求める
+（**固定の仮定値**で、深さが判らないときの 30km と同じ扱い）。
 
 > **1 の表示可否を決めているのは前段の計算のみ**（60 秒の下限は経ない）。
 > 有感半径の推定が変われば、カウントダウンが出るか出ないかも変わる。
 
 ### 5. 揺れ検知の動的距離閾値
 
-- **実装**: [`useKyoshinAlerts.ts:203`](../src/hooks/useKyoshinAlerts.ts:203) `thresholdFromOrigin`
+- **実装**: [`useKyoshinAlerts.ts:214`](../src/hooks/useKyoshinAlerts.ts:214) `thresholdFromOrigin`
 
 強震モニタ（全国の観測点の揺れをリアルタイムに配信する仕組み）で揺れを検知したとき、
 それを「同じ地震の伝播」とみなすか「別の場所で起きた地震」とみなすかの距離のしきい値。
@@ -267,22 +273,22 @@ S 波の到達半径に安全係数 1.2 を掛けて求める。**画面には�
 
 緊急地震速報が無い場合は、震源の深さを 15km と仮置きして近似する。起点の時刻には、
 その地域が最初に揺れを検知した時刻ではなく、**いま観測されている地震全体で最も古い検知時刻**を
-使うことがある（[`useKyoshinAlerts.ts:219`](../src/hooks/useKyoshinAlerts.ts:219) `pickOutbreakOrigin`）。
+使うことがある（[`useKyoshinAlerts.ts:230`](../src/hooks/useKyoshinAlerts.ts:230) `pickOutbreakOrigin`）。
 遠い地域ほど揺れ始めが遅く、自分の検知時刻を起点にすると経過時間が短く見積もられるため。
 
-> 同じ計算をする `dynamicRegionThresholdKm`（同ファイル 189 行）もあるが、こちらは
+> 同じ計算をする `dynamicRegionThresholdKm`（同ファイル 200 行）もあるが、こちらは
 > テストからのみ呼ばれる。実行時に走るのは上記の経路。
 
 ### 6. 地図カメラの寄り先
 
-- **実装**: [`CameraFollowsGL.tsx:821`](../src/components/Map/CameraFollowsGL.tsx:821)（新規受信時の初期表示）/
-  [`bounds.ts:135`](../src/components/Map/gl/bounds.ts:135)（発報中の追従）
+- **実装**: [`CameraFollowsGL.tsx:834`](../src/components/Map/CameraFollowsGL.tsx:834)（新規受信時の初期表示）/
+  [`bounds.ts:137`](../src/components/Map/gl/bounds.ts:137)（発報中の追従）
 
 新しい緊急地震速報を受けたとき、地図をどの範囲へ寄せるかを決めるために波面の位置を計算する。
 **予測値は画面に出ず、表示範囲の決定にしか使わない。**
 
 **ここでも 4 の有感半径を使っている。** 追従する範囲を「震度 1 以上が届く距離」で切り詰めている
-（[`bounds.ts:135`](../src/components/Map/gl/bounds.ts:135)）。つまり 4 の計算は
+（[`bounds.ts:137`](../src/components/Map/gl/bounds.ts:137)）。つまり 4 の計算は
 **表示可否（1）とカメラ（6）の 2 箇所で再利用されている。**
 
 ただし**マグニチュードが取れている間だけ**。取れないときは有感半径による切り詰めを外し、

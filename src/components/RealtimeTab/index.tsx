@@ -12,7 +12,7 @@ import { usePageVisible } from '../../hooks/usePageVisible'
 import { formatDateTime, formatDepth, hasDepth } from '../../utils/formatters'
 import { getIntensityColor, getIntensityLabel, getIntensityLabelWithApproxAbove, getIntensityBgColor, getMagnitudeColor, getDepthColor } from '../../utils/intensity'
 import { getLpgmClassLabelWithApproxAbove, getLpgmClassColor, getLpgmClassBgColor } from '../../utils/lpgm'
-import { eewAreas, eewEventKey, eewMaxScaleInfo, eewMaxLpgmClassInfo, eewSerial, computeDisplayEEWLevel, eewNoForecastReason, canPresentLpgmClass, eewEpicenterRankLabel, eewMagnitudeRankLabel, eewMagnitudePointsLabel, eewForecastChangeText, isEewHypocenterSettled, isEewAreaArrived, sortEewWarningRegions, eewAreaArrivalKind, eewArrivalEtaSec } from '../../utils/eew'
+import { eewAreas, eewEventKey, eewMaxScaleInfo, eewMaxLpgmClassInfo, eewSerial, computeDisplayEEWLevel, eewNoForecastReason, canPresentLpgmClass, eewEpicenterRankLabel, eewMagnitudeRankLabel, eewMagnitudePointsLabel, eewForecastChangeText, isEewHypocenterSettled, isEewAreaArrived, sortEewWarningRegions, eewAreaArrivalKind, eewArrivalEtaSec, isProvisionalHypocenter, compareEewNewestFirst } from '../../utils/eew'
 import { kyoshinIndexToJma, kyoshinIndexToLabel, kyoshinIntensityColor } from '../../utils/kyoshinIntensity'
 import { SHINDO0_COLOR } from '../../utils/measuredIntensity'
 import { readableTextColor } from '../../utils/contrast'
@@ -236,9 +236,9 @@ function EEWCard({ eew, visible, speaking, activeLpgmEventId, onToggleLpgm, onDe
   // **値が無いときは整形を呼ばない。** 呼ぶと「読めない値が来た」として記録され、
   // 「電文が時刻を持たない」ことと区別が付かなくなる（他の呼び出しと表記も揃う）。
   const originTimeText = eew.earthquake.originTime ? formatDateTime(eew.earthquake.originTime) : null
-  // 震源要素が推定できず、PLUM 法による震度予測だけが有効な状態。震源・規模・深さは固定の仮定値
-  // （観測点直下 10km・M1.0）なので、数値は伏せ、地名には未確定である旨を添える。
-  const isAssumed = eew.earthquake.condition === '仮定震源要素'
+  // 震源が決まっていない報（仮定震源要素と「非常に強い揺れを検知」の報。→ `isProvisionalHypocenter`）。
+  // 震源・規模・深さは仮の値（観測点直下 10km）なので、数値は伏せ、地名には未確定である旨を添える。
+  const isAssumed = isProvisionalHypocenter(eew)
   const prefAreas = areas.filter(a => a.pref)
 
   /**
@@ -633,6 +633,20 @@ function EEWCard({ eew, visible, speaking, activeLpgmEventId, onToggleLpgm, onDe
             </span>
           )}
         </div>
+
+        {/* 「非常に強い揺れを検知」の報の本文（電文の `Body/Text`。どこで強い揺れを検知したか）。
+            震源名は粗い地方名（「北陸地方」）しか持たないので、場所はこちらでしか伝わらない。
+            気象庁が書いた文なので見出しを付けずにそのまま出す（2026-10-15 ユーザー承認）。
+            改行と全角空白は電文どおりに残す。**取り消されたら出さない**（固定付加文と同じ扱い。
+            取り消された推定が取消の表示と並ばないように。2026-10-15 ユーザー承認）。 */}
+        {eew.strongShakingText && !eew.cancelledAt && (
+          <div
+            className="text-secondary text-[0.8125rem] roomy:text-[1rem] leading-snug"
+            style={{ whiteSpace: 'pre-line' }}
+          >
+            {eew.strongShakingText}
+          </div>
+        )}
 
         {/* 予想が変わったこと（電文の `Appendix`）。**気象庁が「変わった」と書いてきた事実だけを出す**
             —— アプリが続報どうしを比べて推定した結果ではない。理由まで電文に入っている。
@@ -1254,7 +1268,7 @@ export const RealtimeTab = memo(function RealtimeTab({ eews, kyoshinV2Detections
     <div className="flex flex-col min-h-full p-2 gap-2 roomy:p-3 roomy:gap-3">
       {/* データカード */}
       {[...eews]
-        .sort((a, b) => b.earthquake.originTime.localeCompare(a.earthquake.originTime))
+        .sort(compareEewNewestFirst)
         .map(eew => (
           <EEWCard
             key={eew.issue?.eventId ?? eew.id}
