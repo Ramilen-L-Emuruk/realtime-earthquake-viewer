@@ -6,6 +6,7 @@ import {
   computeSiteKeys,
   extractLearned,
   hydrateLearned,
+  resetTransientState,
   indexToValue,
   siteKey,
   cellKey,
@@ -1323,15 +1324,46 @@ describe('step: faint ティア（震度0級のコヒーレント揺れ）', () 
 })
 
 describe('step: 不連続リセット', () => {
-  it('大きな時刻ジャンプで状態をリセットしその1フレームは検知しない', () => {
+  it('MAX_RESUME_GAP_MS を超える時刻ジャンプで状態をリセットしその1フレームは検知しない', () => {
     const defs = grid3x3(35.0, 139.0, 0.1)
     const meta = buildStationMeta(sitesOf(defs))
     let state = initState(-1000)
     let t = 0
     for (let i = 0; i < 5; i++, t += 1000) state = step(state, uniformFrame(defs, t, 0), meta).state
-    const r = step(state, uniformFrame(defs, t + PARAMS.MAX_DT_GAP_MS + 5000, 3.0), meta)
+    const r = step(state, uniformFrame(defs, t + PARAMS.MAX_RESUME_GAP_MS + 5000, 3.0), meta)
     expect(r.detections.length).toBe(0)
     expect(r.state.events.length).toBe(0)
+  })
+
+  // **F29（設計書§37）**: 作り直しの瞬間にたまたま欠測だった点の床を落としていた。通常のフレームの
+  // 欠測（KYO-1）は床を残すので、扱いが食い違っていた
+  it('正: 作り直しのフレームで欠測している点も、学習済みの床を保つ', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    const k = meta.keys[0]
+    let state = initState(-1000)
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) state = step(state, uniformFrame(defs, t, 0), meta).state
+    state.sites[k] = { ...state.sites[k], floorMean: 0.8, floorDev: 0.3 }
+    const frame: Frame = {
+      ...uniformFrame(defs, t + PARAMS.MAX_RESUME_GAP_MS + 5000, 0),
+      missing: defs.map((_, i) => i === 0),
+    }
+    const r = step(state, frame, meta)
+    expect(r.state.sites[k]?.floorMean).toBeCloseTo(0.8)
+    expect(r.state.sites[k]?.floorDev).toBeCloseTo(0.3)
+  })
+
+  it('対照: 一度も観測していない点は、作り直しの後も状態を持たない（床を作り出さない）', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    const k = meta.keys[0]
+    const missing0 = (t: number, v: number): Frame => ({ ...uniformFrame(defs, t, v), missing: defs.map((_, i) => i === 0) })
+    let state = initState(-1000)
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) state = step(state, missing0(t, 0), meta).state
+    const r = step(state, missing0(t + PARAMS.MAX_RESUME_GAP_MS + 5000, 0), meta)
+    expect(r.state.sites[k]).toBeUndefined()
   })
 
   it('不連続リセットでも学習資産（点別床・セル慢性活性）は引き継ぐ', () => {
@@ -1343,21 +1375,456 @@ describe('step: 不連続リセット', () => {
     let t = 0
     for (let i = 0; i < 5; i++, t += 1000) state = step(state, uniformFrame(defs, t, 0), meta).state
     // 学習資産を手で仕込む
-    state.sites[k] = { hist: [], floorMean: 0.8, floorDev: 0.3, triggeredAtMs: null, lastLevelActiveAtMs: null }
+    state.sites[k] = { hist: [], floorMean: 0.8, floorDev: 0.3, triggeredAtMs: null, lastLevelActiveAtMs: null, lastValue: null, lastChangeAtMs: null, lastObservedAtMs: null, changedOnLastObservation: false }
     state.cellActivity[cell] = 0.7
-    // 不連続ジャンプ
-    const r = step(state, uniformFrame(defs, t + PARAMS.MAX_DT_GAP_MS + 5000, 0.0), meta)
+    // 不連続ジャンプ（途絶明けの上限を超える＝作り直しの経路）
+    const r = step(state, uniformFrame(defs, t + PARAMS.MAX_RESUME_GAP_MS + 5000, 0.0), meta)
     expect(r.state.sites[k].floorMean).toBeCloseTo(0.8)
     expect(r.state.sites[k].floorDev).toBeCloseTo(0.3)
     expect(r.state.cellActivity[cell]).toBeCloseTo(0.7)
   })
 })
 
+describe('step: 途絶明け（MAX_DT_GAP_MS 超・MAX_RESUME_GAP_MS 以内）（設計書§37）', () => {
+  /** 静穏 5 秒 → 全点が value で揺れて確定 → 状態と次の時刻を返す。 */
+  function confirmThen(value: number) {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    const { state, detections } = drive(quietThenShake(defs, { shakeCount: 4, shakeValue: value }), meta)
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(true)
+    return { defs, meta, state, t: 9000 }
+  }
+  const GAP = PARAMS.MAX_DT_GAP_MS + 20_000
+
+  // 正: 揺れが続いていれば、途絶の前の確定が同じ ID のまま残る（検知音を鳴らし直さない）
+  it('正: 途絶の後も揺れが続いていれば、同じ ID の確定が残る', () => {
+    const { defs, meta, state, t } = confirmThen(2.0)
+    const before = state.events.find((e) => e.confidence === 'confirmed')!
+    const r = step(state, uniformFrame(defs, t + GAP, 2.0), meta)
+    const after = r.detections.find((d) => d.id === before.id)
+    expect(after?.confidence).toBe('confirmed')
+  })
+
+  // 対照: 途絶の間に揺れが収まっていれば、途絶明けのフレームで消える
+  it('対照: 途絶の間に揺れが収まっていれば、検知は消える', () => {
+    const { defs, meta, state, t } = confirmThen(2.0)
+    const r = step(state, uniformFrame(defs, t + GAP, 0), meta)
+    expect(r.detections.length).toBe(0)
+  })
+
+  // 対照: 上限を超えた途絶は今までどおり作り直す
+  it('対照: MAX_RESUME_GAP_MS を超える途絶では作り直す', () => {
+    const { defs, meta, state, t } = confirmThen(2.0)
+    const r = step(state, uniformFrame(defs, t + PARAMS.MAX_RESUME_GAP_MS + 1000, 2.0), meta)
+    expect(r.detections.length).toBe(0)
+    expect(r.state.events.length).toBe(0)
+  })
+
+  // 安全弁: 途絶の前のサンプルを立ち上がりの起点に拾わない（履歴を空にする）
+  it('安全弁: 途絶の前の静穏から途絶明けの値への差を、立ち上がりに数えない', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    let state = initState(-1000)
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) state = step(state, uniformFrame(defs, t, 0), meta).state
+    // 途絶の間にゆっくり持ち上がった（途絶明けからは横ばい）。履歴を残すと途絶前の 0 が起点になる
+    const resumeAt = t + GAP
+    for (let i = 0; i < 6; i++) {
+      const r = step(state, uniformFrame(defs, resumeAt + i * 1000, 2.0), meta)
+      state = r.state
+      expect(r.triggers.filter((p) => !p.confirmedShaking).length + r.detections.length).toBe(0)
+    }
+  })
+
+  // 安全弁: 途絶明けのフレームでは学習しない（1 サンプルに途絶の全区間を代表させない）
+  it('安全弁: 途絶明けのフレームでは点別床とセル慢性活性を学習しない', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    const k = meta.keys[4]
+    let state = initState(-1000)
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) state = step(state, uniformFrame(defs, t, 0), meta).state
+    const cell = meta.cellOf[k]
+    state.cellActivity[cell] = 0.7
+    const floorBefore = state.sites[k].floorMean
+    const r = step(state, uniformFrame(defs, t + GAP, -1.0), meta)
+    expect(r.state.sites[k].floorMean).toBe(floorBefore)
+    expect(r.state.cellActivity[cell]).toBe(0.7)
+  })
+
+  // 安全弁: 巻き戻りは途絶明けではない（作り直す）
+  it('安全弁: 時刻が巻き戻ったら途絶明けとして扱わず作り直す', () => {
+    const { defs, meta, state, t } = confirmThen(2.0)
+    const r = step(state, uniformFrame(defs, t - 5000, 2.0), meta)
+    expect(r.state.events.length).toBe(0)
+  })
+
+  it('PARAMS: 途絶明けの上限は、履歴を空にする閾値より長い', () => {
+    expect(PARAMS.MAX_RESUME_GAP_MS).toBeGreaterThan(PARAMS.MAX_DT_GAP_MS)
+  })
+})
+
+describe('resetTransientState: 時間軸の切替（設計書§37）', () => {
+  // 正: 検知と点ごとの一過性の状態を捨て、学習資産だけを残す
+  it('正: 検知を捨て、点別床とセル慢性活性は残す', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    const { state } = drive(quietThenShake(defs, { shakeCount: 4, shakeValue: 2.0 }), meta)
+    const k = meta.keys[0]
+    state.sites[k] = { ...state.sites[k], floorMean: 0.8, floorDev: 0.3 }
+    state.cellActivity['x'] = 0.5
+    const reset = resetTransientState(state)
+    expect(reset.events).toEqual([])
+    expect(reset.sites[k].floorMean).toBeCloseTo(0.8)
+    expect(reset.sites[k].hist).toEqual([])
+    expect(reset.sites[k].triggeredAtMs).toBeNull()
+    expect(reset.cellActivity['x']).toBe(0.5)
+  })
+
+  // 対照: 数秒だけ先へ飛ぶ切替でも旧い時間軸の検知を引き継がない（間隔からは見分けられない形）
+  it('対照: 切替の直後のフレームは、数秒しか進んでいなくても旧い検知を返さない', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    const { state } = drive(quietThenShake(defs, { shakeCount: 4, shakeValue: 2.0 }), meta)
+    // 呼ばずに 2 秒先のフレームを流すと、旧い検知がそのまま続く
+    expect(step(state, uniformFrame(defs, 11_000, 2.0), meta).detections.length).toBeGreaterThan(0)
+    const r = step(resetTransientState(state), uniformFrame(defs, 11_000, 2.0), meta)
+    expect(r.detections.length).toBe(0)
+    expect(r.state.events.length).toBe(0)
+  })
+
+  // 安全弁: 作り直した後も、残した床がそのまま次の学習の起点になる
+  it('安全弁: 切替の後のフレームでも、学習済みの床を失わない', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    let state = initState(-1000)
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) state = step(state, uniformFrame(defs, t, 0), meta).state
+    const k = meta.keys[0]
+    state.sites[k] = { ...state.sites[k], floorMean: 0.8, floorDev: 0.3 }
+    const r = step(resetTransientState(state), uniformFrame(defs, t, 0), meta)
+    expect(r.state.sites[k].floorMean).toBeCloseTo(0.8)
+  })
+})
+
+describe('孤立点の確定の降格（設計書§37）', () => {
+  // 3×3 の網から 2° 以上離れた 1 点（R_KM 以内に他の観測点が無い）。網は孤立点ではない対照用
+  const LONE = { lat: 33.0, lng: 135.0 }
+  const defs: StationDef[] = [...grid3x3(35.0, 139.0, 0.1), LONE]
+  const lone = defs.length - 1
+  /** 静穏 5 秒の後、孤立点だけが valueAt(i) で揺れる `sec` 秒。 */
+  function loneShake(sec: number, valueAt: (i: number) => number): Frame[] {
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) frames.push(uniformFrame(defs, t, 0))
+    for (let i = 0; i < sec; i++, t += 1000) frames.push(frameWith(defs, t, (idx) => (idx === lone ? valueAt(i) : 0)))
+    return frames
+  }
+  function tiersOf(frames: Frame[]) {
+    const meta = buildStationMeta(sitesOf(defs))
+    let state = initState(frames[0].dataTimeMs - 1000)
+    const out: { tier: string; isolated: boolean; gates: DetectionEvent['gates'] | null }[] = []
+    for (const f of frames) {
+      const r = step(state, f, meta)
+      state = r.state
+      const e = state.events[0]
+      out.push({ tier: e?.confidence ?? '-', isolated: e?.isolated ?? false, gates: e?.gates ?? null })
+    }
+    return out
+  }
+  const flatSec = PARAMS.SOLO_ISOLATED_FLAT_MS / 1000
+
+  it('前提: この点は孤立点として扱われる', () => {
+    const meta = buildStationMeta(sitesOf(defs))
+    expect(meta.avail[meta.keys[lone]]).toBe(0)
+  })
+
+  // 正: 張り付いた孤立点は降りる（理由は「値が動かない」）
+  it('正: 値が動かないまま SOLO_ISOLATED_FLAT_MS を過ぎたら降ろす', () => {
+    const tiers = tiersOf(loneShake(flatSec + 5, () => 4.0))
+    expect(tiers.some((x) => x.tier === 'confirmed')).toBe(true)
+    const last = tiers[tiers.length - 1]
+    expect(last.tier).toBe('weak')
+    expect(last.isolated).toBe(true)
+    expect(last.gates?.soloStale).toBe(true)
+    expect(last.gates?.soloStaleFlat).toBe(true)
+  })
+
+  // 対照: 値が動き続ける本物の揺れは、§33 の猶予を過ぎても降ろさない（20 秒で降りていた不具合）
+  it('対照: 値が動き続けていれば、SOLO_CONFIRM_GRACE_MS を過ぎても確定のまま', () => {
+    const graceSec = PARAMS.SOLO_CONFIRM_GRACE_MS / 1000
+    const tiers = tiersOf(loneShake(graceSec + 20, (i) => (i % 2 === 0 ? 4.0 : 4.5)))
+    expect(tiers[tiers.length - 1].tier).toBe('confirmed')
+  })
+
+  // 対照: 値が止まっていても、SOLO_ISOLATED_FLAT_MS の手前では降ろさない
+  it('対照: 値が止まっていても SOLO_ISOLATED_FLAT_MS の手前では確定のまま', () => {
+    const tiers = tiersOf(loneShake(flatSec - 10, () => 4.0))
+    expect(tiers[tiers.length - 1].tier).toBe('confirmed')
+  })
+
+  // 安全弁: 降りた後に値が 1 段動いても戻らない（戻ると検知音が鳴り直す）
+  it('安全弁: 降ろした後に値が動いても確定へ戻らない（一方向）', () => {
+    const tiers = tiersOf(loneShake(flatSec + 15, (i) => (i < flatSec + 5 ? 4.0 : i % 2 === 0 ? 4.0 : 4.5)))
+    const firstDrop = tiers.findIndex((x, i) => i > 0 && tiers[i - 1].tier === 'confirmed' && x.tier !== 'confirmed')
+    expect(firstDrop).toBeGreaterThan(0)
+    expect(tiers.slice(firstDrop).map((x) => x.tier)).not.toContain('confirmed')
+  })
+
+  // 安全弁: 孤立でない単点は、値が動いていても §33 のとおり猶予で降りる（値の判定で置き換えない）
+  it('安全弁: 孤立でない単点は、値が動いていても SOLO_CONFIRM_GRACE_MS で降りる', () => {
+    const meta = buildStationMeta(sitesOf(defs))
+    const graceSec = PARAMS.SOLO_CONFIRM_GRACE_MS / 1000
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) frames.push(uniformFrame(defs, t, 0))
+    for (let i = 0; i < graceSec + 10; i++, t += 1000) {
+      frames.push(frameWith(defs, t, (idx) => (idx === 0 ? (i % 2 === 0 ? 3.5 : 4.0) : 0)))
+    }
+    const { detections } = drive(frames, meta)
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(false)
+  })
+
+  // 安全弁: 値が届かない（欠測の）フレームは「動いていない」に数えない
+  it('安全弁: メンバーが欠測しているフレームでは、固着の印を立てない', () => {
+    const meta = buildStationMeta(sitesOf(defs))
+    // 動きながら確定 → SOLO_ISOLATED_FLAT_MS を超えて値が届かない（イベントは保持の間だけ残る）
+    const frames = loneShake(5, (i) => (i % 2 === 0 ? 4.0 : 4.5))
+    let t = frames[frames.length - 1].dataTimeMs + 1000
+    for (let i = 0; i < 8; i++, t += 1000) frames.push({ ...uniformFrame(defs, t, 0), missing: defs.map((_, j) => j === lone) })
+    let state = initState(frames[0].dataTimeMs - 1000)
+    for (const f of frames) state = step(state, f, meta).state
+    expect(state.events[0]?.isolatedStuckKeys ?? []).toEqual([])
+  })
+
+  /** 静穏 5 秒 → 孤立点が 4.0 のまま `before` 秒 → `gapSec` 秒の空白 → 4.0 のまま `after` 秒。空白は途絶（フレーム無し）か欠測。 */
+  function flatAcrossBlank(before: number, gapSec: number, after: number, blank: 'gap' | 'missing'): Frame[] {
+    const frames = loneShake(before, () => 4.0)
+    let t = frames[frames.length - 1].dataTimeMs + 1000
+    if (blank === 'gap') {
+      t += gapSec * 1000 - 1000
+    } else {
+      for (let i = 0; i < gapSec; i++, t += 1000) frames.push({ ...frameWith(defs, t, () => 0), missing: defs.map((_, j) => j === lone) })
+    }
+    for (let i = 0; i < after; i++, t += 1000) frames.push(frameWith(defs, t, (idx) => (idx === lone ? 4.0 : 0)))
+    return frames
+  }
+
+  // 正: 途絶をまたいでも、観測していない時間は「動かなかった時間」に数えない（数えると、本物の揺れの
+  // 最中に入った途絶だけで 120 秒を超えて降ろす）
+  it('正: 途絶の空白は固着の時間に数えない', () => {
+    expect(PARAMS.MAX_RESUME_GAP_MS).toBeGreaterThan(50_000)
+    const tiers = tiersOf(flatAcrossBlank(flatSec - 30, 50, 20, 'gap'))
+    expect(tiers.some((x) => x.tier === 'confirmed')).toBe(true)
+    expect(tiers.some((x) => x.gates?.soloStaleFlat)).toBe(false)
+  })
+
+  // 欠測はイベントの保持（HOLD_MS）の内に収める。長い欠測ではイベントごと消え、平坦な値では作り直されない
+  it('正: 欠測の空白も固着の時間に数えない', () => {
+    expect(PARAMS.HOLD_MS).toBeGreaterThan(8_000)
+    const tiers = tiersOf(flatAcrossBlank(flatSec - 5, 8, 3, 'missing'))
+    expect(tiers.some((x) => x.tier === 'confirmed')).toBe(true)
+    expect(tiers.some((x) => x.gates?.soloStaleFlat)).toBe(false)
+  })
+
+  // 対照: 空白を差し引くだけで、時計を始め直してはいない。空白の前後で観測した平坦の合計が
+  // SOLO_ISOLATED_FLAT_MS を超えれば降ろす（始め直すと、欠測を挟みがちな固着点がいつまでも降りない）
+  it('対照: 空白の前後で観測した平坦の合計が SOLO_ISOLATED_FLAT_MS を超えれば降ろす', () => {
+    const tiers = tiersOf(flatAcrossBlank(flatSec - 60, 30, 70, 'gap'))
+    expect(tiers[tiers.length - 1].gates?.soloStaleFlat).toBe(true)
+    expect(tiers[tiers.length - 1].tier).toBe('weak')
+  })
+
+  // 安全弁: 値が届かないまま居続けるメンバーは確定を支えられない。届かない時間が SOLO_ISOLATED_FLAT_MS を
+  // 超えたら固着と同じ扱いにする（数えないと、残りのメンバーが固着しても降りない）
+  it('安全弁: 値が SOLO_ISOLATED_FLAT_MS を超えて届かないメンバーは、固着と同じく数える', () => {
+    const pair: StationDef[] = [...grid3x3(35.0, 139.0, 0.1), { lat: 33.0, lng: 135.0 }, { lat: 33.0, lng: 135.6 }]
+    const a = pair.length - 2
+    const b = pair.length - 1
+    const meta = buildStationMeta(sitesOf(pair))
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) frames.push(uniformFrame(pair, t, 0))
+    // A は動き、B は 4.0 のまま。2 点とも確定する
+    for (let i = 0; i < 10; i++, t += 1000) {
+      frames.push(frameWith(pair, t, (idx) => (idx === a ? (i % 2 === 0 ? 4.0 : 4.5) : idx === b ? 4.0 : 0)))
+    }
+    // A の値が届かなくなり、B は固着したまま
+    for (let i = 0; i < flatSec + 10; i++, t += 1000) {
+      frames.push({ ...frameWith(pair, t, (idx) => (idx === b ? 4.0 : 0)), missing: pair.map((_, j) => j === a) })
+    }
+    let state = initState(frames[0].dataTimeMs - 1000)
+    let sawBoth = false
+    for (const f of frames) {
+      state = step(state, f, meta).state
+      if (state.events.some((e) => e.memberKeys.length === 2 && e.everConfirmed)) sawBoth = true
+    }
+    expect(sawBoth).toBe(true)
+    const e = state.events.find((x) => x.memberKeys.includes(meta.keys[b]))
+    expect(e?.gates.soloStaleFlat).toBe(true)
+    expect(e?.confidence).not.toBe('confirmed')
+  })
+
+  // 正: 届かないことで数えた点は、値が戻って動き出せば数えない（一方向にすると、長い欠測の後の本物の
+  // 揺れまで「支えていない」と数え、固着した相手と合わせて降ろしてしまう）
+  it('正: 長く届かなかったメンバーも、値が戻って動き出せば固着に数えない', () => {
+    const pair: StationDef[] = [...grid3x3(35.0, 139.0, 0.1), { lat: 33.0, lng: 135.0 }, { lat: 33.0, lng: 135.6 }]
+    const a = pair.length - 2
+    const b = pair.length - 1
+    const meta = buildStationMeta(sitesOf(pair))
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) frames.push(uniformFrame(pair, t, 0))
+    for (let i = 0; i < 10; i++, t += 1000) {
+      frames.push(frameWith(pair, t, (idx) => (idx === a ? (i % 2 === 0 ? 4.0 : 4.5) : idx === b ? 4.0 : 0)))
+    }
+    // A が SOLO_ISOLATED_FLAT_MS を超えて届かない間に B は固着し、確定が降りる
+    for (let i = 0; i < flatSec + 10; i++, t += 1000) {
+      frames.push({ ...frameWith(pair, t, (idx) => (idx === b ? 4.0 : 0)), missing: pair.map((_, j) => j === a) })
+    }
+    // A の値が戻り、動き続ける
+    for (let i = 0; i < 10; i++, t += 1000) {
+      frames.push(frameWith(pair, t, (idx) => (idx === a ? (i % 2 === 0 ? 4.0 : 4.5) : idx === b ? 4.0 : 0)))
+    }
+    let state = initState(frames[0].dataTimeMs - 1000)
+    for (const f of frames) state = step(state, f, meta).state
+    const e = state.events.find((x) => x.memberKeys.includes(meta.keys[a]) && x.memberKeys.includes(meta.keys[b]))
+    expect(e).toBeDefined()
+    expect(e?.isolatedStuckKeys).toContain(meta.keys[b])
+    expect(e?.confidence).toBe('confirmed')
+  })
+
+  // 対照: 同じ値で戻っただけでは動いている証拠にならない。戻った瞬間に支え直すと、降格→確定→降格を
+  // 往復し、確定の立ち上がりのたびに検知音と通知が鳴り直す（途絶明けの抑止は効かない経路）
+  it('対照: 長く届かなかったメンバーが同じ値で戻っただけなら、確定へ戻さない', () => {
+    const pair: StationDef[] = [...grid3x3(35.0, 139.0, 0.1), { lat: 33.0, lng: 135.0 }, { lat: 33.0, lng: 135.6 }]
+    const a = pair.length - 2
+    const b = pair.length - 1
+    const meta = buildStationMeta(sitesOf(pair))
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) frames.push(uniformFrame(pair, t, 0))
+    for (let i = 0; i < 10; i++, t += 1000) {
+      frames.push(frameWith(pair, t, (idx) => (idx === a ? (i % 2 === 0 ? 4.0 : 4.5) : idx === b ? 4.0 : 0)))
+    }
+    for (let i = 0; i < flatSec + 10; i++, t += 1000) {
+      frames.push({ ...frameWith(pair, t, (idx) => (idx === b ? 4.0 : 0)), missing: pair.map((_, j) => j === a) })
+    }
+    // A は最後に見た値（4.5）のまま戻る
+    for (let i = 0; i < 10; i++, t += 1000) {
+      frames.push(frameWith(pair, t, (idx) => (idx === a ? 4.5 : idx === b ? 4.0 : 0)))
+    }
+    let state = initState(frames[0].dataTimeMs - 1000)
+    const tiers: string[] = []
+    for (const f of frames) {
+      state = step(state, f, meta).state
+      const e = state.events.find((x) => x.memberKeys.includes(meta.keys[b]))
+      tiers.push(e?.confidence ?? '-')
+    }
+    const firstDrop = tiers.findIndex((x, i) => i > 0 && tiers[i - 1] === 'confirmed' && x !== 'confirmed')
+    expect(firstDrop).toBeGreaterThan(0)
+    expect(tiers.slice(firstDrop)).not.toContain('confirmed')
+  })
+
+  // 対照: 欠測の後に途絶明けで戻る形でも同じ。最後に見たフレームで値が変わっていた点は、空白を差し引いた
+  // 時計がちょうど今の時刻になる。時計の値で「変わったか」を見ると、ここで変わったと取り違える
+  it('対照: 欠測の後に途絶明けで同じ値で戻っても、確定へ戻さない', () => {
+    const pair: StationDef[] = [...grid3x3(35.0, 139.0, 0.1), { lat: 33.0, lng: 135.0 }, { lat: 33.0, lng: 135.6 }]
+    const a = pair.length - 2
+    const b = pair.length - 1
+    const meta = buildStationMeta(sitesOf(pair))
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) frames.push(uniformFrame(pair, t, 0))
+    // A は最後のフレームで 4.0→4.5 と変わってから届かなくなる
+    for (let i = 0; i < 10; i++, t += 1000) {
+      frames.push(frameWith(pair, t, (idx) => (idx === a ? (i % 2 === 0 ? 4.0 : 4.5) : idx === b ? 4.0 : 0)))
+    }
+    for (let i = 0; i < flatSec + 10; i++, t += 1000) {
+      frames.push({ ...frameWith(pair, t, (idx) => (idx === b ? 4.0 : 0)), missing: pair.map((_, j) => j === a) })
+    }
+    t += 30_000 // 途絶明け（MAX_DT_GAP_MS 超・MAX_RESUME_GAP_MS 以内）
+    expect(30_000).toBeGreaterThan(PARAMS.MAX_DT_GAP_MS)
+    for (let i = 0; i < 10; i++, t += 1000) {
+      frames.push(frameWith(pair, t, (idx) => (idx === a ? 4.5 : idx === b ? 4.0 : 0)))
+    }
+    let state = initState(frames[0].dataTimeMs - 1000)
+    const tiers: string[] = []
+    for (const f of frames) {
+      state = step(state, f, meta).state
+      const e = state.events.find((x) => x.memberKeys.includes(meta.keys[b]))
+      tiers.push(e?.confidence ?? '-')
+    }
+    const firstDrop = tiers.findIndex((x, i) => i > 0 && tiers[i - 1] === 'confirmed' && x !== 'confirmed')
+    expect(firstDrop).toBeGreaterThan(0)
+    expect(tiers.slice(firstDrop)).not.toContain('confirmed')
+  })
+
+  // 対照: 長く届かなかった点が同じ値で戻り、また 1 フレームだけ欠ける形。欠けたフレームで印を数え直すと
+  // （直前の観測から 1 秒しか経っていないので）印が落ち、次に同じ値で戻った点を「支えている」と数えてしまう
+  it('対照: 同じ値で戻った直後に短い欠測を挟んでも、確定へ戻さない', () => {
+    const pair: StationDef[] = [...grid3x3(35.0, 139.0, 0.1), { lat: 33.0, lng: 135.0 }, { lat: 33.0, lng: 135.6 }]
+    const a = pair.length - 2
+    const b = pair.length - 1
+    const meta = buildStationMeta(sitesOf(pair))
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) frames.push(uniformFrame(pair, t, 0))
+    for (let i = 0; i < 10; i++, t += 1000) {
+      frames.push(frameWith(pair, t, (idx) => (idx === a ? (i % 2 === 0 ? 4.0 : 4.5) : idx === b ? 4.0 : 0)))
+    }
+    const missingA = (f: Frame): Frame => ({ ...f, missing: pair.map((_, j) => j === a) })
+    for (let i = 0; i < flatSec + 10; i++, t += 1000) frames.push(missingA(frameWith(pair, t, (idx) => (idx === b ? 4.0 : 0))))
+    const back = (tt: number) => frameWith(pair, tt, (idx) => (idx === a ? 4.5 : idx === b ? 4.0 : 0))
+    frames.push(back(t)); t += 1000
+    frames.push(missingA(frameWith(pair, t, (idx) => (idx === b ? 4.0 : 0)))); t += 1000
+    for (let i = 0; i < 10; i++, t += 1000) frames.push(back(t))
+    let state = initState(frames[0].dataTimeMs - 1000)
+    const tiers: string[] = []
+    for (const f of frames) {
+      state = step(state, f, meta).state
+      const e = state.events.find((x) => x.memberKeys.includes(meta.keys[b]))
+      tiers.push(e?.confidence ?? '-')
+    }
+    const firstDrop = tiers.findIndex((x, i) => i > 0 && tiers[i - 1] === 'confirmed' && x !== 'confirmed')
+    expect(firstDrop).toBeGreaterThan(0)
+    expect(tiers.slice(firstDrop)).not.toContain('confirmed')
+  })
+
+  // 安全弁: 固着して降りた孤立点の近くで本物の揺れが確定したら、併合しても降りたままにしない
+  it('安全弁: 降りた孤立点に本物の確定が併合されたら、印を外して確定を出す', () => {
+    // 2 つの孤立点（互いに R_KM の外・MERGE_EVENT_KM の内）
+    const pair: StationDef[] = [...grid3x3(35.0, 139.0, 0.1), { lat: 33.0, lng: 135.0 }, { lat: 33.0, lng: 135.6 }]
+    const a = pair.length - 2
+    const b = pair.length - 1
+    const meta = buildStationMeta(sitesOf(pair))
+    expect(meta.avail[meta.keys[a]]).toBe(0)
+    expect(meta.avail[meta.keys[b]]).toBe(0)
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) frames.push(uniformFrame(pair, t, 0))
+    // A が張り付いて降りる
+    for (let i = 0; i < flatSec + 5; i++, t += 1000) frames.push(frameWith(pair, t, (idx) => (idx === a ? 4.0 : 0)))
+    // B で本物の揺れが始まり、動き続ける
+    for (let i = 0; i < 10; i++, t += 1000) {
+      frames.push(frameWith(pair, t, (idx) => (idx === a ? 4.0 : idx === b ? (i % 2 === 0 ? 4.0 : 4.5) : 0)))
+    }
+    const { detections } = drive(frames, meta)
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(true)
+  })
+
+  it('PARAMS: 孤立点を降ろす時間は、実地震で値が同じ段に留まった最長（88 秒）より長い', () => {
+    // 設計書§37 の実測。短くすると本物の揺れを揺れの最中に降ろす
+    expect(PARAMS.SOLO_ISOLATED_FLAT_MS).toBeGreaterThan(88_000)
+    expect(PARAMS.SOLO_ISOLATED_FLAT_MS).toBeGreaterThan(PARAMS.CONFIRM_FRAMES * 1000)
+  })
+})
+
 describe('永続化: extractLearned / hydrateLearned', () => {
   it('学習した床とセル活性を抽出→復元できる（既定床の静穏点は省略）', () => {
     const state = initState(0)
-    state.sites['a'] = { hist: [], floorMean: 0.9, floorDev: 0.4, triggeredAtMs: null, lastLevelActiveAtMs: null } // 学習済み
-    state.sites['b'] = { hist: [], floorMean: 0.0, floorDev: 0.0, triggeredAtMs: null, lastLevelActiveAtMs: null } // 静穏（省略対象）
+    state.sites['a'] = { hist: [], floorMean: 0.9, floorDev: 0.4, triggeredAtMs: null, lastLevelActiveAtMs: null, lastValue: null, lastChangeAtMs: null, lastObservedAtMs: null, changedOnLastObservation: false } // 学習済み
+    state.sites['b'] = { hist: [], floorMean: 0.0, floorDev: 0.0, triggeredAtMs: null, lastLevelActiveAtMs: null, lastValue: null, lastChangeAtMs: null, lastObservedAtMs: null, changedOnLastObservation: false } // 静穏（省略対象）
     state.cellActivity['c1'] = 0.6
 
     const learned = extractLearned(state)
@@ -1395,6 +1862,10 @@ describe('chronicNoiseFloor（震度0ドット表示専用の慢性ノイズ床�
     floorDev,
     triggeredAtMs: null,
     lastLevelActiveAtMs: null,
+    lastValue: null,
+    lastChangeAtMs: null,
+    lastObservedAtMs: null,
+    changedOnLastObservation: false,
   })
 
   it('effectiveFloor と異なり下限(FLOOR_MIN=0.0)でクランプしない（静かな点はマイナスのまま）', () => {

@@ -17,6 +17,9 @@ function ev(overrides: Partial<DetectionEvent> & Pick<DetectionEvent, 'confidenc
     everConfirmed: overrides.confidence === 'confirmed',
     firstConfirmedAtMs: 0,
     everMultiPoint: false,
+    isolated: false,
+    isolatedStuckKeys: [],
+    isolatedSilentKeys: [],
     lastSpreadAtMs: 0,
     everNeighborRise: false,
     gates: initGates(),
@@ -135,6 +138,19 @@ describe('gateShortfall: まだのものは「何が足りないか」を言う'
   it('広がりが続かず取り下げたものはその旨を言う', () => {
     const e = ev({ confidence: 'weak', gates: { ...initGates(), soloStale: true } })
     expect(gateShortfall(e)).toBe('広がりが続かなかったため取り下げ')
+  })
+
+  // 孤立点は対を作れないので「広がりが続かなかった」は理由として合わない（設計書§37）
+  it('孤立点の値が動かずに取り下げたものは、その理由を言う', () => {
+    const e = ev({ confidence: 'weak', gates: { ...initGates(), soloStale: true, soloStaleFlat: true } })
+    expect(gateShortfall(e)).toBe('値が動かないまま続いたため取り下げ')
+    expect(gateNotes(e)).toContain('値が動かないまま続いたため、確定を取り下げました')
+    expect(gateNotes(e)).not.toContain('周囲へ広がらないまま続いたため、確定を取り下げました')
+  })
+
+  it('対照: 取り下げていなければ、孤立点の印だけでは何も言わない', () => {
+    const e = ev({ confidence: 'confirmed', gates: { ...initGates(), soloStaleFlat: true } })
+    expect(gateNotes(e)).toEqual([])
   })
 })
 

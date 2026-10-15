@@ -4,6 +4,7 @@ import { MISSING_INDEX_THRESHOLD, type SiteCoords } from '../services/kyoshin'
 import {
   step,
   initState,
+  resetTransientState,
   buildStationMeta,
   extractLearned,
   hydrateLearned,
@@ -100,9 +101,8 @@ export interface KyoshinDetectorV2Result {
    *
    * まだ床を持たない点は 0 を入れる。0 に `SUSTAIN_MARGIN` を足した実効しきい値（0.4）が震度0ドットの
    * 上限（index 6 ＝ value 0.0）を上回るため、実質「表示しない」側へ倒れる。床を持たないのは、一度も
-   * 観測できていない欠測点と、**大きな時刻の飛び（スリープ復帰・リプレイの巻き戻し等）の直後に
-   * ちょうど欠測している点**——`kyoshinDetector` の不連続リセットは欠測点のキーを作り直さないため、
-   * 学習済みの点でも一時的に落ちる。
+   * 観測できていない欠測点だけ（大きな時刻の飛びや時間軸の切替の直後に欠測している点も、学習済みの
+   * 床は残る。設計書§37）。
    */
   floors: number[]
   /**
@@ -121,7 +121,7 @@ export interface KyoshinDetectorV2Result {
    * この結果が「**結果を出せなくなったので空にした**」ものか（`RESULT_STALL_RESET_FRAMES` 参照）。
    *
    * 受け取る側が「揺れが収まって検知が消えた」のと区別するために持つ。後者からの復帰は同じ地震が
-   * 続いていることが多く（`stateRef` は保持され、`MAX_DT_GAP_MS` 以内なら同じイベントが返る）、
+   * 続いていることが多く（`stateRef` は保持され、`MAX_RESUME_GAP_MS` 以内なら同じイベントが返る）、
    * 警報音や通知を鳴らし直すと「収まって、また始まった」という誤った印象を与える。
    */
   stalled: boolean
@@ -365,6 +365,10 @@ export function useKyoshinDetectorV2(
         // 残すと、過去へ飛ぶ切替で新しい軸のフレームが軒並み「巻き戻り」として捨てられる。
         lastSteppedMsRef.current = -Infinity
         pendingRef.current = []
+        // 検知エンジンの一過性の状態（検知イベント・点ごとの履歴）も落とす。学習資産（点別床・セル
+        // 慢性活性）は残す。**フレームの間隔から推し量らせない**——数十秒先へ飛ぶ切替は「途絶明け」
+        // として旧い軸の検知を残し、数秒先へ飛ぶ切替は普通の続きとして引き継いでしまう（設計書§37）
+        stateRef.current = resetTransientState(stateRef.current)
         // 新しい軸では検知エンジンの状態が空なので、また助走から始める。
         waitingWarmupRef.current = true
       }
