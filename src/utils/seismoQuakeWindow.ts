@@ -1,6 +1,6 @@
 // 地震カードの波形のうち、**どこからどこまでを描くか**を決める。
 //
-// **取りに行く範囲と描く範囲は分ける。** 読み返しは発生の 30 秒前から 4 分ぶんを広めに取る
+// **取りに行く範囲と描く範囲は分ける。** 読み返しは地震カードの時刻（分の頭）の 60 秒前から 5 分ぶんを広めに取る
 // （`services/seismoWaveHistory.ts`）。そのまま描くと、発生前の静かな区間と揺れが収まった後の
 // 長い平らな線に、肝心の揺れが埋もれる。
 //
@@ -15,7 +15,7 @@
 // **それでも切り分けられないもの**: 届きうる時間帯が重なる 2 つの地震（同じ分に起きた・
 // 震源が近い）と、地震情報に載らない地震の揺れ。波形からは見分けようがない。
 
-import type { OriginSecondsSource } from './quakeOriginSeconds'
+import { QUAKE_MINUTE_LEAD_MS, QUAKE_MINUTE_TAIL_MS, type OriginSecondsSource } from './quakeOriginSeconds'
 import type { WaveArrival } from './seismoWaveArrival'
 import { lastFilledIndex, trimTrailingGap, type TimedColumns } from './seismoWaveColumns'
 
@@ -42,13 +42,16 @@ export const MINUTE_MS = 60_000
 /**
  * P 波の到達より前に取る余裕（ms）。**発生時刻の出どころで変える。**
  *
- * - 緊急地震速報: 秒まで正確なので、走時表と実際の伝わり方の差だけを見込む（3 秒）
- * - 地震 ID: **実際の発生より 1〜9 秒遅い**（→ `utils/quakeOriginSeconds.ts`）。遅れたぶん
- *   P 波も早く着いているので、前を 10 秒広げる
+ * - 緊急地震速報: 秒まで発表された値なので、走時表と実際の伝わり方の差だけを見込む（3 秒）。
+ *   震源の決まった最後の報と気象庁の震源リストの差は −7.8〜+0.6 秒（58 地震。負は速報が早い）。
+ *   速報が早いと計算した P・S の到達も早く出るので、前は広がり、**後ろの余裕（S の 10 秒後）は最大
+ *   7.8 秒ぶん削られる**（残り約 2 秒）。後ろは揺れの尾を切る位置にしか効かず、描く範囲は揺れ始めと
+ *   静かさの戻りでも決まる（{@link selectQuakeWindow}）ので、ここでは足していない
+ * - 長期震源カタログ: 気象庁の震源リストの値（0.01 秒）。走時表との差だけを見込む（3 秒）
  */
 const REACH_LEAD_MS: Readonly<Record<OriginSecondsSource, number>> = {
   eew: 3 * SECOND_MS,
-  'event-id': 10 * SECOND_MS,
+  catalog: 3 * SECOND_MS,
 }
 
 /** S 波の到達より後に取る余裕（ms）。 */
@@ -58,13 +61,15 @@ const REACH_TAIL_MS = 10 * SECOND_MS
  * この地震の揺れが届きうる時間帯を出す。**走時を出せなければ `null`。**
  *
  * @param arrival 時間軸の 0 を起点に解いた P・S の到達（`computeWaveArrival`）。分の頭を
- *   起点に解いた値なら、**実際の到達はそこから 0〜60 秒遅い**ので、終わりを 60 秒延ばす。
+ *   起点に解いた値なら、**実際の発生はその分の頭の {@link QUAKE_MINUTE_LEAD_MS} 前〜
+ *   {@link QUAKE_MINUTE_TAIL_MS} 後のどこか**（カードの時刻は地震発現の分で、発生はそれより前へ出うる。
+ *   → `utils/quakeOriginSeconds.ts`）なので、同じ幅だけ前後へ広げる。
  */
 export function computeReachBand(zero: WaveAxisZero, arrival: WaveArrival | null): ReachBand | null {
   if (arrival === null) return null
   if (!Number.isFinite(arrival.pMs) || !Number.isFinite(arrival.sMs)) return null
   if (zero.kind === 'minute') {
-    return { fromMs: arrival.pMs, toMs: arrival.sMs + MINUTE_MS }
+    return { fromMs: arrival.pMs - QUAKE_MINUTE_LEAD_MS, toMs: arrival.sMs + QUAKE_MINUTE_TAIL_MS }
   }
   return { fromMs: arrival.pMs - REACH_LEAD_MS[zero.source], toMs: arrival.sMs + REACH_TAIL_MS }
 }
@@ -104,7 +109,7 @@ const SMOOTH_SECONDS = 3
  */
 export const NOISE_FLOOR_GAL = 0.05
 
-/** ノイズを測る区間の長さ（ms）。**読み返しが発生の 30 秒前から取るのに合わせる。** */
+/** ノイズを測る区間の長さ（ms）。**時間軸の 0 の手前 30 秒。** 読み返しの手前の幅（`WAVE_HISTORY_LEAD_MS`）はこれを覆うように決めてある。 */
 export const NOISE_SPAN_MS = 30 * SECOND_MS
 
 /** ノイズを測るのに要る 1 秒ぶんの値の数。**足りなければ判定しない**（推測でノイズを置かない）。 */
@@ -277,8 +282,10 @@ export function selectQuakeWindow(params: {
   if (noiseSamples.length < NOISE_MIN_SECONDS) return untrimmed('no-noise')
   const threshold = Math.max(median(noiseSamples), NOISE_FLOOR_GAL) * ONSET_RATIO
 
-  // **揺れ始め。** 届きうる時間帯に掛かる秒だけを見る。
-  const reachFirst = Math.floor((reach.fromMs - zero.ms) / SECOND_MS)
+  // **揺れ始め。** 届きうる時間帯に掛かる秒だけを見る。**0 より手前は見ない** —— 分までしか無い地震では
+  // 時間帯が 0 の手前へ広がる（発生が分の頭より前へ出うる）が、そこはノイズを測った区間でもあり、
+  // 前の地震の揺れの残りを揺れ始めと取り違える。
+  const reachFirst = Math.max(0, Math.floor((reach.fromMs - zero.ms) / SECOND_MS))
   const reachLast = Math.floor((reach.toMs - zero.ms) / SECOND_MS)
   let onsetSec: number | null = null
   for (let sec = reachFirst; sec <= reachLast; sec += 1) {

@@ -19,7 +19,7 @@ import { isValidSeismoHostUrl } from './seismoStream'
 /** ホストが 1 回で返す範囲の上限（ms）。**`seismo-host` の `WAVE_RAW_RANGE_MAX_MS` と同じ値。** */
 export const SAMPLES_RANGE_MAX_MS = 2 * 60 * 1000
 
-/** 1 回の取り込みで扱う範囲の上限（ms）。**読み返しの窓（4.5 分）より広く、ホストの列の上限（10 分）以下。** */
+/** 1 回の取り込みで扱う範囲の上限（ms）。**読み返しの窓（5 分）より広く、ホストの列の上限（10 分）以下。** */
 export const SAMPLES_SPAN_MAX_MS = 10 * 60 * 1000
 
 /** 取るときの打ち切り（ms）。1 回で 500 KB 前後になるので列より長めに取る。 */
