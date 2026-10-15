@@ -2224,6 +2224,9 @@ export function App() {
     enabled: settings.seismoEnabled && settings.seismoWave !== 'off',
     isDmdss,
     apiKey: debouncedApiKey,
+    // ライブでは接続が区分を取り決めるまで待つ。再生中は、一度も繋がっていなければ既定の区分で引く
+    // （リプレイの取得と同じ扱い。→ 上の `fetchDmdataReplayEvents` の呼び出し）。
+    classifications: replayTimeOffset === null ? dmdataClassifications : (dmdataClassifications ?? PREFERRED_CLASSIFICATIONS),
     quakes: filteredEarthquakes,
     activeEEWs,
     replayOffsetMs: replayTimeOffset,

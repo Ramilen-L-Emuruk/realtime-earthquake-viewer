@@ -44,7 +44,7 @@ const flush = () => act(async () => { await vi.advanceTimersByTimeAsync(0) })
 function render() {
   return renderHook(() =>
     // API キーを渡さないので緊急地震速報の一覧は取りに行かない（カタログだけを見る）。
-    useQuakeOriginSeconds({ enabled: true, isDmdss: true, apiKey: '', quakes: QUAKES, activeEEWs: NO_EEWS, replayOffsetMs: null }),
+    useQuakeOriginSeconds({ enabled: true, isDmdss: true, apiKey: '', classifications: null, quakes: QUAKES, activeEEWs: NO_EEWS, replayOffsetMs: null }),
   )
 }
 

@@ -1,6 +1,6 @@
 // 地震カードの発生時刻を秒まで決めるための材料を、外から取ってくる（標準版の経路）。
 //
-// DMDSS 版は、画面で受けた速報の発生時刻だけを使う（DMDATA の一覧からは取消だけ。`dmdata.ts` の `fetchDmdataCanceledEewIds`）。
+// DMDSS 版は、画面で受けた速報と、過去の速報の最終報の本文を使う（`dmdataReplay.ts` の `fetchDmdataEewOrigins`）。
 // 何をどの順で採るかは `utils/quakeOriginSeconds.ts`、いつ取るかは `hooks/useQuakeOriginSeconds.ts`。
 
 import { fetchHistory } from './p2pquake'

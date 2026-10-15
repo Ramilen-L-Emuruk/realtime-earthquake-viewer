@@ -13,7 +13,7 @@ import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vites
 import { PREFERRED_CLASSIFICATIONS } from './dmdataClassifications'
 import {
   fetchDmdataReplayEvents, fetchDmdataQuakeHistory, clearReplayCache, clearArchiveCacheForTest,
-  clearParseCachesForTest, filterPreWindowEvents, isArchiveCacheable, HISTORY_WINDOW_DAYS,
+  clearParseCachesForTest, filterPreWindowEvents, isArchiveCacheable, HISTORY_WINDOW_DAYS, fetchDmdataEewOrigins, needsPerEventFetch,
 } from './dmdataReplay'
 import { clearArchiveBodyDb } from '../utils/archiveBodyDb'
 
@@ -3513,5 +3513,277 @@ describe('filterPreWindowEvents の畳み込み（長周期地震動・帯）', 
     })
     const entries = [band('2026-09-29T04:50:00+09:00'), band('2026-09-29T05:50:00+09:00')]
     expect(filterPreWindowEvents(entries, new Date(TARGET))).toHaveLength(2)
+  })
+})
+
+// 過去の緊急地震速報の最終報（地震カードの P/S 線の秒）。一覧と詳細は `condition` を持たないので本文を読む。
+describe('needsPerEventFetch', () => {
+  const base = { eventId: 'E', canceled: false, lastReportMs: Date.parse('2026-10-14T12:00:00+09:00'), lastSerial: 5, warning: true }
+  const ctx = (o: Partial<Parameters<typeof needsPerEventFetch>[1]> = {}) => ({
+    eewHeadType: 'VXSE45' as const,
+    seenSerial: new Map<string, number>(), ownTypeChosen: new Set<string>(), readEventIds: new Map<string, unknown>(),
+    fromMs: Date.parse('2026-10-07T00:00:00+09:00'), toMs: Date.parse('2026-10-15T12:00:00+09:00'), ...o,
+  })
+  it.each([
+    ['目録に無い', base, ctx(), true],
+    ['目録が最終報に届かない', base, ctx({ seenSerial: new Map([['E', 3]]) }), true],
+    ['目録が最終報まで届き、本文も読めた', base, ctx({ seenSerial: new Map([['E', 5]]), ownTypeChosen: new Set(['E']), readEventIds: new Map([['E', 1]]) }), false],
+    ['目録が最終報まで届いたが、本文を読めなかった', base, ctx({ seenSerial: new Map([['E', 5]]), ownTypeChosen: new Set(['E']) }), true],
+    ['目録が最終報まで届き、受けている種別の報が無い', base, ctx({ seenSerial: new Map([['E', 5]]) }), false],
+    ['一覧の報番号が読めず、目録に載っている（日をまたいだ途中の報かもしれない）', { ...base, lastSerial: Number.NaN }, ctx({ seenSerial: new Map([['E', 1]]) }), true],
+    ['一覧の報番号が読めず、目録にも無い', { ...base, lastSerial: Number.NaN }, ctx(), true],
+    ['目録が一覧の最終報を越えている', base, ctx({ seenSerial: new Map([['E', 6]]) }), false],
+    ['最終報が期間の始まりちょうど', { ...base, lastReportMs: Date.parse('2026-10-07T00:00:00+09:00') }, ctx(), true],
+    ['最終報が期間の終わりちょうど', { ...base, lastReportMs: Date.parse('2026-10-15T12:00:00+09:00') }, ctx(), true],
+    ['警報だけを受けていて、警報を出した地震', base, ctx({ eewHeadType: 'VXSE43' }), true],
+    // 既知の制約: 警報の後に予報だけの続報が出た地震は、警報の目録が最終報に届かず毎回取りに行く
+    ['警報だけを受けていて、警報の目録が最終報に届かない', base, ctx({ eewHeadType: 'VXSE43', seenSerial: new Map([['E', 3]]), ownTypeChosen: new Set(['E']), readEventIds: new Map([['E', 1]]) }), true],
+    ['取り消された', { ...base, canceled: true }, ctx(), false],
+    ['最終報が期間より前', { ...base, lastReportMs: Date.parse('2026-10-06T23:00:00+09:00') }, ctx(), false],
+    ['最終報が期間より後', { ...base, lastReportMs: Date.parse('2026-10-15T13:00:00+09:00') }, ctx(), false],
+    ['最終報の時刻が読めない', { ...base, lastReportMs: Number.NaN }, ctx(), true],
+    ['警報だけを受けていて、警報を出していない地震', { ...base, warning: false }, ctx({ eewHeadType: 'VXSE43' }), false],
+    ['警報だけを受けていて、警報を出したかが分からない地震', { ...base, warning: null }, ctx({ eewHeadType: 'VXSE43' }), true],
+    ['予報を受けていれば、警報を出していない地震も取る', { ...base, warning: false }, ctx(), true],
+  ])('%s', (_name, ev, c, expected) => {
+    expect(needsPerEventFetch(ev, c)).toBe(expected)
+  })
+})
+
+describe('fetchDmdataEewOrigins', () => {
+  const EEW_FROM = new Date('2026-10-07T00:00:00+09:00')
+  const EEW_TO = new Date('2026-10-15T12:00:00+09:00')
+
+  /** VXSE45 の XML（最小形）。`assumed` で仮定震源要素の報にする。 */
+  function eewBody(eventId: string, serial: number, originTime: string, o: { assumed?: boolean; infoType?: string } = {}): string {
+    return [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<Report xmlns="http://xml.kishou.go.jp/jmaxml1/" xmlns:jmx="http://xml.kishou.go.jp/jmaxml1/">',
+      '<Control><Title>緊急地震速報（地震動予報）</Title><DateTime>2026-10-14T03:00:10Z</DateTime><Status>通常</Status><EditorialOffice>気象庁</EditorialOffice></Control>',
+      '<Head xmlns="http://xml.kishou.go.jp/jmaxml1/informationBasis1/">',
+      '<Title>緊急地震速報（地震動予報）</Title>',
+      '<ReportDateTime>2026-10-14T12:00:10+09:00</ReportDateTime>',
+      `<EventID>${eventId}</EventID>`,
+      `<InfoType>${o.infoType ?? '発表'}</InfoType>`,
+      `<Serial>${serial}</Serial>`,
+      '</Head>',
+      '<Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/" xmlns:jmx_eb="http://xml.kishou.go.jp/jmaxml1/elementBasis1/">',
+      '<Earthquake>',
+      `<OriginTime>${originTime}</OriginTime>`,
+      `<ArrivalTime>${originTime}</ArrivalTime>`,
+      ...(o.assumed ? ['<Condition>仮定震源要素</Condition>'] : []),
+      '<Hypocenter><Area><Name>茨城県沖</Name><jmx_eb:Coordinate>+36.2+141.0-30000/</jmx_eb:Coordinate></Area></Hypocenter>',
+      '<jmx_eb:Magnitude type="Mj">4.5</jmx_eb:Magnitude>',
+      '</Earthquake>',
+      '<Intensity><Forecast><ForecastInt><From>3</From><To>3</To></ForecastInt></Forecast></Intensity>',
+      '</Body></Report>',
+    ].join('\n')
+  }
+
+  /** 目録 1 件（アーカイブの `xmlReport.head` に地震 ID と報番号が入る形）。 */
+  function eewEntry(id: string, eventId: string, serial: number, o: { test?: boolean; originalId?: string; type?: string } = {}) {
+    return {
+      id, classification: 'eew.forecast', filename: `${id}.xml`,
+      ...(o.originalId && { originalId: o.originalId }),
+      head: { type: o.type ?? 'VXSE45', time: '2026-10-14T03:00:10Z', test: o.test ?? false },
+      xmlReport: { head: { eventId, serial: String(serial) } },
+    }
+  }
+
+  /** 一覧・目録・アーカイブ・詳細・本文の応答を組む。投げた URL を返す。 */
+  function mockEew(o: {
+    /** `dateTime` は一覧の最終報の発表時刻（既定は 10-14 の昼）。地震ごとに取るかはこの日で決まる。 */
+    list: Array<{ eventId: string; isCanceled?: boolean; dateTime?: string; serial?: string; isWarning?: boolean }>
+    archives: Array<{ date: string; url: string; gz: Uint8Array | 'error' }>
+    details?: Record<string, { xmlId: string; body: string }>
+  }): string[] {
+    const urls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: string) => {
+      urls.push(input)
+      if (input.includes('/v2/gd/eew?')) {
+        const items = o.list.map(e => ({
+          eventId: e.eventId, isCanceled: e.isCanceled ?? false, dateTime: e.dateTime ?? '2026-10-14T12:00:00+09:00',
+          ...(e.serial !== undefined && { serial: e.serial }), ...(e.isWarning !== undefined && { isWarning: e.isWarning }),
+        }))
+        return { ok: true, status: 200, json: async () => ({ items }) } as unknown as Response
+      }
+      if (input.includes('/v2/archive?')) {
+        const items = o.archives.map(a => ({ classification: 'eew.forecast', date: a.date, url: a.url }))
+        return { ok: true, status: 200, json: async () => ({ status: 'ok', items }) } as unknown as Response
+      }
+      const archive = o.archives.find(a => a.url === input)
+      if (archive) {
+        if (archive.gz === 'error') return { ok: false, status: 500 } as unknown as Response
+        return { ok: true, status: 200, arrayBuffer: async () => archive.gz as unknown as ArrayBuffer } as unknown as Response
+      }
+      const detail = Object.entries(o.details ?? {}).find(([eventId]) => input.endsWith(`/gd/eew/${eventId}`))
+      if (detail) {
+        const items = [{ serial: 3, telegrams: [{ id: detail[1].xmlId, head: { type: 'VXSE45', test: false } }] }]
+        return { ok: true, status: 200, json: async () => ({ items }) } as unknown as Response
+      }
+      const body = Object.values(o.details ?? {}).find(d => input.endsWith(`/v1/${d.xmlId}`))
+      if (body) return { ok: true, status: 200, text: async () => body.body } as unknown as Response
+      return { ok: false, status: 404 } as unknown as Response
+    }))
+    return urls
+  }
+
+  beforeEach(async () => { await clearAllCaches() })
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
+
+  it('アーカイブの日は 1 日 1 ファイルで、地震ごとに最終報の秒と仮定震源を読む', async () => {
+    const gz = await makeTarGz([
+      { name: 'telegrams.json', content: JSON.stringify([
+        eewEntry('a1', '20261014120000', 1),
+        eewEntry('a2', '20261014120000', 2),
+        eewEntry('a2j', '20261014120000', 2, { originalId: 'a2' }),
+        eewEntry('b1', '20261014130000', 1),
+        eewEntry('t1', '20261014140000', 1, { test: true }),
+      ]) },
+      { name: 'a1.xml', content: eewBody('20261014120000', 1, '2026-10-14T12:00:01+09:00', { assumed: true }) },
+      { name: 'a2.xml', content: eewBody('20261014120000', 2, '2026-10-14T12:00:07+09:00') },
+      { name: 'a2j.xml', content: '{}' },
+      { name: 'b1.xml', content: eewBody('20261014130000', 1, '2026-10-14T13:00:37+09:00', { assumed: true }) },
+      { name: 't1.xml', content: eewBody('20261014140000', 1, '2026-10-14T14:00:00+09:00') },
+    ])
+    const urls = mockEew({
+      list: [{ eventId: '20261014120000', serial: '2' }, { eventId: '20261014130000', serial: '1' }],
+      archives: [{ date: '2026-10-14', url: 'https://data.api.dmdata.jp/v1/archive/eew-1014', gz }],
+    })
+    const { finals, canceledIds } = await fetchDmdataEewOrigins('key', EEW_FROM, EEW_TO, PREFERRED_CLASSIFICATIONS, null)
+    const byId = new Map(finals.map(e => [e.issue?.eventId, e]))
+    // 最終報（報番号 2）の秒。途中の報の仮定震源は採らない
+    expect(byId.get('20261014120000')?.earthquake.originTime).toBe('2026-10-14T12:00:07+09:00')
+    expect(byId.get('20261014120000')?.earthquake.condition).not.toBe('仮定震源要素')
+    // 最終報が仮定震源要素なら、その印のまま返す（秒に使うかは記録の側が決める）
+    expect(byId.get('20261014130000')?.earthquake.condition).toBe('仮定震源要素')
+    // 試験の報は採らない
+    expect(byId.has('20261014140000')).toBe(false)
+    expect(canceledIds).toEqual([])
+    // アーカイブで読めた地震は、詳細も本文も地震ごとに取りに行かない
+    expect(urls.filter(u => u.includes('/gd/eew/'))).toEqual([])
+    expect(urls.filter(u => u.includes('/v1/archive/'))).toHaveLength(1)
+  })
+
+  it('目録に最終報まで載っている地震は、受けている種別の報が無くても地震ごとに取りに行かない', async () => {
+    // 警報だけを受けている人（VXSE43）。この日の目録には予報（VXSE45）しか無い ＝ 予報で終わった地震
+    const gz = await makeTarGz([
+      { name: 'telegrams.json', content: JSON.stringify([eewEntry('f1', '20261014120000', 1), eewEntry('f2', '20261014120000', 2)]) },
+      { name: 'f1.xml', content: eewBody('20261014120000', 1, '2026-10-14T12:00:01+09:00') },
+      { name: 'f2.xml', content: eewBody('20261014120000', 2, '2026-10-14T12:00:02+09:00') },
+    ])
+    const urls = mockEew({
+      list: [{ eventId: '20261014120000', dateTime: '2026-10-14T12:01:00+09:00', serial: '2' }],
+      archives: [{ date: '2026-10-14', url: 'https://data.api.dmdata.jp/v1/archive/eew-1014', gz }],
+    })
+    const result = await fetchDmdataEewOrigins('key', EEW_FROM, EEW_TO, ['eew.warning', 'telegram.earthquake'], null)
+    expect(result.finals).toEqual([])
+    expect(result.complete).toBe(true)
+    expect(urls.filter(u => u.includes('/gd/eew/'))).toEqual([])
+  })
+
+  it('目録に載った報番号が一覧の最終報に届かない地震は、前日のアーカイブに途中の報があっても地震ごとに最終報を取る', async () => {
+    // 10-14 の 23:59 に始まり、続報（確定した震源）は 10-15 に出た。10-15 のアーカイブはまだ無い
+    const gz = await makeTarGz([
+      { name: 'telegrams.json', content: JSON.stringify([eewEntry('p1', '20261014235950', 1)]) },
+      { name: 'p1.xml', content: eewBody('20261014235950', 1, '2026-10-14T23:59:41+09:00', { assumed: true }) },
+    ])
+    const urls = mockEew({
+      list: [{ eventId: '20261014235950', dateTime: '2026-10-15T00:00:30+09:00', serial: '5' }],
+      archives: [{ date: '2026-10-14', url: 'https://data.api.dmdata.jp/v1/archive/eew-1014', gz }],
+      details: { '20261014235950': { xmlId: 'live3', body: eewBody('20261014235950', 5, '2026-10-14T23:59:47+09:00') } },
+    })
+    const { finals, complete } = await fetchDmdataEewOrigins('key', EEW_FROM, EEW_TO, PREFERRED_CLASSIFICATIONS, null)
+    expect(urls.filter(u => u.includes('/gd/eew/20261014235950'))).toHaveLength(1)
+    // 地震ごとに取った最終報が後ろに来る（記録へ変えるときに後勝ちになる）
+    expect(finals[finals.length - 1]?.earthquake.originTime).toBe('2026-10-14T23:59:47+09:00')
+    expect(complete).toBe(true)
+  })
+
+  it('目録で最終報を選んだのに本文を読めなかった地震は、地震ごとに取り直す', async () => {
+    const gz = await makeTarGz([
+      { name: 'telegrams.json', content: JSON.stringify([eewEntry('b2', '20261014120000', 2)]) },
+      { name: 'b2.xml', content: '<壊れた本文' },
+    ])
+    const urls = mockEew({
+      list: [{ eventId: '20261014120000', serial: '2' }],
+      archives: [{ date: '2026-10-14', url: 'https://data.api.dmdata.jp/v1/archive/eew-1014', gz }],
+      details: { '20261014120000': { xmlId: 'live4', body: eewBody('20261014120000', 2, '2026-10-14T12:00:07+09:00') } },
+    })
+    const { finals } = await fetchDmdataEewOrigins('key', EEW_FROM, EEW_TO, PREFERRED_CLASSIFICATIONS, null)
+    expect(urls.filter(u => u.includes('/gd/eew/20261014120000'))).toHaveLength(1)
+    expect(finals.map(e => e.earthquake.originTime)).toEqual(['2026-10-14T12:00:07+09:00'])
+  })
+
+  it('地震ごとの取得が続けて失敗したら打ち切り、取りきれていないと返す', async () => {
+    const ids = ['20261015100000', '20261015100100', '20261015100200', '20261015100300', '20261015100400']
+    const urls = mockEew({ list: ids.map(eventId => ({ eventId, dateTime: '2026-10-15T10:05:00+09:00' })), archives: [] })
+    const { complete } = await fetchDmdataEewOrigins('key', EEW_FROM, EEW_TO, PREFERRED_CLASSIFICATIONS, null)
+    // 詳細は 404（どの地震にも応答を用意していない）。3 回続いたところで止める
+    expect(urls.filter(u => u.includes('/gd/eew/'))).toHaveLength(3)
+    expect(complete).toBe(false)
+  })
+
+  it('止める合図が立っていたら地震ごとの取得をしない', async () => {
+    const urls = mockEew({ list: [{ eventId: '20261015100000', dateTime: '2026-10-15T10:05:00+09:00' }], archives: [] })
+    const abort = new AbortController()
+    abort.abort()
+    const { complete } = await fetchDmdataEewOrigins('key', EEW_FROM, EEW_TO, PREFERRED_CLASSIFICATIONS, abort.signal)
+    expect(urls.filter(u => u.includes('/gd/eew/'))).toEqual([])
+    expect(complete).toBe(false)
+  })
+
+  it('日をまたいで続報が出た地震は、目録の並びによらず報番号のいちばん大きい報を採る', async () => {
+    const day1 = await makeTarGz([
+      { name: 'telegrams.json', content: JSON.stringify([eewEntry('m1', '20261013235950', 1)]) },
+      { name: 'm1.xml', content: eewBody('20261013235950', 1, '2026-10-13T23:59:41+09:00', { assumed: true }) },
+    ])
+    const day2 = await makeTarGz([
+      { name: 'telegrams.json', content: JSON.stringify([eewEntry('m5', '20261013235950', 5)]) },
+      { name: 'm5.xml', content: eewBody('20261013235950', 5, '2026-10-13T23:59:47+09:00') },
+    ])
+    mockEew({
+      list: [{ eventId: '20261013235950', serial: '5' }],
+      // 翌日を先に返す。後に読んだ日を勝たせる作りなら、途中の報（仮定震源要素）が残る
+      archives: [
+        { date: '2026-10-14', url: 'https://data.api.dmdata.jp/v1/archive/eew-1014', gz: day2 },
+        { date: '2026-10-13', url: 'https://data.api.dmdata.jp/v1/archive/eew-1013', gz: day1 },
+      ],
+    })
+    const { finals } = await fetchDmdataEewOrigins('key', EEW_FROM, EEW_TO, PREFERRED_CLASSIFICATIONS, null)
+    expect(finals.map(e => e.earthquake.originTime)).toEqual(['2026-10-13T23:59:47+09:00'])
+  })
+
+  it('アーカイブがまだ無い地震は、詳細を 1 件と最終報の本文を 1 通取る（取り消された地震は取らない）', async () => {
+    const urls = mockEew({
+      list: [{ eventId: '20261015110000' }, { eventId: '20261015113000', isCanceled: true }],
+      archives: [],
+      details: { '20261015110000': { xmlId: 'live1', body: eewBody('20261015110000', 3, '2026-10-15T11:00:23+09:00') } },
+    })
+    const { finals, canceledIds } = await fetchDmdataEewOrigins('key', EEW_FROM, EEW_TO, PREFERRED_CLASSIFICATIONS, null)
+    expect(finals.map(e => e.earthquake.originTime)).toEqual(['2026-10-15T11:00:23+09:00'])
+    expect(canceledIds).toEqual(['20261015113000'])
+    expect(urls.filter(u => u.includes('/gd/eew/'))).toEqual(['https://api.dmdata.jp/v2/gd/eew/20261015110000'])
+    expect(urls.filter(u => u.endsWith('/v1/live1'))).toHaveLength(1)
+  })
+
+  it('アーカイブを読めなかった日の地震は、地震ごとに取りに戻る', async () => {
+    const urls = mockEew({
+      list: [{ eventId: '20261014120000' }],
+      archives: [{ date: '2026-10-14', url: 'https://data.api.dmdata.jp/v1/archive/eew-1014', gz: 'error' }],
+      details: { '20261014120000': { xmlId: 'live2', body: eewBody('20261014120000', 2, '2026-10-14T12:00:07+09:00') } },
+    })
+    const { finals, complete } = await fetchDmdataEewOrigins('key', EEW_FROM, EEW_TO, PREFERRED_CLASSIFICATIONS, null)
+    expect(finals.map(e => e.earthquake.originTime)).toEqual(['2026-10-14T12:00:07+09:00'])
+    expect(urls.filter(u => u.includes('/gd/eew/20261014120000'))).toHaveLength(1)
+    // 読めなかった日があったので、取り直す値打ちがある
+    expect(complete).toBe(false)
+  })
+
+  it('緊急地震速報の区分を受けていなければ 1 件も取らない', async () => {
+    const urls = mockEew({ list: [{ eventId: '20261014120000' }], archives: [] })
+    const result = await fetchDmdataEewOrigins('key', EEW_FROM, EEW_TO, ['telegram.earthquake'], null)
+    expect(result).toEqual({ finals: [], canceledIds: [], complete: true })
+    expect(urls).toEqual([])
   })
 })
